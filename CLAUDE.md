@@ -78,6 +78,45 @@ Other PJ3-style vendorables (`QCodeEditor`, `sol2`, `color_widgets`, `backward-c
 
 Everything else (GLM, assimp, FFmpeg, Lua runtime, etc.) comes from Conan.
 
+### Compile instructions
+
+One-time setup (installs Qt 6.8.3 into `./.qt/`, ~1GB):
+
+```bash
+aqt install-qt linux desktop 6.8.3 linux_gcc_64 \
+    --modules qtcharts qtwebsockets \
+    --outputdir ./.qt
+```
+
+Build (configures Conan, runs CMake, builds):
+
+```bash
+./build.sh
+```
+
+That script:
+
+1. Checks for `.qt/6.8.3/gcc_64/` and errors with the install command if missing.
+2. Runs `conan install ... --output-folder=build --build=missing -s compiler.cppstd=20` (reads `conanfile.txt`).
+3. Configures CMake with `CMAKE_TOOLCHAIN_FILE=build/conan_toolchain.cmake` and `CMAKE_PREFIX_PATH=./.qt/6.8.3/gcc_64`.
+4. Builds with `cmake --build build -j$(nproc)`.
+
+Run the app:
+
+```bash
+./run.sh
+```
+
+`run.sh` unsets `QT_IM_MODULE` before launching. Otherwise the IBus platform input context gets loaded from a system / older Qt install and segfaults under the Qt 6.8.3 runtime.
+
+Re-running `./build.sh` after code changes does incremental builds. `ccache` is picked up automatically if installed.
+
+Submodule: `git submodule update --init --recursive` on first clone.
+
+## UI conventions
+
+- **Prefer `.ui` files over programmatic widget construction.** Widgets, layouts, menus, toolbars, dialogs — build them in Qt Designer (`.ui`) and load via `uic`. Use `AUTOUIC` in the module's `CMakeLists.txt`. Drop to hand-written `QWidget` subclasses only when the construction is genuinely dynamic (e.g. widgets created at runtime from plugin metadata) or when I explicitly ask for it.
+
 ## v1 scope (per plan §0)
 
 Parity-plus with PJ3: file + streaming sources, 11 built-in transforms, undo/redo, derived-series editor (incl. Lua via `pj_scripting`), reactive scripts (via Toolbox + `onTimeChanged`), multi-tab workspace, marketplace install UI, all toolboxes.

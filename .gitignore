@@ -1,0 +1,8 @@
+build/
+.qt/
+.cache/
+compile_commands.json
+CMakeUserPresets.json
+.vscode/
+.idea/
+*.user

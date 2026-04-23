@@ -4,9 +4,14 @@ project(QtADS LANGUAGES CXX)
 
 include_directories(include/Qads)
 
-find_package(Qt5 5.5 COMPONENTS Core Gui Widgets REQUIRED)
+find_package(QT NAMES Qt6 Qt5 REQUIRED COMPONENTS Core Gui Widgets)
+find_package(Qt${QT_VERSION_MAJOR} REQUIRED COMPONENTS Core Gui Widgets)
 if (UNIX AND NOT APPLE)
+    if(QT_VERSION_MAJOR LESS 6)
         find_package(Qt5 5.5 COMPONENTS X11Extras REQUIRED)
+    else()
+        find_package(Qt6 REQUIRED COMPONENTS Gui)
+    endif()
 endif()
 
 set(CMAKE_INCLUDE_CURRENT_DIR ON)
@@ -74,18 +79,31 @@ endif()
 add_library(qt_advanced_docking STATIC ${ads_SRCS} )
 target_compile_definitions(qt_advanced_docking PUBLIC ADS_STATIC)
 
-target_link_libraries(qt_advanced_docking PUBLIC Qt5::Core Qt5::Gui Qt5::Widgets)
+target_include_directories(qt_advanced_docking PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include/Qads>
+)
+
+target_link_libraries(qt_advanced_docking PUBLIC
+    Qt${QT_VERSION_MAJOR}::Core
+    Qt${QT_VERSION_MAJOR}::Gui
+    Qt${QT_VERSION_MAJOR}::Widgets
+)
 
 if(UNIX AND NOT APPLE)
-    target_include_directories(qt_advanced_docking PRIVATE ${Qt5Gui_PRIVATE_INCLUDE_DIRS})
-    target_link_libraries(qt_advanced_docking PUBLIC Qt5::X11Extras)
+    if(QT_VERSION_MAJOR LESS 6)
+        target_include_directories(qt_advanced_docking PRIVATE ${Qt5Gui_PRIVATE_INCLUDE_DIRS})
+        target_link_libraries(qt_advanced_docking PUBLIC Qt5::X11Extras)
+    else()
+        # Qt6: needs GuiPrivate for qpa/qplatformnativeinterface.h
+        target_link_libraries(qt_advanced_docking PRIVATE Qt6::GuiPrivate)
+    endif()
     target_link_libraries(qt_advanced_docking PRIVATE xcb)
 endif()
 
 set_target_properties(qt_advanced_docking PROPERTIES
     AUTOMOC ON
     AUTORCC ON
-    CXX_STANDARD 14
+    CXX_STANDARD 17
     CXX_STANDARD_REQUIRED ON
     CXX_EXTENSIONS OFF
 )

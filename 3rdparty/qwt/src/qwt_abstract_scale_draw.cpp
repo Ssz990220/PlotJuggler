@@ -15,6 +15,9 @@
 
 #include <qpainter.h>
 #include <qpalette.h>
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+#include <QRegularExpression>
+#endif
 #include <qmap.h>
 #include <qlist.h>
 #include <qlocale.h>
@@ -375,8 +378,13 @@ double QwtAbstractScaleDraw::maxTickLength() const
 QwtText QwtAbstractScaleDraw::label( double value ) const
 {
   auto str = QLocale().toString( value, 'f', 6 );
+#if QT_VERSION < QT_VERSION_CHECK(6, 0, 0)
   str.remove( QRegExp("0+$") ); // Remove any number of trailing 0's
   str.remove( QRegExp("\\.$") ); // If the last character is just a '.' then remove it
+#else
+  str.remove( QRegularExpression("0+$") ); // Remove any number of trailing 0's
+  str.remove( QRegularExpression("\\.$") ); // If the last character is just a '.' then remove it
+#endif
   return str;
 }
 

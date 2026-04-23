@@ -189,25 +189,37 @@ set( QWT_SRC
     qwt_plot_opengl_canvas.cpp
     )
 
+find_package(QT NAMES Qt6 Qt5 REQUIRED COMPONENTS Core Gui Widgets Concurrent Svg OpenGL PrintSupport)
+find_package(Qt${QT_VERSION_MAJOR} REQUIRED COMPONENTS Core Gui Widgets Concurrent Svg OpenGL PrintSupport)
+if(QT_VERSION_MAJOR GREATER_EQUAL 6)
+    find_package(Qt6 REQUIRED COMPONENTS OpenGLWidgets SvgWidgets)
+endif()
+
 add_library(plotjuggler_qwt STATIC ${QWT_SRC})
+
+set_target_properties(plotjuggler_qwt PROPERTIES
+    AUTOMOC ON
+)
 
 target_include_directories(plotjuggler_qwt PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>
 )
 
-target_link_libraries(plotjuggler_qwt
-    Qt5::Core
-    Qt5::Gui
-    Qt5::Widgets
-    Qt5::Concurrent
-    Qt5::Svg
-    )
+target_link_libraries(plotjuggler_qwt PUBLIC
+    Qt${QT_VERSION_MAJOR}::Core
+    Qt${QT_VERSION_MAJOR}::Gui
+    Qt${QT_VERSION_MAJOR}::Widgets
+    Qt${QT_VERSION_MAJOR}::Concurrent
+    Qt${QT_VERSION_MAJOR}::Svg
+    Qt${QT_VERSION_MAJOR}::OpenGL
+    Qt${QT_VERSION_MAJOR}::PrintSupport
+)
+if(QT_VERSION_MAJOR GREATER_EQUAL 6)
+    target_link_libraries(plotjuggler_qwt PUBLIC Qt6::OpenGLWidgets Qt6::SvgWidgets)
+endif()
 
 target_compile_definitions(plotjuggler_qwt PUBLIC QWT_MOC_INCLUDE)
 #target_compile_definitions(plotjuggler_qwt PUBLIC QWT_DLL QWT_MAKEDLL )
-
-add_library(plotjuggler_qwt_objects OBJECT ${QWT_SRC})
-target_compile_definitions(plotjuggler_qwt_objects PUBLIC QWT_MOC_INCLUDE)
 
 install(
      TARGETS
