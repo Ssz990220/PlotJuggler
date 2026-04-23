@@ -5,7 +5,6 @@
 
 #include "pj_app_core/PlaybackEngine.h"
 #include "pj_app_core/SvgUtil.h"
-#include "ui/LineEdit.h"
 #include "ui/RealSlider.h"
 #include "ui_TimelineWidget.h"
 

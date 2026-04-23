@@ -2,13 +2,13 @@
 
 #include <QCheckBox>
 #include <QLabel>
+#include <QLineEdit>
 #include <QPushButton>
 #include <QSplitter>
 
 #include "pj_app_core/CatalogModel.h"
 #include "pj_app_core/SvgUtil.h"
 #include "ui/CurveTreeView.h"
-#include "ui/LineEdit.h"
 #include "ui_CurveListPanel.h"
 
 namespace PJ {

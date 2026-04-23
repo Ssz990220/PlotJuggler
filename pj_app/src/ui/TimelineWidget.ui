@@ -22,7 +22,7 @@
     <number>0</number>
    </property>
    <item>
-    <widget class="PJ::LineEdit" name="displayTime">
+    <widget class="QLineEdit" name="displayTime">
      <property name="sizePolicy">
       <sizepolicy hsizetype="MinimumExpanding" vsizetype="Fixed">
        <horstretch>0</horstretch>
@@ -286,11 +286,6 @@
   </layout>
  </widget>
  <customwidgets>
-  <customwidget>
-   <class>PJ::LineEdit</class>
-   <extends>QLineEdit</extends>
-   <header>ui/LineEdit.h</header>
-  </customwidget>
   <customwidget>
    <class>PJ::RealSlider</class>
    <extends>QSlider</extends>

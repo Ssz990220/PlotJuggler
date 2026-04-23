@@ -11,7 +11,6 @@ add_executable(pj_app
     src/ui/LeftPanel.cpp
     src/ui/LeftPanel.h
     src/ui/LeftPanel.ui
-    src/ui/LineEdit.h
     src/ui/RealSlider.h
     src/ui/TimelineWidget.cpp
     src/ui/TimelineWidget.h
