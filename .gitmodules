@@ -1,0 +1,3 @@
+[submodule "plotjuggler_core"]
+	path = plotjuggler_core
+	url = git@github.com:PlotJuggler/plotjuggler_core.git
