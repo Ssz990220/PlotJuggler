@@ -11,11 +11,7 @@ class SessionManager;
 
 // Qt-side facade over the catalog of topics/curves known to the current
 // session. Populated as data sources load; GUI views (CurveListPanel,
-// catalog trees in widget families) read from it.
-//
-// For the prototype this is a thin skeleton — empty catalog, signals wired
-// but unused. Real population lands in Phase 1 when SessionManager gains
-// data-source lifecycles.
+// catalog trees in widget families) subscribe to the add/remove signals.
 class CatalogModel : public QObject {
   Q_OBJECT
  public:

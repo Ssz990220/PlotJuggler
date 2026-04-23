@@ -78,37 +78,29 @@ DockWidget::DockWidget(QWidget* parent) : ads::CDockWidget("Plot", parent) {
 
 DockWidget::~DockWidget() = default;
 
-QWidget* DockWidget::plotPlaceholder() { return placeholder_; }
-
 DockToolbar* DockWidget::toolBar() { return toolbar_; }
 
 QString DockWidget::name() const { return toolbar_->label()->text(); }
 
-void DockWidget::onTrackerTime(double /*time*/) {
-  // No-op in the prototype (no PlotWidget yet).
-}
+void DockWidget::onTrackerTime(double /*time*/) {}
 
 DockWidget* DockWidget::splitHorizontal() {
-  auto* new_widget = new DockWidget(qobject_cast<QWidget*>(parent()));
-  auto* parent_docker = qobject_cast<PlotDocker*>(dockManager());
-  auto* area =
-      parent_docker->addDockWidget(ads::RightDockWidgetArea, new_widget, dockAreaWidget());
-  area->setAllowedAreas(ads::OuterDockAreas);
-
-  connect(this, &DockWidget::undoableChange, parent_docker, &PlotDocker::undoableChange);
-  emit undoableChange();
-  emit parent_docker->dockAdded(new_widget);
-  return new_widget;
+  return splitInto(ads::RightDockWidgetArea);
 }
 
 DockWidget* DockWidget::splitVertical() {
-  auto* new_widget = new DockWidget(qobject_cast<QWidget*>(parent()));
+  return splitInto(ads::BottomDockWidgetArea);
+}
+
+DockWidget* DockWidget::splitInto(ads::DockWidgetArea dock_area) {
   auto* parent_docker = qobject_cast<PlotDocker*>(dockManager());
-  auto* area =
-      parent_docker->addDockWidget(ads::BottomDockWidgetArea, new_widget, dockAreaWidget());
+  if (!parent_docker) {
+    return nullptr;
+  }
+  auto* new_widget = new DockWidget(qobject_cast<QWidget*>(parent()));
+  auto* area = parent_docker->addDockWidget(dock_area, new_widget, dockAreaWidget());
   area->setAllowedAreas(ads::OuterDockAreas);
 
-  connect(this, &DockWidget::undoableChange, parent_docker, &PlotDocker::undoableChange);
   emit undoableChange();
   emit parent_docker->dockAdded(new_widget);
   return new_widget;

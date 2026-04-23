@@ -1,6 +1,7 @@
 #include "pj_app_core/PlaybackEngine.h"
 
 #include <algorithm>
+#include <cmath>
 
 namespace PJ {
 

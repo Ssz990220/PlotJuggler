@@ -10,13 +10,9 @@ namespace PJ {
 
 class PlaybackEngine;
 
-// MAGENTA region at the bottom of the main window: current-time readout,
-// loop toggle, play button, RealSlider, Speed spinner, Step-size spinner.
-// Extracted from PJ3 mainwindow.ui `widgetTimescale` subtree.
-//
-// The widget is a view over a PlaybackEngine and forwards user interaction
-// into the engine. When the engine emits change notifications the widget
-// updates its display.
+// Bottom time strip: current-time readout, loop toggle, play button,
+// RealSlider, Speed / Step-size spinners. View over PlaybackEngine; user
+// interaction calls into the engine and engine signals update the display.
 class TimelineWidget : public QWidget {
   Q_OBJECT
  public:

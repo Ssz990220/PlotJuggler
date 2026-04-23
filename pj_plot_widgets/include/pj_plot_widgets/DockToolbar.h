@@ -16,9 +16,7 @@ class DockToolbar;
 namespace PJ {
 
 // Per-dock toolbar on top of each plot area: rename-on-double-click label,
-// split-horizontal / split-vertical / fullscreen / close buttons. Ported
-// from plotjuggler_app/plot_docker_toolbar.{h,cpp,ui}. The PJ3 buttonBackground
-// (drag-drop colormap) is dropped in this milestone since it needs PlotWidget.
+// split-horizontal / split-vertical / fullscreen / close buttons.
 class DockToolbar : public QWidget {
   Q_OBJECT
  public:

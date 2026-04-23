@@ -8,21 +8,16 @@ namespace PJ {
 
 class DockToolbar;
 
-// ADS-backed dock that hosts a single plot area. Ported from PJ3
-// plot_docker's DockWidget, with two stripped pieces:
-//   - the embedded PlotWidget is replaced by a neutral placeholder QWidget
-//     (Qwt lift is a later milestone)
-//   - the background-colour drag-drop pathway is dropped (needs PlotWidget)
-//
-// splitHorizontal / splitVertical create sibling DockWidgets inside the
-// parent PlotDocker, matching the PJ3 behaviour that drives the RED region.
+// ADS-backed dock hosting a single plot area. splitHorizontal /
+// splitVertical create sibling DockWidgets inside the parent PlotDocker.
+// The embedded placeholder QWidget is replaced by a real PlotWidget when
+// the Qwt lift lands.
 class DockWidget : public ads::CDockWidget, public IDataWidget {
   Q_OBJECT
  public:
   explicit DockWidget(QWidget* parent = nullptr);
   ~DockWidget() override;
 
-  QWidget* plotPlaceholder();
   DockToolbar* toolBar();
   QString name() const;
 
@@ -38,6 +33,8 @@ class DockWidget : public ads::CDockWidget, public IDataWidget {
   void undoableChange();
 
  private:
+  DockWidget* splitInto(ads::DockWidgetArea area);
+
   QWidget* placeholder_ = nullptr;
   DockToolbar* toolbar_ = nullptr;
 };

@@ -6,11 +6,9 @@
 
 namespace PJ {
 
-// Global tracker + playback state. Owns the authoritative tracker time and
-// emits updates as a QTimer ticks while playing.
-//
-// Sits in pj_app_core so every widget family can subscribe to
-// currentTimeChanged and stay in sync (PJ4_PLAN §10).
+// Authoritative tracker time + play/pause/loop state. Drives a QTimer while
+// playing; every widget family subscribes to currentTimeChanged to stay in
+// sync.
 class PlaybackEngine : public QObject {
   Q_OBJECT
  public:

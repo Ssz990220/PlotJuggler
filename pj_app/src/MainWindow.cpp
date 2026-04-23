@@ -21,6 +21,10 @@ MainWindow::MainWindow(QWidget* parent)
 }
 
 MainWindow::~MainWindow() {
+  // Break the widget-owned pointers to services before session_ destroys
+  // the engine — guarantees no late signal dereferences a dead pointer.
+  ui_->timelineWidget->setPlaybackEngine(nullptr);
+  ui_->curveListPanel->setCatalog(nullptr);
   delete ui_;
 }
 

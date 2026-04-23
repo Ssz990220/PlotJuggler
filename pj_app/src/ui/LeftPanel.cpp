@@ -7,6 +7,8 @@
 #include <QSettings>
 #include <QSpinBox>
 
+#include <utility>
+
 #include "pj_app_core/SvgUtil.h"
 #include "ui_LeftPanel.h"
 
@@ -22,25 +24,23 @@ constexpr const char* kStreamingBufferKey = "MainWindow.streamingBufferValue";
 LeftPanel::LeftPanel(QWidget* parent) : QWidget(parent), ui_(new Ui::LeftPanel) {
   ui_->setupUi(this);
 
+  applyIcons(currentTheme());
   QSettings settings;
-  applyIcons(settings.value("StyleSheet::theme", "light").toString());
 
-  // Placeholder streaming sources; wired to real plugins in Phase 1.
   ui_->comboStreaming->addItem(tr("ROS2 Topic Subscriber"));
-
-  // Restore persisted collapse + buffer state. Keys match PJ3 verbatim so a
-  // user's previous preferences carry across the version bump.
-  const int buffer_value = settings.value(kStreamingBufferKey, 15).toInt();
-  ui_->streamingSpinBox->setValue(buffer_value);
+  ui_->streamingSpinBox->setValue(settings.value(kStreamingBufferKey, 5).toInt());
 
   loadCollapseStateFromSettings();
 
-  connect(ui_->buttonHideFileFrame, &QPushButton::clicked, this,
-          &LeftPanel::onHideFileFrameClicked);
-  connect(ui_->buttonHideStreamingFrame, &QPushButton::clicked, this,
-          &LeftPanel::onHideStreamingFrameClicked);
-  connect(ui_->buttonHidePublishersFrame, &QPushButton::clicked, this,
-          &LeftPanel::onHidePublishersFrameClicked);
+  connect(ui_->buttonHideFileFrame, &QPushButton::clicked, this, [this]() {
+    toggleSection(ui_->frameFile, ui_->buttonHideFileFrame, kHiddenFileKey);
+  });
+  connect(ui_->buttonHideStreamingFrame, &QPushButton::clicked, this, [this]() {
+    toggleSection(ui_->frameStreaming, ui_->buttonHideStreamingFrame, kHiddenStreamingKey);
+  });
+  connect(ui_->buttonHidePublishersFrame, &QPushButton::clicked, this, [this]() {
+    toggleSection(ui_->framePublishers, ui_->buttonHidePublishersFrame, kHiddenPublishersKey);
+  });
 
   connect(ui_->buttonLoadDatafile, &QPushButton::clicked, this, &LeftPanel::loadDataRequested);
   connect(ui_->buttonReloadData, &QPushButton::clicked, this, &LeftPanel::reloadDataRequested);
@@ -86,37 +86,23 @@ void LeftPanel::applyIcons(QString theme) {
 
 void LeftPanel::loadCollapseStateFromSettings() {
   QSettings settings;
-  const bool file_hidden = settings.value(kHiddenFileKey, false).toBool();
-  const bool streaming_hidden = settings.value(kHiddenStreamingKey, false).toBool();
-  const bool publishers_hidden = settings.value(kHiddenPublishersKey, false).toBool();
-
-  ui_->frameFile->setHidden(file_hidden);
-  ui_->buttonHideFileFrame->setText(file_hidden ? "+" : "-");
-  ui_->frameStreaming->setHidden(streaming_hidden);
-  ui_->buttonHideStreamingFrame->setText(streaming_hidden ? "+" : "-");
-  ui_->framePublishers->setHidden(publishers_hidden);
-  ui_->buttonHidePublishersFrame->setText(publishers_hidden ? "+" : "-");
+  const std::pair<QFrame*, std::pair<QPushButton*, const char*>> sections[] = {
+      {ui_->frameFile, {ui_->buttonHideFileFrame, kHiddenFileKey}},
+      {ui_->frameStreaming, {ui_->buttonHideStreamingFrame, kHiddenStreamingKey}},
+      {ui_->framePublishers, {ui_->buttonHidePublishersFrame, kHiddenPublishersKey}},
+  };
+  for (const auto& [frame, button_and_key] : sections) {
+    const bool hidden = settings.value(button_and_key.second, false).toBool();
+    frame->setHidden(hidden);
+    button_and_key.first->setText(hidden ? "+" : "-");
+  }
 }
 
-void LeftPanel::onHideFileFrameClicked() {
-  const bool was_hidden = ui_->frameFile->isHidden();
-  ui_->frameFile->setHidden(!was_hidden);
-  ui_->buttonHideFileFrame->setText(was_hidden ? "-" : "+");
-  QSettings().setValue(kHiddenFileKey, !was_hidden);
-}
-
-void LeftPanel::onHideStreamingFrameClicked() {
-  const bool was_hidden = ui_->frameStreaming->isHidden();
-  ui_->frameStreaming->setHidden(!was_hidden);
-  ui_->buttonHideStreamingFrame->setText(was_hidden ? "-" : "+");
-  QSettings().setValue(kHiddenStreamingKey, !was_hidden);
-}
-
-void LeftPanel::onHidePublishersFrameClicked() {
-  const bool was_hidden = ui_->framePublishers->isHidden();
-  ui_->framePublishers->setHidden(!was_hidden);
-  ui_->buttonHidePublishersFrame->setText(was_hidden ? "-" : "+");
-  QSettings().setValue(kHiddenPublishersKey, !was_hidden);
+void LeftPanel::toggleSection(QFrame* frame, QPushButton* button, const char* settings_key) {
+  const bool new_hidden = !frame->isHidden();
+  frame->setHidden(new_hidden);
+  button->setText(new_hidden ? "+" : "-");
+  QSettings().setValue(settings_key, new_hidden);
 }
 
 }  // namespace PJ

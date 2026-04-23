@@ -8,7 +8,6 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QPushButton>
-#include <QSettings>
 
 #include "pj_app_core/SvgUtil.h"
 #include "ui_DockToolbar.h"
@@ -26,9 +25,7 @@ DockToolbar::DockToolbar(ads::CDockWidget* parent)
     : QWidget(parent), parent_dock_(parent), ui_(new Ui::DockToolbar) {
   ui_->setupUi(this);
 
-  QSettings settings;
-  QString theme = settings.value("StyleSheet::theme", "light").toString();
-  onStylesheetChanged(theme);
+  onStylesheetChanged(currentTheme());
 
   ui_->buttonFullscreen->setVisible(false);
   ui_->buttonSplitHorizontal->setVisible(false);

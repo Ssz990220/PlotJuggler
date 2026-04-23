@@ -8,10 +8,9 @@ namespace PJ {
 
 class DockWidget;
 
-// Tabs of the RED region. Each PlotDocker owns one `ads::CDockManager` and
-// manages a tree of DockWidgets that can be split horizontally / vertically.
-// Ported from PJ3 plot_docker.{h,cpp}, minus the PlotDataMapRef argument and
-// the xml save/load (workspace persistence is Phase 2).
+// One tab's worth of plots. Owns an ads::CDockManager and the tree of
+// DockWidgets splittable within it. Always keeps at least one DockWidget
+// alive so the user never sees an empty tab.
 class PlotDocker : public ads::CDockManager {
   Q_OBJECT
  public:

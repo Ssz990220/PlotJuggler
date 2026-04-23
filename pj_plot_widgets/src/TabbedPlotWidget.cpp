@@ -8,21 +8,37 @@
 #include <QLineEdit>
 #include <QMouseEvent>
 #include <QPushButton>
-#include <QSettings>
 #include <QTabBar>
 #include <QTabWidget>
 #include <algorithm>
 
 #include "pj_app_core/SvgUtil.h"
-#include "pj_plot_widgets/DockWidget.h"
 #include "pj_plot_widgets/PlotDocker.h"
 
 namespace PJ {
+
+namespace {
+// ADS config flags are process-global and must be set before the first
+// CDockManager is instantiated. Call once, lazily.
+void applyAdsConfigOnce() {
+  static bool done = false;
+  if (done) {
+    return;
+  }
+  ads::CDockManager::setConfigFlag(ads::CDockManager::DockAreaHasTabsMenuButton, false);
+  ads::CDockManager::setConfigFlag(ads::CDockManager::DockAreaHasUndockButton, false);
+  ads::CDockManager::setConfigFlag(ads::CDockManager::DockAreaHasCloseButton, false);
+  ads::CDockManager::setConfigFlag(ads::CDockManager::EqualSplitOnInsertion, true);
+  ads::CDockManager::setConfigFlag(ads::CDockManager::OpaqueSplitterResize, true);
+  done = true;
+}
+}  // namespace
 
 TabbedPlotWidget::TabbedPlotWidget(QWidget* parent) : TabbedPlotWidget(QStringLiteral("main"), parent) {}
 
 TabbedPlotWidget::TabbedPlotWidget(QString name, QWidget* parent)
     : QWidget(parent), name_(std::move(name)) {
+  applyAdsConfigOnce();
   setContentsMargins(0, 0, 0, 0);
 
   auto* main_layout = new QHBoxLayout(this);
@@ -51,9 +67,7 @@ TabbedPlotWidget::TabbedPlotWidget(QString name, QWidget* parent)
   button_add_tab_->setFixedSize(QSize(32, 32));
   button_add_tab_->setFocusPolicy(Qt::NoFocus);
 
-  QSettings settings;
-  const QString theme = settings.value("StyleSheet::theme", "light").toString();
-  onStylesheetChanged(theme);
+  onStylesheetChanged(currentTheme());
 
   connect(button_add_tab_, &QPushButton::pressed, this,
           &TabbedPlotWidget::onAddTabButtonPressed);
@@ -76,25 +90,14 @@ PlotDocker* TabbedPlotWidget::currentTab() {
 }
 
 PlotDocker* TabbedPlotWidget::addTab(QString tab_name) {
-  static int tab_suffix_count = 1;
-
-  // These ADS flags are process-wide and must be set before any dock manager
-  // is instantiated, matching the PJ3 pattern.
-  ads::CDockManager::setConfigFlag(ads::CDockManager::DockAreaHasTabsMenuButton, false);
-  ads::CDockManager::setConfigFlag(ads::CDockManager::DockAreaHasUndockButton, false);
-  ads::CDockManager::setConfigFlag(ads::CDockManager::DockAreaHasCloseButton, false);
-  ads::CDockManager::setConfigFlag(ads::CDockManager::EqualSplitOnInsertion, true);
-  ads::CDockManager::setConfigFlag(ads::CDockManager::OpaqueSplitterResize, true);
-
   if (tab_name.isEmpty()) {
-    tab_name = QString("tab%1").arg(tab_suffix_count++);
+    tab_name = QString("tab%1").arg(++tab_suffix_count_);
   }
 
   auto* docker = new PlotDocker(tab_name, this);
   connect(docker, &PlotDocker::undoableChange, this, &TabbedPlotWidget::undoableChange);
 
   tab_widget_->addTab(docker, tab_name);
-
   emit tabAdded(docker);
 
   const int index = tab_widget_->count() - 1;
@@ -105,13 +108,17 @@ PlotDocker* TabbedPlotWidget::addTab(QString tab_name) {
   layout->setContentsMargins(0, 0, 0, 0);
 
   auto* close_button = new QPushButton();
-  QSettings settings;
-  const QString theme = settings.value("StyleSheet::theme", "light").toString();
-  close_button->setIcon(LoadSvg(":/resources/svg/close-button.svg", theme));
+  close_button->setIcon(LoadSvg(":/resources/svg/close-button.svg", currentTheme()));
   close_button->setFixedSize(QSize(16, 16));
   close_button->setFlat(true);
-  connect(close_button, &QPushButton::pressed, this,
-          [this]() { onTabCloseRequested(tab_widget_->tabBar()->currentIndex()); });
+  // Capture the dock pointer rather than an index — indexOf resolves the
+  // correct tab at click time even if the tab order has changed.
+  connect(close_button, &QPushButton::pressed, this, [this, docker]() {
+    const int idx = tab_widget_->indexOf(docker);
+    if (idx >= 0) {
+      onTabCloseRequested(idx);
+    }
+  });
 
   layout->addWidget(close_button);
   tab_widget_->tabBar()->setTabButton(index, QTabBar::RightSide, button_widget);
@@ -151,8 +158,7 @@ void TabbedPlotWidget::onTabWidgetCurrentChanged(int index) {
 }
 
 void TabbedPlotWidget::onTabCloseRequested(int index) {
-  // Ensure we always keep at least one tab so the user doesn't end up staring
-  // at a blank TabbedPlotWidget.
+  // Always keep at least one tab open.
   if (tab_widget_->count() == 1) {
     onAddTabButtonPressed();
   }

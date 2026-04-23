@@ -2,7 +2,6 @@
 
 #include <QDoubleSpinBox>
 #include <QPushButton>
-#include <QSettings>
 
 #include "pj_app_core/PlaybackEngine.h"
 #include "pj_app_core/SvgUtil.h"
@@ -15,8 +14,7 @@ namespace PJ {
 TimelineWidget::TimelineWidget(QWidget* parent) : QWidget(parent), ui_(new Ui::TimelineWidget) {
   ui_->setupUi(this);
 
-  QSettings settings;
-  const QString theme = settings.value("StyleSheet::theme", "light").toString();
+  const QString theme = currentTheme();
   ui_->playbackLoop->setIcon(LoadSvg(":/resources/svg/loop.svg", theme));
   ui_->buttonPlay->setIcon(LoadSvg(":/resources/svg/play_arrow.svg", theme));
 
@@ -60,7 +58,10 @@ void TimelineWidget::setPlaybackEngine(PlaybackEngine* engine) {
 void TimelineWidget::onEngineTimeChanged(double t) {
   updating_from_engine_ = true;
   ui_->timeSlider->setRealValue(t);
-  ui_->displayTime->setText(QString::number(t, 'f', 3));
+  const QString formatted = QString::number(t, 'f', 3);
+  if (formatted != ui_->displayTime->text()) {
+    ui_->displayTime->setText(formatted);
+  }
   updating_from_engine_ = false;
 }
 

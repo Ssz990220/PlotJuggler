@@ -11,10 +11,7 @@ namespace PJ {
 
 class PlotDocker;
 
-// Hosts the RED region: a QTabWidget with one PlotDocker per tab and a
-// floating "+" button to add new tabs. Ported from PJ3 tabbedplotwidget,
-// minus the PlotDataMapRef arg, the static-instances registry, and the
-// xml save/load.
+// QTabWidget with one PlotDocker per tab and a floating "+" button.
 class TabbedPlotWidget : public QWidget {
   Q_OBJECT
  public:
@@ -50,6 +47,7 @@ class TabbedPlotWidget : public QWidget {
   QTabWidget* tab_widget_ = nullptr;
   QPushButton* button_add_tab_ = nullptr;
   QString name_;
+  int tab_suffix_count_ = 0;
 };
 
 }  // namespace PJ

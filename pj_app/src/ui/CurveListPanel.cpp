@@ -3,7 +3,6 @@
 #include <QCheckBox>
 #include <QLabel>
 #include <QPushButton>
-#include <QSettings>
 #include <QSplitter>
 
 #include "pj_app_core/CatalogModel.h"
@@ -21,12 +20,11 @@ CurveListPanel::CurveListPanel(QWidget* parent)
   tree_view_ = ui_->treeView;
   custom_view_ = ui_->customView;
 
-  // Splitter ratio per PJ3 (top timeseries gets more room than custom).
+  // Top tree takes more room than the custom series panel.
   ui_->verticalSplitter->setStretchFactor(0, 5);
   ui_->verticalSplitter->setStretchFactor(1, 1);
 
-  QSettings settings;
-  const QString theme = settings.value("StyleSheet::theme", "light").toString();
+  const QString theme = currentTheme();
   ui_->pushButtonTrash->setIcon(LoadSvg(":/resources/svg/trash.svg", theme));
   ui_->buttonEditCustom->setIcon(LoadSvg(":/resources/svg/pencil-edit.svg", theme));
   ui_->buttonDeleteCustom->setIcon(LoadSvg(":/resources/svg/delete_forever.svg", theme));
@@ -53,7 +51,6 @@ CurveListPanel::CurveListPanel(QWidget* parent)
     }
   });
 
-  // Default: values column hidden until the user asks for it.
   tree_view_->setValuesColumnHidden(true);
   custom_view_->setValuesColumnHidden(true);
 }
@@ -83,8 +80,7 @@ void CurveListPanel::setCatalog(CatalogModel* catalog) {
 }
 
 void CurveListPanel::refreshValues(double /*tracker_time*/) {
-  // No-op for the prototype. Once CatalogModel can serve values the per-row
-  // second column is populated here.
+  // TODO: populate the second column from CatalogModel once it serves values.
 }
 
 void CurveListPanel::onFilterChanged(const QString& text) {
@@ -109,8 +105,8 @@ void CurveListPanel::onCurveAdded(const QString& name) {
 }
 
 void CurveListPanel::onCurveRemoved(const QString& /*name*/) {
-  // Linear rebuild is fine for the prototype; CurveTreeView has no
-  // efficient remove-by-name yet.
+  // TODO: add CurveTreeView::removeCurve(name) — linear rebuild is a
+  // prototype stand-in and wipes scroll / expansion / selection state.
   tree_view_->clearCurves();
   if (catalog_) {
     for (const QString& n : catalog_->curveNames()) {

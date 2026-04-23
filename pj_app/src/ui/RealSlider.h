@@ -8,7 +8,7 @@
 namespace PJ {
 
 // Double-precision slider: wraps QSlider's integer API with a floating-point
-// range. Ported verbatim from PJ3 plotjuggler_app/realslider.h.
+// range.
 class RealSlider : public QSlider {
   Q_OBJECT
  public:
@@ -24,15 +24,20 @@ class RealSlider : public QSlider {
   }
 
   double getValue() const {
-    const int min = minimum();
-    const int max = maximum();
-    const double ratio = static_cast<double>(value() - min) / static_cast<double>(max - min);
+    const int span = maximum() - minimum();
+    if (span <= 0) {
+      return min_value_;
+    }
+    const double ratio = static_cast<double>(value() - minimum()) / static_cast<double>(span);
     return (max_value_ - min_value_) * ratio + min_value_;
   }
 
   void setRealValue(double val) {
-    val = std::max(val, min_value_);
-    val = std::min(val, max_value_);
+    val = std::clamp(val, min_value_, max_value_);
+    if (max_value_ == min_value_) {
+      QSlider::setValue(minimum());
+      return;
+    }
     const double ratio = (val - min_value_) / (max_value_ - min_value_);
     const long pos =
         std::lround(static_cast<double>(maximum() - minimum()) * ratio + minimum());

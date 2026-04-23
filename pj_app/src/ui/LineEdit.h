@@ -6,9 +6,8 @@
 
 namespace PJ {
 
-// QLineEdit subclass that fixes placeholder-text colour when a stylesheet is
-// applied (Qt bug QTBUG-92199). Ported verbatim from PJ3
-// plotjuggler_base/include/PlotJuggler/line_edit.h.
+// QLineEdit subclass that fixes placeholder-text colour when a stylesheet
+// is applied (Qt bug QTBUG-92199).
 class LineEdit : public QLineEdit {
   Q_OBJECT
  public:

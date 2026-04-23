@@ -10,8 +10,8 @@ namespace PJ {
 
 namespace {
 
-// Ported from PJ3 plot_docker.cpp HiddenTitleBar — we manage titles via our
-// own DockToolbar, so the built-in ADS title bar is always hidden.
+// We own the title via DockToolbar — the built-in ADS title bar is always
+// hidden.
 class HiddenTitleBar : public ads::CDockAreaTitleBar {
  public:
   using ads::CDockAreaTitleBar::CDockAreaTitleBar;
@@ -31,7 +31,7 @@ class SplittableComponentsFactory : public ads::CDockComponentsFactory {
 
 PlotDocker::PlotDocker(QString name, QWidget* parent)
     : ads::CDockManager(parent), name_(std::move(name)) {
-  setStyleSheet("");  // PJ3 disables ADS internal stylesheet.
+  setStyleSheet("");  // Disable ADS's built-in stylesheet.
   setComponentsFactory(new SplittableComponentsFactory());
 
   connect(this, &ads::CDockManager::dockWidgetRemoved, this,

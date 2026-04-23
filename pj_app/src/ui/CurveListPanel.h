@@ -11,11 +11,8 @@ namespace PJ {
 class CatalogModel;
 class CurveTreeView;
 
-// GREEN region: the Timeseries List tree with filter / values toggle /
-// trash, over a Custom Series section. Trimmed port of PJ3
-// curvelist_panel.{h,cpp,ui}: the tree subclass (CurveTreeView) is ported
-// and preserves PJ3's mime-type contract, but value refresh and custom
-// transforms are stubbed pending CatalogModel / TransformRegistry wiring.
+// Timeseries list + Custom Series section. Top tree mirrors CatalogModel;
+// bottom tree is the user's custom/derived series.
 class CurveListPanel : public QWidget {
   Q_OBJECT
  public:

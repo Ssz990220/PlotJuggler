@@ -29,8 +29,8 @@ CurveTreeView::CurveTreeView(QWidget* parent) : QTreeWidget(parent) {
   setSelectionMode(QAbstractItemView::ExtendedSelection);
   setRootIsDecorated(true);
   setUniformRowHeights(true);
-  // Drag is handled manually in mouseMoveEvent — PJ3 did the same because it
-  // needs two different mime types depending on mouse button.
+  // Drag handled manually in mouseMoveEvent because left vs right button
+  // emit different mime types.
   setDragEnabled(false);
   setDragDropMode(QAbstractItemView::NoDragDrop);
 }
@@ -76,10 +76,12 @@ void CurveTreeView::clearCurves() {
 }
 
 void CurveTreeView::applyFilter(const QString& filter) {
+  if (filter == last_filter_) {
+    return;
+  }
+  last_filter_ = filter;
   const QStringList tokens = filter.split(' ', Qt::SkipEmptyParts);
 
-  // Recursive show-hide: an item is visible if any descendant matches all
-  // tokens (case-insensitive substring, AND).
   std::function<bool(QTreeWidgetItem*)> apply = [&](QTreeWidgetItem* item) {
     bool any_child_visible = false;
     for (int i = 0; i < item->childCount(); ++i) {
@@ -148,8 +150,9 @@ void CurveTreeView::mouseMoveEvent(QMouseEvent* event) {
   }
 
   auto* mime_data = new QMimeData();
-  // PJ3 contract: left-button drag → add curve; right-button drag with
-  // exactly two curves → XY scatter plot. We preserve both mime keys.
+  // Left-button drag → add curve to a plot; right-button drag of exactly
+  // two curves → XY scatter plot. Plot-widget drop sites match on these
+  // mime keys exactly.
   if (drag_button_ == Qt::LeftButton) {
     mime_data->setData("curveslist/add_curve", encoded);
   } else if (drag_button_ == Qt::RightButton && names.size() == 2) {

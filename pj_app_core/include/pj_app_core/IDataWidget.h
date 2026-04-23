@@ -4,9 +4,8 @@ class QWidget;
 
 namespace PJ {
 
-// Tiny contract shared by the three widget families (plot, media, 3d) with
-// pj_app_core. The widget implementations live in sibling modules and never
-// depend on each other — they only depend on this header.
+// Contract implemented by every widget family (plot / 2D / 3D) so pj_app_core
+// can drive tracker updates without coupling to concrete widget types.
 class IDataWidget {
  public:
   virtual ~IDataWidget() = default;

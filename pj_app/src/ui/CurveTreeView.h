@@ -7,12 +7,8 @@
 namespace PJ {
 
 // Hierarchical tree of curves with two columns (name, value-at-tracker).
-// Hosts the drag-source logic that emits the PJ3-compatible mime types
-// ("curveslist/add_curve", "curveslist/new_XY_axis").
-//
-// Trimmed port of PJ3 plotjuggler_app/curvetree_view.{h,cpp}: the tree
-// structure and drag contract are preserved; the TreeCompleter / regex
-// filter / values column refresh are simplified pending CatalogModel wiring.
+// Drag source emits "curveslist/add_curve" (left drag) or
+// "curveslist/new_XY_axis" (right drag of exactly two curves).
 class CurveTreeView : public QTreeWidget {
   Q_OBJECT
  public:
@@ -35,6 +31,7 @@ class CurveTreeView : public QTreeWidget {
 
   QPoint drag_start_pos_;
   Qt::MouseButton drag_button_ = Qt::NoButton;
+  QString last_filter_;
 };
 
 }  // namespace PJ

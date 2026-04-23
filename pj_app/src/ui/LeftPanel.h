@@ -2,20 +2,21 @@
 
 #include <QWidget>
 
+QT_BEGIN_NAMESPACE
+class QFrame;
+class QPushButton;
+QT_END_NAMESPACE
+
 namespace Ui {
 class LeftPanel;
 }
 
 namespace PJ {
 
-// BLUE region: stacked collapsible sections for File / Streaming / Publishers.
-// Ported from the `leftMainWindowFrame` subtree of PJ3 mainwindow.ui (lines
-// 62-1062) with Custom Series moved to CurveListPanel and the Publishers
-// grid kept empty until the plugin-host wiring lands.
-//
-// Emits high-level user-intent signals — wiring to services is MainWindow's
-// responsibility. Collapse state is persisted to QSettings under the same
-// keys PJ3 used, so an existing user's preferences carry over.
+// Stacked collapsible sections for File / Streaming / Publishers. Emits
+// high-level user-intent signals — MainWindow wires them to services.
+// Collapse state is persisted to QSettings under the PJ3-compatible keys
+// ("MainWindow.hiddenFileFrame" etc.).
 class LeftPanel : public QWidget {
   Q_OBJECT
  public:
@@ -38,12 +39,8 @@ class LeftPanel : public QWidget {
  public slots:
   void onStylesheetChanged(QString theme);
 
- private slots:
-  void onHideFileFrameClicked();
-  void onHideStreamingFrameClicked();
-  void onHidePublishersFrameClicked();
-
  private:
+  void toggleSection(QFrame* frame, QPushButton* button, const char* settings_key);
   void loadCollapseStateFromSettings();
   void applyIcons(QString theme);
 
