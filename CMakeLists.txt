@@ -22,7 +22,7 @@ set(PJ_BUILD_PORTED_PLUGINS OFF CACHE BOOL "" FORCE)
 # Qt
 # ---------------------------------------------------------------------------
 
-find_package(Qt6 6.8 REQUIRED COMPONENTS Core Gui Widgets)
+find_package(Qt6 6.8 REQUIRED COMPONENTS Core Gui Widgets Network)
 
 # ---------------------------------------------------------------------------
 # Foundation (Level 0): plotjuggler_core submodule

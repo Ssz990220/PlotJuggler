@@ -18,7 +18,12 @@ class MainWindow : public QMainWindow {
   explicit MainWindow(QWidget* parent = nullptr);
   ~MainWindow() override;
 
+ private slots:
+  void onOpenMarketplace();
+
  private:
+  void refreshStreamingCombo();
+
   Ui::MainWindow* ui_;
   std::unique_ptr<AppSession> session_;
 };

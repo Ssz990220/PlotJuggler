@@ -4,6 +4,8 @@
 #include <QObject>
 #include <QTimer>
 
+#include <memory>
+
 namespace PJ {
 
 // Authoritative tracker time + play/pause/loop state. Drives a QTimer while
@@ -12,6 +14,8 @@ namespace PJ {
 class PlaybackEngine : public QObject {
   Q_OBJECT
  public:
+  using Ptr = std::shared_ptr<PlaybackEngine>;
+
   explicit PlaybackEngine(QObject* parent = nullptr);
   ~PlaybackEngine() override;
 

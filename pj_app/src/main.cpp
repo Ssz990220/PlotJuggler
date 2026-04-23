@@ -4,8 +4,9 @@
 
 int main(int argc, char* argv[]) {
   QApplication app(argc, argv);
-  QCoreApplication::setApplicationName(QStringLiteral("PlotJuggler 4"));
   QCoreApplication::setOrganizationName(QStringLiteral("PlotJuggler"));
+  QCoreApplication::setApplicationName(QStringLiteral("PlotJuggler4"));
+  QApplication::setApplicationDisplayName(QStringLiteral("PlotJuggler 4"));
 
   PJ::MainWindow window;
   window.show();

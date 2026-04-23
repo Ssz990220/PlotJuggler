@@ -1,12 +1,15 @@
-find_package(Qt6 REQUIRED COMPONENTS Core Gui Svg)
+find_package(Qt6 REQUIRED COMPONENTS Core Gui Svg Network)
+find_package(nlohmann_json REQUIRED)
 
 add_library(pj_app_core STATIC
     src/AppSession.cpp
     src/CatalogModel.cpp
+    src/ExtensionCatalogService.cpp
     src/PlaybackEngine.cpp
     src/SessionManager.cpp
     include/pj_app_core/AppSession.h
     include/pj_app_core/CatalogModel.h
+    include/pj_app_core/ExtensionCatalogService.h
     include/pj_app_core/IDataWidget.h
     include/pj_app_core/PlaybackEngine.h
     include/pj_app_core/SessionManager.h
@@ -25,4 +28,10 @@ target_link_libraries(pj_app_core PUBLIC
     Qt6::Core
     Qt6::Gui
     Qt6::Svg
+    Qt6::Network
+    pj_marketplace
+    pj_data_source_host
+    pj_message_parser_host
+    pj_toolbox_host
+    nlohmann_json::nlohmann_json
 )

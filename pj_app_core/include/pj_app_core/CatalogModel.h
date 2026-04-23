@@ -3,6 +3,7 @@
 #include <QObject>
 #include <QString>
 
+#include <memory>
 #include <vector>
 
 namespace PJ {
@@ -15,6 +16,8 @@ class SessionManager;
 class CatalogModel : public QObject {
   Q_OBJECT
  public:
+  using Ptr = std::shared_ptr<CatalogModel>;
+
   explicit CatalogModel(SessionManager* session = nullptr, QObject* parent = nullptr);
   ~CatalogModel() override;
 

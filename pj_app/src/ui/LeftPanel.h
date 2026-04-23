@@ -38,6 +38,9 @@ class LeftPanel : public QWidget {
 
  public slots:
   void onStylesheetChanged(QString theme);
+  // Repopulates the streaming combo. Preserves the current selection if the
+  // previously-selected name is still present.
+  void setStreamingSources(const QStringList& names);
 
  private:
   void toggleSection(QFrame* frame, QPushButton* button, const char* settings_key);

@@ -5,6 +5,7 @@
 #include <QFrame>
 #include <QPushButton>
 #include <QSettings>
+#include <QSignalBlocker>
 #include <QSpinBox>
 
 #include <utility>
@@ -27,7 +28,6 @@ LeftPanel::LeftPanel(QWidget* parent) : QWidget(parent), ui_(new Ui::LeftPanel) 
   applyIcons(currentTheme());
   QSettings settings;
 
-  ui_->comboStreaming->addItem(tr("ROS2 Topic Subscriber"));
   ui_->streamingSpinBox->setValue(settings.value(kStreamingBufferKey, 5).toInt());
 
   loadCollapseStateFromSettings();
@@ -70,6 +70,17 @@ LeftPanel::~LeftPanel() {
 
 void LeftPanel::onStylesheetChanged(QString theme) {
   applyIcons(theme);
+}
+
+void LeftPanel::setStreamingSources(const QStringList& names) {
+  const QString previous = ui_->comboStreaming->currentText();
+  QSignalBlocker block(ui_->comboStreaming);
+  ui_->comboStreaming->clear();
+  ui_->comboStreaming->addItems(names);
+  const int idx = ui_->comboStreaming->findText(previous);
+  if (idx >= 0) {
+    ui_->comboStreaming->setCurrentIndex(idx);
+  }
 }
 
 void LeftPanel::applyIcons(QString theme) {

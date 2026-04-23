@@ -32,8 +32,10 @@ target_include_directories(pj_app PRIVATE
 target_link_libraries(pj_app PRIVATE
     pj_app_core
     pj_plot_widgets
+    pj_marketplace_ui
     qt_advanced_docking
     Qt6::Core
     Qt6::Gui
     Qt6::Widgets
+    Qt6::Network
 )
