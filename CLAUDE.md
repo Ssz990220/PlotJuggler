@@ -15,12 +15,13 @@ Top-level layout (monorepo, per plan §0 and §5):
 ```
 PJ4/
 ├── plotjuggler_core/        # git submodule — Level 0 foundation
-├── pj_scripting/            # Lua today, Python pluggable later
+├── pj_scripting/            # Lua today, Python pluggable later (not yet created)
 ├── pj_app_core/             # services layer (Qt allowed, no QWidget)
-├── pj_plot_widgets/         # Qwt plots (lifted from PJ3)
-├── pj_media_widgets_qt/     # QRhi 2D viewer (wraps pj_media)
-├── pj_3d_widgets/           # QRhi 3D (post-v1)
+├── pj_plot_widgets/         # Qwt plots (lifted from PJ3); placeholder docks in v1
+├── pj_media_widgets_qt/     # QRhi 2D viewer (wraps pj_media) (not yet created)
+├── pj_3d_widgets/           # QRhi 3D (post-v1; not yet created)
 ├── pj_app/                  # main window shell
+├── resources/               # SVG icons (ported from PJ3) + resources.qrc
 └── PJ4_PLAN.md
 ```
 

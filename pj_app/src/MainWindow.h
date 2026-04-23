@@ -4,13 +4,13 @@
 
 #include <memory>
 
-#include "pj_app_core/AppSession.h"
-
-namespace ads {
-class CDockManager;
+namespace Ui {
+class MainWindow;
 }
 
 namespace PJ {
+
+class AppSession;
 
 class MainWindow : public QMainWindow {
   Q_OBJECT
@@ -19,8 +19,8 @@ class MainWindow : public QMainWindow {
   ~MainWindow() override;
 
  private:
+  Ui::MainWindow* ui_;
   std::unique_ptr<AppSession> session_;
-  ads::CDockManager* dock_manager_ = nullptr;
 };
 
 }  // namespace PJ

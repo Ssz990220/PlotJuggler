@@ -1,0 +1,251 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>LeftPanel</class>
+ <widget class="QWidget" name="LeftPanel">
+  <property name="geometry">
+   <rect>
+    <x>0</x>
+    <y>0</y>
+    <width>320</width>
+    <height>400</height>
+   </rect>
+  </property>
+  <layout class="QVBoxLayout" name="rootLayout">
+   <property name="spacing"><number>0</number></property>
+   <property name="leftMargin"><number>0</number></property>
+   <property name="topMargin"><number>0</number></property>
+   <property name="rightMargin"><number>0</number></property>
+   <property name="bottomMargin"><number>0</number></property>
+
+   <!-- FILE section -->
+   <item>
+    <widget class="QWidget" name="widgetLabelFile" native="true">
+     <property name="styleSheet"><string notr="true">background-color: palette(dark); color: palette(light);</string></property>
+     <property name="minimumSize"><size><width>0</width><height>24</height></size></property>
+     <layout class="QHBoxLayout" name="fileHeaderLayout">
+      <property name="leftMargin"><number>6</number></property>
+      <property name="topMargin"><number>2</number></property>
+      <property name="rightMargin"><number>2</number></property>
+      <property name="bottomMargin"><number>2</number></property>
+      <item><widget class="QLabel" name="labelFile"><property name="text"><string>File</string></property></widget></item>
+      <item><spacer><property name="orientation"><enum>Qt::Horizontal</enum></property><property name="sizeHint" stdset="0"><size><width>40</width><height>20</height></size></property></spacer></item>
+      <item>
+       <widget class="QPushButton" name="buttonHideFileFrame">
+        <property name="maximumSize"><size><width>20</width><height>20</height></size></property>
+        <property name="text"><string>-</string></property>
+        <property name="flat"><bool>true</bool></property>
+        <property name="focusPolicy"><enum>Qt::NoFocus</enum></property>
+       </widget>
+      </item>
+     </layout>
+    </widget>
+   </item>
+   <item>
+    <widget class="QFrame" name="frameFile">
+     <property name="frameShape"><enum>QFrame::StyledPanel</enum></property>
+     <layout class="QVBoxLayout" name="fileContentLayout">
+      <property name="spacing"><number>4</number></property>
+      <property name="leftMargin"><number>4</number></property>
+      <property name="topMargin"><number>4</number></property>
+      <property name="rightMargin"><number>4</number></property>
+      <property name="bottomMargin"><number>4</number></property>
+      <item>
+       <layout class="QHBoxLayout" name="dataRow">
+        <item><widget class="QLabel" name="labelData"><property name="text"><string>Data:</string></property></widget></item>
+        <item>
+         <widget class="QPushButton" name="buttonLoadDatafile">
+          <property name="toolTip"><string>Load a data file</string></property>
+          <property name="maximumSize"><size><width>30</width><height>30</height></size></property>
+          <property name="iconSize"><size><width>22</width><height>22</height></size></property>
+          <property name="text"><string/></property>
+          <property name="flat"><bool>true</bool></property>
+         </widget>
+        </item>
+        <item>
+         <widget class="QPushButton" name="buttonReloadData">
+          <property name="toolTip"><string>Reload previous data</string></property>
+          <property name="maximumSize"><size><width>30</width><height>30</height></size></property>
+          <property name="iconSize"><size><width>22</width><height>22</height></size></property>
+          <property name="text"><string/></property>
+          <property name="flat"><bool>true</bool></property>
+         </widget>
+        </item>
+        <item><spacer><property name="orientation"><enum>Qt::Horizontal</enum></property><property name="sizeHint" stdset="0"><size><width>40</width><height>20</height></size></property></spacer></item>
+        <item>
+         <widget class="QPushButton" name="buttonRecentData">
+          <property name="toolTip"><string>Recently loaded data files</string></property>
+          <property name="maximumSize"><size><width>30</width><height>30</height></size></property>
+          <property name="iconSize"><size><width>22</width><height>22</height></size></property>
+          <property name="text"><string/></property>
+          <property name="flat"><bool>true</bool></property>
+         </widget>
+        </item>
+       </layout>
+      </item>
+      <item>
+       <layout class="QHBoxLayout" name="dataOptionsRow">
+        <item><widget class="QCheckBox" name="checkBoxAddPrefix"><property name="text"><string>Add prefix</string></property></widget></item>
+        <item><widget class="QCheckBox" name="checkBoxMergeData"><property name="text"><string>Merge data</string></property></widget></item>
+        <item><spacer><property name="orientation"><enum>Qt::Horizontal</enum></property><property name="sizeHint" stdset="0"><size><width>10</width><height>0</height></size></property></spacer></item>
+       </layout>
+      </item>
+      <item><widget class="QFrame" name="fileSeparator"><property name="frameShape"><enum>QFrame::HLine</enum></property><property name="frameShadow"><enum>QFrame::Sunken</enum></property></widget></item>
+      <item>
+       <layout class="QHBoxLayout" name="layoutRow">
+        <item><widget class="QLabel" name="labelLayout"><property name="text"><string>Layout:</string></property></widget></item>
+        <item>
+         <widget class="QPushButton" name="buttonLoadLayout">
+          <property name="toolTip"><string>Load layout</string></property>
+          <property name="maximumSize"><size><width>30</width><height>30</height></size></property>
+          <property name="iconSize"><size><width>22</width><height>22</height></size></property>
+          <property name="text"><string/></property>
+          <property name="flat"><bool>true</bool></property>
+         </widget>
+        </item>
+        <item>
+         <widget class="QPushButton" name="buttonSaveLayout">
+          <property name="toolTip"><string>Save layout</string></property>
+          <property name="maximumSize"><size><width>30</width><height>30</height></size></property>
+          <property name="iconSize"><size><width>22</width><height>22</height></size></property>
+          <property name="text"><string/></property>
+          <property name="flat"><bool>true</bool></property>
+         </widget>
+        </item>
+        <item><spacer><property name="orientation"><enum>Qt::Horizontal</enum></property><property name="sizeHint" stdset="0"><size><width>40</width><height>20</height></size></property></spacer></item>
+        <item>
+         <widget class="QPushButton" name="buttonRecentLayout">
+          <property name="toolTip"><string>Recently loaded layouts</string></property>
+          <property name="maximumSize"><size><width>30</width><height>30</height></size></property>
+          <property name="iconSize"><size><width>22</width><height>22</height></size></property>
+          <property name="text"><string/></property>
+          <property name="flat"><bool>true</bool></property>
+         </widget>
+        </item>
+       </layout>
+      </item>
+     </layout>
+    </widget>
+   </item>
+
+   <!-- STREAMING section -->
+   <item>
+    <widget class="QWidget" name="widgetLabelStreaming" native="true">
+     <property name="styleSheet"><string notr="true">background-color: palette(dark); color: palette(light);</string></property>
+     <property name="minimumSize"><size><width>0</width><height>24</height></size></property>
+     <layout class="QHBoxLayout" name="streamingHeaderLayout">
+      <property name="leftMargin"><number>6</number></property>
+      <property name="topMargin"><number>2</number></property>
+      <property name="rightMargin"><number>2</number></property>
+      <property name="bottomMargin"><number>2</number></property>
+      <item><widget class="QLabel" name="labelStreaming"><property name="text"><string>Streaming</string></property></widget></item>
+      <item><spacer><property name="orientation"><enum>Qt::Horizontal</enum></property><property name="sizeHint" stdset="0"><size><width>40</width><height>20</height></size></property></spacer></item>
+      <item>
+       <widget class="QPushButton" name="buttonHideStreamingFrame">
+        <property name="maximumSize"><size><width>20</width><height>20</height></size></property>
+        <property name="text"><string>-</string></property>
+        <property name="flat"><bool>true</bool></property>
+        <property name="focusPolicy"><enum>Qt::NoFocus</enum></property>
+       </widget>
+      </item>
+     </layout>
+    </widget>
+   </item>
+   <item>
+    <widget class="QFrame" name="frameStreaming">
+     <property name="frameShape"><enum>QFrame::StyledPanel</enum></property>
+     <layout class="QVBoxLayout" name="streamingContentLayout">
+      <property name="spacing"><number>4</number></property>
+      <property name="leftMargin"><number>4</number></property>
+      <property name="topMargin"><number>4</number></property>
+      <property name="rightMargin"><number>4</number></property>
+      <property name="bottomMargin"><number>4</number></property>
+      <item>
+       <layout class="QHBoxLayout" name="streamingSourceRow">
+        <item><widget class="QComboBox" name="comboStreaming"/></item>
+        <item>
+         <widget class="QPushButton" name="buttonStreamingOptions">
+          <property name="maximumSize"><size><width>30</width><height>30</height></size></property>
+          <property name="iconSize"><size><width>22</width><height>22</height></size></property>
+          <property name="text"><string/></property>
+          <property name="flat"><bool>true</bool></property>
+          <property name="toolTip"><string>Streaming source options</string></property>
+         </widget>
+        </item>
+       </layout>
+      </item>
+      <item>
+       <layout class="QHBoxLayout" name="streamingControlsRow">
+        <item>
+         <widget class="QPushButton" name="buttonStreamingStart">
+          <property name="text"><string>Start</string></property>
+          <property name="checkable"><bool>true</bool></property>
+         </widget>
+        </item>
+        <item>
+         <widget class="QPushButton" name="buttonStreamingPause">
+          <property name="maximumSize"><size><width>30</width><height>30</height></size></property>
+          <property name="iconSize"><size><width>18</width><height>18</height></size></property>
+          <property name="text"><string/></property>
+          <property name="checkable"><bool>true</bool></property>
+          <property name="flat"><bool>true</bool></property>
+          <property name="toolTip"><string>Pause streaming</string></property>
+         </widget>
+        </item>
+        <item>
+         <widget class="QPushButton" name="buttonStreamingNotifications">
+          <property name="maximumSize"><size><width>30</width><height>30</height></size></property>
+          <property name="iconSize"><size><width>18</width><height>18</height></size></property>
+          <property name="text"><string/></property>
+          <property name="flat"><bool>true</bool></property>
+          <property name="toolTip"><string>Notifications</string></property>
+         </widget>
+        </item>
+        <item><widget class="QLabel" name="labelBuffer"><property name="text"><string>Buffer:</string></property></widget></item>
+        <item>
+         <widget class="QSpinBox" name="streamingSpinBox">
+          <property name="suffix"><string> sec</string></property>
+          <property name="minimum"><number>1</number></property>
+          <property name="maximum"><number>999</number></property>
+          <property name="value"><number>15</number></property>
+         </widget>
+        </item>
+       </layout>
+      </item>
+     </layout>
+    </widget>
+   </item>
+
+   <!-- PUBLISHERS section -->
+   <item>
+    <widget class="QWidget" name="widgetLabelPublishers" native="true">
+     <property name="styleSheet"><string notr="true">background-color: palette(dark); color: palette(light);</string></property>
+     <property name="minimumSize"><size><width>0</width><height>24</height></size></property>
+     <layout class="QHBoxLayout" name="publishersHeaderLayout">
+      <property name="leftMargin"><number>6</number></property>
+      <property name="topMargin"><number>2</number></property>
+      <property name="rightMargin"><number>2</number></property>
+      <property name="bottomMargin"><number>2</number></property>
+      <item><widget class="QLabel" name="labelPublishers"><property name="text"><string>Publishers</string></property></widget></item>
+      <item><spacer><property name="orientation"><enum>Qt::Horizontal</enum></property><property name="sizeHint" stdset="0"><size><width>40</width><height>20</height></size></property></spacer></item>
+      <item>
+       <widget class="QPushButton" name="buttonHidePublishersFrame">
+        <property name="maximumSize"><size><width>20</width><height>20</height></size></property>
+        <property name="text"><string>-</string></property>
+        <property name="flat"><bool>true</bool></property>
+        <property name="focusPolicy"><enum>Qt::NoFocus</enum></property>
+       </widget>
+      </item>
+     </layout>
+    </widget>
+   </item>
+   <item>
+    <widget class="QFrame" name="framePublishers">
+     <property name="frameShape"><enum>QFrame::StyledPanel</enum></property>
+     <property name="minimumSize"><size><width>0</width><height>24</height></size></property>
+     <layout class="QGridLayout" name="layoutPublishers"/>
+    </widget>
+   </item>
+  </layout>
+ </widget>
+ <connections/>
+</ui>

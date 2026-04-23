@@ -42,6 +42,7 @@ add_subdirectory(3rdparty/Qt-Advanced-Docking)
 # ---------------------------------------------------------------------------
 
 add_subdirectory(pj_app_core)
+add_subdirectory(pj_plot_widgets)
 
 if(PJ4_BUILD_APP)
     add_subdirectory(pj_app)
