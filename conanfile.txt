@@ -10,7 +10,7 @@ arrow/23.0.1
 nanoarrow/0.7.0
 nlohmann_json/3.12.0
 mcap/2.1.1
-zstd/1.5.7
+zstd/1.5.5
 libarchive/3.8.7
 libjpeg-turbo/3.1.4.1
 libpng/1.6.58
@@ -20,6 +20,10 @@ arrow/*:parquet=True
 arrow/*:with_snappy=True
 nanoarrow/*:with_ipc=True
 libarchive/*:shared=False
+# boost is pulled transitively by arrow; trim its build to avoid unused
+# modules that fail packaging (e.g. boost_cobalt_io_ssl) and slow tests.
+boost/*:without_test=True
+boost/*:without_cobalt=True
 
 [generators]
 CMakeDeps
