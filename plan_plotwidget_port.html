@@ -1,0 +1,849 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>PJ4 — Full PlotWidget Port from PJ3</title>
+<style>
+  :root {
+    --bg: #fafafa;
+    --fg: #1a1a1a;
+    --muted: #555;
+    --accent: #0a4d8f;
+    --accent-soft: #e8f1fa;
+    --code-bg: #f3f3f3;
+    --border: #d0d0d0;
+    --warn: #b35900;
+    --good: #1e7a3a;
+  }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    line-height: 1.55;
+    color: var(--fg);
+    background: var(--bg);
+    max-width: 1100px;
+    margin: 0 auto;
+    padding: 32px 40px 80px;
+  }
+  h1 { color: var(--accent); border-bottom: 3px solid var(--accent); padding-bottom: 8px; margin-top: 0; }
+  h2 {
+    color: var(--accent);
+    margin-top: 2.4em;
+    border-bottom: 1px solid var(--border);
+    padding-bottom: 4px;
+  }
+  h3 { color: #0a3d6f; margin-top: 1.8em; }
+  h4 { color: #333; margin-top: 1.2em; }
+  code, pre { font-family: "JetBrains Mono", "SF Mono", Menlo, Consolas, monospace; }
+  code { background: var(--code-bg); padding: 1px 5px; border-radius: 3px; font-size: 0.92em; }
+  pre {
+    background: var(--code-bg);
+    border: 1px solid var(--border);
+    border-left: 3px solid var(--accent);
+    padding: 12px 16px;
+    border-radius: 4px;
+    overflow-x: auto;
+    font-size: 0.88em;
+    line-height: 1.45;
+  }
+  pre code { background: none; padding: 0; }
+  table { border-collapse: collapse; width: 100%; margin: 16px 0; font-size: 0.93em; }
+  th, td { border: 1px solid var(--border); padding: 8px 12px; text-align: left; vertical-align: top; }
+  th { background: var(--accent-soft); color: var(--accent); }
+  tr:nth-child(even) td { background: #f6f6f6; }
+  blockquote {
+    border-left: 4px solid var(--accent);
+    background: var(--accent-soft);
+    margin: 16px 0;
+    padding: 10px 16px;
+    color: #2a2a2a;
+  }
+  .badge {
+    display: inline-block;
+    font-size: 0.78em;
+    padding: 2px 8px;
+    border-radius: 10px;
+    background: var(--accent-soft);
+    color: var(--accent);
+    margin-right: 4px;
+  }
+  .badge.warn { background: #fff2dd; color: var(--warn); }
+  .badge.good { background: #e0f4e7; color: var(--good); }
+  .toc {
+    background: #fff;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 12px 24px 12px 36px;
+    margin: 24px 0;
+  }
+  .toc ol { margin: 4px 0; }
+  .toc a { color: var(--accent); text-decoration: none; }
+  .toc a:hover { text-decoration: underline; }
+  ul li, ol li { margin: 4px 0; }
+  .ascii-tree {
+    font-family: "JetBrains Mono", monospace;
+    background: var(--code-bg);
+    border: 1px solid var(--border);
+    padding: 16px 20px;
+    border-radius: 4px;
+    white-space: pre;
+    overflow-x: auto;
+    font-size: 0.85em;
+    line-height: 1.4;
+  }
+  .answer {
+    background: #e0f4e7;
+    border-left: 3px solid var(--good);
+    padding: 8px 14px;
+    margin: 8px 0;
+    border-radius: 3px;
+  }
+  .answer strong { color: var(--good); }
+  .risk { background: #fff7eb; border-left: 3px solid var(--warn); padding: 8px 14px; margin: 6px 0; }
+</style>
+</head>
+<body>
+
+<h1>PJ4 — Full PlotWidget Port from PJ3</h1>
+<p style="color:var(--muted); font-size:0.95em;">
+  Implementation plan synthesized from two parallel analyses (Claude's exploration + Codex's deep dive). Executed by Codex under Claude's supervision; each milestone gates on the two-reviewer pre-commit check (simplicity + bugs) per <code>CLAUDE.md</code>.
+</p>
+
+<div class="toc">
+  <strong>Contents</strong>
+  <ol>
+    <li><a href="#context">Context</a></li>
+    <li><a href="#decisions">User decisions</a></li>
+    <li><a href="#architecture">Architecture &amp; module map</a></li>
+    <li><a href="#hierarchy">Class hierarchy</a></li>
+    <li><a href="#adapter">DatastoreCurveAdapter</a></li>
+    <li><a href="#dnd">Drag-drop wiring</a></li>
+    <li><a href="#color">Curve color assignment</a></li>
+    <li><a href="#sync">Synchronized zoom</a></li>
+    <li><a href="#tracker">Tracker integration</a></li>
+    <li><a href="#services">pj_app_core service additions</a></li>
+    <li><a href="#build">Build-system changes</a></li>
+    <li><a href="#milestones">Delivery sequence (M1–M6)</a></li>
+    <li><a href="#verify">Verification per milestone</a></li>
+    <li><a href="#risks">Risks &amp; open items</a></li>
+    <li><a href="#exec">Execution model</a></li>
+  </ol>
+</div>
+
+<h2 id="context">1. Context</h2>
+<p>
+  PJ4 today has placeholder <code>DockWidget</code>s wrapped in a docking shell — there is no real plot canvas, no curve adapter, no drag-drop target, no zoom synchronization, no curve editor.
+  The PJ4 plan (<code>PJ4_PLAN.md</code> §5.3, §8) specifies a wholesale lift of the PJ3 PlotWidget tree with one systematic rewrite: rebind <code>PlotDataMapRef</code> / <code>TransformsMap</code> reads to a <code>DatastoreCurveAdapter</code> over <code>pj_datastore::DataReader</code> and to <code>pj_app_core</code> services.
+</p>
+<p>
+  This plan ports the full PJ3 PlotWidget family and wires up the four demo features the user named: curve color assignment, drag-and-drop from the existing side panel, synchronized X-axis zoom across plots, and full plumbing into the new datastore.
+</p>
+<p>
+  <strong>In scope:</strong> the four demo features plus surrounding plumbing (tracker via <code>PlaybackEngine</code>, statistics dialog, plot-local display transforms — those are in PJ3 and PJ4_PLAN says lift them).
+  <br>
+  <strong>Out of scope:</strong> workspace-to-disk persistence, marketplace data-source UX changes, post-v1 features (<code>PlotBackground</code> colored zone, XY-plot tracker visualization).
+</p>
+
+<h2 id="decisions">2. User decisions guiding this plan</h2>
+<div class="answer"><strong>Data ingestion:</strong> the marketplace's CSV plugin (the user installs/uses it; we don't lift the PJ3 CSV plugin into the repo).</div>
+<div class="answer"><strong>Link toggle:</strong> lives in <code>MainWindow</code> toolbar (global, PJ3-style).</div>
+<div class="answer"><strong>Color picker:</strong> stock <code>QColorDialog</code> — <em>no</em> <code>color_widgets</code> vendoring this round.</div>
+<div class="answer"><strong>Curve naming convention:</strong> <code>topic/field/subfield</code> (all slashes, ROS-style).</div>
+
+<h2 id="architecture">3. Architecture &amp; module map</h2>
+
+<h3>3.1 Layering (unchanged from PJ4_PLAN §5)</h3>
+<div class="ascii-tree">pj_app                       ← MainWindow shell, wires services to widgets
+  └─ depends on pj_plot_widgets, pj_app_core, plotjuggler_core, ADS
+
+pj_plot_widgets              ← Qwt-based plot canvas family (this round's primary target)
+  └─ depends on pj_app_core, plotjuggler_core (datastore), Qwt, ADS, Qt::Widgets
+
+pj_app_core                  ← services (Qt allowed, NO QWidget — enforced via CMake link list)
+  └─ depends on plotjuggler_core only
+
+plotjuggler_core (submodule) ← pj_base, pj_datastore, pj_plugins, pj_media, pj_marketplace</div>
+
+<h3>3.2 <code>pj_app_core/</code> — service-layer additions</h3>
+<p><strong>Modify:</strong></p>
+<ul>
+  <li><code>SessionManager.{h,cpp}</code> — flesh out: own <code>PJ::DataEngine</code>, expose <code>DataReader</code> factory, emit data-invalidation signals.</li>
+  <li><code>CatalogModel.{h,cpp}</code> — flesh out: enumerate datastore topics → curves; emit existing <code>curveAdded/curveRemoved/cleared</code>.</li>
+  <li><code>AppSession.h</code> — composition root continues to own <code>SessionManager</code>, <code>PlaybackEngine</code>, <code>CatalogModel</code>, <code>ExtensionCatalogService</code>. No new dependencies.</li>
+</ul>
+
+<p><strong>New (header-only struct):</strong></p>
+<pre><code>// pj_app_core/include/pj_app_core/CurveDescriptor.h
+namespace PJ {
+struct CurveDescriptor {
+  QString name;                  // e.g. "/imu/orientation/x"
+  TopicId topic_id;
+  DatasetId dataset_id;
+  std::size_t column_index;      // index into TopicChunk::columns
+  QString field_path;            // stable fallback if column_index drifts
+  Timestamp display_offset_ns;   // copied from TimeDomain at lookup time
+};
+}</code></pre>
+<blockquote>
+  Rationale: drag-drop MIME payload carries only QString names; <code>PlotWidget</code> needs a stable lookup from name to <code>(TopicId, ColumnIndex)</code>. <code>field_path</code> is kept alongside <code>column_index</code> so a future schema-evolution event can re-resolve via path.
+</blockquote>
+
+<h3>3.3 <code>pj_plot_widgets/</code> — plot canvas family</h3>
+<p><strong>Replace placeholder logic in:</strong></p>
+<ul>
+  <li><code>DockWidget.{h,cpp}</code> — own a real <code>PlotWidget*</code> instead of the grey-frame placeholder. <code>IDataWidget::onTrackerTime(double)</code> forwards to the embedded plot.</li>
+  <li><code>PlotDocker.{h,cpp}</code> — keep ADS-driven dock manager; add <code>plotWidgetAdded(PlotWidget*)</code> signal so MainWindow can wire each new plot.</li>
+  <li><code>TabbedPlotWidget.{h,cpp}</code> — keep current scaffolding; do <em>not</em> add a per-tab Link toggle.</li>
+  <li><code>DockToolbar.{h,cpp,ui}</code> — extend with the PJ3 toolbar layout. Preserve PJ3 object names verbatim per <code>CLAUDE.md</code>: <code>DraggableToolbar</code>, <code>label</code>, <code>widgetButtons</code>, <code>buttonBackground</code>, <code>buttonSplitHorizontal</code>, <code>buttonSplitVertical</code>, <code>buttonFullscreen</code>, <code>buttonClose</code>.</li>
+</ul>
+
+<p><strong>New (ports from PJ3 with rebinding):</strong></p>
+<table>
+<thead>
+<tr><th>New PJ4 file</th><th>Source (PJ3, read-only ref)</th><th>Notes</th></tr>
+</thead>
+<tbody>
+<tr><td><code>PlotWidgetBase.{h,cpp}</code></td><td><code>plotjuggler_base/.../plotwidget_base.{h,cpp}</code></td><td>Owns Qwt plot, panner, zoomer, magnifier, legend. Drop forwarding via <code>dragEnterSignal</code>/<code>dropSignal</code>. Strip PJ3 <code>PlotData*</code> refs; add a virtual hook for curve creation.</td></tr>
+<tr><td><code>PlotWidget.{h,cpp}</code></td><td><code>plotjuggler_app/plotwidget.{h,cpp}</code></td><td>Concrete plot. Rebinds curve creation to <code>CatalogModel::curveDescriptor</code> + <code>DatastoreCurveAdapter</code>. Owns its <code>CurveTracker</code>. Constructor takes <code>SessionManager*</code> and <code>CatalogModel*</code> instead of <code>PlotDataMapRef&amp;</code>.</td></tr>
+<tr><td><code>PlotZoomer.{h,cpp}</code></td><td><code>plotjuggler_base/src/plotzoomer.{h,cpp}</code></td><td>Pure Qwt extension; portable as-is.</td></tr>
+<tr><td><code>PlotPanner.{h,cpp}</code></td><td><code>plotjuggler_base/src/plotpanner.{h,cpp}</code></td><td>Pure Qwt extension; emits <code>rescaled(QRectF)</code>.</td></tr>
+<tr><td><code>PlotMagnifier.{h,cpp}</code></td><td><code>plotjuggler_base/src/plotmagnifier.{h,cpp}</code></td><td>Wheel zoom with axis-mode constraints.</td></tr>
+<tr><td><code>PlotLegend.{h,cpp}</code></td><td><code>plotjuggler_base/src/plotlegend.{h,cpp}</code></td><td>Custom Qwt legend with hide button.</td></tr>
+<tr><td><code>CurveTracker.{h,cpp}</code></td><td><code>plotjuggler_app/curve_tracker.{h,cpp}</code></td><td>Crosshair markers; reads sample at given X. Driven from <code>PlotWidget::setTrackerPosition</code>.</td></tr>
+<tr><td><strong><code>DatastoreCurveAdapter.{h,cpp}</code></strong></td><td><strong>NEW</strong> — replaces PJ3 <code>timeseries_qwt.{h,cpp}</code></td><td>The single biggest intentional rewrite. See §5.</td></tr>
+<tr><td><code>PointSeriesXY.{h,cpp}</code></td><td><code>plotjuggler_app/point_series_xy.{h,cpp}</code></td><td>XY scatter built from two adapters. Pairs samples by exact timestamp match (PJ3 nearest-lookup is post-v1).</td></tr>
+</tbody>
+</table>
+
+<p><strong>Deferred</strong> (kept on the radar, not delivered this round):</p>
+<ul>
+  <li><strong><code>PlotWidgetEditor</code></strong> (full edit-curves dialog with line width, Y limits, style toggles) — color assignment in M4 instead routes through a context-menu action that opens <code>QColorDialog</code> directly. The full editor returns in the next phase.</li>
+  <li><strong><code>PlotWidgetTransforms</code></strong> — plot-local display transforms (scale/offset/derivative/smoothing). PJ3 keeps these per-plot; we'll port the dialog in the next phase. Curves render raw datastore values for v1.</li>
+  <li><strong><code>StatisticsDialog</code></strong> — visible-range count/min/max/mean readout. Trivial to port once we want it; not needed for the four demo features.</li>
+  <li><code>PlotBackground</code> (colored zone item) — needs a colormap-by-data binding that doesn't yet have a clean shape on the datastore side.</li>
+  <li><code>colormap_editor</code> / <code>colormap_selector</code> — only relevant once <code>PlotBackground</code> lands.</li>
+  <li>XY-plot tracker visualization — only the time-series tracker is in scope.</li>
+</ul>
+
+<h3>3.4 <code>pj_app/</code> — shell wiring</h3>
+<p><strong>Modify <code>MainWindow.{h,cpp,ui}</code></strong>:</p>
+<ul>
+  <li>Add <code>buttonLink</code> toggle to the toolbar in <code>MainWindow.ui</code> (object name preserved from PJ3).</li>
+  <li>Add slots: <code>onPlotTabAdded(PlotDocker*)</code>, <code>onPlotAdded(PlotWidget*)</code>, <code>onPlotZoomChanged(PlotWidget*, QRectF)</code>, <code>onTrackerMoved(QPointF)</code>.</li>
+  <li>Wire <code>TabbedPlotWidget::tabAdded → onPlotTabAdded</code>, <code>PlotDocker::plotWidgetAdded → onPlotAdded</code>, then per-plot: <code>rectChanged → onPlotZoomChanged</code>, <code>trackerMoved → onTrackerMoved</code>, <code>curvesDropped → CurveListPanel::clearSelections</code>.</li>
+  <li>Wire <code>PlaybackEngine::currentTimeChanged → DockWidget::onTrackerTime</code> (broadcast through the dock tree). Wire <code>MainWindow::onTrackerMoved → PlaybackEngine::setCurrentTime</code>.</li>
+</ul>
+<p><strong><code>CurveListPanel.{h,cpp,ui}</code> and <code>CurveTreeView.{h,cpp}</code>:</strong> no payload-format change. Existing MIME formats (<code>curveslist/add_curve</code>, <code>curveslist/new_XY_axis</code>) already match PJ3. Only feed real curve names by populating <code>CatalogModel</code>.</p>
+<blockquote>
+  Note: <code>CLAUDE.md</code> mentions <code>pj_app/src/ui/MainWindow.*</code> paths but the actual files live at <code>pj_app/src/MainWindow.{h,cpp,ui}</code> (Codex caught this). Use the actual paths.
+</blockquote>
+
+<h3>3.5 Class-by-class porting summary</h3>
+<p>
+  Status legend:
+  <span class="badge good">PORT</span> = lift verbatim from PJ3 (style adaptation only).
+  <span class="badge good">PORT+REBIND</span> = lift from PJ3, replace <code>PlotDataMapRef</code>/<code>TransformsMap</code> reads with PJ4 services + adapter.
+  <span class="badge">MODIFY</span> = extend an existing PJ4 stub.
+  <span class="badge">KEEP</span> = existing PJ4 code stays as-is.
+  <span class="badge">NEW</span> = does not exist anywhere; built fresh.
+  <span class="badge warn">DEFER</span> = present in PJ3 but not delivered this round.
+</p>
+
+<h4>Plot canvas family — <code>pj_plot_widgets/</code></h4>
+<table>
+<thead>
+<tr><th>Class</th><th>Status</th><th>PJ3 source / PJ4 destination</th><th>Why</th></tr>
+</thead>
+<tbody>
+<tr>
+  <td><code>PlotWidgetBase</code></td>
+  <td><span class="badge good">PORT+REBIND</span></td>
+  <td><code>plotjuggler_base/.../plotwidget_base.{h,cpp}</code> → <code>pj_plot_widgets/.../PlotWidgetBase.{h,cpp}</code></td>
+  <td>Foundational Qwt host class — owns plot, panner, zoomer, magnifier, legend, drop forwarding. Strip PJ3 <code>PlotData*</code> refs; add a virtual hook subclasses use to create curves.</td>
+</tr>
+<tr>
+  <td><code>PlotWidget</code></td>
+  <td><span class="badge good">PORT+REBIND</span></td>
+  <td><code>plotjuggler_app/plotwidget.{h,cpp}</code> → <code>pj_plot_widgets/.../PlotWidget.{h,cpp}</code></td>
+  <td>Concrete user-facing plot with context menu, drag-drop, color editor, tracker, statistics, transforms. Constructor takes <code>SessionManager*</code> + <code>CatalogModel*</code> instead of <code>PlotDataMapRef&amp;</code>; curve creation routes through <code>DatastoreCurveAdapter</code>. Sets <code>FilterPointsAggressive</code> + <code>ClipPolygons</code> on every <code>QwtPlotCurve</code>.</td>
+</tr>
+<tr>
+  <td><code>PlotZoomer</code></td>
+  <td><span class="badge good">PORT</span></td>
+  <td><code>plotjuggler_base/src/plotzoomer.{h,cpp}</code> → <code>pj_plot_widgets/.../PlotZoomer.{h,cpp}</code></td>
+  <td>Pure Qwt extension (rectangle zoom + aspect ratio). No data dependency, ports unchanged.</td>
+</tr>
+<tr>
+  <td><code>PlotPanner</code></td>
+  <td><span class="badge good">PORT</span></td>
+  <td><code>plotjuggler_base/src/plotpanner.{h,cpp}</code> → same name in PJ4</td>
+  <td>Pure Qwt extension. Emits <code>rescaled(QRectF)</code> for zoom-link wiring.</td>
+</tr>
+<tr>
+  <td><code>PlotMagnifier</code></td>
+  <td><span class="badge good">PORT</span></td>
+  <td><code>plotjuggler_base/src/plotmagnifier.{h,cpp}</code> → same</td>
+  <td>Pure Qwt extension. Wheel zoom with axis-mode constraints.</td>
+</tr>
+<tr>
+  <td><code>PlotLegend</code></td>
+  <td><span class="badge good">PORT</span></td>
+  <td><code>plotjuggler_base/src/plotlegend.{h,cpp}</code> → same</td>
+  <td>Pure Qwt extension; custom legend with hide button. No data dependency.</td>
+</tr>
+<tr>
+  <td><code>CurveTracker</code></td>
+  <td><span class="badge good">PORT</span></td>
+  <td><code>plotjuggler_app/curve_tracker.{h,cpp}</code> → <code>pj_plot_widgets/.../CurveTracker.{h,cpp}</code></td>
+  <td>Crosshair markers and value labels — operates on attached <code>QwtPlotCurve</code>s, agnostic to data backend. Driven from <code>PlotWidget::setTrackerPosition</code> via <code>PlaybackEngine::currentTimeChanged</code>.</td>
+</tr>
+<tr>
+  <td><code>DatastoreCurveAdapter</code></td>
+  <td><span class="badge">NEW</span></td>
+  <td>(replaces PJ3's <code>timeseries_qwt.{h,cpp}</code>) → <code>pj_plot_widgets/.../DatastoreCurveAdapter.{h,cpp}</code></td>
+  <td>The single intentional new piece. <code>QwtSeriesData&lt;QPointF&gt;</code> pull-through over <code>PJ::TopicStorage::sealedChunks</code>; uses <code>setRectOfInterest</code> to narrow visible row range. PJ3's wrapper held a <code>const PlotData*</code>; our equivalent is a chunk-index over the datastore.</td>
+</tr>
+<tr>
+  <td><code>PointSeriesXY</code></td>
+  <td><span class="badge good">PORT+REBIND</span></td>
+  <td><code>plotjuggler_app/point_series_xy.{h,cpp}</code> → <code>pj_plot_widgets/.../PointSeriesXY.{h,cpp}</code></td>
+  <td>XY scatter from two timeseries. Wire to two <code>DatastoreCurveAdapter</code>s and align by exact timestamp at <code>sample(i)</code> time (PJ3 nearest-lookup deferred to post-v1).</td>
+</tr>
+<tr>
+  <td><code>PlotWidgetEditor</code></td>
+  <td><span class="badge warn">DEFER</span></td>
+  <td>(PJ3 <code>plotwidget_editor.{h,cpp,ui}</code>) — port in next phase</td>
+  <td>The full edit-curves dialog (line width, Y limits, style toggles, multi-curve selection) is deferred. M4's color-assignment demo is satisfied by a minimal context-menu action that opens <code>QColorDialog</code> directly, calling <code>PlotWidget::onChangeCurveColor</code>. The full editor returns alongside transforms in the next phase.</td>
+</tr>
+<tr>
+  <td><code>PlotWidgetTransforms</code></td>
+  <td><span class="badge warn">DEFER</span></td>
+  <td>(PJ3 <code>plotwidget_transforms.{h,cpp,ui}</code>) — port in next phase</td>
+  <td>Per-curve display transforms (scale/offset/derivative/smoothing). Not needed for the four demo features; curves render raw datastore values in v1.</td>
+</tr>
+<tr>
+  <td><code>StatisticsDialog</code></td>
+  <td><span class="badge warn">DEFER</span></td>
+  <td>(PJ3 <code>statistics_dialog.{h,cpp,ui}</code>) — port in next phase</td>
+  <td>Visible-range count/min/max/mean readout. Trivial to port once needed; not gating the demo features.</td>
+</tr>
+<tr>
+  <td><code>QwtSeriesWrapper</code> / <code>QwtTimeseries</code> / <code>TransformedTimeseries</code> (PJ3 <code>timeseries_qwt</code>)</td>
+  <td><span class="badge warn">DEFER / REPLACED</span></td>
+  <td>(PJ3-only)</td>
+  <td>The PJ3 family that wraps <code>const PlotData*</code> for Qwt is fully replaced by <code>DatastoreCurveAdapter</code>. Not ported.</td>
+</tr>
+<tr>
+  <td><code>BackgroundColorItem</code></td>
+  <td><span class="badge warn">DEFER</span></td>
+  <td>(PJ3 <code>plot_background.{h,cpp}</code>)</td>
+  <td>Needs a colormap-by-data binding that has no clean shape on the datastore side yet. Out of scope for v1 demo; plan to revisit when colormap UX is settled.</td>
+</tr>
+<tr>
+  <td><code>ColorMap</code> / <code>colormap_selector</code> / <code>colormap_editor</code></td>
+  <td><span class="badge warn">DEFER</span></td>
+  <td>(PJ3 only)</td>
+  <td>Only meaningful once <code>BackgroundColorItem</code> lands. Curve colors use <code>QColorDialog</code>.</td>
+</tr>
+</tbody>
+</table>
+
+<h4>Container family — <code>pj_plot_widgets/</code> (existing scaffolding)</h4>
+<table>
+<thead>
+<tr><th>Class</th><th>Status</th><th>PJ3 reference</th><th>Why</th></tr>
+</thead>
+<tbody>
+<tr>
+  <td><code>DockWidget</code></td>
+  <td><span class="badge">MODIFY</span></td>
+  <td>(PJ3 <code>plot_docker.h</code> top half)</td>
+  <td>Existing PJ4 stub holds a placeholder grey frame. Replace with <code>PlotWidget*</code> ownership; keep <code>IDataWidget</code> impl; <code>onTrackerTime(double)</code> forwards to plot. Splits emit signals MainWindow handles.</td>
+</tr>
+<tr>
+  <td><code>PlotDocker</code></td>
+  <td><span class="badge">MODIFY</span></td>
+  <td>(PJ3 <code>plot_docker.h</code> bottom half)</td>
+  <td>Existing PJ4 stub manages ADS dock tree. Add <code>plotWidgetAdded(PlotWidget*)</code> signal so MainWindow can wire each new plot. PJ3's <code>setHorizontalLink</code> stub is NOT ported — sync-zoom lives in MainWindow per PJ3's actual wiring.</td>
+</tr>
+<tr>
+  <td><code>TabbedPlotWidget</code></td>
+  <td><span class="badge">KEEP</span></td>
+  <td>(PJ3 <code>tabbedplotwidget.{h,cpp}</code>)</td>
+  <td>Existing PJ4 scaffolding is sufficient for v1. The PJ3 per-tab horizontal-link button is intentionally not ported (Link toggle is global in MainWindow).</td>
+</tr>
+<tr>
+  <td><code>DockToolbar</code></td>
+  <td><span class="badge">MODIFY</span></td>
+  <td>(PJ3 <code>plot_docker_toolbar.{h,cpp,ui}</code>)</td>
+  <td>Extend existing PJ4 toolbar to the PJ3 layout: split H/V, fullscreen, close, background-color drop target. Preserve PJ3 object names (<code>buttonSplitHorizontal</code>, etc.) per <code>CLAUDE.md</code>.</td>
+</tr>
+</tbody>
+</table>
+
+<h4>Services — <code>pj_app_core/</code> (existing stubs)</h4>
+<table>
+<thead>
+<tr><th>Class</th><th>Status</th><th>Why</th></tr>
+</thead>
+<tbody>
+<tr>
+  <td><code>SessionManager</code></td>
+  <td><span class="badge">MODIFY</span></td>
+  <td>Currently an empty <code>QObject</code> shell. Grow it to own <code>PJ::DataEngine</code>, expose <code>DataReader</code> factory, look up <code>displayOffsetForTopic</code>, and emit reactive signals (<code>topicsCommitted</code>, <code>dataCleared</code>, <code>timeDomainChanged</code>) — these are PJ4-only; PJ3 had no reactive layer.</td>
+</tr>
+<tr>
+  <td><code>CatalogModel</code></td>
+  <td><span class="badge">MODIFY</span></td>
+  <td>Currently a stub with the right signal shape but no data. Grow it to enumerate datastore topics → curve names; store a name→<code>CurveDescriptor</code> map; emit existing <code>curveAdded/curveRemoved/cleared</code>. Replaces PJ3's <code>PlotDataMapRef</code> read seam at the catalog level.</td>
+</tr>
+<tr>
+  <td><code>CurveDescriptor</code></td>
+  <td><span class="badge">NEW</span></td>
+  <td>Header-only struct (name, TopicId, DatasetId, column_index, field_path, display_offset). Lookup target from drag-drop curve names. Codex's contribution.</td>
+</tr>
+<tr>
+  <td><code>AppSession</code></td>
+  <td><span class="badge">KEEP</span></td>
+  <td>Composition root. Owns SessionManager, PlaybackEngine, CatalogModel, ExtensionCatalogService. No public-API change.</td>
+</tr>
+<tr>
+  <td><code>PlaybackEngine</code></td>
+  <td><span class="badge">KEEP</span></td>
+  <td>Already implemented in PJ4 (124 LOC, QTimer-driven). Just consume <code>currentTimeChanged</code> for the tracker. PJ3's tracker logic was scattered across MainWindow + PlotWidget; PJ4 centralizes it here.</td>
+</tr>
+<tr>
+  <td><code>ExtensionCatalogService</code></td>
+  <td><span class="badge">KEEP</span></td>
+  <td>Wraps marketplace; no plot-side changes needed. The CSV plugin path goes through this service.</td>
+</tr>
+<tr>
+  <td><code>IDataWidget</code></td>
+  <td><span class="badge">KEEP</span></td>
+  <td>The shared widget seam (<code>widget()</code>, <code>onTrackerTime(double)</code>). Don't add plot-specific methods here — keeps the plot/2D/3D widget families siblings, per <code>PJ4_PLAN.md</code> §0.</td>
+</tr>
+</tbody>
+</table>
+
+<h4>Side-panel &amp; shell — <code>pj_app/</code> (existing)</h4>
+<table>
+<thead>
+<tr><th>Class</th><th>Status</th><th>Why</th></tr>
+</thead>
+<tbody>
+<tr>
+  <td><code>CurveListPanel</code></td>
+  <td><span class="badge">KEEP</span></td>
+  <td>Already exists in PJ4 with the right shape. Drag-drop MIME formats (<code>curveslist/add_curve</code>, <code>curveslist/new_XY_axis</code>) already match PJ3 byte-for-byte. Just becomes useful once <code>CatalogModel</code> is populated.</td>
+</tr>
+<tr>
+  <td><code>CurveTreeView</code></td>
+  <td><span class="badge">KEEP</span></td>
+  <td>Drag source already implemented in PJ4. Will populate hierarchy from <code>topic/field/subfield</code> names via existing <code>/</code> separator logic.</td>
+</tr>
+<tr>
+  <td><code>MainWindow</code></td>
+  <td><span class="badge">MODIFY</span></td>
+  <td>Add <code>buttonLink</code> toolbar action (PJ3 object name preserved). Add slots <code>onPlotTabAdded</code> / <code>onPlotAdded</code> / <code>onPlotZoomChanged</code> / <code>onTrackerMoved</code>. Wire <code>PlaybackEngine::currentTimeChanged</code> → broadcast <code>onTrackerTime</code> to every dock. PJ3 had this same shape; PJ4 just plumbs it through services instead of <code>PlotDataMapRef</code>.</td>
+</tr>
+<tr>
+  <td><code>LeftPanel</code> / <code>TimelineWidget</code></td>
+  <td><span class="badge">KEEP</span></td>
+  <td>Existing PJ4 widgets. Already wired to <code>PlaybackEngine</code> and <code>ExtensionCatalogService</code>. Out of scope for the plot port.</td>
+</tr>
+</tbody>
+</table>
+
+<h4>Headcount</h4>
+<p>
+  <strong>NEW: 2</strong> classes (<code>DatastoreCurveAdapter</code>, <code>CurveDescriptor</code>) — total ~500 LOC of net-new code.<br>
+  <strong>PORT (verbatim with style adaptation): 5</strong> (<code>PlotZoomer</code>, <code>PlotPanner</code>, <code>PlotMagnifier</code>, <code>PlotLegend</code>, <code>CurveTracker</code>) — pure lift, ~1200 LOC.<br>
+  <strong>PORT+REBIND: 3</strong> (<code>PlotWidgetBase</code>, <code>PlotWidget</code>, <code>PointSeriesXY</code>) — ~2500 LOC, every <code>PlotData*</code> read replaced.<br>
+  <strong>MODIFY (existing PJ4 stubs): 6</strong> (<code>DockWidget</code>, <code>PlotDocker</code>, <code>DockToolbar</code>, <code>SessionManager</code>, <code>CatalogModel</code>, <code>MainWindow</code>) — extending scaffolding already in place.<br>
+  <strong>KEEP (no change): 7</strong> (<code>TabbedPlotWidget</code>, <code>AppSession</code>, <code>PlaybackEngine</code>, <code>ExtensionCatalogService</code>, <code>IDataWidget</code>, <code>CurveListPanel</code>, <code>CurveTreeView</code>).<br>
+  <strong>DEFER (PJ3 has, PJ4 v1 doesn't): 7</strong> — <code>PlotWidgetEditor</code>, <code>PlotWidgetTransforms</code>, <code>StatisticsDialog</code>, <code>BackgroundColorItem</code>, <code>ColorMap</code>, <code>colormap_selector</code>, <code>colormap_editor</code> — plus the entirety of PJ3's <code>timeseries_qwt</code> family which is replaced rather than ported.
+</p>
+<p>
+  Net effect of deferring the three editor dialogs: ~1500 LOC of port work moves to the next phase. The four demo features (color via context menu + <code>QColorDialog</code>, drag-drop, sync zoom, datastore plumbing) are unaffected.
+</p>
+
+<h2 id="hierarchy">4. Class hierarchy</h2>
+<div class="ascii-tree">                  ┌─────────────────────────────────────────────┐
+                  │ MainWindow (pj_app)                         │
+                  │   owns AppSession, wires Link toggle,       │
+                  │   broadcasts zoom, routes tracker           │
+                  └─────────────────────────────────────────────┘
+                           │ holds                 │ owns
+                           ▼                       ▼
+              ┌──────────────────────┐   ┌─────────────────────────┐
+              │ TabbedPlotWidget     │   │ AppSession (pj_app_core)│
+              │  ├─ tab[i] ─────────►│   │   SessionManager        │
+              │     PlotDocker (ADS) │   │   PlaybackEngine        │
+              │       owns DockWidgets   │   CatalogModel          │
+              └──────────┬───────────┘   │   ExtensionCatalog      │
+                         │               └────────────┬────────────┘
+                  owns 1+│                            │ borrows
+                         ▼                            │
+              ┌──────────────────────┐                │
+              │ DockWidget : IDataWidget              │
+              │  ├ DockToolbar       │                │
+              │  └ PlotWidget* ◄─────┼─ tracker time ┘
+              └──────────┬───────────┘
+                         │ owns
+                         ▼
+              ┌────────────────────────────────────────────────────┐
+              │ PlotWidget : PlotWidgetBase                        │
+              │   ├ PlotZoomer / PlotPanner / PlotMagnifier        │
+              │   ├ PlotLegend                                     │
+              │   ├ CurveTracker                                   │
+              │   └ map&lt;curve_name, QwtPlotCurve+Adapter&gt;          │
+              │                                                    │
+              │   curve creation seam:                             │
+              │     name → CatalogModel::curveDescriptor(name)     │
+              │       → DatastoreCurveAdapter(SessionManager*,     │
+              │                                CurveDescriptor)    │
+              └────────────────────────────────────────────────────┘
+                         │ uses (read)
+                         ▼
+              ┌────────────────────────────────────────────────────┐
+              │ DatastoreCurveAdapter : QwtSeriesData&lt;QPointF&gt;     │
+              │   pull-through to PJ::DataReader — NO copy of      │
+              │   the timeseries; only caches a small chunk index. │
+              │   Qwt's setRectOfInterest() narrows visible range; │
+              │   Qwt's FilterPointsAggressive does paint decimation│
+              └────────────────────────────────────────────────────┘</div>
+<p>The data-access seam is <code>DatastoreCurveAdapter</code>. Everything above it is a near-verbatim port of PJ3.</p>
+
+<h2 id="adapter">5. DatastoreCurveAdapter</h2>
+
+<h3>5.1 Design — thin pull-through, no timeseries copy</h3>
+<p>
+  The adapter is a <strong>read-only translator</strong> between <code>QwtSeriesData&lt;QPointF&gt;</code> and the datastore. It does NOT cache a vector of <code>QPointF</code>. <code>sample(i)</code> goes straight to a sealed <code>PJ::TopicChunk</code> on demand. The only state it owns is a small <strong>chunk index</strong> describing which sealed chunks overlap the visible window and how many rows each contributes — this lets <code>sample(i)</code> be O(log&nbsp;chunks).
+</p>
+<p>
+  This avoids three problems with caching a decimated array:
+</p>
+<ul>
+  <li><strong>Zoom correctness.</strong> Qwt re-paints with whatever rect-of-interest is current; if we'd pre-decimated, zooming in would expose the staircase, not the underlying detail.</li>
+  <li><strong>Decimation overlap.</strong> <code>QwtPlotCurve</code>'s <code>FilterPointsAggressive</code> + <code>ClipPolygons</code> already do paint-time decimation. Adapter-side bucketing would either duplicate this work or hide raw extrema from Qwt before its filters can act.</li>
+  <li><strong>Memory.</strong> A 100M-row topic stays in the datastore (chunked, with retention). The adapter never copies it.</li>
+</ul>
+
+<h4>API leverage — no <code>plotjuggler_core</code> changes needed</h4>
+<p>The design uses only existing public API of <code>plotjuggler_core</code>:</p>
+<ul>
+  <li><code>PJ::DataEngine::getTopicStorage(TopicId) → const TopicStorage*</code></li>
+  <li><code>PJ::TopicStorage::sealedChunks() → const std::deque&lt;TopicChunk&gt;&amp;</code> (commit-ordered, chunks never move)</li>
+  <li><code>PJ::TopicStorage::metadata() → TopicMetadata{time_range_min, time_range_max, total_row_count, ...}</code></li>
+  <li><code>PJ::TopicChunk::readTimestamp(row)</code>, <code>::readNumericAsDouble(col, row)</code>, <code>::isNull(col, row)</code></li>
+  <li><code>PJ::DataEngine::getTimeDomain(id) → const TimeDomain*</code> for the display offset</li>
+  <li><code>PJ::DataEngine::commitChunks(...)</code> returns changed <code>TopicId</code>s — the natural commit-notification primitive</li>
+</ul>
+<p>The reactive signals (<code>topicsCommitted</code>, <code>dataCleared</code>, <code>timeDomainChanged</code>) live on our <code>SessionManager</code> in <code>pj_app_core</code> — a thin <code>QObject</code> wrapper around the engine. <code>DataEngine</code> stays signal-free by design (per <code>plotjuggler_core/CLAUDE.md</code>: Qt-optional substrate). No upstream API change required.</p>
+
+<h3>5.2 Header sketch</h3>
+<pre><code>// pj_plot_widgets/include/pj_plot_widgets/DatastoreCurveAdapter.h
+namespace PJ {
+
+class DatastoreCurveAdapter final : public QwtSeriesData&lt;QPointF&gt; {
+ public:
+  DatastoreCurveAdapter(SessionManager* session, CurveDescriptor source);
+
+  // QwtSeriesData&lt;QPointF&gt; overrides — pull-through, no copy.
+  std::size_t size() const override;
+  QPointF    sample(std::size_t index) const override;
+  QRectF     boundingRect() const override;
+
+  // Qwt calls this with the visible plot rect on each replot.
+  // We narrow our visible row range to chunks overlapping rect.x() .. rect.right().
+  void setRectOfInterest(const QRectF& rect) override;
+
+  // Invalidation hooks (driven from SessionManager signals).
+  void onTopicCommitted();              // append new chunks to chunk index
+  void onDataCleared();                 // rebuild chunk index from scratch
+  void setDisplayOffset(Timestamp ns);  // re-applies on the fly; no rebuild
+
+  const CurveDescriptor& source() const { return source_; }
+  std::optional&lt;QPointF&gt; sampleFromTime(double display_time_sec) const;
+
+ private:
+  struct ChunkSlot {
+    const TopicChunk* chunk;            // borrowed; chunks never move once sealed
+    std::size_t cumulative_row_count;   // rows BEFORE this chunk within the visible range
+  };
+
+  void ensureChunkIndex_() const;       // builds chunk_index_ if dirty
+  std::size_t findChunkSlot_(std::size_t row) const;  // binary search
+  QPointF readPoint_(const ChunkSlot& slot, std::size_t local_row) const;
+
+  SessionManager* session_ = nullptr;
+  CurveDescriptor source_;
+
+  // Visible window — set by Qwt via setRectOfInterest. Defaults to "all rows".
+  Timestamp visible_t_min_raw_ns_ = std::numeric_limits&lt;Timestamp&gt;::min();
+  Timestamp visible_t_max_raw_ns_ = std::numeric_limits&lt;Timestamp&gt;::max();
+
+  Timestamp display_offset_ns_ = 0;
+
+  // Chunk index — small, rebuilt on commit/clear, NOT on zoom.
+  mutable std::vector&lt;ChunkSlot&gt; chunk_index_;
+  mutable std::size_t total_visible_rows_ = 0;
+  mutable bool chunk_index_dirty_ = true;
+
+  // Bounding rect cache (Y bounds need a one-time walk; X bounds come from metadata).
+  mutable QRectF cached_bounding_rect_;
+  mutable bool bounding_rect_valid_ = false;
+};
+
+}  // namespace PJ</code></pre>
+
+<h3>5.3 Time conversion</h3>
+<pre><code>display_ns = round(display_sec * 1e9)
+raw_ns     = display_ns + display_offset_ns         // when querying datastore
+display_x  = double(raw_ns - display_offset_ns) / 1e9  // when handing to Qwt</code></pre>
+
+<h3>5.4 Read flow</h3>
+<p><strong>setRectOfInterest(rect):</strong></p>
+<ol>
+  <li>Convert <code>rect.left()</code> / <code>rect.right()</code> from display seconds to raw nanoseconds.</li>
+  <li>If the new <code>[t_min, t_max]</code> changed, mark <code>chunk_index_dirty_ = true</code>.</li>
+  <li>Mark <code>bounding_rect_valid_ = false</code>.</li>
+</ol>
+<p><strong>ensureChunkIndex_() (lazy):</strong></p>
+<ol>
+  <li>Get <code>TopicStorage*</code> for <code>source_.topic_id</code> from <code>session_-&gt;dataEngine()</code>.</li>
+  <li>Walk its sealed chunks. For each chunk whose timestamp range overlaps <code>[visible_t_min_raw_ns_, visible_t_max_raw_ns_]</code>:
+    <ul>
+      <li>Find first/last row indices that fall in the visible window (binary search on the chunk's timestamp column).</li>
+      <li>Push <code>{chunk, cumulative_row_count}</code> into <code>chunk_index_</code> with the visible-row count for this chunk.</li>
+    </ul>
+  </li>
+  <li><code>total_visible_rows_</code> = sum of contributions.</li>
+  <li>Clear <code>chunk_index_dirty_</code>.</li>
+</ol>
+<p><strong>size() →</strong> <code>ensureChunkIndex_(); return total_visible_rows_;</code></p>
+<p><strong>sample(i):</strong></p>
+<ol>
+  <li><code>ensureChunkIndex_();</code></li>
+  <li>Binary-search <code>chunk_index_</code> for the slot whose <code>cumulative_row_count</code> bracket contains <code>i</code>.</li>
+  <li><code>local_row = i − slot.cumulative_row_count + slot_first_row_offset;</code></li>
+  <li><code>ts_ns = slot.chunk-&gt;readTimestamp(local_row);</code></li>
+  <li><code>y = slot.chunk-&gt;isNull(col, local_row) ? NaN : slot.chunk-&gt;readNumericAsDouble(col, local_row);</code></li>
+  <li>Return <code>QPointF((ts_ns - display_offset_ns_) / 1e9, y)</code>.</li>
+</ol>
+<p><strong>boundingRect():</strong></p>
+<ul>
+  <li>X bounds come from topic metadata (<code>DataReader::getMetadata(topic_id)-&gt;time_range</code>), translated to display seconds.</li>
+  <li>Y bounds: walk the visible chunks once on first call, cache result. Invalidated on any data event.</li>
+  <li>Future hook: when the datastore exposes per-column min/max stats, drop the Y walk.</li>
+</ul>
+
+<h3>5.5 Render decimation is Qwt's job</h3>
+<p>
+  In <code>PlotWidget</code>, when each <code>QwtPlotCurve</code> is created, set:
+</p>
+<pre><code>curve-&gt;setPaintAttribute(QwtPlotCurve::FilterPointsAggressive, true);
+curve-&gt;setPaintAttribute(QwtPlotCurve::ClipPolygons,            true);</code></pre>
+<p>
+  <code>FilterPointsAggressive</code> handles per-pixel decimation while preserving extrema. <code>ClipPolygons</code> trims to canvas. With these enabled, Qwt asks our adapter for samples in the visible row range and itself collapses them to draw efficiently. The adapter does not need to know pixel width.
+</p>
+
+<h3>5.6 Cache invalidation</h3>
+<p>The adapter listens for these signals from <code>SessionManager</code>:</p>
+<ul>
+  <li><code>topicsCommitted(QVector&lt;TopicId&gt; ids)</code> — if <code>source_.topic_id ∈ ids</code>: append new chunks to <code>chunk_index_</code> (or just mark dirty), invalidate bounding rect.</li>
+  <li><code>dataCleared()</code> — clear chunk index.</li>
+  <li><code>timeDomainChanged(DatasetId id)</code> — if <code>source_.dataset_id == id</code>: re-fetch <code>display_offset_ns_</code>; chunk index unchanged.</li>
+</ul>
+<p><code>PlotWidget</code> owns the connection (lambda capturing the adapter) and calls <code>replot()</code> after invalidation.</p>
+
+<h3>5.7 Multi-column mapping</h3>
+<p>One adapter per <code>(TopicId, ColumnIndex)</code> — i.e. one curve per leaf scalar. Structured topics fan out into multiple curves named <code>topic/field/subfield</code>.</p>
+
+<h2 id="dnd">6. Drag-drop wiring</h2>
+<ul>
+  <li><strong>Drop target:</strong> the Qwt plot canvas (forwarded through <code>PlotWidgetBase</code> via Qt's drag-event signals). <em>Not</em> <code>DockWidget</code> — matches PJ3 and aligns with where the user visually expects to drop.</li>
+  <li><strong>MIME formats</strong> (no change): <code>curveslist/add_curve</code>, <code>curveslist/new_XY_axis</code> — already emitted by the existing <code>CurveTreeView</code>.</li>
+  <li><strong>Decode:</strong> payload is a <code>QDataStream</code> of <code>QString</code> curve names, identical to PJ3.</li>
+  <li><strong><code>add_curve</code> path:</strong> for each name, look up <code>CatalogModel::curveDescriptor(name)</code>. If found, create a <code>DatastoreCurveAdapter</code>, wrap it in a <code>QwtPlotCurve</code>, assign next color from the cycle, attach to plot. Reject silently with a status-bar toast if the name is no longer in the catalog.</li>
+  <li><strong><code>new_XY_axis</code> path:</strong> requires exactly two curve names. Construct a <code>PointSeriesXY</code> from two adapters (timestamp-aligned by exact match for v1). The plot enters XY mode (<code>isXYPlot() == true</code>). Drops on a non-empty plot are rejected, matching PJ3.</li>
+</ul>
+
+<h2 id="color">7. Curve color assignment (simplified)</h2>
+<p>User chose stock <code>QColorDialog</code> instead of vendoring <code>color_widgets</code>.</p>
+<ol>
+  <li>Right-click plot → context menu → "Edit curves…" → opens <code>PlotWidgetEditor</code> dialog.</li>
+  <li>Dialog lists curves with current color swatch beside each name.</li>
+  <li>Clicking a swatch opens <code>QColorDialog::getColor(currentColor, this, "Pick curve color")</code>.</li>
+  <li>On accept, dialog calls <code>plot_widget_-&gt;onChangeCurveColor(name, new_color)</code>, which sets <code>QwtPlotCurve::setPen(new_color, line_width)</code> and replots.</li>
+  <li>Color is persisted as part of plot XML state (M4 verification reloads state and confirms color round-trip).</li>
+</ol>
+<p>The dialog's other PJ3 controls (line width selector, Y limits, style) are ported intact.</p>
+
+<h2 id="sync">8. Synchronized zoom</h2>
+
+<h3>8.1 Owner: <code>MainWindow</code> (matches PJ3)</h3>
+<p><code>MainWindow.ui</code> gets <code>QToolButton buttonLink</code> (checkable, object name preserved). State persisted to <code>QSettings</code> under PJ3 key <code>MainWindow.buttonLink</code>.</p>
+
+<h3>8.2 Plot-side signal</h3>
+<p><code>PlotWidget</code> emits <code>void rectChanged(PlotWidget* modified_plot, QRectF new_range);</code></p>
+<p><strong>Emitted on</strong> user-driven zoom/pan/magnify and from <code>setZoomRectangle(rect, /*emit=*/true)</code>.</p>
+<p><strong>NOT emitted</strong> on <code>setZoomRectangle(rect, /*emit=*/false)</code> — this is the broadcast version, called by MainWindow's broadcast loop. Suppressing emit prevents the echo loop. Also not emitted for XY plots.</p>
+
+<h3>8.3 Wiring</h3>
+<pre><code>// MainWindow ctor
+connect(ui-&gt;tabbedPlotWidget, &amp;TabbedPlotWidget::tabAdded,
+        this, &amp;MainWindow::onPlotTabAdded);
+// on existing tabs at startup, call onPlotTabAdded for each
+
+// onPlotTabAdded(PlotDocker* docker)
+connect(docker, &amp;PlotDocker::plotWidgetAdded,
+        this, &amp;MainWindow::onPlotAdded);
+
+// onPlotAdded(PlotWidget* plot)
+connect(plot, &amp;PlotWidget::rectChanged,
+        this, &amp;MainWindow::onPlotZoomChanged);
+connect(plot, &amp;PlotWidget::trackerMoved,
+        this, &amp;MainWindow::onTrackerMoved);
+connect(plot, &amp;PlotWidget::curvesDropped, ui-&gt;curveListPanel,
+        &amp;CurveListPanel::clearSelections);</code></pre>
+
+<h3>8.4 Broadcast algorithm</h3>
+<pre><code>void MainWindow::onPlotZoomChanged(PlotWidget* src, QRectF new_range) {
+  if (!ui-&gt;buttonLink-&gt;isChecked()) return;
+  for (auto* plot : allPlotsInAllTabs()) {
+    if (plot == src) continue;
+    if (plot-&gt;isEmpty()) continue;
+    if (plot-&gt;isXYPlot()) continue;
+    if (!plot-&gt;isZoomLinkEnabled()) continue;  // per-plot opt-out (always true for v1)
+    QRectF rect = plot-&gt;currentBoundingRect();
+    rect.setLeft(new_range.left());
+    rect.setRight(new_range.right());
+    plot-&gt;setZoomRectangle(rect, /*emit=*/false);
+    plot-&gt;replot();
+  }
+}</code></pre>
+<p>X-axis is synced; each plot keeps its own Y range. PJ3 calls <code>on_zoomOutVertical_triggered(false)</code> after broadcast to reset Y to data extent — port that behavior intact.</p>
+
+<h2 id="tracker">9. Tracker integration</h2>
+<ul>
+  <li><code>PlotWidget</code> owns its <code>CurveTracker</code>. <code>DockWidget::onTrackerTime(double t)</code> forwards to <code>plot_widget_-&gt;setTrackerPosition(t)</code>.</li>
+  <li><code>MainWindow</code> connects <code>PlaybackEngine::currentTimeChanged</code> → broadcast <code>onTrackerTime</code> to every dock (walk the tab/dock tree once per signal).</li>
+  <li>User-driven tracker drag in a plot emits <code>PlotWidget::trackerMoved(QPointF p)</code>; <code>MainWindow::onTrackerMoved</code> calls <code>session_-&gt;playbackEngine().setCurrentTime(p.x())</code>. The broadcast then echoes back to all plots, including the source.</li>
+  <li>XY plots don't show a time-tracker line in v1.</li>
+</ul>
+
+<h2 id="services">10. <code>pj_app_core</code> service additions</h2>
+
+<h3>10.1 <code>SessionManager</code></h3>
+<p>Owns a <code>PJ::DataEngine</code> directly (composition root, simplest model).</p>
+<pre><code>PJ::DataEngine&amp; dataEngine();
+const PJ::DataEngine&amp; dataEngine() const;
+PJ::DataReader createReader() const;
+PJ::Timestamp displayOffsetForTopic(PJ::TopicId id) const;
+
+// Q_SIGNALS
+void topicsCommitted(QVector&lt;PJ::TopicId&gt; ids);
+void dataCleared();
+void timeDomainChanged(PJ::DatasetId id);</code></pre>
+<p>Plugin / file-import code (which today doesn't exist in PJ4 — supplied by the user via marketplace install of a CSV plugin) is expected to drive the engine's <code>commitChunks()</code> and then <code>SessionManager</code> re-emits the appropriate signals. Hooking into the marketplace data-source lifecycle is out of scope this round; we fire the signals from a thin shim wherever the writer commits.</p>
+
+<h3>10.2 <code>CatalogModel</code></h3>
+<p>Existing API kept (<code>curveNames</code>, <code>curveAdded</code>, <code>curveRemoved</code>, <code>cleared</code>).</p>
+<p>New API:</p>
+<pre><code>std::optional&lt;CurveDescriptor&gt; curveDescriptor(const QString&amp; name) const;
+QVector&lt;CurveDescriptor&gt; curves() const;
+void rebuildFromDatastore();  // initial population + after dataCleared()</code></pre>
+<p><strong>Build algorithm:</strong> enumerate topics via <code>DataReader::listTopics</code>, walk each topic's <code>TypeTreeNode</code> to find numeric leaves (Float32/Float64/Int32/Int64/Uint64/Bool — string columns excluded for v1), assemble <code>topic/field/subfield</code> names, store the (name → descriptor) map keyed by display name. On <code>topicsCommitted</code>, do an incremental update.</p>
+
+<h3>10.3 What's NOT added in this round</h3>
+<p><code>WidgetRegistry</code>, <code>TransformRegistry</code>, <code>WorkspaceManager</code>, <code>UndoManager</code>, <code>ToolboxManager</code>, <code>NotificationCenter</code> — none required for the four demo features. Adding them prematurely couples the plot port to scaffolding with no consumer yet.</p>
+
+<h2 id="build">11. Build-system changes</h2>
+<ul>
+  <li><strong><code>CMakeLists.txt</code> (top-level):</strong> no new <code>add_subdirectory</code>. <code>QColorDialog</code> is in <code>Qt6::Widgets</code>; no new third-party.</li>
+  <li><strong><code>pj_app_core/CMakeLists.txt</code>:</strong> add <code>plotjuggler_core</code> link (datastore types now in public headers). Confirm <strong>no</strong> <code>Qt6::Widgets</code> link.</li>
+  <li><strong><code>pj_plot_widgets/CMakeLists.txt</code>:</strong>
+    <ul>
+      <li>Add the new source files.</li>
+      <li>Link <code>qwt</code> (target name from the vendored <code>3rdparty/qwt/src</code> — verify during M2).</li>
+      <li>Link <code>pj_app_core</code>, <code>pj_datastore</code>, <code>pj_base</code>, <code>Qt6::Core/Gui/Widgets</code>, <code>qt_advanced_docking</code>.</li>
+      <li><code>AUTOMOC ON</code>, <code>AUTOUIC ON</code>, <code>AUTORCC ON</code>.</li>
+    </ul>
+  </li>
+  <li><strong><code>pj_app/CMakeLists.txt</code>:</strong> no change (AUTOUIC picks up the new <code>buttonLink</code> in <code>MainWindow.ui</code>).</li>
+</ul>
+
+<h2 id="milestones">12. Delivery sequence</h2>
+<p>Each milestone ends in a buildable, runnable, demo-able state. Two-reviewer pre-commit gate runs at the end of each milestone before the user-confirmed commit.</p>
+
+<h3>M1 — Adapter foundation</h3>
+<p><strong>Deliverables:</strong> <code>CurveDescriptor</code>; <code>SessionManager</code> API expansion (engine, reader factory, signals); <code>CatalogModel::rebuildFromDatastore</code>; <code>DatastoreCurveAdapter</code> with downsampler; gtest covering the adapter (synthetic data, downsampler, null handling, display-offset).</p>
+<p><strong>Buildable state:</strong> app still shows placeholder plots; new code lives behind the curtain.</p>
+<p><strong>Demo:</strong> <code>ctest</code> passes for the adapter test.</p>
+
+<h3>M2 — Plot canvas skeleton</h3>
+<p><strong>Deliverables:</strong> port <code>PlotWidgetBase</code>, <code>PlotWidget</code>, <code>PlotZoomer</code>, <code>PlotPanner</code>, <code>PlotMagnifier</code>, <code>PlotLegend</code>. <code>DockWidget</code> owns a real <code>PlotWidget</code>. <code>PlotDocker::plotWidgetAdded</code> emitted.</p>
+<p><strong>Buildable state:</strong> app launches, each dock contains an empty Qwt canvas; pan/zoom/magnify work locally.</p>
+<p><strong>Demo:</strong> split a dock vertically/horizontally → both halves are real plots; mouse wheel zooms; rectangle-zoom works.</p>
+
+<h3>M3 — Drag-drop curves end-to-end</h3>
+<p><strong>Deliverables:</strong> <code>CatalogModel</code> enumerates real topics; <code>PlotWidget</code> accepts both MIME formats; <code>PointSeriesXY</code> minimal impl; status-bar toast for unknown names.</p>
+<p><strong>Buildable state:</strong> side panel shows real curve names from a CSV loaded via the marketplace plugin; drag adds curves to plots.</p>
+<p><strong>Demo:</strong> install marketplace CSV plugin, load a file with at least 3 numeric columns, drag two columns onto one plot (left-drag → time series), drag two onto another (right-drag → XY scatter), drag an unknown name → rejected.</p>
+
+<h3>M4 — Curve color (minimal path)</h3>
+<p><strong>Deliverables:</strong> Right-click curve → context menu with "Change color…" action that opens stock <code>QColorDialog</code>. <code>PlotWidget::onChangeCurveColor(name, QColor)</code> applies the new pen and replots. Plot XML save/load round-trip in-memory covers name list, colors, ranges, mode. <strong>Note:</strong> the full <code>PlotWidgetEditor</code> dialog (line width, Y limits, style toggles, multi-curve selection) is deferred to the next phase per user direction.</p>
+<p><strong>Buildable state:</strong> right-click curve → Change color → <code>QColorDialog</code> opens → pick color → curve repaints.</p>
+<p><strong>Demo:</strong> change a curve to a custom color; serialize plot state via <code>xmlSaveState</code>, drop the curve, reload via <code>xmlLoadState</code>, color is preserved.</p>
+
+<h3>M5 — Synchronized zoom</h3>
+<p><strong>Deliverables:</strong> <code>MainWindow.ui</code> <code>buttonLink</code> toggle; <code>PlotWidget::rectChanged</code>; full broadcast wiring via <code>onPlotTabAdded → onPlotAdded → onPlotZoomChanged</code>; XY-plot exclusion.</p>
+<p><strong>Buildable state:</strong> two non-XY plots, X-zoom in one syncs the other when Link is on; XY plots excluded.</p>
+<p><strong>Demo:</strong> two plots, Link off → independent. Link on → X-axis follows. Add an XY plot, zoom it → others unaffected; zoom others → XY unaffected.</p>
+
+<h3>M6 — Tracker + dock polish</h3>
+<p><strong>Deliverables:</strong> <code>CurveTracker</code> wired to <code>PlaybackEngine</code> both directions (timeline drives tracker line; user-dragged tracker drives timeline); <code>DockToolbar</code> extended to PJ3 layout with split/fullscreen/close buttons and PJ3 object names; XML round-trip extended to cover XY mode, tracker enable, line width. <code>PlotWidgetEditor</code>, <code>PlotWidgetTransforms</code>, <code>StatisticsDialog</code> are deferred to the next phase.</p>
+<p><strong>Buildable state:</strong> full demo-feature set complete (color, drag-drop, sync zoom, tracker integration); PJ3-equivalent dock toolbar.</p>
+<p><strong>Demo:</strong> play timeline → tracker line moves in all non-XY plots; drag tracker in a plot → timeline jumps with it; split/fullscreen/close buttons on dock toolbar work as in PJ3.</p>
+
+<h2 id="verify">13. Verification per milestone</h2>
+<table>
+<thead>
+<tr><th>Milestone</th><th>How to verify</th></tr>
+</thead>
+<tbody>
+<tr><td><strong>M1</strong></td><td><code>cd build &amp;&amp; ctest -R DatastoreCurveAdapter</code> — passes; <code>tests/datastore_curve_adapter_test.cpp</code> covers (a) <code>size()</code> matches sum of visible chunk row counts, (b) <code>sample(i)</code> binary-search returns the correct timestamp/value pair across chunk boundaries, (c) <code>setRectOfInterest</code> narrows visible row count to chunks overlapping the rect, (d) null → NaN, (e) display-offset shifts X correctly, (f) <code>onTopicCommitted</code> after appending a chunk grows <code>size()</code> without rebuilding from scratch.</td></tr>
+<tr><td><strong>M2</strong></td><td><code>./run.sh</code> → app opens with Qwt plot canvas in each dock; split H/V buttons each produce another working plot; wheel-scroll zooms; left-drag zoom rectangle works; pan with middle-mouse-drag works.</td></tr>
+<tr><td><strong>M3</strong></td><td><code>./run.sh</code> → App menu → Marketplace → install CSV plugin → load a CSV with 3+ numeric columns → side panel populates → drag column A onto plot 1 (time series visible) → drag two more onto plot 2 (right-mouse-drag the second to make XY) → unknown drop rejected with status-bar feedback → remove curve via context menu, drop again, works.</td></tr>
+<tr><td><strong>M4</strong></td><td>After M3, right-click a curve → context menu → "Change color…" → <code>QColorDialog</code> opens → pick magenta → curve repaints magenta → save plot state via <code>xmlSaveState</code> → drop the curve → reload via <code>xmlLoadState</code> → color is still magenta.</td></tr>
+<tr><td><strong>M5</strong></td><td>Two non-XY plots loaded with curves. Toggle <code>buttonLink</code> off → zoom plot 1 → plot 2 untouched. Toggle on → zoom plot 1 → plot 2 X follows, Y unchanged. Add XY plot → zoom non-XY plots → XY untouched; zoom XY → others untouched.</td></tr>
+<tr><td><strong>M6</strong></td><td>Play timeline → vertical tracker line in every non-XY plot moves in lockstep, and the per-curve value label at the tracker updates. Drag tracker in a plot → timeline jumps with it. Click split-horizontal / split-vertical / fullscreen / close on the dock toolbar → behavior matches PJ3. Save plot state with non-default tracker enable + line width → restore → settings preserved.</td></tr>
+</tbody>
+</table>
+
+<h2 id="risks">14. Risks &amp; open items</h2>
+<div class="risk"><strong>color_widgets removed from scope</strong> simplifies the build but loses the color-wheel polish. If the user later wants the full PJ3 dialog, we'll vendor + Qt6-patch in a follow-up.</div>
+<div class="risk"><strong>CSV plugin from marketplace must commit through <code>DataEngine</code> and trigger <code>SessionManager::topicsCommitted</code></strong> — the plugin is out of scope for this plan, but it's the integration point. If the marketplace plugin doesn't emit anything, we'll need a thin shim (verify during M3).</div>
+<div class="risk"><strong><code>field_path</code> vs <code>column_index</code> ambiguity:</strong> this round uses <code>column_index</code> for fast access and stores <code>field_path</code> alongside as a stability fallback. If schema evolution lands before this port stabilizes, the descriptor lookup may need to re-resolve via <code>field_path</code>.</div>
+<div class="risk"><strong>Render decimation depends on Qwt's <code>FilterPointsAggressive</code></strong> being effective at the row counts we hand it. If a topic exposes 10M+ visible rows and Qwt's filter is too slow per <code>sample(i)</code> call, we'd revisit by adding a coarser <code>setRectOfInterest</code> stride (still no pre-decimation in the adapter — narrowing the visible row range only). Verify at M2/M3 with a large CSV.</div>
+<div class="risk"><strong>Bounding rect Y-extent</strong> requires walking visible chunks once because the datastore exposes no per-column min/max stat. Could be promoted to a <code>plotjuggler_core</code> API addition (<code>TopicChunk</code> caches min/max per column at seal time) if Y auto-zoom feels sluggish — <strong>requires user confirmation before changing</strong>. X bounds come for free from <code>TopicMetadata::time_range_min/max</code>.</div>
+<div class="risk"><strong>Echo-loop avoidance</strong> depends on <code>setZoomRectangle(rect, false)</code> not emitting <code>rectChanged</code>. Test this explicitly in M5 — a missed connection here causes infinite recursion.</div>
+<div class="risk"><strong>Workspace-to-disk persistence</strong> is not part of this round. <code>xmlSaveState/xmlLoadState</code> work in memory; saving/loading layout files is a future workspace-manager milestone.</div>
+<div class="risk"><strong>Tracker on XY plots</strong> is deferred. PJ3 had a partial implementation; v1 of PJ4 simply hides the tracker on XY plots.</div>
+<div class="risk"><strong>Qwt CMake target name</strong> to be verified at M2 — vendored Qwt's CMakeLists may export <code>qwt</code>, <code>Qwt</code>, or <code>Qt6::Qwt</code>. If it's not exported, add an alias in <code>3rdparty/qwt/src/CMakeLists.txt</code>.</div>
+
+<h2 id="exec">15. Execution model</h2>
+<p>
+  Per <code>CLAUDE.md</code>: each milestone is delegated to Codex with a milestone-scoped brief. Claude runs the two-reviewer pre-commit gate (simplicity reviewer + bug reviewer in parallel) over the produced diff, addresses every real finding, surfaces the diff + review summary to the user, and only commits after explicit user confirmation.
+</p>
+<p>
+  This document keeps Codex's strongest contributions (<code>CurveDescriptor</code> as a first-class type, explicit display-offset math, echo-loop prevention) and Claude's strongest contributions (data-source dependency surfaced as a user decision, <code>color_widgets</code> simplification when the picker is the only blocker, deferral of unused services to keep <code>pj_app_core</code> lean). After user review, the adapter design was reworked from "cache + min/max bucket downsampler" to a thin pull-through over <code>QwtSeriesData::setRectOfInterest</code> + <code>FilterPointsAggressive</code> — keeping render decimation as Qwt's job and preserving zoom correctness, with no <code>plotjuggler_core</code> API extensions needed.
+</p>
+
+<hr style="margin-top:60px; border:none; border-top:1px solid var(--border);">
+<p style="color:var(--muted); font-size:0.85em; text-align:center;">
+  Plan file: <code>/home/davide/ws_plotjuggler/PJ4/plan_plotwidget_port.html</code>
+</p>
+
+</body>
+</html>

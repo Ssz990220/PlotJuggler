@@ -6,3 +6,5 @@ CMakeUserPresets.json
 .vscode/
 .idea/
 *.user
+/aqtinstall.log
+/.qt
