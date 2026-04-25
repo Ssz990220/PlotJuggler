@@ -1,5 +1,6 @@
 find_package(Qt6 REQUIRED COMPONENTS Core Gui Svg Network)
 find_package(nlohmann_json REQUIRED)
+find_package(tsl-robin-map REQUIRED)
 
 add_library(pj_app_core STATIC
     src/AppSession.cpp

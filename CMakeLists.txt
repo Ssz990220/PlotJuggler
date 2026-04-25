@@ -18,6 +18,10 @@ set(PJ_BUILD_TESTS ON CACHE BOOL "Build plotjuggler_core tests" FORCE)
 set(PJ_BUILD_PARQUET_IMPORT_EXAMPLE OFF CACHE BOOL "" FORCE)
 set(PJ_BUILD_PORTED_PLUGINS OFF CACHE BOOL "" FORCE)
 
+if(PJ_BUILD_TESTS)
+    enable_testing()
+endif()
+
 # ---------------------------------------------------------------------------
 # Qt
 # ---------------------------------------------------------------------------

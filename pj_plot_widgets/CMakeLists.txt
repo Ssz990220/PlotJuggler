@@ -1,4 +1,7 @@
 find_package(Qt6 REQUIRED COMPONENTS Core Gui Widgets)
+if(PJ_BUILD_TESTS)
+    find_package(GTest REQUIRED)
+endif()
 
 add_library(pj_plot_widgets STATIC
     src/DatastoreCurveAdapter.cpp
@@ -32,3 +35,15 @@ target_link_libraries(pj_plot_widgets PUBLIC
     Qt6::Gui
     Qt6::Widgets
 )
+
+if(PJ_BUILD_TESTS)
+    add_executable(datastore_curve_adapter_test
+        tests/datastore_curve_adapter_test.cpp
+    )
+    target_link_libraries(datastore_curve_adapter_test PRIVATE
+        pj_plot_widgets
+        pj_datastore
+        GTest::gtest_main
+    )
+    add_test(NAME DatastoreCurveAdapterTest COMMAND datastore_curve_adapter_test)
+endif()
