@@ -9,6 +9,7 @@ add_library(pj_app_core STATIC
     src/SessionManager.cpp
     include/pj_app_core/AppSession.h
     include/pj_app_core/CatalogModel.h
+    include/pj_app_core/CurveDescriptor.h
     include/pj_app_core/ExtensionCatalogService.h
     include/pj_app_core/IDataWidget.h
     include/pj_app_core/PlaybackEngine.h
