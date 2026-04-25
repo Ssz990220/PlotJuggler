@@ -744,16 +744,19 @@ curve-&gt;setPaintAttribute(QwtPlotCurve::ClipPolygons,            true);</code>
   <li><strong><code>new_XY_axis</code> path:</strong> requires exactly two curve names. Construct a <code>PointSeriesXY</code> from two adapters (timestamp-aligned by exact match for v1). The plot enters XY mode (<code>isXYPlot() == true</code>). Drops on a non-empty plot are rejected, matching PJ3.</li>
 </ul>
 
-<h2 id="color">7. Curve color assignment (simplified)</h2>
-<p>User chose stock <code>QColorDialog</code> instead of vendoring <code>color_widgets</code>.</p>
+<h2 id="color">7. Curve color assignment (minimal path)</h2>
+<p>
+  User chose stock <code>QColorDialog</code> instead of vendoring <code>color_widgets</code>, and deferred the full <code>PlotWidgetEditor</code> dialog (line width, Y limits, style toggles, multi-curve selection) to the next phase. M4 ships the smallest path that covers the demo feature.
+</p>
 <ol>
-  <li>Right-click plot → context menu → "Edit curves…" → opens <code>PlotWidgetEditor</code> dialog.</li>
-  <li>Dialog lists curves with current color swatch beside each name.</li>
-  <li>Clicking a swatch opens <code>QColorDialog::getColor(currentColor, this, "Pick curve color")</code>.</li>
-  <li>On accept, dialog calls <code>plot_widget_-&gt;onChangeCurveColor(name, new_color)</code>, which sets <code>QwtPlotCurve::setPen(new_color, line_width)</code> and replots.</li>
+  <li>Right-click on a curve (in the legend or on the canvas) → <code>PlotWidget</code> context menu with one action: "Change color…".</li>
+  <li>Action handler opens <code>QColorDialog::getColor(currentColor, this, tr("Pick curve color"))</code>.</li>
+  <li>On accept, the handler calls <code>PlotWidget::onChangeCurveColor(name, new_color)</code>, which sets <code>QwtPlotCurve::setPen(new_color, line_width)</code> and calls <code>replot()</code>.</li>
   <li>Color is persisted as part of plot XML state (M4 verification reloads state and confirms color round-trip).</li>
 </ol>
-<p>The dialog's other PJ3 controls (line width selector, Y limits, style) are ported intact.</p>
+<p>
+  No editor dialog, no swatch list, no per-curve form controls — the full PJ3-style editor returns when <code>PlotWidgetEditor</code> is ported in the next phase. The line width / Y limits / style toggles travel with that.
+</p>
 
 <h2 id="sync">8. Synchronized zoom</h2>
 
