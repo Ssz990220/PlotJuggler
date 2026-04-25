@@ -125,6 +125,7 @@
     <li><a href="#milestones">Delivery sequence (M1–M6)</a></li>
     <li><a href="#verify">Verification per milestone</a></li>
     <li><a href="#risks">Risks &amp; open items</a></li>
+    <li><a href="#conventions">Engineering conventions</a></li>
     <li><a href="#exec">Execution model</a></li>
   </ol>
 </div>
@@ -306,7 +307,7 @@ struct CurveDescriptor {
   <td><code>PointSeriesXY</code></td>
   <td><span class="badge good">PORT+REBIND</span></td>
   <td><code>plotjuggler_app/point_series_xy.{h,cpp}</code> → <code>pj_plot_widgets/.../PointSeriesXY.{h,cpp}</code></td>
-  <td>XY scatter from two timeseries. Wire to two <code>DatastoreCurveAdapter</code>s and align by exact timestamp at <code>sample(i)</code> time (PJ3 nearest-lookup deferred to post-v1).</td>
+  <td>Separate <code>QwtSeriesData&lt;QPointF&gt;</code> with its own alignment index (NOT a wrapper over two ROI-driven time-series adapters — Qwt's ROI X is the X curve's value, not time). Same-topic fast path: pair by row index. Different-topic path: two-pointer scan by raw timestamp, exact match only. <code>sample(i)</code> dereferences pre-built <code>PairSlot</code>. Codex caught this on the resumed review.</td>
 </tr>
 <tr>
   <td><code>PlotWidgetEditor</code></td>
@@ -551,47 +552,57 @@ class DatastoreCurveAdapter final : public QwtSeriesData&lt;QPointF&gt; {
   // QwtSeriesData&lt;QPointF&gt; overrides — pull-through, no copy.
   std::size_t size() const override;
   QPointF    sample(std::size_t index) const override;
-  QRectF     boundingRect() const override;
+  QRectF     boundingRect() const override;        // FULL-data bounds (not ROI). See §5.4.
 
-  // Qwt calls this with the visible plot rect on each replot.
-  // We narrow our visible row range to chunks overlapping rect.x() .. rect.right().
+  // Qwt calls this with the visible plot rect during updateScaleDiv.
+  // NOT guaranteed to fire before boundingRect() — see §5.4.
   void setRectOfInterest(const QRectF& rect) override;
 
+  // PJ3-equivalent helper: Y bounds restricted to a given X window.
+  // Used by PlotWidgetBase for "vertical zoom-to-visible" (PJ3's getVisualizationRangeY).
+  std::optional&lt;std::pair&lt;double, double&gt;&gt; visibleYRange(double x_min_sec, double x_max_sec) const;
+
   // Invalidation hooks (driven from SessionManager signals).
-  void onTopicCommitted();              // append new chunks to chunk index
-  void onDataCleared();                 // rebuild chunk index from scratch
-  void setDisplayOffset(Timestamp ns);  // re-applies on the fly; no rebuild
+  void onTopicCommitted();              // append new chunks to chunk index, invalidate full bounds
+  void onDataCleared();                 // wipe chunk index
 
   const CurveDescriptor& source() const { return source_; }
   std::optional&lt;QPointF&gt; sampleFromTime(double display_time_sec) const;
 
  private:
   struct ChunkSlot {
-    const TopicChunk* chunk;            // borrowed; chunks never move once sealed
-    std::size_t cumulative_row_count;   // rows BEFORE this chunk within the visible range
+    const TopicChunk* chunk;          // borrowed; chunks in std::deque never move
+    std::size_t row_start;            // first visible row WITHIN this chunk
+    std::size_t row_end;              // one-past-last visible row WITHIN this chunk
+    std::size_t cumulative_begin;     // global row index where this slot starts
+    std::size_t cumulative_end;       // global row index where this slot ends (== next.cumulative_begin)
   };
 
-  void ensureChunkIndex_() const;       // builds chunk_index_ if dirty
-  std::size_t findChunkSlot_(std::size_t row) const;  // binary search
+  void ensureChunkIndex_() const;
+  std::size_t findChunkSlot_(std::size_t global_row) const;  // last_slot_ → +1 → upper_bound
   QPointF readPoint_(const ChunkSlot& slot, std::size_t local_row) const;
+  Timestamp displayOffsetNow_() const;                       // looks up live via DataEngine
 
   SessionManager* session_ = nullptr;
   CurveDescriptor source_;
 
-  // Visible window — set by Qwt via setRectOfInterest. Defaults to "all rows".
+  // Visible window — set by Qwt via setRectOfInterest. Defaults to ALL ROWS so size()/sample()
+  // are valid before the first ROI arrives (Qwt may call boundingRect() first; see §5.4).
   Timestamp visible_t_min_raw_ns_ = std::numeric_limits&lt;Timestamp&gt;::min();
   Timestamp visible_t_max_raw_ns_ = std::numeric_limits&lt;Timestamp&gt;::max();
 
-  Timestamp display_offset_ns_ = 0;
+  // Last-slot cache — Qwt's QwtPointMapper iterates sample(i) sequentially.
+  // Check current slot, then slot+1, then fall back to upper_bound.
+  mutable std::size_t last_slot_ = 0;
 
-  // Chunk index — small, rebuilt on commit/clear, NOT on zoom.
   mutable std::vector&lt;ChunkSlot&gt; chunk_index_;
   mutable std::size_t total_visible_rows_ = 0;
   mutable bool chunk_index_dirty_ = true;
 
-  // Bounding rect cache (Y bounds need a one-time walk; X bounds come from metadata).
-  mutable QRectF cached_bounding_rect_;
-  mutable bool bounding_rect_valid_ = false;
+  // FULL-data bounds cache (X from metadata, Y from ColumnStats union across all chunks).
+  // Invalidated only on topicsCommitted / dataCleared.
+  mutable QRectF cached_full_bounding_rect_;
+  mutable bool full_bounding_rect_valid_ = false;
 };
 
 }  // namespace PJ</code></pre>
@@ -602,49 +613,81 @@ raw_ns     = display_ns + display_offset_ns         // when querying datastore
 display_x  = double(raw_ns - display_offset_ns) / 1e9  // when handing to Qwt</code></pre>
 
 <h3>5.4 Read flow</h3>
-<p><strong>setRectOfInterest(rect):</strong></p>
+
+<p><strong>Important Qwt-ordering invariant (verified by Codex against Qwt source):</strong> <code>setRectOfInterest()</code> is NOT guaranteed to fire before <code>boundingRect()</code>. Qwt's <code>QwtPlot::replot()</code> calls <code>updateAxes()</code> first; autoscale items hit <code>boundingRect()</code> there, and only afterwards does <code>updateScaleDiv()</code> propagate the rect to the series via <code>setRectOfInterest</code>. Therefore:</p>
+<ul>
+  <li><code>boundingRect()</code> must return <strong>full-data bounds</strong>, never ROI-bounded — otherwise autoscale uses the previous frame's ROI and we get a one-frame lag bug on every replot.</li>
+  <li><code>size()</code> and <code>sample()</code> must work before any <code>setRectOfInterest</code> arrives — hence the "all rows" default in the constructor.</li>
+</ul>
+
+<p><strong><code>setRectOfInterest(rect)</code>:</strong></p>
 <ol>
-  <li>Convert <code>rect.left()</code> / <code>rect.right()</code> from display seconds to raw nanoseconds.</li>
-  <li>If the new <code>[t_min, t_max]</code> changed, mark <code>chunk_index_dirty_ = true</code>.</li>
-  <li>Mark <code>bounding_rect_valid_ = false</code>.</li>
+  <li>Convert <code>rect.left()</code>/<code>rect.right()</code> from display seconds to raw nanoseconds: <code>raw_ns = round(display_sec * 1e9) + displayOffsetNow_()</code>.</li>
+  <li>If <code>[t_min, t_max]</code> changed, set <code>chunk_index_dirty_ = true</code>, reset <code>last_slot_ = 0</code>.</li>
+  <li>Do NOT touch <code>full_bounding_rect_valid_</code> — full bounds are independent of the ROI.</li>
 </ol>
-<p><strong>ensureChunkIndex_() (lazy):</strong></p>
+
+<p><strong><code>ensureChunkIndex_()</code> (lazy, runs at most once per ROI change):</strong></p>
 <ol>
-  <li>Get <code>TopicStorage*</code> for <code>source_.topic_id</code> from <code>session_-&gt;dataEngine()</code>.</li>
-  <li>Walk its sealed chunks. For each chunk whose timestamp range overlaps <code>[visible_t_min_raw_ns_, visible_t_max_raw_ns_]</code>:
+  <li><code>const TopicStorage* ts = session_-&gt;dataEngine().getTopicStorage(source_.topic_id);</code> — return early if null (topic deleted).</li>
+  <li>Walk <code>ts-&gt;sealedChunks()</code>. For each chunk whose <code>[time_min, time_max]</code> overlaps <code>[visible_t_min_raw_ns_, visible_t_max_raw_ns_]</code>:
     <ul>
-      <li>Find first/last row indices that fall in the visible window (binary search on the chunk's timestamp column).</li>
-      <li>Push <code>{chunk, cumulative_row_count}</code> into <code>chunk_index_</code> with the visible-row count for this chunk.</li>
+      <li>Binary-search the chunk's timestamp column for first row ≥ <code>t_min</code> and first row &gt; <code>t_max</code>.</li>
+      <li><strong>Boundary-guard rule:</strong> when narrowing, include <strong>one row before</strong> <code>t_min</code> and <strong>one row after</strong> <code>t_max</code> if available — otherwise line segments crossing the viewport boundary disappear before <code>ClipPolygons</code> can clip them (PJ3 had this behavior implicitly via full-array iteration).</li>
+      <li>Push <code>{chunk, row_start, row_end, cumulative_begin, cumulative_end}</code>.</li>
     </ul>
   </li>
-  <li><code>total_visible_rows_</code> = sum of contributions.</li>
+  <li><code>total_visible_rows_ = sum(row_end − row_start)</code> across slots.</li>
   <li>Clear <code>chunk_index_dirty_</code>.</li>
 </ol>
-<p><strong>size() →</strong> <code>ensureChunkIndex_(); return total_visible_rows_;</code></p>
-<p><strong>sample(i):</strong></p>
+
+<p><strong><code>size()</code>:</strong> <code>ensureChunkIndex_(); return total_visible_rows_;</code></p>
+
+<p><strong><code>sample(i)</code>:</strong></p>
 <ol>
   <li><code>ensureChunkIndex_();</code></li>
-  <li>Binary-search <code>chunk_index_</code> for the slot whose <code>cumulative_row_count</code> bracket contains <code>i</code>.</li>
-  <li><code>local_row = i − slot.cumulative_row_count + slot_first_row_offset;</code></li>
+  <li><strong>Last-slot cache</strong> — <code>QwtPointMapper</code> iterates <code>sample(i)</code> sequentially via <code>for (int i = from; i &lt;= to; i++)</code>:
+    <ul>
+      <li>If <code>i</code> falls inside <code>chunk_index_[last_slot_]</code>, use it.</li>
+      <li>Else if <code>i</code> falls inside <code>chunk_index_[last_slot_ + 1]</code>, advance and use.</li>
+      <li>Else <code>std::upper_bound</code> on <code>cumulative_end</code>; update <code>last_slot_</code>.</li>
+    </ul>
+  </li>
+  <li><code>local_row = slot.row_start + (i − slot.cumulative_begin);</code></li>
   <li><code>ts_ns = slot.chunk-&gt;readTimestamp(local_row);</code></li>
   <li><code>y = slot.chunk-&gt;isNull(col, local_row) ? NaN : slot.chunk-&gt;readNumericAsDouble(col, local_row);</code></li>
-  <li>Return <code>QPointF((ts_ns - display_offset_ns_) / 1e9, y)</code>.</li>
+  <li>Return <code>QPointF((ts_ns − displayOffsetNow_()) / 1e9, y)</code>.</li>
 </ol>
-<p><strong>boundingRect():</strong></p>
+
+<p><strong><code>boundingRect()</code> — full-data bounds, NOT ROI-bounded:</strong></p>
 <ul>
-  <li>X bounds come from topic metadata (<code>DataReader::getMetadata(topic_id)-&gt;time_range</code>), translated to display seconds.</li>
-  <li>Y bounds: walk the visible chunks once on first call, cache result. Invalidated on any data event.</li>
-  <li>Future hook: when the datastore exposes per-column min/max stats, drop the Y walk.</li>
+  <li>X bounds from <code>TopicStorage::metadata()</code>: <code>time_range_min</code>/<code>time_range_max</code>, translated by display offset.</li>
+  <li>Y bounds from per-chunk stats: <strong><code>TopicChunk::stats.column_stats[col].min_value/max_value</code></strong> exists publicly via <code>ChunkStats</code> (verified in <code>chunk.hpp</code>). Take the union across all sealed chunks — no row walk required.</li>
+  <li>If a chunk's <code>column_stats[col]</code> entry has <code>nullopt</code> min/max (e.g. all-null column), skip it.</li>
+  <li>Cache in <code>cached_full_bounding_rect_</code>; invalidate only on <code>topicsCommitted</code> / <code>dataCleared</code>. Mouse pan/zoom does not invalidate.</li>
 </ul>
+
+<p><strong><code>visibleYRange(x_min, x_max)</code> — for PJ3-style vertical zoom-to-fit:</strong></p>
+<p>This replaces PJ3's <code>QwtSeriesWrapper::getVisualizationRangeY(range_X)</code>, which <code>PlotWidgetBase</code> uses for "zoom out vertical" semantics:</p>
+<ul>
+  <li>Walk <code>chunk_index_</code> for chunks overlapping <code>[x_min, x_max]</code>.</li>
+  <li>For chunks <strong>fully inside</strong> the X window: use <code>chunk.stats.column_stats[col]</code> directly (cheap, single lookup).</li>
+  <li>For partial-overlap chunks at the boundaries: scan only <code>row_start..row_end</code> in that chunk for min/max.</li>
+  <li>Return <code>nullopt</code> if no values are finite.</li>
+</ul>
+<p>This is the only path that needs to scan rows for Y bounds; auto-zoom on full data does not.</p>
 
 <h3>5.5 Render decimation is Qwt's job</h3>
 <p>
-  In <code>PlotWidget</code>, when each <code>QwtPlotCurve</code> is created, set:
+  In <code>PlotWidget</code>, when each <code>QwtPlotCurve</code> is created, set Qwt's paint-attribute filtering flags:
 </p>
 <pre><code>curve-&gt;setPaintAttribute(QwtPlotCurve::FilterPointsAggressive, true);
 curve-&gt;setPaintAttribute(QwtPlotCurve::ClipPolygons,            true);</code></pre>
 <p>
-  <code>FilterPointsAggressive</code> handles per-pixel decimation while preserving extrema. <code>ClipPolygons</code> trims to canvas. With these enabled, Qwt asks our adapter for samples in the visible row range and itself collapses them to draw efficiently. The adapter does not need to know pixel width.
+  Qwt owns paint-time filtering and decimation. With these flags enabled, Qwt asks our adapter for samples within the ROI-narrowed visible row range and applies its own per-pixel collapse during paint. The adapter does not need to know pixel width and does not pre-decimate.
+</p>
+<p>
+  <strong>Caveat:</strong> Qwt still calls <code>sample(i)</code> for every candidate row in the visible range — paint-time filtering reduces the cost per pixel but not the call count. Performance therefore depends on cheap <code>sample(i)</code> (chunk-index + last-slot cache + raw chunk reads), which is why the design above optimizes that hot path.
 </p>
 
 <h3>5.6 Cache invalidation</h3>
@@ -658,6 +701,39 @@ curve-&gt;setPaintAttribute(QwtPlotCurve::ClipPolygons,            true);</code>
 
 <h3>5.7 Multi-column mapping</h3>
 <p>One adapter per <code>(TopicId, ColumnIndex)</code> — i.e. one curve per leaf scalar. Structured topics fan out into multiple curves named <code>topic/field/subfield</code>.</p>
+
+<h3>5.8 <code>PointSeriesXY</code> — separate class with its own alignment index</h3>
+<p>
+  <strong>Do NOT compose XY plots out of two ROI-driven <code>DatastoreCurveAdapter</code>s.</strong> For a time-series adapter, Qwt's ROI <code>QRectF.x()</code> is display time. For an XY plot, Qwt's ROI <code>QRectF.x()</code> is the X curve's numeric value. Forwarding the same <code>QRectF</code> into two time-series adapters would narrow on the wrong domain.
+</p>
+<p>
+  Instead, <code>PointSeriesXY</code> is its own <code>QwtSeriesData&lt;QPointF&gt;</code> subclass that builds a lazy alignment index over the raw datastore:
+</p>
+<pre><code>class PointSeriesXY final : public QwtSeriesData&lt;QPointF&gt; {
+ public:
+  PointSeriesXY(SessionManager* session, CurveDescriptor x_src, CurveDescriptor y_src);
+
+  std::size_t size() const override;
+  QPointF    sample(std::size_t i) const override;
+  QRectF     boundingRect() const override;       // full-data XY bounds from ColumnStats
+  void       setRectOfInterest(const QRectF&amp;) override;  // narrows by X-VALUE, not time
+
+  void       onTopicCommitted();   // invalidate alignment index
+  void       onDataCleared();
+};</code></pre>
+<p>
+  <strong>Alignment-index build (lazy, rebuilt on commit/clear):</strong>
+</p>
+<ul>
+  <li><strong>Same-topic fast path:</strong> if <code>x_src.topic_id == y_src.topic_id</code>, X and Y are different columns of the same chunk; pair by row index — no scan needed.</li>
+  <li><strong>Different-topic path:</strong> two-pointer scan over both topics' <code>sealedChunks()</code> by raw <code>Timestamp</code>; emit a <code>PairSlot{x_chunk, x_row, y_chunk, y_row}</code> entry only on exact timestamp match. Mismatched samples are dropped (PJ3 behavior).</li>
+</ul>
+<p>
+  <strong><code>sample(i)</code>:</strong> dereference <code>pair_index_[i]</code>, read both values fresh from the chunks, return <code>QPointF(x_value, y_value)</code>. No timestamp matching at sample time.
+</p>
+<p>
+  This preserves the "no copy of timeseries data" principle — the index stores chunk/row references, not values.
+</p>
 
 <h2 id="dnd">6. Drag-drop wiring</h2>
 <ul>
@@ -734,28 +810,42 @@ connect(plot, &amp;PlotWidget::curvesDropped, ui-&gt;curveListPanel,
 
 <h2 id="services">10. <code>pj_app_core</code> service additions</h2>
 
-<h3>10.1 <code>SessionManager</code></h3>
-<p>Owns a <code>PJ::DataEngine</code> directly (composition root, simplest model).</p>
+<h3>10.1 <code>SessionManager</code> — minimal v1 surface</h3>
+<p>Owns a <code>PJ::DataEngine</code> directly. Three things only:</p>
 <pre><code>PJ::DataEngine&amp; dataEngine();
-const PJ::DataEngine&amp; dataEngine() const;
-PJ::DataReader createReader() const;
-PJ::Timestamp displayOffsetForTopic(PJ::TopicId id) const;
+PJ::DataReader  createReader() const;       // thin wrapper for adapter convenience
 
 // Q_SIGNALS
-void topicsCommitted(QVector&lt;PJ::TopicId&gt; ids);
-void dataCleared();
-void timeDomainChanged(PJ::DatasetId id);</code></pre>
-<p>Plugin / file-import code (which today doesn't exist in PJ4 — supplied by the user via marketplace install of a CSV plugin) is expected to drive the engine's <code>commitChunks()</code> and then <code>SessionManager</code> re-emits the appropriate signals. Hooking into the marketplace data-source lifecycle is out of scope this round; we fire the signals from a thin shim wherever the writer commits.</p>
+void topicsCommitted(QVector&lt;PJ::TopicId&gt; ids);  // emitted explicitly after engine.commitChunks()</code></pre>
+<p>That's the minimum the four demo features need. The sole reason this class exists rather than holding <code>DataEngine</code> directly: <code>DataEngine</code> has no Q_SIGNALS by design (Qt-optional substrate per <code>plotjuggler_core/CLAUDE.md</code>) — something must bridge that gap, and this is it.</p>
+<p><strong>Explicitly NOT in v1:</strong></p>
+<ul>
+  <li><code>displayOffsetForTopic(TopicId)</code> — the adapter calls <code>engine.getTimeDomain(id)</code> directly. No reason for a wrapper.</li>
+  <li><code>dataCleared()</code> Q_SIGNAL — no consumer. Add when something asks.</li>
+  <li><code>timeDomainChanged(DatasetId)</code> Q_SIGNAL — no consumer. Add when something asks.</li>
+</ul>
+<p>The CSV plugin (out of scope) drives <code>engine.commitChunks()</code>; a thin shim emits <code>topicsCommitted</code> after that returns. That's the only integration point.</p>
 
-<h3>10.2 <code>CatalogModel</code></h3>
-<p>Existing API kept (<code>curveNames</code>, <code>curveAdded</code>, <code>curveRemoved</code>, <code>cleared</code>).</p>
-<p>New API:</p>
+<h3>10.2 <code>CatalogModel</code> — minimal v1 surface</h3>
+<p>Existing API stays (<code>curveNames()</code>, <code>curveAdded</code>, <code>curveRemoved</code>, <code>cleared</code>) — <code>CurveListPanel</code> already wires to it.</p>
+<p>One method added for drag-drop name resolution:</p>
 <pre><code>std::optional&lt;CurveDescriptor&gt; curveDescriptor(const QString&amp; name) const;
-QVector&lt;CurveDescriptor&gt; curves() const;
-void rebuildFromDatastore();  // initial population + after dataCleared()</code></pre>
-<p><strong>Build algorithm:</strong> enumerate topics via <code>DataReader::listTopics</code>, walk each topic's <code>TypeTreeNode</code> to find numeric leaves (Float32/Float64/Int32/Int64/Uint64/Bool — string columns excluded for v1), assemble <code>topic/field/subfield</code> names, store the (name → descriptor) map keyed by display name. On <code>topicsCommitted</code>, do an incremental update.</p>
+void rebuildFromDatastore();  // initial population on session start, on topicsCommitted</code></pre>
+<p><strong>Build:</strong> enumerate topics via <code>DataReader::listTopics</code>, walk each topic's <code>TypeTreeNode</code> for numeric leaves (Float32/Float64/Int32/Int64/Uint64/Bool — string columns excluded for v1), assemble <code>topic/field/subfield</code> names, store name→<code>CurveDescriptor</code> in a <code>tsl::robin_map</code>. On <code>topicsCommitted</code>, incremental update.</p>
+<p><strong>Explicitly NOT in v1:</strong> <code>curves() → QVector&lt;CurveDescriptor&gt;</code> bulk getter (no consumer). Iteration goes through <code>curveNames()</code> + per-name lookup, which is what the side panel already does.</p>
 
-<h3>10.3 What's NOT added in this round</h3>
+<h3>10.3 Why not collapse <code>SessionManager</code> + <code>CatalogModel</code>?</h3>
+<p>They have genuinely different consumers — the adapter wants <code>DataReader</code>, the side panel wants name enumeration. Splitting is natural. If both classes turn out &lt; 50 LOC each in practice, revisit at the end of M1; otherwise leave them split.</p>
+
+<h3>10.4 Why not skip the service layer entirely?</h3>
+<p>Two non-trivial reasons:</p>
+<ul>
+  <li><strong>Widget-family siblings rule</strong> (<code>PJ4_PLAN.md</code> §0): plot, 2D, and 3D widget libraries cannot depend on each other and must not depend on <code>pj_app</code>. They share state through <code>pj_app_core</code> services. If we kill <code>SessionManager</code> and <code>PlaybackEngine</code>, every widget gains a transitive dependency on <code>MainWindow</code>.</li>
+  <li><strong>Qt-optional substrate</strong>: <code>plotjuggler_core</code> is built without Qt by default. <code>DataEngine</code> can't carry Q_SIGNALS itself; the bridging layer has to live in <code>pj_app_core</code>.</li>
+</ul>
+<p>So the abstraction is load-bearing, not ceremonial.</p>
+
+<h3>10.5 What's NOT added in this round</h3>
 <p><code>WidgetRegistry</code>, <code>TransformRegistry</code>, <code>WorkspaceManager</code>, <code>UndoManager</code>, <code>ToolboxManager</code>, <code>NotificationCenter</code> — none required for the four demo features. Adding them prematurely couples the plot port to scaffolding with no consumer yet.</p>
 
 <h2 id="build">11. Build-system changes</h2>
@@ -765,7 +855,7 @@ void rebuildFromDatastore();  // initial population + after dataCleared()</code>
   <li><strong><code>pj_plot_widgets/CMakeLists.txt</code>:</strong>
     <ul>
       <li>Add the new source files.</li>
-      <li>Link <code>qwt</code> (target name from the vendored <code>3rdparty/qwt/src</code> — verify during M2).</li>
+      <li>Link <code>plotjuggler_qwt</code> (verified target name from <code>3rdparty/qwt/src/CMakeLists.txt</code>).</li>
       <li>Link <code>pj_app_core</code>, <code>pj_datastore</code>, <code>pj_base</code>, <code>Qt6::Core/Gui/Widgets</code>, <code>qt_advanced_docking</code>.</li>
       <li><code>AUTOMOC ON</code>, <code>AUTOUIC ON</code>, <code>AUTORCC ON</code>.</li>
     </ul>
@@ -777,7 +867,7 @@ void rebuildFromDatastore();  // initial population + after dataCleared()</code>
 <p>Each milestone ends in a buildable, runnable, demo-able state. Two-reviewer pre-commit gate runs at the end of each milestone before the user-confirmed commit.</p>
 
 <h3>M1 — Adapter foundation</h3>
-<p><strong>Deliverables:</strong> <code>CurveDescriptor</code>; <code>SessionManager</code> API expansion (engine, reader factory, signals); <code>CatalogModel::rebuildFromDatastore</code>; <code>DatastoreCurveAdapter</code> with downsampler; gtest covering the adapter (synthetic data, downsampler, null handling, display-offset).</p>
+<p><strong>Deliverables:</strong> <code>CurveDescriptor</code>; <code>SessionManager</code> API (engine, reader factory, <code>topicsCommitted</code> signal); <code>CatalogModel::rebuildFromDatastore</code>; <code>DatastoreCurveAdapter</code> as thin pull-through (chunk index + last-slot cache + boundary-guard rows + full-data <code>boundingRect</code> using <code>ColumnStats</code>); gtest covering the adapter contract (see §13 M1 verification).</p>
 <p><strong>Buildable state:</strong> app still shows placeholder plots; new code lives behind the curtain.</p>
 <p><strong>Demo:</strong> <code>ctest</code> passes for the adapter test.</p>
 
@@ -812,7 +902,7 @@ void rebuildFromDatastore();  // initial population + after dataCleared()</code>
 <tr><th>Milestone</th><th>How to verify</th></tr>
 </thead>
 <tbody>
-<tr><td><strong>M1</strong></td><td><code>cd build &amp;&amp; ctest -R DatastoreCurveAdapter</code> — passes; <code>tests/datastore_curve_adapter_test.cpp</code> covers (a) <code>size()</code> matches sum of visible chunk row counts, (b) <code>sample(i)</code> binary-search returns the correct timestamp/value pair across chunk boundaries, (c) <code>setRectOfInterest</code> narrows visible row count to chunks overlapping the rect, (d) null → NaN, (e) display-offset shifts X correctly, (f) <code>onTopicCommitted</code> after appending a chunk grows <code>size()</code> without rebuilding from scratch.</td></tr>
+<tr><td><strong>M1</strong></td><td><code>cd build &amp;&amp; ctest -R DatastoreCurveAdapter</code> — passes; <code>tests/datastore_curve_adapter_test.cpp</code> covers: (a) default "all rows" before any <code>setRectOfInterest</code> call so that <code>size()</code>/<code>sample()</code> are valid for autoscale; (b) <code>setRectOfInterest</code> narrows by X display range and <code>size()</code> reflects the sum of visible row counts; (c) sample lookup across chunk boundaries — including the last-slot sequential cache fast path AND the binary-search fallback; (d) boundary-guard: one extra row before <code>t_min</code> and one after <code>t_max</code> are included when the chunk has them; (e) null numeric values return <code>QPointF(x, NaN)</code>; (f) display offset shifts X correctly; (g) <code>boundingRect()</code> returns full-data bounds independent of ROI, with Y derived from <code>ColumnStats</code> union (no row walk); (h) <code>boundingRect()</code> is cached and only invalidates on <code>onTopicCommitted</code>/<code>onDataCleared</code>; (i) <code>visibleYRange(x_min,x_max)</code> uses <code>ColumnStats</code> for fully-contained chunks and scans only partial-overlap boundary chunks; (j) <code>onTopicCommitted</code> after appending a chunk extends the index without rebuilding from scratch. <strong>M3 also adds:</strong> XY alignment-index tests — same-topic two-column row pairing, different-topic timestamp matching, mismatched-timestamps rejection, and that XY does not reuse time-series ROI semantics.</td></tr>
 <tr><td><strong>M2</strong></td><td><code>./run.sh</code> → app opens with Qwt plot canvas in each dock; split H/V buttons each produce another working plot; wheel-scroll zooms; left-drag zoom rectangle works; pan with middle-mouse-drag works.</td></tr>
 <tr><td><strong>M3</strong></td><td><code>./run.sh</code> → App menu → Marketplace → install CSV plugin → load a CSV with 3+ numeric columns → side panel populates → drag column A onto plot 1 (time series visible) → drag two more onto plot 2 (right-mouse-drag the second to make XY) → unknown drop rejected with status-bar feedback → remove curve via context menu, drop again, works.</td></tr>
 <tr><td><strong>M4</strong></td><td>After M3, right-click a curve → context menu → "Change color…" → <code>QColorDialog</code> opens → pick magenta → curve repaints magenta → save plot state via <code>xmlSaveState</code> → drop the curve → reload via <code>xmlLoadState</code> → color is still magenta.</td></tr>
@@ -826,18 +916,64 @@ void rebuildFromDatastore();  // initial population + after dataCleared()</code>
 <div class="risk"><strong>CSV plugin from marketplace must commit through <code>DataEngine</code> and trigger <code>SessionManager::topicsCommitted</code></strong> — the plugin is out of scope for this plan, but it's the integration point. If the marketplace plugin doesn't emit anything, we'll need a thin shim (verify during M3).</div>
 <div class="risk"><strong><code>field_path</code> vs <code>column_index</code> ambiguity:</strong> this round uses <code>column_index</code> for fast access and stores <code>field_path</code> alongside as a stability fallback. If schema evolution lands before this port stabilizes, the descriptor lookup may need to re-resolve via <code>field_path</code>.</div>
 <div class="risk"><strong>Render decimation depends on Qwt's <code>FilterPointsAggressive</code></strong> being effective at the row counts we hand it. If a topic exposes 10M+ visible rows and Qwt's filter is too slow per <code>sample(i)</code> call, we'd revisit by adding a coarser <code>setRectOfInterest</code> stride (still no pre-decimation in the adapter — narrowing the visible row range only). Verify at M2/M3 with a large CSV.</div>
-<div class="risk"><strong>Bounding rect Y-extent</strong> requires walking visible chunks once because the datastore exposes no per-column min/max stat. Could be promoted to a <code>plotjuggler_core</code> API addition (<code>TopicChunk</code> caches min/max per column at seal time) if Y auto-zoom feels sluggish — <strong>requires user confirmation before changing</strong>. X bounds come for free from <code>TopicMetadata::time_range_min/max</code>.</div>
+<div class="risk"><strong>Threading &amp; chunk lifetime.</strong> The adapter holds raw <code>const TopicChunk*</code> into <code>std::deque</code>. Deque appends preserve existing references (good), but <code>TopicStorage::clearChunks()</code> and <code>DataEngine::enforceRetention()</code> invalidate them. <code>DataEngine</code> has no visible locking. v1 must guarantee no engine mutation during Qwt paint — easiest path: <code>SessionManager</code> serializes commits / clear / retention onto the GUI thread (or uses <code>Qt::QueuedConnection</code> for the bridge signals so they fire between paints, never during).</div>
+<div class="risk"><strong>Retention has no signal.</strong> <code>DataEngine::enforceRetention()</code> returns <code>void</code>. If v1 ever calls it, <code>SessionManager</code> must wrap and emit a topic-data-changed signal so adapters rebuild their chunk index. v1 demo doesn't enforce retention, but flag this for the streaming-source phase.</div>
+<div class="risk"><strong>Display-offset must be looked up live</strong> via <code>DataEngine::getTimeDomain(id)</code>, not cached on the adapter. <code>timeDomainChanged</code> signal (deferred for v1) would otherwise cause stale-offset bugs. v1 reads the offset on each <code>setRectOfInterest</code>; if the demo adds a domain-change UI, add the signal.</div>
 <div class="risk"><strong>Echo-loop avoidance</strong> depends on <code>setZoomRectangle(rect, false)</code> not emitting <code>rectChanged</code>. Test this explicitly in M5 — a missed connection here causes infinite recursion.</div>
 <div class="risk"><strong>Workspace-to-disk persistence</strong> is not part of this round. <code>xmlSaveState/xmlLoadState</code> work in memory; saving/loading layout files is a future workspace-manager milestone.</div>
 <div class="risk"><strong>Tracker on XY plots</strong> is deferred. PJ3 had a partial implementation; v1 of PJ4 simply hides the tracker on XY plots.</div>
-<div class="risk"><strong>Qwt CMake target name</strong> to be verified at M2 — vendored Qwt's CMakeLists may export <code>qwt</code>, <code>Qwt</code>, or <code>Qt6::Qwt</code>. If it's not exported, add an alias in <code>3rdparty/qwt/src/CMakeLists.txt</code>.</div>
+<div class="risk"><strong>Drag-drop payload byte-compat verified.</strong> PJ4 <code>CurveTreeView.cpp:147-159</code> writes <code>QDataStream &lt;&lt; name</code> per QString with MIME <code>"curveslist/add_curve"</code> / <code>"curveslist/new_XY_axis"</code>; PJ3 <code>plotwidget.cpp:471-512</code> reads the same way. Both ends are Qt6, so <code>QDataStream</code> default version matches. No protocol fix required.</div>
 
-<h2 id="exec">15. Execution model</h2>
+<h2 id="conventions">15. Engineering conventions</h2>
+
+<p><strong>Use <code>plotjuggler_core/</code> as the reference template for design patterns and types.</strong> When you need a container, error path, span, optional, ID type, naming convention, PIMPL idiom, or any other primitive — find an existing example in the submodule first and match it. Read <code>plotjuggler_core/docs/cpp_design_recommendations.md</code> if a pattern isn't obvious from the code. Deviate only with a documented reason.</p>
+
+<table>
+<thead>
+<tr><th>Concern</th><th>Use this</th><th>Not this</th></tr>
+</thead>
+<tbody>
+<tr><td>Hash map</td><td><code>tsl::robin_map</code></td><td><code>std::unordered_map</code></td></tr>
+<tr><td>Fallible return</td><td><code>PJ::Expected&lt;T&gt;</code></td><td>Exceptions, error-out-params, sentinel returns</td></tr>
+<tr><td>Void fallible</td><td><code>PJ::Status</code></td><td><code>bool</code> + side channel</td></tr>
+<tr><td>Invariants</td><td><code>PJ_ASSERT(cond, msg)</code></td><td>Bare <code>assert</code> or silent <code>if</code></td></tr>
+<tr><td>Stable IDs</td><td>Typed wrappers — <code>TopicId</code>, <code>DatasetId</code>, <code>FieldId</code></td><td>Raw <code>uint32_t</code></td></tr>
+<tr><td>Time</td><td><code>PJ::Timestamp</code> (int64 ns since epoch)</td><td><code>double</code> seconds at storage layer</td></tr>
+<tr><td>Span / view</td><td><code>PJ::Span&lt;T&gt;</code>, <code>PJ::BitSpan</code></td><td><code>std::span</code> mixed with our APIs</td></tr>
+<tr><td>Stable iteration</td><td><code>std::deque</code> when references must survive growth (chunks)</td><td><code>std::vector</code> when growth invalidates pointers</td></tr>
+<tr><td>Type erasure of impl</td><td>PIMPL: <code>struct Impl; std::unique_ptr&lt;Impl&gt; impl_;</code> with dtor in <code>.cpp</code></td><td>Inline impl details in headers</td></tr>
+<tr><td>Class names</td><td><code>CamelCase</code></td><td><code>snake_case</code> for classes</td></tr>
+<tr><td>Function names</td><td><code>camelBack</code></td><td><code>snake_case</code> functions</td></tr>
+<tr><td>Local variables</td><td><code>lower_case</code></td><td><code>camelBack</code> locals</td></tr>
+<tr><td>Members</td><td><code>lower_case_</code> (trailing underscore)</td><td>No underscore, or <code>m_</code> prefix</td></tr>
+<tr><td>Constants</td><td><code>kCamelCase</code></td><td><code>UPPER_CASE</code></td></tr>
+<tr><td>Namespace</td><td><code>PJ</code> (flat); <code>PJ::encoding</code>, <code>PJ::arrow_import</code> for internals</td><td>Nested vendor namespaces</td></tr>
+<tr><td>Const correctness</td><td><code>[[nodiscard]]</code> on factory and lookup returns; <code>const</code> by default; <code>noexcept</code> on accessors</td><td>Default mutable, default discardable</td></tr>
+<tr><td>Files</td><td><code>PascalCase.h</code> / <code>PascalCase.cpp</code> in PJ4</td><td><code>snake_case.h</code></td></tr>
+</tbody>
+</table>
+
+<p>Concrete consequences for this port:</p>
+<ul>
+  <li><code>DatastoreCurveAdapter</code>'s chunk index uses <code>std::vector&lt;ChunkSlot&gt;</code> (stable while we hold it) but the underlying <code>TopicStorage::sealedChunks()</code> is a <code>std::deque</code> — chunks never move, slot pointers stay valid.</li>
+  <li><code>CatalogModel</code>'s name-to-descriptor map uses <code>tsl::robin_map&lt;QString, CurveDescriptor&gt;</code>.</li>
+  <li>Adapter <code>sample(i)</code> must handle "topic deleted mid-paint" by returning <code>QPointF(NaN, NaN)</code> — Qwt breaks the curve. <code>getTopicStorage(id)</code> returning <code>nullptr</code> is the trigger.</li>
+  <li><code>SessionManager::createReader()</code> returns by value (small RAII view, copyable), not <code>PJ::Expected</code>; the construction is infallible.</li>
+  <li>Time arithmetic in the adapter stays in <code>PJ::Timestamp</code> (ns) until the final <code>display_x_sec</code> conversion. Don't drop to <code>double</code> seconds early — precision loss accumulates.</li>
+</ul>
+
+<h2 id="exec">16. Execution model</h2>
 <p>
   Per <code>CLAUDE.md</code>: each milestone is delegated to Codex with a milestone-scoped brief. Claude runs the two-reviewer pre-commit gate (simplicity reviewer + bug reviewer in parallel) over the produced diff, addresses every real finding, surfaces the diff + review summary to the user, and only commits after explicit user confirmation.
 </p>
 <p>
-  This document keeps Codex's strongest contributions (<code>CurveDescriptor</code> as a first-class type, explicit display-offset math, echo-loop prevention) and Claude's strongest contributions (data-source dependency surfaced as a user decision, <code>color_widgets</code> simplification when the picker is the only blocker, deferral of unused services to keep <code>pj_app_core</code> lean). After user review, the adapter design was reworked from "cache + min/max bucket downsampler" to a thin pull-through over <code>QwtSeriesData::setRectOfInterest</code> + <code>FilterPointsAggressive</code> — keeping render decimation as Qwt's job and preserving zoom correctness, with no <code>plotjuggler_core</code> API extensions needed.
+  This document is the merger of two parallel plans (Claude + Codex). Codex contributed the <code>CurveDescriptor</code> first-class type, explicit display-offset math, and echo-loop prevention as a named invariant. Claude contributed surfacing gating user decisions up front (data source via marketplace CSV, stock <code>QColorDialog</code>, <code>topic/field/subfield</code> naming) and trimming the service surface to only what consumers need.
+</p>
+<p>
+  After user review, the adapter design was reworked from "cache + min/max bucket downsampler" to a thin pull-through over <code>QwtSeriesData::setRectOfInterest</code> + Qwt paint-time filtering — render decimation is Qwt's job. Codex's resumed second-pass review (against the corrected design) caught: <code>setRectOfInterest</code> ordering vs <code>boundingRect</code> (full-data bounds required, ROI-based bounds would lag a frame); <code>ChunkStats::column_stats</code> exists publicly (no walk needed for Y bounds, no upstream API extension); the last-slot cache for sequential <code>sample(i)</code>; the boundary-guard rule; and a separate <code>PointSeriesXY</code> with its own alignment index (forwarding ROI to two time-series adapters narrows by the wrong domain). Threading/lifetime around <code>std::deque</code> chunk references is now a documented invariant.
+</p>
+<p>
+  No <code>plotjuggler_core/</code> API extensions are needed for v1.
 </p>
 
 <hr style="margin-top:60px; border:none; border-top:1px solid var(--border);">
