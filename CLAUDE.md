@@ -47,7 +47,7 @@ Initialize / update the submodule with:
 git submodule update --init --recursive
 ```
 
-### `~/ws_plotjuggler/src/PlotJuggler/` (PJ3 reference — read-only)
+### `~/ws_plotjuggler/PlotJuggler/` (PJ3 reference — read-only)
 
 PlotJuggler 3 source tree. This is **the primary source for cherry-picked code**. Expect heavy reference, particularly for:
 
@@ -137,13 +137,9 @@ Parity-plus with PJ3: file + streaming sources, 11 built-in transforms, undo/red
 - Architectural questions → consult `PJ4_PLAN.md` first; escalate if the plan is silent or contradictory.
 - New modules must respect the dependency rules in plan §5 (widget families are siblings; `pj_app_core` has no `QWidget`).
 
-### Pre-commit review gate
+### Commit policy
 
-- **Before every commit**, spawn two reviewer agents in parallel over the staged/pending diff:
-  1. A **code-quality / simplicity** reviewer — catches accumulating tech debt, duplication, over-abstraction, dead code, unclear naming, comments that explain *what* instead of *why*, things that should be simpler.
-  2. A **bug / issues** reviewer — catches logic errors, null/dangling pointers, missing error handling, race conditions, silent failures, leaks, incorrect Qt signal/slot wiring, off-by-one, ownership mistakes.
-- Address every real finding before committing. Skip only false positives, and say so briefly in the turn.
-- **Never commit autonomously.** Always surface the diff and the review summary, then ask for approval. Commit only after explicit user confirmation in that turn.
+- **Never commit autonomously.** Surface the diff, then ask for approval. Commit only after explicit user confirmation in that turn.
 
 ### Porting policy from PJ3
 
