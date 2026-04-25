@@ -5,9 +5,12 @@
 #include <QStringList>
 #include <QUrl>
 
+#include "FileLoader.h"
 #include "pj_app_core/AppSession.h"
+#include "pj_app_core/CatalogModel.h"
 #include "pj_app_core/ExtensionCatalogService.h"
 #include "pj_app_core/PlaybackEngine.h"
+#include "pj_app_core/SessionManager.h"
 #include "pj_marketplace/marketplace_window.hpp"
 #include "ui/CurveListPanel.h"
 #include "ui/LeftPanel.h"
@@ -28,8 +31,7 @@ QUrl registryUrlFromSettings() {
   const QString raw = QSettings().value(kRegistryUrlSettingsKey, kDefaultRegistryUrl).toString();
   const QUrl url(raw);
   if (!url.isValid() || url.scheme().isEmpty()) {
-    qCWarning(lcMain) << "Invalid" << kRegistryUrlSettingsKey << "in QSettings:" << raw
-                      << "— falling back to default.";
+    qCWarning(lcMain) << "Invalid" << kRegistryUrlSettingsKey << "in QSettings:" << raw << "— falling back to default.";
     return QUrl(QString::fromLatin1(kDefaultRegistryUrl));
   }
   return url;
@@ -47,8 +49,13 @@ MainWindow::MainWindow(QWidget* parent)
   ui_->timelineWidget->setPlaybackEngine(&playback);
 
   refreshStreamingCombo();
-  connect(&session_->extensionCatalog(), &ExtensionCatalogService::catalogChanged, this,
-          &MainWindow::refreshStreamingCombo);
+  connect(
+      &session_->extensionCatalog(), &ExtensionCatalogService::catalogChanged, this,
+      &MainWindow::refreshStreamingCombo);
+
+  file_loader_ = std::make_unique<FileLoader>(
+      session_->sessionManager(), session_->extensionCatalog(), session_->catalogModel(), this);
+  connect(ui_->leftPanel, &LeftPanel::loadDataRequested, this, &MainWindow::onLoadDataRequested);
 
   connect(ui_->actionMarketplace, &QAction::triggered, this, &MainWindow::onOpenMarketplace);
   connect(ui_->actionExit, &QAction::triggered, this, &QWidget::close);
@@ -70,6 +77,10 @@ void MainWindow::onOpenMarketplace() {
   if (dlg.installationsChanged()) {
     catalog.reload();
   }
+}
+
+void MainWindow::onLoadDataRequested() {
+  file_loader_->openFromDialog(this);
 }
 
 void MainWindow::refreshStreamingCombo() {
