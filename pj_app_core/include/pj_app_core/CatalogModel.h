@@ -2,9 +2,11 @@
 
 #include <QObject>
 #include <QString>
-
 #include <memory>
+#include <optional>
 #include <vector>
+
+#include "pj_app_core/CurveDescriptor.h"
 
 namespace PJ {
 
@@ -25,6 +27,10 @@ class CatalogModel : public QObject {
   CatalogModel& operator=(const CatalogModel&) = delete;
 
   std::vector<QString> curveNames() const;
+  [[nodiscard]] std::optional<CurveDescriptor> curveDescriptor(const QString& name) const;
+
+ public slots:
+  void rebuildFromDatastore();
 
  signals:
   void curveAdded(const QString& name);
@@ -32,7 +38,8 @@ class CatalogModel : public QObject {
   void cleared();
 
  private:
-  SessionManager* session_ = nullptr;
+  struct Impl;
+  std::unique_ptr<Impl> impl_;
 };
 
 }  // namespace PJ

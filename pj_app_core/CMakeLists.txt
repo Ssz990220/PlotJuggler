@@ -36,4 +36,6 @@ target_link_libraries(pj_app_core PUBLIC
     pj_message_parser_host
     pj_toolbox_host
     nlohmann_json::nlohmann_json
+  PRIVATE
+    tsl::robin_map
 )
