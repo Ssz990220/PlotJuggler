@@ -30,6 +30,7 @@ target_link_libraries(pj_app_core PUBLIC
     Qt6::Gui
     Qt6::Svg
     Qt6::Network
+    pj_datastore
     pj_marketplace
     pj_data_source_host
     pj_message_parser_host
