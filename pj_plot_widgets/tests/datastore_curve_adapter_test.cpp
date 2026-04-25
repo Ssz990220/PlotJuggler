@@ -175,5 +175,48 @@ TEST_F(DatastoreCurveAdapterTest, TopicCommitGrowsIndexedSize) {
   EXPECT_DOUBLE_EQ(adapter_->sample(12).y(), 22.0);
 }
 
+TEST_F(DatastoreCurveAdapterTest, CrossChunkBoundaryGuardsIncludeAdjacentChunks) {
+  // Chunks are sealed every max_chunk_rows=4 rows. With 10 rows we have
+  // chunk[0]=rows 0..3, chunk[1]=rows 4..7, chunk[2]=rows 8..9.
+  // Window cuts strictly between rows 3 and 4 (display 1.5..1.6 → raw 3.5..3.6 sec):
+  // - row 3 (raw 3 sec, display 1.0) is in chunk[0], outside the window
+  // - row 4 (raw 4 sec, display 2.0) is in chunk[1], outside the window
+  // The cross-chunk guard rule must surface row 3 as the left guard and row 4
+  // as the right guard so the segment crossing the gap still renders.
+  adapter_->setRectOfInterest(QRectF(QPointF(1.5, -1.0), QPointF(1.6, 1.0)));
+
+  ASSERT_EQ(adapter_->size(), 2U);
+  EXPECT_DOUBLE_EQ(adapter_->sample(0).x(), 1.0);  // row 3 from chunk[0] (last row)
+  EXPECT_DOUBLE_EQ(adapter_->sample(0).y(), 13.0);
+  EXPECT_DOUBLE_EQ(adapter_->sample(1).x(), 2.0);  // row 4 from chunk[1] (first row)
+  EXPECT_DOUBLE_EQ(adapter_->sample(1).y(), 14.0);
+}
+
+TEST_F(DatastoreCurveAdapterTest, SampleFromTimeReturnsLatestAtPoint) {
+  // Display time 4.5 sec ↔ raw 6.5 sec. latestAt picks row 6 (raw 6 sec, value 16).
+  const std::optional<QPointF> hit = adapter_->sampleFromTime(4.5);
+  ASSERT_TRUE(hit.has_value());
+  EXPECT_DOUBLE_EQ(hit->x(), 4.0);
+  EXPECT_DOUBLE_EQ(hit->y(), 16.0);
+
+  // Before the first sample → no row at-or-before this time → nullopt.
+  EXPECT_FALSE(adapter_->sampleFromTime(-100.0).has_value());
+}
+
+TEST_F(DatastoreCurveAdapterTest, MissingTopicReturnsNanWithoutCrashing) {
+  // CurveDescriptor pointing at a topic that doesn't exist in the engine —
+  // simulates the "topic deleted mid-paint" path: getTopicStorage() → nullptr.
+  CurveDescriptor stale = descriptor_;
+  stale.topic_id = static_cast<TopicId>(topic_id_ + 9999U);
+  DatastoreCurveAdapter dangling(&session_, stale);
+
+  EXPECT_EQ(dangling.size(), 0U);
+  const QPointF s = dangling.sample(0);
+  EXPECT_TRUE(std::isnan(s.y()));
+  EXPECT_FALSE(dangling.boundingRect().isValid());
+  EXPECT_FALSE(dangling.visibleYRange(0.0, 10.0).has_value());
+  EXPECT_FALSE(dangling.sampleFromTime(0.0).has_value());
+}
+
 }  // namespace
 }  // namespace PJ

@@ -16,7 +16,7 @@
 namespace PJ {
 namespace {
 
-constexpr long double kNanosecondsPerSecond = 1000000000.0L;
+constexpr double kNanosecondsPerSecond = 1e9;
 
 [[nodiscard]] QPointF invalidPoint() {
   return {0.0, std::numeric_limits<double>::quiet_NaN()};
@@ -26,33 +26,14 @@ constexpr long double kNanosecondsPerSecond = 1000000000.0L;
   return {1.0, 1.0, -2.0, -2.0};
 }
 
-[[nodiscard]] Timestamp saturatingAdd(Timestamp lhs, Timestamp rhs) noexcept {
-  if (rhs > 0 && lhs > std::numeric_limits<Timestamp>::max() - rhs) {
-    return std::numeric_limits<Timestamp>::max();
-  }
-  if (rhs < 0 && lhs < std::numeric_limits<Timestamp>::min() - rhs) {
-    return std::numeric_limits<Timestamp>::min();
-  }
-  return lhs + rhs;
+// Caller is responsible for finite-checking display_sec — Qwt rects from real
+// viewports are always bounded; the upstream call sites guard against NaN/inf.
+[[nodiscard]] Timestamp displaySecondsToRawNs(double display_sec, Timestamp display_offset_ns) noexcept {
+  return static_cast<Timestamp>(std::llround(display_sec * kNanosecondsPerSecond)) + display_offset_ns;
 }
 
-[[nodiscard]] Timestamp displaySecondsToRawNs(double display_sec, Timestamp display_offset_ns) {
-  if (!std::isfinite(display_sec)) {
-    return display_sec < 0.0 ? std::numeric_limits<Timestamp>::min() : std::numeric_limits<Timestamp>::max();
-  }
-
-  const long double display_ns = std::round(static_cast<long double>(display_sec) * kNanosecondsPerSecond);
-  if (display_ns <= static_cast<long double>(std::numeric_limits<Timestamp>::min())) {
-    return std::numeric_limits<Timestamp>::min();
-  }
-  if (display_ns >= static_cast<long double>(std::numeric_limits<Timestamp>::max())) {
-    return std::numeric_limits<Timestamp>::max();
-  }
-  return saturatingAdd(static_cast<Timestamp>(display_ns), display_offset_ns);
-}
-
-[[nodiscard]] double rawNsToDisplaySeconds(Timestamp raw_ns, Timestamp display_offset_ns) {
-  return static_cast<double>(raw_ns - display_offset_ns) / static_cast<double>(kNanosecondsPerSecond);
+[[nodiscard]] double rawNsToDisplaySeconds(Timestamp raw_ns, Timestamp display_offset_ns) noexcept {
+  return static_cast<double>(raw_ns - display_offset_ns) / kNanosecondsPerSecond;
 }
 
 [[nodiscard]] bool isAllRowsWindow(Timestamp t_min, Timestamp t_max) noexcept {
@@ -163,11 +144,21 @@ QRectF DatastoreCurveAdapter::boundingRect() const {
 }
 
 void DatastoreCurveAdapter::setRectOfInterest(const QRectF& rect) {
-  const Timestamp offset = displayOffsetNow_();
-  const Timestamp left = displaySecondsToRawNs(rect.left(), offset);
-  const Timestamp right = displaySecondsToRawNs(rect.right(), offset);
-  const Timestamp next_min = std::min(left, right);
-  const Timestamp next_max = std::max(left, right);
+  Timestamp next_min = 0;
+  Timestamp next_max = 0;
+  if (!std::isfinite(rect.left()) || !std::isfinite(rect.right())) {
+    // Non-finite rect bounds (NaN / inf) — fall back to the all-rows window so
+    // size()/sample() stay valid. Qwt occasionally hands us sentinel rects on
+    // first paint or while axes are being reconfigured.
+    next_min = std::numeric_limits<Timestamp>::min();
+    next_max = std::numeric_limits<Timestamp>::max();
+  } else {
+    const Timestamp offset = displayOffsetNow_();
+    const Timestamp left = displaySecondsToRawNs(rect.left(), offset);
+    const Timestamp right = displaySecondsToRawNs(rect.right(), offset);
+    next_min = std::min(left, right);
+    next_max = std::max(left, right);
+  }
 
   if (visible_t_min_raw_ns_ == next_min && visible_t_max_raw_ns_ == next_max) {
     return;
@@ -287,36 +278,103 @@ void DatastoreCurveAdapter::ensureChunkIndex_() const {
     return;
   }
 
+  // Plan-then-materialize so cross-chunk boundary guards (one row from the chunk
+  // immediately before the window, one from the chunk immediately after) can be
+  // emitted in time order before cumulative offsets are assigned.
+  struct PreSlot {
+    const TopicChunk* chunk;
+    std::size_t row_start;
+    std::size_t row_end;
+  };
+  std::vector<PreSlot> pre_slots;
+
   const bool all_rows = isAllRowsWindow(visible_t_min_raw_ns_, visible_t_max_raw_ns_);
-  for (const TopicChunk& chunk : storage->sealedChunks()) {
-    const std::size_t row_count = chunk.stats.row_count;
-    if (row_count == 0 || chunk.stats.t_max < visible_t_min_raw_ns_ || chunk.stats.t_min > visible_t_max_raw_ns_) {
-      continue;
+  if (all_rows) {
+    for (const TopicChunk& chunk : storage->sealedChunks()) {
+      const std::size_t row_count = chunk.stats.row_count;
+      if (row_count == 0) {
+        continue;
+      }
+      pre_slots.push_back(PreSlot{&chunk, 0, row_count});
     }
+  } else {
+    const TopicChunk* prev_left_guard = nullptr;  // last chunk fully before window
+    bool emitted_overlap = false;
+    // True when the most recent overlap chunk had no in-chunk forward-step
+    // available (its natural row_end was at row_count). In that case the
+    // segment crossing the upper boundary needs a cross-chunk right guard
+    // from the next chunk.
+    bool last_overlap_needs_right_guard = false;
 
-    std::size_t row_start = all_rows ? 0 : firstRowGreaterEqual(chunk, visible_t_min_raw_ns_);
-    std::size_t row_end = all_rows ? row_count : firstRowGreater(chunk, visible_t_max_raw_ns_);
+    for (const TopicChunk& chunk : storage->sealedChunks()) {
+      const std::size_t row_count = chunk.stats.row_count;
+      if (row_count == 0) {
+        continue;
+      }
 
-    if (!all_rows) {
+      if (chunk.stats.t_max < visible_t_min_raw_ns_) {
+        prev_left_guard = &chunk;
+        continue;
+      }
+
+      if (chunk.stats.t_min > visible_t_max_raw_ns_) {
+        // First chunk after the window — chunks are time-ordered, so no later
+        // chunk can overlap. Emit cross-chunk right guards when needed.
+        if (!emitted_overlap) {
+          // Window falls in a gap between this chunk and prev_left_guard:
+          // emit both guards so the segment renders across the gap.
+          if (prev_left_guard != nullptr && prev_left_guard->stats.row_count > 0) {
+            pre_slots.push_back(
+                PreSlot{prev_left_guard, prev_left_guard->stats.row_count - 1, prev_left_guard->stats.row_count});
+            pre_slots.push_back(PreSlot{&chunk, 0, 1});
+          }
+        } else if (last_overlap_needs_right_guard) {
+          // Last overlap chunk's forward-step couldn't be applied (it ended at
+          // row_count); supply the right guard from this next chunk.
+          pre_slots.push_back(PreSlot{&chunk, 0, 1});
+        }
+        break;
+      }
+
+      const std::size_t natural_row_start = firstRowGreaterEqual(chunk, visible_t_min_raw_ns_);
+      const std::size_t natural_row_end = firstRowGreater(chunk, visible_t_max_raw_ns_);
+      std::size_t row_start = natural_row_start;
+      std::size_t row_end = natural_row_end;
       if (row_start > 0) {
         --row_start;
       }
       if (row_end < row_count) {
         ++row_end;
       }
-    }
+      if (row_start >= row_end) {
+        continue;
+      }
 
-    if (row_start >= row_end) {
-      continue;
-    }
+      // Cross-chunk left guard: only when the natural (pre-back-step) row_start
+      // was already 0 — i.e. no in-chunk guard is available because the window's
+      // lower bound is at or before this chunk's first sample. Pull the previous
+      // chunk's last row so the segment crossing the lower boundary survives.
+      if (!emitted_overlap && natural_row_start == 0 && prev_left_guard != nullptr &&
+          prev_left_guard->stats.row_count > 0) {
+        pre_slots.push_back(
+            PreSlot{prev_left_guard, prev_left_guard->stats.row_count - 1, prev_left_guard->stats.row_count});
+      }
 
+      pre_slots.push_back(PreSlot{&chunk, row_start, row_end});
+      emitted_overlap = true;
+      last_overlap_needs_right_guard = (natural_row_end == row_count);
+    }
+  }
+
+  chunk_index_.reserve(pre_slots.size());
+  for (const PreSlot& pre : pre_slots) {
     const std::size_t cumulative_begin = total_visible_rows_;
-    total_visible_rows_ += row_end - row_start;
+    total_visible_rows_ += pre.row_end - pre.row_start;
     chunk_index_.push_back(
         ChunkSlot{
-            .chunk = &chunk,
-            .row_start = row_start,
-            .row_end = row_end,
+            .chunk = pre.chunk,
+            .row_start = pre.row_start,
+            .row_end = pre.row_end,
             .cumulative_begin = cumulative_begin,
             .cumulative_end = total_visible_rows_,
         });
@@ -361,17 +419,18 @@ QPointF DatastoreCurveAdapter::readPoint_(const ChunkSlot& slot, std::size_t row
 }
 
 Timestamp DatastoreCurveAdapter::displayOffsetNow_() const {
+  // Live lookup only — never fall back to source_.display_offset_ns, which is
+  // a snapshot taken at catalog-build time and would silently go stale if the
+  // time domain were reconfigured.
   if (session_ == nullptr) {
-    return source_.display_offset_ns;
+    return 0;
   }
-
   const DatasetInfo* dataset = session_->dataEngine().getDataset(source_.dataset_id);
   if (dataset == nullptr || dataset->time_domain.id == 0) {
-    return source_.display_offset_ns;
+    return 0;
   }
-
   const TimeDomain* time_domain = session_->dataEngine().getTimeDomain(dataset->time_domain.id);
-  return time_domain != nullptr ? time_domain->display_offset : source_.display_offset_ns;
+  return time_domain != nullptr ? time_domain->display_offset : 0;
 }
 
 }  // namespace PJ
