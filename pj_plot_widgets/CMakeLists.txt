@@ -1,11 +1,13 @@
 find_package(Qt6 REQUIRED COMPONENTS Core Gui Widgets)
 
 add_library(pj_plot_widgets STATIC
+    src/DatastoreCurveAdapter.cpp
     src/DockToolbar.cpp
     src/DockToolbar.ui
     src/DockWidget.cpp
     src/PlotDocker.cpp
     src/TabbedPlotWidget.cpp
+    include/pj_plot_widgets/DatastoreCurveAdapter.h
     include/pj_plot_widgets/DockToolbar.h
     include/pj_plot_widgets/DockWidget.h
     include/pj_plot_widgets/PlotDocker.h
@@ -24,6 +26,7 @@ target_include_directories(pj_plot_widgets PUBLIC
 
 target_link_libraries(pj_plot_widgets PUBLIC
     pj_app_core
+    plotjuggler_qwt
     qt_advanced_docking
     Qt6::Core
     Qt6::Gui
