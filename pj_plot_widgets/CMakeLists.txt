@@ -1,19 +1,35 @@
-find_package(Qt6 REQUIRED COMPONENTS Core Gui Widgets)
+find_package(Qt6 REQUIRED COMPONENTS Core Gui Widgets Xml)
 if(PJ_BUILD_TESTS)
     find_package(GTest REQUIRED)
 endif()
 
 add_library(pj_plot_widgets STATIC
+    src/CurveTracker.cpp
     src/DatastoreCurveAdapter.cpp
     src/DockToolbar.cpp
     src/DockToolbar.ui
     src/DockWidget.cpp
+    src/PlotLegend.cpp
+    src/PlotMagnifier.cpp
+    src/PlotPanner.cpp
+    src/PointSeriesXY.cpp
     src/PlotDocker.cpp
+    src/PlotWidget.cpp
+    src/PlotWidgetBase.cpp
+    src/PlotZoomer.cpp
     src/TabbedPlotWidget.cpp
     include/pj_plot_widgets/DatastoreCurveAdapter.h
+    include/pj_plot_widgets/CurveTracker.h
     include/pj_plot_widgets/DockToolbar.h
     include/pj_plot_widgets/DockWidget.h
+    include/pj_plot_widgets/PlotLegend.h
+    include/pj_plot_widgets/PlotMagnifier.h
+    include/pj_plot_widgets/PlotPanner.h
+    include/pj_plot_widgets/PointSeriesXY.h
     include/pj_plot_widgets/PlotDocker.h
+    include/pj_plot_widgets/PlotWidget.h
+    include/pj_plot_widgets/PlotWidgetBase.h
+    include/pj_plot_widgets/PlotZoomer.h
     include/pj_plot_widgets/TabbedPlotWidget.h
 )
 
@@ -34,6 +50,7 @@ target_link_libraries(pj_plot_widgets PUBLIC
     Qt6::Core
     Qt6::Gui
     Qt6::Widgets
+    Qt6::Xml
 )
 
 if(PJ_BUILD_TESTS)

@@ -4,47 +4,33 @@
 #include <DockManager.h>
 
 #include <QBoxLayout>
-#include <QFrame>
 #include <QLabel>
 #include <QPushButton>
 
 #include "pj_plot_widgets/DockToolbar.h"
 #include "pj_plot_widgets/PlotDocker.h"
+#include "pj_plot_widgets/PlotWidget.h"
 
 namespace PJ {
 
-namespace {
-QWidget* makePlaceholder(QWidget* parent) {
-  auto* frame = new QFrame(parent);
-  frame->setFrameShape(QFrame::StyledPanel);
-  frame->setFrameShadow(QFrame::Sunken);
-  frame->setStyleSheet("QFrame { background-color: palette(base); }");
-
-  auto* layout = new QVBoxLayout(frame);
-  auto* label = new QLabel(QObject::tr("plot placeholder"), frame);
-  label->setAlignment(Qt::AlignCenter);
-  label->setStyleSheet("QLabel { color: palette(mid); font-size: 14px; }");
-  layout->addWidget(label);
-  return frame;
-}
-}  // namespace
-
-DockWidget::DockWidget(QWidget* parent) : ads::CDockWidget("Plot", parent) {
+DockWidget::DockWidget(SessionManager* session, CatalogModel* catalog, ads::CDockManager* manager, QWidget* parent)
+    : ads::CDockWidget(manager, "Plot", parent != nullptr ? parent : manager), session_(session), catalog_(catalog) {
   setFrameShape(QFrame::NoFrame);
 
-  placeholder_ = makePlaceholder(this);
-  setWidget(placeholder_);
+  plot_widget_ = new PlotWidget(session_, catalog_, this);
+  setWidget(plot_widget_);
+  setFeature(ads::CDockWidget::DockWidgetMovable, false);
   setFeature(ads::CDockWidget::DockWidgetFloatable, false);
   setFeature(ads::CDockWidget::DockWidgetDeleteOnClose, true);
+  connect(plot_widget_, &PlotWidget::splitHorizontal, this, &DockWidget::splitHorizontal);
+  connect(plot_widget_, &PlotWidget::splitVertical, this, &DockWidget::splitVertical);
 
   toolbar_ = new DockToolbar(this);
   toolbar_->label()->setText("...");
   qobject_cast<QBoxLayout*>(layout())->insertWidget(0, toolbar_);
 
-  connect(toolbar_->buttonSplitHorizontal(), &QPushButton::clicked, this,
-          &DockWidget::splitHorizontal);
-  connect(toolbar_->buttonSplitVertical(), &QPushButton::clicked, this,
-          &DockWidget::splitVertical);
+  connect(toolbar_->buttonSplitHorizontal(), &QPushButton::clicked, this, &DockWidget::splitHorizontal);
+  connect(toolbar_->buttonSplitVertical(), &QPushButton::clicked, this, &DockWidget::splitVertical);
 
   auto fullscreenAction = [this]() {
     auto* parent_docker = qobject_cast<PlotDocker*>(dockManager());
@@ -66,9 +52,9 @@ DockWidget::DockWidget(QWidget* parent) : ads::CDockWidget("Plot", parent) {
   connect(toolbar_->buttonClose(), &QPushButton::pressed, this, [this]() {
     dockAreaWidget()->closeArea();
     takeWidget();
-    if (placeholder_) {
-      placeholder_->deleteLater();
-      placeholder_ = nullptr;
+    if (plot_widget_) {
+      plot_widget_->deleteLater();
+      plot_widget_ = nullptr;
     }
     emit undoableChange();
   });
@@ -78,11 +64,31 @@ DockWidget::DockWidget(QWidget* parent) : ads::CDockWidget("Plot", parent) {
 
 DockWidget::~DockWidget() = default;
 
-DockToolbar* DockWidget::toolBar() { return toolbar_; }
+void DockWidget::setDataServices(SessionManager* session, CatalogModel* catalog) {
+  session_ = session;
+  catalog_ = catalog;
+  if (plot_widget_ != nullptr) {
+    plot_widget_->setDataServices(session_, catalog_);
+  }
+}
 
-QString DockWidget::name() const { return toolbar_->label()->text(); }
+PlotWidget* DockWidget::plotWidget() {
+  return plot_widget_;
+}
 
-void DockWidget::onTrackerTime(double /*time*/) {}
+DockToolbar* DockWidget::toolBar() {
+  return toolbar_;
+}
+
+QString DockWidget::name() const {
+  return toolbar_->label()->text();
+}
+
+void DockWidget::onTrackerTime(double time) {
+  if (plot_widget_ != nullptr) {
+    plot_widget_->setTrackerPosition(time);
+  }
+}
 
 DockWidget* DockWidget::splitHorizontal() {
   return splitInto(ads::RightDockWidgetArea);
@@ -97,12 +103,14 @@ DockWidget* DockWidget::splitInto(ads::DockWidgetArea dock_area) {
   if (!parent_docker) {
     return nullptr;
   }
-  auto* new_widget = new DockWidget(qobject_cast<QWidget*>(parent()));
+  auto* new_widget = new DockWidget(session_, catalog_, parent_docker);
   auto* area = parent_docker->addDockWidget(dock_area, new_widget, dockAreaWidget());
   area->setAllowedAreas(ads::OuterDockAreas);
 
+  connect(new_widget, &DockWidget::undoableChange, parent_docker, &PlotDocker::undoableChange);
   emit undoableChange();
   emit parent_docker->dockAdded(new_widget);
+  emit parent_docker->plotWidgetAdded(new_widget->plotWidget());
   return new_widget;
 }
 

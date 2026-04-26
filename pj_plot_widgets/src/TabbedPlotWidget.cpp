@@ -36,8 +36,7 @@ void applyAdsConfigOnce() {
 
 TabbedPlotWidget::TabbedPlotWidget(QWidget* parent) : TabbedPlotWidget(QStringLiteral("main"), parent) {}
 
-TabbedPlotWidget::TabbedPlotWidget(QString name, QWidget* parent)
-    : QWidget(parent), name_(std::move(name)) {
+TabbedPlotWidget::TabbedPlotWidget(QString name, QWidget* parent) : QWidget(parent), name_(std::move(name)) {
   applyAdsConfigOnce();
   setContentsMargins(0, 0, 0, 0);
 
@@ -48,15 +47,12 @@ TabbedPlotWidget::TabbedPlotWidget(QString name, QWidget* parent)
   tab_widget_->setTabsClosable(true);
   tab_widget_->setMovable(true);
 
-  connect(tab_widget_->tabBar(), &QTabBar::tabBarDoubleClicked, this,
-          &TabbedPlotWidget::onRenameCurrentTab);
+  connect(tab_widget_->tabBar(), &QTabBar::tabBarDoubleClicked, this, &TabbedPlotWidget::onRenameCurrentTab);
 
   main_layout->addWidget(tab_widget_);
 
-  connect(tab_widget_, &QTabWidget::currentChanged, this,
-          &TabbedPlotWidget::onTabWidgetCurrentChanged);
-  connect(tab_widget_, &QTabWidget::tabCloseRequested, this,
-          &TabbedPlotWidget::onTabCloseRequested);
+  connect(tab_widget_, &QTabWidget::currentChanged, this, &TabbedPlotWidget::onTabWidgetCurrentChanged);
+  connect(tab_widget_, &QTabWidget::tabCloseRequested, this, &TabbedPlotWidget::onTabCloseRequested);
 
   tab_widget_->tabBar()->installEventFilter(this);
 
@@ -69,8 +65,7 @@ TabbedPlotWidget::TabbedPlotWidget(QString name, QWidget* parent)
 
   onStylesheetChanged(currentTheme());
 
-  connect(button_add_tab_, &QPushButton::pressed, this,
-          &TabbedPlotWidget::onAddTabButtonPressed);
+  connect(button_add_tab_, &QPushButton::pressed, this, &TabbedPlotWidget::onAddTabButtonPressed);
 }
 
 TabbedPlotWidget::~TabbedPlotWidget() = default;
@@ -94,7 +89,7 @@ PlotDocker* TabbedPlotWidget::addTab(QString tab_name) {
     tab_name = QString("tab%1").arg(++tab_suffix_count_);
   }
 
-  auto* docker = new PlotDocker(tab_name, this);
+  auto* docker = new PlotDocker(tab_name, session_, catalog_, this);
   connect(docker, &PlotDocker::undoableChange, this, &TabbedPlotWidget::undoableChange);
 
   tab_widget_->addTab(docker, tab_name);
@@ -127,11 +122,21 @@ PlotDocker* TabbedPlotWidget::addTab(QString tab_name) {
   return docker;
 }
 
+void TabbedPlotWidget::setDataServices(SessionManager* session, CatalogModel* catalog) {
+  session_ = session;
+  catalog_ = catalog;
+  for (int index = 0; index < tab_widget_->count(); ++index) {
+    if (auto* docker = qobject_cast<PlotDocker*>(tab_widget_->widget(index))) {
+      docker->setDataServices(session_, catalog_);
+    }
+  }
+}
+
 void TabbedPlotWidget::onRenameCurrentTab() {
   const int idx = tab_widget_->tabBar()->currentIndex();
   bool ok = true;
-  const QString new_name = QInputDialog::getText(this, tr("Change the tab name"), tr("New name:"),
-                                                 QLineEdit::Normal, tab_widget_->tabText(idx), &ok);
+  const QString new_name = QInputDialog::getText(
+      this, tr("Change the tab name"), tr("New name:"), QLineEdit::Normal, tab_widget_->tabText(idx), &ok);
   if (ok) {
     tab_widget_->setTabText(idx, new_name);
     if (auto* tab = currentTab()) {
