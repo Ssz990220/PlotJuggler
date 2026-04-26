@@ -12,8 +12,28 @@
 #include "qwt_interval.h"
 
 #include <qdatetime.h>
+#if QT_VERSION >= QT_VERSION_CHECK( 6, 8, 0 )
+#include <qtimezone.h>
+#endif
 
 #include <limits>
+
+#if QT_VERSION >= QT_VERSION_CHECK( 6, 8, 0 )
+static inline QTimeZone qwtTimeZoneFromSpec( Qt::TimeSpec spec, int utcOffset = 0 )
+{
+    switch( spec )
+    {
+        case Qt::UTC:
+            return QTimeZone( QTimeZone::UTC );
+        case Qt::LocalTime:
+            return QTimeZone( QTimeZone::LocalTime );
+        case Qt::OffsetFromUTC:
+            return QTimeZone::fromSecondsAheadOfUtc( utcOffset );
+        default:
+            return QTimeZone();
+    }
+}
+#endif
 
 static inline double qwtMsecsForType( int type )
 {
@@ -1120,7 +1140,11 @@ QDateTime QwtDateScaleEngine::alignDate(
     if ( dateTime.timeSpec() == Qt::OffsetFromUTC )
     {
 #if QT_VERSION >= 0x050200
+#if QT_VERSION >= QT_VERSION_CHECK( 6, 8, 0 )
+        dt.setTimeZone( QTimeZone::fromSecondsAheadOfUtc( 0 ) );
+#else
         dt.setOffsetFromUtc( 0 );
+#endif
 #else
         dt.setUtcOffset( 0 );
 #endif
@@ -1282,7 +1306,11 @@ QDateTime QwtDateScaleEngine::alignDate(
     if ( dateTime.timeSpec() == Qt::OffsetFromUTC )
     {
 #if QT_VERSION >= 0x050200
+#if QT_VERSION >= QT_VERSION_CHECK( 6, 8, 0 )
+        dt.setTimeZone( QTimeZone::fromSecondsAheadOfUtc( dateTime.offsetFromUtc() ) );
+#else
         dt.setOffsetFromUtc( dateTime.offsetFromUtc() );
+#endif
 #else
         dt.setUtcOffset( dateTime.utcOffset() );
 #endif
@@ -1307,14 +1335,22 @@ QDateTime QwtDateScaleEngine::toDateTime( double value ) const
         const QDate date = ( value <= 0.0 )
             ? QwtDate::minDate() : QwtDate::maxDate();
 
+#if QT_VERSION >= QT_VERSION_CHECK( 6, 8, 0 )
+        dt = QDateTime( date, QTime( 0, 0 ), qwtTimeZoneFromSpec( m_data->timeSpec ) );
+#else
         dt = QDateTime( date, QTime( 0, 0 ), m_data->timeSpec );
+#endif
     }
 
     if ( m_data->timeSpec == Qt::OffsetFromUTC )
     {
         dt = dt.addSecs( m_data->utcOffset );
 #if QT_VERSION >= 0x050200
+#if QT_VERSION >= QT_VERSION_CHECK( 6, 8, 0 )
+        dt.setTimeZone( QTimeZone::fromSecondsAheadOfUtc( m_data->utcOffset ) );
+#else
         dt.setOffsetFromUtc( m_data->utcOffset );
+#endif
 #else
         dt.setUtcOffset( m_data->utcOffset );
 #endif
@@ -1322,4 +1358,3 @@ QDateTime QwtDateScaleEngine::toDateTime( double value ) const
 
     return dt;
 }
-
