@@ -39,7 +39,16 @@ add_subdirectory(plotjuggler_core)
 # ---------------------------------------------------------------------------
 
 add_subdirectory(3rdparty/qwt/src)
+
+# Qt-Advanced-Docking submodule (PlotJuggler/Qt-Advanced-Docking-System fork
+# tracking upstream master + the Wayland fix on feature/wayland-fix). Pin the
+# version to skip the upstream root CMake's git_describe call (which fails in
+# a submodule checkout), build static, and skip examples/demos.
+set(ADS_VERSION "4.5.0" CACHE STRING "" FORCE)
+set(BUILD_STATIC ON CACHE BOOL "" FORCE)
+set(BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
 add_subdirectory(3rdparty/Qt-Advanced-Docking)
+add_library(qt_advanced_docking ALIAS qtadvanceddocking-qt6)
 
 # ---------------------------------------------------------------------------
 # PJ4 modules (Levels 1-3)

@@ -1,3 +1,7 @@
 [submodule "plotjuggler_core"]
 	path = plotjuggler_core
 	url = git@github.com:PlotJuggler/plotjuggler_core.git
+[submodule "3rdparty/Qt-Advanced-Docking"]
+	path = 3rdparty/Qt-Advanced-Docking
+	url = git@github.com:PlotJuggler/Qt-Advanced-Docking-System.git
+	branch = feature/wayland-fix
