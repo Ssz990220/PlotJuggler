@@ -1,6 +1,9 @@
 find_package(Qt6 REQUIRED COMPONENTS Core Gui Svg Network)
 find_package(nlohmann_json REQUIRED)
 find_package(tsl-robin-map REQUIRED)
+if(PJ_BUILD_TESTS)
+    find_package(GTest REQUIRED)
+endif()
 
 add_library(pj_app_core STATIC
     src/AppSession.cpp
@@ -33,10 +36,19 @@ target_link_libraries(pj_app_core PUBLIC
     Qt6::Network
     pj_datastore
     pj_marketplace
-    pj_data_source_host
-    pj_message_parser_host
-    pj_toolbox_host
+    pj_plugin_runtime_catalog
     nlohmann_json::nlohmann_json
   PRIVATE
     tsl::robin_map
 )
+
+if(PJ_BUILD_TESTS)
+    add_executable(app_session_test
+        tests/app_session_test.cpp
+    )
+    target_link_libraries(app_session_test PRIVATE
+        pj_app_core
+        GTest::gtest_main
+    )
+    add_test(NAME AppSessionTest COMMAND app_session_test)
+endif()

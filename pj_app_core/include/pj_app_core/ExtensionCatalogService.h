@@ -3,45 +3,19 @@
 #include <QObject>
 #include <QString>
 #include <QStringList>
-
-#include <cstdint>
-#include <filesystem>
 #include <memory>
 #include <vector>
 
-#include "pj_plugins/host/data_source_library.hpp"
-#include "pj_plugins/host/message_parser_library.hpp"
-#include "pj_plugins/host/toolbox_library.hpp"
+#include "pj_base/diagnostic_sink.hpp"
+#include "pj_plugins/host/plugin_runtime_catalog.hpp"
 
 namespace PJ {
 
-class DownloadManager;
 class ExtensionManager;
 
-struct LoadedDataSource {
-  DataSourceLibrary library;
-  QString path;
-  QString name;
-  QStringList file_extensions;
-  uint64_t capabilities = 0;
-  std::filesystem::file_time_type loaded_mtime;
-};
-
-struct LoadedMessageParser {
-  MessageParserLibrary library;
-  QString path;
-  QString name;
-  QStringList encodings;
-  std::filesystem::file_time_type loaded_mtime;
-};
-
-struct LoadedToolbox {
-  ToolboxLibrary library;
-  QString path;
-  QString name;
-  uint64_t capabilities = 0;
-  std::filesystem::file_time_type loaded_mtime;
-};
+using LoadedDataSource = RuntimeDataSourcePlugin;
+using LoadedMessageParser = RuntimeMessageParserPlugin;
+using LoadedToolbox = RuntimeToolboxPlugin;
 
 // Bundles the marketplace (ExtensionManager) with the plugin catalog (per-family
 // loaders from pj_plugins) behind one Qt-friendly facade. `pj_app` never touches
@@ -56,62 +30,71 @@ class ExtensionCatalogService : public QObject {
  public:
   using Ptr = std::shared_ptr<ExtensionCatalogService>;
 
-  // If `extensions_dir` is empty, defaults to
-  //   QStandardPaths::AppDataLocation + "/extensions"
-  // (on Linux: ~/.local/share/PlotJuggler4/extensions/). Pass a custom path
-  // for tests.
+  // Creates a service using the default extension directory unless overridden.
   explicit ExtensionCatalogService(QString extensions_dir = {}, QObject* parent = nullptr);
+
+  // Creates a service with an optional app-level diagnostic sink.
+  ExtensionCatalogService(QString extensions_dir, DiagnosticSink sink, QObject* parent = nullptr);
+
+  // Releases marketplace and loaded plugin resources.
   ~ExtensionCatalogService() override;
 
+  // ExtensionCatalogService owns loaded plugin libraries and cannot be copied.
   ExtensionCatalogService(const ExtensionCatalogService&) = delete;
+
+  // ExtensionCatalogService owns loaded plugin libraries and cannot be assigned.
   ExtensionCatalogService& operator=(const ExtensionCatalogService&) = delete;
 
   // Reference valid for the service's lifetime.
-  ExtensionManager& extensionManager() const { return *extension_manager_; }
+  ExtensionManager& extensionManager() const {
+    return *extension_manager_;
+  }
 
-  QString extensionsDir() const { return extensions_dir_; }
+  // Returns the directory where extension DSOs are loaded from.
+  QString extensionsDir() const {
+    return extensions_dir_;
+  }
 
-  // Rescan the extensions directory, unload dropped plugins, reload
-  // mtime-changed ones, load new ones. Emits catalogChanged() if the catalog
-  // actually changed.
+  // Reconciles the loaded plugin catalog with files on disk.
   void reload();
 
-  const std::vector<LoadedDataSource>& dataSources() const { return data_sources_; }
-  const std::vector<LoadedMessageParser>& messageParsers() const { return message_parsers_; }
-  const std::vector<LoadedToolbox>& toolboxes() const { return toolboxes_; }
+  // Returns all loaded DataSource plugins.
+  const std::vector<LoadedDataSource>& dataSources() const;
 
+  // Returns all loaded MessageParser plugins.
+  const std::vector<LoadedMessageParser>& messageParsers() const;
+
+  // Returns all loaded Toolbox plugins.
+  const std::vector<LoadedToolbox>& toolboxes() const;
+
+  // Returns file-import capable DataSource plugins.
   std::vector<const LoadedDataSource*> fileImportSources() const;
+
+  // Returns streaming-capable DataSource plugins.
   std::vector<const LoadedDataSource*> streamSources() const;
+
+  // Finds file-import DataSources that handle ext.
   std::vector<const LoadedDataSource*> findSourcesForExtension(QStringView ext) const;
+
+  // Finds a MessageParser by encoding name.
   const LoadedMessageParser* findParserByEncoding(QStringView encoding) const;
 
   // Builds a QFileDialog-compatible filter string from all file-import sources.
   QString buildFileFilter() const;
 
  signals:
+  // Emitted after reload() changes the loaded plugin set.
   void catalogChanged();
 
  private:
-  bool loadAndRegisterDataSource(const std::filesystem::path& so_path);
-  bool loadAndRegisterMessageParser(const std::filesystem::path& so_path);
-  bool loadAndRegisterToolbox(const std::filesystem::path& so_path);
-  bool tryLoadAny(const std::filesystem::path& so_path);
-  // Removes any loaded entry whose path matches `path`. Returns true if an
-  // entry was removed. Used by reload() to evict stale / family-transitioned
-  // entries before re-loading.
-  bool evictByPath(const QString& path);
-  void scanOnce();
+  // Emits one diagnostic through the optional app-level sink.
+  void reportDiagnostic(DiagnosticLevel level, const QString& message, const QString& id = {}) const;
 
   QString extensions_dir_;
+  DiagnosticSink sink_;
 
-  // download_manager_ is declared before extension_manager_ so it outlives it;
-  // ExtensionManager holds a raw DownloadManager* from here.
-  std::unique_ptr<DownloadManager> download_manager_;
   std::unique_ptr<ExtensionManager> extension_manager_;
-
-  std::vector<LoadedDataSource> data_sources_;
-  std::vector<LoadedMessageParser> message_parsers_;
-  std::vector<LoadedToolbox> toolboxes_;
+  std::unique_ptr<PluginRuntimeCatalog> plugin_catalog_;
 };
 
 }  // namespace PJ

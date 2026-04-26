@@ -206,10 +206,11 @@ bool FileLoader::loadFile(const QString& path, QWidget* dialog_parent) {
   // v1 picks the first match; M3+ can add a chooser when multiple plugins
   // claim the same extension.
   const LoadedDataSource* source = matches.front();
+  const QString source_name = QString::fromStdString(source->name);
 
   DataSourceHandle handle = source->library.createHandle();
   if (!handle.valid()) {
-    return fail(tr("Plugin '%1': createHandle failed.").arg(source->name));
+    return fail(tr("Plugin '%1': createHandle failed.").arg(source_name));
   }
 
   // The v4 DataSource protocol resolves host services during bind(), so the
@@ -236,15 +237,15 @@ bool FileLoader::loadFile(const QString& path, QWidget* dialog_parent) {
   registry.registerService<sdk::DataSourceRuntimeHostService>(makeRuntimeHost(&runtime_state));
 
   if (auto status = handle.bind(registry.view()); !status) {
-    return fail(tr("Plugin '%1': bind failed: %2").arg(source->name, QString::fromStdString(status.error())));
+    return fail(tr("Plugin '%1': bind failed: %2").arg(source_name, QString::fromStdString(status.error())));
   }
 
   if (auto status = handle.loadConfig(buildLoadConfig(path)); !status) {
-    return fail(tr("Plugin '%1': loadConfig failed: %2").arg(source->name, QString::fromStdString(status.error())));
+    return fail(tr("Plugin '%1': loadConfig failed: %2").arg(source_name, QString::fromStdString(status.error())));
   }
 
   if (auto status = handle.start(); !status) {
-    return fail(tr("Plugin '%1': start failed: %2").arg(source->name, QString::fromStdString(status.error())));
+    return fail(tr("Plugin '%1': start failed: %2").arg(source_name, QString::fromStdString(status.error())));
   }
 
   write_host.flushPending();

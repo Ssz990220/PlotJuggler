@@ -1,15 +1,22 @@
 #include "MainWindow.h"
 
+#include <QAction>
 #include <QCloseEvent>
+#include <QDialog>
+#include <QDialogButtonBox>
 #include <QLoggingCategory>
+#include <QPlainTextEdit>
+#include <QPushButton>
 #include <QSettings>
 #include <QStatusBar>
 #include <QStringList>
 #include <QTabWidget>
 #include <QToolButton>
 #include <QUrl>
+#include <QVBoxLayout>
 #include <cmath>
 #include <cstdint>
+#include <utility>
 #include <vector>
 
 #include "FileLoader.h"
@@ -23,6 +30,7 @@
 #include "pj_datastore/engine.hpp"
 #include "pj_datastore/writer.hpp"
 #include "pj_marketplace/marketplace_window.hpp"
+#include "pj_marketplace/qt_diagnostic_bridge.hpp"
 #include "pj_plot_widgets/DockWidget.h"
 #include "pj_plot_widgets/PlotDocker.h"
 #include "pj_plot_widgets/PlotWidget.h"
@@ -45,6 +53,7 @@ constexpr double kNanosecondsPerSecond = 1e9;
 constexpr double kTwoPi = 6.28318530717958647692;
 constexpr int kTestSampleCount = 1000;
 constexpr double kTestDurationSeconds = 10.0;
+constexpr int kMaxDiagnostics = 200;
 
 QUrl registryUrlFromSettings() {
   const QString raw = QSettings().value(kRegistryUrlSettingsKey, kDefaultRegistryUrl).toString();
@@ -57,9 +66,15 @@ QUrl registryUrlFromSettings() {
 }
 }  // namespace
 
-MainWindow::MainWindow(QWidget* parent)
-    : QMainWindow(parent), ui_(new Ui::MainWindow), session_(std::make_unique<AppSession>()) {
+MainWindow::MainWindow(QWidget* parent) : MainWindow(QString{}, parent) {}
+
+MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
+    : QMainWindow(parent),
+      ui_(new Ui::MainWindow),
+      diagnostic_bridge_(new QtDiagnosticBridge(this)),
+      session_(std::make_unique<AppSession>(std::move(extensions_dir), diagnostic_bridge_->sink())) {
   ui_->setupUi(this);
+  connect(diagnostic_bridge_, &QtDiagnosticBridge::diagnosticReported, this, &MainWindow::onDiagnosticReported);
 
   ui_->tabbedPlotWidget->setDataServices(&session_->sessionManager(), &session_->catalogModel());
   connect(ui_->tabbedPlotWidget, &TabbedPlotWidget::tabAdded, this, &MainWindow::onPlotTabAdded);
@@ -72,6 +87,15 @@ MainWindow::MainWindow(QWidget* parent)
   connect(ui_->buttonLink, &QToolButton::toggled, this, [](bool checked) {
     QSettings().setValue(QStringLiteral("MainWindow.buttonLink"), checked);
   });
+
+  diagnostics_action_ = ui_->menuHelp->addAction(tr("Diagnostics..."), this, &MainWindow::onShowDiagnosticsDialog);
+  diagnostics_action_->setEnabled(false);
+  diagnostics_button_ = new QPushButton(tr("Diagnostics"), this);
+  diagnostics_button_->setFlat(true);
+  diagnostics_button_->setToolTip(tr("Open the recent diagnostics log"));
+  diagnostics_button_->setVisible(false);
+  connect(diagnostics_button_, &QPushButton::clicked, this, &MainWindow::onShowDiagnosticsDialog);
+  statusBar()->addPermanentWidget(diagnostics_button_);
 
   auto& playback = session_->playbackEngine();
   playback.setRange(0.0, 10.0);
@@ -159,6 +183,36 @@ void MainWindow::onLoadDataRequested() {
   file_loader_->openFromDialog(this);
 }
 
+void MainWindow::onShowDiagnosticsDialog() {
+  QDialog dlg(this);
+  dlg.setWindowTitle(tr("Diagnostics"));
+  dlg.resize(760, 420);
+
+  auto* layout = new QVBoxLayout(&dlg);
+  auto* text = new QPlainTextEdit(&dlg);
+  text->setReadOnly(true);
+
+  QStringList lines;
+  for (const UiDiagnostic& diagnostic : diagnostics_) {
+    const char* level = diagnostic.level == DiagnosticLevel::kError     ? "ERROR"
+                        : diagnostic.level == DiagnosticLevel::kWarning ? "WARN"
+                                                                        : "INFO";
+    const QString source = diagnostic.source.isEmpty() ? QStringLiteral("-") : diagnostic.source;
+    const QString id = diagnostic.id.isEmpty() ? QStringLiteral("-") : diagnostic.id;
+    lines.append(QString("[%1] %2 %3 %4: %5")
+                     .arg(
+                         diagnostic.timestamp.toLocalTime().toString(Qt::ISODate), QString::fromLatin1(level), source,
+                         id, diagnostic.message));
+  }
+  text->setPlainText(lines.isEmpty() ? tr("No diagnostics.") : lines.join('\n'));
+  layout->addWidget(text);
+
+  auto* buttons = new QDialogButtonBox(QDialogButtonBox::Close, &dlg);
+  connect(buttons, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
+  layout->addWidget(buttons);
+  dlg.exec();
+}
+
 void MainWindow::onPlotTabAdded(PlotDocker* docker) {
   if (docker == nullptr) {
     return;
@@ -205,10 +259,49 @@ void MainWindow::onTrackerMovedFromWidget(QPointF point) {
   session_->playbackEngine().setCurrentTime(point.x());
 }
 
+void MainWindow::onDiagnosticReported(int level, QString source, QString id, QString message) {
+  const auto diagnostic_level = static_cast<DiagnosticLevel>(level);
+  diagnostics_.append(
+      UiDiagnostic{
+          diagnostic_level,
+          std::move(source),
+          std::move(id),
+          std::move(message),
+          QDateTime::currentDateTimeUtc(),
+      });
+  while (diagnostics_.size() > kMaxDiagnostics) {
+    diagnostics_.removeFirst();
+  }
+  updateDiagnosticsButton();
+
+  if (diagnostic_level != DiagnosticLevel::kWarning && diagnostic_level != DiagnosticLevel::kError) {
+    return;
+  }
+
+  const QString prefix = diagnostic_level == DiagnosticLevel::kError ? tr("Error") : tr("Warning");
+  const UiDiagnostic& diagnostic = diagnostics_.back();
+  const QString display =
+      diagnostic.source.isEmpty() ? diagnostic.message : diagnostic.source + QStringLiteral(": ") + diagnostic.message;
+  statusBar()->showMessage(prefix + QStringLiteral(": ") + display, 8000);
+}
+
+void MainWindow::updateDiagnosticsButton() {
+  const bool has_diagnostics = !diagnostics_.isEmpty();
+  if (diagnostics_action_ != nullptr) {
+    diagnostics_action_->setEnabled(has_diagnostics);
+  }
+  if (diagnostics_button_ == nullptr) {
+    return;
+  }
+  diagnostics_button_->setVisible(has_diagnostics);
+  diagnostics_button_->setText(
+      diagnostics_.size() == 1 ? tr("Diagnostics") : tr("Diagnostics (%1)").arg(diagnostics_.size()));
+}
+
 void MainWindow::refreshStreamingCombo() {
   QStringList names;
   for (const auto* ds : session_->extensionCatalog().streamSources()) {
-    names << ds->name;
+    names << QString::fromStdString(ds->name);
   }
   ui_->leftPanel->setStreamingSources(names);
 }
