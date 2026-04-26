@@ -64,3 +64,5 @@ if(PJ_BUILD_TESTS)
     )
     add_test(NAME DatastoreCurveAdapterTest COMMAND datastore_curve_adapter_test)
 endif()
+
+add_subdirectory(sandbox/dock_drag_repro)

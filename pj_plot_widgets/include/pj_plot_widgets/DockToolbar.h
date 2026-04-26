@@ -45,6 +45,8 @@ class DockToolbar : public QWidget {
   void titleChanged(QString title);
 
  private:
+  void mousePressEvent(QMouseEvent* ev) override;
+  void mouseReleaseEvent(QMouseEvent* ev) override;
   void mouseMoveEvent(QMouseEvent* ev) override;
   void enterEvent(QEnterEvent* ev) override;
   void leaveEvent(QEvent* ev) override;

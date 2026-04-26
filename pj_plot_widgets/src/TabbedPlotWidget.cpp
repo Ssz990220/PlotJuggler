@@ -30,6 +30,7 @@ void applyAdsConfigOnce() {
   ads::CDockManager::setConfigFlag(ads::CDockManager::DockAreaHasCloseButton, false);
   ads::CDockManager::setConfigFlag(ads::CDockManager::EqualSplitOnInsertion, true);
   ads::CDockManager::setConfigFlag(ads::CDockManager::OpaqueSplitterResize, true);
+  ads::CDockManager::setConfigFlag(ads::CDockManager::DragPreviewIsDynamic, true);
   done = true;
 }
 }  // namespace

@@ -19,7 +19,6 @@ DockWidget::DockWidget(SessionManager* session, CatalogModel* catalog, ads::CDoc
 
   plot_widget_ = new PlotWidget(session_, catalog_, this);
   setWidget(plot_widget_);
-  setFeature(ads::CDockWidget::DockWidgetMovable, false);
   setFeature(ads::CDockWidget::DockWidgetFloatable, false);
   setFeature(ads::CDockWidget::DockWidgetDeleteOnClose, true);
   connect(plot_widget_, &PlotWidget::splitHorizontal, this, &DockWidget::splitHorizontal);

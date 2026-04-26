@@ -1,5 +1,9 @@
 #include "pj_plot_widgets/DockToolbar.h"
 
+#include <DockAreaTitleBar.h>
+#include <DockAreaWidget.h>
+
+#include <QCoreApplication>
 #include <QInputDialog>
 #include <QLabel>
 #include <QLineEdit>
@@ -63,10 +67,32 @@ void DockToolbar::toggleFullscreen() {
   }
 }
 
+void DockToolbar::mousePressEvent(QMouseEvent* ev) {
+  if (auto* area = parent_dock_->dockAreaWidget()) {
+    // Forward with synthetic pos (0, 0). CFloatingDragPreview positions its
+    // top-left at QCursor::pos() - DragStartMousePosition, so a (0, 0) start
+    // makes the preview track the cursor directly instead of being offset by
+    // wherever the user happened to click along the wide toolbar.
+    QMouseEvent fwd(
+        QEvent::MouseButtonPress, QPointF(0, 0), ev->globalPosition(), ev->button(), ev->buttons(), ev->modifiers());
+    QCoreApplication::sendEvent(area->titleBar(), &fwd);
+    ev->setAccepted(fwd.isAccepted());
+  }
+}
+
+void DockToolbar::mouseReleaseEvent(QMouseEvent* ev) {
+  if (auto* area = parent_dock_->dockAreaWidget()) {
+    QCoreApplication::sendEvent(area->titleBar(), ev);
+  }
+}
+
 void DockToolbar::mouseMoveEvent(QMouseEvent* ev) {
   ui_->buttonFullscreen->setVisible(true);
   ui_->buttonSplitHorizontal->setVisible(!fullscreen_mode_);
   ui_->buttonSplitVertical->setVisible(!fullscreen_mode_);
+  if (auto* area = parent_dock_->dockAreaWidget()) {
+    QCoreApplication::sendEvent(area->titleBar(), ev);
+  }
   ev->accept();
   QWidget::mouseMoveEvent(ev);
 }
