@@ -311,10 +311,12 @@ Purpose:
 
 Approach:
 
-- lift the PJ3 plot widget tree wholesale: `PlotWidgetBase`, `PlotWidget`, `PlotDocker`, `TabbedPlotWidget`, zoomers, `AxisTimeOffset`, custom tracker, per-curve display transform UI, drag-drop, context menus, curve list helpers
-- replace `PlotDataMapRef` reads with `DatastoreCurveAdapter` — a `QwtSeriesData`-derived class that queries `pj_datastore` via `SessionManager`
-- add a min/max-per-pixel downsampler (required for large datasets)
-- implement `IDataWidget` on the plot widget; register a plot factory with `WidgetRegistry`
+- lift the PJ3 plot widget tree wholesale: `PlotWidgetBase`, `PlotWidget`, `PlotDocker`, `TabbedPlotWidget`, zoomers, `AxisTimeOffset`, custom tracker, drag-drop, context menus, curve list helpers (per-curve display transform UI ports later — see deferral note below)
+- replace `PlotDataMapRef` reads with `DatastoreCurveAdapter` — a `QwtSeriesData<QPointF>`-derived class that pull-throughs to `pj_datastore` via `SessionManager` (no copy of timeseries data; see §8.2 for the chunk-index design)
+- rely on Qwt's paint-time decimation (`QwtPlotCurve::FilterPointsAggressive` + `ClipPolygons`) for large datasets — no adapter-side decimation; pre-decimating breaks on zoom
+- implement `IDataWidget` on the plot widget; register the plot factory directly in `pj_app` (no `WidgetRegistry` service in v1; introduce one only when 2D / 3D widget families need symmetric registration)
+
+**Deferred to a follow-up phase** (still planned, not in v1 scope): `PlotWidgetEditor` (full edit-curves dialog with line width / Y limits / style toggles), `PlotWidgetTransforms` (per-curve display-transform dialog), `StatisticsDialog`, `PlotBackground` colored-zone item, colormap selector / editor. The four v1 demo features (drag-drop, color via stock `QColorDialog` from a context menu, sync-zoom, datastore plumbing) are the acceptance bar.
 
 Constraints:
 
@@ -551,9 +553,10 @@ The plotting subsystem must support:
 
 `pj_plot_widgets` adds only what the lift needs to cleanly consume the new datastore:
 
-- `DatastoreCurveAdapter` — a `QwtSeriesData<QPointF>`-derived class that wraps a `SessionManager*` + `TopicRef` and pulls data via `DataReader::rangeQuery()`
-- a min/max-per-pixel downsampler producing at most `2 * viewport_pixel_width` points
-- statistics and inspection helpers (lifted from PJ3 where possible)
+- `DatastoreCurveAdapter` — a `QwtSeriesData<QPointF>`-derived class that holds a `SessionManager*` + `CurveDescriptor` and pull-throughs to `pj_datastore` via `TopicStorage::sealedChunks()`. No copy of timeseries data — only a small chunk-index (per-chunk `(chunk*, row_start, row_end, cumulative_begin, cumulative_end)`) with a last-slot cache for sequential `sample(i)` from `QwtPointMapper`. ROI narrowing via `QwtSeriesData::setRectOfInterest`. Cross-chunk boundary guards keep line segments crossing the viewport boundary visible. `boundingRect()` returns full-data bounds (X from `TopicMetadata::time_range_min/max`, Y from union of `ColumnStats::min_value/max_value` across chunks) so Qwt's autoscale path does not lag a frame.
+- statistics and inspection helpers — deferred to a follow-up phase along with the editor / transforms dialogs.
+
+No adapter-side decimation. Qwt's paint-time `FilterPointsAggressive` + `ClipPolygons` own per-pixel collapse; pre-decimating in the data layer breaks zoom correctness because the cached array is sized for the previous viewport.
 
 No `IPlotBackend` abstraction. Qwt is the rendering library, full stop.
 
@@ -893,16 +896,18 @@ Acceptance:
 
 Deliver:
 
-- lift PJ3 plot widget tree into `pj_plot_widgets` (wholesale; see Section 5.3)
-- `DatastoreCurveAdapter` rebinding data reads to `pj_datastore::DataReader`
-- min/max-per-pixel downsampler
-- `IDataWidget` implementation + `WidgetRegistry` factory registration
-- linked navigation driven by `PlaybackEngine::TimeViewRange`
-- tracker, plot settings, statistics
+- lift PJ3 plot widget tree into `pj_plot_widgets` (wholesale; see §5.3)
+- `DatastoreCurveAdapter` rebinding data reads to `pj_datastore` via `TopicStorage::sealedChunks` (pull-through; see §8.2). No adapter-side downsampler — Qwt's paint-time filtering owns decimation.
+- `IDataWidget` implementation; plot factory wired directly in `pj_app`
+- linked X-axis zoom across plots: `MainWindow` owns the global Link toggle (`buttonLink`); plots emit `rectChanged`; broadcast updates peer plots via `setZoomRectangle(rect, /*emit=*/false)` to avoid echo recursion. XY plots are excluded from sync.
+- tracker driven by `PlaybackEngine::currentTimeChanged` (both directions: timeline → tracker line; user-dragged tracker → timeline)
+- curve color via stock `QColorDialog` from a right-click context menu
+
+Deferred to a follow-up phase: `PlotWidgetEditor`, `PlotWidgetTransforms`, `StatisticsDialog`, `PlotBackground`, colormap selector / editor.
 
 Acceptance:
 
-- ordinary 3.x plotting workflows work with multiple panels, tabs, and linked zoom
+- ordinary 3.x plotting workflows work with multiple panels, tabs, drag-drop curve add, sync zoom, tracker, and color change. The deferred dialogs return in the next phase.
 
 ### Phase 4: Derived transforms
 
