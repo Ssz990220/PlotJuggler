@@ -143,7 +143,7 @@ Parity-plus with PJ3: file + streaming sources, 11 built-in transforms, undo/red
 
 ### Porting policy from PJ3
 
-- **Default: port, don't rewrite.** For every UI element, widget, or helper we need, check `~/ws_plotjuggler/src/PlotJuggler/` first. If PJ3 has something that works, port it. Greenfield rewrites need a real reason.
+- **Default: port, don't rewrite.** For every UI element, widget, or helper we need, check `~/ws_plotjuggler/PlotJuggler/` first. If PJ3 has something that works, port it. Greenfield rewrites need a real reason.
 - **Style changes are expected; widget names are not.** When porting, adapt file/class names and member conventions to plotjuggler_core style (`PascalCase.{h,cpp}`, `PJ::` namespace, `trailing_underscore_` members, Google C++ / 2-space / 120-col). But **preserve the `objectName` of widgets inside `.ui` files verbatim** (e.g. `buttonLoadDatafile`, `frameFile`, `checkBoxAddPrefix`, `displayTime`, `playbackLoop`, `streamingSpinBox`) so existing layout files, stylesheet selectors, and user muscle memory keep working — unless I explicitly ask you to rename one.
 - **Rebind data paths.** PJ3 wiring into `PlotDataMapRef` / `TransformsMap` becomes wiring into `pj_app_core` services (`CatalogModel`, `SessionManager`, `PlaybackEngine`, `TransformRegistry`). That's the one systematic rewrite.
 - **Proactively surface improvement opportunities.** If you see a chance to improve separation of concerns, reusability, testability, or remove duplication while you're porting — flag it and **ask for approval before changing**. Don't silently refactor, and don't silently skip obvious wins. The bar is: "is there a cleaner shape that we'd regret not taking?" If yes, ask.
