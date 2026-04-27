@@ -57,13 +57,12 @@ DataSourceResult showDataSourceDialog(const DataSourceRequest& req) {
 
   DialogEngine engine(DialogHandle::borrowed(*vtable_result, borrowed.ctx), std::move(engine_config));
   if (engine.showDialog(req.parent) == DialogResult::kRejected) {
-    return {.outcome = Outcome::kRejected, .saved_config = {}, .parser_config = {}};
+    return {.outcome = Outcome::kRejected};
   }
 
   return {
       .outcome = Outcome::kAccepted,
-      .saved_config = engine.savedConfig(),
-      .parser_config = engine.parserConfig(),
+      .payload = AcceptedPayload{.saved_config = engine.savedConfig(), .parser_config = engine.parserConfig()},
   };
 }
 

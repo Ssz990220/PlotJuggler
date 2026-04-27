@@ -1,9 +1,11 @@
 #pragma once
 
 #include <QtCore/QtGlobal>
+#include <optional>
 #include <string>
 #include <string_view>
 
+#include "pj_app_core/ExtensionCatalogService.h"
 #include "pj_plugins/dialog_protocol.h"
 
 QT_BEGIN_NAMESPACE
@@ -13,9 +15,6 @@ QT_END_NAMESPACE
 namespace PJ {
 
 class DataSourceHandle;
-class ExtensionCatalogService;
-struct RuntimeDataSourcePlugin;
-using LoadedDataSource = RuntimeDataSourcePlugin;
 
 namespace dialog_presenter {
 
@@ -27,25 +26,27 @@ namespace dialog_presenter {
 // way the caller should proceed with whatever config it had on entry.
 enum class Outcome { kNoDialog, kAccepted, kRejected };
 
-// Result of a data-source dialog. saved_config and parser_config are
-// only meaningful when outcome == kAccepted.
-struct DataSourceResult {
-  Outcome outcome = Outcome::kNoDialog;
+// Configs returned by an accepted dialog. parser_config is empty when
+// the dialog has no pj_parser_slot widget.
+struct AcceptedPayload {
   std::string saved_config;
-  std::string parser_config;  // empty when the dialog has no pj_parser_slot
+  std::string parser_config;
 };
 
-// Inputs for showDataSourceDialog. Preconditions (NOT checked by the
-// helper):
+// Result of a data-source dialog. payload is engaged iff outcome == kAccepted —
+// the type expresses what would otherwise live only in a comment.
+struct DataSourceResult {
+  Outcome outcome = Outcome::kNoDialog;
+  std::optional<AcceptedPayload> payload;
+};
+
+// Inputs for showDataSourceDialog. Preconditions (NOT checked by the helper):
 //   * `handle` has been bind()-ed.
-//   * Any runtime-host callbacks the plugin needs (message-box, etc.)
-//     are already installed on the runtime host. The dialog flow does
-//     not own that wiring — see proto_app's setMessageBoxCallback /
-//     PJ4's RuntimeHost vtable for how it's done.
-//   * `handle` outlives this call. The borrowed dialog ctx is owned by
-//     the source plugin instance held by `handle`; the helper is
-//     synchronous, so no further lifetime extension is needed. A future
-//     modeless caller would need to revisit this.
+//   * Any runtime-host callbacks the plugin needs (message-box, etc.) are
+//     installed on the runtime host before bind() — see RuntimeHost in
+//     FileLoader.cpp for the pattern.
+// Synchronous; helper does not extend `handle` or `catalog` lifetime past
+// return. A future modeless caller would have to revisit both.
 struct DataSourceRequest {
   const LoadedDataSource& source;
   DataSourceHandle& handle;
@@ -54,11 +55,7 @@ struct DataSourceRequest {
   std::string_view initial_parser_config{};
 };
 
-// Pop the data-source plugin's configuration dialog modally. Returns
-// Outcome::kNoDialog when the plugin doesn't actually expose a dialog,
-// Outcome::kRejected when the user cancels, Outcome::kAccepted with
-// the dialog's serialized config otherwise. Caller decides what to
-// persist and whether to re-loadConfig before start().
+// Caller decides what to persist and whether to re-loadConfig before start().
 DataSourceResult showDataSourceDialog(const DataSourceRequest& req);
 
 }  // namespace dialog_presenter

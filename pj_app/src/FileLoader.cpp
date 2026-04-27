@@ -256,9 +256,7 @@ bool FileLoader::loadFile(const QString& path, QWidget* dialog_parent) {
   }
 
   // Pre-populate the dialog with last-used settings so users don't re-pick
-  // delimiter/time column on every load. Key matches proto_app's scheme
-  // (PluginConfig/<plugin name>) so layouts and saved configs read the same
-  // setting across both apps.
+  // delimiter/time column on every load.
   QSettings persisted_settings;
   const QString config_key = pluginConfigKey(source->name);
   const std::string saved_config = persisted_settings.value(config_key, QString()).toString().toStdString();
@@ -268,13 +266,6 @@ bool FileLoader::loadFile(const QString& path, QWidget* dialog_parent) {
     return fail(tr("Plugin '%1': loadConfig failed: %2").arg(source_name, QString::fromStdString(status.error())));
   }
 
-  // Show the plugin's configuration dialog when it advertises one. The
-  // helper handles the capability check, vtable resolution, borrowed-handle
-  // wiring, and parser-slot injection. We re-loadConfig on accept so the
-  // source handle sees the dialog's choices before start() — DialogEngine
-  // already wrote them back via the dialog vtable, but for plugins that
-  // split dialog state from source state, the explicit reload keeps the
-  // contract uniform.
   const auto dlg = dialog_presenter::showDataSourceDialog({
       .source = *source,
       .handle = handle,
@@ -284,17 +275,18 @@ bool FileLoader::loadFile(const QString& path, QWidget* dialog_parent) {
   if (dlg.outcome == dialog_presenter::Outcome::kRejected) {
     return false;
   }
-  if (dlg.outcome == dialog_presenter::Outcome::kAccepted) {
-    config = dlg.saved_config;
+  if (dlg.payload.has_value()) {
+    config = dlg.payload->saved_config;
+    // DialogEngine already wrote the dialog's choices back via the dialog vtable,
+    // but for plugins that split dialog state from source state the explicit
+    // reload keeps the contract uniform.
     if (auto status = handle.loadConfig(config); !status) {
       return fail(tr("Plugin '%1': loadConfig (post-dialog) failed: %2")
                       .arg(source_name, QString::fromStdString(status.error())));
     }
   }
 
-  // Persist the resolved config before start() so the dialog choices stick
-  // even if ingest fails afterwards (matches proto_app's onLoadFile, which
-  // persists unconditionally after the import call).
+  // Persist before start() so dialog choices stick even if ingest fails.
   persisted_settings.setValue(config_key, QString::fromStdString(config));
 
   if (auto status = handle.start(); !status) {
