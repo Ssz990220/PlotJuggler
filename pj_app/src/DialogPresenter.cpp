@@ -1,0 +1,68 @@
+#include "DialogPresenter.h"
+
+#include <QString>
+#include <utility>
+
+#include "pj_app_core/ExtensionCatalogService.h"
+#include "pj_base/data_source_protocol.h"
+#include "pj_plugins/host/data_source_handle.hpp"
+#include "pj_plugins/host/data_source_library.hpp"
+#include "pj_plugins/host/dialog_handle.hpp"
+#include "pj_plugins/host/message_parser_library.hpp"
+#include "pj_plugins/host/plugin_runtime_catalog.hpp"
+#include "pj_plugins/host_qt/dialog_engine.hpp"
+
+namespace PJ::dialog_presenter {
+
+namespace {
+
+// Adapter from ExtensionCatalogService::findParserByEncoding to the
+// QueryParserDialogFn shape DialogEngine expects. Returns the parser's
+// dialog vtable for a given encoding, or nullptr when the parser doesn't
+// exist or doesn't expose a dialog. Captures the catalog by reference —
+// callers must keep the catalog alive for the duration of the dialog.
+QueryParserDialogFn makeParserDialogProvider(const ExtensionCatalogService& catalog) {
+  return [&catalog](const std::string& encoding) -> const PJ_dialog_vtable_t* {
+    const auto* parser = catalog.findParserByEncoding(QString::fromStdString(encoding));
+    if (parser == nullptr) {
+      return nullptr;
+    }
+    auto vtable = parser->library.resolveDialogVtable();
+    return vtable ? *vtable : nullptr;
+  };
+}
+
+}  // namespace
+
+DataSourceResult showDataSourceDialog(const DataSourceRequest& req) {
+  if ((req.source.capabilities & PJ_DATA_SOURCE_CAPABILITY_HAS_DIALOG) == 0) {
+    return {};
+  }
+
+  auto vtable_result = req.source.library.resolveDialogVtable();
+  if (!vtable_result) {
+    return {};
+  }
+
+  const PJ_borrowed_dialog_t borrowed = req.handle.getDialog();
+  if (borrowed.ctx == nullptr) {
+    return {};
+  }
+
+  DialogEngineConfig engine_config;
+  engine_config.parser_dialog_provider = makeParserDialogProvider(req.catalog);
+  engine_config.initial_parser_config.assign(req.initial_parser_config.data(), req.initial_parser_config.size());
+
+  DialogEngine engine(DialogHandle::borrowed(*vtable_result, borrowed.ctx), std::move(engine_config));
+  if (engine.showDialog(req.parent) == DialogResult::kRejected) {
+    return {.outcome = Outcome::kRejected, .saved_config = {}, .parser_config = {}};
+  }
+
+  return {
+      .outcome = Outcome::kAccepted,
+      .saved_config = engine.savedConfig(),
+      .parser_config = engine.parserConfig(),
+  };
+}
+
+}  // namespace PJ::dialog_presenter
