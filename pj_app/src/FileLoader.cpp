@@ -24,9 +24,13 @@
 #include "pj_datastore/engine.hpp"
 #include "pj_datastore/plugin_data_host.hpp"
 #include "pj_marketplace/extension.hpp"
+#include "pj_plugins/dialog_protocol.h"
 #include "pj_plugins/host/data_source_handle.hpp"
 #include "pj_plugins/host/data_source_library.hpp"
+#include "pj_plugins/host/dialog_handle.hpp"
+#include "pj_plugins/host/message_parser_library.hpp"
 #include "pj_plugins/host/service_registry_builder.hpp"
+#include "pj_plugins/host_qt/dialog_engine.hpp"
 
 namespace PJ {
 
@@ -36,6 +40,7 @@ Q_LOGGING_CATEGORY(lcFileLoader, "pj.app.fileloader")
 
 constexpr const char* kLastDirKey = "FileLoader/lastDir";
 constexpr const char* kDefaultTimeDomainName = "default";
+constexpr const char* kPluginConfigKeyPrefix = "PluginConfig/";
 
 // Runtime host state for one file import. Only the bits CSV-style file sources
 // actually exercise are wired up; parser-binding callbacks return false because
@@ -152,13 +157,26 @@ QString normalizeExtension(const QString& path) {
   return suffix.isEmpty() ? QString() : QStringLiteral(".") + suffix.toLower();
 }
 
-// Build a JSON config payload with the file path. Uses Qt's JSON serializer so
-// paths with embedded quotes or backslashes (Windows portability) are escaped
-// correctly — naive string concatenation would break loadConfig parsing.
-std::string buildLoadConfig(const QString& path) {
-  const QJsonObject obj{{QStringLiteral("filepath"), path}};
-  const QByteArray bytes = QJsonDocument(obj).toJson(QJsonDocument::Compact);
-  return std::string(bytes.constData(), static_cast<std::size_t>(bytes.size()));
+// Merge the file path into the (possibly empty) saved JSON config. Saved
+// config carries the dialog state from the previous load (delimiter, time
+// column, etc.) so the dialog opens pre-populated. If saved_config doesn't
+// parse, treat it as empty rather than failing the import.
+std::string buildLoadConfig(std::string_view saved_config, const QString& path) {
+  QJsonObject obj;
+  if (!saved_config.empty()) {
+    const QByteArray bytes(saved_config.data(), static_cast<qsizetype>(saved_config.size()));
+    const QJsonDocument doc = QJsonDocument::fromJson(bytes);
+    if (doc.isObject()) {
+      obj = doc.object();
+    }
+  }
+  obj.insert(QStringLiteral("filepath"), path);
+  const QByteArray out = QJsonDocument(obj).toJson(QJsonDocument::Compact);
+  return std::string(out.constData(), static_cast<std::size_t>(out.size()));
+}
+
+QString pluginConfigKey(const std::string& plugin_id) {
+  return QString::fromLatin1(kPluginConfigKeyPrefix) + QString::fromStdString(plugin_id);
 }
 
 }  // namespace
@@ -240,13 +258,65 @@ bool FileLoader::loadFile(const QString& path, QWidget* dialog_parent) {
     return fail(tr("Plugin '%1': bind failed: %2").arg(source_name, QString::fromStdString(status.error())));
   }
 
-  if (auto status = handle.loadConfig(buildLoadConfig(path)); !status) {
+  // Pre-populate the dialog with last-used settings so users don't re-pick
+  // delimiter/time column on every load. Key is the plugin id (stable across
+  // versions) rather than the human-readable name.
+  QSettings persisted_settings;
+  const QString config_key = pluginConfigKey(source->id);
+  const std::string saved_config = persisted_settings.value(config_key, QString()).toString().toStdString();
+
+  std::string config = buildLoadConfig(saved_config, path);
+  if (auto status = handle.loadConfig(config); !status) {
     return fail(tr("Plugin '%1': loadConfig failed: %2").arg(source_name, QString::fromStdString(status.error())));
+  }
+
+  // Show the plugin's configuration dialog when it advertises one. Mirrors
+  // proto_app's onLoadFile flow: dialog runs on the SAME handle that will
+  // ingest, so any state the dialog mutates (parser config, column choices)
+  // is observed by start().
+  if ((source->capabilities & PJ_DATA_SOURCE_CAPABILITY_HAS_DIALOG) != 0) {
+    auto vt_result = source->library.resolveDialogVtable();
+    if (vt_result) {
+      const PJ_borrowed_dialog_t borrowed = handle.getDialog();
+      if (borrowed.ctx != nullptr) {
+        DialogHandle dialog_handle = DialogHandle::borrowed(*vt_result, borrowed.ctx);
+        DialogEngineConfig engine_config;
+        // Inject parser-options UI when the dialog has a "pj_parser_slot" widget
+        // (currently only stream sources use this; harmless for file sources).
+        engine_config.parser_dialog_provider =
+            [&extensions = extensions_](const std::string& encoding) -> const PJ_dialog_vtable_t* {
+          const auto* parser = extensions.findParserByEncoding(QString::fromStdString(encoding));
+          if (parser == nullptr) {
+            return nullptr;
+          }
+          auto vt = parser->library.resolveDialogVtable();
+          return vt ? *vt : nullptr;
+        };
+        DialogEngine dialog_engine(std::move(dialog_handle), engine_config);
+        if (dialog_engine.showDialog(dialog_parent) == DialogResult::kRejected) {
+          return false;
+        }
+        config = dialog_engine.savedConfig();
+        // Re-apply the dialog's chosen config to the source handle so start()
+        // sees it. (DialogEngine writes back to the dialog vtable, which the
+        // CSV plugin shares with its source state, but other plugins may not —
+        // the explicit loadConfig() makes the contract uniform.)
+        if (auto status = handle.loadConfig(config); !status) {
+          return fail(tr("Plugin '%1': loadConfig (post-dialog) failed: %2")
+                          .arg(source_name, QString::fromStdString(status.error())));
+        }
+      }
+    }
   }
 
   if (auto status = handle.start(); !status) {
     return fail(tr("Plugin '%1': start failed: %2").arg(source_name, QString::fromStdString(status.error())));
   }
+
+  // Persist the resolved config so the next load opens the dialog with the
+  // same settings. Done after start() succeeds — no point remembering a config
+  // that didn't actually work.
+  persisted_settings.setValue(config_key, QString::fromStdString(config));
 
   write_host.flushPending();
   catalog_.rebuildFromDatastore();
