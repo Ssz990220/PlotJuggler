@@ -51,7 +51,9 @@ DataSourceResult showDataSourceDialog(const DataSourceRequest& req) {
 
   DialogEngineConfig engine_config;
   engine_config.parser_dialog_provider = makeParserDialogProvider(req.catalog);
-  engine_config.initial_parser_config.assign(req.initial_parser_config.data(), req.initial_parser_config.size());
+  // string-from-string_view ctor (C++17) handles a default-empty view safely;
+  // raw .assign(data(), size()) would be UB when data() is nullptr.
+  engine_config.initial_parser_config = std::string(req.initial_parser_config);
 
   DialogEngine engine(DialogHandle::borrowed(*vtable_result, borrowed.ctx), std::move(engine_config));
   if (engine.showDialog(req.parent) == DialogResult::kRejected) {
