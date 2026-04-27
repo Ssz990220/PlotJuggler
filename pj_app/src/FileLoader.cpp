@@ -272,6 +272,10 @@ bool FileLoader::loadFile(const QString& path, QWidget* dialog_parent) {
       .catalog = extensions_,
       .parent = dialog_parent,
   });
+  if (dlg.outcome == dialog_presenter::Outcome::kPluginContractViolation) {
+    return fail(tr("Plugin contract violation: %1. Reinstall the plugin from the Marketplace.")
+                    .arg(QString::fromStdString(dlg.error)));
+  }
   if (dlg.outcome == dialog_presenter::Outcome::kRejected) {
     return false;
   }

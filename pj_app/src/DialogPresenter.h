@@ -20,11 +20,15 @@ namespace dialog_presenter {
 
 // Outcome of presenting a plugin's configuration dialog.
 //
-// kNoDialog covers two distinct cases that callers don't need to
-// distinguish: (a) the plugin doesn't advertise kCapabilityHasDialog,
-// or (b) it advertises but didn't ship a usable vtable / context. Either
-// way the caller should proceed with whatever config it had on entry.
-enum class Outcome { kNoDialog, kAccepted, kRejected };
+// kNoDialog and kPluginContractViolation are NOT interchangeable:
+//   * kNoDialog: the plugin doesn't advertise kCapabilityHasDialog.
+//     Caller should proceed with whatever config it had on entry.
+//   * kPluginContractViolation: the plugin advertised kCapabilityHasDialog
+//     but didn't ship a usable vtable, or getDialog() returned a null ctx.
+//     This is a plugin bug — silently proceeding produces wrong data with
+//     no user-visible error. Caller should fail the operation and surface
+//     `error` to the user so the broken plugin can be reinstalled / fixed.
+enum class Outcome { kNoDialog, kAccepted, kRejected, kPluginContractViolation };
 
 // Configs returned by an accepted dialog. parser_config is empty when
 // the dialog has no pj_parser_slot widget.
@@ -33,11 +37,12 @@ struct AcceptedPayload {
   std::string parser_config;
 };
 
-// Result of a data-source dialog. payload is engaged iff outcome == kAccepted —
-// the type expresses what would otherwise live only in a comment.
+// Result of a data-source dialog. payload is engaged iff outcome == kAccepted;
+// error is non-empty iff outcome == kPluginContractViolation.
 struct DataSourceResult {
   Outcome outcome = Outcome::kNoDialog;
   std::optional<AcceptedPayload> payload;
+  std::string error;
 };
 
 // Inputs for showDataSourceDialog. Preconditions (NOT checked by the helper):

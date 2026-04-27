@@ -1,5 +1,6 @@
 #include "DialogPresenter.h"
 
+#include <QLoggingCategory>
 #include <QString>
 #include <utility>
 
@@ -15,6 +16,8 @@
 namespace PJ::dialog_presenter {
 
 namespace {
+
+Q_LOGGING_CATEGORY(lcDialogPresenter, "pj.app.dialogpresenter")
 
 // Adapter from ExtensionCatalogService::findParserByEncoding to the
 // QueryParserDialogFn shape DialogEngine expects. Returns the parser's
@@ -32,6 +35,12 @@ QueryParserDialogFn makeParserDialogProvider(const ExtensionCatalogService& cata
   };
 }
 
+DataSourceResult contractViolation(const std::string& plugin_name, const std::string& reason) {
+  qCWarning(lcDialogPresenter).noquote() << "Plugin" << QString::fromStdString(plugin_name)
+                                         << "advertises kCapabilityHasDialog but" << QString::fromStdString(reason);
+  return {.outcome = Outcome::kPluginContractViolation, .error = "plugin '" + plugin_name + "': " + reason};
+}
+
 }  // namespace
 
 DataSourceResult showDataSourceDialog(const DataSourceRequest& req) {
@@ -41,12 +50,12 @@ DataSourceResult showDataSourceDialog(const DataSourceRequest& req) {
 
   auto vtable_result = req.source.library.resolveDialogVtable();
   if (!vtable_result) {
-    return {};
+    return contractViolation(req.source.name, "resolveDialogVtable failed: " + vtable_result.error());
   }
 
   const PJ_borrowed_dialog_t borrowed = req.handle.getDialog();
   if (borrowed.ctx == nullptr) {
-    return {};
+    return contractViolation(req.source.name, "getDialog() returned null context");
   }
 
   DialogEngineConfig engine_config;
