@@ -259,10 +259,11 @@ bool FileLoader::loadFile(const QString& path, QWidget* dialog_parent) {
   }
 
   // Pre-populate the dialog with last-used settings so users don't re-pick
-  // delimiter/time column on every load. Key is the plugin id (stable across
-  // versions) rather than the human-readable name.
+  // delimiter/time column on every load. Key matches proto_app's scheme
+  // (PluginConfig/<plugin name>) so layouts and saved configs read the same
+  // setting across both apps.
   QSettings persisted_settings;
-  const QString config_key = pluginConfigKey(source->id);
+  const QString config_key = pluginConfigKey(source->name);
   const std::string saved_config = persisted_settings.value(config_key, QString()).toString().toStdString();
 
   std::string config = buildLoadConfig(saved_config, path);
@@ -309,14 +310,14 @@ bool FileLoader::loadFile(const QString& path, QWidget* dialog_parent) {
     }
   }
 
+  // Persist the resolved config before start() so the dialog choices stick
+  // even if ingest fails afterwards (matches proto_app's onLoadFile, which
+  // persists unconditionally after the import call).
+  persisted_settings.setValue(config_key, QString::fromStdString(config));
+
   if (auto status = handle.start(); !status) {
     return fail(tr("Plugin '%1': start failed: %2").arg(source_name, QString::fromStdString(status.error())));
   }
-
-  // Persist the resolved config so the next load opens the dialog with the
-  // same settings. Done after start() succeeds — no point remembering a config
-  // that didn't actually work.
-  persisted_settings.setValue(config_key, QString::fromStdString(config));
 
   write_host.flushPending();
   catalog_.rebuildFromDatastore();
