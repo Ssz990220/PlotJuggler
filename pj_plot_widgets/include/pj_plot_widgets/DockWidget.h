@@ -6,23 +6,30 @@
 
 namespace PJ {
 
+class CatalogModel;
 class DockToolbar;
+class PlotWidget;
+class SessionManager;
 
 // ADS-backed dock hosting a single plot area. splitHorizontal /
 // splitVertical create sibling DockWidgets inside the parent PlotDocker.
-// The embedded placeholder QWidget is replaced by a real PlotWidget when
-// the Qwt lift lands.
 class DockWidget : public ads::CDockWidget, public IDataWidget {
   Q_OBJECT
  public:
-  explicit DockWidget(QWidget* parent = nullptr);
+  explicit DockWidget(
+      SessionManager* session = nullptr, CatalogModel* catalog = nullptr, ads::CDockManager* manager = nullptr,
+      QWidget* parent = nullptr);
   ~DockWidget() override;
 
+  void setDataServices(SessionManager* session, CatalogModel* catalog);
+  PlotWidget* plotWidget();
   DockToolbar* toolBar();
   QString name() const;
 
   // IDataWidget
-  QWidget* widget() override { return this; }
+  QWidget* widget() override {
+    return this;
+  }
   void onTrackerTime(double time) override;
 
  public slots:
@@ -35,7 +42,9 @@ class DockWidget : public ads::CDockWidget, public IDataWidget {
  private:
   DockWidget* splitInto(ads::DockWidgetArea area);
 
-  QWidget* placeholder_ = nullptr;
+  SessionManager* session_ = nullptr;
+  CatalogModel* catalog_ = nullptr;
+  PlotWidget* plot_widget_ = nullptr;
   DockToolbar* toolbar_ = nullptr;
 };
 

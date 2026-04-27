@@ -12,8 +12,28 @@
 
 #include <qdebug.h>
 #include <qlocale.h>
+#if QT_VERSION >= QT_VERSION_CHECK( 6, 8, 0 )
+#include <qtimezone.h>
+#endif
 
 #include <limits>
+
+#if QT_VERSION >= QT_VERSION_CHECK( 6, 8, 0 )
+static inline QTimeZone qwtTimeZoneFromSpec( Qt::TimeSpec spec, int utcOffset = 0 )
+{
+    switch( spec )
+    {
+        case Qt::UTC:
+            return QTimeZone( QTimeZone::UTC );
+        case Qt::LocalTime:
+            return QTimeZone( QTimeZone::LocalTime );
+        case Qt::OffsetFromUTC:
+            return QTimeZone::fromSecondsAheadOfUtc( utcOffset );
+        default:
+            return QTimeZone();
+    }
+}
+#endif
 
 #if QT_VERSION >= 0x050000
 
@@ -132,7 +152,11 @@ static inline void qwtFloorTime(
     const Qt::TimeSpec timeSpec = dt.timeSpec();
 
     if ( timeSpec == Qt::LocalTime )
+#if QT_VERSION >= QT_VERSION_CHECK( 6, 8, 0 )
+        dt = dt.toUTC();
+#else
         dt = dt.toTimeSpec( Qt::UTC );
+#endif
 
     const QTime t = dt.time();
     switch( intervalType )
@@ -157,7 +181,11 @@ static inline void qwtFloorTime(
     }
 
     if ( timeSpec == Qt::LocalTime )
+#if QT_VERSION >= QT_VERSION_CHECK( 6, 8, 0 )
+        dt = dt.toLocalTime();
+#else
         dt = dt.toTimeSpec( Qt::LocalTime );
+#endif
 }
 
 static inline QDateTime qwtToTimeSpec(
@@ -175,11 +203,29 @@ static inline QDateTime qwtToTimeSpec(
         // for those dates
 
         QDateTime dt2 = dt;
+#if QT_VERSION >= QT_VERSION_CHECK( 6, 8, 0 )
+        dt2.setTimeZone( qwtTimeZoneFromSpec( spec, dt.offsetFromUtc() ) );
+#else
         dt2.setTimeSpec( spec );
+#endif
         return dt2;
     }
 
+#if QT_VERSION >= QT_VERSION_CHECK( 6, 8, 0 )
+    switch( spec )
+    {
+        case Qt::UTC:
+            return dt.toUTC();
+        case Qt::LocalTime:
+            return dt.toLocalTime();
+        case Qt::OffsetFromUTC:
+            return dt.toOffsetFromUtc( dt.offsetFromUtc() );
+        default:
+            return dt;
+    }
+#else
     return dt.toTimeSpec( spec );
+#endif
 }
 
 #if 0
@@ -264,7 +310,7 @@ QDateTime QwtDate::toDateTime( double value, Qt::TimeSpec timeSpec )
 
     const double days = static_cast< qint64 >( std::floor( value / msecsPerDay ) );
 
-    const double jd = QwtDate::JulianDayForEpoch + days;
+    const double jd = static_cast< double >( QwtDate::JulianDayForEpoch ) + days;
     if ( ( jd > maxJulianDayD ) || ( jd < minJulianDayD ) )
     {
         qWarning() << "QwtDate::toDateTime: overflow";
@@ -277,7 +323,12 @@ QDateTime QwtDate::toDateTime( double value, Qt::TimeSpec timeSpec )
 
     static const QTime timeNull( 0, 0, 0, 0 );
 
+#if QT_VERSION >= QT_VERSION_CHECK( 6, 8, 0 )
+    QDateTime dt( d, timeNull.addMSecs( msecs ),
+        qwtTimeZoneFromSpec( Qt::UTC ) );
+#else
     QDateTime dt( d, timeNull.addMSecs( msecs ), Qt::UTC );
+#endif
 
     if ( timeSpec == Qt::LocalTime )
         dt = qwtToTimeSpec( dt, timeSpec );
@@ -653,7 +704,12 @@ int QwtDate::utcOffset( const QDateTime& dateTime )
         }
         default:
         {
+#if QT_VERSION >= QT_VERSION_CHECK( 6, 8, 0 )
+            const QDateTime dt1( dateTime.date(), dateTime.time(),
+                qwtTimeZoneFromSpec( Qt::UTC ) );
+#else
             const QDateTime dt1( dateTime.date(), dateTime.time(), Qt::UTC );
+#endif
             seconds = dateTime.secsTo( dt1 );
         }
     }

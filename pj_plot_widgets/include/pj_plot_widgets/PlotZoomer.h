@@ -1,0 +1,33 @@
+#pragma once
+
+#include <qwt_plot_zoomer.h>
+
+#include <QPoint>
+
+namespace PJ {
+
+class PlotZoomer : public QwtPlotZoomer {
+ public:
+  explicit PlotZoomer(QWidget* canvas);
+  ~PlotZoomer() override = default;
+
+  void keepAspectRatio(bool keep) {
+    keep_aspect_ratio_ = keep;
+  }
+
+ protected:
+  void widgetMousePressEvent(QMouseEvent* event) override;
+  void widgetMouseReleaseEvent(QMouseEvent* event) override;
+  void widgetMouseMoveEvent(QMouseEvent* event) override;
+  bool accept(QPolygon& polygon) const override;
+  void zoom(const QRectF& rect) override;
+  QSizeF minZoomSize() const override;
+
+ private:
+  bool mouse_pressed_ = false;
+  bool zoom_enabled_ = false;
+  bool keep_aspect_ratio_ = false;
+  QPoint initial_pos_;
+};
+
+}  // namespace PJ

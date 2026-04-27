@@ -7,6 +7,7 @@
 #include <QInputDialog>
 #include <QLabel>
 #include <QLineEdit>
+#include <QMouseEvent>
 #include <QPushButton>
 
 #include "pj_app_core/SvgUtil.h"
@@ -21,8 +22,7 @@ void setButtonIcon(QPushButton* button, const QIcon& icon) {
 }
 }  // namespace
 
-DockToolbar::DockToolbar(ads::CDockWidget* parent)
-    : QWidget(parent), parent_dock_(parent), ui_(new Ui::DockToolbar) {
+DockToolbar::DockToolbar(ads::CDockWidget* parent) : QWidget(parent), parent_dock_(parent), ui_(new Ui::DockToolbar) {
   ui_->setupUi(this);
 
   onStylesheetChanged(currentTheme());
@@ -41,11 +41,21 @@ DockToolbar::~DockToolbar() {
   delete ui_;
 }
 
-QLabel* DockToolbar::label() { return ui_->label; }
-QPushButton* DockToolbar::buttonFullscreen() { return ui_->buttonFullscreen; }
-QPushButton* DockToolbar::buttonClose() { return ui_->buttonClose; }
-QPushButton* DockToolbar::buttonSplitHorizontal() { return ui_->buttonSplitHorizontal; }
-QPushButton* DockToolbar::buttonSplitVertical() { return ui_->buttonSplitVertical; }
+QLabel* DockToolbar::label() {
+  return ui_->label;
+}
+QPushButton* DockToolbar::buttonFullscreen() {
+  return ui_->buttonFullscreen;
+}
+QPushButton* DockToolbar::buttonClose() {
+  return ui_->buttonClose;
+}
+QPushButton* DockToolbar::buttonSplitHorizontal() {
+  return ui_->buttonSplitHorizontal;
+}
+QPushButton* DockToolbar::buttonSplitVertical() {
+  return ui_->buttonSplitVertical;
+}
 
 void DockToolbar::toggleFullscreen() {
   fullscreen_mode_ = !fullscreen_mode_;
@@ -59,7 +69,14 @@ void DockToolbar::toggleFullscreen() {
 
 void DockToolbar::mousePressEvent(QMouseEvent* ev) {
   if (auto* area = parent_dock_->dockAreaWidget()) {
-    QCoreApplication::sendEvent(area->titleBar(), ev);
+    // Forward with synthetic pos (0, 0). CFloatingDragPreview positions its
+    // top-left at QCursor::pos() - DragStartMousePosition, so a (0, 0) start
+    // makes the preview track the cursor directly instead of being offset by
+    // wherever the user happened to click along the wide toolbar.
+    QMouseEvent fwd(
+        QEvent::MouseButtonPress, QPointF(0, 0), ev->globalPosition(), ev->button(), ev->buttons(), ev->modifiers());
+    QCoreApplication::sendEvent(area->titleBar(), &fwd);
+    ev->setAccepted(fwd.isAccepted());
   }
 }
 
@@ -98,8 +115,8 @@ void DockToolbar::leaveEvent(QEvent* ev) {
 bool DockToolbar::eventFilter(QObject* object, QEvent* event) {
   if (event->type() == QEvent::MouseButtonDblClick) {
     bool ok = true;
-    QString new_name = QInputDialog::getText(this, tr("Change name of the Area"), tr("New name:"),
-                                             QLineEdit::Normal, ui_->label->text(), &ok);
+    QString new_name = QInputDialog::getText(
+        this, tr("Change name of the Area"), tr("New name:"), QLineEdit::Normal, ui_->label->text(), &ok);
     if (ok) {
       ui_->label->setText(new_name);
       emit titleChanged(new_name);

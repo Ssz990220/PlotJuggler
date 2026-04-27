@@ -5,7 +5,9 @@
 #include <QWidget>
 
 QT_BEGIN_NAMESPACE
+class QEnterEvent;
 class QLabel;
+class QMouseEvent;
 class QPushButton;
 QT_END_NAMESPACE
 
@@ -30,7 +32,9 @@ class DockToolbar : public QWidget {
   QPushButton* buttonSplitVertical();
 
   void toggleFullscreen();
-  bool isFullscreen() const { return fullscreen_mode_; }
+  bool isFullscreen() const {
+    return fullscreen_mode_;
+  }
 
   bool eventFilter(QObject* object, QEvent* event) override;
 

@@ -9,7 +9,9 @@ QT_END_NAMESPACE
 
 namespace PJ {
 
+class CatalogModel;
 class PlotDocker;
+class SessionManager;
 
 // QTabWidget with one PlotDocker per tab and a floating "+" button.
 class TabbedPlotWidget : public QWidget {
@@ -20,11 +22,18 @@ class TabbedPlotWidget : public QWidget {
   ~TabbedPlotWidget() override;
 
   PlotDocker* currentTab();
-  QTabWidget* tabWidget() { return tab_widget_; }
-  const QTabWidget* tabWidget() const { return tab_widget_; }
+  QTabWidget* tabWidget() {
+    return tab_widget_;
+  }
+  const QTabWidget* tabWidget() const {
+    return tab_widget_;
+  }
   PlotDocker* addTab(QString name);
+  void setDataServices(SessionManager* session, CatalogModel* catalog);
 
-  QString name() const { return name_; }
+  QString name() const {
+    return name_;
+  }
 
  public slots:
   void onStylesheetChanged(QString theme);
@@ -46,6 +55,8 @@ class TabbedPlotWidget : public QWidget {
  private:
   QTabWidget* tab_widget_ = nullptr;
   QPushButton* button_add_tab_ = nullptr;
+  SessionManager* session_ = nullptr;
+  CatalogModel* catalog_ = nullptr;
   QString name_;
   int tab_suffix_count_ = 0;
 };

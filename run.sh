@@ -6,6 +6,10 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # install (often an older major version) and segfaults under Qt 6.8.
 export QT_IM_MODULE=""
 
+# Native Wayland for ADS drag is patched in 3rdparty/Qt-Advanced-Docking/.
+# Uncomment the next line to fall back to XWayland if a regression appears.
+# export QT_QPA_PLATFORM=xcb
+
 # Point Qt plugin discovery at the bundled Qt 6.8.3 only. If the user's shell
 # has QT_PLUGIN_PATH set to a stale Qt (e.g. /home/.../qt/6.4.2/plugins), Qt
 # scans it first, picks up the cert-only TLS backend there, then fails to load

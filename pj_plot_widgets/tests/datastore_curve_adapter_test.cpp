@@ -11,6 +11,7 @@
 #include "pj_datastore/topic_storage.hpp"
 #include "pj_datastore/writer.hpp"
 #include "pj_plot_widgets/DatastoreCurveAdapter.h"
+#include "pj_plot_widgets/PointSeriesXY.h"
 
 namespace PJ {
 namespace {
@@ -201,6 +202,139 @@ TEST_F(DatastoreCurveAdapterTest, SampleFromTimeReturnsLatestAtPoint) {
 
   // Before the first sample → no row at-or-before this time → nullopt.
   EXPECT_FALSE(adapter_->sampleFromTime(-100.0).has_value());
+}
+
+TEST(PointSeriesXYTest, SameTopicPairsRowsByIndex) {
+  SessionManager session;
+  auto dataset_or = session.dataEngine().createDataset(DatasetDescriptor{.source_name = "xy"});
+  ASSERT_TRUE(dataset_or.has_value()) << dataset_or.error();
+
+  DataWriter writer = session.dataEngine().createWriter();
+  auto schema_or = writer.registerSchema(
+      "xy",
+      makeStruct("xy", {makePrimitive("x", PrimitiveType::kFloat64), makePrimitive("y", PrimitiveType::kFloat64)}));
+  ASSERT_TRUE(schema_or.has_value()) << schema_or.error();
+
+  TopicDescriptor descriptor;
+  descriptor.name = "/xy";
+  descriptor.schema_id = *schema_or;
+  descriptor.max_chunk_rows = 2;
+  auto topic_or = writer.registerTopic(*dataset_or, descriptor);
+  ASSERT_TRUE(topic_or.has_value()) << topic_or.error();
+
+  for (int i = 0; i < 3; ++i) {
+    ASSERT_TRUE(writer.beginRow(*topic_or, static_cast<Timestamp>(i) * kNs).has_value());
+    writer.set(*topic_or, 0, 10.0 + static_cast<double>(i));
+    writer.set(*topic_or, 1, 100.0 + static_cast<double>(i));
+    ASSERT_TRUE(writer.finishRow(*topic_or).has_value());
+  }
+  EXPECT_FALSE(session.commitChunks(writer.flushAll()).empty());
+
+  CurveDescriptor x_descriptor{
+      .name = "/xy/x",
+      .topic_id = *topic_or,
+      .dataset_id = *dataset_or,
+      .column_index = 0,
+      .field_path = "x",
+      .display_offset_ns = 0,
+  };
+  CurveDescriptor y_descriptor{
+      .name = "/xy/y",
+      .topic_id = *topic_or,
+      .dataset_id = *dataset_or,
+      .column_index = 1,
+      .field_path = "y",
+      .display_offset_ns = 0,
+  };
+
+  PointSeriesXY series(&session, x_descriptor, y_descriptor);
+  ASSERT_EQ(series.size(), 3U);
+  EXPECT_DOUBLE_EQ(series.sample(1).x(), 11.0);
+  EXPECT_DOUBLE_EQ(series.sample(1).y(), 101.0);
+
+  const QRectF bounds = series.boundingRect();
+  EXPECT_DOUBLE_EQ(bounds.left(), 10.0);
+  EXPECT_DOUBLE_EQ(bounds.right(), 12.0);
+  EXPECT_DOUBLE_EQ(bounds.top(), 100.0);
+  EXPECT_DOUBLE_EQ(bounds.bottom(), 102.0);
+}
+
+TEST(PointSeriesXYTest, DifferentTopicsPairOnlyExactTimestampsAndInvalidateOnCommit) {
+  SessionManager session;
+  auto dataset_or = session.dataEngine().createDataset(DatasetDescriptor{.source_name = "xy"});
+  ASSERT_TRUE(dataset_or.has_value()) << dataset_or.error();
+
+  DataWriter writer = session.dataEngine().createWriter();
+  auto schema_or = writer.registerSchema("scalar", makePrimitive("value", PrimitiveType::kFloat64));
+  ASSERT_TRUE(schema_or.has_value()) << schema_or.error();
+
+  TopicDescriptor x_topic_descriptor;
+  x_topic_descriptor.name = "/x";
+  x_topic_descriptor.schema_id = *schema_or;
+  x_topic_descriptor.max_chunk_rows = 2;
+  auto x_topic_or = writer.registerTopic(*dataset_or, x_topic_descriptor);
+  ASSERT_TRUE(x_topic_or.has_value()) << x_topic_or.error();
+
+  TopicDescriptor y_topic_descriptor;
+  y_topic_descriptor.name = "/y";
+  y_topic_descriptor.schema_id = *schema_or;
+  y_topic_descriptor.max_chunk_rows = 2;
+  auto y_topic_or = writer.registerTopic(*dataset_or, y_topic_descriptor);
+  ASSERT_TRUE(y_topic_or.has_value()) << y_topic_or.error();
+
+  auto append = [&writer](TopicId topic_id, int t, double value) {
+    ASSERT_TRUE(writer.beginRow(topic_id, static_cast<Timestamp>(t) * kNs).has_value());
+    writer.set(topic_id, 0, value);
+    ASSERT_TRUE(writer.finishRow(topic_id).has_value());
+  };
+  append(*x_topic_or, 0, 1.0);
+  append(*x_topic_or, 1, 2.0);
+  append(*x_topic_or, 2, 3.0);
+  append(*x_topic_or, 3, 4.0);
+  append(*y_topic_or, 1, 10.0);
+  append(*y_topic_or, 3, 30.0);
+  append(*y_topic_or, 4, 40.0);
+  EXPECT_FALSE(session.commitChunks(writer.flushAll()).empty());
+
+  CurveDescriptor x_descriptor{
+      .name = "/x/value",
+      .topic_id = *x_topic_or,
+      .dataset_id = *dataset_or,
+      .column_index = 0,
+      .field_path = "value",
+      .display_offset_ns = 0,
+  };
+  CurveDescriptor y_descriptor{
+      .name = "/y/value",
+      .topic_id = *y_topic_or,
+      .dataset_id = *dataset_or,
+      .column_index = 0,
+      .field_path = "value",
+      .display_offset_ns = 0,
+  };
+
+  PointSeriesXY series(&session, x_descriptor, y_descriptor);
+  ASSERT_EQ(series.size(), 2U);
+  EXPECT_DOUBLE_EQ(series.sample(0).x(), 2.0);
+  EXPECT_DOUBLE_EQ(series.sample(0).y(), 10.0);
+  EXPECT_DOUBLE_EQ(series.sample(1).x(), 4.0);
+  EXPECT_DOUBLE_EQ(series.sample(1).y(), 30.0);
+
+  DataWriter second_writer = session.dataEngine().createWriter();
+  auto append_second = [&second_writer](TopicId topic_id, int t, double value) {
+    ASSERT_TRUE(second_writer.beginRow(topic_id, static_cast<Timestamp>(t) * kNs).has_value());
+    second_writer.set(topic_id, 0, value);
+    ASSERT_TRUE(second_writer.finishRow(topic_id).has_value());
+  };
+  append_second(*x_topic_or, 5, 6.0);
+  append_second(*y_topic_or, 5, 60.0);
+  EXPECT_FALSE(session.commitChunks(second_writer.flushAll()).empty());
+
+  EXPECT_EQ(series.size(), 2U);
+  series.onTopicCommitted();
+  ASSERT_EQ(series.size(), 3U);
+  EXPECT_DOUBLE_EQ(series.sample(2).x(), 6.0);
+  EXPECT_DOUBLE_EQ(series.sample(2).y(), 60.0);
 }
 
 TEST_F(DatastoreCurveAdapterTest, MissingTopicReturnsNanWithoutCrashing) {

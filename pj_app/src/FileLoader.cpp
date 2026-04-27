@@ -19,11 +19,18 @@
 #include "pj_app_core/SessionManager.h"
 #include "pj_base/data_source_protocol.h"
 #include "pj_base/dataset.hpp"
+#include "pj_base/sdk/plugin_data_api.hpp"
+#include "pj_base/sdk/service_traits.hpp"
 #include "pj_datastore/engine.hpp"
 #include "pj_datastore/plugin_data_host.hpp"
 #include "pj_marketplace/extension.hpp"
+#include "pj_plugins/dialog_protocol.h"
 #include "pj_plugins/host/data_source_handle.hpp"
 #include "pj_plugins/host/data_source_library.hpp"
+#include "pj_plugins/host/dialog_handle.hpp"
+#include "pj_plugins/host/message_parser_library.hpp"
+#include "pj_plugins/host/service_registry_builder.hpp"
+#include "pj_plugins/host_qt/dialog_engine.hpp"
 
 namespace PJ {
 
@@ -33,6 +40,7 @@ Q_LOGGING_CATEGORY(lcFileLoader, "pj.app.fileloader")
 
 constexpr const char* kLastDirKey = "FileLoader/lastDir";
 constexpr const char* kDefaultTimeDomainName = "default";
+constexpr const char* kPluginConfigKeyPrefix = "PluginConfig/";
 
 // Runtime host state for one file import. Only the bits CSV-style file sources
 // actually exercise are wired up; parser-binding callbacks return false because
@@ -42,12 +50,13 @@ struct RuntimeHost {
   std::atomic<bool> stop_requested{false};
 };
 
-const char* rhGetLastError(void* ctx) {
-  auto* state = static_cast<RuntimeHost*>(ctx);
-  return state->last_error.empty() ? nullptr : state->last_error.c_str();
+bool failRuntime(RuntimeHost* state, PJ_error_t* out_error, const char* message) noexcept {
+  state->last_error = message;
+  PJ::sdk::fillError(out_error, 1, "pj.app.fileloader", state->last_error);
+  return false;
 }
 
-void rhReportMessage(void* /*ctx*/, PJ_data_source_message_level_t level, PJ_string_view_t message) {
+void rhReportMessage(void* /*ctx*/, PJ_data_source_message_level_t level, PJ_string_view_t message) noexcept {
   const std::string_view text(message.data, message.size);
   switch (level) {
     case PJ_DATA_SOURCE_MESSAGE_ERROR:
@@ -62,39 +71,46 @@ void rhReportMessage(void* /*ctx*/, PJ_data_source_message_level_t level, PJ_str
   }
 }
 
-bool rhProgressStart(void* /*ctx*/, PJ_string_view_t /*label*/, uint64_t /*total*/, bool /*cancellable*/) {
-  return false;  // host doesn't show progress for v1
+bool rhProgressStart(
+    void* /*ctx*/, PJ_string_view_t /*label*/, uint64_t /*total*/, bool /*cancellable*/,
+    PJ_error_t* /*out_error*/) noexcept {
+  return true;  // Import progress is currently logged by plugin messages only.
 }
 
-bool rhProgressUpdate(void* ctx, uint64_t /*current*/) {
+bool rhProgressUpdate(void* ctx, uint64_t /*current*/) noexcept {
   return !static_cast<RuntimeHost*>(ctx)->stop_requested.load();
 }
 
-void rhProgressFinish(void* /*ctx*/) {}
+void rhProgressFinish(void* /*ctx*/) noexcept {}
 
-bool rhIsStopRequested(void* ctx) {
+bool rhIsStopRequested(void* ctx) noexcept {
   return static_cast<RuntimeHost*>(ctx)->stop_requested.load();
 }
 
-void rhNotifyState(void* /*ctx*/, PJ_data_source_state_t /*state*/) {}
+void rhNotifyState(void* /*ctx*/, PJ_data_source_state_t /*state*/) noexcept {}
 
-void rhRequestStop(void* ctx, PJ_data_source_state_t /*terminal*/, PJ_string_view_t reason) {
-  static_cast<RuntimeHost*>(ctx)->last_error.assign(reason.data, reason.size);
+void rhRequestStop(void* ctx, PJ_data_source_state_t /*terminal*/, PJ_string_view_t reason) noexcept {
+  auto* state = static_cast<RuntimeHost*>(ctx);
+  state->last_error.assign(reason.data, reason.size);
+  state->stop_requested.store(true);
 }
 
 bool rhEnsureParserBinding(
-    void* ctx, const PJ_parser_binding_request_t* /*request*/, PJ_parser_binding_handle_t* /*out*/) {
-  static_cast<RuntimeHost*>(ctx)->last_error = "parser binding not supported (no MessageParser plugin wired in v1)";
-  return false;
+    void* ctx, const PJ_parser_binding_request_t* /*request*/, PJ_parser_binding_handle_t* /*out*/,
+    PJ_error_t* out_error) noexcept {
+  return failRuntime(
+      static_cast<RuntimeHost*>(ctx), out_error, "parser binding not supported (no MessageParser plugin wired in v1)");
 }
 
-bool rhPushRawMessage(void* ctx, PJ_parser_binding_handle_t /*handle*/, int64_t /*ts*/, PJ_bytes_view_t /*payload*/) {
-  static_cast<RuntimeHost*>(ctx)->last_error = "push_raw_message called without parser binding";
-  return false;
+bool rhPushRawMessage(
+    void* ctx, PJ_parser_binding_handle_t /*handle*/, int64_t /*ts*/, PJ_bytes_view_t /*payload*/,
+    PJ_error_t* out_error) noexcept {
+  return failRuntime(static_cast<RuntimeHost*>(ctx), out_error, "push_raw_message called without parser binding");
 }
 
 int rhShowMessageBox(
-    void* /*ctx*/, PJ_message_box_type_t /*type*/, PJ_string_view_t title, PJ_string_view_t message, int buttons) {
+    void* /*ctx*/, PJ_message_box_type_t /*type*/, PJ_string_view_t title, PJ_string_view_t message,
+    int buttons) noexcept {
   // Headless default — log and pick a positive button. The host is single-
   // threaded for the import, but Qt modal dialogs from a plugin callback are
   // fragile, so v1 doesn't pop them. Plugins that need user input go through
@@ -113,15 +129,14 @@ int rhShowMessageBox(
   return -1;
 }
 
-const char* rhListAvailableEncodings(void* /*ctx*/) {
+const char* rhListAvailableEncodings(void* /*ctx*/) noexcept {
   return nullptr;  // no parsers wired in v1
 }
 
 PJ_data_source_runtime_host_t makeRuntimeHost(RuntimeHost* state) {
   static const PJ_data_source_runtime_host_vtable_t vtable = {
-      .protocol_version = PJ_DATA_SOURCE_PROTOCOL_VERSION,
+      .protocol_version = 1,
       .struct_size = sizeof(PJ_data_source_runtime_host_vtable_t),
-      .get_last_error = rhGetLastError,
       .report_message = rhReportMessage,
       .progress_start = rhProgressStart,
       .progress_update = rhProgressUpdate,
@@ -142,13 +157,26 @@ QString normalizeExtension(const QString& path) {
   return suffix.isEmpty() ? QString() : QStringLiteral(".") + suffix.toLower();
 }
 
-// Build a JSON config payload with the file path. Uses Qt's JSON serializer so
-// paths with embedded quotes or backslashes (Windows portability) are escaped
-// correctly — naive string concatenation would break loadConfig parsing.
-std::string buildLoadConfig(const QString& path) {
-  const QJsonObject obj{{QStringLiteral("filepath"), path}};
-  const QByteArray bytes = QJsonDocument(obj).toJson(QJsonDocument::Compact);
-  return std::string(bytes.constData(), static_cast<std::size_t>(bytes.size()));
+// Merge the file path into the (possibly empty) saved JSON config. Saved
+// config carries the dialog state from the previous load (delimiter, time
+// column, etc.) so the dialog opens pre-populated. If saved_config doesn't
+// parse, treat it as empty rather than failing the import.
+std::string buildLoadConfig(std::string_view saved_config, const QString& path) {
+  QJsonObject obj;
+  if (!saved_config.empty()) {
+    const QByteArray bytes(saved_config.data(), static_cast<qsizetype>(saved_config.size()));
+    const QJsonDocument doc = QJsonDocument::fromJson(bytes);
+    if (doc.isObject()) {
+      obj = doc.object();
+    }
+  }
+  obj.insert(QStringLiteral("filepath"), path);
+  const QByteArray out = QJsonDocument(obj).toJson(QJsonDocument::Compact);
+  return std::string(out.constData(), static_cast<std::size_t>(out.size()));
+}
+
+QString pluginConfigKey(const std::string& plugin_id) {
+  return QString::fromLatin1(kPluginConfigKeyPrefix) + QString::fromStdString(plugin_id);
 }
 
 }  // namespace
@@ -196,29 +224,15 @@ bool FileLoader::loadFile(const QString& path, QWidget* dialog_parent) {
   // v1 picks the first match; M3+ can add a chooser when multiple plugins
   // claim the same extension.
   const LoadedDataSource* source = matches.front();
+  const QString source_name = QString::fromStdString(source->name);
 
-  // Stand up plugin scaffolding BEFORE creating the dataset. The most common
-  // failure is loadConfig() rejecting a bad/missing path; if we created the
-  // dataset first and then loadConfig failed, the engine would accumulate a
-  // stale empty dataset (pj_datastore has no removeDataset API).
   DataSourceHandle handle = source->library.createHandle();
   if (!handle.valid()) {
-    return fail(tr("Plugin '%1': createHandle failed.").arg(source->name));
+    return fail(tr("Plugin '%1': createHandle failed.").arg(source_name));
   }
 
-  RuntimeHost runtime_state;
-  if (!handle.bindRuntimeHost(makeRuntimeHost(&runtime_state))) {
-    return fail(
-        tr("Plugin '%1': bindRuntimeHost failed: %2").arg(source->name, QString::fromStdString(handle.lastError())));
-  }
-
-  if (!handle.loadConfig(buildLoadConfig(path))) {
-    return fail(tr("Plugin '%1': loadConfig failed: %2").arg(source->name, QString::fromStdString(handle.lastError())));
-  }
-
-  // Past this point, errors will leave a dataset behind (no removal API in
-  // pj_datastore). Acceptable for v1: bind/start failures are rare and the
-  // file path was already validated by loadConfig.
+  // The v4 DataSource protocol resolves host services during bind(), so the
+  // target dataset must exist before loadConfig() and start().
   DataEngine& engine = session_.dataEngine();
   const TimeDomainId td_id = ensureDefaultTimeDomainId();
   if (td_id == 0) {
@@ -234,13 +248,75 @@ bool FileLoader::loadFile(const QString& path, QWidget* dialog_parent) {
 
   const PJ_data_source_handle_t source_handle{static_cast<uint32_t>(*dataset_or)};
   DatastoreSourceWriteHost write_host(engine, source_handle);
-  if (!handle.bindWriteHost(write_host.raw())) {
-    return fail(
-        tr("Plugin '%1': bindWriteHost failed: %2").arg(source->name, QString::fromStdString(handle.lastError())));
+
+  RuntimeHost runtime_state;
+  ServiceRegistryBuilder registry;
+  registry.registerService<sdk::SourceWriteHostService>(write_host.raw());
+  registry.registerService<sdk::DataSourceRuntimeHostService>(makeRuntimeHost(&runtime_state));
+
+  if (auto status = handle.bind(registry.view()); !status) {
+    return fail(tr("Plugin '%1': bind failed: %2").arg(source_name, QString::fromStdString(status.error())));
   }
 
-  if (!handle.start()) {
-    return fail(tr("Plugin '%1': start failed: %2").arg(source->name, QString::fromStdString(handle.lastError())));
+  // Pre-populate the dialog with last-used settings so users don't re-pick
+  // delimiter/time column on every load. Key matches proto_app's scheme
+  // (PluginConfig/<plugin name>) so layouts and saved configs read the same
+  // setting across both apps.
+  QSettings persisted_settings;
+  const QString config_key = pluginConfigKey(source->name);
+  const std::string saved_config = persisted_settings.value(config_key, QString()).toString().toStdString();
+
+  std::string config = buildLoadConfig(saved_config, path);
+  if (auto status = handle.loadConfig(config); !status) {
+    return fail(tr("Plugin '%1': loadConfig failed: %2").arg(source_name, QString::fromStdString(status.error())));
+  }
+
+  // Show the plugin's configuration dialog when it advertises one. Mirrors
+  // proto_app's onLoadFile flow: dialog runs on the SAME handle that will
+  // ingest, so any state the dialog mutates (parser config, column choices)
+  // is observed by start().
+  if ((source->capabilities & PJ_DATA_SOURCE_CAPABILITY_HAS_DIALOG) != 0) {
+    auto vt_result = source->library.resolveDialogVtable();
+    if (vt_result) {
+      const PJ_borrowed_dialog_t borrowed = handle.getDialog();
+      if (borrowed.ctx != nullptr) {
+        DialogHandle dialog_handle = DialogHandle::borrowed(*vt_result, borrowed.ctx);
+        DialogEngineConfig engine_config;
+        // Inject parser-options UI when the dialog has a "pj_parser_slot" widget
+        // (currently only stream sources use this; harmless for file sources).
+        engine_config.parser_dialog_provider =
+            [&extensions = extensions_](const std::string& encoding) -> const PJ_dialog_vtable_t* {
+          const auto* parser = extensions.findParserByEncoding(QString::fromStdString(encoding));
+          if (parser == nullptr) {
+            return nullptr;
+          }
+          auto vt = parser->library.resolveDialogVtable();
+          return vt ? *vt : nullptr;
+        };
+        DialogEngine dialog_engine(std::move(dialog_handle), engine_config);
+        if (dialog_engine.showDialog(dialog_parent) == DialogResult::kRejected) {
+          return false;
+        }
+        config = dialog_engine.savedConfig();
+        // Re-apply the dialog's chosen config to the source handle so start()
+        // sees it. (DialogEngine writes back to the dialog vtable, which the
+        // CSV plugin shares with its source state, but other plugins may not —
+        // the explicit loadConfig() makes the contract uniform.)
+        if (auto status = handle.loadConfig(config); !status) {
+          return fail(tr("Plugin '%1': loadConfig (post-dialog) failed: %2")
+                          .arg(source_name, QString::fromStdString(status.error())));
+        }
+      }
+    }
+  }
+
+  // Persist the resolved config before start() so the dialog choices stick
+  // even if ingest fails afterwards (matches proto_app's onLoadFile, which
+  // persists unconditionally after the import call).
+  persisted_settings.setValue(config_key, QString::fromStdString(config));
+
+  if (auto status = handle.start(); !status) {
+    return fail(tr("Plugin '%1': start failed: %2").arg(source_name, QString::fromStdString(status.error())));
   }
 
   write_host.flushPending();

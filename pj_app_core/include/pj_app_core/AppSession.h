@@ -1,8 +1,10 @@
 #pragma once
 
 #include <QObject>
-
+#include <QString>
 #include <memory>
+
+#include "pj_base/diagnostic_sink.hpp"
 
 namespace PJ {
 
@@ -17,19 +19,43 @@ class SessionManager;
 class AppSession : public QObject {
   Q_OBJECT
  public:
+  // Creates a session using the default extension directory.
   explicit AppSession(QObject* parent = nullptr);
+
+  // Creates a session using an explicit extension directory.
+  explicit AppSession(QString extensions_dir, QObject* parent = nullptr);
+
+  // Creates a session with an explicit extension directory and diagnostics.
+  AppSession(QString extensions_dir, DiagnosticSink sink, QObject* parent = nullptr);
+
+  // Releases all long-lived application services.
   ~AppSession() override;
 
+  // AppSession owns stateful services and cannot be copied.
   AppSession(const AppSession&) = delete;
+
+  // AppSession owns stateful services and cannot be assigned.
   AppSession& operator=(const AppSession&) = delete;
 
-  // Services are owned by AppSession for its full lifetime; widgets always
-  // outlive the objects they reference here. Returning references makes that
-  // ownership contract explicit and drops the raw-pointer hazard.
-  SessionManager& sessionManager() const { return *session_manager_; }
-  PlaybackEngine& playbackEngine() const { return *playback_engine_; }
-  CatalogModel& catalogModel() const { return *catalog_model_; }
-  ExtensionCatalogService& extensionCatalog() const { return *extension_catalog_; }
+  // Returns the session manager owned by this session.
+  SessionManager& sessionManager() const {
+    return *session_manager_;
+  }
+
+  // Returns the playback engine owned by this session.
+  PlaybackEngine& playbackEngine() const {
+    return *playback_engine_;
+  }
+
+  // Returns the catalog model owned by this session.
+  CatalogModel& catalogModel() const {
+    return *catalog_model_;
+  }
+
+  // Returns the extension catalog owned by this session.
+  ExtensionCatalogService& extensionCatalog() const {
+    return *extension_catalog_;
+  }
 
  private:
   std::unique_ptr<SessionManager> session_manager_;

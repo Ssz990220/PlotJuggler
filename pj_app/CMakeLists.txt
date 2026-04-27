@@ -35,6 +35,7 @@ target_link_libraries(pj_app PRIVATE
     pj_app_core
     pj_plot_widgets
     pj_marketplace_ui
+    pj_dialog_engine_qt
     qt_advanced_docking
     Qt6::Core
     Qt6::Gui
