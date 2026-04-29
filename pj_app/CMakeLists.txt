@@ -1,5 +1,7 @@
 add_executable(pj_app
     src/main.cpp
+    src/DialogPresenter.cpp
+    src/DialogPresenter.h
     src/FileLoader.cpp
     src/FileLoader.h
     src/MainWindow.cpp

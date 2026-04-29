@@ -14,6 +14,7 @@
 #include <string>
 #include <string_view>
 
+#include "DialogPresenter.h"
 #include "pj_app_core/CatalogModel.h"
 #include "pj_app_core/ExtensionCatalogService.h"
 #include "pj_app_core/SessionManager.h"
@@ -24,13 +25,9 @@
 #include "pj_datastore/engine.hpp"
 #include "pj_datastore/plugin_data_host.hpp"
 #include "pj_marketplace/extension.hpp"
-#include "pj_plugins/dialog_protocol.h"
 #include "pj_plugins/host/data_source_handle.hpp"
 #include "pj_plugins/host/data_source_library.hpp"
-#include "pj_plugins/host/dialog_handle.hpp"
-#include "pj_plugins/host/message_parser_library.hpp"
 #include "pj_plugins/host/service_registry_builder.hpp"
-#include "pj_plugins/host_qt/dialog_engine.hpp"
 
 namespace PJ {
 
@@ -259,9 +256,7 @@ bool FileLoader::loadFile(const QString& path, QWidget* dialog_parent) {
   }
 
   // Pre-populate the dialog with last-used settings so users don't re-pick
-  // delimiter/time column on every load. Key matches proto_app's scheme
-  // (PluginConfig/<plugin name>) so layouts and saved configs read the same
-  // setting across both apps.
+  // delimiter/time column on every load.
   QSettings persisted_settings;
   const QString config_key = pluginConfigKey(source->name);
   const std::string saved_config = persisted_settings.value(config_key, QString()).toString().toStdString();
@@ -271,48 +266,31 @@ bool FileLoader::loadFile(const QString& path, QWidget* dialog_parent) {
     return fail(tr("Plugin '%1': loadConfig failed: %2").arg(source_name, QString::fromStdString(status.error())));
   }
 
-  // Show the plugin's configuration dialog when it advertises one. Mirrors
-  // proto_app's onLoadFile flow: dialog runs on the SAME handle that will
-  // ingest, so any state the dialog mutates (parser config, column choices)
-  // is observed by start().
-  if ((source->capabilities & PJ_DATA_SOURCE_CAPABILITY_HAS_DIALOG) != 0) {
-    auto vt_result = source->library.resolveDialogVtable();
-    if (vt_result) {
-      const PJ_borrowed_dialog_t borrowed = handle.getDialog();
-      if (borrowed.ctx != nullptr) {
-        DialogHandle dialog_handle = DialogHandle::borrowed(*vt_result, borrowed.ctx);
-        DialogEngineConfig engine_config;
-        // Inject parser-options UI when the dialog has a "pj_parser_slot" widget
-        // (currently only stream sources use this; harmless for file sources).
-        engine_config.parser_dialog_provider =
-            [&extensions = extensions_](const std::string& encoding) -> const PJ_dialog_vtable_t* {
-          const auto* parser = extensions.findParserByEncoding(QString::fromStdString(encoding));
-          if (parser == nullptr) {
-            return nullptr;
-          }
-          auto vt = parser->library.resolveDialogVtable();
-          return vt ? *vt : nullptr;
-        };
-        DialogEngine dialog_engine(std::move(dialog_handle), engine_config);
-        if (dialog_engine.showDialog(dialog_parent) == DialogResult::kRejected) {
-          return false;
-        }
-        config = dialog_engine.savedConfig();
-        // Re-apply the dialog's chosen config to the source handle so start()
-        // sees it. (DialogEngine writes back to the dialog vtable, which the
-        // CSV plugin shares with its source state, but other plugins may not —
-        // the explicit loadConfig() makes the contract uniform.)
-        if (auto status = handle.loadConfig(config); !status) {
-          return fail(tr("Plugin '%1': loadConfig (post-dialog) failed: %2")
-                          .arg(source_name, QString::fromStdString(status.error())));
-        }
-      }
+  const auto dlg = dialog_presenter::showDataSourceDialog({
+      .source = *source,
+      .handle = handle,
+      .catalog = extensions_,
+      .parent = dialog_parent,
+  });
+  if (dlg.outcome == dialog_presenter::Outcome::kPluginContractViolation) {
+    return fail(tr("Plugin contract violation: %1. Reinstall the plugin from the Marketplace.")
+                    .arg(QString::fromStdString(dlg.error)));
+  }
+  if (dlg.outcome == dialog_presenter::Outcome::kRejected) {
+    return false;
+  }
+  if (dlg.payload.has_value()) {
+    config = dlg.payload->saved_config;
+    // DialogEngine already wrote the dialog's choices back via the dialog vtable,
+    // but for plugins that split dialog state from source state the explicit
+    // reload keeps the contract uniform.
+    if (auto status = handle.loadConfig(config); !status) {
+      return fail(tr("Plugin '%1': loadConfig (post-dialog) failed: %2")
+                      .arg(source_name, QString::fromStdString(status.error())));
     }
   }
 
-  // Persist the resolved config before start() so the dialog choices stick
-  // even if ingest fails afterwards (matches proto_app's onLoadFile, which
-  // persists unconditionally after the import call).
+  // Persist before start() so dialog choices stick even if ingest fails.
   persisted_settings.setValue(config_key, QString::fromStdString(config));
 
   if (auto status = handle.start(); !status) {
