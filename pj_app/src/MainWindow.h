@@ -45,9 +45,8 @@ class MainWindow : public QMainWindow {
   [[nodiscard]] bool populateTestData();
 
  signals:
-  // Re-emitted from Theme::themeChanged after the new QSS is applied.
-  // Child widgets connect their onStylesheetChanged(QString) slots so
-  // they can re-render their icons against the new palette.
+  // Fires after qApp's stylesheet is applied; subwidgets refresh
+  // palette-tinted icons via their onStylesheetChanged slots.
   void stylesheetChanged(QString theme);
 
  private slots:
@@ -60,10 +59,8 @@ class MainWindow : public QMainWindow {
   // Opens the recent diagnostics dialog.
   void onShowDiagnosticsDialog();
 
-  // Opens the preferences dialog.
   void onShowPreferencesDialog();
 
-  // Applies the QSS produced by Theme to qApp and tells children.
   void onThemeChanged(const QString& theme);
 
   // Wires callbacks for a newly created plot tab.
@@ -100,8 +97,7 @@ class MainWindow : public QMainWindow {
   // Applies operation to each plot widget.
   void forEachPlot(const std::function<void(PlotWidget*)>& operation);
 
-  // Reloads icons that don't live inside a sub-widget that has its own
-  // onStylesheetChanged slot.
+  // Icons not owned by a subwidget with its own onStylesheetChanged.
   void applyIcons(QString theme);
 
  protected:

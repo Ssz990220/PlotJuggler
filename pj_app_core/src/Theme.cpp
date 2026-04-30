@@ -110,6 +110,9 @@ QStringList Theme::availableThemes() {
 Theme::Theme(QObject* parent) : QObject(parent), name_(QSettings().value(kThemeSettingsKey, "light").toString()) {
   if (!availableThemes().contains(name_)) {
     name_ = QStringLiteral("light");
+    // Rewrite stale or corrupt persisted name so subsequent readers
+    // (e.g. SvgUtil::currentTheme) see the same value Theme is using.
+    QSettings().setValue(kThemeSettingsKey, name_);
   }
   rebuildQss();
 }

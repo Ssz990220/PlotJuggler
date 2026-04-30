@@ -91,9 +91,6 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
     QSettings().setValue(QStringLiteral("MainWindow.buttonLink"), checked);
   });
 
-  // Theme service → application stylesheet, plus a re-emit so child widgets
-  // re-render their icons. Apply the stored theme once at startup so init
-  // and runtime go through the same path.
   connect(theme_.get(), &Theme::themeChanged, this, &MainWindow::onThemeChanged);
   connect(this, &MainWindow::stylesheetChanged, ui_->leftPanel, &LeftPanel::onStylesheetChanged);
   connect(this, &MainWindow::stylesheetChanged, ui_->curveListPanel, &CurveListPanel::onStylesheetChanged);
@@ -128,8 +125,9 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
   connect(ui_->actionMarketplace, &QAction::triggered, this, &MainWindow::onOpenMarketplace);
   connect(ui_->actionExit, &QAction::triggered, this, &QWidget::close);
 
-  // Preferences entry sits in the App menu, between Marketplace and Exit
-  // (the .ui's separator already sits before Exit, so insert above it).
+  // App menu: [Marketplace] | [Preferences] | [Exit] (two separators).
+  // The .ui already provides the divider above Exit; we insert
+  // Preferences between, then add a second separator below it.
   auto* preferences_action = new QAction(tr("Preferences..."), this);
   preferences_action->setShortcut(QKeySequence::Preferences);
   connect(preferences_action, &QAction::triggered, this, &MainWindow::onShowPreferencesDialog);
