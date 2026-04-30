@@ -11,6 +11,7 @@ add_library(pj_app_core STATIC
     src/ExtensionCatalogService.cpp
     src/PlaybackEngine.cpp
     src/SessionManager.cpp
+    src/Theme.cpp
     include/pj_app_core/AppSession.h
     include/pj_app_core/CatalogModel.h
     include/pj_app_core/CurveDescriptor.h
@@ -19,6 +20,7 @@ add_library(pj_app_core STATIC
     include/pj_app_core/PlaybackEngine.h
     include/pj_app_core/SessionManager.h
     include/pj_app_core/SvgUtil.h
+    include/pj_app_core/Theme.h
 )
 
 set_target_properties(pj_app_core PROPERTIES

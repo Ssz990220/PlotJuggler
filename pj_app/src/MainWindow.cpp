@@ -1,6 +1,7 @@
 #include "MainWindow.h"
 
 #include <QAction>
+#include <QApplication>
 #include <QCloseEvent>
 #include <QDialog>
 #include <QDialogButtonBox>
@@ -11,7 +12,6 @@
 #include <QStatusBar>
 #include <QStringList>
 #include <QTabWidget>
-#include <QToolButton>
 #include <QUrl>
 #include <QVBoxLayout>
 #include <cmath>
@@ -20,12 +20,14 @@
 #include <vector>
 
 #include "FileLoader.h"
+#include "PreferencesDialog.h"
 #include "pj_app_core/AppSession.h"
 #include "pj_app_core/CatalogModel.h"
 #include "pj_app_core/ExtensionCatalogService.h"
 #include "pj_app_core/PlaybackEngine.h"
 #include "pj_app_core/SessionManager.h"
 #include "pj_app_core/SvgUtil.h"
+#include "pj_app_core/Theme.h"
 #include "pj_base/dataset.hpp"
 #include "pj_datastore/engine.hpp"
 #include "pj_datastore/writer.hpp"
@@ -72,7 +74,8 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
     : QMainWindow(parent),
       ui_(new Ui::MainWindow),
       diagnostic_bridge_(new QtDiagnosticBridge(this)),
-      session_(std::make_unique<AppSession>(std::move(extensions_dir), diagnostic_bridge_->sink())) {
+      session_(std::make_unique<AppSession>(std::move(extensions_dir), diagnostic_bridge_->sink())),
+      theme_(std::make_unique<Theme>()) {
   ui_->setupUi(this);
   connect(diagnostic_bridge_, &QtDiagnosticBridge::diagnosticReported, this, &MainWindow::onDiagnosticReported);
 
@@ -82,11 +85,20 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
   ui_->curveListPanel->setCatalog(&session_->catalogModel());
 
   QSettings settings;
-  ui_->buttonLink->setIcon(LoadSvg(":/resources/svg/link.svg", currentTheme()));
+  applyIcons(theme_->currentTheme());
   ui_->buttonLink->setChecked(settings.value(QStringLiteral("MainWindow.buttonLink"), true).toBool());
-  connect(ui_->buttonLink, &QToolButton::toggled, this, [](bool checked) {
+  connect(ui_->buttonLink, &QPushButton::toggled, this, [](bool checked) {
     QSettings().setValue(QStringLiteral("MainWindow.buttonLink"), checked);
   });
+
+  // Theme service → application stylesheet, plus a re-emit so child widgets
+  // re-render their icons. Apply the stored theme once at startup so init
+  // and runtime go through the same path.
+  connect(theme_.get(), &Theme::themeChanged, this, &MainWindow::onThemeChanged);
+  connect(this, &MainWindow::stylesheetChanged, ui_->leftPanel, &LeftPanel::onStylesheetChanged);
+  connect(this, &MainWindow::stylesheetChanged, ui_->curveListPanel, &CurveListPanel::onStylesheetChanged);
+  connect(this, &MainWindow::stylesheetChanged, ui_->timelineWidget, &TimelineWidget::onStylesheetChanged);
+  qApp->setStyleSheet(theme_->expandedQss());
 
   diagnostics_action_ = ui_->menuHelp->addAction(tr("Diagnostics..."), this, &MainWindow::onShowDiagnosticsDialog);
   diagnostics_action_->setEnabled(false);
@@ -115,6 +127,14 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
 
   connect(ui_->actionMarketplace, &QAction::triggered, this, &MainWindow::onOpenMarketplace);
   connect(ui_->actionExit, &QAction::triggered, this, &QWidget::close);
+
+  // Preferences entry sits in the App menu, between Marketplace and Exit
+  // (the .ui's separator already sits before Exit, so insert above it).
+  auto* preferences_action = new QAction(tr("Preferences..."), this);
+  preferences_action->setShortcut(QKeySequence::Preferences);
+  connect(preferences_action, &QAction::triggered, this, &MainWindow::onShowPreferencesDialog);
+  ui_->menuApp->insertAction(ui_->actionExit, preferences_action);
+  ui_->menuApp->insertSeparator(ui_->actionExit);
 }
 
 MainWindow::~MainWindow() {
@@ -181,6 +201,21 @@ void MainWindow::onOpenMarketplace() {
 
 void MainWindow::onLoadDataRequested() {
   file_loader_->openFromDialog(this);
+}
+
+void MainWindow::onShowPreferencesDialog() {
+  PreferencesDialog dlg(*theme_, this);
+  dlg.exec();
+}
+
+void MainWindow::onThemeChanged(const QString& theme) {
+  qApp->setStyleSheet(theme_->expandedQss());
+  applyIcons(theme);
+  emit stylesheetChanged(theme);
+}
+
+void MainWindow::applyIcons(QString theme) {
+  ui_->buttonLink->setIcon(LoadSvg(":/resources/svg/link.svg", theme));
 }
 
 void MainWindow::onShowDiagnosticsDialog() {

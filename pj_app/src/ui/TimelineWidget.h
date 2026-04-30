@@ -21,6 +21,9 @@ class TimelineWidget : public QWidget {
 
   void setPlaybackEngine(PlaybackEngine* engine);
 
+ public slots:
+  void onStylesheetChanged(QString theme);
+
  private slots:
   void onEngineTimeChanged(double t);
   void onEngineRangeChanged(double min, double max);
@@ -34,6 +37,8 @@ class TimelineWidget : public QWidget {
   void onStepChanged(double value);
 
  private:
+  void applyIcons(QString theme);
+
   Ui::TimelineWidget* ui_;
   PlaybackEngine* engine_ = nullptr;
   bool updating_from_engine_ = false;

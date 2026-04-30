@@ -29,6 +29,9 @@ class CurveListPanel : public QWidget {
   void deleteCustomSeriesRequested(QString name);
   void clearAllCurvesRequested();
 
+ public slots:
+  void onStylesheetChanged(QString theme);
+
  private slots:
   void onFilterChanged(const QString& text);
   void onCustomFilterChanged(const QString& text);
@@ -39,6 +42,7 @@ class CurveListPanel : public QWidget {
   void onCurveAdded(const QString& name);
   void onCurveRemoved(const QString& name);
   void onCatalogCleared();
+  void applyIcons(QString theme);
 
   Ui::CurveListPanel* ui_;
   CatalogModel* catalog_ = nullptr;

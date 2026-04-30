@@ -13,22 +13,19 @@ namespace PJ {
 TimelineWidget::TimelineWidget(QWidget* parent) : QWidget(parent), ui_(new Ui::TimelineWidget) {
   ui_->setupUi(this);
 
-  const QString theme = currentTheme();
-  ui_->playbackLoop->setIcon(LoadSvg(":/resources/svg/loop.svg", theme));
-  ui_->buttonPlay->setIcon(LoadSvg(":/resources/svg/play_arrow.svg", theme));
+  applyIcons(currentTheme());
 
   ui_->displayTime->setText("0.000");
 
-  connect(ui_->timeSlider, &RealSlider::realValueChanged, this,
-          &TimelineWidget::onSliderValueChanged);
+  connect(ui_->timeSlider, &RealSlider::realValueChanged, this, &TimelineWidget::onSliderValueChanged);
   connect(ui_->buttonPlay, &QPushButton::toggled, this, &TimelineWidget::onPlayToggled);
   connect(ui_->playbackLoop, &QPushButton::toggled, this, &TimelineWidget::onLoopToggled);
-  connect(ui_->playbackRate,
-          static_cast<void (QDoubleSpinBox::*)(double)>(&QDoubleSpinBox::valueChanged), this,
-          &TimelineWidget::onRateChanged);
-  connect(ui_->playbackStep,
-          static_cast<void (QDoubleSpinBox::*)(double)>(&QDoubleSpinBox::valueChanged), this,
-          &TimelineWidget::onStepChanged);
+  connect(
+      ui_->playbackRate, static_cast<void (QDoubleSpinBox::*)(double)>(&QDoubleSpinBox::valueChanged), this,
+      &TimelineWidget::onRateChanged);
+  connect(
+      ui_->playbackStep, static_cast<void (QDoubleSpinBox::*)(double)>(&QDoubleSpinBox::valueChanged), this,
+      &TimelineWidget::onStepChanged);
 }
 
 TimelineWidget::~TimelineWidget() {
@@ -120,6 +117,15 @@ void TimelineWidget::onStepChanged(double value) {
     return;
   }
   engine_->setStep(value);
+}
+
+void TimelineWidget::onStylesheetChanged(QString theme) {
+  applyIcons(theme);
+}
+
+void TimelineWidget::applyIcons(QString theme) {
+  ui_->playbackLoop->setIcon(LoadSvg(":/resources/svg/loop.svg", theme));
+  ui_->buttonPlay->setIcon(LoadSvg(":/resources/svg/play_arrow.svg", theme));
 }
 
 }  // namespace PJ

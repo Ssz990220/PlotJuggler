@@ -13,8 +13,7 @@
 
 namespace PJ {
 
-CurveListPanel::CurveListPanel(QWidget* parent)
-    : QWidget(parent), ui_(new Ui::CurveListPanel) {
+CurveListPanel::CurveListPanel(QWidget* parent) : QWidget(parent), ui_(new Ui::CurveListPanel) {
   ui_->setupUi(this);
 
   tree_view_ = ui_->treeView;
@@ -24,20 +23,14 @@ CurveListPanel::CurveListPanel(QWidget* parent)
   ui_->verticalSplitter->setStretchFactor(0, 5);
   ui_->verticalSplitter->setStretchFactor(1, 1);
 
-  const QString theme = currentTheme();
-  ui_->pushButtonTrash->setIcon(LoadSvg(":/resources/svg/trash.svg", theme));
-  ui_->buttonEditCustom->setIcon(LoadSvg(":/resources/svg/pencil-edit.svg", theme));
-  ui_->buttonDeleteCustom->setIcon(LoadSvg(":/resources/svg/delete_forever.svg", theme));
+  applyIcons(currentTheme());
 
   connect(ui_->lineEditFilter, &QLineEdit::textChanged, this, &CurveListPanel::onFilterChanged);
-  connect(ui_->lineEditCustomFilter, &QLineEdit::textChanged, this,
-          &CurveListPanel::onCustomFilterChanged);
-  connect(ui_->checkBoxShowValues, &QCheckBox::toggled, this,
-          &CurveListPanel::onShowValuesToggled);
+  connect(ui_->lineEditCustomFilter, &QLineEdit::textChanged, this, &CurveListPanel::onCustomFilterChanged);
+  connect(ui_->checkBoxShowValues, &QCheckBox::toggled, this, &CurveListPanel::onShowValuesToggled);
   connect(ui_->pushButtonTrash, &QPushButton::clicked, this, &CurveListPanel::onTrashClicked);
 
-  connect(ui_->buttonAddCustom, &QPushButton::clicked, this,
-          &CurveListPanel::createCustomSeriesRequested);
+  connect(ui_->buttonAddCustom, &QPushButton::clicked, this, &CurveListPanel::createCustomSeriesRequested);
   connect(ui_->buttonEditCustom, &QPushButton::clicked, this, [this]() {
     auto names = custom_view_->selectedCurveNames();
     if (!names.empty()) {
@@ -117,6 +110,16 @@ void CurveListPanel::onCurveRemoved(const QString& /*name*/) {
 
 void CurveListPanel::onCatalogCleared() {
   tree_view_->clearCurves();
+}
+
+void CurveListPanel::onStylesheetChanged(QString theme) {
+  applyIcons(theme);
+}
+
+void CurveListPanel::applyIcons(QString theme) {
+  ui_->pushButtonTrash->setIcon(LoadSvg(":/resources/svg/trash.svg", theme));
+  ui_->buttonEditCustom->setIcon(LoadSvg(":/resources/svg/pencil-edit.svg", theme));
+  ui_->buttonDeleteCustom->setIcon(LoadSvg(":/resources/svg/delete_forever.svg", theme));
 }
 
 }  // namespace PJ

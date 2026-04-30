@@ -27,6 +27,7 @@ class FileLoader;
 class PlotDocker;
 class PlotWidget;
 class QtDiagnosticBridge;
+class Theme;
 
 class MainWindow : public QMainWindow {
   Q_OBJECT
@@ -43,6 +44,12 @@ class MainWindow : public QMainWindow {
   // Populates the session with generated data for smoke testing.
   [[nodiscard]] bool populateTestData();
 
+ signals:
+  // Re-emitted from Theme::themeChanged after the new QSS is applied.
+  // Child widgets connect their onStylesheetChanged(QString) slots so
+  // they can re-render their icons against the new palette.
+  void stylesheetChanged(QString theme);
+
  private slots:
   // Opens the extension marketplace dialog.
   void onOpenMarketplace();
@@ -52,6 +59,12 @@ class MainWindow : public QMainWindow {
 
   // Opens the recent diagnostics dialog.
   void onShowDiagnosticsDialog();
+
+  // Opens the preferences dialog.
+  void onShowPreferencesDialog();
+
+  // Applies the QSS produced by Theme to qApp and tells children.
+  void onThemeChanged(const QString& theme);
 
   // Wires callbacks for a newly created plot tab.
   void onPlotTabAdded(PlotDocker* docker);
@@ -87,6 +100,10 @@ class MainWindow : public QMainWindow {
   // Applies operation to each plot widget.
   void forEachPlot(const std::function<void(PlotWidget*)>& operation);
 
+  // Reloads icons that don't live inside a sub-widget that has its own
+  // onStylesheetChanged slot.
+  void applyIcons(QString theme);
+
  protected:
   // Persists main-window settings before close.
   void closeEvent(QCloseEvent* event) override;
@@ -107,6 +124,7 @@ class MainWindow : public QMainWindow {
   QPushButton* diagnostics_button_ = nullptr;
   std::unique_ptr<AppSession> session_;
   std::unique_ptr<FileLoader> file_loader_;
+  std::unique_ptr<Theme> theme_;
 };
 
 }  // namespace PJ
