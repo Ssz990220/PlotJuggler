@@ -4,7 +4,7 @@
 
 Build **PlotJuggler 4** from scratch as a modern desktop application that reaches parity-plus with PlotJuggler 3.x.
 
-This is a greenfield app repo. It is not a refactor of PJ3 and it does not evolve `pj_proto_app` (deprecated). Code is cherry-picked from PJ3 and rebuilt on top of the `plotjuggler_core` foundation.
+This is a greenfield app repo. It is not a refactor of PJ3. Code is cherry-picked from PJ3 and rebuilt on top of the `plotjuggler_core` foundation.
 
 ## Architecture
 
@@ -15,6 +15,9 @@ Top-level layout (monorepo, per plan §0 and §5):
 ```
 PJ4/
 ├── plotjuggler_core/        # git submodule — Level 0 foundation
+├── pj_media/                # 2D/video pipeline (FFmpeg + QRhi)
+├── pj_marketplace/          # extension install/manage
+├── pj_dialog_host/          # Qt host for plugin-provided dialogs
 ├── pj_scripting/            # Lua today, Python pluggable later (not yet created)
 ├── pj_app_core/             # services layer (Qt allowed, no QWidget)
 ├── pj_plot_widgets/         # Qwt plots (lifted from PJ3); placeholder docks in v1
@@ -36,10 +39,14 @@ Foundation libraries live in the submodule at `./plotjuggler_core/`:
 - `pj_base` — vocabulary types
 - `pj_datastore` — columnar store + `ObjectStore` + `DerivedEngine`
 - `pj_plugins` — ABI + runtime for extensions
-- `pj_media` — 2D/video pipeline (FFmpeg + QRhi)
-- `pj_marketplace` — extension install/manage
 
 These are consumed as-is. Changes to `plotjuggler_core` happen in that repo, not here.
+
+### Root-owned core modules
+
+- `pj_media` — 2D/video pipeline (FFmpeg + QRhi)
+- `pj_marketplace` — extension install/manage
+- `pj_dialog_host` — Qt host for plugin-provided dialogs
 
 Initialize / update the submodule with:
 
@@ -130,7 +137,7 @@ Parity-plus with PJ3: file + streaming sources, 11 built-in transforms, undo/red
 - Exact 3.x UI/terminology parity
 - Hot reload of running extension instances
 - Full backward compatibility with 3.x layout files
-- Evolving `pj_proto_app` into the final app (it is deprecated)
+- Recreating the removed prototype app as the final app
 
 ## Workflow notes
 

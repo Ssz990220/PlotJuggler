@@ -16,7 +16,7 @@ You are picking up a multi-milestone implementation task with cleared context. R
 | 6 | `plotjuggler_core/pj_datastore/docs/REQUIREMENTS.md` and `ARCHITECTURE.md` | Datastore data model, ingest contract, encoding, retention, query semantics. |
 | 7 | `plotjuggler_core/pj_datastore/include/pj_datastore/{engine,reader,query,chunk,topic_storage,plugin_data_host}.hpp` | The actual public APIs you will call from the adapter and any new code. |
 | 8 | `plotjuggler_core/pj_plugins/docs/data-source-guide.md` | DataSource plugin SDK. Helpful for understanding the `FileLoader` integration; plot widgets don't talk to plugins directly. |
-| 9 | `plotjuggler_core/pj_marketplace/include/pj_marketplace/extension.hpp` | What `LoadedDataSource` looks like. |
+| 9 | `pj_marketplace/include/pj_marketplace/extension.hpp` | What `LoadedDataSource` looks like. |
 | 10 | PJ3 reference: `~/ws_plotjuggler/PlotJuggler/plotjuggler_app/{plotwidget,plotwidget_base,plot_docker,plot_docker_toolbar,tabbedplotwidget,curve_tracker,point_series_xy,curvelist_view,mainwindow}.{h,cpp}` and `~/ws_plotjuggler/PlotJuggler/plotjuggler_base/{include/PlotJuggler,src}/{plotwidget_base,plotzoomer,plotpanner,plotmagnifier,plotlegend,timeseries_qwt}.*` | Source code to PORT (verbatim with style adaptation) for M2 / M5 / M6. Read-only. |
 
 The PJ3 path in CLAUDE.md is `~/ws_plotjuggler/PlotJuggler/` (NOT `~/ws_plotjuggler/src/PlotJuggler/`).
@@ -110,7 +110,7 @@ Build / test:
 9. **Per-curve display transforms stay plot-local** — do NOT route through `DerivedEngine` (which is for persistent derived topics).
 10. **`PointSeriesXY` is its own `QwtSeriesData<QPointF>` subclass with its own alignment index.** Do NOT compose it from two `DatastoreCurveAdapter`s — Qwt's ROI X-coord for an XY plot is the X curve's value, not display time, so forwarding ROI to two time-series adapters would narrow on the wrong domain.
 11. **Display offset is looked up live** via `engine.getTimeDomain(...)`. Do NOT cache it on adapters. (M1 already enforces this; preserve.)
-12. **`pj_proto_app/` is deprecated reference code**. Read it for patterns (e.g. `data_source_session.cpp`, `point_series_xy.cpp`) but do NOT link against it from PJ4.
+12. **The old prototype app has been removed**. Use current PJ4 modules as the implementation reference; reach into git history only when explicitly needed.
 
 ---
 

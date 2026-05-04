@@ -11,15 +11,30 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 # ---------------------------------------------------------------------------
 
 option(PJ4_BUILD_APP "Build the pj_app desktop shell" ON)
-# plotjuggler_core submodule options — pj_marketplace in the current submodule
-# pin declares tests unconditionally, so PJ_BUILD_TESTS must stay ON until that
-# is fixed upstream. Heavy ported plugins and the parquet example stay off.
+option(PJ_ENABLE_SANITIZERS "Enable ASAN for Debug builds" OFF)
+option(PJ_ENABLE_TSAN "Enable ThreadSanitizer for Debug builds" OFF)
+# plotjuggler_core submodule options. Heavy ported plugins and the parquet
+# example stay off for the PJ4 app build.
 set(PJ_BUILD_TESTS ON CACHE BOOL "Build plotjuggler_core tests" FORCE)
 set(PJ_BUILD_PARQUET_IMPORT_EXAMPLE OFF CACHE BOOL "" FORCE)
 set(PJ_BUILD_PORTED_PLUGINS OFF CACHE BOOL "" FORCE)
 
 if(PJ_BUILD_TESTS)
     enable_testing()
+    find_package(GTest REQUIRED)
+endif()
+
+# ---------------------------------------------------------------------------
+# Compiler warnings
+# ---------------------------------------------------------------------------
+
+if(MSVC)
+    set(PJ_WARNING_FLAGS /W4 /WX /permissive-)
+else()
+    set(PJ_WARNING_FLAGS
+        -Wall -Wextra -Werror -Wshadow -Wnon-virtual-dtor -Wold-style-cast
+        -Wcast-qual -Wconversion -Woverloaded-virtual -Wpedantic
+    )
 endif()
 
 # ---------------------------------------------------------------------------
@@ -51,9 +66,32 @@ add_subdirectory(3rdparty/Qt-Advanced-Docking)
 add_library(qt_advanced_docking ALIAS qtadvanceddocking-qt6)
 
 # ---------------------------------------------------------------------------
-# PJ4 modules (Levels 1-3)
+# Sanitizers (root-owned modules only)
 # ---------------------------------------------------------------------------
 
+if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+    if(PJ_ENABLE_SANITIZERS)
+        add_compile_options(-fsanitize=address -fno-omit-frame-pointer)
+        add_link_options(-fsanitize=address)
+        add_compile_definitions(PJ_ASAN_ACTIVE)
+    endif()
+    if(PJ_ENABLE_TSAN)
+        add_compile_options(-fsanitize=thread -fno-omit-frame-pointer)
+        add_link_options(-fsanitize=thread)
+    endif()
+endif()
+
+# ---------------------------------------------------------------------------
+# Root-owned PlotJuggler modules
+# ---------------------------------------------------------------------------
+
+if(PJ_BUILD_DATASTORE)
+    add_subdirectory(pj_media/pj_media_core)
+    add_subdirectory(pj_media/pj_media_qt)
+    add_subdirectory(pj_media/demos)
+endif()
+add_subdirectory(pj_marketplace)
+add_subdirectory(pj_dialog_host)
 add_subdirectory(pj_app_core)
 add_subdirectory(pj_plot_widgets)
 
