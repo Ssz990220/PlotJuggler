@@ -10,6 +10,8 @@ add_executable(pj_app
     src/PreferencesDialog.cpp
     src/PreferencesDialog.h
     src/PreferencesDialog.ui
+    src/Theme.cpp
+    src/Theme.h
     src/ui/CurveListPanel.cpp
     src/ui/CurveListPanel.h
     src/ui/CurveListPanel.ui

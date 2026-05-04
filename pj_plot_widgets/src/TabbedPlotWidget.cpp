@@ -4,6 +4,7 @@
 
 #include <QEvent>
 #include <QHBoxLayout>
+#include <QIcon>
 #include <QInputDialog>
 #include <QLineEdit>
 #include <QMouseEvent>
@@ -39,7 +40,7 @@ TabbedPlotWidget::TabbedPlotWidget(QWidget* parent) : TabbedPlotWidget(QStringLi
 
 TabbedPlotWidget::TabbedPlotWidget(QString name, QWidget* parent) : QWidget(parent), name_(std::move(name)) {
   applyAdsConfigOnce();
-  setContentsMargins(0, 0, 0, 0);
+  setContentsMargins(4, 0, 0, 0);
 
   auto* main_layout = new QHBoxLayout(this);
   main_layout->setContentsMargins(0, 0, 0, 0);
@@ -190,6 +191,17 @@ bool TabbedPlotWidget::eventFilter(QObject* obj, QEvent* event) {
 void TabbedPlotWidget::onStylesheetChanged(QString theme) {
   if (button_add_tab_) {
     button_add_tab_->setIcon(LoadSvg(":/resources/svg/add_tab.svg", theme));
+  }
+  const QIcon close_icon = LoadSvg(":/resources/svg/close-button.svg", theme);
+  for (int index = 0; index < tab_widget_->count(); ++index) {
+    if (auto* tab_button = tab_widget_->tabBar()->tabButton(index, QTabBar::RightSide)) {
+      if (auto* close_button = tab_button->findChild<QPushButton*>()) {
+        close_button->setIcon(close_icon);
+      }
+    }
+    if (auto* docker = qobject_cast<PlotDocker*>(tab_widget_->widget(index))) {
+      docker->onStylesheetChanged(theme);
+    }
   }
 }
 

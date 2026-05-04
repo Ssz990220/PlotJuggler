@@ -3,7 +3,7 @@
 #include <QComboBox>
 #include <QDialogButtonBox>
 
-#include "pj_app_core/Theme.h"
+#include "Theme.h"
 #include "ui_PreferencesDialog.h"
 
 namespace PJ {

@@ -1,4 +1,4 @@
-#include "pj_app_core/Theme.h"
+#include "Theme.h"
 
 #include <QFile>
 #include <QLoggingCategory>
@@ -23,7 +23,7 @@ QString resourcePathFor(const QString& name) {
 
 // Expand `${KEY}` tokens against `palette`. Unknown keys are left as
 // literal `${KEY}` so they're visible in the rendered styling and the
-// developer notices — but we don't crash the app, since QSS files are
+// developer notices, but we don't crash the app, since QSS files are
 // resources we control and a missing key is a build-time bug.
 QString expandPlaceholders(const QString& body, const std::map<QString, QString>& palette) {
   QString out;
@@ -39,14 +39,14 @@ QString expandPlaceholders(const QString& body, const std::map<QString, QString>
     out.append(QStringView{body}.mid(i, start - i));
     const int end = body.indexOf(QLatin1Char('}'), start + 2);
     if (end < 0) {
-      qCWarning(lcTheme) << "Unclosed ${...} token in QSS — leaving literal:" << body.mid(start, 32);
+      qCWarning(lcTheme) << "Unclosed ${...} token in QSS, leaving literal:" << body.mid(start, 32);
       out.append(QStringView{body}.mid(start));
       break;
     }
     const QString key = body.mid(start + 2, end - start - 2);
     auto it = palette.find(key);
     if (it == palette.end()) {
-      qCWarning(lcTheme) << "Unknown palette key" << key << "— leaving literal placeholder";
+      qCWarning(lcTheme) << "Unknown palette key" << key << ", leaving literal placeholder";
       out.append(QStringView{body}.mid(start, end - start + 1));
     } else {
       out.append(it->second);
@@ -65,7 +65,7 @@ QString parseAndExpand(const QString& qss) {
     ++i;
   }
   if (i == lines.size()) {
-    qCWarning(lcTheme) << "No PALETTE START marker found — returning QSS unchanged";
+    qCWarning(lcTheme) << "No PALETTE START marker found, returning QSS unchanged";
     return qss;
   }
   ++i;  // skip the START marker line itself
@@ -87,7 +87,7 @@ QString parseAndExpand(const QString& qss) {
     ++i;
   }
   if (i == lines.size()) {
-    qCWarning(lcTheme) << "Reached end of QSS without PALETTE END marker — palette may be incomplete";
+    qCWarning(lcTheme) << "Reached end of QSS without PALETTE END marker, palette may be incomplete";
   } else {
     ++i;  // skip END marker
   }
@@ -143,7 +143,7 @@ void Theme::rebuildQss() {
   const QString path = resourcePathFor(name_);
   QFile file(path);
   if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
-    qCWarning(lcTheme) << "Cannot open" << path << "— stylesheet will be empty";
+    qCWarning(lcTheme) << "Cannot open" << path << ", stylesheet will be empty";
     expanded_qss_.clear();
     return;
   }

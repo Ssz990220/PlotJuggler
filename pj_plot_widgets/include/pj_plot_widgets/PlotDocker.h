@@ -32,6 +32,9 @@ class PlotDocker : public ads::CDockManager {
   int plotCount() const;
   DockWidget* plotAt(int index);
 
+ public slots:
+  void onStylesheetChanged(QString theme);
+
  signals:
   void dockAdded(DockWidget* dock);
   void plotWidgetAdded(PlotWidget* plot);

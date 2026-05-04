@@ -76,4 +76,12 @@ DockWidget* PlotDocker::plotAt(int index) {
   return dynamic_cast<DockWidget*>(dockArea(index)->currentDockWidget());
 }
 
+void PlotDocker::onStylesheetChanged(QString theme) {
+  for (int index = 0; index < plotCount(); ++index) {
+    if (auto* dock = plotAt(index)) {
+      dock->onStylesheetChanged(theme);
+    }
+  }
+}
+
 }  // namespace PJ

@@ -89,6 +89,12 @@ void DockWidget::onTrackerTime(double time) {
   }
 }
 
+void DockWidget::onStylesheetChanged(QString theme) {
+  if (toolbar_ != nullptr) {
+    toolbar_->onStylesheetChanged(theme);
+  }
+}
+
 DockWidget* DockWidget::splitHorizontal() {
   return splitInto(ads::RightDockWidgetArea);
 }

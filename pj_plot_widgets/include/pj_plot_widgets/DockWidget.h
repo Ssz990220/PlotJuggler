@@ -33,6 +33,7 @@ class DockWidget : public ads::CDockWidget, public IDataWidget {
   void onTrackerTime(double time) override;
 
  public slots:
+  void onStylesheetChanged(QString theme);
   DockWidget* splitHorizontal();
   DockWidget* splitVertical();
 

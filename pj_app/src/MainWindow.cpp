@@ -21,13 +21,13 @@
 
 #include "FileLoader.h"
 #include "PreferencesDialog.h"
+#include "Theme.h"
 #include "pj_app_core/AppSession.h"
 #include "pj_app_core/CatalogModel.h"
 #include "pj_app_core/ExtensionCatalogService.h"
 #include "pj_app_core/PlaybackEngine.h"
 #include "pj_app_core/SessionManager.h"
 #include "pj_app_core/SvgUtil.h"
-#include "pj_app_core/Theme.h"
 #include "pj_base/dataset.hpp"
 #include "pj_datastore/engine.hpp"
 #include "pj_datastore/writer.hpp"
@@ -95,6 +95,7 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
   connect(this, &MainWindow::stylesheetChanged, ui_->leftPanel, &LeftPanel::onStylesheetChanged);
   connect(this, &MainWindow::stylesheetChanged, ui_->curveListPanel, &CurveListPanel::onStylesheetChanged);
   connect(this, &MainWindow::stylesheetChanged, ui_->timelineWidget, &TimelineWidget::onStylesheetChanged);
+  connect(this, &MainWindow::stylesheetChanged, ui_->tabbedPlotWidget, &TabbedPlotWidget::onStylesheetChanged);
   qApp->setStyleSheet(theme_->expandedQss());
 
   diagnostics_action_ = ui_->menuHelp->addAction(tr("Diagnostics..."), this, &MainWindow::onShowDiagnosticsDialog);
@@ -210,6 +211,7 @@ void MainWindow::onThemeChanged(const QString& theme) {
   qApp->setStyleSheet(theme_->expandedQss());
   applyIcons(theme);
   emit stylesheetChanged(theme);
+  forEachPlot([](PlotWidget* plot) { plot->replot(); });
 }
 
 void MainWindow::applyIcons(QString theme) {
