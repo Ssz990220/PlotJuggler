@@ -12,11 +12,11 @@
 
 #include "pj_app_core/CurveDescriptor.h"
 #include "pj_base/types.hpp"
+#include "pj_datastore/query.hpp"
 
 namespace PJ {
 
 class SessionManager;
-struct TopicChunk;
 
 class DatastoreCurveAdapter final : public QwtSeriesData<QPointF> {
  public:
@@ -38,17 +38,8 @@ class DatastoreCurveAdapter final : public QwtSeriesData<QPointF> {
   [[nodiscard]] std::optional<QPointF> sampleFromTime(double display_time_sec) const;
 
  private:
-  struct ChunkSlot {
-    const TopicChunk* chunk = nullptr;
-    std::size_t row_start = 0;
-    std::size_t row_end = 0;
-    std::size_t cumulative_begin = 0;
-    std::size_t cumulative_end = 0;
-  };
-
   void ensureChunkIndex_() const;
-  [[nodiscard]] std::size_t findChunkSlot_(std::size_t global_row) const;
-  [[nodiscard]] QPointF readPoint_(const ChunkSlot& slot, std::size_t row) const;
+  [[nodiscard]] QPointF readPoint_(const SeriesSample& sample) const;
   [[nodiscard]] Timestamp displayOffsetNow_() const;
 
   SessionManager* session_ = nullptr;
@@ -57,10 +48,8 @@ class DatastoreCurveAdapter final : public QwtSeriesData<QPointF> {
   Timestamp visible_t_min_raw_ns_ = std::numeric_limits<Timestamp>::min();
   Timestamp visible_t_max_raw_ns_ = std::numeric_limits<Timestamp>::max();
 
-  mutable std::size_t last_slot_ = 0;
-  mutable std::vector<ChunkSlot> chunk_index_;
-  mutable std::size_t total_visible_rows_ = 0;
-  mutable bool chunk_index_dirty_ = true;
+  mutable std::vector<SeriesSample> sample_index_;
+  mutable bool sample_index_dirty_ = true;
 
   mutable QRectF cached_full_bounding_rect_;
   mutable bool full_bounding_rect_valid_ = false;

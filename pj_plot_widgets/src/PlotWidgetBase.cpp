@@ -268,7 +268,7 @@ void PlotWidgetBase::resetZoom() {
   replot();
 }
 
-Range PlotWidgetBase::getVisualizationRangeX() const {
+Range<double> PlotWidgetBase::getVisualizationRangeX() const {
   double left = std::numeric_limits<double>::max();
   double right = std::numeric_limits<double>::lowest();
 
@@ -294,10 +294,10 @@ Range PlotWidgetBase::getVisualizationRangeX() const {
     left -= margin;
     right += margin;
   }
-  return Range{.min = left, .max = right};
+  return Range<double>{.min = left, .max = right};
 }
 
-Range PlotWidgetBase::getVisualizationRangeY(Range range_x) const {
+Range<double> PlotWidgetBase::getVisualizationRangeY(Range<double> range_x) const {
   double bottom = std::numeric_limits<double>::max();
   double top = std::numeric_limits<double>::lowest();
 
@@ -329,7 +329,7 @@ Range PlotWidgetBase::getVisualizationRangeY(Range range_x) const {
   }
 
   const double margin = (top - bottom) * 0.025;
-  return Range{.min = bottom - margin, .max = top + margin};
+  return Range<double>{.min = bottom - margin, .max = top + margin};
 }
 
 void PlotWidgetBase::setModeXY(bool enable) {
@@ -512,15 +512,11 @@ PlotPanner* PlotWidgetBase::panner2() {
 
 void PlotWidgetBase::updateMaximumZoomArea() {
   QRectF max_rect;
-  const Range range_x = getVisualizationRangeX();
+  const Range<double> range_x = getVisualizationRangeX();
   max_rect.setLeft(range_x.min);
   max_rect.setRight(range_x.max);
 
-  const Range full_x_range{
-      .min = std::numeric_limits<double>::lowest(),
-      .max = std::numeric_limits<double>::max(),
-  };
-  const Range range_y = getVisualizationRangeY(full_x_range);
+  const Range<double> range_y = getVisualizationRangeY(range_x);
   max_rect.setBottom(range_y.min);
   max_rect.setTop(range_y.max);
 

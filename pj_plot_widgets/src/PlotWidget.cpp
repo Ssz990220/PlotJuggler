@@ -240,7 +240,7 @@ void PlotWidget::zoomOut(bool emit_signal) {
 void PlotWidget::onZoomOutHorizontalTriggered(bool emit_signal) {
   updateMaximumZoomArea();
   QRectF rect = currentBoundingRect();
-  const Range range_x = getVisualizationRangeX();
+  const Range<double> range_x = getVisualizationRangeX();
   rect.setLeft(range_x.min);
   rect.setRight(range_x.max);
   setZoomRectangle(rect, emit_signal);
@@ -250,7 +250,7 @@ void PlotWidget::onZoomOutHorizontalTriggered(bool emit_signal) {
 void PlotWidget::onZoomOutVerticalTriggered(bool emit_signal) {
   updateMaximumZoomArea();
   QRectF rect = currentBoundingRect();
-  const Range range_y = getVisualizationRangeY(Range{.min = rect.left(), .max = rect.right()});
+  const Range<double> range_y = getVisualizationRangeY(Range<double>{.min = rect.left(), .max = rect.right()});
   rect.setBottom(range_y.min);
   rect.setTop(range_y.max);
   setZoomRectangle(rect, emit_signal);

@@ -90,13 +90,13 @@ class DatastoreCurveAdapterTest : public ::testing::Test {
 };
 
 TEST_F(DatastoreCurveAdapterTest, DefaultAllRowsWorksBeforeRectOfInterest) {
-  ASSERT_EQ(adapter_->size(), 10U);
+  ASSERT_EQ(adapter_->size(), 9U);
 
   const QPointF first = adapter_->sample(0);
   EXPECT_DOUBLE_EQ(first.x(), -2.0);
   EXPECT_DOUBLE_EQ(first.y(), 10.0);
 
-  const QPointF last = adapter_->sample(9);
+  const QPointF last = adapter_->sample(8);
   EXPECT_DOUBLE_EQ(last.x(), 7.0);
   EXPECT_DOUBLE_EQ(last.y(), 19.0);
 }
@@ -104,25 +104,26 @@ TEST_F(DatastoreCurveAdapterTest, DefaultAllRowsWorksBeforeRectOfInterest) {
 TEST_F(DatastoreCurveAdapterTest, RectOfInterestNarrowsAndAddsBoundaryGuards) {
   adapter_->setRectOfInterest(QRectF(QPointF(3.0, -1.0), QPointF(4.0, 1.0)));
 
-  ASSERT_EQ(adapter_->size(), 4U);
+  ASSERT_EQ(adapter_->size(), 2U);
   EXPECT_DOUBLE_EQ(adapter_->sample(0).x(), 2.0);
   EXPECT_DOUBLE_EQ(adapter_->sample(0).y(), 14.0);
-  EXPECT_DOUBLE_EQ(adapter_->sample(3).x(), 5.0);
-  EXPECT_DOUBLE_EQ(adapter_->sample(3).y(), 17.0);
+  EXPECT_DOUBLE_EQ(adapter_->sample(1).x(), 4.0);
+  EXPECT_DOUBLE_EQ(adapter_->sample(1).y(), 16.0);
 }
 
 TEST_F(DatastoreCurveAdapterTest, SampleLookupWorksAcrossChunksAndNonSequentialAccess) {
   EXPECT_DOUBLE_EQ(adapter_->sample(3).y(), 13.0);
   EXPECT_DOUBLE_EQ(adapter_->sample(4).y(), 14.0);
 
-  EXPECT_DOUBLE_EQ(adapter_->sample(9).y(), 19.0);
+  EXPECT_DOUBLE_EQ(adapter_->sample(8).y(), 19.0);
   EXPECT_DOUBLE_EQ(adapter_->sample(0).y(), 10.0);
 }
 
-TEST_F(DatastoreCurveAdapterTest, NullSamplesReturnNan) {
-  const QPointF null_sample = adapter_->sample(5);
-  EXPECT_DOUBLE_EQ(null_sample.x(), 3.0);
-  EXPECT_TRUE(std::isnan(null_sample.y()));
+TEST_F(DatastoreCurveAdapterTest, NullRowsAreSkipped) {
+  ASSERT_EQ(adapter_->size(), 9U);
+  const QPointF sample_after_null = adapter_->sample(5);
+  EXPECT_DOUBLE_EQ(sample_after_null.x(), 4.0);
+  EXPECT_DOUBLE_EQ(sample_after_null.y(), 16.0);
 }
 
 TEST_F(DatastoreCurveAdapterTest, DisplayOffsetShiftsSamplesAndFullBounds) {
@@ -153,7 +154,7 @@ TEST_F(DatastoreCurveAdapterTest, BoundsCacheInvalidatesOnTopicCommittedAndDataC
   EXPECT_FALSE(adapter_->boundingRect().isValid());
 }
 
-TEST_F(DatastoreCurveAdapterTest, VisibleYRangeUsesStatsForFullChunksAndScansPartialChunks) {
+TEST_F(DatastoreCurveAdapterTest, VisibleYRangeUsesSeriesSamples) {
   const std::optional<std::pair<double, double>> full_chunk = adapter_->visibleYRange(2.0, 5.0);
   ASSERT_TRUE(full_chunk.has_value());
   EXPECT_DOUBLE_EQ(full_chunk->first, 14.0);
@@ -166,14 +167,14 @@ TEST_F(DatastoreCurveAdapterTest, VisibleYRangeUsesStatsForFullChunksAndScansPar
 }
 
 TEST_F(DatastoreCurveAdapterTest, TopicCommitGrowsIndexedSize) {
-  ASSERT_EQ(adapter_->size(), 10U);
+  ASSERT_EQ(adapter_->size(), 9U);
 
   appendMoreRows(10, 13);
   adapter_->onTopicCommitted();
 
-  EXPECT_EQ(adapter_->size(), 13U);
-  EXPECT_DOUBLE_EQ(adapter_->sample(12).x(), 10.0);
-  EXPECT_DOUBLE_EQ(adapter_->sample(12).y(), 22.0);
+  EXPECT_EQ(adapter_->size(), 12U);
+  EXPECT_DOUBLE_EQ(adapter_->sample(11).x(), 10.0);
+  EXPECT_DOUBLE_EQ(adapter_->sample(11).y(), 22.0);
 }
 
 TEST_F(DatastoreCurveAdapterTest, CrossChunkBoundaryGuardsIncludeAdjacentChunks) {

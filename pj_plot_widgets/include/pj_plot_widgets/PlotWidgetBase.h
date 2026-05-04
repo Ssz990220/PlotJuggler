@@ -10,6 +10,8 @@
 #include <map>
 #include <optional>
 
+#include "pj_base/types.hpp"
+
 class QDragEnterEvent;
 class QDragLeaveEvent;
 class QDropEvent;
@@ -23,11 +25,6 @@ class PlotLegend;
 class PlotMagnifier;
 class PlotPanner;
 class PlotZoomer;
-
-struct Range {
-  double min = 0.0;
-  double max = 0.0;
-};
 
 enum class LineWidth { kPoints1_0 = 0, kPoints1_5 = 1, kPoints2_0 = 2, kPoints3_0 = 3 };
 
@@ -58,8 +55,8 @@ class PlotWidgetBase : public QWidget {
   [[nodiscard]] CurveInfo* curveFromTitle(const QString& title);
 
   virtual void resetZoom();
-  [[nodiscard]] virtual Range getVisualizationRangeX() const;
-  [[nodiscard]] virtual Range getVisualizationRangeY(Range range_x) const;
+  [[nodiscard]] virtual Range<double> getVisualizationRangeX() const;
+  [[nodiscard]] virtual Range<double> getVisualizationRangeY(Range<double> range_x) const;
 
   virtual void setModeXY(bool enable);
   [[nodiscard]] bool isXYPlot() const noexcept;
