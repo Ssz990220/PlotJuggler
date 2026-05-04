@@ -5,7 +5,13 @@
 #include <QCloseEvent>
 #include <QDialog>
 #include <QDialogButtonBox>
+#include <QFile>
+#include <QFileDialog>
+#include <QKeySequence>
 #include <QLoggingCategory>
+#include <QMenu>
+#include <QMenuBar>
+#include <QMessageBox>
 #include <QPlainTextEdit>
 #include <QPushButton>
 #include <QSettings>
@@ -56,6 +62,8 @@ constexpr double kTwoPi = 6.28318530717958647692;
 constexpr int kTestSampleCount = 1000;
 constexpr double kTestDurationSeconds = 10.0;
 constexpr int kMaxDiagnostics = 200;
+constexpr int kMaxUndoStates = 100;
+constexpr qint64 kUndoCoalesceMs = 100;
 
 QUrl registryUrlFromSettings() {
   const QString raw = QSettings().value(kRegistryUrlSettingsKey, kDefaultRegistryUrl).toString();
@@ -123,6 +131,22 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
       session_->sessionManager(), session_->extensionCatalog(), session_->catalogModel(), this);
   connect(ui_->leftPanel, &LeftPanel::loadDataRequested, this, &MainWindow::onLoadDataRequested);
 
+  auto* edit_menu = new QMenu(tr("Edit"), this);
+  menuBar()->insertMenu(ui_->menuTools->menuAction(), edit_menu);
+  undo_action_ = edit_menu->addAction(tr("Undo"), this, &MainWindow::onUndo);
+  undo_action_->setShortcuts(QKeySequence::Undo);
+  redo_action_ = edit_menu->addAction(tr("Redo"), this, &MainWindow::onRedo);
+  redo_action_->setShortcuts(QKeySequence::Redo);
+
+  load_layout_action_ = new QAction(tr("Load Layout..."), this);
+  save_layout_action_ = new QAction(tr("Save Layout..."), this);
+  ui_->menuApp->insertAction(ui_->actionMarketplace, load_layout_action_);
+  ui_->menuApp->insertAction(ui_->actionMarketplace, save_layout_action_);
+  ui_->menuApp->insertSeparator(ui_->actionMarketplace);
+  connect(load_layout_action_, &QAction::triggered, this, &MainWindow::onLoadLayout);
+  connect(save_layout_action_, &QAction::triggered, this, &MainWindow::onSaveLayout);
+
+  connect(ui_->tabbedPlotWidget, &TabbedPlotWidget::undoableChange, this, &MainWindow::onUndoableChange);
   connect(ui_->actionMarketplace, &QAction::triggered, this, &MainWindow::onOpenMarketplace);
   connect(ui_->actionExit, &QAction::triggered, this, &QWidget::close);
 
@@ -134,6 +158,8 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
   connect(preferences_action, &QAction::triggered, this, &MainWindow::onShowPreferencesDialog);
   ui_->menuApp->insertAction(ui_->actionExit, preferences_action);
   ui_->menuApp->insertSeparator(ui_->actionExit);
+
+  pushInitialUndoState();
 }
 
 MainWindow::~MainWindow() {
@@ -248,6 +274,105 @@ void MainWindow::onShowDiagnosticsDialog() {
   dlg.exec();
 }
 
+void MainWindow::onUndoableChange() {
+  if (applying_state_) {
+    return;
+  }
+  pushUndoState();
+}
+
+void MainWindow::onUndo() {
+  if (undo_states_.size() <= 1) {
+    return;
+  }
+
+  applying_state_ = true;
+  redo_states_.push_back(undo_states_.back());
+  undo_states_.pop_back();
+  const bool loaded = xmlLoadState(undo_states_.back());
+  applying_state_ = false;
+
+  if (!loaded) {
+    statusBar()->showMessage(tr("Unable to restore undo state"), 3000);
+  }
+  undo_timer_.restart();
+  updateUndoRedoActions();
+}
+
+void MainWindow::onRedo() {
+  if (redo_states_.empty()) {
+    return;
+  }
+
+  applying_state_ = true;
+  QDomDocument state = redo_states_.back();
+  redo_states_.pop_back();
+  undo_states_.push_back(state);
+  const bool loaded = xmlLoadState(state);
+  applying_state_ = false;
+
+  if (!loaded) {
+    statusBar()->showMessage(tr("Unable to restore redo state"), 3000);
+  }
+  undo_timer_.restart();
+  updateUndoRedoActions();
+}
+
+void MainWindow::onSaveLayout() {
+  const QString file_name =
+      QFileDialog::getSaveFileName(this, tr("Save Layout"), QString{}, tr("PlotJuggler layout (*.xml);;All files (*)"));
+  if (file_name.isEmpty()) {
+    return;
+  }
+
+  QFile file(file_name);
+  if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate | QIODevice::Text)) {
+    QMessageBox::warning(this, tr("Save Layout"), tr("Unable to write %1").arg(file_name));
+    return;
+  }
+
+  const QDomDocument state = xmlSaveState();
+  file.write(state.toByteArray(2));
+  statusBar()->showMessage(tr("Saved layout %1").arg(file_name), 3000);
+}
+
+void MainWindow::onLoadLayout() {
+  const QString file_name =
+      QFileDialog::getOpenFileName(this, tr("Load Layout"), QString{}, tr("PlotJuggler layout (*.xml);;All files (*)"));
+  if (file_name.isEmpty()) {
+    return;
+  }
+
+  QFile file(file_name);
+  if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
+    QMessageBox::warning(this, tr("Load Layout"), tr("Unable to read %1").arg(file_name));
+    return;
+  }
+
+  QDomDocument state;
+  const QDomDocument::ParseResult parse_result = state.setContent(&file);
+  if (!parse_result) {
+    QMessageBox::warning(
+        this, tr("Load Layout"),
+        tr("Invalid XML at line %1, column %2: %3")
+            .arg(parse_result.errorLine)
+            .arg(parse_result.errorColumn)
+            .arg(parse_result.errorMessage));
+    return;
+  }
+
+  applying_state_ = true;
+  const bool loaded = xmlLoadState(state);
+  applying_state_ = false;
+  if (!loaded) {
+    QMessageBox::warning(this, tr("Load Layout"), tr("The file does not contain a supported PlotJuggler layout."));
+    return;
+  }
+
+  pushInitialUndoState();
+  statusBar()->showMessage(tr("Loaded layout %1").arg(file_name), 3000);
+}
+
 void MainWindow::onPlotTabAdded(PlotDocker* docker) {
   if (docker == nullptr) {
     return;
@@ -266,6 +391,7 @@ void MainWindow::onPlotAdded(PlotWidget* plot) {
   }
   connect(plot, &PlotWidget::rectChanged, this, &MainWindow::onPlotZoomChanged, Qt::UniqueConnection);
   connect(plot, &PlotWidget::trackerMoved, this, &MainWindow::onTrackerMovedFromWidget, Qt::UniqueConnection);
+  disconnect(plot, &PlotWidget::statusMessageRequested, this, nullptr);
   connect(plot, &PlotWidget::statusMessageRequested, this, [this](const QString& message) {
     statusBar()->showMessage(message, 3000);
   });
@@ -273,6 +399,9 @@ void MainWindow::onPlotAdded(PlotWidget* plot) {
 }
 
 void MainWindow::onPlotZoomChanged(PlotWidget* modified, QRectF rect) {
+  if (applying_state_) {
+    return;
+  }
   if (!ui_->buttonLink->isChecked()) {
     return;
   }
@@ -372,6 +501,107 @@ void MainWindow::forEachPlot(const std::function<void(PlotWidget*)>& operation) 
       operation(plot);
     }
   });
+}
+
+QDomDocument MainWindow::xmlSaveState() const {
+  QDomDocument doc;
+  doc.appendChild(
+      doc.createProcessingInstruction(QStringLiteral("xml"), QStringLiteral("version='1.0' encoding='UTF-8'")));
+
+  QDomElement root = doc.createElement(QStringLiteral("root"));
+  root.setAttribute(QStringLiteral("format"), QStringLiteral("PlotJuggler"));
+  root.setAttribute(QStringLiteral("pj4_version"), QStringLiteral("1"));
+  doc.appendChild(root);
+
+  root.appendChild(ui_->tabbedPlotWidget->xmlSaveState(doc));
+
+  QDomElement link_x = doc.createElement(QStringLiteral("link_x"));
+  link_x.setAttribute(
+      QStringLiteral("enabled"), ui_->buttonLink->isChecked() ? QStringLiteral("true") : QStringLiteral("false"));
+  root.appendChild(link_x);
+
+  QDomElement relative_time = doc.createElement(QStringLiteral("use_relative_time_offset"));
+  relative_time.setAttribute(QStringLiteral("enabled"), QStringLiteral("false"));
+  root.appendChild(relative_time);
+
+  QDomElement streaming_buffer = doc.createElement(QStringLiteral("streaming_buffer_size"));
+  streaming_buffer.setAttribute(QStringLiteral("value"), QStringLiteral("5"));
+  root.appendChild(streaming_buffer);
+  return doc;
+}
+
+bool MainWindow::xmlLoadState(const QDomDocument& state_document) {
+  const QDomElement root = state_document.documentElement();
+  if (root.isNull() || root.tagName() != QStringLiteral("root")) {
+    qCWarning(lcMain) << "No <root> element found at the top-level of the XML document";
+    return false;
+  }
+
+  QDomElement main_tabbed_widget;
+  for (QDomElement tabbed = root.firstChildElement(QStringLiteral("tabbed_widget")); !tabbed.isNull();
+       tabbed = tabbed.nextSiblingElement(QStringLiteral("tabbed_widget"))) {
+    if (tabbed.attribute(QStringLiteral("parent")) == QStringLiteral("main_window") || main_tabbed_widget.isNull()) {
+      main_tabbed_widget = tabbed;
+    }
+  }
+  if (main_tabbed_widget.isNull()) {
+    qCWarning(lcMain) << "No <tabbed_widget> element found in XML document";
+    return false;
+  }
+
+  const bool loaded = ui_->tabbedPlotWidget->xmlLoadState(main_tabbed_widget);
+  if (!loaded) {
+    return false;
+  }
+  wireExistingPlots();
+
+  const QDomElement link_x = root.firstChildElement(QStringLiteral("link_x"));
+  if (!link_x.isNull()) {
+    ui_->buttonLink->setChecked(
+        link_x.attribute(QStringLiteral("enabled"), QStringLiteral("true")) == QStringLiteral("true") ||
+        link_x.attribute(QStringLiteral("enabled")) == QStringLiteral("1"));
+  }
+  return true;
+}
+
+void MainWindow::pushInitialUndoState() {
+  undo_states_.clear();
+  redo_states_.clear();
+  undo_states_.push_back(xmlSaveState());
+  undo_timer_.start();
+  updateUndoRedoActions();
+}
+
+void MainWindow::pushUndoState(bool force_new_state) {
+  QDomDocument state = xmlSaveState();
+  if (!undo_states_.empty() && undo_states_.back().toByteArray() == state.toByteArray()) {
+    updateUndoRedoActions();
+    return;
+  }
+
+  const bool should_coalesce =
+      !force_new_state && undo_timer_.isValid() && undo_timer_.elapsed() < kUndoCoalesceMs && undo_states_.size() > 1;
+  if (should_coalesce) {
+    undo_states_.back() = state;
+  } else {
+    undo_states_.push_back(state);
+  }
+
+  while (undo_states_.size() > kMaxUndoStates) {
+    undo_states_.pop_front();
+  }
+  redo_states_.clear();
+  undo_timer_.restart();
+  updateUndoRedoActions();
+}
+
+void MainWindow::updateUndoRedoActions() {
+  if (undo_action_ != nullptr) {
+    undo_action_->setEnabled(undo_states_.size() > 1);
+  }
+  if (redo_action_ != nullptr) {
+    redo_action_->setEnabled(!redo_states_.empty());
+  }
 }
 
 void MainWindow::closeEvent(QCloseEvent* event) {

@@ -41,7 +41,7 @@ endif()
 # Qt
 # ---------------------------------------------------------------------------
 
-find_package(Qt6 6.8 REQUIRED COMPONENTS Core Gui Widgets Network)
+find_package(Qt6 6.8 REQUIRED COMPONENTS Core Gui Widgets Network Xml)
 
 # ---------------------------------------------------------------------------
 # Foundation (Level 0): plotjuggler_core submodule

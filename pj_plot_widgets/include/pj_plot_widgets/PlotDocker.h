@@ -2,6 +2,8 @@
 
 #include <DockManager.h>
 
+#include <QDomDocument>
+#include <QDomElement>
 #include <QString>
 
 namespace PJ {
@@ -28,6 +30,10 @@ class PlotDocker : public ads::CDockManager {
     name_ = std::move(name);
   }
   void setDataServices(SessionManager* session, CatalogModel* catalog);
+  [[nodiscard]] QString stateId() const;
+  void setStateId(QString id);
+  [[nodiscard]] QDomElement xmlSaveState(QDomDocument& doc) const;
+  bool xmlLoadState(const QDomElement& tab_element);
 
   int plotCount() const;
   DockWidget* plotAt(int index);
@@ -42,10 +48,13 @@ class PlotDocker : public ads::CDockManager {
 
  private:
   void ensureAtLeastOneWidget();
+  DockWidget* addDockWithPlot(PlotWidget* plot, ads::DockWidgetArea area, ads::CDockAreaWidget* relative_to = nullptr);
 
+  QString state_id_;
   QString name_;
   SessionManager* session_ = nullptr;
   CatalogModel* catalog_ = nullptr;
+  bool restoring_state_ = false;
 };
 
 }  // namespace PJ

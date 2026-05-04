@@ -16,10 +16,12 @@
 #include <QMimeData>
 #include <QMouseEvent>
 #include <QPen>
+#include <QUuid>
 #include <QVector>
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <set>
 
 #include "pj_app_core/CatalogModel.h"
 #include "pj_app_core/SessionManager.h"
@@ -29,9 +31,24 @@
 #include "pj_plot_widgets/PointSeriesXY.h"
 
 namespace PJ {
+namespace {
+
+QString newStateId() {
+  return QUuid::createUuid().toString(QUuid::WithoutBraces);
+}
+
+QString curveKey(const QString& source_name, const QString& x_name = {}, const QString& y_name = {}) {
+  if (!x_name.isEmpty() || !y_name.isEmpty()) {
+    return QStringLiteral("xy:") + x_name + QStringLiteral("\n") + y_name;
+  }
+  return QStringLiteral("ts:") + source_name;
+}
+
+}  // namespace
 
 PlotWidget::PlotWidget(SessionManager* session, CatalogModel* catalog, QWidget* parent)
     : PlotWidgetBase(parent), session_(session), catalog_(catalog) {
+  state_id_ = newStateId();
   setAcceptDrops(true);
   tracker_ = new CurveTracker(qwtPlot(), QColor(Qt::red));
   connect(this, &PlotWidgetBase::viewResized, this, &PlotWidget::onExternallyResized);
@@ -142,8 +159,19 @@ bool PlotWidget::trackerEnabled() const noexcept {
   return tracker_enabled_;
 }
 
+QString PlotWidget::stateId() const {
+  return state_id_;
+}
+
+void PlotWidget::setStateId(QString id) {
+  if (!id.isEmpty()) {
+    state_id_ = std::move(id);
+  }
+}
+
 QDomElement PlotWidget::xmlSaveState(QDomDocument& doc) const {
   QDomElement plot_element = doc.createElement(QStringLiteral("plot"));
+  plot_element.setAttribute(QStringLiteral("id"), state_id_);
   plot_element.setAttribute(
       QStringLiteral("mode"), isXYPlot() ? QStringLiteral("XYPlot") : QStringLiteral("TimeSeries"));
   plot_element.setAttribute(QStringLiteral("line_width"), lineWidthToString(lineWidth()));
@@ -182,12 +210,42 @@ bool PlotWidget::xmlLoadState(const QDomElement& plot_element, bool autozoom) {
     return false;
   }
 
-  removeAllCurves();
+  setStateId(plot_element.attribute(QStringLiteral("id")));
   setModeXY(plot_element.attribute(QStringLiteral("mode")) == QStringLiteral("XYPlot"));
   setLineWidth(lineWidthFromString(plot_element.attribute(QStringLiteral("line_width"), QStringLiteral("1.0"))));
   setTrackerEnabled(
       plot_element.attribute(QStringLiteral("tracker_enabled"), QStringLiteral("true")) == QStringLiteral("true"));
   qwtPlot()->setTitle(plot_element.attribute(QStringLiteral("title")));
+
+  std::set<QString> desired_keys;
+  for (QDomElement curve_element = plot_element.firstChildElement(QStringLiteral("curve")); !curve_element.isNull();
+       curve_element = curve_element.nextSiblingElement(QStringLiteral("curve"))) {
+    if (isXYPlot() && curve_element.hasAttribute(QStringLiteral("curve_x")) &&
+        curve_element.hasAttribute(QStringLiteral("curve_y"))) {
+      desired_keys.insert(curveKey(
+          curve_element.attribute(QStringLiteral("name")), curve_element.attribute(QStringLiteral("curve_x")),
+          curve_element.attribute(QStringLiteral("curve_y"))));
+    } else {
+      desired_keys.insert(curveKey(curve_element.attribute(QStringLiteral("name"))));
+    }
+  }
+
+  QStringList remove_titles;
+  for (const CurveInfo& info : curveList()) {
+    if (info.curve == nullptr) {
+      continue;
+    }
+    QString existing_key = curveKey(info.source_name);
+    if (auto* xy_series = dynamic_cast<PointSeriesXY*>(info.curve->data())) {
+      existing_key = curveKey(info.source_name, xy_series->xSource().name, xy_series->ySource().name);
+    }
+    if (desired_keys.find(existing_key) == desired_keys.end()) {
+      remove_titles.push_back(info.curve->title().text());
+    }
+  }
+  for (const QString& title : remove_titles) {
+    removeCurve(title);
+  }
 
   for (QDomElement curve_element = plot_element.firstChildElement(QStringLiteral("curve")); !curve_element.isNull();
        curve_element = curve_element.nextSiblingElement(QStringLiteral("curve"))) {
@@ -195,12 +253,30 @@ bool PlotWidget::xmlLoadState(const QDomElement& plot_element, bool autozoom) {
     CurveInfo* loaded_curve = nullptr;
     if (isXYPlot() && curve_element.hasAttribute(QStringLiteral("curve_x")) &&
         curve_element.hasAttribute(QStringLiteral("curve_y"))) {
-      loaded_curve = addCurveXY(
-          curve_element.attribute(QStringLiteral("curve_x")), curve_element.attribute(QStringLiteral("curve_y")),
-          color.isValid() ? color : Qt::transparent);
+      const QString x_name = curve_element.attribute(QStringLiteral("curve_x"));
+      const QString y_name = curve_element.attribute(QStringLiteral("curve_y"));
+      const QString source_name = curve_element.attribute(QStringLiteral("name"));
+      for (CurveInfo& info : curveList()) {
+        if (auto* xy_series = info.curve != nullptr ? dynamic_cast<PointSeriesXY*>(info.curve->data()) : nullptr) {
+          if (curveKey(info.source_name, xy_series->xSource().name, xy_series->ySource().name) ==
+              curveKey(source_name, x_name, y_name)) {
+            loaded_curve = &info;
+            break;
+          }
+        }
+      }
+      if (loaded_curve == nullptr) {
+        loaded_curve = addCurveXY(x_name, y_name, color.isValid() ? color : Qt::transparent);
+      }
     } else {
-      loaded_curve =
-          addCurve(curve_element.attribute(QStringLiteral("name")), color.isValid() ? color : Qt::transparent);
+      const QString curve_name = curve_element.attribute(QStringLiteral("name"));
+      loaded_curve = curveFromTitle(curve_name);
+      if (loaded_curve == nullptr) {
+        loaded_curve = addCurve(curve_name, color.isValid() ? color : Qt::transparent);
+      }
+    }
+    if (loaded_curve != nullptr && loaded_curve->curve != nullptr && color.isValid()) {
+      loaded_curve->curve->setPen(color, loaded_curve->curve->pen().widthF());
     }
     if (loaded_curve != nullptr && curve_element.hasAttribute(QStringLiteral("line_width"))) {
       bool ok = false;
@@ -394,6 +470,7 @@ void PlotWidget::onDropEvent(QDropEvent* event) {
     } else {
       replot();
     }
+    emit undoableChange();
   }
   dragging_ = {};
 }
@@ -410,13 +487,22 @@ void PlotWidget::buildActions() {
   connect(action_remove_all_curves_, &QAction::triggered, this, &PlotWidget::undoableChange);
 
   action_zoom_out_ = new QAction(tr("&Zoom Out"), this);
-  connect(action_zoom_out_, &QAction::triggered, this, [this]() { zoomOut(true); });
+  connect(action_zoom_out_, &QAction::triggered, this, [this]() {
+    zoomOut(true);
+    emit undoableChange();
+  });
 
   action_zoom_out_horizontal_ = new QAction(tr("&Zoom Out Horizontally"), this);
-  connect(action_zoom_out_horizontal_, &QAction::triggered, this, [this]() { onZoomOutHorizontalTriggered(true); });
+  connect(action_zoom_out_horizontal_, &QAction::triggered, this, [this]() {
+    onZoomOutHorizontalTriggered(true);
+    emit undoableChange();
+  });
 
   action_zoom_out_vertical_ = new QAction(tr("&Zoom Out Vertically"), this);
-  connect(action_zoom_out_vertical_, &QAction::triggered, this, [this]() { onZoomOutVerticalTriggered(true); });
+  connect(action_zoom_out_vertical_, &QAction::triggered, this, [this]() {
+    onZoomOutVerticalTriggered(true);
+    emit undoableChange();
+  });
 }
 
 void PlotWidget::canvasContextMenuTriggered(const QPoint& pos) {

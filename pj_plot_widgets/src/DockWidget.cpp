@@ -6,30 +6,43 @@
 #include <QBoxLayout>
 #include <QLabel>
 #include <QPushButton>
+#include <QUuid>
+#include <utility>
 
 #include "pj_plot_widgets/DockToolbar.h"
 #include "pj_plot_widgets/PlotDocker.h"
 #include "pj_plot_widgets/PlotWidget.h"
 
 namespace PJ {
+namespace {
+
+QString newStateId() {
+  return QUuid::createUuid().toString(QUuid::WithoutBraces);
+}
+
+}  // namespace
 
 DockWidget::DockWidget(SessionManager* session, CatalogModel* catalog, ads::CDockManager* manager, QWidget* parent)
-    : ads::CDockWidget(manager, "Plot", parent != nullptr ? parent : manager), session_(session), catalog_(catalog) {
+    : DockWidget(nullptr, session, catalog, manager, parent) {}
+
+DockWidget::DockWidget(
+    PlotWidget* plot, SessionManager* session, CatalogModel* catalog, ads::CDockManager* manager, QWidget* parent,
+    bool create_plot_when_null)
+    : ads::CDockWidget(manager, "Plot", parent != nullptr ? parent : manager),
+      session_(session),
+      catalog_(catalog),
+      state_id_(newStateId()) {
   setFrameShape(QFrame::NoFrame);
 
-  plot_widget_ = new PlotWidget(session_, catalog_, this);
-  setWidget(plot_widget_);
   setFeature(ads::CDockWidget::DockWidgetFloatable, false);
   setFeature(ads::CDockWidget::DockWidgetDeleteOnClose, true);
-  connect(plot_widget_, &PlotWidget::splitHorizontal, this, &DockWidget::splitHorizontal);
-  connect(plot_widget_, &PlotWidget::splitVertical, this, &DockWidget::splitVertical);
 
   toolbar_ = new DockToolbar(this);
   toolbar_->label()->setText("...");
   qobject_cast<QBoxLayout*>(layout())->insertWidget(0, toolbar_);
 
-  connect(toolbar_->buttonSplitHorizontal(), &QPushButton::clicked, this, &DockWidget::splitHorizontal);
-  connect(toolbar_->buttonSplitVertical(), &QPushButton::clicked, this, &DockWidget::splitVertical);
+  connect(toolbar_->buttonSplitHorizontal(), &QPushButton::clicked, this, [this]() { splitHorizontal(); });
+  connect(toolbar_->buttonSplitVertical(), &QPushButton::clicked, this, [this]() { splitVertical(); });
 
   auto fullscreenAction = [this]() {
     auto* parent_docker = qobject_cast<PlotDocker*>(dockManager());
@@ -59,6 +72,9 @@ DockWidget::DockWidget(SessionManager* session, CatalogModel* catalog, ads::CDoc
   });
 
   layout()->setContentsMargins(10, 10, 10, 10);
+  if (plot != nullptr || create_plot_when_null) {
+    setPlotWidget(plot != nullptr ? plot : new PlotWidget(session_, catalog_, this));
+  }
 }
 
 DockWidget::~DockWidget() = default;
@@ -75,12 +91,56 @@ PlotWidget* DockWidget::plotWidget() {
   return plot_widget_;
 }
 
+PlotWidget* DockWidget::releasePlotWidget() {
+  if (plot_widget_ == nullptr) {
+    return nullptr;
+  }
+  disconnect(plot_widget_, nullptr, this, nullptr);
+  auto* plot = plot_widget_;
+  takeWidget();
+  plot_widget_ = nullptr;
+  return plot;
+}
+
+void DockWidget::setPlotWidget(PlotWidget* plot) {
+  if (plot_widget_ == plot) {
+    return;
+  }
+  if (plot_widget_ != nullptr) {
+    disconnect(plot_widget_, nullptr, this, nullptr);
+    takeWidget();
+  }
+  plot_widget_ = plot;
+  if (plot_widget_ == nullptr) {
+    return;
+  }
+  plot_widget_->setDataServices(session_, catalog_);
+  setWidget(plot_widget_);
+  connect(plot_widget_, &PlotWidget::splitHorizontal, this, [this]() { splitHorizontal(); });
+  connect(plot_widget_, &PlotWidget::splitVertical, this, [this]() { splitVertical(); });
+  connect(plot_widget_, &PlotWidget::undoableChange, this, &DockWidget::undoableChange);
+}
+
 DockToolbar* DockWidget::toolBar() {
   return toolbar_;
 }
 
 QString DockWidget::name() const {
   return toolbar_->label()->text();
+}
+
+void DockWidget::setName(const QString& name) {
+  toolbar_->label()->setText(name);
+}
+
+QString DockWidget::stateId() const {
+  return state_id_;
+}
+
+void DockWidget::setStateId(QString id) {
+  if (!id.isEmpty()) {
+    state_id_ = std::move(id);
+  }
 }
 
 void DockWidget::onTrackerTime(double time) {
@@ -96,19 +156,27 @@ void DockWidget::onStylesheetChanged(QString theme) {
 }
 
 DockWidget* DockWidget::splitHorizontal() {
-  return splitInto(ads::RightDockWidgetArea);
+  return splitHorizontal(nullptr);
 }
 
 DockWidget* DockWidget::splitVertical() {
-  return splitInto(ads::BottomDockWidgetArea);
+  return splitVertical(nullptr);
 }
 
-DockWidget* DockWidget::splitInto(ads::DockWidgetArea dock_area) {
+DockWidget* DockWidget::splitHorizontal(PlotWidget* plot) {
+  return splitInto(ads::RightDockWidgetArea, plot);
+}
+
+DockWidget* DockWidget::splitVertical(PlotWidget* plot) {
+  return splitInto(ads::BottomDockWidgetArea, plot);
+}
+
+DockWidget* DockWidget::splitInto(ads::DockWidgetArea dock_area, PlotWidget* plot) {
   auto* parent_docker = qobject_cast<PlotDocker*>(dockManager());
   if (!parent_docker) {
     return nullptr;
   }
-  auto* new_widget = new DockWidget(session_, catalog_, parent_docker);
+  auto* new_widget = new DockWidget(plot, session_, catalog_, parent_docker, nullptr, plot == nullptr);
   auto* area = parent_docker->addDockWidget(dock_area, new_widget, dockAreaWidget());
   area->setAllowedAreas(ads::OuterDockAreas);
 

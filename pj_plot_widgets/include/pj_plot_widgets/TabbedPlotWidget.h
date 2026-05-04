@@ -1,5 +1,7 @@
 #pragma once
 
+#include <QDomDocument>
+#include <QDomElement>
 #include <QWidget>
 
 QT_BEGIN_NAMESPACE
@@ -34,6 +36,10 @@ class TabbedPlotWidget : public QWidget {
   QString name() const {
     return name_;
   }
+  [[nodiscard]] QString stateId() const;
+  void setStateId(QString id);
+  [[nodiscard]] QDomElement xmlSaveState(QDomDocument& doc) const;
+  bool xmlLoadState(const QDomElement& tabbed_area);
 
  public slots:
   void onStylesheetChanged(QString theme);
@@ -53,12 +59,16 @@ class TabbedPlotWidget : public QWidget {
   bool eventFilter(QObject* obj, QEvent* event) override;
 
  private:
+  void installCloseButton(PlotDocker* docker);
+
   QTabWidget* tab_widget_ = nullptr;
   QPushButton* button_add_tab_ = nullptr;
   SessionManager* session_ = nullptr;
   CatalogModel* catalog_ = nullptr;
+  QString state_id_;
   QString name_;
   int tab_suffix_count_ = 0;
+  bool restoring_state_ = false;
 };
 
 }  // namespace PJ

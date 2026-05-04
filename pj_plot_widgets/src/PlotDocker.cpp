@@ -3,6 +3,19 @@
 #include <DockAreaTitleBar.h>
 #include <DockAreaWidget.h>
 #include <DockComponentsFactory.h>
+#include <DockContainerWidget.h>
+#include <DockSplitter.h>
+#include <ads_globals.h>
+
+#include <QDomDocument>
+#include <QHash>
+#include <QSet>
+#include <QSplitter>
+#include <QStringList>
+#include <QUuid>
+#include <QVector>
+#include <algorithm>
+#include <utility>
 
 #include "pj_plot_widgets/DockWidget.h"
 #include "pj_plot_widgets/PlotWidget.h"
@@ -30,15 +43,284 @@ class SplittableComponentsFactory : public ads::CDockComponentsFactory {
   }
 };
 
+QString newStateId() {
+  return QUuid::createUuid().toString(QUuid::WithoutBraces);
+}
+
+QDomElement saveChildNodesState(QDomDocument& doc, QWidget* widget) {
+  if (widget == nullptr) {
+    return {};
+  }
+
+  if (auto* splitter = qobject_cast<QSplitter*>(widget)) {
+    QDomElement splitter_element = doc.createElement(QStringLiteral("DockSplitter"));
+    splitter_element.setAttribute(
+        QStringLiteral("orientation"),
+        splitter->orientation() == Qt::Horizontal ? QStringLiteral("|") : QStringLiteral("-"));
+    splitter_element.setAttribute(QStringLiteral("count"), QString::number(splitter->count()));
+
+    QStringList normalized_sizes;
+    int total_size = 0;
+    for (int size : splitter->sizes()) {
+      total_size += size;
+    }
+    for (int index = 0; index < splitter->count(); ++index) {
+      const int size = splitter->sizes().value(index, 0);
+      const double normalized = total_size > 0 ? static_cast<double>(size) / static_cast<double>(total_size)
+                                               : 1.0 / static_cast<double>(std::max(1, splitter->count()));
+      normalized_sizes.push_back(QString::number(normalized, 'f', 8));
+    }
+    splitter_element.setAttribute(QStringLiteral("sizes"), normalized_sizes.join(QStringLiteral(";")));
+
+    for (int index = 0; index < splitter->count(); ++index) {
+      QDomElement child = saveChildNodesState(doc, splitter->widget(index));
+      if (!child.isNull()) {
+        splitter_element.appendChild(child);
+      }
+    }
+    return splitter_element;
+  }
+
+  auto* dock_area = qobject_cast<ads::CDockAreaWidget*>(widget);
+  if (dock_area == nullptr) {
+    return {};
+  }
+
+  QDomElement area_element = doc.createElement(QStringLiteral("DockArea"));
+  for (int index = 0; index < dock_area->dockWidgetsCount(); ++index) {
+    auto* dock_widget = dynamic_cast<DockWidget*>(dock_area->dockWidget(index));
+    if (dock_widget == nullptr || dock_widget->plotWidget() == nullptr) {
+      continue;
+    }
+    area_element.setAttribute(QStringLiteral("id"), dock_widget->stateId());
+    area_element.setAttribute(QStringLiteral("name"), dock_widget->name());
+    area_element.appendChild(dock_widget->plotWidget()->xmlSaveState(doc));
+  }
+  return area_element;
+}
+
+struct LayoutNode {
+  enum class Type { Area, Splitter };
+
+  Type type = Type::Area;
+  Qt::Orientation orientation = Qt::Horizontal;
+  QVector<double> size_ratios;
+  QString area_id;
+  QString area_name;
+  QVector<QDomElement> plots;
+  QVector<LayoutNode> children;
+  bool valid = false;
+};
+
+LayoutNode parseLayoutNode(const QDomElement& element) {
+  LayoutNode node;
+  if (element.isNull()) {
+    return node;
+  }
+
+  if (element.tagName() == QStringLiteral("DockSplitter")) {
+    node.type = LayoutNode::Type::Splitter;
+    node.valid = true;
+    node.orientation = element.attribute(QStringLiteral("orientation")).startsWith(QStringLiteral("|")) ? Qt::Horizontal
+                                                                                                        : Qt::Vertical;
+    for (const QString& size : element.attribute(QStringLiteral("sizes")).split(';', Qt::SkipEmptyParts)) {
+      bool ok = false;
+      const double value = size.toDouble(&ok);
+      if (ok) {
+        node.size_ratios.push_back(value);
+      }
+    }
+    for (QDomElement child = element.firstChildElement(); !child.isNull(); child = child.nextSiblingElement()) {
+      LayoutNode child_node = parseLayoutNode(child);
+      if (child_node.valid) {
+        node.children.push_back(std::move(child_node));
+      }
+    }
+    node.valid = !node.children.isEmpty();
+    return node;
+  }
+
+  if (element.tagName() == QStringLiteral("DockArea")) {
+    node.type = LayoutNode::Type::Area;
+    node.valid = true;
+    node.area_id = element.attribute(QStringLiteral("id"));
+    node.area_name = element.attribute(QStringLiteral("name"));
+    for (QDomElement plot = element.firstChildElement(QStringLiteral("plot")); !plot.isNull();
+         plot = plot.nextSiblingElement(QStringLiteral("plot"))) {
+      node.plots.push_back(plot);
+    }
+    return node;
+  }
+
+  return node;
+}
+
+class RestorePlotPool {
+ public:
+  RestorePlotPool(QVector<DockWidget*> docks, SessionManager* session, CatalogModel* catalog, QWidget* restored_parent)
+      : session_(session), catalog_(catalog), restored_parent_(restored_parent) {
+    for (DockWidget* dock : docks) {
+      if (dock == nullptr) {
+        continue;
+      }
+      PlotWidget* plot = dock->releasePlotWidget();
+      if (plot == nullptr) {
+        continue;
+      }
+      plot->setDataServices(session_, catalog_);
+      plots_by_position_.push_back(plot);
+      const QString id = plot->stateId();
+      if (!id.isEmpty() && !plots_by_id_.contains(id)) {
+        plots_by_id_.insert(id, plot);
+      }
+    }
+  }
+
+  PlotWidget* takeFirstForNode(const LayoutNode& node) {
+    if (node.type == LayoutNode::Type::Area) {
+      return takeForArea(node);
+    }
+    for (const LayoutNode& child : node.children) {
+      return takeFirstForNode(child);
+    }
+    return createPlot({});
+  }
+
+  PlotWidget* takeForArea(const LayoutNode& node) {
+    const QDomElement plot_element = node.plots.isEmpty() ? QDomElement{} : node.plots.front();
+    const QString plot_id = plot_element.attribute(QStringLiteral("id"));
+    if (!plot_id.isEmpty()) {
+      auto it = plots_by_id_.find(plot_id);
+      if (it != plots_by_id_.end() && !used_.contains(it.value())) {
+        PlotWidget* plot = it.value();
+        used_.insert(plot);
+        return plot;
+      }
+    }
+
+    while (next_position_ < plots_by_position_.size()) {
+      PlotWidget* plot = plots_by_position_.at(next_position_++);
+      if (plot != nullptr && !used_.contains(plot)) {
+        used_.insert(plot);
+        return plot;
+      }
+    }
+
+    return createPlot(plot_id);
+  }
+
+  void deleteUnused() {
+    for (PlotWidget* plot : plots_by_position_) {
+      if (plot != nullptr && !used_.contains(plot)) {
+        plot->deleteLater();
+      }
+    }
+  }
+
+ private:
+  PlotWidget* createPlot(const QString& state_id) {
+    auto* plot = new PlotWidget(session_, catalog_, restored_parent_);
+    plot->setStateId(state_id);
+    used_.insert(plot);
+    plots_by_position_.push_back(plot);
+    if (!plot->stateId().isEmpty() && !plots_by_id_.contains(plot->stateId())) {
+      plots_by_id_.insert(plot->stateId(), plot);
+    }
+    return plot;
+  }
+
+  SessionManager* session_ = nullptr;
+  CatalogModel* catalog_ = nullptr;
+  QWidget* restored_parent_ = nullptr;
+  QVector<PlotWidget*> plots_by_position_;
+  QHash<QString, PlotWidget*> plots_by_id_;
+  QSet<PlotWidget*> used_;
+  qsizetype next_position_ = 0;
+};
+
+void applySplitterSizes(const LayoutNode& node, const QVector<DockWidget*>& widgets) {
+  if (node.size_ratios.size() != widgets.size() || widgets.isEmpty()) {
+    return;
+  }
+  auto* splitter = ads::internal::findParent<ads::CDockSplitter*>(widgets.back());
+  if (splitter == nullptr) {
+    return;
+  }
+
+  int total_size = 0;
+  for (DockWidget* widget : widgets) {
+    total_size += node.orientation == Qt::Horizontal ? widget->width() : widget->height();
+  }
+  if (total_size <= 0) {
+    total_size = static_cast<int>(widgets.size()) * 100;
+  }
+
+  QList<int> sizes;
+  for (double ratio : node.size_ratios) {
+    sizes.push_back(std::max(1, static_cast<int>(ratio * static_cast<double>(total_size))));
+  }
+  splitter->setSizes(sizes);
+}
+
+void restoreNode(const LayoutNode& node, DockWidget* widget, RestorePlotPool& pool) {
+  if (widget == nullptr) {
+    return;
+  }
+
+  if (node.type == LayoutNode::Type::Area) {
+    widget->setStateId(node.area_id);
+    widget->setName(node.area_name.isEmpty() ? QStringLiteral("...") : node.area_name);
+
+    PlotWidget* plot = widget->plotWidget();
+    if (plot == nullptr) {
+      plot = pool.takeForArea(node);
+      widget->setPlotWidget(plot);
+    }
+    const QDomElement plot_element = node.plots.isEmpty() ? QDomElement{} : node.plots.front();
+    if (!plot_element.isNull()) {
+      plot->xmlLoadState(plot_element);
+    } else {
+      plot->removeAllCurves();
+    }
+    return;
+  }
+
+  if (node.children.isEmpty()) {
+    return;
+  }
+
+  QVector<DockWidget*> widgets;
+  widgets.push_back(widget);
+  DockWidget* split_anchor = widget;
+  for (qsizetype index = 1; index < node.children.size(); ++index) {
+    PlotWidget* child_plot = pool.takeFirstForNode(node.children.at(index));
+    split_anchor = node.orientation == Qt::Horizontal ? split_anchor->splitHorizontal(child_plot)
+                                                      : split_anchor->splitVertical(child_plot);
+    if (split_anchor == nullptr) {
+      return;
+    }
+    widgets.push_back(split_anchor);
+  }
+  applySplitterSizes(node, widgets);
+
+  for (qsizetype index = 0; index < node.children.size() && index < widgets.size(); ++index) {
+    restoreNode(node.children.at(index), widgets.at(index), pool);
+  }
+}
+
 }  // namespace
 
 PlotDocker::PlotDocker(QString name, SessionManager* session, CatalogModel* catalog, QWidget* parent)
-    : ads::CDockManager(parent), name_(std::move(name)), session_(session), catalog_(catalog) {
+    : ads::CDockManager(parent), state_id_(newStateId()), name_(std::move(name)), session_(session), catalog_(catalog) {
   setStyleSheet("");  // Disable ADS's built-in stylesheet.
   setComponentsFactory(new SplittableComponentsFactory());
 
   connect(this, &ads::CDockManager::dockWidgetRemoved, this, [this](ads::CDockWidget*) { ensureAtLeastOneWidget(); });
-  connect(this, &ads::CDockManager::dockAreasAdded, this, &PlotDocker::undoableChange);
+  connect(this, &ads::CDockManager::dockAreasAdded, this, [this]() {
+    if (!restoring_state_) {
+      emit undoableChange();
+    }
+  });
 
   ensureAtLeastOneWidget();
 }
@@ -55,17 +337,115 @@ void PlotDocker::setDataServices(SessionManager* session, CatalogModel* catalog)
   }
 }
 
+QString PlotDocker::stateId() const {
+  return state_id_;
+}
+
+void PlotDocker::setStateId(QString id) {
+  if (!id.isEmpty()) {
+    state_id_ = std::move(id);
+  }
+}
+
 void PlotDocker::ensureAtLeastOneWidget() {
+  if (restoring_state_) {
+    return;
+  }
   if (dockAreaCount() != 0) {
     return;
   }
-  auto* widget = new DockWidget(session_, catalog_, this);
-  auto* area = addDockWidget(ads::TopDockWidgetArea, widget);
-  area->setAllowedAreas(ads::OuterDockAreas);
+  addDockWithPlot(nullptr, ads::TopDockWidgetArea);
+}
+
+DockWidget* PlotDocker::addDockWithPlot(
+    PlotWidget* plot, ads::DockWidgetArea dock_area, ads::CDockAreaWidget* relative_to) {
+  auto* widget = new DockWidget(plot, session_, catalog_, this);
+  auto* area_widget = addDockWidget(dock_area, widget, relative_to);
+  area_widget->setAllowedAreas(ads::OuterDockAreas);
 
   connect(widget, &DockWidget::undoableChange, this, &PlotDocker::undoableChange);
   emit dockAdded(widget);
-  emit plotWidgetAdded(widget->plotWidget());
+  if (widget->plotWidget() != nullptr) {
+    emit plotWidgetAdded(widget->plotWidget());
+  }
+  return widget;
+}
+
+QDomElement PlotDocker::xmlSaveState(QDomDocument& doc) const {
+  QDomElement tab_element = doc.createElement(QStringLiteral("Tab"));
+  tab_element.setAttribute(QStringLiteral("id"), state_id_);
+  tab_element.setAttribute(QStringLiteral("containers"), dockContainers().count());
+
+  for (ads::CDockContainerWidget* container : dockContainers()) {
+    QDomElement container_element = doc.createElement(QStringLiteral("Container"));
+    QDomElement child =
+        saveChildNodesState(doc, container->findChild<QSplitter*>(QString(), Qt::FindDirectChildrenOnly));
+    if (!child.isNull()) {
+      container_element.appendChild(child);
+    }
+    tab_element.appendChild(container_element);
+  }
+  return tab_element;
+}
+
+bool PlotDocker::xmlLoadState(const QDomElement& tab_element) {
+  if (tab_element.isNull() || tab_element.tagName() != QStringLiteral("Tab")) {
+    return false;
+  }
+
+  setStateId(tab_element.attribute(QStringLiteral("id")));
+  if (tab_element.hasAttribute(QStringLiteral("tab_name"))) {
+    setName(tab_element.attribute(QStringLiteral("tab_name")));
+  }
+
+  QVector<LayoutNode> container_nodes;
+  for (QDomElement container = tab_element.firstChildElement(QStringLiteral("Container")); !container.isNull();
+       container = container.nextSiblingElement(QStringLiteral("Container"))) {
+    QDomElement child = container.firstChildElement(QStringLiteral("DockSplitter"));
+    if (child.isNull()) {
+      child = container.firstChildElement(QStringLiteral("DockArea"));
+    }
+    LayoutNode node = parseLayoutNode(child);
+    if (node.valid) {
+      container_nodes.push_back(std::move(node));
+    }
+  }
+
+  if (container_nodes.isEmpty()) {
+    return false;
+  }
+
+  const bool was_hidden = isHidden();
+  if (!was_hidden) {
+    hide();
+  }
+
+  restoring_state_ = true;
+  QVector<DockWidget*> old_docks;
+  for (int index = 0; index < plotCount(); ++index) {
+    if (DockWidget* dock = plotAt(index)) {
+      old_docks.push_back(dock);
+    }
+  }
+
+  RestorePlotPool pool(old_docks, session_, catalog_, this);
+  for (DockWidget* dock : old_docks) {
+    removeDockWidget(dock);
+    dock->deleteLater();
+  }
+
+  const LayoutNode& root_node = container_nodes.front();
+  PlotWidget* root_plot = pool.takeFirstForNode(root_node);
+  DockWidget* root_widget = addDockWithPlot(root_plot, ads::TopDockWidgetArea);
+  restoreNode(root_node, root_widget, pool);
+  pool.deleteUnused();
+
+  restoring_state_ = false;
+  ensureAtLeastOneWidget();
+  if (!was_hidden) {
+    show();
+  }
+  return true;
 }
 
 int PlotDocker::plotCount() const {

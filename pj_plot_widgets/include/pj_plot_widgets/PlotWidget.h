@@ -36,6 +36,8 @@ class PlotWidget : public PlotWidgetBase {
   [[nodiscard]] bool isZoomLinkEnabled() const noexcept;
   void setTrackerEnabled(bool enabled);
   [[nodiscard]] bool trackerEnabled() const noexcept;
+  [[nodiscard]] QString stateId() const;
+  void setStateId(QString id);
   [[nodiscard]] QDomElement xmlSaveState(QDomDocument& doc) const;
   bool xmlLoadState(const QDomElement& plot_element, bool autozoom = true);
 
@@ -89,6 +91,7 @@ class PlotWidget : public PlotWidgetBase {
   DragInfo dragging_;
   CurveTracker* tracker_ = nullptr;
   bool tracker_enabled_ = true;
+  QString state_id_;
 
   QAction* action_split_horizontal_ = nullptr;
   QAction* action_split_vertical_ = nullptr;

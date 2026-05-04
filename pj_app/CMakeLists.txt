@@ -48,4 +48,5 @@ target_link_libraries(pj_app PRIVATE
     Qt6::Gui
     Qt6::Widgets
     Qt6::Network
+    Qt6::Xml
 )
