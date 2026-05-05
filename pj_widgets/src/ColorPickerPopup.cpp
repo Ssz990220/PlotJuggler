@@ -1,4 +1,4 @@
-#include "ColorPickerPopup.h"
+#include "pj_widgets/ColorPickerPopup.h"
 
 #include <QLineEdit>
 #include <QLinearGradient>

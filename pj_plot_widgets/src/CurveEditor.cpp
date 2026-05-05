@@ -1,4 +1,4 @@
-#include "CurveEditor.h"
+#include "pj_plot_widgets/CurveEditor.h"
 
 #include <qwt_plot_curve.h>
 #include <qwt_text.h>
@@ -15,9 +15,9 @@
 #include <QSignalBlocker>
 #include <QString>
 
-#include "ColorPickerPopup.h"
 #include "pj_plot_widgets/PlotWidget.h"
 #include "pj_plot_widgets/PlotWidgetBase.h"
+#include "pj_widgets/ColorPickerPopup.h"
 #include "ui_CurveEditor.h"
 
 namespace PJ {
