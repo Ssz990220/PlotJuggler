@@ -14,7 +14,7 @@ Top-level layout (monorepo, per plan §0 and §5):
 
 ```
 PJ4/
-├── plotjuggler_core/        # git submodule — Level 0 foundation
+├── plotjuggler_core/        # git submodule — Level 0 foundation (incl. pj_scene_protocol SDK)
 ├── pj_media/                # 2D/video pipeline (FFmpeg + QRhi)
 ├── pj_marketplace/          # extension install/manage
 ├── pj_dialog_host/          # Qt host for plugin-provided dialogs
@@ -39,12 +39,13 @@ Foundation libraries live in the submodule at `./plotjuggler_core/`:
 - `pj_base` — vocabulary types
 - `pj_datastore` — columnar store + `ObjectStore` + `DerivedEngine`
 - `pj_plugins` — ABI + runtime for extensions
+- `pj_scene_protocol` — canonical schema + Foxglove `ImageAnnotations` Protobuf codec (writer + reader); SDK boundary for plugin authors producing or consuming markers / scene primitives. `pj_base`-only deps.
 
 These are consumed as-is. Changes to `plotjuggler_core` happen in that repo, not here.
 
 ### Root-owned core modules
 
-- `pj_media` — 2D/video pipeline (FFmpeg + QRhi)
+- `pj_media` — 2D/video pipeline (FFmpeg + QRhi). Consumes `pj_scene_protocol` from the submodule for marker producers and the canonical decoder.
 - `pj_marketplace` — extension install/manage
 - `pj_dialog_host` — Qt host for plugin-provided dialogs
 

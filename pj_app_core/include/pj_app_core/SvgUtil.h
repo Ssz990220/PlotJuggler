@@ -10,7 +10,6 @@
 #include <QSettings>
 #include <QString>
 #include <QSvgRenderer>
-
 #include <map>
 
 namespace PJ {

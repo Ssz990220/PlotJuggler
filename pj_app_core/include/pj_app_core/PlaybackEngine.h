@@ -3,7 +3,6 @@
 #include <QElapsedTimer>
 #include <QObject>
 #include <QTimer>
-
 #include <memory>
 
 namespace PJ {
@@ -22,13 +21,27 @@ class PlaybackEngine : public QObject {
   PlaybackEngine(const PlaybackEngine&) = delete;
   PlaybackEngine& operator=(const PlaybackEngine&) = delete;
 
-  double currentTime() const { return current_time_; }
-  double rangeMin() const { return range_min_; }
-  double rangeMax() const { return range_max_; }
-  double playbackRate() const { return rate_; }
-  double step() const { return step_; }
-  bool isPlaying() const { return playing_; }
-  bool isLooping() const { return looping_; }
+  double currentTime() const {
+    return current_time_;
+  }
+  double rangeMin() const {
+    return range_min_;
+  }
+  double rangeMax() const {
+    return range_max_;
+  }
+  double playbackRate() const {
+    return rate_;
+  }
+  double step() const {
+    return step_;
+  }
+  bool isPlaying() const {
+    return playing_;
+  }
+  bool isLooping() const {
+    return looping_;
+  }
 
  public slots:
   void setRange(double min, double max);

@@ -15,15 +15,25 @@ pj_media ships as two CMake targets with a strict dependency direction:
 
 ```
 pj_media_qt  ──►  pj_media_core  ──►  pj_base
-     │                  │                  │
-     │                  ├──►  pj_datastore │
-     │                  ├──►  FFmpeg       │
-     │                  ├──►  turbojpeg    │
-     │                  └──►  libpng       │
-     │                                     │
-     ├──►  Qt 6.8+ (Widgets, Gui, Rhi)    │
-     └──►  pj_media_core                  │
+     │                  │
+     │                  ├──►  pj_scene_protocol  (schema + canonical wire codec)
+     │                  ├──►  pj_datastore
+     │                  ├──►  FFmpeg
+     │                  ├──►  turbojpeg
+     │                  └──►  libpng
+     │
+     ├──►  Qt 6.8+ (Widgets, Gui, Rhi)
+     └──►  pj_media_core
 ```
+
+`pj_scene_protocol` lives in the `plotjuggler_core` submodule (sibling of
+`pj_base`, `pj_datastore`, `pj_plugins`). It owns the `ImageAnnotation`
+struct types and the canonical wire-format codec (writer + reader). Both
+pj_media (consumer of canonical bytes) and any loader/plugin (producer
+of canonical bytes) depend on it; loaders never link pj_media_core, so
+the schema bridge has to live somewhere both sides can see — that's the
+role pj_scene_protocol fills. See `plotjuggler_core/pj_scene_protocol/`
+and its `docs/ARCHITECTURE.md` / `docs/USER_GUIDE.md`.
 
 ### pj_media_core (no Qt)
 
@@ -43,9 +53,8 @@ Pure C++ library. Contains everything that does not touch Qt:
 | `ThumbnailCache` | `thumbnail_cache.h` | JPEG-compressed frame cache: background pre-decode at open, auto-scale to 1920px, YUV420P output (§4.1) |
 | `H264 NAL utils` | `h264_utils.h` | Annex-B keyframe detection (`isH264Keyframe`), SPS/PPS extraction (`extractH264SpsPps`), codec param builder (`makeH264CodecParams`) |
 | `ImageDecoder` | `image_decoder.h` | turbojpeg / libpng / raw-pixel dispatch (§4) |
-| `SceneDecoder` | `scene_decoder.h` | CDR / Protobuf deserializer for annotations and 2D primitives (§4) — deferred |
 | `MediaIndexRegistry` | `media_index_registry.h` | Per-topic keyframe timestamp index sidechannel (§6) |
-| `Compositor` | `compositor.h` | Multi-layer decode orchestration and blending (§8) — deferred |
+| `CompositeMediaSource` | `composite_media_source.h` | Multi-layer fan-out: owns N `MediaSource`, fuses their `MediaFrame`s (§5.4 / §8) |
 | `CancelToken` | `cancel_token.h` | Atomic flag polled by decoders between decode units |
 | `DecodedFrame` | `decoded_frame.h` | RAII wrapper for decoded pixel data (YUV planes or RGB buffer) |
 
@@ -399,12 +408,33 @@ that caching wastes more memory than it saves time (§R4.2).
 
 ### 4.3 SceneDecoder
 
-Stateless. One instance per scene/annotation layer. Deserializes CDR
-or Protobuf wire format into typed scene primitives and annotations
-(see `datatypes_2D.md` for the type catalog).
+pj_media consumes `pj_scene_protocol`'s `ISceneDecoder` (in the
+`plotjuggler_core` submodule). The factory `makeSceneDecoder(schema_name)`
+returns the canonical Foxglove `ImageAnnotations` Protobuf decoder.
+There is exactly **one** decoder kind — pj_media has no schema-name
+dispatch beyond the factory call.
 
-Output is a `SceneFrame` — a collection of typed primitives ready for
-the compositor to rasterize or overlay.
+Wire format spec, type catalog, and encoding rules live in
+`plotjuggler_core/pj_scene_protocol/docs/ARCHITECTURE.md`. Producer and
+consumer recipes are in `plotjuggler_core/pj_scene_protocol/docs/USER_GUIDE.md`.
+
+**pj_media's usage policy:** stateless decoder, one instance per
+scene/annotation layer for the layer's lifetime. `ScenePipelineSource`
+(see §5) owns the decoder and feeds it bytes pulled from `ObjectStore`
+at the active timestamp. Output is a `SceneFrame` ready for the
+compositor (§5.4) to merge with the base image and hand to the renderer
+(§7).
+
+**Source-format conversion is loader-side, not pj_media's concern.**
+Per-source-format adapters (CDR `vision_msgs/msg/Detection2DArray`, CDR
+`yolo_msgs/msg/DetectionArray`, future CSV/RLDS, …) live next to each
+loader; PJ4's reference adapters are in
+`pj_media/demos/cdr_*_to_image_annotation.{h,cpp}` (with
+`pj_media/demos/marker_palette.{h,cpp}` for the FNV-1a class-id →
+palette helper). They call `PJ::serializeImageAnnotation` and push the
+resulting canonical bytes to ObjectStore tagged with
+`metadata_json = {"encoding":"foxglove.ImageAnnotations"}`. The viewer
+side never sees the original schema.
 
 ### 4.4 StreamingVideoDecoder
 
@@ -609,12 +639,31 @@ Internals:
   an internal `FrameSlot`.
 - `takeFrame` polls the `FrameSlot` and returns the latest frame.
 
-### 5.4 Multi-layer (future)
+### 5.4 Multi-layer
 
-When compositing is needed, a `CompositeMediaSource` can own multiple
-`MediaSource` instances, call `takeFrame()` on each, composite on CPU,
-and present the blended result. Same interface, same widget code. This
-is deferred until annotation test data is available.
+`CompositeMediaSource` (`pj_media_core/composite_media_source.h`) owns
+multiple `MediaSource` instances and fuses their `MediaFrame`s on each
+`takeFrame()`. Same `MediaSource` interface — the widget remains agnostic
+of the layer count.
+
+The output of `takeFrame()` is a single `MediaFrame` with two slots:
+
+```cpp
+struct MediaFrame {
+  std::optional<DecodedFrame> base;   // pixel-buffer layer (image/video)
+  std::vector<SceneFrame> overlays;   // vector primitive layers
+};
+```
+
+Fusion rules (see implementation):
+- The first layer that produces a `.base` wins; later bases dropped.
+- Every layer's `.overlays` are concatenated in addition order (later
+  layers render on top).
+- Returns `nullopt` if no layer produced data on this poll.
+
+Layers are owned by the compositor (`std::unique_ptr<MediaSource>`).
+Polling is deterministic (addition order), making z-order configuration
+explicit at construction time.
 
 ---
 
@@ -699,20 +748,33 @@ and 4.
 
 ## 7. Rendering Pipeline
 
-### 7.1 QRhiWidget
+### 7.1 QRhiWidget — five pipelines
 
 `MediaViewerWidget` subclasses `QRhiWidget` (Qt 6.8+), which abstracts
-over Vulkan, Metal, D3D11, and OpenGL at runtime. The widget:
+over Vulkan, Metal, D3D11, and OpenGL at runtime. The widget owns five
+QRhi graphics pipelines that share the same `viewTransform` UBO so
+zoom/pan apply uniformly:
 
-1. Creates 3 R8 GPU textures for YUV420P planes: Y (full resolution),
-   U (half resolution), V (half resolution). This is 75% less GPU
-   memory than a single RGBA8 texture.
-2. On each render tick, polls `FrameSlot::take()`.
-3. If a new frame arrived: uploads plane data to GPU textures via
-   `QRhiResourceUpdateBatch`.
-4. Draws a full-screen quad with the BT.709 YUV-to-RGB fragment shader.
-5. A backward-compatible QImage (RGB) path is kept for image viewers
-   that produce RGB output directly.
+| # | Pipeline | Topology | Responsibility |
+|---|---|---|---|
+| 1 | Image | implicit (procedural fullscreen quad) | YUV420P → RGB via BT.709 (3 R8 textures) or RGBA passthrough |
+| 2 | Marker | `Lines` | 1 px line primitives (`thickness ≤ 1.5`) — bboxes, polylines, circle outlines |
+| 3 | Points | `Triangles` | Solid fills: `kPoints` quads, `LineLoop` fill, `CircleAnnotation` fill |
+| 4 | Thick lines | `Triangles` | Lines/circle outlines with `thickness > 1.5`, expanded CPU-side to perpendicular rectangles |
+| 5 | Text | `Triangles` (textured) | One quad per `TextAnnotation`, glyph mask sampled and tinted by per-vertex colour |
+
+Pipelines 2–5 share `marker_uniform_buf_` (the same `mat4 viewTransform + vec4 frameSize` UBO) but each has its own SRB and VBO so submissions don't trample each other's bindings.
+
+Per-frame flow:
+
+1. Build `MediaFrame` via the attached `MediaSource`. Pixel data goes to texture upload; vector overlays go to CPU vertex builders.
+2. On a dirty cycle, walk `last_overlays_` once and dispatch each `PointsAnnotation` and `CircleAnnotation` to the correct CPU helper (`expandToLineList`, `expandToThickList`, `expandKPointsToQuads`, `expandLoopFillToTriangles`, `expandCircleOutline*`, `expandCircleFillToTriangleFan`). Per circle, `circlePerimeter` is computed once and reused for both outline and fill.
+3. For each `TextAnnotation`, look up `(text, font_size_q)` in `text_cache_`. On miss, render a glyph mask with `QPainter` to a `QImage::Format_Alpha8`, upload as a `QRhiTexture::R8`, and create a per-entry SRB pointing at it (so per-draw rebinding cannot mix textures across instances).
+4. Issue draw calls in order `image → fills → 1 px lines → thick lines → text` so strokes always land on top of fills and labels on top of everything.
+
+### 7.1b Backward-compatible QImage path
+
+A backward-compatible `QImage` upload path is kept for legacy image viewers that produce RGB output directly without going through a `MediaSource`.
 
 ### 7.2 YUV-to-RGB shaders
 
@@ -766,28 +828,30 @@ display time (§R4.8). The `Compositor` class orchestrates this.
 
 ### 8.1 Layer model
 
-Each layer is a `(topic, decoder, blend_mode, z_order)` tuple
-configured at widget construction time. Layer types:
+Each layer is a `MediaSource` registered with the composite. Layer types
+that pj_media renders today (image-pixel space only — see REQUIREMENTS §4.1):
 
-| Layer type | Decoder | Output |
-|------------|---------|--------|
-| Base image/video | `VideoDecoder` or `ImageDecoder` | RGB/YUV pixel buffer |
-| Annotation overlay | `SceneDecoder` | List of 2D primitives (rasterized onto the base) |
-| Depth colormap | `ImageDecoder` (mono16) | False-color pixel buffer (colormap applied by compositor) |
-| Segmentation mask | `ImageDecoder` | Indexed-color pixel buffer (alpha-blended) |
+| Layer type | Source | Output in `MediaFrame` |
+|---|---|---|
+| Base image/video | `ImagePipelineSource`, `FileVideoSource`, `StreamingVideoSource` | `.base` (RGB/YUV pixel buffer) |
+| Vector annotations (`ImageAnnotation`) | `ScenePipelineSource` | `.overlays` (typed primitives — points, line loops/strips/lists, circles, texts) |
+| Depth colormap (planned) | `ImagePipelineSource` with `DepthColormap` codec | additional `.base` slot (pixel-layer fusion not implemented yet) |
+| Segmentation mask (planned) | `ImagePipelineSource` with `SegmentationPalette` codec | additional `.base` slot (idem) |
 
 ### 8.2 Compositing pipeline
 
-When compositing is implemented, a `CompositeMediaSource` (§5.4) would
-own one `MediaSource` per layer. On each tick:
+`CompositeMediaSource` (§5.4) owns one `MediaSource` per layer. On each tick:
 
-1. Calls `takeFrame()` on each layer's `MediaSource`.
-2. Collects decoded outputs.
-3. Applies layer ordering and blending:
-   - Base layer rendered first.
-   - Overlays rasterized on top (annotations as vector primitives,
-     depth/segmentation as alpha-blended pixel buffers).
-4. Returns the composited frame via its own `takeFrame()`.
+1. Calls `setTimestamp()` on every layer.
+2. Calls `takeFrame()` on every layer.
+3. Returns one `MediaFrame` where the first non-null `.base` wins and every layer's `.overlays` are concatenated in addition order.
+
+The widget consumes the fused `MediaFrame` and dispatches:
+
+- `.base` → texture upload + image pipeline.
+- `.overlays` → CPU expansion to vertex streams (see §7.1) and the four overlay pipelines (Lines, Points/Triangles fills, Thick triangles, Text textured).
+
+Pixel-layer fusion (multiple `.base` layers blended in pixel space — RGB + depth colormap + segmentation mask) is **not implemented yet**. Today the composite handles vector overlays on top of one pixel base. Adding a multi-base path requires either an additional slot in `MediaFrame` or a CPU blender step before delivery; estimated ~1 week's work when test data appears.
 
 ### 8.3 At-or-before semantics
 

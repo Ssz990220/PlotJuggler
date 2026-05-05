@@ -1,7 +1,6 @@
 #pragma once
 
 #include <QTreeWidget>
-
 #include <vector>
 
 namespace PJ {
@@ -20,7 +19,9 @@ class CurveTreeView : public QTreeWidget {
   std::vector<QString> selectedCurveNames() const;
 
   void setValuesColumnHidden(bool hidden);
-  bool valuesColumnHidden() const { return isColumnHidden(1); }
+  bool valuesColumnHidden() const {
+    return isColumnHidden(1);
+  }
 
  protected:
   void mousePressEvent(QMouseEvent* event) override;

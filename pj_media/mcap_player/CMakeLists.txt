@@ -14,7 +14,9 @@ find_package(libjpeg-turbo REQUIRED)
 
 add_executable(mcap_player main.cpp video_widget.hpp)
 
-target_include_directories(mcap_player PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/..)
+target_include_directories(mcap_player PRIVATE
+  ${CMAKE_CURRENT_SOURCE_DIR}/../../3rdparty/nanocdr/include
+)
 
 set_target_properties(mcap_player PROPERTIES
   INSTALL_RPATH_USE_LINK_PATH TRUE

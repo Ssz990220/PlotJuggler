@@ -1,7 +1,6 @@
 #pragma once
 
 #include <QSlider>
-
 #include <algorithm>
 #include <cmath>
 
@@ -39,17 +38,19 @@ class RealSlider : public QSlider {
       return;
     }
     const double ratio = (val - min_value_) / (max_value_ - min_value_);
-    const long pos =
-        std::lround(static_cast<double>(maximum() - minimum()) * ratio + minimum());
+    const long pos = std::lround(static_cast<double>(maximum() - minimum()) * ratio + minimum());
     QSlider::setValue(static_cast<int>(pos));
   }
 
-  double getMaximum() const { return max_value_; }
-  double getMinimum() const { return min_value_; }
+  double getMaximum() const {
+    return max_value_;
+  }
+  double getMinimum() const {
+    return min_value_;
+  }
 
   void setRealStepValue(double step) {
-    const double ratio =
-        (max_value_ - min_value_) / static_cast<double>(maximum() - minimum());
+    const double ratio = (max_value_ - min_value_) / static_cast<double>(maximum() - minimum());
     const int new_step = std::max(1, static_cast<int>(std::round(step / ratio)));
     QSlider::setSingleStep(new_step);
   }

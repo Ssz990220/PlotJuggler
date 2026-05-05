@@ -54,6 +54,7 @@ add_subdirectory(plotjuggler_core)
 # ---------------------------------------------------------------------------
 
 add_subdirectory(3rdparty/qwt/src)
+add_subdirectory(3rdparty/nanocdr)
 
 # Qt-Advanced-Docking submodule (PlotJuggler/Qt-Advanced-Docking-System fork
 # tracking upstream master + the Wayland fix on feature/wayland-fix). Pin the
@@ -86,8 +87,8 @@ endif()
 # ---------------------------------------------------------------------------
 
 if(PJ_BUILD_DATASTORE)
-    add_subdirectory(pj_media/pj_media_core)
-    add_subdirectory(pj_media/pj_media_qt)
+    add_subdirectory(pj_media/core)
+    add_subdirectory(pj_media/qt)
     add_subdirectory(pj_media/demos)
 endif()
 add_subdirectory(pj_marketplace)

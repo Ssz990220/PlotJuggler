@@ -38,11 +38,17 @@ then video, then streaming.
 | Docs update | `6a26139` | PLAN.md milestones + roadmap updated. ARCHITECTURE.md FileVideoSource/StreamingVideoSource marked planned. TECHNICAL_NOTES.md §11 Lessons Learned |
 | FileVideoSource + StreamingVideoSource | `e2db9b5` | FileVideoSource wraps FfmpegBackend (4 tests). StreamingVideoSource wraps StreamingVideoDecoder + worker thread (3 tests). mp4_video_viewer + video_stream_demo migrated. All 5 demos use MediaSource uniformly |
 | LSAN suppression | `461cbd0` | Suppress VAAPI driver av_malloc leak in ffmpeg_decoder_test. 60/60 ASAN, 60/60 release |
+| Visual markers v1 (bboxes) | `c14c8af` | SceneFrame / MediaFrame types, ScenePipelineSource, CompositeMediaSource, second QRhi pipeline (Lines). CDR Detection2DArray + yolo_msgs + Foxglove ImageAnnotations decoders. Bboxes rendered as 4-corner LineLoops over video |
+| Markers full coverage | `1971106` | All `ImageAnnotation` primitives rendered: kPoints (solid quads, 3rd pipeline), thick lines (4th pipeline, threshold > 1.5 px), CircleAnnotation outline+fill, TextAnnotation (5th pipeline, R8 mask + tint, per-instance texture cache). Per-vertex colors honoured. LineLoop fill via convex triangle fan. Foxglove decoder reads `circles`, `texts`, `outline_color`, `outline_colors`, `fill_color`. CDR Detection2D uses real `class_id` (FNV-1a hash → palette) and emits `"<class> <score>"` label above bbox. Visual sanity check via extended `quad_overlay_demo`. Build clean under `-Wall -Wextra -Werror -Wshadow`; ASan logs free of project leaks |
 
 ### Known limitations
 
 - **4K backward scrub density**: still limited by GOP size. With typical 2-second GOPs, backward scrub at 4K shows cached thumbnails (1920px) between keyframes. Acceptable for interactive use.
 - **H.264 only** in StreamingVideoDecoder. H.265 and AV1 keyframe detection not yet implemented (FfmpegDecoder can decode anything FFmpeg supports, but NAL utils are H.264-specific).
+- **Marker thick lines have no miter joins**: adjacent segments butt-join, leaving a small visible gap at sharp angles. Acceptable for bboxes (right angles, gap invisible) and gentle polylines.
+- **LineLoop fill is convex-only**: triangle fan from `points[0]`. Concave polygons render with self-overlapping triangles. The annotations real users emit (bboxes, triangles, regular polygons) are convex.
+- **Text cache is unbounded** (`std::unordered_map<TextKey, TextEntry>` keyed by `(text, font_size_q)`). Documented limitation; LRU eviction or atlas compaction is a follow-up. Memory usage in typical robotics annotations (<100 distinct labels per session) is negligible.
+- **No font fallback**: text uses Qt's default font selection. Unicode glyphs missing in the chosen font render as empty boxes — same behaviour as `QPainter::drawText`.
 
 ### Current state and forward plan (2026-04)
 
@@ -110,14 +116,15 @@ the full list.
    once `pj_app_core` scaffolding exists; not blocking today.
 4. **H.265 / AV1 NAL utils** — extend when test data demands.
 
-**Multi-layer rendering and annotations — the main feature gap:**
+**Multi-layer rendering and annotations — current state:**
 
 | Piece | Spec | Status |
 |---|---|---|
-| `Compositor` / `CompositeMediaSource` | ARCH §5.4, §8 | header referenced, no implementation |
-| `SceneDecoder` (CDR/Protobuf → typed primitives) | ARCH §4.3 | header referenced, no implementation |
-| `ImageAnnotation` render path (Points, Circle, Text) | datatypes_2D §8 | not started |
-| 2D `ScenePrimitive` render | datatypes_2D §7 | **removed from scope** (see above) |
+| `CompositeMediaSource` | ARCH §5.4, §8 | ✓ implemented (`composite_media_source.cpp`) |
+| `SceneDecoder` (canonical Protobuf → typed primitives) | ARCH §4.3 | ✓ single decoder for `foxglove.ImageAnnotations` (full coverage: points, circles, texts, all colour fields). Source-format conversion (CDR `vision_msgs`/`yolo_msgs`, …) lives loader-side in `pj_media/demos/cdr_*_to_image_annotation.{h,cpp}` and writes canonical bytes via `pj_scene_protocol::serializeImageAnnotation` before push. |
+| `ImageAnnotation` render path (Points, Circle, Text) | datatypes_2D §8 | ✓ implemented end-to-end. 5 QRhi pipelines (image / lines 1 px / triangles fills+kPoints / thick lines / textured text) with mask-+-tint text rasterisation |
+| 2D `ScenePrimitive` render | datatypes_2D §7 | **removed from scope** (covered by `pj_3d_widgets`) |
+| Pixel-layer fusion (depth colormap + RGB + segmentation, alpha-blended in pixel space) | REQUIREMENTS §4.8, ARCH §8.1 | not started — only the vector-overlay path of `CompositeMediaSource` is exercised today |
 
 #### The multi-layer problem — three cases, not one
 
@@ -140,15 +147,15 @@ cases that REQUIREMENTS.md currently lumps together:
 Time estimates are single-developer, rough. Each phase ends green on
 `./build.sh --debug && ./test.sh && ./run_clang_tidy.sh`.
 
-**Phase A — Cleanup and scope lock (~1 week)**
+**Phase A — Cleanup and scope lock (partial, ~3 days remaining)**
 
 - Delete `video_backend.h` / `VideoBackend`. Move the four callback
-  typedefs into `FfmpegBackend` directly.
+  typedefs into `FfmpegBackend` directly. (still pending)
 - Remove the obsolete `TimelineCursor` prerequisite and the
-  non-existent `JsonExtractor` references from docs.
-- Update `REQUIREMENTS.md §4.1`, `datatypes_2D.md §4`,
+  non-existent `JsonExtractor` references from docs. (still pending)
+- ✓ Update `REQUIREMENTS.md §4.1`, `datatypes_2D.md §4`,
   `ARCHITECTURE.md §8.1` to drop 2D `ScenePrimitive` from pj_media
-  render targets.
+  render targets. **Done in this round of doc updates.**
 
 **Phase B — Real ingest (~2–3 weeks, highest leverage)**
 
@@ -165,32 +172,53 @@ Time estimates are single-developer, rough. Each phase ends green on
   `StreamingVideoDecoder` consumes via the registry instead of its
   inline index on file-backed sources.
 
-**Phase C — Multi-layer compositor MVP (~2 weeks)**
+**Phase C — Multi-layer compositor (partial)**
 
-- Implement `CompositeMediaSource` (ARCH §5.4). Owns
-  `vector<unique_ptr<MediaSource>>`, each with a blend mode enum.
-  On each tick: call `takeFrame()` on each, CPU-alpha-blend in
-  timestamp order, return one composite `DecodedFrame`. Keep it on
-  CPU — 1080p CPU blend is under 5 ms, plenty before GPU is
-  warranted.
-- `MediaViewerWidget` stays unchanged. The compositor is just
-  another `MediaSource`.
-- Demo: RGB camera + depth colormap overlay scrubbable together
-  from one MCAP file. Exercises `at-or-before` per-layer semantics.
+- ✓ `CompositeMediaSource` implemented (`composite_media_source.cpp`).
+  Owns `vector<unique_ptr<MediaSource>>`. Fans `setTimestamp()` across
+  layers; on `takeFrame()` returns a single `MediaFrame` where the
+  first layer's `.base` wins and every layer's `.overlays` are
+  concatenated in addition order. Used today for image + scene
+  annotation composition.
+- ⏳ Pixel-layer fusion (RGB base + depth colormap + segmentation
+  mask, alpha-blended in pixel space) **not started**. Today's
+  composite handles vector overlays on top of one pixel base; the
+  multi-pixel-base case requires either an extra slot in `MediaFrame`
+  or a CPU blender step before delivery. Estimated ~1 week when
+  test data appears.
 
-**Phase D — Annotations (~3 weeks, delivers visible value)**
+**Phase D — Annotations (delivered)**
 
-- Implement `SceneDecoder` — CDR first (ROS 2 path), Protobuf later.
-  Start with `foxglove_msgs/ImageAnnotations` (Points, Circles,
-  Text). Output a `SceneFrame` struct with typed vectors.
-- Implement `AnnotationRasterLayer : MediaSource` — on
-  `setTimestamp(t)`: `latestAt` → `SceneDecoder::decode` →
-  CPU-rasterize to a transparent RGBA buffer at base image
-  resolution. Text via `QPainter + QFont → QImage` (same pattern
-  locked for `pj_3d_widgets`). Lines via Xiaolin Wu or Bresenham;
-  circles via midpoint. No shader work.
-- Wire as an additional compositor layer. Add test data (MCAP with
-  image + annotations).
+- ✓ Schema + canonical wire codec live in `pj_scene_protocol/` (sibling
+  of `pj_media_core`, depends on `pj_base` only so plugins can link it).
+  Provides the `ImageAnnotation` struct types and
+  `serializeImageAnnotation()` (hand-rolled Foxglove ImageAnnotations
+  Protobuf writer, no libprotobuf dependency).
+- ✓ `SceneDecoder` in `pj_media_core` is now a single decoder kind that
+  reads canonical `foxglove.ImageAnnotations` bytes — no schema-name
+  dispatch on the read side. Coverage is complete: points/circles/texts
+  plus outline_color, outline_colors (per-vertex), fill_color.
+- ✓ Source-format adapters (CDR `vision_msgs/msg/Detection2DArray`,
+  CDR `yolo_msgs/msg/DetectionArray`) live next to each loader in
+  `pj_media/demos/cdr_*_to_image_annotation.{h,cpp}` plus
+  `marker_palette.{h,cpp}` for the FNV-1a class-id palette and label
+  formatter. The MCAP demo loader converts source bytes →
+  `ImageAnnotation` → canonical wire bytes → `pushOwned`. New source
+  formats (CSV, RLDS, custom) add new adapter files; pj_media doesn't
+  change.
+- ✓ `ImageAnnotation` rendered end-to-end via 5 QRhi pipelines (see
+  ARCHITECTURE.md §7 / §8.2): image → fills (Triangles) → 1 px lines
+  → thick lines (Triangles) → textured text (Triangles, R8 mask + tint).
+  Per-vertex colours, variable line thickness, per-instance text texture
+  cache keyed by `(text, font_size_q)`. Visual sanity check via extended
+  `quad_overlay_demo`.
+- The `AnnotationRasterLayer` design in earlier drafts (CPU rasteriser
+  → RGBA buffer → texture upload) was **superseded** by the GPU pipeline
+  approach: vector primitives stay vector all the way to QRhi, with
+  thick lines expanded CPU-side to triangle strips and circles tessellated
+  on the fly. Text is the only path that uses CPU rasterisation
+  (`QPainter` → `QImage::Format_Alpha8` → `QRhiTexture::R8`), and the
+  result feeds the GPU as a glyph mask, not a pre-blended overlay.
 
 **Phase E — WebRTC live demo (~2–3 weeks)**
 
@@ -400,12 +428,12 @@ read path, ImageDecoder, MediaSource, QRhiWidget.
 types. Pure C++, no Qt, no external deps beyond pj_base.
 
 **Files**:
-- `pj_media/pj_media_core/include/pj_media_core/frame_slot.h`
-- `pj_media/pj_media_core/include/pj_media_core/cancel_token.h`
-- `pj_media/pj_media_core/include/pj_media_core/decoded_frame.h`
-- `pj_media/pj_media_core/CMakeLists.txt`
-- `pj_media/pj_media_core/tests/frame_slot_test.cpp`
-- `pj_media/pj_media_core/tests/cancel_token_test.cpp`
+- `pj_media/core/include/pj_media_core/frame_slot.h`
+- `pj_media/core/include/pj_media_core/cancel_token.h`
+- `pj_media/core/include/pj_media_core/decoded_frame.h`
+- `pj_media/core/CMakeLists.txt`
+- `pj_media/core/tests/frame_slot_test.cpp`
+- `pj_media/core/tests/cancel_token_test.cpp`
 
 **Tests**:
 - FrameSlot: store + take returns frame; take without store returns
@@ -420,10 +448,10 @@ types. Pure C++, no Qt, no external deps beyond pj_base.
 raw pixel copy. Takes raw bytes, returns `DecodedFrame`.
 
 **Files**:
-- `pj_media/pj_media_core/include/pj_media_core/image_decoder.h`
-- `pj_media/pj_media_core/src/image_decoder.cpp`
-- `pj_media/pj_media_core/tests/image_decoder_test.cpp`
-- `pj_media/pj_media_core/CMakeLists.txt` (link turbojpeg)
+- `pj_media/core/include/pj_media_core/image_decoder.h`
+- `pj_media/core/src/image_decoder.cpp`
+- `pj_media/core/tests/image_decoder_test.cpp`
+- `pj_media/core/CMakeLists.txt` (link turbojpeg)
 
 **Tests**:
 - Decode a known JPEG buffer (extract one message from
@@ -444,14 +472,14 @@ decode via CodecPipeline) and `MediaViewerWidget` (QRhiWidget with
 BT.709 YUV→RGB shader and RGB DecodedFrame upload path).
 
 **Files**:
-- `pj_media/pj_media_core/include/pj_media_core/media_source.h`
-- `pj_media/pj_media_core/include/pj_media_core/image_pipeline_source.h`
-- `pj_media/pj_media_core/src/image_pipeline_source.cpp`
-- `pj_media/pj_media_qt/include/pj_media_qt/media_viewer_widget.h`
-- `pj_media/pj_media_qt/src/media_viewer_widget.cpp`
-- `pj_media/pj_media_qt/CMakeLists.txt`
+- `pj_media/core/include/pj_media_core/media_source.h`
+- `pj_media/core/include/pj_media_core/image_pipeline_source.h`
+- `pj_media/core/src/image_pipeline_source.cpp`
+- `pj_media/qt/include/pj_media_qt/media_viewer_widget.h`
+- `pj_media/qt/src/media_viewer_widget.cpp`
+- `pj_media/qt/CMakeLists.txt`
 - `pj_media/demos/mcap_image_viewer.cpp` (demo binary)
-- `pj_media/pj_media_core/tests/decoded_frame_test.cpp`
+- `pj_media/core/tests/decoded_frame_test.cpp`
 
 **Demo**: `mcap_image_viewer <test_images.mcap>` — opens the file,
 shows images, slider scrubs through the timeline.
@@ -485,12 +513,12 @@ swapping to a custom FFmpeg pipeline later without changing the widget
 or controller.
 
 **Files**:
-- `pj_media/pj_media_core/include/pj_media_core/video_backend.h`
+- `pj_media/core/include/pj_media_core/video_backend.h`
   (abstract interface: open, seek, pause, stepForward, stepBackward,
   duration, position; frame delivery via OpenGL FBO or callback)
-- `pj_media/pj_media_qt/include/pj_media_qt/mpv_backend.h`
-- `pj_media/pj_media_qt/src/mpv_backend.cpp`
-- `pj_media/pj_media_qt/CMakeLists.txt` (link libmpv via pkg-config)
+- `pj_media/qt/include/pj_media_qt/mpv_backend.h`
+- `pj_media/qt/src/mpv_backend.cpp`
+- `pj_media/qt/CMakeLists.txt` (link libmpv via pkg-config)
 
 **VideoBackend interface** (sketch):
 ```cpp
@@ -527,8 +555,8 @@ and rely on the demo binary for validation.
 `seek()` calls from a slider.
 
 **Files**:
-- `pj_media/pj_media_qt/include/pj_media_qt/video_viewer_widget.h`
-- `pj_media/pj_media_qt/src/video_viewer_widget.cpp`
+- `pj_media/qt/include/pj_media_qt/video_viewer_widget.h`
+- `pj_media/qt/src/video_viewer_widget.cpp`
 - `pj_media/demos/mp4_video_viewer.cpp`
 
 **Demo**: `mp4_video_viewer <test_480p.mp4>` — opens MP4, plays
@@ -568,9 +596,9 @@ of the decoded image). Single worker thread decodes all layers
 sequentially, composites, writes to FrameSlot.
 
 **Files**:
-- `pj_media/pj_media_core/include/pj_media_core/compositor.h`
-- `pj_media/pj_media_core/src/compositor.cpp`
-- `pj_media/pj_media_core/tests/compositor_test.cpp`
+- `pj_media/core/include/pj_media_core/compositor.h`
+- `pj_media/core/src/compositor.cpp`
+- `pj_media/core/tests/compositor_test.cpp`
 
 **Tests**:
 - Two layers (base image + synthetic overlay), compositor produces
@@ -593,7 +621,7 @@ camera. The `MediaViewerWidget` displays the latest frame.
 
 **Files**:
 - `pj_media/demos/simulated_stream.cpp`
-- `pj_media/pj_media_core/tests/streaming_test.cpp`
+- `pj_media/core/tests/streaming_test.cpp`
 
 **Tests**:
 - Push 300 frames (10 s at 30 Hz) with 2 s retention window →
@@ -627,9 +655,9 @@ viewer. Custom YUV-to-RGB shader. Zoom (mouse wheel) and pan
 (mouse drag) via vertex shader transform matrix.
 
 **Files**:
-- `pj_media/pj_media_qt/src/media_viewer_widget.cpp` (rewrite)
-- `pj_media/pj_media_qt/shaders/yuv_to_rgb.vert`
-- `pj_media/pj_media_qt/shaders/yuv_to_rgb.frag`
+- `pj_media/qt/src/media_viewer_widget.cpp` (rewrite)
+- `pj_media/qt/shaders/yuv_to_rgb.vert`
+- `pj_media/qt/shaders/yuv_to_rgb.frag`
 
 **Validation**: manual run — verify zoom/pan works, YUV rendering
 is correct (no color artifacts).

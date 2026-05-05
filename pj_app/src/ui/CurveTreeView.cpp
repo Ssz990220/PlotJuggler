@@ -6,7 +6,6 @@
 #include <QHeaderView>
 #include <QMimeData>
 #include <QMouseEvent>
-
 #include <algorithm>
 
 namespace PJ {

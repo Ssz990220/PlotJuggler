@@ -19,13 +19,48 @@ target_link_libraries(extract_frame PRIVATE
 # Uses QRhiWidget (pj_media_qt) if Qt 6.8+ is available, else QLabel fallback
 if(TARGET pj_media_qt)
   set(CMAKE_AUTOMOC ON)
-  add_executable(mcap_image_viewer mcap_image_viewer.cpp)
+  find_package(zstd REQUIRED)
+  add_executable(mcap_image_viewer
+    mcap_image_viewer.cpp
+    cdr_detection2d_to_image_annotation.cpp
+    cdr_yolo_to_image_annotation.cpp
+    marker_palette.cpp
+  )
   target_compile_features(mcap_image_viewer PRIVATE cxx_std_20)
   target_compile_options(mcap_image_viewer PRIVATE ${PJ_WARNING_FLAGS})
   target_compile_definitions(mcap_image_viewer PRIVATE PJ_HAS_RHI_WIDGET)
   target_link_libraries(mcap_image_viewer PRIVATE
-    pj_media_qt pj_media_core pj_datastore mcap::mcap libjpeg-turbo::libjpeg-turbo
+    pj_media_qt pj_media_core pj_scene_protocol pj_datastore mcap::mcap
+    libjpeg-turbo::libjpeg-turbo zstd::libzstd_static nanocdr
   )
+
+  # --- Qt demo: kPoints quad overlay visual sanity check ---
+  add_executable(quad_overlay_demo quad_overlay_demo.cpp)
+  target_compile_features(quad_overlay_demo PRIVATE cxx_std_20)
+  target_compile_options(quad_overlay_demo PRIVATE ${PJ_WARNING_FLAGS})
+  target_link_libraries(quad_overlay_demo PRIVATE
+    pj_media_qt pj_media_core pj_datastore libjpeg-turbo::libjpeg-turbo
+  )
+
+  # Tests for the loader-side CDR adapters. Shares sources with the demo so
+  # there's only one place to fix bugs.
+  if(PJ_BUILD_TESTS)
+    add_executable(cdr_to_image_annotation_test
+      cdr_to_image_annotation_test.cpp
+      cdr_detection2d_to_image_annotation.cpp
+      cdr_yolo_to_image_annotation.cpp
+      marker_palette.cpp
+    )
+    target_compile_features(cdr_to_image_annotation_test PRIVATE cxx_std_20)
+    target_compile_options(cdr_to_image_annotation_test PRIVATE
+      ${PJ_WARNING_FLAGS} ${PJ_SANITIZER_FLAGS}
+    )
+    target_link_libraries(cdr_to_image_annotation_test PRIVATE
+      pj_scene_protocol pj_base GTest::gtest_main nanocdr
+    )
+    add_test(NAME cdr_to_image_annotation_test COMMAND cdr_to_image_annotation_test)
+  endif()
+
   # --- Qt demo: multi-channel viewer (color + depth side by side) ---
   add_executable(multi_channel_viewer multi_channel_viewer.cpp)
   target_compile_features(multi_channel_viewer PRIVATE cxx_std_20)

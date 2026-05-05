@@ -353,49 +353,46 @@ A rectangle is `LINE_LOOP` with 4 points. A polygon outline is `LINE_LOOP` with 
 Overlays rendered in image pixel coordinates. These reference an image topic and draw
 on top of it. They are not part of the 3D scene graph.
 
-### ImageAnnotation
+> **Authoritative wire-format spec and type catalog** live in
+> `plotjuggler_core/pj_scene_protocol/docs/ARCHITECTURE.md`. The schema (`ImageAnnotation`,
+> `PointsAnnotation`, `CircleAnnotation`, `TextAnnotation`, `Point2`, `ColorRGBA`,
+> `SceneFrame`) and the canonical `foxglove.ImageAnnotations` Protobuf wire codec
+> (writer + reader) live in the `pj_scene_protocol` SDK module. Plugin authors that
+> *produce* or *consume* markers should read that doc; this section covers only how
+> pj_media renders the decoded primitives.
+>
+> **Source-format conversion happens loader-side**, not in pj_media. A loader reads its
+> source format (CDR `vision_msgs/msg/Detection2DArray`, `yolo_msgs/msg/DetectionArray`,
+> CSV, RLDS, etc.), fills an `ImageAnnotation`, and calls
+> `PJ::serializeImageAnnotation` before pushing canonical bytes to ObjectStore. PJ4's
+> reference adapters for the MCAP demo live in `pj_media/demos/cdr_*_to_image_annotation.{h,cpp}`
+> and `marker_palette.{h,cpp}` (FNV-1a class-id palette + label formatter).
 
-| Field | Type | Notes |
-|-------|------|-------|
-| `timestamp` | `int64` | Nanoseconds since epoch. |
-| `image_topic` | `string` | Topic of the image to overlay on. |
-| `points` | `PointsAnnotation[]` | |
-| `circles` | `CircleAnnotation[]` | |
-| `texts` | `TextAnnotation[]` | |
+`MediaViewerWidget` renders **every** `ImageAnnotation` primitive end-to-end through
+five QRhi pipelines:
 
-### PointsAnnotation
+| Pipeline | Topology | Used for |
+|---|---|---|
+| Image | textured quad | YUV420P or RGB base frame |
+| Marker (1 px) | `Lines` | `PointsAnnotation` and circle outlines with `thickness ≤ 1.5` (QRhi `Lines` is fixed-width 1 px on most backends — that's the threshold) |
+| Points | `Triangles` | `kPoints` quads, `kLineLoop` fills, circle fills |
+| Thick lines | `Triangles` | `PointsAnnotation` and circle outlines with `thickness > 1.5`, expanded CPU-side to perpendicular rectangles |
+| Text | `Triangles` (textured) | `TextAnnotation` — one quad per label, glyph mask painted by `QPainter` to a `QImage::Format_Alpha8` and uploaded as a `QRhiTexture::R8`. Per-vertex colour acts as a tint over the alpha mask, so two labels with the same text+size but different colours share the same texture (cache key is `(text, font_size_q)`). |
 
-Uses the same type-enum pattern as LinePrimitive, but in 2D pixel coordinates.
+Draw order is `image → fills → 1 px lines → thick lines → text`, so strokes always
+render on top of fills and text on top of everything. Per-vertex colour
+(`PointsAnnotation.colors[]`) is honoured when its size matches `points.size()`,
+otherwise `color` is splatted across all vertices. `LineLoop` fill (`fill_color.a > 0`)
+is a triangle fan from `points[0]` — convex polygons only.
 
-| Field | Type | Notes |
-|-------|------|-------|
-| `type` | `enum` | `POINTS`, `LINE_STRIP`, `LINE_LOOP`, `LINE_LIST`. |
-| `points` | `Point2[]` | Pixel coordinates (origin = top-left). |
-| `thickness` | `double` | Stroke width in pixels. |
-| `color` | `Color` | Uniform color. |
-| `colors` | `Color[]` | Per-point/segment colors. |
-| `fill_color` | `Color` | Fill color (for LINE_LOOP = polygon). |
+**Limitations**: thick lines have no miter joins (adjacent segments butt-join with a
+possible visible gap at sharp angles); polygon fills are convex-only; text is rasterised
+once per `(text, font_size)` and uses Qt's default font selection (no fallback for
+missing glyphs). The text cache is cleared in `releaseResources()`; for now there is
+no LRU eviction.
 
-`Point2`: `{ double x, y }` in pixels.
-
-### CircleAnnotation
-
-| Field | Type | Notes |
-|-------|------|-------|
-| `center` | `Point2` | Center in pixels. |
-| `radius` | `double` | Radius in pixels. |
-| `color` | `Color` | Outline color. |
-| `thickness` | `double` | Outline width in pixels. |
-| `fill_color` | `Color` | Fill color. |
-
-### TextAnnotation
-
-| Field | Type | Notes |
-|-------|------|-------|
-| `position` | `Point2` | Anchor position in pixels. |
-| `font_size` | `double` | Font size in pixels. |
-| `color` | `Color` | Text color. |
-| `text` | `string` | |
+For the schema field tables (`ImageAnnotation`, `PointsAnnotation`, `CircleAnnotation`,
+`TextAnnotation`), see `plotjuggler_core/pj_scene_protocol/docs/ARCHITECTURE.md`.
 
 ---
 
