@@ -96,6 +96,9 @@
     <file alias="list.svg">svg/list.svg</file>
     <file alias="loop.svg">svg/loop.svg</file>
     <file alias="move_view.svg">svg/move_view.svg</file>
+    <file alias="panel_bottom.svg">svg/panel_bottom.svg</file>
+    <file alias="panel_left.svg">svg/panel_left.svg</file>
+    <file alias="panel_right.svg">svg/panel_right.svg</file>
     <file alias="paste.svg">svg/paste.svg</file>
     <file alias="pause.svg">svg/pause.svg</file>
     <file alias="pencil-edit.svg">svg/pencil-edit.svg</file>

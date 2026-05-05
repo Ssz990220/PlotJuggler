@@ -94,6 +94,7 @@ endif()
 add_subdirectory(pj_marketplace)
 add_subdirectory(pj_dialog_host)
 add_subdirectory(pj_app_core)
+add_subdirectory(pj_widgets)
 add_subdirectory(pj_plot_widgets)
 
 if(PJ4_BUILD_APP)

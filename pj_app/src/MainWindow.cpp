@@ -2,6 +2,7 @@
 
 #include <QAction>
 #include <QApplication>
+#include <QByteArray>
 #include <QCloseEvent>
 #include <QDialog>
 #include <QDialogButtonBox>
@@ -15,9 +16,11 @@
 #include <QPlainTextEdit>
 #include <QPushButton>
 #include <QSettings>
+#include <QSplitter>
 #include <QStatusBar>
 #include <QStringList>
 #include <QTabWidget>
+#include <QToolButton>
 #include <QUrl>
 #include <QVBoxLayout>
 #include <cmath>
@@ -39,6 +42,7 @@
 #include "pj_datastore/writer.hpp"
 #include "pj_marketplace/marketplace_window.hpp"
 #include "pj_marketplace/qt_diagnostic_bridge.hpp"
+#include "pj_plot_widgets/CurveEditor.h"
 #include "pj_plot_widgets/DockWidget.h"
 #include "pj_plot_widgets/PlotDocker.h"
 #include "pj_plot_widgets/PlotWidget.h"
@@ -64,6 +68,29 @@ constexpr double kTestDurationSeconds = 10.0;
 constexpr int kMaxDiagnostics = 200;
 constexpr int kMaxUndoStates = 100;
 constexpr qint64 kUndoCoalesceMs = 100;
+
+// QSettings keys for the CurveEditor side panel. Position is stored as int
+// (cast of PanelPosition); per-position splitter state is stored under
+// separate keys so reopening the editor at the same position restores its
+// exact width / height.
+constexpr auto kPanelPositionKey = "MainWindow.panelPosition";
+constexpr auto kPanelStateKeyLeft = "MainWindow.splitterState.left";
+constexpr auto kPanelStateKeyRight = "MainWindow.splitterState.right";
+constexpr auto kPanelStateKeyBottom = "MainWindow.splitterState.bottom";
+
+[[nodiscard]] const char* panelStateKeyFor(PanelPosition pos) {
+  switch (pos) {
+    case PanelPosition::kLeft:
+      return kPanelStateKeyLeft;
+    case PanelPosition::kRight:
+      return kPanelStateKeyRight;
+    case PanelPosition::kBottom:
+      return kPanelStateKeyBottom;
+    case PanelPosition::kNone:
+      return "";
+  }
+  return "";
+}
 
 QUrl registryUrlFromSettings() {
   const QString raw = QSettings().value(kRegistryUrlSettingsKey, kDefaultRegistryUrl).toString();
@@ -105,6 +132,22 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
   connect(this, &MainWindow::stylesheetChanged, ui_->timelineWidget, &TimelineWidget::onStylesheetChanged);
   connect(this, &MainWindow::stylesheetChanged, ui_->tabbedPlotWidget, &TabbedPlotWidget::onStylesheetChanged);
   qApp->setStyleSheet(theme_->expandedQss());
+
+  ui_->buttonPanelLeft->setIcon(LoadSvg(":/resources/svg/panel_left.svg", theme_->currentTheme()));
+  ui_->buttonPanelBottom->setIcon(LoadSvg(":/resources/svg/panel_bottom.svg", theme_->currentTheme()));
+  ui_->buttonPanelRight->setIcon(LoadSvg(":/resources/svg/panel_right.svg", theme_->currentTheme()));
+  connect(ui_->buttonPanelLeft, &QToolButton::toggled, this, [this](bool checked) {
+    onPanelButtonToggled(PanelPosition::kLeft, checked);
+  });
+  connect(ui_->buttonPanelBottom, &QToolButton::toggled, this, [this](bool checked) {
+    onPanelButtonToggled(PanelPosition::kBottom, checked);
+  });
+  connect(ui_->buttonPanelRight, &QToolButton::toggled, this, [this](bool checked) {
+    onPanelButtonToggled(PanelPosition::kRight, checked);
+  });
+
+  curve_editor_ = new CurveEditor(this);
+  curve_editor_->setVisible(false);
 
   diagnostics_action_ = ui_->menuHelp->addAction(tr("Diagnostics..."), this, &MainWindow::onShowDiagnosticsDialog);
   diagnostics_action_->setEnabled(false);
@@ -160,6 +203,23 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
   ui_->menuApp->insertSeparator(ui_->actionExit);
 
   pushInitialUndoState();
+
+  bindEditorToActivePlot();
+  const auto stored_position =
+      static_cast<PanelPosition>(settings.value(kPanelPositionKey, static_cast<int>(PanelPosition::kNone)).toInt());
+  switch (stored_position) {
+    case PanelPosition::kLeft:
+      ui_->buttonPanelLeft->setChecked(true);
+      break;
+    case PanelPosition::kRight:
+      ui_->buttonPanelRight->setChecked(true);
+      break;
+    case PanelPosition::kBottom:
+      ui_->buttonPanelBottom->setChecked(true);
+      break;
+    case PanelPosition::kNone:
+      break;
+  }
 }
 
 MainWindow::~MainWindow() {
@@ -383,6 +443,7 @@ void MainWindow::onPlotTabAdded(PlotDocker* docker) {
       onPlotAdded(dock->plotWidget());
     }
   }
+  bindEditorToActivePlot();
 }
 
 void MainWindow::onPlotAdded(PlotWidget* plot) {
@@ -396,6 +457,7 @@ void MainWindow::onPlotAdded(PlotWidget* plot) {
     statusBar()->showMessage(message, 3000);
   });
   plot->setTrackerPosition(session_->playbackEngine().currentTime());
+  bindEditorToActivePlot();
 }
 
 void MainWindow::onPlotZoomChanged(PlotWidget* modified, QRectF rect) {
@@ -605,8 +667,106 @@ void MainWindow::updateUndoRedoActions() {
 }
 
 void MainWindow::closeEvent(QCloseEvent* event) {
-  QSettings().setValue(QStringLiteral("MainWindow.buttonLink"), ui_->buttonLink->isChecked());
+  QSettings settings;
+  settings.setValue(QStringLiteral("MainWindow.buttonLink"), ui_->buttonLink->isChecked());
+  if (panel_position_ != PanelPosition::kNone) {
+    savePanelSize();
+  }
+  settings.setValue(kPanelPositionKey, static_cast<int>(panel_position_));
   QMainWindow::closeEvent(event);
+}
+
+void MainWindow::onPanelButtonToggled(PanelPosition pos, bool checked) {
+  if (curve_editor_ == nullptr) {
+    return;
+  }
+
+  if (checked) {
+    // Untoggle the other two position buttons with their signals blocked so
+    // they don't re-enter this slot. Mutual exclusion is implemented manually
+    // because QButtonGroup::setExclusive(true) would prevent the click-active-
+    // again-to-hide path below.
+    const std::pair<PanelPosition, QToolButton*> all_buttons[] = {
+        {PanelPosition::kLeft, ui_->buttonPanelLeft},
+        {PanelPosition::kRight, ui_->buttonPanelRight},
+        {PanelPosition::kBottom, ui_->buttonPanelBottom},
+    };
+    for (const auto& [other_pos, btn] : all_buttons) {
+      if (other_pos != pos && btn->isChecked()) {
+        QSignalBlocker block(btn);
+        btn->setChecked(false);
+      }
+    }
+    showCurveEditor(pos);
+  } else if (pos == panel_position_) {
+    hideCurveEditor();
+  }
+  // (!checked && pos != panel_position_) is the de-toggle that fired when we
+  // ourselves untoggled an inactive sibling above; ignore it.
+}
+
+void MainWindow::showCurveEditor(PanelPosition pos) {
+  if (curve_editor_ == nullptr) {
+    return;
+  }
+  if (panel_position_ != PanelPosition::kNone) {
+    savePanelSize();
+  }
+  // setParent(this) detaches from any current splitter slot without destroying.
+  curve_editor_->setParent(this);
+
+  QSplitter* splitter = ui_->plotAreaSplitter;
+  splitter->setOrientation(pos == PanelPosition::kBottom ? Qt::Vertical : Qt::Horizontal);
+
+  // kLeft inserts before the plots; kRight and kBottom both append after.
+  const int insert_index = pos == PanelPosition::kLeft ? 0 : splitter->count();
+  splitter->insertWidget(insert_index, curve_editor_);
+
+  curve_editor_->setVisible(true);
+  panel_position_ = pos;
+
+  const QByteArray state = QSettings().value(panelStateKeyFor(pos)).toByteArray();
+  if (!state.isEmpty()) {
+    splitter->restoreState(state);
+  }
+}
+
+void MainWindow::hideCurveEditor() {
+  if (curve_editor_ == nullptr) {
+    return;
+  }
+  if (panel_position_ != PanelPosition::kNone) {
+    savePanelSize();
+  }
+  curve_editor_->setVisible(false);
+  curve_editor_->setParent(this);
+  panel_position_ = PanelPosition::kNone;
+  ui_->plotAreaSplitter->setOrientation(Qt::Horizontal);
+}
+
+void MainWindow::savePanelSize() {
+  if (panel_position_ == PanelPosition::kNone) {
+    return;
+  }
+  QSettings().setValue(panelStateKeyFor(panel_position_), ui_->plotAreaSplitter->saveState());
+}
+
+void MainWindow::bindEditorToActivePlot() {
+  if (curve_editor_ == nullptr) {
+    return;
+  }
+  PlotWidget* active = nullptr;
+  QTabWidget* tabs = ui_->tabbedPlotWidget->tabWidget();
+  if (tabs != nullptr) {
+    if (auto* docker = qobject_cast<PlotDocker*>(tabs->currentWidget())) {
+      if (docker->plotCount() > 0) {
+        if (DockWidget* dock = docker->plotAt(0)) {
+          active = dock->plotWidget();
+        }
+      }
+    }
+  }
+  curve_editor_->setPlot(active);
 }
 
 }  // namespace PJ

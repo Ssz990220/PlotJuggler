@@ -41,12 +41,24 @@ class PlotWidget : public PlotWidgetBase {
   [[nodiscard]] QDomElement xmlSaveState(QDomDocument& doc) const;
   bool xmlLoadState(const QDomElement& plot_element, bool autozoom = true);
 
+  // Reads back the style currently applied to a Qwt curve (combining its
+  // QwtPlotCurve::CurveStyle and the Inverted attribute) as a CurveStyle.
+  // Used by xmlSaveState and by the CurveEditor side panel.
+  [[nodiscard]] static CurveStyle qwtStyleToCurveStyle(const QwtPlotCurve* curve);
+
  public slots:
   void zoomOut(bool emit_signal = true);
   void onZoomOutHorizontalTriggered(bool emit_signal = true);
   void onZoomOutVerticalTriggered(bool emit_signal = true);
   void setTrackerPosition(double display_time_sec);
   void onChangeCurveColor(const QString& curve_name, QColor new_color);
+  // Per-curve mutators used by the CurveEditor side panel. Each one targets a
+  // single curve by name and leaves every other curve untouched, in contrast
+  // to the plot-wide setLineWidth(LineWidth) / overrideCurvesStyle(...) which
+  // iterate every curve.
+  void setCurveLineWidth(const QString& curve_name, double width);
+  void setCurveStyle(const QString& curve_name, CurveStyle style);
+  void setCurveVisible(const QString& curve_name, bool visible);
   void removeAllCurves() override;
 
  signals:
@@ -84,6 +96,8 @@ class PlotWidget : public PlotWidgetBase {
   [[nodiscard]] bool allCurvesKnown(const QStringList& curves) const;
   [[nodiscard]] static QString lineWidthToString(LineWidth width);
   [[nodiscard]] static LineWidth lineWidthFromString(QString value);
+  [[nodiscard]] static QString curveStyleToString(CurveStyle style);
+  [[nodiscard]] static CurveStyle curveStyleFromString(QString value);
 
   SessionManager* session_ = nullptr;
   CatalogModel* catalog_ = nullptr;

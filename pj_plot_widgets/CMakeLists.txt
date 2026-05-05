@@ -4,6 +4,8 @@ if(PJ_BUILD_TESTS)
 endif()
 
 add_library(pj_plot_widgets STATIC
+    src/CurveEditor.cpp
+    src/CurveEditor.ui
     src/CurveTracker.cpp
     src/DatastoreCurveAdapter.cpp
     src/DockToolbar.cpp
@@ -18,18 +20,19 @@ add_library(pj_plot_widgets STATIC
     src/PlotWidgetBase.cpp
     src/PlotZoomer.cpp
     src/TabbedPlotWidget.cpp
-    include/pj_plot_widgets/DatastoreCurveAdapter.h
+    include/pj_plot_widgets/CurveEditor.h
     include/pj_plot_widgets/CurveTracker.h
+    include/pj_plot_widgets/DatastoreCurveAdapter.h
     include/pj_plot_widgets/DockToolbar.h
     include/pj_plot_widgets/DockWidget.h
+    include/pj_plot_widgets/PlotDocker.h
     include/pj_plot_widgets/PlotLegend.h
     include/pj_plot_widgets/PlotMagnifier.h
     include/pj_plot_widgets/PlotPanner.h
-    include/pj_plot_widgets/PointSeriesXY.h
-    include/pj_plot_widgets/PlotDocker.h
     include/pj_plot_widgets/PlotWidget.h
     include/pj_plot_widgets/PlotWidgetBase.h
     include/pj_plot_widgets/PlotZoomer.h
+    include/pj_plot_widgets/PointSeriesXY.h
     include/pj_plot_widgets/TabbedPlotWidget.h
 )
 
@@ -51,6 +54,8 @@ target_link_libraries(pj_plot_widgets PUBLIC
     Qt6::Gui
     Qt6::Widgets
     Qt6::Xml
+  PRIVATE
+    pj_widgets
 )
 
 if(PJ_BUILD_TESTS)

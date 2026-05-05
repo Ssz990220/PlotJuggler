@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none">
+  <!-- Outer rectangle -->
+  <rect x="2" y="2" width="20" height="20" rx="2" stroke="#000000" stroke-width="1.5" fill="none"/>
+  <!-- Horizontal divider -->
+  <line x1="2" y1="15" x2="22" y2="15" stroke="#000000" stroke-width="1.5"/>
+  <!-- Bottom panel fill -->
+  <rect x="2" y="15" width="20" height="7" rx="2" fill="#000000"/>
+  <!-- Square off top corners of the fill -->
+  <rect x="2" y="15" width="20" height="2" fill="#000000"/>
+</svg>

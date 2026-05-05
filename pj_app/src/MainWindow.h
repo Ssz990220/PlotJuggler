@@ -25,12 +25,17 @@ class MainWindow;
 namespace PJ {
 
 class AppSession;
+class CurveEditor;
 class DockWidget;
 class FileLoader;
 class PlotDocker;
 class PlotWidget;
 class QtDiagnosticBridge;
 class Theme;
+
+// Side-position the CurveEditor panel can occupy. Mutually exclusive at
+// runtime; click the active position again to return to kNone.
+enum class PanelPosition { kNone, kLeft, kRight, kBottom };
 
 class MainWindow : public QMainWindow {
   Q_OBJECT
@@ -93,6 +98,10 @@ class MainWindow : public QMainWindow {
   // Loads layout XML from disk.
   void onLoadLayout();
 
+  // Toggles the CurveEditor panel into one of three positions, or hides it
+  // when the currently-active position button is clicked again.
+  void onPanelButtonToggled(PanelPosition pos, bool checked);
+
  private:
   // Records and displays one diagnostic from the shared bridge.
   void onDiagnosticReported(int level, QString source, QString id, QString message);
@@ -133,6 +142,21 @@ class MainWindow : public QMainWindow {
   // Updates enabled state for undo / redo actions.
   void updateUndoRedoActions();
 
+  // Re-parents the editor into plotAreaSplitter at the given position and
+  // restores the splitter sizes saved for that position.
+  void showCurveEditor(PanelPosition pos);
+
+  // Detaches the editor from plotAreaSplitter and hides it.
+  void hideCurveEditor();
+
+  // Persists the current splitter sizes under the slot for the active panel
+  // position so the next show() call restores them.
+  void savePanelSize();
+
+  // Resolves "the active plot" (first dock of the current tab) and re-binds
+  // the editor to it. Called on tab/dock changes.
+  void bindEditorToActivePlot();
+
  protected:
   // Persists main-window settings before close.
   void closeEvent(QCloseEvent* event) override;
@@ -162,6 +186,8 @@ class MainWindow : public QMainWindow {
   std::deque<QDomDocument> redo_states_;
   QElapsedTimer undo_timer_;
   bool applying_state_ = false;
+  CurveEditor* curve_editor_ = nullptr;
+  PanelPosition panel_position_ = PanelPosition::kNone;
 };
 
 }  // namespace PJ

@@ -195,6 +195,9 @@ QDomElement PlotWidget::xmlSaveState(QDomDocument& doc) const {
     curve_element.setAttribute(QStringLiteral("name"), info.source_name);
     curve_element.setAttribute(QStringLiteral("color"), info.curve->pen().color().name());
     curve_element.setAttribute(QStringLiteral("line_width"), QString::number(info.curve->pen().widthF(), 'f', 2));
+    curve_element.setAttribute(QStringLiteral("style"), curveStyleToString(qwtStyleToCurveStyle(info.curve)));
+    curve_element.setAttribute(
+        QStringLiteral("visible"), info.curve->isVisible() ? QStringLiteral("true") : QStringLiteral("false"));
     if (auto* xy_series = dynamic_cast<PointSeriesXY*>(info.curve->data())) {
       curve_element.setAttribute(QStringLiteral("curve_x"), xy_series->xSource().name);
       curve_element.setAttribute(QStringLiteral("curve_y"), xy_series->ySource().name);
@@ -285,6 +288,15 @@ bool PlotWidget::xmlLoadState(const QDomElement& plot_element, bool autozoom) {
         loaded_curve->curve->setPen(loaded_curve->curve->pen().color(), width);
       }
     }
+    if (loaded_curve != nullptr && curve_element.hasAttribute(QStringLiteral("style"))) {
+      // Apply per-curve style after the per-curve width above so the style
+      // toggle path (which leaves the pen alone) does not undo the width.
+      setCurveStyle(loaded_curve->source_name, curveStyleFromString(curve_element.attribute(QStringLiteral("style"))));
+    }
+    if (loaded_curve != nullptr) {
+      const QString visible_attr = curve_element.attribute(QStringLiteral("visible"), QStringLiteral("true"));
+      loaded_curve->curve->setVisible(visible_attr == QStringLiteral("true"));
+    }
   }
 
   const QDomElement range_element = plot_element.firstChildElement(QStringLiteral("range"));
@@ -353,6 +365,60 @@ void PlotWidget::onChangeCurveColor(const QString& curve_name, QColor new_color)
       return;
     }
   }
+}
+
+void PlotWidget::setCurveLineWidth(const QString& curve_name, double width) {
+  CurveInfo* info = curveFromTitle(curve_name);
+  if (info == nullptr || info->curve == nullptr) {
+    return;
+  }
+  info->curve->setPen(info->curve->pen().color(), width);
+  replot();
+  emit undoableChange();
+}
+
+void PlotWidget::setCurveStyle(const QString& curve_name, CurveStyle style) {
+  CurveInfo* info = curveFromTitle(curve_name);
+  if (info == nullptr || info->curve == nullptr) {
+    return;
+  }
+  // Mirror PlotWidgetBase::setStyle()'s style-to-Qwt mapping (Steps + Inverted
+  // attribute), but skip the pen-width assignment so per-curve width set via
+  // setCurveLineWidth() survives a style toggle.
+  switch (style) {
+    case kLines:
+      info->curve->setStyle(QwtPlotCurve::Lines);
+      break;
+    case kLinesAndDots:
+      info->curve->setStyle(QwtPlotCurve::LinesAndDots);
+      break;
+    case kDots:
+      info->curve->setStyle(QwtPlotCurve::Dots);
+      break;
+    case kSticks:
+      info->curve->setStyle(QwtPlotCurve::Sticks);
+      break;
+    case kSteps:
+      info->curve->setStyle(QwtPlotCurve::Steps);
+      info->curve->setCurveAttribute(QwtPlotCurve::Inverted, false);
+      break;
+    case kStepsInverted:
+      info->curve->setStyle(QwtPlotCurve::Steps);
+      info->curve->setCurveAttribute(QwtPlotCurve::Inverted, true);
+      break;
+  }
+  replot();
+  emit undoableChange();
+}
+
+void PlotWidget::setCurveVisible(const QString& curve_name, bool visible) {
+  CurveInfo* info = curveFromTitle(curve_name);
+  if (info == nullptr || info->curve == nullptr) {
+    return;
+  }
+  info->curve->setVisible(visible);
+  replot();
+  emit undoableChange();
 }
 
 void PlotWidget::removeAllCurves() {
@@ -638,6 +704,63 @@ LineWidth PlotWidget::lineWidthFromString(QString value) {
     return LineWidth::kPoints3_0;
   }
   return LineWidth::kPoints1_0;
+}
+
+QString PlotWidget::curveStyleToString(CurveStyle style) {
+  switch (style) {
+    case kLines:
+      return QStringLiteral("Lines");
+    case kDots:
+      return QStringLiteral("Dots");
+    case kLinesAndDots:
+      return QStringLiteral("LinesAndDots");
+    case kSticks:
+      return QStringLiteral("Sticks");
+    case kSteps:
+      return QStringLiteral("Steps");
+    case kStepsInverted:
+      return QStringLiteral("StepsInverted");
+  }
+  return QStringLiteral("Lines");
+}
+
+PlotWidgetBase::CurveStyle PlotWidget::curveStyleFromString(QString value) {
+  if (value == QStringLiteral("Dots")) {
+    return kDots;
+  }
+  if (value == QStringLiteral("LinesAndDots")) {
+    return kLinesAndDots;
+  }
+  if (value == QStringLiteral("Sticks")) {
+    return kSticks;
+  }
+  if (value == QStringLiteral("Steps")) {
+    return kSteps;
+  }
+  if (value == QStringLiteral("StepsInverted")) {
+    return kStepsInverted;
+  }
+  return kLines;
+}
+
+PlotWidgetBase::CurveStyle PlotWidget::qwtStyleToCurveStyle(const QwtPlotCurve* curve) {
+  if (curve == nullptr) {
+    return kLines;
+  }
+  switch (curve->style()) {
+    case QwtPlotCurve::Lines:
+      return kLines;
+    case QwtPlotCurve::Dots:
+      return kDots;
+    case QwtPlotCurve::LinesAndDots:
+      return kLinesAndDots;
+    case QwtPlotCurve::Sticks:
+      return kSticks;
+    case QwtPlotCurve::Steps:
+      return curve->testCurveAttribute(QwtPlotCurve::Inverted) ? kStepsInverted : kSteps;
+    default:
+      return kLines;
+  }
 }
 
 void PlotWidget::reconnectDataSignals() {
