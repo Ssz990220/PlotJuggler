@@ -11,8 +11,11 @@
 #include <QStringList>
 #include <atomic>
 #include <cstdint>
+#include <memory>
+#include <set>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 
 #include "DialogPresenter.h"
 #include "pj_app_core/CatalogModel.h"
@@ -27,6 +30,7 @@
 #include "pj_marketplace/extension.hpp"
 #include "pj_plugins/host/data_source_handle.hpp"
 #include "pj_plugins/host/data_source_library.hpp"
+#include "pj_plugins/host/message_parser_handle.hpp"
 #include "pj_plugins/host/service_registry_builder.hpp"
 
 namespace PJ {
@@ -39,12 +43,32 @@ constexpr const char* kLastDirKey = "FileLoader/lastDir";
 constexpr const char* kDefaultTimeDomainName = "default";
 constexpr const char* kPluginConfigKeyPrefix = "PluginConfig/";
 
-// Runtime host state for one file import. Only the bits CSV-style file sources
-// actually exercise are wired up; parser-binding callbacks return false because
-// self-parsing file sources (CSV, MCAP-via-bundled-parser) don't use them.
+// One parser binding owned by the host. Destruction order (reverse of
+// declaration) is load-bearing: the parser may flush pending writes through
+// `write_host` when destroyed, so the parser must die BEFORE `write_host`.
+// The registry builder only supplies fat pointers at bind-time — after bind,
+// the plugin holds its own copies, so the builder can die first.
+struct ParserBinding {
+  std::unique_ptr<ServiceRegistryBuilder> registry_builder;
+  std::unique_ptr<DatastoreParserWriteHost> write_host;
+  std::unique_ptr<MessageParserHandle> parser;
+};
+
+// Runtime host state for one file import. Wires every callback the v4
+// DataSource protocol exposes, including parser-binding for sources that
+// produce raw bytes and delegate decoding to a MessageParser plugin (e.g.
+// a future ROS bag loader → parser_ros). Self-parsing sources (CSV, etc.)
+// leave the parser-binding callbacks unused.
 struct RuntimeHost {
   std::string last_error;
   std::atomic<bool> stop_requested{false};
+  ExtensionCatalogService* catalog = nullptr;
+  DataEngine* engine = nullptr;
+  DatasetId dataset_id = 0;
+  uint32_t next_binding_id = 1;
+  std::unordered_map<uint32_t, ParserBinding> parser_bindings;
+  // Cached JSON for `list_available_encodings` — lifetime: until next call.
+  std::string available_encodings_cache;
 };
 
 bool failRuntime(RuntimeHost* state, PJ_error_t* out_error, const char* message) noexcept {
@@ -93,16 +117,93 @@ void rhRequestStop(void* ctx, PJ_data_source_state_t /*terminal*/, PJ_string_vie
 }
 
 bool rhEnsureParserBinding(
-    void* ctx, const PJ_parser_binding_request_t* /*request*/, PJ_parser_binding_handle_t* /*out*/,
+    void* ctx, const PJ_parser_binding_request_t* request, PJ_parser_binding_handle_t* out,
     PJ_error_t* out_error) noexcept {
-  return failRuntime(
-      static_cast<RuntimeHost*>(ctx), out_error, "parser binding not supported (no MessageParser plugin wired in v1)");
+  auto* state = static_cast<RuntimeHost*>(ctx);
+  if (state->catalog == nullptr || state->engine == nullptr) {
+    return failRuntime(state, out_error, "parser binding unavailable: runtime host not fully wired");
+  }
+  try {
+    const std::string_view encoding(request->parser_encoding.data, request->parser_encoding.size);
+    const std::string_view topic_name(request->topic_name.data, request->topic_name.size);
+    const std::string_view type_name(request->type_name.data, request->type_name.size);
+
+    const LoadedMessageParser* parser_entry = state->catalog->findParserByEncoding(
+        QString::fromUtf8(encoding.data(), static_cast<int>(encoding.size())));
+    if (parser_entry == nullptr) {
+      return failRuntime(state, out_error, ("no parser found for encoding '" + std::string(encoding) + "'").c_str());
+    }
+
+    auto parser = std::make_unique<MessageParserHandle>(parser_entry->library.createHandle());
+    if (!parser->valid()) {
+      return failRuntime(
+          state, out_error, ("failed to create parser instance for '" + std::string(encoding) + "'").c_str());
+    }
+
+    auto topic_or = state->engine->createTopic(state->dataset_id, TopicDescriptor{.name = std::string(topic_name)});
+    if (!topic_or.has_value()) {
+      return failRuntime(
+          state, out_error, ("failed to create topic '" + std::string(topic_name) + "': " + topic_or.error()).c_str());
+    }
+    const PJ_topic_handle_t topic_handle{static_cast<uint32_t>(*topic_or)};
+
+    auto write_host = std::make_unique<DatastoreParserWriteHost>(*state->engine, topic_handle);
+
+    // Build the service registry the parser binds against. The builder must
+    // outlive bind() because the plugin may hold a view into it; we move it
+    // into the ParserBinding so its lifetime matches the parser's.
+    auto registry_builder = std::make_unique<ServiceRegistryBuilder>();
+    registry_builder->registerService<sdk::ParserWriteHostService>(write_host->raw());
+    if (auto status = parser->bind(registry_builder->view()); !status) {
+      return failRuntime(state, out_error, ("failed to bind parser services: " + status.error()).c_str());
+    }
+
+    if (request->schema.size > 0) {
+      const Span<const uint8_t> schema_span(request->schema.data, request->schema.size);
+      if (auto status = parser->bindSchema(type_name, schema_span); !status) {
+        return failRuntime(
+            state, out_error, ("failed to bind schema for " + std::string(type_name) + ": " + status.error()).c_str());
+      }
+    }
+
+    if (request->parser_config_json.size > 0) {
+      const std::string_view parser_config(request->parser_config_json.data, request->parser_config_json.size);
+      if (auto status = parser->loadConfig(parser_config); !status) {
+        return failRuntime(state, out_error, ("failed to load parser config: " + status.error()).c_str());
+      }
+    }
+
+    const uint32_t binding_id = state->next_binding_id++;
+    state->parser_bindings.emplace(
+        binding_id, ParserBinding{std::move(registry_builder), std::move(write_host), std::move(parser)});
+
+    *out = PJ_parser_binding_handle_t{binding_id};
+    qCInfo(lcFileLoader) << "[parser-bind] encoding=" << QString::fromUtf8(encoding.data(), static_cast<int>(encoding.size()))
+                         << "topic=" << QString::fromUtf8(topic_name.data(), static_cast<int>(topic_name.size()));
+    return true;
+  } catch (...) {
+    return failRuntime(state, out_error, "exception while binding parser");
+  }
 }
 
 bool rhPushRawMessage(
-    void* ctx, PJ_parser_binding_handle_t /*handle*/, int64_t /*ts*/, PJ_bytes_view_t /*payload*/,
+    void* ctx, PJ_parser_binding_handle_t handle, int64_t timestamp_ns, PJ_bytes_view_t payload,
     PJ_error_t* out_error) noexcept {
-  return failRuntime(static_cast<RuntimeHost*>(ctx), out_error, "push_raw_message called without parser binding");
+  auto* state = static_cast<RuntimeHost*>(ctx);
+  try {
+    auto it = state->parser_bindings.find(handle.id);
+    if (it == state->parser_bindings.end()) {
+      return failRuntime(state, out_error, "invalid parser binding handle");
+    }
+    if (auto status =
+            it->second.parser->parse(timestamp_ns, Span<const uint8_t>(payload.data, payload.size));
+        !status) {
+      return failRuntime(state, out_error, status.error().c_str());
+    }
+    return true;
+  } catch (...) {
+    return failRuntime(state, out_error, "exception while pushing raw message");
+  }
 }
 
 int rhShowMessageBox(
@@ -126,8 +227,36 @@ int rhShowMessageBox(
   return -1;
 }
 
-const char* rhListAvailableEncodings(void* /*ctx*/) noexcept {
-  return nullptr;  // no parsers wired in v1
+const char* rhListAvailableEncodings(void* ctx) noexcept {
+  auto* state = static_cast<RuntimeHost*>(ctx);
+  if (state->catalog == nullptr) {
+    return nullptr;
+  }
+  try {
+    // Build a JSON array of unique encodings the catalog knows. Cached on
+    // `state` so the returned char* is valid until the next call (per the
+    // protocol contract).
+    std::set<std::string> unique_encodings;
+    for (const auto& parser : state->catalog->messageParsers()) {
+      for (const auto& encoding : parser.encodings) {
+        unique_encodings.insert(encoding);
+      }
+    }
+    std::string json = "[";
+    bool first = true;
+    for (const auto& enc : unique_encodings) {
+      if (!first) {
+        json += ",";
+      }
+      first = false;
+      json += "\"" + enc + "\"";
+    }
+    json += "]";
+    state->available_encodings_cache = std::move(json);
+    return state->available_encodings_cache.c_str();
+  } catch (...) {
+    return nullptr;
+  }
 }
 
 PJ_data_source_runtime_host_t makeRuntimeHost(RuntimeHost* state) {
@@ -247,6 +376,9 @@ bool FileLoader::loadFile(const QString& path, QWidget* dialog_parent) {
   DatastoreSourceWriteHost write_host(engine, source_handle);
 
   RuntimeHost runtime_state;
+  runtime_state.catalog = &extensions_;
+  runtime_state.engine = &engine;
+  runtime_state.dataset_id = static_cast<DatasetId>(*dataset_or);
   ServiceRegistryBuilder registry;
   registry.registerService<sdk::SourceWriteHostService>(write_host.raw());
   registry.registerService<sdk::DataSourceRuntimeHostService>(makeRuntimeHost(&runtime_state));
