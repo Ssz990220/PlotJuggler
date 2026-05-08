@@ -18,9 +18,6 @@
 #include <unordered_map>
 
 #include "DialogPresenter.h"
-#include "pj_app_core/CatalogModel.h"
-#include "pj_app_core/ExtensionCatalogService.h"
-#include "pj_app_core/SessionManager.h"
 #include "pj_base/data_source_protocol.h"
 #include "pj_base/dataset.hpp"
 #include "pj_base/sdk/plugin_data_api.hpp"
@@ -32,6 +29,9 @@
 #include "pj_plugins/host/data_source_library.hpp"
 #include "pj_plugins/host/message_parser_handle.hpp"
 #include "pj_plugins/host/service_registry_builder.hpp"
+#include "pj_runtime/CatalogModel.h"
+#include "pj_runtime/ExtensionCatalogService.h"
+#include "pj_runtime/SessionManager.h"
 
 namespace PJ {
 
@@ -128,8 +128,8 @@ bool rhEnsureParserBinding(
     const std::string_view topic_name(request->topic_name.data, request->topic_name.size);
     const std::string_view type_name(request->type_name.data, request->type_name.size);
 
-    const LoadedMessageParser* parser_entry = state->catalog->findParserByEncoding(
-        QString::fromUtf8(encoding.data(), static_cast<int>(encoding.size())));
+    const LoadedMessageParser* parser_entry =
+        state->catalog->findParserByEncoding(QString::fromUtf8(encoding.data(), static_cast<int>(encoding.size())));
     if (parser_entry == nullptr) {
       return failRuntime(state, out_error, ("no parser found for encoding '" + std::string(encoding) + "'").c_str());
     }
@@ -178,7 +178,8 @@ bool rhEnsureParserBinding(
         binding_id, ParserBinding{std::move(registry_builder), std::move(write_host), std::move(parser)});
 
     *out = PJ_parser_binding_handle_t{binding_id};
-    qCInfo(lcFileLoader) << "[parser-bind] encoding=" << QString::fromUtf8(encoding.data(), static_cast<int>(encoding.size()))
+    qCInfo(lcFileLoader) << "[parser-bind] encoding="
+                         << QString::fromUtf8(encoding.data(), static_cast<int>(encoding.size()))
                          << "topic=" << QString::fromUtf8(topic_name.data(), static_cast<int>(topic_name.size()));
     return true;
   } catch (...) {
@@ -195,8 +196,7 @@ bool rhPushRawMessage(
     if (it == state->parser_bindings.end()) {
       return failRuntime(state, out_error, "invalid parser binding handle");
     }
-    if (auto status =
-            it->second.parser->parse(timestamp_ns, Span<const uint8_t>(payload.data, payload.size));
+    if (auto status = it->second.parser->parse(timestamp_ns, Span<const uint8_t>(payload.data, payload.size));
         !status) {
       return failRuntime(state, out_error, status.error().c_str());
     }

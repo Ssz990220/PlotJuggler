@@ -5,8 +5,8 @@
 #include <string>
 #include <string_view>
 
-#include "pj_app_core/ExtensionCatalogService.h"
 #include "pj_plugins/dialog_protocol.h"
+#include "pj_runtime/ExtensionCatalogService.h"
 
 QT_BEGIN_NAMESPACE
 class QWidget;

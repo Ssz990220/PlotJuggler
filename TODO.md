@@ -29,10 +29,10 @@ You are starting on branch `development` at HEAD `d713b41`. Already committed an
 
 ### M1 — adapter foundation (DONE)
 
-- `pj_app_core/include/pj_app_core/CurveDescriptor.h` — POD struct mapping curve name → `(TopicId, DatasetId, ColumnIndex, field_path, display_offset_ns)`.
-- `pj_app_core::SessionManager` — owns `PJ::DataEngine`, `createReader()`, `commitChunks()` wrapper that emits `topicsCommitted(QVector<TopicId>)`.
-- `pj_app_core::CatalogModel` — enumerates numeric leaf columns of all topics into curve names like `topic/field/subfield`; `curveDescriptor(name)` lookup; subscribes to `topicsCommitted` and rebuilds.
-- `pj_plot_widgets::DatastoreCurveAdapter` — final design (see plan §5). Pull-through `QwtSeriesData<QPointF>`, no copy of timeseries data. Chunk-index with last-slot cache, cross-chunk boundary guards, `boundingRect()` returns full-data bounds via `ColumnStats` (not ROI-bounded), `visibleYRange(x_min, x_max)` for PJ3-style vertical zoom-to-visible. 11/11 tests pass.
+- `pj_runtime/include/pj_runtime/CurveDescriptor.h` — POD struct mapping curve name → `(TopicId, DatasetId, ColumnIndex, field_path, display_offset_ns)`.
+- `pj_runtime::SessionManager` — owns `PJ::DataEngine`, `createReader()`, `commitChunks()` wrapper that emits `topicsCommitted(QVector<TopicId>)`.
+- `pj_runtime::CatalogModel` — enumerates numeric leaf columns of all topics into curve names like `topic/field/subfield`; `curveDescriptor(name)` lookup; subscribes to `topicsCommitted` and rebuilds.
+- `pj_plotting::DatastoreCurveAdapter` — final design (see plan §5). Pull-through `QwtSeriesData<QPointF>`, no copy of timeseries data. Chunk-index with last-slot cache, cross-chunk boundary guards, `boundingRect()` returns full-data bounds via `ColumnStats` (not ROI-bounded), `visibleYRange(x_min, x_max)` for PJ3-style vertical zoom-to-visible. 11/11 tests pass.
 
 ### Load-file flow (DONE)
 
@@ -44,7 +44,7 @@ You are starting on branch `development` at HEAD `d713b41`. Already committed an
 
 ### Scaffolding present (you'll modify, not create)
 
-- `pj_plot_widgets/{DockWidget,PlotDocker,TabbedPlotWidget,DockToolbar}` — exist as stubs with placeholder content. M2 fills them in.
+- `pj_plotting/{DockWidget,PlotDocker,TabbedPlotWidget,DockToolbar}` — exist as stubs with placeholder content. M2 fills them in.
 - `pj_app/src/MainWindow.{h,cpp,ui}` — exists; you'll add `buttonLink` and zoom-broadcast slots in M5.
 - `pj_app/src/ui/{CurveListPanel,CurveTreeView,LeftPanel,TimelineWidget}` — left as-is. CurveTreeView already emits the right MIME formats (`curveslist/add_curve`, `curveslist/new_XY_axis`).
 
@@ -100,8 +100,8 @@ Build / test:
 ## 5. Hard rules
 
 1. **Do NOT modify `plotjuggler_core/`**. If you find a missing API while building, STOP and ask. Do not add anything to the submodule.
-2. **Do NOT add new `pj_app_core` services** (no `WidgetRegistry`, `TransformRegistry`, `WorkspaceManager`, `UndoManager`, `ToolboxManager`, `NotificationCenter`). Out of scope for v1.
-3. **`pj_app_core` may NOT link `Qt6::Widgets`** — only `Qt6::Core`/`Gui`/`Network`/`Svg`. Plot widgets live in `pj_plot_widgets`, which CAN link Qt6::Widgets and Qwt.
+2. **Do NOT add new `pj_runtime` services** (no `WidgetRegistry`, `TransformRegistry`, `WorkspaceManager`, `UndoManager`, `ToolboxManager`, `NotificationCenter`). Out of scope for v1.
+3. **`pj_runtime` may NOT link `Qt6::Widgets`** — only `Qt6::Core`/`Network`. Reusable Qt helpers that need `Gui`/`Svg` live in `pj_widgets`; plot widgets live in `pj_plotting`, which CAN link Qt6::Widgets and Qwt.
 4. **Do NOT add a downsampler / decimator in the adapter or anywhere else.** Qwt owns paint-time filtering. The adapter is a thin pull-through.
 5. **`boundingRect()` must return FULL-data bounds, NEVER ROI-bounded.** Qwt's autoscale path calls it before propagating ROI; ROI-bounded bounds would lag a frame.
 6. **`setRectOfInterest` must NOT cause `rectChanged` echo emits.** When MainWindow broadcasts a peer update via `setZoomRectangle(rect, /*emit=*/false)`, that path must NOT re-emit. Otherwise infinite recursion.
@@ -123,16 +123,16 @@ Each milestone ends in a buildable, runnable, demo-able state. Stage on a featur
 **Goal:** replace placeholder `DockWidget` content with a real Qwt plot using ported PJ3 base classes. Local pan/zoom/magnify works; no curves yet.
 
 **Deliverables (port PJ3 → PJ4 with style adaptation; rebind data paths):**
-- `pj_plot_widgets/{include/pj_plot_widgets,src}/PlotWidgetBase.{h,cpp}` — port from PJ3 `plotjuggler_base/{include/PlotJuggler,src}/plotwidget_base.{h,cpp}`. Strip `PlotData*` references; expose virtual hook for curve creation.
-- `pj_plot_widgets/.../PlotWidget.{h,cpp}` — port from PJ3 `plotjuggler_app/plotwidget.{h,cpp}`. Constructor takes `SessionManager*` + `CatalogModel*` (NOT `PlotDataMapRef&`). Curve creation routes through `DatastoreCurveAdapter`. Each `QwtPlotCurve` gets `setPaintAttribute(QwtPlotCurve::FilterPointsAggressive, true)` + `setPaintAttribute(QwtPlotCurve::ClipPolygons, true)`. Defer color-editor / transform-dialog / statistics-dialog wiring (those classes are deferred).
-- `pj_plot_widgets/.../PlotZoomer.{h,cpp}` — port from `plotjuggler_base/src/plotzoomer.{h,cpp}`. Pure Qwt extension.
-- `pj_plot_widgets/.../PlotPanner.{h,cpp}` — port from `plotjuggler_base/src/plotpanner.{h,cpp}`.
-- `pj_plot_widgets/.../PlotMagnifier.{h,cpp}` — port from `plotjuggler_base/src/plotmagnifier.{h,cpp}`.
-- `pj_plot_widgets/.../PlotLegend.{h,cpp}` — port from `plotjuggler_base/src/plotlegend.{h,cpp}`.
-- `pj_plot_widgets/include/pj_plot_widgets/DockWidget.h` + `src/DockWidget.cpp` — modify existing stub. Replace placeholder grey frame with `PlotWidget*` ownership. `IDataWidget::onTrackerTime(double)` forwards to the embedded plot.
-- `pj_plot_widgets/include/pj_plot_widgets/PlotDocker.h` + `src/PlotDocker.cpp` — modify. Add Qt signal `void plotWidgetAdded(PlotWidget*);` and emit it whenever a new dock's plot is created (initial creation + splits). Existing `dockAdded` stays.
+- `pj_plotting/widget/{include/pj_plotting,src}/PlotWidgetBase.{h,cpp}` — port from PJ3 `plotjuggler_base/{include/PlotJuggler,src}/plotwidget_base.{h,cpp}`. Strip `PlotData*` references; expose virtual hook for curve creation.
+- `pj_plotting/widget/.../PlotWidget.{h,cpp}` — port from PJ3 `plotjuggler_app/plotwidget.{h,cpp}`. Constructor takes `SessionManager*` + `CatalogModel*` (NOT `PlotDataMapRef&`). Curve creation routes through `DatastoreCurveAdapter`. Each `QwtPlotCurve` gets `setPaintAttribute(QwtPlotCurve::FilterPointsAggressive, true)` + `setPaintAttribute(QwtPlotCurve::ClipPolygons, true)`. Defer color-editor / transform-dialog / statistics-dialog wiring (those classes are deferred).
+- `pj_plotting/widget/.../PlotZoomer.{h,cpp}` — port from `plotjuggler_base/src/plotzoomer.{h,cpp}`. Pure Qwt extension.
+- `pj_plotting/.../PlotPanner.{h,cpp}` — port from `plotjuggler_base/src/plotpanner.{h,cpp}`.
+- `pj_plotting/.../PlotMagnifier.{h,cpp}` — port from `plotjuggler_base/src/plotmagnifier.{h,cpp}`.
+- `pj_plotting/.../PlotLegend.{h,cpp}` — port from `plotjuggler_base/src/plotlegend.{h,cpp}`.
+- `pj_plotting/widget/include/pj_plotting/DockWidget.h` + `widget/src/DockWidget.cpp` — modify existing stub. Replace placeholder grey frame with `PlotWidget*` ownership. `IDataWidget::onTrackerTime(double)` forwards to the embedded plot.
+- `pj_plotting/widget/include/pj_plotting/PlotDocker.h` + `widget/src/PlotDocker.cpp` — modify. Add Qt signal `void plotWidgetAdded(PlotWidget*);` and emit it whenever a new dock's plot is created (initial creation + splits). Existing `dockAdded` stays.
 
-**Build adjustments:** `pj_plot_widgets/CMakeLists.txt` — add the new sources, link `plotjuggler_qwt`. `AUTOMOC ON`, `AUTOUIC ON`, `AUTORCC ON` (already set).
+**Build adjustments:** `pj_plotting/widget/CMakeLists.txt` — add the new sources, link `plotjuggler_qwt`. `AUTOMOC ON`, `AUTOUIC ON`, `AUTORCC ON` (already set).
 
 **Out of scope for M2:** `CurveTracker`, drag-drop wiring, color editor, transforms, sync zoom. Those are M5/M6.
 
@@ -143,7 +143,7 @@ Each milestone ends in a buildable, runnable, demo-able state. Stage on a featur
 **Goal:** drag curve names from the existing side panel onto plots and see a real time-series rendered against the datastore. XY plot creation via right-drag of two curves.
 
 **Deliverables:**
-- `pj_plot_widgets/.../PointSeriesXY.{h,cpp}` — port from PJ3 `plotjuggler_app/point_series_xy.{h,cpp}`. **Own `QwtSeriesData<QPointF>` subclass with an alignment index** (do NOT compose from two `DatastoreCurveAdapter`s — see hard rule 10). Same-topic fast path: pair by row index. Different-topic: two-pointer scan by raw `Timestamp`, exact matches only. `sample(i)` dereferences a pre-built `PairSlot{x_chunk, x_row, y_chunk, y_row}`. Invalidate alignment index on `topicsCommitted` for either source topic.
+- `pj_plotting/core/.../PointSeriesXY.{h,cpp}` — port from PJ3 `plotjuggler_app/point_series_xy.{h,cpp}`. **Own `QwtSeriesData<QPointF>` subclass with an alignment index** (do NOT compose from two `DatastoreCurveAdapter`s — see hard rule 10). Same-topic fast path: pair by row index. Different-topic: two-pointer scan by raw `Timestamp`, exact matches only. `sample(i)` dereferences a pre-built `PairSlot{x_chunk, x_row, y_chunk, y_row}`. Invalidate alignment index on `topicsCommitted` for either source topic.
 - Drag-drop accept on `PlotWidgetBase` (Qt event forwarding through `dragEnterEvent`/`dropEvent` signals from the canvas). MIME formats already match: `"curveslist/add_curve"` and `"curveslist/new_XY_axis"`. Decode via `QDataStream` of `QString` curve names. For each name, look up `CatalogModel::curveDescriptor(name)`; if found, create a `DatastoreCurveAdapter` and attach as a `QwtPlotCurve`. Reject silently with a status-bar toast for unknown names. Reject right-drag on a non-empty plot.
 - Plot color cycle for newly added curves (PJ3-equivalent). A small constexpr `std::array<QColor, N>` of stable colors, indexed by the next-curve counter on the plot.
 - `PlotWidget::isXYPlot()` — true when current mode is XY. Used by M5 sync-zoom to exclude XY plots.
@@ -183,13 +183,13 @@ Each milestone ends in a buildable, runnable, demo-able state. Stage on a featur
 **Goal:** vertical tracker line moves in lockstep with the global timeline; dragging a tracker in any plot drives the timeline. Dock toolbar matches PJ3 layout.
 
 **Deliverables:**
-- `pj_plot_widgets/.../CurveTracker.{h,cpp}` — port from PJ3 `plotjuggler_app/curve_tracker.{h,cpp}`. Crosshair markers + value labels at a given X. Owned by `PlotWidget`.
+- `pj_plotting/widget/.../CurveTracker.{h,cpp}` — port from PJ3 `plotjuggler_app/curve_tracker.{h,cpp}`. Crosshair markers + value labels at a given X. Owned by `PlotWidget`.
 - `PlotWidget::setTrackerPosition(double display_time_sec)` — moves the tracker, updates value labels.
 - `DockWidget::onTrackerTime(double t)` (already overrides `IDataWidget`) → forwards to `plot_widget_->setTrackerPosition(t)`.
 - `MainWindow` wires `PlaybackEngine::currentTimeChanged` → broadcast `onTrackerTime` to every dock (walk the tab/dock tree once per signal).
 - Reverse direction: `PlotWidget::trackerMoved(QPointF)` signal, emitted on user-driven tracker drag. `MainWindow` slot calls `session_->playbackEngine().setCurrentTime(p.x())`. The broadcast then echoes back to all plots (including the source) — this loop is intentional and converges.
 - XY plots show no tracker line in v1 (no time axis to track on).
-- `pj_plot_widgets/include/pj_plot_widgets/DockToolbar.h` + `src/DockToolbar.cpp` + `src/DockToolbar.ui` — extend existing stub to PJ3 layout: split-horizontal, split-vertical, fullscreen, close buttons. Preserve PJ3 object names (`buttonSplitHorizontal`, `buttonSplitVertical`, `buttonFullscreen`, `buttonClose`).
+- `pj_plotting/widget/include/pj_plotting/DockToolbar.h` + `widget/src/DockToolbar.cpp` + `widget/src/DockToolbar.ui` — extend existing stub to PJ3 layout: split-horizontal, split-vertical, fullscreen, close buttons. Preserve PJ3 object names (`buttonSplitHorizontal`, `buttonSplitVertical`, `buttonFullscreen`, `buttonClose`).
 - Extend XML round-trip from M4 to cover: tracker enable, line width, XY mode, plot title.
 
 **Verification:** play timeline → tracker line moves in every non-XY plot, value labels update at the tracker. Drag tracker in a plot → timeline jumps to match. Click split/fullscreen/close on the dock toolbar → behavior matches PJ3. Save plot state with non-default tracker enable + line width → restore → settings preserved.
@@ -227,8 +227,8 @@ If you encounter any of these, **STOP and surface the issue rather than guessing
 
 For consistent style, reuse these as templates:
 
-- **Pull-through `QwtSeriesData` adapter**: `pj_plot_widgets/src/DatastoreCurveAdapter.cpp` (already in tree). Same general shape for `PointSeriesXY`.
-- **Qt-side service wrapping a Qt-optional substrate type**: `pj_app_core/src/SessionManager.cpp` (wraps `PJ::DataEngine`, emits `topicsCommitted`).
+- **Pull-through `QwtSeriesData` adapter**: `pj_plotting/core/src/DatastoreCurveAdapter.cpp` (already in tree). Same general shape for `PointSeriesXY`.
+- **Qt-side service wrapping a Qt-optional substrate type**: `pj_runtime/src/SessionManager.cpp` (wraps `PJ::DataEngine`, emits `topicsCommitted`).
 - **PIMPL with `std::deque` for stable references**: `plotjuggler_core/pj_datastore/include/pj_datastore/topic_storage.hpp`.
 - **C-ABI plugin host adapter**: `pj_app/src/FileLoader.cpp` (RuntimeHost vtable + DatastoreSourceWriteHost binding).
 - **Conventional-commit messages with design rationale**: `git log` on `development` from `441ea07` onwards.

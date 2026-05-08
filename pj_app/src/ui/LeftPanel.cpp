@@ -9,7 +9,7 @@
 #include <QSpinBox>
 #include <utility>
 
-#include "pj_app_core/SvgUtil.h"
+#include "pj_widgets/SvgUtil.h"
 #include "ui_LeftPanel.h"
 
 namespace PJ {

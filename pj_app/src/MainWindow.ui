@@ -365,7 +365,7 @@
   <customwidget>
    <class>PJ::TabbedPlotWidget</class>
    <extends>QWidget</extends>
-   <header>pj_plot_widgets/TabbedPlotWidget.h</header>
+   <header>pj_plotting/TabbedPlotWidget.h</header>
   </customwidget>
  </customwidgets>
  <resources>

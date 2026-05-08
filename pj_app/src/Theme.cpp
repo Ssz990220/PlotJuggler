@@ -6,7 +6,7 @@
 #include <QStringList>
 #include <map>
 
-#include "pj_app_core/SvgUtil.h"
+#include "pj_widgets/SvgUtil.h"
 
 namespace PJ {
 

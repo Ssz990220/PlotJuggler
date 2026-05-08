@@ -1,8 +1,10 @@
-find_package(Qt6 REQUIRED COMPONENTS Core Gui Widgets)
+find_package(Qt6 REQUIRED COMPONENTS Core Gui Svg Widgets)
 
 add_library(pj_widgets STATIC
     src/ColorPickerPopup.cpp
     include/pj_widgets/ColorPickerPopup.h
+    include/pj_widgets/RealSlider.h
+    include/pj_widgets/SvgUtil.h
 )
 
 set_target_properties(pj_widgets PROPERTIES
@@ -16,5 +18,6 @@ target_include_directories(pj_widgets PUBLIC
 target_link_libraries(pj_widgets PUBLIC
     Qt6::Core
     Qt6::Gui
+    Qt6::Svg
     Qt6::Widgets
 )

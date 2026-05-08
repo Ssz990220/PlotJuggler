@@ -289,7 +289,7 @@
   <customwidget>
    <class>PJ::RealSlider</class>
    <extends>QSlider</extends>
-   <header>ui/RealSlider.h</header>
+   <header>pj_widgets/RealSlider.h</header>
   </customwidget>
  </customwidgets>
  <connections/>

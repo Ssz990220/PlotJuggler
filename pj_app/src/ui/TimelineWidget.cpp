@@ -3,9 +3,9 @@
 #include <QDoubleSpinBox>
 #include <QPushButton>
 
-#include "pj_app_core/PlaybackEngine.h"
-#include "pj_app_core/SvgUtil.h"
-#include "ui/RealSlider.h"
+#include "pj_runtime/PlaybackEngine.h"
+#include "pj_widgets/RealSlider.h"
+#include "pj_widgets/SvgUtil.h"
 #include "ui_TimelineWidget.h"
 
 namespace PJ {

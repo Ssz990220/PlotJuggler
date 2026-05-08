@@ -20,7 +20,6 @@ add_executable(pj_app
     src/ui/LeftPanel.cpp
     src/ui/LeftPanel.h
     src/ui/LeftPanel.ui
-    src/ui/RealSlider.h
     src/ui/TimelineWidget.cpp
     src/ui/TimelineWidget.h
     src/ui/TimelineWidget.ui
@@ -39,8 +38,9 @@ target_include_directories(pj_app PRIVATE
 )
 
 target_link_libraries(pj_app PRIVATE
-    pj_app_core
-    pj_plot_widgets
+    pj_runtime
+    pj_widgets
+    pj_plotting
     pj_marketplace_ui
     pj_dialog_engine_qt
     qt_advanced_docking

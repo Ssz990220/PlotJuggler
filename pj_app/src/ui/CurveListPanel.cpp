@@ -6,8 +6,8 @@
 #include <QPushButton>
 #include <QSplitter>
 
-#include "pj_app_core/CatalogModel.h"
-#include "pj_app_core/SvgUtil.h"
+#include "pj_runtime/CatalogModel.h"
+#include "pj_widgets/SvgUtil.h"
 #include "ui/CurveTreeView.h"
 #include "ui_CurveListPanel.h"
 
