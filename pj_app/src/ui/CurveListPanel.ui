@@ -106,7 +106,7 @@
   <customwidget>
    <class>PJ::CurveTreeView</class>
    <extends>QTreeWidget</extends>
-   <header>ui/CurveTreeView.h</header>
+   <header>pj_widgets/CurveTreeView.h</header>
   </customwidget>
  </customwidgets>
  <connections/>

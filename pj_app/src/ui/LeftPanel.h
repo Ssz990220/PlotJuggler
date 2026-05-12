@@ -26,8 +26,12 @@ class LeftPanel : public QWidget {
  signals:
   void loadDataRequested();
   void reloadDataRequested();
+  // Carries the popup anchor (button's bottom-left in global coords).
+  void recentDataRequested(QPoint global_pos);
   void loadLayoutRequested();
   void saveLayoutRequested();
+  // Carries the popup anchor (button's bottom-left in global coords).
+  void recentLayoutRequested(QPoint global_pos);
   void addPrefixToggled(bool enabled);
   void mergeDataToggled(bool enabled);
   void streamingStartToggled(bool started);
@@ -41,6 +45,9 @@ class LeftPanel : public QWidget {
   // Repopulates the streaming combo. Preserves the current selection if the
   // previously-selected name is still present.
   void setStreamingSources(const QStringList& names);
+  void setReloadEnabled(bool enabled);
+  void setRecentEnabled(bool enabled);
+  void setRecentLayoutEnabled(bool enabled);
 
  private:
   void toggleSection(QFrame* frame, QPushButton* button, const char* settings_key);

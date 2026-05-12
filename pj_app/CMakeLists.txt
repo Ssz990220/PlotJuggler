@@ -15,8 +15,6 @@ add_executable(pj_app
     src/ui/CurveListPanel.cpp
     src/ui/CurveListPanel.h
     src/ui/CurveListPanel.ui
-    src/ui/CurveTreeView.cpp
-    src/ui/CurveTreeView.h
     src/ui/LeftPanel.cpp
     src/ui/LeftPanel.h
     src/ui/LeftPanel.ui

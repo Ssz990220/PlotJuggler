@@ -29,6 +29,13 @@ class CatalogModel : public QObject {
   std::vector<QString> curveNames() const;
   [[nodiscard]] std::optional<CurveDescriptor> curveDescriptor(const QString& name) const;
 
+  void clearAll();
+  void removeCurves(const std::vector<QString>& names);
+
+  // Discards soft-delete tombstones and rebuilds from the datastore so a
+  // resurrection path (e.g. layout load) can re-expose previously removed curves.
+  void resetRemovalState();
+
  public slots:
   void rebuildFromDatastore();
 

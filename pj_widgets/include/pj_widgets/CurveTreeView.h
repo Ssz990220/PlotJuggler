@@ -17,6 +17,10 @@ class CurveTreeView : public QTreeWidget {
   void clearCurves();
   void applyFilter(const QString& filter);
   std::vector<QString> selectedCurveNames() const;
+  // selectedCurveNames() returns only directly-selected leaves; this variant
+  // expands selected group nodes to all their leaf descendants. Result is
+  // sorted and deduplicated.
+  std::vector<QString> selectedCurveNamesRecursive() const;
 
   void setValuesColumnHidden(bool hidden);
   bool valuesColumnHidden() const {

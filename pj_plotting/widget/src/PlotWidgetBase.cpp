@@ -4,6 +4,7 @@
 #include <qwt_plot.h>
 #include <qwt_plot_canvas.h>
 #include <qwt_plot_curve.h>
+#include <qwt_plot_grid.h>
 #include <qwt_plot_layout.h>
 #include <qwt_plot_marker.h>
 #include <qwt_plot_opengl_canvas.h>
@@ -71,6 +72,14 @@ class PlotWidgetBase::QwtPlotPimpl : public QwtPlot {
         parent(parent_widget) {
     setCanvas(canvas_widget);
     legend = new PlotLegend(this);
+    grid = new QwtPlotGrid();
+    grid->enableX(false);
+    grid->enableXMin(false);
+    grid->enableY(false);
+    grid->enableYMin(false);
+    grid->setMajorPen(QPen(QColor(150, 150, 150), 0.0, Qt::DashLine));
+    grid->setMinorPen(QPen(QColor(210, 210, 210), 0.0, Qt::DotLine));
+    grid->attach(this);
     magnifier = new PlotMagnifier(canvas_widget);
     panner1 = new PlotPanner(canvas_widget);
     panner2 = new PlotPanner(canvas_widget);
@@ -135,6 +144,7 @@ class PlotWidgetBase::QwtPlotPimpl : public QwtPlot {
   }
 
   PlotLegend* legend = nullptr;
+  QwtPlotGrid* grid = nullptr;
   PlotMagnifier* magnifier = nullptr;
   PlotPanner* panner1 = nullptr;
   PlotPanner* panner2 = nullptr;
@@ -364,6 +374,27 @@ void PlotWidgetBase::setLegendAlignment(Qt::Alignment alignment) {
   plot_->legend->setAlignmentInCanvas(Qt::Alignment(Qt::AlignTop | alignment));
 }
 
+void PlotWidgetBase::setLegendVisible(bool visible) {
+  plot_->legend->setVisible(visible);
+  replot();
+}
+
+bool PlotWidgetBase::legendVisible() const noexcept {
+  return plot_->legend->isVisible();
+}
+
+void PlotWidgetBase::setGridVisible(bool visible) {
+  plot_->grid->enableX(visible);
+  plot_->grid->enableXMin(visible);
+  plot_->grid->enableY(visible);
+  plot_->grid->enableYMin(visible);
+  replot();
+}
+
+bool PlotWidgetBase::gridVisible() const noexcept {
+  return plot_->grid->xEnabled();
+}
+
 void PlotWidgetBase::setZoomEnabled(bool enabled) {
   plot_->zoom_enabled = enabled;
   plot_->zoomer->setEnabled(enabled);
@@ -409,7 +440,11 @@ void PlotWidgetBase::setAcceptDrops(bool accept) {
 }
 
 void PlotWidgetBase::overrideCurvesStyle(std::optional<CurveStyle> style) {
+  if (plot_->overridden_curve_style == style) {
+    return;
+  }
   plot_->overridden_curve_style = style;
+  updateCurvesStyle();
 }
 
 std::optional<PlotWidgetBase::CurveStyle> PlotWidgetBase::overriddenCurvesStyle() const noexcept {
@@ -467,26 +502,38 @@ void PlotWidgetBase::setStyle(QwtPlotCurve* curve, CurveStyle style) {
   const double width = style == kDots ? dotWidthValue(lineWidth()) : lineWidthValue(lineWidth());
   curve->setPen(curve->pen().color(), width);
 
+  // Qwt's QwtPlotCurve::LinesAndDots style on its own does not draw visible
+  // dots at the pen widths we use (1.4-4.2 px); attach an explicit symbol so
+  // each sample is rendered as a small filled circle. Cleared for plain Lines.
   switch (style) {
     case kLines:
       curve->setStyle(QwtPlotCurve::Lines);
+      curve->setSymbol(nullptr);
       break;
-    case kLinesAndDots:
-      curve->setStyle(QwtPlotCurve::LinesAndDots);
+    case kLinesAndDots: {
+      curve->setStyle(QwtPlotCurve::Lines);
+      const QColor color = curve->pen().color();
+      const int dot_size = static_cast<int>(std::round(dotWidthValue(lineWidth())));
+      curve->setSymbol(new QwtSymbol(QwtSymbol::Ellipse, color, QPen(color), QSize(dot_size, dot_size)));
       break;
+    }
     case kDots:
       curve->setStyle(QwtPlotCurve::Dots);
+      curve->setSymbol(nullptr);
       break;
     case kSticks:
       curve->setStyle(QwtPlotCurve::Sticks);
+      curve->setSymbol(nullptr);
       break;
     case kSteps:
       curve->setStyle(QwtPlotCurve::Steps);
       curve->setCurveAttribute(QwtPlotCurve::Inverted, false);
+      curve->setSymbol(nullptr);
       break;
     case kStepsInverted:
       curve->setStyle(QwtPlotCurve::Steps);
       curve->setCurveAttribute(QwtPlotCurve::Inverted, true);
+      curve->setSymbol(nullptr);
       break;
   }
 }

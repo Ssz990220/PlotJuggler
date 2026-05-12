@@ -17,6 +17,7 @@
 
 class QAction;
 class QCloseEvent;
+class QMenu;
 class QPushButton;
 
 namespace Ui {
@@ -32,11 +33,13 @@ class FileLoader;
 class PlotDocker;
 class PlotWidget;
 class QtDiagnosticBridge;
+class RecentFilesMenu;
 class Theme;
 
-// Side-position the CurveEditor panel can occupy. Mutually exclusive at
-// runtime; click the active position again to return to kNone.
-enum class PanelPosition { kNone, kLeft, kRight, kBottom };
+// Three-state cycle of the Legend toggle. Click cycles RIGHT -> LEFT ->
+// HIDDEN -> RIGHT, mirroring PJ3 buttonLegend behaviour. Stored as int in
+// QSettings ("MainWindow.legendStatus").
+enum class LegendStatus { kLeft = 0, kRight = 1, kHidden = 2 };
 
 class MainWindow : public QMainWindow {
   Q_OBJECT
@@ -59,103 +62,63 @@ class MainWindow : public QMainWindow {
   void stylesheetChanged(QString theme);
 
  private slots:
-  // Opens the extension marketplace dialog.
   void onOpenMarketplace();
-
-  // Opens the file-load workflow.
   void onLoadDataRequested();
-
-  // Opens the recent diagnostics dialog.
+  void onReloadDataRequested();
+  void onRecentDataRequested(QPoint global_pos);
+  void onFileLoaded(const QString& path);
+  void onTrashRequested(const QStringList& names, bool covers_all);
+  void onCatalogCurveRemoved(const QString& name);
+  void onCatalogCleared();
   void onShowDiagnosticsDialog();
-
   void onShowPreferencesDialog();
-
   void onThemeChanged(const QString& theme);
-
-  // Wires callbacks for a newly created plot tab.
   void onPlotTabAdded(PlotDocker* docker);
-
-  // Wires callbacks for a newly created plot widget.
   void onPlotAdded(PlotWidget* plot);
-
   // Mirrors X zoom to linked plots.
   void onPlotZoomChanged(PlotWidget* modified, QRectF rect);
-
-  // Updates playback time from a plot tracker move.
   void onTrackerMovedFromWidget(QPointF point);
-
-  // Records a user-visible plot layout change.
   void onUndoableChange();
-
-  // Restores the previous layout snapshot.
   void onUndo();
-
-  // Restores the next layout snapshot after undo.
   void onRedo();
-
-  // Saves the current layout XML to disk.
   void onSaveLayout();
-
-  // Loads layout XML from disk.
   void onLoadLayout();
-
-  // Toggles the CurveEditor panel into one of three positions, or hides it
-  // when the currently-active position button is clicked again.
-  void onPanelButtonToggled(PanelPosition pos, bool checked);
+  void onRecentLayoutRequested(QPoint global_pos);
+  // Cycles legend_status_ to the next state and re-applies it to every plot.
+  void onLegendButtonClicked();
 
  private:
-  // Records and displays one diagnostic from the shared bridge.
+  // Pushes the current toolbar toggle state (show_points / legend_status /
+  // activate_grid / dots) into one plot, so newly added plots match.
+  void applyGlobalToggles(PlotWidget* plot);
+  void applyLegendStatus(PlotWidget* plot);
+
   void onDiagnosticReported(int level, QString source, QString id, QString message);
-
-  // Updates visibility and text for diagnostics UI affordances.
   void updateDiagnosticsButton();
-
-  // Refreshes the streaming source selector from loaded plugins.
   void refreshStreamingCombo();
 
-  // Wires callbacks for plots already present after UI setup.
+  // Returns false and shows a QMessageBox warning on I/O or parse failure.
+  bool saveLayoutToFile(const QString& path);
+  bool loadLayoutFromFile(const QString& path);
+
   void wireExistingPlots();
-
-  // Applies operation to each plot docker.
   void forEachDocker(const std::function<void(PlotDocker*)>& operation);
-
-  // Applies operation to each dock widget.
   void forEachDock(const std::function<void(DockWidget*)>& operation);
-
-  // Applies operation to each plot widget.
   void forEachPlot(const std::function<void(PlotWidget*)>& operation);
 
   // Icons not owned by a subwidget with its own onStylesheetChanged.
   void applyIcons(QString theme);
 
-  // Serializes the current app layout state.
   [[nodiscard]] QDomDocument xmlSaveState() const;
-
-  // Loads a previously serialized app layout state.
   bool xmlLoadState(const QDomDocument& state_document);
 
-  // Initializes the undo stack with the post-construction state.
   void pushInitialUndoState();
-
-  // Adds or replaces the newest undo snapshot.
   void pushUndoState(bool force_new_state = false);
-
-  // Updates enabled state for undo / redo actions.
   void updateUndoRedoActions();
 
-  // Re-parents the editor into plotAreaSplitter at the given position and
-  // restores the splitter sizes saved for that position.
-  void showCurveEditor(PanelPosition pos);
-
-  // Detaches the editor from plotAreaSplitter and hides it.
+  void showCurveEditor();
   void hideCurveEditor();
-
-  // Persists the current splitter sizes under the slot for the active panel
-  // position so the next show() call restores them.
-  void savePanelSize();
-
-  // Resolves "the active plot" (first dock of the current tab) and re-binds
-  // the editor to it. Called on tab/dock changes.
+  // Re-binds the editor to the first dock of the current tab.
   void bindEditorToActivePlot();
 
  protected:
@@ -188,7 +151,13 @@ class MainWindow : public QMainWindow {
   QElapsedTimer undo_timer_;
   bool applying_state_ = false;
   CurveEditor* curve_editor_ = nullptr;
-  PanelPosition panel_position_ = PanelPosition::kNone;
+  LegendStatus legend_status_ = LegendStatus::kLeft;
+
+  // Paths from the last successful load batch. Session-only (not persisted),
+  // matching PJ3 _loaded_datafiles_previous semantics.
+  QStringList last_loaded_data_files_;
+  RecentFilesMenu* recent_data_menu_ = nullptr;
+  RecentFilesMenu* recent_layout_menu_ = nullptr;
 };
 
 }  // namespace PJ

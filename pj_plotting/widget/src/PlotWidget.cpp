@@ -3,7 +3,9 @@
 #include <qwt_plot.h>
 #include <qwt_plot_curve.h>
 #include <qwt_plot_item.h>
+#include <qwt_plot_marker.h>
 #include <qwt_scale_map.h>
+#include <qwt_symbol.h>
 #include <qwt_text.h>
 
 #include <QColorDialog>
@@ -11,11 +13,14 @@
 #include <QDragEnterEvent>
 #include <QDragLeaveEvent>
 #include <QDropEvent>
+#include <QFontDatabase>
 #include <QIODevice>
 #include <QMenu>
 #include <QMimeData>
 #include <QMouseEvent>
+#include <QPalette>
 #include <QPen>
+#include <QSettings>
 #include <QUuid>
 #include <QVector>
 #include <algorithm>
@@ -32,6 +37,8 @@
 
 namespace PJ {
 namespace {
+
+constexpr int kHoverHitRadiusPx = 40;
 
 QString newStateId() {
   return QUuid::createUuid().toString(QUuid::WithoutBraces);
@@ -51,6 +58,20 @@ PlotWidget::PlotWidget(SessionManager* session, CatalogModel* catalog, QWidget* 
   state_id_ = newStateId();
   setAcceptDrops(true);
   tracker_ = new CurveTracker(qwtPlot(), QColor(Qt::red));
+
+  // Mouse-hover inspector. Shows a snap-to-curve dot + value tooltip wherever
+  // the mouse points, gated by show_points_. Independent from the playback
+  // tracker (tracker_): the red playback line always shows the current
+  // playback time and is not affected by this toggle.
+  show_point_marker_ = new QwtPlotMarker();
+  show_point_marker_->setSymbol(new QwtSymbol(QwtSymbol::Ellipse, QColor(Qt::yellow), QPen(Qt::black), QSize(8, 8)));
+  show_point_marker_->setVisible(false);
+  show_point_marker_->attach(qwtPlot());
+
+  show_point_text_ = new QwtPlotMarker();
+  show_point_text_->setVisible(false);
+  show_point_text_->attach(qwtPlot());
+
   connect(this, &PlotWidgetBase::viewResized, this, &PlotWidget::onExternallyResized);
   connect(this, &PlotWidgetBase::curveListChanged, this, [this]() { updateMaximumZoomArea(); });
   connect(this, &PlotWidgetBase::dragEnterSignal, this, &PlotWidget::onDragEnterEvent);
@@ -62,6 +83,14 @@ PlotWidget::PlotWidget(SessionManager* session, CatalogModel* catalog, QWidget* 
 
 PlotWidget::~PlotWidget() {
   delete tracker_;
+  if (show_point_marker_ != nullptr) {
+    show_point_marker_->detach();
+    delete show_point_marker_;
+  }
+  if (show_point_text_ != nullptr) {
+    show_point_text_->detach();
+    delete show_point_text_;
+  }
   delete action_split_horizontal_;
   delete action_split_vertical_;
   delete action_remove_all_curves_;
@@ -159,6 +188,110 @@ bool PlotWidget::trackerEnabled() const noexcept {
   return tracker_enabled_;
 }
 
+void PlotWidget::setShowPoints(bool show) {
+  show_points_ = show;
+  if (!show) {
+    if (show_point_marker_ != nullptr) {
+      show_point_marker_->setVisible(false);
+    }
+    if (show_point_text_ != nullptr) {
+      show_point_text_->setVisible(false);
+    }
+    replot();
+  }
+}
+
+bool PlotWidget::showPoints() const noexcept {
+  return show_points_;
+}
+
+void PlotWidget::showPointValues(QPoint paint_point) {
+  if (!show_points_ || show_point_marker_ == nullptr || show_point_text_ == nullptr) {
+    return;
+  }
+
+  auto paint_to_plot = [this](QPoint p) {
+    return QPointF(qwtPlot()->invTransform(QwtPlot::xBottom, p.x()), qwtPlot()->invTransform(QwtPlot::yLeft, p.y()));
+  };
+  auto plot_to_paint = [this](QPointF p) {
+    return QPoint(qwtPlot()->transform(QwtPlot::xBottom, p.x()), qwtPlot()->transform(QwtPlot::yLeft, p.y()));
+  };
+
+  const QPointF mouse_in_plot = paint_to_plot(paint_point);
+  const int precision = QSettings().value(QStringLiteral("Preferences::precision"), 3).toInt();
+
+  QString text;
+  int min_distance_sqr = kHoverHitRadiusPx * kHoverHitRadiusPx;
+  bool updated = false;
+  QPointF marker_point;
+  const QwtPlotItemList curves = qwtPlot()->itemList(QwtPlotItem::Rtti_PlotCurve);
+  for (auto* item : curves) {
+    auto* curve = dynamic_cast<QwtPlotCurve*>(item);
+    if (curve == nullptr || !curve->isVisible()) {
+      continue;
+    }
+    const auto maybe_point = curvePointAt(curve, mouse_in_plot.x());
+    if (!maybe_point) {
+      continue;
+    }
+    const QPoint sample_paint = plot_to_paint(*maybe_point);
+    const QPoint diff = sample_paint - paint_point;
+    const int dist_sqr = diff.x() * diff.x() + diff.y() * diff.y();
+    if (dist_sqr < min_distance_sqr) {
+      updated = true;
+      min_distance_sqr = dist_sqr;
+      marker_point = *maybe_point;
+      text =
+          QString("<font color=%1>%2<br>x: %3<br>y: %4</font>")
+              .arg(
+                  curve->pen().color().name(), curve->title().text(), QString::number(maybe_point->x(), 'f', precision),
+                  QString::number(maybe_point->y(), 'f', precision));
+    }
+  }
+
+  const bool was_visible = show_point_marker_->isVisible();
+  show_point_marker_->setVisible(updated);
+  show_point_text_->setVisible(updated);
+
+  if (updated) {
+    show_point_marker_->setValue(marker_point);
+
+    QwtText label;
+    label.setText(text);
+    label.setBorderPen(QColor(Qt::transparent));
+    QColor background = qwtPlot()->palette().color(QPalette::Window);
+    background.setAlpha(220);
+    label.setBackgroundBrush(background);
+    QFont font = QFontDatabase::systemFont(QFontDatabase::FixedFont);
+    font.setPointSize(9);
+    label.setFont(font);
+    label.setRenderFlags(Qt::AlignLeft);
+    show_point_text_->setLabel(label);
+    show_point_text_->setLabelAlignment(Qt::AlignRight);
+
+    const QPoint marker_paint = plot_to_paint(marker_point);
+    QPoint text_anchor = marker_paint + QPoint(15, -20);
+    const double text_width = label.textSize().width();
+    const double canvas_width = qwtPlot()->canvas()->width();
+    if (marker_paint.x() > canvas_width * 0.5 && (text_anchor.x() + text_width) > canvas_width) {
+      text_anchor = marker_paint + QPoint(-15 - static_cast<int>(text_width), -20);
+    }
+    show_point_text_->setValue(paint_to_plot(text_anchor));
+  }
+
+  // Replot only when the steady state actually changed: visibility flipped,
+  // we snapped to a different sample, or the tooltip text differs (e.g. a
+  // curve appeared/disappeared at the same x).
+  const bool visibility_changed = updated != was_visible;
+  const bool position_or_text_changed =
+      updated && (marker_point != show_point_last_pos_ || text != show_point_last_text_);
+  if (visibility_changed || position_or_text_changed) {
+    replot();
+  }
+  show_point_last_pos_ = updated ? marker_point : QPointF{};
+  show_point_last_text_ = updated ? text : QString{};
+}
+
 QString PlotWidget::stateId() const {
   return state_id_;
 }
@@ -179,13 +312,19 @@ QDomElement PlotWidget::xmlSaveState(QDomDocument& doc) const {
   plot_element.setAttribute(
       QStringLiteral("tracker_enabled"), tracker_enabled_ ? QStringLiteral("true") : QStringLiteral("false"));
 
-  QDomElement range_element = doc.createElement(QStringLiteral("range"));
+  // Skip the <range> element when the canvas has not yet computed a real
+  // viewport (e.g. drop happened immediately before save) -- a degenerate
+  // rect would restore as a zero-width window and hide everything. Without
+  // <range>, xmlLoadState falls back to zoomOut(), which auto-fits.
   const QRectF rect = currentBoundingRect();
-  range_element.setAttribute(QStringLiteral("bottom"), QString::number(rect.bottom(), 'f', 6));
-  range_element.setAttribute(QStringLiteral("top"), QString::number(rect.top(), 'f', 6));
-  range_element.setAttribute(QStringLiteral("left"), QString::number(rect.left(), 'f', 6));
-  range_element.setAttribute(QStringLiteral("right"), QString::number(rect.right(), 'f', 6));
-  plot_element.appendChild(range_element);
+  if (rect.left() != rect.right() && rect.top() != rect.bottom()) {
+    QDomElement range_element = doc.createElement(QStringLiteral("range"));
+    range_element.setAttribute(QStringLiteral("bottom"), QString::number(rect.bottom(), 'f', 6));
+    range_element.setAttribute(QStringLiteral("top"), QString::number(rect.top(), 'f', 6));
+    range_element.setAttribute(QStringLiteral("left"), QString::number(rect.left(), 'f', 6));
+    range_element.setAttribute(QStringLiteral("right"), QString::number(rect.right(), 'f', 6));
+    plot_element.appendChild(range_element);
+  }
 
   for (const CurveInfo& info : curveList()) {
     if (info.curve == nullptr) {
@@ -300,15 +439,20 @@ bool PlotWidget::xmlLoadState(const QDomElement& plot_element, bool autozoom) {
   }
 
   const QDomElement range_element = plot_element.firstChildElement(QStringLiteral("range"));
+  QRectF rect;
   if (!range_element.isNull() && autozoom) {
-    QRectF rect;
     rect.setBottom(range_element.attribute(QStringLiteral("bottom")).toDouble());
     rect.setTop(range_element.attribute(QStringLiteral("top")).toDouble());
     rect.setLeft(range_element.attribute(QStringLiteral("left")).toDouble());
     rect.setRight(range_element.attribute(QStringLiteral("right")).toDouble());
-    setZoomRectangle(rect, false);
-  } else {
+  }
+  // Fall back to zoomOut when no <range> was saved or the saved rect is
+  // degenerate (zero-width or zero-height). Without this, an old layout
+  // saved before the canvas auto-fitted would restore as a blank plot.
+  if (rect.left() == rect.right() || rect.top() == rect.bottom()) {
     zoomOut(false);
+  } else {
+    setZoomRectangle(rect, false);
   }
   replot();
   return true;
@@ -460,6 +604,19 @@ bool PlotWidget::eventFilter(QObject* obj, QEvent* event) {
       emit trackerMoved(
           QPointF(x_map.invTransform(mouse_event->pos().x()), y_map.invTransform(mouse_event->pos().y())));
       return true;
+    }
+    // Mouse hover inspector (buttonShowpoint). Doesn't consume the event so
+    // panning/zooming/etc keep working underneath. Gate by show_points_ so
+    // the hot path stays a single bool read when the toggle is off.
+    if (show_points_) {
+      showPointValues(mouse_event->pos());
+    }
+  }
+  if (event->type() == QEvent::Leave && obj == qwtPlot()->canvas()) {
+    if (show_point_marker_ != nullptr && show_point_marker_->isVisible()) {
+      show_point_marker_->setVisible(false);
+      show_point_text_->setVisible(false);
+      replot();
     }
   }
   return false;

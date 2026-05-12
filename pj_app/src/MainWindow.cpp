@@ -17,6 +17,7 @@
 #include <QPushButton>
 #include <QScopedValueRollback>
 #include <QSettings>
+#include <QSignalBlocker>
 #include <QSplitter>
 #include <QStatusBar>
 #include <QStringList>
@@ -26,6 +27,7 @@
 #include <QVBoxLayout>
 #include <cmath>
 #include <cstdint>
+#include <optional>
 #include <utility>
 #include <vector>
 
@@ -47,6 +49,7 @@
 #include "pj_runtime/ExtensionCatalogService.h"
 #include "pj_runtime/PlaybackEngine.h"
 #include "pj_runtime/SessionManager.h"
+#include "pj_widgets/RecentFilesMenu.h"
 #include "pj_widgets/SvgUtil.h"
 #include "ui/CurveListPanel.h"
 #include "ui/LeftPanel.h"
@@ -69,30 +72,29 @@ constexpr double kTestDurationSeconds = 10.0;
 constexpr int kMaxDiagnostics = 200;
 constexpr int kMaxUndoStates = 100;
 constexpr qint64 kUndoCoalesceMs = 100;
+
 constexpr auto kButtonLinkKey = "MainWindow.buttonLink";
 
-// QSettings keys for the CurveEditor side panel. Position is stored as int
-// (cast of PanelPosition); per-position splitter state is stored under
-// separate keys so reopening the editor at the same position restores its
-// exact width / height.
-constexpr auto kPanelPositionKey = "MainWindow.panelPosition";
-constexpr auto kPanelStateKeyLeft = "MainWindow.splitterState.left";
-constexpr auto kPanelStateKeyRight = "MainWindow.splitterState.right";
-constexpr auto kPanelStateKeyBottom = "MainWindow.splitterState.bottom";
+constexpr auto kLeftColumnVisibleKey = "MainWindow.leftColumnVisible";
+constexpr auto kCurveEditorVisibleKey = "MainWindow.curveEditorVisible";
+constexpr auto kCurveEditorSplitterStateKey = "MainWindow.curveEditorSplitterState";
 
-[[nodiscard]] const char* panelStateKeyFor(PanelPosition pos) {
-  switch (pos) {
-    case PanelPosition::kLeft:
-      return kPanelStateKeyLeft;
-    case PanelPosition::kRight:
-      return kPanelStateKeyRight;
-    case PanelPosition::kBottom:
-      return kPanelStateKeyBottom;
-    case PanelPosition::kNone:
-      return "";
-  }
-  return "";
-}
+constexpr auto kButtonShowpointKey = "MainWindow.buttonShowpoint";
+constexpr auto kButtonActivateGridKey = "MainWindow.buttonActivateGrid";
+constexpr auto kButtonDotsKey = "MainWindow.buttonDots";
+constexpr auto kLegendStatusKey = "MainWindow.legendStatus";
+
+constexpr auto kRecentDataFilesKey = "MainWindow.recentDataFiles";
+constexpr int kRecentDataFilesMax = 10;
+
+constexpr auto kRecentLayoutFilesKey = "MainWindow.recentLayoutFiles";
+constexpr int kRecentLayoutFilesMax = 10;
+
+constexpr auto kXmlLinkX = "link_x";
+constexpr auto kXmlShowPoints = "show_points";
+constexpr auto kXmlLegendStatus = "legend_status";
+constexpr auto kXmlActivateGrid = "activate_grid";
+constexpr auto kXmlDots = "dots";
 
 QUrl registryUrlFromSettings() {
   QSettings settings;
@@ -130,6 +132,47 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
     settings.setValue(kButtonLinkKey, checked);
   });
 
+  // Toggle lambdas no-op while applying_state_ is set so xmlLoadState/undo/redo
+  // can bulk-apply once at the end without per-button forEachPlot or QSettings churn.
+  ui_->buttonShowpoint->setChecked(settings.value(kButtonShowpointKey, true).toBool());
+  connect(ui_->buttonShowpoint, &QPushButton::toggled, this, [this](bool checked) {
+    if (applying_state_) {
+      return;
+    }
+    QSettings().setValue(kButtonShowpointKey, checked);
+    forEachPlot([checked](PlotWidget* plot) { plot->setShowPoints(checked); });
+  });
+
+  ui_->buttonActivateGrid->setChecked(settings.value(kButtonActivateGridKey, false).toBool());
+  connect(ui_->buttonActivateGrid, &QPushButton::toggled, this, [this](bool checked) {
+    if (applying_state_) {
+      return;
+    }
+    QSettings().setValue(kButtonActivateGridKey, checked);
+    forEachPlot([checked](PlotWidget* plot) { plot->setGridVisible(checked); });
+  });
+
+  ui_->buttonDots->setChecked(settings.value(kButtonDotsKey, false).toBool());
+  connect(ui_->buttonDots, &QPushButton::toggled, this, [this](bool checked) {
+    if (applying_state_) {
+      return;
+    }
+    QSettings().setValue(kButtonDotsKey, checked);
+    forEachPlot([checked](PlotWidget* plot) {
+      plot->overrideCurvesStyle(
+          checked ? std::optional<PlotWidgetBase::CurveStyle>{PlotWidgetBase::kLinesAndDots} : std::nullopt);
+      plot->replot();
+    });
+  });
+
+  legend_status_ =
+      static_cast<LegendStatus>(settings.value(kLegendStatusKey, static_cast<int>(LegendStatus::kLeft)).toInt());
+  connect(ui_->buttonLegend, &QPushButton::clicked, this, &MainWindow::onLegendButtonClicked);
+
+  // Push the just-loaded toggle states into every plot already created by
+  // wireExistingPlots(). New plots will pick this up via onPlotAdded.
+  forEachPlot([this](PlotWidget* plot) { applyGlobalToggles(plot); });
+
   connect(theme_.get(), &Theme::themeChanged, this, &MainWindow::onThemeChanged);
   connect(this, &MainWindow::stylesheetChanged, ui_->leftPanel, &LeftPanel::onStylesheetChanged);
   connect(this, &MainWindow::stylesheetChanged, ui_->curveListPanel, &CurveListPanel::onStylesheetChanged);
@@ -138,15 +181,15 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
   qApp->setStyleSheet(theme_->expandedQss());
 
   connect(ui_->buttonPanelLeft, &QToolButton::toggled, this, [this](bool checked) {
-    onPanelButtonToggled(PanelPosition::kLeft, checked);
-  });
-  connect(ui_->buttonPanelBottom, &QToolButton::toggled, this, [this](bool checked) {
-    onPanelButtonToggled(PanelPosition::kBottom, checked);
+    ui_->leftColumn->setVisible(checked);
   });
   connect(ui_->buttonPanelRight, &QToolButton::toggled, this, [this](bool checked) {
-    onPanelButtonToggled(PanelPosition::kRight, checked);
+    if (checked) {
+      showCurveEditor();
+    } else {
+      hideCurveEditor();
+    }
   });
-
   curve_editor_ = new CurveEditor(this);
   curve_editor_->setVisible(false);
 
@@ -174,6 +217,33 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
   file_loader_ = std::make_unique<FileLoader>(
       session_->sessionManager(), session_->extensionCatalog(), session_->catalogModel(), this);
   connect(ui_->leftPanel, &LeftPanel::loadDataRequested, this, &MainWindow::onLoadDataRequested);
+  connect(ui_->leftPanel, &LeftPanel::reloadDataRequested, this, &MainWindow::onReloadDataRequested);
+  connect(ui_->leftPanel, &LeftPanel::recentDataRequested, this, &MainWindow::onRecentDataRequested);
+  connect(file_loader_.get(), &FileLoader::fileLoaded, this, &MainWindow::onFileLoaded);
+
+  recent_data_menu_ = new RecentFilesMenu(kRecentDataFilesKey, kRecentDataFilesMax, this);
+  connect(recent_data_menu_, &RecentFilesMenu::activated, this, [this](const QString& path) {
+    file_loader_->loadFile(path, this);
+  });
+  connect(recent_data_menu_, &RecentFilesMenu::enabledChanged, ui_->leftPanel, &LeftPanel::setRecentEnabled);
+  ui_->leftPanel->setRecentEnabled(!recent_data_menu_->isEmpty());
+
+  connect(ui_->leftPanel, &LeftPanel::loadLayoutRequested, this, &MainWindow::onLoadLayout);
+  connect(ui_->leftPanel, &LeftPanel::saveLayoutRequested, this, &MainWindow::onSaveLayout);
+  connect(ui_->leftPanel, &LeftPanel::recentLayoutRequested, this, &MainWindow::onRecentLayoutRequested);
+
+  recent_layout_menu_ = new RecentFilesMenu(kRecentLayoutFilesKey, kRecentLayoutFilesMax, this);
+  connect(recent_layout_menu_, &RecentFilesMenu::activated, this, [this](const QString& path) {
+    if (loadLayoutFromFile(path)) {
+      recent_layout_menu_->record(path);
+    }
+  });
+  connect(recent_layout_menu_, &RecentFilesMenu::enabledChanged, ui_->leftPanel, &LeftPanel::setRecentLayoutEnabled);
+  ui_->leftPanel->setRecentLayoutEnabled(!recent_layout_menu_->isEmpty());
+
+  connect(ui_->curveListPanel, &CurveListPanel::trashRequested, this, &MainWindow::onTrashRequested);
+  connect(&session_->catalogModel(), &CatalogModel::curveRemoved, this, &MainWindow::onCatalogCurveRemoved);
+  connect(&session_->catalogModel(), &CatalogModel::cleared, this, &MainWindow::onCatalogCleared);
 
   auto* edit_menu = new QMenu(tr("Edit"), this);
   menuBar()->insertMenu(ui_->menuTools->menuAction(), edit_menu);
@@ -194,9 +264,6 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
   connect(ui_->actionMarketplace, &QAction::triggered, this, &MainWindow::onOpenMarketplace);
   connect(ui_->actionExit, &QAction::triggered, this, &QWidget::close);
 
-  // App menu: [Marketplace] | [Preferences] | [Exit] (two separators).
-  // The .ui already provides the divider above Exit; we insert
-  // Preferences between, then add a second separator below it.
   auto* preferences_action = new QAction(tr("Preferences..."), this);
   preferences_action->setShortcut(QKeySequence::Preferences);
   connect(preferences_action, &QAction::triggered, this, &MainWindow::onShowPreferencesDialog);
@@ -206,20 +273,17 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
   pushInitialUndoState();
 
   bindEditorToActivePlot();
-  const auto stored_position =
-      static_cast<PanelPosition>(settings.value(kPanelPositionKey, static_cast<int>(PanelPosition::kNone)).toInt());
-  switch (stored_position) {
-    case PanelPosition::kLeft:
-      ui_->buttonPanelLeft->setChecked(true);
-      break;
-    case PanelPosition::kRight:
-      ui_->buttonPanelRight->setChecked(true);
-      break;
-    case PanelPosition::kBottom:
-      ui_->buttonPanelBottom->setChecked(true);
-      break;
-    case PanelPosition::kNone:
-      break;
+
+  const bool left_visible = settings.value(kLeftColumnVisibleKey, true).toBool();
+  ui_->leftColumn->setVisible(left_visible);
+  {
+    QSignalBlocker block(ui_->buttonPanelLeft);
+    ui_->buttonPanelLeft->setChecked(left_visible);
+  }
+  if (settings.value(kCurveEditorVisibleKey, false).toBool()) {
+    QSignalBlocker block(ui_->buttonPanelRight);
+    ui_->buttonPanelRight->setChecked(true);
+    showCurveEditor();
   }
 }
 
@@ -289,6 +353,52 @@ void MainWindow::onLoadDataRequested() {
   file_loader_->openFromDialog(this);
 }
 
+void MainWindow::onReloadDataRequested() {
+  if (last_loaded_data_files_.isEmpty()) {
+    return;
+  }
+  // Snapshot and clear: each successful loadFile() repopulates
+  // last_loaded_data_files_ via onFileLoaded, so after the loop the list
+  // contains exactly the files that reloaded successfully.
+  const QStringList previous = std::move(last_loaded_data_files_);
+  for (const QString& path : previous) {
+    file_loader_->loadFile(path, this);
+  }
+  ui_->leftPanel->setReloadEnabled(!last_loaded_data_files_.isEmpty());
+}
+
+void MainWindow::onRecentDataRequested(QPoint global_pos) {
+  recent_data_menu_->popupAt(global_pos);
+}
+
+void MainWindow::onFileLoaded(const QString& path) {
+  last_loaded_data_files_.push_back(path);
+  ui_->leftPanel->setReloadEnabled(true);
+  recent_data_menu_->record(path);
+}
+
+void MainWindow::onTrashRequested(const QStringList& names, bool covers_all) {
+  if (!covers_all) {
+    session_->catalogModel().removeCurves(std::vector<QString>(names.begin(), names.end()));
+    return;
+  }
+  const auto reply = QMessageBox::question(
+      this, tr("Remove all curves"),
+      tr("Remove ALL curves from the catalog and from every plot?\n\nThis cannot be undone."),
+      QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
+  if (reply == QMessageBox::Yes) {
+    session_->catalogModel().clearAll();
+  }
+}
+
+void MainWindow::onCatalogCurveRemoved(const QString& name) {
+  forEachPlot([&name](PlotWidget* plot) { plot->removeCurve(name); });
+}
+
+void MainWindow::onCatalogCleared() {
+  forEachPlot([](PlotWidget* plot) { plot->removeAllCurves(); });
+}
+
 void MainWindow::onShowPreferencesDialog() {
   PreferencesDialog dlg(*theme_, this);
   dlg.exec();
@@ -303,8 +413,11 @@ void MainWindow::onThemeChanged(const QString& theme) {
 
 void MainWindow::applyIcons(QString theme) {
   ui_->buttonLink->setIcon(LoadSvg(":/resources/svg/link.svg", theme));
+  ui_->buttonShowpoint->setIcon(LoadSvg(":/resources/svg/show_point.svg", theme));
+  ui_->buttonLegend->setIcon(LoadSvg(":/resources/svg/legend.svg", theme));
+  ui_->buttonActivateGrid->setIcon(LoadSvg(":/resources/svg/grid.svg", theme));
+  ui_->buttonDots->setIcon(LoadSvg(":/resources/svg/point_chart.svg", theme));
   ui_->buttonPanelLeft->setIcon(LoadSvg(":/resources/svg/panel_left.svg", theme));
-  ui_->buttonPanelBottom->setIcon(LoadSvg(":/resources/svg/panel_bottom.svg", theme));
   ui_->buttonPanelRight->setIcon(LoadSvg(":/resources/svg/panel_right.svg", theme));
 }
 
@@ -388,21 +501,22 @@ void MainWindow::onRedo() {
 }
 
 void MainWindow::onSaveLayout() {
-  const QString file_name =
-      QFileDialog::getSaveFileName(this, tr("Save Layout"), QString{}, tr("PlotJuggler layout (*.xml);;All files (*)"));
-  if (file_name.isEmpty()) {
+  QFileDialog dialog(this, tr("Save Layout"));
+  dialog.setAcceptMode(QFileDialog::AcceptSave);
+  dialog.setFileMode(QFileDialog::AnyFile);
+  dialog.setNameFilter(tr("PlotJuggler layout (*.xml);;All files (*)"));
+  dialog.setDefaultSuffix(QStringLiteral("xml"));
+  if (dialog.exec() != QDialog::Accepted) {
     return;
   }
-
-  QFile file(file_name);
-  if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate | QIODevice::Text)) {
-    QMessageBox::warning(this, tr("Save Layout"), tr("Unable to write %1").arg(file_name));
+  const QStringList selected = dialog.selectedFiles();
+  if (selected.isEmpty()) {
     return;
   }
-
-  const QDomDocument state = xmlSaveState();
-  file.write(state.toByteArray(2));
-  statusBar()->showMessage(tr("Saved layout %1").arg(file_name), 3000);
+  const QString file_name = selected.first();
+  if (saveLayoutToFile(file_name)) {
+    recent_layout_menu_->record(file_name);
+  }
 }
 
 void MainWindow::onLoadLayout() {
@@ -411,11 +525,29 @@ void MainWindow::onLoadLayout() {
   if (file_name.isEmpty()) {
     return;
   }
+  if (loadLayoutFromFile(file_name)) {
+    recent_layout_menu_->record(file_name);
+  }
+}
 
-  QFile file(file_name);
+bool MainWindow::saveLayoutToFile(const QString& path) {
+  QFile file(path);
+  if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate | QIODevice::Text)) {
+    QMessageBox::warning(this, tr("Save Layout"), tr("Unable to write %1").arg(path));
+    return false;
+  }
+
+  const QDomDocument state = xmlSaveState();
+  file.write(state.toByteArray(2));
+  statusBar()->showMessage(tr("Saved layout %1").arg(path), 3000);
+  return true;
+}
+
+bool MainWindow::loadLayoutFromFile(const QString& path) {
+  QFile file(path);
   if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
-    QMessageBox::warning(this, tr("Load Layout"), tr("Unable to read %1").arg(file_name));
-    return;
+    QMessageBox::warning(this, tr("Load Layout"), tr("Unable to read %1").arg(path));
+    return false;
   }
 
   QDomDocument state;
@@ -427,8 +559,12 @@ void MainWindow::onLoadLayout() {
             .arg(parse_result.errorLine)
             .arg(parse_result.errorColumn)
             .arg(parse_result.errorMessage));
-    return;
+    return false;
   }
+
+  // Drop trash-button tombstones so the layout can resurrect curves the user
+  // removed earlier in the session.
+  session_->catalogModel().resetRemovalState();
 
   const bool loaded = [&] {
     QScopedValueRollback guard(applying_state_, true);
@@ -436,11 +572,16 @@ void MainWindow::onLoadLayout() {
   }();
   if (!loaded) {
     QMessageBox::warning(this, tr("Load Layout"), tr("The file does not contain a supported PlotJuggler layout."));
-    return;
+    return false;
   }
 
   pushInitialUndoState();
-  statusBar()->showMessage(tr("Loaded layout %1").arg(file_name), 3000);
+  statusBar()->showMessage(tr("Loaded layout %1").arg(path), 3000);
+  return true;
+}
+
+void MainWindow::onRecentLayoutRequested(QPoint global_pos) {
+  recent_layout_menu_->popupAt(global_pos);
 }
 
 void MainWindow::onPlotTabAdded(PlotDocker* docker) {
@@ -467,7 +608,49 @@ void MainWindow::onPlotAdded(PlotWidget* plot) {
     statusBar()->showMessage(message, 3000);
   });
   plot->setTrackerPosition(session_->playbackEngine().currentTime());
+  applyGlobalToggles(plot);
   bindEditorToActivePlot();
+}
+
+void MainWindow::onLegendButtonClicked() {
+  // PJ3 cycle: RIGHT -> LEFT -> HIDDEN -> RIGHT.
+  switch (legend_status_) {
+    case LegendStatus::kLeft:
+      legend_status_ = LegendStatus::kHidden;
+      break;
+    case LegendStatus::kRight:
+      legend_status_ = LegendStatus::kLeft;
+      break;
+    case LegendStatus::kHidden:
+      legend_status_ = LegendStatus::kRight;
+      break;
+  }
+  QSettings().setValue(kLegendStatusKey, static_cast<int>(legend_status_));
+  forEachPlot([this](PlotWidget* plot) { applyLegendStatus(plot); });
+}
+
+void MainWindow::applyLegendStatus(PlotWidget* plot) {
+  if (plot == nullptr) {
+    return;
+  }
+  const bool visible = legend_status_ != LegendStatus::kHidden;
+  plot->setLegendVisible(visible);
+  if (visible) {
+    plot->setLegendAlignment(legend_status_ == LegendStatus::kLeft ? Qt::AlignLeft : Qt::AlignRight);
+  }
+  plot->replot();
+}
+
+void MainWindow::applyGlobalToggles(PlotWidget* plot) {
+  if (plot == nullptr) {
+    return;
+  }
+  plot->setShowPoints(ui_->buttonShowpoint->isChecked());
+  plot->setGridVisible(ui_->buttonActivateGrid->isChecked());
+  plot->overrideCurvesStyle(
+      ui_->buttonDots->isChecked() ? std::optional<PlotWidgetBase::CurveStyle>{PlotWidgetBase::kLinesAndDots}
+                                   : std::nullopt);
+  applyLegendStatus(plot);
 }
 
 void MainWindow::onPlotZoomChanged(PlotWidget* modified, QRectF rect) {
@@ -587,10 +770,30 @@ QDomDocument MainWindow::xmlSaveState() const {
 
   root.appendChild(ui_->tabbedPlotWidget->xmlSaveState(doc));
 
-  QDomElement link_x = doc.createElement(QStringLiteral("link_x"));
+  QDomElement link_x = doc.createElement(kXmlLinkX);
   link_x.setAttribute(
       QStringLiteral("enabled"), ui_->buttonLink->isChecked() ? QStringLiteral("true") : QStringLiteral("false"));
   root.appendChild(link_x);
+
+  QDomElement show_points = doc.createElement(kXmlShowPoints);
+  show_points.setAttribute(
+      QStringLiteral("enabled"), ui_->buttonShowpoint->isChecked() ? QStringLiteral("true") : QStringLiteral("false"));
+  root.appendChild(show_points);
+
+  QDomElement legend_status = doc.createElement(kXmlLegendStatus);
+  legend_status.setAttribute(QStringLiteral("value"), QString::number(static_cast<int>(legend_status_)));
+  root.appendChild(legend_status);
+
+  QDomElement grid = doc.createElement(kXmlActivateGrid);
+  grid.setAttribute(
+      QStringLiteral("enabled"),
+      ui_->buttonActivateGrid->isChecked() ? QStringLiteral("true") : QStringLiteral("false"));
+  root.appendChild(grid);
+
+  QDomElement dots = doc.createElement(kXmlDots);
+  dots.setAttribute(
+      QStringLiteral("enabled"), ui_->buttonDots->isChecked() ? QStringLiteral("true") : QStringLiteral("false"));
+  root.appendChild(dots);
 
   QDomElement relative_time = doc.createElement(QStringLiteral("use_relative_time_offset"));
   relative_time.setAttribute(QStringLiteral("enabled"), QStringLiteral("false"));
@@ -612,12 +815,12 @@ bool MainWindow::xmlLoadState(const QDomDocument& state_document) {
   QDomElement main_tabbed_widget;
   for (auto tabbed = root.firstChildElement(QStringLiteral("tabbed_widget")); !tabbed.isNull();
        tabbed = tabbed.nextSiblingElement(QStringLiteral("tabbed_widget"))) {
-    if (main_tabbed_widget.isNull()) {
-      main_tabbed_widget = tabbed;
-    }
     if (tabbed.attribute(QStringLiteral("parent")) == QStringLiteral("main_window")) {
       main_tabbed_widget = tabbed;
       break;
+    }
+    if (main_tabbed_widget.isNull()) {
+      main_tabbed_widget = tabbed;
     }
   }
   if (main_tabbed_widget.isNull()) {
@@ -631,12 +834,41 @@ bool MainWindow::xmlLoadState(const QDomDocument& state_document) {
   }
   wireExistingPlots();
 
-  const QDomElement link_x = root.firstChildElement(QStringLiteral("link_x"));
+  const QDomElement link_x = root.firstChildElement(kXmlLinkX);
   if (!link_x.isNull()) {
     ui_->buttonLink->setChecked(
         link_x.attribute(QStringLiteral("enabled"), QStringLiteral("true")) == QStringLiteral("true") ||
         link_x.attribute(QStringLiteral("enabled")) == QStringLiteral("1"));
   }
+
+  const QDomElement show_points_el = root.firstChildElement(kXmlShowPoints);
+  if (!show_points_el.isNull()) {
+    ui_->buttonShowpoint->setChecked(
+        show_points_el.attribute(QStringLiteral("enabled"), QStringLiteral("true")) == QStringLiteral("true"));
+  }
+
+  const QDomElement grid_el = root.firstChildElement(kXmlActivateGrid);
+  if (!grid_el.isNull()) {
+    ui_->buttonActivateGrid->setChecked(
+        grid_el.attribute(QStringLiteral("enabled"), QStringLiteral("false")) == QStringLiteral("true"));
+  }
+
+  const QDomElement dots_el = root.firstChildElement(kXmlDots);
+  if (!dots_el.isNull()) {
+    ui_->buttonDots->setChecked(
+        dots_el.attribute(QStringLiteral("enabled"), QStringLiteral("false")) == QStringLiteral("true"));
+  }
+
+  const QDomElement legend_el = root.firstChildElement(kXmlLegendStatus);
+  if (!legend_el.isNull()) {
+    legend_status_ = static_cast<LegendStatus>(
+        legend_el.attribute(QStringLiteral("value"), QString::number(static_cast<int>(LegendStatus::kLeft))).toInt());
+  }
+
+  // The four toggle setChecked() calls above no-op'd their connected lambdas
+  // because applying_state_ is true during xmlLoadState. Apply all global
+  // toggles to every plot in a single forEachPlot walk here.
+  forEachPlot([this](PlotWidget* plot) { applyGlobalToggles(plot); });
   return true;
 }
 
@@ -682,64 +914,32 @@ void MainWindow::updateUndoRedoActions() {
 
 void MainWindow::closeEvent(QCloseEvent* event) {
   QSettings settings;
-  if (panel_position_ != PanelPosition::kNone) {
-    savePanelSize();
+  settings.setValue(kButtonLinkKey, ui_->buttonLink->isChecked());
+  settings.setValue(kButtonShowpointKey, ui_->buttonShowpoint->isChecked());
+  settings.setValue(kButtonActivateGridKey, ui_->buttonActivateGrid->isChecked());
+  settings.setValue(kButtonDotsKey, ui_->buttonDots->isChecked());
+  settings.setValue(kLegendStatusKey, static_cast<int>(legend_status_));
+  settings.setValue(kLeftColumnVisibleKey, ui_->buttonPanelLeft->isChecked());
+  const bool editor_visible = ui_->buttonPanelRight->isChecked();
+  settings.setValue(kCurveEditorVisibleKey, editor_visible);
+  if (editor_visible) {
+    settings.setValue(kCurveEditorSplitterStateKey, ui_->plotAreaSplitter->saveState());
   }
-  settings.setValue(kPanelPositionKey, static_cast<int>(panel_position_));
   QMainWindow::closeEvent(event);
 }
 
-void MainWindow::onPanelButtonToggled(PanelPosition pos, bool checked) {
+void MainWindow::showCurveEditor() {
   if (curve_editor_ == nullptr) {
     return;
   }
-
-  if (checked) {
-    // Untoggle the other two position buttons with their signals blocked so
-    // they don't re-enter this slot. Mutual exclusion is implemented manually
-    // because QButtonGroup::setExclusive(true) would prevent the click-active-
-    // again-to-hide path below.
-    const std::pair<PanelPosition, QToolButton*> all_buttons[] = {
-        {PanelPosition::kLeft, ui_->buttonPanelLeft},
-        {PanelPosition::kRight, ui_->buttonPanelRight},
-        {PanelPosition::kBottom, ui_->buttonPanelBottom},
-    };
-    for (const auto& [other_pos, btn] : all_buttons) {
-      if (other_pos != pos && btn->isChecked()) {
-        QSignalBlocker block(btn);
-        btn->setChecked(false);
-      }
-    }
-    showCurveEditor(pos);
-  } else if (pos == panel_position_) {
-    hideCurveEditor();
-  }
-  // (!checked && pos != panel_position_) is the de-toggle that fired when we
-  // ourselves untoggled an inactive sibling above; ignore it.
-}
-
-void MainWindow::showCurveEditor(PanelPosition pos) {
-  if (curve_editor_ == nullptr) {
-    return;
-  }
-  if (panel_position_ != PanelPosition::kNone) {
-    savePanelSize();
-  }
-  // setParent(this) detaches from any current splitter slot without destroying.
   curve_editor_->setParent(this);
 
   QSplitter* splitter = ui_->plotAreaSplitter;
-  splitter->setOrientation(pos == PanelPosition::kBottom ? Qt::Vertical : Qt::Horizontal);
-
-  // kLeft inserts before the plots; kRight and kBottom both append after.
-  const int insert_index = pos == PanelPosition::kLeft ? 0 : splitter->count();
-  splitter->insertWidget(insert_index, curve_editor_);
-
+  splitter->insertWidget(splitter->count(), curve_editor_);
   curve_editor_->setVisible(true);
-  panel_position_ = pos;
 
   QSettings settings;
-  const QByteArray state = settings.value(panelStateKeyFor(pos)).toByteArray();
+  const QByteArray state = settings.value(kCurveEditorSplitterStateKey).toByteArray();
   if (!state.isEmpty()) {
     splitter->restoreState(state);
   }
@@ -749,21 +949,10 @@ void MainWindow::hideCurveEditor() {
   if (curve_editor_ == nullptr) {
     return;
   }
-  if (panel_position_ != PanelPosition::kNone) {
-    savePanelSize();
-  }
+  QSettings settings;
+  settings.setValue(kCurveEditorSplitterStateKey, ui_->plotAreaSplitter->saveState());
   curve_editor_->setVisible(false);
   curve_editor_->setParent(this);
-  panel_position_ = PanelPosition::kNone;
-  ui_->plotAreaSplitter->setOrientation(Qt::Horizontal);
-}
-
-void MainWindow::savePanelSize() {
-  if (panel_position_ == PanelPosition::kNone) {
-    return;
-  }
-  QSettings settings;
-  settings.setValue(panelStateKeyFor(panel_position_), ui_->plotAreaSplitter->saveState());
 }
 
 void MainWindow::bindEditorToActivePlot() {

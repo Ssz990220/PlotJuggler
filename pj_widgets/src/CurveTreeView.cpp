@@ -1,4 +1,4 @@
-#include "ui/CurveTreeView.h"
+#include "pj_widgets/CurveTreeView.h"
 
 #include <QApplication>
 #include <QDataStream>
@@ -110,6 +110,25 @@ std::vector<QString> CurveTreeView::selectedCurveNames() const {
     }
   }
   std::sort(names.begin(), names.end());
+  return names;
+}
+
+std::vector<QString> CurveTreeView::selectedCurveNamesRecursive() const {
+  std::vector<QString> names;
+  std::function<void(QTreeWidgetItem*)> collect = [&](QTreeWidgetItem* item) {
+    const QString full = item->data(kNameColumn, Qt::UserRole).toString();
+    if (!full.isEmpty()) {
+      names.push_back(full);
+    }
+    for (int i = 0; i < item->childCount(); ++i) {
+      collect(item->child(i));
+    }
+  };
+  for (auto* item : selectedItems()) {
+    collect(item);
+  }
+  std::sort(names.begin(), names.end());
+  names.erase(std::unique(names.begin(), names.end()), names.end());
   return names;
 }
 

@@ -63,6 +63,11 @@ class PlotWidgetBase : public QWidget {
 
   void setLegendSize(int size);
   void setLegendAlignment(Qt::Alignment alignment);
+  void setLegendVisible(bool visible);
+  [[nodiscard]] bool legendVisible() const noexcept;
+
+  void setGridVisible(bool visible);
+  [[nodiscard]] bool gridVisible() const noexcept;
 
   void setZoomEnabled(bool enabled);
   [[nodiscard]] bool isZoomEnabled() const noexcept;

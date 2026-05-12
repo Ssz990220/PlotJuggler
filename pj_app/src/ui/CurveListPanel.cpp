@@ -7,8 +7,8 @@
 #include <QSplitter>
 
 #include "pj_runtime/CatalogModel.h"
+#include "pj_widgets/CurveTreeView.h"
 #include "pj_widgets/SvgUtil.h"
-#include "ui/CurveTreeView.h"
 #include "ui_CurveListPanel.h"
 
 namespace PJ {
@@ -90,7 +90,10 @@ void CurveListPanel::onShowValuesToggled(bool show) {
 }
 
 void CurveListPanel::onTrashClicked() {
-  emit clearAllCurvesRequested();
+  const auto selected = tree_view_->selectedCurveNamesRecursive();
+  const std::size_t total = catalog_ != nullptr ? catalog_->curveNames().size() : 0;
+  const bool covers_all = selected.empty() || (total > 0 && selected.size() >= total);
+  emit trashRequested(QStringList(selected.begin(), selected.end()), covers_all);
 }
 
 void CurveListPanel::onCurveAdded(const QString& name) {

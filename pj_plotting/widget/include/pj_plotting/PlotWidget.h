@@ -36,6 +36,10 @@ class PlotWidget : public PlotWidgetBase {
   [[nodiscard]] bool isZoomLinkEnabled() const noexcept;
   void setTrackerEnabled(bool enabled);
   [[nodiscard]] bool trackerEnabled() const noexcept;
+  // Mouse-hover inspector. Independent from the playback tracker_; toggling
+  // this off does not hide the playback red line.
+  void setShowPoints(bool show);
+  [[nodiscard]] bool showPoints() const noexcept;
   [[nodiscard]] QString stateId() const;
   void setStateId(QString id);
   [[nodiscard]] QDomElement xmlSaveState(QDomDocument& doc) const;
@@ -43,7 +47,6 @@ class PlotWidget : public PlotWidgetBase {
 
   // Reads back the style currently applied to a Qwt curve (combining its
   // QwtPlotCurve::CurveStyle and the Inverted attribute) as a CurveStyle.
-  // Used by xmlSaveState and by the CurveEditor side panel.
   [[nodiscard]] static CurveStyle qwtStyleToCurveStyle(const QwtPlotCurve* curve);
 
  public slots:
@@ -52,10 +55,7 @@ class PlotWidget : public PlotWidgetBase {
   void onZoomOutVerticalTriggered(bool emit_signal = true);
   void setTrackerPosition(double display_time_sec);
   void onChangeCurveColor(const QString& curve_name, QColor new_color);
-  // Per-curve mutators used by the CurveEditor side panel. Each one targets a
-  // single curve by name and leaves every other curve untouched, in contrast
-  // to the plot-wide setLineWidth(LineWidth) / overrideCurvesStyle(...) which
-  // iterate every curve.
+  // Per-curve mutators (vs the plot-wide setLineWidth / overrideCurvesStyle).
   void setCurveLineWidth(const QString& curve_name, double width);
   void setCurveStyle(const QString& curve_name, CurveStyle style);
   void setCurveVisible(const QString& curve_name, bool visible);
@@ -80,6 +80,8 @@ class PlotWidget : public PlotWidgetBase {
   void onDropEvent(QDropEvent* event);
 
  private:
+  // No-op when show_points_ is false.
+  void showPointValues(QPoint paint_point);
   enum class DragMode { kNone, kCurves, kNewXY };
 
   struct DragInfo {
@@ -105,6 +107,12 @@ class PlotWidget : public PlotWidgetBase {
   DragInfo dragging_;
   CurveTracker* tracker_ = nullptr;
   bool tracker_enabled_ = true;
+  bool show_points_ = true;
+  QwtPlotMarker* show_point_marker_ = nullptr;
+  QwtPlotMarker* show_point_text_ = nullptr;
+  // Used to skip replot when the mouse drifts but the snapped sample is unchanged.
+  QPointF show_point_last_pos_;
+  QString show_point_last_text_;
   QString state_id_;
 
   QAction* action_split_horizontal_ = nullptr;

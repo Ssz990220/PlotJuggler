@@ -1,5 +1,6 @@
 #pragma once
 
+#include <QStringList>
 #include <QWidget>
 
 namespace Ui {
@@ -27,7 +28,10 @@ class CurveListPanel : public QWidget {
   void createCustomSeriesRequested();
   void editCustomSeriesRequested(QString name);
   void deleteCustomSeriesRequested(QString name);
-  void clearAllCurvesRequested();
+  // covers_all is true when the panel determined the selection (or its
+  // empty-implies-all interpretation) targets every known curve. MainWindow
+  // decides whether to prompt the user.
+  void trashRequested(QStringList names, bool covers_all);
 
  public slots:
   void onStylesheetChanged(QString theme);

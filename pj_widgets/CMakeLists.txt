@@ -2,8 +2,12 @@ find_package(Qt6 REQUIRED COMPONENTS Core Gui Svg Widgets)
 
 add_library(pj_widgets STATIC
     src/ColorPickerPopup.cpp
+    src/CurveTreeView.cpp
+    src/RecentFilesMenu.cpp
     include/pj_widgets/ColorPickerPopup.h
+    include/pj_widgets/CurveTreeView.h
     include/pj_widgets/RealSlider.h
+    include/pj_widgets/RecentFilesMenu.h
     include/pj_widgets/SvgUtil.h
 )
 

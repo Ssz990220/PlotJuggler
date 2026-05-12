@@ -39,8 +39,21 @@ LeftPanel::LeftPanel(QWidget* parent) : QWidget(parent), ui_(new Ui::LeftPanel) 
 
   connect(ui_->buttonLoadDatafile, &QPushButton::clicked, this, &LeftPanel::loadDataRequested);
   connect(ui_->buttonReloadData, &QPushButton::clicked, this, &LeftPanel::reloadDataRequested);
+  connect(ui_->buttonRecentData, &QPushButton::clicked, this, [this]() {
+    const QPoint pos = ui_->buttonRecentData->mapToGlobal(ui_->buttonRecentData->rect().bottomLeft());
+    emit recentDataRequested(pos);
+  });
   connect(ui_->buttonLoadLayout, &QPushButton::clicked, this, &LeftPanel::loadLayoutRequested);
   connect(ui_->buttonSaveLayout, &QPushButton::clicked, this, &LeftPanel::saveLayoutRequested);
+  connect(ui_->buttonRecentLayout, &QPushButton::clicked, this, [this]() {
+    const QPoint pos = ui_->buttonRecentLayout->mapToGlobal(ui_->buttonRecentLayout->rect().bottomLeft());
+    emit recentLayoutRequested(pos);
+  });
+
+  // No data loaded yet -> nothing to reload, no recent entries.
+  ui_->buttonReloadData->setEnabled(false);
+  ui_->buttonRecentData->setEnabled(false);
+  ui_->buttonRecentLayout->setEnabled(false);
   connect(ui_->checkBoxAddPrefix, &QCheckBox::toggled, this, &LeftPanel::addPrefixToggled);
   connect(ui_->checkBoxMergeData, &QCheckBox::toggled, this, &LeftPanel::mergeDataToggled);
 
@@ -60,6 +73,18 @@ LeftPanel::~LeftPanel() {
 
 void LeftPanel::onStylesheetChanged(QString theme) {
   applyIcons(theme);
+}
+
+void LeftPanel::setReloadEnabled(bool enabled) {
+  ui_->buttonReloadData->setEnabled(enabled);
+}
+
+void LeftPanel::setRecentEnabled(bool enabled) {
+  ui_->buttonRecentData->setEnabled(enabled);
+}
+
+void LeftPanel::setRecentLayoutEnabled(bool enabled) {
+  ui_->buttonRecentLayout->setEnabled(enabled);
 }
 
 void LeftPanel::setStreamingSources(const QStringList& names) {
