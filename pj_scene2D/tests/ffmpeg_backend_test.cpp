@@ -13,6 +13,7 @@
 
 #include <chrono>
 #include <cmath>
+#include <cstdlib>
 #include <filesystem>
 #include <string>
 #include <thread>
@@ -28,11 +29,16 @@ using std::chrono::milliseconds;
 // Video path constants
 // ---------------------------------------------------------------------------
 
+inline std::string homeDir() {
+  const char* h = std::getenv("HOME");
+  return h ? h : "";
+}
+
 const std::string kTestVideo = "pj_scene2D/testdata/test_480p.mp4";
 const std::string kTestVideo1080p = "pj_scene2D/testdata/test_1080p.mp4";
 const std::string kTestVideoBframes = "pj_scene2D/testdata/test_1080p_bframes.mp4";
-const std::string kTestVideo1920 = std::string(getenv("HOME") ? getenv("HOME") : "") + "/ws_plotjuggler/video_1920.mp4";
-const std::string kTestVideo4k = std::string(getenv("HOME") ? getenv("HOME") : "") + "/ws_plotjuggler/video_4k.mp4";
+const std::string kTestVideo1920 = homeDir() + "/ws_plotjuggler/video_1920.mp4";
+const std::string kTestVideo4k = homeDir() + "/ws_plotjuggler/video_4k.mp4";
 
 // ---------------------------------------------------------------------------
 // TestBackend — standalone backend helper for non-fixture tests

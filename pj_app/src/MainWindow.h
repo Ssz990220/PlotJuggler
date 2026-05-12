@@ -1,5 +1,6 @@
 #pragma once
 
+#include <QByteArray>
 #include <QDateTime>
 #include <QDomDocument>
 #include <QElapsedTimer>
@@ -182,8 +183,8 @@ class MainWindow : public QMainWindow {
   std::unique_ptr<AppSession> session_;
   std::unique_ptr<FileLoader> file_loader_;
   std::unique_ptr<Theme> theme_;
-  std::deque<QDomDocument> undo_states_;
-  std::deque<QDomDocument> redo_states_;
+  std::deque<QByteArray> undo_states_;
+  std::deque<QByteArray> redo_states_;
   QElapsedTimer undo_timer_;
   bool applying_state_ = false;
   CurveEditor* curve_editor_ = nullptr;

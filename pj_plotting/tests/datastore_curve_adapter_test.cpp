@@ -32,7 +32,7 @@ class DatastoreCurveAdapterTest : public ::testing::Test {
     ASSERT_TRUE(dataset_or.has_value()) << dataset_or.error();
     dataset_id_ = *dataset_or;
 
-    DataWriter writer = session_.dataEngine().createWriter();
+    auto writer = session_.dataEngine().createWriter();
     auto schema_or = writer.registerSchema("sample", makePrimitive("value", PrimitiveType::kFloat64));
     ASSERT_TRUE(schema_or.has_value()) << schema_or.error();
 
@@ -62,7 +62,7 @@ class DatastoreCurveAdapterTest : public ::testing::Test {
   }
 
   void appendMoreRows(int first, int last_exclusive) {
-    DataWriter writer = session_.dataEngine().createWriter();
+    auto writer = session_.dataEngine().createWriter();
     auto handle_or = writer.bindTopicWriter(topic_id_);
     ASSERT_TRUE(handle_or.has_value()) << handle_or.error();
     appendRows(writer, topic_id_, first, last_exclusive);
@@ -155,12 +155,12 @@ TEST_F(DatastoreCurveAdapterTest, BoundsCacheInvalidatesOnTopicCommittedAndDataC
 }
 
 TEST_F(DatastoreCurveAdapterTest, VisibleYRangeUsesSeriesSamples) {
-  const std::optional<std::pair<double, double>> full_chunk = adapter_->visibleYRange(2.0, 5.0);
+  const auto full_chunk = adapter_->visibleYRange(2.0, 5.0);
   ASSERT_TRUE(full_chunk.has_value());
   EXPECT_DOUBLE_EQ(full_chunk->first, 14.0);
   EXPECT_DOUBLE_EQ(full_chunk->second, 17.0);
 
-  const std::optional<std::pair<double, double>> partial = adapter_->visibleYRange(3.0, 4.0);
+  const auto partial = adapter_->visibleYRange(3.0, 4.0);
   ASSERT_TRUE(partial.has_value());
   EXPECT_DOUBLE_EQ(partial->first, 16.0);
   EXPECT_DOUBLE_EQ(partial->second, 16.0);
@@ -196,7 +196,7 @@ TEST_F(DatastoreCurveAdapterTest, CrossChunkBoundaryGuardsIncludeAdjacentChunks)
 
 TEST_F(DatastoreCurveAdapterTest, SampleFromTimeReturnsLatestAtPoint) {
   // Display time 4.5 sec ↔ raw 6.5 sec. latestAt picks row 6 (raw 6 sec, value 16).
-  const std::optional<QPointF> hit = adapter_->sampleFromTime(4.5);
+  const auto hit = adapter_->sampleFromTime(4.5);
   ASSERT_TRUE(hit.has_value());
   EXPECT_DOUBLE_EQ(hit->x(), 4.0);
   EXPECT_DOUBLE_EQ(hit->y(), 16.0);
@@ -210,7 +210,7 @@ TEST(PointSeriesXYTest, SameTopicPairsRowsByIndex) {
   auto dataset_or = session.dataEngine().createDataset(DatasetDescriptor{.source_name = "xy"});
   ASSERT_TRUE(dataset_or.has_value()) << dataset_or.error();
 
-  DataWriter writer = session.dataEngine().createWriter();
+  auto writer = session.dataEngine().createWriter();
   auto schema_or = writer.registerSchema(
       "xy",
       makeStruct("xy", {makePrimitive("x", PrimitiveType::kFloat64), makePrimitive("y", PrimitiveType::kFloat64)}));
@@ -265,7 +265,7 @@ TEST(PointSeriesXYTest, DifferentTopicsPairOnlyExactTimestampsAndInvalidateOnCom
   auto dataset_or = session.dataEngine().createDataset(DatasetDescriptor{.source_name = "xy"});
   ASSERT_TRUE(dataset_or.has_value()) << dataset_or.error();
 
-  DataWriter writer = session.dataEngine().createWriter();
+  auto writer = session.dataEngine().createWriter();
   auto schema_or = writer.registerSchema("scalar", makePrimitive("value", PrimitiveType::kFloat64));
   ASSERT_TRUE(schema_or.has_value()) << schema_or.error();
 
@@ -321,7 +321,7 @@ TEST(PointSeriesXYTest, DifferentTopicsPairOnlyExactTimestampsAndInvalidateOnCom
   EXPECT_DOUBLE_EQ(series.sample(1).x(), 4.0);
   EXPECT_DOUBLE_EQ(series.sample(1).y(), 30.0);
 
-  DataWriter second_writer = session.dataEngine().createWriter();
+  auto second_writer = session.dataEngine().createWriter();
   auto append_second = [&second_writer](TopicId topic_id, int t, double value) {
     ASSERT_TRUE(second_writer.beginRow(topic_id, static_cast<Timestamp>(t) * kNs).has_value());
     second_writer.set(topic_id, 0, value);

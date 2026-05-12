@@ -122,7 +122,7 @@ void CurveTracker::setPosition(const QPointF& tracker_position) {
       point_marker->setSymbol(new QwtSymbol(QwtSymbol::Ellipse, color, QPen(Qt::black), QSize(5, 5)));
     }
 
-    const std::optional<QPointF> maybe_point = curvePointAt(curve, tracker_position.x());
+    const auto maybe_point = curvePointAt(curve, tracker_position.x());
     if (!maybe_point.has_value()) {
       point_marker->setVisible(false);
       continue;
@@ -135,7 +135,7 @@ void CurveTracker::setPosition(const QPointF& tracker_position) {
       continue;
     }
 
-    const std::optional<QPointF> maybe_reference = referencePointAt(curve, reference_pos_);
+    const auto maybe_reference = referencePointAt(curve, reference_pos_);
     LineParts parts;
     parts.color = color;
     parts.value = QString::number(point.y(), 'f', precision);

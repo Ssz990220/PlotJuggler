@@ -1,7 +1,8 @@
 #include "marker_palette.h"
 
+#include <fmt/format.h>
+
 #include <cmath>
-#include <cstdio>
 
 namespace pj_demos {
 namespace {
@@ -41,13 +42,7 @@ std::string formatLabel(const std::string& label, double score) {
   if (label.empty()) {
     return {};
   }
-  char buf[64] = {0};
-  if (std::isfinite(score)) {
-    std::snprintf(buf, sizeof(buf), "%s %.2f", label.c_str(), score);
-  } else {
-    std::snprintf(buf, sizeof(buf), "%s", label.c_str());
-  }
-  return std::string(buf);
+  return std::isfinite(score) ? fmt::format("{} {:.2f}", label, score) : label;
 }
 
 PJ::TextAnnotation makeBboxLabel(

@@ -15,6 +15,7 @@
 #include <QMessageBox>
 #include <QPlainTextEdit>
 #include <QPushButton>
+#include <QScopedValueRollback>
 #include <QSettings>
 #include <QSplitter>
 #include <QStatusBar>
@@ -68,6 +69,7 @@ constexpr double kTestDurationSeconds = 10.0;
 constexpr int kMaxDiagnostics = 200;
 constexpr int kMaxUndoStates = 100;
 constexpr qint64 kUndoCoalesceMs = 100;
+constexpr auto kButtonLinkKey = "MainWindow.buttonLink";
 
 // QSettings keys for the CurveEditor side panel. Position is stored as int
 // (cast of PanelPosition); per-position splitter state is stored under
@@ -93,11 +95,12 @@ constexpr auto kPanelStateKeyBottom = "MainWindow.splitterState.bottom";
 }
 
 QUrl registryUrlFromSettings() {
-  const QString raw = QSettings().value(kRegistryUrlSettingsKey, kDefaultRegistryUrl).toString();
+  QSettings settings;
+  const QString raw = settings.value(kRegistryUrlSettingsKey, kDefaultRegistryUrl).toString();
   const QUrl url(raw);
   if (!url.isValid() || url.scheme().isEmpty()) {
     qCWarning(lcMain) << "Invalid" << kRegistryUrlSettingsKey << "in QSettings:" << raw << "— falling back to default.";
-    return QUrl(QString::fromLatin1(kDefaultRegistryUrl));
+    return QUrl(kDefaultRegistryUrl);
   }
   return url;
 }
@@ -121,9 +124,10 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
 
   QSettings settings;
   applyIcons(theme_->currentTheme());
-  ui_->buttonLink->setChecked(settings.value(QStringLiteral("MainWindow.buttonLink"), true).toBool());
+  ui_->buttonLink->setChecked(settings.value(kButtonLinkKey, true).toBool());
   connect(ui_->buttonLink, &QPushButton::toggled, this, [](bool checked) {
-    QSettings().setValue(QStringLiteral("MainWindow.buttonLink"), checked);
+    QSettings settings;
+    settings.setValue(kButtonLinkKey, checked);
   });
 
   connect(theme_.get(), &Theme::themeChanged, this, &MainWindow::onThemeChanged);
@@ -133,9 +137,6 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
   connect(this, &MainWindow::stylesheetChanged, ui_->tabbedPlotWidget, &TabbedPlotWidget::onStylesheetChanged);
   qApp->setStyleSheet(theme_->expandedQss());
 
-  ui_->buttonPanelLeft->setIcon(LoadSvg(":/resources/svg/panel_left.svg", theme_->currentTheme()));
-  ui_->buttonPanelBottom->setIcon(LoadSvg(":/resources/svg/panel_bottom.svg", theme_->currentTheme()));
-  ui_->buttonPanelRight->setIcon(LoadSvg(":/resources/svg/panel_right.svg", theme_->currentTheme()));
   connect(ui_->buttonPanelLeft, &QToolButton::toggled, this, [this](bool checked) {
     onPanelButtonToggled(PanelPosition::kLeft, checked);
   });
@@ -245,7 +246,7 @@ bool MainWindow::populateTestData() {
     return false;
   }
 
-  DataWriter writer = engine.createWriter();
+  auto writer = engine.createWriter();
   auto sin_or = writer.registerScalarSeries(*dataset_or, "test/sin", NumericType::kFloat64);
   auto cos_or = writer.registerScalarSeries(*dataset_or, "test/cos", NumericType::kFloat64);
   if (!sin_or.has_value() || !cos_or.has_value()) {
@@ -263,7 +264,7 @@ bool MainWindow::populateTestData() {
     writer.appendScalar(*cos_or, timestamp, std::cos(phase));
   }
 
-  const std::vector<TopicId> changed_topics = session_->sessionManager().commitChunks(writer.flushAll());
+  const auto changed_topics = session_->sessionManager().commitChunks(writer.flushAll());
   if (changed_topics.empty()) {
     qCWarning(lcMain) << "test data commit produced no datastore changes";
     return false;
@@ -302,6 +303,9 @@ void MainWindow::onThemeChanged(const QString& theme) {
 
 void MainWindow::applyIcons(QString theme) {
   ui_->buttonLink->setIcon(LoadSvg(":/resources/svg/link.svg", theme));
+  ui_->buttonPanelLeft->setIcon(LoadSvg(":/resources/svg/panel_left.svg", theme));
+  ui_->buttonPanelBottom->setIcon(LoadSvg(":/resources/svg/panel_bottom.svg", theme));
+  ui_->buttonPanelRight->setIcon(LoadSvg(":/resources/svg/panel_right.svg", theme));
 }
 
 void MainWindow::onShowDiagnosticsDialog() {
@@ -346,11 +350,14 @@ void MainWindow::onUndo() {
     return;
   }
 
-  applying_state_ = true;
   redo_states_.push_back(undo_states_.back());
   undo_states_.pop_back();
-  const bool loaded = xmlLoadState(undo_states_.back());
-  applying_state_ = false;
+  QDomDocument doc;
+  doc.setContent(undo_states_.back());
+  const bool loaded = [&] {
+    QScopedValueRollback guard(applying_state_, true);
+    return xmlLoadState(doc);
+  }();
 
   if (!loaded) {
     statusBar()->showMessage(tr("Unable to restore undo state"), 3000);
@@ -364,12 +371,14 @@ void MainWindow::onRedo() {
     return;
   }
 
-  applying_state_ = true;
-  QDomDocument state = redo_states_.back();
+  undo_states_.push_back(redo_states_.back());
   redo_states_.pop_back();
-  undo_states_.push_back(state);
-  const bool loaded = xmlLoadState(state);
-  applying_state_ = false;
+  QDomDocument doc;
+  doc.setContent(undo_states_.back());
+  const bool loaded = [&] {
+    QScopedValueRollback guard(applying_state_, true);
+    return xmlLoadState(doc);
+  }();
 
   if (!loaded) {
     statusBar()->showMessage(tr("Unable to restore redo state"), 3000);
@@ -410,7 +419,7 @@ void MainWindow::onLoadLayout() {
   }
 
   QDomDocument state;
-  const QDomDocument::ParseResult parse_result = state.setContent(&file);
+  const auto parse_result = state.setContent(&file);
   if (!parse_result) {
     QMessageBox::warning(
         this, tr("Load Layout"),
@@ -421,9 +430,10 @@ void MainWindow::onLoadLayout() {
     return;
   }
 
-  applying_state_ = true;
-  const bool loaded = xmlLoadState(state);
-  applying_state_ = false;
+  const bool loaded = [&] {
+    QScopedValueRollback guard(applying_state_, true);
+    return xmlLoadState(state);
+  }();
   if (!loaded) {
     QMessageBox::warning(this, tr("Load Layout"), tr("The file does not contain a supported PlotJuggler layout."));
     return;
@@ -600,10 +610,14 @@ bool MainWindow::xmlLoadState(const QDomDocument& state_document) {
   }
 
   QDomElement main_tabbed_widget;
-  for (QDomElement tabbed = root.firstChildElement(QStringLiteral("tabbed_widget")); !tabbed.isNull();
+  for (auto tabbed = root.firstChildElement(QStringLiteral("tabbed_widget")); !tabbed.isNull();
        tabbed = tabbed.nextSiblingElement(QStringLiteral("tabbed_widget"))) {
-    if (tabbed.attribute(QStringLiteral("parent")) == QStringLiteral("main_window") || main_tabbed_widget.isNull()) {
+    if (main_tabbed_widget.isNull()) {
       main_tabbed_widget = tabbed;
+    }
+    if (tabbed.attribute(QStringLiteral("parent")) == QStringLiteral("main_window")) {
+      main_tabbed_widget = tabbed;
+      break;
     }
   }
   if (main_tabbed_widget.isNull()) {
@@ -629,14 +643,14 @@ bool MainWindow::xmlLoadState(const QDomDocument& state_document) {
 void MainWindow::pushInitialUndoState() {
   undo_states_.clear();
   redo_states_.clear();
-  undo_states_.push_back(xmlSaveState());
+  undo_states_.push_back(xmlSaveState().toByteArray(2));
   undo_timer_.start();
   updateUndoRedoActions();
 }
 
 void MainWindow::pushUndoState(bool force_new_state) {
-  QDomDocument state = xmlSaveState();
-  if (!undo_states_.empty() && undo_states_.back().toByteArray() == state.toByteArray()) {
+  const QByteArray state = xmlSaveState().toByteArray(2);
+  if (!undo_states_.empty() && undo_states_.back() == state) {
     updateUndoRedoActions();
     return;
   }
@@ -668,7 +682,6 @@ void MainWindow::updateUndoRedoActions() {
 
 void MainWindow::closeEvent(QCloseEvent* event) {
   QSettings settings;
-  settings.setValue(QStringLiteral("MainWindow.buttonLink"), ui_->buttonLink->isChecked());
   if (panel_position_ != PanelPosition::kNone) {
     savePanelSize();
   }
@@ -725,7 +738,8 @@ void MainWindow::showCurveEditor(PanelPosition pos) {
   curve_editor_->setVisible(true);
   panel_position_ = pos;
 
-  const QByteArray state = QSettings().value(panelStateKeyFor(pos)).toByteArray();
+  QSettings settings;
+  const QByteArray state = settings.value(panelStateKeyFor(pos)).toByteArray();
   if (!state.isEmpty()) {
     splitter->restoreState(state);
   }
@@ -748,7 +762,8 @@ void MainWindow::savePanelSize() {
   if (panel_position_ == PanelPosition::kNone) {
     return;
   }
-  QSettings().setValue(panelStateKeyFor(panel_position_), ui_->plotAreaSplitter->saveState());
+  QSettings settings;
+  settings.setValue(panelStateKeyFor(panel_position_), ui_->plotAreaSplitter->saveState());
 }
 
 void MainWindow::bindEditorToActivePlot() {
@@ -756,15 +771,11 @@ void MainWindow::bindEditorToActivePlot() {
     return;
   }
   PlotWidget* active = nullptr;
-  QTabWidget* tabs = ui_->tabbedPlotWidget->tabWidget();
-  if (tabs != nullptr) {
-    if (auto* docker = qobject_cast<PlotDocker*>(tabs->currentWidget())) {
-      if (docker->plotCount() > 0) {
-        if (DockWidget* dock = docker->plotAt(0)) {
-          active = dock->plotWidget();
-        }
-      }
-    }
+  auto* tabs = ui_->tabbedPlotWidget->tabWidget();
+  auto* docker = tabs ? qobject_cast<PlotDocker*>(tabs->currentWidget()) : nullptr;
+  auto* dock = (docker && docker->plotCount() > 0) ? docker->plotAt(0) : nullptr;
+  if (dock) {
+    active = dock->plotWidget();
   }
   curve_editor_->setPlot(active);
 }

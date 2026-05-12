@@ -342,7 +342,7 @@ bool FileLoader::loadFile(const QString& path, QWidget* dialog_parent) {
     return fail(tr("File has no extension; cannot pick a plugin."));
   }
 
-  const std::vector<const LoadedDataSource*> matches = extensions_.findSourcesForExtension(ext);
+  const auto matches = extensions_.findSourcesForExtension(ext);
   if (matches.empty()) {
     return fail(tr("No DataSource plugin handles %1 files. Install one from the Marketplace.").arg(ext));
   }

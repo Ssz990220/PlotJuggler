@@ -4,6 +4,8 @@ extern "C" {
 #include <libavcodec/avcodec.h>
 }
 
+#include <fmt/format.h>
+
 #include <algorithm>
 
 #include "pj_scene2d_core/ffmpeg_decoder.h"
@@ -95,7 +97,7 @@ Expected<DecodedFrame> StreamingVideoDecoder::decodeRange(size_t start_idx, size
     if (!entry.has_value()) {
       // Missing entry mid-GOP — the decode chain is broken.
       // Return error rather than producing corrupt output.
-      return unexpected("entry evicted mid-GOP (index " + std::to_string(i) + ")");
+      return unexpected(fmt::format("entry evicted mid-GOP (index {})", i));
     }
     // Track position by ObjectStore timestamp (= DTS for B-frame videos).
     last_sent_ts_ = entry->timestamp;

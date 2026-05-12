@@ -147,8 +147,8 @@ void PointSeriesXY::buildSameTopicIndex_() const {
 }
 
 void PointSeriesXY::buildDifferentTopicIndex_() const {
-  const std::vector<RowRef> x_rows = rowsFor_(x_source_.topic_id);
-  const std::vector<RowRef> y_rows = rowsFor_(y_source_.topic_id);
+  const auto x_rows = rowsFor_(x_source_.topic_id);
+  const auto y_rows = rowsFor_(y_source_.topic_id);
 
   std::size_t x_index = 0;
   std::size_t y_index = 0;

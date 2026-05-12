@@ -84,13 +84,13 @@ PlotWidget::CurveInfo* PlotWidget::addCurve(const QString& name, QColor color) {
     return nullptr;
   }
 
-  const std::optional<CurveDescriptor> descriptor = catalog_->curveDescriptor(name);
+  const auto descriptor = catalog_->curveDescriptor(name);
   if (!descriptor.has_value()) {
     return nullptr;
   }
 
   auto* adapter = new DatastoreCurveAdapter(session_, *descriptor);
-  CurveInfo* info = PlotWidgetBase::addCurve(name, adapter, color);
+  auto* info = PlotWidgetBase::addCurve(name, adapter, color);
   if (info == nullptr) {
     return nullptr;
   }
@@ -107,15 +107,15 @@ PlotWidget::CurveInfo* PlotWidget::addCurveXY(const QString& x_name, const QStri
     return nullptr;
   }
 
-  const std::optional<CurveDescriptor> x_descriptor = catalog_->curveDescriptor(x_name);
-  const std::optional<CurveDescriptor> y_descriptor = catalog_->curveDescriptor(y_name);
+  const auto x_descriptor = catalog_->curveDescriptor(x_name);
+  const auto y_descriptor = catalog_->curveDescriptor(y_name);
   if (!x_descriptor.has_value() || !y_descriptor.has_value()) {
     return nullptr;
   }
 
   const QString title = tr("%1 vs %2").arg(y_name, x_name);
   auto* series = new PointSeriesXY(session_, *x_descriptor, *y_descriptor);
-  CurveInfo* info = PlotWidgetBase::addCurve(title, series, color);
+  auto* info = PlotWidgetBase::addCurve(title, series, color);
   if (info == nullptr) {
     return nullptr;
   }

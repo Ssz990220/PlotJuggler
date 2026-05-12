@@ -1,5 +1,6 @@
 #include "pj_runtime/CatalogModel.h"
 
+#include <fmt/format.h>
 #include <tsl/robin_map.h>
 
 #include <QHash>
@@ -72,7 +73,7 @@ void collectTypeTreeLeaves(
   if (node.kind == TypeKind::kArray) {
     if (node.element_type && node.fixed_array_size.has_value()) {
       for (uint32_t i = 0; i < *node.fixed_array_size; ++i) {
-        const std::string element_path = current_path + "[" + std::to_string(i) + "]";
+        const std::string element_path = fmt::format("{}[{}]", current_path, i);
         if (node.element_type->kind == TypeKind::kStruct) {
           for (const auto& child : node.element_type->children) {
             collectTypeTreeLeaves(*child, element_path, next_column, columns);
@@ -208,7 +209,7 @@ void CatalogModel::rebuildFromDatastore() {
         continue;
       }
 
-      const std::vector<ColumnDescriptor> columns = topicColumns(*storage, reader.getTypeTree(topic_id));
+      const auto columns = topicColumns(*storage, reader.getTypeTree(topic_id));
       for (std::size_t column_index = 0; column_index < columns.size(); ++column_index) {
         const ColumnDescriptor& column = columns[column_index];
         if (!isCatalogNumeric(column.logical_type)) {

@@ -3,6 +3,7 @@
 #include <gtest/gtest.h>
 
 #include <chrono>
+#include <cinttypes>
 #include <filesystem>
 #include <string>
 #include <vector>
@@ -830,7 +831,9 @@ TEST(StreamingVideoDecoderBframeTest, SimulateDemoDualTimer) {
   // Check DTS monotonicity and print first few DTS/PTS values
   fprintf(stderr, "[DemoDualTimer] First 10 packets DTS/PTS:\n");
   for (size_t i = 0; i < 10 && i < packets.size(); ++i) {
-    fprintf(stderr, "  [%zu] dts=%ld pts=%ld key=%d\n", i, packets[i].dts, packets[i].timestamp, packets[i].keyframe);
+    fprintf(
+        stderr, "  [%zu] dts=%" PRId64 " pts=%" PRId64 " key=%d\n", i, packets[i].dts, packets[i].timestamp,
+        packets[i].keyframe);
   }
 
   ObjectStore store;
@@ -891,14 +894,16 @@ TEST(StreamingVideoDecoderBframeTest, TimeToFirstFrameUserVideo) {
   fprintf(stderr, "[video_1920] First 5 DTS/PTS:\n");
   for (size_t i = 0; i < 5 && i < packets.size(); ++i) {
     fprintf(
-        stderr, "  [%zu] dts=%ld pts=%ld key=%d size=%zu\n", i, packets[i].dts, packets[i].timestamp,
+        stderr, "  [%zu] dts=%" PRId64 " pts=%" PRId64 " key=%d size=%zu\n", i, packets[i].dts, packets[i].timestamp,
         packets[i].keyframe, packets[i].data.size());
   }
 
   // Check DTS monotonicity
   for (size_t i = 1; i < packets.size(); ++i) {
     if (packets[i].dts < packets[i - 1].dts) {
-      fprintf(stderr, "[video_1920] NON-MONOTONIC DTS at i=%zu: %ld < %ld\n", i, packets[i].dts, packets[i - 1].dts);
+      fprintf(
+          stderr, "[video_1920] NON-MONOTONIC DTS at i=%zu: %" PRId64 " < %" PRId64 "\n", i, packets[i].dts,
+          packets[i - 1].dts);
       break;
     }
   }
@@ -913,7 +918,8 @@ TEST(StreamingVideoDecoderBframeTest, TimeToFirstFrameUserVideo) {
     auto push_result = store.pushOwned(topic, pkt.dts, pkt.data);
     if (!push_result.has_value()) {
       fprintf(
-          stderr, "[video_1920] Push FAILED at %d: %s (dts=%ld)\n", push_count, push_result.error().c_str(), pkt.dts);
+          stderr, "[video_1920] Push FAILED at %d: %s (dts=%" PRId64 ")\n", push_count, push_result.error().c_str(),
+          pkt.dts);
       break;
     }
     ++push_count;

@@ -96,7 +96,7 @@ DialogResult DialogEngine::showDialog(QWidget* parent) {
   }
 
   // 2. Wrap in QDialog if needed
-  QDialog* dialog = qobject_cast<QDialog*>(loaded);
+  auto* dialog = qobject_cast<QDialog*>(loaded);
   if (!dialog) {
     dialog = new QDialog(parent);
     dialog->setWindowTitle(loaded->windowTitle());
@@ -350,7 +350,7 @@ DialogResult DialogEngine::showDialog(QWidget* parent) {
       return;
     }
 
-    QDialog* sub_dialog = qobject_cast<QDialog*>(sub_loaded);
+    auto* sub_dialog = qobject_cast<QDialog*>(sub_loaded);
     if (!sub_dialog) {
       sub_dialog = new QDialog(dialog);
       sub_dialog->setWindowTitle(sub_loaded->windowTitle());

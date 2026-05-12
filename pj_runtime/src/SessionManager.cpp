@@ -11,7 +11,7 @@ DataReader SessionManager::createReader() const {
 }
 
 std::vector<TopicId> SessionManager::commitChunks(std::vector<std::pair<TopicId, TopicChunk>> chunks) {
-  std::vector<TopicId> changed = data_engine_.commitChunks(std::move(chunks));
+  auto changed = data_engine_.commitChunks(std::move(chunks));
   if (!changed.empty()) {
     QVector<TopicId> ids;
     ids.reserve(static_cast<qsizetype>(changed.size()));

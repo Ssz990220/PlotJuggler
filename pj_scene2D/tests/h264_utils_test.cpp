@@ -6,6 +6,7 @@ extern "C" {
 #include <libavcodec/avcodec.h>
 }
 
+#include <array>
 #include <filesystem>
 #include <string>
 
