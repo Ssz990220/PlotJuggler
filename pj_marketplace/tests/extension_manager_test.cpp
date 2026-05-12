@@ -1198,23 +1198,23 @@ TEST_F(ExtensionManagerTest, ApplyPendingUninstallsIsNoOpForEmptyDirectory) {
 // when adding a new platform tuple to PlatformUtils.
 constexpr const char* expectedPlatformKey() {
 #if defined(Q_OS_WIN)
-#  if defined(Q_PROCESSOR_ARM_64)
+#if defined(Q_PROCESSOR_ARM_64)
   return "windows-arm64";
-#  else
+#else
   return "windows-x86_64";
-#  endif
+#endif
 #elif defined(Q_OS_MACOS)
-#  if defined(Q_PROCESSOR_ARM_64)
+#if defined(Q_PROCESSOR_ARM_64)
   return "macos-arm64";
-#  else
+#else
   return "macos-x86_64";
-#  endif
+#endif
 #elif defined(Q_OS_LINUX)
-#  if defined(Q_PROCESSOR_ARM_64)
+#if defined(Q_PROCESSOR_ARM_64)
   return "linux-arm64";
-#  else
+#else
   return "linux-x86_64";
-#  endif
+#endif
 #else
   return "";
 #endif
@@ -1250,8 +1250,8 @@ TEST(PlatformDetectionTest, CurrentPlatformResolvesRegistryArtifact) {
   Extension ext;
   ext.id = "test-extension";
   ext.version = "1.0.0";
-  for (const char* key : {"linux-x86_64", "linux-arm64", "windows-x86_64", "windows-arm64", "macos-x86_64",
-                          "macos-arm64"}) {
+  for (const char* key :
+       {"linux-x86_64", "linux-arm64", "windows-x86_64", "windows-arm64", "macos-x86_64", "macos-arm64"}) {
     ext.platforms[QString::fromLatin1(key)] = {
         QStringLiteral("https://example.com/test/extension-%1.zip").arg(QString::fromLatin1(key)),
         "sha256:0000000000000000000000000000000000000000000000000000000000000000"};
