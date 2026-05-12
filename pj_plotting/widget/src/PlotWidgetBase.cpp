@@ -6,6 +6,7 @@
 #include <qwt_plot_curve.h>
 #include <qwt_plot_layout.h>
 #include <qwt_plot_marker.h>
+#include <qwt_plot_opengl_canvas.h>
 #include <qwt_scale_engine.h>
 #include <qwt_scale_map.h>
 #include <qwt_scale_widget.h>
@@ -159,14 +160,26 @@ PlotWidgetBase::PlotWidgetBase(QWidget* parent) : QWidget(parent) {
     }
   };
 
-  auto* canvas = new QwtPlotCanvas();
-  canvas->setFrameStyle(QFrame::Box | QFrame::Plain);
-  canvas->setLineWidth(1);
-  canvas->setPalette(Qt::white);
-  canvas->setPaintAttribute(QwtPlotCanvas::BackingStore, true);
-  canvas->setObjectName("qwtCanvas");
+  const bool use_opengl = QSettings().value("Preferences::use_opengl", true).toBool();
 
-  plot_ = new QwtPlotPimpl(this, canvas, on_view_resized, on_event);
+  QWidget* abs_canvas = nullptr;
+  if (use_opengl) {
+    auto* canvas = new QwtPlotOpenGLCanvas();
+    canvas->setFrameStyle(QFrame::Box | QFrame::Plain);
+    canvas->setLineWidth(1);
+    canvas->setPalette(Qt::white);
+    abs_canvas = canvas;
+  } else {
+    auto* canvas = new QwtPlotCanvas();
+    canvas->setFrameStyle(QFrame::Box | QFrame::Plain);
+    canvas->setLineWidth(1);
+    canvas->setPalette(Qt::white);
+    canvas->setPaintAttribute(QwtPlotCanvas::BackingStore, true);
+    abs_canvas = canvas;
+  }
+  abs_canvas->setObjectName("qwtCanvas");
+
+  plot_ = new QwtPlotPimpl(this, abs_canvas, on_view_resized, on_event);
 
   auto* layout = new QHBoxLayout(this);
   layout->setContentsMargins(0, 0, 0, 0);

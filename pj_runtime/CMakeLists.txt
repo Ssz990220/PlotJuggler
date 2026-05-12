@@ -8,12 +8,14 @@ endif()
 add_library(pj_runtime STATIC
     src/AppSession.cpp
     src/CatalogModel.cpp
+    src/DataSourceRuntimeHost.cpp
     src/ExtensionCatalogService.cpp
     src/PlaybackEngine.cpp
     src/SessionManager.cpp
     include/pj_runtime/AppSession.h
     include/pj_runtime/CatalogModel.h
     include/pj_runtime/CurveDescriptor.h
+    include/pj_runtime/DataSourceRuntimeHost.h
     include/pj_runtime/ExtensionCatalogService.h
     include/pj_runtime/IDataWidget.h
     include/pj_runtime/PlaybackEngine.h

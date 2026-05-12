@@ -143,6 +143,7 @@ std::optional<std::pair<double, double>> DatastoreCurveAdapter::visibleYRange(
 void DatastoreCurveAdapter::onTopicCommitted() {
   sample_index_dirty_ = true;
   full_bounding_rect_valid_ = false;
+  cached_display_offset_valid_ = false;
 }
 
 void DatastoreCurveAdapter::onDataCleared() {
@@ -150,6 +151,7 @@ void DatastoreCurveAdapter::onDataCleared() {
   sample_index_dirty_ = true;
   full_bounding_rect_valid_ = false;
   cached_full_bounding_rect_ = invalidRect();
+  cached_display_offset_valid_ = false;
 }
 
 std::optional<QPointF> DatastoreCurveAdapter::sampleFromTime(double display_time_sec) const {
@@ -233,18 +235,28 @@ QPointF DatastoreCurveAdapter::readPoint_(const SeriesSample& sample) const {
 }
 
 Timestamp DatastoreCurveAdapter::displayOffsetNow_() const {
-  // Live lookup only — never fall back to source_.display_offset_ns, which is
-  // a snapshot taken at catalog-build time and would silently go stale if the
-  // time domain were reconfigured.
-  if (session_ == nullptr) {
-    return 0;
+  if (cached_display_offset_valid_) {
+    return cached_display_offset_ns_;
   }
-  const DatasetInfo* dataset = session_->dataEngine().getDataset(source_.dataset_id);
-  if (dataset == nullptr || dataset->time_domain.id == 0) {
-    return 0;
+
+  // Live lookup — never fall back to source_.display_offset_ns, which is a
+  // snapshot taken at catalog-build time. The cache below is invalidated by
+  // onTopicCommitted / onDataCleared so it tracks time-domain reconfiguration
+  // through the same signals that drive sample re-indexing.
+  Timestamp offset = 0;
+  if (session_ != nullptr) {
+    const DatasetInfo* dataset = session_->dataEngine().getDataset(source_.dataset_id);
+    if (dataset != nullptr && dataset->time_domain.id != 0) {
+      const TimeDomain* time_domain = session_->dataEngine().getTimeDomain(dataset->time_domain.id);
+      if (time_domain != nullptr) {
+        offset = time_domain->display_offset;
+      }
+    }
   }
-  const TimeDomain* time_domain = session_->dataEngine().getTimeDomain(dataset->time_domain.id);
-  return time_domain != nullptr ? time_domain->display_offset : 0;
+
+  cached_display_offset_ns_ = offset;
+  cached_display_offset_valid_ = true;
+  return offset;
 }
 
 }  // namespace PJ

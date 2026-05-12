@@ -37,11 +37,17 @@ else()
     )
 endif()
 
+# Keep frame pointers in all PJ4-owned targets so `perf record --call-graph fp`
+# can unwind without DWARF.
+if(NOT MSVC)
+    add_compile_options(-fno-omit-frame-pointer)
+endif()
+
 # ---------------------------------------------------------------------------
 # Qt
 # ---------------------------------------------------------------------------
 
-find_package(Qt6 6.8 REQUIRED COMPONENTS Core Gui Widgets Network Xml)
+find_package(Qt6 6.8 REQUIRED COMPONENTS Core Gui Widgets Network OpenGLWidgets Xml)
 find_package(fmt REQUIRED)
 
 # ---------------------------------------------------------------------------

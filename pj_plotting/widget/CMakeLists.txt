@@ -1,4 +1,4 @@
-find_package(Qt6 REQUIRED COMPONENTS Core Gui Widgets Xml)
+find_package(Qt6 REQUIRED COMPONENTS Core Gui Widgets OpenGLWidgets Xml)
 
 add_library(pj_plotting STATIC
     src/CurveEditor.cpp
@@ -47,6 +47,7 @@ target_link_libraries(pj_plotting PUBLIC
     Qt6::Core
     Qt6::Gui
     Qt6::Widgets
+    Qt6::OpenGLWidgets
     Qt6::Xml
   PRIVATE
     pj_widgets

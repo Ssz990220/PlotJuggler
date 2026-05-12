@@ -53,6 +53,14 @@ class DatastoreCurveAdapter final : public QwtSeriesData<QPointF> {
 
   mutable QRectF cached_full_bounding_rect_;
   mutable bool full_bounding_rect_valid_ = false;
+
+  // Cached display-time offset (raw_ns). Resolved live on first use after an
+  // invalidation; invalidated in onTopicCommitted/onDataCleared so it tracks
+  // time-domain reconfiguration through the same signals that drive sample
+  // re-indexing. Removing this cache makes readPoint_() pay 2 DataEngine
+  // lookups per sample, which dominates per-curve paint cost.
+  mutable Timestamp cached_display_offset_ns_ = 0;
+  mutable bool cached_display_offset_valid_ = false;
 };
 
 }  // namespace PJ
