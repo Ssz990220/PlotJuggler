@@ -2,6 +2,7 @@
 
 #include <QStringList>
 #include <QWidget>
+#include <vector>
 
 namespace Ui {
 class CurveListPanel;
@@ -47,6 +48,7 @@ class CurveListPanel : public QWidget {
   void onCurveRemoved(const QString& name);
   void onCatalogCleared();
   void applyIcons(QString theme);
+  std::vector<QString> selectedCurveNamesForDrag() const;
 
   Ui::CurveListPanel* ui_;
   CatalogModel* catalog_ = nullptr;

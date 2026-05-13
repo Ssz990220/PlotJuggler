@@ -25,3 +25,7 @@ target_link_libraries(pj_widgets PUBLIC
     Qt6::Svg
     Qt6::Widgets
 )
+
+if(PJ_BUILD_TESTS)
+    add_subdirectory(tests)
+endif()

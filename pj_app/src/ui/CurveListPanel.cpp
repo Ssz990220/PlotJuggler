@@ -5,6 +5,7 @@
 #include <QLineEdit>
 #include <QPushButton>
 #include <QSplitter>
+#include <algorithm>
 
 #include "pj_runtime/CatalogModel.h"
 #include "pj_widgets/CurveTreeView.h"
@@ -46,6 +47,10 @@ CurveListPanel::CurveListPanel(QWidget* parent) : QWidget(parent), ui_(new Ui::C
 
   tree_view_->setValuesColumnHidden(true);
   custom_view_->setValuesColumnHidden(true);
+
+  auto drag_selection_provider = [this]() { return selectedCurveNamesForDrag(); };
+  tree_view_->setDragSelectionProvider(drag_selection_provider);
+  custom_view_->setDragSelectionProvider(drag_selection_provider);
 }
 
 CurveListPanel::~CurveListPanel() {
@@ -123,6 +128,15 @@ void CurveListPanel::applyIcons(QString theme) {
   ui_->pushButtonTrash->setIcon(LoadSvg(":/resources/svg/trash.svg", theme));
   ui_->buttonEditCustom->setIcon(LoadSvg(":/resources/svg/pencil-edit.svg", theme));
   ui_->buttonDeleteCustom->setIcon(LoadSvg(":/resources/svg/delete_forever.svg", theme));
+}
+
+std::vector<QString> CurveListPanel::selectedCurveNamesForDrag() const {
+  std::vector<QString> names = tree_view_->selectedCurveNamesRecursive();
+  std::vector<QString> custom_names = custom_view_->selectedCurveNamesRecursive();
+  names.insert(names.end(), custom_names.begin(), custom_names.end());
+  std::sort(names.begin(), names.end());
+  names.erase(std::unique(names.begin(), names.end()), names.end());
+  return names;
 }
 
 }  // namespace PJ

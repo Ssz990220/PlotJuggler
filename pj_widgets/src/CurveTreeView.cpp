@@ -7,6 +7,8 @@
 #include <QMimeData>
 #include <QMouseEvent>
 #include <algorithm>
+#include <functional>
+#include <utility>
 
 namespace PJ {
 
@@ -17,6 +19,26 @@ constexpr int kValueColumn = 1;
 QStringList splitPath(const QString& name) {
   return name.split('/', Qt::SkipEmptyParts);
 }
+
+class CurveTreeItem : public QTreeWidgetItem {
+ public:
+  explicit CurveTreeItem(QTreeWidgetItem* parent) : QTreeWidgetItem(parent) {}
+
+  bool operator<(const QTreeWidgetItem& other) const override {
+    const QString lhs = text(kNameColumn);
+    const QString rhs = other.text(kNameColumn);
+    const int folded_compare = QString::localeAwareCompare(lhs.toCaseFolded(), rhs.toCaseFolded());
+    if (folded_compare != 0) {
+      return folded_compare < 0;
+    }
+    return QString::localeAwareCompare(lhs, rhs) < 0;
+  }
+};
+
+void normalizeCurveNames(std::vector<QString>& names) {
+  std::sort(names.begin(), names.end());
+  names.erase(std::unique(names.begin(), names.end()), names.end());
+}
 }  // namespace
 
 CurveTreeView::CurveTreeView(QWidget* parent) : QTreeWidget(parent) {
@@ -25,13 +47,27 @@ CurveTreeView::CurveTreeView(QWidget* parent) : QTreeWidget(parent) {
   header()->setSectionResizeMode(kNameColumn, QHeaderView::Stretch);
   header()->setSectionResizeMode(kValueColumn, QHeaderView::ResizeToContents);
   header()->setSectionsClickable(false);
+  setEditTriggers(QAbstractItemView::NoEditTriggers);
   setSelectionMode(QAbstractItemView::ExtendedSelection);
+  setSelectionBehavior(QAbstractItemView::SelectRows);
+  setFocusPolicy(Qt::ClickFocus);
   setRootIsDecorated(true);
   setUniformRowHeights(true);
+  setHorizontalScrollMode(QAbstractItemView::ScrollPerPixel);
+  setExpandsOnDoubleClick(false);
   // Drag handled manually in mouseMoveEvent because left vs right button
   // emit different mime types.
   setDragEnabled(false);
   setDragDropMode(QAbstractItemView::NoDragDrop);
+
+  connect(this, &QTreeWidget::itemDoubleClicked, this, [this](QTreeWidgetItem* item, int column) {
+    if (item == nullptr || column != kNameColumn || item->childCount() == 0) {
+      return;
+    }
+    const bool expanded = !item->isExpanded();
+    item->setExpanded(expanded);
+    setDescendantsExpanded(item, expanded);
+  });
 }
 
 QTreeWidgetItem* CurveTreeView::ensureGroup(const QString& path) {
@@ -47,9 +83,9 @@ QTreeWidgetItem* CurveTreeView::ensureGroup(const QString& path) {
       }
     }
     if (!found) {
-      found = new QTreeWidgetItem(parent);
+      found = new CurveTreeItem(parent);
       found->setText(kNameColumn, part);
-      found->setFlags(found->flags() & ~Qt::ItemIsDragEnabled);
+      found->setFlags(found->flags() & ~(Qt::ItemIsDragEnabled | Qt::ItemIsSelectable));
     }
     parent = found;
   }
@@ -64,10 +100,11 @@ void CurveTreeView::addCurve(const QString& name) {
     parent = ensureGroup(name.left(last_sep));
     leaf_name = name.mid(last_sep + 1);
   }
-  auto* item = new QTreeWidgetItem(parent);
+  auto* item = new CurveTreeItem(parent);
   item->setText(kNameColumn, leaf_name);
   item->setData(kNameColumn, Qt::UserRole, name);
-  item->setFlags(item->flags() | Qt::ItemIsDragEnabled);
+  item->setFlags(item->flags() | Qt::ItemIsDragEnabled | Qt::ItemIsSelectable);
+  sortTree();
 }
 
 void CurveTreeView::clearCurves() {
@@ -109,7 +146,7 @@ std::vector<QString> CurveTreeView::selectedCurveNames() const {
       names.push_back(full);
     }
   }
-  std::sort(names.begin(), names.end());
+  normalizeCurveNames(names);
   return names;
 }
 
@@ -127,8 +164,7 @@ std::vector<QString> CurveTreeView::selectedCurveNamesRecursive() const {
   for (auto* item : selectedItems()) {
     collect(item);
   }
-  std::sort(names.begin(), names.end());
-  names.erase(std::unique(names.begin(), names.end()), names.end());
+  normalizeCurveNames(names);
   return names;
 }
 
@@ -136,10 +172,54 @@ void CurveTreeView::setValuesColumnHidden(bool hidden) {
   setColumnHidden(kValueColumn, hidden);
 }
 
+void CurveTreeView::setDragSelectionProvider(DragSelectionProvider provider) {
+  drag_selection_provider_ = std::move(provider);
+}
+
+void CurveTreeView::sortTree() {
+  std::function<void(QTreeWidgetItem*)> sort_children = [&](QTreeWidgetItem* item) {
+    item->sortChildren(kNameColumn, Qt::AscendingOrder);
+    for (int i = 0; i < item->childCount(); ++i) {
+      sort_children(item->child(i));
+    }
+  };
+  sort_children(invisibleRootItem());
+}
+
+void CurveTreeView::setDescendantsExpanded(QTreeWidgetItem* item, bool expanded) {
+  for (int i = 0; i < item->childCount(); ++i) {
+    QTreeWidgetItem* child = item->child(i);
+    if (child->childCount() > 0) {
+      child->setExpanded(expanded);
+      setDescendantsExpanded(child, expanded);
+    }
+  }
+}
+
+std::vector<QString> CurveTreeView::selectedCurveNamesForDrag() const {
+  std::vector<QString> names =
+      drag_selection_provider_ != nullptr ? drag_selection_provider_() : selectedCurveNamesRecursive();
+  normalizeCurveNames(names);
+  return names;
+}
+
 void CurveTreeView::mousePressEvent(QMouseEvent* event) {
+  drag_curve_names_.clear();
+  suppress_next_release_ = false;
   if (event->button() == Qt::LeftButton || event->button() == Qt::RightButton) {
     drag_start_pos_ = event->pos();
     drag_button_ = event->button();
+
+    const Qt::KeyboardModifiers selection_modifiers = Qt::ControlModifier | Qt::ShiftModifier | Qt::MetaModifier;
+    QTreeWidgetItem* item = itemAt(event->pos());
+    if (item != nullptr && item->isSelected() && !(event->modifiers() & selection_modifiers)) {
+      drag_curve_names_ = selectedCurveNamesForDrag();
+      if (drag_curve_names_.size() > 1) {
+        suppress_next_release_ = true;
+        event->accept();
+        return;
+      }
+    }
   }
   QTreeWidget::mousePressEvent(event);
 }
@@ -149,14 +229,25 @@ void CurveTreeView::mouseMoveEvent(QMouseEvent* event) {
     QTreeWidget::mouseMoveEvent(event);
     return;
   }
-  if ((event->pos() - drag_start_pos_).manhattanLength() < QApplication::startDragDistance()) {
+  if (!(event->buttons() & drag_button_)) {
+    drag_button_ = Qt::NoButton;
+    drag_curve_names_.clear();
     QTreeWidget::mouseMoveEvent(event);
     return;
   }
+  if ((event->pos() - drag_start_pos_).manhattanLength() < QApplication::startDragDistance()) {
+    if (drag_curve_names_.empty()) {
+      QTreeWidget::mouseMoveEvent(event);
+    } else {
+      event->accept();
+    }
+    return;
+  }
 
-  auto names = selectedCurveNames();
+  auto names = drag_curve_names_.empty() ? selectedCurveNamesForDrag() : drag_curve_names_;
   if (names.empty()) {
     drag_button_ = Qt::NoButton;
+    drag_curve_names_.clear();
     QTreeWidget::mouseMoveEvent(event);
     return;
   }
@@ -178,13 +269,30 @@ void CurveTreeView::mouseMoveEvent(QMouseEvent* event) {
   } else {
     delete mime_data;
     drag_button_ = Qt::NoButton;
+    drag_curve_names_.clear();
     return;
   }
 
   auto* drag = new QDrag(this);
   drag->setMimeData(mime_data);
   drag_button_ = Qt::NoButton;
+  drag_curve_names_.clear();
   drag->exec(Qt::CopyAction | Qt::MoveAction);
+}
+
+void CurveTreeView::mouseReleaseEvent(QMouseEvent* event) {
+  if (suppress_next_release_) {
+    suppress_next_release_ = false;
+    drag_button_ = Qt::NoButton;
+    drag_curve_names_.clear();
+    event->accept();
+    return;
+  }
+  if (event->button() == drag_button_) {
+    drag_button_ = Qt::NoButton;
+    drag_curve_names_.clear();
+  }
+  QTreeWidget::mouseReleaseEvent(event);
 }
 
 }  // namespace PJ
