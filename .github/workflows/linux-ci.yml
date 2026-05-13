@@ -13,8 +13,15 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  pre-commit:
+    if: github.event.pull_request.draft == false
+    uses: ./.github/workflows/pre-commit.yml
+    permissions:
+      contents: read
+
   build:
     if: github.event.pull_request.draft == false
+    needs: pre-commit
     runs-on: ubuntu-22.04
     permissions:
       contents: read

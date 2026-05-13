@@ -13,8 +13,15 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  pre-commit:
+    if: github.event.pull_request.draft == false
+    uses: ./.github/workflows/pre-commit.yml
+    permissions:
+      contents: read
+
   build:
     if: github.event.pull_request.draft == false
+    needs: pre-commit
     runs-on: windows-latest
     # PJ4 v1 is Linux-only by policy (see CLAUDE.md). This job runs as a
     # portability tracker: it surfaces POSIX-isms early without blocking
