@@ -137,6 +137,7 @@ void Theme::setTheme(const QString& name) {
   QSettings().setValue(kThemeSettingsKey, name_);
   rebuildQss();
   emit themeChanged(name_);
+  emit qssChanged();
 }
 
 void Theme::rebuildQss() {

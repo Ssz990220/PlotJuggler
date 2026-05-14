@@ -19,15 +19,17 @@ namespace PJ {
 class ColorPickerPopup;
 class PlotWidget;
 
-// Side panel for editing the curves of a single PlotWidget. The top list
-// shows one row per curve (color swatch + visibility checkbox + name); the
-// detail pane below exposes per-curve width and style controls that operate
-// on the row currently selected in the list. Per-row swatch and visibility
-// changes apply immediately to their owning curve regardless of selection.
+// Side panel listing the curves of a single PlotWidget. One row per
+// curve: color swatch (click for picker) | name | visibility eye |
+// trash. Header strip has a Datasets-style filter + kebab popup with a
+// "Clear all curves" action.
 //
-// Bind via setPlot(plot) / setPlot(nullptr). The panel auto-refreshes when
-// the bound plot's curveListChanged() fires; a destroyed plot is detected
-// via a QObject::destroyed connection.
+// Bind via setPlot(plot) / setPlot(nullptr). The panel auto-refreshes
+// when the bound plot's curveListChanged() fires; a destroyed plot is
+// detected via a QObject::destroyed connection.
+//
+// Width / Line style controls live in the global right-toolbar strip
+// (MainWindow), not here.
 class CurveEditor : public QWidget {
   Q_OBJECT
  public:
@@ -42,25 +44,44 @@ class CurveEditor : public QWidget {
 
  public slots:
   void refresh();
+  // Updates the per-row visibility / trash + header icons to the new
+  // theme's ink.
+  void onStylesheetChanged(QString theme);
 
  private slots:
-  void onListSelectionChanged();
-  void onWidthChanged(int combo_index);
-  void onStyleChanged();
-  void onDeleteClicked();
+  void onFilterChanged(const QString& text);
+
+ protected:
+  // Watches the curves-filter QLineEdit so its FocusIn / FocusOut events
+  // can swap label visibility, mirroring the Datasets header. Also watches
+  // the listWidget viewport so row names can re-elide on resize.
+  bool eventFilter(QObject* watched, QEvent* event) override;
+
+  // Drives the progressive collapse of the Curves header (search +
+  // filter + label hide when too narrow; kebab is always present).
+  // Driven off the panel's own width because the header band's QWidget
+  // can't actually shrink below the sum of its content's natural sizes.
+  void resizeEvent(QResizeEvent* event) override;
 
  private:
-  void setDetailControlsEnabled(bool enabled);
-  void syncControlsToSelectedCurve();
+  // Re-applies the active filter text to the list items (case-insensitive
+  // substring match against the row's curve name). Called after refresh().
+  void applyFilter();
+  // Hides search + filter + label when the header band is too narrow,
+  // keeping the kebab always reachable.
+  void updateHeaderForWidth();
   void appendRow(const QString& curve_name, QColor color, bool visible);
   void onSwatchClicked(const QString& curve_name, QPushButton* swatch);
   void onPickerColorChanged(QColor color);
   void onVisibilityToggled(const QString& curve_name, bool visible);
-  [[nodiscard]] QString selectedCurveName() const;
   void clearActivePicker();
 
   Ui::CurveEditor* ui_;
   PlotWidget* plot_ = nullptr;
+  // Tracks the active theme so per-row visibility-toggle icons can be
+  // rendered in the right ink at row-creation time without having to
+  // walk back up to qApp / Theme. Updated via onStylesheetChanged.
+  QString current_theme_ = QStringLiteral("light");
   QMetaObject::Connection curve_list_connection_;
   QMetaObject::Connection plot_destroyed_connection_;
 

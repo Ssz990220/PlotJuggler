@@ -2,17 +2,20 @@
 
 #include <DockManager.h>
 
-#include <QEvent>
+#include <QFrame>
 #include <QHBoxLayout>
 #include <QIcon>
 #include <QInputDialog>
+#include <QLabel>
 #include <QLineEdit>
 #include <QMouseEvent>
 #include <QPushButton>
-#include <QTabBar>
-#include <QTabWidget>
-#include <QUuid>
-#include <QVector>
+#include <QScrollArea>
+#include <QScrollBar>
+#include <QStackedWidget>
+#include <QStyle>
+#include <QVBoxLayout>
+#include <QWheelEvent>
 #include <algorithm>
 #include <utility>
 
@@ -22,6 +25,43 @@
 namespace PJ {
 
 namespace {
+// Compact tab-strip height. We aim for the tab column's *total* chrome
+// (the strip itself plus the 1-px tabs_separator drawn underneath) to
+// match the Sources/Datasets header bars, which are 24 px and have no
+// separator below. So the strip itself is 23 px and the separator
+// adds the final 1 px → 24 total — keeping the plot content's top
+// edge pixel-aligned with the curve-list content on the left column.
+constexpr int kTabBarHeight = 23;
+// Tab/button footprint inside the bar — flush with the bar height
+// (no breathing room) because tabs have their own coloured backgrounds;
+// any gap would show a strip of bar-background above and below the tab.
+// The [+] and panel-toggle buttons match so the whole row is uniform.
+constexpr int kTabBarButtonSize = 23;
+// Icon size — matches the title bar's 20-px glyph so the tab-strip
+// buttons read at the same visual weight as the rest of the chrome.
+constexpr int kTabBarIconSize = 20;
+
+// QScrollArea variant that redirects vertical wheel input to the
+// horizontal scrollbar. Lets the user wheel-scroll an overflowing
+// tab strip the same way Chrome / VSCode do, without us needing to
+// show a (visually heavy) horizontal scrollbar.
+class HorizontalScrollArea : public QScrollArea {
+ public:
+  using QScrollArea::QScrollArea;
+
+ protected:
+  void wheelEvent(QWheelEvent* event) override {
+    QScrollBar* hbar = horizontalScrollBar();
+    const int delta = event->angleDelta().y();
+    if (hbar != nullptr && delta != 0) {
+      hbar->setValue(hbar->value() - delta);
+      event->accept();
+      return;
+    }
+    QScrollArea::wheelEvent(event);
+  }
+};
+
 // ADS config flags are process-global and must be set before the first
 // CDockManager is instantiated. Call once, lazily.
 void applyAdsConfigOnce() {
@@ -37,132 +77,295 @@ void applyAdsConfigOnce() {
   ads::CDockManager::setConfigFlag(ads::CDockManager::DragPreviewIsDynamic, true);
   done = true;
 }
-
-QString newStateId() {
-  return QUuid::createUuid().toString(QUuid::WithoutBraces);
-}
 }  // namespace
+
+// Small private widget for one tab in the strip. Holds a name label
+// plus a close button. Double-clicking flips the label out for an
+// in-place QLineEdit; pressing Enter commits the rename, Escape or
+// loss of focus reverts to the previous name.
+class PlotTabFrame : public QFrame {
+  Q_OBJECT
+ public:
+  explicit PlotTabFrame(const QString& tab_name, QWidget* parent = nullptr) : QFrame(parent) {
+    setObjectName("plotTabFrame");
+    setProperty("selected", false);
+    setAttribute(Qt::WA_StyledBackground, true);
+    setCursor(Qt::PointingHandCursor);
+    // Fill the bar height exactly — tabs have a colored background, so
+    // any breathing room above or below would render as a visible
+    // 1-px stripe of bar-background flanking the tab.
+    setFixedHeight(kTabBarButtonSize);
+
+    auto* layout = new QHBoxLayout(this);
+    layout->setContentsMargins(8, 0, 4, 0);
+    layout->setSpacing(6);
+
+    label_ = new QLabel(tab_name, this);
+    label_->setAttribute(Qt::WA_TransparentForMouseEvents);
+    layout->addWidget(label_);
+
+    edit_ = new QLineEdit(this);
+    edit_->setObjectName("plotTabRenameEdit");
+    edit_->hide();
+    edit_->installEventFilter(this);
+    connect(edit_, &QLineEdit::returnPressed, this, &PlotTabFrame::commitEdit);
+    layout->addWidget(edit_);
+
+    close_button_ = new QPushButton(this);
+    close_button_->setFlat(true);
+    close_button_->setFixedSize(QSize(16, 16));
+    close_button_->setFocusPolicy(Qt::NoFocus);
+    layout->addWidget(close_button_);
+    connect(close_button_, &QPushButton::clicked, this, &PlotTabFrame::closeRequested);
+  }
+
+  void setName(const QString& tab_name) {
+    label_->setText(tab_name);
+  }
+
+  [[nodiscard]] QString name() const {
+    return label_->text();
+  }
+
+  void setSelected(bool selected) {
+    if (property("selected").toBool() == selected) {
+      return;
+    }
+    setProperty("selected", selected);
+    style()->unpolish(this);
+    style()->polish(this);
+    update();
+  }
+
+  [[nodiscard]] QPushButton* closeButton() const {
+    return close_button_;
+  }
+
+  void enterEditMode() {
+    if (edit_active_) {
+      return;
+    }
+    edit_active_ = true;
+    edit_->setText(label_->text());
+    label_->hide();
+    edit_->show();
+    edit_->setFocus(Qt::OtherFocusReason);
+    edit_->setCursorPosition(edit_->text().length());
+  }
+
+ signals:
+  void clicked();
+  void renameCommitted(const QString& new_name);
+  void closeRequested();
+
+ protected:
+  void mousePressEvent(QMouseEvent* event) override {
+    if (event->button() == Qt::LeftButton) {
+      emit clicked();
+    }
+    QFrame::mousePressEvent(event);
+  }
+
+  void mouseDoubleClickEvent(QMouseEvent* event) override {
+    if (event->button() == Qt::LeftButton) {
+      enterEditMode();
+    }
+    QFrame::mouseDoubleClickEvent(event);
+  }
+
+  bool eventFilter(QObject* watched, QEvent* event) override {
+    if (watched == edit_ && edit_active_) {
+      if (event->type() == QEvent::FocusOut) {
+        // Reverting on focus loss is the user-requested behaviour;
+        // explicit commit only happens on Enter.
+        cancelEdit();
+      } else if (event->type() == QEvent::KeyPress) {
+        if (static_cast<QKeyEvent*>(event)->key() == Qt::Key_Escape) {
+          cancelEdit();
+          return true;
+        }
+      }
+    }
+    return QFrame::eventFilter(watched, event);
+  }
+
+ private slots:
+  void commitEdit() {
+    if (!edit_active_) {
+      return;
+    }
+    edit_active_ = false;
+    const QString new_text = edit_->text();
+    label_->setText(new_text);
+    edit_->hide();
+    label_->show();
+    setFocus(Qt::OtherFocusReason);
+    emit renameCommitted(new_text);
+  }
+
+  void cancelEdit() {
+    if (!edit_active_) {
+      return;
+    }
+    edit_active_ = false;
+    edit_->hide();
+    label_->show();
+  }
+
+ private:
+  QLabel* label_;
+  QLineEdit* edit_;
+  QPushButton* close_button_;
+  bool edit_active_ = false;
+};
 
 TabbedPlotWidget::TabbedPlotWidget(QWidget* parent) : TabbedPlotWidget(QStringLiteral("main"), parent) {}
 
-TabbedPlotWidget::TabbedPlotWidget(QString name, QWidget* parent)
-    : QWidget(parent), state_id_(newStateId()), name_(std::move(name)) {
+TabbedPlotWidget::TabbedPlotWidget(QString name, QWidget* parent) : QWidget(parent), name_(std::move(name)) {
   applyAdsConfigOnce();
-  setContentsMargins(4, 0, 0, 0);
+  setContentsMargins(0, 0, 0, 0);
 
-  auto* main_layout = new QHBoxLayout(this);
-  main_layout->setContentsMargins(0, 0, 0, 0);
+  auto* root_layout = new QVBoxLayout(this);
+  root_layout->setContentsMargins(0, 0, 0, 0);
+  root_layout->setSpacing(0);
 
-  tab_widget_ = new QTabWidget(this);
-  tab_widget_->setTabsClosable(true);
-  tab_widget_->setMovable(true);
+  // Tab strip — outer hbox with two regions:
+  //   * a horizontally scrollable area containing the [+] add button
+  //     and one PlotTabFrame per tab (left-aligned via a trailing
+  //     stretch). When the tabs together exceed the viewport, the
+  //     scroll area shows a horizontal scrollbar instead of squeezing
+  //     the panel buttons off-screen.
+  //   * the three panel-toggle buttons, pinned at the far right.
+  auto* tabs_bar_widget = new QWidget(this);
+  tabs_bar_widget->setObjectName("plotTabsBar");
+  tabs_bar_widget->setContentsMargins(0, 0, 0, 0);
+  auto* outer_layout = new QHBoxLayout(tabs_bar_widget);
+  outer_layout->setContentsMargins(0, 0, 0, 0);
+  outer_layout->setSpacing(0);
 
-  connect(tab_widget_->tabBar(), &QTabBar::tabBarDoubleClicked, this, &TabbedPlotWidget::onRenameCurrentTab);
+  // QScrollArea-based wrapper removed — the scroll area's viewport was
+  // reserving a couple of pixels of vertical chrome that pushed the
+  // tabs and [+] button down inside the 24-px bar, even with both
+  // scrollbar policies set to AlwaysOff. Without it, overflowing tabs
+  // simply squish via QHBoxLayout's default behavior.
+  //
+  //   auto* tabs_scroll = new HorizontalScrollArea(tabs_bar_widget);
+  //   tabs_scroll->setObjectName("plotTabsScrollArea");
+  //   tabs_scroll->setFrameShape(QFrame::NoFrame);
+  //   tabs_scroll->setWidgetResizable(true);
+  //   tabs_scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+  //   tabs_scroll->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+  //   tabs_scroll->setFixedHeight(kTabBarHeight);
+  //   tabs_scroll->setWidget(tabs_inner);
+  //   outer_layout->addWidget(tabs_scroll, 1);
+  auto* tabs_inner = new QWidget(tabs_bar_widget);
+  tabs_inner->setObjectName("plotTabsInner");
+  tabs_inner->setContentsMargins(0, 0, 0, 0);
+  tabs_inner->setFixedHeight(kTabBarHeight);
+  tabs_bar_layout_ = new QHBoxLayout(tabs_inner);
+  tabs_bar_layout_->setContentsMargins(0, 0, 0, 0);
+  tabs_bar_layout_->setSpacing(0);
 
-  main_layout->addWidget(tab_widget_);
-
-  connect(tab_widget_, &QTabWidget::currentChanged, this, &TabbedPlotWidget::onTabWidgetCurrentChanged);
-  connect(tab_widget_, &QTabWidget::tabCloseRequested, this, &TabbedPlotWidget::onTabCloseRequested);
-  connect(tab_widget_->tabBar(), &QTabBar::tabMoved, this, [this]() {
-    if (!restoring_state_) {
-      emit undoableChange();
-    }
-  });
-
-  tab_widget_->tabBar()->installEventFilter(this);
-
-  addTab({});
-
-  button_add_tab_ = new QPushButton("", this);
+  button_add_tab_ = new QPushButton(this);
   button_add_tab_->setFlat(true);
-  button_add_tab_->setFixedSize(QSize(32, 32));
+  button_add_tab_->setFixedSize(QSize(kTabBarButtonSize, kTabBarButtonSize));
+  button_add_tab_->setIconSize(QSize(kTabBarIconSize, kTabBarIconSize));
   button_add_tab_->setFocusPolicy(Qt::NoFocus);
+  connect(button_add_tab_, &QPushButton::clicked, this, &TabbedPlotWidget::onAddTabButtonPressed);
+  tabs_bar_layout_->addWidget(button_add_tab_, 0, Qt::AlignVCenter);
+  tabs_bar_layout_->addStretch(1);
+
+  outer_layout->addWidget(tabs_inner, 1);
+
+  // Panel-toggle buttons sit at the far right of the tab strip and
+  // control the surrounding shell panels (left column, timeline,
+  // right toolbar). Checkable — the icon is a fixed "Dock to <side>"
+  // glyph and the checked state mirrors the panel's visibility (driven
+  // by the MainWindow shell). Placed outside the scroll area so they
+  // remain pinned regardless of how many tabs are open.
+  auto make_panel_button = [this](const char* tip) {
+    auto* button = new QPushButton(this);
+    button->setObjectName(QStringLiteral("plotTabsPanelButton"));
+    button->setFlat(true);
+    button->setCheckable(true);
+    button->setFixedSize(QSize(kTabBarButtonSize, kTabBarButtonSize));
+    button->setIconSize(QSize(kTabBarIconSize, kTabBarIconSize));
+    button->setFocusPolicy(Qt::NoFocus);
+    button->setToolTip(QObject::tr(tip));
+    return button;
+  };
+  button_left_panel_ = make_panel_button(QT_TR_NOOP("Toggle left panel"));
+  button_bottom_panel_ = make_panel_button(QT_TR_NOOP("Toggle bottom panel"));
+  button_right_panel_ = make_panel_button(QT_TR_NOOP("Toggle right panel"));
+  outer_layout->addWidget(button_left_panel_, 0, Qt::AlignVCenter);
+  outer_layout->addWidget(button_bottom_panel_, 0, Qt::AlignVCenter);
+  outer_layout->addWidget(button_right_panel_, 0, Qt::AlignVCenter);
+
+  root_layout->addWidget(tabs_bar_widget);
+
+  // 1px separator — same paint pattern as the title-bar / timeline /
+  // right-toolbar dividers so all chrome lines look identical.
+  auto* tabs_separator = new QFrame(this);
+  tabs_separator->setObjectName("plotTabsSeparator");
+  tabs_separator->setFrameShape(QFrame::NoFrame);
+  tabs_separator->setAutoFillBackground(true);
+  tabs_separator->setFixedHeight(1);
+  root_layout->addWidget(tabs_separator);
+
+  stack_ = new QStackedWidget(this);
+  stack_->setContentsMargins(0, 0, 0, 0);
+  root_layout->addWidget(stack_, 1);
 
   onStylesheetChanged(currentTheme());
-
-  connect(button_add_tab_, &QPushButton::pressed, this, &TabbedPlotWidget::onAddTabButtonPressed);
+  addTab({});
 }
 
 TabbedPlotWidget::~TabbedPlotWidget() = default;
 
-void TabbedPlotWidget::paintEvent(QPaintEvent* event) {
-  QWidget::paintEvent(event);
-  const int margin = 5;
-  const int width_tabbar = tab_widget_->tabBar()->width();
-  const int max_width_tabbar = std::max(0, width() - button_add_tab_->width() - margin);
-  const int button_pos = std::min(width_tabbar + margin, max_width_tabbar);
-  tab_widget_->tabBar()->setMaximumWidth(max_width_tabbar);
-  button_add_tab_->move(QPoint(button_pos, 0));
+PlotDocker* TabbedPlotWidget::currentTab() {
+  return qobject_cast<PlotDocker*>(stack_->currentWidget());
 }
 
-PlotDocker* TabbedPlotWidget::currentTab() {
-  return qobject_cast<PlotDocker*>(tab_widget_->currentWidget());
+int TabbedPlotWidget::dockerCount() const {
+  return static_cast<int>(tabs_.size());
+}
+
+PlotDocker* TabbedPlotWidget::dockerAt(int index) {
+  if (index < 0 || index >= dockerCount()) {
+    return nullptr;
+  }
+  return tabs_[static_cast<std::size_t>(index)].docker;
 }
 
 PlotDocker* TabbedPlotWidget::addTab(QString tab_name) {
   if (tab_name.isEmpty()) {
     tab_name = QString("tab%1").arg(++tab_suffix_count_);
   }
+  PlotDocker* docker = createDocker(tab_name);
+  PlotTabFrame* frame = createTabFrame(tab_name, docker);
 
-  auto* docker = new PlotDocker(tab_name, session_, catalog_, this);
-  connect(docker, &PlotDocker::undoableChange, this, &TabbedPlotWidget::undoableChange);
+  stack_->addWidget(docker);
+  // Insert frame just before the add-button (which is at index 0 after
+  // the stretch we appended) so tabs grow leftward of the [+] button.
+  // Explicit AlignVCenter — same rationale as the [+] button: matches
+  // the 1-px-breathing-room rhythm of the rest of the chrome bars.
+  const int insert_index = static_cast<int>(tabs_.size());
+  tabs_bar_layout_->insertWidget(insert_index, frame, 0, Qt::AlignVCenter);
+  tabs_.push_back({frame, docker});
 
-  tab_widget_->addTab(docker, tab_name);
   emit tabAdded(docker);
 
-  installCloseButton(docker);
-  tab_widget_->setCurrentWidget(docker);
+  stack_->setCurrentWidget(docker);
+  updateSelectionStyle();
+  emit currentTabChanged(docker);
   return docker;
-}
-
-void TabbedPlotWidget::installCloseButton(PlotDocker* docker) {
-  const int index = tab_widget_->indexOf(docker);
-  if (index < 0) {
-    return;
-  }
-  auto* button_widget = new QWidget();
-  auto* layout = new QHBoxLayout(button_widget);
-  layout->setSpacing(2);
-  layout->setContentsMargins(0, 0, 0, 0);
-
-  auto* close_button = new QPushButton();
-  close_button->setIcon(LoadSvg(":/resources/svg/close-button.svg", currentTheme()));
-  close_button->setFixedSize(QSize(16, 16));
-  close_button->setFlat(true);
-  // Capture the dock pointer rather than an index — indexOf resolves the
-  // correct tab at click time even if the tab order has changed.
-  connect(close_button, &QPushButton::pressed, this, [this, docker]() {
-    const int idx = tab_widget_->indexOf(docker);
-    if (idx >= 0) {
-      onTabCloseRequested(idx);
-    }
-  });
-
-  layout->addWidget(close_button);
-  tab_widget_->tabBar()->setTabButton(index, QTabBar::RightSide, button_widget);
 }
 
 void TabbedPlotWidget::setDataServices(SessionManager* session, CatalogModel* catalog) {
   session_ = session;
   catalog_ = catalog;
-  for (int index = 0; index < tab_widget_->count(); ++index) {
-    if (auto* docker = qobject_cast<PlotDocker*>(tab_widget_->widget(index))) {
-      docker->setDataServices(session_, catalog_);
-    }
-  }
-}
-
-void TabbedPlotWidget::onRenameCurrentTab() {
-  const int idx = tab_widget_->tabBar()->currentIndex();
-  bool ok = true;
-  const QString new_name = QInputDialog::getText(
-      this, tr("Change the tab name"), tr("New name:"), QLineEdit::Normal, tab_widget_->tabText(idx), &ok);
-  if (ok) {
-    tab_widget_->setTabText(idx, new_name);
-    if (auto* tab = currentTab()) {
-      tab->setName(new_name);
-    }
-    emit undoableChange();
+  for (const TabEntry& entry : tabs_) {
+    entry.docker->setDataServices(session_, catalog_);
   }
 }
 
@@ -171,71 +374,112 @@ void TabbedPlotWidget::onAddTabButtonPressed() {
   emit undoableChange();
 }
 
-void TabbedPlotWidget::onTabWidgetCurrentChanged(int index) {
-  if (tab_widget_->count() == 0) {
-    if (restoring_state_) {
+void TabbedPlotWidget::onTabFrameClicked(PlotTabFrame* frame) {
+  if (TabEntry* entry = findEntry(frame)) {
+    stack_->setCurrentWidget(entry->docker);
+    updateSelectionStyle();
+    emit currentTabChanged(entry->docker);
+  }
+}
+
+void TabbedPlotWidget::onTabRenameRequested(PlotTabFrame* frame, const QString& new_name) {
+  TabEntry* entry = findEntry(frame);
+  if (entry == nullptr) {
+    return;
+  }
+  entry->docker->setName(new_name);
+  emit undoableChange();
+}
+
+void TabbedPlotWidget::onTabCloseRequested(PlotTabFrame* frame) {
+  TabEntry* entry = findEntry(frame);
+  if (entry == nullptr) {
+    return;
+  }
+  // Always keep at least one tab open.
+  if (tabs_.size() == 1) {
+    onAddTabButtonPressed();
+    entry = findEntry(frame);  // vector reallocated above
+    if (entry == nullptr) {
       return;
     }
-    addTab({});
   }
-  for (int i = 0; i < tab_widget_->count(); ++i) {
-    auto* button = tab_widget_->tabBar()->tabButton(i, QTabBar::RightSide);
-    if (button) {
-      button->setHidden(i != index);
+
+  PlotDocker* docker = entry->docker;
+  PlotTabFrame* frame_widget = entry->frame;
+
+  tabs_.erase(tabs_.begin() + (entry - tabs_.data()));
+
+  stack_->removeWidget(docker);
+  tabs_bar_layout_->removeWidget(frame_widget);
+  frame_widget->deleteLater();
+  docker->deleteLater();
+
+  if (stack_->currentWidget() == nullptr && !tabs_.empty()) {
+    stack_->setCurrentWidget(tabs_.front().docker);
+  }
+  updateSelectionStyle();
+  emit currentTabChanged(qobject_cast<PlotDocker*>(stack_->currentWidget()));
+  emit undoableChange();
+}
+
+TabbedPlotWidget::TabEntry* TabbedPlotWidget::findEntry(PlotTabFrame* frame) {
+  for (TabEntry& entry : tabs_) {
+    if (entry.frame == frame) {
+      return &entry;
     }
   }
+  return nullptr;
 }
 
-void TabbedPlotWidget::onTabCloseRequested(int index) {
-  // Always keep at least one tab open.
-  if (tab_widget_->count() == 1) {
-    onAddTabButtonPressed();
+TabbedPlotWidget::TabEntry* TabbedPlotWidget::findEntry(PlotDocker* docker) {
+  for (TabEntry& entry : tabs_) {
+    if (entry.docker == docker) {
+      return &entry;
+    }
   }
+  return nullptr;
+}
 
-  auto* docker = qobject_cast<PlotDocker*>(tab_widget_->widget(index));
-  tab_widget_->removeTab(index);
-  if (docker) {
-    docker->deleteLater();
-  }
-  if (!restoring_state_) {
-    emit undoableChange();
+void TabbedPlotWidget::updateSelectionStyle() {
+  auto* current = qobject_cast<PlotDocker*>(stack_->currentWidget());
+  for (const TabEntry& entry : tabs_) {
+    entry.frame->setSelected(entry.docker == current);
   }
 }
 
-bool TabbedPlotWidget::eventFilter(QObject* obj, QEvent* event) {
-  QTabBar* tab_bar = tab_widget_->tabBar();
-  if (obj == tab_bar && event->type() == QEvent::MouseButtonPress) {
-    auto* mouse_event = static_cast<QMouseEvent*>(event);
-    const int index = tab_bar->tabAt(mouse_event->pos());
-    tab_bar->setCurrentIndex(index);
-  }
-  return QWidget::eventFilter(obj, event);
+PlotDocker* TabbedPlotWidget::createDocker(const QString& tab_name) {
+  auto* docker = new PlotDocker(tab_name, session_, catalog_, this);
+  connect(docker, &PlotDocker::undoableChange, this, &TabbedPlotWidget::undoableChange);
+  return docker;
+}
+
+PlotTabFrame* TabbedPlotWidget::createTabFrame(const QString& tab_name, PlotDocker* docker) {
+  auto* frame = new PlotTabFrame(tab_name, this);
+  frame->closeButton()->setIcon(LoadSvg(":/resources/svg/close-button.svg", currentTheme()));
+  connect(frame, &PlotTabFrame::clicked, this, [this, frame]() { onTabFrameClicked(frame); });
+  connect(frame, &PlotTabFrame::renameCommitted, this, [this, frame](const QString& new_name) {
+    onTabRenameRequested(frame, new_name);
+  });
+  connect(frame, &PlotTabFrame::closeRequested, this, [this, frame]() { onTabCloseRequested(frame); });
+  // Suppress the unused-warning-on-no-capture by acknowledging docker.
+  (void)docker;
+  return frame;
 }
 
 void TabbedPlotWidget::onStylesheetChanged(QString theme) {
-  if (button_add_tab_) {
+  if (button_add_tab_ != nullptr) {
     button_add_tab_->setIcon(LoadSvg(":/resources/svg/add_tab.svg", theme));
   }
+  // Panel-toggle button icons are owned by MainWindow because their
+  // open/close glyph depends on the live visibility of the target
+  // panel — knowledge this widget intentionally doesn't have.
   const QIcon close_icon = LoadSvg(":/resources/svg/close-button.svg", theme);
-  for (int index = 0; index < tab_widget_->count(); ++index) {
-    if (auto* tab_button = tab_widget_->tabBar()->tabButton(index, QTabBar::RightSide)) {
-      if (auto* close_button = tab_button->findChild<QPushButton*>()) {
-        close_button->setIcon(close_icon);
-      }
+  for (const TabEntry& entry : tabs_) {
+    if (auto* close_btn = entry.frame->closeButton()) {
+      close_btn->setIcon(close_icon);
     }
-    if (auto* docker = qobject_cast<PlotDocker*>(tab_widget_->widget(index))) {
-      docker->onStylesheetChanged(theme);
-    }
-  }
-}
-
-QString TabbedPlotWidget::stateId() const {
-  return state_id_;
-}
-
-void TabbedPlotWidget::setStateId(QString id) {
-  if (!id.isEmpty()) {
-    state_id_ = std::move(id);
+    entry.docker->onStylesheetChanged(theme);
   }
 }
 
@@ -245,18 +489,22 @@ QDomElement TabbedPlotWidget::xmlSaveState(QDomDocument& doc) const {
   tabbed_area.setAttribute(QStringLiteral("name"), name_);
   tabbed_area.setAttribute(QStringLiteral("parent"), QStringLiteral("main_window"));
 
-  for (int index = 0; index < tab_widget_->count(); ++index) {
-    auto* docker = qobject_cast<PlotDocker*>(tab_widget_->widget(index));
-    if (docker == nullptr) {
-      continue;
-    }
-    QDomElement tab_element = docker->xmlSaveState(doc);
-    tab_element.setAttribute(QStringLiteral("tab_name"), tab_widget_->tabText(index));
+  for (const TabEntry& entry : tabs_) {
+    QDomElement tab_element = entry.docker->xmlSaveState(doc);
+    tab_element.setAttribute(QStringLiteral("tab_name"), entry.docker->name());
     tabbed_area.appendChild(tab_element);
   }
 
+  PlotDocker* current = qobject_cast<PlotDocker*>(stack_->currentWidget());
+  int current_index = 0;
+  for (std::size_t i = 0; i < tabs_.size(); ++i) {
+    if (tabs_[i].docker == current) {
+      current_index = static_cast<int>(i);
+      break;
+    }
+  }
   QDomElement current_tab = doc.createElement(QStringLiteral("currentTabIndex"));
-  current_tab.setAttribute(QStringLiteral("index"), tab_widget_->currentIndex());
+  current_tab.setAttribute(QStringLiteral("index"), current_index);
   tabbed_area.appendChild(current_tab);
   return tabbed_area;
 }
@@ -282,89 +530,43 @@ bool TabbedPlotWidget::xmlLoadState(const QDomElement& tabbed_area) {
 
   restoring_state_ = true;
 
-  QVector<PlotDocker*> existing_tabs;
-  for (int index = 0; index < tab_widget_->count(); ++index) {
-    if (auto* docker = qobject_cast<PlotDocker*>(tab_widget_->widget(index))) {
-      existing_tabs.push_back(docker);
-    }
+  // Tear down existing tabs (frames + dockers) before rebuilding.
+  for (TabEntry& entry : tabs_) {
+    stack_->removeWidget(entry.docker);
+    entry.docker->deleteLater();
+    tabs_bar_layout_->removeWidget(entry.frame);
+    entry.frame->deleteLater();
   }
-
-  QVector<PlotDocker*> used_tabs;
-  auto is_used = [&used_tabs](PlotDocker* candidate) { return used_tabs.contains(candidate); };
-  auto find_by_id = [&existing_tabs, &is_used](const QString& id) -> PlotDocker* {
-    if (id.isEmpty()) {
-      return nullptr;
-    }
-    for (PlotDocker* docker : existing_tabs) {
-      if (docker != nullptr && !is_used(docker) && docker->stateId() == id) {
-        return docker;
-      }
-    }
-    return nullptr;
-  };
-  auto find_by_name = [&existing_tabs, &is_used](const QString& name) -> PlotDocker* {
-    if (name.isEmpty()) {
-      return nullptr;
-    }
-    for (PlotDocker* docker : existing_tabs) {
-      if (docker != nullptr && !is_used(docker) && docker->name() == name) {
-        return docker;
-      }
-    }
-    return nullptr;
-  };
+  tabs_.clear();
+  tab_suffix_count_ = 0;
 
   for (qsizetype target_index = 0; target_index < target_tabs.size(); ++target_index) {
     const QDomElement tab_element = target_tabs.at(target_index);
     const QString tab_name =
         tab_element.attribute(QStringLiteral("tab_name"), QStringLiteral("tab%1").arg(target_index + 1));
-
-    PlotDocker* docker = find_by_id(tab_element.attribute(QStringLiteral("id")));
-    if (docker == nullptr) {
-      docker = find_by_name(tab_name);
-    }
-    if (docker == nullptr && target_index < existing_tabs.size() && !is_used(existing_tabs.at(target_index))) {
-      docker = existing_tabs.at(target_index);
-    }
-    if (docker == nullptr) {
-      docker = addTab(tab_name);
-    }
-
-    used_tabs.push_back(docker);
+    PlotDocker* docker = addTab(tab_name);
     docker->setStateId(tab_element.attribute(QStringLiteral("id")));
     docker->setName(tab_name);
-
-    const int current_index = tab_widget_->indexOf(docker);
-    if (current_index != target_index) {
-      tab_widget_->removeTab(current_index);
-      tab_widget_->insertTab(static_cast<int>(target_index), docker, tab_name);
-      installCloseButton(docker);
-    } else {
-      tab_widget_->setTabText(current_index, tab_name);
-    }
-
     if (!docker->xmlLoadState(tab_element)) {
       restoring_state_ = false;
       return false;
     }
   }
 
-  for (int index = tab_widget_->count() - 1; index >= 0; --index) {
-    auto* docker = qobject_cast<PlotDocker*>(tab_widget_->widget(index));
-    if (docker != nullptr && !used_tabs.contains(docker)) {
-      tab_widget_->removeTab(index);
-      docker->deleteLater();
-    }
+  const int requested_index = tabbed_area.firstChildElement(QStringLiteral("currentTabIndex"))
+                                  .attribute(QStringLiteral("index"), QStringLiteral("0"))
+                                  .toInt();
+  const int max_index = dockerCount() - 1;
+  const int current_index = std::clamp(requested_index, 0, std::max(0, max_index));
+  if (PlotDocker* docker = dockerAt(current_index)) {
+    stack_->setCurrentWidget(docker);
+    updateSelectionStyle();
+    emit currentTabChanged(docker);
   }
-
-  int current_index = tabbed_area.firstChildElement(QStringLiteral("currentTabIndex"))
-                          .attribute(QStringLiteral("index"), QStringLiteral("0"))
-                          .toInt();
-  current_index = std::clamp(current_index, 0, tab_widget_->count() - 1);
-  tab_widget_->setCurrentIndex(current_index);
-  onTabWidgetCurrentChanged(current_index);
   restoring_state_ = false;
   return true;
 }
 
 }  // namespace PJ
+
+#include "TabbedPlotWidget.moc"

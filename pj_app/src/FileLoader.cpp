@@ -1,11 +1,9 @@
 #include "FileLoader.h"
 
-#include <QFileDialog>
 #include <QFileInfo>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QLoggingCategory>
-#include <QMessageBox>
 #include <QSettings>
 #include <QString>
 #include <QStringList>
@@ -14,6 +12,8 @@
 #include <string_view>
 
 #include "DialogPresenter.h"
+#include "LoadFileDialog.h"
+#include "MessageBox.h"
 #include "pj_base/data_source_protocol.h"
 #include "pj_base/dataset.hpp"
 #include "pj_datastore/engine.hpp"
@@ -76,11 +76,17 @@ void FileLoader::openFromDialog(QWidget* dialog_parent) {
   const QString last_dir = settings.value(kLastDirKey, QString()).toString();
   const QString filter = extensions_.buildFileFilter();
 
-  const QString path = QFileDialog::getOpenFileName(dialog_parent, tr("Load data file"), last_dir, filter);
+  LoadFileDialog dialog(dialog_parent, last_dir, filter);
+  if (dialog.exec() != QDialog::Accepted) {
+    return;
+  }
+  const QString path = dialog.selectedPath();
   if (path.isEmpty()) {
     return;
   }
   settings.setValue(kLastDirKey, QFileInfo(path).absolutePath());
+  // TODO: route dialog.addPrefix() / dialog.mergeMetadata() through to
+  // the loader once the loader pipeline supports those flags.
   loadFile(path, dialog_parent);
 }
 
@@ -89,7 +95,7 @@ bool FileLoader::loadFile(const QString& path, QWidget* dialog_parent) {
   const auto fail = [&](const QString& reason) -> bool {
     qCWarning(lcFileLoader).noquote() << reason;
     if (dialog_parent != nullptr) {
-      QMessageBox::warning(dialog_parent, tr("Load failed"), reason);
+      MessageBox::warning(dialog_parent, tr("Load failed"), reason);
     }
     emit fileLoadFailed(path, reason);
     return false;

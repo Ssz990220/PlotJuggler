@@ -48,14 +48,11 @@ ExtensionDetailDialog::ExtensionDetailDialog(const Extension& ext, const QString
   ui_->meta_lbl->setText(meta.join("  \u2022  "));
 
   // ── Tags (chips) ── dynamic: created per extension ────────────────────────
+  // Visual style lives in resources/stylesheet_*.qss under
+  // QLabel#extTagChip — keyed off objectName.
   for (int i = 0; i < ext.tags.size(); ++i) {
     auto* chip = new QLabel(ext.tags[i], ui_->tags_container);
-    chip->setStyleSheet(
-        "QLabel { background: palette(alternate-base);"
-        "         border: 1px solid palette(mid);"
-        "         border-radius: 3px;"
-        "         padding: 1px 6px;"
-        "         font-size: 11px; }");
+    chip->setObjectName("extTagChip");
     ui_->tags_layout->insertWidget(i, chip);
   }
 
@@ -75,15 +72,10 @@ ExtensionDetailDialog::ExtensionDetailDialog(const Extension& ext, const QString
   });
 
   if (!installed || has_update) {
-    const QString lbl = has_update ? "Update \u2B06" : "Install";
-    const QString style =
-        has_update
-            ? "QPushButton { background:#e6a817; color:white; border:none; border-radius:4px; padding:4px 14px; }"
-              "QPushButton:hover { background:#f0b82a; }"
-            : "QPushButton { background:#2196f3; color:white; border:none; border-radius:4px; padding:4px 14px; }"
-              "QPushButton:hover { background:#42a5f5; }";
-    ui_->action_btn->setText(lbl);
-    ui_->action_btn->setStyleSheet(style);
+    // Object name selects the matching #extButtonInstall /
+    // #extButtonUpdate rule in resources/stylesheet_*.qss.
+    ui_->action_btn->setText(has_update ? "Update \u2B06" : "Install");
+    ui_->action_btn->setObjectName(has_update ? "extButtonUpdate" : "extButtonInstall");
     ui_->action_btn->setVisible(true);
     connect(ui_->action_btn, &QPushButton::clicked, this, [this]() {
       emit installRequested();

@@ -535,21 +535,7 @@ TEST_F(ExtensionManagerTest, UninstallUnknownExtensionEmitsError) {
 
 // update() backs up the current version and re-installs from the registry.
 // The new version is registered with the correct version string after completion.
-//
-// Linux-only: ExtensionManager::update() takes the in-place rename + promote
-// path on Linux and the staging-then-apply-on-restart path on Windows. The
-// Linux path emits installFinished synchronously and populates backupDir();
-// the Windows path defers both to applyPendingInstalls() at next startup, so
-// every assertion in this test would fire before the staging step has produced
-// any visible effect. A Windows-equivalent test using the staging flow + a
-// follow-up applyPendingInstalls() call is tracked as future work; until then
-// we skip on Windows to keep CI green without weakening Linux coverage.
 TEST_F(ExtensionManagerTest, UpdateReinstallsWithNewVersion) {
-#ifdef Q_OS_WIN
-  GTEST_SKIP() << "update() takes the staging-and-apply-on-restart path on Windows; "
-               << "this test asserts the Linux direct-promote semantics. Windows-equivalent "
-               << "test using the staging flow is pending.";
-#endif
   // Ensure clean backup state before test (in case previous run failed mid-test).
   QDir(PlatformUtils::backupDir() + "/mock-data-source-1.0.0").removeRecursively();
 
@@ -584,15 +570,7 @@ TEST_F(ExtensionManagerTest, UpdateReinstallsWithNewVersion) {
 //
 // ext_dir is placed under the same filesystem root as backupDir() (~/.plotjuggler/)
 // so that QDir::rename() can do an atomic move without a cross-device copy.
-//
-// Linux-only: see rationale on UpdateReinstallsWithNewVersion. The Windows path
-// of update() does not touch backupDir() — backups for the staging flow live in
-// pending_dir_ instead.
 TEST_F(ExtensionManagerTest, UpdateBacksUpOldVersionOnSuccess) {
-#ifdef Q_OS_WIN
-  GTEST_SKIP() << "update() does not populate backupDir() on Windows; "
-               << "backups for the staging path live in pending_dir_.";
-#endif
   // Ensure clean backup state before test (in case previous run failed mid-test).
   QDir(PlatformUtils::backupDir() + "/mock-data-source-1.0.0").removeRecursively();
 
@@ -634,15 +612,7 @@ TEST_F(ExtensionManagerTest, UpdateBacksUpOldVersionOnSuccess) {
 //
 // ext_dir is placed under the same filesystem root as backupDir() (~/.plotjuggler/)
 // so that QDir::rename() can do an atomic move without a cross-device copy.
-//
-// Linux-only: the entire backup/recovery contract this test verifies (backupDir(),
-// installError message containing the backup path) belongs to the Linux update
-// path. The Windows staging path uses a different recovery model (quarantine
-// inside pending_dir_) which a separate test should cover.
 TEST_F(ExtensionManagerTest, UpdateKeepsBackupWhenInstallFails) {
-#ifdef Q_OS_WIN
-  GTEST_SKIP() << "Linux-only: backup/recovery via backupDir() is the Linux update contract.";
-#endif
   QTemporaryDir local_ext_dir(QDir(PlatformUtils::backupDir()).absoluteFilePath("../test_ext_XXXXXX"));
   ASSERT_TRUE(local_ext_dir.isValid());
 
@@ -1192,42 +1162,6 @@ TEST_F(ExtensionManagerTest, ApplyPendingUninstallsIsNoOpForEmptyDirectory) {
 // [8] Platform detection
 // ---------------------------------------------------------------------------
 
-// Compile-time expected values for the build host. Assertions below compare
-// PlatformUtils::currentPlatform() and isWindows() against these so the same
-// tests are valid (and meaningful) on every supported host. Update this block
-// when adding a new platform tuple to PlatformUtils.
-constexpr const char* expectedPlatformKey() {
-#if defined(Q_OS_WIN)
-#if defined(Q_PROCESSOR_ARM_64)
-  return "windows-arm64";
-#else
-  return "windows-x86_64";
-#endif
-#elif defined(Q_OS_MACOS)
-#if defined(Q_PROCESSOR_ARM_64)
-  return "macos-arm64";
-#else
-  return "macos-x86_64";
-#endif
-#elif defined(Q_OS_LINUX)
-#if defined(Q_PROCESSOR_ARM_64)
-  return "linux-arm64";
-#else
-  return "linux-x86_64";
-#endif
-#else
-  return "";
-#endif
-}
-
-constexpr bool expectedIsWindows() {
-#ifdef Q_OS_WIN
-  return true;
-#else
-  return false;
-#endif
-}
-
 // currentPlatform() must return a non-empty string in "<os>-<arch>" format.
 TEST(PlatformDetectionTest, CurrentPlatformHasExpectedFormat) {
   const QString platform = PlatformUtils::currentPlatform();
@@ -1235,37 +1169,35 @@ TEST(PlatformDetectionTest, CurrentPlatformHasExpectedFormat) {
   EXPECT_TRUE(platform.contains('-')) << "Expected '<os>-<arch>' format, got: " << platform.toStdString();
 }
 
-// PlatformUtils::currentPlatform() must match what we know the build host to be
-// at compile time. Catches drift between the runtime detector and the build-time
-// platform tuple on any supported host.
-TEST(PlatformDetectionTest, CurrentPlatformMatchesBuildHost) {
-  EXPECT_EQ(PlatformUtils::currentPlatform(), QString::fromLatin1(expectedPlatformKey()));
+// On the primary Linux x86_64 build/CI host, the reported platform must match the
+// key used in the registry fixture so that install() can resolve the download artifact.
+TEST(PlatformDetectionTest, LinuxX86PlatformMatchesRegistryKey) {
+  EXPECT_EQ(PlatformUtils::currentPlatform(), "linux-x86_64");
 }
 
 // Verify that PlatformUtils::currentPlatform() returns a key that would exist
 // in a typical registry entry, so install() can resolve the download artifact.
 TEST(PlatformDetectionTest, CurrentPlatformResolvesRegistryArtifact) {
-  // Test fixture with fake URLs covering every supported platform — we only
-  // check that the current host's key is present.
+  // Test fixture with fake URLs - we only check that the platform key exists
   Extension ext;
   ext.id = "test-extension";
   ext.version = "1.0.0";
-  for (const char* key :
-       {"linux-x86_64", "linux-arm64", "windows-x86_64", "windows-arm64", "macos-x86_64", "macos-arm64"}) {
-    ext.platforms[QString::fromLatin1(key)] = {
-        QStringLiteral("https://example.com/test/extension-%1.zip").arg(QString::fromLatin1(key)),
-        "sha256:0000000000000000000000000000000000000000000000000000000000000000"};
-  }
+  ext.platforms["linux-x86_64"] = {
+      "https://example.com/test/extension-linux-x86_64.zip",
+      "sha256:0000000000000000000000000000000000000000000000000000000000000000"};
+  ext.platforms["windows-x86_64"] = {
+      "https://example.com/test/extension-windows-x64.zip",
+      "sha256:0000000000000000000000000000000000000000000000000000000000000000"};
 
   EXPECT_TRUE(ext.platforms.contains(PlatformUtils::currentPlatform()))
       << "Platform '" << PlatformUtils::currentPlatform().toStdString()
       << "' is not listed in the mock-data-source registry entry";
 }
 
-// PlatformUtils::isWindows() must agree with the compile-time platform of the
-// build host: true on Windows, false everywhere else.
-TEST(PlatformDetectionTest, IsWindowsMatchesBuildHost) {
-  EXPECT_EQ(PlatformUtils::isWindows(), expectedIsWindows());
+// On Linux, install() must write directly to extensions_dir (no staging).
+// isWindows() must return false to confirm the code path is exercised.
+TEST(PlatformDetectionTest, IsWindowsReturnsFalseOnLinux) {
+  EXPECT_FALSE(PlatformUtils::isWindows());
 }
 
 }  // namespace

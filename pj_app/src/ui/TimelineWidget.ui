@@ -2,12 +2,6 @@
 <ui version="4.0">
  <class>TimelineWidget</class>
  <widget class="QWidget" name="TimelineWidget">
-  <property name="maximumSize">
-   <size>
-    <width>16777215</width>
-    <height>40</height>
-   </size>
-  </property>
   <layout class="QHBoxLayout" name="layoutTimescale" stretch="0,1,0">
    <property name="leftMargin">
     <number>0</number>
@@ -32,13 +26,13 @@
      <property name="minimumSize">
       <size>
        <width>80</width>
-       <height>30</height>
+       <height>24</height>
       </size>
      </property>
      <property name="maximumSize">
       <size>
        <width>200</width>
-       <height>30</height>
+       <height>24</height>
       </size>
      </property>
      <property name="font">
@@ -73,14 +67,20 @@
        <widget class="QPushButton" name="playbackLoop">
         <property name="minimumSize">
          <size>
-          <width>28</width>
-          <height>28</height>
+          <width>24</width>
+          <height>24</height>
          </size>
         </property>
         <property name="maximumSize">
          <size>
-          <width>28</width>
-          <height>28</height>
+          <width>24</width>
+          <height>24</height>
+         </size>
+        </property>
+        <property name="iconSize">
+         <size>
+          <width>20</width>
+          <height>20</height>
          </size>
         </property>
         <property name="focusPolicy">
@@ -91,12 +91,6 @@
         </property>
         <property name="text">
          <string/>
-        </property>
-        <property name="iconSize">
-         <size>
-          <width>22</width>
-          <height>22</height>
-         </size>
         </property>
         <property name="checkable">
          <bool>true</bool>
@@ -110,14 +104,20 @@
        <widget class="QPushButton" name="buttonPlay">
         <property name="minimumSize">
          <size>
-          <width>28</width>
-          <height>28</height>
+          <width>24</width>
+          <height>24</height>
          </size>
         </property>
         <property name="maximumSize">
          <size>
-          <width>28</width>
-          <height>28</height>
+          <width>24</width>
+          <height>24</height>
+         </size>
+        </property>
+        <property name="iconSize">
+         <size>
+          <width>20</width>
+          <height>20</height>
          </size>
         </property>
         <property name="focusPolicy">
@@ -128,12 +128,6 @@
         </property>
         <property name="text">
          <string/>
-        </property>
-        <property name="iconSize">
-         <size>
-          <width>26</width>
-          <height>26</height>
-         </size>
         </property>
         <property name="checkable">
          <bool>true</bool>
@@ -154,13 +148,13 @@
         <property name="minimumSize">
          <size>
           <width>0</width>
-          <height>40</height>
+          <height>24</height>
          </size>
         </property>
         <property name="maximumSize">
          <size>
           <width>16777215</width>
-          <height>40</height>
+          <height>24</height>
          </size>
         </property>
         <property name="focusPolicy">
@@ -179,52 +173,39 @@
      <property name="maximumSize">
       <size>
        <width>16777215</width>
-       <height>40</height>
+       <height>24</height>
       </size>
      </property>
      <property name="frameShape">
-      <enum>QFrame::StyledPanel</enum>
+      <enum>QFrame::NoFrame</enum>
      </property>
      <property name="frameShadow">
       <enum>QFrame::Raised</enum>
      </property>
      <layout class="QHBoxLayout" name="horizontalLayout">
       <property name="spacing">
-       <number>6</number>
+       <number>4</number>
       </property>
       <property name="leftMargin">
-       <number>4</number>
+       <number>0</number>
       </property>
       <property name="topMargin">
-       <number>2</number>
+       <number>0</number>
       </property>
       <property name="rightMargin">
-       <number>4</number>
+       <number>0</number>
       </property>
       <property name="bottomMargin">
-       <number>2</number>
+       <number>0</number>
       </property>
       <item>
-       <widget class="QLabel" name="label">
-        <property name="font">
-         <font>
-          <weight>75</weight>
-          <bold>true</bold>
-         </font>
-        </property>
-        <property name="text">
-         <string>Speed:</string>
-        </property>
+       <widget class="QLabel" name="labelSpeed">
+        <property name="toolTip"><string>Speed</string></property>
+        <property name="text"><string/></property>
        </widget>
       </item>
       <item>
-       <widget class="QDoubleSpinBox" name="playbackRate">
-        <property name="minimumSize">
-         <size>
-          <width>0</width>
-          <height>30</height>
-         </size>
-        </property>
+       <widget class="PJ::DoubleScrubber" name="playbackRate">
         <property name="toolTip">
          <string>Rate (speed multiplier)</string>
         </property>
@@ -246,26 +227,13 @@
        </widget>
       </item>
       <item>
-       <widget class="QLabel" name="label_2">
-        <property name="font">
-         <font>
-          <weight>75</weight>
-          <bold>true</bold>
-         </font>
-        </property>
-        <property name="text">
-         <string>Step size:</string>
-        </property>
+       <widget class="QLabel" name="labelStep">
+        <property name="toolTip"><string>Step size</string></property>
+        <property name="text"><string/></property>
        </widget>
       </item>
       <item>
-       <widget class="QDoubleSpinBox" name="playbackStep">
-        <property name="minimumSize">
-         <size>
-          <width>0</width>
-          <height>30</height>
-         </size>
-        </property>
+       <widget class="PJ::DoubleScrubber" name="playbackStep">
         <property name="toolTip">
          <string>Step size to move the time tracker (use the LEFT/RIGHT arrows)</string>
         </property>
@@ -290,6 +258,16 @@
    <class>PJ::RealSlider</class>
    <extends>QSlider</extends>
    <header>pj_widgets/RealSlider.h</header>
+  </customwidget>
+  <customwidget>
+   <class>PJ::IntScrubber</class>
+   <extends>QWidget</extends>
+   <header>ui/IntScrubber.h</header>
+  </customwidget>
+  <customwidget>
+   <class>PJ::DoubleScrubber</class>
+   <extends>QWidget</extends>
+   <header>ui/DoubleScrubber.h</header>
   </customwidget>
  </customwidgets>
  <connections/>

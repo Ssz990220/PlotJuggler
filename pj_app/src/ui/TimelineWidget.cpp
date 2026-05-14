@@ -1,14 +1,54 @@
 #include "ui/TimelineWidget.h"
 
-#include <QDoubleSpinBox>
+#include <QByteArray>
+#include <QFile>
+#include <QImage>
+#include <QLabel>
+#include <QPainter>
+#include <QPixmap>
 #include <QPushButton>
+#include <QSettings>
+#include <QSvgRenderer>
+#include <Qt>
 
 #include "pj_runtime/PlaybackEngine.h"
 #include "pj_widgets/RealSlider.h"
 #include "pj_widgets/SvgUtil.h"
+#include "ui/DoubleScrubber.h"
 #include "ui_TimelineWidget.h"
 
 namespace PJ {
+
+namespace {
+
+// Single source of truth for icon size on the timeline strip — applies to
+// the loop / play QPushButtons (via setIconSize) and the Speed / Buffer /
+// Step QLabels (via renderSvgPixmap). Change here, all icons move together.
+constexpr QSize kTimelineIconSize{20, 20};
+
+// Rasterise a monochrome Material SVG at a given logical size, honouring the
+// caller widget's devicePixelRatio so QLabel::setPixmap stays crisp on HiDPI
+// screens. Applies the same #000000 / #ffffff recolour as LoadSvg.
+QPixmap renderSvgPixmap(const QString& path, const QString& theme, const QSize& logical_size, qreal dpr) {
+  QFile file(path);
+  if (!file.open(QFile::ReadOnly | QFile::Text)) {
+    return {};
+  }
+  QByteArray svg_data = file.readAll();
+  file.close();
+  RecolorSvgInk(svg_data, theme.contains("light"));
+  QSvgRenderer renderer(svg_data);
+  const QSize physical = logical_size * dpr;
+  QImage image(physical, QImage::Format_ARGB32);
+  image.fill(Qt::transparent);
+  QPainter painter(&image);
+  renderer.render(&painter);
+  painter.end();
+  QPixmap pm = QPixmap::fromImage(image);
+  pm.setDevicePixelRatio(dpr);
+  return pm;
+}
+}  // namespace
 
 TimelineWidget::TimelineWidget(QWidget* parent) : QWidget(parent), ui_(new Ui::TimelineWidget) {
   ui_->setupUi(this);
@@ -19,13 +59,14 @@ TimelineWidget::TimelineWidget(QWidget* parent) : QWidget(parent), ui_(new Ui::T
 
   connect(ui_->timeSlider, &RealSlider::realValueChanged, this, &TimelineWidget::onSliderValueChanged);
   connect(ui_->buttonPlay, &QPushButton::toggled, this, &TimelineWidget::onPlayToggled);
+  // Icon-only sync: swap play_arrow ↔ pause whenever the toggle flips,
+  // regardless of whether the change came from the user or from
+  // onEnginePlayingChanged below. Kept separate from onPlayToggled so
+  // the visual swap runs even while updating_from_engine_ is set.
+  connect(ui_->buttonPlay, &QPushButton::toggled, this, [this]() { applyPlayPauseIcon(currentTheme()); });
   connect(ui_->playbackLoop, &QPushButton::toggled, this, &TimelineWidget::onLoopToggled);
-  connect(
-      ui_->playbackRate, static_cast<void (QDoubleSpinBox::*)(double)>(&QDoubleSpinBox::valueChanged), this,
-      &TimelineWidget::onRateChanged);
-  connect(
-      ui_->playbackStep, static_cast<void (QDoubleSpinBox::*)(double)>(&QDoubleSpinBox::valueChanged), this,
-      &TimelineWidget::onStepChanged);
+  connect(ui_->playbackRate, &DoubleScrubber::valueChanged, this, &TimelineWidget::onRateChanged);
+  connect(ui_->playbackStep, &DoubleScrubber::valueChanged, this, &TimelineWidget::onStepChanged);
 }
 
 TimelineWidget::~TimelineWidget() {
@@ -125,7 +166,17 @@ void TimelineWidget::onStylesheetChanged(QString theme) {
 
 void TimelineWidget::applyIcons(QString theme) {
   ui_->playbackLoop->setIcon(LoadSvg(":/resources/svg/loop.svg", theme));
-  ui_->buttonPlay->setIcon(LoadSvg(":/resources/svg/play_arrow.svg", theme));
+  ui_->playbackLoop->setIconSize(kTimelineIconSize);
+  applyPlayPauseIcon(theme);
+  ui_->buttonPlay->setIconSize(kTimelineIconSize);
+  const qreal dpr = devicePixelRatioF();
+  ui_->labelSpeed->setPixmap(renderSvgPixmap(":/resources/svg/acute.svg", theme, kTimelineIconSize, dpr));
+  ui_->labelStep->setPixmap(renderSvgPixmap(":/resources/svg/move_selection_right.svg", theme, kTimelineIconSize, dpr));
+}
+
+void TimelineWidget::applyPlayPauseIcon(const QString& theme) {
+  const char* icon = ui_->buttonPlay->isChecked() ? ":/resources/svg/pause.svg" : ":/resources/svg/play_arrow.svg";
+  ui_->buttonPlay->setIcon(LoadSvg(QString::fromLatin1(icon), theme));
 }
 
 }  // namespace PJ

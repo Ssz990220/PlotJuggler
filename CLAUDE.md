@@ -14,39 +14,21 @@ Top-level layout (monorepo, per plan §0 and §5):
 
 ```
 PJ4/
-├── 3rdparty/                # vendored CMake dependencies only
-├── plotjuggler_core/        # git submodule — Level 0 foundation (incl. pj_scene_protocol SDK)
-├── pj_scene2D/               # 2D scene module: core logic, Qt widgets, demos, tests
+├── plotjuggler_core/        # git submodule — Level 0 foundation
+├── pj_media/                # 2D/video pipeline (FFmpeg + QRhi)
 ├── pj_marketplace/          # extension install/manage
 ├── pj_dialog_host/          # Qt host for plugin-provided dialogs
 ├── pj_scripting/            # Lua today, Python pluggable later (not yet created)
-├── pj_runtime/              # services layer (Qt allowed, no Qt6::Widgets link)
-├── pj_widgets/              # reusable Qt widgets and UI helpers
-├── pj_plotting/             # Qwt plotting module: core adapters, Qt widgets, tests
+├── pj_app_core/             # services layer (Qt allowed, no QWidget)
+├── pj_plot_widgets/         # Qwt plots (lifted from PJ3); placeholder docks in v1
+├── pj_media_widgets_qt/     # QRhi 2D viewer (wraps pj_media) (not yet created)
 ├── pj_3d_widgets/           # QRhi 3D (post-v1; not yet created)
 ├── pj_app/                  # main window shell
 ├── resources/               # SVG icons (ported from PJ3) + resources.qrc
 └── PJ4_PLAN.md
 ```
 
-The widget families (`pj_plotting`, `pj_scene2D/widgets` via the `pj_scene2d_widgets` target, and future `pj_3d_widgets`) never depend on each other. Shared reusable Qt controls/helpers live in `pj_widgets`; shared runtime state flows through the `IDataWidget` contract exposed by `pj_runtime`.
-
-### Placement rules
-
-When adding files, use the owning module rather than creating new top-level folders. If the requested location does not match these boundaries, ask before proceeding and suggest the closest fit.
-
-- `plotjuggler_core/`: read-only submodule foundation (`pj_base`, `pj_datastore`, `pj_plugins`, `pj_scene_protocol`). Change it only when explicitly working in that submodule.
-- `pj_runtime/`: app runtime services and contracts: session/data lifecycle, catalog, playback, extension catalog, future workspace/transform/toolbox services. No concrete widgets and no `Qt6::Widgets` link.
-- `pj_app/`: executable shell only: `MainWindow`, menus/toolbars/status bar, app dialogs, and wiring between runtime services and concrete widgets. Do not put reusable controls or business logic here.
-- `pj_widgets/`: reusable Qt widgets and UI helpers that could be used by another Qt app. Depends only on Qt and the C++ standard library; no dependencies on `pj_runtime`, `pj_app`, or other PJ modules.
-- `pj_plotting/`: Qwt plotting feature family. Put datastore adapters and plotting logic in `core/`, Qt/Qwt widgets in `widget/`, and focused tests in `tests/`.
-- `pj_scene2D/`: 2D media/scene feature family. Put independent media logic in `core/`, Qt viewer widgets in `widgets/`, runnable examples in `demos/`, and tests in `tests/`.
-- `pj_marketplace/`: extension registry, download, install/manage services, and marketplace UI.
-- `pj_dialog_host/`: Qt host/binding for plugin-provided dialogs. General app dialogs stay in `pj_app`; reusable dialog controls stay in `pj_widgets`.
-- `pj_scripting/`: future language-agnostic scripting engine. Do not place scripting code under `pj_app` or widget modules unless it is strictly UI/editor code.
-- `pj_3d_widgets/`: future 3D visualization widget family. Do not add 3D code elsewhere unless the plan explicitly names a shared lower-level module.
-- `resources/`: shared app resources registered in `resources.qrc`; module-local test/demo assets should live with that module.
-- `3rdparty/`: vendored source dependencies added via CMake `add_subdirectory`. Conan/system dependencies do not belong here.
+The three widget families (`pj_plot_widgets`, `pj_media_widgets_qt`, `pj_3d_widgets`) are **siblings** — they never depend on each other. They share only the `IDataWidget` contract exposed by `pj_app_core`.
 
 ## Key sources
 
@@ -57,9 +39,14 @@ Foundation libraries live in the submodule at `./plotjuggler_core/`:
 - `pj_base` — vocabulary types
 - `pj_datastore` — columnar store + `ObjectStore` + `DerivedEngine`
 - `pj_plugins` — ABI + runtime for extensions
-- `pj_scene_protocol` — canonical schema + Foxglove `ImageAnnotations` Protobuf codec (writer + reader); SDK boundary for plugin authors producing or consuming markers / scene primitives. `pj_base`-only deps.
 
 These are consumed as-is. Changes to `plotjuggler_core` happen in that repo, not here.
+
+### Root-owned core modules
+
+- `pj_media` — 2D/video pipeline (FFmpeg + QRhi)
+- `pj_marketplace` — extension install/manage
+- `pj_dialog_host` — Qt host for plugin-provided dialogs
 
 Initialize / update the submodule with:
 
@@ -155,7 +142,7 @@ Parity-plus with PJ3: file + streaming sources, 11 built-in transforms, undo/red
 ## Workflow notes
 
 - Architectural questions → consult `PJ4_PLAN.md` first; escalate if the plan is silent or contradictory.
-- New modules must respect the dependency rules in plan §5 (widget families are siblings; `pj_runtime` has no concrete widget implementation and does not link `Qt6::Widgets`).
+- New modules must respect the dependency rules in plan §5 (widget families are siblings; `pj_app_core` has no `QWidget`).
 
 ### Commit policy
 
@@ -165,6 +152,6 @@ Parity-plus with PJ3: file + streaming sources, 11 built-in transforms, undo/red
 
 - **Default: port, don't rewrite.** For every UI element, widget, or helper we need, check `~/ws_plotjuggler/PlotJuggler/` first. If PJ3 has something that works, port it. Greenfield rewrites need a real reason.
 - **Style changes are expected; widget names are not.** When porting, adapt file/class names and member conventions to plotjuggler_core style (`PascalCase.{h,cpp}`, `PJ::` namespace, `trailing_underscore_` members, Google C++ / 2-space / 120-col). But **preserve the `objectName` of widgets inside `.ui` files verbatim** (e.g. `buttonLoadDatafile`, `frameFile`, `checkBoxAddPrefix`, `displayTime`, `playbackLoop`, `streamingSpinBox`) so existing layout files, stylesheet selectors, and user muscle memory keep working — unless I explicitly ask you to rename one.
-- **Rebind data paths.** PJ3 wiring into `PlotDataMapRef` / `TransformsMap` becomes wiring into `pj_runtime` services (`CatalogModel`, `SessionManager`, `PlaybackEngine`, `TransformRegistry`). That's the one systematic rewrite.
+- **Rebind data paths.** PJ3 wiring into `PlotDataMapRef` / `TransformsMap` becomes wiring into `pj_app_core` services (`CatalogModel`, `SessionManager`, `PlaybackEngine`, `TransformRegistry`). That's the one systematic rewrite.
 - **Proactively surface improvement opportunities.** If you see a chance to improve separation of concerns, reusability, testability, or remove duplication while you're porting — flag it and **ask for approval before changing**. Don't silently refactor, and don't silently skip obvious wins. The bar is: "is there a cleaner shape that we'd regret not taking?" If yes, ask.
 - **Don't fix what isn't broken.** Code that already reads cleanly and does the right thing gets ported close to verbatim (modulo style). Save the refactor energy for real problems.

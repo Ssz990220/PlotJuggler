@@ -172,18 +172,24 @@ PlotWidgetBase::PlotWidgetBase(QWidget* parent) : QWidget(parent) {
 
   const bool use_opengl = QSettings().value("Preferences::use_opengl", true).toBool();
 
+  // TODO(theme): QwtPlotCanvas uses a backing-store paint path that ignores
+  //   QSS background rules, so the canvas needs a solid palette colour here.
+  //   Currently baked to the light-theme ${dark_background} value (#F5F5F5);
+  //   should be wired to react on themeChanged. See resources/visual_guidelines.md §5.
+  const QColor canvas_bg(0xf5, 0xf5, 0xf5);
+
   QWidget* abs_canvas = nullptr;
   if (use_opengl) {
     auto* canvas = new QwtPlotOpenGLCanvas();
     canvas->setFrameStyle(QFrame::Box | QFrame::Plain);
     canvas->setLineWidth(1);
-    canvas->setPalette(Qt::white);
+    canvas->setPalette(canvas_bg);
     abs_canvas = canvas;
   } else {
     auto* canvas = new QwtPlotCanvas();
     canvas->setFrameStyle(QFrame::Box | QFrame::Plain);
     canvas->setLineWidth(1);
-    canvas->setPalette(Qt::white);
+    canvas->setPalette(canvas_bg);
     canvas->setPaintAttribute(QwtPlotCanvas::BackingStore, true);
     abs_canvas = canvas;
   }
@@ -198,7 +204,7 @@ PlotWidgetBase::PlotWidgetBase(QWidget* parent) : QWidget(parent) {
   plot_->setMinimumSize(100, 100);
   plot_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
   plot_->canvas()->setMouseTracking(true);
-  plot_->setCanvasBackground(Qt::white);
+  plot_->setCanvasBackground(Qt::transparent);
   plot_->setAxisAutoScale(QwtPlot::yLeft, true);
   plot_->setAxisAutoScale(QwtPlot::xBottom, true);
   plot_->axisScaleEngine(QwtPlot::xBottom)->setAttribute(QwtScaleEngine::Floating, true);
@@ -371,7 +377,7 @@ void PlotWidgetBase::setLegendSize(int size) {
 }
 
 void PlotWidgetBase::setLegendAlignment(Qt::Alignment alignment) {
-  plot_->legend->setAlignmentInCanvas(Qt::Alignment(Qt::AlignTop | alignment));
+  plot_->legend->setAlignmentInCanvas(alignment);
 }
 
 void PlotWidgetBase::setLegendVisible(bool visible) {

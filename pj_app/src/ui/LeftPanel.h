@@ -2,21 +2,14 @@
 
 #include <QWidget>
 
-QT_BEGIN_NAMESPACE
-class QFrame;
-class QPushButton;
-QT_END_NAMESPACE
-
 namespace Ui {
 class LeftPanel;
 }
 
 namespace PJ {
 
-// Stacked collapsible sections for File / Streaming / Publishers. Emits
-// high-level user-intent signals — MainWindow wires them to services.
-// Collapse state is persisted to QSettings under the PJ3-compatible keys
-// ("MainWindow.hiddenFileFrame" etc.).
+// "Sources" section: file load + streaming source. Emits high-level
+// user-intent signals — MainWindow wires them to services.
 class LeftPanel : public QWidget {
   Q_OBJECT
  public:
@@ -26,19 +19,14 @@ class LeftPanel : public QWidget {
  signals:
   void loadDataRequested();
   void reloadDataRequested();
-  // Carries the popup anchor (button's bottom-left in global coords).
-  void recentDataRequested(QPoint global_pos);
-  void loadLayoutRequested();
-  void saveLayoutRequested();
-  // Carries the popup anchor (button's bottom-left in global coords).
-  void recentLayoutRequested(QPoint global_pos);
-  void addPrefixToggled(bool enabled);
-  void mergeDataToggled(bool enabled);
+  // Emitted when the user picks a path from the recent-files menu in
+  // the Input header. MainWindow connects this to FileLoader::loadFile.
+  void recentFileSelected(QString path);
   void streamingStartToggled(bool started);
-  void streamingPauseToggled(bool paused);
-  void streamingBufferChanged(int seconds);
   void streamingSourceChanged(QString source);
-  void streamingOptionsRequested();
+  // Buffer length (seconds) for the streaming source. Persisted to
+  // QSettings; emitted when the user adjusts the inline scrubber.
+  void streamingBufferChanged(int seconds);
 
  public slots:
   void onStylesheetChanged(QString theme);
@@ -47,11 +35,8 @@ class LeftPanel : public QWidget {
   void setStreamingSources(const QStringList& names);
   void setReloadEnabled(bool enabled);
   void setRecentEnabled(bool enabled);
-  void setRecentLayoutEnabled(bool enabled);
 
  private:
-  void toggleSection(QFrame* frame, QPushButton* button, const char* settings_key);
-  void loadCollapseStateFromSettings();
   void applyIcons(QString theme);
 
   Ui::LeftPanel* ui_;

@@ -4,12 +4,27 @@
 #include <cstdlib>
 
 #include "MainWindow.h"
+#include "Style.h"
+#include "WidgetTuner.h"
 
 int main(int argc, char* argv[]) {
+  // Pin to Fusion (under our Style proxy) before constructing
+  // QApplication so widgets that read the style at construction time
+  // don't end up with the platform's native style (KDE Breeze, GNOME
+  // Adwaita, etc.) which silently overrides QSS on QMenu and other
+  // popups. Style additionally suppresses default dialog-button icons
+  // and the underline-mnemonic decoration.
+  QApplication::setStyle(new PJ::Style(QStringLiteral("Fusion")));
   QApplication app(argc, argv);
   QCoreApplication::setOrganizationName(QStringLiteral("PlotJuggler"));
   QCoreApplication::setApplicationName(QStringLiteral("PlotJuggler4"));
   QApplication::setApplicationDisplayName(QStringLiteral("PlotJuggler 4"));
+
+  // WidgetTuner: app-wide Polish-event filter that side-steps QSS
+  // specificity battles by directly tagging menus and palette-painting
+  // combo popups.
+  auto* tuner = new PJ::WidgetTuner(&app);
+  qApp->installEventFilter(tuner);
 
   QCommandLineParser parser;
   parser.setApplicationDescription(QStringLiteral("PlotJuggler 4"));

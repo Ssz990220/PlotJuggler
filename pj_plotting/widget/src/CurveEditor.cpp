@@ -3,100 +3,204 @@
 #include <qwt_plot_curve.h>
 #include <qwt_text.h>
 
-#include <QCheckBox>
+#include <QEvent>
 #include <QHBoxLayout>
 #include <QLabel>
+#include <QLineEdit>
 #include <QListWidget>
 #include <QListWidgetItem>
+#include <QMenu>
 #include <QPen>
 #include <QPoint>
 #include <QPushButton>
-#include <QRadioButton>
-#include <QSignalBlocker>
 #include <QString>
+#include <QToolButton>
+#include <QWidgetAction>
 
 #include "pj_plotting/PlotWidget.h"
 #include "pj_plotting/PlotWidgetBase.h"
 #include "pj_widgets/ColorPickerPopup.h"
+#include "pj_widgets/ElidingLabel.h"
+#include "pj_widgets/SvgUtil.h"
 #include "ui_CurveEditor.h"
 
 namespace PJ {
 
 namespace {
 
-// Inline-row layout: [swatch | visibility | name].
-constexpr int kSwatchSize = 16;
-constexpr int kRowSpacing = 6;
-constexpr int kRowMargin = 2;
+// Inline-row geometry. Every inner widget sits flush with the row's
+// outer border — no internal padding. The swatch is a square anchored
+// to the left, eye + trash are squares anchored to the right, all
+// scaling to the row's height so they maintain 1:1 aspect. The name
+// takes whatever horizontal space is left.
+constexpr int kRowHeight = 20;
+constexpr int kRowSpacing = 2;
 
 constexpr auto kCurveNameRole = Qt::UserRole;
 
-// Maps the comboBoxWidth index (4 entries) to the actual pen width applied
-// to the curve. Matches the enum values in PlotWidgetBase::LineWidth.
-[[nodiscard]] double widthForComboIndex(int index) {
-  switch (index) {
-    case 0:
-      return 1.0;
-    case 1:
-      return 1.5;
-    case 2:
-      return 2.0;
-    case 3:
-      return 3.0;
-    default:
-      return 1.0;
-  }
-}
+constexpr auto kVisibilityOnPath = ":/resources/svg/visibility.svg";
+constexpr auto kVisibilityOffPath = ":/resources/svg/visibility_off.svg";
+constexpr auto kTrashIconPath = ":/resources/svg/trash.svg";
 
-// Inverse of widthForComboIndex — selects the closest combo entry to the
-// curve's current pen width so syncControlsToSelectedCurve has a defined
-// initial state even when the pen width was set programmatically to a value
-// that doesn't match any combo entry exactly.
-[[nodiscard]] int comboIndexForWidth(double width) {
-  if (width >= 2.5) {
-    return 3;  // 3.0
-  }
-  if (width >= 1.75) {
-    return 2;  // 2.0
-  }
-  if (width >= 1.25) {
-    return 1;  // 1.5
-  }
-  return 0;  // 1.0
-}
+// Property keys tagged onto per-row QToolButtons so onStylesheetChanged
+// can find them via findChildren and re-tint without rebuilding rows.
+constexpr auto kVisibilityButtonProperty = "pj.curveEditor.visibilityButton";
+constexpr auto kTrashButtonProperty = "pj.curveEditor.trashButton";
 
-// Stylesheet for the per-row color swatch. Border keeps the fill visible on
-// either light or dark themes; pointing-hand cursor advertises clickability.
+// Stylesheet for the per-row color swatch. Borderless sharp-edged square —
+// the fill alone advertises the curve color, pointing-hand cursor signals
+// clickability.
 [[nodiscard]] QString swatchStyleSheet(QColor color) {
-  return QStringLiteral("background-color: %1; border: 1px solid #444; border-radius: 3px;").arg(color.name());
+  return QStringLiteral("background-color: %1; border: none; border-radius: 0;").arg(color.name());
 }
+
+// Custom row widget. Uses explicit geometry instead of a QHBoxLayout so
+// the eye + trash icons pin to the right edge regardless of available
+// width — they never get pushed out, no jitter while resizing, and the
+// name takes the leftover middle (or hides). The swatch is left-anchored,
+// the buttons are right-anchored, the name fills (or vanishes from) the
+// gap between them.
+class CurveRowWidget : public QWidget {
+ public:
+  CurveRowWidget(QPushButton* swatch, ElidingLabel* name, QToolButton* eye, QToolButton* trash, QWidget* parent)
+      : QWidget(parent), swatch_(swatch), name_(name), eye_(eye), trash_(trash) {
+    swatch_->setParent(this);
+    name_->setParent(this);
+    eye_->setParent(this);
+    trash_->setParent(this);
+    setAttribute(Qt::WA_TransparentForMouseEvents, false);
+  }
+
+  [[nodiscard]] QSize sizeHint() const override {
+    // Width is whatever the listWidget viewport gives us; the row's
+    // height stays fixed so QListWidget sizes the item consistently.
+    return {0, kRowHeight};
+  }
+
+ protected:
+  void resizeEvent(QResizeEvent* event) override {
+    QWidget::resizeEvent(event);
+    const int h = height();
+    const int total_w = width();
+
+    // Every inner widget is a square of side `h` (the row height), so
+    // each one is 1:1 and flush with the top + bottom borders. The
+    // swatch anchors left, the two action buttons anchor right.
+    swatch_->setGeometry(0, 0, h, h);
+
+    const int trash_x = total_w - h;
+    trash_->setGeometry(trash_x, 0, h, h);
+    const int eye_x = trash_x - kRowSpacing - h;
+    eye_->setGeometry(eye_x, 0, h, h);
+
+    // Name lives between the swatch and the eye. If the gap is too
+    // small to be readable, hide it — eye + trash stay put.
+    const int name_x = h + kRowSpacing;
+    const int name_right = eye_x - kRowSpacing;
+    const int name_width = name_right - name_x;
+    if (name_width < 1) {
+      if (name_->isVisible()) {
+        name_->setVisible(false);
+      }
+      return;
+    }
+    if (!name_->isVisible()) {
+      name_->setVisible(true);
+    }
+    name_->setGeometry(name_x, 0, name_width, h);
+  }
+
+ private:
+  QPushButton* swatch_;
+  ElidingLabel* name_;
+  QToolButton* eye_;
+  QToolButton* trash_;
+};
 
 }  // namespace
 
 CurveEditor::CurveEditor(QWidget* parent) : QWidget(parent), ui_(new Ui::CurveEditor) {
   ui_->setupUi(this);
 
-  connect(ui_->listWidget, &QListWidget::itemSelectionChanged, this, &CurveEditor::onListSelectionChanged);
-  connect(
-      ui_->comboBoxWidth, static_cast<void (QComboBox::*)(int)>(&QComboBox::currentIndexChanged), this,
-      &CurveEditor::onWidthChanged);
-
-  // Each radio routes through the same slot; the slot reads the currently-
-  // checked button to find the new style. Avoids one connect-per-button-per-
-  // style mapping inline.
-  for (QRadioButton* radio :
-       {ui_->radioLines, ui_->radioDots, ui_->radioLinesAndDots, ui_->radioSticks, ui_->radioSteps,
-        ui_->radioStepsInverted}) {
-    connect(radio, &QRadioButton::toggled, this, [this](bool checked) {
-      if (checked) {
-        onStyleChanged();
+  // Curves header: filter line edit + kebab menu, mirroring the Datasets
+  // header. The kebab currently hosts a single "Clear all curves" action;
+  // future panel-level options (sort, hide-invisible, etc.) hang here.
+  auto* curves_menu = new QMenu(this);
+  curves_menu->setObjectName(QStringLiteral("PJMenu"));
+  auto* clear_all_button = new QPushButton(tr("Clear all curves"), curves_menu);
+  clear_all_button->setFlat(true);
+  clear_all_button->setProperty("destructive", true);
+  clear_all_button->setIcon(LoadSvg(":/resources/svg/trash.svg", current_theme_));
+  connect(clear_all_button, &QPushButton::clicked, this, [this, curves_menu]() {
+    curves_menu->hide();
+    if (plot_ == nullptr) {
+      return;
+    }
+    // Snapshot curve names first — removeCurve fires curveListChanged which
+    // mutates the underlying list, so we can't iterate it live.
+    QStringList names;
+    for (const auto& info : plot_->curveList()) {
+      if (info.curve != nullptr) {
+        names << info.curve->title().text();
       }
-    });
-  }
+    }
+    for (const QString& name : names) {
+      plot_->removeCurve(name);
+    }
+    plot_->replot();
+    emit plot_->undoableChange();
+  });
+  auto* clear_all_action = new QWidgetAction(curves_menu);
+  clear_all_action->setDefaultWidget(clear_all_button);
+  curves_menu->addAction(clear_all_action);
 
-  connect(ui_->buttonDeleteCurve, &QPushButton::clicked, this, &CurveEditor::onDeleteClicked);
+  connect(ui_->buttonCurvesMenu, &QToolButton::clicked, this, [this, curves_menu]() {
+    // Right-align the popup with the kebab: open at the button's bottom-
+    // left, then shift left by (menu_width - button_width) so the menu's
+    // right edge sits flush with the button's right edge. menu->width()
+    // is only meaningful after popup() lays out, so we reposition after
+    // the initial show — popup() is non-blocking.
+    auto* btn = ui_->buttonCurvesMenu;
+    const QPoint bottom_left = btn->mapToGlobal(QPoint(0, btn->height()));
+    curves_menu->popup(bottom_left);
+    const int shift = curves_menu->width() - btn->width();
+    if (shift > 0) {
+      curves_menu->move(bottom_left.x() - shift, bottom_left.y());
+    }
+  });
+  connect(ui_->lineEditCurvesFilter, &QLineEdit::textChanged, this, &CurveEditor::onFilterChanged);
+  // Enter while typing drops focus — restores any sibling header chrome
+  // via the focus-out branch of eventFilter without a stray click.
+  connect(ui_->lineEditCurvesFilter, &QLineEdit::returnPressed, ui_->lineEditCurvesFilter, &QLineEdit::clearFocus);
+  ui_->lineEditCurvesFilter->installEventFilter(this);
+  // Lock the header row to its natural height so hiding label/kebab on
+  // filter focus doesn't shift the line edit vertically.
+  ui_->widgetLabelCurves->layout()->activate();
+  ui_->widgetLabelCurves->setFixedHeight(ui_->widgetLabelCurves->layout()->sizeHint().height());
 
-  setDetailControlsEnabled(false);
+  // Progressive collapse runs off CurveEditor::resizeEvent (our own
+  // width), not off the header band's QWidget — the band can't shrink
+  // below the sum of its content's natural sizes, so it would never
+  // trigger a hide threshold on its own.
+  ui_->listWidget->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+  // Adjust mode tells the view to re-issue per-item geometry on resize
+  // (otherwise items keep their first-laid-out width and the rows never
+  // shrink with the viewport).
+  ui_->listWidget->setResizeMode(QListView::Adjust);
+  // Rows sit flush against each other — no inter-item gap.
+  ui_->listWidget->setSpacing(0);
+
+  // QHBoxLayout's minimumSize is the sum of every child's natural
+  // minimum. The QLabel ("Curves") and the QLineEdit have non-zero
+  // implicit minimums, which would keep the header band — and the
+  // CurveEditor as a whole — from ever shrinking past ~96 px. Zero
+  // them out so the layout can actually collapse and our resizeEvent
+  // threshold has something to act on.
+  setMinimumWidth(0);
+  ui_->widgetLabelCurves->setMinimumWidth(0);
+  ui_->labelCurves->setMinimumWidth(0);
+  ui_->lineEditCurvesFilter->setMinimumWidth(0);
+  ui_->listWidget->setMinimumWidth(0);
 }
 
 CurveEditor::~CurveEditor() {
@@ -121,8 +225,6 @@ void CurveEditor::setPlot(PlotWidget* plot) {
       plot_ = nullptr;
       clearActivePicker();
       ui_->listWidget->clear();
-      setDetailControlsEnabled(false);
-      ui_->buttonDeleteCurve->setEnabled(false);
     });
   }
   refresh();
@@ -136,8 +238,6 @@ void CurveEditor::refresh() {
   clearActivePicker();
 
   if (plot_ == nullptr) {
-    setDetailControlsEnabled(false);
-    ui_->buttonDeleteCurve->setEnabled(false);
     return;
   }
 
@@ -147,153 +247,68 @@ void CurveEditor::refresh() {
     }
     appendRow(info.curve->title().text(), info.curve->pen().color(), info.curve->isVisible());
   }
-
-  // No row is selected after a clear → controls disabled, button greyed out.
-  setDetailControlsEnabled(false);
-  ui_->buttonDeleteCurve->setEnabled(false);
-}
-
-void CurveEditor::onListSelectionChanged() {
-  const bool has_selection = !ui_->listWidget->selectedItems().isEmpty();
-  setDetailControlsEnabled(has_selection);
-  ui_->buttonDeleteCurve->setEnabled(has_selection);
-  if (has_selection) {
-    syncControlsToSelectedCurve();
-  }
-}
-
-void CurveEditor::onWidthChanged(int combo_index) {
-  if (plot_ == nullptr) {
-    return;
-  }
-  const QString name = selectedCurveName();
-  if (name.isEmpty()) {
-    return;
-  }
-  plot_->setCurveLineWidth(name, widthForComboIndex(combo_index));
-}
-
-void CurveEditor::onStyleChanged() {
-  if (plot_ == nullptr) {
-    return;
-  }
-  const QString name = selectedCurveName();
-  if (name.isEmpty()) {
-    return;
-  }
-  PlotWidgetBase::CurveStyle style = PlotWidgetBase::kLines;
-  if (ui_->radioDots->isChecked()) {
-    style = PlotWidgetBase::kDots;
-  } else if (ui_->radioLinesAndDots->isChecked()) {
-    style = PlotWidgetBase::kLinesAndDots;
-  } else if (ui_->radioSticks->isChecked()) {
-    style = PlotWidgetBase::kSticks;
-  } else if (ui_->radioSteps->isChecked()) {
-    style = PlotWidgetBase::kSteps;
-  } else if (ui_->radioStepsInverted->isChecked()) {
-    style = PlotWidgetBase::kStepsInverted;
-  }
-  plot_->setCurveStyle(name, style);
-}
-
-void CurveEditor::onDeleteClicked() {
-  if (plot_ == nullptr) {
-    return;
-  }
-  const QString name = selectedCurveName();
-  if (name.isEmpty()) {
-    return;
-  }
-  // PlotWidget::removeCurve fires curveListChanged → refresh() rebuilds the
-  // list and clears selection. The detail-pane disable is handled there.
-  plot_->removeCurve(name);
-  plot_->replot();
-  emit plot_->undoableChange();
-}
-
-void CurveEditor::setDetailControlsEnabled(bool enabled) {
-  ui_->comboBoxWidth->setEnabled(enabled);
-  ui_->frameStyle->setEnabled(enabled);
-}
-
-void CurveEditor::syncControlsToSelectedCurve() {
-  if (plot_ == nullptr) {
-    return;
-  }
-  const QString name = selectedCurveName();
-  if (name.isEmpty()) {
-    return;
-  }
-  const auto* info = plot_->curveFromTitle(name);
-  if (info == nullptr || info->curve == nullptr) {
-    return;
-  }
-  const QwtPlotCurve* curve = info->curve;
-
-  QSignalBlocker block_combo(ui_->comboBoxWidth);
-  QSignalBlocker block_lines(ui_->radioLines);
-  QSignalBlocker block_dots(ui_->radioDots);
-  QSignalBlocker block_both(ui_->radioLinesAndDots);
-  QSignalBlocker block_sticks(ui_->radioSticks);
-  QSignalBlocker block_steps(ui_->radioSteps);
-  QSignalBlocker block_steps_inv(ui_->radioStepsInverted);
-
-  ui_->comboBoxWidth->setCurrentIndex(comboIndexForWidth(curve->pen().widthF()));
-  switch (PlotWidget::qwtStyleToCurveStyle(curve)) {
-    case PlotWidgetBase::kLines:
-      ui_->radioLines->setChecked(true);
-      break;
-    case PlotWidgetBase::kDots:
-      ui_->radioDots->setChecked(true);
-      break;
-    case PlotWidgetBase::kLinesAndDots:
-      ui_->radioLinesAndDots->setChecked(true);
-      break;
-    case PlotWidgetBase::kSticks:
-      ui_->radioSticks->setChecked(true);
-      break;
-    case PlotWidgetBase::kSteps:
-      ui_->radioSteps->setChecked(true);
-      break;
-    case PlotWidgetBase::kStepsInverted:
-      ui_->radioStepsInverted->setChecked(true);
-      break;
-  }
+  // Preserve the active filter across refreshes.
+  applyFilter();
 }
 
 void CurveEditor::appendRow(const QString& curve_name, QColor color, bool visible) {
   auto* item = new QListWidgetItem();
   item->setData(kCurveNameRole, curve_name);
 
-  auto* row_widget = new QWidget();
-  auto* layout = new QHBoxLayout(row_widget);
-  layout->setContentsMargins(kRowMargin, kRowMargin, kRowMargin, kRowMargin);
-  layout->setSpacing(kRowSpacing);
-
-  auto* swatch = new QPushButton(row_widget);
-  swatch->setFixedSize(kSwatchSize, kSwatchSize);
+  // Children are constructed without a parent — CurveRowWidget's ctor
+  // reparents them in one place so resizeEvent can pin geometry directly
+  // (sizes scale to the row height, so no setFixedSize here).
+  auto* swatch = new QPushButton();
   swatch->setCursor(Qt::PointingHandCursor);
   swatch->setFlat(true);
   swatch->setStyleSheet(swatchStyleSheet(color));
-  swatch->setToolTip(tr("Click to change curve color"));
   connect(swatch, &QPushButton::clicked, this, [this, curve_name, swatch]() { onSwatchClicked(curve_name, swatch); });
 
-  auto* visibility = new QCheckBox(row_widget);
+  auto* visibility = new QToolButton();
+  // The objectName drives the curveVisibilityToggle QSS rule that strips
+  // QToolButton's default hover / checked background so the eye icon
+  // appears as a plain ink glyph regardless of state.
+  visibility->setObjectName(QStringLiteral("curveVisibilityToggle"));
+  visibility->setProperty(kVisibilityButtonProperty, curve_name);
+  visibility->setCheckable(true);
+  visibility->setAutoRaise(true);
+  visibility->setFocusPolicy(Qt::NoFocus);
+  visibility->setIconSize(QSize(kRowHeight, kRowHeight));
   visibility->setChecked(visible);
+  visibility->setIcon(LoadSvg(visible ? kVisibilityOnPath : kVisibilityOffPath, current_theme_));
   visibility->setToolTip(tr("Toggle curve visibility"));
-  connect(visibility, &QCheckBox::toggled, this, [this, curve_name](bool checked) {
+  connect(visibility, &QToolButton::toggled, this, [this, curve_name, visibility](bool checked) {
+    visibility->setIcon(LoadSvg(checked ? kVisibilityOnPath : kVisibilityOffPath, current_theme_));
     onVisibilityToggled(curve_name, checked);
   });
 
-  auto* name_label = new QLabel(curve_name, row_widget);
+  auto* name_label = new ElidingLabel();
+  name_label->setObjectName(QStringLiteral("curveNameLabel"));
+  // Curve names are typically topic paths (`/foo/bar/leaf`); elide from
+  // the left so the meaningful leaf stays visible as the row narrows.
+  name_label->setElideMode(Qt::ElideLeft);
+  name_label->setFullText(curve_name);
 
-  layout->addWidget(swatch);
-  layout->addWidget(visibility);
-  layout->addWidget(name_label);
-  layout->addStretch(1);
+  auto* trash = new QToolButton();
+  trash->setObjectName(QStringLiteral("curveTrashToggle"));
+  trash->setProperty(kTrashButtonProperty, curve_name);
+  trash->setAutoRaise(true);
+  trash->setFocusPolicy(Qt::NoFocus);
+  trash->setIconSize(QSize(kRowHeight, kRowHeight));
+  trash->setIcon(LoadSvg(kTrashIconPath, current_theme_));
+  trash->setToolTip(tr("Remove this curve from its plot"));
+  connect(trash, &QToolButton::clicked, this, [this, curve_name]() {
+    if (plot_ == nullptr) {
+      return;
+    }
+    plot_->removeCurve(curve_name);
+    plot_->replot();
+    emit plot_->undoableChange();
+  });
 
+  auto* row_widget = new CurveRowWidget(swatch, name_label, visibility, trash, /*parent=*/nullptr);
   ui_->listWidget->addItem(item);
-  item->setSizeHint(row_widget->sizeHint());
+  item->setSizeHint(QSize(0, kRowHeight));
   ui_->listWidget->setItemWidget(item, row_widget);
 }
 
@@ -343,12 +358,69 @@ void CurveEditor::onVisibilityToggled(const QString& curve_name, bool visible) {
   plot_->setCurveVisible(curve_name, visible);
 }
 
-QString CurveEditor::selectedCurveName() const {
-  const QList<QListWidgetItem*> selected = ui_->listWidget->selectedItems();
-  if (selected.isEmpty()) {
-    return {};
+void CurveEditor::onStylesheetChanged(QString theme) {
+  current_theme_ = std::move(theme);
+  // Header chrome icons: search glyph + kebab.
+  ui_->buttonSearchCurves->setIcon(LoadSvg(":/resources/svg/search_light.svg", current_theme_));
+  ui_->buttonCurvesMenu->setIcon(LoadSvg(":/resources/svg/more_vert.svg", current_theme_));
+  // Re-tint every row's visibility + trash toggles to the new theme ink.
+  // The buttons are owned by the row widgets stored as itemWidget on each
+  // QListWidgetItem; QObject::findChildren walks that subtree.
+  for (int i = 0; i < ui_->listWidget->count(); ++i) {
+    QWidget* row = ui_->listWidget->itemWidget(ui_->listWidget->item(i));
+    if (row == nullptr) {
+      continue;
+    }
+    for (auto* button : row->findChildren<QToolButton*>()) {
+      if (button->property(kVisibilityButtonProperty).isValid()) {
+        button->setIcon(LoadSvg(button->isChecked() ? kVisibilityOnPath : kVisibilityOffPath, current_theme_));
+      } else if (button->property(kTrashButtonProperty).isValid()) {
+        button->setIcon(LoadSvg(kTrashIconPath, current_theme_));
+      }
+    }
   }
-  return selected.first()->data(kCurveNameRole).toString();
+}
+
+void CurveEditor::onFilterChanged(const QString& /*text*/) {
+  applyFilter();
+}
+
+void CurveEditor::applyFilter() {
+  const QString needle = ui_->lineEditCurvesFilter->text().trimmed();
+  for (int i = 0; i < ui_->listWidget->count(); ++i) {
+    QListWidgetItem* item = ui_->listWidget->item(i);
+    const QString curve_name = item->data(kCurveNameRole).toString();
+    const bool match = needle.isEmpty() || curve_name.contains(needle, Qt::CaseInsensitive);
+    item->setHidden(!match);
+  }
+}
+
+bool CurveEditor::eventFilter(QObject* watched, QEvent* event) {
+  const QEvent::Type type = event->type();
+  if ((type == QEvent::FocusIn || type == QEvent::FocusOut) && watched == ui_->lineEditCurvesFilter) {
+    // Focus expands the filter into the label's space. Kebab stays
+    // visible — it never gets pushed out.
+    const bool focused = (type == QEvent::FocusIn);
+    ui_->labelCurves->setVisible(!focused);
+  }
+  return QWidget::eventFilter(watched, event);
+}
+
+void CurveEditor::resizeEvent(QResizeEvent* event) {
+  QWidget::resizeEvent(event);
+  updateHeaderForWidth();
+}
+
+void CurveEditor::updateHeaderForWidth() {
+  // When the panel narrows past the point where a usable filter would
+  // fit, hide the filter + search icon. The "Curves" label stays as
+  // the section title; the kebab is always visible — it never gets
+  // pushed out. Filter-focus still hides the label to widen the input
+  // (handled in eventFilter).
+  constexpr int kFilterHideBelow = 140;
+  const bool wide_enough = width() >= kFilterHideBelow;
+  ui_->buttonSearchCurves->setVisible(wide_enough);
+  ui_->lineEditCurvesFilter->setVisible(wide_enough);
 }
 
 }  // namespace PJ

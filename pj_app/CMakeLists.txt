@@ -1,23 +1,59 @@
+find_package(Qt6 REQUIRED COMPONENTS Core Gui Widgets Test)
+
 add_executable(pj_app
     src/main.cpp
     src/DialogPresenter.cpp
     src/DialogPresenter.h
     src/FileLoader.cpp
     src/FileLoader.h
+    src/LoadFileDialog.cpp
+    src/LoadFileDialog.h
     src/MainWindow.cpp
     src/MainWindow.h
     src/MainWindow.ui
+    src/Dialog.cpp
+    src/Dialog.h
+    src/Dialog.ui
+    src/MessageBox.cpp
+    src/MessageBox.h
+    src/SaveFileDialog.cpp
+    src/SaveFileDialog.h
+    src/Style.h
+    src/WidgetTuner.cpp
+    src/WidgetTuner.h
     src/PreferencesDialog.cpp
     src/PreferencesDialog.h
     src/PreferencesDialog.ui
     src/Theme.cpp
     src/Theme.h
+    src/DebugUi.cpp
+    src/DebugUi.h
+    src/TitleBar.cpp
+    src/TitleBar.h
+    src/TitleBar.ui
     src/ui/CurveListPanel.cpp
     src/ui/CurveListPanel.h
     src/ui/CurveListPanel.ui
+    src/ui/ToggleSwitch.cpp
+    src/ui/ToggleSwitch.h
     src/ui/LeftPanel.cpp
     src/ui/LeftPanel.h
     src/ui/LeftPanel.ui
+    src/ui/DiagnosticsCard.cpp
+    src/ui/DiagnosticsCard.h
+    src/ui/DiagnosticsCard.ui
+    src/ui/DiagnosticsPopup.cpp
+    src/ui/DiagnosticsPopup.h
+    src/ui/DiagnosticsPopup.ui
+    src/ui/DiagnosticsDetailDialog.cpp
+    src/ui/DiagnosticsDetailDialog.h
+    src/ui/DiagnosticsDetailDialog.ui
+    src/ui/DoubleScrubber.cpp
+    src/ui/DoubleScrubber.h
+    src/ui/IntScrubber.cpp
+    src/ui/IntScrubber.h
+    src/ui/ScrubberBase.cpp
+    src/ui/ScrubberBase.h
     src/ui/TimelineWidget.cpp
     src/ui/TimelineWidget.h
     src/ui/TimelineWidget.ui

@@ -1,21 +1,75 @@
 //------- PALETTE START --------
+// Theme palette — every QSS value should reference a token here.
+// Hard-coded hex / rgba / px values in the body are a smell; promote
+// them to a token before re-using them in a second rule. See
+// resources/visual_guidelines.md for the canonical reference.
 
 theme: dark
 
-widget_background: #333333
-main_background: #404040
-dark_background: #444444
+// ---- Backgrounds ---------------------------------------------------
+widget_background:           transparent
+main_background:             #373743
+dark_background:             #3B3B47
+titlebar_background:         #1C1C22
+widget_background_disabled:  #404040
 
-default_text:  #F0F0F0
-disabled_text: #777777
+// ---- Text ----------------------------------------------------------
+default_text:    #F0F0F0
+disabled_text:   #777777
+inverse_text:    #111111
 
-widget_background_disabled: #404040;
+// ---- Borders -------------------------------------------------------
+border_default:  #B0B0BF
+border_hover:    #148CD2
+border_checked:  #1177ff
 
-border_default: #666666
-border_hover:   #148CD2
-border_checked: #1177ff
-
+// ---- Selections ----------------------------------------------------
 item_selection_background: #148CD2
+
+// ---- Brand accent colors (theme-agnostic, same in both stylesheets) ----
+PJPurple:        #CC00CC
+PJPurpleDark:    #990099
+PJBlue:          #1177FF
+PJLightBlue:     #C2DCFF
+PJLightPurple:   #FFAEFF
+
+// ---- Status accents (used by marketplace cards + status banners) ---
+// Theme-agnostic — these read the same against either chrome shade.
+accent_warning:        #e6a817
+accent_warning_hover:  #f0b820
+accent_success:        #4caf6e
+accent_info:           #148cd2
+accent_info_hover:     #42a5f5
+accent_neutral:        #607d8b
+accent_error:          #d32f2f
+
+// ---- Marketplace card surface (theme-relative) ---------------------
+marketplace_card_bg:        #5C5C70
+marketplace_card_bg_hover:  #707085
+
+// ---- Hover / pressed overlays --------------------------------------
+// Inverted from the light theme: white-with-alpha on top of a darker
+// surface reads as "lighter on hover, even lighter when pressed".
+hover_overlay:   rgba(255, 255, 255, 30)
+pressed_overlay: rgba(255, 255, 255, 70)
+ink_select:      rgba(255, 255, 255, 60)
+
+// ---- Scrollbar / slider tones -------------------------------------
+scrollbar_handle:        #787878
+scrollbar_handle_hover:  #148CD2
+slider_handle:           #999999
+slider_handle_hover:     #99ccff
+
+// ---- Chrome geometry (in pixels, no `px` suffix) -------------------
+// Mirror the light stylesheet exactly — chrome geometry is theme-
+// agnostic; only colors flip between themes.
+chrome_bar_height:        24
+chrome_tab_strip_height:  23
+chrome_button_size:        24
+chrome_button_size_inset:  23
+chrome_icon_size:          20
+chrome_spacing:            4
+chrome_border_width:       1
 
 //------- PALETTE END --------
 
@@ -33,7 +87,7 @@ QWidget:disabled{
 
 PlotWidget {
     background: ${widget_background};
-    border: 0px solid white;
+    border: none;
 }
 
 QMainWindow {
@@ -41,7 +95,10 @@ QMainWindow {
 }
 
 QDialog {
-    background: ${main_background};
+    /* Use the same token as QMainWindow so frameless dialogs sit on
+       the same shade as the app behind them rather than a slightly
+       different one. */
+    background: ${dark_background};
 }
 
 QLabel {
@@ -52,8 +109,8 @@ QLabel {
 QLineEdit {
     color: ${default_text};
     background: ${widget_background};
-    border-radius: 1px;
-    border: 1px solid ${border_default};
+    border-radius: 0px;
+    border: none;
 }
 
 QLineEdit:disabled {
@@ -66,10 +123,10 @@ QTabWidget{
 }
 
 QTabWidget::pane { /* The tab widget frame */
-    border: 1px solid ${border_default};
+    border: none;
     background: ${widget_background};
     top: -1px;
-    border-radius: 2px;
+    border-radius: 0px;
     border-top-left-radius: 0px;
 }
 
@@ -82,8 +139,8 @@ QTabWidget::tab-bar {
 }
 
 QTabBar::tab {
-    border-top-left-radius: 2px;
-    border-top-right-radius: 2px;
+    border-top-left-radius: 0px;
+    border-top-right-radius: 0px;
     border-bottom-left-radius: 0px;
     border-bottom-right-radius: 0px;
     min-width: 10ex;
@@ -92,9 +149,9 @@ QTabBar::tab {
     padding-right: 6px;
     padding-left: 6px;
     color: ${default_text};
-    border-left: 1px solid ${border_default};
-    border-right: 1px solid ${border_default};
-    border-top: 1px solid ${border_default};
+    border-left: none;
+    border-right: none;
+    border-top: none;
 }
 
 QTabBar::tab:selected {
@@ -102,7 +159,7 @@ QTabBar::tab:selected {
 }
 QTabBar::tab:!selected {
     background: transparent;
-    border-bottom: 1px solid ${border_default};
+    border-bottom: none;
 }
 
 
@@ -115,15 +172,17 @@ QTextEdit,
 QPlainTextEdit {
    background: ${widget_background};
    color: ${default_text};
-   border-radius: 2px;
-   border: 1px solid ${border_default};
+   border-radius: 0px;
+   border: none;
 }
 
 QToolTip {
-    border: 1px solid ${default_text};
-    border-radius: 2px;
-    background: ${widget_background};
-    color: ${default_text}; }
+    border: 1px solid ${border_default};
+    border-radius: 0px;
+    background-color: ${dark_background};
+    color: ${default_text};
+    padding: 2px 4px;
+}
 
 
 /* QScrollArea ------------------------------------------------------------
@@ -139,8 +198,8 @@ https://doc.qt.io/qt-5/stylesheet-examples.html#customizing-qscrollbar
 QScrollBar:horizontal {
   height: 16px;
   margin: 2px 16px 2px 16px;
-  border: 0px solid #687279;
-  border-radius: 1px;
+  border: none;
+  border-radius: 0px;
   background-color: ${widget_background};
 }
 
@@ -148,104 +207,96 @@ QScrollBar:vertical {
   background-color: ${widget_background};
   width: 16px;
   margin: 16px 2px 16px 2px;
-  border: 0px solid #687279;
-  border-radius: 1px;
+  border: none;
+  border-radius: 0px;
 }
 
 QScrollBar::handle:horizontal {
-  background-color: #787878;
-  border: 1px solid #687279;
-  border-radius: 1px;
+  background-color: ${scrollbar_handle};
+  border: none;
+  border-radius: 0px;
   min-width: 8px;
 }
 
 QScrollBar::handle:horizontal:hover {
-  background-color: #148CD2;
-  border: 1px solid #148CD2;
-  border-radius: 1px;
+  background-color: ${scrollbar_handle_hover};
+  border: none;
+  border-radius: 0px;
   min-width: 8px;
 }
 
 QScrollBar::handle:vertical {
-  background-color: #787878;
-  border: 1px solid #687279;
+  background-color: ${scrollbar_handle};
+  border: none;
   min-height: 8px;
-  border-radius: 1px;
+  border-radius: 0px;
 }
 
 QScrollBar::handle:vertical:hover {
-  background-color: #148CD2;
-  border: 1px solid ${border_hover};
-  border-radius: 1px;
+  background-color: ${scrollbar_handle_hover};
+  border: none;
+  border-radius: 0px;
   min-height: 8px;
 }
 
 QScrollBar::add-line:horizontal {
   margin: 0px 0px 0px 0px;
-  border-image: url(":/style_${theme}/arrow_right.png");
+  border-image: url(":/resources/svg/keyboard_arrow_right_dark.svg");
   height: 12px;
   width: 12px;
   subcontrol-position: right;
   subcontrol-origin: margin;
 }
-
-QScrollBar::add-line:horizontal:hover, QScrollBar::add-line:horizontal:on {
-  border-image: url(":/style_${theme}/arrow_right_focus.png");
-  height: 12px;
-  width: 12px;
-  subcontrol-position: right;
-  subcontrol-origin: margin;
+QScrollBar::add-line:horizontal:hover {
+  border-image: url(":/resources/svg/keyboard_arrow_right_hover.svg");
+}
+QScrollBar::add-line:horizontal:pressed {
+  border-image: url(":/resources/svg/keyboard_arrow_right_pressed.svg");
 }
 
 QScrollBar::add-line:vertical {
   margin: 3px 0px 3px 0px;
-  border-image: url(":/style_${theme}/arrow_down.png");
+  border-image: url(":/resources/svg/keyboard_arrow_down_dark.svg");
   height: 12px;
   width: 12px;
   subcontrol-position: bottom;
   subcontrol-origin: margin;
 }
-
-QScrollBar::add-line:vertical:hover, QScrollBar::add-line:vertical:on {
-  border-image: url(":/style_${theme}/arrow_down_focus.png");
-  height: 12px;
-  width: 12px;
-  subcontrol-position: bottom;
-  subcontrol-origin: margin;
+QScrollBar::add-line:vertical:hover {
+  border-image: url(":/resources/svg/keyboard_arrow_down_hover.svg");
+}
+QScrollBar::add-line:vertical:pressed {
+  border-image: url(":/resources/svg/keyboard_arrow_down_pressed.svg");
 }
 
 QScrollBar::sub-line:horizontal {
   margin: 0px 3px 0px 3px;
-  border-image: url(":/style_${theme}/arrow_left.png");
+  border-image: url(":/resources/svg/keyboard_arrow_left_dark.svg");
   height: 12px;
   width: 12px;
   subcontrol-position: left;
   subcontrol-origin: margin;
 }
-
-QScrollBar::sub-line:horizontal:hover, QScrollBar::sub-line:horizontal:on {
-  border-image: url(":/style_${theme}/arrow_left_focus.png");
-  height: 12px;
-  width: 12px;
-  subcontrol-position: left;
-  subcontrol-origin: margin;
+QScrollBar::sub-line:horizontal:hover {
+  border-image: url(":/resources/svg/keyboard_arrow_left_hover.svg");
+}
+QScrollBar::sub-line:horizontal:pressed {
+  border-image: url(":/resources/svg/keyboard_arrow_left_pressed.svg");
 }
 
 QScrollBar::sub-line:vertical {
   margin: 3px 0px 3px 0px;
-  border-image: url(":/style_${theme}/arrow_up.png");
+  border-image: url(":/resources/svg/keyboard_arrow_up_dark.svg");
   height: 12px;
   width: 12px;
   subcontrol-position: top;
   subcontrol-origin: margin;
 }
-
-QScrollBar::sub-line:vertical:hover, QScrollBar::sub-line:vertical:on {
-  border-image: url(":/style_${theme}/arrow_up_focus.png");
-  height: 12px;
-  width: 12px;
-  subcontrol-position: top;
-  subcontrol-origin: margin;
+QScrollBar::sub-line:vertical:hover {
+  border-image: url(":/resources/svg/keyboard_arrow_up_hover.svg");
+}
+QScrollBar::sub-line:vertical:pressed {
+  border-image: url(":/resources/svg/keyboard_arrow_up_pressed.svg");
 }
 
 QScrollBar::up-arrow:horizontal, QScrollBar::down-arrow:horizontal {
@@ -266,46 +317,137 @@ QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {
 
 /* QMenu ----------------------------------------------------------- */
 
-QMenu {
-    background-color: ${widget_background};
-    border: 1px solid ${border_default};
-}
+/* QMenu rules use the #PJMenu id selector — id+type beats the cascading
+   QWidget {background: transparent} rule that otherwise wins for popups
+   when the stylesheet is applied via qApp->setStyleSheet. Tag any new
+   menu with `setObjectName("PJMenu")` to opt into this styling. */
 
-QMenu::icon {
-    padding-left: 6px;
-}
-
-QMenu::item {
-    background: ${widget_background};
-    padding: 2px 25px 2px 25px;
+QMenu#PJMenu {
+    background: ${dark_background};
+    background-color: ${dark_background};
     color: ${default_text};
-    border: 1px solid transparent;
-    margin: 0px;
-    margin-left: 0px;
-    margin-right: 0px;
+    /* Border one step darker than the menu fill so the popup reads
+       as a raised surface against the app chrome. */
+    border: 1px solid ${titlebar_background};
+    padding: 0;
 }
 
-QMenu::item:selected {
-    background: ${border_hover};
+QMenu#PJMenu::icon {
+    padding-left: 0;
+}
+
+QMenu#PJMenu::item {
+    background-color: transparent;
+    /* top, right, bottom, left — left is minimal so the icon hugs
+       the menu's left edge; right keeps a breathing margin. */
+    padding: 4px 14px 4px 6px;
     color: ${default_text};
+    border: none;
+    margin: 0;
 }
 
-QMenu::item:checked {
-    color: #1177ff;
-    font: bold;
+QMenu#PJMenu::item:selected {
+    /* Dark theme: hover goes DARKER (titlebar tone) and text snaps
+       to white for contrast against the dark fill. */
+    background-color: ${titlebar_background};
+    color: ${inverse_text};
 }
 
-QMenu::item:unchecked {
-    color: ${default_text};
+QMenu#PJMenu::item:checked {
+    color: ${PJBlue};
 }
 
-QMenu::item:disabled {
+QMenu#PJMenu::item:disabled {
     color: ${disabled_text};
 }
 
-QMenu::indicator {
-    width: 24px;
-    height: 20px;
+QMenu#PJMenu::separator {
+    height: 0px;
+    background-color: transparent;
+    margin: 0;
+}
+
+QMenu#PJMenu::right-arrow {
+    image: none;
+    width: 0;
+    height: 0;
+    margin: 0;
+}
+
+QMenu#PJMenu::indicator {
+    width: 0px;
+    height: 0px;
+    image: none;
+}
+
+/* Push buttons hosted inside PJMenu (e.g. destructive-action items via
+   QWidgetAction). No state ever paints a blue accent border — palette
+   highlight stays out — and hover is a fixed light-blue swatch the
+   user picked, identical in both themes. */
+QMenu#PJMenu QPushButton,
+QMenu#PJMenu QPushButton:focus,
+QMenu#PJMenu QPushButton:pressed,
+QMenu#PJMenu QPushButton:checked {
+    background: transparent;
+    border: none;
+    outline: none;
+    padding: 4px 14px 4px 6px;
+    text-align: left;
+    border-radius: 0;
+}
+
+/* Destructive menu items (Cancel/Delete/Clear...) get PJPurple text
+   in both themes. Lives at the QSS level so the inline button
+   stylesheet only has to set the `destructive` property — no
+   hardcoded colour duplicated per call-site. */
+QMenu#PJMenu QPushButton[destructive="true"] {
+    color: ${PJPurple};
+}
+
+/* QCheckBox embedded in PJMenu (e.g. "Show Values"): match the
+   QPushButton padding so its leading edge aligns with the icon
+   column of neighbouring button items. The indicator's default
+   margin-left is zeroed so the indicator itself sits at the
+   item's padding-left, not 4px further in. */
+QMenu#PJMenu QCheckBox {
+    padding: 4px 14px 4px 6px;
+}
+
+QMenu#PJMenu QCheckBox::indicator {
+    margin-left: 0;
+}
+
+QMenu#PJMenu QPushButton:hover {
+    background: ${titlebar_background};
+    color: ${inverse_text};
+    border: none;
+    outline: none;
+}
+
+/* Destructive / negative-action buttons (Cancel, Delete, Clear, etc.)
+   opt in via `setProperty("destructive", true)`. Hover gets the
+   PJLightPurple swatch so destructive controls read distinctly from
+   neutral ones (which use PJLightBlue). Applies inside or outside a
+   QMenu — the second selector is just for specificity over the
+   PJMenu QPushButton:hover rule above. */
+QPushButton[destructive="true"]:hover,
+QMenu#PJMenu QPushButton[destructive="true"]:hover {
+    background: ${PJLightPurple};
+    border: none;
+    outline: none;
+}
+
+/* "Special" PJMenu items (e.g. PlotJuggler Marketplace, Exit) opt in
+   via `setProperty("special", true)`. They get the PJLightBlue ->
+   PJLightPurple gradient on hover, distinguishing them from neutral
+   items (solid PJLightBlue) and destructive ones (solid PJLightPurple). */
+QMenu#PJMenu QPushButton[special="true"]:hover {
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+                                stop:0 ${PJLightBlue},
+                                stop:1 ${PJLightPurple});
+    color: #111111;
+    border: none;
+    outline: none;
 }
 
 
@@ -314,59 +456,51 @@ QMenu::indicator {
 --------------------------------------------------------------------------- */
 QAbstractSpinBox {
   background-color: ${widget_background};
-  border: 1px solid ${border_default};
+  border: none;
   color: ${default_text};
   padding-top: 2px;
   padding-bottom: 2px;
-  padding-left: 4px;
-  padding-right: 4px;
-  border-radius: 2px;
+  padding-left: ${chrome_spacing}px;
+  padding-right: ${chrome_spacing}px;
+  border-radius: 0px;
 }
 
 QAbstractSpinBox:up-button {
   background-color: transparent;
   subcontrol-origin: border;
   subcontrol-position: top right;
-  border-left: 1px solid ${border_default};
-  border-bottom: 1px solid ${border_default};
+  border: none;
   margin: 0px;
 }
 
 QAbstractSpinBox::up-arrow,
 QAbstractSpinBox::up-arrow:disabled,
-QAbstractSpinBox::up-arrow:off {
-  image: url(":/style_${theme}/arrow_up.png");
+QAbstractSpinBox::up-arrow:off,
+QAbstractSpinBox::up-arrow:hover {
+  image: url(":/resources/svg/keyboard_arrow_up_dark.svg");
   height: 12px;
   width: 12px;
-}
-
-QAbstractSpinBox::up-arrow:hover {
-  image: url(":/style_${theme}/arrow_up_focus.png");
 }
 
 QAbstractSpinBox:down-button {
   background-color: transparent;
   subcontrol-origin: border;
   subcontrol-position: bottom right;
-  border-left: 1px solid ${border_default};
-  border-top: 1px solid ${border_default};
+  border: none;
   margin: 0px;
 }
 
 QAbstractSpinBox::down-arrow,
 QAbstractSpinBox::down-arrow:disabled,
-QAbstractSpinBox::down-arrow:off {
-  image: url(":/style_${theme}/arrow_down.png");
+QAbstractSpinBox::down-arrow:off,
+QAbstractSpinBox::down-arrow:hover {
+  image: url(":/resources/svg/keyboard_arrow_down_dark.svg");
   height: 12px;
   width: 12px;
 }
 
-QAbstractSpinBox::down-arrow:hover {
-  image: url(":/style_${theme}/arrow_down_focus.png");
-}
-
 QAbstractSpinBox:hover {
-  border: 1px solid ${border_hover};
+  border: none;
 }
 
 
@@ -394,38 +528,19 @@ QRadioButton::indicator {
 }
 
 QRadioButton::indicator:unchecked {
-    image: url(:/style_${theme}/radio_unchecked.svg);
-}
-
-QRadioButton::indicator:unchecked:hover,
-QRadioButton::indicator:unchecked:focus,
-QRadioButton::indicator:unchecked:pressed {
-    border: none;
-    outline: none;
-    image: url(:/style_${theme}/radio_unchecked_focus.svg);
+    image: url(:/resources/svg/radio_unchecked_dark.svg);
 }
 
 QRadioButton::indicator:checked {
-    border: none;
-    outline: none;
-    image: url(:/style_${theme}/radio_checked.svg);
-}
-
-QRadioButton::indicator:checked:hover,
-QRadioButton::indicator:checked:focus,
-QRadioButton::indicator:checked:pressed {
-    border: none;
-    outline: none;
-    image: url(:/style_${theme}/radio_checked_focus.svg);
+    image: url(:/resources/svg/radio_checked_dark.svg);
 }
 
 QRadioButton::indicator:checked:disabled {
-    outline: none;
-    image: url(:/style_${theme}/radio_checked_disabled.svg);
+    image: url(:/resources/svg/radio_checked_disabled_dark.svg);
 }
 
 QRadioButton::indicator:unchecked:disabled {
-    image: url(:/style_${theme}/radio_unchecked_disabled.svg);
+    image: url(:/resources/svg/radio_unchecked_disabled_dark.svg);
 }
 
 /* QCheckBox -------------------------------------------------------------- */
@@ -436,35 +551,25 @@ QCheckBox{
 }
 
 QCheckBox::indicator {
-    margin-left: 4px;
+    margin-left: ${chrome_spacing}px;
     width: 16px;
     height: 16px;
 }
 
 QCheckBox::indicator:unchecked {
-    image: url(:/style_${theme}/checkbox_unchecked.svg);
-}
-
-QCheckBox::indicator:unchecked:hover,
-QCheckBox::indicator:unchecked:focus,
-QCheckBox::indicator:unchecked:pressed {
-    border: none;
-    image: url(:/style_${theme}/checkbox_unchecked_focus.svg);
+    image: url(:/resources/svg/checkbox_unchecked_dark.svg);
 }
 
 QCheckBox::indicator:unchecked:disabled {
-    image: url(:/style_${theme}/checkbox_unchecked_disabled.svg);
+    image: url(:/resources/svg/checkbox_unchecked_disabled_dark.svg);
 }
 
 QCheckBox::indicator:checked {
-    image: url(:/style_${theme}/checkbox_checked.svg);
+    image: url(:/resources/svg/checkbox_checked_dark.svg);
 }
 
-QCheckBox::indicator:checked:hover,
-QCheckBox::indicator:checked:focus,
-QCheckBox::indicator:checked:pressed {
-    border: none;
-    image: url(:/style_${theme}/checkbox_checked_focus.svg);
+QCheckBox::indicator:checked:disabled {
+    image: url(:/resources/svg/checkbox_checked_disabled_dark.svg);
 }
 
 /* QGroupBox -------------------------------------------------------------- */
@@ -482,7 +587,7 @@ QGroupBox::title {
 }
 
 QGroupBox::indicator {
-    margin-left: 4px;
+    margin-left: ${chrome_spacing}px;
     width: 16px;
     height: 16px;
 }
@@ -491,26 +596,20 @@ QGroupBox::indicator {
     margin-left: 2px;
 }
 
-QGroupBox::indicator:unchecked:hover,
-QGroupBox::indicator:unchecked:focus,
-QGroupBox::indicator:unchecked:pressed {
-    border: none;
-    image: url(:/style_${theme}/checkbox_unchecked_focus.svg);
+QGroupBox::indicator:unchecked {
+    image: url(:/resources/svg/checkbox_unchecked_dark.svg);
 }
 
-QGroupBox::indicator:checked:hover,
-QGroupBox::indicator:checked:focus,
-QGroupBox::indicator:checked:pressed {
-    border: none;
-    image: url(:/style_${theme}/checkbox_checked_focus.svg);
+QGroupBox::indicator:checked {
+    image: url(:/resources/svg/checkbox_checked_dark.svg);
 }
 
 QGroupBox::indicator:checked:disabled {
-    image: url(:/style_${theme}/checkbox_checked_disabled.svg);
+    image: url(:/resources/svg/checkbox_checked_disabled_dark.svg);
 }
 
 QGroupBox::indicator:unchecked:disabled {
-    image: url(:/style_${theme}/checkbox_unchecked_disabled.svg);
+    image: url(:/resources/svg/checkbox_unchecked_disabled_dark.svg);
 }
 
 /* QPushButton -------------------------------------------------------------- */
@@ -518,7 +617,7 @@ QGroupBox::indicator:unchecked:disabled {
 QPushButton
 {
     color: ${default_text};
-    border-radius: 2px;
+    border-radius: 0px;
     padding: 6px;
     outline: none;
 }
@@ -526,30 +625,17 @@ QPushButton
 QPushButton[flat="true"]
 {
     background: transparent;
-    border: 0px;
+    border: none;
 }
 
 QPushButton[flat="false"]
 {
     background: ${widget_background};
-    border: 1px solid ${border_default};
+    border: none;
 }
 
 QPushButton:disabled {
     color: ${disabled_text};
-}
-
-
-QPushButton:checked {
-  border: 2px solid ${border_checked};
-  border-radius: 4px;
-}
-
-QPushButton:checked:disabled {
-    border: 1px solid #32414B;
-    color: ${disabled_text};
-    padding: 3px;
-    outline: none;
 }
 
 QPushButton::menu-indicator {
@@ -558,17 +644,112 @@ QPushButton::menu-indicator {
     bottom: 4px;
 }
 
+/* Consistent state feedback. Hover / pressed are neutral lighten
+   overlays; the active "selected" states (checked) use the same
+   ${item_selection_background} tone as tree-view selections so all
+   "this is the active thing" indicators read identically. */
+QPushButton:hover {
+    background: ${hover_overlay};
+}
+
 QPushButton:pressed {
-    border: 2px solid ${border_checked};
-    border-radius: 4px;
+    background: ${pressed_overlay};
 }
 
-QPushButton:hover{
-    border: 1px solid ${border_hover};
+QPushButton:checked {
+    background: ${item_selection_background};
 }
 
-QPushButton:checked:hover{
-    border: 1px solid ${border_checked};
+QPushButton:checked:hover {
+    background: ${item_selection_background};
+}
+
+QPushButton:checked:disabled {
+    color: ${disabled_text};
+}
+
+
+/* QToolButton ----------------------------------------------------------- */
+/* Explicit rules pre-empt the platform fallback paint, which on some */
+/* Linux desktops lights up the whole button area in palette(highlight) */
+/* — a brown wash that visually wipes the icon. */
+
+QToolButton {
+    background: transparent;
+    border: none;
+    border-radius: 0px;
+    color: ${default_text};
+    padding: 0;
+}
+
+QToolButton:hover {
+    background: ${hover_overlay};
+}
+
+QToolButton:pressed {
+    background: ${ink_select};
+}
+
+QToolButton:checked {
+    background: ${item_selection_background};
+}
+
+QToolButton:disabled {
+    background: transparent;
+    color: ${disabled_text};
+}
+
+/* Curve-editor per-row inline buttons (visibility eye, trash): kept flat
+   in every state so the icons read as plain ink glyphs, no hover /
+   checked / pressed wash. */
+QToolButton#curveVisibilityToggle,
+QToolButton#curveVisibilityToggle:hover,
+QToolButton#curveVisibilityToggle:pressed,
+QToolButton#curveVisibilityToggle:checked,
+QToolButton#curveTrashToggle,
+QToolButton#curveTrashToggle:hover,
+QToolButton#curveTrashToggle:pressed {
+    background: transparent;
+    border: none;
+}
+
+/* Curve-editor line-style frame: when no curve is selected the frame is
+   disabled, which would otherwise pick up the generic QWidget:disabled
+   gray wash. Keep it transparent so the chrome stays clean. */
+QFrame#frameStyle,
+QFrame#frameStyle:disabled {
+    background: transparent;
+}
+
+/* Curve-editor line-style selector: the six mutually-exclusive style
+   icons stay flat in every state so the row reads as a strip of plain
+   glyphs, no blue wash on the active button. */
+QToolButton#radioLines,
+QToolButton#radioLines:hover,
+QToolButton#radioLines:pressed,
+QToolButton#radioLines:checked,
+QToolButton#radioDots,
+QToolButton#radioDots:hover,
+QToolButton#radioDots:pressed,
+QToolButton#radioDots:checked,
+QToolButton#radioLinesAndDots,
+QToolButton#radioLinesAndDots:hover,
+QToolButton#radioLinesAndDots:pressed,
+QToolButton#radioLinesAndDots:checked,
+QToolButton#radioSticks,
+QToolButton#radioSticks:hover,
+QToolButton#radioSticks:pressed,
+QToolButton#radioSticks:checked,
+QToolButton#radioSteps,
+QToolButton#radioSteps:hover,
+QToolButton#radioSteps:pressed,
+QToolButton#radioSteps:checked,
+QToolButton#radioStepsInverted,
+QToolButton#radioStepsInverted:hover,
+QToolButton#radioStepsInverted:pressed,
+QToolButton#radioStepsInverted:checked {
+    background: transparent;
+    border: none;
 }
 
 
@@ -576,15 +757,57 @@ QPushButton:checked:hover{
 
 QComboBox {
     color: ${default_text};
-    background-color: ${widget_background};
+    background-color: ${dark_background};
     selection-color: ${default_text};
     selection-background-color: ${border_hover};
-    border-radius: 2px;
     border: 1px solid ${border_default};
-    padding-top: 2px;     /* This fix  #103, #111*/
-    padding-bottom: 2px;  /* This fix  #103, #111*/
-    padding-left: 4px;
-    padding-right: 4px;
+    border-radius: 0px;
+    padding: 2px 22px 2px 6px;
+}
+
+QComboBox:hover {
+    border-color: ${border_hover};
+}
+
+QComboBox::drop-down {
+    subcontrol-origin: padding;
+    subcontrol-position: center right;
+    width: 18px;
+    border: none;
+    background: transparent;
+}
+
+QComboBox::down-arrow {
+    image: url(:/resources/svg/keyboard_arrow_down_dark.svg);
+    width: 14px;
+    height: 14px;
+}
+
+QComboBox QAbstractItemView {
+    background-color: ${dark_background};
+    border: none;
+    selection-background-color: ${border_hover};
+    selection-color: ${default_text};
+    color: ${default_text};
+    outline: none;
+    padding: 0;
+    margin: 0;
+}
+
+QComboBox QAbstractItemView::viewport {
+    background-color: ${dark_background};
+}
+
+QComboBox QAbstractItemView::item {
+    background-color: transparent;
+    padding: 2px 14px;
+    color: ${default_text};
+}
+
+QComboBox QAbstractItemView::item:selected,
+QComboBox QAbstractItemView::item:hover {
+    background-color: ${item_selection_background};
+    color: ${default_text};
 }
 
 
@@ -600,18 +823,18 @@ QSlider:focus {
 
 QSlider::groove:horizontal {
     background: ${widget_background};
-    border: 1px solid #32414B;
+    border: none;
     height: 8px;
     margin: 0px;
-    border-radius: 4px;
+    border-radius: 0px;
 }
 
 QSlider::sub-page:horizontal {
-    background: #1177ff;
-    border: 1px solid #32414B;
+    background: ${PJBlue};
+    border: none;
     height: 4px;
     margin: 0px;
-    border-radius: 4px;
+    border-radius: 0px;
 }
 
 QSlider::sub-page:horizontal:disabled {
@@ -619,17 +842,65 @@ QSlider::sub-page:horizontal:disabled {
 }
 
 QSlider::handle:horizontal {
-    background: #999999;
-    border: 1px solid #32414B;
+    background: ${slider_handle};
+    border: none;
     width: 8px;
     height: 8px;
     margin: -4px 0;
-    border-radius: 4px;
+    border-radius: 0px;
 }
 
 QSlider::handle:horizontal:hover {
-    background: #99ccff;
-    border: 1px solid ${border_hover};
+    background: ${slider_handle_hover};
+    border: none;
+}
+
+/* 1-px separator between the playback bar (above) and the timeline
+   strip (below). Painted as the strip's top border so the line is
+   only visible when the strip itself is visible — folding the strip
+   away (via the bottom-panel toggle) takes the divider with it
+   rather than leaving a stray border at the window's bottom edge. */
+QWidget#timelineStrip {
+    border-top: 1px solid ${border_default};
+}
+
+/* Playback slider spans the full 24-px chrome row top-to-bottom:
+   groove and handle both fill the bar height (no margins / negative
+   insets), so the body reads as a solid track and the handle as a
+   tall narrow grip. */
+QSlider#timeSlider::groove:horizontal {
+    height: 24px;
+    margin: 0;
+    background: ${widget_background};
+    border: 1px solid ${border_default};
+}
+
+QSlider#timeSlider::sub-page:horizontal {
+    height: 24px;
+    margin: 0;
+    background: ${PJLightBlue};
+    /* No border — at value 0.0 the sub-page collapses to width 0 and
+       a 1-px border would still paint as a vertical PJBlue sliver
+       hugging the groove's left edge. The groove's own border draws
+       the outer rectangle; the sub-page just fills the played area. */
+    border: none;
+}
+
+/* Playback handle: PJLightPurple nominal, PJPurple on hover/hold —
+   distinct from the generic slider styling so the scrubber reads
+   as "the time control" against any other slider in the dialog. */
+QSlider#timeSlider::handle:horizontal {
+    width: 6px;
+    height: 24px;
+    margin: 0;
+    background: ${PJLightPurple};
+    border: 1px solid ${PJPurple};
+}
+
+QSlider#timeSlider::handle:horizontal:hover,
+QSlider#timeSlider::handle:horizontal:pressed {
+    background: ${PJPurple};
+    border: 1px solid ${PJPurple};
 }
 
 
@@ -640,8 +911,8 @@ QTreeView,
 QListView {
    background: ${widget_background};
    color: ${default_text};
-   border-radius: 2px;
-   border: 1px solid ${border_default};
+   border-radius: 0px;
+   border: none;
 
    selection-color: ${default_text};
    selection-background-color: transparent;
@@ -656,35 +927,40 @@ QListView::item:selected {
 }
 
 QHeaderView::section {
-    background-color: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                                      stop:0 #E2E1E0,   stop:0.5 #F2F1F0,
-                                      stop:0.6 #F5F4F3, stop:1.0 #D2D1D0);
-    color: black;
-    padding-left: 4px;
-    border: 1px solid #6c6c6c;
+    background-color: transparent;
+    color: ${default_text};
+    padding-left: ${chrome_spacing}px;
+    border: none;
+    border-bottom: 1px solid ${border_default};
+    border-right: 1px solid ${border_default};
+}
+
+QHeaderView::section:last,
+QHeaderView::section:only-one {
+    border-right: none;
 }
 
 QHeaderView::text{
-    padding-left: 4px;
-    padding-right: 4px;
+    padding-left: ${chrome_spacing}px;
+    padding-right: ${chrome_spacing}px;
 }
 
 QHeaderView::up-arrow {
     subcontrol-position: center right;
-    image: url(":/style_${theme}/arrow_up.png");
+    image: url(:/resources/svg/keyboard_arrow_up_dark.svg);
     height: 12px;
     width: 12px;
-    padding-left: 4px;
-    padding-right: 4px;
+    padding-left: ${chrome_spacing}px;
+    padding-right: ${chrome_spacing}px;
 }
 
 QHeaderView::down-arrow {
     subcontrol-position: center right;
-    image: url(":/style_${theme}/arrow_down.png");
+    image: url(:/resources/svg/keyboard_arrow_down_dark.svg);
     height: 12px;
     width: 12px;
-    padding-left: 4px;
-    padding-right: 4px;
+    padding-left: ${chrome_spacing}px;
+    padding-right: ${chrome_spacing}px;
 }
 
 QTreeView:branch {
@@ -693,37 +969,32 @@ QTreeView:branch {
 
 
 QTreeView:branch:selected, QTreeView:branch:hover {
-  background: url(":/style_${theme}/transparent.png");
+  background: transparent;
 }
 
+/* Branch indicators use the *_light.svg variant (fill #B8B8B8) under the
+   dark theme so they read as a light gray on the dark tree background.
+   The *_dark.svg variant (fill #454545) is reserved for the light theme. */
 QTreeView:branch:has-siblings:!adjoins-item {
-  border-image: url(":/style_${theme}/branch_line.png") 0;
+  border-image: url(":/resources/svg/branch_line_light.svg") 0;
 }
 
 QTreeView:branch:has-siblings:adjoins-item {
-  border-image: url(":/style_${theme}/branch_more.png") 0;
+  border-image: url(":/resources/svg/branch_more_light.svg") 0;
 }
 
 QTreeView:branch:!has-children:!has-siblings:adjoins-item {
-  border-image: url(":/style_${theme}/branch_end.png") 0;
+  border-image: url(":/resources/svg/branch_end_light.svg") 0;
 }
 
 QTreeView:branch:has-children:!has-siblings:closed, QTreeView:branch:closed:has-children:has-siblings {
   border-image: none;
-  image: url(":/style_${theme}/branch_closed.png");
+  image: url(":/resources/svg/keyboard_arrow_right_dark.svg");
 }
 
 QTreeView:branch:open:has-children:!has-siblings, QTreeView:branch:open:has-children:has-siblings {
   border-image: none;
-  image: url(":/style_${theme}/branch_open.png");
-}
-
-QTreeView:branch:has-children:!has-siblings:closed:hover, QTreeView:branch:closed:has-children:has-siblings:hover {
-  image: url(":/style_${theme}/branch_closed_focus.png");
-}
-
-QTreeView:branch:open:has-children:!has-siblings:hover, QTreeView:branch:open:has-children:has-siblings:hover {
-  image: url(":/style_${theme}/branch_open_focus.png");
+  image: url(":/resources/svg/keyboard_arrow_down_dark.svg");
 }
 
 
@@ -733,27 +1004,26 @@ QSplitter {
   margin: 0px;
 }
 
+/* Splitter handles are now thin 1px separator lines instead of icon
+   drag-handles. Resize still works (you can grab the line) but the
+   visual is just a divider. */
 QSplitter::handle {
-  background-color: #b5b5b5;
-  border: 0px;
+  background-color: ${border_default};
+  border: none;
   spacing: 0px;
   padding: 0px;
   margin: 0px;
-
-  height: 1px;
+  image: none;
 }
 
-QSplitter::handle:horizontal::hover {
-    background-color: qlineargradient(spread:pad,  x1:0, y1:0, x2:0, y2:1,
-       stop:0 #1177ff,   stop:0.4 #cc00cc,
-       stop:0.6 #cc00cc, stop:1.0 #1177ff);
+QSplitter::handle:horizontal { width: 1px; }
+QSplitter::handle:vertical   { height: 1px; }
+
+QSplitter::handle:hover,
+QSplitter::handle:pressed {
+  background-color: ${PJPurple};
 }
 
-QSplitter::handle:vertical::hover {
-    background-color: qlineargradient(spread:pad, x1:0, y1:0, x2:1, y2:0,
-       stop:0 #1177ff,   stop:0.4 #cc00cc,
-       stop:0.6 #cc00cc, stop:1.0 #1177ff);
-}
 
 /* QMenuBar ---------------------------------------------------------------
 
@@ -762,11 +1032,11 @@ https://doc.qt.io/qt-5/stylesheet-examples.html#customizing-qmenubar
 --------------------------------------------------------------------------- */
 QMenuBar {
   background: #111111;
-  border: 0px solid ${border_default};
+  border: none;
 }
 
 QMenuBar:focus {
-  border: 1px solid ${border_hover};
+  border: none;
 }
 
 QMenuBar::item {
@@ -777,13 +1047,13 @@ QMenuBar::item {
 QMenuBar::item:selected {
   padding: 4px;
   background: transparent;
-  border: 0px solid #687279;
+  border: none;
 }
 
 QMenuBar::item:pressed {
   padding: 4px;
-  border: 0px solid #687279;
-  background-color: #148CD2;
+  border: none;
+  background-color: ${scrollbar_handle_hover};
   color: #F0F0F0;
   margin-bottom: 0px;
   padding-bottom: 0px;
@@ -798,53 +1068,28 @@ QWidget#leftMainWindowFrame
   background-color: ${main_background};
 }
 
-QWidget#widgetLabelLoad,
-QWidget#widgetLabelStreaming,
-QWidget#widgetLabelPublishers,
-QWidget#widgetLabelTimeseries
-{
-    background-color: #2a2a2a;
-    border: 1px solid black;
-}
-
-QWidget#widgetLabelLoad QLabel,
-QWidget#widgetLabelStreaming QLabel,
-QWidget#widgetLabelPublishers QLabel,
-QWidget#widgetLabelTimeseries QLabel
-{
-    color: #FFFFFF;
-}
-
-QPushButton#buttonHideFileFrame,
-QPushButton#buttonHidePublishersFrame,
-QPushButton#buttonHideStreamingFrame {
-    color: #FFFFFF;
-    background-color: transparent;
-}
-
-
 QLineEdit#lineEditFilter,
 QLineEdit#lineEditCustomFilter{
   background-color: transparent;
-  border: 0px;
+  border: none;
   border-radius: 0px;
-  border-bottom: 2px solid ${border_hover};
+  border-bottom: none;
 }
 
 QLineEdit#lineEditPrefix{
   background-color: transparent;
-  border: 0px;
+  border: none;
   border-radius: 0px;
-  border-bottom: 2px solid ${border_hover};
+  border-bottom: none;
 }
 
 QLineEdit#lineEditFilter:focus,
 QLineEdit#lineEditCustomFilter:focus{
-  border-bottom: 2px solid ${border_checked};
+  border-bottom: none;
 }
 
 QLineEdit#lineEditPrefix:focus{
-  border-bottom: 2px solid ${border_checked};
+  border-bottom: none;
 }
 
 QWidget#plottingArea{
@@ -855,23 +1100,13 @@ QWidget#plottingArea QMenu{
   background-color: ${main_background};
 }
 
-QSplitter#mainSplitter::handle {
-  background-color: #000000;
-  height: 1px;
-}
-
-QSplitter#mainSplitter::handle:horizontal::hover {
-    background-color: qlineargradient(spread:pad, x1:0, y1:0, x2:1, y2:0,
-        stop:0 #1177ff,   stop:0.4 #cc00cc,
-        stop:0.6 #cc00cc, stop:1.0 #1177ff);
-}
 
 QFrame#framePlotPreview,
 QFrame#framePlotPreviewA,
 QFrame#framePlotPreviewB,
 QFrame#framePlotPreviewC {
    background-color: ${widget_background};
-   border: 1px solid ${border_default};
+   border: none;
    margin: 0px;
 }
 
@@ -881,17 +1116,17 @@ QWidget#formulaPage{
 
 ads--CDockContainerWidget {
   background: ${widget_background};
-  border: 0px;
+  border: none;
 }
 
 ads--CDockAreaWidget {
    background: ${widget_background};
-   border: 0px;
+   border: none;
 }
 
 ads--CDockWidget {
    background: ${widget_background};
-   border: 0px;
+   border: none;
 }
 
 QScrollArea#dockWidgetScrollArea {
@@ -900,12 +1135,12 @@ QScrollArea#dockWidgetScrollArea {
 
 QwtPlot {
    background: ${widget_background};
-   border: 0px;
+   border: none;
 }
 
 QWidget#qwtCanvas {
    background: ${widget_background};
-   border: 0px;
+   border: none;
 }
 
 QDialog#PlotWidgetEditor QListView::item:selected {
@@ -916,8 +1151,8 @@ QDialog#PlotWidgetEditor QListView::item:selected {
 
 ToastNotification {
     background-color: ${widget_background};
-    border: 1px solid ${border_default};
-    border-radius: 6px;
+    border: none;
+    border-radius: 0px;
     min-width: 250px;
     max-width: 400px;
 }
@@ -943,4 +1178,286 @@ ToastNotification QPushButton#toastCloseButton {
 
 ToastNotification QPushButton#toastCloseButton:hover {
     color: ${default_text};
+}
+
+/* ---------- Frameless chrome bars ---------- */
+/* Every chrome row that draws its own bottom border (TitleBar +
+   dialog title bars) shares this rule. */
+#TitleBar,
+QDialog QWidget#dialogTitleBar {
+    background: ${titlebar_background};
+    border-bottom: ${chrome_border_width}px solid ${border_default};
+}
+
+QFrame#timelineSeparator,
+QFrame#plotTabsSeparator {
+    background-color: ${border_default};
+}
+
+/* Tab-strip chrome — transparent so it inherits whatever sits
+   underneath (the dock manager's paint), rather than imposing the
+   titlebar_background tone of the other chrome rows. */
+QWidget#plotTabsBar,
+QWidget#plotTabsInner {
+    background: transparent;
+    border: none;
+}
+
+/* Custom tab strip in TabbedPlotWidget. The active tab uses a
+   `selected="true"` dynamic property so it stands out from the inactive
+   peers without needing a different objectName per state. */
+QFrame#plotTabFrame {
+    background: ${dark_background};
+    border: none;
+    border-radius: 0px;
+    color: ${default_text};
+}
+
+QFrame#plotTabFrame[selected="true"] {
+    background: ${item_selection_background};
+}
+
+QFrame#plotTabFrame:hover {
+    background: ${titlebar_background};
+}
+
+QLineEdit#plotTabRenameEdit {
+    background: transparent;
+    border: none;
+    padding: 0;
+    selection-background-color: ${ink_select};
+    selection-color: ${default_text};
+}
+
+/* Accordion-header bands in the LHS panels and the right-side
+   CurveEditor "Curves" / global Width / global Line style headers all
+   share the title-bar tone. */
+QWidget#widgetLabelInput,
+QWidget#widgetLabelTimeseries,
+QWidget#widgetLabelCustom,
+QWidget#widgetLabelCurves,
+QWidget#widgetLabelChart,
+QWidget#widgetLabelLegend,
+QWidget#widgetLabelCurveWidth,
+QWidget#widgetLabelCurveStyle {
+    background-color: ${titlebar_background};
+}
+
+/* 2-px leading padding so the section titles ("Sources", "Datasets",
+   "Custom Series") don't butt up against the band's left edge. */
+QLabel#labelInput,
+QLabel#labelTimeseries,
+QLabel#labelCustom {
+    padding-left: 2px;
+}
+
+/* Static 1-px border on the left edge of the global column, separating
+   the plot area from the global icon strip. Not a splitter handle —
+   purely visual; the only draggable boundary is between the global
+   column and the local panel. */
+QFrame#globalToolbarLeftBorder {
+    background-color: ${border_default};
+    border: none;
+}
+
+/* Inline search line edits sit directly inside the header band — the
+   default chrome (background + border) reads as a separate input which
+   we don't want; the leading magnifying-glass icon already cues "type
+   here". The neutral selection colours replace the system blue text
+   highlight that the platform palette would otherwise inject. */
+QLineEdit#lineEditFilter,
+QLineEdit#lineEditCustomFilter,
+QLineEdit#lineEditCurvesFilter,
+QLineEdit#lineEditFilter:focus,
+QLineEdit#lineEditCustomFilter:focus,
+QLineEdit#lineEditCurvesFilter:focus {
+    background: transparent;
+    border: none;
+    selection-background-color: ${ink_select};
+    selection-color: ${default_text};
+}
+
+/* ---------- Chrome buttons (TitleBar + dialog title bars) ----------
+   See the light stylesheet for the geometry rationale. Dark theme
+   uses the saturated PJPurple on hover (vs PJLightPurple in light)
+   so the close glyph stays visible against the dark chrome. */
+#TitleBar QToolButton,
+QDialog QToolButton#buttonClose {
+    background: transparent;
+    border: none;
+    color: ${default_text};
+    padding: 0;
+}
+
+#TitleBar QToolButton:hover,
+QDialog QToolButton#buttonClose:hover {
+    background: ${hover_overlay};
+}
+
+#TitleBar QToolButton:pressed,
+QDialog QToolButton#buttonClose:pressed {
+    background: ${pressed_overlay};
+}
+
+#TitleBar QToolButton::menu-indicator,
+#TitleBar QToolButton::menu-button,
+#TitleBar QToolButton::menu-arrow {
+    image: none;
+    width: 0px;
+    height: 0px;
+    border: none;
+    background: transparent;
+    subcontrol-origin: padding;
+    subcontrol-position: top right;
+}
+
+#TitleBar QToolButton#buttonClose:hover,
+QDialog QToolButton#buttonClose:hover {
+    background: ${PJPurple};
+    color: ${inverse_text};
+}
+
+#TitleBar QToolButton#buttonClose:pressed,
+QDialog QToolButton#buttonClose:pressed {
+    background: ${PJPurpleDark};
+    color: ${inverse_text};
+}
+
+QDialog QLabel#dialogTitleLabel {
+    color: ${default_text};
+    padding-left: ${chrome_spacing}px;
+}
+
+/* "Close Plot Area" button (DockToolbar uses QPushButton, not the
+   QToolButton that title bars use — covered by its own selector). */
+QPushButton#buttonClose:hover {
+    background: ${PJPurple};
+    color: ${inverse_text};
+}
+
+QPushButton#buttonClose:pressed {
+    background: #990099;
+    color: ${inverse_text};
+}
+
+/* DiagnosticsPopup ------------------------------------------------ */
+
+QFrame#DiagnosticsPopup {
+    background: ${dark_background};
+    background-color: ${dark_background};
+    color: ${default_text};
+    border: 1px solid ${border_default};
+    border-radius: 0;
+}
+
+/* When the cursor is over the drag handle or a resize drag is in
+   progress, the popup's own bottom border swaps to PJPurple. Painting
+   the line on the popup (rather than on the inner #dragHandle) lets
+   it meet the side borders at the corners without the inset that
+   rootLayout's side margins would otherwise impose. The "dragActive"
+   dynamic property is toggled in DiagnosticsPopup::setDragActive(). */
+QFrame#DiagnosticsPopup[dragActive="true"] {
+    border-bottom: 1px solid ${PJPurple};
+}
+
+QFrame#DiagnosticsCard {
+    background-color: transparent;
+    border: none;
+    border-radius: 0;
+}
+
+QFrame#DiagnosticsCard:hover {
+    background-color: ${item_selection_background};
+}
+
+QFrame#DiagnosticsCard QLabel#cardTimestamp {
+    color: ${default_text};
+}
+
+QToolButton#cardCopyButton {
+    border: none;
+    background: transparent;
+    padding: 0;
+}
+
+QToolButton#cardCopyButton:hover {
+    background: ${item_selection_background};
+    border-radius: 0;
+}
+
+QLabel#DiagnosticsEmptyState {
+    color: ${disabled_text};
+}
+
+/* Drag-to-resize handle — purely a transparent hit zone. The visible
+   bottom line is the popup's own border, which is recoloured via the
+   parent's [dragActive] property (toggled from the C++ event filter
+   on this handle). */
+QFrame#dragHandle {
+    background: transparent;
+    border: none;
+    margin: 0;
+    min-height: 4px;
+    max-height: 4px;
+}
+
+/* ---------- Marketplace cards + status accents ----------
+   See stylesheet_light.qss for the rationale; dark variant uses the
+   same selectors with theme-relative tokens (marketplace_card_bg,
+   default_text, inverse_text already differ per theme). */
+
+QScrollArea#scroll_area_,
+QScrollArea#scroll_area_ > QWidget > QWidget {
+    background: ${dark_background};
+}
+
+QFrame#extCard {
+    background: ${marketplace_card_bg};
+    color: ${default_text};
+    border: none;
+}
+
+QFrame#extCard:hover {
+    background: ${marketplace_card_bg_hover};
+}
+
+QFrame#extCard QLabel {
+    color: ${default_text};
+    background: transparent;
+}
+
+QLabel#extCardDescription {
+    color: ${default_text};
+    font-size: 11px;
+}
+
+QPushButton#extButtonInstall,
+QPushButton#extButtonUpdate,
+QPushButton#extBadgeInstalled,
+QPushButton#extBadgeNeedsRestart,
+QPushButton#extBadgeLocalNewer {
+    color: ${inverse_text};
+    border: none;
+    padding: 4px 0px;
+    font-weight: bold;
+}
+
+QPushButton#extButtonInstall            { background: ${accent_info}; }
+QPushButton#extButtonInstall:hover      { background: ${accent_info_hover}; }
+QPushButton#extButtonUpdate             { background: ${accent_warning}; }
+QPushButton#extButtonUpdate:hover       { background: ${accent_warning_hover}; }
+QPushButton#extBadgeInstalled:disabled  { background: ${accent_success}; }
+QPushButton#extBadgeNeedsRestart:disabled { background: ${accent_warning}; }
+QPushButton#extBadgeLocalNewer:disabled { background: ${accent_neutral}; }
+
+QLabel#extTagChip {
+    background: ${marketplace_card_bg};
+    border: 1px solid ${border_default};
+    padding: 1px 6px;
+    font-size: 11px;
+}
+
+QLabel#marketplaceStatusError {
+    color: ${accent_error};
+    font-weight: bold;
 }

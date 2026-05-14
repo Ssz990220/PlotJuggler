@@ -15,6 +15,7 @@
 #include <QDropEvent>
 #include <QFontDatabase>
 #include <QIODevice>
+#include <QIcon>
 #include <QMenu>
 #include <QMimeData>
 #include <QMouseEvent>
@@ -34,6 +35,7 @@
 #include "pj_plotting/PointSeriesXY.h"
 #include "pj_runtime/CatalogModel.h"
 #include "pj_runtime/SessionManager.h"
+#include "pj_widgets/SvgUtil.h"
 
 namespace PJ {
 namespace {
@@ -699,6 +701,9 @@ void PlotWidget::onDropEvent(QDropEvent* event) {
 }
 
 void PlotWidget::buildActions() {
+  // Icons are re-applied with the current theme each time the
+  // context menu opens (see canvasContextMenuTriggered), so they
+  // don't need to be set here.
   action_split_horizontal_ = new QAction(tr("&Split Horizontally"), this);
   connect(action_split_horizontal_, &QAction::triggered, this, &PlotWidget::splitHorizontal);
 
@@ -735,20 +740,33 @@ void PlotWidget::canvasContextMenuTriggered(const QPoint& pos) {
 
   CurveInfo* selected_curve = curveAtPosition(pos);
   QMenu menu(qwtPlot());
+  menu.setObjectName(QStringLiteral("PJMenu"));
+  // Refresh icons with the active theme on every popup so the
+  // glyphs stay correctly tinted after a theme switch.
+  const QString theme = currentTheme();
+  action_split_horizontal_->setIcon(QIcon(LoadSvg(":/resources/svg/add_column.svg", theme)));
+  action_split_vertical_->setIcon(QIcon(LoadSvg(":/resources/svg/add_row.svg", theme)));
+  action_remove_all_curves_->setIcon(QIcon(LoadSvg(":/resources/svg/delete_forever.svg", theme)));
+  action_zoom_out_->setIcon(QIcon(LoadSvg(":/resources/svg/zoom_max.svg", theme)));
+  action_zoom_out_horizontal_->setIcon(QIcon(LoadSvg(":/resources/svg/zoom_horizontal.svg", theme)));
+  action_zoom_out_vertical_->setIcon(QIcon(LoadSvg(":/resources/svg/zoom_vertical.svg", theme)));
   if (selected_curve != nullptr) {
-    menu.addAction(tr("Change color..."), this, [this, selected_curve]() {
-      const QColor current_color = selected_curve->curve->pen().color();
-      const QColor next_color = QColorDialog::getColor(current_color, this, tr("Pick curve color"));
-      if (next_color.isValid()) {
-        onChangeCurveColor(selected_curve->curve->title().text(), next_color);
-        emit undoableChange();
-      }
-    });
-    menu.addAction(tr("Remove curve"), this, [this, selected_curve]() {
-      removeCurve(selected_curve->curve->title().text());
-      emit undoableChange();
-      replot();
-    });
+    menu.addAction(
+        QIcon(LoadSvg(":/resources/svg/color_background.svg", theme)), tr("Change color..."), this,
+        [this, selected_curve]() {
+          const QColor current_color = selected_curve->curve->pen().color();
+          const QColor next_color = QColorDialog::getColor(current_color, this, tr("Pick curve color"));
+          if (next_color.isValid()) {
+            onChangeCurveColor(selected_curve->curve->title().text(), next_color);
+            emit undoableChange();
+          }
+        });
+    menu.addAction(
+        QIcon(LoadSvg(":/resources/svg/trash.svg", theme)), tr("Remove curve"), this, [this, selected_curve]() {
+          removeCurve(selected_curve->curve->title().text());
+          emit undoableChange();
+          replot();
+        });
     menu.addSeparator();
   }
   menu.addAction(action_split_horizontal_);

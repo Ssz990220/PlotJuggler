@@ -24,7 +24,13 @@ class Theme : public QObject {
   void setTheme(const QString& name);
 
  signals:
+  // Fires when the theme name changes. Listeners refresh palette-tinted
+  // SVG icons from the new theme.
   void themeChanged(const QString& name);
+
+  // Fires whenever expandedQss() changes. Listeners reapply the
+  // application stylesheet.
+  void qssChanged();
 
  private:
   void rebuildQss();

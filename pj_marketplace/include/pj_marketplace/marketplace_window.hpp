@@ -7,6 +7,9 @@
 #include "pj_marketplace/extension.hpp"
 #include "pj_marketplace/installed_extension.hpp"
 
+class QLabel;
+class QMouseEvent;
+
 namespace Ui {
 class MarketplaceWindow;
 }
@@ -46,6 +49,9 @@ class MarketplaceWindow : public QDialog {
   // Refreshes installed state before cards are painted.
   void showEvent(QShowEvent* event) override;
 
+  // System-move on title-bar drag (frameless dialog chrome).
+  void mousePressEvent(QMouseEvent* event) override;
+
  private slots:
   // Updates the search filter.
   void onSearchChanged(const QString& text);
@@ -72,6 +78,14 @@ class MarketplaceWindow : public QDialog {
   void onUninstallButtonClicked(const QString& ext_id);
 
  private:
+  // Wraps the .ui's content in a body widget under a custom title bar
+  // (frameless window with drag-to-move + close button), matching the
+  // Dialog chrome used elsewhere in the app. Inlined here because
+  // pj_marketplace_ui can't depend on pj_app's Dialog without
+  // creating a cycle. Extract to a shared widgets module if you find
+  // yourself wanting this in a third place.
+  void installChrome();
+
   // Creates widgets from the .ui file and configures fixed UI affordances.
   void setupUi();
 
@@ -114,6 +128,11 @@ class MarketplaceWindow : public QDialog {
   bool installations_changed_ = false;
   bool status_error_sticky_ = false;
   bool initial_snapshot_provided_ = false;
+
+  // Chrome widgets — owned by `this` via parent. Used by mousePressEvent
+  // to identify drag-handle clicks.
+  QWidget* dialog_title_bar_ = nullptr;
+  QLabel* dialog_title_label_ = nullptr;
 };
 
 }  // namespace PJ

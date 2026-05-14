@@ -1,10 +1,18 @@
 #include "ui/CurveListPanel.h"
 
+#include <QAction>
 #include <QCheckBox>
+#include <QEvent>
+#include <QHBoxLayout>
+#include <QIcon>
 #include <QLabel>
 #include <QLineEdit>
+#include <QMenu>
+#include <QPoint>
 #include <QPushButton>
 #include <QSplitter>
+#include <QToolButton>
+#include <QWidgetAction>
 #include <algorithm>
 
 #include "pj_runtime/CatalogModel.h"
@@ -24,25 +32,106 @@ CurveListPanel::CurveListPanel(QWidget* parent) : QWidget(parent), ui_(new Ui::C
   ui_->verticalSplitter->setStretchFactor(0, 5);
   ui_->verticalSplitter->setStretchFactor(1, 1);
 
+  // Leading search icons attached before applyIcons() so the icon
+  // refresh sees them. Zero text margins so the leading action sits
+  // flush against the line edit's left edge instead of getting style-
+  // default inset.
+  // No leading-action search icons — QLineEdit's internal
+  // QLineEditIconButton hardcodes its rendered icon to 16 px for any
+  // line edit shorter than 34 px (see QLineEditPrivate::
+  // sideWidgetParameters in Qt source), so setIconSize is ignored and
+  // the magnifying glass paints with visible padding inside the
+  // 20-px chrome button. Instead, the .ui keeps the search button as
+  // a sibling QToolButton next to the filter line edit, sized at the
+  // standard 20×20 with no extra chrome.
+  ui_->lineEditFilter->setTextMargins(0, 0, 0, 0);
+  ui_->lineEditCustomFilter->setTextMargins(0, 0, 0, 0);
+
+  // Datasets header overflow menu — Show Values toggle + Clear All
+  // (destructive, so styled red).
+  auto* datasets_menu = new QMenu(this);
+  datasets_menu->setObjectName(QStringLiteral("PJMenu"));
+
+  auto* show_values_check = new QCheckBox(tr("Show Values"), datasets_menu);
+  auto* show_values_action = new QWidgetAction(datasets_menu);
+  show_values_action->setDefaultWidget(show_values_check);
+  datasets_menu->addAction(show_values_action);
+  connect(show_values_check, &QCheckBox::toggled, this, &CurveListPanel::onShowValuesToggled);
+
+  datasets_menu->addSeparator();
+
+  // QWidgetAction wraps a flat QPushButton so we can colour the text
+  // red — QMenu's default item painter doesn't expose a per-action
+  // colour the way QSS would for a regular QPushButton.
+  clear_all_button_ = new QPushButton(tr("Clear all curves"), datasets_menu);
+  clear_all_button_->setFlat(true);
+  clear_all_button_->setProperty("destructive", true);
+  // Padding, text-align, AND the destructive ${PJPurple} colour
+  // are handled centrally in stylesheet_*.qss under
+  // `QMenu#PJMenu QPushButton[destructive="true"]` — no per-button
+  // stylesheet needed here.
+  auto* clear_all_action = new QWidgetAction(datasets_menu);
+  clear_all_action->setDefaultWidget(clear_all_button_);
+  datasets_menu->addAction(clear_all_action);
+  connect(clear_all_button_, &QPushButton::clicked, this, [this, datasets_menu]() {
+    datasets_menu->hide();
+    emit clearAllCurvesRequested();
+  });
+
+  connect(ui_->buttonDatasetsMenu, &QToolButton::clicked, this, [this, datasets_menu]() {
+    const QPoint anchor = ui_->buttonDatasetsMenu->mapToGlobal(QPoint(0, ui_->buttonDatasetsMenu->height()));
+    datasets_menu->popup(anchor);
+  });
+
   applyIcons(currentTheme());
 
+  // Both filter line edits are inline in their respective header bands.
   connect(ui_->lineEditFilter, &QLineEdit::textChanged, this, &CurveListPanel::onFilterChanged);
   connect(ui_->lineEditCustomFilter, &QLineEdit::textChanged, this, &CurveListPanel::onCustomFilterChanged);
-  connect(ui_->checkBoxShowValues, &QCheckBox::toggled, this, &CurveListPanel::onShowValuesToggled);
-  connect(ui_->pushButtonTrash, &QPushButton::clicked, this, &CurveListPanel::onTrashClicked);
 
-  connect(ui_->buttonAddCustom, &QPushButton::clicked, this, &CurveListPanel::createCustomSeriesRequested);
-  connect(ui_->buttonEditCustom, &QPushButton::clicked, this, [this]() {
-    auto names = custom_view_->selectedCurveNames();
-    if (!names.empty()) {
-      emit editCustomSeriesRequested(names.front());
-    }
-  });
-  connect(ui_->buttonDeleteCustom, &QPushButton::clicked, this, [this]() {
+  // Enter while typing drops focus back to the panel — restores the
+  // sibling label + action buttons (via the focus-out branch of
+  // eventFilter) without forcing the user to click elsewhere.
+  connect(ui_->lineEditFilter, &QLineEdit::returnPressed, ui_->lineEditFilter, &QLineEdit::clearFocus);
+  connect(ui_->lineEditCustomFilter, &QLineEdit::returnPressed, ui_->lineEditCustomFilter, &QLineEdit::clearFocus);
+
+  // While the filter has focus, hide its sibling label + buttons so the
+  // input takes the full header width. Restored on focus loss.
+  ui_->lineEditFilter->installEventFilter(this);
+  ui_->lineEditCustomFilter->installEventFilter(this);
+
+  // Lock each header band to its natural height so hiding the siblings
+  // can't shrink the row and shift the line edit's vertical centre.
+  // QHBoxLayout vertically centres items, so even a 1-2px drop in the
+  // row's preferred height (when the tallest sibling hides) was enough
+  // to nudge the line edit upwards on focus.
+  ui_->widgetLabelTimeseries->layout()->activate();
+  ui_->widgetLabelCustom->layout()->activate();
+  ui_->widgetLabelTimeseries->setFixedHeight(ui_->widgetLabelTimeseries->layout()->sizeHint().height());
+  ui_->widgetLabelCustom->setFixedHeight(ui_->widgetLabelCustom->layout()->sizeHint().height());
+
+  connect(ui_->buttonAddCustom, &QToolButton::clicked, this, &CurveListPanel::createCustomSeriesRequested);
+
+  // Custom-series header overflow menu — mirrors the Datasets menu.
+  // Delete is destructive so it gets the same red treatment.
+  auto* custom_menu = new QMenu(this);
+  custom_menu->setObjectName(QStringLiteral("PJMenu"));
+  delete_custom_button_ = new QPushButton(tr("Delete"), custom_menu);
+  delete_custom_button_->setFlat(true);
+  delete_custom_button_->setProperty("destructive", true);
+  auto* delete_custom_action = new QWidgetAction(custom_menu);
+  delete_custom_action->setDefaultWidget(delete_custom_button_);
+  custom_menu->addAction(delete_custom_action);
+  connect(delete_custom_button_, &QPushButton::clicked, this, [this, custom_menu]() {
+    custom_menu->hide();
     auto names = custom_view_->selectedCurveNames();
     if (!names.empty()) {
       emit deleteCustomSeriesRequested(names.front());
     }
+  });
+  connect(ui_->buttonCustomMenu, &QToolButton::clicked, this, [this, custom_menu]() {
+    const QPoint anchor = ui_->buttonCustomMenu->mapToGlobal(QPoint(0, ui_->buttonCustomMenu->height()));
+    custom_menu->popup(anchor);
   });
 
   tree_view_->setValuesColumnHidden(true);
@@ -124,10 +213,35 @@ void CurveListPanel::onStylesheetChanged(QString theme) {
   applyIcons(theme);
 }
 
+bool CurveListPanel::eventFilter(QObject* watched, QEvent* event) {
+  const QEvent::Type type = event->type();
+  if (type == QEvent::FocusIn || type == QEvent::FocusOut) {
+    const bool focused = (type == QEvent::FocusIn);
+    if (watched == ui_->lineEditFilter) {
+      ui_->labelTimeseries->setVisible(!focused);
+      ui_->buttonDatasetsMenu->setVisible(!focused);
+    } else if (watched == ui_->lineEditCustomFilter) {
+      ui_->labelCustom->setVisible(!focused);
+      ui_->buttonAddCustom->setVisible(!focused);
+      ui_->buttonCustomMenu->setVisible(!focused);
+    }
+  }
+  return QWidget::eventFilter(watched, event);
+}
+
 void CurveListPanel::applyIcons(QString theme) {
-  ui_->pushButtonTrash->setIcon(LoadSvg(":/resources/svg/trash.svg", theme));
-  ui_->buttonEditCustom->setIcon(LoadSvg(":/resources/svg/pencil-edit.svg", theme));
-  ui_->buttonDeleteCustom->setIcon(LoadSvg(":/resources/svg/delete_forever.svg", theme));
+  ui_->buttonDatasetsMenu->setIcon(LoadSvg(":/resources/svg/more_vert.svg", theme));
+  ui_->buttonCustomMenu->setIcon(LoadSvg(":/resources/svg/more_vert.svg", theme));
+  ui_->buttonAddCustom->setIcon(LoadSvg(":/resources/svg/add_tab.svg", theme));
+  if (clear_all_button_ != nullptr) {
+    clear_all_button_->setIcon(LoadSvg(":/resources/svg/trash.svg", theme));
+  }
+  if (delete_custom_button_ != nullptr) {
+    delete_custom_button_->setIcon(LoadSvg(":/resources/svg/delete_forever.svg", theme));
+  }
+  const QIcon search_icon(LoadSvg(":/resources/svg/search_light.svg", theme));
+  ui_->buttonSearchTimeseries->setIcon(search_icon);
+  ui_->buttonSearchCustom->setIcon(search_icon);
 }
 
 std::vector<QString> CurveListPanel::selectedCurveNamesForDrag() const {

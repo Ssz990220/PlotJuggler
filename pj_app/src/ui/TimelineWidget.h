@@ -38,6 +38,9 @@ class TimelineWidget : public QWidget {
 
  private:
   void applyIcons(QString theme);
+  // Swaps the play button between play_arrow.svg and pause.svg based on
+  // its current checked state, re-tinted for the given theme.
+  void applyPlayPauseIcon(const QString& theme);
 
   Ui::TimelineWidget* ui_;
   PlaybackEngine* engine_ = nullptr;

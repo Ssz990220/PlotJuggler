@@ -17,90 +17,63 @@
    </size>
   </property>
   <layout class="QVBoxLayout" name="mainLayout">
-   <property name="spacing">
-    <number>6</number>
-   </property>
-   <property name="leftMargin">
-    <number>6</number>
-   </property>
-   <property name="topMargin">
-    <number>6</number>
-   </property>
-   <property name="rightMargin">
-    <number>6</number>
-   </property>
-   <property name="bottomMargin">
-    <number>6</number>
-   </property>
+   <property name="spacing"><number>0</number></property>
+   <property name="leftMargin"><number>0</number></property>
+   <property name="topMargin"><number>0</number></property>
+   <property name="rightMargin"><number>0</number></property>
+   <property name="bottomMargin"><number>0</number></property>
    <item>
-    <layout class="QHBoxLayout" name="headerLayout">
-     <item>
-      <widget class="QLabel" name="labelCurves">
-       <property name="font">
-        <font>
-         <bold>true</bold>
-        </font>
-       </property>
-       <property name="text">
-        <string>Curves</string>
-       </property>
-      </widget>
-     </item>
-     <item>
-      <spacer name="headerSpacer">
-       <property name="orientation">
-        <enum>Qt::Horizontal</enum>
-       </property>
-       <property name="sizeHint" stdset="0">
-        <size>
-         <width>40</width>
-         <height>20</height>
-        </size>
-       </property>
-      </spacer>
-     </item>
-     <item>
-      <widget class="QPushButton" name="buttonDeleteCurve">
-       <property name="enabled">
-        <bool>false</bool>
-       </property>
-       <property name="minimumSize">
-        <size>
-         <width>22</width>
-         <height>22</height>
-        </size>
-       </property>
-       <property name="maximumSize">
-        <size>
-         <width>22</width>
-         <height>22</height>
-        </size>
-       </property>
-       <property name="focusPolicy">
-        <enum>Qt::NoFocus</enum>
-       </property>
-       <property name="toolTip">
-        <string>Remove the selected curve from its plot</string>
-       </property>
-       <property name="text">
-        <string/>
-       </property>
-       <property name="icon">
-        <iconset resource="../../../resources/resources.qrc">
-         <normaloff>:/resources/svg/trash.svg</normaloff>:/resources/svg/trash.svg</iconset>
-       </property>
-       <property name="iconSize">
-        <size>
-         <width>16</width>
-         <height>16</height>
-        </size>
-       </property>
-       <property name="flat">
-        <bool>true</bool>
-       </property>
-      </widget>
-     </item>
-    </layout>
+    <widget class="QWidget" name="widgetLabelCurves" native="true">
+     <property name="minimumSize"><size><width>0</width><height>24</height></size></property>
+     <property name="maximumSize"><size><width>16777215</width><height>24</height></size></property>
+     <layout class="QHBoxLayout" name="headerLayout">
+      <property name="spacing"><number>0</number></property>
+      <property name="leftMargin"><number>0</number></property>
+      <property name="topMargin"><number>0</number></property>
+      <property name="rightMargin"><number>0</number></property>
+      <property name="bottomMargin"><number>0</number></property>
+      <item>
+       <widget class="QLabel" name="labelCurves">
+        <property name="text"><string>Curves</string></property>
+       </widget>
+      </item>
+      <item>
+       <spacer name="searchCurvesGap">
+        <property name="orientation"><enum>Qt::Horizontal</enum></property>
+        <property name="sizeType"><enum>QSizePolicy::Fixed</enum></property>
+        <property name="sizeHint" stdset="0"><size><width>2</width><height>1</height></size></property>
+       </spacer>
+      </item>
+      <item>
+       <widget class="QToolButton" name="buttonSearchCurves">
+        <property name="minimumSize"><size><width>20</width><height>20</height></size></property>
+        <property name="maximumSize"><size><width>20</width><height>20</height></size></property>
+        <property name="iconSize"><size><width>20</width><height>20</height></size></property>
+        <property name="text"><string/></property>
+        <property name="autoRaise"><bool>true</bool></property>
+        <property name="focusPolicy"><enum>Qt::FocusPolicy::NoFocus</enum></property>
+       </widget>
+      </item>
+      <item>
+       <widget class="QLineEdit" name="lineEditCurvesFilter">
+        <property name="placeholderText"><string>Filter...</string></property>
+        <property name="minimumSize"><size><width>0</width><height>24</height></size></property>
+        <property name="maximumSize"><size><width>16777215</width><height>24</height></size></property>
+       </widget>
+      </item>
+      <item>
+       <widget class="QToolButton" name="buttonCurvesMenu">
+        <property name="toolTip"><string>Curves options</string></property>
+        <property name="minimumSize"><size><width>24</width><height>24</height></size></property>
+        <property name="maximumSize"><size><width>24</width><height>24</height></size></property>
+        <property name="iconSize"><size><width>20</width><height>20</height></size></property>
+        <property name="text"><string/></property>
+        <property name="autoRaise"><bool>true</bool></property>
+        <property name="focusPolicy"><enum>Qt::FocusPolicy::NoFocus</enum></property>
+       </widget>
+      </item>
+     </layout>
+    </widget>
    </item>
    <item>
     <widget class="QListWidget" name="listWidget">
@@ -129,220 +102,6 @@
       <enum>QAbstractItemView::SelectRows</enum>
      </property>
     </widget>
-   </item>
-   <item>
-    <widget class="Line" name="lineWidthSeparator">
-     <property name="orientation">
-      <enum>Qt::Horizontal</enum>
-     </property>
-    </widget>
-   </item>
-   <item>
-    <layout class="QHBoxLayout" name="widthLayout">
-     <item>
-      <widget class="QComboBox" name="comboBoxWidth">
-       <property name="enabled">
-        <bool>false</bool>
-       </property>
-       <property name="minimumSize">
-        <size>
-         <width>50</width>
-         <height>30</height>
-        </size>
-       </property>
-       <property name="maximumSize">
-        <size>
-         <width>50</width>
-         <height>30</height>
-        </size>
-       </property>
-       <property name="insertPolicy">
-        <enum>QComboBox::NoInsert</enum>
-       </property>
-       <property name="iconSize">
-        <size>
-         <width>22</width>
-         <height>22</height>
-        </size>
-       </property>
-       <item>
-        <property name="text">
-         <string/>
-        </property>
-        <property name="icon">
-         <iconset resource="../../../resources/resources.qrc">
-          <normaloff>:/resources/svg/line_width_1_0.svg</normaloff>:/resources/svg/line_width_1_0.svg</iconset>
-        </property>
-       </item>
-       <item>
-        <property name="text">
-         <string/>
-        </property>
-        <property name="icon">
-         <iconset resource="../../../resources/resources.qrc">
-          <normaloff>:/resources/svg/line_width_1_5.svg</normaloff>:/resources/svg/line_width_1_5.svg</iconset>
-        </property>
-       </item>
-       <item>
-        <property name="text">
-         <string/>
-        </property>
-        <property name="icon">
-         <iconset resource="../../../resources/resources.qrc">
-          <normaloff>:/resources/svg/line_width_2_0.svg</normaloff>:/resources/svg/line_width_2_0.svg</iconset>
-        </property>
-       </item>
-       <item>
-        <property name="text">
-         <string/>
-        </property>
-        <property name="icon">
-         <iconset resource="../../../resources/resources.qrc">
-          <normaloff>:/resources/svg/line_width_3_0.svg</normaloff>:/resources/svg/line_width_3_0.svg</iconset>
-        </property>
-       </item>
-      </widget>
-     </item>
-     <item>
-      <widget class="QLabel" name="labelWidth">
-       <property name="text">
-        <string>Width</string>
-       </property>
-      </widget>
-     </item>
-     <item>
-      <spacer name="widthSpacer">
-       <property name="orientation">
-        <enum>Qt::Horizontal</enum>
-       </property>
-       <property name="sizeHint" stdset="0">
-        <size>
-         <width>40</width>
-         <height>20</height>
-        </size>
-       </property>
-      </spacer>
-     </item>
-    </layout>
-   </item>
-   <item>
-    <widget class="Line" name="lineStyleSeparator">
-     <property name="orientation">
-      <enum>Qt::Horizontal</enum>
-     </property>
-    </widget>
-   </item>
-   <item>
-    <widget class="QLabel" name="labelStyle">
-     <property name="font">
-      <font>
-       <bold>true</bold>
-      </font>
-     </property>
-     <property name="text">
-      <string>Line style</string>
-     </property>
-    </widget>
-   </item>
-   <item>
-    <widget class="QFrame" name="frameStyle">
-     <property name="enabled">
-      <bool>false</bool>
-     </property>
-     <layout class="QVBoxLayout" name="styleLayout">
-      <property name="spacing">
-       <number>2</number>
-      </property>
-      <property name="leftMargin">
-       <number>0</number>
-      </property>
-      <property name="topMargin">
-       <number>0</number>
-      </property>
-      <property name="rightMargin">
-       <number>0</number>
-      </property>
-      <property name="bottomMargin">
-       <number>0</number>
-      </property>
-      <item>
-       <widget class="QRadioButton" name="radioLines">
-        <property name="focusPolicy">
-         <enum>Qt::NoFocus</enum>
-        </property>
-        <property name="text">
-         <string>Lines</string>
-        </property>
-        <property name="checked">
-         <bool>true</bool>
-        </property>
-       </widget>
-      </item>
-      <item>
-       <widget class="QRadioButton" name="radioDots">
-        <property name="focusPolicy">
-         <enum>Qt::NoFocus</enum>
-        </property>
-        <property name="text">
-         <string>Dots</string>
-        </property>
-       </widget>
-      </item>
-      <item>
-       <widget class="QRadioButton" name="radioLinesAndDots">
-        <property name="focusPolicy">
-         <enum>Qt::NoFocus</enum>
-        </property>
-        <property name="text">
-         <string>Lines and Dots</string>
-        </property>
-       </widget>
-      </item>
-      <item>
-       <widget class="QRadioButton" name="radioSticks">
-        <property name="focusPolicy">
-         <enum>Qt::NoFocus</enum>
-        </property>
-        <property name="text">
-         <string>Sticks</string>
-        </property>
-       </widget>
-      </item>
-      <item>
-       <widget class="QRadioButton" name="radioSteps">
-        <property name="focusPolicy">
-         <enum>Qt::NoFocus</enum>
-        </property>
-        <property name="text">
-         <string>Steps (pre)</string>
-        </property>
-       </widget>
-      </item>
-      <item>
-       <widget class="QRadioButton" name="radioStepsInverted">
-        <property name="focusPolicy">
-         <enum>Qt::NoFocus</enum>
-        </property>
-        <property name="text">
-         <string>Steps (post)</string>
-        </property>
-       </widget>
-      </item>
-     </layout>
-    </widget>
-   </item>
-   <item>
-    <spacer name="verticalSpacer">
-     <property name="orientation">
-      <enum>Qt::Vertical</enum>
-     </property>
-     <property name="sizeHint" stdset="0">
-      <size>
-       <width>20</width>
-       <height>40</height>
-      </size>
-     </property>
-    </spacer>
    </item>
   </layout>
  </widget>
