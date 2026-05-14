@@ -13,9 +13,13 @@ if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
   set(CMAKE_CXX_STANDARD 20)
   set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-  set(PJ_WARNING_FLAGS -Wall -Wextra -Werror -Wshadow -Wnon-virtual-dtor
-    -Wold-style-cast -Wcast-qual -Wconversion -Woverloaded-virtual -Wpedantic
-  )
+  if(MSVC)
+    set(PJ_WARNING_FLAGS /W4 /WX /permissive-)
+  else()
+    set(PJ_WARNING_FLAGS -Wall -Wextra -Werror -Wshadow -Wnon-virtual-dtor
+      -Wold-style-cast -Wcast-qual -Wconversion -Woverloaded-virtual -Wpedantic
+    )
+  endif()
 
   find_package(GTest REQUIRED)
   enable_testing()
@@ -157,7 +161,7 @@ target_link_libraries(registry_manager_test PRIVATE
 set_target_properties(registry_manager_test PROPERTIES
   RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/tests
 )
-target_compile_options(registry_manager_test PRIVATE -Wall -Wextra)
+target_compile_options(registry_manager_test PRIVATE ${PJ_WARNING_FLAGS})
 add_test(NAME registry_manager_test COMMAND registry_manager_test)
 
 if(TARGET mock_data_source_plugin AND TARGET mock_file_source_plugin

@@ -150,8 +150,21 @@ jobs:
       - name: Install sccache
         uses: mozilla-actions/sccache-action@v0.0.9
 
+      - name: Setup MSVC environment
+        # Loads cl.exe / link.exe / rc.exe etc. into PATH so the Ninja
+        # generator can find them. The VS generator did this implicitly;
+        # Ninja does not.
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
       - name: Build
         shell: bash
+        env:
+          # Backs sccache with the GitHub Actions cache (10 GB cap, LRU).
+          # The sccache-action above exports ACTIONS_CACHE_URL and
+          # ACTIONS_RUNTIME_TOKEN; this env var flips sccache to use them.
+          SCCACHE_GHA_ENABLED: "true"
         run: |
           QT_DIR="$(pwd)/.qt/6.8.3/msvc2022_64"
           if [[ ! -d "$QT_DIR" ]]; then
@@ -163,20 +176,42 @@ jobs:
           conan install . --output-folder=build --build=missing \
             -s build_type=RelWithDebInfo -s compiler.cppstd=20
 
-          cmake -S . -B build \
+          # Use Ninja Multi-Config so sccache is actually invoked: CMake's
+          # CMAKE_<LANG>_COMPILER_LAUNCHER is honored by the Ninja and
+          # Makefile generators only — the Visual Studio (MSBuild) generator
+          # silently ignores it, which is why prior runs showed "Compile
+          # requests: 0" in sccache --show-stats.
+          #
+          # CMAKE_MSVC_DEBUG_INFORMATION_FORMAT=Embedded forces /Z7 instead
+          # of /Zi for RelWithDebInfo. /Zi writes to a shared PDB via
+          # mspdbsrv.exe which sccache cannot cache; /Z7 embeds debug info
+          # in each .obj and is fully cacheable.
+          cmake -S . -B build -G "Ninja Multi-Config" \
             -DCMAKE_TOOLCHAIN_FILE="build/conan_toolchain.cmake" \
-            -DCMAKE_BUILD_TYPE=RelWithDebInfo \
             -DCMAKE_PREFIX_PATH="$QT_DIR" \
+            -DCMAKE_MSVC_DEBUG_INFORMATION_FORMAT=Embedded \
             -DCMAKE_C_COMPILER_LAUNCHER=sccache \
             -DCMAKE_CXX_COMPILER_LAUNCHER=sccache
 
-          cmake --build build --config RelWithDebInfo
+          cmake --build build --config RelWithDebInfo --parallel
+
+          # Surface sccache stats before the post-action does, so they
+          # appear in the Build step's log next to the compile output.
+          sccache --show-stats
 
       - name: Save Conan cache to ghcr.io
         # Only push from the canonical repo on real pushes (forks lack write
         # access to ghcr.io packages). Skip on cache HIT — the tag content is
         # already up to date, no point re-uploading the same bytes.
-        if: github.event_name == 'push' && github.repository == 'PlotJuggler/PJ4' && env.CONAN_CACHE_HIT != '1' && (steps.setup_oras.outcome == 'success' || steps.setup_oras_fallback.outcome == 'success')
+        # `!cancelled()` lets us save the cache even when the project compile
+        # step (`cmake --build`) fails — Conan deps finished long before, so
+        # the cache is fully populated and worth preserving for the next run.
+        if: |
+          !cancelled() &&
+          github.event_name == 'push' &&
+          github.repository == 'PlotJuggler/PJ4' &&
+          env.CONAN_CACHE_HIT != '1' &&
+          (steps.setup_oras.outcome == 'success' || steps.setup_oras_fallback.outcome == 'success')
         shell: pwsh
         run: |
           $tag = "${{ steps.conan_cache.outputs.tag }}"
