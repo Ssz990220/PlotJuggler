@@ -1,7 +1,7 @@
 #pragma once
 
-#include "Dialog.h"
 #include "pj_runtime/DiagnosticHistory.h"
+#include "pj_widgets/Dialog.h"
 
 namespace Ui {
 class DiagnosticsDetailDialog;

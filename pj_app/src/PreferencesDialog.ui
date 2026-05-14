@@ -66,7 +66,7 @@
   <customwidget>
    <class>PJ::ToggleSwitch</class>
    <extends>QWidget</extends>
-   <header>ui/ToggleSwitch.h</header>
+   <header>pj_widgets/ToggleSwitch.h</header>
   </customwidget>
  </customwidgets>
  <resources/>

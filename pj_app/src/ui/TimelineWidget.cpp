@@ -12,9 +12,9 @@
 #include <Qt>
 
 #include "pj_runtime/PlaybackEngine.h"
+#include "pj_widgets/DoubleScrubber.h"
 #include "pj_widgets/RealSlider.h"
 #include "pj_widgets/SvgUtil.h"
-#include "ui/DoubleScrubber.h"
 #include "ui_TimelineWidget.h"
 
 namespace PJ {

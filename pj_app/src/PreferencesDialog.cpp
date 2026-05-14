@@ -10,7 +10,7 @@
 
 #include "MainWindow.h"
 #include "Theme.h"
-#include "ui/ToggleSwitch.h"
+#include "pj_widgets/ToggleSwitch.h"
 #include "ui_PreferencesDialog.h"
 
 namespace PJ {

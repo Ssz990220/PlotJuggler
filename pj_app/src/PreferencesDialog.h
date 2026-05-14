@@ -2,7 +2,7 @@
 
 #include <QString>
 
-#include "Dialog.h"
+#include "pj_widgets/Dialog.h"
 
 namespace Ui {
 class PreferencesDialog;

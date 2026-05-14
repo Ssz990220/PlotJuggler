@@ -2,7 +2,7 @@
 
 #include <QString>
 
-#include "ui/ScrubberBase.h"
+#include "pj_widgets/ScrubberBase.h"
 
 namespace PJ {
 

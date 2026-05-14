@@ -1,11 +1,11 @@
-#include "MessageBox.h"
+#include "pj_widgets/MessageBox.h"
 
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QPushButton>
 #include <QVBoxLayout>
 
-#include "Dialog.h"
+#include "pj_widgets/Dialog.h"
 
 namespace PJ {
 

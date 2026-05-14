@@ -13,7 +13,6 @@
 
 #include "DialogPresenter.h"
 #include "LoadFileDialog.h"
-#include "MessageBox.h"
 #include "pj_base/data_source_protocol.h"
 #include "pj_base/dataset.hpp"
 #include "pj_datastore/engine.hpp"
@@ -25,6 +24,7 @@
 #include "pj_runtime/DataSourceRuntimeHost.h"
 #include "pj_runtime/ExtensionCatalogService.h"
 #include "pj_runtime/SessionManager.h"
+#include "pj_widgets/MessageBox.h"
 
 namespace PJ {
 

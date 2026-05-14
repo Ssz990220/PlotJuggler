@@ -11,14 +11,6 @@ add_executable(pj_app
     src/MainWindow.cpp
     src/MainWindow.h
     src/MainWindow.ui
-    src/Dialog.cpp
-    src/Dialog.h
-    src/Dialog.ui
-    src/MessageBox.cpp
-    src/MessageBox.h
-    src/SaveFileDialog.cpp
-    src/SaveFileDialog.h
-    src/Style.h
     src/WidgetTuner.cpp
     src/WidgetTuner.h
     src/PreferencesDialog.cpp
@@ -34,8 +26,6 @@ add_executable(pj_app
     src/ui/CurveListPanel.cpp
     src/ui/CurveListPanel.h
     src/ui/CurveListPanel.ui
-    src/ui/ToggleSwitch.cpp
-    src/ui/ToggleSwitch.h
     src/ui/LeftPanel.cpp
     src/ui/LeftPanel.h
     src/ui/LeftPanel.ui
@@ -48,12 +38,6 @@ add_executable(pj_app
     src/ui/DiagnosticsDetailDialog.cpp
     src/ui/DiagnosticsDetailDialog.h
     src/ui/DiagnosticsDetailDialog.ui
-    src/ui/DoubleScrubber.cpp
-    src/ui/DoubleScrubber.h
-    src/ui/IntScrubber.cpp
-    src/ui/IntScrubber.h
-    src/ui/ScrubberBase.cpp
-    src/ui/ScrubberBase.h
     src/ui/TimelineWidget.cpp
     src/ui/TimelineWidget.h
     src/ui/TimelineWidget.ui

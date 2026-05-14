@@ -1,4 +1,4 @@
-#include "ui/ScrubberBase.h"
+#include "pj_widgets/ScrubberBase.h"
 
 #include <QApplication>
 #include <QCursor>

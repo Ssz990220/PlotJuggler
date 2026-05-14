@@ -4,17 +4,17 @@
 
 This section captures the architectural decisions that supersede portions of this document. The body below remains as planning context; where it conflicts with this section, this section wins.
 
-- **Three independent widget families by design.** The GUI is split into three sibling modules that never depend on each other: `pj_plot_widgets` (Qwt, lifted wholesale from PJ3), `pj_media_widgets_qt` (QRhi, wraps the existing `pj_media`), and `pj_3d_widgets` (renderer TBD, contract-reserved). Heterogeneity is a feature, not a problem. The single seam they share is the small `IDataWidget` contract exposed by `pj_app_core`.
-- **`pj_scripting` is its own module.** Language-agnostic engine (Lua today via sol2; Python pluggable later) decoupled from both the GUI and `pj_app_core`'s services layer. Depends only on `pj_base` + `pj_datastore`. Custom Lua transforms reach `DerivedEngine` through a thin `transform_adapter`. Reactive scripts live in a Toolbox plugin that links `pj_scripting` directly.
-- **`pj_app_core` Qt boundary is relaxed.** Previously "no Qt"; now **Qt is allowed (QObject, QTimer, QSettings, signals), no QWidget/QDialog**. Services remain headlessly testable via `QCoreApplication`. This trades a small amount of purity for much cheaper timer/settings/reactive plumbing.
-- **Plot widgets are lifted wholesale from PJ3**, not rebuilt on Qt Charts. `PlotWidgetBase`, `PlotWidget`, `PlotDocker`, `TabbedPlotWidget`, zoomers, axis-time, drag-drop, per-curve display transform UI all move into `pj_plot_widgets/`; their data reads are rebound to `pj_datastore` via a `DatastoreCurveAdapter`. No `IPlotBackend` abstraction.
-- **Monorepo for now.** App-owned modules (`pj_media`, `pj_marketplace`, `pj_dialog_host`, `pj_scripting`, `pj_app_core`, `pj_plot_widgets`, `pj_media_widgets_qt`, `pj_3d_widgets`, `pj_app`) live as siblings inside this repository. The long-term intent is still a separate `plotjuggler_app` repo with `plotjuggler_core` as a submodule; module boundaries are designed so that split is a mechanical move later.
+- **Three independent widget families by design.** The GUI is split into widget families that never depend on each other: `pj_plotting` (Qwt, lifted wholesale from PJ3), `pj_scene2D/widgets` via the `pj_scene2d_widgets` target (QRhi, wraps `pj_scene2D/core`), and `pj_3d_widgets` (renderer TBD, contract-reserved). Heterogeneity is a feature, not a problem. Shared reusable Qt controls/helpers live in `pj_widgets`; shared runtime state flows through the small `IDataWidget` contract exposed by `pj_runtime`.
+- **`pj_scripting` is its own module.** Language-agnostic engine (Lua today via sol2; Python pluggable later) decoupled from both the GUI and `pj_runtime`'s services layer. Depends only on `pj_base` + `pj_datastore`. Custom Lua transforms reach `DerivedEngine` through a thin `transform_adapter`. Reactive scripts live in a Toolbox plugin that links `pj_scripting` directly.
+- **`pj_runtime` Qt boundary is relaxed.** Previously "no Qt"; now **Qt is allowed (QObject, QTimer, QSettings, signals), but no concrete QWidget/QDialog implementation and no `Qt6::Widgets` link**. `IDataWidget` may forward-declare `QWidget` as the shell contract. Services remain headlessly testable via `QCoreApplication`. This trades a small amount of purity for much cheaper timer/settings/reactive plumbing.
+- **Plot widgets are lifted wholesale from PJ3**, not rebuilt on Qt Charts. `PlotWidgetBase`, `PlotWidget`, `PlotDocker`, `TabbedPlotWidget`, zoomers, axis-time, drag-drop, per-curve display transform UI all move into `pj_plotting/`; their data reads are rebound to `pj_datastore` via a `DatastoreCurveAdapter`. No `IPlotBackend` abstraction.
+- **Monorepo for now.** App-owned modules (`pj_scene2D`, `pj_marketplace`, `pj_dialog_host`, `pj_scripting`, `pj_runtime`, `pj_widgets`, `pj_plotting`, `pj_3d_widgets`, `pj_app`) live inside this repository. The long-term intent is still a separate `plotjuggler_app` repo with `plotjuggler_core` as a submodule; module boundaries are designed so that split is a mechanical move later.
 - **v1 target is parity-plus with PJ3.** File + streaming sources, 11 built-in transforms, undo/redo, derived-series editor (incl. Lua via `pj_scripting`), reactive scripts (via Toolbox + `onTimeChanged`), multi-tab workspace, marketplace install UI, all toolboxes.
 - **Plugin families and marketplace are assumed done** and out of scope for this plan. Toolbox SDK gaps (embedded charts, drag-drop, code editor, `onTimeChanged`, ScatterXY outputs) are being addressed in parallel and are assumed solved.
 - **The old prototype app is removed.** It was a throwaway prototype; current PJ4 modules are the implementation baseline.
-- **Three-widget time model.** Global tracker owned by `PlaybackEngine` in `pj_app_core`. Plots redraw a vertical marker line (cheap); 2D/3D widgets snap to the frame at tracker time (via `MediaSource::setTimestamp` / equivalent).
+- **Three-widget time model.** Global tracker owned by `PlaybackEngine` in `pj_runtime`. Plots redraw a vertical marker line (cheap); 2D/3D widgets snap to the frame at tracker time (via `MediaSource::setTimestamp` / equivalent).
 
-Where the sections below refer to `pj_plotting` or `pj_app_shell_qt`, read them as `pj_plot_widgets` + `pj_media_widgets_qt` + `pj_3d_widgets` and `pj_app` respectively.
+Where the sections below refer to `pj_app_shell_qt`, read that as `pj_app`.
 
 ## 1. Purpose
 
@@ -98,11 +98,11 @@ The current repository already provides substantial infrastructure:
   - C ABI + C++ SDK layers
   - dialog engine
   - All PJ3 plugins have been ported
-- `pj_media`
+- `pj_scene2D`
   - 2D/video visualization on top of `ObjectStore`
   - FFmpeg-backed video decode with HW acceleration, scrub optimizations, B-frame support
   - `MediaSource` pull-based abstraction (`ImagePipelineSource`, `FileVideoSource`, `StreamingVideoSource`)
-  - `pj_media_qt` QRhi widget with BT.709 YUV→RGB shader
+  - `pj_scene2d_widgets` QRhi widget with BT.709 YUV→RGB shader
 - `pj_marketplace`
   - extension installation and management UI/services (assumed done)
 
@@ -134,13 +134,13 @@ These already exist and remain the substrate:
 - `pj_base`
 - `pj_datastore` (including `ObjectStore` + `DerivedEngine`)
 - `pj_plugins`
-- `pj_media` (2D/video visualization)
+- `pj_scene2D` (2D/video visualization)
 - `pj_marketplace`
 - `pj_scripting` (new — language-agnostic engine, Lua today)
 
 They provide the vocabulary types, columnar + object stores, extension ABI/runtime, media pipeline, marketplace services, and scripting runtime.
 
-#### Level 1: app core (`pj_app_core`)
+#### Level 1: app core (`pj_runtime`)
 
 This is the authoritative business layer for the 4.x app.
 
@@ -161,15 +161,19 @@ Constraints (revised):
 - no UI-owned state
 - fully testable headlessly with `QCoreApplication`
 
+#### Shared Qt helpers: `pj_widgets`
+
+Reusable Qt building blocks that are not tied to PlotJuggler's app shell live in `pj_widgets`. This is for controls and UI utilities such as color pickers, SVG icon loading, and numeric sliders. It is not a fourth widget family and it must not own application state.
+
 #### Level 2: widget families (three independent sibling modules)
 
 The concrete desktop UI layer is **three independent widget families**, each with its own rendering world. They are siblings: they do not depend on each other.
 
-- **`pj_plot_widgets`** — Qwt-based plot widgets (lifted wholesale from PlotJuggler 3.x). Time-series, XY, tracker, zoomers, per-curve display transforms.
-- **`pj_media_widgets_qt`** — 2D viewer widgets wrapping `pj_media` / `pj_media_qt`. Image, video, depth, annotation display via QRhi.
+- **`pj_plotting`** — Qwt-based plot widgets (lifted wholesale from PlotJuggler 3.x). Time-series, XY, tracker, zoomers, per-curve display transforms.
+- **`pj_scene2D/widgets`** — 2D viewer widgets built as the `pj_scene2d_widgets` target and wrapping `pj_scene2D/core`. Image, video, depth, annotation display via QRhi.
 - **`pj_3d_widgets`** — placeholder for future 3D. Renderer TBD (Qt 3D / QRhi+custom / embed Rerun / VTK). Contract-reserved only; not implemented in v1.
 
-All three implement the small `IDataWidget` contract from `pj_app_core` (tracker callback, save/load state, subscribed topics, Qt widget accessor). The variability of these three rendering worlds is **by design**.
+All three implement the small `IDataWidget` contract from `pj_runtime` (tracker callback, save/load state, subscribed topics, Qt widget accessor). They may use reusable Qt helpers from `pj_widgets`, but they do not depend on each other. The variability of these three rendering worlds is **by design**.
 
 #### Level 3: shell (`pj_app`)
 
@@ -182,7 +186,7 @@ Responsibilities:
 - Qt Advanced Docking Layout (ads) for tabs + docked panels (plots + media + 3D cohabiting)
 - tree/catalog views
 - editors and dialogs (including marketplace window)
-- wiring `pj_app_core` services to widgets from all three families
+- wiring `pj_runtime` services to widgets from all three families
 
 Constraints:
 
@@ -253,7 +257,7 @@ The final app is organized as several sibling modules on top of the existing fou
 Purpose:
 
 - language-agnostic scripting runtime
-- used by `pj_app_core` and by Toolbox plugins that provide script editors (e.g. Lua editor, reactive scripts)
+- used by `pj_runtime` and by Toolbox plugins that provide script editors (e.g. Lua editor, reactive scripts)
 
 Depends on: `pj_base`, `pj_datastore` (for transform interfaces).
 
@@ -270,7 +274,7 @@ Rule:
 - no Qt, no GUI code, no knowledge of services
 - Toolbox plugins that ship a script editor link this library directly
 
-### 5.2 `pj_app_core` — business services
+### 5.2 `pj_runtime` — business services
 
 Purpose:
 
@@ -299,10 +303,10 @@ Small contracts defined here:
 Constraints:
 
 - Qt allowed (QObject/QTimer/QSettings/signals)
-- **no** `QWidget` / `QDialog`
+- **no concrete** `QWidget` / `QDialog` implementation and no `Qt6::Widgets` link
 - headlessly testable via `QCoreApplication`
 
-### 5.3 `pj_plot_widgets` — Qwt plot widgets (lifted from PJ3)
+### 5.3 `pj_plotting` — Qwt plot widgets (lifted from PJ3)
 
 Purpose:
 
@@ -320,9 +324,9 @@ Approach:
 Constraints:
 
 - no knowledge of extension sessions, workspace persistence policy, or marketplace
-- no dependency on `pj_media_widgets_qt` or `pj_3d_widgets`
+- no dependency on `pj_scene2d_widgets` or `pj_3d_widgets`
 
-### 5.4 `pj_media_widgets_qt` — 2D media widgets
+### 5.4 `pj_scene2D/widgets` — 2D media widgets
 
 Purpose:
 
@@ -330,13 +334,13 @@ Purpose:
 
 Approach:
 
-- thin wrapper around the existing `pj_media_qt` (`MediaViewerWidget`, QRhi rendering)
+- thin wrapper around `pj_scene2D/core` using `MediaViewerWidget` and QRhi rendering
 - subscribe to `PlaybackEngine::trackerChanged` → call `MediaSource::setTimestamp` → request repaint
 - implement `IDataWidget`; register factory
 
 Constraints:
 
-- no dependency on `pj_plot_widgets` or `pj_3d_widgets`
+- no dependency on `pj_plotting` or `pj_3d_widgets`
 
 ### 5.5 `pj_3d_widgets` — 3D widget family (robotics viz)
 
@@ -344,11 +348,11 @@ Architecture locked; full implementation post-v1 (adds ~6-7 weeks on top of app 
 
 **Data types (v1 target, 6 total)**: TF2 (infrastructure), URDF/mesh, Pointcloud, Markers (arrows/boxes/spheres/cylinders/line strips/text), Image+Pinhole (frustum + optional textured near-plane), OccupancyGrid (textured plane in 3D).
 
-**Storage**: all via `pj_datastore::ObjectStore`. Pointcloud is lazy-fetch (like MCAP images in `pj_media`); everything else lives in memory. DataSource plugins write via existing `object_write_host.push(topic, encoding, bytes, t)` using per-type encoding strings — no new write hosts.
+**Storage**: all via `pj_datastore::ObjectStore`. Pointcloud is lazy-fetch (like MCAP images in `pj_scene2D`); everything else lives in memory. DataSource plugins write via existing `object_write_host.push(topic, encoding, bytes, t)` using per-type encoding strings — no new write hosts.
 
 **Stack (locked)**:
 
-- GPU abstraction: **QRhi** (consistent with `pj_media`)
+- GPU abstraction: **QRhi** (consistent with `pj_scene2D`)
 - Widget base: `QRhiWidget` subclass, hand-rolled scene (no Qt 3D, no Qt 3D scene graph)
 - 3D math: **GLM** (GLSL-matching types, `glm::slerp` for TF interpolation, header-only conan dep)
 - Mesh loading: **assimp** (conan dep)
@@ -356,14 +360,14 @@ Architecture locked; full implementation post-v1 (adds ~6-7 weeks on top of app 
 - Pointcloud decoders: hand-rolled (PCD, `PointCloud2`)
 - Marker primitives: hand-rolled geometry generators
 - Text rendering: `QPainter` + `QFont` → `QImage` → QRhi texture
-- Image decoding: reuse `pj_media`
+- Image decoding: reuse `pj_scene2D`
 - Coordinate convention: **ROS Z-up**
 
 **Scene organization**: flat per-widget drawable list (Foxglove-lean; RViz-style per-type config knobs can be added incrementally). Scenes in robotics contexts are small enough that a deep scene graph is unnecessary.
 
 **Caching**: minimal. Pointcloud drawables cache GPU buffers across tracker changes; everything else re-decodes on change (cheap).
 
-**TF interpretation layer** (stateful: per-edge ring buffer + slerp/lerp interpolation + tree traversal over ObjectStore TF samples) lives inside `pj_3d_widgets` for v1. To be reviewed later: if 2D widgets or `pj_app_core` transforms need TF too, promote to a sibling module `pj_tf`.
+**TF interpretation layer** (stateful: per-edge ring buffer + slerp/lerp interpolation + tree traversal over ObjectStore TF samples) lives inside `pj_3d_widgets` for v1. To be reviewed later: if 2D widgets or `pj_runtime` transforms need TF too, promote to a sibling module `pj_tf`.
 
 **Interaction**: orbit camera (drag rotate / wheel zoom / middle-drag pan), drag-drop topics from `CatalogModel`, per-drawable context menu (visibility / color / delete), click-to-select picking.
 
@@ -371,7 +375,7 @@ Architecture locked; full implementation post-v1 (adds ~6-7 weeks on top of app 
 
 **Inspiration source (not a dependency)**: [threepp](https://github.com/markaren/threepp) (MIT-licensed C++20 Three.js port) is read as a reference for specific rendering patterns (URDF traversal, OrbitControls math, Raycaster algorithm, material abstractions). Logic may be ported with attribution. threepp is never linked as a runtime dep — the single-QRhi-GPU-stack property is preserved.
 
-**Rule**: implements `IDataWidget` from `pj_app_core`; registered with `WidgetRegistry`.
+**Rule**: implements `IDataWidget` from `pj_runtime`; register directly in `pj_app` for v1. Introduce a `WidgetRegistry` service only when 2D / 3D widget families need symmetric registration.
 
 ### 5.6 `pj_app` — desktop shell
 
@@ -387,11 +391,11 @@ Responsibilities:
 - catalog/tree panel
 - transform editor, script editor, toolbox panel hosts
 - marketplace window integration
-- binding `pj_app_core` services to widgets from all three families
+- binding `pj_runtime` services to widgets from all three families
 
 Rule:
 
-- consumes concrete services from `pj_app_core`
+- consumes concrete services from `pj_runtime`
 - no business logic of its own
 
 ## 6. Core Runtime Model
@@ -407,7 +411,7 @@ It should:
 - define app-wide event streams
 - support startup, workspace restore, and orderly shutdown
 
-Suggested composition (all from `pj_app_core`, plus one from `pj_scripting`):
+Suggested composition (all from `pj_runtime`, plus one from `pj_scripting`):
 
 - `SessionManager`
 - `PlaybackEngine`
@@ -531,7 +535,7 @@ Data samples themselves are not part of undo/redo. Undo is for workspace and app
 
 ## 8. Plotting Subsystem Design
 
-The plotting subsystem lives in `pj_plot_widgets`. The approach is **wholesale lift from PlotJuggler 3.x**: the plot widget code has been refined over years and is good; the rot was in PJ3's `MainWindow` coupling, not in the plot widgets.
+The plotting subsystem lives in `pj_plotting`. The approach is **wholesale lift from PlotJuggler 3.x**: the plot widget code has been refined over years and is good; the rot was in PJ3's `MainWindow` coupling, not in the plot widgets.
 
 ### 8.1 Requirements
 
@@ -550,7 +554,7 @@ The plotting subsystem must support:
 
 `DataReader` is the public read API of `pj_datastore` and the canonical query surface.
 
-`pj_plot_widgets` adds only what the lift needs to cleanly consume the new datastore:
+`pj_plotting` adds only what the lift needs to cleanly consume the new datastore:
 
 - `DatastoreCurveAdapter` — a `QwtSeriesData<QPointF>`-derived class that holds a `SessionManager*` + `CurveDescriptor` and pull-throughs to `pj_datastore` via `TopicStorage::sealedChunks()`. No copy of timeseries data — only a small chunk-index (per-chunk `(chunk*, row_start, row_end, cumulative_begin, cumulative_end)`) with a last-slot cache for sequential `sample(i)` from `QwtPointMapper`. ROI narrowing via `QwtSeriesData::setRectOfInterest`. Cross-chunk boundary guards keep line segments crossing the viewport boundary visible. `boundingRect()` returns full-data bounds (X from `TopicMetadata::time_range_min/max`, Y from union of `ColumnStats::min_value/max_value` across chunks) so Qwt's autoscale path does not lag a frame.
 - statistics and inspection helpers — deferred to a follow-up phase along with the editor / transforms dialogs.
@@ -564,7 +568,7 @@ No `IPlotBackend` abstraction. Qwt is the rendering library, full stop.
 Lift from PJ3 as-is:
 
 - wheel/pan/zoom-rect/tracker handling in the widget base classes
-- linked-range synchronization driven by `pj_app_core` state (a `link_group` per plot widget, stored in layout)
+- linked-range synchronization driven by `pj_runtime` state (a `link_group` per plot widget, stored in layout)
 - tracker crosshair that reads the global tracker time from `PlaybackEngine` and redraws a vertical line
 - context menus, drag-drop acceptors, per-curve display transforms UI
 
@@ -652,7 +656,7 @@ The runtime exposes controlled access via native functions registered with the e
 - read access to series via the Toolbox host's `catalogSnapshot()` + `readSeries()`
 - creation or update of derived outputs via the Toolbox host's write API
 
-No special `pj_app_core` wiring is required — reactive scripts are a toolbox like any other.
+No special `pj_runtime` wiring is required — reactive scripts are a toolbox like any other.
 
 ### 9.5 Relationship with `DerivedEngine`
 
@@ -895,7 +899,7 @@ Acceptance:
 
 Deliver:
 
-- lift PJ3 plot widget tree into `pj_plot_widgets` (wholesale; see §5.3)
+- lift PJ3 plot widget tree into `pj_plotting` (wholesale; see §5.3)
 - `DatastoreCurveAdapter` rebinding data reads to `pj_datastore` via `TopicStorage::sealedChunks` (pull-through; see §8.2). No adapter-side downsampler — Qwt's paint-time filtering owns decimation.
 - `IDataWidget` implementation; plot factory wired directly in `pj_app`
 - linked X-axis zoom across plots: `MainWindow` owns the global Link toggle (`buttonLink`); plots emit `rectChanged`; broadcast updates peer plots via `setZoomRectangle(rect, /*emit=*/false)` to avoid echo recursion. XY plots are excluded from sync.
@@ -1024,7 +1028,7 @@ Core types:
 - `DataSessionDescriptor`
 - `ExtensionDescriptor`
 
-Concrete services (in `pj_app_core` unless noted):
+Concrete services (in `pj_runtime` unless noted):
 
 - `AppSession`
 - `SessionManager`

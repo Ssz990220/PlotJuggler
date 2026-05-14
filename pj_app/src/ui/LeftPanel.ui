@@ -224,7 +224,7 @@
   <customwidget>
    <class>PJ::IntScrubber</class>
    <extends>QWidget</extends>
-   <header>ui/IntScrubber.h</header>
+   <header>pj_widgets/IntScrubber.h</header>
   </customwidget>
  </customwidgets>
  <connections/>

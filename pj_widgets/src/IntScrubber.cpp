@@ -1,18 +1,17 @@
-#include "ui/DoubleScrubber.h"
+#include "pj_widgets/IntScrubber.h"
 
 #include <algorithm>
-#include <limits>
 
 namespace PJ {
 
-DoubleScrubber::DoubleScrubber(QWidget* parent) : ScrubberBase(parent) {}
+IntScrubber::IntScrubber(QWidget* parent) : ScrubberBase(parent) {}
 
-double DoubleScrubber::clamp(double v) const {
+int IntScrubber::clamp(int v) const {
   return std::clamp(v, minimum_, maximum_);
 }
 
-void DoubleScrubber::setValue(double v) {
-  const double clamped = clamp(v);
+void IntScrubber::setValue(int v) {
+  const int clamped = clamp(v);
   if (clamped == value_) {
     return;
   }
@@ -21,14 +20,14 @@ void DoubleScrubber::setValue(double v) {
   valueRepaint();
 }
 
-void DoubleScrubber::setRange(double min, double max) {
+void IntScrubber::setRange(int min, int max) {
   minimum_ = std::min(min, max);
   maximum_ = std::max(min, max);
   setValue(value_);
   valueRepaint();
 }
 
-void DoubleScrubber::setMinimum(double v) {
+void IntScrubber::setMinimum(int v) {
   minimum_ = v;
   if (maximum_ < minimum_) {
     maximum_ = minimum_;
@@ -36,7 +35,7 @@ void DoubleScrubber::setMinimum(double v) {
   setValue(value_);
 }
 
-void DoubleScrubber::setMaximum(double v) {
+void IntScrubber::setMaximum(int v) {
   maximum_ = v;
   if (minimum_ > maximum_) {
     minimum_ = maximum_;
@@ -44,34 +43,29 @@ void DoubleScrubber::setMaximum(double v) {
   setValue(value_);
 }
 
-void DoubleScrubber::setSingleStep(double v) {
-  single_step_ = std::max(std::numeric_limits<double>::min(), v);
+void IntScrubber::setSingleStep(int v) {
+  single_step_ = std::max(1, v);
 }
 
-void DoubleScrubber::setDecimals(int d) {
-  decimals_ = std::max(0, d);
-  valueRepaint();
-}
-
-void DoubleScrubber::setSuffix(const QString& s) {
+void IntScrubber::setSuffix(const QString& s) {
   suffix_ = s;
   valueRepaint();
 }
 
-void DoubleScrubber::setPrefix(const QString& s) {
+void IntScrubber::setPrefix(const QString& s) {
   prefix_ = s;
   valueRepaint();
 }
 
-void DoubleScrubber::stepBy(int steps_signed) {
+void IntScrubber::stepBy(int steps_signed) {
   setValue(value_ + steps_signed * single_step_);
 }
 
-QString DoubleScrubber::displayText() const {
-  return prefix_ + QString::number(value_, 'f', decimals_) + suffix_;
+QString IntScrubber::displayText() const {
+  return prefix_ + QString::number(value_) + suffix_;
 }
 
-bool DoubleScrubber::commitText(const QString& text) {
+bool IntScrubber::commitText(const QString& text) {
   QString stripped = text;
   if (!prefix_.isEmpty() && stripped.startsWith(prefix_)) {
     stripped = stripped.mid(prefix_.size());
@@ -80,7 +74,7 @@ bool DoubleScrubber::commitText(const QString& text) {
     stripped.chop(suffix_.size());
   }
   bool ok = false;
-  const double parsed = stripped.trimmed().toDouble(&ok);
+  const int parsed = stripped.trimmed().toInt(&ok);
   if (!ok) {
     return false;
   }

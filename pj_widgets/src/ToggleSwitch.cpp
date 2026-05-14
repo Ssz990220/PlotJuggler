@@ -1,4 +1,4 @@
-#include "ui/ToggleSwitch.h"
+#include "pj_widgets/ToggleSwitch.h"
 
 #include <QEasingCurve>
 #include <QEvent>

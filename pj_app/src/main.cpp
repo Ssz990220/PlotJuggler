@@ -4,8 +4,8 @@
 #include <cstdlib>
 
 #include "MainWindow.h"
-#include "Style.h"
 #include "WidgetTuner.h"
+#include "pj_widgets/Style.h"
 
 int main(int argc, char* argv[]) {
   // Pin to Fusion (under our Style proxy) before constructing

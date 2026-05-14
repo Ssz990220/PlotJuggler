@@ -12,8 +12,8 @@
 #include <QStringList>
 #include <QToolButton>
 
+#include "pj_widgets/IntScrubber.h"
 #include "pj_widgets/SvgUtil.h"
-#include "ui/IntScrubber.h"
 #include "ui_LeftPanel.h"
 
 namespace PJ {
