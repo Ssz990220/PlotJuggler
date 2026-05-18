@@ -1,13 +1,16 @@
 #pragma once
 
+#include <QString>
 #include <QStringList>
 #include <QWidget>
+#include <vector>
 
 class QDragEnterEvent;
 class QDragMoveEvent;
 class QDropEvent;
 class QEvent;
 class QObject;
+class QToolButton;
 
 namespace PJ {
 
@@ -19,6 +22,13 @@ class VisualizationPlaceholderWidget : public QWidget {
  public:
   explicit VisualizationPlaceholderWidget(QWidget* parent = nullptr);
 
+ public slots:
+  // Re-tints the Plot / 2D / 3D icons through LoadSvg so they pick up
+  // the active theme's ink (light => #3D3D3D, dark => #E0E0E0) the same
+  // way every other chrome icon in the app does. DockWidget routes
+  // MainWindow's stylesheetChanged signal here.
+  void onStylesheetChanged(const QString& theme);
+
  signals:
   void catalogItemsDropped(QStringList keys);
 
@@ -27,6 +37,13 @@ class VisualizationPlaceholderWidget : public QWidget {
   void dragEnterEvent(QDragEnterEvent* event) override;
   void dragMoveEvent(QDragMoveEvent* event) override;
   void dropEvent(QDropEvent* event) override;
+
+ private:
+  struct IconButton {
+    QToolButton* button;
+    QString icon_path;
+  };
+  std::vector<IconButton> icon_buttons_;
 };
 
 }  // namespace PJ

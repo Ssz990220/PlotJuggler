@@ -11,13 +11,16 @@
 #include <QToolButton>
 
 #include "pj_widgets/CurveTreeView.h"
+#include "pj_widgets/SvgUtil.h"
 
 namespace PJ {
 namespace {
 
 QToolButton* makeIconButton(const QString& icon_path, const QString& tooltip, bool enabled, QWidget* parent) {
   auto* button = new QToolButton(parent);
-  button->setIcon(QIcon(icon_path));
+  // Icon is theme-tinted by the caller via LoadSvg+setIcon after the
+  // button is created; the placeholder also re-tints on theme changes.
+  Q_UNUSED(icon_path);
   button->setIconSize(QSize(48, 48));
   button->setFixedSize(66, 66);
   button->setAutoRaise(true);
@@ -60,15 +63,39 @@ VisualizationPlaceholderWidget::VisualizationPlaceholderWidget(QWidget* parent) 
   layout->setContentsMargins(0, 0, 0, 0);
   layout->setSpacing(10);
   layout->addStretch(1);
-  for (auto* button :
-       {makeIconButton(QStringLiteral(":/resources/svg/scatter_plot.svg"), tr("Plot"), true, this),
-        makeIconButton(QStringLiteral(":/resources/svg/cast.svg"), tr("2D"), true, this),
-        makeIconButton(QStringLiteral(":/resources/svg/grid.svg"), tr("3D"), false, this)}) {
+  const struct {
+    const char* path;
+    const char* tooltip;
+    bool enabled;
+  } specs[] = {
+      {":/resources/svg/line_axis.svg", QT_TR_NOOP("Plot"), true},
+      {":/resources/svg/image.svg", QT_TR_NOOP("2D"), true},
+      {":/resources/svg/cube.svg", QT_TR_NOOP("3D"), false},
+  };
+  icon_buttons_.reserve(std::size(specs));
+  for (const auto& spec : specs) {
+    auto* button = makeIconButton(QString::fromLatin1(spec.path), tr(spec.tooltip), spec.enabled, this);
     button->setAcceptDrops(true);
     button->installEventFilter(this);
     layout->addWidget(button);
+    icon_buttons_.push_back({button, QString::fromLatin1(spec.path)});
   }
   layout->addStretch(1);
+  // Initial paint at whatever theme is currently active. Subsequent
+  // changes flow in through onStylesheetChanged.
+  onStylesheetChanged(currentTheme());
+}
+
+void VisualizationPlaceholderWidget::onStylesheetChanged(const QString& theme) {
+  // RenderSvgPixmap (not LoadSvg) so the central icons rasterize at
+  // exactly their display size (with DPR baked in) and stay crisp. The
+  // shared LoadSvg cache always renders to 64x64, which is downsampled
+  // to 48x48 here -- visible blur on the larger placeholder buttons.
+  for (const auto& entry : icon_buttons_) {
+    const QSize icon_size = entry.button->iconSize();
+    const QPixmap pixmap = RenderSvgPixmap(entry.icon_path, theme, icon_size, devicePixelRatioF());
+    entry.button->setIcon(QIcon(pixmap));
+  }
 }
 
 bool VisualizationPlaceholderWidget::eventFilter(QObject* watched, QEvent* event) {

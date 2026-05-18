@@ -9,14 +9,15 @@ tuple. Transforms is an optional dict supporting:
     hflip=1         Horizontal mirror.
     vflip=1         Vertical mirror.
     fill=0|1        Per-entry override of Material's fill axis.
+    fill_color=<#> Per-entry override of the global --fill-color (e.g. "#FFFFFF").
 
 Variant axes (configurable via flags):
 
-    --style         outlined | rounded | sharp     (sharpness; default outlined)
+    --style         outlined | rounded | sharp     (sharpness; default sharp)
     --weight        100..700                       (default 300)
     --fill          0 | 1                          (default 0; per-entry fill= wins)
     --grade         -25 | 0 | 200                  (default 0)
-    --optical-size  20 | 24 | 40 | 48              (default 24)
+    --optical-size  20 | 24 | 40 | 48              (default 48)
 
 URL pattern used:
 
@@ -29,7 +30,7 @@ the non-default axes concatenated as "wght{N}grad{N}fill{N}".
 Example:
 
     python3 scripts/download_material_icons.py \
-        --style rounded --optical-size 24 \
+        --style rounded --optical-size 48 \
         -o resources/svg/
 
 A duplicate Material name (e.g. "Circle" -> green/red, or "Position Top
@@ -56,104 +57,115 @@ GSTATIC_URL = (
 # each output file is unambiguous; the same Material name can appear in
 # multiple entries (different transforms / different recolor targets).
 ICON_MAPPING: dict[str, tuple[str, dict[str, str]]] = {
-    "checkbox_checked_light.svg":          ("Check Box",                  {}),
-    "checkbox_unchecked_light.svg":        ("Check Box Outline Blank",    {}),
-    "radio_checked_light.svg":             ("Radio Button Checked",       {}),
-    "radio_unchecked_light.svg":           ("Radio Button Unchecked",     {}),
-    "light_mode_light.svg":                ("Light Mode",                 {}),
-    "dark_mode_light.svg":                 ("Dark Mode",                  {}),
-    "logout.svg":                          ("Logout",                     {}),
-    "archive.svg":                         ("Archive",                    {}),
-    "save_as.svg":                         ("Save As",                    {}),
-    "dashboard_load.svg":                  ("Dashboard 2 Gear",           {}),
     "acute.svg":                           ("Acute",                      {}),
     "add_column.svg":                      ("Add Column Right",           {}),
     "add_row.svg":                         ("Add Row Below",              {}),
     "add_tab.svg":                         ("Add",                        {}),
     "alarm-bell.svg":                      ("Notifications",              {}),
-    "alarm-bell-active.svg":               ("Notifications Active",       {"fill": "1"}),
-    "diag_info.svg":                       ("Info",                       {}),
-    "diag_warning.svg":                    ("Warning",                    {}),
-    "diag_error.svg":                      ("Release Alert",              {}),
-    "numbers.svg":                         ("123",                        {}),
+    "alarm-bell-active.svg":               ("Notifications Active",       {}),
     "apps_box.svg":                        ("Apps",                       {}),
+    "archive.svg":                         ("Archive",                    {}),
     "cast.svg":                            ("Cast",                       {}),
+    "check.svg":                           ("Check",                      {}),
+    "checkbox_checked_light.svg":          ("Check Box",                  {}),
+    "checkbox_unchecked_light.svg":        ("Check Box Outline Blank",    {}),
     "clear.svg":                           ("Mop",                        {}),
     "cloud.svg":                           ("Cloud",                      {}),
     "close-button.svg":                    ("Close",                      {}),
     "collapse.svg":                        ("Collapse Content",           {}),
     "color_background.svg":                ("Filter B And W",             {}),
-    "filter_list.svg":                     ("Filter List",                {}),
     "colored_charts.svg":                  ("Ssid Chart",                 {}),
-    "check.svg":                           ("Check",                      {}),
     "copy.svg":                            ("Content Copy",               {}),
+    "cube.svg":                            ("Deployed Code",              {}),
+    "dark_mode_light.svg":                 ("Dark Mode",                  {"fill_color": "#FFFFFF"}),
+    "dashboard_load.svg":                  ("Dashboard 2 Gear",           {}),
+    "database.svg":                        ("Database",                   {}),
     "datetime.svg":                        ("Calendar Clock",             {}),
     "delete_forever.svg":                  ("Delete Forever",             {}),
+    "diag_error.svg":                      ("Release Alert",              {}),
+    "diag_info.svg":                       ("Info",                       {}),
+    "diag_warning.svg":                    ("Warning",                    {}),
     "draft.svg":                           ("Draft",                      {}),
     "drag_handle_horizontal.svg":          ("Drag Handle",                {}),
     "drag_handle_vertical.svg":            ("Drag Handle",                {"rotate": "90"}),
     "expand.svg":                          ("Expand Content",             {}),
     "expand_more.svg":                     ("Expand More",                {}),
-    "extension.svg":                       ("Extension",                  {}),
     "export.svg":                          ("Upload",                     {}),
+    "extension.svg":                       ("Extension",                  {}),
+    "file_open.svg":                       ("File Open",                  {}),
+    "folder_open.svg":                     ("Folder Open",                {}),
+    "filter_list.svg":                     ("Filter List",                {}),
     "fullscreen.svg":                      ("Fullscreen",                 {}),
     "Fx.svg":                              ("Function",                   {}),
     "green_circle.svg":                    ("Circle",                     {}),
-    "red_circle.svg":                      ("Circle",                     {}),
-    "grid.svg":                            ("Background Grid Small",      {"fill": "1"}),
+    "grid.svg":                            ("Background Grid Small",      {}),
+    "grid_4x4.svg":                        ("Grid 4x4",                   {}),
+    "image.svg":                           ("Image",                      {}),
     "import.svg":                          ("Download",                   {}),
-    "upload_file.svg":                     ("Upload File",                {}),
-    "left-arrow.svg":                      ("Arrow Left",                 {}),
-    "legend.svg":                          ("List",                       {"fill": "1"}),
-    "line_width_1_0.svg":                  ("Pen Size 1",                 {"fill": "1"}),
-    "line_width_1_5.svg":                  ("Pen Size 2",                 {"fill": "1"}),
-    "line_width_2_0.svg":                  ("Pen Size 3",                 {"fill": "1"}),
-    "line_width_3_0.svg":                  ("Pen Size 4",                 {"fill": "1"}),
-    "link.svg":                            ("Link 2",                     {"fill": "1"}),
-    "list.svg":                            ("List",                       {}),
     "keyboard_arrow_down_light.svg":       ("Keyboard Arrow Down",        {}),
     "keyboard_arrow_left_light.svg":       ("Keyboard Arrow Left",        {}),
     "keyboard_arrow_right_light.svg":      ("Keyboard Arrow Right",       {}),
     "keyboard_arrow_up_light.svg":         ("Keyboard Arrow Up",          {}),
+    "left-arrow.svg":                      ("Arrow Left",                 {}),
+    "legend.svg":                          ("List",                       {}),
+    "light_mode_light.svg":                ("Light Mode",                 {"fill_color": "#FFFFFF"}),
+    "line_axis.svg":                       ("Line Axis",                  {}),
+    "line_width_1_0.svg":                  ("Pen Size 1",                 {}),
+    "line_width_1_5.svg":                  ("Pen Size 2",                 {}),
+    "line_width_2_0.svg":                  ("Pen Size 3",                 {}),
+    "line_width_3_0.svg":                  ("Pen Size 4",                 {}),
+    "link.svg":                            ("Link 2",                     {}),
+    "list.svg":                            ("List",                       {}),
+    "logout.svg":                          ("Logout",                     {}),
     "loop.svg":                            ("Laps",                       {}),
     "mobile_layout.svg":                   ("Mobile Layout",              {}),
+    "more_vert.svg":                       ("More Vert",                  {}),
     "move_selection_right.svg":            ("Move Selection Right",       {}),
     "move_view.svg":                       ("Drag Pan",                   {}),
-    "more_vert.svg":                       ("More Vert",                  {}),
-    "panel_left.svg":                      ("Dock To Left",               {"fill": "1"}),
-    "panel_right.svg":                     ("Dock To Right",              {"fill": "1"}),
-    "panel_bottom.svg":                    ("Dock To Bottom",             {"fill": "1"}),
+    "numbers.svg":                         ("123",                        {}),
+    "panel_bottom.svg":                    ("Dock To Bottom",             {}),
+    "panel_left.svg":                      ("Dock To Left",               {}),
+    "panel_right.svg":                     ("Dock To Right",              {}),
     "paste.svg":                           ("Content Paste",              {}),
     "pause.svg":                           ("Pause",                      {}),
-    "plot_image.svg":                      ("Bid Landscape",              {}),
+    "play_arrow.svg":                      ("Play Arrow",                 {}),
+    "play_arrow_left.svg":                 ("Play Arrow",                 {"hflip": "1"}),
     "point_chart.svg":                     ("Timeline",                   {}),
+    "position_bottom_left.svg":            ("Position Bottom Left",       {}),
+    "position_bottom_right.svg":           ("Position Bottom Right",      {}),
+    "position_top_left.svg":               ("Position Top Right",         {"hflip": "1"}),
+    "position_top_right.svg":              ("Position Top Right",         {}),
+    "radio_checked_light.svg":             ("Radio Button Checked",       {}),
+    "radio_unchecked_light.svg":           ("Radio Button Unchecked",     {}),
     "ratio.svg":                           ("View Real Size",             {}),
+    "red_circle.svg":                      ("Circle",                     {}),
     "reference_line.svg":                  ("Line Axis",                  {}),
     "reload_light.svg":                    ("Refresh",                    {}),
-    "restore_page.svg":                    ("Restore Page",               {}),
     "remove_list.svg":                     ("Playlist Remove",            {}),
     "remove_red.svg":                      ("Cancel",                     {}),
+    "restore_page.svg":                    ("Restore Page",               {}),
     "right-arrow.svg":                     ("Arrow Right",                {}),
     "save.svg":                            ("Save",                       {}),
+    "save_as.svg":                         ("Save As",                    {}),
     "scatter.svg":                         ("Grain",                      {}),
+    "scatter_plot.svg":                    ("Scatter Plot",               {}),
+    "search.svg":                          ("Search",                     {}),
     "search_light.svg":                    ("Search",                     {}),
     "settings_cog_light.svg":              ("Settings",                   {}),
     "share_eta.svg":                       ("Share Eta",                  {}),
-    "show_point.svg":                      ("Step Into",                  {"fill": "1"}),
+    "show_point.svg":                      ("Step Into",                  {}),
     "t0.svg":                              ("Start",                      {}),
-    "tune.svg":                            ("Tune",                       {}),
     "trash.svg":                           ("Delete",                     {}),
     "tree.svg":                            ("Account Tree",               {}),
+    "tune.svg":                            ("Tune",                       {}),
+    "upload_file.svg":                     ("Upload File",                {}),
+    "visibility.svg":                      ("Visibility",                 {}),
+    "visibility_off.svg":                  ("Visibility Off",             {}),
     "xy.svg":                              ("Table Chart View",           {}),
     "zoom_horizontal.svg":                 ("Arrows Outward",             {}),
     "zoom_in.svg":                         ("Zoom In",                    {}),
     "zoom_max.svg":                        ("Open With",                  {}),
     "zoom_vertical.svg":                   ("Arrows Outward",             {"rotate": "90"}),
-    "position_bottom_right.svg":           ("Position Bottom Right",      {"fill": "1"}),
-    "position_bottom_left.svg":            ("Position Bottom Left",       {"fill": "1"}),
-    "position_top_right.svg":              ("Position Top Right",         {"fill": "1"}),
-    "position_top_left.svg":               ("Position Top Right",         {"fill": "1", "hflip": "1"}),
-    "scatter_plot.svg":                    ("Scatter Plot",               {"fill": "1"}),
 }
 
 
@@ -267,8 +279,8 @@ def main(argv: list[str]) -> int:
     parser.add_argument(
         "--style",
         choices=["outlined", "rounded", "sharp"],
-        default="outlined",
-        help="Material Symbols style (sharpness). Default: outlined.",
+        default="sharp",
+        help="Material Symbols style (sharpness). Default: sharp.",
     )
     parser.add_argument(
         "--weight",
@@ -296,15 +308,18 @@ def main(argv: list[str]) -> int:
         "--size",
         dest="optical_size",
         type=int,
-        default=24,
+        default=48,
         choices=[20, 24, 40, 48],
-        help="Optical size in pixels. Default: 24.",
+        help="Optical size in pixels. Default: 48.",
     )
     parser.add_argument(
         "--fill-color",
-        default=None,
-        help="If set, inject fill=\"<color>\" into each downloaded SVG's <path> "
-        "elements (e.g. '#474747'). Default: no fill (renders as currentColor/black).",
+        default="#3D3D3D",
+        help="Inject fill=\"<color>\" into each downloaded SVG's <path> elements. "
+        "Default: #3D3D3D (PJ4 light-theme ink). LoadSvg's RecolorSvgInk swaps "
+        "this for #E0E0E0 when dark mode is active, so QSS image: url(...) "
+        "rules see the right colour without a recolor pass. Pass an empty "
+        "string to disable injection.",
     )
     parser.add_argument(
         "--output-dir",
@@ -362,7 +377,7 @@ def main(argv: list[str]) -> int:
             style=args.style, name=icon_id, variant=variant, size=args.optical_size
         )
         suffix_parts = []
-        for key in ("rotate", "hflip", "vflip", "fill"):
+        for key in ("rotate", "hflip", "vflip", "fill", "fill_color"):
             if key in transforms:
                 suffix_parts.append(f"[{key}={transforms[key]}]")
         suffix = (" " + " ".join(suffix_parts)) if suffix_parts else ""
@@ -409,8 +424,13 @@ def main(argv: list[str]) -> int:
         if transforms.get("vflip") == "1":
             blob = apply_flip(blob, "v")
 
-        if args.fill_color:
-            blob = inject_fill(blob, args.fill_color)
+        # Per-entry fill_color overrides the global --fill-color flag, so
+        # specific icons (e.g. the toggle sun/moon glyphs that always
+        # paint on a coloured track) can ship with a fixed colour baked
+        # into every <path> regardless of what the CLI run requested.
+        fill_color = transforms.get("fill_color", args.fill_color)
+        if fill_color:
+            blob = inject_fill(blob, fill_color)
 
         target_path.parent.mkdir(parents=True, exist_ok=True)
         target_path.write_bytes(blob)

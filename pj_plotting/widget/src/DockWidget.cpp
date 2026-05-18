@@ -175,6 +175,9 @@ void DockWidget::onStylesheetChanged(QString theme) {
   if (toolbar_ != nullptr) {
     toolbar_->onStylesheetChanged(theme);
   }
+  if (placeholder_widget_ != nullptr) {
+    placeholder_widget_->onStylesheetChanged(theme);
+  }
 }
 
 DockWidget* DockWidget::splitHorizontal() {
