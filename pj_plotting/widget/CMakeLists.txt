@@ -8,6 +8,7 @@ add_library(pj_plotting STATIC
     src/DockToolbar.ui
     src/DockWidget.cpp
     src/PlotDocker.cpp
+    src/PlotFocusOverlay.cpp
     src/PlotLegend.cpp
     src/PlotMagnifier.cpp
     src/PlotPanner.cpp
@@ -20,6 +21,7 @@ add_library(pj_plotting STATIC
     include/pj_plotting/DockToolbar.h
     include/pj_plotting/DockWidget.h
     include/pj_plotting/PlotDocker.h
+    include/pj_plotting/PlotFocusOverlay.h
     include/pj_plotting/PlotLegend.h
     include/pj_plotting/PlotMagnifier.h
     include/pj_plotting/PlotPanner.h

@@ -20,6 +20,7 @@ class QButtonGroup;
 class QCloseEvent;
 class QMenu;
 class QPushButton;
+class QStackedWidget;
 class QToolButton;
 
 namespace Ui {
@@ -114,6 +115,11 @@ class MainWindow : public QMainWindow {
   // Wires callbacks for a newly created plot tab.
   void onPlotTabAdded(PlotDocker* docker);
 
+  // Routes the focused DockWidget to the right config page and updates
+  // the curve-editor binding. Plot-only state changes still go through
+  // bindEditorToPlot.
+  void onDockFocused(DockWidget* dock);
+
   // Wires callbacks for a newly created plot widget.
   void onPlotAdded(PlotWidget* plot);
 
@@ -143,6 +149,9 @@ class MainWindow : public QMainWindow {
   // activate_grid / dots) into one plot, so newly added plots match.
   void applyGlobalToggles(PlotWidget* plot);
   void applyLegendStatus(PlotWidget* plot);
+  // Toggles dots overlay on Lines/LinesAndDots curves only; curves in
+  // Dots/Sticks/Steps keep their style.
+  void applyDots(PlotWidget* plot);
 
   // Convenience: emit a diagnostic into the session's sink. Source/id
   // are stable string literals; message is a translated QString. The
@@ -180,10 +189,9 @@ class MainWindow : public QMainWindow {
   // headers fold below ~72 px wide).
   void buildLocalToolbar();
 
-  // Iterates every plot in every tab and applies the new pen width or
-  // curve style to every curve. Used by the global width/style buttons.
-  void applyGlobalWidth(double width);
-  void applyGlobalStyle(int style);
+  // Apply to every curve of the editor's bound plot. No-op when unbound.
+  void applyActivePlotWidth(double width);
+  void applyActivePlotStyle(int style);
 
   // Layout helpers.
   void loadLayoutFromPath(const QString& path);
@@ -206,9 +214,10 @@ class MainWindow : public QMainWindow {
   // Updates enabled state for undo / redo actions.
   void updateUndoRedoActions();
 
-  // Rebinds the right-panel CurveEditor to the first plot of the current
-  // tab, or to nullptr if no tab is active.
-  void bindEditorToActivePlot();
+  // Binds the CurveEditor to `plot` and enables/disables the width and
+  // style toolbar buttons accordingly (they no-op without an active plot).
+  void bindEditorToPlot(PlotWidget* plot);
+  [[nodiscard]] PlotWidget* firstPlotOfActiveTab() const;
 
  protected:
   // Persists main-window settings before close.
@@ -257,6 +266,18 @@ class MainWindow : public QMainWindow {
   // Lives inside localToolbarWidget; visibility piggybacks on the
   // right-panel toggle in the tab strip.
   CurveEditor* curve_editor_ = nullptr;
+
+  // Right-sidepanel content swap: the stack hosts a plot-config page
+  // (Curve Width / Style strips + CurveEditor) and per-family pages
+  // for 2D and 3D scenes. onDockFocused() picks the active page from
+  // the focused DockWidget's content type.
+  QStackedWidget* right_panel_stack_ = nullptr;
+  QWidget* plot_config_page_ = nullptr;
+  QWidget* scene2d_config_page_ = nullptr;
+  QWidget* scene3d_config_page_ = nullptr;
+  // Shown when the focused dock holds the 3-icon
+  // VisualizationPlaceholderWidget — nothing to configure yet.
+  QWidget* empty_dock_page_ = nullptr;
 
   // Global-column "Chart" icons — built in buildGlobalToolbar(), so
   // stored as member pointers (no ui_-> accessor).

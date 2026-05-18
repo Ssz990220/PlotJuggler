@@ -552,6 +552,22 @@ QwtPlot* PlotWidgetBase::qwtPlot() {
   return plot_;
 }
 
+void PlotWidgetBase::installHoverFilter(QObject* filter) {
+  if (filter == nullptr || plot_ == nullptr) {
+    return;
+  }
+  if (QWidget* canvas = plot_->canvas(); canvas != nullptr) {
+    canvas->installEventFilter(filter);
+  }
+  for (int axis : {QwtAxis::YLeft, QwtAxis::YRight, QwtAxis::XBottom, QwtAxis::XTop}) {
+    if (plot_->isAxisVisible(axis)) {
+      if (auto* widget = plot_->axisWidget(axis); widget != nullptr) {
+        widget->installEventFilter(filter);
+      }
+    }
+  }
+}
+
 const QwtPlot* PlotWidgetBase::qwtPlot() const {
   return plot_;
 }

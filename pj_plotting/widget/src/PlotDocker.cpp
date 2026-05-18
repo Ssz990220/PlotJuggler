@@ -8,6 +8,7 @@
 #include <ads_globals.h>
 
 #include <QDomDocument>
+#include <QEvent>
 #include <QHash>
 #include <QSet>
 #include <QSplitter>
@@ -18,6 +19,7 @@
 #include <utility>
 
 #include "pj_plotting/DockWidget.h"
+#include "pj_plotting/PlotFocusOverlay.h"
 #include "pj_plotting/PlotWidget.h"
 
 namespace PJ {
@@ -322,10 +324,42 @@ PlotDocker::PlotDocker(QString name, SessionManager* session, CatalogModel* cata
     }
   });
 
+  focus_overlay_ = new PlotFocusOverlay(*this);
+  connect(
+      this, &ads::CDockManager::focusedDockWidgetChanged, this,
+      [this](ads::CDockWidget* /*old*/, ads::CDockWidget* now) {
+        focus_overlay_->setFocusedArea(now != nullptr ? now->dockAreaWidget() : nullptr);
+        emit dockFocused(qobject_cast<DockWidget*>(now));
+      });
+  connect(this, &PlotDocker::plotWidgetAdded, this, &PlotDocker::watchPlotForHover);
+
   ensureAtLeastOneWidget();
 }
 
 PlotDocker::~PlotDocker() = default;
+
+void PlotDocker::watchPlotForHover(PlotWidget* plot) {
+  if (plot != nullptr) {
+    plot->installHoverFilter(this);
+  }
+}
+
+bool PlotDocker::eventFilter(QObject* watched, QEvent* event) {
+  const QEvent::Type type = event->type();
+  if (focus_overlay_ != nullptr && (type == QEvent::Enter || type == QEvent::Leave)) {
+    // Walk up from the watched child (canvas or axis widget) to its
+    // containing DockWidget so we can hand the overlay its CDockAreaWidget.
+    for (QObject* node = watched; node != nullptr; node = node->parent()) {
+      auto* dock_widget = qobject_cast<ads::CDockWidget*>(node);
+      if (dock_widget == nullptr) {
+        continue;
+      }
+      focus_overlay_->setHoveredArea(type == QEvent::Enter ? dock_widget->dockAreaWidget() : nullptr);
+      break;
+    }
+  }
+  return ads::CDockManager::eventFilter(watched, event);
+}
 
 void PlotDocker::setDataServices(SessionManager* session, CatalogModel* catalog) {
   session_ = session;

@@ -24,6 +24,7 @@
 #include <QShortcut>
 #include <QSizePolicy>
 #include <QSplitter>
+#include <QStackedWidget>
 #include <QStandardPaths>
 #include <QStatusBar>
 #include <QStringList>
@@ -350,11 +351,20 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
   // for the left column, the timeline strip, and the right toolbar.
   // The buttons are checkable: each carries a fixed "Dock to <side>"
   // glyph and the checked state mirrors the panel's visibility
-  // (checked = visible). Persisted across sessions, defaulting to
-  // visible. Visibility is restored before applyIcons() so the initial
-  // checked state matches the live state.
+  // (checked = visible). At launch the left panel is forced visible
+  // and the right panel forced hidden regardless of the persisted
+  // value; the bottom strip restores its QSettings value as before.
+  // In-session toggles still persist normally — the override applies
+  // only on startup.
   for (const PanelToggle& toggle : panelToggles(ui_)) {
-    const bool visible = settings.value(QString::fromLatin1(toggle.settings_key), true).toBool();
+    bool visible;
+    if (toggle.target == ui_->leftColumn) {
+      visible = true;
+    } else if (toggle.target == ui_->localToolbarWidget) {
+      visible = false;
+    } else {
+      visible = settings.value(QString::fromLatin1(toggle.settings_key), true).toBool();
+    }
     toggle.target->setVisible(visible);
     toggle.button->setChecked(visible);
     // Bottom-strip toggle restore: if the strip is hidden, clamp the
@@ -516,29 +526,65 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
   // the local panel's toggle state.
   buildGlobalToolbar();
 
+  // Right sidepanel content switches by focused widget type via a
+  // QStackedWidget. Page 0 is the plot-config UI (Curve Width / Style
+  // strips + CurveEditor). Pages 1 and 2 are per-family placeholders
+  // (Scene2D, Scene3D); onDockFocused() picks the active page.
+  auto* outer_layout = qobject_cast<QVBoxLayout*>(ui_->localToolbarWidget->layout());
+  outer_layout->setSpacing(0);
+  outer_layout->setContentsMargins(0, 0, 0, 0);
+  right_panel_stack_ = new QStackedWidget(ui_->localToolbarWidget);
+  outer_layout->addWidget(right_panel_stack_, /*stretch=*/1);
+
+  plot_config_page_ = new QWidget(right_panel_stack_);
+  auto* plot_config_layout = new QVBoxLayout(plot_config_page_);
+  plot_config_layout->setSpacing(0);
+  plot_config_layout->setContentsMargins(0, 0, 0, 0);
+  right_panel_stack_->addWidget(plot_config_page_);
+
+  auto make_placeholder = [this](const QString& text) {
+    auto* page = new QWidget(right_panel_stack_);
+    auto* layout = new QVBoxLayout(page);
+    layout->setContentsMargins(0, 0, 0, 0);
+    layout->addStretch(1);
+    auto* label = new QLabel(text, page);
+    label->setAlignment(Qt::AlignCenter);
+    label->setWordWrap(true);
+    layout->addWidget(label);
+    layout->addStretch(1);
+    return page;
+  };
+  scene2d_config_page_ = make_placeholder(tr("TODO: 2D configuration"));
+  scene3d_config_page_ = make_placeholder(tr("TODO: 3D configuration"));
+  empty_dock_page_ = make_placeholder(tr("No widget selected"));
+  right_panel_stack_->addWidget(scene2d_config_page_);
+  right_panel_stack_->addWidget(scene3d_config_page_);
+  right_panel_stack_->addWidget(empty_dock_page_);
+  right_panel_stack_->setCurrentWidget(plot_config_page_);
+
   // Local panel to the right of the global column — Curve Width / Curve
   // Style header bands and their FlowLayout icon strips, followed by the
   // per-curve CurveEditor. Hidden by the "Toggle Right Panel" button;
   // its width snaps/folds as the user drags the splitter handle.
   buildLocalToolbar();
 
-  // CurveEditor lives below the icon strips inside the local panel; same
-  // right-panel toggle controls visibility. Rebinds to the active plot
-  // on tab changes.
-  curve_editor_ = new CurveEditor(ui_->localToolbarWidget);
-  auto* toolbar_layout = qobject_cast<QVBoxLayout*>(ui_->localToolbarWidget->layout());
-  toolbar_layout->addWidget(curve_editor_, /*stretch=*/1);
+  // CurveEditor lives below the icon strips inside the plot-config
+  // page; same right-panel toggle controls visibility (the stack is
+  // a child of localToolbarWidget). Rebinds to the active plot on tab
+  // changes.
+  curve_editor_ = new CurveEditor(plot_config_page_);
+  plot_config_layout->addWidget(curve_editor_, /*stretch=*/1);
   // Trailing stretch keeps the icon strips anchored at the top of the
   // panel when the CurveEditor below is hidden. CurveEditor's own
   // stretch factor (1) outweighs the spacer's default (0), so while
   // the editor is visible it still fills the remaining vertical space.
-  toolbar_layout->addStretch(0);
+  plot_config_layout->addStretch(0);
   curve_editor_->onStylesheetChanged(theme_->currentTheme());
   connect(this, &MainWindow::stylesheetChanged, curve_editor_, &CurveEditor::onStylesheetChanged);
   connect(ui_->tabbedPlotWidget, &TabbedPlotWidget::currentTabChanged, this, [this](PlotDocker* /*docker*/) {
-    bindEditorToActivePlot();
+    bindEditorToPlot(firstPlotOfActiveTab());
   });
-  bindEditorToActivePlot();
+  bindEditorToPlot(firstPlotOfActiveTab());
 
   pushInitialUndoState();
   updateUndoRedoActions();
@@ -683,12 +729,17 @@ void MainWindow::onPlotTabAdded(PlotDocker* docker) {
     return;
   }
   connect(docker, &PlotDocker::plotWidgetAdded, this, &MainWindow::onPlotAdded, Qt::UniqueConnection);
+  // ADS focus is the single source of truth for "which widget is active":
+  // it fires on canvas click and on tab-titlebar click. PlotDocker re-emits
+  // it as dockFocused(DockWidget*) so MainWindow can route to the right
+  // sidepanel page (plot config / 2D / 3D) without pulling in ADS types.
+  connect(docker, &PlotDocker::dockFocused, this, &MainWindow::onDockFocused, Qt::UniqueConnection);
   for (int index = 0; index < docker->plotCount(); ++index) {
     if (DockWidget* dock = docker->plotAt(index)) {
       onPlotAdded(dock->plotWidget());
     }
   }
-  bindEditorToActivePlot();
+  bindEditorToPlot(firstPlotOfActiveTab());
 }
 
 void MainWindow::onPlotAdded(PlotWidget* plot) {
@@ -702,7 +753,9 @@ void MainWindow::onPlotAdded(PlotWidget* plot) {
   });
   plot->setTrackerPosition(session_->playbackEngine().currentTime());
   applyGlobalToggles(plot);
-  bindEditorToActivePlot();
+  if (curve_editor_ != nullptr && curve_editor_->plot() == nullptr) {
+    bindEditorToPlot(plot);
+  }
 }
 
 namespace {
@@ -801,9 +854,21 @@ void MainWindow::applyGlobalToggles(PlotWidget* plot) {
   }
   plot->setShowPoints(show_points_);
   plot->setGridVisible(activate_grid_);
-  plot->overrideCurvesStyle(
-      dots_ ? std::optional<PlotWidgetBase::CurveStyle>{PlotWidgetBase::kLinesAndDots} : std::nullopt);
+  applyDots(plot);
   applyLegendStatus(plot);
+}
+
+void MainWindow::applyDots(PlotWidget* plot) {
+  if (plot == nullptr) {
+    return;
+  }
+  const auto from = dots_ ? PlotWidgetBase::kLines : PlotWidgetBase::kLinesAndDots;
+  const auto to = dots_ ? PlotWidgetBase::kLinesAndDots : PlotWidgetBase::kLines;
+  for (const auto& info : plot->curveList()) {
+    if (info.curve != nullptr && PlotWidget::qwtStyleToCurveStyle(info.curve) == from) {
+      plot->setCurveStyle(info.source_name, to);
+    }
+  }
 }
 
 void MainWindow::onPlotZoomChanged(PlotWidget* modified, QRectF rect) {
@@ -1316,17 +1381,52 @@ void MainWindow::updateUndoRedoActions() {
   }
 }
 
-void MainWindow::bindEditorToActivePlot() {
-  if (curve_editor_ == nullptr) {
-    return;
+void MainWindow::bindEditorToPlot(PlotWidget* plot) {
+  if (curve_editor_ != nullptr) {
+    curve_editor_->setPlot(plot);
   }
-  PlotWidget* active = nullptr;
+  // The width/style buttons act on the editor's plot, so keep them
+  // visibly disabled when there is none to act on.
+  const bool enable = plot != nullptr;
+  if (width_button_group_ != nullptr) {
+    for (auto* btn : width_button_group_->buttons()) {
+      btn->setEnabled(enable);
+    }
+  }
+  if (style_button_group_ != nullptr) {
+    for (auto* btn : style_button_group_->buttons()) {
+      btn->setEnabled(enable);
+    }
+  }
+}
+
+PlotWidget* MainWindow::firstPlotOfActiveTab() const {
   auto* docker = ui_->tabbedPlotWidget->currentTab();
   auto* dock = (docker != nullptr && docker->plotCount() > 0) ? docker->plotAt(0) : nullptr;
+  return dock != nullptr ? dock->plotWidget() : nullptr;
+}
+
+void MainWindow::onDockFocused(DockWidget* dock) {
+  bindEditorToPlot(dock != nullptr ? dock->plotWidget() : nullptr);
+
+  // Placeholder docks (3-icon picker) and unknown widget kinds fall
+  // through to the empty page — "nothing to configure" is the honest
+  // signal when there is no curve, image, or scene to act on.
+  QWidget* target = empty_dock_page_;
   if (dock != nullptr) {
-    active = dock->plotWidget();
+    if (dock->plotWidget() != nullptr) {
+      target = plot_config_page_;
+    } else if (dock->objectWidget() != nullptr) {
+      QWidget* obj = dock->objectWidget()->widget();
+      if (qobject_cast<Media2DDockWidget*>(obj) != nullptr) {
+        target = scene2d_config_page_;
+      }
+      // Future: qobject_cast<Scene3DDockWidget*>(obj) -> scene3d_config_page_
+    }
   }
-  curve_editor_->setPlot(active);
+  if (right_panel_stack_ != nullptr) {
+    right_panel_stack_->setCurrentWidget(target);
+  }
 }
 
 void MainWindow::buildGlobalToolbar() {
@@ -1396,9 +1496,8 @@ void MainWindow::buildGlobalToolbar() {
     }
     dots_ = checked;
     QSettings().setValue(QStringLiteral("MainWindow.buttonDots"), checked);
-    forEachPlot([checked](PlotWidget* plot) {
-      plot->overrideCurvesStyle(
-          checked ? std::optional<PlotWidgetBase::CurveStyle>{PlotWidgetBase::kLinesAndDots} : std::nullopt);
+    forEachPlot([this](PlotWidget* plot) {
+      applyDots(plot);
       plot->replot();
     });
   });
@@ -1462,17 +1561,15 @@ void MainWindow::buildGlobalToolbar() {
 }
 
 void MainWindow::buildLocalToolbar() {
-  // localToolbarWidget's QVBoxLayout from the .ui hosts the per-plot
-  // settings: a "Curve Width" header + flow-strip, a "Curve Style"
-  // header + flow-strip, then the CurveEditor (added by the caller).
-  // Sections wrap as the panel narrows; below ~72 px the headers hide
-  // and the icon strips stack into a 1- or 2-col snap.
-  auto* outer = qobject_cast<QVBoxLayout*>(ui_->localToolbarWidget->layout());
+  // Populates the plot-config page of the right-sidepanel stack: a
+  // "Curve Width" header + flow-strip, a "Curve Style" header +
+  // flow-strip, then the CurveEditor (added by the caller). Sections
+  // wrap as the panel narrows; below ~72 px the headers hide and the
+  // icon strips stack into a 1- or 2-col snap.
+  auto* outer = qobject_cast<QVBoxLayout*>(plot_config_page_->layout());
   if (outer == nullptr) {
     return;
   }
-  outer->setSpacing(0);
-  outer->setContentsMargins(0, 0, 0, 0);
 
   struct ToolSpec {
     const char* object_name;
@@ -1480,15 +1577,15 @@ void MainWindow::buildLocalToolbar() {
     const char* tooltip;
     std::function<void()> on_click;
   };
-  const auto on_width = [this](double w) { return [this, w]() { applyGlobalWidth(w); }; };
-  const auto on_style = [this](int s) { return [this, s]() { applyGlobalStyle(s); }; };
+  const auto on_width = [this](double w) { return [this, w]() { applyActivePlotWidth(w); }; };
+  const auto on_style = [this](int s) { return [this, s]() { applyActivePlotStyle(s); }; };
 
   auto build_section = [this, outer](
                            const QString& heading, const QString& header_object_name,
                            const std::vector<ToolSpec>& specs) -> QWidget* {
     // Heading: same 24-px grey band as Datasets / Custom Series / Curves
     // (styled via #widgetLabel* QSS rule that picks up titlebar_background).
-    auto* header = new QWidget(ui_->localToolbarWidget);
+    auto* header = new QWidget(plot_config_page_);
     header->setObjectName(header_object_name);
     header->setFixedHeight(24);
     auto* header_layout = new QHBoxLayout(header);
@@ -1509,7 +1606,7 @@ void MainWindow::buildLocalToolbar() {
     // wrapped rows render below the strip's bottom edge and get clipped.
     // Each strip wraps independently inside its own section, so icons
     // never cross a section header.
-    auto* strip = new QWidget(ui_->localToolbarWidget);
+    auto* strip = new QWidget(plot_config_page_);
     QSizePolicy strip_policy(QSizePolicy::Preferred, QSizePolicy::Minimum);
     strip_policy.setHeightForWidth(true);
     strip->setSizePolicy(strip_policy);
@@ -1543,7 +1640,7 @@ void MainWindow::buildLocalToolbar() {
   // Curve Width: same exclusive radio-group pattern as Curve Style.
   // Default is 1.0 (kPoints1_0). The group's id is the LineWidth enum
   // index (0..3); the matching double is looked up from a parallel
-  // array so the click slot below can call applyGlobalWidth.
+  // array so the click slot below can call applyActivePlotWidth.
   width_button_group_ = new QButtonGroup(this);
   width_button_group_->setExclusive(true);
   const std::array<std::pair<const char*, double>, 4> width_button_specs{{
@@ -1566,9 +1663,6 @@ void MainWindow::buildLocalToolbar() {
   connect(width_button_group_, &QButtonGroup::idClicked, this, [](int width_id) {
     QSettings().setValue(QStringLiteral("MainWindow.curveWidth"), width_id);
   });
-  if (initial_width_id >= 0 && initial_width_id < static_cast<int>(width_button_specs.size())) {
-    applyGlobalWidth(width_button_specs[initial_width_id].second);
-  }
 
   curve_style_header_ = build_section(
       tr("Curve Style"), QStringLiteral("widgetLabelCurveStyle"),
@@ -1615,10 +1709,9 @@ void MainWindow::buildLocalToolbar() {
   }
   // Persist the selection so the same style sticks across sessions, and
   // apply it once to existing plots so curves match the checked button.
-  connect(style_button_group_, &QButtonGroup::idClicked, this, [this](int style_value) {
+  connect(style_button_group_, &QButtonGroup::idClicked, this, [](int style_value) {
     QSettings().setValue(QStringLiteral("MainWindow.curveStyle"), style_value);
   });
-  applyGlobalStyle(initial_style);
 
   // Re-tint all local-panel tool buttons when the theme rolls. Each
   // button tagged with an "iconPath" property is re-rendered against
@@ -1633,27 +1726,31 @@ void MainWindow::buildLocalToolbar() {
   });
 }
 
-void MainWindow::applyGlobalWidth(double width) {
-  forEachPlot([width](PlotWidget* plot) {
-    for (const auto& info : plot->curveList()) {
-      if (info.curve != nullptr) {
-        plot->setCurveLineWidth(info.source_name, width);
-      }
+void MainWindow::applyActivePlotWidth(double width) {
+  PlotWidget* plot = curve_editor_ != nullptr ? curve_editor_->plot() : nullptr;
+  if (plot == nullptr) {
+    return;
+  }
+  for (const auto& info : plot->curveList()) {
+    if (info.curve != nullptr) {
+      plot->setCurveLineWidth(info.source_name, width);
     }
-    plot->replot();
-  });
+  }
+  plot->replot();
 }
 
-void MainWindow::applyGlobalStyle(int style) {
+void MainWindow::applyActivePlotStyle(int style) {
+  PlotWidget* plot = curve_editor_ != nullptr ? curve_editor_->plot() : nullptr;
+  if (plot == nullptr) {
+    return;
+  }
   const auto curve_style = static_cast<PlotWidgetBase::CurveStyle>(style);
-  forEachPlot([curve_style](PlotWidget* plot) {
-    for (const auto& info : plot->curveList()) {
-      if (info.curve != nullptr) {
-        plot->setCurveStyle(info.source_name, curve_style);
-      }
+  for (const auto& info : plot->curveList()) {
+    if (info.curve != nullptr) {
+      plot->setCurveStyle(info.source_name, curve_style);
     }
-    plot->replot();
-  });
+  }
+  plot->replot();
 }
 
 }  // namespace PJ

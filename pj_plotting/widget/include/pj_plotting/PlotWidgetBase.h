@@ -92,6 +92,11 @@ class PlotWidgetBase : public QWidget {
     return line_width_;
   }
 
+  // Installs `filter` on the canvas and every visible axis scale widget,
+  // so the caller sees Enter/Leave across the whole chart surface (Qt
+  // does not bubble those events to ancestors).
+  void installHoverFilter(QObject* filter);
+
  public slots:
   void replot();
   virtual void removeAllCurves();

@@ -15,6 +15,7 @@ namespace PJ {
 class CatalogModel;
 class DockWidget;
 class IDataWidget;
+class PlotFocusOverlay;
 class PlotWidget;
 class SessionManager;
 
@@ -50,14 +51,23 @@ class PlotDocker : public ads::CDockManager {
  public slots:
   void onStylesheetChanged(QString theme);
 
+ protected:
+  bool eventFilter(QObject* watched, QEvent* event) override;
+
  signals:
   void dockAdded(DockWidget* dock);
   void plotWidgetAdded(PlotWidget* plot);
+  // Re-emit of ads::CDockManager::focusedDockWidgetChanged narrowed to
+  // PJ::DockWidget so listeners don't pull in ADS types. Receivers
+  // inspect dock->plotWidget()/dock->objectWidget() to know the kind.
+  // nullptr when ADS focus moves to no widget.
+  void dockFocused(DockWidget* dock);
   void undoableChange();
 
  private:
   void ensureAtLeastOneWidget();
   DockWidget* addDockWithPlot(PlotWidget* plot, ads::DockWidgetArea area, ads::CDockAreaWidget* relative_to = nullptr);
+  void watchPlotForHover(PlotWidget* plot);
 
   QString state_id_;
   QString name_;
@@ -65,6 +75,7 @@ class PlotDocker : public ads::CDockManager {
   CatalogModel* catalog_ = nullptr;
   ObjectWidgetFactory object_widget_factory_;
   bool restoring_state_ = false;
+  PlotFocusOverlay* focus_overlay_ = nullptr;
 };
 
 }  // namespace PJ
