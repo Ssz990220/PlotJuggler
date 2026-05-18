@@ -7,6 +7,7 @@
 #include <QIcon>
 #include <QLabel>
 #include <QLineEdit>
+#include <QMargins>
 #include <QMenu>
 #include <QPoint>
 #include <QPushButton>
@@ -14,6 +15,7 @@
 #include <QToolButton>
 #include <QWidgetAction>
 #include <algorithm>
+#include <array>
 
 #include "pj_runtime/CatalogModel.h"
 #include "pj_widgets/CurveTreeView.h"
@@ -234,6 +236,11 @@ void CurveListPanel::onStylesheetChanged(QString theme) {
   applyIcons(theme);
 }
 
+void CurveListPanel::onChromeMetricsChanged(const ChromeMetrics& metrics) {
+  chrome_metrics_ = metrics;
+  applyIcons(currentTheme());
+}
+
 bool CurveListPanel::eventFilter(QObject* watched, QEvent* event) {
   const QEvent::Type type = event->type();
   if (type == QEvent::FocusIn || type == QEvent::FocusOut) {
@@ -263,6 +270,56 @@ void CurveListPanel::applyIcons(QString theme) {
   const QIcon search_icon(LoadSvg(":/resources/svg/search_light.svg", theme));
   ui_->buttonSearchTimeseries->setIcon(search_icon);
   ui_->buttonSearchCustom->setIcon(search_icon);
+
+  // Resize chrome buttons in lock-step with the global icon metrics.
+  // clear_all_button_ and delete_custom_button_ are inline-action menu
+  // items (full-width inside a popup), not square chrome — skip them.
+  const QSize icon_sz(chrome_metrics_.icon_size, chrome_metrics_.icon_size);
+  const int button_extent = chrome_metrics_.icon_size + chrome_metrics_.icon_padding;
+  const int band_extent = button_extent + (2 * chrome_metrics_.layout_padding);
+  const std::array<QToolButton*, 5> chrome_buttons{
+      ui_->buttonDatasetsMenu, ui_->buttonCustomMenu, ui_->buttonAddCustom, ui_->buttonSearchTimeseries,
+      ui_->buttonSearchCustom};
+  for (QToolButton* btn : chrome_buttons) {
+    btn->setMinimumSize(button_extent, button_extent);
+    btn->setMaximumSize(button_extent, button_extent);
+    btn->setIconSize(icon_sz);
+  }
+  ui_->lineEditFilter->setMinimumHeight(button_extent);
+  ui_->lineEditFilter->setMaximumHeight(button_extent);
+  ui_->lineEditCustomFilter->setMinimumHeight(button_extent);
+  ui_->lineEditCustomFilter->setMaximumHeight(button_extent);
+  // Bands grow to band_extent so the contentsMargins applied to their
+  // inner layouts (below) are absorbed by the band instead of squeezing
+  // the chrome inside.
+  ui_->widgetLabelTimeseries->setFixedHeight(band_extent);
+  ui_->widgetLabelCustom->setFixedHeight(band_extent);
+  const QMargins margins(
+      chrome_metrics_.layout_padding, chrome_metrics_.layout_padding, chrome_metrics_.layout_padding,
+      chrome_metrics_.layout_padding);
+  if (auto* layout = ui_->timeseriesHeaderLayout) {
+    layout->setContentsMargins(margins);
+    layout->setSpacing(chrome_metrics_.layout_spacing);
+  }
+  if (auto* layout = ui_->customHeaderLayout) {
+    layout->setContentsMargins(margins);
+    layout->setSpacing(chrome_metrics_.layout_spacing);
+  }
+  // Per-row padding on the Datasets / Custom Series trees. QTreeView
+  // has no setSpacing() the way QListWidget does — instead, push a
+  // per-instance stylesheet that pads ::item by layout_spacing on top
+  // and bottom. Setting an empty stylesheet at zero spacing clears the
+  // rule (otherwise the previous value would linger).
+  const QString row_padding = chrome_metrics_.layout_spacing > 0
+                                  ? QStringLiteral("QTreeView::item { padding-top: %1px; padding-bottom: %1px; }")
+                                        .arg(chrome_metrics_.layout_spacing)
+                                  : QString();
+  if (tree_view_ != nullptr) {
+    tree_view_->setStyleSheet(row_padding);
+  }
+  if (custom_view_ != nullptr) {
+    custom_view_->setStyleSheet(row_padding);
+  }
 }
 
 std::vector<QString> CurveListPanel::selectedCurveNamesForDrag() const {

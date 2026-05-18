@@ -21,11 +21,6 @@ namespace PJ {
 
 namespace {
 
-// Single source of truth for icon size on the timeline strip — applies to
-// the loop / play QPushButtons (via setIconSize) and the Speed / Buffer /
-// Step QLabels (via renderSvgPixmap). Change here, all icons move together.
-constexpr QSize kTimelineIconSize{20, 20};
-
 // Rasterise a monochrome Material SVG at a given logical size, honouring the
 // caller widget's devicePixelRatio so QLabel::setPixmap stays crisp on HiDPI
 // screens. Applies the same #000000 / #ffffff recolour as LoadSvg.
@@ -198,14 +193,48 @@ void TimelineWidget::onStylesheetChanged(QString theme) {
   applyIcons(theme);
 }
 
+void TimelineWidget::onChromeMetricsChanged(const ChromeMetrics& metrics) {
+  chrome_metrics_ = metrics;
+  applyIcons(currentTheme());
+}
+
 void TimelineWidget::applyIcons(QString theme) {
+  const QSize icon_sz(chrome_metrics_.icon_size, chrome_metrics_.icon_size);
+  const int button_extent = chrome_metrics_.icon_size + chrome_metrics_.icon_padding;
+  const int band_extent = button_extent + (2 * chrome_metrics_.layout_padding);
   ui_->playbackLoop->setIcon(LoadSvg(":/resources/svg/loop.svg", theme));
-  ui_->playbackLoop->setIconSize(kTimelineIconSize);
+  ui_->playbackLoop->setIconSize(icon_sz);
+  ui_->playbackLoop->setMinimumSize(button_extent, button_extent);
+  ui_->playbackLoop->setMaximumSize(button_extent, button_extent);
   applyPlayPauseIcon(theme);
-  ui_->buttonPlay->setIconSize(kTimelineIconSize);
+  ui_->buttonPlay->setIconSize(icon_sz);
+  ui_->buttonPlay->setMinimumSize(button_extent, button_extent);
+  ui_->buttonPlay->setMaximumSize(button_extent, button_extent);
+  // Override .ui-baked 24-px height caps on the strip's non-button
+  // controls so the row grows together when icons scale.
+  ui_->displayTime->setMinimumHeight(button_extent);
+  ui_->displayTime->setMaximumHeight(button_extent);
+  ui_->timeSlider->setMinimumHeight(button_extent);
+  ui_->timeSlider->setMaximumHeight(button_extent);
+  ui_->frame->setMaximumHeight(button_extent);
+  // Outer strip layout: padding goes here, so the playback widget
+  // itself grows by 2 * layout_padding via sizeHint (the inner content
+  // remains button_extent tall plus the margins).
+  if (auto* layout = ui_->layoutTimescale) {
+    layout->setContentsMargins(
+        chrome_metrics_.layout_padding, chrome_metrics_.layout_padding, chrome_metrics_.layout_padding,
+        chrome_metrics_.layout_padding);
+    layout->setSpacing(chrome_metrics_.layout_spacing);
+  }
+  // Grow the TimelineWidget itself to band_extent so the .ui-baked
+  // 24-px clamp on the host slot in MainWindow.ui doesn't clip the
+  // taller buttons / scrubbers when Chrome metrics scale up. Without
+  // this the outer slot stays at 24 and the inner row overflows.
+  setMinimumHeight(band_extent);
+  setMaximumHeight(band_extent);
   const qreal dpr = devicePixelRatioF();
-  ui_->labelSpeed->setPixmap(renderSvgPixmap(":/resources/svg/acute.svg", theme, kTimelineIconSize, dpr));
-  ui_->labelStep->setPixmap(renderSvgPixmap(":/resources/svg/move_selection_right.svg", theme, kTimelineIconSize, dpr));
+  ui_->labelSpeed->setPixmap(renderSvgPixmap(":/resources/svg/acute.svg", theme, icon_sz, dpr));
+  ui_->labelStep->setPixmap(renderSvgPixmap(":/resources/svg/move_selection_right.svg", theme, icon_sz, dpr));
 }
 
 void TimelineWidget::applyPlayPauseIcon(const QString& theme) {

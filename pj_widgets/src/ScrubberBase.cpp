@@ -110,10 +110,13 @@ void ScrubberBase::paintEvent(QPaintEvent*) {
   const QColor border_grey = light ? QColor(0xc0, 0xc0, 0xc0) : QColor(0xb0, 0xb0, 0xbf);
   const QColor active = light ? QColor(0x62, 0xc5, 0xff) : QColor(0x14, 0x8c, 0xd2);
 
-  // Background fill: use full rect.
+  // Background fill: full rect. Forced #ffffff in light mode so the
+  // scrubber reads as part of the chart surface (matches QSS
+  // chart_background); dark mode keeps the palette Base brush.
   QPainterPath fill_path;
   fill_path.addRoundedRect(rect(), kCornerRadiusPx, kCornerRadiusPx);
-  p.fillPath(fill_path, pal.brush(QPalette::Base));
+  const QBrush fill_brush = light ? QBrush(QColor(0xff, 0xff, 0xff)) : pal.brush(QPalette::Base);
+  p.fillPath(fill_path, fill_brush);
 
   // Border stroke: inset by 0.5 px so the 1 px line lands cleanly on
   // pixel boundaries (otherwise antialiasing smears the edge across two

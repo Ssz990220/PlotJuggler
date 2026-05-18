@@ -14,6 +14,7 @@
 #include <memory>
 
 #include "pj_base/diagnostic_sink.hpp"
+#include "pj_widgets/ChromeMetrics.h"
 
 class QAction;
 class QButtonGroup;
@@ -75,10 +76,34 @@ class MainWindow : public QMainWindow {
   // emit through the same pipeline plugins use.
   [[nodiscard]] DiagnosticSink diagnosticSink() const;
 
+  // Global Chrome metrics for toolbar/panel buttons. Persisted to
+  // QSettings (ui/icon_size, ui/icon_padding, ui/layout_padding,
+  // ui/layout_spacing) and broadcast via chromeMetricsChanged so each
+  // icon-bearing widget can re-render.
+  [[nodiscard]] const ChromeMetrics& chromeMetrics() const {
+    return chrome_metrics_;
+  }
+
+ public slots:
+  void setIconSize(int size);
+  void setIconPadding(int padding);
+  void setLayoutPadding(int padding);
+  void setLayoutSpacing(int spacing);
+
  signals:
   // Fires after qApp's stylesheet is applied; subwidgets refresh
   // palette-tinted icons via their onStylesheetChanged slots.
   void stylesheetChanged(QString theme);
+
+  // Fires when any chrome metric changes. Bundled so consumers always
+  // recompute layout from a consistent snapshot:
+  //   band height       = (icon_size + icon_padding) + 2 * layout_padding
+  //   chrome margins    = layout_padding
+  //   chrome / list gap = layout_spacing
+  // layout_padding feeds QLayout::setContentsMargins (band grows to
+  // absorb it), layout_spacing feeds QLayout::setSpacing and the
+  // CurveEditor list-row gap.
+  void chromeMetricsChanged(const ChromeMetrics& metrics);
 
  private slots:
   // Layout file flow: open / save / replay-recent. Persists the chosen
@@ -303,6 +328,10 @@ class MainWindow : public QMainWindow {
   bool show_points_ = false;
   bool activate_grid_ = false;
   bool dots_ = false;
+
+  // Loaded from QSettings before any child widget is built so the first
+  // applyIcons() of each widget already uses the saved metrics.
+  ChromeMetrics chrome_metrics_;
 };
 
 }  // namespace PJ

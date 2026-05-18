@@ -56,10 +56,15 @@ class CurveTreeView : public QTreeWidget {
   void mousePressEvent(QMouseEvent* event) override;
   void mouseMoveEvent(QMouseEvent* event) override;
   void mouseReleaseEvent(QMouseEvent* event) override;
+  void resizeEvent(QResizeEvent* event) override;
 
  private:
   QTreeWidgetItem* ensureGroup(const QString& path);
   QString treePathFromCurvePath(const CurvePath& path) const;
+  // Recompute the Name column so it fills whatever viewport width is
+  // left over after the Value column. Used by the resize event handler
+  // and the value-column show/hide toggle.
+  void syncNameColumnWidth();
   void sortTree();
   void setDescendantsExpanded(QTreeWidgetItem* item, bool expanded);
   std::vector<QString> selectedCurveNamesForDrag() const;
@@ -71,6 +76,10 @@ class CurveTreeView : public QTreeWidget {
   bool suppress_next_release_ = false;
   QString last_filter_;
   DragSelectionProvider drag_selection_provider_;
+  // Re-entry guard for the header sectionResized handler: programmatic
+  // resizes inside the handler re-fire the signal, which would otherwise
+  // cause an infinite ping-pong between Name and Value.
+  bool adjusting_columns_ = false;
 };
 
 }  // namespace PJ

@@ -6,6 +6,7 @@
 #include <QWidget>
 
 #include "pj_plotting/PlotWidgetBase.h"
+#include "pj_widgets/ChromeMetrics.h"
 
 class QListWidgetItem;
 class QPushButton;
@@ -47,6 +48,14 @@ class CurveEditor : public QWidget {
   // Updates the per-row visibility / trash + header icons to the new
   // theme's ink.
   void onStylesheetChanged(QString theme);
+  // Rebinds the header band's chrome dimensions (search + filter +
+  // kebab) so they grow with the global chrome-metrics setting. The
+  // band grows to (icon_size + icon_padding) + 2 * layout_padding tall
+  // with layout_padding applied as contentsMargins, and layout_spacing
+  // is forwarded to QListWidget::setSpacing so the curve rows gain
+  // visible gaps. Per-row visibility / trash icons keep their compact
+  // 20-px row height — they're a deliberate dense-list design.
+  void onChromeMetricsChanged(const ChromeMetrics& metrics);
 
  private slots:
   void onFilterChanged(const QString& text);
@@ -82,6 +91,10 @@ class CurveEditor : public QWidget {
   // rendered in the right ink at row-creation time without having to
   // walk back up to qApp / Theme. Updated via onStylesheetChanged.
   QString current_theme_ = QStringLiteral("light");
+  // Row-pixel height for curve rows. Tracks icon_size so larger icons
+  // don't clip; updated via onChromeMetricsChanged. Default matches
+  // MainWindow's first-launch icon size and the original compact list.
+  int row_height_ = 20;
   QMetaObject::Connection curve_list_connection_;
   QMetaObject::Connection plot_destroyed_connection_;
 

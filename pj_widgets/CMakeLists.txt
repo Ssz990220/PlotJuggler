@@ -14,6 +14,7 @@ add_library(pj_widgets STATIC
     src/ScrubberBase.cpp
     src/ToggleSwitch.cpp
     src/VisualizationPlaceholderWidget.cpp
+    include/pj_widgets/ChromeMetrics.h
     include/pj_widgets/ColorPickerPopup.h
     include/pj_widgets/CurveTreeView.h
     include/pj_widgets/Dialog.h

@@ -16,6 +16,8 @@ add_executable(pj_app
     src/PreferencesDialog.cpp
     src/PreferencesDialog.h
     src/PreferencesDialog.ui
+    src/PreferencesNavRow.cpp
+    src/PreferencesNavRow.h
     src/Theme.cpp
     src/Theme.h
     src/DebugUi.cpp
@@ -69,3 +71,14 @@ target_link_libraries(pj_app PRIVATE
     Qt6::Network
     Qt6::Xml
 )
+
+# Don't re-export symbols pulled in from static archive members. Without
+# this, Conan-built libpng/libjpeg/etc. symbols are exported globally from
+# pj_app and the dynamic linker can interpose them ahead of the system
+# copies that GTK/glib load — see for example the libpng 1.6.43 (system)
+# vs 1.6.58 (Conan) ABI skew that crashes QGtk3Interface::fileIcon during
+# QFileDialog with an "invalid pointer" free. --exclude-libs,ALL is the
+# GNU/LLD spelling; harmless on other linkers but only meaningful here.
+if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang" AND NOT APPLE AND NOT WIN32)
+    target_link_options(pj_app PRIVATE "LINKER:--exclude-libs,ALL")
+endif()

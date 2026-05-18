@@ -8,6 +8,7 @@
 #include <QTimer>
 #include <QToolButton>
 #include <QWindow>
+#include <array>
 
 #include "pj_widgets/SvgUtil.h"
 #include "ui/DiagnosticsPopup.h"
@@ -27,14 +28,12 @@ TitleBar::TitleBar(QWidget* parent) : QWidget(parent), ui_(new Ui::TitleBar) {
   // and leave a ghost strip of titlebar-background gray below the
   // buttons.
   //
-  // Height is 24 to match every other chrome row (Sources, Datasets,
-  // Custom Series, Playback). QSS adds `border-bottom: 1px` *inside*
-  // the widget's geometry, so the inner content rect is 23 px tall.
-  // The buttons in `TitleBar.ui` are therefore sized 23×23 — filling
-  // the inner content exactly, no centering asymmetry, same visual
-  // rhythm as the 23×23 tab-bar buttons (which sit in a 23-px bar
-  // followed by a separate 1-px separator → 24 total chrome).
-  setFixedHeight(24);
+  // Height tracks the global icon-metrics setting: button height equals
+  // icon_size + icon_padding, and the title-bar itself is +1 to leave
+  // room for the QSS `border-bottom: 1px` that draws inside our
+  // geometry. Initial values are the defaults; MainWindow re-pushes the
+  // saved metrics via iconMetricsChanged after the connection is wired.
+  applyIconMetrics();
 
   // Tag every popup with objectName="PJMenu" so the QMenu#PJMenu rule
   // in stylesheet_*.qss applies. The id+type selector outranks the
@@ -170,6 +169,43 @@ void TitleBar::onDiagnosticRecorded(const DiagnosticRecord& /*r*/) {
 
 void TitleBar::onStylesheetChanged(QString theme) {
   applyIcons(theme);
+}
+
+void TitleBar::onChromeMetricsChanged(const ChromeMetrics& metrics) {
+  chrome_metrics_ = metrics;
+  applyIconMetrics();
+}
+
+void TitleBar::applyIconMetrics() {
+  const int button_extent = chrome_metrics_.icon_size + chrome_metrics_.icon_padding;
+  // Bar = button + 2 * layout_padding + 1 (the QSS bottom border draws
+  // inside our geometry, so the inner content rect is bar_height - 1).
+  const int bar_height = button_extent + (2 * chrome_metrics_.layout_padding) + 1;
+  setMinimumHeight(bar_height);
+  setMaximumHeight(bar_height);
+  setFixedHeight(bar_height);
+  if (auto* layout = ui_->horizontalLayout) {
+    layout->setContentsMargins(
+        chrome_metrics_.layout_padding, chrome_metrics_.layout_padding, chrome_metrics_.layout_padding,
+        chrome_metrics_.layout_padding);
+    layout->setSpacing(chrome_metrics_.layout_spacing);
+  }
+
+  // Square chrome buttons — fixed extent on both axes.
+  const QSize icon_sz(chrome_metrics_.icon_size, chrome_metrics_.icon_size);
+  const std::array<QToolButton*, 7> square_buttons{ui_->buttonNotifications, ui_->buttonExtension, ui_->buttonLayout,
+                                                   ui_->buttonPreferences,   ui_->buttonMinimize,  ui_->buttonMaximize,
+                                                   ui_->buttonClose};
+  for (QToolButton* btn : square_buttons) {
+    btn->setMinimumSize(button_extent, button_extent);
+    btn->setMaximumSize(button_extent, button_extent);
+    btn->setIconSize(icon_sz);
+  }
+  // App icon has text beside the glyph — height is fixed, width floats
+  // to fit the "PlotJuggler" label.
+  ui_->appIcon->setMinimumHeight(button_extent);
+  ui_->appIcon->setMaximumHeight(button_extent);
+  ui_->appIcon->setIconSize(icon_sz);
 }
 
 void TitleBar::changeEvent(QEvent* event) {

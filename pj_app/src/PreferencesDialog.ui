@@ -7,40 +7,251 @@
    <property name="topMargin"><number>12</number></property>
    <property name="rightMargin"><number>12</number></property>
    <property name="bottomMargin"><number>12</number></property>
-   <property name="spacing"><number>8</number></property>
+   <property name="spacing"><number>12</number></property>
    <item>
-    <layout class="QHBoxLayout" name="themeRow">
+    <layout class="QHBoxLayout" name="panesRow">
+     <property name="spacing"><number>12</number></property>
      <item>
-      <widget class="QLabel" name="labelTheme">
-       <property name="text"><string>Theme:</string></property>
+      <widget class="QScrollArea" name="navScrollArea">
+       <property name="sizePolicy">
+        <sizepolicy hsizetype="Fixed" vsizetype="Expanding">
+         <horstretch>0</horstretch>
+         <verstretch>1</verstretch>
+        </sizepolicy>
+       </property>
+       <property name="minimumSize"><size><width>160</width><height>0</height></size></property>
+       <property name="maximumSize"><size><width>160</width><height>16777215</height></size></property>
+       <property name="frameShape"><enum>QFrame::NoFrame</enum></property>
+       <property name="frameShadow"><enum>QFrame::Plain</enum></property>
+       <property name="widgetResizable"><bool>true</bool></property>
+       <property name="horizontalScrollBarPolicy"><enum>Qt::ScrollBarAlwaysOff</enum></property>
+       <widget class="QWidget" name="navContainer">
+        <property name="geometry">
+         <rect><x>0</x><y>0</y><width>160</width><height>320</height></rect>
+        </property>
+        <layout class="QVBoxLayout" name="navLayout">
+         <property name="leftMargin"><number>0</number></property>
+         <property name="topMargin"><number>0</number></property>
+         <property name="rightMargin"><number>0</number></property>
+         <property name="bottomMargin"><number>0</number></property>
+         <property name="spacing"><number>0</number></property>
+         <item>
+          <spacer name="navBottomSpacer">
+           <property name="orientation"><enum>Qt::Vertical</enum></property>
+           <property name="sizeHint" stdset="0"><size><width>0</width><height>0</height></size></property>
+          </spacer>
+         </item>
+        </layout>
+       </widget>
       </widget>
      </item>
      <item>
-      <spacer name="themeSpacer">
-       <property name="orientation"><enum>Qt::Horizontal</enum></property>
-       <property name="sizeHint" stdset="0"><size><width>40</width><height>0</height></size></property>
-      </spacer>
-     </item>
-     <item>
-      <widget class="PJ::ToggleSwitch" name="themeToggle" native="true">
+      <widget class="QStackedWidget" name="pagesStack">
        <property name="sizePolicy">
-        <sizepolicy hsizetype="Fixed" vsizetype="Fixed">
-         <horstretch>0</horstretch>
-         <verstretch>0</verstretch>
+        <sizepolicy hsizetype="Expanding" vsizetype="Expanding">
+         <horstretch>1</horstretch>
+         <verstretch>1</verstretch>
         </sizepolicy>
        </property>
+       <widget class="QWidget" name="pageAppearance">
+        <layout class="QVBoxLayout" name="appearanceLayout">
+         <property name="leftMargin"><number>0</number></property>
+         <property name="topMargin"><number>0</number></property>
+         <property name="rightMargin"><number>0</number></property>
+         <property name="bottomMargin"><number>0</number></property>
+         <property name="spacing"><number>8</number></property>
+         <item>
+          <layout class="QHBoxLayout" name="themeRow">
+           <item>
+            <widget class="QLabel" name="labelTheme">
+             <property name="text"><string>Theme:</string></property>
+            </widget>
+           </item>
+           <item>
+            <spacer name="themeSpacer">
+             <property name="orientation"><enum>Qt::Horizontal</enum></property>
+             <property name="sizeHint" stdset="0"><size><width>40</width><height>0</height></size></property>
+            </spacer>
+           </item>
+           <item>
+            <widget class="PJ::ToggleSwitch" name="themeToggle" native="true">
+             <property name="sizePolicy">
+              <sizepolicy hsizetype="Fixed" vsizetype="Fixed">
+               <horstretch>0</horstretch>
+               <verstretch>0</verstretch>
+              </sizepolicy>
+             </property>
+            </widget>
+           </item>
+          </layout>
+         </item>
+         <item>
+          <layout class="QHBoxLayout" name="iconSizeRow">
+           <item>
+            <widget class="QLabel" name="labelIconSize">
+             <property name="text"><string>Icon size:</string></property>
+            </widget>
+           </item>
+           <item>
+            <spacer name="iconSizeSpacer">
+             <property name="orientation"><enum>Qt::Horizontal</enum></property>
+             <property name="sizeHint" stdset="0"><size><width>40</width><height>0</height></size></property>
+            </spacer>
+           </item>
+           <item>
+            <widget class="PJ::IntScrubber" name="iconSizeScrubber">
+             <property name="sizePolicy">
+              <sizepolicy hsizetype="Fixed" vsizetype="Fixed">
+               <horstretch>0</horstretch>
+               <verstretch>0</verstretch>
+              </sizepolicy>
+             </property>
+            </widget>
+           </item>
+          </layout>
+         </item>
+         <item>
+          <layout class="QHBoxLayout" name="iconPaddingRow">
+           <item>
+            <widget class="QLabel" name="labelIconPadding">
+             <property name="text"><string>Icon padding:</string></property>
+            </widget>
+           </item>
+           <item>
+            <spacer name="iconPaddingSpacer">
+             <property name="orientation"><enum>Qt::Horizontal</enum></property>
+             <property name="sizeHint" stdset="0"><size><width>40</width><height>0</height></size></property>
+            </spacer>
+           </item>
+           <item>
+            <widget class="PJ::IntScrubber" name="iconPaddingScrubber">
+             <property name="sizePolicy">
+              <sizepolicy hsizetype="Fixed" vsizetype="Fixed">
+               <horstretch>0</horstretch>
+               <verstretch>0</verstretch>
+              </sizepolicy>
+             </property>
+            </widget>
+           </item>
+          </layout>
+         </item>
+         <item>
+          <layout class="QHBoxLayout" name="layoutPaddingRow">
+           <item>
+            <widget class="QLabel" name="labelLayoutPadding">
+             <property name="text"><string>Layout padding:</string></property>
+            </widget>
+           </item>
+           <item>
+            <spacer name="layoutPaddingSpacer">
+             <property name="orientation"><enum>Qt::Horizontal</enum></property>
+             <property name="sizeHint" stdset="0"><size><width>40</width><height>0</height></size></property>
+            </spacer>
+           </item>
+           <item>
+            <widget class="PJ::IntScrubber" name="layoutPaddingScrubber">
+             <property name="sizePolicy">
+              <sizepolicy hsizetype="Fixed" vsizetype="Fixed">
+               <horstretch>0</horstretch>
+               <verstretch>0</verstretch>
+              </sizepolicy>
+             </property>
+            </widget>
+           </item>
+          </layout>
+         </item>
+         <item>
+          <layout class="QHBoxLayout" name="layoutSpacingRow">
+           <item>
+            <widget class="QLabel" name="labelLayoutSpacing">
+             <property name="text"><string>Layout spacing:</string></property>
+            </widget>
+           </item>
+           <item>
+            <spacer name="layoutSpacingSpacer">
+             <property name="orientation"><enum>Qt::Horizontal</enum></property>
+             <property name="sizeHint" stdset="0"><size><width>40</width><height>0</height></size></property>
+            </spacer>
+           </item>
+           <item>
+            <widget class="PJ::IntScrubber" name="layoutSpacingScrubber">
+             <property name="sizePolicy">
+              <sizepolicy hsizetype="Fixed" vsizetype="Fixed">
+               <horstretch>0</horstretch>
+               <verstretch>0</verstretch>
+              </sizepolicy>
+             </property>
+            </widget>
+           </item>
+          </layout>
+         </item>
+         <item>
+          <spacer name="appearanceVerticalSpacer">
+           <property name="orientation"><enum>Qt::Vertical</enum></property>
+           <property name="sizeHint" stdset="0"><size><width>20</width><height>20</height></size></property>
+          </spacer>
+         </item>
+        </layout>
+       </widget>
+       <widget class="QWidget" name="pagePlotting">
+        <layout class="QVBoxLayout" name="plottingLayout">
+         <property name="leftMargin"><number>0</number></property>
+         <property name="topMargin"><number>0</number></property>
+         <property name="rightMargin"><number>0</number></property>
+         <property name="bottomMargin"><number>0</number></property>
+         <item>
+          <widget class="QLabel" name="labelPlottingComingSoon">
+           <property name="text"><string>Coming soon</string></property>
+           <property name="alignment"><set>Qt::AlignCenter</set></property>
+          </widget>
+         </item>
+        </layout>
+       </widget>
+       <widget class="QWidget" name="pageStreaming">
+        <layout class="QVBoxLayout" name="streamingLayout">
+         <property name="leftMargin"><number>0</number></property>
+         <property name="topMargin"><number>0</number></property>
+         <property name="rightMargin"><number>0</number></property>
+         <property name="bottomMargin"><number>0</number></property>
+         <item>
+          <widget class="QLabel" name="labelStreamingComingSoon">
+           <property name="text"><string>Coming soon</string></property>
+           <property name="alignment"><set>Qt::AlignCenter</set></property>
+          </widget>
+         </item>
+        </layout>
+       </widget>
+       <widget class="QWidget" name="pageScripting">
+        <layout class="QVBoxLayout" name="scriptingLayout">
+         <property name="leftMargin"><number>0</number></property>
+         <property name="topMargin"><number>0</number></property>
+         <property name="rightMargin"><number>0</number></property>
+         <property name="bottomMargin"><number>0</number></property>
+         <item>
+          <widget class="QLabel" name="labelScriptingComingSoon">
+           <property name="text"><string>Coming soon</string></property>
+           <property name="alignment"><set>Qt::AlignCenter</set></property>
+          </widget>
+         </item>
+        </layout>
+       </widget>
       </widget>
      </item>
     </layout>
    </item>
    <item>
-    <spacer name="verticalSpacer">
-     <property name="orientation"><enum>Qt::Vertical</enum></property>
-     <property name="sizeHint" stdset="0"><size><width>20</width><height>20</height></size></property>
-    </spacer>
-   </item>
-   <item>
     <layout class="QHBoxLayout" name="buttonLayout">
+     <item>
+      <widget class="QToolButton" name="buttonResetDefaults">
+       <property name="toolTip"><string>Reset to defaults</string></property>
+       <property name="focusPolicy"><enum>Qt::NoFocus</enum></property>
+       <property name="autoRaise"><bool>true</bool></property>
+       <property name="text"><string/></property>
+       <property name="iconSize"><size><width>20</width><height>20</height></size></property>
+       <property name="minimumSize"><size><width>24</width><height>24</height></size></property>
+       <property name="maximumSize"><size><width>24</width><height>24</height></size></property>
+      </widget>
+     </item>
      <item>
       <spacer name="buttonSpacer">
        <property name="orientation"><enum>Qt::Horizontal</enum></property>
@@ -67,6 +278,11 @@
    <class>PJ::ToggleSwitch</class>
    <extends>QWidget</extends>
    <header>pj_widgets/ToggleSwitch.h</header>
+  </customwidget>
+  <customwidget>
+   <class>PJ::IntScrubber</class>
+   <extends>QWidget</extends>
+   <header>pj_widgets/IntScrubber.h</header>
   </customwidget>
  </customwidgets>
  <resources/>

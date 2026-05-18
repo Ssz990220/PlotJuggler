@@ -3,6 +3,8 @@
 #include <QTimer>
 #include <QWidget>
 
+#include "pj_widgets/ChromeMetrics.h"
+
 namespace Ui {
 class TimelineWidget;
 }
@@ -24,6 +26,11 @@ class TimelineWidget : public QWidget {
 
  public slots:
   void onStylesheetChanged(QString theme);
+
+  // Rebinds Chrome metrics broadcast from MainWindow. Re-runs
+  // applyIcons() so buttons, label pixmaps, layout padding, and the
+  // spacing between row items all update atomically.
+  void onChromeMetricsChanged(const ChromeMetrics& metrics);
 
  private slots:
   void onEngineTimeChanged(double t);
@@ -56,6 +63,9 @@ class TimelineWidget : public QWidget {
   QTimer seek_throttle_timer_;
   double pending_seek_value_ = 0.0;
   bool has_pending_seek_ = false;
+
+  // Chrome metrics from MainWindow::chromeMetricsChanged.
+  ChromeMetrics chrome_metrics_;
 };
 
 }  // namespace PJ

@@ -2,6 +2,8 @@
 
 #include <QWidget>
 
+#include "pj_widgets/ChromeMetrics.h"
+
 namespace Ui {
 class LeftPanel;
 }
@@ -30,6 +32,10 @@ class LeftPanel : public QWidget {
 
  public slots:
   void onStylesheetChanged(QString theme);
+  // Rebinds Chrome metrics from MainWindow. Re-runs applyIcons() so
+  // the Sources band, page rows, and streaming row absorb new icon
+  // metrics, layout padding and the spacing between items.
+  void onChromeMetricsChanged(const ChromeMetrics& metrics);
   // Repopulates the streaming combo. Preserves the current selection if the
   // previously-selected name is still present.
   void setStreamingSources(const QStringList& names);
@@ -40,6 +46,8 @@ class LeftPanel : public QWidget {
   void applyIcons(QString theme);
 
   Ui::LeftPanel* ui_;
+  // Chrome metrics from MainWindow::chromeMetricsChanged.
+  ChromeMetrics chrome_metrics_;
 };
 
 }  // namespace PJ

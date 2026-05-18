@@ -17,6 +17,7 @@
 #include <QVBoxLayout>
 #include <QWheelEvent>
 #include <algorithm>
+#include <array>
 #include <utility>
 
 #include "pj_plotting/PlotDocker.h"
@@ -259,11 +260,11 @@ TabbedPlotWidget::TabbedPlotWidget(QString name, QWidget* parent) : QWidget(pare
   //   tabs_scroll->setFixedHeight(kTabBarHeight);
   //   tabs_scroll->setWidget(tabs_inner);
   //   outer_layout->addWidget(tabs_scroll, 1);
-  auto* tabs_inner = new QWidget(tabs_bar_widget);
-  tabs_inner->setObjectName("plotTabsInner");
-  tabs_inner->setContentsMargins(0, 0, 0, 0);
-  tabs_inner->setFixedHeight(kTabBarHeight);
-  tabs_bar_layout_ = new QHBoxLayout(tabs_inner);
+  tabs_inner_ = new QWidget(tabs_bar_widget);
+  tabs_inner_->setObjectName("plotTabsInner");
+  tabs_inner_->setContentsMargins(0, 0, 0, 0);
+  tabs_inner_->setFixedHeight(kTabBarHeight);
+  tabs_bar_layout_ = new QHBoxLayout(tabs_inner_);
   tabs_bar_layout_->setContentsMargins(0, 0, 0, 0);
   tabs_bar_layout_->setSpacing(0);
 
@@ -276,7 +277,7 @@ TabbedPlotWidget::TabbedPlotWidget(QString name, QWidget* parent) : QWidget(pare
   tabs_bar_layout_->addWidget(button_add_tab_, 0, Qt::AlignVCenter);
   tabs_bar_layout_->addStretch(1);
 
-  outer_layout->addWidget(tabs_inner, 1);
+  outer_layout->addWidget(tabs_inner_, 1);
 
   // Panel-toggle buttons sit at the far right of the tab strip and
   // control the surrounding shell panels (left column, timeline,
@@ -288,7 +289,8 @@ TabbedPlotWidget::TabbedPlotWidget(QString name, QWidget* parent) : QWidget(pare
     auto* button = new QPushButton(this);
     button->setObjectName(QStringLiteral("plotTabsPanelButton"));
     button->setFlat(true);
-    button->setCheckable(true);
+    // Not checkable — MainWindow swaps the glyph between filled (panel
+    // visible) and outlined (panel hidden) variants on click.
     button->setFixedSize(QSize(kTabBarButtonSize, kTabBarButtonSize));
     button->setIconSize(QSize(kTabBarIconSize, kTabBarIconSize));
     button->setFocusPolicy(Qt::NoFocus);
@@ -465,6 +467,12 @@ PlotDocker* TabbedPlotWidget::createDocker(const QString& tab_name) {
 
 PlotTabFrame* TabbedPlotWidget::createTabFrame(const QString& tab_name, PlotDocker* docker) {
   auto* frame = new PlotTabFrame(tab_name, this);
+  // Tab frames default to kTabBarButtonSize; rebind to the live chrome
+  // extent so a tab added after the user customised icon metrics still
+  // fills the bar.
+  const int chrome_extent = std::max(
+      1, (chrome_metrics_.icon_size + chrome_metrics_.icon_padding) - 1 + (2 * chrome_metrics_.layout_padding));
+  frame->setFixedHeight(chrome_extent);
   frame->closeButton()->setIcon(LoadSvg(":/resources/svg/close-button.svg", currentTheme()));
   connect(frame, &PlotTabFrame::clicked, this, [this, frame]() { onTabFrameClicked(frame); });
   connect(frame, &PlotTabFrame::renameCommitted, this, [this, frame](const QString& new_name) {
@@ -474,6 +482,34 @@ PlotTabFrame* TabbedPlotWidget::createTabFrame(const QString& tab_name, PlotDock
   // Suppress the unused-warning-on-no-capture by acknowledging docker.
   (void)docker;
   return frame;
+}
+
+void TabbedPlotWidget::onChromeMetricsChanged(const ChromeMetrics& metrics) {
+  chrome_metrics_ = metrics;
+  // The tab strip historically uses (icon + icon_padding − 1) for the
+  // strip height and chrome buttons, plus a 1-px separator below for
+  // alignment with full-extent left-column bands. Layout padding adds
+  // on top, growing the strip uniformly.
+  const int chrome_extent = std::max(1, (metrics.icon_size + metrics.icon_padding) - 1 + (2 * metrics.layout_padding));
+  if (tabs_inner_ != nullptr) {
+    tabs_inner_->setFixedHeight(chrome_extent);
+  }
+  const int button_extent = std::max(1, chrome_extent);
+  const QSize icon_sz(metrics.icon_size, metrics.icon_size);
+  const std::array<QPushButton*, 4> chrome_buttons{
+      button_add_tab_, button_left_panel_, button_bottom_panel_, button_right_panel_};
+  for (QPushButton* btn : chrome_buttons) {
+    if (btn == nullptr) {
+      continue;
+    }
+    btn->setFixedSize(QSize(button_extent, button_extent));
+    btn->setIconSize(icon_sz);
+  }
+  for (const TabEntry& entry : tabs_) {
+    if (entry.frame != nullptr) {
+      entry.frame->setFixedHeight(chrome_extent);
+    }
+  }
 }
 
 void TabbedPlotWidget::onStylesheetChanged(QString theme) {

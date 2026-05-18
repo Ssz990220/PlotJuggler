@@ -102,6 +102,22 @@ constexpr auto kLayoutFilter = "PlotJuggler 4 Layout (*.pjl4)";
 constexpr auto kLayoutExtension = ".pjl4";
 constexpr int kMaxUndoStates = 100;
 constexpr qint64 kUndoCoalesceMs = 100;
+constexpr auto kIconSizeKey = "ui/icon_size";
+constexpr auto kIconPaddingKey = "ui/icon_padding";
+constexpr auto kLayoutPaddingKey = "ui/layout_padding";
+constexpr auto kLayoutSpacingKey = "ui/layout_spacing";
+constexpr int kIconSizeMin = 12;
+constexpr int kIconSizeMax = 48;
+constexpr int kIconPaddingMin = 0;
+constexpr int kIconPaddingMax = 32;
+constexpr int kLayoutPaddingMin = 0;
+constexpr int kLayoutPaddingMax = 16;
+constexpr int kLayoutSpacingMin = 0;
+constexpr int kLayoutSpacingMax = 16;
+constexpr int kIconSizeDefault = 24;
+constexpr int kIconPaddingDefault = 4;
+constexpr int kLayoutPaddingDefault = 2;
+constexpr int kLayoutSpacingDefault = 2;
 
 Qt::Edges edgesAtPoint(const QSize& window_size, const QPoint& pos) {
   Qt::Edges edges;
@@ -141,22 +157,27 @@ struct PanelToggle {
   QPushButton* button;
   QWidget* target;
   const char* settings_key;
-  const char* icon_path;  // full resource path, no per-state suffix.
+  const char* icon_path_on;   // filled glyph — panel visible.
+  const char* icon_path_off;  // unfilled glyph — panel hidden.
 };
 
 std::array<PanelToggle, 3> panelToggles(Ui::MainWindow* ui) {
+  // Material's "Dock to Left" / "Dock to Right" glyphs fill the half
+  // of the frame opposite to the side they nominally dock toward, so
+  // the left-panel toggle reads correctly with the panel_right.svg
+  // asset and vice versa.
   return {{
       {ui->tabbedPlotWidget->leftPanelButton(), ui->leftColumn, "MainWindow.panelLeftVisible",
-       ":/resources/svg/panel_left.svg"},
+       ":/resources/svg/panel_right.svg", ":/resources/svg/panel_right_off.svg"},
       // Toggle target is timelineStrip, NOT the whole bottomPanel — the
       // playback strip (timelineWidget) sits above the strip in the same
       // panel and must remain visible at all times. Resize of the
       // bottomPanel via the splitter handle grows the strip; the playback
       // keeps its fixed height (sizePolicy Fixed-vertical in MainWindow.ui).
       {ui->tabbedPlotWidget->bottomPanelButton(), ui->timelineStrip, "MainWindow.panelBottomVisible",
-       ":/resources/svg/panel_bottom.svg"},
+       ":/resources/svg/panel_bottom.svg", ":/resources/svg/panel_bottom_off.svg"},
       {ui->tabbedPlotWidget->rightPanelButton(), ui->localToolbarWidget, "MainWindow.panelRightVisible",
-       ":/resources/svg/panel_right.svg"},
+       ":/resources/svg/panel_left.svg", ":/resources/svg/panel_left_off.svg"},
   }};
 }
 
@@ -179,6 +200,24 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
       diagnostic_bridge_(new QtDiagnosticBridge(this)),
       session_(std::make_unique<AppSession>(std::move(extensions_dir), diagnostic_bridge_->sink())),
       theme_(std::make_unique<Theme>()) {
+  // Pull saved icon metrics before setupUi so the literals we feed into
+  // build*Toolbar() pick up the correct values on first paint. Widgets
+  // that auto-construct from the .ui still draw at their default sizes
+  // during setupUi, but we re-broadcast at the end of the constructor.
+  {
+    QSettings s;
+    chrome_metrics_.icon_size =
+        std::clamp(s.value(QString::fromLatin1(kIconSizeKey), kIconSizeDefault).toInt(), kIconSizeMin, kIconSizeMax);
+    chrome_metrics_.icon_padding = std::clamp(
+        s.value(QString::fromLatin1(kIconPaddingKey), kIconPaddingDefault).toInt(), kIconPaddingMin, kIconPaddingMax);
+    chrome_metrics_.layout_padding = std::clamp(
+        s.value(QString::fromLatin1(kLayoutPaddingKey), kLayoutPaddingDefault).toInt(), kLayoutPaddingMin,
+        kLayoutPaddingMax);
+    chrome_metrics_.layout_spacing = std::clamp(
+        s.value(QString::fromLatin1(kLayoutSpacingKey), kLayoutSpacingDefault).toInt(), kLayoutSpacingMin,
+        kLayoutSpacingMax);
+  }
+
   ui_->setupUi(this);
 
   // Hard-zero contents margins on the QMainWindow itself, the central
@@ -349,13 +388,14 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
 
   // Panel toggle buttons in the tab strip drive shell-level visibility
   // for the left column, the timeline strip, and the right toolbar.
-  // The buttons are checkable: each carries a fixed "Dock to <side>"
-  // glyph and the checked state mirrors the panel's visibility
-  // (checked = visible). At launch the left panel is forced visible
-  // and the right panel forced hidden regardless of the persisted
-  // value; the bottom strip restores its QSettings value as before.
-  // In-session toggles still persist normally — the override applies
-  // only on startup.
+  // The buttons are NOT checkable — visibility is communicated through
+  // the icon glyph itself (filled = panel visible, outlined = hidden),
+  // swapped via the "iconPath" dynamic property + applyIcons() so
+  // theme-tinting flows through one codepath. At launch the left panel
+  // is forced visible and the right panel forced hidden regardless of
+  // the persisted value; the bottom strip restores its QSettings value
+  // as before. In-session toggles persist normally — the override
+  // applies only on startup.
   for (const PanelToggle& toggle : panelToggles(ui_)) {
     bool visible;
     if (toggle.target == ui_->leftColumn) {
@@ -366,7 +406,8 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
       visible = settings.value(QString::fromLatin1(toggle.settings_key), true).toBool();
     }
     toggle.target->setVisible(visible);
-    toggle.button->setChecked(visible);
+    toggle.button->setCheckable(false);
+    toggle.button->setProperty("iconPath", QString::fromLatin1(visible ? toggle.icon_path_on : toggle.icon_path_off));
     // Bottom-strip toggle restore: if the strip is hidden, clamp the
     // bottom panel to the playback bar's height so the splitter can't
     // open empty space below the playback when the user drags it.
@@ -376,10 +417,14 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
     const QByteArray key{toggle.settings_key};
     QPushButton* button = toggle.button;
     QWidget* target = toggle.target;
-    connect(button, &QPushButton::clicked, this, [this, key, button, target]() {
+    const QString icon_on = QString::fromLatin1(toggle.icon_path_on);
+    const QString icon_off = QString::fromLatin1(toggle.icon_path_off);
+    connect(button, &QPushButton::clicked, this, [this, key, button, target, icon_on, icon_off]() {
       const bool now_visible = !target->isVisible();
       target->setVisible(now_visible);
-      button->setChecked(now_visible);
+      const QString icon = now_visible ? icon_on : icon_off;
+      button->setProperty("iconPath", icon);
+      button->setIcon(LoadSvg(icon, theme_->currentTheme()));
       QSettings().setValue(QString::fromLatin1(key), now_visible);
       // Bottom-panel toggle: also collapse/restore the splitter so the
       // playback stays glued to the top with no empty gap below when
@@ -438,7 +483,76 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
   connect(this, &MainWindow::stylesheetChanged, ui_->timelineWidget, &TimelineWidget::onStylesheetChanged);
   connect(this, &MainWindow::stylesheetChanged, ui_->tabbedPlotWidget, &TabbedPlotWidget::onStylesheetChanged);
   connect(this, &MainWindow::stylesheetChanged, title_bar_, &TitleBar::onStylesheetChanged);
+
+  // Icon-metrics broadcast — runs alongside the theme broadcast. Each
+  // listener caches both values and re-runs its applyIcons pass. The
+  // tabbedPlotWidget is not currently in scope; see
+  // docs/superpowers/specs/2026-05-15-icon-size-preference-design.md
+  // ("panel-toggle buttons out of scope").
+  connect(this, &MainWindow::chromeMetricsChanged, ui_->leftPanel, &LeftPanel::onChromeMetricsChanged);
+  connect(this, &MainWindow::chromeMetricsChanged, ui_->curveListPanel, &CurveListPanel::onChromeMetricsChanged);
+  connect(this, &MainWindow::chromeMetricsChanged, ui_->timelineWidget, &TimelineWidget::onChromeMetricsChanged);
+  connect(this, &MainWindow::chromeMetricsChanged, ui_->tabbedPlotWidget, &TabbedPlotWidget::onChromeMetricsChanged);
+  connect(this, &MainWindow::chromeMetricsChanged, title_bar_, &TitleBar::onChromeMetricsChanged);
+
   apply_theme_chrome();
+
+  // Reflow chrome dimensions after each widget has re-applied its
+  // icons — runs LAST so the per-widget slots above have already
+  // updated sizeHint(). The timeline strip's minimum height tracks
+  // its content; the local toolbar's minimum width fits six chrome
+  // buttons on one row plus a small flow-layout margin.
+  //
+  // The splitter and the bottomPanel cap need explicit nudges: Qt's
+  // QSplitter doesn't re-layout on a child's min-height change, and
+  // when the bottom strip is hidden we clamp bottomPanel's max-height
+  // to the playback's old min-height during toggle. Without these
+  // pushes, the playback bar grows upward only and its icons get
+  // clipped against bottomPanel's stale bottom edge.
+  connect(this, &MainWindow::chromeMetricsChanged, this, [this](const ChromeMetrics& metrics) {
+    // The .ui pins timelineWidget to maximumHeight 24 — override both
+    // min and max so the playback bar grows with its buttons. sizePolicy
+    // is Preferred-Fixed in the .ui, so the widget's height stays equal
+    // to sizeHint regardless of available space.
+    const int playback_height = ui_->timelineWidget->sizeHint().height();
+    ui_->timelineWidget->setMinimumHeight(playback_height);
+    ui_->timelineWidget->setMaximumHeight(playback_height);
+
+    const int band_extent = (metrics.icon_size + metrics.icon_padding) + (2 * metrics.layout_padding);
+    // Local toolbar fits six chrome buttons on one row at the band
+    // extent, plus a small margin for the FlowLayout to wrap.
+    ui_->localToolbarWidget->setMinimumWidth((6 * band_extent) + 6);
+
+    if (!ui_->timelineStrip->isVisible()) {
+      // Strip is hidden — keep the bottomPanel's max-height in sync
+      // with the new playback height so the playback bar doesn't get
+      // clipped against the stale cap from the toggle handler.
+      ui_->bottomPanel->setMaximumHeight(playback_height);
+    }
+    // Pin the bottomPanel's minimum height to the new playback height
+    // so the QSplitter is forced to honor it. Without this the inner
+    // QVBoxLayout will shrink the playback bar if the splitter slot is
+    // smaller than the new band_extent (Qt's QSplitter doesn't always
+    // re-layout when a grandchild's min size changes — it caches the
+    // bottomPanel's old minimumSizeHint until something invalidates it).
+    ui_->bottomPanel->setMinimumHeight(playback_height);
+    // Grow the bottom pane up to at least the playback's new height.
+    // Preserve the user's current bottom-pane size if it's already
+    // larger (e.g. the strip is open and dragged taller).
+    const QList<int> sizes = ui_->timelineSplitter->sizes();
+    if (sizes.size() == 2 && sizes[1] < playback_height) {
+      const int total = sizes[0] + sizes[1];
+      ui_->timelineSplitter->setSizes({total - playback_height, playback_height});
+    }
+    // Force a re-layout of the bottomPanel now that its child's height
+    // pin and its own min height have changed. setMinimumHeight only
+    // invalidates lazily; activate() runs the layout immediately so
+    // the playback bar is sized correctly before the next paint.
+    if (auto* bottom_layout = ui_->bottomPanel->layout()) {
+      bottom_layout->invalidate();
+      bottom_layout->activate();
+    }
+  });
 
   // Dev-only widget inspector: Ctrl+Shift+D = pesticide outline overlay,
   // Ctrl+Shift+Q = QSS debug border layer. Drop the include + this call +
@@ -568,6 +682,12 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
   // its width snaps/folds as the user drags the splitter handle.
   buildLocalToolbar();
 
+  // Push the loaded metrics through every chrome-aware widget so
+  // anything that picked up .ui defaults — including the global and local
+  // toolbar columns, which install their own listeners inside the build*
+  // functions above — re-renders at the saved values.
+  emit chromeMetricsChanged(chrome_metrics_);
+
   // CurveEditor lives below the icon strips inside the plot-config
   // page; same right-panel toggle controls visibility (the stack is
   // a child of localToolbarWidget). Rebinds to the active plot on tab
@@ -580,7 +700,9 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
   // the editor is visible it still fills the remaining vertical space.
   plot_config_layout->addStretch(0);
   curve_editor_->onStylesheetChanged(theme_->currentTheme());
+  curve_editor_->onChromeMetricsChanged(chrome_metrics_);
   connect(this, &MainWindow::stylesheetChanged, curve_editor_, &CurveEditor::onStylesheetChanged);
+  connect(this, &MainWindow::chromeMetricsChanged, curve_editor_, &CurveEditor::onChromeMetricsChanged);
   connect(ui_->tabbedPlotWidget, &TabbedPlotWidget::currentTabChanged, this, [this](PlotDocker* /*docker*/) {
     bindEditorToPlot(firstPlotOfActiveTab());
   });
@@ -697,13 +819,58 @@ void MainWindow::onThemeChanged(const QString& theme) {
   forEachPlot([](PlotWidget* plot) { plot->replot(); });
 }
 
+void MainWindow::setIconSize(int size) {
+  const int clamped = std::clamp(size, kIconSizeMin, kIconSizeMax);
+  if (clamped == chrome_metrics_.icon_size) {
+    return;
+  }
+  chrome_metrics_.icon_size = clamped;
+  QSettings().setValue(QString::fromLatin1(kIconSizeKey), clamped);
+  emit chromeMetricsChanged(chrome_metrics_);
+}
+
+void MainWindow::setIconPadding(int padding) {
+  const int clamped = std::clamp(padding, kIconPaddingMin, kIconPaddingMax);
+  if (clamped == chrome_metrics_.icon_padding) {
+    return;
+  }
+  chrome_metrics_.icon_padding = clamped;
+  QSettings().setValue(QString::fromLatin1(kIconPaddingKey), clamped);
+  emit chromeMetricsChanged(chrome_metrics_);
+}
+
+void MainWindow::setLayoutPadding(int padding) {
+  const int clamped = std::clamp(padding, kLayoutPaddingMin, kLayoutPaddingMax);
+  if (clamped == chrome_metrics_.layout_padding) {
+    return;
+  }
+  chrome_metrics_.layout_padding = clamped;
+  QSettings().setValue(QString::fromLatin1(kLayoutPaddingKey), clamped);
+  emit chromeMetricsChanged(chrome_metrics_);
+}
+
+void MainWindow::setLayoutSpacing(int spacing) {
+  const int clamped = std::clamp(spacing, kLayoutSpacingMin, kLayoutSpacingMax);
+  if (clamped == chrome_metrics_.layout_spacing) {
+    return;
+  }
+  chrome_metrics_.layout_spacing = clamped;
+  QSettings().setValue(QString::fromLatin1(kLayoutSpacingKey), clamped);
+  emit chromeMetricsChanged(chrome_metrics_);
+}
+
 void MainWindow::applyIcons(QString theme) {
   // Right-side buttons (Chart + Legend in the global column, Width and
   // Line-style in the local panel) are created programmatically by
   // buildGlobalToolbar() / buildLocalToolbar() and re-tinted by their
   // own stylesheetChanged hooks via each button's "iconPath" property.
   for (const PanelToggle& toggle : panelToggles(ui_)) {
-    toggle.button->setIcon(LoadSvg(QString::fromLatin1(toggle.icon_path), theme));
+    // The "iconPath" property carries whichever variant (on / off) the
+    // toggle currently shows; falls back to the on variant on first
+    // paint before the toggle handler has run.
+    const QString icon_path = toggle.button->property("iconPath").toString();
+    const QString resolved = icon_path.isEmpty() ? QString::fromLatin1(toggle.icon_path_on) : icon_path;
+    toggle.button->setIcon(LoadSvg(resolved, theme));
   }
   // Title-bar menus: their QActions persist across theme changes, so
   // re-tint here. The Marketplace entry under the Extensions menu is
@@ -778,10 +945,10 @@ namespace {
   return QStringLiteral(":/resources/svg/position_top_right.svg");
 }
 
-// Left-click cycle when the legend is already visible. Loops through
-// the four corners; never returns kHidden (show/hide is driven by
-// right-click).
-//   TR → TL → BL → BR → TR
+// Four-corner forward cycle. Used while the legend is visible to walk
+// TR → TL → BL → BR; the BR-to-hidden wrap and the hidden-to-visible
+// restore are handled by the click handler so it can also reset the
+// saved corner to TR at the cycle boundary.
 [[nodiscard]] LegendStatus nextLegendCorner(LegendStatus current) {
   switch (current) {
     case LegendStatus::kTopRight:
@@ -793,8 +960,6 @@ namespace {
     case LegendStatus::kBottomRight:
       return LegendStatus::kTopRight;
     case LegendStatus::kHidden:
-      // Defensive: callers should restore from the saved corner before
-      // advancing the cycle; pick top-right as a safe fall-through.
       return LegendStatus::kTopRight;
   }
   return LegendStatus::kTopRight;
@@ -1447,8 +1612,9 @@ void MainWindow::buildGlobalToolbar() {
     btn->setProperty("iconPath", QString::fromLatin1(icon_path));
     btn->setFocusPolicy(Qt::NoFocus);
     btn->setAutoRaise(true);
-    btn->setFixedSize(24, 24);
-    btn->setIconSize(QSize(20, 20));
+    const int button_extent = chrome_metrics_.icon_size + chrome_metrics_.icon_padding;
+    btn->setFixedSize(button_extent, button_extent);
+    btn->setIconSize(QSize(chrome_metrics_.icon_size, chrome_metrics_.icon_size));
     btn->setIcon(LoadSvg(QString::fromLatin1(icon_path), theme_->currentTheme()));
     btn->setToolTip(tr(tooltip));
     outer->addWidget(btn);
@@ -1518,16 +1684,24 @@ void MainWindow::buildGlobalToolbar() {
       legendCornerIcon(legend_status_ == LegendStatus::kHidden ? previous_legend_corner_ : legend_status_).toLatin1();
   button_legend_ = add_button(
       "buttonLegendPosition", initial_icon.constData(),
-      "Legend position — left-click cycles corners (TR → TL → BL → BR), right-click shows / hides");
+      "Legend position — left-click walks TR → TL → BL → BR, then unchecks at TR before the next "
+      "cycle. Right-click toggles show/hide at the current corner.");
   button_legend_->setCheckable(true);
   button_legend_->setChecked(legend_status_ != LegendStatus::kHidden);
   connect(button_legend_, &QToolButton::clicked, this, [this](bool /*checked*/) {
-    // Qt has already toggled the visual checked state by the time this
-    // fires; setLegendStatus() resyncs it to the actual model state.
+    // Three branches for the cycle:
+    //   * Hidden: re-show at previous_legend_corner_. This is TR right
+    //     after a BR-to-hidden wrap, or the last visible corner after
+    //     a right-click hide.
+    //   * BR (cycle end): reset previous_legend_corner_ to TR so the
+    //     unchecked button paints the TR icon, then hide. The next
+    //     left-click takes the Hidden branch and re-enters at TR.
+    //   * Any other visible corner: advance to the next corner.
     if (legend_status_ == LegendStatus::kHidden) {
-      // First left-click while hidden enables at the saved corner
-      // without advancing the cycle.
       setLegendStatus(previous_legend_corner_);
+    } else if (legend_status_ == LegendStatus::kBottomRight) {
+      previous_legend_corner_ = LegendStatus::kTopRight;
+      setLegendStatus(LegendStatus::kHidden);
     } else {
       setLegendStatus(nextLegendCorner(legend_status_));
     }
@@ -1556,6 +1730,26 @@ void MainWindow::buildGlobalToolbar() {
       if (!path.isEmpty()) {
         btn->setIcon(LoadSvg(path, theme));
       }
+    }
+  });
+
+  // Resize the global toolbar column. Column width = button_extent +
+  // 2 * layout_padding, with the same value pushed as contentsMargins
+  // on the inner QVBoxLayout so the buttons grow inward to absorb the
+  // padding instead of clipping.
+  connect(this, &MainWindow::chromeMetricsChanged, ui_->globalToolbarWidget, [this](const ChromeMetrics& metrics) {
+    const int button_extent = metrics.icon_size + metrics.icon_padding;
+    const int column_width = button_extent + (2 * metrics.layout_padding);
+    ui_->globalToolbarWidget->setMinimumWidth(column_width);
+    ui_->globalToolbarWidget->setMaximumWidth(column_width);
+    if (auto* layout = ui_->globalToolbarWidget->layout()) {
+      layout->setContentsMargins(
+          metrics.layout_padding, metrics.layout_padding, metrics.layout_padding, metrics.layout_padding);
+      layout->setSpacing(metrics.layout_spacing);
+    }
+    for (auto* btn : ui_->globalToolbarWidget->findChildren<QToolButton*>()) {
+      btn->setIconSize(QSize(metrics.icon_size, metrics.icon_size));
+      btn->setFixedSize(button_extent, button_extent);
     }
   });
 }
@@ -1587,11 +1781,18 @@ void MainWindow::buildLocalToolbar() {
     // (styled via #widgetLabel* QSS rule that picks up titlebar_background).
     auto* header = new QWidget(plot_config_page_);
     header->setObjectName(header_object_name);
-    header->setFixedHeight(24);
+    header->setFixedHeight(chrome_metrics_.icon_size + chrome_metrics_.icon_padding);
     auto* header_layout = new QHBoxLayout(header);
     header_layout->setContentsMargins(0, 0, 0, 0);
     header_layout->setSpacing(0);
     auto* label = new QLabel(heading, header);
+    // Mirror the .ui-baked naming convention: a `widgetLabelX` container
+    // wraps a `labelX` label. Lets the QSS padding-left rule that styles
+    // labelInput / labelTimeseries / labelCustom catch these too.
+    static const QString kWidgetPrefix = QStringLiteral("widgetL");
+    if (header_object_name.startsWith(kWidgetPrefix)) {
+      label->setObjectName(QStringLiteral("l") + header_object_name.mid(kWidgetPrefix.size()));
+    }
     header_layout->addWidget(label);
     header_layout->addStretch(1);
     outer->addWidget(header);
@@ -1617,8 +1818,9 @@ void MainWindow::buildLocalToolbar() {
       btn->setProperty("iconPath", QString::fromLatin1(spec.icon_path));
       btn->setFocusPolicy(Qt::NoFocus);
       btn->setAutoRaise(true);
-      btn->setFixedSize(24, 24);
-      btn->setIconSize(QSize(20, 20));
+      const int button_extent = chrome_metrics_.icon_size + chrome_metrics_.icon_padding;
+      btn->setFixedSize(button_extent, button_extent);
+      btn->setIconSize(QSize(chrome_metrics_.icon_size, chrome_metrics_.icon_size));
       btn->setIcon(LoadSvg(QString::fromLatin1(spec.icon_path), theme_->currentTheme()));
       btn->setToolTip(tr(spec.tooltip));
       connect(btn, &QToolButton::clicked, this, spec.on_click);
@@ -1723,6 +1925,39 @@ void MainWindow::buildLocalToolbar() {
         btn->setIcon(LoadSvg(path, theme));
       }
     }
+  });
+
+  // Local-panel toolbar: each button stays button_extent square, the
+  // two "Curve Width" / "Curve Style" header bands grow to band_extent
+  // tall, and the section's flow-layout / strip gains layout_padding on
+  // every edge so the icon strip doesn't sit flush with the panel edge.
+  connect(this, &MainWindow::chromeMetricsChanged, ui_->localToolbarWidget, [this](const ChromeMetrics& metrics) {
+    const int button_extent = metrics.icon_size + metrics.icon_padding;
+    const int band_extent = button_extent + (2 * metrics.layout_padding);
+    for (auto* btn : ui_->localToolbarWidget->findChildren<QToolButton*>()) {
+      btn->setIconSize(QSize(metrics.icon_size, metrics.icon_size));
+      btn->setFixedSize(button_extent, button_extent);
+    }
+    const QMargins band_margins(
+        metrics.layout_padding, metrics.layout_padding, metrics.layout_padding, metrics.layout_padding);
+    if (curve_width_header_ != nullptr) {
+      curve_width_header_->setFixedHeight(band_extent);
+      if (auto* layout = curve_width_header_->layout()) {
+        layout->setContentsMargins(band_margins);
+        layout->setSpacing(metrics.layout_spacing);
+      }
+    }
+    if (curve_style_header_ != nullptr) {
+      curve_style_header_->setFixedHeight(band_extent);
+      if (auto* layout = curve_style_header_->layout()) {
+        layout->setContentsMargins(band_margins);
+        layout->setSpacing(metrics.layout_spacing);
+      }
+    }
+    // Outer layout stays at 0 margins / 0 spacing (set once in
+    // buildLocalToolbar). Each header band already applies layout_pad
+    // internally; pushing it onto the outer too would double-pad the
+    // bars — the LHS rootLayout follows the same rule.
   });
 }
 

@@ -3,6 +3,8 @@
 #include <QAction>
 #include <QComboBox>
 #include <QFileInfo>
+#include <QLayout>
+#include <QMargins>
 #include <QMenu>
 #include <QPoint>
 #include <QPushButton>
@@ -11,6 +13,7 @@
 #include <QStackedWidget>
 #include <QStringList>
 #include <QToolButton>
+#include <initializer_list>
 
 #include "pj_widgets/IntScrubber.h"
 #include "pj_widgets/SvgUtil.h"
@@ -23,7 +26,6 @@ constexpr const char* kRecentFilesKey = "File/recent";
 // Streaming-buffer setting key — preserved verbatim from when the
 // scrubber lived on the timeline so user-saved values survive the move.
 constexpr const char* kStreamingBufferKey = "MainWindow.streamingBufferValue";
-constexpr QSize kStreamIconSize{20, 20};
 }  // namespace
 
 LeftPanel::LeftPanel(QWidget* parent) : QWidget(parent), ui_(new Ui::LeftPanel) {
@@ -121,6 +123,11 @@ void LeftPanel::onStylesheetChanged(QString theme) {
   applyIcons(theme);
 }
 
+void LeftPanel::onChromeMetricsChanged(const ChromeMetrics& metrics) {
+  chrome_metrics_ = metrics;
+  applyIcons(currentTheme());
+}
+
 void LeftPanel::setReloadEnabled(bool enabled) {
   ui_->buttonReloadData->setEnabled(enabled);
 }
@@ -147,9 +154,54 @@ void LeftPanel::applyIcons(QString theme) {
   ui_->buttonLoadDatafile->setIcon(LoadSvg(":/resources/svg/upload_file.svg", theme));
   ui_->buttonReloadData->setIcon(LoadSvg(":/resources/svg/restore_page.svg", theme));
   ui_->buttonRecentFiles->setIcon(LoadSvg(":/resources/svg/play_arrow.svg", theme));
-  ui_->buttonStreamingOptions->setIcon(LoadSvg(":/resources/svg/tune.svg", theme));
-  ui_->labelBuffer->setPixmap(
-      RenderSvgPixmap(":/resources/svg/share_eta.svg", theme, kStreamIconSize, devicePixelRatioF()));
+  ui_->buttonStreamingOptions->setIcon(LoadSvg(":/resources/svg/add_tab.svg", theme));
+
+  const QSize icon_sz(chrome_metrics_.icon_size, chrome_metrics_.icon_size);
+  const int button_extent = chrome_metrics_.icon_size + chrome_metrics_.icon_padding;
+  // Band height grows by 2 * layout_padding so the contentsMargins
+  // applied to inner layouts are absorbed by the container instead of
+  // squeezing the buttons.
+  const int band_extent = button_extent + (2 * chrome_metrics_.layout_padding);
+  // Every icon-bearing button in this panel uses the same square chrome
+  // pattern; iterate by type rather than by name.
+  for (auto* btn : findChildren<QToolButton*>()) {
+    btn->setMinimumSize(button_extent, button_extent);
+    btn->setMaximumSize(button_extent, button_extent);
+    btn->setIconSize(icon_sz);
+  }
+  for (auto* btn : findChildren<QPushButton*>()) {
+    btn->setMinimumSize(button_extent, button_extent);
+    btn->setMaximumSize(button_extent, button_extent);
+    btn->setIconSize(icon_sz);
+  }
+  // Override the .ui-baked 24-px height pins on the input header band
+  // and the streaming-row controls. Header bands grow to band_extent;
+  // the inline streaming controls stay button-tall so they line up
+  // visually with the buttons in their row.
+  ui_->widgetLabelInput->setMinimumHeight(band_extent);
+  ui_->widgetLabelInput->setMaximumHeight(band_extent);
+  ui_->comboStreaming->setMinimumHeight(button_extent);
+  ui_->comboStreaming->setMaximumHeight(button_extent);
+  ui_->streamingSpinBox->setMinimumHeight(button_extent);
+  ui_->streamingSpinBox->setMaximumHeight(button_extent);
+  ui_->labelBuffer->setMinimumSize(button_extent, button_extent);
+  ui_->labelBuffer->setMaximumSize(button_extent, button_extent);
+  ui_->labelBuffer->setPixmap(RenderSvgPixmap(":/resources/svg/share_eta.svg", theme, icon_sz, devicePixelRatioF()));
+  // Push layout_padding into every relevant layout — Sources header,
+  // the file/stream/cloud page outer layouts, and the two streaming
+  // rows. Spacing follows so individual items inside a row gain the
+  // same breathing room as the band edges.
+  const QMargins margins(
+      chrome_metrics_.layout_padding, chrome_metrics_.layout_padding, chrome_metrics_.layout_padding,
+      chrome_metrics_.layout_padding);
+  for (auto* layout : std::initializer_list<QLayout*>{
+           ui_->inputHeaderLayout, ui_->pageFile->layout(), ui_->pageStream->layout(), ui_->pageCloud->layout(),
+           ui_->streamSourceRow, ui_->streamBufferRow}) {
+    if (layout != nullptr) {
+      layout->setContentsMargins(margins);
+      layout->setSpacing(chrome_metrics_.layout_spacing);
+    }
+  }
 }
 
 }  // namespace PJ

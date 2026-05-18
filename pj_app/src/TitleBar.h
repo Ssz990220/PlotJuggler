@@ -4,6 +4,7 @@
 #include <QWidget>
 
 #include "pj_runtime/DiagnosticHistory.h"
+#include "pj_widgets/ChromeMetrics.h"
 
 class QMenu;
 class QMouseEvent;
@@ -59,6 +60,13 @@ class TitleBar : public QWidget {
  public slots:
   void onStylesheetChanged(QString theme);
 
+  // Rebinds Chrome metrics from MainWindow. Re-sizes the title bar to
+  // (icon_size + icon_padding) + 2 * layout_padding tall, sets each
+  // chrome button to (icon_size + icon_padding) square, pushes
+  // layout_padding as contentsMargins on the horizontal layout, and
+  // layout_spacing as the gap between adjacent chrome buttons.
+  void onChromeMetricsChanged(const ChromeMetrics& metrics);
+
  protected:
   void mousePressEvent(QMouseEvent* event) override;
   void mouseDoubleClickEvent(QMouseEvent* event) override;
@@ -69,6 +77,7 @@ class TitleBar : public QWidget {
 
  private:
   void applyIcons(const QString& theme);
+  void applyIconMetrics();
   void onMaximizeClicked();
   [[nodiscard]] bool isOnMoveHandle(const QPoint& pos) const;
 
@@ -87,6 +96,9 @@ class TitleBar : public QWidget {
   // (timer running). Stored so applyIcons() can pick the right SVG on
   // theme change without consulting the timer.
   bool bell_active_ = false;
+
+  // Chrome metrics broadcast from MainWindow::chromeMetricsChanged.
+  ChromeMetrics chrome_metrics_;
 };
 
 }  // namespace PJ

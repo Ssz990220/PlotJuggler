@@ -165,9 +165,15 @@
            <layout class="QHBoxLayout" name="streamBufferRow">
             <property name="spacing"><number>4</number></property>
             <item>
+             <spacer name="streamBufferLeadingSpacer">
+              <property name="orientation"><enum>Qt::Horizontal</enum></property>
+              <property name="sizeHint" stdset="0"><size><width>0</width><height>0</height></size></property>
+             </spacer>
+            </item>
+            <item>
              <widget class="PJ::IntScrubber" name="streamingSpinBox">
               <property name="sizePolicy">
-               <sizepolicy hsizetype="Expanding" vsizetype="Fixed">
+               <sizepolicy hsizetype="Preferred" vsizetype="Fixed">
                 <horstretch>0</horstretch>
                 <verstretch>0</verstretch>
                </sizepolicy>

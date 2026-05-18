@@ -33,7 +33,11 @@ namespace {
 // to the left, eye + trash are squares anchored to the right, all
 // scaling to the row's height so they maintain 1:1 aspect. The name
 // takes whatever horizontal space is left.
-constexpr int kRowHeight = 20;
+//
+// The row height tracks the global icon-size scrubber so larger icons
+// don't clip; the default 20 matches MainWindow's first-launch icon
+// size and the original compact-list design.
+constexpr int kDefaultRowHeight = 20;
 constexpr int kRowSpacing = 2;
 
 constexpr auto kCurveNameRole = Qt::UserRole;
@@ -63,8 +67,9 @@ constexpr auto kTrashButtonProperty = "pj.curveEditor.trashButton";
 // gap between them.
 class CurveRowWidget : public QWidget {
  public:
-  CurveRowWidget(QPushButton* swatch, ElidingLabel* name, QToolButton* eye, QToolButton* trash, QWidget* parent)
-      : QWidget(parent), swatch_(swatch), name_(name), eye_(eye), trash_(trash) {
+  CurveRowWidget(
+      QPushButton* swatch, ElidingLabel* name, QToolButton* eye, QToolButton* trash, int row_height, QWidget* parent)
+      : QWidget(parent), swatch_(swatch), name_(name), eye_(eye), trash_(trash), row_height_(row_height) {
     swatch_->setParent(this);
     name_->setParent(this);
     eye_->setParent(this);
@@ -72,10 +77,18 @@ class CurveRowWidget : public QWidget {
     setAttribute(Qt::WA_TransparentForMouseEvents, false);
   }
 
+  void setRowHeight(int row_height) {
+    if (row_height == row_height_) {
+      return;
+    }
+    row_height_ = row_height;
+    updateGeometry();
+  }
+
   [[nodiscard]] QSize sizeHint() const override {
     // Width is whatever the listWidget viewport gives us; the row's
-    // height stays fixed so QListWidget sizes the item consistently.
-    return {0, kRowHeight};
+    // height tracks the icon-size scrubber so icons grow with it.
+    return {0, row_height_};
   }
 
  protected:
@@ -116,6 +129,7 @@ class CurveRowWidget : public QWidget {
   ElidingLabel* name_;
   QToolButton* eye_;
   QToolButton* trash_;
+  int row_height_;
 };
 
 }  // namespace
@@ -275,7 +289,7 @@ void CurveEditor::appendRow(const QString& curve_key, const QString& display_nam
   visibility->setCheckable(true);
   visibility->setAutoRaise(true);
   visibility->setFocusPolicy(Qt::NoFocus);
-  visibility->setIconSize(QSize(kRowHeight, kRowHeight));
+  visibility->setIconSize(QSize(row_height_, row_height_));
   visibility->setChecked(visible);
   visibility->setIcon(LoadSvg(visible ? kVisibilityOnPath : kVisibilityOffPath, current_theme_));
   visibility->setToolTip(tr("Toggle curve visibility"));
@@ -297,7 +311,7 @@ void CurveEditor::appendRow(const QString& curve_key, const QString& display_nam
   trash->setProperty(kTrashButtonProperty, curve_key);
   trash->setAutoRaise(true);
   trash->setFocusPolicy(Qt::NoFocus);
-  trash->setIconSize(QSize(kRowHeight, kRowHeight));
+  trash->setIconSize(QSize(row_height_, row_height_));
   trash->setIcon(LoadSvg(kTrashIconPath, current_theme_));
   trash->setToolTip(tr("Remove this curve from its plot"));
   connect(trash, &QToolButton::clicked, this, [this, curve_key]() {
@@ -309,9 +323,9 @@ void CurveEditor::appendRow(const QString& curve_key, const QString& display_nam
     emit plot_->undoableChange();
   });
 
-  auto* row_widget = new CurveRowWidget(swatch, name_label, visibility, trash, /*parent=*/nullptr);
+  auto* row_widget = new CurveRowWidget(swatch, name_label, visibility, trash, row_height_, /*parent=*/nullptr);
   ui_->listWidget->addItem(item);
-  item->setSizeHint(QSize(0, kRowHeight));
+  item->setSizeHint(QSize(0, row_height_));
   ui_->listWidget->setItemWidget(item, row_widget);
 }
 
@@ -359,6 +373,51 @@ void CurveEditor::onVisibilityToggled(const QString& curve_name, bool visible) {
     return;
   }
   plot_->setCurveVisible(curve_name, visible);
+}
+
+void CurveEditor::onChromeMetricsChanged(const ChromeMetrics& metrics) {
+  const int button_extent = metrics.icon_size + metrics.icon_padding;
+  const int band_extent = button_extent + (2 * metrics.layout_padding);
+  const QSize icon_sz(metrics.icon_size, metrics.icon_size);
+  ui_->buttonSearchCurves->setMinimumSize(button_extent, button_extent);
+  ui_->buttonSearchCurves->setMaximumSize(button_extent, button_extent);
+  ui_->buttonSearchCurves->setIconSize(icon_sz);
+  ui_->buttonCurvesMenu->setMinimumSize(button_extent, button_extent);
+  ui_->buttonCurvesMenu->setMaximumSize(button_extent, button_extent);
+  ui_->buttonCurvesMenu->setIconSize(icon_sz);
+  ui_->lineEditCurvesFilter->setMinimumHeight(button_extent);
+  ui_->lineEditCurvesFilter->setMaximumHeight(button_extent);
+  ui_->widgetLabelCurves->setMinimumHeight(band_extent);
+  ui_->widgetLabelCurves->setMaximumHeight(band_extent);
+  if (auto* layout = ui_->headerLayout) {
+    layout->setContentsMargins(
+        metrics.layout_padding, metrics.layout_padding, metrics.layout_padding, metrics.layout_padding);
+    layout->setSpacing(metrics.layout_spacing);
+  }
+  // QListWidget::setSpacing is the gap between adjacent rows.
+  ui_->listWidget->setSpacing(metrics.layout_spacing);
+  // Row height tracks icon_size so the per-row eye / trash glyphs and
+  // the colour swatch grow with the rest of the chrome. Push the new
+  // value into each existing row (item sizeHint + the row widget's own
+  // stored row height + the per-row button iconSize so the eye and
+  // trash glyphs re-rasterise at the new extent).
+  row_height_ = metrics.icon_size;
+  const QSize row_icon_size(row_height_, row_height_);
+  for (int i = 0; i < ui_->listWidget->count(); ++i) {
+    QListWidgetItem* item = ui_->listWidget->item(i);
+    item->setSizeHint(QSize(0, row_height_));
+    QWidget* widget = ui_->listWidget->itemWidget(item);
+    if (widget == nullptr) {
+      continue;
+    }
+    // CurveRowWidget is the only widget type set as itemWidget here;
+    // static_cast is safe and skips the qobject_cast requirement for
+    // a Q_OBJECT on the file-local row class.
+    static_cast<CurveRowWidget*>(widget)->setRowHeight(row_height_);
+    for (auto* button : widget->findChildren<QToolButton*>()) {
+      button->setIconSize(row_icon_size);
+    }
+  }
 }
 
 void CurveEditor::onStylesheetChanged(QString theme) {

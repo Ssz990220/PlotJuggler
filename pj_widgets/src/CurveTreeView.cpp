@@ -82,9 +82,42 @@ QString catalogKeyForItem(const QTreeWidgetItem* item) {
 CurveTreeView::CurveTreeView(QWidget* parent) : QTreeWidget(parent) {
   setColumnCount(2);
   setHeaderLabels({tr("Name"), tr("Value")});
-  header()->setSectionResizeMode(kNameColumn, QHeaderView::Stretch);
-  header()->setSectionResizeMode(kValueColumn, QHeaderView::ResizeToContents);
+  // Splitter-style divider: both sections Interactive (Stretch sections
+  // refuse to yield space, so the divider next to a Stretch section is
+  // not draggable). When the user drags the divider Qt resizes Name
+  // (left of divider); we mirror the change into Value so the two
+  // sections together always fill the viewport. Default Value width is
+  // narrow — the numeric column shouldn't dominate the panel.
+  header()->setSectionResizeMode(kNameColumn, QHeaderView::Interactive);
+  header()->setSectionResizeMode(kValueColumn, QHeaderView::Interactive);
+  header()->setStretchLastSection(false);
+  header()->setMinimumSectionSize(20);
+  header()->resizeSection(kValueColumn, 60);
   header()->setSectionsClickable(false);
+  // Ensure the header sees Enter/Leave/HoverMove events — the QSS
+  // `QHeaderView::section:hover` rule that tints the column divider
+  // PJPurple only fires when the header has the Hover attribute set.
+  header()->setAttribute(Qt::WA_Hover, true);
+  header()->viewport()->setAttribute(Qt::WA_Hover, true);
+  // Splitter behavior: dragging the divider resizes Name; we translate
+  // that into a Value resize (delta in opposite direction) so the
+  // divider acts like a QSplitter handle and Name + Value always equal
+  // the viewport width. The reentry guard stops the programmatic Value
+  // resize from cascading back through this same handler.
+  connect(header(), &QHeaderView::sectionResized, this, [this](int section, int old_size, int new_size) {
+    if (adjusting_columns_ || section != kNameColumn) {
+      return;
+    }
+    const int delta = new_size - old_size;
+    const int target_value =
+        std::clamp(columnWidth(kValueColumn) - delta, header()->minimumSectionSize(), viewport()->width());
+    adjusting_columns_ = true;
+    header()->resizeSection(kValueColumn, target_value);
+    // If Value clamped (hit min or max), the delta consumed by Value
+    // is less than the user's drag; rebase Name so total = viewport.
+    syncNameColumnWidth();
+    adjusting_columns_ = false;
+  });
   setEditTriggers(QAbstractItemView::NoEditTriggers);
   setSelectionMode(QAbstractItemView::ExtendedSelection);
   setSelectionBehavior(QAbstractItemView::SelectRows);
@@ -324,6 +357,34 @@ std::vector<QString> CurveTreeView::selectedCatalogKeysRecursive() const {
 
 void CurveTreeView::setValuesColumnHidden(bool hidden) {
   setColumnHidden(kValueColumn, hidden);
+  syncNameColumnWidth();
+}
+
+void CurveTreeView::resizeEvent(QResizeEvent* event) {
+  QTreeWidget::resizeEvent(event);
+  syncNameColumnWidth();
+}
+
+void CurveTreeView::syncNameColumnWidth() {
+  // Name fills whatever's left after the Value column. The viewport
+  // width excludes the vertical scrollbar, so Name + Value always sum
+  // to exactly the visible row width — no dead space, no horizontal
+  // scroll triggered by the header.
+  const int viewport_width = viewport()->width();
+  const int value_width = isColumnHidden(kValueColumn) ? 0 : columnWidth(kValueColumn);
+  const int min_section = header()->minimumSectionSize();
+  const int name_width = std::max(min_section, viewport_width - value_width);
+  if (columnWidth(kNameColumn) == name_width) {
+    return;
+  }
+  // Suppress the sectionResized hijack: this is a programmatic sync of
+  // Name to the viewport, not a user drag, so it must not be re-routed
+  // back into a Value resize. Without the guard the resize event would
+  // cascade infinitely (sync → resizeSection → lambda → sync → ...).
+  const bool was_adjusting = adjusting_columns_;
+  adjusting_columns_ = true;
+  header()->resizeSection(kNameColumn, name_width);
+  adjusting_columns_ = was_adjusting;
 }
 
 void CurveTreeView::setDragSelectionProvider(DragSelectionProvider provider) {

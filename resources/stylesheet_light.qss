@@ -12,6 +12,10 @@ main_background:             #eeeeee
 dark_background:             #F5F5F5
 titlebar_background:         #e0e0e0
 widget_background_disabled:  #eeeeee
+// Theme-agnostic — the plotting canvas, the Qwt internal canvas, and
+// the per-tab strip frames in TabbedPlotWidget all paint this colour
+// so the plot area reads as a flat white surface in both themes.
+chart_background:            #ffffff
 
 // ---- Text ----------------------------------------------------------
 default_text:    #111111
@@ -100,7 +104,7 @@ QWidget:disabled{
 }
 
 PlotWidget {
-    background: ${widget_background};
+    background: ${chart_background};
     border: none;
 }
 
@@ -948,6 +952,25 @@ QHeaderView::section:only-one {
     border-right: none;
 }
 
+/* Divider hover: paint the section's right border PJPurple so the
+   resizable column separator lights up the same way QSplitter handles
+   do when the user hovers it. The full border shorthand is re-specified
+   here (not just `border-right-color`) because Qt's QSS engine drops
+   the inherited bottom + right borders when only the color is changed
+   in a :hover variant. */
+QHeaderView::section:hover {
+    background-color: transparent;
+    color: ${default_text};
+    padding-left: ${chrome_spacing}px;
+    border: none;
+    border-bottom: 1px solid ${border_default};
+    border-right: 1px solid ${PJPurple};
+}
+QHeaderView::section:last:hover,
+QHeaderView::section:only-one:hover {
+    border-right: none;
+}
+
 QHeaderView::text{
     padding-left: ${chrome_spacing}px;
     padding-right: ${chrome_spacing}px;
@@ -1128,17 +1151,17 @@ QWidget#formulaPage{
 }
 
 ads--CDockContainerWidget {
-  background: ${widget_background};
+  background: ${chart_background};
   border: none;
 }
 
 ads--CDockAreaWidget {
-   background: ${widget_background};
+   background: ${chart_background};
    border: none;
 }
 
 ads--CDockWidget {
-   background: ${widget_background};
+   background: ${chart_background};
    border: none;
 }
 
@@ -1147,12 +1170,12 @@ QScrollArea#dockWidgetScrollArea {
 }
 
 QwtPlot {
-   background: ${widget_background};
+   background: ${chart_background};
    border: none;
 }
 
 QWidget#qwtCanvas {
-   background: ${widget_background};
+   background: ${chart_background};
    border: none;
 }
 
@@ -1211,12 +1234,12 @@ QFrame#plotTabsSeparator {
     background-color: ${border_default};
 }
 
-/* Tab-strip chrome — transparent so it inherits whatever sits
-   underneath (the dock manager's paint), rather than imposing the
-   titlebar_background tone of the other chrome rows. */
+/* Tab-strip chrome — flat white so the bar reads as part of the
+   chart surface in light mode rather than the grey shell tone the
+   dark stylesheet inherits via transparency. */
 QWidget#plotTabsBar,
 QWidget#plotTabsInner {
-    background: transparent;
+    background: ${chart_background};
     border: none;
 }
 
@@ -1224,7 +1247,7 @@ QWidget#plotTabsInner {
    `selected="true"` dynamic property so it stands out from the inactive
    peers without needing a different objectName per state. */
 QFrame#plotTabFrame {
-    background: ${dark_background};
+    background: ${chart_background};
     border: none;
     border-radius: 0px;
     color: ${default_text};
@@ -1261,10 +1284,14 @@ QWidget#widgetLabelCurveStyle {
 }
 
 /* 2-px leading padding so the section titles ("Sources", "Datasets",
-   "Custom Series") don't butt up against the band's left edge. */
+   "Custom Series", "Curves", "Curve Width", "Curve Style") don't butt up
+   against the band's left edge. */
 QLabel#labelInput,
 QLabel#labelTimeseries,
-QLabel#labelCustom {
+QLabel#labelCustom,
+QLabel#labelCurves,
+QLabel#labelCurveWidth,
+QLabel#labelCurveStyle {
     padding-left: 2px;
 }
 
@@ -1350,6 +1377,33 @@ QDialog QToolButton#buttonClose:pressed {
 QDialog QLabel#dialogTitleLabel {
     color: ${default_text};
     padding-left: ${chrome_spacing}px;
+}
+
+/* PreferencesDialog left-hand nav column ----------------------------
+   No outer border; the column reads as a soft inset against the dialog
+   body via its dark_background fill (the nominal app surface tone).
+   Rows are PreferencesNavRow (QFrame#navRow); selected row paints a
+   tinted fill, no accent edge. */
+QScrollArea#navScrollArea {
+    background: ${dark_background};
+    border: none;
+}
+QScrollArea#navScrollArea > QWidget > QWidget#navContainer {
+    background: ${dark_background};
+}
+QFrame#navRow {
+    background: transparent;
+    border: none;
+}
+QFrame#navRow:hover {
+    background: ${hover_overlay};
+}
+QFrame#navRow[selected="true"] {
+    background: ${item_selection_background};
+}
+QLabel#navRowLabel {
+    background: transparent;
+    color: ${default_text};
 }
 
 /* "Close Plot Area" button (DockToolbar uses QPushButton, not the

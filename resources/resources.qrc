@@ -101,8 +101,11 @@
     <file alias="move_view.svg">svg/move_view.svg</file>
     <file alias="numbers.svg">svg/numbers.svg</file>
     <file alias="panel_bottom.svg">svg/panel_bottom.svg</file>
+    <file alias="panel_bottom_off.svg">svg/panel_bottom_off.svg</file>
     <file alias="panel_left.svg">svg/panel_left.svg</file>
+    <file alias="panel_left_off.svg">svg/panel_left_off.svg</file>
     <file alias="panel_right.svg">svg/panel_right.svg</file>
+    <file alias="panel_right_off.svg">svg/panel_right_off.svg</file>
     <file alias="paste.svg">svg/paste.svg</file>
     <file alias="pause.svg">svg/pause.svg</file>
     <file alias="play_arrow.svg">svg/play_arrow.svg</file>

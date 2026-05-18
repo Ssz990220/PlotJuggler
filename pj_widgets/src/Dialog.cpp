@@ -1,5 +1,7 @@
 #include "pj_widgets/Dialog.h"
 
+#include <QApplication>
+#include <QEvent>
 #include <QLayout>
 #include <QMouseEvent>
 #include <QToolButton>
@@ -10,6 +12,32 @@
 #include "ui_Dialog.h"
 
 namespace PJ {
+
+namespace {
+
+// Hit-test band width around the dialog edge that triggers a resize.
+constexpr int kResizeMargin = 6;
+
+Qt::CursorShape CursorForEdges(Qt::Edges edges) {
+  switch (static_cast<int>(edges)) {
+    case Qt::TopEdge | Qt::LeftEdge:
+    case Qt::BottomEdge | Qt::RightEdge:
+      return Qt::SizeFDiagCursor;
+    case Qt::TopEdge | Qt::RightEdge:
+    case Qt::BottomEdge | Qt::LeftEdge:
+      return Qt::SizeBDiagCursor;
+    case Qt::TopEdge:
+    case Qt::BottomEdge:
+      return Qt::SizeVerCursor;
+    case Qt::LeftEdge:
+    case Qt::RightEdge:
+      return Qt::SizeHorCursor;
+    default:
+      return Qt::ArrowCursor;
+  }
+}
+
+}  // namespace
 
 Dialog::Dialog(QWidget* parent) : QDialog(parent), ui_(new Ui::Dialog) {
   ui_->setupUi(this);
@@ -23,6 +51,11 @@ Dialog::Dialog(QWidget* parent) : QDialog(parent), ui_(new Ui::Dialog) {
 
   applyIcons();
   connect(ui_->buttonClose, &QToolButton::clicked, this, &QDialog::reject);
+
+  // Application-wide event filter so we can swap the cursor and start
+  // a system resize from any widget inside the dialog's edge band.
+  // Same pattern MainWindow uses; gated to widgets whose window is us.
+  qApp->installEventFilter(this);
 }
 
 Dialog::~Dialog() {
@@ -65,6 +98,56 @@ void Dialog::mousePressEvent(QMouseEvent* event) {
     }
   }
   QDialog::mousePressEvent(event);
+}
+
+Qt::Edges Dialog::edgesAtPoint(const QPoint& pos) const {
+  Qt::Edges edges;
+  if (pos.x() <= kResizeMargin) {
+    edges |= Qt::LeftEdge;
+  } else if (pos.x() >= width() - kResizeMargin) {
+    edges |= Qt::RightEdge;
+  }
+  if (pos.y() <= kResizeMargin) {
+    edges |= Qt::TopEdge;
+  } else if (pos.y() >= height() - kResizeMargin) {
+    edges |= Qt::BottomEdge;
+  }
+  return edges;
+}
+
+bool Dialog::eventFilter(QObject* watched, QEvent* event) {
+  const QEvent::Type type = event->type();
+  if (type != QEvent::MouseMove && type != QEvent::MouseButtonPress) {
+    return QDialog::eventFilter(watched, event);
+  }
+  auto* widget = qobject_cast<QWidget*>(watched);
+  if (widget == nullptr || widget->window() != this) {
+    return QDialog::eventFilter(watched, event);
+  }
+  if (isMaximized() || isFullScreen()) {
+    return QDialog::eventFilter(watched, event);
+  }
+  auto* mouse_event = static_cast<QMouseEvent*>(event);
+  const QPoint window_pos = mapFromGlobal(mouse_event->globalPosition().toPoint());
+  const Qt::Edges edges = edgesAtPoint(window_pos);
+
+  if (type == QEvent::MouseMove) {
+    if (edges != 0) {
+      setCursor(CursorForEdges(edges));
+    } else {
+      unsetCursor();
+    }
+    return false;
+  }
+  // MouseButtonPress
+  if (mouse_event->button() != Qt::LeftButton || edges == 0) {
+    return false;
+  }
+  if (auto* handle = windowHandle()) {
+    handle->startSystemResize(edges);
+    return true;
+  }
+  return false;
 }
 
 }  // namespace PJ

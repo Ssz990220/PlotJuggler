@@ -9,6 +9,7 @@
 
 #include "pj_base/builtin/BuiltinObject.hpp"
 #include "pj_datastore/object_store.hpp"
+#include "pj_widgets/ChromeMetrics.h"
 
 QT_BEGIN_NAMESPACE
 class QHBoxLayout;
@@ -83,6 +84,13 @@ class TabbedPlotWidget : public QWidget {
 
  public slots:
   void onStylesheetChanged(QString theme);
+  // Rebinds the tab-strip Chrome metrics — the [+] tab button, the
+  // three panel-toggle buttons, the strip height itself, and every
+  // open tab frame. Connected to MainWindow::chromeMetricsChanged.
+  // layout_spacing is ignored for now — tab frames sit flush with one
+  // another by design, so introducing gaps between them would expose
+  // strips of the tab-bar background.
+  void onChromeMetricsChanged(const ChromeMetrics& metrics);
 
  signals:
   void undoableChange();
@@ -112,10 +120,16 @@ class TabbedPlotWidget : public QWidget {
 
   QHBoxLayout* tabs_bar_layout_ = nullptr;
   QStackedWidget* stack_ = nullptr;
+  QWidget* tabs_inner_ = nullptr;
   QPushButton* button_add_tab_ = nullptr;
   QPushButton* button_left_panel_ = nullptr;
   QPushButton* button_bottom_panel_ = nullptr;
   QPushButton* button_right_panel_ = nullptr;
+  // Tab-strip Chrome metrics — defaults match the kTabBar* constants
+  // in the .cpp so first paint is unchanged until the host pushes the
+  // saved Preferences values. layout_spacing is ignored: tab frames sit
+  // flush by design.
+  ChromeMetrics chrome_metrics_{20, 3, 0, 0};
   SessionManager* session_ = nullptr;
   CatalogModel* catalog_ = nullptr;
   ObjectWidgetFactory object_widget_factory_;

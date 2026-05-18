@@ -4,6 +4,8 @@
 #include <QWidget>
 #include <vector>
 
+#include "pj_widgets/ChromeMetrics.h"
+
 class QAction;
 class QPushButton;
 
@@ -41,6 +43,14 @@ class CurveListPanel : public QWidget {
 
  public slots:
   void onStylesheetChanged(QString theme);
+  // Rebinds Chrome metrics broadcast from MainWindow. Resizes header
+  // bands to (icon_size + icon_padding) + 2 * layout_padding tall,
+  // sizes the chrome buttons to (icon_size + icon_padding) square,
+  // pushes layout_padding as contentsMargins on the header band
+  // layouts, and uses layout_spacing for both the in-band spacing and
+  // the per-row vertical padding of the Datasets / Custom Series tree
+  // views (via per-instance QSS).
+  void onChromeMetricsChanged(const ChromeMetrics& metrics);
 
  protected:
   // Hides the sibling label / action buttons in each header band when
@@ -70,6 +80,8 @@ class CurveListPanel : public QWidget {
   // leading icons on theme switch.
   QPushButton* clear_all_button_ = nullptr;
   QPushButton* delete_custom_button_ = nullptr;
+  // Chrome metrics from MainWindow::chromeMetricsChanged.
+  ChromeMetrics chrome_metrics_;
 };
 
 }  // namespace PJ

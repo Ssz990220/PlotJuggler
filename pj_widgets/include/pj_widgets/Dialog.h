@@ -2,7 +2,9 @@
 
 #include <QDialog>
 #include <QString>
+#include <Qt>
 
+class QEvent;
 class QLayout;
 class QMouseEvent;
 
@@ -41,9 +43,14 @@ class Dialog : public QDialog {
 
  protected:
   void mousePressEvent(QMouseEvent* event) override;
+  bool eventFilter(QObject* watched, QEvent* event) override;
 
  private:
   void applyIcons();
+  // Returns the edges (Qt::LeftEdge / RightEdge / TopEdge / BottomEdge,
+  // or a corner combination) the point lies inside the kResizeMargin
+  // band of, or 0 when the point is in the interior.
+  [[nodiscard]] Qt::Edges edgesAtPoint(const QPoint& pos) const;
 
   Ui::Dialog* ui_;
 };
