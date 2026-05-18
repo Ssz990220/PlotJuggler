@@ -31,7 +31,7 @@ jobs:
       - name: Use HTTPS for github.com submodules
         run: git config --global url."https://github.com/".insteadOf "git@github.com:"
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           submodules: recursive
 
@@ -129,7 +129,7 @@ jobs:
 
       - name: Cache Qt
         id: qt-cache
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: .qt
           key: qt-6.8.3-linux-gcc_64-qtcharts-qtwebsockets
@@ -154,7 +154,7 @@ jobs:
       - name: Configure ccache
         # Compiler-output cache for our own C++ — complementary to the Conan
         # cache (which holds prebuilt third-party packages, not our objects).
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ~/.cache/ccache
           key: ccache-linux-${{ github.ref_name }}-${{ github.sha }}
