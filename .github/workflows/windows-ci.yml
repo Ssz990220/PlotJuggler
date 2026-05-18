@@ -173,8 +173,15 @@ jobs:
           fi
 
           conan profile detect --force
+          # Tell Conan to generate a Ninja-compatible toolchain. Without this
+          # override Conan auto-picks "Visual Studio 17 2022" and stamps the
+          # toolchain with CMAKE_GENERATOR_PLATFORM=x64 + CMAKE_GENERATOR_TOOLSET=v143.
+          # Then our `cmake -G "Ninja Multi-Config"` below errors with:
+          #   Generator Ninja Multi-Config does not support platform specification,
+          #   but platform x64 was specified.
           conan install . --output-folder=build --build=missing \
-            -s build_type=RelWithDebInfo -s compiler.cppstd=20
+            -s build_type=RelWithDebInfo -s compiler.cppstd=20 \
+            -c tools.cmake.cmaketoolchain:generator="Ninja Multi-Config"
 
           # Use Ninja Multi-Config so sccache is actually invoked: CMake's
           # CMAKE_<LANG>_COMPILER_LAUNCHER is honored by the Ninja and
@@ -186,9 +193,18 @@ jobs:
           # of /Zi for RelWithDebInfo. /Zi writes to a shared PDB via
           # mspdbsrv.exe which sccache cannot cache; /Z7 embeds debug info
           # in each .obj and is fully cacheable.
+          #
+          # CMAKE_POLICY_DEFAULT_CMP0141=NEW is required for CMake to honor
+          # CMAKE_MSVC_DEBUG_INFORMATION_FORMAT at all. The variable was added
+          # in CMake 3.25 behind policy CMP0141; without NEW, CMake silently
+          # falls back to the legacy /Zi flag — which is what causes parallel
+          # cl.exe workers to race on pj_base.pdb (fatal C1041). We can't bump
+          # cmake_minimum_required past 3.22 because Ubuntu 22.04 LTS ships
+          # CMake 3.22.1, so the opt-in lives here in the CI invocation.
           cmake -S . -B build -G "Ninja Multi-Config" \
             -DCMAKE_TOOLCHAIN_FILE="build/conan_toolchain.cmake" \
             -DCMAKE_PREFIX_PATH="$QT_DIR" \
+            -DCMAKE_POLICY_DEFAULT_CMP0141=NEW \
             -DCMAKE_MSVC_DEBUG_INFORMATION_FORMAT=Embedded \
             -DCMAKE_C_COMPILER_LAUNCHER=sccache \
             -DCMAKE_CXX_COMPILER_LAUNCHER=sccache
