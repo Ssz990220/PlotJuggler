@@ -1,9 +1,13 @@
 #include "FileLoader.h"
 
+#include <QCoreApplication>
 #include <QFileInfo>
+#include <QGuiApplication>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QLoggingCategory>
+#include <QProgressBar>
+#include <QProgressDialog>
 #include <QSettings>
 #include <QString>
 #include <QStringList>
@@ -193,8 +197,66 @@ bool FileLoader::loadFile(const QString& path, QWidget* dialog_parent) {
   // Persist before start() so dialog choices stick even if ingest fails.
   persisted_settings.setValue(config_key, QString::fromStdString(config));
 
+  // Progress dialog — shown when the plugin calls progressStart().
+  // The import runs synchronously on the main thread, so we drive the dialog
+  // with processEvents() inside the update callback.
+  // Suppress the " — PlotJuggler 4" suffix the window manager appends when
+  // applicationDisplayName is set. Restored automatically on scope exit.
+  const QString saved_display_name = QGuiApplication::applicationDisplayName();
+  QGuiApplication::setApplicationDisplayName(QString{});
+  struct RestoreDisplayName {
+    QString name;
+    ~RestoreDisplayName() {
+      QGuiApplication::setApplicationDisplayName(name);
+    }
+  } restore_display_name{saved_display_name};
+
+  QProgressDialog progress_dlg(dialog_parent);
+  progress_dlg.setWindowTitle(QString{});
+  progress_dlg.setWindowModality(Qt::WindowModal);
+  progress_dlg.setMinimumDuration(0);
+  progress_dlg.setAutoClose(false);
+  progress_dlg.setAutoReset(false);
+  progress_dlg.setMinimumWidth(400);
+  if (auto* bar = progress_dlg.findChild<QProgressBar*>()) {
+    bar->setAlignment(Qt::AlignCenter);
+    bar->setTextVisible(true);
+  }
+
+  ingest_session.onProgressStart = [&progress_dlg](std::string_view label, uint64_t total, bool cancellable) {
+    const QString title = QString::fromUtf8(label.data(), static_cast<int>(label.size()));
+    progress_dlg.setWindowTitle(title);
+    progress_dlg.setLabelText(QString{});
+    progress_dlg.setRange(0, total > 0 ? static_cast<int>(total) : 0);
+    progress_dlg.setValue(0);
+    progress_dlg.setCancelButtonText(cancellable ? tr("Cancel") : QString{});
+    QCoreApplication::processEvents();
+  };
+
+  ingest_session.onProgressUpdate = [&progress_dlg, &ingest_session](uint64_t current) -> bool {
+    progress_dlg.setValue(static_cast<int>(current));
+    QCoreApplication::processEvents();
+    if (progress_dlg.wasCanceled()) {
+      ingest_session.requestStop("cancelled by user");
+      return false;
+    }
+    return true;
+  };
+
+  ingest_session.onProgressFinish = [&progress_dlg]() {
+    progress_dlg.setValue(progress_dlg.maximum());
+    QCoreApplication::processEvents();
+    progress_dlg.reset();
+  };
+
   if (auto status = handle.start(); !status) {
+    progress_dlg.reset();
     return fail(tr("Plugin '%1': start failed: %2").arg(source_name, QString::fromStdString(status.error())));
+  }
+
+  if (ingest_session.stopRequested()) {
+    qCWarning(lcFileLoader) << "[FileLoader] import cancelled by user, reason:"
+                            << QString::fromStdString(ingest_session.lastError());
   }
 
   ingest_session.flushAll();

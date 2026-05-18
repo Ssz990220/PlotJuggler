@@ -199,16 +199,31 @@ void DataSourceRuntimeHost::cbReportMessage(
 }
 
 bool DataSourceRuntimeHost::cbProgressStart(
-    void* /*ctx*/, PJ_string_view_t /*label*/, uint64_t /*total*/, bool /*cancellable*/,
-    PJ_error_t* /*out_error*/) noexcept {
-  return true;  // Import progress is currently logged by plugin messages only.
+    void* ctx, PJ_string_view_t label, uint64_t total, bool cancellable, PJ_error_t* /*out_error*/) noexcept {
+  auto* self = static_cast<DataSourceRuntimeHost*>(ctx);
+  if (self->onProgressStart) {
+    self->onProgressStart(std::string_view(label.data, label.size), total, cancellable);
+  }
+  return true;
 }
 
-bool DataSourceRuntimeHost::cbProgressUpdate(void* ctx, uint64_t /*current*/) noexcept {
-  return !static_cast<DataSourceRuntimeHost*>(ctx)->stop_requested_.load();
+bool DataSourceRuntimeHost::cbProgressUpdate(void* ctx, uint64_t current) noexcept {
+  auto* self = static_cast<DataSourceRuntimeHost*>(ctx);
+  if (self->stop_requested_.load()) {
+    return false;
+  }
+  if (self->onProgressUpdate) {
+    return self->onProgressUpdate(current);
+  }
+  return true;
 }
 
-void DataSourceRuntimeHost::cbProgressFinish(void* /*ctx*/) noexcept {}
+void DataSourceRuntimeHost::cbProgressFinish(void* ctx) noexcept {
+  auto* self = static_cast<DataSourceRuntimeHost*>(ctx);
+  if (self->onProgressFinish) {
+    self->onProgressFinish();
+  }
+}
 
 bool DataSourceRuntimeHost::cbIsStopRequested(void* ctx) noexcept {
   return static_cast<DataSourceRuntimeHost*>(ctx)->stop_requested_.load();

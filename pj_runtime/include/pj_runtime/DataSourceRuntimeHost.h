@@ -77,6 +77,15 @@ class DataSourceRuntimeHost {
     return stop_requested_.load();
   }
 
+  // Optional progress hooks — set before calling the plugin's start().
+  // Called from the import thread; implementations must be thread-safe
+  // (e.g. post to the main thread via QMetaObject::invokeMethod).
+  // onProgressStart: label, total steps (0 = indeterminate), cancellable.
+  // onProgressUpdate: current step; return false to cancel.
+  std::function<void(std::string_view label, uint64_t total, bool cancellable)> onProgressStart;
+  std::function<bool(uint64_t current)> onProgressUpdate;
+  std::function<void()> onProgressFinish;
+
   // Most recent error message captured by any callback. Empty if none.
   const std::string& lastError() const noexcept {
     return last_error_;
