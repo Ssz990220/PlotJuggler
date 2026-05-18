@@ -57,6 +57,14 @@ TimelineWidget::TimelineWidget(QWidget* parent) : QWidget(parent), ui_(new Ui::T
 
   ui_->displayTime->setText("0.000");
 
+  // 30 Hz throttle window for slider-driven seeks. Synchronous image decode on
+  // the GUI thread takes ~30-120 ms per topic; without this window each slider
+  // tick during a drag would chain a fresh decode and the visible image lags
+  // arbitrarily far behind the slider.
+  seek_throttle_timer_.setSingleShot(true);
+  seek_throttle_timer_.setInterval(33);
+  connect(&seek_throttle_timer_, &QTimer::timeout, this, &TimelineWidget::flushPendingSeek);
+
   connect(ui_->timeSlider, &RealSlider::realValueChanged, this, &TimelineWidget::onSliderValueChanged);
   connect(ui_->buttonPlay, &QPushButton::toggled, this, &TimelineWidget::onPlayToggled);
   // Icon-only sync: swap play_arrow ↔ pause whenever the toggle flips,
@@ -125,7 +133,33 @@ void TimelineWidget::onSliderValueChanged(double value) {
   if (updating_from_engine_ || !engine_) {
     return;
   }
+  if (seek_throttle_timer_.isActive()) {
+    // Inside the throttle window — buffer the latest value. The trailing-edge
+    // flush below will deliver whatever sits here once the window closes.
+    pending_seek_value_ = value;
+    has_pending_seek_ = true;
+    return;
+  }
+  // Leading edge: open the window first so a long synchronous decode inside
+  // setCurrentTime keeps the timer alive (it cannot tick on a blocked event
+  // loop, but it will fire as soon as control returns).
+  has_pending_seek_ = false;
+  seek_throttle_timer_.start();
   engine_->setCurrentTime(value);
+}
+
+void TimelineWidget::flushPendingSeek() {
+  if (!has_pending_seek_) {
+    return;
+  }
+  if (!engine_) {
+    has_pending_seek_ = false;
+    return;
+  }
+  const double v = pending_seek_value_;
+  has_pending_seek_ = false;
+  seek_throttle_timer_.start();  // Re-arm so a long drag stays rate-limited.
+  engine_->setCurrentTime(v);
 }
 
 void TimelineWidget::onPlayToggled(bool checked) {

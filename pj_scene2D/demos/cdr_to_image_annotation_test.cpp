@@ -9,7 +9,7 @@
 #include "cdr_yolo_to_image_annotation.h"
 #include "marker_palette.h"
 #include "nanocdr/nanocdr.hpp"
-#include "pj_scene_protocol/image_annotation.h"
+#include "pj_scene2d_core/scene_frame.h"
 
 namespace pj_demos {
 namespace {

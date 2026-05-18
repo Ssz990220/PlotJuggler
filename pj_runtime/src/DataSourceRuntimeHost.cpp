@@ -1,9 +1,13 @@
 #include "pj_runtime/DataSourceRuntimeHost.h"
 
+#include <fmt/format.h>
+
 #include <QLoggingCategory>
 #include <QString>
+#include <functional>
 #include <set>
 #include <utility>
+#include <vector>
 
 #include "pj_base/sdk/plugin_data_api.hpp"
 #include "pj_base/sdk/service_traits.hpp"
@@ -16,6 +20,54 @@ namespace PJ {
 
 namespace {
 Q_LOGGING_CATEGORY(lcIngest, "pj.runtime.ingest")
+
+struct PayloadAnchorGuard {
+  PJ_payload_anchor_t anchor;
+  ~PayloadAnchorGuard() {
+    if (anchor.release != nullptr) {
+      anchor.release(anchor.ctx);
+    }
+  }
+};
+
+std::vector<uint8_t> copyPayloadBytes(const PJ_payload_t& payload) {
+  std::vector<uint8_t> bytes;
+  if (payload.size > 0 && payload.data != nullptr) {
+    bytes.assign(payload.data, payload.data + payload.size);
+  }
+  return bytes;
+}
+
+struct FetcherOwner {
+  explicit FetcherOwner(PJ_message_data_fetcher_t fetcher_in) : fetcher(fetcher_in) {}
+
+  FetcherOwner(const FetcherOwner&) = delete;
+  FetcherOwner& operator=(const FetcherOwner&) = delete;
+
+  ~FetcherOwner() {
+    if (fetcher.release != nullptr) {
+      fetcher.release(fetcher.ctx);
+    }
+  }
+
+  PJ_message_data_fetcher_t fetcher;
+};
+
+std::function<std::vector<uint8_t>()> makeLazyFetchClosure(std::shared_ptr<FetcherOwner> owner) {
+  return [owner = std::move(owner)]() -> std::vector<uint8_t> {
+    PJ_payload_t payload{};
+    PJ_error_t err{};
+    if (owner->fetcher.fetchMessageData == nullptr ||
+        !owner->fetcher.fetchMessageData(owner->fetcher.ctx, &payload, &err)) {
+      return {};
+    }
+    PayloadAnchorGuard payload_anchor_guard{payload.anchor};
+    if (payload.data == nullptr && payload.size > 0) {
+      return {};
+    }
+    return copyPayloadBytes(payload);
+  };
+}
 }  // namespace
 
 // ---------------------------------------------------------------------------
@@ -28,8 +80,15 @@ DataSourceRuntimeHost::ParserBinding::ParserBinding() = default;
 
 DataSourceRuntimeHost::ParserBinding::ParserBinding(
     std::unique_ptr<ServiceRegistryBuilder> b, std::unique_ptr<DatastoreParserWriteHost> w,
-    std::unique_ptr<MessageParserHandle> p)
-    : registry_builder(std::move(b)), write_host(std::move(w)), parser(std::move(p)) {}
+    std::unique_ptr<DatastoreParserObjectWriteHost> ow, std::unique_ptr<MessageParserHandle> p, std::string topic,
+    sdk::BuiltinObjectType kind, std::optional<ObjectTopicId> object_topic)
+    : registry_builder(std::move(b)),
+      write_host(std::move(w)),
+      object_write_host(std::move(ow)),
+      parser(std::move(p)),
+      topic_name(std::move(topic)),
+      object_kind(kind),
+      object_topic_id(object_topic) {}
 
 DataSourceRuntimeHost::ParserBinding::~ParserBinding() = default;
 
@@ -56,6 +115,7 @@ const PJ_data_source_runtime_host_vtable_t DataSourceRuntimeHost::kVtable = {
     .push_raw_message = &DataSourceRuntimeHost::cbPushRawMessage,
     .show_message_box = &DataSourceRuntimeHost::cbShowMessageBox,
     .list_available_encodings = &DataSourceRuntimeHost::cbListAvailableEncodings,
+    .push_message_v2 = &DataSourceRuntimeHost::cbPushMessageV2,
 };
 
 // ---------------------------------------------------------------------------
@@ -63,8 +123,16 @@ const PJ_data_source_runtime_host_vtable_t DataSourceRuntimeHost::kVtable = {
 // ---------------------------------------------------------------------------
 
 DataSourceRuntimeHost::DataSourceRuntimeHost(
-    DataEngine& engine, ExtensionCatalogService& catalog, DatasetId dataset_id, PJ_data_source_handle_t source_handle)
-    : engine_(engine), catalog_(catalog), dataset_id_(dataset_id), source_write_host_(engine, source_handle) {}
+    DataEngine& engine, ExtensionCatalogService& catalog, DatasetId dataset_id, PJ_data_source_handle_t source_handle,
+    ObjectStore& object_store, std::string source_id, ObjectTopicParserRegistrar parser_registrar)
+    : engine_(engine),
+      catalog_(catalog),
+      object_store_(object_store),
+      source_id_(std::move(source_id)),
+      object_topic_parser_registrar_(std::move(parser_registrar)),
+      dataset_id_(dataset_id),
+      source_write_host_(engine, source_handle),
+      source_object_write_host_(object_store, dataset_id) {}
 
 DataSourceRuntimeHost::~DataSourceRuntimeHost() = default;
 
@@ -74,6 +142,7 @@ DataSourceRuntimeHost::~DataSourceRuntimeHost() = default;
 
 void DataSourceRuntimeHost::registerServices(ServiceRegistryBuilder& registry) {
   registry.registerService<sdk::SourceWriteHostService>(source_write_host_.raw());
+  registry.registerService<sdk::SourceObjectWriteHostService>(source_object_write_host_.raw());
   registry.registerService<sdk::DataSourceRuntimeHostService>(PJ_data_source_runtime_host_t{
       .ctx = this,
       .vtable = &kVtable,
@@ -187,33 +256,97 @@ bool DataSourceRuntimeHost::cbEnsureParserBinding(
     // into the ParserBinding so its lifetime matches the parser's.
     auto registry_builder = std::make_unique<ServiceRegistryBuilder>();
     registry_builder->registerService<sdk::ParserWriteHostService>(write_host->raw());
-    if (auto status = parser->bind(registry_builder->view()); !status) {
-      return self->fail(out_error, ("failed to bind parser services: " + status.error()).c_str());
+
+    const Span<const uint8_t> schema_span(request->schema.data, request->schema.size);
+    if (auto status = parser->bindSchema(type_name, schema_span); !status) {
+      return self->fail(
+          out_error, ("failed to bind schema for " + std::string(type_name) + ": " + status.error()).c_str());
     }
 
-    if (request->schema.size > 0) {
-      const Span<const uint8_t> schema_span(request->schema.data, request->schema.size);
-      if (auto status = parser->bindSchema(type_name, schema_span); !status) {
-        return self->fail(
-            out_error, ("failed to bind schema for " + std::string(type_name) + ": " + status.error()).c_str());
-      }
-    }
-
+    std::string parser_config;
     if (request->parser_config_json.size > 0) {
-      const std::string_view parser_config(request->parser_config_json.data, request->parser_config_json.size);
+      parser_config.assign(request->parser_config_json.data, request->parser_config_json.size);
       if (auto status = parser->loadConfig(parser_config); !status) {
         return self->fail(out_error, ("failed to load parser config: " + status.error()).c_str());
       }
     }
 
+    const sdk::BuiltinObjectType object_kind = parser->classifySchema(type_name, schema_span);
+    std::optional<ObjectTopicId> object_topic_id;
+    std::unique_ptr<DatastoreParserObjectWriteHost> object_write_host;
+    if (object_kind == sdk::BuiltinObjectType::kNone) {
+      // The parser declined to classify this topic as a builtin object — it
+      // will only produce scalar columns. Surface this once per binding so
+      // the operator knows why an image-shaped topic might not be showing in
+      // the catalog as an ObjectTopic. Plugins that legitimately do not
+      // produce objects (string topics, etc.) just generate one info line.
+      qCInfo(lcIngest) << "[parser-bind] classifySchema=kNone topic="
+                       << QString::fromUtf8(topic_name.data(), static_cast<int>(topic_name.size()))
+                       << "type=" << QString::fromUtf8(type_name.data(), static_cast<int>(type_name.size()))
+                       << "encoding=" << QString::fromUtf8(encoding.data(), static_cast<int>(encoding.size()))
+                       << "— scalar-only ingest";
+    } else {
+      if (auto existing = self->object_store_.findTopic(self->dataset_id_, topic_name); existing.has_value()) {
+        object_topic_id = existing;
+      } else {
+        const std::string metadata_json = fmt::format(R"({{"builtin_object_type":"{}"}})", sdk::name(object_kind));
+        auto registered = self->object_store_.registerTopic(
+            ObjectTopicDescriptor{
+                .dataset_id = self->dataset_id_,
+                .topic_name = std::string(topic_name),
+                .metadata_json = metadata_json,
+            });
+        if (!registered.has_value()) {
+          return self->fail(
+              out_error,
+              ("failed to register object topic '" + std::string(topic_name) + "': " + registered.error()).c_str());
+        }
+        object_topic_id = *registered;
+      }
+      object_write_host = std::make_unique<DatastoreParserObjectWriteHost>(self->object_store_, object_topic_id->id);
+      registry_builder->registerService<sdk::ParserObjectWriteHostService>(object_write_host->raw());
+
+      if (self->object_topic_parser_registrar_) {
+        auto object_parser = std::make_unique<MessageParserHandle>(parser_entry->library.createHandle());
+        if (!object_parser->valid()) {
+          return self->fail(
+              out_error, ("failed to create object parser instance for '" + std::string(encoding) + "'").c_str());
+        }
+        if (auto status = object_parser->bindSchema(type_name, schema_span); !status) {
+          return self->fail(
+              out_error,
+              ("failed to bind object parser schema for " + std::string(type_name) + ": " + status.error()).c_str());
+        }
+        if (!parser_config.empty()) {
+          if (auto status = object_parser->loadConfig(parser_config); !status) {
+            return self->fail(out_error, ("failed to load object parser config: " + status.error()).c_str());
+          }
+        }
+        self->object_topic_parser_registrar_(*object_topic_id, std::move(object_parser));
+      }
+    }
+
+    if (auto status = parser->bind(registry_builder->view()); !status) {
+      return self->fail(out_error, ("failed to bind parser services: " + status.error()).c_str());
+    }
+
     const uint32_t binding_id = self->next_binding_id_++;
     self->parser_bindings_.emplace(
-        binding_id, ParserBinding{std::move(registry_builder), std::move(write_host), std::move(parser)});
+        binding_id, ParserBinding{
+                        std::move(registry_builder),
+                        std::move(write_host),
+                        std::move(object_write_host),
+                        std::move(parser),
+                        std::string(topic_name),
+                        object_kind,
+                        object_topic_id,
+                    });
 
     *out = PJ_parser_binding_handle_t{binding_id};
     qCInfo(lcIngest) << "[parser-bind] encoding="
                      << QString::fromUtf8(encoding.data(), static_cast<int>(encoding.size()))
-                     << "topic=" << QString::fromUtf8(topic_name.data(), static_cast<int>(topic_name.size()));
+                     << "topic=" << QString::fromUtf8(topic_name.data(), static_cast<int>(topic_name.size()))
+                     << "object_kind=" << static_cast<int>(object_kind);
     return true;
   } catch (...) {
     return self->fail(out_error, "exception while binding parser");
@@ -233,9 +366,89 @@ bool DataSourceRuntimeHost::cbPushRawMessage(
         !status) {
       return self->fail(out_error, status.error().c_str());
     }
+    if (it->second.object_topic_id.has_value()) {
+      std::vector<uint8_t> owned;
+      if (payload.size > 0) {
+        owned.assign(payload.data, payload.data + payload.size);
+      }
+      if (auto status = self->object_store_.pushOwned(*it->second.object_topic_id, timestamp_ns, std::move(owned));
+          !status) {
+        return self->fail(out_error, ("ObjectStore.pushOwned failed: " + status.error()).c_str());
+      }
+    }
     return true;
   } catch (...) {
     return self->fail(out_error, "exception while pushing raw message");
+  }
+}
+
+bool DataSourceRuntimeHost::cbPushMessageV2(
+    void* ctx, PJ_parser_binding_handle_t handle, int64_t timestamp_ns, PJ_message_data_fetcher_t fetch_message_data,
+    PJ_error_t* out_error) noexcept {
+  auto* self = static_cast<DataSourceRuntimeHost*>(ctx);
+  auto fetcher_owner = std::make_shared<FetcherOwner>(fetch_message_data);
+
+  try {
+    auto it = self->parser_bindings_.find(handle.id);
+    if (it == self->parser_bindings_.end()) {
+      return self->fail(out_error, "invalid parser binding handle");
+    }
+    auto& binding = it->second;
+    if (fetcher_owner->fetcher.fetchMessageData == nullptr) {
+      return self->fail(out_error, "message data fetcher is null");
+    }
+
+    // Object ingest policy only applies to parser bindings that actually
+    // classify as builtin objects. Scalar-only topics must stay eager so a
+    // broad default lazy policy cannot accidentally drop normal curves.
+    const bool is_object_topic = binding.object_topic_id.has_value();
+    const auto policy = is_object_topic
+                            ? self->policy_resolver_.resolve(self->source_id_, binding.topic_name, binding.object_kind)
+                            : sdk::ObjectIngestPolicy::kEager;
+
+    auto push_lazy_object = [&]() -> bool {
+      if (!is_object_topic) {
+        return true;
+      }
+      auto closure = makeLazyFetchClosure(fetcher_owner);
+      if (auto status = self->object_store_.pushLazy(*binding.object_topic_id, timestamp_ns, std::move(closure));
+          !status) {
+        return self->fail(out_error, ("ObjectStore.pushLazy failed: " + status.error()).c_str());
+      }
+      return true;
+    };
+
+    if (policy == sdk::ObjectIngestPolicy::kPureLazy) {
+      return push_lazy_object();
+    }
+
+    PJ_payload_t payload{};
+    if (!fetcher_owner->fetcher.fetchMessageData(fetcher_owner->fetcher.ctx, &payload, out_error)) {
+      return false;
+    }
+
+    PayloadAnchorGuard payload_anchor_guard{payload.anchor};
+    if (payload.data == nullptr && payload.size > 0) {
+      return self->fail(out_error, "message data fetcher returned null data");
+    }
+    if (auto status = binding.parser->parse(timestamp_ns, Span<const uint8_t>(payload.data, payload.size)); !status) {
+      return self->fail(out_error, status.error().c_str());
+    }
+
+    if (policy == sdk::ObjectIngestPolicy::kLazyObjectsEagerScalars) {
+      return push_lazy_object();
+    }
+
+    if (is_object_topic) {
+      if (auto status =
+              self->object_store_.pushOwned(*binding.object_topic_id, timestamp_ns, copyPayloadBytes(payload));
+          !status) {
+        return self->fail(out_error, ("ObjectStore.pushOwned failed: " + status.error()).c_str());
+      }
+    }
+    return true;
+  } catch (...) {
+    return self->fail(out_error, "exception while pushing message v2");
   }
 }
 

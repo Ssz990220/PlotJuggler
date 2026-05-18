@@ -94,6 +94,13 @@ class MainWindow : public QMainWindow {
   // Opens the file-load workflow.
   void onLoadDataRequested();
 
+  // Updates playback bounds after a data file has populated datastore and
+  // object-store topics.
+  void onFileLoaded(const QString& path);
+
+  // Removes selected catalog entries from the curve/object tree.
+  void onCatalogTrashRequested(QStringList keys, bool covers_all);
+
   void onShowPreferencesDialog();
 
   // Rebuilds the title-bar Extensions popup from the current

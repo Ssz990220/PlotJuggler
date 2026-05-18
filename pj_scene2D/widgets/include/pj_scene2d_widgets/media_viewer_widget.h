@@ -2,6 +2,7 @@
 
 #include <rhi/qrhi.h>
 
+#include <QColor>
 #include <QFile>
 #include <QImage>
 #include <QMatrix4x4>
@@ -14,7 +15,7 @@
 #include <vector>
 
 #include "pj_scene2d_core/decoded_frame.h"
-#include "pj_scene_protocol/image_annotation.h"
+#include "pj_scene2d_core/scene_frame.h"
 
 namespace PJ {
 
@@ -40,6 +41,7 @@ class MediaSource;
 /// Thread-safe: setFrame() may be called from any thread.
 class MediaViewerWidget : public QRhiWidget {
   Q_OBJECT
+  Q_PROPERTY(QColor clearColor READ clearColor WRITE setClearColor)
 
  public:
   explicit MediaViewerWidget(QWidget* parent = nullptr);
@@ -60,6 +62,9 @@ class MediaViewerWidget : public QRhiWidget {
 
   /// Reset zoom to 1x and pan to origin.
   void resetView();
+
+  void setClearColor(const QColor& color);
+  [[nodiscard]] QColor clearColor() const;
 
  signals:
   void zoomChanged(float zoom);
@@ -127,6 +132,7 @@ class MediaViewerWidget : public QRhiWidget {
   float pan_x_ = 0.0f;
   float pan_y_ = 0.0f;
   QPointF last_mouse_pos_;
+  QColor clear_color_{Qt::white};
 
   // Uniform buffer layout (std140):
   // mat4 viewTransform  (64 bytes, offset 0)

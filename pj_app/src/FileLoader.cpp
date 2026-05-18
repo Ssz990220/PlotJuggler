@@ -19,6 +19,7 @@
 #include "pj_marketplace/extension.hpp"
 #include "pj_plugins/host/data_source_handle.hpp"
 #include "pj_plugins/host/data_source_library.hpp"
+#include "pj_plugins/host/message_parser_handle.hpp"
 #include "pj_plugins/host/service_registry_builder.hpp"
 #include "pj_runtime/CatalogModel.h"
 #include "pj_runtime/DataSourceRuntimeHost.h"
@@ -136,8 +137,16 @@ bool FileLoader::loadFile(const QString& path, QWidget* dialog_parent) {
     return fail(tr("createDataset failed: %1").arg(QString::fromStdString(dataset_or.error())));
   }
 
+  const auto dataset_id = static_cast<DatasetId>(*dataset_or);
   const PJ_data_source_handle_t source_handle{static_cast<uint32_t>(*dataset_or)};
-  DataSourceRuntimeHost ingest_session(engine, extensions_, static_cast<DatasetId>(*dataset_or), source_handle);
+  DataSourceRuntimeHost ingest_session(
+      engine, extensions_, dataset_id, source_handle, session_.objectStore(), source->id,
+      [this](ObjectTopicId id, std::unique_ptr<MessageParserHandle> parser) {
+        session_.registerObjectTopicParser(id, std::move(parser));
+      });
+  ingest_session.policyResolver().setDefault(PJ::sdk::ObjectIngestPolicy::kLazyObjectsEagerScalars);
+  ingest_session.policyResolver().setForType(
+      PJ::sdk::BuiltinObjectType::kPointCloud, PJ::sdk::ObjectIngestPolicy::kPureLazy);
 
   ServiceRegistryBuilder registry;
   ingest_session.registerServices(registry);

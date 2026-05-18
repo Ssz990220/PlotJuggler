@@ -57,13 +57,32 @@ class AppSession : public QObject {
     return *extension_catalog_;
   }
 
+  // Scans every dataset's topics + object topics for time bounds and applies
+  // them to the playback engine.
+  //
+  // First call (no prior seed): sets the range and snaps currentTime to the
+  // new minimum so the user lands at the start of the data.
+  //
+  // Subsequent calls: expand the range monotonically so additional file loads
+  // never shrink it, and leave currentTime alone so the user's scrub position
+  // is preserved across loads.
+  //
+  // Returns true if any topic with data was found and the engine was updated.
+  bool seedPlaybackFromSession();
+
  private:
   std::unique_ptr<SessionManager> session_manager_;
   std::unique_ptr<PlaybackEngine> playback_engine_;
   std::unique_ptr<CatalogModel> catalog_model_;
   // Declared last: its ctor hits disk (scan + load) and must run after the
-  // other services are alive.
+  // other services are alive. The destructor resets services explicitly so
+  // session-owned plugin handles die before loaded plugin libraries unload.
   std::unique_ptr<ExtensionCatalogService> extension_catalog_;
+
+  // Flips to true on the first successful seedPlaybackFromSession(). Used to
+  // distinguish "first load" (snap currentTime) from "additional load"
+  // (preserve currentTime).
+  bool playback_seeded_ = false;
 };
 
 }  // namespace PJ

@@ -2,15 +2,62 @@
 
 #include <QObject>
 #include <QString>
+#include <cstddef>
 #include <memory>
 #include <optional>
+#include <variant>
 #include <vector>
 
+#include "pj_base/builtin/BuiltinObject.hpp"
+#include "pj_datastore/object_store.hpp"
 #include "pj_runtime/CurveDescriptor.h"
 
 namespace PJ {
 
 class SessionManager;
+
+// Scalar-field payload: numeric series read from the data engine.
+struct ScalarFieldPayload {
+  QString field_name;
+  QString field_path;
+  TopicId topic_id = 0;
+  std::size_t column_index = 0;
+  Timestamp display_offset_ns = 0;
+};
+
+// Object-topic payload: time-indexed canonical-object stream from the object
+// store (e.g. images, depth, image annotations).
+struct ObjectTopicPayload {
+  ObjectTopicId object_topic_id;
+  sdk::BuiltinObjectType object_type = sdk::BuiltinObjectType::kNone;
+  QString metadata_json;
+};
+
+// A single entry in the catalog. The variant payload statically separates
+// scalar-field state from object-topic state so consumers cannot accidentally
+// read object fields off a scalar entry (or vice versa) — the previous flat
+// struct had per-variant dead fields that bit-rotted silently.
+struct CatalogItem {
+  QString key;  // Opaque catalog key, not a display path.
+  QString dataset_name;
+  QString topic_name;
+  DatasetId dataset_id;
+  std::variant<ScalarFieldPayload, ObjectTopicPayload> payload;
+};
+
+// Convenience accessors. Prefer these over std::get_if at call sites.
+[[nodiscard]] inline bool isScalarField(const CatalogItem& item) noexcept {
+  return std::holds_alternative<ScalarFieldPayload>(item.payload);
+}
+[[nodiscard]] inline bool isObjectTopic(const CatalogItem& item) noexcept {
+  return std::holds_alternative<ObjectTopicPayload>(item.payload);
+}
+[[nodiscard]] inline const ScalarFieldPayload* asScalarField(const CatalogItem& item) noexcept {
+  return std::get_if<ScalarFieldPayload>(&item.payload);
+}
+[[nodiscard]] inline const ObjectTopicPayload* asObjectTopic(const CatalogItem& item) noexcept {
+  return std::get_if<ObjectTopicPayload>(&item.payload);
+}
 
 // Qt-side facade over the catalog of topics/curves known to the current
 // session. Populated as data sources load; GUI views (CurveListPanel,
@@ -26,11 +73,14 @@ class CatalogModel : public QObject {
   CatalogModel(const CatalogModel&) = delete;
   CatalogModel& operator=(const CatalogModel&) = delete;
 
-  std::vector<QString> curveNames() const;
-  [[nodiscard]] std::optional<CurveDescriptor> curveDescriptor(const QString& name) const;
+  std::vector<CatalogItem> items() const;
+  [[nodiscard]] std::optional<CatalogItem> itemDescriptor(const QString& key) const;
+  std::vector<CurveDescriptor> curves() const;
+  [[nodiscard]] std::optional<CurveDescriptor> curveDescriptor(const QString& key) const;
 
   void clearAll();
-  void removeCurves(const std::vector<QString>& names);
+  void removeItems(const std::vector<QString>& keys);
+  void removeCurves(const std::vector<QString>& keys);
 
   // Discards soft-delete tombstones and rebuilds from the datastore so a
   // resurrection path (e.g. layout load) can re-expose previously removed curves.
@@ -40,8 +90,8 @@ class CatalogModel : public QObject {
   void rebuildFromDatastore();
 
  signals:
-  void curveAdded(const QString& name);
-  void curveRemoved(const QString& name);
+  void itemAdded(const CatalogItem& item);
+  void itemRemoved(const QString& key);
   void cleared();
 
  private:

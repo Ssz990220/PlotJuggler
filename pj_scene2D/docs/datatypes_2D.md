@@ -515,12 +515,13 @@ Overlays rendered in image pixel coordinates. These reference an image topic and
 on top of it. They are not part of the 3D scene graph.
 
 > **Authoritative wire-format spec and type catalog** live in
-> `plotjuggler_core/pj_scene_protocol/docs/ARCHITECTURE.md`. The schema (`ImageAnnotation`,
-> `PointsAnnotation`, `CircleAnnotation`, `TextAnnotation`, `Point2`, `ColorRGBA`,
-> `SceneFrame`) and the canonical `foxglove.ImageAnnotations` Protobuf wire codec
-> (writer + reader) live in the `pj_scene_protocol` SDK module. Plugin authors that
-> *produce* or *consume* markers should read that doc; this section covers only how
-> pj_scene2D renders the decoded primitives.
+> `plotjuggler_core/pj_base/include/pj_base/builtin/`. The canonical
+> `ImageAnnotations` schema and the `foxglove.ImageAnnotations` Protobuf wire
+> codec (writer + reader) are part of `pj_base/builtin`; pj_scene2D exposes
+> renderer-local aliases through `pj_scene2d_core/scene_frame.h`. Plugin
+> authors that *produce* or *consume* markers should use the canonical SDK
+> types; this section covers only how pj_scene2D renders the decoded
+> primitives.
 >
 > **Source-format conversion happens loader-side**, not in pj_scene2D. A loader reads its
 > source format (CDR `vision_msgs/msg/Detection2DArray`, `yolo_msgs/msg/DetectionArray`,
@@ -552,8 +553,9 @@ once per `(text, font_size)` and uses Qt's default font selection (no fallback f
 missing glyphs). The text cache is cleared in `releaseResources()`; for now there is
 no LRU eviction.
 
-For the schema field tables (`ImageAnnotation`, `PointsAnnotation`, `CircleAnnotation`,
-`TextAnnotation`), see `plotjuggler_core/pj_scene_protocol/docs/ARCHITECTURE.md`.
+For the schema field tables (`ImageAnnotations`, `PointsAnnotation`,
+`CircleAnnotation`, `TextAnnotation`), see
+`plotjuggler_core/pj_base/include/pj_base/builtin/ImageAnnotations.hpp`.
 
 ---
 

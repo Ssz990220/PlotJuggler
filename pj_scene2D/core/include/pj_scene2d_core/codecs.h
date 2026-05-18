@@ -6,20 +6,6 @@
 
 namespace PJ {
 
-/// Strips CDR envelope from a ROS2 message. Finds JPEG/PNG marker
-/// and returns the payload bytes as the output frame's pixels.
-class CdrImageStripper : public CodecStage {
- public:
-  Expected<DecodedFrame> decode(const DecodedFrame& input) const override;
-};
-
-/// Strips the ROS2 compressedDepth header. Finds PNG signature
-/// within the payload and returns it.
-class CompressedDepthStripper : public CodecStage {
- public:
-  Expected<DecodedFrame> decode(const DecodedFrame& input) const override;
-};
-
 /// JPEG → RGB888 via turbojpeg.
 class JpegCodec : public CodecStage {
  public:
@@ -50,6 +36,35 @@ class DepthToGrayscale : public CodecStage {
   Expected<DecodedFrame> decode(const DecodedFrame& input) const override;
 };
 
+/// Pass-through for display-ready frames, Mono16 → RGB888 grayscale when needed.
+class NormalizeMono16 : public CodecStage {
+ public:
+  Expected<DecodedFrame> decode(const DecodedFrame& input) const override;
+
+ private:
+  DepthToGrayscale mono16_to_grayscale_;
+};
+
+/// JPEG/PNG byte decoder cascade. The output may still be Mono16.
+class ImageDecodeCascade : public CodecStage {
+ public:
+  Expected<DecodedFrame> decode(const DecodedFrame& input) const override;
+
+ private:
+  JpegCodec jpeg_;
+  PngCodec png_;
+};
+
+/// JPEG/PNG auto-dispatch followed by Mono16 normalization when needed.
+class AutoImageCodec : public CodecStage {
+ public:
+  Expected<DecodedFrame> decode(const DecodedFrame& input) const override;
+
+ private:
+  ImageDecodeCascade decode_;
+  NormalizeMono16 normalize_;
+};
+
 /// Mono8 class IDs → RGB888 false-color. Each class ID (0-255) maps to
 /// a distinct hue. Input must be kMono8 with pixels->size() >= width*height.
 class SegmentationPalette : public CodecStage {
@@ -59,8 +74,6 @@ class SegmentationPalette : public CodecStage {
 
 // --- Pipeline builders ---
 
-std::unique_ptr<CodecPipeline> makeJpegPipeline();     ///< JpegCodec only (raw JPEG input)
-std::unique_ptr<CodecPipeline> makeCdrJpegPipeline();  ///< CdrImageStripper → JpegCodec
-std::unique_ptr<CodecPipeline> makeDepthPipeline();    ///< CompressedDepthStripper → PngCodec → DepthToGrayscale
+std::unique_ptr<CodecPipeline> makeJpegPipeline();  ///< JpegCodec only (raw JPEG input)
 
 }  // namespace PJ

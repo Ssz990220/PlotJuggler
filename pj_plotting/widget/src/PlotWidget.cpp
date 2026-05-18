@@ -53,6 +53,27 @@ QString curveKey(const QString& source_name, const QString& x_name = {}, const Q
   return QStringLiteral("ts:") + source_name;
 }
 
+void appendDisplayPath(QString& base, QString path) {
+  path.replace('.', '/');
+  while (path.startsWith('/')) {
+    path.remove(0, 1);
+  }
+  if (path.isEmpty()) {
+    return;
+  }
+  if (!base.isEmpty() && !base.endsWith('/')) {
+    base += '/';
+  }
+  base += path;
+}
+
+QString curveDisplayName(const CurveDescriptor& descriptor) {
+  QString name;
+  appendDisplayPath(name, descriptor.topic_name);
+  appendDisplayPath(name, descriptor.field_name);
+  return name.isEmpty() ? descriptor.name : name;
+}
+
 }  // namespace
 
 PlotWidget::PlotWidget(SessionManager* session, CatalogModel* catalog, QWidget* parent)
@@ -125,6 +146,7 @@ PlotWidget::CurveInfo* PlotWidget::addCurve(const QString& name, QColor color) {
   if (info == nullptr) {
     return nullptr;
   }
+  info->curve->setTitle(curveDisplayName(*descriptor));
   if (tracker_ != nullptr) {
     tracker_->setEnabled(tracker_enabled_);
   }
@@ -144,7 +166,7 @@ PlotWidget::CurveInfo* PlotWidget::addCurveXY(const QString& x_name, const QStri
     return nullptr;
   }
 
-  const QString title = tr("%1 vs %2").arg(y_name, x_name);
+  const QString title = tr("%1 vs %2").arg(curveDisplayName(*y_descriptor), curveDisplayName(*x_descriptor));
   auto* series = new PointSeriesXY(session_, *x_descriptor, *y_descriptor);
   auto* info = PlotWidgetBase::addCurve(title, series, color);
   if (info == nullptr) {
@@ -504,12 +526,10 @@ void PlotWidget::setTrackerPosition(double display_time_sec) {
 }
 
 void PlotWidget::onChangeCurveColor(const QString& curve_name, QColor new_color) {
-  for (auto& info : curveList()) {
-    if (info.curve->title().text() == curve_name) {
-      info.curve->setPen(new_color, info.curve->pen().widthF());
-      replot();
-      return;
-    }
+  CurveInfo* info = curveFromTitle(curve_name);
+  if (info != nullptr && info->curve != nullptr) {
+    info->curve->setPen(new_color, info->curve->pen().widthF());
+    replot();
   }
 }
 
@@ -757,13 +777,13 @@ void PlotWidget::canvasContextMenuTriggered(const QPoint& pos) {
           const QColor current_color = selected_curve->curve->pen().color();
           const QColor next_color = QColorDialog::getColor(current_color, this, tr("Pick curve color"));
           if (next_color.isValid()) {
-            onChangeCurveColor(selected_curve->curve->title().text(), next_color);
+            onChangeCurveColor(selected_curve->source_name, next_color);
             emit undoableChange();
           }
         });
     menu.addAction(
         QIcon(LoadSvg(":/resources/svg/trash.svg", theme)), tr("Remove curve"), this, [this, selected_curve]() {
-          removeCurve(selected_curve->curve->title().text());
+          removeCurve(selected_curve->source_name);
           emit undoableChange();
           replot();
         });

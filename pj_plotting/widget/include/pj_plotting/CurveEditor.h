@@ -70,7 +70,7 @@ class CurveEditor : public QWidget {
   // Hides search + filter + label when the header band is too narrow,
   // keeping the kebab always reachable.
   void updateHeaderForWidth();
-  void appendRow(const QString& curve_name, QColor color, bool visible);
+  void appendRow(const QString& curve_key, const QString& display_name, QColor color, bool visible);
   void onSwatchClicked(const QString& curve_name, QPushButton* swatch);
   void onPickerColorChanged(QColor color);
   void onVisibilityToggled(const QString& curve_name, bool visible);

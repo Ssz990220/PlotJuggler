@@ -3,6 +3,7 @@
 #include <QFont>
 #include <QFontMetricsF>
 #include <QPainter>
+#include <QVector4D>
 #include <algorithm>
 #include <cmath>
 #include <cstring>
@@ -27,12 +28,27 @@ static constexpr float kBT709[] = {
 
 MediaViewerWidget::MediaViewerWidget(QWidget* parent) : QRhiWidget(parent) {
   setApi(Api::OpenGL);
+  setObjectName(QStringLiteral("mediaViewerCanvas"));
   setFocusPolicy(Qt::StrongFocus);
   static bool resources_initialized = [] {
     pjMediaQtInitResources();
     return true;
   }();
   (void)resources_initialized;
+}
+
+void MediaViewerWidget::setClearColor(const QColor& color) {
+  QColor next = color.isValid() ? color : QColor(Qt::white);
+  next.setAlpha(255);
+  if (next == clear_color_) {
+    return;
+  }
+  clear_color_ = next;
+  update();
+}
+
+QColor MediaViewerWidget::clearColor() const {
+  return clear_color_;
 }
 
 void MediaViewerWidget::setFrame(const DecodedFrame& frame) {
@@ -273,6 +289,50 @@ void expandCircleFillToTriangleFan(
   }
 }
 
+QRhiScissor imageScissor(const QMatrix4x4& view, const QSize& output_size) {
+  if (output_size.width() <= 0 || output_size.height() <= 0) {
+    return QRhiScissor(0, 0, 0, 0);
+  }
+
+  float min_x = 1.0e9f;
+  float min_y = 1.0e9f;
+  float max_x = -1.0e9f;
+  float max_y = -1.0e9f;
+  const QVector4D corners[] = {
+      {-1.0f, -1.0f, 0.0f, 1.0f},
+      {1.0f, -1.0f, 0.0f, 1.0f},
+      {-1.0f, 1.0f, 0.0f, 1.0f},
+      {1.0f, 1.0f, 0.0f, 1.0f},
+  };
+
+  for (const auto& corner : corners) {
+    QVector4D point = view * corner;
+    if (point.w() != 0.0f) {
+      point /= point.w();
+    }
+    min_x = std::min(min_x, point.x());
+    min_y = std::min(min_y, point.y());
+    max_x = std::max(max_x, point.x());
+    max_y = std::max(max_y, point.y());
+  }
+
+  min_x = std::clamp(min_x, -1.0f, 1.0f);
+  min_y = std::clamp(min_y, -1.0f, 1.0f);
+  max_x = std::clamp(max_x, -1.0f, 1.0f);
+  max_y = std::clamp(max_y, -1.0f, 1.0f);
+  if (max_x <= min_x || max_y <= min_y) {
+    return QRhiScissor(0, 0, 0, 0);
+  }
+
+  const auto width = static_cast<float>(output_size.width());
+  const auto height = static_cast<float>(output_size.height());
+  const int x0 = std::max(0, static_cast<int>(std::floor((min_x * 0.5f + 0.5f) * width)));
+  const int x1 = std::min(output_size.width(), static_cast<int>(std::ceil((max_x * 0.5f + 0.5f) * width)));
+  const int y0 = std::max(0, static_cast<int>(std::floor((1.0f - max_y) * 0.5f * height)));
+  const int y1 = std::min(output_size.height(), static_cast<int>(std::ceil((1.0f - min_y) * 0.5f * height)));
+  return QRhiScissor(x0, y0, std::max(0, x1 - x0), std::max(0, y1 - y0));
+}
+
 }  // namespace
 
 void MediaViewerWidget::setTimestamp(int64_t ts_ns) {
@@ -394,6 +454,7 @@ void MediaViewerWidget::initialize(QRhiCommandBuffer* /*cb*/) {
   srb_->create();
 
   pipeline_ = r->newGraphicsPipeline();
+  pipeline_->setFlags(QRhiGraphicsPipeline::UsesScissor);
   pipeline_->setShaderStages(
       {QRhiShaderStage(QRhiShaderStage::Vertex, vert), QRhiShaderStage(QRhiShaderStage::Fragment, frag)});
 
@@ -979,10 +1040,11 @@ void MediaViewerWidget::render(QRhiCommandBuffer* cb) {
   const size_t points_vertex_count = (points_pipeline_ != nullptr) ? points_vertex_data_.size() / 6 : 0;
   const size_t thick_vertex_count = (thick_pipeline_ != nullptr) ? thick_vertex_data_.size() / 6 : 0;
 
-  cb->beginPass(rt, QColor::fromRgbF(0.0f, 0.0f, 0.0f, 1.0f), {1.0f, 0}, updates);
+  cb->beginPass(rt, clear_color_, {1.0f, 0}, updates);
   cb->setGraphicsPipeline(pipeline_);
   cb->setViewport(
       QRhiViewport(0, 0, static_cast<float>(output_size.width()), static_cast<float>(output_size.height())));
+  cb->setScissor(imageScissor(view, output_size));
   cb->setShaderResources(srb_);
   cb->draw(3);
 

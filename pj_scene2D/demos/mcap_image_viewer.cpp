@@ -20,17 +20,18 @@
 #include "pj_datastore/object_store.hpp"
 #include "pj_scene2d_core/codecs.h"
 #include "pj_scene2d_core/composite_media_source.h"
+#include "pj_scene2d_core/image_annotation_codec.h"
 #include "pj_scene2d_core/image_pipeline_source.h"
+#include "pj_scene2d_core/scene_decoder.h"
 #include "pj_scene2d_core/scene_pipeline_source.h"
 #include "pj_scene2d_widgets/media_viewer_widget.h"
-#include "pj_scene_protocol/image_annotation_codec.h"
-#include "pj_scene_protocol/scene_decoder.h"
 
 #define MCAP_IMPLEMENTATION
 #include <mcap/reader.hpp>
 
 #include "cdr_detection2d_to_image_annotation.h"
 #include "cdr_yolo_to_image_annotation.h"
+#include "demo_cdr_codecs.h"
 #include "mcap_helpers.hpp"
 
 // ---------------------------------------------------------------------------
@@ -327,8 +328,8 @@ class ImageViewerWindow : public QMainWindow {
       return;
     }
 
-    auto image_src =
-        std::make_unique<PJ::ImagePipelineSource>(store_.get(), image_loader_->topic_id, PJ::makeCdrJpegPipeline());
+    auto image_src = std::make_unique<PJ::ImagePipelineSource>(
+        store_.get(), image_loader_->topic_id, PJ::demo::makeCdrJpegPipeline());
 
     // Try to discover an annotations topic. The loader converts source-format
     // bytes (CDR Detection2D, yolo, or already-canonical Foxglove) into

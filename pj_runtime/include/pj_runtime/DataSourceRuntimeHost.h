@@ -2,14 +2,19 @@
 
 #include <atomic>
 #include <cstdint>
+#include <functional>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <unordered_map>
 
+#include "pj_base/builtin/BuiltinObject.hpp"
 #include "pj_base/data_source_protocol.h"
 #include "pj_base/dataset.hpp"
+#include "pj_datastore/object_store.hpp"
 #include "pj_datastore/plugin_data_host.hpp"
+#include "pj_plugins/sdk/object_ingest_policy.hpp"
 
 namespace PJ {
 
@@ -39,12 +44,14 @@ class ServiceRegistryBuilder;
 // usable from headless or test contexts.
 class DataSourceRuntimeHost {
  public:
+  using ObjectTopicParserRegistrar = std::function<void(ObjectTopicId, std::unique_ptr<MessageParserHandle>)>;
+
   // Wires the source-side write host immediately (engine + source_handle).
   // The plugin's bind() will see SourceWriteHostService and
   // DataSourceRuntimeHostService through registerServices().
   DataSourceRuntimeHost(
-      DataEngine& engine, ExtensionCatalogService& catalog, DatasetId dataset_id,
-      PJ_data_source_handle_t source_handle);
+      DataEngine& engine, ExtensionCatalogService& catalog, DatasetId dataset_id, PJ_data_source_handle_t source_handle,
+      ObjectStore& object_store, std::string source_id = {}, ObjectTopicParserRegistrar parser_registrar = {});
 
   ~DataSourceRuntimeHost();
 
@@ -75,6 +82,14 @@ class DataSourceRuntimeHost {
     return last_error_;
   }
 
+  [[nodiscard]] sdk::ObjectIngestPolicyResolver& policyResolver() noexcept {
+    return policy_resolver_;
+  }
+
+  [[nodiscard]] const sdk::ObjectIngestPolicyResolver& policyResolver() const noexcept {
+    return policy_resolver_;
+  }
+
  private:
   // ----- C-ABI callbacks -----
   // Each casts ctx to DataSourceRuntimeHost* and accesses members directly.
@@ -91,6 +106,9 @@ class DataSourceRuntimeHost {
       PJ_error_t* out_error) noexcept;
   static bool cbPushRawMessage(
       void* ctx, PJ_parser_binding_handle_t handle, int64_t timestamp_ns, PJ_bytes_view_t payload,
+      PJ_error_t* out_error) noexcept;
+  static bool cbPushMessageV2(
+      void* ctx, PJ_parser_binding_handle_t handle, int64_t timestamp_ns, PJ_message_data_fetcher_t fetch_message_data,
       PJ_error_t* out_error) noexcept;
   static int cbShowMessageBox(
       void* ctx, PJ_message_box_type_t type, PJ_string_view_t title, PJ_string_view_t message, int buttons) noexcept;
@@ -113,12 +131,17 @@ class DataSourceRuntimeHost {
   struct ParserBinding {
     std::unique_ptr<ServiceRegistryBuilder> registry_builder;
     std::unique_ptr<DatastoreParserWriteHost> write_host;
+    std::unique_ptr<DatastoreParserObjectWriteHost> object_write_host;
     std::unique_ptr<MessageParserHandle> parser;
+    std::string topic_name;
+    sdk::BuiltinObjectType object_kind = sdk::BuiltinObjectType::kNone;
+    std::optional<ObjectTopicId> object_topic_id;
 
     ParserBinding();
     ParserBinding(
         std::unique_ptr<ServiceRegistryBuilder> b, std::unique_ptr<DatastoreParserWriteHost> w,
-        std::unique_ptr<MessageParserHandle> p);
+        std::unique_ptr<DatastoreParserObjectWriteHost> ow, std::unique_ptr<MessageParserHandle> p, std::string topic,
+        sdk::BuiltinObjectType kind, std::optional<ObjectTopicId> object_topic);
     ~ParserBinding();
 
     ParserBinding(ParserBinding&&) noexcept;
@@ -127,8 +150,13 @@ class DataSourceRuntimeHost {
 
   DataEngine& engine_;
   ExtensionCatalogService& catalog_;
+  ObjectStore& object_store_;
+  std::string source_id_;
+  ObjectTopicParserRegistrar object_topic_parser_registrar_;
+  sdk::ObjectIngestPolicyResolver policy_resolver_;
   DatasetId dataset_id_;
   DatastoreSourceWriteHost source_write_host_;
+  DatastoreSourceObjectWriteHost source_object_write_host_;
 
   std::string last_error_;
   std::atomic<bool> stop_requested_{false};

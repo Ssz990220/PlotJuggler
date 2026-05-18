@@ -4,7 +4,7 @@
 #include <vector>
 
 #include "pj_scene2d_core/decoded_frame.h"
-#include "pj_scene_protocol/image_annotation.h"
+#include "pj_scene2d_core/scene_frame.h"
 
 namespace PJ {
 

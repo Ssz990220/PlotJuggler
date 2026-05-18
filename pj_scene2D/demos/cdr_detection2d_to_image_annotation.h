@@ -4,7 +4,7 @@
 #include <cstdint>
 
 #include "pj_base/expected.hpp"
-#include "pj_scene_protocol/image_annotation.h"
+#include "pj_scene2d_core/scene_frame.h"
 
 namespace pj_demos {
 

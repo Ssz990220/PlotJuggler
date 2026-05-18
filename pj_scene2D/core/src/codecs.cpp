@@ -5,64 +5,11 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cstring>
 #include <vector>
 
 namespace PJ {
-
-// ---------------------------------------------------------------------------
-// CdrImageStripper
-// ---------------------------------------------------------------------------
-
-Expected<DecodedFrame> CdrImageStripper::decode(const DecodedFrame& input) const {
-  if (input.isNull() || input.pixels->size() < 16) {
-    return unexpected("CDR data too small");
-  }
-  const auto* data = input.pixels->data();
-  auto size = input.pixels->size();
-
-  for (size_t i = 0; i + 3 < size; ++i) {
-    bool is_jpeg = data[i] == 0xFF && data[i + 1] == 0xD8 && data[i + 2] == 0xFF;
-    bool is_png = i + 7 < size && data[i] == 0x89 && data[i + 1] == 0x50 && data[i + 2] == 0x4E && data[i + 3] == 0x47;
-
-    if (is_jpeg || is_png) {
-      size_t payload_size = size - i;
-      if (i >= 4) {
-        uint32_t len = 0;
-        std::memcpy(&len, data + i - 4, 4);
-        if (len > 0 && len <= size - i) {
-          payload_size = len;
-        }
-      }
-      DecodedFrame out;
-      out.pixels = std::make_shared<std::vector<uint8_t>>(data + i, data + i + payload_size);
-      return out;
-    }
-  }
-  return unexpected("no JPEG/PNG marker found in CDR envelope");
-}
-
-// ---------------------------------------------------------------------------
-// CompressedDepthStripper
-// ---------------------------------------------------------------------------
-
-Expected<DecodedFrame> CompressedDepthStripper::decode(const DecodedFrame& input) const {
-  if (input.isNull() || input.pixels->size() < 16) {
-    return unexpected("data too small for compressedDepth");
-  }
-  const auto* data = input.pixels->data();
-  auto size = input.pixels->size();
-
-  for (size_t i = 0; i + 7 < size; ++i) {
-    if (data[i] == 0x89 && data[i + 1] == 0x50 && data[i + 2] == 0x4E && data[i + 3] == 0x47 && data[i + 4] == 0x0D &&
-        data[i + 5] == 0x0A && data[i + 6] == 0x1A && data[i + 7] == 0x0A) {
-      DecodedFrame out;
-      out.pixels = std::make_shared<std::vector<uint8_t>>(data + i, data + size);
-      return out;
-    }
-  }
-  return unexpected("no PNG signature found in compressedDepth");
-}
 
 // ---------------------------------------------------------------------------
 // JpegCodec
@@ -131,6 +78,15 @@ void pngReadCb(png_structp png, png_bytep out, png_size_t count) {
   ctx->offset += count;
 }
 
+bool hasJpegSignature(const uint8_t* data, size_t size) noexcept {
+  return data != nullptr && size >= 3 && data[0] == 0xFF && data[1] == 0xD8 && data[2] == 0xFF;
+}
+
+bool hasPngSignature(const uint8_t* data, size_t size) noexcept {
+  return data != nullptr && size >= 8 && data[0] == 0x89 && data[1] == 0x50 && data[2] == 0x4E && data[3] == 0x47 &&
+         data[4] == 0x0D && data[5] == 0x0A && data[6] == 0x1A && data[7] == 0x0A;
+}
+
 }  // namespace
 
 Expected<DecodedFrame> PngCodec::decode(const DecodedFrame& input) const {
@@ -170,7 +126,12 @@ Expected<DecodedFrame> PngCodec::decode(const DecodedFrame& input) const {
 
   bool is_mono16 = (color_type == PNG_COLOR_TYPE_GRAY && bit_depth == 16);
 
-  if (!is_mono16) {
+  if (is_mono16) {
+    if constexpr (std::endian::native == std::endian::little) {
+      png_set_swap(png);
+    }
+    png_read_update_info(png, info);
+  } else {
     if (bit_depth == 16) {
       png_set_strip_16(png);
     }
@@ -216,6 +177,65 @@ Expected<DecodedFrame> PngCodec::decode(const DecodedFrame& input) const {
   frame.height = height;
   frame.format = fmt;
   return frame;
+}
+
+// ---------------------------------------------------------------------------
+// NormalizeMono16
+// ---------------------------------------------------------------------------
+
+Expected<DecodedFrame> NormalizeMono16::decode(const DecodedFrame& input) const {
+  if (input.isNull()) {
+    return unexpected("empty image data");
+  }
+  if (input.format == PixelFormat::kMono16 && input.width > 0 && input.height > 0) {
+    return mono16_to_grayscale_.decode(input);
+  }
+  return input;
+}
+
+// ---------------------------------------------------------------------------
+// ImageDecodeCascade
+// ---------------------------------------------------------------------------
+
+Expected<DecodedFrame> ImageDecodeCascade::decode(const DecodedFrame& input) const {
+  if (input.isNull()) {
+    return unexpected("empty image data");
+  }
+
+  const auto* data = input.pixels->data();
+  const auto size = input.pixels->size();
+  if (hasJpegSignature(data, size)) {
+    return jpeg_.decode(input);
+  }
+  if (hasPngSignature(data, size)) {
+    auto decoded = png_.decode(input);
+    if (!decoded.has_value()) {
+      return decoded;
+    }
+    return decoded;
+  }
+
+  return unexpected("unsupported image payload: expected JPEG or PNG");
+}
+
+// ---------------------------------------------------------------------------
+// AutoImageCodec
+// ---------------------------------------------------------------------------
+
+Expected<DecodedFrame> AutoImageCodec::decode(const DecodedFrame& input) const {
+  if (input.isNull()) {
+    return unexpected("empty image data");
+  }
+
+  if (input.format == PixelFormat::kMono16 && input.width > 0 && input.height > 0) {
+    return normalize_.decode(input);
+  }
+
+  auto decoded = decode_.decode(input);
+  if (!decoded.has_value()) {
+    return decoded;
+  }
+  return normalize_.decode(*decoded);
 }
 
 // ---------------------------------------------------------------------------
@@ -349,21 +369,6 @@ Expected<DecodedFrame> SegmentationPalette::decode(const DecodedFrame& input) co
 std::unique_ptr<CodecPipeline> makeJpegPipeline() {
   auto p = std::make_unique<CodecPipeline>();
   p->addStage(std::make_unique<JpegCodec>());
-  return p;
-}
-
-std::unique_ptr<CodecPipeline> makeCdrJpegPipeline() {
-  auto p = std::make_unique<CodecPipeline>();
-  p->addStage(std::make_unique<CdrImageStripper>());
-  p->addStage(std::make_unique<JpegCodec>());
-  return p;
-}
-
-std::unique_ptr<CodecPipeline> makeDepthPipeline() {
-  auto p = std::make_unique<CodecPipeline>();
-  p->addStage(std::make_unique<CompressedDepthStripper>());
-  p->addStage(std::make_unique<PngCodec>());
-  p->addStage(std::make_unique<DepthToGrayscale>());
   return p;
 }
 

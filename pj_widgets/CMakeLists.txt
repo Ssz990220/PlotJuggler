@@ -13,6 +13,7 @@ add_library(pj_widgets STATIC
     src/SaveFileDialog.cpp
     src/ScrubberBase.cpp
     src/ToggleSwitch.cpp
+    src/VisualizationPlaceholderWidget.cpp
     include/pj_widgets/ColorPickerPopup.h
     include/pj_widgets/CurveTreeView.h
     include/pj_widgets/Dialog.h
@@ -28,6 +29,7 @@ add_library(pj_widgets STATIC
     include/pj_widgets/Style.h
     include/pj_widgets/SvgUtil.h
     include/pj_widgets/ToggleSwitch.h
+    include/pj_widgets/VisualizationPlaceholderWidget.h
 )
 
 set_target_properties(pj_widgets PROPERTIES

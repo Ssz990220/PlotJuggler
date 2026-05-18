@@ -4,7 +4,7 @@
 #include <string>
 #include <string_view>
 
-#include "pj_scene_protocol/image_annotation.h"
+#include "pj_scene2d_core/scene_frame.h"
 
 // Loader-side helpers for producing canonical ImageAnnotation structs from
 // CDR-encoded ROS 2 marker messages. These are demo-local — every loader/plugin

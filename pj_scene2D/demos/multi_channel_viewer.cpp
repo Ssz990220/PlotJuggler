@@ -15,6 +15,7 @@
 #include <unordered_map>
 #include <vector>
 
+#include "demo_cdr_codecs.h"
 #include "pj_datastore/object_store.hpp"
 #include "pj_scene2d_core/codecs.h"
 #include "pj_scene2d_core/image_pipeline_source.h"
@@ -144,7 +145,7 @@ class MultiChannelWindow : public QMainWindow {
           chan_ptr->topic.find("depth") != std::string::npos || chan_ptr->topic.find("Depth") != std::string::npos;
       std::unique_ptr<PJ::CodecPipeline> pipeline;
       if (is_depth) {
-        pipeline = PJ::makeDepthPipeline();
+        pipeline = PJ::demo::makePngDepthPipeline();
       } else {
         pipeline = PJ::makeJpegPipeline();
       }
@@ -192,7 +193,7 @@ class MultiChannelWindow : public QMainWindow {
           // Strip CDR envelope: find the media payload (JPEG SOI or PNG sig)
           PJ::DecodedFrame frame;
           frame.pixels = std::make_shared<std::vector<uint8_t>>(raw, raw + raw_size);
-          PJ::CdrImageStripper stripper;
+          PJ::demo::CdrImageStripper stripper;
           auto result = stripper.decode(frame);
           if (result.has_value() && !result->isNull()) {
             return std::move(*result->pixels);

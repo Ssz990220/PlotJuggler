@@ -5,8 +5,10 @@
 #include <tsl/robin_set.h>
 
 #include <QHash>
+#include <QLoggingCategory>
 #include <algorithm>
 #include <cstddef>
+#include <nlohmann/json.hpp>
 #include <string>
 #include <utility>
 
@@ -14,12 +16,15 @@
 #include "pj_base/type_tree.hpp"
 #include "pj_datastore/column_buffer.hpp"
 #include "pj_datastore/engine.hpp"
+#include "pj_datastore/object_store.hpp"
 #include "pj_datastore/reader.hpp"
 #include "pj_datastore/topic_storage.hpp"
 #include "pj_runtime/SessionManager.h"
 
 namespace PJ {
 namespace {
+
+Q_LOGGING_CATEGORY(lcCatalog, "pj.runtime.catalog")
 
 struct QStringHash {
   [[nodiscard]] std::size_t operator()(const QString& value) const noexcept {
@@ -48,15 +53,91 @@ struct QStringHash {
   return false;
 }
 
-[[nodiscard]] QString makeCurveName(const std::string& topic_name, const std::string& field_path) {
-  QString name = QString::fromStdString(topic_name);
-  if (!field_path.empty()) {
-    if (!name.endsWith('/')) {
-      name += '/';
-    }
-    name += QString::fromStdString(field_path).replace('.', '/');
+[[nodiscard]] QString baseDatasetLabel(const DatasetInfo* dataset) {
+  QString label = dataset != nullptr ? QString::fromStdString(dataset->source_name) : QString{};
+  if (label.isEmpty()) {
+    label = QStringLiteral("Dataset");
   }
-  return name;
+  label.replace('/', '_');
+  return label;
+}
+
+[[nodiscard]] QString makeCurveKey(DatasetId dataset_id, TopicId topic_id, std::size_t column_index) {
+  return QStringLiteral("dataset:%1/topic:%2/column:%3").arg(dataset_id).arg(topic_id).arg(column_index);
+}
+
+[[nodiscard]] QString makeObjectTopicKey(DatasetId dataset_id, ObjectTopicId object_topic_id) {
+  return QStringLiteral("dataset:%1/object_topic:%2").arg(dataset_id).arg(object_topic_id.id);
+}
+
+[[nodiscard]] sdk::BuiltinObjectType objectTypeFromMetadata(std::string_view metadata_json) {
+  if (metadata_json.empty()) {
+    return sdk::BuiltinObjectType::kNone;
+  }
+  try {
+    const auto metadata = nlohmann::json::parse(metadata_json);
+    const auto it = metadata.find("builtin_object_type");
+    if (it == metadata.end()) {
+      qCWarning(lcCatalog) << "objectTypeFromMetadata: missing 'builtin_object_type' key — metadata="
+                           << QString::fromUtf8(metadata_json.data(), static_cast<int>(metadata_json.size()));
+      return sdk::BuiltinObjectType::kNone;
+    }
+    if (!it->is_string()) {
+      qCWarning(lcCatalog) << "objectTypeFromMetadata: 'builtin_object_type' is not a string — metadata="
+                           << QString::fromUtf8(metadata_json.data(), static_cast<int>(metadata_json.size()));
+      return sdk::BuiltinObjectType::kNone;
+    }
+    const auto raw = it->get<std::string>();
+    const auto parsed = sdk::parseBuiltinObjectType(raw);
+    if (!parsed.has_value()) {
+      qCWarning(lcCatalog) << "objectTypeFromMetadata: unknown builtin_object_type='" << QString::fromStdString(raw)
+                           << "' — topic will be hidden from object-aware views";
+      return sdk::BuiltinObjectType::kNone;
+    }
+    return *parsed;
+  } catch (const nlohmann::json::exception& e) {
+    qCWarning(lcCatalog) << "objectTypeFromMetadata: JSON parse failed:" << e.what() << "metadata="
+                         << QString::fromUtf8(metadata_json.data(), static_cast<int>(metadata_json.size()));
+    return sdk::BuiltinObjectType::kNone;
+  }
+}
+
+[[nodiscard]] CurveDescriptor curveFromItem(const CatalogItem& item) {
+  const auto* scalar = asScalarField(item);
+  Q_ASSERT(scalar != nullptr);  // Precondition: caller verified isScalarField(item).
+  return CurveDescriptor{
+      .name = item.key,
+      .dataset_name = item.dataset_name,
+      .topic_name = item.topic_name,
+      .field_name = scalar->field_name,
+      .topic_id = scalar->topic_id,
+      .dataset_id = item.dataset_id,
+      .column_index = scalar->column_index,
+      .field_path = scalar->field_path,
+      .display_offset_ns = scalar->display_offset_ns,
+  };
+}
+
+[[nodiscard]] bool catalogItemLess(const CatalogItem& lhs, const CatalogItem& rhs) {
+  if (lhs.dataset_id != rhs.dataset_id) {
+    return lhs.dataset_id < rhs.dataset_id;
+  }
+  const int topic_compare = QString::localeAwareCompare(lhs.topic_name, rhs.topic_name);
+  if (topic_compare != 0) {
+    return topic_compare < 0;
+  }
+  // ObjectTopic sorts after ScalarField within the same topic (the variant
+  // index gives a deterministic order: ScalarFieldPayload=0, ObjectTopic=1).
+  if (lhs.payload.index() != rhs.payload.index()) {
+    return lhs.payload.index() < rhs.payload.index();
+  }
+  if (const auto* l = asScalarField(lhs)) {
+    const auto* r = asScalarField(rhs);  // index match implies r is non-null
+    if (l->column_index != r->column_index) {
+      return l->column_index < r->column_index;
+    }
+  }
+  return lhs.key < rhs.key;
 }
 
 void collectTypeTreeLeaves(
@@ -144,11 +225,11 @@ void collectTypeTreeLeaves(
 struct CatalogModel::Impl {
   explicit Impl(SessionManager* session_in) : session(session_in) {}
 
-  using CurveMap = tsl::robin_map<QString, CurveDescriptor, QStringHash>;
+  using ItemMap = tsl::robin_map<QString, CatalogItem, QStringHash>;
   using NameSet = tsl::robin_set<QString, QStringHash>;
 
   SessionManager* session = nullptr;
-  CurveMap curves;
+  ItemMap items;
   // Datasets hidden by clearAll: rebuildFromDatastore skips them entirely.
   // A reload of the same file creates a fresh DatasetId not in this set, so
   // the curves come back.
@@ -168,39 +249,95 @@ CatalogModel::CatalogModel(SessionManager* session, QObject* parent)
 
 CatalogModel::~CatalogModel() = default;
 
-std::vector<QString> CatalogModel::curveNames() const {
-  std::vector<QString> names;
-  names.reserve(impl_->curves.size());
-  for (const auto& [name, descriptor] : impl_->curves) {
-    (void)descriptor;
-    names.push_back(name);
+std::vector<CatalogItem> CatalogModel::items() const {
+  std::vector<CatalogItem> items;
+  items.reserve(impl_->items.size());
+  for (const auto& [key, item] : impl_->items) {
+    (void)key;
+    items.push_back(item);
   }
-  std::sort(names.begin(), names.end());
-  return names;
+  std::sort(items.begin(), items.end(), catalogItemLess);
+  return items;
 }
 
-std::optional<CurveDescriptor> CatalogModel::curveDescriptor(const QString& name) const {
-  const auto it = impl_->curves.find(name);
-  if (it == impl_->curves.end()) {
+std::optional<CatalogItem> CatalogModel::itemDescriptor(const QString& key) const {
+  const auto it = impl_->items.find(key);
+  if (it == impl_->items.end()) {
     return std::nullopt;
   }
   return it->second;
 }
 
+std::vector<CurveDescriptor> CatalogModel::curves() const {
+  std::vector<CurveDescriptor> curves;
+  curves.reserve(impl_->items.size());
+  for (const auto& [key, item] : impl_->items) {
+    (void)key;
+    if (isScalarField(item)) {
+      curves.push_back(curveFromItem(item));
+    }
+  }
+  std::sort(curves.begin(), curves.end(), [](const CurveDescriptor& lhs, const CurveDescriptor& rhs) {
+    if (lhs.dataset_id != rhs.dataset_id) {
+      return lhs.dataset_id < rhs.dataset_id;
+    }
+    if (lhs.topic_id != rhs.topic_id) {
+      return lhs.topic_id < rhs.topic_id;
+    }
+    return lhs.column_index < rhs.column_index;
+  });
+  return curves;
+}
+
+std::optional<CurveDescriptor> CatalogModel::curveDescriptor(const QString& key) const {
+  const auto it = impl_->items.find(key);
+  if (it == impl_->items.end() || !isScalarField(it->second)) {
+    return std::nullopt;
+  }
+  return curveFromItem(it->second);
+}
+
 void CatalogModel::rebuildFromDatastore() {
   if (impl_->session == nullptr) {
-    if (!impl_->curves.empty()) {
-      impl_->curves.clear();
+    if (!impl_->items.empty()) {
+      impl_->items.clear();
       emit cleared();
     }
     return;
   }
 
-  Impl::CurveMap next_curves;
+  Impl::ItemMap next_items;
   const DataReader reader = impl_->session->createReader();
   DataEngine& engine = impl_->session->dataEngine();
+  ObjectStore& object_store = impl_->session->objectStore();
+  const std::vector<DatasetId> dataset_ids = reader.listDatasets();
 
-  for (const DatasetId dataset_id : reader.listDatasets()) {
+  tsl::robin_map<DatasetId, QString> dataset_labels;
+  tsl::robin_map<QString, int, QStringHash> label_counts;
+  for (const DatasetId dataset_id : dataset_ids) {
+    if (impl_->removed_datasets.count(dataset_id) > 0) {
+      continue;
+    }
+    ++label_counts[baseDatasetLabel(engine.getDataset(dataset_id))];
+  }
+
+  tsl::robin_map<QString, int, QStringHash> label_ordinals;
+  for (const DatasetId dataset_id : dataset_ids) {
+    if (impl_->removed_datasets.count(dataset_id) > 0) {
+      continue;
+    }
+    const QString base_label = baseDatasetLabel(engine.getDataset(dataset_id));
+    QString label = base_label;
+    if (label_counts[base_label] > 1) {
+      const int ordinal = ++label_ordinals[base_label];
+      if (ordinal > 1) {
+        label = QStringLiteral("%1 (%2)").arg(base_label).arg(ordinal);
+      }
+    }
+    dataset_labels.insert_or_assign(dataset_id, std::move(label));
+  }
+
+  for (const DatasetId dataset_id : dataset_ids) {
     if (impl_->removed_datasets.count(dataset_id) > 0) {
       continue;
     }
@@ -216,6 +353,9 @@ void CatalogModel::rebuildFromDatastore() {
       time_domain = engine.getTimeDomain(dataset->time_domain.id);
     }
     const Timestamp display_offset = time_domain != nullptr ? time_domain->display_offset : 0;
+    const auto dataset_label_it = dataset_labels.find(dataset_id);
+    const QString dataset_label =
+        dataset_label_it != dataset_labels.end() ? dataset_label_it->second : baseDatasetLabel(dataset);
 
     for (const TopicId topic_id : reader.listTopics(dataset_id)) {
       const auto metadata = reader.getMetadata(topic_id);
@@ -235,55 +375,83 @@ void CatalogModel::rebuildFromDatastore() {
           continue;
         }
 
-        const QString field_path = QString::fromStdString(column.field_path);
-        const QString name = makeCurveName(metadata->name, column.field_path);
-        if (removed_names_for_dataset != nullptr && removed_names_for_dataset->count(name) > 0) {
+        const QString key = makeCurveKey(dataset_id, topic_id, column_index);
+        if (removed_names_for_dataset != nullptr && removed_names_for_dataset->count(key) > 0) {
           continue;
         }
-        next_curves.insert_or_assign(
-            name, CurveDescriptor{
-                      .name = name,
-                      .topic_id = topic_id,
-                      .dataset_id = dataset_id,
-                      .column_index = column_index,
-                      .field_path = field_path,
-                      .display_offset_ns = display_offset,
-                  });
+        next_items.insert_or_assign(
+            key, CatalogItem{
+                     .key = key,
+                     .dataset_name = dataset_label,
+                     .topic_name = QString::fromStdString(metadata->name),
+                     .dataset_id = dataset_id,
+                     .payload =
+                         ScalarFieldPayload{
+                             .field_name = QString::fromStdString(column.field_path),
+                             .field_path = QString::fromStdString(column.field_path),
+                             .topic_id = topic_id,
+                             .column_index = column_index,
+                             .display_offset_ns = display_offset,
+                         },
+                 });
       }
+    }
+
+    for (const ObjectTopicId object_topic_id : object_store.listTopics(dataset_id)) {
+      const ObjectTopicDescriptor& object_topic = object_store.descriptor(object_topic_id);
+      const QString key = makeObjectTopicKey(dataset_id, object_topic_id);
+      if (removed_names_for_dataset != nullptr && removed_names_for_dataset->count(key) > 0) {
+        // Honor the per-dataset removal blacklist for object topics too.
+        // Without this, dropping an image topic into the trash would silently
+        // come back on the next rebuildFromDatastore.
+        continue;
+      }
+      next_items.insert_or_assign(
+          key, CatalogItem{
+                   .key = key,
+                   .dataset_name = dataset_label,
+                   .topic_name = QString::fromStdString(object_topic.topic_name),
+                   .dataset_id = dataset_id,
+                   .payload =
+                       ObjectTopicPayload{
+                           .object_topic_id = object_topic_id,
+                           .object_type = objectTypeFromMetadata(object_topic.metadata_json),
+                           .metadata_json = QString::fromStdString(object_topic.metadata_json),
+                       },
+               });
     }
   }
 
-  const Impl::CurveMap previous_curves = std::move(impl_->curves);
-  impl_->curves = std::move(next_curves);
+  const Impl::ItemMap previous_items = std::move(impl_->items);
+  impl_->items = std::move(next_items);
 
-  if (!previous_curves.empty() && impl_->curves.empty()) {
+  if (!previous_items.empty() && impl_->items.empty()) {
     emit cleared();
     return;
   }
 
-  for (const auto& [name, descriptor] : previous_curves) {
+  for (const auto& [key, descriptor] : previous_items) {
     (void)descriptor;
-    if (impl_->curves.find(name) == impl_->curves.end()) {
-      emit curveRemoved(name);
+    if (impl_->items.find(key) == impl_->items.end()) {
+      emit itemRemoved(key);
     }
   }
 
-  for (const auto& [name, descriptor] : impl_->curves) {
-    (void)descriptor;
-    if (previous_curves.find(name) == previous_curves.end()) {
-      emit curveAdded(name);
+  for (const auto& [key, descriptor] : impl_->items) {
+    if (previous_items.find(key) == previous_items.end()) {
+      emit itemAdded(descriptor);
     }
   }
 }
 
 void CatalogModel::clearAll() {
-  if (impl_->curves.empty()) {
+  if (impl_->items.empty()) {
     return;
   }
-  for (const auto& kv : impl_->curves) {
+  for (const auto& kv : impl_->items) {
     impl_->removed_datasets.insert(kv.second.dataset_id);
   }
-  impl_->curves.clear();
+  impl_->items.clear();
   impl_->removed_names_per_dataset.clear();
   emit cleared();
 }
@@ -297,17 +465,25 @@ void CatalogModel::resetRemovalState() {
   rebuildFromDatastore();
 }
 
-void CatalogModel::removeCurves(const std::vector<QString>& names) {
-  for (const QString& name : names) {
-    const auto it = impl_->curves.find(name);
-    if (it == impl_->curves.end()) {
+void CatalogModel::removeItems(const std::vector<QString>& keys) {
+  // Accepts any catalog item kind. Object-topic keys are honored too, so the
+  // trash/remove flow stays symmetric across scalar fields and object topics
+  // — rebuildFromDatastore consults the same blacklist for both, so an entry
+  // removed here will not silently come back on the next commit.
+  for (const QString& key : keys) {
+    const auto it = impl_->items.find(key);
+    if (it == impl_->items.end()) {
       continue;
     }
     const DatasetId dataset_id = it->second.dataset_id;
-    impl_->removed_names_per_dataset[dataset_id].insert(name);
-    impl_->curves.erase(it);
-    emit curveRemoved(name);
+    impl_->removed_names_per_dataset[dataset_id].insert(key);
+    impl_->items.erase(it);
+    emit itemRemoved(key);
   }
+}
+
+void CatalogModel::removeCurves(const std::vector<QString>& keys) {
+  removeItems(keys);
 }
 
 }  // namespace PJ

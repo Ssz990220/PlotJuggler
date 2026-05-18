@@ -53,4 +53,37 @@ if(PJ_BUILD_TESTS)
         GTest::gtest_main
     )
     add_test(NAME AppSessionTest COMMAND app_session_test)
+
+    add_executable(catalog_model_test
+        tests/catalog_model_test.cpp
+    )
+    target_compile_options(catalog_model_test PRIVATE ${PJ_WARNING_FLAGS})
+    target_link_libraries(catalog_model_test PRIVATE
+        pj_runtime
+        GTest::gtest_main
+    )
+    add_test(NAME CatalogModelTest COMMAND catalog_model_test)
+
+    add_library(runtime_host_object_parser_plugin SHARED
+        tests/runtime_host_object_parser_plugin.cpp
+    )
+    target_compile_features(runtime_host_object_parser_plugin PRIVATE cxx_std_20)
+    target_compile_options(runtime_host_object_parser_plugin PRIVATE ${PJ_WARNING_FLAGS})
+    target_link_libraries(runtime_host_object_parser_plugin PRIVATE
+        pj_plugin_sdk
+    )
+
+    add_executable(data_source_runtime_host_object_ingest_test
+        tests/data_source_runtime_host_object_ingest_test.cpp
+    )
+    target_compile_definitions(data_source_runtime_host_object_ingest_test PRIVATE
+        PJ_RUNTIME_HOST_OBJECT_PARSER_PATH="$<TARGET_FILE:runtime_host_object_parser_plugin>"
+    )
+    target_compile_options(data_source_runtime_host_object_ingest_test PRIVATE ${PJ_WARNING_FLAGS})
+    target_link_libraries(data_source_runtime_host_object_ingest_test PRIVATE
+        pj_runtime
+        GTest::gtest_main
+    )
+    add_dependencies(data_source_runtime_host_object_ingest_test runtime_host_object_parser_plugin)
+    add_test(NAME DataSourceRuntimeHostObjectIngestTest COMMAND data_source_runtime_host_object_ingest_test)
 endif()

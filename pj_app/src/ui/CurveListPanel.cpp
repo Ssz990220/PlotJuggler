@@ -22,6 +22,35 @@
 
 namespace PJ {
 
+namespace {
+
+CurveTreeView::CurvePath treePathFromCatalogItem(const CatalogItem& item) {
+  const auto* scalar = asScalarField(item);
+  return CurveTreeView::CurvePath{
+      .key = item.key,
+      .dataset = item.dataset_name,
+      .topic = item.topic_name,
+      .field = scalar != nullptr ? scalar->field_name : QString{},
+      .selectable = scalar != nullptr,
+  };
+}
+
+void addCatalogItem(CurveTreeView* tree_view, const CatalogItem& item) {
+  tree_view->addCatalogItem(treePathFromCatalogItem(item));
+}
+
+void rebuildTree(CurveTreeView* tree_view, CatalogModel* catalog) {
+  tree_view->clearCurves();
+  if (catalog == nullptr) {
+    return;
+  }
+  for (const CatalogItem& item : catalog->items()) {
+    addCatalogItem(tree_view, item);
+  }
+}
+
+}  // namespace
+
 CurveListPanel::CurveListPanel(QWidget* parent) : QWidget(parent), ui_(new Ui::CurveListPanel) {
   ui_->setupUi(this);
 
@@ -154,16 +183,13 @@ void CurveListPanel::setCatalog(CatalogModel* catalog) {
     disconnect(catalog_, nullptr, this, nullptr);
   }
   catalog_ = catalog;
-  tree_view_->clearCurves();
+  rebuildTree(tree_view_, catalog_);
   if (!catalog_) {
     return;
   }
-  connect(catalog_, &CatalogModel::curveAdded, this, &CurveListPanel::onCurveAdded);
-  connect(catalog_, &CatalogModel::curveRemoved, this, &CurveListPanel::onCurveRemoved);
+  connect(catalog_, &CatalogModel::itemAdded, this, &CurveListPanel::onCatalogItemAdded);
+  connect(catalog_, &CatalogModel::itemRemoved, this, &CurveListPanel::onCatalogItemRemoved);
   connect(catalog_, &CatalogModel::cleared, this, &CurveListPanel::onCatalogCleared);
-  for (const QString& name : catalog_->curveNames()) {
-    tree_view_->addCurve(name);
-  }
 }
 
 void CurveListPanel::refreshValues(double /*tracker_time*/) {
@@ -184,25 +210,20 @@ void CurveListPanel::onShowValuesToggled(bool show) {
 }
 
 void CurveListPanel::onTrashClicked() {
-  const auto selected = tree_view_->selectedCurveNamesRecursive();
-  const std::size_t total = catalog_ != nullptr ? catalog_->curveNames().size() : 0;
+  const auto selected = tree_view_->selectedCatalogKeysRecursive();
+  const std::size_t total = catalog_ != nullptr ? catalog_->items().size() : 0;
   const bool covers_all = selected.empty() || (total > 0 && selected.size() >= total);
   emit trashRequested(QStringList(selected.begin(), selected.end()), covers_all);
 }
 
-void CurveListPanel::onCurveAdded(const QString& name) {
-  tree_view_->addCurve(name);
+void CurveListPanel::onCatalogItemAdded(const CatalogItem& item) {
+  addCatalogItem(tree_view_, item);
 }
 
-void CurveListPanel::onCurveRemoved(const QString& /*name*/) {
+void CurveListPanel::onCatalogItemRemoved(const QString& /*key*/) {
   // TODO: add CurveTreeView::removeCurve(name) — linear rebuild is a
   // prototype stand-in and wipes scroll / expansion / selection state.
-  tree_view_->clearCurves();
-  if (catalog_) {
-    for (const QString& n : catalog_->curveNames()) {
-      tree_view_->addCurve(n);
-    }
-  }
+  rebuildTree(tree_view_, catalog_);
 }
 
 void CurveListPanel::onCatalogCleared() {

@@ -59,6 +59,7 @@ target_link_libraries(pj_app PRIVATE
     pj_runtime
     pj_widgets
     pj_plotting
+    pj_scene2d_widgets
     pj_marketplace_ui
     pj_dialog_engine_qt
     qt_advanced_docking

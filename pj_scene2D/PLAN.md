@@ -29,7 +29,7 @@ then video, then streaming.
 | integration tests | `b7b6490` | 23 integration tests: play, forward/backward scrub at 480p/1080p/4K/1920p-B-frames, pause/unpause, bidirectional, close safety, responsiveness, settle behavior |
 | M17+M18: streaming video | `0601835` | StreamingVideoDecoder: ObjectStore + FfmpegDecoder bridge. H.264 NAL utils (isH264Keyframe, extractH264SpsPps, makeH264CodecParams). Incremental keyframe index, forward-path optimization, same-timestamp cache, eviction-resilient live decode. video_stream_demo with live/scrub toggle, 500-frame buffer. 23 tests (5 h264_utils + 18 streaming_video_decoder) |
 | B-frame support | `b1cfbd6` | DTS-keyed ObjectStore storage for B-frame videos. Removed drain() from seek path (was O(n²) with B-frame reorder). Negative DTS fix via std::optional sentinels. Startup burst for instant B-frame playback. 6 additional tests |
-| MediaSource abstraction | `f7a8a7a` | MediaSource interface (`setTimestamp` + `takeFrame`), ImagePipelineSource (synchronous CodecPipeline + ObjectStore), MediaViewerWidget integration (`setMediaSource`, `setTimestamp`), RGB/RGBA/BGR DecodedFrame upload path, `makeCdrJpegPipeline()` factory. Docs: ARCHITECTURE.md §5 rewritten, PlaybackController replaced, MpvBackend deprecated |
+| MediaSource abstraction | `f7a8a7a` | MediaSource interface (`setTimestamp` + `takeFrame`), ImagePipelineSource (synchronous CodecPipeline + ObjectStore), MediaViewerWidget integration (`setMediaSource`, `setTimestamp`), RGB/RGBA/BGR DecodedFrame upload path, demo-only CDR JPEG pipeline factory. Docs: ARCHITECTURE.md §5 rewritten, PlaybackController replaced, MpvBackend deprecated |
 | Demo migrations | `2fc91ea` | Image demos (simulated_stream, multi_channel_viewer, mcap_image_viewer) migrated to ImagePipelineSource + `setMediaSource()`. `expectedBufferSize()` + `isValid()` added to DecodedFrame. Odd-dimension YUV420P buffer overflow fixed in ffmpeg_decoder, thumbnail_cache, media_viewer_widget. 18 decoded_frame tests |
 | TDD review fixes | `a182b2b` | avFrameToDecodedFrame returns `Expected<DecodedFrame>` (C2). ThumbnailCache buildThread checks FFmpeg return values (C4). ThumbnailCache reopen clears stale frames (H1). EAGAIN retry in FfmpegDecoder (H2). StreamingVideoDecoder returns error on evicted mid-GOP entries (H3). ffmpeg_decoder_test updated to expect YUV420P. 6 thumbnail_cache tests |
 | Medium review fixes | `18bead3` | DepthToGrayscale + SegmentationPalette validate buffer size and format. ImagePipelineSource deduplicates same-timestamp requests. FfmpegDecoder header doc corrected to YUV420P |
@@ -189,11 +189,10 @@ Time estimates are single-developer, rough. Each phase ends green on
 
 **Phase D — Annotations (delivered)**
 
-- ✓ Schema + canonical wire codec live in `pj_scene_protocol/` (sibling
-  of `pj_scene2d_core`, depends on `pj_base` only so plugins can link it).
-  Provides the `ImageAnnotation` struct types and
-  `serializeImageAnnotation()` (hand-rolled Foxglove ImageAnnotations
-  Protobuf writer, no libprotobuf dependency).
+- ✓ Canonical annotation schemas and codecs live in
+  `plotjuggler_core/pj_base/builtin/`. pj_scene2D keeps local
+  `pj_scene2d_core` wrappers (`scene_frame.h`, `image_annotation_codec.h`)
+  for its renderer-facing names.
 - ✓ `SceneDecoder` in `pj_scene2d_core` is now a single decoder kind that
   reads canonical `foxglove.ImageAnnotations` bytes — no schema-name
   dispatch on the read side. Coverage is complete: points/circles/texts
@@ -664,8 +663,9 @@ is correct (no color artifacts).
 
 ### M16: SceneDecoder + annotation overlay
 
-**Scope**: Deserialize CDR/Protobuf scene primitives and image
-annotations. Render as overlays on the base image.
+**Scope**: Deserialize canonical scene primitives and image annotations.
+Source-format adapters such as ROS CDR stay in parser plugins or
+demo-local helpers. Render as overlays on the base image.
 
 Deferred until there is concrete test data with annotations.
 

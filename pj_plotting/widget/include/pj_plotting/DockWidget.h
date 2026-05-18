@@ -2,6 +2,11 @@
 
 #include <DockWidget.h>
 
+#include <QStringList>
+#include <functional>
+
+#include "pj_base/builtin/BuiltinObject.hpp"
+#include "pj_datastore/object_store.hpp"
 #include "pj_runtime/IDataWidget.h"
 
 namespace PJ {
@@ -10,24 +15,31 @@ class CatalogModel;
 class DockToolbar;
 class PlotWidget;
 class SessionManager;
+class VisualizationPlaceholderWidget;
 
 // ADS-backed dock hosting a single plot area. splitHorizontal /
 // splitVertical create sibling DockWidgets inside the parent PlotDocker.
 class DockWidget : public ads::CDockWidget, public IDataWidget {
   Q_OBJECT
  public:
+  using ObjectWidgetFactory =
+      std::function<IDataWidget*(ObjectTopicId, sdk::BuiltinObjectType, const QString&, QWidget*)>;
+
   explicit DockWidget(
       SessionManager* session = nullptr, CatalogModel* catalog = nullptr, ads::CDockManager* manager = nullptr,
       QWidget* parent = nullptr);
   explicit DockWidget(
       PlotWidget* plot, SessionManager* session = nullptr, CatalogModel* catalog = nullptr,
-      ads::CDockManager* manager = nullptr, QWidget* parent = nullptr, bool create_plot_when_null = true);
+      ads::CDockManager* manager = nullptr, QWidget* parent = nullptr, bool create_plot_when_null = false);
   ~DockWidget() override;
 
   void setDataServices(SessionManager* session, CatalogModel* catalog);
+  void setObjectWidgetFactory(ObjectWidgetFactory factory);
   PlotWidget* plotWidget();
+  IDataWidget* objectWidget();
   PlotWidget* releasePlotWidget();
   void setPlotWidget(PlotWidget* plot);
+  void setPlaceholderWidget();
   DockToolbar* toolBar();
   QString name() const;
   void setName(const QString& name);
@@ -49,13 +61,23 @@ class DockWidget : public ads::CDockWidget, public IDataWidget {
 
  signals:
   void undoableChange();
+  void plotWidgetCreated(PlotWidget* plot);
+
+ private slots:
+  void onCatalogItemsDropped(const QStringList& keys);
 
  private:
   DockWidget* splitInto(ads::DockWidgetArea area, PlotWidget* plot);
+  PlotWidget* ensurePlotWidget();
+  void clearCurrentContent(bool delete_content);
 
   SessionManager* session_ = nullptr;
   CatalogModel* catalog_ = nullptr;
+  ObjectWidgetFactory object_widget_factory_;
+  QWidget* content_widget_ = nullptr;
+  VisualizationPlaceholderWidget* placeholder_widget_ = nullptr;
   PlotWidget* plot_widget_ = nullptr;
+  IDataWidget* object_widget_ = nullptr;
   DockToolbar* toolbar_ = nullptr;
   QString state_id_;
 };

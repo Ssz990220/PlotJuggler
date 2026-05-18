@@ -337,6 +337,15 @@ void PlotDocker::setDataServices(SessionManager* session, CatalogModel* catalog)
   }
 }
 
+void PlotDocker::setObjectWidgetFactory(ObjectWidgetFactory factory) {
+  object_widget_factory_ = std::move(factory);
+  for (int index = 0; index < plotCount(); ++index) {
+    if (auto* dock = plotAt(index)) {
+      dock->setObjectWidgetFactory(object_widget_factory_);
+    }
+  }
+}
+
 QString PlotDocker::stateId() const {
   return state_id_;
 }
@@ -359,11 +368,13 @@ void PlotDocker::ensureAtLeastOneWidget() {
 
 DockWidget* PlotDocker::addDockWithPlot(
     PlotWidget* plot, ads::DockWidgetArea dock_area, ads::CDockAreaWidget* relative_to) {
-  auto* widget = new DockWidget(plot, session_, catalog_, this);
+  auto* widget = new DockWidget(plot, session_, catalog_, this, nullptr, plot != nullptr);
+  widget->setObjectWidgetFactory(object_widget_factory_);
   auto* area_widget = addDockWidget(dock_area, widget, relative_to);
   area_widget->setAllowedAreas(ads::OuterDockAreas);
 
   connect(widget, &DockWidget::undoableChange, this, &PlotDocker::undoableChange);
+  connect(widget, &DockWidget::plotWidgetCreated, this, &PlotDocker::plotWidgetAdded);
   emit dockAdded(widget);
   if (widget->plotWidget() != nullptr) {
     emit plotWidgetAdded(widget->plotWidget());

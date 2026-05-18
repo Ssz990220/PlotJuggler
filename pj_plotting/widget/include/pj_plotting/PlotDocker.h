@@ -5,11 +5,16 @@
 #include <QDomDocument>
 #include <QDomElement>
 #include <QString>
+#include <functional>
+
+#include "pj_base/builtin/BuiltinObject.hpp"
+#include "pj_datastore/object_store.hpp"
 
 namespace PJ {
 
 class CatalogModel;
 class DockWidget;
+class IDataWidget;
 class PlotWidget;
 class SessionManager;
 
@@ -19,6 +24,9 @@ class SessionManager;
 class PlotDocker : public ads::CDockManager {
   Q_OBJECT
  public:
+  using ObjectWidgetFactory =
+      std::function<IDataWidget*(ObjectTopicId, sdk::BuiltinObjectType, const QString&, QWidget*)>;
+
   explicit PlotDocker(
       QString name, SessionManager* session = nullptr, CatalogModel* catalog = nullptr, QWidget* parent = nullptr);
   ~PlotDocker() override;
@@ -30,6 +38,7 @@ class PlotDocker : public ads::CDockManager {
     name_ = std::move(name);
   }
   void setDataServices(SessionManager* session, CatalogModel* catalog);
+  void setObjectWidgetFactory(ObjectWidgetFactory factory);
   [[nodiscard]] QString stateId() const;
   void setStateId(QString id);
   [[nodiscard]] QDomElement xmlSaveState(QDomDocument& doc) const;
@@ -54,6 +63,7 @@ class PlotDocker : public ads::CDockManager {
   QString name_;
   SessionManager* session_ = nullptr;
   CatalogModel* catalog_ = nullptr;
+  ObjectWidgetFactory object_widget_factory_;
   bool restoring_state_ = false;
 };
 

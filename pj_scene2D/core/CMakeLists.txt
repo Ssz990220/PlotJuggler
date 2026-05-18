@@ -42,7 +42,7 @@ if(MSVC)
   target_compile_options(pj_scene2d_core PRIVATE /wd4611)
 endif()
 target_link_libraries(pj_scene2d_core
-  PUBLIC pj_base pj_datastore pj_scene_protocol
+  PUBLIC pj_base pj_datastore pj_plugin_sdk
   PRIVATE libjpeg-turbo::libjpeg-turbo PNG::PNG fmt::fmt
 )
 
@@ -64,6 +64,8 @@ if(PJ_BUILD_TESTS)
     ../tests/decoded_frame_test.cpp
     ../tests/cancel_token_test.cpp
     ../tests/image_decoder_test.cpp
+    ../tests/codecs_test.cpp
+    ../tests/image_pipeline_source_test.cpp
     ../tests/scene_frame_test.cpp
     ../tests/scene_pipeline_source_test.cpp
     ../tests/composite_media_source_test.cpp

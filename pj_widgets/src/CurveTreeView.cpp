@@ -3,6 +3,7 @@
 #include <QApplication>
 #include <QDataStream>
 #include <QDrag>
+#include <QFont>
 #include <QHeaderView>
 #include <QMimeData>
 #include <QMouseEvent>
@@ -15,9 +16,20 @@ namespace PJ {
 namespace {
 constexpr int kNameColumn = 0;
 constexpr int kValueColumn = 1;
+constexpr int kSearchRole = Qt::UserRole + 1;
+constexpr int kObjectTopicRole = Qt::UserRole + 2;
+constexpr int kCatalogItemRole = Qt::UserRole + 3;
 
 QStringList splitPath(const QString& name) {
   return name.split('/', Qt::SkipEmptyParts);
+}
+
+QString normalizedPathSegment(QString path) {
+  path.replace('.', '/');
+  while (path.startsWith('/')) {
+    path.remove(0, 1);
+  }
+  return path;
 }
 
 class CurveTreeItem : public QTreeWidgetItem {
@@ -38,6 +50,32 @@ class CurveTreeItem : public QTreeWidgetItem {
 void normalizeCurveNames(std::vector<QString>& names) {
   std::sort(names.begin(), names.end());
   names.erase(std::unique(names.begin(), names.end()), names.end());
+}
+
+QString curveNameForItem(const QTreeWidgetItem* item) {
+  if (item == nullptr) {
+    return {};
+  }
+  return item->data(kNameColumn, Qt::UserRole).toString();
+}
+
+bool isObjectTopicItem(const QTreeWidgetItem* item) {
+  return item != nullptr && !item->data(kNameColumn, kObjectTopicRole).toString().isEmpty();
+}
+
+QString catalogKeyForItem(const QTreeWidgetItem* item) {
+  if (item == nullptr) {
+    return {};
+  }
+  QString key = item->data(kNameColumn, kCatalogItemRole).toString();
+  if (!key.isEmpty()) {
+    return key;
+  }
+  key = item->data(kNameColumn, Qt::UserRole).toString();
+  if (!key.isEmpty()) {
+    return key;
+  }
+  return item->data(kNameColumn, kObjectTopicRole).toString();
 }
 }  // namespace
 
@@ -68,6 +106,40 @@ CurveTreeView::CurveTreeView(QWidget* parent) : QTreeWidget(parent) {
     item->setExpanded(expanded);
     setDescendantsExpanded(item, expanded);
   });
+}
+
+QString CurveTreeView::catalogItemsMimeType() {
+  return QStringLiteral("plotjuggler/catalog-items");
+}
+
+QByteArray CurveTreeView::encodeCatalogKeys(const QStringList& keys) {
+  QByteArray encoded;
+  QDataStream stream(&encoded, QIODevice::WriteOnly);
+  for (const QString& key : keys) {
+    if (!key.isEmpty()) {
+      stream << key;
+    }
+  }
+  return encoded;
+}
+
+QStringList CurveTreeView::decodeCatalogKeys(const QMimeData* mime_data) {
+  QStringList keys;
+  if (mime_data == nullptr || !mime_data->hasFormat(catalogItemsMimeType())) {
+    return keys;
+  }
+
+  QByteArray encoded = mime_data->data(catalogItemsMimeType());
+  QDataStream stream(&encoded, QIODevice::ReadOnly);
+  while (!stream.atEnd()) {
+    QString key;
+    stream >> key;
+    if (!key.isEmpty()) {
+      keys.push_back(key);
+    }
+  }
+  keys.removeDuplicates();
+  return keys;
 }
 
 QTreeWidgetItem* CurveTreeView::ensureGroup(const QString& path) {
@@ -103,7 +175,62 @@ void CurveTreeView::addCurve(const QString& name) {
   auto* item = new CurveTreeItem(parent);
   item->setText(kNameColumn, leaf_name);
   item->setData(kNameColumn, Qt::UserRole, name);
+  item->setData(kNameColumn, kSearchRole, name);
   item->setFlags(item->flags() | Qt::ItemIsDragEnabled | Qt::ItemIsSelectable);
+  sortTree();
+}
+
+QString CurveTreeView::treePathFromCurvePath(const CurvePath& path) const {
+  QString tree_path = path.dataset;
+  const QString topic = normalizedPathSegment(path.topic);
+  const QString field = normalizedPathSegment(path.field);
+  if (!topic.isEmpty()) {
+    tree_path += QStringLiteral("/") + topic;
+  }
+  if (!field.isEmpty()) {
+    tree_path += QStringLiteral("/") + field;
+  }
+  return tree_path;
+}
+
+void CurveTreeView::addCurve(const CurvePath& path) {
+  addCatalogItem(
+      CurvePath{
+          .key = path.key,
+          .dataset = path.dataset,
+          .topic = path.topic,
+          .field = path.field,
+          .selectable = true,
+      });
+}
+
+void CurveTreeView::addCatalogItem(const CurvePath& path) {
+  const QString tree_path = treePathFromCurvePath(path);
+  QTreeWidgetItem* item = nullptr;
+  if (path.selectable) {
+    const int last_sep = tree_path.lastIndexOf('/');
+    QTreeWidgetItem* parent = invisibleRootItem();
+    QString leaf_name = tree_path;
+    if (last_sep >= 0) {
+      parent = ensureGroup(tree_path.left(last_sep));
+      leaf_name = tree_path.mid(last_sep + 1);
+    }
+    item = new CurveTreeItem(parent);
+    item->setText(kNameColumn, leaf_name);
+    item->setData(kNameColumn, Qt::UserRole, path.key);
+    item->setData(kNameColumn, kCatalogItemRole, path.key);
+    item->setFlags(item->flags() | Qt::ItemIsDragEnabled | Qt::ItemIsSelectable);
+  } else {
+    item = ensureGroup(tree_path);
+    item->setData(kNameColumn, kObjectTopicRole, path.key);
+    item->setData(kNameColumn, kCatalogItemRole, path.key);
+    item->setFlags(item->flags() | Qt::ItemIsDragEnabled | Qt::ItemIsSelectable);
+
+    QFont font = item->font(kNameColumn);
+    font.setItalic(true);
+    item->setFont(kNameColumn, font);
+  }
+  item->setData(kNameColumn, kSearchRole, tree_path);
   sortTree();
 }
 
@@ -123,8 +250,11 @@ void CurveTreeView::applyFilter(const QString& filter) {
     for (int i = 0; i < item->childCount(); ++i) {
       any_child_visible = apply(item->child(i)) || any_child_visible;
     }
-    const QString full = item->data(kNameColumn, Qt::UserRole).toString();
-    const QString haystack = full.isEmpty() ? item->text(kNameColumn) : full;
+    QString haystack = item->data(kNameColumn, kSearchRole).toString();
+    if (haystack.isEmpty()) {
+      const QString full = item->data(kNameColumn, Qt::UserRole).toString();
+      haystack = full.isEmpty() ? item->text(kNameColumn) : full;
+    }
     const bool self_match = std::all_of(tokens.begin(), tokens.end(), [&](const QString& token) {
       return haystack.contains(token, Qt::CaseInsensitive);
     });
@@ -153,9 +283,12 @@ std::vector<QString> CurveTreeView::selectedCurveNames() const {
 std::vector<QString> CurveTreeView::selectedCurveNamesRecursive() const {
   std::vector<QString> names;
   std::function<void(QTreeWidgetItem*)> collect = [&](QTreeWidgetItem* item) {
-    const QString full = item->data(kNameColumn, Qt::UserRole).toString();
+    const QString full = curveNameForItem(item);
     if (!full.isEmpty()) {
       names.push_back(full);
+    }
+    if (isObjectTopicItem(item)) {
+      return;
     }
     for (int i = 0; i < item->childCount(); ++i) {
       collect(item->child(i));
@@ -166,6 +299,27 @@ std::vector<QString> CurveTreeView::selectedCurveNamesRecursive() const {
   }
   normalizeCurveNames(names);
   return names;
+}
+
+std::vector<QString> CurveTreeView::selectedCatalogKeysRecursive() const {
+  std::vector<QString> keys;
+  std::function<void(QTreeWidgetItem*)> collect = [&](QTreeWidgetItem* item) {
+    const QString key = catalogKeyForItem(item);
+    if (!key.isEmpty()) {
+      keys.push_back(key);
+    }
+    if (isObjectTopicItem(item)) {
+      return;
+    }
+    for (int i = 0; i < item->childCount(); ++i) {
+      collect(item->child(i));
+    }
+  };
+  for (auto* item : selectedItems()) {
+    collect(item);
+  }
+  normalizeCurveNames(keys);
+  return keys;
 }
 
 void CurveTreeView::setValuesColumnHidden(bool hidden) {
@@ -205,6 +359,7 @@ std::vector<QString> CurveTreeView::selectedCurveNamesForDrag() const {
 
 void CurveTreeView::mousePressEvent(QMouseEvent* event) {
   drag_curve_names_.clear();
+  drag_catalog_keys_.clear();
   suppress_next_release_ = false;
   if (event->button() == Qt::LeftButton || event->button() == Qt::RightButton) {
     drag_start_pos_ = event->pos();
@@ -212,6 +367,10 @@ void CurveTreeView::mousePressEvent(QMouseEvent* event) {
 
     const Qt::KeyboardModifiers selection_modifiers = Qt::ControlModifier | Qt::ShiftModifier | Qt::MetaModifier;
     QTreeWidgetItem* item = itemAt(event->pos());
+    const QString item_catalog_key = catalogKeyForItem(item);
+    if (!item_catalog_key.isEmpty()) {
+      drag_catalog_keys_.push_back(item_catalog_key);
+    }
     if (item != nullptr && item->isSelected() && !(event->modifiers() & selection_modifiers)) {
       drag_curve_names_ = selectedCurveNamesForDrag();
       if (drag_curve_names_.size() > 1) {
@@ -232,11 +391,12 @@ void CurveTreeView::mouseMoveEvent(QMouseEvent* event) {
   if (!(event->buttons() & drag_button_)) {
     drag_button_ = Qt::NoButton;
     drag_curve_names_.clear();
+    drag_catalog_keys_.clear();
     QTreeWidget::mouseMoveEvent(event);
     return;
   }
   if ((event->pos() - drag_start_pos_).manhattanLength() < QApplication::startDragDistance()) {
-    if (drag_curve_names_.empty()) {
+    if (drag_curve_names_.empty() && drag_catalog_keys_.empty()) {
       QTreeWidget::mouseMoveEvent(event);
     } else {
       event->accept();
@@ -245,9 +405,18 @@ void CurveTreeView::mouseMoveEvent(QMouseEvent* event) {
   }
 
   auto names = drag_curve_names_.empty() ? selectedCurveNamesForDrag() : drag_curve_names_;
-  if (names.empty()) {
+  QStringList catalog_keys = drag_catalog_keys_;
+  if (catalog_keys.empty()) {
+    for (const QString& name : names) {
+      catalog_keys.push_back(name);
+    }
+  }
+  catalog_keys.removeDuplicates();
+
+  if (names.empty() && catalog_keys.empty()) {
     drag_button_ = Qt::NoButton;
     drag_curve_names_.clear();
+    drag_catalog_keys_.clear();
     QTreeWidget::mouseMoveEvent(event);
     return;
   }
@@ -259,11 +428,16 @@ void CurveTreeView::mouseMoveEvent(QMouseEvent* event) {
   }
 
   auto* mime_data = new QMimeData();
+  if (!catalog_keys.empty()) {
+    mime_data->setData(catalogItemsMimeType(), encodeCatalogKeys(catalog_keys));
+  }
   // Left-button drag → add curve to a plot; right-button drag of exactly
   // two curves → XY scatter plot. Plot-widget drop sites match on these
   // mime keys exactly.
   if (drag_button_ == Qt::LeftButton) {
-    mime_data->setData("curveslist/add_curve", encoded);
+    if (!names.empty()) {
+      mime_data->setData("curveslist/add_curve", encoded);
+    }
   } else if (drag_button_ == Qt::RightButton && names.size() == 2) {
     mime_data->setData("curveslist/new_XY_axis", encoded);
   } else {
@@ -277,6 +451,7 @@ void CurveTreeView::mouseMoveEvent(QMouseEvent* event) {
   drag->setMimeData(mime_data);
   drag_button_ = Qt::NoButton;
   drag_curve_names_.clear();
+  drag_catalog_keys_.clear();
   drag->exec(Qt::CopyAction | Qt::MoveAction);
 }
 
@@ -285,12 +460,14 @@ void CurveTreeView::mouseReleaseEvent(QMouseEvent* event) {
     suppress_next_release_ = false;
     drag_button_ = Qt::NoButton;
     drag_curve_names_.clear();
+    drag_catalog_keys_.clear();
     event->accept();
     return;
   }
   if (event->button() == drag_button_) {
     drag_button_ = Qt::NoButton;
     drag_curve_names_.clear();
+    drag_catalog_keys_.clear();
   }
   QTreeWidget::mouseReleaseEvent(event);
 }

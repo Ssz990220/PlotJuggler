@@ -158,13 +158,14 @@ model eliminates this structurally.
 | **JPEG decode** | Via FFmpeg MJPEG decoder | Via turbojpeg (faster, lighter) |
 | **PNG decode** | Via FFmpeg PNG decoder | Via libpng |
 | **Pipeline** | Part of VideoSource/VideoDecoder | Separate `CodecPipeline` with composable stages |
-| **CDR stripping** | In McapVideoSource | `CdrImageStripper` codec stage |
+| **CDR stripping** | In McapVideoSource | Parser plugin in app; demo helper only |
 | **Depth/segmentation** | Not addressed | `DepthToGrayscale`, `SegmentationPalette` stages |
 
-Production's `CodecPipeline` is more flexible — stages compose
-arbitrarily (CDR strip → JPEG decode, or depth strip → PNG decode →
-grayscale colormap). The experiment used FFmpeg for everything, which
-is heavier for simple JPEG/PNG.
+Production's `CodecPipeline` is more flexible for canonical image bytes
+(JPEG/PNG/depth PNG → display pixels). Source envelopes such as ROS CDR
+belong to parser plugins in the app; demo helpers may still strip CDR for
+standalone experiments. The experiment used FFmpeg for everything, which is
+heavier for simple JPEG/PNG.
 
 ---
 
@@ -235,7 +236,7 @@ formats, requiring 11 mappings.
 | `expectedBufferSize()` / `isValid()` | Centralized YUV buffer sizing |
 | Direction-aware scrub | Suppress backward partials, forward threshold |
 | B-frame support | DTS-keyed storage, reorder buffer burst |
-| `CdrImageStripper` / `DepthToGrayscale` / `SegmentationPalette` | ROS2 data support |
+| Parser-owned CDR decode / `DepthToGrayscale` / `SegmentationPalette` | ROS2 data support |
 | ObjectStore integration | Dual-store model (media + scalars) |
 
 ---

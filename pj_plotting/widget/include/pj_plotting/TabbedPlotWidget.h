@@ -4,7 +4,11 @@
 #include <QDomElement>
 #include <QString>
 #include <QWidget>
+#include <functional>
 #include <vector>
+
+#include "pj_base/builtin/BuiltinObject.hpp"
+#include "pj_datastore/object_store.hpp"
 
 QT_BEGIN_NAMESPACE
 class QHBoxLayout;
@@ -15,6 +19,7 @@ QT_END_NAMESPACE
 namespace PJ {
 
 class CatalogModel;
+class IDataWidget;
 class PlotDocker;
 class PlotTabFrame;
 class SessionManager;
@@ -26,6 +31,9 @@ class SessionManager;
 class TabbedPlotWidget : public QWidget {
   Q_OBJECT
  public:
+  using ObjectWidgetFactory =
+      std::function<IDataWidget*(ObjectTopicId, sdk::BuiltinObjectType, const QString&, QWidget*)>;
+
   explicit TabbedPlotWidget(QWidget* parent = nullptr);
   explicit TabbedPlotWidget(QString name, QWidget* parent = nullptr);
   ~TabbedPlotWidget() override;
@@ -33,6 +41,7 @@ class TabbedPlotWidget : public QWidget {
   PlotDocker* currentTab();
   PlotDocker* addTab(QString name);
   void setDataServices(SessionManager* session, CatalogModel* catalog);
+  void setObjectWidgetFactory(ObjectWidgetFactory factory);
 
   [[nodiscard]] int dockerCount() const;
   PlotDocker* dockerAt(int index);
@@ -109,6 +118,7 @@ class TabbedPlotWidget : public QWidget {
   QPushButton* button_right_panel_ = nullptr;
   SessionManager* session_ = nullptr;
   CatalogModel* catalog_ = nullptr;
+  ObjectWidgetFactory object_widget_factory_;
   QString name_;
   QString state_id_;
   int tab_suffix_count_ = 0;

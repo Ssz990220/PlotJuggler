@@ -1106,6 +1106,10 @@ QWidget#plottingArea{
   background-color: ${dark_background};
 }
 
+QWidget#mediaViewerCanvas{
+  qproperty-clearColor: ${dark_background};
+}
+
 QWidget#plottingArea QMenu{
   background-color: ${widget_background};
 }

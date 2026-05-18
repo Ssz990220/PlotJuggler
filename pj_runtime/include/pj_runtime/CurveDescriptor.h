@@ -8,7 +8,10 @@
 namespace PJ {
 
 struct CurveDescriptor {
-  QString name;  // e.g. "/imu/orientation/x"
+  QString name;  // Opaque catalog key, not a display path.
+  QString dataset_name;
+  QString topic_name;
+  QString field_name;
   TopicId topic_id;
   DatasetId dataset_id;
   std::size_t column_index;

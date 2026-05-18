@@ -35,9 +35,11 @@
 #include <QVBoxLayout>
 #include <QWidgetAction>
 #include <QWindow>
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include <limits>
 #include <optional>
 #include <utility>
 #include <vector>
@@ -50,6 +52,8 @@
 #include "TitleBar.h"
 #include "pj_base/dataset.hpp"
 #include "pj_datastore/engine.hpp"
+#include "pj_datastore/object_store.hpp"
+#include "pj_datastore/reader.hpp"
 #include "pj_datastore/writer.hpp"
 #include "pj_marketplace/marketplace_window.hpp"
 #include "pj_marketplace/qt_diagnostic_bridge.hpp"
@@ -64,6 +68,8 @@
 #include "pj_runtime/ExtensionCatalogService.h"
 #include "pj_runtime/PlaybackEngine.h"
 #include "pj_runtime/SessionManager.h"
+#include "pj_scene2d_widgets/Media2DDockWidget.h"
+#include "pj_scene2d_widgets/media_viewer_widget.h"
 #include "pj_widgets/FlowLayout.h"
 #include "pj_widgets/MessageBox.h"
 #include "pj_widgets/SaveFileDialog.h"
@@ -193,6 +199,18 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
   ui_->rightToolbarSplitter->setContentsMargins(0, 0, 0, 0);
   ui_->plotsAndGlobalContainer->setContentsMargins(0, 0, 0, 0);
   ui_->globalToolbarWidget->setContentsMargins(0, 0, 0, 0);
+
+  // Qt 6.8 QRhiWidget needs an RHI-capable top-level backing store from
+  // the first show(). Keep a zero-size viewer in an existing visible layout
+  // so image docks created later can initialize their QRhi.
+  auto* rhi_bootstrap = new MediaViewerWidget(ui_->globalToolbarWidget);
+  rhi_bootstrap->setObjectName(QStringLiteral("rhi_bootstrap"));
+  rhi_bootstrap->setMaximumSize(0, 0);
+  rhi_bootstrap->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
+  if (auto* global_toolbar_layout = qobject_cast<QVBoxLayout*>(ui_->globalToolbarWidget->layout())) {
+    global_toolbar_layout->addWidget(rhi_bootstrap);
+  }
+
   ui_->mainSplitter->setHandleWidth(1);
   ui_->timelineSplitter->setHandleWidth(1);
   ui_->rightToolbarSplitter->setHandleWidth(1);
@@ -284,9 +302,35 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
   title_bar_->setDiagnosticHistory(diagnostic_history_);
 
   ui_->tabbedPlotWidget->setDataServices(&session_->sessionManager(), &session_->catalogModel());
+  ui_->tabbedPlotWidget->setObjectWidgetFactory(
+      [this](
+          ObjectTopicId topic_id, sdk::BuiltinObjectType object_type, const QString& title,
+          QWidget* parent) -> IDataWidget* {
+        auto* widget = new Media2DDockWidget(parent);
+        widget->setSessionManager(&session_->sessionManager());
+        if (widget->setImageTopic(topic_id, object_type, title)) {
+          return widget;
+        }
+        // Tear down the empty widget and tell the user *why* the drop did
+        // nothing. setImageTopic already logs the specific reason; this
+        // surfaces the failure to the GUI so the operator doesn't sit
+        // staring at an unchanged placeholder.
+        widget->deleteLater();
+        MessageBox::warning(
+            this, tr("Cannot display topic"),
+            tr("This object topic cannot be displayed in a 2D view (object_type=%1). "
+               "Typically this means the source did not register a parser for the topic, "
+               "or the type is not yet supported by the built-in viewer.")
+                .arg(static_cast<int>(object_type)));
+        return nullptr;
+      });
   connect(ui_->tabbedPlotWidget, &TabbedPlotWidget::tabAdded, this, &MainWindow::onPlotTabAdded);
   wireExistingPlots();
   ui_->curveListPanel->setCatalog(&session_->catalogModel());
+  connect(ui_->curveListPanel, &CurveListPanel::trashRequested, this, &MainWindow::onCatalogTrashRequested);
+  connect(ui_->curveListPanel, &CurveListPanel::clearAllCurvesRequested, this, [this]() {
+    session_->catalogModel().clearAll();
+  });
 
   QSettings settings;
   // Right-toolbar global view toggles persisted across sessions. Buttons
@@ -406,6 +450,7 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
   file_loader_ = std::make_unique<FileLoader>(
       session_->sessionManager(), session_->extensionCatalog(), session_->catalogModel(), this);
   connect(ui_->leftPanel, &LeftPanel::loadDataRequested, this, &MainWindow::onLoadDataRequested);
+  connect(file_loader_.get(), &FileLoader::fileLoaded, this, &MainWindow::onFileLoaded);
   // Track successful loads so the Recently loaded files popup can show
   // them; the cap-5 record/dedup logic is shared with the layout list.
   connect(file_loader_.get(), &FileLoader::fileLoaded, this, [](const QString& path) {
@@ -563,6 +608,22 @@ void MainWindow::onOpenMarketplace() {
 
 void MainWindow::onLoadDataRequested() {
   file_loader_->openFromDialog(this);
+}
+
+void MainWindow::onFileLoaded(const QString& /*path*/) {
+  // Range computation + first-vs-subsequent-load semantics live in
+  // AppSession::seedPlaybackFromSession(). MainWindow is the shell that
+  // wires the load completion to the runtime — domain logic belongs in
+  // pj_runtime, not here.
+  session_->seedPlaybackFromSession();
+}
+
+void MainWindow::onCatalogTrashRequested(QStringList keys, bool covers_all) {
+  if (covers_all) {
+    session_->catalogModel().clearAll();
+    return;
+  }
+  session_->catalogModel().removeItems(std::vector<QString>(keys.begin(), keys.end()));
 }
 
 void MainWindow::onShowPreferencesDialog() {
@@ -1576,7 +1637,7 @@ void MainWindow::applyGlobalWidth(double width) {
   forEachPlot([width](PlotWidget* plot) {
     for (const auto& info : plot->curveList()) {
       if (info.curve != nullptr) {
-        plot->setCurveLineWidth(info.curve->title().text(), width);
+        plot->setCurveLineWidth(info.source_name, width);
       }
     }
     plot->replot();
@@ -1588,7 +1649,7 @@ void MainWindow::applyGlobalStyle(int style) {
   forEachPlot([curve_style](PlotWidget* plot) {
     for (const auto& info : plot->curveList()) {
       if (info.curve != nullptr) {
-        plot->setCurveStyle(info.curve->title().text(), curve_style);
+        plot->setCurveStyle(info.source_name, curve_style);
       }
     }
     plot->replot();

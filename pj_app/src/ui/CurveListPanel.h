@@ -14,6 +14,7 @@ class CurveListPanel;
 namespace PJ {
 
 class CatalogModel;
+struct CatalogItem;
 class CurveTreeView;
 
 // Timeseries list + Custom Series section. Top tree mirrors CatalogModel;
@@ -54,8 +55,8 @@ class CurveListPanel : public QWidget {
   void onTrashClicked();
 
  private:
-  void onCurveAdded(const QString& name);
-  void onCurveRemoved(const QString& name);
+  void onCatalogItemAdded(const CatalogItem& item);
+  void onCatalogItemRemoved(const QString& key);
   void onCatalogCleared();
   void applyIcons(QString theme);
   std::vector<QString> selectedCurveNamesForDrag() const;

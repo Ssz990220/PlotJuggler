@@ -1,6 +1,6 @@
-#include <gtest/gtest.h>
+#include "pj_scene2d_core/scene_frame.h"
 
-#include "pj_scene_protocol/image_annotation.h"
+#include <gtest/gtest.h>
 
 namespace PJ {
 namespace {

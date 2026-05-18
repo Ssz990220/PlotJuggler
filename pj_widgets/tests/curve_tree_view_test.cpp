@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 
 #include <QApplication>
+#include <QMimeData>
 #include <QMouseEvent>
 #include <QTreeWidgetItem>
 #include <QtGlobal>
@@ -42,6 +43,18 @@ std::vector<std::string> childNames(const QTreeWidgetItem* item) {
     names.push_back(item->child(i)->text(0).toStdString());
   }
   return names;
+}
+
+QTreeWidgetItem* findChild(QTreeWidgetItem* parent, const QString& name) {
+  if (parent == nullptr) {
+    return nullptr;
+  }
+  for (int i = 0; i < parent->childCount(); ++i) {
+    if (parent->child(i)->text(0) == name) {
+      return parent->child(i);
+    }
+  }
+  return nullptr;
 }
 
 }  // namespace
@@ -167,6 +180,61 @@ TEST(CurveTreeViewTest, DoubleClickTogglesWholeSubtreeExpansion) {
   Q_EMIT view.itemDoubleClicked(root, 0);
   EXPECT_FALSE(root->isExpanded());
   EXPECT_FALSE(branch->isExpanded());
+}
+
+TEST(CurveTreeViewTest, ObjectTopicsUseTopicNodeWithoutEnteringCurveSelection) {
+  PJ::CurveTreeView view;
+
+  view.addCatalogItem(
+      PJ::CurveTreeView::CurvePath{
+          .key = QStringLiteral("object:1"),
+          .dataset = QStringLiteral("drive.mcap"),
+          .topic = QStringLiteral("/camera/image"),
+          .field = {},
+          .selectable = false,
+      });
+  view.addCurve(
+      PJ::CurveTreeView::CurvePath{
+          .key = QStringLiteral("curve:1"),
+          .dataset = QStringLiteral("drive.mcap"),
+          .topic = QStringLiteral("/camera/image"),
+          .field = QStringLiteral("byte_count"),
+      });
+
+  ASSERT_EQ(view.topLevelItemCount(), 1);
+  QTreeWidgetItem* dataset = view.topLevelItem(0);
+  ASSERT_NE(dataset, nullptr);
+  QTreeWidgetItem* camera = findChild(dataset, QStringLiteral("camera"));
+  ASSERT_NE(camera, nullptr);
+  QTreeWidgetItem* image = findChild(camera, QStringLiteral("image"));
+  ASSERT_NE(image, nullptr);
+  EXPECT_TRUE(image->font(0).italic());
+  EXPECT_TRUE(image->flags().testFlag(Qt::ItemIsSelectable));
+  EXPECT_TRUE(image->flags().testFlag(Qt::ItemIsDragEnabled));
+
+  ASSERT_EQ(image->childCount(), 1);
+  EXPECT_EQ(image->child(0)->text(0), QStringLiteral("byte_count"));
+  EXPECT_TRUE(image->child(0)->flags().testFlag(Qt::ItemIsSelectable));
+
+  image->setSelected(true);
+  EXPECT_TRUE(view.selectedCurveNamesRecursive().empty());
+  EXPECT_EQ(toStdStrings(view.selectedCatalogKeysRecursive()), (std::vector<std::string>{"object:1"}));
+
+  image->child(0)->setSelected(true);
+  EXPECT_EQ(toStdStrings(view.selectedCurveNamesRecursive()), (std::vector<std::string>{"curve:1"}));
+  EXPECT_EQ(toStdStrings(view.selectedCatalogKeysRecursive()), (std::vector<std::string>{"curve:1", "object:1"}));
+}
+
+TEST(CurveTreeViewTest, EncodesCatalogItemDragPayloads) {
+  QMimeData mime_data;
+  mime_data.setData(
+      PJ::CurveTreeView::catalogItemsMimeType(),
+      PJ::CurveTreeView::encodeCatalogKeys({QStringLiteral("object:1"), QStringLiteral("curve:1")}));
+
+  const QStringList keys = PJ::CurveTreeView::decodeCatalogKeys(&mime_data);
+  ASSERT_EQ(keys.size(), 2);
+  EXPECT_EQ(keys[0], QStringLiteral("object:1"));
+  EXPECT_EQ(keys[1], QStringLiteral("curve:1"));
 }
 
 int main(int argc, char** argv) {

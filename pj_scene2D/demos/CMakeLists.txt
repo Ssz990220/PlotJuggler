@@ -18,6 +18,7 @@ if(TARGET pj_scene2d_widgets)
   find_package(zstd REQUIRED)
   add_executable(mcap_image_viewer
     mcap_image_viewer.cpp
+    demo_cdr_codecs.cpp
     cdr_detection2d_to_image_annotation.cpp
     cdr_yolo_to_image_annotation.cpp
     marker_palette.cpp
@@ -26,7 +27,7 @@ if(TARGET pj_scene2d_widgets)
   target_compile_options(mcap_image_viewer PRIVATE ${PJ_WARNING_FLAGS})
   target_compile_definitions(mcap_image_viewer PRIVATE PJ_HAS_RHI_WIDGET)
   target_link_libraries(mcap_image_viewer PRIVATE
-    pj_scene2d_widgets pj_scene2d_core pj_scene_protocol pj_datastore mcap::mcap
+    pj_scene2d_widgets pj_scene2d_core pj_datastore mcap::mcap
     libjpeg-turbo::libjpeg-turbo zstd::libzstd_static nanocdr fmt::fmt
   )
 
@@ -52,13 +53,13 @@ if(TARGET pj_scene2d_widgets)
       ${PJ_WARNING_FLAGS} ${PJ_SANITIZER_FLAGS}
     )
     target_link_libraries(cdr_to_image_annotation_test PRIVATE
-      pj_scene_protocol pj_base GTest::gtest_main nanocdr fmt::fmt
+      pj_scene2d_core pj_base GTest::gtest_main nanocdr fmt::fmt
     )
     add_test(NAME cdr_to_image_annotation_test COMMAND cdr_to_image_annotation_test)
   endif()
 
   # --- Qt demo: multi-channel viewer (color + depth side by side) ---
-  add_executable(multi_channel_viewer multi_channel_viewer.cpp)
+  add_executable(multi_channel_viewer multi_channel_viewer.cpp demo_cdr_codecs.cpp)
   target_compile_features(multi_channel_viewer PRIVATE cxx_std_20)
   target_compile_options(multi_channel_viewer PRIVATE ${PJ_WARNING_FLAGS})
   target_link_libraries(multi_channel_viewer PRIVATE

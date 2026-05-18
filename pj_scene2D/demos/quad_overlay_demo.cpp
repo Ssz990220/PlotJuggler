@@ -30,10 +30,10 @@
 #include "pj_scene2d_core/codecs.h"
 #include "pj_scene2d_core/composite_media_source.h"
 #include "pj_scene2d_core/image_pipeline_source.h"
+#include "pj_scene2d_core/scene_decoder.h"
+#include "pj_scene2d_core/scene_frame.h"
 #include "pj_scene2d_core/scene_pipeline_source.h"
 #include "pj_scene2d_widgets/media_viewer_widget.h"
-#include "pj_scene_protocol/image_annotation.h"
-#include "pj_scene_protocol/scene_decoder.h"
 
 namespace {
 

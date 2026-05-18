@@ -15,7 +15,7 @@ Top-level layout (monorepo, per plan §0 and §5):
 ```
 PJ4/
 ├── 3rdparty/                # vendored CMake dependencies only
-├── plotjuggler_core/        # git submodule — Level 0 foundation (incl. pj_scene_protocol SDK)
+├── plotjuggler_core/        # git submodule — Level 0 foundation (pj_base / pj_datastore / pj_plugins)
 ├── pj_scene2D/               # 2D scene module: core logic, Qt widgets, demos, tests
 ├── pj_marketplace/          # extension install/manage
 ├── pj_dialog_host/          # Qt host for plugin-provided dialogs
@@ -35,7 +35,7 @@ The widget families (`pj_plotting`, `pj_scene2D/widgets` via the `pj_scene2d_wid
 
 When adding files, use the owning module rather than creating new top-level folders. If the requested location does not match these boundaries, ask before proceeding and suggest the closest fit.
 
-- `plotjuggler_core/`: read-only submodule foundation (`pj_base`, `pj_datastore`, `pj_plugins`, `pj_scene_protocol`). Change it only when explicitly working in that submodule.
+- `plotjuggler_core/`: read-only submodule foundation (`pj_base`, `pj_datastore`, `pj_plugins`). Canonical object schemas (`Image`, `DepthImage`, `ImageAnnotations`, `PointCloud`, `FrameTransforms`) and their codecs live under `pj_base/builtin/`. Change `plotjuggler_core` only when explicitly working in that submodule.
 - `pj_runtime/`: app runtime services and contracts: session/data lifecycle, catalog, playback, extension catalog, future workspace/transform/toolbox services. No concrete widgets and no `Qt6::Widgets` link.
 - `pj_app/`: executable shell only: `MainWindow`, menus/toolbars/status bar, app dialogs, and wiring between runtime services and concrete widgets. Do not put reusable controls or business logic here.
 - `pj_widgets/`: reusable Qt widgets and UI helpers that could be used by another Qt app. Depends only on Qt and the C++ standard library; no dependencies on `pj_runtime`, `pj_app`, or other PJ modules.
@@ -54,10 +54,9 @@ When adding files, use the owning module rather than creating new top-level fold
 
 Foundation libraries live in the submodule at `./plotjuggler_core/`:
 
-- `pj_base` — vocabulary types
+- `pj_base` — vocabulary types + canonical object schemas (`pj_base/builtin/Image.hpp`, `DepthImage.hpp`, `ImageAnnotations.hpp`, `PointCloud.hpp`, `FrameTransforms.hpp`) and their codecs. SDK boundary for plugin authors producing or consuming canonical objects.
 - `pj_datastore` — columnar store + `ObjectStore` + `DerivedEngine`
 - `pj_plugins` — ABI + runtime for extensions
-- `pj_scene_protocol` — canonical schema + Foxglove `ImageAnnotations` Protobuf codec (writer + reader); SDK boundary for plugin authors producing or consuming markers / scene primitives. `pj_base`-only deps.
 
 These are consumed as-is. Changes to `plotjuggler_core` happen in that repo, not here.
 

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <QTimer>
 #include <QWidget>
 
 namespace Ui {
@@ -42,9 +43,19 @@ class TimelineWidget : public QWidget {
   // its current checked state, re-tinted for the given theme.
   void applyPlayPauseIcon(const QString& theme);
 
+  // Slider-drag throttle: image decode on the GUI thread takes tens of ms per
+  // tick; QSlider with 1 ms step resolution can emit thousands of valueChanged
+  // events per drag. We rate-limit setCurrentTime to ~30 Hz with a leading-edge
+  // + trailing-edge throttle so the final position is always committed without
+  // backlog. See PlaybackEngine docs for context.
+  void flushPendingSeek();
+
   Ui::TimelineWidget* ui_;
   PlaybackEngine* engine_ = nullptr;
   bool updating_from_engine_ = false;
+  QTimer seek_throttle_timer_;
+  double pending_seek_value_ = 0.0;
+  bool has_pending_seek_ = false;
 };
 
 }  // namespace PJ

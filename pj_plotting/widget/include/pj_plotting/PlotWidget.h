@@ -29,6 +29,7 @@ class PlotWidget : public PlotWidgetBase {
   ~PlotWidget() override;
 
   void setDataServices(SessionManager* session, CatalogModel* catalog);
+  using PlotWidgetBase::addCurve;
   CurveInfo* addCurve(const QString& name, QColor color = Qt::transparent);
   CurveInfo* addCurveXY(const QString& x_name, const QString& y_name, QColor color = Qt::transparent);
 

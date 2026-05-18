@@ -26,14 +26,12 @@ pj_scene2d_widgets  ──►  pj_scene2d_core  ──►  pj_base
      └──►  pj_scene2d_core
 ```
 
-`pj_scene_protocol` lives in the `plotjuggler_core` submodule (sibling of
-`pj_base`, `pj_datastore`, `pj_plugins`). It owns the `ImageAnnotation`
-struct types and the canonical wire-format codec (writer + reader). Both
-pj_scene2D (consumer of canonical bytes) and any loader/plugin (producer
-of canonical bytes) depend on it; loaders never link pj_scene2d_core, so
-the schema bridge has to live somewhere both sides can see — that's the
-role pj_scene_protocol fills. See `plotjuggler_core/pj_scene_protocol/`
-and its `docs/ARCHITECTURE.md` / `docs/USER_GUIDE.md`.
+Canonical object schemas live in `plotjuggler_core/pj_base/builtin/`.
+`ImageAnnotations` owns the canonical wire-format codec (writer + reader).
+Both pj_scene2D (consumer of canonical bytes) and any loader/plugin
+(producer of canonical bytes) depend on those SDK types; loaders never link
+pj_scene2d_core. pj_scene2D keeps renderer-local aliases and the `SceneFrame`
+batch wrapper in `pj_scene2d_core/scene_frame.h`.
 
 ### pj_scene2d_core (no Qt)
 
@@ -273,19 +271,19 @@ display-ready pixels, those bytes pass through a **codec pipeline** —
 an ordered chain of stateless transforms configured per-layer at
 widget setup time.
 
-Every link in the chain is a codec. Some decode bytes→bytes (envelope
-stripping), some decode bytes→pixels (image decompression), some
-transform pixels→pixels (visualization mapping). The pipeline doesn't
-distinguish these — they're all codecs applied in sequence.
+Every link in the chain is a codec. Some decode bytes→pixels (image
+decompression), some transform pixels→pixels (visualization mapping).
+The production application receives canonical object payloads from parser
+plugins before this point, so source envelopes such as ROS CDR are not
+part of the core pipeline.
 
 ### Examples
 
 ```
-ROS2 CompressedImage:    CdrStripper → JpegDecoder → [identity]
-ROS2 CompressedDepth:    CdrStripper → DepthPngDecoder → DepthColormap
-Foxglove CompressedImage: JsonExtractor → JpegDecoder → [identity]
-Raw segmentation mask:   [identity] → PaletteMapper
-MP4 video:               VideoBackend (libmpv handles internally)
+Canonical Image (jpeg):       JpegCodec → [identity]
+Canonical Image (png/mono16): PngCodec → DepthToGrayscale
+Raw segmentation mask:        [identity] → PaletteMapper
+MP4 video:                    VideoBackend (libmpv handles internally)
 ```
 
 ### Design
@@ -306,19 +304,16 @@ consumes raw bytes and either:
   bytes → next stage consumes `pixels->data()` and `pixels->size()`.
 
 The last stage must produce display-ready pixels (RGB/RGBA). The
-`ImagePipelineSource` receives the pipeline at construction time,
-configured based on the topic's `metadata_json` (encoding, schema,
+`ImagePipelineSource` receives either a parser instance that returns
+canonical `sdk::Image`, or a demo/test pipeline configured based on the
+topic's `metadata_json` (encoding, schema,
 media_class).
 
 ### Codec inventory
 
-**Envelope codecs** (bytes → bytes):
-
-| Codec | Input | Output |
-|-------|-------|--------|
-| `CdrStripper` | CDR-wrapped message | Payload bytes (after header + string fields) |
-| `JsonExtractor` | JSON message with base64 `data` field | Raw image bytes |
-| `CompressedDepthStripper` | ROS2 compressedDepth | PNG payload (strips 12-byte header) |
+Source envelopes such as ROS CDR are decoded by parser plugins before the
+application consumes media. The demo-only CDR helpers live under
+`pj_scene2D/demos`.
 
 **Image codecs** (bytes → pixels):
 
@@ -408,15 +403,15 @@ that caching wastes more memory than it saves time (§R4.2).
 
 ### 4.3 SceneDecoder
 
-pj_scene2D consumes `pj_scene_protocol`'s `ISceneDecoder` (in the
-`plotjuggler_core` submodule). The factory `makeSceneDecoder(schema_name)`
-returns the canonical Foxglove `ImageAnnotations` Protobuf decoder.
-There is exactly **one** decoder kind — pj_scene2D has no schema-name
-dispatch beyond the factory call.
+pj_scene2D consumes its local `ISceneDecoder` abstraction from
+`pj_scene2d_core/scene_decoder.h`. The factory `makeSceneDecoder(schema_name)`
+returns a decoder for canonical Foxglove `ImageAnnotations` Protobuf bytes.
+There is exactly **one** decoder kind - pj_scene2D has no schema-name dispatch
+beyond the factory call.
 
 Wire format spec, type catalog, and encoding rules live in
-`plotjuggler_core/pj_scene_protocol/docs/ARCHITECTURE.md`. Producer and
-consumer recipes are in `plotjuggler_core/pj_scene_protocol/docs/USER_GUIDE.md`.
+`plotjuggler_core/pj_base/include/pj_base/builtin/ImageAnnotations.hpp` and
+`plotjuggler_core/pj_base/include/pj_base/builtin/image_annotations_codec.hpp`.
 
 **pj_scene2D's usage policy:** stateless decoder, one instance per
 scene/annotation layer for the layer's lifetime. `ScenePipelineSource`
@@ -1048,7 +1043,7 @@ What to take from each reference prototype and what to leave behind.
 | Component | Action | Notes |
 |-----------|--------|-------|
 | `LazyMediaSeries<T>` callback model | **VALIDATED** | The pattern (timestamps + resolve closures capturing shared_ptr) is sound and maps directly to ObjectStore's `pushLazy` with fetch callbacks. The mcap_player sandbox validated the approach. No code to port — ObjectStore implements the pattern natively |
-| `CompressedImageParser` (CDR → turbojpeg) | **REFERENCE** | Demonstrates the parser → decoder split. In pj_scene2D proper, the CDR envelope peeling is a `MessageParser` plugin; the turbojpeg decode is `ImageDecoder` |
+| `CompressedImageParser` (CDR → canonical Image → turbojpeg) | **REFERENCE** | Demonstrates the parser → decoder split. In the app, CDR envelope peeling is a `MessageParser` plugin concern; pj_scene2D core only receives canonical `sdk::Image` or demo-prepared bytes |
 
 ---
 

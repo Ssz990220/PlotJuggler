@@ -37,6 +37,7 @@ constexpr int kRowHeight = 20;
 constexpr int kRowSpacing = 2;
 
 constexpr auto kCurveNameRole = Qt::UserRole;
+constexpr auto kCurveDisplayNameRole = Qt::UserRole + 1;
 
 constexpr auto kVisibilityOnPath = ":/resources/svg/visibility.svg";
 constexpr auto kVisibilityOffPath = ":/resources/svg/visibility_off.svg";
@@ -141,7 +142,7 @@ CurveEditor::CurveEditor(QWidget* parent) : QWidget(parent), ui_(new Ui::CurveEd
     QStringList names;
     for (const auto& info : plot_->curveList()) {
       if (info.curve != nullptr) {
-        names << info.curve->title().text();
+        names << info.source_name;
       }
     }
     for (const QString& name : names) {
@@ -245,15 +246,16 @@ void CurveEditor::refresh() {
     if (info.curve == nullptr) {
       continue;
     }
-    appendRow(info.curve->title().text(), info.curve->pen().color(), info.curve->isVisible());
+    appendRow(info.source_name, info.curve->title().text(), info.curve->pen().color(), info.curve->isVisible());
   }
   // Preserve the active filter across refreshes.
   applyFilter();
 }
 
-void CurveEditor::appendRow(const QString& curve_name, QColor color, bool visible) {
+void CurveEditor::appendRow(const QString& curve_key, const QString& display_name, QColor color, bool visible) {
   auto* item = new QListWidgetItem();
-  item->setData(kCurveNameRole, curve_name);
+  item->setData(kCurveNameRole, curve_key);
+  item->setData(kCurveDisplayNameRole, display_name);
 
   // Children are constructed without a parent — CurveRowWidget's ctor
   // reparents them in one place so resizeEvent can pin geometry directly
@@ -262,14 +264,14 @@ void CurveEditor::appendRow(const QString& curve_name, QColor color, bool visibl
   swatch->setCursor(Qt::PointingHandCursor);
   swatch->setFlat(true);
   swatch->setStyleSheet(swatchStyleSheet(color));
-  connect(swatch, &QPushButton::clicked, this, [this, curve_name, swatch]() { onSwatchClicked(curve_name, swatch); });
+  connect(swatch, &QPushButton::clicked, this, [this, curve_key, swatch]() { onSwatchClicked(curve_key, swatch); });
 
   auto* visibility = new QToolButton();
   // The objectName drives the curveVisibilityToggle QSS rule that strips
   // QToolButton's default hover / checked background so the eye icon
   // appears as a plain ink glyph regardless of state.
   visibility->setObjectName(QStringLiteral("curveVisibilityToggle"));
-  visibility->setProperty(kVisibilityButtonProperty, curve_name);
+  visibility->setProperty(kVisibilityButtonProperty, curve_key);
   visibility->setCheckable(true);
   visibility->setAutoRaise(true);
   visibility->setFocusPolicy(Qt::NoFocus);
@@ -277,9 +279,9 @@ void CurveEditor::appendRow(const QString& curve_name, QColor color, bool visibl
   visibility->setChecked(visible);
   visibility->setIcon(LoadSvg(visible ? kVisibilityOnPath : kVisibilityOffPath, current_theme_));
   visibility->setToolTip(tr("Toggle curve visibility"));
-  connect(visibility, &QToolButton::toggled, this, [this, curve_name, visibility](bool checked) {
+  connect(visibility, &QToolButton::toggled, this, [this, curve_key, visibility](bool checked) {
     visibility->setIcon(LoadSvg(checked ? kVisibilityOnPath : kVisibilityOffPath, current_theme_));
-    onVisibilityToggled(curve_name, checked);
+    onVisibilityToggled(curve_key, checked);
   });
 
   auto* name_label = new ElidingLabel();
@@ -287,21 +289,22 @@ void CurveEditor::appendRow(const QString& curve_name, QColor color, bool visibl
   // Curve names are typically topic paths (`/foo/bar/leaf`); elide from
   // the left so the meaningful leaf stays visible as the row narrows.
   name_label->setElideMode(Qt::ElideLeft);
-  name_label->setFullText(curve_name);
+  name_label->setFullText(display_name);
+  name_label->setToolTip(curve_key);
 
   auto* trash = new QToolButton();
   trash->setObjectName(QStringLiteral("curveTrashToggle"));
-  trash->setProperty(kTrashButtonProperty, curve_name);
+  trash->setProperty(kTrashButtonProperty, curve_key);
   trash->setAutoRaise(true);
   trash->setFocusPolicy(Qt::NoFocus);
   trash->setIconSize(QSize(kRowHeight, kRowHeight));
   trash->setIcon(LoadSvg(kTrashIconPath, current_theme_));
   trash->setToolTip(tr("Remove this curve from its plot"));
-  connect(trash, &QToolButton::clicked, this, [this, curve_name]() {
+  connect(trash, &QToolButton::clicked, this, [this, curve_key]() {
     if (plot_ == nullptr) {
       return;
     }
-    plot_->removeCurve(curve_name);
+    plot_->removeCurve(curve_key);
     plot_->replot();
     emit plot_->undoableChange();
   });
@@ -390,7 +393,9 @@ void CurveEditor::applyFilter() {
   for (int i = 0; i < ui_->listWidget->count(); ++i) {
     QListWidgetItem* item = ui_->listWidget->item(i);
     const QString curve_name = item->data(kCurveNameRole).toString();
-    const bool match = needle.isEmpty() || curve_name.contains(needle, Qt::CaseInsensitive);
+    const QString display_name = item->data(kCurveDisplayNameRole).toString();
+    const bool match = needle.isEmpty() || curve_name.contains(needle, Qt::CaseInsensitive) ||
+                       display_name.contains(needle, Qt::CaseInsensitive);
     item->setHidden(!match);
   }
 }

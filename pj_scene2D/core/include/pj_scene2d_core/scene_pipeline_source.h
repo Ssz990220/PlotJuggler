@@ -6,8 +6,8 @@
 
 #include "pj_datastore/object_store.hpp"
 #include "pj_scene2d_core/media_source.h"
-#include "pj_scene_protocol/image_annotation.h"
-#include "pj_scene_protocol/scene_decoder.h"
+#include "pj_scene2d_core/scene_decoder.h"
+#include "pj_scene2d_core/scene_frame.h"
 
 namespace PJ {
 

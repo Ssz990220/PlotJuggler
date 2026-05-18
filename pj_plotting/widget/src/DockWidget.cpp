@@ -12,6 +12,8 @@
 #include "pj_plotting/DockToolbar.h"
 #include "pj_plotting/PlotDocker.h"
 #include "pj_plotting/PlotWidget.h"
+#include "pj_runtime/CatalogModel.h"
+#include "pj_widgets/VisualizationPlaceholderWidget.h"
 
 namespace PJ {
 namespace {
@@ -23,7 +25,7 @@ QString newStateId() {
 }  // namespace
 
 DockWidget::DockWidget(SessionManager* session, CatalogModel* catalog, ads::CDockManager* manager, QWidget* parent)
-    : DockWidget(nullptr, session, catalog, manager, parent) {}
+    : DockWidget(nullptr, session, catalog, manager, parent, false) {}
 
 DockWidget::DockWidget(
     PlotWidget* plot, SessionManager* session, CatalogModel* catalog, ads::CDockManager* manager, QWidget* parent,
@@ -63,17 +65,15 @@ DockWidget::DockWidget(
 
   connect(toolbar_->buttonClose(), &QPushButton::pressed, this, [this]() {
     dockAreaWidget()->closeArea();
-    takeWidget();
-    if (plot_widget_) {
-      plot_widget_->deleteLater();
-      plot_widget_ = nullptr;
-    }
+    clearCurrentContent(true);
     emit undoableChange();
   });
 
   layout()->setContentsMargins(10, 10, 10, 10);
   if (plot != nullptr || create_plot_when_null) {
     setPlotWidget(plot != nullptr ? plot : new PlotWidget(session_, catalog_, this));
+  } else {
+    setPlaceholderWidget();
   }
 }
 
@@ -87,8 +87,16 @@ void DockWidget::setDataServices(SessionManager* session, CatalogModel* catalog)
   }
 }
 
+void DockWidget::setObjectWidgetFactory(ObjectWidgetFactory factory) {
+  object_widget_factory_ = std::move(factory);
+}
+
 PlotWidget* DockWidget::plotWidget() {
   return plot_widget_;
+}
+
+IDataWidget* DockWidget::objectWidget() {
+  return object_widget_;
 }
 
 PlotWidget* DockWidget::releasePlotWidget() {
@@ -98,6 +106,7 @@ PlotWidget* DockWidget::releasePlotWidget() {
   disconnect(plot_widget_, nullptr, this, nullptr);
   auto* plot = plot_widget_;
   takeWidget();
+  content_widget_ = nullptr;
   plot_widget_ = nullptr;
   return plot;
 }
@@ -106,11 +115,9 @@ void DockWidget::setPlotWidget(PlotWidget* plot) {
   if (plot_widget_ == plot) {
     return;
   }
-  if (plot_widget_ != nullptr) {
-    disconnect(plot_widget_, nullptr, this, nullptr);
-    takeWidget();
-  }
+  clearCurrentContent(true);
   plot_widget_ = plot;
+  content_widget_ = plot_widget_;
   if (plot_widget_ == nullptr) {
     return;
   }
@@ -119,6 +126,18 @@ void DockWidget::setPlotWidget(PlotWidget* plot) {
   connect(plot_widget_, &PlotWidget::splitHorizontal, this, [this]() { splitHorizontal(); });
   connect(plot_widget_, &PlotWidget::splitVertical, this, [this]() { splitVertical(); });
   connect(plot_widget_, &PlotWidget::undoableChange, this, &DockWidget::undoableChange);
+  emit plotWidgetCreated(plot_widget_);
+}
+
+void DockWidget::setPlaceholderWidget() {
+  clearCurrentContent(true);
+  placeholder_widget_ = new VisualizationPlaceholderWidget(this);
+  content_widget_ = placeholder_widget_;
+  setWidget(placeholder_widget_);
+  setName(QStringLiteral("..."));
+  connect(
+      placeholder_widget_, &VisualizationPlaceholderWidget::catalogItemsDropped, this,
+      &DockWidget::onCatalogItemsDropped);
 }
 
 DockToolbar* DockWidget::toolBar() {
@@ -146,6 +165,9 @@ void DockWidget::setStateId(QString id) {
 void DockWidget::onTrackerTime(double time) {
   if (plot_widget_ != nullptr) {
     plot_widget_->setTrackerPosition(time);
+  }
+  if (object_widget_ != nullptr) {
+    object_widget_->onTrackerTime(time);
   }
 }
 
@@ -176,15 +198,94 @@ DockWidget* DockWidget::splitInto(ads::DockWidgetArea dock_area, PlotWidget* plo
   if (!parent_docker) {
     return nullptr;
   }
-  auto* new_widget = new DockWidget(plot, session_, catalog_, parent_docker, nullptr, plot == nullptr);
+  auto* new_widget = new DockWidget(plot, session_, catalog_, parent_docker, nullptr, false);
+  new_widget->setObjectWidgetFactory(object_widget_factory_);
   auto* area = parent_docker->addDockWidget(dock_area, new_widget, dockAreaWidget());
   area->setAllowedAreas(ads::OuterDockAreas);
 
   connect(new_widget, &DockWidget::undoableChange, parent_docker, &PlotDocker::undoableChange);
+  connect(new_widget, &DockWidget::plotWidgetCreated, parent_docker, &PlotDocker::plotWidgetAdded);
   emit undoableChange();
   emit parent_docker->dockAdded(new_widget);
-  emit parent_docker->plotWidgetAdded(new_widget->plotWidget());
+  if (new_widget->plotWidget() != nullptr) {
+    emit parent_docker->plotWidgetAdded(new_widget->plotWidget());
+  }
   return new_widget;
+}
+
+PlotWidget* DockWidget::ensurePlotWidget() {
+  if (plot_widget_ == nullptr) {
+    setPlotWidget(new PlotWidget(session_, catalog_, this));
+    setName(QStringLiteral("..."));
+  }
+  return plot_widget_;
+}
+
+void DockWidget::onCatalogItemsDropped(const QStringList& keys) {
+  if (catalog_ == nullptr || keys.empty()) {
+    return;
+  }
+
+  const auto first_item = catalog_->itemDescriptor(keys.front());
+  if (!first_item.has_value()) {
+    return;
+  }
+
+  if (isScalarField(*first_item)) {
+    PlotWidget* plot = ensurePlotWidget();
+    bool changed = false;
+    for (const QString& key : keys) {
+      if (catalog_->curveDescriptor(key).has_value()) {
+        changed = plot->addCurve(key) != nullptr || changed;
+      }
+    }
+    if (changed) {
+      plot->zoomOut(true);
+      emit undoableChange();
+    }
+    return;
+  }
+
+  const auto* object_payload = asObjectTopic(*first_item);
+  if (object_payload == nullptr || !object_widget_factory_) {
+    return;
+  }
+
+  // The factory itself decides which object types it can host — returning
+  // nullptr means "I can't render this", which we surface by reverting to
+  // the placeholder so the user sees an explicit "not supported" affordance.
+  const QString title = first_item->dataset_name.isEmpty()
+                            ? first_item->topic_name
+                            : QStringLiteral("%1/%2").arg(first_item->dataset_name, first_item->topic_name);
+  clearCurrentContent(true);
+  object_widget_ = object_widget_factory_(object_payload->object_topic_id, object_payload->object_type, title, this);
+  content_widget_ = object_widget_ != nullptr ? object_widget_->widget() : nullptr;
+  if (content_widget_ == nullptr) {
+    setPlaceholderWidget();
+    return;
+  }
+  setWidget(content_widget_);
+  setName(first_item->topic_name);
+  emit undoableChange();
+}
+
+void DockWidget::clearCurrentContent(bool delete_content) {
+  if (plot_widget_ != nullptr) {
+    disconnect(plot_widget_, nullptr, this, nullptr);
+  }
+  if (placeholder_widget_ != nullptr) {
+    disconnect(placeholder_widget_, nullptr, this, nullptr);
+  }
+  if (content_widget_ != nullptr) {
+    takeWidget();
+    if (delete_content) {
+      content_widget_->deleteLater();
+    }
+  }
+  content_widget_ = nullptr;
+  placeholder_widget_ = nullptr;
+  plot_widget_ = nullptr;
+  object_widget_ = nullptr;
 }
 
 }  // namespace PJ
