@@ -212,6 +212,12 @@ bool PlotWidget::trackerEnabled() const noexcept {
   return tracker_enabled_;
 }
 
+void PlotWidget::setTrackerParameter(CurveTracker::Parameter parameter) {
+  if (tracker_ != nullptr) {
+    tracker_->setParameter(parameter);
+  }
+}
+
 void PlotWidget::setShowPoints(bool show) {
   show_points_ = show;
   if (!show) {

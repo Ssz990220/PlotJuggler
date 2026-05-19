@@ -9,6 +9,7 @@
 #include <QRectF>
 #include <QStringList>
 
+#include "pj_plotting/CurveTracker.h"
 #include "pj_plotting/PlotWidgetBase.h"
 
 class QDragEnterEvent;
@@ -19,7 +20,6 @@ class QMimeData;
 namespace PJ {
 
 class CatalogModel;
-class CurveTracker;
 class SessionManager;
 
 class PlotWidget : public PlotWidgetBase {
@@ -37,6 +37,7 @@ class PlotWidget : public PlotWidgetBase {
   [[nodiscard]] bool isZoomLinkEnabled() const noexcept;
   void setTrackerEnabled(bool enabled);
   [[nodiscard]] bool trackerEnabled() const noexcept;
+  void setTrackerParameter(CurveTracker::Parameter parameter);
   // Mouse-hover inspector. Independent from the playback tracker_; toggling
   // this off does not hide the playback red line.
   void setShowPoints(bool show);

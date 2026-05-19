@@ -12,6 +12,7 @@
 #include <QDomDocument>
 #include <QFile>
 #include <QFileInfo>
+#include <QIcon>
 #include <QKeySequence>
 #include <QLabel>
 #include <QLoggingCategory>
@@ -59,6 +60,7 @@
 #include "pj_marketplace/marketplace_window.hpp"
 #include "pj_marketplace/qt_diagnostic_bridge.hpp"
 #include "pj_plotting/CurveEditor.h"
+#include "pj_plotting/CurveTracker.h"
 #include "pj_plotting/DockWidget.h"
 #include "pj_plotting/PlotDocker.h"
 #include "pj_plotting/PlotWidget.h"
@@ -379,6 +381,8 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
   show_points_ = settings.value(QStringLiteral("MainWindow.buttonShowpoint"), true).toBool();
   activate_grid_ = settings.value(QStringLiteral("MainWindow.buttonActivateGrid"), false).toBool();
   dots_ = settings.value(QStringLiteral("MainWindow.buttonDots"), false).toBool();
+  tracker_info_ = static_cast<CurveTracker::Parameter>(
+      settings.value(QStringLiteral("MainWindow.timeTrackerSetting"), static_cast<int>(CurveTracker::kValue)).toInt());
   legend_status_ = static_cast<LegendStatus>(
       settings.value(QStringLiteral("MainWindow.legendStatus"), static_cast<int>(LegendStatus::kHidden)).toInt());
 
@@ -1021,6 +1025,47 @@ void MainWindow::applyGlobalToggles(PlotWidget* plot) {
   plot->setGridVisible(activate_grid_);
   applyDots(plot);
   applyLegendStatus(plot);
+  plot->setTrackerParameter(tracker_info_);
+}
+
+void MainWindow::updateTimeTrackerIcon() {
+  if (button_time_tracker_ == nullptr) {
+    return;
+  }
+  // TODO: 3 PNG variants are light-theme only (PJ3 ships no dark equivalents).
+  // Dark-theme users see the light icon; replace with tinted SVGs if/when
+  // someone designs them.
+  switch (tracker_info_) {
+    case CurveTracker::kLineOnly:
+      button_time_tracker_->setIcon(QIcon(QStringLiteral(":/style_light/line_tracker.png")));
+      break;
+    case CurveTracker::kValue:
+      button_time_tracker_->setIcon(QIcon(QStringLiteral(":/style_light/line_tracker_1.png")));
+      break;
+    case CurveTracker::kValueName:
+      button_time_tracker_->setIcon(QIcon(QStringLiteral(":/style_light/line_tracker_a.png")));
+      break;
+  }
+}
+
+void MainWindow::onTimeTrackerButtonClicked() {
+  switch (tracker_info_) {
+    case CurveTracker::kLineOnly:
+      tracker_info_ = CurveTracker::kValue;
+      break;
+    case CurveTracker::kValue:
+      tracker_info_ = CurveTracker::kValueName;
+      break;
+    case CurveTracker::kValueName:
+      tracker_info_ = CurveTracker::kLineOnly;
+      break;
+  }
+  QSettings().setValue(QStringLiteral("MainWindow.timeTrackerSetting"), static_cast<int>(tracker_info_));
+  updateTimeTrackerIcon();
+  forEachPlot([this](PlotWidget* plot) {
+    plot->setTrackerParameter(tracker_info_);
+    plot->replot();
+  });
 }
 
 void MainWindow::applyDots(PlotWidget* plot) {
@@ -1426,6 +1471,9 @@ QDomDocument MainWindow::xmlSaveState() const {
   QDomElement dots = doc.createElement(QStringLiteral("dots"));
   dots.setAttribute(QStringLiteral("enabled"), bool_attr(button_dots_->isChecked()));
   root.appendChild(dots);
+  QDomElement tracker_info = doc.createElement(QStringLiteral("tracker_info"));
+  tracker_info.setAttribute(QStringLiteral("value"), QString::number(static_cast<int>(tracker_info_)));
+  root.appendChild(tracker_info);
   return doc;
 }
 
@@ -1493,6 +1541,13 @@ bool MainWindow::xmlLoadState(const QDomDocument& state_document) {
     dots_ = read_bool(dots, dots_);
     button_dots_->setChecked(dots_);
     QSettings().setValue(QStringLiteral("MainWindow.buttonDots"), dots_);
+  }
+  const QDomElement tracker_info_el = root.firstChildElement(QStringLiteral("tracker_info"));
+  if (!tracker_info_el.isNull()) {
+    tracker_info_ = static_cast<CurveTracker::Parameter>(
+        tracker_info_el.attribute(QStringLiteral("value"), QString::number(static_cast<int>(tracker_info_))).toInt());
+    QSettings().setValue(QStringLiteral("MainWindow.timeTrackerSetting"), static_cast<int>(tracker_info_));
+    updateTimeTrackerIcon();
   }
   if (!legend_status.isNull()) {
     const auto new_status = static_cast<LegendStatus>(
@@ -1626,6 +1681,18 @@ void MainWindow::buildGlobalToolbar() {
   // QSettings, and calls forEachPlot. applying_state_ no-ops the slot
   // during bulk reload (xmlLoadState / undo / redo).
   button_link_ = add_button("buttonLink", ":/resources/svg/link.svg", "Link X axis");
+  // buttonTimeTracker cycles through 3 pre-rendered PNG icons by state, so it
+  // skips the theme-tinted LoadSvg path baked into add_button. Built inline.
+  button_time_tracker_ = new QToolButton(ui_->globalToolbarWidget);
+  button_time_tracker_->setObjectName(QStringLiteral("buttonTimeTracker"));
+  button_time_tracker_->setFocusPolicy(Qt::NoFocus);
+  button_time_tracker_->setAutoRaise(true);
+  button_time_tracker_->setFixedSize(24, 24);
+  button_time_tracker_->setIconSize(QSize(20, 20));
+  button_time_tracker_->setToolTip(tr("Cycle TimeTracker display: line only / line + value / line + value + name"));
+  outer->addWidget(button_time_tracker_);
+  updateTimeTrackerIcon();
+  connect(button_time_tracker_, &QToolButton::clicked, this, &MainWindow::onTimeTrackerButtonClicked);
   button_show_point_ = add_button("buttonShowpoint", ":/resources/svg/show_point.svg", "Show point in plot");
   button_grid_ = add_button("buttonActivateGrid", ":/resources/svg/grid.svg", "Show/Hide the grid");
   button_dots_ = add_button("buttonDots", ":/resources/svg/scatter_plot.svg", "Show data point markers on curves");

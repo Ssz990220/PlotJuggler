@@ -14,6 +14,7 @@
 #include <memory>
 
 #include "pj_base/diagnostic_sink.hpp"
+#include "pj_plotting/CurveTracker.h"
 #include "pj_widgets/ChromeMetrics.h"
 
 class QAction;
@@ -178,6 +179,11 @@ class MainWindow : public QMainWindow {
   // Dots/Sticks/Steps keep their style.
   void applyDots(PlotWidget* plot);
 
+  // Refreshes button_time_tracker_'s icon to match tracker_info_.
+  void updateTimeTrackerIcon();
+  // Slot: cycles tracker_info_ to the next state and applies to every plot.
+  void onTimeTrackerButtonClicked();
+
   // Convenience: emit a diagnostic into the session's sink. Source/id
   // are stable string literals; message is a translated QString. The
   // sink fans out to QtDiagnosticBridge → DiagnosticHistory and from
@@ -307,6 +313,7 @@ class MainWindow : public QMainWindow {
   // Global-column "Chart" icons — built in buildGlobalToolbar(), so
   // stored as member pointers (no ui_-> accessor).
   QToolButton* button_link_ = nullptr;
+  QToolButton* button_time_tracker_ = nullptr;
   QToolButton* button_show_point_ = nullptr;
   QToolButton* button_grid_ = nullptr;
   QToolButton* button_dots_ = nullptr;
@@ -332,6 +339,9 @@ class MainWindow : public QMainWindow {
   // Loaded from QSettings before any child widget is built so the first
   // applyIcons() of each widget already uses the saved metrics.
   ChromeMetrics chrome_metrics_;
+  // Three-state cycle for the playback tracker info level (line / +value /
+  // +value+name). Default kValue matches PJ3 (mainwindow.cpp:154).
+  CurveTracker::Parameter tracker_info_ = CurveTracker::kValue;
 };
 
 }  // namespace PJ

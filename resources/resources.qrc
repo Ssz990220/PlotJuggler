@@ -4,6 +4,11 @@
     <file alias="stylesheet_light.qss">stylesheet_light.qss</file>
     <file alias="stylesheet_dark.qss">stylesheet_dark.qss</file>
   </qresource>
+  <qresource prefix="/style_light">
+    <file alias="line_tracker.png">style_light/line_tracker.png</file>
+    <file alias="line_tracker_1.png">style_light/line_tracker_1.png</file>
+    <file alias="line_tracker_a.png">style_light/line_tracker_a.png</file>
+  </qresource>
   <qresource prefix="/resources/svg">
     <file alias="Fx.svg">svg/Fx.svg</file>
     <file alias="acute.svg">svg/acute.svg</file>
