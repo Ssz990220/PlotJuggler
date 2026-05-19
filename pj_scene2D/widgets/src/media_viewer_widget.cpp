@@ -341,6 +341,29 @@ void MediaViewerWidget::setTimestamp(int64_t ts_ns) {
   }
 }
 
+bool MediaViewerWidget::hasRetainedUploadableFrameLocked() const {
+  if (!pending_qimage_.isNull()) {
+    return true;
+  }
+  if (pending_decoded_.isNull()) {
+    return false;
+  }
+
+  switch (pending_decoded_.format) {
+    case PixelFormat::kRGB888:
+    case PixelFormat::kRGBA8888:
+    case PixelFormat::kBGR888:
+    case PixelFormat::kBGRA8888:
+    case PixelFormat::kYUV420P:
+      return true;
+    case PixelFormat::kMono8:
+    case PixelFormat::kMono16:
+    case PixelFormat::kNV12:
+      return false;
+  }
+  return false;
+}
+
 void MediaViewerWidget::releaseResources() {
   delete pipeline_;
   pipeline_ = nullptr;
@@ -393,6 +416,8 @@ void MediaViewerWidget::releaseResources() {
   clearTextCache();
   tex_width_ = 0;
   tex_height_ = 0;
+  std::lock_guard lock(frame_mutex_);
+  has_pending_ = hasRetainedUploadableFrameLocked();
 }
 
 void MediaViewerWidget::clearTextCache() {

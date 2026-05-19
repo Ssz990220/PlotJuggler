@@ -23,9 +23,21 @@ class CurveTreeView : public QTreeWidget {
     QString topic;
     QString field;
     bool selectable = true;
+    bool is_image_topic = false;
   };
 
+  // Hierarchical: split dataset/topic/field on every '/' (after '.' → '/').
+  // ShowTopics: dataset and topic stay as literal nodes (topic shown
+  // verbatim, e.g. "/camera/image"); the field still splits on '/' so
+  // nested struct fields show up as sub-folders below the topic.
+  enum class ViewMode { Hierarchical, ShowTopics };
+
   explicit CurveTreeView(QWidget* parent = nullptr);
+
+  void setViewMode(ViewMode mode);
+  [[nodiscard]] ViewMode viewMode() const {
+    return view_mode_;
+  }
 
   [[nodiscard]] static QString catalogItemsMimeType();
   [[nodiscard]] static QByteArray encodeCatalogKeys(const QStringList& keys);
@@ -36,6 +48,7 @@ class CurveTreeView : public QTreeWidget {
   void addCatalogItem(const CurvePath& path);
   void clearCurves();
   void applyFilter(const QString& filter);
+  void refreshIcons(const QString& theme);
   std::vector<QString> selectedCurveNames() const;
   // selectedCurveNames() returns only directly-selected leaves; this variant
   // expands selected group nodes to all their leaf descendants. Result is
@@ -59,6 +72,7 @@ class CurveTreeView : public QTreeWidget {
   void resizeEvent(QResizeEvent* event) override;
 
  private:
+  QTreeWidgetItem* ensureGroupSegments(const QStringList& segments);
   QTreeWidgetItem* ensureGroup(const QString& path);
   QString treePathFromCurvePath(const CurvePath& path) const;
   // Recompute the Name column so it fills whatever viewport width is
@@ -80,6 +94,7 @@ class CurveTreeView : public QTreeWidget {
   // resizes inside the handler re-fire the signal, which would otherwise
   // cause an infinite ping-pong between Name and Value.
   bool adjusting_columns_ = false;
+  ViewMode view_mode_ = ViewMode::Hierarchical;
 };
 
 }  // namespace PJ

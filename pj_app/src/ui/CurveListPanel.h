@@ -62,6 +62,7 @@ class CurveListPanel : public QWidget {
   void onFilterChanged(const QString& text);
   void onCustomFilterChanged(const QString& text);
   void onShowValuesToggled(bool show);
+  void onPreserveTopicNameToggled(bool checked);
   void onTrashClicked();
 
  private:

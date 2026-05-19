@@ -75,6 +75,7 @@ class PlotWidget : public PlotWidgetBase {
   void statusMessageRequested(QString message);
   void splitHorizontal();
   void splitVertical();
+  void curveColorChanged(QString curve_name, QColor color);
 
  protected:
   bool eventFilter(QObject* obj, QEvent* event) override;

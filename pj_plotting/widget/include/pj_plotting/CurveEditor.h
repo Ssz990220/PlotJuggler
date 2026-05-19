@@ -82,6 +82,7 @@ class CurveEditor : public QWidget {
   void appendRow(const QString& curve_key, const QString& display_name, QColor color, bool visible);
   void onSwatchClicked(const QString& curve_name, QPushButton* swatch);
   void onPickerColorChanged(QColor color);
+  void onCurveColorChanged(const QString& curve_name, QColor color);
   void onVisibilityToggled(const QString& curve_name, bool visible);
   void clearActivePicker();
 
@@ -96,6 +97,7 @@ class CurveEditor : public QWidget {
   // MainWindow's first-launch icon size and the original compact list.
   int row_height_ = 20;
   QMetaObject::Connection curve_list_connection_;
+  QMetaObject::Connection curve_color_connection_;
   QMetaObject::Connection plot_destroyed_connection_;
 
   // Lazily created on first swatch click; reused for the lifetime of the
@@ -104,7 +106,6 @@ class CurveEditor : public QWidget {
   // Identifies which row's swatch the popup is currently editing. Cleared
   // whenever the row is destroyed (refresh / setPlot / plot teardown).
   QString active_color_curve_;
-  QPushButton* active_color_swatch_ = nullptr;
 };
 
 }  // namespace PJ

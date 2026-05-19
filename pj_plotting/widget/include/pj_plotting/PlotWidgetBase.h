@@ -45,7 +45,9 @@ class PlotWidgetBase : public QWidget {
   explicit PlotWidgetBase(QWidget* parent = nullptr);
   ~PlotWidgetBase() override;
 
-  virtual CurveInfo* addCurve(const QString& name, QwtSeriesData<QPointF>* series, QColor color = Qt::transparent);
+  virtual CurveInfo* addCurve(
+      const QString& name, QwtSeriesData<QPointF>* series, QColor color = Qt::transparent,
+      const QString& display_name = {});
   virtual void removeCurve(const QString& title);
 
   [[nodiscard]] const std::list<CurveInfo>& curveList() const noexcept;

@@ -5,11 +5,14 @@
 #include <QWidget>
 #include <vector>
 
+class QAction;
+class QContextMenuEvent;
 class QDragEnterEvent;
 class QDragMoveEvent;
 class QDropEvent;
 class QEvent;
 class QObject;
+class QPoint;
 class QToolButton;
 
 namespace PJ {
@@ -31,18 +34,26 @@ class VisualizationPlaceholderWidget : public QWidget {
 
  signals:
   void catalogItemsDropped(QStringList keys);
+  void splitHorizontalRequested();
+  void splitVerticalRequested();
 
  protected:
+  void contextMenuEvent(QContextMenuEvent* event) override;
   bool eventFilter(QObject* watched, QEvent* event) override;
   void dragEnterEvent(QDragEnterEvent* event) override;
   void dragMoveEvent(QDragMoveEvent* event) override;
   void dropEvent(QDropEvent* event) override;
 
  private:
+  void showSplitContextMenu(const QPoint& global_pos);
+  void updateSplitActionIcons(const QString& theme);
+
   struct IconButton {
     QToolButton* button;
     QString icon_path;
   };
+  QAction* action_split_horizontal_ = nullptr;
+  QAction* action_split_vertical_ = nullptr;
   std::vector<IconButton> icon_buttons_;
 };
 

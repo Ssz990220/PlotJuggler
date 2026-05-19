@@ -1,5 +1,6 @@
 add_executable(curve_tree_view_test
     curve_tree_view_test.cpp
+    ${CMAKE_SOURCE_DIR}/resources/resources.qrc
 )
 
 target_link_libraries(curve_tree_view_test PRIVATE
@@ -12,6 +13,7 @@ if(DEFINED PJ_WARNING_FLAGS)
 endif()
 
 set_target_properties(curve_tree_view_test PROPERTIES
+    AUTORCC ON
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
 )
 

@@ -2,6 +2,8 @@
 
 #include <DockWidget.h>
 
+#include <QEvent>
+#include <QPoint>
 #include <QStringList>
 #include <functional>
 
@@ -64,12 +66,17 @@ class DockWidget : public ads::CDockWidget, public IDataWidget {
   void plotWidgetCreated(PlotWidget* plot);
 
  private slots:
+  void clearToPlaceholder();
   void onCatalogItemsDropped(const QStringList& keys);
 
  private:
+  bool eventFilter(QObject* watched, QEvent* event) override;
   DockWidget* splitInto(ads::DockWidgetArea area, PlotWidget* plot);
   PlotWidget* ensurePlotWidget();
   void clearCurrentContent(bool delete_content);
+  void installObjectContextMenuFilter(QWidget* root);
+  void removeObjectContextMenuFilter(QWidget* root);
+  void showObjectContextMenu(const QPoint& global_pos);
 
   SessionManager* session_ = nullptr;
   CatalogModel* catalog_ = nullptr;

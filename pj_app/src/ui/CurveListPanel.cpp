@@ -11,6 +11,7 @@
 #include <QMenu>
 #include <QPoint>
 #include <QPushButton>
+#include <QSettings>
 #include <QSplitter>
 #include <QToolButton>
 #include <QWidgetAction>
@@ -26,14 +27,18 @@ namespace PJ {
 
 namespace {
 
+constexpr auto kPreserveTopicNameKey = "CurveListPanel/show_topics";
+
 CurveTreeView::CurvePath treePathFromCatalogItem(const CatalogItem& item) {
   const auto* scalar = asScalarField(item);
+  const auto* object_topic = asObjectTopic(item);
   return CurveTreeView::CurvePath{
       .key = item.key,
       .dataset = item.dataset_name,
       .topic = item.topic_name,
       .field = scalar != nullptr ? scalar->field_name : QString{},
       .selectable = scalar != nullptr,
+      .is_image_topic = object_topic != nullptr && object_topic->object_type == sdk::BuiltinObjectType::kImage,
   };
 }
 
@@ -78,7 +83,7 @@ CurveListPanel::CurveListPanel(QWidget* parent) : QWidget(parent), ui_(new Ui::C
   ui_->lineEditFilter->setTextMargins(0, 0, 0, 0);
   ui_->lineEditCustomFilter->setTextMargins(0, 0, 0, 0);
 
-  // Datasets header overflow menu — Show Values toggle + Clear All
+  // Datasets header overflow menu — view toggles + Clear All
   // (destructive, so styled red).
   auto* datasets_menu = new QMenu(this);
   datasets_menu->setObjectName(QStringLiteral("PJMenu"));
@@ -88,6 +93,20 @@ CurveListPanel::CurveListPanel(QWidget* parent) : QWidget(parent), ui_(new Ui::C
   show_values_action->setDefaultWidget(show_values_check);
   datasets_menu->addAction(show_values_action);
   connect(show_values_check, &QCheckBox::toggled, this, &CurveListPanel::onShowValuesToggled);
+
+  auto* preserve_topic_name_check = new QCheckBox(tr("Preserve Topic Name"), datasets_menu);
+  // Seed the checkbox AND the tree view mode from QSettings before wiring
+  // the signal — that way the first rebuildTree() driven by setCatalog()
+  // already lays out under the saved mode (no rebuild thrash on startup).
+  QSettings settings;
+  const bool preserve_topic_name = settings.value(QLatin1String(kPreserveTopicNameKey), true).toBool();
+  preserve_topic_name_check->setChecked(preserve_topic_name);
+  tree_view_->setViewMode(
+      preserve_topic_name ? CurveTreeView::ViewMode::ShowTopics : CurveTreeView::ViewMode::Hierarchical);
+  auto* preserve_topic_name_action = new QWidgetAction(datasets_menu);
+  preserve_topic_name_action->setDefaultWidget(preserve_topic_name_check);
+  datasets_menu->addAction(preserve_topic_name_action);
+  connect(preserve_topic_name_check, &QCheckBox::toggled, this, &CurveListPanel::onPreserveTopicNameToggled);
 
   datasets_menu->addSeparator();
 
@@ -211,6 +230,14 @@ void CurveListPanel::onShowValuesToggled(bool show) {
   custom_view_->setValuesColumnHidden(!show);
 }
 
+void CurveListPanel::onPreserveTopicNameToggled(bool checked) {
+  QSettings settings;
+  settings.setValue(QLatin1String(kPreserveTopicNameKey), checked);
+  tree_view_->setViewMode(checked ? CurveTreeView::ViewMode::ShowTopics : CurveTreeView::ViewMode::Hierarchical);
+  rebuildTree(tree_view_, catalog_);
+  tree_view_->applyFilter(ui_->lineEditFilter->text());
+}
+
 void CurveListPanel::onTrashClicked() {
   const auto selected = tree_view_->selectedCatalogKeysRecursive();
   const std::size_t total = catalog_ != nullptr ? catalog_->items().size() : 0;
@@ -258,6 +285,9 @@ bool CurveListPanel::eventFilter(QObject* watched, QEvent* event) {
 }
 
 void CurveListPanel::applyIcons(QString theme) {
+  if (tree_view_ != nullptr) {
+    tree_view_->refreshIcons(theme);
+  }
   ui_->buttonDatasetsMenu->setIcon(LoadSvg(":/resources/svg/more_vert.svg", theme));
   ui_->buttonCustomMenu->setIcon(LoadSvg(":/resources/svg/more_vert.svg", theme));
   ui_->buttonAddCustom->setIcon(LoadSvg(":/resources/svg/add_tab.svg", theme));

@@ -1,11 +1,14 @@
 #include "pj_widgets/VisualizationPlaceholderWidget.h"
 
+#include <QAction>
+#include <QContextMenuEvent>
 #include <QDragEnterEvent>
 #include <QDragMoveEvent>
 #include <QDropEvent>
 #include <QEvent>
 #include <QHBoxLayout>
 #include <QIcon>
+#include <QMenu>
 #include <QMimeData>
 #include <QSize>
 #include <QToolButton>
@@ -59,6 +62,12 @@ VisualizationPlaceholderWidget::VisualizationPlaceholderWidget(QWidget* parent) 
   setAcceptDrops(true);
   setObjectName(QStringLiteral("VisualizationPlaceholderWidget"));
 
+  action_split_horizontal_ = new QAction(tr("&Split Horizontally"), this);
+  connect(action_split_horizontal_, &QAction::triggered, this, [this]() { emit splitHorizontalRequested(); });
+
+  action_split_vertical_ = new QAction(tr("&Split Vertically"), this);
+  connect(action_split_vertical_, &QAction::triggered, this, [this]() { emit splitVerticalRequested(); });
+
   auto* layout = new QHBoxLayout(this);
   layout->setContentsMargins(0, 0, 0, 0);
   layout->setSpacing(10);
@@ -87,6 +96,8 @@ VisualizationPlaceholderWidget::VisualizationPlaceholderWidget(QWidget* parent) 
 }
 
 void VisualizationPlaceholderWidget::onStylesheetChanged(const QString& theme) {
+  updateSplitActionIcons(theme);
+
   // RenderSvgPixmap (not LoadSvg) so the central icons rasterize at
   // exactly their display size (with DPR baked in) and stay crisp. The
   // shared LoadSvg cache always renders to 64x64, which is downsampled
@@ -96,6 +107,14 @@ void VisualizationPlaceholderWidget::onStylesheetChanged(const QString& theme) {
     const QPixmap pixmap = RenderSvgPixmap(entry.icon_path, theme, icon_size, devicePixelRatioF());
     entry.button->setIcon(QIcon(pixmap));
   }
+}
+
+void VisualizationPlaceholderWidget::contextMenuEvent(QContextMenuEvent* event) {
+  if (event == nullptr) {
+    return;
+  }
+  showSplitContextMenu(event->globalPos());
+  event->accept();
 }
 
 bool VisualizationPlaceholderWidget::eventFilter(QObject* watched, QEvent* event) {
@@ -110,6 +129,10 @@ bool VisualizationPlaceholderWidget::eventFilter(QObject* watched, QEvent* event
       return acceptCatalogDrag(static_cast<QDropEvent*>(event));
     case QEvent::Drop:
       return dropCatalogItems(static_cast<QDropEvent*>(event), this);
+    case QEvent::ContextMenu:
+      showSplitContextMenu(static_cast<QContextMenuEvent*>(event)->globalPos());
+      event->accept();
+      return true;
     default:
       break;
   }
@@ -135,6 +158,21 @@ void VisualizationPlaceholderWidget::dropEvent(QDropEvent* event) {
     return;
   }
   QWidget::dropEvent(event);
+}
+
+void VisualizationPlaceholderWidget::showSplitContextMenu(const QPoint& global_pos) {
+  updateSplitActionIcons(currentTheme());
+
+  QMenu menu(this);
+  menu.setObjectName(QStringLiteral("PJMenu"));
+  menu.addAction(action_split_horizontal_);
+  menu.addAction(action_split_vertical_);
+  menu.exec(global_pos);
+}
+
+void VisualizationPlaceholderWidget::updateSplitActionIcons(const QString& theme) {
+  action_split_horizontal_->setIcon(QIcon(LoadSvg(":/resources/svg/add_column.svg", theme)));
+  action_split_vertical_->setIcon(QIcon(LoadSvg(":/resources/svg/add_row.svg", theme)));
 }
 
 }  // namespace PJ

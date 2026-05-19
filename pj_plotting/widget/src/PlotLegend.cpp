@@ -2,6 +2,7 @@
 
 #include <qwt_graphic.h>
 #include <qwt_legend_data.h>
+#include <qwt_plot_curve.h>
 #include <qwt_text.h>
 
 #include <QMarginsF>
@@ -67,8 +68,22 @@ void PlotLegend::drawLegendData(
   painter->setClipRect(item_rect, Qt::IntersectClip);
 
   int title_offset = 0;
-  const QwtGraphic graphic = data.icon();
-  if (!graphic.isEmpty()) {
+  constexpr qreal kDotDiameter = 8.0;
+  constexpr qreal kDotGap = 4.0;
+  if (const auto* curve = dynamic_cast<const QwtPlotCurve*>(plot_item); curve != nullptr) {
+    QColor dot_color = curve->pen().color();
+    if (!plot_item->isVisible()) {
+      dot_color.setAlphaF(0.45);
+    }
+    const QRectF dot_rect(item_rect.left(), item_rect.center().y() - (kDotDiameter / 2.0), kDotDiameter, kDotDiameter);
+    painter->save();
+    painter->setRenderHint(QPainter::Antialiasing, true);
+    painter->setPen(Qt::NoPen);
+    painter->setBrush(dot_color);
+    painter->drawEllipse(dot_rect);
+    painter->restore();
+    title_offset += static_cast<int>(kDotDiameter + kDotGap);
+  } else if (const QwtGraphic graphic = data.icon(); !graphic.isEmpty()) {
     QRectF icon_rect(item_rect.topLeft(), graphic.defaultSize());
     icon_rect.moveCenter(QPoint(icon_rect.center().x(), rect.center().y()));
     if (plot_item->isVisible()) {
@@ -92,9 +107,16 @@ void PlotLegend::drawLegendData(
 void PlotLegend::drawBackground(QPainter* painter, const QRectF& rect) const {
   painter->save();
   QPen pen = textPen();
-  pen.setColor(parent_plot_->canvas()->palette().windowText().color());
+  QColor border = parent_plot_->canvas()->palette().windowText().color();
+  border.setAlphaF(0.4);
+  pen.setColor(border);
   painter->setPen(pen);
-  painter->setBrush(backgroundBrush());
+  QColor background = parent_plot_->palette().window().color();
+  if (!background.isValid() || background.alpha() == 0) {
+    background = parent_plot_->canvas()->palette().window().color();
+  }
+  background.setAlphaF(0.4);
+  painter->setBrush(background);
   const double radius = borderRadius();
   painter->drawRoundedRect(rect, radius, radius);
   painter->restore();

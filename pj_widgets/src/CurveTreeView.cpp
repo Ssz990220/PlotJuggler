@@ -3,13 +3,18 @@
 #include <QApplication>
 #include <QDataStream>
 #include <QDrag>
-#include <QFont>
 #include <QHeaderView>
+#include <QIcon>
 #include <QMimeData>
 #include <QMouseEvent>
+#include <QPainter>
+#include <QStyle>
+#include <QStyledItemDelegate>
 #include <algorithm>
 #include <functional>
 #include <utility>
+
+#include "pj_widgets/SvgUtil.h"
 
 namespace PJ {
 
@@ -19,6 +24,7 @@ constexpr int kValueColumn = 1;
 constexpr int kSearchRole = Qt::UserRole + 1;
 constexpr int kObjectTopicRole = Qt::UserRole + 2;
 constexpr int kCatalogItemRole = Qt::UserRole + 3;
+constexpr int kImageTopicRole = Qt::UserRole + 4;
 
 QStringList splitPath(const QString& name) {
   return name.split('/', Qt::SkipEmptyParts);
@@ -44,6 +50,46 @@ class CurveTreeItem : public QTreeWidgetItem {
       return folded_compare < 0;
     }
     return QString::localeAwareCompare(lhs, rhs) < 0;
+  }
+};
+
+class CurveTreeItemDelegate : public QStyledItemDelegate {
+ public:
+  using QStyledItemDelegate::QStyledItemDelegate;
+
+  void paint(QPainter* painter, const QStyleOptionViewItem& option, const QModelIndex& index) const override {
+    QStyleOptionViewItem opt(option);
+    initStyleOption(&opt, index);
+
+    const bool draw_image_icon = index.column() == kNameColumn && index.data(kImageTopicRole).toBool();
+    const QIcon image_icon = opt.icon;
+    const QWidget* widget = opt.widget;
+    const QStyle* style = widget != nullptr ? widget->style() : QApplication::style();
+    QRect image_icon_rect;
+    if (draw_image_icon) {
+      constexpr int kIconExtent = 16;
+      constexpr int kIconMargin = 4;
+      opt.icon = {};
+      opt.features &= ~QStyleOptionViewItem::HasDecoration;
+
+      const QRect text_rect = style->subElementRect(QStyle::SE_ItemViewItemText, &opt, widget);
+      opt.text = opt.fontMetrics.elidedText(
+          opt.text, opt.textElideMode, std::max(0, text_rect.width() - kIconExtent - kIconMargin));
+      const int icon_left = std::min(
+          text_rect.left() + opt.fontMetrics.horizontalAdvance(opt.text) + kIconMargin,
+          text_rect.right() - kIconExtent + 1);
+      image_icon_rect = QRect(icon_left, option.rect.center().y() - (kIconExtent / 2), kIconExtent, kIconExtent);
+    }
+
+    style->drawControl(QStyle::CE_ItemViewItem, &opt, painter, widget);
+
+    if (!draw_image_icon || image_icon.isNull()) {
+      return;
+    }
+
+    const QIcon::Mode mode = option.state.testFlag(QStyle::State_Enabled) ? QIcon::Normal : QIcon::Disabled;
+    const QIcon::State state = option.state.testFlag(QStyle::State_Open) ? QIcon::On : QIcon::Off;
+    image_icon.paint(painter, image_icon_rect, Qt::AlignCenter, mode, state);
   }
 };
 
@@ -77,11 +123,33 @@ QString catalogKeyForItem(const QTreeWidgetItem* item) {
   }
   return item->data(kNameColumn, kObjectTopicRole).toString();
 }
+
+void setImageTopicDecoration(QTreeWidgetItem* item, bool is_image_topic, const QString& theme) {
+  if (item == nullptr) {
+    return;
+  }
+  item->setData(kNameColumn, kImageTopicRole, is_image_topic);
+  const QIcon icon = is_image_topic ? QIcon(LoadSvg(QStringLiteral(":/resources/svg/image.svg"), theme)) : QIcon{};
+  item->setIcon(kNameColumn, icon);
+}
+
+void refreshImageTopicIcons(QTreeWidgetItem* item, const QString& theme) {
+  if (item == nullptr) {
+    return;
+  }
+  if (item->data(kNameColumn, kImageTopicRole).toBool()) {
+    item->setIcon(kNameColumn, QIcon(LoadSvg(QStringLiteral(":/resources/svg/image.svg"), theme)));
+  }
+  for (int i = 0; i < item->childCount(); ++i) {
+    refreshImageTopicIcons(item->child(i), theme);
+  }
+}
 }  // namespace
 
 CurveTreeView::CurveTreeView(QWidget* parent) : QTreeWidget(parent) {
   setColumnCount(2);
   setHeaderLabels({tr("Name"), tr("Value")});
+  setItemDelegate(new CurveTreeItemDelegate(this));
   // Splitter-style divider: both sections Interactive (Stretch sections
   // refuse to yield space, so the divider next to a Stretch section is
   // not draggable). When the user drags the divider Qt resizes Name
@@ -137,6 +205,9 @@ CurveTreeView::CurveTreeView(QWidget* parent) : QTreeWidget(parent) {
     }
     const bool expanded = !item->isExpanded();
     item->setExpanded(expanded);
+    if (item->parent() == nullptr) {
+      return;
+    }
     setDescendantsExpanded(item, expanded);
   });
 }
@@ -175,10 +246,12 @@ QStringList CurveTreeView::decodeCatalogKeys(const QMimeData* mime_data) {
   return keys;
 }
 
-QTreeWidgetItem* CurveTreeView::ensureGroup(const QString& path) {
-  const QStringList parts = splitPath(path);
+QTreeWidgetItem* CurveTreeView::ensureGroupSegments(const QStringList& segments) {
   QTreeWidgetItem* parent = invisibleRootItem();
-  for (const QString& part : parts) {
+  for (const QString& part : segments) {
+    if (part.isEmpty()) {
+      continue;
+    }
     QTreeWidgetItem* found = nullptr;
     for (int i = 0; i < parent->childCount(); ++i) {
       auto* child = parent->child(i);
@@ -195,6 +268,10 @@ QTreeWidgetItem* CurveTreeView::ensureGroup(const QString& path) {
     parent = found;
   }
   return parent;
+}
+
+QTreeWidgetItem* CurveTreeView::ensureGroup(const QString& path) {
+  return ensureGroupSegments(splitPath(path));
 }
 
 void CurveTreeView::addCurve(const QString& name) {
@@ -234,13 +311,42 @@ void CurveTreeView::addCurve(const CurvePath& path) {
           .topic = path.topic,
           .field = path.field,
           .selectable = true,
+          .is_image_topic = false,
       });
 }
 
 void CurveTreeView::addCatalogItem(const CurvePath& path) {
   const QString tree_path = treePathFromCurvePath(path);
   QTreeWidgetItem* item = nullptr;
-  if (path.selectable) {
+  if (view_mode_ == ViewMode::ShowTopics) {
+    // Dataset and topic are atomic (topic shown verbatim). The field still
+    // splits on '/' after '.' → '/' so nested struct fields fan out as
+    // sub-folders under the topic node.
+    QStringList segments;
+    if (!path.dataset.isEmpty()) {
+      segments << path.dataset;
+    }
+    if (!path.topic.isEmpty()) {
+      segments << path.topic;
+    }
+    if (path.selectable) {
+      segments += splitPath(normalizedPathSegment(path.field));
+      QString leaf_name = segments.isEmpty() ? tree_path : segments.takeLast();
+      QTreeWidgetItem* parent = ensureGroupSegments(segments);
+      item = new CurveTreeItem(parent);
+      item->setText(kNameColumn, leaf_name);
+      item->setData(kNameColumn, Qt::UserRole, path.key);
+      item->setData(kNameColumn, kCatalogItemRole, path.key);
+      item->setFlags(item->flags() | Qt::ItemIsDragEnabled | Qt::ItemIsSelectable);
+    } else {
+      // Object topic: terminal at dataset ▸ topic.
+      item = ensureGroupSegments(segments);
+      item->setData(kNameColumn, kObjectTopicRole, path.key);
+      item->setData(kNameColumn, kCatalogItemRole, path.key);
+      item->setFlags(item->flags() | Qt::ItemIsDragEnabled | Qt::ItemIsSelectable);
+      setImageTopicDecoration(item, path.is_image_topic, currentTheme());
+    }
+  } else if (path.selectable) {
     const int last_sep = tree_path.lastIndexOf('/');
     QTreeWidgetItem* parent = invisibleRootItem();
     QString leaf_name = tree_path;
@@ -258,17 +364,31 @@ void CurveTreeView::addCatalogItem(const CurvePath& path) {
     item->setData(kNameColumn, kObjectTopicRole, path.key);
     item->setData(kNameColumn, kCatalogItemRole, path.key);
     item->setFlags(item->flags() | Qt::ItemIsDragEnabled | Qt::ItemIsSelectable);
-
-    QFont font = item->font(kNameColumn);
-    font.setItalic(true);
-    item->setFont(kNameColumn, font);
+    setImageTopicDecoration(item, path.is_image_topic, currentTheme());
   }
   item->setData(kNameColumn, kSearchRole, tree_path);
   sortTree();
 }
 
+void CurveTreeView::setViewMode(ViewMode mode) {
+  if (view_mode_ == mode) {
+    return;
+  }
+  view_mode_ = mode;
+  // Force the next applyFilter() call to actually re-run, otherwise the
+  // text-equality short-circuit at the top of applyFilter() would skip the
+  // re-filter that the post-rebuild caller expects.
+  last_filter_.clear();
+}
+
 void CurveTreeView::clearCurves() {
   clear();
+}
+
+void CurveTreeView::refreshIcons(const QString& theme) {
+  for (int i = 0; i < topLevelItemCount(); ++i) {
+    refreshImageTopicIcons(topLevelItem(i), theme);
+  }
 }
 
 void CurveTreeView::applyFilter(const QString& filter) {

@@ -1,5 +1,8 @@
 #include <gtest/gtest.h>
+#include <qwt_plot_curve.h>
+#include <qwt_text.h>
 
+#include <QAction>
 #include <QApplication>
 #include <QDragEnterEvent>
 #include <QDragMoveEvent>
@@ -68,6 +71,17 @@ class FakeObjectWidget : public QWidget, public PJ::IDataWidget {
   void onTrackerTime(double /*time*/) override {}
 };
 
+QAction* findActionByText(QObject* parent, const QString& text) {
+  for (auto* action : parent->findChildren<QAction*>()) {
+    QString action_text = action->text();
+    action_text.remove(QLatin1Char('&'));
+    if (action_text == text) {
+      return action;
+    }
+  }
+  return nullptr;
+}
+
 }  // namespace
 
 TEST(DockWidgetPlaceholderTest, EmptyDockerStartsWithPlaceholderDock) {
@@ -80,6 +94,47 @@ TEST(DockWidgetPlaceholderTest, EmptyDockerStartsWithPlaceholderDock) {
   ASSERT_NE(dock, nullptr);
   EXPECT_EQ(dock->plotWidget(), nullptr);
   EXPECT_EQ(dock->objectWidget(), nullptr);
+}
+
+TEST(DockWidgetPlaceholderTest, PlaceholderSplitActionsEmitRequests) {
+  TestPlaceholderWidget placeholder;
+  int horizontal_count = 0;
+  int vertical_count = 0;
+  QObject::connect(&placeholder, &PJ::VisualizationPlaceholderWidget::splitHorizontalRequested, &placeholder, [&]() {
+    ++horizontal_count;
+  });
+  QObject::connect(&placeholder, &PJ::VisualizationPlaceholderWidget::splitVerticalRequested, &placeholder, [&]() {
+    ++vertical_count;
+  });
+
+  auto* horizontal_action = findActionByText(&placeholder, QStringLiteral("Split Horizontally"));
+  auto* vertical_action = findActionByText(&placeholder, QStringLiteral("Split Vertically"));
+  ASSERT_NE(horizontal_action, nullptr);
+  ASSERT_NE(vertical_action, nullptr);
+
+  horizontal_action->trigger();
+  vertical_action->trigger();
+
+  EXPECT_EQ(horizontal_count, 1);
+  EXPECT_EQ(vertical_count, 1);
+}
+
+TEST(DockWidgetPlaceholderTest, PlaceholderSplitActionCreatesSiblingDock) {
+  PJ::SessionManager session;
+  PJ::CatalogModel catalog(&session);
+  PJ::PlotDocker docker(QStringLiteral("test"), &session, &catalog);
+
+  ASSERT_EQ(docker.plotCount(), 1);
+  auto* dock = docker.plotAt(0);
+  ASSERT_NE(dock, nullptr);
+  auto* placeholder = dock->findChild<PJ::VisualizationPlaceholderWidget*>();
+  ASSERT_NE(placeholder, nullptr);
+  auto* horizontal_action = findActionByText(placeholder, QStringLiteral("Split Horizontally"));
+  ASSERT_NE(horizontal_action, nullptr);
+
+  horizontal_action->trigger();
+
+  EXPECT_EQ(docker.plotCount(), 2);
 }
 
 TEST(DockWidgetPlaceholderTest, ScalarDropConvertsPlaceholderToPlot) {
@@ -104,6 +159,35 @@ TEST(DockWidgetPlaceholderTest, ScalarDropConvertsPlaceholderToPlot) {
   ASSERT_NE(dock->plotWidget(), nullptr);
   EXPECT_EQ(dock->objectWidget(), nullptr);
   EXPECT_EQ(dock->plotWidget()->curveList().size(), 1U);
+}
+
+TEST(DockWidgetPlaceholderTest, CurveListChangedSeesDisplayTitleAfterCatalogKeyAdd) {
+  PJ::SessionManager session;
+  PJ::CatalogModel catalog(&session);
+  auto dataset = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "drive.mcap"});
+  ASSERT_TRUE(dataset.has_value()) << dataset.error();
+  const PJ::TopicId topic_id = addScalarTopic(session, *dataset, "/imu/accel");
+  ASSERT_NE(topic_id, 0U);
+
+  const auto curves = catalog.curves();
+  ASSERT_EQ(curves.size(), 1U);
+  ASSERT_NE(curves[0].name, QStringLiteral("imu/accel/value"));
+
+  PJ::PlotWidget plot(&session, &catalog);
+  QStringList observed_titles;
+  QObject::connect(&plot, &PJ::PlotWidget::curveListChanged, &plot, [&]() {
+    for (const auto& info : plot.curveList()) {
+      if (info.curve != nullptr) {
+        observed_titles << info.curve->title().text();
+      }
+    }
+  });
+
+  const auto* info = plot.addCurve(curves[0].name);
+  ASSERT_NE(info, nullptr);
+  EXPECT_EQ(info->source_name, curves[0].name);
+  EXPECT_EQ(info->curve->title().text(), QStringLiteral("imu/accel/value"));
+  EXPECT_EQ(observed_titles, QStringList{QStringLiteral("imu/accel/value")});
 }
 
 TEST(DockWidgetPlaceholderTest, ImageObjectDropConvertsPlaceholderToMedia2D) {
@@ -146,6 +230,49 @@ TEST(DockWidgetPlaceholderTest, ImageObjectDropConvertsPlaceholderToMedia2D) {
   EXPECT_EQ(dock->plotWidget(), nullptr);
   EXPECT_TRUE(factory_called);
   EXPECT_NE(dock->objectWidget(), nullptr);
+}
+
+TEST(DockWidgetPlaceholderTest, ClearObjectContentRestoresPlaceholder) {
+  PJ::SessionManager session;
+  PJ::CatalogModel catalog(&session);
+  auto dataset = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "drive.mcap"});
+  ASSERT_TRUE(dataset.has_value()) << dataset.error();
+  auto object_topic = session.objectStore().registerTopic(
+      PJ::ObjectTopicDescriptor{
+          .dataset_id = *dataset,
+          .topic_name = "/camera/image_raw/compressed",
+          .metadata_json = R"({"builtin_object_type":"kImage"})",
+      });
+  ASSERT_TRUE(object_topic.has_value()) << object_topic.error();
+  catalog.rebuildFromDatastore();
+
+  const auto items = catalog.items();
+  ASSERT_EQ(items.size(), 1U);
+
+  PJ::PlotDocker docker(QStringLiteral("test"), &session, &catalog);
+  docker.setObjectWidgetFactory(
+      [](PJ::ObjectTopicId, PJ::sdk::BuiltinObjectType, const QString&, QWidget* parent) -> PJ::IDataWidget* {
+        return new FakeObjectWidget(parent);
+      });
+  auto* dock = docker.plotAt(0);
+  ASSERT_NE(dock, nullptr);
+  int undoable_count = 0;
+  QObject::connect(dock, &PJ::DockWidget::undoableChange, dock, [&]() { ++undoable_count; });
+
+  const bool drop_invoked = QMetaObject::invokeMethod(
+      dock, "onCatalogItemsDropped", Qt::DirectConnection, Q_ARG(QStringList, QStringList{items[0].key}));
+  ASSERT_TRUE(drop_invoked);
+  ASSERT_NE(dock->objectWidget(), nullptr);
+  EXPECT_EQ(undoable_count, 1);
+
+  const bool clear_invoked = QMetaObject::invokeMethod(dock, "clearToPlaceholder", Qt::DirectConnection);
+  ASSERT_TRUE(clear_invoked);
+
+  EXPECT_EQ(dock->plotWidget(), nullptr);
+  EXPECT_EQ(dock->objectWidget(), nullptr);
+  EXPECT_NE(dock->findChild<PJ::VisualizationPlaceholderWidget*>(), nullptr);
+  EXPECT_EQ(dock->name(), QStringLiteral("..."));
+  EXPECT_EQ(undoable_count, 2);
 }
 
 TEST(DockWidgetPlaceholderTest, PlaceholderAcceptsCatalogDragMoveAndIconDrop) {

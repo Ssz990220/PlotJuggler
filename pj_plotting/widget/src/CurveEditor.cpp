@@ -10,12 +10,15 @@
 #include <QListWidget>
 #include <QListWidgetItem>
 #include <QMenu>
+#include <QPaintEvent>
+#include <QPainter>
 #include <QPen>
 #include <QPoint>
 #include <QPushButton>
 #include <QString>
 #include <QToolButton>
 #include <QWidgetAction>
+#include <algorithm>
 
 #include "pj_plotting/PlotWidget.h"
 #include "pj_plotting/PlotWidgetBase.h"
@@ -51,13 +54,41 @@ constexpr auto kTrashIconPath = ":/resources/svg/trash.svg";
 // can find them via findChildren and re-tint without rebuilding rows.
 constexpr auto kVisibilityButtonProperty = "pj.curveEditor.visibilityButton";
 constexpr auto kTrashButtonProperty = "pj.curveEditor.trashButton";
+constexpr auto kColorButtonProperty = "pj.curveEditor.colorButton";
 
-// Stylesheet for the per-row color swatch. Borderless sharp-edged square —
-// the fill alone advertises the curve color, pointing-hand cursor signals
-// clickability.
-[[nodiscard]] QString swatchStyleSheet(QColor color) {
-  return QStringLiteral("background-color: %1; border: none; border-radius: 0;").arg(color.name());
-}
+class CurveColorButton : public QPushButton {
+ public:
+  explicit CurveColorButton(QColor color, QWidget* parent = nullptr) : QPushButton(parent), color_(color) {
+    setCursor(Qt::PointingHandCursor);
+    setFlat(true);
+    setFocusPolicy(Qt::NoFocus);
+  }
+
+  void setColor(QColor color) {
+    if (color_ == color) {
+      return;
+    }
+    color_ = color;
+    update();
+  }
+
+ protected:
+  void paintEvent(QPaintEvent* event) override {
+    Q_UNUSED(event)
+    QPainter painter(this);
+    painter.setRenderHint(QPainter::Antialiasing, true);
+    painter.setPen(Qt::NoPen);
+    painter.setBrush(color_);
+
+    const int extent = std::max(6, std::min(width(), height()) - 6);
+    const QRectF swatch_rect((width() - extent) / 2.0, (height() - extent) / 2.0, extent, extent);
+    const qreal radius = std::max<qreal>(2.0, extent * 0.22);
+    painter.drawRoundedRect(swatch_rect, radius, radius);
+  }
+
+ private:
+  QColor color_;
+};
 
 // Custom row widget. Uses explicit geometry instead of a QHBoxLayout so
 // the eye + trash icons pin to the right edge regardless of available
@@ -229,6 +260,9 @@ void CurveEditor::setPlot(PlotWidget* plot) {
   if (curve_list_connection_) {
     QObject::disconnect(curve_list_connection_);
   }
+  if (curve_color_connection_) {
+    QObject::disconnect(curve_color_connection_);
+  }
   if (plot_destroyed_connection_) {
     QObject::disconnect(plot_destroyed_connection_);
   }
@@ -236,6 +270,7 @@ void CurveEditor::setPlot(PlotWidget* plot) {
   clearActivePicker();
   if (plot_ != nullptr) {
     curve_list_connection_ = connect(plot_, &PlotWidgetBase::curveListChanged, this, &CurveEditor::refresh);
+    curve_color_connection_ = connect(plot_, &PlotWidget::curveColorChanged, this, &CurveEditor::onCurveColorChanged);
     plot_destroyed_connection_ = connect(plot_, &QObject::destroyed, this, [this]() {
       plot_ = nullptr;
       clearActivePicker();
@@ -274,10 +309,8 @@ void CurveEditor::appendRow(const QString& curve_key, const QString& display_nam
   // Children are constructed without a parent — CurveRowWidget's ctor
   // reparents them in one place so resizeEvent can pin geometry directly
   // (sizes scale to the row height, so no setFixedSize here).
-  auto* swatch = new QPushButton();
-  swatch->setCursor(Qt::PointingHandCursor);
-  swatch->setFlat(true);
-  swatch->setStyleSheet(swatchStyleSheet(color));
+  auto* swatch = new CurveColorButton(color);
+  swatch->setProperty(kColorButtonProperty, curve_key);
   connect(swatch, &QPushButton::clicked, this, [this, curve_key, swatch]() { onSwatchClicked(curve_key, swatch); });
 
   auto* visibility = new QToolButton();
@@ -337,7 +370,6 @@ void CurveEditor::onSwatchClicked(const QString& curve_name, QPushButton* swatch
   const QColor current = (info != nullptr && info->curve != nullptr) ? info->curve->pen().color() : QColor(Qt::white);
 
   active_color_curve_ = curve_name;
-  active_color_swatch_ = swatch;
 
   if (color_picker_ == nullptr) {
     color_picker_ = new ColorPickerPopup(this);
@@ -354,15 +386,22 @@ void CurveEditor::onPickerColorChanged(QColor color) {
   }
   // onChangeCurveColor calls replot() internally; no second replot here.
   plot_->onChangeCurveColor(active_color_curve_, color);
-  if (active_color_swatch_ != nullptr) {
-    active_color_swatch_->setStyleSheet(swatchStyleSheet(color));
-  }
   emit plot_->undoableChange();
+}
+
+void CurveEditor::onCurveColorChanged(const QString& curve_name, QColor color) {
+  for (auto* button : ui_->listWidget->findChildren<QPushButton*>()) {
+    if (button->property(kColorButtonProperty).toString() != curve_name) {
+      continue;
+    }
+    if (auto* color_button = dynamic_cast<CurveColorButton*>(button)) {
+      color_button->setColor(color);
+    }
+  }
 }
 
 void CurveEditor::clearActivePicker() {
   active_color_curve_.clear();
-  active_color_swatch_ = nullptr;
   if (color_picker_ != nullptr && color_picker_->isVisible()) {
     color_picker_->hide();
   }

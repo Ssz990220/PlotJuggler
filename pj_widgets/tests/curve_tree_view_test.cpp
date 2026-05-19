@@ -157,7 +157,7 @@ TEST(CurveTreeViewTest, PressingSelectedItemDoesNotCollapseMultiSelection) {
   EXPECT_TRUE(top_leaf->isSelected());
 }
 
-TEST(CurveTreeViewTest, DoubleClickTogglesWholeSubtreeExpansion) {
+TEST(CurveTreeViewTest, DoubleClickOnDatasetTogglesOnlyDatasetExpansion) {
   PJ::CurveTreeView view;
 
   view.addCurve(QStringLiteral("root/branch/leaf_a"));
@@ -175,11 +175,39 @@ TEST(CurveTreeViewTest, DoubleClickTogglesWholeSubtreeExpansion) {
 
   Q_EMIT view.itemDoubleClicked(root, 0);
   EXPECT_TRUE(root->isExpanded());
-  EXPECT_TRUE(branch->isExpanded());
+  EXPECT_FALSE(branch->isExpanded());
 
   Q_EMIT view.itemDoubleClicked(root, 0);
   EXPECT_FALSE(root->isExpanded());
   EXPECT_FALSE(branch->isExpanded());
+}
+
+TEST(CurveTreeViewTest, DoubleClickBelowDatasetTogglesWholeSubtreeExpansion) {
+  PJ::CurveTreeView view;
+
+  view.addCurve(QStringLiteral("root/branch/subbranch/leaf_a"));
+  view.addCurve(QStringLiteral("root/branch/subbranch/leaf_b"));
+
+  QTreeWidgetItem* root = view.topLevelItem(0);
+  ASSERT_NE(root, nullptr);
+  ASSERT_EQ(root->childCount(), 1);
+  QTreeWidgetItem* branch = root->child(0);
+  ASSERT_NE(branch, nullptr);
+  ASSERT_EQ(branch->childCount(), 1);
+  QTreeWidgetItem* subbranch = branch->child(0);
+  ASSERT_NE(subbranch, nullptr);
+
+  view.collapseAll();
+  EXPECT_FALSE(branch->isExpanded());
+  EXPECT_FALSE(subbranch->isExpanded());
+
+  Q_EMIT view.itemDoubleClicked(branch, 0);
+  EXPECT_TRUE(branch->isExpanded());
+  EXPECT_TRUE(subbranch->isExpanded());
+
+  Q_EMIT view.itemDoubleClicked(branch, 0);
+  EXPECT_FALSE(branch->isExpanded());
+  EXPECT_FALSE(subbranch->isExpanded());
 }
 
 TEST(CurveTreeViewTest, ObjectTopicsUseTopicNodeWithoutEnteringCurveSelection) {
@@ -192,6 +220,7 @@ TEST(CurveTreeViewTest, ObjectTopicsUseTopicNodeWithoutEnteringCurveSelection) {
           .topic = QStringLiteral("/camera/image"),
           .field = {},
           .selectable = false,
+          .is_image_topic = true,
       });
   view.addCurve(
       PJ::CurveTreeView::CurvePath{
@@ -208,7 +237,8 @@ TEST(CurveTreeViewTest, ObjectTopicsUseTopicNodeWithoutEnteringCurveSelection) {
   ASSERT_NE(camera, nullptr);
   QTreeWidgetItem* image = findChild(camera, QStringLiteral("image"));
   ASSERT_NE(image, nullptr);
-  EXPECT_TRUE(image->font(0).italic());
+  EXPECT_FALSE(image->font(0).italic());
+  EXPECT_FALSE(image->icon(0).isNull());
   EXPECT_TRUE(image->flags().testFlag(Qt::ItemIsSelectable));
   EXPECT_TRUE(image->flags().testFlag(Qt::ItemIsDragEnabled));
 

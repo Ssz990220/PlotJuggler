@@ -218,13 +218,14 @@ PlotWidgetBase::~PlotWidgetBase() {
   plot_ = nullptr;
 }
 
-PlotWidgetBase::CurveInfo* PlotWidgetBase::addCurve(const QString& name, QwtSeriesData<QPointF>* series, QColor color) {
+PlotWidgetBase::CurveInfo* PlotWidgetBase::addCurve(
+    const QString& name, QwtSeriesData<QPointF>* series, QColor color, const QString& display_name) {
   if (series == nullptr || curveFromTitle(name) != nullptr) {
     delete series;
     return nullptr;
   }
 
-  auto* curve = new QwtPlotCurve(name);
+  auto* curve = new QwtPlotCurve(display_name.isEmpty() ? name : display_name);
   curve->setPaintAttribute(QwtPlotCurve::ClipPolygons, true);
   curve->setPaintAttribute(QwtPlotCurve::FilterPointsAggressive, true);
   curve->setData(series);

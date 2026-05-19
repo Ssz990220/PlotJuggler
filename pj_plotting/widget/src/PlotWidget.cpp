@@ -146,11 +146,10 @@ PlotWidget::CurveInfo* PlotWidget::addCurve(const QString& name, QColor color) {
   }
 
   auto* adapter = new DatastoreCurveAdapter(session_, *descriptor);
-  auto* info = PlotWidgetBase::addCurve(name, adapter, color);
+  auto* info = PlotWidgetBase::addCurve(name, adapter, color, curveDisplayName(*descriptor));
   if (info == nullptr) {
     return nullptr;
   }
-  info->curve->setTitle(curveDisplayName(*descriptor));
   if (tracker_ != nullptr) {
     tracker_->setEnabled(tracker_enabled_);
   }
@@ -558,6 +557,7 @@ void PlotWidget::onChangeCurveColor(const QString& curve_name, QColor new_color)
   CurveInfo* info = curveFromTitle(curve_name);
   if (info != nullptr && info->curve != nullptr) {
     info->curve->setPen(new_color, info->curve->pen().widthF());
+    emit curveColorChanged(info->source_name, new_color);
     replot();
   }
 }

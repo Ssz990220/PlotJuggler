@@ -3,16 +3,22 @@
 #include <DockAreaWidget.h>
 #include <DockManager.h>
 
+#include <QAction>
 #include <QBoxLayout>
+#include <QContextMenuEvent>
+#include <QIcon>
 #include <QLabel>
+#include <QMenu>
 #include <QPushButton>
 #include <QUuid>
+#include <QWidget>
 #include <utility>
 
 #include "pj_plotting/DockToolbar.h"
 #include "pj_plotting/PlotDocker.h"
 #include "pj_plotting/PlotWidget.h"
 #include "pj_runtime/CatalogModel.h"
+#include "pj_widgets/SvgUtil.h"
 #include "pj_widgets/VisualizationPlaceholderWidget.h"
 
 namespace PJ {
@@ -20,6 +26,12 @@ namespace {
 
 QString newStateId() {
   return QUuid::createUuid().toString(QUuid::WithoutBraces);
+}
+
+bool isContentWidgetOrChild(QObject* watched, QWidget* content_widget) {
+  auto* widget = qobject_cast<QWidget*>(watched);
+  return widget != nullptr && content_widget != nullptr &&
+         (widget == content_widget || content_widget->isAncestorOf(widget));
 }
 
 }  // namespace
@@ -138,6 +150,12 @@ void DockWidget::setPlaceholderWidget() {
   connect(
       placeholder_widget_, &VisualizationPlaceholderWidget::catalogItemsDropped, this,
       &DockWidget::onCatalogItemsDropped);
+  connect(placeholder_widget_, &VisualizationPlaceholderWidget::splitHorizontalRequested, this, [this]() {
+    splitHorizontal();
+  });
+  connect(placeholder_widget_, &VisualizationPlaceholderWidget::splitVerticalRequested, this, [this]() {
+    splitVertical();
+  });
 }
 
 DockToolbar* DockWidget::toolBar() {
@@ -178,6 +196,17 @@ void DockWidget::onStylesheetChanged(QString theme) {
   if (placeholder_widget_ != nullptr) {
     placeholder_widget_->onStylesheetChanged(theme);
   }
+}
+
+bool DockWidget::eventFilter(QObject* watched, QEvent* event) {
+  if (object_widget_ != nullptr && content_widget_ != nullptr && isContentWidgetOrChild(watched, content_widget_) &&
+      event != nullptr && event->type() == QEvent::ContextMenu) {
+    auto* context_event = static_cast<QContextMenuEvent*>(event);
+    showObjectContextMenu(context_event->globalPos());
+    event->accept();
+    return true;
+  }
+  return ads::CDockWidget::eventFilter(watched, event);
 }
 
 DockWidget* DockWidget::splitHorizontal() {
@@ -267,8 +296,14 @@ void DockWidget::onCatalogItemsDropped(const QStringList& keys) {
     setPlaceholderWidget();
     return;
   }
+  installObjectContextMenuFilter(content_widget_);
   setWidget(content_widget_);
   setName(first_item->topic_name);
+  emit undoableChange();
+}
+
+void DockWidget::clearToPlaceholder() {
+  setPlaceholderWidget();
   emit undoableChange();
 }
 
@@ -280,6 +315,7 @@ void DockWidget::clearCurrentContent(bool delete_content) {
     disconnect(placeholder_widget_, nullptr, this, nullptr);
   }
   if (content_widget_ != nullptr) {
+    removeObjectContextMenuFilter(content_widget_);
     takeWidget();
     if (delete_content) {
       content_widget_->deleteLater();
@@ -289,6 +325,44 @@ void DockWidget::clearCurrentContent(bool delete_content) {
   placeholder_widget_ = nullptr;
   plot_widget_ = nullptr;
   object_widget_ = nullptr;
+}
+
+void DockWidget::installObjectContextMenuFilter(QWidget* root) {
+  if (root == nullptr) {
+    return;
+  }
+  root->installEventFilter(this);
+  const auto children = root->findChildren<QWidget*>();
+  for (auto* child : children) {
+    child->installEventFilter(this);
+  }
+}
+
+void DockWidget::removeObjectContextMenuFilter(QWidget* root) {
+  if (root == nullptr) {
+    return;
+  }
+  root->removeEventFilter(this);
+  const auto children = root->findChildren<QWidget*>();
+  for (auto* child : children) {
+    child->removeEventFilter(this);
+  }
+}
+
+void DockWidget::showObjectContextMenu(const QPoint& global_pos) {
+  const QString theme = currentTheme();
+  QMenu menu(this);
+  menu.setObjectName(QStringLiteral("PJMenu"));
+  menu.addAction(QIcon(LoadSvg(":/resources/svg/add_column.svg", theme)), tr("Split Horizontally"), this, [this]() {
+    splitHorizontal();
+  });
+  menu.addAction(QIcon(LoadSvg(":/resources/svg/add_row.svg", theme)), tr("Split Vertically"), this, [this]() {
+    splitVertical();
+  });
+  menu.addSeparator();
+  menu.addAction(
+      QIcon(LoadSvg(":/resources/svg/clear.svg", theme)), tr("Clear"), this, [this]() { clearToPlaceholder(); });
+  menu.exec(global_pos);
 }
 
 }  // namespace PJ

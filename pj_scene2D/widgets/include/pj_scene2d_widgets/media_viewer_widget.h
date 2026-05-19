@@ -81,6 +81,7 @@ class MediaViewerWidget : public QRhiWidget {
 
  private:
   [[nodiscard]] QMatrix4x4 buildViewTransform(QSize output_size) const;
+  [[nodiscard]] bool hasRetainedUploadableFrameLocked() const;
   static QShader loadShader(const QString& path);
   // Get-or-create the glyph mask texture for a given (text, font_size). Renders
   // via QPainter on first miss and uploads as an R8 QRhiTexture. The texture
@@ -108,7 +109,9 @@ class MediaViewerWidget : public QRhiWidget {
   // MediaSource (not owned)
   MediaSource* media_source_ = nullptr;
 
-  // Pending frame (set from any thread, uploaded on render tick)
+  // Last CPU-side frame. `has_pending_` marks whether it still needs an
+  // upload; the data itself is intentionally retained after upload so QRhi
+  // resource recreation can restore the latest visible image.
   std::mutex frame_mutex_;
   DecodedFrame pending_decoded_;  // YUV420P or RGB frame
   QImage pending_qimage_;         // QImage fallback
