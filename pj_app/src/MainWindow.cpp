@@ -1024,6 +1024,7 @@ void MainWindow::applyGlobalToggles(PlotWidget* plot) {
   plot->setShowPoints(show_points_);
   plot->setGridVisible(activate_grid_);
   applyDots(plot);
+  plot->setReferenceLine(reference_time_);
   applyLegendStatus(plot);
   plot->setTrackerParameter(tracker_info_);
 }
@@ -1696,6 +1697,9 @@ void MainWindow::buildGlobalToolbar() {
   button_show_point_ = add_button("buttonShowpoint", ":/resources/svg/show_point.svg", "Show point in plot");
   button_grid_ = add_button("buttonActivateGrid", ":/resources/svg/grid.svg", "Show/Hide the grid");
   button_dots_ = add_button("buttonDots", ":/resources/svg/scatter_plot.svg", "Show data point markers on curves");
+  button_reference_point_ = add_button(
+      "buttonReferencePoint", ":/resources/svg/reference_line.svg",
+      "Drop a blue reference line at the playback position; values render as delta from there");
   auto make_checkable = [](QToolButton* btn, bool initial_checked) {
     btn->setCheckable(true);
     btn->setChecked(initial_checked);
@@ -1704,6 +1708,7 @@ void MainWindow::buildGlobalToolbar() {
   make_checkable(button_show_point_, show_points_);
   make_checkable(button_grid_, activate_grid_);
   make_checkable(button_dots_, dots_);
+  make_checkable(button_reference_point_, false);
   connect(button_link_, &QToolButton::toggled, this, [](bool checked) {
     QSettings().setValue(QStringLiteral("MainWindow.buttonLink"), checked);
   });
@@ -1733,6 +1738,16 @@ void MainWindow::buildGlobalToolbar() {
       applyDots(plot);
       plot->replot();
     });
+  });
+  // Session-only state — not persisted to QSettings, not in xmlSaveState.
+  // Captures the playback time at the moment of click; subsequent scrubbing
+  // does not move the reference.
+  connect(button_reference_point_, &QToolButton::toggled, this, [this](bool checked) {
+    if (applying_state_) {
+      return;
+    }
+    reference_time_ = checked ? std::optional<double>{session_->playbackEngine().currentTime()} : std::nullopt;
+    forEachPlot([this](PlotWidget* plot) { plot->setReferenceLine(reference_time_); });
   });
 
   // "Legend" group — single icon that combines a corner picker with a

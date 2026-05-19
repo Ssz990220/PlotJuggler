@@ -81,6 +81,9 @@ PlotWidget::PlotWidget(SessionManager* session, CatalogModel* catalog, QWidget* 
   state_id_ = newStateId();
   setAcceptDrops(true);
   tracker_ = new CurveTracker(qwtPlot(), QColor(Qt::red));
+  reference_tracker_ = new CurveTracker(qwtPlot(), QColor(Qt::blue));
+  reference_tracker_->setParameter(CurveTracker::kLineOnly);
+  reference_tracker_->setEnabled(false);
 
   // Mouse-hover inspector. Shows a snap-to-curve dot + value tooltip wherever
   // the mouse points, gated by show_points_. Independent from the playback
@@ -106,6 +109,7 @@ PlotWidget::PlotWidget(SessionManager* session, CatalogModel* catalog, QWidget* 
 
 PlotWidget::~PlotWidget() {
   delete tracker_;
+  delete reference_tracker_;
   if (show_point_marker_ != nullptr) {
     show_point_marker_->detach();
     delete show_point_marker_;
@@ -175,6 +179,9 @@ PlotWidget::CurveInfo* PlotWidget::addCurveXY(const QString& x_name, const QStri
   if (tracker_ != nullptr) {
     tracker_->setEnabled(false);
   }
+  // Clears blue tracker + red tracker's reference_pos_. Otherwise, returning
+  // to time-series mode later would resurrect stale Δ values without a blue line.
+  setReferenceLine(std::nullopt);
   info->curve->setStyle(QwtPlotCurve::Dots);
   info->curve->setPen(info->curve->pen().color(), dotWidthValue(lineWidth()));
   updateMaximumZoomArea();
@@ -204,6 +211,22 @@ void PlotWidget::setTrackerEnabled(bool enabled) {
   tracker_enabled_ = enabled;
   if (tracker_ != nullptr) {
     tracker_->setEnabled(enabled && !isXYPlot());
+  }
+  replot();
+}
+
+void PlotWidget::setReferenceLine(std::optional<double> reference_x_sec) {
+  if (reference_tracker_ == nullptr || tracker_ == nullptr) {
+    return;
+  }
+  if (isXYPlot() || !reference_x_sec.has_value()) {
+    reference_tracker_->setEnabled(false);
+    tracker_->setReferencePosition(std::nullopt);
+  } else {
+    const QPointF reference_point(*reference_x_sec, 0.0);
+    reference_tracker_->setEnabled(true);
+    reference_tracker_->setPosition(reference_point);
+    tracker_->setReferencePosition(reference_point);
   }
   replot();
 }

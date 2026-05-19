@@ -12,6 +12,7 @@
 #include <deque>
 #include <functional>
 #include <memory>
+#include <optional>
 
 #include "pj_base/diagnostic_sink.hpp"
 #include "pj_plotting/CurveTracker.h"
@@ -317,6 +318,7 @@ class MainWindow : public QMainWindow {
   QToolButton* button_show_point_ = nullptr;
   QToolButton* button_grid_ = nullptr;
   QToolButton* button_dots_ = nullptr;
+  QToolButton* button_reference_point_ = nullptr;
   // Global-column "Legend" button — single icon that combines a corner
   // picker (left-click) with a show/hide toggle (right-click). Checked
   // while the legend is shown at one of the four corners; unchecked
@@ -342,6 +344,9 @@ class MainWindow : public QMainWindow {
   // Three-state cycle for the playback tracker info level (line / +value /
   // +value+name). Default kValue matches PJ3 (mainwindow.cpp:154).
   CurveTracker::Parameter tracker_info_ = CurveTracker::kValue;
+  // Session-only — PJ3 doesn't persist this either. Set at toggle-ON to the
+  // current playback time; tracker renders Δ values until cleared.
+  std::optional<double> reference_time_;
 };
 
 }  // namespace PJ

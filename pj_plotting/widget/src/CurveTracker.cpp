@@ -141,7 +141,7 @@ void CurveTracker::setPosition(const QPointF& tracker_position) {
     parts.value = QString::number(point.y(), 'f', precision);
     parts.name = curve->title().text();
     if (maybe_reference.has_value()) {
-      parts.delta = QStringLiteral(" (d %1)").arg(QString::number(point.y() - maybe_reference->y(), 'f', precision));
+      parts.delta = QStringLiteral(" (Δ %1)").arg(QString::number(point.y() - maybe_reference->y(), 'f', precision));
     }
     text_lines.insert({point.y(), parts});
     values_char_count = std::max(values_char_count, static_cast<int>(parts.value.length()));
@@ -165,8 +165,13 @@ void CurveTracker::setPosition(const QPointF& tracker_position) {
 
   QwtText marker_text;
   const QColor text_color = plot_->palette().color(QPalette::WindowText);
-  QString marker_html = QStringLiteral("<font color=%1>time : %2</font><br>")
-                            .arg(text_color.name(), QString::number(tracker_position.x(), 'f', precision));
+  QString time_delta;
+  if (reference_pos_.has_value()) {
+    time_delta =
+        QStringLiteral(" (Δ %1)").arg(QString::number(tracker_position.x() - reference_pos_->x(), 'f', precision));
+  }
+  QString marker_html = QStringLiteral("<font color=%1>time : %2%3</font><br>")
+                            .arg(text_color.name(), QString::number(tracker_position.x(), 'f', precision), time_delta);
 
   if (parameter_ != kLineOnly) {
     int line_index = 0;

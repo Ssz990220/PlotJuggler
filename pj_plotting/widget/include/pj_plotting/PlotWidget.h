@@ -8,6 +8,7 @@
 #include <QMetaObject>
 #include <QRectF>
 #include <QStringList>
+#include <optional>
 
 #include "pj_plotting/CurveTracker.h"
 #include "pj_plotting/PlotWidgetBase.h"
@@ -38,6 +39,9 @@ class PlotWidget : public PlotWidgetBase {
   void setTrackerEnabled(bool enabled);
   [[nodiscard]] bool trackerEnabled() const noexcept;
   void setTrackerParameter(CurveTracker::Parameter parameter);
+  // Sets (or clears, when nullopt) a blue reference line. While set, the red
+  // playback tracker renders values as deltas from this X. No-op on XY plots.
+  void setReferenceLine(std::optional<double> reference_x_sec);
   // Mouse-hover inspector. Independent from the playback tracker_; toggling
   // this off does not hide the playback red line.
   void setShowPoints(bool show);
@@ -108,6 +112,7 @@ class PlotWidget : public PlotWidgetBase {
   QMetaObject::Connection topics_committed_connection_;
   DragInfo dragging_;
   CurveTracker* tracker_ = nullptr;
+  CurveTracker* reference_tracker_ = nullptr;
   bool tracker_enabled_ = true;
   bool show_points_ = true;
   QwtPlotMarker* show_point_marker_ = nullptr;
