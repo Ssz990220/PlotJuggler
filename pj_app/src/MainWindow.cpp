@@ -383,6 +383,7 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
   dots_ = settings.value(QStringLiteral("MainWindow.buttonDots"), false).toBool();
   tracker_info_ = static_cast<CurveTracker::Parameter>(
       settings.value(QStringLiteral("MainWindow.timeTrackerSetting"), static_cast<int>(CurveTracker::kValue)).toInt());
+  keep_ratio_ = settings.value(QStringLiteral("MainWindow.buttonRatio"), true).toBool();
   legend_status_ = static_cast<LegendStatus>(
       settings.value(QStringLiteral("MainWindow.legendStatus"), static_cast<int>(LegendStatus::kHidden)).toInt());
 
@@ -1044,6 +1045,7 @@ void MainWindow::applyGlobalToggles(PlotWidget* plot) {
   plot->setGridVisible(activate_grid_);
   applyDots(plot);
   plot->setReferenceLine(reference_time_);
+  plot->setKeepRatioXY(keep_ratio_);
   applyLegendStatus(plot);
   plot->setTrackerParameter(tracker_info_);
 }
@@ -1535,6 +1537,9 @@ QDomDocument MainWindow::xmlSaveState() const {
   QDomElement tracker_info = doc.createElement(QStringLiteral("tracker_info"));
   tracker_info.setAttribute(QStringLiteral("value"), QString::number(static_cast<int>(tracker_info_)));
   root.appendChild(tracker_info);
+  QDomElement ratio = doc.createElement(QStringLiteral("ratio"));
+  ratio.setAttribute(QStringLiteral("enabled"), bool_attr(button_ratio_->isChecked()));
+  root.appendChild(ratio);
   return doc;
 }
 
@@ -1609,6 +1614,12 @@ bool MainWindow::xmlLoadState(const QDomDocument& state_document) {
         tracker_info_el.attribute(QStringLiteral("value"), QString::number(static_cast<int>(tracker_info_))).toInt());
     QSettings().setValue(QStringLiteral("MainWindow.timeTrackerSetting"), static_cast<int>(tracker_info_));
     updateTimeTrackerIcon();
+  }
+  const QDomElement ratio = root.firstChildElement(QStringLiteral("ratio"));
+  if (!ratio.isNull()) {
+    keep_ratio_ = read_bool(ratio, keep_ratio_);
+    button_ratio_->setChecked(keep_ratio_);
+    QSettings().setValue(QStringLiteral("MainWindow.buttonRatio"), keep_ratio_);
   }
   if (!legend_status.isNull()) {
     const auto new_status = static_cast<LegendStatus>(
@@ -1792,6 +1803,7 @@ void MainWindow::buildGlobalToolbar() {
   });
 
   button_show_point_ = add_button("buttonShowpoint", ":/resources/svg/show_point.svg", "Show point in plot");
+  button_ratio_ = add_button("buttonRatio", ":/resources/svg/ratio.svg", "Keep aspect ratio of XY plots (1:1)");
   button_dots_ = add_button("buttonDots", ":/resources/svg/scatter_plot.svg", "Show data point markers on curves");
   button_reference_point_ = add_button(
       "buttonReferencePoint", ":/resources/svg/reference_line.svg",
@@ -1803,6 +1815,7 @@ void MainWindow::buildGlobalToolbar() {
   make_checkable(button_link_, QSettings().value(QStringLiteral("MainWindow.buttonLink"), true).toBool());
   make_checkable(button_show_point_, show_points_);
   make_checkable(button_grid_, activate_grid_);
+  make_checkable(button_ratio_, keep_ratio_);
   make_checkable(button_dots_, dots_);
   make_checkable(button_reference_point_, false);
   // buttonZoomOut is a one-shot action, not a toggle — no make_checkable.
@@ -1839,6 +1852,14 @@ void MainWindow::buildGlobalToolbar() {
       applyDots(plot);
       plot->replot();
     });
+  });
+  connect(button_ratio_, &QToolButton::toggled, this, [this](bool checked) {
+    if (applying_state_) {
+      return;
+    }
+    keep_ratio_ = checked;
+    QSettings().setValue(QStringLiteral("MainWindow.buttonRatio"), checked);
+    forEachPlot([checked](PlotWidget* plot) { plot->setKeepRatioXY(checked); });
   });
   // Session-only state — not persisted to QSettings, not in xmlSaveState.
   // Captures the playback time at the moment of click; subsequent scrubbing

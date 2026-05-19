@@ -325,6 +325,7 @@ class MainWindow : public QMainWindow {
   QToolButton* button_show_point_ = nullptr;
   QToolButton* button_grid_ = nullptr;
   QToolButton* button_zoom_out_ = nullptr;
+  QToolButton* button_ratio_ = nullptr;
   QToolButton* button_dots_ = nullptr;
   QToolButton* button_reference_point_ = nullptr;
   // Global-column "Legend" button — single icon that combines a corner
@@ -355,6 +356,8 @@ class MainWindow : public QMainWindow {
   // Session-only — PJ3 doesn't persist this either. Set at toggle-ON to the
   // current playback time; tracker renders Δ values until cleared.
   std::optional<double> reference_time_;
+  // PJ3 parity: 1:1 aspect is the expected default for XY plots.
+  bool keep_ratio_ = true;
 };
 
 }  // namespace PJ

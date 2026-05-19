@@ -74,24 +74,35 @@ bool PlotZoomer::accept(QPolygon& polygon) const {
   return QwtPlotZoomer::accept(polygon);
 }
 
+void PlotZoomer::applyKeepAspectRatio(QRectF& rect) const {
+  if (!keep_aspect_ratio_) {
+    return;
+  }
+  const QRectF canvas_rect = canvas()->contentsRect();
+  // canvasBoundingRect-style inputs can have inverted Y (height < 0). Normalize
+  // before computing ratios; the caller's setAxisScale tolerates either order.
+  rect = rect.normalized();
+  if (canvas_rect.height() <= 0.0 || rect.height() <= 0.0) {
+    return;
+  }
+  const double canvas_ratio = canvas_rect.width() / canvas_rect.height();
+  const double zoom_ratio = rect.width() / rect.height();
+  if (zoom_ratio < canvas_ratio) {
+    const double new_width = rect.height() * canvas_ratio;
+    const double increment = new_width - rect.width();
+    rect.setWidth(new_width);
+    rect.moveLeft(rect.left() - 0.5 * increment);
+  } else {
+    const double new_height = rect.width() / canvas_ratio;
+    const double increment = new_height - rect.height();
+    rect.setHeight(new_height);
+    rect.moveTop(rect.top() - 0.5 * increment);
+  }
+}
+
 void PlotZoomer::zoom(const QRectF& zoom_rect) {
   QRectF rect = zoom_rect;
-  if (keep_aspect_ratio_) {
-    const QRectF canvas_rect = canvas()->contentsRect();
-    const double canvas_ratio = canvas_rect.width() / canvas_rect.height();
-    const double zoom_ratio = zoom_rect.width() / zoom_rect.height();
-    if (zoom_ratio < canvas_ratio) {
-      const double new_width = zoom_rect.height() * canvas_ratio;
-      const double increment = new_width - zoom_rect.width();
-      rect.setWidth(new_width);
-      rect.moveLeft(rect.left() - 0.5 * increment);
-    } else {
-      const double new_height = zoom_rect.width() / canvas_ratio;
-      const double increment = new_height - zoom_rect.height();
-      rect.setHeight(new_height);
-      rect.moveTop(rect.top() - 0.5 * increment);
-    }
-  }
+  applyKeepAspectRatio(rect);
   QwtPlotZoomer::zoom(rect);
 }
 

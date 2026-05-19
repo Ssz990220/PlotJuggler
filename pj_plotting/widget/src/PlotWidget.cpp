@@ -189,9 +189,17 @@ PlotWidget::CurveInfo* PlotWidget::addCurveXY(const QString& x_name, const QStri
 }
 
 void PlotWidget::setZoomRectangle(QRectF rect, bool emit_signal) {
-  setAxisScale(QwtPlot::yLeft, rect.bottom(), rect.top());
-  setAxisScale(QwtPlot::xBottom, rect.left(), rect.right());
-  qwtPlot()->updateAxes();
+  if (isXYPlot() && keepRatioXY()) {
+    // Every programmatic "return to original zoom" funnels through here
+    // (zoomOut, the H/V zoom-outs, XML restore). We keep the requested zoom
+    // level (PJ3 re-fits to the data extent) and re-impose the canvas aspect
+    // ratio so the XY shape stays 1:1.
+    applyRectKeepingRatio(rect);
+  } else {
+    setAxisScale(QwtPlot::yLeft, rect.bottom(), rect.top());
+    setAxisScale(QwtPlot::xBottom, rect.left(), rect.right());
+    qwtPlot()->updateAxes();
+  }
 
   if (emit_signal) {
     if (isXYPlot()) {
@@ -674,7 +682,20 @@ bool PlotWidget::eventFilter(QObject* obj, QEvent* event) {
 }
 
 void PlotWidget::onExternallyResized(const QRectF& rect) {
-  if (isXYPlot() || !isZoomLinkEnabled()) {
+  if (isXYPlot()) {
+    if (keepRatioXY()) {
+      // Wheel-zoom (magnifier) and pan bypass the drag-zoom keep-ratio path,
+      // and the magnifier clamps each axis independently at the data bounds —
+      // that asymmetry skews a 1:1 circle into an ellipse. Re-impose the
+      // canvas aspect ratio on the event's rect (not currentBoundingRect():
+      // the magnifier emits this signal before it replots, so the current
+      // view is still stale here).
+      applyRectKeepingRatio(rect);
+      replot();
+    }
+    return;  // XY never emits rectChanged (PJ3 parity).
+  }
+  if (!isZoomLinkEnabled()) {
     return;
   }
   emit rectChanged(this, rect);

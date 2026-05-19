@@ -130,7 +130,6 @@ class PlotWidgetBase::QwtPlotPimpl : public QwtPlot {
   void resizeEvent(QResizeEvent* event) override {
     QwtPlot::resizeEvent(event);
     resized_callback(canvasBoundingRect());
-    emit parent->widgetResized();
   }
 
   void dragEnterEvent(QDragEnterEvent* event) override {
@@ -291,11 +290,14 @@ PlotWidgetBase::CurveInfo* PlotWidgetBase::curveFromTitle(const QString& title) 
 
 void PlotWidgetBase::resetZoom() {
   updateMaximumZoomArea();
-  const QRectF rect = maxZoomRect();
+  applyRectToAxes(maxZoomRect());
+  replot();
+}
+
+void PlotWidgetBase::applyRectToAxes(const QRectF& rect) {
   plot_->setAxisScale(QwtPlot::yLeft, std::min(rect.bottom(), rect.top()), std::max(rect.bottom(), rect.top()));
   plot_->setAxisScale(QwtPlot::xBottom, std::min(rect.left(), rect.right()), std::max(rect.left(), rect.right()));
   plot_->updateAxes();
-  replot();
 }
 
 Range<double> PlotWidgetBase::getVisualizationRangeX() const {
@@ -439,6 +441,26 @@ bool PlotWidgetBase::keepRatioXY() const noexcept {
 void PlotWidgetBase::setKeepRatioXY(bool active) {
   keep_aspect_ratio_ = active;
   plot_->zoomer->keepAspectRatio(isXYPlot() && active);
+  if (!isXYPlot()) {
+    return;
+  }
+  // Reshape current view; otherwise the toggle only takes effect on the next
+  // drag-zoom. OFF re-fits to data bounds (loses zoom by design).
+  if (active) {
+    applyRectKeepingRatio(currentBoundingRect());
+    replot();
+  } else {
+    // resetZoom() refreshes max bounds first: data may have changed since the
+    // last reset, so the cached max_zoom_rect_ could be stale.
+    resetZoom();
+  }
+}
+
+void PlotWidgetBase::applyRectKeepingRatio(QRectF rect) {
+  if (isXYPlot() && keep_aspect_ratio_) {
+    plot_->zoomer->applyKeepAspectRatio(rect);
+  }
+  applyRectToAxes(rect);
 }
 
 void PlotWidgetBase::setAcceptDrops(bool accept) {

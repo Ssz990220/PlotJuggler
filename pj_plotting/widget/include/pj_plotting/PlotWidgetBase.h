@@ -110,7 +110,6 @@ class PlotWidgetBase : public QWidget {
   void dragLeaveSignal(QDragLeaveEvent* event);
   void dropSignal(QDropEvent* event);
   void legendSizeChanged(int new_size);
-  void widgetResized();
 
  protected:
   class QwtPlotPimpl;
@@ -128,6 +127,16 @@ class PlotWidgetBase : public QWidget {
 
   void updateMaximumZoomArea();
   bool eventFilter(QObject* obj, QEvent* event) override;
+
+  // Corrects rect to the canvas aspect ratio (when XY + keepRatioXY) and
+  // applies it to the axes. Caller decides whether to replot. Pass the rect
+  // explicitly: after a magnifier/panner change, currentBoundingRect() is
+  // still stale (those emit before they replot).
+  void applyRectKeepingRatio(QRectF rect);
+
+  // Applies a rect to the axes (min/max-safe, so it tolerates the normalized
+  // rect that applyKeepAspectRatio produces). Caller decides whether to replot.
+  void applyRectToAxes(const QRectF& rect);
 
  private:
   QwtPlotPimpl* plot_ = nullptr;

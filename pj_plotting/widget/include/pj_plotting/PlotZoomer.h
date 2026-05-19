@@ -15,6 +15,9 @@ class PlotZoomer : public QwtPlotZoomer {
     keep_aspect_ratio_ = keep;
   }
 
+  // Expands rect along the shorter axis to match canvas pixel ratio; preserves center. No-op when off.
+  void applyKeepAspectRatio(QRectF& rect) const;
+
  protected:
   void widgetMousePressEvent(QMouseEvent* event) override;
   void widgetMouseReleaseEvent(QMouseEvent* event) override;
