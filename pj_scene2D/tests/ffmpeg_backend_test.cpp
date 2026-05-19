@@ -13,11 +13,12 @@
 
 #include <chrono>
 #include <cmath>
-#include <cstdlib>
 #include <filesystem>
 #include <string>
 #include <thread>
 #include <vector>
+
+#include "pj_base/sdk/platform.hpp"
 
 namespace PJ {
 namespace {
@@ -30,8 +31,7 @@ using std::chrono::milliseconds;
 // ---------------------------------------------------------------------------
 
 inline std::string homeDir() {
-  const char* h = std::getenv("HOME");
-  return h ? h : "";
+  return PJ::sdk::getEnv("HOME").value_or("");
 }
 
 const std::string kTestVideo = "pj_scene2D/testdata/test_480p.mp4";

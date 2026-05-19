@@ -4,6 +4,19 @@ function(pj_scene2d_find_ffmpeg out_found out_targets out_source)
     set(${out_found} TRUE PARENT_SCOPE)
     set(${out_targets} ffmpeg::avcodec ffmpeg::avformat ffmpeg::avutil ffmpeg::swscale PARENT_SCOPE)
     set(${out_source} "Conan" PARENT_SCOPE)
+    # Conan 2's CMakeDeps declares ffmpeg::* as INTERFACE IMPORTED targets
+    # without IMPORTED_LOCATION, so $<TARGET_RUNTIME_DLLS:tgt> cannot find
+    # the DLLs. Forward the per-config bin/ directories Conan wrote to its
+    # data files so the caller can locate runtime DLLs (Windows needs them
+    # next to test exes; otherwise STATUS_DLL_NOT_FOUND at launch).
+    set(_bin_dirs "")
+    foreach(_cfg RELWITHDEBINFO RELEASE DEBUG MINSIZEREL)
+      if(DEFINED ffmpeg_BIN_DIRS_${_cfg})
+        list(APPEND _bin_dirs "${ffmpeg_BIN_DIRS_${_cfg}}")
+      endif()
+    endforeach()
+    list(REMOVE_DUPLICATES _bin_dirs)
+    set(PJ_SCENE2D_FFMPEG_BIN_DIRS "${_bin_dirs}" PARENT_SCOPE)
     return()
   endif()
 

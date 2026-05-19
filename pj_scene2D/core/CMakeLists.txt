@@ -76,6 +76,12 @@ if(PJ_BUILD_TESTS)
     add_executable(${test_name} ${test_src})
     target_link_libraries(${test_name} PRIVATE pj_scene2d_core libjpeg-turbo::libjpeg-turbo PNG::PNG GTest::gtest_main)
     target_compile_options(${test_name} PRIVATE ${PJ_WARNING_FLAGS} ${PJ_SANITIZER_FLAGS})
+    if(MSVC)
+      # Some test helpers call libpng's setjmp(png_jmpbuf(...)) with a
+      # PngWriteCtx on the stack. Same C4611 rationale as the library
+      # target above; suppress here for consistency across the module.
+      target_compile_options(${test_name} PRIVATE /wd4611)
+    endif()
     add_test(NAME ${test_name} COMMAND ${test_name})
   endforeach()
 
@@ -184,6 +190,48 @@ if(PJ_BUILD_TESTS)
     add_test(NAME ffmpeg_backend_test COMMAND ffmpeg_backend_test
       WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
     )
+
+    if(WIN32)
+      # Conan installs FFmpeg as shared libs on Windows but its package cache is
+      # not on %PATH%, so test binaries exit with STATUS_DLL_NOT_FOUND (0xc0000135)
+      # when the loader can't resolve avcodec/avformat/etc. Copy the FFmpeg
+      # runtime DLLs next to each test executable.
+      #
+      # We can't use $<TARGET_RUNTIME_DLLS:tgt>: Conan 2's CMakeDeps declares
+      # ffmpeg::* as INTERFACE IMPORTED with no IMPORTED_LOCATION, so the
+      # gen-exp expands to nothing. Use the bin/ dirs forwarded by the helper
+      # (which reads them from Conan's per-config *-data.cmake files).
+      set(_pj_ffmpeg_test_targets
+        ffmpeg_decoder_test
+        thumbnail_cache_test
+        h264_utils_test
+        streaming_video_decoder_test
+        streaming_video_source_test2
+        file_video_source_test
+        ffmpeg_backend_test
+      )
+
+      set(_pj_ffmpeg_dlls "")
+      foreach(_dir ${PJ_SCENE2D_FFMPEG_BIN_DIRS})
+        file(GLOB _glob "${_dir}/*.dll")
+        list(APPEND _pj_ffmpeg_dlls ${_glob})
+      endforeach()
+      list(REMOVE_DUPLICATES _pj_ffmpeg_dlls)
+
+      if(_pj_ffmpeg_dlls)
+        foreach(_tgt ${_pj_ffmpeg_test_targets})
+          add_custom_command(TARGET ${_tgt} POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+              ${_pj_ffmpeg_dlls} $<TARGET_FILE_DIR:${_tgt}>
+            VERBATIM
+          )
+        endforeach()
+      else()
+        message(WARNING "pj_scene2d_core: no FFmpeg runtime DLLs found in "
+          "PJ_SCENE2D_FFMPEG_BIN_DIRS='${PJ_SCENE2D_FFMPEG_BIN_DIRS}'; "
+          "FFmpeg-dependent tests may fail with STATUS_DLL_NOT_FOUND on Windows")
+      endif()
+    endif()
   endif()
 
   # Dual-store test: ObjectStore + DataEngine from same MCAP (M11)

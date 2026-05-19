@@ -535,7 +535,14 @@ TEST_F(ExtensionManagerTest, UninstallUnknownExtensionEmitsError) {
 
 // update() backs up the current version and re-installs from the registry.
 // The new version is registered with the correct version string after completion.
+//
+// Windows uses a deferred staging path (see ExtensionManager::update() -> doInstall(staging=true)
+// because loaded DLLs cannot be replaced atomically. The staged variant is exercised by the
+// applyPendingInstalls tests in section [6], so skip the direct-path assertions here.
 TEST_F(ExtensionManagerTest, UpdateReinstallsWithNewVersion) {
+  if (PlatformUtils::isWindows()) {
+    GTEST_SKIP() << "update() on Windows stages to pending dir; covered by applyPendingInstalls tests";
+  }
   // Ensure clean backup state before test (in case previous run failed mid-test).
   QDir(PlatformUtils::backupDir() + "/mock-data-source-1.0.0").removeRecursively();
 
@@ -570,7 +577,13 @@ TEST_F(ExtensionManagerTest, UpdateReinstallsWithNewVersion) {
 //
 // ext_dir is placed under the same filesystem root as backupDir() (~/.plotjuggler/)
 // so that QDir::rename() can do an atomic move without a cross-device copy.
+//
+// Linux-only: the Windows update path stages the new version instead of replacing the old
+// one, so no backup directory is created. See ExtensionManager::update().
 TEST_F(ExtensionManagerTest, UpdateBacksUpOldVersionOnSuccess) {
+  if (PlatformUtils::isWindows()) {
+    GTEST_SKIP() << "update() on Windows stages instead of swapping; no backup is created";
+  }
   // Ensure clean backup state before test (in case previous run failed mid-test).
   QDir(PlatformUtils::backupDir() + "/mock-data-source-1.0.0").removeRecursively();
 
@@ -612,7 +625,13 @@ TEST_F(ExtensionManagerTest, UpdateBacksUpOldVersionOnSuccess) {
 //
 // ext_dir is placed under the same filesystem root as backupDir() (~/.plotjuggler/)
 // so that QDir::rename() can do an atomic move without a cross-device copy.
+//
+// Linux-only: on Windows update() stages the new version without touching the live install,
+// so there is no backup to preserve and v1 remains installed on failure.
 TEST_F(ExtensionManagerTest, UpdateKeepsBackupWhenInstallFails) {
+  if (PlatformUtils::isWindows()) {
+    GTEST_SKIP() << "update() on Windows stages without removing v1; backup semantics do not apply";
+  }
   QTemporaryDir local_ext_dir(QDir(PlatformUtils::backupDir()).absoluteFilePath("../test_ext_XXXXXX"));
   ASSERT_TRUE(local_ext_dir.isValid());
 
@@ -1172,6 +1191,9 @@ TEST(PlatformDetectionTest, CurrentPlatformHasExpectedFormat) {
 // On the primary Linux x86_64 build/CI host, the reported platform must match the
 // key used in the registry fixture so that install() can resolve the download artifact.
 TEST(PlatformDetectionTest, LinuxX86PlatformMatchesRegistryKey) {
+  if (PlatformUtils::isWindows()) {
+    GTEST_SKIP() << "test pins the Linux x86_64 platform key";
+  }
   EXPECT_EQ(PlatformUtils::currentPlatform(), "linux-x86_64");
 }
 
@@ -1197,6 +1219,9 @@ TEST(PlatformDetectionTest, CurrentPlatformResolvesRegistryArtifact) {
 // On Linux, install() must write directly to extensions_dir (no staging).
 // isWindows() must return false to confirm the code path is exercised.
 TEST(PlatformDetectionTest, IsWindowsReturnsFalseOnLinux) {
+  if (PlatformUtils::isWindows()) {
+    GTEST_SKIP() << "test asserts the Linux code path is exercised";
+  }
   EXPECT_FALSE(PlatformUtils::isWindows());
 }
 
