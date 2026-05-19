@@ -53,6 +53,7 @@
 #include "Theme.h"
 #include "TitleBar.h"
 #include "pj_base/dataset.hpp"
+#include "pj_base/types.hpp"
 #include "pj_datastore/engine.hpp"
 #include "pj_datastore/object_store.hpp"
 #include "pj_datastore/reader.hpp"
@@ -1017,6 +1018,25 @@ void MainWindow::applyLegendStatus(PlotWidget* plot) {
   plot->setLegendAlignment(alignment);
 }
 
+void MainWindow::onLegendButtonClicked() {
+  // Three branches for the cycle:
+  //   * Hidden: re-show at previous_legend_corner_. This is TR right
+  //     after a BR-to-hidden wrap, or the last visible corner after
+  //     a right-click hide.
+  //   * BR (cycle end): reset previous_legend_corner_ to TR so the
+  //     unchecked button paints the TR icon, then hide. The next
+  //     left-click takes the Hidden branch and re-enters at TR.
+  //   * Any other visible corner: advance to the next corner.
+  if (legend_status_ == LegendStatus::kHidden) {
+    setLegendStatus(previous_legend_corner_);
+  } else if (legend_status_ == LegendStatus::kBottomRight) {
+    previous_legend_corner_ = LegendStatus::kTopRight;
+    setLegendStatus(LegendStatus::kHidden);
+  } else {
+    setLegendStatus(nextLegendCorner(legend_status_));
+  }
+}
+
 void MainWindow::applyGlobalToggles(PlotWidget* plot) {
   if (plot == nullptr) {
     return;
@@ -1152,6 +1172,51 @@ void MainWindow::forEachPlot(const std::function<void(PlotWidget*)>& operation) 
   forEachDock([&operation](DockWidget* dock) {
     if (PlotWidget* plot = dock->plotWidget()) {
       operation(plot);
+    }
+  });
+}
+
+void MainWindow::linkedZoomOut() {
+  if (!button_link_->isChecked()) {
+    forEachPlot([](PlotWidget* plot) { plot->zoomOut(false); });
+    return;
+  }
+  forEachDocker([](PlotDocker* docker) {
+    auto plot_at = [docker](int index) -> PlotWidget* {
+      DockWidget* dock = docker->plotAt(index);
+      PlotWidget* plot = dock != nullptr ? dock->plotWidget() : nullptr;
+      return (plot != nullptr && !plot->isEmpty()) ? plot : nullptr;
+    };
+
+    std::optional<Range<double>> x_union;
+    for (int index = 0; index < docker->plotCount(); ++index) {
+      PlotWidget* plot = plot_at(index);
+      if (plot == nullptr || plot->isXYPlot()) {
+        continue;
+      }
+      const QRectF rect = plot->maxZoomRect();
+      if (!x_union) {
+        x_union = Range<double>{rect.left(), rect.right()};
+      } else {
+        x_union->min = std::min(x_union->min, rect.left());
+        x_union->max = std::max(x_union->max, rect.right());
+      }
+    }
+
+    for (int index = 0; index < docker->plotCount(); ++index) {
+      PlotWidget* plot = plot_at(index);
+      if (plot == nullptr) {
+        continue;
+      }
+      if (plot->isXYPlot() || !x_union) {
+        plot->zoomOut(false);
+        continue;
+      }
+      QRectF rect = plot->maxZoomRect();
+      rect.setLeft(x_union->min);
+      rect.setRight(x_union->max);
+      plot->setZoomRectangle(rect, false);
+      plot->replot();
     }
   });
 }
@@ -1682,6 +1747,8 @@ void MainWindow::buildGlobalToolbar() {
   // QSettings, and calls forEachPlot. applying_state_ no-ops the slot
   // during bulk reload (xmlLoadState / undo / redo).
   button_link_ = add_button("buttonLink", ":/resources/svg/link.svg", "Link X axis");
+  button_zoom_out_ = add_button("buttonZoomOut", ":/resources/svg/zoom_max.svg", "Zoom Out All");
+  button_grid_ = add_button("buttonActivateGrid", ":/resources/svg/grid.svg", "Show/Hide the grid");
   // buttonTimeTracker cycles through 3 pre-rendered PNG icons by state, so it
   // skips the theme-tinted LoadSvg path baked into add_button. Built inline.
   button_time_tracker_ = new QToolButton(ui_->globalToolbarWidget);
@@ -1694,8 +1761,42 @@ void MainWindow::buildGlobalToolbar() {
   outer->addWidget(button_time_tracker_);
   updateTimeTrackerIcon();
   connect(button_time_tracker_, &QToolButton::clicked, this, &MainWindow::onTimeTrackerButtonClicked);
+
+  // "Legend" group — single icon that combines a corner picker with a
+  // show/hide toggle.
+  //   * Left-click: enable at the current position if hidden, otherwise
+  //                 cycle through corners (TR → TL → BL → BR → TR).
+  //   * Right-click: toggle show/hide at the current position (no
+  //                  cycle).
+  // The icon always reflects the "current position": the active corner
+  // while checked, or the saved corner that will be restored on the
+  // next show while unchecked.
+  if (legend_status_ != LegendStatus::kHidden) {
+    previous_legend_corner_ = legend_status_;
+  }
+  const QByteArray initial_icon =
+      legendCornerIcon(legend_status_ == LegendStatus::kHidden ? previous_legend_corner_ : legend_status_).toLatin1();
+  button_legend_ = add_button(
+      "buttonLegendPosition", initial_icon.constData(),
+      "Legend position — left-click walks TR → TL → BL → BR, then unchecks at TR before the next "
+      "cycle. Right-click toggles show/hide at the current corner.");
+  button_legend_->setCheckable(true);
+  button_legend_->setChecked(legend_status_ != LegendStatus::kHidden);
+  connect(button_legend_, &QToolButton::clicked, this, &MainWindow::onLegendButtonClicked);
+  // Right-click: enable customContextMenu so the click event reaches us
+  // (Qt's default context menu policy would consume right-clicks for a
+  // popup). No menu is shown — the signal is used solely as a
+  // right-click hook.
+  button_legend_->setContextMenuPolicy(Qt::CustomContextMenu);
+  connect(button_legend_, &QToolButton::customContextMenuRequested, this, [this](const QPoint& /*pos*/) {
+    if (legend_status_ == LegendStatus::kHidden) {
+      setLegendStatus(previous_legend_corner_);
+    } else {
+      setLegendStatus(LegendStatus::kHidden);
+    }
+  });
+
   button_show_point_ = add_button("buttonShowpoint", ":/resources/svg/show_point.svg", "Show point in plot");
-  button_grid_ = add_button("buttonActivateGrid", ":/resources/svg/grid.svg", "Show/Hide the grid");
   button_dots_ = add_button("buttonDots", ":/resources/svg/scatter_plot.svg", "Show data point markers on curves");
   button_reference_point_ = add_button(
       "buttonReferencePoint", ":/resources/svg/reference_line.svg",
@@ -1709,6 +1810,11 @@ void MainWindow::buildGlobalToolbar() {
   make_checkable(button_grid_, activate_grid_);
   make_checkable(button_dots_, dots_);
   make_checkable(button_reference_point_, false);
+  // buttonZoomOut is a one-shot action, not a toggle — no make_checkable.
+  connect(button_zoom_out_, &QToolButton::clicked, this, [this]() {
+    linkedZoomOut();
+    onUndoableChange();
+  });
   connect(button_link_, &QToolButton::toggled, this, [](bool checked) {
     QSettings().setValue(QStringLiteral("MainWindow.buttonLink"), checked);
   });
@@ -1748,57 +1854,6 @@ void MainWindow::buildGlobalToolbar() {
     }
     reference_time_ = checked ? std::optional<double>{session_->playbackEngine().currentTime()} : std::nullopt;
     forEachPlot([this](PlotWidget* plot) { plot->setReferenceLine(reference_time_); });
-  });
-
-  // "Legend" group — single icon that combines a corner picker with a
-  // show/hide toggle.
-  //   * Left-click: enable at the current position if hidden, otherwise
-  //                 cycle through corners (TR → TL → BL → BR → TR).
-  //   * Right-click: toggle show/hide at the current position (no
-  //                  cycle).
-  // The icon always reflects the "current position": the active corner
-  // while checked, or the saved corner that will be restored on the
-  // next show while unchecked.
-  if (legend_status_ != LegendStatus::kHidden) {
-    previous_legend_corner_ = legend_status_;
-  }
-  const QByteArray initial_icon =
-      legendCornerIcon(legend_status_ == LegendStatus::kHidden ? previous_legend_corner_ : legend_status_).toLatin1();
-  button_legend_ = add_button(
-      "buttonLegendPosition", initial_icon.constData(),
-      "Legend position — left-click walks TR → TL → BL → BR, then unchecks at TR before the next "
-      "cycle. Right-click toggles show/hide at the current corner.");
-  button_legend_->setCheckable(true);
-  button_legend_->setChecked(legend_status_ != LegendStatus::kHidden);
-  connect(button_legend_, &QToolButton::clicked, this, [this](bool /*checked*/) {
-    // Three branches for the cycle:
-    //   * Hidden: re-show at previous_legend_corner_. This is TR right
-    //     after a BR-to-hidden wrap, or the last visible corner after
-    //     a right-click hide.
-    //   * BR (cycle end): reset previous_legend_corner_ to TR so the
-    //     unchecked button paints the TR icon, then hide. The next
-    //     left-click takes the Hidden branch and re-enters at TR.
-    //   * Any other visible corner: advance to the next corner.
-    if (legend_status_ == LegendStatus::kHidden) {
-      setLegendStatus(previous_legend_corner_);
-    } else if (legend_status_ == LegendStatus::kBottomRight) {
-      previous_legend_corner_ = LegendStatus::kTopRight;
-      setLegendStatus(LegendStatus::kHidden);
-    } else {
-      setLegendStatus(nextLegendCorner(legend_status_));
-    }
-  });
-  // Right-click: enable customContextMenu so the click event reaches us
-  // (Qt's default context menu policy would consume right-clicks for a
-  // popup). No menu is shown — the signal is used solely as a
-  // right-click hook.
-  button_legend_->setContextMenuPolicy(Qt::CustomContextMenu);
-  connect(button_legend_, &QToolButton::customContextMenuRequested, this, [this](const QPoint& /*pos*/) {
-    if (legend_status_ == LegendStatus::kHidden) {
-      setLegendStatus(previous_legend_corner_);
-    } else {
-      setLegendStatus(LegendStatus::kHidden);
-    }
   });
 
   // Trailing stretch pins the icon stack at the top of the column.

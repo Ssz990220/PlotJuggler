@@ -176,6 +176,8 @@ class MainWindow : public QMainWindow {
   // activate_grid / dots) into one plot, so newly added plots match.
   void applyGlobalToggles(PlotWidget* plot);
   void applyLegendStatus(PlotWidget* plot);
+  // Slot: left-click cycles or restores the legend position.
+  void onLegendButtonClicked();
   // Toggles dots overlay on Lines/LinesAndDots curves only; curves in
   // Dots/Sticks/Steps keep their style.
   void applyDots(PlotWidget* plot);
@@ -184,6 +186,11 @@ class MainWindow : public QMainWindow {
   void updateTimeTrackerIcon();
   // Slot: cycles tracker_info_ to the next state and applies to every plot.
   void onTimeTrackerButtonClicked();
+
+  // Per-tab union of X-ranges across non-XY plots when buttonLink is checked;
+  // independent zoom-out otherwise. XY plots always zoom out individually
+  // (their X axis is a curve value, not time, so the union is meaningless).
+  void linkedZoomOut();
 
   // Convenience: emit a diagnostic into the session's sink. Source/id
   // are stable string literals; message is a translated QString. The
@@ -317,6 +324,7 @@ class MainWindow : public QMainWindow {
   QToolButton* button_time_tracker_ = nullptr;
   QToolButton* button_show_point_ = nullptr;
   QToolButton* button_grid_ = nullptr;
+  QToolButton* button_zoom_out_ = nullptr;
   QToolButton* button_dots_ = nullptr;
   QToolButton* button_reference_point_ = nullptr;
   // Global-column "Legend" button — single icon that combines a corner
