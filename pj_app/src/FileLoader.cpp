@@ -16,7 +16,7 @@
 #include <string_view>
 
 #include "DialogPresenter.h"
-#include "LoadFileDialog.h"
+#include "MainWindow.h"
 #include "pj_base/data_source_protocol.h"
 #include "pj_base/dataset.hpp"
 #include "pj_datastore/engine.hpp"
@@ -29,6 +29,7 @@
 #include "pj_runtime/DataSourceRuntimeHost.h"
 #include "pj_runtime/ExtensionCatalogService.h"
 #include "pj_runtime/SessionManager.h"
+#include "pj_widgets/FileDialog.h"
 #include "pj_widgets/MessageBox.h"
 
 namespace PJ {
@@ -81,17 +82,18 @@ void FileLoader::openFromDialog(QWidget* dialog_parent) {
   const QString last_dir = settings.value(kLastDirKey, QString()).toString();
   const QString filter = extensions_.buildFileFilter();
 
-  LoadFileDialog dialog(dialog_parent, last_dir, filter);
-  if (dialog.exec() != QDialog::Accepted) {
-    return;
-  }
-  const QString path = dialog.selectedPath();
+  // PJ::FileDialog wraps a non-native QFileDialog in our frameless
+  // chrome — see pj_widgets/FileDialog.h. The native GTK dialog also
+  // crashes on this app's libpng ABI skew (see the --exclude-libs,ALL
+  // note in pj_app/CMakeLists.txt), so we avoid it both for look and
+  // for stability. Passing the MainWindow as the metrics source primes
+  // the toolbar icon size and keeps it in step via chromeMetricsChanged.
+  auto* metrics_source = dialog_parent != nullptr ? qobject_cast<MainWindow*>(dialog_parent->window()) : nullptr;
+  const QString path = FileDialog::getOpenFileName(dialog_parent, tr("Load Data"), last_dir, filter, metrics_source);
   if (path.isEmpty()) {
     return;
   }
   settings.setValue(kLastDirKey, QFileInfo(path).absolutePath());
-  // TODO: route dialog.addPrefix() / dialog.mergeMetadata() through to
-  // the loader once the loader pipeline supports those flags.
   loadFile(path, dialog_parent);
 }
 

@@ -6,8 +6,6 @@ add_executable(pj_app
     src/DialogPresenter.h
     src/FileLoader.cpp
     src/FileLoader.h
-    src/LoadFileDialog.cpp
-    src/LoadFileDialog.h
     src/MainWindow.cpp
     src/MainWindow.h
     src/MainWindow.ui

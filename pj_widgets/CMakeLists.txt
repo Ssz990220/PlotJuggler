@@ -6,11 +6,11 @@ add_library(pj_widgets STATIC
     src/Dialog.cpp
     src/Dialog.ui
     src/DoubleScrubber.cpp
+    src/FileDialog.cpp
     src/FlowLayout.cpp
     src/IntScrubber.cpp
     src/MessageBox.cpp
     src/RecentFilesMenu.cpp
-    src/SaveFileDialog.cpp
     src/ScrubberBase.cpp
     src/ToggleSwitch.cpp
     src/VisualizationPlaceholderWidget.cpp
@@ -20,12 +20,12 @@ add_library(pj_widgets STATIC
     include/pj_widgets/Dialog.h
     include/pj_widgets/DoubleScrubber.h
     include/pj_widgets/ElidingLabel.h
+    include/pj_widgets/FileDialog.h
     include/pj_widgets/FlowLayout.h
     include/pj_widgets/IntScrubber.h
     include/pj_widgets/MessageBox.h
     include/pj_widgets/RealSlider.h
     include/pj_widgets/RecentFilesMenu.h
-    include/pj_widgets/SaveFileDialog.h
     include/pj_widgets/ScrubberBase.h
     include/pj_widgets/Style.h
     include/pj_widgets/SvgUtil.h

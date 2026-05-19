@@ -938,12 +938,21 @@ QListView::item:selected {
    color: black;
 }
 
+/* The widget itself owns the continuous bottom line so the divider
+   extends past the rightmost section into any empty header strip when
+   columns don't fill the available width. The per-section border-bottom
+   below paints on top of this and stays in sync visually. */
+QHeaderView {
+    background-color: transparent;
+    border: none;
+    border-bottom: 1px solid ${border_default};
+}
+
 QHeaderView::section {
     background-color: transparent;
     color: ${default_text};
     padding-left: ${chrome_spacing}px;
     border: none;
-    border-bottom: 1px solid ${border_default};
     border-right: 1px solid ${border_default};
 }
 
@@ -963,7 +972,6 @@ QHeaderView::section:hover {
     color: ${default_text};
     padding-left: ${chrome_spacing}px;
     border: none;
-    border-bottom: 1px solid ${border_default};
     border-right: 1px solid ${PJPurple};
 }
 QHeaderView::section:last:hover,
@@ -1543,4 +1551,47 @@ QLabel#extTagChip {
 QLabel#marketplaceStatusError {
     color: ${accent_error};
     font-weight: bold;
+}
+
+/* QFileDialog (non-native) ---------------------------------------------- */
+/* The native GTK dialog crashes on this app's libpng ABI skew (see
+   pj_app/CMakeLists.txt), so we force the Qt-drawn dialog with
+   DontUseNativeDialog and skin it here. Most of its inner widgets
+   (QPushButton, QComboBox, QLineEdit, QTreeView, QListView) already
+   pick up the cascade; the rules below target the parts that don't.
+   The sidebar/frame deliberately carry no border — the splitter handle
+   between them already paints a 1px divider (see QSplitter::handle). */
+
+QFileDialog QListView#sidebar {
+    background: ${main_background};
+    /* Three-sided border — the splitter handle on the right already paints
+       the divider, so we omit border-right to avoid a 2 px stacked line. */
+    border-top: 1px solid ${border_default};
+    border-left: 1px solid ${border_default};
+    border-bottom: 1px solid ${border_default};
+    border-right: none;
+    padding: 2px 0px;
+}
+
+QFileDialog QListView#sidebar::item {
+    padding: 4px 6px;
+}
+
+QFileDialog QListView#sidebar::item:selected {
+    background-color: ${item_selection_background};
+    color: black;
+}
+
+QFileDialog QFrame#frame {
+    background: transparent;
+    /* Three-sided border — the splitter handle on the left already paints
+       the divider, so we omit border-left to avoid a 2 px stacked line. */
+    border-top: 1px solid ${border_default};
+    border-right: 1px solid ${border_default};
+    border-bottom: 1px solid ${border_default};
+    border-left: none;
+}
+
+QFileDialog QToolButton {
+    padding: 2px;
 }

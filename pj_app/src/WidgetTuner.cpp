@@ -6,6 +6,7 @@
 #include <QEvent>
 #include <QFrame>
 #include <QMenu>
+#include <QMessageBox>
 #include <QMetaObject>
 #include <QPalette>
 #include <QSettings>
@@ -64,6 +65,11 @@ bool WidgetTuner::eventFilter(QObject* watched, QEvent* event) {
   // QMenus (including Qt-internal context menus) — tag for QSS.
   if (auto* menu = qobject_cast<QMenu*>(watched); menu != nullptr && menu->objectName().isEmpty()) {
     menu->setObjectName(QStringLiteral("PJMenu"));
+  }
+
+  // QMessageBox: strip the native system frame. No other chrome.
+  if (auto* msg = qobject_cast<QMessageBox*>(watched)) {
+    msg->setWindowFlag(Qt::FramelessWindowHint, true);
   }
 
   // QComboBox popup view — paint its palette directly so Fusion uses

@@ -48,7 +48,6 @@
 
 #include "DebugUi.h"
 #include "FileLoader.h"
-#include "LoadFileDialog.h"
 #include "PreferencesDialog.h"
 #include "Theme.h"
 #include "TitleBar.h"
@@ -74,9 +73,9 @@
 #include "pj_runtime/SessionManager.h"
 #include "pj_scene2d_widgets/Media2DDockWidget.h"
 #include "pj_scene2d_widgets/media_viewer_widget.h"
+#include "pj_widgets/FileDialog.h"
 #include "pj_widgets/FlowLayout.h"
 #include "pj_widgets/MessageBox.h"
-#include "pj_widgets/SaveFileDialog.h"
 #include "pj_widgets/SvgUtil.h"
 #include "ui/CurveListPanel.h"
 #include "ui/DiagnosticsDetailDialog.h"
@@ -1229,12 +1228,9 @@ void MainWindow::closeEvent(QCloseEvent* event) {
 
 void MainWindow::onLoadLayout() {
   const QString start_dir = QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation);
-  LoadFileDialog dlg(this, start_dir, tr(kLayoutFilter), LoadFileDialog::Options::NoOptions);
-  dlg.setDialogTitle(tr("Load Layout"));
-  if (dlg.exec() != QDialog::Accepted) {
-    return;
-  }
-  const QString path = dlg.selectedPath();
+  // Passing `this` as the metrics source primes the dialog with the
+  // current icon size and keeps it in step if chromeMetricsChanged fires.
+  const QString path = FileDialog::getOpenFileName(this, tr("Load Layout"), start_dir, tr(kLayoutFilter), this);
   if (path.isEmpty()) {
     return;
   }
@@ -1243,12 +1239,11 @@ void MainWindow::onLoadLayout() {
 
 void MainWindow::onSaveLayout() {
   const QString start_dir = QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation);
-  SaveFileDialog dlg(this, start_dir, tr(kLayoutFilter), QString::fromLatin1(kLayoutExtension));
-  dlg.setDialogTitle(tr("Save Layout"));
-  if (dlg.exec() != QDialog::Accepted) {
-    return;
-  }
-  const QString path = dlg.selectedPath();
+  // setDefaultSuffix (passed through PJ::FileDialog) wants the extension
+  // without the leading dot.
+  const QString default_suffix = QString::fromLatin1(kLayoutExtension).mid(1);
+  const QString path =
+      FileDialog::getSaveFileName(this, tr("Save Layout"), start_dir, tr(kLayoutFilter), default_suffix, this);
   if (path.isEmpty()) {
     return;
   }
