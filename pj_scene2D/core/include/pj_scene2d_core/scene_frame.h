@@ -2,7 +2,7 @@
 
 #include <vector>
 
-#include "pj_base/builtin/ImageAnnotations.hpp"
+#include "pj_base/builtin/image_annotations.hpp"
 #include "pj_base/types.hpp"
 
 namespace PJ {

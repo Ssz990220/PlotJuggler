@@ -3,7 +3,7 @@
 #include <QWidget>
 #include <memory>
 
-#include "pj_base/builtin/BuiltinObject.hpp"
+#include "pj_base/builtin/builtin_object.hpp"
 #include "pj_datastore/object_store.hpp"
 #include "pj_runtime/IDataWidget.h"
 

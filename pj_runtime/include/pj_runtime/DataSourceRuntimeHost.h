@@ -9,7 +9,7 @@
 #include <string_view>
 #include <unordered_map>
 
-#include "pj_base/builtin/BuiltinObject.hpp"
+#include "pj_base/builtin/builtin_object.hpp"
 #include "pj_base/data_source_protocol.h"
 #include "pj_base/dataset.hpp"
 #include "pj_datastore/object_store.hpp"

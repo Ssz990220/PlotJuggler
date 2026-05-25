@@ -9,7 +9,7 @@
 
 #include <gtest/gtest.h>
 
-#include "pj_base/builtin/BuiltinObject.hpp"
+#include "pj_base/builtin/builtin_object.hpp"
 #include "pj_scene2d_core/codec_pipeline.h"
 #include "pj_scene2d_widgets/Media2DDockWidget.h"
 

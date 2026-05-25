@@ -163,6 +163,13 @@ std::unique_ptr<CodecPipeline> Media2DDockWidget::makePipelineFor(sdk::BuiltinOb
     case sdk::BuiltinObjectType::kPointCloud:
     case sdk::BuiltinObjectType::kImageAnnotations:
     case sdk::BuiltinObjectType::kFrameTransforms:
+    case sdk::BuiltinObjectType::kOccupancyGrid:
+    case sdk::BuiltinObjectType::kCompressedPointCloud:
+    case sdk::BuiltinObjectType::kMesh3D:
+    case sdk::BuiltinObjectType::kVideoFrame:
+    case sdk::BuiltinObjectType::kSceneEntities:
+    case sdk::BuiltinObjectType::kAssetVideo:
+    case sdk::BuiltinObjectType::kRobotDescription:
       return nullptr;
   }
   return nullptr;

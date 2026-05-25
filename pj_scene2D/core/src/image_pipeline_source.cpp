@@ -12,7 +12,7 @@
 #include <unordered_set>
 #include <utility>
 
-#include "pj_base/builtin/Image.hpp"
+#include "pj_base/builtin/image.hpp"
 #include "pj_plugins/sdk/message_parser_plugin_base.hpp"
 
 namespace PJ {
