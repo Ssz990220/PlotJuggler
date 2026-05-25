@@ -11,27 +11,31 @@ Cross-references to `OBJECT_STORE_DESIGN.md` use `§OS` notation (e.g., `§OS3.4
 
 ## 1. Module Structure
 
-pj_scene2D ships as two CMake targets with a strict dependency direction:
+pj_scene2D ships as two CMake targets with a strict dependency direction
+(matches `pj_scene2D/core/CMakeLists.txt` and `pj_scene2D/widgets/CMakeLists.txt`):
 
 ```
 pj_scene2d_widgets  ──►  pj_scene2d_core  ──►  pj_base
      │                  │
-     │                  ├──►  pj_scene_protocol  (schema + canonical wire codec)
      │                  ├──►  pj_datastore
-     │                  ├──►  FFmpeg
+     │                  ├──►  pj_plugin_sdk         (INTERFACE; canonical schemas + codecs)
+     │                  ├──►  FFmpeg                (optional, gated on PJ_SCENE2D_HAS_FFMPEG)
      │                  ├──►  turbojpeg
      │                  └──►  libpng
      │
      ├──►  Qt 6.8+ (Widgets, Gui, Rhi)
+     ├──►  pj_runtime           (IDataWidget contract, PlaybackEngine driver)
      └──►  pj_scene2d_core
 ```
 
-Canonical object schemas live in `plotjuggler_core/pj_base/builtin/`.
-`ImageAnnotations` owns the canonical wire-format codec (writer + reader).
-Both pj_scene2D (consumer of canonical bytes) and any loader/plugin
-(producer of canonical bytes) depend on those SDK types; loaders never link
-pj_scene2d_core. pj_scene2D keeps renderer-local aliases and the `SceneFrame`
-batch wrapper in `pj_scene2d_core/scene_frame.h`.
+Canonical object schemas live in `plotjuggler_core/pj_base/builtin/` and
+are made available to pj_scene2D via `pj_plugin_sdk` (an INTERFACE library
+that re-exports the canonical SDK headers). `ImageAnnotations` owns the
+canonical wire-format codec (writer + reader). Both pj_scene2D (consumer
+of canonical bytes) and any loader/plugin (producer of canonical bytes)
+depend on those SDK types; loaders never link pj_scene2d_core. pj_scene2D
+keeps renderer-local aliases and the `SceneFrame` batch wrapper in
+`pj_scene2d_core/scene_frame.h`.
 
 ### pj_scene2d_core (no Qt)
 
@@ -51,7 +55,7 @@ Pure C++ library. Contains everything that does not touch Qt:
 | `ThumbnailCache` | `thumbnail_cache.h` | JPEG-compressed frame cache: background pre-decode at open, auto-scale to 1920px, YUV420P output (§4.1) |
 | `H264 NAL utils` | `h264_utils.h` | Annex-B keyframe detection (`isH264Keyframe`), SPS/PPS extraction (`extractH264SpsPps`), codec param builder (`makeH264CodecParams`) |
 | `ImageDecoder` | `image_decoder.h` | turbojpeg / libpng / raw-pixel dispatch (§4) |
-| `MediaIndexRegistry` | `media_index_registry.h` | Per-topic keyframe timestamp index sidechannel (§6) |
+| `MediaIndexRegistry` | (designed, not yet implemented) | Per-topic keyframe timestamp index sidechannel for a future file-backed ObjectStore path (§6). Today's streaming and file paths each manage their own keyframe index internally; no header exists in `pj_scene2D/core/include/`. |
 | `CompositeMediaSource` | `composite_media_source.h` | Multi-layer fan-out: owns N `MediaSource`, fuses their `MediaFrame`s (§5.4 / §8) |
 | `CancelToken` | `cancel_token.h` | Atomic flag polled by decoders between decode units |
 | `DecodedFrame` | `decoded_frame.h` | RAII wrapper for decoded pixel data (YUV planes or RGB buffer) |
@@ -86,19 +90,24 @@ only in the read path.
 
 ```
 DataSource plugin
-  ├─► [direct]    ObjectStore::pushOwned / pushLazy       ◄── v1
+  ├─► [direct]    ObjectStore::pushOwned / pushLazy             ◄── primary path today
   └─► [delegated] host.pushRawMessage ─► MessageParser::parse()
                                             ├─► scalar write host  (DataEngine)
                                             └─► object write host  (ObjectStore)
-                                                                   ◄── requires parser ABI v2
+                                                                   ◄── now supported via
+                                                                       MessageParser protocol v4
+                                                                       service-registry bindings
 ```
 
-**V1 supports direct ingest only.** DataSource plugins call
-`pushOwned` / `pushLazy` directly. Delegated ingest (via
-`MessageParser::parse()` with two hosts) requires parser ABI v2
-(two-host `parse()` signature), which is an outstanding prerequisite
-(see `REQUIREMENTS.md` Prerequisites). Delegated ingest is a
-subsequent milestone.
+**Direct ingest is the primary, fully-wired path.** DataSource plugins
+call `pushOwned` / `pushLazy` directly. The originally-proposed parser
+ABI v2 has been delivered as `pj_plugins` MessageParser protocol v4:
+rather than adding hosts as `parse()` parameters, parsers acquire both
+a scalar write host (`pj.parser_write.v1`) and an object write host
+through the service registry at `bind(registry)` time and write to
+both inside a single `parse()` call. Delegated media ingest is therefore
+structurally enabled and is being wired up incrementally (see
+`REQUIREMENTS.md` §4.4).
 
 ### Read path (display — pj_scene2D's domain)
 
@@ -136,9 +145,12 @@ On each application tick:
    latest decoded frame. If a new frame is available, it uploads pixel
    data to GPU textures and draws.
 
-The main thread drives both steps — there is no `TimelineCursor`
-subscription or callback model. This matches how PlotJuggler's
-existing plot widgets are driven.
+The Qt main thread drives both steps — there is no `TimelineCursor`
+subscription model in `pj_base`. The entry point into the widget is
+`PJ::IDataWidget::onTrackerTime(double)` (from `pj_runtime`), invoked
+by `pj_runtime::PlaybackEngine`; the widget forwards that time to its
+internal `MediaSource` via `setTimestamp()`. This matches how
+PlotJuggler's existing plot widgets are driven. See §9.1 for details.
 
 ---
 
@@ -662,11 +674,29 @@ explicit at construction time.
 
 ---
 
-## 6. MediaIndexRegistry
+## 6. MediaIndexRegistry — *designed, not yet implemented*
+
+> **Status (as of 2026-05-19): the `MediaIndexRegistry` described in this
+> section is a design artefact. No `media_index_registry.h` exists in
+> `pj_scene2D/core/include/pj_scene2d_core/`, and no public C ABI slot
+> for `publish_keyframe_index` exists in `pj_base`. The realised keyframe
+> indexing today lives inside individual decoders:**
+> - **Streaming sources** — `StreamingVideoDecoder` (§4.4) maintains its
+>   own inline keyframe vector via incremental NAL inspection.
+> - **File-backed sources** — `FfmpegBackend` (§4.1) relies on FFmpeg's
+>   own seek index (it opens files directly via `AVFormatContext`, not
+>   through ObjectStore).
+>
+> The registry is the design for a future **file-backed ObjectStore**
+> path (raw bytes pushed via `pushLazy`, but the decoder needs random
+> access by keyframe rather than by file offset). That path does not
+> exist yet; until it does, this section is preserved as the
+> design-of-record so the work can be picked up without re-deriving the
+> contract.
 
 Keyframe tracking lives in pj_scene2D, not in ObjectStore (§R4.2,
-§R4.4). The `MediaIndexRegistry` is the sidechannel that holds
-per-topic keyframe timestamp lists.
+§R4.4). The `MediaIndexRegistry` is the proposed sidechannel that
+would hold per-topic keyframe timestamp lists.
 
 ```cpp
 class MediaIndexRegistry {
@@ -871,14 +901,27 @@ timestamp matching.
 
 ### 9.1 Main-thread-driven timestamps
 
-There is no `TimelineCursor` subscription or callback model. The
-application's main thread drives timestamps directly:
+There is no `TimelineCursor` subscription or callback model in
+`pj_base`. Instead, widgets implement `PJ::IDataWidget` (from
+`pj_runtime/IDataWidget.h`) and are driven by `pj_runtime::PlaybackEngine`
+on the Qt main thread. The runtime calls `widget->onTrackerTime(time)`
+on each tick; the widget forwards that time into its internal
+`MediaSource` and triggers a repaint:
 
 ```cpp
-// Application main loop / timer tick:
-widget->setTimestamp(current_time_ns);  // forwards to MediaSource
-widget->update();                       // triggers repaint
+// Inside the widget, on the Qt main thread:
+void Media2DDockWidget::onTrackerTime(double time) {
+  const int64_t ts_ns = /* seconds → ns conversion */;
+  if (image_topic_source_) {
+    image_topic_source_->setTimestamp(ts_ns);
+  }
+  update();  // triggers repaint; render() pulls latest frame via takeFrame()
+}
 ```
+
+The contract property of the original `TimelineCursor` design — *widgets
+never own or drive the clock* — is preserved: widgets only **receive**
+time on `onTrackerTime`, never advance it.
 
 This matches how PlotJuggler's existing plot widgets are driven — the
 main thread iterates over widgets and tells each one to update. Media
@@ -933,7 +976,8 @@ pushing.
 |------|------|----------|---------|
 | `ObjectSeries::mutex` (§OS3.4) | `shared_mutex` | Per-topic entry storage | Shared: worker threads via `latestAt`/`at`/`indexAt`. Exclusive: poll thread via `pushOwned`/`pushLazy`/eviction |
 | `FrameSlot::mutex_` | `mutex` | Single-frame mailbox | Worker: `store()`. Main: `take()`. Never held concurrently — always < 1 us |
-| `MediaIndexRegistry::mutex_` | `shared_mutex` | Keyframe index | Shared: worker via `keyframeBefore`. Exclusive: DataSource via `registerIndex`, worker via `appendKeyframe` |
+| `StreamingVideoDecoder` internal keyframe-vector mutex | `mutex` (internal) | In-decoder keyframe timestamps | Held only by the streaming decoder's worker thread during incremental NAL inspection. Not exposed in the public API. |
+| `MediaIndexRegistry::mutex_` *(planned)* | `shared_mutex` | Keyframe index — see §6 deferred-design banner | N/A today: the registry does not yet exist. |
 
 ### 10.3 Lock ordering
 
@@ -944,9 +988,11 @@ acquired and released independently — never held simultaneously:
    `shared_ptr` handle → releases lock.
 2. Worker decodes (no locks held — decoder operates on owned data).
    For streaming video, if the decoder detects a keyframe via NAL
-   inspection, it calls `MediaIndexRegistry::appendKeyframe()` which
-   acquires `MediaIndexRegistry::mutex_` (exclusive) → appends →
-   releases. This happens after the ObjectStore lock is released.
+   inspection, it appends the timestamp to its **internal**
+   keyframe vector under a private mutex (no public API surface). This
+   happens after the ObjectStore lock is released. When the planned
+   `MediaIndexRegistry` lands (§6) this is the path that will switch to
+   the shared registry instead of the in-decoder vector.
 3. Worker acquires `FrameSlot::mutex_` → stores frame → releases.
 
 The main thread acquires `FrameSlot::mutex_` (via `take()`) for
@@ -965,9 +1011,13 @@ swaps pending state under `pending_mutex_` — also brief.
   + shared_ptr copy). Contention is effectively zero.
 - **FrameSlot mutex**: held for < 1 us on both sides (store is a
   move; take is a move). Zero contention in practice.
-- **MediaIndexRegistry shared_mutex**: reads (binary search) are
-  O(log k) where k is the number of keyframes. Writes
-  (`appendKeyframe`) are O(1) amortized. Negligible contention.
+- **StreamingVideoDecoder internal keyframe-vector mutex**: reads
+  (binary search) are O(log k) where k is the number of keyframes.
+  Writes are O(1) amortised. Held only by the decoder's own worker
+  thread, so contention is zero in practice. The future
+  `MediaIndexRegistry` (§6) is planned to use a `shared_mutex` with the
+  same complexity characteristics; it will only become contended if
+  multiple decoders observe the same topic concurrently.
 
 ### 10.5 Error propagation across threads
 
@@ -1075,8 +1125,11 @@ bugs that were already proven unfixable by patching.
    decode forward) cannot race with eviction. (Requirement: §R4.3)
 
 6. **Keyframe tracking is pj_scene2D's concern, not ObjectStore's.**
-   ObjectStore is codec-agnostic (§OS3.6). `MediaIndexRegistry` owns
-   keyframe indices. (Decision: §R4.2, §R4.4)
+   ObjectStore is codec-agnostic (§OS3.6). Today the index lives inside
+   each decoder (`StreamingVideoDecoder`'s inline vector, FFmpeg's own
+   seek index inside `FfmpegBackend`); a `MediaIndexRegistry` is
+   designed for a future file-backed ObjectStore path (§6). (Decision:
+   §R4.2, §R4.4)
 
 7. **Parsers are codec-agnostic envelope peelers.** They never inspect
    NAL types, keyframe flags, or GOP structure. All codec knowledge

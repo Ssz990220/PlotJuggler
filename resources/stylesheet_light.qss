@@ -769,7 +769,9 @@ QToolButton#radioStepsInverted:checked {
 
 QComboBox {
     color: ${default_text};
-    background-color: ${dark_background};
+    /* Match QAbstractSpinBox / DoubleScrubber background so input widgets
+       form a visually coherent set; popup list view keeps ${dark_background}. */
+    background-color: ${widget_background};
     selection-color: ${default_text};
     selection-background-color: ${border_hover};
     border: 1px solid ${border_default};

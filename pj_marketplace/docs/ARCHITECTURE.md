@@ -1,7 +1,7 @@
 # PlotJuggler Marketplace — Architecture
 
 > **Version:** 1.0.0
-> **Last Updated:** 2026-03-16
+> **Last Updated:** 2026-05-19
 > **Purpose:** Document HOW the system is designed and built
 
 ---
@@ -63,7 +63,13 @@ Two approaches were considered: create an external plugin management tool (like 
 
 The reasoning is that the typical PlotJuggler user doesn't want to leave the application to install plugins. They want to open a window inside PlotJuggler, search for what they need, install it, and keep working. It's the VSCode experience, not managing packages from a terminal.
 
-That said, development will begin with a **standalone prototype**. This allows rapid iteration without touching PlotJuggler's code, and validates that the concept works before committing to the architecture. Once validated, it will integrate as native functionality in PlotJuggler 4.
+The module ships **both as a standalone Qt app and as a static library embeddable in PJ4**, and CMake builds both targets unconditionally:
+
+- `pj_marketplace` — static library with the core (`DownloadManager`, `ExtensionManager`, `RegistryManager`, `PlatformUtils`, `QtDiagnosticBridge`). No UI dependency.
+- `pj_marketplace_ui` — static library with the Qt UI (`marketplace_window`, `extension_detail_dialog`).
+- `pj_marketplace_app` — standalone executable that links both libraries above.
+
+The standalone executable continues to exist precisely because it lets us iterate on the marketplace without rebuilding the whole PJ4 shell. The embedded `pj_app` integration consumes the same `pj_marketplace` / `pj_marketplace_ui` libraries, so behaviour stays in sync between the two entry points.
 
 ### 2.2 Plugin Template as Product
 
@@ -128,6 +134,8 @@ pj_marketplace/
 │       ├── registry_manager.hpp          # Registry fetch/parse API
 │       ├── download_manager.hpp          # HTTP + checksum + libarchive extraction
 │       ├── platform_utils.hpp            # OS detection, standard paths
+│       ├── qt_diagnostic_bridge.hpp      # Forwards ExtensionManager diagnostics into PJ::DiagnosticSink
+│       ├── marketplace.hpp               # Aggregate include
 │       ├── marketplace_window.hpp        # Main dialog
 │       └── extension_detail_dialog.hpp   # Per-extension detail dialog
 └── src/
@@ -135,11 +143,14 @@ pj_marketplace/
     │   ├── ExtensionManager.cpp
     │   ├── RegistryManager.cpp
     │   ├── DownloadManager.cpp
-    │   └── PlatformUtils.cpp
+    │   ├── PlatformUtils.cpp
+    │   └── QtDiagnosticBridge.cpp
     └── ui/
         ├── marketplace_window.{cpp,ui}
         └── extension_detail_dialog.{cpp,ui}
 ```
+
+`src/models/` and `src/utils/` exist as reserved directories (with `.gitkeep` files) but are empty today — the model headers live in `include/pj_marketplace/` and there are no shared utilities yet.
 
 ### 3.2 Data Models
 
@@ -182,10 +193,11 @@ struct InstalledExtension {
 
 | Component | Responsibility | Dependencies |
 |-----------|---------------|--------------|
-| **RegistryManager** | Fetch JSON, parse, cache with TTL | QNetworkAccessManager |
-| **ExtensionManager** | Install, uninstall, update, staged promotion | DownloadManager, PlatformUtils, plugin catalog |
+| **RegistryManager** | Fetch JSON, parse (no cache today — see REQUIREMENTS F-11) | QNetworkAccessManager |
+| **ExtensionManager** | Install, uninstall, update, staged promotion, ring-buffer diagnostics, optional `PJ::DiagnosticSink` fan-out | DownloadManager, PlatformUtils, plugin catalog |
 | **DownloadManager** | HTTP GET with progress, SHA256 verification, ZIP extraction | QNetworkAccessManager, QCryptographicHash, libarchive |
 | **PlatformUtils** | Detect OS, get paths | Qt platform macros |
+| **QtDiagnosticBridge** | Adapter from `ExtensionManager::diagnosticReported` Qt signal to `PJ::DiagnosticSink`. Used when the embedding host supplies a sink. | Qt signals/slots |
 
 #### ExtensionManager — Constructor Design
 
@@ -434,7 +446,7 @@ Binary compatibility (ABI) is the biggest technical challenge:
 │                                     │                                │
 │  ┌────────────────┐         ┌───────┴────────┐                      │
 │  │  Plugin Code   │◄───────►│  SDK Headers   │                      │
-│  │  (C++17)       │         │  (No Qt!)      │                      │
+│  │  (C++17+)      │         │  (No Qt!)      │                      │
 │  └────────────────┘         └────────────────┘                      │
 │                                                                      │
 │  NO Qt dependency = NO ABI breaks when PJ updates Qt                │
@@ -451,6 +463,15 @@ Binary compatibility (ABI) is the biggest technical challenge:
 ---
 
 ## 7. Build System
+
+> **POC-phase framing note:** §7.2 and §10.1 use "POC" / "post-POC" labels
+> reflecting the project's status when this document was first written.
+> The marketplace itself is no longer a POC — the static libraries
+> (`pj_marketplace`, `pj_marketplace_ui`) and standalone executable
+> (`pj_marketplace_app`) all build by default in PJ4 and have test
+> coverage. The "dummy plugin" section below remains useful as a
+> minimal-example reference for plugin authors; the "real plugin
+> template" subsection in §7.3 is the recommended starting point.
 
 ### 7.1 CMakeLists.txt (Marketplace)
 

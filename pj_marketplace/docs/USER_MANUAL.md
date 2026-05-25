@@ -1,7 +1,7 @@
 # PlotJuggler Marketplace — User Manual
 
 > **Version:** 1.0.0
-> **Last Updated:** 2026-03-04
+> **Last Updated:** 2026-05-19
 > **Audience:** End users, developers, and LLMs assisting with the project
 
 ---
@@ -108,13 +108,20 @@ If PlotJuggler already has the plugin loaded at startup, the marketplace is seed
 
 ## 3. Developer Guide
 
-> **Note (POC vs Real Plugins):**
+> **Note on plugin shape:**
 >
-> During the POC phase (March 2026), we use **dummy plugins** that only have a `getMetadata()` function — no Qt, no SDK dependency. This simplifies CI and cross-platform builds.
+> Plugins are pure C++ DSOs that consume the C ABI declared in
+> `plotjuggler_core/pj_plugins`. They do **not** link Qt — only the
+> host (PlotJuggler / the marketplace) does. Each plugin exposes a
+> small embedded JSON manifest (`id`, `name`, `version`, …) through the
+> SDK export macro; the marketplace reads that manifest to recognise
+> installed plugins. The workflow below describes the full process
+> for these plugins.
 >
-> **Real plugins** (post-POC) will use the PlotJuggler SDK and may have Qt UI files. The workflow below describes the full process for real plugins.
->
-> **CI Options:** Extensions can live in separate repos (one per extension) or in a mono-repo with per-component releases (see [Foxglove MCAP](https://github.com/foxglove/mcap) as reference). The registry supports both approaches.
+> **CI Options:** Extensions can live in separate repos (one per
+> extension) or in a mono-repo with per-component releases (see
+> [Foxglove MCAP](https://github.com/foxglove/mcap) as reference). The
+> registry supports both approaches.
 
 ### 3.1 Creating a New Extension
 
@@ -327,7 +334,7 @@ Inside that root:
 
 This is the **PlotJuggler Marketplace**, an extension distribution system for PlotJuggler (a robotics data visualization tool). Key points:
 
-- **Stack:** C++17, Qt 6 Widgets, CMake, Conan
+- **Stack:** C++20, Qt 6.8 Widgets, CMake, Conan
 - **Architecture:** Serverless (GitHub-hosted registry and artifacts)
 - **Key innovation:** Plugins don't depend on Qt (ABI stability)
 
@@ -365,9 +372,10 @@ This is the **PlotJuggler Marketplace**, an extension distribution system for Pl
 | Registry fetching | `src/core/RegistryManager.cpp` |
 | Installation logic | `src/core/ExtensionManager.cpp` |
 | Download handling | `src/core/DownloadManager.cpp` |
-| Main UI | `src/ui/MarketplaceWindow.cpp` |
-| Extension detail dialog | `src/ui/extension_detail_dialog.cpp` |
-| Data models | `src/models/` |
+| Diagnostic-sink bridge | `src/core/QtDiagnosticBridge.cpp` |
+| Main UI | `src/ui/marketplace_window.{cpp,ui}` |
+| Extension detail dialog | `src/ui/extension_detail_dialog.{cpp,ui}` |
+| Public headers (incl. data models) | `include/pj_marketplace/` |
 
 ### 6.5 Testing
 

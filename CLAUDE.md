@@ -48,6 +48,40 @@ When adding files, use the owning module rather than creating new top-level fold
 - `resources/`: shared app resources registered in `resources.qrc`; module-local test/demo assets should live with that module.
 - `3rdparty/`: vendored source dependencies added via CMake `add_subdirectory`. Conan/system dependencies do not belong here.
 
+## Documentation
+
+Each PJ4 module owns its intent docs. An agent landing in the repo reads root `CLAUDE.md` → `PJ4_PLAN.md` → per-module `CLAUDE.md` → per-module `docs/` → code. If any link in that chain is missing or stale, treat it as a documentation bug, not a code bug.
+
+### Per-module documentation contract
+
+Every PJ4 module (anything matching `pj_*/`) owns:
+
+- `<module>/CLAUDE.md` — one-paragraph purpose + pointer to the module's `docs/` and key headers. The entry point for an agent landing in that subtree.
+- `<module>/docs/` — module-local intent docs. Minimum content depends on module complexity:
+  - **Trivial / structurally obvious** (e.g. `pj_widgets`, `pj_dialog_host`, `pj_app`): CLAUDE.md only; no `docs/` required.
+  - **Standard module**: `docs/REQUIREMENTS.md` (the WHAT).
+  - **Module with non-obvious internals**: add `docs/ARCHITECTURE.md` (the HOW). See `pj_scene2D/docs/` for the reference shape.
+
+Cross-cutting docs (porting strategy, glossary, ADRs) live in top-level `docs/`. Its scope is described in [`docs/README.md`](./docs/README.md).
+
+### Module documentation index
+
+| Module | Entry point | Docs |
+|---|---|---|
+| `pj_app` | [pj_app/CLAUDE.md](./pj_app/CLAUDE.md) | — |
+| `pj_runtime` | [pj_runtime/CLAUDE.md](./pj_runtime/CLAUDE.md) | — |
+| `pj_widgets` | [pj_widgets/CLAUDE.md](./pj_widgets/CLAUDE.md) | — |
+| `pj_plotting` | [pj_plotting/CLAUDE.md](./pj_plotting/CLAUDE.md) | — |
+| `pj_dialog_host` | [pj_dialog_host/CLAUDE.md](./pj_dialog_host/CLAUDE.md) | — |
+| `pj_scene2D` | [pj_scene2D/CLAUDE.md](./pj_scene2D/CLAUDE.md) | [docs/](./pj_scene2D/docs/) — REQUIREMENTS, ARCHITECTURE, TECHNICAL_NOTES, datatypes_2D, … |
+| `pj_marketplace` | [pj_marketplace/README.md](./pj_marketplace/README.md) | [docs/](./pj_marketplace/docs/) — REQUIREMENTS, ARCHITECTURE, USER_MANUAL, marketplace-spec |
+| `pj_scene3D` | — (WIP, not yet tracked) | WIP design spec lives at `docs/superpowers/specs/2026-05-15-pj-scene3d-design.md` (also untracked); will migrate into `pj_scene3D/docs/` when the module stabilizes |
+| `plotjuggler_core/` (submodule) | [plotjuggler_core/CLAUDE.md](./plotjuggler_core/CLAUDE.md) | submodule owns its own `docs/` tree |
+
+### Freshness discipline
+
+Before any commit that changes behavior, public APIs, ABI structs, module ownership, or user-facing semantics: verify that the relevant `CLAUDE.md` / `docs/` files still match reality. If they don't, either update them in the same change or ask whether to update before committing. Do not commit known-stale docs.
+
 ## Key sources
 
 ### `plotjuggler_core/` (submodule)

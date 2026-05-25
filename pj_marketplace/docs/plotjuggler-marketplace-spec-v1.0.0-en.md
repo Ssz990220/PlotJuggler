@@ -6,6 +6,20 @@
 > **Author:** Pablo Iñigo Blasco
 > **Stack:** C++17, Qt 6 Widgets, CMake, Conan/Pixi
 
+> **⚠ Frozen v1.0.0 historical spec.** This document is the consolidated
+> v1.0.0 specification as written in March 2026, kept verbatim as a
+> design-of-record. Details that have moved since:
+> - The PJ4-integrated build runs at **C++20** (not C++17 as listed
+>   above) and is no longer a "standalone prototype" — both the
+>   standalone `pj_marketplace_app` and the embedded `pj_app` integration
+>   ship together.
+> - Specific implementation details (component names, file layout,
+>   diagnostic propagation) have evolved.
+>
+> **For the current state, read `REQUIREMENTS.md` and `ARCHITECTURE.md`
+> in this folder.** This spec is preserved for context on the original
+> design intent and the high-level scope discussion.
+
 ---
 
 ## Abstract

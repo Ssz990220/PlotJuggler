@@ -1,11 +1,18 @@
 # pj_scene2D Technical Notes
 
-Implementation-relevant technical knowledge for the pj_scene2D module. This is a
-knowledge base, not an architecture document. Architecture decisions will be
-made during design and documented in a future ARCHITECTURE.md.
+Implementation-relevant technical knowledge for the pj_scene2D module — a
+supplementary knowledge base sitting alongside `ARCHITECTURE.md`. Where
+`ARCHITECTURE.md` defines HOW the module is built today, this file captures the
+**domain background** that informed those decisions: Qt 6.8 specifics, codec
+caveats, platform HW-accel matrices, debugging notes, and lessons brought over
+from the standalone experiment.
 
-Sources: the standalone pj_scene2D experiment (`~/ws_plotjuggler/pj_scene2D/`) and
-design discussions for the integrated module.
+Read `ARCHITECTURE.md` first for the module's current shape; come here for
+"why this Qt API and not that one" or "what we learned from prior attempts."
+
+Sources: the standalone pj_scene2D experiment (`~/ws_plotjuggler/pj_scene2D/`),
+the `~/ws_plotjuggler/video_player_lab/` prototype, and design discussions for
+the integrated module.
 
 ---
 
@@ -486,12 +493,16 @@ backends:
 
 ## 8. Reference Documents
 
-- [dataset_format_comparison.md](dataset_format_comparison.md) — detailed
-  comparison of MCAP, RLDS, LeRobot, and Zarr formats covering data models,
-  timestamps, image/video storage, I/O, and ecosystem
 - [datatypes_2D.md](datatypes_2D.md) — complete type catalog: Image,
   VideoFrame, CameraCalibration, ImageAnnotation, PointCloud, ScenePrimitive,
   Grid, FrameTransform
+- [`docs/research/dataset_format_comparison.md`](../../docs/research/dataset_format_comparison.md)
+  (top-level) — cross-cutting comparison of MCAP, RLDS, LeRobot, and Zarr
+  formats covering data models, timestamps, image/video storage, I/O, and
+  ecosystem
+- [`docs/research/rerun_notes.md`](../../docs/research/rerun_notes.md)
+  (top-level) — analysis of Rerun's 2D architecture, kept as background
+  for design comparisons
 
 ---
 

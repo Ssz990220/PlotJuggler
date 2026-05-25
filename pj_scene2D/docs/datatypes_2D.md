@@ -1,5 +1,35 @@
 # Scene Types — Unified Type Catalog
 
+## Implementation status (as of 2026-05-19)
+
+This document is the **design catalogue** for canonical scene types.
+Canonical types are realised as C++ structs under
+`plotjuggler_core/pj_base/include/pj_base/builtin/` (re-exported as
+`PJ::sdk::` types through `pj_plugin_sdk`). Not every type listed below
+has shipped yet:
+
+| Type | Status | Header (if realised) |
+|---|---|---|
+| `FrameTransform` (§3) | ✅ Realised | `pj_base/builtin/FrameTransforms.hpp` + `frame_transforms_codec.hpp` |
+| `Image` (§4) | ✅ Realised | `pj_base/builtin/Image.hpp` |
+| `DepthImage` (§5) | ✅ Realised | `pj_base/builtin/DepthImage.hpp` + `depth_image_utils.hpp` |
+| `SegmentationImage` (§6) | 🟡 Designed, not yet realised | — |
+| `ClassRegistry` (§7) | 🟡 Designed, not yet realised | — (likely lives next to SegmentationImage) |
+| `VideoFrame` (§8) | 🟡 Designed, not yet realised | — (today streaming video flows through `StreamingVideoDecoder` consuming raw NAL bytes from ObjectStore directly; a `VideoFrame.hpp` canonical struct is not yet split out) |
+| `CameraCalibration` (§9) | 🟡 Designed, not yet realised | — |
+| `PointCloud` (§10) | ✅ Realised | `pj_base/builtin/PointCloud.hpp` |
+| `ScenePrimitive` variants (§11) | 🟡 Designed, not yet realised | — |
+| `ImageAnnotations` (not its own § here, but listed in `BuiltinObject.hpp`) | ✅ Realised | `pj_base/builtin/ImageAnnotations.hpp` + `image_annotations_codec.hpp` |
+| `RobotDescription` (not in this catalogue) | ✅ Realised | `pj_base/builtin/RobotDescription.hpp` |
+
+Types marked 🟡 are spec-level only — there is no struct, no codec, and
+no test coverage yet. The schemas below describe the **intent**; once a
+type ships, this table is the place to record that and link to its
+header. Treat the rest of the document as the source-of-truth contract
+for both realised and unrealised types.
+
+---
+
 ## 1. Design Principles
 
 ### Separate storage backends

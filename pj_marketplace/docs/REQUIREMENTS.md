@@ -1,7 +1,7 @@
 # PlotJuggler Marketplace — Requirements
 
 > **Version:** 1.0.0
-> **Last Updated:** 2026-03-16
+> **Last Updated:** 2026-05-19
 > **Purpose:** Define WHAT the application should do, not HOW
 
 ---
@@ -131,7 +131,7 @@ elsewhere in the host application:
 |----|-------------|---------------------|
 | F-24 | Configure registry URL via settings dialog | User can open ⚙ settings, enter a custom URL, and the marketplace immediately fetches from the new URL |
 | F-25 | Persist registry URL between sessions | The last configured registry URL is saved and automatically restored on next launch |
-| F-11 | Local registry cache with TTL | Registry is cached locally, refreshed after expiration |
+| F-11 | Local registry cache with TTL *(deferred)* | Not implemented today — `RegistryManager` always fetches fresh. Would be reintroduced only if a clear caching need emerges (see [TODO.md](TODO.md)). |
 | F-12 | Backup previous version on updates | Old version saved before overwriting |
 | F-13 | Automatic rollback if plugin fails | Deferred; backups may exist, but automatic restore is not implemented |
 | F-14 | Windows staging: apply on restart | Updates downloaded but applied only after restart (Windows) |
@@ -155,7 +155,7 @@ elsewhere in the host application:
 
 | ID | Requirement | Metric |
 |----|-------------|--------|
-| NF-01 | C++17 minimum | Code compiles with C++17 standard |
+| NF-01 | C++20 | Module builds at C++20 (`CMAKE_CXX_STANDARD 20`), matching the rest of PJ4 and `plotjuggler_core` |
 | NF-02 | Qt 6.x Widgets | LTS 6.8 target |
 | NF-03 | Cross-platform | Works on Linux, Windows, macOS |
 | NF-04 | Build system: CMake | Standard CMake project |
@@ -323,7 +323,11 @@ elsewhere in the host application:
 - GitHub raw URLs remain accessible
 - Extensions are < 50MB compressed
 - Registry has < 100 extensions in foreseeable future
-- **POC phase:** Dummy plugins are pure C++ with no Qt dependency (only `getMetadata()` function), simplifying cross-platform CI
+- **Plugin ABI surface stays narrow.** Plugins do not link Qt — they
+  consume the C ABI declared in `plotjuggler_core/pj_plugins` and
+  expose only a small embedded manifest plus their vtable. This keeps
+  cross-platform CI simple and decouples plugin builds from Qt
+  version churn.
 
 ### 9.3 Out of Scope (v1.0)
 

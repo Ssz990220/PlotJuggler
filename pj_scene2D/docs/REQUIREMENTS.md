@@ -28,24 +28,37 @@ retention, §4 owning handles + `EntryTimestampsView` + `RetentionBudget`,
 `PJ_object_write_host_vtable_t`). Those extensions were driven by the
 requirements below and are now consistent across both documents.
 
-**Two prerequisites remain outstanding:**
+**The two prerequisites originally listed here have both been resolved**,
+though in shapes that differ from what this document first proposed:
 
-- **`TimelineCursor` interface in `pj_base`** — a small read-only
-  interface that pj_scene2D widgets subscribe to for current-time
-  updates. Not present in `pj_base` today; must be added as a new
-  header. Signatures are out of scope for this document and will be
-  defined when `pj_base` is extended. pj_scene2D's contract: widgets
-  only *subscribe*, never drive.
+- **Time updates: `IDataWidget` in `pj_runtime`** (resolved). pj_scene2D
+  widgets implement `PJ::IDataWidget` (from
+  `pj_runtime/include/pj_runtime/IDataWidget.h`) and are driven by
+  `pj_runtime::PlaybackEngine`. The original proposal was a
+  `TimelineCursor` header in `pj_base` to which widgets would subscribe;
+  the as-built model instead has widgets implement an interface and the
+  runtime call them on each tick. The contract property still holds:
+  widgets only *receive* time, they never drive the clock. See §4.5 and
+  §6 for the current wording.
 
-- **`pj_plugins` ABI v2 — two-host `parse()` signature** — the
-  current `message_parser_protocol.h` defines `parse(ctx, ts, payload)`
-  with a single write host bound once at setup via `bind_write_host`.
-  pj_scene2D's parser contract (§4.4) requires `parse()` to receive
-  **both** a scalar write host and an object write host (either may be
-  NULL). This is an ABI-breaking change to `PJ_message_parser_vtable_t`
-  requiring a protocol version bump. `pj_plugins/docs/REQUIREMENTS.md`
-  and `pj_plugins/docs/ARCHITECTURE.md` must be updated to reflect the
-  new signature before any media-capable parser can be implemented.
+- **Two-host parser ingest: protocol v4 + service-registry bindings**
+  (resolved). The original proposal was a parser ABI bump to a two-host
+  `parse()` signature. The `pj_plugins` MessageParser protocol is now at
+  v4 (`message_parser_protocol.h`); rather than adding hosts as
+  parameters, hosts are acquired at `bind(registry)` time via named
+  services (`pj.parser_write.v1` for scalars; an object write service for
+  media). A parser binds whichever services it needs and writes to them
+  inside its single `parse()` call. The net behaviour matches what §4.4
+  requires.
+
+**One related implementation item is still pending:** the per-topic
+keyframe-index sidechannel (referred to as `MediaIndexRegistry` in §4.4
+and ARCHITECTURE.md §6) is designed but not yet implemented. Today
+`StreamingVideoDecoder` maintains its own inline keyframe vector and
+`FfmpegBackend` uses FFmpeg's own seek index — both paths work without
+the registry. The registry would only be needed if a future file-backed
+ObjectStore path lands. Treat `MediaIndexRegistry` references in §4.4 as
+**designed, not yet realised**.
 
 **Note on keyframe tracking**: pj_scene2D does NOT ask ObjectStore to
 know anything about keyframes. Per `OBJECT_STORE_DESIGN.md §3.6`,
@@ -266,19 +279,24 @@ formats such as MCAP (scalars + images), LeRobot (Parquet + MP4), and
 ROS 2 bags.
 
 **Two ingest modes for media**, matching the existing scalar plugin model.
-**V1 ships with direct ingest only**; delegated ingest requires parser
-ABI v2 (two-host `parse()` signature — see Prerequisites) and is a
-subsequent milestone:
+Direct ingest is the v1 path and is what ships today. Delegated ingest
+is now structurally supported by the v4 `pj_plugins` protocol (a parser
+can bind both a scalar write service and an object write service at
+`bind()` time — see Prerequisites) and is being wired up incrementally
+on top of that protocol:
 
 - **Direct ingest**: the DataSource plugin calls
   `object_write_host.register_topic()` itself and then pushes entries
   directly via `push_owned` (streaming) or `push_lazy` (file-backed). The
   plugin handles the raw bytes end-to-end, with no parser in the loop.
-  For video topics on file-backed sources, the plugin additionally
-  publishes a pre-computed keyframe timestamp list to
-  `pj_scene2d_core::MediaIndexRegistry` — this is a separate pj_scene2D-side
-  sidechannel, not an ObjectStore concern. Appropriate when the format
-  is format-tight enough that a dedicated parser adds no value (raw-JPEG
+  For video topics on file-backed sources, the design calls for the
+  plugin to additionally publish a pre-computed keyframe timestamp list
+  to a pj_scene2D-side `MediaIndexRegistry` sidechannel (not yet
+  implemented — see Prerequisites). Today the live `StreamingVideoDecoder`
+  builds its own keyframe vector inline and file-backed playback uses
+  `FfmpegBackend`'s direct-file seek, so the registry is not on the
+  critical path. Direct ingest is appropriate when the format is
+  format-tight enough that a dedicated parser adds no value (raw-JPEG
   folder, LeRobot MP4, dedicated MCAP importer, etc.).
 
 - **Delegated ingest**: the DataSource plugin registers the topic, obtains
@@ -315,7 +333,7 @@ host from a single parse call. No double decode.
 | Topic metadata (`media_class`, `encoding`, `schema`) | DataSource at registration time |
 | Frame reassembly from sub-frame packets | DataSource |
 | Raw-bytes push (`push_owned` / `push_lazy`) | Parser (delegated) or DataSource (direct) |
-| Video keyframe indexing | `pj_scene2d_core::MediaIndexRegistry` (file-backed: DataSource publishes at open) or `pj_scene2d_core::VideoDecoder` (streaming: incremental NAL inspection) |
+| Video keyframe indexing | `pj_scene2d_core::StreamingVideoDecoder` inline keyframe vector (streaming, incremental NAL inspection) or `pj_scene2d_core::FfmpegBackend` via FFmpeg's own seek index (file). A separate `MediaIndexRegistry` sidechannel is designed for a future file-backed ObjectStore path but is not yet implemented. |
 | Retention budget / eviction trigger | Application (budget) + ObjectStore (enforcement) |
 
 **Frame granularity**: following `datatypes_2D.md §4b` (and matching
@@ -328,24 +346,28 @@ before pushing.
 **Keyframe indexing is pj_scene2D's concern, not ObjectStore's.** This
 resolves the tension with `datatypes_2D.md §4b` which rejects a
 schema-level keyframe flag: the wire schema has none, and ObjectStore
-also has none. Instead, `pj_scene2d_core` owns a per-topic keyframe index
-built from one of two sources:
+also has none. Today the keyframe index lives inside the decoder that
+needs it:
 
-- **File-backed sources**: the DataSource plugin (which must already
-  scan the file to discover entries) pre-computes the keyframe list at
-  open time and publishes it via
-  `object_write_host.publish_keyframe_index(topic, timestamps, count)`
-  — a C ABI slot on the object write host vtable. The host receives
-  the timestamp array and populates `pj_scene2d_core::MediaIndexRegistry`
-  internally, keyed by `ObjectTopicId`. The DataSource never touches
-  pj_scene2d_core directly. pj_scene2D's `VideoDecoder` looks up the index
-  when it opens the topic.
-- **Streaming sources**: the `VideoDecoder` builds the keyframe index
-  incrementally as entries arrive, NAL-parsing each new entry on the
-  decoder thread. One-time inspection per entry; amortized over live
-  playback at no user-visible cost.
+- **Streaming sources (implemented)**: `StreamingVideoDecoder` builds
+  the keyframe index incrementally as entries arrive, NAL-parsing each
+  new entry on the decoder thread. One-time inspection per entry;
+  amortised over live playback at no user-visible cost.
+- **File-backed sources (today)**: `FfmpegBackend` opens the file
+  directly via `AVFormatContext` and uses FFmpeg's own keyframe index;
+  no pj_scene2D-side registry is involved.
+- **File-backed ObjectStore path (designed, not yet implemented)**: the
+  original plan was for a DataSource plugin to pre-compute the keyframe
+  list at open time and publish it via a C ABI slot
+  (`object_write_host.publish_keyframe_index(topic, timestamps, count)`),
+  with the host populating a pj_scene2D-side `MediaIndexRegistry`
+  keyed by `ObjectTopicId`. Neither the C ABI slot nor the registry
+  exist in code today. They are kept in the design (see
+  ARCHITECTURE.md §6) for the day that path lands.
 
-Neither pattern adds codec-specific fields or methods to ObjectStore.
+In every realised path the indexing lives in `pj_scene2d_core`, never
+in ObjectStore. No pattern adds codec-specific fields or methods to
+ObjectStore.
 
 **Parser manifest carries no media routing**: parser manifests declare
 only `encoding` (wire format such as `cdr`, `protobuf`, `json`) and
@@ -369,17 +391,19 @@ gate host wiring on a parser-level flag.
    via `push_lazy`.
 3. For streaming sources: accumulate incoming bytes and push via
    `push_owned`.
-4. **For video topics on file-backed sources only**: pre-compute a
-   keyframe timestamp list at open time (via NAL scan, MP4 `stss` atom,
-   etc.) and publish it via
-   `object_write_host.publish_keyframe_index(topic, timestamps, count)`.
-   The host forwards the list to pj_scene2D's internal
-   `MediaIndexRegistry`, keyed by `ObjectTopicId`. The DataSource
-   plugin does not link `pj_scene2d_core` — communication is through the
-   C ABI write host only. Streaming video sources skip this —
-   pj_scene2D's `VideoDecoder` builds the keyframe index incrementally
-   as entries arrive. Non-video media topics (self-contained JPEG/PNG,
-   point clouds, scene primitives) do not need any keyframe information.
+4. **For video topics — implemented today, no DataSource action required**:
+   streaming video sources rely on `StreamingVideoDecoder`'s incremental
+   keyframe scan; file-backed playback uses `FfmpegBackend`'s direct file
+   index. A future file-backed-ObjectStore path is designed to take a
+   pre-computed keyframe list via
+   `object_write_host.publish_keyframe_index(topic, timestamps, count)`,
+   forwarded to a pj_scene2D-side `MediaIndexRegistry` keyed by
+   `ObjectTopicId` — neither the slot nor the registry exist in code yet
+   (see Prerequisites). When that path lands, the DataSource will not
+   link `pj_scene2d_core` — communication will be through the C ABI
+   write host only. Non-video media topics (self-contained JPEG/PNG,
+   point clouds, scene primitives) do not need any keyframe information
+   in any of these paths.
 5. Publish optional rate hints (`preferred_fps`, `natural_range_ns`) so
    the application clock can pace playback appropriately.
 
@@ -397,9 +421,13 @@ Media channels share the global timeline:
 
 - Timestamps are `int64_t` nanoseconds since Unix epoch, matching
   `pj_datastore`.
-- The global timeline cursor is owned by the application. pj_scene2D widgets
-  subscribe via a small `TimelineCursor` interface declared in `pj_base`.
-  Widgets never drive the clock.
+- The global time cursor is owned by `pj_runtime::PlaybackEngine` (part
+  of the application's `AppSession`). pj_scene2D widgets implement
+  `PJ::IDataWidget` (from `pj_runtime/IDataWidget.h`); the runtime calls
+  `onTrackerTime(double time)` on each tick. Widgets never drive the
+  clock — they only receive time. (The original design called for a
+  `TimelineCursor` header in `pj_base`; the realised model puts the
+  contract in `pj_runtime` instead — see Prerequisites.)
 - **Rate hints**: DataSource plugins publish optional hints at startup
   (`preferred_fps`, `natural_range_ns`). The timeline cursor aggregates
   hints across sources and picks a default playback pace, which the user
@@ -412,8 +440,8 @@ Media channels share the global timeline:
   a mapping table (LeRobot Parquet, or user-provided epoch). Live streams
   use source-provided stamps (e.g., ROS header.stamp) with time-of-arrival
   fallback when absent.
-- **Multi-camera synchronization**: multiple camera widgets subscribed to
-  the same `TimelineCursor` all observe the cursor advance on the same
+- **Multi-camera synchronization**: multiple camera widgets driven by
+  the same `PlaybackEngine` all receive `onTrackerTime` on the same
   tick. Each widget queries its own topic independently at the current
   timestamp. There is no cross-widget rendezvous or barrier — widgets
   run in parallel and visible skew between them during heavy scrub is
@@ -436,7 +464,7 @@ singleton model.
 |---------|-------|------|
 | `VideoDecoder` | stateful, one instance per video layer | FFmpeg wrapper with runtime HW-accel detection and guaranteed software fallback. Platform backend matrix is documented in `TECHNICAL_NOTES.md §3`. |
 | `ImageDecoder` | stateless, one instance per image layer | Dispatches to turbojpeg (JPEG), libpng (PNG), or raw pixel copy (mono8, rgb8, etc.). Multiple instances in one widget are fine (they share no state). |
-| `SceneDecoder` | stateless, one instance per scene/annotation layer | Single canonical-wire decoder (`foxglove.ImageAnnotations` Protobuf, hand-rolled, no libprotobuf). Source-format conversion (e.g. CDR `vision_msgs/Detection2DArray`) is loader-side; pj_scene2D only sees canonical bytes. Schema + canonical wire codec (writer + reader) live in `pj_scene_protocol`, an SDK module in the `plotjuggler_core` submodule. |
+| `SceneDecoder` | stateless, one instance per scene/annotation layer | Single canonical-wire decoder (`foxglove.ImageAnnotations` Protobuf, hand-rolled, no libprotobuf). Source-format conversion (e.g. CDR `vision_msgs/Detection2DArray`) is loader-side; pj_scene2D only sees canonical bytes. Schema + canonical wire codec (writer + reader) live in `plotjuggler_core/pj_base/builtin/ImageAnnotations.hpp` + `image_annotations_codec.hpp`, re-exported through `pj_plugin_sdk`. |
 
 **Threading and decoder ownership**: each viewer widget owns one
 `PlaybackController`. The controller owns **one decoder instance per
@@ -493,13 +521,14 @@ is only visible at the request API boundary.
 by the decoder between NAL units (or between JPEG scans). A new request
 flips the previous token, and the decoder returns early.
 
-**Keyframe seek**: video decoders query their pj_scene2D-owned keyframe
-index (see §4.4 — either the `MediaIndexRegistry` entry published by
-the DataSource for file-backed sources, or the incrementally-built
-in-decoder index for streaming sources) to find the seek target in
-O(log k). They then call `ObjectStore::latestAt(topic, keyframe_ts)`
-for the keyframe bytes, flush the FFmpeg context, and iterate forward
-via `at(topic, i)` through subsequent P-frames to the target timestamp.
+**Keyframe seek**: video decoders use whichever keyframe index their
+path provides (`StreamingVideoDecoder`'s in-decoder index for streaming
+sources today; `FfmpegBackend`'s FFmpeg-managed index for file-backed
+sources; a future `MediaIndexRegistry` for the file-backed ObjectStore
+path — see §4.4) to find the seek target in O(log k). For ObjectStore
+paths they then call `ObjectStore::latestAt(topic, keyframe_ts)` for
+the keyframe bytes, flush the FFmpeg context, and iterate forward via
+`at(topic, i)` through subsequent P-frames to the target timestamp.
 No backward walk through ObjectStore entries is needed. Because live
 and scrub modes are mutually exclusive (§4.3), the buffer is frozen
 while a scrub-time seek is in flight — no race is possible between
@@ -625,8 +654,9 @@ direction:
 - pj_scene2D is a **read-only consumer** of `pj_datastore`. It never writes
   to `DataEngine` or `ObjectStore`. Writes happen through plugin host
   interfaces owned by the application.
-- Widgets subscribe to a `TimelineCursor` (declared in `pj_base`) provided
-  by the application; they never own or drive the clock.
+- Widgets implement `PJ::IDataWidget` (from `pj_runtime`) and are driven
+  by `pj_runtime::PlaybackEngine` via `onTrackerTime`. They never own or
+  drive the clock.
 - Decoder frame delivery is pull-only. No public signals for frame
   delivery. Adding a signal escape hatch is explicitly forbidden because
   it reintroduces the Qt event-queue staleness bug.
@@ -640,32 +670,37 @@ pj_scene2D widgets. pj_scene2D does not auto-instantiate widgets from
 dataset contents; the application decides when to open a viewer for
 a topic.
 
-*Construction* — a widget is created with a reference to the
-`ObjectStore` holding the topic's data, a reference to the application's
-`TimelineCursor`, and the topic identifier (`ObjectTopicId` or topic
-name). On construction, the widget:
+*Construction* — a widget is created with a reference to the application's
+`SessionManager` (which exposes `ObjectStore` access), and is bound to a
+specific topic via `setImageTopic()` (or the equivalent setter for the
+widget kind). The widget then implements `IDataWidget`, and the
+application registers it with the active `PlaybackEngine` so it begins
+receiving `onTrackerTime` calls. On construction (and topic bind), the
+widget:
 
-1. Queries the topic's `metadata_json` from ObjectStore to pick an
-   appropriate internal viewer type (image viewer, video viewer, scene
-   viewer) and the decoders for its active layers.
+1. Queries the topic's `metadata_json` and canonical object type to
+   pick an appropriate internal viewer type (image viewer, video
+   viewer, scene viewer) and the decoders for its active layers.
 2. Instantiates one decoder instance per active layer (see §4.6
    "Threading and decoder ownership").
-3. Subscribes to the `TimelineCursor` for time updates.
-4. Starts its `PlaybackController`'s worker thread(s).
+3. Starts the worker thread(s) owned by the underlying
+   `MediaSource` implementation (`ImagePipelineSource`,
+   `FileVideoSource`, `StreamingVideoSource`).
 
 *Destruction* — on destruction, the widget:
 
-1. Unsubscribes from the `TimelineCursor`.
-2. Requests cancellation on any in-flight decodes.
-3. Stops and joins all worker threads spawned by its
-   `PlaybackController`.
+1. Stops receiving `onTrackerTime` (the runtime drops it from its
+   driven-widget set).
+2. Requests cancellation on any in-flight decodes via the
+   `MediaSource`'s internal `CancelToken`.
+3. Stops and joins all worker threads spawned by its `MediaSource`.
 4. Releases any owning byte handles it holds from ObjectStore.
 
 *Teardown order* — the application must destroy widgets **before**
-destroying the `ObjectStore` or `TimelineCursor` they reference.
-pj_scene2D does not manage cross-module lifetime; it trusts the caller.
-Destroying the ObjectStore or TimelineCursor while a widget still
-holds references is undefined behavior.
+destroying the `AppSession` (and the `SessionManager` / `PlaybackEngine`
+it owns) or the `ObjectStore` they reference. pj_scene2D does not manage
+cross-module lifetime; it trusts the caller. Destroying any of those
+while a widget still holds references is undefined behaviour.
 
 *Dataset close / topic removal* — when a topic is removed from
 ObjectStore (dataset unload, explicit `removeTopic`), widgets observing
@@ -702,4 +737,5 @@ a widget onto a different dataset while the widget is alive.
   decoder state lives inside pj_scene2D's `VideoDecoder`, not in any
   plugin.
 - **Dataset format support beyond documented types** — MCAP, LeRobot,
-  RLDS, Zarr. See `dataset_format_comparison.md` for coverage.
+  RLDS, Zarr. See `docs/research/dataset_format_comparison.md` (at the
+  repo root) for coverage.
