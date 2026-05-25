@@ -16,8 +16,10 @@ set(CMAKE_AUTORCC ON)
 add_library(pj_scene2d_widgets STATIC
   src/Media2DDockWidget.cpp
   src/media_viewer_widget.cpp
+  src/pixel_inspector.cpp
   include/pj_scene2d_widgets/Media2DDockWidget.h
   include/pj_scene2d_widgets/media_viewer_widget.h
+  include/pj_scene2d_widgets/pixel_inspector.h
   shaders/shaders.qrc
 )
 target_include_directories(pj_scene2d_widgets PUBLIC include)
@@ -44,6 +46,16 @@ if(PJ_BUILD_TESTS)
   )
   target_compile_options(media2d_dock_widget_dispatch_test PRIVATE ${PJ_WARNING_FLAGS} ${PJ_SANITIZER_FLAGS})
   add_test(NAME Media2DDockDispatch COMMAND media2d_dock_widget_dispatch_test)
+
+  add_executable(pixel_inspector_test
+    ../tests/pixel_inspector_test.cpp
+  )
+  target_link_libraries(pixel_inspector_test PRIVATE
+    pj_scene2d_widgets
+    GTest::gtest_main
+  )
+  target_compile_options(pixel_inspector_test PRIVATE ${PJ_WARNING_FLAGS} ${PJ_SANITIZER_FLAGS})
+  add_test(NAME PixelInspector COMMAND pixel_inspector_test)
 endif()
 
 # QRhiWidget requires private Gui headers (rhi/qrhi.h)

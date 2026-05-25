@@ -2,6 +2,7 @@
 
 #include <QFont>
 #include <QFontMetricsF>
+#include <QMetaObject>
 #include <QPainter>
 #include <QVector4D>
 #include <algorithm>
@@ -9,6 +10,7 @@
 #include <cstring>
 
 #include "pj_scene2d_core/media_source.h"
+#include "pj_scene2d_widgets/pixel_inspector.h"
 
 void pjMediaQtInitResources() {
   Q_INIT_RESOURCE(shaders);
@@ -26,16 +28,21 @@ static constexpr float kBT709[] = {
 };
 // clang-format on
 
+static constexpr int kPointInspectorCropSize = 10;
+
 MediaViewerWidget::MediaViewerWidget(QWidget* parent) : QRhiWidget(parent) {
   setApi(Api::OpenGL);
   setObjectName(QStringLiteral("mediaViewerCanvas"));
   setFocusPolicy(Qt::StrongFocus);
+  setMouseTracking(true);
   static bool resources_initialized = [] {
     pjMediaQtInitResources();
     return true;
   }();
   (void)resources_initialized;
 }
+
+MediaViewerWidget::~MediaViewerWidget() = default;
 
 void MediaViewerWidget::setClearColor(const QColor& color) {
   QColor next = color.isValid() ? color : QColor(Qt::white);
@@ -51,29 +58,74 @@ QColor MediaViewerWidget::clearColor() const {
   return clear_color_;
 }
 
+void MediaViewerWidget::setPointInspectorEnabled(bool enabled) {
+  if (point_inspector_enabled_.load(std::memory_order_relaxed) == enabled) {
+    return;
+  }
+  point_inspector_enabled_.store(enabled, std::memory_order_relaxed);
+  if (!enabled) {
+    hidePointInspector();
+    return;
+  }
+  refreshPointInspector();
+}
+
+bool MediaViewerWidget::pointInspectorEnabled() const noexcept {
+  return point_inspector_enabled_.load(std::memory_order_relaxed);
+}
+
 void MediaViewerWidget::setFrame(const DecodedFrame& frame) {
   if (frame.isNull()) {
     return;
   }
-  std::lock_guard lock(frame_mutex_);
-  pending_decoded_ = frame;
-  pending_is_yuv_ = (frame.format == PixelFormat::kYUV420P);
-  pending_qimage_ = QImage();  // clear any pending QImage
-  has_pending_ = true;
+  {
+    std::lock_guard lock(frame_mutex_);
+    pending_decoded_ = frame;
+    pending_is_yuv_ = (frame.format == PixelFormat::kYUV420P);
+    pending_qimage_ = QImage();  // clear any pending QImage
+    inspector_frame_ = frame;
+    has_pending_ = true;
+  }
   if (pipeline_ != nullptr) {
     update();
   }
+  schedulePointInspectorRefresh();
 }
 
 void MediaViewerWidget::setFrame(const QImage& img) {
-  std::lock_guard lock(frame_mutex_);
-  pending_qimage_ = img;
-  pending_is_yuv_ = false;
-  pending_decoded_ = {};  // clear any pending DecodedFrame
-  has_pending_ = true;
+  auto to_decoded = [](const QImage& source) {
+    DecodedFrame frame;
+    if (source.isNull()) {
+      return frame;
+    }
+    const QImage converted = source.convertToFormat(QImage::Format_RGBA8888);
+    const int width = converted.width();
+    const int height = converted.height();
+    auto pixels = std::make_shared<std::vector<uint8_t>>(static_cast<size_t>(width) * height * 4U);
+    for (int y = 0; y < height; ++y) {
+      const auto* src = converted.constScanLine(y);
+      auto* dst = pixels->data() + static_cast<size_t>(y) * static_cast<size_t>(width) * 4U;
+      std::memcpy(dst, src, static_cast<size_t>(width) * 4U);
+    }
+    frame.pixels = std::move(pixels);
+    frame.width = width;
+    frame.height = height;
+    frame.format = PixelFormat::kRGBA8888;
+    return frame;
+  };
+
+  {
+    std::lock_guard lock(frame_mutex_);
+    pending_qimage_ = img;
+    pending_is_yuv_ = false;
+    pending_decoded_ = {};  // clear any pending DecodedFrame
+    inspector_frame_ = to_decoded(img);
+    has_pending_ = true;
+  }
   if (pipeline_ != nullptr) {
     update();
   }
+  schedulePointInspectorRefresh();
 }
 
 void MediaViewerWidget::resetView() {
@@ -86,6 +138,9 @@ void MediaViewerWidget::resetView() {
 void MediaViewerWidget::setMediaSource(MediaSource* source) {
   std::lock_guard lock(frame_mutex_);
   media_source_ = source;
+  inspector_frame_ = {};
+  point_inspector_active_.store(false, std::memory_order_relaxed);
+  hidePointInspector();
   last_overlays_.clear();
   overlays_dirty_ = true;
   // Drop glyph textures keyed to the previous source's labels; new source
@@ -365,6 +420,7 @@ bool MediaViewerWidget::hasRetainedUploadableFrameLocked() const {
 }
 
 void MediaViewerWidget::releaseResources() {
+  hidePointInspector();
   delete pipeline_;
   pipeline_ = nullptr;
   delete srb_;
@@ -717,6 +773,7 @@ void MediaViewerWidget::render(QRhiCommandBuffer* cb) {
   auto* rt = renderTarget();
   const QSize output_size = rt->pixelSize();
   QRhiResourceUpdateBatch* updates = r->nextResourceUpdateBatch();
+  bool inspector_frame_changed = false;
 
   {
     std::lock_guard lock(frame_mutex_);
@@ -731,6 +788,8 @@ void MediaViewerWidget::render(QRhiCommandBuffer* cb) {
           pending_decoded_ = std::move(*frame->base);
           pending_is_yuv_ = (pending_decoded_.format == PixelFormat::kYUV420P);
           pending_qimage_ = QImage();
+          inspector_frame_ = pending_decoded_;
+          inspector_frame_changed = true;
           has_pending_ = true;
         }
         if (!frame->overlays.empty()) {
@@ -906,6 +965,10 @@ void MediaViewerWidget::render(QRhiCommandBuffer* cb) {
 
       has_pending_ = false;
     }
+  }
+
+  if (inspector_frame_changed) {
+    schedulePointInspectorRefresh();
   }
 
   // Update uniforms
@@ -1147,10 +1210,17 @@ void MediaViewerWidget::wheelEvent(QWheelEvent* e) {
 
   update();
   emit zoomChanged(zoom_);
+  if (point_inspector_enabled_.load(std::memory_order_relaxed) &&
+      point_inspector_active_.load(std::memory_order_relaxed)) {
+    refreshPointInspector();
+  }
   e->accept();
 }
 
 void MediaViewerWidget::mousePressEvent(QMouseEvent* e) {
+  if (e->button() == Qt::LeftButton) {
+    hidePointInspector();
+  }
   if (e->button() == Qt::LeftButton && zoom_ > 1.0f) {
     last_mouse_pos_ = e->position();
     e->accept();
@@ -1166,12 +1236,25 @@ void MediaViewerWidget::mouseMoveEvent(QMouseEvent* e) {
     last_mouse_pos_ = e->position();
     update();
     e->accept();
+    return;
+  }
+
+  last_point_inspector_pos_ = e->position();
+  point_inspector_active_.store(true, std::memory_order_relaxed);
+  if (point_inspector_enabled_.load(std::memory_order_relaxed)) {
+    refreshPointInspector();
   }
 }
 
 void MediaViewerWidget::mouseDoubleClickEvent(QMouseEvent* e) {
   resetView();
   e->accept();
+}
+
+void MediaViewerWidget::leaveEvent(QEvent* e) {
+  point_inspector_active_.store(false, std::memory_order_relaxed);
+  hidePointInspector();
+  QRhiWidget::leaveEvent(e);
 }
 
 QMatrix4x4 MediaViewerWidget::buildViewTransform(QSize output_size) const {
@@ -1189,6 +1272,65 @@ QMatrix4x4 MediaViewerWidget::buildViewTransform(QSize output_size) const {
   m.scale(sx * zoom_, sy * zoom_);
   m.translate(pan_x_, pan_y_);
   return m;
+}
+
+void MediaViewerWidget::refreshPointInspector() {
+  if (!point_inspector_enabled_.load(std::memory_order_relaxed) ||
+      !point_inspector_active_.load(std::memory_order_relaxed)) {
+    hidePointInspector();
+    return;
+  }
+
+  DecodedFrame frame;
+  {
+    std::lock_guard lock(frame_mutex_);
+    frame = inspector_frame_;
+  }
+  if (frame.isNull() || frame.width <= 0 || frame.height <= 0) {
+    hidePointInspector();
+    return;
+  }
+
+  const auto image_point = widgetPointToImagePixel(
+      last_point_inspector_pos_, size(), QSize(frame.width, frame.height), zoom_, pan_x_, pan_y_);
+  if (!image_point.has_value()) {
+    hidePointInspector();
+    return;
+  }
+
+  auto crop = extractRgbCrop(frame, image_point->x(), image_point->y(), kPointInspectorCropSize);
+  if (crop.empty()) {
+    hidePointInspector();
+    return;
+  }
+
+  if (point_inspector_ == nullptr) {
+    point_inspector_ = std::make_unique<PixelInspector>();
+  }
+  point_inspector_->updatePixel(std::move(crop), kPointInspectorCropSize, image_point->x(), image_point->y());
+  point_inspector_->showNear(mapToGlobal(last_point_inspector_pos_.toPoint()));
+}
+
+void MediaViewerWidget::schedulePointInspectorRefresh() {
+  if (!point_inspector_enabled_.load(std::memory_order_relaxed) ||
+      !point_inspector_active_.load(std::memory_order_relaxed)) {
+    return;
+  }
+  QMetaObject::invokeMethod(
+      this,
+      [this]() {
+        if (point_inspector_enabled_.load(std::memory_order_relaxed) &&
+            point_inspector_active_.load(std::memory_order_relaxed)) {
+          refreshPointInspector();
+        }
+      },
+      Qt::QueuedConnection);
+}
+
+void MediaViewerWidget::hidePointInspector() {
+  if (point_inspector_ != nullptr) {
+    point_inspector_->hideImmediately();
+  }
 }
 
 QShader MediaViewerWidget::loadShader(const QString& path) {

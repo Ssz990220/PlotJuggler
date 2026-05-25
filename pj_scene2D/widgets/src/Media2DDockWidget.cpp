@@ -49,6 +49,16 @@ void Media2DDockWidget::setSessionManager(SessionManager* session) {
   session_ = session;
 }
 
+void Media2DDockWidget::setPointInspectorEnabled(bool enabled) {
+  if (viewer_ != nullptr) {
+    viewer_->setPointInspectorEnabled(enabled);
+  }
+}
+
+bool Media2DDockWidget::pointInspectorEnabled() const noexcept {
+  return viewer_ != nullptr && viewer_->pointInspectorEnabled();
+}
+
 bool Media2DDockWidget::setImageTopic(
     ObjectTopicId topic_id, sdk::BuiltinObjectType object_type, const QString& title) {
   if (session_ == nullptr) {

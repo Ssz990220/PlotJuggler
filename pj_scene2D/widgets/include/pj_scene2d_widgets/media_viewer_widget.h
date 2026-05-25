@@ -9,6 +9,8 @@
 #include <QMouseEvent>
 #include <QRhiWidget>
 #include <QWheelEvent>
+#include <atomic>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <unordered_map>
@@ -20,6 +22,7 @@
 namespace PJ {
 
 class MediaSource;
+class PixelInspector;
 
 /// GPU-accelerated image/video viewer using QRhiWidget.
 ///
@@ -45,6 +48,7 @@ class MediaViewerWidget : public QRhiWidget {
 
  public:
   explicit MediaViewerWidget(QWidget* parent = nullptr);
+  ~MediaViewerWidget() override;
 
   /// Attach a MediaSource. The widget does NOT take ownership.
   /// Call setTimestamp() to drive the source; render() polls takeFrame().
@@ -66,6 +70,10 @@ class MediaViewerWidget : public QRhiWidget {
   void setClearColor(const QColor& color);
   [[nodiscard]] QColor clearColor() const;
 
+  /// Enables the hover pixel magnifier used by the global "Show point" toggle.
+  void setPointInspectorEnabled(bool enabled);
+  [[nodiscard]] bool pointInspectorEnabled() const noexcept;
+
  signals:
   void zoomChanged(float zoom);
 
@@ -78,10 +86,14 @@ class MediaViewerWidget : public QRhiWidget {
   void mousePressEvent(QMouseEvent* e) override;
   void mouseMoveEvent(QMouseEvent* e) override;
   void mouseDoubleClickEvent(QMouseEvent* e) override;
+  void leaveEvent(QEvent* e) override;
 
  private:
   [[nodiscard]] QMatrix4x4 buildViewTransform(QSize output_size) const;
   [[nodiscard]] bool hasRetainedUploadableFrameLocked() const;
+  void refreshPointInspector();
+  void schedulePointInspectorRefresh();
+  void hidePointInspector();
   static QShader loadShader(const QString& path);
   // Get-or-create the glyph mask texture for a given (text, font_size). Renders
   // via QPainter on first miss and uploads as an R8 QRhiTexture. The texture
@@ -115,6 +127,7 @@ class MediaViewerWidget : public QRhiWidget {
   std::mutex frame_mutex_;
   DecodedFrame pending_decoded_;  // YUV420P or RGB frame
   QImage pending_qimage_;         // QImage fallback
+  DecodedFrame inspector_frame_;
   bool has_pending_ = false;
   bool pending_is_yuv_ = false;
 
@@ -135,7 +148,11 @@ class MediaViewerWidget : public QRhiWidget {
   float pan_x_ = 0.0f;
   float pan_y_ = 0.0f;
   QPointF last_mouse_pos_;
+  QPointF last_point_inspector_pos_;
   QColor clear_color_{Qt::white};
+  std::unique_ptr<PixelInspector> point_inspector_;
+  std::atomic_bool point_inspector_enabled_{false};
+  std::atomic_bool point_inspector_active_{false};
 
   // Uniform buffer layout (std140):
   // mat4 viewTransform  (64 bytes, offset 0)

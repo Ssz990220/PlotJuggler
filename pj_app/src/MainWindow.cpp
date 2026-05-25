@@ -351,6 +351,7 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
         auto* widget = new Media2DDockWidget(parent);
         widget->setSessionManager(&session_->sessionManager());
         if (widget->setImageTopic(topic_id, object_type, title)) {
+          widget->setPointInspectorEnabled(show_points_);
           return widget;
         }
         // Tear down the empty widget and tell the user *why* the drop did
@@ -390,6 +391,7 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
   // Push the just-loaded toggle states into every plot already created by
   // wireExistingPlots(). New plots will pick this up via onPlotAdded.
   forEachPlot([this](PlotWidget* plot) { applyGlobalToggles(plot); });
+  applyShowPointsTo2DWidgets();
 
   // Panel toggle buttons in the tab strip drive shell-level visibility
   // for the left column, the timeline strip, and the right toolbar.
@@ -1050,6 +1052,20 @@ void MainWindow::applyGlobalToggles(PlotWidget* plot) {
   plot->setTrackerParameter(tracker_info_);
 }
 
+void MainWindow::applyShowPointsToDock(DockWidget* dock) {
+  if (dock == nullptr || dock->objectWidget() == nullptr) {
+    return;
+  }
+  auto* media = qobject_cast<Media2DDockWidget*>(dock->objectWidget()->widget());
+  if (media != nullptr) {
+    media->setPointInspectorEnabled(show_points_);
+  }
+}
+
+void MainWindow::applyShowPointsTo2DWidgets() {
+  forEachDock([this](DockWidget* dock) { applyShowPointsToDock(dock); });
+}
+
 void MainWindow::updateTimeTrackerIcon() {
   if (button_time_tracker_ == nullptr) {
     return;
@@ -1630,6 +1646,7 @@ bool MainWindow::xmlLoadState(const QDomDocument& state_document) {
     setLegendStatus(new_status);
   }
   forEachPlot([this](PlotWidget* plot) { applyGlobalToggles(plot); });
+  applyShowPointsTo2DWidgets();
   return true;
 }
 
@@ -1833,6 +1850,7 @@ void MainWindow::buildGlobalToolbar() {
     show_points_ = checked;
     QSettings().setValue(QStringLiteral("MainWindow.buttonShowpoint"), checked);
     forEachPlot([checked](PlotWidget* plot) { plot->setShowPoints(checked); });
+    applyShowPointsTo2DWidgets();
   });
   connect(button_grid_, &QToolButton::toggled, this, [this](bool checked) {
     if (applying_state_) {

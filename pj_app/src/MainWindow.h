@@ -175,6 +175,8 @@ class MainWindow : public QMainWindow {
   // Pushes the current toolbar toggle state (show_points / legend_status /
   // activate_grid / dots) into one plot, so newly added plots match.
   void applyGlobalToggles(PlotWidget* plot);
+  void applyShowPointsToDock(DockWidget* dock);
+  void applyShowPointsTo2DWidgets();
   void applyLegendStatus(PlotWidget* plot);
   // Slot: left-click cycles or restores the legend position.
   void onLegendButtonClicked();
@@ -341,7 +343,7 @@ class MainWindow : public QMainWindow {
   LegendStatus previous_legend_corner_ = LegendStatus::kTopRight;
 
   // Global-column view toggles. Persisted to QSettings; XML
-  // round-tripped; applied to every plot via forEachPlot.
+  // round-tripped; show_points_ applies to plots and 2D image viewers.
   LegendStatus legend_status_ = LegendStatus::kTopRight;
   bool show_points_ = false;
   bool activate_grid_ = false;

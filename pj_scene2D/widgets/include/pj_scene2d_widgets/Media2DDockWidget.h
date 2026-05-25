@@ -24,6 +24,8 @@ class Media2DDockWidget : public QWidget, public IDataWidget {
 
   void setSessionManager(SessionManager* session);
   bool setImageTopic(ObjectTopicId topic_id, sdk::BuiltinObjectType object_type, const QString& title);
+  void setPointInspectorEnabled(bool enabled);
+  [[nodiscard]] bool pointInspectorEnabled() const noexcept;
 
   QWidget* widget() override {
     return this;
