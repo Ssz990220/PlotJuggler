@@ -14,8 +14,10 @@
 #include <cstdint>
 #include <string>
 #include <string_view>
+#include <vector>
 
 #include "DialogPresenter.h"
+#include "FanoutConfig.h"
 #include "MainWindow.h"
 #include "pj_base/data_source_protocol.h"
 #include "pj_base/dataset.hpp"
@@ -67,6 +69,15 @@ std::string buildLoadConfig(std::string_view saved_config, const QString& path) 
 
 QString pluginConfigKey(const std::string& plugin_id) {
   return QString::fromLatin1(kPluginConfigKeyPrefix) + QString::fromStdString(plugin_id);
+}
+
+// Default ingest policies the app applies to every DataSourceRuntimeHost it
+// builds: scalars eager, objects lazy (decoded on pull), point clouds always
+// pure-lazy (they're the heaviest payload). Hoisted here so the pre-dialog
+// scratch session and the per-fanout loop iterations stay in lockstep.
+void applyDefaultIngestPolicies(DataSourceRuntimeHost& session) {
+  session.policyResolver().setDefault(PJ::sdk::ObjectIngestPolicy::kLazyObjectsEagerScalars);
+  session.policyResolver().setForType(PJ::sdk::BuiltinObjectType::kPointCloud, PJ::sdk::ObjectIngestPolicy::kPureLazy);
 }
 
 }  // namespace
@@ -150,9 +161,7 @@ bool FileLoader::loadFile(const QString& path, QWidget* dialog_parent) {
       [this](ObjectTopicId id, std::unique_ptr<MessageParserHandle> parser) {
         session_.registerObjectTopicParser(id, std::move(parser));
       });
-  ingest_session.policyResolver().setDefault(PJ::sdk::ObjectIngestPolicy::kLazyObjectsEagerScalars);
-  ingest_session.policyResolver().setForType(
-      PJ::sdk::BuiltinObjectType::kPointCloud, PJ::sdk::ObjectIngestPolicy::kPureLazy);
+  applyDefaultIngestPolicies(ingest_session);
 
   ServiceRegistryBuilder registry;
   ingest_session.registerServices(registry);
@@ -225,43 +234,188 @@ bool FileLoader::loadFile(const QString& path, QWidget* dialog_parent) {
     bar->setTextVisible(true);
   }
 
-  ingest_session.onProgressStart = [&progress_dlg](std::string_view label, uint64_t total, bool cancellable) {
-    const QString title = QString::fromUtf8(label.data(), static_cast<int>(label.size()));
-    progress_dlg.setWindowTitle(title);
-    progress_dlg.setLabelText(QString{});
-    progress_dlg.setRange(0, total > 0 ? static_cast<int>(total) : 0);
-    progress_dlg.setValue(0);
-    progress_dlg.setCancelButtonText(cancellable ? tr("Cancel") : QString{});
-    QCoreApplication::processEvents();
+  // Latch cancellation the moment we observe it (inside onProgressUpdate). We
+  // can't trust progress_dlg.wasCanceled() after an import returns: on normal
+  // completion onProgressFinish calls reset(), which clears that flag, so the
+  // post-import checks below (single-instance and the fanout loop) could miss a
+  // real cancel. A separate sticky bool is reliable regardless of which exit
+  // path ran.
+  bool user_cancelled = false;
+
+  // Progress callbacks are re-wired per ingest_session (once for single-instance,
+  // N times in fanout mode) — the dialog itself is shared.
+  auto wireProgress = [&progress_dlg, &user_cancelled](DataSourceRuntimeHost& session) {
+    session.onProgressStart = [&progress_dlg](std::string_view label, uint64_t total, bool cancellable) {
+      const QString title = QString::fromUtf8(label.data(), static_cast<int>(label.size()));
+      progress_dlg.setWindowTitle(title);
+      progress_dlg.setLabelText(QString{});
+      progress_dlg.setRange(0, total > 0 ? static_cast<int>(total) : 0);
+      progress_dlg.setValue(0);
+      progress_dlg.setCancelButtonText(cancellable ? tr("Cancel") : QString{});
+      QCoreApplication::processEvents();
+    };
+    session.onProgressUpdate = [&progress_dlg, &session, &user_cancelled](uint64_t current) -> bool {
+      progress_dlg.setValue(static_cast<int>(current));
+      QCoreApplication::processEvents();
+      if (progress_dlg.wasCanceled()) {
+        user_cancelled = true;
+        session.requestStop("cancelled by user");
+        return false;
+      }
+      return true;
+    };
+    session.onProgressFinish = [&progress_dlg]() {
+      progress_dlg.setValue(progress_dlg.maximum());
+      QCoreApplication::processEvents();
+      progress_dlg.reset();
+    };
   };
 
-  ingest_session.onProgressUpdate = [&progress_dlg, &ingest_session](uint64_t current) -> bool {
-    progress_dlg.setValue(static_cast<int>(current));
-    QCoreApplication::processEvents();
-    if (progress_dlg.wasCanceled()) {
-      ingest_session.requestStop("cancelled by user");
-      return false;
+  // Detect multi-instance fanout. A DataSource plugin emits a `__pj_fanout`
+  // array on accept when one selection should expand into several independent
+  // imports — each entry becomes its own DatasetId. For single-instance
+  // importers the helper returns `{ config }` and the legacy flow runs unchanged.
+  const auto fanouts = detail::extractFanout(config);
+
+  if (fanouts.size() == 1) {
+    // Single-instance: reuse the already-bound scratch handle + dataset.
+    wireProgress(ingest_session);
+    if (auto status = handle.start(); !status) {
+      progress_dlg.reset();
+      return fail(tr("Plugin '%1': start failed: %2").arg(source_name, QString::fromStdString(status.error())));
     }
-    return true;
-  };
+    ingest_session.flushAll();
+    // FileSourceBase::start() calls requestStop(..., "import complete") on the
+    // normal success path (plotjuggler_core pj_base/.../sdk/data_source_patterns.hpp),
+    // so stopRequested() can't distinguish completion from cancel — consult the
+    // sticky flag. The rows already committed by flushAll() can't be rolled back
+    // (ObjectStore writes are immediate and there is no removeDataset), so a
+    // cancelled import leaves partial data; surface that instead of returning a
+    // silent success.
+    if (user_cancelled) {
+      qCWarning(lcFileLoader) << "[FileLoader] import cancelled by user, reason:"
+                              << QString::fromStdString(ingest_session.lastError());
+      if (dialog_parent != nullptr) {
+        MessageBox::warning(
+            dialog_parent, tr("Import cancelled"), tr("The import was cancelled; the loaded data may be incomplete."));
+      }
+    }
+  } else {
+    // Multi-instance fanout. The pre-dialog scratch dataset is now an empty
+    // orphan — pj_datastore has no removeDataset, so we accept the cost (an
+    // empty dataset has no committed topics, so CatalogModel::rebuildFromDatastore
+    // skips it — no phantom catalog entry). Each fanout entry mints its own
+    // handle + dataset + ingest_session. Continue-on-error per the user-confirmed
+    // policy: a bad entry does not lose the others.
+    enum class EntryOutcome { Completed, Failed, Cancelled };
 
-  ingest_session.onProgressFinish = [&progress_dlg]() {
-    progress_dlg.setValue(progress_dlg.maximum());
-    QCoreApplication::processEvents();
-    progress_dlg.reset();
-  };
+    const QString basename = QFileInfo(path).completeBaseName();
+    std::size_t completed = 0;
+    std::size_t failed = 0;
+    bool cancelled = false;
+    QStringList failed_labels;
 
-  if (auto status = handle.start(); !status) {
-    progress_dlg.reset();
-    return fail(tr("Plugin '%1': start failed: %2").arg(source_name, QString::fromStdString(status.error())));
+    // Per-fanout-iteration runner. Creates a fresh dataset + handle + ingest
+    // host, binds, loadConfig's the per-entry cfg, then runs the import. Logs a
+    // context-rich warning on every failure mode so partial imports are
+    // diagnosable from the log alone. Returns Failed before the import starts,
+    // Cancelled if the user cancelled during it, else Completed.
+    auto runFanoutEntry = [&](std::size_t idx, const std::string& cfg_i, const QString& iter_display) -> EntryOutcome {
+      auto iter_dataset_or =
+          engine.createDataset(DatasetDescriptor{.source_name = iter_display.toStdString(), .time_domain_id = td_id});
+      if (!iter_dataset_or.has_value()) {
+        qCWarning(lcFileLoader) << "[FileLoader] fanout[" << idx
+                                << "]: createDataset failed:" << QString::fromStdString(iter_dataset_or.error());
+        return EntryOutcome::Failed;
+      }
+      const auto iter_dataset_id = static_cast<DatasetId>(*iter_dataset_or);
+      const PJ_data_source_handle_t iter_source_handle{static_cast<uint32_t>(iter_dataset_id)};
+
+      DataSourceHandle iter_handle = source->library.createHandle();
+      if (!iter_handle.valid()) {
+        qCWarning(lcFileLoader) << "[FileLoader] fanout[" << idx << "]: createHandle failed";
+        return EntryOutcome::Failed;
+      }
+
+      DataSourceRuntimeHost iter_ingest(
+          engine, extensions_, iter_dataset_id, iter_source_handle, session_.objectStore(), source->id,
+          [this](ObjectTopicId id, std::unique_ptr<MessageParserHandle> parser) {
+            session_.registerObjectTopicParser(id, std::move(parser));
+          });
+      applyDefaultIngestPolicies(iter_ingest);
+
+      ServiceRegistryBuilder iter_registry;
+      iter_ingest.registerServices(iter_registry);
+
+      if (auto status = iter_handle.bind(iter_registry.view()); !status) {
+        qCWarning(lcFileLoader) << "[FileLoader] fanout[" << idx
+                                << "]: bind failed:" << QString::fromStdString(status.error());
+        return EntryOutcome::Failed;
+      }
+      if (auto status = iter_handle.loadConfig(cfg_i); !status) {
+        qCWarning(lcFileLoader) << "[FileLoader] fanout[" << idx
+                                << "]: loadConfig failed:" << QString::fromStdString(status.error());
+        return EntryOutcome::Failed;
+      }
+
+      wireProgress(iter_ingest);
+      progress_dlg.setLabelText(tr("Importing %1 (%2/%3)").arg(iter_display).arg(idx + 1).arg(fanouts.size()));
+
+      if (auto status = iter_handle.start(); !status) {
+        progress_dlg.reset();
+        qCWarning(lcFileLoader) << "[FileLoader] fanout[" << idx
+                                << "]: start failed:" << QString::fromStdString(status.error());
+        return EntryOutcome::Failed;
+      }
+      // Commit whatever landed so the dataset is internally consistent. On
+      // cancel we still flush — the alternative (dropping unflushed scalars
+      // while ObjectStore payloads, written immediately, stay committed) would
+      // leave a half-written dataset — and report it as Cancelled rather than a
+      // clean success. user_cancelled is the canonical cancel signal (see the
+      // declaration above); it can only have flipped during this entry's import,
+      // since the loop breaks on cancel.
+      iter_ingest.flushAll();
+      return user_cancelled ? EntryOutcome::Cancelled : EntryOutcome::Completed;
+    };
+
+    for (std::size_t i = 0; i < fanouts.size(); ++i) {
+      const std::string& cfg_i = fanouts[i];
+      const QString suffix = detail::parseDisplaySuffix(cfg_i, QString::number(i + 1));
+      const QString iter_display = basename + QChar('/') + suffix;
+
+      switch (runFanoutEntry(i, cfg_i, iter_display)) {
+        case EntryOutcome::Completed:
+          ++completed;
+          break;
+        case EntryOutcome::Failed:
+          ++failed;
+          failed_labels << iter_display;
+          break;
+        case EntryOutcome::Cancelled:
+          cancelled = true;
+          break;
+      }
+      if (cancelled) {
+        qCWarning(lcFileLoader) << "[FileLoader] fanout: user cancelled at entry" << (i + 1) << "of" << fanouts.size();
+        break;
+      }
+    }
+
+    const int total = static_cast<int>(fanouts.size());
+    const bool all_ok = !cancelled && failed == 0 && static_cast<int>(completed) == total;
+    if (!all_ok && dialog_parent != nullptr) {
+      QString msg = tr("Imported %1 of %2 dataset(s).").arg(completed).arg(total);
+      if (failed > 0) {
+        msg += QChar('\n') + tr("%1 failed: %2.").arg(failed).arg(failed_labels.join(QStringLiteral(", ")));
+      }
+      if (cancelled) {
+        msg += QChar('\n') +
+               tr("Import cancelled; the remaining datasets were skipped and the cancelled one may be partial.");
+      }
+      MessageBox::warning(dialog_parent, cancelled ? tr("Import cancelled") : tr("Partial import"), msg);
+    }
   }
 
-  if (ingest_session.stopRequested()) {
-    qCWarning(lcFileLoader) << "[FileLoader] import cancelled by user, reason:"
-                            << QString::fromStdString(ingest_session.lastError());
-  }
-
-  ingest_session.flushAll();
   catalog_.rebuildFromDatastore();
   emit fileLoaded(path);
   return true;

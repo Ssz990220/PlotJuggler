@@ -69,11 +69,14 @@ ffmpeg/*:with_coreimage=False
 ffmpeg/*:with_videotoolbox=False
 ffmpeg/*:with_libsvtav1=False
 ffmpeg/*:with_libaom=False
-ffmpeg/*:with_libdav1d=False
+# dav1d is the software AV1 decoder. Without it, avcodec_find_decoder(AV_CODEC_ID_AV1)
+# returns the HW-only stub and avcodec_open2 fails for AV1 streams, so any
+# AV1-encoded video a DataSource plugin hands us would fail to decode.
+ffmpeg/*:with_libdav1d=True
 ffmpeg/*:disable_all_encoders=True
 ffmpeg/*:disable_all_muxers=True
 ffmpeg/*:disable_all_decoders=True
-ffmpeg/*:enable_decoders=h264,hevc,mjpeg
+ffmpeg/*:enable_decoders=h264,hevc,mjpeg,av1,libdav1d
 ffmpeg/*:disable_all_demuxers=True
 ffmpeg/*:enable_demuxers=mov,matroska,avi,h264,hevc,mjpeg
 ffmpeg/*:disable_all_parsers=True

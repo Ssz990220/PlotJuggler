@@ -4,6 +4,8 @@ add_executable(pj_app
     src/main.cpp
     src/DialogPresenter.cpp
     src/DialogPresenter.h
+    src/FanoutConfig.cpp
+    src/FanoutConfig.h
     src/FileLoader.cpp
     src/FileLoader.h
     src/MainWindow.cpp
@@ -79,4 +81,25 @@ target_link_libraries(pj_app PRIVATE
 # GNU/LLD spelling; harmless on other linkers but only meaningful here.
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang" AND NOT APPLE AND NOT WIN32)
     target_link_options(pj_app PRIVATE "LINKER:--exclude-libs,ALL")
+endif()
+
+# ---------------------------------------------------------------------------
+# Tests
+# ---------------------------------------------------------------------------
+
+if(PJ_BUILD_TESTS)
+    find_package(GTest REQUIRED)
+
+    # Pure config-parsing logic (no GUI), compiled standalone so it's linkable
+    # from a plain gtest binary. FanoutConfig.cpp is also part of pj_app itself.
+    add_executable(fanout_config_test
+        tests/fanout_config_test.cpp
+        src/FanoutConfig.cpp
+    )
+    target_include_directories(fanout_config_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    target_link_libraries(fanout_config_test PRIVATE
+        Qt6::Core
+        GTest::gtest_main
+    )
+    add_test(NAME FanoutConfig COMMAND fanout_config_test)
 endif()
