@@ -2,6 +2,8 @@ find_package(Qt6 REQUIRED COMPONENTS Core Gui Svg Widgets)
 
 add_library(pj_widgets STATIC
     src/ColorPickerPopup.cpp
+    src/ComboBox.cpp
+    src/ComboBoxGradientDelegate.cpp
     src/CurveTreeView.cpp
     src/Dialog.cpp
     src/Dialog.ui
@@ -16,6 +18,8 @@ add_library(pj_widgets STATIC
     src/VisualizationPlaceholderWidget.cpp
     include/pj_widgets/ChromeMetrics.h
     include/pj_widgets/ColorPickerPopup.h
+    include/pj_widgets/ComboBox.h
+    include/pj_widgets/ComboBoxGradientDelegate.h
     include/pj_widgets/CurveTreeView.h
     include/pj_widgets/Dialog.h
     include/pj_widgets/DoubleScrubber.h
@@ -29,6 +33,7 @@ add_library(pj_widgets STATIC
     include/pj_widgets/ScrubberBase.h
     include/pj_widgets/Style.h
     include/pj_widgets/SvgUtil.h
+    include/pj_widgets/ThemeColors.h
     include/pj_widgets/ToggleSwitch.h
     include/pj_widgets/VisualizationPlaceholderWidget.h
 )
@@ -53,3 +58,5 @@ target_link_libraries(pj_widgets PUBLIC
 if(PJ_BUILD_TESTS)
     add_subdirectory(tests)
 endif()
+
+add_subdirectory(demos)

@@ -299,7 +299,7 @@ void DiagnosticsPopup::endHandleDrag(QMouseEvent* event) {
   dragging_ = false;
   ui_->scrollArea->setUpdatesEnabled(true);
   ui_->scrollArea->update();
-  // Keep the PJPurple bottom border only if the cursor is still over
+  // Keep the purple bottom border only if the cursor is still over
   // the handle — otherwise revert to the neutral border colour.
   setDragActive(hover_over_handle_);
   event->accept();

@@ -116,7 +116,7 @@ CurveListPanel::CurveListPanel(QWidget* parent) : QWidget(parent), ui_(new Ui::C
   clear_all_button_ = new QPushButton(tr("Clear all curves"), datasets_menu);
   clear_all_button_->setFlat(true);
   clear_all_button_->setProperty("destructive", true);
-  // Padding, text-align, AND the destructive ${PJPurple} colour
+  // Padding, text-align, AND the destructive ${purple} colour
   // are handled centrally in stylesheet_*.qss under
   // `QMenu#PJMenu QPushButton[destructive="true"]` — no per-button
   // stylesheet needed here.

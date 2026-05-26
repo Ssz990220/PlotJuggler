@@ -10,8 +10,8 @@ class CDockContainerWidget;
 
 namespace PJ {
 
-// Click-through overlay that frames the focused (PJBlue) and hovered
-// (PJLightBlue) dock areas. The container must outlive this overlay,
+// Click-through overlay that frames the focused (blue) and hovered
+// (light_blue) dock areas. The container must outlive this overlay,
 // which parents itself to the container and installs an event filter
 // on it to track layout changes.
 class PlotFocusOverlay final : public QWidget {

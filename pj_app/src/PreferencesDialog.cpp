@@ -157,7 +157,7 @@ PreferencesDialog::PreferencesDialog(Theme& theme, QWidget* parent)
   // bright/active state.
   //
   // Icons are forced to white so they read clearly against the
-  // colored track (PJBlue when on, gray when off).
+  // colored track (blue when on, gray when off).
   ui_->themeToggle->setLeftIcon(LoadWhiteFillIcon(QStringLiteral(":/resources/svg/light_mode_light.svg")));
   ui_->themeToggle->setRightIcon(LoadWhiteFillIcon(QStringLiteral(":/resources/svg/dark_mode_light.svg")));
   // Snap the toggle to the active theme without animating — the

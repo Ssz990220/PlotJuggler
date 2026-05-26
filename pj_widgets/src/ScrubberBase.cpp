@@ -19,6 +19,7 @@
 #include <cmath>
 
 #include "pj_widgets/SvgUtil.h"
+#include "pj_widgets/ThemeColors.h"
 
 namespace PJ {
 
@@ -110,12 +111,13 @@ void ScrubberBase::paintEvent(QPaintEvent*) {
   const QColor border_grey = light ? QColor(0xc0, 0xc0, 0xc0) : QColor(0xb0, 0xb0, 0xbf);
   const QColor active = light ? QColor(0x62, 0xc5, 0xff) : QColor(0x14, 0x8c, 0xd2);
 
-  // Background fill: full rect. Forced #ffffff in light mode so the
-  // scrubber reads as part of the chart surface (matches QSS
-  // chart_background); dark mode keeps the palette Base brush.
+  // Background fill: full rect. Colours come from pj_widgets/ThemeColors.h
+  // so they stay in lockstep with the QSS `input_background` token used by
+  // PJ::ComboBox — Qt's palette(base) brush varies per platform and landed
+  // near-white in dark mode, defeating the dark theme.
   QPainterPath fill_path;
   fill_path.addRoundedRect(rect(), kCornerRadiusPx, kCornerRadiusPx);
-  const QBrush fill_brush = light ? QBrush(QColor(0xff, 0xff, 0xff)) : pal.brush(QPalette::Base);
+  const QBrush fill_brush(light ? theme::kInputBackgroundLight : theme::kInputBackgroundDark);
   p.fillPath(fill_path, fill_brush);
 
   // Border stroke: inset by 0.5 px so the 1 px line lands cleanly on

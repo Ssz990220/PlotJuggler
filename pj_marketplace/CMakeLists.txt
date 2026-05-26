@@ -82,6 +82,7 @@ target_include_directories(pj_marketplace_ui PRIVATE
 
 target_link_libraries(pj_marketplace_ui PUBLIC
   pj_marketplace
+  pj_widgets
   Qt6::Widgets
 )
 

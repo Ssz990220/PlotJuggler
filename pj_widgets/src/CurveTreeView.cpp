@@ -164,7 +164,7 @@ CurveTreeView::CurveTreeView(QWidget* parent) : QTreeWidget(parent) {
   header()->setSectionsClickable(false);
   // Ensure the header sees Enter/Leave/HoverMove events — the QSS
   // `QHeaderView::section:hover` rule that tints the column divider
-  // PJPurple only fires when the header has the Hover attribute set.
+  // purple only fires when the header has the Hover attribute set.
   header()->setAttribute(Qt::WA_Hover, true);
   header()->viewport()->setAttribute(Qt::WA_Hover, true);
   // Splitter behavior: dragging the divider resizes Name; we translate

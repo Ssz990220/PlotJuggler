@@ -25,7 +25,7 @@
       </widget>
      </item>
      <item>
-      <widget class="QComboBox" name="category_combo_">
+      <widget class="PJ::ComboBox" name="category_combo_">
        <property name="minimumWidth"><number>140</number></property>
        <!-- Items populated in C++ to support QVariant userData -->
       </widget>
@@ -124,6 +124,13 @@
 
   </layout>
  </widget>
+ <customwidgets>
+  <customwidget>
+   <class>PJ::ComboBox</class>
+   <extends>QComboBox</extends>
+   <header>pj_widgets/ComboBox.h</header>
+  </customwidget>
+ </customwidgets>
  <resources/>
  <connections/>
 </ui>

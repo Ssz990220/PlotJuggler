@@ -49,11 +49,11 @@ The token names below are stable; the values differ per theme.
 
 | Token | Value | Used for |
 |---|---|---|
-| `PJBlue` | `#1177FF` | Primary call-to-action; selection sub-page on `#timeSlider`. |
-| `PJLightBlue` | `#C2DCFF` | Hover state on tabs / menu items in light theme; track of the selected portion of `#timeSlider`. |
-| `PJPurple` | `#CC00CC` | Destructive / window-close hover on dark theme; pressed state in light. |
-| `PJPurpleDark` (dark only) | `#990099` | Window-close pressed state in dark theme. |
-| `PJLightPurple` | `#FFAEFF` | Window-close hover state in light theme. |
+| `blue` | `#1177FF` | Primary call-to-action; selection sub-page on `#timeSlider`. |
+| `light_blue` | `#C2DCFF` | Hover state on tabs / menu items in light theme; track of the selected portion of `#timeSlider`. |
+| `purple` | `#CC00CC` | Destructive / window-close hover on dark theme; pressed state in light. |
+| `purple_dark` (dark only) | `#990099` | Window-close pressed state in dark theme. |
+| `light_purple` | `#FFAEFF` | Window-close hover state in light theme. |
 
 ### 1.5 Overlays
 
@@ -79,14 +79,14 @@ swapped identity".
 | `slider_handle` | `#999999` | `#999999` | Generic `QSlider` thumb (not the time slider). |
 | `slider_handle_hover` | `#99ccff` | `#99ccff` | Generic slider hover. |
 
-The playback `#timeSlider` is special-cased: handle is `PJLightPurple`
-nominally, `PJPurple` on hover/pressed.
+The playback `#timeSlider` is special-cased: handle is `light_purple`
+nominally, `purple` on hover/pressed.
 
 ### 1.7 Selection
 
 | Token | Light | Dark |
 |---|---|---|
-| `item_selection_background` | `#C2DCFF` (= `PJLightBlue`) | `#148CD2` |
+| `item_selection_background` | `#C2DCFF` (= `light_blue`) | `#148CD2` |
 
 ---
 

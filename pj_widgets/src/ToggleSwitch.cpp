@@ -123,7 +123,7 @@ void ToggleSwitch::paintEvent(QPaintEvent* /*event*/) {
   // from the "off" tone to the "on" tone as the thumb moves so the
   // color transition tracks the animation smoothly.
   const QColor off_track(120, 120, 120);
-  const QColor on_track(0x11, 0x77, 0xFF);  // PJBlue
+  const QColor on_track(0x11, 0x77, 0xFF);  // blue
   const auto lerp = [](int a, int b, qreal t) { return static_cast<int>(a + ((b - a) * t)); };
   const QColor track_color(
       lerp(off_track.red(), on_track.red(), thumb_position_),

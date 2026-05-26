@@ -88,7 +88,7 @@ class DiagnosticsPopup : public QFrame {
   void endHandleDrag(QMouseEvent* event);
 
   // Toggle the popup's "dragActive" dynamic property and re-polish so
-  // QSS swaps the bottom border between border_default and PJPurple.
+  // QSS swaps the bottom border between border_default and purple.
   // True while the cursor is over dragHandle, or while a drag is in
   // progress (so the colour stays during a long drag that may cross
   // the handle's bounds).

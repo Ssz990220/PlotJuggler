@@ -12,6 +12,11 @@ main_background:             #373743
 dark_background:             #3B3B47
 titlebar_background:         #1C1C22
 widget_background_disabled:  #404040
+// Fill colour for input chrome (PJ::ComboBox, DoubleScrubber). Slightly
+// lighter than dark_background so the input rectangle reads as a raised
+// surface against the dialog body; ScrubberBase::paintEvent uses the
+// same value in C++ to stay in lockstep with the QComboBox QSS.
+input_background:            #4D4D5A
 
 // ---- Text ----------------------------------------------------------
 default_text:    #F0F0F0
@@ -25,13 +30,18 @@ border_checked:  #1177ff
 
 // ---- Selections ----------------------------------------------------
 item_selection_background: #148CD2
+// Text painted on top of `item_selection_background` in views (tables,
+// trees, lists, file-dialog sidebar). Stays dark in both themes because
+// the highlight fill is light/mid blue and reads better with dark ink
+// than with the theme's regular default_text.
+selection_text:            #000000
 
 // ---- Brand accent colors (theme-agnostic, same in both stylesheets) ----
-PJPurple:        #CC00CC
-PJPurpleDark:    #990099
-PJBlue:          #1177FF
-PJLightBlue:     #C2DCFF
-PJLightPurple:   #FFAEFF
+purple:        #CC00CC
+purple_dark:    #990099
+blue:          #1177FF
+light_blue:     #C2DCFF
+light_purple:   #FFAEFF
 
 // ---- Status accents (used by marketplace cards + status banners) ---
 // Theme-agnostic — these read the same against either chrome shade.
@@ -60,6 +70,27 @@ scrollbar_handle_hover:  #148CD2
 slider_handle:           #999999
 slider_handle_hover:     #99ccff
 
+// ---- Menu bar -----------------------------------------------------
+// QMenuBar is the only chrome row that intentionally does *not* track
+// the theme — the light stylesheet inverts it (dark bar + light text)
+// so the top-of-window menu strip reads identically across themes.
+// These tokens encode that override; the body shouldn't re-hardcode them.
+menubar_background:      #111111
+menubar_text:            #F0F0F0
+
+// ---- MessageBox per-theme overrides --------------------------------
+// destructive_text: ink colour for `msgbox_role=destructive` at rest.
+//   purple on the dark-theme marketplace_card_bg fails WCAG contrast
+//   (~2.5:1), so dark uses the lighter light_purple shade instead.
+// msgbox_cancel_bg: surface for `msgbox_role=cancel`. Has to stay
+//   darker than the dialog background AND darker than the neutral button
+//   in both themes, so the hierarchy "neutral > cancel" reads the same
+//   way in dark and light (in light, widget_background_disabled is
+//   *lighter* than the dialog bg — wrong direction).
+destructive_text:        #FFAEFF
+msgbox_cancel_bg:       #2E2E38
+msgbox_cancel_bg_hover: #404050
+
 // ---- Chrome geometry (in pixels, no `px` suffix) -------------------
 // Mirror the light stylesheet exactly — chrome geometry is theme-
 // agnostic; only colors flip between themes.
@@ -70,6 +101,10 @@ chrome_button_size_inset:  23
 chrome_icon_size:          20
 chrome_spacing:            4
 chrome_border_width:       1
+
+// Corner radius for input chrome (PJ::ComboBox closed + open, DoubleScrubber).
+// Keep DoubleScrubber's ScrubberBase::kCornerRadiusPx in lockstep.
+corner_radius:             4
 
 //------- PALETTE END --------
 
@@ -355,7 +390,7 @@ QMenu#PJMenu::item:selected {
 }
 
 QMenu#PJMenu::item:checked {
-    color: ${PJBlue};
+    color: ${blue};
 }
 
 QMenu#PJMenu::item:disabled {
@@ -397,12 +432,12 @@ QMenu#PJMenu QPushButton:checked {
     border-radius: 0;
 }
 
-/* Destructive menu items (Cancel/Delete/Clear...) get PJPurple text
+/* Destructive menu items (Cancel/Delete/Clear...) get purple text
    in both themes. Lives at the QSS level so the inline button
    stylesheet only has to set the `destructive` property — no
    hardcoded colour duplicated per call-site. */
 QMenu#PJMenu QPushButton[destructive="true"] {
-    color: ${PJPurple};
+    color: ${purple};
 }
 
 /* QCheckBox embedded in PJMenu (e.g. "Show Values"): match the
@@ -427,26 +462,26 @@ QMenu#PJMenu QPushButton:hover {
 
 /* Destructive / negative-action buttons (Cancel, Delete, Clear, etc.)
    opt in via `setProperty("destructive", true)`. Hover gets the
-   PJLightPurple swatch so destructive controls read distinctly from
-   neutral ones (which use PJLightBlue). Applies inside or outside a
+   light_purple swatch so destructive controls read distinctly from
+   neutral ones (which use light_blue). Applies inside or outside a
    QMenu — the second selector is just for specificity over the
    PJMenu QPushButton:hover rule above. */
 QPushButton[destructive="true"]:hover,
 QMenu#PJMenu QPushButton[destructive="true"]:hover {
-    background: ${PJLightPurple};
+    background: ${light_purple};
     border: none;
     outline: none;
 }
 
 /* "Special" PJMenu items (e.g. PlotJuggler Marketplace, Exit) opt in
-   via `setProperty("special", true)`. They get the PJLightBlue ->
-   PJLightPurple gradient on hover, distinguishing them from neutral
-   items (solid PJLightBlue) and destructive ones (solid PJLightPurple). */
+   via `setProperty("special", true)`. They get the light_blue ->
+   light_purple gradient on hover, distinguishing them from neutral
+   items (solid light_blue) and destructive ones (solid light_purple). */
 QMenu#PJMenu QPushButton[special="true"]:hover {
     background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
-                                stop:0 ${PJLightBlue},
-                                stop:1 ${PJLightPurple});
-    color: #111111;
+                                stop:0 ${light_blue},
+                                stop:1 ${light_purple});
+    color: ${inverse_text};
     border: none;
     outline: none;
 }
@@ -584,7 +619,7 @@ QGroupBox::title {
     subcontrol-origin: margin;
     subcontrol-position: top left;
     padding-bottom: 10px;
-    font: bold;
+    font-weight: 600;
 }
 
 QGroupBox::indicator {
@@ -756,20 +791,23 @@ QToolButton#radioStepsInverted:checked {
 
 /* QCombobox -------------------------------------------------------------- */
 
+/* Closed combobox chrome — mirrors DoubleScrubber's painted chrome. */
 QComboBox {
     color: ${default_text};
-    /* Match QAbstractSpinBox / DoubleScrubber background so input widgets
-       form a visually coherent set; popup list view keeps ${dark_background}. */
-    background-color: ${widget_background};
-    selection-color: ${default_text};
-    selection-background-color: ${border_hover};
+    background: ${input_background};
+    selection-color: ${selection_text};
     border: 1px solid ${border_default};
-    border-radius: 0px;
-    padding: 2px 22px 2px 6px;
+    border-radius: ${corner_radius}px;
+    padding-top: 2px;
+    padding-bottom: 2px;
+    padding-left: ${chrome_spacing}px;
+    padding-right: 22px;
+    min-height: 20px;
 }
 
-QComboBox:hover {
-    border-color: ${border_hover};
+QComboBox:hover,
+QComboBox:focus {
+    border: 1px solid ${border_hover};
 }
 
 QComboBox::drop-down {
@@ -786,31 +824,35 @@ QComboBox::down-arrow {
     height: 14px;
 }
 
+/* Popup — rounded surface + 1 px border. The light_purple→light_blue
+   gradient on selected/hovered items is painted by the
+   PJ::ComboBoxGradientDelegate in C++; Qt's QSS engine doesn't honour
+   gradient backgrounds on QComboBox popup items (they go through
+   QPalette::Highlight, which only carries a solid colour). */
+/* Popup container (QComboBoxPrivateContainer) — Qt's default QFrame paint
+   draws a 1-px outline that lands on top of the inner view's QSS border,
+   reading as a double line at the corners. Force a fully transparent
+   container so the view's border-radius is the only visible edge. */
+QComboBoxPrivateContainer {
+    background: transparent;
+    border: none;
+}
+
 QComboBox QAbstractItemView {
     background-color: ${dark_background};
-    border: none;
-    selection-background-color: ${border_hover};
-    selection-color: ${default_text};
+    border: 1px solid ${border_default};
+    border-radius: ${corner_radius}px;
     color: ${default_text};
     outline: none;
-    padding: 0;
+    padding-top: 4px;
+    padding-bottom: 4px;
+    padding-left: 0;
+    padding-right: 0;
     margin: 0;
 }
 
 QComboBox QAbstractItemView::viewport {
     background-color: ${dark_background};
-}
-
-QComboBox QAbstractItemView::item {
-    background-color: transparent;
-    padding: 2px 14px;
-    color: ${default_text};
-}
-
-QComboBox QAbstractItemView::item:selected,
-QComboBox QAbstractItemView::item:hover {
-    background-color: ${item_selection_background};
-    color: ${default_text};
 }
 
 
@@ -833,7 +875,7 @@ QSlider::groove:horizontal {
 }
 
 QSlider::sub-page:horizontal {
-    background: ${PJBlue};
+    background: ${blue};
     border: none;
     height: 4px;
     margin: 0px;
@@ -881,29 +923,29 @@ QSlider#timeSlider::groove:horizontal {
 QSlider#timeSlider::sub-page:horizontal {
     height: 24px;
     margin: 0;
-    background: ${PJLightBlue};
+    background: ${light_blue};
     /* No border — at value 0.0 the sub-page collapses to width 0 and
-       a 1-px border would still paint as a vertical PJBlue sliver
+       a 1-px border would still paint as a vertical blue sliver
        hugging the groove's left edge. The groove's own border draws
        the outer rectangle; the sub-page just fills the played area. */
     border: none;
 }
 
-/* Playback handle: PJLightPurple nominal, PJPurple on hover/hold —
+/* Playback handle: light_purple nominal, purple on hover/hold —
    distinct from the generic slider styling so the scrubber reads
    as "the time control" against any other slider in the dialog. */
 QSlider#timeSlider::handle:horizontal {
     width: 6px;
     height: 24px;
     margin: 0;
-    background: ${PJLightPurple};
-    border: 1px solid ${PJPurple};
+    background: ${light_purple};
+    border: 1px solid ${purple};
 }
 
 QSlider#timeSlider::handle:horizontal:hover,
 QSlider#timeSlider::handle:horizontal:pressed {
-    background: ${PJPurple};
-    border: 1px solid ${PJPurple};
+    background: ${purple};
+    border: 1px solid ${purple};
 }
 
 
@@ -926,7 +968,7 @@ QTableView::item:selected,
 QTreeView::item:selected,
 QListView::item:selected {
    background-color: ${item_selection_background};
-   color: black;
+   color: ${selection_text};
 }
 
 /* The widget itself owns the continuous bottom line so the divider
@@ -952,7 +994,7 @@ QHeaderView::section:only-one {
     border-right: none;
 }
 
-/* Divider hover: paint the section's right border PJPurple so the
+/* Divider hover: paint the section's right border purple so the
    resizable column separator lights up the same way QSplitter handles
    do when the user hovers it. The full border shorthand is re-specified
    here (not just `border-right-color`) because Qt's QSS engine drops
@@ -963,7 +1005,7 @@ QHeaderView::section:hover {
     color: ${default_text};
     padding-left: ${chrome_spacing}px;
     border: none;
-    border-right: 1px solid ${PJPurple};
+    border-right: 1px solid ${purple};
 }
 QHeaderView::section:last:hover,
 QHeaderView::section:only-one:hover {
@@ -1051,7 +1093,7 @@ QSplitter::handle:vertical   { height: 1px; }
 
 QSplitter::handle:hover,
 QSplitter::handle:pressed {
-  background-color: ${PJPurple};
+  background-color: ${purple};
 }
 
 
@@ -1061,7 +1103,8 @@ https://doc.qt.io/qt-5/stylesheet-examples.html#customizing-qmenubar
 
 --------------------------------------------------------------------------- */
 QMenuBar {
-  background: #111111;
+  background: ${menubar_background};
+  color: ${menubar_text};
   border: none;
 }
 
@@ -1084,7 +1127,7 @@ QMenuBar::item:pressed {
   padding: 4px;
   border: none;
   background-color: ${scrollbar_handle_hover};
-  color: #F0F0F0;
+  color: ${menubar_text};
   margin-bottom: 0px;
   padding-bottom: 0px;
 }
@@ -1205,7 +1248,7 @@ ToastNotification QPushButton#toastCloseButton {
     border: none;
     color: ${disabled_text};
     font-size: 14pt;
-    font-weight: bold;
+    font-weight: 600;
     padding: 0px;
     margin: 0px;
 }
@@ -1317,7 +1360,7 @@ QLineEdit#lineEditCurvesFilter:focus {
 
 /* ---------- Chrome buttons (TitleBar + dialog title bars) ----------
    See the light stylesheet for the geometry rationale. Dark theme
-   uses the saturated PJPurple on hover (vs PJLightPurple in light)
+   uses the saturated purple on hover (vs light_purple in light)
    so the close glyph stays visible against the dark chrome. */
 #TitleBar QToolButton,
 QDialog QToolButton#buttonClose {
@@ -1351,13 +1394,13 @@ QDialog QToolButton#buttonClose:pressed {
 
 #TitleBar QToolButton#buttonClose:hover,
 QDialog QToolButton#buttonClose:hover {
-    background: ${PJPurple};
+    background: ${purple};
     color: ${inverse_text};
 }
 
 #TitleBar QToolButton#buttonClose:pressed,
 QDialog QToolButton#buttonClose:pressed {
-    background: ${PJPurpleDark};
+    background: ${purple_dark};
     color: ${inverse_text};
 }
 
@@ -1396,12 +1439,12 @@ QLabel#navRowLabel {
 /* "Close Plot Area" button (DockToolbar uses QPushButton, not the
    QToolButton that title bars use — covered by its own selector). */
 QPushButton#buttonClose:hover {
-    background: ${PJPurple};
+    background: ${purple};
     color: ${inverse_text};
 }
 
 QPushButton#buttonClose:pressed {
-    background: #990099;
+    background: ${purple_dark};
     color: ${inverse_text};
 }
 
@@ -1416,13 +1459,13 @@ QFrame#DiagnosticsPopup {
 }
 
 /* When the cursor is over the drag handle or a resize drag is in
-   progress, the popup's own bottom border swaps to PJPurple. Painting
+   progress, the popup's own bottom border swaps to purple. Painting
    the line on the popup (rather than on the inner #dragHandle) lets
    it meet the side borders at the corners without the inset that
    rootLayout's side margins would otherwise impose. The "dragActive"
    dynamic property is toggled in DiagnosticsPopup::setDragActive(). */
 QFrame#DiagnosticsPopup[dragActive="true"] {
-    border-bottom: 1px solid ${PJPurple};
+    border-bottom: 1px solid ${purple};
 }
 
 QFrame#DiagnosticsCard {
@@ -1504,7 +1547,7 @@ QPushButton#extBadgeLocalNewer {
     color: ${inverse_text};
     border: none;
     padding: 4px 0px;
-    font-weight: bold;
+    font-weight: 600;
 }
 
 QPushButton#extButtonInstall            { background: ${accent_info}; }
@@ -1524,7 +1567,101 @@ QLabel#extTagChip {
 
 QLabel#marketplaceStatusError {
     color: ${accent_error};
-    font-weight: bold;
+    font-weight: 600;
+}
+
+/* ---------- PJ::MessageBox ----------
+   Frameless modal that replaces QMessageBox. Surface is `${dark_background}`
+   with a thin border (the frameless flag drops the WM chrome). Buttons key
+   off a `msgbox_role` dynamic property; the role determines the surface:
+     primary     → light_purple → light_blue gradient (eye-catching)
+     neutral     → marketplace_card_bg (medium grey, lifts on hover)
+     destructive → neutral surface with purple ink; light_purple on hover
+     cancel      → widget_background_disabled (subtler than neutral)
+   Text on the gradient is `${selection_text}` (dark in both themes — white
+   would be unreadable on the pale gradient stops). */
+
+/* Dialog window itself is fully transparent — the rounded card inside it
+   carries all the visible paint. Combined with WA_TranslucentBackground in
+   C++, the corner pixels outside the card are alpha=0 so the dialog has
+   true rounded corners without relying on setMask (which Wayland
+   compositors silently drop). */
+QDialog#pjMessageBox {
+    background: transparent;
+}
+
+QFrame#pjMessageBoxCard {
+    background: ${dark_background};
+    border: 1px solid ${border_default};
+    border-radius: 8px;
+}
+
+QLabel#pjMessageBoxTitle {
+    color: ${default_text};
+    font-size: 12pt;
+    font-weight: 600;
+}
+
+QLabel#pjMessageBoxBody {
+    color: ${default_text};
+}
+
+QPushButton#pjMessageBoxButton {
+    min-height: 26px;
+    padding: 6px 12px;
+    border: none;
+    /* Rounded corners — matches info_dialog.png. Departs from the app's
+       general border-radius:0 aesthetic deliberately; the message box is a
+       distinct modal moment and the soft corners read as more dialog-y. */
+    border-radius: 6px;
+    font-weight: 600;
+}
+
+QPushButton[msgbox_role="primary"] {
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+                                stop:0 ${light_purple},
+                                stop:1 ${light_blue});
+    color: ${selection_text};
+}
+
+QPushButton[msgbox_role="primary"]:hover {
+    /* Keep the gradient direction but bias the stops toward light_blue
+       so the button reads a touch cooler on hover. */
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+                                stop:0 ${light_purple},
+                                stop:0.5 ${light_blue},
+                                stop:1 ${light_blue});
+    color: ${selection_text};
+}
+
+QPushButton[msgbox_role="neutral"] {
+    background: ${marketplace_card_bg};
+    color: ${default_text};
+}
+
+QPushButton[msgbox_role="neutral"]:hover {
+    background: ${marketplace_card_bg_hover};
+    color: ${default_text};
+}
+
+QPushButton[msgbox_role="cancel"] {
+    background: ${msgbox_cancel_bg};
+    color: ${default_text};
+}
+
+QPushButton[msgbox_role="cancel"]:hover {
+    background: ${msgbox_cancel_bg_hover};
+    color: ${default_text};
+}
+
+QPushButton[msgbox_role="destructive"] {
+    background: ${marketplace_card_bg};
+    color: ${destructive_text};
+}
+
+QPushButton[msgbox_role="destructive"]:hover {
+    background: ${light_purple};
+    color: ${inverse_text};
 }
 
 /* QFileDialog (non-native) ---------------------------------------------- */
@@ -1553,7 +1690,7 @@ QFileDialog QListView#sidebar::item {
 
 QFileDialog QListView#sidebar::item:selected {
     background-color: ${item_selection_background};
-    color: black;
+    color: ${selection_text};
 }
 
 QFileDialog QFrame#frame {

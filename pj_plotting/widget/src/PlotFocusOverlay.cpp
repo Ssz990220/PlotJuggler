@@ -13,7 +13,7 @@ namespace PJ {
 
 namespace {
 // Match the QSS palette tokens — see resources/stylesheet_*.qss
-// (PJBlue, PJLightBlue). Keep these in sync if the tokens change.
+// (blue, light_blue). Keep these in sync if the tokens change.
 const QColor kFocusColor = QColor("#1177FF");
 const QColor kHoverColor = QColor("#C2DCFF");
 
