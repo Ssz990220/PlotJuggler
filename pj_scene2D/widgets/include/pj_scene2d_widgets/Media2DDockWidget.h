@@ -10,7 +10,9 @@
 namespace PJ {
 
 class CodecPipeline;
+class FileVideoSource;
 class ImagePipelineSource;
+class MediaSource;
 class MediaViewerWidget;
 class SessionManager;
 
@@ -47,7 +49,9 @@ class Media2DDockWidget : public QWidget, public IDataWidget {
  private:
   MediaViewerWidget* bootstrap_ = nullptr;
   MediaViewerWidget* viewer_ = nullptr;
-  std::unique_ptr<ImagePipelineSource> image_topic_source_;
+  // Polymorphic source: ImagePipelineSource for image / depth / annotation
+  // topics, FileVideoSource for file-backed video (sdk::AssetVideo).
+  std::unique_ptr<MediaSource> media_topic_source_;
   SessionManager* session_ = nullptr;
   ObjectTopicId topic_id_{};
 };

@@ -74,5 +74,39 @@ TEST_F(FileVideoSourceTest, PauseResume) {
   EXPECT_TRUE(source->isPaused());
 }
 
+TEST_F(FileVideoSourceTest, SetEpochAnchorAppliesOffset) {
+  // setEpochAnchorNs maps tracker (epoch) ns → file-relative ns by subtracting
+  // the anchor inside setTimestamp. With anchor = T0 and setTimestamp(T0 + N),
+  // the backend should seek to N nanoseconds into the file (≈ N/1e9 seconds).
+  auto source_or = FileVideoSource::open(kTestVideo);
+  ASSERT_TRUE(source_or.has_value());
+  auto& source = *source_or;
+
+  constexpr int64_t kAnchorNs = 1'700'000'000'000'000'000LL;  // arbitrary epoch ns
+  constexpr int64_t kOffsetNs = 1'000'000'000LL;              // 1 second into the file
+  source->setEpochAnchorNs(kAnchorNs);
+  source->setTimestamp(kAnchorNs + kOffsetNs);
+
+  // Poll for a frame; if the anchor wasn't applied, the backend would have
+  // been asked to seek to a far-future point (well beyond duration) and no
+  // frame would arrive within the deadline.
+  std::optional<MediaFrame> frame;
+  auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+  while ((!frame.has_value() || !frame->base.has_value()) && std::chrono::steady_clock::now() < deadline) {
+    frame = source->takeFrame();
+    if (!frame.has_value() || !frame->base.has_value()) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(16));
+    }
+  }
+
+  ASSERT_TRUE(frame.has_value()) << "no frame received — anchor offset was likely not applied";
+  ASSERT_TRUE(frame->base.has_value());
+  EXPECT_TRUE(frame->base->isValid());
+  // The reported playback position should be close to the file-relative
+  // 1.0 second target (decoded frame may snap to nearest keyframe).
+  EXPECT_GE(source->position(), 0.0);
+  EXPECT_LT(source->position(), source->duration());
+}
+
 }  // namespace
 }  // namespace PJ

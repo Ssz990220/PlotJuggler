@@ -251,10 +251,27 @@ jobs:
           }
 
       - name: Test
-        # Prepend Qt's bin/ to PATH so the OS loader can resolve Qt6Core.dll
-        # and friends when ctest launches the Qt-linking test executables.
-        # Without this, every Qt test exits 0xC0000135 (STATUS_DLL_NOT_FOUND).
+        # Prepend Qt's and FFmpeg's bin/ dirs to PATH so the OS loader can resolve
+        # their DLLs (Qt6Core.dll, avcodec/avformat/avutil/swscale) when ctest
+        # launches the test executables. Without this they exit 0xC0000135
+        # (STATUS_DLL_NOT_FOUND) before any test code runs.
         shell: bash
         run: |
           export PATH="$(pwd)/.qt/6.8.3/msvc2022_64/bin:$PATH"
+          # FFmpeg's Conan bin dir(s) are emitted at configure time by
+          # pj_scene2D/core/CMakeLists.txt (Conan's package path is hashed and not
+          # knowable here). Prepend each so every exe that transitively links
+          # pj_scene2d_core resolves the FFmpeg DLLs — covers all such tests at once,
+          # no per-target list.
+          #
+          # DEFERRED: a shipped Windows pj_app.exe needs these same 4 DLLs at startup.
+          # PJ4 v1 is Linux-only and this job is a non-blocking portability tracker,
+          # so real packaging (windeployqt + bundling the FFmpeg DLLs via CPack/
+          # install) is intentionally NOT done here. Wire that up when Windows
+          # becomes a supported release target.
+          if [[ -f build/pj_ffmpeg_bin_dirs.txt ]]; then
+            while IFS= read -r _d; do
+              [[ -n "$_d" ]] && export PATH="$(cygpath -u "$_d"):$PATH"
+            done < build/pj_ffmpeg_bin_dirs.txt
+          fi
           ctest --test-dir build --build-config RelWithDebInfo --output-on-failure

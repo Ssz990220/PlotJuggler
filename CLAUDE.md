@@ -184,6 +184,7 @@ Parity-plus with PJ3: file + streaming sources, 11 built-in transforms, undo/red
 - Hot reload of running extension instances
 - Full backward compatibility with 3.x layout files
 - Recreating the removed prototype app as the final app
+- Windows runtime packaging / deployment (windeployqt + bundling the FFmpeg shared DLLs that `pj_app` transitively requires via `pj_scene2d_core`) — deferred until Windows is a supported release target. Today Windows CI is a non-blocking portability tracker and resolves these DLLs via `PATH` at test time only (see `.github/workflows/windows-ci.yml`).
 
 ## Workflow notes
 

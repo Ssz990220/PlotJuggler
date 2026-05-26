@@ -4,10 +4,15 @@
 #include <QLoggingCategory>
 #include <QMetaObject>
 #include <QPointer>
+#include <QString>
 
+#include "pj_base/builtin/asset_video.hpp"
+#include "pj_base/builtin/asset_video_codec.hpp"
 #include "pj_runtime/SessionManager.h"
 #include "pj_scene2d_core/codecs.h"
+#include "pj_scene2d_core/file_video_source.h"
 #include "pj_scene2d_core/image_pipeline_source.h"
+#include "pj_scene2d_core/media_source.h"
 #include "pj_scene2d_widgets/media_viewer_widget.h"
 
 namespace PJ {
@@ -35,14 +40,14 @@ Media2DDockWidget::Media2DDockWidget(QWidget* parent) : QWidget(parent) {
 }
 
 Media2DDockWidget::~Media2DDockWidget() {
-  // Detach the viewer's media_source_ pointer BEFORE joining the worker so
-  // any in-flight render() finishes without touching the source that's about
-  // to be destroyed. Resetting the unique_ptr next blocks until the worker
-  // thread joins, so no further callback / takeFrame can race destruction.
+  // Detach the viewer's media_source_ pointer BEFORE joining the worker (or
+  // FfmpegBackend decode thread for FileVideoSource) so any in-flight render()
+  // finishes without touching the source about to be destroyed. Resetting the
+  // unique_ptr next blocks until the worker joins.
   if (viewer_ != nullptr) {
     viewer_->setMediaSource(nullptr);
   }
-  image_topic_source_.reset();
+  media_topic_source_.reset();
 }
 
 void Media2DDockWidget::setSessionManager(SessionManager* session) {
@@ -67,6 +72,59 @@ bool Media2DDockWidget::setImageTopic(
     return false;
   }
 
+  // Detach any previous source from the viewer BEFORE destroying it, mirroring
+  // the destructor discipline so a render mid-rebind cannot touch a freed
+  // source.
+  if (viewer_ != nullptr) {
+    viewer_->setMediaSource(nullptr);
+  }
+  media_topic_source_.reset();
+
+  ObjectStore& store = session_->objectStore();
+  topic_id_ = topic_id;
+
+  // Video branch: file-backed video declared as a single sdk::AssetVideo entry
+  // in ObjectStore. The MP4 itself is the random-access store; decoding the
+  // asset payload yields the file path and (optional) wall-clock anchor.
+  if (object_type == sdk::BuiltinObjectType::kAssetVideo) {
+    if (store.entryCount(topic_id) == 0) {
+      qCWarning(lcMedia2DDock) << "setImageTopic: kAssetVideo topic_id=" << topic_id.id
+                               << "has no entries — drop refused (producer must push the AssetVideo entry at "
+                                  "registration time)";
+      return false;
+    }
+    const auto entry = store.at(topic_id, 0);
+    if (!entry.has_value() || entry->data == nullptr) {
+      qCWarning(lcMedia2DDock) << "setImageTopic: kAssetVideo topic_id=" << topic_id.id << "first entry has no payload";
+      return false;
+    }
+    auto asset = PJ::deserializeAssetVideo(entry->data->data(), entry->data->size());
+    if (!asset.has_value()) {
+      qCWarning(lcMedia2DDock) << "setImageTopic: deserializeAssetVideo failed for topic_id=" << topic_id.id << ":"
+                               << QString::fromStdString(asset.error());
+      return false;
+    }
+    auto src = FileVideoSource::open(asset->file_path);
+    if (!src.has_value()) {
+      qCWarning(lcMedia2DDock) << "setImageTopic: FileVideoSource::open failed for"
+                               << QString::fromStdString(asset->file_path) << ":"
+                               << QString::fromStdString(src.error());
+      return false;
+    }
+    if (asset->time_origin_ns.has_value()) {
+      (*src)->setEpochAnchorNs(*asset->time_origin_ns);
+    }
+    media_topic_source_ = std::move(*src);
+    viewer_->setMediaSource(media_topic_source_.get());
+    setWindowTitle(title.isEmpty() ? tr("2D View") : tr("2D View - %1").arg(title));
+    // Bootstrap at file PTS 0. With the anchor applied, setTimestamp(anchor)
+    // maps to file-relative 0. Unanchored video uses anchor=0 → setTimestamp(0).
+    media_topic_source_->setTimestamp(asset->time_origin_ns.value_or(0));
+    viewer_->update();
+    return true;
+  }
+
+  // Image branch (parser-driven canonical kImage, or built-in JPEG pipeline).
   auto pipeline = makePipelineFor(object_type);
   auto* parser = session_->parserForObjectTopic(topic_id);
   if (parser == nullptr && pipeline == nullptr) {
@@ -84,26 +142,28 @@ bool Media2DDockWidget::setImageTopic(
     return false;
   }
 
-  ObjectStore& store = session_->objectStore();
+  std::unique_ptr<ImagePipelineSource> image_src;
   if (parser != nullptr) {
-    image_topic_source_ = std::make_unique<ImagePipelineSource>(&store, topic_id, parser);
+    image_src = std::make_unique<ImagePipelineSource>(&store, topic_id, parser);
   } else {
-    image_topic_source_ = std::make_unique<ImagePipelineSource>(&store, topic_id, std::move(pipeline));
+    image_src = std::make_unique<ImagePipelineSource>(&store, topic_id, std::move(pipeline));
   }
-  topic_id_ = topic_id;
 
   // Callback fires from the source's worker thread; hop to the GUI thread via
   // QueuedConnection and consume the frame in pollPendingFrame(). QPointer
   // guards against the widget being deleted between worker emission and slot
   // invocation; invokeMethod against a destroyed receiver is also safe by
   // itself but the QPointer check avoids posting an event we know is moot.
-  image_topic_source_->setFrameReadyCallback([qp = QPointer<Media2DDockWidget>(this)]() {
+  // setFrameReadyCallback only exists on ImagePipelineSource — install while
+  // we still hold the concrete type, then erase into the polymorphic member.
+  image_src->setFrameReadyCallback([qp = QPointer<Media2DDockWidget>(this)]() {
     if (qp) {
       QMetaObject::invokeMethod(qp.data(), "pollPendingFrame", Qt::QueuedConnection);
     }
   });
 
-  viewer_->setMediaSource(image_topic_source_.get());
+  media_topic_source_ = std::move(image_src);
+  viewer_->setMediaSource(media_topic_source_.get());
   setWindowTitle(title.isEmpty() ? tr("2D View") : tr("2D View - %1").arg(title));
 
   if (store.entryCount(topic_id) == 0) {
@@ -113,9 +173,9 @@ bool Media2DDockWidget::setImageTopic(
   }
 
   // Kick off the bootstrap frame asynchronously — the callback above will land
-  // it in the viewer once the worker is done. setTimestamp returns in microseconds.
+  // it in the viewer once the worker is done.
   const auto range = store.timeRange(topic_id);
-  image_topic_source_->setTimestamp(range.first);
+  media_topic_source_->setTimestamp(range.first);
   return true;
 }
 
@@ -126,11 +186,17 @@ void Media2DDockWidget::onTrackerTime(double time) {
     return;
   }
 
-  if (image_topic_source_ != nullptr && session_ != nullptr) {
-    // Cheap (microseconds): just posts a target to the worker thread. The
-    // decoded frame lands in pollPendingFrame() asynchronously when the
+  if (media_topic_source_ != nullptr && session_ != nullptr) {
+    // ImagePipelineSource: cheap (microseconds) — posts a target to its
+    // worker thread; the decoded frame lands in pollPendingFrame() when the
     // worker fires its frame-ready callback.
-    image_topic_source_->setTimestamp(ts);
+    // FileVideoSource: also cheap — applies the epoch anchor and posts a
+    // seek to FfmpegBackend's decode thread. The next render() polls
+    // takeFrame() via processEvents() and surfaces the frame; the explicit
+    // update() below schedules that repaint. update() is coalesced by Qt
+    // so the redundant call on the image branch is a no-op.
+    media_topic_source_->setTimestamp(ts);
+    viewer_->update();
     return;
   }
 
@@ -139,10 +205,14 @@ void Media2DDockWidget::onTrackerTime(double time) {
 }
 
 void Media2DDockWidget::pollPendingFrame() {
-  if (viewer_ == nullptr || image_topic_source_ == nullptr) {
+  // Only ImagePipelineSource installs a frame-ready callback that routes here.
+  // FileVideoSource lets MediaViewerWidget::render() poll takeFrame() directly
+  // (via processEvents()), so this slot is effectively a no-op for the video
+  // branch.
+  if (viewer_ == nullptr || media_topic_source_ == nullptr) {
     return;
   }
-  auto frame = image_topic_source_->takeFrame();
+  auto frame = media_topic_source_->takeFrame();
   if (!frame.has_value() || !frame->base.has_value()) {
     // Worker may fire the callback once per decode, but the latest result
     // was already taken by an earlier invocation (e.g. rapid coalesced

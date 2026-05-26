@@ -507,18 +507,29 @@ seeks require a keyframe still present in the store.
 
 Which component to use depends on the data source:
 
-| Scenario | Component | ObjectStore? | Notes |
+| Scenario | Component | ObjectStore role | Notes |
 |----------|-----------|-------------|-------|
-| File-based MP4/MKV playback | FfmpegBackend | No | Direct file access via AVFormatContext. Best scrub performance. |
-| Streaming VideoFrame (ROS 2, RTSP) | StreamingVideoDecoder | Yes | Encoded packets in ObjectStore with retention budget. |
-| File-based MCAP with CompressedVideo | StreamingVideoDecoder | Yes (lazy) | DataSource pushes encoded packets at open time. |
-| ML datasets (LeRobot, RLDS) | FfmpegBackend | No | MP4 per camera; Parquet scalars go to DataEngine. Episodes map to DatasetId. |
+| File-based MP4/MKV playback | FfmpegBackend | Carries one `sdk::AssetVideo` entry per topic | Direct random access to the file via AVFormatContext. Best scrub performance. ObjectStore stores only the asset *reference*, not the bytes. |
+| Streaming VideoFrame (ROS 2, RTSP) | StreamingVideoDecoder | Encoded packets with retention budget | One ObjectStore entry per `sdk::VideoFrame`. |
+| File-based MCAP with CompressedVideo | StreamingVideoDecoder | Lazy-fetched encoded packets | DataSource pushes encoded packets at open time. |
+| ML datasets (LeRobot, RLDS) | FfmpegBackend | One `sdk::AssetVideo` per camera topic | MP4 per camera; Parquet scalars go to DataEngine. Episodes map to DatasetId. |
 
-**File-based video does not go through ObjectStore** — the file itself is
-the random-access store. ObjectStore adds value only for streaming, where
-it provides the retention buffer. The application constructs the right
-`MediaSource` implementation (§5) based on the topic's `media_class`
-metadata.
+**File-based video travels through ObjectStore as an asset reference, not
+as bytes.** The producer (e.g. the LeRobot loader, `data_load_mp4`)
+registers a topic with `builtin_object_type = kAssetVideo` and pushes a
+single ObjectStore entry containing a serialized `PJ::sdk::AssetVideo`
+(file path, wall-clock `time_origin_ns`, optional duration, codec hint,
+resolution, frame rate). The bytes never reach ObjectStore — the MP4
+itself is the random-access store, accessed consumer-side via FFmpeg in
+`FileVideoSource`. ObjectStore's job is to make the asset *discoverable*
+(catalog routing via `BuiltinObjectType::kAssetVideo`) and to carry the
+typed playback metadata.
+
+`Media2DDockWidget` decodes the AssetVideo entry, opens
+`FileVideoSource::open(file_path)`, and forwards `time_origin_ns` to
+`FileVideoSource::setEpochAnchorNs()` so the source itself maps the
+global tracker (epoch ns) to file-relative ns. Consumers never compute
+the offset themselves — that contract lives inside the source.
 
 **Multi-modal datasets** (video + scalars from the same recording): the
 DataSource plugin populates both stores — `DataEngine` for plottable

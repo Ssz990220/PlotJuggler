@@ -39,6 +39,13 @@ class FileVideoSource : public MediaSource {
   void stepForward();                     ///< Advance by one frame
   void stepBackward();                    ///< Go back by one frame
 
+  /// Subtract this wall-clock anchor from every setTimestamp() value before
+  /// seeking the file. Producers that emit sdk::AssetVideo with a populated
+  /// time_origin_ns pass that value here so the global tracker (epoch ns)
+  /// maps to file-relative ns. Default 0 means "tracker time is already
+  /// file-relative" — legacy file-from-zero behavior.
+  void setEpochAnchorNs(int64_t anchor_ns);
+
   /// Callbacks fired from takeFrame() (via processEvents) on the main thread.
   void setPositionCallback(VideoBackend::PositionCallback cb);
   void setDurationCallback(VideoBackend::DurationCallback cb);
@@ -52,6 +59,10 @@ class FileVideoSource : public MediaSource {
   // Latest frame from the backend's FrameCallback
   std::mutex frame_mutex_;
   std::optional<DecodedFrame> pending_frame_;
+
+  // Wall-clock anchor subtracted in setTimestamp() before the backend seek.
+  // Zero for unanchored video; producers populate via setEpochAnchorNs().
+  int64_t epoch_anchor_ns_ = 0;
 };
 
 }  // namespace PJ

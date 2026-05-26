@@ -191,46 +191,20 @@ if(PJ_BUILD_TESTS)
       WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
     )
 
-    if(WIN32)
-      # Conan installs FFmpeg as shared libs on Windows but its package cache is
-      # not on %PATH%, so test binaries exit with STATUS_DLL_NOT_FOUND (0xc0000135)
-      # when the loader can't resolve avcodec/avformat/etc. Copy the FFmpeg
-      # runtime DLLs next to each test executable.
-      #
-      # We can't use $<TARGET_RUNTIME_DLLS:tgt>: Conan 2's CMakeDeps declares
-      # ffmpeg::* as INTERFACE IMPORTED with no IMPORTED_LOCATION, so the
-      # gen-exp expands to nothing. Use the bin/ dirs forwarded by the helper
-      # (which reads them from Conan's per-config *-data.cmake files).
-      set(_pj_ffmpeg_test_targets
-        ffmpeg_decoder_test
-        thumbnail_cache_test
-        h264_utils_test
-        streaming_video_decoder_test
-        streaming_video_source_test2
-        file_video_source_test
-        ffmpeg_backend_test
-      )
-
-      set(_pj_ffmpeg_dlls "")
-      foreach(_dir ${PJ_SCENE2D_FFMPEG_BIN_DIRS})
-        file(GLOB _glob "${_dir}/*.dll")
-        list(APPEND _pj_ffmpeg_dlls ${_glob})
-      endforeach()
-      list(REMOVE_DUPLICATES _pj_ffmpeg_dlls)
-
-      if(_pj_ffmpeg_dlls)
-        foreach(_tgt ${_pj_ffmpeg_test_targets})
-          add_custom_command(TARGET ${_tgt} POST_BUILD
-            COMMAND ${CMAKE_COMMAND} -E copy_if_different
-              ${_pj_ffmpeg_dlls} $<TARGET_FILE_DIR:${_tgt}>
-            VERBATIM
-          )
-        endforeach()
-      else()
-        message(WARNING "pj_scene2d_core: no FFmpeg runtime DLLs found in "
-          "PJ_SCENE2D_FFMPEG_BIN_DIRS='${PJ_SCENE2D_FFMPEG_BIN_DIRS}'; "
-          "FFmpeg-dependent tests may fail with STATUS_DLL_NOT_FOUND on Windows")
-      endif()
+    if(WIN32 AND PJ_SCENE2D_FFMPEG_BIN_DIRS)
+      # Windows is a non-blocking portability tracker (PJ4 v1 is Linux-only). Any
+      # exe that transitively links pj_scene2d_core (the FFmpeg tests AND pj_app)
+      # needs FFmpeg's shared DLLs (avcodec/avformat/avutil/swscale) resolvable at
+      # launch, else STATUS_DLL_NOT_FOUND (0xc0000135). Conan 2's CMakeDeps declares
+      # ffmpeg::* as INTERFACE IMPORTED with no IMPORTED_LOCATION, so
+      # $<TARGET_RUNTIME_DLLS:tgt> is empty. Rather than copy DLLs next to every
+      # target (a fragile per-target list that silently drops new consumers), export
+      # the Conan bin dir(s) so the CI Test step can prepend them to PATH for all
+      # test exes at once. Proper bundling (windeployqt + CPack) is deferred until
+      # Windows is a supported release target — see .github/workflows/windows-ci.yml
+      # and the "Non-goals" section of the root CLAUDE.md.
+      string(REPLACE ";" "\n" _pj_ffmpeg_dirs_text "${PJ_SCENE2D_FFMPEG_BIN_DIRS}")
+      file(WRITE "${CMAKE_BINARY_DIR}/pj_ffmpeg_bin_dirs.txt" "${_pj_ffmpeg_dirs_text}\n")
     endif()
   endif()
 
