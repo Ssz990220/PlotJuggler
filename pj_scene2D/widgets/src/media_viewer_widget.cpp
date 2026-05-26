@@ -409,9 +409,9 @@ bool MediaViewerWidget::hasRetainedUploadableFrameLocked() const {
     case PixelFormat::kRGBA8888:
     case PixelFormat::kBGR888:
     case PixelFormat::kBGRA8888:
+    case PixelFormat::kMono8:
     case PixelFormat::kYUV420P:
       return true;
-    case PixelFormat::kMono8:
     case PixelFormat::kMono16:
     case PixelFormat::kNV12:
       return false;
@@ -894,6 +894,19 @@ void MediaViewerWidget::render(QRhiCommandBuffer* cb) {
             rgba_buf[i * 4 + 0] = src[i * 3 + (is_bgr ? 2 : 0)];
             rgba_buf[i * 4 + 1] = src[i * 3 + 1];
             rgba_buf[i * 4 + 2] = src[i * 3 + (is_bgr ? 0 : 2)];
+            rgba_buf[i * 4 + 3] = 255;
+          }
+          rgba_data = rgba_buf.data();
+          rgba_size = rgba_buf.size();
+        } else if (pending_decoded_.format == PixelFormat::kMono8) {
+          // Mono8→RGBA: replicate luma to RGB, alpha=255
+          rgba_buf.resize(static_cast<size_t>(w) * static_cast<size_t>(h) * 4);
+          int pixel_count = w * h;
+          for (int i = 0; i < pixel_count; ++i) {
+            uint8_t g = src[i];
+            rgba_buf[i * 4 + 0] = g;
+            rgba_buf[i * 4 + 1] = g;
+            rgba_buf[i * 4 + 2] = g;
             rgba_buf[i * 4 + 3] = 255;
           }
           rgba_data = rgba_buf.data();
