@@ -59,4 +59,9 @@ MessageParserPluginBase* SessionManager::parserForObjectTopic(ObjectTopicId id) 
   return static_cast<MessageParserPluginBase*>(it->second->context());
 }
 
+void SessionManager::recordLoadedSource(QString path, QString prefix, QString plugin_id, QString plugin_config_json) {
+  last_loaded_source_ =
+      LoadedSource{std::move(path), std::move(prefix), std::move(plugin_id), std::move(plugin_config_json)};
+}
+
 }  // namespace PJ

@@ -1,6 +1,9 @@
 #include "pj_widgets/FileDialog.h"
 
+#include <QCheckBox>
 #include <QDialog>
+#include <QGridLayout>
+#include <QHBoxLayout>
 #include <QIcon>
 #include <QLayout>
 #include <QList>
@@ -162,6 +165,71 @@ QString FileDialog::getSaveFileName(
     return {};
   }
   return dlg.selectedFile();
+}
+
+std::vector<QCheckBox*> FileDialog::embedExtras(const std::vector<ExtraOption>& extras) {
+  std::vector<QCheckBox*> boxes;
+  if (extras.empty()) {
+    return boxes;
+  }
+  boxes.reserve(extras.size());
+
+  // The dialog uses QGridLayout; we append at the next row, spanning all
+  // columns so the checkbox row sits cleanly above the OK/Cancel buttons.
+  auto* extras_widget = new QWidget(inner_);
+  auto* row = new QHBoxLayout(extras_widget);
+  row->setContentsMargins(0, 0, 0, 0);
+  for (const ExtraOption& opt : extras) {
+    auto* box = new QCheckBox(opt.label, extras_widget);
+    box->setChecked(opt.default_checked);
+    row->addWidget(box);
+    boxes.push_back(box);
+  }
+  row->addStretch(1);
+  if (auto* grid = qobject_cast<QGridLayout*>(inner_->layout())) {
+    const int next_row = grid->rowCount();
+    grid->addWidget(extras_widget, next_row, 0, 1, grid->columnCount());
+  }
+  return boxes;
+}
+
+FileDialog::SaveResult FileDialog::getSaveFileNameWithOptions(
+    QWidget* parent, const QString& caption, const QString& dir, const QString& filter, const QString& default_suffix,
+    const std::vector<ExtraOption>& extras) {
+  FileDialog dlg(parent);
+  if (!caption.isEmpty()) {
+    dlg.setDialogTitle(caption);
+  }
+  dlg.setAcceptMode(QFileDialog::AcceptSave);
+  dlg.setFileMode(QFileDialog::AnyFile);
+  if (!dir.isEmpty()) {
+    dlg.setDirectory(dir);
+  }
+  if (!filter.isEmpty()) {
+    dlg.setNameFilter(filter);
+  }
+  if (!default_suffix.isEmpty()) {
+    dlg.setDefaultSuffix(default_suffix);
+  }
+  auto boxes = dlg.embedExtras(extras);
+
+  SaveResult result;
+  result.option_states.assign(extras.size(), false);
+  for (std::size_t i = 0; i < extras.size(); ++i) {
+    result.option_states[i] = extras[i].default_checked;
+  }
+
+  if (dlg.exec() != QDialog::Accepted) {
+    return result;  // empty path; option_states left at defaults
+  }
+  const QStringList selected = dlg.selectedFiles();
+  if (!selected.isEmpty()) {
+    result.path = selected.first();
+  }
+  for (std::size_t i = 0; i < boxes.size(); ++i) {
+    result.option_states[i] = boxes[i]->isChecked();
+  }
+  return result;
 }
 
 }  // namespace PJ

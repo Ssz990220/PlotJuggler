@@ -1,9 +1,11 @@
 #pragma once
 
+#include <QCheckBox>
 #include <QFileDialog>
 #include <QObject>
 #include <QString>
 #include <QStringList>
+#include <vector>
 
 #include "pj_widgets/ChromeMetrics.h"
 #include "pj_widgets/Dialog.h"
@@ -39,6 +41,23 @@ class FileDialog : public Dialog {
       QWidget* parent, const QString& caption, const QString& dir, const QString& filter,
       const QString& default_suffix = QString());
 
+  struct ExtraOption {
+    QString label;
+    bool default_checked = false;
+  };
+  struct SaveResult {
+    QString path;
+    std::vector<bool> option_states;  // same order/length as the input extras
+  };
+
+  // Save dialog that embeds one or more checkboxes (one per ExtraOption) in
+  // a row between the file list and the OK/Cancel buttons. Returns the
+  // chosen path plus the final state of each checkbox. Path is empty on
+  // cancel; option_states is left default-checked in that case.
+  static SaveResult getSaveFileNameWithOptions(
+      QWidget* parent, const QString& caption, const QString& dir, const QString& filter, const QString& default_suffix,
+      const std::vector<ExtraOption>& extras);
+
   // Templated overloads that wire chrome metrics from a signal source.
   // The source must expose `chromeMetrics()` returning a (const?)
   // ChromeMetrics(&) and a Qt signal `chromeMetricsChanged(const
@@ -52,6 +71,10 @@ class FileDialog : public Dialog {
   static QString getSaveFileName(
       QWidget* parent, const QString& caption, const QString& dir, const QString& filter, const QString& default_suffix,
       SignalSourceT* metrics_source);
+  template <typename SignalSourceT>
+  static SaveResult getSaveFileNameWithOptions(
+      QWidget* parent, const QString& caption, const QString& dir, const QString& filter, const QString& default_suffix,
+      const std::vector<ExtraOption>& extras, SignalSourceT* metrics_source);
 
  public slots:
   // Apply chrome metrics (icon size) to the embedded QFileDialog. Connect
@@ -61,6 +84,13 @@ class FileDialog : public Dialog {
   void onChromeMetricsChanged(const ChromeMetrics& metrics);
 
  private:
+  // Append a horizontal row of checkboxes (one per ExtraOption) to the
+  // QFileDialog's QGridLayout, spanning all columns so it sits cleanly
+  // above the OK/Cancel buttons. Returns the checkbox pointers in input
+  // order so callers can read state on accept. No-op (and returns an
+  // empty vector) when `extras` is empty.
+  std::vector<QCheckBox*> embedExtras(const std::vector<ExtraOption>& extras);
+
   QFileDialog* inner_;
   ChromeMetrics chrome_metrics_;
 };
@@ -117,6 +147,49 @@ QString FileDialog::getSaveFileName(
     return {};
   }
   return dlg.selectedFile();
+}
+
+template <typename SignalSourceT>
+FileDialog::SaveResult FileDialog::getSaveFileNameWithOptions(
+    QWidget* parent, const QString& caption, const QString& dir, const QString& filter, const QString& default_suffix,
+    const std::vector<ExtraOption>& extras, SignalSourceT* metrics_source) {
+  FileDialog dlg(parent);
+  if (!caption.isEmpty()) {
+    dlg.setDialogTitle(caption);
+  }
+  dlg.setAcceptMode(QFileDialog::AcceptSave);
+  dlg.setFileMode(QFileDialog::AnyFile);
+  if (!dir.isEmpty()) {
+    dlg.setDirectory(dir);
+  }
+  if (!filter.isEmpty()) {
+    dlg.setNameFilter(filter);
+  }
+  if (!default_suffix.isEmpty()) {
+    dlg.setDefaultSuffix(default_suffix);
+  }
+  if (metrics_source != nullptr) {
+    dlg.onChromeMetricsChanged(metrics_source->chromeMetrics());
+    QObject::connect(metrics_source, &SignalSourceT::chromeMetricsChanged, &dlg, &FileDialog::onChromeMetricsChanged);
+  }
+  auto boxes = dlg.embedExtras(extras);
+
+  SaveResult result;
+  result.option_states.assign(extras.size(), false);
+  for (std::size_t i = 0; i < extras.size(); ++i) {
+    result.option_states[i] = extras[i].default_checked;
+  }
+  if (dlg.exec() != QDialog::Accepted) {
+    return result;  // empty path; option_states left at defaults
+  }
+  const QStringList selected = dlg.selectedFiles();
+  if (!selected.isEmpty()) {
+    result.path = selected.first();
+  }
+  for (std::size_t i = 0; i < boxes.size(); ++i) {
+    result.option_states[i] = boxes[i]->isChecked();
+  }
+  return result;
 }
 
 }  // namespace PJ

@@ -8,6 +8,8 @@ add_executable(pj_app
     src/FanoutConfig.h
     src/FileLoader.cpp
     src/FileLoader.h
+    src/LayoutXml.cpp
+    src/LayoutXml.h
     src/MainWindow.cpp
     src/MainWindow.h
     src/MainWindow.ui
@@ -102,4 +104,25 @@ if(PJ_BUILD_TESTS)
         GTest::gtest_main
     )
     add_test(NAME FanoutConfig COMMAND fanout_config_test)
+
+    # LayoutXml is a self-contained DOM helper module (no Qt::Widgets, no
+    # MainWindow) so we compile the source directly into the test target
+    # instead of linking against the pj_app executable.
+    add_executable(layout_xml_test
+        tests/layout_xml_test.cpp
+        src/LayoutXml.cpp
+        src/LayoutXml.h
+    )
+    target_include_directories(layout_xml_test PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src
+    )
+    target_link_libraries(layout_xml_test PRIVATE
+        Qt6::Core
+        Qt6::Xml
+        GTest::gtest_main
+    )
+    if(DEFINED PJ_WARNING_FLAGS)
+        target_compile_options(layout_xml_test PRIVATE ${PJ_WARNING_FLAGS})
+    endif()
+    add_test(NAME LayoutXmlTest COMMAND layout_xml_test)
 endif()

@@ -156,4 +156,86 @@ TEST(CatalogModelTest, RemovedObjectTopicStaysHiddenAcrossRebuild) {
   EXPECT_TRUE(catalog.items().empty());
 }
 
+TEST(CatalogModelTest, RestoreDatasetBringsBackClearedItems) {
+  // Reproduces the layout-reload bug: a dataset hidden by clearAll
+  // (which is what Clear All Curves calls) stays filtered out of every
+  // future rebuildFromDatastore. restoreDataset() lifts the filter for
+  // exactly one id so FileLoader can reuse an existing engine dataset
+  // without un-hiding unrelated cleared datasets.
+  PJ::SessionManager session;
+  PJ::CatalogModel catalog(&session);
+
+  auto dataset_a = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "a.mcap"});
+  ASSERT_TRUE(dataset_a.has_value());
+  ASSERT_NE(addScalarTopic(session, *dataset_a, "/imu/accel/sample"), 0U);
+
+  auto dataset_b = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "b.mcap"});
+  ASSERT_TRUE(dataset_b.has_value());
+  ASSERT_NE(addScalarTopic(session, *dataset_b, "/gps/fix"), 0U);
+
+  ASSERT_EQ(catalog.items().size(), 2U);
+
+  catalog.clearAll();
+  EXPECT_TRUE(catalog.items().empty());
+
+  catalog.rebuildFromDatastore();
+  EXPECT_TRUE(catalog.items().empty()) << "clearAll should mark both datasets as removed";
+
+  catalog.restoreDataset(*dataset_a);
+  const auto items_after_restore = catalog.items();
+  ASSERT_EQ(items_after_restore.size(), 1U);
+  EXPECT_EQ(items_after_restore[0].dataset_id, *dataset_a)
+      << "restoreDataset must surface only the targeted dataset, not the other cleared one";
+}
+
+TEST(CatalogModelPathResolve, DatasetsEnumeratesLoadedDatasetsInLoadOrder) {
+  PJ::SessionManager session;
+  PJ::CatalogModel catalog(&session);
+  auto a = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "a.mcap"});
+  ASSERT_TRUE(a.has_value());
+  ASSERT_NE(addScalarTopic(session, *a, "/imu/accel/sample"), 0U);
+  auto b = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "b.mcap"});
+  ASSERT_TRUE(b.has_value());
+  ASSERT_NE(addScalarTopic(session, *b, "/gps/fix"), 0U);
+
+  const auto ds = catalog.datasets();
+  ASSERT_EQ(ds.size(), 2U);
+  EXPECT_EQ(ds[0].first, *a);
+  EXPECT_EQ(ds[0].second, QStringLiteral("a.mcap"));
+  EXPECT_EQ(ds[1].first, *b);
+  EXPECT_EQ(ds[1].second, QStringLiteral("b.mcap"));
+}
+
+TEST(CatalogModelPathResolve, SameTopicFieldResolvesPerDatasetToDistinctKeys) {
+  // The core generic-reuse guarantee: two similar recordings share an
+  // identical topic+field path but live under different per-load keys.
+  PJ::SessionManager session;
+  PJ::CatalogModel catalog(&session);
+  auto a = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "nissan_1.mcap"});
+  ASSERT_TRUE(a.has_value());
+  ASSERT_NE(addScalarTopic(session, *a, "/vehicle/speed"), 0U);
+  auto b = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "nissan_2.mcap"});
+  ASSERT_TRUE(b.has_value());
+  ASSERT_NE(addScalarTopic(session, *b, "/vehicle/speed"), 0U);
+
+  const auto da = catalog.descriptorForPath(*a, QStringLiteral("/vehicle/speed"), QStringLiteral("value"));
+  const auto db = catalog.descriptorForPath(*b, QStringLiteral("/vehicle/speed"), QStringLiteral("value"));
+  ASSERT_TRUE(da.has_value());
+  ASSERT_TRUE(db.has_value());
+  EXPECT_EQ(da->dataset_id, *a);
+  EXPECT_EQ(db->dataset_id, *b);
+  EXPECT_NE(da->name, db->name);  // distinct opaque keys, same stable path
+}
+
+TEST(CatalogModelPathResolve, ReturnsNulloptForAbsentTopicOrField) {
+  PJ::SessionManager session;
+  PJ::CatalogModel catalog(&session);
+  auto a = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "a.mcap"});
+  ASSERT_TRUE(a.has_value());
+  ASSERT_NE(addScalarTopic(session, *a, "/vehicle/speed"), 0U);
+
+  EXPECT_FALSE(catalog.descriptorForPath(*a, QStringLiteral("/no/such/topic"), QStringLiteral("value")).has_value());
+  EXPECT_FALSE(catalog.descriptorForPath(*a, QStringLiteral("/vehicle/speed"), QStringLiteral("nope")).has_value());
+}
+
 }  // namespace

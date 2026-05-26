@@ -297,6 +297,33 @@ std::optional<CurveDescriptor> CatalogModel::curveDescriptor(const QString& key)
   return curveFromItem(it->second);
 }
 
+std::vector<std::pair<DatasetId, QString>> CatalogModel::datasets() const {
+  std::vector<std::pair<DatasetId, QString>> result;
+  tsl::robin_set<DatasetId> seen;
+  for (const auto& [key, item] : impl_->items) {
+    (void)key;
+    if (seen.insert(item.dataset_id).second) {
+      result.emplace_back(item.dataset_id, item.dataset_name);
+    }
+  }
+  std::sort(result.begin(), result.end(), [](const auto& lhs, const auto& rhs) { return lhs.first < rhs.first; });
+  return result;
+}
+
+std::optional<CurveDescriptor> CatalogModel::descriptorForPath(
+    DatasetId dataset_id, const QString& topic, const QString& field) const {
+  for (const auto& [key, item] : impl_->items) {
+    (void)key;
+    if (item.dataset_id != dataset_id || item.topic_name != topic || !isScalarField(item)) {
+      continue;
+    }
+    if (asScalarField(item)->field_path == field) {
+      return curveFromItem(item);
+    }
+  }
+  return std::nullopt;
+}
+
 void CatalogModel::rebuildFromDatastore() {
   if (impl_->session == nullptr) {
     if (!impl_->items.empty()) {
@@ -463,6 +490,14 @@ void CatalogModel::resetRemovalState() {
   impl_->removed_datasets.clear();
   impl_->removed_names_per_dataset.clear();
   rebuildFromDatastore();
+}
+
+void CatalogModel::restoreDataset(DatasetId dataset_id) {
+  const bool was_removed = impl_->removed_datasets.erase(dataset_id) > 0;
+  const bool had_per_item = impl_->removed_names_per_dataset.erase(dataset_id) > 0;
+  if (was_removed || had_per_item) {
+    rebuildFromDatastore();
+  }
 }
 
 void CatalogModel::removeItems(const std::vector<QString>& keys) {

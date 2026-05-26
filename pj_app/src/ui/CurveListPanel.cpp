@@ -2,6 +2,8 @@
 
 #include <QAction>
 #include <QCheckBox>
+#include <QDomDocument>
+#include <QDomElement>
 #include <QEvent>
 #include <QHBoxLayout>
 #include <QIcon>
@@ -11,6 +13,7 @@
 #include <QMenu>
 #include <QPoint>
 #include <QPushButton>
+#include <QScopedValueRollback>
 #include <QSettings>
 #include <QSplitter>
 #include <QToolButton>
@@ -88,25 +91,25 @@ CurveListPanel::CurveListPanel(QWidget* parent) : QWidget(parent), ui_(new Ui::C
   auto* datasets_menu = new QMenu(this);
   datasets_menu->setObjectName(QStringLiteral("PJMenu"));
 
-  auto* show_values_check = new QCheckBox(tr("Show Values"), datasets_menu);
+  show_values_check_ = new QCheckBox(tr("Show Values"), datasets_menu);
   auto* show_values_action = new QWidgetAction(datasets_menu);
-  show_values_action->setDefaultWidget(show_values_check);
+  show_values_action->setDefaultWidget(show_values_check_);
   datasets_menu->addAction(show_values_action);
-  connect(show_values_check, &QCheckBox::toggled, this, &CurveListPanel::onShowValuesToggled);
+  connect(show_values_check_, &QCheckBox::toggled, this, &CurveListPanel::onShowValuesToggled);
 
-  auto* preserve_topic_name_check = new QCheckBox(tr("Preserve Topic Name"), datasets_menu);
+  preserve_topic_name_check_ = new QCheckBox(tr("Preserve Topic Name"), datasets_menu);
   // Seed the checkbox AND the tree view mode from QSettings before wiring
   // the signal — that way the first rebuildTree() driven by setCatalog()
   // already lays out under the saved mode (no rebuild thrash on startup).
   QSettings settings;
   const bool preserve_topic_name = settings.value(QLatin1String(kPreserveTopicNameKey), true).toBool();
-  preserve_topic_name_check->setChecked(preserve_topic_name);
+  preserve_topic_name_check_->setChecked(preserve_topic_name);
   tree_view_->setViewMode(
       preserve_topic_name ? CurveTreeView::ViewMode::ShowTopics : CurveTreeView::ViewMode::Hierarchical);
   auto* preserve_topic_name_action = new QWidgetAction(datasets_menu);
-  preserve_topic_name_action->setDefaultWidget(preserve_topic_name_check);
+  preserve_topic_name_action->setDefaultWidget(preserve_topic_name_check_);
   datasets_menu->addAction(preserve_topic_name_action);
-  connect(preserve_topic_name_check, &QCheckBox::toggled, this, &CurveListPanel::onPreserveTopicNameToggled);
+  connect(preserve_topic_name_check_, &QCheckBox::toggled, this, &CurveListPanel::onPreserveTopicNameToggled);
 
   datasets_menu->addSeparator();
 
@@ -217,6 +220,68 @@ void CurveListPanel::refreshValues(double /*tracker_time*/) {
   // TODO: populate the second column from CatalogModel once it serves values.
 }
 
+QDomElement CurveListPanel::saveListState(QDomDocument& doc) const {
+  QDomElement element = doc.createElement(QStringLiteral("curve_list_state"));
+
+  if (preserve_topic_name_check_ != nullptr) {
+    element.setAttribute(
+        QStringLiteral("show_topics"),
+        preserve_topic_name_check_->isChecked() ? QStringLiteral("true") : QStringLiteral("false"));
+  }
+  if (show_values_check_ != nullptr) {
+    element.setAttribute(
+        QStringLiteral("show_values"),
+        show_values_check_->isChecked() ? QStringLiteral("true") : QStringLiteral("false"));
+  }
+  if (ui_->lineEditFilter != nullptr) {
+    element.setAttribute(QStringLiteral("datasets_filter"), ui_->lineEditFilter->text());
+  }
+  if (ui_->lineEditCustomFilter != nullptr) {
+    element.setAttribute(QStringLiteral("custom_filter"), ui_->lineEditCustomFilter->text());
+  }
+  return element;
+}
+
+void CurveListPanel::restoreListState(const QDomElement& element) {
+  if (element.isNull() || element.tagName() != QStringLiteral("curve_list_state")) {
+    return;
+  }
+
+  // Bracket the toggles with applying_state_ so onPreserveTopicNameToggled
+  // doesn't write its QSettings key. setViewMode + rebuildTree still run.
+  // QScopedValueRollback gives exception-safety: a throw inside any slot
+  // restores the flag instead of leaving it stuck-true (which would
+  // silently disable QSettings writes from later user-initiated toggles).
+  // Matches MainWindow.cpp's pattern at the xmlLoadState path.
+  {
+    QScopedValueRollback guard(applying_state_, true);
+
+    if (element.hasAttribute(QStringLiteral("show_topics")) && preserve_topic_name_check_ != nullptr) {
+      const bool wanted = element.attribute(QStringLiteral("show_topics")) == QStringLiteral("true");
+      if (preserve_topic_name_check_->isChecked() != wanted) {
+        preserve_topic_name_check_->setChecked(wanted);  // emits toggled -> slot runs (rebuilds tree)
+      }
+    }
+
+    if (element.hasAttribute(QStringLiteral("show_values")) && show_values_check_ != nullptr) {
+      const bool wanted = element.attribute(QStringLiteral("show_values")) == QStringLiteral("true");
+      if (show_values_check_->isChecked() != wanted) {
+        show_values_check_->setChecked(wanted);  // emits toggled -> slot runs (no QSettings write)
+      }
+    }
+  }
+
+  // Filter texts: setText emits textChanged, which the connected slots
+  // forward to tree_view_->applyFilter — that's exactly what we want.
+  // Do NOT block signals here.
+  if (element.hasAttribute(QStringLiteral("datasets_filter")) && ui_->lineEditFilter != nullptr) {
+    ui_->lineEditFilter->setText(element.attribute(QStringLiteral("datasets_filter")));
+  }
+  if (element.hasAttribute(QStringLiteral("custom_filter")) && ui_->lineEditCustomFilter != nullptr) {
+    ui_->lineEditCustomFilter->setText(element.attribute(QStringLiteral("custom_filter")));
+  }
+}
+
 void CurveListPanel::onFilterChanged(const QString& text) {
   tree_view_->applyFilter(text);
 }
@@ -231,8 +296,10 @@ void CurveListPanel::onShowValuesToggled(bool show) {
 }
 
 void CurveListPanel::onPreserveTopicNameToggled(bool checked) {
-  QSettings settings;
-  settings.setValue(QLatin1String(kPreserveTopicNameKey), checked);
+  if (!applying_state_) {
+    QSettings settings;
+    settings.setValue(QLatin1String(kPreserveTopicNameKey), checked);
+  }
   tree_view_->setViewMode(checked ? CurveTreeView::ViewMode::ShowTopics : CurveTreeView::ViewMode::Hierarchical);
   rebuildTree(tree_view_, catalog_);
   tree_view_->applyFilter(ui_->lineEditFilter->text());

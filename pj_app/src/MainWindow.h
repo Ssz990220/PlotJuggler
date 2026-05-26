@@ -2,6 +2,7 @@
 
 #include <QByteArray>
 #include <QDateTime>
+#include <QDir>
 #include <QDomDocument>
 #include <QElapsedTimer>
 #include <QList>
@@ -13,8 +14,11 @@
 #include <functional>
 #include <memory>
 #include <optional>
+#include <utility>
+#include <vector>
 
 #include "pj_base/diagnostic_sink.hpp"
+#include "pj_base/types.hpp"
 #include "pj_plotting/CurveTracker.h"
 #include "pj_widgets/ChromeMetrics.h"
 
@@ -124,7 +128,8 @@ class MainWindow : public QMainWindow {
 
   // Updates playback bounds after a data file has populated datastore and
   // object-store topics.
-  void onFileLoaded(const QString& path);
+  void onFileLoaded(
+      const QString& path, const QString& prefix, const QString& plugin_id, const QString& plugin_config_json);
 
   // Removes selected catalog entries from the curve/object tree.
   void onCatalogTrashRequested(QStringList keys, bool covers_all);
@@ -236,9 +241,65 @@ class MainWindow : public QMainWindow {
 
   // Layout helpers.
   void loadLayoutFromPath(const QString& path);
-  void saveLayoutToPath(const QString& path);
+  void saveLayoutToPath(const QString& path, bool include_data_source);
   void recordRecentLayout(const QString& path);
   [[nodiscard]] QStringList recentLayouts() const;
+
+  // Picks the dataset a layout's curves bind to. Returns the sole dataset
+  // when only one is loaded; otherwise prompts the user (defaulting to the
+  // most-recently-loaded). nullopt means the user cancelled the chooser.
+  [[nodiscard]] std::optional<DatasetId> chooseActiveDataset(
+      const std::vector<std::pair<DatasetId, QString>>& datasets);
+
+  // Rewrites every curve's stable topic+field path to a concrete catalog key
+  // in the currently-loaded data (first dataset that has the path). Used by
+  // undo/redo restore, whose snapshots carry stable paths, not the per-load
+  // keys — so a snapshot survives an intervening data reload.
+  void rebindToCurrentSession(QDomDocument& doc);
+
+  // kPlaceholders was removed: the SessionManager API for registering
+  // empty placeholder series doesn't exist yet, so the "Create empty
+  // placeholders" button was indistinguishable from "Remove from plots"
+  // (both just dropped the curves). Re-add the enumerator + the button
+  // once the underlying API lands.
+  enum class MissingCurveChoice { kRemove, kCancel };
+
+  // Modal prompt mirroring PJ3's missing-curve dialog. `names` is shown to
+  // the user (truncated past ~10 entries). Returns the user's pick.
+  [[nodiscard]] MissingCurveChoice promptMissingCurves(const QStringList& names);
+
+  // Builds <previouslyLoaded_Datafiles> from SessionManager's record, using
+  // a path relative to `layout_dir` when the source lives at or beneath it,
+  // absolute otherwise. Returns a null element when no source is recorded.
+  [[nodiscard]] QDomElement appendDataSourceElement(QDomDocument& doc, const QDir& layout_dir) const;
+
+  // Builds <right_panel_state visible="…" width="…" style="…"
+  // splitter_sizes="…"/> from the four right-panel state sources. Always
+  // emits an element (none of the attributes are gated). Caller appends.
+  [[nodiscard]] QDomElement saveRightPanelState(QDomDocument& doc) const;
+
+  // Applies <right_panel_state> attributes individually; missing or
+  // mismatched values are silently ignored. Never writes to QSettings —
+  // layout-driven UI changes don't mutate the global per-user defaults.
+  void restoreRightPanelState(const QDomElement& element);
+
+  // Builds <chrome_state left_visible="..." bottom_visible="..."
+  // main_splitter_sizes="..." timeline_splitter_sizes="..."/>. Covers
+  // cross-panel chrome that isn't owned by an individual panel widget.
+  [[nodiscard]] QDomElement saveChromeState(QDomDocument& doc) const;
+
+  // Applies <chrome_state> attributes individually; missing or mismatched
+  // values are silently ignored. Visibility goes through the same
+  // setVisible + setProperty + setIcon path used by restoreRightPanelState
+  // so QSettings stays untouched.
+  void restoreChromeState(const QDomElement& element);
+
+  // Applies a panel-visibility flip via the PanelToggle struct that owns
+  // the target widget: direct setVisible + icon swap on the toggle
+  // button, no QSettings write, no toggle-handler reentry. Used by
+  // restoreRightPanelState and restoreChromeState. No-op when target is
+  // null OR its current visibility already matches `wanted`.
+  void applyPanelVisibility(QWidget* target, bool wanted);
 
   // Serializes the current app layout state.
   [[nodiscard]] QDomDocument xmlSaveState() const;

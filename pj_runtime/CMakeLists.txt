@@ -54,6 +54,15 @@ if(PJ_BUILD_TESTS)
     )
     add_test(NAME AppSessionTest COMMAND app_session_test)
 
+    add_executable(session_manager_test
+        tests/session_manager_test.cpp
+    )
+    target_link_libraries(session_manager_test PRIVATE
+        pj_runtime
+        GTest::gtest_main
+    )
+    add_test(NAME SessionManagerTest COMMAND session_manager_test)
+
     add_executable(catalog_model_test
         tests/catalog_model_test.cpp
     )

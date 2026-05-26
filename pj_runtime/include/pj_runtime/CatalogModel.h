@@ -5,6 +5,7 @@
 #include <cstddef>
 #include <memory>
 #include <optional>
+#include <utility>
 #include <variant>
 #include <vector>
 
@@ -78,6 +79,16 @@ class CatalogModel : public QObject {
   std::vector<CurveDescriptor> curves() const;
   [[nodiscard]] std::optional<CurveDescriptor> curveDescriptor(const QString& key) const;
 
+  // Loaded datasets as (id, display name) pairs, ordered by load (dataset id
+  // ascending). Derived from current catalog contents.
+  [[nodiscard]] std::vector<std::pair<DatasetId, QString>> datasets() const;
+
+  // Resolves a stable topic+field path to the matching scalar curve within a
+  // specific dataset. Lets a layout rebind across similar datasets where the
+  // opaque per-load key differs but the topic/field path is identical.
+  [[nodiscard]] std::optional<CurveDescriptor> descriptorForPath(
+      DatasetId dataset_id, const QString& topic, const QString& field) const;
+
   void clearAll();
   void removeItems(const std::vector<QString>& keys);
   void removeCurves(const std::vector<QString>& keys);
@@ -85,6 +96,14 @@ class CatalogModel : public QObject {
   // Discards soft-delete tombstones and rebuilds from the datastore so a
   // resurrection path (e.g. layout load) can re-expose previously removed curves.
   void resetRemovalState();
+
+  // Un-hides one previously-cleared dataset (and any per-item removals
+  // scoped to it) and rebuilds from the datastore. Used by FileLoader
+  // when it reuses an existing engine dataset for a re-loaded file —
+  // the dataset was hidden by Clear All Curves but the underlying data
+  // is still present, so re-loading the same file should bring it back
+  // into view without un-hiding unrelated datasets.
+  void restoreDataset(DatasetId dataset_id);
 
  public slots:
   void rebuildFromDatastore();

@@ -386,20 +386,37 @@ QDomElement PlotWidget::xmlSaveState(QDomDocument& doc) const {
     plot_element.appendChild(range_element);
   }
 
+  // A curve is identified by its stable topic+field path (PJ::LayoutXml), not
+  // the engine's opaque per-load catalog key. On load — layout file or undo/redo
+  // snapshot alike — the path is re-resolved against the current dataset(s) to
+  // the concrete key (PJ::LayoutXml::rebindCurveKeys), so the saved form stays
+  // valid across reloads and similar datasets.
+  const auto writeStablePath = [&](QDomElement& element, const QString& topic_attr, const QString& field_attr,
+                                   const QString& key) {
+    if (catalog_ == nullptr) {
+      return;
+    }
+    if (const auto descriptor = catalog_->curveDescriptor(key); descriptor.has_value()) {
+      element.setAttribute(topic_attr, descriptor->topic_name);
+      element.setAttribute(field_attr, descriptor->field_path);
+    }
+  };
+
   for (const CurveInfo& info : curveList()) {
     if (info.curve == nullptr) {
       continue;
     }
     QDomElement curve_element = doc.createElement(QStringLiteral("curve"));
-    curve_element.setAttribute(QStringLiteral("name"), info.source_name);
     curve_element.setAttribute(QStringLiteral("color"), info.curve->pen().color().name());
     curve_element.setAttribute(QStringLiteral("line_width"), QString::number(info.curve->pen().widthF(), 'f', 2));
     curve_element.setAttribute(QStringLiteral("style"), curveStyleToString(qwtStyleToCurveStyle(info.curve)));
     curve_element.setAttribute(
         QStringLiteral("visible"), info.curve->isVisible() ? QStringLiteral("true") : QStringLiteral("false"));
     if (auto* xy_series = dynamic_cast<PointSeriesXY*>(info.curve->data())) {
-      curve_element.setAttribute(QStringLiteral("curve_x"), xy_series->xSource().name);
-      curve_element.setAttribute(QStringLiteral("curve_y"), xy_series->ySource().name);
+      writeStablePath(curve_element, QStringLiteral("x_topic"), QStringLiteral("x_field"), xy_series->xSource().name);
+      writeStablePath(curve_element, QStringLiteral("y_topic"), QStringLiteral("y_field"), xy_series->ySource().name);
+    } else {
+      writeStablePath(curve_element, QStringLiteral("topic"), QStringLiteral("field"), info.source_name);
     }
     plot_element.appendChild(curve_element);
   }

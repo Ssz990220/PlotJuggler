@@ -1,5 +1,7 @@
 #pragma once
 
+#include <QDomDocument>
+#include <QDomElement>
 #include <QWidget>
 
 #include "pj_widgets/ChromeMetrics.h"
@@ -41,6 +43,16 @@ class LeftPanel : public QWidget {
   void setStreamingSources(const QStringList& names);
   void setReloadEnabled(bool enabled);
   void setRecentEnabled(bool enabled);
+
+  // Builds <left_panel_state sources_tab="..." streaming_source="..."
+  // streaming_buffer="..."/>. Caller appends to the layout document.
+  // visibility is NOT included here — MainWindow handles it via chrome_state.
+  [[nodiscard]] QDomElement saveSourcesState(QDomDocument& doc) const;
+
+  // Applies <left_panel_state> attributes individually; missing or
+  // mismatched values are silently ignored. Never writes to QSettings —
+  // layout-driven UI changes don't mutate the global per-user defaults.
+  void restoreSourcesState(const QDomElement& element);
 
  private:
   void applyIcons(QString theme);

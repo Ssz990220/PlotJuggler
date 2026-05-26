@@ -108,7 +108,7 @@ void FileLoader::openFromDialog(QWidget* dialog_parent) {
   loadFile(path, dialog_parent);
 }
 
-bool FileLoader::loadFile(const QString& path, QWidget* dialog_parent) {
+bool FileLoader::loadFile(const QString& path, QWidget* dialog_parent, const LoadHints& hints) {
   // One unified failure path — log, optionally pop a dialog, emit signal.
   const auto fail = [&](const QString& reason) -> bool {
     qCWarning(lcFileLoader).noquote() << reason;
@@ -148,6 +148,34 @@ bool FileLoader::loadFile(const QString& path, QWidget* dialog_parent) {
   }
 
   const QString display_name = QFileInfo(path).fileName();
+
+  // Dataset reuse: if the engine already has a dataset for this source
+  // name, skip the entire ingest path and just bring it back into the
+  // catalog. Without this, re-loading the same file (e.g. via layout
+  // replay after Clear All Curves) mints a new monotonic dataset_id
+  // even though the underlying data is still present. The layout's
+  // saved keys reference the original dataset_id, so a duplicate ingest
+  // surfaces every curve as "missing" — see CatalogModel.cpp's
+  // removed_datasets gate.
+  //
+  // Matching is by basename (same as createDataset's source_name). This
+  // can collide if two different files share a basename; the cost of a
+  // false reuse is bounded — the user just doesn't get fresh data they
+  // weren't asking for. The cost of NOT reusing (current bug) is broken
+  // layout reload, which is worse.
+  for (const auto existing_id : engine.listDatasets()) {
+    const DatasetInfo* info = engine.getDataset(existing_id);
+    if (info != nullptr && info->source_name == display_name.toStdString()) {
+      catalog_.restoreDataset(existing_id);
+      // preset_config_json is what MainWindow passed in from the layout
+      // (data-source replay); on the interactive path it's empty, which
+      // is fine — the same file is being re-opened, the previous
+      // LoadedSource still describes it.
+      emit fileLoaded(path, QString(), source_name, hints.preset_config_json);
+      return true;
+    }
+  }
+
   auto dataset_or =
       engine.createDataset(DatasetDescriptor{.source_name = display_name.toStdString(), .time_domain_id = td_id});
   if (!dataset_or.has_value()) {
@@ -171,42 +199,75 @@ bool FileLoader::loadFile(const QString& path, QWidget* dialog_parent) {
   }
 
   // Pre-populate the dialog with last-used settings so users don't re-pick
-  // delimiter/time column on every load.
+  // delimiter/time column on every load. The layout-driven path (hints
+  // with a matching plugin id + a usable preset config) skips the dialog
+  // entirely; we fall back to the dialog with the QSettings pre-fill if
+  // either the id mismatches or loadConfig rejects the preset.
   QSettings persisted_settings;
   const QString config_key = pluginConfigKey(source->name);
   const std::string saved_config = persisted_settings.value(config_key, QString()).toString().toStdString();
 
-  std::string config = buildLoadConfig(saved_config, path);
-  if (auto status = handle.loadConfig(config); !status) {
-    return fail(tr("Plugin '%1': loadConfig failed: %2").arg(source_name, QString::fromStdString(status.error())));
+  std::string config;
+  bool skip_dialog = false;
+
+  const bool hint_eligible =
+      hints.skip_dialog && !hints.preset_config_json.isEmpty() && hints.expected_plugin_id == source_name;
+  if (hint_eligible) {
+    const std::string preset = hints.preset_config_json.toStdString();
+    if (auto status = handle.loadConfig(preset); status) {
+      config = preset;
+      skip_dialog = true;
+    } else {
+      // Silent fallback: layout's config didn't take. Use the QSettings
+      // pre-fill and let the dialog drive — caller's UX is "if it works,
+      // skip; if not, ask."
+      qCInfo(lcFileLoader).noquote() << tr("Layout preset rejected by '%1': %2 — falling back to dialog")
+                                            .arg(source_name, QString::fromStdString(status.error()));
+      config = buildLoadConfig(saved_config, path);
+      if (auto retry = handle.loadConfig(config); !retry) {
+        return fail(tr("Plugin '%1': loadConfig failed: %2").arg(source_name, QString::fromStdString(retry.error())));
+      }
+    }
+  } else {
+    config = buildLoadConfig(saved_config, path);
+    if (auto status = handle.loadConfig(config); !status) {
+      return fail(tr("Plugin '%1': loadConfig failed: %2").arg(source_name, QString::fromStdString(status.error())));
+    }
   }
 
-  const auto dlg = dialog_presenter::showDataSourceDialog({
-      .source = *source,
-      .handle = handle,
-      .catalog = extensions_,
-      .parent = dialog_parent,
-  });
-  if (dlg.outcome == dialog_presenter::Outcome::kPluginContractViolation) {
-    return fail(tr("Plugin contract violation: %1. Reinstall the plugin from the Marketplace.")
-                    .arg(QString::fromStdString(dlg.error)));
-  }
-  if (dlg.outcome == dialog_presenter::Outcome::kRejected) {
-    return false;
-  }
-  if (dlg.payload.has_value()) {
-    config = dlg.payload->saved_config;
-    // DialogEngine already wrote the dialog's choices back via the dialog vtable,
-    // but for plugins that split dialog state from source state the explicit
-    // reload keeps the contract uniform.
-    if (auto status = handle.loadConfig(config); !status) {
-      return fail(tr("Plugin '%1': loadConfig (post-dialog) failed: %2")
-                      .arg(source_name, QString::fromStdString(status.error())));
+  if (!skip_dialog) {
+    const auto dlg = dialog_presenter::showDataSourceDialog({
+        .source = *source,
+        .handle = handle,
+        .catalog = extensions_,
+        .parent = dialog_parent,
+    });
+    if (dlg.outcome == dialog_presenter::Outcome::kPluginContractViolation) {
+      return fail(tr("Plugin contract violation: %1. Reinstall the plugin from the Marketplace.")
+                      .arg(QString::fromStdString(dlg.error)));
+    }
+    if (dlg.outcome == dialog_presenter::Outcome::kRejected) {
+      return false;
+    }
+    if (dlg.payload.has_value()) {
+      config = dlg.payload->saved_config;
+      // DialogEngine already wrote the dialog's choices back via the dialog vtable,
+      // but for plugins that split dialog state from source state the explicit
+      // reload keeps the contract uniform.
+      if (auto status = handle.loadConfig(config); !status) {
+        return fail(tr("Plugin '%1': loadConfig (post-dialog) failed: %2")
+                        .arg(source_name, QString::fromStdString(status.error())));
+      }
     }
   }
 
   // Persist before start() so dialog choices stick even if ingest fails.
-  persisted_settings.setValue(config_key, QString::fromStdString(config));
+  // Skip on the hint path: layout-driven reloads should NOT overwrite the
+  // user's last interactive choice in QSettings (spec §11). Otherwise
+  // opening a layout would silently mutate the global per-plugin pre-fill.
+  if (!skip_dialog) {
+    persisted_settings.setValue(config_key, QString::fromStdString(config));
+  }
 
   // Progress dialog — shown when the plugin calls progressStart().
   // The import runs synchronously on the main thread, so we drive the dialog
@@ -417,8 +478,25 @@ bool FileLoader::loadFile(const QString& path, QWidget* dialog_parent) {
   }
 
   catalog_.rebuildFromDatastore();
-  emit fileLoaded(path);
+
+  // Capture the plugin's canonical post-load state AFTER start() + ingest
+  // so any state computed during the actual load (discovered fields,
+  // applied defaults, ingest-time policy overrides) is included in what
+  // a layout file persists. saveConfig failures here are non-fatal —
+  // the layout save just won't carry plugin config.
+  std::string captured_config;
+  if (auto status = handle.saveConfig(captured_config); !status) {
+    qCWarning(lcFileLoader).noquote() << tr("Plugin '%1': saveConfig failed: %2 — layout save will skip plugin config")
+                                             .arg(source_name, QString::fromStdString(status.error()));
+    captured_config.clear();
+  }
+
+  emit fileLoaded(path, QString(), source_name, QString::fromStdString(captured_config));
   return true;
+}
+
+bool FileLoader::loadFile(const QString& path, QWidget* dialog_parent) {
+  return loadFile(path, dialog_parent, LoadHints{});
 }
 
 TimeDomainId FileLoader::ensureDefaultTimeDomainId() {

@@ -15,6 +15,18 @@ class CatalogModel;
 class ExtensionCatalogService;
 class SessionManager;
 
+// Hints supplied by callers that already know what plugin to use and what
+// config to apply (e.g. layout-driven reload). When skip_dialog is true and
+// the layout's preset_config_json applies cleanly to the matching plugin,
+// FileLoader::loadFile bypasses the data-source dialog entirely. On any
+// failure (id mismatch, loadConfig rejection), the dialog falls back open
+// with the existing QSettings-based pre-fill.
+struct LoadHints {
+  QString expected_plugin_id;  // Empty -> no hint; FileLoader picks plugin by extension as usual.
+  QString preset_config_json;  // Empty -> no hint; QSettings pre-fill is used.
+  bool skip_dialog = false;    // Only honored when both fields above are non-empty AND the plugin id matches.
+};
+
 // Drives the file-import path: pick a file, find the matching DataSource
 // plugin via ExtensionCatalogService, ingest into the SessionManager's data
 // engine, and refresh the curve catalog. Lives in pj_app because it talks to
@@ -37,9 +49,11 @@ class FileLoader : public QObject {
   // Programmatic entry point. Returns true on successful ingest.
   // Emits fileLoaded() on success and fileLoadFailed() on failure.
   bool loadFile(const QString& path, QWidget* dialog_parent = nullptr);
+  bool loadFile(const QString& path, QWidget* dialog_parent, const LoadHints& hints);
 
  signals:
-  void fileLoaded(const QString& path);
+  void fileLoaded(
+      const QString& path, const QString& prefix, const QString& plugin_id, const QString& plugin_config_json);
   void fileLoadFailed(const QString& path, const QString& reason);
 
  private:

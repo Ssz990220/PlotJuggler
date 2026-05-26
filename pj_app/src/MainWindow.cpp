@@ -13,16 +13,21 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QIcon>
+#include <QInputDialog>
 #include <QKeySequence>
 #include <QLabel>
 #include <QLoggingCategory>
 #include <QMenu>
+#include <QMessageBox>
 #include <QMouseEvent>
 #include <QPalette>
 #include <QPushButton>
+#include <QSaveFile>
 #include <QScopedValueRollback>
+#include <QSet>
 #include <QSettings>
 #include <QShortcut>
+#include <QSignalBlocker>
 #include <QSizePolicy>
 #include <QSplitter>
 #include <QStackedWidget>
@@ -48,6 +53,7 @@
 
 #include "DebugUi.h"
 #include "FileLoader.h"
+#include "LayoutXml.h"
 #include "PreferencesDialog.h"
 #include "Theme.h"
 #include "TitleBar.h"
@@ -93,6 +99,21 @@ constexpr auto kDefaultRegistryUrl =
     "refs/heads/development/registry.json";
 constexpr auto kRegistryUrlSettingsKey = "Marketplace/registryUrl";
 constexpr auto kPanelBottomExpandedKey = "MainWindow.panelBottomExpandedHeight";
+
+// Directory of the most recently saved or loaded layout. Re-using PJ3's
+// QSettings key keeps cross-version migration trivial (a user who
+// upgrades from PJ3 lands in their existing layout directory). Fallback
+// when unset is QDir::currentPath() — matches PJ3.
+constexpr auto kLastLayoutDirKey = "MainWindow.lastLayoutDirectory";
+
+// Layout schema version. Bumped only on incompatible changes (additive
+// elements/attributes don't need a bump — the loader silently skips
+// unknown content). Read by loadLayoutFromPath to flag layouts saved
+// by newer PJ4 builds; the layout still loads best-effort.
+// v2: curves identified by stable topic+field path (rebound per-dataset on
+// load) instead of the opaque per-load catalog key; <root binding=...> marks
+// generic vs source-bound layouts.
+constexpr int kLayoutSchemaVersion = 2;
 constexpr double kNanosecondsPerSecond = 1e9;
 constexpr double kTwoPi = 6.28318530717958647692;
 constexpr int kTestSampleCount = 1000;
@@ -100,8 +121,8 @@ constexpr double kTestDurationSeconds = 10.0;
 constexpr int kResizeMargin = 6;
 constexpr int kMaxRecentLayouts = 5;
 constexpr auto kRecentLayoutsKey = "Layout/recent";
-constexpr auto kLayoutFilter = "PlotJuggler 4 Layout (*.pjl4)";
-constexpr auto kLayoutExtension = ".pjl4";
+constexpr auto kLayoutFilter = "PlotJuggler 4 Layout (*.pj4.xml)";
+// Extension itself is the single source of truth in LayoutXml::kLayoutExtension.
 constexpr int kMaxUndoStates = 100;
 constexpr qint64 kUndoCoalesceMs = 100;
 constexpr auto kIconSizeKey = "ui/icon_size";
@@ -192,6 +213,16 @@ QUrl registryUrlFromSettings() {
   }
   return url;
 }
+
+// Curve-Width radio mapping. Hoisted from buildLocalToolbar so the
+// layout-save path can encode the float value (rebuild-stable) and the
+// layout-load path can map the stored value back to a button.
+inline constexpr std::array<std::pair<const char*, double>, 4> kWidthButtonSpecs{{
+    {"globalWidth1_0", 1.0},
+    {"globalWidth1_5", 1.5},
+    {"globalWidth2_0", 2.0},
+    {"globalWidth3_0", 3.0},
+}};
 }  // namespace
 
 MainWindow::MainWindow(QWidget* parent) : MainWindow(QString{}, parent) {}
@@ -372,7 +403,14 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
   ui_->curveListPanel->setCatalog(&session_->catalogModel());
   connect(ui_->curveListPanel, &CurveListPanel::trashRequested, this, &MainWindow::onCatalogTrashRequested);
   connect(ui_->curveListPanel, &CurveListPanel::clearAllCurvesRequested, this, [this]() {
+    // Same logic as onCatalogTrashRequested(covers_all=true): clear the
+    // catalog AND drop SessionManager's lastLoadedSource record.
+    // Otherwise the next layout-load sees already_loaded=true and
+    // silently skips the data-source reload prompt — the user clears
+    // everything, opens a layout that embeds a data source, and gets
+    // the missing-curve dialog without ever being asked to reload.
     session_->catalogModel().clearAll();
+    session_->sessionManager().clearLoadedSource();
   });
 
   QSettings settings;
@@ -584,15 +622,18 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
   connect(file_loader_.get(), &FileLoader::fileLoaded, this, &MainWindow::onFileLoaded);
   // Track successful loads so the Recently loaded files popup can show
   // them; the cap-5 record/dedup logic is shared with the layout list.
-  connect(file_loader_.get(), &FileLoader::fileLoaded, this, [](const QString& path) {
-    QStringList recent = QSettings().value(QStringLiteral("File/recent")).toStringList();
-    recent.removeAll(path);
-    recent.prepend(path);
-    while (recent.size() > 5) {
-      recent.removeLast();
-    }
-    QSettings().setValue(QStringLiteral("File/recent"), recent);
-  });
+  connect(
+      file_loader_.get(), &FileLoader::fileLoaded, this,
+      [](const QString& path, const QString& /*prefix*/, const QString& /*plugin_id*/,
+         const QString& /*plugin_config_json*/) {
+        QStringList recent = QSettings().value(QStringLiteral("File/recent")).toStringList();
+        recent.removeAll(path);
+        recent.prepend(path);
+        while (recent.size() > 5) {
+          recent.removeLast();
+        }
+        QSettings().setValue(QStringLiteral("File/recent"), recent);
+      });
   // Replay a recent path through the same loader. loadFile will fall
   // through fileLoaded / fileLoadFailed naturally; failures don't have
   // to be handled here.
@@ -626,18 +667,25 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
   exit_widget_action->setDefaultWidget(exit_menu_button_);
   title_bar_->appMenu()->addAction(exit_widget_action);
 
-  // Undo/Redo apply to plot-layout snapshots. Live in the Layout menu
-  // above Recent so the shortcut + menu entry sit alongside the
-  // Save/Load actions they undo.
-  title_bar_->layoutMenu()->insertSeparator(recent_layouts_menu_->menuAction());
+  // Undo/Redo apply to plot-layout snapshots. They are keyboard-only
+  // (Ctrl+Z / Ctrl+Y) and deliberately NOT in any menu. Registering them on
+  // the main window via addAction is what makes the shortcuts fire window-wide;
+  // an action that lives only in a popup menu (as these used to) never
+  // activates its shortcut while that menu is closed.
   undo_action_ = new QAction(tr("Undo"), this);
   undo_action_->setShortcuts(QKeySequence::Undo);
   connect(undo_action_, &QAction::triggered, this, &MainWindow::onUndo);
-  title_bar_->layoutMenu()->insertAction(recent_layouts_menu_->menuAction(), undo_action_);
+  addAction(undo_action_);
   redo_action_ = new QAction(tr("Redo"), this);
-  redo_action_->setShortcuts(QKeySequence::Redo);
+  // The platform's standard redo set (Ctrl+Y and/or Ctrl+Shift+Z depending on
+  // desktop-theme detection) plus both explicitly, so redo works the same
+  // everywhere regardless of how Qt resolves QKeySequence::Redo.
+  QList<QKeySequence> redo_shortcuts = QKeySequence::keyBindings(QKeySequence::Redo);
+  redo_shortcuts.append(QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_Z));
+  redo_shortcuts.append(QKeySequence(Qt::CTRL | Qt::Key_Y));
+  redo_action_->setShortcuts(redo_shortcuts);
   connect(redo_action_, &QAction::triggered, this, &MainWindow::onRedo);
-  title_bar_->layoutMenu()->insertAction(recent_layouts_menu_->menuAction(), redo_action_);
+  addAction(redo_action_);
 
   // Plot-layout changes from TabbedPlotWidget feed the undo stack.
   connect(ui_->tabbedPlotWidget, &TabbedPlotWidget::undoableChange, this, &MainWindow::onUndoableChange);
@@ -785,17 +833,23 @@ void MainWindow::onLoadDataRequested() {
   file_loader_->openFromDialog(this);
 }
 
-void MainWindow::onFileLoaded(const QString& /*path*/) {
-  // Range computation + first-vs-subsequent-load semantics live in
-  // AppSession::seedPlaybackFromSession(). MainWindow is the shell that
-  // wires the load completion to the runtime — domain logic belongs in
-  // pj_runtime, not here.
+void MainWindow::onFileLoaded(
+    const QString& path, const QString& prefix, const QString& plugin_id, const QString& plugin_config_json) {
+  // MainWindow is the shell that wires load completion to the runtime —
+  // recording the source (incl. plugin id + json) and seeding playback are
+  // pj_runtime concerns; we just relay. Prefix is empty in v1 until the
+  // load dialog gains a prefix input.
+  session_->sessionManager().recordLoadedSource(path, prefix, plugin_id, plugin_config_json);
   session_->seedPlaybackFromSession();
 }
 
 void MainWindow::onCatalogTrashRequested(QStringList keys, bool covers_all) {
   if (covers_all) {
     session_->catalogModel().clearAll();
+    // Catalog wipe implies the original source is functionally gone;
+    // clear the record so the next layout load doesn't silently skip
+    // the data-source reload prompt based on stale state.
+    session_->sessionManager().clearLoadedSource();
     return;
   }
   session_->catalogModel().removeItems(std::vector<QString>(keys.begin(), keys.end()));
@@ -1245,27 +1299,45 @@ void MainWindow::closeEvent(QCloseEvent* event) {
 }
 
 void MainWindow::onLoadLayout() {
-  const QString start_dir = QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation);
+  // Remember the last directory across sessions (matches PJ3 behaviour
+  // and the data-file loader's pattern at FileLoader.cpp:82). Default
+  // to the working directory on first run rather than ~/Documents,
+  // since layout files commonly live in project directories.
+  const QString start_dir = QSettings().value(kLastLayoutDirKey, QDir::currentPath()).toString();
   // Passing `this` as the metrics source primes the dialog with the
   // current icon size and keeps it in step if chromeMetricsChanged fires.
   const QString path = FileDialog::getOpenFileName(this, tr("Load Layout"), start_dir, tr(kLayoutFilter), this);
   if (path.isEmpty()) {
     return;
   }
+  QSettings().setValue(kLastLayoutDirKey, QFileInfo(path).absolutePath());
   loadLayoutFromPath(path);
 }
 
 void MainWindow::onSaveLayout() {
-  const QString start_dir = QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation);
+  const QString start_dir = QSettings().value(kLastLayoutDirKey, QDir::currentPath()).toString();
   // setDefaultSuffix (passed through PJ::FileDialog) wants the extension
   // without the leading dot.
-  const QString default_suffix = QString::fromLatin1(kLayoutExtension).mid(1);
-  const QString path =
-      FileDialog::getSaveFileName(this, tr("Save Layout"), start_dir, tr(kLayoutFilter), default_suffix, this);
-  if (path.isEmpty()) {
+  const QString default_suffix = QString::fromLatin1(LayoutXml::kLayoutExtension).mid(1);
+
+  // Checked = source-bound: embed the data-source reference so opening the
+  // layout reloads this exact file. Unchecked = generic: the layout carries
+  // no file reference and binds its curves (by topic+field) to whatever
+  // dataset is loaded when it's opened — for reuse across similar recordings.
+  // Default ON matches PJ3 and the common "save, reload later" workflow.
+  const FileDialog::ExtraOption save_source_opt{tr("Bind to this data source"), /*default_checked=*/true};
+  const auto result = FileDialog::getSaveFileNameWithOptions(
+      this, tr("Save Layout"), start_dir, tr(kLayoutFilter), default_suffix, {save_source_opt}, this);
+
+  if (result.path.isEmpty()) {
     return;
   }
-  saveLayoutToPath(path);
+  // Backstops the dialog's defaultSuffix: a bare typed name (no extension)
+  // becomes a .pj4.xml file even if the platform dialog skipped the suffix.
+  const QString save_path = LayoutXml::ensureLayoutExtension(result.path);
+  QSettings().setValue(kLastLayoutDirKey, QFileInfo(save_path).absolutePath());
+  const bool include_data_source = !result.option_states.empty() && result.option_states[0];
+  saveLayoutToPath(save_path, include_data_source);
 }
 
 void MainWindow::onLoadRecentLayout(const QString& path) {
@@ -1346,30 +1418,198 @@ void MainWindow::onRebuildExtensionsMenu() {
 }
 
 void MainWindow::loadLayoutFromPath(const QString& path) {
-  // Stub: layout state isn't serialised yet (plot widgets are placeholder
-  // in v1). We just verify the file is openable, refresh the recent list,
-  // and report success. When real state lands, this is the function that
-  // gains a body.
+  // 1. Open + parse
   QFile file(path);
   if (!file.open(QIODevice::ReadOnly)) {
     MessageBox::warning(this, tr("Load Layout"), tr("Cannot open '%1' for reading.").arg(path));
     return;
   }
+  QDomDocument doc;
+  const QDomDocument::ParseResult parse_result = doc.setContent(&file);
+  if (!parse_result) {
+    file.close();
+    MessageBox::warning(
+        this, tr("Load Layout"),
+        tr("'%1' is not a valid PJ4 layout: %2 (line %3, col %4)")
+            .arg(path, parse_result.errorMessage)
+            .arg(parse_result.errorLine)
+            .arg(parse_result.errorColumn));
+    return;
+  }
   file.close();
+
+  // Forward-compat schema check. pj4_version is written by xmlSaveState
+  // as an integer string; if we encounter a layout from a newer PJ4
+  // that introduced incompatible schema changes, warn but proceed —
+  // unknown elements are silently ignored downstream anyway. We never
+  // hard-fail on this; the user can always re-save under the current
+  // schema.
+  const QDomElement root = doc.documentElement();
+  bool version_ok = false;
+  const int version = root.attribute(QStringLiteral("pj4_version"), QStringLiteral("0")).toInt(&version_ok);
+  if (version_ok && version > kLayoutSchemaVersion) {
+    emitDiagnostic(
+        DiagnosticLevel::kWarning, "Layout", "schema-newer",
+        tr("Layout '%1' was saved by a newer PJ4 (pj4_version=%2 > %3); loading best-effort.")
+            .arg(QFileInfo(path).fileName())
+            .arg(version)
+            .arg(kLayoutSchemaVersion));
+  }
+
+  // 2. Source-bound layouts may reload their original file; generic layouts
+  // (and source-bound ones whose file is missing or where the user opts out)
+  // bind straight to the currently-loaded data. The binding attribute records
+  // the save-time intent; this is the load-time override.
+  const QString binding = root.attribute(QStringLiteral("binding"), QStringLiteral("source"));
+  const QDir layout_dir(QFileInfo(path).absoluteDir());
+  const LayoutXml::DataSourceRef replay = LayoutXml::extractDataSource(doc, layout_dir);
+  if (binding != QStringLiteral("generic") && !replay.resolved_path.isEmpty()) {
+    const auto current_source = session_->sessionManager().lastLoadedSource();
+    const bool same_source_loaded =
+        current_source.has_value() && LayoutXml::isSamePath(current_source->path, replay.resolved_path);
+    if (same_source_loaded) {
+      // The referenced file is already loaded; nothing to reload.
+    } else if (!QFileInfo::exists(replay.resolved_path)) {
+      emitDiagnostic(
+          DiagnosticLevel::kWarning, "Layout", "data-source-missing",
+          tr("Layout's data source '%1' does not exist on disk; applying to current data.").arg(replay.resolved_path));
+    } else {
+      QMessageBox box(this);
+      box.setIcon(QMessageBox::Question);
+      box.setWindowTitle(tr("Load Layout"));
+      box.setText(tr("This layout was saved with data source:\n  %1\n\nReload it, or apply the layout to the "
+                     "currently loaded data?")
+                      .arg(replay.resolved_path));
+      QPushButton* reload_btn = box.addButton(tr("Reload original"), QMessageBox::AcceptRole);
+      QPushButton* current_btn = box.addButton(tr("Use current data"), QMessageBox::AcceptRole);
+      QPushButton* cancel_btn = box.addButton(tr("Cancel"), QMessageBox::RejectRole);
+      box.setDefaultButton(reload_btn);
+      box.exec();
+      if (box.clickedButton() == cancel_btn) {
+        return;
+      }
+      if (box.clickedButton() == reload_btn) {
+        LoadHints hints{
+            .expected_plugin_id = replay.plugin_id,
+            .preset_config_json = replay.plugin_config_json,
+            .skip_dialog = !replay.plugin_id.isEmpty() && !replay.plugin_config_json.isEmpty(),
+        };
+        // FileLoader shows its own error dialog on failure; fall through and
+        // let the unresolved-curve handling below catch an empty load.
+        file_loader_->loadFile(replay.resolved_path, this, hints);
+      }
+    }
+  }
+
+  // 3. Pick the target dataset and rebind every curve's stable topic+field
+  // path to that dataset's concrete keys. A layout built on one recording
+  // thus reuses on a similar one (same topics/fields). Paths the dataset
+  // can't provide are surfaced via the missing-curve prompt.
+  const auto datasets = session_->catalogModel().datasets();
+  if (datasets.empty()) {
+    MessageBox::warning(
+        this, tr("Load Layout"), tr("No data is loaded. Open a data source before applying this layout."));
+    return;
+  }
+  const std::optional<DatasetId> target = chooseActiveDataset(datasets);
+  if (!target.has_value()) {
+    return;  // user cancelled the dataset chooser
+  }
+  const DatasetId target_id = *target;
+  const QList<LayoutXml::SeriesPath> unresolved =
+      LayoutXml::rebindCurveKeys(doc, [this, target_id](const LayoutXml::SeriesPath& p) -> std::optional<QString> {
+        const auto descriptor = session_->catalogModel().descriptorForPath(target_id, p.topic, p.field);
+        return descriptor.has_value() ? std::optional<QString>(descriptor->name) : std::nullopt;
+      });
+  if (!unresolved.isEmpty()) {
+    QStringList shown;
+    shown.reserve(unresolved.size());
+    for (const LayoutXml::SeriesPath& sp : unresolved) {
+      shown.push_back(sp.display());
+    }
+    switch (promptMissingCurves(shown)) {
+      case MissingCurveChoice::kCancel:
+        return;
+      case MissingCurveChoice::kRemove:
+        LayoutXml::stripUnresolvedCurves(doc);
+        break;
+    }
+  }
+
+  // 4. Apply. If step 2 already reloaded a data source AND this fails,
+  // we leave the world half-mutated: the new data is loaded but the
+  // user's plots/panels never came back. Rolling back a synchronous
+  // ingest is not currently feasible (FileLoader has no "unload" API
+  // and the DataEngine doesn't support transactional commits). The
+  // warning is the best signal we can offer.
+  if (!xmlLoadState(doc)) {
+    MessageBox::warning(
+        this, tr("Load Layout"),
+        tr("Layout was parsed but could not be applied. If a data source was reloaded, it is still loaded."));
+    return;
+  }
+
+  // 4a. Restore curve-list content state (filters + show_topics/show_values toggles).
+  ui_->curveListPanel->restoreListState(doc.documentElement().firstChildElement(QStringLiteral("curve_list_state")));
+
+  // 4b. Restore right-panel state.
+  restoreRightPanelState(doc.documentElement().firstChildElement(QStringLiteral("right_panel_state")));
+
+  // 4c. Restore LeftPanel Sources tab + streaming controls.
+  ui_->leftPanel->restoreSourcesState(doc.documentElement().firstChildElement(QStringLiteral("left_panel_state")));
+
+  // 4d. Restore chrome state (panel visibilities + splitter sizes).
+  restoreChromeState(doc.documentElement().firstChildElement(QStringLiteral("chrome_state")));
+
+  // 5. Recent files + diagnostic
   recordRecentLayout(path);
   emitDiagnostic(DiagnosticLevel::kInfo, "Layout", "loaded", tr("Loaded layout: %1").arg(QFileInfo(path).fileName()));
 }
 
-void MainWindow::saveLayoutToPath(const QString& path) {
-  // Stub: write a placeholder JSON document. Same future-shape note as
-  // loadLayoutFromPath — when real state arrives, this gains a body.
-  QFile file(path);
-  if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+void MainWindow::saveLayoutToPath(const QString& path, bool include_data_source) {
+  QDomDocument doc = xmlSaveState();
+  // Record the binding intent so load knows whether to reload the original
+  // file (source-bound) or adopt the currently-loaded dataset (generic). The
+  // data-source element below is only embedded for source-bound layouts.
+  doc.documentElement().setAttribute(
+      QStringLiteral("binding"), include_data_source ? QStringLiteral("source") : QStringLiteral("generic"));
+  if (include_data_source) {
+    const QDir layout_dir(QFileInfo(path).absoluteDir());
+    QDomElement ds = appendDataSourceElement(doc, layout_dir);
+    if (!ds.isNull()) {
+      doc.documentElement().appendChild(ds);
+    }
+  }
+  // Always save right-panel state — pure UI chrome, no privacy cost,
+  // not gated by Save Data Source.
+  doc.documentElement().appendChild(saveRightPanelState(doc));
+  // Always save the remaining widget state — pure UI chrome, not gated
+  // by Save Data Source.
+  doc.documentElement().appendChild(ui_->leftPanel->saveSourcesState(doc));
+  doc.documentElement().appendChild(ui_->curveListPanel->saveListState(doc));
+  doc.documentElement().appendChild(saveChromeState(doc));
+  // QSaveFile gives us write-temp + rename atomicity: a partial write
+  // (disk full, signal, broken NFS) leaves the user's prior layout
+  // untouched. commit() does the rename; cancelWriting() abandons the
+  // tempfile. A QFile::Truncate path would have destroyed prior state
+  // before completing the write.
+  QSaveFile file(path);
+  if (!file.open(QIODevice::WriteOnly)) {
     MessageBox::warning(this, tr("Save Layout"), tr("Cannot open '%1' for writing.").arg(path));
     return;
   }
-  file.write("{}\n");
-  file.close();
+  const QByteArray bytes = doc.toByteArray(2);
+  if (file.write(bytes) != bytes.size()) {
+    const QString err = file.errorString();
+    file.cancelWriting();
+    MessageBox::warning(this, tr("Save Layout"), tr("Failed to write layout to '%1': %2").arg(path, err));
+    return;
+  }
+  if (!file.commit()) {
+    MessageBox::warning(
+        this, tr("Save Layout"), tr("Failed to finalize layout '%1': %2").arg(path, file.errorString()));
+    return;
+  }
   recordRecentLayout(path);
   emitDiagnostic(DiagnosticLevel::kInfo, "Layout", "saved", tr("Saved layout: %1").arg(QFileInfo(path).fileName()));
 }
@@ -1478,6 +1718,22 @@ void MainWindow::onUndoableChange() {
   pushUndoState();
 }
 
+void MainWindow::rebindToCurrentSession(QDomDocument& doc) {
+  const auto datasets = session_->catalogModel().datasets();
+  // Unresolved paths are intentionally ignored here: undo/redo restores
+  // silently (no missing-curve prompt), and a curve whose data is gone is
+  // simply dropped on restore.
+  (void)LayoutXml::rebindCurveKeys(doc, [this, &datasets](const LayoutXml::SeriesPath& p) -> std::optional<QString> {
+    for (const auto& [id, name] : datasets) {
+      (void)name;
+      if (const auto descriptor = session_->catalogModel().descriptorForPath(id, p.topic, p.field)) {
+        return descriptor->name;
+      }
+    }
+    return std::nullopt;
+  });
+}
+
 void MainWindow::onUndo() {
   if (undo_states_.size() <= 1) {
     return;
@@ -1487,6 +1743,7 @@ void MainWindow::onUndo() {
   undo_states_.pop_back();
   QDomDocument doc;
   doc.setContent(undo_states_.back());
+  rebindToCurrentSession(doc);
   const bool loaded = [&] {
     QScopedValueRollback guard(applying_state_, true);
     return xmlLoadState(doc);
@@ -1508,6 +1765,7 @@ void MainWindow::onRedo() {
   redo_states_.pop_back();
   QDomDocument doc;
   doc.setContent(undo_states_.back());
+  rebindToCurrentSession(doc);
   const bool loaded = [&] {
     QScopedValueRollback guard(applying_state_, true);
     return xmlLoadState(doc);
@@ -1520,6 +1778,327 @@ void MainWindow::onRedo() {
   updateUndoRedoActions();
 }
 
+QDomElement MainWindow::appendDataSourceElement(QDomDocument& doc, const QDir& layout_dir) const {
+  const auto src = session_->sessionManager().lastLoadedSource();
+  if (!src.has_value()) {
+    return QDomElement();
+  }
+  QDomElement wrapper = doc.createElement(QStringLiteral("previouslyLoaded_Datafiles"));
+  QDomElement file_info = doc.createElement(QStringLiteral("fileInfo"));
+
+  const QFileInfo info(src->path);
+  const QString abs = info.absoluteFilePath();
+  const QString rel = layout_dir.relativeFilePath(abs);
+  // Prefer the relative form when the data lives at or beneath the layout
+  // dir; fall back to absolute when it escapes. This diverges from PJ3,
+  // which always stores relative — PJ4 avoids brittle ../.. paths so that
+  // moving a layout file doesn't silently break the data reference.
+  // A relative path is a "subpath" only when Qt's relativeFilePath did
+  // NOT emit a "../" prefix or the literal ".." path. The earlier check
+  // (`!rel.startsWith("..")`) would misclassify legitimate filenames
+  // like "..foo" or "..bar/data.csv" as escaping the dir.
+  const bool is_subpath = rel != QStringLiteral("..") && !rel.startsWith(QStringLiteral("../"));
+  file_info.setAttribute(QStringLiteral("filename"), is_subpath ? rel : abs);
+  file_info.setAttribute(QStringLiteral("prefix"), src->prefix);
+
+  // Emit the plugin sub-element whenever the plugin id is known. An
+  // empty saveConfig payload is legitimate (some plugins have no
+  // user-tunable state) and must NOT cause us to skip — otherwise
+  // those plugins would re-prompt on every layout reload. Empty
+  // plugin_id means the loader didn't capture a plugin (legacy path
+  // or saveConfig failure); only that case skips the child.
+  if (!src->plugin_id.isEmpty()) {
+    QDomElement plugin = doc.createElement(QStringLiteral("plugin"));
+    plugin.setAttribute(QStringLiteral("ID"), src->plugin_id);
+    // CDATA so the JSON survives round-tripping without XML escape mangling.
+    // appendJsonAsCdata splits across multiple CDATA sections when the JSON
+    // contains a literal "]]>" sequence (otherwise it'd terminate the
+    // CDATA early and corrupt the layout file).
+    LayoutXml::appendJsonAsCdata(doc, plugin, src->plugin_config_json);
+    file_info.appendChild(plugin);
+  }
+
+  wrapper.appendChild(file_info);
+  return wrapper;
+}
+
+QDomElement MainWindow::saveRightPanelState(QDomDocument& doc) const {
+  QDomElement element = doc.createElement(QStringLiteral("right_panel_state"));
+
+  if (ui_->localToolbarWidget != nullptr) {
+    element.setAttribute(
+        QStringLiteral("visible"),
+        ui_->localToolbarWidget->isVisible() ? QStringLiteral("true") : QStringLiteral("false"));
+  }
+
+  // Curve Width: the radio's checkedId is a loop index (0..3); map it
+  // back to the canonical double via kWidthButtonSpecs so we encode the
+  // value (rebuild-stable) rather than the index (depends on button
+  // declaration order).
+  if (width_button_group_ != nullptr) {
+    const int id = width_button_group_->checkedId();
+    if (id >= 0 && id < static_cast<int>(kWidthButtonSpecs.size())) {
+      element.setAttribute(QStringLiteral("width"), QString::number(kWidthButtonSpecs[id].second, 'g'));
+    }
+  }
+
+  // Curve Style: the radio's checkedId IS the CurveStyle enum value
+  // (assigned at button-group construction). Stable across rebuilds.
+  if (style_button_group_ != nullptr) {
+    const int id = style_button_group_->checkedId();
+    if (id >= 0) {
+      element.setAttribute(QStringLiteral("style"), QString::number(id));
+    }
+  }
+
+  if (ui_->rightToolbarSplitter != nullptr) {
+    QStringList parts;
+    const QList<int> sizes = ui_->rightToolbarSplitter->sizes();
+    parts.reserve(sizes.size());
+    for (int s : sizes) {
+      parts.push_back(QString::number(s));
+    }
+    element.setAttribute(QStringLiteral("splitter_sizes"), parts.join(QLatin1Char(',')));
+  }
+
+  return element;
+}
+
+void MainWindow::applyPanelVisibility(QWidget* target, bool wanted) {
+  if (target == nullptr || target->isVisible() == wanted) {
+    return;
+  }
+  const auto toggles = panelToggles(ui_);
+  for (const PanelToggle& t : toggles) {
+    if (t.target != target) {
+      continue;
+    }
+    t.target->setVisible(wanted);
+    const QString icon = QString::fromLatin1(wanted ? t.icon_path_on : t.icon_path_off);
+    t.button->setProperty("iconPath", icon);
+    t.button->setIcon(LoadSvg(icon, theme_->currentTheme()));
+    return;
+  }
+}
+
+void MainWindow::restoreRightPanelState(const QDomElement& element) {
+  if (element.isNull() || element.tagName() != QStringLiteral("right_panel_state")) {
+    return;
+  }
+
+  // Visibility: re-create the side-effects of a button click (toggle
+  // target + swap icon) without writing to QSettings. Diff-against-
+  // current avoids needless flips.
+  if (element.hasAttribute(QStringLiteral("visible"))) {
+    const bool wanted = element.attribute(QStringLiteral("visible")) == QStringLiteral("true");
+    applyPanelVisibility(ui_->localToolbarWidget, wanted);
+  }
+
+  // Curve Width: look up the button whose canonical value fuzzy-matches
+  // the layout's stored value. Block group signals so the idClicked
+  // lambda doesn't rewrite QSettings.
+  if (element.hasAttribute(QStringLiteral("width")) && width_button_group_ != nullptr) {
+    bool ok = false;
+    const double wanted = element.attribute(QStringLiteral("width")).toDouble(&ok);
+    if (ok) {
+      for (int i = 0; i < static_cast<int>(kWidthButtonSpecs.size()); ++i) {
+        if (qFuzzyCompare(kWidthButtonSpecs[i].second, wanted)) {
+          if (auto* btn = width_button_group_->button(i)) {
+            const QSignalBlocker blocker(width_button_group_);
+            btn->setChecked(true);
+          }
+          break;
+        }
+      }
+    }
+  }
+
+  // Curve Style: checkedId is the CurveStyle enum value; pass through.
+  // Same QSettings-suppression via QSignalBlocker.
+  if (element.hasAttribute(QStringLiteral("style")) && style_button_group_ != nullptr) {
+    bool ok = false;
+    const int wanted = element.attribute(QStringLiteral("style")).toInt(&ok);
+    if (ok) {
+      if (auto* btn = style_button_group_->button(wanted)) {
+        const QSignalBlocker blocker(style_button_group_);
+        btn->setChecked(true);
+      }
+    }
+  }
+
+  // Splitter sizes: only apply when the parsed list length matches the
+  // splitter's current widget count. A mismatch means the splitter shape
+  // changed across PJ4 versions; layout silently skips this piece.
+  if (element.hasAttribute(QStringLiteral("splitter_sizes")) && ui_->rightToolbarSplitter != nullptr) {
+    const QStringList parts =
+        element.attribute(QStringLiteral("splitter_sizes")).split(QLatin1Char(','), Qt::SkipEmptyParts);
+    if (parts.size() == ui_->rightToolbarSplitter->count()) {
+      QList<int> sizes;
+      sizes.reserve(parts.size());
+      bool all_ok = true;
+      for (const QString& p : parts) {
+        bool ok = false;
+        const int v = p.toInt(&ok);
+        if (!ok) {
+          all_ok = false;
+          break;
+        }
+        sizes.push_back(v);
+      }
+      if (all_ok) {
+        ui_->rightToolbarSplitter->setSizes(sizes);
+      }
+    }
+  }
+}
+
+QDomElement MainWindow::saveChromeState(QDomDocument& doc) const {
+  QDomElement element = doc.createElement(QStringLiteral("chrome_state"));
+
+  if (ui_->leftColumn != nullptr) {
+    element.setAttribute(
+        QStringLiteral("left_visible"),
+        ui_->leftColumn->isVisible() ? QStringLiteral("true") : QStringLiteral("false"));
+  }
+  if (ui_->timelineStrip != nullptr) {
+    element.setAttribute(
+        QStringLiteral("bottom_visible"),
+        ui_->timelineStrip->isVisible() ? QStringLiteral("true") : QStringLiteral("false"));
+  }
+
+  const auto join_sizes = [](QSplitter* splitter) {
+    QStringList parts;
+    const QList<int> sizes = splitter->sizes();
+    parts.reserve(sizes.size());
+    for (int s : sizes) {
+      parts.push_back(QString::number(s));
+    }
+    return parts.join(QLatin1Char(','));
+  };
+
+  if (ui_->mainSplitter != nullptr) {
+    element.setAttribute(QStringLiteral("main_splitter_sizes"), join_sizes(ui_->mainSplitter));
+  }
+  if (ui_->timelineSplitter != nullptr) {
+    element.setAttribute(QStringLiteral("timeline_splitter_sizes"), join_sizes(ui_->timelineSplitter));
+  }
+
+  return element;
+}
+
+void MainWindow::restoreChromeState(const QDomElement& element) {
+  if (element.isNull() || element.tagName() != QStringLiteral("chrome_state")) {
+    return;
+  }
+
+  if (element.hasAttribute(QStringLiteral("left_visible"))) {
+    const bool wanted = element.attribute(QStringLiteral("left_visible")) == QStringLiteral("true");
+    applyPanelVisibility(ui_->leftColumn, wanted);
+  }
+  if (element.hasAttribute(QStringLiteral("bottom_visible"))) {
+    const bool wanted = element.attribute(QStringLiteral("bottom_visible")) == QStringLiteral("true");
+    applyPanelVisibility(ui_->timelineStrip, wanted);
+    // Replay the bottom-panel splitter clamp the click handler does so
+    // the user can't drag the splitter handle to re-introduce empty
+    // space below the playback bar when the strip is hidden. timeline_
+    // splitter_sizes (if present) is applied below and supersedes this.
+    if (!wanted && ui_->bottomPanel != nullptr && ui_->timelineWidget != nullptr) {
+      ui_->bottomPanel->setMaximumHeight(ui_->timelineWidget->minimumHeight());
+    } else if (wanted && ui_->bottomPanel != nullptr) {
+      ui_->bottomPanel->setMaximumHeight(QWIDGETSIZE_MAX);
+    }
+  }
+
+  // Splitter sizes: only apply when parsed length matches the splitter's
+  // widget count. Mismatch -> silent no-op.
+  const auto apply_splitter = [](QSplitter* splitter, const QString& raw) {
+    if (splitter == nullptr) {
+      return;
+    }
+    const QStringList parts = raw.split(QLatin1Char(','), Qt::SkipEmptyParts);
+    if (parts.size() != splitter->count()) {
+      return;
+    }
+    QList<int> sizes;
+    sizes.reserve(parts.size());
+    for (const QString& p : parts) {
+      bool ok = false;
+      const int v = p.toInt(&ok);
+      if (!ok) {
+        return;
+      }
+      sizes.push_back(v);
+    }
+    splitter->setSizes(sizes);
+  };
+
+  if (element.hasAttribute(QStringLiteral("main_splitter_sizes"))) {
+    apply_splitter(ui_->mainSplitter, element.attribute(QStringLiteral("main_splitter_sizes")));
+  }
+  if (element.hasAttribute(QStringLiteral("timeline_splitter_sizes"))) {
+    apply_splitter(ui_->timelineSplitter, element.attribute(QStringLiteral("timeline_splitter_sizes")));
+  }
+}
+
+std::optional<DatasetId> MainWindow::chooseActiveDataset(const std::vector<std::pair<DatasetId, QString>>& datasets) {
+  if (datasets.size() == 1) {
+    return datasets.front().first;
+  }
+  QStringList names;
+  names.reserve(static_cast<int>(datasets.size()));
+  for (const auto& [id, name] : datasets) {
+    (void)id;
+    names.push_back(name);
+  }
+  // Default to the most-recently-loaded dataset (datasets are load-ordered).
+  const int default_index = static_cast<int>(datasets.size()) - 1;
+  bool ok = false;
+  const QString chosen = QInputDialog::getItem(
+      this, tr("Apply Layout"), tr("Apply this layout to which dataset?"), names, default_index,
+      /*editable=*/false, &ok);
+  if (!ok) {
+    return std::nullopt;
+  }
+  for (const auto& [id, name] : datasets) {
+    if (name == chosen) {
+      return id;
+    }
+  }
+  return std::nullopt;
+}
+
+MainWindow::MissingCurveChoice MainWindow::promptMissingCurves(const QStringList& names) {
+  static constexpr int kMaxShown = 10;
+  QString body = tr("The layout references %n curve(s) not present in the current data:", "", names.size());
+  body += QStringLiteral("\n\n");
+  const int shown = std::min<int>(names.size(), kMaxShown);
+  for (int i = 0; i < shown; ++i) {
+    body += QStringLiteral("  • ") + names[i] + QStringLiteral("\n");
+  }
+  if (names.size() > kMaxShown) {
+    body += tr("  … and %n more\n", "", names.size() - kMaxShown);
+  }
+  body += QStringLiteral("\n");
+  body += tr("Choose how to handle them:");
+
+  QMessageBox box(this);
+  box.setIcon(QMessageBox::Question);
+  box.setWindowTitle(tr("Missing curves"));
+  box.setText(body);
+  QPushButton* remove_btn = box.addButton(tr("Remove from plots"), QMessageBox::AcceptRole);
+  QPushButton* cancel_btn = box.addButton(tr("Cancel"), QMessageBox::RejectRole);
+  // Default to Cancel — Remove is destructive (drops all missing curves
+  // from every plot in the layout). Don't let an accidental Enter wipe
+  // state on a layout the user just opened.
+  box.setDefaultButton(cancel_btn);
+  box.exec();
+
+  if (box.clickedButton() == remove_btn) {
+    return MissingCurveChoice::kRemove;
+  }
+  return MissingCurveChoice::kCancel;
+}
+
 QDomDocument MainWindow::xmlSaveState() const {
   QDomDocument doc;
   doc.appendChild(
@@ -1527,7 +2106,7 @@ QDomDocument MainWindow::xmlSaveState() const {
 
   QDomElement root = doc.createElement(QStringLiteral("root"));
   root.setAttribute(QStringLiteral("format"), QStringLiteral("PlotJuggler"));
-  root.setAttribute(QStringLiteral("pj4_version"), QStringLiteral("1"));
+  root.setAttribute(QStringLiteral("pj4_version"), QString::number(kLayoutSchemaVersion));
   doc.appendChild(root);
 
   root.appendChild(ui_->tabbedPlotWidget->xmlSaveState(doc));
@@ -2016,16 +2595,10 @@ void MainWindow::buildLocalToolbar() {
   // array so the click slot below can call applyActivePlotWidth.
   width_button_group_ = new QButtonGroup(this);
   width_button_group_->setExclusive(true);
-  const std::array<std::pair<const char*, double>, 4> width_button_specs{{
-      {"globalWidth1_0", 1.0},
-      {"globalWidth1_5", 1.5},
-      {"globalWidth2_0", 2.0},
-      {"globalWidth3_0", 3.0},
-  }};
   const int initial_width_id = QSettings().value(QStringLiteral("MainWindow.curveWidth"), 0).toInt();
-  for (int i = 0; i < static_cast<int>(width_button_specs.size()); ++i) {
+  for (int i = 0; i < static_cast<int>(kWidthButtonSpecs.size()); ++i) {
     auto* btn =
-        curve_width_header_->parentWidget()->findChild<QToolButton*>(QString::fromLatin1(width_button_specs[i].first));
+        curve_width_header_->parentWidget()->findChild<QToolButton*>(QString::fromLatin1(kWidthButtonSpecs[i].first));
     if (btn == nullptr) {
       continue;
     }

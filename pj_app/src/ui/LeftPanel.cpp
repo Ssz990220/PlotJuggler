@@ -2,6 +2,8 @@
 
 #include <QAction>
 #include <QComboBox>
+#include <QDomDocument>
+#include <QDomElement>
 #include <QFileInfo>
 #include <QLayout>
 #include <QMargins>
@@ -144,6 +146,70 @@ void LeftPanel::setStreamingSources(const QStringList& names) {
   const int idx = ui_->comboStreaming->findText(previous);
   if (idx >= 0) {
     ui_->comboStreaming->setCurrentIndex(idx);
+  }
+}
+
+QDomElement LeftPanel::saveSourcesState(QDomDocument& doc) const {
+  QDomElement element = doc.createElement(QStringLiteral("left_panel_state"));
+
+  // sources_tab: report which of the three autoExclusive tabs is checked.
+  if (ui_->tabFile->isChecked()) {
+    element.setAttribute(QStringLiteral("sources_tab"), QStringLiteral("file"));
+  } else if (ui_->tabStream->isChecked()) {
+    element.setAttribute(QStringLiteral("sources_tab"), QStringLiteral("stream"));
+  } else if (ui_->tabCloud->isChecked()) {
+    element.setAttribute(QStringLiteral("sources_tab"), QStringLiteral("cloud"));
+  }
+
+  element.setAttribute(QStringLiteral("streaming_source"), ui_->comboStreaming->currentText());
+  element.setAttribute(QStringLiteral("streaming_buffer"), QString::number(ui_->streamingSpinBox->value()));
+  return element;
+}
+
+void LeftPanel::restoreSourcesState(const QDomElement& element) {
+  if (element.isNull() || element.tagName() != QStringLiteral("left_panel_state")) {
+    return;
+  }
+
+  // sources_tab: setChecked(true) propagates via autoExclusive and the
+  // connected lambdas (which switch the inputStack page). We deliberately
+  // do NOT block these signals — switching the visible page is the
+  // intended side-effect of selecting a tab.
+  if (element.hasAttribute(QStringLiteral("sources_tab"))) {
+    const QString tab = element.attribute(QStringLiteral("sources_tab"));
+    if (tab == QStringLiteral("file")) {
+      ui_->tabFile->setChecked(true);
+    } else if (tab == QStringLiteral("stream")) {
+      ui_->tabStream->setChecked(true);
+    } else if (tab == QStringLiteral("cloud")) {
+      ui_->tabCloud->setChecked(true);
+    }
+    // Unknown tab string -> silent no-op.
+  }
+
+  // streaming_source: pick the combo entry by display text. -1 from
+  // findText means the source isn't currently in the combo (plugin
+  // not installed) -> silent no-op. Block signals so we don't emit
+  // streamingSourceChanged during restore.
+  if (element.hasAttribute(QStringLiteral("streaming_source"))) {
+    const QString src = element.attribute(QStringLiteral("streaming_source"));
+    const int idx = ui_->comboStreaming->findText(src);
+    if (idx >= 0) {
+      const QSignalBlocker blocker(ui_->comboStreaming);
+      ui_->comboStreaming->setCurrentIndex(idx);
+    }
+  }
+
+  // streaming_buffer: setValue triggers the connected lambda which
+  // writes QSettings AND emits streamingBufferChanged. Block signals
+  // to suppress both.
+  if (element.hasAttribute(QStringLiteral("streaming_buffer"))) {
+    bool ok = false;
+    const int seconds = element.attribute(QStringLiteral("streaming_buffer")).toInt(&ok);
+    if (ok) {
+      const QSignalBlocker blocker(ui_->streamingSpinBox);
+      ui_->streamingSpinBox->setValue(seconds);
+    }
   }
 }
 

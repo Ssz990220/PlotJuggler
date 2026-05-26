@@ -1,8 +1,10 @@
 #pragma once
 
 #include <QObject>
+#include <QString>
 #include <QVector>
 #include <memory>
+#include <optional>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -44,6 +46,21 @@ class SessionManager : public QObject {
   void registerObjectTopicParser(ObjectTopicId id, std::unique_ptr<MessageParserHandle> parser);
   [[nodiscard]] MessageParserPluginBase* parserForObjectTopic(ObjectTopicId id) const;
 
+  struct LoadedSource {
+    QString path;
+    QString prefix;
+    QString plugin_id;           // Empty when the loader didn't record a plugin (e.g. legacy paths).
+    QString plugin_config_json;  // Plugin's saveConfig() JSON at load time.
+  };
+
+  [[nodiscard]] std::optional<LoadedSource> lastLoadedSource() const noexcept {
+    return last_loaded_source_;
+  }
+  void recordLoadedSource(QString path, QString prefix, QString plugin_id = {}, QString plugin_config_json = {});
+  void clearLoadedSource() noexcept {
+    last_loaded_source_.reset();
+  }
+
  signals:
   void topicsCommitted(QVector<PJ::TopicId> ids);
 
@@ -51,6 +68,7 @@ class SessionManager : public QObject {
   DataEngine data_engine_;
   ObjectStore object_store_;
   std::unordered_map<uint32_t, std::unique_ptr<MessageParserHandle>> object_topic_parsers_;
+  std::optional<LoadedSource> last_loaded_source_;
 };
 
 }  // namespace PJ

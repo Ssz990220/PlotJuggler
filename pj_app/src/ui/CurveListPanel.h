@@ -1,5 +1,8 @@
 #pragma once
 
+#include <QCheckBox>
+#include <QDomDocument>
+#include <QDomElement>
 #include <QStringList>
 #include <QWidget>
 #include <vector>
@@ -30,6 +33,16 @@ class CurveListPanel : public QWidget {
   void setCatalog(CatalogModel* catalog);
 
   void refreshValues(double tracker_time);
+
+  // Builds <curve_list_state show_topics="..." show_values="..."
+  // datasets_filter="..." custom_filter="..."/> — filter text plus
+  // display-mode toggles.
+  [[nodiscard]] QDomElement saveListState(QDomDocument& doc) const;
+
+  // Applies <curve_list_state> attributes individually; missing or
+  // mismatched values are silently ignored. Sets applying_state_
+  // around the toggle calls so QSettings stays untouched.
+  void restoreListState(const QDomElement& element);
 
  signals:
   void createCustomSeriesRequested();
@@ -81,6 +94,16 @@ class CurveListPanel : public QWidget {
   // leading icons on theme switch.
   QPushButton* clear_all_button_ = nullptr;
   QPushButton* delete_custom_button_ = nullptr;
+  // Show Values and Preserve Topic Name checkboxes live inside the
+  // datasets popup menu. Held as members so restoreListState can flip
+  // them without rummaging through the menu's children.
+  QCheckBox* show_values_check_ = nullptr;
+  QCheckBox* preserve_topic_name_check_ = nullptr;
+
+  // Set to true around restoreListState so the Preserve-Topic-Name slot
+  // suppresses its QSettings write. Layout-driven changes mutate the UI
+  // but must not mutate the global per-user default.
+  bool applying_state_ = false;
   // Chrome metrics from MainWindow::chromeMetricsChanged.
   ChromeMetrics chrome_metrics_;
 };
