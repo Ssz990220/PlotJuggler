@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -166,6 +167,9 @@ class DataSourceRuntimeHost {
   DatasetId dataset_id_;
   DatastoreSourceWriteHost source_write_host_;
   DatastoreSourceObjectWriteHost source_object_write_host_;
+  // Shared by lazy ObjectStore closures. Some source plugins wrap readers
+  // whose deferred message fetch API is not safe to call concurrently.
+  std::shared_ptr<std::mutex> lazy_fetch_mutex_;
 
   std::string last_error_;
   std::atomic<bool> stop_requested_{false};

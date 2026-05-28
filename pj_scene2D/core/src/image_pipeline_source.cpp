@@ -19,7 +19,7 @@ namespace PJ {
 
 namespace {
 
-// Once-per-topic/error warning sink. Core stays Qt-free per CMakeLists;
+// Once-per-source/error warning sink. Core stays Qt-free per CMakeLists;
 // decoder/parser failure surfaces must reach the operator without requiring
 // env-var gating, but playback can revisit the same failing frame many times.
 template <typename... Args>
@@ -37,13 +37,21 @@ void warnOnce(const std::string& key, fmt::format_string<Args...> fmt_str, Args&
   fmt::print(stderr, "\n");
 }
 
-[[nodiscard]] std::string warningKey(std::string_view topic_name, std::string_view reason) {
+[[nodiscard]] std::string warningKey(std::string_view source_key, std::string_view reason) {
   std::string key;
-  key.reserve(topic_name.size() + reason.size() + 1);
-  key.append(topic_name);
+  key.reserve(source_key.size() + reason.size() + 1);
+  key.append(source_key);
   key.push_back(':');
   key.append(reason);
   return key;
+}
+
+std::string sourceLabel(const ObjectStore* store, ObjectTopicId topic) {
+  if (store == nullptr) {
+    return fmt::format("topic_id={}", topic.id);
+  }
+  const auto& descriptor = store->descriptor(topic);
+  return fmt::format("dataset={} topic='{}' topic_id={}", descriptor.dataset_id, descriptor.topic_name, topic.id);
 }
 
 struct RawEncodingInfo {
@@ -147,13 +155,13 @@ std::shared_ptr<std::vector<uint8_t>> imageDataBytes(const sdk::Image& img, std:
 }  // namespace
 
 ImagePipelineSource::ImagePipelineSource(ObjectStore* store, ObjectTopicId topic, MessageParserPluginBase* parser)
-    : store_(store), topic_(topic), parser_(parser) {
+    : store_(store), topic_(topic), source_key_(sourceLabel(store, topic)), parser_(parser) {
   worker_ = std::thread(&ImagePipelineSource::workerLoop, this);
 }
 
 ImagePipelineSource::ImagePipelineSource(
     ObjectStore* store, ObjectTopicId topic, std::unique_ptr<CodecPipeline> pipeline)
-    : store_(store), topic_(topic), pipeline_(std::move(pipeline)) {
+    : store_(store), topic_(topic), source_key_(sourceLabel(store, topic)), pipeline_(std::move(pipeline)) {
   worker_ = std::thread(&ImagePipelineSource::workerLoop, this);
 }
 
@@ -262,8 +270,8 @@ std::optional<DecodedFrame> ImagePipelineSource::decodeAt(int64_t ts_ns) {
   auto entry = store_->at(topic_, *index);
   if (!entry.has_value() || entry->data == nullptr || entry->data->empty()) {
     warnOnce(
-        warningKey(topic_name, "empty-resolved-entry"),
-        "topic={} index={} empty-resolved-entry (viewer will show no frame)", topic_name, *index);
+        warningKey(source_key_, "empty-resolved-entry"),
+        "{} request_ts={} index={} empty-resolved-entry (viewer will show no frame)", source_key_, ts_ns, *index);
     return std::nullopt;
   }
   if (entry->timestamp == last_entry_ts_) {
@@ -278,20 +286,20 @@ std::optional<DecodedFrame> ImagePipelineSource::decodeAt(int64_t ts_ns) {
     };
     auto object_or = parser_->parseObject(entry->timestamp, payload);
     if (!object_or.has_value()) {
-      warnOnce(warningKey(topic_name, "parseObject"), "topic={} parseObject failed: {}", topic_name, object_or.error());
+      warnOnce(warningKey(source_key_, "parseObject"), "{} parseObject failed: {}", source_key_, object_or.error());
       return std::nullopt;
     }
     if (sdk::typeOf(*object_or) != sdk::BuiltinObjectType::kImage) {
       warnOnce(
-          warningKey(topic_name, "wrong-object-kind"), "topic={} parseObject returned wrong object_kind={}", topic_name,
+          warningKey(source_key_, "wrong-object-kind"), "{} parseObject returned wrong object_kind={}", source_key_,
           static_cast<int>(sdk::typeOf(*object_or)));
       return std::nullopt;
     }
     const auto* img = std::any_cast<sdk::Image>(&*object_or);
     if (img == nullptr) {
       warnOnce(
-          warningKey(topic_name, "any-cast-image"), "topic={} any_cast<sdk::Image> failed (parser contract violation)",
-          topic_name);
+          warningKey(source_key_, "any-cast-image"), "{} any_cast<sdk::Image> failed (parser contract violation)",
+          source_key_);
       return std::nullopt;
     }
 
@@ -299,14 +307,14 @@ std::optional<DecodedFrame> ImagePipelineSource::decodeAt(int64_t ts_ns) {
       auto decoded = imageToDecodedFrame(*img, *raw, entry->timestamp);
       if (!decoded.has_value()) {
         warnOnce(
-            warningKey(topic_name, "raw-conversion"), "topic={} raw image conversion failed encoding={} size={}x{}",
-            topic_name, img->encoding, img->width, img->height);
+            warningKey(source_key_, "raw-conversion"), "{} raw image conversion failed encoding={} size={}x{}",
+            source_key_, img->encoding, img->width, img->height);
         return std::nullopt;
       }
       auto normalized = normalize_mono16_.decode(*decoded);
       if (!normalized.has_value()) {
         warnOnce(
-            warningKey(topic_name, "raw-normalization"), "topic={} raw normalization failed: {}", topic_name,
+            warningKey(source_key_, "raw-normalization"), "{} raw normalization failed: {}", source_key_,
             normalized.error());
         return std::nullopt;
       }
@@ -316,8 +324,8 @@ std::optional<DecodedFrame> ImagePipelineSource::decodeAt(int64_t ts_ns) {
 
     if (img->data.empty()) {
       warnOnce(
-          warningKey(topic_name, "empty-canonical-image"), "topic={} canonical image has empty data encoding={}",
-          topic_name, img->encoding);
+          warningKey(source_key_, "empty-canonical-image"), "{} canonical image has empty data encoding={}",
+          source_key_, img->encoding);
       return std::nullopt;
     }
     DecodedFrame staged;
@@ -334,7 +342,7 @@ std::optional<DecodedFrame> ImagePipelineSource::decodeAt(int64_t ts_ns) {
     }
     if (!decoded.has_value()) {
       warnOnce(
-          warningKey(topic_name, "compressed-decode"), "topic={} compressed decode failed encoding={}: {}", topic_name,
+          warningKey(source_key_, "compressed-decode"), "{} compressed decode failed encoding={}: {}", source_key_,
           img->encoding, decoded.error());
       return std::nullopt;
     }
@@ -342,8 +350,8 @@ std::optional<DecodedFrame> ImagePipelineSource::decodeAt(int64_t ts_ns) {
     auto normalized = normalize_mono16_.decode(*decoded);
     if (!normalized.has_value()) {
       warnOnce(
-          warningKey(topic_name, "compressed-normalization"), "topic={} compressed normalization failed: {}",
-          topic_name, normalized.error());
+          warningKey(source_key_, "compressed-normalization"), "{} compressed normalization failed: {}", source_key_,
+          normalized.error());
       return std::nullopt;
     }
     normalized->pts = entry->timestamp;
@@ -352,15 +360,14 @@ std::optional<DecodedFrame> ImagePipelineSource::decodeAt(int64_t ts_ns) {
 
   if (pipeline_ == nullptr) {
     warnOnce(
-        warningKey(topic_name, "no-parser-no-pipeline"),
-        "topic={} no parser and no pipeline - viewer cannot decode this topic", topic_name);
+        warningKey(source_key_, "no-parser-no-pipeline"),
+        "{} no parser and no pipeline - viewer cannot decode this topic", source_key_);
     return std::nullopt;
   }
 
   auto result = pipeline_->decode(entry->data->data(), entry->data->size());
   if (!result.has_value()) {
-    warnOnce(
-        warningKey(topic_name, "pipeline-decode"), "topic={} pipeline decode failed: {}", topic_name, result.error());
+    warnOnce(warningKey(source_key_, "pipeline-decode"), "{} pipeline decode failed: {}", source_key_, result.error());
     return std::nullopt;
   }
   result->pts = entry->timestamp;

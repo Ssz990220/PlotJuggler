@@ -5,6 +5,7 @@
 #include <QLoggingCategory>
 #include <QString>
 #include <functional>
+#include <mutex>
 #include <set>
 #include <utility>
 #include <vector>
@@ -53,16 +54,57 @@ struct FetcherOwner {
   PJ_message_data_fetcher_t fetcher;
 };
 
-std::function<std::vector<uint8_t>()> makeLazyFetchClosure(std::shared_ptr<FetcherOwner> owner) {
-  return [owner = std::move(owner)]() -> std::vector<uint8_t> {
+QString errorMessage(const PJ_error_t& err) {
+  if (err.message[0] == '\0') {
+    return QStringLiteral("<none>");
+  }
+  return QString::fromUtf8(err.message);
+}
+
+struct LazyFetchContext {
+  DatasetId dataset_id = 0;
+  ObjectTopicId object_topic_id{};
+  std::string source_id;
+  std::string topic_name;
+  int64_t timestamp_ns = 0;
+};
+
+std::function<std::vector<uint8_t>()> makeLazyFetchClosure(
+    std::shared_ptr<FetcherOwner> owner, std::shared_ptr<std::mutex> fetch_mutex, LazyFetchContext context) {
+  return [owner = std::move(owner), fetch_mutex = std::move(fetch_mutex),
+          context = std::move(context)]() -> std::vector<uint8_t> {
     PJ_payload_t payload{};
     PJ_error_t err{};
-    if (owner->fetcher.fetchMessageData == nullptr ||
-        !owner->fetcher.fetchMessageData(owner->fetcher.ctx, &payload, &err)) {
+    bool ok = false;
+    if (owner->fetcher.fetchMessageData != nullptr) {
+      if (fetch_mutex != nullptr) {
+        std::lock_guard lock(*fetch_mutex);
+        ok = owner->fetcher.fetchMessageData(owner->fetcher.ctx, &payload, &err);
+      } else {
+        ok = owner->fetcher.fetchMessageData(owner->fetcher.ctx, &payload, &err);
+      }
+    }
+    if (!ok) {
+      qCWarning(lcIngest) << "[lazy-fetch] failed source=" << QString::fromStdString(context.source_id)
+                          << "dataset=" << context.dataset_id << "topic=" << QString::fromStdString(context.topic_name)
+                          << "object_topic_id=" << context.object_topic_id.id << "timestamp_ns=" << context.timestamp_ns
+                          << "error=" << errorMessage(err);
       return {};
     }
     PayloadAnchorGuard payload_anchor_guard{payload.anchor};
     if (payload.data == nullptr && payload.size > 0) {
+      qCWarning(lcIngest) << "[lazy-fetch] null data with nonzero size source="
+                          << QString::fromStdString(context.source_id) << "dataset=" << context.dataset_id
+                          << "topic=" << QString::fromStdString(context.topic_name)
+                          << "object_topic_id=" << context.object_topic_id.id << "timestamp_ns=" << context.timestamp_ns
+                          << "payload_size=" << payload.size;
+      return {};
+    }
+    if (payload.size == 0) {
+      qCWarning(lcIngest) << "[lazy-fetch] empty payload source=" << QString::fromStdString(context.source_id)
+                          << "dataset=" << context.dataset_id << "topic=" << QString::fromStdString(context.topic_name)
+                          << "object_topic_id=" << context.object_topic_id.id
+                          << "timestamp_ns=" << context.timestamp_ns;
       return {};
     }
     return copyPayloadBytes(payload);
@@ -132,7 +174,8 @@ DataSourceRuntimeHost::DataSourceRuntimeHost(
       object_topic_parser_registrar_(std::move(parser_registrar)),
       dataset_id_(dataset_id),
       source_write_host_(engine, source_handle),
-      source_object_write_host_(object_store, dataset_id) {}
+      source_object_write_host_(object_store, dataset_id),
+      lazy_fetch_mutex_(std::make_shared<std::mutex>()) {}
 
 DataSourceRuntimeHost::~DataSourceRuntimeHost() = default;
 
@@ -425,7 +468,15 @@ bool DataSourceRuntimeHost::cbPushMessageV2(
       if (!is_object_topic) {
         return true;
       }
-      auto closure = makeLazyFetchClosure(fetcher_owner);
+      auto closure = makeLazyFetchClosure(
+          fetcher_owner, self->lazy_fetch_mutex_,
+          LazyFetchContext{
+              .dataset_id = self->dataset_id_,
+              .object_topic_id = *binding.object_topic_id,
+              .source_id = self->source_id_,
+              .topic_name = binding.topic_name,
+              .timestamp_ns = timestamp_ns,
+          });
       if (auto status = self->object_store_.pushLazy(*binding.object_topic_id, timestamp_ns, std::move(closure));
           !status) {
         return self->fail(out_error, ("ObjectStore.pushLazy failed: " + status.error()).c_str());
@@ -438,7 +489,14 @@ bool DataSourceRuntimeHost::cbPushMessageV2(
     }
 
     PJ_payload_t payload{};
-    if (!fetcher_owner->fetcher.fetchMessageData(fetcher_owner->fetcher.ctx, &payload, out_error)) {
+    bool fetched = false;
+    if (self->lazy_fetch_mutex_ != nullptr) {
+      std::lock_guard lock(*self->lazy_fetch_mutex_);
+      fetched = fetcher_owner->fetcher.fetchMessageData(fetcher_owner->fetcher.ctx, &payload, out_error);
+    } else {
+      fetched = fetcher_owner->fetcher.fetchMessageData(fetcher_owner->fetcher.ctx, &payload, out_error);
+    }
+    if (!fetched) {
       return false;
     }
 

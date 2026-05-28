@@ -7,6 +7,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <string>
 #include <thread>
 
 #include "pj_datastore/object_store.hpp"
@@ -77,6 +78,7 @@ class ImagePipelineSource : public MediaSource {
   // the constructor returns.
   ObjectStore* store_;
   ObjectTopicId topic_;
+  std::string source_key_;
   MessageParserPluginBase* parser_ = nullptr;
   std::unique_ptr<CodecPipeline> pipeline_;
   JpegCodec jpeg_codec_;
