@@ -27,13 +27,27 @@ Expected<std::unique_ptr<FileVideoSource>> FileVideoSource::open(const std::stri
 void FileVideoSource::setTimestamp(int64_t ts_ns) {
   // Map tracker (epoch) ns → file-relative ns. epoch_anchor_ns_ defaults to 0
   // (legacy file-from-zero), so unanchored video sees ts_ns unchanged.
-  const int64_t file_relative_ns = ts_ns - epoch_anchor_ns_;
+  int64_t file_relative_ns = ts_ns - epoch_anchor_ns_;
+  // Clamp into the clip window when present. Producers that share an MP4
+  // across many clips (LeRobot v3.0) set [clip_start_ns_, clip_end_ns_] so
+  // the tracker cannot seek past the episode's slice in either direction.
+  if (clip_start_ns_.has_value() && file_relative_ns < *clip_start_ns_) {
+    file_relative_ns = *clip_start_ns_;
+  }
+  if (clip_end_ns_.has_value() && file_relative_ns > *clip_end_ns_) {
+    file_relative_ns = *clip_end_ns_;
+  }
   double seconds = static_cast<double>(file_relative_ns) / 1'000'000'000.0;
   backend_->seek(seconds);
 }
 
 void FileVideoSource::setEpochAnchorNs(int64_t anchor_ns) {
   epoch_anchor_ns_ = anchor_ns;
+}
+
+void FileVideoSource::setClipWindowNs(std::optional<int64_t> start_ns, std::optional<int64_t> end_ns) {
+  clip_start_ns_ = start_ns;
+  clip_end_ns_ = end_ns;
 }
 
 std::optional<MediaFrame> FileVideoSource::takeFrame() {

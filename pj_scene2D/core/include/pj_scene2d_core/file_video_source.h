@@ -46,6 +46,13 @@ class FileVideoSource : public MediaSource {
   /// file-relative" — legacy file-from-zero behavior.
   void setEpochAnchorNs(int64_t anchor_ns);
 
+  /// In-file playback window for assets that share their MP4 with other
+  /// clips (e.g. one episode out of a concatenated LeRobot v3.0 video).
+  /// When set, setTimestamp() clamps the file-relative seek position to
+  /// [start_ns, end_ns]. Either bound may be `nullopt` to leave that side
+  /// unclamped. Default (both absent) → unrestricted whole-file playback.
+  void setClipWindowNs(std::optional<int64_t> start_ns, std::optional<int64_t> end_ns);
+
   /// Callbacks fired from takeFrame() (via processEvents) on the main thread.
   void setPositionCallback(VideoBackend::PositionCallback cb);
   void setDurationCallback(VideoBackend::DurationCallback cb);
@@ -63,6 +70,11 @@ class FileVideoSource : public MediaSource {
   // Wall-clock anchor subtracted in setTimestamp() before the backend seek.
   // Zero for unanchored video; producers populate via setEpochAnchorNs().
   int64_t epoch_anchor_ns_ = 0;
+
+  // In-file clip window in ns; absent bounds mean "no clamp on that side".
+  // Used by consumers that share a file across many clips (LeRobot v3.0).
+  std::optional<int64_t> clip_start_ns_;
+  std::optional<int64_t> clip_end_ns_;
 };
 
 }  // namespace PJ

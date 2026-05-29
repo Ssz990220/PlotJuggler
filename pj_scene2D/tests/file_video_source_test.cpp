@@ -74,6 +74,78 @@ TEST_F(FileVideoSourceTest, PauseResume) {
   EXPECT_TRUE(source->isPaused());
 }
 
+TEST_F(FileVideoSourceTest, ClipWindowClampsBelowStart) {
+  // setClipWindowNs(start, end) restricts every seek to the in-file window.
+  // Asking for ts=0 with start=2s must clamp up to 2s, not seek to file PTS 0.
+  auto source_or = FileVideoSource::open(kTestVideo);
+  ASSERT_TRUE(source_or.has_value());
+  auto& source = *source_or;
+
+  // 2s..4s slice — well inside the test asset, which is >4s long.
+  source->setClipWindowNs(2'000'000'000LL, 4'000'000'000LL);
+  source->setTimestamp(0);
+
+  std::optional<MediaFrame> frame;
+  auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+  while ((!frame.has_value() || !frame->base.has_value()) && std::chrono::steady_clock::now() < deadline) {
+    frame = source->takeFrame();
+    if (!frame.has_value() || !frame->base.has_value()) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(16));
+    }
+  }
+  ASSERT_TRUE(frame.has_value()) << "no frame after clip-clamped seek";
+  // Backend may snap to the nearest keyframe behind 2s; allow a small slack.
+  EXPECT_GE(source->position(), 1.5);
+  EXPECT_LE(source->position(), 4.0 + 0.1);
+}
+
+TEST_F(FileVideoSourceTest, ClipWindowClampsAboveEnd) {
+  // Asking for a tracker time well past the clip's end must clamp down to
+  // end, not seek past the playable window.
+  auto source_or = FileVideoSource::open(kTestVideo);
+  ASSERT_TRUE(source_or.has_value());
+  auto& source = *source_or;
+
+  source->setClipWindowNs(2'000'000'000LL, 4'000'000'000LL);
+  source->setTimestamp(10'000'000'000LL);  // 10s — beyond the window
+
+  std::optional<MediaFrame> frame;
+  auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+  while ((!frame.has_value() || !frame->base.has_value()) && std::chrono::steady_clock::now() < deadline) {
+    frame = source->takeFrame();
+    if (!frame.has_value() || !frame->base.has_value()) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(16));
+    }
+  }
+  ASSERT_TRUE(frame.has_value()) << "no frame after clip-clamped seek";
+  // Should sit inside [start, end] window, not at 10s.
+  EXPECT_LE(source->position(), 4.0 + 0.1);
+  EXPECT_GE(source->position(), 2.0 - 0.1);
+}
+
+TEST_F(FileVideoSourceTest, ClipWindowAbsentDoesNotClamp) {
+  // Absent bounds → no clamping; seek behavior identical to legacy path.
+  auto source_or = FileVideoSource::open(kTestVideo);
+  ASSERT_TRUE(source_or.has_value());
+  auto& source = *source_or;
+
+  source->setClipWindowNs(std::nullopt, std::nullopt);
+  source->setTimestamp(1'000'000'000);  // 1 second
+
+  std::optional<MediaFrame> frame;
+  auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+  while ((!frame.has_value() || !frame->base.has_value()) && std::chrono::steady_clock::now() < deadline) {
+    frame = source->takeFrame();
+    if (!frame.has_value() || !frame->base.has_value()) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(16));
+    }
+  }
+  ASSERT_TRUE(frame.has_value());
+  // Without clamping, position lands at or near the requested 1s.
+  EXPECT_GE(source->position(), 0.0);
+  EXPECT_LT(source->position(), source->duration());
+}
+
 TEST_F(FileVideoSourceTest, SetEpochAnchorAppliesOffset) {
   // setEpochAnchorNs maps tracker (epoch) ns → file-relative ns by subtracting
   // the anchor inside setTimestamp. With anchor = T0 and setTimestamp(T0 + N),

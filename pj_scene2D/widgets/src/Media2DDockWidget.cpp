@@ -114,11 +114,17 @@ bool Media2DDockWidget::setImageTopic(
     if (asset->time_origin_ns.has_value()) {
       (*src)->setEpochAnchorNs(*asset->time_origin_ns);
     }
+    // Forward the clip window (if any) so the source clamps every seek to
+    // [start_ns, end_ns]. Set unconditionally — absent bounds disable the
+    // corresponding clamp, matching whole-file playback for single-clip mp4s.
+    (*src)->setClipWindowNs(asset->start_ns, asset->end_ns);
     media_topic_source_ = std::move(*src);
     viewer_->setMediaSource(media_topic_source_.get());
     setWindowTitle(title.isEmpty() ? tr("2D View") : tr("2D View - %1").arg(title));
     // Bootstrap at file PTS 0. With the anchor applied, setTimestamp(anchor)
     // maps to file-relative 0. Unanchored video uses anchor=0 → setTimestamp(0).
+    // The clip clamp (if set) ensures the bootstrap seek lands inside the
+    // playable window, not before start_ns.
     media_topic_source_->setTimestamp(asset->time_origin_ns.value_or(0));
     viewer_->update();
     return true;
