@@ -43,7 +43,7 @@ if(MSVC)
 endif()
 target_link_libraries(pj_scene2d_core
   PUBLIC pj_base pj_datastore pj_plugin_sdk
-  PRIVATE libjpeg-turbo::libjpeg-turbo PNG::PNG fmt::fmt
+  PRIVATE libjpeg-turbo::libjpeg-turbo PNG::PNG pj_internal_fmt
 )
 
 if(PJ_SCENE2D_HAS_FFMPEG)

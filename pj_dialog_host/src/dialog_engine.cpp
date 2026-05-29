@@ -7,12 +7,12 @@
 #include <QGroupBox>
 #include <QSettings>
 #include <QTimer>
-#include <QUiLoader>
 #include <QVBoxLayout>
 #include <pj_plugins/host/widget_data_view.hpp>
 #include <pj_plugins/host/widget_event_builder.hpp>
 #include <pj_plugins/host_qt/dialog_engine.hpp>
 #include <pj_plugins/host_qt/drop_event_filter.hpp>
+#include <pj_plugins/host_qt/pj_ui_loader.hpp>
 #include <pj_plugins/host_qt/widget_binding.hpp>
 
 namespace PJ {
@@ -89,7 +89,7 @@ DialogResult DialogEngine::showDialog(QWidget* parent) {
   QBuffer buffer(&data);
   buffer.open(QIODevice::ReadOnly);
 
-  QUiLoader loader;
+  PjUiLoader loader;
   QWidget* loaded = loader.load(&buffer, parent);
   if (!loaded) {
     return DialogResult::kRejected;
@@ -240,7 +240,7 @@ DialogResult DialogEngine::showDialog(QWidget* parent) {
     QBuffer parser_buffer(&parser_data);
     parser_buffer.open(QIODevice::ReadOnly);
 
-    QUiLoader parser_loader;
+    PjUiLoader parser_loader;
     parser_dialog_widget = parser_loader.load(&parser_buffer, parser_slot);
     if (!parser_dialog_widget) {
       parser_dialog_handle.reset();
@@ -344,7 +344,7 @@ DialogResult DialogEngine::showDialog(QWidget* parent) {
     QBuffer sub_buffer(&sub_data);
     sub_buffer.open(QIODevice::ReadOnly);
 
-    QUiLoader sub_loader;
+    PjUiLoader sub_loader;
     QWidget* sub_loaded = sub_loader.load(&sub_buffer, dialog);
     if (!sub_loaded) {
       return;

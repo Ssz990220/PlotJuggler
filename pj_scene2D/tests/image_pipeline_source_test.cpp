@@ -90,19 +90,22 @@ class CanonicalRgbParser final : public PJ::MessageParserPluginBase {
   CanonicalRgbParser() {
     PJ::sdk::SchemaHandler handler;
     handler.object_type = PJ::sdk::BuiltinObjectType::kImage;
-    handler.parse_object = [](PJ::Timestamp ts, PJ::sdk::PayloadView payload) -> PJ::Expected<PJ::sdk::BuiltinObject> {
-      return PJ::sdk::BuiltinObject{PJ::sdk::Image{
-          .width = 1,
-          .height = 1,
-          .encoding = "rgb8",
-          .row_step = 3,
-          .is_bigendian = false,
-          .data = payload.bytes,
-          .anchor = payload.anchor,
-          .compressed_depth_min = std::nullopt,
-          .compressed_depth_max = std::nullopt,
-          .timestamp_ns = ts,
-      }};
+    handler.parse_object = [](PJ::Timestamp ts, PJ::sdk::PayloadView payload) -> PJ::Expected<PJ::sdk::ObjectRecord> {
+      return PJ::sdk::ObjectRecord{
+          .ts = std::nullopt,
+          .object = PJ::sdk::BuiltinObject{PJ::sdk::Image{
+              .width = 1,
+              .height = 1,
+              .encoding = "rgb8",
+              .row_step = 3,
+              .is_bigendian = false,
+              .data = payload.bytes,
+              .anchor = payload.anchor,
+              .compressed_depth_min = std::nullopt,
+              .compressed_depth_max = std::nullopt,
+              .timestamp_ns = ts,
+          }},
+      };
     };
     registerSchemaHandler("image", std::move(handler));
   }
@@ -113,19 +116,22 @@ class CanonicalCompressedDepthParser final : public PJ::MessageParserPluginBase 
   CanonicalCompressedDepthParser() {
     PJ::sdk::SchemaHandler handler;
     handler.object_type = PJ::sdk::BuiltinObjectType::kImage;
-    handler.parse_object = [](PJ::Timestamp ts, PJ::sdk::PayloadView payload) -> PJ::Expected<PJ::sdk::BuiltinObject> {
-      return PJ::sdk::BuiltinObject{PJ::sdk::Image{
-          .width = 0,
-          .height = 0,
-          .encoding = "compressedDepth",
-          .row_step = 0,
-          .is_bigendian = false,
-          .data = payload.bytes,
-          .anchor = payload.anchor,
-          .compressed_depth_min = 0.0f,
-          .compressed_depth_max = 1.0f,
-          .timestamp_ns = ts,
-      }};
+    handler.parse_object = [](PJ::Timestamp ts, PJ::sdk::PayloadView payload) -> PJ::Expected<PJ::sdk::ObjectRecord> {
+      return PJ::sdk::ObjectRecord{
+          .ts = std::nullopt,
+          .object = PJ::sdk::BuiltinObject{PJ::sdk::Image{
+              .width = 0,
+              .height = 0,
+              .encoding = "compressedDepth",
+              .row_step = 0,
+              .is_bigendian = false,
+              .data = payload.bytes,
+              .anchor = payload.anchor,
+              .compressed_depth_min = 0.0f,
+              .compressed_depth_max = 1.0f,
+              .timestamp_ns = ts,
+          }},
+      };
     };
     registerSchemaHandler("depth", std::move(handler));
   }
@@ -172,13 +178,13 @@ TEST(ImagePipelineSourceTest, DeduplicatesResolvedEntryTimestampBeforeResolvingL
   ASSERT_TRUE(topic.has_value());
 
   int fetch_calls = 0;
-  ASSERT_TRUE(store.pushLazy(*topic, 1'000, [&fetch_calls] {
+  ASSERT_TRUE(store.pushLazy(*topic, 1'000, [&fetch_calls]() -> PJ::sdk::PayloadView {
     ++fetch_calls;
-    return std::vector<uint8_t>{1};
+    return PJ::sdk::makePayloadView(std::vector<uint8_t>{1});
   }));
-  ASSERT_TRUE(store.pushLazy(*topic, 2'000, [&fetch_calls] {
+  ASSERT_TRUE(store.pushLazy(*topic, 2'000, [&fetch_calls]() -> PJ::sdk::PayloadView {
     ++fetch_calls;
-    return std::vector<uint8_t>{2};
+    return PJ::sdk::makePayloadView(std::vector<uint8_t>{2});
   }));
 
   int decode_calls = 0;

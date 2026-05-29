@@ -206,7 +206,7 @@ struct McapTopicLoader {
       } else {
         status = store.pushLazy(
             topic_id, ts,
-            [reader = fetch_reader, mtx = fetch_mutex, topic = topic_name, ts, target_chan]() -> std::vector<uint8_t> {
+            [reader = fetch_reader, mtx = fetch_mutex, topic = topic_name, ts, target_chan]() -> PJ::sdk::PayloadView {
               std::lock_guard<std::mutex> lock(*mtx);
               mcap::ReadMessageOptions read_opts;
               read_opts.startTime = static_cast<mcap::Timestamp>(ts);
@@ -216,7 +216,7 @@ struct McapTopicLoader {
               for (auto vit = v.begin(); vit != v.end(); ++vit) {
                 if (vit->message.channelId == target_chan) {
                   const auto* d = reinterpret_cast<const uint8_t*>(vit->message.data);
-                  return pj_demos::maybeDecompressZstd({d, d + vit->message.dataSize});
+                  return PJ::sdk::makePayloadView(pj_demos::maybeDecompressZstd({d, d + vit->message.dataSize}));
                 }
               }
               return {};

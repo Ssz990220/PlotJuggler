@@ -106,7 +106,7 @@ DualStoreResult loadPotato(ObjectStore& obj_store, DataEngine& engine) {
       auto topic_id = img_it->second;
       const auto& local_reader = shared_reader;
 
-      obj_store.pushLazy(topic_id, ts, [local_reader, chan, ts]() -> std::vector<uint8_t> {
+      obj_store.pushLazy(topic_id, ts, [local_reader, chan, ts]() -> sdk::PayloadView {
         mcap::ReadMessageOptions read_opts;
         read_opts.startTime = static_cast<mcap::Timestamp>(ts);
         read_opts.endTime = read_opts.startTime + 1;
@@ -114,7 +114,7 @@ DualStoreResult loadPotato(ObjectStore& obj_store, DataEngine& engine) {
         for (auto vit = v.begin(); vit != v.end(); ++vit) {
           if (vit->message.channelId == chan) {
             const auto* d = reinterpret_cast<const uint8_t*>(vit->message.data);
-            return {d, d + vit->message.dataSize};
+            return sdk::makePayloadView(std::vector<uint8_t>{d, d + vit->message.dataSize});
           }
         }
         return {};
@@ -169,7 +169,7 @@ TEST_F(DualStoreTest, BothStoresQueryAtSameTimestamp) {
 
   auto image_entry = obj_store.latestAt(entry.obj_id, mid_ts);
   ASSERT_TRUE(image_entry.has_value());
-  EXPECT_GT(image_entry->data->size(), 0u);
+  EXPECT_GT(image_entry->payload.bytes.size(), 0u);
 }
 
 }  // namespace

@@ -135,12 +135,12 @@ int main(int argc, char* argv[]) {
 
   // Resolve the entry
   auto entry = store.at(topic_id, frame_index);
-  if (!entry.has_value() || entry->data->empty()) {
+  if (!entry.has_value() || entry->payload.bytes.empty()) {
     std::cerr << "Failed to resolve entry\n";
     return 1;
   }
 
-  const auto& raw = *entry->data;
+  const auto& raw = entry->payload.bytes;
   std::cout << "Raw message size: " << raw.size() << " bytes\n";
 
   // Try CDR extraction (ROS2 CompressedImage)

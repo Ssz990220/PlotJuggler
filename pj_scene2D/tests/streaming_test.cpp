@@ -81,7 +81,7 @@ TEST(StreamingTest, PauseFreezesScrubResume) {
   for (size_t i = 0; i < count_at_pause; ++i) {
     auto entry = store.at(topic, i);
     ASSERT_TRUE(entry.has_value()) << "entry " << i << " inaccessible during scrub";
-    EXPECT_GT(entry->data->size(), 0u);
+    EXPECT_GT(entry->payload.bytes.size(), 0u);
   }
 
   // latestAt at midpoint should work
@@ -125,7 +125,7 @@ TEST(StreamingTest, ConcurrentPushAndRead) {
       auto [t_min, t_max] = store.timeRange(topic);
       if (t_max > 0) {
         auto entry = store.latestAt(topic, t_max);
-        if (entry.has_value() && !entry->data->empty()) {
+        if (entry.has_value() && !entry->payload.bytes.empty()) {
           read_count.fetch_add(1);
         }
       }

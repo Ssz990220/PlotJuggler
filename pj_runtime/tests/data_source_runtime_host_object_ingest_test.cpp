@@ -2,6 +2,7 @@
 
 #include <QFileInfo>
 #include <QString>
+#include <algorithm>
 #include <atomic>
 #include <cstdint>
 #include <memory>
@@ -108,8 +109,8 @@ TEST_F(DataSourceRuntimeHostObjectIngestTest, PushMessageV2EagerCommitsScalarsAn
   EXPECT_EQ(object_store_.memoryUsage(*object_topic), payload.size());
   auto entry = object_store_.latestAt(*object_topic, 123);
   ASSERT_TRUE(entry.has_value());
-  ASSERT_NE(entry->data, nullptr);
-  EXPECT_EQ(*entry->data, payload);
+  ASSERT_NE(entry->payload.anchor, nullptr);
+  EXPECT_TRUE(std::equal(entry->payload.bytes.begin(), entry->payload.bytes.end(), payload.begin(), payload.end()));
   EXPECT_EQ(fetch_calls->load(), 1);
 }
 
@@ -141,8 +142,8 @@ TEST_F(DataSourceRuntimeHostObjectIngestTest, PushMessageV2LazyObjectsEagerScala
   EXPECT_EQ(object_store_.memoryUsage(*object_topic), 0U);
   auto entry = object_store_.latestAt(*object_topic, 123);
   ASSERT_TRUE(entry.has_value());
-  ASSERT_NE(entry->data, nullptr);
-  EXPECT_EQ(*entry->data, payload);
+  ASSERT_NE(entry->payload.anchor, nullptr);
+  EXPECT_TRUE(std::equal(entry->payload.bytes.begin(), entry->payload.bytes.end(), payload.begin(), payload.end()));
   EXPECT_EQ(fetch_calls->load(), 2);
 }
 
@@ -165,8 +166,8 @@ TEST_F(DataSourceRuntimeHostObjectIngestTest, PushMessageV2PureLazyDefersFetchAn
   EXPECT_EQ(object_store_.memoryUsage(*object_topic), 0U);
   auto entry = object_store_.latestAt(*object_topic, 123);
   ASSERT_TRUE(entry.has_value());
-  ASSERT_NE(entry->data, nullptr);
-  EXPECT_EQ(*entry->data, payload);
+  ASSERT_NE(entry->payload.anchor, nullptr);
+  EXPECT_TRUE(std::equal(entry->payload.bytes.begin(), entry->payload.bytes.end(), payload.begin(), payload.end()));
   EXPECT_EQ(fetch_calls->load(), 1);
 }
 

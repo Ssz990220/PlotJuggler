@@ -28,7 +28,7 @@ if(TARGET pj_scene2d_widgets)
   target_compile_definitions(mcap_image_viewer PRIVATE PJ_HAS_RHI_WIDGET)
   target_link_libraries(mcap_image_viewer PRIVATE
     pj_scene2d_widgets pj_scene2d_core pj_datastore mcap::mcap
-    libjpeg-turbo::libjpeg-turbo zstd::libzstd_static nanocdr fmt::fmt
+    libjpeg-turbo::libjpeg-turbo zstd::libzstd_static nanocdr pj_internal_fmt
   )
 
   # --- Qt demo: kPoints quad overlay visual sanity check ---
@@ -53,7 +53,7 @@ if(TARGET pj_scene2d_widgets)
       ${PJ_WARNING_FLAGS} ${PJ_SANITIZER_FLAGS}
     )
     target_link_libraries(cdr_to_image_annotation_test PRIVATE
-      pj_scene2d_core pj_base GTest::gtest_main nanocdr fmt::fmt
+      pj_scene2d_core pj_base GTest::gtest_main nanocdr pj_internal_fmt
     )
     add_test(NAME cdr_to_image_annotation_test COMMAND cdr_to_image_annotation_test)
   endif()

@@ -41,7 +41,7 @@ target_link_libraries(pj_runtime PUBLIC
     nlohmann_json::nlohmann_json
   PRIVATE
     tsl::robin_map
-    fmt::fmt
+    pj_internal_fmt
 )
 
 if(PJ_BUILD_TESTS)

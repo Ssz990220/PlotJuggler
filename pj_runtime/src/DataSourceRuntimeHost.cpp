@@ -69,10 +69,16 @@ struct LazyFetchContext {
   int64_t timestamp_ns = 0;
 };
 
-std::function<std::vector<uint8_t>()> makeLazyFetchClosure(
+// Wraps the plugin's C-ABI lazy fetcher in a closure that returns a
+// PayloadView with the plugin's anchor preserved through to ObjectStore.
+// On invocation, the plugin's payload.anchor (a {ctx, release fn} pair) is
+// re-wrapped in a host-local shared_ptr whose custom deleter routes back to
+// the plugin's release fn through the C ABI. Both sides allocate and free on
+// their own side of the boundary; the bytes are read in place via the Span.
+std::function<sdk::PayloadView()> makeLazyFetchClosure(
     std::shared_ptr<FetcherOwner> owner, std::shared_ptr<std::mutex> fetch_mutex, LazyFetchContext context) {
   return [owner = std::move(owner), fetch_mutex = std::move(fetch_mutex),
-          context = std::move(context)]() -> std::vector<uint8_t> {
+          context = std::move(context)]() -> sdk::PayloadView {
     PJ_payload_t payload{};
     PJ_error_t err{};
     bool ok = false;
@@ -91,13 +97,15 @@ std::function<std::vector<uint8_t>()> makeLazyFetchClosure(
                           << "error=" << errorMessage(err);
       return {};
     }
-    PayloadAnchorGuard payload_anchor_guard{payload.anchor};
     if (payload.data == nullptr && payload.size > 0) {
       qCWarning(lcIngest) << "[lazy-fetch] null data with nonzero size source="
                           << QString::fromStdString(context.source_id) << "dataset=" << context.dataset_id
                           << "topic=" << QString::fromStdString(context.topic_name)
                           << "object_topic_id=" << context.object_topic_id.id << "timestamp_ns=" << context.timestamp_ns
                           << "payload_size=" << payload.size;
+      if (payload.anchor.release != nullptr) {
+        payload.anchor.release(payload.anchor.ctx);
+      }
       return {};
     }
     if (payload.size == 0) {
@@ -105,9 +113,21 @@ std::function<std::vector<uint8_t>()> makeLazyFetchClosure(
                           << "dataset=" << context.dataset_id << "topic=" << QString::fromStdString(context.topic_name)
                           << "object_topic_id=" << context.object_topic_id.id
                           << "timestamp_ns=" << context.timestamp_ns;
+      if (payload.anchor.release != nullptr) {
+        payload.anchor.release(payload.anchor.ctx);
+      }
       return {};
     }
-    return copyPayloadBytes(payload);
+    auto host_anchor =
+        std::shared_ptr<const void>(payload.anchor.ctx, [release = payload.anchor.release](const void* h) noexcept {
+          if (release != nullptr) {
+            release(const_cast<void*>(h));
+          }
+        });
+    return sdk::PayloadView{
+        Span<const uint8_t>{payload.data, payload.size},
+        sdk::BufferAnchor{std::move(host_anchor)},
+    };
   };
 }
 }  // namespace

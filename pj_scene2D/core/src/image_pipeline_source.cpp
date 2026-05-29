@@ -268,7 +268,7 @@ std::optional<DecodedFrame> ImagePipelineSource::decodeAt(int64_t ts_ns) {
   }
 
   auto entry = store_->at(topic_, *index);
-  if (!entry.has_value() || entry->data == nullptr || entry->data->empty()) {
+  if (!entry.has_value() || entry->payload.anchor == nullptr || entry->payload.bytes.empty()) {
     warnOnce(
         warningKey(source_key_, "empty-resolved-entry"),
         "{} request_ts={} index={} empty-resolved-entry (viewer will show no frame)", source_key_, ts_ns, *index);
@@ -280,22 +280,18 @@ std::optional<DecodedFrame> ImagePipelineSource::decodeAt(int64_t ts_ns) {
   last_entry_ts_ = entry->timestamp;
 
   if (parser_ != nullptr) {
-    sdk::PayloadView payload{
-        Span<const uint8_t>(entry->data->data(), entry->data->size()),
-        entry->data,
-    };
-    auto object_or = parser_->parseObject(entry->timestamp, payload);
+    auto object_or = parser_->parseObject(entry->timestamp, entry->payload);
     if (!object_or.has_value()) {
       warnOnce(warningKey(source_key_, "parseObject"), "{} parseObject failed: {}", source_key_, object_or.error());
       return std::nullopt;
     }
-    if (sdk::typeOf(*object_or) != sdk::BuiltinObjectType::kImage) {
+    if (sdk::typeOf(object_or->object) != sdk::BuiltinObjectType::kImage) {
       warnOnce(
           warningKey(source_key_, "wrong-object-kind"), "{} parseObject returned wrong object_kind={}", source_key_,
-          static_cast<int>(sdk::typeOf(*object_or)));
+          static_cast<int>(sdk::typeOf(object_or->object)));
       return std::nullopt;
     }
-    const auto* img = std::any_cast<sdk::Image>(&*object_or);
+    const auto* img = std::any_cast<sdk::Image>(&object_or->object);
     if (img == nullptr) {
       warnOnce(
           warningKey(source_key_, "any-cast-image"), "{} any_cast<sdk::Image> failed (parser contract violation)",
@@ -365,7 +361,7 @@ std::optional<DecodedFrame> ImagePipelineSource::decodeAt(int64_t ts_ns) {
     return std::nullopt;
   }
 
-  auto result = pipeline_->decode(entry->data->data(), entry->data->size());
+  auto result = pipeline_->decode(entry->payload.bytes.data(), entry->payload.bytes.size());
   if (!result.has_value()) {
     warnOnce(warningKey(source_key_, "pipeline-decode"), "{} pipeline decode failed: {}", source_key_, result.error());
     return std::nullopt;

@@ -178,7 +178,7 @@ class MultiChannelWindow : public QMainWindow {
 
       // Push lazy entry that strips CDR at resolve time, storing only
       // the media payload in ObjectStore (JPEG bytes or depth PNG).
-      store_->pushLazy(ch.topic_id, ts, [reader, chan_id, ts]() -> std::vector<uint8_t> {
+      store_->pushLazy(ch.topic_id, ts, [reader, chan_id, ts]() -> PJ::sdk::PayloadView {
         mcap::ReadMessageOptions read_opts;
         read_opts.startTime = static_cast<mcap::Timestamp>(ts);
         read_opts.endTime = read_opts.startTime + 1;
@@ -196,9 +196,9 @@ class MultiChannelWindow : public QMainWindow {
           PJ::demo::CdrImageStripper stripper;
           auto result = stripper.decode(frame);
           if (result.has_value() && !result->isNull()) {
-            return std::move(*result->pixels);
+            return PJ::sdk::makePayloadView(std::move(*result->pixels));
           }
-          return {raw, raw + raw_size};
+          return PJ::sdk::makePayloadView(std::vector<uint8_t>{raw, raw + raw_size});
         }
         return {};
       });

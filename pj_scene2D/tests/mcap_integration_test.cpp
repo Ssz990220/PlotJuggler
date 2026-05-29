@@ -85,7 +85,7 @@ struct McapLoader {
           continue;
         }
 
-        store.pushLazy(topic_id, ts, [local_reader, local_topic, ts]() -> std::vector<uint8_t> {
+        store.pushLazy(topic_id, ts, [local_reader, local_topic, ts]() -> sdk::PayloadView {
           mcap::ReadMessageOptions read_opts;
           read_opts.startTime = static_cast<mcap::Timestamp>(ts);
           read_opts.endTime = read_opts.startTime + 1;
@@ -93,7 +93,7 @@ struct McapLoader {
           auto v = local_reader->readMessages([](const mcap::Status&) {}, read_opts);
           for (auto vit = v.begin(); vit != v.end(); ++vit) {
             auto* d = reinterpret_cast<const uint8_t*>(vit->message.data);
-            return {d, d + vit->message.dataSize};
+            return sdk::makePayloadView(std::vector<uint8_t>{d, d + vit->message.dataSize});
           }
           return {};
         });
@@ -124,7 +124,7 @@ TEST_F(McapImageIntegration, LatestAtReturnsBytes) {
   auto mid_ts = t_min + (t_max - t_min) / 2;
   auto entry = store.latestAt(loader.topic_id, mid_ts);
   ASSERT_TRUE(entry.has_value());
-  EXPECT_GT(entry->data->size(), 0u);
+  EXPECT_GT(entry->payload.bytes.size(), 0u);
 }
 
 TEST_F(McapImageIntegration, DecodeImageFromStore) {
@@ -134,9 +134,9 @@ TEST_F(McapImageIntegration, DecodeImageFromStore) {
 
   auto entry = store.at(loader.topic_id, 0);
   ASSERT_TRUE(entry.has_value());
-  ASSERT_GT(entry->data->size(), 0u);
+  ASSERT_GT(entry->payload.bytes.size(), 0u);
 
-  auto& raw = *entry->data;
+  const auto& raw = entry->payload.bytes;
 
   auto json_str = store.descriptor(loader.topic_id).metadata_json;
   auto meta = nlohmann::json::parse(json_str);
@@ -159,7 +159,7 @@ TEST_F(McapImageIntegration, AllEntriesResolve) {
   for (size_t i = 0; i < count; ++i) {
     auto entry = store.at(loader.topic_id, i);
     ASSERT_TRUE(entry.has_value()) << "entry " << i << " failed to resolve";
-    EXPECT_GT(entry->data->size(), 0u) << "entry " << i << " has empty data";
+    EXPECT_GT(entry->payload.bytes.size(), 0u) << "entry " << i << " has empty data";
   }
 }
 

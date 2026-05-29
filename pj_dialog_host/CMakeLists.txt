@@ -21,10 +21,14 @@ endforeach()
 add_library(pj_dialog_engine_qt STATIC
     src/widget_binding.cpp
     src/dialog_engine.cpp
+    src/panel_engine.cpp
+    src/pj_ui_loader.cpp
     src/chart_preview_widget.cpp
     include/pj_plugins/host_qt/chart_preview_widget.hpp
     include/pj_plugins/host_qt/dialog_engine.hpp
     include/pj_plugins/host_qt/drop_event_filter.hpp
+    include/pj_plugins/host_qt/panel_engine.hpp
+    include/pj_plugins/host_qt/pj_ui_loader.hpp
     include/pj_plugins/host_qt/widget_binding.hpp
 )
 
@@ -42,6 +46,7 @@ target_include_directories(pj_dialog_engine_qt PUBLIC
 target_link_libraries(pj_dialog_engine_qt
     PUBLIC
         pj_dialog_host
+        pj_widgets
         Qt6::Widgets
         Qt6::UiTools
         Qt6::Charts
@@ -62,6 +67,41 @@ if(PJ_BUILD_TESTS)
     )
     add_test(NAME dialog_engine_test COMMAND dialog_engine_test)
     set_tests_properties(dialog_engine_test PROPERTIES
+        ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
+    )
+
+    add_executable(panel_engine_test
+        tests/panel_engine_test.cpp
+        tests/mock_panel_plugin.cpp
+    )
+    set_target_properties(panel_engine_test PROPERTIES AUTOMOC ON)
+    target_compile_options(panel_engine_test PRIVATE ${PJ_WARNING_FLAGS})
+    target_link_libraries(panel_engine_test
+        PRIVATE
+            pj_dialog_engine_qt
+            pj_dialog_sdk
+            GTest::gtest
+            GTest::gtest_main
+    )
+    add_test(NAME panel_engine_test COMMAND panel_engine_test)
+    set_tests_properties(panel_engine_test PROPERTIES
+        ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
+    )
+
+    add_executable(widget_binding_test
+        tests/widget_binding_test.cpp
+    )
+    set_target_properties(widget_binding_test PROPERTIES AUTOMOC ON)
+    target_compile_options(widget_binding_test PRIVATE ${PJ_WARNING_FLAGS})
+    target_link_libraries(widget_binding_test
+        PRIVATE
+            pj_dialog_engine_qt
+            pj_dialog_sdk
+            GTest::gtest
+            GTest::gtest_main
+    )
+    add_test(NAME widget_binding_test COMMAND widget_binding_test)
+    set_tests_properties(widget_binding_test PROPERTIES
         ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
     )
 endif()

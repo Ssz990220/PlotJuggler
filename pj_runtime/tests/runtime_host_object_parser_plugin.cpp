@@ -11,9 +11,10 @@ PJ::sdk::SchemaHandler makeByteCountHandler(PJ::sdk::BuiltinObjectType object_ty
   return PJ::sdk::SchemaHandler{
       .object_type = object_type,
       .parse_scalars = [](PJ::Timestamp /*timestamp_ns*/,
-                          PJ::Span<const uint8_t> payload) -> PJ::Expected<std::vector<PJ::sdk::NamedFieldValue>> {
-        return std::vector<PJ::sdk::NamedFieldValue>{
-            {.name = "byte_count", .value = static_cast<uint64_t>(payload.size())},
+                          PJ::Span<const uint8_t> payload) -> PJ::Expected<PJ::sdk::ScalarRecord> {
+        return PJ::sdk::ScalarRecord{
+            .ts = std::nullopt,
+            .fields = {{.name = "byte_count", .value = static_cast<uint64_t>(payload.size())}},
         };
       },
       .parse_object = {},

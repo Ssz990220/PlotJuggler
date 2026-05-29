@@ -5,6 +5,7 @@ add_library(pj_widgets STATIC
     src/ComboBox.cpp
     src/ComboBoxGradientDelegate.cpp
     src/CurveTreeView.cpp
+    src/DateRangePicker.cpp
     src/Dialog.cpp
     src/Dialog.ui
     src/DoubleScrubber.cpp
@@ -12,6 +13,7 @@ add_library(pj_widgets STATIC
     src/FlowLayout.cpp
     src/IntScrubber.cpp
     src/MessageBox.cpp
+    src/RangeSlider.cpp
     src/RecentFilesMenu.cpp
     src/ScrubberBase.cpp
     src/ToggleSwitch.cpp
@@ -21,6 +23,7 @@ add_library(pj_widgets STATIC
     include/pj_widgets/ComboBox.h
     include/pj_widgets/ComboBoxGradientDelegate.h
     include/pj_widgets/CurveTreeView.h
+    include/pj_widgets/DateRangePicker.h
     include/pj_widgets/Dialog.h
     include/pj_widgets/DoubleScrubber.h
     include/pj_widgets/ElidingLabel.h
@@ -29,6 +32,7 @@ add_library(pj_widgets STATIC
     include/pj_widgets/IntScrubber.h
     include/pj_widgets/MessageBox.h
     include/pj_widgets/RealSlider.h
+    include/pj_widgets/RangeSlider.h
     include/pj_widgets/RecentFilesMenu.h
     include/pj_widgets/ScrubberBase.h
     include/pj_widgets/Style.h
@@ -60,3 +64,8 @@ if(PJ_BUILD_TESTS)
 endif()
 
 add_subdirectory(demos)
+
+option(PJ_BUILD_WIDGET_DEMOS "Build pj_widgets demo apps" ${PJ_BUILD_TESTS})
+if(PJ_BUILD_WIDGET_DEMOS)
+    add_subdirectory(demo)
+endif()

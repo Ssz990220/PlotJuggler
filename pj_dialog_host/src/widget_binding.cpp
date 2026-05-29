@@ -1,5 +1,10 @@
+#include <pj_widgets/DateRangePicker.h>
+#include <pj_widgets/RangeSlider.h>
+
 #include <QCheckBox>
 #include <QComboBox>
+#include <QDate>
+#include <QDateTime>
 #include <QDialogButtonBox>
 #include <QDoubleSpinBox>
 #include <QGroupBox>
@@ -19,7 +24,9 @@
 #include <QSvgRenderer>
 #include <QTabWidget>
 #include <QTableWidget>
+#include <QTimeZone>
 #include <QVBoxLayout>
+#include <cstdint>
 #include <pj_plugins/host/widget_event_builder.hpp>
 #include <pj_plugins/host_qt/chart_preview_widget.hpp>
 #include <pj_plugins/host_qt/widget_binding.hpp>
@@ -29,6 +36,39 @@
 #include "python_syntax_highlighter.hpp"
 
 namespace PJ {
+
+namespace {
+
+// Human-readable nanosecond duration: "42s", "12m 30s", "3h 45m", "2d 5h 30m".
+std::string formatDuration(std::int64_t duration_ns) {
+  const std::int64_t total_secs = duration_ns / 1'000'000'000LL;
+  if (total_secs < 60) {
+    return std::to_string(total_secs) + "s";
+  }
+  const std::int64_t days = total_secs / 86400;
+  const std::int64_t hours = (total_secs % 86400) / 3600;
+  const std::int64_t minutes = (total_secs % 3600) / 60;
+  const std::int64_t secs = total_secs % 60;
+  if (days > 0) {
+    return std::to_string(days) + "d " + std::to_string(hours) + "h " + std::to_string(minutes) + "m";
+  }
+  if (hours > 0) {
+    return std::to_string(hours) + "h " + std::to_string(minutes) + "m";
+  }
+  return std::to_string(minutes) + "m " + std::to_string(secs) + "s";
+}
+
+// Map a slider position in [0, slider_max] onto absolute nanoseconds within
+// [min_ns, max_ns].
+std::int64_t sliderToNs(int pos, int slider_max, std::int64_t min_ns, std::int64_t max_ns) {
+  if (slider_max <= 0) {
+    return min_ns;
+  }
+  const double fraction = static_cast<double>(pos) / static_cast<double>(slider_max);
+  return min_ns + static_cast<std::int64_t>(fraction * static_cast<double>(max_ns - min_ns));
+}
+
+}  // namespace
 
 // ---------------------------------------------------------------------------
 // apply_widget_data — push WidgetDataView values into Qt widgets
@@ -43,6 +83,19 @@ static void apply_to_widget(QWidget* w, std::string_view name, const PJ::WidgetD
   }
   if (auto v = view.visible(name)) {
     w->setVisible(*v);
+  }
+
+  // --- Generic field-validity indicator (any widget) ---
+  // The plugin owns the validation rule and pushes {valid, tooltip}; the host
+  // renders a soft cue (the tooltip plus a red border on the field itself when
+  // invalid) without needing a per-field indicator widget. The border is scoped
+  // by objectName so child widgets are unaffected; cleared when valid.
+  if (auto ok = view.fieldValid(name)) {
+    if (auto tip = view.fieldValidTooltip(name)) {
+      w->setToolTip(QString::fromStdString(*tip));
+    }
+    const QString sel = w->objectName().isEmpty() ? QString() : QStringLiteral("#%1").arg(w->objectName());
+    w->setStyleSheet(*ok || sel.isEmpty() ? QString() : sel + QStringLiteral(" { border: 1px solid #D32F2F; }"));
   }
 
   // --- QLineEdit ---
@@ -95,13 +148,42 @@ static void apply_to_widget(QWidget* w, std::string_view name, const PJ::WidgetD
   // --- QComboBox ---
   if (auto* cb = qobject_cast<QComboBox*>(w)) {
     if (auto v = view.items(name)) {
-      cb->clear();
+      // Rebuild only when the item set actually changed. For an editable combo
+      // (where text + items share one diff key) an unconditional clear()+add
+      // would wipe the line edit and bounce the caret to the end on every
+      // keystroke tick. Comparing first keeps mid-text editing stable.
+      QStringList incoming;
+      incoming.reserve(static_cast<qsizetype>(v->size()));
       for (const auto& item : *v) {
-        cb->addItem(QString::fromStdString(item));
+        incoming << QString::fromStdString(item);
+      }
+      QStringList current;
+      current.reserve(cb->count());
+      for (int i = 0; i < cb->count(); ++i) {
+        current << cb->itemText(i);
+      }
+      if (current != incoming) {
+        const QString saved = cb->isEditable() ? cb->currentText() : QString();
+        cb->clear();
+        cb->addItems(incoming);
+        if (cb->isEditable()) {
+          cb->setCurrentText(saved);
+        }
       }
     }
     if (auto v = view.currentIndex(name)) {
       cb->setCurrentIndex(*v);
+    }
+    // Editable combos carry free text (e.g. a server URI). Reflect the
+    // plugin's text() back into the line edit, guarded so a value identical
+    // to what the user just typed doesn't reset the cursor mid-edit.
+    if (cb->isEditable()) {
+      if (auto v = view.text(name)) {
+        const QString t = QString::fromStdString(*v);
+        if (cb->currentText() != t) {
+          cb->setCurrentText(t);
+        }
+      }
     }
     return;
   }
@@ -272,6 +354,63 @@ static void apply_to_widget(QWidget* w, std::string_view name, const PJ::WidgetD
     return;
   }
 
+  // --- RangeSlider (two-handle range slider) ---
+  if (auto* rs = qobject_cast<RangeSlider*>(w)) {
+    // Bounds first — setMinimum/setMaximum reset the handle values, so values
+    // (sent in the same tick) must be applied afterwards.
+    if (auto v = view.rangeSliderMin(name)) {
+      rs->setMinimum(*v);
+    }
+    if (auto v = view.rangeSliderMax(name)) {
+      rs->setMaximum(*v);
+    }
+    if (auto v = view.rangeSliderLower(name)) {
+      rs->setLowerValue(*v);
+    }
+    if (auto v = view.rangeSliderUpper(name)) {
+      rs->setUpperValue(*v);
+    }
+    // Duration floating labels: when a time span is provided, install the
+    // formatters (handle = offset from start, center = selected duration).
+    if (auto span = view.rangeSliderTimeSpan(name)) {
+      const std::int64_t min_ns = span->first;
+      const std::int64_t max_ns = span->second;
+      if (max_ns > min_ns) {
+        const int slider_max = rs->GetMaximun();
+        rs->setShowTicks(false);
+        rs->setShowTickLabels(false);
+        rs->setShowHandleValueTooltip(false);
+        rs->setFloatingLabelsVisible(true);
+        // Floating labels are painted inside the widget rect, so re-derive the
+        // height from minimumSizeHint() once the labels are enabled (it accounts
+        // for the font-dependent label rows above/below the handle row).
+        rs->setMinimumHeight(rs->minimumSizeHint().height());
+        rs->setLabelFormatter([min_ns, max_ns, slider_max](double pos) -> QString {
+          std::int64_t ns = sliderToNs(static_cast<int>(pos), slider_max, min_ns, max_ns);
+          return QString::fromStdString(formatDuration(ns - min_ns));
+        });
+        rs->setCenterLabelFormatter([min_ns, max_ns, slider_max](double lo, double hi) -> QString {
+          std::int64_t lo_ns = sliderToNs(static_cast<int>(lo), slider_max, min_ns, max_ns);
+          std::int64_t hi_ns = sliderToNs(static_cast<int>(hi), slider_max, min_ns, max_ns);
+          return QString::fromStdString(formatDuration(hi_ns - lo_ns));
+        });
+        rs->update();
+      }
+    }
+    return;
+  }
+
+  // --- DateRangePicker (date/time range placeholder hints) ---
+  if (auto* drp = qobject_cast<DateRangePicker*>(w)) {
+    if (auto iso = view.dateRangeEarliest(name)) {
+      drp->setEarliestDate(QDate::fromString(QString::fromStdString(*iso), Qt::ISODate));
+    }
+    if (auto iso = view.dateRangeLatest(name)) {
+      drp->setLatestDate(QDate::fromString(QString::fromStdString(*iso), Qt::ISODate));
+    }
+    return;
+  }
+
   // --- QFrame with chart_series or chart_zoom_enabled → ChartPreviewWidget ---
   if (auto* frame = qobject_cast<QFrame*>(w)) {
     auto series_data = view.chartSeries(name);
@@ -378,6 +517,18 @@ void connectWidgetSignals(QWidget* root, WidgetEventCallback callback) {
       QObject::connect(cb, &QComboBox::currentIndexChanged, cb, [callback, name, cb](int index) {
         callback(name, WidgetEventBuilder::indexChanged(index, cb->currentText().toStdString()));
       });
+      // Editable combos let the user type a free value (server URI, etc.).
+      // currentIndexChanged alone never fires while typing, and the typed
+      // dispatcher routes index events to onIndexChanged — so a plugin reading
+      // the value via onTextChanged would never see it. editTextChanged fires
+      // for both typing and dropdown selection (selection updates the line
+      // edit), so forward it as a text_changed event. currentIndexChanged is
+      // kept for index-based consumers (onIndexChanged).
+      if (cb->isEditable()) {
+        QObject::connect(cb, &QComboBox::editTextChanged, cb, [callback, name](const QString& text) {
+          callback(name, WidgetEventBuilder::textChanged(text.toStdString()));
+        });
+      }
       continue;
     }
     if (auto* ck = qobject_cast<QCheckBox*>(w)) {
@@ -441,6 +592,31 @@ void connectWidgetSignals(QWidget* root, WidgetEventCallback callback) {
     if (auto* tw = qobject_cast<QTabWidget*>(w)) {
       QObject::connect(tw, &QTabWidget::currentChanged, tw, [callback, name](int index) {
         callback(name, WidgetEventBuilder::tabChanged(index));
+      });
+      continue;
+    }
+    if (auto* rs = qobject_cast<RangeSlider*>(w)) {
+      // Both handle signals coalesce into one rangeChanged event carrying the
+      // current lower+upper, so dragging either handle keeps the plugin in sync.
+      auto emit_range = [callback, name, rs]() {
+        callback(name, WidgetEventBuilder::rangeChanged(rs->GetLowerValue(), rs->GetUpperValue()));
+      };
+      QObject::connect(rs, &RangeSlider::lowerValueChanged, rs, [emit_range](int) { emit_range(); });
+      QObject::connect(rs, &RangeSlider::upperValueChanged, rs, [emit_range](int) { emit_range(); });
+      continue;
+    }
+    if (auto* drp = qobject_cast<DateRangePicker*>(w)) {
+      QObject::connect(drp, &DateRangePicker::filterChanged, drp, [callback, name](const RangeFilter& f) {
+        // Combine date + time into UTC ISO datetimes; empty string = unbounded side.
+        std::string from_iso;
+        std::string to_iso;
+        if (f.date_from.has_value()) {
+          from_iso = QDateTime(*f.date_from, f.from_time, QTimeZone::utc()).toString(Qt::ISODate).toStdString();
+        }
+        if (f.date_to.has_value()) {
+          to_iso = QDateTime(*f.date_to, f.to_time, QTimeZone::utc()).toString(Qt::ISODate).toStdString();
+        }
+        callback(name, WidgetEventBuilder::dateRangeChanged(from_iso, to_iso));
       });
       continue;
     }

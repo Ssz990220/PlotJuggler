@@ -94,11 +94,11 @@ bool Media2DDockWidget::setImageTopic(
       return false;
     }
     const auto entry = store.at(topic_id, 0);
-    if (!entry.has_value() || entry->data == nullptr) {
+    if (!entry.has_value() || entry->payload.anchor == nullptr) {
       qCWarning(lcMedia2DDock) << "setImageTopic: kAssetVideo topic_id=" << topic_id.id << "first entry has no payload";
       return false;
     }
-    auto asset = PJ::deserializeAssetVideo(entry->data->data(), entry->data->size());
+    auto asset = PJ::deserializeAssetVideo(entry->payload.bytes.data(), entry->payload.bytes.size());
     if (!asset.has_value()) {
       qCWarning(lcMedia2DDock) << "setImageTopic: deserializeAssetVideo failed for topic_id=" << topic_id.id << ":"
                                << QString::fromStdString(asset.error());
@@ -240,6 +240,9 @@ std::unique_ptr<CodecPipeline> Media2DDockWidget::makePipelineFor(sdk::BuiltinOb
     case sdk::BuiltinObjectType::kSceneEntities:
     case sdk::BuiltinObjectType::kAssetVideo:
     case sdk::BuiltinObjectType::kRobotDescription:
+    case sdk::BuiltinObjectType::kCameraInfo:
+    case sdk::BuiltinObjectType::kOccupancyGridUpdate:
+    case sdk::BuiltinObjectType::kLog:
       return nullptr;
   }
   return nullptr;

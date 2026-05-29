@@ -19,12 +19,12 @@ void ScenePipelineSource::setTimestamp(int64_t ts_ns) {
   // through the decode (lock-discipline pattern documented in
   // ObjectStore::entryTimestamps).
   auto entry = store_->latestAt(topic_, ts_ns);
-  if (!entry.has_value() || entry->data == nullptr || entry->data->empty()) {
+  if (!entry.has_value() || entry->payload.anchor == nullptr || entry->payload.bytes.empty()) {
     pending_scene_.reset();
     return;
   }
 
-  auto result = decoder_->decode(entry->data->data(), entry->data->size());
+  auto result = decoder_->decode(entry->payload.bytes.data(), entry->payload.bytes.size());
   if (result.has_value()) {
     pending_scene_ = std::move(*result);
   } else {

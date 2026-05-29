@@ -10,12 +10,14 @@ nanoarrow/0.7.0
 nlohmann_json/3.12.0
 mcap/2.1.1
 zstd/1.5.5
+fast_float/8.1.0
 libarchive/3.8.7
 libjpeg-turbo/3.1.4.1
 libpng/1.6.58
 ffmpeg/8.1
 
 [options]
+fmt/*:header_only=True
 nanoarrow/*:with_ipc=True
 libarchive/*:shared=False
 # pj_scene2D needs FFmpeg for file video playback and packet-stream decode.

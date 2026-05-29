@@ -79,7 +79,7 @@ Expected<DecodedFrame> StreamingVideoDecoder::decodeAt(Timestamp ts) {
     if (!kf_entry.has_value()) {
       return unexpected("keyframe entry not available");
     }
-    if (!initDecoder(kf_entry->data->data(), kf_entry->data->size())) {
+    if (!initDecoder(kf_entry->payload.bytes.data(), kf_entry->payload.bytes.size())) {
       return unexpected("failed to initialize decoder");
     }
   }
@@ -102,9 +102,9 @@ Expected<DecodedFrame> StreamingVideoDecoder::decodeRange(size_t start_idx, size
     // Track position by ObjectStore timestamp (= DTS for B-frame videos).
     last_sent_ts_ = entry->timestamp;
     if (i < target_idx) {
-      decoder_->decodeSkip(entry->data->data(), entry->data->size(), entry->timestamp);
+      decoder_->decodeSkip(entry->payload.bytes.data(), entry->payload.bytes.size(), entry->timestamp);
     } else {
-      auto frame = decoder_->decode(entry->data->data(), entry->data->size(), entry->timestamp);
+      auto frame = decoder_->decode(entry->payload.bytes.data(), entry->payload.bytes.size(), entry->timestamp);
       if (frame.has_value() && !frame->isNull()) {
         result = std::move(*frame);
       }
@@ -164,7 +164,7 @@ void StreamingVideoDecoder::updateKeyframeIndex() {
     if (!entry.has_value()) {
       continue;
     }
-    if (isH264Keyframe(entry->data->data(), entry->data->size())) {
+    if (isH264Keyframe(entry->payload.bytes.data(), entry->payload.bytes.size())) {
       keyframe_timestamps_.push_back(entry->timestamp);
     }
     last_scanned_ts_ = entry->timestamp;
