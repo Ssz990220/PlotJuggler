@@ -104,8 +104,7 @@ class CanonicalRgbParser final : public PJ::MessageParserPluginBase {
               .compressed_depth_min = std::nullopt,
               .compressed_depth_max = std::nullopt,
               .timestamp_ns = ts,
-          }},
-      };
+          }}};
     };
     registerSchemaHandler("image", std::move(handler));
   }
@@ -130,11 +129,62 @@ class CanonicalCompressedDepthParser final : public PJ::MessageParserPluginBase 
               .compressed_depth_min = 0.0f,
               .compressed_depth_max = 1.0f,
               .timestamp_ns = ts,
-          }},
-      };
+          }}};
     };
     registerSchemaHandler("depth", std::move(handler));
   }
+};
+
+// Mirrors the real-world failure mode where a MessageParser keeps internal
+// scratch (fastcdr offset, dictionaries) and two ImagePipelineSource workers
+// sharing the same parser pointer enter parseObject concurrently. The atomic
+// `in_flight_` counter catches concurrent entry deterministically; a
+// non-atomic scratch field gives TSan a second signal when the suite is
+// rebuilt with PJ_ENABLE_TSAN=ON.
+class RacyImageParser final : public PJ::MessageParserPluginBase {
+ public:
+  RacyImageParser() {
+    PJ::sdk::SchemaHandler handler;
+    handler.object_type = PJ::sdk::BuiltinObjectType::kImage;
+    handler.parse_object = [this](
+                               PJ::Timestamp ts, PJ::sdk::PayloadView payload) -> PJ::Expected<PJ::sdk::ObjectRecord> {
+      const int prev = in_flight_.fetch_add(1, std::memory_order_acq_rel);
+      if (prev > 0) {
+        race_observed_.store(true, std::memory_order_release);
+      }
+      // Force a deterministic window: without the sleep, the two workers may
+      // serialise by chance on a fast machine and hide the race.
+      std::this_thread::sleep_for(std::chrono::milliseconds(5));
+      scratch_ = static_cast<int>(ts & 0xFF);  // intentionally non-atomic
+      PJ::sdk::ObjectRecord out{
+          .ts = std::nullopt,
+          .object = PJ::sdk::BuiltinObject{PJ::sdk::Image{
+              .width = 1,
+              .height = 1,
+              .encoding = "rgb8",
+              .row_step = 3,
+              .is_bigendian = false,
+              .data = payload.bytes,
+              .anchor = payload.anchor,
+              .compressed_depth_min = std::nullopt,
+              .compressed_depth_max = std::nullopt,
+              .timestamp_ns = ts,
+          }},
+      };
+      in_flight_.fetch_sub(1, std::memory_order_acq_rel);
+      return out;
+    };
+    registerSchemaHandler("image", std::move(handler));
+  }
+
+  bool raceObserved() const {
+    return race_observed_.load(std::memory_order_acquire);
+  }
+
+ private:
+  std::atomic<int> in_flight_{0};
+  std::atomic<bool> race_observed_{false};
+  int scratch_ = 0;
 };
 
 // Bridges the source's frame-ready callback (fired from the worker thread)
@@ -180,11 +230,11 @@ TEST(ImagePipelineSourceTest, DeduplicatesResolvedEntryTimestampBeforeResolvingL
   int fetch_calls = 0;
   ASSERT_TRUE(store.pushLazy(*topic, 1'000, [&fetch_calls]() -> PJ::sdk::PayloadView {
     ++fetch_calls;
-    return PJ::sdk::makePayloadView(std::vector<uint8_t>{1});
+    return PJ::sdk::makePayloadView({1});
   }));
   ASSERT_TRUE(store.pushLazy(*topic, 2'000, [&fetch_calls]() -> PJ::sdk::PayloadView {
     ++fetch_calls;
-    return PJ::sdk::makePayloadView(std::vector<uint8_t>{2});
+    return PJ::sdk::makePayloadView({2});
   }));
 
   int decode_calls = 0;
@@ -367,4 +417,43 @@ TEST(ImagePipelineSourceTest, DestructorJoinsWorkerEvenWithPendingRequest) {
     // Destroy immediately — may be mid-decode. Destructor must join cleanly.
     source.reset();
   }
+}
+
+TEST(ImagePipelineSourceTest, SharedParserMutexSerializesConcurrentSources) {
+  // Two ImagePipelineSource instances sharing the same parser pointer (the
+  // SessionManager singleton, in production) must never enter parseObject
+  // concurrently — fastcdr et al. keep stateful scratch and corrupt under
+  // a race, manifesting as bogus payload sizes and segfaults. Passing a
+  // shared mutex collapses concurrent decodes onto a single critical section.
+  PJ::ObjectStore store;
+  auto topic = store.registerTopic({PJ::DatasetId{1}, "/camera/image", "{}"});
+  ASSERT_TRUE(topic.has_value());
+  for (int i = 0; i < 8; ++i) {
+    ASSERT_TRUE(store.pushOwned(*topic, 1'000 + i * 100, std::vector<uint8_t>{static_cast<uint8_t>(i), 20, 30}));
+  }
+
+  RacyImageParser parser;
+  ASSERT_TRUE(parser.bindSchema("image", PJ::Span<const uint8_t>{}));
+
+  auto parser_mutex = std::make_shared<std::mutex>();
+  PJ::ImagePipelineSource source_a(&store, *topic, &parser, parser_mutex);
+  PJ::ImagePipelineSource source_b(&store, *topic, &parser, parser_mutex);
+  FrameSync sync_a;
+  FrameSync sync_b;
+  sync_a.install(source_a);
+  sync_b.install(source_b);
+
+  // Burst-fire both sources at distinct timestamps so they cannot dedup against
+  // their own previous request. Worker threads will pile onto parseObject and,
+  // without the shared mutex, race.
+  for (int i = 0; i < 8; ++i) {
+    source_a.setTimestamp(1'000 + i * 100);
+    source_b.setTimestamp(1'000 + i * 100);
+  }
+  // Wait long enough for both workers to drain — 5 ms per parse × 8 frames
+  // × 2 workers, serialized = ~80 ms; double it for safety.
+  std::this_thread::sleep_for(std::chrono::milliseconds(200));
+
+  EXPECT_FALSE(parser.raceObserved()) << "parseObject was entered concurrently — shared parser_mutex did not "
+                                         "serialise consumers (this is the bug the fix addresses).";
 }

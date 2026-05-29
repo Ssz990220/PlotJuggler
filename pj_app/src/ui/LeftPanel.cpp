@@ -105,8 +105,13 @@ LeftPanel::LeftPanel(QWidget* parent) : QWidget(parent), ui_(new Ui::LeftPanel) 
     adapt_stack_to_current_page();
   });
 
-  // The cog drives the start/stop toggle for the streaming source.
-  connect(ui_->buttonStreamingOptions, &QPushButton::toggled, this, &LeftPanel::streamingStartToggled);
+  // The cog is a one-shot Start trigger for the streaming source. There is
+  // no stop affordance — the session lives until app shutdown or error.
+  connect(ui_->buttonStreamingOptions, &QPushButton::clicked, this, &LeftPanel::streamingStartRequested);
+  // Pause/resume of follow-live, independent of start/stop. PJ3 parity.
+  connect(ui_->buttonStreamingPause, &QPushButton::toggled, this, &LeftPanel::streamingPauseToggled);
+  connect(
+      ui_->buttonStreamingPause, &QPushButton::toggled, this, [this](bool) { applyPauseButtonState(currentTheme()); });
   connect(ui_->comboStreaming, &QComboBox::currentTextChanged, this, &LeftPanel::streamingSourceChanged);
 
   // Buffer scrubber: restore from QSettings on construct, persist + emit on change.
@@ -140,13 +145,29 @@ void LeftPanel::setRecentEnabled(bool enabled) {
 
 void LeftPanel::setStreamingSources(const QStringList& names) {
   const QString previous = ui_->comboStreaming->currentText();
-  QSignalBlocker block(ui_->comboStreaming);
-  ui_->comboStreaming->clear();
-  ui_->comboStreaming->addItems(names);
-  const int idx = ui_->comboStreaming->findText(previous);
-  if (idx >= 0) {
-    ui_->comboStreaming->setCurrentIndex(idx);
+  {
+    QSignalBlocker block(ui_->comboStreaming);
+    ui_->comboStreaming->clear();
+    ui_->comboStreaming->addItems(names);
+    const int idx = ui_->comboStreaming->findText(previous);
+    if (idx >= 0) {
+      ui_->comboStreaming->setCurrentIndex(idx);
+    }
   }
+  // QComboBox auto-selects index 0 on the first addItems(), but the blocker
+  // above swallows the corresponding currentTextChanged; emit once so the
+  // visible selection matches what listeners (StreamingSourceManager) hold.
+  const QString current = ui_->comboStreaming->currentText();
+  if (current != previous) {
+    emit streamingSourceChanged(current);
+  }
+}
+
+void LeftPanel::applyPauseButtonState(QString theme) {
+  const bool paused = ui_->buttonStreamingPause->isChecked();
+  ui_->buttonStreamingPause->setIcon(
+      LoadSvg(paused ? ":/resources/svg/play_arrow.svg" : ":/resources/svg/pause.svg", theme));
+  ui_->buttonStreamingPause->setToolTip(paused ? tr("Resume streaming") : tr("Pause streaming"));
 }
 
 QDomElement LeftPanel::saveSourcesState(QDomDocument& doc) const {
@@ -221,6 +242,7 @@ void LeftPanel::applyIcons(QString theme) {
   ui_->buttonReloadData->setIcon(LoadSvg(":/resources/svg/restore_page.svg", theme));
   ui_->buttonRecentFiles->setIcon(LoadSvg(":/resources/svg/play_arrow.svg", theme));
   ui_->buttonStreamingOptions->setIcon(LoadSvg(":/resources/svg/add_tab.svg", theme));
+  applyPauseButtonState(theme);
 
   const QSize icon_sz(chrome_metrics_.icon_size, chrome_metrics_.icon_size);
   const int button_extent = chrome_metrics_.icon_size + chrome_metrics_.icon_padding;

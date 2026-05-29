@@ -1,0 +1,449 @@
+#include "StreamingSourceManager.h"
+
+#include <QLoggingCategory>
+#include <QMetaObject>
+#include <QSettings>
+#include <QThread>
+#include <cstdint>
+#include <limits>
+#include <nlohmann/json.hpp>
+#include <string>
+#include <utility>
+
+#include "DialogPresenter.h"
+#include "pj_base/data_source_protocol.h"
+#include "pj_base/dataset.hpp"
+#include "pj_datastore/engine.hpp"
+#include "pj_datastore/object_store.hpp"
+#include "pj_datastore/topic_storage.hpp"
+#include "pj_marketplace/extension.hpp"
+#include "pj_plugins/host/data_source_handle.hpp"
+#include "pj_plugins/host/data_source_library.hpp"
+#include "pj_plugins/host/message_parser_handle.hpp"
+#include "pj_plugins/host/service_registry_builder.hpp"
+#include "pj_runtime/CatalogModel.h"
+#include "pj_runtime/DataSourceRuntimeHost.h"
+#include "pj_runtime/ExtensionCatalogService.h"
+#include "pj_runtime/SessionManager.h"
+
+namespace PJ {
+
+namespace {
+
+Q_LOGGING_CATEGORY(lcStream, "pj.app.streamingmanager")
+
+// v1 hardcoded. Promote to a member + setter if/when we want it configurable.
+// 50ms (20Hz) balances perceived latency against host overhead.
+constexpr int kPollPeriodMs = 50;
+
+// ObjectStore memory ceiling per object topic. Finite so the tail buffer
+// (post-pause pushes accumulating on the secondary store) is bounded;
+// at the cap the standard FIFO retention drops the oldest tail entries.
+// 64 MiB is low enough to expose tail growth quickly with raw 1080p
+// imagery during testing (~10 frames at 6 MB/frame). Production might
+// raise this; image-compression (Fase 3) will revisit.
+constexpr size_t kStreamingObjectMemoryBudget = 64U * 1024U * 1024U;
+
+constexpr const char* kDefaultTimeDomainName = "default";
+constexpr const char* kPluginConfigKeyPrefix = "PluginConfig/";
+constexpr const char* kStreamingBufferKey = "MainWindow.streamingBufferValue";
+
+QString pluginConfigKey(const std::string& plugin_id) {
+  return QString::fromLatin1(kPluginConfigKeyPrefix) + QString::fromStdString(plugin_id);
+}
+
+// Looks up a streaming plugin by display name. Returns nullptr when no
+// streaming plugin matches — caller surfaces the error.
+const LoadedDataSource* resolveStreamSource(const ExtensionCatalogService& extensions, const QString& plugin_id) {
+  for (const auto* ds : extensions.streamSources()) {
+    if (QString::fromStdString(ds->name) == plugin_id) {
+      return ds;
+    }
+  }
+  return nullptr;
+}
+
+}  // namespace
+
+// Per-session state. Held by unique_ptr in the manager's map so the worker
+// thread can hold a stable pointer to it across map mutations.
+struct StreamingSourceManager::StreamingSession {
+  std::string plugin_id;
+  DatasetId dataset_id = 0;
+  DataSourceHandle handle;
+  std::unique_ptr<DataSourceRuntimeHost> runtime_host_;
+  std::unique_ptr<QThread> worker;
+
+  explicit StreamingSession(DataSourceHandle&& h) : handle(std::move(h)) {}
+};
+
+StreamingSourceManager::StreamingSourceManager(
+    SessionManager& session, ExtensionCatalogService& extensions, CatalogModel& catalog, QWidget* dialog_parent,
+    QObject* parent)
+    : QObject(parent),
+      session_manager_(session),
+      extensions_(extensions),
+      catalog_(catalog),
+      dialog_parent_(dialog_parent),
+      secondary_object_store_(std::make_unique<ObjectStore>()),
+      secondary_data_engine_(std::make_unique<DataEngine>()) {
+  retention_seconds_ = QSettings().value(kStreamingBufferKey, retention_seconds_).toInt();
+}
+
+StreamingSourceManager::~StreamingSourceManager() {
+  // Cooperative stop + join for every live session. We can't go through
+  // onWorkerFinished here because the UI event loop won't run again.
+  for (auto& [dataset_id, sess] : sessions_) {
+    if (sess->runtime_host_ != nullptr) {
+      sess->runtime_host_->requestStop("manager shutdown");
+    }
+  }
+  for (auto& [dataset_id, sess] : sessions_) {
+    if (sess->worker != nullptr) {
+      sess->worker->wait();
+    }
+  }
+}
+
+bool StreamingSourceManager::hasActiveSession() const {
+  return !sessions_.empty();
+}
+
+void StreamingSourceManager::onSourceChanged(const QString& plugin_id) {
+  selected_plugin_ = plugin_id;
+}
+
+void StreamingSourceManager::onBufferChanged(int seconds) {
+  // The worker loop re-applies the budget on each UI-thread hop (see
+  // workerLoop below), so simply storing the new value is enough — the
+  // change reaches every live session on the next iteration (~50 ms).
+  retention_seconds_ = seconds;
+}
+
+void StreamingSourceManager::onStartRequested() {
+  if (selected_plugin_.isEmpty()) {
+    qCWarning(lcStream) << "Start requested but no stream source selected.";
+    emit setupError(tr("No stream source selected."));
+    return;
+  }
+  startSession(selected_plugin_);
+}
+
+void StreamingSourceManager::onPauseToggled(bool paused) {
+  paused_ = paused;
+  if (paused) {
+    // Pause: target swap onto the secondary store / engine for both
+    // families. The primary stays frozen by absence of writes — that's
+    // what consumers (Media2DDockWidget, PlotWidget) read while paused.
+    for (auto& [_id, sess] : sessions_) {
+      sess->runtime_host_->setObjectStoreTarget(secondary_object_store_.get());
+      sess->runtime_host_->setDataEngineTarget(secondary_data_engine_.get());
+    }
+    return;
+  }
+  // Resume. Swap targets BEFORE flushing so any push already in flight
+  // finishes on the secondary and the NEXT push goes to primary; otherwise
+  // the flush would race against new arrivals.
+  auto& primary_store = session_manager_.objectStore();
+  auto& primary_engine = session_manager_.dataEngine();
+  for (auto& [_id, sess] : sessions_) {
+    sess->runtime_host_->setObjectStoreTarget(&primary_store);
+    sess->runtime_host_->setDataEngineTarget(&primary_engine);
+  }
+  flushSecondaryIntoPrimary();
+  flushSecondaryDataEngineIntoPrimary();
+  // Catch-up nudge so consumers (PlotWidget auto-fit, Media2DDockWidget jump
+  // to latest frame) land on the post-flush live edge. Mirrors PJ3 "flush at
+  // play" semantics.
+  for (const auto& [dataset_id, _] : sessions_) {
+    const auto topic_ids = session_manager_.createReader().listTopics(dataset_id);
+    QVector<TopicId> ids;
+    ids.reserve(static_cast<qsizetype>(topic_ids.size()));
+    for (const TopicId id : topic_ids) {
+      ids.push_back(id);
+    }
+    session_manager_.notifyIngest(std::move(ids), /*live=*/true);
+  }
+}
+
+void StreamingSourceManager::flushSecondaryDataEngineIntoPrimary() {
+  // Zero-copy bulk transfer: DataEngine::flushTo moves every sealed chunk
+  // deque from secondary to primary by pointer move; no chunk buffer is
+  // reconstructed. Topics are matched by descriptor (dataset_id + name),
+  // and the lockstep registration in startSession guarantees the matching
+  // descriptors exist on both sides. The secondary's topics stay registered
+  // (only contents transfer) so the next pause does not re-mirror.
+  if (auto result = secondary_data_engine_->flushTo(session_manager_.dataEngine()); !result) {
+    qCWarning(lcStream) << "flushSecondaryDataEngineIntoPrimary failed:" << QString::fromStdString(result.error());
+  }
+}
+
+void StreamingSourceManager::flushSecondaryIntoPrimary() {
+  // Zero-copy bulk transfer: ObjectStore::flushTo moves every ObjectEntry
+  // from secondary into primary by value-moving the entry (its std::variant
+  // / std::any holds either a shared_ptr or a closure; both transfer with
+  // their captured state intact, so no payload bytes are copied and no lazy
+  // closure is invoked during the flush). Topics matched by descriptor;
+  // lockstep registration in DataSourceRuntimeHost::cbEnsureParserBinding
+  // guarantees compatibility. Topics stay registered on the secondary.
+  if (auto result = secondary_object_store_->flushTo(session_manager_.objectStore()); !result) {
+    qCWarning(lcStream) << "flushSecondaryIntoPrimary failed:" << QString::fromStdString(result.error());
+  }
+}
+
+void StreamingSourceManager::startSession(const QString& plugin_id) {
+  const LoadedDataSource* source_ptr = resolveStreamSource(extensions_, plugin_id);
+  if (source_ptr == nullptr) {
+    qCWarning(lcStream) << "Stream plugin not found:" << plugin_id;
+    emit setupError(tr("Stream plugin '%1' not found.").arg(plugin_id));
+    return;
+  }
+  const LoadedDataSource& source = *source_ptr;
+  const QString source_name = QString::fromStdString(source.name);
+
+  DataSourceHandle handle = source.library.createHandle();
+  if (!handle.valid()) {
+    qCWarning(lcStream) << "createHandle failed for" << source_name;
+    emit setupError(tr("Plugin '%1': createHandle failed.").arg(source_name));
+    return;
+  }
+
+  DataEngine& engine = session_manager_.dataEngine();
+  const TimeDomainId td_id = ensureDefaultTimeDomainId();
+  if (td_id == 0) {
+    emit setupError(tr("Could not create the default time domain."));
+    return;
+  }
+
+  const QString display_name = QStringLiteral("[stream] %1").arg(source_name);
+  auto dataset_or =
+      engine.createDataset(DatasetDescriptor{.source_name = display_name.toStdString(), .time_domain_id = td_id});
+  if (!dataset_or.has_value()) {
+    emit setupError(tr("createDataset failed: %1").arg(QString::fromStdString(dataset_or.error())));
+    return;
+  }
+  const DatasetId dataset_id = static_cast<DatasetId>(*dataset_or);
+  const PJ_data_source_handle_t source_handle{static_cast<uint32_t>(dataset_id)};
+
+  // Lockstep mirror onto the secondary engine. Topics are mirrored
+  // individually inside DataSourceRuntimeHost; the dataset has to exist
+  // here so cbEnsureParserBinding can use the same DatasetId on both
+  // engines without translation.
+  auto mirrored_dataset = secondary_data_engine_->createDataset(
+      DatasetDescriptor{.source_name = display_name.toStdString(), .time_domain_id = td_id});
+  if (!mirrored_dataset.has_value()) {
+    emit setupError(tr("secondary createDataset failed: %1").arg(QString::fromStdString(mirrored_dataset.error())));
+    return;
+  }
+  if (*mirrored_dataset != dataset_id) {
+    emit setupError(tr("lockstep desync on dataset: primary=%1 secondary=%2").arg(dataset_id).arg(*mirrored_dataset));
+    return;
+  }
+
+  auto session = std::make_unique<StreamingSession>(std::move(handle));
+  session->plugin_id = source.name;
+  session->dataset_id = dataset_id;
+  session->runtime_host_ = std::make_unique<DataSourceRuntimeHost>(
+      engine, extensions_, dataset_id, source_handle, session_manager_.objectStore(), source.name,
+      [this](ObjectTopicId id, std::unique_ptr<MessageParserHandle> parser) {
+        session_manager_.registerObjectTopicParser(id, std::move(parser));
+      },
+      secondary_object_store_.get(), secondary_data_engine_.get());
+
+  ServiceRegistryBuilder registry;
+  session->runtime_host_->registerServices(registry);
+
+  if (auto status = session->handle.bind(registry.view()); !status) {
+    emit streamError(
+        dataset_id, tr("Plugin '%1': bind failed: %2").arg(source_name, QString::fromStdString(status.error())));
+    return;
+  }
+
+  QSettings persisted_settings;
+  const QString config_key = pluginConfigKey(source.name);
+  std::string config = persisted_settings.value(config_key, QString()).toString().toStdString();
+  // Always invoke loadConfig — even on a first run with empty config. Stream
+  // plugins use this hook to wire the runtime host into their dialog (e.g.
+  // populating the available-encodings combo via list_available_encodings).
+  // Skipping it leaves the dialog with "(no parsers available)" and the OK
+  // button disabled.
+  if (auto status = session->handle.loadConfig(config); !status) {
+    qCInfo(lcStream) << "loadConfig failed; proceeding with plugin defaults:" << QString::fromStdString(status.error());
+  }
+
+  // Extract parser config saved from a previous session so the embedded
+  // parser sub-dialog (e.g. JSON "Use embedded timestamp") is pre-populated.
+  std::string initial_parser_config;
+  {
+    auto saved_cfg = nlohmann::json::parse(config, nullptr, false);
+    if (!saved_cfg.is_discarded() && saved_cfg.contains("_parser_config")) {
+      initial_parser_config = saved_cfg["_parser_config"].get<std::string>();
+    }
+  }
+
+  const auto dlg = dialog_presenter::showDataSourceDialog({
+      .source = source,
+      .handle = session->handle,
+      .catalog = extensions_,
+      .parent = dialog_parent_,
+      .initial_parser_config = initial_parser_config,
+  });
+  if (dlg.outcome == dialog_presenter::Outcome::kPluginContractViolation) {
+    emit streamError(
+        dataset_id, tr("Plugin contract violation: %1. Reinstall the plugin from the Marketplace.")
+                        .arg(QString::fromStdString(dlg.error)));
+    return;
+  }
+  if (dlg.outcome == dialog_presenter::Outcome::kRejected) {
+    qCInfo(lcStream) << "User cancelled stream dialog for" << source_name;
+    return;
+  }
+  if (dlg.payload.has_value()) {
+    config = dlg.payload->saved_config;
+    // Embed the parser sub-dialog config (e.g. JSON embedded-timestamp
+    // settings) into the main plugin config under "_parser_config" so the
+    // stream plugin forwards it to ensureParserBinding when each topic's
+    // parser binding is created in the worker loop.
+    if (!dlg.payload->parser_config.empty()) {
+      auto cfg = nlohmann::json::parse(config, nullptr, false);
+      if (!cfg.is_discarded()) {
+        cfg["_parser_config"] = dlg.payload->parser_config;
+        config = cfg.dump();
+      }
+    }
+    if (auto status = session->handle.loadConfig(config); !status) {
+      emit streamError(
+          dataset_id, tr("Plugin '%1': loadConfig (post-dialog) failed: %2")
+                          .arg(source_name, QString::fromStdString(status.error())));
+      return;
+    }
+  }
+  persisted_settings.setValue(config_key, QString::fromStdString(config));
+
+  if (auto status = session->handle.start(); !status) {
+    emit streamError(
+        dataset_id, tr("Plugin '%1': start failed: %2").arg(source_name, QString::fromStdString(status.error())));
+    return;
+  }
+
+  // QThread::create runs the lambda as the thread's run(); no Qt event loop
+  // needed in the worker — we only post back via QueuedConnection.
+  session->worker.reset(QThread::create([this, dataset_id]() { workerLoop(dataset_id); }));
+
+  QThread* worker_ptr = session->worker.get();
+  sessions_.emplace(dataset_id, std::move(session));
+  worker_ptr->start();
+
+  emit streamStarted(dataset_id);
+}
+
+void StreamingSourceManager::workerLoop(DatasetId dataset_id) {
+  auto it = sessions_.find(dataset_id);
+  if (it == sessions_.end()) {
+    return;
+  }
+  StreamingSession* sess = it->second.get();
+
+  while (!sess->runtime_host_->stopRequested()) {
+    if (auto status = sess->handle.poll(); !status) {
+      const QString err = QString::fromStdString(status.error());
+      QMetaObject::invokeMethod(
+          this, [this, dataset_id, err]() { emit streamError(dataset_id, err); }, Qt::QueuedConnection);
+      sess->runtime_host_->requestStop(std::string("plugin poll error: ") + err.toStdString());
+      break;
+    }
+    sess->runtime_host_->flushPending();
+    // Broadcast live-advance on the UI thread so plot adapters invalidate
+    // their sample caches AND follow-live consumers auto-fit. The write
+    // host wrote directly through DataEngine and bypassed SessionManager's
+    // own commitChunks → neither Qt signal would fire otherwise.
+    //
+    // The `live` flag is gated on `paused_`: when the user has paused the
+    // stream, samples keep being committed but the plot stops following the
+    // live edge (PlotWidget skips resetZoom and just replots in place).
+    //
+    // Retention enforcement piggybacks on the same UI-thread hop so
+    // `retention_seconds_` stays UI-thread-only (no atomic needed). Trim
+    // runs before notifyIngest so consumers observe the post-trim engine.
+    QMetaObject::invokeMethod(
+        this,
+        [this, dataset_id]() {
+          const auto window_ns = static_cast<int64_t>(retention_seconds_) * 1'000'000'000LL;
+          // Apply the budget on every tick: cheap (one map iteration per
+          // session) and idempotent. Solves the cold-start problem where the
+          // plugin creates new object topics mid-stream (post-startSession)
+          // and would otherwise miss the budget set by setObjectRetentionBudget.
+          if (auto it = sessions_.find(dataset_id); it != sessions_.end()) {
+            it->second->runtime_host_->setObjectRetentionBudget(window_ns, kStreamingObjectMemoryBudget);
+          }
+          // Scalar engine retention: the primary's pre-pause snapshot is
+          // preserved by absence of writes during pause (everything goes to
+          // the secondary engine), so the sliding window can run unguarded.
+          session_manager_.dataEngine().enforceRetention(window_ns);
+
+          const auto topic_ids = session_manager_.createReader().listTopics(dataset_id);
+          QVector<TopicId> ids;
+          ids.reserve(static_cast<qsizetype>(topic_ids.size()));
+          for (const TopicId id : topic_ids) {
+            ids.push_back(id);
+          }
+          session_manager_.notifyIngest(std::move(ids), /*live=*/!paused_);
+        },
+        Qt::QueuedConnection);
+    QThread::msleep(kPollPeriodMs);
+  }
+
+  sess->handle.stop();
+  sess->runtime_host_->flushAll();
+
+  QMetaObject::invokeMethod(this, [this, dataset_id]() { onWorkerFinished(dataset_id); }, Qt::QueuedConnection);
+}
+
+void StreamingSourceManager::onWorkerFinished(DatasetId dataset_id) {
+  auto it = sessions_.find(dataset_id);
+  if (it == sessions_.end()) {
+    return;
+  }
+  StreamingSession* sess = it->second.get();
+  const QString reason = QString::fromStdString(sess->runtime_host_->lastError());
+
+  if (sess->worker != nullptr) {
+    sess->worker->wait();
+  }
+
+  sessions_.erase(it);
+  emit streamStopped(dataset_id, reason);
+}
+
+void StreamingSourceManager::requestStopAll(const QString& reason) {
+  for (auto& [dataset_id, sess] : sessions_) {
+    sess->runtime_host_->requestStop(reason.toStdString());
+  }
+}
+
+TimeDomainId StreamingSourceManager::ensureDefaultTimeDomainId() {
+  if (default_time_domain_id_ != 0) {
+    return default_time_domain_id_;
+  }
+  auto domain_or = session_manager_.dataEngine().createTimeDomain(kDefaultTimeDomainName);
+  if (!domain_or.has_value()) {
+    qCWarning(lcStream) << "createTimeDomain failed:" << QString::fromStdString(domain_or.error());
+    return 0;
+  }
+  // Lockstep mirror onto the secondary engine so TimeDomainIds tick together
+  // (every subsequent lockstep createDataset/createTopic relies on this).
+  auto mirrored = secondary_data_engine_->createTimeDomain(kDefaultTimeDomainName);
+  if (!mirrored.has_value()) {
+    qCWarning(lcStream) << "secondary createTimeDomain failed:" << QString::fromStdString(mirrored.error());
+    return 0;
+  }
+  if (*mirrored != *domain_or) {
+    qCWarning(lcStream).nospace() << "lockstep desync on time domain: primary=" << *domain_or
+                                  << " secondary=" << *mirrored;
+    return 0;
+  }
+  default_time_domain_id_ = *domain_or;
+  return default_time_domain_id_;
+}
+
+}  // namespace PJ

@@ -4,6 +4,7 @@
 #include <QString>
 #include <QVector>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <unordered_map>
 #include <utility>
@@ -43,8 +44,21 @@ class SessionManager : public QObject {
 
   [[nodiscard]] std::vector<TopicId> commitChunks(std::vector<std::pair<TopicId, TopicChunk>> chunks);
 
+  // Re-emit hook for callers that wrote straight through the DataEngine,
+  // bypassing commitChunks() (file/stream ingest has no Qt awareness) — without
+  // it, plot adapter caches never invalidate on the ingested data. `live`
+  // propagates to samplesIngested; follow-live consumers (PlotWidget auto-fit,
+  // Media2DDockWidget frame advance) act only when it is true.
+  void notifyIngest(QVector<PJ::TopicId> ids, bool live = false);
+
   void registerObjectTopicParser(ObjectTopicId id, std::unique_ptr<MessageParserHandle> parser);
   [[nodiscard]] MessageParserPluginBase* parserForObjectTopic(ObjectTopicId id) const;
+
+  // Mutex shared by every consumer of parserForObjectTopic(id). MessageParser
+  // plugins are not thread-safe (fastcdr et al. keep stateful scratch), so
+  // workers sharing the singleton parser MUST hold this around each parseObject
+  // call. Returns nullptr if no parser is registered for the topic.
+  [[nodiscard]] std::shared_ptr<std::mutex> parserMutexForObjectTopic(ObjectTopicId id) const;
 
   struct LoadedSource {
     QString path;
@@ -62,12 +76,23 @@ class SessionManager : public QObject {
   }
 
  signals:
-  void topicsCommitted(QVector<PJ::TopicId> ids);
+  // Emitted when topics receive new samples (commit/ingest path). `live` is
+  // true only for follow-live writers (streaming today). Cache-invalidation
+  // consumers can drop the trailing arg; auto-pan/auto-fit consumers branch
+  // on it.
+  void samplesIngested(QVector<PJ::TopicId> ids, bool live);
 
  private:
+  struct ObjectParserSlot {
+    std::unique_ptr<MessageParserHandle> handle;
+    // shared_ptr so consumers can keep the mutex alive past topic removal —
+    // the lock guards their in-flight parseObject call to completion.
+    std::shared_ptr<std::mutex> mutex;
+  };
+
   DataEngine data_engine_;
   ObjectStore object_store_;
-  std::unordered_map<uint32_t, std::unique_ptr<MessageParserHandle>> object_topic_parsers_;
+  std::unordered_map<uint32_t, ObjectParserSlot> object_topic_parsers_;
   std::optional<LoadedSource> last_loaded_source_;
 };
 

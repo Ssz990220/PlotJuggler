@@ -54,6 +54,7 @@ class Media2DDockWidget : public QWidget, public IDataWidget {
   std::unique_ptr<MediaSource> media_topic_source_;
   SessionManager* session_ = nullptr;
   ObjectTopicId topic_id_{};
+  QMetaObject::Connection live_samples_conn_;
 };
 
 }  // namespace PJ

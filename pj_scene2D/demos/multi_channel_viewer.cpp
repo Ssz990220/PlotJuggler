@@ -198,7 +198,7 @@ class MultiChannelWindow : public QMainWindow {
           if (result.has_value() && !result->isNull()) {
             return PJ::sdk::makePayloadView(std::move(*result->pixels));
           }
-          return PJ::sdk::makePayloadView(std::vector<uint8_t>{raw, raw + raw_size});
+          return PJ::sdk::makePayloadView(std::vector<uint8_t>(raw, raw + raw_size));
         }
         return {};
       });

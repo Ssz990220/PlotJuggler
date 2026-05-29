@@ -140,7 +140,7 @@ int main(int argc, char* argv[]) {
     return 1;
   }
 
-  const auto& raw = entry->payload.bytes;
+  const auto raw = entry->payload.bytes;  // Span<const uint8_t>
   std::cout << "Raw message size: " << raw.size() << " bytes\n";
 
   // Try CDR extraction (ROS2 CompressedImage)

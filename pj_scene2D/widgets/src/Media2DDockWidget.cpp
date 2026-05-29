@@ -144,7 +144,10 @@ bool Media2DDockWidget::setImageTopic(
 
   std::unique_ptr<ImagePipelineSource> image_src;
   if (parser != nullptr) {
-    image_src = std::make_unique<ImagePipelineSource>(&store, topic_id, parser);
+    // The parser singleton is shared by every consumer of this topic, so the
+    // session's per-topic mutex serialises parseObject across workers.
+    image_src =
+        std::make_unique<ImagePipelineSource>(&store, topic_id, parser, session_->parserMutexForObjectTopic(topic_id));
   } else {
     image_src = std::make_unique<ImagePipelineSource>(&store, topic_id, std::move(pipeline));
   }
@@ -165,6 +168,25 @@ bool Media2DDockWidget::setImageTopic(
   media_topic_source_ = std::move(image_src);
   viewer_->setMediaSource(media_topic_source_.get());
   setWindowTitle(title.isEmpty() ? tr("2D View") : tr("2D View - %1").arg(title));
+
+  // Streaming hookup: onTrackerTime() only fires on explicit seeks (the
+  // playback clock doesn't auto-advance during live ingest), so subscribe to
+  // the SessionManager nudge and pull the latest ObjectStore tip on each live
+  // advance. setTimestamp() dedups internally when ts is unchanged.
+  if (live_samples_conn_) {
+    QObject::disconnect(live_samples_conn_);
+  }
+  live_samples_conn_ =
+      connect(session_, &SessionManager::samplesIngested, this, [this](const QVector<TopicId>&, bool live) {
+        if (!live || media_topic_source_ == nullptr || session_ == nullptr) {
+          return;
+        }
+        ObjectStore& live_store = session_->objectStore();
+        if (live_store.entryCount(topic_id_) == 0) {
+          return;
+        }
+        media_topic_source_->setTimestamp(live_store.timeRange(topic_id_).second);
+      });
 
   if (store.entryCount(topic_id) == 0) {
     qCInfo(lcMedia2DDock) << "setImageTopic: topic_id=" << topic_id.id

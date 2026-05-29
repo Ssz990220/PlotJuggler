@@ -1026,15 +1026,15 @@ PlotWidgetBase::CurveStyle PlotWidget::qwtStyleToCurveStyle(const QwtPlotCurve* 
 }
 
 void PlotWidget::reconnectDataSignals() {
-  if (topics_committed_connection_) {
-    disconnect(topics_committed_connection_);
+  if (samples_ingested_connection_) {
+    disconnect(samples_ingested_connection_);
   }
   if (session_ == nullptr) {
     return;
   }
 
-  topics_committed_connection_ =
-      connect(session_, &SessionManager::topicsCommitted, this, [this](const QVector<TopicId>& ids) {
+  samples_ingested_connection_ =
+      connect(session_, &SessionManager::samplesIngested, this, [this](const QVector<TopicId>& ids, bool live) {
         bool changed = false;
         for (auto& info : curveList()) {
           auto* adapter = dynamic_cast<DatastoreCurveAdapter*>(info.curve->data());
@@ -1056,7 +1056,16 @@ void PlotWidget::reconnectDataSignals() {
             changed = true;
           }
         }
-        if (changed) {
+        if (!changed) {
+          return;
+        }
+        if (live) {
+          // Follow-live: re-fit axes so streaming samples beyond the initial
+          // drop-time range become visible. resetZoom subsumes
+          // updateMaximumZoomArea + replot.
+          resetZoom();
+        } else {
+          // One-shot writers (file load) stay zoomed where the user left them.
           updateMaximumZoomArea();
           replot();
         }

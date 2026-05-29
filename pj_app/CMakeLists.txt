@@ -8,6 +8,8 @@ add_executable(pj_app
     src/FanoutConfig.h
     src/FileLoader.cpp
     src/FileLoader.h
+    src/StreamingSourceManager.cpp
+    src/StreamingSourceManager.h
     src/LayoutXml.cpp
     src/LayoutXml.h
     src/MainWindow.cpp

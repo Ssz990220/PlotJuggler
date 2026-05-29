@@ -154,8 +154,13 @@ std::shared_ptr<std::vector<uint8_t>> imageDataBytes(const sdk::Image& img, std:
 
 }  // namespace
 
-ImagePipelineSource::ImagePipelineSource(ObjectStore* store, ObjectTopicId topic, MessageParserPluginBase* parser)
-    : store_(store), topic_(topic), source_key_(sourceLabel(store, topic)), parser_(parser) {
+ImagePipelineSource::ImagePipelineSource(
+    ObjectStore* store, ObjectTopicId topic, MessageParserPluginBase* parser, std::shared_ptr<std::mutex> parser_mutex)
+    : store_(store),
+      topic_(topic),
+      source_key_(sourceLabel(store, topic)),
+      parser_(parser),
+      parser_mutex_(std::move(parser_mutex)) {
   worker_ = std::thread(&ImagePipelineSource::workerLoop, this);
 }
 
@@ -280,11 +285,28 @@ std::optional<DecodedFrame> ImagePipelineSource::decodeAt(int64_t ts_ns) {
   last_entry_ts_ = entry->timestamp;
 
   if (parser_ != nullptr) {
-    auto object_or = parser_->parseObject(entry->timestamp, entry->payload);
+    // entry->payload already is a PayloadView (bytes + anchor); pass it through
+    // verbatim so the anchor's lifetime extends across the parser call.
+    sdk::PayloadView payload = entry->payload;
+    // MessageParser plugins aren't thread-safe (fastcdr et al. keep stateful
+    // scratch). When two workers share one parser instance — same image topic
+    // dropped twice, so SessionManager hands back its singleton — the shared
+    // mutex prevents concurrent parseObject and scratch-buffer corruption. Held
+    // for the parseObject call only; the following any_cast/decode work on the
+    // returned BuiltinObject without touching the parser.
+    auto invokeParser = [&] {
+      if (parser_mutex_) {
+        std::lock_guard<std::mutex> lock(*parser_mutex_);
+        return parser_->parseObject(entry->timestamp, payload);
+      }
+      return parser_->parseObject(entry->timestamp, payload);
+    };
+    auto object_or = invokeParser();
     if (!object_or.has_value()) {
       warnOnce(warningKey(source_key_, "parseObject"), "{} parseObject failed: {}", source_key_, object_or.error());
       return std::nullopt;
     }
+    const PJ::Timestamp effective_ts = object_or->ts.value_or(entry->timestamp);
     if (sdk::typeOf(object_or->object) != sdk::BuiltinObjectType::kImage) {
       warnOnce(
           warningKey(source_key_, "wrong-object-kind"), "{} parseObject returned wrong object_kind={}", source_key_,
@@ -300,7 +322,7 @@ std::optional<DecodedFrame> ImagePipelineSource::decodeAt(int64_t ts_ns) {
     }
 
     if (auto raw = rawEncodingInfo(img->encoding); raw.has_value()) {
-      auto decoded = imageToDecodedFrame(*img, *raw, entry->timestamp);
+      auto decoded = imageToDecodedFrame(*img, *raw, effective_ts);
       if (!decoded.has_value()) {
         warnOnce(
             warningKey(source_key_, "raw-conversion"), "{} raw image conversion failed encoding={} size={}x{}",
@@ -314,7 +336,7 @@ std::optional<DecodedFrame> ImagePipelineSource::decodeAt(int64_t ts_ns) {
             normalized.error());
         return std::nullopt;
       }
-      normalized->pts = entry->timestamp;
+      normalized->pts = effective_ts;
       return std::move(*normalized);
     }
 
@@ -326,7 +348,7 @@ std::optional<DecodedFrame> ImagePipelineSource::decodeAt(int64_t ts_ns) {
     }
     DecodedFrame staged;
     staged.pixels = imageDataBytes(*img, topic_name);
-    staged.pts = entry->timestamp;
+    staged.pts = effective_ts;
 
     Expected<DecodedFrame> decoded = unexpected("unsupported image encoding: " + img->encoding);
     if (isJpegEncoding(img->encoding)) {
@@ -342,7 +364,7 @@ std::optional<DecodedFrame> ImagePipelineSource::decodeAt(int64_t ts_ns) {
           img->encoding, decoded.error());
       return std::nullopt;
     }
-    decoded->pts = entry->timestamp;
+    decoded->pts = effective_ts;
     auto normalized = normalize_mono16_.decode(*decoded);
     if (!normalized.has_value()) {
       warnOnce(
@@ -350,7 +372,7 @@ std::optional<DecodedFrame> ImagePipelineSource::decodeAt(int64_t ts_ns) {
           normalized.error());
       return std::nullopt;
     }
-    normalized->pts = entry->timestamp;
+    normalized->pts = effective_ts;
     return std::move(*normalized);
   }
 

@@ -243,7 +243,7 @@ struct CatalogModel::Impl {
 CatalogModel::CatalogModel(SessionManager* session, QObject* parent)
     : QObject(parent), impl_(std::make_unique<Impl>(session)) {
   if (impl_->session != nullptr) {
-    connect(impl_->session, &SessionManager::topicsCommitted, this, &CatalogModel::rebuildFromDatastore);
+    connect(impl_->session, &SessionManager::samplesIngested, this, &CatalogModel::rebuildFromDatastore);
   }
 }
 

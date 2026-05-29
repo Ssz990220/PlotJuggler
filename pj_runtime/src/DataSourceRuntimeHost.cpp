@@ -22,14 +22,15 @@ namespace PJ {
 namespace {
 Q_LOGGING_CATEGORY(lcIngest, "pj.runtime.ingest")
 
-struct PayloadAnchorGuard {
-  PJ_payload_anchor_t anchor;
-  ~PayloadAnchorGuard() {
-    if (anchor.release != nullptr) {
-      anchor.release(anchor.ctx);
-    }
+// Wrap a C-ABI payload anchor as a shared_ptr<void> whose deleter calls
+// release exactly once at refcount zero. Null anchor.release → empty
+// shared_ptr: the caller MUST copy, since the buffer dies with the C-ABI call.
+sdk::BufferAnchor wrapPayloadAnchor(const PJ_payload_anchor_t& anchor) {
+  if (anchor.release == nullptr) {
+    return {};
   }
-};
+  return sdk::BufferAnchor{std::shared_ptr<void>(anchor.ctx, anchor.release)};
+}
 
 std::vector<uint8_t> copyPayloadBytes(const PJ_payload_t& payload) {
   std::vector<uint8_t> bytes;
@@ -37,6 +38,31 @@ std::vector<uint8_t> copyPayloadBytes(const PJ_payload_t& payload) {
     bytes.assign(payload.data, payload.data + payload.size);
   }
   return bytes;
+}
+
+// Idempotent lazy closure that replays the same PayloadView on every read.
+// Anchor-bearing payload: captures the anchor so the buffer lives for the
+// ObjectStore entry's lifetime (zero copy). Null anchor (transient buffer):
+// copies the bytes into a shared_ptr<vector> that serves as its own anchor.
+std::function<sdk::PayloadView()> makeCapturedPayloadClosure(const PJ_payload_t& payload) {
+  if (payload.anchor.release == nullptr) {
+    auto bytes = std::make_shared<const std::vector<uint8_t>>(copyPayloadBytes(payload));
+    return [bytes]() -> sdk::PayloadView {
+      return sdk::PayloadView{
+          Span<const uint8_t>{bytes->data(), bytes->size()},
+          sdk::BufferAnchor{bytes},
+      };
+    };
+  }
+  auto anchor = wrapPayloadAnchor(payload.anchor);
+  const uint8_t* data = payload.data;
+  uint64_t size = payload.size;
+  return [anchor = std::move(anchor), data, size]() -> sdk::PayloadView {
+    return sdk::PayloadView{
+        Span<const uint8_t>{data, static_cast<size_t>(size)},
+        anchor,
+    };
+  };
 }
 
 struct FetcherOwner {
@@ -69,12 +95,10 @@ struct LazyFetchContext {
   int64_t timestamp_ns = 0;
 };
 
-// Wraps the plugin's C-ABI lazy fetcher in a closure that returns a
-// PayloadView with the plugin's anchor preserved through to ObjectStore.
-// On invocation, the plugin's payload.anchor (a {ctx, release fn} pair) is
-// re-wrapped in a host-local shared_ptr whose custom deleter routes back to
-// the plugin's release fn through the C ABI. Both sides allocate and free on
-// their own side of the boundary; the bytes are read in place via the Span.
+// Deferred lazy closure: re-invokes the fetcher on every read, wrapping each
+// invocation's anchor in a per-call shared_ptr so a returned PayloadView can
+// outlive the call without holding the fetcher. For kPureLazy sources, where
+// holding bytes until read time costs more than re-fetching.
 std::function<sdk::PayloadView()> makeLazyFetchClosure(
     std::shared_ptr<FetcherOwner> owner, std::shared_ptr<std::mutex> fetch_mutex, LazyFetchContext context) {
   return [owner = std::move(owner), fetch_mutex = std::move(fetch_mutex),
@@ -118,15 +142,18 @@ std::function<sdk::PayloadView()> makeLazyFetchClosure(
       }
       return {};
     }
-    auto host_anchor =
-        std::shared_ptr<const void>(payload.anchor.ctx, [release = payload.anchor.release](const void* h) noexcept {
-          if (release != nullptr) {
-            release(const_cast<void*>(h));
-          }
-        });
+    auto anchor = wrapPayloadAnchor(payload.anchor);
+    if (anchor == nullptr) {
+      // No ownership — must copy because the buffer dies with this call.
+      auto bytes = std::make_shared<const std::vector<uint8_t>>(copyPayloadBytes(payload));
+      return sdk::PayloadView{
+          Span<const uint8_t>{bytes->data(), bytes->size()},
+          sdk::BufferAnchor{bytes},
+      };
+    }
     return sdk::PayloadView{
-        Span<const uint8_t>{payload.data, payload.size},
-        sdk::BufferAnchor{std::move(host_anchor)},
+        Span<const uint8_t>{payload.data, static_cast<size_t>(payload.size)},
+        std::move(anchor),
     };
   };
 }
@@ -186,10 +213,13 @@ const PJ_data_source_runtime_host_vtable_t DataSourceRuntimeHost::kVtable = {
 
 DataSourceRuntimeHost::DataSourceRuntimeHost(
     DataEngine& engine, ExtensionCatalogService& catalog, DatasetId dataset_id, PJ_data_source_handle_t source_handle,
-    ObjectStore& object_store, std::string source_id, ObjectTopicParserRegistrar parser_registrar)
+    ObjectStore& object_store, std::string source_id, ObjectTopicParserRegistrar parser_registrar,
+    ObjectStore* secondary_object_store, DataEngine* secondary_data_engine)
     : engine_(engine),
       catalog_(catalog),
       object_store_(object_store),
+      secondary_object_store_(secondary_object_store),
+      secondary_data_engine_(secondary_data_engine),
       source_id_(std::move(source_id)),
       object_topic_parser_registrar_(std::move(parser_registrar)),
       dataset_id_(dataset_id),
@@ -230,9 +260,53 @@ void DataSourceRuntimeHost::flushAll() {
   }
 }
 
+void DataSourceRuntimeHost::flushPending() {
+  source_write_host_.flushPending();
+  for (auto& [binding_id, binding] : parser_bindings_) {
+    if (binding.write_host != nullptr) {
+      binding.write_host->flushPending();
+    }
+  }
+}
 void DataSourceRuntimeHost::requestStop(std::string_view reason) {
   last_error_.assign(reason.data(), reason.size());
   stop_requested_.store(true);
+}
+
+void DataSourceRuntimeHost::setObjectRetentionBudget(int64_t time_window_ns, size_t max_memory_bytes) {
+  for (auto& [_id, binding] : parser_bindings_) {
+    if (!binding.object_topic_id.has_value()) {
+      continue;
+    }
+    object_store_.setRetentionBudget(
+        *binding.object_topic_id,
+        RetentionBudget{.time_window_ns = time_window_ns, .max_memory_bytes = max_memory_bytes});
+  }
+}
+
+void DataSourceRuntimeHost::setObjectStoreTarget(ObjectStore* target) {
+  // Retarget the source-level object write host and every per-parser-binding
+  // one (the streaming hot path). Each host's atomic swap lets in-flight
+  // pushes finish on the old target while the next lands on the new one; the
+  // manager guarantees `target` already has the topics (lockstep mirror).
+  source_object_write_host_.setTarget(target);
+  for (auto& [_id, binding] : parser_bindings_) {
+    if (binding.object_write_host != nullptr) {
+      binding.object_write_host->setTarget(target);
+    }
+  }
+}
+
+void DataSourceRuntimeHost::setDataEngineTarget(DataEngine* target) {
+  // Mirrors setObjectStoreTarget but for scalar writes. Retargets the
+  // source-level write host and every parser binding so all scalar pushes
+  // land on the secondary engine during pause and on the primary on resume.
+  source_write_host_.setTarget(target);
+  for (auto& [_id, binding] : parser_bindings_) {
+    if (binding.write_host != nullptr) {
+      binding.write_host->setTarget(target);
+    }
+  }
 }
 
 bool DataSourceRuntimeHost::fail(PJ_error_t* out_error, const char* message) noexcept {
@@ -327,6 +401,27 @@ bool DataSourceRuntimeHost::cbEnsureParserBinding(
     }
     const PJ_topic_handle_t topic_handle{static_cast<uint32_t>(*topic_or)};
 
+    // Lockstep-mirror into the secondary engine. The two TopicId counters
+    // stay in step only if every primary createTopic is paired with a
+    // secondary one; a mismatch is a desync (later a wrong-engine push) — fail
+    // loudly here at registration.
+    if (self->secondary_data_engine_ != nullptr) {
+      auto mirrored = self->secondary_data_engine_->createTopic(
+          self->dataset_id_, TopicDescriptor{.name = std::string(topic_name)});
+      if (!mirrored.has_value()) {
+        return self->fail(
+            out_error,
+            ("failed to mirror topic '" + std::string(topic_name) + "' into secondary engine: " + mirrored.error())
+                .c_str());
+      }
+      if (*mirrored != *topic_or) {
+        return self->fail(
+            out_error, ("lockstep desync: primary topic id " + std::to_string(*topic_or) + " != secondary topic id " +
+                        std::to_string(*mirrored))
+                           .c_str());
+      }
+    }
+
     auto write_host = std::make_unique<DatastoreParserWriteHost>(self->engine_, topic_handle);
 
     // Build the service registry the parser binds against. The builder must
@@ -368,18 +463,37 @@ bool DataSourceRuntimeHost::cbEnsureParserBinding(
         object_topic_id = existing;
       } else {
         const std::string metadata_json = fmt::format(R"({{"builtin_object_type":"{}"}})", sdk::name(object_kind));
-        auto registered = self->object_store_.registerTopic(
-            ObjectTopicDescriptor{
-                .dataset_id = self->dataset_id_,
-                .topic_name = std::string(topic_name),
-                .metadata_json = metadata_json,
-            });
+        const ObjectTopicDescriptor descriptor{
+            .dataset_id = self->dataset_id_,
+            .topic_name = std::string(topic_name),
+            .metadata_json = metadata_json,
+        };
+        auto registered = self->object_store_.registerTopic(descriptor);
         if (!registered.has_value()) {
           return self->fail(
               out_error,
               ("failed to register object topic '" + std::string(topic_name) + "': " + registered.error()).c_str());
         }
         object_topic_id = *registered;
+        // Lockstep-mirror into the secondary store. The two id counters stay
+        // in step only if every primary registerTopic is paired with a
+        // secondary one; a mismatch means another caller (multi-session race?)
+        // slipped a registration in — fail loudly here, not at the next push.
+        if (self->secondary_object_store_ != nullptr) {
+          auto mirrored = self->secondary_object_store_->registerTopic(descriptor);
+          if (!mirrored.has_value()) {
+            return self->fail(
+                out_error, ("failed to mirror object topic '" + std::string(topic_name) +
+                            "' into secondary store: " + mirrored.error())
+                               .c_str());
+          }
+          if (mirrored->id != registered->id) {
+            return self->fail(
+                out_error, ("lockstep desync: primary id " + std::to_string(registered->id) + " != secondary id " +
+                            std::to_string(mirrored->id))
+                               .c_str());
+          }
+        }
       }
       object_write_host = std::make_unique<DatastoreParserObjectWriteHost>(self->object_store_, object_topic_id->id);
       registry_builder->registerService<sdk::ParserObjectWriteHostService>(object_write_host->raw());
@@ -520,7 +634,11 @@ bool DataSourceRuntimeHost::cbPushMessageV2(
       return false;
     }
 
-    PayloadAnchorGuard payload_anchor_guard{payload.anchor};
+    // Build the captured-payload closure FIRST, so the anchor lifetime binds
+    // to the closure rather than this scope (no PayloadAnchorGuard needed): on
+    // any abort below, dropping `captured_closure` releases the anchor cleanly.
+    auto captured_closure = makeCapturedPayloadClosure(payload);
+
     if (payload.data == nullptr && payload.size > 0) {
       return self->fail(out_error, "message data fetcher returned null data");
     }
@@ -528,15 +646,15 @@ bool DataSourceRuntimeHost::cbPushMessageV2(
       return self->fail(out_error, status.error().c_str());
     }
 
-    if (policy == sdk::ObjectIngestPolicy::kLazyObjectsEagerScalars) {
-      return push_lazy_object();
-    }
-
+    // Always-lazy doctrine: object entries land as lazy closures capturing the
+    // upstream anchor, so store reads replay the same PayloadView (zero-copy
+    // when anchor-bearing). Eager and kLazyObjectsEagerScalars collapse here —
+    // the parser already ran and we hold the bytes, so no kPureLazy re-fetch.
     if (is_object_topic) {
       if (auto status =
-              self->object_store_.pushOwned(*binding.object_topic_id, timestamp_ns, copyPayloadBytes(payload));
+              self->object_store_.pushLazy(*binding.object_topic_id, timestamp_ns, std::move(captured_closure));
           !status) {
-        return self->fail(out_error, ("ObjectStore.pushOwned failed: " + status.error()).c_str());
+        return self->fail(out_error, ("ObjectStore.pushLazy failed: " + status.error()).c_str());
       }
     }
     return true;

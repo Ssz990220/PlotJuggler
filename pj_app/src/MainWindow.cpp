@@ -55,6 +55,7 @@
 #include "FileLoader.h"
 #include "LayoutXml.h"
 #include "PreferencesDialog.h"
+#include "StreamingSourceManager.h"
 #include "Theme.h"
 #include "TitleBar.h"
 #include "pj_base/dataset.hpp"
@@ -129,14 +130,10 @@ constexpr auto kIconSizeKey = "ui/icon_size";
 constexpr auto kIconPaddingKey = "ui/icon_padding";
 constexpr auto kLayoutPaddingKey = "ui/layout_padding";
 constexpr auto kLayoutSpacingKey = "ui/layout_spacing";
-constexpr int kIconSizeMin = 12;
-constexpr int kIconSizeMax = 48;
-constexpr int kIconPaddingMin = 0;
-constexpr int kIconPaddingMax = 32;
-constexpr int kLayoutPaddingMin = 0;
-constexpr int kLayoutPaddingMax = 16;
-constexpr int kLayoutSpacingMin = 0;
-constexpr int kLayoutSpacingMax = 16;
+constexpr Range<int> kIconSizeRange{12, 48};
+constexpr Range<int> kIconPaddingRange{0, 32};
+constexpr Range<int> kLayoutPaddingRange{0, 16};
+constexpr Range<int> kLayoutSpacingRange{0, 16};
 constexpr int kIconSizeDefault = 24;
 constexpr int kIconPaddingDefault = 4;
 constexpr int kLayoutPaddingDefault = 2;
@@ -240,15 +237,13 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
   {
     QSettings s;
     chrome_metrics_.icon_size =
-        std::clamp(s.value(QString::fromLatin1(kIconSizeKey), kIconSizeDefault).toInt(), kIconSizeMin, kIconSizeMax);
-    chrome_metrics_.icon_padding = std::clamp(
-        s.value(QString::fromLatin1(kIconPaddingKey), kIconPaddingDefault).toInt(), kIconPaddingMin, kIconPaddingMax);
-    chrome_metrics_.layout_padding = std::clamp(
-        s.value(QString::fromLatin1(kLayoutPaddingKey), kLayoutPaddingDefault).toInt(), kLayoutPaddingMin,
-        kLayoutPaddingMax);
-    chrome_metrics_.layout_spacing = std::clamp(
-        s.value(QString::fromLatin1(kLayoutSpacingKey), kLayoutSpacingDefault).toInt(), kLayoutSpacingMin,
-        kLayoutSpacingMax);
+        kIconSizeRange.clamp(s.value(QString::fromLatin1(kIconSizeKey), kIconSizeDefault).toInt());
+    chrome_metrics_.icon_padding =
+        kIconPaddingRange.clamp(s.value(QString::fromLatin1(kIconPaddingKey), kIconPaddingDefault).toInt());
+    chrome_metrics_.layout_padding =
+        kLayoutPaddingRange.clamp(s.value(QString::fromLatin1(kLayoutPaddingKey), kLayoutPaddingDefault).toInt());
+    chrome_metrics_.layout_spacing =
+        kLayoutSpacingRange.clamp(s.value(QString::fromLatin1(kLayoutSpacingKey), kLayoutSpacingDefault).toInt());
   }
 
   ui_->setupUi(this);
@@ -382,6 +377,18 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
         auto* widget = new Media2DDockWidget(parent);
         widget->setSessionManager(&session_->sessionManager());
         if (widget->setImageTopic(topic_id, object_type, title)) {
+          // Dropping a streaming topic into a view is what seeds the playback
+          // slider — not subscribing in the source dialog. Position the range
+          // over the streamed window and the playhead at the live edge
+          // ("now"); from here live ingest keeps it tracking the live edge.
+          if (active_streaming_dataset_id_ != 0) {
+            streaming_playback_seeded_ = true;
+            if (const auto range = computeActiveStreamingRangeSec(); range.has_value()) {
+              auto& engine = session_->playbackEngine();
+              engine.setRange(range->min, range->max);
+              engine.setCurrentTime(range->max);
+            }
+          }
           widget->setPointInspectorEnabled(show_points_);
           return widget;
         }
@@ -611,6 +618,52 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
     forEachDock([time](DockWidget* dock) { dock->onTrackerTime(time); });
   });
 
+  streaming_manager_ = std::make_unique<StreamingSourceManager>(
+      session_->sessionManager(), session_->extensionCatalog(), session_->catalogModel(), this, this);
+  connect(
+      ui_->leftPanel, &LeftPanel::streamingSourceChanged, streaming_manager_.get(),
+      &StreamingSourceManager::onSourceChanged);
+  connect(
+      ui_->leftPanel, &LeftPanel::streamingBufferChanged, streaming_manager_.get(),
+      &StreamingSourceManager::onBufferChanged);
+  connect(
+      ui_->leftPanel, &LeftPanel::streamingStartRequested, streaming_manager_.get(),
+      &StreamingSourceManager::onStartRequested);
+  connect(
+      ui_->leftPanel, &LeftPanel::streamingPauseToggled, streaming_manager_.get(),
+      &StreamingSourceManager::onPauseToggled);
+
+  // Streaming → playback range wiring. The slider range is scoped to the
+  // active streaming dataset only — unioning with every dataset in the global
+  // store (as AppSession::seedPlaybackFromSession does for file loads) can
+  // stretch the slider across unrelated historical data, leaving the actual
+  // streamed window as a sliver where intermediate scrub positions resolve to
+  // "before first entry" or "at the live edge" with nothing in between.
+  //
+  // The slider stays untouched until a streaming topic is dropped into a view
+  // (the object-widget factory above seeds range + playhead and sets
+  // streaming_playback_seeded_). Merely subscribing to topics in the source
+  // dialog must not move it. Once seeded, the playhead follows the live edge
+  // while live — re-pinned to rangeMax on every ingest so the slider tracks
+  // "now" instead of drifting backward as the window grows. On LeftPanel pause
+  // (live=false) range + playhead freeze, so the user can rewind.
+  connect(streaming_manager_.get(), &StreamingSourceManager::streamStarted, this, [this](DatasetId id) {
+    active_streaming_dataset_id_ = id;
+  });
+  connect(
+      &session_->sessionManager(), &SessionManager::samplesIngested, this, [this](const QVector<TopicId>&, bool live) {
+        if (!streaming_playback_seeded_ || !live) {
+          return;
+        }
+        if (const auto range = computeActiveStreamingRangeSec(); range.has_value()) {
+          auto& engine = session_->playbackEngine();
+          engine.setRange(range->min, range->max);
+          engine.setCurrentTime(range->max);
+        }
+      });
+
+  // Populate the combo only after the manager is wired so the initial
+  // streamingSourceChanged emission from setStreamingSources() reaches it.
   refreshStreamingCombo();
   connect(
       &session_->extensionCatalog(), &ExtensionCatalogService::catalogChanged, this,
@@ -881,7 +934,7 @@ void MainWindow::onThemeChanged(const QString& theme) {
 }
 
 void MainWindow::setIconSize(int size) {
-  const int clamped = std::clamp(size, kIconSizeMin, kIconSizeMax);
+  const int clamped = kIconSizeRange.clamp(size);
   if (clamped == chrome_metrics_.icon_size) {
     return;
   }
@@ -891,7 +944,7 @@ void MainWindow::setIconSize(int size) {
 }
 
 void MainWindow::setIconPadding(int padding) {
-  const int clamped = std::clamp(padding, kIconPaddingMin, kIconPaddingMax);
+  const int clamped = kIconPaddingRange.clamp(padding);
   if (clamped == chrome_metrics_.icon_padding) {
     return;
   }
@@ -901,7 +954,7 @@ void MainWindow::setIconPadding(int padding) {
 }
 
 void MainWindow::setLayoutPadding(int padding) {
-  const int clamped = std::clamp(padding, kLayoutPaddingMin, kLayoutPaddingMax);
+  const int clamped = kLayoutPaddingRange.clamp(padding);
   if (clamped == chrome_metrics_.layout_padding) {
     return;
   }
@@ -911,7 +964,7 @@ void MainWindow::setLayoutPadding(int padding) {
 }
 
 void MainWindow::setLayoutSpacing(int spacing) {
-  const int clamped = std::clamp(spacing, kLayoutSpacingMin, kLayoutSpacingMax);
+  const int clamped = kLayoutSpacingRange.clamp(spacing);
   if (clamped == chrome_metrics_.layout_spacing) {
     return;
   }
@@ -1193,6 +1246,41 @@ void MainWindow::onPlotZoomChanged(PlotWidget* modified, QRectF rect) {
 
 void MainWindow::onTrackerMovedFromWidget(QPointF point) {
   session_->playbackEngine().setCurrentTime(point.x());
+}
+
+std::optional<Range<double>> MainWindow::computeActiveStreamingRangeSec() const {
+  if (active_streaming_dataset_id_ == 0) {
+    return std::nullopt;
+  }
+  const auto reader = session_->sessionManager().createReader();
+  const auto& object_store = session_->sessionManager().objectStore();
+
+  Timestamp t_min = std::numeric_limits<Timestamp>::max();
+  Timestamp t_max = std::numeric_limits<Timestamp>::min();
+  bool found = false;
+
+  for (const TopicId topic_id : reader.listTopics(active_streaming_dataset_id_)) {
+    const auto metadata = reader.getMetadata(topic_id);
+    if (metadata.has_value() && metadata->total_row_count > 0) {
+      t_min = std::min(t_min, metadata->time_range_min);
+      t_max = std::max(t_max, metadata->time_range_max);
+      found = true;
+    }
+  }
+  for (const ObjectTopicId object_topic_id : object_store.listTopics(active_streaming_dataset_id_)) {
+    if (object_store.entryCount(object_topic_id) > 0) {
+      const auto [obj_min, obj_max] = object_store.timeRange(object_topic_id);
+      t_min = std::min(t_min, obj_min);
+      t_max = std::max(t_max, obj_max);
+      found = true;
+    }
+  }
+  if (!found) {
+    return std::nullopt;
+  }
+
+  constexpr double kNsPerSec = 1.0e9;
+  return Range<double>{.min = static_cast<double>(t_min) / kNsPerSec, .max = static_cast<double>(t_max) / kNsPerSec};
 }
 
 DiagnosticSink MainWindow::diagnosticSink() const {

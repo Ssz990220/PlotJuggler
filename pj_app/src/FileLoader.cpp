@@ -12,6 +12,7 @@
 #include <QString>
 #include <QStringList>
 #include <cstdint>
+#include <nlohmann/json.hpp>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -236,11 +237,22 @@ bool FileLoader::loadFile(const QString& path, QWidget* dialog_parent, const Loa
   }
 
   if (!skip_dialog) {
+    // Extract parser config saved from a previous session so DialogEngine can
+    // restore the embedded parser dialog to its last state.
+    std::string initial_parser_config;
+    {
+      auto saved_cfg = nlohmann::json::parse(saved_config, nullptr, false);
+      if (!saved_cfg.is_discarded() && saved_cfg.contains("_parser_config")) {
+        initial_parser_config = saved_cfg["_parser_config"].get<std::string>();
+      }
+    }
+
     const auto dlg = dialog_presenter::showDataSourceDialog({
         .source = *source,
         .handle = handle,
         .catalog = extensions_,
         .parent = dialog_parent,
+        .initial_parser_config = initial_parser_config,
     });
     if (dlg.outcome == dialog_presenter::Outcome::kPluginContractViolation) {
       return fail(tr("Plugin contract violation: %1. Reinstall the plugin from the Marketplace.")
@@ -251,6 +263,16 @@ bool FileLoader::loadFile(const QString& path, QWidget* dialog_parent, const Loa
     }
     if (dlg.payload.has_value()) {
       config = dlg.payload->saved_config;
+      // If the dialog had an embedded parser slot, embed the parser config in the
+      // saved config so it survives across sessions and reaches the source via
+      // loadConfig(). The source extracts it under the "_parser_config" key.
+      if (!dlg.payload->parser_config.empty()) {
+        auto cfg = nlohmann::json::parse(config, nullptr, false);
+        if (!cfg.is_discarded()) {
+          cfg["_parser_config"] = dlg.payload->parser_config;
+          config = cfg.dump();
+        }
+      }
       // DialogEngine already wrote the dialog's choices back via the dialog vtable,
       // but for plugins that split dialog state from source state the explicit
       // reload keeps the contract uniform.

@@ -26,7 +26,13 @@ class LeftPanel : public QWidget {
   // Emitted when the user picks a path from the recent-files menu in
   // the Input header. MainWindow connects this to FileLoader::loadFile.
   void recentFileSelected(QString path);
-  void streamingStartToggled(bool started);
+  // The cog button is a one-shot Start action — there is no "stop" affordance
+  // in the UI (Davide: streaming should always be open). Emitted on click.
+  void streamingStartRequested();
+  // Pause/resume of the active stream session(s). When paused, samples keep
+  // ingesting but the viewport no longer follows the live edge — mirrors PJ3
+  // semantics. Wired into StreamingSourceManager::onPauseToggled.
+  void streamingPauseToggled(bool paused);
   void streamingSourceChanged(QString source);
   // Buffer length (seconds) for the streaming source. Persisted to
   // QSettings; emitted when the user adjusts the inline scrubber.
@@ -56,6 +62,10 @@ class LeftPanel : public QWidget {
 
  private:
   void applyIcons(QString theme);
+  // Swaps the pause/resume icon and tooltip to match the button's checked
+  // state. Called from applyIcons() and on every toggled() emission so the
+  // glyph tracks both theme changes and user clicks.
+  void applyPauseButtonState(QString theme);
 
   Ui::LeftPanel* ui_;
   // Chrome metrics from MainWindow::chromeMetricsChanged.

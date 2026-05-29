@@ -85,15 +85,15 @@ struct McapLoader {
           continue;
         }
 
-        store.pushLazy(topic_id, ts, [local_reader, local_topic, ts]() -> sdk::PayloadView {
+        store.pushLazy(topic_id, ts, [local_reader, local_topic, ts]() -> PJ::sdk::PayloadView {
           mcap::ReadMessageOptions read_opts;
           read_opts.startTime = static_cast<mcap::Timestamp>(ts);
           read_opts.endTime = read_opts.startTime + 1;
           read_opts.topicFilter = [local_topic](std::string_view t) { return t == local_topic; };
           auto v = local_reader->readMessages([](const mcap::Status&) {}, read_opts);
           for (auto vit = v.begin(); vit != v.end(); ++vit) {
-            auto* d = reinterpret_cast<const uint8_t*>(vit->message.data);
-            return sdk::makePayloadView(std::vector<uint8_t>{d, d + vit->message.dataSize});
+            const auto* d = reinterpret_cast<const uint8_t*>(vit->message.data);
+            return PJ::sdk::makePayloadView(std::vector<uint8_t>(d, d + vit->message.dataSize));
           }
           return {};
         });
@@ -136,7 +136,7 @@ TEST_F(McapImageIntegration, DecodeImageFromStore) {
   ASSERT_TRUE(entry.has_value());
   ASSERT_GT(entry->payload.bytes.size(), 0u);
 
-  const auto& raw = entry->payload.bytes;
+  auto raw = entry->payload.bytes;  // Span<const uint8_t>
 
   auto json_str = store.descriptor(loader.topic_id).metadata_json;
   auto meta = nlohmann::json::parse(json_str);

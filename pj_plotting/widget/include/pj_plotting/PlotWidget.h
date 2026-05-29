@@ -110,7 +110,7 @@ class PlotWidget : public PlotWidgetBase {
 
   SessionManager* session_ = nullptr;
   CatalogModel* catalog_ = nullptr;
-  QMetaObject::Connection topics_committed_connection_;
+  QMetaObject::Connection samples_ingested_connection_;
   DragInfo dragging_;
   CurveTracker* tracker_ = nullptr;
   CurveTracker* reference_tracker_ = nullptr;

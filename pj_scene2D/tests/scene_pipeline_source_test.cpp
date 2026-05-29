@@ -141,8 +141,8 @@ TEST(ScenePipelineSourceTest, ConcurrentPushAndQuery) {
   std::thread indexer([&]() {
     for (int i = 0; i < kPushCount; ++i) {
       auto bytes = makeMockBytes(static_cast<int64_t>(i) * 100, 1);
-      auto status = store.pushLazy(topic, static_cast<Timestamp>(i) * 100, [bytes]() -> sdk::PayloadView {
-        return sdk::makePayloadView(bytes);
+      auto status = store.pushLazy(topic, static_cast<Timestamp>(i) * 100, [bytes]() -> PJ::sdk::PayloadView {
+        return PJ::sdk::makePayloadView(bytes);
       });
       if (status.has_value()) {
         indexed.fetch_add(1, std::memory_order_release);

@@ -44,6 +44,8 @@ class FileLoader;
 class PlotDocker;
 class PlotWidget;
 class QtDiagnosticBridge;
+class StreamingSourceManager;
+class RecentFilesMenu;
 class Theme;
 class TitleBar;
 
@@ -160,6 +162,11 @@ class MainWindow : public QMainWindow {
 
   // Updates playback time from a plot tracker move.
   void onTrackerMovedFromWidget(QPointF point);
+
+  // Seconds-domain range spanning all data in the active streaming dataset, or
+  // nullopt when no streaming session is active or it holds no data yet.
+  // Shared by the live-ingest range update and the drop-to-view seeding.
+  std::optional<Range<double>> computeActiveStreamingRangeSec() const;
 
   // Records a user-visible plot layout change.
   void onUndoableChange();
@@ -338,6 +345,18 @@ class MainWindow : public QMainWindow {
   QAction* redo_action_ = nullptr;
   std::unique_ptr<AppSession> session_;
   std::unique_ptr<FileLoader> file_loader_;
+  std::unique_ptr<StreamingSourceManager> streaming_manager_;
+  // Active streaming dataset id while a session is live (0 = none).
+  // Scopes the playback slider range to this dataset's data only so unrelated
+  // file/scalar timestamps in the global store don't stretch the slider into
+  // ranges where no streamable data exists.
+  DatasetId active_streaming_dataset_id_ = 0;
+  // Flips to true the first time a streaming topic is dropped into a view,
+  // which seeds the playback range + playhead. Until then the slider is left
+  // untouched so merely subscribing to topics in the source dialog does not
+  // move it. While true, live ingest tracks the live edge until the user
+  // pauses.
+  bool streaming_playback_seeded_ = false;
   std::unique_ptr<Theme> theme_;
   TitleBar* title_bar_ = nullptr;
   QMenu* recent_layouts_menu_ = nullptr;

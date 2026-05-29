@@ -9,6 +9,7 @@
 #include <string>
 #include <string_view>
 #include <unordered_map>
+#include <vector>
 
 #include "pj_base/builtin/builtin_object.hpp"
 #include "pj_base/data_source_protocol.h"
@@ -47,12 +48,20 @@ class DataSourceRuntimeHost {
  public:
   using ObjectTopicParserRegistrar = std::function<void(ObjectTopicId, std::unique_ptr<MessageParserHandle>)>;
 
-  // Wires the source-side write host immediately (engine + source_handle).
-  // The plugin's bind() will see SourceWriteHostService and
-  // DataSourceRuntimeHostService through registerServices().
+  // Wires the source-side write host immediately; the plugin's bind() sees
+  // SourceWriteHostService + DataSourceRuntimeHostService via registerServices().
+  //
+  // `secondary_object_store` / `secondary_data_engine`, when non-null, enable
+  // streaming dual-store / dual-engine routing: every object topic (resp.
+  // scalar topic) this host registers is mirrored into the secondary in
+  // lockstep, so both share the same ObjectTopicId (resp. TopicId) per topic
+  // name. The manager then flips ingest between primary and secondary via
+  // setObjectStoreTarget / setDataEngineTarget on each pause/resume. Both null
+  // (file-load callers) → single-store behaviour, identical to before.
   DataSourceRuntimeHost(
       DataEngine& engine, ExtensionCatalogService& catalog, DatasetId dataset_id, PJ_data_source_handle_t source_handle,
-      ObjectStore& object_store, std::string source_id = {}, ObjectTopicParserRegistrar parser_registrar = {});
+      ObjectStore& object_store, std::string source_id = {}, ObjectTopicParserRegistrar parser_registrar = {},
+      ObjectStore* secondary_object_store = nullptr, DataEngine* secondary_data_engine = nullptr);
 
   ~DataSourceRuntimeHost();
 
@@ -68,6 +77,11 @@ class DataSourceRuntimeHost {
   // rows reach the DataReader — open chunks are invisible until sealed, and
   // every parser binding has its own independent writer.
   void flushAll();
+
+  // Non-terminal flush: commits rows written since the previous flush, safe to
+  // call repeatedly. Used by long-lived ingest (streaming) to keep
+  // work-in-progress visible to readers; flushAll() remains the terminal call.
+  void flushPending();
 
   // Stop signalling for the plugin's cooperative-cancellation callbacks. The
   // reason is also recorded as the last error.
@@ -98,6 +112,35 @@ class DataSourceRuntimeHost {
 
   [[nodiscard]] const sdk::ObjectIngestPolicyResolver& policyResolver() const noexcept {
     return policy_resolver_;
+  }
+
+  // Apply a (time_window, max_memory) retention budget to every object topic
+  // bound so far. No "protect" knob needed: the pause snapshot is preserved by
+  // the dual-store flow (no writes on the primary), not by a per-budget floor.
+  void setObjectRetentionBudget(int64_t time_window_ns, size_t max_memory_bytes);
+
+  // Atomically retarget every object write host (source-level + per-parser-
+  // binding) at `target`, swapping ingest between primary and secondary store
+  // on pause/resume. Bound ObjectTopicIds stay valid because every
+  // registerTopic is mirrored to the secondary at registration time.
+  void setObjectStoreTarget(ObjectStore* target);
+
+  // Scalar-write analogue of setObjectStoreTarget: retargets the source-level
+  // host and every parser binding. Bound topic handles stay valid via the same
+  // lockstep-mirror guarantee.
+  void setDataEngineTarget(DataEngine* target);
+
+  // Secondary ObjectStore wired at construction (nullptr for single-store
+  // callers). The streaming manager uses it for the resume flush and to
+  // confirm a real secondary was wired at startSession.
+  [[nodiscard]] ObjectStore* secondaryObjectStore() noexcept {
+    return secondary_object_store_;
+  }
+
+  // Secondary DataEngine wired at construction (nullptr for single-engine
+  // callers). Mirrors secondaryObjectStore.
+  [[nodiscard]] DataEngine* secondaryDataEngine() noexcept {
+    return secondary_data_engine_;
   }
 
  private:
@@ -161,6 +204,13 @@ class DataSourceRuntimeHost {
   DataEngine& engine_;
   ExtensionCatalogService& catalog_;
   ObjectStore& object_store_;
+  // Lockstep mirror of `object_store_` for the streaming dual-store flow (null
+  // for single-store callers). See the constructor doc for the id-sharing
+  // invariant that lets write hosts retarget between the two.
+  ObjectStore* secondary_object_store_ = nullptr;
+  // Lockstep mirror of `engine_` for the streaming dual-engine flow (null for
+  // single-engine callers); same id-sharing invariant as above.
+  DataEngine* secondary_data_engine_ = nullptr;
   std::string source_id_;
   ObjectTopicParserRegistrar object_topic_parser_registrar_;
   sdk::ObjectIngestPolicyResolver policy_resolver_;

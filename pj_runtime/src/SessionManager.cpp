@@ -26,9 +26,16 @@ std::vector<TopicId> SessionManager::commitChunks(std::vector<std::pair<TopicId,
     for (const TopicId id : changed) {
       ids.push_back(id);
     }
-    emit topicsCommitted(std::move(ids));
+    emit samplesIngested(std::move(ids), /*live=*/false);
   }
   return changed;
+}
+
+void SessionManager::notifyIngest(QVector<TopicId> ids, bool live) {
+  if (ids.isEmpty()) {
+    return;
+  }
+  emit samplesIngested(std::move(ids), live);
 }
 
 void SessionManager::registerObjectTopicParser(ObjectTopicId id, std::unique_ptr<MessageParserHandle> parser) {
@@ -39,7 +46,8 @@ void SessionManager::registerObjectTopicParser(ObjectTopicId id, std::unique_ptr
     // can't be decoded anymore" with no diagnostic. Keep the prior parser and
     // warn loudly so the operator can see something is wrong with the binding.
     const auto existing = object_topic_parsers_.find(id.id);
-    if (existing != object_topic_parsers_.end() && existing->second != nullptr && existing->second->valid()) {
+    if (existing != object_topic_parsers_.end() && existing->second.handle != nullptr &&
+        existing->second.handle->valid()) {
       qCWarning(lcSession) << "registerObjectTopicParser: ignoring invalid replacement for topic" << id.id
                            << "(previous valid parser preserved)";
       return;
@@ -48,15 +56,26 @@ void SessionManager::registerObjectTopicParser(ObjectTopicId id, std::unique_ptr
     object_topic_parsers_.erase(id.id);
     return;
   }
-  object_topic_parsers_[id.id] = std::move(parser);
+  // Fresh mutex per registration: a re-registration swaps in a new parser, but
+  // existing consumers still guard the old one. Reusing the lock would let the
+  // new caller race with leftover work on the old parser pointer.
+  object_topic_parsers_[id.id] = ObjectParserSlot{std::move(parser), std::make_shared<std::mutex>()};
 }
 
 MessageParserPluginBase* SessionManager::parserForObjectTopic(ObjectTopicId id) const {
   auto it = object_topic_parsers_.find(id.id);
-  if (it == object_topic_parsers_.end() || it->second == nullptr || !it->second->valid()) {
+  if (it == object_topic_parsers_.end() || it->second.handle == nullptr || !it->second.handle->valid()) {
     return nullptr;
   }
-  return static_cast<MessageParserPluginBase*>(it->second->context());
+  return static_cast<MessageParserPluginBase*>(it->second.handle->context());
+}
+
+std::shared_ptr<std::mutex> SessionManager::parserMutexForObjectTopic(ObjectTopicId id) const {
+  auto it = object_topic_parsers_.find(id.id);
+  if (it == object_topic_parsers_.end() || it->second.handle == nullptr || !it->second.handle->valid()) {
+    return nullptr;
+  }
+  return it->second.mutex;
 }
 
 void SessionManager::recordLoadedSource(QString path, QString prefix, QString plugin_id, QString plugin_config_json) {

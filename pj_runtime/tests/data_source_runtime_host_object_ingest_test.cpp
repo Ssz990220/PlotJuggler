@@ -106,11 +106,14 @@ TEST_F(DataSourceRuntimeHostObjectIngestTest, PushMessageV2EagerCommitsScalarsAn
   ASSERT_TRUE(object_topic.has_value());
   EXPECT_EQ(object_store_.descriptor(*object_topic).metadata_json, R"({"builtin_object_type":"kImage"})");
   EXPECT_EQ(object_store_.entryCount(*object_topic), 1U);
-  EXPECT_EQ(object_store_.memoryUsage(*object_topic), payload.size());
+  // Under always-lazy ingest with captured anchor, object entries go to the
+  // store via pushLazy. The lazy slot does not contribute to memoryUsage —
+  // bytes are owned upstream via the captured anchor.
+  EXPECT_EQ(object_store_.memoryUsage(*object_topic), 0U);
   auto entry = object_store_.latestAt(*object_topic, 123);
   ASSERT_TRUE(entry.has_value());
   ASSERT_NE(entry->payload.anchor, nullptr);
-  EXPECT_TRUE(std::equal(entry->payload.bytes.begin(), entry->payload.bytes.end(), payload.begin(), payload.end()));
+  EXPECT_EQ(std::vector<uint8_t>(entry->payload.bytes.begin(), entry->payload.bytes.end()), payload);
   EXPECT_EQ(fetch_calls->load(), 1);
 }
 
@@ -143,8 +146,11 @@ TEST_F(DataSourceRuntimeHostObjectIngestTest, PushMessageV2LazyObjectsEagerScala
   auto entry = object_store_.latestAt(*object_topic, 123);
   ASSERT_TRUE(entry.has_value());
   ASSERT_NE(entry->payload.anchor, nullptr);
-  EXPECT_TRUE(std::equal(entry->payload.bytes.begin(), entry->payload.bytes.end(), payload.begin(), payload.end()));
-  EXPECT_EQ(fetch_calls->load(), 2);
+  EXPECT_EQ(std::vector<uint8_t>(entry->payload.bytes.begin(), entry->payload.bytes.end()), payload);
+  // The captured-payload closure replays the same PayloadView on every read
+  // (it holds onto the upstream anchor) rather than re-invoking the fetcher.
+  // So latestAt does NOT trigger an additional fetch.
+  EXPECT_EQ(fetch_calls->load(), 1);
 }
 
 TEST_F(DataSourceRuntimeHostObjectIngestTest, PushMessageV2PureLazyDefersFetchAndDoesNotCommitScalars) {
@@ -167,7 +173,7 @@ TEST_F(DataSourceRuntimeHostObjectIngestTest, PushMessageV2PureLazyDefersFetchAn
   auto entry = object_store_.latestAt(*object_topic, 123);
   ASSERT_TRUE(entry.has_value());
   ASSERT_NE(entry->payload.anchor, nullptr);
-  EXPECT_TRUE(std::equal(entry->payload.bytes.begin(), entry->payload.bytes.end(), payload.begin(), payload.end()));
+  EXPECT_EQ(std::vector<uint8_t>(entry->payload.bytes.begin(), entry->payload.bytes.end()), payload);
   EXPECT_EQ(fetch_calls->load(), 1);
 }
 
@@ -184,6 +190,25 @@ TEST_F(DataSourceRuntimeHostObjectIngestTest, PushMessageV2KeepsScalarOnlyTopics
   host_->flushAll();
   EXPECT_EQ(totalRowCount(), 1U);
   EXPECT_FALSE(object_store_.findTopic(dataset_id_, "/scalar/topic").has_value());
+}
+
+TEST_F(DataSourceRuntimeHostObjectIngestTest, SetObjectRetentionBudgetAppliesToEveryBoundObjectTopic) {
+  auto binding_a = bindTopic("/camera/image", "mock/image");
+  ASSERT_TRUE(binding_a.has_value()) << binding_a.error();
+  auto binding_b = bindTopic("/camera/image_b", "mock/image");
+  ASSERT_TRUE(binding_b.has_value()) << binding_b.error();
+
+  constexpr int64_t kWindowNs = 5'000'000'000LL;
+  constexpr size_t kMemCap = 16U * 1024U * 1024U;
+  host_->setObjectRetentionBudget(kWindowNs, kMemCap);
+
+  for (const auto* name : {"/camera/image", "/camera/image_b"}) {
+    auto topic_id = object_store_.findTopic(dataset_id_, name);
+    ASSERT_TRUE(topic_id.has_value());
+    const auto budget = object_store_.retentionBudget(*topic_id);
+    EXPECT_EQ(budget.time_window_ns, kWindowNs);
+    EXPECT_EQ(budget.max_memory_bytes, kMemCap);
+  }
 }
 
 }  // namespace

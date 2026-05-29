@@ -30,8 +30,8 @@ You are starting on branch `development` at HEAD `d713b41`. Already committed an
 ### M1 — adapter foundation (DONE)
 
 - `pj_runtime/include/pj_runtime/CurveDescriptor.h` — POD struct mapping curve name → `(TopicId, DatasetId, ColumnIndex, field_path, display_offset_ns)`.
-- `pj_runtime::SessionManager` — owns `PJ::DataEngine`, `createReader()`, `commitChunks()` wrapper that emits `topicsCommitted(QVector<TopicId>)`.
-- `pj_runtime::CatalogModel` — enumerates numeric leaf columns of all topics into curve names like `topic/field/subfield`; `curveDescriptor(name)` lookup; subscribes to `topicsCommitted` and rebuilds.
+- `pj_runtime::SessionManager` — owns `PJ::DataEngine`, `createReader()`, `commitChunks()` wrapper that emits `samplesIngested(QVector<TopicId>)`.
+- `pj_runtime::CatalogModel` — enumerates numeric leaf columns of all topics into curve names like `topic/field/subfield`; `curveDescriptor(name)` lookup; subscribes to `samplesIngested` and rebuilds.
 - `pj_plotting::DatastoreCurveAdapter` — final design (see plan §5). Pull-through `QwtSeriesData<QPointF>`, no copy of timeseries data. Chunk-index with last-slot cache, cross-chunk boundary guards, `boundingRect()` returns full-data bounds via `ColumnStats` (not ROI-bounded), `visibleYRange(x_min, x_max)` for PJ3-style vertical zoom-to-visible. 11/11 tests pass.
 
 ### Load-file flow (DONE)
@@ -143,7 +143,7 @@ Each milestone ends in a buildable, runnable, demo-able state. Stage on a featur
 **Goal:** drag curve names from the existing side panel onto plots and see a real time-series rendered against the datastore. XY plot creation via right-drag of two curves.
 
 **Deliverables:**
-- `pj_plotting/core/.../PointSeriesXY.{h,cpp}` — port from PJ3 `plotjuggler_app/point_series_xy.{h,cpp}`. **Own `QwtSeriesData<QPointF>` subclass with an alignment index** (do NOT compose from two `DatastoreCurveAdapter`s — see hard rule 10). Same-topic fast path: pair by row index. Different-topic: two-pointer scan by raw `Timestamp`, exact matches only. `sample(i)` dereferences a pre-built `PairSlot{x_chunk, x_row, y_chunk, y_row}`. Invalidate alignment index on `topicsCommitted` for either source topic.
+- `pj_plotting/core/.../PointSeriesXY.{h,cpp}` — port from PJ3 `plotjuggler_app/point_series_xy.{h,cpp}`. **Own `QwtSeriesData<QPointF>` subclass with an alignment index** (do NOT compose from two `DatastoreCurveAdapter`s — see hard rule 10). Same-topic fast path: pair by row index. Different-topic: two-pointer scan by raw `Timestamp`, exact matches only. `sample(i)` dereferences a pre-built `PairSlot{x_chunk, x_row, y_chunk, y_row}`. Invalidate alignment index on `samplesIngested` for either source topic.
 - Drag-drop accept on `PlotWidgetBase` (Qt event forwarding through `dragEnterEvent`/`dropEvent` signals from the canvas). MIME formats already match: `"curveslist/add_curve"` and `"curveslist/new_XY_axis"`. Decode via `QDataStream` of `QString` curve names. For each name, look up `CatalogModel::curveDescriptor(name)`; if found, create a `DatastoreCurveAdapter` and attach as a `QwtPlotCurve`. Reject silently with a status-bar toast for unknown names. Reject right-drag on a non-empty plot.
 - Plot color cycle for newly added curves (PJ3-equivalent). A small constexpr `std::array<QColor, N>` of stable colors, indexed by the next-curve counter on the plot.
 - `PlotWidget::isXYPlot()` — true when current mode is XY. Used by M5 sync-zoom to exclude XY plots.
@@ -228,7 +228,7 @@ If you encounter any of these, **STOP and surface the issue rather than guessing
 For consistent style, reuse these as templates:
 
 - **Pull-through `QwtSeriesData` adapter**: `pj_plotting/core/src/DatastoreCurveAdapter.cpp` (already in tree). Same general shape for `PointSeriesXY`.
-- **Qt-side service wrapping a Qt-optional substrate type**: `pj_runtime/src/SessionManager.cpp` (wraps `PJ::DataEngine`, emits `topicsCommitted`).
+- **Qt-side service wrapping a Qt-optional substrate type**: `pj_runtime/src/SessionManager.cpp` (wraps `PJ::DataEngine`, emits `samplesIngested`).
 - **PIMPL with `std::deque` for stable references**: `plotjuggler_core/pj_datastore/include/pj_datastore/topic_storage.hpp`.
 - **C-ABI plugin host adapter**: `pj_app/src/FileLoader.cpp` (RuntimeHost vtable + DatastoreSourceWriteHost binding).
 - **Conventional-commit messages with design rationale**: `git log` on `development` from `441ea07` onwards.

@@ -48,7 +48,13 @@ class ImagePipelineSource : public MediaSource {
   /// @param store  ObjectStore to query (not owned, must be non-null and outlive this source)
   /// @param topic  Topic ID to query via latestAt()
   /// @param parser  Parser to drive canonical-image decode (not owned)
-  ImagePipelineSource(ObjectStore* store, ObjectTopicId topic, MessageParserPluginBase* parser);
+  /// @param parser_mutex  Shared mutex serialising parseObject across consumers
+  ///   of the same parser. MessageParser plugins aren't thread-safe (stateful
+  ///   scratch), so sources sharing a parser pointer MUST share a mutex. Pass
+  ///   nullptr only when the parser is private to this source (e.g. unit tests).
+  ImagePipelineSource(
+      ObjectStore* store, ObjectTopicId topic, MessageParserPluginBase* parser,
+      std::shared_ptr<std::mutex> parser_mutex = nullptr);
 
   /// @param store  ObjectStore to query (not owned, must be non-null and outlive this source)
   /// @param topic  Topic ID to query via latestAt()
@@ -80,6 +86,7 @@ class ImagePipelineSource : public MediaSource {
   ObjectTopicId topic_;
   std::string source_key_;
   MessageParserPluginBase* parser_ = nullptr;
+  std::shared_ptr<std::mutex> parser_mutex_;
   std::unique_ptr<CodecPipeline> pipeline_;
   JpegCodec jpeg_codec_;
   PngCodec png_codec_;
