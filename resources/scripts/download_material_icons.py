@@ -13,7 +13,7 @@ tuple. Transforms is an optional dict supporting:
 
 Variant axes (configurable via flags):
 
-    --style         outlined | rounded | sharp     (sharpness; default sharp)
+    --style         outlined | rounded | sharp     (sharpness; default rounded)
     --weight        100..700                       (default 300)
     --fill          0 | 1                          (default 0; per-entry fill= wins)
     --grade         -25 | 0 | 200                  (default 0)
@@ -313,8 +313,8 @@ def main(argv: list[str]) -> int:
     parser.add_argument(
         "--style",
         choices=["outlined", "rounded", "sharp"],
-        default="sharp",
-        help="Material Symbols style (sharpness). Default: sharp.",
+        default="rounded",
+        help="Material Symbols style (sharpness). Default: rounded.",
     )
     parser.add_argument(
         "--weight",

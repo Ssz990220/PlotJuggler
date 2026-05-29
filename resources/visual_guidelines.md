@@ -28,6 +28,7 @@ The token names below are stable; the values differ per theme.
 | `dark_background` | `#F5F5F5` | `#3B3B47` | `QMainWindow` and `QDialog` body fill. |
 | `titlebar_background` | `#e0e0e0` | `#1C1C22` | Every chrome row (TitleBar, dialog title bar, Sources / Datasets / Custom Series header bands). |
 | `widget_background_disabled` | `#eeeeee` | `#404040` | Disabled-state fill for input widgets. |
+| `input_background` | `#FFFFFF` | `#4D4D5A` | Fill for the input-chrome family (`QLineEdit`, `QAbstractSpinBox`, `QComboBox`, `DoubleScrubber`) — reads as a chart-surface inset rectangle. |
 
 ### 1.2 Text
 
@@ -116,6 +117,8 @@ Geometry tokens:
 | `chrome_icon_size` | `20` | Icon rendered inside every chrome button. |
 | `chrome_spacing` | `4` | Horizontal gap between icon buttons in the same row; also label-text left padding. |
 | `chrome_border_width` | `1` | Every chrome border. |
+| `corner_radius` | `4` | Corner radius for input chrome (`QLineEdit`, `QAbstractSpinBox`, `QComboBox`, `DoubleScrubber`). Keep `ScrubberBase::kCornerRadiusPx` in lockstep. |
+| `input_min_height` | `18` | Min **content** height shared by every input-chrome widget so text fields, spin boxes and combo boxes resolve to one identical outer height (18 + 2×2 padding + 2×1 border = 24). |
 
 ### 2.1 Why two button sizes
 
@@ -163,9 +166,23 @@ splitter-handle widget to style.
 
 ### 2.4 Border radii
 
-**Zero** everywhere. Every `border-radius`, `border-top-left-radius`
-etc. is `0px`. Square corners are the house style. If you find
-yourself reaching for a rounded corner, push back instead.
+**Zero** everywhere **except input chrome.** Chrome bars, panels,
+buttons, tabs and views all use square corners (`border-radius: 0px`) —
+that's the house style, so push back if you reach for a rounded corner
+on those.
+
+The one deliberate exception is the **input-chrome family** —
+`QLineEdit`, `QAbstractSpinBox` and `QComboBox` (plus the C++-painted
+`DoubleScrubber`) — which share `${corner_radius}px` (4px) rounded
+corners, the `${input_background}` fill, and a `${border_hover}` focus
+ring, so text fields, spin boxes and combo boxes read as one consistent
+inset-input family. The `PJ::MessageBox` card is a second, separate
+exception (`6`/`8px`) covered in its own section.
+
+Inline search fields embedded in header bands (`#lineEditFilter`,
+`#lineEditCustomFilter`, `#lineEditCurvesFilter`, `#lineEditPrefix`) opt
+back out via id selectors (transparent, borderless, `padding: 0`) — the
+leading magnifier icon already cues "type here", so they stay flat.
 
 ---
 

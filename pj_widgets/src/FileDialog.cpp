@@ -1,11 +1,13 @@
 #include "pj_widgets/FileDialog.h"
 
 #include <QCheckBox>
+#include <QComboBox>
 #include <QDialog>
 #include <QGridLayout>
 #include <QHBoxLayout>
 #include <QIcon>
 #include <QLayout>
+#include <QLineEdit>
 #include <QList>
 #include <QSize>
 #include <QString>
@@ -21,6 +23,14 @@ namespace {
 constexpr const char* kToolbarButtons[] = {
     "backButton", "forwardButton", "toParentButton", "newFolderButton", "listModeButton", "detailModeButton",
 };
+
+// Shared height for the filename field and the look-in / file-type combos.
+// QFileDialog lays them in a grid whose row height tracks the combo's
+// minimumSizeHint — the style floors that a few px above a bare QLineEdit,
+// so QSS min/max-height can't pull the combos down to match the field.
+// Pin all three in C++ instead. Value mirrors the app's input-chrome box
+// model in the stylesheets: input_min_height (18) + 2*2 padding + 2*1 border.
+constexpr int kInputRowHeightPx = 24;
 
 // Re-skin a QFileDialog toolbar button identified by objectName with one
 // of the app's themed SVG icons. Silent no-op when the button is missing
@@ -66,6 +76,16 @@ FileDialog::FileDialog(QWidget* parent) : Dialog(parent) {
   // templated static helpers) override with the live MainWindow values
   // and may wire chromeMetricsChanged to stay in step.
   onChromeMetricsChanged(chrome_metrics_);
+
+  // Equalize the input row heights (see kInputRowHeightPx). Both combos
+  // (lookInCombo, fileTypeCombo) and the filename field get the same
+  // fixed height so they line up instead of the combos rendering taller.
+  for (auto* combo : inner_->findChildren<QComboBox*>()) {
+    combo->setFixedHeight(kInputRowHeightPx);
+  }
+  if (auto* name_edit = inner_->findChild<QLineEdit*>(QStringLiteral("fileNameEdit"))) {
+    name_edit->setFixedHeight(kInputRowHeightPx);
+  }
 
   // The inner QDialogButtonBox accepts/rejects route the outer Dialog,
   // so exec() on the outer returns the expected QDialog::DialogCode.

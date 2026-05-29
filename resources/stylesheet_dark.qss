@@ -106,6 +106,12 @@ chrome_border_width:       1
 // Keep DoubleScrubber's ScrubberBase::kCornerRadiusPx in lockstep.
 corner_radius:             4
 
+// Min content height shared by every input-chrome widget (QLineEdit,
+// QAbstractSpinBox, PJ::ComboBox) so text fields, spin boxes and combo
+// boxes resolve to one identical outer height. Retune the whole family
+// from this single value.
+input_min_height:          18
+
 //------- PALETTE END --------
 
 QWidget {
@@ -143,9 +149,19 @@ QLabel {
 
 QLineEdit {
     color: ${default_text};
-    background: ${widget_background};
-    border-radius: 0px;
-    border: none;
+    background: ${input_background};
+    border: 1px solid ${border_default};
+    border-radius: ${corner_radius}px;
+    padding-top: 2px;
+    padding-bottom: 2px;
+    padding-left: ${chrome_spacing}px;
+    padding-right: ${chrome_spacing}px;
+    min-height: ${input_min_height}px;
+}
+
+QLineEdit:hover,
+QLineEdit:focus {
+    border: 1px solid ${border_hover};
 }
 
 QLineEdit:disabled {
@@ -491,14 +507,15 @@ QMenu#PJMenu QPushButton[special="true"]:hover {
 
 --------------------------------------------------------------------------- */
 QAbstractSpinBox {
-  background-color: ${widget_background};
-  border: none;
+  background-color: ${input_background};
+  border: 1px solid ${border_default};
   color: ${default_text};
   padding-top: 2px;
   padding-bottom: 2px;
   padding-left: ${chrome_spacing}px;
   padding-right: ${chrome_spacing}px;
-  border-radius: 0px;
+  border-radius: ${corner_radius}px;
+  min-height: ${input_min_height}px;
 }
 
 QAbstractSpinBox:up-button {
@@ -535,8 +552,9 @@ QAbstractSpinBox::down-arrow:hover {
   width: 12px;
 }
 
-QAbstractSpinBox:hover {
-  border: none;
+QAbstractSpinBox:hover,
+QAbstractSpinBox:focus {
+  border: 1px solid ${border_hover};
 }
 
 
@@ -802,7 +820,7 @@ QComboBox {
     padding-bottom: 2px;
     padding-left: ${chrome_spacing}px;
     padding-right: 22px;
-    min-height: 20px;
+    min-height: ${input_min_height}px;
 }
 
 QComboBox:hover,
@@ -1154,6 +1172,7 @@ QLineEdit#lineEditPrefix{
   border: none;
   border-radius: 0px;
   border-bottom: none;
+  padding: 0;
 }
 
 QLineEdit#lineEditFilter:focus,
@@ -1354,6 +1373,7 @@ QLineEdit#lineEditCustomFilter:focus,
 QLineEdit#lineEditCurvesFilter:focus {
     background: transparent;
     border: none;
+    padding: 0;
     selection-background-color: ${ink_select};
     selection-color: ${default_text};
 }
