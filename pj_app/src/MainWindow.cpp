@@ -417,14 +417,8 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
   ui_->curveListPanel->setCatalog(&session_->catalogModel());
   connect(ui_->curveListPanel, &CurveListPanel::trashRequested, this, &MainWindow::onCatalogTrashRequested);
   connect(ui_->curveListPanel, &CurveListPanel::clearAllCurvesRequested, this, [this]() {
-    // Same logic as onCatalogTrashRequested(covers_all=true): clear the
-    // catalog AND drop SessionManager's lastLoadedSource record.
-    // Otherwise the next layout-load sees already_loaded=true and
-    // silently skips the data-source reload prompt — the user clears
-    // everything, opens a layout that embeds a data source, and gets
-    // the missing-curve dialog without ever being asked to reload.
+    // Keep lastLoadedSource so reload can recover after clearing the catalog.
     session_->catalogModel().clearAll();
-    session_->sessionManager().clearLoadedSource();
   });
 
   QSettings settings;
@@ -685,28 +679,34 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
   file_loader_ = std::make_unique<FileLoader>(
       session_->sessionManager(), session_->extensionCatalog(), session_->catalogModel(), this);
   connect(ui_->leftPanel, &LeftPanel::loadDataRequested, this, &MainWindow::onLoadDataRequested);
+  connect(ui_->leftPanel, &LeftPanel::reloadDataRequested, this, &MainWindow::onReloadDataRequested);
   connect(ui_->leftPanel, &LeftPanel::cloudToolboxRequested, this, &MainWindow::onCloudToolboxRequested);
   connect(file_loader_.get(), &FileLoader::fileLoaded, this, &MainWindow::onFileLoaded);
-  // Track successful loads so the Recently loaded files popup can show
-  // them; the cap-5 record/dedup logic is shared with the layout list.
+  // Track successful loads for the recent-files popup.
   connect(
       file_loader_.get(), &FileLoader::fileLoaded, this,
-      [](const QString& path, const QString& /*prefix*/, const QString& /*plugin_id*/,
-         const QString& /*plugin_config_json*/) {
-        QStringList recent = QSettings().value(QStringLiteral("File/recent")).toStringList();
+      [this](
+          const QString& path, const QString& /*prefix*/, const QString& /*plugin_id*/,
+          const QString& /*plugin_config_json*/) {
+        QSettings settings;
+        QStringList recent = settings.value(QStringLiteral("File/recent")).toStringList();
         recent.removeAll(path);
         recent.prepend(path);
         while (recent.size() > 5) {
           recent.removeLast();
         }
-        QSettings().setValue(QStringLiteral("File/recent"), recent);
+        settings.setValue(QStringLiteral("File/recent"), recent);
+        ui_->leftPanel->setRecentEnabled(true);
       });
-  // Replay a recent path through the same loader. loadFile will fall
-  // through fileLoaded / fileLoadFailed naturally; failures don't have
-  // to be handled here.
+  // Recent files reopen through the normal load flow, including the dialog.
   connect(ui_->leftPanel, &LeftPanel::recentFileSelected, this, [this](const QString& path) {
     file_loader_->loadFile(path, this);
   });
+  // Enable the popup immediately when prior sessions recorded recent files.
+  {
+    QSettings settings;
+    ui_->leftPanel->setRecentEnabled(!settings.value(QStringLiteral("File/recent")).toStringList().isEmpty());
+  }
 
   connect(ui_->actionMarketplace, &QAction::triggered, this, &MainWindow::onOpenMarketplace);
   connect(ui_->actionExit, &QAction::triggered, this, &QWidget::close);
@@ -900,6 +900,21 @@ void MainWindow::onLoadDataRequested() {
   file_loader_->openFromDialog(this);
 }
 
+void MainWindow::onReloadDataRequested() {
+  const auto src = session_->sessionManager().lastLoadedSource();
+  if (!src.has_value()) {
+    return;
+  }
+  // Prevent re-entry; success re-enables via onFileLoaded.
+  ui_->leftPanel->setReloadEnabled(false);
+  LoadHints hints{
+      .expected_plugin_id = src->plugin_id,
+      .preset_config_json = src->plugin_config_json,
+      .skip_dialog = !src->plugin_id.isEmpty() && !src->plugin_config_json.isEmpty(),
+  };
+  file_loader_->loadFile(src->path, this, hints);
+}
+
 void MainWindow::onFileLoaded(
     const QString& path, const QString& prefix, const QString& plugin_id, const QString& plugin_config_json) {
   // MainWindow is the shell that wires load completion to the runtime —
@@ -908,15 +923,13 @@ void MainWindow::onFileLoaded(
   // load dialog gains a prefix input.
   session_->sessionManager().recordLoadedSource(path, prefix, plugin_id, plugin_config_json);
   session_->seedPlaybackFromSession();
+  ui_->leftPanel->setReloadEnabled(true);
 }
 
 void MainWindow::onCatalogTrashRequested(QStringList keys, bool covers_all) {
   if (covers_all) {
+    // Keep lastLoadedSource so reload can recover after clearing the catalog.
     session_->catalogModel().clearAll();
-    // Catalog wipe implies the original source is functionally gone;
-    // clear the record so the next layout load doesn't silently skip
-    // the data-source reload prompt based on stale state.
-    session_->sessionManager().clearLoadedSource();
     return;
   }
   session_->catalogModel().removeItems(std::vector<QString>(keys.begin(), keys.end()));
@@ -1567,8 +1580,10 @@ void MainWindow::loadLayoutFromPath(const QString& path) {
   const LayoutXml::DataSourceRef replay = LayoutXml::extractDataSource(doc, layout_dir);
   if (binding != QStringLiteral("generic") && !replay.resolved_path.isEmpty()) {
     const auto current_source = session_->sessionManager().lastLoadedSource();
-    const bool same_source_loaded =
-        current_source.has_value() && LayoutXml::isSamePath(current_source->path, replay.resolved_path);
+    // A remembered source counts as loaded only while the catalog has data.
+    const bool same_source_loaded = current_source.has_value() &&
+                                    LayoutXml::isSamePath(current_source->path, replay.resolved_path) &&
+                                    !session_->catalogModel().isEmpty();
     if (same_source_loaded) {
       // The referenced file is already loaded; nothing to reload.
     } else if (!QFileInfo::exists(replay.resolved_path)) {
@@ -1595,6 +1610,7 @@ void MainWindow::loadLayoutFromPath(const QString& path) {
             .expected_plugin_id = replay.plugin_id,
             .preset_config_json = replay.plugin_config_json,
             .skip_dialog = !replay.plugin_id.isEmpty() && !replay.plugin_config_json.isEmpty(),
+            .prefer_reuse = true,
         };
         // FileLoader shows its own error dialog on failure; fall through and
         // let the unresolved-curve handling below catch an empty load.
@@ -1882,7 +1898,8 @@ void MainWindow::onRedo() {
 
 QDomElement MainWindow::appendDataSourceElement(QDomDocument& doc, const QDir& layout_dir) const {
   const auto src = session_->sessionManager().lastLoadedSource();
-  if (!src.has_value()) {
+  // Do not save a data-source reference after the catalog was cleared.
+  if (!src.has_value() || session_->catalogModel().isEmpty()) {
     return QDomElement();
   }
   QDomElement wrapper = doc.createElement(QStringLiteral("previouslyLoaded_Datafiles"));

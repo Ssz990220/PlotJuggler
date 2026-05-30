@@ -110,8 +110,18 @@ void FileLoader::openFromDialog(QWidget* dialog_parent) {
 }
 
 bool FileLoader::loadFile(const QString& path, QWidget* dialog_parent, const LoadHints& hints) {
+  // Restore same-source datasets if a replacement load is cancelled or fails.
+  std::vector<DatasetId> tombstoned_for_replace;
+  const auto rollbackTombstones = [&]() {
+    for (const DatasetId id : tombstoned_for_replace) {
+      catalog_.restoreDataset(id);
+    }
+    tombstoned_for_replace.clear();
+  };
+
   // One unified failure path — log, optionally pop a dialog, emit signal.
   const auto fail = [&](const QString& reason) -> bool {
+    rollbackTombstones();
     qCWarning(lcFileLoader).noquote() << reason;
     if (dialog_parent != nullptr) {
       MessageBox::warning(dialog_parent, tr("Load failed"), reason);
@@ -149,36 +159,38 @@ bool FileLoader::loadFile(const QString& path, QWidget* dialog_parent, const Loa
   }
 
   const QString display_name = QFileInfo(path).fileName();
+  const std::string display_name_utf8 = display_name.toStdString();
 
-  // Dataset reuse: if the engine already has a dataset for this source
-  // name, skip the entire ingest path and just bring it back into the
-  // catalog. Without this, re-loading the same file (e.g. via layout
-  // replay after Clear All Curves) mints a new monotonic dataset_id
-  // even though the underlying data is still present. The layout's
-  // saved keys reference the original dataset_id, so a duplicate ingest
-  // surfaces every curve as "missing" — see CatalogModel.cpp's
-  // removed_datasets gate.
-  //
-  // Matching is by basename (same as createDataset's source_name). This
-  // can collide if two different files share a basename; the cost of a
-  // false reuse is bounded — the user just doesn't get fresh data they
-  // weren't asking for. The cost of NOT reusing (current bug) is broken
-  // layout reload, which is worse.
+  // Same-source handling: layout replay reuses the existing DatasetId;
+  // interactive load/reload hides matches before a fresh ingest. Matching
+  // still uses the file basename, so same-basename files remain ambiguous.
   for (const auto existing_id : engine.listDatasets()) {
     const DatasetInfo* info = engine.getDataset(existing_id);
-    if (info != nullptr && info->source_name == display_name.toStdString()) {
+    if (info == nullptr || info->source_name != display_name_utf8) {
+      continue;
+    }
+    if (hints.prefer_reuse) {
+      // Reuse the id referenced by the layout; keep the recorded config
+      // when legacy XML has no preset.
+      QString emit_config = hints.preset_config_json;
+      if (emit_config.isEmpty()) {
+        const auto prev = session_.lastLoadedSource();
+        if (prev.has_value() && prev->path == path) {
+          emit_config = prev->plugin_config_json;
+        }
+      }
       catalog_.restoreDataset(existing_id);
-      // preset_config_json is what MainWindow passed in from the layout
-      // (data-source replay); on the interactive path it's empty, which
-      // is fine — the same file is being re-opened, the previous
-      // LoadedSource still describes it.
-      emit fileLoaded(path, QString(), source_name, hints.preset_config_json);
+      emit fileLoaded(path, QString(), source_name, emit_config);
       return true;
+    }
+    // Interactive load/reload replaces the caller-visible dataset.
+    // The datastore keeps old data; the catalog tombstone hides it.
+    if (catalog_.removeDataset(existing_id)) {
+      tombstoned_for_replace.push_back(existing_id);
     }
   }
 
-  auto dataset_or =
-      engine.createDataset(DatasetDescriptor{.source_name = display_name.toStdString(), .time_domain_id = td_id});
+  auto dataset_or = engine.createDataset(DatasetDescriptor{.source_name = display_name_utf8, .time_domain_id = td_id});
   if (!dataset_or.has_value()) {
     return fail(tr("createDataset failed: %1").arg(QString::fromStdString(dataset_or.error())));
   }
@@ -259,6 +271,7 @@ bool FileLoader::loadFile(const QString& path, QWidget* dialog_parent, const Loa
                       .arg(QString::fromStdString(dlg.error)));
     }
     if (dlg.outcome == dialog_presenter::Outcome::kRejected) {
+      rollbackTombstones();
       return false;
     }
     if (dlg.payload.has_value()) {

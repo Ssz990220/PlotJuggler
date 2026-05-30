@@ -128,6 +128,9 @@ class MainWindow : public QMainWindow {
   // Opens the file-load workflow.
   void onLoadDataRequested();
 
+  // Reloads the remembered data source with its recorded plugin config.
+  void onReloadDataRequested();
+
   // Updates playback bounds after a data file has populated datastore and
   // object-store topics.
   void onFileLoaded(

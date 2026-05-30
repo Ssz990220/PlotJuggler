@@ -260,6 +260,10 @@ std::vector<CatalogItem> CatalogModel::items() const {
   return items;
 }
 
+bool CatalogModel::isEmpty() const noexcept {
+  return impl_->items.empty();
+}
+
 std::optional<CatalogItem> CatalogModel::itemDescriptor(const QString& key) const {
   const auto it = impl_->items.find(key);
   if (it == impl_->items.end()) {
@@ -498,6 +502,35 @@ void CatalogModel::restoreDataset(DatasetId dataset_id) {
   if (was_removed || had_per_item) {
     rebuildFromDatastore();
   }
+}
+
+bool CatalogModel::removeDataset(DatasetId dataset_id) {
+  const auto inserted = impl_->removed_datasets.insert(dataset_id).second;
+  const auto had_per_item = impl_->removed_names_per_dataset.erase(dataset_id) > 0;
+
+  std::vector<QString> dropped;
+  for (auto it = impl_->items.begin(); it != impl_->items.end();) {
+    if (it->second.dataset_id == dataset_id) {
+      dropped.push_back(it->first);
+      it = impl_->items.erase(it);
+    } else {
+      ++it;
+    }
+  }
+
+  if (!inserted && !had_per_item && dropped.empty()) {
+    return false;
+  }
+
+  // Emptying the catalog gets one bulk-clear signal instead of N removals.
+  if (impl_->items.empty() && !dropped.empty()) {
+    emit cleared();
+  } else {
+    for (const QString& key : dropped) {
+      emit itemRemoved(key);
+    }
+  }
+  return true;
 }
 
 void CatalogModel::removeItems(const std::vector<QString>& keys) {

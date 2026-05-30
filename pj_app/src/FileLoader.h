@@ -25,6 +25,8 @@ struct LoadHints {
   QString expected_plugin_id;  // Empty -> no hint; FileLoader picks plugin by extension as usual.
   QString preset_config_json;  // Empty -> no hint; QSettings pre-fill is used.
   bool skip_dialog = false;    // Only honored when both fields above are non-empty AND the plugin id matches.
+  // Layout replay reuses matching DatasetIds; normal load/reload replaces them.
+  bool prefer_reuse = false;
 };
 
 // Drives the file-import path: pick a file, find the matching DataSource

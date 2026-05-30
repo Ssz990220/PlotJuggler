@@ -75,6 +75,8 @@ class CatalogModel : public QObject {
   CatalogModel& operator=(const CatalogModel&) = delete;
 
   std::vector<CatalogItem> items() const;
+  // Fast alternative to items().empty(), which copies and sorts entries.
+  [[nodiscard]] bool isEmpty() const noexcept;
   [[nodiscard]] std::optional<CatalogItem> itemDescriptor(const QString& key) const;
   std::vector<CurveDescriptor> curves() const;
   [[nodiscard]] std::optional<CurveDescriptor> curveDescriptor(const QString& key) const;
@@ -97,13 +99,12 @@ class CatalogModel : public QObject {
   // resurrection path (e.g. layout load) can re-expose previously removed curves.
   void resetRemovalState();
 
-  // Un-hides one previously-cleared dataset (and any per-item removals
-  // scoped to it) and rebuilds from the datastore. Used by FileLoader
-  // when it reuses an existing engine dataset for a re-loaded file —
-  // the dataset was hidden by Clear All Curves but the underlying data
-  // is still present, so re-loading the same file should bring it back
-  // into view without un-hiding unrelated datasets.
+  // Restores one dataset hidden by removeDataset().
   void restoreDataset(DatasetId dataset_id);
+
+  // Hides one dataset from the catalog and future rebuilds.
+  // Emits cleared() if it empties the catalog; otherwise emits itemRemoved().
+  bool removeDataset(DatasetId dataset_id);
 
  public slots:
   void rebuildFromDatastore();

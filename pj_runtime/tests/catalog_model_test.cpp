@@ -188,6 +188,76 @@ TEST(CatalogModelTest, RestoreDatasetBringsBackClearedItems) {
       << "restoreDataset must surface only the targeted dataset, not the other cleared one";
 }
 
+TEST(CatalogModelTest, RemoveDatasetHidesItemsScopedToTargetIdAndReturnsTrue) {
+  PJ::SessionManager session;
+  PJ::CatalogModel catalog(&session);
+
+  auto dataset_a = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "a.mcap"});
+  ASSERT_TRUE(dataset_a.has_value());
+  ASSERT_NE(addScalarTopic(session, *dataset_a, "/imu/accel/sample"), 0U);
+
+  auto dataset_b = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "b.mcap"});
+  ASSERT_TRUE(dataset_b.has_value());
+  ASSERT_NE(addScalarTopic(session, *dataset_b, "/gps/fix"), 0U);
+
+  ASSERT_EQ(catalog.items().size(), 2U);
+
+  EXPECT_TRUE(catalog.removeDataset(*dataset_a));
+  const auto items = catalog.items();
+  ASSERT_EQ(items.size(), 1U);
+  EXPECT_EQ(items[0].dataset_id, *dataset_b) << "removeDataset must not touch unrelated datasets";
+}
+
+TEST(CatalogModelTest, RemoveDatasetTombstonePersistsAcrossRebuild) {
+  PJ::SessionManager session;
+  PJ::CatalogModel catalog(&session);
+
+  auto dataset_a = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "a.mcap"});
+  ASSERT_TRUE(dataset_a.has_value());
+  ASSERT_NE(addScalarTopic(session, *dataset_a, "/imu/accel/sample"), 0U);
+  ASSERT_EQ(catalog.items().size(), 1U);
+
+  EXPECT_TRUE(catalog.removeDataset(*dataset_a));
+  EXPECT_TRUE(catalog.items().empty());
+
+  catalog.rebuildFromDatastore();
+  EXPECT_TRUE(catalog.items().empty())
+      << "tombstone must outlive rebuildFromDatastore; otherwise the next commit resurrects the dataset";
+}
+
+TEST(CatalogModelTest, RemoveDatasetIsIdempotent) {
+  PJ::SessionManager session;
+  PJ::CatalogModel catalog(&session);
+
+  auto dataset_a = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "a.mcap"});
+  ASSERT_TRUE(dataset_a.has_value());
+  ASSERT_NE(addScalarTopic(session, *dataset_a, "/imu/accel/sample"), 0U);
+
+  EXPECT_TRUE(catalog.removeDataset(*dataset_a));
+  EXPECT_FALSE(catalog.removeDataset(*dataset_a)) << "second remove on the same id must be a no-op";
+}
+
+TEST(CatalogModelTest, RemoveDatasetEmitsClearedWhenEmptyingCatalog) {
+  PJ::SessionManager session;
+  PJ::CatalogModel catalog(&session);
+
+  auto dataset_a = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "a.mcap"});
+  ASSERT_TRUE(dataset_a.has_value());
+  ASSERT_NE(addScalarTopic(session, *dataset_a, "/imu/accel/sample"), 0U);
+  ASSERT_NE(addScalarTopic(session, *dataset_a, "/gps/fix"), 0U);
+  ASSERT_EQ(catalog.items().size(), 2U);
+
+  int cleared_count = 0;
+  int item_removed_count = 0;
+  QObject::connect(&catalog, &PJ::CatalogModel::cleared, &catalog, [&]() { ++cleared_count; });
+  QObject::connect(&catalog, &PJ::CatalogModel::itemRemoved, &catalog, [&](const QString&) { ++item_removed_count; });
+
+  EXPECT_TRUE(catalog.removeDataset(*dataset_a));
+  EXPECT_EQ(cleared_count, 1) << "must emit a single cleared() when the wipe empties the catalog";
+  EXPECT_EQ(item_removed_count, 0)
+      << "must not also emit per-item itemRemoved — that's the O(N^2) regression we're guarding against";
+}
+
 TEST(CatalogModelPathResolve, DatasetsEnumeratesLoadedDatasetsInLoadOrder) {
   PJ::SessionManager session;
   PJ::CatalogModel catalog(&session);
