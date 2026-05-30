@@ -1,6 +1,9 @@
 #include "pj_scene2d_widgets/Media2DDockWidget.h"
 
 #include <QBoxLayout>
+#include <QByteArray>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QLoggingCategory>
 #include <QMetaObject>
 #include <QPointer>
@@ -19,6 +22,24 @@ namespace PJ {
 
 namespace {
 Q_LOGGING_CATEGORY(lcMedia2DDock, "pj.scene2d.dock")
+
+// True when the topic's metadata declares the per-frame canonical image codec
+// (image_codec=pj_image_v1) — each ObjectStore entry is a serialized sdk::Image
+// blob (the mosaico toolbox contract). Such topics carry no MessageParser, so
+// the viewer deserializes each blob itself via ImagePipelineSource.
+bool topicUsesCanonicalImageCodec(const std::string& metadata_json) {
+  const auto doc = QJsonDocument::fromJson(QByteArray::fromStdString(metadata_json));
+  if (!doc.isObject()) {
+    // Empty metadata is the normal "no canonical codec" case; non-empty-but-unparseable
+    // means a producer emitted broken metadata — surface it so it isn't mistaken
+    // downstream for "no decoder for this topic".
+    if (!metadata_json.empty()) {
+      qCWarning(lcMedia2DDock) << "topic metadata is not a valid JSON object; cannot detect image_codec";
+    }
+    return false;
+  }
+  return doc.object().value(QStringLiteral("image_codec")).toString() == QStringLiteral("pj_image_v1");
+}
 }  // namespace
 
 Media2DDockWidget::Media2DDockWidget(QWidget* parent) : QWidget(parent) {
@@ -130,10 +151,14 @@ bool Media2DDockWidget::setImageTopic(
     return true;
   }
 
-  // Image branch (parser-driven canonical kImage, or built-in JPEG pipeline).
+  // Image branch: parser-driven canonical image, a per-frame canonical sdk::Image
+  // blob (image_codec=pj_image_v1, e.g. the mosaico toolbox), or the built-in
+  // JPEG pipeline.
   auto pipeline = makePipelineFor(object_type);
   auto* parser = session_->parserForObjectTopic(topic_id);
-  if (parser == nullptr && pipeline == nullptr) {
+  const bool canonical_blob =
+      parser == nullptr && topicUsesCanonicalImageCodec(store.descriptor(topic_id).metadata_json);
+  if (parser == nullptr && !canonical_blob && pipeline == nullptr) {
     // Production object topics are expected to ship a parser via the data
     // source's parser registrar. The pipeline fallback only exists for image
     // types that have a built-in decoder family (currently kImage→JPEG).
@@ -154,6 +179,9 @@ bool Media2DDockWidget::setImageTopic(
     // session's per-topic mutex serialises parseObject across workers.
     image_src =
         std::make_unique<ImagePipelineSource>(&store, topic_id, parser, session_->parserMutexForObjectTopic(topic_id));
+  } else if (canonical_blob) {
+    // No parser: each entry is a serialized sdk::Image the source deserializes.
+    image_src = std::make_unique<ImagePipelineSource>(&store, topic_id, ImagePipelineSource::CanonicalImageCodec{});
   } else {
     image_src = std::make_unique<ImagePipelineSource>(&store, topic_id, std::move(pipeline));
   }

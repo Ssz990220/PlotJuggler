@@ -39,3 +39,22 @@ set_target_properties(file_dialog_test PROPERTIES
 )
 
 add_test(NAME FileDialogTest COMMAND file_dialog_test)
+
+add_executable(credentials_editor_test
+    credentials_editor_test.cpp
+)
+
+target_link_libraries(credentials_editor_test PRIVATE
+    pj_widgets
+    GTest::gtest
+)
+
+if(DEFINED PJ_WARNING_FLAGS)
+    target_compile_options(credentials_editor_test PRIVATE ${PJ_WARNING_FLAGS})
+endif()
+
+set_target_properties(credentials_editor_test PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
+)
+
+add_test(NAME CredentialsEditorTest COMMAND credentials_editor_test)

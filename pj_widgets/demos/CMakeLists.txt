@@ -48,3 +48,13 @@ target_link_libraries(pj_widgets_combobox_demo PRIVATE
     Qt6::Widgets
     Qt6::Svg
 )
+
+# Dialog building blocks (SDK 0.4.0): RangeSlider + DateRangePicker. No QSS or
+# resources — links only pj_widgets + Qt6::Widgets.
+add_executable(pj_widgets_dialog_blocks_demo dialog_blocks_demo.cpp)
+target_compile_features(pj_widgets_dialog_blocks_demo PRIVATE cxx_std_20)
+target_compile_options(pj_widgets_dialog_blocks_demo PRIVATE ${PJ_WARNING_FLAGS})
+target_link_libraries(pj_widgets_dialog_blocks_demo PRIVATE
+    pj_widgets
+    Qt6::Widgets
+)

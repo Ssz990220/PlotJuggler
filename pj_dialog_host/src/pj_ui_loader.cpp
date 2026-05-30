@@ -3,6 +3,7 @@
 
 #include "pj_plugins/host_qt/pj_ui_loader.hpp"
 
+#include <pj_widgets/CredentialsEditor.h>
 #include <pj_widgets/DateRangePicker.h>
 #include <pj_widgets/RangeSlider.h>
 
@@ -20,6 +21,8 @@ QWidget* PjUiLoader::createWidget(const QString& class_name, QWidget* parent, co
     w = new RangeSlider(Qt::Horizontal, RangeSlider::DoubleHandles, parent);
   } else if (class_name == QLatin1String("DateRangePicker")) {
     w = new DateRangePicker(parent);
+  } else if (class_name == QLatin1String("CredentialsEditor")) {
+    w = new CredentialsEditor(parent);
   }
 
   if (w != nullptr) {

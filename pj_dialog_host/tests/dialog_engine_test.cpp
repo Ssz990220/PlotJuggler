@@ -8,10 +8,13 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QListWidget>
+#include <QPlainTextEdit>
 #include <QPushButton>
 #include <QRadioButton>
 #include <QSpinBox>
 #include <QTabWidget>
+#include <QTableWidget>
+#include <QTableWidgetItem>
 #include <QVBoxLayout>
 #include <QWidget>
 #include <nlohmann/json.hpp>
@@ -308,6 +311,238 @@ TEST_F(DialogEngineTest, RoundTripWidgetBinding) {
   EXPECT_EQ(updated_view.text("name_input").value_or(""), "my_source");
 
   delete root;
+}
+
+// ==========================================================================
+// Table binding — selection changes must not rebuild rows
+// ==========================================================================
+
+namespace {
+nlohmann::json tableData(
+    const char* name, const std::vector<std::vector<std::string>>& rows, const std::vector<int>& selected) {
+  nlohmann::json d;
+  d[name]["headers"] = {"A", "B"};
+  d[name]["rows"] = rows;
+  d[name]["selected_rows"] = selected;
+  return d;
+}
+}  // namespace
+
+// Selecting a row re-delivers identical rows under the same widget-data key.
+// The host must reuse the existing QTableWidgetItems (cheap) rather than
+// recreating them — this is what kept row clicks from rebuilding the table.
+TEST(TableBinding, SelectionChangeReusesItems) {
+  QWidget root;
+  auto* tw = new QTableWidget(&root);
+  tw->setObjectName("tbl");
+
+  const std::vector<std::vector<std::string>> rows = {{"a0", "b0"}, {"a1", "b1"}};
+  PJ::applyWidgetData(&root, PJ::WidgetDataView(tableData("tbl", rows, {0}).dump()));
+
+  ASSERT_EQ(tw->rowCount(), 2);
+  QTableWidgetItem* item00 = tw->item(0, 0);
+  QTableWidgetItem* item11 = tw->item(1, 1);
+  ASSERT_NE(item00, nullptr);
+  ASSERT_NE(item11, nullptr);
+  EXPECT_TRUE(tw->item(0, 0)->isSelected());
+
+  // Same rows, selection moves to row 1.
+  PJ::applyWidgetData(&root, PJ::WidgetDataView(tableData("tbl", rows, {1}).dump()));
+
+  EXPECT_EQ(tw->item(0, 0), item00);  // same pointer ⇒ not rebuilt
+  EXPECT_EQ(tw->item(1, 1), item11);
+  EXPECT_FALSE(tw->item(0, 0)->isSelected());
+  EXPECT_TRUE(tw->item(1, 0)->isSelected());
+}
+
+TEST(TableBinding, RowContentChangeRebuildsCells) {
+  QWidget root;
+  auto* tw = new QTableWidget(&root);
+  tw->setObjectName("tbl");
+
+  PJ::applyWidgetData(&root, PJ::WidgetDataView(tableData("tbl", {{"a0", "b0"}}, {}).dump()));
+  ASSERT_EQ(tw->rowCount(), 1);
+  EXPECT_EQ(tw->item(0, 0)->text(), "a0");
+
+  PJ::applyWidgetData(&root, PJ::WidgetDataView(tableData("tbl", {{"X", "Y"}, {"Z", "W"}}, {}).dump()));
+  ASSERT_EQ(tw->rowCount(), 2);
+  EXPECT_EQ(tw->item(0, 0)->text(), "X");
+  EXPECT_EQ(tw->item(1, 1)->text(), "W");
+}
+
+// Filtering: visible_rows hides the rows not in the set, and re-applying a wider
+// set (same rows ⇒ rebuild skipped) must still un-hide them. Without honoring
+// visible_rows the date/name/query filters do nothing.
+TEST(TableBinding, VisibleRowsHideAndShowFilteredRows) {
+  QWidget root;
+  auto* tw = new QTableWidget(&root);
+  tw->setObjectName("tbl");
+
+  const std::vector<std::vector<std::string>> rows = {{"a0", "b0"}, {"a1", "b1"}, {"a2", "b2"}};
+  auto withVisible = [&](const std::vector<int>& visible) {
+    nlohmann::json d;
+    d["tbl"]["headers"] = {"A", "B"};
+    d["tbl"]["rows"] = rows;
+    d["tbl"]["visible_rows"] = visible;
+    return d.dump();
+  };
+
+  PJ::applyWidgetData(&root, PJ::WidgetDataView(withVisible({1})));
+  ASSERT_EQ(tw->rowCount(), 3);
+  EXPECT_TRUE(tw->isRowHidden(0));
+  EXPECT_FALSE(tw->isRowHidden(1));
+  EXPECT_TRUE(tw->isRowHidden(2));
+
+  // Widen the filter — rows unchanged, so the item rebuild is skipped, but the
+  // hidden state must still update.
+  PJ::applyWidgetData(&root, PJ::WidgetDataView(withVisible({0, 1, 2})));
+  EXPECT_FALSE(tw->isRowHidden(0));
+  EXPECT_FALSE(tw->isRowHidden(1));
+  EXPECT_FALSE(tw->isRowHidden(2));
+}
+
+// Streaming parity: when a sequence's detail arrives, only that cell changes and
+// the row count is unchanged, so the item is updated in place (pointer kept)
+// rather than rebuilding the table — this is what makes detail fill in row by
+// row instead of all at once.
+TEST(TableBinding, SameShapeCellUpdateIsInPlace) {
+  QWidget root;
+  auto* tw = new QTableWidget(&root);
+  tw->setObjectName("tbl");
+
+  PJ::applyWidgetData(&root, PJ::WidgetDataView(tableData("tbl", {{"a0", "--"}, {"a1", "--"}}, {}).dump()));
+  ASSERT_EQ(tw->rowCount(), 2);
+  QTableWidgetItem* item01 = tw->item(0, 1);
+  ASSERT_NE(item01, nullptr);
+  EXPECT_EQ(item01->text(), "--");
+
+  // Row 0's detail streams in (same shape, one cell changes).
+  PJ::applyWidgetData(&root, PJ::WidgetDataView(tableData("tbl", {{"a0", "42 MiB"}, {"a1", "--"}}, {}).dump()));
+  EXPECT_EQ(tw->item(0, 1), item01);  // same item ⇒ updated in place
+  EXPECT_EQ(item01->text(), "42 MiB");
+  EXPECT_EQ(tw->item(1, 1)->text(), "--");
+}
+
+// ==========================================================================
+// Code editor — caret offset round-trips via code_cursor
+// ==========================================================================
+
+TEST(CodeEditorBinding, AppliesCodeCursor) {
+  QWidget root;
+  auto* pte = new QPlainTextEdit(&root);
+  pte->setObjectName("editor");
+
+  nlohmann::json d;
+  d["editor"]["code_content"] = "robot == bonirob";
+  d["editor"]["code_cursor"] = 5;
+  PJ::applyWidgetData(&root, PJ::WidgetDataView(d.dump()));
+
+  EXPECT_EQ(pte->toPlainText().toStdString(), "robot == bonirob");
+  EXPECT_EQ(pte->textCursor().position(), 5);
+}
+
+TEST(CodeEditorBinding, ClampsOutOfRangeCodeCursor) {
+  QWidget root;
+  auto* pte = new QPlainTextEdit(&root);
+  pte->setObjectName("editor");
+
+  nlohmann::json d;
+  d["editor"]["code_content"] = "abc";
+  d["editor"]["code_cursor"] = 999;
+  PJ::applyWidgetData(&root, PJ::WidgetDataView(d.dump()));
+
+  EXPECT_EQ(pte->textCursor().position(), 3);  // clamped to text length
+}
+
+// Opt-in (setCodeCaretTracking): a cursor move with no text edit emits a
+// code_changed event carrying the new caret offset.
+TEST(CodeEditorBinding, CaretTrackingEmitsOnCursorMove) {
+  QWidget root;
+  auto* pte = new QPlainTextEdit(&root);
+  pte->setObjectName("editor");
+
+  nlohmann::json d;
+  d["editor"]["code_language"] = "lua";
+  d["editor"]["code_content"] = "robot == x";
+  d["editor"]["code_caret_tracking"] = true;
+  PJ::applyWidgetData(&root, PJ::WidgetDataView(d.dump()));
+
+  {
+    QTextCursor tc = pte->textCursor();
+    tc.setPosition(0);
+    pte->setTextCursor(tc);
+  }
+
+  std::vector<std::string> events;
+  PJ::connectWidgetSignals(&root, [&](const std::string& name, const std::string& json) {
+    if (name == "editor") {
+      events.push_back(json);
+    }
+  });
+
+  QTextCursor tc = pte->textCursor();
+  tc.setPosition(3);
+  pte->setTextCursor(tc);  // cursor move only — no text change
+
+  ASSERT_FALSE(events.empty());
+  auto ev = nlohmann::json::parse(events.back());
+  EXPECT_EQ(ev["code_cursor"], 3);
+}
+
+// Opt-out (the default): a cursor move emits nothing; a text edit still emits,
+// but without a caret offset — the pre-caret behavior, so editors that only
+// validate code aren't re-run on every cursor move.
+TEST(CodeEditorBinding, NoCaretTrackingIgnoresCursorMoves) {
+  QWidget root;
+  auto* pte = new QPlainTextEdit(&root);
+  pte->setObjectName("editor");
+
+  nlohmann::json d;
+  d["editor"]["code_language"] = "lua";
+  d["editor"]["code_content"] = "robot == x";
+  PJ::applyWidgetData(&root, PJ::WidgetDataView(d.dump()));
+
+  {
+    QTextCursor tc = pte->textCursor();
+    tc.setPosition(0);
+    pte->setTextCursor(tc);
+  }
+
+  std::vector<std::string> events;
+  PJ::connectWidgetSignals(&root, [&](const std::string& name, const std::string& json) {
+    if (name == "editor") {
+      events.push_back(json);
+    }
+  });
+
+  QTextCursor tc = pte->textCursor();
+  tc.setPosition(3);
+  pte->setTextCursor(tc);  // cursor move only
+  EXPECT_TRUE(events.empty()) << "opt-out editor must not emit on cursor moves";
+
+  pte->setPlainText("changed");  // a real edit still fires
+  ASSERT_EQ(events.size(), 1u);
+  auto ev = nlohmann::json::parse(events.back());
+  EXPECT_TRUE(ev.contains("code_changed"));
+  EXPECT_FALSE(ev.contains("code_cursor")) << "opt-out editor carries no caret offset";
+}
+
+// ==========================================================================
+// Named icon resolver
+// ==========================================================================
+
+TEST(NamedIconResolver, MapsKnownIdsToThemedResourcePaths) {
+  EXPECT_EQ(PJ::resolveNamedIconPath("link"), QStringLiteral(":/resources/svg/link.svg"));
+  EXPECT_EQ(PJ::resolveNamedIconPath("contract"), QStringLiteral(":/resources/svg/contract.svg"));
+  EXPECT_EQ(PJ::resolveNamedIconPath("plug_connect"), QStringLiteral(":/resources/svg/plug_connect.svg"));
+  EXPECT_EQ(PJ::resolveNamedIconPath("refresh"), QStringLiteral(":/resources/svg/refresh.svg"));
+}
+
+TEST(NamedIconResolver, ReturnsEmptyForUnknownOrEmptyId) {
+  EXPECT_TRUE(PJ::resolveNamedIconPath("does-not-exist").isEmpty());
+  EXPECT_TRUE(PJ::resolveNamedIconPath("").isEmpty());
+  // Case-sensitive: ids are exact semantic tokens, not free text.
+  EXPECT_TRUE(PJ::resolveNamedIconPath("Link").isEmpty());
 }
 
 // ==========================================================================

@@ -6,6 +6,7 @@
 // RangeSlider data binding (bounds/values + duration labels), and the generic
 // field-validity indicator (setFieldValid).
 
+#include <pj_widgets/CredentialsEditor.h>
 #include <pj_widgets/DateRangePicker.h>
 #include <pj_widgets/RangeSlider.h>
 
@@ -55,6 +56,7 @@ TEST(PjUiLoader, RegistersBuildingBlocks) {
   <layout class="QVBoxLayout">
    <item><widget class="RangeSlider" name="rangeSlider"/></item>
    <item><widget class="DateRangePicker" name="datePicker"/></item>
+   <item><widget class="CredentialsEditor" name="certContents"/></item>
    <item><widget class="QLineEdit" name="plainEdit"/></item>
   </layout>
  </widget>
@@ -67,6 +69,11 @@ TEST(PjUiLoader, RegistersBuildingBlocks) {
   ASSERT_NE(root, nullptr);
   EXPECT_NE(root->findChild<PJ::RangeSlider*>("rangeSlider"), nullptr);
   EXPECT_NE(root->findChild<PJ::DateRangePicker*>("datePicker"), nullptr);
+  EXPECT_NE(root->findChild<PJ::CredentialsEditor*>("certContents"), nullptr);
+  // The cert dialog addresses CredentialsEditor's inner inputs by name; they
+  // must be reachable for the plugin's setText("certPath"/...) to land.
+  EXPECT_NE(root->findChild<QLineEdit*>("certPath"), nullptr);
+  EXPECT_NE(root->findChild<QLineEdit*>("apiKey"), nullptr);
   EXPECT_NE(root->findChild<QLineEdit*>("plainEdit"), nullptr);
   delete root;
 }

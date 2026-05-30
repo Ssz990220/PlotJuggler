@@ -1,5 +1,6 @@
 #include <pj_widgets/DateRangePicker.h>
 #include <pj_widgets/RangeSlider.h>
+#include <pj_widgets/SvgUtil.h>
 
 #include <QCheckBox>
 #include <QComboBox>
@@ -7,6 +8,7 @@
 #include <QDateTime>
 #include <QDialogButtonBox>
 #include <QDoubleSpinBox>
+#include <QFont>
 #include <QGroupBox>
 #include <QHeaderView>
 #include <QLabel>
@@ -21,12 +23,16 @@
 #include <QSignalBlocker>
 #include <QSpinBox>
 #include <QSplitter>
+#include <QStyle>
 #include <QSvgRenderer>
 #include <QTabWidget>
 #include <QTableWidget>
+#include <QTextCursor>
 #include <QTimeZone>
 #include <QVBoxLayout>
+#include <algorithm>
 #include <cstdint>
+#include <memory>
 #include <pj_plugins/host/widget_event_builder.hpp>
 #include <pj_plugins/host_qt/chart_preview_widget.hpp>
 #include <pj_plugins/host_qt/widget_binding.hpp>
@@ -36,6 +42,22 @@
 #include "python_syntax_highlighter.hpp"
 
 namespace PJ {
+
+QString resolveNamedIconPath(std::string_view icon_name) {
+  if (icon_name == "link") {
+    return QStringLiteral(":/resources/svg/link.svg");
+  }
+  if (icon_name == "contract") {
+    return QStringLiteral(":/resources/svg/contract.svg");
+  }
+  if (icon_name == "plug_connect") {
+    return QStringLiteral(":/resources/svg/plug_connect.svg");
+  }
+  if (icon_name == "refresh") {
+    return QStringLiteral(":/resources/svg/refresh.svg");
+  }
+  return {};
+}
 
 namespace {
 
@@ -73,6 +95,137 @@ std::int64_t sliderToNs(int pos, int slider_max, std::int64_t min_ns, std::int64
 // ---------------------------------------------------------------------------
 // apply_widget_data — push WidgetDataView values into Qt widgets
 // ---------------------------------------------------------------------------
+
+// Push `rows` into the table with minimal churn. All table aspects
+// (rows/selection/visibility) share one widget-data key, so every selection
+// change and every streamed per-row detail update re-delivers the whole rows
+// array. When the shape (row + column count) is unchanged — the common case —
+// only the cells whose text actually differs are updated in place: this keeps
+// the existing QTableWidgetItems (so selection + scroll survive), avoids the
+// ResizeToContents re-measure a full rebuild triggers, and lets streamed detail
+// fill in cell-by-cell instead of snapping in all at once. Only a row/column
+// count change forces a full rebuild.
+static void apply_table_rows(QTableWidget* tw, const std::vector<std::vector<std::string>>& rows) {
+  const bool same_shape = static_cast<std::size_t>(tw->rowCount()) == rows.size() &&
+                          (rows.empty() || static_cast<std::size_t>(tw->columnCount()) == rows.front().size());
+  if (same_shape) {
+    for (std::size_t r = 0; r < rows.size(); ++r) {
+      const auto& row = rows[r];
+      for (std::size_t c = 0; c < row.size(); ++c) {
+        const QString text = QString::fromStdString(row[c]);
+        QTableWidgetItem* item = tw->item(static_cast<int>(r), static_cast<int>(c));
+        if (item == nullptr) {
+          tw->setItem(static_cast<int>(r), static_cast<int>(c), new QTableWidgetItem(text));
+        } else if (item->text() != text) {
+          item->setText(text);
+        }
+      }
+    }
+    return;
+  }
+  const bool updates = tw->updatesEnabled();
+  tw->setUpdatesEnabled(false);
+  tw->setRowCount(static_cast<int>(rows.size()));
+  for (std::size_t r = 0; r < rows.size(); ++r) {
+    const auto& row = rows[r];
+    for (std::size_t c = 0; c < row.size(); ++c) {
+      tw->setItem(static_cast<int>(r), static_cast<int>(c), new QTableWidgetItem(QString::fromStdString(row[c])));
+    }
+  }
+  tw->setUpdatesEnabled(updates);
+}
+
+// True when `tw`'s header labels already equal `headers`.
+static bool table_matches_headers(const QTableWidget* tw, const QStringList& headers) {
+  if (tw->columnCount() != headers.size()) {
+    return false;
+  }
+  for (int i = 0; i < headers.size(); ++i) {
+    const QTableWidgetItem* h = tw->horizontalHeaderItem(i);
+    if (h == nullptr || h->text() != headers[i]) {
+      return false;
+    }
+  }
+  return true;
+}
+
+// Make a QTableWidget header read + behave like CurveTreeView's: column 0 fills
+// the remaining viewport width (no dead space) while every divider stays
+// user-draggable. A plain Stretch first column looks the same but is NOT
+// resizable, so the name divider can't be dragged — Interactive + this fill
+// logic restores the drag. WA_Hover lets the QSS `QHeaderView::section:hover`
+// divider tint fire; the header font is forced non-bold (QTableWidget defaults
+// it bold, unlike QTreeWidget) so the two read consistently.
+//
+// Idempotent: resize modes + font are re-applied on every call, but the signal
+// wiring is installed once (guarded by a dynamic property).
+static void InstallTreeLikeHeader(QTableWidget* tw) {
+  auto* header = tw->horizontalHeader();
+  header->setStretchLastSection(false);
+  header->setSectionResizeMode(QHeaderView::Interactive);
+  header->setMinimumSectionSize(20);
+  header->setAttribute(Qt::WA_Hover, true);
+  header->viewport()->setAttribute(Qt::WA_Hover, true);
+  QFont header_font = header->font();
+  header_font.setBold(false);
+  header->setFont(header_font);
+
+  if (tw->property("pjTreeLikeHeader").toBool()) {
+    return;  // already wired; the modes/font above were just re-applied
+  }
+  tw->setProperty("pjTreeLikeHeader", true);
+
+  // Re-entrancy guard: our own resizeSection() calls emit sectionResized, which
+  // would otherwise re-enter and cascade. Shared so the lambdas (parented to tw)
+  // see the same flag.
+  auto adjusting = std::make_shared<bool>(false);
+
+  auto fill_first = [tw, adjusting]() {
+    auto* hdr = tw->horizontalHeader();
+    if (*adjusting || hdr->count() == 0) {
+      return;
+    }
+    int others = 0;
+    for (int i = 1; i < hdr->count(); ++i) {
+      if (!hdr->isSectionHidden(i)) {
+        others += hdr->sectionSize(i);
+      }
+    }
+    const int target = std::max(hdr->minimumSectionSize(), tw->viewport()->width() - others);
+    if (hdr->sectionSize(0) == target) {
+      return;
+    }
+    *adjusting = true;
+    hdr->resizeSection(0, target);
+    *adjusting = false;
+  };
+
+  QObject::connect(
+      header, &QHeaderView::sectionResized, tw,
+      [header, adjusting, fill_first](int section, int old_size, int new_size) {
+        if (*adjusting) {
+          return;  // programmatic resize, not a user drag
+        }
+        // Move the dragged divider by pushing the opposite delta into the next
+        // visible column, so total width is preserved and the divider moves.
+        int next = section + 1;
+        while (next < header->count() && header->isSectionHidden(next)) {
+          ++next;
+        }
+        if (next < header->count()) {
+          *adjusting = true;
+          const int delta = new_size - old_size;
+          header->resizeSection(next, std::max(header->minimumSectionSize(), header->sectionSize(next) - delta));
+          *adjusting = false;
+        }
+        fill_first();  // rebase column 0 in case the neighbour clamped
+      });
+  // The header tracks the viewport, so geometriesChanged fires on splitter /
+  // window resizes — re-fill column 0 to the new width.
+  QObject::connect(header, &QHeaderView::geometriesChanged, tw, [fill_first]() { fill_first(); });
+
+  fill_first();
+}
 
 static void apply_to_widget(QWidget* w, std::string_view name, const PJ::WidgetDataView& view) {
   const QSignalBlocker blocker(w);
@@ -115,6 +268,25 @@ static void apply_to_widget(QWidget* w, std::string_view name, const PJ::WidgetD
   // --- QPlainTextEdit ---
   if (auto* pte = qobject_cast<QPlainTextEdit*>(w)) {
     if (auto code = view.codeContent(name)) {
+      // Code editors use a light-theme syntax highlighter (dark-on-white token
+      // colors), so the text area must stay white regardless of the app's
+      // light/dark theme. Tag the widget so the global stylesheet paints it
+      // white; set once + re-polish so the attribute selector re-evaluates.
+      if (!pte->property("_pj_code_editor").toBool()) {
+        pte->setProperty("_pj_code_editor", true);
+        pte->style()->unpolish(pte);
+        pte->style()->polish(pte);
+      }
+      // Also tag the editor's immediate container pane so the area around the
+      // editor (assist dropdowns, labels) shares the white code surface in the
+      // light theme. WA_StyledBackground lets the QSS background paint on a
+      // plain QWidget; the dark theme leaves the pane at its normal background.
+      if (auto* pane = pte->parentWidget(); pane != nullptr && !pane->property("_pj_code_editor_pane").toBool()) {
+        pane->setProperty("_pj_code_editor_pane", true);
+        pane->setAttribute(Qt::WA_StyledBackground, true);
+        pane->style()->unpolish(pane);
+        pane->style()->polish(pane);
+      }
       // Code editor mode: only update if content actually differs (preserve cursor).
       QString new_text = QString::fromStdString(*code);
       if (pte->toPlainText() != new_text) {
@@ -136,11 +308,23 @@ static void apply_to_widget(QWidget* w, std::string_view name, const PJ::WidgetD
           }
         }
       }
+      // Place the caret where the plugin asked (e.g. just past an inserted
+      // completion), now that the new text is in place.
+      if (auto cur = view.codeCursor(name)) {
+        QTextCursor tc = pte->textCursor();
+        tc.setPosition(qBound(0, *cur, static_cast<int>(pte->toPlainText().size())));
+        pte->setTextCursor(tc);
+      }
     } else if (auto pt = view.plainText(name)) {
       pte->setPlainText(QString::fromStdString(*pt));
     }
     if (auto v = view.readOnly(name)) {
       pte->setReadOnly(*v);
+    }
+    // Opt-in caret tracking: when set, connectWidgetSignals also wires
+    // cursorPositionChanged so the plugin sees caret moves, not just edits.
+    if (auto track = view.codeCaretTracking(name)) {
+      pte->setProperty("_pj_caret_tracking", *track);
     }
     return;
   }
@@ -254,24 +438,25 @@ static void apply_to_widget(QWidget* w, std::string_view name, const PJ::WidgetD
       for (const auto& h : *v) {
         hdr << QString::fromStdString(h);
       }
-      tw->setColumnCount(static_cast<int>(hdr.size()));
-      tw->setHorizontalHeaderLabels(hdr);
-      // Stretch first column, resize-to-contents for the rest
-      auto* header = tw->horizontalHeader();
-      if (hdr.size() > 0) {
-        header->setSectionResizeMode(0, QHeaderView::Stretch);
-        for (int i = 1; i < hdr.size(); ++i) {
-          header->setSectionResizeMode(i, QHeaderView::ResizeToContents);
-        }
+      // Re-setting headers reconfigures the header + its resize modes (not free),
+      // so only do it when they actually changed.
+      if (!table_matches_headers(tw, hdr)) {
+        tw->setColumnCount(static_cast<int>(hdr.size()));
+        tw->setHorizontalHeaderLabels(hdr);
+        // Tree-like header: column 0 fills the remaining width, every divider
+        // stays draggable, and the QSS hover-divider tint fires (port of #90).
+        InstallTreeLikeHeader(tw);
       }
     }
     if (auto v = view.tableRows(name)) {
-      tw->setRowCount(static_cast<int>(v->size()));
-      for (std::size_t r = 0; r < v->size(); ++r) {
-        const auto& row = (*v)[r];
-        for (std::size_t c = 0; c < row.size(); ++c) {
-          tw->setItem(static_cast<int>(r), static_cast<int>(c), new QTableWidgetItem(QString::fromStdString(row[c])));
-        }
+      apply_table_rows(tw, *v);
+    }
+    // Row visibility (live filtering): hide rows not in the visible set. Absent
+    // (clearVisibleRows ⇒ nullopt) means "no change"; an empty set hides all.
+    if (auto v = view.visibleRows(name)) {
+      std::set<int> visible(v->begin(), v->end());
+      for (int r = 0; r < tw->rowCount(); ++r) {
+        tw->setRowHidden(r, !visible.contains(r));
       }
     }
     if (auto v = view.disabledRows(name)) {
@@ -331,6 +516,15 @@ static void apply_to_widget(QWidget* w, std::string_view name, const PJ::WidgetD
         QPainter painter(&pix);
         renderer.render(&painter);
         btn->setIcon(QIcon(pix));
+      }
+    }
+    // Named icons: the plugin sends a semantic id (setButtonIconNamed); the
+    // host resolves it from its themed icon set. Unknown ids leave the button
+    // icon untouched.
+    if (auto icon_name = view.buttonIconName(name)) {
+      const QString path = resolveNamedIconPath(*icon_name);
+      if (!path.isEmpty()) {
+        btn->setIcon(QIcon(LoadSvg(path, currentTheme())));
       }
     }
     return;
@@ -507,9 +701,24 @@ void connectWidgetSignals(QWidget* root, WidgetEventCallback callback) {
     if (auto* pte = qobject_cast<QPlainTextEdit*>(w)) {
       // Only wire code editors (marked by _pj_code_lang property), not read-only plain text.
       if (pte->property("_pj_code_lang").isValid()) {
-        QObject::connect(pte, &QPlainTextEdit::textChanged, pte, [callback, name, pte]() {
-          callback(name, WidgetEventBuilder::codeChanged(pte->toPlainText().toStdString()));
-        });
+        // Caret-tracking editors (opt-in via setCodeCaretTracking) emit code +
+        // caret offset on both edits and cursor moves, so caret-aware completion
+        // can react to the cursor even when the text didn't change. Editors that
+        // didn't opt in fire on text changes only and carry no caret — the
+        // pre-caret behavior — so an editor that merely validates code isn't
+        // re-run on every cursor move.
+        if (pte->property("_pj_caret_tracking").toBool()) {
+          auto emit_code = [callback, name, pte]() {
+            callback(
+                name, WidgetEventBuilder::codeChanged(pte->toPlainText().toStdString(), pte->textCursor().position()));
+          };
+          QObject::connect(pte, &QPlainTextEdit::textChanged, pte, emit_code);
+          QObject::connect(pte, &QPlainTextEdit::cursorPositionChanged, pte, emit_code);
+        } else {
+          QObject::connect(pte, &QPlainTextEdit::textChanged, pte, [callback, name, pte]() {
+            callback(name, WidgetEventBuilder::codeChanged(pte->toPlainText().toStdString()));
+          });
+        }
       }
       continue;
     }

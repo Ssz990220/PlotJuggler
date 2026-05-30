@@ -65,6 +65,28 @@ class AutoImageCodec : public CodecStage {
   NormalizeMono16 normalize_;
 };
 
+/// Bayer color-filter-array pattern, named by the top-left 2x2 tile.
+enum class BayerPattern : uint8_t {
+  kRGGB,
+  kGRBG,
+  kGBRG,
+  kBGGR,
+};
+
+/// Bayer mosaic → RGB888 demosaic. Input must be a kMono8 frame whose pixels
+/// hold the raw CFA mosaic (one sample per pixel). The constructor selects the
+/// CFA pattern. Missing channels are filled by averaging the same-channel
+/// samples in the 3x3 neighbourhood (clamped at edges).
+class BayerDecode : public CodecStage {
+ public:
+  explicit BayerDecode(BayerPattern pattern) : pattern_(pattern) {}
+
+  Expected<DecodedFrame> decode(const DecodedFrame& input) const override;
+
+ private:
+  BayerPattern pattern_;
+};
+
 /// Mono8 class IDs → RGB888 false-color. Each class ID (0-255) maps to
 /// a distinct hue. Input must be kMono8 with pixels->size() >= width*height.
 class SegmentationPalette : public CodecStage {

@@ -137,7 +137,16 @@ across messages.
 |----------|-----------------|-------------|
 | Raw color | `rgb8`, `rgba8`, `bgr8`, `bgra8` | Row-major, interleaved. `step` required. |
 | Raw greyscale | `mono8`, `mono16` | Single channel. `mono16` is luminance, **not** depth (use `DepthImage`). |
-| Compressed | `jpeg`, `png`, `webp` | Single-frame compressed image. `step = 0`. Width and height must still be set. |
+| Raw Bayer | `bayer_rggb8`, `bayer_grbg8`, `bayer_gbrg8`, `bayer_bggr8` | Single-channel CFA mosaic (name = top-left 2×2 tile). Demosaiced to `rgb8` on decode. |
+| Compressed | `jpeg`, `png` | Single-frame compressed image. `step = 0`. Width and height must still be set. (`webp` is reserved — no built-in decoder yet.) |
+
+A raw or Bayer buffer may also arrive wrapped in an 8-bit grayscale container —
+PNG/JPEG (the flat `step × height` bytes reshaped as a grayscale image of
+`width = step`). PNG wrapping is lossless; JPEG wrapping is lossy and only
+approximates the original samples (not byte-exact). The decoder detects the
+container signature, recovers the flat bytes, then reinterprets at the logical
+geometry; if the wrapped decode fails it falls back to treating the bytes as raw. The `encoding` field still names
+the logical pixel layout, not the container.
 
 The `encoding` string is open — implementations may add new values without a schema
 revision. Keep encoding strings conventional where one exists in ROS, Foxglove, or

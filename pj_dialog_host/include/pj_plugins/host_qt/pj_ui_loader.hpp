@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: MIT
 //
 // QUiLoader subclass that teaches QUiLoader to instantiate the host-provided
-// custom widgets (RangeSlider, DateRangePicker) so plugin .ui files can declare
+// custom widgets (RangeSlider, DateRangePicker, CredentialsEditor) so plugin .ui files can declare
 // them by class name. Plain Qt widget classes fall through to the base
 // QUiLoader. Used by both PanelEngine and DialogEngine so every dialog/panel
 // sees the same widget vocabulary.

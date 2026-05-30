@@ -237,6 +237,21 @@ QPlainTextEdit {
    border: none;
 }
 
+/* Code editors (Lua / Python) use a light-theme syntax highlighter (dark-on-
+   white token colors), so the text area stays white with dark ink. Tagged via
+   the dynamic property _pj_code_editor in pj_dialog_host's widget binding. */
+QPlainTextEdit[_pj_code_editor="true"] {
+   background: #ffffff;
+   color: #1E1E1E;
+}
+
+/* The pane wrapping a code editor (assist dropdowns + labels around it) shares
+   the same white surface, so the whole editor block reads as one. Tagged
+   _pj_code_editor_pane alongside the editor in the widget binding. */
+QWidget[_pj_code_editor_pane="true"] {
+   background: #ffffff;
+}
+
 QToolTip {
     border: 1px solid ${border_default};
     border-radius: 0px;
@@ -1007,6 +1022,7 @@ QHeaderView::section {
     color: ${default_text};
     padding-left: ${chrome_spacing}px;
     border: none;
+    border-top: 1px solid ${border_default};
     border-right: 1px solid ${border_default};
 }
 
@@ -1026,6 +1042,7 @@ QHeaderView::section:hover {
     color: ${default_text};
     padding-left: ${chrome_spacing}px;
     border: none;
+    border-top: 1px solid ${border_default};
     border-right: 1px solid ${purple};
 }
 QHeaderView::section:last:hover,
@@ -1737,4 +1754,30 @@ QFileDialog QFrame#frame {
 
 QFileDialog QToolButton {
     padding: 2px;
+}
+
+/* ---- Mosaico panel: bordered column band + slider frame ------------------
+   The seq / topic / dataView columns are QFrames inside mainSplitter. Each gets
+   a 1px border that omits its splitter-facing side(s): the QSplitter::handle
+   already paints a 1px divider, so the borders meet the handle instead of
+   stacking a 2px line — one continuous bordered band whose edges run flush. The
+   padding is top/bottom only, so content sits flush against the vertical edges.
+   (Ported from #90.) */
+QFrame#seqPanelContainer {
+    border: 1px solid ${border_default};
+    border-right: none;
+    padding: 4px 0px;
+}
+
+QFrame#topicPanelContainer {
+    border: 1px solid ${border_default};
+    border-left: none;
+    border-right: none;
+    padding: 4px 0px;
+}
+
+QFrame#dataViewContainer {
+    border: 1px solid ${border_default};
+    border-left: none;
+    padding: 4px 0px;
 }

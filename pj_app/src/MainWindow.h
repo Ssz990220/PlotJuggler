@@ -144,6 +144,11 @@ class MainWindow : public QMainWindow {
   // "PlotJuggler Marketplace" entry that opens the marketplace dialog.
   void onRebuildExtensionsMenu();
 
+  // Launches a cloud-tagged toolbox by id (from LeftPanel::cloudToolboxRequested):
+  // builds a ToolboxRuntimeHost, binds the toolbox, hosts its dialog in a
+  // PanelEngine, and presents it in the chart area. Close tears it all down.
+  void onCloudToolboxRequested(const QString& plugin_id);
+
   void onThemeChanged(const QString& theme);
 
   // Wires callbacks for a newly created plot tab.
@@ -338,6 +343,12 @@ class MainWindow : public QMainWindow {
   bool eventFilter(QObject* watched, QEvent* event) override;
 
  private:
+  // Swaps the chart area (ui_->tabbedPlotWidget) out and presents `panel` in
+  // its place; returns false if a panel is already up. restoreCentralArea
+  // tears the panel down and restores the chart.
+  bool presentPanel(QWidget* panel);
+  void restoreCentralArea();
+
   Ui::MainWindow* ui_;
   QtDiagnosticBridge* diagnostic_bridge_ = nullptr;
   DiagnosticHistory* diagnostic_history_ = nullptr;
@@ -399,6 +410,13 @@ class MainWindow : public QMainWindow {
   // Shown when the focused dock holds the 3-icon
   // VisualizationPlaceholderWidget — nothing to configure yet.
   QWidget* empty_dock_page_ = nullptr;
+
+  // Active toolbox panel presented in place of the chart area by
+  // presentPanel()/restoreCentralArea(). At most one at a time;
+  // panel_parent_/panel_layout_index_ remember where the chart was.
+  QWidget* current_panel_ = nullptr;
+  int panel_layout_index_ = -1;
+  QWidget* panel_parent_ = nullptr;
 
   // Global-column "Chart" icons — built in buildGlobalToolbar(), so
   // stored as member pointers (no ui_-> accessor).

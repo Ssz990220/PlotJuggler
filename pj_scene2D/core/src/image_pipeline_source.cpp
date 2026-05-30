@@ -13,6 +13,7 @@
 #include <utility>
 
 #include "pj_base/builtin/image.hpp"
+#include "pj_base/builtin/image_codec.hpp"
 #include "pj_plugins/sdk/message_parser_plugin_base.hpp"
 
 namespace PJ {
@@ -152,6 +153,166 @@ std::shared_ptr<std::vector<uint8_t>> imageDataBytes(const sdk::Image& img, std:
   return bytes;
 }
 
+std::optional<BayerPattern> bayerPatternFor(std::string_view encoding) noexcept {
+  if (encoding == "bayer_rggb8") {
+    return BayerPattern::kRGGB;
+  }
+  if (encoding == "bayer_grbg8") {
+    return BayerPattern::kGRBG;
+  }
+  if (encoding == "bayer_gbrg8") {
+    return BayerPattern::kGBRG;
+  }
+  if (encoding == "bayer_bggr8") {
+    return BayerPattern::kBGGR;
+  }
+  return std::nullopt;
+}
+
+bool hasPngOrJpegSignature(const uint8_t* data, size_t size) noexcept {
+  if (data == nullptr) {
+    return false;
+  }
+  const bool jpeg = size >= 3 && data[0] == 0xFF && data[1] == 0xD8 && data[2] == 0xFF;
+  // Full 8-byte PNG signature (\x89PNG\r\n\x1a\n), not just the first four bytes:
+  // a 4-byte prefix match leaves a 1-in-2^32 chance that a raw/Bayer buffer is
+  // mistaken for a PNG container, and a failed sniff used to drop the frame.
+  const bool png = size >= 8 && data[0] == 0x89 && data[1] == 0x50 && data[2] == 0x4E && data[3] == 0x47 &&
+                   data[4] == 0x0D && data[5] == 0x0A && data[6] == 0x1A && data[7] == 0x0A;
+  return jpeg || png;
+}
+
+// Reduce a decoded frame to a single-channel kMono8 buffer by taking one channel.
+// A grayscale PNG decodes to kRGB888 with R==G==B, so any channel recovers the
+// original samples exactly. A grayscale JPEG is lossy: R/G/B may differ slightly
+// and the value only approximates the original sample, so JPEG wrapping is
+// best-effort display recovery, not byte-exact. Raw mono8 passes through unchanged.
+std::optional<DecodedFrame> toMono8Mosaic(const DecodedFrame& frame) {
+  if (frame.isNull() || frame.width <= 0 || frame.height <= 0) {
+    return std::nullopt;
+  }
+  const size_t pixel_count = static_cast<size_t>(frame.width) * static_cast<size_t>(frame.height);
+  size_t stride = 0;
+  switch (frame.format) {
+    case PixelFormat::kMono8:
+      stride = 1;
+      break;
+    case PixelFormat::kRGB888:
+    case PixelFormat::kBGR888:
+      stride = 3;
+      break;
+    case PixelFormat::kRGBA8888:
+    case PixelFormat::kBGRA8888:
+      stride = 4;
+      break;
+    case PixelFormat::kMono16:
+    case PixelFormat::kYUV420P:
+    case PixelFormat::kNV12:
+      return std::nullopt;
+  }
+  const auto& src = *frame.pixels;
+  if (src.size() < pixel_count * stride) {
+    return std::nullopt;
+  }
+  auto out = std::make_shared<std::vector<uint8_t>>(pixel_count);
+  for (size_t i = 0; i < pixel_count; ++i) {
+    (*out)[i] = src[i * stride];
+  }
+  DecodedFrame mono;
+  mono.pixels = std::move(out);
+  mono.width = frame.width;
+  mono.height = frame.height;
+  mono.format = PixelFormat::kMono8;
+  mono.pts = frame.pts;
+  return mono;
+}
+
+// Decode a canonical sdk::Image whose encoding names raw pixel semantics
+// (rgb8/bgr8/mono8/mono16/16UC1) or a Bayer CFA (bayer_*). Some transports wrap
+// the flat byte buffer in an 8-bit grayscale PNG (lossless, width = stride) or
+// JPEG (lossy — recovered samples only approximate the originals). When a
+// container signature is present we decompress and recover the flat bytes before
+// reinterpreting at the logical geometry; if that decode fails (e.g. a raw buffer
+// whose first bytes coincidentally look like a container), we fall back to
+// interpreting the original bytes as raw rather than dropping the frame. Bayer
+// mosaics are then demosaiced to RGB888.
+std::optional<DecodedFrame> decodeRawOrBayerImage(
+    const sdk::Image& img, int64_t pts, std::string_view source_key, const AutoImageCodec& auto_codec,
+    const NormalizeMono16& normalize) {
+  if (img.width == 0 || img.height == 0 || img.data.empty()) {
+    warnOnce(
+        warningKey(source_key, "empty-raw-image"), "{} raw/bayer image has empty data/geometry encoding={} size={}x{}",
+        source_key, img.encoding, img.width, img.height);
+    return std::nullopt;
+  }
+
+  sdk::Image flat = img;
+  std::shared_ptr<std::vector<uint8_t>> recovered;
+  if (hasPngOrJpegSignature(img.data.data(), img.data.size())) {
+    DecodedFrame staged;
+    staged.pixels = std::make_shared<std::vector<uint8_t>>(img.data.data(), img.data.data() + img.data.size());
+    // On any failure, leave `flat == img` and fall through to the raw path: the
+    // signature may be a coincidence in a genuinely raw buffer (or a corrupt
+    // container), and the geometry check below drops it if the bytes don't fit.
+    if (auto decompressed = auto_codec.decode(staged); !decompressed.has_value()) {
+      warnOnce(
+          warningKey(source_key, "container-decode"), "{} container decode failed encoding={}: {}; falling back to raw",
+          source_key, img.encoding, decompressed.error());
+    } else if (auto mono = toMono8Mosaic(*decompressed); !mono.has_value()) {
+      warnOnce(
+          warningKey(source_key, "container-flatten"),
+          "{} could not recover flat bytes encoding={}; falling back to raw", source_key, img.encoding);
+    } else {
+      recovered = mono->pixels;
+      flat.data = Span<const uint8_t>(recovered->data(), recovered->size());
+    }
+  }
+
+  // Bayer mosaics: stage the CFA samples as a mono8 frame, then demosaic to RGB.
+  if (auto pattern = bayerPatternFor(flat.encoding); pattern.has_value()) {
+    auto mosaic = imageToDecodedFrame(flat, RawEncodingInfo{PixelFormat::kMono8, 1}, pts);
+    if (!mosaic.has_value()) {
+      warnOnce(
+          warningKey(source_key, "bayer-staging"), "{} bayer staging failed encoding={} size={}x{}", source_key,
+          flat.encoding, flat.width, flat.height);
+      return std::nullopt;
+    }
+    auto rgb = BayerDecode(*pattern).decode(*mosaic);
+    if (!rgb.has_value()) {
+      warnOnce(
+          warningKey(source_key, "bayer-demosaic"), "{} bayer demosaic failed encoding={}: {}", source_key,
+          flat.encoding, rgb.error());
+      return std::nullopt;
+    }
+    rgb->pts = pts;
+    return std::move(*rgb);
+  }
+
+  // Fixed-layout raw encodings.
+  const auto info = rawEncodingInfo(flat.encoding);
+  if (!info.has_value()) {
+    warnOnce(
+        warningKey(source_key, "unsupported-raw-encoding"), "{} unsupported raw encoding={}", source_key,
+        flat.encoding);
+    return std::nullopt;
+  }
+  auto decoded = imageToDecodedFrame(flat, *info, pts);
+  if (!decoded.has_value()) {
+    warnOnce(
+        warningKey(source_key, "raw-conversion"), "{} raw image conversion failed encoding={} size={}x{}", source_key,
+        flat.encoding, flat.width, flat.height);
+    return std::nullopt;
+  }
+  auto normalized = normalize.decode(*decoded);
+  if (!normalized.has_value()) {
+    warnOnce(
+        warningKey(source_key, "raw-normalization"), "{} raw normalization failed: {}", source_key, normalized.error());
+    return std::nullopt;
+  }
+  normalized->pts = pts;
+  return std::move(*normalized);
+}
+
 }  // namespace
 
 ImagePipelineSource::ImagePipelineSource(
@@ -167,6 +328,11 @@ ImagePipelineSource::ImagePipelineSource(
 ImagePipelineSource::ImagePipelineSource(
     ObjectStore* store, ObjectTopicId topic, std::unique_ptr<CodecPipeline> pipeline)
     : store_(store), topic_(topic), source_key_(sourceLabel(store, topic)), pipeline_(std::move(pipeline)) {
+  worker_ = std::thread(&ImagePipelineSource::workerLoop, this);
+}
+
+ImagePipelineSource::ImagePipelineSource(ObjectStore* store, ObjectTopicId topic, CanonicalImageCodec /*tag*/)
+    : store_(store), topic_(topic), source_key_(sourceLabel(store, topic)), canonical_image_codec_(true) {
   worker_ = std::thread(&ImagePipelineSource::workerLoop, this);
 }
 
@@ -320,60 +486,19 @@ std::optional<DecodedFrame> ImagePipelineSource::decodeAt(int64_t ts_ns) {
           source_key_);
       return std::nullopt;
     }
+    return decodeCanonicalImage(*img, effective_ts, topic_name);
+  }
 
-    if (auto raw = rawEncodingInfo(img->encoding); raw.has_value()) {
-      auto decoded = imageToDecodedFrame(*img, *raw, effective_ts);
-      if (!decoded.has_value()) {
-        warnOnce(
-            warningKey(source_key_, "raw-conversion"), "{} raw image conversion failed encoding={} size={}x{}",
-            source_key_, img->encoding, img->width, img->height);
-        return std::nullopt;
-      }
-      auto normalized = normalize_mono16_.decode(*decoded);
-      if (!normalized.has_value()) {
-        warnOnce(
-            warningKey(source_key_, "raw-normalization"), "{} raw normalization failed: {}", source_key_,
-            normalized.error());
-        return std::nullopt;
-      }
-      normalized->pts = effective_ts;
-      return std::move(*normalized);
-    }
-
-    if (img->data.empty()) {
+  if (canonical_image_codec_) {
+    // Each entry's bytes are a serialized sdk::Image (pj_base pj_image_v1 codec).
+    // Deserialize per frame, then run the shared canonical-image decode path.
+    auto img = deserializeImage(entry->payload.bytes.data(), entry->payload.bytes.size());
+    if (!img.has_value()) {
       warnOnce(
-          warningKey(source_key_, "empty-canonical-image"), "{} canonical image has empty data encoding={}",
-          source_key_, img->encoding);
+          warningKey(source_key_, "canonical-deserialize"), "{} deserializeImage failed: {}", source_key_, img.error());
       return std::nullopt;
     }
-    DecodedFrame staged;
-    staged.pixels = imageDataBytes(*img, topic_name);
-    staged.pts = effective_ts;
-
-    Expected<DecodedFrame> decoded = unexpected("unsupported image encoding: " + img->encoding);
-    if (isJpegEncoding(img->encoding)) {
-      decoded = jpeg_codec_.decode(staged);
-    } else if (isPngEncoding(img->encoding)) {
-      decoded = png_codec_.decode(staged);
-    } else {
-      decoded = auto_image_codec_.decode(staged);
-    }
-    if (!decoded.has_value()) {
-      warnOnce(
-          warningKey(source_key_, "compressed-decode"), "{} compressed decode failed encoding={}: {}", source_key_,
-          img->encoding, decoded.error());
-      return std::nullopt;
-    }
-    decoded->pts = effective_ts;
-    auto normalized = normalize_mono16_.decode(*decoded);
-    if (!normalized.has_value()) {
-      warnOnce(
-          warningKey(source_key_, "compressed-normalization"), "{} compressed normalization failed: {}", source_key_,
-          normalized.error());
-      return std::nullopt;
-    }
-    normalized->pts = effective_ts;
-    return std::move(*normalized);
+    return decodeCanonicalImage(*img, entry->timestamp, topic_name);
   }
 
   if (pipeline_ == nullptr) {
@@ -390,6 +515,51 @@ std::optional<DecodedFrame> ImagePipelineSource::decodeAt(int64_t ts_ns) {
   }
   result->pts = entry->timestamp;
   return std::move(*result);
+}
+
+std::optional<DecodedFrame> ImagePipelineSource::decodeCanonicalImage(
+    const sdk::Image& img, int64_t pts, std::string_view topic_name) {
+  // Raw pixel layouts and Bayer mosaics (incl. grayscale-PNG-wrapped buffers)
+  // reinterpret at the logical geometry; everything else is a self-describing
+  // compressed container handled by the jpeg/png/auto cascade.
+  if (rawEncodingInfo(img.encoding).has_value() || bayerPatternFor(img.encoding).has_value()) {
+    return decodeRawOrBayerImage(img, pts, source_key_, auto_image_codec_, normalize_mono16_);
+  }
+
+  if (img.data.empty()) {
+    warnOnce(
+        warningKey(source_key_, "empty-canonical-image"), "{} canonical image has empty data encoding={}", source_key_,
+        img.encoding);
+    return std::nullopt;
+  }
+  DecodedFrame staged;
+  staged.pixels = imageDataBytes(img, topic_name);
+  staged.pts = pts;
+
+  Expected<DecodedFrame> decoded = unexpected("unsupported image encoding: " + img.encoding);
+  if (isJpegEncoding(img.encoding)) {
+    decoded = jpeg_codec_.decode(staged);
+  } else if (isPngEncoding(img.encoding)) {
+    decoded = png_codec_.decode(staged);
+  } else {
+    decoded = auto_image_codec_.decode(staged);
+  }
+  if (!decoded.has_value()) {
+    warnOnce(
+        warningKey(source_key_, "compressed-decode"), "{} compressed decode failed encoding={}: {}", source_key_,
+        img.encoding, decoded.error());
+    return std::nullopt;
+  }
+  decoded->pts = pts;
+  auto normalized = normalize_mono16_.decode(*decoded);
+  if (!normalized.has_value()) {
+    warnOnce(
+        warningKey(source_key_, "compressed-normalization"), "{} compressed normalization failed: {}", source_key_,
+        normalized.error());
+    return std::nullopt;
+  }
+  normalized->pts = pts;
+  return std::move(*normalized);
 }
 
 }  // namespace PJ

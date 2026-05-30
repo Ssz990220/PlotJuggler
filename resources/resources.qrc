@@ -26,6 +26,7 @@
     <file alias="branch_line_light.svg">svg/branch_line_light.svg</file>
     <file alias="branch_more_dark.svg">svg/branch_more_dark.svg</file>
     <file alias="branch_more_light.svg">svg/branch_more_light.svg</file>
+    <file alias="calendar_month.svg">svg/calendar_month.svg</file>
     <file alias="cast.svg">svg/cast.svg</file>
     <file alias="check.svg">svg/check.svg</file>
     <file alias="checkbox_checked_dark.svg">svg/checkbox_checked_dark.svg</file>
@@ -44,6 +45,7 @@
     <file alias="collapse.svg">svg/collapse.svg</file>
     <file alias="color_background.svg">svg/color_background.svg</file>
     <file alias="colored_charts.svg">svg/colored_charts.svg</file>
+    <file alias="contract.svg">svg/contract.svg</file>
     <file alias="copy.svg">svg/copy.svg</file>
     <file alias="create_new_folder.svg">svg/create_new_folder.svg</file>
     <file alias="cube.svg">svg/cube.svg</file>
@@ -117,6 +119,7 @@
     <file alias="pause.svg">svg/pause.svg</file>
     <file alias="play_arrow.svg">svg/play_arrow.svg</file>
     <file alias="play_arrow_left.svg">svg/play_arrow_left.svg</file>
+    <file alias="plug_connect.svg">svg/plug_connect.svg</file>
     <file alias="plotjuggler.svg">svg/plotjuggler.svg</file>
     <file alias="point_chart.svg">svg/point_chart.svg</file>
     <file alias="position_bottom_left.svg">svg/position_bottom_left.svg</file>
@@ -134,6 +137,7 @@
     <file alias="ratio.svg">svg/ratio.svg</file>
     <file alias="red_circle.svg">svg/red_circle.svg</file>
     <file alias="reference_line.svg">svg/reference_line.svg</file>
+    <file alias="refresh.svg">svg/refresh.svg</file>
     <file alias="reload_dark.svg">svg/reload_dark.svg</file>
     <file alias="reload_light.svg">svg/reload_light.svg</file>
     <file alias="remove_list.svg">svg/remove_list.svg</file>

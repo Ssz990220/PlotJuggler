@@ -12,7 +12,9 @@ add_library(pj_runtime STATIC
     src/DiagnosticHistory.cpp
     src/ExtensionCatalogService.cpp
     src/PlaybackEngine.cpp
+    src/QSettingsBackend.cpp
     src/SessionManager.cpp
+    src/ToolboxRuntimeHost.cpp
     include/pj_runtime/AppSession.h
     include/pj_runtime/CatalogModel.h
     include/pj_runtime/CurveDescriptor.h
@@ -21,7 +23,9 @@ add_library(pj_runtime STATIC
     include/pj_runtime/ExtensionCatalogService.h
     include/pj_runtime/IDataWidget.h
     include/pj_runtime/PlaybackEngine.h
+    include/pj_runtime/QSettingsBackend.h
     include/pj_runtime/SessionManager.h
+    include/pj_runtime/ToolboxRuntimeHost.h
 )
 
 set_target_properties(pj_runtime PROPERTIES
@@ -72,6 +76,26 @@ if(PJ_BUILD_TESTS)
         GTest::gtest_main
     )
     add_test(NAME CatalogModelTest COMMAND catalog_model_test)
+
+    add_executable(qsettings_backend_test
+        tests/qsettings_backend_test.cpp
+    )
+    target_compile_options(qsettings_backend_test PRIVATE ${PJ_WARNING_FLAGS})
+    target_link_libraries(qsettings_backend_test PRIVATE
+        pj_runtime
+        GTest::gtest_main
+    )
+    add_test(NAME QSettingsBackendTest COMMAND qsettings_backend_test)
+
+    add_executable(toolbox_runtime_host_test
+        tests/toolbox_runtime_host_test.cpp
+    )
+    target_compile_options(toolbox_runtime_host_test PRIVATE ${PJ_WARNING_FLAGS})
+    target_link_libraries(toolbox_runtime_host_test PRIVATE
+        pj_runtime
+        GTest::gtest
+    )
+    add_test(NAME ToolboxRuntimeHostTest COMMAND toolbox_runtime_host_test)
 
     add_library(runtime_host_object_parser_plugin SHARED
         tests/runtime_host_object_parser_plugin.cpp

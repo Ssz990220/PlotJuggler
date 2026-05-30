@@ -8,6 +8,7 @@
 #include <mutex>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <thread>
 
 #include "pj_datastore/object_store.hpp"
@@ -18,6 +19,9 @@
 namespace PJ {
 
 class MessageParserPluginBase;
+namespace sdk {
+struct Image;
+}  // namespace sdk
 
 /// MediaSource for image topics (JPEG, PNG, depth, segmentation).
 ///
@@ -61,6 +65,17 @@ class ImagePipelineSource : public MediaSource {
   /// @param pipeline  Codec pipeline for decode (owned, moved in)
   ImagePipelineSource(ObjectStore* store, ObjectTopicId topic, std::unique_ptr<CodecPipeline> pipeline);
 
+  /// Tag selecting the per-frame canonical-image route: each ObjectStore entry's
+  /// bytes are a serialized sdk::Image (pj_base pj_image_v1 codec). Used by
+  /// producers (e.g. the mosaico toolbox) that push canonical Image blobs via
+  /// pushOwnedObject and register the topic with metadata image_codec=pj_image_v1
+  /// — there is no MessageParser, so the source deserializes each blob itself.
+  struct CanonicalImageCodec {};
+
+  /// @param store  ObjectStore to query (not owned, must be non-null and outlive this source)
+  /// @param topic  Topic ID to query via latestAt()
+  ImagePipelineSource(ObjectStore* store, ObjectTopicId topic, CanonicalImageCodec tag);
+
   ~ImagePipelineSource() override;
 
   ImagePipelineSource(const ImagePipelineSource&) = delete;
@@ -79,6 +94,11 @@ class ImagePipelineSource : public MediaSource {
   void workerLoop();
   std::optional<DecodedFrame> decodeAt(int64_t ts_ns);
 
+  // Decode one canonical sdk::Image (from a parser or a deserialized blob) into a
+  // display frame: raw/bayer encodings via the raw-or-bayer path (incl. grayscale
+  // PNG-wrapped recovery), otherwise the jpeg/png/auto compressed cascade.
+  std::optional<DecodedFrame> decodeCanonicalImage(const sdk::Image& img, int64_t pts, std::string_view topic_name);
+
   // I/O config and codec state — read/written by worker thread only after
   // construction finishes. The main thread treats them as read-only after
   // the constructor returns.
@@ -88,6 +108,7 @@ class ImagePipelineSource : public MediaSource {
   MessageParserPluginBase* parser_ = nullptr;
   std::shared_ptr<std::mutex> parser_mutex_;
   std::unique_ptr<CodecPipeline> pipeline_;
+  bool canonical_image_codec_ = false;
   JpegCodec jpeg_codec_;
   PngCodec png_codec_;
   NormalizeMono16 normalize_mono16_;

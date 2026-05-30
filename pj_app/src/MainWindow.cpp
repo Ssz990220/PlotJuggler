@@ -47,6 +47,7 @@
 #include <cmath>
 #include <cstdint>
 #include <limits>
+#include <memory>
 #include <optional>
 #include <utility>
 #include <vector>
@@ -72,12 +73,18 @@
 #include "pj_plotting/PlotDocker.h"
 #include "pj_plotting/PlotWidget.h"
 #include "pj_plotting/TabbedPlotWidget.h"
+#include "pj_plugins/host/dialog_handle.hpp"
+#include "pj_plugins/host/service_registry_builder.hpp"
+#include "pj_plugins/host/toolbox_handle.hpp"
+#include "pj_plugins/host_qt/panel_engine.hpp"
 #include "pj_runtime/AppSession.h"
 #include "pj_runtime/CatalogModel.h"
 #include "pj_runtime/DiagnosticHistory.h"
 #include "pj_runtime/ExtensionCatalogService.h"
 #include "pj_runtime/PlaybackEngine.h"
+#include "pj_runtime/QSettingsBackend.h"
 #include "pj_runtime/SessionManager.h"
+#include "pj_runtime/ToolboxRuntimeHost.h"
 #include "pj_scene2d_widgets/Media2DDockWidget.h"
 #include "pj_scene2d_widgets/media_viewer_widget.h"
 #include "pj_widgets/FileDialog.h"
@@ -669,9 +676,16 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
       &session_->extensionCatalog(), &ExtensionCatalogService::catalogChanged, this,
       &MainWindow::refreshStreamingCombo);
 
+  // Populate the Cloud page from the catalog now and on every catalog change.
+  ui_->leftPanel->populateCloudToolboxes(session_->extensionCatalog().toolboxes());
+  connect(&session_->extensionCatalog(), &ExtensionCatalogService::catalogChanged, this, [this]() {
+    ui_->leftPanel->populateCloudToolboxes(session_->extensionCatalog().toolboxes());
+  });
+
   file_loader_ = std::make_unique<FileLoader>(
       session_->sessionManager(), session_->extensionCatalog(), session_->catalogModel(), this);
   connect(ui_->leftPanel, &LeftPanel::loadDataRequested, this, &MainWindow::onLoadDataRequested);
+  connect(ui_->leftPanel, &LeftPanel::cloudToolboxRequested, this, &MainWindow::onCloudToolboxRequested);
   connect(file_loader_.get(), &FileLoader::fileLoaded, this, &MainWindow::onFileLoaded);
   // Track successful loads so the Recently loaded files popup can show
   // them; the cap-5 record/dedup logic is shared with the layout list.
@@ -2818,6 +2832,196 @@ void MainWindow::applyActivePlotStyle(int style) {
     }
   }
   plot->replot();
+}
+
+bool MainWindow::presentPanel(QWidget* panel) {
+  if (panel == nullptr) {
+    return false;
+  }
+  if (current_panel_ != nullptr) {
+    qWarning("MainWindow::presentPanel: another panel is already presented");
+    return false;
+  }
+
+  // The chart area (ui_->tabbedPlotWidget) lives as a direct child of a
+  // QSplitter in MainWindow.ui. Swap the panel into the chart's splitter slot
+  // and remember the slot so restoreCentralArea() can put the chart back.
+  QWidget* chart = ui_->tabbedPlotWidget;
+  panel_parent_ = chart->parentWidget();
+  auto* splitter = qobject_cast<QSplitter*>(panel_parent_);
+  if (splitter == nullptr) {
+    qWarning("MainWindow::presentPanel: tabbedPlotWidget is not in a QSplitter");
+    panel_parent_ = nullptr;
+    return false;
+  }
+  panel_layout_index_ = splitter->indexOf(chart);
+  if (panel_layout_index_ < 0) {
+    qWarning("MainWindow::presentPanel: chart not in splitter");
+    panel_parent_ = nullptr;
+    return false;
+  }
+  // Swap the panel into the chart's exact splitter slot via replaceWidget so the
+  // pane count stays constant and the saved size list still lines up (an
+  // insert+hide would leave N+1 panes against an N-entry size list). replaceWidget
+  // hands the chart back to us, reparented out of the splitter; keep it hidden so
+  // restoreCentralArea can swap it back into the same slot.
+  const QList<int> saved_sizes = splitter->sizes();
+  QWidget* removed = splitter->replaceWidget(panel_layout_index_, panel);
+  if (removed != chart) {
+    qWarning("MainWindow::presentPanel: unexpected widget at chart slot; aborting swap");
+    if (removed != nullptr) {
+      splitter->replaceWidget(panel_layout_index_, removed);
+    }
+    panel_parent_ = nullptr;
+    panel_layout_index_ = -1;
+    return false;
+  }
+  chart->hide();
+  panel->show();
+  splitter->setSizes(saved_sizes);
+  current_panel_ = panel;
+  return true;
+}
+
+void MainWindow::restoreCentralArea() {
+  if (current_panel_ == nullptr) {
+    return;
+  }
+  auto* splitter = qobject_cast<QSplitter*>(panel_parent_);
+  if (splitter != nullptr && panel_layout_index_ >= 0) {
+    // Swap the chart back into its slot; replaceWidget removes the panel and
+    // hands it back reparented out of the splitter (we delete it below).
+    const QList<int> saved_sizes = splitter->sizes();
+    splitter->replaceWidget(panel_layout_index_, ui_->tabbedPlotWidget);
+    splitter->setSizes(saved_sizes);
+  } else {
+    qWarning("MainWindow::restoreCentralArea: panel_parent_ is no longer a splitter; chart not restored to slot");
+  }
+  ui_->tabbedPlotWidget->show();
+  current_panel_->hide();
+  current_panel_->setParent(nullptr);
+  current_panel_->deleteLater();
+  current_panel_ = nullptr;
+  panel_layout_index_ = -1;
+  panel_parent_ = nullptr;
+}
+
+void MainWindow::onCloudToolboxRequested(const QString& plugin_id) {
+  // Surface every failure on the diagnostic channel (the same sink the toolbox's
+  // own on_message uses below), not just stderr, so a user-initiated launch that
+  // fails is visible in the UI instead of silently doing nothing.
+  auto report_error = [this](const QString& source, const QString& detail) {
+    if (diagnostic_history_ != nullptr) {
+      diagnostic_history_->record(DiagnosticLevel::kError, source, QStringLiteral("toolbox"), detail);
+    }
+    qWarning("MainWindow::onCloudToolboxRequested: %s", qPrintable(detail));
+  };
+
+  // 1. Find the toolbox in the catalog.
+  const auto& toolboxes = session_->extensionCatalog().toolboxes();
+  auto it = std::find_if(toolboxes.begin(), toolboxes.end(), [&plugin_id](const RuntimeToolboxPlugin& tb) {
+    return QString::fromStdString(tb.id) == plugin_id;
+  });
+  if (it == toolboxes.end()) {
+    report_error(plugin_id, tr("Cloud toolbox '%1' not found in catalog").arg(plugin_id));
+    return;
+  }
+
+  // 2. Assemble the host services + toolbox handle into one owner whose member
+  //    order *guarantees* teardown order. The plugin's destructor persists its
+  //    state through the SettingsStoreHost, so the handle (declared last ->
+  //    destroyed first) must be torn down while the host + settings backend it
+  //    persists through are still alive. Lambda capture-destruction order is
+  //    unspecified, so a struct (reverse-declaration destruction) is required.
+  struct PanelSession {
+    std::unique_ptr<QSettingsBackend> settings;
+    std::unique_ptr<ServiceRegistryBuilder> builder;
+    std::unique_ptr<ToolboxRuntimeHost> host;
+    std::shared_ptr<ToolboxHandle> handle;
+
+    // Teardown order is load-bearing, so make it explicit here rather than relying
+    // on member-declaration order alone: the plugin (handle) persists its state
+    // through the settings backend in its destructor, so it must be torn down
+    // first, then the service views (builder) into host/settings, then the host
+    // (which holds a SettingsBackend&), then settings last. This survives a future
+    // member reorder; the implicit reverse-declaration destruction that follows
+    // only resets already-null pointers.
+    ~PanelSession() {
+      handle.reset();
+      builder.reset();
+      host.reset();
+      settings.reset();
+    }
+  };
+  auto session = std::make_shared<PanelSession>();
+  session->settings = std::make_unique<QSettingsBackend>();
+  session->builder = std::make_unique<ServiceRegistryBuilder>();
+
+  const QString source = it->name.empty() ? plugin_id : QString::fromStdString(it->name);
+  ToolboxRuntimeHost::Callbacks callbacks;
+  callbacks.on_data_changed = [this]() {
+    session_->catalogModel().rebuildFromDatastore();
+    session_->seedPlaybackFromSession();
+  };
+  callbacks.on_message = [this, source](PJ_toolbox_message_level_t level, std::string message) {
+    if (diagnostic_history_ == nullptr) {
+      return;
+    }
+    DiagnosticLevel diag = DiagnosticLevel::kInfo;
+    if (level == PJ_TOOLBOX_MESSAGE_ERROR) {
+      diag = DiagnosticLevel::kError;
+    } else if (level == PJ_TOOLBOX_MESSAGE_WARNING) {
+      diag = DiagnosticLevel::kWarning;
+    }
+    diagnostic_history_->record(diag, source, QStringLiteral("toolbox"), QString::fromStdString(message));
+  };
+
+  session->host = std::make_unique<ToolboxRuntimeHost>(
+      session_->sessionManager().dataEngine(), session_->sessionManager().objectStore(), *session->settings,
+      std::move(callbacks));
+  session->host->registerServices(*session->builder);
+
+  // 3. Create the toolbox instance and bind it to the assembled services.
+  session->handle = std::make_shared<ToolboxHandle>(it->library.createHandle());
+  if (auto status = session->handle->bind(session->builder->view()); !status) {
+    report_error(source, tr("Failed to bind toolbox '%1': %2").arg(source, QString::fromStdString(status.error())));
+    return;
+  }
+
+  // 4. Host the toolbox's dialog in a PanelEngine.
+  const PJ_borrowed_dialog_t borrowed = session->handle->getDialog();
+  if (borrowed.vtable == nullptr || borrowed.ctx == nullptr) {
+    report_error(source, tr("Toolbox '%1' returned no dialog").arg(source));
+    return;
+  }
+  auto* engine = new PanelEngine(DialogHandle::fromBorrowed(borrowed), {}, this);
+  QWidget* panel = engine->openPanel();
+  if (panel == nullptr) {
+    report_error(source, tr("Failed to build the panel UI for '%1'").arg(source));
+    delete engine;
+    return;
+  }
+
+  // 5. Close -> restore + teardown. The captured session keeps the services +
+  //    plugin alive until the panel is gone; deleteLater defers the teardown
+  //    (incl. the handle's worker-thread join) past any in-flight signals, and
+  //    PanelSession's member order destroys the plugin before the settings host
+  //    it persists through.
+  engine->onCloseRequested([this, engine, session](const std::string& /*reason*/) {
+    (void)session;
+    restoreCentralArea();
+    engine->deleteLater();
+  });
+
+  // 6. Present in the chart area.
+  if (!presentPanel(panel)) {
+    report_error(source, tr("Cannot show '%1': another panel is already open").arg(source));
+    // presentPanel did not parent `panel` on the reject path, and the engine keeps
+    // only a non-owning QPointer to it, so it would leak unless we delete it here.
+    engine->close();
+    panel->deleteLater();
+    engine->deleteLater();
+  }
 }
 
 }  // namespace PJ

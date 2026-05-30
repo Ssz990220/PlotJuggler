@@ -363,6 +363,79 @@ Expected<DecodedFrame> SegmentationPalette::decode(const DecodedFrame& input) co
 }
 
 // ---------------------------------------------------------------------------
+// BayerDecode
+// ---------------------------------------------------------------------------
+
+namespace {
+
+// Channel sampled by the CFA at (row, col): 0=R, 1=G, 2=B. Indexed by the
+// top-left 2x2 tile of each pattern.
+int cfaChannel(BayerPattern pattern, int row, int col) noexcept {
+  static constexpr int kTiles[4][2][2] = {
+      {{0, 1}, {1, 2}},  // RGGB
+      {{1, 0}, {2, 1}},  // GRBG
+      {{1, 2}, {0, 1}},  // GBRG
+      {{2, 1}, {1, 0}},  // BGGR
+  };
+  return kTiles[static_cast<int>(pattern)][row & 1][col & 1];
+}
+
+}  // namespace
+
+Expected<DecodedFrame> BayerDecode::decode(const DecodedFrame& input) const {
+  if (input.isNull()) {
+    return unexpected("empty bayer input");
+  }
+  if (input.format != PixelFormat::kMono8) {
+    return unexpected("BayerDecode expects a kMono8 mosaic");
+  }
+  const int w = input.width;
+  const int h = input.height;
+  if (w <= 0 || h <= 0) {
+    return unexpected("invalid bayer dimensions");
+  }
+  const auto& src = *input.pixels;
+  if (src.size() < static_cast<size_t>(w) * static_cast<size_t>(h)) {
+    return unexpected("bayer buffer too small for dimensions");
+  }
+
+  auto out = std::make_shared<std::vector<uint8_t>>(static_cast<size_t>(w) * static_cast<size_t>(h) * 3);
+  for (int y = 0; y < h; ++y) {
+    for (int x = 0; x < w; ++x) {
+      int sum[3] = {0, 0, 0};
+      int cnt[3] = {0, 0, 0};
+      for (int dy = -1; dy <= 1; ++dy) {
+        for (int dx = -1; dx <= 1; ++dx) {
+          const int nx = std::clamp(x + dx, 0, w - 1);
+          const int ny = std::clamp(y + dy, 0, h - 1);
+          const int ch = cfaChannel(pattern_, ny, nx);
+          sum[ch] += src[static_cast<size_t>(ny) * static_cast<size_t>(w) + static_cast<size_t>(nx)];
+          ++cnt[ch];
+        }
+      }
+      // The channel sampled at this pixel is known exactly, so pass it through
+      // instead of averaging it with same-channel neighbours (which would soften
+      // the measured channel). Only the two missing channels are interpolated.
+      const int center_ch = cfaChannel(pattern_, y, x);
+      const uint8_t center_val = src[static_cast<size_t>(y) * static_cast<size_t>(w) + static_cast<size_t>(x)];
+      const size_t o = (static_cast<size_t>(y) * static_cast<size_t>(w) + static_cast<size_t>(x)) * 3;
+      for (int ch = 0; ch < 3; ++ch) {
+        (*out)[o + static_cast<size_t>(ch)] =
+            ch == center_ch ? center_val : (cnt[ch] > 0 ? static_cast<uint8_t>(sum[ch] / cnt[ch]) : 0);
+      }
+    }
+  }
+
+  DecodedFrame frame;
+  frame.pixels = std::move(out);
+  frame.width = w;
+  frame.height = h;
+  frame.format = PixelFormat::kRGB888;
+  frame.pts = input.pts;
+  return frame;
+}
+
+// ---------------------------------------------------------------------------
 // Pipeline builders
 // ---------------------------------------------------------------------------
 

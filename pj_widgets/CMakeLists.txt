@@ -4,6 +4,7 @@ add_library(pj_widgets STATIC
     src/ColorPickerPopup.cpp
     src/ComboBox.cpp
     src/ComboBoxGradientDelegate.cpp
+    src/CredentialsEditor.cpp
     src/CurveTreeView.cpp
     src/DateRangePicker.cpp
     src/Dialog.cpp
@@ -22,6 +23,7 @@ add_library(pj_widgets STATIC
     include/pj_widgets/ColorPickerPopup.h
     include/pj_widgets/ComboBox.h
     include/pj_widgets/ComboBoxGradientDelegate.h
+    include/pj_widgets/CredentialsEditor.h
     include/pj_widgets/CurveTreeView.h
     include/pj_widgets/DateRangePicker.h
     include/pj_widgets/Dialog.h

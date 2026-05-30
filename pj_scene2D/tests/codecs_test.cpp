@@ -60,6 +60,41 @@ PJ::DecodedFrame rawBytesFrame(const std::vector<uint8_t>& bytes) {
   return frame;
 }
 
+PJ::DecodedFrame mono8MosaicFrame(int width, int height, const std::vector<uint8_t>& mosaic) {
+  PJ::DecodedFrame frame;
+  frame.pixels = std::make_shared<std::vector<uint8_t>>(mosaic);
+  frame.width = width;
+  frame.height = height;
+  frame.format = PJ::PixelFormat::kMono8;
+  return frame;
+}
+
+// Build a width*height mosaic where each site holds the value mapped to the
+// channel it samples under the given top-left 2x2 CFA pattern. site_for(r,c)
+// returns 'R','G','B'. R=255, G=128, B=0 — a uniform per-channel field, so a
+// correct demosaic reconstructs (255,128,0) at every interior pixel.
+template <typename SiteFn>
+std::vector<uint8_t> channelEncodedMosaic(int width, int height, SiteFn site_for) {
+  std::vector<uint8_t> m(static_cast<size_t>(width) * static_cast<size_t>(height));
+  for (int r = 0; r < height; ++r) {
+    for (int c = 0; c < width; ++c) {
+      const char ch = site_for(r, c);
+      m[static_cast<size_t>(r) * static_cast<size_t>(width) + static_cast<size_t>(c)] = (ch == 'R')   ? 255
+                                                                                        : (ch == 'G') ? 128
+                                                                                                      : 0;
+    }
+  }
+  return m;
+}
+
+void expectRgb(const PJ::DecodedFrame& f, int x, int y, uint8_t r, uint8_t g, uint8_t b) {
+  const size_t i = (static_cast<size_t>(y) * static_cast<size_t>(f.width) + static_cast<size_t>(x)) * 3;
+  ASSERT_LT(i + 2, f.pixels->size());
+  EXPECT_EQ((*f.pixels)[i + 0], r) << "R @ (" << x << "," << y << ")";
+  EXPECT_EQ((*f.pixels)[i + 1], g) << "G @ (" << x << "," << y << ")";
+  EXPECT_EQ((*f.pixels)[i + 2], b) << "B @ (" << x << "," << y << ")";
+}
+
 }  // namespace
 
 TEST(AutoImageCodecTest, NormalizesMono16PngToRgbGrayscale) {
@@ -90,4 +125,63 @@ TEST(AutoImageCodecTest, NormalizesMono16PngToRgbGrayscale) {
   EXPECT_EQ(pixels[9], 255);  // max maps to white
   EXPECT_EQ(pixels[10], 255);
   EXPECT_EQ(pixels[11], 255);
+}
+
+TEST(BayerDecodeTest, RggbInteriorPixelsReconstructChannels) {
+  // RGGB top-left tile:  R G / G B
+  auto site = [](int r, int c) -> char {
+    if (r % 2 == 0 && c % 2 == 0) {
+      return 'R';
+    }
+    if (r % 2 == 1 && c % 2 == 1) {
+      return 'B';
+    }
+    return 'G';
+  };
+  const std::vector<uint8_t> mosaic = channelEncodedMosaic(4, 4, site);
+
+  PJ::BayerDecode codec(PJ::BayerPattern::kRGGB);
+  auto out = codec.decode(mono8MosaicFrame(4, 4, mosaic));
+  ASSERT_TRUE(out.has_value()) << out.error();
+
+  EXPECT_EQ(out->width, 4);
+  EXPECT_EQ(out->height, 4);
+  EXPECT_EQ(out->format, PJ::PixelFormat::kRGB888);
+  ASSERT_NE(out->pixels, nullptr);
+  EXPECT_EQ(out->pixels->size(), 4u * 4u * 3u);
+
+  // Interior pixels have a full neighbourhood, so the uniform-per-channel
+  // field must round-trip exactly.
+  expectRgb(*out, 1, 1, 255, 128, 0);
+  expectRgb(*out, 2, 1, 255, 128, 0);
+  expectRgb(*out, 1, 2, 255, 128, 0);
+  expectRgb(*out, 2, 2, 255, 128, 0);
+}
+
+TEST(BayerDecodeTest, BggrPlacesRedAndBlueOppositeToRggb) {
+  // BGGR top-left tile:  B G / G R  — same uniform-per-channel field, so a
+  // pattern-aware decode must still yield (255,128,0) at interior pixels.
+  auto site = [](int r, int c) -> char {
+    if (r % 2 == 0 && c % 2 == 0) {
+      return 'B';
+    }
+    if (r % 2 == 1 && c % 2 == 1) {
+      return 'R';
+    }
+    return 'G';
+  };
+  const std::vector<uint8_t> mosaic = channelEncodedMosaic(4, 4, site);
+
+  PJ::BayerDecode codec(PJ::BayerPattern::kBGGR);
+  auto out = codec.decode(mono8MosaicFrame(4, 4, mosaic));
+  ASSERT_TRUE(out.has_value()) << out.error();
+  expectRgb(*out, 1, 1, 255, 128, 0);
+  expectRgb(*out, 2, 2, 255, 128, 0);
+}
+
+// Guard against an out-of-bounds read in the 3x3 neighbourhood loop: a buffer
+// smaller than width*height must be rejected, not demosaiced.
+TEST(BayerDecodeTest, RejectsBufferTooSmallForDimensions) {
+  auto out = PJ::BayerDecode(PJ::BayerPattern::kRGGB).decode(mono8MosaicFrame(4, 4, std::vector<uint8_t>(8, 0)));
+  EXPECT_FALSE(out.has_value());
 }

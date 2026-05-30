@@ -29,6 +29,7 @@ struct PanelEngine::Impl {
   QPointer<QWidget> root;
   QTimer* tick_timer = nullptr;
   nlohmann::json prev_data = nlohmann::json::object();
+  std::string prev_raw;
   std::function<void(std::string)> close_cb;
   Stats stats;
   bool closed = false;
@@ -40,6 +41,13 @@ struct PanelEngine::Impl {
     if (raw.empty()) {
       return std::nullopt;
     }
+    // Panels tick at 20Hz; an idle plugin re-emits byte-identical widget data
+    // each tick. Skip the parse + per-key diff + apply when nothing changed —
+    // one-shot requests (close/sub-dialog) flip the bytes, so they still fire.
+    if (raw == prev_raw) {
+      return std::nullopt;
+    }
+    prev_raw = raw;
     nlohmann::json new_data = nlohmann::json::parse(raw, nullptr, false);
     if (new_data.is_discarded()) {
       return std::nullopt;
@@ -206,6 +214,7 @@ QWidget* PanelEngine::openPanel() {
       WidgetDataView view(initial_raw);
       applyWidgetData(loaded, view);
       impl_->prev_data = std::move(initial_data);
+      impl_->prev_raw = initial_raw;
     }
   }
 

@@ -1,0 +1,38 @@
+#pragma once
+
+#include <QSettings>
+#include <QString>
+#include <optional>
+#include <string>
+#include <string_view>
+#include <vector>
+
+#include "pj_base/sdk/settings_store_host.hpp"
+
+namespace PJ {
+
+// Host-side SettingsBackend backed by QSettings, providing the "pj.settings.v1"
+// service (see sdk::SettingsStoreHost). Persists to the app's configuration
+// (PlotJuggler4.conf, via the org/app name set on QApplication) or to an
+// explicit INI file for headless hosts and tests. Keys use '/' which QSettings
+// maps to nested groups (e.g. the [mosaico] section); scalars are stored as
+// strings, lists as a native QStringList.
+class QSettingsBackend : public sdk::SettingsBackend {
+ public:
+  // App configuration store (PlotJuggler4.conf).
+  QSettingsBackend();
+  // Explicit INI file — for headless hosts and tests.
+  explicit QSettingsBackend(const QString& ini_path);
+
+  std::optional<std::string> getString(std::string_view key) override;
+  void setString(std::string_view key, std::string_view value) override;
+  std::optional<std::vector<std::string>> getStringList(std::string_view key) override;
+  void setStringList(std::string_view key, const std::vector<std::string>& values) override;
+  bool contains(std::string_view key) override;
+  void remove(std::string_view key) override;
+
+ private:
+  QSettings settings_;
+};
+
+}  // namespace PJ

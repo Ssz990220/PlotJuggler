@@ -46,11 +46,11 @@ inline void RecolorSvgInk(QByteArray& svg_data, bool light_theme) {
 
   // (3) Root-tag fill injection: if the SVG has no `fill` on its root
   // element, give it one so any per-path-fill-less children inherit it.
-  const int svg_open = svg_data.indexOf("<svg");
+  const int svg_open = static_cast<int>(svg_data.indexOf("<svg"));
   if (svg_open < 0) {
     return;
   }
-  const int tag_end = svg_data.indexOf('>', svg_open);
+  const int tag_end = static_cast<int>(svg_data.indexOf('>', svg_open));
   if (tag_end <= svg_open) {
     return;
   }

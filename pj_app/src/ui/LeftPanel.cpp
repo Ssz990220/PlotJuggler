@@ -5,7 +5,9 @@
 #include <QDomDocument>
 #include <QDomElement>
 #include <QFileInfo>
+#include <QLabel>
 #include <QLayout>
+#include <QLayoutItem>
 #include <QMargins>
 #include <QMenu>
 #include <QPoint>
@@ -15,7 +17,9 @@
 #include <QStackedWidget>
 #include <QStringList>
 #include <QToolButton>
+#include <QVBoxLayout>
 #include <initializer_list>
+#include <nlohmann/json.hpp>
 
 #include "pj_widgets/IntScrubber.h"
 #include "pj_widgets/SvgUtil.h"
@@ -258,6 +262,12 @@ void LeftPanel::applyIcons(QString theme) {
     btn->setIconSize(icon_sz);
   }
   for (auto* btn : findChildren<QPushButton*>()) {
+    // Cloud-launcher buttons are runtime-added text buttons, not the square
+    // icon chrome this loop styles — leave their natural sizing alone, else
+    // they get squashed to button_extent x button_extent and clip their label.
+    if (btn->objectName().startsWith(QStringLiteral("cloudToolboxOpen_"))) {
+      continue;
+    }
     btn->setMinimumSize(button_extent, button_extent);
     btn->setMaximumSize(button_extent, button_extent);
     btn->setIconSize(icon_sz);
@@ -290,6 +300,76 @@ void LeftPanel::applyIcons(QString theme) {
       layout->setSpacing(chrome_metrics_.layout_spacing);
     }
   }
+}
+
+void LeftPanel::populateCloudToolboxes(const std::vector<RuntimeToolboxPlugin>& toolboxes) {
+  auto* container = ui_->pageCloud->findChild<QWidget*>("cloudToolboxContainer");
+  if (container == nullptr) {
+    return;
+  }
+  auto* layout = qobject_cast<QVBoxLayout*>(container->layout());
+  if (layout == nullptr) {
+    return;
+  }
+
+  // Wipe existing rows.
+  while (QLayoutItem* item = layout->takeAt(0)) {
+    if (QWidget* w = item->widget()) {
+      w->deleteLater();
+    }
+    delete item;
+  }
+
+  bool any_cloud = false;
+  for (const auto& tb : toolboxes) {
+    // The manifest lives on the loaded vtable as a constexpr char[]; a null
+    // vtable is a load failure already reported through the diagnostic sink.
+    const auto* vtable = tb.library.vtable();
+    if (vtable == nullptr || vtable->manifest_json == nullptr) {
+      continue;
+    }
+    auto manifest = nlohmann::json::parse(vtable->manifest_json, nullptr, /*allow_exceptions=*/false);
+    if (!manifest.is_object()) {
+      // The plugin loaded but ships a malformed manifest; warn so a toolbox that
+      // silently never appears in the cloud list is diagnosable, then skip it.
+      qWarning("LeftPanel: toolbox '%s' has an invalid manifest_json; skipping", tb.id.c_str());
+      continue;
+    }
+    bool is_cloud = false;
+    if (auto it = manifest.find("tags"); it != manifest.end() && it->is_array()) {
+      for (const auto& tag : *it) {
+        if (tag.is_string() && tag.get<std::string>() == "cloud") {
+          is_cloud = true;
+          break;
+        }
+      }
+    }
+    if (!is_cloud) {
+      continue;
+    }
+    any_cloud = true;
+
+    // One full-width button per cloud source; its label is the toolbox name
+    // and clicking it launches the panel.
+    auto* btn = new QPushButton(QString::fromStdString(tb.name), container);
+    btn->setObjectName(QStringLiteral("cloudToolboxOpen_") + QString::fromStdString(tb.id));
+    if (auto desc = manifest.find("description"); desc != manifest.end() && desc->is_string()) {
+      btn->setToolTip(QString::fromStdString(desc->get<std::string>()));
+    }
+    layout->addWidget(btn);
+
+    const QString id = QString::fromStdString(tb.id);
+    connect(btn, &QPushButton::clicked, this, [this, id]() { emit cloudToolboxRequested(id); });
+  }
+
+  if (!any_cloud) {
+    auto* placeholder = new QLabel(tr("(no cloud toolboxes installed)"), container);
+    placeholder->setObjectName(QStringLiteral("labelCloudPlaceholder"));
+    placeholder->setAlignment(Qt::AlignCenter);
+    placeholder->setEnabled(false);
+    layout->addWidget(placeholder);
+  }
+  layout->addStretch();
 }
 
 }  // namespace PJ

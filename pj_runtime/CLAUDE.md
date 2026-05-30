@@ -21,6 +21,8 @@ The authoritative source is `include/pj_runtime/`. Today:
 | `CatalogModel.h` | Catalog of curves, objects, and data sources available to the UI. |
 | `PlaybackEngine.h` | Time cursor + playback (play/pause/seek/loop). Drives `IDataWidget::onTrackerTime`. |
 | `DataSourceRuntimeHost.h` | Host-side runner for `DataSource` plugins from `pj_plugins`. |
+| `ToolboxRuntimeHost.h` | Host-side runner for `Toolbox` plugins: assembles `ToolboxHostService` (write surface) + `ToolboxRuntimeHostService` (diagnostics / data-changed) + `SettingsStoreService` into a `ServiceRegistry`. App concerns are injected as `Callbacks`; the `[thread-safe]` vtable callbacks marshal onto the constructing (GUI) thread. |
+| `QSettingsBackend.h` | `sdk::SettingsBackend` implemented over `QSettings` (→ `PlotJuggler4.conf`); injected into `ToolboxRuntimeHost` so plugin settings persist. `'/'`-separated keys map to `.conf` groups. |
 | `ExtensionCatalogService.h` | Marketplace-backed extension catalog (queries `pj_marketplace`). |
 | `DiagnosticHistory.h` | Ring buffer of diagnostics surfaced via `pj_base::DiagnosticSink`. |
 | `IDataWidget.h` | The contract every data widget (plot / 2D / 3D) implements so playback can drive tracker updates without coupling to concrete widget types. |

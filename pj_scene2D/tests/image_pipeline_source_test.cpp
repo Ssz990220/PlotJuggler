@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "pj_base/builtin/image.hpp"
+#include "pj_base/builtin/image_codec.hpp"
 #include "pj_plugins/sdk/message_parser_plugin_base.hpp"
 
 namespace {
@@ -54,6 +55,37 @@ std::vector<uint8_t> makeMono16Png(int width, int height, const std::vector<uint
   std::vector<png_bytep> rows(static_cast<size_t>(height));
   for (int y = 0; y < height; ++y) {
     rows[static_cast<size_t>(y)] = big_endian_samples.data() + static_cast<size_t>(y) * static_cast<size_t>(width) * 2;
+  }
+  png_write_image(png, rows.data());
+  png_write_end(png, info);
+  png_destroy_write_struct(&png, &info);
+  return ctx.bytes;
+}
+
+// 8-bit grayscale PNG. Mosaico wraps a raw/bayer pixel buffer losslessly by
+// reshaping its flat bytes (row_step * height) as a grayscale image of
+// width=row_step, height=height, then PNG-compressing that.
+std::vector<uint8_t> makeMono8Png(int width, int height, const std::vector<uint8_t>& values) {
+  PngWriteCtx ctx;
+  png_structp png = png_create_write_struct(PNG_LIBPNG_VER_STRING, nullptr, nullptr, nullptr);
+  EXPECT_NE(png, nullptr);
+  png_infop info = png_create_info_struct(png);
+  EXPECT_NE(info, nullptr);
+
+  if (setjmp(png_jmpbuf(png))) {
+    png_destroy_write_struct(&png, &info);
+    return {};
+  }
+
+  png_set_write_fn(png, &ctx, pngWriteCallback, pngFlushCallback);
+  png_set_IHDR(
+      png, info, static_cast<png_uint_32>(width), static_cast<png_uint_32>(height), 8, PNG_COLOR_TYPE_GRAY,
+      PNG_INTERLACE_NONE, PNG_COMPRESSION_TYPE_DEFAULT, PNG_FILTER_TYPE_DEFAULT);
+  png_write_info(png, info);
+  std::vector<uint8_t> samples = values;  // mutable copy for libpng row pointers
+  std::vector<png_bytep> rows(static_cast<size_t>(height));
+  for (int y = 0; y < height; ++y) {
+    rows[static_cast<size_t>(y)] = samples.data() + static_cast<size_t>(y) * static_cast<size_t>(width);
   }
   png_write_image(png, rows.data());
   png_write_end(png, info);
@@ -132,6 +164,35 @@ class CanonicalCompressedDepthParser final : public PJ::MessageParserPluginBase 
           }}};
     };
     registerSchemaHandler("depth", std::move(handler));
+  }
+};
+
+// Parser returning a canonical sdk::Image with caller-chosen geometry/encoding,
+// reusing the pushed payload bytes verbatim as Image::data. Lets a test drive
+// the raw/bayer decode paths (incl. Mosaico's grayscale-PNG-wrapped buffers).
+class CanonicalRawParser final : public PJ::MessageParserPluginBase {
+ public:
+  CanonicalRawParser(uint32_t width, uint32_t height, std::string encoding, uint32_t row_step) {
+    PJ::sdk::SchemaHandler handler;
+    handler.object_type = PJ::sdk::BuiltinObjectType::kImage;
+    handler.parse_object = [width, height, encoding, row_step](
+                               PJ::Timestamp ts, PJ::sdk::PayloadView payload) -> PJ::Expected<PJ::sdk::ObjectRecord> {
+      return PJ::sdk::ObjectRecord{
+          .ts = std::nullopt,
+          .object = PJ::sdk::BuiltinObject{PJ::sdk::Image{
+              .width = width,
+              .height = height,
+              .encoding = encoding,
+              .row_step = row_step,
+              .is_bigendian = false,
+              .data = payload.bytes,
+              .anchor = payload.anchor,
+              .compressed_depth_min = std::nullopt,
+              .compressed_depth_max = std::nullopt,
+              .timestamp_ns = ts,
+          }}};
+    };
+    registerSchemaHandler("image", std::move(handler));
   }
 };
 
@@ -456,4 +517,177 @@ TEST(ImagePipelineSourceTest, SharedParserMutexSerializesConcurrentSources) {
 
   EXPECT_FALSE(parser.raceObserved()) << "parseObject was entered concurrently — shared parser_mutex did not "
                                          "serialise consumers (this is the bug the fix addresses).";
+}
+
+TEST(ImagePipelineSourceTest, ParserDrivenRawRgb8WrappedInGrayscalePngDecodesToColor) {
+  // Mosaico transports a raw rgb8 frame losslessly by reshaping its flat byte
+  // buffer (row_step * height) as an 8-bit grayscale PNG of width=row_step,
+  // height=height, then advertising encoding="rgb8". The viewer must detect the
+  // PNG container, recover the flat bytes, and reinterpret at the logical 2x2
+  // geometry — NOT treat the PNG container bytes as raw pixels (renders black).
+  const std::vector<uint8_t> rgb = {
+      10, 20, 30, 40,  50,  60,   // row 0: two RGB pixels
+      70, 80, 90, 100, 110, 120,  // row 1: two RGB pixels
+  };
+  const std::vector<uint8_t> png = makeMono8Png(/*width=row_step*/ 6, /*height*/ 2, rgb);
+  ASSERT_FALSE(png.empty());
+
+  PJ::ObjectStore store;
+  auto topic = store.registerTopic({PJ::DatasetId{1}, "/camera/image", "{}"});
+  ASSERT_TRUE(topic.has_value());
+  ASSERT_TRUE(store.pushOwned(*topic, 1'000, png));
+
+  CanonicalRawParser parser(2, 2, "rgb8", 6);
+  ASSERT_TRUE(parser.bindSchema("image", PJ::Span<const uint8_t>{}));
+  PJ::ImagePipelineSource source(&store, *topic, &parser);
+  FrameSync sync;
+  sync.install(source);
+
+  source.setTimestamp(1'000);
+  ASSERT_TRUE(sync.waitReady());
+  auto frame = source.takeFrame();
+  ASSERT_TRUE(frame.has_value());
+  ASSERT_TRUE(frame->base.has_value());
+
+  EXPECT_EQ(frame->base->width, 2);
+  EXPECT_EQ(frame->base->height, 2);
+  EXPECT_EQ(frame->base->format, PJ::PixelFormat::kRGB888);
+  ASSERT_NE(frame->base->pixels, nullptr);
+  EXPECT_EQ(*frame->base->pixels, rgb);
+}
+
+TEST(ImagePipelineSourceTest, ParserDrivenBayerRggb8WrappedInGrayscalePngDemosaicsToRgb) {
+  // A bayer_rggb8 mosaic arrives the same way: a grayscale PNG (width=row_step=W)
+  // wrapping the mono8 CFA samples. The viewer must recover the mosaic and
+  // demosaic to RGB888 — not render the gray mosaic as-is. The CFA encodes a
+  // uniform per-channel field (R=200, G=100, B=50) so every reconstructed pixel
+  // must be exactly (200,100,50).
+  constexpr int kW = 4;
+  constexpr int kH = 4;
+  std::vector<uint8_t> mosaic(static_cast<size_t>(kW) * kH);
+  for (int r = 0; r < kH; ++r) {
+    for (int c = 0; c < kW; ++c) {
+      // RGGB top-left 2x2 tile: (even,even)=R, (odd,odd)=B, else G.
+      uint8_t v = 100;  // G
+      if (r % 2 == 0 && c % 2 == 0) {
+        v = 200;  // R
+      } else if (r % 2 == 1 && c % 2 == 1) {
+        v = 50;  // B
+      }
+      mosaic[static_cast<size_t>(r) * kW + static_cast<size_t>(c)] = v;
+    }
+  }
+  const std::vector<uint8_t> png = makeMono8Png(kW, kH, mosaic);
+  ASSERT_FALSE(png.empty());
+
+  PJ::ObjectStore store;
+  auto topic = store.registerTopic({PJ::DatasetId{1}, "/camera/image", "{}"});
+  ASSERT_TRUE(topic.has_value());
+  ASSERT_TRUE(store.pushOwned(*topic, 1'000, png));
+
+  CanonicalRawParser parser(kW, kH, "bayer_rggb8", kW);
+  ASSERT_TRUE(parser.bindSchema("image", PJ::Span<const uint8_t>{}));
+  PJ::ImagePipelineSource source(&store, *topic, &parser);
+  FrameSync sync;
+  sync.install(source);
+
+  source.setTimestamp(1'000);
+  ASSERT_TRUE(sync.waitReady());
+  auto frame = source.takeFrame();
+  ASSERT_TRUE(frame.has_value());
+  ASSERT_TRUE(frame->base.has_value());
+
+  EXPECT_EQ(frame->base->width, kW);
+  EXPECT_EQ(frame->base->height, kH);
+  EXPECT_EQ(frame->base->format, PJ::PixelFormat::kRGB888);
+  ASSERT_NE(frame->base->pixels, nullptr);
+  ASSERT_EQ(frame->base->pixels->size(), static_cast<size_t>(kW) * kH * 3);
+  // Interior pixel (1,1) has a full neighbourhood — the uniform field round-trips.
+  const auto& px = *frame->base->pixels;
+  const size_t i = (1 * static_cast<size_t>(kW) + 1) * 3;
+  EXPECT_EQ(px[i + 0], 200);
+  EXPECT_EQ(px[i + 1], 100);
+  EXPECT_EQ(px[i + 2], 50);
+}
+
+TEST(ImagePipelineSourceTest, CanonicalCodecDecodesSerializedRawRgb8) {
+  // Toolbox path: the producer serializes an sdk::Image (pj_base pj_image_v1
+  // codec) and pushes the blob via pushOwnedObject; the topic advertises
+  // image_codec=pj_image_v1 and gets NO MessageParser. The viewer's canonical
+  // codec source must deserialize each blob, then decode it.
+  const std::vector<uint8_t> rgb = {10, 20, 30, 40, 50, 60};  // 2x1 rgb8
+  PJ::sdk::Image img;
+  img.width = 2;
+  img.height = 1;
+  img.encoding = "rgb8";
+  img.row_step = 6;
+  img.data = PJ::Span<const uint8_t>(rgb.data(), rgb.size());
+  const std::vector<uint8_t> blob = PJ::serializeImage(img);
+  ASSERT_FALSE(blob.empty());
+
+  PJ::ObjectStore store;
+  auto topic = store.registerTopic(
+      {PJ::DatasetId{1}, "/camera/image", R"({"builtin_object_type":"kImage","image_codec":"pj_image_v1"})"});
+  ASSERT_TRUE(topic.has_value());
+  ASSERT_TRUE(store.pushOwned(*topic, 1'000, blob));
+
+  PJ::ImagePipelineSource source(&store, *topic, PJ::ImagePipelineSource::CanonicalImageCodec{});
+  FrameSync sync;
+  sync.install(source);
+
+  source.setTimestamp(1'000);
+  ASSERT_TRUE(sync.waitReady());
+  auto frame = source.takeFrame();
+  ASSERT_TRUE(frame.has_value());
+  ASSERT_TRUE(frame->base.has_value());
+
+  EXPECT_EQ(frame->base->width, 2);
+  EXPECT_EQ(frame->base->height, 1);
+  EXPECT_EQ(frame->base->format, PJ::PixelFormat::kRGB888);
+  ASSERT_NE(frame->base->pixels, nullptr);
+  EXPECT_EQ(*frame->base->pixels, rgb);
+}
+
+TEST(ImagePipelineSourceTest, CanonicalCodecDecodesSerializedPngWrappedRgb8) {
+  // The real Mosaico shape: a serialized sdk::Image whose encoding is "rgb8" but
+  // whose data is the flat buffer wrapped in a grayscale PNG (width=row_step).
+  // Exercises both halves of the fix end to end: canonical deserialize, then
+  // PNG-unwrap + reinterpret at the logical geometry.
+  const std::vector<uint8_t> rgb = {
+      10, 20, 30, 40,  50,  60,  // row 0
+      70, 80, 90, 100, 110, 120  // row 1
+  };
+  const std::vector<uint8_t> png = makeMono8Png(/*width=row_step*/ 6, /*height*/ 2, rgb);
+  ASSERT_FALSE(png.empty());
+
+  PJ::sdk::Image img;
+  img.width = 2;
+  img.height = 2;
+  img.encoding = "rgb8";
+  img.row_step = 6;
+  img.data = PJ::Span<const uint8_t>(png.data(), png.size());
+  const std::vector<uint8_t> blob = PJ::serializeImage(img);
+  ASSERT_FALSE(blob.empty());
+
+  PJ::ObjectStore store;
+  auto topic = store.registerTopic(
+      {PJ::DatasetId{1}, "/camera/image", R"({"builtin_object_type":"kImage","image_codec":"pj_image_v1"})"});
+  ASSERT_TRUE(topic.has_value());
+  ASSERT_TRUE(store.pushOwned(*topic, 1'000, blob));
+
+  PJ::ImagePipelineSource source(&store, *topic, PJ::ImagePipelineSource::CanonicalImageCodec{});
+  FrameSync sync;
+  sync.install(source);
+
+  source.setTimestamp(1'000);
+  ASSERT_TRUE(sync.waitReady());
+  auto frame = source.takeFrame();
+  ASSERT_TRUE(frame.has_value());
+  ASSERT_TRUE(frame->base.has_value());
+
+  EXPECT_EQ(frame->base->width, 2);
+  EXPECT_EQ(frame->base->height, 2);
+  EXPECT_EQ(frame->base->format, PJ::PixelFormat::kRGB888);
+  ASSERT_NE(frame->base->pixels, nullptr);
+  EXPECT_EQ(*frame->base->pixels, rgb);
 }

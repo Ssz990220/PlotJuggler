@@ -30,9 +30,9 @@ struct PanelEngineConfig {
 /// Typical usage from pj_app:
 ///   auto* engine = new PJ::PanelEngine(std::move(dialog_handle), {}, this);
 ///   engine->onCloseRequested([this](std::string reason) { restoreCentralArea(); });
-///   auto widget = engine->openPanel();
-///   if (!widget) { ... handle error ... }
-///   mainWindow->presentPanel(widget.value());
+///   QWidget* widget = engine->openPanel();
+///   if (widget == nullptr) { ... handle error ... }
+///   mainWindow->presentPanel(widget);  // takes ownership; engine keeps a weak ref
 class PanelEngine : public QObject {
   Q_OBJECT
  public:

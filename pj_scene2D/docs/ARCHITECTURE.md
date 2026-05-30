@@ -316,10 +316,15 @@ consumes raw bytes and either:
   bytes → next stage consumes `pixels->data()` and `pixels->size()`.
 
 The last stage must produce display-ready pixels (RGB/RGBA). The
-`ImagePipelineSource` receives either a parser instance that returns
-canonical `sdk::Image`, or a demo/test pipeline configured based on the
-topic's `metadata_json` (encoding, schema,
-media_class).
+`ImagePipelineSource` receives one of three decode routes: a parser
+instance that returns canonical `sdk::Image`; the `CanonicalImageCodec`
+tag for topics whose `metadata_json` declares `image_codec=pj_image_v1`
+(each ObjectStore entry is a serialized `sdk::Image` blob the source
+deserializes itself — the toolbox image-producer contract); or a
+demo/test pipeline. Canonical images (parser- or blob-sourced) share one
+decode path: raw/Bayer encodings (incl. grayscale-PNG-wrapped buffers)
+reinterpret at the logical geometry, everything else runs the
+jpeg/png/auto compressed cascade.
 
 ### Codec inventory
 

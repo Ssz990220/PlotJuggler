@@ -3,7 +3,9 @@
 #include <QDomDocument>
 #include <QDomElement>
 #include <QWidget>
+#include <vector>
 
+#include "pj_plugins/host/plugin_runtime_catalog.hpp"
 #include "pj_widgets/ChromeMetrics.h"
 
 namespace Ui {
@@ -37,6 +39,10 @@ class LeftPanel : public QWidget {
   // Buffer length (seconds) for the streaming source. Persisted to
   // QSettings; emitted when the user adjusts the inline scrubber.
   void streamingBufferChanged(int seconds);
+  // Emitted when the user clicks a cloud-tagged toolbox entry in the Cloud
+  // page. `plugin_id` is the toolbox's manifest `id`; MainWindow wires this to
+  // the launcher slot that binds a ToolboxRuntimeHost and presents the panel.
+  void cloudToolboxRequested(QString plugin_id);
 
  public slots:
   void onStylesheetChanged(QString theme);
@@ -59,6 +65,13 @@ class LeftPanel : public QWidget {
   // mismatched values are silently ignored. Never writes to QSettings —
   // layout-driven UI changes don't mutate the global per-user defaults.
   void restoreSourcesState(const QDomElement& element);
+
+ public:
+  // Rebuilds the Cloud page from the catalog. Not a slot: RuntimeToolboxPlugin
+  // is non-copyable (owns a ToolboxLibrary), so MOC can't marshal it. Filters
+  // to toolboxes whose manifest `tags` contains "cloud" and renders one button
+  // per match. Safe to call repeatedly (e.g. on catalogChanged).
+  void populateCloudToolboxes(const std::vector<RuntimeToolboxPlugin>& toolboxes);
 
  private:
   void applyIcons(QString theme);
