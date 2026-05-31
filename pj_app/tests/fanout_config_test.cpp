@@ -9,6 +9,7 @@
 namespace {
 
 using PJ::detail::extractFanout;
+using PJ::detail::parseDisplayName;
 using PJ::detail::parseDisplaySuffix;
 using Vec = std::vector<std::string>;
 
@@ -86,6 +87,33 @@ TEST(ParseDisplaySuffix, PresentValueReturnsSuffix) {
   EXPECT_EQ(
       parseDisplaySuffix(R"({"display_suffix":"cam_left"})", QStringLiteral("fb")).toStdString(),
       std::string("cam_left"));
+}
+
+// --- parseDisplayName -------------------------------------------------------
+
+TEST(ParseDisplayName, EmptyConfigReturnsEmpty) {
+  EXPECT_TRUE(parseDisplayName("").isEmpty());
+}
+
+TEST(ParseDisplayName, NonObjectReturnsEmpty) {
+  EXPECT_TRUE(parseDisplayName("not json").isEmpty());
+  EXPECT_TRUE(parseDisplayName("[1,2]").isEmpty());
+}
+
+TEST(ParseDisplayName, MissingKeyReturnsEmpty) {
+  EXPECT_TRUE(parseDisplayName(R"({"foo":"bar"})").isEmpty());
+}
+
+TEST(ParseDisplayName, NonStringValueReturnsEmpty) {
+  EXPECT_TRUE(parseDisplayName(R"({"display_name":7})").isEmpty());
+}
+
+TEST(ParseDisplayName, EmptyStringValueReturnsEmpty) {
+  EXPECT_TRUE(parseDisplayName(R"({"display_name":""})").isEmpty());
+}
+
+TEST(ParseDisplayName, PresentValueReturnsName) {
+  EXPECT_EQ(parseDisplayName(R"({"display_name":"pusht_v21"})").toStdString(), std::string("pusht_v21"));
 }
 
 }  // namespace

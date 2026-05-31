@@ -375,6 +375,15 @@ bool FileLoader::loadFile(const QString& path, QWidget* dialog_parent, const Loa
 
   if (fanouts.size() == 1) {
     // Single-instance: reuse the already-bound scratch handle + dataset.
+    // issue #98: apply the plugin's dataset name BEFORE start() so the
+    // commit-driven catalog rebuild surfaces curves already under the right
+    // tree-root label. rebuildFromDatastore signals add/remove keyed by curve
+    // identity, never relabels, so overriding after the curves are shown would
+    // not reach the tree view on the initial load — mirror how fanout sets its
+    // labels at createDataset time, before any topic is committed.
+    if (const QString plugin_name = detail::parseDisplayName(config); !plugin_name.isEmpty()) {
+      catalog_.setDatasetDisplayName(dataset_id, plugin_name);
+    }
     wireProgress(ingest_session);
     if (auto status = handle.start(); !status) {
       progress_dlg.reset();
@@ -406,6 +415,11 @@ bool FileLoader::loadFile(const QString& path, QWidget* dialog_parent, const Loa
     enum class EntryOutcome { Completed, Failed, Cancelled };
 
     const QString basename = QFileInfo(path).completeBaseName();
+    // issue #98: let the plugin name the dataset root. `display_name` (if the
+    // plugin emitted it in the accepted config) replaces the file basename as
+    // the shared prefix; the per-episode `display_suffix` still forms the leaf.
+    const QString fanout_name = detail::parseDisplayName(config);
+    const QString base = fanout_name.isEmpty() ? basename : fanout_name;
     std::size_t completed = 0;
     std::size_t failed = 0;
     bool cancelled = false;
@@ -477,7 +491,7 @@ bool FileLoader::loadFile(const QString& path, QWidget* dialog_parent, const Loa
     for (std::size_t i = 0; i < fanouts.size(); ++i) {
       const std::string& cfg_i = fanouts[i];
       const QString suffix = detail::parseDisplaySuffix(cfg_i, QString::number(i + 1));
-      const QString iter_display = basename + QChar('/') + suffix;
+      const QString iter_display = base + QChar('/') + suffix;
 
       switch (runFanoutEntry(i, cfg_i, iter_display)) {
         case EntryOutcome::Completed:

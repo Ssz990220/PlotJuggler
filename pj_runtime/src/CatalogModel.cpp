@@ -238,6 +238,9 @@ struct CatalogModel::Impl {
   // by the DatasetId the curve belonged to, so a reload (new DatasetId)
   // re-introduces the name.
   tsl::robin_map<DatasetId, NameSet> removed_names_per_dataset;
+  // Plugin-provided tree-root labels (issue #98), keyed by stable DatasetId so
+  // they survive rebuilds and clearAll/restoreDataset. Never holds empty values.
+  tsl::robin_map<DatasetId, QString> dataset_display_overrides;
 };
 
 CatalogModel::CatalogModel(SessionManager* session, QObject* parent)
@@ -343,13 +346,27 @@ void CatalogModel::rebuildFromDatastore() {
   ObjectStore& object_store = impl_->session->objectStore();
   const std::vector<DatasetId> dataset_ids = reader.listDatasets();
 
+  // issue #98: a plugin-provided display name (set via setDatasetDisplayName)
+  // overrides the file-derived source_name label, with the same '/'→'_'
+  // normalization as baseDatasetLabel so it participates in the duplicate-label
+  // ordinal disambiguation below. Absent/empty ⇒ the source_name label.
+  const auto effectiveBaseLabel = [this, &engine](DatasetId id) -> QString {
+    if (const auto it = impl_->dataset_display_overrides.find(id);
+        it != impl_->dataset_display_overrides.end() && !it->second.isEmpty()) {
+      QString label = it->second;
+      label.replace('/', '_');
+      return label;
+    }
+    return baseDatasetLabel(engine.getDataset(id));
+  };
+
   tsl::robin_map<DatasetId, QString> dataset_labels;
   tsl::robin_map<QString, int, QStringHash> label_counts;
   for (const DatasetId dataset_id : dataset_ids) {
     if (impl_->removed_datasets.count(dataset_id) > 0) {
       continue;
     }
-    ++label_counts[baseDatasetLabel(engine.getDataset(dataset_id))];
+    ++label_counts[effectiveBaseLabel(dataset_id)];
   }
 
   tsl::robin_map<QString, int, QStringHash> label_ordinals;
@@ -357,7 +374,7 @@ void CatalogModel::rebuildFromDatastore() {
     if (impl_->removed_datasets.count(dataset_id) > 0) {
       continue;
     }
-    const QString base_label = baseDatasetLabel(engine.getDataset(dataset_id));
+    const QString base_label = effectiveBaseLabel(dataset_id);
     QString label = base_label;
     if (label_counts[base_label] > 1) {
       const int ordinal = ++label_ordinals[base_label];
@@ -386,7 +403,7 @@ void CatalogModel::rebuildFromDatastore() {
     const Timestamp display_offset = time_domain != nullptr ? time_domain->display_offset : 0;
     const auto dataset_label_it = dataset_labels.find(dataset_id);
     const QString dataset_label =
-        dataset_label_it != dataset_labels.end() ? dataset_label_it->second : baseDatasetLabel(dataset);
+        dataset_label_it != dataset_labels.end() ? dataset_label_it->second : effectiveBaseLabel(dataset_id);
 
     for (const TopicId topic_id : reader.listTopics(dataset_id)) {
       const auto metadata = reader.getMetadata(topic_id);
@@ -502,6 +519,21 @@ void CatalogModel::restoreDataset(DatasetId dataset_id) {
   if (was_removed || had_per_item) {
     rebuildFromDatastore();
   }
+}
+
+void CatalogModel::setDatasetDisplayName(DatasetId dataset_id, const QString& display_name) {
+  if (display_name.isEmpty()) {
+    if (impl_->dataset_display_overrides.erase(dataset_id) > 0) {
+      rebuildFromDatastore();
+    }
+    return;
+  }
+  const auto it = impl_->dataset_display_overrides.find(dataset_id);
+  if (it != impl_->dataset_display_overrides.end() && it->second == display_name) {
+    return;
+  }
+  impl_->dataset_display_overrides.insert_or_assign(dataset_id, display_name);
+  rebuildFromDatastore();
 }
 
 bool CatalogModel::removeDataset(DatasetId dataset_id) {

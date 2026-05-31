@@ -102,6 +102,17 @@ class CatalogModel : public QObject {
   // Restores one dataset hidden by removeDataset().
   void restoreDataset(DatasetId dataset_id);
 
+  // Overrides the tree-root label of a dataset, replacing the file-derived
+  // source_name shown in catalog/tree views (issue #98 — lets a DataSource name
+  // its dataset instead of inheriting the opened file's basename). Keyed by the
+  // stable DatasetId so the override survives rebuildFromDatastore and
+  // clearAll/restoreDataset. The override is normalized ('/'→'_') and
+  // participates in duplicate-label ordinal disambiguation, exactly like a
+  // source_name-derived label. An empty string clears the override (falls back
+  // to source_name). Does not touch the engine's immutable DatasetInfo, so
+  // dataset-reuse matching (by source_name) is unaffected.
+  void setDatasetDisplayName(DatasetId dataset_id, const QString& display_name);
+
   // Hides one dataset from the catalog and future rebuilds.
   // Emits cleared() if it empties the catalog; otherwise emits itemRemoved().
   bool removeDataset(DatasetId dataset_id);

@@ -69,4 +69,17 @@ QString parseDisplaySuffix(std::string_view cfg, const QString& fallback) {
   return s.isEmpty() ? fallback : s;
 }
 
+QString parseDisplayName(std::string_view cfg) {
+  if (cfg.empty()) {
+    return QString{};
+  }
+  const QByteArray bytes(cfg.data(), static_cast<qsizetype>(cfg.size()));
+  const auto doc = QJsonDocument::fromJson(bytes);
+  if (!doc.isObject()) {
+    return QString{};
+  }
+  const QJsonValue v = doc.object().value(QStringLiteral("display_name"));
+  return v.isString() ? v.toString() : QString{};
+}
+
 }  // namespace PJ::detail

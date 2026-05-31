@@ -188,6 +188,134 @@ TEST(CatalogModelTest, RestoreDatasetBringsBackClearedItems) {
       << "restoreDataset must surface only the targeted dataset, not the other cleared one";
 }
 
+// --- setDatasetDisplayName (issue #98) --------------------------------------
+
+TEST(CatalogModelTest, DisplayNameOverrideReplacesLabelButKeepsSourceName) {
+  PJ::SessionManager session;
+  PJ::CatalogModel catalog(&session);
+
+  auto dataset = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "info.json"});
+  ASSERT_TRUE(dataset.has_value()) << dataset.error();
+  ASSERT_NE(addScalarTopic(session, *dataset, "/imu/accel/sample"), 0U);
+  ASSERT_EQ(catalog.curves().at(0).dataset_name, QStringLiteral("info.json"));
+
+  catalog.setDatasetDisplayName(*dataset, QStringLiteral("pusht_v21"));
+
+  EXPECT_EQ(catalog.curves().at(0).dataset_name, QStringLiteral("pusht_v21"));
+  // The engine's source_name is left untouched so dataset-reuse matching
+  // (FileLoader matches by source_name) keeps working.
+  const PJ::DatasetInfo* info = session.dataEngine().getDataset(*dataset);
+  ASSERT_NE(info, nullptr);
+  EXPECT_EQ(info->source_name, std::string("info.json"));
+}
+
+TEST(CatalogModelTest, DisplayNameOverrideIsFlattened) {
+  PJ::SessionManager session;
+  PJ::CatalogModel catalog(&session);
+
+  auto dataset = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "info.json"});
+  ASSERT_TRUE(dataset.has_value());
+  ASSERT_NE(addScalarTopic(session, *dataset, "/imu/accel/sample"), 0U);
+
+  catalog.setDatasetDisplayName(*dataset, QStringLiteral("lerobot/pusht"));
+
+  // '/' is flattened to '_' (same normalization as a source_name label) so the
+  // override stays a single tree-root node.
+  EXPECT_EQ(catalog.curves().at(0).dataset_name, QStringLiteral("lerobot_pusht"));
+}
+
+TEST(CatalogModelTest, DisplayNameOverrideParticipatesInCollisionOrdinals) {
+  PJ::SessionManager session;
+  PJ::CatalogModel catalog(&session);
+
+  auto first = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "a.json"});
+  ASSERT_TRUE(first.has_value());
+  ASSERT_NE(addScalarTopic(session, *first, "/imu/accel/sample"), 0U);
+  auto second = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "b.json"});
+  ASSERT_TRUE(second.has_value());
+  ASSERT_NE(addScalarTopic(session, *second, "/imu/accel/sample"), 0U);
+
+  catalog.setDatasetDisplayName(*first, QStringLiteral("pusht"));
+  catalog.setDatasetDisplayName(*second, QStringLiteral("pusht"));
+
+  const auto curves = catalog.curves();
+  ASSERT_EQ(curves.size(), 2U);
+  EXPECT_EQ(curves[0].dataset_name, QStringLiteral("pusht"));
+  EXPECT_EQ(curves[1].dataset_name, QStringLiteral("pusht (2)"));
+}
+
+TEST(CatalogModelTest, DisplayNameOverrideSurvivesRebuild) {
+  PJ::SessionManager session;
+  PJ::CatalogModel catalog(&session);
+
+  auto dataset = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "info.json"});
+  ASSERT_TRUE(dataset.has_value());
+  ASSERT_NE(addScalarTopic(session, *dataset, "/imu/accel/sample"), 0U);
+  catalog.setDatasetDisplayName(*dataset, QStringLiteral("pusht_v21"));
+
+  // A second commit triggers rebuildFromDatastore via topicsCommitted.
+  ASSERT_NE(addScalarTopic(session, *dataset, "/imu/gyro/sample"), 0U);
+
+  for (const auto& curve : catalog.curves()) {
+    EXPECT_EQ(curve.dataset_name, QStringLiteral("pusht_v21"));
+  }
+}
+
+TEST(CatalogModelTest, DisplayNameOverrideSurvivesClearAndRestore) {
+  PJ::SessionManager session;
+  PJ::CatalogModel catalog(&session);
+
+  auto dataset = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "info.json"});
+  ASSERT_TRUE(dataset.has_value());
+  ASSERT_NE(addScalarTopic(session, *dataset, "/imu/accel/sample"), 0U);
+  catalog.setDatasetDisplayName(*dataset, QStringLiteral("pusht_v21"));
+
+  catalog.clearAll();
+  EXPECT_TRUE(catalog.items().empty());
+
+  catalog.restoreDataset(*dataset);
+  ASSERT_EQ(catalog.curves().size(), 1U);
+  EXPECT_EQ(catalog.curves().at(0).dataset_name, QStringLiteral("pusht_v21"));
+}
+
+// Regression for the single-instance path: rebuildFromDatastore signals only
+// add/remove keyed by curve identity (never a relabel), so the override must be
+// in place BEFORE the topic is committed for its label to ride the itemAdded
+// signal that incremental subscribers (the curve tree) consume. FileLoader
+// relies on this by calling setDatasetDisplayName before start().
+TEST(CatalogModelTest, DisplayNameOverrideSetBeforeCommitReachesItemAddedSignal) {
+  PJ::SessionManager session;
+  PJ::CatalogModel catalog(&session);
+
+  auto dataset = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "info.json"});
+  ASSERT_TRUE(dataset.has_value());
+  catalog.setDatasetDisplayName(*dataset, QStringLiteral("pusht_v21"));
+
+  QString added_dataset_name;
+  QObject::connect(&catalog, &PJ::CatalogModel::itemAdded, [&](const PJ::CatalogItem& item) {
+    added_dataset_name = item.dataset_name;
+  });
+
+  ASSERT_NE(addScalarTopic(session, *dataset, "/imu/accel/sample"), 0U);
+
+  EXPECT_EQ(added_dataset_name, QStringLiteral("pusht_v21"));
+}
+
+TEST(CatalogModelTest, EmptyDisplayNameClearsOverride) {
+  PJ::SessionManager session;
+  PJ::CatalogModel catalog(&session);
+
+  auto dataset = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "info.json"});
+  ASSERT_TRUE(dataset.has_value());
+  ASSERT_NE(addScalarTopic(session, *dataset, "/imu/accel/sample"), 0U);
+  catalog.setDatasetDisplayName(*dataset, QStringLiteral("pusht_v21"));
+  ASSERT_EQ(catalog.curves().at(0).dataset_name, QStringLiteral("pusht_v21"));
+
+  catalog.setDatasetDisplayName(*dataset, QString{});
+
+  EXPECT_EQ(catalog.curves().at(0).dataset_name, QStringLiteral("info.json"));
+}
+
 TEST(CatalogModelTest, RemoveDatasetHidesItemsScopedToTargetIdAndReturnsTrue) {
   PJ::SessionManager session;
   PJ::CatalogModel catalog(&session);
