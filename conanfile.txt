@@ -5,6 +5,7 @@
 fmt/12.1.0
 tsl-robin-map/1.4.0
 gtest/1.17.0
+glm/1.0.1
 benchmark/1.9.5
 nanoarrow/0.7.0
 nlohmann_json/3.12.0
