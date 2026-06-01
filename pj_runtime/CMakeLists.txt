@@ -1,4 +1,4 @@
-find_package(Qt6 REQUIRED COMPONENTS Core Network)
+find_package(Qt6 REQUIRED COMPONENTS Core Network Xml)
 find_package(nlohmann_json REQUIRED)
 find_package(tsl-robin-map REQUIRED)
 if(PJ_BUILD_TESTS)
@@ -39,6 +39,7 @@ target_include_directories(pj_runtime PUBLIC
 target_link_libraries(pj_runtime PUBLIC
     Qt6::Core
     Qt6::Network
+    Qt6::Xml
     pj_datastore
     pj_marketplace
     pj_plugin_runtime_catalog

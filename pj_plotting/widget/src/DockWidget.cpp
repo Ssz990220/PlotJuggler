@@ -6,9 +6,13 @@
 #include <QAction>
 #include <QBoxLayout>
 #include <QContextMenuEvent>
+#include <QDragEnterEvent>
+#include <QDragMoveEvent>
+#include <QDropEvent>
 #include <QIcon>
 #include <QLabel>
 #include <QMenu>
+#include <QMimeData>
 #include <QPushButton>
 #include <QUuid>
 #include <QWidget>
@@ -18,6 +22,7 @@
 #include "pj_plotting/PlotDocker.h"
 #include "pj_plotting/PlotWidget.h"
 #include "pj_runtime/CatalogModel.h"
+#include "pj_widgets/CurveTreeView.h"
 #include "pj_widgets/SvgUtil.h"
 #include "pj_widgets/VisualizationPlaceholderWidget.h"
 
@@ -141,6 +146,36 @@ void DockWidget::setPlotWidget(PlotWidget* plot) {
   emit plotWidgetCreated(plot_widget_);
 }
 
+void DockWidget::setObjectWidget(IDataWidget* widget) {
+  if (object_widget_ == widget) {
+    return;
+  }
+  clearCurrentContent(true);
+  object_widget_ = widget;
+  content_widget_ = object_widget_ != nullptr ? object_widget_->widget() : nullptr;
+  if (content_widget_ == nullptr) {
+    return;
+  }
+  installObjectContextMenuFilter(content_widget_);
+  // ForceNoScrollArea: object widgets manage their own viewport — wrapping
+  // them in ADS' QScrollArea adds a visible frame. Mirrors the drop path.
+  setWidget(content_widget_, ads::CDockWidget::ForceNoScrollArea);
+}
+
+IDataWidget* DockWidget::releaseObjectWidget() {
+  if (object_widget_ == nullptr) {
+    return nullptr;
+  }
+  if (content_widget_ != nullptr) {
+    removeObjectContextMenuFilter(content_widget_);
+  }
+  auto* obj = object_widget_;
+  takeWidget();
+  content_widget_ = nullptr;
+  object_widget_ = nullptr;
+  return obj;
+}
+
 void DockWidget::setPlaceholderWidget() {
   clearCurrentContent(true);
   placeholder_widget_ = new VisualizationPlaceholderWidget(this);
@@ -200,11 +235,41 @@ void DockWidget::onStylesheetChanged(QString theme) {
 
 bool DockWidget::eventFilter(QObject* watched, QEvent* event) {
   if (object_widget_ != nullptr && content_widget_ != nullptr && isContentWidgetOrChild(watched, content_widget_) &&
-      event != nullptr && event->type() == QEvent::ContextMenu) {
-    auto* context_event = static_cast<QContextMenuEvent*>(event);
-    showObjectContextMenu(context_event->globalPos());
-    event->accept();
-    return true;
+      event != nullptr) {
+    switch (event->type()) {
+      case QEvent::ContextMenu: {
+        auto* context_event = static_cast<QContextMenuEvent*>(event);
+        showObjectContextMenu(context_event->globalPos());
+        event->accept();
+        return true;
+      }
+      // Catalog drops on the *live* content widget — once the placeholder
+      // is gone, this filter is the only thing that hears the drop. Used by
+      // multi-topic widgets (Scene3D) to absorb additional topics. The
+      // factory replacement path stays as a fallback inside
+      // onCatalogItemsDropped when the existing widget refuses the family.
+      case QEvent::DragEnter:
+      case QEvent::DragMove: {
+        auto* drag = static_cast<QDropEvent*>(event);
+        if (drag->mimeData() != nullptr && drag->mimeData()->hasFormat(CurveTreeView::catalogItemsMimeType())) {
+          drag->acceptProposedAction();
+          return true;
+        }
+        return false;
+      }
+      case QEvent::Drop: {
+        auto* drop = static_cast<QDropEvent*>(event);
+        const QStringList keys = CurveTreeView::decodeCatalogKeys(drop->mimeData());
+        if (keys.isEmpty()) {
+          return false;
+        }
+        drop->acceptProposedAction();
+        onCatalogItemsDropped(keys);
+        return true;
+      }
+      default:
+        break;
+    }
   }
   return ads::CDockWidget::eventFilter(watched, event);
 }
@@ -283,12 +348,49 @@ void DockWidget::onCatalogItemsDropped(const QStringList& keys) {
     return;
   }
 
+  // Helper: build the title string the factory expects from a catalog item —
+  // "dataset/topic" when the dataset name is known, else the bare topic.
+  const auto title_for = [](const auto& descriptor) {
+    return descriptor.dataset_name.isEmpty()
+               ? descriptor.topic_name
+               : QStringLiteral("%1/%2").arg(descriptor.dataset_name, descriptor.topic_name);
+  };
+  // Helper: walk all keys and offer each one to the given widget via
+  // IDataWidget::tryAcceptObjectTopic. Returns the count accepted.
+  const auto offer_keys_to = [&](IDataWidget* target, int start_index) {
+    int accepted = 0;
+    for (int i = start_index; i < keys.size(); ++i) {
+      const auto desc = catalog_->itemDescriptor(keys[i]);
+      if (!desc.has_value()) {
+        continue;
+      }
+      const auto* payload = asObjectTopic(*desc);
+      if (payload == nullptr) {
+        continue;
+      }
+      if (target->tryAcceptObjectTopic(payload->object_topic_id, payload->object_type, title_for(*desc))) {
+        ++accepted;
+      }
+    }
+    return accepted;
+  };
+
+  // First: if a widget is already mounted, try to add the dropped topics
+  // *into* it (Scene3DDockWidget consumes pointcloud / TF this way). On
+  // success we don't replace the widget — only the topic list grows.
+  if (object_widget_ != nullptr) {
+    if (offer_keys_to(object_widget_, /*start_index=*/0) > 0) {
+      emit undoableChange();
+      return;
+    }
+    // Existing widget refused all keys (wrong family) — fall through and
+    // replace it with a fresh factory-created one.
+  }
+
   // The factory itself decides which object types it can host — returning
   // nullptr means "I can't render this", which we surface by reverting to
   // the placeholder so the user sees an explicit "not supported" affordance.
-  const QString title = first_item->dataset_name.isEmpty()
-                            ? first_item->topic_name
-                            : QStringLiteral("%1/%2").arg(first_item->dataset_name, first_item->topic_name);
+  const QString title = title_for(*first_item);
   clearCurrentContent(true);
   object_widget_ = object_widget_factory_(object_payload->object_topic_id, object_payload->object_type, title, this);
   content_widget_ = object_widget_ != nullptr ? object_widget_->widget() : nullptr;
@@ -297,8 +399,19 @@ void DockWidget::onCatalogItemsDropped(const QStringList& keys) {
     return;
   }
   installObjectContextMenuFilter(content_widget_);
-  setWidget(content_widget_);
+  // ForceNoScrollArea: object widgets (Scene3DDockWidget, Media2DDockWidget,
+  // …) manage their own viewport — wrapping them in ADS' QScrollArea adds a
+  // visible frame around the content. The object widget is responsible for
+  // its own sizing/scrolling if any is needed.
+  setWidget(content_widget_, ads::CDockWidget::ForceNoScrollArea);
   setName(first_item->topic_name);
+  // Multi-select drop: hand the remaining keys to the new widget so it
+  // can absorb the rest of the selection (Scene3D / future multi-topic
+  // viewers benefit; single-topic widgets refuse and we drop them
+  // silently — the user still got their first topic shown).
+  if (object_widget_ != nullptr && keys.size() > 1) {
+    offer_keys_to(object_widget_, /*start_index=*/1);
+  }
   emit undoableChange();
 }
 
@@ -332,6 +445,12 @@ void DockWidget::installObjectContextMenuFilter(QWidget* root) {
     return;
   }
   root->installEventFilter(this);
+  // Enable drop-target status on the root content widget so subsequent
+  // catalog drags surface DragEnter/Drop events here (eventFilter then
+  // routes them to onCatalogItemsDropped). Children typically refuse drops
+  // and Qt walks up the parent chain to find this accepting root, so we
+  // don't need to flip every descendant — only the root.
+  root->setAcceptDrops(true);
   const auto children = root->findChildren<QWidget*>();
   for (auto* child : children) {
     child->installEventFilter(this);

@@ -41,6 +41,12 @@ class DockWidget : public ads::CDockWidget, public IDataWidget {
   IDataWidget* objectWidget();
   PlotWidget* releasePlotWidget();
   void setPlotWidget(PlotWidget* plot);
+  // Restore-path counterpart of setPlotWidget for object widgets
+  // (Scene3DDockWidget, …). The drop flow keeps installing its own object
+  // widgets via the factory; this hook lets layout restore install one
+  // it just constructed and then call xmlLoadState on it.
+  void setObjectWidget(IDataWidget* widget);
+  IDataWidget* releaseObjectWidget();
   void setPlaceholderWidget();
   DockToolbar* toolBar();
   QString name() const;

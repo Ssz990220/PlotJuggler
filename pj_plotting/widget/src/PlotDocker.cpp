@@ -91,12 +91,27 @@ QDomElement saveChildNodesState(QDomDocument& doc, QWidget* widget) {
   QDomElement area_element = doc.createElement(QStringLiteral("DockArea"));
   for (int index = 0; index < dock_area->dockWidgetsCount(); ++index) {
     auto* dock_widget = dynamic_cast<DockWidget*>(dock_area->dockWidget(index));
-    if (dock_widget == nullptr || dock_widget->plotWidget() == nullptr) {
+    if (dock_widget == nullptr) {
+      continue;
+    }
+    // Plot widgets emit <plot>; object widgets (Scene3DDockWidget, …)
+    // emit whatever their xmlSaveState returns (e.g. <scene3d>). A null
+    // QDomElement from an object widget means "I don't persist state yet",
+    // so we skip it honestly rather than writing an empty stub.
+    QDomElement payload;
+    if (auto* plot = dock_widget->plotWidget()) {
+      payload = plot->xmlSaveState(doc);
+    } else if (auto* obj = dock_widget->objectWidget()) {
+      payload = obj->xmlSaveState(doc);
+      if (payload.isNull()) {
+        continue;
+      }
+    } else {
       continue;
     }
     area_element.setAttribute(QStringLiteral("id"), dock_widget->stateId());
     area_element.setAttribute(QStringLiteral("name"), dock_widget->name());
-    area_element.appendChild(dock_widget->plotWidget()->xmlSaveState(doc));
+    area_element.appendChild(payload);
   }
   return area_element;
 }
@@ -147,14 +162,39 @@ LayoutNode parseLayoutNode(const QDomElement& element) {
     node.valid = true;
     node.area_id = element.attribute(QStringLiteral("id"));
     node.area_name = element.attribute(QStringLiteral("name"));
+    // node.plots holds the per-dock content element regardless of kind —
+    // either <plot> (PlotWidget) or <scene3d> (Scene3DDockWidget). Restore
+    // discriminates via tagName().
     for (QDomElement plot = element.firstChildElement(QStringLiteral("plot")); !plot.isNull();
          plot = plot.nextSiblingElement(QStringLiteral("plot"))) {
       node.plots.push_back(plot);
+    }
+    for (QDomElement scene = element.firstChildElement(QStringLiteral("scene3d")); !scene.isNull();
+         scene = scene.nextSiblingElement(QStringLiteral("scene3d"))) {
+      node.plots.push_back(scene);
     }
     return node;
   }
 
   return node;
+}
+
+// First leaf-area dock element reachable from `node`, descending into the
+// first child of each splitter. Used to decide between plot-pool and
+// empty-object-widget construction at the top of the restore tree.
+QDomElement firstLeafElement(const LayoutNode& node) {
+  const LayoutNode* cur = &node;
+  while (cur->type == LayoutNode::Type::Splitter && !cur->children.isEmpty()) {
+    cur = &cur->children.front();
+  }
+  if (cur->type == LayoutNode::Type::Area && !cur->plots.isEmpty()) {
+    return cur->plots.front();
+  }
+  return {};
+}
+
+bool isScene3DTag(const QDomElement& element) {
+  return !element.isNull() && element.tagName() == QStringLiteral("scene3d");
 }
 
 class RestorePlotPool {
@@ -264,7 +304,9 @@ void applySplitterSizes(const LayoutNode& node, const QVector<DockWidget*>& widg
   splitter->setSizes(sizes);
 }
 
-void restoreNode(const LayoutNode& node, DockWidget* widget, RestorePlotPool& pool) {
+void restoreNode(
+    const LayoutNode& node, DockWidget* widget, RestorePlotPool& pool,
+    const PlotDocker::EmptyObjectWidgetFactory& empty_factory) {
   if (widget == nullptr) {
     return;
   }
@@ -273,14 +315,27 @@ void restoreNode(const LayoutNode& node, DockWidget* widget, RestorePlotPool& po
     widget->setStateId(node.area_id);
     widget->setName(node.area_name.isEmpty() ? QStringLiteral("...") : node.area_name);
 
+    const QDomElement dock_element = node.plots.isEmpty() ? QDomElement{} : node.plots.front();
+
+    if (isScene3DTag(dock_element) && empty_factory) {
+      // Object-widget path: build an empty Scene3D dock via the factory
+      // registered by MainWindow, then ask it to load its own XML payload.
+      IDataWidget* obj = empty_factory(dock_element.tagName(), widget);
+      if (obj != nullptr) {
+        widget->setObjectWidget(obj);
+        obj->xmlLoadState(dock_element);
+      }
+      return;
+    }
+
+    // Plot path
     PlotWidget* plot = widget->plotWidget();
     if (plot == nullptr) {
       plot = pool.takeForArea(node);
       widget->setPlotWidget(plot);
     }
-    const QDomElement plot_element = node.plots.isEmpty() ? QDomElement{} : node.plots.front();
-    if (!plot_element.isNull()) {
-      plot->xmlLoadState(plot_element);
+    if (!dock_element.isNull()) {
+      plot->xmlLoadState(dock_element);
     } else {
       plot->removeAllCurves();
     }
@@ -295,9 +350,17 @@ void restoreNode(const LayoutNode& node, DockWidget* widget, RestorePlotPool& po
   widgets.push_back(widget);
   DockWidget* split_anchor = widget;
   for (qsizetype index = 1; index < node.children.size(); ++index) {
-    PlotWidget* child_plot = pool.takeFirstForNode(node.children.at(index));
-    split_anchor = node.orientation == Qt::Horizontal ? split_anchor->splitHorizontal(child_plot)
-                                                      : split_anchor->splitVertical(child_plot);
+    const LayoutNode& child = node.children.at(index);
+    const bool child_is_scene3d = isScene3DTag(firstLeafElement(child));
+    if (child_is_scene3d) {
+      // No plot needed — the leaf will install an object widget itself.
+      split_anchor =
+          node.orientation == Qt::Horizontal ? split_anchor->splitHorizontal() : split_anchor->splitVertical();
+    } else {
+      PlotWidget* child_plot = pool.takeFirstForNode(child);
+      split_anchor = node.orientation == Qt::Horizontal ? split_anchor->splitHorizontal(child_plot)
+                                                        : split_anchor->splitVertical(child_plot);
+    }
     if (split_anchor == nullptr) {
       return;
     }
@@ -306,7 +369,7 @@ void restoreNode(const LayoutNode& node, DockWidget* widget, RestorePlotPool& po
   applySplitterSizes(node, widgets);
 
   for (qsizetype index = 0; index < node.children.size() && index < widgets.size(); ++index) {
-    restoreNode(node.children.at(index), widgets.at(index), pool);
+    restoreNode(node.children.at(index), widgets.at(index), pool, empty_factory);
   }
 }
 
@@ -378,6 +441,10 @@ void PlotDocker::setObjectWidgetFactory(ObjectWidgetFactory factory) {
       dock->setObjectWidgetFactory(object_widget_factory_);
     }
   }
+}
+
+void PlotDocker::setEmptyObjectWidgetFactory(EmptyObjectWidgetFactory factory) {
+  empty_object_widget_factory_ = std::move(factory);
 }
 
 QString PlotDocker::stateId() const {
@@ -480,9 +547,18 @@ bool PlotDocker::xmlLoadState(const QDomElement& tab_element) {
   }
 
   const LayoutNode& root_node = container_nodes.front();
-  PlotWidget* root_plot = pool.takeFirstForNode(root_node);
-  DockWidget* root_widget = addDockWithPlot(root_plot, ads::TopDockWidgetArea);
-  restoreNode(root_node, root_widget, pool);
+  // Decide top-level dock kind by peeking the first leaf's content tag.
+  // A <scene3d> root needs a placeholder DockWidget (no plot), into which
+  // restoreNode then installs the empty Scene3D dock via the factory.
+  const bool root_is_scene3d = isScene3DTag(firstLeafElement(root_node));
+  DockWidget* root_widget = nullptr;
+  if (root_is_scene3d) {
+    root_widget = addDockWithPlot(nullptr, ads::TopDockWidgetArea);
+  } else {
+    PlotWidget* root_plot = pool.takeFirstForNode(root_node);
+    root_widget = addDockWithPlot(root_plot, ads::TopDockWidgetArea);
+  }
+  restoreNode(root_node, root_widget, pool, empty_object_widget_factory_);
   pool.deleteUnused();
 
   restoring_state_ = false;

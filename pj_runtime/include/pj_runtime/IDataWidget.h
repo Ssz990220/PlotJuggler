@@ -1,5 +1,12 @@
 #pragma once
 
+#include <QDomDocument>
+#include <QDomElement>
+#include <QString>
+
+#include "pj_base/builtin/builtin_object.hpp"
+#include "pj_datastore/object_store.hpp"
+
 class QWidget;
 
 namespace PJ {
@@ -13,6 +20,28 @@ class IDataWidget {
   virtual QWidget* widget() = 0;
 
   virtual void onTrackerTime(double time) = 0;
+
+  // Optional hook: a host (DockWidget) may offer a freshly-dropped object
+  // topic to an existing widget that wants to consume it instead of being
+  // replaced. Default = refuse, which preserves the historical replace-on-drop
+  // behavior for plot and 2D widgets. Multi-topic 3D widgets override this to
+  // accept compatible types in place. Return true if the topic was accepted.
+  virtual bool tryAcceptObjectTopic(
+      ObjectTopicId /*topic_id*/, sdk::BuiltinObjectType /*object_type*/, const QString& /*title*/) {
+    return false;
+  }
+
+  // Optional XML persistence. Default returns a null QDomElement, signalling
+  // "this widget doesn't persist state yet" — the dispatcher (PlotDocker)
+  // checks `isNull()` and skips honestly rather than writing an empty stub.
+  // Widgets that own state override these to produce a single self-contained
+  // element (e.g. Scene3DDockWidget returns `<scene3d>`).
+  virtual QDomElement xmlSaveState(QDomDocument& /*doc*/) const {
+    return {};
+  }
+  virtual bool xmlLoadState(const QDomElement& /*element*/) {
+    return true;
+  }
 };
 
 }  // namespace PJ
