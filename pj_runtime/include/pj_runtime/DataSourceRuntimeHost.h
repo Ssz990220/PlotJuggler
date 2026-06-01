@@ -157,10 +157,7 @@ class DataSourceRuntimeHost {
   static bool cbEnsureParserBinding(
       void* ctx, const PJ_parser_binding_request_t* request, PJ_parser_binding_handle_t* out,
       PJ_error_t* out_error) noexcept;
-  static bool cbPushRawMessage(
-      void* ctx, PJ_parser_binding_handle_t handle, int64_t timestamp_ns, PJ_bytes_view_t payload,
-      PJ_error_t* out_error) noexcept;
-  static bool cbPushMessageV2(
+  static bool cbPushMessage(
       void* ctx, PJ_parser_binding_handle_t handle, int64_t timestamp_ns, PJ_message_data_fetcher_t fetch_message_data,
       PJ_error_t* out_error) noexcept;
   static int cbShowMessageBox(

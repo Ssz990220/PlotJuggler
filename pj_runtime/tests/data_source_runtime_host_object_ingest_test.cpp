@@ -89,7 +89,7 @@ class DataSourceRuntimeHostObjectIngestTest : public ::testing::Test {
   PJ::ServiceRegistryBuilder registry_builder_;
 };
 
-TEST_F(DataSourceRuntimeHostObjectIngestTest, PushMessageV2EagerCommitsScalarsAndStoresOwnedObjectBytes) {
+TEST_F(DataSourceRuntimeHostObjectIngestTest, PushMessageEagerCommitsScalarsAndStoresOwnedObjectBytes) {
   host_->policyResolver().setDefault(PJ::sdk::ObjectIngestPolicy::kEager);
 
   auto binding_or = bindTopic("/camera/image", "mock/image");
@@ -126,7 +126,7 @@ TEST_F(DataSourceRuntimeHostObjectIngestTest, BindSchemaRegisteredObjectTypeCrea
   EXPECT_EQ(object_store_.descriptor(*object_topic).metadata_json, R"({"builtin_object_type":"kImage"})");
 }
 
-TEST_F(DataSourceRuntimeHostObjectIngestTest, PushMessageV2LazyObjectsEagerScalarsCommitsScalarsAndDefersObjectBytes) {
+TEST_F(DataSourceRuntimeHostObjectIngestTest, PushMessageLazyObjectsEagerScalarsCommitsScalarsAndDefersObjectBytes) {
   host_->policyResolver().setDefault(PJ::sdk::ObjectIngestPolicy::kLazyObjectsEagerScalars);
 
   auto binding_or = bindTopic("/camera/image", "mock/image");
@@ -153,7 +153,7 @@ TEST_F(DataSourceRuntimeHostObjectIngestTest, PushMessageV2LazyObjectsEagerScala
   EXPECT_EQ(fetch_calls->load(), 1);
 }
 
-TEST_F(DataSourceRuntimeHostObjectIngestTest, PushMessageV2PureLazyDefersFetchAndDoesNotCommitScalars) {
+TEST_F(DataSourceRuntimeHostObjectIngestTest, PushMessagePureLazyDefersFetchAndDoesNotCommitScalars) {
   host_->policyResolver().setDefault(PJ::sdk::ObjectIngestPolicy::kPureLazy);
 
   auto binding_or = bindTopic("/camera/image", "mock/image");
@@ -177,7 +177,7 @@ TEST_F(DataSourceRuntimeHostObjectIngestTest, PushMessageV2PureLazyDefersFetchAn
   EXPECT_EQ(fetch_calls->load(), 1);
 }
 
-TEST_F(DataSourceRuntimeHostObjectIngestTest, PushMessageV2KeepsScalarOnlyTopicsEagerUnderLazyPolicy) {
+TEST_F(DataSourceRuntimeHostObjectIngestTest, PushMessageKeepsScalarOnlyTopicsEagerUnderLazyPolicy) {
   host_->policyResolver().setForTopic("/scalar/topic", PJ::sdk::ObjectIngestPolicy::kPureLazy);
 
   auto binding_or = bindTopic("/scalar/topic", "mock/scalar");

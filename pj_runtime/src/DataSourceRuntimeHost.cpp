@@ -201,10 +201,9 @@ const PJ_data_source_runtime_host_vtable_t DataSourceRuntimeHost::kVtable = {
     .notify_state = &DataSourceRuntimeHost::cbNotifyState,
     .request_stop = &DataSourceRuntimeHost::cbRequestStop,
     .ensure_parser_binding = &DataSourceRuntimeHost::cbEnsureParserBinding,
-    .push_raw_message = &DataSourceRuntimeHost::cbPushRawMessage,
     .show_message_box = &DataSourceRuntimeHost::cbShowMessageBox,
     .list_available_encodings = &DataSourceRuntimeHost::cbListAvailableEncodings,
-    .push_message_v2 = &DataSourceRuntimeHost::cbPushMessageV2,
+    .push_message = &DataSourceRuntimeHost::cbPushMessage,
 };
 
 // ---------------------------------------------------------------------------
@@ -545,36 +544,7 @@ bool DataSourceRuntimeHost::cbEnsureParserBinding(
   }
 }
 
-bool DataSourceRuntimeHost::cbPushRawMessage(
-    void* ctx, PJ_parser_binding_handle_t handle, int64_t timestamp_ns, PJ_bytes_view_t payload,
-    PJ_error_t* out_error) noexcept {
-  auto* self = static_cast<DataSourceRuntimeHost*>(ctx);
-  try {
-    auto it = self->parser_bindings_.find(handle.id);
-    if (it == self->parser_bindings_.end()) {
-      return self->fail(out_error, "invalid parser binding handle");
-    }
-    if (auto status = it->second.parser->parse(timestamp_ns, Span<const uint8_t>(payload.data, payload.size));
-        !status) {
-      return self->fail(out_error, status.error().c_str());
-    }
-    if (it->second.object_topic_id.has_value()) {
-      std::vector<uint8_t> owned;
-      if (payload.size > 0) {
-        owned.assign(payload.data, payload.data + payload.size);
-      }
-      if (auto status = self->object_store_.pushOwned(*it->second.object_topic_id, timestamp_ns, std::move(owned));
-          !status) {
-        return self->fail(out_error, ("ObjectStore.pushOwned failed: " + status.error()).c_str());
-      }
-    }
-    return true;
-  } catch (...) {
-    return self->fail(out_error, "exception while pushing raw message");
-  }
-}
-
-bool DataSourceRuntimeHost::cbPushMessageV2(
+bool DataSourceRuntimeHost::cbPushMessage(
     void* ctx, PJ_parser_binding_handle_t handle, int64_t timestamp_ns, PJ_message_data_fetcher_t fetch_message_data,
     PJ_error_t* out_error) noexcept {
   auto* self = static_cast<DataSourceRuntimeHost*>(ctx);
