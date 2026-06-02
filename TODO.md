@@ -11,11 +11,11 @@ You are picking up a multi-milestone implementation task with cleared context. R
 | 1 | `CLAUDE.md` (this repo) | Project rules: build, conventions, porting policy, commit policy. Top-of-stack. |
 | 2 | `plan_plotwidget_port.html` (this repo) | THE master plan. Open in any browser or read as HTML. Especially: §3 (file map), §4 (class hierarchy), §5 (DatastoreCurveAdapter — already implemented but read it for the design contract), §6–§9 (drag-drop, color, sync zoom, tracker), §10 (services), §12 (milestones), §13 (verification per milestone), §15 (engineering conventions). |
 | 3 | `PJ4_PLAN.md` (this repo) | Strategic architecture: §0 (revisions, sibling-widget rule), §5.3 (wholesale-lift strategy), §8 (plotting subsystem). |
-| 4 | `plotjuggler_core/CLAUDE.md` | Substrate library rules. Naming (`CamelCase` classes, `camelBack` functions, `lower_case` locals, `lower_case_` members, `kCamelCase` constants), error handling (`PJ::Expected<T>` / `PJ::Status`), containers (`tsl::robin_map`), invariants (`PJ_ASSERT`). |
-| 5 | `plotjuggler_core/docs/cpp_design_recommendations.md` | Style guide referenced from CLAUDE.md. |
-| 6 | `plotjuggler_core/pj_datastore/docs/REQUIREMENTS.md` and `ARCHITECTURE.md` | Datastore data model, ingest contract, encoding, retention, query semantics. |
-| 7 | `plotjuggler_core/pj_datastore/include/pj_datastore/{engine,reader,query,chunk,topic_storage,plugin_data_host}.hpp` | The actual public APIs you will call from the adapter and any new code. |
-| 8 | `plotjuggler_core/pj_plugins/docs/data-source-guide.md` | DataSource plugin SDK. Helpful for understanding the `FileLoader` integration; plot widgets don't talk to plugins directly. |
+| 4 | `plotjuggler_sdk/CLAUDE.md` | Substrate library rules. Naming (`CamelCase` classes, `camelBack` functions, `lower_case` locals, `lower_case_` members, `kCamelCase` constants), error handling (`PJ::Expected<T>` / `PJ::Status`), containers (`tsl::robin_map`), invariants (`PJ_ASSERT`). |
+| 5 | `plotjuggler_sdk/docs/cpp_design_recommendations.md` | Style guide referenced from CLAUDE.md. |
+| 6 | `pj_datastore/docs/REQUIREMENTS.md` and `ARCHITECTURE.md` | Datastore data model, ingest contract, encoding, retention, query semantics. (`pj_datastore` is now a top-level PJ4 module, moved out of the submodule.) |
+| 7 | `pj_datastore/include/pj_datastore/{engine,reader,query,chunk,topic_storage,plugin_data_host}.hpp` | The actual public APIs you will call from the adapter and any new code. |
+| 8 | `plotjuggler_sdk/pj_plugins/docs/data-source-guide.md` | DataSource plugin SDK. Helpful for understanding the `FileLoader` integration; plot widgets don't talk to plugins directly. |
 | 9 | `pj_marketplace/include/pj_marketplace/extension.hpp` | What `LoadedDataSource` looks like. |
 | 10 | PJ3 reference: `~/ws_plotjuggler/PlotJuggler/plotjuggler_app/{plotwidget,plotwidget_base,plot_docker,plot_docker_toolbar,tabbedplotwidget,curve_tracker,point_series_xy,curvelist_view,mainwindow}.{h,cpp}` and `~/ws_plotjuggler/PlotJuggler/plotjuggler_base/{include/PlotJuggler,src}/{plotwidget_base,plotzoomer,plotpanner,plotmagnifier,plotlegend,timeseries_qwt}.*` | Source code to PORT (verbatim with style adaptation) for M2 / M5 / M6. Read-only. |
 
@@ -68,7 +68,7 @@ You are starting on branch `development` at HEAD `d713b41`. Already committed an
 
 ## 4. Engineering conventions (mandatory)
 
-Use `plotjuggler_core/` as the reference template for design patterns and types. Read `plotjuggler_core/docs/cpp_design_recommendations.md` if a pattern isn't obvious.
+Use `plotjuggler_sdk/` as the reference template for design patterns and types. Read `plotjuggler_sdk/docs/cpp_design_recommendations.md` if a pattern isn't obvious.
 
 | Concern | Use this | Not this |
 |---|---|---|
@@ -99,7 +99,7 @@ Build / test:
 
 ## 5. Hard rules
 
-1. **Do NOT modify `plotjuggler_core/`**. If you find a missing API while building, STOP and ask. Do not add anything to the submodule.
+1. **Do NOT modify `plotjuggler_sdk/`**. If you find a missing API while building, STOP and ask. Do not add anything to the submodule.
 2. **Do NOT add new `pj_runtime` services** (no `WidgetRegistry`, `TransformRegistry`, `WorkspaceManager`, `UndoManager`, `ToolboxManager`, `NotificationCenter`). Out of scope for v1.
 3. **`pj_runtime` may NOT link `Qt6::Widgets`** — only `Qt6::Core`/`Network`. Reusable Qt helpers that need `Gui`/`Svg` live in `pj_widgets`; plot widgets live in `pj_plotting`, which CAN link Qt6::Widgets and Qwt.
 4. **Do NOT add a downsampler / decimator in the adapter or anywhere else.** Qwt owns paint-time filtering. The adapter is a thin pull-through.
@@ -214,7 +214,7 @@ Each milestone ends in a buildable, runnable, demo-able state. Stage on a featur
 
 If you encounter any of these, **STOP and surface the issue rather than guessing**:
 
-- A `plotjuggler_core/` API method you need does not exist (e.g. you find yourself wanting `removeDataset`, per-column min/max stats, a `dataCleared` signal). Hard rule 1: ask before extending the submodule.
+- A `plotjuggler_sdk/` API method you need does not exist (e.g. you find yourself wanting `removeDataset`, per-column min/max stats, a `dataCleared` signal). Hard rule 1: ask before extending the submodule.
 - A milestone deliverable conflicts with the plan or with an earlier decision in §3.
 - A PJ3 file you intended to port has a behavior whose PJ4 equivalent isn't obvious (e.g. depends on `TransformsMap` for math curves, depends on `PlotBackground` for colored zones — both are deferred per §3).
 - A milestone's verification step can't run (e.g. M3 verification needs the marketplace CSV plugin installed; if it isn't installed, surface the gap rather than half-testing).
@@ -229,7 +229,7 @@ For consistent style, reuse these as templates:
 
 - **Pull-through `QwtSeriesData` adapter**: `pj_plotting/core/src/DatastoreCurveAdapter.cpp` (already in tree). Same general shape for `PointSeriesXY`.
 - **Qt-side service wrapping a Qt-optional substrate type**: `pj_runtime/src/SessionManager.cpp` (wraps `PJ::DataEngine`, emits `samplesIngested`).
-- **PIMPL with `std::deque` for stable references**: `plotjuggler_core/pj_datastore/include/pj_datastore/topic_storage.hpp`.
+- **PIMPL with `std::deque` for stable references**: `pj_datastore/include/pj_datastore/topic_storage.hpp`.
 - **C-ABI plugin host adapter**: `pj_app/src/FileLoader.cpp` (RuntimeHost vtable + DatastoreSourceWriteHost binding).
 - **Conventional-commit messages with design rationale**: `git log` on `development` from `441ea07` onwards.
 

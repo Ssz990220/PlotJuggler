@@ -25,7 +25,7 @@ pj_plotting_widget  ──►  pj_plotting_core  ──►  pj_datastore + pj_ba
 This module is the canonical example of the **wholesale lift** strategy:
 
 1. **Lift PJ3 files close to verbatim.** Source: `~/ws_plotjuggler/PlotJuggler/plotjuggler_app/`. Class names map directly: PJ3 `PlotWidget` → PJ4 `PlotWidget`, etc.
-2. **Apply plotjuggler_core style** on the way in: `PascalCase.{h,cpp}`, `PJ::` namespace, `trailing_underscore_` members, Google C++ / 2-space / 120-col.
+2. **Apply plotjuggler_sdk style** on the way in: `PascalCase.{h,cpp}`, `PJ::` namespace, `trailing_underscore_` members, Google C++ / 2-space / 120-col.
 3. **Preserve `.ui` `objectName` values verbatim** so stylesheets and muscle memory keep working.
 4. **Rebind data reads only.** Replace PJ3's `PlotDataMapRef` / `TransformsMap` consumption with `pj_plotting::DatastoreCurveAdapter` over `pj_datastore::DataReader`. This is the only systematic rewrite — do not rewrite plotting logic from scratch.
 5. **Do not rebuild from scratch.** If a class reads cleanly in PJ3, port it.

@@ -4,7 +4,7 @@
 
 This document is the **design catalogue** for canonical scene types.
 Canonical types are realised as C++ structs under
-`plotjuggler_core/pj_base/include/pj_base/builtin/` (re-exported as
+`plotjuggler_sdk/pj_base/include/pj_base/builtin/` (re-exported as
 `PJ::sdk::` types through `pj_plugin_sdk`). Not every type listed below
 has shipped yet:
 
@@ -554,7 +554,7 @@ Overlays rendered in image pixel coordinates. These reference an image topic and
 on top of it. They are not part of the 3D scene graph.
 
 > **Authoritative wire-format spec and type catalog** live in
-> `plotjuggler_core/pj_base/include/pj_base/builtin/`. The canonical
+> `plotjuggler_sdk/pj_base/include/pj_base/builtin/`. The canonical
 > `ImageAnnotations` schema and the `foxglove.ImageAnnotations` Protobuf wire
 > codec (writer + reader) are part of `pj_base/builtin`; pj_scene2D exposes
 > renderer-local aliases through `pj_scene2d_core/scene_frame.h`. Plugin
@@ -594,7 +594,7 @@ no LRU eviction.
 
 For the schema field tables (`ImageAnnotations`, `PointsAnnotation`,
 `CircleAnnotation`, `TextAnnotation`), see
-`plotjuggler_core/pj_base/include/pj_base/builtin/ImageAnnotations.hpp`.
+`plotjuggler_sdk/pj_base/include/pj_base/builtin/ImageAnnotations.hpp`.
 
 ---
 

@@ -56,7 +56,7 @@ target_link_libraries(pj_dialog_engine_qt
 if(PJ_BUILD_TESTS)
     add_executable(dialog_engine_test
         tests/dialog_engine_test.cpp
-        ${CMAKE_SOURCE_DIR}/plotjuggler_core/pj_plugins/dialog_protocol/examples/mock_dialog.cpp
+        ${CMAKE_SOURCE_DIR}/plotjuggler_sdk/pj_plugins/dialog_protocol/examples/mock_dialog.cpp
     )
     target_compile_options(dialog_engine_test PRIVATE ${PJ_WARNING_FLAGS})
     target_link_libraries(dialog_engine_test

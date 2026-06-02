@@ -4,7 +4,7 @@
 
 Build **PlotJuggler 4** from scratch as a modern desktop application that reaches parity-plus with PlotJuggler 3.x.
 
-This is a greenfield app repo. It is not a refactor of PJ3. Code is cherry-picked from PJ3 and rebuilt on top of the `plotjuggler_core` foundation.
+This is a greenfield app repo. It is not a refactor of PJ3. Code is cherry-picked from PJ3 and rebuilt on top of the `plotjuggler_sdk` foundation.
 
 ## Architecture
 
@@ -15,7 +15,8 @@ Top-level layout (monorepo, per plan §0 and §5):
 ```
 PJ4/
 ├── 3rdparty/                # vendored CMake dependencies only
-├── plotjuggler_core/        # git submodule — Level 0 foundation (pj_base / pj_datastore / pj_plugins)
+├── plotjuggler_sdk/         # git submodule — Level 0 plugin SDK (pj_base / pj_plugins)
+├── pj_datastore/            # Level 0 columnar store + ObjectStore + DerivedEngine (moved out of the submodule)
 ├── pj_scene2D/               # 2D scene module: core logic, Qt widgets, demos, tests
 ├── pj_marketplace/          # extension install/manage
 ├── pj_dialog_host/          # Qt host for plugin-provided dialogs
@@ -35,7 +36,8 @@ The widget families (`pj_plotting`, `pj_scene2D/widgets` via the `pj_scene2d_wid
 
 When adding files, use the owning module rather than creating new top-level folders. If the requested location does not match these boundaries, ask before proceeding and suggest the closest fit.
 
-- `plotjuggler_core/`: read-only submodule foundation (`pj_base`, `pj_datastore`, `pj_plugins`). Canonical object schemas (`Image`, `DepthImage`, `ImageAnnotations`, `PointCloud`, `FrameTransforms`) and their codecs live under `pj_base/builtin/`. Change `plotjuggler_core` only when explicitly working in that submodule.
+- `plotjuggler_sdk/`: read-only submodule — the plugin **SDK** (`pj_base`, `pj_plugins`). Canonical object schemas (`Image`, `DepthImage`, `ImageAnnotations`, `PointCloud`, `FrameTransforms`) and their codecs live under `pj_base/builtin/`. Change `plotjuggler_sdk` only when explicitly working in that submodule.
+- `pj_datastore/`: Level 0 columnar storage engine — `DataEngine` + `ObjectStore` + `DerivedEngine` + the host-side C-ABI write bridges. App-internal (plugins never link it; they reach storage through the `pj_base` C ABI). Was previously inside the `plotjuggler_sdk` submodule. Pure C++20, no Qt; depends only on `pj_base`. Logic in `src/`, public headers in `include/pj_datastore/`, tests in `tests/`, docs in `docs/`. Licensed MPL-2.0.
 - `pj_runtime/`: app runtime services and contracts: session/data lifecycle, catalog, playback, extension catalog, future workspace/transform/toolbox services. No concrete widgets and no `Qt6::Widgets` link.
 - `pj_app/`: executable shell only: `MainWindow`, menus/toolbars/status bar, app dialogs, and wiring between runtime services and concrete widgets. Do not put reusable controls or business logic here.
 - `pj_widgets/`: reusable Qt widgets and UI helpers that could be used by another Qt app. Depends only on Qt and the C++ standard library; no dependencies on `pj_runtime`, `pj_app`, or other PJ modules.
@@ -76,7 +78,8 @@ Cross-cutting docs (porting strategy, glossary, ADRs) live in top-level `docs/`.
 | `pj_scene2D` | [pj_scene2D/CLAUDE.md](./pj_scene2D/CLAUDE.md) | [docs/](./pj_scene2D/docs/) — REQUIREMENTS, ARCHITECTURE, TECHNICAL_NOTES, datatypes_2D, … |
 | `pj_marketplace` | [pj_marketplace/README.md](./pj_marketplace/README.md) | [docs/](./pj_marketplace/docs/) — REQUIREMENTS, ARCHITECTURE, USER_MANUAL, marketplace-spec |
 | `pj_scene3D` | — (WIP, not yet tracked) | WIP design spec lives at `docs/superpowers/specs/2026-05-15-pj-scene3d-design.md` (also untracked); will migrate into `pj_scene3D/docs/` when the module stabilizes |
-| `plotjuggler_core/` (submodule) | [plotjuggler_core/CLAUDE.md](./plotjuggler_core/CLAUDE.md) | submodule owns its own `docs/` tree |
+| `pj_datastore` | [pj_datastore/CLAUDE.md](./pj_datastore/CLAUDE.md) | [docs/](./pj_datastore/docs/) — REQUIREMENTS, ARCHITECTURE, USER_GUIDE, OBJECT_STORE_DESIGN |
+| `plotjuggler_sdk/` (submodule) | [plotjuggler_sdk/CLAUDE.md](./plotjuggler_sdk/CLAUDE.md) | submodule owns its own `docs/` tree |
 
 ### Freshness discipline
 
@@ -84,21 +87,33 @@ Before any commit that changes behavior, public APIs, ABI structs, module owners
 
 ## Key sources
 
-### `plotjuggler_core/` (submodule)
+### `plotjuggler_sdk/` (submodule) — the plugin SDK
 
-Foundation libraries live in the submodule at `./plotjuggler_core/`:
+The SDK libraries live in the submodule at `./plotjuggler_sdk/`:
 
 - `pj_base` — vocabulary types + canonical object schemas (`pj_base/builtin/Image.hpp`, `DepthImage.hpp`, `ImageAnnotations.hpp`, `PointCloud.hpp`, `FrameTransforms.hpp`) and their codecs. SDK boundary for plugin authors producing or consuming canonical objects.
-- `pj_datastore` — columnar store + `ObjectStore` + `DerivedEngine`
 - `pj_plugins` — ABI + runtime for extensions
 
-These are consumed as-is. Changes to `plotjuggler_core` happen in that repo, not here.
+These are consumed as-is. Changes to `plotjuggler_sdk` happen in that repo, not here.
 
 Initialize / update the submodule with:
 
 ```
 git submodule update --init --recursive
 ```
+
+### `pj_datastore/` (top-level module — moved out of the submodule)
+
+The columnar storage engine is an app-internal Level 0 module, not part of the plugin SDK
+(plugins reach storage only through the `pj_base` C ABI). It builds from source via
+`add_subdirectory(pj_datastore)` in the root `CMakeLists.txt`, immediately after the submodule so
+the `pj_base` / `pj_internal_fmt` targets it links already exist.
+
+- `pj_datastore` — columnar store (`DataEngine`) + `ObjectStore` + `DerivedEngine` + the host-side
+  C-ABI write bridges (`plugin_data_host.hpp`). Public headers under `include/pj_datastore/`.
+- Conan deps it needs (`nanoarrow`, `tsl-robin-map`, `benchmark`) are declared in the root
+  `conanfile.txt`; its CMake also performs the nanoarrow/IPC target detection (relocated from the
+  submodule when the engine moved).
 
 ### `~/ws_plotjuggler/PlotJuggler/` (PJ3 reference — read-only)
 
@@ -198,7 +213,7 @@ Parity-plus with PJ3: file + streaming sources, 11 built-in transforms, undo/red
 ### Porting policy from PJ3
 
 - **Default: port, don't rewrite.** For every UI element, widget, or helper we need, check `~/ws_plotjuggler/PlotJuggler/` first. If PJ3 has something that works, port it. Greenfield rewrites need a real reason.
-- **Style changes are expected; widget names are not.** When porting, adapt file/class names and member conventions to plotjuggler_core style (`PascalCase.{h,cpp}`, `PJ::` namespace, `trailing_underscore_` members, Google C++ / 2-space / 120-col). But **preserve the `objectName` of widgets inside `.ui` files verbatim** (e.g. `buttonLoadDatafile`, `frameFile`, `checkBoxAddPrefix`, `displayTime`, `playbackLoop`, `streamingSpinBox`) so existing layout files, stylesheet selectors, and user muscle memory keep working — unless I explicitly ask you to rename one.
+- **Style changes are expected; widget names are not.** When porting, adapt file/class names and member conventions to plotjuggler_sdk style (`PascalCase.{h,cpp}`, `PJ::` namespace, `trailing_underscore_` members, Google C++ / 2-space / 120-col). But **preserve the `objectName` of widgets inside `.ui` files verbatim** (e.g. `buttonLoadDatafile`, `frameFile`, `checkBoxAddPrefix`, `displayTime`, `playbackLoop`, `streamingSpinBox`) so existing layout files, stylesheet selectors, and user muscle memory keep working — unless I explicitly ask you to rename one.
 - **Rebind data paths.** PJ3 wiring into `PlotDataMapRef` / `TransformsMap` becomes wiring into `pj_runtime` services (`CatalogModel`, `SessionManager`, `PlaybackEngine`, `TransformRegistry`). That's the one systematic rewrite.
 - **Proactively surface improvement opportunities.** If you see a chance to improve separation of concerns, reusability, testability, or remove duplication while you're porting — flag it and **ask for approval before changing**. Don't silently refactor, and don't silently skip obvious wins. The bar is: "is there a cleaner shape that we'd regret not taking?" If yes, ask.
 - **Don't fix what isn't broken.** Code that already reads cleanly and does the right thing gets ported close to verbatim (modulo style). Save the refactor energy for real problems.

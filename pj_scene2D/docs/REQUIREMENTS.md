@@ -2,7 +2,7 @@
 
 ## 1. Purpose
 
-Viewer-side module for rendering 2D data in PlotJuggler Core: images, video,
+Viewer-side module for rendering 2D data in PlotJuggler: images, video,
 image annotations, depth and segmentation overlays, and 2D scene primitives
 (markers, lines, polygons with `z = 0`). It handles on-demand decoding and
 GPU-accelerated display of media synchronized with the global timeline.
@@ -464,7 +464,7 @@ singleton model.
 |---------|-------|------|
 | `VideoDecoder` | stateful, one instance per video layer | FFmpeg wrapper with runtime HW-accel detection and guaranteed software fallback. Platform backend matrix is documented in `TECHNICAL_NOTES.md §3`. |
 | `ImageDecoder` | stateless, one instance per image layer | Dispatches to turbojpeg (JPEG), libpng (PNG), or raw pixel copy (mono8, rgb8, etc.). Multiple instances in one widget are fine (they share no state). |
-| `SceneDecoder` | stateless, one instance per scene/annotation layer | Single canonical-wire decoder (`foxglove.ImageAnnotations` Protobuf, hand-rolled, no libprotobuf). Source-format conversion (e.g. CDR `vision_msgs/Detection2DArray`) is loader-side; pj_scene2D only sees canonical bytes. Schema + canonical wire codec (writer + reader) live in `plotjuggler_core/pj_base/builtin/ImageAnnotations.hpp` + `image_annotations_codec.hpp`, re-exported through `pj_plugin_sdk`. |
+| `SceneDecoder` | stateless, one instance per scene/annotation layer | Single canonical-wire decoder (`foxglove.ImageAnnotations` Protobuf, hand-rolled, no libprotobuf). Source-format conversion (e.g. CDR `vision_msgs/Detection2DArray`) is loader-side; pj_scene2D only sees canonical bytes. Schema + canonical wire codec (writer + reader) live in `plotjuggler_sdk/pj_base/builtin/ImageAnnotations.hpp` + `image_annotations_codec.hpp`, re-exported through `pj_plugin_sdk`. |
 
 **Threading and decoder ownership**: each viewer widget owns one
 `PlaybackController`. The controller owns **one decoder instance per

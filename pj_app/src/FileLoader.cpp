@@ -392,7 +392,7 @@ bool FileLoader::loadFile(const QString& path, QWidget* dialog_parent, const Loa
     }
     ingest_session.flushAll();
     // FileSourceBase::start() calls requestStop(..., "import complete") on the
-    // normal success path (plotjuggler_core pj_base/.../sdk/data_source_patterns.hpp),
+    // normal success path (plotjuggler_sdk pj_base/.../sdk/data_source_patterns.hpp),
     // so stopRequested() can't distinguish completion from cancel — consult the
     // sticky flag. The rows already committed by flushAll() can't be rolled back
     // (ObjectStore writes are immediate and there is no removeDataset), so a

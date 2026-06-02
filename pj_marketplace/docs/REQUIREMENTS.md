@@ -155,7 +155,7 @@ elsewhere in the host application:
 
 | ID | Requirement | Metric |
 |----|-------------|--------|
-| NF-01 | C++20 | Module builds at C++20 (`CMAKE_CXX_STANDARD 20`), matching the rest of PJ4 and `plotjuggler_core` |
+| NF-01 | C++20 | Module builds at C++20 (`CMAKE_CXX_STANDARD 20`), matching the rest of PJ4 and `plotjuggler_sdk` |
 | NF-02 | Qt 6.x Widgets | LTS 6.8 target |
 | NF-03 | Cross-platform | Works on Linux, Windows, macOS |
 | NF-04 | Build system: CMake | Standard CMake project |
@@ -324,7 +324,7 @@ elsewhere in the host application:
 - Extensions are < 50MB compressed
 - Registry has < 100 extensions in foreseeable future
 - **Plugin ABI surface stays narrow.** Plugins do not link Qt — they
-  consume the C ABI declared in `plotjuggler_core/pj_plugins` and
+  consume the C ABI declared in `plotjuggler_sdk/pj_plugins` and
   expose only a small embedded manifest plus their vtable. This keeps
   cross-platform CI simple and decouples plugin builds from Qt
   version churn.

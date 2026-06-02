@@ -8,7 +8,7 @@ This section captures the architectural decisions that supersede portions of thi
 - **`pj_scripting` is its own module.** Language-agnostic engine (Lua today via sol2; Python pluggable later) decoupled from both the GUI and `pj_runtime`'s services layer. Depends only on `pj_base` + `pj_datastore`. Custom Lua transforms reach `DerivedEngine` through a thin `transform_adapter`. Reactive scripts live in a Toolbox plugin that links `pj_scripting` directly.
 - **`pj_runtime` Qt boundary is relaxed.** Previously "no Qt"; now **Qt is allowed (QObject, QTimer, QSettings, signals), but no concrete QWidget/QDialog implementation and no `Qt6::Widgets` link**. `IDataWidget` may forward-declare `QWidget` as the shell contract. Services remain headlessly testable via `QCoreApplication`. This trades a small amount of purity for much cheaper timer/settings/reactive plumbing.
 - **Plot widgets are lifted wholesale from PJ3**, not rebuilt on Qt Charts. `PlotWidgetBase`, `PlotWidget`, `PlotDocker`, `TabbedPlotWidget`, zoomers, axis-time, drag-drop, per-curve display transform UI all move into `pj_plotting/`; their data reads are rebound to `pj_datastore` via a `DatastoreCurveAdapter`. No `IPlotBackend` abstraction.
-- **Monorepo for now.** App-owned modules (`pj_scene2D`, `pj_marketplace`, `pj_dialog_host`, `pj_scripting`, `pj_runtime`, `pj_widgets`, `pj_plotting`, `pj_3d_widgets`, `pj_app`) live inside this repository. The long-term intent is still a separate `plotjuggler_app` repo with `plotjuggler_core` as a submodule; module boundaries are designed so that split is a mechanical move later.
+- **Monorepo for now.** App-owned modules (`pj_datastore`, `pj_scene2D`, `pj_marketplace`, `pj_dialog_host`, `pj_scripting`, `pj_runtime`, `pj_widgets`, `pj_plotting`, `pj_3d_widgets`, `pj_app`) live inside this repository. `pj_datastore` (the columnar storage engine) was moved out of the `plotjuggler_sdk` submodule into the app repo, because plugins reach storage only through the `pj_base` C ABI and never link the engine — so the `plotjuggler_sdk` submodule is purely the plugin **SDK** (`pj_base` + `pj_plugins`). The long-term intent is still a separate `plotjuggler_app` repo with the `plotjuggler_sdk` SDK as a submodule; module boundaries are designed so that split is a mechanical move later.
 - **v1 target is parity-plus with PJ3.** File + streaming sources, 11 built-in transforms, undo/redo, derived-series editor (incl. Lua via `pj_scripting`), reactive scripts (via Toolbox + `onTimeChanged`), multi-tab workspace, marketplace install UI, all toolboxes.
 - **Plugin families and marketplace are assumed done** and out of scope for this plan. Toolbox SDK gaps (embedded charts, drag-drop, code editor, `onTimeChanged`, ScatterXY outputs) are being addressed in parallel and are assumed solved.
 - **The old prototype app is removed.** It was a throwaway prototype; current PJ4 modules are the implementation baseline.
@@ -20,11 +20,11 @@ Where the sections below refer to `pj_app_shell_qt`, read that as `pj_app`.
 
 This document defines the implementation plan for building a full PlotJuggler 4.x desktop application with feature coverage comparable to PlotJuggler 3.x, while modernizing the internal architecture.
 
-The goal is not to recreate the 3.x code structure. The goal is to recreate the 3.x product capability set on top of the new `plotjuggler_core` foundations:
+The goal is not to recreate the 3.x code structure. The goal is to recreate the 3.x product capability set on top of the foundation libraries:
 
-- `pj_base`
-- `pj_datastore`
-- `pj_plugins`
+- `pj_base` (in the `plotjuggler_sdk` SDK submodule)
+- `pj_plugins` (in the `plotjuggler_sdk` SDK submodule)
+- `pj_datastore` (top-level app module; moved out of the submodule)
 - marketplace-delivered extensions
 
 The main design objective is a strict separation between:
@@ -131,9 +131,9 @@ The final app should be built in three concrete levels:
 
 These already exist and remain the substrate:
 
-- `pj_base`
-- `pj_datastore` (including `ObjectStore` + `DerivedEngine`)
-- `pj_plugins`
+- `pj_base` (in the `plotjuggler_sdk` SDK submodule)
+- `pj_plugins` (in the `plotjuggler_sdk` SDK submodule)
+- `pj_datastore` (top-level app module — `ObjectStore` + `DerivedEngine`; moved out of the submodule, since plugins reach it only via the `pj_base` C ABI)
 - `pj_scene2D` (2D/video visualization)
 - `pj_marketplace`
 - `pj_scripting` (new — language-agnostic engine, Lua today)

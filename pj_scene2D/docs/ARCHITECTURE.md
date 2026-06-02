@@ -28,7 +28,7 @@ pj_scene2d_widgets  ──►  pj_scene2d_core  ──►  pj_base
      └──►  pj_scene2d_core
 ```
 
-Canonical object schemas live in `plotjuggler_core/pj_base/builtin/` and
+Canonical object schemas live in `plotjuggler_sdk/pj_base/builtin/` and
 are made available to pj_scene2D via `pj_plugin_sdk` (an INTERFACE library
 that re-exports the canonical SDK headers). `ImageAnnotations` owns the
 canonical wire-format codec (writer + reader). Both pj_scene2D (consumer
@@ -427,8 +427,8 @@ There is exactly **one** decoder kind - pj_scene2D has no schema-name dispatch
 beyond the factory call.
 
 Wire format spec, type catalog, and encoding rules live in
-`plotjuggler_core/pj_base/include/pj_base/builtin/ImageAnnotations.hpp` and
-`plotjuggler_core/pj_base/include/pj_base/builtin/image_annotations_codec.hpp`.
+`plotjuggler_sdk/pj_base/include/pj_base/builtin/ImageAnnotations.hpp` and
+`plotjuggler_sdk/pj_base/include/pj_base/builtin/image_annotations_codec.hpp`.
 
 **pj_scene2D's usage policy:** stateless decoder, one instance per
 scene/annotation layer for the layer's lifetime. `ScenePipelineSource`
@@ -1104,7 +1104,7 @@ What to take from each reference prototype and what to leave behind.
 | TimelineBridge | **DO NOT PORT** | — | Replaced by main-thread-driven `setTimestamp()` model |
 | Timestamp µs vs ns dichotomy | **FIX** | — | pj_scene2D uses ns everywhere. The parallel effort's video engine used µs internally. All internal timestamps must be int64_t nanoseconds |
 
-### From `plotjuggler_core/pj_scene2D/mcap_player/`
+### From the legacy `pj_scene2D/mcap_player/` sandbox (pre-rename SDK repo)
 
 | Component | Action | Notes |
 |-----------|--------|-------|

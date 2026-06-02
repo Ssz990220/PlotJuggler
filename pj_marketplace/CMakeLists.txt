@@ -2,7 +2,7 @@
 # Standalone build support
 #
 # When this file is the root of the build (standalone), we set up the project
-# and find all dependencies here. When used as a subdirectory of plotjuggler_core,
+# and find all dependencies here. When used as a subdirectory of plotjuggler_sdk,
 # the parent already provides CXX standard, warning flags, GTest, and testing.
 # ---------------------------------------------------------------------------
 
@@ -87,20 +87,20 @@ target_link_libraries(pj_marketplace_ui PUBLIC
 )
 
 # pj_base provides expected.hpp (header-only for our usage).
-# When built as part of plotjuggler_core the targets already exist;
+# When built as part of plotjuggler_sdk the targets already exist;
 # in standalone mode we synthesize a pj_plugin_catalog target so downstream
 # consumers always link a single, non-duplicated symbol set regardless of build mode.
 if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
   find_package(nlohmann_json REQUIRED)
-  set(PJ_CORE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../plotjuggler_core")
+  set(PJ_SDK_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../plotjuggler_sdk")
   if(NOT TARGET pj_plugin_catalog)
     add_library(pj_plugin_catalog STATIC
-      ${PJ_CORE_DIR}/pj_plugins/src/plugin_catalog.cpp
+      ${PJ_SDK_DIR}/pj_plugins/src/plugin_catalog.cpp
     )
     target_include_directories(pj_plugin_catalog PUBLIC
-      ${PJ_CORE_DIR}/pj_base/include
-      ${PJ_CORE_DIR}/pj_plugins/include
-      ${PJ_CORE_DIR}/pj_plugins/dialog_protocol/include
+      ${PJ_SDK_DIR}/pj_base/include
+      ${PJ_SDK_DIR}/pj_plugins/include
+      ${PJ_SDK_DIR}/pj_plugins/dialog_protocol/include
     )
     target_link_libraries(pj_plugin_catalog PUBLIC
       nlohmann_json::nlohmann_json

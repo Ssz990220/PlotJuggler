@@ -190,7 +190,7 @@ Time estimates are single-developer, rough. Each phase ends green on
 **Phase D — Annotations (delivered)**
 
 - ✓ Canonical annotation schemas and codecs live in
-  `plotjuggler_core/pj_base/builtin/`. pj_scene2D keeps local
+  `plotjuggler_sdk/pj_base/builtin/`. pj_scene2D keeps local
   `pj_scene2d_core` wrappers (`scene_frame.h`, `image_annotation_codec.h`)
   for its renderer-facing names.
 - ✓ `SceneDecoder` in `pj_scene2d_core` is now a single decoder kind that

@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Qt host for **plugin-provided dialogs**. Plugins (DataSource, MessageParser, Toolbox, Dialog) describe their UIs declaratively via the dialog protocol in `plotjuggler_core/pj_plugins`; this module turns those descriptions into actual `QWidget` trees and drives the typed event loop back to the plugin.
+Qt host for **plugin-provided dialogs**. Plugins (DataSource, MessageParser, Toolbox, Dialog) describe their UIs declaratively via the dialog protocol in `plotjuggler_sdk/pj_plugins`; this module turns those descriptions into actual `QWidget` trees and drives the typed event loop back to the plugin.
 
 Single static-library target: `pj_dialog_engine_qt`. Links `Qt6::Widgets`, `Qt6::UiTools`, `Qt6::Charts`, `Qt6::SvgWidgets`.
 
@@ -17,7 +17,7 @@ Single static-library target: `pj_dialog_engine_qt`. Links `Qt6::Widgets`, `Qt6:
 
 - **General app dialogs** (Preferences, Diagnostics, etc.) → `pj_app`.
 - **Reusable dialog chrome and controls** (`Dialog`, `FileDialog`, `MessageBox`, scrubbers, …) → `pj_widgets`.
-- **The dialog protocol / SDK** itself → `plotjuggler_core/pj_plugins` (this module is the host, not the contract).
+- **The dialog protocol / SDK** itself → `plotjuggler_sdk/pj_plugins` (this module is the host, not the contract).
 
 ## Public surface
 
@@ -34,4 +34,4 @@ Public headers live under `include/pj_plugins/host_qt/` — the namespace mirror
 
 `tests/dialog_engine_test.cpp`. Add tests when extending the protocol coverage.
 
-`pj_dialog_host` has no `docs/` folder — the protocol itself is documented in `plotjuggler_core/pj_plugins/docs/dialog-plugin-guide.md`; this host just realizes that protocol in Qt.
+`pj_dialog_host` has no `docs/` folder — the protocol itself is documented in `plotjuggler_sdk/pj_plugins/docs/dialog-plugin-guide.md`; this host just realizes that protocol in Qt.

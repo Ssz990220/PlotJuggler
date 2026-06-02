@@ -13,9 +13,12 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 option(PJ4_BUILD_APP "Build the pj_app desktop shell" ON)
 option(PJ_ENABLE_SANITIZERS "Enable ASAN for Debug builds" OFF)
 option(PJ_ENABLE_TSAN "Enable ThreadSanitizer for Debug builds" OFF)
-# plotjuggler_core submodule options. Heavy ported plugins and the parquet
-# example stay off for the PJ4 app build.
-set(PJ_BUILD_TESTS ON CACHE BOOL "Build plotjuggler_core tests" FORCE)
+# Foundation build options. PJ_BUILD_TESTS feeds both the plotjuggler_sdk SDK
+# submodule and the pj_datastore module. The rest stay off for the PJ4 app
+# build: the SDK's ported-plugins collection, and pj_datastore's parquet
+# example (PJ_BUILD_PARQUET_IMPORT_EXAMPLE is now a pj_datastore option, pinned
+# off here before that subdirectory is added).
+set(PJ_BUILD_TESTS ON CACHE BOOL "Build foundation (SDK + pj_datastore) tests" FORCE)
 set(PJ_BUILD_PARQUET_IMPORT_EXAMPLE OFF CACHE BOOL "" FORCE)
 set(PJ_BUILD_PORTED_PLUGINS OFF CACHE BOOL "" FORCE)
 
@@ -51,10 +54,16 @@ find_package(Qt6 6.8 REQUIRED COMPONENTS Core Gui Widgets Network OpenGLWidgets 
 find_package(fmt REQUIRED)
 
 # ---------------------------------------------------------------------------
-# Foundation (Level 0): plotjuggler_core submodule
+# Foundation (Level 0): the plotjuggler_sdk SDK submodule (pj_base + pj_plugins)
+# plus pj_datastore, the columnar storage engine. pj_datastore used to live in
+# the plotjuggler_sdk submodule; it now lives in the
+# app repo (plugins reach it only through the pj_base C ABI, never by linking
+# it). pj_datastore MUST be added AFTER the submodule so the pj_base /
+# pj_internal_fmt targets it links already exist.
 # ---------------------------------------------------------------------------
 
-add_subdirectory(plotjuggler_core)
+add_subdirectory(plotjuggler_sdk)
+add_subdirectory(pj_datastore)
 
 # ---------------------------------------------------------------------------
 # Vendored third-party
@@ -93,11 +102,10 @@ endif()
 # Root-owned PlotJuggler modules
 # ---------------------------------------------------------------------------
 
-if(PJ_BUILD_DATASTORE)
-    add_subdirectory(pj_scene2D/core)
-    add_subdirectory(pj_scene2D/widgets)
-    add_subdirectory(pj_scene2D/demos)
-endif()
+# pj_scene2D depends on pj_datastore, which is now always built (above).
+add_subdirectory(pj_scene2D/core)
+add_subdirectory(pj_scene2D/widgets)
+add_subdirectory(pj_scene2D/demos)
 add_subdirectory(pj_scene3D/core)
 add_subdirectory(pj_scene3D/widgets)
 add_subdirectory(pj_marketplace)

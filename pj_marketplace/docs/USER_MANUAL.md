@@ -111,7 +111,7 @@ If PlotJuggler already has the plugin loaded at startup, the marketplace is seed
 > **Note on plugin shape:**
 >
 > Plugins are pure C++ DSOs that consume the C ABI declared in
-> `plotjuggler_core/pj_plugins`. They do **not** link Qt — only the
+> `plotjuggler_sdk/pj_plugins`. They do **not** link Qt — only the
 > host (PlotJuggler / the marketplace) does. Each plugin exposes a
 > small embedded JSON manifest (`id`, `name`, `version`, …) through the
 > SDK export macro; the marketplace reads that manifest to recognise
