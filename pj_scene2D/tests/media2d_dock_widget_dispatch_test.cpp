@@ -1,3 +1,6 @@
+// Copyright 2026 Davide Faconti
+// SPDX-License-Identifier: MPL-2.0
+
 // Verifies the parser-less pipeline dispatch in Media2DDockWidget.
 //
 // Background: C5 in the dfaconti/image-runtime review flagged that

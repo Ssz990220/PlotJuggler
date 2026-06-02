@@ -1,3 +1,6 @@
+// Copyright 2026 Davide Faconti
+// SPDX-License-Identifier: MPL-2.0
+
 #include "pj_plotting/CurveTracker.h"
 
 #include <qwt_plot.h>

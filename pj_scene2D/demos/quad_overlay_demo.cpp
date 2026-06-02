@@ -1,3 +1,6 @@
+// Copyright 2026 Davide Faconti
+// SPDX-License-Identifier: MPL-2.0
+
 /// Visual sanity check for the full markers feature in pj_scene2D.
 ///
 /// Renders an 800x600 dark-grey image with one of every supported primitive

@@ -1,3 +1,6 @@
+// Copyright 2026 Davide Faconti
+// SPDX-License-Identifier: MPL-2.0
+
 /// Video stream demo: demuxes an MP4 file, pushes H.264 NAL units into
 /// ObjectStore at real-time rate, and displays via StreamingVideoDecoder.
 ///

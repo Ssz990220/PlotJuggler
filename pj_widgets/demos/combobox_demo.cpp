@@ -1,3 +1,6 @@
+// Copyright 2026 Davide Faconti
+// SPDX-License-Identifier: MPL-2.0
+
 // Standalone visual demo for QComboBox styling.
 //
 // Interactive window with several PJ::ComboBox variants (basic, long

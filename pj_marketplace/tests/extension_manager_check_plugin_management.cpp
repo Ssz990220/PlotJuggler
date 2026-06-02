@@ -1,3 +1,6 @@
+// Copyright 2026 Davide Faconti
+// SPDX-License-Identifier: MPL-2.0
+
 // Integration test: installs can-bus-parser via ExtensionManager using the real registry.json.
 //
 // Requires network access. Not intended for CI — run manually to verify the full pipeline:

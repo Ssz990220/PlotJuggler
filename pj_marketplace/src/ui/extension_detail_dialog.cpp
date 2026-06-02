@@ -1,3 +1,6 @@
+// Copyright 2026 Davide Faconti
+// SPDX-License-Identifier: MPL-2.0
+
 #include "pj_marketplace/extension_detail_dialog.hpp"
 
 #include <QDesktopServices>

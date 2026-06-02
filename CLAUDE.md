@@ -6,6 +6,13 @@ Build **PlotJuggler 4** from scratch as a modern desktop application that reache
 
 This is a greenfield app repo. It is not a refactor of PJ3. Code is cherry-picked from PJ3 and rebuilt on top of the `plotjuggler_sdk` foundation.
 
+## License
+
+PJ4 is **MPL-2.0** (see [`LICENSE`](./LICENSE)); every source file carries an
+`// SPDX-License-Identifier: MPL-2.0` header. New source files must include that
+header. The `plotjuggler_sdk` submodule is a separate repo with its own license
+(Apache-2.0 for `pj_base`/`pj_plugins`) — do not relicense it from here.
+
 ## Architecture
 
 Full implementation plan: [`PJ4_PLAN.md`](./PJ4_PLAN.md). That document is the source of truth for module boundaries, delivery phases, and architectural decisions — read it before proposing structural changes.

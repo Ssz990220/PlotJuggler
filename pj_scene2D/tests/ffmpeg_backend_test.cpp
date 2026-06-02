@@ -1,3 +1,6 @@
+// Copyright 2026 Davide Faconti
+// SPDX-License-Identifier: MPL-2.0
+
 /// FfmpegBackend integration tests — playback, forward scrub, backward scrub.
 ///
 /// These tests drive the real decode pipeline with test_480p.mp4.

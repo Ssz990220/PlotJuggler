@@ -1,3 +1,6 @@
+// Copyright 2026 Davide Faconti
+// SPDX-License-Identifier: MPL-2.0
+
 /// Simulated live stream demo: pushes synthetic JPEG frames into
 /// ObjectStore at 30 Hz, displays the latest frame via MediaViewerWidget.
 /// Pause freezes the buffer for scrub; resume returns to live edge.

@@ -1,3 +1,6 @@
+// Copyright 2026 Davide Faconti
+// SPDX-License-Identifier: MPL-2.0
+
 /// MP4 video player demo using FileVideoSource (MediaSource adapter
 /// for FfmpegBackend). Slider scrub, play/pause, step forward/backward.
 ///

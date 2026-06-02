@@ -1,3 +1,6 @@
+// Copyright 2026 Davide Faconti
+// SPDX-License-Identifier: MPL-2.0
+
 #include "pj_scene3d_widgets/gl/program.h"
 
 #include <fmt/format.h>

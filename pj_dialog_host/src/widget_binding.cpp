@@ -1,3 +1,6 @@
+// Copyright 2026 Davide Faconti
+// SPDX-License-Identifier: MPL-2.0
+
 #include <pj_widgets/DateRangePicker.h>
 #include <pj_widgets/RangeSlider.h>
 #include <pj_widgets/SvgUtil.h>

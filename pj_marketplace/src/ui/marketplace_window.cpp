@@ -1,3 +1,6 @@
+// Copyright 2026 Davide Faconti
+// SPDX-License-Identifier: MPL-2.0
+
 #include "pj_marketplace/marketplace_window.hpp"
 
 #include <QComboBox>

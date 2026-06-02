@@ -1,4 +1,6 @@
 #pragma once
+// Copyright 2026 Davide Faconti
+// SPDX-License-Identifier: MPL-2.0
 
 // QtDiagnosticBridge adapts the Qt-free PJ::DiagnosticSink vocabulary to a
 // queued Qt signal. Hosts can pass sink() to non-GUI components and connect the

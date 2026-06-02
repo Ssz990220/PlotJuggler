@@ -1,4 +1,6 @@
 #pragma once
+// Copyright 2026 Davide Faconti
+// SPDX-License-Identifier: MPL-2.0
 
 /// Shared test helper: extract annex-B H.264 packets from an MP4 file.
 /// Used by h264_utils_test and streaming_video_decoder_test.

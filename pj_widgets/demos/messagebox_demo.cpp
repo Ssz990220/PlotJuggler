@@ -1,3 +1,6 @@
+// Copyright 2026 Davide Faconti
+// SPDX-License-Identifier: MPL-2.0
+
 // Standalone visual demo for pj_widgets/MessageBox.
 //
 // Interactive window with one button per MessageBox variant

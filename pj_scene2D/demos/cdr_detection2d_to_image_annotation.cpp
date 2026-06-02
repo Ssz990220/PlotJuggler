@@ -1,3 +1,6 @@
+// Copyright 2026 Davide Faconti
+// SPDX-License-Identifier: MPL-2.0
+
 #include "cdr_detection2d_to_image_annotation.h"
 
 #include <cmath>

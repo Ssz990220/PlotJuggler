@@ -1,3 +1,6 @@
+// Copyright 2026 Davide Faconti
+// SPDX-License-Identifier: MPL-2.0
+
 #include "pj_scene2d_core/streaming_video_source.h"
 
 #include "pj_scene2d_core/streaming_video_decoder.h"

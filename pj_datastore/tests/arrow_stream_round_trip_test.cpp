@@ -1,3 +1,6 @@
+// Copyright 2026 Davide Faconti
+// SPDX-License-Identifier: MPL-2.0
+
 /**
  * @file arrow_stream_round_trip_test.cpp
  * @brief End-to-end round trip through the v4 Arrow C Data Interface path.
