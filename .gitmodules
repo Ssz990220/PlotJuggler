@@ -5,3 +5,6 @@
 	path = 3rdparty/Qt-Advanced-Docking
 	url = git@github.com:PlotJuggler/Qt-Advanced-Docking-System.git
 	branch = feature/wayland-fix
+[submodule "3rdparty/doomgeneric"]
+	path = 3rdparty/doomgeneric
+	url = https://github.com/ozkl/doomgeneric.git

@@ -14,23 +14,30 @@ links are covered by the GPL.
 Complete corresponding source
 -----------------------------
 
-The complete corresponding source code for the "pj-raster-helper" binary is
-available in the PlotJuggler/PJ4 source repository, at the revision from which
-the binary was built:
+The complete corresponding source code for the "pj-raster-helper" binary:
 
-    https://github.com/PlotJuggler/PJ4
+  - The IPC shim and build files (the helper itself) and the shared wire-protocol
+    header live in the PlotJuggler/PJ4 source repository, at the revision from
+    which the binary was built:
 
-  - IPC shim and build files (the helper itself): raster_helper/
-  - rendering engine, vendored verbatim:          3rdparty/doomgeneric/
-  - shared wire-protocol header:                  raster_ipc/RasterIpcProtocol.h
+        https://github.com/PlotJuggler/PJ4
+        (raster_helper/ and raster_ipc/RasterIpcProtocol.h)
 
-The engine source is vendored unmodified from its upstream project:
+  - The rendering engine is the doomgeneric project, included as a git submodule
+    at 3rdparty/doomgeneric and pinned to commit
 
-    https://github.com/ozkl/doomgeneric
+        dcb7a8dbc7a16ce3dda29382ac9aae9d77d21284
 
-To build the binary, configure the repository with CMake; the "pj-raster-helper"
-target produces this executable (Qt6 Core/Network plus the vendored doomgeneric
-sources).
+    of its upstream repository:
+
+        https://github.com/ozkl/doomgeneric
+
+    Running `git submodule update --init 3rdparty/doomgeneric` fetches the exact
+    engine source at that commit.
+
+To build the binary, initialize the submodule and configure the repository with
+CMake; the "pj-raster-helper" target produces this executable (Qt6 Core/Network
+plus the doomgeneric sources).
 
 Offer
 -----
