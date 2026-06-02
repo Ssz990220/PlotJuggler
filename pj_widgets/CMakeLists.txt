@@ -1,4 +1,4 @@
-find_package(Qt6 REQUIRED COMPONENTS Core Gui Svg Widgets)
+find_package(Qt6 REQUIRED COMPONENTS Core Gui Network Svg Widgets)
 
 add_library(pj_widgets STATIC
     src/ColorPickerPopup.cpp
@@ -15,6 +15,8 @@ add_library(pj_widgets STATIC
     src/IntScrubber.cpp
     src/MessageBox.cpp
     src/RangeSlider.cpp
+    src/RasterFrame.cpp
+    src/RasterStreamView.cpp
     src/RecentFilesMenu.cpp
     src/ScrubberBase.cpp
     src/ToggleSwitch.cpp
@@ -35,6 +37,8 @@ add_library(pj_widgets STATIC
     include/pj_widgets/MessageBox.h
     include/pj_widgets/RealSlider.h
     include/pj_widgets/RangeSlider.h
+    include/pj_widgets/RasterFrame.h
+    include/pj_widgets/RasterStreamView.h
     include/pj_widgets/RecentFilesMenu.h
     include/pj_widgets/ScrubberBase.h
     include/pj_widgets/Style.h
@@ -52,11 +56,13 @@ set_target_properties(pj_widgets PROPERTIES
 
 target_include_directories(pj_widgets PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+    $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/raster_ipc>
 )
 
 target_link_libraries(pj_widgets PUBLIC
     Qt6::Core
     Qt6::Gui
+    Qt6::Network
     Qt6::Svg
     Qt6::Widgets
 )

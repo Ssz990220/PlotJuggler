@@ -58,3 +58,29 @@ set_target_properties(credentials_editor_test PROPERTIES
 )
 
 add_test(NAME CredentialsEditorTest COMMAND credentials_editor_test)
+
+find_package(Qt6 REQUIRED COMPONENTS Test)
+
+# Protocol peer for the stream-view test: publishes one frame, no engine.
+add_executable(raster_stub_helper raster_stub_helper.cpp)
+target_include_directories(raster_stub_helper PRIVATE ${CMAKE_SOURCE_DIR}/raster_ipc)
+target_link_libraries(raster_stub_helper PRIVATE Qt6::Core Qt6::Network)
+set_target_properties(raster_stub_helper PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
+
+add_executable(raster_frame_test raster_frame_test.cpp)
+target_link_libraries(raster_frame_test PRIVATE pj_widgets GTest::gtest_main)
+if(DEFINED PJ_WARNING_FLAGS)
+    target_compile_options(raster_frame_test PRIVATE ${PJ_WARNING_FLAGS})
+endif()
+set_target_properties(raster_frame_test PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
+add_test(NAME RasterFrame COMMAND raster_frame_test)
+
+add_executable(raster_stream_view_test raster_stream_view_test.cpp)
+set_target_properties(raster_stream_view_test PROPERTIES
+    AUTOMOC ON
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
+target_link_libraries(raster_stream_view_test PRIVATE pj_widgets Qt6::Test GTest::gtest)
+target_compile_definitions(raster_stream_view_test PRIVATE
+    PJ_STUB_HELPER_PATH="$<TARGET_FILE:raster_stub_helper>")
+add_dependencies(raster_stream_view_test raster_stub_helper)
+add_test(NAME RasterStreamView COMMAND raster_stream_view_test)

@@ -2,11 +2,11 @@
 
 ## Purpose
 
-Reusable Qt widgets and UI helpers — the kind of controls that could be dropped into another Qt application without dragging PJ4-specific state with them. Static library, `Qt6::Core` / `Gui` / `Svg` / `Widgets` only.
+Reusable Qt widgets and UI helpers — the kind of controls that could be dropped into another Qt application without dragging PJ4-specific state with them. Static library, `Qt6::Core` / `Gui` / `Network` / `Svg` / `Widgets` only.
 
 ## Hard constraints (from root CLAUDE.md)
 
-- Depends only on **Qt and the C++ standard library**.
+- Depends only on **Qt and the C++ standard library** (plus the dependency-free, header-only `raster_ipc/` wire-protocol contract, which is not a PJ module).
 - **No dependencies on `pj_runtime`, `pj_app`, or any other PJ module.** Anything that needs runtime state belongs upstream of here.
 - If a widget is specific to PlotJuggler workflows (e.g. plot-specific dockers), it belongs in the widget-family module instead.
 
@@ -28,6 +28,8 @@ Widgets:
 | `ElidingLabel.h` | `QLabel` that elides instead of clipping. |
 | `CurveTreeView.h` | Tree view tuned for PlotJuggler's curve catalog (no runtime coupling — model is plugged in by the caller). |
 | `VisualizationPlaceholderWidget.h` | Placeholder shown when no data widget is bound. |
+| `RasterStreamView.h` | Hosts an external renderer process and paints its framebuffer (streamed over shared memory via the `raster_ipc/` contract) in a panel; forwards key input through an injectable translator. Pure Qt, no window embedding. |
+| `RasterFrame.h` | Decodes a `raster_ipc` shared-memory frame into a `QImage` (consumer side of the protocol). |
 
 Helpers (header-only or small):
 

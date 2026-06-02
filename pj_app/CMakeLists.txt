@@ -1,4 +1,4 @@
-find_package(Qt6 REQUIRED COMPONENTS Core Gui Widgets Test)
+find_package(Qt6 REQUIRED COMPONENTS Core Gui Widgets Network Test)
 
 add_executable(pj_app
     src/main.cpp
@@ -17,6 +17,8 @@ add_executable(pj_app
     src/MainWindow.ui
     src/WidgetTuner.cpp
     src/WidgetTuner.h
+    src/KeySequence.cpp
+    src/KeySequence.h
     src/PreferencesDialog.cpp
     src/PreferencesDialog.h
     src/PreferencesDialog.ui
@@ -49,6 +51,8 @@ add_executable(pj_app
     src/ui/TimelineWidget.cpp
     src/ui/TimelineWidget.h
     src/ui/TimelineWidget.ui
+    src/RasterKeyMap.cpp
+    src/RasterKeyMap.h
     ${CMAKE_SOURCE_DIR}/resources/resources.qrc
 )
 
@@ -61,6 +65,7 @@ set_target_properties(pj_app PROPERTIES
 
 target_include_directories(pj_app PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}/raster_ipc
 )
 
 target_link_libraries(pj_app PRIVATE
@@ -130,4 +135,55 @@ if(PJ_BUILD_TESTS)
         target_compile_options(layout_xml_test PRIVATE ${PJ_WARNING_FLAGS})
     endif()
     add_test(NAME LayoutXmlTest COMMAND layout_xml_test)
+
+    add_executable(key_sequence_matcher_test
+        tests/key_sequence_matcher_test.cpp
+        src/KeySequence.cpp
+    )
+    set_target_properties(key_sequence_matcher_test PROPERTIES AUTOMOC ON)
+    target_include_directories(key_sequence_matcher_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    target_link_libraries(key_sequence_matcher_test PRIVATE
+        Qt6::Core
+        Qt6::Gui
+        GTest::gtest_main
+    )
+    if(DEFINED PJ_WARNING_FLAGS)
+        target_compile_options(key_sequence_matcher_test PRIVATE ${PJ_WARNING_FLAGS})
+    endif()
+    add_test(NAME KeySequenceMatcher COMMAND key_sequence_matcher_test)
+
+    add_executable(key_sequence_watcher_test
+        tests/key_sequence_watcher_test.cpp
+        src/KeySequence.cpp
+    )
+    set_target_properties(key_sequence_watcher_test PROPERTIES AUTOMOC ON)
+    target_include_directories(key_sequence_watcher_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    target_link_libraries(key_sequence_watcher_test PRIVATE
+        Qt6::Core
+        Qt6::Gui
+        GTest::gtest
+    )
+    if(DEFINED PJ_WARNING_FLAGS)
+        target_compile_options(key_sequence_watcher_test PRIVATE ${PJ_WARNING_FLAGS})
+    endif()
+    add_test(NAME KeySequenceWatcher COMMAND key_sequence_watcher_test)
+
+    add_executable(raster_ipc_protocol_test tests/raster_ipc_protocol_test.cpp)
+    target_include_directories(raster_ipc_protocol_test PRIVATE ${CMAKE_SOURCE_DIR}/raster_ipc)
+    target_link_libraries(raster_ipc_protocol_test PRIVATE GTest::gtest_main)
+    if(DEFINED PJ_WARNING_FLAGS)
+        target_compile_options(raster_ipc_protocol_test PRIVATE ${PJ_WARNING_FLAGS})
+    endif()
+    add_test(NAME RasterIpcProtocol COMMAND raster_ipc_protocol_test)
+
+    add_executable(raster_key_map_test
+        tests/raster_key_map_test.cpp
+        src/RasterKeyMap.cpp
+    )
+    target_include_directories(raster_key_map_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    target_link_libraries(raster_key_map_test PRIVATE Qt6::Core GTest::gtest_main)
+    if(DEFINED PJ_WARNING_FLAGS)
+        target_compile_options(raster_key_map_test PRIVATE ${PJ_WARNING_FLAGS})
+    endif()
+    add_test(NAME RasterKeyMap COMMAND raster_key_map_test)
 endif()

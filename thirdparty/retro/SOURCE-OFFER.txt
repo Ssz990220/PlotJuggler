@@ -1,0 +1,44 @@
+Written Offer of Source Code (GNU GPL v2, Section 3)
+====================================================
+
+The program "pj-raster-helper" distributed in this directory is licensed under
+the GNU General Public License, version 2 (see the accompanying file COPYING).
+It is built from, and statically links, the doomgeneric engine (GPLv2).
+
+PlotJuggler itself does NOT link this program. "pj-raster-helper" is a separate
+executable that PlotJuggler launches as a child process and communicates with
+over shared-memory IPC. It is distributed here as an aggregate ("mere
+aggregation" in the words of the GPL); only this program and the libraries it
+links are covered by the GPL.
+
+Complete corresponding source
+-----------------------------
+
+The complete corresponding source code for the "pj-raster-helper" binary is
+available in the PlotJuggler/PJ4 source repository, at the revision from which
+the binary was built:
+
+    https://github.com/PlotJuggler/PJ4
+
+  - IPC shim and build files (the helper itself): raster_helper/
+  - rendering engine, vendored verbatim:          3rdparty/doomgeneric/
+  - shared wire-protocol header:                  raster_ipc/RasterIpcProtocol.h
+
+The engine source is vendored unmodified from its upstream project:
+
+    https://github.com/ozkl/doomgeneric
+
+To build the binary, configure the repository with CMake; the "pj-raster-helper"
+target produces this executable (Qt6 Core/Network plus the vendored doomgeneric
+sources).
+
+Offer
+-----
+
+For a period of three (3) years from the date you received this binary, the
+distributor will, on request, provide a complete machine-readable copy of the
+corresponding source code on a physical medium, for no more than the cost of
+physically performing the distribution. To request it, open an issue at
+https://github.com/PlotJuggler/PJ4 or contact the PlotJuggler maintainers.
+
+This offer is valid to anyone who receives this binary.

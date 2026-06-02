@@ -91,6 +91,11 @@ class MainWindow : public QMainWindow {
   // emit through the same pipeline plugins use.
   [[nodiscard]] DiagnosticSink diagnosticSink() const;
 
+  // Presents the embedded external-process view in the central area (via
+  // presentPanel) and restores the chart when the session ends. Idempotent:
+  // a no-op if a panel is already presented.
+  void openEmbeddedConsole();
+
   // Global Chrome metrics for toolbar/panel buttons. Persisted to
   // QSettings (ui/icon_size, ui/icon_padding, ui/layout_padding,
   // ui/layout_spacing) and broadcast via chromeMetricsChanged so each

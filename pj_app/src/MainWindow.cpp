@@ -12,6 +12,7 @@
 #include <QByteArray>
 #include <QCloseEvent>
 #include <QColor>
+#include <QCoreApplication>
 #include <QDomDocument>
 #include <QFile>
 #include <QFileInfo>
@@ -59,6 +60,7 @@
 #include "FileLoader.h"
 #include "LayoutXml.h"
 #include "PreferencesDialog.h"
+#include "RasterKeyMap.h"
 #include "StreamingSourceManager.h"
 #include "Theme.h"
 #include "TitleBar.h"
@@ -96,6 +98,7 @@
 #include "pj_widgets/FileDialog.h"
 #include "pj_widgets/FlowLayout.h"
 #include "pj_widgets/MessageBox.h"
+#include "pj_widgets/RasterStreamView.h"
 #include "pj_widgets/SvgUtil.h"
 #include "scene_object_classification.h"
 #include "ui/CurveListPanel.h"
@@ -3085,6 +3088,22 @@ void MainWindow::restoreCentralArea() {
   current_panel_ = nullptr;
   panel_layout_index_ = -1;
   panel_parent_ = nullptr;
+}
+
+void MainWindow::openEmbeddedConsole() {
+  auto* view = new RasterStreamView(this);
+  view->setKeyTranslator(&engineKeyForQtKey);
+  if (!presentPanel(view)) {
+    view->deleteLater();
+    return;
+  }
+  connect(view, &RasterStreamView::sessionEnded, this, [this]() { restoreCentralArea(); });
+  const QString dir = QCoreApplication::applicationDirPath() + QStringLiteral("/thirdparty/retro/");
+  QString helper = QStandardPaths::findExecutable(QStringLiteral("pj-raster-helper"), {dir});
+  if (helper.isEmpty()) {
+    helper = dir + QStringLiteral("pj-raster-helper");
+  }
+  view->start(helper, dir + QStringLiteral("base.wad"));
 }
 
 void MainWindow::onCloudToolboxRequested(const QString& plugin_id) {
