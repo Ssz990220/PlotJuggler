@@ -24,8 +24,12 @@ class VisualizationPlaceholderWidget;
 class DockWidget : public ads::CDockWidget, public IDataWidget {
   Q_OBJECT
  public:
+  // One factory for both paths: layout restore calls it with a `kind` tag and a
+  // null seed (then xmlLoadState repopulates); a catalog drop calls it with an
+  // empty kind and a non-null seed (the factory classifies + populates the first
+  // topic). A null return means "not an object widget for this input".
   using ObjectWidgetFactory =
-      std::function<IDataWidget*(ObjectTopicId, sdk::BuiltinObjectType, const QString&, QWidget*)>;
+      std::function<IDataWidget*(const QString& kind, const ObjectDropSeed* seed, QWidget* parent)>;
 
   explicit DockWidget(
       SessionManager* session = nullptr, CatalogModel* catalog = nullptr, ads::CDockManager* manager = nullptr,

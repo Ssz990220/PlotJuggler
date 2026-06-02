@@ -9,6 +9,10 @@ QT_BEGIN_NAMESPACE
 class QWidget;
 QT_END_NAMESPACE
 
+namespace pj::scene3d {
+class TransformService;
+}  // namespace pj::scene3d
+
 namespace PJ {
 
 class CatalogModel;
@@ -53,6 +57,13 @@ class FileLoader : public QObject {
   bool loadFile(const QString& path, QWidget* dialog_parent = nullptr);
   bool loadFile(const QString& path, QWidget* dialog_parent, const LoadHints& hints);
 
+  // 3D TF ingest is triggered at load time through this service (owned by the
+  // app shell, not the domain-neutral runtime). When unset, TF ingest is
+  // skipped — non-3D builds simply never set it.
+  void setTransformService(pj::scene3d::TransformService* service) {
+    transform_service_ = service;
+  }
+
  signals:
   void fileLoaded(
       const QString& path, const QString& prefix, const QString& plugin_id, const QString& plugin_config_json);
@@ -68,6 +79,7 @@ class FileLoader : public QObject {
   ExtensionCatalogService& extensions_;
   CatalogModel& catalog_;
   TimeDomainId default_time_domain_id_ = 0;
+  pj::scene3d::TransformService* transform_service_ = nullptr;
 };
 
 }  // namespace PJ

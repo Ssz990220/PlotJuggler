@@ -33,7 +33,7 @@ TEST(TfBufferHierarchy, EmptyBufferReturnsEmptyVector) {
 
 TEST(TfBufferHierarchy, SingleEdgeProducesRootAndChild) {
   TransformBuffer buf;
-  buf.setTransform(makeStatic("odom", "base_link"), true);
+  buf.setTransform(makeStatic("odom", "base_link"));
 
   const auto rows = buf.getFrameHierarchy();
   ASSERT_EQ(rows.size(), 2U);
@@ -45,8 +45,8 @@ TEST(TfBufferHierarchy, SingleEdgeProducesRootAndChild) {
 
 TEST(TfBufferHierarchy, DisconnectedForestsKeepBothRootsAtDepthZero) {
   TransformBuffer buf;
-  buf.setTransform(makeStatic("map", "robot"), true);
-  buf.setTransform(makeStatic("world", "drone"), true);
+  buf.setTransform(makeStatic("map", "robot"));
+  buf.setTransform(makeStatic("world", "drone"));
 
   const auto rows = buf.getFrameHierarchy();
   ASSERT_EQ(rows.size(), 4U);
@@ -63,10 +63,10 @@ TEST(TfBufferHierarchy, DisconnectedForestsKeepBothRootsAtDepthZero) {
 TEST(TfBufferHierarchy, ChildrenAtSameDepthAreAlphabetical) {
   TransformBuffer buf;
   // Insert in non-alphabetical order; expect alphabetical output.
-  buf.setTransform(makeStatic("base_link", "z_link"), true);
-  buf.setTransform(makeStatic("base_link", "a_link"), true);
-  buf.setTransform(makeStatic("base_link", "m_link"), true);
-  buf.setTransform(makeStatic("odom", "base_link"), true);
+  buf.setTransform(makeStatic("base_link", "z_link"));
+  buf.setTransform(makeStatic("base_link", "a_link"));
+  buf.setTransform(makeStatic("base_link", "m_link"));
+  buf.setTransform(makeStatic("odom", "base_link"));
 
   const auto rows = buf.getFrameHierarchy();
   ASSERT_EQ(rows.size(), 5U);
@@ -81,11 +81,11 @@ TEST(TfBufferHierarchy, MixedCaseSiblingsSortCaseInsensitively) {
   TransformBuffer buf;
   // Foxglove-style: capital-O frames must interleave with lowercase
   // siblings, not cluster ahead of them because uppercase < lowercase ASCII.
-  buf.setTransform(makeStatic("base_link", "Omniwheel_1"), true);
-  buf.setTransform(makeStatic("base_link", "imu_link"), true);
-  buf.setTransform(makeStatic("base_link", "Omniwheel_2"), true);
-  buf.setTransform(makeStatic("base_link", "rail_left"), true);
-  buf.setTransform(makeStatic("odom", "base_link"), true);
+  buf.setTransform(makeStatic("base_link", "Omniwheel_1"));
+  buf.setTransform(makeStatic("base_link", "imu_link"));
+  buf.setTransform(makeStatic("base_link", "Omniwheel_2"));
+  buf.setTransform(makeStatic("base_link", "rail_left"));
+  buf.setTransform(makeStatic("odom", "base_link"));
 
   const auto rows = buf.getFrameHierarchy();
   ASSERT_EQ(rows.size(), 6U);
@@ -100,13 +100,13 @@ TEST(TfBufferHierarchy, MixedCaseSiblingsSortCaseInsensitively) {
 
 TEST(TfBufferHierarchy, FlatWalkIsCycleSafe) {
   TransformBuffer buf;
-  buf.setTransform(makeStatic("a", "b"), true);
+  buf.setTransform(makeStatic("a", "b"));
   // Attempting to set b->a would throw (parents_ enforces single-parent).
   // To exercise the visited guard, manually craft via two non-conflicting
   // edges that form a degenerate self-cycle is not directly possible with
   // the public API. Instead, verify a deep linear chain terminates.
-  buf.setTransform(makeStatic("b", "c"), true);
-  buf.setTransform(makeStatic("c", "d"), true);
+  buf.setTransform(makeStatic("b", "c"));
+  buf.setTransform(makeStatic("c", "d"));
 
   const auto rows = buf.getFrameHierarchy();
   ASSERT_EQ(rows.size(), 4U);
@@ -126,7 +126,7 @@ TEST(TfBufferHierarchyJson, EmptyBufferReturnsEmptyArray) {
 
 TEST(TfBufferHierarchyJson, SingleEdgeNestsChild) {
   TransformBuffer buf;
-  buf.setTransform(makeStatic("odom", "base_link"), true);
+  buf.setTransform(makeStatic("odom", "base_link"));
 
   const auto json = buf.getFrameHierarchyJson();
   const auto expected = nlohmann::json::parse(R"([
@@ -139,8 +139,8 @@ TEST(TfBufferHierarchyJson, SingleEdgeNestsChild) {
 
 TEST(TfBufferHierarchyJson, DisconnectedForestsAppearAsTwoTopLevelEntries) {
   TransformBuffer buf;
-  buf.setTransform(makeStatic("map", "robot"), true);
-  buf.setTransform(makeStatic("world", "drone"), true);
+  buf.setTransform(makeStatic("map", "robot"));
+  buf.setTransform(makeStatic("world", "drone"));
 
   const auto json = buf.getFrameHierarchyJson();
   ASSERT_TRUE(json.is_array());
@@ -153,10 +153,10 @@ TEST(TfBufferHierarchyJson, DisconnectedForestsAppearAsTwoTopLevelEntries) {
 
 TEST(TfBufferHierarchyJson, ChildrenAlphabeticalAtEachDepth) {
   TransformBuffer buf;
-  buf.setTransform(makeStatic("base_link", "z_link"), true);
-  buf.setTransform(makeStatic("base_link", "a_link"), true);
-  buf.setTransform(makeStatic("base_link", "m_link"), true);
-  buf.setTransform(makeStatic("odom", "base_link"), true);
+  buf.setTransform(makeStatic("base_link", "z_link"));
+  buf.setTransform(makeStatic("base_link", "a_link"));
+  buf.setTransform(makeStatic("base_link", "m_link"));
+  buf.setTransform(makeStatic("odom", "base_link"));
 
   const auto json = buf.getFrameHierarchyJson();
   ASSERT_EQ(json.size(), 1U);
@@ -169,9 +169,9 @@ TEST(TfBufferHierarchyJson, ChildrenAlphabeticalAtEachDepth) {
 
 TEST(TfBufferHierarchyJson, DeepChainTerminates) {
   TransformBuffer buf;
-  buf.setTransform(makeStatic("a", "b"), true);
-  buf.setTransform(makeStatic("b", "c"), true);
-  buf.setTransform(makeStatic("c", "d"), true);
+  buf.setTransform(makeStatic("a", "b"));
+  buf.setTransform(makeStatic("b", "c"));
+  buf.setTransform(makeStatic("c", "d"));
 
   const auto json = buf.getFrameHierarchyJson();
   ASSERT_EQ(json.size(), 1U);

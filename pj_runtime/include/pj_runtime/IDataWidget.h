@@ -11,6 +11,16 @@ class QWidget;
 
 namespace PJ {
 
+// A single dropped object topic, handed to the object-widget factory so it can
+// construct the right dock *and* seed it with its first topic. The factory is
+// called with a seed for a catalog drop, or with `nullptr` (kind only) during
+// layout restore, where the topics are repopulated from XML via xmlLoadState().
+struct ObjectDropSeed {
+  ObjectTopicId topic_id;
+  sdk::BuiltinObjectType object_type;
+  QString title;
+};
+
 // Contract implemented by every widget family (plot / 2D / 3D) so pj_runtime
 // can drive tracker updates without coupling to concrete widget types.
 class IDataWidget {

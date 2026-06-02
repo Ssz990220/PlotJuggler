@@ -20,7 +20,7 @@ TransformBuffer::TransformBuffer(Duration cache_window) : cache_window_(cache_wi
 
 TransformBuffer::~TransformBuffer() = default;
 
-PJ::Expected<void, SetTransformError> TransformBuffer::setTransform(const StampedTransform& tf, bool is_static) {
+PJ::Expected<void, SetTransformError> TransformBuffer::setTransform(const StampedTransform& tf) {
   std::unique_lock lock(parents_mutex_);
 
   if (tf.child_frame == tf.parent_frame) {
@@ -37,15 +37,12 @@ PJ::Expected<void, SetTransformError> TransformBuffer::setTransform(const Stampe
   }
 
   link.parent = tf.parent_frame;
-  link.history.is_static = is_static;
 
+  // No static/dynamic distinction: every edge is a time-ordered history resolved
+  // by nearest-previous (see sampleAt). A transform published once — /tf_static,
+  // however namespaced — is simply a single-sample history that holds for all
+  // later query times, so static-ness never has to be inferred from a topic name.
   const Transform normalized{tf.transform.t, glm::normalize(tf.transform.q)};
-  if (is_static) {
-    link.history.samples.clear();
-    link.history.samples.emplace_back(TimePoint{}, normalized);
-    return {};
-  }
-
   auto& samples = link.history.samples;
   if (samples.empty() || tf.stamp > samples.back().first) {
     samples.emplace_back(tf.stamp, normalized);
@@ -60,10 +57,17 @@ PJ::Expected<void, SetTransformError> TransformBuffer::setTransform(const Stampe
 
   // kKeepAll disables eviction: bulk-ingested bounded sources (a loaded file)
   // feed the whole recording up front, so a rolling window would trim every
-  // dynamic edge to its tail and break lookups earlier in the timeline.
+  // edge to its tail and break lookups earlier in the timeline. Under a finite
+  // window (live streaming) `samples.size() > 1` pins the most recent sample —
+  // an edge is NEVER evicted to empty, so a slow / stopped / once-published frame
+  // keeps resolving forever instead of orphaning. That "always keep the last
+  // sample" guarantee is what lets us drop the static flag: it gives static-like
+  // persistence to every edge uniformly. (The current cutoff is per-edge-relative
+  // so the guard is presently belt-and-suspenders, but it pins the invariant
+  // should eviction ever switch to a global clock.)
   if (cache_window_ < kKeepAll) {
     const auto cutoff = samples.back().first - cache_window_;
-    while (!samples.empty() && samples.front().first < cutoff) {
+    while (samples.size() > 1 && samples.front().first < cutoff) {
       samples.pop_front();
     }
   }
@@ -74,10 +78,10 @@ std::optional<Transform> TransformBuffer::sampleAt(const EdgeHistory& h, TimePoi
   if (h.samples.empty()) {
     return std::nullopt;
   }
-  if (h.is_static) {
-    return h.samples.front().second;
-  }
-
+  // Nearest-previous (zero-order hold): the newest sample at or before `t`. A
+  // single-sample edge therefore resolves at every t >= its stamp. A query
+  // strictly before the first sample has no value yet (the frame had not been
+  // announced at that time) -> nullopt.
   auto hi = std::upper_bound(h.samples.begin(), h.samples.end(), t, EdgeHistory::stamp_less);
   if (hi == h.samples.begin()) {
     return std::nullopt;
@@ -214,12 +218,13 @@ std::optional<TimePoint> TransformBuffer::latestCommonTime(const std::string& ta
     return std::nullopt;
   }
 
-  // Newest time bounded by every dynamic edge up to the common ancestor; static
-  // edges (and empty histories) impose no bound.
+  // Newest time bounded by every multi-sample edge up to the common ancestor.
+  // Single-sample edges (the static case) and empty histories hold for all time,
+  // so they impose no upper bound.
   auto walk = [](const std::vector<ChainHop>& chain, std::size_t k, std::optional<TimePoint>& acc) {
     for (std::size_t i = 0; i < k; ++i) {
       const auto& edge = chain[i].link->history;
-      if (edge.is_static || edge.samples.empty()) {
+      if (edge.samples.size() <= 1) {
         continue;
       }
       const auto latest = edge.samples.back().first;
@@ -265,9 +270,6 @@ std::optional<TimePoint> TransformBuffer::getLatestSample(const std::string& chi
   }
 
   const auto& history = it->second.history;
-  if (history.is_static) {
-    return TimePoint{};
-  }
   if (history.samples.empty()) {
     return std::nullopt;
   }

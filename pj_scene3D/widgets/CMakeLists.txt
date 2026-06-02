@@ -1,0 +1,39 @@
+set(CMAKE_AUTOMOC ON)
+
+find_package(OpenGL REQUIRED)
+find_package(Qt6 REQUIRED COMPONENTS Xml)
+
+set(PJ_SCENE3D_WIDGETS_SOURCES
+  src/gl/buffer.cpp
+  src/gl/program.cpp
+  src/gl/vertex_array.cpp
+  src/gl/debug.cpp
+  src/gizmos/arrow_gizmo.cpp
+  src/passes/axis_overlay_pass.cpp
+  src/passes/axis_render_pass.cpp
+  src/passes/grid_render_pass.cpp
+  src/passes/pointcloud_render_pass.cpp
+  src/render_pass.cpp
+  src/camera.cpp
+  src/scene_view_widget.cpp
+  src/scene3d_entity.cpp
+  src/entities/pointcloud_entity.cpp
+  src/Scene3DDockWidget.cpp
+  src/transform_service.cpp
+  include/pj_scene3d_widgets/scene_view_widget.h
+  include/pj_scene3d_widgets/scene3d_entity.h
+  include/pj_scene3d_widgets/entities/pointcloud_entity.h
+  include/pj_scene3d_widgets/Scene3DDockWidget.h
+  include/pj_scene3d_widgets/transform_service.h
+)
+
+add_library(pj_scene3d_widgets STATIC ${PJ_SCENE3D_WIDGETS_SOURCES})
+target_include_directories(pj_scene3d_widgets PUBLIC include)
+target_compile_features(pj_scene3d_widgets PUBLIC cxx_std_20)
+target_compile_options(pj_scene3d_widgets PRIVATE
+  ${PJ_WARNING_FLAGS} ${PJ_SANITIZER_FLAGS}
+)
+target_link_libraries(pj_scene3d_widgets
+  PUBLIC pj_scene3d_core pj_runtime pj_plugin_runtime_catalog pj_widgets Qt6::Widgets Qt6::OpenGLWidgets Qt6::Xml OpenGL::GL
+  PRIVATE pj_internal_fmt
+)

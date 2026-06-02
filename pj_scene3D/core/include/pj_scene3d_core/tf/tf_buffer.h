@@ -61,8 +61,10 @@ class TransformBuffer {
 
   // Insert or replace the edge for `tf.child_frame`. Returns the rejected-edge
   // reason instead of throwing, so a malformed edge in a bulk feed drops one
-  // edge rather than aborting the whole load.
-  PJ::Expected<void, SetTransformError> setTransform(const StampedTransform& tf, bool is_static = false);
+  // edge rather than aborting the whole load. There is no static/dynamic flag: a
+  // transform published once (/tf_static, however it is namespaced) is just a
+  // single-sample history that resolves at every later time via nearest-previous.
+  PJ::Expected<void, SetTransformError> setTransform(const StampedTransform& tf);
 
   // Throwing lookup (tf2 ergonomics): the SE(3) target<-source transform at
   // `stamp`, or throws std::runtime_error if unavailable. Thin wrapper over
@@ -77,8 +79,9 @@ class TransformBuffer {
   // True iff tryLookupTransform would succeed at `stamp`.
   bool canTransform(const std::string& target, const std::string& source, TimePoint stamp) const;
 
-  // Newest time at which every edge between the two frames has a sample (static
-  // edges impose no bound). nullopt if the frames are disconnected.
+  // Newest time at which every edge between the two frames has a sample
+  // (single-sample edges hold for all time, so they impose no bound). nullopt if
+  // the frames are disconnected.
   std::optional<TimePoint> latestCommonTime(const std::string& target, const std::string& source) const;
 
   std::vector<std::string> getAllFrames() const;
@@ -105,7 +108,6 @@ class TransformBuffer {
     using Sample = std::pair<TimePoint, Transform>;
 
     std::deque<Sample> samples;
-    bool is_static = false;
 
     static bool less_stamp(const Sample& sample, TimePoint stamp) {
       return sample.first < stamp;

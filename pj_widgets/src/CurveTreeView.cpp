@@ -25,6 +25,7 @@ constexpr int kSearchRole = Qt::UserRole + 1;
 constexpr int kObjectTopicRole = Qt::UserRole + 2;
 constexpr int kCatalogItemRole = Qt::UserRole + 3;
 constexpr int kImageTopicRole = Qt::UserRole + 4;
+constexpr int k3dObjectTopicRole = Qt::UserRole + 5;
 
 QStringList splitPath(const QString& name) {
   return name.split('/', Qt::SkipEmptyParts);
@@ -61,12 +62,21 @@ class CurveTreeItemDelegate : public QStyledItemDelegate {
     QStyleOptionViewItem opt(option);
     initStyleOption(&opt, index);
 
+    // A topic row may carry one of two trailing icons: image.svg for
+    // image-family topics, cube.svg for 3D-object topics. We
+    // suppress the standard left-side decoration and paint the icon at
+    // the right edge of the elided text. The two roles are mutually
+    // exclusive in practice (a topic is one builtin family), so we pick
+    // whichever role is set; image takes precedence if both happen.
     const bool draw_image_icon = index.column() == kNameColumn && index.data(kImageTopicRole).toBool();
-    const QIcon image_icon = opt.icon;
+    const bool draw_3d_object_icon =
+        !draw_image_icon && index.column() == kNameColumn && index.data(k3dObjectTopicRole).toBool();
+    const bool draw_trailing_icon = draw_image_icon || draw_3d_object_icon;
+    const QIcon trailing_icon = opt.icon;
     const QWidget* widget = opt.widget;
     const QStyle* style = widget != nullptr ? widget->style() : QApplication::style();
-    QRect image_icon_rect;
-    if (draw_image_icon) {
+    QRect trailing_icon_rect;
+    if (draw_trailing_icon) {
       constexpr int kIconExtent = 16;
       constexpr int kIconMargin = 4;
       opt.icon = {};
@@ -78,18 +88,18 @@ class CurveTreeItemDelegate : public QStyledItemDelegate {
       const int icon_left = std::min(
           text_rect.left() + opt.fontMetrics.horizontalAdvance(opt.text) + kIconMargin,
           text_rect.right() - kIconExtent + 1);
-      image_icon_rect = QRect(icon_left, option.rect.center().y() - (kIconExtent / 2), kIconExtent, kIconExtent);
+      trailing_icon_rect = QRect(icon_left, option.rect.center().y() - (kIconExtent / 2), kIconExtent, kIconExtent);
     }
 
     style->drawControl(QStyle::CE_ItemViewItem, &opt, painter, widget);
 
-    if (!draw_image_icon || image_icon.isNull()) {
+    if (!draw_trailing_icon || trailing_icon.isNull()) {
       return;
     }
 
     const QIcon::Mode mode = option.state.testFlag(QStyle::State_Enabled) ? QIcon::Normal : QIcon::Disabled;
     const QIcon::State state = option.state.testFlag(QStyle::State_Open) ? QIcon::On : QIcon::Off;
-    image_icon.paint(painter, image_icon_rect, Qt::AlignCenter, mode, state);
+    trailing_icon.paint(painter, trailing_icon_rect, Qt::AlignCenter, mode, state);
   }
 };
 
@@ -124,24 +134,32 @@ QString catalogKeyForItem(const QTreeWidgetItem* item) {
   return item->data(kNameColumn, kObjectTopicRole).toString();
 }
 
-void setImageTopicDecoration(QTreeWidgetItem* item, bool is_image_topic, const QString& theme) {
+void setTopicIconDecoration(QTreeWidgetItem* item, bool is_image_topic, bool is_3d_object_topic, const QString& theme) {
   if (item == nullptr) {
     return;
   }
   item->setData(kNameColumn, kImageTopicRole, is_image_topic);
-  const QIcon icon = is_image_topic ? QIcon(LoadSvg(QStringLiteral(":/resources/svg/image.svg"), theme)) : QIcon{};
+  item->setData(kNameColumn, k3dObjectTopicRole, is_3d_object_topic);
+  QIcon icon;
+  if (is_image_topic) {
+    icon = QIcon(LoadSvg(QStringLiteral(":/resources/svg/image.svg"), theme));
+  } else if (is_3d_object_topic) {
+    icon = QIcon(LoadSvg(QStringLiteral(":/resources/svg/cube.svg"), theme));
+  }
   item->setIcon(kNameColumn, icon);
 }
 
-void refreshImageTopicIcons(QTreeWidgetItem* item, const QString& theme) {
+void refreshTopicIcons(QTreeWidgetItem* item, const QString& theme) {
   if (item == nullptr) {
     return;
   }
   if (item->data(kNameColumn, kImageTopicRole).toBool()) {
     item->setIcon(kNameColumn, QIcon(LoadSvg(QStringLiteral(":/resources/svg/image.svg"), theme)));
+  } else if (item->data(kNameColumn, k3dObjectTopicRole).toBool()) {
+    item->setIcon(kNameColumn, QIcon(LoadSvg(QStringLiteral(":/resources/svg/cube.svg"), theme)));
   }
   for (int i = 0; i < item->childCount(); ++i) {
-    refreshImageTopicIcons(item->child(i), theme);
+    refreshTopicIcons(item->child(i), theme);
   }
 }
 }  // namespace
@@ -312,6 +330,7 @@ void CurveTreeView::addCurve(const CurvePath& path) {
           .field = path.field,
           .selectable = true,
           .is_image_topic = false,
+          .is_3d_object_topic = false,
       });
 }
 
@@ -344,7 +363,7 @@ void CurveTreeView::addCatalogItem(const CurvePath& path) {
       item->setData(kNameColumn, kObjectTopicRole, path.key);
       item->setData(kNameColumn, kCatalogItemRole, path.key);
       item->setFlags(item->flags() | Qt::ItemIsDragEnabled | Qt::ItemIsSelectable);
-      setImageTopicDecoration(item, path.is_image_topic, currentTheme());
+      setTopicIconDecoration(item, path.is_image_topic, path.is_3d_object_topic, currentTheme());
     }
   } else if (path.selectable) {
     const int last_sep = tree_path.lastIndexOf('/');
@@ -364,7 +383,7 @@ void CurveTreeView::addCatalogItem(const CurvePath& path) {
     item->setData(kNameColumn, kObjectTopicRole, path.key);
     item->setData(kNameColumn, kCatalogItemRole, path.key);
     item->setFlags(item->flags() | Qt::ItemIsDragEnabled | Qt::ItemIsSelectable);
-    setImageTopicDecoration(item, path.is_image_topic, currentTheme());
+    setTopicIconDecoration(item, path.is_image_topic, path.is_3d_object_topic, currentTheme());
   }
   item->setData(kNameColumn, kSearchRole, tree_path);
   sortTree();
@@ -387,7 +406,7 @@ void CurveTreeView::clearCurves() {
 
 void CurveTreeView::refreshIcons(const QString& theme) {
   for (int i = 0; i < topLevelItemCount(); ++i) {
-    refreshImageTopicIcons(topLevelItem(i), theme);
+    refreshTopicIcons(topLevelItem(i), theme);
   }
 }
 

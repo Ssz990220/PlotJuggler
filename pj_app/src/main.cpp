@@ -1,6 +1,7 @@
 #include <QApplication>
 #include <QCommandLineOption>
 #include <QCommandLineParser>
+#include <Qt>
 #include <cstdlib>
 
 #include "MainWindow.h"
@@ -15,6 +16,20 @@ int main(int argc, char* argv[]) {
   // popups. Style additionally suppresses default dialog-button icons
   // and the underline-mnemonic decoration.
   QApplication::setStyle(new PJ::Style(QStringLiteral("Fusion")));
+
+  // QOpenGLWidget (used by pj_scene3D's SceneViewWidget) creates a
+  // separate GL context per top-level window. ADS docking reparents
+  // dock widgets when the user splits, floats, or moves a dock, which
+  // moves the QOpenGLWidget to a new top-level — and with it, a new GL
+  // context. Without context sharing every reparent destroys the
+  // 3D scene's buffers, shaders, and textures, and they have to be
+  // recreated from scratch (currently we don't, so the scene goes
+  // blank). AA_ShareOpenGLContexts makes every QOpenGLContext in the
+  // process share resources, so the GL objects survive reparenting.
+  //
+  // Must be set BEFORE QApplication is constructed.
+  QApplication::setAttribute(Qt::AA_ShareOpenGLContexts);
+
   QApplication app(argc, argv);
   QCoreApplication::setOrganizationName(QStringLiteral("PlotJuggler"));
   QCoreApplication::setApplicationName(QStringLiteral("PlotJuggler4"));

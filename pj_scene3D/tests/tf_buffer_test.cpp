@@ -88,18 +88,88 @@ TEST(TransformBufferTest, ReparentingIsRejected) {
   EXPECT_EQ(result.error(), SetTransformError::ReparentConflict);
 }
 
-TEST(TransformBufferTest, StaticTransform) {
+// A transform published once resolves at its stamp and every later time, with no
+// static flag. This is how /tf_static is modelled now: a single-sample history
+// held forward by nearest-previous. /tf_static is conventionally stamped at (or
+// near) the recording start, so it covers the whole playback range.
+TEST(TransformBufferTest, SingleSampleHoldsForward) {
   TransformBuffer buffer;
   const auto transform = makeTranslation(42.0, -7.0, 3.0);
 
-  buffer.setTransform(makeStamped("world", "A", 123ns, transform), true);
+  buffer.setTransform(makeStamped("world", "A", TimePoint{}, transform));
 
   const auto distant_future = std::chrono::duration_cast<TimePoint>(std::chrono::hours(24));
-  const auto distant_past = -std::chrono::duration_cast<TimePoint>(std::chrono::hours(24));
-
   expectTranslation(buffer.lookupTransform("world", "A", TimePoint{}), 42.0, -7.0, 3.0);
   expectTranslation(buffer.lookupTransform("world", "A", distant_future), 42.0, -7.0, 3.0);
-  expectTranslation(buffer.lookupTransform("world", "A", distant_past), 42.0, -7.0, 3.0);
+
+  // Boundary of the unified model: a query strictly BEFORE the only sample has no
+  // value yet. For /tf_static stamped at the recording start this slice never
+  // occurs during playback. (Switch sampleAt to clamp-before-first if a late
+  // static stamp must still resolve earlier — a 2-line change.)
+  const auto distant_past = -std::chrono::duration_cast<TimePoint>(std::chrono::hours(24));
+  EXPECT_FALSE(buffer.tryLookupTransform("world", "A", distant_past).has_value());
+}
+
+// GNERSIS PR2 review item A1, reproduced at the core level. A namespaced
+// "/robot1/tf_static" edge used to be string-matched against "/tf_static" in
+// TransformService to decide static-ness, so namespaced static topics fell
+// through to dynamic and orphaned. The buffer is now told nothing about the
+// topic: a single sample at the recording start resolves for every later query
+// regardless of the topic name, so the bug cannot exist.
+TEST(TransformBufferTest, NamespacedStaticResolvesWithoutTopicHint) {
+  TransformBuffer buffer;
+  buffer.setTransform(makeStamped("base_link", "camera", TimePoint{}, makeTranslation(0.5, 0.0, 1.0)));
+
+  for (const TimePoint stamp : {TimePoint{0}, TimePoint{1'000'000'000}, TimePoint{999'000'000'000}}) {
+    const auto tf = buffer.tryLookupTransform("base_link", "camera", stamp);
+    ASSERT_TRUE(tf.has_value());
+    expectTranslation(*tf, 0.5, 0.0, 1.0);
+  }
+}
+
+// A re-latched static transform arrives several times with identical values but
+// increasing stamps. No special case: the vector keeps the samples and
+// nearest-previous resolves them, including far past the last stamp.
+TEST(TransformBufferTest, RepublishedStaticUsesNearestPrevious) {
+  TransformBuffer buffer(TransformBuffer::kKeepAll);
+  const auto value = makeTranslation(9.0, 0.0, 0.0);
+  for (const TimePoint stamp : {0s, 1s, 2s}) {
+    buffer.setTransform(makeStamped("map", "sensor", stamp, value));
+  }
+  expectTranslation(buffer.lookupTransform("map", "sensor", 0s), 9.0);
+  expectTranslation(buffer.lookupTransform("map", "sensor", 5s), 9.0);  // held forward past last stamp
+  const auto distant_future = std::chrono::duration_cast<TimePoint>(std::chrono::hours(24));
+  expectTranslation(buffer.lookupTransform("map", "sensor", distant_future), 9.0);
+}
+
+// A dynamic edge that stops updating keeps resolving at and after its last sample
+// forever — even under a finite (streaming) window — because eviction runs only
+// when THAT edge is written and never empties it. This is what the static flag
+// used to guarantee, now applied to every edge uniformly.
+TEST(TransformBufferTest, StoppedDynamicKeepsResolvingUnderFiniteWindow) {
+  TransformBuffer buffer(10ns);  // tiny rolling window
+  for (const TimePoint stamp : {0ns, 5ns, 10ns}) {
+    buffer.setTransform(makeStamped("odom", "base", stamp, makeTranslationFromStamp(stamp)));
+  }
+  // The edge stops here. A query far in the future still holds the last sample.
+  ASSERT_TRUE(buffer.tryLookupTransform("odom", "base", 1'000'000ns).has_value());
+  expectTranslation(buffer.lookupTransform("odom", "base", 1'000'000ns), 10.0);
+}
+
+// Under a finite window, a time jump much larger than the window evicts stale
+// samples, but the most recent one is pinned (samples.size() > 1 guard): the edge
+// is never emptied, so lookups at/after the jump resolve. Scrubbing back below the
+// retained tail orphans — the inherent cost of a finite window, absent under kKeepAll.
+TEST(TransformBufferTest, FiniteWindowPinsMostRecentSample) {
+  TransformBuffer buffer(10ns);
+  buffer.setTransform(makeStamped("map", "odom", 0ns, makeTranslation(0.0)));
+  buffer.setTransform(makeStamped("map", "odom", 100ns, makeTranslation(100.0)));  // jump >> window
+
+  // Most recent sample pinned and resolving...
+  ASSERT_TRUE(buffer.tryLookupTransform("map", "odom", 200ns).has_value());
+  expectTranslation(buffer.lookupTransform("map", "odom", 200ns), 100.0);
+  // ...older sample evicted: a scrub back below the retained tail has no value.
+  EXPECT_FALSE(buffer.tryLookupTransform("map", "odom", 50ns).has_value());
 }
 
 TEST(TransformBufferTest, Introspection) {
@@ -107,7 +177,7 @@ TEST(TransformBufferTest, Introspection) {
   const TimePoint stamp_a = 11ns;
 
   buffer.setTransform(makeStamped("world", "A", stamp_a, makeTranslation(1.0)));
-  buffer.setTransform(makeStamped("world", "B", 12ns, makeTranslation(2.0)), true);
+  buffer.setTransform(makeStamped("world", "B", 12ns, makeTranslation(2.0)));
   buffer.setTransform(makeStamped("A", "C", 13ns, makeTranslation(3.0)));
 
   const auto all_frames = buffer.getAllFrames();
@@ -131,10 +201,12 @@ TEST(TransformBufferTest, Introspection) {
   }
   EXPECT_FALSE(buffer.getLatestSample("nonexistent").has_value());
 
+  // B is now just a single-sample edge stamped at 12ns (no static special-case),
+  // so its latest sample is 12ns rather than the old static sentinel TimePoint{}.
   const auto latest_b = buffer.getLatestSample("B");
   EXPECT_TRUE(latest_b.has_value());
   if (latest_b.has_value()) {
-    EXPECT_EQ(*latest_b, TimePoint{});
+    EXPECT_EQ(*latest_b, 12ns);
   }
 }
 

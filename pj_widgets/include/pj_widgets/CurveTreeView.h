@@ -24,6 +24,7 @@ class CurveTreeView : public QTreeWidget {
     QString field;
     bool selectable = true;
     bool is_image_topic = false;
+    bool is_3d_object_topic = false;
   };
 
   // Hierarchical: split dataset/topic/field on every '/' (after '.' → '/').

@@ -21,6 +21,7 @@ namespace PJ {
 
 class CatalogModel;
 class IDataWidget;
+struct ObjectDropSeed;
 class PlotDocker;
 class PlotTabFrame;
 class SessionManager;
@@ -32,9 +33,10 @@ class SessionManager;
 class TabbedPlotWidget : public QWidget {
   Q_OBJECT
  public:
+  // Single object-widget factory used by both drop (seed != null) and layout
+  // restore (kind tag, seed == null). See DockWidget::ObjectWidgetFactory.
   using ObjectWidgetFactory =
-      std::function<IDataWidget*(ObjectTopicId, sdk::BuiltinObjectType, const QString&, QWidget*)>;
-  using EmptyObjectWidgetFactory = std::function<IDataWidget*(const QString& kind, QWidget* parent)>;
+      std::function<IDataWidget*(const QString& kind, const ObjectDropSeed* seed, QWidget* parent)>;
 
   explicit TabbedPlotWidget(QWidget* parent = nullptr);
   explicit TabbedPlotWidget(QString name, QWidget* parent = nullptr);
@@ -44,9 +46,6 @@ class TabbedPlotWidget : public QWidget {
   PlotDocker* addTab(QString name);
   void setDataServices(SessionManager* session, CatalogModel* catalog);
   void setObjectWidgetFactory(ObjectWidgetFactory factory);
-  // Sibling of setObjectWidgetFactory used during layout restore — builds
-  // an empty object widget keyed by an XML kind tag (e.g. "scene3d").
-  void setEmptyObjectWidgetFactory(EmptyObjectWidgetFactory factory);
 
   [[nodiscard]] int dockerCount() const;
   PlotDocker* dockerAt(int index);
@@ -137,7 +136,6 @@ class TabbedPlotWidget : public QWidget {
   SessionManager* session_ = nullptr;
   CatalogModel* catalog_ = nullptr;
   ObjectWidgetFactory object_widget_factory_;
-  EmptyObjectWidgetFactory empty_object_widget_factory_;
   QString name_;
   QString state_id_;
   int tab_suffix_count_ = 0;

@@ -15,6 +15,7 @@ namespace PJ {
 class CatalogModel;
 class DockWidget;
 class IDataWidget;
+struct ObjectDropSeed;
 class PlotFocusOverlay;
 class PlotWidget;
 class SessionManager;
@@ -25,12 +26,12 @@ class SessionManager;
 class PlotDocker : public ads::CDockManager {
   Q_OBJECT
  public:
+  // One factory for both paths. Layout restore calls it with the saved XML tag
+  // as `kind` and a null seed; a catalog drop calls it with an empty kind and a
+  // non-null seed. Null return = "not an object widget" (restore falls back to
+  // the plot path).
   using ObjectWidgetFactory =
-      std::function<IDataWidget*(ObjectTopicId, sdk::BuiltinObjectType, const QString&, QWidget*)>;
-  // Sibling of ObjectWidgetFactory used by layout restore: constructs an
-  // *empty* object widget keyed by the kind tag from the saved XML
-  // (e.g. "scene3d"). The caller then calls xmlLoadState() to populate.
-  using EmptyObjectWidgetFactory = std::function<IDataWidget*(const QString& kind, QWidget* parent)>;
+      std::function<IDataWidget*(const QString& kind, const ObjectDropSeed* seed, QWidget* parent)>;
 
   explicit PlotDocker(
       QString name, SessionManager* session = nullptr, CatalogModel* catalog = nullptr, QWidget* parent = nullptr);
@@ -44,7 +45,6 @@ class PlotDocker : public ads::CDockManager {
   }
   void setDataServices(SessionManager* session, CatalogModel* catalog);
   void setObjectWidgetFactory(ObjectWidgetFactory factory);
-  void setEmptyObjectWidgetFactory(EmptyObjectWidgetFactory factory);
   [[nodiscard]] QString stateId() const;
   void setStateId(QString id);
   [[nodiscard]] QDomElement xmlSaveState(QDomDocument& doc) const;
@@ -79,7 +79,6 @@ class PlotDocker : public ads::CDockManager {
   SessionManager* session_ = nullptr;
   CatalogModel* catalog_ = nullptr;
   ObjectWidgetFactory object_widget_factory_;
-  EmptyObjectWidgetFactory empty_object_widget_factory_;
   bool restoring_state_ = false;
   PlotFocusOverlay* focus_overlay_ = nullptr;
 };

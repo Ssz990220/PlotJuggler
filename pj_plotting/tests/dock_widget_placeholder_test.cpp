@@ -212,12 +212,17 @@ TEST(DockWidgetPlaceholderTest, ImageObjectDropConvertsPlaceholderToMedia2D) {
   PJ::PlotDocker docker(QStringLiteral("test"), &session, &catalog);
   bool factory_called = false;
   docker.setObjectWidgetFactory(
-      [&](PJ::ObjectTopicId topic_id, PJ::sdk::BuiltinObjectType object_type, const QString& title,
-          QWidget* parent) -> PJ::IDataWidget* {
+      [&](const QString& kind, const PJ::ObjectDropSeed* seed, QWidget* parent) -> PJ::IDataWidget* {
         factory_called = true;
-        EXPECT_EQ(topic_id, *object_topic);
-        EXPECT_EQ(object_type, PJ::sdk::BuiltinObjectType::kImage);
-        EXPECT_EQ(title, QStringLiteral("drive.mcap//camera/image_raw/compressed"));
+        // Drop path: empty kind, a seed carrying the dropped topic.
+        EXPECT_TRUE(kind.isEmpty());
+        EXPECT_NE(seed, nullptr);
+        if (seed != nullptr) {
+          EXPECT_EQ(seed->topic_id, *object_topic);
+          EXPECT_EQ(seed->object_type, PJ::sdk::BuiltinObjectType::kImage);
+          // Single dataset loaded -> title drops the redundant "drive.mcap/" prefix.
+          EXPECT_EQ(seed->title, QStringLiteral("/camera/image_raw/compressed"));
+        }
         return new FakeObjectWidget(parent);
       });
   auto* dock = docker.plotAt(0);
@@ -250,10 +255,9 @@ TEST(DockWidgetPlaceholderTest, ClearObjectContentRestoresPlaceholder) {
   ASSERT_EQ(items.size(), 1U);
 
   PJ::PlotDocker docker(QStringLiteral("test"), &session, &catalog);
-  docker.setObjectWidgetFactory(
-      [](PJ::ObjectTopicId, PJ::sdk::BuiltinObjectType, const QString&, QWidget* parent) -> PJ::IDataWidget* {
-        return new FakeObjectWidget(parent);
-      });
+  docker.setObjectWidgetFactory([](const QString&, const PJ::ObjectDropSeed*, QWidget* parent) -> PJ::IDataWidget* {
+    return new FakeObjectWidget(parent);
+  });
   auto* dock = docker.plotAt(0);
   ASSERT_NE(dock, nullptr);
   int undoable_count = 0;
@@ -273,6 +277,42 @@ TEST(DockWidgetPlaceholderTest, ClearObjectContentRestoresPlaceholder) {
   EXPECT_NE(dock->findChild<PJ::VisualizationPlaceholderWidget*>(), nullptr);
   EXPECT_EQ(dock->name(), QStringLiteral("..."));
   EXPECT_EQ(undoable_count, 2);
+}
+
+TEST(DockWidgetPlaceholderTest, RestoreRoutesObjectWidgetTagsToFactoryByKind) {
+  // Regression: a saved <scene2d> dock (and <scene3d>) must be recognized on
+  // restore and routed to the object-widget factory keyed by its XML tag. Before
+  // the generic-restore fix the layout parser collected only <plot> and
+  // <scene3d>, so <scene2d> docks silently vanished on reload.
+  for (const QString& kind : {QStringLiteral("scene2d"), QStringLiteral("scene3d")}) {
+    PJ::SessionManager session;
+    PJ::CatalogModel catalog(&session);
+    PJ::PlotDocker docker(QStringLiteral("test"), &session, &catalog);
+
+    QString seen_kind;
+    bool seed_was_null = false;
+    docker.setObjectWidgetFactory(
+        [&](const QString& factory_kind, const PJ::ObjectDropSeed* seed, QWidget* parent) -> PJ::IDataWidget* {
+          seen_kind = factory_kind;
+          seed_was_null = (seed == nullptr);
+          return new FakeObjectWidget(parent);
+        });
+
+    QDomDocument doc;
+    const QString xml = QStringLiteral(
+                            "<Tab id=\"t1\" containers=\"1\"><Container><DockArea id=\"a1\" name=\"View\">"
+                            "<%1/></DockArea></Container></Tab>")
+                            .arg(kind);
+    ASSERT_TRUE(doc.setContent(xml));
+
+    EXPECT_TRUE(docker.xmlLoadState(doc.documentElement()));
+    EXPECT_EQ(seen_kind, kind);
+    EXPECT_TRUE(seed_was_null);  // restore passes a null seed (the dock reloads from XML)
+    auto* dock = docker.plotAt(0);
+    ASSERT_NE(dock, nullptr);
+    EXPECT_NE(dock->objectWidget(), nullptr);
+    EXPECT_EQ(dock->plotWidget(), nullptr);
+  }
 }
 
 TEST(DockWidgetPlaceholderTest, PlaceholderAcceptsCatalogDragMoveAndIconDrop) {

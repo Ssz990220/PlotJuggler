@@ -379,13 +379,6 @@ void TabbedPlotWidget::setObjectWidgetFactory(ObjectWidgetFactory factory) {
   }
 }
 
-void TabbedPlotWidget::setEmptyObjectWidgetFactory(EmptyObjectWidgetFactory factory) {
-  empty_object_widget_factory_ = std::move(factory);
-  for (const TabEntry& entry : tabs_) {
-    entry.docker->setEmptyObjectWidgetFactory(empty_object_widget_factory_);
-  }
-}
-
 void TabbedPlotWidget::onAddTabButtonPressed() {
   addTab({});
   emit undoableChange();
@@ -468,7 +461,6 @@ void TabbedPlotWidget::updateSelectionStyle() {
 PlotDocker* TabbedPlotWidget::createDocker(const QString& tab_name) {
   auto* docker = new PlotDocker(tab_name, session_, catalog_, this);
   docker->setObjectWidgetFactory(object_widget_factory_);
-  docker->setEmptyObjectWidgetFactory(empty_object_widget_factory_);
   connect(docker, &PlotDocker::undoableChange, this, &TabbedPlotWidget::undoableChange);
   return docker;
 }

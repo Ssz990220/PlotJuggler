@@ -74,6 +74,7 @@
     <file alias="grid_view.svg">svg/grid_view.svg</file>
     <file alias="image.svg">svg/image.svg</file>
     <file alias="import.svg">svg/import.svg</file>
+    <file alias="invert.svg">svg/invert.svg</file>
     <file alias="keyboard_arrow_down_dark.svg">svg/keyboard_arrow_down_dark.svg</file>
     <file alias="keyboard_arrow_down_hover.svg">svg/keyboard_arrow_down_hover.svg</file>
     <file alias="keyboard_arrow_down_light.svg">svg/keyboard_arrow_down_light.svg</file>

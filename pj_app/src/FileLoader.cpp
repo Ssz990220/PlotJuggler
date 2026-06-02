@@ -32,6 +32,7 @@
 #include "pj_runtime/DataSourceRuntimeHost.h"
 #include "pj_runtime/ExtensionCatalogService.h"
 #include "pj_runtime/SessionManager.h"
+#include "pj_scene3d_widgets/transform_service.h"
 #include "pj_widgets/FileDialog.h"
 #include "pj_widgets/MessageBox.h"
 
@@ -527,6 +528,16 @@ bool FileLoader::loadFile(const QString& path, QWidget* dialog_parent, const Loa
   }
 
   catalog_.rebuildFromDatastore();
+
+  // Per pj_scene3D REQUIREMENTS §9: TF buffer is per-dataset, populated
+  // eagerly at MCAP load time. Synchronous so drag-dropping a 3D topic
+  // is instant — the cost lives in the (expected-to-be-slow) load path,
+  // not in interaction. Scene3DDockWidget borrows the shared buffer from
+  // the same TransformService. When no service is wired (non-3D builds)
+  // TF ingest is simply skipped.
+  if (transform_service_ != nullptr) {
+    transform_service_->ingestFrameTransformsForDataset(dataset_id);
+  }
 
   // Capture the plugin's canonical post-load state AFTER start() + ingest
   // so any state computed during the actual load (discovered fields,

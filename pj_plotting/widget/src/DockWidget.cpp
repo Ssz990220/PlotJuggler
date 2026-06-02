@@ -348,10 +348,13 @@ void DockWidget::onCatalogItemsDropped(const QStringList& keys) {
     return;
   }
 
-  // Helper: build the title string the factory expects from a catalog item —
-  // "dataset/topic" when the dataset name is known, else the bare topic.
-  const auto title_for = [](const auto& descriptor) {
-    return descriptor.dataset_name.isEmpty()
+  // Helper: build the title string the factory expects from a catalog item.
+  // With a single dataset loaded the dataset name is redundant noise in the
+  // object lists, so show just the topic; with multiple datasets keep the
+  // "dataset/topic" qualifier to disambiguate.
+  const bool single_dataset = (catalog_ != nullptr) && catalog_->datasets().size() <= 1;
+  const auto title_for = [single_dataset](const auto& descriptor) {
+    return (single_dataset || descriptor.dataset_name.isEmpty())
                ? descriptor.topic_name
                : QStringLiteral("%1/%2").arg(descriptor.dataset_name, descriptor.topic_name);
   };
@@ -392,7 +395,10 @@ void DockWidget::onCatalogItemsDropped(const QStringList& keys) {
   // the placeholder so the user sees an explicit "not supported" affordance.
   const QString title = title_for(*first_item);
   clearCurrentContent(true);
-  object_widget_ = object_widget_factory_(object_payload->object_topic_id, object_payload->object_type, title, this);
+  // Drop path: empty kind + a seed for the first topic. The factory classifies
+  // the object type, constructs the matching dock, and populates the seed.
+  const ObjectDropSeed seed{object_payload->object_topic_id, object_payload->object_type, title};
+  object_widget_ = object_widget_factory_(QString(), &seed, this);
   content_widget_ = object_widget_ != nullptr ? object_widget_->widget() : nullptr;
   if (content_widget_ == nullptr) {
     setPlaceholderWidget();

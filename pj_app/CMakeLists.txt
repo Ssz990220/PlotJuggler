@@ -32,6 +32,8 @@ add_executable(pj_app
     src/ui/CurveListPanel.cpp
     src/ui/CurveListPanel.h
     src/ui/CurveListPanel.ui
+    src/ui/Scene3DConfigPanel.cpp
+    src/ui/Scene3DConfigPanel.h
     src/ui/LeftPanel.cpp
     src/ui/LeftPanel.h
     src/ui/LeftPanel.ui
@@ -66,6 +68,7 @@ target_link_libraries(pj_app PRIVATE
     pj_widgets
     pj_plotting
     pj_scene2d_widgets
+    pj_scene3d_widgets
     pj_marketplace_ui
     pj_dialog_engine_qt
     qt_advanced_docking

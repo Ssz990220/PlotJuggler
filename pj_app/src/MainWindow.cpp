@@ -87,13 +87,17 @@
 #include "pj_runtime/ToolboxRuntimeHost.h"
 #include "pj_scene2d_widgets/Media2DDockWidget.h"
 #include "pj_scene2d_widgets/media_viewer_widget.h"
+#include "pj_scene3d_widgets/Scene3DDockWidget.h"
+#include "pj_scene3d_widgets/transform_service.h"
 #include "pj_widgets/FileDialog.h"
 #include "pj_widgets/FlowLayout.h"
 #include "pj_widgets/MessageBox.h"
 #include "pj_widgets/SvgUtil.h"
+#include "scene_object_classification.h"
 #include "ui/CurveListPanel.h"
 #include "ui/DiagnosticsDetailDialog.h"
 #include "ui/LeftPanel.h"
+#include "ui/Scene3DConfigPanel.h"
 #include "ui/TimelineWidget.h"
 #include "ui_MainWindow.h"
 
@@ -237,6 +241,10 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
       diagnostic_bridge_(new QtDiagnosticBridge(this)),
       session_(std::make_unique<AppSession>(std::move(extensions_dir), diagnostic_bridge_->sink())),
       theme_(std::make_unique<Theme>()) {
+  // The 3D transform service owns the per-dataset TF buffers + load-time
+  // ingest. It lives in the shell (not pj_runtime) so the runtime stays
+  // domain-neutral; it reads only SessionManager's neutral surface.
+  transform_service_ = std::make_unique<pj::scene3d::TransformService>(session_->sessionManager());
   // Pull saved icon metrics before setupUi so the literals we feed into
   // build*Toolbar() pick up the correct values on first paint. Widgets
   // that auto-construct from the .ui still draw at their default sizes
@@ -378,16 +386,70 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
 
   ui_->tabbedPlotWidget->setDataServices(&session_->sessionManager(), &session_->catalogModel());
   ui_->tabbedPlotWidget->setObjectWidgetFactory(
-      [this](
-          ObjectTopicId topic_id, sdk::BuiltinObjectType object_type, const QString& title,
-          QWidget* parent) -> IDataWidget* {
-        auto* widget = new Media2DDockWidget(parent);
-        widget->setSessionManager(&session_->sessionManager());
-        if (widget->setImageTopic(topic_id, object_type, title)) {
-          // Dropping a streaming topic into a view is what seeds the playback
-          // slider — not subscribing in the source dialog. Position the range
-          // over the streamed window and the playhead at the live edge
-          // ("now"); from here live ingest keeps it tracking the live edge.
+      [this](const QString& kind, const ObjectDropSeed* seed, QWidget* parent) -> IDataWidget* {
+        // One factory for both paths. Layout restore passes the saved XML tag as
+        // `kind` with a null seed (the dock reloads its own state); a catalog
+        // drop passes an empty kind with a seed, which we classify into a kind,
+        // construct, and populate. Family routing for v0:
+        //   image-ish (kImage, kDepthImage, kImageAnnotations) → scene2d
+        //   3D-ish    (kPointCloud, kFrameTransforms)          → scene3d
+        QString resolved_kind = kind;
+        if (resolved_kind.isEmpty() && seed != nullptr) {
+          // Image/2D is the default for any non-3D object topic here; the 2D
+          // dock surfaces an error for types its parser can't decode. (When the
+          // multi-layer 2D dock lands, this gains an explicit is2d guard.)
+          resolved_kind =
+              is3dSceneObjectType(seed->object_type) ? QStringLiteral("scene3d") : QStringLiteral("scene2d");
+        }
+        IDataWidget* widget = makeSceneDock(resolved_kind, parent);
+        if (widget == nullptr) {
+          // Unknown kind: on a drop, tell the user why nothing appeared; on
+          // restore (no seed) a null just means "not my kind" and is silent.
+          if (seed != nullptr) {
+            MessageBox::warning(
+                this, tr("Cannot display topic"),
+                tr("This object topic cannot be displayed (object_type=%1).").arg(static_cast<int>(seed->object_type)));
+          }
+          return nullptr;
+        }
+        if (seed == nullptr) {
+          // Restore path: hand back the empty dock; PlotDocker then calls
+          // xmlLoadState() to repopulate its topics and per-layer config.
+          return widget;
+        }
+
+        // Drop path: populate the first topic and apply view side-effects. The
+        // populate call is family-specific until Media2DDockWidget is replaced
+        // by the multi-topic Scene2DDockWidget (then both use tryAcceptObjectTopic).
+        QWidget* qwidget = widget->widget();
+        if (auto* scene3d = qobject_cast<Scene3DDockWidget*>(qwidget)) {
+          if (!scene3d->setSceneTopic(seed->topic_id, seed->object_type, seed->title)) {
+            scene3d->deleteLater();
+            MessageBox::warning(
+                this, tr("Cannot display topic"),
+                tr("This object topic cannot be displayed in a 3D view (object_type=%1). "
+                   "The 3D view requires a registered parser that emits a canonical "
+                   "PointCloud or FrameTransforms object.")
+                    .arg(static_cast<int>(seed->object_type)));
+            return nullptr;
+          }
+          // currentTimeChanged only fires on changes, so a brand-new widget
+          // never gets the current playhead — seed it now to render at the right
+          // time immediately.
+          scene3d->onTrackerTime(session_->playbackEngine().currentTime());
+        } else if (auto* media2d = qobject_cast<Media2DDockWidget*>(qwidget)) {
+          if (!media2d->setImageTopic(seed->topic_id, seed->object_type, seed->title)) {
+            media2d->deleteLater();
+            MessageBox::warning(
+                this, tr("Cannot display topic"),
+                tr("This object topic cannot be displayed in a 2D view (object_type=%1). "
+                   "Typically this means the source did not register a parser for the topic, "
+                   "or the type is not yet supported by the built-in viewer.")
+                    .arg(static_cast<int>(seed->object_type)));
+            return nullptr;
+          }
+          // Dropping a streaming topic seeds the playback slider over the
+          // streamed window with the playhead at the live edge.
           if (active_streaming_dataset_id_ != 0) {
             streaming_playback_seeded_ = true;
             if (const auto range = computeActiveStreamingRangeSec(); range.has_value()) {
@@ -396,21 +458,10 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
               engine.setCurrentTime(range->max);
             }
           }
-          widget->setPointInspectorEnabled(show_points_);
-          return widget;
+          media2d->setPointInspectorEnabled(show_points_);
+          media2d->onTrackerTime(session_->playbackEngine().currentTime());
         }
-        // Tear down the empty widget and tell the user *why* the drop did
-        // nothing. setImageTopic already logs the specific reason; this
-        // surfaces the failure to the GUI so the operator doesn't sit
-        // staring at an unchanged placeholder.
-        widget->deleteLater();
-        MessageBox::warning(
-            this, tr("Cannot display topic"),
-            tr("This object topic cannot be displayed in a 2D view (object_type=%1). "
-               "Typically this means the source did not register a parser for the topic, "
-               "or the type is not yet supported by the built-in viewer.")
-                .arg(static_cast<int>(object_type)));
-        return nullptr;
+        return widget;
       });
   connect(ui_->tabbedPlotWidget, &TabbedPlotWidget::tabAdded, this, &MainWindow::onPlotTabAdded);
   wireExistingPlots();
@@ -678,6 +729,7 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
 
   file_loader_ = std::make_unique<FileLoader>(
       session_->sessionManager(), session_->extensionCatalog(), session_->catalogModel(), this);
+  file_loader_->setTransformService(transform_service_.get());
   connect(ui_->leftPanel, &LeftPanel::loadDataRequested, this, &MainWindow::onLoadDataRequested);
   connect(ui_->leftPanel, &LeftPanel::reloadDataRequested, this, &MainWindow::onReloadDataRequested);
   connect(ui_->leftPanel, &LeftPanel::cloudToolboxRequested, this, &MainWindow::onCloudToolboxRequested);
@@ -791,7 +843,13 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
     return page;
   };
   scene2d_config_page_ = make_placeholder(tr("TODO: 2D configuration"));
-  scene3d_config_page_ = make_placeholder(tr("TODO: 3D configuration"));
+  scene3d_config_panel_ = new Scene3DConfigPanel(right_panel_stack_);
+  scene3d_config_page_ = scene3d_config_panel_;
+  // Push the active theme into the panel so its row icons paint in the
+  // right ink on first show, then keep them tracking subsequent theme
+  // toggles via the standard stylesheetChanged signal.
+  scene3d_config_panel_->onStylesheetChanged(theme_->currentTheme());
+  connect(this, &MainWindow::stylesheetChanged, scene3d_config_panel_, &Scene3DConfigPanel::onStylesheetChanged);
   empty_dock_page_ = make_placeholder(tr("No widget selected"));
   right_panel_stack_->addWidget(scene2d_config_page_);
   right_panel_stack_->addWidget(scene3d_config_page_);
@@ -832,6 +890,29 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
 
   pushInitialUndoState();
   updateUndoRedoActions();
+}
+
+IDataWidget* MainWindow::makeSceneDock(const QString& kind, QWidget* parent) {
+  // Single construct + wire site for object-widget docks, shared by the drop
+  // and layout-restore paths. Wiring (session / transform service / theme) is
+  // identical regardless of how the dock is later populated.
+  if (kind == QStringLiteral("scene3d")) {
+    auto* widget = new Scene3DDockWidget(parent);
+    widget->setSessionManager(&session_->sessionManager());
+    widget->setTransformService(transform_service_.get());
+    widget->setThemeHint(theme_->currentTheme());
+    // Keep the 3D background in sync with theme toggles for this dock's
+    // lifetime (auto-disconnected when `widget` is destroyed).
+    connect(
+        theme_.get(), &Theme::themeChanged, widget, [widget, this]() { widget->setThemeHint(theme_->currentTheme()); });
+    return widget;
+  }
+  if (kind == QStringLiteral("scene2d")) {
+    auto* widget = new Media2DDockWidget(parent);
+    widget->setSessionManager(&session_->sessionManager());
+    return widget;
+  }
+  return nullptr;
 }
 
 MainWindow::~MainWindow() {
@@ -2420,6 +2501,7 @@ void MainWindow::onDockFocused(DockWidget* dock) {
   // through to the empty page — "nothing to configure" is the honest
   // signal when there is no curve, image, or scene to act on.
   QWidget* target = empty_dock_page_;
+  Scene3DDockWidget* scene3d_dock = nullptr;
   if (dock != nullptr) {
     if (dock->plotWidget() != nullptr) {
       target = plot_config_page_;
@@ -2427,9 +2509,17 @@ void MainWindow::onDockFocused(DockWidget* dock) {
       QWidget* obj = dock->objectWidget()->widget();
       if (qobject_cast<Media2DDockWidget*>(obj) != nullptr) {
         target = scene2d_config_page_;
+      } else if (auto* s3d = qobject_cast<Scene3DDockWidget*>(obj); s3d != nullptr) {
+        target = scene3d_config_page_;
+        scene3d_dock = s3d;
       }
-      // Future: qobject_cast<Scene3DDockWidget*>(obj) -> scene3d_config_page_
     }
+  }
+  // Bind / unbind the 3D config panel BEFORE switching the stack so the
+  // page is already populated when it becomes visible. Passing nullptr
+  // when leaving a 3D dock detaches signal connections cleanly.
+  if (scene3d_config_panel_ != nullptr) {
+    scene3d_config_panel_->bindDock(scene3d_dock);
   }
   if (right_panel_stack_ != nullptr) {
     right_panel_stack_->setCurrentWidget(target);

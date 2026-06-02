@@ -24,6 +24,7 @@
 #include "pj_runtime/CatalogModel.h"
 #include "pj_widgets/CurveTreeView.h"
 #include "pj_widgets/SvgUtil.h"
+#include "scene_object_classification.h"
 #include "ui_CurveListPanel.h"
 
 namespace PJ {
@@ -42,6 +43,7 @@ CurveTreeView::CurvePath treePathFromCatalogItem(const CatalogItem& item) {
       .field = scalar != nullptr ? scalar->field_name : QString{},
       .selectable = scalar != nullptr,
       .is_image_topic = object_topic != nullptr && object_topic->object_type == sdk::BuiltinObjectType::kImage,
+      .is_3d_object_topic = object_topic != nullptr && is3dSceneObjectType(object_topic->object_type),
   };
 }
 

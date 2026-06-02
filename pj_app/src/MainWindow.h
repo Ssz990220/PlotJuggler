@@ -34,6 +34,10 @@ namespace Ui {
 class MainWindow;
 }
 
+namespace pj::scene3d {
+class TransformService;
+}  // namespace pj::scene3d
+
 namespace PJ {
 
 class AppSession;
@@ -41,6 +45,7 @@ class CurveEditor;
 class DiagnosticHistory;
 class DockWidget;
 class FileLoader;
+class IDataWidget;
 class PlotDocker;
 class PlotWidget;
 class QtDiagnosticBridge;
@@ -352,12 +357,22 @@ class MainWindow : public QMainWindow {
   bool presentPanel(QWidget* panel);
   void restoreCentralArea();
 
+  // Constructs + wires (but does not populate) an object-widget dock of the
+  // given kind ("scene3d" / "scene2d"). Shared by both the drop and the
+  // layout-restore paths of the object-widget factory; returns nullptr for an
+  // unknown kind.
+  IDataWidget* makeSceneDock(const QString& kind, QWidget* parent);
+
   Ui::MainWindow* ui_;
   QtDiagnosticBridge* diagnostic_bridge_ = nullptr;
   DiagnosticHistory* diagnostic_history_ = nullptr;
   QAction* undo_action_ = nullptr;
   QAction* redo_action_ = nullptr;
   std::unique_ptr<AppSession> session_;
+  // Owns the per-dataset 3D TF buffers + load-time ingest. Lives here in the
+  // shell (not pj_runtime) so the runtime stays domain-neutral. Declared after
+  // session_ so it is destroyed first (it holds a reference into session_).
+  std::unique_ptr<pj::scene3d::TransformService> transform_service_;
   std::unique_ptr<FileLoader> file_loader_;
   std::unique_ptr<StreamingSourceManager> streaming_manager_;
   // Active streaming dataset id while a session is live (0 = none).
@@ -410,6 +425,10 @@ class MainWindow : public QMainWindow {
   QWidget* plot_config_page_ = nullptr;
   QWidget* scene2d_config_page_ = nullptr;
   QWidget* scene3d_config_page_ = nullptr;
+  // Concrete widget instance behind scene3d_config_page_; held as a
+  // distinct member so onDockFocused() can call bindDock() on it
+  // without an extra qobject_cast.
+  class Scene3DConfigPanel* scene3d_config_panel_ = nullptr;
   // Shown when the focused dock holds the 3-icon
   // VisualizationPlaceholderWidget — nothing to configure yet.
   QWidget* empty_dock_page_ = nullptr;
