@@ -20,12 +20,14 @@
 #include <QSettings>
 #include <QSplitter>
 #include <QToolButton>
+#include <QTreeWidgetItem>
 #include <QWidgetAction>
 #include <algorithm>
 #include <array>
 
 #include "pj_runtime/CatalogModel.h"
 #include "pj_widgets/CurveTreeView.h"
+#include "pj_widgets/MessageBox.h"
 #include "pj_widgets/SvgUtil.h"
 #include "scene_object_classification.h"
 #include "ui_CurveListPanel.h"
@@ -121,7 +123,7 @@ CurveListPanel::CurveListPanel(QWidget* parent) : QWidget(parent), ui_(new Ui::C
   // QWidgetAction wraps a flat QPushButton so we can colour the text
   // red — QMenu's default item painter doesn't expose a per-action
   // colour the way QSS would for a regular QPushButton.
-  clear_all_button_ = new QPushButton(tr("Clear all curves"), datasets_menu);
+  clear_all_button_ = new QPushButton(tr("Remove all Datasets"), datasets_menu);
   clear_all_button_->setFlat(true);
   clear_all_button_->setProperty("destructive", true);
   // Padding, text-align, AND the destructive ${purple} colour
@@ -198,6 +200,9 @@ CurveListPanel::CurveListPanel(QWidget* parent) : QWidget(parent), ui_(new Ui::C
   auto drag_selection_provider = [this]() { return selectedCurveNamesForDrag(); };
   tree_view_->setDragSelectionProvider(drag_selection_provider);
   custom_view_->setDragSelectionProvider(drag_selection_provider);
+
+  tree_view_->setContextMenuPolicy(Qt::CustomContextMenu);
+  connect(tree_view_, &QWidget::customContextMenuRequested, this, &CurveListPanel::onTreeContextMenu);
 }
 
 CurveListPanel::~CurveListPanel() {
@@ -217,7 +222,7 @@ void CurveListPanel::setCatalog(CatalogModel* catalog) {
     return;
   }
   connect(catalog_, &CatalogModel::itemAdded, this, &CurveListPanel::onCatalogItemAdded);
-  connect(catalog_, &CatalogModel::itemRemoved, this, &CurveListPanel::onCatalogItemRemoved);
+  connect(catalog_, &CatalogModel::itemsRemoved, this, &CurveListPanel::onCatalogItemsRemoved);
   connect(catalog_, &CatalogModel::cleared, this, &CurveListPanel::onCatalogCleared);
 }
 
@@ -317,13 +322,50 @@ void CurveListPanel::onTrashClicked() {
   emit trashRequested(QStringList(selected.begin(), selected.end()), covers_all);
 }
 
+void CurveListPanel::onTreeContextMenu(const QPoint& pos) {
+  // Dataset is the only top-level group (label has no '/', has >=1 topic child).
+  // Topic/curve nodes get no menu.
+  QTreeWidgetItem* item = tree_view_->itemAt(pos);
+  if (item == nullptr || item->parent() != nullptr || item->childCount() == 0 || catalog_ == nullptr) {
+    return;
+  }
+  const QString dataset_name = item->text(0);
+  DatasetId dataset_id = 0;
+  bool found = false;
+  for (const auto& [id, name] : catalog_->datasets()) {
+    if (name == dataset_name) {
+      dataset_id = id;
+      found = true;
+      break;
+    }
+  }
+  if (!found) {
+    return;
+  }
+
+  QMenu menu(this);
+  menu.setObjectName(QStringLiteral("PJMenu"));
+  QAction* remove_action = menu.addAction(tr("Remove dataset"));
+  if (menu.exec(tree_view_->viewport()->mapToGlobal(pos)) != remove_action) {
+    return;
+  }
+
+  const int choice = MessageBox::question(
+      this, tr("Remove dataset"), tr("Are you sure you want to remove '%1' and its data?").arg(dataset_name),
+      {{tr("Remove"), MessageBox::DestructiveRole}, {tr("Cancel"), MessageBox::CancelRole}});
+  if (choice == 0) {
+    emit removeDatasetRequested(dataset_id);
+  }
+}
+
 void CurveListPanel::onCatalogItemAdded(const CatalogItem& item) {
   addCatalogItem(tree_view_, item);
 }
 
-void CurveListPanel::onCatalogItemRemoved(const QString& /*key*/) {
-  // TODO: add CurveTreeView::removeCurve(name) — linear rebuild is a
-  // prototype stand-in and wipes scroll / expansion / selection state.
+void CurveListPanel::onCatalogItemsRemoved(const QStringList& /*keys*/) {
+  // One rebuild per batch (a dataset / multi-key trash is a single itemsRemoved).
+  // TODO: incremental CurveTreeView::removeCurve(name); linear rebuild wipes
+  // scroll/expansion/selection.
   rebuildTree(tree_view_, catalog_);
 }
 

@@ -53,6 +53,19 @@ class SessionManager : public QObject {
   // Media2DDockWidget frame advance) act only when it is true.
   void notifyIngest(QVector<PJ::TopicId> ids, bool live = false);
 
+  // In-place reload swap: replace `primary_id`'s scalar + object data with the
+  // data staged under `staged_id` in `staged_engine`/`staged_store`, keeping the
+  // primary DatasetId/TopicId/ObjectTopicId — and thus every curve key and
+  // 2D-dock binding — STABLE. Ordered transaction: datasetAboutToBeReplaced ->
+  // DataEngine + ObjectStore replaceDatasetFrom -> re-register staged object
+  // parsers under the stable primary ids and drop removed ones -> notifyIngest.
+  // Runs NO event loop. Caller must stage into a throwaway engine/store, run no
+  // event loop between staging and this call, and rebuild the catalog after it
+  // returns (also with no event loop in between).
+  void replaceDataset(
+      DataEngine& staged_engine, ObjectStore& staged_store, DatasetId staged_id, DatasetId primary_id,
+      std::vector<std::pair<ObjectTopicId, std::unique_ptr<MessageParserHandle>>> staged_object_parsers);
+
   void registerObjectTopicParser(ObjectTopicId id, std::unique_ptr<MessageParserHandle> parser);
   [[nodiscard]] MessageParserPluginBase* parserForObjectTopic(ObjectTopicId id) const;
 
@@ -77,12 +90,26 @@ class SessionManager : public QObject {
     last_loaded_source_.reset();
   }
 
+  // Object eviction. DataEngine scalars are append-only, so dataset removal keeps
+  // them (catalog tombstone); ObjectStore canonical objects are heavy and
+  // evictable, so removal frees them outright.
+  void evictDatasetObjects(DatasetId dataset_id);
+  // Evicts a specific set of object topics (and their parsers), for trashing a
+  // selection of object-topic entries rather than a whole dataset.
+  void evictObjectTopics(const std::vector<ObjectTopicId>& topic_ids);
+  void clearAllObjects();
+
  signals:
   // Emitted when topics receive new samples (commit/ingest path). `live` is
   // true only for follow-live writers (streaming today). Cache-invalidation
   // consumers can drop the trailing arg; auto-pan/auto-fit consumers branch
   // on it.
   void samplesIngested(QVector<PJ::TopicId> ids, bool live);
+
+  // Emitted by replaceDataset just before a reload swaps a dataset's chunks in
+  // place. Bound plot adapters must synchronously drop cached chunk pointers; the
+  // DatasetId/TopicIds stay valid (unlike catalog removal), only chunks change.
+  void datasetAboutToBeReplaced(PJ::DatasetId dataset_id);
 
  private:
   struct ObjectParserSlot {

@@ -11,6 +11,7 @@
 #include <QMetaObject>
 #include <QPointer>
 #include <QString>
+#include <algorithm>
 
 #include "pj_base/builtin/asset_video.hpp"
 #include "pj_base/builtin/asset_video_codec.hpp"
@@ -71,7 +72,7 @@ Media2DDockWidget::~Media2DDockWidget() {
   if (viewer_ != nullptr) {
     viewer_->setMediaSource(nullptr);
   }
-  media_topic_source_.reset();
+  layers_.clear();
 }
 
 void Media2DDockWidget::setSessionManager(SessionManager* session) {
@@ -96,16 +97,14 @@ bool Media2DDockWidget::setImageTopic(
     return false;
   }
 
-  // Detach any previous source from the viewer BEFORE destroying it, mirroring
-  // the destructor discipline so a render mid-rebind cannot touch a freed
-  // source.
+  // Replace bound layer(s): detach + drop the old before building the new, so a
+  // render mid-rebind cannot touch a freed source (mirrors the destructor).
   if (viewer_ != nullptr) {
     viewer_->setMediaSource(nullptr);
   }
-  media_topic_source_.reset();
+  layers_.clear();
 
   ObjectStore& store = session_->objectStore();
-  topic_id_ = topic_id;
 
   // Video branch: file-backed video declared as a single sdk::AssetVideo entry
   // in ObjectStore. The MP4 itself is the random-access store; decoding the
@@ -142,14 +141,15 @@ bool Media2DDockWidget::setImageTopic(
     // [start_ns, end_ns]. Set unconditionally — absent bounds disable the
     // corresponding clamp, matching whole-file playback for single-clip mp4s.
     (*src)->setClipWindowNs(asset->start_ns, asset->end_ns);
-    media_topic_source_ = std::move(*src);
-    viewer_->setMediaSource(media_topic_source_.get());
+    addLayer(topic_id, std::move(*src));
     setWindowTitle(title.isEmpty() ? tr("2D View") : tr("2D View - %1").arg(title));
     // Bootstrap at file PTS 0. With the anchor applied, setTimestamp(anchor)
     // maps to file-relative 0. Unanchored video uses anchor=0 → setTimestamp(0).
     // The clip clamp (if set) ensures the bootstrap seek lands inside the
     // playable window, not before start_ns.
-    media_topic_source_->setTimestamp(asset->time_origin_ns.value_or(0));
+    if (MediaSource* bound = boundSource()) {
+      bound->setTimestamp(asset->time_origin_ns.value_or(0));
+    }
     viewer_->update();
     return true;
   }
@@ -202,8 +202,7 @@ bool Media2DDockWidget::setImageTopic(
     }
   });
 
-  media_topic_source_ = std::move(image_src);
-  viewer_->setMediaSource(media_topic_source_.get());
+  addLayer(topic_id, std::move(image_src));
   setWindowTitle(title.isEmpty() ? tr("2D View") : tr("2D View - %1").arg(title));
 
   // Streaming hookup: onTrackerTime() only fires on explicit seeks (the
@@ -214,15 +213,19 @@ bool Media2DDockWidget::setImageTopic(
     QObject::disconnect(live_samples_conn_);
   }
   live_samples_conn_ =
-      connect(session_, &SessionManager::samplesIngested, this, [this](const QVector<TopicId>&, bool live) {
-        if (!live || media_topic_source_ == nullptr || session_ == nullptr) {
+      connect(session_, &SessionManager::samplesIngested, this, [this, topic_id](const QVector<TopicId>&, bool live) {
+        if (!live || session_ == nullptr) {
+          return;
+        }
+        MediaSource* bound = boundSource();
+        if (bound == nullptr) {
           return;
         }
         ObjectStore& live_store = session_->objectStore();
-        if (live_store.entryCount(topic_id_) == 0) {
+        if (live_store.entryCount(topic_id) == 0) {
           return;
         }
-        media_topic_source_->setTimestamp(live_store.timeRange(topic_id_).second);
+        bound->setTimestamp(live_store.timeRange(topic_id).second);
       });
 
   if (store.entryCount(topic_id) == 0) {
@@ -234,8 +237,47 @@ bool Media2DDockWidget::setImageTopic(
   // Kick off the bootstrap frame asynchronously — the callback above will land
   // it in the viewer once the worker is done.
   const auto range = store.timeRange(topic_id);
-  media_topic_source_->setTimestamp(range.first);
+  if (MediaSource* bound = boundSource()) {
+    bound->setTimestamp(range.first);
+  }
   return true;
+}
+
+void Media2DDockWidget::addLayer(ObjectTopicId topic_id, std::unique_ptr<MediaSource> source) {
+  layers_.push_back(Layer{topic_id, std::move(source)});
+  rebindViewer();
+}
+
+void Media2DDockWidget::rebindViewer() {
+  if (viewer_ != nullptr) {
+    viewer_->setMediaSource(boundSource());
+  }
+}
+
+MediaSource* Media2DDockWidget::boundSource() const {
+  // Single source today. TODO(multi-layer): wrap ≥2 layers in a CompositeMediaSource
+  // (already tested) plus overlay-without-base render so a removed base still shows
+  // the remaining layers on a transparent bg.
+  return layers_.empty() ? nullptr : layers_.front().source.get();
+}
+
+bool Media2DDockWidget::revalidateObjects() {
+  if (session_ == nullptr || layers_.empty()) {
+    return !layers_.empty();
+  }
+  ObjectStore& store = session_->objectStore();
+  // A live topic carries a name; an evicted one resolves to the empty descriptor.
+  const auto is_dead = [&store](const Layer& layer) { return store.descriptor(layer.topic_id).topic_name.empty(); };
+  if (std::none_of(layers_.begin(), layers_.end(), is_dead)) {
+    return true;
+  }
+  // Detach before mutating so an in-flight render can't touch a freed source.
+  if (viewer_ != nullptr) {
+    viewer_->setMediaSource(nullptr);
+  }
+  layers_.erase(std::remove_if(layers_.begin(), layers_.end(), is_dead), layers_.end());
+  rebindViewer();
+  return !layers_.empty();
 }
 
 void Media2DDockWidget::onTrackerTime(double time) {
@@ -245,7 +287,7 @@ void Media2DDockWidget::onTrackerTime(double time) {
     return;
   }
 
-  if (media_topic_source_ != nullptr && session_ != nullptr) {
+  if (MediaSource* bound = boundSource(); bound != nullptr && session_ != nullptr) {
     // ImagePipelineSource: cheap (microseconds) — posts a target to its
     // worker thread; the decoded frame lands in pollPendingFrame() when the
     // worker fires its frame-ready callback.
@@ -254,7 +296,7 @@ void Media2DDockWidget::onTrackerTime(double time) {
     // takeFrame() via processEvents() and surfaces the frame; the explicit
     // update() below schedules that repaint. update() is coalesced by Qt
     // so the redundant call on the image branch is a no-op.
-    media_topic_source_->setTimestamp(ts);
+    bound->setTimestamp(ts);
     viewer_->update();
     return;
   }
@@ -268,10 +310,11 @@ void Media2DDockWidget::pollPendingFrame() {
   // FileVideoSource lets MediaViewerWidget::render() poll takeFrame() directly
   // (via processEvents()), so this slot is effectively a no-op for the video
   // branch.
-  if (viewer_ == nullptr || media_topic_source_ == nullptr) {
+  MediaSource* bound = boundSource();
+  if (viewer_ == nullptr || bound == nullptr) {
     return;
   }
-  auto frame = media_topic_source_->takeFrame();
+  auto frame = bound->takeFrame();
   if (!frame.has_value() || !frame->base.has_value()) {
     // Worker may fire the callback once per decode, but the latest result
     // was already taken by an earlier invocation (e.g. rapid coalesced

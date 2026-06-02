@@ -68,6 +68,10 @@ class DockWidget : public ads::CDockWidget, public IDataWidget {
 
  public slots:
   void onStylesheetChanged(QString theme);
+  // Resets the dock to the empty placeholder (same as the toolbar's "Clear").
+  // A slot so the shell (via QMetaObject::invokeMethod) can reset a dock whose
+  // bound data was evicted.
+  void clearToPlaceholder();
   DockWidget* splitHorizontal();
   DockWidget* splitVertical();
   DockWidget* splitHorizontal(PlotWidget* plot);
@@ -78,7 +82,6 @@ class DockWidget : public ads::CDockWidget, public IDataWidget {
   void plotWidgetCreated(PlotWidget* plot);
 
  private slots:
-  void clearToPlaceholder();
   void onCatalogItemsDropped(const QStringList& keys);
 
  private:

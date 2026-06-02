@@ -36,6 +36,11 @@ class PlotWidget : public PlotWidgetBase {
   CurveInfo* addCurve(const QString& name, QColor color = Qt::transparent);
   CurveInfo* addCurveXY(const QString& x_name, const QString& y_name, QColor color = Qt::transparent);
 
+  // Drops curves whose source key is gone from the catalog (XY drops if either X
+  // or Y source is gone), keeps the rest. One replot; returns whether anything
+  // changed. Symmetric with IObjectViewer::revalidateObjects.
+  bool revalidate();
+
   void setZoomRectangle(QRectF rect, bool emit_signal);
   [[nodiscard]] bool isZoomLinkEnabled() const noexcept;
   void setTrackerEnabled(bool enabled);
@@ -113,6 +118,7 @@ class PlotWidget : public PlotWidgetBase {
   SessionManager* session_ = nullptr;
   CatalogModel* catalog_ = nullptr;
   QMetaObject::Connection samples_ingested_connection_;
+  QMetaObject::Connection dataset_replace_connection_;
   DragInfo dragging_;
   CurveTracker* tracker_ = nullptr;
   CurveTracker* reference_tracker_ = nullptr;

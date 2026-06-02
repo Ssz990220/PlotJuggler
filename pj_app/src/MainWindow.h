@@ -146,6 +146,10 @@ class MainWindow : public QMainWindow {
   // Removes selected catalog entries from the curve/object tree.
   void onCatalogTrashRequested(QStringList keys, bool covers_all);
 
+  // Removes one whole dataset (right-click "Remove dataset", post-confirmation):
+  // tombstones its scalars and evicts its media. Widget sync is signal-driven.
+  void onRemoveDatasetRequested(DatasetId dataset_id);
+
   void onShowPreferencesDialog();
 
   // Rebuilds the title-bar Extensions popup from the current
@@ -242,6 +246,12 @@ class MainWindow : public QMainWindow {
   // Applies operation to each plot widget.
   void forEachPlot(const std::function<void(PlotWidget*)>& operation);
 
+  // Re-syncs every data widget to the catalog after a removal: each prunes its
+  // own dead pieces (plots drop dead curves; object viewers drop dead layers,
+  // resetting the dock to the placeholder when empty). Connected to the
+  // catalog's cleared()/itemsRemoved() signals.
+  void syncWidgetsToCatalog();
+
   // Icons not owned by a subwidget with its own onStylesheetChanged.
   void applyIcons(QString theme);
 
@@ -331,6 +341,12 @@ class MainWindow : public QMainWindow {
 
   // Initializes the undo stack with the post-construction state.
   void pushInitialUndoState();
+
+  // Discards undo/redo history and re-baselines from the current state. Called
+  // after a confirmed data removal: prior snapshots are serialized layouts that
+  // reference now-deleted curves by key, so replaying one would resurrect a
+  // layout pointing at missing data.
+  void resetUndoHistory();
 
   // Adds or replaces the newest undo snapshot.
   void pushUndoState(bool force_new_state = false);

@@ -26,6 +26,7 @@ The authoritative source is `include/pj_runtime/`. Today:
 | `ExtensionCatalogService.h` | Marketplace-backed extension catalog (queries `pj_marketplace`). |
 | `DiagnosticHistory.h` | Ring buffer of diagnostics surfaced via `pj_base::DiagnosticSink`. |
 | `IDataWidget.h` | The contract every data widget (plot / 2D / 3D) implements so playback can drive tracker updates without coupling to concrete widget types. |
+| `IObjectViewer.h` | The contract an object-store-backed viewer (e.g. a 2D image dock) implements so the shell can ask it to drop layers whose object topic was removed; returns whether any live layer remains. Pairs with `CatalogModel`'s `cleared()` / `itemsRemoved()` removal signals. |
 | `CurveDescriptor.h` | Stable identifier for a curve in the datastore. |
 
 ## Linked dependencies

@@ -4,9 +4,13 @@
 #include <gtest/gtest.h>
 
 #include <QString>
+#include <QStringList>
+#include <cstdint>
 #include <string>
 #include <vector>
 
+#include "pj_datastore/engine.hpp"
+#include "pj_datastore/object_store.hpp"
 #include "pj_datastore/writer.hpp"
 #include "pj_runtime/CatalogModel.h"
 #include "pj_runtime/SessionManager.h"
@@ -368,25 +372,51 @@ TEST(CatalogModelTest, RemoveDatasetIsIdempotent) {
   EXPECT_FALSE(catalog.removeDataset(*dataset_a)) << "second remove on the same id must be a no-op";
 }
 
-TEST(CatalogModelTest, RemoveDatasetEmitsClearedWhenEmptyingCatalog) {
+TEST(CatalogModelTest, RemoveDatasetEmitsClearedWhenItEmptiesTheCatalog) {
   PJ::SessionManager session;
   PJ::CatalogModel catalog(&session);
+  auto dataset = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "a.mcap"});
+  ASSERT_TRUE(dataset.has_value());
+  ASSERT_NE(addScalarTopic(session, *dataset, "/imu/accel/sample"), 0U);
+  ASSERT_NE(addScalarTopic(session, *dataset, "/gps/fix"), 0U);
 
+  int cleared = 0;
+  int items_removed_emissions = 0;
+  QObject::connect(&catalog, &PJ::CatalogModel::cleared, [&cleared] { ++cleared; });
+  QObject::connect(&catalog, &PJ::CatalogModel::itemsRemoved, [&items_removed_emissions](const QStringList&) {
+    ++items_removed_emissions;
+  });
+
+  EXPECT_TRUE(catalog.removeDataset(*dataset));
+  EXPECT_TRUE(catalog.items().empty());
+  EXPECT_EQ(cleared, 1) << "emptying the catalog emits cleared() once (cheap view reset, avoids O(N^2))";
+  EXPECT_EQ(items_removed_emissions, 0) << "no itemsRemoved churn when the whole catalog goes empty";
+}
+
+TEST(CatalogModelTest, RemoveDatasetEmitsOneBatchedItemsRemovedWhenOthersRemain) {
+  PJ::SessionManager session;
+  PJ::CatalogModel catalog(&session);
   auto dataset_a = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "a.mcap"});
   ASSERT_TRUE(dataset_a.has_value());
   ASSERT_NE(addScalarTopic(session, *dataset_a, "/imu/accel/sample"), 0U);
   ASSERT_NE(addScalarTopic(session, *dataset_a, "/gps/fix"), 0U);
-  ASSERT_EQ(catalog.items().size(), 2U);
+  auto dataset_b = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "b.mcap"});
+  ASSERT_TRUE(dataset_b.has_value());
+  ASSERT_NE(addScalarTopic(session, *dataset_b, "/vehicle/speed"), 0U);
 
-  int cleared_count = 0;
-  int item_removed_count = 0;
-  QObject::connect(&catalog, &PJ::CatalogModel::cleared, &catalog, [&]() { ++cleared_count; });
-  QObject::connect(&catalog, &PJ::CatalogModel::itemRemoved, &catalog, [&](const QString&) { ++item_removed_count; });
+  int cleared = 0;
+  int emissions = 0;
+  int total_keys = 0;
+  QObject::connect(&catalog, &PJ::CatalogModel::cleared, [&cleared] { ++cleared; });
+  QObject::connect(&catalog, &PJ::CatalogModel::itemsRemoved, [&](const QStringList& keys) {
+    ++emissions;
+    total_keys += static_cast<int>(keys.size());
+  });
 
   EXPECT_TRUE(catalog.removeDataset(*dataset_a));
-  EXPECT_EQ(cleared_count, 1) << "must emit a single cleared() when the wipe empties the catalog";
-  EXPECT_EQ(item_removed_count, 0)
-      << "must not also emit per-item itemRemoved — that's the O(N^2) regression we're guarding against";
+  EXPECT_EQ(cleared, 0) << "dataset_b remains, so no cleared()";
+  EXPECT_EQ(emissions, 1) << "one batched itemsRemoved, not one signal per key (no N replots downstream)";
+  EXPECT_EQ(total_keys, 2) << "the batch carries both dropped keys";
 }
 
 TEST(CatalogModelPathResolve, DatasetsEnumeratesLoadedDatasetsInLoadOrder) {
@@ -437,6 +467,96 @@ TEST(CatalogModelPathResolve, ReturnsNulloptForAbsentTopicOrField) {
 
   EXPECT_FALSE(catalog.descriptorForPath(*a, QStringLiteral("/no/such/topic"), QStringLiteral("value")).has_value());
   EXPECT_FALSE(catalog.descriptorForPath(*a, QStringLiteral("/vehicle/speed"), QStringLiteral("nope")).has_value());
+}
+
+// ===========================================================================
+// In-place reload (DataEngine/ObjectStore::replaceDatasetFrom) keeps curve/object
+// keys stable — the runtime guarantee that plots and 2D docks keep bindings.
+// ===========================================================================
+
+TEST(CatalogModelReloadTest, ScalarReplaceKeepsCurveKeyAndEmitsNoRemoval) {
+  PJ::SessionManager session;
+  PJ::CatalogModel catalog(&session);
+
+  auto primary = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "drive.mcap"});
+  ASSERT_TRUE(primary.has_value());
+  const PJ::TopicId topic = addScalarTopic(session, *primary, "/imu/accel/sample");
+  ASSERT_NE(topic, 0U);
+  catalog.rebuildFromDatastore();
+
+  const auto before = catalog.curves();
+  ASSERT_EQ(before.size(), 1U);
+  const QString key_before = before[0].name;
+
+  // Stage a same-source reload into a throwaway engine, then swap it in.
+  PJ::DataEngine staged;
+  auto staged_ds = staged.createDataset(PJ::DatasetDescriptor{.source_name = "drive.mcap"});
+  ASSERT_TRUE(staged_ds.has_value());
+  {
+    PJ::DataWriter writer = staged.createWriter();
+    auto handle = writer.registerScalarSeries(*staged_ds, "/imu/accel/sample", PJ::NumericType::kFloat64);
+    ASSERT_TRUE(handle.has_value());
+    writer.appendScalar(*handle, 200, 42.0);
+    staged.commitChunks(writer.flushAll());
+  }
+
+  int removed_emissions = 0;
+  bool cleared_emitted = false;
+  QObject::connect(&catalog, &PJ::CatalogModel::itemsRemoved, &catalog, [&removed_emissions](const QStringList&) {
+    ++removed_emissions;
+  });
+  QObject::connect(&catalog, &PJ::CatalogModel::cleared, &catalog, [&cleared_emitted]() { cleared_emitted = true; });
+
+  ASSERT_TRUE(session.dataEngine().replaceDatasetFrom(staged, *staged_ds, *primary).has_value());
+  catalog.rebuildFromDatastore();
+
+  const auto after = catalog.curves();
+  ASSERT_EQ(after.size(), 1U);
+  EXPECT_EQ(after[0].name, key_before) << "curve key must be stable across reload";
+  EXPECT_EQ(after[0].dataset_id, *primary);
+  EXPECT_EQ(after[0].topic_id, topic);
+  EXPECT_EQ(removed_emissions, 0) << "a surviving curve must not be reported removed";
+  EXPECT_FALSE(cleared_emitted);
+}
+
+TEST(CatalogModelReloadTest, ObjectReplaceKeepsObjectTopicKey) {
+  PJ::SessionManager session;
+  PJ::CatalogModel catalog(&session);
+
+  auto primary = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "drive.mcap"});
+  ASSERT_TRUE(primary.has_value());
+  auto obj =
+      session.objectStore().registerTopic({.dataset_id = *primary, .topic_name = "/cam/image", .metadata_json = "{}"});
+  ASSERT_TRUE(obj.has_value());
+  ASSERT_TRUE(session.objectStore().pushOwned(*obj, 100, std::vector<uint8_t>(4, 0)).has_value());
+  catalog.rebuildFromDatastore();
+
+  auto objectKey = [](const std::vector<PJ::CatalogItem>& items) -> QString {
+    for (const auto& item : items) {
+      if (PJ::isObjectTopic(item)) {
+        return item.key;
+      }
+    }
+    return {};
+  };
+  const QString key_before = objectKey(catalog.items());
+  ASSERT_FALSE(key_before.isEmpty());
+
+  PJ::ObjectStore staged;
+  auto staged_obj = staged.registerTopic({.dataset_id = 9, .topic_name = "/cam/image", .metadata_json = "{}"});
+  ASSERT_TRUE(staged_obj.has_value());
+  ASSERT_TRUE(staged.pushOwned(*staged_obj, 200, std::vector<uint8_t>(4, 1)).has_value());
+
+  int removed_emissions = 0;
+  QObject::connect(&catalog, &PJ::CatalogModel::itemsRemoved, &catalog, [&removed_emissions](const QStringList&) {
+    ++removed_emissions;
+  });
+
+  ASSERT_TRUE(session.objectStore().replaceDatasetFrom(staged, 9, *primary).has_value());
+  catalog.rebuildFromDatastore();
+
+  EXPECT_EQ(objectKey(catalog.items()), key_before) << "object topic key (ObjectTopicId) must be stable across reload";
+  EXPECT_EQ(removed_emissions, 0);
 }
 
 }  // namespace

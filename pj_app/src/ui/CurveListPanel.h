@@ -5,10 +5,12 @@
 #include <QCheckBox>
 #include <QDomDocument>
 #include <QDomElement>
+#include <QPoint>
 #include <QStringList>
 #include <QWidget>
 #include <vector>
 
+#include "pj_base/types.hpp"
 #include "pj_widgets/ChromeMetrics.h"
 
 class QAction;
@@ -55,6 +57,9 @@ class CurveListPanel : public QWidget {
   void trashRequested(QStringList names, bool covers_all);
   // Emitted when the user picks "Clear All" from the datasets menu.
   void clearAllCurvesRequested();
+  // Emitted after the user confirms "Remove dataset"; the panel has already
+  // resolved the dataset node to a DatasetId.
+  void removeDatasetRequested(DatasetId dataset_id);
 
  public slots:
   void onStylesheetChanged(QString theme);
@@ -79,10 +84,12 @@ class CurveListPanel : public QWidget {
   void onShowValuesToggled(bool show);
   void onPreserveTopicNameToggled(bool checked);
   void onTrashClicked();
+  // Right-click on a dataset node → "Remove dataset" + confirmation dialog.
+  void onTreeContextMenu(const QPoint& pos);
 
  private:
   void onCatalogItemAdded(const CatalogItem& item);
-  void onCatalogItemRemoved(const QString& key);
+  void onCatalogItemsRemoved(const QStringList& keys);
   void onCatalogCleared();
   void applyIcons(QString theme);
   std::vector<QString> selectedCurveNamesForDrag() const;

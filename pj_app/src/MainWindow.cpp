@@ -84,6 +84,7 @@
 #include "pj_runtime/CatalogModel.h"
 #include "pj_runtime/DiagnosticHistory.h"
 #include "pj_runtime/ExtensionCatalogService.h"
+#include "pj_runtime/IObjectViewer.h"
 #include "pj_runtime/PlaybackEngine.h"
 #include "pj_runtime/QSettingsBackend.h"
 #include "pj_runtime/SessionManager.h"
@@ -469,10 +470,26 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
   connect(ui_->tabbedPlotWidget, &TabbedPlotWidget::tabAdded, this, &MainWindow::onPlotTabAdded);
   wireExistingPlots();
   ui_->curveListPanel->setCatalog(&session_->catalogModel());
+
+  // Keep data widgets coherent with catalog removals, whoever triggers them.
+  // Each widget prunes its OWN pieces against the live catalog/store. One pass
+  // per removal.
+  connect(&session_->catalogModel(), &CatalogModel::cleared, this, [this]() { syncWidgetsToCatalog(); });
+  connect(&session_->catalogModel(), &CatalogModel::itemsRemoved, this, [this](const QStringList&) {
+    syncWidgetsToCatalog();
+  });
+
   connect(ui_->curveListPanel, &CurveListPanel::trashRequested, this, &MainWindow::onCatalogTrashRequested);
+  connect(ui_->curveListPanel, &CurveListPanel::removeDatasetRequested, this, &MainWindow::onRemoveDatasetRequested);
   connect(ui_->curveListPanel, &CurveListPanel::clearAllCurvesRequested, this, [this]() {
-    // Keep lastLoadedSource so reload can recover after clearing the catalog.
+    // Confirmed full wipe: free all objects before mutating the catalog, so the
+    // cleared() subscription sees the topics gone and resets the object viewers.
+    // Eviction lives at the confirmed-removal site, not in clearAll(), so the
+    // low-level catalog op stays safe for speculative callers. Keep
+    // lastLoadedSource for the quick-reload path (#99).
+    session_->sessionManager().clearAllObjects();
     session_->catalogModel().clearAll();
+    resetUndoHistory();
   });
 
   QSettings settings;
@@ -1007,16 +1024,49 @@ void MainWindow::onFileLoaded(
   // load dialog gains a prefix input.
   session_->sessionManager().recordLoadedSource(path, prefix, plugin_id, plugin_config_json);
   session_->seedPlaybackFromSession();
+  // A same-source reload evicts the old dataset's objects AFTER the removeDataset
+  // signal fired, so re-run the coherence pass here to reset any 2D viewer still
+  // bound to an evicted topic. Idempotent for a first/additive load.
+  syncWidgetsToCatalog();
   ui_->leftPanel->setReloadEnabled(true);
 }
 
 void MainWindow::onCatalogTrashRequested(QStringList keys, bool covers_all) {
+  CatalogModel& catalog = session_->catalogModel();
   if (covers_all) {
-    // Keep lastLoadedSource so reload can recover after clearing the catalog.
-    session_->catalogModel().clearAll();
+    // Free ObjectStore topics before the catalog wipe so the cleared()
+    // subscription sees them gone and resets 2D viewers (symmetric with the
+    // "Remove all Datasets" path). Keep lastLoadedSource for reload.
+    session_->sessionManager().clearAllObjects();
+    catalog.clearAll();
+    resetUndoHistory();
     return;
   }
-  session_->catalogModel().removeItems(std::vector<QString>(keys.begin(), keys.end()));
+  // Evict the trashed object topics before mutating the catalog, so the
+  // itemsRemoved subscription's revalidateObjects() (which checks the
+  // ObjectStore, not the catalog) drops their 2D layers. Scalar keys are ignored
+  // here (engine is append-only).
+  std::vector<ObjectTopicId> trashed_objects;
+  for (const QString& key : keys) {
+    if (const auto item = catalog.itemDescriptor(key); item.has_value()) {
+      if (const ObjectTopicPayload* obj = asObjectTopic(*item)) {
+        trashed_objects.push_back(obj->object_topic_id);
+      }
+    }
+  }
+  session_->sessionManager().evictObjectTopics(trashed_objects);
+  catalog.removeItems(std::vector<QString>(keys.begin(), keys.end()));
+  resetUndoHistory();
+}
+
+void MainWindow::onRemoveDatasetRequested(DatasetId dataset_id) {
+  // Confirmed removal: evict the dataset's objects first, then tombstone its
+  // scalars (kept in the engine). Order matters — the catalog's
+  // cleared()/itemsRemoved subscriptions then see the topics already gone and
+  // each widget prunes its own pieces (curves / object layers).
+  session_->sessionManager().evictDatasetObjects(dataset_id);
+  session_->catalogModel().removeDataset(dataset_id);
+  resetUndoHistory();
 }
 
 void MainWindow::onShowPreferencesDialog() {
@@ -1442,6 +1492,20 @@ void MainWindow::forEachPlot(const std::function<void(PlotWidget*)>& operation) 
   forEachDock([&operation](DockWidget* dock) {
     if (PlotWidget* plot = dock->plotWidget()) {
       operation(plot);
+    }
+  });
+}
+
+void MainWindow::syncWidgetsToCatalog() {
+  // Each widget prunes its OWN now-invalid pieces against the live catalog/store:
+  //  - plots drop curves whose source key is gone (empty plot stays, reusable);
+  //  - object viewers drop layers whose topic was evicted, reporting empty so the
+  //    shell resets that dock to the reusable placeholder.
+  forEachPlot([](PlotWidget* plot) { plot->revalidate(); });
+  forEachDock([](DockWidget* dock) {
+    auto* viewer = dynamic_cast<IObjectViewer*>(dock->objectWidget());
+    if (viewer != nullptr && !viewer->revalidateObjects()) {
+      dock->clearToPlaceholder();
     }
   });
 }
@@ -2438,6 +2502,13 @@ void MainWindow::pushInitialUndoState() {
   undo_states_.push_back(xmlSaveState().toByteArray(2));
   undo_timer_.start();
   updateUndoRedoActions();
+}
+
+void MainWindow::resetUndoHistory() {
+  // Re-baselining from the current state is what the initial push does. By the
+  // time a removal call returns, the synchronous catalog subscriptions have
+  // already pruned the widgets, so this snapshot is clean.
+  pushInitialUndoState();
 }
 
 void MainWindow::pushUndoState(bool force_new_state) {

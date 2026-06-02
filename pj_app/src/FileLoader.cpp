@@ -15,9 +15,11 @@
 #include <QString>
 #include <QStringList>
 #include <cstdint>
+#include <functional>
 #include <nlohmann/json.hpp>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 #include "DialogPresenter.h"
@@ -165,9 +167,10 @@ bool FileLoader::loadFile(const QString& path, QWidget* dialog_parent, const Loa
   const QString display_name = QFileInfo(path).fileName();
   const std::string display_name_utf8 = display_name.toStdString();
 
-  // Same-source handling: layout replay reuses the existing DatasetId;
-  // interactive load/reload hides matches before a fresh ingest. Matching
-  // still uses the file basename, so same-basename files remain ambiguous.
+  // Same-source handling: layout replay reuses the existing DatasetId; an interactive load/reload replaces the
+  // dataset's data in place, keeping its DatasetId/TopicIds (and so all curve keys) stable. Matching is by file
+  // basename, so same-basename files are one source.
+  DatasetId existing_primary_id = 0;
   for (const auto existing_id : engine.listDatasets()) {
     const DatasetInfo* info = engine.getDataset(existing_id);
     if (info == nullptr || info->source_name != display_name_utf8) {
@@ -187,25 +190,54 @@ bool FileLoader::loadFile(const QString& path, QWidget* dialog_parent, const Loa
       emit fileLoaded(path, QString(), source_name, emit_config);
       return true;
     }
-    // Interactive load/reload replaces the caller-visible dataset.
-    // The datastore keeps old data; the catalog tombstone hides it.
-    if (catalog_.removeDataset(existing_id)) {
-      tombstoned_for_replace.push_back(existing_id);
-    }
+    // Tombstone is deferred to the post-ingest swap (single-instance) or the fanout fallback below: don't disturb
+    // the live dataset until the staged ingest has succeeded.
+    existing_primary_id = existing_id;
+    break;
   }
 
-  auto dataset_or = engine.createDataset(DatasetDescriptor{.source_name = display_name_utf8, .time_domain_id = td_id});
+  // Ingest target. A first load writes straight into the live engine/store. A same-source reload stages into a
+  // throwaway secondary engine/store, so the primary stays live and readable until one synchronous swap after a
+  // successful ingest. Only the single-instance case swaps; a fanout reload falls back to the legacy path.
+  const bool replacing = (existing_primary_id != 0);
+  DataEngine staged_engine;
+  ObjectStore staged_store;
+  DataEngine& target_engine = replacing ? staged_engine : engine;
+  ObjectStore& target_store = replacing ? staged_store : session_.objectStore();
+  TimeDomainId target_td_id = td_id;
+  if (replacing) {
+    auto staged_td = staged_engine.createTimeDomain("default");
+    if (!staged_td.has_value()) {
+      return fail(tr("Could not create the staging time domain."));
+    }
+    target_td_id = *staged_td;
+  }
+
+  auto dataset_or =
+      target_engine.createDataset(DatasetDescriptor{.source_name = display_name_utf8, .time_domain_id = target_td_id});
   if (!dataset_or.has_value()) {
     return fail(tr("createDataset failed: %1").arg(QString::fromStdString(dataset_or.error())));
   }
 
   const auto dataset_id = static_cast<DatasetId>(*dataset_or);
   const PJ_data_source_handle_t source_handle{static_cast<uint32_t>(*dataset_or)};
+
+  // On the replace path the staged ObjectTopicIds are throwaway; collect the
+  // parsers and re-register them under the stable primary ids after the swap.
+  std::vector<std::pair<ObjectTopicId, std::unique_ptr<MessageParserHandle>>> staged_object_parsers;
+  DataSourceRuntimeHost::ObjectTopicParserRegistrar object_parser_registrar;
+  if (replacing) {
+    object_parser_registrar = [&staged_object_parsers](ObjectTopicId id, std::unique_ptr<MessageParserHandle> parser) {
+      staged_object_parsers.emplace_back(id, std::move(parser));
+    };
+  } else {
+    object_parser_registrar = [this](ObjectTopicId id, std::unique_ptr<MessageParserHandle> parser) {
+      session_.registerObjectTopicParser(id, std::move(parser));
+    };
+  }
   DataSourceRuntimeHost ingest_session(
-      engine, extensions_, dataset_id, source_handle, session_.objectStore(), source->id,
-      [this](ObjectTopicId id, std::unique_ptr<MessageParserHandle> parser) {
-        session_.registerObjectTopicParser(id, std::move(parser));
-      });
+      target_engine, extensions_, dataset_id, source_handle, target_store, source->id,
+      std::move(object_parser_registrar));
   applyDefaultIngestPolicies(ingest_session);
 
   ServiceRegistryBuilder registry;
@@ -385,7 +417,9 @@ bool FileLoader::loadFile(const QString& path, QWidget* dialog_parent, const Loa
     // identity, never relabels, so overriding after the curves are shown would
     // not reach the tree view on the initial load — mirror how fanout sets its
     // labels at createDataset time, before any topic is committed.
-    if (const QString plugin_name = detail::parseDisplayName(config); !plugin_name.isEmpty()) {
+    // On the replace path `dataset_id` is the throwaway staged id; the swap
+    // block applies the plugin name to the stable primary id instead.
+    if (const QString plugin_name = detail::parseDisplayName(config); !replacing && !plugin_name.isEmpty()) {
       catalog_.setDatasetDisplayName(dataset_id, plugin_name);
     }
     wireProgress(ingest_session);
@@ -410,11 +444,15 @@ bool FileLoader::loadFile(const QString& path, QWidget* dialog_parent, const Loa
       }
     }
   } else {
-    // Multi-instance fanout. The pre-dialog scratch dataset is now an empty
-    // orphan — pj_datastore has no removeDataset, so we accept the cost (an
-    // empty dataset has no committed topics, so CatalogModel::rebuildFromDatastore
-    // skips it — no phantom catalog entry). Each fanout entry mints its own
-    // handle + dataset + ingest_session. Continue-on-error per the user-confirmed
+    // A same-source reload that fans out cannot replace in place (one source becomes N datasets). Fall back to legacy
+    // replace: tombstone the existing dataset now (objects evicted past the rollback point below) and let the fanout
+    // create fresh datasets on the primary engine. The staged scratch is discarded with staged_engine.
+    if (replacing && catalog_.removeDataset(existing_primary_id)) {
+      tombstoned_for_replace.push_back(existing_primary_id);
+    }
+    // Multi-instance fanout. The first-load scratch dataset is now an empty orphan; pj_datastore has no removeDataset,
+    // but an empty dataset has no committed topics so CatalogModel::rebuildFromDatastore skips it (no phantom entry).
+    // Each fanout entry mints its own handle + dataset + ingest_session. Continue-on-error per the user-confirmed
     // policy: a bad entry does not lose the others.
     enum class EntryOutcome { Completed, Failed, Cancelled };
 
@@ -530,7 +568,29 @@ bool FileLoader::loadFile(const QString& path, QWidget* dialog_parent, const Loa
     }
   }
 
-  catalog_.rebuildFromDatastore();
+  // Past the last rollback point: the load committed. Reconcile the staged data (replace path) or the tombstones
+  // (legacy path) into the live session. A cancelled reload skips the swap, keeping the original data intact.
+  if (replacing && fanouts.size() == 1 && !user_cancelled) {
+    // Single-instance reload: in-place replace swap. SessionManager owns the ordered, no-event-loop swap (invalidate
+    // adapters -> engine + object replace -> parser remap -> re-index). It keeps the primary
+    // DatasetId/TopicIds/ObjectTopicIds — and so curve keys + 2D dock bindings — stable, so widgets keep their
+    // curves. Do not pump events before the catalog rebuild below.
+    session_.replaceDataset(
+        staged_engine, staged_store, dataset_id, existing_primary_id, std::move(staged_object_parsers));
+
+    // Re-apply the plugin's dataset-root name on the stable primary id (#98). An empty name clears a stale override.
+    catalog_.setDatasetDisplayName(existing_primary_id, detail::parseDisplayName(config));
+  } else {
+    // Legacy path (first load, or fanout-reload fallback). Tombstoned same-source datasets are now permanently gone;
+    // free their heavy ObjectStore topics (removeDataset only hid scalar data, which the engine keeps append-only).
+    // Eviction is deferred to here, not the tombstone site, because a mid-load failure rolls the tombstones back.
+    for (const DatasetId tombstoned_id : tombstoned_for_replace) {
+      session_.evictDatasetObjects(tombstoned_id);
+    }
+  }
+  tombstoned_for_replace.clear();
+
+  catalog_.rebuildFromDatastore();  // T6 (replace path): same keys ⇒ no spurious itemsRemoved
 
   // Per pj_scene3D REQUIREMENTS §9: TF buffer is per-dataset, populated
   // eagerly at MCAP load time. Synchronous so drag-dropping a 3D topic

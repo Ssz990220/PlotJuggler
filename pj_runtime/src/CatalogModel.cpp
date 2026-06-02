@@ -481,11 +481,15 @@ void CatalogModel::rebuildFromDatastore() {
     return;
   }
 
+  QStringList removed_keys;
   for (const auto& [key, descriptor] : previous_items) {
     (void)descriptor;
     if (impl_->items.find(key) == impl_->items.end()) {
-      emit itemRemoved(key);
+      removed_keys.push_back(key);
     }
+  }
+  if (!removed_keys.isEmpty()) {
+    emit itemsRemoved(removed_keys);
   }
 
   for (const auto& [key, descriptor] : impl_->items) {
@@ -539,40 +543,12 @@ void CatalogModel::setDatasetDisplayName(DatasetId dataset_id, const QString& di
   rebuildFromDatastore();
 }
 
-bool CatalogModel::removeDataset(DatasetId dataset_id) {
-  const auto inserted = impl_->removed_datasets.insert(dataset_id).second;
-  const auto had_per_item = impl_->removed_names_per_dataset.erase(dataset_id) > 0;
-
-  std::vector<QString> dropped;
-  for (auto it = impl_->items.begin(); it != impl_->items.end();) {
-    if (it->second.dataset_id == dataset_id) {
-      dropped.push_back(it->first);
-      it = impl_->items.erase(it);
-    } else {
-      ++it;
-    }
-  }
-
-  if (!inserted && !had_per_item && dropped.empty()) {
-    return false;
-  }
-
-  // Emptying the catalog gets one bulk-clear signal instead of N removals.
-  if (impl_->items.empty() && !dropped.empty()) {
-    emit cleared();
-  } else {
-    for (const QString& key : dropped) {
-      emit itemRemoved(key);
-    }
-  }
-  return true;
-}
-
 void CatalogModel::removeItems(const std::vector<QString>& keys) {
   // Accepts any catalog item kind. Object-topic keys are honored too, so the
   // trash/remove flow stays symmetric across scalar fields and object topics
   // — rebuildFromDatastore consults the same blacklist for both, so an entry
   // removed here will not silently come back on the next commit.
+  QStringList removed;
   for (const QString& key : keys) {
     const auto it = impl_->items.find(key);
     if (it == impl_->items.end()) {
@@ -581,12 +557,42 @@ void CatalogModel::removeItems(const std::vector<QString>& keys) {
     const DatasetId dataset_id = it->second.dataset_id;
     impl_->removed_names_per_dataset[dataset_id].insert(key);
     impl_->items.erase(it);
-    emit itemRemoved(key);
+    removed.push_back(key);
+  }
+  if (!removed.isEmpty()) {
+    emit itemsRemoved(removed);
   }
 }
 
 void CatalogModel::removeCurves(const std::vector<QString>& keys) {
   removeItems(keys);
+}
+
+bool CatalogModel::removeDataset(DatasetId dataset_id) {
+  std::vector<QString> keys;
+  for (const auto& [key, item] : impl_->items) {
+    if (item.dataset_id == dataset_id) {
+      keys.push_back(key);
+    }
+  }
+  if (keys.empty()) {
+    return false;
+  }
+  // Whole-dataset tombstone (vs removeItems' per-name blacklist): rebuildFromDatastore
+  // hides this id until a reload mints a new DatasetId or restoreDataset un-hides it.
+  impl_->removed_datasets.insert(dataset_id);
+  impl_->removed_names_per_dataset.erase(dataset_id);
+  for (const QString& key : keys) {
+    impl_->items.erase(key);
+  }
+  // Empty catalog: one cleared() (views reset in O(1)); otherwise one batched
+  // itemsRemoved so consumers react once, not per key.
+  if (impl_->items.empty()) {
+    emit cleared();
+  } else {
+    emit itemsRemoved(QStringList(keys.begin(), keys.end()));
+  }
+  return true;
 }
 
 }  // namespace PJ

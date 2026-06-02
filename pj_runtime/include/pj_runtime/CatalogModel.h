@@ -4,6 +4,7 @@
 
 #include <QObject>
 #include <QString>
+#include <QStringList>
 #include <cstddef>
 #include <memory>
 #include <optional>
@@ -97,6 +98,14 @@ class CatalogModel : public QObject {
   void removeItems(const std::vector<QString>& keys);
   void removeCurves(const std::vector<QString>& keys);
 
+  // Tombstones one dataset's items (hidden from future rebuildFromDatastore;
+  // scalar data stays in the DataEngine). Emits cleared() if it empties the
+  // catalog, else one batched itemsRemoved; returns false (no-op) if the dataset
+  // has no items. Pure catalog op — media eviction is the caller's job (shell
+  // evicts at confirmed-removal sites), so it stays safe for speculative/rollback
+  // use. Undo via restoreDataset(); a reload mints a fresh DatasetId.
+  bool removeDataset(DatasetId dataset_id);
+
   // Discards soft-delete tombstones and rebuilds from the datastore so a
   // resurrection path (e.g. layout load) can re-expose previously removed curves.
   void resetRemovalState();
@@ -115,16 +124,14 @@ class CatalogModel : public QObject {
   // dataset-reuse matching (by source_name) is unaffected.
   void setDatasetDisplayName(DatasetId dataset_id, const QString& display_name);
 
-  // Hides one dataset from the catalog and future rebuilds.
-  // Emits cleared() if it empties the catalog; otherwise emits itemRemoved().
-  bool removeDataset(DatasetId dataset_id);
-
  public slots:
   void rebuildFromDatastore();
 
  signals:
   void itemAdded(const CatalogItem& item);
-  void itemRemoved(const QString& key);
+  // One emission per removal operation (whole dataset, multi-key trash, or keys
+  // that vanished on a rebuild) so consumers react once, not per key.
+  void itemsRemoved(const QStringList& keys);
   void cleared();
 
  private:

@@ -653,6 +653,50 @@ void PlotWidget::removeAllCurves() {
   }
 }
 
+bool PlotWidget::revalidate() {
+  if (catalog_ == nullptr) {
+    return false;
+  }
+  // A curve is stale once its source key is gone from the catalog. Collect first,
+  // then remove: removeCurve() mutates curve_list, so removing while iterating
+  // would invalidate the iterator.
+  QStringList to_remove;
+  for (const CurveInfo& info : curveList()) {
+    if (info.curve == nullptr) {
+      continue;
+    }
+    if (const auto* adapter = dynamic_cast<const DatastoreCurveAdapter*>(info.curve->data())) {
+      if (!catalog_->curveDescriptor(adapter->source().name).has_value()) {
+        to_remove.push_back(info.source_name);
+      }
+    } else if (const auto* xy_series = dynamic_cast<const PointSeriesXY*>(info.curve->data())) {
+      if (!catalog_->curveDescriptor(xy_series->xSource().name).has_value() ||
+          !catalog_->curveDescriptor(xy_series->ySource().name).has_value()) {
+        to_remove.push_back(info.source_name);
+      }
+    }
+  }
+  if (to_remove.isEmpty()) {
+    return false;
+  }
+  for (const QString& source_name : to_remove) {
+    removeCurve(source_name);
+  }
+  // If revalidation drained every curve, mirror removeAllCurves()'s reset out of
+  // XY mode: onDragEnterEvent() only accepts an add_curve drop when !isXYPlot(),
+  // so a stuck-XY empty plot would reject every new curve dropped onto it.
+  if (curveList().empty()) {
+    setModeXY(false);
+    if (tracker_ != nullptr) {
+      tracker_->setEnabled(tracker_enabled_);
+      tracker_->redraw();
+    }
+  }
+  updateMaximumZoomArea();
+  replot();
+  return true;
+}
+
 bool PlotWidget::eventFilter(QObject* obj, QEvent* event) {
   if (PlotWidgetBase::eventFilter(obj, event)) {
     return true;
@@ -1032,6 +1076,9 @@ void PlotWidget::reconnectDataSignals() {
   if (samples_ingested_connection_) {
     disconnect(samples_ingested_connection_);
   }
+  if (dataset_replace_connection_) {
+    disconnect(dataset_replace_connection_);
+  }
   if (session_ == nullptr) {
     return;
   }
@@ -1073,6 +1120,31 @@ void PlotWidget::reconnectDataSignals() {
           replot();
         }
       });
+
+  // In-place reload swaps a dataset's chunks under our adapters, freeing the raw
+  // TopicChunk* they cache (sample_index_ / xy index). Drop those caches
+  // synchronously BEFORE the swap to avoid a UAF; bindings (DatasetId/TopicIds)
+  // stay valid and re-index on the next paint via the post-swap samplesIngested.
+  // Forced DirectConnection so the clear runs inline within the emit (same
+  // thread, never queued) — the no-event-loop UAF contract requires it.
+  dataset_replace_connection_ = connect(
+      session_, &SessionManager::datasetAboutToBeReplaced, this,
+      [this](DatasetId dataset_id) {
+        for (auto& info : curveList()) {
+          if (auto* adapter = dynamic_cast<DatastoreCurveAdapter*>(info.curve->data())) {
+            if (adapter->source().dataset_id == dataset_id) {
+              adapter->onDataCleared();
+            }
+            continue;
+          }
+          if (auto* xy_series = dynamic_cast<PointSeriesXY*>(info.curve->data())) {
+            if (xy_series->xSource().dataset_id == dataset_id || xy_series->ySource().dataset_id == dataset_id) {
+              xy_series->onDataCleared();
+            }
+          }
+        }
+      },
+      Qt::DirectConnection);
 }
 
 }  // namespace PJ
