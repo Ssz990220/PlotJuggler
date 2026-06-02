@@ -573,7 +573,13 @@ void CurveTreeView::mousePressEvent(QMouseEvent* event) {
     }
     if (item != nullptr && item->isSelected() && !(event->modifiers() & selection_modifiers)) {
       drag_curve_names_ = selectedCurveNamesForDrag();
-      if (drag_curve_names_.size() > 1) {
+      // A plain press on an already-selected row drags the WHOLE selection.
+      // Preserve it (suppress the release that would otherwise collapse it to
+      // the clicked row) whenever more than one row is selected — counting
+      // object/image topics too, which contribute catalog keys but no scalar
+      // curve names. The payload itself is read back from the live selection in
+      // createDragMimeData(), so it stays correct as long as we keep it intact.
+      if (drag_curve_names_.size() > 1 || selectedCatalogKeysRecursive().size() > 1) {
         suppress_next_release_ = true;
         event->accept();
         return;
@@ -604,21 +610,42 @@ void CurveTreeView::mouseMoveEvent(QMouseEvent* event) {
     return;
   }
 
-  auto names = drag_curve_names_.empty() ? selectedCurveNamesForDrag() : drag_curve_names_;
-  QStringList catalog_keys = drag_catalog_keys_;
-  if (catalog_keys.empty()) {
-    for (const QString& name : names) {
-      catalog_keys.push_back(name);
-    }
+  QMimeData* mime_data = createDragMimeData(drag_button_);
+  drag_button_ = Qt::NoButton;
+  drag_curve_names_.clear();
+  drag_catalog_keys_.clear();
+  if (mime_data == nullptr) {
+    return;
+  }
+
+  auto* drag = new QDrag(this);
+  drag->setMimeData(mime_data);
+  drag->exec(Qt::CopyAction | Qt::MoveAction);
+}
+
+QMimeData* CurveTreeView::createDragMimeData(Qt::MouseButton button) const {
+  const std::vector<QString> names = selectedCurveNamesForDrag();
+
+  // The catalog payload must carry EVERY selected item, not just the row under
+  // the cursor when the drag began. Object/image topics come from the recursive
+  // catalog walk; scalar curves (whose catalog key is their own name) are added
+  // from `names`, which also folds in a cross-view selection supplied by a drag
+  // selection provider.
+  QStringList catalog_keys;
+  for (const QString& key : selectedCatalogKeysRecursive()) {
+    catalog_keys.push_back(key);
+  }
+  for (const QString& name : names) {
+    catalog_keys.push_back(name);
   }
   catalog_keys.removeDuplicates();
 
-  if (names.empty() && catalog_keys.empty()) {
-    drag_button_ = Qt::NoButton;
-    drag_curve_names_.clear();
-    drag_catalog_keys_.clear();
-    QTreeWidget::mouseMoveEvent(event);
-    return;
+  // Left-button drag → add curve(s) to a plot; right-button drag of exactly two
+  // curves → XY scatter plot. Anything else is not a drag we initiate.
+  const bool left_add = button == Qt::LeftButton;
+  const bool right_xy = button == Qt::RightButton && names.size() == 2;
+  if ((!left_add && !right_xy) || (names.empty() && catalog_keys.empty())) {
+    return nullptr;
   }
 
   QByteArray encoded;
@@ -628,31 +655,16 @@ void CurveTreeView::mouseMoveEvent(QMouseEvent* event) {
   }
 
   auto* mime_data = new QMimeData();
+  // Plot-widget and placeholder drop sites match on these mime keys exactly.
   if (!catalog_keys.empty()) {
     mime_data->setData(catalogItemsMimeType(), encodeCatalogKeys(catalog_keys));
   }
-  // Left-button drag → add curve to a plot; right-button drag of exactly
-  // two curves → XY scatter plot. Plot-widget drop sites match on these
-  // mime keys exactly.
-  if (drag_button_ == Qt::LeftButton) {
-    if (!names.empty()) {
-      mime_data->setData("curveslist/add_curve", encoded);
-    }
-  } else if (drag_button_ == Qt::RightButton && names.size() == 2) {
-    mime_data->setData("curveslist/new_XY_axis", encoded);
-  } else {
-    delete mime_data;
-    drag_button_ = Qt::NoButton;
-    drag_curve_names_.clear();
-    return;
+  if (left_add && !names.empty()) {
+    mime_data->setData(QStringLiteral("curveslist/add_curve"), encoded);
+  } else if (right_xy) {
+    mime_data->setData(QStringLiteral("curveslist/new_XY_axis"), encoded);
   }
-
-  auto* drag = new QDrag(this);
-  drag->setMimeData(mime_data);
-  drag_button_ = Qt::NoButton;
-  drag_curve_names_.clear();
-  drag_catalog_keys_.clear();
-  drag->exec(Qt::CopyAction | Qt::MoveAction);
+  return mime_data;
 }
 
 void CurveTreeView::mouseReleaseEvent(QMouseEvent* event) {

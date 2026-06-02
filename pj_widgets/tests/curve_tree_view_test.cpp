@@ -5,6 +5,7 @@
 #include <QMouseEvent>
 #include <QTreeWidgetItem>
 #include <QtGlobal>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -265,6 +266,92 @@ TEST(CurveTreeViewTest, EncodesCatalogItemDragPayloads) {
   ASSERT_EQ(keys.size(), 2);
   EXPECT_EQ(keys[0], QStringLiteral("object:1"));
   EXPECT_EQ(keys[1], QStringLiteral("curve:1"));
+}
+
+// Regression: dragging a multi-selection onto an empty pane (which consumes the
+// catalog-key payload) must add every selected curve, not just one. The catalog
+// payload used to carry only the row under the cursor at press time.
+TEST(CurveTreeViewTest, DragPayloadCarriesEverySelectedScalarCurve) {
+  PJ::CurveTreeView view;
+  view.addCurve(QStringLiteral("vehicle/speed"));
+  view.addCurve(QStringLiteral("vehicle/rpm"));
+  view.addCurve(QStringLiteral("vehicle/temp"));
+
+  QTreeWidgetItem* group = view.topLevelItem(0);
+  ASSERT_NE(group, nullptr);
+  for (const char* leaf : {"speed", "rpm", "temp"}) {
+    QTreeWidgetItem* item = findChild(group, QString::fromLatin1(leaf));
+    ASSERT_NE(item, nullptr) << leaf;
+    item->setSelected(true);
+  }
+
+  std::unique_ptr<QMimeData> mime(view.createDragMimeData(Qt::LeftButton));
+  ASSERT_NE(mime, nullptr);
+
+  // Catalog payload — consumed when dropping on an empty pane / placeholder.
+  const QStringList catalog_keys = PJ::CurveTreeView::decodeCatalogKeys(mime.get());
+  EXPECT_EQ(catalog_keys.size(), 3);
+  EXPECT_TRUE(catalog_keys.contains(QStringLiteral("vehicle/speed")));
+  EXPECT_TRUE(catalog_keys.contains(QStringLiteral("vehicle/rpm")));
+  EXPECT_TRUE(catalog_keys.contains(QStringLiteral("vehicle/temp")));
+
+  // Curve-name payload — consumed when dropping on an existing plot.
+  ASSERT_TRUE(mime->hasFormat(QStringLiteral("curveslist/add_curve")));
+  QByteArray encoded = mime->data(QStringLiteral("curveslist/add_curve"));
+  QDataStream stream(&encoded, QIODevice::ReadOnly);
+  int curve_count = 0;
+  while (!stream.atEnd()) {
+    QString name;
+    stream >> name;
+    if (!name.isEmpty()) {
+      ++curve_count;
+    }
+  }
+  EXPECT_EQ(curve_count, 3);
+}
+
+// Regression: the same defect on the object-topic side — a multi-selection of
+// image/object topics (which carry no scalar curve names) must still ship every
+// selected catalog key.
+TEST(CurveTreeViewTest, DragPayloadCarriesEverySelectedObjectTopic) {
+  PJ::CurveTreeView view;
+  view.addCatalogItem(
+      PJ::CurveTreeView::CurvePath{
+          .key = QStringLiteral("object:a"),
+          .dataset = QStringLiteral("drive.mcap"),
+          .topic = QStringLiteral("/camera/front"),
+          .field = {},
+          .selectable = false,
+          .is_image_topic = true,
+      });
+  view.addCatalogItem(
+      PJ::CurveTreeView::CurvePath{
+          .key = QStringLiteral("object:b"),
+          .dataset = QStringLiteral("drive.mcap"),
+          .topic = QStringLiteral("/camera/rear"),
+          .field = {},
+          .selectable = false,
+          .is_image_topic = true,
+      });
+
+  QTreeWidgetItem* dataset = view.topLevelItem(0);
+  ASSERT_NE(dataset, nullptr);
+  QTreeWidgetItem* camera = findChild(dataset, QStringLiteral("camera"));
+  ASSERT_NE(camera, nullptr);
+  QTreeWidgetItem* front = findChild(camera, QStringLiteral("front"));
+  QTreeWidgetItem* rear = findChild(camera, QStringLiteral("rear"));
+  ASSERT_NE(front, nullptr);
+  ASSERT_NE(rear, nullptr);
+  front->setSelected(true);
+  rear->setSelected(true);
+
+  std::unique_ptr<QMimeData> mime(view.createDragMimeData(Qt::LeftButton));
+  ASSERT_NE(mime, nullptr);
+
+  const QStringList catalog_keys = PJ::CurveTreeView::decodeCatalogKeys(mime.get());
+  EXPECT_EQ(catalog_keys.size(), 2);
+  EXPECT_TRUE(catalog_keys.contains(QStringLiteral("object:a")));
+  EXPECT_TRUE(catalog_keys.contains(QStringLiteral("object:b")));
 }
 
 int main(int argc, char** argv) {

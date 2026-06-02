@@ -60,6 +60,15 @@ class CurveTreeView : public QTreeWidget {
   // selectedCurveNamesRecursive().
   std::vector<QString> selectedCatalogKeysRecursive() const;
 
+  // Builds the MIME payload for a drag of the current selection: the
+  // "curveslist/add_curve" / "curveslist/new_XY_axis" curve-name format and
+  // the catalog-key format, each covering EVERY selected row (not just the row
+  // under the cursor). Returns nullptr — and transfers ownership otherwise —
+  // when the selection has nothing draggable for `button`. Exposed for tests
+  // because the live drag path ends in a blocking QDrag::exec() that cannot be
+  // driven from a unit test.
+  [[nodiscard]] QMimeData* createDragMimeData(Qt::MouseButton button) const;
+
   void setValuesColumnHidden(bool hidden);
   bool valuesColumnHidden() const {
     return isColumnHidden(1);
