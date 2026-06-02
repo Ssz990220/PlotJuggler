@@ -25,8 +25,14 @@ see pj-official-plugins#122) decode ROS / CDR messages into canonical
   `pj_base`, `nlohmann_json`. Key headers:
   `core/include/pj_scene3d_core/{tf/tf_buffer.h, tf/transform.h,
   occupancy_grid_reconstructor.h, pointcloud.h}`.
-- `widgets/` — Qt `QOpenGLWidget` viewer, render passes, entities, and
-  `Scene3DDockWidget` (an `IDataWidget`). *Landing incrementally.*
+- `widgets/` — Qt viewer (`SceneViewWidget`, a native `QOpenGLWindow` embedded
+  via `QWidget::createWindowContainer` — *not* a `QOpenGLWidget`; the FBO
+  composite path re-uploaded the whole raster UI every repaint), render passes,
+  entities, and `Scene3DDockWidget` (an `IDataWidget`). The view has no QWidget
+  `contextMenuEvent`, so it detects a right-click and emits `contextMenuRequested`;
+  the dock re-injects a `QContextMenuEvent` on itself so the host shows the same
+  standard menu (Split Horizontally/Vertically, Clear) as other widgets.
+  *Landing incrementally.*
 
 # Validation
 

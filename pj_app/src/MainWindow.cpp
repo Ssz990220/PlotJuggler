@@ -395,8 +395,8 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
         // `kind` with a null seed (the dock reloads its own state); a catalog
         // drop passes an empty kind with a seed, which we classify into a kind,
         // construct, and populate. Family routing for v0:
-        //   image-ish (kImage, kDepthImage, kImageAnnotations) → scene2d
-        //   3D-ish    (kPointCloud, kFrameTransforms)          → scene3d
+        //   image-ish (kImage, kDepthImage, kImageAnnotations)  → scene2d
+        //   3D-ish    (kPointCloud, kFrameTransforms, kOccupancyGrid) → scene3d
         QString resolved_kind = kind;
         if (resolved_kind.isEmpty() && seed != nullptr) {
           // Image/2D is the default for any non-3D object topic here; the 2D

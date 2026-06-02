@@ -49,8 +49,13 @@ class TopicRowWidget : public QWidget {
  public:
   TopicRowWidget(
       ObjectTopicId topic_id, const QString& display_name, bool visible, const QString& theme, int row_height,
-      QWidget* parent)
-      : QWidget(parent), topic_id_(topic_id), current_theme_(theme), row_height_(row_height), full_name_(display_name) {
+      bool removable, QWidget* parent)
+      : QWidget(parent),
+        topic_id_(topic_id),
+        current_theme_(theme),
+        row_height_(row_height),
+        removable_(removable),
+        full_name_(display_name) {
     name_ = new ElidingLabel(this);
     // Left elide so the meaningful leaf (`/leaf_name`) stays visible as
     // the row narrows — the user explicitly asked for this and it
@@ -78,11 +83,15 @@ class TopicRowWidget : public QWidget {
     eye_->setFocusPolicy(Qt::NoFocus);
     eye_->setToolTip(tr("Toggle topic visibility"));
 
-    trash_ = new QToolButton(this);
-    trash_->setObjectName(QStringLiteral("curveTrashToggle"));
-    trash_->setAutoRaise(true);
-    trash_->setFocusPolicy(Qt::NoFocus);
-    trash_->setToolTip(tr("Remove this topic from the scene"));
+    // The TF display row is permanent, so it gets no trash button (removable
+    // == false). Everything else (eye toggle, name, drag) is unchanged.
+    if (removable_) {
+      trash_ = new QToolButton(this);
+      trash_->setObjectName(QStringLiteral("curveTrashToggle"));
+      trash_->setAutoRaise(true);
+      trash_->setFocusPolicy(Qt::NoFocus);
+      trash_->setToolTip(tr("Remove this topic from the scene"));
+    }
 
     refreshIcons();
 
@@ -90,7 +99,9 @@ class TopicRowWidget : public QWidget {
       eye_->setIcon(LoadSvg(checked ? kVisibilityOnPath : kVisibilityOffPath, current_theme_));
       emit visibilityToggled(topic_id_, checked);
     });
-    connect(trash_, &QToolButton::clicked, this, [this]() { emit removeClicked(topic_id_); });
+    if (trash_ != nullptr) {
+      connect(trash_, &QToolButton::clicked, this, [this]() { emit removeClicked(topic_id_); });
+    }
   }
 
   void setVisibleState(bool visible) {
@@ -155,9 +166,14 @@ class TopicRowWidget : public QWidget {
     const int h = height();
     const int total_w = width();
 
-    const int trash_x = total_w - h;
-    trash_->setGeometry(trash_x, 0, h, h);
-    const int eye_x = trash_x - kRowSpacing - h;
+    // With a trash button the eye sits to its left; without one (TF row) the
+    // eye takes the rightmost slot.
+    int eye_x = total_w - h;
+    if (trash_ != nullptr) {
+      const int trash_x = total_w - h;
+      trash_->setGeometry(trash_x, 0, h, h);
+      eye_x = trash_x - kRowSpacing - h;
+    }
     eye_->setGeometry(eye_x, 0, h, h);
 
     // Name claims the full width from the left edge up to the eye button,
@@ -182,13 +198,16 @@ class TopicRowWidget : public QWidget {
     const QSize sz(row_height_, row_height_);
     eye_->setIconSize(sz);
     eye_->setIcon(LoadSvg(eye_->isChecked() ? kVisibilityOnPath : kVisibilityOffPath, current_theme_));
-    trash_->setIconSize(sz);
-    trash_->setIcon(LoadSvg(kTrashIconPath, current_theme_));
+    if (trash_ != nullptr) {
+      trash_->setIconSize(sz);
+      trash_->setIcon(LoadSvg(kTrashIconPath, current_theme_));
+    }
   }
 
   ObjectTopicId topic_id_;
   QString current_theme_;
   int row_height_;
+  bool removable_ = true;
   QString full_name_;
   QString orphan_reason_;
   bool is_orphan_ = false;
@@ -332,6 +351,9 @@ void Scene3DConfigPanel::bindDock(Scene3DDockWidget* dock) {
   connect(dock, &Scene3DDockWidget::entityRemoved, this, &Scene3DConfigPanel::onDockEntityRemoved);
   connect(dock, &Scene3DDockWidget::entityVisibilityChanged, this, &Scene3DConfigPanel::onDockEntityVisibilityChanged);
   connect(dock, &Scene3DDockWidget::entityOrphanChanged, this, &Scene3DConfigPanel::onDockEntityOrphanChanged);
+  // TF binds with no entityAdded (e.g. a /tf-only drop), so rebuild the list
+  // when it announces presence to surface the permanent TF row.
+  connect(dock, &Scene3DDockWidget::tfPresenceChanged, this, [this](bool) { rebuildTopicList(); });
 }
 
 void Scene3DConfigPanel::disconnectFromDock() {
@@ -352,6 +374,7 @@ void Scene3DConfigPanel::rebuildTopicList() {
     auto* item = new QListWidgetItem(topics_list_);
     installRowWidget(item, info.topic_id, info.display_name, info.visible);
   }
+  appendTfRow();
   // Auto-select the first topic so the user sees a populated params
   // pane immediately on first drop.
   if (topics_list_->count() > 0) {
@@ -361,9 +384,34 @@ void Scene3DConfigPanel::rebuildTopicList() {
   }
 }
 
+void Scene3DConfigPanel::appendTfRow() {
+  if (bound_dock_ == nullptr || !bound_dock_->tfPresent()) {
+    return;
+  }
+  // TF is a permanent dataset-wide display (the axis triads), not a droppable
+  // topic — a fixed, non-removable row with just a name + visibility eye,
+  // pinned below the entity rows. Its eye drives the dock's TF visibility.
+  auto* item = new QListWidgetItem(topics_list_);
+  auto* row = new TopicRowWidget(
+      ObjectTopicId{0}, QStringLiteral("/tf"), bound_dock_->tfVisible(), current_theme_, kDefaultRowHeight,
+      /*removable=*/false, topics_list_);
+  item->setSizeHint(QSize(0, kDefaultRowHeight));
+  item->setToolTip(tr("Transform frames (TF) — always present"));
+  // Not drag-reorderable: it's pinned and carries no topic id, so it must not
+  // pollute the entity drag-reorder (onRowMoved reads kTopicIdRole).
+  item->setFlags(item->flags() & ~Qt::ItemIsDragEnabled);
+  topics_list_->setItemWidget(item, row);
+  connect(row, &TopicRowWidget::visibilityToggled, this, [this](ObjectTopicId, bool v) {
+    if (bound_dock_ != nullptr) {
+      bound_dock_->setTfVisible(v);
+    }
+  });
+}
+
 void Scene3DConfigPanel::installRowWidget(
     QListWidgetItem* item, ObjectTopicId topic_id, const QString& name, bool visible) {
-  auto* row = new TopicRowWidget(topic_id, name, visible, current_theme_, kDefaultRowHeight, topics_list_);
+  auto* row =
+      new TopicRowWidget(topic_id, name, visible, current_theme_, kDefaultRowHeight, /*removable=*/true, topics_list_);
   // Fixed height per row so QListWidget pre-computes positions identically
   // to CurveEditor; width comes from the viewport (0 stretches).
   item->setSizeHint(QSize(0, kDefaultRowHeight));
@@ -501,6 +549,9 @@ void Scene3DConfigPanel::rebuildFromOrder(const std::vector<int64_t>& ordered_id
         to_select = item;
       }
     }
+    // Re-pin the permanent TF row below the reordered entities — it carries no
+    // topic id, so it isn't part of ordered_ids and would otherwise be lost.
+    appendTfRow();
   }
   if (to_select != nullptr) {
     topics_list_->setCurrentItem(to_select);  // one selection signal → refresh params pane

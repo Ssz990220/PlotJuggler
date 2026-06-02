@@ -8,6 +8,8 @@
 #include <QStringList>
 #include <chrono>
 #include <cstdint>
+#include <memory>
+#include <mutex>
 #include <string>
 
 #include "pj_scene3d_widgets/passes/pointcloud_render_pass.h"
@@ -137,6 +139,9 @@ class PointCloudEntity : public Scene3DEntity {
   QString display_name_;
   Scene3DEntityContext ctx_;
   PJ::MessageParserPluginBase* parser_ = nullptr;
+  // Per-topic mutex serialising parseObject across all consumers of this
+  // topic's parser (SessionManager hands back a singleton). See parseLocked().
+  std::shared_ptr<std::mutex> parser_mutex_;
 
   std::string color_field_;
   QStringList available_color_fields_;

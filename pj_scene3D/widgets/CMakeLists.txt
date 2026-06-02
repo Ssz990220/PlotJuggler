@@ -8,23 +8,30 @@ set(PJ_SCENE3D_WIDGETS_SOURCES
   src/gl/program.cpp
   src/gl/vertex_array.cpp
   src/gl/debug.cpp
+  src/gl/texture.cpp
   src/gizmos/arrow_gizmo.cpp
   src/passes/axis_overlay_pass.cpp
   src/passes/axis_render_pass.cpp
   src/passes/grid_render_pass.cpp
   src/passes/pointcloud_render_pass.cpp
+  src/passes/occupancy_grid_render_pass.cpp
   src/render_pass.cpp
   src/camera.cpp
   src/scene_view_widget.cpp
   src/scene3d_entity.cpp
   src/entities/pointcloud_entity.cpp
+  src/entities/occupancy_grid_entity.cpp
   src/Scene3DDockWidget.cpp
   src/transform_service.cpp
   include/pj_scene3d_widgets/scene_view_widget.h
   include/pj_scene3d_widgets/scene3d_entity.h
   include/pj_scene3d_widgets/entities/pointcloud_entity.h
+  include/pj_scene3d_widgets/entities/occupancy_grid_entity.h
+  include/pj_scene3d_widgets/passes/occupancy_grid_render_pass.h
+  include/pj_scene3d_widgets/gl/texture.h
   include/pj_scene3d_widgets/Scene3DDockWidget.h
   include/pj_scene3d_widgets/transform_service.h
+  include/pj_scene3d_widgets/parse_locked.h
 )
 
 add_library(pj_scene3d_widgets STATIC ${PJ_SCENE3D_WIDGETS_SOURCES})

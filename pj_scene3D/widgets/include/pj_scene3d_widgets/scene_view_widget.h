@@ -90,8 +90,23 @@ class SceneViewWidget : public QOpenGLWindow {
     return fixed_frame_;
   }
 
+  // Show/hide the per-frame TF axis triads. The TF buffer is still used to
+  // transform entities regardless — this only gates drawing the axes. Default
+  // visible (TF is a first-class always-on display; see docs/REQUIREMENTS.md §4).
+  void setAxesVisible(bool visible);
+  [[nodiscard]] bool axesVisible() const {
+    return axes_visible_;
+  }
+
  signals:
   void framesChanged(const QList<FrameRow>& frames);
+
+  // Emitted on a right-button *click* — a press and release with no intervening
+  // drag (a right-*drag* still zooms the camera). `global_pos` is in screen
+  // coordinates, ready to hand to QMenu::exec. The view deliberately owns no
+  // menu: a QOpenGLWindow has no QWidget contextMenuEvent, and menu contents
+  // (entities, camera) are Scene3DDockWidget's concern, so the dock builds it.
+  void contextMenuRequested(const QPoint& global_pos);
 
  protected:
   void initializeGL() override;
@@ -124,7 +139,16 @@ class SceneViewWidget : public QOpenGLWindow {
 
   QList<FrameRow> last_frame_list_;
 
+  // Whether the TF axis triads are drawn (see setAxesVisible). Does not affect
+  // entity frame resolution, only the axes pass.
+  bool axes_visible_ = true;
+
   QPoint last_mouse_pos_;
+  // Press anchor + drag latch: distinguishes a right-*click* (opens the context
+  // menu) from a right-*drag* (zooms). press_pos_ is set on every press; the
+  // latch trips once the cursor leaves the platform drag threshold.
+  QPoint press_pos_;
+  bool dragged_since_press_ = false;
   Qt::MouseButton active_button_{Qt::NoButton};
 
   // -1 = unset (use palette luminance), 0 = light, 1 = dark.

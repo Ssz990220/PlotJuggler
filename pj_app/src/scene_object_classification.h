@@ -14,6 +14,7 @@ namespace PJ {
   switch (type) {
     case sdk::BuiltinObjectType::kPointCloud:
     case sdk::BuiltinObjectType::kFrameTransforms:
+    case sdk::BuiltinObjectType::kOccupancyGrid:
       return true;
     default:
       return false;

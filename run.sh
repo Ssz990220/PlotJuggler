@@ -36,13 +36,31 @@ BIN="${SCRIPT_DIR}/build/pj_app/pj_app"
 #   Env overrides: PJ_TRACE_API (gl|egl; try egl if the trace is empty),
 #                  PJ_TRACE_OUT (output path; default ./pj_app.trace).
 use_apitrace=0
+user_set_plugin_dir=0
 app_args=()
 for arg in "$@"; do
   case "$arg" in
     --apitrace) use_apitrace=1 ;;
+    --plugin-dir|--plugin-dir=*) user_set_plugin_dir=1; app_args+=("$arg") ;;
     *) app_args+=("$arg") ;;
   esac
 done
+
+# Default plugin discovery to the locally-built official plugins so a plain
+# `./run.sh` can open MCAP/CSV/etc. without a Marketplace install. The app's
+# built-in default (QStandardPaths AppDataLocation/extensions) is empty on a
+# dev box, so without this you get "No DataSource plugin handles .mcap files".
+# Build them with: (cd pj-official-plugins && ./build.sh). Overridable: pass
+# your own --plugin-dir, or set PJ_PLUGIN_DIR, to take precedence.
+DEFAULT_PLUGIN_DIR="${PJ_PLUGIN_DIR:-${SCRIPT_DIR}/pj-official-plugins/build/all/Release/bin}"
+if [ "$user_set_plugin_dir" -eq 0 ]; then
+  if [ -d "$DEFAULT_PLUGIN_DIR" ]; then
+    app_args+=("--plugin-dir" "$DEFAULT_PLUGIN_DIR")
+  else
+    echo "run.sh: no plugin dir at ${DEFAULT_PLUGIN_DIR} — data-source plugins (MCAP, CSV, …) won't load." >&2
+    echo "run.sh: build them with: (cd pj-official-plugins && ./build.sh)" >&2
+  fi
+fi
 
 if [ "$use_apitrace" -eq 1 ]; then
   if command -v apitrace >/dev/null 2>&1; then

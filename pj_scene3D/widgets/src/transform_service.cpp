@@ -7,6 +7,7 @@
 #include <chrono>
 #include <glm/glm.hpp>
 #include <glm/gtc/quaternion.hpp>
+#include <memory>
 
 #include "pj_base/builtin/builtin_object.hpp"
 #include "pj_base/builtin/frame_transforms.hpp"
@@ -15,6 +16,7 @@
 #include "pj_runtime/SessionManager.h"
 #include "pj_scene3d_core/tf/tf_buffer.h"
 #include "pj_scene3d_core/tf/transform.h"
+#include "pj_scene3d_widgets/parse_locked.h"
 
 namespace pj::scene3d {
 
@@ -57,6 +59,7 @@ void TransformService::ingestFrameTransformsForDataset(PJ::DatasetId dataset_id)
     if (parser == nullptr) {
       continue;
     }
+    auto parser_mutex = session_.parserMutexForObjectTopic(topic_id);
     const auto count = object_store.entryCount(topic_id);
     if (count == 0) {
       continue;
@@ -67,7 +70,7 @@ void TransformService::ingestFrameTransformsForDataset(PJ::DatasetId dataset_id)
     if (!first.has_value() || first->payload.bytes.empty()) {
       continue;
     }
-    auto probe_obj = parser->parseObject(first->timestamp, first->payload);
+    auto probe_obj = parseLocked(parser, parser_mutex, first->timestamp, first->payload);
     if (!probe_obj.has_value() || PJ::sdk::typeOf(probe_obj->object) != PJ::sdk::BuiltinObjectType::kFrameTransforms) {
       continue;
     }
@@ -84,7 +87,7 @@ void TransformService::ingestFrameTransformsForDataset(PJ::DatasetId dataset_id)
       if (!entry.has_value() || entry->payload.bytes.empty()) {
         continue;
       }
-      auto obj = parser->parseObject(entry->timestamp, entry->payload);
+      auto obj = parseLocked(parser, parser_mutex, entry->timestamp, entry->payload);
       if (!obj.has_value()) {
         continue;
       }

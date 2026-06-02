@@ -77,6 +77,10 @@ class Scene3DConfigPanel : public QWidget {
   // Create the per-row widget (eye toggle + name label + trash button) for
   // a topic and attach it to the given list item.
   void installRowWidget(QListWidgetItem* item, ObjectTopicId topic_id, const QString& name, bool visible);
+  // Append the permanent, non-removable TF display row (name + visibility eye,
+  // no trash) when the bound dock has TF. Called from every list rebuild so TF
+  // survives drag-reorders. No-op when the dock has no TF.
+  void appendTfRow();
   // Clear and re-add the topic rows in `ordered_ids`, re-selecting `select_id`.
   // Used after a drag-reorder so the rows (with their custom widgets) are rebuilt
   // deterministically rather than relying on QListWidget's item-move handling.

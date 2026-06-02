@@ -22,12 +22,14 @@
 #include <cstring>
 #include <glm/glm.hpp>
 #include <limits>
+#include <memory>
 #include <string_view>
 
 #include "pj_base/builtin/point_cloud.hpp"
 #include "pj_plugins/sdk/message_parser_plugin_base.hpp"
 #include "pj_runtime/SessionManager.h"
 #include "pj_scene3d_core/pointcloud.h"
+#include "pj_scene3d_widgets/parse_locked.h"
 #include "pj_widgets/ColorPickerPopup.h"
 #include "pj_widgets/DoubleScrubber.h"
 
@@ -365,6 +367,7 @@ bool PointCloudEntity::attach(const Scene3DEntityContext& ctx) {
   }
   ctx_ = ctx;
   parser_ = ctx_.session->parserForObjectTopic(topic_id_);
+  parser_mutex_ = ctx_.session->parserMutexForObjectTopic(topic_id_);
   if (parser_ == nullptr) {
     qCWarning(lcPointCloudEntity) << "attach: no parser for topic_id=" << topic_id_.id;
     return false;
@@ -387,6 +390,7 @@ bool PointCloudEntity::attach(const Scene3DEntityContext& ctx) {
 
 void PointCloudEntity::detach() {
   parser_ = nullptr;
+  parser_mutex_.reset();
   ctx_ = {};
   cloud_pass_.setActiveCloud(nullptr);
 }
@@ -835,7 +839,7 @@ bool PointCloudEntity::bootstrap() {
   if (!first.has_value() || first->payload.bytes.empty()) {
     return false;
   }
-  auto obj = parser_->parseObject(first->timestamp, first->payload);
+  auto obj = parseLocked(parser_, parser_mutex_, first->timestamp, first->payload);
   if (!obj.has_value()) {
     qCWarning(lcPointCloudEntity) << "bootstrap parseObject failed:" << QString::fromStdString(obj.error());
     return false;
@@ -876,7 +880,7 @@ void PointCloudEntity::renderAt(int64_t time_ns) {
   if (!resolved.has_value() || resolved->payload.bytes.empty()) {
     return;
   }
-  auto obj = parser_->parseObject(resolved->timestamp, resolved->payload);
+  auto obj = parseLocked(parser_, parser_mutex_, resolved->timestamp, resolved->payload);
   if (!obj.has_value()) {
     qCWarning(lcPointCloudEntity) << "renderAt parseObject failed:" << QString::fromStdString(obj.error());
     return;

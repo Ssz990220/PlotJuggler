@@ -6,6 +6,8 @@
 #include <QAbstractItemView>
 #include <QBoxLayout>
 #include <QComboBox>
+#include <QContextMenuEvent>
+#include <QCoreApplication>
 #include <QFontMetrics>
 #include <QLoggingCategory>
 #include <QResizeEvent>
@@ -13,17 +15,18 @@
 #include <algorithm>
 #include <cctype>
 #include <chrono>
-#include <limits>
 #include <unordered_set>
 #include <utility>
 
 #include "pj_base/builtin/builtin_object.hpp"
 #include "pj_runtime/SessionManager.h"
 #include "pj_scene3d_core/tf/tf_buffer.h"
+#include "pj_scene3d_core/tracker_time.h"
 // Concrete entity headers — each new drawable kind adds its include
 // here and a branch in addTopic's switch. Future work (post-v1) may
 // replace this with a Scene3DEntityFactory registry to support
 // plugin-provided drawables; until then, a switch is enough.
+#include "pj_scene3d_widgets/entities/occupancy_grid_entity.h"
 #include "pj_scene3d_widgets/entities/pointcloud_entity.h"
 #include "pj_scene3d_widgets/scene3d_entity.h"
 #include "pj_scene3d_widgets/scene_view_widget.h"
@@ -35,6 +38,7 @@ namespace {
 Q_LOGGING_CATEGORY(lcScene3DDock, "pj.scene3d.dock")
 
 using pj::scene3d::FrameRow;
+using pj::scene3d::OccupancyGridEntity;
 using pj::scene3d::PointCloudEntity;
 using pj::scene3d::Scene3DEntity;
 using pj::scene3d::Scene3DEntityContext;
@@ -100,6 +104,7 @@ Scene3DDockWidget::Scene3DDockWidget(QWidget* parent) : QWidget(parent) {
   layout->addWidget(view_container_, 1);
 
   connect(view_, &pj::scene3d::SceneViewWidget::framesChanged, this, &Scene3DDockWidget::onAvailableFrames);
+  connect(view_, &pj::scene3d::SceneViewWidget::contextMenuRequested, this, &Scene3DDockWidget::showViewContextMenu);
   refreshFrameOverlayCombo();
   connect(frame_overlay_combo_, &QComboBox::currentIndexChanged, this, &Scene3DDockWidget::onOverlayFramePicked);
 }
@@ -135,7 +140,8 @@ bool Scene3DDockWidget::tryAcceptObjectTopic(
   // trip the "unsupported object_type" warning inside addTopic for
   // drops we expect to refuse (e.g. an Image dropped onto a 3D widget
   // — the host catches the false return and constructs a Media2D).
-  if (object_type != sdk::BuiltinObjectType::kPointCloud && object_type != sdk::BuiltinObjectType::kFrameTransforms) {
+  if (object_type != sdk::BuiltinObjectType::kPointCloud && object_type != sdk::BuiltinObjectType::kFrameTransforms &&
+      object_type != sdk::BuiltinObjectType::kOccupancyGrid) {
     return false;
   }
   return addTopic(topic_id, object_type, title);
@@ -158,6 +164,11 @@ bool Scene3DDockWidget::addTopic(ObjectTopicId topic_id, sdk::BuiltinObjectType 
   if (!tf_buffer_ && transform_service_ != nullptr) {
     tf_buffer_ = transform_service_->transformBuffer(dataset_id);
     view_->setTransformBuffer(tf_buffer_);
+    // The TF buffer just bound: announce TF as a permanent display so the side
+    // panel adds its row even for a /tf-only drop (which emits no entityAdded).
+    if (tfPresent()) {
+      emit tfPresenceChanged(true);
+    }
   }
 
   // TF is dataset-wide. Dropping a /tf topic by itself binds the TF
@@ -175,6 +186,9 @@ bool Scene3DDockWidget::addTopic(ObjectTopicId topic_id, sdk::BuiltinObjectType 
   switch (object_type) {
     case sdk::BuiltinObjectType::kPointCloud:
       entity = std::make_unique<PointCloudEntity>(topic_id, display_name, this);
+      break;
+    case sdk::BuiltinObjectType::kOccupancyGrid:
+      entity = std::make_unique<OccupancyGridEntity>(topic_id, display_name, this);
       break;
     default:
       qCWarning(lcScene3DDock) << "addTopic: unsupported object_type" << static_cast<int>(object_type);
@@ -261,39 +275,23 @@ void Scene3DDockWidget::onTrackerTime(double time) {
 }
 
 int64_t Scene3DDockWidget::clampToEntityRange(int64_t time_ns) const {
-  if (entities_.empty()) {
-    return time_ns;
-  }
-  int64_t lo = std::numeric_limits<int64_t>::max();
-  int64_t hi = std::numeric_limits<int64_t>::lowest();
+  // Collect each entity's [first, last] and defer to the pure, tested clamp.
+  // The subtlety it gets right: a latched/one-shot grid (zero-span range, e.g.
+  // /map pinned to the recording start) lowers the lower bound — so the slider
+  // minimum snaps onto its exact ns — but must NOT cap the upper bound, or its
+  // lone early timestamp would drag the live playhead backwards and hide
+  // everything keyed to "now" (TF axes, live grids). See clampTrackerTimeToRanges
+  // and tracker_time_test.cpp.
+  std::vector<pj::scene3d::EntityTimeRange> ranges;
+  ranges.reserve(entities_.size());
   for (const auto& [key, entity] : entities_) {
     if (entity == nullptr) {
       continue;
     }
     const auto [first, last] = entity->timeRangeNs();
-    // Skip only inverted ranges, NOT single-entry topics (first == last). A
-    // one-shot/latched grid (e.g. /map_amcl, clamped to the recording's first
-    // timestamp) has a zero-span range; it must still contribute to [lo, hi] so
-    // the tracker time gets snapped onto its exact timestamp. Otherwise the
-    // playhead — carried as double seconds, which can't represent ns precision
-    // at epoch scale — lands a few hundred ns short and latestAt misses it, so
-    // the grid never shows at the slider minimum.
-    if (last < first) {
-      continue;
-    }
-    lo = std::min(lo, first);
-    hi = std::max(hi, last);
+    ranges.push_back({first, last});
   }
-  if (lo > hi) {
-    return time_ns;
-  }
-  if (time_ns < lo) {
-    return lo;
-  }
-  if (time_ns > hi) {
-    return hi;
-  }
-  return time_ns;
+  return pj::scene3d::clampTrackerTimeToRanges(time_ns, ranges);
 }
 
 void Scene3DDockWidget::absorbFallbackFrames(Scene3DEntity* entity) {
@@ -391,6 +389,20 @@ std::vector<Scene3DDockWidget::TopicInfo> Scene3DDockWidget::entities() const {
 bool Scene3DDockWidget::topicVisible(ObjectTopicId topic_id) const {
   auto it = entities_.find(topic_id.id);
   return it != entities_.end() && it->second != nullptr && it->second->info().visible;
+}
+
+bool Scene3DDockWidget::tfPresent() const {
+  return tf_buffer_ != nullptr && !tf_buffer_->getFrameHierarchy().empty();
+}
+
+bool Scene3DDockWidget::tfVisible() const {
+  return view_ != nullptr && view_->axesVisible();
+}
+
+void Scene3DDockWidget::setTfVisible(bool visible) {
+  if (view_ != nullptr) {
+    view_->setAxesVisible(visible);
+  }
 }
 
 Scene3DEntity* Scene3DDockWidget::entityFor(ObjectTopicId topic_id) const {
@@ -652,6 +664,19 @@ bool Scene3DDockWidget::xmlLoadState(const QDomElement& element) {
     setFixedFrameAutoRoot();
   }
   return true;
+}
+
+void Scene3DDockWidget::showViewContextMenu(const QPoint& global_pos) {
+  // The 3D view is a native QOpenGLWindow, so a right-click on it never reaches
+  // the QWidget tree as a QContextMenuEvent — which is exactly what the host
+  // DockWidget's event filter listens for to show the standard visualization
+  // menu (Split Horizontally / Split Vertically / Clear). Re-inject that event
+  // on ourselves (the IDataWidget content widget the host installs its filter
+  // on), so the 3D scene gets the identical menu to timeseries/2D widgets with
+  // no dependency on pj_plotting. If the widget is used un-hosted (demos), no
+  // filter is installed and this is simply a no-op.
+  QContextMenuEvent ev(QContextMenuEvent::Mouse, mapFromGlobal(global_pos), global_pos);
+  QCoreApplication::sendEvent(this, &ev);
 }
 
 }  // namespace PJ

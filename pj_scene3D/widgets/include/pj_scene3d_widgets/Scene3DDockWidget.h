@@ -124,6 +124,14 @@ class Scene3DDockWidget : public QWidget, public IDataWidget {
   [[nodiscard]] std::vector<TopicInfo> entities() const;
   [[nodiscard]] bool topicVisible(ObjectTopicId topic_id) const;
 
+  // TF is a dataset-wide display (the axis triads), not an ObjectStore topic, so
+  // it isn't in entities(). These let the side panel show it as a permanent,
+  // undeletable-but-hideable row. tfPresent() is true once the TF buffer is
+  // bound and has frames; tfVisible()/setTfVisible() gate drawing the axes.
+  [[nodiscard]] bool tfPresent() const;
+  [[nodiscard]] bool tfVisible() const;
+  void setTfVisible(bool visible);
+
   // Returns the entity for a given topic, or nullptr if not attached.
   // The Scene3DConfigPanel calls createConfigWidget on this when a topic
   // is selected — per-instance parameter UI is owned by the entity, not
@@ -172,6 +180,9 @@ class Scene3DDockWidget : public QWidget, public IDataWidget {
   void entityAdded(ObjectTopicId topic_id);
   void entityRemoved(ObjectTopicId topic_id);
   void entityVisibilityChanged(ObjectTopicId topic_id, bool visible);
+  // Fires once when the TF buffer binds, so the panel can add the permanent TF
+  // row even for a /tf-only drop (which emits no entityAdded).
+  void tfPresenceChanged(bool present);
   // The entity's source frame is (no longer) reachable from the dock's
   // currently selected fixed frame. `reason` is a localized message
   // suitable for a tooltip explaining why; empty when is_orphan == false.
@@ -202,6 +213,13 @@ class Scene3DDockWidget : public QWidget, public IDataWidget {
   // entity's source frame changes, or on entity attach. Emits
   // entityOrphanChanged for any entity whose state flipped.
   void recomputeOrphanStates();
+  // Bridge SceneViewWidget::contextMenuRequested (a right-click on the native
+  // QOpenGLWindow) into a QContextMenuEvent posted on this content widget, so
+  // the host DockWidget's existing context-menu filter shows the standard
+  // visualization menu (Split Horizontally / Split Vertically / Clear) — the
+  // same menu timeseries and 2D widgets get. Keeps pj_scene3D free of any
+  // pj_plotting dependency.
+  void showViewContextMenu(const QPoint& global_pos);
 
   SessionManager* session_ = nullptr;
   pj::scene3d::TransformService* transform_service_ = nullptr;

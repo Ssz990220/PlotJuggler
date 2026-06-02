@@ -10,6 +10,7 @@
 #include <QOpenGLVersionFunctionsFactory>
 #include <QPalette>
 #include <QSize>
+#include <QStyleHints>
 #include <QSurfaceFormat>
 #include <QWheelEvent>
 #include <algorithm>
@@ -65,6 +66,14 @@ void SceneViewWidget::setFixedFrame(const std::string& frame) {
     return;
   }
   fixed_frame_ = frame;
+  update();
+}
+
+void SceneViewWidget::setAxesVisible(bool visible) {
+  if (axes_visible_ == visible) {
+    return;
+  }
+  axes_visible_ = visible;
   update();
 }
 
@@ -206,7 +215,7 @@ void SceneViewWidget::paintGL() {
   const FrameContext frame_ctx{tf_ref, fixed_frame_, render_time_};
 
   grid_.render(view_params, frame_ctx);
-  if (tf_) {
+  if (tf_ && axes_visible_) {
     axes_.render(view_params, frame_ctx);
   }
   // Iterate entities in insertion order. Each entity is responsible
@@ -237,10 +246,18 @@ void SceneViewWidget::paintGL() {
 
 void SceneViewWidget::mousePressEvent(QMouseEvent* event) {
   last_mouse_pos_ = event->position().toPoint();
+  press_pos_ = last_mouse_pos_;
+  dragged_since_press_ = false;
   active_button_ = event->button();
 }
 
 void SceneViewWidget::mouseReleaseEvent(QMouseEvent* event) {
+  // A right-button release with no intervening drag is a context-menu click;
+  // a right-*drag* already zoomed the camera (mouseMoveEvent) and must not also
+  // pop a menu. The dock builds the actual QMenu (see contextMenuRequested).
+  if (event->button() == Qt::RightButton && !dragged_since_press_) {
+    emit contextMenuRequested(event->globalPosition().toPoint());
+  }
   // Clear the drag state on release. As a QOpenGLWidget this was masked (moves
   // only arrived while a button was held); as a native QOpenGLWindow the press
   // grabs the mouse and moves keep arriving, so without this the drag never
@@ -255,6 +272,12 @@ void SceneViewWidget::mouseMoveEvent(QMouseEvent* event) {
     return;
   }
   const QPoint current = event->position().toPoint();
+  // Latch a drag once the cursor leaves the platform drag threshold, so a
+  // right release past this point is treated as a zoom, not a menu click.
+  if (!dragged_since_press_ &&
+      (current - press_pos_).manhattanLength() > QGuiApplication::styleHints()->startDragDistance()) {
+    dragged_since_press_ = true;
+  }
   const QPoint delta = current - last_mouse_pos_;
   last_mouse_pos_ = current;
 
