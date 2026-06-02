@@ -140,6 +140,8 @@ target_compile_options(pj_marketplace_app PRIVATE ${PJ_WARNING_FLAGS})
 # Tests
 # ---------------------------------------------------------------------------
 
+if(PJ_BUILD_TESTS)
+
 # download_manager_test has its own main() to initialise QCoreApplication
 add_executable(download_manager_test tests/download_manager_test.cpp)
 target_link_libraries(download_manager_test PRIVATE pj_marketplace GTest::gtest Qt6::Test LibArchive::LibArchive)
@@ -213,3 +215,5 @@ target_compile_definitions(extension_manager_check_plugin_management PRIVATE
   RESULTS_DIR="${CMAKE_CURRENT_BINARY_DIR}/tests/results"
 )
 target_compile_options(extension_manager_check_plugin_management PRIVATE ${PJ_WARNING_FLAGS})
+
+endif() # PJ_BUILD_TESTS
