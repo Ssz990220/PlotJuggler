@@ -10,19 +10,29 @@
 
 namespace PJ {
 
+/// One ordered pixel layer in a MediaFrame. Layers are composited bottom to top.
+struct PixelLayer {
+  DecodedFrame frame;
+  float opacity = 1.0f;
+};
+
 /// Multi-layer frame produced by MediaSource at a given timestamp.
 ///
 /// `base` is the pixel-buffer layer (image, video, depth colormap, segmentation).
+/// `pixel_layers` are ordered pixel buffers, bottom to top. An empty
+/// `pixel_layers` vector means consumers should use the legacy single `base`
+/// as the pixel layer, so existing producers do not need to populate it.
 /// `overlays` are vector primitives drawn on top (annotations, markers).
 ///
-/// An empty MediaFrame (no base and no overlays) is a valid return — it signals
-/// "nothing new since the last takeFrame()".
+/// An empty MediaFrame (no base, no pixel layers, and no overlays) is a valid
+/// return — it signals "nothing new since the last takeFrame()".
 struct MediaFrame {
   std::optional<DecodedFrame> base;
+  std::vector<PixelLayer> pixel_layers;
   std::vector<SceneFrame> overlays;
 
   [[nodiscard]] bool empty() const noexcept {
-    return !base.has_value() && overlays.empty();
+    return !base.has_value() && pixel_layers.empty() && overlays.empty();
   }
 };
 

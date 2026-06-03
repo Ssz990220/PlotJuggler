@@ -7,6 +7,7 @@
 #include <QtGlobal>
 #include <chrono>
 #include <cstdint>
+#include <limits>
 #include <memory>
 #include <string>
 #include <unordered_map>
@@ -152,9 +153,20 @@ class FakeSceneDock : public PJ::SceneDockWidget {
     return refresh_count_;
   }
 
+  /// Makes the dock consume topics of this object type as scene-wide config
+  /// (no layer created), exercising the ConsumedAsConfig path.
+  void setConfigConsumeType(PJ::sdk::BuiltinObjectType type) {
+    config_consume_type_ = type;
+  }
+
  protected:
   QWidget* createSceneView() override {
     return new QWidget();
+  }
+
+  bool handleSceneConfigTopic(
+      PJ::ObjectTopicId /*topic_id*/, PJ::sdk::BuiltinObjectType object_type, const QString& /*title*/) override {
+    return object_type == config_consume_type_;
   }
 
   std::unique_ptr<PJ::SceneLayerContext> makeContext() override {
@@ -182,6 +194,7 @@ class FakeSceneDock : public PJ::SceneDockWidget {
  private:
   std::vector<int64_t> last_synced_ids_;
   int refresh_count_ = 0;
+  PJ::sdk::BuiltinObjectType config_consume_type_ = PJ::sdk::BuiltinObjectType::kNone;
 };
 
 }  // namespace
@@ -357,6 +370,78 @@ TEST(SceneDockWidgetTest, XmlSaveLoadRoundTripsLayersOrderVisibilityAndPayload) 
   EXPECT_EQ(restored_a->payload(), QStringLiteral("alpha"));
   EXPECT_EQ(restored_b->payload(), QStringLiteral("beta"));
   EXPECT_EQ(restored.lastSyncedIds(), infoIds(infos));
+}
+
+TEST(SceneDockWidgetTest, LayerAddedIsEmittedAfterViewIsReconciled) {
+  g_fake_layer_configs.clear();
+  FakeSceneDock dock;
+  std::vector<int64_t> synced_at_emit;
+  bool fired = false;
+  // Mutate -> reconcile view -> notify: the view must already include the new
+  // layer when observers (which may trigger a paint) react to layerAdded.
+  QObject::connect(&dock, &PJ::SceneDockWidget::layerAdded, &dock, [&](PJ::ObjectTopicId) {
+    synced_at_emit = dock.lastSyncedIds();
+    fired = true;
+  });
+
+  ASSERT_TRUE(dock.addTopic(topic(1), PJ::sdk::BuiltinObjectType::kPointCloud, QStringLiteral("cloud_a")));
+
+  EXPECT_TRUE(fired);
+  EXPECT_EQ(synced_at_emit, (std::vector<int64_t>{1}));
+}
+
+TEST(SceneDockWidgetTest, LayerRemovedIsEmittedAfterViewIsReconciled) {
+  g_fake_layer_configs.clear();
+  FakeSceneDock dock;
+  ASSERT_TRUE(dock.addTopic(topic(1), PJ::sdk::BuiltinObjectType::kPointCloud, QStringLiteral("cloud_a")));
+  ASSERT_TRUE(dock.addTopic(topic(2), PJ::sdk::BuiltinObjectType::kPointCloud, QStringLiteral("cloud_b")));
+
+  std::vector<int64_t> synced_at_emit;
+  bool fired = false;
+  // The view must already exclude the removed layer when observers react, so a
+  // paint-triggering slot never renders a composite bound to the detached layer.
+  QObject::connect(&dock, &PJ::SceneDockWidget::layerRemoved, &dock, [&](PJ::ObjectTopicId) {
+    synced_at_emit = dock.lastSyncedIds();
+    fired = true;
+  });
+
+  dock.removeTopic(topic(1));
+
+  EXPECT_TRUE(fired);
+  EXPECT_EQ(synced_at_emit, (std::vector<int64_t>{2}));
+}
+
+TEST(SceneDockWidgetTest, TrackerTimeIgnoresNonFiniteValues) {
+  g_fake_layer_configs.clear();
+  g_fake_layer_configs[1] = FakeLayerConfig{std::pair<int64_t, int64_t>{100, 200}};
+  FakeSceneDock dock;
+  ASSERT_TRUE(dock.addTopic(topic(1), PJ::sdk::BuiltinObjectType::kPointCloud, QStringLiteral("cloud_a")));
+  auto* layer = dynamic_cast<FakeLayer*>(dock.layerFor(topic(1)));
+  ASSERT_NE(layer, nullptr);
+  layer->clearTrackerTimes();
+
+  // NaN/inf carry no position; the dock must drop them rather than cast a
+  // non-finite double to int64 (undefined behavior) and forward garbage.
+  dock.onTrackerTime(std::numeric_limits<double>::quiet_NaN());
+  dock.onTrackerTime(std::numeric_limits<double>::infinity());
+
+  EXPECT_TRUE(layer->trackerTimesNs().empty());
+}
+
+TEST(SceneDockWidgetTest, ConfigTopicIsConsumedWithoutCreatingLayer) {
+  g_fake_layer_configs.clear();
+  FakeSceneDock dock;
+  dock.setConfigConsumeType(PJ::sdk::BuiltinObjectType::kImage);
+  int added_count = 0;
+  QObject::connect(&dock, &PJ::SceneDockWidget::layerAdded, &dock, [&](PJ::ObjectTopicId) { ++added_count; });
+
+  // A scene-wide config topic is accepted (addTopic == true) but spawns no layer
+  // and no layerAdded signal: the two meanings the typed AddOutcome separates.
+  EXPECT_TRUE(dock.addTopic(topic(5), PJ::sdk::BuiltinObjectType::kImage, QStringLiteral("config")));
+
+  EXPECT_EQ(added_count, 0);
+  EXPECT_EQ(dock.layerFor(topic(5)), nullptr);
+  EXPECT_TRUE(dock.layers().empty());
 }
 
 int main(int argc, char** argv) {

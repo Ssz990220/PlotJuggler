@@ -5,6 +5,7 @@
 #include <QTimer>
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <cstdint>
 #include <limits>
 #include <memory>
@@ -18,8 +19,6 @@
 namespace PJ {
 
 namespace {
-
-constexpr double kNanosecondsPerSecond = 1.0e9;
 
 [[nodiscard]] int64_t topicKey(ObjectTopicId topic_id) {
   return static_cast<int64_t>(topic_id.id);
@@ -59,48 +58,75 @@ bool SceneDockWidget::tryAcceptObjectTopic(
 }
 
 bool SceneDockWidget::addTopic(ObjectTopicId topic_id, sdk::BuiltinObjectType object_type, const QString& title) {
+  // Public accept/refuse contract: both "layer added" and "consumed as config"
+  // count as accepted. Callers needing the distinction use addLayer().
+  return addLayer(topic_id, object_type, title) != AddOutcome::Rejected;
+}
+
+SceneDockWidget::AddOutcome SceneDockWidget::addLayer(
+    ObjectTopicId topic_id, sdk::BuiltinObjectType object_type, const QString& title) {
   ensureSceneViewCreated();
   const int64_t key = topicKey(topic_id);
   if (layers_.find(key) != layers_.end()) {
-    return false;
+    return AddOutcome::Rejected;
   }
   if (handleSceneConfigTopic(topic_id, object_type, title)) {
-    return true;
-  }
-  if (!acceptsObjectType(object_type)) {
-    return false;
+    return AddOutcome::ConsumedAsConfig;
   }
 
+  std::unique_ptr<ISceneLayer> layer = createAndAttachLayer(topic_id, object_type, title);
+  if (layer == nullptr) {
+    return AddOutcome::Rejected;
+  }
+  wireLayerSignals(layer.get(), topic_id);
+  registerLayer(key, std::move(layer));
+
+  // Mutate -> reconcile view -> notify: the view already includes the new layer
+  // when observers react to layerAdded (a slot may trigger a paint).
+  syncViewLayers();
+  refreshView();
+  emit layerAdded(topic_id);
+  return AddOutcome::LayerAdded;
+}
+
+std::unique_ptr<ISceneLayer> SceneDockWidget::createAndAttachLayer(
+    ObjectTopicId topic_id, sdk::BuiltinObjectType object_type, const QString& title) {
+  if (!acceptsObjectType(object_type)) {
+    return nullptr;
+  }
   std::unique_ptr<ISceneLayer> layer = factory_.create(topic_id, object_type, title);
   if (layer == nullptr) {
-    return false;
+    return nullptr;
   }
-
   std::unique_ptr<SceneLayerContext> context = makeContext();
   SceneLayerContext fallback_context;
   fallback_context.session = session_;
   const SceneLayerContext& attach_context = context != nullptr ? *context : fallback_context;
   if (!layer->attach(attach_context)) {
-    return false;
+    return nullptr;
   }
+  return layer;
+}
 
-  ISceneLayer* layer_raw = layer.get();
-  layer_visibility_cache_[key] = layer_raw->info().visible;
-
-  connect(layer_raw, &ISceneLayer::infoChanged, this, [this]() {
+void SceneDockWidget::wireLayerSignals(ISceneLayer* layer, ObjectTopicId topic_id) {
+  connect(layer, &ISceneLayer::infoChanged, this, [this]() {
     syncViewLayers();
     refreshView();
   });
-  connect(layer_raw, &ISceneLayer::visibilityChanged, this, [this, topic_id](bool visible) {
+  connect(layer, &ISceneLayer::visibilityChanged, this, [this, topic_id](bool visible) {
     recordLayerVisibility(topic_id, visible);
     syncViewLayers();
     refreshView();
   });
-  connect(layer_raw, &ISceneLayer::repaintRequested, this, [this]() { refreshView(); });
-  connect(layer_raw, &ISceneLayer::warningChanged, this, [this, topic_id](bool warn, QString reason) {
+  connect(layer, &ISceneLayer::repaintRequested, this, [this]() { refreshView(); });
+  connect(layer, &ISceneLayer::warningChanged, this, [this, topic_id](bool warn, QString reason) {
     emit layerWarningChanged(topic_id, warn, std::move(reason));
   });
+}
 
+void SceneDockWidget::registerLayer(int64_t key, std::unique_ptr<ISceneLayer> layer) {
+  ISceneLayer* layer_raw = layer.get();
+  layer_visibility_cache_[key] = layer_raw->info().visible;
   layers_.emplace(key, std::move(layer));
   draw_order_.push_back(key);
 
@@ -109,11 +135,6 @@ bool SceneDockWidget::addTopic(ObjectTopicId topic_id, sdk::BuiltinObjectType ob
     const int64_t seed_ns = (last >= first) ? std::clamp(last_tracker_ns_, first, last) : last_tracker_ns_;
     layer_raw->setTrackerTime(std::chrono::nanoseconds{seed_ns});
   }
-
-  emit layerAdded(topic_id);
-  syncViewLayers();
-  refreshView();
-  return true;
 }
 
 void SceneDockWidget::removeTopic(ObjectTopicId topic_id) {
@@ -125,18 +146,17 @@ void SceneDockWidget::removeTopic(ObjectTopicId topic_id) {
   if (it->second != nullptr) {
     it->second->detach();
   }
-  // Keep the layer object alive until the view has been rebuilt. syncViewLayers()
-  // repoints the view at a composite that no longer references this layer's
-  // backend; freeing it earlier — or during the layerRemoved emit, which may run
-  // connected slots synchronously and trigger a paint — would leave the view
-  // borrowing a destroyed source. Destroyed at scope exit, after refreshView().
+  // Mutate -> reconcile view -> notify. Keep the removed layer alive until after
+  // syncViewLayers() repoints the view off this layer's backend and observers are
+  // notified, so a paint triggered from a layerRemoved slot never renders a
+  // composite borrowing a detached/destroyed source. Destroyed at scope exit.
   std::unique_ptr<ISceneLayer> removed = std::move(it->second);
   layers_.erase(it);
   layer_visibility_cache_.erase(key);
   draw_order_.erase(std::remove(draw_order_.begin(), draw_order_.end(), key), draw_order_.end());
-  emit layerRemoved(topic_id);
   syncViewLayers();
   refreshView();
+  emit layerRemoved(topic_id);
 }
 
 void SceneDockWidget::setTopicVisible(ObjectTopicId topic_id, bool visible) {
@@ -194,7 +214,21 @@ ISceneLayer* SceneDockWidget::layerFor(ObjectTopicId topic_id) const {
 }
 
 void SceneDockWidget::onTrackerTime(double time) {
-  const auto raw_ns = static_cast<int64_t>(time * kNanosecondsPerSecond);
+  // IDataWidget delivers tracker time as seconds in a bare double; convert via
+  // chrono instead of a hand-rolled 1e9 factor. NaN/inf carry no position and are
+  // UB to cast, so drop them; saturate finite out-of-range values before casting.
+  const double ns_d = std::chrono::duration<double, std::nano>(std::chrono::duration<double>(time)).count();
+  if (!std::isfinite(ns_d)) {
+    return;
+  }
+  int64_t raw_ns = 0;
+  if (ns_d >= static_cast<double>(std::numeric_limits<int64_t>::max())) {
+    raw_ns = std::numeric_limits<int64_t>::max();
+  } else if (ns_d <= static_cast<double>(std::numeric_limits<int64_t>::lowest())) {
+    raw_ns = std::numeric_limits<int64_t>::lowest();
+  } else {
+    raw_ns = static_cast<int64_t>(ns_d);
+  }
   const int64_t clamped_ns = clampToLayerRange(raw_ns);
   last_tracker_ns_ = clamped_ns;
   for (auto& [key, layer] : layers_) {
@@ -270,8 +304,8 @@ bool SceneDockWidget::xmlLoadState(const QDomElement& element) {
     if (!topic_id_opt.has_value()) {
       continue;
     }
-    if (!addTopic(*topic_id_opt, *object_type_opt, display_name)) {
-      continue;
+    if (addLayer(*topic_id_opt, *object_type_opt, display_name) != AddOutcome::LayerAdded) {
+      continue;  // rejected, or consumed as a scene-config topic: no layer to restore
     }
     if (ISceneLayer* layer = layerFor(*topic_id_opt); layer != nullptr) {
       const QDomElement payload = layer_el.firstChildElement();

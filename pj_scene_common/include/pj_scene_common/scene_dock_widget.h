@@ -91,12 +91,26 @@ class SceneDockWidget : public QWidget, public IDataWidget {
   virtual void refreshView();
 
  private:
+  /// Result of an add attempt, separating the two outcomes addTopic's bool used
+  /// to conflate ("layer created" vs "consumed as a scene-config topic").
+  enum class AddOutcome { LayerAdded, ConsumedAsConfig, Rejected };
+
   void ensureSceneViewCreated();
   [[nodiscard]] int64_t clampToLayerRange(int64_t time_ns) const;
   [[nodiscard]] std::vector<ISceneLayer*> orderedLayerPtrs() const;
   void syncViewLayers();
   void clearLayers();
   void recordLayerVisibility(ObjectTopicId topic_id, bool visible);
+
+  /// Orchestrates adding a topic as a render layer or scene-config topic.
+  AddOutcome addLayer(ObjectTopicId topic_id, sdk::BuiltinObjectType object_type, const QString& title);
+  /// Creates and attaches a layer; returns nullptr if unsupported or attach fails.
+  [[nodiscard]] std::unique_ptr<ISceneLayer> createAndAttachLayer(
+      ObjectTopicId topic_id, sdk::BuiltinObjectType object_type, const QString& title);
+  /// Connects a layer's signals to the dock's reconcile/notify slots.
+  void wireLayerSignals(ISceneLayer* layer, ObjectTopicId topic_id);
+  /// Records a constructed layer in the draw order and seeds its tracker time.
+  void registerLayer(int64_t key, std::unique_ptr<ISceneLayer> layer);
 
   std::unordered_map<int64_t, std::unique_ptr<ISceneLayer>> layers_;
   std::vector<int64_t> draw_order_;

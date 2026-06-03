@@ -8,6 +8,7 @@
 #include <string_view>
 #include <utility>
 
+#include "pj_base/builtin/scene_entities_codec.hpp"
 #include "pj_scene2d_core/image_annotation_codec.h"
 
 namespace PJ {
@@ -39,9 +40,17 @@ class ImageAnnotationsSceneDecoder final : public ISceneDecoder {
 
 }  // namespace detail
 
+class SceneEntities2DDecoder final : public ISceneDecoder {
+ public:
+  Expected<SceneFrame> decode(const uint8_t* data, size_t size) override;
+};
+
 [[nodiscard]] inline std::unique_ptr<ISceneDecoder> makeSceneDecoder(std::string_view schema_name) {
   if (schema_name == kSchemaImageAnnotations) {
     return std::make_unique<detail::ImageAnnotationsSceneDecoder>();
+  }
+  if (schema_name == kSchemaSceneEntities) {
+    return std::make_unique<SceneEntities2DDecoder>();
   }
   return nullptr;
 }

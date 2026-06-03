@@ -12,7 +12,9 @@ set(PJ_SCENE2D_CORE_SOURCES
   src/codec_pipeline.cpp
   src/codecs.cpp
   src/image_pipeline_source.cpp
+  src/depth_pipeline_source.cpp
   src/scene_pipeline_source.cpp
+  src/scene_entities_2d_decoder.cpp
   src/composite_media_source.cpp
 )
 
@@ -66,9 +68,13 @@ if(PJ_BUILD_TESTS)
     ../tests/image_decoder_test.cpp
     ../tests/codecs_test.cpp
     ../tests/image_pipeline_source_test.cpp
+    tests/depth_pipeline_source_test.cpp
     ../tests/scene_frame_test.cpp
     ../tests/scene_pipeline_source_test.cpp
+    tests/scene_entities_2d_decoder_test.cpp
     ../tests/composite_media_source_test.cpp
+    tests/borrowed_media_source_test.cpp
+    tests/composite_pixel_layers_test.cpp
   )
 
   foreach(test_src ${PJ_SCENE2D_CORE_TESTS})
