@@ -3,14 +3,12 @@
 
 #include "pj_scene3d_widgets/scene_view_widget.h"
 
-#include <QGuiApplication>
+#include <QEvent>
 #include <QMouseEvent>
 #include <QOpenGLContext>
 #include <QOpenGLFunctions_4_5_Core>
 #include <QOpenGLVersionFunctionsFactory>
 #include <QPalette>
-#include <QSize>
-#include <QStyleHints>
 #include <QSurfaceFormat>
 #include <QWheelEvent>
 #include <algorithm>
@@ -30,18 +28,31 @@ QSurfaceFormat make_default_format() {
   fmt.setVersion(4, 5);
   fmt.setProfile(QSurfaceFormat::CoreProfile);
   fmt.setDepthBufferSize(24);
+  // 4x MSAA. Requested explicitly because a QOpenGLWidget renders into an FBO
+  // sized by the format's concrete sample count — the default (-1, "don't
+  // care") yields a single-sampled FBO. The previous native QOpenGLWindow got
+  // multisampling incidentally from the platform's default visual; the FBO path
+  // does not, so without this the grid/TF/pointcloud edges alias.
+  fmt.setSamples(4);
   fmt.setSwapInterval(1);  // vsync — caps render at ~60Hz on standard monitors
   return fmt;
 }
 
 }  // namespace
 
-SceneViewWidget::SceneViewWidget(QWindow* parent) : QOpenGLWindow(QOpenGLWindow::NoPartialUpdate, parent) {
+SceneViewWidget::SceneViewWidget(QWidget* parent) : QOpenGLWidget(parent) {
   setFormat(make_default_format());
-  setMinimumSize(QSize(320, 240));
+  setMinimumSize(320, 240);
+  setMouseTracking(false);
 }
 
-SceneViewWidget::~SceneViewWidget() = default;
+SceneViewWidget::~SceneViewWidget() {
+  // Disconnect the teardown hook first so aboutToBeDestroyed can't fire on this
+  // half-destroyed object when the base QOpenGLWidget destroys the context, then
+  // free GL resources while our members and the context are still alive.
+  QObject::disconnect(context_cleanup_connection_);
+  releaseGlResources();
+}
 
 void SceneViewWidget::setTransformBuffer(std::shared_ptr<TransformBuffer> tf) {
   if (tf_ == tf) {
@@ -145,13 +156,44 @@ void SceneViewWidget::refreshAvailableFrames() {
 }
 
 void SceneViewWidget::initializeGL() {
+  // Qt calls this once per GL context — on first realize and again after every
+  // context recreation (QOpenGLWidget rebuilds its context when reparented by
+  // ADS dock/float/split). Rewire the teardown hook to THIS context so the
+  // dying context releases its own resources; releaseGlResources() already ran
+  // for the previous context (via its aboutToBeDestroyed), clearing the passes'
+  // initialized_ latches, so the rebuild below starts from a clean slate.
+  QObject::disconnect(context_cleanup_connection_);
+  context_cleanup_connection_ = connect(
+      context(), &QOpenGLContext::aboutToBeDestroyed, this, &SceneViewWidget::releaseGlResources, Qt::DirectConnection);
+
   gl::installDebugCallback();
   axes_.initializeGL();
   grid_.initializeGL();
   overlay_.initializeGL();
   // Entity GL is initialised lazily in paintGL — entities may be added
   // dynamically after the widget is already realised, so initializing
-  // here would miss late entries.
+  // here would miss late entries. releaseGlResources() reset their lazy-init
+  // guards, so they rebuild on the first paint after a context recreation.
+}
+
+void SceneViewWidget::releaseGlResources() {
+  // Drop every pass's and entity's GL objects with a context current so their
+  // glDelete* actually run (the wrappers self-skip without a current context).
+  // Called from the context's aboutToBeDestroyed (reparent or teardown) and the
+  // destructor. context() is null before the first show / after full teardown.
+  if (context() == nullptr) {
+    return;
+  }
+  makeCurrent();
+  axes_.releaseGL();
+  grid_.releaseGL();
+  overlay_.releaseGL();
+  for (Scene3DEntity* entity : entities_) {
+    if (entity != nullptr) {
+      entity->releaseGL();
+    }
+  }
+  doneCurrent();
 }
 
 void SceneViewWidget::resizeGL(int /*w*/, int /*h*/) {
@@ -167,9 +209,7 @@ void SceneViewWidget::paintGL() {
 
   // Theme-aware background + grid — see Phase 1 commit (theme-aware
   // background + high-contrast grid color) for the full rationale.
-  // QWindow has no palette(); use the application palette for the light/dark
-  // luminance fallback (the host normally drives this via setThemeHint).
-  const QPalette pal = QGuiApplication::palette();
+  const QPalette pal = palette();
   const QColor window_bg = pal.color(QPalette::Window);
   const bool dark_theme = theme_hint_ >= 0 ? (theme_hint_ == 1) : (window_bg.valueF() < 0.5f);
   const QColor bg = dark_theme ? QColor(45, 48, 56) : QColor(232, 234, 238);
@@ -246,22 +286,13 @@ void SceneViewWidget::paintGL() {
 
 void SceneViewWidget::mousePressEvent(QMouseEvent* event) {
   last_mouse_pos_ = event->position().toPoint();
-  press_pos_ = last_mouse_pos_;
-  dragged_since_press_ = false;
   active_button_ = event->button();
 }
 
 void SceneViewWidget::mouseReleaseEvent(QMouseEvent* event) {
-  // A right-button release with no intervening drag is a context-menu click;
-  // a right-*drag* already zoomed the camera (mouseMoveEvent) and must not also
-  // pop a menu. The dock builds the actual QMenu (see contextMenuRequested).
-  if (event->button() == Qt::RightButton && !dragged_since_press_) {
-    emit contextMenuRequested(event->globalPosition().toPoint());
-  }
-  // Clear the drag state on release. As a QOpenGLWidget this was masked (moves
-  // only arrived while a button was held); as a native QOpenGLWindow the press
-  // grabs the mouse and moves keep arriving, so without this the drag never
-  // ends and the surface holds the grab — blocking clicks elsewhere.
+  // Clear the active-gesture latch when its button is released so a chorded
+  // drag (e.g. press LMB then MMB, release MMB, keep dragging LMB) doesn't keep
+  // applying the released button's gesture.
   if (event->button() == active_button_) {
     active_button_ = Qt::NoButton;
   }
@@ -272,12 +303,6 @@ void SceneViewWidget::mouseMoveEvent(QMouseEvent* event) {
     return;
   }
   const QPoint current = event->position().toPoint();
-  // Latch a drag once the cursor leaves the platform drag threshold, so a
-  // right release past this point is treated as a zoom, not a menu click.
-  if (!dragged_since_press_ &&
-      (current - press_pos_).manhattanLength() > QGuiApplication::styleHints()->startDragDistance()) {
-    dragged_since_press_ = true;
-  }
   const QPoint delta = current - last_mouse_pos_;
   last_mouse_pos_ = current;
 
@@ -300,6 +325,13 @@ void SceneViewWidget::wheelEvent(QWheelEvent* event) {
   const float ticks = static_cast<float>(event->angleDelta().y()) / 120.0f;
   camera_.zoom(ticks);
   update();
+}
+
+void SceneViewWidget::changeEvent(QEvent* event) {
+  if (event->type() == QEvent::PaletteChange || event->type() == QEvent::ApplicationPaletteChange) {
+    update();
+  }
+  QOpenGLWidget::changeEvent(event);
 }
 
 }  // namespace pj::scene3d

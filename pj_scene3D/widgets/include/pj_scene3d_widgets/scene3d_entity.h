@@ -120,6 +120,12 @@ class Scene3DEntity : public QObject {
   virtual void initializeGL() = 0;
   virtual void render(const ViewParams& view_params, const FrameContext& frame_ctx) = 0;
 
+  // Drop the GL resources owned by this entity's render pass(es), returning
+  // them to their pre-initializeGL state. Called by SceneViewWidget when the
+  // GL context is about to be destroyed (see IRenderPass::releaseGL); the
+  // entity re-initializes lazily on the next paintGL.
+  virtual void releaseGL() = 0;
+
   // Per-instance parameter UI. The right-sidepanel calls this when the
   // entity is selected and inserts the returned widget into its params
   // container. Ownership transfers to `parent`; the entity does not

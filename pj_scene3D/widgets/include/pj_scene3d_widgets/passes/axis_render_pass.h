@@ -15,6 +15,7 @@ class AxisRenderPass : public IRenderPass {
  public:
   void initializeGL() override;
   void render(const ViewParams& view_params, const FrameContext& frame_ctx) override;
+  void releaseGL() override;
 
   void setAxisLength(float length_m);
   [[nodiscard]] float axisLength() const noexcept;

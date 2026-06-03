@@ -96,6 +96,15 @@ void GridRenderPass::render(const ViewParams& view_params, [[maybe_unused]] cons
   unuseProgram();
 }
 
+void GridRenderPass::releaseGL() {
+  // Forget the old context's GL objects and re-arm initializeGL(), which
+  // rebuilds the program + re-uploads the static grid VBO from scratch.
+  program_.reset();
+  vao_ = gl::VertexArray{};
+  vbo_ = gl::Buffer{};
+  initialized_ = false;
+}
+
 void GridRenderPass::setColor(const glm::vec3& color) {
   color_ = color;
 }

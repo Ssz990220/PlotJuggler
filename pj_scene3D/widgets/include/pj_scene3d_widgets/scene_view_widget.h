@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include <QList>
-#include <QOpenGLWindow>
+#include <QOpenGLWidget>
 #include <QPoint>
 #include <chrono>
 #include <memory>
@@ -16,6 +16,7 @@
 #include "pj_scene3d_widgets/passes/axis_render_pass.h"
 #include "pj_scene3d_widgets/passes/grid_render_pass.h"
 
+class QEvent;
 class QMouseEvent;
 class QWheelEvent;
 
@@ -28,18 +29,11 @@ class Scene3DEntity;
 // (PointCloud topics, future URDF robots, etc.). Entities are non-owning
 // — Scene3DDockWidget owns them and is responsible for calling addEntity
 // before they're allowed to render and removeEntity before destruction.
-// Implemented as a QOpenGLWindow (native GL surface) rather than a
-// QOpenGLWidget: the latter renders to an FBO that Qt composites into the
-// window backingstore, which re-uploads the entire raster UI (~21.5 MB) to the
-// GPU every frame the view repaints. A native surface is presented directly by
-// the windowing-system compositor, so the UI is not re-textured on 3D updates.
-// Embedded in the widget tree via QWidget::createWindowContainer (see
-// Scene3DDockWidget).
-class SceneViewWidget : public QOpenGLWindow {
+class SceneViewWidget : public QOpenGLWidget {
   Q_OBJECT
 
  public:
-  explicit SceneViewWidget(QWindow* parent = nullptr);
+  explicit SceneViewWidget(QWidget* parent = nullptr);
   ~SceneViewWidget() override;
 
   void setTransformBuffer(std::shared_ptr<TransformBuffer> tf);
@@ -101,13 +95,6 @@ class SceneViewWidget : public QOpenGLWindow {
  signals:
   void framesChanged(const QList<FrameRow>& frames);
 
-  // Emitted on a right-button *click* — a press and release with no intervening
-  // drag (a right-*drag* still zooms the camera). `global_pos` is in screen
-  // coordinates, ready to hand to QMenu::exec. The view deliberately owns no
-  // menu: a QOpenGLWindow has no QWidget contextMenuEvent, and menu contents
-  // (entities, camera) are Scene3DDockWidget's concern, so the dock builds it.
-  void contextMenuRequested(const QPoint& global_pos);
-
  protected:
   void initializeGL() override;
   void resizeGL(int w, int h) override;
@@ -117,8 +104,17 @@ class SceneViewWidget : public QOpenGLWindow {
   void mouseReleaseEvent(QMouseEvent* event) override;
   void mouseMoveEvent(QMouseEvent* event) override;
   void wheelEvent(QWheelEvent* event) override;
+  void changeEvent(QEvent* event) override;
 
  private:
+  // Release every pass's and entity's GL resources, returning them to their
+  // pre-initializeGL state. Connected to the current QOpenGLContext's
+  // aboutToBeDestroyed (rewired per context in initializeGL) and also called
+  // from the destructor. QOpenGLWidget recreates its context on every reparent
+  // (ADS dock/float/split) and destroys it on teardown; VAOs/FBOs aren't shared
+  // across contexts, so stale handles must be dropped and rebuilt.
+  void releaseGlResources();
+
   // Owned passes that don't depend on the entity count.
   AxisRenderPass axes_;
   GridRenderPass grid_;
@@ -144,15 +140,15 @@ class SceneViewWidget : public QOpenGLWindow {
   bool axes_visible_ = true;
 
   QPoint last_mouse_pos_;
-  // Press anchor + drag latch: distinguishes a right-*click* (opens the context
-  // menu) from a right-*drag* (zooms). press_pos_ is set on every press; the
-  // latch trips once the cursor leaves the platform drag threshold.
-  QPoint press_pos_;
-  bool dragged_since_press_ = false;
   Qt::MouseButton active_button_{Qt::NoButton};
 
   // -1 = unset (use palette luminance), 0 = light, 1 = dark.
   int theme_hint_ = -1;
+
+  // Connection to the current GL context's aboutToBeDestroyed signal. Rewired to
+  // each new context in initializeGL and disconnected in the destructor so the
+  // teardown hook never fires on a half-destroyed widget.
+  QMetaObject::Connection context_cleanup_connection_;
 };
 
 }  // namespace pj::scene3d

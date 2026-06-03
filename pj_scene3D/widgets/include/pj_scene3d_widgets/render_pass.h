@@ -46,6 +46,16 @@ class IRenderPass {
   virtual ~IRenderPass() = default;
   virtual void initializeGL() = 0;
   virtual void render(const ViewParams& view_params, const FrameContext& frame_ctx) = 0;
+
+  // Drop every GL object this pass owns and return it to its pre-initializeGL
+  // state (handles forgotten, `initialized_` cleared, pending uploads re-armed).
+  // SceneViewWidget calls this when the QOpenGLWidget's GL context is about to
+  // be destroyed — the widget recreates its context on every reparent (ADS
+  // dock/float/split) and destroys it on teardown. VAOs and FBOs are per-context
+  // (never shared across contexts), so a handle cached in the old context is
+  // invalid in the new one. After releaseGL the next initializeGL rebuilds
+  // cleanly. Must be idempotent and safe to call with the dying context current.
+  virtual void releaseGL() = 0;
 };
 
 }  // namespace pj::scene3d

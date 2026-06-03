@@ -251,6 +251,10 @@ void OccupancyGridEntity::initializeGL() {
   grid_pass_.initializeGL();
 }
 
+void OccupancyGridEntity::releaseGL() {
+  grid_pass_.releaseGL();
+}
+
 void OccupancyGridEntity::render(const ViewParams& view_params, const FrameContext& frame_ctx) {
   if (!visible_) {
     return;

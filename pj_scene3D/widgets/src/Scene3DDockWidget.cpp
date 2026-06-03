@@ -5,13 +5,12 @@
 
 #include <QAbstractItemView>
 #include <QBoxLayout>
-#include <QComboBox>
-#include <QContextMenuEvent>
-#include <QCoreApplication>
 #include <QFontMetrics>
 #include <QLoggingCategory>
 #include <QResizeEvent>
 #include <QSignalBlocker>
+#include <QStyle>
+#include <QStyleOptionComboBox>
 #include <algorithm>
 #include <cctype>
 #include <chrono>
@@ -22,6 +21,7 @@
 #include "pj_runtime/SessionManager.h"
 #include "pj_scene3d_core/tf/tf_buffer.h"
 #include "pj_scene3d_core/tracker_time.h"
+#include "pj_widgets/ComboBox.h"
 // Concrete entity headers — each new drawable kind adds its include
 // here and a branch in addTopic's switch. Future work (post-v1) may
 // replace this with a Scene3DEntityFactory registry to support
@@ -79,33 +79,30 @@ Scene3DDockWidget::Scene3DDockWidget(QWidget* parent) : QWidget(parent) {
   layout->setContentsMargins(0, 0, 0, 0);
   layout->setSpacing(0);
 
-  // Fixed-frame selector. It used to float over the GL view, but the view is
-  // now a native QOpenGLWindow (see SceneViewWidget) embedded via
-  // createWindowContainer — a native surface can't have sibling widgets
-  // composited on top, so the combo lives in a thin bar above the view.
-  auto* top_bar = new QWidget(this);
-  auto* top_bar_layout = new QHBoxLayout(top_bar);
-  top_bar_layout->setContentsMargins(4, 2, 4, 2);
-  top_bar_layout->setSpacing(0);
-  frame_overlay_combo_ = new QComboBox(top_bar);
-  frame_overlay_combo_->setFocusPolicy(Qt::ClickFocus);
-  top_bar_layout->addWidget(frame_overlay_combo_);
-  top_bar_layout->addStretch();
-  layout->addWidget(top_bar);
-
-  // The 3D view: a native GL window presented directly by the compositor,
-  // wrapped in a container widget so it sits in the layout. This avoids the
-  // QOpenGLWidget backingstore path that re-uploaded the whole raster UI
-  // (~21.5 MB) to the GPU every repaint.
-  view_ = new pj::scene3d::SceneViewWidget();
-  view_container_ = QWidget::createWindowContainer(view_, this);
-  view_container_->setContentsMargins(0, 0, 0, 0);
-  view_container_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
-  layout->addWidget(view_container_, 1);
+  view_ = new pj::scene3d::SceneViewWidget(this);
+  view_->setContentsMargins(0, 0, 0, 0);
+  view_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+  layout->addWidget(view_);
 
   connect(view_, &pj::scene3d::SceneViewWidget::framesChanged, this, &Scene3DDockWidget::onAvailableFrames);
-  connect(view_, &pj::scene3d::SceneViewWidget::contextMenuRequested, this, &Scene3DDockWidget::showViewContextMenu);
+
+  // Floating fixed-frame combo overlaid on the top-left of view_. A PJ::ComboBox
+  // (the app-wide themed dropdown) so it tracks the light/dark stylesheet and
+  // gets the same popup styling as every other combo — no per-call-site QSS.
+  // Created as a sibling-child of `this` (not parented to view_) so Qt composites
+  // it on top of the QOpenGLWidget without the well-known QOpenGLWidget
+  // child-widget z-order glitches. Positioned manually in resizeEvent.
+  //
+  // Width is computed per-selection from the *currently selected* item's
+  // text (see layoutFrameOverlayCombo) rather than sized to the longest
+  // item — that keeps the overlay compact even when one frame name in the
+  // dropdown is very long. Dropdown popup width is widened separately so
+  // every row is fully readable when expanded.
+  frame_overlay_combo_ = new ComboBox(this);
+  frame_overlay_combo_->setFocusPolicy(Qt::ClickFocus);
+  frame_overlay_combo_->raise();
   refreshFrameOverlayCombo();
+
   connect(frame_overlay_combo_, &QComboBox::currentIndexChanged, this, &Scene3DDockWidget::onOverlayFramePicked);
 }
 
@@ -254,6 +251,13 @@ void Scene3DDockWidget::removeTopic(ObjectTopicId topic_id) {
   }
   if (it->second != nullptr) {
     view_->removeEntity(it->second.get());
+    // Free the entity's GL resources with the view's context current. Otherwise
+    // its render-pass wrapper destructors run with no current context and the
+    // gl wrappers self-skip glDelete, leaking the VBO/VAO/texture into the live
+    // context until the whole view is torn down.
+    view_->makeCurrent();
+    it->second->releaseGL();
+    view_->doneCurrent();
     it->second->detach();
   }
   entities_.erase(it);
@@ -476,6 +480,7 @@ void Scene3DDockWidget::refreshFrameOverlayCombo() {
   if (idx >= 0) {
     frame_overlay_combo_->setCurrentIndex(idx);
   }
+  layoutFrameOverlayCombo();
 }
 
 void Scene3DDockWidget::onOverlayFramePicked(int /*index*/) {
@@ -486,6 +491,51 @@ void Scene3DDockWidget::onOverlayFramePicked(int /*index*/) {
   if (!name.isEmpty()) {
     setFixedFrame(name);
   }
+}
+
+void Scene3DDockWidget::layoutFrameOverlayCombo() {
+  if (frame_overlay_combo_ == nullptr || view_ == nullptr) {
+    return;
+  }
+  constexpr int kMargin = 8;
+  // Combo width tracks the selected item only (so the overlay stays compact even
+  // when one frame name is very long). The chrome (frame, padding, dropdown
+  // arrow) is added by the style rather than a hardcoded slack — a fixed slack
+  // underestimates the themed PJ::ComboBox and clips the text (e.g. "map" → "m").
+  const QFontMetrics fm(frame_overlay_combo_->font());
+  const QString current_text = frame_overlay_combo_->currentText();
+  const auto combo_width_for = [&](const QString& text) {
+    QStyleOptionComboBox opt;
+    opt.initFrom(frame_overlay_combo_);
+    const QSize content(fm.horizontalAdvance(text), fm.height());
+    return frame_overlay_combo_->style()
+        ->sizeFromContents(QStyle::CT_ComboBox, &opt, content, frame_overlay_combo_)
+        .width();
+  };
+  const int natural_w = combo_width_for(current_text);
+  // Cap to the dock width only once the dock has a real width — during
+  // construction width() is 0 and the cap would collapse the combo.
+  const int avail = width() - 2 * kMargin;
+  const int w = (avail > 0) ? std::min(natural_w, avail) : natural_w;
+  const int h = frame_overlay_combo_->sizeHint().height();
+  const QPoint view_origin = view_->pos();
+  frame_overlay_combo_->setGeometry(view_origin.x() + kMargin, view_origin.y() + kMargin, w, h);
+
+  // Popup list keeps its own width so every row is fully readable when
+  // expanded, even when the closed combo is narrow.
+  if (auto* view = frame_overlay_combo_->view()) {
+    int popup_w = natural_w;
+    for (int i = 0; i < frame_overlay_combo_->count(); ++i) {
+      popup_w = std::max(popup_w, combo_width_for(frame_overlay_combo_->itemText(i)));
+    }
+    view->setMinimumWidth(popup_w);
+  }
+  frame_overlay_combo_->raise();
+}
+
+void Scene3DDockWidget::resizeEvent(QResizeEvent* event) {
+  QWidget::resizeEvent(event);
+  layoutFrameOverlayCombo();
 }
 
 Scene3DDockWidget::OrphanSnapshot Scene3DDockWidget::orphanState(ObjectTopicId topic_id) const {
@@ -664,19 +714,6 @@ bool Scene3DDockWidget::xmlLoadState(const QDomElement& element) {
     setFixedFrameAutoRoot();
   }
   return true;
-}
-
-void Scene3DDockWidget::showViewContextMenu(const QPoint& global_pos) {
-  // The 3D view is a native QOpenGLWindow, so a right-click on it never reaches
-  // the QWidget tree as a QContextMenuEvent — which is exactly what the host
-  // DockWidget's event filter listens for to show the standard visualization
-  // menu (Split Horizontally / Split Vertically / Clear). Re-inject that event
-  // on ourselves (the IDataWidget content widget the host installs its filter
-  // on), so the 3D scene gets the identical menu to timeseries/2D widgets with
-  // no dependency on pj_plotting. If the widget is used un-hosted (demos), no
-  // filter is installed and this is simply a no-op.
-  QContextMenuEvent ev(QContextMenuEvent::Mouse, mapFromGlobal(global_pos), global_pos);
-  QCoreApplication::sendEvent(this, &ev);
 }
 
 }  // namespace PJ

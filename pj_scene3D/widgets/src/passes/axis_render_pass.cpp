@@ -34,6 +34,11 @@ void AxisRenderPass::initializeGL() {
   initialized_ = true;
 }
 
+void AxisRenderPass::releaseGL() {
+  arrow_.releaseGL();
+  initialized_ = false;
+}
+
 void AxisRenderPass::rebuildGizmo() {
   if (initialized_) {
     arrow_.rebuild(paramsForLength(axis_length_));

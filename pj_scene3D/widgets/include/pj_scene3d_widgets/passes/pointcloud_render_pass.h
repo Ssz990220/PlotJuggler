@@ -37,6 +37,7 @@ class PointcloudRenderPass : public IRenderPass {
 
   void initializeGL() override;
   void render(const ViewParams& view_params, const FrameContext& frame_ctx) override;
+  void releaseGL() override;
 
   // Replaces the cloud being rendered. Triggers VBO re-upload on next render.
   // If cloud is non-null and cloud->scalar.size() == cloud->positions.size(),

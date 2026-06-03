@@ -335,6 +335,24 @@ PointcloudRenderPass::PointcloudRenderPass() = default;
 
 PointcloudRenderPass::~PointcloudRenderPass() = default;
 
+void PointcloudRenderPass::releaseGL() {
+  // Drop both programs and every buffer from the dying context. The CPU-side
+  // cloud_ (a shared_ptr) is retained; initializeGL() re-sets cloud_dirty_ so
+  // render() re-uploads the point VBO and re-wires the attribs in the new
+  // context. cube_instance_bindings_dirty_ forces the cube path to rebind too.
+  program_.reset();
+  cube_program_.reset();
+  vao_ = gl::VertexArray{};
+  vbo_ = gl::Buffer{};
+  cube_vao_ = gl::VertexArray{};
+  cube_vbo_ = gl::Buffer{};
+  cube_ebo_ = gl::Buffer{};
+  vbo_point_count_ = 0U;
+  cube_instance_bindings_dirty_ = true;
+  cloud_dirty_ = (cloud_ != nullptr);
+  initialized_ = false;
+}
+
 void PointcloudRenderPass::initializeGL() {
   // Idempotent: SceneViewWidget::paintGL calls the owning entity's
   // initializeGL() every frame (so an entity added after the widget is

@@ -29,6 +29,11 @@ void AxisOverlayPass::initializeGL() {
   initialized_ = true;
 }
 
+void AxisOverlayPass::releaseGL() {
+  arrow_.releaseGL();
+  initialized_ = false;
+}
+
 void AxisOverlayPass::render(const ViewParams& view_params, const FrameContext& /*frame_ctx*/) {
   if (!initialized_) {
     return;

@@ -105,6 +105,17 @@ void ArrowGizmo::rebuild(const Params& params) {
   }
 }
 
+void ArrowGizmo::releaseGL() {
+  // Drop the GL program + buffers from the dying context; keep the CPU-side
+  // mesh and set mesh_dirty_ so initializeGL re-uploads it in the new context.
+  program_.reset();
+  vao_ = gl::VertexArray{};
+  vbo_ = gl::Buffer{};
+  ebo_ = gl::Buffer{};
+  initialized_ = false;
+  mesh_dirty_ = true;
+}
+
 void ArrowGizmo::generateMesh() {
   vertex_data_.clear();
   index_data_.clear();

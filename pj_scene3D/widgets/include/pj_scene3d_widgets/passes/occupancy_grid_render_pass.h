@@ -31,6 +31,7 @@ class OccupancyGridRenderPass : public IRenderPass {
 
   void initializeGL() override;
   void render(const ViewParams& view_params, const FrameContext& frame_ctx) override;
+  void releaseGL() override;
 
   // Replace the grid being shown. Stages a texture upload for the next render()
   // (which runs with a current GL context): a full glTexImage2D when

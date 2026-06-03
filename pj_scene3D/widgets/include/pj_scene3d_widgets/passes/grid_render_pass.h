@@ -16,6 +16,7 @@ class GridRenderPass : public IRenderPass {
  public:
   void initializeGL() override;
   void render(const ViewParams& view_params, [[maybe_unused]] const FrameContext& frame_ctx) override;
+  void releaseGL() override;
 
   void setColor(const glm::vec3& color);
   void setExtentMetres(float extent_m);

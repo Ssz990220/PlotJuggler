@@ -440,6 +440,10 @@ void PointCloudEntity::render(const ViewParams& view_params, const FrameContext&
   cloud_pass_.render(view_params, frame_ctx);
 }
 
+void PointCloudEntity::releaseGL() {
+  cloud_pass_.releaseGL();
+}
+
 QWidget* PointCloudEntity::createConfigWidget(QWidget* parent) {
   auto* container = new QWidget(parent);
   auto* outer = new QVBoxLayout(container);

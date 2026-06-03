@@ -57,6 +57,7 @@ class PointCloudEntity : public Scene3DEntity {
 
   void initializeGL() override;
   void render(const ViewParams& view_params, const FrameContext& frame_ctx) override;
+  void releaseGL() override;
 
   QWidget* createConfigWidget(QWidget* parent) override;
 

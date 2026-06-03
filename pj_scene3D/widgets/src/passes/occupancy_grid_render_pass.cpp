@@ -154,6 +154,22 @@ void OccupancyGridRenderPass::clearGrid() {
   has_grid_ = false;
 }
 
+void OccupancyGridRenderPass::releaseGL() {
+  // Drop the program, quad VBO, VAO, and grid texture from the dying context.
+  // pending_cells_ (the current full grid) is retained; re-arm a full upload so
+  // render() repopulates the texture after initializeGL rebuilds the resources
+  // in the new context.
+  program_.reset();
+  vao_ = gl::VertexArray{};
+  vbo_ = gl::Buffer{};
+  texture_ = gl::Texture{};
+  initialized_ = false;
+  if (has_grid_) {
+    pending_full_ = true;
+    pending_rects_.clear();
+  }
+}
+
 void OccupancyGridRenderPass::render(const ViewParams& view_params, const FrameContext& frame_ctx) {
   if (!visible_ || !has_grid_) {
     return;

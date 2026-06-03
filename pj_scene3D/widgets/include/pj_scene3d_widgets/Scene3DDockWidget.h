@@ -16,7 +16,6 @@
 #include "pj_runtime/IDataWidget.h"
 #include "pj_scene3d_core/tf/tf_buffer.h"
 
-class QComboBox;
 class QResizeEvent;
 
 namespace pj::scene3d {
@@ -27,6 +26,7 @@ class TransformService;
 
 namespace PJ {
 
+class ComboBox;
 class SessionManager;
 
 // Dock content for 3D scene topics. v1 supports multiple PointCloud2 topics
@@ -188,6 +188,9 @@ class Scene3DDockWidget : public QWidget, public IDataWidget {
   // suitable for a tooltip explaining why; empty when is_orphan == false.
   void entityOrphanChanged(ObjectTopicId topic_id, bool is_orphan, const QString& reason);
 
+ protected:
+  void resizeEvent(QResizeEvent* event) override;
+
  private slots:
   void onAvailableFrames(const QList<pj::scene3d::FrameRow>& frames);
 
@@ -202,6 +205,8 @@ class Scene3DDockWidget : public QWidget, public IDataWidget {
   // (setFixedFrame, setFixedFrameAutoRoot, onAvailableFrames bootstrap)
   // own the mode decision.
   void applyResolvedFixedFrame(const QString& frame);
+  // Position the floating combo at the top-left of view_ with a small margin.
+  void layoutFrameOverlayCombo();
   // Sync the floating top-left frame combo to the current available_frames_,
   // fixed_frame_, and fixed_frame_mode_. Cheap (~tens of items).
   void refreshFrameOverlayCombo();
@@ -213,20 +218,9 @@ class Scene3DDockWidget : public QWidget, public IDataWidget {
   // entity's source frame changes, or on entity attach. Emits
   // entityOrphanChanged for any entity whose state flipped.
   void recomputeOrphanStates();
-  // Bridge SceneViewWidget::contextMenuRequested (a right-click on the native
-  // QOpenGLWindow) into a QContextMenuEvent posted on this content widget, so
-  // the host DockWidget's existing context-menu filter shows the standard
-  // visualization menu (Split Horizontally / Split Vertically / Clear) — the
-  // same menu timeseries and 2D widgets get. Keeps pj_scene3D free of any
-  // pj_plotting dependency.
-  void showViewContextMenu(const QPoint& global_pos);
-
   SessionManager* session_ = nullptr;
   pj::scene3d::TransformService* transform_service_ = nullptr;
   pj::scene3d::SceneViewWidget* view_ = nullptr;
-  // The view is a native QOpenGLWindow; this is the QWidget that embeds it in
-  // the layout (QWidget::createWindowContainer). Owns view_'s widget lifetime.
-  QWidget* view_container_ = nullptr;
   std::shared_ptr<pj::scene3d::TransformBuffer> tf_buffer_;
 
   // Owning entity registry, keyed by ObjectTopicId.id.
@@ -251,7 +245,7 @@ class Scene3DDockWidget : public QWidget, public IDataWidget {
   // child of `this` (not of view_), so resizeEvent on the dock places it.
   // Hosting it here keeps the sidepanel type-blind: only the dock owns the
   // fixed-frame UX.
-  QComboBox* frame_overlay_combo_ = nullptr;
+  ComboBox* frame_overlay_combo_ = nullptr;
 
   // Per-entity orphan state. An entity is "orphan" when its primary
   // sourceFrame() can't be transformed into the current fixed frame at

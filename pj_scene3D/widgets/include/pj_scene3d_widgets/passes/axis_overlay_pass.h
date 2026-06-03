@@ -20,6 +20,7 @@ class AxisOverlayPass : public IRenderPass {
 
   void initializeGL() override;
   void render(const ViewParams& view_params, const FrameContext& frame_ctx) override;
+  void releaseGL() override;
 
   // HUD geometry in widget-relative pixels. Defaults: 80×80 px, 12 px margin.
   // Clamped to size_px >= 1 and margin_px >= 0 to keep glViewport / glScissor

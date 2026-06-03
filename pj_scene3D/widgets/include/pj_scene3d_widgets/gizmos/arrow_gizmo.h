@@ -43,6 +43,13 @@ class ArrowGizmo {
   // current state. Call after initializeGL.
   void rebuild(const Params& params);
 
+  // Drop the GL program + buffers and reset to the pre-initializeGL state, so
+  // the next initializeGL rebuilds them in the current context. Used by the
+  // owning render pass when the GL context is recreated (see
+  // IRenderPass::releaseGL). The CPU-side mesh is kept; mesh_dirty_ is set so
+  // it re-uploads on rebuild.
+  void releaseGL();
+
   [[nodiscard]] const Params& params() const noexcept {
     return params_;
   }
