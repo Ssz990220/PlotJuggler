@@ -276,17 +276,27 @@ void DataSourceRuntimeHost::requestStop(std::string_view reason) {
 }
 
 void DataSourceRuntimeHost::setObjectRetentionBudget(int64_t time_window_ns, size_t max_memory_bytes) {
+  // Budget the active store (B while paused) so the paused tail stays bounded;
+  // the frozen store is untouched (eviction is push-triggered anyway).
+  ObjectStore* target = object_store_target_.load();
   for (auto& [_id, binding] : parser_bindings_) {
     if (!binding.object_topic_id.has_value()) {
       continue;
     }
-    object_store_.setRetentionBudget(
+    target->setRetentionBudget(
         *binding.object_topic_id,
         RetentionBudget{.time_window_ns = time_window_ns, .max_memory_bytes = max_memory_bytes});
   }
 }
 
 void DataSourceRuntimeHost::setObjectStoreTarget(ObjectStore* target) {
+  // Route cbPushMessage's lazy-object push through the swap (it pushed straight
+  // to the primary before, evicting the paused scrub-back snapshot).
+  object_store_target_.store(target);
+  // TODO(stream-pause): deferred edge cases (none hit a topic registered before
+  // the first pause): bindings created while paused still init against A; an
+  // in-flight push can strand a frame in B across the resume flush; resume's
+  // catch-up notifyIngest lists only scalar TopicIds (object-only flush nudge).
   // Retarget the source-level object write host and every per-parser-binding
   // one (the streaming hot path). Each host's atomic swap lets in-flight
   // pushes finish on the old target while the next lands on the new one; the
@@ -584,7 +594,8 @@ bool DataSourceRuntimeHost::cbPushMessage(
               .topic_name = binding.topic_name,
               .timestamp_ns = timestamp_ns,
           });
-      if (auto status = self->object_store_.pushLazy(*binding.object_topic_id, timestamp_ns, std::move(closure));
+      if (auto status =
+              self->object_store_target_.load()->pushLazy(*binding.object_topic_id, timestamp_ns, std::move(closure));
           !status) {
         return self->fail(out_error, ("ObjectStore.pushLazy failed: " + status.error()).c_str());
       }
@@ -624,8 +635,8 @@ bool DataSourceRuntimeHost::cbPushMessage(
     // when anchor-bearing). Eager and kLazyObjectsEagerScalars collapse here —
     // the parser already ran and we hold the bytes, so no kPureLazy re-fetch.
     if (is_object_topic) {
-      if (auto status =
-              self->object_store_.pushLazy(*binding.object_topic_id, timestamp_ns, std::move(captured_closure));
+      if (auto status = self->object_store_target_.load()->pushLazy(
+              *binding.object_topic_id, timestamp_ns, std::move(captured_closure));
           !status) {
         return self->fail(out_error, ("ObjectStore.pushLazy failed: " + status.error()).c_str());
       }

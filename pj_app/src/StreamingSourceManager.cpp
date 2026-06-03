@@ -155,6 +155,9 @@ void StreamingSourceManager::onPauseToggled(bool paused) {
   }
   flushSecondaryIntoPrimary();
   flushSecondaryDataEngineIntoPrimary();
+  // DataEngine::flushTo moves chunks without trimming; re-trim the merged
+  // primary to the window (objects are already trimmed by ObjectStore::flushTo).
+  session_manager_.dataEngine().enforceRetention(static_cast<int64_t>(retention_seconds_) * 1'000'000'000LL);
   // Catch-up nudge so consumers (PlotWidget auto-fit, Media2DDockWidget jump
   // to latest frame) land on the post-flush live edge. Mirrors PJ3 "flush at
   // play" semantics.
@@ -379,10 +382,14 @@ void StreamingSourceManager::workerLoop(DatasetId dataset_id) {
           if (auto it = sessions_.find(dataset_id); it != sessions_.end()) {
             it->second->runtime_host_->setObjectRetentionBudget(window_ns, kStreamingObjectMemoryBudget);
           }
-          // Scalar engine retention: the primary's pre-pause snapshot is
-          // preserved by absence of writes during pause (everything goes to
-          // the secondary engine), so the sliding window can run unguarded.
-          session_manager_.dataEngine().enforceRetention(window_ns);
+          // Trim the engine currently being written: B while paused (bounds the
+          // tail), the primary while live. The frozen engine is never touched,
+          // preserving the primary snapshot for scrub-back.
+          if (paused_) {
+            secondary_data_engine_->enforceRetention(window_ns);
+          } else {
+            session_manager_.dataEngine().enforceRetention(window_ns);
+          }
 
           const auto topic_ids = session_manager_.createReader().listTopics(dataset_id);
           QVector<TopicId> ids;

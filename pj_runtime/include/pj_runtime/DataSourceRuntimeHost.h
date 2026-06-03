@@ -124,9 +124,9 @@ class DataSourceRuntimeHost {
     return policy_resolver_;
   }
 
-  // Apply a (time_window, max_memory) retention budget to every object topic
-  // bound so far. No "protect" knob needed: the pause snapshot is preserved by
-  // the dual-store flow (no writes on the primary), not by a per-budget floor.
+  // Apply a (time_window, max_memory) budget to every bound object topic, on the
+  // *active* store (A live / B paused, per object_store_target_): bounds the
+  // paused tail B while leaving the frozen primary untouched.
   void setObjectRetentionBudget(int64_t time_window_ns, size_t max_memory_bytes);
 
   // Atomically retarget every object write host (source-level + per-parser-
@@ -211,6 +211,11 @@ class DataSourceRuntimeHost {
   DataEngine& engine_;
   ExtensionCatalogService& catalog_;
   ObjectStore& object_store_;
+  // Active target for cbPushMessage's lazy-object push: primary (A) while live,
+  // secondary (B) while paused (swapped by setObjectStoreTarget). Atomic: UI
+  // thread writes, worker thread reads. Keeps A unwritten — thus unevicted —
+  // while paused.
+  std::atomic<ObjectStore*> object_store_target_{&object_store_};
   // Lockstep mirror of `object_store_` for the streaming dual-store flow (null
   // for single-store callers). See the constructor doc for the id-sharing
   // invariant that lets write hosts retarget between the two.

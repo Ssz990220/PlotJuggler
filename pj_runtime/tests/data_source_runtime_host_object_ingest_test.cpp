@@ -214,4 +214,69 @@ TEST_F(DataSourceRuntimeHostObjectIngestTest, SetObjectRetentionBudgetAppliesToE
   }
 }
 
+// Regression for the streaming dual-store pause bug: object pushes must follow
+// setObjectStoreTarget so the primary is frozen (never written, never evicted)
+// while paused. Before the fix, cbPushMessage pushed straight to the primary
+// regardless of the swap, so paused frames slid the primary's retention window
+// and shrank the scrub-back range.
+TEST_F(DataSourceRuntimeHostObjectIngestTest, ObjectPushFollowsStoreTargetSwap) {
+  PJ::DataEngine secondary_engine;
+  PJ::ObjectStore secondary_object_store;
+  // Lockstep dataset on the secondary (same DatasetId), mirroring StreamingSourceManager.
+  auto secondary_dataset =
+      secondary_engine.createDataset(PJ::DatasetDescriptor{.source_name = "test", .time_domain_id = 0});
+  ASSERT_TRUE(secondary_dataset.has_value()) << secondary_dataset.error();
+  ASSERT_EQ(static_cast<PJ::DatasetId>(*secondary_dataset), dataset_id_);
+
+  PJ::ServiceRegistryBuilder builder;
+  PJ::DataSourceRuntimeHost host(
+      engine_, catalog_, dataset_id_, source_handle_, object_store_, "dual_store_src", {}, &secondary_object_store,
+      &secondary_engine);
+  host.policyResolver().setDefault(PJ::sdk::ObjectIngestPolicy::kEager);
+  host.registerServices(builder);
+
+  PJ::sdk::ServiceRegistry services(builder.view());
+  auto runtime_or = services.require<PJ::sdk::DataSourceRuntimeHostService>();
+  ASSERT_TRUE(runtime_or.has_value()) << runtime_or.error();
+  PJ::DataSourceRuntimeHostView runtime = *runtime_or;
+
+  auto binding = runtime.ensureParserBinding(
+      PJ::ParserBindingRequest{
+          .topic_name = "/camera/image",
+          .parser_encoding = "runtime_host_object",
+          .type_name = "mock/image",
+          .schema = PJ::Span<const uint8_t>{},
+          .parser_config_json = "{}",
+      });
+  ASSERT_TRUE(binding.has_value()) << binding.error();
+
+  auto push = [&](PJ::Timestamp ts) {
+    auto status = runtime.pushMessage(*binding, ts, []() -> std::vector<uint8_t> { return {1, 2, 3, 4}; });
+    EXPECT_TRUE(status.has_value()) << status.error();
+  };
+
+  auto primary_topic = object_store_.findTopic(dataset_id_, "/camera/image");
+  auto secondary_topic = secondary_object_store.findTopic(dataset_id_, "/camera/image");
+  ASSERT_TRUE(primary_topic.has_value());
+  ASSERT_TRUE(secondary_topic.has_value()) << "object topic must be lockstep-registered on both stores";
+
+  // Live: target defaults to the primary.
+  push(100);
+  EXPECT_EQ(object_store_.entryCount(*primary_topic), 1U);
+  EXPECT_EQ(secondary_object_store.entryCount(*secondary_topic), 0U);
+
+  // Pause: swap to the secondary. New frames land on B; the primary is frozen.
+  host.setObjectStoreTarget(&secondary_object_store);
+  push(200);
+  push(300);
+  EXPECT_EQ(object_store_.entryCount(*primary_topic), 1U) << "primary must not grow while paused";
+  EXPECT_EQ(secondary_object_store.entryCount(*secondary_topic), 2U);
+
+  // Resume: swap back to the primary.
+  host.setObjectStoreTarget(&object_store_);
+  push(400);
+  EXPECT_EQ(object_store_.entryCount(*primary_topic), 2U);
+  EXPECT_EQ(secondary_object_store.entryCount(*secondary_topic), 2U);
+}
+
 }  // namespace
