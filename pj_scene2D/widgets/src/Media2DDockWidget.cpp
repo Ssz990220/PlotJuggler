@@ -297,10 +297,7 @@ void Media2DDockWidget::onTrackerTime(double time) {
     // update() below schedules that repaint. update() is coalesced by Qt
     // so the redundant call on the image branch is a no-op.
     bound->setTimestamp(ts);
-    viewer_->update();
-    return;
   }
-
   viewer_->setTimestamp(ts);
   viewer_->update();
 }

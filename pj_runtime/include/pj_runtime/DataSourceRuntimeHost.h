@@ -70,6 +70,14 @@ class DataSourceRuntimeHost {
   DataSourceRuntimeHost(const DataSourceRuntimeHost&) = delete;
   DataSourceRuntimeHost& operator=(const DataSourceRuntimeHost&) = delete;
 
+  // Signature: (type, title, message, buttons) → clicked button.
+  // type and buttons use the PJ_message_box_type_t / PJ_MSG_BTN_* constants.
+  // If not set, the host picks the positive button (headless mode).
+  using MessageBoxHandler = std::function<int(int type, std::string_view title, std::string_view message, int buttons)>;
+  void setMessageBoxHandler(MessageBoxHandler handler) {
+    message_box_handler_ = std::move(handler);
+  }
+
   // Registers SourceWriteHostService + DataSourceRuntimeHostService into the
   // builder used to bind the DataSource plugin.
   void registerServices(ServiceRegistryBuilder& registry);
@@ -220,6 +228,7 @@ class DataSourceRuntimeHost {
   // whose deferred message fetch API is not safe to call concurrently.
   std::shared_ptr<std::mutex> lazy_fetch_mutex_;
 
+  MessageBoxHandler message_box_handler_;
   std::string last_error_;
   std::atomic<bool> stop_requested_{false};
   uint32_t next_binding_id_ = 1;

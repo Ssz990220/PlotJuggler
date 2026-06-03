@@ -637,22 +637,26 @@ bool DataSourceRuntimeHost::cbPushMessage(
 }
 
 int DataSourceRuntimeHost::cbShowMessageBox(
-    void* /*ctx*/, PJ_message_box_type_t /*type*/, PJ_string_view_t title, PJ_string_view_t message,
-    int buttons) noexcept {
-  // Headless default — log and pick a positive button. The host is single-
-  // threaded for the import, but Qt modal dialogs from a plugin callback are
-  // fragile, so v1 doesn't pop them. Plugins that need user input go through
-  // their own dialog capability.
+    void* ctx, PJ_message_box_type_t type, PJ_string_view_t title, PJ_string_view_t message, int buttons) noexcept {
+  auto* self = static_cast<DataSourceRuntimeHost*>(ctx);
+  const std::string_view sv_title(title.data, title.size);
+  const std::string_view sv_message(message.data, message.size);
+
+  if (self->message_box_handler_) {
+    return self->message_box_handler_(static_cast<int>(type), sv_title, sv_message, buttons);
+  }
+
+  // Headless fallback: log and pick the positive button.
   qCInfo(lcIngest) << "[plugin msgbox]" << QString::fromUtf8(title.data, static_cast<int>(title.size)) << "—"
                    << QString::fromUtf8(message.data, static_cast<int>(message.size));
-  if ((buttons & PJ_MSG_BTN_OK) != 0) {
-    return PJ_MSG_BTN_OK;
+  if ((buttons & PJ_MSG_BTN_CONTINUE) != 0) {
+    return PJ_MSG_BTN_CONTINUE;
   }
   if ((buttons & PJ_MSG_BTN_YES) != 0) {
     return PJ_MSG_BTN_YES;
   }
-  if ((buttons & PJ_MSG_BTN_CONTINUE) != 0) {
-    return PJ_MSG_BTN_CONTINUE;
+  if ((buttons & PJ_MSG_BTN_OK) != 0) {
+    return PJ_MSG_BTN_OK;
   }
   return -1;
 }

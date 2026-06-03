@@ -9,8 +9,10 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QLoggingCategory>
+#include <QMessageBox>
 #include <QProgressBar>
 #include <QProgressDialog>
+#include <QPushButton>
 #include <QSettings>
 #include <QString>
 #include <QStringList>
@@ -236,8 +238,66 @@ bool FileLoader::loadFile(const QString& path, QWidget* dialog_parent, const Loa
     };
   }
   DataSourceRuntimeHost ingest_session(
-      target_engine, extensions_, dataset_id, source_handle, target_store, source->id,
-      std::move(object_parser_registrar));
+      engine, extensions_, dataset_id, source_handle, session_.objectStore(), source->id,
+      [this](ObjectTopicId id, std::unique_ptr<MessageParserHandle> parser) {
+        session_.registerObjectTopicParser(id, std::move(parser));
+      });
+  if (dialog_parent != nullptr) {
+    ingest_session.setMessageBoxHandler(
+        [dialog_parent](int type, std::string_view title, std::string_view message, int buttons) -> int {
+          const QString q_title = QString::fromUtf8(title.data(), static_cast<int>(title.size()));
+          const QString q_text = QString::fromUtf8(message.data(), static_cast<int>(message.size()));
+
+          QMessageBox msgBox(dialog_parent);
+          msgBox.setWindowTitle(q_title);
+          msgBox.setText(q_text);
+          switch (type) {
+            case PJ_MESSAGE_BOX_WARNING:
+              msgBox.setIcon(QMessageBox::Warning);
+              break;
+            case PJ_MESSAGE_BOX_ERROR:
+              msgBox.setIcon(QMessageBox::Critical);
+              break;
+            case PJ_MESSAGE_BOX_QUESTION:
+              msgBox.setIcon(QMessageBox::Question);
+              break;
+            default:
+              msgBox.setIcon(QMessageBox::Information);
+              break;
+          }
+          QPushButton* btn_ok = (buttons & PJ_MSG_BTN_OK) ? msgBox.addButton(QMessageBox::Ok) : nullptr;
+          QPushButton* btn_cancel = (buttons & PJ_MSG_BTN_CANCEL) ? msgBox.addButton(QMessageBox::Cancel) : nullptr;
+          QPushButton* btn_yes = (buttons & PJ_MSG_BTN_YES) ? msgBox.addButton(QMessageBox::Yes) : nullptr;
+          QPushButton* btn_no = (buttons & PJ_MSG_BTN_NO) ? msgBox.addButton(QMessageBox::No) : nullptr;
+          QPushButton* btn_continue = (buttons & PJ_MSG_BTN_CONTINUE)
+                                          ? msgBox.addButton(QObject::tr("Continue"), QMessageBox::AcceptRole)
+                                          : nullptr;
+          QPushButton* btn_abort =
+              (buttons & PJ_MSG_BTN_ABORT) ? msgBox.addButton(QObject::tr("Abort"), QMessageBox::RejectRole) : nullptr;
+
+          msgBox.exec();
+          const auto* clicked = msgBox.clickedButton();
+          if (clicked == btn_continue) {
+            return PJ_MSG_BTN_CONTINUE;
+          }
+          if (clicked == btn_abort) {
+            return PJ_MSG_BTN_ABORT;
+          }
+          if (clicked == btn_yes) {
+            return PJ_MSG_BTN_YES;
+          }
+          if (clicked == btn_no) {
+            return PJ_MSG_BTN_NO;
+          }
+          if (clicked == btn_ok) {
+            return PJ_MSG_BTN_OK;
+          }
+          if (clicked == btn_cancel) {
+            return PJ_MSG_BTN_CANCEL;
+          }
+          return -1;
+        });
+  }
   applyDefaultIngestPolicies(ingest_session);
 
   ServiceRegistryBuilder registry;
