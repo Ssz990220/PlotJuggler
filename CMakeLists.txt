@@ -112,6 +112,7 @@ add_subdirectory(pj_marketplace)
 add_subdirectory(pj_dialog_host)
 add_subdirectory(pj_runtime)
 add_subdirectory(pj_widgets)
+add_subdirectory(pj_scene_common)
 add_subdirectory(pj_plotting)
 
 if(PJ4_BUILD_APP)

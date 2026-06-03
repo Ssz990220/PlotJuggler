@@ -1,0 +1,1 @@
+pj_scene_common owns the backend-agnostic layered scene dock framework shared by scene widget families. Start with `include/pj_scene_common/scene_layer.h`, `layer_factory.h`, and `scene_dock_widget.h`; rendering-specific view state belongs in the 2D/3D families, not in this module.
