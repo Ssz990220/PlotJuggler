@@ -92,6 +92,9 @@ class DockWidget : public ads::CDockWidget, public IDataWidget {
   void installObjectContextMenuFilter(QWidget* root);
   void removeObjectContextMenuFilter(QWidget* root);
   void showObjectContextMenu(const QPoint& global_pos);
+  // Make this dock the focused one after it receives a drop, so its settings
+  // become visible immediately (no-op if the manager has no focus controller).
+  void focusSelf();
 
   SessionManager* session_ = nullptr;
   CatalogModel* catalog_ = nullptr;

@@ -85,7 +85,42 @@ QAction* findActionByText(QObject* parent, const QString& text) {
   return nullptr;
 }
 
+// Splits the placeholder inside `dock` and returns the newly created sibling.
+PJ::DockWidget* splitFrom(PJ::PlotDocker& docker, PJ::DockWidget* dock, int expected_count) {
+  auto* placeholder = dock->findChild<PJ::VisualizationPlaceholderWidget*>();
+  EXPECT_NE(placeholder, nullptr);
+  if (placeholder == nullptr) {
+    return nullptr;
+  }
+  auto* split = findActionByText(placeholder, QStringLiteral("Split Horizontally"));
+  EXPECT_NE(split, nullptr);
+  if (split == nullptr) {
+    return nullptr;
+  }
+  split->trigger();
+  EXPECT_EQ(docker.plotCount(), expected_count);
+  return docker.plotAt(expected_count - 1);
+}
+
 }  // namespace
+
+// Focus behavior needs ADS's FocusController, which only exists when the
+// FocusHighlighting config flag is set at CDockManager construction. The flag
+// is process-global; set it per-test and restore it so test order can't leak
+// focus behavior into tests that don't expect it.
+class DockFocusTest : public ::testing::Test {
+ protected:
+  void SetUp() override {
+    saved_flags_ = ads::CDockManager::configFlags();
+    ads::CDockManager::setConfigFlag(ads::CDockManager::FocusHighlighting, true);
+  }
+  void TearDown() override {
+    ads::CDockManager::setConfigFlags(saved_flags_);
+  }
+
+ private:
+  ads::CDockManager::ConfigFlags saved_flags_;
+};
 
 TEST(DockWidgetPlaceholderTest, EmptyDockerStartsWithPlaceholderDock) {
   PJ::SessionManager session;
@@ -138,6 +173,163 @@ TEST(DockWidgetPlaceholderTest, PlaceholderSplitActionCreatesSiblingDock) {
   horizontal_action->trigger();
 
   EXPECT_EQ(docker.plotCount(), 2);
+}
+
+TEST_F(DockFocusTest, DropFocusesReceivingDock) {
+  PJ::SessionManager session;
+  PJ::CatalogModel catalog(&session);
+  auto dataset = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "drive.mcap"});
+  ASSERT_TRUE(dataset.has_value()) << dataset.error();
+  ASSERT_NE(addScalarTopic(session, *dataset, "/imu/accel"), 0U);
+  const auto curves = catalog.curves();
+  ASSERT_EQ(curves.size(), 1U);
+
+  PJ::PlotDocker docker(QStringLiteral("test"), &session, &catalog);
+  docker.show();  // focusedDockWidgetChanged only fires for visible docks.
+
+  auto* dock0 = docker.plotAt(0);
+  ASSERT_NE(dock0, nullptr);
+  auto* dock1 = splitFrom(docker, dock0, 2);
+  ASSERT_NE(dock1, nullptr);
+
+  PJ::DockWidget* focused = nullptr;
+  QObject::connect(&docker, &PJ::PlotDocker::dockFocused, [&](PJ::DockWidget* d) { focused = d; });
+
+  // Drop a scalar onto the second dock — it should immediately gain focus so
+  // its settings show, rather than waiting for a manual click.
+  ASSERT_TRUE(
+      QMetaObject::invokeMethod(
+          dock1, "onCatalogItemsDropped", Qt::DirectConnection, Q_ARG(QStringList, QStringList{curves[0].name})));
+
+  EXPECT_EQ(focused, dock1);
+  EXPECT_EQ(docker.focusedDock(), dock1);
+}
+
+TEST_F(DockFocusTest, ObjectDropFocusesReceivingDock) {
+  PJ::SessionManager session;
+  PJ::CatalogModel catalog(&session);
+  auto dataset = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "drive.mcap"});
+  ASSERT_TRUE(dataset.has_value()) << dataset.error();
+  auto object_topic = session.objectStore().registerTopic(
+      PJ::ObjectTopicDescriptor{
+          .dataset_id = *dataset,
+          .topic_name = "/camera/image_raw/compressed",
+          .metadata_json = R"({"builtin_object_type":"kImage"})",
+      });
+  ASSERT_TRUE(object_topic.has_value()) << object_topic.error();
+  catalog.rebuildFromDatastore();
+  const auto items = catalog.items();
+  ASSERT_EQ(items.size(), 1U);
+
+  PJ::PlotDocker docker(QStringLiteral("test"), &session, &catalog);
+  docker.setObjectWidgetFactory(
+      [](const QString& /*kind*/, const PJ::ObjectDropSeed* /*seed*/, QWidget* parent) -> PJ::IDataWidget* {
+        return new FakeObjectWidget(parent);
+      });
+  docker.show();
+
+  auto* dock0 = docker.plotAt(0);
+  ASSERT_NE(dock0, nullptr);
+  auto* dock1 = splitFrom(docker, dock0, 2);
+  ASSERT_NE(dock1, nullptr);
+
+  PJ::DockWidget* focused = nullptr;
+  QObject::connect(&docker, &PJ::PlotDocker::dockFocused, [&](PJ::DockWidget* d) { focused = d; });
+
+  // Dropping an object topic (factory-created widget) focuses its dock too.
+  ASSERT_TRUE(
+      QMetaObject::invokeMethod(
+          dock1, "onCatalogItemsDropped", Qt::DirectConnection, Q_ARG(QStringList, QStringList{items[0].key})));
+
+  ASSERT_NE(dock1->objectWidget(), nullptr);
+  EXPECT_EQ(focused, dock1);
+  EXPECT_EQ(docker.focusedDock(), dock1);
+}
+
+TEST_F(DockFocusTest, ClosingFocusedDockRefocusesPreviouslyFocused) {
+  PJ::SessionManager session;
+  PJ::CatalogModel catalog(&session);
+  PJ::PlotDocker docker(QStringLiteral("test"), &session, &catalog);
+  docker.show();
+
+  auto* dock0 = docker.plotAt(0);
+  ASSERT_NE(dock0, nullptr);
+  auto* dock1 = splitFrom(docker, dock0, 2);
+  ASSERT_NE(dock1, nullptr);
+  auto* dock2 = splitFrom(docker, dock1, 3);
+  ASSERT_NE(dock2, nullptr);
+
+  // Establish focus history: … → dock1 → dock2, so the previous is dock1.
+  docker.setDockWidgetFocused(dock1);
+  docker.setDockWidgetFocused(dock2);
+  ASSERT_EQ(docker.focusedDock(), dock2);
+
+  PJ::DockWidget* focused = nullptr;
+  QObject::connect(&docker, &PJ::PlotDocker::dockFocused, [&](PJ::DockWidget* d) { focused = d; });
+
+  dock2->closeDockWidget();
+
+  // Focus returns to the previously focused dock (dock1), not merely the first
+  // surviving sibling (dock0) — and never stays on the deleted dock.
+  EXPECT_EQ(focused, dock1);
+  EXPECT_EQ(docker.focusedDock(), dock1);
+  EXPECT_EQ(docker.plotCount(), 2);
+}
+
+TEST_F(DockFocusTest, ClosingLastRealDockFocusesPlaceholder) {
+  PJ::SessionManager session;
+  PJ::CatalogModel catalog(&session);
+  PJ::PlotDocker docker(QStringLiteral("test"), &session, &catalog);
+  docker.show();
+
+  auto* dock0 = docker.plotAt(0);
+  ASSERT_NE(dock0, nullptr);
+  docker.setDockWidgetFocused(dock0);
+
+  PJ::DockWidget* focused = dock0;
+  QObject::connect(&docker, &PJ::PlotDocker::dockFocused, [&](PJ::DockWidget* d) { focused = d; });
+
+  dock0->closeDockWidget();
+
+  // A fresh placeholder is created and focused; it is not the deleted dock,
+  // so the panel falls back to its empty page instead of stale settings.
+  ASSERT_EQ(docker.plotCount(), 1);
+  EXPECT_NE(focused, dock0);
+  EXPECT_EQ(focused, docker.plotAt(0));
+}
+
+TEST_F(DockFocusTest, DropOntoAlreadyFocusedPlaceholderRefreshes) {
+  PJ::SessionManager session;
+  PJ::CatalogModel catalog(&session);
+  auto dataset = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "drive.mcap"});
+  ASSERT_TRUE(dataset.has_value()) << dataset.error();
+  ASSERT_NE(addScalarTopic(session, *dataset, "/imu/accel"), 0U);
+  const auto curves = catalog.curves();
+  ASSERT_EQ(curves.size(), 1U);
+
+  PJ::PlotDocker docker(QStringLiteral("test"), &session, &catalog);
+  docker.show();
+
+  // Close the only widget: a fresh placeholder is created and *takes focus*.
+  auto* dock0 = docker.plotAt(0);
+  ASSERT_NE(dock0, nullptr);
+  docker.setDockWidgetFocused(dock0);
+  dock0->closeDockWidget();
+  auto* placeholder = docker.plotAt(0);
+  ASSERT_NE(placeholder, nullptr);
+  ASSERT_EQ(docker.focusedDock(), placeholder);
+
+  PJ::DockWidget* focused = nullptr;
+  QObject::connect(&docker, &PJ::PlotDocker::dockFocused, [&](PJ::DockWidget* d) { focused = d; });
+
+  // Dropping onto the already-focused placeholder populates it; ADS won't emit a
+  // focus change (focus didn't move), but the panel must still refresh.
+  ASSERT_TRUE(
+      QMetaObject::invokeMethod(
+          placeholder, "onCatalogItemsDropped", Qt::DirectConnection, Q_ARG(QStringList, QStringList{curves[0].name})));
+
+  ASSERT_NE(placeholder->plotWidget(), nullptr);
+  EXPECT_EQ(focused, placeholder);
 }
 
 TEST(DockWidgetPlaceholderTest, ScalarDropConvertsPlaceholderToPlot) {

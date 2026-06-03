@@ -1,3 +1,5 @@
+find_package(Qt6 REQUIRED COMPONENTS Test)
+
 add_executable(curve_tree_view_test
     curve_tree_view_test.cpp
     ${CMAKE_SOURCE_DIR}/resources/resources.qrc
@@ -84,3 +86,25 @@ target_compile_definitions(raster_stream_view_test PRIVATE
     PJ_STUB_HELPER_PATH="$<TARGET_FILE:raster_stub_helper>")
 add_dependencies(raster_stream_view_test raster_stub_helper)
 add_test(NAME RasterStreamView COMMAND raster_stream_view_test)
+
+add_executable(layer_list_view_test
+    layer_list_view_test.cpp
+    ${CMAKE_SOURCE_DIR}/resources/resources.qrc
+)
+
+target_link_libraries(layer_list_view_test PRIVATE
+    pj_widgets
+    GTest::gtest
+    Qt6::Test
+)
+
+if(DEFINED PJ_WARNING_FLAGS)
+    target_compile_options(layer_list_view_test PRIVATE ${PJ_WARNING_FLAGS})
+endif()
+
+set_target_properties(layer_list_view_test PROPERTIES
+    AUTORCC ON
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
+)
+
+add_test(NAME LayerListViewTest COMMAND layer_list_view_test)

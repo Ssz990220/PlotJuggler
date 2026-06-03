@@ -4,6 +4,7 @@ add_library(pj_widgets STATIC
     src/ColorPickerPopup.cpp
     src/ComboBox.cpp
     src/ComboBoxGradientDelegate.cpp
+    src/ConfigPanelHost.cpp
     src/CredentialsEditor.cpp
     src/CurveTreeView.cpp
     src/DateRangePicker.cpp
@@ -13,6 +14,7 @@ add_library(pj_widgets STATIC
     src/FileDialog.cpp
     src/FlowLayout.cpp
     src/IntScrubber.cpp
+    src/LayerListView.cpp
     src/MessageBox.cpp
     src/RangeSlider.cpp
     src/RasterFrame.cpp
@@ -25,6 +27,7 @@ add_library(pj_widgets STATIC
     include/pj_widgets/ColorPickerPopup.h
     include/pj_widgets/ComboBox.h
     include/pj_widgets/ComboBoxGradientDelegate.h
+    include/pj_widgets/ConfigPanelHost.h
     include/pj_widgets/CredentialsEditor.h
     include/pj_widgets/CurveTreeView.h
     include/pj_widgets/DateRangePicker.h
@@ -34,6 +37,7 @@ add_library(pj_widgets STATIC
     include/pj_widgets/FileDialog.h
     include/pj_widgets/FlowLayout.h
     include/pj_widgets/IntScrubber.h
+    include/pj_widgets/LayerListView.h
     include/pj_widgets/MessageBox.h
     include/pj_widgets/RealSlider.h
     include/pj_widgets/RangeSlider.h

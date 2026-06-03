@@ -343,6 +343,7 @@ void DockWidget::onCatalogItemsDropped(const QStringList& keys) {
       plot->zoomOut(true);
       emit undoableChange();
     }
+    focusSelf();
     return;
   }
 
@@ -387,6 +388,7 @@ void DockWidget::onCatalogItemsDropped(const QStringList& keys) {
   if (object_widget_ != nullptr) {
     if (offer_keys_to(object_widget_, /*start_index=*/0) > 0) {
       emit undoableChange();
+      focusSelf();
       return;
     }
     // Existing widget refused all keys (wrong family) — fall through and
@@ -422,11 +424,18 @@ void DockWidget::onCatalogItemsDropped(const QStringList& keys) {
     offer_keys_to(object_widget_, /*start_index=*/1);
   }
   emit undoableChange();
+  focusSelf();
 }
 
 void DockWidget::clearToPlaceholder() {
   setPlaceholderWidget();
   emit undoableChange();
+}
+
+void DockWidget::focusSelf() {
+  if (auto* docker = qobject_cast<PlotDocker*>(dockManager()); docker != nullptr) {
+    docker->focusDock(this);
+  }
 }
 
 void DockWidget::clearCurrentContent(bool delete_content) {

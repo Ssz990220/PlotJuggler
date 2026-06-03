@@ -907,7 +907,9 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
   connect(this, &MainWindow::stylesheetChanged, curve_editor_, &CurveEditor::onStylesheetChanged);
   connect(this, &MainWindow::chromeMetricsChanged, curve_editor_, &CurveEditor::onChromeMetricsChanged);
   connect(ui_->tabbedPlotWidget, &TabbedPlotWidget::currentTabChanged, this, [this](PlotDocker* /*docker*/) {
-    bindEditorToPlot(firstPlotOfActiveTab());
+    // Switching tabs doesn't emit ADS focus, so drive the right panel (and the
+    // editor binding it subsumes) from the new tab's focused dock.
+    onDockFocused(activeFocusedDock());
   });
   bindEditorToPlot(firstPlotOfActiveTab());
 
@@ -1511,6 +1513,12 @@ void MainWindow::syncWidgetsToCatalog() {
       dock->clearToPlaceholder();
     }
   });
+  // Clearing a dock to its placeholder doesn't change ADS focus, so the right
+  // panel won't refresh on its own. Re-evaluate it against the active tab's
+  // focused dock: if that dock was just emptied, the panel falls back to the
+  // empty page; otherwise this is a no-op. Keying off the active tab (rather
+  // than a remembered pointer) avoids ever painting a hidden tab's dock.
+  onDockFocused(activeFocusedDock());
 }
 
 void MainWindow::linkedZoomOut() {
@@ -2569,6 +2577,17 @@ PlotWidget* MainWindow::firstPlotOfActiveTab() const {
   auto* docker = ui_->tabbedPlotWidget->currentTab();
   auto* dock = (docker != nullptr && docker->plotCount() > 0) ? docker->plotAt(0) : nullptr;
   return dock != nullptr ? dock->plotWidget() : nullptr;
+}
+
+DockWidget* MainWindow::activeFocusedDock() const {
+  auto* docker = ui_->tabbedPlotWidget->currentTab();
+  if (docker == nullptr) {
+    return nullptr;
+  }
+  if (DockWidget* focused = docker->focusedDock(); focused != nullptr) {
+    return focused;
+  }
+  return docker->plotCount() > 0 ? docker->plotAt(0) : nullptr;
 }
 
 void MainWindow::onDockFocused(DockWidget* dock) {

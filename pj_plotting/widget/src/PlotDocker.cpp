@@ -384,7 +384,17 @@ PlotDocker::PlotDocker(QString name, SessionManager* session, CatalogModel* cata
   setStyleSheet("");  // Disable ADS's built-in stylesheet.
   setComponentsFactory(new SplittableComponentsFactory());
 
-  connect(this, &ads::CDockManager::dockWidgetRemoved, this, [this](ads::CDockWidget*) { ensureAtLeastOneWidget(); });
+  connect(this, &ads::CDockManager::dockWidgetRemoved, this, [this](ads::CDockWidget* removed) {
+    auto* removed_dock = qobject_cast<DockWidget*>(removed);
+    const bool removed_was_focused = (removed_dock != nullptr && removed_dock == focused_dock_);
+    ensureAtLeastOneWidget();
+    // ADS doesn't move focus to a survivor when the focused dock is closed, so
+    // do it here: the right panel mirrors the focused dock, and leaving focus
+    // on a deleted dock would strand stale settings on screen.
+    if (removed_was_focused && !restoring_state_) {
+      refocusAfterRemoval(removed_dock);
+    }
+  });
   connect(this, &ads::CDockManager::dockAreasAdded, this, [this]() {
     if (!restoring_state_) {
       emit undoableChange();
@@ -395,8 +405,13 @@ PlotDocker::PlotDocker(QString name, SessionManager* session, CatalogModel* cata
   connect(
       this, &ads::CDockManager::focusedDockWidgetChanged, this,
       [this](ads::CDockWidget* /*old*/, ads::CDockWidget* now) {
+        auto* now_dock = qobject_cast<DockWidget*>(now);
+        if (now_dock != focused_dock_) {
+          previous_dock_ = focused_dock_;
+          focused_dock_ = now_dock;
+        }
         focus_overlay_->setFocusedArea(now != nullptr ? now->dockAreaWidget() : nullptr);
-        emit dockFocused(qobject_cast<DockWidget*>(now));
+        emit dockFocused(now_dock);
       });
   connect(this, &PlotDocker::plotWidgetAdded, this, &PlotDocker::watchPlotForHover);
 
@@ -454,6 +469,28 @@ QString PlotDocker::stateId() const {
 void PlotDocker::setStateId(QString id) {
   if (!id.isEmpty()) {
     state_id_ = std::move(id);
+  }
+}
+
+void PlotDocker::refocusAfterRemoval(DockWidget* removed) {
+  DockWidget* target = nullptr;
+  // Prefer the previously focused dock so the user lands back where they were.
+  // QPointer keeps it null if it was deleted in the meantime.
+  if (previous_dock_ != nullptr && previous_dock_ != removed) {
+    target = previous_dock_;
+  } else {
+    // Otherwise focus the first surviving dock. ensureAtLeastOneWidget() has
+    // already guaranteed at least one exists, so closing the last real widget
+    // lands focus on the freshly created placeholder (an empty config panel).
+    for (int i = 0; i < plotCount(); ++i) {
+      if (DockWidget* dock = plotAt(i); dock != nullptr && dock != removed) {
+        target = dock;
+        break;
+      }
+    }
+  }
+  if (target != nullptr) {
+    setDockWidgetFocused(target);
   }
 }
 
@@ -575,6 +612,24 @@ int PlotDocker::plotCount() const {
 
 DockWidget* PlotDocker::plotAt(int index) {
   return dynamic_cast<DockWidget*>(dockArea(index)->currentDockWidget());
+}
+
+DockWidget* PlotDocker::focusedDock() const {
+  return focused_dock_.data();
+}
+
+void PlotDocker::focusDock(DockWidget* dock) {
+  if (dock == nullptr) {
+    return;
+  }
+  if (dock == focused_dock_) {
+    // Already focused: ADS won't re-emit focusedDockWidgetChanged, but the
+    // dock's content just changed (e.g. a drop populated a focused placeholder
+    // after every widget was closed), so refresh listeners directly.
+    emit dockFocused(dock);
+  } else {
+    setDockWidgetFocused(dock);
+  }
 }
 
 void PlotDocker::onStylesheetChanged(QString theme) {

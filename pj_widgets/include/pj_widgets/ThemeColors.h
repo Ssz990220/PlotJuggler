@@ -29,4 +29,9 @@ inline const QColor kSelectionText(0x00, 0x00, 0x00);
 inline const QColor kInputBackgroundDark(0x4D, 0x4D, 0x5A);
 inline const QColor kInputBackgroundLight(0xFF, 0xFF, 0xFF);
 
+// Semantic accent — error / danger. Mirrors the `accent_error` QSS token
+// (identical in both themes today). Used for invalid/warning row text and
+// other self-painted widgets that can't reach the QSS palette.
+inline const QColor kAccentError(0xD3, 0x2F, 0x2F);
+
 }  // namespace PJ::theme

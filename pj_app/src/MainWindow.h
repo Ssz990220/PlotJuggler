@@ -363,6 +363,11 @@ class MainWindow : public QMainWindow {
   // style toolbar buttons accordingly (they no-op without an active plot).
   void bindEditorToPlot(PlotWidget* plot);
   [[nodiscard]] PlotWidget* firstPlotOfActiveTab() const;
+  // The dock driving the right config panel: the focused dock of the active
+  // tab, or its first dock when nothing is focused. Used to refresh the panel
+  // on events that don't emit ADS focus (tab switch, data clear) without ever
+  // mirroring a dock from a hidden tab.
+  [[nodiscard]] DockWidget* activeFocusedDock() const;
 
  protected:
   // Persists main-window settings before close.

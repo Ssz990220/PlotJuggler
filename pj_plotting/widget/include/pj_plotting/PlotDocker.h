@@ -6,6 +6,7 @@
 
 #include <QDomDocument>
 #include <QDomElement>
+#include <QPointer>
 #include <QString>
 #include <functional>
 
@@ -54,6 +55,13 @@ class PlotDocker : public ads::CDockManager {
 
   int plotCount() const;
   DockWidget* plotAt(int index);
+  // The dock that currently holds focus in this tab (the one driving the right
+  // config panel), or nullptr if none. Tracked from focusedDockWidgetChanged.
+  [[nodiscard]] DockWidget* focusedDock() const;
+  // Focus `dock` so its settings show. If it is already the focused dock, ADS
+  // suppresses its focus-changed signal — so re-announce dockFocused directly,
+  // which is what a drop populating an already-focused placeholder needs.
+  void focusDock(DockWidget* dock);
 
  public slots:
   void onStylesheetChanged(QString theme);
@@ -75,6 +83,11 @@ class PlotDocker : public ads::CDockManager {
   void ensureAtLeastOneWidget();
   DockWidget* addDockWithPlot(PlotWidget* plot, ads::DockWidgetArea area, ads::CDockAreaWidget* relative_to = nullptr);
   void watchPlotForHover(PlotWidget* plot);
+  // Move focus to a surviving dock after the focused one was removed, so its
+  // settings stay visible. Prefers the previously focused dock; otherwise the
+  // first remaining dock (which, after ensureAtLeastOneWidget, may be a fresh
+  // placeholder when the last real widget was closed).
+  void refocusAfterRemoval(DockWidget* removed);
 
   QString state_id_;
   QString name_;
@@ -83,6 +96,10 @@ class PlotDocker : public ads::CDockManager {
   ObjectWidgetFactory object_widget_factory_;
   bool restoring_state_ = false;
   PlotFocusOverlay* focus_overlay_ = nullptr;
+  // One-deep focus history, maintained from focusedDockWidgetChanged. Used to
+  // restore focus to the previously active dock when the current one closes.
+  QPointer<DockWidget> focused_dock_;
+  QPointer<DockWidget> previous_dock_;
 };
 
 }  // namespace PJ
