@@ -30,7 +30,7 @@ int main(int argc, char* argv[]) {
   // surviving view). With each view's GL context fully independent, tearing one
   // down can no longer touch the others. The original "survive a context
   // recreation" concern is handled instead inside pj_scene3D: every render pass
-  // and entity implements releaseGL(), and SceneViewWidget rebuilds its GL state
+  // and layer implements releaseGL(), and SceneViewWidget rebuilds its GL state
   // in initializeGL() — so a recreated context self-heals rather than relying on
   // a process-wide share group.
 

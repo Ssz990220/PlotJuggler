@@ -41,7 +41,12 @@ SceneDockWidget::SceneDockWidget(QWidget* parent) : QWidget(parent) {
 }
 
 SceneDockWidget::~SceneDockWidget() {
-  clearLayers();
+  // clearLayers() must not run here: it reconciles the concrete view through
+  // the pure-virtual syncViewLayers(), which cannot be dispatched during
+  // base-class destruction. Concrete docks whose view references layers call
+  // clearLayers() in their own destructor; by the time we get here that has
+  // either happened (this is a no-op) or no view reconciliation was needed.
+  destroyLayersUnsynced();
 }
 
 QWidget* SceneDockWidget::widget() {
@@ -54,7 +59,10 @@ void SceneDockWidget::setSessionManager(SessionManager* session) {
 
 bool SceneDockWidget::tryAcceptObjectTopic(
     ObjectTopicId topic_id, sdk::BuiltinObjectType object_type, const QString& title) {
-  return acceptsObjectType(object_type) ? addTopic(topic_id, object_type, title) : false;
+  // No acceptsObjectType() pre-gate: addLayer() consults handleSceneConfigTopic()
+  // first (a family may consume a topic as scene-wide config, e.g. TF, without it
+  // being a render layer) and rejects unsupported types via createAndAttachLayer().
+  return addTopic(topic_id, object_type, title);
 }
 
 bool SceneDockWidget::addTopic(ObjectTopicId topic_id, sdk::BuiltinObjectType object_type, const QString& title) {
@@ -132,8 +140,14 @@ void SceneDockWidget::registerLayer(int64_t key, std::unique_ptr<ISceneLayer> la
 
   if (layer_raw->info().visible) {
     const auto [first, last] = layer_raw->timeRangeNs();
-    const int64_t seed_ns = (last >= first) ? std::clamp(last_tracker_ns_, first, last) : last_tracker_ns_;
-    layer_raw->setTrackerTime(std::chrono::nanoseconds{seed_ns});
+    if (last_tracker_ns_.has_value()) {
+      const int64_t seed_ns = (last >= first) ? std::clamp(*last_tracker_ns_, first, last) : *last_tracker_ns_;
+      layer_raw->setTrackerTime(std::chrono::nanoseconds{seed_ns});
+    } else if (last >= first) {
+      // No tracker tick yet: deliberately show the layer's first frame instead
+      // of fabricating a time (0 is a valid timestamp; absence is explicit).
+      layer_raw->setTrackerTime(std::chrono::nanoseconds{first});
+    }
   }
 }
 
@@ -159,7 +173,32 @@ void SceneDockWidget::removeTopic(ObjectTopicId topic_id) {
   emit layerRemoved(topic_id);
 }
 
-void SceneDockWidget::setTopicVisible(ObjectTopicId topic_id, bool visible) {
+bool SceneDockWidget::revalidateObjects() {
+  if (session_ == nullptr || layers_.empty()) {
+    return !layers_.empty();
+  }
+  // A live topic carries a name; an evicted one resolves to the empty
+  // descriptor. Collect first — removeTopic() mutates layers_ and runs the
+  // full removal path (detach, view re-point, layerRemoved notification), so
+  // observers like the layer-list panels stay coherent for free.
+  ObjectStore& store = session_->objectStore();
+  std::vector<ObjectTopicId> dead;
+  for (const auto& [key, layer] : layers_) {
+    if (layer == nullptr) {
+      continue;
+    }
+    const ObjectTopicId topic_id = layer->info().topic_id;
+    if (store.descriptor(topic_id).topic_name.empty()) {
+      dead.push_back(topic_id);
+    }
+  }
+  for (const ObjectTopicId topic_id : dead) {
+    removeTopic(topic_id);
+  }
+  return !layers_.empty();
+}
+
+void SceneDockWidget::setLayerVisible(ObjectTopicId topic_id, bool visible) {
   ISceneLayer* layer = layerFor(topic_id);
   if (layer == nullptr) {
     return;
@@ -314,7 +353,7 @@ bool SceneDockWidget::xmlLoadState(const QDomElement& element) {
       }
     }
     if (!visible) {
-      setTopicVisible(*topic_id_opt, false);
+      setLayerVisible(*topic_id_opt, false);
     }
   }
   syncViewLayers();
@@ -366,26 +405,46 @@ void SceneDockWidget::ensureSceneViewCreated() {
 }
 
 int64_t SceneDockWidget::clampToLayerRange(int64_t time_ns) const {
-  if (layers_.empty()) {
-    return time_ns;
-  }
-  int64_t lo = std::numeric_limits<int64_t>::max();
-  int64_t hi = std::numeric_limits<int64_t>::lowest();
+  // Latched-layer rule (semantics ported from pj_scene3d_core's
+  // clampTrackerTimeToRanges, which the 3D dock used before migrating onto this
+  // base): a *spanning* layer (first < last) bounds both ends; a *latched /
+  // one-shot* layer (first == last, e.g. a map pinned to the recording start)
+  // is valid from its stamp ONWARD — it lowers `lo` but must NOT cap `hi`, or
+  // its lone early stamp would drag the live playhead backwards and hide
+  // everything keyed to "now" (the old "TF doesn't render unless another topic
+  // is present" bug). With no spanning layer there is no upper bound; with no
+  // usable range the time passes through unchanged.
+  bool have_lo = false;
+  bool have_hi = false;
+  int64_t lo = 0;
+  int64_t hi = 0;
   for (const auto& [key, layer] : layers_) {
     if (layer == nullptr) {
       continue;
     }
     const auto [first, last] = layer->timeRangeNs();
     if (last < first) {
-      continue;
+      continue;  // inverted: no data
     }
-    lo = std::min(lo, first);
-    hi = std::max(hi, last);
+    if (!have_lo || first < lo) {
+      lo = first;
+      have_lo = true;
+    }
+    if (last > first && (!have_hi || last > hi)) {
+      hi = last;
+      have_hi = true;
+    }
   }
-  if (lo > hi) {
+  if (!have_lo) {
     return time_ns;
   }
-  return std::clamp(time_ns, lo, hi);
+  if (time_ns < lo) {
+    return lo;
+  }
+  if (have_hi && time_ns > hi) {
+    return hi;
+  }
+  return time_ns;
 }
 
 std::vector<ISceneLayer*> SceneDockWidget::orderedLayerPtrs() const {
@@ -405,6 +464,28 @@ void SceneDockWidget::syncViewLayers() {
 }
 
 void SceneDockWidget::clearLayers() {
+  if (layers_.empty()) {
+    return;
+  }
+  // Mirror removeTopic()'s ordering for the clear-all case: re-point the view
+  // off every layer (a sync with an empty draw order) while the layers are
+  // still alive, so a view holding raw layer pointers can drop and release
+  // them safely (the 3D view releases each layer's GL resources here). Only
+  // then detach; the retired layers are destroyed at scope exit.
+  auto retired = std::move(layers_);
+  layers_.clear();
+  draw_order_.clear();
+  layer_visibility_cache_.clear();
+  syncViewLayers();
+  refreshView();
+  for (auto& [key, layer] : retired) {
+    if (layer != nullptr) {
+      layer->detach();
+    }
+  }
+}
+
+void SceneDockWidget::destroyLayersUnsynced() {
   for (auto& [key, layer] : layers_) {
     if (layer != nullptr) {
       layer->detach();

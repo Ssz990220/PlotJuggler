@@ -26,7 +26,7 @@ see pj-official-plugins#122) decode ROS / CDR messages into canonical
   `core/include/pj_scene3d_core/{tf/tf_buffer.h, tf/transform.h,
   occupancy_grid_reconstructor.h, pointcloud.h}`.
 - `widgets/` — Qt viewer (`SceneViewWidget`, a `QOpenGLWidget` embedded as a
-  direct child of `Scene3DDockWidget`), render passes, entities, and
+  direct child of `Scene3DDockWidget`), render passes, layers, and
   `Scene3DDockWidget` (an `IDataWidget`). A right-click on the view delivers a
   native `QContextMenuEvent` that the host `DockWidget`'s event filter catches,
   so the 3D scene gets the same standard menu (Split Horizontally/Vertically,
@@ -38,7 +38,7 @@ see pj-official-plugins#122) decode ROS / CDR messages into canonical
     (a `glBindVertexArray(non-gen name)` flood + the map texture vanishing). Each
     view's GL context is therefore independent, which means a `QOpenGLWidget`
     *recreates* its context when ADS reparents the dock (dock/float/split). VAOs
-    and FBOs are per-context (never shared), so every `IRenderPass`/`Scene3DEntity`
+    and FBOs are per-context (never shared), so every `IRenderPass`/`Scene3DLayer`
     (and `ArrowGizmo`) implements `releaseGL()`; `SceneViewWidget` calls it from
     the dying context's `aboutToBeDestroyed` and rebuilds in `initializeGL`, so a
     recreated context self-heals instead of binding stale handles or going blank.

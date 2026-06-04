@@ -1,5 +1,5 @@
 // Copyright 2026 Davide Faconti
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: MPL-2.0
 #pragma once
 
 #include <memory>

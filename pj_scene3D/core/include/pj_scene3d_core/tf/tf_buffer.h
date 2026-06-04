@@ -9,6 +9,7 @@
 #include <optional>
 #include <shared_mutex>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -36,6 +37,13 @@ enum class LookupError {
   Disconnected,    // both frames known but no common ancestor (incl. broken cycles)
   NoSampleAtTime,  // an edge on the connecting path has no sample at the requested time
 };
+
+// Case-insensitive (ASCII) less for frame names. Frame identity stays
+// case-sensitive in the buffer; this is *display order* only. It is the single
+// definition of user-facing frame ordering: getFrameHierarchy()'s sibling sort
+// and any dock-level merge sort (e.g. the fixed-frame combo's clusters) must
+// agree, so both call this.
+[[nodiscard]] bool frameNameLess(std::string_view a, std::string_view b) noexcept;
 
 struct FrameRow {
   std::string name;

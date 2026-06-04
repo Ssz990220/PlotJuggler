@@ -18,7 +18,7 @@
 #include <unordered_map>
 #include <vector>
 
-#include "pj_scene2d_core/decoded_frame.h"
+#include "pj_scene2d_core/media_frame.h"
 #include "pj_scene2d_core/scene_frame.h"
 
 namespace PJ {
@@ -108,9 +108,47 @@ class MediaViewerWidget : public QRhiWidget {
   // releaseResources() (Qt has already stopped rendering).
   void clearTextCache();
 
+  // Selects the YUV→RGB shader path. Values must match the `pixelFormat`
+  // uniform contract in shaders/yuv_to_rgb.frag. kNV12 is RESERVED: the shader
+  // branch exists, but no decoder emits NV12 and the upload support gate
+  // rejects it — wire the two-plane upload before producing it.
+  enum class TexturePathFormat : int32_t {
+    kYUV420P = 0,
+    kNV12 = 1,
+    kRGBA = 2,
+  };
+
+  // Single definition of the PixelFormat -> shader-path projection: planar YUV
+  // stays planar; every packed RGB/BGR/mono layout is CPU-converted and lands
+  // on the RGBA path. Keep upload branch decisions on this, not on ad-hoc
+  // PixelFormat comparisons, so the projection cannot drift between the
+  // single-frame and per-layer upload paths.
+  [[nodiscard]] static TexturePathFormat texturePathFor(PixelFormat format) noexcept;
+
+  struct TextureLayerResources {
+    QRhiTexture* tex_y = nullptr;
+    QRhiTexture* tex_u = nullptr;
+    QRhiTexture* tex_v = nullptr;
+    QRhiBuffer* uniform_buf = nullptr;
+    QRhiShaderResourceBindings* srb = nullptr;
+    int width = 0;
+    int height = 0;
+    TexturePathFormat format = TexturePathFormat::kRGBA;
+    float opacity = 1.0f;
+  };
+
+  void clearPixelLayerTextures();
+  void destroyTextureLayer(TextureLayerResources& layer);
+  bool ensureTextureLayer(TextureLayerResources& layer);
+  bool uploadDecodedFrameToTexture(
+      const DecodedFrame& frame, TextureLayerResources& layer, QRhiResourceUpdateBatch* updates);
+  void updateTextureLayerUniform(
+      TextureLayerResources& layer, const QMatrix4x4& view, QRhiResourceUpdateBatch* updates) const;
+
   // Pipeline for YUV→RGB shader (video frames)
   QRhi* rhi_cached_ = nullptr;
   QRhiGraphicsPipeline* pipeline_ = nullptr;
+  QRhiGraphicsPipeline* composite_pipeline_ = nullptr;
   QRhiBuffer* uniform_buf_ = nullptr;
   QRhiSampler* sampler_ = nullptr;
   QRhiShaderResourceBindings* srb_ = nullptr;
@@ -132,19 +170,16 @@ class MediaViewerWidget : public QRhiWidget {
   DecodedFrame inspector_frame_;
   bool has_pending_ = false;
   bool pending_is_yuv_ = false;
+  std::vector<PixelLayer> pending_pixel_layers_;
+  bool has_pending_pixel_layers_ = false;
+  bool pixel_layers_active_ = false;
 
   int tex_width_ = 0;
   int tex_height_ = 0;
   float frame_aspect_ = 0.0f;
 
-  // Selects the YUV→RGB shader path. Values must match the `pixelFormat`
-  // uniform contract in shaders/yuv_to_rgb.frag.
-  enum class TexturePathFormat : int32_t {
-    kYUV420P = 0,
-    kNV12 = 1,
-    kRGBA = 2,
-  };
   TexturePathFormat current_pixel_format_ = TexturePathFormat::kRGBA;
+  std::vector<TextureLayerResources> pixel_layer_textures_;
 
   float zoom_ = 1.0f;
   float pan_x_ = 0.0f;

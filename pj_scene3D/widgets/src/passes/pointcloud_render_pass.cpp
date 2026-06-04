@@ -354,8 +354,8 @@ void PointcloudRenderPass::releaseGL() {
 }
 
 void PointcloudRenderPass::initializeGL() {
-  // Idempotent: SceneViewWidget::paintGL calls the owning entity's
-  // initializeGL() every frame (so an entity added after the widget is
+  // Idempotent: SceneViewWidget::paintGL calls the owning layer's
+  // initializeGL() every frame (so a layer added after the widget is
   // realised initialises on its first paint). Without this guard we
   // recompiled both shader programs, re-uploaded the static cube mesh, and
   // re-flagged cloud_dirty_ (forcing a full cloud VBO re-upload) on EVERY

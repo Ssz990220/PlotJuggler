@@ -4,33 +4,32 @@
 #include "pj_scene3d_widgets/Scene3DDockWidget.h"
 
 #include <QAbstractItemView>
-#include <QBoxLayout>
+#include <QDomDocument>
+#include <QDomElement>
 #include <QFontMetrics>
 #include <QLoggingCategory>
+#include <QPoint>
 #include <QResizeEvent>
 #include <QSignalBlocker>
+#include <QSizePolicy>
 #include <QStyle>
 #include <QStyleOptionComboBox>
 #include <algorithm>
 #include <cctype>
 #include <chrono>
+#include <limits>
+#include <memory>
 #include <unordered_set>
 #include <utility>
 
 #include "pj_base/builtin/builtin_object.hpp"
 #include "pj_runtime/SessionManager.h"
 #include "pj_scene3d_core/tf/tf_buffer.h"
-#include "pj_scene3d_core/tracker_time.h"
-#include "pj_widgets/ComboBox.h"
-// Concrete entity headers — each new drawable kind adds its include
-// here and a branch in addTopic's switch. Future work (post-v1) may
-// replace this with a Scene3DEntityFactory registry to support
-// plugin-provided drawables; until then, a switch is enough.
-#include "pj_scene3d_widgets/entities/occupancy_grid_entity.h"
-#include "pj_scene3d_widgets/entities/pointcloud_entity.h"
-#include "pj_scene3d_widgets/scene3d_entity.h"
+#include "pj_scene3d_widgets/layers/occupancy_grid_layer.h"
+#include "pj_scene3d_widgets/layers/pointcloud_layer.h"
 #include "pj_scene3d_widgets/scene_view_widget.h"
 #include "pj_scene3d_widgets/transform_service.h"
+#include "pj_widgets/ComboBox.h"
 
 namespace PJ {
 
@@ -38,27 +37,17 @@ namespace {
 Q_LOGGING_CATEGORY(lcScene3DDock, "pj.scene3d.dock")
 
 using pj::scene3d::FrameRow;
-using pj::scene3d::OccupancyGridEntity;
-using pj::scene3d::PointCloudEntity;
-using pj::scene3d::Scene3DEntity;
-using pj::scene3d::Scene3DEntityContext;
-using pj::scene3d::TransformBuffer;
+using pj::scene3d::OccupancyGridLayer;
+using pj::scene3d::PointCloudLayer;
+using pj::scene3d::Scene3DLayer;
+using pj::scene3d::Scene3DLayerContext;
 
-bool framesContain(const QList<FrameRow>& frames, const QString& name) {
+[[nodiscard]] bool framesContain(const QList<FrameRow>& frames, const QString& name) {
   const auto needle = name.toStdString();
   return std::any_of(frames.begin(), frames.end(), [&](const FrameRow& r) { return r.name == needle; });
 }
 
-// Case-insensitive less for frame names — mirrors tinytf's display-order
-// comparator. Used when interleaving entity-fallback orphan roots with the
-// already-sorted TF forest so the user sees one consistent alphabetical view.
-bool frameNameLess(const std::string& a, const std::string& b) {
-  return std::lexicographical_compare(a.begin(), a.end(), b.begin(), b.end(), [](unsigned char x, unsigned char y) {
-    return std::tolower(x) < std::tolower(y);
-  });
-}
-
-QString pickFixedFrame(const QList<FrameRow>& frames) {
+[[nodiscard]] QString pickFixedFrame(const QList<FrameRow>& frames) {
   for (const auto* name : {"map", "world", "odom", "base_link", "base_footprint"}) {
     if (framesContain(frames, QString::fromLatin1(name))) {
       return QString::fromLatin1(name);
@@ -67,246 +56,212 @@ QString pickFixedFrame(const QList<FrameRow>& frames) {
   return frames.isEmpty() ? QString() : QString::fromStdString(frames.first().name);
 }
 
+[[nodiscard]] int64_t topicKey(ObjectTopicId topic_id) {
+  return static_cast<int64_t>(topic_id.id);
+}
+
 }  // namespace
 
-Scene3DDockWidget::Scene3DDockWidget(QWidget* parent) : QWidget(parent) {
+Scene3DDockWidget::Scene3DDockWidget(QWidget* parent) : SceneDockWidget(parent) {
   setWindowTitle(tr("3D View"));
-  // Belt-and-braces zero margins: QSS `QWidget { padding: 0px; }` doesn't
-  // touch widgets whose styled-background flag isn't set, so set the
-  // contents margins explicitly on both the dock and its child view.
-  setContentsMargins(0, 0, 0, 0);
-  auto* layout = new QVBoxLayout(this);
-  layout->setContentsMargins(0, 0, 0, 0);
-  layout->setSpacing(0);
 
-  view_ = new pj::scene3d::SceneViewWidget(this);
-  view_->setContentsMargins(0, 0, 0, 0);
-  view_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
-  layout->addWidget(view_);
+  layerFactory().registerType(
+      sdk::BuiltinObjectType::kPointCloud,
+      [this](ObjectTopicId topic_id, sdk::BuiltinObjectType /*object_type*/, const QString& display_name)
+          -> std::unique_ptr<ISceneLayer> {
+        prepareTransformBufferForTopic(topic_id);
+        auto layer = std::make_unique<PointCloudLayer>(topic_id, display_name, this);
+        wireScene3DLayer(layer.get());
+        return layer;
+      });
+  layerFactory().registerType(
+      sdk::BuiltinObjectType::kOccupancyGrid,
+      [this](ObjectTopicId topic_id, sdk::BuiltinObjectType /*object_type*/, const QString& display_name)
+          -> std::unique_ptr<ISceneLayer> {
+        prepareTransformBufferForTopic(topic_id);
+        auto layer = std::make_unique<OccupancyGridLayer>(topic_id, display_name, this);
+        wireScene3DLayer(layer.get());
+        return layer;
+      });
 
-  connect(view_, &pj::scene3d::SceneViewWidget::framesChanged, this, &Scene3DDockWidget::onAvailableFrames);
-
-  // Floating fixed-frame combo overlaid on the top-left of view_. A PJ::ComboBox
-  // (the app-wide themed dropdown) so it tracks the light/dark stylesheet and
-  // gets the same popup styling as every other combo — no per-call-site QSS.
-  // Created as a sibling-child of `this` (not parented to view_) so Qt composites
-  // it on top of the QOpenGLWidget without the well-known QOpenGLWidget
-  // child-widget z-order glitches. Positioned manually in resizeEvent.
-  //
-  // Width is computed per-selection from the *currently selected* item's
-  // text (see layoutFrameOverlayCombo) rather than sized to the longest
-  // item — that keeps the overlay compact even when one frame name in the
-  // dropdown is very long. Dropdown popup width is widened separately so
-  // every row is fully readable when expanded.
   frame_overlay_combo_ = new ComboBox(this);
   frame_overlay_combo_->setFocusPolicy(Qt::ClickFocus);
   frame_overlay_combo_->raise();
   refreshFrameOverlayCombo();
-
   connect(frame_overlay_combo_, &QComboBox::currentIndexChanged, this, &Scene3DDockWidget::onOverlayFramePicked);
+
+  // Forget a removed topic's cached orphan/warning state. pj_app drives its UI
+  // off the base SceneDockWidget layer* signals directly, so no relay is needed.
+  connect(this, &SceneDockWidget::layerRemoved, this, [this](ObjectTopicId topic_id) {
+    orphan_states_.erase(topicKey(topic_id));
+  });
 }
 
 Scene3DDockWidget::~Scene3DDockWidget() {
-  // Detach entities before they're destroyed so any view-level state
-  // (registration in SceneViewWidget) is unwound first.
-  for (auto& [key, entity] : entities_) {
-    if (entity != nullptr) {
-      view_->removeEntity(entity.get());
-      entity->detach();
-    }
-  }
-}
-
-void Scene3DDockWidget::setSessionManager(SessionManager* session) {
-  session_ = session;
+  // Release the view's layer references — and their GL resources — while this
+  // concrete class is still alive: clearLayers() reconciles the view through
+  // syncViewLayers(), which the base destructor can no longer dispatch to us.
+  // Without this, SceneViewWidget::layers_ would dangle over the destroyed
+  // layers and releaseGlResources()/setLayers() would dereference freed
+  // memory (and the layers' GL objects would die without a current context).
+  clearLayers();
 }
 
 void Scene3DDockWidget::setTransformService(pj::scene3d::TransformService* service) {
   transform_service_ = service;
+  if (view_ != nullptr && tf_buffer_ != nullptr) {
+    view_->setTransformBuffer(tf_buffer_);
+  }
 }
 
-void Scene3DDockWidget::setThemeHint(const QString& theme) {
-  if (view_ != nullptr) {
-    view_->setThemeHint(theme);
+bool Scene3DDockWidget::handlesObjectType(sdk::BuiltinObjectType object_type) {
+  return object_type == sdk::BuiltinObjectType::kPointCloud ||
+         object_type == sdk::BuiltinObjectType::kFrameTransforms ||
+         object_type == sdk::BuiltinObjectType::kOccupancyGrid;
+}
+
+bool Scene3DDockWidget::addTopic(ObjectTopicId topic_id, sdk::BuiltinObjectType object_type, const QString& title) {
+  if (sessionManager() == nullptr) {
+    qCWarning(lcScene3DDock) << "addTopic: session is null";
+    return false;
   }
+  if (layerFor(topic_id) != nullptr) {
+    return true;
+  }
+  if (!handlesObjectType(object_type)) {
+    qCWarning(lcScene3DDock) << "addTopic: unsupported object_type" << static_cast<int>(object_type);
+    return false;
+  }
+
+  const bool accepted = SceneDockWidget::addTopic(topic_id, object_type, title);
+  if (accepted) {
+    setWindowTitle(title.isEmpty() ? tr("3D View") : tr("3D View - %1").arg(title));
+    recomputeOrphanStates();
+  }
+  return accepted;
 }
 
 bool Scene3DDockWidget::tryAcceptObjectTopic(
     ObjectTopicId topic_id, sdk::BuiltinObjectType object_type, const QString& title) {
-  // Family pre-check so DockWidget's replacement-fallback path doesn't
-  // trip the "unsupported object_type" warning inside addTopic for
-  // drops we expect to refuse (e.g. an Image dropped onto a 3D widget
-  // — the host catches the false return and constructs a Media2D).
-  if (object_type != sdk::BuiltinObjectType::kPointCloud && object_type != sdk::BuiltinObjectType::kFrameTransforms &&
-      object_type != sdk::BuiltinObjectType::kOccupancyGrid) {
-    return false;
-  }
+  // addTopic (this class's shadow, with title/orphan bookkeeping) already
+  // guards on handlesObjectType() and consumes config topics via the base.
   return addTopic(topic_id, object_type, title);
 }
 
-bool Scene3DDockWidget::addTopic(ObjectTopicId topic_id, sdk::BuiltinObjectType object_type, const QString& title) {
-  if (session_ == nullptr) {
+void Scene3DDockWidget::onTrackerTime(double time) {
+  // The base converts (NaN/inf-safe), clamps with the latched-layer rule, and
+  // drives the layers; reuse its result for the view's render time instead of
+  // re-deriving and re-clamping it here.
+  SceneDockWidget::onTrackerTime(time);
+  if (const auto ns = lastTrackerNs(); view_ != nullptr && ns.has_value()) {
+    view_->setTrackerTime(std::chrono::nanoseconds{*ns});
+  }
+}
+
+QWidget* Scene3DDockWidget::createSceneView() {
+  auto* view = new pj::scene3d::SceneViewWidget();
+  view_ = view;
+  view_->setContentsMargins(0, 0, 0, 0);
+  view_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+  connect(view_, &pj::scene3d::SceneViewWidget::framesChanged, this, &Scene3DDockWidget::onAvailableFrames);
+  if (tf_buffer_ != nullptr) {
+    view_->setTransformBuffer(tf_buffer_);
+  }
+  refreshFrameOverlayCombo();
+  layoutFrameOverlayCombo();
+  if (frame_overlay_combo_ != nullptr) {
+    frame_overlay_combo_->raise();
+  }
+  return view_;
+}
+
+std::unique_ptr<SceneLayerContext> Scene3DDockWidget::makeContext() {
+  auto ctx = std::make_unique<Scene3DLayerContext>();
+  ctx->session = sessionManager();
+  ctx->tf_buffer = tf_buffer_;
+  return ctx;
+}
+
+bool Scene3DDockWidget::acceptsObjectType(sdk::BuiltinObjectType object_type) const {
+  return object_type == sdk::BuiltinObjectType::kPointCloud || object_type == sdk::BuiltinObjectType::kOccupancyGrid;
+}
+
+bool Scene3DDockWidget::handleSceneConfigTopic(
+    ObjectTopicId topic_id, sdk::BuiltinObjectType object_type, const QString& title) {
+  if (object_type != sdk::BuiltinObjectType::kFrameTransforms) {
+    return false;
+  }
+  if (sessionManager() == nullptr) {
     qCWarning(lcScene3DDock) << "addTopic: session is null";
     return false;
   }
-  if (entities_.contains(topic_id.id)) {
-    return true;  // idempotent
-  }
-
-  // First-topic binding: pull the per-dataset TF buffer. Subsequent
-  // topic additions inherit the same buffer (multi-topic is single-
-  // dataset for now — cross-dataset is out of scope).
-  ObjectStore& store = session_->objectStore();
-  const auto dataset_id = store.descriptor(topic_id).dataset_id;
-  if (!tf_buffer_ && transform_service_ != nullptr) {
-    tf_buffer_ = transform_service_->transformBuffer(dataset_id);
-    view_->setTransformBuffer(tf_buffer_);
-    // The TF buffer just bound: announce TF as a permanent display so the side
-    // panel adds its row even for a /tf-only drop (which emits no entityAdded).
-    if (tfPresent()) {
-      emit tfPresenceChanged(true);
-    }
-  }
-
-  // TF is dataset-wide. Dropping a /tf topic by itself binds the TF
-  // buffer above and renders the axes — no per-topic entity needed.
-  if (object_type == sdk::BuiltinObjectType::kFrameTransforms) {
-    setWindowTitle(title.isEmpty() ? tr("3D View") : tr("3D View - %1").arg(title));
-    return true;
-  }
-
-  // Construct the right concrete entity for the family. Each new
-  // drawable kind adds a branch here; a registry replaces this only
-  // when plugin-provided drawables land (post-v1).
-  std::unique_ptr<Scene3DEntity> entity;
-  const QString display_name = title.isEmpty() ? tr("(unnamed)") : title;
-  switch (object_type) {
-    case sdk::BuiltinObjectType::kPointCloud:
-      entity = std::make_unique<PointCloudEntity>(topic_id, display_name, this);
-      break;
-    case sdk::BuiltinObjectType::kOccupancyGrid:
-      entity = std::make_unique<OccupancyGridEntity>(topic_id, display_name, this);
-      break;
-    default:
-      qCWarning(lcScene3DDock) << "addTopic: unsupported object_type" << static_cast<int>(object_type);
-      return false;
-  }
-
-  Scene3DEntity* entity_raw = entity.get();
-  Scene3DEntityContext ctx{session_, tf_buffer_};
-  if (!entity->attach(ctx)) {
-    qCWarning(lcScene3DDock) << "addTopic: entity attach failed for topic_id=" << topic_id.id;
-    return false;
-  }
-
-  // Register with the view before bookkeeping so the first paint after
-  // attach has a registered entity to iterate.
-  view_->addEntity(entity_raw);
-  absorbFallbackFrames(entity_raw);
-  if (!view_->fixedFrame().empty()) {
-    entity->setFixedFrame(QString::fromStdString(view_->fixedFrame()));
-  }
-
-  // Bridge per-entity events to the dock's generic signals. The entity
-  // owns the connections (Qt parent), so they're cleaned up
-  // automatically on entity destruction.
-  connect(entity_raw, &Scene3DEntity::visibilityChanged, this, [this, topic_id](bool visible) {
-    emit entityVisibilityChanged(topic_id, visible);
-  });
-  connect(entity_raw, &Scene3DEntity::fallbackFramesChanged, this, [this, entity_raw](const QStringList&) {
-    absorbFallbackFrames(entity_raw);
-  });
-  connect(entity_raw, &Scene3DEntity::sourceFrameChanged, this, [this](const QString&) { recomputeOrphanStates(); });
-  connect(entity_raw, &Scene3DEntity::repaintRequested, view_, [this]() { view_->update(); });
-
-  // Seed the entity at the current tracker time so it reconstructs and stages
-  // its grid for the imminent repaint (addEntity already requested one), rather
-  // than rendering empty until the next playback tick. Done after the
-  // repaintRequested connect so the entity's own update request is honored too.
-  // Seed the entity so it shows immediately, clamped to the entity's OWN range.
-  // The slider minimum can sit in a "dead zone" before a dynamic topic's first
-  // sample — the window-fallback pins the minimum to a clamped latched topic
-  // (e.g. /map_amcl) while a costmap's data starts a fraction of a second later.
-  // Without the clamp the new entity reconstructs empty at the playhead and
-  // stays blank until the user scrubs past the gap. Clamping shows its nearest
-  // (first) frame now; onTrackerTime tracks the true playhead during playback.
-  if (entity_raw->info().visible) {
-    const auto [first, last] = entity_raw->timeRangeNs();
-    const int64_t seed_ns = (last >= first) ? std::clamp(last_tracker_ns_, first, last) : last_tracker_ns_;
-    entity_raw->setTrackerTime(std::chrono::nanoseconds{seed_ns});
-  }
-
-  entities_.emplace(topic_id.id, std::move(entity));
-  emit entityAdded(topic_id);
-  recomputeOrphanStates();
-
+  prepareTransformBufferForTopic(topic_id);
   setWindowTitle(title.isEmpty() ? tr("3D View") : tr("3D View - %1").arg(title));
   return true;
 }
 
-void Scene3DDockWidget::removeTopic(ObjectTopicId topic_id) {
-  auto it = entities_.find(topic_id.id);
-  if (it == entities_.end()) {
-    return;
-  }
-  if (it->second != nullptr) {
-    view_->removeEntity(it->second.get());
-    // Free the entity's GL resources with the view's context current. Otherwise
-    // its render-pass wrapper destructors run with no current context and the
-    // gl wrappers self-skip glDelete, leaking the VBO/VAO/texture into the live
-    // context until the whole view is torn down.
-    view_->makeCurrent();
-    it->second->releaseGL();
-    view_->doneCurrent();
-    it->second->detach();
-  }
-  entities_.erase(it);
-  orphan_states_.erase(topic_id.id);
-  emit entityRemoved(topic_id);
-}
-
-void Scene3DDockWidget::onTrackerTime(double time) {
-  constexpr double kNsPerSec = 1.0e9;
-  const auto raw_ns = static_cast<int64_t>(time * kNsPerSec);
-  const auto ts_ns = clampToEntityRange(raw_ns);
-  last_tracker_ns_ = ts_ns;
-  view_->setTrackerTime(std::chrono::nanoseconds{ts_ns});
-  for (auto& [key, entity] : entities_) {
-    if (entity != nullptr && entity->info().visible) {
-      entity->setTrackerTime(std::chrono::nanoseconds{ts_ns});
-    }
-  }
-}
-
-int64_t Scene3DDockWidget::clampToEntityRange(int64_t time_ns) const {
-  // Collect each entity's [first, last] and defer to the pure, tested clamp.
-  // The subtlety it gets right: a latched/one-shot grid (zero-span range, e.g.
-  // /map pinned to the recording start) lowers the lower bound — so the slider
-  // minimum snaps onto its exact ns — but must NOT cap the upper bound, or its
-  // lone early timestamp would drag the live playhead backwards and hide
-  // everything keyed to "now" (TF axes, live grids). See clampTrackerTimeToRanges
-  // and tracker_time_test.cpp.
-  std::vector<pj::scene3d::EntityTimeRange> ranges;
-  ranges.reserve(entities_.size());
-  for (const auto& [key, entity] : entities_) {
-    if (entity == nullptr) {
+void Scene3DDockWidget::syncViewLayers(const std::vector<ISceneLayer*>& ordered_layers) {
+  std::vector<Scene3DLayer*> ordered;
+  ordered.reserve(ordered_layers.size());
+  const QString fixed = currentFixedFrame();
+  for (ISceneLayer* layer : ordered_layers) {
+    auto* scene3d_layer = dynamic_cast<Scene3DLayer*>(layer);
+    if (scene3d_layer == nullptr) {
       continue;
     }
-    const auto [first, last] = entity->timeRangeNs();
-    ranges.push_back({first, last});
+    absorbFallbackFrames(scene3d_layer);
+    if (!fixed.isEmpty()) {
+      scene3d_layer->setFixedFrame(fixed);
+    }
+    ordered.push_back(scene3d_layer);
   }
-  return pj::scene3d::clampTrackerTimeToRanges(time_ns, ranges);
+  if (view_ != nullptr) {
+    view_->setLayers(ordered);
+  }
+  recomputeOrphanStates();
 }
 
-void Scene3DDockWidget::absorbFallbackFrames(Scene3DEntity* entity) {
-  if (entity == nullptr) {
+void Scene3DDockWidget::refreshView() {
+  if (view_ != nullptr) {
+    view_->update();
+  }
+}
+
+QString Scene3DDockWidget::xmlTag() const {
+  return QStringLiteral("scene3d");
+}
+
+void Scene3DDockWidget::prepareTransformBufferForTopic(ObjectTopicId topic_id) {
+  if (tf_buffer_ != nullptr || transform_service_ == nullptr || sessionManager() == nullptr) {
+    return;
+  }
+  ObjectStore& store = sessionManager()->objectStore();
+  const auto dataset_id = store.descriptor(topic_id).dataset_id;
+  tf_buffer_ = transform_service_->transformBuffer(dataset_id);
+  if (view_ != nullptr) {
+    view_->setTransformBuffer(tf_buffer_);
+  }
+}
+
+void Scene3DDockWidget::wireScene3DLayer(Scene3DLayer* layer) {
+  if (layer == nullptr) {
+    return;
+  }
+  connect(layer, &Scene3DLayer::fallbackFramesChanged, this, [this, layer](const QStringList&) {
+    absorbFallbackFrames(layer);
+  });
+  connect(layer, &Scene3DLayer::sourceFrameChanged, this, [this](const QString&) { recomputeOrphanStates(); });
+}
+
+void Scene3DDockWidget::absorbFallbackFrames(Scene3DLayer* layer) {
+  if (layer == nullptr) {
     return;
   }
   bool changed = false;
-  for (const QString& f : entity->fallbackFrames()) {
-    const std::string s = f.toStdString();
-    if (std::find(fallback_frames_.begin(), fallback_frames_.end(), s) == fallback_frames_.end()) {
-      fallback_frames_.push_back(s);
+  for (const QString& frame : layer->fallbackFrames()) {
+    const std::string frame_std = frame.toStdString();
+    if (std::find(fallback_frames_.begin(), fallback_frames_.end(), frame_std) == fallback_frames_.end()) {
+      fallback_frames_.push_back(frame_std);
       changed = true;
     }
   }
@@ -316,12 +271,6 @@ void Scene3DDockWidget::absorbFallbackFrames(Scene3DEntity* entity) {
 }
 
 void Scene3DDockWidget::onAvailableFrames(const QList<FrameRow>& frames) {
-  // Group the TF hierarchy into (root, subtree) clusters — DFS pre-order
-  // means every depth-0 row starts a contiguous cluster of its descendants.
-  // Then append entity-fallback frames as their own single-row clusters
-  // (orphans, depth 0) and sort clusters by root name. The result is a
-  // valid DFS pre-order with fallbacks interleaved alphabetically among
-  // real roots.
   std::vector<QList<FrameRow>> clusters;
   for (const auto& row : frames) {
     if (row.depth == 0 || clusters.empty()) {
@@ -329,13 +278,13 @@ void Scene3DDockWidget::onAvailableFrames(const QList<FrameRow>& frames) {
     }
     clusters.back().append(row);
   }
-  for (const auto& fb : fallback_frames_) {
-    if (!framesContain(frames, QString::fromStdString(fb))) {
-      clusters.push_back({FrameRow{fb, 0}});
+  for (const auto& fallback : fallback_frames_) {
+    if (!framesContain(frames, QString::fromStdString(fallback))) {
+      clusters.push_back({FrameRow{fallback, 0}});
     }
   }
   std::sort(clusters.begin(), clusters.end(), [](const QList<FrameRow>& a, const QList<FrameRow>& b) {
-    return frameNameLess(a.first().name, b.first().name);
+    return pj::scene3d::frameNameLess(a.first().name, b.first().name);
   });
 
   QList<FrameRow> effective;
@@ -352,14 +301,9 @@ void Scene3DDockWidget::onAvailableFrames(const QList<FrameRow>& frames) {
   emit availableFramesChanged(effective);
   refreshFrameOverlayCombo();
 
-  // AutoRoot mode keeps re-resolving on every TF arrival; Explicit mode only
-  // bootstraps when no frame has been chosen yet.
   if (fixed_frame_mode_ == FixedFrameMode::kAutoRoot || currentFixedFrame().isEmpty()) {
     applyResolvedFixedFrame(pickFixedFrame(effective));
   }
-  // TF topology changed — re-check every entity even when the resolved fixed
-  // frame is unchanged. A new edge can connect a previously-orphan entity,
-  // or vice versa.
   recomputeOrphanStates();
 }
 
@@ -370,48 +314,9 @@ QString Scene3DDockWidget::currentFixedFrame() const {
   return QString::fromStdString(view_->fixedFrame());
 }
 
-std::vector<Scene3DDockWidget::TopicInfo> Scene3DDockWidget::entities() const {
-  // Return in render order (the view's entity vector), NOT entities_ map order
-  // (which is arbitrary hash order). This keeps the Topics list in draw order
-  // and puts newly added entities — appended to the view via push_back — at the
-  // bottom, matching the drag-reorder convention (top = behind, bottom = on top).
-  std::vector<TopicInfo> out;
-  if (view_ == nullptr) {
-    return out;
-  }
-  out.reserve(view_->entities().size());
-  for (const pj::scene3d::Scene3DEntity* entity : view_->entities()) {
-    if (entity == nullptr) {
-      continue;
-    }
-    const auto info = entity->info();
-    out.push_back(TopicInfo{info.topic_id, info.display_name, info.visible});
-  }
-  return out;
-}
-
-bool Scene3DDockWidget::topicVisible(ObjectTopicId topic_id) const {
-  auto it = entities_.find(topic_id.id);
-  return it != entities_.end() && it->second != nullptr && it->second->info().visible;
-}
-
-bool Scene3DDockWidget::tfPresent() const {
-  return tf_buffer_ != nullptr && !tf_buffer_->getFrameHierarchy().empty();
-}
-
-bool Scene3DDockWidget::tfVisible() const {
-  return view_ != nullptr && view_->axesVisible();
-}
-
-void Scene3DDockWidget::setTfVisible(bool visible) {
-  if (view_ != nullptr) {
-    view_->setAxesVisible(visible);
-  }
-}
-
-Scene3DEntity* Scene3DDockWidget::entityFor(ObjectTopicId topic_id) const {
-  auto it = entities_.find(topic_id.id);
-  return it == entities_.end() ? nullptr : it->second.get();
+bool Scene3DDockWidget::layerVisible(ObjectTopicId topic_id) const {
+  const ISceneLayer* layer = layerFor(topic_id);
+  return layer != nullptr && layer->info().visible;
 }
 
 void Scene3DDockWidget::setFixedFrame(const QString& frame) {
@@ -448,11 +353,9 @@ void Scene3DDockWidget::applyResolvedFixedFrame(const QString& frame) {
     return;
   }
   view_->setFixedFrame(frame.toStdString());
-  // Broadcast to every entity so their X/Y/Z colormap caches mark
-  // themselves dirty (the next render refits).
-  for (auto& [key, entity] : entities_) {
-    if (entity != nullptr) {
-      entity->setFixedFrame(frame);
+  for (const SceneLayerInfo& info : layers()) {
+    if (ISceneLayer* layer = layerFor(info.topic_id); layer != nullptr) {
+      layer->setFixedFrame(frame);
     }
   }
   view_->update();
@@ -472,9 +375,6 @@ void Scene3DDockWidget::refreshFrameOverlayCombo() {
     const QString display = QString(row.depth * 2, QChar(' ')) + name;
     frame_overlay_combo_->addItem(display, name);
   }
-  // AutoRoot still drives the initial bootstrap pick — we just don't surface
-  // a synthetic row for it. The user sees whichever named frame was
-  // auto-resolved selected, and any subsequent pick flips to Explicit mode.
   const QString current = currentFixedFrame();
   const int idx = frame_overlay_combo_->findData(current);
   if (idx >= 0) {
@@ -499,9 +399,8 @@ void Scene3DDockWidget::layoutFrameOverlayCombo() {
   }
   constexpr int kMargin = 8;
   // Combo width tracks the selected item only (so the overlay stays compact even
-  // when one frame name is very long). The chrome (frame, padding, dropdown
-  // arrow) is added by the style rather than a hardcoded slack — a fixed slack
-  // underestimates the themed PJ::ComboBox and clips the text (e.g. "map" → "m").
+  // when one frame name is very long). The chrome is added by the active combo
+  // style rather than a hardcoded slack, which avoids clipping themed combos.
   const QFontMetrics fm(frame_overlay_combo_->font());
   const QString current_text = frame_overlay_combo_->currentText();
   const auto combo_width_for = [&](const QString& text) {
@@ -513,60 +412,37 @@ void Scene3DDockWidget::layoutFrameOverlayCombo() {
         .width();
   };
   const int natural_w = combo_width_for(current_text);
-  // Cap to the dock width only once the dock has a real width — during
-  // construction width() is 0 and the cap would collapse the combo.
   const int avail = width() - 2 * kMargin;
   const int w = (avail > 0) ? std::min(natural_w, avail) : natural_w;
   const int h = frame_overlay_combo_->sizeHint().height();
   const QPoint view_origin = view_->pos();
   frame_overlay_combo_->setGeometry(view_origin.x() + kMargin, view_origin.y() + kMargin, w, h);
 
-  // Popup list keeps its own width so every row is fully readable when
-  // expanded, even when the closed combo is narrow.
-  if (auto* view = frame_overlay_combo_->view()) {
+  if (auto* popup_view = frame_overlay_combo_->view()) {
     int popup_w = natural_w;
     for (int i = 0; i < frame_overlay_combo_->count(); ++i) {
       popup_w = std::max(popup_w, combo_width_for(frame_overlay_combo_->itemText(i)));
     }
-    view->setMinimumWidth(popup_w);
+    popup_view->setMinimumWidth(popup_w);
   }
   frame_overlay_combo_->raise();
 }
 
 void Scene3DDockWidget::resizeEvent(QResizeEvent* event) {
-  QWidget::resizeEvent(event);
+  SceneDockWidget::resizeEvent(event);
   layoutFrameOverlayCombo();
 }
 
 Scene3DDockWidget::OrphanSnapshot Scene3DDockWidget::orphanState(ObjectTopicId topic_id) const {
-  auto it = orphan_states_.find(topic_id.id);
+  auto it = orphan_states_.find(topicKey(topic_id));
   if (it == orphan_states_.end()) {
     return {};
   }
   return {it->second.is_orphan, it->second.reason};
 }
 
-void Scene3DDockWidget::setTopicVisible(ObjectTopicId topic_id, bool visible) {
-  if (auto* entity = entityFor(topic_id)) {
-    entity->setVisible(visible);
-  }
-}
-
-void Scene3DDockWidget::reorderEntities(const std::vector<ObjectTopicId>& ordered_topic_ids) {
-  if (view_ == nullptr) {
-    return;
-  }
-  std::vector<pj::scene3d::Scene3DEntity*> ordered;
-  ordered.reserve(ordered_topic_ids.size());
-  for (const ObjectTopicId topic_id : ordered_topic_ids) {
-    auto it = entities_.find(topic_id.id);
-    if (it != entities_.end() && it->second != nullptr) {
-      ordered.push_back(it->second.get());
-    }
-  }
-  // The view applies it only if `ordered` is a full permutation of its
-  // registry, then repaints. Saved state follows from view_->entities().
-  view_->reorderEntities(ordered);
+void Scene3DDockWidget::setLayerVisible(ObjectTopicId topic_id, bool visible) {
+  SceneDockWidget::setLayerVisible(topic_id, visible);
 }
 
 void Scene3DDockWidget::recomputeOrphanStates() {
@@ -576,36 +452,25 @@ void Scene3DDockWidget::recomputeOrphanStates() {
   const QString fixed = currentFixedFrame();
   const std::string fixed_std = fixed.toStdString();
 
-  // Hoist the all-frames snapshot once per recompute — orphan-ness is a
-  // pure topology check at this point, so we don't need to ask the TF
-  // buffer per entity. Connectivity uses latestCommonTime() which (per
-  // tf_buffer.cpp) returns nullopt iff there is no common ancestor; it
-  // does NOT require a TF sample at any particular timestamp, so this is
-  // robust to dynamic edges whose first sample is in the future.
   std::unordered_set<std::string> known_frames;
-  for (auto&& f : tf_buffer_->getAllFrames()) {
-    known_frames.insert(std::move(f));
+  for (auto&& frame : tf_buffer_->getAllFrames()) {
+    known_frames.insert(std::move(frame));
   }
 
-  for (const auto& [key, entity_ptr] : entities_) {
-    if (entity_ptr == nullptr) {
+  for (const SceneLayerInfo& info : layers()) {
+    auto* layer = dynamic_cast<Scene3DLayer*>(layerFor(info.topic_id));
+    if (layer == nullptr) {
       continue;
     }
-    const QString src = entity_ptr->sourceFrame();
+    const QString src = layer->sourceFrame();
     bool is_orphan = false;
     QString reason;
     if (src.isEmpty() || fixed.isEmpty()) {
-      // Pending data — don't flag as orphan yet.
+      // Pending data.
     } else if (src == fixed) {
-      // Identity transform always succeeds; never orphan.
+      // Identity transform.
     } else {
       const std::string src_std = src.toStdString();
-      // No-TF / disjoint-subtree case: in an MCAP that publishes N
-      // pointclouds but no /tf or /tf_static, known_frames is empty;
-      // each entity's source frame surfaces as an orphan root in the
-      // overlay combo, and switching between them renders one
-      // pointcloud at a time while the others get this "can't be
-      // resolved" tooltip — accurate (no TF available) and intentional.
       if (known_frames.count(src_std) == 0) {
         is_orphan = true;
         reason = tr("Frame '%1' can't be resolved").arg(src);
@@ -614,52 +479,22 @@ void Scene3DDockWidget::recomputeOrphanStates() {
         reason = tr("Frame '%1' is not connected to fixed frame '%2'").arg(src, fixed);
       }
     }
-    auto& state = orphan_states_[key];
+
+    auto& state = orphan_states_[topicKey(info.topic_id)];
     if (state.is_orphan != is_orphan || state.reason != reason) {
       state.is_orphan = is_orphan;
       state.reason = reason;
-      ObjectTopicId tid;
-      tid.id = static_cast<uint32_t>(key);
-      emit entityOrphanChanged(tid, is_orphan, reason);
+      emit layerWarningChanged(info.topic_id, is_orphan, reason);
     }
   }
 }
 
 QDomElement Scene3DDockWidget::xmlSaveState(QDomDocument& doc) const {
-  QDomElement root = doc.createElement(QStringLiteral("scene3d"));
-  root.setAttribute(QStringLiteral("version"), QStringLiteral("1"));
+  QDomElement root = SceneDockWidget::xmlSaveState(doc);
   root.setAttribute(
       QStringLiteral("fixed_frame_mode"),
       fixed_frame_mode_ == FixedFrameMode::kAutoRoot ? QStringLiteral("auto_root") : QStringLiteral("explicit"));
   root.setAttribute(QStringLiteral("fixed_frame"), currentFixedFrame());
-
-  QDomElement entities_el = doc.createElement(QStringLiteral("entities"));
-  if (session_ != nullptr && view_ != nullptr) {
-    // Persist in render order (view_->entities()), not entities_ map order, so
-    // the user's drag-reordered draw order round-trips: xmlLoadState recreates
-    // entities in document order.
-    for (pj::scene3d::Scene3DEntity* entity_ptr : view_->entities()) {
-      if (entity_ptr == nullptr) {
-        continue;
-      }
-      const auto info = entity_ptr->info();
-      const auto& desc = session_->objectStore().descriptor(info.topic_id);
-      QDomElement entity_el = doc.createElement(QStringLiteral("entity"));
-      entity_el.setAttribute(QStringLiteral("kind"), info.family_name.toLower());
-      entity_el.setAttribute(QStringLiteral("dataset_id"), QString::number(desc.dataset_id));
-      entity_el.setAttribute(QStringLiteral("topic_name"), QString::fromStdString(desc.topic_name));
-      entity_el.setAttribute(QStringLiteral("object_type"), QString::fromUtf8(sdk::name(info.object_type).data()));
-      entity_el.setAttribute(QStringLiteral("display_name"), info.display_name);
-      entity_el.setAttribute(
-          QStringLiteral("visible"), info.visible ? QStringLiteral("true") : QStringLiteral("false"));
-      QDomElement payload = entity_ptr->xmlSaveState(doc);
-      if (!payload.isNull()) {
-        entity_el.appendChild(payload);
-      }
-      entities_el.appendChild(entity_el);
-    }
-  }
-  root.appendChild(entities_el);
   return root;
 }
 
@@ -667,45 +502,15 @@ bool Scene3DDockWidget::xmlLoadState(const QDomElement& element) {
   if (element.isNull() || element.tagName() != QStringLiteral("scene3d")) {
     return false;
   }
-  // Defer applying fixed-frame state until after entities are attached so the
-  // dock's fallback-frames cache is populated before any auto-resolve runs.
+
+  orphan_states_.clear();
+  fallback_frames_.clear();
+
   const QString saved_mode = element.attribute(QStringLiteral("fixed_frame_mode"), QStringLiteral("auto_root"));
   const QString saved_frame = element.attribute(QStringLiteral("fixed_frame"));
 
-  QDomElement entities_el = element.firstChildElement(QStringLiteral("entities"));
-  if (session_ != nullptr) {
-    for (QDomElement entity_el = entities_el.firstChildElement(QStringLiteral("entity")); !entity_el.isNull();
-         entity_el = entity_el.nextSiblingElement(QStringLiteral("entity"))) {
-      const auto dataset_id = static_cast<PJ::DatasetId>(entity_el.attribute(QStringLiteral("dataset_id")).toUInt());
-      const QString topic_name = entity_el.attribute(QStringLiteral("topic_name"));
-      const QString object_type_str = entity_el.attribute(QStringLiteral("object_type"));
-      const QString display_name = entity_el.attribute(QStringLiteral("display_name"));
-      const bool visible =
-          entity_el.attribute(QStringLiteral("visible"), QStringLiteral("true")) == QStringLiteral("true");
-
-      auto object_type_opt = sdk::parseBuiltinObjectType(object_type_str.toStdString());
-      if (!object_type_opt.has_value()) {
-        qCWarning(lcScene3DDock) << "xmlLoadState: unknown object_type" << object_type_str << ", skipping entity";
-        continue;
-      }
-      auto topic_id_opt = session_->objectStore().findTopic(dataset_id, topic_name.toStdString());
-      if (!topic_id_opt.has_value()) {
-        qCInfo(lcScene3DDock) << "xmlLoadState: topic" << topic_name << "not present in current dataset, skipping";
-        continue;
-      }
-      if (!addTopic(*topic_id_opt, *object_type_opt, display_name)) {
-        continue;
-      }
-      if (!visible) {
-        setTopicVisible(*topic_id_opt, false);
-      }
-      if (auto* entity = entityFor(*topic_id_opt); entity != nullptr) {
-        QDomElement payload = entity_el.firstChildElement();
-        if (!payload.isNull()) {
-          entity->xmlLoadState(payload);
-        }
-      }
-    }
+  if (!SceneDockWidget::xmlLoadState(element)) {
+    return false;
   }
 
   if (saved_mode == QStringLiteral("explicit") && !saved_frame.isEmpty()) {
@@ -713,6 +518,15 @@ bool Scene3DDockWidget::xmlLoadState(const QDomElement& element) {
   } else {
     setFixedFrameAutoRoot();
   }
+
+  const auto infos = layers();
+  if (infos.empty()) {
+    setWindowTitle(tr("3D View"));
+  } else {
+    const QString& title = infos.back().display_name;
+    setWindowTitle(title.isEmpty() ? tr("3D View") : tr("3D View - %1").arg(title));
+  }
+  recomputeOrphanStates();
   return true;
 }
 

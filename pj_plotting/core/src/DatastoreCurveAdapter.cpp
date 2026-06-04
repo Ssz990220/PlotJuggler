@@ -13,11 +13,10 @@
 #include "pj_datastore/query.hpp"
 #include "pj_datastore/reader.hpp"
 #include "pj_runtime/SessionManager.h"
+#include "pj_runtime/constants.h"
 
 namespace PJ {
 namespace {
-
-constexpr double kNanosecondsPerSecond = 1e9;
 
 [[nodiscard]] QPointF invalidPoint() {
   return {0.0, std::numeric_limits<double>::quiet_NaN()};

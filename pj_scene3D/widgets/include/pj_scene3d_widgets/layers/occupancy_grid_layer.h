@@ -1,5 +1,5 @@
 // Copyright 2026 Davide Faconti
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: MPL-2.0
 #pragma once
 
 #include <QString>
@@ -16,7 +16,7 @@
 #include "pj_datastore/object_store.hpp"  // PJ::ObjectTopicId
 #include "pj_scene3d_core/occupancy_grid_reconstructor.h"
 #include "pj_scene3d_widgets/passes/occupancy_grid_render_pass.h"
-#include "pj_scene3d_widgets/scene3d_entity.h"
+#include "pj_scene3d_widgets/scene3d_layer.h"
 
 namespace PJ {
 class MessageParserPluginBase;
@@ -26,25 +26,25 @@ class QWidget;
 
 namespace pj::scene3d {
 
-// Scene3DEntity for a nav_msgs/OccupancyGrid base topic plus its optional
+// Scene3DLayer for a nav_msgs/OccupancyGrid base topic plus its optional
 // map_msgs/OccupancyGridUpdate sibling ("<base>_updates"). On every tracker
 // tick it asks OccupancyGridReconstructor for the grid as displayed at that
 // time (base keyframe + applicable deltas, correct under back-and-forth
 // scrubbing) and pushes it to an OccupancyGridRenderPass.
-class OccupancyGridEntity : public Scene3DEntity {
+class OccupancyGridLayer : public Scene3DLayer {
   Q_OBJECT
  public:
-  OccupancyGridEntity(PJ::ObjectTopicId topic_id, QString display_name, QObject* parent = nullptr);
-  ~OccupancyGridEntity() override;
+  OccupancyGridLayer(PJ::ObjectTopicId topic_id, QString display_name, QObject* parent = nullptr);
+  ~OccupancyGridLayer() override;
 
-  [[nodiscard]] Scene3DEntityInfo info() const override;
+  [[nodiscard]] PJ::SceneLayerInfo info() const override;
   [[nodiscard]] std::pair<int64_t, int64_t> timeRangeNs() const override;
   [[nodiscard]] QStringList fallbackFrames() const override;
   [[nodiscard]] QString sourceFrame() const override;
   QDomElement xmlSaveState(QDomDocument& doc) const override;
   bool xmlLoadState(const QDomElement& element) override;
 
-  bool attach(const Scene3DEntityContext& ctx) override;
+  bool attach(const PJ::SceneLayerContext& ctx) override;
   void detach() override;
 
   void setFixedFrame(const QString& frame) override;
@@ -76,7 +76,7 @@ class OccupancyGridEntity : public Scene3DEntity {
 
   PJ::ObjectTopicId topic_id_;
   QString display_name_;
-  Scene3DEntityContext ctx_;
+  Scene3DLayerContext ctx_;
   PJ::MessageParserPluginBase* parser_ = nullptr;
   // Per-topic mutex serialising parseObject across all consumers of this
   // topic's parser (SessionManager hands back a singleton). See parseLocked().

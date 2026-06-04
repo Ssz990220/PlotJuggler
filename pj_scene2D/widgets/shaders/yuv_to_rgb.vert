@@ -4,6 +4,7 @@ layout(std140, binding = 0) uniform Uniforms {
     mat4 viewTransform;
     mat4 colorMatrix;
     int pixelFormat;  // 0 = YUV420P, 1 = NV12, 2 = RGBA
+    float opacity;
 };
 
 layout(location = 0) out vec2 v_uv;

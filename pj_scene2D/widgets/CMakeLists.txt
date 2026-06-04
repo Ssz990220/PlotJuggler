@@ -14,10 +14,19 @@ set(CMAKE_AUTORCC ON)
 
 # --- pj_scene2d_widgets: image viewer (QRhiWidget), no mpv dependency ---
 add_library(pj_scene2d_widgets STATIC
-  src/Media2DDockWidget.cpp
+  src/Scene2DDockWidget.cpp
+  src/layers/depth_image_layer.cpp
+  src/layers/image_layer.cpp
+  src/layers/scene2d_layer.cpp
+  src/layers/scene_decoder_layer.cpp
   src/media_viewer_widget.cpp
   src/pixel_inspector.cpp
+  include/pj_scene2d_widgets/Scene2DDockWidget.h
   include/pj_scene2d_widgets/Media2DDockWidget.h
+  include/pj_scene2d_widgets/layers/depth_image_layer.h
+  include/pj_scene2d_widgets/layers/image_layer.h
+  include/pj_scene2d_widgets/layers/scene2d_layer.h
+  include/pj_scene2d_widgets/layers/scene_decoder_layer.h
   include/pj_scene2d_widgets/media_viewer_widget.h
   include/pj_scene2d_widgets/pixel_inspector.h
   shaders/shaders.qrc
@@ -26,7 +35,7 @@ target_include_directories(pj_scene2d_widgets PUBLIC include)
 target_compile_features(pj_scene2d_widgets PUBLIC cxx_std_20)
 target_compile_options(pj_scene2d_widgets PRIVATE ${PJ_WARNING_FLAGS} ${PJ_SANITIZER_FLAGS})
 target_link_libraries(pj_scene2d_widgets
-  PUBLIC pj_scene2d_core pj_runtime Qt6::Widgets Qt6::Gui
+  PUBLIC pj_scene_common pj_scene2d_core pj_runtime Qt6::Widgets Qt6::Gui
 )
 
 # ---------------------------------------------------------------------------
@@ -56,6 +65,16 @@ if(PJ_BUILD_TESTS)
   )
   target_compile_options(pixel_inspector_test PRIVATE ${PJ_WARNING_FLAGS} ${PJ_SANITIZER_FLAGS})
   add_test(NAME PixelInspector COMMAND pixel_inspector_test)
+
+  add_executable(scene2d_dock_widget_test
+    ../tests/scene2d_dock_widget_test.cpp
+  )
+  target_link_libraries(scene2d_dock_widget_test PRIVATE
+    pj_scene2d_widgets
+    GTest::gtest
+  )
+  target_compile_options(scene2d_dock_widget_test PRIVATE ${PJ_WARNING_FLAGS} ${PJ_SANITIZER_FLAGS})
+  add_test(NAME scene2d_dock_widget_test COMMAND scene2d_dock_widget_test)
 endif()
 
 # QRhiWidget requires private Gui headers (rhi/qrhi.h)

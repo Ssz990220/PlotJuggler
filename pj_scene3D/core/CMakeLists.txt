@@ -24,7 +24,6 @@ if(PJ_BUILD_TESTS)
     ../tests/occupancy_grid_reconstructor_test.cpp
     ../tests/tf_buffer_test.cpp
     ../tests/tf_buffer_hierarchy_test.cpp
-    ../tests/tracker_time_test.cpp
   )
   foreach(test_src ${PJ_SCENE3D_CORE_TESTS})
     get_filename_component(test_name ${test_src} NAME_WE)

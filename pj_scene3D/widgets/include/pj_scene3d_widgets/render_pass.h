@@ -41,6 +41,9 @@ struct FrameContext {
   [[nodiscard]] std::optional<Transform> lookup(const std::string& child) const;
 };
 
+// Abstract interface for one GL rendering pass: owns its shader program and GL
+// buffers and draws a single primitive kind (grid, axes, point cloud, …).
+// SceneViewWidget and the Scene3DLayers sequence their passes on every paintGL.
 class IRenderPass {
  public:
   virtual ~IRenderPass() = default;

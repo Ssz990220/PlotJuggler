@@ -14,14 +14,11 @@
 #include "pj_runtime/ExtensionCatalogService.h"
 #include "pj_runtime/PlaybackEngine.h"
 #include "pj_runtime/SessionManager.h"
+#include "pj_runtime/constants.h"
 
 namespace PJ {
 
-namespace {
-
-constexpr double kNanosecondsPerSecond = 1.0e9;
-
-}  // namespace
+namespace {}  // namespace
 
 AppSession::AppSession(QObject* parent) : AppSession(QString{}, parent) {}
 

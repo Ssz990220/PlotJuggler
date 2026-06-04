@@ -457,6 +457,8 @@ class MainWindow : public QMainWindow {
   // distinct member so onDockFocused() can call bindDock() on it
   // without an extra qobject_cast.
   class Scene3DConfigPanel* scene3d_config_panel_ = nullptr;
+  // Same, for the 2D scene's layer panel (binds to the focused Scene2DDockWidget).
+  class Scene2DConfigPanel* scene2d_config_panel_ = nullptr;
   // Shown when the focused dock holds the 3-icon
   // VisualizationPlaceholderWidget — nothing to configure yet.
   QWidget* empty_dock_page_ = nullptr;

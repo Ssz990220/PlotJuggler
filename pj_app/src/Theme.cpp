@@ -3,11 +3,15 @@
 
 #include "Theme.h"
 
+#include <QColor>
 #include <QFile>
+#include <QGuiApplication>
 #include <QLoggingCategory>
+#include <QPalette>
 #include <QSettings>
 #include <QStringList>
 #include <map>
+#include <utility>
 
 #include "pj_widgets/SvgUtil.h"
 
@@ -59,7 +63,7 @@ QString expandPlaceholders(const QString& body, const std::map<QString, QString>
   return out;
 }
 
-QString parseAndExpand(const QString& qss) {
+QString parseAndExpand(const QString& qss, std::map<QString, QString>* tokens_out = nullptr) {
   const QStringList lines = qss.split(QLatin1Char('\n'));
 
   std::map<QString, QString> palette;
@@ -101,7 +105,40 @@ QString parseAndExpand(const QString& qss) {
     body.append(lines[i]);
     body.append(QLatin1Char('\n'));
   }
-  return expandPlaceholders(body, palette);
+  QString expanded = expandPlaceholders(body, palette);
+  if (tokens_out != nullptr) {
+    *tokens_out = std::move(palette);
+  }
+  return expanded;
+}
+
+// Qt style sheets do NOT update QPalette, so widgets that paint themselves
+// outside QSS (the 3D view's GL background derives dark/light from
+// palette().color(QPalette::Window) luminance) would otherwise read the
+// PLATFORM palette and guess the theme wrong (dark scene in light mode on a
+// dark desktop). Keep the application palette's Window/WindowText in lockstep
+// with the theme tokens; QGuiApplication::setPalette also delivers
+// ApplicationPaletteChange to every widget, repainting them on theme switches.
+void syncApplicationPalette(const std::map<QString, QString>& tokens) {
+  if (qGuiApp == nullptr) {
+    return;  // Theme constructed without a GUI application (tests)
+  }
+  const auto window_it = tokens.find(QStringLiteral("main_background"));
+  const auto text_it = tokens.find(QStringLiteral("default_text"));
+  if (window_it == tokens.end() || text_it == tokens.end()) {
+    qCWarning(lcTheme) << "Palette tokens main_background/default_text missing; application palette not synced";
+    return;
+  }
+  const QColor window_color(window_it->second);
+  const QColor text_color(text_it->second);
+  if (!window_color.isValid() || !text_color.isValid()) {
+    qCWarning(lcTheme) << "Palette tokens are not valid colors; application palette not synced";
+    return;
+  }
+  QPalette pal = QGuiApplication::palette();
+  pal.setColor(QPalette::Window, window_color);
+  pal.setColor(QPalette::WindowText, text_color);
+  QGuiApplication::setPalette(pal);
 }
 
 }  // namespace
@@ -152,7 +189,9 @@ void Theme::rebuildQss() {
     return;
   }
   const QString raw = QString::fromUtf8(file.readAll());
-  expanded_qss_ = parseAndExpand(raw);
+  std::map<QString, QString> tokens;
+  expanded_qss_ = parseAndExpand(raw, &tokens);
+  syncApplicationPalette(tokens);
 }
 
 }  // namespace PJ

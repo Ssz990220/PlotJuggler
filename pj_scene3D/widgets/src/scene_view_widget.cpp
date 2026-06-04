@@ -4,6 +4,7 @@
 #include "pj_scene3d_widgets/scene_view_widget.h"
 
 #include <QEvent>
+#include <QGuiApplication>
 #include <QMouseEvent>
 #include <QOpenGLContext>
 #include <QOpenGLFunctions_4_5_Core>
@@ -17,7 +18,7 @@
 #include "pj_scene3d_core/tf/tf_buffer.h"
 #include "pj_scene3d_widgets/gl/debug.h"
 #include "pj_scene3d_widgets/render_pass.h"
-#include "pj_scene3d_widgets/scene3d_entity.h"
+#include "pj_scene3d_widgets/scene3d_layer.h"
 
 namespace pj::scene3d {
 
@@ -88,55 +89,20 @@ void SceneViewWidget::setAxesVisible(bool visible) {
   update();
 }
 
-void SceneViewWidget::setThemeHint(const QString& theme) {
-  const QString lower = theme.toLower();
-  if (lower.contains(QStringLiteral("light"))) {
-    theme_hint_ = 0;
-  } else if (lower.contains(QStringLiteral("dark"))) {
-    theme_hint_ = 1;
-  } else {
-    theme_hint_ = -1;  // fall back to palette luminance
-  }
-  update();
-}
-
-void SceneViewWidget::addEntity(Scene3DEntity* entity) {
-  if (entity == nullptr || hasEntity(entity)) {
+void SceneViewWidget::setLayers(const std::vector<Scene3DLayer*>& ordered) {
+  if (layers_ == ordered) {
     return;
   }
-  // Entities own their render passes. GL init is deferred to paintGL via
-  // the per-entity initializeGL guard, so we don't need a current GL
-  // context here — registration is safe from any thread that owns the
-  // widget.
-  entities_.push_back(entity);
-  update();
-}
-
-void SceneViewWidget::removeEntity(Scene3DEntity* entity) {
-  if (entity == nullptr) {
-    return;
-  }
-  entities_.erase(std::remove(entities_.begin(), entities_.end(), entity), entities_.end());
-  update();
-}
-
-bool SceneViewWidget::hasEntity(const Scene3DEntity* entity) const {
-  return std::find(entities_.begin(), entities_.end(), entity) != entities_.end();
-}
-
-void SceneViewWidget::reorderEntities(const std::vector<Scene3DEntity*>& ordered) {
-  // Accept only an exact permutation of the current registry: same size, and
-  // every current entity present exactly once. This keeps the registry's
-  // membership invariant regardless of what the caller passes.
-  if (ordered.size() != entities_.size()) {
-    return;
-  }
-  for (Scene3DEntity* entity : entities_) {
-    if (std::count(ordered.begin(), ordered.end(), entity) != 1) {
-      return;
+  if (context() != nullptr) {
+    makeCurrent();
+    for (Scene3DLayer* layer : layers_) {
+      if (layer != nullptr && std::find(ordered.begin(), ordered.end(), layer) == ordered.end()) {
+        layer->releaseGL();
+      }
     }
+    doneCurrent();
   }
-  entities_ = ordered;
+  layers_ = ordered;
   update();
 }
 
@@ -170,14 +136,14 @@ void SceneViewWidget::initializeGL() {
   axes_.initializeGL();
   grid_.initializeGL();
   overlay_.initializeGL();
-  // Entity GL is initialised lazily in paintGL — entities may be added
+  // Layer GL is initialised lazily in paintGL — layers may be added
   // dynamically after the widget is already realised, so initializing
   // here would miss late entries. releaseGlResources() reset their lazy-init
   // guards, so they rebuild on the first paint after a context recreation.
 }
 
 void SceneViewWidget::releaseGlResources() {
-  // Drop every pass's and entity's GL objects with a context current so their
+  // Drop every pass's and layer's GL objects with a context current so their
   // glDelete* actually run (the wrappers self-skip without a current context).
   // Called from the context's aboutToBeDestroyed (reparent or teardown) and the
   // destructor. context() is null before the first show / after full teardown.
@@ -188,9 +154,9 @@ void SceneViewWidget::releaseGlResources() {
   axes_.releaseGL();
   grid_.releaseGL();
   overlay_.releaseGL();
-  for (Scene3DEntity* entity : entities_) {
-    if (entity != nullptr) {
-      entity->releaseGL();
+  for (Scene3DLayer* layer : layers_) {
+    if (layer != nullptr) {
+      layer->releaseGL();
     }
   }
   doneCurrent();
@@ -209,9 +175,13 @@ void SceneViewWidget::paintGL() {
 
   // Theme-aware background + grid — see Phase 1 commit (theme-aware
   // background + high-contrast grid color) for the full rationale.
-  const QPalette pal = palette();
+  // Read the APPLICATION palette, not this widget's: QStyleSheetStyle's polish
+  // rewrites widget palettes from QSS rules (the app stylesheet's transparent
+  // QWidget background lands as #000000 in QPalette::Window), while the
+  // application palette is kept in lockstep with the theme by pj_app's Theme.
+  const QPalette pal = QGuiApplication::palette();
   const QColor window_bg = pal.color(QPalette::Window);
-  const bool dark_theme = theme_hint_ >= 0 ? (theme_hint_ == 1) : (window_bg.valueF() < 0.5f);
+  const bool dark_theme = window_bg.valueF() < 0.5F;
   const QColor bg = dark_theme ? QColor(45, 48, 56) : QColor(232, 234, 238);
   const QColor fg = dark_theme ? QColor(220, 220, 220) : QColor(40, 40, 40);
   funcs->glClearColor(
@@ -250,7 +220,7 @@ void SceneViewWidget::paintGL() {
   // Grid never consults the TF buffer; safe to render even when tf_ is null.
   static const TransformBuffer kEmptyBuffer;
   const TransformBuffer& tf_ref = tf_ ? *tf_ : kEmptyBuffer;
-  // The TF-resolution triple, bundled for the passes/entities that need it.
+  // The TF-resolution triple, bundled for the passes/layers that need it.
   // fixed_frame_ is the long-lived member (no per-frame string copy).
   const FrameContext frame_ctx{tf_ref, fixed_frame_, render_time_};
 
@@ -258,21 +228,21 @@ void SceneViewWidget::paintGL() {
   if (tf_ && axes_visible_) {
     axes_.render(view_params, frame_ctx);
   }
-  // Iterate entities in insertion order. Each entity is responsible
+  // Iterate layers in the order supplied by SceneDockWidget. Each layer is responsible
   // for its own GL state — initializeGL() is intentionally called per
-  // frame, and entities (like the render passes they own) guard
+  // frame, and layers (like the render passes they own) guard
   // against double-init via an internal `initialized_` flag. The
-  // per-frame call lets entities added *after* the widget realises
+  // per-frame call lets layers added *after* the widget realises
   // initialise on their first paint without needing a current GL
-  // context at attach time. See Scene3DEntity::initializeGL for the
+  // context at attach time. See Scene3DLayer::initializeGL for the
   // contract.
   if (tf_) {
-    for (Scene3DEntity* entity : entities_) {
-      if (entity == nullptr) {
+    for (Scene3DLayer* layer : layers_) {
+      if (layer == nullptr) {
         continue;
       }
-      entity->initializeGL();
-      entity->render(view_params, frame_ctx);
+      layer->initializeGL();
+      layer->render(view_params, frame_ctx);
     }
   }
 

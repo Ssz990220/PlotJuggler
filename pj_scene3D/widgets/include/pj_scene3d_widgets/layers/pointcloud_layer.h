@@ -13,7 +13,7 @@
 #include <string>
 
 #include "pj_scene3d_widgets/passes/pointcloud_render_pass.h"
-#include "pj_scene3d_widgets/scene3d_entity.h"
+#include "pj_scene3d_widgets/scene3d_layer.h"
 
 namespace PJ {
 class MessageParserPluginBase;
@@ -23,7 +23,7 @@ class QWidget;
 
 namespace pj::scene3d {
 
-// First concrete Scene3DEntity: a single sensor_msgs/PointCloud2 topic.
+// First concrete Scene3DLayer: a single sensor_msgs/PointCloud2 topic.
 // Owns its own PointcloudRenderPass and absorbs the per-topic state that
 // used to live in Scene3DDockWidget::PointCloudTopicState.
 //
@@ -31,24 +31,24 @@ namespace pj::scene3d {
 // Adding new per-instance parameters (point size, alpha, colormap choice)
 // is local to this class — Scene3DDockWidget and Scene3DConfigPanel do
 // not need to change.
-class PointCloudEntity : public Scene3DEntity {
+class PointCloudLayer : public Scene3DLayer {
   Q_OBJECT
  public:
   // The topic id + initial display name are needed before attach() since
   // info() can be called immediately after construction (e.g. by the
   // dock to populate its row).
-  PointCloudEntity(PJ::ObjectTopicId topic_id, QString display_name, QObject* parent = nullptr);
-  ~PointCloudEntity() override;
+  PointCloudLayer(PJ::ObjectTopicId topic_id, QString display_name, QObject* parent = nullptr);
+  ~PointCloudLayer() override;
 
-  // Scene3DEntity
-  [[nodiscard]] Scene3DEntityInfo info() const override;
+  // Scene3DLayer
+  [[nodiscard]] PJ::SceneLayerInfo info() const override;
   [[nodiscard]] std::pair<int64_t, int64_t> timeRangeNs() const override;
   [[nodiscard]] QStringList fallbackFrames() const override;
   [[nodiscard]] QString sourceFrame() const override;
   QDomElement xmlSaveState(QDomDocument& doc) const override;
   bool xmlLoadState(const QDomElement& element) override;
 
-  bool attach(const Scene3DEntityContext& ctx) override;
+  bool attach(const PJ::SceneLayerContext& ctx) override;
   void detach() override;
 
   void setFixedFrame(const QString& frame) override;
@@ -138,7 +138,7 @@ class PointCloudEntity : public Scene3DEntity {
 
   PJ::ObjectTopicId topic_id_;
   QString display_name_;
-  Scene3DEntityContext ctx_;
+  Scene3DLayerContext ctx_;
   PJ::MessageParserPluginBase* parser_ = nullptr;
   // Per-topic mutex serialising parseObject across all consumers of this
   // topic's parser (SessionManager hands back a singleton). See parseLocked().
@@ -148,7 +148,7 @@ class PointCloudEntity : public Scene3DEntity {
   QStringList available_color_fields_;
   std::string source_frame_;
   QString fixed_frame_;
-  // The latest tracker time pushed to this entity; the time the cached VBO was
+  // The latest tracker time pushed to this layer; the time the cached VBO was
   // (re)decoded at. Used by refreshNow() to re-decode at the current playhead.
   std::chrono::nanoseconds decoded_at_ns_{0};
 

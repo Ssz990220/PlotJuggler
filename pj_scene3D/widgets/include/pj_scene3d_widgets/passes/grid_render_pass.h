@@ -12,6 +12,8 @@
 
 namespace pj::scene3d {
 
+// Draws the reference ground grid on the z=0 plane at the fixed-frame origin.
+// TF-independent (ignores FrameContext); extent and color are configurable.
 class GridRenderPass : public IRenderPass {
  public:
   void initializeGL() override;

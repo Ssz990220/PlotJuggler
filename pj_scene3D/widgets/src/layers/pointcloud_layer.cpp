@@ -1,7 +1,7 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 
-#include "pj_scene3d_widgets/entities/pointcloud_entity.h"
+#include "pj_scene3d_widgets/layers/pointcloud_layer.h"
 
 #include <QComboBox>
 #include <QFormLayout>
@@ -36,7 +36,7 @@
 namespace pj::scene3d {
 
 namespace {
-Q_LOGGING_CATEGORY(lcPointCloudEntity, "pj.scene3d.entity.pointcloud")
+Q_LOGGING_CATEGORY(lcPointCloudLayer, "pj.scene3d.layer.pointcloud")
 
 using PJ::Span;
 using PJ::sdk::PayloadView;
@@ -100,7 +100,7 @@ DecodedPointCloud convertCanonical(const PointCloud& src, std::string_view scala
   out.frame_id = src.frame_id;
 
   if (src.is_bigendian) {
-    qCWarning(lcPointCloudEntity) << "PointCloud is big-endian; not supported, dropping";
+    qCWarning(lcPointCloudLayer) << "PointCloud is big-endian; not supported, dropping";
     return out;
   }
   const std::size_t n = static_cast<std::size_t>(src.width) * static_cast<std::size_t>(src.height);
@@ -109,14 +109,14 @@ DecodedPointCloud convertCanonical(const PointCloud& src, std::string_view scala
   }
   const std::size_t step = src.point_step;
   if (src.data.size() < n * step) {
-    qCWarning(lcPointCloudEntity) << "PointCloud data buffer too small:" << src.data.size() << "<" << n * step;
+    qCWarning(lcPointCloudLayer) << "PointCloud data buffer too small:" << src.data.size() << "<" << n * step;
     return out;
   }
   const PointField* xf = findField(src.fields, "x");
   const PointField* yf = findField(src.fields, "y");
   const PointField* zf = findField(src.fields, "z");
   if (!xf || !yf || !zf) {
-    qCWarning(lcPointCloudEntity) << "PointCloud missing x/y/z fields";
+    qCWarning(lcPointCloudLayer) << "PointCloud missing x/y/z fields";
     return out;
   }
 
@@ -212,10 +212,10 @@ class SolidColorSwatch : public QPushButton {
 
 }  // namespace
 
-PointCloudEntity::PointCloudEntity(PJ::ObjectTopicId topic_id, QString display_name, QObject* parent)
-    : Scene3DEntity(parent), topic_id_(topic_id), display_name_(std::move(display_name)) {
-  // Push entity defaults to the pass at construction so the first paint
-  // already reflects them (entity defaults are the design-spec values, not
+PointCloudLayer::PointCloudLayer(PJ::ObjectTopicId topic_id, QString display_name, QObject* parent)
+    : Scene3DLayer(parent), topic_id_(topic_id), display_name_(std::move(display_name)) {
+  // Push layer defaults to the pass at construction so the first paint
+  // already reflects them (layer defaults are the design-spec values, not
   // the pass's "minimum visual change" defaults).
   cloud_pass_.setShape(shape_);
   cloud_pass_.setSizeMeters(size_meters_);
@@ -226,10 +226,10 @@ PointCloudEntity::PointCloudEntity(PJ::ObjectTopicId topic_id, QString display_n
   cloud_pass_.setInvertLut(invert_lut_);
 }
 
-PointCloudEntity::~PointCloudEntity() = default;
+PointCloudLayer::~PointCloudLayer() = default;
 
-Scene3DEntityInfo PointCloudEntity::info() const {
-  return Scene3DEntityInfo{
+PJ::SceneLayerInfo PointCloudLayer::info() const {
+  return PJ::SceneLayerInfo{
       .topic_id = topic_id_,
       .object_type = PJ::sdk::BuiltinObjectType::kPointCloud,
       .display_name = display_name_,
@@ -238,11 +238,11 @@ Scene3DEntityInfo PointCloudEntity::info() const {
   };
 }
 
-std::pair<int64_t, int64_t> PointCloudEntity::timeRangeNs() const {
+std::pair<int64_t, int64_t> PointCloudLayer::timeRangeNs() const {
   return {ts_first_, ts_last_};
 }
 
-QStringList PointCloudEntity::fallbackFrames() const {
+QStringList PointCloudLayer::fallbackFrames() const {
   QStringList out;
   if (!source_frame_.empty()) {
     out.append(QString::fromStdString(source_frame_));
@@ -250,11 +250,11 @@ QStringList PointCloudEntity::fallbackFrames() const {
   return out;
 }
 
-QString PointCloudEntity::sourceFrame() const {
+QString PointCloudLayer::sourceFrame() const {
   return QString::fromStdString(source_frame_);
 }
 
-QDomElement PointCloudEntity::xmlSaveState(QDomDocument& doc) const {
+QDomElement PointCloudLayer::xmlSaveState(QDomDocument& doc) const {
   QDomElement el = doc.createElement(QStringLiteral("pointcloud"));
   auto shape_str = [&]() -> QString {
     switch (shape_) {
@@ -296,7 +296,7 @@ QDomElement PointCloudEntity::xmlSaveState(QDomDocument& doc) const {
   return el;
 }
 
-bool PointCloudEntity::xmlLoadState(const QDomElement& element) {
+bool PointCloudLayer::xmlLoadState(const QDomElement& element) {
   if (element.isNull() || element.tagName() != QStringLiteral("pointcloud")) {
     return false;
   }
@@ -360,16 +360,17 @@ bool PointCloudEntity::xmlLoadState(const QDomElement& element) {
   return true;
 }
 
-bool PointCloudEntity::attach(const Scene3DEntityContext& ctx) {
-  if (ctx.session == nullptr) {
-    qCWarning(lcPointCloudEntity) << "attach: session is null";
+bool PointCloudLayer::attach(const PJ::SceneLayerContext& ctx) {
+  const auto& scene3d_ctx = static_cast<const Scene3DLayerContext&>(ctx);
+  if (scene3d_ctx.session == nullptr) {
+    qCWarning(lcPointCloudLayer) << "attach: session is null";
     return false;
   }
-  ctx_ = ctx;
+  ctx_ = scene3d_ctx;
   parser_ = ctx_.session->parserForObjectTopic(topic_id_);
   parser_mutex_ = ctx_.session->parserMutexForObjectTopic(topic_id_);
   if (parser_ == nullptr) {
-    qCWarning(lcPointCloudEntity) << "attach: no parser for topic_id=" << topic_id_.id;
+    qCWarning(lcPointCloudLayer) << "attach: no parser for topic_id=" << topic_id_.id;
     return false;
   }
   PJ::ObjectStore& store = ctx_.session->objectStore();
@@ -379,7 +380,7 @@ bool PointCloudEntity::attach(const Scene3DEntityContext& ctx) {
     ts_last_ = range.second;
   }
   if (!bootstrap()) {
-    qCWarning(lcPointCloudEntity) << "attach: bootstrap failed for topic_id=" << topic_id_.id;
+    qCWarning(lcPointCloudLayer) << "attach: bootstrap failed for topic_id=" << topic_id_.id;
     // Continue anyway — render will silently skip until a sample arrives.
   }
   if (ts_first_ != 0) {
@@ -388,14 +389,14 @@ bool PointCloudEntity::attach(const Scene3DEntityContext& ctx) {
   return true;
 }
 
-void PointCloudEntity::detach() {
+void PointCloudLayer::detach() {
   parser_ = nullptr;
   parser_mutex_.reset();
   ctx_ = {};
   cloud_pass_.setActiveCloud(nullptr);
 }
 
-void PointCloudEntity::setFixedFrame(const QString& frame) {
+void PointCloudLayer::setFixedFrame(const QString& frame) {
   if (fixed_frame_ == frame) {
     return;
   }
@@ -408,23 +409,23 @@ void PointCloudEntity::setFixedFrame(const QString& frame) {
   refreshNow();
 }
 
-void PointCloudEntity::setTrackerTime(std::chrono::nanoseconds time) {
+void PointCloudLayer::setTrackerTime(std::chrono::nanoseconds time) {
   decoded_at_ns_ = time;
   if (visible_) {
     renderAt(time.count());
   }
 }
 
-void PointCloudEntity::setVisible(bool visible) {
+void PointCloudLayer::setVisible(bool visible) {
   if (visible_ == visible) {
     return;
   }
   visible_ = visible;
   cloud_pass_.setVisible(visible);
   emit visibilityChanged(visible);
-  // Un-hiding decodes at the current tracker time so the entity isn't
+  // Un-hiding decodes at the current tracker time so the layer isn't
   // stuck painting the geometry it had at the moment of hiding (the
-  // dock skips hidden entities in onTrackerTime, so any tracker moves
+  // dock skips hidden layers in onTrackerTime, so any tracker moves
   // while hidden are not reflected in the pass's VBO).
   if (visible) {
     refreshNow();
@@ -432,19 +433,19 @@ void PointCloudEntity::setVisible(bool visible) {
   emit repaintRequested();
 }
 
-void PointCloudEntity::initializeGL() {
+void PointCloudLayer::initializeGL() {
   cloud_pass_.initializeGL();
 }
 
-void PointCloudEntity::render(const ViewParams& view_params, const FrameContext& frame_ctx) {
+void PointCloudLayer::render(const ViewParams& view_params, const FrameContext& frame_ctx) {
   cloud_pass_.render(view_params, frame_ctx);
 }
 
-void PointCloudEntity::releaseGL() {
+void PointCloudLayer::releaseGL() {
   cloud_pass_.releaseGL();
 }
 
-QWidget* PointCloudEntity::createConfigWidget(QWidget* parent) {
+QWidget* PointCloudLayer::createConfigWidget(QWidget* parent) {
   auto* container = new QWidget(parent);
   auto* outer = new QVBoxLayout(container);
   outer->setContentsMargins(0, 0, 0, 0);
@@ -625,7 +626,7 @@ QWidget* PointCloudEntity::createConfigWidget(QWidget* parent) {
   };
   apply_range_visibility(auto_range_);
 
-  // ---- User → entity wires -------------------------------------------------
+  // ---- User → layer wires -------------------------------------------------
 
   QObject::connect(
       shape_combo, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
@@ -684,7 +685,7 @@ QWidget* PointCloudEntity::createConfigWidget(QWidget* parent) {
     apply_range_visibility(on);
   });
 
-  QObject::connect(invert_btn, &QPushButton::toggled, this, &PointCloudEntity::setInvertLut);
+  QObject::connect(invert_btn, &QPushButton::toggled, this, &PointCloudLayer::setInvertLut);
 
   const auto push_manual_range = [this, range_min_spin, range_max_spin]() {
     setManualRange(static_cast<float>(range_min_spin->value()), static_cast<float>(range_max_spin->value()));
@@ -692,10 +693,10 @@ QWidget* PointCloudEntity::createConfigWidget(QWidget* parent) {
   QObject::connect(range_min_spin, &PJ::DoubleScrubber::valueChanged, this, push_manual_range);
   QObject::connect(range_max_spin, &PJ::DoubleScrubber::valueChanged, this, push_manual_range);
 
-  // ---- Entity → widget wires (out-of-band changes / auto-range refresh) ----
+  // ---- Layer → widget wires (out-of-band changes / auto-range refresh) ----
 
   QPointer<QComboBox> safe_type(color_type_combo);
-  QObject::connect(this, &PointCloudEntity::colorFieldsChanged, container, [safe_type, rebuild_color_type_combo]() {
+  QObject::connect(this, &PointCloudLayer::colorFieldsChanged, container, [safe_type, rebuild_color_type_combo]() {
     if (!safe_type) {
       return;
     }
@@ -704,7 +705,7 @@ QWidget* PointCloudEntity::createConfigWidget(QWidget* parent) {
 
   QPointer<PJ::DoubleScrubber> safe_min(range_min_spin);
   QPointer<PJ::DoubleScrubber> safe_max(range_max_spin);
-  QObject::connect(this, &PointCloudEntity::autoRangeComputed, container, [safe_min, safe_max](float lo, float hi) {
+  QObject::connect(this, &PointCloudLayer::autoRangeComputed, container, [safe_min, safe_max](float lo, float hi) {
     if (safe_min) {
       QSignalBlocker block(safe_min.data());
       safe_min->setValue(static_cast<double>(lo));
@@ -733,7 +734,7 @@ QWidget* PointCloudEntity::createConfigWidget(QWidget* parent) {
   return container;
 }
 
-void PointCloudEntity::setColorField(const QString& field) {
+void PointCloudLayer::setColorField(const QString& field) {
   const std::string new_field = field.toStdString();
   if (color_field_ == new_field) {
     return;
@@ -744,7 +745,7 @@ void PointCloudEntity::setColorField(const QString& field) {
   refreshNow();
 }
 
-void PointCloudEntity::setShape(PointcloudRenderPass::Shape shape) {
+void PointCloudLayer::setShape(PointcloudRenderPass::Shape shape) {
   if (shape_ == shape) {
     return;
   }
@@ -753,7 +754,7 @@ void PointCloudEntity::setShape(PointcloudRenderPass::Shape shape) {
   emit repaintRequested();
 }
 
-void PointCloudEntity::setSizeMeters(float meters) {
+void PointCloudLayer::setSizeMeters(float meters) {
   if (size_meters_ == meters) {
     return;
   }
@@ -762,7 +763,7 @@ void PointCloudEntity::setSizeMeters(float meters) {
   emit repaintRequested();
 }
 
-void PointCloudEntity::setSizePixels(int pixels) {
+void PointCloudLayer::setSizePixels(int pixels) {
   if (size_pixels_ == pixels) {
     return;
   }
@@ -771,7 +772,7 @@ void PointCloudEntity::setSizePixels(int pixels) {
   emit repaintRequested();
 }
 
-void PointCloudEntity::setColorType(PointcloudRenderPass::ColorType type) {
+void PointCloudLayer::setColorType(PointcloudRenderPass::ColorType type) {
   if (color_type_ == type) {
     return;
   }
@@ -780,7 +781,7 @@ void PointCloudEntity::setColorType(PointcloudRenderPass::ColorType type) {
   emit repaintRequested();
 }
 
-void PointCloudEntity::setSolidColor(QColor color) {
+void PointCloudLayer::setSolidColor(QColor color) {
   if (solid_color_ == color) {
     return;
   }
@@ -789,7 +790,7 @@ void PointCloudEntity::setSolidColor(QColor color) {
   emit repaintRequested();
 }
 
-void PointCloudEntity::setColormap(PointcloudRenderPass::Colormap cm) {
+void PointCloudLayer::setColormap(PointcloudRenderPass::Colormap cm) {
   if (colormap_ == cm) {
     return;
   }
@@ -798,7 +799,7 @@ void PointCloudEntity::setColormap(PointcloudRenderPass::Colormap cm) {
   emit repaintRequested();
 }
 
-void PointCloudEntity::setInvertLut(bool invert) {
+void PointCloudLayer::setInvertLut(bool invert) {
   if (invert_lut_ == invert) {
     return;
   }
@@ -807,7 +808,7 @@ void PointCloudEntity::setInvertLut(bool invert) {
   emit repaintRequested();
 }
 
-void PointCloudEntity::setAutoRange(bool enable) {
+void PointCloudLayer::setAutoRange(bool enable) {
   if (auto_range_ == enable) {
     return;
   }
@@ -818,14 +819,14 @@ void PointCloudEntity::setAutoRange(bool enable) {
     range_dirty_ = true;
     refreshNow();
   } else {
-    // Pin the pass to whatever manual values the entity is currently
+    // Pin the pass to whatever manual values the layer is currently
     // holding so the colormap doesn't snap to stale auto-computed bounds.
     cloud_pass_.setColormapRange(manual_range_min_, manual_range_max_);
     emit repaintRequested();
   }
 }
 
-void PointCloudEntity::setManualRange(float min_value, float max_value) {
+void PointCloudLayer::setManualRange(float min_value, float max_value) {
   if (manual_range_min_ == min_value && manual_range_max_ == max_value) {
     return;
   }
@@ -837,7 +838,7 @@ void PointCloudEntity::setManualRange(float min_value, float max_value) {
   }
 }
 
-bool PointCloudEntity::bootstrap() {
+bool PointCloudLayer::bootstrap() {
   PJ::ObjectStore& store = ctx_.session->objectStore();
   auto first = store.at(topic_id_, 0);
   if (!first.has_value() || first->payload.bytes.empty()) {
@@ -845,7 +846,7 @@ bool PointCloudEntity::bootstrap() {
   }
   auto obj = parseLocked(parser_, parser_mutex_, first->timestamp, first->payload);
   if (!obj.has_value()) {
-    qCWarning(lcPointCloudEntity) << "bootstrap parseObject failed:" << QString::fromStdString(obj.error());
+    qCWarning(lcPointCloudLayer) << "bootstrap parseObject failed:" << QString::fromStdString(obj.error());
     return false;
   }
   const auto* sdk_cloud = std::any_cast<PointCloud>(&obj->object);
@@ -875,7 +876,7 @@ bool PointCloudEntity::bootstrap() {
   return true;
 }
 
-void PointCloudEntity::renderAt(int64_t time_ns) {
+void PointCloudLayer::renderAt(int64_t time_ns) {
   if (ctx_.session == nullptr || parser_ == nullptr) {
     return;
   }
@@ -886,7 +887,7 @@ void PointCloudEntity::renderAt(int64_t time_ns) {
   }
   auto obj = parseLocked(parser_, parser_mutex_, resolved->timestamp, resolved->payload);
   if (!obj.has_value()) {
-    qCWarning(lcPointCloudEntity) << "renderAt parseObject failed:" << QString::fromStdString(obj.error());
+    qCWarning(lcPointCloudLayer) << "renderAt parseObject failed:" << QString::fromStdString(obj.error());
     return;
   }
   const auto* sdk_cloud = std::any_cast<PointCloud>(&obj->object);
@@ -918,7 +919,7 @@ void PointCloudEntity::renderAt(int64_t time_ns) {
   emit repaintRequested();
 }
 
-void PointCloudEntity::refreshNow() {
+void PointCloudLayer::refreshNow() {
   // Decode at the latest tracker time if known, else at ts_first_ (which
   // is set by bootstrap before any tracker tick fires).
   const int64_t t = decoded_at_ns_.count() != 0 ? decoded_at_ns_.count() : ts_first_;

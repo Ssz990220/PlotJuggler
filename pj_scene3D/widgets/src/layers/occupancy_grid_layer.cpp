@@ -1,6 +1,6 @@
 // Copyright 2026 Davide Faconti
-// SPDX-License-Identifier: Apache-2.0
-#include "pj_scene3d_widgets/entities/occupancy_grid_entity.h"
+// SPDX-License-Identifier: MPL-2.0
+#include "pj_scene3d_widgets/layers/occupancy_grid_layer.h"
 
 #include <QComboBox>
 #include <QDomElement>
@@ -26,13 +26,13 @@ namespace {
 Q_LOGGING_CATEGORY(lcOccGrid, "pj.scene3d.occupancy_grid")
 }  // namespace
 
-OccupancyGridEntity::OccupancyGridEntity(PJ::ObjectTopicId topic_id, QString display_name, QObject* parent)
-    : Scene3DEntity(parent), topic_id_(topic_id), display_name_(std::move(display_name)) {}
+OccupancyGridLayer::OccupancyGridLayer(PJ::ObjectTopicId topic_id, QString display_name, QObject* parent)
+    : Scene3DLayer(parent), topic_id_(topic_id), display_name_(std::move(display_name)) {}
 
-OccupancyGridEntity::~OccupancyGridEntity() = default;
+OccupancyGridLayer::~OccupancyGridLayer() = default;
 
-Scene3DEntityInfo OccupancyGridEntity::info() const {
-  return Scene3DEntityInfo{
+PJ::SceneLayerInfo OccupancyGridLayer::info() const {
+  return PJ::SceneLayerInfo{
       .topic_id = topic_id_,
       .object_type = PJ::sdk::BuiltinObjectType::kOccupancyGrid,
       .display_name = display_name_,
@@ -41,22 +41,22 @@ Scene3DEntityInfo OccupancyGridEntity::info() const {
   };
 }
 
-std::pair<int64_t, int64_t> OccupancyGridEntity::timeRangeNs() const {
+std::pair<int64_t, int64_t> OccupancyGridLayer::timeRangeNs() const {
   return {ts_first_, ts_last_};
 }
 
-QStringList OccupancyGridEntity::fallbackFrames() const {
+QStringList OccupancyGridLayer::fallbackFrames() const {
   if (source_frame_.empty()) {
     return {};
   }
   return {QString::fromStdString(source_frame_)};
 }
 
-QString OccupancyGridEntity::sourceFrame() const {
+QString OccupancyGridLayer::sourceFrame() const {
   return QString::fromStdString(source_frame_);
 }
 
-QDomElement OccupancyGridEntity::xmlSaveState(QDomDocument& doc) const {
+QDomElement OccupancyGridLayer::xmlSaveState(QDomDocument& doc) const {
   QDomElement el = doc.createElement(QStringLiteral("occupancy_grid"));
   el.setAttribute(
       QStringLiteral("color_scheme"), color_scheme_ == OccupancyGridRenderPass::ColorScheme::kCostmap
@@ -66,7 +66,7 @@ QDomElement OccupancyGridEntity::xmlSaveState(QDomDocument& doc) const {
   return el;
 }
 
-bool OccupancyGridEntity::xmlLoadState(const QDomElement& element) {
+bool OccupancyGridLayer::xmlLoadState(const QDomElement& element) {
   color_scheme_ = element.attribute(QStringLiteral("color_scheme")) == QStringLiteral("costmap")
                       ? OccupancyGridRenderPass::ColorScheme::kCostmap
                       : OccupancyGridRenderPass::ColorScheme::kMap;
@@ -80,14 +80,15 @@ bool OccupancyGridEntity::xmlLoadState(const QDomElement& element) {
   return true;
 }
 
-bool OccupancyGridEntity::attach(const Scene3DEntityContext& ctx) {
-  if (ctx.session == nullptr) {
+bool OccupancyGridLayer::attach(const PJ::SceneLayerContext& ctx) {
+  const auto& scene3d_ctx = static_cast<const Scene3DLayerContext&>(ctx);
+  if (scene3d_ctx.session == nullptr) {
     qCWarning(lcOccGrid) << "attach: session is null";
     return false;
   }
-  ctx_ = ctx;
-  parser_ = ctx.session->parserForObjectTopic(topic_id_);
-  parser_mutex_ = ctx.session->parserMutexForObjectTopic(topic_id_);
+  ctx_ = scene3d_ctx;
+  parser_ = scene3d_ctx.session->parserForObjectTopic(topic_id_);
+  parser_mutex_ = scene3d_ctx.session->parserMutexForObjectTopic(topic_id_);
   if (parser_ == nullptr) {
     qCWarning(lcOccGrid) << "attach: no parser for occupancy-grid topic" << topic_id_.id;
     return false;
@@ -95,13 +96,13 @@ bool OccupancyGridEntity::attach(const Scene3DEntityContext& ctx) {
 
   // Discover the paired "<base>_updates" sibling in the same dataset (RViz
   // convention). Absent → base-only mode (each full grid is a keyframe).
-  PJ::ObjectStore& store = ctx.session->objectStore();
+  PJ::ObjectStore& store = scene3d_ctx.session->objectStore();
   const auto& desc = store.descriptor(topic_id_);
   const auto updates_id = store.findTopic(desc.dataset_id, desc.topic_name + "_updates");
   if (updates_id.has_value()) {
     updates_topic_ = *updates_id;
-    updates_parser_ = ctx.session->parserForObjectTopic(*updates_id);
-    updates_parser_mutex_ = ctx.session->parserMutexForObjectTopic(*updates_id);
+    updates_parser_ = scene3d_ctx.session->parserForObjectTopic(*updates_id);
+    updates_parser_mutex_ = scene3d_ctx.session->parserMutexForObjectTopic(*updates_id);
   }
 
   grid_pass_.setColorScheme(color_scheme_);
@@ -109,7 +110,7 @@ bool OccupancyGridEntity::attach(const Scene3DEntityContext& ctx) {
   return bootstrap();
 }
 
-void OccupancyGridEntity::detach() {
+void OccupancyGridLayer::detach() {
   grid_pass_.clearGrid();
   parser_ = nullptr;
   parser_mutex_.reset();
@@ -118,7 +119,7 @@ void OccupancyGridEntity::detach() {
   updates_topic_.reset();
 }
 
-bool OccupancyGridEntity::bootstrap() {
+bool OccupancyGridLayer::bootstrap() {
   PJ::ObjectStore& store = ctx_.session->objectStore();
   auto first = store.at(topic_id_, 0);
   if (!first.has_value() || first->payload.bytes.empty()) {
@@ -150,7 +151,7 @@ bool OccupancyGridEntity::bootstrap() {
   return true;
 }
 
-void OccupancyGridEntity::renderAt(int64_t time_ns) {
+void OccupancyGridLayer::renderAt(int64_t time_ns) {
   if (ctx_.session == nullptr || parser_ == nullptr) {
     return;
   }
@@ -223,7 +224,7 @@ void OccupancyGridEntity::renderAt(int64_t time_ns) {
       std::vector<CellRect>(update.dirty.begin(), update.dirty.end()));
 }
 
-void OccupancyGridEntity::setFixedFrame(const QString& frame) {
+void OccupancyGridLayer::setFixedFrame(const QString& frame) {
   // The grid is frame-relative; the render pass places it per-frame via its
   // FrameContext lookup against the fixed frame, so no re-decode is needed —
   // just request a paint.
@@ -231,13 +232,13 @@ void OccupancyGridEntity::setFixedFrame(const QString& frame) {
   emit repaintRequested();
 }
 
-void OccupancyGridEntity::setTrackerTime(std::chrono::nanoseconds time) {
+void OccupancyGridLayer::setTrackerTime(std::chrono::nanoseconds time) {
   tracker_time_ = time;
   renderAt(time.count());
   emit repaintRequested();
 }
 
-void OccupancyGridEntity::setVisible(bool visible) {
+void OccupancyGridLayer::setVisible(bool visible) {
   if (visible_ == visible) {
     return;
   }
@@ -247,34 +248,34 @@ void OccupancyGridEntity::setVisible(bool visible) {
   emit repaintRequested();
 }
 
-void OccupancyGridEntity::initializeGL() {
+void OccupancyGridLayer::initializeGL() {
   grid_pass_.initializeGL();
 }
 
-void OccupancyGridEntity::releaseGL() {
+void OccupancyGridLayer::releaseGL() {
   grid_pass_.releaseGL();
 }
 
-void OccupancyGridEntity::render(const ViewParams& view_params, const FrameContext& frame_ctx) {
+void OccupancyGridLayer::render(const ViewParams& view_params, const FrameContext& frame_ctx) {
   if (!visible_) {
     return;
   }
   grid_pass_.render(view_params, frame_ctx);
 }
 
-void OccupancyGridEntity::setColorScheme(OccupancyGridRenderPass::ColorScheme scheme) {
+void OccupancyGridLayer::setColorScheme(OccupancyGridRenderPass::ColorScheme scheme) {
   color_scheme_ = scheme;
   grid_pass_.setColorScheme(scheme);
   emit repaintRequested();
 }
 
-void OccupancyGridEntity::setOpacity(float opacity) {
+void OccupancyGridLayer::setOpacity(float opacity) {
   opacity_ = std::clamp(opacity, 0.0f, 1.0f);
   grid_pass_.setOpacity(opacity_);
   emit repaintRequested();
 }
 
-QWidget* OccupancyGridEntity::createConfigWidget(QWidget* parent) {
+QWidget* OccupancyGridLayer::createConfigWidget(QWidget* parent) {
   auto* container = new QWidget(parent);
   auto* outer = new QVBoxLayout(container);
   outer->setContentsMargins(0, 0, 0, 0);

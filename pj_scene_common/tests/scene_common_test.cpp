@@ -5,6 +5,7 @@
 #include <QString>
 #include <QWidget>
 #include <QtGlobal>
+#include <algorithm>
 #include <chrono>
 #include <cstdint>
 #include <limits>
@@ -28,6 +29,9 @@ struct FakeLayerConfig {
 
 std::unordered_map<uint32_t, FakeLayerConfig> g_fake_layer_configs;
 std::vector<uint32_t> g_detached_topics;
+// Ordered lifecycle log ("sync:<n>" / "detach:<id>" / "destroy:<id>") for
+// order-of-operations assertions (e.g. view re-pointed before layers die).
+std::vector<std::string> g_layer_events;
 
 PJ::ObjectTopicId topic(uint32_t id) {
   PJ::ObjectTopicId topic_id;
@@ -68,9 +72,14 @@ class FakeLayer : public PJ::ISceneLayer {
     return true;
   }
 
+  ~FakeLayer() override {
+    g_layer_events.push_back("destroy:" + std::to_string(info_.topic_id.id));
+  }
+
   void detach() override {
     detached_ = true;
     g_detached_topics.push_back(info_.topic_id.id);
+    g_layer_events.push_back("detach:" + std::to_string(info_.topic_id.id));
   }
 
   void setTrackerTime(std::chrono::nanoseconds time) override {
@@ -180,6 +189,7 @@ class FakeSceneDock : public PJ::SceneDockWidget {
   }
 
   void syncViewLayers(const std::vector<PJ::ISceneLayer*>& ordered_layers) override {
+    g_layer_events.push_back("sync:" + std::to_string(ordered_layers.size()));
     last_synced_ids_.clear();
     last_synced_ids_.reserve(ordered_layers.size());
     for (const PJ::ISceneLayer* layer : ordered_layers) {
@@ -297,15 +307,15 @@ TEST(SceneDockWidgetTest, TrackerTimeClampsToLayerUnionAndForwardsToVisibleLayer
   layer_a->clearTrackerTimes();
   layer_b->clearTrackerTimes();
 
-  dock.setTopicVisible(topic(2), false);
+  dock.setLayerVisible(topic(2), false);
   dock.onTrackerTime(50.0 / 1000000000.0);
 
   EXPECT_EQ(layer_a->trackerTimesNs(), (std::vector<int64_t>{100}));
   EXPECT_TRUE(layer_b->trackerTimesNs().empty());
 
   layer_a->clearTrackerTimes();
-  dock.setTopicVisible(topic(1), false);
-  dock.setTopicVisible(topic(2), true);
+  dock.setLayerVisible(topic(1), false);
+  dock.setLayerVisible(topic(2), true);
   dock.onTrackerTime(500.0 / 1000000000.0);
 
   EXPECT_TRUE(layer_a->trackerTimesNs().empty());
@@ -343,7 +353,7 @@ TEST(SceneDockWidgetTest, XmlSaveLoadRoundTripsLayersOrderVisibilityAndPayload) 
   ASSERT_NE(source_b, nullptr);
   source_a->setPayload(QStringLiteral("alpha"));
   source_b->setPayload(QStringLiteral("beta"));
-  source.setTopicVisible(*topic_a, false);
+  source.setLayerVisible(*topic_a, false);
   source.reorderLayers({*topic_b, *topic_a});
 
   QDomDocument doc(QStringLiteral("scene_common"));
@@ -409,6 +419,113 @@ TEST(SceneDockWidgetTest, LayerRemovedIsEmittedAfterViewIsReconciled) {
 
   EXPECT_TRUE(fired);
   EXPECT_EQ(synced_at_emit, (std::vector<int64_t>{2}));
+}
+
+// Catalog-removal cleanup (IObjectViewer): revalidateObjects() drops layers
+// whose ObjectStore topic was evicted and reports whether any live layer
+// remains, so the shell can reset an emptied dock to its placeholder.
+TEST(SceneDockWidgetTest, RevalidateObjectsPrunesEvictedTopicsAndReportsEmpty) {
+  g_fake_layer_configs.clear();
+  PJ::SessionManager session;
+  auto dataset = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "drive.mcap"});
+  ASSERT_TRUE(dataset.has_value()) << dataset.error();
+  auto topic_a = session.objectStore().registerTopic(
+      PJ::ObjectTopicDescriptor{
+          .dataset_id = *dataset,
+          .topic_name = "/cloud_a",
+          .metadata_json = R"({"builtin_object_type":"kPointCloud"})",
+      });
+  ASSERT_TRUE(topic_a.has_value()) << topic_a.error();
+  auto topic_b = session.objectStore().registerTopic(
+      PJ::ObjectTopicDescriptor{
+          .dataset_id = *dataset,
+          .topic_name = "/cloud_b",
+          .metadata_json = R"({"builtin_object_type":"kPointCloud"})",
+      });
+  ASSERT_TRUE(topic_b.has_value()) << topic_b.error();
+
+  FakeSceneDock dock;
+  dock.setSessionManager(&session);
+  ASSERT_TRUE(dock.addTopic(*topic_a, PJ::sdk::BuiltinObjectType::kPointCloud, QStringLiteral("a")));
+  ASSERT_TRUE(dock.addTopic(*topic_b, PJ::sdk::BuiltinObjectType::kPointCloud, QStringLiteral("b")));
+  std::vector<uint32_t> removed_topics;
+  QObject::connect(&dock, &PJ::SceneDockWidget::layerRemoved, [&removed_topics](PJ::ObjectTopicId topic_id) {
+    removed_topics.push_back(topic_id.id);
+  });
+
+  // Nothing evicted: everything stays, dock reports non-empty.
+  EXPECT_TRUE(dock.revalidateObjects());
+  EXPECT_EQ(dock.layers().size(), 2U);
+
+  // Evict one topic: its layer is pruned (with the usual removal notification),
+  // the other survives, dock still reports non-empty.
+  session.objectStore().removeTopic(*topic_a);
+  EXPECT_TRUE(dock.revalidateObjects());
+  ASSERT_EQ(dock.layers().size(), 1U);
+  EXPECT_EQ(dock.layers().front().topic_id.id, topic_b->id);
+  EXPECT_EQ(removed_topics, (std::vector<uint32_t>{topic_a->id}));
+
+  // Evict the last topic: dock empties and reports false (shell resets it).
+  session.objectStore().removeTopic(*topic_b);
+  EXPECT_FALSE(dock.revalidateObjects());
+  EXPECT_TRUE(dock.layers().empty());
+}
+
+// A latched / one-shot layer (first == last, e.g. a map pinned to the recording
+// start) is valid from its stamp ONWARD: it lowers the clamp's minimum but must
+// NOT cap the maximum, or its lone early stamp would drag the live playhead
+// backwards (the old "TF doesn't render unless another topic is present" bug).
+TEST(SceneDockWidgetTest, LatchedLayerDoesNotDragTrackerTimeBack) {
+  g_fake_layer_configs.clear();
+  g_fake_layer_configs[1] = FakeLayerConfig{std::pair<int64_t, int64_t>{1'000, 1'000}};  // latched
+  FakeSceneDock dock;
+  ASSERT_TRUE(dock.addTopic(topic(1), PJ::sdk::BuiltinObjectType::kPointCloud, QStringLiteral("map")));
+  auto* latched = dynamic_cast<FakeLayer*>(dock.layerFor(topic(1)));
+  ASSERT_NE(latched, nullptr);
+
+  // Live playhead after the latched stamp: must pass through unclamped.
+  latched->clearTrackerTimes();
+  dock.onTrackerTime(5'000.0 / 1'000'000'000.0);
+  EXPECT_EQ(latched->trackerTimesNs(), (std::vector<int64_t>{5'000}));
+
+  // Before the latched stamp: raised to it (the slider minimum snaps onto it).
+  latched->clearTrackerTimes();
+  dock.onTrackerTime(500.0 / 1'000'000'000.0);
+  EXPECT_EQ(latched->trackerTimesNs(), (std::vector<int64_t>{1'000}));
+
+  // A spanning layer bounds the top; the latched layer still does not extend it.
+  g_fake_layer_configs[2] = FakeLayerConfig{std::pair<int64_t, int64_t>{2'000, 3'000}};
+  ASSERT_TRUE(dock.addTopic(topic(2), PJ::sdk::BuiltinObjectType::kPointCloud, QStringLiteral("cloud")));
+  latched->clearTrackerTimes();
+  dock.onTrackerTime(10'000.0 / 1'000'000'000.0);
+  EXPECT_EQ(latched->trackerTimesNs(), (std::vector<int64_t>{3'000}));
+}
+
+// Clearing all layers (the xmlLoadState restore path) must re-point the
+// concrete view off the old layers (a sync with an empty order) BEFORE any of
+// them is destroyed: a view holding raw layer pointers (e.g. the 3D
+// SceneViewWidget's layer list) otherwise dereferences freed layers when it
+// reconciles, and the layers' GL resources die without a release hook.
+TEST(SceneDockWidgetTest, ClearLayersRepointsViewBeforeDestroyingLayers) {
+  FakeSceneDock dock;
+  ASSERT_TRUE(dock.addTopic(topic(1), PJ::sdk::BuiltinObjectType::kPointCloud, QStringLiteral("a")));
+  ASSERT_TRUE(dock.addTopic(topic(2), PJ::sdk::BuiltinObjectType::kPointCloud, QStringLiteral("b")));
+  g_layer_events.clear();
+
+  QDomDocument doc;
+  const QDomElement empty_scene = doc.createElement(QStringLiteral("scene"));
+  ASSERT_TRUE(dock.xmlLoadState(empty_scene));
+
+  const auto begin = g_layer_events.begin();
+  const auto end = g_layer_events.end();
+  const auto first_empty_sync = std::find(begin, end, std::string("sync:0"));
+  const auto first_destroy =
+      std::find_if(begin, end, [](const std::string& event) { return event.rfind("destroy:", 0) == 0; });
+  ASSERT_NE(first_empty_sync, end) << "clearLayers() never re-pointed the view (no empty sync)";
+  ASSERT_NE(first_destroy, end);
+  EXPECT_LT(first_empty_sync - begin, first_destroy - begin)
+      << "view was re-pointed only AFTER layers were destroyed (use-after-free window)";
+  EXPECT_TRUE(dock.layers().empty());
 }
 
 TEST(SceneDockWidgetTest, TrackerTimeIgnoresNonFiniteValues) {

@@ -84,8 +84,11 @@ void MediaViewerWidget::setFrame(const DecodedFrame& frame) {
   {
     std::lock_guard lock(frame_mutex_);
     pending_decoded_ = frame;
-    pending_is_yuv_ = (frame.format == PixelFormat::kYUV420P);
+    pending_is_yuv_ = texturePathFor(frame.format) == TexturePathFormat::kYUV420P;
     pending_qimage_ = QImage();  // clear any pending QImage
+    pending_pixel_layers_.clear();
+    has_pending_pixel_layers_ = false;
+    pixel_layers_active_ = false;
     inspector_frame_ = frame;
     has_pending_ = true;
   }
@@ -122,6 +125,9 @@ void MediaViewerWidget::setFrame(const QImage& img) {
     pending_qimage_ = img;
     pending_is_yuv_ = false;
     pending_decoded_ = {};  // clear any pending DecodedFrame
+    pending_pixel_layers_.clear();
+    has_pending_pixel_layers_ = false;
+    pixel_layers_active_ = false;
     inspector_frame_ = to_decoded(img);
     has_pending_ = true;
   }
@@ -146,6 +152,13 @@ void MediaViewerWidget::setMediaSource(MediaSource* source) {
   hidePointInspector();
   last_overlays_.clear();
   overlays_dirty_ = true;
+  // Drop the previous source's pixel-layer stack so its segmentation/depth
+  // overlays don't keep compositing over the new source. The GPU textures are
+  // reconciled when the next frame arrives; until then pixel_layers_active_ is
+  // false, so they stay inert (mirrors the reset in setFrame/setDecodedFrame).
+  pending_pixel_layers_.clear();
+  has_pending_pixel_layers_ = false;
+  pixel_layers_active_ = false;
   // Drop glyph textures keyed to the previous source's labels; new source
   // likely brings a different label set, and the cache currently has no LRU.
   clearTextCache();
@@ -426,6 +439,8 @@ void MediaViewerWidget::releaseResources() {
   hidePointInspector();
   delete pipeline_;
   pipeline_ = nullptr;
+  delete composite_pipeline_;
+  composite_pipeline_ = nullptr;
   delete srb_;
   srb_ = nullptr;
   delete tex_y_;
@@ -438,6 +453,7 @@ void MediaViewerWidget::releaseResources() {
   sampler_ = nullptr;
   delete uniform_buf_;
   uniform_buf_ = nullptr;
+  clearPixelLayerTextures();
   delete marker_pipeline_;
   marker_pipeline_ = nullptr;
   delete marker_srb_;
@@ -476,6 +492,7 @@ void MediaViewerWidget::releaseResources() {
   tex_width_ = 0;
   tex_height_ = 0;
   std::lock_guard lock(frame_mutex_);
+  has_pending_pixel_layers_ = !pending_pixel_layers_.empty();
   has_pending_ = hasRetainedUploadableFrameLocked();
 }
 
@@ -486,6 +503,232 @@ void MediaViewerWidget::clearTextCache() {
   }
   text_cache_.clear();
   text_draw_items_.clear();
+}
+
+void MediaViewerWidget::clearPixelLayerTextures() {
+  for (auto& layer : pixel_layer_textures_) {
+    destroyTextureLayer(layer);
+  }
+  pixel_layer_textures_.clear();
+}
+
+void MediaViewerWidget::destroyTextureLayer(TextureLayerResources& layer) {
+  delete layer.srb;
+  delete layer.uniform_buf;
+  delete layer.tex_y;
+  delete layer.tex_u;
+  delete layer.tex_v;
+  layer = {};
+}
+
+bool MediaViewerWidget::ensureTextureLayer(TextureLayerResources& layer) {
+  auto* r = rhi();
+  if (r == nullptr || sampler_ == nullptr) {
+    return false;
+  }
+  if (layer.uniform_buf == nullptr) {
+    layer.uniform_buf = r->newBuffer(QRhiBuffer::Dynamic, QRhiBuffer::UniformBuffer, kUniformBufSize);
+    if (!layer.uniform_buf->create()) {
+      destroyTextureLayer(layer);
+      return false;
+    }
+  }
+  if (layer.tex_y == nullptr) {
+    layer.tex_y = r->newTexture(QRhiTexture::R8, QSize(1, 1));
+    layer.tex_u = r->newTexture(QRhiTexture::R8, QSize(1, 1));
+    layer.tex_v = r->newTexture(QRhiTexture::R8, QSize(1, 1));
+    if (!layer.tex_y->create() || !layer.tex_u->create() || !layer.tex_v->create()) {
+      destroyTextureLayer(layer);
+      return false;
+    }
+  }
+  if (layer.srb == nullptr) {
+    layer.srb = r->newShaderResourceBindings();
+    layer.srb->setBindings({
+        QRhiShaderResourceBinding::uniformBuffer(
+            0, QRhiShaderResourceBinding::VertexStage | QRhiShaderResourceBinding::FragmentStage, layer.uniform_buf),
+        QRhiShaderResourceBinding::sampledTexture(1, QRhiShaderResourceBinding::FragmentStage, layer.tex_y, sampler_),
+        QRhiShaderResourceBinding::sampledTexture(2, QRhiShaderResourceBinding::FragmentStage, layer.tex_u, sampler_),
+        QRhiShaderResourceBinding::sampledTexture(3, QRhiShaderResourceBinding::FragmentStage, layer.tex_v, sampler_),
+    });
+    if (!layer.srb->create()) {
+      destroyTextureLayer(layer);
+      return false;
+    }
+  }
+  return true;
+}
+
+MediaViewerWidget::TexturePathFormat MediaViewerWidget::texturePathFor(PixelFormat format) noexcept {
+  switch (format) {
+    case PixelFormat::kYUV420P:
+      return TexturePathFormat::kYUV420P;
+    case PixelFormat::kNV12:
+      return TexturePathFormat::kNV12;  // reserved: see header — not produced yet
+    case PixelFormat::kRGB888:
+    case PixelFormat::kRGBA8888:
+    case PixelFormat::kBGR888:
+    case PixelFormat::kBGRA8888:
+    case PixelFormat::kMono8:
+    case PixelFormat::kMono16:
+      return TexturePathFormat::kRGBA;
+  }
+  return TexturePathFormat::kRGBA;
+}
+
+bool MediaViewerWidget::uploadDecodedFrameToTexture(
+    const DecodedFrame& frame, TextureLayerResources& layer, QRhiResourceUpdateBatch* updates) {
+  if (frame.isNull() || frame.width <= 0 || frame.height <= 0 || frame.pixels == nullptr || updates == nullptr) {
+    return false;
+  }
+  if (!ensureTextureLayer(layer)) {
+    return false;
+  }
+
+  const int w = frame.width;
+  const int h = frame.height;
+  const uint8_t* src = frame.pixels->data();
+  const size_t src_size = frame.pixels->size();
+
+  if (texturePathFor(frame.format) == TexturePathFormat::kYUV420P) {
+    const int uv_w = (w + 1) / 2;
+    const int uv_h = (h + 1) / 2;
+    const int y_size = w * h;
+    const int uv_size = uv_w * uv_h;
+    if (src_size < static_cast<size_t>(y_size + 2 * uv_size)) {
+      return false;
+    }
+
+    if (w != layer.width || h != layer.height || layer.format != TexturePathFormat::kYUV420P) {
+      layer.tex_y->destroy();
+      layer.tex_y->setFormat(QRhiTexture::R8);
+      layer.tex_y->setPixelSize(QSize(w, h));
+      layer.tex_y->create();
+
+      layer.tex_u->destroy();
+      layer.tex_u->setFormat(QRhiTexture::R8);
+      layer.tex_u->setPixelSize(QSize(uv_w, uv_h));
+      layer.tex_u->create();
+
+      layer.tex_v->destroy();
+      layer.tex_v->setFormat(QRhiTexture::R8);
+      layer.tex_v->setPixelSize(QSize(uv_w, uv_h));
+      layer.tex_v->create();
+
+      layer.srb->destroy();
+      layer.srb->setBindings({
+          QRhiShaderResourceBinding::uniformBuffer(
+              0, QRhiShaderResourceBinding::VertexStage | QRhiShaderResourceBinding::FragmentStage, layer.uniform_buf),
+          QRhiShaderResourceBinding::sampledTexture(1, QRhiShaderResourceBinding::FragmentStage, layer.tex_y, sampler_),
+          QRhiShaderResourceBinding::sampledTexture(2, QRhiShaderResourceBinding::FragmentStage, layer.tex_u, sampler_),
+          QRhiShaderResourceBinding::sampledTexture(3, QRhiShaderResourceBinding::FragmentStage, layer.tex_v, sampler_),
+      });
+      layer.srb->create();
+
+      layer.width = w;
+      layer.height = h;
+      layer.format = TexturePathFormat::kYUV420P;
+    }
+
+    QRhiTextureSubresourceUploadDescription y_desc(src, y_size);
+    y_desc.setSourceSize(QSize(w, h));
+    updates->uploadTexture(layer.tex_y, QRhiTextureUploadDescription({0, 0, y_desc}));
+
+    QRhiTextureSubresourceUploadDescription u_desc(src + y_size, uv_size);
+    u_desc.setSourceSize(QSize(uv_w, uv_h));
+    updates->uploadTexture(layer.tex_u, QRhiTextureUploadDescription({0, 0, u_desc}));
+
+    QRhiTextureSubresourceUploadDescription v_desc(src + y_size + uv_size, uv_size);
+    v_desc.setSourceSize(QSize(uv_w, uv_h));
+    updates->uploadTexture(layer.tex_v, QRhiTextureUploadDescription({0, 0, v_desc}));
+    return true;
+  }
+
+  std::vector<uint8_t> rgba_buf;
+  const uint8_t* rgba_data = nullptr;
+  size_t rgba_size = 0;
+  const bool is_bgr = (frame.format == PixelFormat::kBGR888 || frame.format == PixelFormat::kBGRA8888);
+
+  if (frame.format == PixelFormat::kRGBA8888) {
+    rgba_data = src;
+    rgba_size = src_size;
+  } else if (frame.format == PixelFormat::kBGRA8888) {
+    rgba_buf.resize(static_cast<size_t>(w) * static_cast<size_t>(h) * 4U);
+    const int pixel_count = w * h;
+    for (int i = 0; i < pixel_count; ++i) {
+      rgba_buf[i * 4 + 0] = src[i * 4 + 2];
+      rgba_buf[i * 4 + 1] = src[i * 4 + 1];
+      rgba_buf[i * 4 + 2] = src[i * 4 + 0];
+      rgba_buf[i * 4 + 3] = src[i * 4 + 3];
+    }
+    rgba_data = rgba_buf.data();
+    rgba_size = rgba_buf.size();
+  } else if (frame.format == PixelFormat::kRGB888 || frame.format == PixelFormat::kBGR888) {
+    rgba_buf.resize(static_cast<size_t>(w) * static_cast<size_t>(h) * 4U);
+    const int pixel_count = w * h;
+    for (int i = 0; i < pixel_count; ++i) {
+      rgba_buf[i * 4 + 0] = src[i * 3 + (is_bgr ? 2 : 0)];
+      rgba_buf[i * 4 + 1] = src[i * 3 + 1];
+      rgba_buf[i * 4 + 2] = src[i * 3 + (is_bgr ? 0 : 2)];
+      rgba_buf[i * 4 + 3] = 255;
+    }
+    rgba_data = rgba_buf.data();
+    rgba_size = rgba_buf.size();
+  } else if (frame.format == PixelFormat::kMono8) {
+    rgba_buf.resize(static_cast<size_t>(w) * static_cast<size_t>(h) * 4U);
+    const int pixel_count = w * h;
+    for (int i = 0; i < pixel_count; ++i) {
+      const uint8_t g = src[i];
+      rgba_buf[i * 4 + 0] = g;
+      rgba_buf[i * 4 + 1] = g;
+      rgba_buf[i * 4 + 2] = g;
+      rgba_buf[i * 4 + 3] = 255;
+    }
+    rgba_data = rgba_buf.data();
+    rgba_size = rgba_buf.size();
+  }
+
+  if (rgba_data == nullptr) {
+    return false;
+  }
+
+  if (w != layer.width || h != layer.height || layer.format != TexturePathFormat::kRGBA) {
+    layer.tex_y->destroy();
+    layer.tex_y->setFormat(QRhiTexture::RGBA8);
+    layer.tex_y->setPixelSize(QSize(w, h));
+    layer.tex_y->create();
+
+    layer.srb->destroy();
+    layer.srb->setBindings({
+        QRhiShaderResourceBinding::uniformBuffer(
+            0, QRhiShaderResourceBinding::VertexStage | QRhiShaderResourceBinding::FragmentStage, layer.uniform_buf),
+        QRhiShaderResourceBinding::sampledTexture(1, QRhiShaderResourceBinding::FragmentStage, layer.tex_y, sampler_),
+        QRhiShaderResourceBinding::sampledTexture(2, QRhiShaderResourceBinding::FragmentStage, layer.tex_u, sampler_),
+        QRhiShaderResourceBinding::sampledTexture(3, QRhiShaderResourceBinding::FragmentStage, layer.tex_v, sampler_),
+    });
+    layer.srb->create();
+
+    layer.width = w;
+    layer.height = h;
+    layer.format = TexturePathFormat::kRGBA;
+  }
+
+  QRhiTextureSubresourceUploadDescription sub_desc(rgba_data, static_cast<quint32>(rgba_size));
+  sub_desc.setSourceSize(QSize(w, h));
+  updates->uploadTexture(layer.tex_y, QRhiTextureUploadDescription({0, 0, sub_desc}));
+  return true;
+}
+
+void MediaViewerWidget::updateTextureLayerUniform(
+    TextureLayerResources& layer, const QMatrix4x4& view, QRhiResourceUpdateBatch* updates) const {
+  if (layer.uniform_buf == nullptr || updates == nullptr) {
+    return;
+  }
+  updates->updateDynamicBuffer(layer.uniform_buf, 0, 64, view.constData());
+  updates->updateDynamicBuffer(layer.uniform_buf, 64, 64, kBT709);
+  const int32_t fmt = static_cast<int32_t>(layer.format);
+  updates->updateDynamicBuffer(layer.uniform_buf, 128, 4, &fmt);
+  updates->updateDynamicBuffer(layer.uniform_buf, 132, 4, &layer.opacity);
 }
 
 void MediaViewerWidget::initialize(QRhiCommandBuffer* /*cb*/) {
@@ -550,6 +793,26 @@ void MediaViewerWidget::initialize(QRhiCommandBuffer* /*cb*/) {
     qWarning("MediaViewerWidget: failed to create graphics pipeline");
     pipeline_ = nullptr;
     return;
+  }
+
+  composite_pipeline_ = r->newGraphicsPipeline();
+  composite_pipeline_->setFlags(QRhiGraphicsPipeline::UsesScissor);
+  composite_pipeline_->setShaderStages(
+      {QRhiShaderStage(QRhiShaderStage::Vertex, vert), QRhiShaderStage(QRhiShaderStage::Fragment, frag)});
+  composite_pipeline_->setVertexInputLayout(input_layout);
+  composite_pipeline_->setShaderResourceBindings(srb_);
+  composite_pipeline_->setRenderPassDescriptor(renderTarget()->renderPassDescriptor());
+  QRhiGraphicsPipeline::TargetBlend image_blend;
+  image_blend.enable = true;
+  image_blend.srcColor = QRhiGraphicsPipeline::SrcAlpha;
+  image_blend.dstColor = QRhiGraphicsPipeline::OneMinusSrcAlpha;
+  image_blend.srcAlpha = QRhiGraphicsPipeline::One;
+  image_blend.dstAlpha = QRhiGraphicsPipeline::OneMinusSrcAlpha;
+  composite_pipeline_->setTargetBlends({image_blend});
+  if (!composite_pipeline_->create()) {
+    qWarning("MediaViewerWidget: failed to create composite graphics pipeline");
+    delete composite_pipeline_;
+    composite_pipeline_ = nullptr;
   }
 
   // ----- Marker / overlay pipeline -----
@@ -759,7 +1022,7 @@ void MediaViewerWidget::initialize(QRhiCommandBuffer* /*cb*/) {
     qWarning("MediaViewerWidget: scene_text shaders not loaded; text disabled");
   }
 
-  if (has_pending_) {
+  if (has_pending_ || has_pending_pixel_layers_) {
     update();
   }
 }
@@ -787,10 +1050,27 @@ void MediaViewerWidget::render(QRhiCommandBuffer* cb) {
     if (media_source_ != nullptr) {
       auto frame = media_source_->takeFrame();
       if (frame.has_value()) {
-        if (frame->base.has_value() && !frame->base->isNull()) {
-          pending_decoded_ = std::move(*frame->base);
-          pending_is_yuv_ = (pending_decoded_.format == PixelFormat::kYUV420P);
+        if (!frame->pixel_layers.empty()) {
+          pending_pixel_layers_ = std::move(frame->pixel_layers);
+          has_pending_pixel_layers_ = true;
+          pixel_layers_active_ = true;
+          has_pending_ = false;
+          pending_decoded_ = {};
           pending_qimage_ = QImage();
+          for (const auto& layer : pending_pixel_layers_) {
+            if (!layer.frame.isNull()) {
+              inspector_frame_ = layer.frame;
+              inspector_frame_changed = true;
+              break;
+            }
+          }
+        } else if (frame->base.has_value() && !frame->base->isNull()) {
+          pending_decoded_ = std::move(*frame->base);
+          pending_is_yuv_ = texturePathFor(pending_decoded_.format) == TexturePathFormat::kYUV420P;
+          pending_qimage_ = QImage();
+          pending_pixel_layers_.clear();
+          has_pending_pixel_layers_ = false;
+          pixel_layers_active_ = false;
           inspector_frame_ = pending_decoded_;
           inspector_frame_changed = true;
           has_pending_ = true;
@@ -800,6 +1080,28 @@ void MediaViewerWidget::render(QRhiCommandBuffer* cb) {
           overlays_dirty_ = true;
         }
       }
+    }
+
+    if (has_pending_pixel_layers_) {
+      if (pending_pixel_layers_.size() < pixel_layer_textures_.size()) {
+        for (size_t i = pending_pixel_layers_.size(); i < pixel_layer_textures_.size(); ++i) {
+          destroyTextureLayer(pixel_layer_textures_[i]);
+        }
+      }
+      pixel_layer_textures_.resize(pending_pixel_layers_.size());
+
+      bool set_frame_size = false;
+      for (size_t i = 0; i < pending_pixel_layers_.size(); ++i) {
+        auto& texture = pixel_layer_textures_[i];
+        texture.opacity = std::clamp(pending_pixel_layers_[i].opacity, 0.0f, 1.0f);
+        if (uploadDecodedFrameToTexture(pending_pixel_layers_[i].frame, texture, updates) && !set_frame_size) {
+          tex_width_ = texture.width;
+          tex_height_ = texture.height;
+          frame_aspect_ = static_cast<float>(texture.width) / static_cast<float>(texture.height);
+          set_frame_size = true;
+        }
+      }
+      has_pending_pixel_layers_ = false;
     }
 
     if (has_pending_) {
@@ -993,6 +1295,13 @@ void MediaViewerWidget::render(QRhiCommandBuffer* cb) {
   updates->updateDynamicBuffer(uniform_buf_, 64, 64, kBT709);
   int32_t fmt = static_cast<int32_t>(current_pixel_format_);
   updates->updateDynamicBuffer(uniform_buf_, 128, 4, &fmt);
+  const float opacity = 1.0f;
+  updates->updateDynamicBuffer(uniform_buf_, 132, 4, &opacity);
+  if (pixel_layers_active_) {
+    for (auto& layer : pixel_layer_textures_) {
+      updateTextureLayerUniform(layer, view, updates);
+    }
+  }
 
   // ----- Marker pipeline: rebuild VBO + update uniforms -----
   size_t marker_vertex_count = 0;
@@ -1145,12 +1454,26 @@ void MediaViewerWidget::render(QRhiCommandBuffer* cb) {
   const size_t thick_vertex_count = (thick_pipeline_ != nullptr) ? thick_vertex_data_.size() / 6 : 0;
 
   cb->beginPass(rt, clear_color_, {1.0f, 0}, updates);
-  cb->setGraphicsPipeline(pipeline_);
-  cb->setViewport(
-      QRhiViewport(0, 0, static_cast<float>(output_size.width()), static_cast<float>(output_size.height())));
-  cb->setScissor(imageScissor(view, output_size));
-  cb->setShaderResources(srb_);
-  cb->draw(3);
+  if (pixel_layers_active_ && composite_pipeline_ != nullptr && !pixel_layer_textures_.empty()) {
+    cb->setGraphicsPipeline(composite_pipeline_);
+    cb->setViewport(
+        QRhiViewport(0, 0, static_cast<float>(output_size.width()), static_cast<float>(output_size.height())));
+    cb->setScissor(imageScissor(view, output_size));
+    for (auto& layer : pixel_layer_textures_) {
+      if (layer.srb == nullptr || layer.width <= 0 || layer.height <= 0) {
+        continue;
+      }
+      cb->setShaderResources(layer.srb);
+      cb->draw(3);
+    }
+  } else {
+    cb->setGraphicsPipeline(pipeline_);
+    cb->setViewport(
+        QRhiViewport(0, 0, static_cast<float>(output_size.width()), static_cast<float>(output_size.height())));
+    cb->setScissor(imageScissor(view, output_size));
+    cb->setShaderResources(srb_);
+    cb->draw(3);
+  }
 
   // Second draw call: vector overlays (markers) on top of the image, blended.
   // Draw order: image (already drawn) → fills (Triangles) → outlines (Lines).

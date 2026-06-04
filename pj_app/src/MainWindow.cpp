@@ -91,6 +91,7 @@
 #include "pj_runtime/QSettingsBackend.h"
 #include "pj_runtime/SessionManager.h"
 #include "pj_runtime/ToolboxRuntimeHost.h"
+#include "pj_runtime/constants.h"
 #include "pj_scene2d_widgets/Media2DDockWidget.h"
 #include "pj_scene2d_widgets/media_viewer_widget.h"
 #include "pj_scene3d_widgets/Scene3DDockWidget.h"
@@ -104,6 +105,7 @@
 #include "ui/CurveListPanel.h"
 #include "ui/DiagnosticsDetailDialog.h"
 #include "ui/LeftPanel.h"
+#include "ui/Scene2DConfigPanel.h"
 #include "ui/Scene3DConfigPanel.h"
 #include "ui/TimelineWidget.h"
 #include "ui_MainWindow.h"
@@ -133,7 +135,6 @@ constexpr auto kLastLayoutDirKey = "MainWindow.lastLayoutDirectory";
 // load) instead of the opaque per-load catalog key; <root binding=...> marks
 // generic vs source-bound layouts.
 constexpr int kLayoutSchemaVersion = 2;
-constexpr double kNanosecondsPerSecond = 1e9;
 constexpr double kTwoPi = 6.28318530717958647692;
 constexpr int kTestSampleCount = 1000;
 constexpr double kTestDurationSeconds = 10.0;
@@ -398,15 +399,16 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
         // `kind` with a null seed (the dock reloads its own state); a catalog
         // drop passes an empty kind with a seed, which we classify into a kind,
         // construct, and populate. Family routing for v0:
-        //   image-ish (kImage, kDepthImage, kImageAnnotations)  → scene2d
-        //   3D-ish    (kPointCloud, kFrameTransforms, kOccupancyGrid) → scene3d
+        //   3D-ish (kPointCloud/kFrameTransforms/kOccupancyGrid)                     → scene3d
+        //   2D-ish (kImage/kAssetVideo/kDepthImage/kImageAnnotations/kSceneEntities) → scene2d
         QString resolved_kind = kind;
         if (resolved_kind.isEmpty() && seed != nullptr) {
-          // Image/2D is the default for any non-3D object topic here; the 2D
-          // dock surfaces an error for types its parser can't decode. (When the
-          // multi-layer 2D dock lands, this gains an explicit is2d guard.)
-          resolved_kind =
-              is3dSceneObjectType(seed->object_type) ? QStringLiteral("scene3d") : QStringLiteral("scene2d");
+          // Classify the dropped object into a scene kind. kSceneEntities is both
+          // 2D and 3D; is3d wins here (markers are primarily 3D), but a 2D dock
+          // still accepts markers dropped onto an existing scene. Neither → "".
+          resolved_kind = is3dSceneObjectType(seed->object_type)   ? QStringLiteral("scene3d")
+                          : is2dSceneObjectType(seed->object_type) ? QStringLiteral("scene2d")
+                                                                   : QString();
         }
         IDataWidget* widget = makeSceneDock(resolved_kind, parent);
         if (widget == nullptr) {
@@ -467,6 +469,13 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
           }
           media2d->setPointInspectorEnabled(show_points_);
           media2d->onTrackerTime(session_->playbackEngine().currentTime());
+        } else {
+          // makeSceneDock produced a kind this populate switch doesn't handle —
+          // a programming error if a new family is added without a branch here.
+          // Fail loudly rather than returning an unpopulated dock.
+          qWarning("MainWindow: makeSceneDock returned an unhandled object-widget kind");
+          widget->widget()->deleteLater();
+          return nullptr;
         }
         return widget;
       });
@@ -865,7 +874,10 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
     layout->addStretch(1);
     return page;
   };
-  scene2d_config_page_ = make_placeholder(tr("TODO: 2D configuration"));
+  scene2d_config_panel_ = new Scene2DConfigPanel(right_panel_stack_);
+  scene2d_config_page_ = scene2d_config_panel_;
+  scene2d_config_panel_->onStylesheetChanged(theme_->currentTheme());
+  connect(this, &MainWindow::stylesheetChanged, scene2d_config_panel_, &Scene2DConfigPanel::onStylesheetChanged);
   scene3d_config_panel_ = new Scene3DConfigPanel(right_panel_stack_);
   scene3d_config_page_ = scene3d_config_panel_;
   // Push the active theme into the panel so its row icons paint in the
@@ -925,11 +937,8 @@ IDataWidget* MainWindow::makeSceneDock(const QString& kind, QWidget* parent) {
     auto* widget = new Scene3DDockWidget(parent);
     widget->setSessionManager(&session_->sessionManager());
     widget->setTransformService(transform_service_.get());
-    widget->setThemeHint(theme_->currentTheme());
-    // Keep the 3D background in sync with theme toggles for this dock's
-    // lifetime (auto-disconnected when `widget` is destroyed).
-    connect(
-        theme_.get(), &Theme::themeChanged, widget, [widget, this]() { widget->setThemeHint(theme_->currentTheme()); });
+    // No theme push needed: SceneViewWidget derives dark/light from its own
+    // palette luminance and repaints on QEvent::PaletteChange.
     return widget;
   }
   if (kind == QStringLiteral("scene2d")) {
@@ -1445,8 +1454,9 @@ std::optional<Range<double>> MainWindow::computeActiveStreamingRangeSec() const 
     return std::nullopt;
   }
 
-  constexpr double kNsPerSec = 1.0e9;
-  return Range<double>{.min = static_cast<double>(t_min) / kNsPerSec, .max = static_cast<double>(t_max) / kNsPerSec};
+  return Range<double>{
+      .min = static_cast<double>(t_min) / kNanosecondsPerSecond,
+      .max = static_cast<double>(t_max) / kNanosecondsPerSecond};
 }
 
 DiagnosticSink MainWindow::diagnosticSink() const {
@@ -2598,22 +2608,27 @@ void MainWindow::onDockFocused(DockWidget* dock) {
   // signal when there is no curve, image, or scene to act on.
   QWidget* target = empty_dock_page_;
   Scene3DDockWidget* scene3d_dock = nullptr;
+  SceneDockWidget* scene2d_dock = nullptr;
   if (dock != nullptr) {
     if (dock->plotWidget() != nullptr) {
       target = plot_config_page_;
     } else if (dock->objectWidget() != nullptr) {
       QWidget* obj = dock->objectWidget()->widget();
-      if (qobject_cast<Media2DDockWidget*>(obj) != nullptr) {
+      if (auto* s2d = qobject_cast<Media2DDockWidget*>(obj); s2d != nullptr) {
         target = scene2d_config_page_;
+        scene2d_dock = s2d;
       } else if (auto* s3d = qobject_cast<Scene3DDockWidget*>(obj); s3d != nullptr) {
         target = scene3d_config_page_;
         scene3d_dock = s3d;
       }
     }
   }
-  // Bind / unbind the 3D config panel BEFORE switching the stack so the
-  // page is already populated when it becomes visible. Passing nullptr
-  // when leaving a 3D dock detaches signal connections cleanly.
+  // Bind / unbind the config panels BEFORE switching the stack so the page is
+  // already populated when it becomes visible. Passing nullptr when leaving a
+  // scene dock detaches signal connections cleanly.
+  if (scene2d_config_panel_ != nullptr) {
+    scene2d_config_panel_->bindDock(scene2d_dock);
+  }
   if (scene3d_config_panel_ != nullptr) {
     scene3d_config_panel_->bindDock(scene3d_dock);
   }

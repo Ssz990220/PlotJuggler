@@ -22,13 +22,13 @@ class QWheelEvent;
 
 namespace pj::scene3d {
 
-class Scene3DEntity;
+class Scene3DLayer;
 
 // Standalone Qt widget that renders the 3D scene: a grid at the fixed-frame
-// origin, an XYZ axis triad per TF frame, and zero or more user entities
-// (PointCloud topics, future URDF robots, etc.). Entities are non-owning
-// — Scene3DDockWidget owns them and is responsible for calling addEntity
-// before they're allowed to render and removeEntity before destruction.
+// origin, an XYZ axis triad per TF frame, and zero or more user layers
+// (PointCloud topics, future URDF robots, etc.). Layers are non-owning
+// — SceneDockWidget owns them and Scene3DDockWidget pushes the base-owned
+// render order into this view whenever it changes.
 class SceneViewWidget : public QOpenGLWidget {
   Q_OBJECT
 
@@ -40,30 +40,12 @@ class SceneViewWidget : public QOpenGLWidget {
   void setTrackerTime(std::chrono::nanoseconds t);
   void setFixedFrame(const std::string& frame);
 
-  // Explicit theme hint, used when the host (pj_app) applies its theme
-  // via QSS rather than QPalette — QSS doesn't update palette() returns,
-  // so palette-based detection picks up the unrelated OS default. The
-  // host passes "light" or "dark" (anything else falls back to palette
-  // luminance detection).
-  void setThemeHint(const QString& theme);
+  // Replace the render order: index 0 renders first (behind), the last on top.
+  // For coplanar overlays (costmaps) this is what decides the overlap winner.
+  void setLayers(const std::vector<Scene3DLayer*>& ordered);
 
-  // ---- Entity registry. Entities render in insertion order (depth test
-  // still wins; insertion order matters only when fragments coincide).
-  // Adding the same entity twice is a no-op.
-  void addEntity(Scene3DEntity* entity);
-  void removeEntity(Scene3DEntity* entity);
-  [[nodiscard]] bool hasEntity(const Scene3DEntity* entity) const;
-
-  // Replace the render order with `ordered`, which must be a permutation of the
-  // currently registered entities (same elements, no dupes). Index 0 renders
-  // first (behind); the last renders on top — for coplanar overlays (costmaps)
-  // this is what decides the overlap winner. A non-permutation is ignored.
-  void reorderEntities(const std::vector<Scene3DEntity*>& ordered);
-
-  // Entities in current render order (insertion order, or whatever
-  // reorderEntities last set). Used to persist the order.
-  [[nodiscard]] const std::vector<Scene3DEntity*>& entities() const {
-    return entities_;
+  [[nodiscard]] const std::vector<Scene3DLayer*>& layers() const {
+    return layers_;
   }
 
   AxisRenderPass& axisPass() {
@@ -85,7 +67,7 @@ class SceneViewWidget : public QOpenGLWidget {
   }
 
   // Show/hide the per-frame TF axis triads. The TF buffer is still used to
-  // transform entities regardless — this only gates drawing the axes. Default
+  // transform layers regardless — this only gates drawing the axes. Default
   // visible (TF is a first-class always-on display; see docs/REQUIREMENTS.md §4).
   void setAxesVisible(bool visible);
   [[nodiscard]] bool axesVisible() const {
@@ -107,7 +89,7 @@ class SceneViewWidget : public QOpenGLWidget {
   void changeEvent(QEvent* event) override;
 
  private:
-  // Release every pass's and entity's GL resources, returning them to their
+  // Release every pass's and layer's GL resources, returning them to their
   // pre-initializeGL state. Connected to the current QOpenGLContext's
   // aboutToBeDestroyed (rewired per context in initializeGL) and also called
   // from the destructor. QOpenGLWidget recreates its context on every reparent
@@ -115,14 +97,13 @@ class SceneViewWidget : public QOpenGLWidget {
   // across contexts, so stale handles must be dropped and rebuilt.
   void releaseGlResources();
 
-  // Owned passes that don't depend on the entity count.
+  // Owned passes that don't depend on the layer count.
   AxisRenderPass axes_;
   GridRenderPass grid_;
   AxisOverlayPass overlay_;
 
-  // Non-owning entity registry, kept in insertion order so render
-  // sequencing is deterministic.
-  std::vector<Scene3DEntity*> entities_;
+  // Non-owning layer registry, in the order supplied by SceneDockWidget.
+  std::vector<Scene3DLayer*> layers_;
 
   OrbitCamera camera_;
 
@@ -136,14 +117,11 @@ class SceneViewWidget : public QOpenGLWidget {
   QList<FrameRow> last_frame_list_;
 
   // Whether the TF axis triads are drawn (see setAxesVisible). Does not affect
-  // entity frame resolution, only the axes pass.
+  // layer frame resolution, only the axes pass.
   bool axes_visible_ = true;
 
   QPoint last_mouse_pos_;
   Qt::MouseButton active_button_{Qt::NoButton};
-
-  // -1 = unset (use palette luminance), 0 = light, 1 = dark.
-  int theme_hint_ = -1;
 
   // Connection to the current GL context's aboutToBeDestroyed signal. Rewired to
   // each new context in initializeGL and disconnected in the destructor so the

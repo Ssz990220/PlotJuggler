@@ -34,6 +34,8 @@ add_executable(pj_app
     src/ui/CurveListPanel.cpp
     src/ui/CurveListPanel.h
     src/ui/CurveListPanel.ui
+    src/ui/Scene2DConfigPanel.cpp
+    src/ui/Scene2DConfigPanel.h
     src/ui/Scene3DConfigPanel.cpp
     src/ui/Scene3DConfigPanel.h
     src/ui/LeftPanel.cpp

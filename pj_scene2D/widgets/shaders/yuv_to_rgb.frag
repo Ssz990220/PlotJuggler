@@ -14,6 +14,7 @@ layout(std140, binding = 0) uniform Uniforms {
     mat4 viewTransform;
     mat4 colorMatrix;
     int pixelFormat;  // 0 = YUV420P, 1 = NV12, 2 = RGBA
+    float opacity;
 };
 
 void main()
@@ -27,6 +28,7 @@ void main()
     // RGBA passthrough
     if (pixelFormat == 2) {
         fragColor = texture(y_tex, v_uv);
+        fragColor.a *= opacity;
         return;
     }
 
@@ -48,5 +50,5 @@ void main()
     // YUV → RGB via color matrix (BT.709 or BT.601)
     vec3 yuv = vec3(y, u - 0.5, v - 0.5);
     vec3 rgb = (colorMatrix * vec4(yuv, 1.0)).rgb;
-    fragColor = vec4(clamp(rgb, 0.0, 1.0), 1.0);
+    fragColor = vec4(clamp(rgb, 0.0, 1.0), opacity);
 }

@@ -292,9 +292,7 @@ namespace {
 // "imu_link" instead of clustering before all lowercase frames.
 struct FrameNameLess {
   bool operator()(const std::string& a, const std::string& b) const noexcept {
-    return std::lexicographical_compare(a.begin(), a.end(), b.begin(), b.end(), [](unsigned char x, unsigned char y) {
-      return std::tolower(x) < std::tolower(y);
-    });
+    return frameNameLess(a, b);
   }
 };
 
@@ -392,6 +390,12 @@ nlohmann::json TransformBuffer::getFrameHierarchyJson() const {
     out.push_back(build(build, r));
   }
   return out;
+}
+
+bool frameNameLess(std::string_view a, std::string_view b) noexcept {
+  return std::lexicographical_compare(a.begin(), a.end(), b.begin(), b.end(), [](unsigned char x, unsigned char y) {
+    return std::tolower(x) < std::tolower(y);
+  });
 }
 
 }  // namespace pj::scene3d

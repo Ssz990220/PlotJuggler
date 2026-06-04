@@ -6,6 +6,7 @@
 #include <QWidget>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <string>
 #include <unordered_map>
 #include <utility>
@@ -14,6 +15,7 @@
 #include "pj_base/builtin/builtin_object.hpp"
 #include "pj_datastore/object_store.hpp"
 #include "pj_runtime/IDataWidget.h"
+#include "pj_runtime/IObjectViewer.h"
 #include "pj_scene_common/layer_factory.h"
 #include "pj_scene_common/scene_layer.h"
 
@@ -25,7 +27,7 @@ class SessionManager;
 ///
 /// Subclasses provide the concrete scene view, accepted object types, layer
 /// context, and the hook that maps the ordered layer list into the renderer.
-class SceneDockWidget : public QWidget, public IDataWidget {
+class SceneDockWidget : public QWidget, public IDataWidget, public IObjectViewer {
   Q_OBJECT
  public:
   explicit SceneDockWidget(QWidget* parent = nullptr);
@@ -37,11 +39,16 @@ class SceneDockWidget : public QWidget, public IDataWidget {
   QDomElement xmlSaveState(QDomDocument& doc) const override;
   bool xmlLoadState(const QDomElement& element) override;
 
+  /// IObjectViewer: drops layers whose ObjectStore topic was evicted (empty
+  /// descriptor) via the regular removal path, and reports whether any live
+  /// layer remains so the shell can reset an emptied dock to its placeholder.
+  bool revalidateObjects() override;
+
   /// Accepts a topic as either a render layer or a scene-wide config topic.
   bool addTopic(ObjectTopicId topic_id, sdk::BuiltinObjectType object_type, const QString& title);
 
   void removeTopic(ObjectTopicId topic_id);
-  void setTopicVisible(ObjectTopicId topic_id, bool visible);
+  void setLayerVisible(ObjectTopicId topic_id, bool visible);
 
   /// Applies a partial or complete draw order, appending omitted layers after it.
   void reorderLayers(const std::vector<ObjectTopicId>& ordered_topic_ids);
@@ -90,6 +97,30 @@ class SceneDockWidget : public QWidget, public IDataWidget {
   /// Requests a view repaint after layer state changes.
   virtual void refreshView();
 
+  /// Last tracker time forwarded to the layers (ns, already clamped by
+  /// clampToLayerRange), or nullopt when no tracker tick (or live nudge) has
+  /// arrived yet — 0 is a valid timestamp, so absence is explicit. For derived
+  /// docks that drive an additional consumer off the same clock (the 3D view's
+  /// render time, the 2D composite seed).
+  [[nodiscard]] std::optional<int64_t> lastTrackerNs() const {
+    return last_tracker_ns_;
+  }
+
+  /// Records an externally-derived tracker time (e.g. a live-ingest nudge to
+  /// the data edge) as the seed for future layer additions and rebuild seeding,
+  /// without driving the layers (the caller already did).
+  void noteTrackerTime(int64_t time_ns) {
+    last_tracker_ns_ = time_ns;
+  }
+
+  /// Removes every layer: re-points the concrete view off the old layers
+  /// (syncViewLayers with an empty order) while they are still alive, then
+  /// detaches and destroys them. Concrete docks whose scene view holds raw
+  /// layer pointers (e.g. the 3D view's layer list) MUST call this from their
+  /// own destructor, while virtual dispatch still reaches their overrides —
+  /// the base destructor cannot reconcile the view for them.
+  void clearLayers();
+
  private:
   /// Result of an add attempt, separating the two outcomes addTopic's bool used
   /// to conflate ("layer created" vs "consumed as a scene-config topic").
@@ -99,7 +130,9 @@ class SceneDockWidget : public QWidget, public IDataWidget {
   [[nodiscard]] int64_t clampToLayerRange(int64_t time_ns) const;
   [[nodiscard]] std::vector<ISceneLayer*> orderedLayerPtrs() const;
   void syncViewLayers();
-  void clearLayers();
+  /// Destructor-safe teardown: detaches and destroys layers WITHOUT touching
+  /// the (pure virtual) view reconciliation. Only for ~SceneDockWidget.
+  void destroyLayersUnsynced();
   void recordLayerVisibility(ObjectTopicId topic_id, bool visible);
 
   /// Orchestrates adding a topic as a render layer or scene-config topic.
@@ -116,7 +149,7 @@ class SceneDockWidget : public QWidget, public IDataWidget {
   std::vector<int64_t> draw_order_;
   LayerFactory factory_;
   SessionManager* session_ = nullptr;
-  int64_t last_tracker_ns_ = 0;
+  std::optional<int64_t> last_tracker_ns_;
   QWidget* scene_view_ = nullptr;
   std::unordered_map<int64_t, bool> layer_visibility_cache_;
 };

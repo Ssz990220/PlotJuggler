@@ -1,24 +1,24 @@
 // Copyright 2026 Davide Faconti
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: MPL-2.0
 #pragma once
 
 #include "pj_base/builtin/builtin_object.hpp"
+#include "pj_scene2d_widgets/Scene2DDockWidget.h"
+#include "pj_scene3d_widgets/Scene3DDockWidget.h"
 
 namespace PJ {
 
-// Host policy: which canonical object types the 3D scene displays. Single source
-// of truth for both catalog iconography (a topic "marked as 3D") and drop
-// routing (-> Scene3DDockWidget). Image/2D families are classified separately.
-// Adding a 3D object type = one case here.
+// Host-side routing/iconography forwarders. Each scene family owns its accepted
+// type set (the dock's static handlesObjectType, next to the code implementing
+// support); these aliases exist so shell code reads as policy. kSceneEntities is
+// currently 2D-only (the 3D family has no marker layer yet), so dropped markers
+// route to scene2d; the factory ladder gives 3D precedence if that ever changes.
 [[nodiscard]] inline bool is3dSceneObjectType(sdk::BuiltinObjectType type) {
-  switch (type) {
-    case sdk::BuiltinObjectType::kPointCloud:
-    case sdk::BuiltinObjectType::kFrameTransforms:
-    case sdk::BuiltinObjectType::kOccupancyGrid:
-      return true;
-    default:
-      return false;
-  }
+  return Scene3DDockWidget::handlesObjectType(type);
+}
+
+[[nodiscard]] inline bool is2dSceneObjectType(sdk::BuiltinObjectType type) {
+  return Scene2DDockWidget::handlesObjectType(type);
 }
 
 }  // namespace PJ
