@@ -8,6 +8,7 @@ endif()
 add_library(pj_runtime STATIC
     src/AppSession.cpp
     src/CatalogModel.cpp
+    src/CurveColorRegistry.cpp
     src/DataSourceRuntimeHost.cpp
     src/DiagnosticHistory.cpp
     src/ExtensionCatalogService.cpp
@@ -17,6 +18,7 @@ add_library(pj_runtime STATIC
     src/ToolboxRuntimeHost.cpp
     include/pj_runtime/AppSession.h
     include/pj_runtime/CatalogModel.h
+    include/pj_runtime/CurveColorRegistry.h
     include/pj_runtime/CurveDescriptor.h
     include/pj_runtime/DataSourceRuntimeHost.h
     include/pj_runtime/DiagnosticHistory.h
@@ -77,6 +79,16 @@ if(PJ_BUILD_TESTS)
         GTest::gtest_main
     )
     add_test(NAME CatalogModelTest COMMAND catalog_model_test)
+
+    add_executable(curve_color_registry_test
+        tests/curve_color_registry_test.cpp
+    )
+    target_compile_options(curve_color_registry_test PRIVATE ${PJ_WARNING_FLAGS})
+    target_link_libraries(curve_color_registry_test PRIVATE
+        pj_runtime
+        GTest::gtest_main
+    )
+    add_test(NAME CurveColorRegistryTest COMMAND curve_color_registry_test)
 
     add_executable(qsettings_backend_test
         tests/qsettings_backend_test.cpp

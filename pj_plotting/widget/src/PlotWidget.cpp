@@ -37,6 +37,7 @@
 #include "pj_plotting/PlotLegend.h"
 #include "pj_plotting/PointSeriesXY.h"
 #include "pj_runtime/CatalogModel.h"
+#include "pj_runtime/CurveColorRegistry.h"
 #include "pj_runtime/SessionManager.h"
 #include "pj_widgets/SvgUtil.h"
 
@@ -75,6 +76,14 @@ QString curveDisplayName(const CurveDescriptor& descriptor) {
   appendDisplayPath(name, descriptor.topic_name);
   appendDisplayPath(name, descriptor.field_name);
   return name.isEmpty() ? descriptor.name : name;
+}
+
+// The session-scoped curve-color registry (issue #68), reached through the
+// SessionManager the widget already holds. Returns nullptr when no session is
+// wired (e.g. a service-less PlotWidget in a unit test), in which case the base
+// class's per-widget nextColor() rotation is the fallback.
+CurveColorRegistry* colorRegistryOf(SessionManager* session) {
+  return session != nullptr ? &session->curveColorRegistry() : nullptr;
 }
 
 }  // namespace
@@ -146,6 +155,21 @@ PlotWidget::CurveInfo* PlotWidget::addCurve(const QString& name, QColor color) {
   const auto descriptor = catalog_->curveDescriptor(name);
   if (!descriptor.has_value()) {
     return nullptr;
+  }
+
+  // Auto-assignment (issue #68): reuse the curve's remembered color so it stays
+  // consistent across plots; otherwise take the next color from the shared,
+  // session-wide palette counter and remember it. An explicit (non-transparent)
+  // color — e.g. from a layout file — is honored as-is. session_ is non-null here
+  // (guarded above), so the session registry is always available.
+  if (color == Qt::transparent) {
+    CurveColorRegistry& registry = session_->curveColorRegistry();
+    if (const auto remembered = registry.color(name); remembered.has_value()) {
+      color = QColor(*remembered);
+    } else {
+      color = PlotWidgetBase::paletteColor(registry.nextPaletteIndex());
+      registry.setColor(name, color.name());
+    }
   }
 
   auto* adapter = new DatastoreCurveAdapter(session_, *descriptor);
@@ -499,6 +523,12 @@ bool PlotWidget::xmlLoadState(const QDomElement& plot_element, bool autozoom) {
     }
     if (loaded_curve != nullptr && loaded_curve->curve != nullptr && color.isValid()) {
       loaded_curve->curve->setPen(color, loaded_curve->curve->pen().widthF());
+      // Seed the session color memory so this curve keeps its saved color when
+      // later dragged into another plot (issue #68). Time-series only — see the
+      // matching note in onChangeCurveColor; XY curves are out of scope here.
+      if (CurveColorRegistry* registry = colorRegistryOf(session_); registry != nullptr && !isXYPlot()) {
+        registry->setColor(loaded_curve->source_name, color.name());
+      }
     }
     if (loaded_curve != nullptr && curve_element.hasAttribute(QStringLiteral("line_width"))) {
       bool ok = false;
@@ -585,6 +615,14 @@ void PlotWidget::onChangeCurveColor(const QString& curve_name, QColor new_color)
   CurveInfo* info = curveFromTitle(curve_name);
   if (info != nullptr && info->curve != nullptr) {
     info->curve->setPen(new_color, info->curve->pen().widthF());
+    // Remember the override so the curve keeps this color when re-dragged into
+    // another plot (issue #68). Keyed by source_name, the same key addCurve uses.
+    // Time-series only: XY curves are keyed by a composed title and the registry
+    // is never consulted for them (addCurveXY does not auto-assign from it), so
+    // writing them here would only add entries nothing reads.
+    if (CurveColorRegistry* registry = colorRegistryOf(session_); registry != nullptr && !isXYPlot()) {
+      registry->setColor(info->source_name, new_color.name());
+    }
     emit curveColorChanged(info->source_name, new_color);
     replot();
   }

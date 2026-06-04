@@ -17,7 +17,7 @@ The authoritative source is `include/pj_runtime/`. Today:
 | Header | Role |
 |---|---|
 | `AppSession.h` | Central runtime object. Owns and exposes the services below. `pj_app` instantiates one at startup. |
-| `SessionManager.h` | Session lifecycle (load/clear/active dataset). |
+| `SessionManager.h` | Session lifecycle (load/clear/active dataset). Also owns and exposes the session's `CurveColorRegistry` so plot widgets can reach it through their existing `SessionManager` pointer. |
 | `CatalogModel.h` | Catalog of curves, objects, and data sources available to the UI. |
 | `PlaybackEngine.h` | Time cursor + playback (play/pause/seek/loop). Drives `IDataWidget::onTrackerTime`. |
 | `DataSourceRuntimeHost.h` | Host-side runner for `DataSource` plugins from `pj_plugins`. |
@@ -28,6 +28,7 @@ The authoritative source is `include/pj_runtime/`. Today:
 | `IDataWidget.h` | The contract every data widget (plot / 2D / 3D) implements so playback can drive tracker updates without coupling to concrete widget types. |
 | `IObjectViewer.h` | The contract an object-store-backed viewer (e.g. a 2D image dock) implements so the shell can ask it to drop layers whose object topic was removed; returns whether any live layer remains. Pairs with `CatalogModel`'s `cleared()` / `itemsRemoved()` removal signals. |
 | `CurveDescriptor.h` | Stable identifier for a curve in the datastore. |
+| `CurveColorRegistry.h` | Session-scoped memory of each curve's color (hex string), so a curve keeps its color across plots (issue #68). Owned by `SessionManager` (and surfaced via `AppSession::curveColorRegistry()`); cleared when the catalog empties. |
 
 ## Linked dependencies
 

@@ -574,6 +574,10 @@ QColor PlotWidgetBase::nextColor() {
   return colorFromIndex(next_color_index_++);
 }
 
+QColor PlotWidgetBase::paletteColor(int index) {
+  return colorFromIndex(index);
+}
+
 QwtPlot* PlotWidgetBase::qwtPlot() {
   return plot_;
 }

@@ -11,6 +11,7 @@
 namespace PJ {
 
 class CatalogModel;
+class CurveColorRegistry;
 class ExtensionCatalogService;
 class PlaybackEngine;
 class SessionManager;
@@ -58,6 +59,13 @@ class AppSession : public QObject {
   ExtensionCatalogService& extensionCatalog() const {
     return *extension_catalog_;
   }
+
+  // Returns the session's curve-color registry. It is owned by SessionManager
+  // (so plot widgets can reach it through the SessionManager pointer they hold
+  // without it being threaded through their constructors); this is a convenience
+  // delegate. Remembers each curve's color so it stays consistent across plots
+  // (issue #68); cleared whenever the catalog empties.
+  [[nodiscard]] CurveColorRegistry& curveColorRegistry() const;
 
   // Scans every dataset's topics + object topics for time bounds and applies
   // them to the playback engine.

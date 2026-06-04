@@ -11,6 +11,7 @@
 #include "pj_datastore/object_store.hpp"
 #include "pj_datastore/reader.hpp"
 #include "pj_runtime/CatalogModel.h"
+#include "pj_runtime/CurveColorRegistry.h"
 #include "pj_runtime/ExtensionCatalogService.h"
 #include "pj_runtime/PlaybackEngine.h"
 #include "pj_runtime/SessionManager.h"
@@ -19,6 +20,10 @@
 namespace PJ {
 
 namespace {}  // namespace
+
+CurveColorRegistry& AppSession::curveColorRegistry() const {
+  return session_manager_->curveColorRegistry();
+}
 
 AppSession::AppSession(QObject* parent) : AppSession(QString{}, parent) {}
 
@@ -30,7 +35,14 @@ AppSession::AppSession(QString extensions_dir, DiagnosticSink sink, QObject* par
       session_manager_(std::make_unique<SessionManager>()),
       playback_engine_(std::make_unique<PlaybackEngine>()),
       catalog_model_(std::make_unique<CatalogModel>(session_manager_.get())),
-      extension_catalog_(std::make_unique<ExtensionCatalogService>(std::move(extensions_dir), std::move(sink))) {}
+      extension_catalog_(std::make_unique<ExtensionCatalogService>(std::move(extensions_dir), std::move(sink))) {
+  // Forget remembered curve colors whenever the catalog empties (data cleared
+  // or replaced), matching PJ3's per-PlotData COLOR_HINT lifetime so reopening
+  // fresh data restarts palette rotation from the first color. The registry is
+  // owned by SessionManager; AppSession just wires its session-scoped clear.
+  QObject::connect(
+      catalog_model_.get(), &CatalogModel::cleared, this, [this]() { session_manager_->curveColorRegistry().clear(); });
+}
 
 AppSession::~AppSession() {
   catalog_model_.reset();

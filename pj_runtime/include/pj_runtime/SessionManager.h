@@ -18,6 +18,7 @@
 #include "pj_datastore/object_store.hpp"
 #include "pj_datastore/reader.hpp"
 #include "pj_plugins/host/message_parser_handle.hpp"
+#include "pj_runtime/CurveColorRegistry.h"
 
 namespace PJ {
 
@@ -42,6 +43,16 @@ class SessionManager : public QObject {
   [[nodiscard]] ObjectStore& objectStore() noexcept {
     return object_store_;
   }
+
+  // Session-scoped memory of each curve's assigned color, so a curve keeps its
+  // color when dragged into another plot (issue #68). Plot widgets reach it
+  // through the SessionManager pointer they already hold, so the registry need
+  // not be threaded through the widget constructors. AppSession clears it when
+  // the catalog empties.
+  [[nodiscard]] CurveColorRegistry& curveColorRegistry() noexcept {
+    return curve_color_registry_;
+  }
+
   [[nodiscard]] DataReader createReader() const;
 
   [[nodiscard]] std::vector<TopicId> commitChunks(std::vector<std::pair<TopicId, TopicChunk>> chunks);
@@ -121,6 +132,7 @@ class SessionManager : public QObject {
 
   DataEngine data_engine_;
   ObjectStore object_store_;
+  CurveColorRegistry curve_color_registry_;
   std::unordered_map<uint32_t, ObjectParserSlot> object_topic_parsers_;
   std::optional<LoadedSource> last_loaded_source_;
 };

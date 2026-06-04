@@ -58,6 +58,12 @@ class PlotWidgetBase : public QWidget {
   [[nodiscard]] std::map<QString, QColor> curveColors() const;
   [[nodiscard]] CurveInfo* curveFromTitle(const QString& title);
 
+  // The color at `index` in the built-in 8-color palette (index wraps modulo
+  // the palette size). Lets callers that own a shared color counter (e.g. a
+  // session-wide CurveColorRegistry) map an index to a color without depending
+  // on this widget's per-instance nextColor() counter.
+  [[nodiscard]] static QColor paletteColor(int index);
+
   virtual void resetZoom();
   [[nodiscard]] virtual Range<double> getVisualizationRangeX() const;
   [[nodiscard]] virtual Range<double> getVisualizationRangeY(Range<double> range_x) const;

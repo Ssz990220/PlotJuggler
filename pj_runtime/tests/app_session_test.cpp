@@ -12,6 +12,8 @@
 #include "pj_datastore/writer.hpp"
 #include "pj_marketplace/extension_manager.hpp"
 #include "pj_runtime/AppSession.h"
+#include "pj_runtime/CatalogModel.h"
+#include "pj_runtime/CurveColorRegistry.h"
 #include "pj_runtime/ExtensionCatalogService.h"
 #include "pj_runtime/PlaybackEngine.h"
 #include "pj_runtime/SessionManager.h"
@@ -105,6 +107,41 @@ TEST(AppSessionTest, SubsequentSeedPreservesCurrentTimeWhenNewRangeIsSubset) {
   EXPECT_DOUBLE_EQ(session.playbackEngine().rangeMin(), 100.0e-9);
   EXPECT_DOUBLE_EQ(session.playbackEngine().rangeMax(), 200.0e-9);
   EXPECT_DOUBLE_EQ(session.playbackEngine().currentTime(), 150.0e-9);
+}
+
+TEST(AppSessionTest, ClearingCatalogForgetsRememberedCurveColors) {
+  QTemporaryDir dir;
+  ASSERT_TRUE(dir.isValid());
+  PJ::AppSession session(dir.path());
+
+  // Load data so the catalog is non-empty (clearAll() is a no-op, and emits
+  // nothing, on an already-empty catalog).
+  auto dataset =
+      session.sessionManager().dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "drive.mcap"});
+  ASSERT_TRUE(dataset.has_value()) << dataset.error();
+  addScalarSamples(session, *dataset, "/imu/x", {100, 200});
+  session.catalogModel().rebuildFromDatastore();
+
+  // A remembered curve color...
+  session.curveColorRegistry().setColor(QStringLiteral("/imu/x"), QStringLiteral("#1f77b4"));
+  ASSERT_TRUE(session.curveColorRegistry().color(QStringLiteral("/imu/x")).has_value());
+
+  // ...is forgotten when the catalog is cleared (data replaced), via the
+  // AppSession wiring of CatalogModel::cleared -> CurveColorRegistry::clear.
+  session.catalogModel().clearAll();
+
+  EXPECT_FALSE(session.curveColorRegistry().color(QStringLiteral("/imu/x")).has_value());
+}
+
+TEST(AppSessionTest, CurveColorRegistryIsOwnedBySessionManager) {
+  QTemporaryDir dir;
+  ASSERT_TRUE(dir.isValid());
+  PJ::AppSession session(dir.path());
+
+  // The registry is owned by SessionManager; AppSession's accessor delegates to
+  // it. Plot widgets reach the same instance through their SessionManager
+  // pointer, so it never has to be threaded through their constructors.
+  EXPECT_EQ(&session.curveColorRegistry(), &session.sessionManager().curveColorRegistry());
 }
 
 }  // namespace
