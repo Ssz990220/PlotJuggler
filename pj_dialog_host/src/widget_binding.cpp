@@ -152,20 +152,28 @@ static bool table_matches_headers(const QTableWidget* tw, const QStringList& hea
   return true;
 }
 
-// Make a QTableWidget header read + behave like CurveTreeView's: column 0 fills
-// the remaining viewport width (no dead space) while every divider stays
-// user-draggable. A plain Stretch first column looks the same but is NOT
-// resizable, so the name divider can't be dragged — Interactive + this fill
-// logic restores the drag. WA_Hover lets the QSS `QHeaderView::section:hover`
-// divider tint fire; the header font is forced non-bold (QTableWidget defaults
-// it bold, unlike QTreeWidget) so the two read consistently.
+// Size a topic/curve table the way it reads best: the first column stretches to
+// fill the viewport (no dead grey space to the right) while every other column
+// hugs its content. WA_Hover lets the QSS `QHeaderView::section:hover` divider
+// tint fire; the header font is forced non-bold (QTableWidget defaults it bold,
+// unlike QTreeWidget) so it reads consistently with CurveTreeView.
 //
-// Idempotent: resize modes + font are re-applied on every call, but the signal
-// wiring is installed once (guarded by a dynamic property).
+// Stretch + ResizeToContents are persistent live modes (Qt re-measures as rows
+// arrive), so they only need to be set once. Guarded by a dynamic property and a
+// column-count check so it's safe to call on every widget_data delivery — it
+// configures the first time the table actually has columns and no-ops after.
+// This is deliberately NOT gated on the header *labels* changing: dialogs whose
+// .ui predefines column headers (e.g. MCAP's tableWidget) match the plugin's
+// setTableHeaders() verbatim, so a label-change gate would skip them entirely
+// and leave the .ui's default Interactive sizing — the very bug this fixes.
 static void InstallTreeLikeHeader(QTableWidget* tw) {
   auto* header = tw->horizontalHeader();
+  if (header->count() == 0 || tw->property("pjTreeLikeHeader").toBool()) {
+    return;
+  }
+  tw->setProperty("pjTreeLikeHeader", true);
+
   header->setStretchLastSection(false);
-  header->setSectionResizeMode(QHeaderView::Interactive);
   header->setMinimumSectionSize(20);
   header->setAttribute(Qt::WA_Hover, true);
   header->viewport()->setAttribute(Qt::WA_Hover, true);
@@ -173,61 +181,10 @@ static void InstallTreeLikeHeader(QTableWidget* tw) {
   header_font.setBold(false);
   header->setFont(header_font);
 
-  if (tw->property("pjTreeLikeHeader").toBool()) {
-    return;  // already wired; the modes/font above were just re-applied
+  header->setSectionResizeMode(0, QHeaderView::Stretch);
+  for (int i = 1; i < header->count(); ++i) {
+    header->setSectionResizeMode(i, QHeaderView::ResizeToContents);
   }
-  tw->setProperty("pjTreeLikeHeader", true);
-
-  // Re-entrancy guard: our own resizeSection() calls emit sectionResized, which
-  // would otherwise re-enter and cascade. Shared so the lambdas (parented to tw)
-  // see the same flag.
-  auto adjusting = std::make_shared<bool>(false);
-
-  auto fill_first = [tw, adjusting]() {
-    auto* hdr = tw->horizontalHeader();
-    if (*adjusting || hdr->count() == 0) {
-      return;
-    }
-    int others = 0;
-    for (int i = 1; i < hdr->count(); ++i) {
-      if (!hdr->isSectionHidden(i)) {
-        others += hdr->sectionSize(i);
-      }
-    }
-    const int target = std::max(hdr->minimumSectionSize(), tw->viewport()->width() - others);
-    if (hdr->sectionSize(0) == target) {
-      return;
-    }
-    *adjusting = true;
-    hdr->resizeSection(0, target);
-    *adjusting = false;
-  };
-
-  QObject::connect(
-      header, &QHeaderView::sectionResized, tw,
-      [header, adjusting, fill_first](int section, int old_size, int new_size) {
-        if (*adjusting) {
-          return;  // programmatic resize, not a user drag
-        }
-        // Move the dragged divider by pushing the opposite delta into the next
-        // visible column, so total width is preserved and the divider moves.
-        int next = section + 1;
-        while (next < header->count() && header->isSectionHidden(next)) {
-          ++next;
-        }
-        if (next < header->count()) {
-          *adjusting = true;
-          const int delta = new_size - old_size;
-          header->resizeSection(next, std::max(header->minimumSectionSize(), header->sectionSize(next) - delta));
-          *adjusting = false;
-        }
-        fill_first();  // rebase column 0 in case the neighbour clamped
-      });
-  // The header tracks the viewport, so geometriesChanged fires on splitter /
-  // window resizes — re-fill column 0 to the new width.
-  QObject::connect(header, &QHeaderView::geometriesChanged, tw, [fill_first]() { fill_first(); });
-
-  fill_first();
 }
 
 static void apply_to_widget(QWidget* w, std::string_view name, const PJ::WidgetDataView& view) {
@@ -441,15 +398,17 @@ static void apply_to_widget(QWidget* w, std::string_view name, const PJ::WidgetD
       for (const auto& h : *v) {
         hdr << QString::fromStdString(h);
       }
-      // Re-setting headers reconfigures the header + its resize modes (not free),
-      // so only do it when they actually changed.
+      // Re-setting labels reconfigures the header (not free), so only do it when
+      // they actually changed. The sizing setup below is separate: it must also
+      // run for dialogs whose .ui predefines matching headers (e.g. MCAP), where
+      // this branch is skipped — hence InstallTreeLikeHeader lives outside it.
       if (!table_matches_headers(tw, hdr)) {
         tw->setColumnCount(static_cast<int>(hdr.size()));
         tw->setHorizontalHeaderLabels(hdr);
-        // Tree-like header: column 0 fills the remaining width, every divider
-        // stays draggable, and the QSS hover-divider tint fires (port of #90).
-        InstallTreeLikeHeader(tw);
       }
+      // First column fills the width, the rest hug content. Idempotent + guarded,
+      // so calling it on every delivery is cheap (port/fix of #90).
+      InstallTreeLikeHeader(tw);
     }
     if (auto v = view.tableRows(name)) {
       apply_table_rows(tw, *v);
