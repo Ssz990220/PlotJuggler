@@ -74,6 +74,10 @@ QString Dialog::dialogTitle() const {
   return ui_->dialogTitleLabel->text();
 }
 
+void Dialog::setCloseButtonVisible(bool visible) {
+  ui_->buttonClose->setVisible(visible);
+}
+
 QWidget* Dialog::contentWidget() const {
   return ui_->dialogContent;
 }

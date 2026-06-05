@@ -16,6 +16,7 @@ add_library(pj_widgets STATIC
     src/IntScrubber.cpp
     src/LayerListView.cpp
     src/MessageBox.cpp
+    src/ProgressDialog.cpp
     src/RangeSlider.cpp
     src/RasterFrame.cpp
     src/RasterStreamView.cpp
@@ -39,6 +40,7 @@ add_library(pj_widgets STATIC
     include/pj_widgets/IntScrubber.h
     include/pj_widgets/LayerListView.h
     include/pj_widgets/MessageBox.h
+    include/pj_widgets/ProgressDialog.h
     include/pj_widgets/RealSlider.h
     include/pj_widgets/RangeSlider.h
     include/pj_widgets/RasterFrame.h

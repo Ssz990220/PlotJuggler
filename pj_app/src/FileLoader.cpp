@@ -10,8 +10,6 @@
 #include <QJsonObject>
 #include <QLoggingCategory>
 #include <QMessageBox>
-#include <QProgressBar>
-#include <QProgressDialog>
 #include <QPushButton>
 #include <QSettings>
 #include <QString>
@@ -42,6 +40,7 @@
 #include "pj_scene3d_widgets/transform_service.h"
 #include "pj_widgets/FileDialog.h"
 #include "pj_widgets/MessageBox.h"
+#include "pj_widgets/ProgressDialog.h"
 
 namespace PJ {
 
@@ -414,52 +413,62 @@ bool FileLoader::loadFile(const QString& path, QWidget* dialog_parent, const Loa
     }
   } restore_display_name{saved_display_name};
 
-  QProgressDialog progress_dlg(dialog_parent);
-  progress_dlg.setWindowTitle(QString{});
-  progress_dlg.setWindowModality(Qt::WindowModal);
-  progress_dlg.setMinimumDuration(0);
-  progress_dlg.setAutoClose(false);
-  progress_dlg.setAutoReset(false);
-  progress_dlg.setMinimumWidth(400);
-  if (auto* bar = progress_dlg.findChild<QProgressBar*>()) {
-    bar->setAlignment(Qt::AlignCenter);
-    bar->setTextVisible(true);
-  }
+  // Two-way stop semantics: both interrupt the ingest, they differ in what
+  // happens to the data parsed before the click.
+  //   - Keep:    stop reading; flush the partial data so it appears in the
+  //              tree (button labelled "Cancel" in the UI).
+  //   - Discard: stop reading and throw the partial data away (no flush,
+  //              evict ObjectStore payloads, drop the dataset).
+  // None  = no user request, the import ran to completion.
+  enum class CancelAction { None, Keep, Discard };
+  CancelAction user_action = CancelAction::None;
 
-  // Latch cancellation the moment we observe it (inside onProgressUpdate). We
-  // can't trust progress_dlg.wasCanceled() after an import returns: on normal
-  // completion onProgressFinish calls reset(), which clears that flag, so the
-  // post-import checks below (single-instance and the fanout loop) could miss a
-  // real cancel. A separate sticky bool is reliable regardless of which exit
-  // path ran.
-  bool user_cancelled = false;
+  // App-styled progress dialog with two stop buttons. It is domain-neutral:
+  // it reports Primary / Secondary and we map those to CancelAction here
+  // (Primary = Cancel/keep, Secondary = Discard).
+  ProgressDialog progress_dlg(dialog_parent);
+  progress_dlg.setPrimaryButton(
+      tr("Cancel"), QStringLiteral(":/resources/svg/cancel_keep.svg"),
+      tr("Stop reading; keep the data parsed so far."));
+  progress_dlg.setSecondaryButton(
+      tr("Discard"), QStringLiteral(":/resources/svg/cancel_discard.svg"),
+      tr("Stop reading and discard the partial data."));
 
   // Progress callbacks are re-wired per ingest_session (once for single-instance,
   // N times in fanout mode) — the dialog itself is shared.
-  auto wireProgress = [&progress_dlg, &user_cancelled](DataSourceRuntimeHost& session) {
-    session.onProgressStart = [&progress_dlg](std::string_view label, uint64_t total, bool cancellable) {
+  auto wireProgress = [&](DataSourceRuntimeHost& session) {
+    session.onProgressStart = [&](std::string_view label, uint64_t total, bool cancellable) {
       const QString title = QString::fromUtf8(label.data(), static_cast<int>(label.size()));
-      progress_dlg.setWindowTitle(title);
-      progress_dlg.setLabelText(QString{});
+      progress_dlg.setDialogTitle(title);
+      progress_dlg.setMessage(QString{});
       progress_dlg.setRange(0, total > 0 ? static_cast<int>(total) : 0);
       progress_dlg.setValue(0);
-      progress_dlg.setCancelButtonText(cancellable ? tr("Cancel") : QString{});
+      progress_dlg.setStopButtonsVisible(cancellable);
+      if (!progress_dlg.isVisible()) {
+        progress_dlg.show();
+      }
       QCoreApplication::processEvents();
     };
-    session.onProgressUpdate = [&progress_dlg, &session, &user_cancelled](uint64_t current) -> bool {
+    session.onProgressUpdate = [&](uint64_t current) -> bool {
       progress_dlg.setValue(static_cast<int>(current));
       QCoreApplication::processEvents();
-      if (progress_dlg.wasCanceled()) {
-        user_cancelled = true;
-        session.requestStop("cancelled by user");
-        return false;
+      switch (progress_dlg.action()) {
+        case ProgressDialog::Action::Primary:
+          user_action = CancelAction::Keep;
+          break;
+        case ProgressDialog::Action::Secondary:
+          user_action = CancelAction::Discard;
+          break;
+        case ProgressDialog::Action::None:
+          return true;
       }
-      return true;
+      session.requestStop(
+          user_action == CancelAction::Keep ? "cancelled by user (keep partial)" : "cancelled by user (discard)");
+      return false;
     };
-    session.onProgressFinish = [&progress_dlg]() {
+    session.onProgressFinish = [&]() {
       progress_dlg.setValue(progress_dlg.maximum());
       QCoreApplication::processEvents();
-      progress_dlg.reset();
     };
   };
 
@@ -484,25 +493,36 @@ bool FileLoader::loadFile(const QString& path, QWidget* dialog_parent, const Loa
     }
     wireProgress(ingest_session);
     if (auto status = handle.start(); !status) {
-      progress_dlg.reset();
+      progress_dlg.hide();
       return fail(tr("Plugin '%1': start failed: %2").arg(source_name, QString::fromStdString(status.error())));
     }
-    ingest_session.flushAll();
-    // FileSourceBase::start() calls requestStop(..., "import complete") on the
-    // normal success path (plotjuggler_sdk pj_base/.../sdk/data_source_patterns.hpp),
-    // so stopRequested() can't distinguish completion from cancel — consult the
-    // sticky flag. The rows already committed by flushAll() can't be rolled back
-    // (ObjectStore writes are immediate and there is no removeDataset), so a
-    // cancelled import leaves partial data; surface that instead of returning a
-    // silent success.
-    if (user_cancelled) {
-      qCWarning(lcFileLoader) << "[FileLoader] import cancelled by user, reason:"
-                              << QString::fromStdString(ingest_session.lastError());
-      if (dialog_parent != nullptr) {
-        MessageBox::warning(
-            dialog_parent, tr("Import cancelled"), tr("The import was cancelled; the loaded data may be incomplete."));
+    // Two-way stop: Discard throws the partial parse away, Cancel keeps it.
+    //
+    // Discard path: a file load never flushes until the terminal flushAll()
+    // below, and ~DataSourceRuntimeHost never flushes (flushAll() is the only
+    // path that makes rows visible), so skipping it leaves every buffered
+    // scalar row invisible. ObjectStore payloads are written immediately, so
+    // evict them explicitly; removeDataset() drops the never-committed dataset
+    // from the catalog. Return early — no flush, no rebuild, no fileLoaded.
+    // The replace path needs none of this: its swap below is gated on
+    // user_action == None and the staged engine/store are discarded on
+    // return, so the original data stays intact.
+    //
+    // Cancel(keep) path: fall through to flushAll() so the rows parsed before
+    // the user clicked Cancel surface in the tree. Replace-on-cancel is still
+    // refused below (the swap requires a complete read).
+    if (user_action == CancelAction::Discard) {
+      qCWarning(lcFileLoader) << "[FileLoader] import discarded by user; partial data dropped";
+      if (!replacing) {
+        session_.evictDatasetObjects(dataset_id);
+        catalog_.removeDataset(dataset_id);
       }
+      return false;
     }
+    if (user_action == CancelAction::Keep) {
+      qCInfo(lcFileLoader) << "[FileLoader] import cancelled by user; keeping the partial load";
+    }
+    ingest_session.flushAll();
   } else {
     // A same-source reload that fans out cannot replace in place (one source becomes N datasets). Fall back to legacy
     // replace: tombstone the existing dataset now (objects evicted past the rollback point below) and let the fanout
@@ -514,7 +534,10 @@ bool FileLoader::loadFile(const QString& path, QWidget* dialog_parent, const Loa
     // but an empty dataset has no committed topics so CatalogModel::rebuildFromDatastore skips it (no phantom entry).
     // Each fanout entry mints its own handle + dataset + ingest_session. Continue-on-error per the user-confirmed
     // policy: a bad entry does not lose the others.
-    enum class EntryOutcome { Completed, Failed, Cancelled };
+    // Outcomes per fanout entry. Kept keeps the entry's partial flush
+    // ("Cancel" — stop here but keep what was already parsed); Discarded
+    // throws it away. Both stop the outer loop.
+    enum class EntryOutcome { Completed, Failed, Kept, Discarded };
 
     const QString basename = QFileInfo(path).completeBaseName();
     // issue #98: let the plugin name the dataset root. `display_name` (if the
@@ -524,7 +547,7 @@ bool FileLoader::loadFile(const QString& path, QWidget* dialog_parent, const Loa
     const QString base = fanout_name.isEmpty() ? basename : fanout_name;
     std::size_t completed = 0;
     std::size_t failed = 0;
-    bool cancelled = false;
+    bool stopped = false;  // Cancel or Abort by the user during the loop.
     QStringList failed_labels;
 
     // Per-fanout-iteration runner. Creates a fresh dataset + handle + ingest
@@ -571,23 +594,33 @@ bool FileLoader::loadFile(const QString& path, QWidget* dialog_parent, const Loa
       }
 
       wireProgress(iter_ingest);
-      progress_dlg.setLabelText(tr("Importing %1 (%2/%3)").arg(iter_display).arg(idx + 1).arg(fanouts.size()));
+      progress_dlg.setMessage(tr("Importing %1 (%2/%3)").arg(iter_display).arg(idx + 1).arg(fanouts.size()));
 
       if (auto status = iter_handle.start(); !status) {
-        progress_dlg.reset();
+        progress_dlg.hide();
         qCWarning(lcFileLoader) << "[FileLoader] fanout[" << idx
                                 << "]: start failed:" << QString::fromStdString(status.error());
         return EntryOutcome::Failed;
       }
-      // Commit whatever landed so the dataset is internally consistent. On
-      // cancel we still flush — the alternative (dropping unflushed scalars
-      // while ObjectStore payloads, written immediately, stay committed) would
-      // leave a half-written dataset — and report it as Cancelled rather than a
-      // clean success. user_cancelled is the canonical cancel signal (see the
-      // declaration above); it can only have flipped during this entry's import,
-      // since the loop breaks on cancel.
+      // Discard = drop this entry entirely. Skip flushAll() so its buffered
+      // scalar rows never become visible, then evict the immediately-written
+      // ObjectStore payloads and drop the dataset — no half-written remnant.
+      // user_action can only have flipped during this entry's import, since
+      // the loop breaks on Keep/Discard. Entries that already Completed stay
+      // loaded.
+      if (user_action == CancelAction::Discard) {
+        session_.evictDatasetObjects(iter_dataset_id);
+        catalog_.removeDataset(iter_dataset_id);
+        return EntryOutcome::Discarded;
+      }
+      // Cancel(Keep) = keep what was already parsed for this entry
+      // (flushAll), then stop the outer loop so subsequent entries are
+      // skipped.
       iter_ingest.flushAll();
-      return user_cancelled ? EntryOutcome::Cancelled : EntryOutcome::Completed;
+      if (user_action == CancelAction::Keep) {
+        return EntryOutcome::Kept;
+      }
+      return EntryOutcome::Completed;
     };
 
     for (std::size_t i = 0; i < fanouts.size(); ++i) {
@@ -603,34 +636,32 @@ bool FileLoader::loadFile(const QString& path, QWidget* dialog_parent, const Loa
           ++failed;
           failed_labels << iter_display;
           break;
-        case EntryOutcome::Cancelled:
-          cancelled = true;
+        case EntryOutcome::Kept:
+          // Cancel: this entry kept its partial flush; the remaining entries
+          // are skipped.
+          ++completed;
+          stopped = true;
+          break;
+        case EntryOutcome::Discarded:
+          // Discard: this entry is dropped; the remaining entries are skipped.
+          stopped = true;
           break;
       }
-      if (cancelled) {
-        qCWarning(lcFileLoader) << "[FileLoader] fanout: user cancelled at entry" << (i + 1) << "of" << fanouts.size();
+      if (stopped) {
+        qCInfo(lcFileLoader) << "[FileLoader] fanout: user stopped (" << static_cast<int>(user_action) << ") at entry"
+                             << (i + 1) << "of" << fanouts.size();
         break;
       }
-    }
-
-    const int total = static_cast<int>(fanouts.size());
-    const bool all_ok = !cancelled && failed == 0 && static_cast<int>(completed) == total;
-    if (!all_ok && dialog_parent != nullptr) {
-      QString msg = tr("Imported %1 of %2 dataset(s).").arg(completed).arg(total);
-      if (failed > 0) {
-        msg += QChar('\n') + tr("%1 failed: %2.").arg(failed).arg(failed_labels.join(QStringLiteral(", ")));
-      }
-      if (cancelled) {
-        msg += QChar('\n') +
-               tr("Import cancelled; the remaining datasets were skipped and the cancelled one may be partial.");
-      }
-      MessageBox::warning(dialog_parent, cancelled ? tr("Import cancelled") : tr("Partial import"), msg);
     }
   }
 
   // Past the last rollback point: the load committed. Reconcile the staged data (replace path) or the tombstones
   // (legacy path) into the live session. A cancelled reload skips the swap, keeping the original data intact.
-  if (replacing && fanouts.size() == 1 && !user_cancelled) {
+  // Allow the swap on Cancel(Keep) too: the partial flush has already landed
+  // on the staged engine/store, and "keep what was already parsed" means the
+  // user wants those rows to replace the previous live data. Only Discard
+  // suppresses the swap (the staged side is intentionally thrown away).
+  if (replacing && fanouts.size() == 1 && user_action != CancelAction::Discard) {
     // Single-instance reload: in-place replace swap. SessionManager owns the ordered, no-event-loop swap (invalidate
     // adapters -> engine + object replace -> parser remap -> re-index). It keeps the primary
     // DatasetId/TopicIds/ObjectTopicIds — and so curve keys + 2D dock bindings — stable, so widgets keep their

@@ -38,6 +38,10 @@ class Dialog : public QDialog {
   void setDialogTitle(const QString& title);
   [[nodiscard]] QString dialogTitle() const;
 
+  // Show or hide the title-bar close (✕) button. Hide it for dialogs whose
+  // only sanctioned exits are their own action buttons (e.g. ProgressDialog).
+  void setCloseButtonVisible(bool visible);
+
   // The body widget subclasses fill. Already in the chrome's vertical
   // layout under the title bar.
   [[nodiscard]] QWidget* contentWidget() const;

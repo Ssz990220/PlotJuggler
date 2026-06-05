@@ -19,6 +19,7 @@ Widgets:
 | `Dialog.h` + `Dialog.ui` | Chrome wrapper used by app dialogs and `FileDialog`. Source of `ChromeMetrics` defaults `{24, 2, 2, 2}`. |
 | `FileDialog.h` | `QFileDialog` wrapped in `PJ::Dialog` chrome. |
 | `MessageBox.h` | Themed `QMessageBox` replacement — frameless modal with heading, body, optional "Don't show again" checkbox, and a vertical column of N labelled buttons (primary button paints the light_purple → light_blue gradient via the `msgbox_role` dynamic property). Static helpers: `information` / `warning` / `critical` (single OK) + `question` (multi-button, returns clicked index). |
+| `ProgressDialog.h` | `QProgressDialog` replacement on the `Dialog` chrome: message + bar + up to two stop buttons. Domain-neutral — reports `Action::Primary` / `Action::Secondary` (sticky, polled via `action()` or the `stopRequested` signal) and leaves their meaning to the caller. No close affordance (base ✕ hidden, Esc swallowed). |
 | `RecentFilesMenu.h` | `QMenu` populated from a persistent recent-files list. |
 | `ColorPickerPopup.h` | Compact popup color picker. |
 | `ToggleSwitch.h` | iOS-style toggle replacement for `QCheckBox`. |
