@@ -1,6 +1,7 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 
+#include <QAbstractItemView>
 #include <QBuffer>
 #include <QComboBox>
 #include <QDialog>
@@ -8,9 +9,13 @@
 #include <QEventLoop>
 #include <QFileDialog>
 #include <QGroupBox>
+#include <QLayout>
+#include <QPlainTextEdit>
 #include <QSettings>
+#include <QSpacerItem>
 #include <QTimer>
 #include <QVBoxLayout>
+#include <functional>
 #include <pj_plugins/host/widget_data_view.hpp>
 #include <pj_plugins/host/widget_event_builder.hpp>
 #include <pj_plugins/host_qt/dialog_engine.hpp>
@@ -102,11 +107,69 @@ DialogResult DialogEngine::showDialog(QWidget* parent) {
   auto* dialog = qobject_cast<QDialog*>(loaded);
   if (!dialog) {
     dialog = new QDialog(parent);
-    dialog->setWindowTitle(loaded->windowTitle());
     auto* layout = new QVBoxLayout(dialog);
     layout->setContentsMargins(0, 0, 0, 0);
     layout->addWidget(loaded);
   }
+
+  // "[*]" renders empty yet stops Qt appending the " — PlotJuggler 4" title suffix.
+  dialog->setWindowTitle(loaded->windowTitle() + "[*]");
+
+  // Dialogs with a parser slot embed a parser-options widget whose height varies
+  // with the chosen message protocol (a single msgpack checkbox vs a tall
+  // Protobuf table). A fixed .ui size can't fit both without dead space or
+  // clipping, so for these — and only these — the host sizes the dialog to its
+  // actual content at runtime. Plain dialogs (topic-table loaders, toolboxes…)
+  // have no parser slot and keep their authored .ui size untouched.
+  const bool content_fit_dialog = loaded->findChild<QWidget*>("pj_parser_slot") != nullptr;
+
+  // Snap the dialog to its real content: drop the authored fixed minimum heights
+  // (the dialog's own and the parser slot's reservation) and collapse expanding
+  // vertical spacers so there's no dead space, but give tables/lists/editors a
+  // readable minimum so they don't shrink to a tiny default. Idempotent — safe
+  // to call on every protocol change.
+  auto fit_to_content = [loaded, dialog]() {
+    QWidget* slot = loaded->findChild<QWidget*>("pj_parser_slot");
+    if (slot == nullptr) {
+      return;
+    }
+    loaded->setMinimumHeight(0);
+    dialog->setMinimumHeight(0);
+    slot->setMinimumHeight(0);
+    std::function<void(QLayout*)> collapse_vspacers = [&](QLayout* layout) {
+      if (layout == nullptr) {
+        return;
+      }
+      for (int i = 0; i < layout->count(); ++i) {
+        QLayoutItem* item = layout->itemAt(i);
+        if (QSpacerItem* spacer = item->spacerItem()) {
+          if (spacer->expandingDirections() & Qt::Vertical) {
+            spacer->changeSize(0, 0, QSizePolicy::Minimum, QSizePolicy::Fixed);
+          }
+        } else if (QLayout* child = item->layout()) {
+          collapse_vspacers(child);
+        }
+      }
+      layout->invalidate();
+    };
+    collapse_vspacers(loaded->layout());
+    // Parser options that carry a table (Protobuf, ROS1/ROS2) need room to be
+    // usable; give such tables/editors a generous minimum height. Protocols
+    // without a table (msgpack/cbor/json) have no item view here and stay
+    // compact.
+    const auto ensure_readable = [](QWidget* w) {
+      if (w->minimumHeight() < 300) {
+        w->setMinimumHeight(300);
+      }
+    };
+    for (QAbstractItemView* view : loaded->findChildren<QAbstractItemView*>()) {
+      ensure_readable(view);
+    }
+    for (QPlainTextEdit* editor : loaded->findChildren<QPlainTextEdit*>()) {
+      ensure_readable(editor);
+    }
+    dialog->adjustSize();
+  };
 
   // Wire buttonBox signals — works whether the loaded widget was a QDialog
   // or a plain QWidget. Needed so Close/OK/Cancel buttons function correctly.
@@ -127,7 +190,9 @@ DialogResult DialogEngine::showDialog(QWidget* parent) {
   auto manifest_json = nlohmann::json::parse(handle_.manifest(), nullptr, false);
   std::string plugin_name = manifest_json.is_object() ? manifest_json.value("name", "") : "";
   QString geometry_key = QString("DialogGeometry/%1").arg(QString::fromStdString(plugin_name));
-  if (!plugin_name.empty()) {
+  // Content-fit dialogs never restore a saved size — it would override the fit
+  // (a stale large geometry re-applied on show is exactly what left dead space).
+  if (!plugin_name.empty() && !content_fit_dialog) {
     QSettings settings;
     auto saved = settings.value(geometry_key).toByteArray();
     if (!saved.isEmpty()) {
@@ -309,9 +374,16 @@ DialogResult DialogEngine::showDialog(QWidget* parent) {
       parser_slot_layout = new QVBoxLayout(parser_slot);
       parser_slot_layout->setContentsMargins(0, 0, 0, 0);
 
-      // Connect encoding combo to trigger parser dialog injection
+      // Connect encoding combo to trigger parser dialog injection, then re-fit.
+      // The fit is deferred with singleShot(0) so it runs AFTER the layout has
+      // measured the freshly-injected widget — calling it synchronously here
+      // would size the dialog to the PREVIOUS protocol's options (a one-step lag,
+      // where each selection shows the prior protocol's size).
       if (auto* combo = loaded->findChild<QComboBox*>("comboBoxProtocol")) {
-        QObject::connect(combo, &QComboBox::currentTextChanged, inject_parser_dialog);
+        QObject::connect(combo, &QComboBox::currentTextChanged, dialog, [&, fit_to_content](const QString& encoding) {
+          inject_parser_dialog(encoding);
+          QTimer::singleShot(0, dialog, [fit_to_content]() { fit_to_content(); });
+        });
         // Note: initial injection happens AFTER widget_data is applied (see below)
       }
     }
@@ -330,12 +402,14 @@ DialogResult DialogEngine::showDialog(QWidget* parent) {
     applyWidgetData(binding_root, view);
   }
 
-  // 3b. Trigger initial parser dialog injection now that combo is populated
+  // 3b. Trigger initial parser dialog injection now that combo is populated,
+  // then size the dialog to its content.
   if (parser_slot != nullptr) {
     if (auto* combo = loaded->findChild<QComboBox*>("comboBoxProtocol")) {
       inject_parser_dialog(combo->currentText());
     }
   }
+  fit_to_content();
 
   // Helper: open a sub-dialog from UI XML (nested modal inside parent)
   auto maybe_open_sub_dialog = [&](const ApplyResult& ar) {
@@ -356,7 +430,6 @@ DialogResult DialogEngine::showDialog(QWidget* parent) {
     auto* sub_dialog = qobject_cast<QDialog*>(sub_loaded);
     if (!sub_dialog) {
       sub_dialog = new QDialog(dialog);
-      sub_dialog->setWindowTitle(sub_loaded->windowTitle());
       auto* sub_layout = new QVBoxLayout(sub_dialog);
       sub_layout->setContentsMargins(0, 0, 0, 0);
       sub_layout->addWidget(sub_loaded);
@@ -367,6 +440,8 @@ DialogResult DialogEngine::showDialog(QWidget* parent) {
         QObject::connect(sub_bb, &QDialogButtonBox::rejected, sub_dialog, &QDialog::reject);
       }
     }
+    // "[*]" renders empty yet stops Qt appending the " — PlotJuggler 4" title suffix.
+    sub_dialog->setWindowTitle(sub_loaded->windowTitle() + "[*]");
 
     sub_dialog->exec();
     delete sub_dialog;
@@ -427,6 +502,15 @@ DialogResult DialogEngine::showDialog(QWidget* parent) {
   });
   tick_timer.start();
 
+  // Re-fit once the dialog is actually shown and laid out: the pre-show sizeHint
+  // is stale (measured before the window exists), so a deferred singleShot(0)
+  // fit gives the right size from the start. We only RE-FIT here — the parser
+  // options were already injected and populated above, so we must NOT re-inject
+  // (that would replace the populated widget with a fresh, empty one).
+  if (content_fit_dialog) {
+    QTimer::singleShot(0, dialog, [fit_to_content]() { fit_to_content(); });
+  }
+
   // 7. Run dialog (modal or non-modal)
   int result;
   if (config_.non_modal) {
@@ -458,8 +542,9 @@ DialogResult DialogEngine::showDialog(QWidget* parent) {
     parser_config_.clear();
     dr = DialogResult::kRejected;
   }
-  // Save dialog geometry for next time
-  if (!plugin_name.empty()) {
+  // Save dialog geometry for next time (not for content-fit dialogs — they
+  // always size to content, so a remembered manual size must not stick).
+  if (!plugin_name.empty() && !content_fit_dialog) {
     QSettings settings;
     settings.setValue(geometry_key, dialog->saveGeometry());
   }

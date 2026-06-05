@@ -67,7 +67,8 @@ Dialog::~Dialog() {
 
 void Dialog::setDialogTitle(const QString& title) {
   ui_->dialogTitleLabel->setText(title);
-  setWindowTitle(title);
+  // "[*]" renders empty yet stops Qt appending the " — PlotJuggler 4" title suffix.
+  setWindowTitle(title + "[*]");
 }
 
 QString Dialog::dialogTitle() const {

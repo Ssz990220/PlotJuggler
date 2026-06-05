@@ -5,7 +5,6 @@
 
 #include <QCoreApplication>
 #include <QFileInfo>
-#include <QGuiApplication>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QLoggingCategory>
@@ -402,17 +401,6 @@ bool FileLoader::loadFile(const QString& path, QWidget* dialog_parent, const Loa
   // Progress dialog — shown when the plugin calls progressStart().
   // The import runs synchronously on the main thread, so we drive the dialog
   // with processEvents() inside the update callback.
-  // Suppress the " — PlotJuggler 4" suffix the window manager appends when
-  // applicationDisplayName is set. Restored automatically on scope exit.
-  const QString saved_display_name = QGuiApplication::applicationDisplayName();
-  QGuiApplication::setApplicationDisplayName(QString{});
-  struct RestoreDisplayName {
-    QString name;
-    ~RestoreDisplayName() {
-      QGuiApplication::setApplicationDisplayName(name);
-    }
-  } restore_display_name{saved_display_name};
-
   // Two-way stop semantics: both interrupt the ingest, they differ in what
   // happens to the data parsed before the click.
   //   - Keep:    stop reading; flush the partial data so it appears in the

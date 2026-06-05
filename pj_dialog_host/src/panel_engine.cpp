@@ -90,11 +90,12 @@ struct PanelEngine::Impl {
         QDialog* sub_dialog = qobject_cast<QDialog*>(sub_loaded);
         if (sub_dialog == nullptr) {
           sub_dialog = new QDialog(root);
-          sub_dialog->setWindowTitle(sub_loaded->windowTitle());
           auto* sub_layout = new QVBoxLayout(sub_dialog);
           sub_layout->setContentsMargins(0, 0, 0, 0);
           sub_layout->addWidget(sub_loaded);
         }
+        // "[*]" renders empty yet stops Qt appending the " — PlotJuggler 4" title suffix.
+        sub_dialog->setWindowTitle(sub_loaded->windowTitle() + "[*]");
         // Frameless + theme-painted, like the app's own dialogs. The .ui ships a
         // plain QDialog that otherwise gets the native OS titlebar (which doesn't
         // match the dark/light chrome). FramelessWindowHint drops the OS frame;
