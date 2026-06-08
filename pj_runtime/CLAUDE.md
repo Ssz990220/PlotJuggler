@@ -2,11 +2,11 @@
 
 ## Purpose
 
-App runtime services and contracts for PlotJuggler 4. This is the **services seam** between the shell (`pj_app`) and the rest of the system: every widget family (`pj_plotting`, `pj_scene2D/widgets`, future `pj_3d_widgets`) reads from and reacts to services exposed here, but the widget families themselves are siblings and never depend on each other.
+App runtime services and contracts for PlotJuggler 4. This is the **services seam** between the shell (`pj_app`) and the rest of the system: every widget family (`pj_plotting`, `pj_scene2D/widgets`, `pj_scene3D/widgets`) reads from and reacts to services exposed here, but the widget families themselves are siblings and never depend on each other.
 
 ## Hard constraints (from root CLAUDE.md)
 
-- Qt is allowed (`Qt6::Core`, `Qt6::Network`).
+- Qt is allowed (`Qt6::Core`, `Qt6::Network`, `Qt6::Xml`).
 - **`Qt6::Widgets` is forbidden.** No concrete widgets live here. Anything that needs `QWidget` belongs in `pj_widgets` or a widget-family module.
 - Public headers under `include/pj_runtime/` are the SDK boundary for the shell and widget modules.
 
@@ -30,10 +30,11 @@ The authoritative source is `include/pj_runtime/`. Today:
 | `IObjectViewer.h` | The contract an object-store-backed viewer (e.g. a 2D image dock) implements so the shell can ask it to drop layers whose object topic was removed; returns whether any live layer remains. Pairs with `CatalogModel`'s `cleared()` / `itemsRemoved()` removal signals. |
 | `CurveDescriptor.h` | Stable identifier for a curve in the datastore. |
 | `CurveColorRegistry.h` | Session-scoped memory of each curve's color (hex string), so a curve keeps its color across plots (issue #68). Owned by `SessionManager` (and surfaced via `AppSession::curveColorRegistry()`); cleared when the catalog empties. |
+| `constants.h` | `PJ::kNanosecondsPerSecond` — single-source-of-truth seconds<->nanoseconds factor (derived from `std::chrono::nanoseconds::period`) for the int64-ns spine <-> seconds-double conversions at the IDataWidget/Qwt time boundary. Consumed by `Time.h`. |
 
 ## Linked dependencies
 
-Public link surface (per `CMakeLists.txt`): `Qt6::Core`, `Qt6::Network`, `pj_datastore`, `pj_marketplace`, `pj_plugin_runtime_catalog`, `nlohmann_json`. Private: `tsl::robin_map`, `fmt`.
+Public link surface (per `CMakeLists.txt`): `Qt6::Core`, `Qt6::Network`, `Qt6::Xml`, `pj_datastore`, `pj_marketplace`, `pj_plugin_runtime_catalog`, `nlohmann_json`. Private: `tsl::robin_map`, `pj_internal_fmt`.
 
 ## When porting from PJ3
 

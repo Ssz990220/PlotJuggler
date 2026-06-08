@@ -134,7 +134,7 @@ pj_marketplace/
 │       ├── registry_manager.hpp          # Registry fetch/parse API
 │       ├── download_manager.hpp          # HTTP + checksum + libarchive extraction
 │       ├── platform_utils.hpp            # OS detection, standard paths
-│       ├── qt_diagnostic_bridge.hpp      # Forwards ExtensionManager diagnostics into PJ::DiagnosticSink
+│       ├── qt_diagnostic_bridge.hpp      # Adapts a PJ::DiagnosticSink to a queued Qt diagnosticReported() signal
 │       ├── marketplace.hpp               # Aggregate include
 │       ├── marketplace_window.hpp        # Main dialog
 │       └── extension_detail_dialog.hpp   # Per-extension detail dialog
@@ -154,31 +154,41 @@ pj_marketplace/
 
 ### 3.2 Data Models
 
-#### Extension.h
+#### extension.hpp
 ```cpp
+struct Platform {
+    QString url;
+    QString checksum;     // sha256:<hex>
+};
+
+struct ExtensionPlugin {
+    QString name;
+    QString type;
+    QString library;
+};
+
 struct Extension {
     QString id;
     QString name;
     QString description;
     QString author;
     QString publisher;
-    QString license;
-    QString category;        // data_loader, data_streamer, parser, toolbox
+    QString website;
+    QString repository;
+    QString license;         // SPDX identifier
+    QString icon_url;        // Optional
+    QString category;        // "data_loader" | "data_streamer" | "parser" | "toolbox" | "bundle"
     QStringList tags;
     QString version;
     QString min_plotjuggler_version;
 
-    struct Platform {
-        QString url;
-        QString checksum;     // sha256:...
-    };
+    QList<ExtensionPlugin> plugins;
     QMap<QString, Platform> platforms;  // linux-x86_64, windows-x86_64, etc.
-
     QMap<QString, QString> changelog;   // version -> description
 };
 ```
 
-#### InstalledExtension.h
+#### installed_extension.hpp
 ```cpp
 struct InstalledExtension {
     QString id;
@@ -197,7 +207,7 @@ struct InstalledExtension {
 | **ExtensionManager** | Install, uninstall, update, staged promotion, ring-buffer diagnostics, optional `PJ::DiagnosticSink` fan-out | DownloadManager, PlatformUtils, plugin catalog |
 | **DownloadManager** | HTTP GET with progress, SHA256 verification, ZIP extraction | QNetworkAccessManager, QCryptographicHash, libarchive |
 | **PlatformUtils** | Detect OS, get paths | Qt platform macros |
-| **QtDiagnosticBridge** | Adapter from `ExtensionManager::diagnosticReported` Qt signal to `PJ::DiagnosticSink`. Used when the embedding host supplies a sink. | Qt signals/slots |
+| **QtDiagnosticBridge** | Exposes a `PJ::DiagnosticSink` via `sink()` and re-emits each received `PJ::Diagnostic` as a thread-safe queued Qt signal `diagnosticReported(int level, QString source, QString id, QString message)` (queued delivery guarded by `QPointer`). Lets a host hand a Qt-free sink to non-GUI components (e.g. `ExtensionManager`, which takes a `DiagnosticSink` ctor param) and connect the signal to its UI. | Qt signals/slots |
 
 #### ExtensionManager — Constructor Design
 
@@ -206,11 +216,15 @@ All dependencies are injected via constructor. The extensions directory defaults
 mocking `PlatformUtils`:
 
 ```cpp
-ExtensionManager(DownloadManager* downloader,
-                 const QString& extensions_dir = PlatformUtils::extensionsDir(),
-                 const QString& pending_dir = PlatformUtils::pendingDir(),
-                 QObject* parent = nullptr);
+explicit ExtensionManager(DownloadManager* downloader,
+                          const QString& extensions_dir = PlatformUtils::extensionsDir(),
+                          const QString& pending_dir = PlatformUtils::pendingDir(),
+                          DiagnosticSink sink = {},
+                          QObject* parent = nullptr);
 ```
+
+A companion no-arg `ExtensionManager()` overload also exists; it creates an owned
+`DownloadManager` and uses the standard user directories.
 
 **Design decisions:**
 - No `setExtensionsDir()` public setter — directory is fixed at construction time

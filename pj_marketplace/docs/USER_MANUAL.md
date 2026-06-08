@@ -11,7 +11,7 @@
 ### For End Users
 
 1. Open PlotJuggler
-2. Go to **Plugins → Open Marketplace**
+2. Click the **Extensions** button (puzzle-piece icon) in the title bar, then choose **PlotJuggler Marketplace** at the bottom of the dropdown
 3. Search for the extension you need (e.g., "ROS 2")
 4. Click **Install**
 5. Restart PlotJuggler if prompted
@@ -33,12 +33,12 @@
 ### 2.1 Opening the Marketplace
 
 **From PlotJuggler:**
-- Menu: `Plugins → Open Marketplace`
+- Click the **Extensions** button (puzzle-piece icon) in the window title bar, then choose **PlotJuggler Marketplace** at the bottom of the dropdown (below the list of installed extensions). There is no top-level Plugins menu.
 - Keyboard shortcut: (TBD)
 
 **Standalone (development only):**
 ```bash
-./pj_marketplace
+./build/pj_marketplace/pj_marketplace_app
 ```
 
 ### 2.2 Browsing Extensions
@@ -64,10 +64,10 @@ If PlotJuggler already has the plugin loaded at startup, the marketplace is seed
 - Example: `csv` finds "CSV Loader", "CSV Exporter"
 
 **Category filter dropdown:**
-- All
+- All categories
 - Data Loader
 - Data Streamer
-- Parser
+- Message Parser
 - Toolbox
 
 **Quick filters:** *(planned — not yet implemented)*
@@ -195,12 +195,14 @@ PJ_DATA_SOURCE_PLUGIN(MyPlugin,
 
 ### 3.3 Plugin Types
 
-| Type | Interface | Purpose |
-|------|-----------|---------|
-| `data_loader` | `PJ::DataLoader` | Load data from files |
-| `data_streamer` | `PJ::DataStreamer` | Real-time data streaming |
-| `parser` | `PJ::MessageParser` | Parse binary data to fields |
-| `toolbox` | `PJ::ToolboxPlugin` | Custom tools with UI |
+| Type | Base class (export macro) | Purpose |
+|------|---------------------------|---------|
+| `data_loader` | `PJ::DataSourcePluginBase` (`PJ_DATA_SOURCE_PLUGIN`) | Load data from files |
+| `data_streamer` | `PJ::DataSourcePluginBase` (`PJ_DATA_SOURCE_PLUGIN`) | Real-time data streaming |
+| `parser` | `PJ::MessageParserPluginBase` (`PJ_MESSAGE_PARSER_PLUGIN`) | Parse binary data to fields |
+| `toolbox` | `PJ::ToolboxPluginBase` (`PJ_TOOLBOX_PLUGIN`) | Custom tools with UI |
+
+A single `DataSourcePluginBase` serves both file and streaming sources; whether it loads files or streams live data is declared via `capabilities()`/manifest, not by a separate base class.
 
 ### 3.4 Best Practices
 
@@ -379,16 +381,17 @@ This is the **PlotJuggler Marketplace**, an extension distribution system for Pl
 
 ### 6.5 Testing
 
+`pj_marketplace` builds as part of the PJ4 monorepo (root `CMakeLists.txt` `add_subdirectory(pj_marketplace)`); the repo defines no CMakePresets.json.
+
 ```bash
-# Build
-cmake --preset conan-release
-cmake --build --preset conan-release
+# Build (output dir build/, RelWithDebInfo)
+./build.sh
 
 # Run tests
-ctest --preset conan-release
+ctest --test-dir build/pj_marketplace
 
-# Run standalone
-./build/release/pj_marketplace
+# Run standalone (target pj_marketplace_app — no OUTPUT_NAME override)
+./build/pj_marketplace/pj_marketplace_app
 ```
 
 ---

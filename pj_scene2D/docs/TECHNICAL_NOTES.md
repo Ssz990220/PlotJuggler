@@ -140,7 +140,7 @@ FfmpegBackend fully supports B-frame streams:
 - **PTS from AVFrame**: uses `AVFrame::pts` (presentation order) not
   packet DTS (decode order). This is critical for correct timestamp
   reporting with B-frame reordering.
-- Test coverage: `test_1920_bframes.mp4` exercises B-frame handling
+- Test coverage: `test_1080p_bframes.mp4` exercises B-frame handling
   in both forward and backward scrub.
 - For MCAP-stored video, I+P only (no B-frames) is still recommended
   for simpler seeking.
@@ -447,10 +447,14 @@ nanosecond timestamps, using Annex B encoding.
 
 ---
 
-## 7. Lazy Handle Implementations
+## 7. Storage-Mode / Handle Resolution by Backend
 
-How the lazy handle model (REQUIREMENTS.md section 4.2) maps to concrete
-backends:
+How the ObjectStore owning-handle storage model (REQUIREMENTS.md §4.2
+"Storage Integration") maps to concrete backends. §4.2 abstracts the two
+internal storage modes — owned bytes (streaming) vs lazy fetch callbacks
+(file-backed) — behind a uniform owning handle; the per-backend
+Stored/Resolve strategies below are the concrete realizations of those
+modes.
 
 ### MCAP Handle
 
@@ -519,11 +523,16 @@ never in any plugin. See ARCHITECTURE.md §4 and REQUIREMENTS.md §4.4.
 
 ### Mixed Scalar + Media Output from a Single Parse Call
 
-**Resolved:** Two-host `parse()` signature. The parser receives both a
-scalar write host (`PJ_parser_write_host_t`) and an object write host
-(`PJ_object_write_host_t`). Either may be NULL. This requires parser
-ABI v2, which is an outstanding prerequisite (see REQUIREMENTS.md
-Prerequisites). V1 uses direct ingest only.
+**Resolved (delivered as `pj_plugins` MessageParser protocol v4).** The
+originally-proposed parser ABI v2 / two-host `parse()` signature was
+superseded by a service-registry model. The `parse()` slot takes only
+`(ctx, timestamp_ns, payload, out_error)` — no host parameters. Instead, a
+parser acquires its write hosts at `bind(registry)` time via named
+services: a scalar write host (`pj.parser_write.v1`) and, for media, an
+object write host (`pj.parser_object_write.v1`). It then writes scalar and
+media portions to the bound hosts inside a single `parse()` call. This is
+no longer an outstanding prerequisite — `PJ_MESSAGE_PARSER_PROTOCOL_VERSION`
+is 4. See REQUIREMENTS.md Prerequisites and ARCHITECTURE.md §2/§4.
 
 ### Metadata Availability: Eager vs Lazy
 
@@ -549,7 +558,7 @@ class MediaSource {
  public:
   virtual ~MediaSource() = default;
   virtual void setTimestamp(int64_t ts_ns) = 0;
-  virtual std::optional<DecodedFrame> takeFrame() = 0;
+  virtual std::optional<MediaFrame> takeFrame() = 0;
 };
 ```
 
@@ -558,15 +567,24 @@ class MediaSource {
   changes. It may decode synchronously (images) or post to an internal
   worker thread (video).
 - `takeFrame()` is called by the main thread at render rate. Returns
-  the latest decoded frame, or nullopt if nothing new.
+  the latest `MediaFrame` (base pixels and/or overlays), or nullopt if
+  nothing new since the last call.
 - No `cancel()` in the public interface — each implementation manages
   cancellation internally.
 - The widget calls `update()` after `setTimestamp()` to trigger a repaint.
 
-**Three implementations:**
-- `ImagePipelineSource` — synchronous decode via CodecPipeline. Done.
-- `FileVideoSource` — wraps FfmpegBackend (self-contained threading). Planned.
-- `StreamingVideoSource` — wraps StreamingVideoDecoder + worker thread. Planned.
+**Concrete implementations** (all in `pj_scene2d_core`):
+- `ImagePipelineSource` — synchronous decode via CodecPipeline + ObjectStore.
+- `DepthPipelineSource` — synchronous depth-image decode pipeline.
+- `ScenePipelineSource` — synchronous scene-primitive decode pipeline.
+- `FileVideoSource` — wraps FfmpegBackend (self-contained threading);
+  poll-based `takeFrame()`.
+- `StreamingVideoSource` — wraps StreamingVideoDecoder on a dedicated
+  worker thread; latest-wins.
+- `CompositeMediaSource` — fans `setTimestamp`/`takeFrame` out across N
+  child sources (multi-layer).
+- `BorrowedMediaSource` — non-owning adapter over an externally-owned
+  source.
 
 ---
 

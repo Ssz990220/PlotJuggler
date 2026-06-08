@@ -1,14 +1,12 @@
 # pj_scene2D demos
 
-All demos require Qt 6.8+ and are built only when `pj_scene2d_widgets` is available.
+The Qt demos require Qt 6.8+ and are built only when the `pj_scene2d_widgets` target is available. The `extract_frame` CLI tool has no Qt dependency and is always built (it links only pj_scene2d_core, pj_datastore, mcap, and libjpeg-turbo).
 Video demos additionally require FFmpeg (libavcodec, libavformat).
 
 ## Building
 
 ```bash
 ./build.sh            # RelWithDebInfo
-# or
-./build.sh --debug    # Debug + ASAN (Qt 6.8 required in debug Qt path)
 ```
 
 ## Running

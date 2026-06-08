@@ -25,6 +25,7 @@ pj_scene2d_widgets  ──►  pj_scene2d_core  ──►  pj_base
      │
      ├──►  Qt 6.8+ (Widgets, Gui, Rhi)
      ├──►  pj_runtime           (IDataWidget contract, PlaybackEngine driver)
+     ├──►  pj_scene_common      (SceneDockWidget/ISceneLayer base; backend-agnostic layered scene dock framework)
      └──►  pj_scene2d_core
 ```
 
@@ -67,7 +68,11 @@ itself or in lightweight headers within `pj_base`.
 
 ### pj_scene2d_widgets (Qt widgets)
 
-Qt widget library built on top of `pj_scene2d_core`:
+Qt widget library built on top of `pj_scene2d_core` and `pj_scene_common`.
+`Scene2DDockWidget` extends `pj_scene_common`'s `SceneDockWidget` base (which
+owns the ordered layer stack and the `IDataWidget`/`IObjectViewer` contracts);
+the layer subclasses (image / depth_image / scene2d / scene_decoder) supply the
+2D-specific rendering.
 
 | Component | Header(s) | Role |
 |-----------|-----------|------|
@@ -126,7 +131,7 @@ Main thread                            MediaSource (internal)
      │       │                              │
      │       └─► source->takeFrame()        │
      │               │                      │
-     │               └─► DecodedFrame (YUV420P or RGB)
+     │               └─► MediaFrame (base DecodedFrame + pixel_layers + overlays)
      │                        │
      │                  upload to GPU textures
      │                        │
@@ -275,8 +280,8 @@ the partial result based on the direction-aware rule (§3.2).
 
 ## 4. Codec Pipeline
 
-> For the upstream wire-format contract (Mosaico-side storage types that
-> the codec pipeline decodes), see [`mosaico_media.md`](./mosaico_media.md).
+> For the wire-format type catalog that the codec pipeline decodes, see
+> [`datatypes_2D.md`](./datatypes_2D.md).
 
 Each ObjectStore topic produces raw bytes in a wire format. To reach
 display-ready pixels, those bytes pass through a **codec pipeline** —
@@ -422,12 +427,16 @@ that caching wastes more memory than it saves time (§R4.2).
 
 pj_scene2D consumes its local `ISceneDecoder` abstraction from
 `pj_scene2d_core/scene_decoder.h`. The factory `makeSceneDecoder(schema_name)`
-returns a decoder for canonical Foxglove `ImageAnnotations` Protobuf bytes.
-There is exactly **one** decoder kind - pj_scene2D has no schema-name dispatch
-beyond the factory call.
+dispatches on the schema string across two concrete `ISceneDecoder` kinds:
+`kSchemaImageAnnotations` (`"PJ.ImageAnnotations"`, the PJ-canonical
+`ImageAnnotations` re-encoding) maps to `ImageAnnotationsSceneDecoder`, and
+`kSchemaSceneEntities` (`"PJ.SceneEntities"`) maps to `SceneEntities2DDecoder`
+(implemented in `pj_scene2D/core/src/scene_entities_2d_decoder.cpp`, which
+projects `sdk::SceneEntities` into 2D annotations). An unrecognized schema
+returns `nullptr`.
 
 Wire format spec, type catalog, and encoding rules live in
-`plotjuggler_sdk/pj_base/include/pj_base/builtin/ImageAnnotations.hpp` and
+`plotjuggler_sdk/pj_base/include/pj_base/builtin/image_annotations.hpp` and
 `plotjuggler_sdk/pj_base/include/pj_base/builtin/image_annotations_codec.hpp`.
 
 **pj_scene2D's usage policy:** stateless decoder, one instance per
@@ -555,7 +564,7 @@ class MediaSource {
  public:
   virtual ~MediaSource() = default;
   virtual void setTimestamp(int64_t ts_ns) = 0;
-  virtual std::optional<DecodedFrame> takeFrame() = 0;
+  virtual std::optional<MediaFrame> takeFrame() = 0;
 };
 ```
 
@@ -571,7 +580,8 @@ lets each decoder path manage its own complexity at the right granularity.
 - `setTimestamp(ts_ns)` is called by the main thread when the global
   time changes. May decode synchronously or post to an internal worker.
 - `takeFrame()` is called by the main thread at render rate. Returns
-  the latest decoded frame, or nullopt if nothing new since last call.
+  the latest `MediaFrame` (composited base + ordered `pixel_layers` +
+  vector overlays), or nullopt/empty if nothing new since last call.
 - No `cancel()` in the public interface — each implementation manages
   cancellation internally when a new `setTimestamp` arrives.
 - The widget calls `update()` after `setTimestamp()` to trigger repaint.
@@ -587,7 +597,7 @@ class ImagePipelineSource : public MediaSource {
   ImagePipelineSource(ObjectStore* store, ObjectTopicId topic,
                       std::unique_ptr<CodecPipeline> pipeline);
   void setTimestamp(int64_t ts_ns) override;
-  std::optional<DecodedFrame> takeFrame() override;
+  std::optional<MediaFrame> takeFrame() override;
 };
 ```
 
@@ -610,7 +620,7 @@ class FileVideoSource : public MediaSource {
   static Expected<std::unique_ptr<FileVideoSource>> open(const std::string& path);
 
   void setTimestamp(int64_t ts_ns) override;
-  std::optional<DecodedFrame> takeFrame() override;
+  std::optional<MediaFrame> takeFrame() override;
 
   // Additional API beyond MediaSource (for slider/transport UI):
   double duration() const;
@@ -647,7 +657,7 @@ class StreamingVideoSource : public MediaSource {
   ~StreamingVideoSource();
 
   void setTimestamp(int64_t ts_ns) override;
-  std::optional<DecodedFrame> takeFrame() override;
+  std::optional<MediaFrame> takeFrame() override;
   bool isInitialized() const;
 };
 ```
@@ -669,12 +679,18 @@ multiple `MediaSource` instances and fuses their `MediaFrame`s on each
 `takeFrame()`. Same `MediaSource` interface — the widget remains agnostic
 of the layer count.
 
-The output of `takeFrame()` is a single `MediaFrame` with two slots:
+The output of `takeFrame()` is a single `MediaFrame`:
 
 ```cpp
 struct MediaFrame {
-  std::optional<DecodedFrame> base;   // pixel-buffer layer (image/video)
-  std::vector<SceneFrame> overlays;   // vector primitive layers
+  std::optional<DecodedFrame> base;        // pixel-buffer layer (image/video)
+  std::vector<PixelLayer> pixel_layers;    // ordered pixel buffers, bottom to top
+  std::vector<SceneFrame> overlays;        // vector primitive layers
+};
+
+struct PixelLayer {
+  DecodedFrame frame;
+  float opacity = 1.0f;
 };
 ```
 
@@ -789,16 +805,17 @@ and 4.
 
 ## 7. Rendering Pipeline
 
-### 7.1 QRhiWidget — five pipelines
+### 7.1 QRhiWidget — six pipelines
 
 `MediaViewerWidget` subclasses `QRhiWidget` (Qt 6.8+), which abstracts
-over Vulkan, Metal, D3D11, and OpenGL at runtime. The widget owns five
+over Vulkan, Metal, D3D11, and OpenGL at runtime. The widget owns six
 QRhi graphics pipelines that share the same `viewTransform` UBO so
 zoom/pan apply uniformly:
 
 | # | Pipeline | Topology | Responsibility |
 |---|---|---|---|
 | 1 | Image | implicit (procedural fullscreen quad) | YUV420P → RGB via BT.709 (3 R8 textures) or RGBA passthrough |
+| 1b | Composite (pixel layers) | implicit (procedural fullscreen quad) | Alpha-blends N additional `MediaFrame::pixel_layers` over the base, each with its own SRB and per-layer `opacity`; used when `pixel_layers_active_` (member `composite_pipeline_`) |
 | 2 | Marker | `Lines` | 1 px line primitives (`thickness ≤ 1.5`) — bboxes, polylines, circle outlines |
 | 3 | Points | `Triangles` | Solid fills: `kPoints` quads, `LineLoop` fill, `CircleAnnotation` fill |
 | 4 | Thick lines | `Triangles` | Lines/circle outlines with `thickness > 1.5`, expanded CPU-side to perpendicular rectangles |
@@ -865,7 +882,7 @@ Acceptable degradation; the UX remains functional.
 ## 8. Multi-Layer Compositor
 
 A viewer widget may composite multiple ObjectStore topics at the same
-display time (§R4.8). The `Compositor` class orchestrates this.
+display time (§R4.8). The `CompositeMediaSource` class orchestrates this (§5.4).
 
 ### 8.1 Layer model
 
@@ -874,10 +891,10 @@ that pj_scene2D renders today (image-pixel space only — see REQUIREMENTS §4.1
 
 | Layer type | Source | Output in `MediaFrame` |
 |---|---|---|
-| Base image/video | `ImagePipelineSource`, `FileVideoSource`, `StreamingVideoSource` | `.base` (RGB/YUV pixel buffer) |
+| Base image/video | `ImagePipelineSource`, `FileVideoSource`, `StreamingVideoSource` | `.pixel_layers` (RGB/YUV pixel buffer; `.base` kept as the legacy single-layer fallback) |
 | Vector annotations (`ImageAnnotation`) | `ScenePipelineSource` | `.overlays` (typed primitives — points, line loops/strips/lists, circles, texts) |
-| Depth colormap (planned) | `ImagePipelineSource` with `DepthColormap` codec | additional `.base` slot (pixel-layer fusion not implemented yet) |
-| Segmentation mask (planned) | `ImagePipelineSource` with `SegmentationPalette` codec | additional `.base` slot (idem) |
+| Depth colormap | `DepthPipelineSource` / `DepthImageLayer` (registered for `sdk::BuiltinObjectType::kDepthImage`) | `.pixel_layers` (RGBA via turbo/jet colormap) |
+| Segmentation mask (planned) | `ImagePipelineSource` with `SegmentationPalette` codec | `.pixel_layers` (not yet registered as a layer type) |
 
 ### 8.2 Compositing pipeline
 
@@ -892,7 +909,7 @@ The widget consumes the fused `MediaFrame` and dispatches:
 - `.base` → texture upload + image pipeline.
 - `.overlays` → CPU expansion to vertex streams (see §7.1) and the four overlay pipelines (Lines, Points/Triangles fills, Thick triangles, Text textured).
 
-Pixel-layer fusion (multiple `.base` layers blended in pixel space — RGB + depth colormap + segmentation mask) is **not implemented yet**. Today the composite handles vector overlays on top of one pixel base. Adding a multi-base path requires either an additional slot in `MediaFrame` or a CPU blender step before delivery; estimated ~1 week's work when test data appears.
+Pixel-layer fusion (multiple pixel buffers blended in pixel space — e.g. RGB base + depth colormap) **is implemented**. `CompositeMediaSource` collects each layer's ordered `pixel_layers` (per-layer opacity, scaled by the layer's composite opacity) into a single `MediaFrame.pixel_layers` stack, and `MediaViewerWidget` renders them via a dedicated alpha-blended `composite_pipeline_` (SrcAlpha/OneMinusSrcAlpha), one draw call per uploaded `pixel_layer_textures_` entry, when `pixel_layers_active_`. The legacy single-`base` path is retained for producers that don't populate `pixel_layers`.
 
 ### 8.3 At-or-before semantics
 

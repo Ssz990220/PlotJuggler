@@ -22,22 +22,24 @@ Top-level layout (monorepo, per plan §0 and §5):
 ```
 PJ4/
 ├── 3rdparty/                # vendored CMake dependencies only
+├── thirdparty/              # GPLv2/shareware compliance payload for the standalone raster_helper (distinct from 3rdparty/)
 ├── plotjuggler_sdk/         # git submodule — Level 0 plugin SDK (pj_base / pj_plugins)
 ├── pj_datastore/            # Level 0 columnar store + ObjectStore + DerivedEngine (moved out of the submodule)
-├── pj_scene2D/               # 2D scene module: core logic, Qt widgets, demos, tests
+├── pj_scene_common/         # backend-agnostic layered scene dock framework, shared by the scene widget families
+├── pj_scene2D/              # 2D scene widget family: core logic, Qt widgets, demos, tests
+├── pj_scene3D/              # 3D scene widget family: core (TF, pointcloud, occupancy-grid) + OpenGL widgets
 ├── pj_marketplace/          # extension install/manage
 ├── pj_dialog_host/          # Qt host for plugin-provided dialogs
 ├── pj_scripting/            # Lua today, Python pluggable later (not yet created)
 ├── pj_runtime/              # services layer (Qt allowed, no Qt6::Widgets link)
 ├── pj_widgets/              # reusable Qt widgets and UI helpers
-├── pj_plotting/             # Qwt plotting module: core adapters, Qt widgets, tests
-├── pj_3d_widgets/           # QRhi 3D (post-v1; not yet created)
+├── pj_plotting/             # Qwt plotting widget family: core adapters, Qt widgets, tests
 ├── pj_app/                  # main window shell
 ├── resources/               # SVG icons (ported from PJ3) + resources.qrc
 └── PJ4_PLAN.md
 ```
 
-The widget families (`pj_plotting`, `pj_scene2D/widgets` via the `pj_scene2d_widgets` target, and future `pj_3d_widgets`) never depend on each other. Shared reusable Qt controls/helpers live in `pj_widgets`; shared runtime state flows through the `IDataWidget` contract exposed by `pj_runtime`.
+The widget families (`pj_plotting`, `pj_scene2D/widgets` via the `pj_scene2d_widgets` target, and `pj_scene3D/widgets` via the `pj_scene3d_widgets` target) never depend on each other. Shared reusable Qt controls/helpers live in `pj_widgets`; shared runtime state flows through the `IDataWidget` contract exposed by `pj_runtime`.
 
 ### Placement rules
 
@@ -48,14 +50,17 @@ When adding files, use the owning module rather than creating new top-level fold
 - `pj_runtime/`: app runtime services and contracts: session/data lifecycle, catalog, playback, extension catalog, future workspace/transform/toolbox services. No concrete widgets and no `Qt6::Widgets` link.
 - `pj_app/`: executable shell only: `MainWindow`, menus/toolbars/status bar, app dialogs, and wiring between runtime services and concrete widgets. Do not put reusable controls or business logic here.
 - `pj_widgets/`: reusable Qt widgets and UI helpers that could be used by another Qt app. Depends only on Qt and the C++ standard library; no dependencies on `pj_runtime`, `pj_app`, or other PJ modules.
+- `pj_scene_common/`: backend-agnostic layered scene dock framework (`scene_layer.h`, `layer_factory.h`, `scene_dock_widget.h`) shared by the 2D/3D scene widget families. Rendering-specific view state stays in those families, not here.
 - `pj_plotting/`: Qwt plotting feature family. Put datastore adapters and plotting logic in `core/`, Qt/Qwt widgets in `widget/`, and focused tests in `tests/`.
 - `pj_scene2D/`: 2D media/scene feature family. Put independent media logic in `core/`, Qt viewer widgets in `widgets/`, runnable examples in `demos/`, and tests in `tests/`.
 - `pj_marketplace/`: extension registry, download, install/manage services, and marketplace UI.
 - `pj_dialog_host/`: Qt host/binding for plugin-provided dialogs. General app dialogs stay in `pj_app`; reusable dialog controls stay in `pj_widgets`.
 - `pj_scripting/`: future language-agnostic scripting engine. Do not place scripting code under `pj_app` or widget modules unless it is strictly UI/editor code.
-- `pj_3d_widgets/`: future 3D visualization widget family. Do not add 3D code elsewhere unless the plan explicitly names a shared lower-level module.
+- `pj_scene3D/`: 3D scene widget family (robotics viz): TF, pointclouds, occupancy grids, URDF/mesh. Independent 3D logic in `core/`, OpenGL widgets in `widgets/`, tests in `tests/`. Do not add 3D rendering code elsewhere.
 - `resources/`: shared app resources registered in `resources.qrc`; module-local test/demo assets should live with that module.
 - `3rdparty/`: vendored source dependencies added via CMake `add_subdirectory`. Conan/system dependencies do not belong here.
+- `thirdparty/`: GPLv2/shareware license + source-offer compliance artifacts (`thirdparty/retro/`) shipped alongside the separately-licensed `pj-raster-helper`; distinct from `3rdparty/` (CMake-vendored sources). The root `CMakeLists.txt` installs these next to the helper binary.
+- Top-level `raster_helper/` (the standalone GPL-2.0 `pj-raster-helper` executable that links vendored doomgeneric — PlotJuggler links none of it) and `raster_ipc/` (its header-only, Qt-free MPL-2.0 IPC contract, consumed by `pj_widgets`) are intentional non-`pj_` helper folders, not PJ modules, and are exempt from the no-new-top-level-folders rule.
 
 ## Documentation
 
@@ -88,9 +93,10 @@ Cross-cutting docs (porting strategy, glossary, ADRs) live in top-level `docs/`.
 | `pj_widgets` | [pj_widgets/CLAUDE.md](./pj_widgets/CLAUDE.md) | — |
 | `pj_plotting` | [pj_plotting/CLAUDE.md](./pj_plotting/CLAUDE.md) | — |
 | `pj_dialog_host` | [pj_dialog_host/CLAUDE.md](./pj_dialog_host/CLAUDE.md) | — |
+| `pj_scene_common` | [pj_scene_common/CLAUDE.md](./pj_scene_common/CLAUDE.md) | — |
 | `pj_scene2D` | [pj_scene2D/CLAUDE.md](./pj_scene2D/CLAUDE.md) | [docs/](./pj_scene2D/docs/) — REQUIREMENTS, ARCHITECTURE, TECHNICAL_NOTES, datatypes_2D, … |
 | `pj_marketplace` | [pj_marketplace/README.md](./pj_marketplace/README.md) | [docs/](./pj_marketplace/docs/) — REQUIREMENTS, ARCHITECTURE, USER_MANUAL, marketplace-spec |
-| `pj_scene3D` | — (WIP, not yet tracked) | WIP design spec lives at `docs/superpowers/specs/2026-05-15-pj-scene3d-design.md` (also untracked); will migrate into `pj_scene3D/docs/` when the module stabilizes |
+| `pj_scene3D` | [pj_scene3D/CLAUDE.md](./pj_scene3D/CLAUDE.md) | [docs/](./pj_scene3D/docs/) — REQUIREMENTS |
 | `pj_datastore` | [pj_datastore/CLAUDE.md](./pj_datastore/CLAUDE.md) | [docs/](./pj_datastore/docs/) — REQUIREMENTS, ARCHITECTURE, USER_GUIDE, OBJECT_STORE_DESIGN |
 | `plotjuggler_sdk/` (submodule) | [plotjuggler_sdk/CLAUDE.md](./plotjuggler_sdk/CLAUDE.md) | submodule owns its own `docs/` tree |
 
@@ -104,7 +110,7 @@ Before any commit that changes behavior, public APIs, ABI structs, module owners
 
 The SDK libraries live in the submodule at `./plotjuggler_sdk/`:
 
-- `pj_base` — vocabulary types + canonical object schemas (`pj_base/builtin/Image.hpp`, `DepthImage.hpp`, `ImageAnnotations.hpp`, `PointCloud.hpp`, `FrameTransforms.hpp`) and their codecs. SDK boundary for plugin authors producing or consuming canonical objects.
+- `pj_base` — vocabulary types + canonical object schemas (`pj_base/builtin/image.hpp`, `depth_image.hpp`, `image_annotations.hpp`, `point_cloud.hpp`, `frame_transforms.hpp`) and their codecs. SDK boundary for plugin authors producing or consuming canonical objects.
 - `pj_plugins` — ABI + runtime for extensions
 
 These are consumed as-is. Changes to `plotjuggler_sdk` happen in that repo, not here.
@@ -149,12 +155,14 @@ The "wholesale lift" strategy for plot widgets (plan §5.3, §8) means porting f
 
 ### Vendored third-party
 
-Mirror PJ3's `3rdparty/` convention. Vendored deps live at `./3rdparty/<name>/` and are added via `add_subdirectory` from the top-level `CMakeLists.txt`.
+Mirror PJ3's `3rdparty/` convention. Vendored deps live at `./3rdparty/<name>/` and are added (most via `add_subdirectory`) from the top-level `CMakeLists.txt`.
 
 Explicitly vendored (do not take from Conan or system packages):
 
 - **Qwt** — required for Qt 6.8 compatibility and for parity with PJ3 plot widgets.
 - **Qt-Advanced-Docking-System** — docking framework used by `pj_app`.
+- **nanocdr** — vendored via `add_subdirectory`.
+- **doomgeneric** — a vendored C engine whose sources are globbed directly into the `pj-raster-helper` target (not `add_subdirectory`'d). It and `raster_helper` form an optional, GPL-isolated standalone executable that PlotJuggler never links.
 
 Other PJ3-style vendorables (`QCodeEditor`, `sol2`, `color_widgets`, `date`) will be vendored on the same pattern as we pull in the modules that need them — decide per-case when each module lands.
 
@@ -207,7 +215,7 @@ Submodule: `git submodule update --init --recursive` on first clone.
 
 Parity-plus with PJ3: file + streaming sources, 11 built-in transforms, undo/redo, derived-series editor (incl. Lua via `pj_scripting`), reactive scripts (via Toolbox + `onTimeChanged`), multi-tab workspace, marketplace install UI, all toolboxes.
 
-`pj_3d_widgets` is contract-reserved in v1 — full implementation is post-v1 (~6–7 weeks extra per plan §5.5).
+The 3D widget family ships as `pj_scene3D` (built and wired into `pj_app` via `Scene3DDockWidget`): TF, pointclouds, occupancy grids, and axis/grid render passes. Advanced features (URDF/mesh rendering, camera models, photorealism) are ongoing post-v1 work — see `pj_scene3D/docs/REQUIREMENTS.md` and plan §5.5.
 
 ## Non-goals (explicitly deferred)
 

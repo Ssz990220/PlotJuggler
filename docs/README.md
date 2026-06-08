@@ -23,7 +23,7 @@ Examples of what belongs here:
 |---|---|---|
 | `research/dataset_format_comparison.md` | Reference | Cross-cutting comparison of MCAP, RLDS, LeRobot, Zarr. Informs pj_scene2D and any future dataset-format work. |
 | `research/rerun_notes.md` | Reference | Analysis of Rerun's 2D architecture; comparison input for pj_scene2D and (potentially) pj_scene3D. |
-| `superpowers/specs/2026-05-15-pj-scene3d-design.md` | WIP design spec (untracked) | Will move to `pj_scene3D/docs/` when that module's documentation stabilises. |
+| `superpowers/specs/2026-05-15-pj-scene3d-design.md` | WIP design spec (untracked) | `pj_scene3D/docs/` already exists and is tracked (`REQUIREMENTS.md`); fold the still-relevant parts of this spec into `pj_scene3D/docs/`, then delete this row. |
 
 ## Where to find module docs
 

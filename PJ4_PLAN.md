@@ -4,11 +4,11 @@
 
 This section captures the architectural decisions that supersede portions of this document. The body below remains as planning context; where it conflicts with this section, this section wins.
 
-- **Three independent widget families by design.** The GUI is split into widget families that never depend on each other: `pj_plotting` (Qwt, lifted wholesale from PJ3), `pj_scene2D/widgets` via the `pj_scene2d_widgets` target (QRhi, wraps `pj_scene2D/core`), and `pj_3d_widgets` (renderer TBD, contract-reserved). Heterogeneity is a feature, not a problem. Shared reusable Qt controls/helpers live in `pj_widgets`; shared runtime state flows through the small `IDataWidget` contract exposed by `pj_runtime`.
+- **Three independent widget families by design.** The GUI is split into widget families that never depend on each other: `pj_plotting` (Qwt, lifted wholesale from PJ3), `pj_scene2D/widgets` via the `pj_scene2d_widgets` target (QRhi, wraps `pj_scene2D/core`), and `pj_scene3D/widgets` via the `pj_scene3d_widgets` target (hand-rolled OpenGL 4.5 Core, wraps `pj_scene3d_core`). Heterogeneity is a feature, not a problem. Shared reusable Qt controls/helpers live in `pj_widgets`; shared runtime state flows through the small `IDataWidget` contract exposed by `pj_runtime`.
 - **`pj_scripting` is its own module.** Language-agnostic engine (Lua today via sol2; Python pluggable later) decoupled from both the GUI and `pj_runtime`'s services layer. Depends only on `pj_base` + `pj_datastore`. Custom Lua transforms reach `DerivedEngine` through a thin `transform_adapter`. Reactive scripts live in a Toolbox plugin that links `pj_scripting` directly.
 - **`pj_runtime` Qt boundary is relaxed.** Previously "no Qt"; now **Qt is allowed (QObject, QTimer, QSettings, signals), but no concrete QWidget/QDialog implementation and no `Qt6::Widgets` link**. `IDataWidget` may forward-declare `QWidget` as the shell contract. Services remain headlessly testable via `QCoreApplication`. This trades a small amount of purity for much cheaper timer/settings/reactive plumbing.
 - **Plot widgets are lifted wholesale from PJ3**, not rebuilt on Qt Charts. `PlotWidgetBase`, `PlotWidget`, `PlotDocker`, `TabbedPlotWidget`, zoomers, axis-time, drag-drop, per-curve display transform UI all move into `pj_plotting/`; their data reads are rebound to `pj_datastore` via a `DatastoreCurveAdapter`. No `IPlotBackend` abstraction.
-- **Monorepo for now.** App-owned modules (`pj_datastore`, `pj_scene2D`, `pj_marketplace`, `pj_dialog_host`, `pj_scripting`, `pj_runtime`, `pj_widgets`, `pj_plotting`, `pj_3d_widgets`, `pj_app`) live inside this repository. `pj_datastore` (the columnar storage engine) was moved out of the `plotjuggler_sdk` submodule into the app repo, because plugins reach storage only through the `pj_base` C ABI and never link the engine — so the `plotjuggler_sdk` submodule is purely the plugin **SDK** (`pj_base` + `pj_plugins`). The long-term intent is still a separate `plotjuggler_app` repo with the `plotjuggler_sdk` SDK as a submodule; module boundaries are designed so that split is a mechanical move later.
+- **Monorepo for now.** App-owned modules (`pj_datastore`, `pj_scene2D`, `pj_scene3D`, `pj_scene_common`, `pj_marketplace`, `pj_dialog_host`, `pj_scripting`, `pj_runtime`, `pj_widgets`, `pj_plotting`, `pj_app`) live inside this repository. `pj_datastore` (the columnar storage engine) was moved out of the `plotjuggler_sdk` submodule into the app repo, because plugins reach storage only through the `pj_base` C ABI and never link the engine — so the `plotjuggler_sdk` submodule is purely the plugin **SDK** (`pj_base` + `pj_plugins`). The long-term intent is still a separate `plotjuggler_app` repo with the `plotjuggler_sdk` SDK as a submodule; module boundaries are designed so that split is a mechanical move later.
 - **v1 target is parity-plus with PJ3.** File + streaming sources, 11 built-in transforms, undo/redo, derived-series editor (incl. Lua via `pj_scripting`), reactive scripts (via Toolbox + `onTimeChanged`), multi-tab workspace, marketplace install UI, all toolboxes.
 - **Plugin families and marketplace are assumed done** and out of scope for this plan. Toolbox SDK gaps (embedded charts, drag-drop, code editor, `onTimeChanged`, ScatterXY outputs) are being addressed in parallel and are assumed solved.
 - **The old prototype app is removed.** It was a throwaway prototype; current PJ4 modules are the implementation baseline.
@@ -135,6 +135,7 @@ These already exist and remain the substrate:
 - `pj_plugins` (in the `plotjuggler_sdk` SDK submodule)
 - `pj_datastore` (top-level app module — `ObjectStore` + `DerivedEngine`; moved out of the submodule, since plugins reach it only via the `pj_base` C ABI)
 - `pj_scene2D` (2D/video visualization)
+- `pj_scene_common` (backend-agnostic shared scene-dock framework consumed by the 2D/3D widget families)
 - `pj_marketplace`
 - `pj_scripting` (new — language-agnostic engine, Lua today)
 
@@ -171,7 +172,7 @@ The concrete desktop UI layer is **three independent widget families**, each wit
 
 - **`pj_plotting`** — Qwt-based plot widgets (lifted wholesale from PlotJuggler 3.x). Time-series, XY, tracker, zoomers, per-curve display transforms.
 - **`pj_scene2D/widgets`** — 2D viewer widgets built as the `pj_scene2d_widgets` target and wrapping `pj_scene2D/core`. Image, video, depth, annotation display via QRhi.
-- **`pj_3d_widgets`** — placeholder for future 3D. Renderer TBD (Qt 3D / QRhi+custom / embed Rerun / VTK). Contract-reserved only; not implemented in v1.
+- **`pj_scene3D/widgets`** — 3D viewer widgets built as the `pj_scene3d_widgets` target, wrapping `pj_scene3d_core`. Hand-rolled OpenGL 4.5 Core renderer (`QOpenGLWidget` + `QOpenGLFunctions_4_5_Core`), with TF, pointcloud, occupancy-grid, axis/grid render passes; integrated into pj_app via `Scene3DDockWidget` + `TransformService`.
 
 All three implement the small `IDataWidget` contract from `pj_runtime` (tracker callback, save/load state, subscribed topics, Qt widget accessor). They may use reusable Qt helpers from `pj_widgets`, but they do not depend on each other. The variability of these three rendering worlds is **by design**.
 
@@ -324,7 +325,7 @@ Approach:
 Constraints:
 
 - no knowledge of extension sessions, workspace persistence policy, or marketplace
-- no dependency on `pj_scene2d_widgets` or `pj_3d_widgets`
+- no dependency on `pj_scene2d_widgets` or `pj_scene3d_widgets`
 
 ### 5.4 `pj_scene2D/widgets` — 2D media widgets
 
@@ -340,11 +341,11 @@ Approach:
 
 Constraints:
 
-- no dependency on `pj_plotting` or `pj_3d_widgets`
+- no dependency on `pj_plotting` or `pj_scene3d_widgets`
 
-### 5.5 `pj_3d_widgets` — 3D widget family (robotics viz)
+### 5.5 `pj_scene3D` — 3D widget family (robotics viz)
 
-Architecture locked; full implementation post-v1 (adds ~6-7 weeks on top of app v1). See `docs/APP_IMPLEMENTATION_PLAN.md` section 2.4 for the full spec.
+Implemented and wired into `pj_app` (built via `add_subdirectory(pj_scene3D/core)` + `add_subdirectory(pj_scene3D/widgets)`; `MainWindow` instantiates `Scene3DDockWidget` + `TransformService`). See `pj_scene3D/docs/REQUIREMENTS.md` for the full spec (it supersedes this section).
 
 **Data types (v1 target, 6 total)**: TF2 (infrastructure), URDF/mesh, Pointcloud, Markers (arrows/boxes/spheres/cylinders/line strips/text), Image+Pinhole (frustum + optional textured near-plane), OccupancyGrid (textured plane in 3D).
 
@@ -352,8 +353,8 @@ Architecture locked; full implementation post-v1 (adds ~6-7 weeks on top of app 
 
 **Stack (locked)**:
 
-- GPU abstraction: **QRhi** (consistent with `pj_scene2D`)
-- Widget base: `QRhiWidget` subclass, hand-rolled scene (no Qt 3D, no Qt 3D scene graph)
+- GPU abstraction: **hand-rolled raw OpenGL 4.5 Core** (`QOpenGLFunctions_4_5_Core`)
+- Widget base: `QOpenGLWidget` subclass (`SceneViewWidget`), hand-rolled scene (no Qt 3D, no Qt 3D scene graph)
 - 3D math: **GLM** (GLSL-matching types, `glm::slerp` for TF interpolation, header-only conan dep)
 - Mesh loading: **assimp** (conan dep)
 - URDF parsing: `QXmlStreamReader`
@@ -367,13 +368,13 @@ Architecture locked; full implementation post-v1 (adds ~6-7 weeks on top of app 
 
 **Caching**: minimal. Pointcloud drawables cache GPU buffers across tracker changes; everything else re-decodes on change (cheap).
 
-**TF interpretation layer** (stateful: per-edge ring buffer + slerp/lerp interpolation + tree traversal over ObjectStore TF samples) lives inside `pj_3d_widgets` for v1. To be reviewed later: if 2D widgets or `pj_runtime` transforms need TF too, promote to a sibling module `pj_tf`.
+**TF interpretation layer** (stateful: per-edge ring buffer + slerp/lerp interpolation + tree traversal over ObjectStore TF samples) lives inside `pj_scene3D` for v1. To be reviewed later: if 2D widgets or `pj_runtime` transforms need TF too, promote to a sibling module `pj_tf`.
 
 **Interaction**: orbit camera (drag rotate / wheel zoom / middle-drag pan), drag-drop topics from `CatalogModel`, per-drawable context menu (visibility / color / delete), click-to-select picking.
 
 **Deferred (post-v1)**: shared GPU resources across multiple 3D widgets, advanced pointcloud LOD, costmap 3D / octomap, richer per-display config UI.
 
-**Inspiration source (not a dependency)**: [threepp](https://github.com/markaren/threepp) (MIT-licensed C++20 Three.js port) is read as a reference for specific rendering patterns (URDF traversal, OrbitControls math, Raycaster algorithm, material abstractions). Logic may be ported with attribution. threepp is never linked as a runtime dep — the single-QRhi-GPU-stack property is preserved.
+**Inspiration source (not a dependency)**: [threepp](https://github.com/markaren/threepp) (MIT-licensed C++20 Three.js port) is read as a reference for specific rendering patterns (URDF traversal, OrbitControls math, Raycaster algorithm, material abstractions). Logic may be ported with attribution. threepp is never linked as a runtime dep — the single-GPU-stack property is preserved.
 
 **Rule**: implements `IDataWidget` from `pj_runtime`; register directly in `pj_app` for v1. Introduce a `WidgetRegistry` service only when 2D / 3D widget families need symmetric registration.
 

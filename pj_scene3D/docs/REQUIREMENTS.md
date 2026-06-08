@@ -109,7 +109,7 @@ The TF buffer is the central runtime data structure that makes scrub-replay work
 
 ### Behavioral contract
 
-Adapted from the existing `tinytf.hpp` prototype:
+Behavioral contract of `TransformBuffer` (`core/include/pj_scene3d_core/tf/tf_buffer.h`):
 
 - **`T_target_from_source` convention** (same as ROS tf2): `lookupTransform(target, source, t)` returns the transform `T` such that `p_target = T * p_source`.
 - **Tree, not DAG**: each child frame has exactly one parent. Reparenting attempts are rejected.
@@ -208,7 +208,7 @@ assimp, URDF, tinyply, PCD reader, RGB-direct color mode, additional colormaps b
 
 ## 15. TF prototype adaptation summary
 
-The existing `pj_scene3D/tinytf.hpp` prototype is adapted in place (single source of truth, no wrapper layer) and promoted into the module's `core/tf/` location. Required edits:
+The TF prototype has been promoted into `pj_scene3D/core/include/pj_scene3d_core/tf/` as the `TransformBuffer` class (`tf/tf_buffer.h`, `tf/transform.h`) — single source of truth, no wrapper layer. The edits applied during promotion were:
 
 1. **`sampleAt` rewritten to zero-order hold** (nearest sample at or before `t`), replacing the prototype's lerp+slerp interpolation. The free-function `interpolate()` becomes unused inside the buffer (may be deleted or kept exposed as a free utility).
 2. **`TimePoint` retyped** from `std::chrono::steady_clock::time_point` to a replay-time-friendly type compatible with `PlaybackEngine`'s tracker time. (Final concrete type chosen at integration time.)
@@ -217,12 +217,12 @@ The existing `pj_scene3D/tinytf.hpp` prototype is adapted in place (single sourc
    - enumerate all known frames,
    - query the parent of a frame,
    - query the latest sample stamp for a frame's edge.
-5. **Non-throwing query variant**: `tryLookupTransform(target, source, t) → std::optional<Transform>` for the render hot path. The throwing variant is retained for explicit user code.
+5. **Non-throwing query variant**: `tryLookupTransform(target, source, t) → PJ::Expected<Transform, LookupError>` — the primary accessor for the render hot path; the typed `LookupError` enum (`UnknownSource`/`UnknownTarget`/`Disconnected`/`NoSampleAtTime`) keeps render-loop misses allocation-free. The throwing `lookupTransform` is a thin wrapper over it.
 6. **`setTransform` normalizes the quaternion on insert** to defend against ingest noise accumulating through composed transforms.
 
 **Unchanged** from the prototype:
 - The `T_target_from_source` convention.
-- Tree-not-DAG enforcement (reparenting throws).
+- Tree-not-DAG enforcement: a reparent conflict (a child already claimed under a different parent) is rejected — `setTransform` returns `PJ::unexpected(SetTransformError::ReparentConflict)` and drops that one edge (non-throwing), so a bulk ingest continues.
 - Common-ancestor walk algorithm.
 - Per-edge `std::deque` sample storage with 10-second cache window pruning.
 - The `Transform` struct (translation + unit quaternion).

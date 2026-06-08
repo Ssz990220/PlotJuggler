@@ -11,7 +11,7 @@
 
 Two libraries with a strict dependency direction:
 
-- **pj_base** (`pj_base/`): Vocabulary types and SDK headers with zero external dependencies. Defines:
+- **pj_base** (`plotjuggler_sdk/pj_base/`, from the SDK submodule): Vocabulary types and SDK headers with zero external dependencies. Defines:
   - `Timestamp` (`int64_t`, nanoseconds since Unix epoch)
   - `Range<T>` inclusive min/max pairs
   - Identity types: `DatasetId`, `TopicId`, `FieldId`, `SchemaId`, `TimeDomainId` (all `uint32_t`), `ChunkId` (`uint64_t`), `NodeId` (`uint32_t`)

@@ -464,8 +464,8 @@ Managed at multiple levels:
 | **GPU API** | wgpu (Vulkan/Metal/D3D12/WebGPU) | QRhi (Qt 6.8: Vulkan/Metal/D3D11/OpenGL) |
 | **YUV conversion** | GPU compute/fragment shader (BT.601/BT.709 aware) | GPU fragment shader (BT.709) |
 | **Frame delivery** | Immediate-mode re-query every render frame | Pull-based `MediaSource::takeFrame()` |
-| **Layer compositing** | `DrawOrder` float → depth buffer offsets | Deferred (future `CompositeMediaSource`) |
-| **Keyframe index** | Built from MP4 demux or NAL parsing | Same — `MediaIndexRegistry` or inline in decoder |
+| **Layer compositing** | `DrawOrder` float → depth buffer offsets | `CompositeMediaSource` (shipped): fans `setTimestamp()` to N owned layers and fuses their `MediaFrame`s (opacity-folded pixel layers stacked bottom-to-top in add order, plus concatenated overlays); wired into `Scene2DDockWidget` |
+| **Keyframe index** | Built from MP4 demux or NAL parsing | Inline in decoder today — `StreamingVideoDecoder` keyframe vector (streaming) / `FfmpegBackend` FFmpeg seek index (file); a `MediaIndexRegistry` sidechannel is designed for a future file-backed ObjectStore path but not yet implemented (no header exists) |
 | **Scrub strategy** | Keyframe seek + decode forward; 400ms grace delay | Keyframe seek + decode forward; direction-aware partials + thumbnail cache |
 | **Retention/GC** | Chunk-level GC, furthest-from-cursor priority | ObjectStore time/memory budget per topic |
 | **Backward scrub** | Show last-good frame (fading) | Publish keyframe instantly, then refine to target; thumbnail cache for sub-keyframe positions |
@@ -478,10 +478,12 @@ Managed at multiple levels:
 
 **DrawOrder compositing**: Rerun's approach of a single float per
 archetype that maps to depth buffer offsets is simpler than a dedicated
-compositor class. When pj_scene2D adds multi-layer compositing, this
-pattern is worth considering — each `MediaSource` could carry a
-`draw_order` and the widget could composite via depth testing rather
-than explicit CPU-side blending.
+compositor class. pj_scene2D's shipped `CompositeMediaSource` instead
+composites CPU-side (opacity-folded layers in add order); Rerun's
+depth-offset pattern remains worth considering if GPU compositing is
+ever needed — each `MediaSource` could carry a `draw_order` and the
+widget could composite via depth testing rather than explicit
+CPU-side blending.
 
 **FFmpeg as subprocess**: Avoids LGPL linking concerns and provides
 crash isolation (decoder crash doesn't kill the viewer), but adds IPC

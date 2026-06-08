@@ -9,9 +9,9 @@ Qwt-based plotting module — the PJ4 home for time-series plots, dockers, zoome
 Two targets with a strict direction:
 
 ```
-pj_plotting_widget  ──►  pj_plotting_core  ──►  pj_datastore + pj_base
-                              │
-                              └──►  Qwt (vendored at 3rdparty/qwt)
+pj_plotting  ──►  pj_plotting_core  ──►  pj_datastore + pj_base
+                       │
+                       └──►  Qwt (vendored at 3rdparty/qwt)
 ```
 
 | Subdir | Contents | Role |
@@ -32,7 +32,7 @@ This module is the canonical example of the **wholesale lift** strategy:
 
 ## Cross-module rules
 
-- This module is a sibling of `pj_scene2D/widgets` and future `pj_3d_widgets`. **They never depend on each other.**
+- This module is a sibling of `pj_scene2D/widgets` and `pj_scene3D/widgets`. **They never depend on each other.**
 - Shared runtime state flows through `pj_runtime::IDataWidget` (so `PlaybackEngine` can drive tracker updates without coupling to plot internals).
 - Reusable Qt controls used here that could serve another widget family go in `pj_widgets`, not here.
 

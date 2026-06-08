@@ -10,17 +10,17 @@ has shipped yet:
 
 | Type | Status | Header (if realised) |
 |---|---|---|
-| `FrameTransform` (§3) | ✅ Realised | `pj_base/builtin/FrameTransforms.hpp` + `frame_transforms_codec.hpp` |
-| `Image` (§4) | ✅ Realised | `pj_base/builtin/Image.hpp` |
-| `DepthImage` (§5) | ✅ Realised | `pj_base/builtin/DepthImage.hpp` + `depth_image_utils.hpp` |
+| `FrameTransform` (§3) | ✅ Realised | `pj_base/builtin/frame_transforms.hpp` + `frame_transforms_codec.hpp` |
+| `Image` (§4) | ✅ Realised | `pj_base/builtin/image.hpp` |
+| `DepthImage` (§5) | ✅ Realised | `pj_base/builtin/depth_image.hpp` + `depth_image_utils.hpp` |
 | `SegmentationImage` (§6) | 🟡 Designed, not yet realised | — |
 | `ClassRegistry` (§7) | 🟡 Designed, not yet realised | — (likely lives next to SegmentationImage) |
-| `VideoFrame` (§8) | 🟡 Designed, not yet realised | — (today streaming video flows through `StreamingVideoDecoder` consuming raw NAL bytes from ObjectStore directly; a `VideoFrame.hpp` canonical struct is not yet split out) |
-| `CameraCalibration` (§9) | 🟡 Designed, not yet realised | — |
-| `PointCloud` (§10) | ✅ Realised | `pj_base/builtin/PointCloud.hpp` |
+| `VideoFrame` (§8) | ✅ Realised | `pj_base/builtin/video_frame.hpp` + `video_frame_codec.hpp` (enum `kVideoFrame = 10`) |
+| `CameraCalibration` (§9, realised as `sdk::CameraInfo`) | ✅ Realised | `pj_base/builtin/camera_info.hpp` + `camera_info_codec.hpp` |
+| `PointCloud` (§10) | ✅ Realised | `pj_base/builtin/point_cloud.hpp` |
 | `ScenePrimitive` variants (§11) | 🟡 Designed, not yet realised | — |
-| `ImageAnnotations` (not its own § here, but listed in `BuiltinObject.hpp`) | ✅ Realised | `pj_base/builtin/ImageAnnotations.hpp` + `image_annotations_codec.hpp` |
-| `RobotDescription` (not in this catalogue) | ✅ Realised | `pj_base/builtin/RobotDescription.hpp` |
+| `ImageAnnotations` (not its own § here, but listed in `pj_base/builtin/builtin_object.hpp` as `kImageAnnotations`) | ✅ Realised | `pj_base/builtin/image_annotations.hpp` + `image_annotations_codec.hpp` |
+| `RobotDescription` (not in this catalogue) | ✅ Realised | `pj_base/builtin/robot_description.hpp` |
 
 Types marked 🟡 are spec-level only — there is no struct, no codec, and
 no test coverage yet. The schemas below describe the **intent**; once a
@@ -332,10 +332,12 @@ This fundamental difference drives separate storage and query semantics:
 
 | Field | Type | Notes |
 |-------|------|-------|
-| `timestamp` | `int64` | Presentation timestamp (nanoseconds since epoch). See "Timestamp semantics". |
+| `timestamp_ns` | `int64` | Presentation timestamp (nanoseconds since epoch). See "Timestamp semantics". |
 | `frame_id` | `string` | Coordinate frame of the camera. |
-| `codec` | `string` | `h264`, `h265`, `av1`, `vp9`. |
+| `format` | `string` | `h264`, `h265`, `av1`, `vp9`. |
 | `data` | `bytes` | Encoded frame data (see codec rules below). |
+
+The realised struct also carries a `BufferAnchor anchor` for zero-copy lifetime.
 
 Width and height are not in the schema — they live in the bitstream (SPS/VPS for
 H.264/H.265, Sequence Header OBU for AV1, frame header for VP9) and are read by the
@@ -413,6 +415,9 @@ the actual bitstream content.
 Field-for-field compatible with ROS `sensor_msgs/CameraInfo`. Applies to all four
 image-family types when projection between image-pixel space and world coordinates
 is needed.
+
+Realised as `PJ::sdk::CameraInfo` (`pj_base/builtin/camera_info.hpp`), field-for-field
+as documented; enum slot `BuiltinObjectType::kCameraInfo = 14`, wire schema `PJ.CameraInfo`.
 
 ---
 
@@ -594,7 +599,7 @@ no LRU eviction.
 
 For the schema field tables (`ImageAnnotations`, `PointsAnnotation`,
 `CircleAnnotation`, `TextAnnotation`), see
-`plotjuggler_sdk/pj_base/include/pj_base/builtin/ImageAnnotations.hpp`.
+`plotjuggler_sdk/pj_base/include/pj_base/builtin/image_annotations.hpp`.
 
 ---
 

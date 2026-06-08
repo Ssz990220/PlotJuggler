@@ -16,8 +16,8 @@ decoded frames inside pj_scene2D is an implementation detail of the decoder
 pipeline, not a contract.
 
 3D data types (PointCloud, 3D scene primitives, Grid) are stored in the
-same ObjectStore but are rendered by a future `pj_scene` module, not by
-pj_scene2D.
+same ObjectStore but are rendered by the `pj_scene3D` widget family, not
+by pj_scene2D.
 
 ## Prerequisites
 
@@ -155,21 +155,21 @@ This document does not duplicate field-level definitions.
 
 PointCloud, Grid (occupancy / costmap / elevation), all `ScenePrimitive`
 variants (including 2D `z = 0` ones), and FrameTransform chains are
-stored in the same ObjectStore but are consumed by `pj_3d_widgets`
+stored in the same ObjectStore but are consumed by `pj_scene3D`
 rather than by pj_scene2D. Even when a marker carries `z = 0`, projecting
 it onto a camera image requires `CameraCalibration` plus TF interpolation,
-which is the machinery `pj_3d_widgets` owns. Duplicating that inside
+which is the machinery `pj_scene3D` owns. Duplicating that inside
 pj_scene2D would create two TF resolvers and two projection paths for the
-same primitive — see `PLAN.md` "Scope decision" for the full rationale.
+same primitive — exactly the mistake the independent-widget-families design avoids.
 
 **Note on Grid**: `datatypes_2D.md §10` classifies Grid as "2D/3D"
 because the underlying data is a flat rectangular cell array. pj_scene2D
-nevertheless defers Grid to `pj_scene` because Grid carries world-space
+nevertheless defers Grid to `pj_scene3D` because Grid carries world-space
 metadata (`pose`, `cell_size`, `frame_id`) and its natural display is a
 **world-space** top-down tile — a different viewer class from pj_scene2D's
 image-space viewers (which zoom and pan in pixel coordinates, not
-meters). Once `pj_scene` exists, both the 2D top-down and 3D elevation
-views of a grid will be rendered there, sharing the same ObjectStore
+meters). In `pj_scene3D`, both the 2D top-down and 3D elevation
+views of a grid are rendered there, sharing the same ObjectStore
 entries as their source of truth. pj_scene2D's image viewers do NOT
 attempt to render grids as plain pictures (ignoring world metadata)
 because the result would be misleading — you could not correctly
@@ -313,16 +313,21 @@ on top of that protocol:
   a single "CDR parser" handles CompressedImage, CompressedVideo,
   CameraInfo, and more without codec knowledge.
 
-**Parser contract — single entry point, two hosts**:
+**Parser contract — single entry point, registry-bound hosts**:
 
-`MessageParser::parse()` receives raw payload bytes, a timestamp, and two
-host bindings — a scalar write host (`PJ_parser_write_host_t`) and an
-object write host (`PJ_object_write_host_t`). Either may be NULL. The
-parser walks the payload once and writes the scalar portions to the
-scalar host and the media portions to the object host. A ROS
-`sensor_msgs/CompressedImage` parser writes `header.seq` and
-`header.frame_id` to the scalar host AND the JPEG bytes to the object
-host from a single parse call. No double decode.
+`MessageParser::parse(ctx, timestamp_ns, payload, out_error)` receives only
+the raw payload bytes, a nanosecond timestamp, and an out-error — it does
+NOT receive any host bindings as parameters. Instead the parser acquires
+its write hosts at `bind(registry)` time from the service registry: the
+scalar write host via `pj.parser_write.v1` (`PJ_parser_write_host_t`) and,
+for media parsers, the object write host via `pj.parser_object_write.v1`
+(`PJ_object_write_host_t`). A parser binds whichever services it needs.
+During its single `parse()` call it walks the payload once and writes the
+scalar portions to the bound scalar host and the media portions to the
+bound object host. A ROS `sensor_msgs/CompressedImage` parser writes
+`header.seq` and `header.frame_id` to the scalar host AND the JPEG bytes
+to the object host from a single parse call. No double decode. (See the
+Prerequisites note on protocol v4 + service-registry bindings.)
 
 **Ownership summary** for media topics:
 
@@ -464,14 +469,15 @@ singleton model.
 |---------|-------|------|
 | `VideoDecoder` | stateful, one instance per video layer | FFmpeg wrapper with runtime HW-accel detection and guaranteed software fallback. Platform backend matrix is documented in `TECHNICAL_NOTES.md §3`. |
 | `ImageDecoder` | stateless, one instance per image layer | Dispatches to turbojpeg (JPEG), libpng (PNG), or raw pixel copy (mono8, rgb8, etc.). Multiple instances in one widget are fine (they share no state). |
-| `SceneDecoder` | stateless, one instance per scene/annotation layer | Single canonical-wire decoder (`foxglove.ImageAnnotations` Protobuf, hand-rolled, no libprotobuf). Source-format conversion (e.g. CDR `vision_msgs/Detection2DArray`) is loader-side; pj_scene2D only sees canonical bytes. Schema + canonical wire codec (writer + reader) live in `plotjuggler_sdk/pj_base/builtin/ImageAnnotations.hpp` + `image_annotations_codec.hpp`, re-exported through `pj_plugin_sdk`. |
+| `SceneDecoder` | stateless, one instance per scene/annotation layer | Single canonical-wire decoder (`foxglove.ImageAnnotations` Protobuf, hand-rolled, no libprotobuf). Source-format conversion (e.g. CDR `vision_msgs/Detection2DArray`) is loader-side; pj_scene2D only sees canonical bytes. Schema + canonical wire codec (writer + reader) live in `plotjuggler_sdk/pj_base/builtin/image_annotations.hpp` + `image_annotations_codec.hpp`, re-exported through `pj_plugin_sdk`. |
 
-**Threading and decoder ownership**: each viewer widget owns one
-`PlaybackController`. The controller owns **one decoder instance per
-active layer** — a widget compositing a base video + an annotation
-overlay + a depth colormap instantiates one `VideoDecoder`, one
-`SceneDecoder`, and one `ImageDecoder`. Decoders for different layers
-do not share internal state.
+**Threading and decoder ownership**: each viewer widget is driven by one
+`MediaSource` (`CompositeMediaSource` for the multi-layer case). The
+source owns **one decoder instance per active layer** — a widget
+compositing a base video + an annotation overlay + a depth colormap
+instantiates one `VideoDecoder`, one `SceneDecoder`, and one
+`ImageDecoder`. Decoders for different layers do not share internal
+state.
 
 The number of worker threads per widget is an **implementation detail**,
 not part of the contract. A single worker may drive all per-layer
@@ -490,7 +496,7 @@ contractual guarantees hold:
 
 **Pull-based frame delivery (FrameSlot mailbox)**:
 
-The widget's `PlaybackController` writes each completed composited frame
+The widget's `MediaSource` writes each completed composited frame
 (a single frame assembled from all active layers) into a `FrameSlot` —
 a single-slot latest-wins mailbox protected by a mutex. The UI thread
 polls the slot at the display refresh rate and displays whatever
@@ -559,9 +565,9 @@ decoder seek and entry eviction.
 A viewer widget may composite multiple ObjectStore topics at the same
 display time (base image + annotation overlay + depth colormap +
 segmentation mask). Each layer has its own decoder instance owned by
-the widget's `PlaybackController` (see §4.6 "Threading and decoder
-ownership"). Decoders for different layers are independent and do not
-share state. On each render tick:
+the widget's `MediaSource` (`CompositeMediaSource`; see §4.6 "Threading
+and decoder ownership"). Decoders for different layers are independent
+and do not share state. On each render tick:
 
 1. For each layer: `store.latestAt(topic, render_time_ns)` returns the
    owning byte handle.
@@ -717,8 +723,8 @@ a widget onto a different dataset while the widget is alive.
 
 - **Audio** — no decoding, display, or synchronization of audio tracks.
 - **3D rendering** — point clouds, 3D scene primitives, and grids are
-  stored in the same ObjectStore but rendered by a future `pj_scene`
-  module, not by pj_scene2D.
+  stored in the same ObjectStore but rendered by the `pj_scene3D` widget
+  family, not by pj_scene2D.
 - **Reverse playback** — forward-only. Backward scrub is supported via
   keyframe seek + decode-forward, but continuous reverse-direction
   playback is not.
