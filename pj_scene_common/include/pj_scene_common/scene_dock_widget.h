@@ -16,6 +16,7 @@
 #include "pj_datastore/object_store.hpp"
 #include "pj_runtime/IDataWidget.h"
 #include "pj_runtime/IObjectViewer.h"
+#include "pj_runtime/Time.h"  // PJ::Timepoint, fromRaw/toRaw
 #include "pj_scene_common/layer_factory.h"
 #include "pj_scene_common/scene_layer.h"
 
@@ -103,14 +104,15 @@ class SceneDockWidget : public QWidget, public IDataWidget, public IObjectViewer
   /// docks that drive an additional consumer off the same clock (the 3D view's
   /// render time, the 2D composite seed).
   [[nodiscard]] std::optional<int64_t> lastTrackerNs() const {
-    return last_tracker_ns_;
+    return last_tracker_.has_value() ? std::optional<int64_t>{PJ::toRaw(*last_tracker_)} : std::nullopt;
   }
 
   /// Records an externally-derived tracker time (e.g. a live-ingest nudge to
   /// the data edge) as the seed for future layer additions and rebuild seeding,
-  /// without driving the layers (the caller already did).
+  /// without driving the layers (the caller already did). Takes a raw int64-ns
+  /// (the spine edge) and lifts it to a Timepoint for internal storage.
   void noteTrackerTime(int64_t time_ns) {
-    last_tracker_ns_ = time_ns;
+    last_tracker_ = PJ::fromRaw(time_ns);
   }
 
   /// Removes every layer: re-points the concrete view off the old layers
@@ -127,7 +129,7 @@ class SceneDockWidget : public QWidget, public IDataWidget, public IObjectViewer
   enum class AddOutcome { LayerAdded, ConsumedAsConfig, Rejected };
 
   void ensureSceneViewCreated();
-  [[nodiscard]] int64_t clampToLayerRange(int64_t time_ns) const;
+  [[nodiscard]] PJ::Timepoint clampToLayerRange(PJ::Timepoint time) const;
   [[nodiscard]] std::vector<ISceneLayer*> orderedLayerPtrs() const;
   void syncViewLayers();
   /// Destructor-safe teardown: detaches and destroys layers WITHOUT touching
@@ -149,7 +151,7 @@ class SceneDockWidget : public QWidget, public IDataWidget, public IObjectViewer
   std::vector<int64_t> draw_order_;
   LayerFactory factory_;
   SessionManager* session_ = nullptr;
-  std::optional<int64_t> last_tracker_ns_;
+  std::optional<PJ::Timepoint> last_tracker_;
   QWidget* scene_view_ = nullptr;
   std::unordered_map<int64_t, bool> layer_visibility_cache_;
 };

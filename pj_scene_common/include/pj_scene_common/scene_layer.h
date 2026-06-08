@@ -11,6 +11,7 @@
 
 #include "pj_base/builtin/builtin_object.hpp"
 #include "pj_datastore/object_store.hpp"
+#include "pj_runtime/Time.h"  // PJ::Timepoint, PJ::Range, fromRaw/toRaw
 
 namespace PJ {
 
@@ -48,8 +49,11 @@ class ISceneLayer : public QObject {
   /// Returns the current layer metadata used by dock and list UI.
   [[nodiscard]] virtual SceneLayerInfo info() const = 0;
 
-  /// Returns the valid data range in nanoseconds, or an invalid range if empty.
-  [[nodiscard]] virtual std::pair<int64_t, int64_t> timeRangeNs() const = 0;
+  /// Returns the valid data range as an absolute Timepoint interval, or an
+  /// inverted/empty range `{Timepoint::max(), Timepoint::min()}` if the layer
+  /// carries no data (e.g. a static layer positioned purely by TF). The dock
+  /// detects emptiness with `range.max < range.min`.
+  [[nodiscard]] virtual PJ::Range<PJ::Timepoint> timeRange() const = 0;
 
   /// Binds the layer to shared scene services. Called once before updates.
   virtual bool attach(const SceneLayerContext& ctx) = 0;
@@ -57,8 +61,8 @@ class ISceneLayer : public QObject {
   /// Releases resources acquired by attach(). Called before the layer is dropped.
   virtual void detach() = 0;
 
-  /// Moves the layer to the current tracker time after dock-level clamping.
-  virtual void setTrackerTime(std::chrono::nanoseconds time) = 0;
+  /// Moves the layer to the current tracker Timepoint after dock-level clamping.
+  virtual void setTrackerTime(PJ::Timepoint time) = 0;
 
   /// Updates visibility; implementations should emit visibilityChanged on change.
   virtual void setVisible(bool visible) = 0;

@@ -10,6 +10,7 @@
 #include <string>
 #include <vector>
 
+#include "pj_runtime/Time.h"  // PJ::Timepoint
 #include "pj_scene3d_core/camera/camera.h"
 #include "pj_scene3d_core/tf/tf_buffer.h"
 #include "pj_scene3d_widgets/passes/axis_overlay_pass.h"
@@ -37,7 +38,7 @@ class SceneViewWidget : public QOpenGLWidget {
   ~SceneViewWidget() override;
 
   void setTransformBuffer(std::shared_ptr<TransformBuffer> tf);
-  void setTrackerTime(std::chrono::nanoseconds t);
+  void setTrackerTime(PJ::Timepoint t);
   void setFixedFrame(const std::string& frame);
 
   // Replace the render order: index 0 renders first (behind), the last on top.
@@ -127,7 +128,7 @@ class SceneViewWidget : public QOpenGLWidget {
   // The time the scene renders at. Distinct from the global playhead: the dock
   // pushes a clamped time via setTrackerTime, and paint is async from ticks, so
   // this is render state, not the clock. Fed to the per-frame FrameContext.
-  std::chrono::nanoseconds render_time_{0};
+  PJ::Timepoint render_time_{};
   std::string fixed_frame_;
 
   QList<FrameRow> last_frame_list_;

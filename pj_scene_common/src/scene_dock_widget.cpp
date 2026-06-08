@@ -139,14 +139,16 @@ void SceneDockWidget::registerLayer(int64_t key, std::unique_ptr<ISceneLayer> la
   draw_order_.push_back(key);
 
   if (layer_raw->info().visible) {
-    const auto [first, last] = layer_raw->timeRangeNs();
-    if (last_tracker_ns_.has_value()) {
-      const int64_t seed_ns = (last >= first) ? std::clamp(*last_tracker_ns_, first, last) : *last_tracker_ns_;
-      layer_raw->setTrackerTime(std::chrono::nanoseconds{seed_ns});
+    const auto range = layer_raw->timeRange();
+    const PJ::Timepoint first = range.min;
+    const PJ::Timepoint last = range.max;
+    if (last_tracker_.has_value()) {
+      const PJ::Timepoint seed = (last >= first) ? std::clamp(*last_tracker_, first, last) : *last_tracker_;
+      layer_raw->setTrackerTime(seed);
     } else if (last >= first) {
       // No tracker tick yet: deliberately show the layer's first frame instead
       // of fabricating a time (0 is a valid timestamp; absence is explicit).
-      layer_raw->setTrackerTime(std::chrono::nanoseconds{first});
+      layer_raw->setTrackerTime(first);
     }
   }
 }
@@ -268,11 +270,11 @@ void SceneDockWidget::onTrackerTime(double time) {
   } else {
     raw_ns = static_cast<int64_t>(ns_d);
   }
-  const int64_t clamped_ns = clampToLayerRange(raw_ns);
-  last_tracker_ns_ = clamped_ns;
+  const PJ::Timepoint clamped = clampToLayerRange(PJ::fromRaw(raw_ns));
+  last_tracker_ = clamped;
   for (auto& [key, layer] : layers_) {
     if (layer != nullptr && layer->info().visible) {
-      layer->setTrackerTime(std::chrono::nanoseconds{clamped_ns});
+      layer->setTrackerTime(clamped);
     }
   }
   refreshView();
@@ -404,7 +406,7 @@ void SceneDockWidget::ensureSceneViewCreated() {
   layout->addWidget(scene_view_);
 }
 
-int64_t SceneDockWidget::clampToLayerRange(int64_t time_ns) const {
+PJ::Timepoint SceneDockWidget::clampToLayerRange(PJ::Timepoint time) const {
   // Latched-layer rule (semantics ported from pj_scene3d_core's
   // clampTrackerTimeToRanges, which the 3D dock used before migrating onto this
   // base): a *spanning* layer (first < last) bounds both ends; a *latched /
@@ -413,16 +415,19 @@ int64_t SceneDockWidget::clampToLayerRange(int64_t time_ns) const {
   // its lone early stamp would drag the live playhead backwards and hide
   // everything keyed to "now" (the old "TF doesn't render unless another topic
   // is present" bug). With no spanning layer there is no upper bound; with no
-  // usable range the time passes through unchanged.
+  // usable range the time passes through unchanged. `lo`/`hi` are guarded by
+  // have_lo/have_hi — never a default Timepoint (which is epoch, not a bound).
   bool have_lo = false;
   bool have_hi = false;
-  int64_t lo = 0;
-  int64_t hi = 0;
+  PJ::Timepoint lo{};
+  PJ::Timepoint hi{};
   for (const auto& [key, layer] : layers_) {
     if (layer == nullptr) {
       continue;
     }
-    const auto [first, last] = layer->timeRangeNs();
+    const auto range = layer->timeRange();
+    const PJ::Timepoint first = range.min;
+    const PJ::Timepoint last = range.max;
     if (last < first) {
       continue;  // inverted: no data
     }
@@ -436,15 +441,15 @@ int64_t SceneDockWidget::clampToLayerRange(int64_t time_ns) const {
     }
   }
   if (!have_lo) {
-    return time_ns;
+    return time;
   }
-  if (time_ns < lo) {
+  if (time < lo) {
     return lo;
   }
-  if (have_hi && time_ns > hi) {
+  if (have_hi && time > hi) {
     return hi;
   }
-  return time_ns;
+  return time;
 }
 
 std::vector<ISceneLayer*> SceneDockWidget::orderedLayerPtrs() const {

@@ -17,6 +17,7 @@
 
 #include "pj_datastore/engine.hpp"
 #include "pj_runtime/SessionManager.h"
+#include "pj_runtime/Time.h"  // PJ::Timepoint, PJ::Range, fromRaw/toRaw
 #include "pj_scene_common/layer_factory.h"
 #include "pj_scene_common/scene_dock_widget.h"
 #include "pj_scene_common/scene_layer.h"
@@ -62,8 +63,8 @@ class FakeLayer : public PJ::ISceneLayer {
     return info_;
   }
 
-  [[nodiscard]] std::pair<int64_t, int64_t> timeRangeNs() const override {
-    return range_;
+  [[nodiscard]] PJ::Range<PJ::Timepoint> timeRange() const override {
+    return {PJ::fromRaw(range_.first), PJ::fromRaw(range_.second)};
   }
 
   bool attach(const PJ::SceneLayerContext& ctx) override {
@@ -82,8 +83,8 @@ class FakeLayer : public PJ::ISceneLayer {
     g_layer_events.push_back("detach:" + std::to_string(info_.topic_id.id));
   }
 
-  void setTrackerTime(std::chrono::nanoseconds time) override {
-    tracker_times_ns_.push_back(time.count());
+  void setTrackerTime(PJ::Timepoint time) override {
+    tracker_times_ns_.push_back(PJ::toRaw(time));
   }
 
   void setVisible(bool visible) override {
@@ -499,6 +500,34 @@ TEST(SceneDockWidgetTest, LatchedLayerDoesNotDragTrackerTimeBack) {
   latched->clearTrackerTimes();
   dock.onTrackerTime(10'000.0 / 1'000'000'000.0);
   EXPECT_EQ(latched->trackerTimesNs(), (std::vector<int64_t>{3'000}));
+}
+
+// A static layer (inverted/empty timeRange, e.g. a future URDF RobotModelLayer)
+// must NOT contribute to the dock's clamp union: clampToLayerRange skips
+// `range.max < range.min`, so a co-resident spanning layer alone bounds the
+// playhead, and the static layer still receives every tracker tick.
+TEST(SceneDockWidgetTest, StaticLayerWithInvertedRangeIsSkippedByClamp) {
+  g_fake_layer_configs.clear();
+  // Inverted range == "static / no data": max() as min field, min() as max field.
+  g_fake_layer_configs[1] = FakeLayerConfig{
+      std::pair<int64_t, int64_t>{std::numeric_limits<int64_t>::max(), std::numeric_limits<int64_t>::lowest()}};
+  g_fake_layer_configs[2] = FakeLayerConfig{std::pair<int64_t, int64_t>{2'000, 3'000}};  // spanning
+  FakeSceneDock dock;
+  ASSERT_TRUE(dock.addTopic(topic(1), PJ::sdk::BuiltinObjectType::kPointCloud, QStringLiteral("static")));
+  ASSERT_TRUE(dock.addTopic(topic(2), PJ::sdk::BuiltinObjectType::kPointCloud, QStringLiteral("cloud")));
+  auto* static_layer = dynamic_cast<FakeLayer*>(dock.layerFor(topic(1)));
+  ASSERT_NE(static_layer, nullptr);
+  static_layer->clearTrackerTimes();
+
+  // Below the spanning layer's range -> raised to its lower bound (the static
+  // layer's inverted range neither lowers nor caps).
+  dock.onTrackerTime(1'000.0 / 1'000'000'000.0);
+  EXPECT_EQ(static_layer->trackerTimesNs(), (std::vector<int64_t>{2'000}));
+
+  // Inside the spanning layer's range -> passes through; static layer still ticks.
+  static_layer->clearTrackerTimes();
+  dock.onTrackerTime(2'500.0 / 1'000'000'000.0);
+  EXPECT_EQ(static_layer->trackerTimesNs(), (std::vector<int64_t>{2'500}));
 }
 
 // Clearing all layers (the xmlLoadState restore path) must re-point the

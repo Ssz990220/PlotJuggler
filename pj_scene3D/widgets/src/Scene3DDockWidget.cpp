@@ -230,7 +230,7 @@ void Scene3DDockWidget::onTrackerTime(double time) {
   // re-deriving and re-clamping it here.
   SceneDockWidget::onTrackerTime(time);
   if (const auto ns = lastTrackerNs(); view_ != nullptr && ns.has_value()) {
-    view_->setTrackerTime(std::chrono::nanoseconds{*ns});
+    view_->setTrackerTime(PJ::fromRaw(*ns));
     updateSceneBounds();  // cloud / grid geometry changes with tracker time
   }
 }

@@ -10,6 +10,7 @@
 #include <utility>
 
 #include "pj_runtime/SessionManager.h"
+#include "pj_runtime/Time.h"  // PJ::fromRaw, PJ::toRaw
 #include "pj_scene2d_core/media_source.h"
 
 namespace PJ {
@@ -31,11 +32,12 @@ SceneLayerInfo Scene2DLayer::info() const {
   return info_;
 }
 
-std::pair<int64_t, int64_t> Scene2DLayer::timeRangeNs() const {
+PJ::Range<PJ::Timepoint> Scene2DLayer::timeRange() const {
   if (store_ == nullptr || store_->entryCount(info_.topic_id) == 0) {
-    return {1, 0};
+    return {PJ::Timepoint::max(), PJ::Timepoint::min()};  // inverted: empty
   }
-  return store_->timeRange(info_.topic_id);
+  const auto [lo, hi] = store_->timeRange(info_.topic_id);
+  return {PJ::fromRaw(lo), PJ::fromRaw(hi)};
 }
 
 bool Scene2DLayer::attach(const SceneLayerContext& ctx) {
@@ -65,10 +67,10 @@ void Scene2DLayer::detach() {
   last_tracker_time_ns_.reset();
 }
 
-void Scene2DLayer::setTrackerTime(std::chrono::nanoseconds time) {
-  last_tracker_time_ns_ = time.count();
+void Scene2DLayer::setTrackerTime(PJ::Timepoint time) {
+  last_tracker_time_ns_ = PJ::toRaw(time);
   if (source_ != nullptr) {
-    source_->setTimestamp(time.count());
+    source_->setTimestamp(PJ::toRaw(time));
   }
 }
 

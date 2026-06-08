@@ -9,3 +9,6 @@ CMakeUserPresets.json
 /aqtinstall.log
 /.qt
 .worktrees/
+
+# superpowers brainstorming / planning process artifacts (local, not tracked)
+docs/superpowers/

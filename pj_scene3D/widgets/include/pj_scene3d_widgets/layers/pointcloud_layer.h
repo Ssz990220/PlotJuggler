@@ -43,7 +43,7 @@ class PointCloudLayer : public Scene3DLayer {
 
   // Scene3DLayer
   [[nodiscard]] PJ::SceneLayerInfo info() const override;
-  [[nodiscard]] std::pair<int64_t, int64_t> timeRangeNs() const override;
+  [[nodiscard]] PJ::Range<PJ::Timepoint> timeRange() const override;
   [[nodiscard]] QStringList fallbackFrames() const override;
   [[nodiscard]] QString sourceFrame() const override;
   QDomElement xmlSaveState(QDomDocument& doc) const override;
@@ -53,7 +53,7 @@ class PointCloudLayer : public Scene3DLayer {
   void detach() override;
 
   void setFixedFrame(const QString& frame) override;
-  void setTrackerTime(std::chrono::nanoseconds time) override;
+  void setTrackerTime(PJ::Timepoint time) override;
   void setVisible(bool visible) override;
 
   void initializeGL() override;
@@ -154,9 +154,9 @@ class PointCloudLayer : public Scene3DLayer {
   QStringList available_color_fields_;
   std::string source_frame_;
   QString fixed_frame_;
-  // The latest tracker time pushed to this layer; the time the cached VBO was
-  // (re)decoded at. Used by refreshNow() to re-decode at the current playhead.
-  std::chrono::nanoseconds decoded_at_ns_{0};
+  // The latest tracker time pushed to this layer; the Timepoint the cached VBO
+  // was (re)decoded at. Used by refreshNow() to re-decode at the current playhead.
+  PJ::Timepoint decoded_at_ns_{};
 
   bool visible_ = true;
   bool range_dirty_ = true;

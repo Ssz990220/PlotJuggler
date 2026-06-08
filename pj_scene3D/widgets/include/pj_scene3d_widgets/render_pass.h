@@ -33,7 +33,7 @@ struct ViewParams {
 struct FrameContext {
   const TransformBuffer& tf;
   const std::string& fixed_frame;
-  std::chrono::nanoseconds time;
+  TimePoint time;  // pj::scene3d::TimePoint (== PJ::Timepoint), from transform.h
 
   // SE(3) fixed_frame<-child at `time`, or nullopt if it can't resolve. Collapses
   // the buffer's Expected<Transform, LookupError> to optional: a pass only needs

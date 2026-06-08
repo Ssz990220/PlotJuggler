@@ -64,7 +64,7 @@ void SceneViewWidget::setTransformBuffer(std::shared_ptr<TransformBuffer> tf) {
   update();
 }
 
-void SceneViewWidget::setTrackerTime(std::chrono::nanoseconds t) {
+void SceneViewWidget::setTrackerTime(PJ::Timepoint t) {
   if (render_time_ == t) {
     return;
   }

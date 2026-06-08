@@ -249,7 +249,7 @@ void Scene2DDockWidget::reconnectLiveSamples(SessionManager* session) {
         for (const SceneLayerInfo& info : layers()) {
           ISceneLayer* layer = layerFor(info.topic_id);
           if (layer != nullptr && info.visible) {
-            layer->setTrackerTime(std::chrono::nanoseconds{latest});
+            layer->setTrackerTime(PJ::fromRaw(latest));
           }
         }
         if (composite_ != nullptr) {

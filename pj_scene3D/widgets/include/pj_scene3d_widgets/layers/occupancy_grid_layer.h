@@ -38,7 +38,7 @@ class OccupancyGridLayer : public Scene3DLayer {
   ~OccupancyGridLayer() override;
 
   [[nodiscard]] PJ::SceneLayerInfo info() const override;
-  [[nodiscard]] std::pair<int64_t, int64_t> timeRangeNs() const override;
+  [[nodiscard]] PJ::Range<PJ::Timepoint> timeRange() const override;
   [[nodiscard]] QStringList fallbackFrames() const override;
   [[nodiscard]] QString sourceFrame() const override;
   QDomElement xmlSaveState(QDomDocument& doc) const override;
@@ -48,7 +48,7 @@ class OccupancyGridLayer : public Scene3DLayer {
   void detach() override;
 
   void setFixedFrame(const QString& frame) override;
-  void setTrackerTime(std::chrono::nanoseconds time) override;
+  void setTrackerTime(PJ::Timepoint time) override;
   void setVisible(bool visible) override;
 
   void initializeGL() override;
@@ -88,7 +88,7 @@ class OccupancyGridLayer : public Scene3DLayer {
 
   std::string source_frame_;
   QString fixed_frame_;
-  std::chrono::nanoseconds tracker_time_{0};
+  PJ::Timepoint tracker_time_{};
   bool visible_ = true;
   int64_t ts_first_ = 0;
   int64_t ts_last_ = 0;

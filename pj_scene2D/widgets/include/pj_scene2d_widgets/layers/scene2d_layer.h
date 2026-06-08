@@ -35,11 +35,11 @@ class Scene2DLayer : public ISceneLayer {
   ~Scene2DLayer() override;
 
   [[nodiscard]] SceneLayerInfo info() const override;
-  [[nodiscard]] std::pair<int64_t, int64_t> timeRangeNs() const override;
+  [[nodiscard]] PJ::Range<PJ::Timepoint> timeRange() const override;
 
   bool attach(const SceneLayerContext& ctx) override;
   void detach() override;
-  void setTrackerTime(std::chrono::nanoseconds time) override;
+  void setTrackerTime(PJ::Timepoint time) override;
   void setVisible(bool visible) override;
   QWidget* createConfigWidget(QWidget* parent) override;
   QDomElement xmlSaveState(QDomDocument& doc) const override;

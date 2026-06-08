@@ -8,7 +8,7 @@
 namespace pj::scene3d {
 
 std::optional<Transform> FrameContext::lookup(const std::string& child) const {
-  auto result = tf.tryLookupTransform(fixed_frame, child, TimePoint{time});
+  auto result = tf.tryLookupTransform(fixed_frame, child, time);
   if (!result) {
     return std::nullopt;
   }

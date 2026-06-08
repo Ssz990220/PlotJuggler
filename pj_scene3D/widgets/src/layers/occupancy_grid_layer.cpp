@@ -17,6 +17,7 @@
 #include "pj_base/builtin/occupancy_grid_update.hpp"
 #include "pj_plugins/sdk/message_parser_plugin_base.hpp"
 #include "pj_runtime/SessionManager.h"
+#include "pj_runtime/Time.h"                // PJ::fromRaw, PJ::toRaw
 #include "pj_scene3d_core/camera/camera.h"  // AABB, occupancyGridBounds
 #include "pj_scene3d_widgets/parse_locked.h"
 #include "pj_widgets/DoubleScrubber.h"
@@ -42,8 +43,8 @@ PJ::SceneLayerInfo OccupancyGridLayer::info() const {
   };
 }
 
-std::pair<int64_t, int64_t> OccupancyGridLayer::timeRangeNs() const {
-  return {ts_first_, ts_last_};
+PJ::Range<PJ::Timepoint> OccupancyGridLayer::timeRange() const {
+  return {PJ::fromRaw(ts_first_), PJ::fromRaw(ts_last_)};
 }
 
 QStringList OccupancyGridLayer::fallbackFrames() const {
@@ -233,9 +234,9 @@ void OccupancyGridLayer::setFixedFrame(const QString& frame) {
   emit repaintRequested();
 }
 
-void OccupancyGridLayer::setTrackerTime(std::chrono::nanoseconds time) {
+void OccupancyGridLayer::setTrackerTime(PJ::Timepoint time) {
   tracker_time_ = time;
-  renderAt(time.count());
+  renderAt(PJ::toRaw(time));
   emit repaintRequested();
 }
 

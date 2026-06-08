@@ -28,6 +28,7 @@
 #include "pj_base/builtin/point_cloud.hpp"
 #include "pj_plugins/sdk/message_parser_plugin_base.hpp"
 #include "pj_runtime/SessionManager.h"
+#include "pj_runtime/Time.h"                // PJ::fromRaw, PJ::toRaw
 #include "pj_scene3d_core/camera/camera.h"  // AABB, expandAABB
 #include "pj_scene3d_core/pointcloud.h"
 #include "pj_scene3d_widgets/parse_locked.h"
@@ -239,8 +240,8 @@ PJ::SceneLayerInfo PointCloudLayer::info() const {
   };
 }
 
-std::pair<int64_t, int64_t> PointCloudLayer::timeRangeNs() const {
-  return {ts_first_, ts_last_};
+PJ::Range<PJ::Timepoint> PointCloudLayer::timeRange() const {
+  return {PJ::fromRaw(ts_first_), PJ::fromRaw(ts_last_)};
 }
 
 QStringList PointCloudLayer::fallbackFrames() const {
@@ -411,10 +412,10 @@ void PointCloudLayer::setFixedFrame(const QString& frame) {
   refreshNow();
 }
 
-void PointCloudLayer::setTrackerTime(std::chrono::nanoseconds time) {
+void PointCloudLayer::setTrackerTime(PJ::Timepoint time) {
   decoded_at_ns_ = time;
   if (visible_) {
-    renderAt(time.count());
+    renderAt(PJ::toRaw(time));
   }
 }
 
@@ -934,7 +935,8 @@ void PointCloudLayer::renderAt(int64_t time_ns) {
 void PointCloudLayer::refreshNow() {
   // Decode at the latest tracker time if known, else at ts_first_ (which
   // is set by bootstrap before any tracker tick fires).
-  const int64_t t = decoded_at_ns_.count() != 0 ? decoded_at_ns_.count() : ts_first_;
+  const int64_t decoded_raw = PJ::toRaw(decoded_at_ns_);
+  const int64_t t = decoded_raw != 0 ? decoded_raw : ts_first_;
   if (t != 0) {
     renderAt(t);
   }
