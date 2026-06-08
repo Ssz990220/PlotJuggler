@@ -165,7 +165,19 @@ jobs:
             --modules qtcharts qtwebsockets --outputdir ./.qt
 
       - name: Install sccache
+        # sccache is a compile-cache speedup, NOT load-bearing: the build is
+        # correct without it, just slower. So this step must never fail the run.
+        # `version` is pinned because the default `latest` does a GitHub API
+        # release lookup that intermittently returns undefined ("Unable to
+        # locate executable file: undefined") and was red-X'ing this job — and
+        # main's — for builds that have nothing to do with sccache.
+        # continue-on-error + the outcome gate in Build mirror the graceful
+        # degradation already used for oras above.
+        id: setup_sccache
+        continue-on-error: true
         uses: mozilla-actions/sccache-action@v0.0.9
+        with:
+          version: "v0.8.2"
 
       - name: Setup MSVC environment
         # Loads cl.exe / link.exe / rc.exe etc. into PATH so the Ninja
@@ -178,10 +190,20 @@ jobs:
       - name: Build
         shell: bash
         env:
-          # Backs sccache with the GitHub Actions cache (10 GB cap, LRU).
-          # The sccache-action above exports ACTIONS_CACHE_URL and
-          # ACTIONS_RUNTIME_TOKEN; this env var flips sccache to use them.
-          SCCACHE_GHA_ENABLED: "true"
+          # sccache uses its default LOCAL-DISK cache. We intentionally do NOT
+          # set SCCACHE_GHA_ENABLED: the GitHub Actions cache backend needs
+          # ACTIONS_CACHE_URL, a legacy runner env var that GitHub retired in
+          # favor of the v2 cache service. sccache 0.8.2 still expects the old
+          # one, so enabling the GHA backend makes the sccache server fail to
+          # start ("ACTIONS_CACHE_URL not found") and every compile dies with
+          # exit 2. Local disk always starts; cross-run caching of the
+          # expensive third-party closure (Conan deps) is handled separately
+          # by the ghcr.io / actions cache steps above.
+          #
+          # "true" only if the install step actually succeeded; gates the
+          # compiler-launcher wiring below so a flaked sccache install degrades
+          # to an uncached (but correct) build instead of failing.
+          SCCACHE_AVAILABLE: ${{ steps.setup_sccache.outcome == 'success' }}
         run: |
           QT_DIR="$(pwd)/.qt/6.8.3/msvc2022_64"
           if [[ ! -d "$QT_DIR" ]]; then
@@ -218,19 +240,32 @@ jobs:
           # cl.exe workers to race on pj_base.pdb (fatal C1041). We can't bump
           # cmake_minimum_required past 3.22 because Ubuntu 22.04 LTS ships
           # CMake 3.22.1, so the opt-in lives here in the CI invocation.
+          # Only route the compiler through sccache if its install succeeded.
+          # /Z7 (Embedded debug info) below stays on regardless: it also avoids
+          # the parallel-cl.exe pj_base.pdb race, so it's correct with or
+          # without the cache.
+          launcher_args=()
+          if [[ "$SCCACHE_AVAILABLE" == "true" ]]; then
+            launcher_args=(-DCMAKE_C_COMPILER_LAUNCHER=sccache \
+                           -DCMAKE_CXX_COMPILER_LAUNCHER=sccache)
+          else
+            echo "::warning::sccache unavailable; building without a compiler cache"
+          fi
+
           cmake -S . -B build -G "Ninja Multi-Config" \
             -DCMAKE_TOOLCHAIN_FILE="build/conan_toolchain.cmake" \
             -DCMAKE_PREFIX_PATH="$QT_DIR" \
             -DCMAKE_POLICY_DEFAULT_CMP0141=NEW \
             -DCMAKE_MSVC_DEBUG_INFORMATION_FORMAT=Embedded \
-            -DCMAKE_C_COMPILER_LAUNCHER=sccache \
-            -DCMAKE_CXX_COMPILER_LAUNCHER=sccache
+            "${launcher_args[@]}"
 
           cmake --build build --config RelWithDebInfo --parallel
 
           # Surface sccache stats before the post-action does, so they
           # appear in the Build step's log next to the compile output.
-          sccache --show-stats
+          if [[ "$SCCACHE_AVAILABLE" == "true" ]]; then
+            sccache --show-stats
+          fi
 
       - name: Save Conan cache to ghcr.io
         # Only push from the canonical repo on real pushes (forks lack write
