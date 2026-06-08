@@ -8,6 +8,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <limits>
 #include <memory>
 #include <string>
 #include <vector>
@@ -308,6 +309,142 @@ TEST(ArrowImportTest, ImportWithTimestampColumn) {
   ASSERT_TRUE(latest_or->has_value());
   EXPECT_EQ((*latest_or)->timestamp, 25000);
   EXPECT_DOUBLE_EQ((*latest_or)->chunk->readNumericAsDouble(0, (*latest_or)->row_index), 25.0 * 0.5);
+}
+
+struct TimestampImportCase {
+  const char* name;
+  ArrowTimeUnit unit;
+  int64_t ticks_per_second;
+};
+
+void expectTimestampColumnRescalesToNanos(const TimestampImportCase& test_case) {
+  SCOPED_TRACE(test_case.name);
+  DataEngine engine;
+  auto ds_or = engine.createDataset(DatasetDescriptor{.source_name = "test", .time_domain_id = 0});
+  ASSERT_TRUE(ds_or.has_value());
+
+  DataWriter writer = engine.createWriter();
+
+  // Build schema: struct { timestamp[unit] "ts", float64 "value" }
+  nanoarrow::UniqueSchema schema;
+  ASSERT_EQ(ArrowSchemaInitFromType(schema.get(), NANOARROW_TYPE_STRUCT), NANOARROW_OK);
+  ASSERT_EQ(ArrowSchemaAllocateChildren(schema.get(), 2), NANOARROW_OK);
+
+  ArrowSchemaInit(schema->children[0]);
+  ASSERT_EQ(
+      ArrowSchemaSetTypeDateTime(schema->children[0], NANOARROW_TYPE_TIMESTAMP, test_case.unit, nullptr), NANOARROW_OK);
+  ASSERT_EQ(ArrowSchemaSetName(schema->children[0], "ts"), NANOARROW_OK);
+
+  ArrowSchemaInit(schema->children[1]);
+  ASSERT_EQ(ArrowSchemaSetType(schema->children[1], NANOARROW_TYPE_DOUBLE), NANOARROW_OK);
+  ASSERT_EQ(ArrowSchemaSetName(schema->children[1], "value"), NANOARROW_OK);
+
+  constexpr int64_t N = 10;
+  nanoarrow::UniqueArray array;
+  ASSERT_EQ(ArrowArrayInitFromSchema(array.get(), schema.get(), nullptr), NANOARROW_OK);
+  ASSERT_EQ(ArrowArrayStartAppending(array.get()), NANOARROW_OK);
+  for (int64_t i = 0; i < N; ++i) {
+    ASSERT_EQ(ArrowArrayAppendInt(array->children[0], (i + 1) * test_case.ticks_per_second), NANOARROW_OK);
+    ASSERT_EQ(ArrowArrayAppendDouble(array->children[1], static_cast<double>(i)), NANOARROW_OK);
+    ASSERT_EQ(ArrowArrayFinishElement(array.get()), NANOARROW_OK);
+  }
+  ASSERT_EQ(ArrowArrayFinishBuildingDefault(array.get(), nullptr), NANOARROW_OK);
+
+  auto ipc_bytes = serialize_to_ipc(schema.get(), array.get());
+
+  std::vector<ArrowColumnMapping> mappings = {{
+      .arrow_column_index = 1,
+      .pj_column_index = 0,
+      .pj_type = PrimitiveType::kFloat64,
+      .field_name = "value",
+  }};
+  auto val_tree = makePrimitive("value", PrimitiveType::kFloat64);
+  auto sid = *writer.registerSchema(std::string("ts_") + test_case.name + "_schema", val_tree);
+  TopicDescriptor desc;
+  desc.name = std::string("ts_") + test_case.name + "_topic";
+  desc.schema_id = sid;
+  auto tid = *writer.registerTopic(*ds_or, desc);
+
+  auto status = importIpcStream(writer, tid, PJ::Span<const uint8_t>(ipc_bytes.data(), ipc_bytes.size()), mappings, 0);
+  ASSERT_TRUE(status.has_value()) << status.error();
+  engine.commitChunks(writer.flushAll());
+
+  // 5 seconds in the Arrow unit must land at 5e9 ns, not at the raw tick count
+  // (the old unit-blind behavior).
+  DataReader reader = engine.createReader();
+  auto latest_or = reader.latestAt(QueryPoint{.topic_id = tid, .t = 5'000'000'000LL});
+  ASSERT_TRUE(latest_or.has_value()) << latest_or.error();
+  ASSERT_TRUE(latest_or->has_value());
+  EXPECT_EQ((*latest_or)->timestamp, 5'000'000'000LL);
+  EXPECT_DOUBLE_EQ((*latest_or)->chunk->readNumericAsDouble(0, (*latest_or)->row_index), 4.0);
+}
+
+// ===========================================================================
+// Test: TIMESTAMP units are rescaled to nanoseconds (bug 2)
+// ===========================================================================
+
+TEST(ArrowImportTest, ImportTimestampColumnRescalesUnitsToNanos) {
+  const std::vector<TimestampImportCase> cases = {
+      {"s", NANOARROW_TIME_UNIT_SECOND, 1},
+      {"ms", NANOARROW_TIME_UNIT_MILLI, 1'000},
+      {"us", NANOARROW_TIME_UNIT_MICRO, 1'000'000},
+      {"ns", NANOARROW_TIME_UNIT_NANO, 1'000'000'000},
+  };
+
+  for (const TimestampImportCase& test_case : cases) {
+    expectTimestampColumnRescalesToNanos(test_case);
+  }
+}
+
+TEST(ArrowImportTest, ImportTimestampColumnRejectsUnitScalingOverflow) {
+  DataEngine engine;
+  auto ds_or = engine.createDataset(DatasetDescriptor{.source_name = "test", .time_domain_id = 0});
+  ASSERT_TRUE(ds_or.has_value());
+
+  DataWriter writer = engine.createWriter();
+
+  nanoarrow::UniqueSchema schema;
+  ASSERT_EQ(ArrowSchemaInitFromType(schema.get(), NANOARROW_TYPE_STRUCT), NANOARROW_OK);
+  ASSERT_EQ(ArrowSchemaAllocateChildren(schema.get(), 2), NANOARROW_OK);
+
+  ArrowSchemaInit(schema->children[0]);
+  ASSERT_EQ(
+      ArrowSchemaSetTypeDateTime(schema->children[0], NANOARROW_TYPE_TIMESTAMP, NANOARROW_TIME_UNIT_SECOND, nullptr),
+      NANOARROW_OK);
+  ASSERT_EQ(ArrowSchemaSetName(schema->children[0], "ts"), NANOARROW_OK);
+
+  ArrowSchemaInit(schema->children[1]);
+  ASSERT_EQ(ArrowSchemaSetType(schema->children[1], NANOARROW_TYPE_DOUBLE), NANOARROW_OK);
+  ASSERT_EQ(ArrowSchemaSetName(schema->children[1], "value"), NANOARROW_OK);
+
+  nanoarrow::UniqueArray array;
+  ASSERT_EQ(ArrowArrayInitFromSchema(array.get(), schema.get(), nullptr), NANOARROW_OK);
+  ASSERT_EQ(ArrowArrayStartAppending(array.get()), NANOARROW_OK);
+  ASSERT_EQ(
+      ArrowArrayAppendInt(array->children[0], (std::numeric_limits<int64_t>::max() / 1'000'000'000LL) + 1),
+      NANOARROW_OK);
+  ASSERT_EQ(ArrowArrayAppendDouble(array->children[1], 1.0), NANOARROW_OK);
+  ASSERT_EQ(ArrowArrayFinishElement(array.get()), NANOARROW_OK);
+  ASSERT_EQ(ArrowArrayFinishBuildingDefault(array.get(), nullptr), NANOARROW_OK);
+
+  auto ipc_bytes = serialize_to_ipc(schema.get(), array.get());
+
+  std::vector<ArrowColumnMapping> mappings = {{
+      .arrow_column_index = 1,
+      .pj_column_index = 0,
+      .pj_type = PrimitiveType::kFloat64,
+      .field_name = "value",
+  }};
+  auto val_tree = makePrimitive("value", PrimitiveType::kFloat64);
+  auto sid = *writer.registerSchema("ts_overflow_schema", val_tree);
+  TopicDescriptor desc;
+  desc.name = "ts_overflow_topic";
+  desc.schema_id = sid;
+  auto tid = *writer.registerTopic(*ds_or, desc);
+
+  auto status = importIpcStream(writer, tid, PJ::Span<const uint8_t>(ipc_bytes.data(), ipc_bytes.size()), mappings, 0);
+  ASSERT_FALSE(status.has_value());
+  EXPECT_NE(status.error().find("cannot be represented as int64 nanoseconds"), std::string::npos);
 }
 
 // ===========================================================================

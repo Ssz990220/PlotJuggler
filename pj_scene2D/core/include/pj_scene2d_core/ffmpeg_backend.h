@@ -51,6 +51,14 @@ class FfmpegBackend : public VideoBackend {
 
   void processEvents() override;
 
+  /// Stream pts ticks spanned by one frame interval. `frame_interval_us` is
+  /// microseconds per frame; `time_base` is seconds per tick
+  /// (av_q2d(stream->time_base)). Computed in floating point so a sub-microsecond
+  /// time_base does not truncate: the old `int64(time_base * 1e6)` divisor
+  /// floored to 0 for any time_base < 1 µs/tick (e.g. a nanosecond time_base),
+  /// causing a divide-by-zero. Always returns >= 1. Static + pure for testing.
+  [[nodiscard]] static int64_t ptsPerFrame(int64_t frame_interval_us, double time_base) noexcept;
+
  private:
   struct FrameIndex {
     int64_t pts;

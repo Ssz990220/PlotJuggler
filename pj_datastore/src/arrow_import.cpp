@@ -5,9 +5,11 @@
 
 #include <fmt/format.h>
 
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <string>
@@ -223,8 +225,68 @@ ColumnDataWithBuffer make_column_data_nanoarrow(
   return result;
 }
 
-/// Extract timestamps from an ArrowArrayView child column.
-std::vector<Timestamp> extract_timestamps_nanoarrow(const ArrowArrayView* view, int64_t length) {
+/// Scale extracted integer ticks in place to nanoseconds for an Arrow TIMESTAMP
+/// unit. Plain integer timestamp columns pass NANOARROW_TIME_UNIT_NANO (identity),
+/// so existing int64-ns data is untouched. ns-per-tick is derived from std::chrono
+/// so the factors can't drift.
+[[nodiscard]] const char* timeUnitName(ArrowTimeUnit unit) noexcept {
+  switch (unit) {
+    case NANOARROW_TIME_UNIT_SECOND:
+      return "s";
+    case NANOARROW_TIME_UNIT_MILLI:
+      return "ms";
+    case NANOARROW_TIME_UNIT_MICRO:
+      return "us";
+    case NANOARROW_TIME_UNIT_NANO:
+      return "ns";
+  }
+  return "unknown";
+}
+
+[[nodiscard]] bool multiplyWouldOverflow(Timestamp value, Timestamp multiplier) noexcept {
+  if (multiplier <= 0) {
+    return true;
+  }
+  if (value > 0) {
+    return value > std::numeric_limits<Timestamp>::max() / multiplier;
+  }
+  if (value < 0) {
+    return value < std::numeric_limits<Timestamp>::min() / multiplier;
+  }
+  return false;
+}
+
+[[nodiscard]] Status rescale_to_nanoseconds(std::vector<Timestamp>& values, ArrowTimeUnit unit) {
+  Timestamp ns_per_tick = 1;
+  switch (unit) {
+    case NANOARROW_TIME_UNIT_SECOND:
+      ns_per_tick = std::chrono::nanoseconds{std::chrono::seconds{1}}.count();
+      break;
+    case NANOARROW_TIME_UNIT_MILLI:
+      ns_per_tick = std::chrono::nanoseconds{std::chrono::milliseconds{1}}.count();
+      break;
+    case NANOARROW_TIME_UNIT_MICRO:
+      ns_per_tick = std::chrono::nanoseconds{std::chrono::microseconds{1}}.count();
+      break;
+    case NANOARROW_TIME_UNIT_NANO:
+      return okStatus();  // already nanoseconds
+  }
+  for (Timestamp& v : values) {
+    if (multiplyWouldOverflow(v, ns_per_tick)) {
+      return unexpected(
+          fmt::format(
+              "Arrow TIMESTAMP[{}] value {} cannot be represented as int64 nanoseconds", timeUnitName(unit), v));
+    }
+    v *= ns_per_tick;
+  }
+  return okStatus();
+}
+
+/// Extract timestamps (as int64 ns) from an ArrowArrayView child column. @p unit
+/// is the column's Arrow time unit (s/ms/us/ns) when it is a TIMESTAMP; raw
+/// integer columns pass NANOARROW_TIME_UNIT_NANO and are taken as ns verbatim.
+Expected<std::vector<Timestamp>> extract_timestamps_nanoarrow(
+    const ArrowArrayView* view, int64_t length, ArrowTimeUnit unit) {
   const auto n = static_cast<std::size_t>(length);
   std::vector<Timestamp> result(n);
 
@@ -240,11 +302,17 @@ std::vector<Timestamp> extract_timestamps_nanoarrow(const ArrowArrayView* view, 
       result[static_cast<std::size_t>(i)] = static_cast<Timestamp>(raw[i]);
     }
   } else {
+    // Unsupported storage: synthesize row indices (not a real time → no scaling).
     for (int64_t i = 0; i < length; ++i) {
       result[static_cast<std::size_t>(i)] = i;
     }
+    return result;
   }
 
+  Status scale_status = rescale_to_nanoseconds(result, unit);
+  if (!scale_status.has_value()) {
+    return unexpected(scale_status.error());
+  }
   return result;
 }
 
@@ -316,6 +384,19 @@ PJ::Status ingestBatchesFromStream(
     return PJ::unexpected("Failed to initialize ArrowArrayView from schema");
   }
 
+  // Resolve the timestamp column's Arrow time unit once. A plain integer column
+  // (or none) defaults to nanoseconds, preserving raw int64-ns timestamps; a
+  // TIMESTAMP column carries its s/ms/us/ns unit, which extract_timestamps scales.
+  ArrowTimeUnit timestamp_unit = NANOARROW_TIME_UNIT_NANO;
+  if (timestamp_column >= 0 && timestamp_column < schema->n_children) {
+    ArrowSchemaView ts_view;
+    ArrowError ts_error;
+    if (ArrowSchemaViewInit(&ts_view, schema->children[timestamp_column], &ts_error) == NANOARROW_OK &&
+        ts_view.type == NANOARROW_TYPE_TIMESTAMP) {
+      timestamp_unit = ts_view.time_unit;
+    }
+  }
+
   nanoarrow::UniqueArray batch;
   while (true) {
     batch.reset();
@@ -344,7 +425,12 @@ PJ::Status ingestBatchesFromStream(
         return PJ::unexpected(
             fmt::format("timestamp_column {} out of range ({} children)", timestamp_column, array_view->n_children));
       }
-      timestamps = extract_timestamps_nanoarrow(array_view->children[timestamp_column], num_rows);
+      auto timestamps_or =
+          extract_timestamps_nanoarrow(array_view->children[timestamp_column], num_rows, timestamp_unit);
+      if (!timestamps_or.has_value()) {
+        return unexpected(timestamps_or.error());
+      }
+      timestamps = std::move(*timestamps_or);
     } else {
       timestamps = generate_sequential_timestamps(num_rows);
     }

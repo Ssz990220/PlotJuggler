@@ -445,7 +445,7 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
           // currentTimeChanged only fires on changes, so a brand-new widget
           // never gets the current playhead — seed it now to render at the right
           // time immediately.
-          scene3d->onTrackerTime(session_->playbackEngine().currentTime());
+          scene3d->onTrackerTime(toAxisDouble(session_->playbackEngine().currentTime()));
         } else if (auto* media2d = qobject_cast<Media2DDockWidget*>(qwidget)) {
           if (!media2d->setImageTopic(seed->topic_id, seed->object_type, seed->title)) {
             media2d->deleteLater();
@@ -463,12 +463,12 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
             streaming_playback_seeded_ = true;
             if (const auto range = computeActiveStreamingRangeSec(); range.has_value()) {
               auto& engine = session_->playbackEngine();
-              engine.setRange(range->min, range->max);
-              engine.setCurrentTime(range->max);
+              engine.setRange(displayRange(range->min, range->max));
+              engine.setCurrentTime(displaySeconds(range->max));
             }
           }
           media2d->setPointInspectorEnabled(show_points_);
-          media2d->onTrackerTime(session_->playbackEngine().currentTime());
+          media2d->onTrackerTime(toAxisDouble(session_->playbackEngine().currentTime()));
         } else {
           // makeSceneDock produced a kind this populate switch doesn't handle —
           // a programming error if a new family is added without a branch here.
@@ -696,7 +696,7 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
   DebugUi::installInto(this, theme_.get());
 
   auto& playback = session_->playbackEngine();
-  playback.setRange(0.0, 10.0);
+  playback.setRange(displayRange(0.0, 10.0));
   ui_->timelineWidget->setPlaybackEngine(&playback);
   connect(&playback, &PlaybackEngine::currentTimeChanged, this, [this](double time) {
     forEachDock([time](DockWidget* dock) { dock->onTrackerTime(time); });
@@ -741,8 +741,8 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
         }
         if (const auto range = computeActiveStreamingRangeSec(); range.has_value()) {
           auto& engine = session_->playbackEngine();
-          engine.setRange(range->min, range->max);
-          engine.setCurrentTime(range->max);
+          engine.setRange(displayRange(range->min, range->max));
+          engine.setCurrentTime(displaySeconds(range->max));
         }
       });
 
@@ -996,7 +996,7 @@ bool MainWindow::populateTestData() {
     return false;
   }
   session_->catalogModel().rebuildFromDatastore();
-  session_->playbackEngine().setRange(0.0, kTestDurationSeconds);
+  session_->playbackEngine().setRange(displayRange(0.0, kTestDurationSeconds));
   emitDiagnostic(DiagnosticLevel::kInfo, "TestData", "loaded", tr("Loaded test sin/cos data"));
   return true;
 }
@@ -1207,7 +1207,7 @@ void MainWindow::onPlotAdded(PlotWidget* plot) {
   connect(plot, &PlotWidget::statusMessageRequested, this, [this](const QString& message) {
     emitDiagnostic(DiagnosticLevel::kInfo, "Plot", "status", message);
   });
-  plot->setTrackerPosition(session_->playbackEngine().currentTime());
+  plot->setTrackerPosition(toAxisDouble(session_->playbackEngine().currentTime()));
   applyGlobalToggles(plot);
   if (curve_editor_ != nullptr && curve_editor_->plot() == nullptr) {
     bindEditorToPlot(plot);
@@ -1420,7 +1420,7 @@ void MainWindow::onPlotZoomChanged(PlotWidget* modified, QRectF rect) {
 }
 
 void MainWindow::onTrackerMovedFromWidget(QPointF point) {
-  session_->playbackEngine().setCurrentTime(point.x());
+  session_->playbackEngine().setCurrentTime(displaySeconds(point.x()));
 }
 
 std::optional<Range<double>> MainWindow::computeActiveStreamingRangeSec() const {
@@ -2785,7 +2785,8 @@ void MainWindow::buildGlobalToolbar() {
     if (applying_state_) {
       return;
     }
-    reference_time_ = checked ? std::optional<double>{session_->playbackEngine().currentTime()} : std::nullopt;
+    reference_time_ =
+        checked ? std::optional<double>{toAxisDouble(session_->playbackEngine().currentTime())} : std::nullopt;
     forEachPlot([this](PlotWidget* plot) { plot->setReferenceLine(reference_time_); });
   });
 

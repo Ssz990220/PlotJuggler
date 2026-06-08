@@ -19,7 +19,8 @@ The authoritative source is `include/pj_runtime/`. Today:
 | `AppSession.h` | Central runtime object. Owns and exposes the services below. `pj_app` instantiates one at startup. |
 | `SessionManager.h` | Session lifecycle (load/clear/active dataset). Also owns and exposes the session's `CurveColorRegistry` so plot widgets can reach it through their existing `SessionManager` pointer. |
 | `CatalogModel.h` | Catalog of curves, objects, and data sources available to the UI. |
-| `PlaybackEngine.h` | Time cursor + playback (play/pause/seek/loop). Drives `IDataWidget::onTrackerTime`. |
+| `Time.h` | Canonical time vocabulary: `Timepoint` (absolute `sys_time<ns>`), `Duration`, and `DisplaySeconds` (the Qwt/playback display-axis coordinate), plus named boundary adapters (`fromRaw`/`toRaw`, `rawToDisplaySeconds`, `toAxisDouble`). Sits above the frozen int64-ns spine; nothing here touches the SDK submodule. |
+| `PlaybackEngine.h` | Time cursor + playback (play/pause/seek/loop). Public API speaks `DisplaySeconds`/`DisplayRange`; the `currentTimeChanged(double)` signal + `IDataWidget::onTrackerTime(double)` stay `double` (a fleet-wide moc/vtable contract). |
 | `DataSourceRuntimeHost.h` | Host-side runner for `DataSource` plugins from `pj_plugins`. |
 | `ToolboxRuntimeHost.h` | Host-side runner for `Toolbox` plugins: assembles `ToolboxHostService` (write surface) + `ToolboxRuntimeHostService` (diagnostics / data-changed) + `SettingsStoreService` into a `ServiceRegistry`. App concerns are injected as `Callbacks`; the `[thread-safe]` vtable callbacks marshal onto the constructing (GUI) thread. |
 | `QSettingsBackend.h` | `sdk::SettingsBackend` implemented over `QSettings` (→ `PlotJuggler4.conf`); injected into `ToolboxRuntimeHost` so plugin settings persist. `'/'`-separated keys map to `.conf` groups. |

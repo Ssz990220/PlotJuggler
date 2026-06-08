@@ -9,7 +9,12 @@
 
 namespace pj::scene3d {
 
-using TimePoint = std::chrono::nanoseconds;
+// An ABSOLUTE frame stamp (nanoseconds, Unix epoch) — structurally identical to
+// PJ::Timepoint in pj_runtime/Time.h, but defined here so pj_scene3d_core stays
+// pj_runtime-free. Being a time_point (not a bare nanoseconds duration) keeps it
+// un-mixable with Duration: TimePoint - TimePoint is a Duration, TimePoint +
+// TimePoint won't compile.
+using TimePoint = std::chrono::sys_time<std::chrono::nanoseconds>;
 
 struct Transform {
   glm::dvec3 t{0.0};

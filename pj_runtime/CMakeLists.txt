@@ -52,6 +52,16 @@ target_link_libraries(pj_runtime PUBLIC
 )
 
 if(PJ_BUILD_TESTS)
+    add_executable(time_test
+        tests/time_test.cpp
+    )
+    target_compile_options(time_test PRIVATE ${PJ_WARNING_FLAGS})
+    target_link_libraries(time_test PRIVATE
+        pj_runtime
+        GTest::gtest_main
+    )
+    add_test(NAME TimeTest COMMAND time_test)
+
     add_executable(app_session_test
         tests/app_session_test.cpp
     )

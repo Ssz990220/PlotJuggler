@@ -81,9 +81,31 @@ TEST(AppSessionTest, SeedPlaybackUsesScalarAndObjectTimeBounds) {
       session.sessionManager().objectStore().pushOwned(*object_topic, 900, std::vector<uint8_t>{1}).has_value());
 
   EXPECT_TRUE(session.seedPlaybackFromSession());
-  EXPECT_DOUBLE_EQ(session.playbackEngine().rangeMin(), 100.0e-9);
-  EXPECT_DOUBLE_EQ(session.playbackEngine().rangeMax(), 900.0e-9);
-  EXPECT_DOUBLE_EQ(session.playbackEngine().currentTime(), 100.0e-9);
+  EXPECT_DOUBLE_EQ(session.playbackEngine().rangeMin().value, 100.0e-9);
+  EXPECT_DOUBLE_EQ(session.playbackEngine().rangeMax().value, 900.0e-9);
+  EXPECT_DOUBLE_EQ(session.playbackEngine().currentTime().value, 100.0e-9);
+}
+
+TEST(AppSessionTest, SeedPlaybackUsesDisplayRelativeSecondsForShiftedDataset) {
+  QTemporaryDir dir;
+  ASSERT_TRUE(dir.isValid());
+  PJ::AppSession session(dir.path());
+
+  // A dataset on a time domain shifted by +2 s (display_time = raw - 2e9).
+  auto domain = session.sessionManager().dataEngine().createTimeDomain("shifted");
+  ASSERT_TRUE(domain.has_value()) << domain.error();
+  session.sessionManager().dataEngine().setDisplayOffset(*domain, 2'000'000'000LL);
+  auto dataset = session.sessionManager().dataEngine().createDataset(
+      PJ::DatasetDescriptor{.source_name = "shifted.mcap", .time_domain_id = *domain});
+  ASSERT_TRUE(dataset.has_value()) << dataset.error();
+  addScalarSamples(session, *dataset, "/imu/x", {5'000'000'000LL, 9'000'000'000LL});
+
+  EXPECT_TRUE(session.seedPlaybackFromSession());
+  // Display seconds = (raw - 2e9)/1e9 -> [3, 7], NOT the absolute [5, 9] the old
+  // offset-blind seeding produced.
+  EXPECT_DOUBLE_EQ(session.playbackEngine().rangeMin().value, 3.0);
+  EXPECT_DOUBLE_EQ(session.playbackEngine().rangeMax().value, 7.0);
+  EXPECT_DOUBLE_EQ(session.playbackEngine().currentTime().value, 3.0);
 }
 
 TEST(AppSessionTest, SubsequentSeedPreservesCurrentTimeWhenNewRangeIsSubset) {
@@ -96,7 +118,7 @@ TEST(AppSessionTest, SubsequentSeedPreservesCurrentTimeWhenNewRangeIsSubset) {
   ASSERT_TRUE(first_dataset.has_value()) << first_dataset.error();
   addScalarSamples(session, *first_dataset, "/imu/x", {100, 200});
   ASSERT_TRUE(session.seedPlaybackFromSession());
-  session.playbackEngine().setCurrentTime(150.0e-9);
+  session.playbackEngine().setCurrentTime(PJ::DisplaySeconds{150.0e-9});
 
   auto second_dataset =
       session.sessionManager().dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "second.mcap"});
@@ -104,9 +126,9 @@ TEST(AppSessionTest, SubsequentSeedPreservesCurrentTimeWhenNewRangeIsSubset) {
   addScalarSamples(session, *second_dataset, "/imu/x", {120, 180});
 
   EXPECT_TRUE(session.seedPlaybackFromSession());
-  EXPECT_DOUBLE_EQ(session.playbackEngine().rangeMin(), 100.0e-9);
-  EXPECT_DOUBLE_EQ(session.playbackEngine().rangeMax(), 200.0e-9);
-  EXPECT_DOUBLE_EQ(session.playbackEngine().currentTime(), 150.0e-9);
+  EXPECT_DOUBLE_EQ(session.playbackEngine().rangeMin().value, 100.0e-9);
+  EXPECT_DOUBLE_EQ(session.playbackEngine().rangeMax().value, 200.0e-9);
+  EXPECT_DOUBLE_EQ(session.playbackEngine().currentTime().value, 150.0e-9);
 }
 
 TEST(AppSessionTest, ClearingCatalogForgetsRememberedCurveColors) {

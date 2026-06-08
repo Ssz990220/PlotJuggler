@@ -92,8 +92,8 @@ void TimelineWidget::setPlaybackEngine(PlaybackEngine* engine) {
   connect(engine_, &PlaybackEngine::playingChanged, this, &TimelineWidget::onEnginePlayingChanged);
   connect(engine_, &PlaybackEngine::playbackRateChanged, this, &TimelineWidget::onEngineRateChanged);
 
-  onEngineRangeChanged(engine_->rangeMin(), engine_->rangeMax());
-  onEngineTimeChanged(engine_->currentTime());
+  onEngineRangeChanged(toAxisDouble(engine_->rangeMin()), toAxisDouble(engine_->rangeMax()));
+  onEngineTimeChanged(toAxisDouble(engine_->currentTime()));
   onEnginePlayingChanged(engine_->isPlaying());
   onEngineRateChanged(engine_->playbackRate());
 }
@@ -143,7 +143,7 @@ void TimelineWidget::onSliderValueChanged(double value) {
   // loop, but it will fire as soon as control returns).
   has_pending_seek_ = false;
   seek_throttle_timer_.start();
-  engine_->setCurrentTime(value);
+  engine_->setCurrentTime(displaySeconds(value));
 }
 
 void TimelineWidget::flushPendingSeek() {
@@ -157,7 +157,7 @@ void TimelineWidget::flushPendingSeek() {
   const double v = pending_seek_value_;
   has_pending_seek_ = false;
   seek_throttle_timer_.start();  // Re-arm so a long drag stays rate-limited.
-  engine_->setCurrentTime(v);
+  engine_->setCurrentTime(displaySeconds(v));
 }
 
 void TimelineWidget::onPlayToggled(bool checked) {

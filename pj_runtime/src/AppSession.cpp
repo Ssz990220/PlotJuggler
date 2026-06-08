@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <limits>
+#include <optional>
 #include <utility>
 
 #include "pj_base/types.hpp"
@@ -15,7 +16,7 @@
 #include "pj_runtime/ExtensionCatalogService.h"
 #include "pj_runtime/PlaybackEngine.h"
 #include "pj_runtime/SessionManager.h"
-#include "pj_runtime/constants.h"
+#include "pj_runtime/Time.h"
 
 namespace PJ {
 
@@ -55,18 +56,26 @@ bool AppSession::seedPlaybackFromSession() {
   const DataReader reader = session_manager_->createReader();
   const ObjectStore& object_store = session_manager_->objectStore();
 
-  Timestamp t_min = std::numeric_limits<Timestamp>::max();
-  Timestamp t_max = std::numeric_limits<Timestamp>::min();
-  bool found = false;
+  // Union the bounds in DISPLAY-relative seconds, converting each dataset with
+  // its OWN offset, so the playback axis matches what the plots render
+  // (display_time = raw_time - offset) rather than the absolute epoch.
+  std::optional<DisplaySeconds> new_min;
+  std::optional<DisplaySeconds> new_max;
 
   for (const DatasetId dataset_id : reader.listDatasets()) {
+    const DisplayOffset offset = session_manager_->displayOffset(dataset_id);
+
+    Timestamp raw_min = std::numeric_limits<Timestamp>::max();
+    Timestamp raw_max = std::numeric_limits<Timestamp>::min();
+    bool found = false;
+
     for (const TopicId topic_id : reader.listTopics(dataset_id)) {
       const auto metadata = reader.getMetadata(topic_id);
       if (!metadata.has_value() || metadata->total_row_count == 0) {
         continue;
       }
-      t_min = std::min(t_min, metadata->time_range_min);
-      t_max = std::max(t_max, metadata->time_range_max);
+      raw_min = std::min(raw_min, metadata->time_range_min);
+      raw_max = std::max(raw_max, metadata->time_range_max);
       found = true;
     }
 
@@ -75,33 +84,37 @@ bool AppSession::seedPlaybackFromSession() {
         continue;
       }
       const auto [object_min, object_max] = object_store.timeRange(object_topic_id);
-      t_min = std::min(t_min, object_min);
-      t_max = std::max(t_max, object_max);
+      raw_min = std::min(raw_min, object_min);
+      raw_max = std::max(raw_max, object_max);
       found = true;
     }
+
+    if (!found) {
+      continue;
+    }
+
+    const DisplaySeconds ds_min = rawToDisplaySeconds(raw_min, offset);
+    const DisplaySeconds ds_max = rawToDisplaySeconds(raw_max, offset);
+    new_min = new_min ? std::min(*new_min, ds_min) : ds_min;
+    new_max = new_max ? std::max(*new_max, ds_max) : ds_max;
   }
 
-  if (!found) {
+  if (!new_min) {
     return false;
   }
 
-  const double new_min_sec = static_cast<double>(t_min) / kNanosecondsPerSecond;
-  const double new_max_sec = static_cast<double>(t_max) / kNanosecondsPerSecond;
-
   if (!playback_seeded_) {
     // First load: snap range and currentTime to data bounds.
-    playback_engine_->setRange(new_min_sec, new_max_sec);
-    playback_engine_->setCurrentTime(new_min_sec);
+    playback_engine_->setRange(DisplayRange{*new_min, *new_max});
+    playback_engine_->setCurrentTime(*new_min);
     playback_seeded_ = true;
     return true;
   }
 
-  // Subsequent loads: expand monotonically; keep the user's current playhead
-  // unless it is now outside the union range (PlaybackEngine::setRange will
-  // clamp via setCurrentTime if needed).
-  const double union_min = std::min(playback_engine_->rangeMin(), new_min_sec);
-  const double union_max = std::max(playback_engine_->rangeMax(), new_max_sec);
-  playback_engine_->setRange(union_min, union_max);
+  // Subsequent loads expand the range monotonically; setRange re-clamps the playhead.
+  const DisplaySeconds union_min = std::min(playback_engine_->rangeMin(), *new_min);
+  const DisplaySeconds union_max = std::max(playback_engine_->rangeMax(), *new_max);
+  playback_engine_->setRange(DisplayRange{union_min, union_max});
   return true;
 }
 

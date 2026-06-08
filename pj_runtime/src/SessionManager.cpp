@@ -24,6 +24,19 @@ DataReader SessionManager::createReader() const {
   return data_engine_.createReader();
 }
 
+DisplayOffset SessionManager::displayOffset(DatasetId dataset_id) const {
+  // Live lookup via the time-domain map: the dataset's own time_domain is a
+  // snapshot from createDataset, so reading its display_offset directly would go
+  // stale after setDisplayOffset. Same discipline as DatastoreCurveAdapter.
+  if (const DatasetInfo* dataset = data_engine_.getDataset(dataset_id);
+      dataset != nullptr && dataset->time_domain.id != 0) {
+    if (const TimeDomain* domain = data_engine_.getTimeDomain(dataset->time_domain.id)) {
+      return offsetOf(*domain);
+    }
+  }
+  return DisplayOffset{};  // unknown dataset or default domain → no shift
+}
+
 std::vector<TopicId> SessionManager::commitChunks(std::vector<std::pair<TopicId, TopicChunk>> chunks) {
   auto changed = data_engine_.commitChunks(std::move(chunks));
   if (!changed.empty()) {

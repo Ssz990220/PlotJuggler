@@ -13,7 +13,7 @@
 #include "pj_datastore/query.hpp"
 #include "pj_datastore/reader.hpp"
 #include "pj_runtime/SessionManager.h"
-#include "pj_runtime/constants.h"
+#include "pj_runtime/Time.h"
 
 namespace PJ {
 namespace {
@@ -26,14 +26,16 @@ namespace {
   return {1.0, 1.0, -2.0, -2.0};
 }
 
-// Caller is responsible for finite-checking display_sec — Qwt rects from real
-// viewports are always bounded; the upstream call sites guard against NaN/inf.
+// Thin Qwt-boundary adapters over the canonical conversions in Time.h, so the
+// (raw - offset)/1e9 arithmetic lives in exactly one place. Caller is responsible
+// for finite-checking display_sec — Qwt rects from real viewports are always
+// bounded; the upstream call sites guard against NaN/inf.
 [[nodiscard]] Timestamp displaySecondsToRawNs(double display_sec, Timestamp display_offset_ns) noexcept {
-  return static_cast<Timestamp>(std::llround(display_sec * kNanosecondsPerSecond)) + display_offset_ns;
+  return displaySecondsToRaw(fromAxisDouble(display_sec), DisplayOffset{Duration{display_offset_ns}});
 }
 
 [[nodiscard]] double rawNsToDisplaySeconds(Timestamp raw_ns, Timestamp display_offset_ns) noexcept {
-  return static_cast<double>(raw_ns - display_offset_ns) / kNanosecondsPerSecond;
+  return toAxisDouble(rawToDisplaySeconds(raw_ns, DisplayOffset{Duration{display_offset_ns}}));
 }
 
 [[nodiscard]] bool isAllRowsWindow(Timestamp t_min, Timestamp t_max) noexcept {

@@ -19,7 +19,9 @@ PlaybackEngine::PlaybackEngine(QObject* parent) : QObject(parent) {
 
 PlaybackEngine::~PlaybackEngine() = default;
 
-void PlaybackEngine::setRange(double min, double max) {
+void PlaybackEngine::setRange(DisplayRange range) {
+  double min = range.min.value;
+  double max = range.max.value;
   if (max < min) {
     std::swap(min, max);
   }
@@ -37,8 +39,8 @@ void PlaybackEngine::setRange(double min, double max) {
   }
 }
 
-void PlaybackEngine::setCurrentTime(double t) {
-  const double clamped = clampedTime(t);
+void PlaybackEngine::setCurrentTime(DisplaySeconds t) {
+  const double clamped = clampedTime(t.value);
   if (clamped == current_time_) {
     return;
   }

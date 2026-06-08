@@ -4,6 +4,7 @@
 #include <gtest/gtest.h>
 
 #include <QString>
+#include <chrono>
 
 #include "pj_runtime/SessionManager.h"
 
@@ -148,6 +149,28 @@ TEST(SessionManagerObjectsTest, EvictObjectTopicsRemovesOnlySpecifiedTopics) {
   const auto remaining = session.objectStore().listTopics(*dataset);
   ASSERT_EQ(remaining.size(), 1U) << "sibling object topic in the same dataset must survive";
   EXPECT_EQ(remaining.front().id, topic_keep->id) << "the surviving topic must be the one not evicted";
+}
+
+TEST(SessionManagerTimeTest, DisplayOffsetReadsLiveTimeDomainShift) {
+  PJ::SessionManager session;
+  auto domain = session.dataEngine().createTimeDomain("shifted");
+  ASSERT_TRUE(domain.has_value());
+  auto dataset = session.dataEngine().createDataset(
+      PJ::DatasetDescriptor{.source_name = "shifted.mcap", .time_domain_id = *domain});
+  ASSERT_TRUE(dataset.has_value());
+
+  // Offset set AFTER createDataset: it must be read live, since the dataset's
+  // snapshot of the domain would still report zero.
+  session.dataEngine().setDisplayOffset(*domain, 2'000'000'000LL);
+  EXPECT_EQ(session.displayOffset(*dataset).value, std::chrono::nanoseconds{2'000'000'000LL});
+}
+
+TEST(SessionManagerTimeTest, DisplayOffsetIsZeroForDefaultDomainAndUnknownDataset) {
+  PJ::SessionManager session;
+  auto dataset = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "plain.mcap"});
+  ASSERT_TRUE(dataset.has_value());
+  EXPECT_EQ(session.displayOffset(*dataset).value, std::chrono::nanoseconds{0});  // default (id 0) domain
+  EXPECT_EQ(session.displayOffset(9999).value, std::chrono::nanoseconds{0});      // unknown dataset
 }
 
 }  // namespace

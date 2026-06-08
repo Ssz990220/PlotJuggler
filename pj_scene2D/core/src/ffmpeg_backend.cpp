@@ -11,6 +11,9 @@ extern "C" {
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
+#include <cstdint>
+#include <limits>
 
 namespace PJ {
 
@@ -18,6 +21,25 @@ FfmpegBackend::FfmpegBackend() : decoder_(std::make_unique<FfmpegDecoder>()) {}
 
 FfmpegBackend::~FfmpegBackend() {
   close();
+}
+
+int64_t FfmpegBackend::ptsPerFrame(int64_t frame_interval_us, double time_base) noexcept {
+  if (!std::isfinite(time_base) || time_base <= 0.0) {
+    return 1;  // unknown/degenerate time_base — caller falls back to a 1-tick step
+  }
+  // ticks/frame = (frame_interval seconds) / (seconds per tick). Done in double
+  // so a sub-µs time_base survives; the old int64(time_base * 1e6) floored to 0.
+  const double ticks = (static_cast<double>(frame_interval_us) * 1e-6) / time_base;
+  if (!std::isfinite(ticks) || ticks <= 1.0) {
+    return 1;
+  }
+  // The decode logic multiplies this value by small constants (up to 100).
+  // Clamp degenerate tiny time_bases before llround and before those products.
+  constexpr int64_t kMaxSafeTicks = std::numeric_limits<int64_t>::max() / 100;
+  if (ticks >= static_cast<double>(kMaxSafeTicks)) {
+    return kMaxSafeTicks;
+  }
+  return std::llround(ticks);
 }
 
 bool FfmpegBackend::open(const std::string& path) {
@@ -266,8 +288,7 @@ void FfmpegBackend::decodeThread() {
       // don't seek — just continue decoding forward. Avoids flush penalty.
       static constexpr int kForwardThreshold = 100;
       int64_t forward_gap = target - last_decoded_pts_;
-      int64_t threshold_pts =
-          static_cast<int64_t>(kForwardThreshold) * frame_interval_us_ / static_cast<int64_t>(time_base_ * 1'000'000);
+      int64_t threshold_pts = static_cast<int64_t>(kForwardThreshold) * ptsPerFrame(frame_interval_us_, time_base_);
       bool need_seek = last_decoded_pts_ < 0 || target <= last_decoded_pts_ || forward_gap > threshold_pts;
 
       int64_t kf_pts = findKeyframeBefore(target);
@@ -360,7 +381,7 @@ void FfmpegBackend::decodeAndDeliver(int64_t target_pts, bool allow_partial, int
       continue;
     }
 
-    int64_t pts_per_frame = frame_interval_us_ / static_cast<int64_t>(time_base_ * 1'000'000);
+    int64_t pts_per_frame = ptsPerFrame(frame_interval_us_, time_base_);
     bool near_target = pkt->pts >= target_pts || (target_pts - pkt->pts) <= pts_per_frame * 5;
 
     // For forward scrub: periodic full decode for partials.

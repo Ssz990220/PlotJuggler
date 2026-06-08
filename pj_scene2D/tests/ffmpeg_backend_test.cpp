@@ -17,6 +17,7 @@
 #include <chrono>
 #include <cmath>
 #include <filesystem>
+#include <limits>
 #include <string>
 #include <thread>
 #include <vector>
@@ -822,6 +823,47 @@ TEST_F(FfmpegBackendTest, ForwardScrubSettle4K) {
     EXPECT_LT(backward_jump, 0.5) << "Rewind after 4K forward scrub at index " << i << ": was at " << last_scrub_pos
                                   << ", jumped to " << tb.positions[i];
   }
+}
+
+// ---------------------------------------------------------------------------
+// ptsPerFrame — pure helper, no video fixture needed
+// ---------------------------------------------------------------------------
+//
+// Regression for the time_base truncation bug: the old divisor
+// `int64(time_base * 1e6)` floored to 0 for any time_base < 1 µs/tick (e.g. a
+// nanosecond time_base), so `frame_interval_us / 0` divided by zero. The helper
+// computes ticks/frame in floating point and clamps to >= 1.
+TEST(FfmpegBackendPtsPerFrame, HandlesFineTimeBaseWithoutDivideByZero) {
+  constexpr int64_t kFrameUs = 33333;  // 30 fps → ~33333 µs/frame
+
+  // Typical 90 kHz video time_base: 33333 µs / (1/90000 s/tick) ≈ 3000 ticks.
+  EXPECT_NEAR(static_cast<double>(FfmpegBackend::ptsPerFrame(kFrameUs, 1.0 / 90000.0)), 3000.0, 2.0);
+
+  // Millisecond time_base (1/1000 s/tick) ≈ 33 ticks/frame.
+  EXPECT_NEAR(static_cast<double>(FfmpegBackend::ptsPerFrame(kFrameUs, 1.0 / 1000.0)), 33.0, 1.0);
+
+  // Nanosecond time_base (1e-9 s/tick): THE regression case. Old code:
+  // int64(1e-9 * 1e6) == int64(0.001) == 0 → divide-by-zero. New code: a large
+  // positive tick count (≈ 33,333,000), never zero.
+  const int64_t ns_tb = FfmpegBackend::ptsPerFrame(kFrameUs, 1e-9);
+  EXPECT_GT(ns_tb, 0);
+  EXPECT_NEAR(static_cast<double>(ns_tb), 33'333'000.0, 1.0);
+
+  // Another sub-µs time_base past the old truncation cliff (1/15360000 s/tick).
+  EXPECT_GT(FfmpegBackend::ptsPerFrame(kFrameUs, 1.0 / 15'360'000.0), 0);
+
+  // Degenerate/unknown time_base → safe 1-tick fallback (no UB).
+  EXPECT_EQ(FfmpegBackend::ptsPerFrame(kFrameUs, 0.0), 1);
+  EXPECT_EQ(FfmpegBackend::ptsPerFrame(kFrameUs, -1.0), 1);
+  EXPECT_EQ(FfmpegBackend::ptsPerFrame(kFrameUs, std::numeric_limits<double>::quiet_NaN()), 1);
+  EXPECT_EQ(FfmpegBackend::ptsPerFrame(kFrameUs, std::numeric_limits<double>::infinity()), 1);
+
+  // Never returns 0 even when a frame spans less than one tick.
+  EXPECT_GE(FfmpegBackend::ptsPerFrame(kFrameUs, 100.0), 1);
+
+  // Absurdly tiny but finite time_base: clamp before llround() would overflow
+  // and keep later threshold multiplications inside int64_t.
+  EXPECT_EQ(FfmpegBackend::ptsPerFrame(kFrameUs, 1e-300), std::numeric_limits<int64_t>::max() / 100);
 }
 
 }  // namespace

@@ -7,11 +7,15 @@
 #include <QTimer>
 #include <memory>
 
+#include "pj_runtime/Time.h"
+
 namespace PJ {
 
 // Authoritative tracker time + play/pause/loop state. Drives a QTimer while
 // playing; every widget family subscribes to currentTimeChanged to stay in
-// sync.
+// sync. Time is display-relative seconds (DisplaySeconds); the change SIGNALS
+// stay bare double — they are a moc/vtable contract shared by every widget
+// family's onTrackerTime(double), so they are deliberately not typed.
 class PlaybackEngine : public QObject {
   Q_OBJECT
  public:
@@ -23,14 +27,14 @@ class PlaybackEngine : public QObject {
   PlaybackEngine(const PlaybackEngine&) = delete;
   PlaybackEngine& operator=(const PlaybackEngine&) = delete;
 
-  double currentTime() const {
-    return current_time_;
+  [[nodiscard]] DisplaySeconds currentTime() const {
+    return DisplaySeconds{current_time_};
   }
-  double rangeMin() const {
-    return range_min_;
+  [[nodiscard]] DisplaySeconds rangeMin() const {
+    return DisplaySeconds{range_min_};
   }
-  double rangeMax() const {
-    return range_max_;
+  [[nodiscard]] DisplaySeconds rangeMax() const {
+    return DisplaySeconds{range_max_};
   }
   double playbackRate() const {
     return rate_;
@@ -46,8 +50,8 @@ class PlaybackEngine : public QObject {
   }
 
  public slots:
-  void setRange(double min, double max);
-  void setCurrentTime(double t);
+  void setRange(DisplayRange range);
+  void setCurrentTime(DisplaySeconds t);
   void setPlaybackRate(double rate);
   void setStep(double step);
   void setLooping(bool looping);

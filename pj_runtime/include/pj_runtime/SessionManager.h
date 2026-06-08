@@ -19,6 +19,7 @@
 #include "pj_datastore/reader.hpp"
 #include "pj_plugins/host/message_parser_handle.hpp"
 #include "pj_runtime/CurveColorRegistry.h"
+#include "pj_runtime/Time.h"
 
 namespace PJ {
 
@@ -54,6 +55,11 @@ class SessionManager : public QObject {
   }
 
   [[nodiscard]] DataReader createReader() const;
+
+  /// Per-dataset display shift (display_time = raw_time - offset), read LIVE from
+  /// the time-domain map (the dataset's own snapshot can go stale after
+  /// setDisplayOffset). Zero for an unknown dataset or the default (id 0) domain.
+  [[nodiscard]] DisplayOffset displayOffset(DatasetId dataset_id) const;
 
   [[nodiscard]] std::vector<TopicId> commitChunks(std::vector<std::pair<TopicId, TopicChunk>> chunks);
 

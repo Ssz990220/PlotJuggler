@@ -97,7 +97,7 @@ void TransformService::ingestFrameTransformsForDataset(PJ::DatasetId dataset_id)
       }
       for (const auto& t : ft->transforms) {
         StampedTransform st;
-        st.stamp = std::chrono::nanoseconds(t.timestamp);
+        st.stamp = TimePoint{std::chrono::nanoseconds(t.timestamp)};
         st.parent_frame = t.parent_frame_id;
         st.child_frame = t.child_frame_id;
         st.transform.t = glm::dvec3{t.translation.x, t.translation.y, t.translation.z};
