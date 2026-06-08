@@ -205,6 +205,8 @@ Run the app:
 
 Re-running `./build.sh` after code changes does incremental builds. `ccache` is picked up automatically if installed.
 
+After a rebuild meant to pick up a C++ change, confirm the file actually recompiled (grep the build log for `Building .../<file>.cpp.o`, or check the `.o` mtime) before claiming the fix is live — RCC/QSS rebuilds can mask a stalled C++ recompile, so an edit looks like it had "no effect" when it was never compiled. Never chain `pkill … ; ./build.sh`: the chained build exits 144 and skips recompiling. Kill the running app in its own command, then run `./build.sh` standalone.
+
 Submodule: `git submodule update --init --recursive` on first clone.
 
 ## UI conventions
@@ -230,10 +232,30 @@ The 3D widget family ships as `pj_scene3D` (built and wired into `pj_app` via `S
 
 - Architectural questions → consult `PJ4_PLAN.md` first; escalate if the plan is silent or contradictory.
 - New modules must respect the dependency rules in plan §5 (widget families are siblings; `pj_runtime` has no concrete widget implementation and does not link `Qt6::Widgets`).
+- Keep host code (`pj_app`, `pj_runtime`, `conanfile.txt`) **domain-neutral**: no plugin-specific terms (dataset-domain names, "episode") or hardcoded per-plugin policy. Mechanisms/protocols stay generic; the plugin supplies the domain meaning. A genuinely general capability motivated by one plugin is fine (e.g. a standard codec); a plugin-specific reference or branch in the host is not.
+- Delegating to Codex: invoke it **harness-tracked with a watchdog** (`codex exec` inside a backgrounded, timeout-bounded `Bash`) — the companion job model sends no completion notification and Codex can hang silently. Judge liveness by job-log mtime, not the "running" status; on timeout, cancel and take over the build/test yourself. Codex output is usually high quality when it does finish — act on its findings.
+
+### Execution autonomy
+
+Once we've agreed on an approach, run the plan to completion — work through implementation, build, and tests **without pausing for "should I proceed?" check-ins**. Davide reviews the final result, not each step; don't ask for mid-task confirmation on reversible work. "Run to completion" stops **at the commit boundary, not through it**: commits (see Commit policy), pushes/PRs, and anything outward-facing or destructive still require a stop-and-surface.
+
+### Verifying visual / performance changes
+
+Don't just assert a change works and hand it back ("I don't see any difference" / "are you sure something changed?" are recurring round-trips). Calibrate the claim to what you actually checked:
+
+- **Visual / widget / layout changes** — self-verification is often impractical, so this is a *suggestion*, not a rule: when it's cheap, a screenshot (qt-widgeteer harness or `/run`) is worth it; otherwise just be honest about what you did and didn't confirm rather than implying it's visually verified.
+- **Performance changes** — these *are* measurable, so prefer a **number** over assertion (replot/repaint rate, which should stay ≤60 Hz; frame time; a profiler counter).
 
 ### Commit policy
 
 - **Never commit autonomously.** Surface the diff, then ask for approval. Commit only after explicit user confirmation in that turn.
+
+### Git gotchas (these cost time repeatedly)
+
+- After `git mv` + edits to the moved file, `git add` the new path — the edits are NOT staged with the rename ("100% similarity" in commit output is the tell that you shipped a stale blob).
+- `git rebase` skips pre-commit hooks. After any rebase with **manual conflict resolution**, run `pre-commit run --all-files` and fold fixes into the originating commit (`--fixup` + `--autosquash`) so every commit stays hook-clean.
+- After a squash-merge, verify every intended commit landed (`git log --oneline <merge-commit>`); commits pushed after the squash diff was prepared get silently dropped.
+- After merging `origin/main` into a feature branch, grep that the feature's entry points still have **production callers** (not just defs/tests) — a modify/delete conflict can accept the deletion and silently drop wiring while CI stays green.
 
 ### Porting policy from PJ3
 
