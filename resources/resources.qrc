@@ -74,6 +74,7 @@
     <file alias="grid.svg">svg/grid.svg</file>
     <file alias="grid_4x4.svg">svg/grid_4x4.svg</file>
     <file alias="grid_view.svg">svg/grid_view.svg</file>
+    <file alias="home.svg">svg/home.svg</file>
     <file alias="image.svg">svg/image.svg</file>
     <file alias="import.svg">svg/import.svg</file>
     <file alias="invert.svg">svg/invert.svg</file>

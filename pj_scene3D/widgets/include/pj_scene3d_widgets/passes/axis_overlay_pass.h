@@ -18,11 +18,17 @@ class AxisOverlayPass : public IRenderPass {
  public:
   enum class Corner { kTopLeft, kTopRight, kBottomLeft, kBottomRight };
 
+  // Default HUD footprint in widget pixels, exposed so layout code that reserves
+  // space beside the HUD (e.g. the Scene3D overlay controls) doesn't hardcode
+  // these literals. Mirrored by the member initializers below.
+  static constexpr int kDefaultSizePx = 80;
+  static constexpr int kDefaultMarginPx = 0;
+
   void initializeGL() override;
   void render(const ViewParams& view_params, const FrameContext& frame_ctx) override;
   void releaseGL() override;
 
-  // HUD geometry in widget-relative pixels. Defaults: 80×80 px, 12 px margin.
+  // HUD geometry in widget-relative pixels. Defaults: 80×80 px, 0 px margin.
   // Clamped to size_px >= 1 and margin_px >= 0 to keep glViewport / glScissor
   // out of GL_INVALID_VALUE territory.
   void setSize(int size_px, int margin_px) {
@@ -41,8 +47,8 @@ class AxisOverlayPass : public IRenderPass {
   void setArrowParams(const ArrowGizmo::Params& params);
 
  private:
-  int size_px_ = 80;
-  int margin_px_ = 12;
+  int size_px_ = kDefaultSizePx;
+  int margin_px_ = kDefaultMarginPx;
   Corner corner_ = Corner::kTopRight;
   bool initialized_ = false;
   ArrowGizmo arrow_;

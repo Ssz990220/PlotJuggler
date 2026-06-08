@@ -19,6 +19,7 @@
 #include "pj_scene_common/scene_layer.h"
 
 class QResizeEvent;
+class QToolButton;
 class QWidget;
 
 namespace pj::scene3d {
@@ -114,6 +115,10 @@ class Scene3DDockWidget : public SceneDockWidget {
   void refreshFrameOverlayCombo();
   void onOverlayFramePicked(int index);
   void layoutFrameOverlayCombo();
+  // Union worldBounds() over the current view entities and push the result to the
+  // camera (drives adaptive near/far + framing). Cheap; called on layer changes
+  // and on tracker-time changes (cloud/grid geometry moves over time).
+  void updateSceneBounds();
   void recomputeOrphanStates();
 
   pj::scene3d::TransformService* transform_service_ = nullptr;
@@ -124,6 +129,11 @@ class Scene3DDockWidget : public SceneDockWidget {
   std::vector<std::string> fallback_frames_;
   FixedFrameMode fixed_frame_mode_ = FixedFrameMode::kAutoRoot;
   ComboBox* frame_overlay_combo_ = nullptr;
+  // Top-right overlay controls (children of `this`, not the QOpenGLWidget — z-order):
+  // the camera-model selector and a Home (reset-to-default-view) button, anchored
+  // to the left of the orientation gizmo.
+  ComboBox* camera_model_combo_ = nullptr;
+  QToolButton* home_button_ = nullptr;
 
   /// Cached per-topic orphan/warning state, so recomputeOrphanStates() only
   /// emits layerWarningChanged when a layer's frame-resolvability actually flips.

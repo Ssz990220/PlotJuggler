@@ -111,6 +111,7 @@ ICON_MAPPING: dict[str, tuple[str, dict[str, str]]] = {
     "grid.svg":                            ("Background Grid Small",      {}),
     "grid_4x4.svg":                        ("Grid 4x4",                   {}),
     "grid_view.svg":                       ("Grid View",                  {}),
+    "home.svg":                            ("Home",                       {}),
     "image.svg":                           ("Image",                      {}),
     "import.svg":                          ("Download",                   {}),
     "keyboard_arrow_down_light.svg":       ("Keyboard Arrow Down",        {}),

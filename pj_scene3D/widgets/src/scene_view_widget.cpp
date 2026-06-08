@@ -212,8 +212,8 @@ void SceneViewWidget::paintGL() {
 
   const float aspect = static_cast<float>(width()) / static_cast<float>(std::max(height(), 1));
   const ViewParams view_params{
-      camera_.viewMatrix(),
-      camera_.projMatrix(aspect),
+      camera_->viewMatrix(),
+      camera_->projMatrix(aspect),
       height(),
   };
 
@@ -254,6 +254,34 @@ void SceneViewWidget::paintGL() {
   funcs->glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
 }
 
+void SceneViewWidget::setCameraModel(CameraModel model) {
+  const CameraState carried = camera_->state();
+  std::unique_ptr<ICamera> next;
+  switch (model) {
+    case CameraModel::Orbit:
+      next = std::make_unique<OrbitCamera>();
+      break;
+    case CameraModel::TopDownOrtho:
+      next = std::make_unique<TopDownOrthoCamera>();
+      break;
+    case CameraModel::Fly:
+      next = std::make_unique<FlyCamera>();
+      break;
+    case CameraModel::XYOrbit:
+      next = std::make_unique<XYOrbitCamera>();
+      break;
+  }
+  next->adoptState(carried);            // carry the pose across so the view doesn't jump
+  next->setSceneBounds(scene_bounds_);  // bounds aren't part of CameraState
+  camera_ = std::move(next);
+  update();
+}
+
+void SceneViewWidget::setSceneBounds(const AABB& bounds) {
+  scene_bounds_ = bounds;
+  camera_->setSceneBounds(bounds);
+}
+
 void SceneViewWidget::mousePressEvent(QMouseEvent* event) {
   last_mouse_pos_ = event->position().toPoint();
   active_button_ = event->button();
@@ -281,11 +309,13 @@ void SceneViewWidget::mouseMoveEvent(QMouseEvent* event) {
   const bool shift = (event->modifiers() & Qt::ShiftModifier) != 0;
 
   if (active_button_ == Qt::LeftButton && !shift) {
-    camera_.rotate(dx, dy);
+    camera_->rotate(dx, dy);
   } else if (active_button_ == Qt::MiddleButton || (active_button_ == Qt::LeftButton && shift)) {
-    camera_.pan(dx, dy);
+    camera_->pan(dx, dy);
   } else if (active_button_ == Qt::RightButton) {
-    camera_.zoom(dy * 0.01f);
+    // Right-drag stays center-of-view zoom — cursor-anchoring per drag delta
+    // walks the focal (focal creep); only the wheel is cursor-anchored.
+    camera_->zoom(dy * 0.01f);
   }
 
   update();
@@ -293,7 +323,8 @@ void SceneViewWidget::mouseMoveEvent(QMouseEvent* event) {
 
 void SceneViewWidget::wheelEvent(QWheelEvent* event) {
   const float ticks = static_cast<float>(event->angleDelta().y()) / 120.0f;
-  camera_.zoom(ticks);
+  const QPointF pos = event->position();
+  camera_->zoomToCursor(ticks, glm::vec2{static_cast<float>(pos.x()), static_cast<float>(pos.y())}, width(), height());
   update();
 }
 

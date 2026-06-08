@@ -6,6 +6,8 @@ find_package(glm REQUIRED)
 find_package(nlohmann_json REQUIRED)
 
 add_library(pj_scene3d_core STATIC
+  src/camera/camera.cpp
+  src/camera/camera_math.cpp
   src/occupancy_grid_reconstructor.cpp
   src/tf/tf_buffer.cpp
   src/version.cpp
@@ -22,6 +24,10 @@ target_link_libraries(pj_scene3d_core
 if(PJ_BUILD_TESTS)
   set(PJ_SCENE3D_CORE_TESTS
     ../tests/occupancy_grid_reconstructor_test.cpp
+    ../tests/occupancy_grid_bounds_test.cpp
+    ../tests/camera_near_far_test.cpp
+    ../tests/camera_zoom_to_cursor_test.cpp
+    ../tests/camera_state_transfer_test.cpp
     ../tests/tf_buffer_test.cpp
     ../tests/tf_buffer_hierarchy_test.cpp
   )

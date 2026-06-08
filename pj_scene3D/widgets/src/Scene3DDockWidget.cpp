@@ -7,6 +7,7 @@
 #include <QDomDocument>
 #include <QDomElement>
 #include <QFontMetrics>
+#include <QIcon>
 #include <QLoggingCategory>
 #include <QPoint>
 #include <QResizeEvent>
@@ -14,6 +15,7 @@
 #include <QSizePolicy>
 #include <QStyle>
 #include <QStyleOptionComboBox>
+#include <QToolButton>
 #include <algorithm>
 #include <cctype>
 #include <chrono>
@@ -30,6 +32,7 @@
 #include "pj_scene3d_widgets/scene_view_widget.h"
 #include "pj_scene3d_widgets/transform_service.h"
 #include "pj_widgets/ComboBox.h"
+#include "pj_widgets/SvgUtil.h"
 
 namespace PJ {
 
@@ -41,6 +44,42 @@ using pj::scene3d::OccupancyGridLayer;
 using pj::scene3d::PointCloudLayer;
 using pj::scene3d::Scene3DLayer;
 using pj::scene3d::Scene3DLayerContext;
+using pj::scene3d::SceneViewWidget;
+
+// Stable enum <-> on-disk-name table for the camera model, persisted in the
+// layout. The enum value == combo index, so the on-disk name stays independent of
+// the combo's display order; one table feeds both directions so they can't drift.
+struct CameraModelName {
+  SceneViewWidget::CameraModel model;
+  const char* id;
+};
+constexpr CameraModelName kCameraModelNames[] = {
+    {SceneViewWidget::CameraModel::Orbit, "orbit"},
+    {SceneViewWidget::CameraModel::XYOrbit, "xy_orbit"},
+    {SceneViewWidget::CameraModel::Fly, "fly"},
+    {SceneViewWidget::CameraModel::TopDownOrtho, "top_down_ortho"},
+};
+
+QString cameraModelToString(int combo_index) {
+  const auto model = static_cast<SceneViewWidget::CameraModel>(combo_index);
+  for (const auto& entry : kCameraModelNames) {
+    if (entry.model == model) {
+      return QString::fromLatin1(entry.id);
+    }
+  }
+  return QStringLiteral("orbit");
+}
+
+// Combo index for a persisted model name, or -1 when missing / unknown (→ keep
+// the default).
+int cameraModelFromString(const QString& name) {
+  for (const auto& entry : kCameraModelNames) {
+    if (name == QLatin1String(entry.id)) {
+      return static_cast<int>(entry.model);
+    }
+  }
+  return -1;
+}
 
 [[nodiscard]] bool framesContain(const QList<FrameRow>& frames, const QString& name) {
   const auto needle = name.toStdString();
@@ -89,6 +128,43 @@ Scene3DDockWidget::Scene3DDockWidget(QWidget* parent) : SceneDockWidget(parent) 
   frame_overlay_combo_->raise();
   refreshFrameOverlayCombo();
   connect(frame_overlay_combo_, &QComboBox::currentIndexChanged, this, &Scene3DDockWidget::onOverlayFramePicked);
+
+  // Camera-model selector + Home button — same styled overlay control as the
+  // fixed-frame combo (a pj_widgets ComboBox), anchored top-right just left of
+  // the orientation gizmo. Children of `this` (NOT view_) so they layer above
+  // the QOpenGLWidget without fighting ADS's native-window flags. addItems()
+  // before connect() avoids a spurious callback into a not-yet-constructed view
+  // during the ctor.
+  camera_model_combo_ = new ComboBox(this);
+  camera_model_combo_->setObjectName(QStringLiteral("cameraModelCombo"));
+  camera_model_combo_->setFocusPolicy(Qt::ClickFocus);
+  camera_model_combo_->addItems({tr("Orbit"), tr("XYOrbit"), tr("Fly"), tr("Top-down ortho")});
+  camera_model_combo_->raise();
+  connect(camera_model_combo_, &QComboBox::currentIndexChanged, this, [this](int index) {
+    if (view_ != nullptr && index >= 0) {
+      view_->setCameraModel(static_cast<pj::scene3d::SceneViewWidget::CameraModel>(index));
+      view_->update();
+    }
+  });
+
+  home_button_ = new QToolButton(this);
+  home_button_->setObjectName(QStringLiteral("cameraHomeButton"));
+  home_button_->setFocusPolicy(Qt::ClickFocus);
+  home_button_->setToolTip(tr("Reset view to default (Home)"));
+  // Bundled Material "home" glyph (resources.qrc). Pinned to the light-theme
+  // ink so it stays dark on this always-light overlay button, even when the
+  // app is in dark mode (theme-following ink would render near-invisible here).
+  home_button_->setIcon(PJ::LoadSvg(QStringLiteral(":/resources/svg/home.svg")));
+  home_button_->setStyleSheet(QStringLiteral(
+      "QToolButton { background-color: rgba(255, 255, 255, 200); border: 1px solid rgba(60, 60, 60, 180); "
+      "padding: 2px; border-radius: 3px; }"));  // symmetric padding: this is a square icon-only button
+  home_button_->raise();
+  connect(home_button_, &QToolButton::clicked, this, [this]() {
+    if (view_ != nullptr) {
+      view_->camera().reset();
+      view_->update();
+    }
+  });
 
   // Forget a removed topic's cached orphan/warning state. pj_app drives its UI
   // off the base SceneDockWidget layer* signals directly, so no relay is needed.
@@ -155,6 +231,7 @@ void Scene3DDockWidget::onTrackerTime(double time) {
   SceneDockWidget::onTrackerTime(time);
   if (const auto ns = lastTrackerNs(); view_ != nullptr && ns.has_value()) {
     view_->setTrackerTime(std::chrono::nanoseconds{*ns});
+    updateSceneBounds();  // cloud / grid geometry changes with tracker time
   }
 }
 
@@ -217,8 +294,25 @@ void Scene3DDockWidget::syncViewLayers(const std::vector<ISceneLayer*>& ordered_
   }
   if (view_ != nullptr) {
     view_->setLayers(ordered);
+    updateSceneBounds();
   }
   recomputeOrphanStates();
+}
+
+void Scene3DDockWidget::updateSceneBounds() {
+  if (view_ == nullptr) {
+    return;
+  }
+  pj::scene3d::AABB scene;
+  for (Scene3DLayer* layer : view_->layers()) {
+    if (layer == nullptr) {
+      continue;
+    }
+    if (const auto bounds = layer->worldBounds(); bounds.has_value()) {
+      scene = pj::scene3d::unionAABB(scene, *bounds);
+    }
+  }
+  view_->setSceneBounds(scene);
 }
 
 void Scene3DDockWidget::refreshView() {
@@ -426,6 +520,49 @@ void Scene3DDockWidget::layoutFrameOverlayCombo() {
     popup_view->setMinimumWidth(popup_w);
   }
   frame_overlay_combo_->raise();
+
+  // Camera-model combo + Home button, anchored top-right but to the LEFT of the
+  // orientation gizmo (which occupies the very corner). The fixed-frame combo
+  // stays top-left.
+  constexpr int kGap = 6;
+  // Reserve the gizmo's default footprint — read from AxisOverlayPass so the two
+  // can't silently desync — plus a gap before the controls.
+  constexpr int kGizmoReserveW =
+      pj::scene3d::AxisOverlayPass::kDefaultSizePx + pj::scene3d::AxisOverlayPass::kDefaultMarginPx + kGap;
+  if (camera_model_combo_ != nullptr) {
+    // Size via the combo's own style chrome (chevron + padding), matching the
+    // fixed-frame combo's style-driven sizing above — a hardcoded slack would
+    // clip a themed ComboBox.
+    const QFontMetrics cm_fm(camera_model_combo_->font());
+    QStyleOptionComboBox cam_opt;
+    cam_opt.initFrom(camera_model_combo_);
+    int cam_w = 0;
+    for (int i = 0; i < camera_model_combo_->count(); ++i) {
+      const QSize content(cm_fm.horizontalAdvance(camera_model_combo_->itemText(i)), cm_fm.height());
+      cam_w = std::max(
+          cam_w, camera_model_combo_->style()
+                     ->sizeFromContents(QStyle::CT_ComboBox, &cam_opt, content, camera_model_combo_)
+                     .width());
+    }
+    const int cam_h = camera_model_combo_->sizeHint().height();
+    const int home_w = (home_button_ != nullptr) ? cam_h : 0;  // square button matching combo height
+    const int total_w = cam_w + (home_button_ != nullptr ? kGap + home_w : 0);
+    const int top_y = view_origin.y() + kMargin;
+    // Right edge of the controls sits just left of the gizmo's reserved region;
+    // Home button is the rightmost (nearest the gizmo), combo to its left.
+    const int controls_right = view_origin.x() + view_->width() - kGizmoReserveW;
+    const int left_x = controls_right - total_w;
+    camera_model_combo_->setGeometry(left_x, top_y, cam_w, cam_h);
+    camera_model_combo_->raise();
+    if (home_button_ != nullptr) {
+      home_button_->setGeometry(left_x + cam_w + kGap, top_y, home_w, cam_h);
+      // Icon-only square button: size the glyph to nearly fill it (minus border +
+      // padding) so it doesn't render at the tiny default QToolButton icon size.
+      const int home_icon_dim = std::max(home_w - 8, 1);
+      home_button_->setIconSize(QSize(home_icon_dim, home_icon_dim));
+      home_button_->raise();
+    }
+  }
 }
 
 void Scene3DDockWidget::resizeEvent(QResizeEvent* event) {
@@ -495,6 +632,12 @@ QDomElement Scene3DDockWidget::xmlSaveState(QDomDocument& doc) const {
       QStringLiteral("fixed_frame_mode"),
       fixed_frame_mode_ == FixedFrameMode::kAutoRoot ? QStringLiteral("auto_root") : QStringLiteral("explicit"));
   root.setAttribute(QStringLiteral("fixed_frame"), currentFixedFrame());
+  if (view_ != nullptr && camera_model_combo_ != nullptr) {
+    root.setAttribute(QStringLiteral("camera_model"), cameraModelToString(camera_model_combo_->currentIndex()));
+    root.setAttribute(
+        QStringLiteral("camera_state"),
+        QString::fromStdString(pj::scene3d::cameraStateToJson(view_->camera().state())));
+  }
   return root;
 }
 
@@ -517,6 +660,22 @@ bool Scene3DDockWidget::xmlLoadState(const QDomElement& element) {
     setFixedFrame(saved_frame);
   } else {
     setFixedFrameAutoRoot();
+  }
+
+  // Restore the camera model + pose (tolerant of older layouts without them).
+  // Setting the combo index switches the active controller via its signal; the
+  // adoptState then applies the saved pose on top.
+  if (view_ != nullptr) {
+    if (camera_model_combo_ != nullptr) {
+      if (const int idx = cameraModelFromString(element.attribute(QStringLiteral("camera_model"))); idx >= 0) {
+        camera_model_combo_->setCurrentIndex(idx);
+      }
+    }
+    const QString camera_state = element.attribute(QStringLiteral("camera_state"));
+    if (!camera_state.isEmpty()) {
+      view_->camera().adoptState(pj::scene3d::cameraStateFromJson(camera_state.toStdString(), view_->camera().state()));
+    }
+    view_->update();
   }
 
   const auto infos = layers();

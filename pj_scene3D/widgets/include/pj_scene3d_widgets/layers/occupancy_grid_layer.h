@@ -54,6 +54,7 @@ class OccupancyGridLayer : public Scene3DLayer {
   void initializeGL() override;
   void render(const ViewParams& view_params, const FrameContext& frame_ctx) override;
   void releaseGL() override;
+  [[nodiscard]] std::optional<AABB> worldBounds() const override;
 
   QWidget* createConfigWidget(QWidget* parent) override;
 

@@ -17,6 +17,7 @@
 #include "pj_base/builtin/occupancy_grid_update.hpp"
 #include "pj_plugins/sdk/message_parser_plugin_base.hpp"
 #include "pj_runtime/SessionManager.h"
+#include "pj_scene3d_core/camera/camera.h"  // AABB, occupancyGridBounds
 #include "pj_scene3d_widgets/parse_locked.h"
 #include "pj_widgets/DoubleScrubber.h"
 
@@ -261,6 +262,23 @@ void OccupancyGridLayer::render(const ViewParams& view_params, const FrameContex
     return;
   }
   grid_pass_.render(view_params, frame_ctx);
+}
+
+std::optional<AABB> OccupancyGridLayer::worldBounds() const {
+  // Bounds come from the grid as currently reconstructed (whatever the last
+  // renderAt produced). Empty before any base keyframe has been seen.
+  const ReconstructedGrid& grid = reconstructor_.grid();
+  if (grid.empty()) {
+    return std::nullopt;
+  }
+  const glm::vec3 origin{
+      static_cast<float>(grid.origin.position.x), static_cast<float>(grid.origin.position.y),
+      static_cast<float>(grid.origin.position.z)};
+  const AABB box = occupancyGridBounds(origin, grid.resolution, grid.width, grid.height);
+  if (!box.valid) {
+    return std::nullopt;
+  }
+  return box;
 }
 
 void OccupancyGridLayer::setColorScheme(OccupancyGridRenderPass::ColorScheme scheme) {

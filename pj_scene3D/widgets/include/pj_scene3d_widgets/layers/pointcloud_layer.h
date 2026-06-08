@@ -10,6 +10,7 @@
 #include <cstdint>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 
 #include "pj_scene3d_widgets/passes/pointcloud_render_pass.h"
@@ -58,6 +59,11 @@ class PointCloudLayer : public Scene3DLayer {
   void initializeGL() override;
   void render(const ViewParams& view_params, const FrameContext& frame_ctx) override;
   void releaseGL() override;
+  // Source-frame extent of the decoded cloud, recomputed on each decode in
+  // renderAt(). nullopt until the first cloud is decoded.
+  [[nodiscard]] std::optional<AABB> worldBounds() const override {
+    return world_bounds_;
+  }
 
   QWidget* createConfigWidget(QWidget* parent) override;
 
@@ -156,6 +162,9 @@ class PointCloudLayer : public Scene3DLayer {
   bool range_dirty_ = true;
   int64_t ts_first_ = 0;
   int64_t ts_last_ = 0;
+
+  // Source-frame bounds of the most recently decoded cloud (see worldBounds()).
+  std::optional<AABB> world_bounds_;
 
   // User-tunable per-cloud parameters. Mirror the render pass's current
   // values; the panel reads them on rebuild so a re-opened config widget

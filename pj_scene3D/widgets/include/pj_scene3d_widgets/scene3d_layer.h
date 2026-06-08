@@ -10,8 +10,10 @@
 #include <chrono>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <utility>
 
+#include "pj_scene3d_core/camera/camera.h"  // AABB
 #include "pj_scene_common/scene_layer.h"
 
 class QWidget;
@@ -84,6 +86,15 @@ class Scene3DLayer : public PJ::ISceneLayer {
   // GL context is about to be destroyed (see IRenderPass::releaseGL); the
   // layer re-initializes lazily on the next paintGL.
   virtual void releaseGL() = 0;
+
+  // World-space (source-frame) extent of this layer's geometry, or nullopt when
+  // the layer reports no bounds (no data decoded yet, or a bounds-less layer
+  // kind). The dock unions these across layers to drive camera framing and
+  // adaptive near/far. NON-pure so existing layer kinds need no change; concrete
+  // kinds with geometry (point clouds, occupancy grids) override it.
+  [[nodiscard]] virtual std::optional<AABB> worldBounds() const {
+    return std::nullopt;
+  }
 
  signals:
   // Layer noticed new source-frame candidates — the dock unions these

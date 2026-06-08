@@ -10,8 +10,8 @@
 #include <string>
 #include <vector>
 
+#include "pj_scene3d_core/camera/camera.h"
 #include "pj_scene3d_core/tf/tf_buffer.h"
-#include "pj_scene3d_widgets/camera.h"
 #include "pj_scene3d_widgets/passes/axis_overlay_pass.h"
 #include "pj_scene3d_widgets/passes/axis_render_pass.h"
 #include "pj_scene3d_widgets/passes/grid_render_pass.h"
@@ -54,9 +54,19 @@ class SceneViewWidget : public QOpenGLWidget {
   GridRenderPass& gridPass() {
     return grid_;
   }
-  OrbitCamera& camera() {
-    return camera_;
+  [[nodiscard]] ICamera& camera() {
+    return *camera_;
   }
+
+  // Selectable camera controllers. Enumerator order matches the combo-box order
+  // in Scene3DDockWidget, so a combo index casts directly to a CameraModel.
+  enum class CameraModel { Orbit, XYOrbit, Fly, TopDownOrtho };
+  // Switch the active controller, carrying the current pose across so the view
+  // doesn't jump (capture state → construct → adoptState → swap → repaint).
+  void setCameraModel(CameraModel model);
+  // Latest scene extent (union of entity worldBounds()); forwarded to the active
+  // camera for adaptive near/far and framing.
+  void setSceneBounds(const AABB& bounds);
 
   // Re-poll the TransformBuffer for the current frame set; emits
   // framesChanged if the set differs from the previous poll.
@@ -105,7 +115,13 @@ class SceneViewWidget : public QOpenGLWidget {
   // Non-owning layer registry, in the order supplied by SceneDockWidget.
   std::vector<Scene3DLayer*> layers_;
 
-  OrbitCamera camera_;
+  // Active camera controller (one of the CameraModel kinds). Owned; swapped by
+  // setCameraModel(). Defaults to the improved Orbit.
+  std::unique_ptr<ICamera> camera_{std::make_unique<OrbitCamera>()};
+
+  // Latest scene extent, retained so a camera-model swap can re-apply it to the
+  // freshly constructed controller (bounds are not part of CameraState).
+  AABB scene_bounds_{};
 
   std::shared_ptr<TransformBuffer> tf_;
   // The time the scene renders at. Distinct from the global playhead: the dock

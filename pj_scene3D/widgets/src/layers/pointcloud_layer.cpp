@@ -28,6 +28,7 @@
 #include "pj_base/builtin/point_cloud.hpp"
 #include "pj_plugins/sdk/message_parser_plugin_base.hpp"
 #include "pj_runtime/SessionManager.h"
+#include "pj_scene3d_core/camera/camera.h"  // AABB, expandAABB
 #include "pj_scene3d_core/pointcloud.h"
 #include "pj_scene3d_widgets/parse_locked.h"
 #include "pj_widgets/ColorPickerPopup.h"
@@ -394,6 +395,7 @@ void PointCloudLayer::detach() {
   parser_mutex_.reset();
   ctx_ = {};
   cloud_pass_.setActiveCloud(nullptr);
+  world_bounds_.reset();
 }
 
 void PointCloudLayer::setFixedFrame(const QString& frame) {
@@ -904,6 +906,16 @@ void PointCloudLayer::renderAt(int64_t time_ns) {
     emit fallbackFramesChanged(fallbackFrames());
   }
   auto decoded = convertCanonical(*sdk_cloud, color_field_);
+
+  // Cache the source-frame bounds (TF is applied per-render in the shader, so the
+  // decoded positions are in the cloud's own frame). Skip non-finite points.
+  AABB bounds;
+  for (const glm::vec3& p : decoded.positions) {
+    if (std::isfinite(p.x) && std::isfinite(p.y) && std::isfinite(p.z)) {
+      expandAABB(bounds, p);
+    }
+  }
+  world_bounds_ = bounds.valid ? std::optional<AABB>{bounds} : std::nullopt;
 
   if (!decoded.scalar.empty() && auto_range_) {
     const bool is_spatial = color_field_ == "x" || color_field_ == "y" || color_field_ == "z";

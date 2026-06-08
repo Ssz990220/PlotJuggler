@@ -16,7 +16,6 @@ set(PJ_SCENE3D_WIDGETS_SOURCES
   src/passes/pointcloud_render_pass.cpp
   src/passes/occupancy_grid_render_pass.cpp
   src/render_pass.cpp
-  src/camera.cpp
   src/scene_view_widget.cpp
   src/scene3d_layer.cpp
   src/layers/pointcloud_layer.cpp
