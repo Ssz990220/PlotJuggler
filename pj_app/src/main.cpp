@@ -5,12 +5,23 @@
 #include <QCommandLineOption>
 #include <QCommandLineParser>
 #include <Qt>
+#include <backward.hpp>
 #include <cstdlib>
 
 #include "KeySequence.h"
 #include "MainWindow.h"
 #include "WidgetTuner.h"
 #include "pj_widgets/Style.h"
+
+namespace {
+// One process-wide crash handler. Its constructor (run at static-init, before
+// main) registers handlers for SIGSEGV/SIGABRT/SIGFPE/... that dump a
+// symbolized stack trace to stderr. We instantiate it explicitly rather than
+// relying on the global defined inside backward-cpp's compiled backward.cpp,
+// which the linker drops from the static archive when nothing references it.
+// backward-cpp recommends exactly one such instance per program.
+backward::SignalHandling g_crash_handler;
+}  // namespace
 
 int main(int argc, char* argv[]) {
   // Pin to Fusion (under our Style proxy) before constructing

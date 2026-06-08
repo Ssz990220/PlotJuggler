@@ -16,6 +16,12 @@ libarchive/3.8.7
 libjpeg-turbo/3.1.4.1
 libpng/1.6.58
 ffmpeg/8.1
+# Crash handler for pj_app: prints a symbolized stack trace (with source
+# file:line) to stderr on SIGSEGV/SIGABRT/etc. The default options select the
+# `dw` stack-details backend, which pulls elfutils transitively from Conan — so
+# the rich-trace backend is self-contained and needs no system -dev packages,
+# keeping the build portable across machines and CI.
+backward-cpp/1.6
 
 [options]
 fmt/*:header_only=True

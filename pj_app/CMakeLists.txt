@@ -1,5 +1,11 @@
 find_package(Qt6 REQUIRED COMPONENTS Core Gui Widgets Network Test)
 
+# backward-cpp (Conan): symbolized crash backtraces. The package exports the
+# `Backward` config and the `Backward::Backward` target, which propagates the
+# BACKWARD_HAS_* defines and links the stack-detail backend (elfutils/libdw)
+# transitively. main.cpp installs the signal handler.
+find_package(Backward REQUIRED)
+
 add_executable(pj_app
     src/main.cpp
     src/DialogPresenter.cpp
@@ -79,6 +85,7 @@ target_link_libraries(pj_app PRIVATE
     pj_marketplace_ui
     pj_dialog_engine_qt
     qt_advanced_docking
+    Backward::Backward
     Qt6::Core
     Qt6::Gui
     Qt6::Widgets

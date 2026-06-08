@@ -156,9 +156,13 @@ Explicitly vendored (do not take from Conan or system packages):
 - **Qwt** — required for Qt 6.8 compatibility and for parity with PJ3 plot widgets.
 - **Qt-Advanced-Docking-System** — docking framework used by `pj_app`.
 
-Other PJ3-style vendorables (`QCodeEditor`, `sol2`, `color_widgets`, `backward-cpp`, `date`) will be vendored on the same pattern as we pull in the modules that need them — decide per-case when each module lands.
+Other PJ3-style vendorables (`QCodeEditor`, `sol2`, `color_widgets`, `date`) will be vendored on the same pattern as we pull in the modules that need them — decide per-case when each module lands.
 
-Everything else (GLM, assimp, FFmpeg, Lua runtime, etc.) comes from Conan.
+Everything else (GLM, assimp, FFmpeg, Lua runtime, etc.) comes from Conan — including
+**backward-cpp** (consumed via `backward-cpp/1.6`, not vendored): `pj_app` links
+`Backward::Backward` and installs a `backward::SignalHandling` crash handler in `main.cpp`
+for symbolized stack traces. Its default `dw` backend pulls `elfutils` transitively from
+Conan, so rich traces need no system `-dev` packages.
 
 ### Compile instructions
 
