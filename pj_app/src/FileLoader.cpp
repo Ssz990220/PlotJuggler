@@ -657,6 +657,10 @@ bool FileLoader::loadFile(const QString& path, QWidget* dialog_parent, const Loa
     session_.replaceDataset(
         staged_engine, staged_store, dataset_id, existing_primary_id, std::move(staged_object_parsers));
 
+    // Un-tombstone the reused id: removeDataset hides it assuming a reload mints a new DatasetId, but the in-place
+    // replace keeps it stable — without this the rebuild below skips the reloaded dataset (empty curve tree).
+    catalog_.restoreDataset(existing_primary_id);
+
     // Re-apply the plugin's dataset-root name on the stable primary id (#98). An empty name clears a stale override.
     catalog_.setDatasetDisplayName(existing_primary_id, detail::parseDisplayName(config));
   } else {

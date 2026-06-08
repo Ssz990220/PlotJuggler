@@ -195,6 +195,51 @@ TEST(CatalogModelTest, RestoreDatasetBringsBackClearedItems) {
       << "restoreDataset must surface only the targeted dataset, not the other cleared one";
 }
 
+// Regression for the remove-then-reload bug (PR #131): removeDataset tombstones a DatasetId in the
+// catalog, and an in-place reload of the same file deliberately REUSES that id (replaceDataset keeps
+// DatasetId/TopicId stable so curve keys survive). The tombstone therefore outlives the swap, so the
+// reloaded data stays invisible unless the caller (FileLoader) lifts it with restoreDataset. This locks
+// that contract: a real replaceDataset reusing a removed id does NOT self-un-hide; restoreDataset does.
+TEST(CatalogModelTest, ReloadReusingRemovedDatasetIdStaysHiddenUntilRestore) {
+  PJ::SessionManager session;
+  PJ::CatalogModel catalog(&session);
+
+  auto dataset = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "drive.mcap"});
+  ASSERT_TRUE(dataset.has_value()) << dataset.error();
+  ASSERT_NE(addScalarTopic(session, *dataset, "/imu/accel/sample"), 0U);
+  ASSERT_EQ(catalog.items().size(), 1U);
+
+  // Remove: the engine keeps the data (append-only), the catalog tombstones the id and hides it.
+  ASSERT_TRUE(catalog.removeDataset(*dataset));
+  EXPECT_TRUE(catalog.items().empty());
+
+  // Reload: stage a fresh engine carrying the same topic, then run the real in-place replace that
+  // keeps the primary DatasetId stable (what FileLoader does on a same-file reload).
+  PJ::DataEngine staged_engine;
+  PJ::ObjectStore staged_store;
+  auto staged = staged_engine.createDataset(PJ::DatasetDescriptor{.source_name = "drive.mcap"});
+  ASSERT_TRUE(staged.has_value()) << staged.error();
+  {
+    PJ::DataWriter writer = staged_engine.createWriter();
+    auto handle = writer.registerScalarSeries(*staged, "/imu/accel/sample", PJ::NumericType::kFloat64);
+    ASSERT_TRUE(handle.has_value()) << handle.error();
+    writer.appendScalar(*handle, 200, 2.0);
+    staged_engine.commitChunks(writer.flushAll());
+  }
+  session.replaceDataset(staged_engine, staged_store, *staged, *dataset, {});
+  catalog.rebuildFromDatastore();
+
+  // The bug: the swap reused the tombstoned id, so the rebuild still filters the dataset out.
+  EXPECT_TRUE(catalog.items().empty())
+      << "an in-place reload reusing a removed DatasetId must stay hidden until restoreDataset";
+
+  // The fix recipe FileLoader applies on the replace path: lift the tombstone for the reused id.
+  catalog.restoreDataset(*dataset);
+  const auto items = catalog.items();
+  ASSERT_EQ(items.size(), 1U) << "restoreDataset must surface the reloaded dataset";
+  EXPECT_EQ(items[0].dataset_id, *dataset);
+}
+
 // --- setDatasetDisplayName (issue #98) --------------------------------------
 
 TEST(CatalogModelTest, DisplayNameOverrideReplacesLabelButKeepsSourceName) {

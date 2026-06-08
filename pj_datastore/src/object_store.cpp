@@ -370,26 +370,26 @@ Expected<ObjectDatasetReplaceResult> ObjectStore::replaceDatasetFrom(
     const std::string& name = staged_series->descriptor.topic_name;
     staged_names.insert(name);
 
+    // Resolve target series+id once (matched keeps its ObjectTopicId + adopts metadata; added mints a fresh one),
+    // then run the identical entry move below a single time.
+    ObjectSeries* primary_series = nullptr;
+    ObjectTopicId primary_tid;
     if (auto match = primary_by_name.find(name); match != primary_by_name.end()) {
-      // Matched: keep the primary ObjectTopicId, swap the entries in.
-      ObjectSeries* p = match->second.first;
-      p->entries = std::move(staged_series->entries);
-      p->entry_timestamps = std::move(staged_series->entry_timestamps);
-      p->memory_bytes = staged_series->memory_bytes;
-      p->descriptor.metadata_json = staged_series->descriptor.metadata_json;  // adopt reloaded metadata
-      result.remapped.emplace_back(sid, match->second.second);
+      primary_series = match->second.first;
+      primary_tid = match->second.second;
+      primary_series->descriptor.metadata_json = staged_series->descriptor.metadata_json;  // adopt reloaded metadata
     } else {
-      // Added: register a fresh primary series under primary_id, move entries in.
-      ObjectTopicId new_id{next_id_++};
+      primary_tid = ObjectTopicId{next_id_++};
       auto series = std::make_unique<ObjectSeries>();
       series->descriptor = staged_series->descriptor;
       series->descriptor.dataset_id = primary_id;
-      series->entries = std::move(staged_series->entries);
-      series->entry_timestamps = std::move(staged_series->entry_timestamps);
-      series->memory_bytes = staged_series->memory_bytes;
-      topics_.emplace_back(new_id, std::move(series));
-      result.remapped.emplace_back(sid, new_id);
+      primary_series = series.get();  // heap-owned: stays valid after emplace_back reallocs topics_
+      topics_.emplace_back(primary_tid, std::move(series));
     }
+    primary_series->entries = std::move(staged_series->entries);
+    primary_series->entry_timestamps = std::move(staged_series->entry_timestamps);
+    primary_series->memory_bytes = staged_series->memory_bytes;
+    result.remapped.emplace_back(sid, primary_tid);
     staged_series->memory_bytes = 0;  // entries/timestamps already moved-from
   }
 
@@ -397,10 +397,8 @@ Expected<ObjectDatasetReplaceResult> ObjectStore::replaceDatasetFrom(
   for (const auto& [name, slot] : primary_by_name) {
     if (staged_names.count(name) == 0) {
       result.removed_topics.push_back(slot.second);
+      eraseTopicLocked(slot.second);
     }
-  }
-  for (const ObjectTopicId rid : result.removed_topics) {
-    eraseTopicLocked(rid);
   }
 
   return result;

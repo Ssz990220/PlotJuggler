@@ -206,7 +206,9 @@ PlotWidgetBase::PlotWidgetBase(QWidget* parent) : QWidget(parent) {
   plot_->setMinimumSize(100, 100);
   plot_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
   plot_->canvas()->setMouseTracking(true);
-  plot_->setCanvasBackground(Qt::transparent);
+  // Opaque background: a transparent canvas forces a per-paint alpha-composite of the whole
+  // canvas (slow in software raster) instead of a fast opaque blit. canvas_bg matches the palette set above.
+  plot_->setCanvasBackground(canvas_bg);
   plot_->setAxisAutoScale(QwtPlot::yLeft, true);
   plot_->setAxisAutoScale(QwtPlot::xBottom, true);
   plot_->axisScaleEngine(QwtPlot::xBottom)->setAttribute(QwtScaleEngine::Floating, true);

@@ -285,13 +285,12 @@ Expected<DatasetReplaceResult> DataEngine::replaceDatasetFrom(
     if (staged_storage == nullptr) {
       continue;
     }
-    const std::string name = staged_storage->descriptor().name;
+    const std::string& name = staged_storage->descriptor().name;
     staged_names.insert(name);
 
     const auto match = primary_by_name.find(name);
-    const bool is_new = (match == primary_by_name.end());
     TopicId primary_tid = 0;
-    if (is_new) {
+    if (match == primary_by_name.end()) {
       // Schema-less by design: post-replace reads resolve columns from the moved
       // chunks' own descriptors (and the copied inline layout below), so a new
       // topic needs no registry schema (which would not exist in this engine).
@@ -315,7 +314,7 @@ Expected<DatasetReplaceResult> DataEngine::replaceDatasetFrom(
     primary_storage->clearChunks();
     // Adopt the staged topic's inline layout (move, not copy — the staged engine
     // is discarded next) then re-stamp + move its chunks onto the primary id.
-    primary_storage->column_descriptors_ = std::move(staged_storage->column_descriptors_);
+    primary_storage->setColumnDescriptors(std::move(staged_storage->column_descriptors_));
     adoptChunksFrom(*primary_storage, *staged_storage);
   }
 
