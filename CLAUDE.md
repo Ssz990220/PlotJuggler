@@ -96,7 +96,7 @@ Cross-cutting docs (porting strategy, glossary, ADRs) live in top-level `docs/`.
 | `pj_scene_common` | [pj_scene_common/CLAUDE.md](./pj_scene_common/CLAUDE.md) | — |
 | `pj_scene2D` | [pj_scene2D/CLAUDE.md](./pj_scene2D/CLAUDE.md) | [docs/](./pj_scene2D/docs/) — REQUIREMENTS, ARCHITECTURE, TECHNICAL_NOTES, datatypes_2D, … |
 | `pj_marketplace` | [pj_marketplace/README.md](./pj_marketplace/README.md) | [docs/](./pj_marketplace/docs/) — REQUIREMENTS, ARCHITECTURE, USER_MANUAL, marketplace-spec |
-| `pj_scene3D` | [pj_scene3D/CLAUDE.md](./pj_scene3D/CLAUDE.md) | [docs/](./pj_scene3D/docs/) — REQUIREMENTS |
+| `pj_scene3D` | [pj_scene3D/CLAUDE.md](./pj_scene3D/CLAUDE.md) | [docs/](./pj_scene3D/docs/) — REQUIREMENTS, CAMERA_MODELS_DESIGN, CAMERA_OVERHAUL_PLAN |
 | `pj_datastore` | [pj_datastore/CLAUDE.md](./pj_datastore/CLAUDE.md) | [docs/](./pj_datastore/docs/) — REQUIREMENTS, ARCHITECTURE, USER_GUIDE, OBJECT_STORE_DESIGN |
 | `plotjuggler_sdk/` (submodule) | [plotjuggler_sdk/CLAUDE.md](./plotjuggler_sdk/CLAUDE.md) | submodule owns its own `docs/` tree |
 
@@ -106,33 +106,13 @@ Before any commit that changes behavior, public APIs, ABI structs, module owners
 
 ## Key sources
 
-### `plotjuggler_sdk/` (submodule) — the plugin SDK
+### `plotjuggler_sdk/` (submodule) — the plugin SDK, consumed as-is
 
-The SDK libraries live in the submodule at `./plotjuggler_sdk/`:
+`pj_base` (vocabulary types + canonical object schemas/codecs under `pj_base/builtin/`) and `pj_plugins` (extension ABI + runtime). What they are: see Placement rules; the full story lives in the submodule's own `CLAUDE.md`. Changes happen in that repo, not here.
 
-- `pj_base` — vocabulary types + canonical object schemas (`pj_base/builtin/image.hpp`, `depth_image.hpp`, `image_annotations.hpp`, `point_cloud.hpp`, `frame_transforms.hpp`) and their codecs. SDK boundary for plugin authors producing or consuming canonical objects.
-- `pj_plugins` — ABI + runtime for extensions
+### `pj_datastore/` — build ordering
 
-These are consumed as-is. Changes to `plotjuggler_sdk` happen in that repo, not here.
-
-Initialize / update the submodule with:
-
-```
-git submodule update --init --recursive
-```
-
-### `pj_datastore/` (top-level module — moved out of the submodule)
-
-The columnar storage engine is an app-internal Level 0 module, not part of the plugin SDK
-(plugins reach storage only through the `pj_base` C ABI). It builds from source via
-`add_subdirectory(pj_datastore)` in the root `CMakeLists.txt`, immediately after the submodule so
-the `pj_base` / `pj_internal_fmt` targets it links already exist.
-
-- `pj_datastore` — columnar store (`DataEngine`) + `ObjectStore` + `DerivedEngine` + the host-side
-  C-ABI write bridges (`plugin_data_host.hpp`). Public headers under `include/pj_datastore/`.
-- Conan deps it needs (`nanoarrow`, `tsl-robin-map`, `benchmark`) are declared in the root
-  `conanfile.txt`; its CMake also performs the nanoarrow/IPC target detection (relocated from the
-  submodule when the engine moved).
+What it is: see Placement rules. Build-specific: `add_subdirectory(pj_datastore)` runs in the root `CMakeLists.txt` immediately after the submodule (so the `pj_base` / `pj_internal_fmt` targets it links already exist); its Conan deps (`nanoarrow`, `tsl-robin-map`, `benchmark`) live in the root `conanfile.txt`.
 
 ### `~/ws_plotjuggler/PlotJuggler/` (PJ3 reference — read-only)
 
@@ -217,7 +197,7 @@ Submodule: `git submodule update --init --recursive` on first clone.
 
 Parity-plus with PJ3: file + streaming sources, 11 built-in transforms, undo/redo, derived-series editor (incl. Lua via `pj_scripting`), reactive scripts (via Toolbox + `onTimeChanged`), multi-tab workspace, marketplace install UI, all toolboxes.
 
-The 3D widget family ships as `pj_scene3D` (built and wired into `pj_app` via `Scene3DDockWidget`): TF, pointclouds, occupancy grids, and axis/grid render passes. Advanced features (URDF/mesh rendering, camera models, photorealism) are ongoing post-v1 work — see `pj_scene3D/docs/REQUIREMENTS.md` and plan §5.5.
+The 3D widget family ships as `pj_scene3D` (built and wired into `pj_app` via `Scene3DDockWidget`): TF, pointclouds, occupancy grids, axis/grid render passes, and pluggable camera models. Advanced features (URDF/mesh rendering, photorealism) are ongoing post-v1 work — see `pj_scene3D/docs/REQUIREMENTS.md` and plan §5.5.
 
 ## Non-goals (explicitly deferred)
 
@@ -231,13 +211,13 @@ The 3D widget family ships as `pj_scene3D` (built and wired into `pj_app` via `S
 ## Workflow notes
 
 - Architectural questions → consult `PJ4_PLAN.md` first; escalate if the plan is silent or contradictory.
-- New modules must respect the dependency rules in plan §5 (widget families are siblings; `pj_runtime` has no concrete widget implementation and does not link `Qt6::Widgets`).
+- New modules must respect the dependency rules in plan §5.
 - Keep host code (`pj_app`, `pj_runtime`, `conanfile.txt`) **domain-neutral**: no plugin-specific terms (dataset-domain names, "episode") or hardcoded per-plugin policy. Mechanisms/protocols stay generic; the plugin supplies the domain meaning. A genuinely general capability motivated by one plugin is fine (e.g. a standard codec); a plugin-specific reference or branch in the host is not.
 - Delegating to Codex: invoke it **harness-tracked with a watchdog** (`codex exec` inside a backgrounded, timeout-bounded `Bash`) — the companion job model sends no completion notification and Codex can hang silently. Judge liveness by job-log mtime, not the "running" status; on timeout, cancel and take over the build/test yourself. Codex output is usually high quality when it does finish — act on its findings.
 
 ### Execution autonomy
 
-Once we've agreed on an approach, run the plan to completion — work through implementation, build, and tests **without pausing for "should I proceed?" check-ins**. Davide reviews the final result, not each step; don't ask for mid-task confirmation on reversible work. "Run to completion" stops **at the commit boundary, not through it**: commits (see Commit policy), pushes/PRs, and anything outward-facing or destructive still require a stop-and-surface.
+Once we've agreed on an approach, run the plan to completion — work through implementation, build, and tests **without pausing for "should I proceed?" check-ins**. The User reviews the final result, not each step; don't ask for mid-task confirmation on reversible work. "Run to completion" stops **at the commit boundary, not through it**: commits (see Commit policy), pushes/PRs, and anything outward-facing or destructive still require a stop-and-surface.
 
 ### Verifying visual / performance changes
 
