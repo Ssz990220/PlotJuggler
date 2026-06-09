@@ -131,7 +131,9 @@ class ObjectStore {
 
   // --- Registration ---
 
-  Expected<ObjectTopicId> registerTopic(const ObjectTopicDescriptor& descriptor);
+  // Set `requested_id` non-zero to register with that exact id; otherwise the
+  // next id is auto-assigned.
+  Expected<ObjectTopicId> registerTopic(const ObjectTopicDescriptor& descriptor, ObjectTopicId requested_id = {});
 
   // Resolve a topic id by (dataset_id, topic_name) without registering. Returns
   // nullopt if no topic with that key exists. Used by hosts that need to bind a

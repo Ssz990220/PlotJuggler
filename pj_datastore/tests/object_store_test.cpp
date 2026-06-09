@@ -68,6 +68,42 @@ TEST(ObjectStoreTest, FindTopicMissingReturnsNullopt) {
   EXPECT_FALSE(store.findTopic(99, "cam/image").has_value());
 }
 
+TEST(ObjectStoreTest, RegisterTopicCanMirrorExplicitIdAfterCounterDrift) {
+  ObjectStore primary;
+  ObjectStore secondary;
+
+  auto primary_only =
+      primary.registerTopic({.dataset_id = 1, .topic_name = "file/image", .metadata_json = R"({"source":"file"})"});
+  ASSERT_TRUE(primary_only.has_value()) << primary_only.error();
+  EXPECT_EQ(primary_only->id, 1u);
+
+  auto stream_topic =
+      primary.registerTopic({.dataset_id = 2, .topic_name = "stream/image", .metadata_json = R"({"source":"stream"})"});
+  ASSERT_TRUE(stream_topic.has_value()) << stream_topic.error();
+  EXPECT_EQ(stream_topic->id, 2u);
+
+  auto mirrored = secondary.registerTopic(
+      {.dataset_id = 2, .topic_name = "stream/image", .metadata_json = R"({"source":"stream"})"}, *stream_topic);
+  ASSERT_TRUE(mirrored.has_value()) << mirrored.error();
+  EXPECT_EQ(mirrored->id, stream_topic->id);
+  ASSERT_TRUE(secondary.findTopic(2, "stream/image").has_value());
+  EXPECT_EQ(secondary.descriptor(*stream_topic).metadata_json, R"({"source":"stream"})");
+
+  auto next_secondary = secondary.registerTopic({.dataset_id = 2, .topic_name = "stream/depth", .metadata_json = "{}"});
+  ASSERT_TRUE(next_secondary.has_value()) << next_secondary.error();
+  EXPECT_EQ(next_secondary->id, stream_topic->id + 1);
+}
+
+TEST(ObjectStoreTest, DuplicateExplicitObjectTopicIdIsRejected) {
+  ObjectStore store;
+  auto existing = store.registerTopic({.dataset_id = 1, .topic_name = "cam/image", .metadata_json = "{}"});
+  ASSERT_TRUE(existing.has_value()) << existing.error();
+
+  auto duplicate =
+      store.registerTopic({.dataset_id = 2, .topic_name = "other/image", .metadata_json = "{}"}, *existing);
+  EXPECT_FALSE(duplicate.has_value());
+}
+
 TEST(ObjectStoreTest, ListTopics) {
   ObjectStore store;
   auto id1 = registerTestTopic(store, "topic_a");

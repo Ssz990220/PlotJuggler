@@ -44,8 +44,13 @@ DataEngine& DataEngine::operator=(DataEngine&&) noexcept = default;
 // Dataset management
 // ---------------------------------------------------------------------------
 
-Expected<DatasetId> DataEngine::createDataset(DatasetDescriptor descriptor) {
-  DatasetId id = impl_->next_dataset_id++;
+Expected<DatasetId> DataEngine::createDataset(DatasetDescriptor descriptor, DatasetId requested_id) {
+  DatasetId id = requested_id != 0 ? requested_id : impl_->next_dataset_id;
+  if (requested_id != 0) {
+    if (impl_->datasets.find(requested_id) != impl_->datasets.end()) {
+      return PJ::unexpected(fmt::format("Dataset {} already exists", requested_id));
+    }
+  }
 
   // Verify time domain exists if specified
   if (descriptor.time_domain_id != 0) {
@@ -53,6 +58,13 @@ Expected<DatasetId> DataEngine::createDataset(DatasetDescriptor descriptor) {
     if (it == impl_->time_domains.end()) {
       return PJ::unexpected(fmt::format("Time domain {} not found", descriptor.time_domain_id));
     }
+  }
+  if (requested_id != 0) {
+    if (impl_->next_dataset_id <= id) {
+      impl_->next_dataset_id = id + 1;
+    }
+  } else {
+    ++impl_->next_dataset_id;
   }
 
   DatasetInfo info;
@@ -77,7 +89,7 @@ const DatasetInfo* DataEngine::getDataset(DatasetId id) const {
 // Topic management
 // ---------------------------------------------------------------------------
 
-Expected<TopicId> DataEngine::createTopic(DatasetId dataset_id, TopicDescriptor descriptor) {
+Expected<TopicId> DataEngine::createTopic(DatasetId dataset_id, TopicDescriptor descriptor, TopicId requested_id) {
   auto it = impl_->datasets.find(dataset_id);
   if (it == impl_->datasets.end()) {
     return PJ::unexpected(fmt::format("Dataset {} not found", dataset_id));
@@ -90,7 +102,17 @@ Expected<TopicId> DataEngine::createTopic(DatasetId dataset_id, TopicDescriptor 
     }
   }
 
-  TopicId id = impl_->next_topic_id++;
+  TopicId id = requested_id != 0 ? requested_id : impl_->next_topic_id;
+  if (requested_id != 0) {
+    if (impl_->topics.find(requested_id) != impl_->topics.end()) {
+      return PJ::unexpected(fmt::format("Topic {} already exists", requested_id));
+    }
+    if (impl_->next_topic_id <= id) {
+      impl_->next_topic_id = id + 1;
+    }
+  } else {
+    ++impl_->next_topic_id;
+  }
   descriptor.dataset_id = dataset_id;
   impl_->topics.emplace(
       std::piecewise_construct, std::forward_as_tuple(id), std::forward_as_tuple(id, std::move(descriptor)));
@@ -130,8 +152,18 @@ const TypeRegistry& DataEngine::typeRegistry() const {
 // Time domains
 // ---------------------------------------------------------------------------
 
-Expected<TimeDomainId> DataEngine::createTimeDomain(std::string name) {
-  TimeDomainId id = impl_->next_time_domain_id++;
+Expected<TimeDomainId> DataEngine::createTimeDomain(std::string name, TimeDomainId requested_id) {
+  TimeDomainId id = requested_id != 0 ? requested_id : impl_->next_time_domain_id;
+  if (requested_id != 0) {
+    if (impl_->time_domains.find(requested_id) != impl_->time_domains.end()) {
+      return PJ::unexpected(fmt::format("Time domain {} already exists", requested_id));
+    }
+    if (impl_->next_time_domain_id <= id) {
+      impl_->next_time_domain_id = id + 1;
+    }
+  } else {
+    ++impl_->next_time_domain_id;
+  }
   TimeDomain td;
   td.id = id;
   td.name = std::move(name);

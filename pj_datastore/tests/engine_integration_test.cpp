@@ -1247,5 +1247,104 @@ TEST(EngineReplaceTest, IdStabilityReaderSeesNewData) {
   EXPECT_DOUBLE_EQ(firstValue(primary, a), 50.0);
 }
 
+// ===========================================================================
+// Explicit id creation: streaming mirrors a primary-only engine/store into a
+// secondary one. The primary can drift first when ordinary file loads create
+// time domains, datasets, or topics that never exist in the secondary.
+// ===========================================================================
+
+TEST(DataEngineExplicitIdTest, TimeDomainCanMirrorPrimaryIdAfterCounterDrift) {
+  DataEngine primary;
+  DataEngine secondary;
+
+  auto file_domain = primary.createTimeDomain("file_default");
+  ASSERT_TRUE(file_domain.has_value()) << file_domain.error();
+  EXPECT_EQ(*file_domain, 1u);
+
+  auto stream_domain = primary.createTimeDomain("stream_default");
+  ASSERT_TRUE(stream_domain.has_value()) << stream_domain.error();
+  EXPECT_EQ(*stream_domain, 2u);
+
+  auto mirrored = secondary.createTimeDomain("stream_default", *stream_domain);
+  ASSERT_TRUE(mirrored.has_value()) << mirrored.error();
+  EXPECT_EQ(*mirrored, *stream_domain);
+  ASSERT_NE(secondary.getTimeDomain(*stream_domain), nullptr);
+  EXPECT_EQ(secondary.getTimeDomain(*stream_domain)->name, "stream_default");
+
+  auto next_secondary_domain = secondary.createTimeDomain("next");
+  ASSERT_TRUE(next_secondary_domain.has_value()) << next_secondary_domain.error();
+  EXPECT_EQ(*next_secondary_domain, *stream_domain + 1);
+}
+
+TEST(DataEngineExplicitIdTest, DatasetCanMirrorPrimaryIdAfterCounterDrift) {
+  DataEngine primary;
+  DataEngine secondary;
+
+  auto file_dataset = primary.createDataset(DatasetDescriptor{.source_name = "file", .time_domain_id = 0});
+  ASSERT_TRUE(file_dataset.has_value()) << file_dataset.error();
+  EXPECT_EQ(*file_dataset, 1u);
+
+  auto stream_dataset = primary.createDataset(DatasetDescriptor{.source_name = "stream", .time_domain_id = 0});
+  ASSERT_TRUE(stream_dataset.has_value()) << stream_dataset.error();
+  EXPECT_EQ(*stream_dataset, 2u);
+
+  auto mirrored =
+      secondary.createDataset(DatasetDescriptor{.source_name = "stream", .time_domain_id = 0}, *stream_dataset);
+  ASSERT_TRUE(mirrored.has_value()) << mirrored.error();
+  EXPECT_EQ(*mirrored, *stream_dataset);
+  ASSERT_NE(secondary.getDataset(*stream_dataset), nullptr);
+  EXPECT_EQ(secondary.getDataset(*stream_dataset)->source_name, "stream");
+
+  auto next_secondary_dataset = secondary.createDataset(DatasetDescriptor{.source_name = "next", .time_domain_id = 0});
+  ASSERT_TRUE(next_secondary_dataset.has_value()) << next_secondary_dataset.error();
+  EXPECT_EQ(*next_secondary_dataset, *stream_dataset + 1);
+}
+
+TEST(DataEngineExplicitIdTest, TopicCanMirrorPrimaryIdAfterCounterDrift) {
+  DataEngine primary;
+  DataEngine secondary;
+
+  auto primary_dataset = primary.createDataset(DatasetDescriptor{.source_name = "stream", .time_domain_id = 0});
+  ASSERT_TRUE(primary_dataset.has_value()) << primary_dataset.error();
+  auto secondary_dataset =
+      secondary.createDataset(DatasetDescriptor{.source_name = "stream", .time_domain_id = 0}, *primary_dataset);
+  ASSERT_TRUE(secondary_dataset.has_value()) << secondary_dataset.error();
+
+  auto primary_only_topic = primary.createTopic(*primary_dataset, TopicDescriptor{.name = "file/topic"});
+  ASSERT_TRUE(primary_only_topic.has_value()) << primary_only_topic.error();
+  EXPECT_EQ(*primary_only_topic, 1u);
+
+  auto stream_topic = primary.createTopic(*primary_dataset, TopicDescriptor{.name = "stream/topic"});
+  ASSERT_TRUE(stream_topic.has_value()) << stream_topic.error();
+  EXPECT_EQ(*stream_topic, 2u);
+
+  auto mirrored = secondary.createTopic(*secondary_dataset, TopicDescriptor{.name = "stream/topic"}, *stream_topic);
+  ASSERT_TRUE(mirrored.has_value()) << mirrored.error();
+  EXPECT_EQ(*mirrored, *stream_topic);
+  ASSERT_NE(secondary.getTopicStorage(*stream_topic), nullptr);
+  EXPECT_EQ(secondary.getTopicStorage(*stream_topic)->descriptor().name, "stream/topic");
+
+  auto next_secondary_topic = secondary.createTopic(*secondary_dataset, TopicDescriptor{.name = "next/topic"});
+  ASSERT_TRUE(next_secondary_topic.has_value()) << next_secondary_topic.error();
+  EXPECT_EQ(*next_secondary_topic, *stream_topic + 1);
+}
+
+TEST(DataEngineExplicitIdTest, DuplicateExplicitIdsAreRejected) {
+  DataEngine engine;
+
+  auto domain = engine.createTimeDomain("default");
+  ASSERT_TRUE(domain.has_value()) << domain.error();
+  EXPECT_FALSE(engine.createTimeDomain("duplicate", *domain).has_value());
+
+  auto dataset = engine.createDataset(DatasetDescriptor{.source_name = "dataset", .time_domain_id = 0});
+  ASSERT_TRUE(dataset.has_value()) << dataset.error();
+  EXPECT_FALSE(
+      engine.createDataset(DatasetDescriptor{.source_name = "duplicate", .time_domain_id = 0}, *dataset).has_value());
+
+  auto topic = engine.createTopic(*dataset, TopicDescriptor{.name = "topic"});
+  ASSERT_TRUE(topic.has_value()) << topic.error();
+  EXPECT_FALSE(engine.createTopic(*dataset, TopicDescriptor{.name = "duplicate"}, *topic).has_value());
+}
+
 }  // namespace
 }  // namespace PJ

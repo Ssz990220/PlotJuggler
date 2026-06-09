@@ -12,15 +12,27 @@ namespace PJ {
 
 // --- Registration ---
 
-Expected<ObjectTopicId> ObjectStore::registerTopic(const ObjectTopicDescriptor& descriptor) {
+Expected<ObjectTopicId> ObjectStore::registerTopic(
+    const ObjectTopicDescriptor& descriptor, ObjectTopicId requested_id) {
   std::unique_lock lock(store_mutex_);
   for (const auto& [tid, series] : topics_) {
     if (series->descriptor.topic_name == descriptor.topic_name &&
         series->descriptor.dataset_id == descriptor.dataset_id) {
       return unexpected("topic already registered: " + descriptor.topic_name);
     }
+    if (requested_id.id != 0 && tid.id == requested_id.id) {
+      return unexpected("object topic id already in use: " + std::to_string(requested_id.id));
+    }
   }
-  ObjectTopicId id{next_id_++};
+  ObjectTopicId id;
+  if (requested_id.id != 0) {
+    id = requested_id;
+    if (next_id_ <= id.id) {
+      next_id_ = id.id + 1;
+    }
+  } else {
+    id = ObjectTopicId{next_id_++};
+  }
   auto series = std::make_unique<ObjectSeries>();
   series->descriptor = descriptor;
   topics_.emplace_back(id, std::move(series));

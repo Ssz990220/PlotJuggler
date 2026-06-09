@@ -44,7 +44,7 @@ Hierarchy: **Dataset -> Topic -> Chunk -> Column**
 ### Logical Layer
 
 **`DataEngine`** — Central owner of all state. Stores datasets, topics (as `TopicStorage`), time domains, and the global `TypeRegistry`, all in hash map containers (tsl::robin_map internally, std::unordered_map in headers). Provides:
-- `createDataset()`, `createTopic()`, `createTimeDomain()` with monotonic ID allocation
+- `createDataset()`, `createTopic()`, `createTimeDomain()` with monotonic ID allocation or explicit caller-requested IDs
 - `commitChunks()` — appends sealed chunks to `TopicStorage`, returns deduplicated list of changed `TopicId`s
 - `enforceRetention()` — evicts old chunks across all topics
 - Factory methods `createWriter()` and `createReader()`

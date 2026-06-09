@@ -150,8 +150,8 @@ class StreamingSourceManager : public QObject {
   // Scalar twin of secondary_object_store_. Empty during live ingest;
   // receives every scalar push (source-level and parser bindings) during
   // pause via DataSourceRuntimeHost::setDataEngineTarget, and is drained
-  // into the primary DataEngine at resume. Lockstep DatasetIds /
-  // TimeDomainIds / TopicIds with the primary are maintained by
+  // into the primary DataEngine at resume. Matching TimeDomainIds,
+  // DatasetIds, and TopicIds with the primary are requested explicitly by
   // startSession + cbEnsureParserBinding so chunks can be drained by id
   // without any translation.
   std::unique_ptr<DataEngine> secondary_data_engine_;

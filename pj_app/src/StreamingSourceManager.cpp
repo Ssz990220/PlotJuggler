@@ -232,17 +232,17 @@ void StreamingSourceManager::startSession(const QString& plugin_id) {
   const PJ_data_source_handle_t source_handle{static_cast<uint32_t>(dataset_id)};
 
   // Lockstep mirror onto the secondary engine. Topics are mirrored
-  // individually inside DataSourceRuntimeHost; the dataset has to exist
-  // here so cbEnsureParserBinding can use the same DatasetId on both
-  // engines without translation.
+  // individually inside DataSourceRuntimeHost; the dataset has to exist here so
+  // cbEnsureParserBinding can use the same DatasetId on both engines without
+  // translation. Create it with the SAME id explicitly: the two engines'
+  // auto-increment counters drift whenever the primary gets a dataset the
+  // secondary doesn't (e.g. a file load between streams), so a plain
+  // createDataset() on the secondary would return a different id and the next
+  // stream would abort here. Forcing the id keeps them in lockstep regardless.
   auto mirrored_dataset = secondary_data_engine_->createDataset(
-      DatasetDescriptor{.source_name = display_name.toStdString(), .time_domain_id = td_id});
+      DatasetDescriptor{.source_name = display_name.toStdString(), .time_domain_id = td_id}, dataset_id);
   if (!mirrored_dataset.has_value()) {
     emit setupError(tr("secondary createDataset failed: %1").arg(QString::fromStdString(mirrored_dataset.error())));
-    return;
-  }
-  if (*mirrored_dataset != dataset_id) {
-    emit setupError(tr("lockstep desync on dataset: primary=%1 secondary=%2").arg(dataset_id).arg(*mirrored_dataset));
     return;
   }
 
@@ -440,9 +440,10 @@ TimeDomainId StreamingSourceManager::ensureDefaultTimeDomainId() {
     qCWarning(lcStream) << "createTimeDomain failed:" << QString::fromStdString(domain_or.error());
     return 0;
   }
-  // Lockstep mirror onto the secondary engine so TimeDomainIds tick together
-  // (every subsequent lockstep createDataset/createTopic relies on this).
-  auto mirrored = secondary_data_engine_->createTimeDomain(kDefaultTimeDomainName);
+  // Mirror the same TimeDomainId onto the secondary engine. Primary-only file
+  // loads can advance the primary counter before streaming starts, so the
+  // secondary must request this exact id instead of relying on counter order.
+  auto mirrored = secondary_data_engine_->createTimeDomain(kDefaultTimeDomainName, *domain_or);
   if (!mirrored.has_value()) {
     qCWarning(lcStream) << "secondary createTimeDomain failed:" << QString::fromStdString(mirrored.error());
     return 0;

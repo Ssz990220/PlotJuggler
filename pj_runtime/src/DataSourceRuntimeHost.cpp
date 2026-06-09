@@ -413,24 +413,20 @@ bool DataSourceRuntimeHost::cbEnsureParserBinding(
     }
     const PJ_topic_handle_t topic_handle{static_cast<uint32_t>(*topic_or)};
 
-    // Lockstep-mirror into the secondary engine. The two TopicId counters
-    // stay in step only if every primary createTopic is paired with a
-    // secondary one; a mismatch is a desync (later a wrong-engine push) — fail
-    // loudly here at registration.
+    // Lockstep-mirror into the secondary engine with the SAME TopicId. The two
+    // engines' TopicId counters drift whenever the primary gets topics the
+    // secondary doesn't (e.g. a file loaded between streams), so we force the
+    // secondary topic id to match the primary's instead of relying on the
+    // counters staying in step. A later push uses one id against whichever
+    // engine is the active target, so the ids MUST match.
     if (self->secondary_data_engine_ != nullptr) {
       auto mirrored = self->secondary_data_engine_->createTopic(
-          self->dataset_id_, TopicDescriptor{.name = std::string(topic_name)});
+          self->dataset_id_, TopicDescriptor{.name = std::string(topic_name)}, *topic_or);
       if (!mirrored.has_value()) {
         return self->fail(
             out_error,
             ("failed to mirror topic '" + std::string(topic_name) + "' into secondary engine: " + mirrored.error())
                 .c_str());
-      }
-      if (*mirrored != *topic_or) {
-        return self->fail(
-            out_error, ("lockstep desync: primary topic id " + std::to_string(*topic_or) + " != secondary topic id " +
-                        std::to_string(*mirrored))
-                           .c_str());
       }
     }
 
@@ -487,22 +483,17 @@ bool DataSourceRuntimeHost::cbEnsureParserBinding(
               ("failed to register object topic '" + std::string(topic_name) + "': " + registered.error()).c_str());
         }
         object_topic_id = *registered;
-        // Lockstep-mirror into the secondary store. The two id counters stay
-        // in step only if every primary registerTopic is paired with a
-        // secondary one; a mismatch means another caller (multi-session race?)
-        // slipped a registration in — fail loudly here, not at the next push.
+        // Lockstep-mirror into the secondary store with the SAME ObjectTopicId.
+        // The two stores' id counters drift whenever the primary gets topics the
+        // secondary doesn't (e.g. a file loaded between streams), so we force the
+        // secondary id to match the primary's. A later push uses one id against
+        // whichever store is the active target, so the ids MUST match.
         if (self->secondary_object_store_ != nullptr) {
-          auto mirrored = self->secondary_object_store_->registerTopic(descriptor);
+          auto mirrored = self->secondary_object_store_->registerTopic(descriptor, *registered);
           if (!mirrored.has_value()) {
             return self->fail(
                 out_error, ("failed to mirror object topic '" + std::string(topic_name) +
                             "' into secondary store: " + mirrored.error())
-                               .c_str());
-          }
-          if (mirrored->id != registered->id) {
-            return self->fail(
-                out_error, ("lockstep desync: primary id " + std::to_string(registered->id) + " != secondary id " +
-                            std::to_string(mirrored->id))
                                .c_str());
           }
         }

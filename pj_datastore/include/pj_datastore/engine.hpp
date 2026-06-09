@@ -40,15 +40,19 @@ class DataEngine {
   DataEngine& operator=(const DataEngine&) = delete;
 
   // Dataset management
-  /// Create and register a dataset.
-  [[nodiscard]] PJ::Expected<PJ::DatasetId> createDataset(PJ::DatasetDescriptor descriptor);
+  /// Create and register a dataset. Set `requested_id` non-zero to create it
+  /// with that exact DatasetId; otherwise the next id is auto-assigned.
+  [[nodiscard]] PJ::Expected<PJ::DatasetId> createDataset(
+      PJ::DatasetDescriptor descriptor, PJ::DatasetId requested_id = 0);
 
   /// Lookup dataset by id (nullptr if missing).
   [[nodiscard]] const PJ::DatasetInfo* getDataset(PJ::DatasetId id) const;
 
   // Topic management (called by DataWriter)
-  /// Create a topic under a dataset.
-  [[nodiscard]] PJ::Expected<PJ::TopicId> createTopic(PJ::DatasetId dataset_id, TopicDescriptor descriptor);
+  /// Create a topic under a dataset. Set `requested_id` non-zero to create it
+  /// with that exact TopicId; otherwise the next id is auto-assigned.
+  [[nodiscard]] PJ::Expected<PJ::TopicId> createTopic(
+      PJ::DatasetId dataset_id, TopicDescriptor descriptor, PJ::TopicId requested_id = 0);
 
   /// Mutable topic storage lookup (nullptr if missing).
   [[nodiscard]] TopicStorage* getTopicStorage(PJ::TopicId id);
@@ -64,8 +68,9 @@ class DataEngine {
   [[nodiscard]] const TypeRegistry& typeRegistry() const;
 
   // Time domains
-  /// Create a new time domain.
-  [[nodiscard]] PJ::Expected<PJ::TimeDomainId> createTimeDomain(std::string name);
+  /// Create a new time domain. Set `requested_id` non-zero to create it with
+  /// that exact TimeDomainId; otherwise the next id is auto-assigned.
+  [[nodiscard]] PJ::Expected<PJ::TimeDomainId> createTimeDomain(std::string name, PJ::TimeDomainId requested_id = 0);
 
   /// Lookup time domain by id (nullptr if missing).
   [[nodiscard]] const PJ::TimeDomain* getTimeDomain(PJ::TimeDomainId id) const;
