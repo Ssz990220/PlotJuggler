@@ -2,8 +2,6 @@
 // SPDX-License-Identifier: MPL-2.0
 #include "ui/Scene2DConfigPanel.h"
 
-#include <QFrame>
-#include <QLabel>
 #include <QVBoxLayout>
 #include <utility>
 #include <vector>
@@ -12,6 +10,7 @@
 #include "pj_scene_common/scene_layer.h"
 #include "pj_widgets/ConfigPanelHost.h"
 #include "pj_widgets/LayerListView.h"
+#include "pj_widgets/SectionHeaderBand.h"
 
 namespace PJ {
 
@@ -26,25 +25,29 @@ namespace {
 }  // namespace
 
 Scene2DConfigPanel::Scene2DConfigPanel(QWidget* parent) : QWidget(parent) {
+  // Zero outer margins so the section header bands span edge-to-edge, like
+  // the plotting panel's Curve Width / Curve Style strips; each content block
+  // under a band re-adds its own inset.
   auto* root = new QVBoxLayout(this);
-  root->setContentsMargins(8, 8, 8, 8);
-  root->setSpacing(8);
+  root->setContentsMargins(0, 0, 0, 0);
+  root->setSpacing(0);
 
-  auto* layers_label = new QLabel(tr("Layers"), this);
-  layers_label->setStyleSheet(QStringLiteral("font-weight: bold;"));
-  root->addWidget(layers_label);
+  root->addWidget(new SectionHeaderBand(tr("Layers"), this));
+  auto* layers_host = new QWidget(this);
+  auto* layers_layout = new QVBoxLayout(layers_host);
+  layers_layout->setContentsMargins(8, 4, 8, 4);
+  list_ = new LayerListView(layers_host);
+  layers_layout->addWidget(list_);
+  root->addWidget(layers_host);
 
-  list_ = new LayerListView(this);
-  root->addWidget(list_);
-
-  auto* sep = new QFrame(this);
-  sep->setFrameShape(QFrame::HLine);
-  sep->setFrameShadow(QFrame::Sunken);
-  root->addWidget(sep);
-
-  config_host_ = new ConfigPanelHost(this);
-  root->addWidget(config_host_);
-  root->addStretch(1);
+  root->addWidget(new SectionHeaderBand(tr("Settings"), this));
+  auto* settings_host = new QWidget(this);
+  auto* settings_layout = new QVBoxLayout(settings_host);
+  settings_layout->setContentsMargins(8, 4, 8, 4);
+  config_host_ = new ConfigPanelHost(settings_host);
+  settings_layout->addWidget(config_host_);
+  settings_layout->addStretch(1);
+  root->addWidget(settings_host, /*stretch=*/1);
 
   connect(list_, &LayerListView::selectionChanged, this, &Scene2DConfigPanel::updateConfigPane);
   connect(list_, &LayerListView::visibilityToggled, this, [this](qint64 id, bool visible) {

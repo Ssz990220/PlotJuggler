@@ -277,8 +277,7 @@ LayerListView::LayerListView(QWidget* parent) : QWidget(parent), current_theme_(
   list_->setMinimumWidth(0);
   list_->setStyleSheet(QStringLiteral("QListWidget::item { padding: 0px; }"));
   list_->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Maximum);
-  list_->setMinimumHeight(kDefaultRowHeight * 2);
-  list_->setMaximumHeight(kDefaultRowHeight * 6 + 4);
+  list_->setFixedHeight(kDefaultRowHeight * 4 + 4);
   root->addWidget(list_);
   setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Maximum);
 
@@ -312,6 +311,7 @@ void LayerListView::setRows(const std::vector<LayerRow>& rows) {
   } else if (selected.has_value()) {
     emit selectionChanged();
   }
+  updateMinimumHeight();
 }
 
 void LayerListView::addRow(const LayerRow& row) {
@@ -326,6 +326,7 @@ void LayerListView::addRow(const LayerRow& row) {
   if (list_->currentItem() == nullptr) {
     list_->setCurrentItem(item);
   }
+  updateMinimumHeight();
 }
 
 void LayerListView::removeRow(qint64 id) {
@@ -343,12 +344,21 @@ void LayerListView::removeRow(qint64 id) {
   }
   delete list_->takeItem(row);
   items_.erase(it);
+  updateMinimumHeight();
 }
 
 void LayerListView::clearRows() {
   detachItemWidgets(list_);
   list_->clear();
   items_.clear();
+  updateMinimumHeight();
+}
+
+void LayerListView::updateMinimumHeight() {
+  // Fixed (min == max) so the layout can neither stretch the list to its
+  // natural QListWidget sizeHint nor collapse it below the 4-row floor.
+  const int rows = std::clamp(list_->count(), 4, 6);
+  list_->setFixedHeight(kDefaultRowHeight * rows + 4);
 }
 
 void LayerListView::setRowVisible(qint64 id, bool visible) {

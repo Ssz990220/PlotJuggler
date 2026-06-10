@@ -24,6 +24,7 @@ Widgets:
 | `ColorPickerPopup.h` | Compact popup color picker. |
 | `ToggleSwitch.h` | iOS-style toggle replacement for `QCheckBox`. |
 | `IntScrubber.h` / `DoubleScrubber.h` / `ScrubberBase.h` | Drag-to-scrub numeric inputs. |
+| `SectionHeaderBand.h` | 24-px titlebar-tone section header strip (leading indent baked in); background themed once via the `PJ--SectionHeaderBand` QSS class rule, so instances need no per-objectName stylesheet registration. |
 | `RealSlider.h` | Floating-point `QSlider`. |
 | `FlowLayout.h` | Standard Qt example flow layout. |
 | `ElidingLabel.h` | `QLabel` that elides instead of clipping. |

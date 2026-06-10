@@ -3,8 +3,6 @@
 
 #include "ui/Scene3DConfigPanel.h"
 
-#include <QFrame>
-#include <QLabel>
 #include <QVBoxLayout>
 #include <cstdint>
 #include <utility>
@@ -15,6 +13,7 @@
 #include "pj_scene_common/scene_layer.h"
 #include "pj_widgets/ConfigPanelHost.h"
 #include "pj_widgets/LayerListView.h"
+#include "pj_widgets/SectionHeaderBand.h"
 
 namespace PJ {
 
@@ -37,33 +36,29 @@ namespace {
 }  // namespace
 
 Scene3DConfigPanel::Scene3DConfigPanel(QWidget* parent) : QWidget(parent) {
+  // Zero outer margins so the section header bands span edge-to-edge, like
+  // the plotting panel's Curve Width / Curve Style strips; each content block
+  // under a band re-adds its own inset.
   auto* root = new QVBoxLayout(this);
-  root->setContentsMargins(8, 8, 8, 8);
-  root->setSpacing(8);
+  root->setContentsMargins(0, 0, 0, 0);
+  root->setSpacing(0);
 
-  auto* topics_frame = new QFrame(this);
-  topics_frame->setFrameShape(QFrame::StyledPanel);
-  topics_frame->setFrameShadow(QFrame::Sunken);
-  auto* topics_frame_layout = new QVBoxLayout(topics_frame);
-  topics_frame_layout->setContentsMargins(6, 6, 6, 6);
-  topics_frame_layout->setSpacing(4);
+  root->addWidget(new SectionHeaderBand(tr("Topics"), this));
+  auto* topics_host = new QWidget(this);
+  auto* topics_layout = new QVBoxLayout(topics_host);
+  topics_layout->setContentsMargins(8, 4, 8, 4);
+  layer_list_ = new LayerListView(topics_host);
+  topics_layout->addWidget(layer_list_);
+  root->addWidget(topics_host);
 
-  auto* topics_label = new QLabel(tr("Topics"), topics_frame);
-  topics_label->setStyleSheet(QStringLiteral("font-weight: bold;"));
-  topics_frame_layout->addWidget(topics_label);
-
-  layer_list_ = new LayerListView(topics_frame);
-  topics_frame_layout->addWidget(layer_list_);
-  root->addWidget(topics_frame);
-
-  auto* sep_rule = new QFrame(this);
-  sep_rule->setFrameShape(QFrame::HLine);
-  sep_rule->setFrameShadow(QFrame::Sunken);
-  root->addWidget(sep_rule);
-
-  config_host_ = new ConfigPanelHost(this);
-  root->addWidget(config_host_);
-  root->addStretch(1);
+  root->addWidget(new SectionHeaderBand(tr("Settings"), this));
+  auto* settings_host = new QWidget(this);
+  auto* settings_layout = new QVBoxLayout(settings_host);
+  settings_layout->setContentsMargins(8, 4, 8, 4);
+  config_host_ = new ConfigPanelHost(settings_host);
+  settings_layout->addWidget(config_host_);
+  settings_layout->addStretch(1);
+  root->addWidget(settings_host, /*stretch=*/1);
 
   connect(layer_list_, &LayerListView::selectionChanged, this, &Scene3DConfigPanel::onLayerSelectionChanged);
   connect(layer_list_, &LayerListView::visibilityToggled, this, [this](qint64 id, bool visible) {

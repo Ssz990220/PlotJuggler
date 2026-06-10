@@ -1350,28 +1350,31 @@ QLineEdit#plotTabRenameEdit {
 }
 
 /* Accordion-header bands in the LHS panels and the right-side
-   CurveEditor "Curves" / global Width / global Line style headers all
-   share the title-bar tone. */
+   CurveEditor "Curves" header share the title-bar tone; the code-built
+   bands (Curve Width / Curve Style / 3D scene sections) are
+   SectionHeaderBand widgets, themed by the class rule below. */
 QWidget#widgetLabelInput,
 QWidget#widgetLabelTimeseries,
 QWidget#widgetLabelCustom,
 QWidget#widgetLabelCurves,
 QWidget#widgetLabelChart,
-QWidget#widgetLabelLegend,
-QWidget#widgetLabelCurveWidth,
-QWidget#widgetLabelCurveStyle {
+QWidget#widgetLabelLegend {
+    background-color: ${titlebar_background};
+}
+
+/* Shared section-header widget (pj_widgets SectionHeaderBand): same band
+   tone, themed once via the class selector — no per-instance objectName
+   registration. The leading indent is baked into the widget. */
+PJ--SectionHeaderBand {
     background-color: ${titlebar_background};
 }
 
 /* 2-px leading padding so the section titles ("Sources", "Datasets",
-   "Custom Series", "Curves", "Curve Width", "Curve Style") don't butt up
-   against the band's left edge. */
+   "Custom Series", "Curves") don't butt up against the band's left edge. */
 QLabel#labelInput,
 QLabel#labelTimeseries,
 QLabel#labelCustom,
-QLabel#labelCurves,
-QLabel#labelCurveWidth,
-QLabel#labelCurveStyle {
+QLabel#labelCurves {
     padding-left: 2px;
 }
 

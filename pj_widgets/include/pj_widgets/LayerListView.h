@@ -52,6 +52,9 @@ class LayerListView : public QWidget {
   void installRowWidget(QListWidgetItem* item, const LayerRow& row);
   void rebuildFromOrder(const std::vector<qint64>& ordered_ids, qint64 select_id);
   void onRowMoved(int from, int to);
+  // Height tracks the row count: 4-row floor, growing to the 6-row cap
+  // (scrollbar beyond). Called by every row mutation.
+  void updateMinimumHeight();
 
   QListWidget* list_ = nullptr;
   std::unordered_map<qint64, QListWidgetItem*> items_;

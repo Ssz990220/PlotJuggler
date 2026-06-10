@@ -100,6 +100,7 @@
 #include "pj_widgets/FlowLayout.h"
 #include "pj_widgets/MessageBox.h"
 #include "pj_widgets/RasterStreamView.h"
+#include "pj_widgets/SectionHeaderBand.h"
 #include "pj_widgets/SvgUtil.h"
 #include "scene_object_classification.h"
 #include "ui/CurveListPanel.h"
@@ -2848,24 +2849,12 @@ void MainWindow::buildLocalToolbar() {
   auto build_section = [this, outer](
                            const QString& heading, const QString& header_object_name,
                            const std::vector<ToolSpec>& specs) -> QWidget* {
-    // Heading: same 24-px grey band as Datasets / Custom Series / Curves
-    // (styled via #widgetLabel* QSS rule that picks up titlebar_background).
-    auto* header = new QWidget(plot_config_page_);
+    // Heading: the shared titlebar-tone band (pj_widgets SectionHeaderBand,
+    // themed via the PJ--SectionHeaderBand QSS class rule). The objectName is
+    // kept for widget-tree selectors; the chrome-metrics handler resizes it.
+    auto* header = new SectionHeaderBand(heading, plot_config_page_);
     header->setObjectName(header_object_name);
     header->setFixedHeight(chrome_metrics_.icon_size + chrome_metrics_.icon_padding);
-    auto* header_layout = new QHBoxLayout(header);
-    header_layout->setContentsMargins(0, 0, 0, 0);
-    header_layout->setSpacing(0);
-    auto* label = new QLabel(heading, header);
-    // Mirror the .ui-baked naming convention: a `widgetLabelX` container
-    // wraps a `labelX` label. Lets the QSS padding-left rule that styles
-    // labelInput / labelTimeseries / labelCustom catch these too.
-    static const QString kWidgetPrefix = QStringLiteral("widgetL");
-    if (header_object_name.startsWith(kWidgetPrefix)) {
-      label->setObjectName(QStringLiteral("l") + header_object_name.mid(kWidgetPrefix.size()));
-    }
-    header_layout->addWidget(label);
-    header_layout->addStretch(1);
     outer->addWidget(header);
 
     // Icon strip: FlowLayout, spacing 0 so icons sit flush with each
