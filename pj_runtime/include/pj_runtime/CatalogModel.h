@@ -128,6 +128,9 @@ class CatalogModel : public QObject {
   void rebuildFromDatastore();
 
  signals:
+  // Batched companion to itemAdded(), emitted once per rebuild so views can
+  // update/sort once even when many catalog entries appear at the same time.
+  void itemsAdded(const std::vector<CatalogItem>& items);
   void itemAdded(const CatalogItem& item);
   // One emission per removal operation (whole dataset, multi-key trash, or keys
   // that vanished on a rebuild) so consumers react once, not per key.

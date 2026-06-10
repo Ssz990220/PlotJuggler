@@ -29,6 +29,7 @@ constexpr int kObjectTopicRole = Qt::UserRole + 2;
 constexpr int kCatalogItemRole = Qt::UserRole + 3;
 constexpr int kImageTopicRole = Qt::UserRole + 4;
 constexpr int k3dObjectTopicRole = Qt::UserRole + 5;
+constexpr int kSortKeyRole = Qt::UserRole + 6;
 
 QStringList splitPath(const QString& name) {
   return name.split('/', Qt::SkipEmptyParts);
@@ -42,18 +43,31 @@ QString normalizedPathSegment(QString path) {
   return path;
 }
 
+void setItemName(QTreeWidgetItem* item, const QString& name) {
+  item->setText(kNameColumn, name);
+  item->setData(kNameColumn, kSortKeyRole, name.toCaseFolded());
+}
+
+QString sortKeyForItem(const QTreeWidgetItem& item) {
+  const QString cached_key = item.data(kNameColumn, kSortKeyRole).toString();
+  if (!cached_key.isEmpty() || item.text(kNameColumn).isEmpty()) {
+    return cached_key;
+  }
+  return item.text(kNameColumn).toCaseFolded();
+}
+
 class CurveTreeItem : public QTreeWidgetItem {
  public:
   explicit CurveTreeItem(QTreeWidgetItem* parent) : QTreeWidgetItem(parent) {}
 
   bool operator<(const QTreeWidgetItem& other) const override {
-    const QString lhs = text(kNameColumn);
-    const QString rhs = other.text(kNameColumn);
-    const int folded_compare = QString::localeAwareCompare(lhs.toCaseFolded(), rhs.toCaseFolded());
+    const QString lhs_key = sortKeyForItem(*this);
+    const QString rhs_key = sortKeyForItem(other);
+    const int folded_compare = QString::localeAwareCompare(lhs_key, rhs_key);
     if (folded_compare != 0) {
       return folded_compare < 0;
     }
-    return QString::localeAwareCompare(lhs, rhs) < 0;
+    return QString::localeAwareCompare(text(kNameColumn), other.text(kNameColumn)) < 0;
   }
 };
 
@@ -283,7 +297,7 @@ QTreeWidgetItem* CurveTreeView::ensureGroupSegments(const QStringList& segments)
     }
     if (!found) {
       found = new CurveTreeItem(parent);
-      found->setText(kNameColumn, part);
+      setItemName(found, part);
       found->setFlags(found->flags() & ~(Qt::ItemIsDragEnabled | Qt::ItemIsSelectable));
     }
     parent = found;
@@ -296,6 +310,23 @@ QTreeWidgetItem* CurveTreeView::ensureGroup(const QString& path) {
 }
 
 void CurveTreeView::addCurve(const QString& name) {
+  addCurve(name, SortMode::Immediate);
+}
+
+void CurveTreeView::addCurves(const std::vector<QString>& names) {
+  if (names.empty()) {
+    return;
+  }
+  const bool updates_were_enabled = updatesEnabled();
+  setUpdatesEnabled(false);
+  for (const QString& name : names) {
+    addCurve(name, SortMode::Deferred);
+  }
+  sortTree();
+  setUpdatesEnabled(updates_were_enabled);
+}
+
+void CurveTreeView::addCurve(const QString& name, SortMode sort_mode) {
   const int last_sep = name.lastIndexOf('/');
   QTreeWidgetItem* parent = invisibleRootItem();
   QString leaf_name = name;
@@ -304,11 +335,13 @@ void CurveTreeView::addCurve(const QString& name) {
     leaf_name = name.mid(last_sep + 1);
   }
   auto* item = new CurveTreeItem(parent);
-  item->setText(kNameColumn, leaf_name);
+  setItemName(item, leaf_name);
   item->setData(kNameColumn, Qt::UserRole, name);
   item->setData(kNameColumn, kSearchRole, name);
   item->setFlags(item->flags() | Qt::ItemIsDragEnabled | Qt::ItemIsSelectable);
-  sortTree();
+  if (sort_mode == SortMode::Immediate) {
+    sortTree();
+  }
 }
 
 QString CurveTreeView::treePathFromCurvePath(const CurvePath& path) const {
@@ -334,10 +367,28 @@ void CurveTreeView::addCurve(const CurvePath& path) {
           .selectable = true,
           .is_image_topic = false,
           .is_3d_object_topic = false,
-      });
+      },
+      SortMode::Immediate);
 }
 
 void CurveTreeView::addCatalogItem(const CurvePath& path) {
+  addCatalogItem(path, SortMode::Immediate);
+}
+
+void CurveTreeView::addCatalogItems(const std::vector<CurvePath>& paths) {
+  if (paths.empty()) {
+    return;
+  }
+  const bool updates_were_enabled = updatesEnabled();
+  setUpdatesEnabled(false);
+  for (const CurvePath& path : paths) {
+    addCatalogItem(path, SortMode::Deferred);
+  }
+  sortTree();
+  setUpdatesEnabled(updates_were_enabled);
+}
+
+void CurveTreeView::addCatalogItem(const CurvePath& path, SortMode sort_mode) {
   const QString tree_path = treePathFromCurvePath(path);
   QTreeWidgetItem* item = nullptr;
   if (view_mode_ == ViewMode::ShowTopics) {
@@ -356,7 +407,7 @@ void CurveTreeView::addCatalogItem(const CurvePath& path) {
       QString leaf_name = segments.isEmpty() ? tree_path : segments.takeLast();
       QTreeWidgetItem* parent = ensureGroupSegments(segments);
       item = new CurveTreeItem(parent);
-      item->setText(kNameColumn, leaf_name);
+      setItemName(item, leaf_name);
       item->setData(kNameColumn, Qt::UserRole, path.key);
       item->setData(kNameColumn, kCatalogItemRole, path.key);
       item->setFlags(item->flags() | Qt::ItemIsDragEnabled | Qt::ItemIsSelectable);
@@ -377,7 +428,7 @@ void CurveTreeView::addCatalogItem(const CurvePath& path) {
       leaf_name = tree_path.mid(last_sep + 1);
     }
     item = new CurveTreeItem(parent);
-    item->setText(kNameColumn, leaf_name);
+    setItemName(item, leaf_name);
     item->setData(kNameColumn, Qt::UserRole, path.key);
     item->setData(kNameColumn, kCatalogItemRole, path.key);
     item->setFlags(item->flags() | Qt::ItemIsDragEnabled | Qt::ItemIsSelectable);
@@ -389,7 +440,9 @@ void CurveTreeView::addCatalogItem(const CurvePath& path) {
     setTopicIconDecoration(item, path.is_image_topic, path.is_3d_object_topic, currentTheme());
   }
   item->setData(kNameColumn, kSearchRole, tree_path);
-  sortTree();
+  if (sort_mode == SortMode::Immediate) {
+    sortTree();
+  }
 }
 
 void CurveTreeView::setViewMode(ViewMode mode) {

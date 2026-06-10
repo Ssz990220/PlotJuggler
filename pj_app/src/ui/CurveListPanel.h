@@ -88,7 +88,7 @@ class CurveListPanel : public QWidget {
   void onTreeContextMenu(const QPoint& pos);
 
  private:
-  void onCatalogItemAdded(const CatalogItem& item);
+  void onCatalogItemsAdded(const std::vector<CatalogItem>& items);
   void onCatalogItemsRemoved(const QStringList& keys);
   void onCatalogCleared();
   void applyIcons(QString theme);

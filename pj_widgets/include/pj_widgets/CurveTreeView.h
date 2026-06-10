@@ -47,8 +47,10 @@ class CurveTreeView : public QTreeWidget {
   [[nodiscard]] static QStringList decodeCatalogKeys(const QMimeData* mime_data);
 
   void addCurve(const QString& name);
+  void addCurves(const std::vector<QString>& names);
   void addCurve(const CurvePath& path);
   void addCatalogItem(const CurvePath& path);
+  void addCatalogItems(const std::vector<CurvePath>& paths);
   void clearCurves();
   void applyFilter(const QString& filter);
   void refreshIcons(const QString& theme);
@@ -84,6 +86,10 @@ class CurveTreeView : public QTreeWidget {
   void resizeEvent(QResizeEvent* event) override;
 
  private:
+  enum class SortMode { Immediate, Deferred };
+
+  void addCurve(const QString& name, SortMode sort_mode);
+  void addCatalogItem(const CurvePath& path, SortMode sort_mode);
   QTreeWidgetItem* ensureGroupSegments(const QStringList& segments);
   QTreeWidgetItem* ensureGroup(const QString& path);
   QString treePathFromCurvePath(const CurvePath& path) const;

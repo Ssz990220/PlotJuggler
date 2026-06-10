@@ -80,6 +80,50 @@ TEST(CurveTreeViewTest, SortsTopLevelGroupsAndChildren) {
   EXPECT_EQ(childNames(alpha), (std::vector<std::string>{"bravo", "charlie", "delta"}));
 }
 
+TEST(CurveTreeViewTest, BatchedCatalogInsertSortsTopLevelGroupsAndChildren) {
+  PJ::CurveTreeView view;
+
+  view.addCatalogItems({
+      PJ::CurveTreeView::CurvePath{
+          .key = QStringLiteral("gamma/zeta"),
+          .dataset = QStringLiteral("gamma"),
+          .topic = {},
+          .field = QStringLiteral("zeta"),
+      },
+      PJ::CurveTreeView::CurvePath{
+          .key = QStringLiteral("alpha/delta"),
+          .dataset = QStringLiteral("alpha"),
+          .topic = {},
+          .field = QStringLiteral("delta"),
+      },
+      PJ::CurveTreeView::CurvePath{
+          .key = QStringLiteral("beta/root"),
+          .dataset = QStringLiteral("beta"),
+          .topic = {},
+          .field = QStringLiteral("root"),
+      },
+      PJ::CurveTreeView::CurvePath{
+          .key = QStringLiteral("alpha/charlie"),
+          .dataset = QStringLiteral("alpha"),
+          .topic = {},
+          .field = QStringLiteral("charlie"),
+      },
+      PJ::CurveTreeView::CurvePath{
+          .key = QStringLiteral("alpha/bravo"),
+          .dataset = QStringLiteral("alpha"),
+          .topic = {},
+          .field = QStringLiteral("bravo"),
+      },
+  });
+
+  EXPECT_EQ(topLevelNames(view), (std::vector<std::string>{"alpha", "beta", "gamma"}));
+
+  ASSERT_EQ(view.topLevelItemCount(), 3);
+  QTreeWidgetItem* alpha = view.topLevelItem(0);
+  ASSERT_EQ(alpha->text(0), QStringLiteral("alpha"));
+  EXPECT_EQ(childNames(alpha), (std::vector<std::string>{"bravo", "charlie", "delta"}));
+}
+
 TEST(CurveTreeViewTest, UsesPj3StyleRowSelectionAndLeafOnlyGroups) {
   PJ::CurveTreeView view;
 

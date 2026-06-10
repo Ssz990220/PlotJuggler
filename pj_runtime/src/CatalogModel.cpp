@@ -481,6 +481,7 @@ void CatalogModel::rebuildFromDatastore() {
     return;
   }
 
+  std::vector<CatalogItem> added_items;
   QStringList removed_keys;
   for (const auto& [key, descriptor] : previous_items) {
     (void)descriptor;
@@ -488,14 +489,20 @@ void CatalogModel::rebuildFromDatastore() {
       removed_keys.push_back(key);
     }
   }
-  if (!removed_keys.isEmpty()) {
-    emit itemsRemoved(removed_keys);
-  }
-
   for (const auto& [key, descriptor] : impl_->items) {
     if (previous_items.find(key) == previous_items.end()) {
+      added_items.push_back(descriptor);
+    }
+  }
+  if (!added_items.empty()) {
+    std::sort(added_items.begin(), added_items.end(), catalogItemLess);
+    emit itemsAdded(added_items);
+    for (const CatalogItem& descriptor : added_items) {
       emit itemAdded(descriptor);
     }
+  }
+  if (!removed_keys.isEmpty()) {
+    emit itemsRemoved(removed_keys);
   }
 }
 

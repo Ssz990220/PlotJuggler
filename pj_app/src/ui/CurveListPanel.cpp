@@ -52,8 +52,16 @@ CurveTreeView::CurvePath treePathFromCatalogItem(const CatalogItem& item) {
   };
 }
 
-void addCatalogItem(CurveTreeView* tree_view, const CatalogItem& item) {
-  tree_view->addCatalogItem(treePathFromCatalogItem(item));
+void addCatalogItems(CurveTreeView* tree_view, const std::vector<CatalogItem>& items) {
+  if (tree_view == nullptr || items.empty()) {
+    return;
+  }
+  std::vector<CurveTreeView::CurvePath> paths;
+  paths.reserve(items.size());
+  for (const CatalogItem& item : items) {
+    paths.push_back(treePathFromCatalogItem(item));
+  }
+  tree_view->addCatalogItems(paths);
 }
 
 void rebuildTree(CurveTreeView* tree_view, CatalogModel* catalog) {
@@ -61,9 +69,7 @@ void rebuildTree(CurveTreeView* tree_view, CatalogModel* catalog) {
   if (catalog == nullptr) {
     return;
   }
-  for (const CatalogItem& item : catalog->items()) {
-    addCatalogItem(tree_view, item);
-  }
+  addCatalogItems(tree_view, catalog->items());
 }
 
 }  // namespace
@@ -221,7 +227,7 @@ void CurveListPanel::setCatalog(CatalogModel* catalog) {
   if (!catalog_) {
     return;
   }
-  connect(catalog_, &CatalogModel::itemAdded, this, &CurveListPanel::onCatalogItemAdded);
+  connect(catalog_, &CatalogModel::itemsAdded, this, &CurveListPanel::onCatalogItemsAdded);
   connect(catalog_, &CatalogModel::itemsRemoved, this, &CurveListPanel::onCatalogItemsRemoved);
   connect(catalog_, &CatalogModel::cleared, this, &CurveListPanel::onCatalogCleared);
 }
@@ -358,8 +364,8 @@ void CurveListPanel::onTreeContextMenu(const QPoint& pos) {
   }
 }
 
-void CurveListPanel::onCatalogItemAdded(const CatalogItem& item) {
-  addCatalogItem(tree_view_, item);
+void CurveListPanel::onCatalogItemsAdded(const std::vector<CatalogItem>& items) {
+  addCatalogItems(tree_view_, items);
 }
 
 void CurveListPanel::onCatalogItemsRemoved(const QStringList& /*keys*/) {
