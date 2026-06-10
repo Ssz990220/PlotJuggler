@@ -23,6 +23,10 @@ jobs:
     if: github.event.pull_request.draft == false
     needs: pre-commit
     runs-on: ubuntu-22.04
+    # Backstop against hangs (a deadlocked test otherwise holds the runner for
+    # GitHub's 6-hour default). Worst observed legitimate run — cold Conan +
+    # cold ccache — is ~28 min.
+    timeout-minutes: 60
     permissions:
       contents: read
       packages: write   # push/pull the Conan cache OCI artifact on ghcr.io
@@ -250,4 +254,7 @@ jobs:
         run: ccache -s
 
       - name: Test
-        run: xvfb-run -a ctest --test-dir build --output-on-failure
+        # --timeout kills any single test after 2 min (the suite normally
+        # finishes in well under that), so one deadlocked test fails loudly
+        # with its name in the log instead of stalling the whole job.
+        run: xvfb-run -a ctest --test-dir build --output-on-failure --timeout 120

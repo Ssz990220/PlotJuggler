@@ -27,6 +27,10 @@ jobs:
     # portability tracker: it surfaces POSIX-isms early without blocking
     # PRs while the codebase converges on cross-platform cleanliness.
     continue-on-error: true
+    # Backstop against hangs (a deadlocked test otherwise holds the runner for
+    # GitHub's 6-hour default). Worst observed legitimate run — cold sccache —
+    # is ~59 min.
+    timeout-minutes: 90
     permissions:
       contents: read
       packages: write   # push/pull the Conan cache OCI artifact on ghcr.io
@@ -389,4 +393,6 @@ jobs:
               [[ -n "$_d" ]] && export PATH="$(cygpath -u "$_d"):$PATH"
             done < build/pj_ffmpeg_bin_dirs.txt
           fi
-          ctest --test-dir build --build-config RelWithDebInfo --output-on-failure
+          # --timeout kills any single test after 2 min so a deadlocked test
+          # fails loudly with its name in the log instead of stalling the job.
+          ctest --test-dir build --build-config RelWithDebInfo --output-on-failure --timeout 120
