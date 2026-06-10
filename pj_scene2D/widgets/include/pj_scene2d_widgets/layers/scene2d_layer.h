@@ -53,7 +53,11 @@ class Scene2DLayer : public ISceneLayer {
   [[nodiscard]] std::optional<int64_t> lastTrackerTimeNs() const noexcept;
 
  protected:
+  /// Non-null only after attach() stores the session and before detach() clears it;
+  /// guaranteed valid inside createMediaSource(), onAfterAttach(), and onBeforeDetach().
   [[nodiscard]] ObjectStore* objectStore() const noexcept;
+  /// Same attach window as objectStore(); nullptr before attach(), after detach(),
+  /// and after a failed createMediaSource() during attach().
   [[nodiscard]] SessionManager* sessionManager() const noexcept;
   [[nodiscard]] ObjectTopicId topicId() const noexcept;
   [[nodiscard]] sdk::BuiltinObjectType objectType() const noexcept;
@@ -61,6 +65,8 @@ class Scene2DLayer : public ISceneLayer {
 
   void setSource(std::unique_ptr<MediaSource> source);
   [[nodiscard]] MediaSource* borrowedSource() const noexcept;
+  /// Called during attach() after objectStore()/sessionManager() become valid.
+  /// Returning nullptr fails attach() and clears those pointers again.
   [[nodiscard]] virtual std::unique_ptr<MediaSource> createMediaSource(const SceneLayerContext& ctx) = 0;
   virtual void onAfterAttach();
   virtual void onBeforeDetach();

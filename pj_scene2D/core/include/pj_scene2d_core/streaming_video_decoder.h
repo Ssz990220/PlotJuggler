@@ -169,18 +169,12 @@ class StreamingVideoDecoder {
   // B-frames (see initDecoder impl). Returns false if the codec is
   // unknown/unbuilt or the decoder cannot open.
   bool initDecoder(std::string_view format, Span<const uint8_t> keyframe_bytes);
-  // Feed entries forward from `start_idx`, buffering decoded frames (pts >=
-  // target_ts) into ready_frames_, until the target frame is available or the
-  // stream tip is reached (then drain). Serves and returns the EXACT target frame
-  // — FFmpeg's reorder + frame-thread delay means the frame for a packet surfaces
-  // only after later packets are fed, so a naive "first frame off the target
-  // packet" returns one several frames early. Updates last_sent_ts_/last_served_ts_.
-  // Feed entries forward from decode-order index `start_idx`, buffering decoded
-  // frames (pts >= target_pts) until the frame at exactly `target_pts` surfaces or
-  // the tip is reached. `target_idx` is the target's decode-order index, used only
-  // to detect a hole strictly before it. Serves/returns the EXACT target frame.
+  // Feed decode-order entries from `start_idx`, buffering decoded frames with PTS
+  // >= `target_ts` until the exact target frame surfaces or the tip is drained.
+  // `target_idx` is only for hole detection before the target; FFmpeg reorder and
+  // frame-thread delay mean the target may surface several packets later.
   Expected<DecodedFrame> serveForward(
-      size_t start_idx, size_t target_idx, Timestamp target_pts, const CancelTokenPtr& cancel);
+      size_t start_idx, size_t target_idx, Timestamp target_ts, const CancelTokenPtr& cancel);
   // Pop the buffered frame at exactly `ts` (dropping every earlier, now-past
   // frame), or nullopt if it is not buffered yet. Sets last_served_ts_/last_frame_.
   std::optional<DecodedFrame> takeReadyFrame(Timestamp ts);

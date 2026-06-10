@@ -44,20 +44,30 @@ Pure C++ library. Contains everything that does not touch Qt:
 
 | Component | Header(s) | Role |
 |-----------|-----------|------|
+| `BorrowedMediaSource` | `borrowed_media_source.h` | Non-owning `MediaSource` adapter over an externally-owned source pointer. |
+| `CancelToken` | `cancel_token.h` | Shared atomic cancellation flag polled by streaming-video decode work. |
+| `CodecPipeline` | `codec_pipeline.h` | Ordered chain of `CodecStage` transforms from raw bytes to `DecodedFrame`. |
+| `Image codecs` | `codecs.h` | Built-in codec stages and image pipeline builders: JPEG, PNG, Mono16 normalization, Bayer, segmentation palette. |
+| `CompositeMediaSource` | `composite_media_source.h` | Multi-layer fan-out: owns N `MediaSource`s and fuses their `MediaFrame`s (§5.4 / §8). |
+| `DecodedFrame` | `decoded_frame.h` | RAII wrapper for decoded pixel data (YUV planes or packed RGB/RGBA buffers). |
+| `DepthPipelineSource` | `depth_pipeline_source.h` | Synchronous `MediaSource` for canonical `DepthImage` payloads: deserializes and colormaps to RGBA. |
+| `EntryThumbnailCache` | `entry_thumbnail_cache.h` | Background HD-capped JPEG thumbnail cache for streaming `VideoFrame` scrub previews (§4.1). |
+| `FfmpegDecoder` | `ffmpeg_decoder.h` | FFmpeg AVCodecContext wrapper: HW-accel probing, guaranteed software fallback, YUV420P output (§R4.7). |
+| `H264 NAL utils` | `h264_utils.h` | H.264 Annex-B keyframe oracle (`isH264Keyframe`), used by codec-generic video helpers. |
+| `ImageAnnotation codec wrappers` | `image_annotation_codec.h` | Singular-named wrappers around the canonical SDK `ImageAnnotations` codec. |
+| `Image rectifier` | `image_rectifier.h` | Bilinear lens-undistortion of a `DecodedFrame` through a precomputed `UndistortMap` (interleaved 8-bit formats; planar/16-bit pass through unrectified). |
+| `Undistort remap` | `undistort_remap.h` | Per-camera reverse sampling map built from `CameraInfo` (K/D/R/P), consumed by the rectifier; see TECHNICAL_NOTES "rectify the image, not warp the annotations". |
 | `MediaSource` | `media_source.h` | Abstract frame-delivery interface: `setTimestamp` + `takeFrame` (§5) |
 | `ImagePipelineSource` | `image_pipeline_source.h` | `MediaSource` for images: wraps CodecPipeline + ObjectStore, decodes on a worker thread (§5.1) |
-| `StreamingVideoSource` | `streaming_video_source.h` | `MediaSource` for streaming video: wraps StreamingVideoDecoder + worker thread (§5.3) |
-| `FrameSlot` | `frame_slot.h` | Single-slot latest-wins mailbox (§3) |
-| `FfmpegDecoder` | `ffmpeg_decoder.h` | FFmpeg AVCodecContext wrapper: HW-accel probing, outputs YUV420P (§R4.7 compliant) |
-| `StreamingVideoDecoder` | `streaming_video_decoder.h` | Decodes streaming VideoFrame entries (H.264/HEVC/AV1, keyed on `VideoFrame.format`) from ObjectStore via FfmpegDecoder (§4.4) |
-| `EntryThumbnailCache` | `entry_thumbnail_cache.h` | JPEG-compressed thumbnail cache for streaming `VideoFrame` topics: background pre-decode, HD-capped via `thumbnail_codec` (§4.1) |
-| `H264 NAL utils` | `h264_utils.h` | H.264-specific Annex-B helpers (`isH264Keyframe`, SPS/PPS extraction `extractH264SpsPps`, `makeH264CodecParams`). Used by `video_codec_utils` for the H.264 case; no longer on the streaming decode open path (it now opens without extradata). |
-| `Video codec utils` | `video_codec_utils.h` | Codec-generic dispatch keyed on `VideoFrame.format`: `videoCodecIdFromFormat()` (whitelists h264/h265/av1; vp9 → NONE), the keyframe oracle `isVideoKeyframe(codec_id, …)` (H.264 IDR / HEVC IRAP / AV1 seq-header OBU), and `makeVideoCodecParams(codec_id)` (codec id only, no extradata) (§4.4) |
-| `ImageDecoder` | `image_decoder.h` | turbojpeg / libpng / raw-pixel dispatch (§4) |
-| `MediaIndexRegistry` | (designed, not yet implemented) | Per-topic keyframe timestamp index sidechannel for a future file-backed ObjectStore path (§6). Today's streaming and file paths each manage their own keyframe index internally; no header exists in `pj_scene2D/core/include/`. |
-| `CompositeMediaSource` | `composite_media_source.h` | Multi-layer fan-out: owns N `MediaSource`, fuses their `MediaFrame`s (§5.4 / §8) |
-| `CancelToken` | `cancel_token.h` | Atomic flag polled by decoders between decode units |
-| `DecodedFrame` | `decoded_frame.h` | RAII wrapper for decoded pixel data (YUV planes or RGB buffer) |
+| `MediaFrame` | `media_frame.h` | Multi-layer payload returned by `MediaSource`: legacy base frame, ordered pixel layers, and overlays. |
+| `SceneDecoder` | `scene_decoder.h` | Schema dispatch and `ISceneDecoder` implementations for image annotations and 2D-projected scene entities (§4.3). |
+| `SceneFrame` | `scene_frame.h` | Time-stamped batch of image-overlay annotations carried through the media pipeline. |
+| `ScenePipelineSource` | `scene_pipeline_source.h` | Synchronous `MediaSource` for vector-overlay topics decoded from `ObjectStore` (§5). |
+| `StreamingVideoDecoder` | `streaming_video_decoder.h` | ObjectStore-aware GOP decoder for `VideoFrame` entries (H.264/HEVC/AV1 keyed on `VideoFrame.format`) via `FfmpegDecoder` (§4.4). |
+| `StreamingVideoSource` | `streaming_video_source.h` | Worker-backed `MediaSource` for streaming video; wraps `StreamingVideoDecoder` (§5.3). |
+| `Thumbnail codec` | `thumbnail_codec.h` | Stateless HD-capped JPEG encode/decode helpers for YUV420P scrub thumbnails. |
+| `Video codec utils` | `video_codec_utils.h` | Codec-generic dispatch, keyframe detection, codec-parameter creation, and parameter-set priming (§4.4). |
+| `VideoFrame NAL extractor` | `video_frame_nal_extractor.h` | Parser-backed zero-copy extractor from canonical `VideoFrame` messages to raw NAL/OBU spans. |
 
 DataSource plugins do NOT link `pj_scene2d_core` — plugins depend only
 on `pj_base` (see `pj_plugins/docs/ARCHITECTURE.md`). Format-specific
@@ -76,9 +86,9 @@ handles per-frame `kVideoFrame` streaming topics (parser-mode
 
 | Component | Header(s) | Role |
 |-----------|-----------|------|
-| `MediaViewerWidget` | `media_viewer_widget.h` | `QRhiWidget` subclass: GPU rendering via BT.709 YUV->RGB fragment shader (3 R8 textures for YUV420P), zoom/pan, RGB DecodedFrame path, backward-compatible QImage path. Integrates with `MediaSource` via `setMediaSource()` + `setTimestamp()` (§7) |
-| Texture shaders | `shaders/texture.{vert,frag}` | RGBA texture display with view transform matrix |
-| YUV shaders | `shaders/yuv_to_rgb.{vert,frag}` | BT.709 YUV420P->RGB conversion via 3 R8 textures |
+| `MediaViewerWidget` | `media_viewer_widget.h` | `QRhiWidget` subclass: GPU rendering via BT.709 YUV->RGB fragment shader (3 R8 textures for YUV420P), zoom/pan, RGB DecodedFrame path, and `MediaSource` polling via `setMediaSource()` + `setTimestamp()` (§7) |
+| YUV shaders | `shaders/yuv_to_rgb.{vert,frag}` | BT.709 YUV420P->RGB conversion via 3 R8 textures, plus RGBA passthrough for packed RGB uploads |
+| Overlay shaders | `shaders/scene_lines.{vert,frag}`, `shaders/scene_quads.{vert,frag}`, `shaders/scene_text.{vert,frag}` | Annotation overlay pipelines (§7.1): 1 px lines, solid fills / thick lines, textured text quads |
 
 The Qt layer is thin — it owns the GPU surface and polls the
 `MediaSource`'s `takeFrame()` at render rate. All decode logic,
@@ -123,8 +133,9 @@ Main thread                            MediaSource (internal)
      │       │                              │
      │       └─► source->setTimestamp(ts)    │
      │               │                      │
-     │               ├─ [ImagePipeline]  store->latestAt(ts) → pipeline->decode()
-     │               └─ [StreamingVideo] post to worker  ──► decoder_.decodeAt(ts)
+     │               ├─ [ImagePipeline]  post to worker ──► store->indexAt/at → decode()
+     │               ├─ [StreamingVideo] post to worker ──► decoder_.decodeAt(ts)
+     │               └─ [Depth/Scene]    latestAt(ts) → synchronous decode
      │                                      │
      ├─ widget->render()                    │
      │       │                              │
@@ -142,8 +153,9 @@ Main thread                            MediaSource (internal)
 On each application tick:
 
 1. The main thread calls `widget->setTimestamp(ts_ns)`, which forwards
-   to the attached `MediaSource`. The source either decodes immediately
-   (images) or posts a request to its internal worker (video).
+   to the attached `MediaSource`. Image and streaming-video sources post
+   a request to their internal workers; depth and scene sources decode
+   synchronously on the caller thread.
 2. The main thread triggers a repaint (calls `widget->update()`).
 3. In `render()`, the widget calls `source->takeFrame()` to get the
    latest decoded frame. If a new frame is available, it uploads pixel
@@ -160,76 +172,63 @@ PlotJuggler's existing plot widgets are driven. See §9.1 for details.
 
 ## 3. Scrub Architecture
 
-This section ports the patterns proven in
-`~/ws_plotjuggler/video_player_lab/ARCHITECTURE.md §3` into pj_scene2D's
-architecture. That document is the canonical reference for WHY these
-patterns work and WHY alternatives fail — read it before modifying
-anything in this section.
+This section ports the patterns proven in the `video_player_lab`
+prototype (a standalone scrub-architecture testbed, since removed along
+with its ARCHITECTURE.md). The WHY behind these patterns — and why the
+alternatives fail — is inlined below; treat it as settled rationale, not
+open design space.
 
-### 3.1 FrameSlot — the single-slot mailbox
+### 3.1 Latest-wins frame delivery
 
-The `FrameSlot` is the mechanism that eliminates stale-frame
-interleaving during scrub. It is ~60 lines of code:
-
-```cpp
-struct CompositeFrame {
-  // Blended pixel buffer from all active layers (RGB or YUV).
-  // Exact representation is an implementation detail; may be a
-  // shared_ptr to a pixel buffer, an AVFrame, or a QImage.
-};
-
-struct SlotResult {
-  int64_t timestamp_ns;
-  CompositeFrame frame;
-};
-
-class FrameSlot {
- public:
-  void store(int64_t timestamp_ns, CompositeFrame frame);
-  std::optional<SlotResult> take();
-
- private:
-  std::mutex mutex_;
-  CompositeFrame frame_;
-  int64_t timestamp_ns_ = 0;
-  bool has_new_ = false;
-};
-```
+The realized frame handoff is a pull-based latest-wins mailbox owned by each
+worker-backed `MediaSource`, not a standalone helper type. `ImagePipelineSource`
+and `StreamingVideoSource` both store the latest decoded `DecodedFrame` in an
+internal `std::optional<DecodedFrame> result_frame_` protected by
+`result_mutex_`; `takeFrame()` moves it into a `MediaFrame` and clears the slot.
+Synchronous sources (depth and scene entities) use the same latest-result
+contract without a worker mutex.
 
 Properties:
 
-- **Latest-wins**: `store()` physically overwrites the previous frame.
+- **Latest-wins**: depositing a result physically overwrites the previous frame.
   A stale frame cannot reach the display because it is replaced before
   the UI polls.
-- **At most two composite frames alive** (one in the slot, one being
-  displayed). Memory usage is bounded.
-- **No Qt event queue involvement**. No `QMetaCallEvent`, no
-  `QueuedConnection`, no `invokeMethod`. The only synchronization
-  primitive is `std::mutex`.
-- **Pull timing**: the UI polls via `QTimer::timeout` at ~60 Hz. On
-  each tick: `auto r = slot_.take(); if (r) uploadToGpu(r->frame);`.
+- **At most two decoded frames alive per source** (one retained in the source,
+  one being displayed). Memory usage is bounded.
+- **No Qt event queue for frame payloads**. Worker-ready callbacks may
+  wake the GUI to poll, but decoded frames cross threads only through the
+  source's latest-result mailbox and `takeFrame()`.
+- **Pull timing**: the UI polls via `render()` at repaint rate. On
+  each pass: `auto r = source->takeFrame(); if (r) uploadToGpu(*r);`.
 
-The video_player_lab prototype uses frame indices as identifiers
-because it is file-only (§5.1-5.2 of that document). pj_scene2D uses
-`int64_t` nanosecond timestamps instead — the universal coordinate
-that works for both file and streaming sources.
+**Design history:** the prototype used a standalone `FrameSlot`
+(`store()`/`take()` behind one mutex). WP1.1 removed that helper from this
+tree; only the mailbox concept remains, implemented inline by the worker-backed
+sources.
+
+The video_player_lab prototype used frame indices as identifiers
+because it was file-only. pj_scene2D uses `int64_t` nanosecond
+timestamps instead — the universal coordinate that works for both file
+and streaming sources.
 
 **Qt signals are NOT used for frame delivery.** Adding a signal escape
-hatch is explicitly forbidden. See
-`~/ws_plotjuggler/video_player_lab/ARCHITECTURE.md §3.2-3.3` for the
-structural proof that push-based delivery via Qt event queues cannot be
-fixed by patching, and the enumeration of 5+ failed patches that must
-not be retried.
+hatch is explicitly forbidden. The structural problem (proven in the
+prototype, where 5+ patch attempts failed before the mailbox design):
+a `QueuedConnection` posts one event per decoded frame, and posted
+events cannot be invalidated — during rapid scrub, stale frames pile up
+in the event queue and reach the display after newer frames have already
+been decoded. Patching around the queue (event compression,
+sequence-number guards on delivery, blocking connections) does not fix
+it, because the queue itself is the staleness buffer. The latest-wins
+mailbox removes the buffer instead.
 
 ### 3.2 Direction-aware cancel-store
 
-When the user scrubs rapidly, in-flight decodes are cancelled via
-`CancelToken` (an `atomic<bool>` polled between decode units). The
-question is: should a partially-decoded frame be published to the
-`FrameSlot`?
+The prototype design question for cancellable decoders was: when the user
+scrubs rapidly and an in-flight decode is cancelled, should a
+partially-decoded frame be published to the result mailbox?
 
-The rule, proven in
-`~/ws_plotjuggler/video_player_lab/ARCHITECTURE.md §3.6`:
+The rule, established empirically in the video_player_lab prototype:
 
 - **Forward scrub** (`current_request_ts > previous_request_ts`):
   publish partials. The decoder is decoding toward the target from a
@@ -249,8 +248,8 @@ ObjectStore decoder, not as live code.
 
 ### 3.3 CancelToken
 
-Each decode request carries a `CancelToken` — a class wrapping an
-`atomic<bool>`, shared between requester and decoder via
+A streaming-video decode request carries a `CancelToken` — a class wrapping
+an `atomic<bool>`, shared between requester and decoder via
 `shared_ptr<CancelToken>`:
 
 ```cpp
@@ -264,16 +263,17 @@ class CancelToken {
 };
 ```
 
-Decoders poll `token->isCancelled()` at natural check points:
+Live cancellation today:
 
 - `StreamingVideoDecoder`: between NAL units (after each `avcodec_receive_frame`).
-- `ImageDecoder`: between JPEG MCU rows (if turbojpeg supports
-  progressive; otherwise after the single decode call).
-- `SceneDecoder`: between primitives in a batch message.
+- `ImagePipelineSource`: no mid-decode cancellation today; stale image targets
+  are coalesced before the worker starts the next decode.
+- `DepthPipelineSource` / `ScenePipelineSource`: synchronous on the caller
+  thread; no token is used.
 
-A new request flips the previous token. The decoder returns early, and
-the decoder (or its owning `MediaSource`) decides whether to publish
-the partial result based on the direction-aware rule (§3.2).
+A new streaming-video request flips the previous token. The decoder returns
+early and `StreamingVideoSource` deposits no partial result; §3.2's
+direction-aware partial-publish rule is design rationale only.
 
 ---
 
@@ -341,7 +341,6 @@ application consumes media. The reference CDR helpers live under
 |-------|-------|--------|
 | `JpegCodec` | JPEG bytes | RGB888 pixels |
 | `PngCodec` | PNG bytes | RGB888 or RGBA8888 or Mono16 pixels |
-| `ImageDecoder::decodeRaw` (static helper, not a `CodecStage`) | Raw pixel buffer + dimensions | Typed DecodedFrame |
 
 **Visualization codecs** (pixels → display pixels):
 
@@ -358,8 +357,8 @@ Adding a new codec requires a code change — same rule as before.
 
 The host has a single video decode path: per-frame `VideoFrame` topics
 decoded out of `ObjectStore`. There is no file-backed video decoder in
-the host (the `kAssetVideo` enum slot is reserved in the SDK but carries
-no host decode path).
+the host (the SDK ships the `sdk::AssetVideo` type, but no host decode
+path consumes it).
 
 **`StreamingVideoDecoder`** (streaming / ObjectStore-based): decodes
 VideoFrame entries from ObjectStore, codec-generically (H.264/HEVC/AV1).
@@ -391,10 +390,10 @@ partial publication).
 
 `JpegCodec` and `PngCodec` are `CodecStage`
 implementations. They are stateless — multiple instances per widget
-are fine. `ImageDecoder` (the current class) bundles JPEG + PNG + raw
-dispatch as a convenience via `decodeJpeg`/`decodePng`/`decodeRaw`; raw
-wrapping has no `CodecStage` of its own (it is the static
-`ImageDecoder::decodeRaw` helper).
+are fine. `ImageDecodeCascade` auto-dispatches JPEG vs PNG, and
+`AutoImageCodec` adds Mono16 normalization for display. Raw canonical image
+buffers are wrapped directly by `ImagePipelineSource` before entering the
+pipeline; there is no separate raw `CodecStage`.
 
 No decoded-frame cache. On-the-fly decode is fast enough for stills
 that caching wastes more memory than it saves time (§R4.2).
@@ -410,6 +409,14 @@ dispatches on the schema string across two concrete `ISceneDecoder` kinds:
 (implemented in `pj_scene2D/core/src/scene_entities_2d_decoder.cpp`, which
 projects `sdk::SceneEntities` into 2D annotations). An unrecognized schema
 returns `nullptr`.
+
+`SceneEntities2DDecoder` is intentionally a stateless per-message projection,
+not a retained scene graph. It supports the seven primitive lists that can be
+projected with the current 2D annotation types — arrows, cubes, spheres, lines,
+triangles, texts, and axes. Cylinders and models are not projected today. Each
+message produces a fresh snapshot: deletions, `lifetime_ns`, and `frame_locked`
+are not applied, and `pose.orientation` is ignored; projection uses only XY
+translation from `pose.position`.
 
 Wire format spec, type catalog, and encoding rules live in
 `plotjuggler_sdk/pj_base/include/pj_base/builtin/image_annotations.hpp` and
@@ -521,7 +528,8 @@ Which component to use depends on the data source:
 The host's canonical video model is **per-frame `VideoFrame`**: each
 ObjectStore entry holds one encoded frame, decoded GOP-aware by
 `StreamingVideoDecoder`. There is no file-backed (`kAssetVideo`) decode
-path in the host — `kAssetVideo` remains a reserved SDK enum slot only.
+path in the host — the SDK ships the `sdk::AssetVideo` type and codec,
+but the host does not consume them.
 A producer that wants to surface an MP4 transcodes it to per-frame
 `VideoFrame` entries at ingest time.
 
@@ -549,7 +557,7 @@ class MediaSource {
 ```
 
 **Design rationale**: `PlaybackController` was a monolithic orchestrator
-that would have owned decoders, worker threads, FrameSlot, compositor,
+that would have owned decoders, worker threads, frame mailboxes, compositor,
 and CancelToken management. This conflicted with the streaming decode
 path (`StreamingVideoSource`), which is already a self-contained
 subsystem (owns its worker thread, latest-wins request model,
@@ -585,14 +593,20 @@ class ImagePipelineSource : public MediaSource {
 
 Internals: `setTimestamp` posts the target timestamp to the worker (request
 mutex + condition variable, latest-target-wins) and returns. The worker calls
-`store->latestAt(topic, ts)` → decodes → stores the result in an internal
-`std::optional<DecodedFrame> result_frame_` under `result_mutex_`. `takeFrame`
-returns that frame and clears it (nullopt on second call). After depositing a
-frame the worker fires the optional `setFrameReadyCallback` (from the worker
-thread) so consumers re-poll `takeFrame()`.
+`store->latestAt(topic, ts)` → decodes → optionally rectifies
+(`rectifyIfCalibrated`: when `setCameraInfoMap()` provided a `CameraInfo` for
+the frame's `frame_id`, the decoded frame is lens-undistorted via
+`image_rectifier`/`undistort_remap` before publication; see TECHNICAL_NOTES
+"rectify the image, not warp the annotations") → stores the result in an
+internal `std::optional<DecodedFrame> result_frame_` under `result_mutex_`.
+`takeFrame` returns that frame and clears it (nullopt on second call). After
+depositing a frame the worker fires the optional `setFrameReadyCallback` (from
+the worker thread) so consumers re-poll `takeFrame()`.
 
-One worker thread, no FrameSlot (no CancelToken: stale targets are coalesced
-by latest-target-wins rather than cancelled mid-decode).
+One worker thread with an inline result mailbox (no CancelToken: stale targets
+are coalesced by latest-target-wins rather than cancelled mid-decode).
+`setCameraInfoMap()` must be called before the first `setTimestamp()` — the
+worker reads the calibration map without further locking.
 
 ### 5.3 StreamingVideoSource
 
@@ -787,10 +801,6 @@ Per-frame flow:
 3. For each `TextAnnotation`, look up `(text, font_size_q)` in `text_cache_`. On miss, render a glyph mask with `QPainter` to a `QImage::Format_Alpha8`, upload as a `QRhiTexture::R8`, and create a per-entry SRB pointing at it (so per-draw rebinding cannot mix textures across instances).
 4. Issue draw calls in order `image → fills → 1 px lines → thick lines → text` so strokes always land on top of fills and labels on top of everything.
 
-### 7.1b Backward-compatible QImage path
-
-A backward-compatible `QImage` upload path is kept for legacy image viewers that produce RGB output directly without going through a `MediaSource`.
-
 ### 7.2 YUV-to-RGB shaders
 
 Fragment shader performs BT.709 color conversion using 3 R8 texture
@@ -957,49 +967,66 @@ pushing.
 
 | Thread | Responsibilities | Lock discipline |
 |--------|-----------------|-----------------|
-| **Qt main thread** | UI events, `widget->setTimestamp()`, `widget->render()` → `source->takeFrame()`, GPU upload | Never blocks on decode — every `MediaSource` (`ImagePipelineSource` included) posts to an internal worker thread and the main thread only polls `takeFrame()` |
+| **Qt main thread** | UI events, `widget->setTimestamp()`, `widget->render()` → `source->takeFrame()`, GPU upload | Posts async requests for image/video sources. Depth and scene sources decode synchronously in `setTimestamp()`, so those paths may spend decode time on the GUI thread |
+| **ImagePipelineSource worker** (1 per `ImagePipelineSource`) | ObjectStore lookup, parser/canonical-image handling, `CodecPipeline` decode, result deposit | Uses `request_mutex_`/`request_cv_` for latest-target requests and `result_mutex_` for the latest decoded frame. ObjectStore locks are released before codec work |
 | **StreamingVideoSource worker** (1 per `StreamingVideoSource`) | `StreamingVideoDecoder::decodeAt()`, `depositFrame()` (writes `result_frame_` under `result_mutex_`) | Acquires ObjectStore shared locks (released immediately after handle copy). Holds decoder-internal state exclusively |
 | **DataSource poll thread** (1 per app, existing) | `DataSource::poll()` → `ObjectStore::pushOwned/pushLazy` | Acquires ObjectStore exclusive locks per push. Never touches decoders |
+| **EntryThumbnailCache builder** (1 per cache, bounded topics only) | Single forward decode pass producing HD-capped JPEG scrub thumbnails | Owns its own decoder/extractor; publishes tiles under `EntryThumbnailCache::mutex_`; never shares the playback decoder |
 
 ### 10.2 Lock inventory
 
 | Lock | Type | Protects | Held by |
 |------|------|----------|---------|
-| `ObjectSeries::mutex` (§OS3.4) | `shared_mutex` | Per-topic entry storage | Shared: worker threads via `latestAt`/`at`/`indexAt`. Exclusive: poll thread via `pushOwned`/`pushLazy`/eviction |
-| `FrameSlot::mutex_` | `mutex` | Single-frame mailbox | Worker: `store()`. Main: `take()`. Never held concurrently — always < 1 us |
+| `ObjectSeries::mutex` (§OS3.4) | `shared_mutex` | Per-topic entry storage | Shared: image/video workers via `latestAt`/`at`/`indexAt`, and the Qt main thread for synchronous depth/scene `latestAt`. Exclusive: poll thread via `pushOwned`/`pushLazy`/eviction |
+| `ImagePipelineSource::request_mutex_` / `StreamingVideoSource::request_mutex_` | `mutex` | Latest target timestamp, request-present flag, condition-variable predicate; streaming also guards the active cancel token | Main: `setTimestamp()` posts/coalesces requests. Worker: waits, takes one request, clears the flag. Not held during ObjectStore lookup or decode |
+| `ImagePipelineSource::result_mutex_` / `StreamingVideoSource::result_mutex_` | `mutex` | Latest decoded-frame mailbox | Worker: deposit latest frame. Main: `takeFrame()`. Never held while ObjectStore or decoder locks are held |
+| `ImagePipelineSource::callback_mutex_` / `StreamingVideoSource::callback_mutex_` | `mutex` | The optional frame-ready callback slot | Main/layer: `setFrameReadyCallback()`. Worker: copies the callback under the lock, invokes it after release |
+| `ImagePipelineSource::parser_mutex_` (`shared_ptr<std::mutex>`) | `mutex` | Serializes `MessageParser::parseObject` calls on a parser instance shared with the owning layer's keepalive | Worker: held across each `parseObject`. Shared with the layer that provided the parser binding |
+| `EntryThumbnailCache::mutex_` | `mutex` | Thumbnail tile map + byte budget | Builder thread: tile publish. Reader (video worker via `StreamingVideoSource`): `lookup()` |
+| `MediaViewerWidget::frame_mutex_` (widgets layer) | `mutex` | `media_source_` pointer, pending frame / pixel-layer staging, `inspector_frame_` | GUI thread at all four sites today (`setMediaSource`, `releaseResources`, `render`'s poll, inspector read); the lock keeps source swap and frame staging atomic |
 | `StreamingVideoDecoder` keyframe vector (no lock) | none | In-decoder keyframe timestamps | Accessed only by the streaming decoder's owning worker thread during incremental NAL inspection. A plain `std::vector<Timestamp>` — single-consumer, so no lock exists. Not exposed in the public API. |
 | `MediaIndexRegistry::mutex_` *(planned)* | `shared_mutex` | Keyframe index — see §6 deferred-design banner | N/A today: the registry does not yet exist. |
 
 ### 10.3 Lock ordering
 
-No nested locking across the three lock families. Each lock is
+No nested locking across the live lock families. Each lock is
 acquired and released independently — never held simultaneously:
 
-1. Worker acquires `ObjectSeries::mutex` (shared) → copies
-   `shared_ptr` handle → releases lock.
-2. Worker decodes (no locks held — decoder operates on owned data).
-   For streaming video, if the decoder detects a keyframe via NAL
-   inspection, it appends the timestamp to its **internal**
-   keyframe vector (a plain `std::vector`, no lock — only the owning
-   worker thread touches it). This
-   happens after the ObjectStore lock is released. When the planned
-   `MediaIndexRegistry` lands (§6) this is the path that will switch to
-   the shared registry instead of the in-decoder vector.
-3. Worker acquires `FrameSlot::mutex_` → stores frame → releases.
+1. Async sources: main thread acquires `request_mutex_`, updates the
+   latest target (and cancels the old streaming token when applicable),
+   releases, then notifies the worker.
+2. Worker wakes, acquires `request_mutex_`, copies the target, clears
+   `has_request_`, releases. It does not hold `request_mutex_` during
+   ObjectStore access, parser work, or decode.
+3. Worker acquires `ObjectSeries::mutex` (shared) through `latestAt`/`at`/
+   `indexAt` → copies an owning byte handle or entry metadata → releases.
+4. Worker decodes (no ObjectStore or source mutex held). For streaming
+   video, keyframe discoveries append to the decoder's **internal**
+   keyframe vector (plain `std::vector`, no lock — only the owning worker
+   thread touches it). When the planned `MediaIndexRegistry` lands (§6),
+   this is the path that will switch to the shared registry instead.
+5. Worker acquires its source's `result_mutex_` → stores the complete
+   frame → releases.
 
-The main thread acquires `FrameSlot::mutex_` (via `take()`) for
-`StreamingVideoSource`. For `ImagePipelineSource`, the main thread
-acquires `ObjectSeries::mutex` (shared, via `latestAt()`) directly
-in `setTimestamp()` — this is brief (<1us) and acceptable.
+The main thread acquires the source `result_mutex_` only through
+`takeFrame()`, and never while holding ObjectStore locks. Synchronous
+`DepthPipelineSource` and `ScenePipelineSource` acquire ObjectStore shared
+locks inside `setTimestamp()`, copy the entry bytes/handle, release the store
+lock, then decode and retain a pending frame without `request_mutex_` or
+`result_mutex_`.
 
 ### 10.4 Contention analysis
 
 - **ObjectStore shared_mutex**: at typical media frame rates (30-60
   fps), the push thread holds an exclusive lock for ~1 us per entry
   (deque append + timestamp vector append + optional eviction).
-  Worker threads hold shared locks for ~1 us per query (binary search
-  + shared_ptr copy). Contention is effectively zero.
-- **FrameSlot mutex**: held for < 1 us on both sides (store is a
+  Worker threads and synchronous depth/scene calls hold shared locks
+  for ~1 us per query (binary search + shared_ptr copy). Contention is
+  effectively zero.
+- **Source request mutex**: held for one timestamp/cancel-token update
+  on the main side and one request copy on the worker side. It is never
+  held while decoding.
+- **Source result mutex**: held for < 1 us on both sides (store is a
   move; take is a move). Zero contention in practice.
 - **StreamingVideoDecoder keyframe vector (no lock)**: reads
   (binary search) are O(log k) where k is the number of keyframes.
@@ -1051,13 +1078,13 @@ decode call.
 
 What to take from each reference prototype and what to leave behind.
 
-### From `video_player_lab/`
+### From `video_player_lab/` (prototype since removed; table kept as the historical record)
 
 | Component | Action | Target in pj_scene2D | Notes |
 |-----------|--------|-------------------|-------|
-| `FrameSlot` | **PORT** | `pj_scene2d_core/frame_slot.h` | Copy the ~60-line implementation. Change identity from `size_t index` to `int64_t timestamp_ns`. The mechanism is identical |
+| Latest-wins mailbox | **PORT CONCEPT ONLY** | `ImagePipelineSource` / `StreamingVideoSource` internals | The standalone helper was deleted; worker-backed sources keep the latest result inline as `result_frame_` under `result_mutex_` |
 | Direction-aware cancel-store | **NOT PORTED** | — | The host's only video path (`StreamingVideoSource`) uses a latest-wins request model with no partial publication, so direction-aware cancel-store is not needed. Retained as design rationale in §3.2 for a future file-backed decoder |
-| `VideoDecoder::flush()` at EOF | **PORTED** as `FfmpegDecoder::flush()` | `FfmpegDecoder` | 3 lines: send NULL packet, drain buffered frames |
+| EOF decoder flush | **PORTED** as `FfmpegDecoder::flush()` | `FfmpegDecoder` | 3 lines: send NULL packet, drain buffered frames |
 | `ENOMEM` recovery | **PORTED** | `FfmpegDecoder` | On `AVERROR(ENOMEM)`: `avcodec_flush_buffers` + retry once. Hit during scrub testing |
 | `FrameCache` (JPEG cache) | **PORTED** as `EntryThumbnailCache` | `pj_scene2d_core/entry_thumbnail_cache.h` | Background thread builds ~1 thumbnail per adaptive interval for streaming `VideoFrame` topics, HD-capped via `thumbnail_codec.h` (≤1280px, YUV420P, JPEG quality 80). Used by `StreamingVideoSource` for instant backward scrub |
 | `FrameConverter` | **DO NOT PORT** | — | Equivalent HW→SW transfer exists in pj_scene2D's `FfmpegDecoder` |
@@ -1066,14 +1093,13 @@ What to take from each reference prototype and what to leave behind.
 | `VideoWidget` (QRhiWidget) | **DO NOT PORT** | — | pj_scene2D already has `MediaViewerWidget` with the same QRhi + shader approach plus additional features (pixel inspector) |
 | Keyframe pre-decode at open | **PORTED** as `EntryThumbnailCache` | `pj_scene2d_core/entry_thumbnail_cache.h` | Implemented for streaming `VideoFrame` topics: a background builder samples ~1 frame per interval from a single forward decode (materializing pixels only on the surfaced frames) into HD-capped JPEG thumbnails, used for instant backward scrub feedback |
 
-### From `~/ws_plotjuggler/pj_scene2D/` (parallel effort)
+### From the standalone pj_scene2D experiment (parallel effort; working tree since removed)
 
 | Component | Action | Target in pj_scene2D | Notes |
 |-----------|--------|-------------------|-------|
 | QRhiWidget + YUV shaders | **CHERRY-PICK** | `MediaViewerWidget` | The shader code and QRhi setup are production-ready. Adapt to pj_scene2d_core's frame types |
-| FFmpegVideoSource / VideoDecoder | **CHERRY-PICKED** as `FfmpegDecoder` (+ `StreamingVideoDecoder`/`StreamingVideoSource`) | `FfmpegDecoder` | HW-accel probing, codec open/close, sws_scale paths. Push-based delivery dropped in favour of the pull-based `takeFrame()` model |
-| `FrameSlot` (already ported from video_player_lab) | **USE AS-IS** | — | Already present in the parallel effort |
-| ImageSource + BufferStrategy | **ADAPT** | `ImageDecoder` | The per-topic buffer strategy is more complex than needed for pj_scene2d_core's stateless `ImageDecoder`. Take the turbojpeg/libpng dispatch; leave the caching strategy |
+| FFmpeg video stack | **CHERRY-PICKED** as `FfmpegDecoder` (+ `StreamingVideoDecoder`/`StreamingVideoSource`) | `FfmpegDecoder` | HW-accel probing, codec open/close, sws_scale paths. Push-based delivery dropped in favour of the pull-based `takeFrame()` model |
+| ImageSource + BufferStrategy | **ADAPT** | `JpegCodec` / `PngCodec` / `ImagePipelineSource` | The per-topic buffer strategy is more complex than needed. Keep the turbojpeg/libpng codec stages and let `ImagePipelineSource` own ObjectStore lookup + raw canonical-image wrapping |
 | PayloadDescriptor bytecode VM | **EVALUATE** | — | Clever but complex. Evaluate whether the simpler approach (metadata_json + decoder dispatch) suffices before porting |
 | TimelineBridge | **DO NOT PORT** | — | Replaced by main-thread-driven `setTimestamp()` model |
 | Timestamp µs vs ns dichotomy | **FIX** | — | pj_scene2D uses ns everywhere. The parallel effort's video engine used µs internally. All internal timestamps must be int64_t nanoseconds |
@@ -1094,17 +1120,20 @@ bugs that were already proven unfixable by patching.
 
 1. **No Qt signals for frame delivery.** The `MediaSource::takeFrame()`
    pull model is the only path from decoder to display. Adding a signal
-   escape hatch reintroduces stale-frame interleaving. (Proof:
-   `video_player_lab/ARCHITECTURE.md §3.2-3.3`)
+   escape hatch reintroduces stale-frame interleaving. (Rationale
+   inlined in §3.1; proven in the since-removed video_player_lab
+   prototype.)
 
 2. **One MediaSource per widget.** The widget polls exactly one source
    for frames. When multi-layer compositing is added, a
    `CompositeMediaSource` composites internally and presents a single
    frame via the same interface.
 
-3. **Backward scrub suppresses partial publications.** Forward partials
-   are fine; backward partials show frames moving in the wrong
-   direction. (Proof: `video_player_lab/ARCHITECTURE.md §3.6`)
+3. **Shipped sources publish only complete frames.** `StreamingVideoSource`
+   cancels stale decode work and `ImagePipelineSource` coalesces pending
+   image requests, but neither path deposits partial decoded frames. The
+   direction-aware partial-publish rule in §3.2 is retained as design
+   rationale for a future file-backed decoder.
 
 4. **ObjectStore handles are owning.** A decoder can hold a byte handle
    while the store pushes and evicts. No use-after-free is possible.

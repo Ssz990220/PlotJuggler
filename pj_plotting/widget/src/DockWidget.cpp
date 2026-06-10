@@ -410,7 +410,7 @@ void DockWidget::onCatalogItemsDropped(const QStringList& keys) {
     return;
   }
   installObjectContextMenuFilter(content_widget_);
-  // ForceNoScrollArea: object widgets (Scene3DDockWidget, Media2DDockWidget,
+  // ForceNoScrollArea: object widgets (Scene3DDockWidget, Scene2DDockWidget,
   // …) manage their own viewport — wrapping them in ADS' QScrollArea adds a
   // visible frame around the content. The object widget is responsible for
   // its own sizing/scrolling if any is needed.

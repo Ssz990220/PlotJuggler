@@ -144,6 +144,8 @@ QWidget* Scene2DDockWidget::createSceneView() {
   layout->setContentsMargins(0, 0, 0, 0);
   layout->setSpacing(0);
 
+  // Forces Qt 6.8 to create an RHI-backed window backing store before first show();
+  // dynamically added QRhiWidgets otherwise never get a QRhi. See TECHNICAL_NOTES.md.
   bootstrap_ = new MediaViewerWidget(container);
   bootstrap_->setMaximumSize(0, 0);
   layout->addWidget(bootstrap_);

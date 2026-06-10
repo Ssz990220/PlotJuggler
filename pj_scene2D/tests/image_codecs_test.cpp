@@ -1,15 +1,16 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 
-#include "pj_scene2d_core/image_decoder.h"
-
 #include <gtest/gtest.h>
 #include <png.h>
 #include <turbojpeg.h>
 
 #include <cstdint>
 #include <cstring>
+#include <memory>
 #include <vector>
+
+#include "pj_scene2d_core/codecs.h"
 
 namespace PJ {
 namespace {
@@ -76,12 +77,18 @@ std::vector<uint8_t> createTestPng(int width, int height, bool with_alpha) {
   return ctx.data;
 }
 
+DecodedFrame compressedFrame(const std::vector<uint8_t>& bytes) {
+  DecodedFrame frame;
+  frame.pixels = std::make_shared<std::vector<uint8_t>>(bytes);
+  return frame;
+}
+
 // --- JPEG tests ---
 
-TEST(ImageDecoderTest, DecodeValidJpeg) {
-  ImageDecoder decoder;
+TEST(ImageCodecTest, DecodeValidJpeg) {
+  ImageDecodeCascade decoder;
   auto jpeg = createTestJpeg(64, 48);
-  auto result = decoder.decodeJpeg(jpeg.data(), jpeg.size());
+  auto result = decoder.decode(compressedFrame(jpeg));
   ASSERT_TRUE(result.has_value()) << result.error();
   EXPECT_EQ(result->width, 64);
   EXPECT_EQ(result->height, 48);
@@ -91,33 +98,25 @@ TEST(ImageDecoderTest, DecodeValidJpeg) {
   EXPECT_LT((*result->pixels)[1], 50);
 }
 
-TEST(ImageDecoderTest, DecodeEmptyInputFails) {
-  ImageDecoder decoder;
-  auto result = decoder.decodeJpeg(nullptr, 0);
+TEST(ImageCodecTest, DecodeEmptyInputFails) {
+  JpegCodec decoder;
+  auto result = decoder.decode({});
   EXPECT_FALSE(result.has_value());
 }
 
-TEST(ImageDecoderTest, DecodeCorruptInputFails) {
-  ImageDecoder decoder;
+TEST(ImageCodecTest, DecodeCorruptInputFails) {
+  JpegCodec decoder;
   std::vector<uint8_t> garbage = {0x00, 0x01, 0x02, 0x03, 0xFF, 0xD8, 0xFF, 0xE0};
-  auto result = decoder.decodeJpeg(garbage.data(), garbage.size());
-  EXPECT_FALSE(result.has_value());
-}
-
-TEST(ImageDecoderTest, DecodeCancelledReturnsEarly) {
-  ImageDecoder decoder;
-  auto jpeg = createTestJpeg(64, 48);
-  auto token = makeCancelToken();
-  token->cancel();
-  auto result = decoder.decodeJpeg(jpeg.data(), jpeg.size(), token);
+  auto result = decoder.decode(compressedFrame(garbage));
   EXPECT_FALSE(result.has_value());
 }
 
 // --- PNG tests ---
 
-TEST(ImageDecoderTest, DecodePngRgb) {
+TEST(ImageCodecTest, DecodePngRgb) {
+  PngCodec decoder;
   auto png = createTestPng(32, 24, false);
-  auto result = ImageDecoder::decodePng(png.data(), png.size());
+  auto result = decoder.decode(compressedFrame(png));
   ASSERT_TRUE(result.has_value()) << result.error();
   EXPECT_EQ(result->width, 32);
   EXPECT_EQ(result->height, 24);
@@ -127,41 +126,25 @@ TEST(ImageDecoderTest, DecodePngRgb) {
   EXPECT_LT((*result->pixels)[2], 10);
 }
 
-TEST(ImageDecoderTest, DecodePngRgba) {
+TEST(ImageCodecTest, DecodePngRgba) {
+  PngCodec decoder;
   auto png = createTestPng(16, 16, true);
-  auto result = ImageDecoder::decodePng(png.data(), png.size());
+  auto result = decoder.decode(compressedFrame(png));
   ASSERT_TRUE(result.has_value()) << result.error();
   EXPECT_EQ(result->format, PixelFormat::kRGBA8888);
   EXPECT_EQ((*result->pixels)[3], 128);
 }
 
-TEST(ImageDecoderTest, DecodePngEmptyFails) {
-  auto result = ImageDecoder::decodePng(nullptr, 0);
+TEST(ImageCodecTest, DecodePngEmptyFails) {
+  PngCodec decoder;
+  auto result = decoder.decode({});
   EXPECT_FALSE(result.has_value());
 }
 
-TEST(ImageDecoderTest, DecodePngCorruptFails) {
+TEST(ImageCodecTest, DecodePngCorruptFails) {
+  PngCodec decoder;
   std::vector<uint8_t> garbage = {0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00};
-  auto result = ImageDecoder::decodePng(garbage.data(), garbage.size());
-  EXPECT_FALSE(result.has_value());
-}
-
-// --- Raw tests ---
-
-TEST(ImageDecoderTest, DecodeRawRgb) {
-  constexpr int kW = 4;
-  constexpr int kH = 4;
-  std::vector<uint8_t> raw(kW * kH * 3, 0x80);
-  auto result = ImageDecoder::decodeRaw(raw.data(), raw.size(), kW, kH, PixelFormat::kRGB888);
-  ASSERT_TRUE(result.has_value()) << result.error();
-  EXPECT_EQ(result->width, kW);
-  EXPECT_EQ(result->height, kH);
-  EXPECT_EQ((*result->pixels)[0], 0x80);
-}
-
-TEST(ImageDecoderTest, DecodeRawBufferTooSmall) {
-  std::vector<uint8_t> raw(10);
-  auto result = ImageDecoder::decodeRaw(raw.data(), raw.size(), 100, 100, PixelFormat::kRGB888);
+  auto result = decoder.decode(compressedFrame(garbage));
   EXPECT_FALSE(result.has_value());
 }
 

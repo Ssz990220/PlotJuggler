@@ -836,14 +836,6 @@ TEST(StreamingVideoDecoderBframeTest, SimulateDemoDualTimer) {
   auto packets = test::extractAnnexBPackets(kBframeVideo);
   ASSERT_GT(packets.size(), 100u);
 
-  // Check DTS monotonicity and print first few DTS/PTS values
-  fprintf(stderr, "[DemoDualTimer] First 10 packets DTS/PTS:\n");
-  for (size_t i = 0; i < 10 && i < packets.size(); ++i) {
-    fprintf(
-        stderr, "  [%zu] dts=%" PRId64 " pts=%" PRId64 " key=%d\n", i, packets[i].dts, packets[i].timestamp,
-        packets[i].keyframe);
-  }
-
   ObjectStore store;
   auto topic = *store.registerTopic({0, "video/demo_sim", R"({"media_class":"video","encoding":"h264"})"});
   StreamingVideoDecoder decoder;
@@ -887,99 +879,6 @@ TEST(StreamingVideoDecoderBframeTest, SimulateDemoDualTimer) {
   ASSERT_TRUE(first_frame_found) << "no frame after 6 seconds of simulation";
   // With B-frame reorder depth ~30, expect first frame at ~30-40 pushes (~1s)
   EXPECT_LT(push_count, 100) << "first frame took too many pushes — possible O(n^2) regression";
-}
-
-TEST(StreamingVideoDecoderBframeTest, TimeToFirstFrameUserVideo) {
-  // Test with the user's actual video file if available
-  const std::string user_video = "/home/davide/ws_plotjuggler/video_1920.mp4";
-  if (!std::filesystem::exists(user_video)) {
-    GTEST_SKIP() << "video_1920.mp4 not found";
-  }
-  auto packets = test::extractAnnexBPackets(user_video);
-  ASSERT_GT(packets.size(), 10u);
-
-  fprintf(stderr, "[video_1920] %zu packets\n", packets.size());
-  fprintf(stderr, "[video_1920] First 5 DTS/PTS:\n");
-  for (size_t i = 0; i < 5 && i < packets.size(); ++i) {
-    fprintf(
-        stderr, "  [%zu] dts=%" PRId64 " pts=%" PRId64 " key=%d size=%zu\n", i, packets[i].dts, packets[i].timestamp,
-        packets[i].keyframe, packets[i].data.size());
-  }
-
-  // Check DTS monotonicity
-  for (size_t i = 1; i < packets.size(); ++i) {
-    if (packets[i].dts < packets[i - 1].dts) {
-      fprintf(
-          stderr, "[video_1920] NON-MONOTONIC DTS at i=%zu: %" PRId64 " < %" PRId64 "\n", i, packets[i].dts,
-          packets[i - 1].dts);
-      break;
-    }
-  }
-
-  ObjectStore store;
-  auto topic = *store.registerTopic({0, "video/user", R"({"media_class":"video","encoding":"h264"})"});
-  StreamingVideoDecoder decoder;
-  decoder.attach(&store, topic);
-
-  int push_count = 0;
-  for (const auto& pkt : packets) {
-    auto push_result = store.pushOwned(topic, pkt.dts, pkt.data);
-    if (!push_result.has_value()) {
-      fprintf(
-          stderr, "[video_1920] Push FAILED at %d: %s (dts=%" PRId64 ")\n", push_count, push_result.error().c_str(),
-          pkt.dts);
-      break;
-    }
-    ++push_count;
-
-    auto range = store.timeRange(topic);
-    auto result = decoder.decodeAt(range.second);
-    if (result.has_value() && !result->isNull()) {
-      fprintf(stderr, "[video_1920] First frame after %d pushes, %dx%d\n", push_count, result->width, result->height);
-      EXPECT_LT(push_count, 100) << "too many pushes for first frame";
-      return;
-    }
-  }
-  FAIL() << "no frame after " << push_count << " pushes";
-}
-
-TEST(StreamingVideoDecoderBframeTest, TimeToFirstFrame) {
-  // Measure how long it takes to get the first decoded frame.
-  // With B-frames, FFmpeg's reorder buffer delays output.
-  using Clock = std::chrono::steady_clock;
-
-  auto measure_first_frame = [](const std::string& path, const char* label) {
-    if (!std::filesystem::exists(path)) {
-      fprintf(stderr, "[%s] SKIPPED — file not found\n", label);
-      return;
-    }
-    auto packets = test::extractAnnexBPackets(path);
-
-    ObjectStore store;
-    auto topic = *store.registerTopic({0, "video/ttff", R"({"media_class":"video","encoding":"h264"})"});
-    StreamingVideoDecoder decoder;
-    decoder.attach(&store, topic);
-
-    auto wall_start = Clock::now();
-    int frames_pushed = 0;
-    for (const auto& pkt : packets) {
-      store.pushOwned(topic, pkt.dts, pkt.data);
-      ++frames_pushed;
-
-      auto range = store.timeRange(topic);
-      auto result = decoder.decodeAt(range.second);
-      if (result.has_value() && !result->isNull()) {
-        auto elapsed = std::chrono::duration<double, std::milli>(Clock::now() - wall_start).count();
-        fprintf(stderr, "[%s] First frame after %d pushes, %.1fms\n", label, frames_pushed, elapsed);
-        return;
-      }
-    }
-    fprintf(stderr, "[%s] NO FRAME after %d pushes!\n", label, frames_pushed);
-  };
-
-  measure_first_frame("pj_scene2D/testdata/test_480p.mp4", "480p I+P");
-  measure_first_frame("pj_scene2D/testdata/test_1080p.mp4", "1080p I+P");
-  measure_first_frame("pj_scene2D/testdata/test_1080p_bframes.mp4", "1080p B-frames");
 }
 
 // ---------------------------------------------------------------------------

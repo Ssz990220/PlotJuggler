@@ -92,7 +92,7 @@
 #include "pj_runtime/SessionManager.h"
 #include "pj_runtime/ToolboxRuntimeHost.h"
 #include "pj_runtime/constants.h"
-#include "pj_scene2d_widgets/Media2DDockWidget.h"
+#include "pj_scene2d_widgets/Scene2DDockWidget.h"
 #include "pj_scene2d_widgets/media_viewer_widget.h"
 #include "pj_scene3d_widgets/Scene3DDockWidget.h"
 #include "pj_scene3d_widgets/transform_service.h"
@@ -429,8 +429,8 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
         }
 
         // Drop path: populate the first topic and apply view side-effects. The
-        // populate call is family-specific until Media2DDockWidget is replaced
-        // by the multi-topic Scene2DDockWidget (then both use tryAcceptObjectTopic).
+        // populate call is family-specific until both 2D and 3D scene docks use
+        // tryAcceptObjectTopic().
         QWidget* qwidget = widget->widget();
         if (auto* scene3d = qobject_cast<Scene3DDockWidget*>(qwidget)) {
           if (!scene3d->setSceneTopic(seed->topic_id, seed->object_type, seed->title)) {
@@ -447,7 +447,7 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
           // never gets the current playhead — seed it now to render at the right
           // time immediately.
           scene3d->onTrackerTime(toAxisDouble(session_->playbackEngine().currentTime()));
-        } else if (auto* media2d = qobject_cast<Media2DDockWidget*>(qwidget)) {
+        } else if (auto* media2d = qobject_cast<Scene2DDockWidget*>(qwidget)) {
           if (!media2d->setImageTopic(seed->topic_id, seed->object_type, seed->title)) {
             media2d->deleteLater();
             MessageBox::warning(
@@ -952,7 +952,7 @@ IDataWidget* MainWindow::makeSceneDock(const QString& kind, QWidget* parent) {
     return widget;
   }
   if (kind == QStringLiteral("scene2d")) {
-    auto* widget = new Media2DDockWidget(parent);
+    auto* widget = new Scene2DDockWidget(parent);
     widget->setSessionManager(&session_->sessionManager());
     return widget;
   }
@@ -1369,7 +1369,7 @@ void MainWindow::applyShowPointsToDock(DockWidget* dock) {
   if (dock == nullptr || dock->objectWidget() == nullptr) {
     return;
   }
-  auto* media = qobject_cast<Media2DDockWidget*>(dock->objectWidget()->widget());
+  auto* media = qobject_cast<Scene2DDockWidget*>(dock->objectWidget()->widget());
   if (media != nullptr) {
     media->setPointInspectorEnabled(show_points_);
   }
@@ -2647,7 +2647,7 @@ void MainWindow::onDockFocused(DockWidget* dock) {
       target = plot_config_page_;
     } else if (dock->objectWidget() != nullptr) {
       QWidget* obj = dock->objectWidget()->widget();
-      if (auto* s2d = qobject_cast<Media2DDockWidget*>(obj); s2d != nullptr) {
+      if (auto* s2d = qobject_cast<Scene2DDockWidget*>(obj); s2d != nullptr) {
         target = scene2d_config_page_;
         scene2d_dock = s2d;
       } else if (auto* s3d = qobject_cast<Scene3DDockWidget*>(obj); s3d != nullptr) {

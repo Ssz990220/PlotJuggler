@@ -10,9 +10,10 @@ from the standalone experiment.
 Read `ARCHITECTURE.md` first for the module's current shape; come here for
 "why this Qt API and not that one" or "what we learned from prior attempts."
 
-Sources: the standalone pj_scene2D experiment (`~/ws_plotjuggler/pj_scene2D/`),
-the `~/ws_plotjuggler/video_player_lab/` prototype, and design discussions for
-the integrated module.
+Sources: the standalone pj_scene2D experiment, the video_player_lab
+prototype (both working trees since removed; their lessons are captured
+here and in `ARCHITECTURE.md`), and design discussions for the
+integrated module.
 
 ---
 
@@ -55,6 +56,17 @@ the bridge between a custom decode pipeline and Qt's rendering:
 - Optional zero-copy: import HW-decoded GPU surfaces directly as QRhi
   textures via `QRhiTexture::createFrom({nativeHandle, 0})`
 
+### Shader Toolchain
+
+The widget consumes offline-compiled Qt shader blobs (`*.qsb`) through
+`QShader::fromSerialized()`. `shaders/shaders.qrc` embeds the `.qsb` files;
+the neighboring `.vert` / `.frag` files are reference inputs. Editing GLSL
+sources has no runtime or build effect until the matching `.qsb` file is
+regenerated with Qt's `qsb` tool from the `qtshadertools` module. The pinned
+`.qt` install in this worktree currently does not include `qsb`, and
+`widgets/CMakeLists.txt` has no `qt6_add_shaders` rule. Adding that build-time
+rule is deferred work tracked as F-009.
+
 ### QRhiWidget Multi-Instance Lifecycle (Qt 6.8)
 
 Qt 6.8 `QRhiWidget` has a critical initialization requirement: the
@@ -86,7 +98,7 @@ successfully.
 - Track `QRhi* rhi_cached_` in `initialize()`. If `rhi() != cached`,
   call `releaseResources()` and reinitialize — resources from the old
   QRhi are invalid.
-- In `setFrame()` (or any method that calls `update()`), guard with
+- In any method that calls `update()` before the first successful `initialize()`, guard with
   `if (pipeline_ != nullptr)` — calling `update()` before init floods
   Qt with render requests that can't be fulfilled and starves the
   initialization path.
@@ -369,17 +381,14 @@ path must not require the keyframe index (`keyframe_timestamps_` may be
 empty) or the original keyframe entry (may be evicted). Only backward
 seeks require a keyframe still in the store.
 
-**No extradata on the streaming decode path; HW format pinned via `get_format`.**
-The streaming decoder opens `FfmpegDecoder` from `codec_id` alone (via
-`makeVideoCodecParams(codec_id)`) with **no `extradata`**: the wire contract
-requires every keyframe to carry its parameter sets in-band (H.264 SPS/PPS, HEVC
-VPS/SPS/PPS, AV1 sequence header), which FFmpeg reads on the first keyframe. An
-earlier iteration pre-extracted SPS/PPS into `AVCodecParameters::extradata` to
-avoid VAAPI "Failed to sync surface"; that was replaced — `FfmpegDecoder` now
-selects the HW surface format deterministically in its `get_format` callback
-(`hwPixelFormatFor`/`pickHwFormat`) and falls back to software when the codec/GPU
-offers no HW config. `extractH264SpsPps()` survives in `h264_utils.h` but is no
-longer on the streaming decode path.
+**Parameter sets are primed before opening H.264/HEVC streams.**
+The streaming decoder builds `AVCodecParameters` with
+`makeVideoCodecParams(codec_id)` and primes H.264/HEVC extradata from the first
+keyframe via `primeKeyframeParamSets()` before opening `FfmpegDecoder`. This
+matches demuxer-provided codec config and avoids the observed first-B-frame drop
+when H.264 parameter sets are consumed only in-band. `h264_utils.h` now keeps
+only the H.264 keyframe oracle; codec-parameter construction and parameter-set
+extraction live in `video_codec_utils`.
 
 **Never drain() during live streaming startup.** FFmpeg's `avcodec_send_packet(nullptr)`
 signals EOF and puts the codec in drain state. Subsequent `avcodec_send_packet` calls
@@ -539,9 +548,11 @@ is 4. See REQUIREMENTS.md Prerequisites and ARCHITECTURE.md §2/§4.
 
 **Resolved:** Initialize the decoder eagerly on the first keyframe (one open per
 channel, not per frame). `StreamingVideoDecoder` opens from the `codec_id`
-resolved from `VideoFrame.format` (`makeVideoCodecParams`, no extradata) and lets
-FFmpeg ingest that keyframe's in-band parameter sets — it does not pre-extract
-SPS/PPS. No lazy metadata deferral.
+resolved from `VideoFrame.format` (`makeVideoCodecParams`) and primes
+`extradata` from that keyframe's in-band parameter sets via
+`primeKeyframeParamSets` (deduplicated against the in-band copies — duplicated
+sets would reproduce the first-B-frame drop the priming exists to fix). No lazy
+metadata deferral.
 
 ---
 
@@ -565,8 +576,8 @@ class MediaSource {
 
 **Key properties:**
 - `setTimestamp()` is called by the main thread when the global time
-  changes. It may decode synchronously (images) or post to an internal
-  worker thread (video).
+  changes. Image and streaming-video sources post to an internal worker
+  thread; depth and scene sources decode synchronously on the caller thread.
 - `takeFrame()` is called by the main thread at render rate. Returns
   the latest `MediaFrame` (base pixels and/or overlays), or nullopt if
   nothing new since the last call.
@@ -575,11 +586,14 @@ class MediaSource {
 - The widget calls `update()` after `setTimestamp()` to trigger a repaint.
 
 **Concrete implementations** (all in `pj_scene2d_core`):
-- `ImagePipelineSource` — synchronous decode via CodecPipeline + ObjectStore.
-- `DepthPipelineSource` — synchronous depth-image decode pipeline.
-- `ScenePipelineSource` — synchronous scene-primitive decode pipeline.
-- `StreamingVideoSource` — wraps StreamingVideoDecoder on a dedicated
-  worker thread; latest-wins.
+- `ImagePipelineSource` — worker-backed image decode via `CodecPipeline`
+  + `ObjectStore`; latest decoded result is polled by `takeFrame()`.
+- `DepthPipelineSource` — synchronous depth-image deserialize + colormap
+  in `setTimestamp()`.
+- `ScenePipelineSource` — synchronous scene/annotation decode in
+  `setTimestamp()`.
+- `StreamingVideoSource` — worker-backed `StreamingVideoDecoder`; latest-wins
+  request/result handoff.
 - `CompositeMediaSource` — fans `setTimestamp`/`takeFrame` out across N
   child sources (multi-layer).
 - `BorrowedMediaSource` — non-owning adapter over an externally-owned

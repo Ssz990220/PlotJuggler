@@ -308,7 +308,8 @@ on top of that protocol:
   FlatBuffers, …) to expose header scalars and the opaque media payload,
   emitting each to the appropriate host. Codec concerns (keyframe
   detection, decoder state, GOP handling) live entirely in pj_scene2D's
-  `VideoDecoder`, never in the parser. Appropriate for serialized
+  video decoder classes (`StreamingVideoDecoder` / `FfmpegDecoder`), never
+  in the parser. Appropriate for serialized
   message streams where the same envelope carries many message types —
   a single "CDR parser" handles CompressedImage, CompressedVideo,
   CameraInfo, and more without codec knowledge.
@@ -465,65 +466,66 @@ singleton model.
 
 | Decoder | State | Role |
 |---------|-------|------|
-| `VideoDecoder` | stateful, one instance per video layer | FFmpeg wrapper with runtime HW-accel detection and guaranteed software fallback. Platform backend matrix is documented in `TECHNICAL_NOTES.md §3`. |
-| `ImageDecoder` | stateless, one instance per image layer | Dispatches to turbojpeg (JPEG), libpng (PNG), or raw pixel copy (mono8, rgb8, etc.). Multiple instances in one widget are fine (they share no state). |
+| `FfmpegDecoder` + `StreamingVideoDecoder` | stateful, one instance per video layer | FFmpeg wrapper plus ObjectStore-aware GOP decoder with runtime HW-accel detection and guaranteed software fallback. Platform backend matrix is documented in `TECHNICAL_NOTES.md §3`. |
+| `CodecPipeline` with `JpegCodec` / `PngCodec` / `ImageDecodeCascade` | stateless, one instance per image layer | Dispatches to turbojpeg (JPEG), libpng (PNG), or canonical raw image wrapping in `ImagePipelineSource`. Multiple instances in one widget are fine (they share no state). |
 | `SceneDecoder` | stateless, one instance per scene/annotation layer | Single canonical-wire decoder (`foxglove.ImageAnnotations` Protobuf, hand-rolled, no libprotobuf). Source-format conversion (e.g. CDR `vision_msgs/Detection2DArray`) is loader-side; pj_scene2D only sees canonical bytes. Schema + canonical wire codec (writer + reader) live in `plotjuggler_sdk/pj_base/builtin/image_annotations.hpp` + `image_annotations_codec.hpp`, re-exported through `pj_plugin_sdk`. |
 
 **Threading and decoder ownership**: each viewer widget is driven by one
 `MediaSource` (`CompositeMediaSource` for the multi-layer case). The
 source owns **one decoder instance per active layer** — a widget
 compositing a base video + an annotation overlay + a depth colormap
-instantiates one `VideoDecoder`, one `SceneDecoder`, and one
-`ImageDecoder`. Decoders for different layers do not share internal
-state.
+instantiates one video decoder/source, one scene decoder/source, and one
+image/depth codec pipeline. Decoders for different layers do not share
+internal state.
 
 The number of worker threads per widget is an **implementation detail**,
-not part of the contract. A single worker may drive all per-layer
-decoders sequentially per render tick (simplest), or each decoder may
-run on its own thread for parallelism (advanced). Either way, three
+not part of the contract. Worker-backed sources (`ImagePipelineSource`,
+`StreamingVideoSource`) own their own request/result channels today;
+synchronous sources (`DepthPipelineSource`, `ScenePipelineSource`) publish
+their next result directly from `setTimestamp()`. Either way, three
 contractual guarantees hold:
 
 1. Decoders for different layers do not share internal state.
-2. The UI thread polls exactly one `FrameSlot` per widget — the one
-   containing the composited output.
+2. The UI thread polls exactly one `MediaSource` per widget — usually a
+   `CompositeMediaSource` containing the ordered layer stack.
 3. Stale frames from any layer cannot reach the display via any code
-   path (the FrameSlot's latest-wins semantics apply to the composited
-   frame, and per-layer decodes feeding into it are individually
-   cancelable per §4.6 "Direction-aware cancel-store" + "Cancellation
-   tokens").
+   path (worker-backed sources overwrite their latest result before the
+   UI polls, and per-layer decodes feeding into the compositor are
+   coalesced or cancelable per their source contract).
 
-**Pull-based frame delivery (FrameSlot mailbox)**:
+**Pull-based frame delivery (MediaSource latest-result mailbox)**:
 
-The widget's `MediaSource` writes each completed composited frame
-(a single frame assembled from all active layers) into a `FrameSlot` —
-a single-slot latest-wins mailbox protected by a mutex. The UI thread
-polls the slot at the display refresh rate and displays whatever
-arrived. A new frame physically overwrites the previous one. A stale
-frame cannot reach the display because it is replaced before the UI
-reads it. There is one `FrameSlot` per widget, never per layer —
-compositing always happens before delivery.
+The widget polls its attached `MediaSource` at render rate via
+`takeFrame()`. Worker-backed sources keep a single latest decoded result
+internally; a new result physically overwrites the previous one before
+the UI can poll it. In the multi-layer case, `CompositeMediaSource`
+polls each layer source, retains the latest contribution per layer, and
+returns one composited `MediaFrame` to the viewer.
 
 **Qt signals are NOT used for frame delivery.** The `Qt::QueuedConnection`
 event-queue model is structurally incompatible with rapid scrub: queued
 events cannot be invalidated, and stale frames pile up in the event queue
 while newer ones are already elsewhere in the pipeline. This is a proven
-failure mode with canonical analysis in
-`~/ws_plotjuggler/video_player_lab/ARCHITECTURE.md §3`, which also
-enumerates the failed patches that must not be retried. Do not
+failure mode — analyzed in the video_player_lab prototype (since
+removed), with the rationale now inlined in `ARCHITECTURE.md §3.1`,
+including the patch attempts that must not be retried. Do not
 reintroduce push-based delivery.
 
 **Direction-aware cancel-store**: when the user scrubs rapidly, in-flight
-decodes are cancelled before completion. Forward scrub publishes partial
-decodes for smooth visual feedback. Backward scrub suppresses partials —
-if published, they would show the decoder replaying FORWARD from a
-keyframe while the user is dragging BACKWARD, creating visible reverse
-jitter. The rule is tracked at the request level (compare current request
-timestamp to the previous one) because scrub direction is user intent and
-is only visible at the request API boundary.
+video decodes are cancelled before completion. The shipped sources do not
+publish partial decode results: `StreamingVideoSource` cancels stale GOP
+work with a `CancelToken` and deposits only complete decoded frames;
+`ImagePipelineSource` coalesces stale timestamp requests before the worker
+starts the next decode; depth and scene sources decode synchronously on the
+caller thread. The video_player_lab direction-aware partial-publish rule
+(forward partials allowed, backward partials suppressed) is preserved as
+design rationale in `ARCHITECTURE.md §3.2` for a future file-backed decoder,
+not as current behavior.
 
-**Cancellation tokens**: each decode request carries an atomic flag polled
-by the decoder between NAL units (or between JPEG scans). A new request
-flips the previous token, and the decoder returns early.
+**Cancellation tokens**: streaming-video decode requests carry an atomic
+flag polled by the decoder between NAL units. A new request flips the
+previous token, and the decoder returns early without publishing a partial
+frame.
 
 **Keyframe seek**: video decoders use whichever keyframe index their
 path provides (`StreamingVideoDecoder`'s in-decoder index for streaming
@@ -571,13 +573,12 @@ and do not share state. On each render tick:
    owning byte handle.
 2. Each layer's decoder decodes its result independently.
 3. The compositor combines per-layer outputs per the widget's layer
-   ordering and blending configuration, and writes the composited
-   frame to the widget's single output `FrameSlot`.
+   ordering and blending configuration, and returns the composited
+   `MediaFrame` through the widget's attached `MediaSource`.
 
-The UI thread polls that one `FrameSlot` and displays the composited
-result. There is no per-layer slot exposed to the UI — compositing
-always happens on the decoder side before the frame reaches the
-display.
+The UI thread polls that one `MediaSource` and displays the composited
+result. There is no per-layer source exposed to the viewer — compositing
+always happens before the frame reaches the display.
 
 **At-or-before semantics are strict**: the compositor always uses the
 entry at or before the current display time, never a future entry even if
@@ -612,9 +613,10 @@ alpha blending) are widget configuration, not part of the data model.
   by decoder workers across widgets and across layers within a widget
   (see §4.6 "Threading and decoder ownership"). No shared decoder
   state between widgets or between layers.
-- **Deterministic scrub**: pull-based delivery via `FrameSlot` guarantees
+- **Deterministic scrub**: pull-based delivery via `MediaSource::takeFrame()` guarantees
   the displayed frame is always the newest decoded frame. Stale frames
-  cannot reach the display via any code path.
+  cannot reach the display via any code path, and shipped sources publish
+  only complete frames — no partial decode result is displayed.
 - **Error reporting**: fallible public API calls return
   `PJ::Expected<T>` following the `pj_base` convention. No C++
   exceptions cross pj_scene2D's library boundary, and no exceptions
@@ -639,9 +641,9 @@ alpha blending) are widget configuration, not part of the data model.
 pj_scene2D is delivered as two CMake targets with a strict dependency
 direction:
 
-- **`pj_scene2d_core`** — pure C++ library containing decoders, demux
-  helpers, NAL parsers, keyframe detection, frame slot, playback
-  controller, and the compositor logic. Depends on `pj_base`,
+- **`pj_scene2d_core`** — pure C++ library containing media-source
+  adapters, image/video/depth/scene decoders, codec pipelines, NAL/keyframe
+  helpers, decoded frame types, and composite media-source logic. Depends on `pj_base`,
   `pj_datastore`, FFmpeg, turbojpeg, libpng. **No Qt dependency**.
   DataSource plugins do NOT link this library — plugins depend only
   on `pj_base` (see `pj_plugins/docs/ARCHITECTURE.md`). Format-specific
@@ -687,17 +689,17 @@ widget:
    viewer, scene viewer) and the decoders for its active layers.
 2. Instantiates one decoder instance per active layer (see §4.6
    "Threading and decoder ownership").
-3. Starts the worker thread(s) owned by the underlying
-   `MediaSource` implementation (`ImagePipelineSource`,
-   `StreamingVideoSource`).
+3. Starts any worker thread(s) owned by the underlying `MediaSource`
+   implementation (`ImagePipelineSource`, `StreamingVideoSource`).
 
 *Destruction* — on destruction, the widget:
 
 1. Stops receiving `onTrackerTime` (the runtime drops it from its
    driven-widget set).
-2. Requests cancellation on any in-flight decodes via the
-   `MediaSource`'s internal `CancelToken`.
-3. Stops and joins all worker threads spawned by its `MediaSource`.
+2. Requests cancellation on any in-flight asynchronous decodes via the
+   `MediaSource`'s internal cancellation mechanism where available.
+3. Stops and joins all worker threads spawned by worker-backed `MediaSource`
+   implementations.
 4. Releases any owning byte handles it holds from ObjectStore.
 
 *Teardown order* — the application must destroy widgets **before**
@@ -738,8 +740,8 @@ a widget onto a different dataset while the widget is alive.
   as a standalone image file from the viewer. May be added later as a
   feature but is not part of the initial requirements.
 - **Stateful video parsers** — parsers stay stateless per message. Video
-  decoder state lives inside pj_scene2D's `VideoDecoder`, not in any
-  plugin.
+  decoder state lives inside pj_scene2D's `StreamingVideoDecoder` /
+  `FfmpegDecoder`, not in any plugin.
 - **Dataset format support beyond documented types** — MCAP, LeRobot,
   RLDS, Zarr. See `docs/research/dataset_format_comparison.md` (at the
   repo root) for coverage.

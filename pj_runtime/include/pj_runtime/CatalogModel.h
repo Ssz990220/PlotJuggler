@@ -50,11 +50,11 @@ struct CatalogItem {
 };
 
 // True for canonical object types the 2D scene module (pj_scene2D) can display
-// in a Media2DDockWidget: raw/compressed images, single video frames, image
+// in a Scene2DDockWidget: raw/compressed images, single video frames, image
 // overlays, and depth images. Used by catalog/tree views to mark a topic as
 // droppable into a 2D view (icon + drop routing), keeping the
 // "what is scene2D-displayable" policy in one place instead of scattered
-// per-type == checks. Kept in sync with Media2DDockWidget::setImageTopic.
+// per-type == checks. Kept in sync with Scene2DDockWidget::setImageTopic.
 [[nodiscard]] inline bool isScene2DDisplayable(sdk::BuiltinObjectType object_type) noexcept {
   switch (object_type) {
     case sdk::BuiltinObjectType::kImage:

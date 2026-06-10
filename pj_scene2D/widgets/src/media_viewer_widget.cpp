@@ -3,8 +3,10 @@
 
 #include "pj_scene2d_widgets/media_viewer_widget.h"
 
+#include <QFile>
 #include <QFont>
 #include <QFontMetricsF>
+#include <QImage>
 #include <QMetaObject>
 #include <QPainter>
 #include <QVector4D>
@@ -85,66 +87,6 @@ bool MediaViewerWidget::pointInspectorEnabled() const noexcept {
   return point_inspector_enabled_.load(std::memory_order_relaxed);
 }
 
-void MediaViewerWidget::setFrame(const DecodedFrame& frame) {
-  if (frame.isNull()) {
-    return;
-  }
-  {
-    std::lock_guard lock(frame_mutex_);
-    pending_decoded_ = frame;
-    pending_is_yuv_ = texturePathFor(frame.format) == TexturePathFormat::kYUV420P;
-    pending_qimage_ = QImage();  // clear any pending QImage
-    pending_pixel_layers_.clear();
-    has_pending_pixel_layers_ = false;
-    pixel_layers_active_ = false;
-    inspector_frame_ = frame;
-    has_pending_ = true;
-  }
-  if (pipeline_ != nullptr) {
-    update();
-  }
-  schedulePointInspectorRefresh();
-}
-
-void MediaViewerWidget::setFrame(const QImage& img) {
-  auto to_decoded = [](const QImage& source) {
-    DecodedFrame frame;
-    if (source.isNull()) {
-      return frame;
-    }
-    const QImage converted = source.convertToFormat(QImage::Format_RGBA8888);
-    const int width = converted.width();
-    const int height = converted.height();
-    auto pixels = std::make_shared<std::vector<uint8_t>>(static_cast<size_t>(width) * height * 4U);
-    for (int y = 0; y < height; ++y) {
-      const auto* src = converted.constScanLine(y);
-      auto* dst = pixels->data() + static_cast<size_t>(y) * static_cast<size_t>(width) * 4U;
-      std::memcpy(dst, src, static_cast<size_t>(width) * 4U);
-    }
-    frame.pixels = std::move(pixels);
-    frame.width = width;
-    frame.height = height;
-    frame.format = PixelFormat::kRGBA8888;
-    return frame;
-  };
-
-  {
-    std::lock_guard lock(frame_mutex_);
-    pending_qimage_ = img;
-    pending_is_yuv_ = false;
-    pending_decoded_ = {};  // clear any pending DecodedFrame
-    pending_pixel_layers_.clear();
-    has_pending_pixel_layers_ = false;
-    pixel_layers_active_ = false;
-    inspector_frame_ = to_decoded(img);
-    has_pending_ = true;
-  }
-  if (pipeline_ != nullptr) {
-    update();
-  }
-  schedulePointInspectorRefresh();
-}
-
 void MediaViewerWidget::resetView() {
   zoom_ = 1.0f;
   pan_x_ = 0.0f;
@@ -163,7 +105,7 @@ void MediaViewerWidget::setMediaSource(MediaSource* source) {
   // Drop the previous source's pixel-layer stack so its segmentation/depth
   // overlays don't keep compositing over the new source. The GPU textures are
   // reconciled when the next frame arrives; until then pixel_layers_active_ is
-  // false, so they stay inert (mirrors the reset in setFrame/setDecodedFrame).
+  // false, so they stay inert.
   pending_pixel_layers_.clear();
   has_pending_pixel_layers_ = false;
   pixel_layers_active_ = false;
@@ -421,9 +363,6 @@ void MediaViewerWidget::setTimestamp(int64_t ts_ns) {
 }
 
 bool MediaViewerWidget::hasRetainedUploadableFrameLocked() const {
-  if (!pending_qimage_.isNull()) {
-    return true;
-  }
   if (pending_decoded_.isNull()) {
     return false;
   }
@@ -1064,7 +1003,6 @@ void MediaViewerWidget::render(QRhiCommandBuffer* cb) {
           pixel_layers_active_ = true;
           has_pending_ = false;
           pending_decoded_ = {};
-          pending_qimage_ = QImage();
           for (const auto& layer : pending_pixel_layers_) {
             if (!layer.frame.isNull()) {
               inspector_frame_ = layer.frame;
@@ -1075,7 +1013,6 @@ void MediaViewerWidget::render(QRhiCommandBuffer* cb) {
         } else if (frame->base.has_value() && !frame->base->isNull()) {
           pending_decoded_ = std::move(*frame->base);
           pending_is_yuv_ = texturePathFor(pending_decoded_.format) == TexturePathFormat::kYUV420P;
-          pending_qimage_ = QImage();
           pending_pixel_layers_.clear();
           has_pending_pixel_layers_ = false;
           pixel_layers_active_ = false;
@@ -1256,37 +1193,6 @@ void MediaViewerWidget::render(QRhiCommandBuffer* cb) {
           updates->uploadTexture(tex_y_, QRhiTextureUploadDescription({0, 0, sub_desc}));
           frame_aspect_ = static_cast<float>(w) / static_cast<float>(h);
         }
-
-      } else if (!pending_qimage_.isNull()) {
-        // QImage path (backward compat)
-        QImage img = pending_qimage_.convertToFormat(QImage::Format_RGBA8888);
-        QSize img_size = img.size();
-
-        if (img_size.width() != tex_width_ || img_size.height() != tex_height_ ||
-            current_pixel_format_ != TexturePathFormat::kRGBA) {
-          tex_y_->destroy();
-          tex_y_->setFormat(QRhiTexture::RGBA8);
-          tex_y_->setPixelSize(img_size);
-          tex_y_->create();
-
-          srb_->destroy();
-          srb_->setBindings({
-              QRhiShaderResourceBinding::uniformBuffer(
-                  0, QRhiShaderResourceBinding::VertexStage | QRhiShaderResourceBinding::FragmentStage, uniform_buf_),
-              QRhiShaderResourceBinding::sampledTexture(1, QRhiShaderResourceBinding::FragmentStage, tex_y_, sampler_),
-              QRhiShaderResourceBinding::sampledTexture(2, QRhiShaderResourceBinding::FragmentStage, tex_u_, sampler_),
-              QRhiShaderResourceBinding::sampledTexture(3, QRhiShaderResourceBinding::FragmentStage, tex_v_, sampler_),
-          });
-          srb_->create();
-
-          tex_width_ = img_size.width();
-          tex_height_ = img_size.height();
-          current_pixel_format_ = TexturePathFormat::kRGBA;
-        }
-
-        QRhiTextureSubresourceUploadDescription sub_desc(img);
-        updates->uploadTexture(tex_y_, QRhiTextureUploadDescription({0, 0, sub_desc}));
-        frame_aspect_ = static_cast<float>(tex_width_) / static_cast<float>(tex_height_);
       }
 
       has_pending_ = false;

@@ -18,6 +18,8 @@ namespace PJ {
 
 // Decoder of a single overlay message into a SceneFrame. Each schema family
 // supported by pj_scene2D registers a concrete decoder via makeSceneDecoder().
+// Decoders are stateless per-message adapters; scene layers keep one decoder
+// instance per layer and may reuse it across timestamps.
 //
 // Two entry points for the two ingest routes (see scene_decoder_layer):
 //  - decode(bytes)  — canonical-producer topics: the store holds canonical bytes.
@@ -27,6 +29,8 @@ namespace PJ {
 class ISceneDecoder {
  public:
   virtual ~ISceneDecoder() = default;
+  /// Decode one serialized message of the schema this instance was created for.
+  /// Implementations do not retain input storage or cross-message state.
   virtual Expected<SceneFrame> decode(const uint8_t* data, size_t size) = 0;
   virtual Expected<SceneFrame> decode(const sdk::BuiltinObject& object) = 0;
 };
@@ -42,6 +46,9 @@ namespace detail {
   return frame;
 }
 
+/// Direct adapter for canonical ImageAnnotations messages; preserves the batch
+/// timestamp and wraps the decoded annotation batch in a SceneFrame (both
+/// ingest routes land on the same struct).
 class ImageAnnotationsSceneDecoder final : public ISceneDecoder {
  public:
   Expected<SceneFrame> decode(const uint8_t* data, size_t size) override {
@@ -63,12 +70,20 @@ class ImageAnnotationsSceneDecoder final : public ISceneDecoder {
 
 }  // namespace detail
 
+/// Projects sdk::SceneEntities into a single ImageAnnotations batch.
+///
+/// This is a lossy identity-orientation XY snapshot: frame_locked, deletion,
+/// lifetime_ns, Z, and pose orientation are ignored; cube/axis/arrow primitives
+/// render in local +X/+Y screen axes. Lines/spheres/cubes/triangles/arrows/axes/
+/// text are supported; cylinders/models are skipped.
 class SceneEntities2DDecoder final : public ISceneDecoder {
  public:
   Expected<SceneFrame> decode(const uint8_t* data, size_t size) override;
   Expected<SceneFrame> decode(const sdk::BuiltinObject& object) override;
 };
 
+/// Factory for the supported 2D scene schemas. Returns nullptr for unknown
+/// schema names, so callers must check before decoding.
 [[nodiscard]] inline std::unique_ptr<ISceneDecoder> makeSceneDecoder(std::string_view schema_name) {
   if (schema_name == kSchemaImageAnnotations) {
     return std::make_unique<detail::ImageAnnotationsSceneDecoder>();

@@ -5,10 +5,6 @@
 
 #include <gtest/gtest.h>
 
-extern "C" {
-#include <libavcodec/avcodec.h>
-}
-
 #include <array>
 #include <filesystem>
 #include <string>
@@ -67,14 +63,6 @@ TEST_F(H264UtilsTest, EmptyDataReturnsFalse) {
   std::array<uint8_t, 4> empty = {0, 0, 0, 0};
   EXPECT_FALSE(isH264Keyframe(empty.data(), 0));
   EXPECT_FALSE(isH264Keyframe(empty.data(), 3));
-}
-
-TEST_F(H264UtilsTest, MakeH264CodecParams) {
-  AVCodecParameters* params = makeH264CodecParams();
-  ASSERT_NE(params, nullptr);
-  EXPECT_EQ(params->codec_id, AV_CODEC_ID_H264);
-  EXPECT_EQ(params->codec_type, AVMEDIA_TYPE_VIDEO);
-  avcodec_parameters_free(&params);
 }
 
 TEST_F(H264UtilsTest, AnnexBStartCodePresent) {

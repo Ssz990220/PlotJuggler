@@ -50,11 +50,11 @@ enum class PixelFormat : uint8_t {
   return 0;
 }
 
-/// Decoded pixel buffer produced by decoders (ImageDecoder, FfmpegDecoder)
+/// Decoded pixel buffer produced by decoders and codec stages
 /// and consumed by MediaViewerWidget for GPU upload.
 ///
 /// Ownership: `pixels` is shared via shared_ptr, enabling zero-copy
-/// handoff between pipeline stages and latest-wins FrameSlot patterns.
+/// handoff between pipeline stages and MediaSource delivery paths.
 ///
 /// For YUV420P: pixels contains Y plane (w*h), then U plane
 /// ((w+1)/2 * (h+1)/2), then V plane (same size) — contiguous.

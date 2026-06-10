@@ -17,6 +17,8 @@ namespace PJ {
 
 namespace {
 
+// Translation-only orthographic XY projection. Rotation and Z are intentionally
+// dropped to keep SceneEntities usable as lightweight pixel-space overlays.
 [[nodiscard]] Point2 project(const sdk::Point3& point, const sdk::Pose& pose) noexcept {
   return Point2{pose.position.x + point.x, pose.position.y + point.y};
 }
@@ -225,6 +227,8 @@ void appendEntity(const sdk::SceneEntity& entity, ImageAnnotation& annotation) {
   for (const auto& axes : entity.axes) {
     appendAxes(axes, annotation);
   }
+  // TODO: Cylinders could reuse the sphere top-down circle projection.
+  // Models are intentionally skipped: mesh assets need a loader before 2D projection.
 }
 
 // Project a canonical SceneEntities batch onto a 2D SceneFrame (the primitives'

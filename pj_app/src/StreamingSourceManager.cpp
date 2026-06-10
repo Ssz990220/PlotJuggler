@@ -137,7 +137,7 @@ void StreamingSourceManager::onPauseToggled(bool paused) {
   if (paused) {
     // Pause: target swap onto the secondary store / engine for both
     // families. The primary stays frozen by absence of writes — that's
-    // what consumers (Media2DDockWidget, PlotWidget) read while paused.
+    // what consumers (Scene2DDockWidget, PlotWidget) read while paused.
     for (auto& [_id, sess] : sessions_) {
       sess->runtime_host_->setObjectStoreTarget(secondary_object_store_.get());
       sess->runtime_host_->setDataEngineTarget(secondary_data_engine_.get());
@@ -164,7 +164,7 @@ void StreamingSourceManager::onPauseToggled(bool paused) {
       session_manager_.dataEngine().enforceRetention(window_ns, streaming_dataset_id);
     }
   }
-  // Catch-up nudge so consumers (PlotWidget auto-fit, Media2DDockWidget jump
+  // Catch-up nudge so consumers (PlotWidget auto-fit, Scene2DDockWidget jump
   // to latest frame) land on the post-flush live edge. Mirrors PJ3 "flush at
   // play" semantics.
   for (const auto& [dataset_id, _] : sessions_) {

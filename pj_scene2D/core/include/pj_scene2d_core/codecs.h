@@ -106,6 +106,8 @@ class BayerDecode : public CodecStage {
 
 /// Mono8 class IDs → RGB888 false-color. Each class ID (0-255) maps to
 /// a distinct hue. Input must be kMono8 with pixels->size() >= width*height.
+/// Designed for the planned segmentation layer; not yet wired into any pipeline
+/// (no production constructor call).
 class SegmentationPalette : public CodecStage {
  public:
   Expected<DecodedFrame> decode(const DecodedFrame& input) const override;

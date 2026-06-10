@@ -5,8 +5,6 @@
 #include <rhi/qrhi.h>
 
 #include <QColor>
-#include <QFile>
-#include <QImage>
 #include <QMatrix4x4>
 #include <QMouseEvent>
 #include <QRhiWidget>
@@ -27,24 +25,18 @@ namespace PJ {
 class MediaSource;
 class PixelInspector;
 
-/// GPU-accelerated image/video viewer using QRhiWidget.
+/// GPU-accelerated scene/video viewer using QRhiWidget.
 ///
-/// Two usage modes:
+/// Attach a MediaSource with setMediaSource(), then call setTimestamp() on each
+/// application tick. The widget polls the source in render() via takeFrame().
 ///
-/// 1. **MediaSource mode** (preferred): call setMediaSource() once, then
-///    setTimestamp() on each application tick. The widget polls the source
-///    in render() via takeFrame().
-///
-/// 2. **Manual mode** (backward compat): call setFrame() directly with
-///    decoded pixels. Used when no MediaSource is attached.
-///
-/// Supports YUV420P (3-plane BT.709 shader), RGB888/RGBA8888 DecodedFrame,
-/// and QImage inputs.
+/// Supports YUV420P (3-plane BT.709 shader), packed RGB/RGBA DecodedFrame
+/// payloads, and MediaFrame.pixel_layers alpha-composited in order.
+/// SceneFrame overlays (points/lines/circles/text) are tessellated CPU-side and
+/// drawn above the image; see ARCHITECTURE.md §7.1.
 ///
 /// Zoom (mouse wheel, cursor-anchored) and pan (mouse drag) via a view
 /// transform matrix in the vertex shader. See REQUIREMENTS.md §4.7.
-///
-/// Thread-safe: setFrame() may be called from any thread.
 class MediaViewerWidget : public QRhiWidget {
   Q_OBJECT
   Q_PROPERTY(QColor clearColor READ clearColor WRITE setClearColor)
@@ -60,12 +52,6 @@ class MediaViewerWidget : public QRhiWidget {
   /// Forward a timestamp to the attached MediaSource.
   /// No-op if no source is attached.
   void setTimestamp(int64_t ts_ns);
-
-  /// Set a decoded video frame (YUV420P or RGB). Thread-safe.
-  void setFrame(const DecodedFrame& frame);
-
-  /// Set an RGB image (backward compat for image viewers). Thread-safe.
-  void setFrame(const QImage& img);
 
   /// Reset zoom to 1x and pan to origin.
   void resetView();
@@ -167,7 +153,6 @@ class MediaViewerWidget : public QRhiWidget {
   // resource recreation can restore the latest visible image.
   std::mutex frame_mutex_;
   DecodedFrame pending_decoded_;  // YUV420P or RGB frame
-  QImage pending_qimage_;         // QImage fallback
   DecodedFrame inspector_frame_;
   bool has_pending_ = false;
   bool pending_is_yuv_ = false;

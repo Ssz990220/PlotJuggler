@@ -12,6 +12,7 @@ extern "C" {
 #include <libavcodec/avcodec.h>
 #include <libavcodec/bsf.h>
 #include <libavformat/avformat.h>
+#include <libavutil/log.h>
 }
 
 #include <cstdint>
@@ -33,6 +34,13 @@ struct AnnexBPacket {
 /// Timestamps are converted to nanoseconds.
 inline std::vector<AnnexBPacket> extractAnnexBPackets(const std::string& path) {
   std::vector<AnnexBPacket> packets;
+
+  // Quiet FFmpeg's stderr chatter in test output. Also load-bearing for tests
+  // that use no other libavutil symbol: the direct av_log_* reference keeps the
+  // linker (--as-needed) from dropping the binary's libavutil DT_NEEDED — without
+  // it, libavformat's transitive avutil dependency fails to resolve through the
+  // executable's RUNPATH on CI (RUNPATH does not apply to grandchild deps).
+  av_log_set_level(AV_LOG_ERROR);
 
   AVFormatContext* fmt_ctx = nullptr;
   if (avformat_open_input(&fmt_ctx, path.c_str(), nullptr, nullptr) < 0) {

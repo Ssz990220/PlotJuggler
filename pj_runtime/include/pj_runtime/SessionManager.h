@@ -67,7 +67,7 @@ class SessionManager : public QObject {
   // bypassing commitChunks() (file/stream ingest has no Qt awareness) — without
   // it, plot adapter caches never invalidate on the ingested data. `live`
   // propagates to samplesIngested; follow-live consumers (PlotWidget auto-fit,
-  // Media2DDockWidget frame advance) act only when it is true.
+  // Scene2DDockWidget frame advance) act only when it is true.
   void notifyIngest(QVector<PJ::TopicId> ids, bool live = false);
 
   // In-place reload swap: replace `primary_id`'s scalar + object data with the

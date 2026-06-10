@@ -23,7 +23,6 @@ add_library(pj_scene2d_widgets STATIC
   src/media_viewer_widget.cpp
   src/pixel_inspector.cpp
   include/pj_scene2d_widgets/Scene2DDockWidget.h
-  include/pj_scene2d_widgets/Media2DDockWidget.h
   include/pj_scene2d_widgets/layers/depth_image_layer.h
   include/pj_scene2d_widgets/layers/image_layer.h
   include/pj_scene2d_widgets/layers/scene2d_layer.h
@@ -48,15 +47,15 @@ if(PJ_BUILD_TESTS)
   # Dispatch-table unit test: verifies makePipelineFor() returns the right
   # built-in pipeline (or nullptr) per object type. Does not construct the
   # widget, so it does not require an RHI context.
-  add_executable(media2d_dock_widget_dispatch_test
-    ../tests/media2d_dock_widget_dispatch_test.cpp
+  add_executable(scene2d_dock_widget_dispatch_test
+    ../tests/scene2d_dock_widget_dispatch_test.cpp
   )
-  target_link_libraries(media2d_dock_widget_dispatch_test PRIVATE
+  target_link_libraries(scene2d_dock_widget_dispatch_test PRIVATE
     pj_scene2d_widgets
     GTest::gtest
   )
-  target_compile_options(media2d_dock_widget_dispatch_test PRIVATE ${PJ_WARNING_FLAGS} ${PJ_SANITIZER_FLAGS})
-  add_test(NAME Media2DDockDispatch COMMAND media2d_dock_widget_dispatch_test)
+  target_compile_options(scene2d_dock_widget_dispatch_test PRIVATE ${PJ_WARNING_FLAGS} ${PJ_SANITIZER_FLAGS})
+  add_test(NAME scene2d_dock_widget_dispatch_test COMMAND scene2d_dock_widget_dispatch_test)
 
   add_executable(pixel_inspector_test
     ../tests/pixel_inspector_test.cpp

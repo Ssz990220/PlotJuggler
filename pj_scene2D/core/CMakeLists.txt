@@ -8,7 +8,6 @@ include("${CMAKE_CURRENT_LIST_DIR}/../cmake/PjScene2DFfmpeg.cmake")
 pj_scene2d_find_ffmpeg(PJ_SCENE2D_HAS_FFMPEG PJ_SCENE2D_FFMPEG_TARGETS PJ_SCENE2D_FFMPEG_SOURCE)
 
 set(PJ_SCENE2D_CORE_SOURCES
-  src/image_decoder.cpp
   src/codec_pipeline.cpp
   src/codecs.cpp
   src/image_pipeline_source.cpp
@@ -68,7 +67,7 @@ if(PJ_BUILD_TESTS)
   set(PJ_SCENE2D_CORE_TESTS
     ../tests/decoded_frame_test.cpp
     ../tests/cancel_token_test.cpp
-    ../tests/image_decoder_test.cpp
+    ../tests/image_codecs_test.cpp
     ../tests/codecs_test.cpp
     ../tests/undistort_remap_test.cpp
     ../tests/image_pipeline_source_test.cpp

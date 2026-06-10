@@ -1,6 +1,6 @@
 # Scene Types — Unified Type Catalog
 
-## Implementation status (as of 2026-05-19)
+## Implementation status (as of 2026-06-10)
 
 This document is the **design catalogue** for canonical scene types.
 Canonical types are realised as C++ structs under
@@ -17,8 +17,9 @@ has shipped yet:
 | `ClassRegistry` (§7) | 🟡 Designed, not yet realised | — (likely lives next to SegmentationImage) |
 | `VideoFrame` (§8) | ✅ Realised + wired | `pj_base/builtin/video_frame.hpp` + `video_frame_codec.hpp` (wire layout matches Foxglove `CompressedVideo`: `timestamp=1, frame_id=2, data=3, format=4`). Loaded as a canonical object: parser_protobuf classifies `PJ.VideoFrame` / `foxglove.CompressedVideo`, parser_ros classifies `foxglove_msgs/CompressedVideo` → `kVideoFrame` ObjectTopic → rendered by `StreamingVideoSource` (parser-mode: unwraps each entry's message to its raw NAL span zero-copy, then `StreamingVideoDecoder`). |
 | `CameraCalibration` (§9, realised as `sdk::CameraInfo`) | ✅ Realised | `pj_base/builtin/camera_info.hpp` + `camera_info_codec.hpp` |
-| `PointCloud` (§10) | ✅ Realised | `pj_base/builtin/point_cloud.hpp` |
-| `ScenePrimitive` variants (§11) | 🟡 Designed, not yet realised | — |
+| `PointCloud` (§10) | ✅ Realised | `pj_base/builtin/point_cloud.hpp` (+ `compressed_point_cloud.hpp` / `_codec.hpp` for the compressed variant) |
+| `ScenePrimitive` variants (§11) | ✅ Realised — in a different shape | `pj_base/builtin/scene_entities.hpp` + `scene_entities_codec.hpp`. Shipped as `sdk::SceneEntities` (`kSceneEntities = 11`, wire schema `PJ.SceneEntities`): a Foxglove-style entity model with typed primitive lists per `SceneEntity` (arrow/cube/sphere/cylinder/line/triangle/text/axes/model), not §11's common-header + variant-payload design — treat §11 as design history. pj_scene2D projects the supported 2D subset via `scene_entities_2d_decoder`: arrows, cubes, spheres, lines, triangles, texts, and axes; cylinders and models are not projected. |
+| `Grid` (§13) | ✅ Realised — narrowed | `pj_base/builtin/occupancy_grid.hpp` + `occupancy_grid_codec.hpp` (`sdk::OccupancyGrid`, square cells via `resolution`) plus incremental patches in `occupancy_grid_update.hpp` (`kOccupancyGridUpdate`). The generic multi-channel Grid of §13 remains design-only |
 | `ImageAnnotations` (not its own § here, but listed in `pj_base/builtin/builtin_object.hpp` as `kImageAnnotations`) | ✅ Realised | `pj_base/builtin/image_annotations.hpp` + `image_annotations_codec.hpp` |
 | `RobotDescription` (not in this catalogue) | ✅ Realised | `pj_base/builtin/robot_description.hpp` |
 
@@ -473,6 +474,14 @@ storage layer treats them equivalently.
 
 For 2D visualization in world space, use z = 0 in all positions.
 
+**Realised pj_scene2D projection contract:** `sdk::SceneEntities` projection is
+a stateless per-message snapshot. The decoder does not retain prior entities,
+apply deletion markers, expire `lifetime_ns`, or re-transform `frame_locked`
+entities. It projects only XY translation from each primitive's `pose.position`;
+`pose.orientation` is ignored. Supported primitive lists are arrows, cubes,
+spheres, lines, triangles, texts, and axes. Cylinders and models are currently
+not projected.
+
 ### Payload: ArrowData
 
 | Field | Type |
@@ -640,7 +649,10 @@ For the schema field tables (`ImageAnnotations`, `PointsAnnotation`,
 | 11 | Grid | 2D/3D | Yes | Yes (packed cells) |
 
 ScenePrimitive payload variants:
-ArrowData, CubeData, SphereData, CylinderData, MarkersData, MeshData, TextData, ModelData.
+ArrowData, CubeData, SphereData, CylinderData, MarkersData, MeshData, TextData,
+ModelData. pj_scene2D's current `SceneEntities2DDecoder` projects 7 of the 9
+realised Foxglove-style primitive lists (arrows, cubes, spheres, lines,
+triangles, texts, axes); cylinders and models are not projected.
 
 The four image-family types — Image, DepthImage, SegmentationImage, VideoFrame —
 share a family criterion described in §1: split when the *decoded value* has a
@@ -662,9 +674,9 @@ encoding level (no separate `CompressedImage`) but split at the semantic level.
 | `BarChart` / `SeriesLines` | Belongs in the time-series/plotting layer, not scene types. |
 | `JointState` | Plottable as time-series (scalars). Robot model visualization uses SceneEntity. |
 | `VoxelGrid` | Deferred. Can be added later as a Grid variant or new type. |
-| `Asset3D` (standalone) | Covered by ModelPrimitive inside SceneEntity. |
-| `AssetVideo` (whole file) | Deferred for the host. `kAssetVideo` remains a reserved SDK enum slot (12) with no host decode path; per-frame `VideoFrame` (§8) is the canonical video model. |
+| `Asset3D` (standalone) | Originally covered by ModelPrimitive inside SceneEntity; the SDK has since added a standalone `sdk::Mesh3D` binary mesh asset (`pj_base/builtin/mesh3d.hpp`, `kMesh3D = 9`). Host-side consumption is landing with pj_scene3D's URDF/mesh work (PR #164); not yet on main. |
+| `AssetVideo` (whole file) | Deferred for the host. The SDK ships the `sdk::AssetVideo` struct + codec (`pj_base/builtin/asset_video.hpp`, `kAssetVideo = 12`), but the host has no decode path for it; per-frame `VideoFrame` (§8) is the canonical video model. |
 | `LaserScan` | Converted to PointCloud at ingest time (polar → cartesian). |
 | `GraphNodes` / `GraphEdges` | Rerun-specific. Deferred. |
-| `Log` | Deferred. Can be added later. |
+| `Log` | Realised since: `sdk::Log` (`pj_base/builtin/log.hpp`, `kLog = 16`) — textual log messages; not a pj_scene2D rendering concern. |
 | `GeoPoint` / `GeoJSON` | Deferred. Geospatial types can be added later. |

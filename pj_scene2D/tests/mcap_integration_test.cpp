@@ -10,7 +10,6 @@
 #include <vector>
 
 #include "pj_datastore/object_store.hpp"
-#include "pj_scene2d_core/image_decoder.h"
 
 #define MCAP_IMPLEMENTATION
 #include <mcap/reader.hpp>

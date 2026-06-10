@@ -11,7 +11,7 @@
 #include <vector>
 
 #include "pj_datastore/object_store.hpp"
-#include "pj_scene2d_core/image_decoder.h"
+#include "pj_scene2d_core/codecs.h"
 
 #define MCAP_IMPLEMENTATION
 #include <mcap/reader.hpp>
@@ -175,8 +175,10 @@ int main(int argc, char* argv[]) {
   std::cout << "JPEG size: " << jpeg_size << " bytes\n";
 
   // Decode
-  PJ::ImageDecoder decoder;
-  auto frame_or = decoder.decodeJpeg(jpeg_data, jpeg_size);
+  PJ::DecodedFrame encoded;
+  encoded.pixels = std::make_shared<std::vector<uint8_t>>(jpeg_data, jpeg_data + jpeg_size);
+  PJ::JpegCodec decoder;
+  auto frame_or = decoder.decode(encoded);
   if (!frame_or.has_value()) {
     std::cerr << "Decode failed: " << frame_or.error() << "\n";
     return 1;
