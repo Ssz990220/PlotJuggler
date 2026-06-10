@@ -21,6 +21,15 @@ repos:
         exclude_types: [svg]
       - id: fix-byte-order-marker
 
+  # Custom hooks
+  - repo: local
+    hooks:
+      - id: check-forbidden-patterns
+        name: Check for forbidden patterns (std::getenv, etc.)
+        entry: .pre-commit-scripts/check-forbidden-patterns.py
+        language: python
+        types_or: [c++, c]
+
   # CPP hooks
   - repo: https://github.com/pre-commit/mirrors-clang-format
     rev: v22.1.0
