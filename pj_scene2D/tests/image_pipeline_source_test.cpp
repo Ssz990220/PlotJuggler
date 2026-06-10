@@ -4,98 +4,24 @@
 #include "pj_scene2d_core/image_pipeline_source.h"
 
 #include <gtest/gtest.h>
-#include <png.h>
 
+#include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
 #include <mutex>
 #include <optional>
 #include <stdexcept>
+#include <string>
 #include <thread>
 #include <vector>
 
 #include "pj_base/builtin/image.hpp"
 #include "pj_base/builtin/image_codec.hpp"
 #include "pj_plugins/sdk/message_parser_plugin_base.hpp"
+#include "test_png_io.h"
 
 namespace {
-
-struct PngWriteCtx {
-  std::vector<uint8_t> bytes;
-};
-
-void pngWriteCallback(png_structp png, png_bytep data, png_size_t length) {
-  auto* ctx = static_cast<PngWriteCtx*>(png_get_io_ptr(png));
-  const auto* first = reinterpret_cast<const uint8_t*>(data);
-  ctx->bytes.insert(ctx->bytes.end(), first, first + length);
-}
-
-void pngFlushCallback(png_structp /*png*/) {}
-
-std::vector<uint8_t> makeMono16Png(int width, int height, const std::vector<uint16_t>& values) {
-  PngWriteCtx ctx;
-  png_structp png = png_create_write_struct(PNG_LIBPNG_VER_STRING, nullptr, nullptr, nullptr);
-  EXPECT_NE(png, nullptr);
-  png_infop info = png_create_info_struct(png);
-  EXPECT_NE(info, nullptr);
-
-  if (setjmp(png_jmpbuf(png))) {
-    png_destroy_write_struct(&png, &info);
-    return {};
-  }
-
-  png_set_write_fn(png, &ctx, pngWriteCallback, pngFlushCallback);
-  png_set_IHDR(
-      png, info, static_cast<png_uint_32>(width), static_cast<png_uint_32>(height), 16, PNG_COLOR_TYPE_GRAY,
-      PNG_INTERLACE_NONE, PNG_COMPRESSION_TYPE_DEFAULT, PNG_FILTER_TYPE_DEFAULT);
-
-  png_write_info(png, info);
-  std::vector<uint8_t> big_endian_samples(values.size() * 2);
-  for (size_t i = 0; i < values.size(); ++i) {
-    big_endian_samples[i * 2 + 0] = static_cast<uint8_t>((values[i] >> 8) & 0xFF);
-    big_endian_samples[i * 2 + 1] = static_cast<uint8_t>(values[i] & 0xFF);
-  }
-  std::vector<png_bytep> rows(static_cast<size_t>(height));
-  for (int y = 0; y < height; ++y) {
-    rows[static_cast<size_t>(y)] = big_endian_samples.data() + static_cast<size_t>(y) * static_cast<size_t>(width) * 2;
-  }
-  png_write_image(png, rows.data());
-  png_write_end(png, info);
-  png_destroy_write_struct(&png, &info);
-  return ctx.bytes;
-}
-
-// 8-bit grayscale PNG. Mosaico wraps a raw/bayer pixel buffer losslessly by
-// reshaping its flat bytes (row_step * height) as a grayscale image of
-// width=row_step, height=height, then PNG-compressing that.
-std::vector<uint8_t> makeMono8Png(int width, int height, const std::vector<uint8_t>& values) {
-  PngWriteCtx ctx;
-  png_structp png = png_create_write_struct(PNG_LIBPNG_VER_STRING, nullptr, nullptr, nullptr);
-  EXPECT_NE(png, nullptr);
-  png_infop info = png_create_info_struct(png);
-  EXPECT_NE(info, nullptr);
-
-  if (setjmp(png_jmpbuf(png))) {
-    png_destroy_write_struct(&png, &info);
-    return {};
-  }
-
-  png_set_write_fn(png, &ctx, pngWriteCallback, pngFlushCallback);
-  png_set_IHDR(
-      png, info, static_cast<png_uint_32>(width), static_cast<png_uint_32>(height), 8, PNG_COLOR_TYPE_GRAY,
-      PNG_INTERLACE_NONE, PNG_COMPRESSION_TYPE_DEFAULT, PNG_FILTER_TYPE_DEFAULT);
-  png_write_info(png, info);
-  std::vector<uint8_t> samples = values;  // mutable copy for libpng row pointers
-  std::vector<png_bytep> rows(static_cast<size_t>(height));
-  for (int y = 0; y < height; ++y) {
-    rows[static_cast<size_t>(y)] = samples.data() + static_cast<size_t>(y) * static_cast<size_t>(width);
-  }
-  png_write_image(png, rows.data());
-  png_write_end(png, info);
-  png_destroy_write_struct(&png, &info);
-  return ctx.bytes;
-}
 
 class CountingStage final : public PJ::CodecStage {
  public:
@@ -121,67 +47,18 @@ std::unique_ptr<PJ::CodecPipeline> makeCountingPipeline(int& calls) {
   return pipeline;
 }
 
-class CanonicalRgbParser final : public PJ::MessageParserPluginBase {
- public:
-  CanonicalRgbParser() {
-    PJ::sdk::SchemaHandler handler;
-    handler.object_type = PJ::sdk::BuiltinObjectType::kImage;
-    handler.parse_object = [](PJ::Timestamp ts, PJ::sdk::PayloadView payload) -> PJ::Expected<PJ::sdk::ObjectRecord> {
-      return PJ::sdk::ObjectRecord{
-          .ts = std::nullopt,
-          .object = PJ::sdk::BuiltinObject{PJ::sdk::Image{
-              .width = 1,
-              .height = 1,
-              .encoding = "rgb8",
-              .row_step = 3,
-              .is_bigendian = false,
-              .data = payload.bytes,
-              .anchor = payload.anchor,
-              .compressed_depth_min = std::nullopt,
-              .compressed_depth_max = std::nullopt,
-              .timestamp_ns = ts,
-              .frame_id = "",
-          }}};
-    };
-    registerSchemaHandler("image", std::move(handler));
-  }
-};
-
-class CanonicalCompressedDepthParser final : public PJ::MessageParserPluginBase {
- public:
-  CanonicalCompressedDepthParser() {
-    PJ::sdk::SchemaHandler handler;
-    handler.object_type = PJ::sdk::BuiltinObjectType::kImage;
-    handler.parse_object = [](PJ::Timestamp ts, PJ::sdk::PayloadView payload) -> PJ::Expected<PJ::sdk::ObjectRecord> {
-      return PJ::sdk::ObjectRecord{
-          .ts = std::nullopt,
-          .object = PJ::sdk::BuiltinObject{PJ::sdk::Image{
-              .width = 0,
-              .height = 0,
-              .encoding = "compressedDepth",
-              .row_step = 0,
-              .is_bigendian = false,
-              .data = payload.bytes,
-              .anchor = payload.anchor,
-              .compressed_depth_min = 0.0f,
-              .compressed_depth_max = 1.0f,
-              .timestamp_ns = ts,
-              .frame_id = "",
-          }}};
-    };
-    registerSchemaHandler("depth", std::move(handler));
-  }
-};
-
 // Parser returning a canonical sdk::Image with caller-chosen geometry/encoding,
 // reusing the pushed payload bytes verbatim as Image::data. Lets a test drive
 // the raw/bayer decode paths (incl. Mosaico's grayscale-PNG-wrapped buffers).
 class CanonicalRawParser final : public PJ::MessageParserPluginBase {
  public:
-  CanonicalRawParser(uint32_t width, uint32_t height, std::string encoding, uint32_t row_step) {
+  CanonicalRawParser(
+      uint32_t width, uint32_t height, std::string encoding, uint32_t row_step,
+      std::optional<float> compressed_depth_min = std::nullopt,
+      std::optional<float> compressed_depth_max = std::nullopt, std::string schema_name = "image") {
     PJ::sdk::SchemaHandler handler;
     handler.object_type = PJ::sdk::BuiltinObjectType::kImage;
-    handler.parse_object = [width, height, encoding, row_step](
+    handler.parse_object = [width, height, encoding, row_step, compressed_depth_min, compressed_depth_max](
                                PJ::Timestamp ts, PJ::sdk::PayloadView payload) -> PJ::Expected<PJ::sdk::ObjectRecord> {
       return PJ::sdk::ObjectRecord{
           .ts = std::nullopt,
@@ -193,13 +70,13 @@ class CanonicalRawParser final : public PJ::MessageParserPluginBase {
               .is_bigendian = false,
               .data = payload.bytes,
               .anchor = payload.anchor,
-              .compressed_depth_min = std::nullopt,
-              .compressed_depth_max = std::nullopt,
+              .compressed_depth_min = compressed_depth_min,
+              .compressed_depth_max = compressed_depth_max,
               .timestamp_ns = ts,
               .frame_id = "",
           }}};
     };
-    registerSchemaHandler("image", std::move(handler));
+    registerSchemaHandler(schema_name, std::move(handler));
   }
 };
 
@@ -355,7 +232,7 @@ TEST(ImagePipelineSourceTest, ParserDrivenPathConsumesCanonicalImage) {
   ASSERT_TRUE(topic.has_value());
   ASSERT_TRUE(store.pushOwned(*topic, 1'000, std::vector<uint8_t>{10, 20, 30}));
 
-  CanonicalRgbParser parser;
+  CanonicalRawParser parser(1, 1, "rgb8", 3);
   ASSERT_TRUE(parser.bindSchema("image", PJ::Span<const uint8_t>{}));
   PJ::ImagePipelineSource source(&store, *topic, &parser, /*parser_mutex=*/nullptr, /*parser_keepalive=*/nullptr);
   FrameSync sync;
@@ -400,7 +277,7 @@ TEST(ImagePipelineSourceTest, ThrowingParserDoesNotTerminateProcess) {
 }
 
 TEST(ImagePipelineSourceTest, ParserDrivenCompressedDepthDecodesPngThenNormalizesMono16) {
-  const std::vector<uint8_t> png = makeMono16Png(2, 2, {0, 1000, 2000, 3000});
+  const std::vector<uint8_t> png = PJ::test::makeGrayPng(2, 2, 16, std::vector<uint16_t>{0, 1000, 2000, 3000});
   ASSERT_FALSE(png.empty());
 
   PJ::ObjectStore store;
@@ -408,7 +285,7 @@ TEST(ImagePipelineSourceTest, ParserDrivenCompressedDepthDecodesPngThenNormalize
   ASSERT_TRUE(topic.has_value());
   ASSERT_TRUE(store.pushOwned(*topic, 1'000, png));
 
-  CanonicalCompressedDepthParser parser;
+  CanonicalRawParser parser(0, 0, "compressedDepth", 0, 0.0f, 1.0f, "depth");
   ASSERT_TRUE(parser.bindSchema("depth", PJ::Span<const uint8_t>{}));
   PJ::ImagePipelineSource source(&store, *topic, &parser, /*parser_mutex=*/nullptr, /*parser_keepalive=*/nullptr);
   FrameSync sync;
@@ -432,7 +309,7 @@ TEST(ImagePipelineSourceTest, ParserDrivenCompressedDepthDecodesPngThenNormalize
 }
 
 TEST(ImagePipelineSourceTest, ParserDrivenCompressedDepthRepairsChunkStreamStartingAtIhdr) {
-  const std::vector<uint8_t> png = makeMono16Png(2, 2, {0, 1000, 2000, 3000});
+  const std::vector<uint8_t> png = PJ::test::makeGrayPng(2, 2, 16, std::vector<uint16_t>{0, 1000, 2000, 3000});
   ASSERT_GT(png.size(), 12U);
   ASSERT_EQ(png[12], 'I');
   ASSERT_EQ(png[13], 'H');
@@ -446,7 +323,7 @@ TEST(ImagePipelineSourceTest, ParserDrivenCompressedDepthRepairsChunkStreamStart
   ASSERT_TRUE(topic.has_value());
   ASSERT_TRUE(store.pushOwned(*topic, 1'000, chunk_stream));
 
-  CanonicalCompressedDepthParser parser;
+  CanonicalRawParser parser(0, 0, "compressedDepth", 0, 0.0f, 1.0f, "depth");
   ASSERT_TRUE(parser.bindSchema("depth", PJ::Span<const uint8_t>{}));
   PJ::ImagePipelineSource source(&store, *topic, &parser, /*parser_mutex=*/nullptr, /*parser_keepalive=*/nullptr);
   FrameSync sync;
@@ -481,7 +358,7 @@ TEST(ImagePipelineSourceTest, CoalescesBurstOfSetTimestampToSingleDecode) {
   ASSERT_TRUE(store.pushOwned(*topic, 2'000, std::vector<uint8_t>{4, 5, 6}));
   ASSERT_TRUE(store.pushOwned(*topic, 3'000, std::vector<uint8_t>{7, 8, 9}));
 
-  CanonicalRgbParser parser;
+  CanonicalRawParser parser(1, 1, "rgb8", 3);
   ASSERT_TRUE(parser.bindSchema("image", PJ::Span<const uint8_t>{}));
   PJ::ImagePipelineSource source(&store, *topic, &parser, /*parser_mutex=*/nullptr, /*parser_keepalive=*/nullptr);
   FrameSync sync;
@@ -518,7 +395,7 @@ TEST(ImagePipelineSourceTest, DestructorJoinsWorkerEvenWithPendingRequest) {
     ASSERT_TRUE(topic.has_value());
     ASSERT_TRUE(store.pushOwned(*topic, 1'000, std::vector<uint8_t>{10, 20, 30}));
 
-    CanonicalRgbParser parser;
+    CanonicalRawParser parser(1, 1, "rgb8", 3);
     ASSERT_TRUE(parser.bindSchema("image", PJ::Span<const uint8_t>{}));
 
     auto source = std::make_unique<PJ::ImagePipelineSource>(
@@ -578,7 +455,7 @@ TEST(ImagePipelineSourceTest, ParserDrivenRawRgb8WrappedInGrayscalePngDecodesToC
       10, 20, 30, 40,  50,  60,   // row 0: two RGB pixels
       70, 80, 90, 100, 110, 120,  // row 1: two RGB pixels
   };
-  const std::vector<uint8_t> png = makeMono8Png(/*width=row_step*/ 6, /*height*/ 2, rgb);
+  const std::vector<uint8_t> png = PJ::test::makeGrayPng(/*width=row_step*/ 6, /*height*/ 2, 8, rgb);
   ASSERT_FALSE(png.empty());
 
   PJ::ObjectStore store;
@@ -626,7 +503,7 @@ TEST(ImagePipelineSourceTest, ParserDrivenBayerRggb8WrappedInGrayscalePngDemosai
       mosaic[static_cast<size_t>(r) * kW + static_cast<size_t>(c)] = v;
     }
   }
-  const std::vector<uint8_t> png = makeMono8Png(kW, kH, mosaic);
+  const std::vector<uint8_t> png = PJ::test::makeGrayPng(kW, kH, 8, mosaic);
   ASSERT_FALSE(png.empty());
 
   PJ::ObjectStore store;
@@ -706,7 +583,7 @@ TEST(ImagePipelineSourceTest, CanonicalCodecDecodesSerializedPngWrappedRgb8) {
       10, 20, 30, 40,  50,  60,  // row 0
       70, 80, 90, 100, 110, 120  // row 1
   };
-  const std::vector<uint8_t> png = makeMono8Png(/*width=row_step*/ 6, /*height*/ 2, rgb);
+  const std::vector<uint8_t> png = PJ::test::makeGrayPng(/*width=row_step*/ 6, /*height*/ 2, 8, rgb);
   ASSERT_FALSE(png.empty());
 
   PJ::sdk::Image img;

@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include <gtest/gtest.h>
-#include <png.h>
 #include <turbojpeg.h>
 
 #include <cstdint>
@@ -11,6 +10,7 @@
 #include <vector>
 
 #include "pj_scene2d_core/codecs.h"
+#include "test_png_io.h"
 
 namespace PJ {
 namespace {
@@ -33,48 +33,6 @@ std::vector<uint8_t> createTestJpeg(int width, int height) {
   tjFree(jpeg_buf);
   tjDestroy(compressor);
   return result;
-}
-
-struct PngWriteContext {
-  std::vector<uint8_t> data;
-};
-
-void pngWriteCallback(png_structp png, png_bytep buf, png_size_t count) {
-  auto* ctx = static_cast<PngWriteContext*>(png_get_io_ptr(png));
-  ctx->data.insert(ctx->data.end(), buf, buf + count);
-}
-
-std::vector<uint8_t> createTestPng(int width, int height, bool with_alpha) {
-  int channels = with_alpha ? 4 : 3;
-  std::vector<uint8_t> pixels(static_cast<size_t>(width * height * channels));
-  for (size_t i = 0; i < pixels.size(); i += static_cast<size_t>(channels)) {
-    pixels[i] = 0;
-    pixels[i + 1] = 255;
-    pixels[i + 2] = 0;
-    if (with_alpha) {
-      pixels[i + 3] = 128;
-    }
-  }
-
-  PngWriteContext ctx;
-  png_structp png = png_create_write_struct(PNG_LIBPNG_VER_STRING, nullptr, nullptr, nullptr);
-  png_infop info = png_create_info_struct(png);
-  png_set_write_fn(png, &ctx, pngWriteCallback, nullptr);
-
-  png_set_IHDR(
-      png, info, static_cast<png_uint_32>(width), static_cast<png_uint_32>(height), 8,
-      with_alpha ? PNG_COLOR_TYPE_RGBA : PNG_COLOR_TYPE_RGB, PNG_INTERLACE_NONE, PNG_COMPRESSION_TYPE_DEFAULT,
-      PNG_FILTER_TYPE_DEFAULT);
-  png_write_info(png, info);
-
-  std::vector<png_bytep> rows(static_cast<size_t>(height));
-  for (int y = 0; y < height; ++y) {
-    rows[static_cast<size_t>(y)] = pixels.data() + static_cast<size_t>(y * width * channels);
-  }
-  png_write_image(png, rows.data());
-  png_write_end(png, nullptr);
-  png_destroy_write_struct(&png, &info);
-  return ctx.data;
 }
 
 DecodedFrame compressedFrame(const std::vector<uint8_t>& bytes) {
@@ -115,7 +73,7 @@ TEST(ImageCodecTest, DecodeCorruptInputFails) {
 
 TEST(ImageCodecTest, DecodePngRgb) {
   PngCodec decoder;
-  auto png = createTestPng(32, 24, false);
+  auto png = PJ::test::makeRgbPng(32, 24, false);
   auto result = decoder.decode(compressedFrame(png));
   ASSERT_TRUE(result.has_value()) << result.error();
   EXPECT_EQ(result->width, 32);
@@ -128,7 +86,7 @@ TEST(ImageCodecTest, DecodePngRgb) {
 
 TEST(ImageCodecTest, DecodePngRgba) {
   PngCodec decoder;
-  auto png = createTestPng(16, 16, true);
+  auto png = PJ::test::makeRgbPng(16, 16, true);
   auto result = decoder.decode(compressedFrame(png));
   ASSERT_TRUE(result.has_value()) << result.error();
   EXPECT_EQ(result->format, PixelFormat::kRGBA8888);

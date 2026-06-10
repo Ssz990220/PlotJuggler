@@ -130,7 +130,6 @@ void DepthPipelineSource::setTimestamp(int64_t ts_ns) {
   }
 
   MediaFrame frame;
-  frame.base = *decoded;
   frame.pixel_layers.push_back(PixelLayer{std::move(*decoded), opacity_});
   pending_frame_ = std::move(frame);
 }
@@ -168,6 +167,7 @@ void DepthPipelineSource::setOpacity(float opacity) noexcept {
 }
 
 std::optional<DecodedFrame> DepthPipelineSource::decodeDepthImage(const sdk::DepthImage& depth, int64_t pts) const {
+  // DepthImage float/colormap path; Image/PNG mono16 topics use Mono16ToGrayscale separately.
   const auto format = resolveDepthFormat(depth.encoding);
   if (!format.has_value() || depth.width == 0 || depth.height == 0 || depth.data.empty()) {
     return std::nullopt;

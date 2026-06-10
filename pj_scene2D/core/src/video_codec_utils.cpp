@@ -3,6 +3,8 @@
 
 #include "pj_scene2d_core/video_codec_utils.h"
 
+#include "video_codec_utils_internal.h"
+
 extern "C" {
 #include <libavcodec/avcodec.h>
 }
@@ -15,15 +17,6 @@ extern "C" {
 #include "pj_scene2d_core/h264_utils.h"
 
 namespace PJ {
-
-namespace {
-
-std::string toLower(std::string_view s) {
-  std::string out(s);
-  std::transform(
-      out.begin(), out.end(), out.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-  return out;
-}
 
 // Offset of the byte after the next Annex-B start code at/after `offset`, or
 // `size` if none. Start codes are 0x000001 (3-byte) or 0x00000001 (4-byte).
@@ -40,6 +33,15 @@ size_t nextNalHeader(const uint8_t* data, size_t size, size_t offset) {
     ++offset;
   }
   return size;
+}
+
+namespace {
+
+std::string toLower(std::string_view s) {
+  std::string out(s);
+  std::transform(
+      out.begin(), out.end(), out.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+  return out;
 }
 
 // HEVC (H.265) Annex-B keyframe oracle. The NAL header is 2 bytes; the type is

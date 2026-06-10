@@ -10,7 +10,6 @@
 #include <mutex>
 #include <optional>
 #include <string>
-#include <string_view>
 #include <thread>
 #include <unordered_map>
 
@@ -114,7 +113,7 @@ class ImagePipelineSource : public MediaSource {
   // Decode one canonical sdk::Image (from a parser or a deserialized blob) into a
   // display frame: raw/bayer encodings via the raw-or-bayer path (incl. grayscale
   // PNG-wrapped recovery), otherwise the jpeg/png/auto compressed cascade.
-  std::optional<DecodedFrame> decodeCanonicalImage(const sdk::Image& img, int64_t pts, std::string_view topic_name);
+  std::optional<DecodedFrame> decodeCanonicalImage(const sdk::Image& img, int64_t pts);
 
   // Lens-undistort a decoded frame in place when calibration exists for its
   // frame_id, emitting it at the camera's native (calibrated) resolution so 2D

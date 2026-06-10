@@ -58,6 +58,7 @@ Pure C++ library. Contains everything that does not touch Qt:
 | `Image rectifier` | `image_rectifier.h` | Bilinear lens-undistortion of a `DecodedFrame` through a precomputed `UndistortMap` (interleaved 8-bit formats; planar/16-bit pass through unrectified). |
 | `Undistort remap` | `undistort_remap.h` | Per-camera reverse sampling map built from `CameraInfo` (K/D/R/P), consumed by the rectifier; see TECHNICAL_NOTES "rectify the image, not warp the annotations". |
 | `MediaSource` | `media_source.h` | Abstract frame-delivery interface: `setTimestamp` + `takeFrame` (§5) |
+| `Parser object helper` | `parser_object.h` | Shared locked-`parseObject` helper over a `SessionManager::ParserBinding` snapshot (parser + mutex + keepalive); used by the image source and the VideoFrame NAL extractor. |
 | `ImagePipelineSource` | `image_pipeline_source.h` | `MediaSource` for images: wraps CodecPipeline + ObjectStore, decodes on a worker thread (§5.1) |
 | `MediaFrame` | `media_frame.h` | Multi-layer payload returned by `MediaSource`: legacy base frame, ordered pixel layers, and overlays. |
 | `SceneDecoder` | `scene_decoder.h` | Schema dispatch and `ISceneDecoder` implementations for image annotations and 2D-projected scene entities (§4.3). |
@@ -297,7 +298,7 @@ part of the core pipeline.
 
 ```
 Canonical Image (jpeg):       JpegCodec → [identity]
-Canonical Image (png/mono16): PngCodec → DepthToGrayscale
+Canonical Image (png/mono16): PngCodec → Mono16ToGrayscale
 Raw segmentation mask:        [identity] → SegmentationPalette
 ```
 
@@ -346,7 +347,7 @@ application consumes media. The reference CDR helpers live under
 
 | Codec | Input | Output |
 |-------|-------|--------|
-| `DepthToGrayscale` | Mono16 depth values | RGB888 (grayscale, normalized to range) |
+| `Mono16ToGrayscale` | Mono16 image values | RGB888 (grayscale, non-zero range normalized; zero stays black) |
 | `SegmentationPalette` | Mono8 class IDs | RGB888 (color per class) |
 | (passthrough, conceptual) | Any RGB/RGBA | No-op |
 

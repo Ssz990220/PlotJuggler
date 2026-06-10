@@ -34,21 +34,6 @@ TEST(SceneFrameTest, EqualityIsValueBased) {
   EXPECT_NE(lhs, rhs);
 }
 
-TEST(SceneFrameTest, BboxAsLineLoopFourCorners) {
-  // YOLO bbox (cx=100, cy=200, w=50, h=30) → 4-corner LineLoop.
-  const double cx = 100.0, cy = 200.0, w = 50.0, h = 30.0;
-  PointsAnnotation bbox;
-  bbox.topology = AnnotationTopology::kLineLoop;
-  bbox.points = {
-      {cx - w / 2, cy - h / 2},
-      {cx + w / 2, cy - h / 2},
-      {cx + w / 2, cy + h / 2},
-      {cx - w / 2, cy + h / 2},
-  };
-  EXPECT_EQ(bbox.points.size(), 4u);
-  EXPECT_EQ(bbox.topology, AnnotationTopology::kLineLoop);
-}
-
 TEST(SceneFrameTest, ColorDefaultIsOpaqueBlack) {
   ColorRGBA c;
   EXPECT_EQ(c.r, 0);

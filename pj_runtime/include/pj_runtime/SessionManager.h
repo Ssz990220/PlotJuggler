@@ -84,6 +84,19 @@ class SessionManager : public QObject {
       std::vector<std::pair<ObjectTopicId, std::unique_ptr<MessageParserHandle>>> staged_object_parsers);
 
   void registerObjectTopicParser(ObjectTopicId id, std::unique_ptr<MessageParserHandle> parser);
+  struct ParserBinding {
+    MessageParserPluginBase* parser = nullptr;
+    std::shared_ptr<std::mutex> mutex;
+    std::shared_ptr<void> keepalive;
+
+    [[nodiscard]] explicit operator bool() const noexcept {
+      return parser != nullptr && keepalive != nullptr;
+    }
+  };
+
+  /// Returns the parser pointer, shared parse mutex, and DSO keepalive for one
+  /// object topic as a single snapshot. Empty when no valid parser is registered.
+  [[nodiscard]] ParserBinding parserBindingForObjectTopic(ObjectTopicId id) const;
   [[nodiscard]] MessageParserPluginBase* parserForObjectTopic(ObjectTopicId id) const;
 
   // Mutex shared by every consumer of parserForObjectTopic(id). MessageParser

@@ -5,8 +5,7 @@
 /// Shared test helper: extract per-frame compressed video packets from an MP4.
 /// H.264/HEVC are converted to Annex-B (the right *_mp4toannexb filter is picked
 /// by codec, and it also prepends in-band parameter sets to keyframes); other
-/// codecs (e.g. AV1 OBUs) pass through verbatim. Used by h264_utils_test and
-/// streaming_video_decoder_test.
+/// codecs (e.g. AV1 OBUs) pass through verbatim. Shared by the video test suites.
 
 extern "C" {
 #include <libavcodec/avcodec.h>
@@ -39,7 +38,8 @@ inline std::vector<AnnexBPacket> extractAnnexBPackets(const std::string& path) {
   // that use no other libavutil symbol: the direct av_log_* reference keeps the
   // linker (--as-needed) from dropping the binary's libavutil DT_NEEDED — without
   // it, libavformat's transitive avutil dependency fails to resolve through the
-  // executable's RUNPATH on CI (RUNPATH does not apply to grandchild deps).
+  // executable's RUNPATH on CI (RUNPATH does not apply to grandchild deps). Do
+  // not remove even if linkage currently survives via another object's avutil use.
   av_log_set_level(AV_LOG_ERROR);
 
   AVFormatContext* fmt_ctx = nullptr;

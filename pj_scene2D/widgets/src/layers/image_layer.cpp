@@ -6,8 +6,6 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QLoggingCategory>
-#include <QMetaObject>
-#include <QPointer>
 #include <QString>
 #include <any>
 #include <memory>
@@ -25,7 +23,7 @@
 #include "pj_runtime/SessionManager.h"
 #include "pj_scene2d_core/image_pipeline_source.h"
 #include "pj_scene2d_core/media_source.h"
-#include "pj_scene2d_widgets/Scene2DDockWidget.h"
+#include "pj_scene2d_widgets/scene2d_pipelines.h"
 
 namespace PJ {
 
@@ -107,8 +105,9 @@ std::unique_ptr<MediaSource> ImageLayer::createMediaSource(const SceneLayerConte
     return nullptr;
   }
 
-  auto pipeline = Scene2DDockWidget::makePipelineFor(objectType());
-  auto* parser = session->parserForObjectTopic(topicId());
+  auto pipeline = makeScene2DPipelineFor(objectType());
+  const auto parser_binding = session->parserBindingForObjectTopic(topicId());
+  auto* parser = parser_binding.parser;
   const bool canonical_blob =
       parser == nullptr && topicUsesCanonicalImageCodec(store->descriptor(topicId()).metadata_json);
   if (parser == nullptr && !canonical_blob && pipeline == nullptr) {
@@ -118,20 +117,8 @@ std::unique_ptr<MediaSource> ImageLayer::createMediaSource(const SceneLayerConte
 
   std::unique_ptr<ImagePipelineSource> image_src;
   if (parser != nullptr) {
-    // Parser-mode: the decode worker calls parser->parseObject off the GUI
-    // thread, so pin the parser instance + plugin DSO via the keepalive for the
-    // worker's whole lifetime (mirrors VideoLayer). A null keepalive paired with
-    // a non-null parser means the topic was unregistered between the two lookups
-    // — refuse rather than hand the worker a parser that could be dlclosed under
-    // an in-flight call.
-    auto parser_keepalive = session->parserKeepaliveForObjectTopic(topicId());
-    if (parser_keepalive == nullptr) {
-      qCWarning(lcScene2DImageLayer) << "kImage topic_id=" << topicId().id
-                                     << "has no live parser keepalive — cannot safely decode image messages";
-      return nullptr;
-    }
-    image_src = std::make_unique<ImagePipelineSource>(
-        store, topicId(), parser, session->parserMutexForObjectTopic(topicId()), std::move(parser_keepalive));
+    image_src =
+        std::make_unique<ImagePipelineSource>(store, topicId(), parser, parser_binding.mutex, parser_binding.keepalive);
   } else if (canonical_blob) {
     image_src = std::make_unique<ImagePipelineSource>(store, topicId(), ImagePipelineSource::CanonicalImageCodec{});
   } else {
@@ -145,19 +132,7 @@ std::unique_ptr<MediaSource> ImageLayer::createMediaSource(const SceneLayerConte
   // attaches); a camera_info published after attach is not retro-applied.
   image_src->setCameraInfoMap(collectCameraInfoByFrameId(session, store));
 
-  image_src->setFrameReadyCallback([qp = QPointer<ImageLayer>(this)]() {
-    if (!qp) {
-      return;
-    }
-    QMetaObject::invokeMethod(
-        qp.data(),
-        [qp]() {
-          if (qp) {
-            emit qp->repaintRequested();
-          }
-        },
-        Qt::QueuedConnection);
-  });
+  image_src->setFrameReadyCallback(makeQueuedRepaintCallback());
   return image_src;
 }
 

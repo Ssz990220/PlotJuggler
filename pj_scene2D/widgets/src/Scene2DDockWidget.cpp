@@ -3,11 +3,9 @@
 #include "pj_scene2d_widgets/Scene2DDockWidget.h"
 
 #include <QBoxLayout>
-#include <QMetaObject>
-#include <QPointer>
 #include <QSizePolicy>
 #include <algorithm>
-#include <chrono>
+#include <array>
 #include <cstdint>
 #include <limits>
 #include <memory>
@@ -17,50 +15,82 @@
 
 #include "pj_runtime/SessionManager.h"
 #include "pj_scene2d_core/borrowed_media_source.h"
-#include "pj_scene2d_core/codecs.h"
 #include "pj_scene2d_core/composite_media_source.h"
 #include "pj_scene2d_core/scene_decoder.h"
 #include "pj_scene2d_widgets/layers/depth_image_layer.h"
 #include "pj_scene2d_widgets/layers/image_layer.h"
 #include "pj_scene2d_widgets/layers/scene2d_layer.h"
 #include "pj_scene2d_widgets/layers/scene_decoder_layer.h"
+#ifdef PJ_HAS_FFMPEG
 #include "pj_scene2d_widgets/layers/video_layer.h"
+#endif
 #include "pj_scene2d_widgets/media_viewer_widget.h"
 
 namespace PJ {
 
-namespace {}  // namespace
+namespace {
+
+using LayerCreator = std::unique_ptr<ISceneLayer> (*)(
+    ObjectTopicId topic_id, sdk::BuiltinObjectType object_type, const QString& display_name);
+
+struct LayerRegistration {
+  sdk::BuiltinObjectType object_type;
+  LayerCreator creator;
+};
+
+std::unique_ptr<ISceneLayer> createImageLayer(
+    ObjectTopicId topic_id, sdk::BuiltinObjectType object_type, const QString& display_name) {
+  return std::make_unique<ImageLayer>(topic_id, object_type, display_name);
+}
+
+#ifdef PJ_HAS_FFMPEG
+std::unique_ptr<ISceneLayer> createVideoLayer(
+    ObjectTopicId topic_id, sdk::BuiltinObjectType object_type, const QString& display_name) {
+  return std::make_unique<VideoLayer>(topic_id, object_type, display_name);
+}
+#endif
+
+std::unique_ptr<ISceneLayer> createDepthImageLayer(
+    ObjectTopicId topic_id, sdk::BuiltinObjectType object_type, const QString& display_name) {
+  return std::make_unique<DepthImageLayer>(topic_id, object_type, display_name);
+}
+
+std::unique_ptr<ISceneLayer> createImageAnnotationsLayer(
+    ObjectTopicId topic_id, sdk::BuiltinObjectType object_type, const QString& display_name) {
+  return std::make_unique<SceneDecoderLayer>(
+      topic_id, object_type, display_name, QStringLiteral("Annotations"), kSchemaImageAnnotations);
+}
+
+std::unique_ptr<ISceneLayer> createSceneEntitiesLayer(
+    ObjectTopicId topic_id, sdk::BuiltinObjectType object_type, const QString& display_name) {
+  return std::make_unique<SceneDecoderLayer>(
+      topic_id, object_type, display_name, QStringLiteral("Markers"), kSchemaSceneEntities);
+}
+
+#ifdef PJ_HAS_FFMPEG
+constexpr std::array<LayerRegistration, 5> kLayerRegistrations {
+  {
+#else
+constexpr std::array<LayerRegistration, 4> kLayerRegistrations{{
+#endif
+    {sdk::BuiltinObjectType::kImage, &createImageLayer},
+#ifdef PJ_HAS_FFMPEG
+        {sdk::BuiltinObjectType::kVideoFrame, &createVideoLayer},
+#endif
+        {sdk::BuiltinObjectType::kDepthImage, &createDepthImageLayer},
+        {sdk::BuiltinObjectType::kImageAnnotations, &createImageAnnotationsLayer},
+        {sdk::BuiltinObjectType::kSceneEntities, &createSceneEntitiesLayer},
+  }
+};
+
+}  // namespace
 
 Scene2DDockWidget::Scene2DDockWidget(QWidget* parent) : SceneDockWidget(parent) {
   setWindowTitle(tr("2D View"));
 
-  layerFactory().registerType(
-      sdk::BuiltinObjectType::kImage,
-      [](ObjectTopicId topic_id, sdk::BuiltinObjectType object_type, const QString& display_name) {
-        return std::make_unique<ImageLayer>(topic_id, object_type, display_name);
-      });
-  layerFactory().registerType(
-      sdk::BuiltinObjectType::kVideoFrame,
-      [](ObjectTopicId topic_id, sdk::BuiltinObjectType object_type, const QString& display_name) {
-        return std::make_unique<VideoLayer>(topic_id, object_type, display_name);
-      });
-  layerFactory().registerType(
-      sdk::BuiltinObjectType::kDepthImage,
-      [](ObjectTopicId topic_id, sdk::BuiltinObjectType object_type, const QString& display_name) {
-        return std::make_unique<DepthImageLayer>(topic_id, object_type, display_name);
-      });
-  layerFactory().registerType(
-      sdk::BuiltinObjectType::kImageAnnotations,
-      [](ObjectTopicId topic_id, sdk::BuiltinObjectType object_type, const QString& display_name) {
-        return std::make_unique<SceneDecoderLayer>(
-            topic_id, object_type, display_name, QStringLiteral("Annotations"), kSchemaImageAnnotations);
-      });
-  layerFactory().registerType(
-      sdk::BuiltinObjectType::kSceneEntities,
-      [](ObjectTopicId topic_id, sdk::BuiltinObjectType object_type, const QString& display_name) {
-        return std::make_unique<SceneDecoderLayer>(
-            topic_id, object_type, display_name, QStringLiteral("Markers"), kSchemaSceneEntities);
-      });
+  for (const LayerRegistration& registration : kLayerRegistrations) {
+    layerFactory().registerType(registration.object_type, registration.creator);
+  }
 }
 
 Scene2DDockWidget::~Scene2DDockWidget() {
@@ -95,33 +125,6 @@ void Scene2DDockWidget::setPointInspectorEnabled(bool enabled) {
 
 bool Scene2DDockWidget::pointInspectorEnabled() const noexcept {
   return viewer_ != nullptr && viewer_->pointInspectorEnabled();
-}
-
-std::unique_ptr<CodecPipeline> Scene2DDockWidget::makePipelineFor(sdk::BuiltinObjectType object_type) {
-  switch (object_type) {
-    case sdk::BuiltinObjectType::kImage:
-      return makeJpegPipeline();
-    case sdk::BuiltinObjectType::kDepthImage:
-      return nullptr;
-    case sdk::BuiltinObjectType::kNone:
-    case sdk::BuiltinObjectType::kPointCloud:
-    case sdk::BuiltinObjectType::kImageAnnotations:
-    case sdk::BuiltinObjectType::kFrameTransforms:
-    case sdk::BuiltinObjectType::kOccupancyGrid:
-    case sdk::BuiltinObjectType::kCompressedPointCloud:
-    case sdk::BuiltinObjectType::kMesh3D:
-    case sdk::BuiltinObjectType::kVideoFrame:
-    case sdk::BuiltinObjectType::kSceneEntities:
-    // kAssetVideo is a reserved SDK enum slot with no host decode path; listed
-    // to keep this exhaustive switch -Werror=switch clean.
-    case sdk::BuiltinObjectType::kAssetVideo:
-    case sdk::BuiltinObjectType::kRobotDescription:
-    case sdk::BuiltinObjectType::kCameraInfo:
-    case sdk::BuiltinObjectType::kOccupancyGridUpdate:
-    case sdk::BuiltinObjectType::kLog:
-      return nullptr;
-  }
-  return nullptr;
 }
 
 size_t Scene2DDockWidget::compositeLayerCountForTesting() const noexcept {
@@ -167,16 +170,9 @@ std::unique_ptr<SceneLayerContext> Scene2DDockWidget::makeContext() {
 }
 
 bool Scene2DDockWidget::handlesObjectType(sdk::BuiltinObjectType object_type) {
-  switch (object_type) {
-    case sdk::BuiltinObjectType::kImage:
-    case sdk::BuiltinObjectType::kVideoFrame:
-    case sdk::BuiltinObjectType::kDepthImage:
-    case sdk::BuiltinObjectType::kImageAnnotations:
-    case sdk::BuiltinObjectType::kSceneEntities:
-      return true;
-    default:
-      return false;
-  }
+  return std::any_of(kLayerRegistrations.begin(), kLayerRegistrations.end(), [object_type](const auto& registration) {
+    return registration.object_type == object_type;
+  });
 }
 
 bool Scene2DDockWidget::acceptsObjectType(sdk::BuiltinObjectType object_type) const {
@@ -243,36 +239,42 @@ void Scene2DDockWidget::reconnectLiveSamples(SessionManager* session) {
   }
   live_samples_conn_ =
       connect(session, &SessionManager::samplesIngested, this, [this](const QVector<TopicId>&, bool live) {
-        if (!live || sessionManager() == nullptr) {
-          return;
+        if (live) {
+          driveVisibleLayersToLiveEdge();
         }
-
-        ObjectStore& store = sessionManager()->objectStore();
-        bool any = false;
-        int64_t latest = std::numeric_limits<int64_t>::lowest();
-        for (const SceneLayerInfo& info : layers()) {
-          if (!info.visible || store.entryCount(info.topic_id) == 0) {
-            continue;
-          }
-          latest = std::max(latest, store.timeRange(info.topic_id).second);
-          any = true;
-        }
-        if (!any) {
-          return;
-        }
-
-        noteTrackerTime(latest);
-        for (const SceneLayerInfo& info : layers()) {
-          ISceneLayer* layer = layerFor(info.topic_id);
-          if (layer != nullptr && info.visible) {
-            layer->setTrackerTime(PJ::fromRaw(latest));
-          }
-        }
-        if (composite_ != nullptr) {
-          composite_->setTimestamp(latest);
-        }
-        refreshView();
       });
+}
+
+void Scene2DDockWidget::driveVisibleLayersToLiveEdge() {
+  if (sessionManager() == nullptr) {
+    return;
+  }
+
+  ObjectStore& store = sessionManager()->objectStore();
+  bool any = false;
+  int64_t latest = std::numeric_limits<int64_t>::lowest();
+  for (const SceneLayerInfo& info : layers()) {
+    if (!info.visible || store.entryCount(info.topic_id) == 0) {
+      continue;
+    }
+    latest = std::max(latest, store.timeRange(info.topic_id).second);
+    any = true;
+  }
+  if (!any) {
+    return;
+  }
+
+  noteTrackerTime(latest);
+  for (const SceneLayerInfo& info : layers()) {
+    ISceneLayer* layer = layerFor(info.topic_id);
+    if (layer != nullptr && info.visible) {
+      layer->setTrackerTime(PJ::fromRaw(latest));
+    }
+  }
+  if (composite_ != nullptr) {
+    composite_->setTimestamp(latest);
+  }
+  refreshView();
 }
 
 void Scene2DDockWidget::syncCompositeTimestamp(const std::vector<ISceneLayer*>& ordered_layers) {

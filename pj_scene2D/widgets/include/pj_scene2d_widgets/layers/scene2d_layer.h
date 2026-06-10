@@ -9,6 +9,7 @@
 #include <QWidget>
 #include <chrono>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <utility>
@@ -65,6 +66,9 @@ class Scene2DLayer : public ISceneLayer {
 
   void setSource(std::unique_ptr<MediaSource> source);
   [[nodiscard]] MediaSource* borrowedSource() const noexcept;
+  /// Builds the worker-thread -> GUI-thread repaint trampoline used by async
+  /// media sources. The returned callback is safe to invoke after layer teardown.
+  [[nodiscard]] std::function<void()> makeQueuedRepaintCallback();
   /// Called during attach() after objectStore()/sessionManager() become valid.
   /// Returning nullptr fails attach() and clears those pointers again.
   [[nodiscard]] virtual std::unique_ptr<MediaSource> createMediaSource(const SceneLayerContext& ctx) = 0;

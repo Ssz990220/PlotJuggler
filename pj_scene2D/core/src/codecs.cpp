@@ -102,15 +102,6 @@ void pngReadCb(png_structp png, png_bytep out, png_size_t count) {
   return true;
 }
 
-bool hasJpegSignature(const uint8_t* data, size_t size) noexcept {
-  return data != nullptr && size >= 3 && data[0] == 0xFF && data[1] == 0xD8 && data[2] == 0xFF;
-}
-
-bool hasPngSignature(const uint8_t* data, size_t size) noexcept {
-  return data != nullptr && size >= 8 && data[0] == 0x89 && data[1] == 0x50 && data[2] == 0x4E && data[3] == 0x47 &&
-         data[4] == 0x0D && data[5] == 0x0A && data[6] == 0x1A && data[7] == 0x0A;
-}
-
 }  // namespace
 
 Expected<DecodedFrame> PngCodec::decode(const DecodedFrame& input) const {
@@ -242,15 +233,13 @@ Expected<DecodedFrame> ImageDecodeCascade::decode(const DecodedFrame& input) con
 
   const auto* data = input.pixels->data();
   const auto size = input.pixels->size();
-  if (hasJpegSignature(data, size)) {
-    return jpeg_.decode(input);
-  }
-  if (hasPngSignature(data, size)) {
-    auto decoded = png_.decode(input);
-    if (!decoded.has_value()) {
-      return decoded;
-    }
-    return decoded;
+  switch (sniffImageContainer(data, size)) {
+    case ImageContainer::kJpeg:
+      return jpeg_.decode(input);
+    case ImageContainer::kPng:
+      return png_.decode(input);
+    case ImageContainer::kUnknown:
+      break;
   }
 
   return unexpected("unsupported image payload: expected JPEG or PNG");
@@ -277,12 +266,13 @@ Expected<DecodedFrame> AutoImageCodec::decode(const DecodedFrame& input) const {
 }
 
 // ---------------------------------------------------------------------------
-// DepthToGrayscale
+// Mono16ToGrayscale
 // ---------------------------------------------------------------------------
 
-Expected<DecodedFrame> DepthToGrayscale::decode(const DecodedFrame& input) const {
+Expected<DecodedFrame> Mono16ToGrayscale::decode(const DecodedFrame& input) const {
+  // Generic uint16 grayscale for Image/PNG mono16 topics; DepthImage keeps a separate float/colormap path.
   if (input.isNull()) {
-    return unexpected("empty depth data");
+    return unexpected("empty mono16 data");
   }
   if (input.format != PixelFormat::kMono16 || input.width == 0 || input.height == 0) {
     return unexpected("expected mono16 input with valid dimensions");
@@ -290,7 +280,7 @@ Expected<DecodedFrame> DepthToGrayscale::decode(const DecodedFrame& input) const
 
   auto pixel_count = static_cast<size_t>(input.width) * static_cast<size_t>(input.height);
   if (input.pixels->size() < pixel_count * 2) {
-    return unexpected("depth buffer too small for dimensions");
+    return unexpected("mono16 buffer too small for dimensions");
   }
   const auto* src = reinterpret_cast<const uint16_t*>(input.pixels->data());
 

@@ -5,12 +5,6 @@
 
 #include <gtest/gtest.h>
 
-extern "C" {
-#include <libavcodec/avcodec.h>
-#include <libavcodec/bsf.h>
-#include <libavformat/avformat.h>
-}
-
 #include <chrono>
 #include <filesystem>
 #include <string>
@@ -18,69 +12,20 @@ extern "C" {
 #include <vector>
 
 #include "pj_datastore/object_store.hpp"
+#include "test_mp4_demux.h"
 
 namespace PJ {
 namespace {
 
 const std::string kTestVideo = "pj_scene2D/testdata/test_480p.mp4";
 
-/// Push all H.264 packets from an MP4 file into ObjectStore as annex-B NAL units.
+/// Push all video packets from an MP4 file into ObjectStore as decoder-ready units.
 size_t pushVideoPackets(const std::string& path, ObjectStore& store, ObjectTopicId topic) {
-  AVFormatContext* fmt_ctx = nullptr;
-  if (avformat_open_input(&fmt_ctx, path.c_str(), nullptr, nullptr) < 0) {
-    return 0;
+  const auto packets = test::extractAnnexBPackets(path);
+  for (const auto& packet : packets) {
+    store.pushOwned(topic, packet.dts, packet.data);
   }
-  avformat_find_stream_info(fmt_ctx, nullptr);
-
-  int video_idx = -1;
-  for (unsigned i = 0; i < fmt_ctx->nb_streams; ++i) {
-    if (fmt_ctx->streams[i]->codecpar->codec_type == AVMEDIA_TYPE_VIDEO) {
-      video_idx = static_cast<int>(i);
-      break;
-    }
-  }
-  if (video_idx < 0) {
-    avformat_close_input(&fmt_ctx);
-    return 0;
-  }
-
-  auto* stream = fmt_ctx->streams[video_idx];
-  double time_base = av_q2d(stream->time_base);
-
-  const AVBitStreamFilter* bsf = av_bsf_get_by_name("h264_mp4toannexb");
-  AVBSFContext* bsf_ctx = nullptr;
-  av_bsf_alloc(bsf, &bsf_ctx);
-  avcodec_parameters_copy(bsf_ctx->par_in, stream->codecpar);
-  bsf_ctx->time_base_in = stream->time_base;
-  av_bsf_init(bsf_ctx);
-
-  AVPacket* pkt = av_packet_alloc();
-  AVPacket* filtered = av_packet_alloc();
-  size_t count = 0;
-
-  while (av_read_frame(fmt_ctx, pkt) >= 0) {
-    if (pkt->stream_index != video_idx) {
-      av_packet_unref(pkt);
-      continue;
-    }
-    int64_t dts_ns = static_cast<int64_t>(static_cast<double>(pkt->dts) * time_base * 1'000'000'000.0);
-
-    if (av_bsf_send_packet(bsf_ctx, pkt) >= 0) {
-      while (av_bsf_receive_packet(bsf_ctx, filtered) >= 0) {
-        std::vector<uint8_t> data(filtered->data, filtered->data + filtered->size);
-        store.pushOwned(topic, dts_ns, std::move(data));
-        ++count;
-        av_packet_unref(filtered);
-      }
-    }
-    av_packet_unref(pkt);
-  }
-
-  av_packet_free(&pkt);
-  av_packet_free(&filtered);
-  av_bsf_free(&bsf_ctx);
-  avformat_close_input(&fmt_ctx);
-  return count;
+  return packets.size();
 }
 
 class StreamingVideoSourceTest : public ::testing::Test {

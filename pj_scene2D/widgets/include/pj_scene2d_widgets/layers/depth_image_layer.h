@@ -26,10 +26,12 @@ class DepthImageLayer final : public Scene2DLayer {
 
  protected:
   [[nodiscard]] std::unique_ptr<MediaSource> createMediaSource(const SceneLayerContext& ctx) override;
+  void onBeforeDetach() override;
   void saveOptions(QDomElement& element) const override;
   bool loadOptions(const QDomElement& element) override;
 
  private:
+  void applyTo(DepthPipelineSource& source) const;
   void applyOptions();
   void setColormap(DepthColormap colormap);
   void setAutoRange(bool enabled);
@@ -41,6 +43,7 @@ class DepthImageLayer final : public Scene2DLayer {
   float far_m_ = 10.0f;
   bool auto_range_ = true;
   float opacity_ = 1.0f;
+  DepthPipelineSource* depth_source_ = nullptr;
 };
 
 }  // namespace PJ

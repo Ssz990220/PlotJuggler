@@ -23,6 +23,7 @@
 #include "pj_base/builtin/image_codec.hpp"
 #include "pj_plugins/sdk/message_parser_plugin_base.hpp"
 #include "pj_scene2d_core/image_rectifier.h"
+#include "pj_scene2d_core/parser_object.h"
 
 namespace PJ {
 
@@ -138,7 +139,7 @@ bool startsWithIhdrChunkType(const uint8_t* data, size_t size) noexcept {
   return data != nullptr && size >= 4 && data[0] == 'I' && data[1] == 'H' && data[2] == 'D' && data[3] == 'R';
 }
 
-std::shared_ptr<std::vector<uint8_t>> imageDataBytes(const sdk::Image& img, std::string_view topic_name) {
+std::shared_ptr<std::vector<uint8_t>> imageDataBytes(const sdk::Image& img) {
   auto bytes = std::make_shared<std::vector<uint8_t>>();
   if (img.data.empty()) {
     return bytes;
@@ -155,7 +156,6 @@ std::shared_ptr<std::vector<uint8_t>> imageDataBytes(const sdk::Image& img, std:
     bytes->reserve(sizeof(kPngPrefix) + img.data.size());
     bytes->insert(bytes->end(), kPngPrefix, kPngPrefix + sizeof(kPngPrefix));
     bytes->insert(bytes->end(), img.data.data(), img.data.data() + img.data.size());
-    (void)topic_name;  // intentional: repair path is silent once the codec call succeeds
     return bytes;
   }
 
@@ -177,19 +177,6 @@ std::optional<BayerPattern> bayerPatternFor(std::string_view encoding) noexcept 
     return BayerPattern::kBGGR;
   }
   return std::nullopt;
-}
-
-bool hasPngOrJpegSignature(const uint8_t* data, size_t size) noexcept {
-  if (data == nullptr) {
-    return false;
-  }
-  const bool jpeg = size >= 3 && data[0] == 0xFF && data[1] == 0xD8 && data[2] == 0xFF;
-  // Full 8-byte PNG signature (\x89PNG\r\n\x1a\n), not just the first four bytes:
-  // a 4-byte prefix match leaves a 1-in-2^32 chance that a raw/Bayer buffer is
-  // mistaken for a PNG container, and a failed sniff used to drop the frame.
-  const bool png = size >= 8 && data[0] == 0x89 && data[1] == 0x50 && data[2] == 0x4E && data[3] == 0x47 &&
-                   data[4] == 0x0D && data[5] == 0x0A && data[6] == 0x1A && data[7] == 0x0A;
-  return jpeg || png;
 }
 
 // Reduce a decoded frame to a single-channel kMono8 buffer by taking one channel.
@@ -258,7 +245,7 @@ std::optional<DecodedFrame> decodeRawOrBayerImage(
 
   sdk::Image flat = img;
   std::shared_ptr<std::vector<uint8_t>> recovered;
-  if (hasPngOrJpegSignature(img.data.data(), img.data.size())) {
+  if (sniffImageContainer(img.data.data(), img.data.size()) != ImageContainer::kUnknown) {
     DecodedFrame staged;
     staged.pixels = std::make_shared<std::vector<uint8_t>>(img.data.data(), img.data.data() + img.data.size());
     // On any failure, leave `flat == img` and fall through to the raw path: the
@@ -474,9 +461,7 @@ void ImagePipelineSource::workerLoop() {
 
 std::optional<DecodedFrame> ImagePipelineSource::decodeAt(int64_t ts_ns) {
   // store_ non-null is a constructor precondition; downstream code unconditionally
-  // dereferences it (entryTimestamps, at, indexAt). Keep the topic-name lookup
-  // and the indexAt call consistent — both depend on the same precondition.
-  const std::string topic_name = store_->descriptor(topic_).topic_name;
+  // dereferences it (entryTimestamps, at, indexAt).
   auto index = store_->indexAt(topic_, ts_ns);
   if (!index.has_value()) {
     // Expected on scrub-before-data; silent.
@@ -509,41 +494,30 @@ std::optional<DecodedFrame> ImagePipelineSource::decodeAt(int64_t ts_ns) {
     // entry->payload already is a PayloadView (bytes + anchor); pass it through
     // verbatim so the anchor's lifetime extends across the parser call.
     sdk::PayloadView payload = entry->payload;
-    // MessageParser plugins aren't thread-safe (fastcdr et al. keep stateful
-    // scratch). When two workers share one parser instance — same image topic
-    // dropped twice, so SessionManager hands back its singleton — the shared
-    // mutex prevents concurrent parseObject and scratch-buffer corruption. Held
-    // for the parseObject call only; the following any_cast/decode work on the
-    // returned BuiltinObject without touching the parser.
-    auto invokeParser = [&] {
-      if (parser_mutex_) {
-        std::lock_guard<std::mutex> lock(*parser_mutex_);
-        return parser_->parseObject(entry->timestamp, payload);
+    auto parsed = parseObjectAs<sdk::Image>(
+        *parser_, parser_mutex_, entry->timestamp, payload, sdk::BuiltinObjectType::kImage, "sdk::Image");
+    if (!parsed.has_value()) {
+      const ParserObjectError& error = parsed.error();
+      switch (error.kind) {
+        case ParserObjectErrorKind::kParseFailed:
+          warnOnce(warningKey(source_key_, "parseObject"), "{} {}", source_key_, error.message);
+          break;
+        case ParserObjectErrorKind::kWrongObjectKind:
+          warnOnce(
+              warningKey(source_key_, "wrong-object-kind"), "{} parseObject returned wrong object_kind={}", source_key_,
+              static_cast<int>(error.actual_type));
+          break;
+        case ParserObjectErrorKind::kAnyCastFailed:
+          warnOnce(warningKey(source_key_, "any-cast-image"), "{} {}", source_key_, error.message);
+          break;
       }
-      return parser_->parseObject(entry->timestamp, payload);
-    };
-    auto object_or = invokeParser();
-    if (!object_or.has_value()) {
-      warnOnce(warningKey(source_key_, "parseObject"), "{} parseObject failed: {}", source_key_, object_or.error());
       return std::nullopt;
     }
-    const PJ::Timestamp effective_ts = object_or->ts.value_or(entry->timestamp);
-    if (sdk::typeOf(object_or->object) != sdk::BuiltinObjectType::kImage) {
-      warnOnce(
-          warningKey(source_key_, "wrong-object-kind"), "{} parseObject returned wrong object_kind={}", source_key_,
-          static_cast<int>(sdk::typeOf(object_or->object)));
-      return std::nullopt;
-    }
-    const auto* img = std::any_cast<sdk::Image>(&object_or->object);
-    if (img == nullptr) {
-      warnOnce(
-          warningKey(source_key_, "any-cast-image"), "{} any_cast<sdk::Image> failed (parser contract violation)",
-          source_key_);
-      return std::nullopt;
-    }
-    auto df = decodeCanonicalImage(*img, effective_ts, topic_name);
+    const PJ::Timestamp effective_ts = parsed->record.ts.value_or(entry->timestamp);
+    const sdk::Image& img = *parsed->value;
+    auto df = decodeCanonicalImage(img, effective_ts);
     if (df.has_value()) {
-      df->frame_id = img->frame_id;  // carry the source frame so the viewer can find its CameraInfo.
+      df->frame_id = img.frame_id;  // carry the source frame so the viewer can find its CameraInfo.
       rectifyIfCalibrated(*df);
     }
     return df;
@@ -558,7 +532,7 @@ std::optional<DecodedFrame> ImagePipelineSource::decodeAt(int64_t ts_ns) {
           warningKey(source_key_, "canonical-deserialize"), "{} deserializeImage failed: {}", source_key_, img.error());
       return std::nullopt;
     }
-    auto df = decodeCanonicalImage(*img, entry->timestamp, topic_name);
+    auto df = decodeCanonicalImage(*img, entry->timestamp);
     if (df.has_value()) {
       df->frame_id = img->frame_id;
       rectifyIfCalibrated(*df);
@@ -639,8 +613,7 @@ void ImagePipelineSource::rectifyIfCalibrated(DecodedFrame& df) {
   }
 }
 
-std::optional<DecodedFrame> ImagePipelineSource::decodeCanonicalImage(
-    const sdk::Image& img, int64_t pts, std::string_view topic_name) {
+std::optional<DecodedFrame> ImagePipelineSource::decodeCanonicalImage(const sdk::Image& img, int64_t pts) {
   // Raw pixel layouts and Bayer mosaics (incl. grayscale-PNG-wrapped buffers)
   // reinterpret at the logical geometry; everything else is a self-describing
   // compressed container handled by the jpeg/png/auto cascade.
@@ -655,7 +628,7 @@ std::optional<DecodedFrame> ImagePipelineSource::decodeCanonicalImage(
     return std::nullopt;
   }
   DecodedFrame staged;
-  staged.pixels = imageDataBytes(img, topic_name);
+  staged.pixels = imageDataBytes(img);
   staged.pts = pts;
 
   Expected<DecodedFrame> decoded = unexpected("unsupported image encoding: " + img.encoding);

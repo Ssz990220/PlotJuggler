@@ -106,9 +106,7 @@ void MediaViewerWidget::setMediaSource(MediaSource* source) {
   // overlays don't keep compositing over the new source. The GPU textures are
   // reconciled when the next frame arrives; until then pixel_layers_active_ is
   // false, so they stay inert.
-  pending_pixel_layers_.clear();
-  has_pending_pixel_layers_ = false;
-  pixel_layers_active_ = false;
+  resetPendingPixelLayers();
   // Drop glyph textures keyed to the previous source's labels; new source
   // likely brings a different label set, and the cache currently has no LRU.
   clearTextCache();
@@ -354,6 +352,49 @@ QRhiScissor imageScissor(const QMatrix4x4& view, const QSize& output_size) {
   return QRhiScissor(x0, y0, std::max(0, x1 - x0), std::max(0, y1 - y0));
 }
 
+QRhiGraphicsPipeline::TargetBlend alphaBlend() {
+  QRhiGraphicsPipeline::TargetBlend blend;
+  blend.enable = true;
+  blend.srcColor = QRhiGraphicsPipeline::SrcAlpha;
+  blend.dstColor = QRhiGraphicsPipeline::OneMinusSrcAlpha;
+  blend.srcAlpha = QRhiGraphicsPipeline::One;
+  blend.dstAlpha = QRhiGraphicsPipeline::OneMinusSrcAlpha;
+  return blend;
+}
+
+QRhiVertexInputLayout colorVertexInputLayout() {
+  QRhiVertexInputLayout layout;
+  layout.setBindings({QRhiVertexInputBinding(24)});  // stride: vec2 pos + vec4 color
+  layout.setAttributes({
+      QRhiVertexInputAttribute(0, 0, QRhiVertexInputAttribute::Float2, 0),
+      QRhiVertexInputAttribute(0, 1, QRhiVertexInputAttribute::Float4, 8),
+  });
+  return layout;
+}
+
+QRhiVertexInputLayout textVertexInputLayout() {
+  QRhiVertexInputLayout layout;
+  layout.setBindings({QRhiVertexInputBinding(32)});  // stride: vec2 pos + vec2 uv + vec4 color
+  layout.setAttributes({
+      QRhiVertexInputAttribute(0, 0, QRhiVertexInputAttribute::Float2, 0),
+      QRhiVertexInputAttribute(0, 1, QRhiVertexInputAttribute::Float2, 8),
+      QRhiVertexInputAttribute(0, 2, QRhiVertexInputAttribute::Float4, 16),
+  });
+  return layout;
+}
+
+void setTextureLayerBindings(
+    QRhiShaderResourceBindings* srb, QRhiBuffer* uniform_buf, QRhiTexture* tex_y, QRhiTexture* tex_u,
+    QRhiTexture* tex_v, QRhiSampler* sampler) {
+  srb->setBindings({
+      QRhiShaderResourceBinding::uniformBuffer(
+          0, QRhiShaderResourceBinding::VertexStage | QRhiShaderResourceBinding::FragmentStage, uniform_buf),
+      QRhiShaderResourceBinding::sampledTexture(1, QRhiShaderResourceBinding::FragmentStage, tex_y, sampler),
+      QRhiShaderResourceBinding::sampledTexture(2, QRhiShaderResourceBinding::FragmentStage, tex_u, sampler),
+      QRhiShaderResourceBinding::sampledTexture(3, QRhiShaderResourceBinding::FragmentStage, tex_v, sampler),
+  });
+}
+
 }  // namespace
 
 void MediaViewerWidget::setTimestamp(int64_t ts_ns) {
@@ -363,23 +404,13 @@ void MediaViewerWidget::setTimestamp(int64_t ts_ns) {
 }
 
 bool MediaViewerWidget::hasRetainedUploadableFrameLocked() const {
-  if (pending_decoded_.isNull()) {
-    return false;
-  }
+  return !pending_decoded_.isNull() && isUploadablePixelFormat(pending_decoded_.format);
+}
 
-  switch (pending_decoded_.format) {
-    case PixelFormat::kRGB888:
-    case PixelFormat::kRGBA8888:
-    case PixelFormat::kBGR888:
-    case PixelFormat::kBGRA8888:
-    case PixelFormat::kMono8:
-    case PixelFormat::kYUV420P:
-      return true;
-    case PixelFormat::kMono16:
-    case PixelFormat::kNV12:
-      return false;
-  }
-  return false;
+void MediaViewerWidget::resetPendingPixelLayers() {
+  pending_pixel_layers_.clear();
+  has_pending_pixel_layers_ = false;
+  pixel_layers_active_ = false;
 }
 
 void MediaViewerWidget::releaseResources() {
@@ -388,54 +419,21 @@ void MediaViewerWidget::releaseResources() {
   pipeline_ = nullptr;
   delete composite_pipeline_;
   composite_pipeline_ = nullptr;
-  delete srb_;
-  srb_ = nullptr;
-  delete tex_y_;
-  tex_y_ = nullptr;
-  delete tex_u_;
-  tex_u_ = nullptr;
-  delete tex_v_;
-  tex_v_ = nullptr;
+  destroyTextureLayer(base_texture_);
   delete sampler_;
   sampler_ = nullptr;
-  delete uniform_buf_;
-  uniform_buf_ = nullptr;
   clearPixelLayerTextures();
-  delete marker_pipeline_;
-  marker_pipeline_ = nullptr;
-  delete marker_srb_;
-  marker_srb_ = nullptr;
+  destroyOverlayPipeline(marker_overlay_);
+  destroyOverlayPipeline(points_overlay_);
+  destroyOverlayPipeline(thick_overlay_);
+  destroyOverlayPipeline(text_overlay_);
+  clearTextCache();
   delete marker_uniform_buf_;
   marker_uniform_buf_ = nullptr;
-  delete marker_vbo_;
-  marker_vbo_ = nullptr;
-  marker_vbo_capacity_ = 0;
-  delete points_pipeline_;
-  points_pipeline_ = nullptr;
-  delete points_srb_;
-  points_srb_ = nullptr;
-  delete points_vbo_;
-  points_vbo_ = nullptr;
-  points_vbo_capacity_ = 0;
-  delete thick_pipeline_;
-  thick_pipeline_ = nullptr;
-  delete thick_srb_;
-  thick_srb_ = nullptr;
-  delete thick_vbo_;
-  thick_vbo_ = nullptr;
-  thick_vbo_capacity_ = 0;
-  delete text_pipeline_;
-  text_pipeline_ = nullptr;
-  delete text_srb_;
-  text_srb_ = nullptr;
-  delete text_vbo_;
-  text_vbo_ = nullptr;
   delete text_sampler_;
   text_sampler_ = nullptr;
   delete text_placeholder_tex_;
   text_placeholder_tex_ = nullptr;
-  text_vbo_capacity_ = 0;
-  clearTextCache();
   tex_width_ = 0;
   tex_height_ = 0;
   std::lock_guard lock(frame_mutex_);
@@ -491,13 +489,7 @@ bool MediaViewerWidget::ensureTextureLayer(TextureLayerResources& layer) {
   }
   if (layer.srb == nullptr) {
     layer.srb = r->newShaderResourceBindings();
-    layer.srb->setBindings({
-        QRhiShaderResourceBinding::uniformBuffer(
-            0, QRhiShaderResourceBinding::VertexStage | QRhiShaderResourceBinding::FragmentStage, layer.uniform_buf),
-        QRhiShaderResourceBinding::sampledTexture(1, QRhiShaderResourceBinding::FragmentStage, layer.tex_y, sampler_),
-        QRhiShaderResourceBinding::sampledTexture(2, QRhiShaderResourceBinding::FragmentStage, layer.tex_u, sampler_),
-        QRhiShaderResourceBinding::sampledTexture(3, QRhiShaderResourceBinding::FragmentStage, layer.tex_v, sampler_),
-    });
+    setTextureLayerBindings(layer.srb, layer.uniform_buf, layer.tex_y, layer.tex_u, layer.tex_v, sampler_);
     if (!layer.srb->create()) {
       destroyTextureLayer(layer);
       return false;
@@ -523,9 +515,28 @@ MediaViewerWidget::TexturePathFormat MediaViewerWidget::texturePathFor(PixelForm
   return TexturePathFormat::kRGBA;
 }
 
+bool MediaViewerWidget::isUploadablePixelFormat(PixelFormat format) noexcept {
+  switch (format) {
+    case PixelFormat::kRGB888:
+    case PixelFormat::kRGBA8888:
+    case PixelFormat::kBGR888:
+    case PixelFormat::kBGRA8888:
+    case PixelFormat::kMono8:
+    case PixelFormat::kYUV420P:
+      return true;
+    case PixelFormat::kMono16:
+    case PixelFormat::kNV12:
+      return false;
+  }
+  return false;
+}
+
 bool MediaViewerWidget::uploadDecodedFrameToTexture(
     const DecodedFrame& frame, TextureLayerResources& layer, QRhiResourceUpdateBatch* updates) {
   if (frame.isNull() || frame.width <= 0 || frame.height <= 0 || frame.pixels == nullptr || updates == nullptr) {
+    return false;
+  }
+  if (!isUploadablePixelFormat(frame.format)) {
     return false;
   }
   if (!ensureTextureLayer(layer)) {
@@ -563,13 +574,7 @@ bool MediaViewerWidget::uploadDecodedFrameToTexture(
       layer.tex_v->create();
 
       layer.srb->destroy();
-      layer.srb->setBindings({
-          QRhiShaderResourceBinding::uniformBuffer(
-              0, QRhiShaderResourceBinding::VertexStage | QRhiShaderResourceBinding::FragmentStage, layer.uniform_buf),
-          QRhiShaderResourceBinding::sampledTexture(1, QRhiShaderResourceBinding::FragmentStage, layer.tex_y, sampler_),
-          QRhiShaderResourceBinding::sampledTexture(2, QRhiShaderResourceBinding::FragmentStage, layer.tex_u, sampler_),
-          QRhiShaderResourceBinding::sampledTexture(3, QRhiShaderResourceBinding::FragmentStage, layer.tex_v, sampler_),
-      });
+      setTextureLayerBindings(layer.srb, layer.uniform_buf, layer.tex_y, layer.tex_u, layer.tex_v, sampler_);
       layer.srb->create();
 
       layer.width = w;
@@ -591,7 +596,6 @@ bool MediaViewerWidget::uploadDecodedFrameToTexture(
     return true;
   }
 
-  std::vector<uint8_t> rgba_buf;
   const uint8_t* rgba_data = nullptr;
   size_t rgba_size = 0;
   const bool is_bgr = (frame.format == PixelFormat::kBGR888 || frame.format == PixelFormat::kBGRA8888);
@@ -600,39 +604,39 @@ bool MediaViewerWidget::uploadDecodedFrameToTexture(
     rgba_data = src;
     rgba_size = src_size;
   } else if (frame.format == PixelFormat::kBGRA8888) {
-    rgba_buf.resize(static_cast<size_t>(w) * static_cast<size_t>(h) * 4U);
+    rgba_repack_buffer_.resize(static_cast<size_t>(w) * static_cast<size_t>(h) * 4U);
     const int pixel_count = w * h;
     for (int i = 0; i < pixel_count; ++i) {
-      rgba_buf[i * 4 + 0] = src[i * 4 + 2];
-      rgba_buf[i * 4 + 1] = src[i * 4 + 1];
-      rgba_buf[i * 4 + 2] = src[i * 4 + 0];
-      rgba_buf[i * 4 + 3] = src[i * 4 + 3];
+      rgba_repack_buffer_[i * 4 + 0] = src[i * 4 + 2];
+      rgba_repack_buffer_[i * 4 + 1] = src[i * 4 + 1];
+      rgba_repack_buffer_[i * 4 + 2] = src[i * 4 + 0];
+      rgba_repack_buffer_[i * 4 + 3] = src[i * 4 + 3];
     }
-    rgba_data = rgba_buf.data();
-    rgba_size = rgba_buf.size();
+    rgba_data = rgba_repack_buffer_.data();
+    rgba_size = rgba_repack_buffer_.size();
   } else if (frame.format == PixelFormat::kRGB888 || frame.format == PixelFormat::kBGR888) {
-    rgba_buf.resize(static_cast<size_t>(w) * static_cast<size_t>(h) * 4U);
+    rgba_repack_buffer_.resize(static_cast<size_t>(w) * static_cast<size_t>(h) * 4U);
     const int pixel_count = w * h;
     for (int i = 0; i < pixel_count; ++i) {
-      rgba_buf[i * 4 + 0] = src[i * 3 + (is_bgr ? 2 : 0)];
-      rgba_buf[i * 4 + 1] = src[i * 3 + 1];
-      rgba_buf[i * 4 + 2] = src[i * 3 + (is_bgr ? 0 : 2)];
-      rgba_buf[i * 4 + 3] = 255;
+      rgba_repack_buffer_[i * 4 + 0] = src[i * 3 + (is_bgr ? 2 : 0)];
+      rgba_repack_buffer_[i * 4 + 1] = src[i * 3 + 1];
+      rgba_repack_buffer_[i * 4 + 2] = src[i * 3 + (is_bgr ? 0 : 2)];
+      rgba_repack_buffer_[i * 4 + 3] = 255;
     }
-    rgba_data = rgba_buf.data();
-    rgba_size = rgba_buf.size();
+    rgba_data = rgba_repack_buffer_.data();
+    rgba_size = rgba_repack_buffer_.size();
   } else if (frame.format == PixelFormat::kMono8) {
-    rgba_buf.resize(static_cast<size_t>(w) * static_cast<size_t>(h) * 4U);
+    rgba_repack_buffer_.resize(static_cast<size_t>(w) * static_cast<size_t>(h) * 4U);
     const int pixel_count = w * h;
     for (int i = 0; i < pixel_count; ++i) {
       const uint8_t g = src[i];
-      rgba_buf[i * 4 + 0] = g;
-      rgba_buf[i * 4 + 1] = g;
-      rgba_buf[i * 4 + 2] = g;
-      rgba_buf[i * 4 + 3] = 255;
+      rgba_repack_buffer_[i * 4 + 0] = g;
+      rgba_repack_buffer_[i * 4 + 1] = g;
+      rgba_repack_buffer_[i * 4 + 2] = g;
+      rgba_repack_buffer_[i * 4 + 3] = 255;
     }
-    rgba_data = rgba_buf.data();
-    rgba_size = rgba_buf.size();
+    rgba_data = rgba_repack_buffer_.data();
+    rgba_size = rgba_repack_buffer_.size();
   }
 
   if (rgba_data == nullptr) {
@@ -646,13 +650,7 @@ bool MediaViewerWidget::uploadDecodedFrameToTexture(
     layer.tex_y->create();
 
     layer.srb->destroy();
-    layer.srb->setBindings({
-        QRhiShaderResourceBinding::uniformBuffer(
-            0, QRhiShaderResourceBinding::VertexStage | QRhiShaderResourceBinding::FragmentStage, layer.uniform_buf),
-        QRhiShaderResourceBinding::sampledTexture(1, QRhiShaderResourceBinding::FragmentStage, layer.tex_y, sampler_),
-        QRhiShaderResourceBinding::sampledTexture(2, QRhiShaderResourceBinding::FragmentStage, layer.tex_u, sampler_),
-        QRhiShaderResourceBinding::sampledTexture(3, QRhiShaderResourceBinding::FragmentStage, layer.tex_v, sampler_),
-    });
+    setTextureLayerBindings(layer.srb, layer.uniform_buf, layer.tex_y, layer.tex_u, layer.tex_v, sampler_);
     layer.srb->create();
 
     layer.width = w;
@@ -678,6 +676,86 @@ void MediaViewerWidget::updateTextureLayerUniform(
   updates->updateDynamicBuffer(layer.uniform_buf, 132, 4, &layer.opacity);
 }
 
+void MediaViewerWidget::destroyOverlayPipeline(OverlayPipeline& overlay) {
+  delete overlay.pipeline;
+  delete overlay.srb;
+  delete overlay.vbo;
+  overlay.pipeline = nullptr;
+  overlay.srb = nullptr;
+  overlay.vbo = nullptr;
+  overlay.vbo_capacity = 0;
+}
+
+bool MediaViewerWidget::createOverlayVbo(OverlayPipeline& overlay, size_t initial_capacity) {
+  auto* r = rhi();
+  if (r == nullptr) {
+    return false;
+  }
+  overlay.vbo_capacity = initial_capacity;
+  overlay.vbo = r->newBuffer(QRhiBuffer::Dynamic, QRhiBuffer::VertexBuffer, static_cast<int>(overlay.vbo_capacity));
+  if (!overlay.vbo->create()) {
+    destroyOverlayPipeline(overlay);
+    return false;
+  }
+  return true;
+}
+
+bool MediaViewerWidget::createUniformOverlaySrb(OverlayPipeline& overlay) {
+  auto* r = rhi();
+  if (r == nullptr || marker_uniform_buf_ == nullptr) {
+    return false;
+  }
+  overlay.srb = r->newShaderResourceBindings();
+  overlay.srb->setBindings({
+      QRhiShaderResourceBinding::uniformBuffer(
+          0, QRhiShaderResourceBinding::VertexStage | QRhiShaderResourceBinding::FragmentStage, marker_uniform_buf_),
+  });
+  if (!overlay.srb->create()) {
+    destroyOverlayPipeline(overlay);
+    return false;
+  }
+  return true;
+}
+
+bool MediaViewerWidget::createOverlayGraphicsPipeline(
+    OverlayPipeline& overlay, const QShader& vert, const QShader& frag, QRhiGraphicsPipeline::Topology topology,
+    const QRhiVertexInputLayout& input_layout, const char* failure_message) {
+  auto* r = rhi();
+  if (r == nullptr || overlay.srb == nullptr) {
+    return false;
+  }
+  overlay.pipeline = r->newGraphicsPipeline();
+  overlay.pipeline->setShaderStages(
+      {QRhiShaderStage(QRhiShaderStage::Vertex, vert), QRhiShaderStage(QRhiShaderStage::Fragment, frag)});
+  overlay.pipeline->setTopology(topology);
+  overlay.pipeline->setVertexInputLayout(input_layout);
+  overlay.pipeline->setShaderResourceBindings(overlay.srb);
+  overlay.pipeline->setRenderPassDescriptor(renderTarget()->renderPassDescriptor());
+  overlay.pipeline->setTargetBlends({alphaBlend()});
+  if (!overlay.pipeline->create()) {
+    qWarning("%s", failure_message);
+    destroyOverlayPipeline(overlay);
+    return false;
+  }
+  return true;
+}
+
+void MediaViewerWidget::uploadOverlayVertexData(OverlayPipeline& overlay, QRhiResourceUpdateBatch* updates) {
+  if (overlay.pipeline == nullptr || overlay.vbo == nullptr || updates == nullptr) {
+    return;
+  }
+  const size_t needed = overlay.vertex_data.size() * sizeof(float);
+  if (needed > overlay.vbo_capacity) {
+    overlay.vbo->destroy();
+    overlay.vbo_capacity = std::max(needed * 2, overlay.vbo_capacity);
+    overlay.vbo->setSize(static_cast<int>(overlay.vbo_capacity));
+    overlay.vbo->create();
+  }
+  if (needed > 0) {
+    updates->updateDynamicBuffer(overlay.vbo, 0, static_cast<int>(needed), overlay.vertex_data.data());
+  }
+}
+
 void MediaViewerWidget::initialize(QRhiCommandBuffer* /*cb*/) {
   auto* r = rhi();
   if (r == nullptr) {
@@ -701,31 +779,15 @@ void MediaViewerWidget::initialize(QRhiCommandBuffer* /*cb*/) {
     return;
   }
 
-  // Uniform buffer: viewTransform (64) + colorMatrix (64) + pixelFormat (4) + padding (12) = 144
-  uniform_buf_ = r->newBuffer(QRhiBuffer::Dynamic, QRhiBuffer::UniformBuffer, kUniformBufSize);
-  uniform_buf_->create();
-
   sampler_ = r->newSampler(
       QRhiSampler::Linear, QRhiSampler::Linear, QRhiSampler::None, QRhiSampler::ClampToEdge, QRhiSampler::ClampToEdge);
   sampler_->create();
 
-  // Create placeholder textures (1x1) — resized on first frame
-  tex_y_ = r->newTexture(QRhiTexture::R8, QSize(1, 1));
-  tex_y_->create();
-  tex_u_ = r->newTexture(QRhiTexture::R8, QSize(1, 1));
-  tex_u_->create();
-  tex_v_ = r->newTexture(QRhiTexture::R8, QSize(1, 1));
-  tex_v_->create();
-
-  srb_ = r->newShaderResourceBindings();
-  srb_->setBindings({
-      QRhiShaderResourceBinding::uniformBuffer(
-          0, QRhiShaderResourceBinding::VertexStage | QRhiShaderResourceBinding::FragmentStage, uniform_buf_),
-      QRhiShaderResourceBinding::sampledTexture(1, QRhiShaderResourceBinding::FragmentStage, tex_y_, sampler_),
-      QRhiShaderResourceBinding::sampledTexture(2, QRhiShaderResourceBinding::FragmentStage, tex_u_, sampler_),
-      QRhiShaderResourceBinding::sampledTexture(3, QRhiShaderResourceBinding::FragmentStage, tex_v_, sampler_),
-  });
-  srb_->create();
+  // Uniform buffer + placeholder textures (1x1) — resized on first frame.
+  if (!ensureTextureLayer(base_texture_)) {
+    qWarning("MediaViewerWidget: failed to create base texture resources");
+    return;
+  }
 
   pipeline_ = r->newGraphicsPipeline();
   pipeline_->setFlags(QRhiGraphicsPipeline::UsesScissor);
@@ -734,7 +796,7 @@ void MediaViewerWidget::initialize(QRhiCommandBuffer* /*cb*/) {
 
   QRhiVertexInputLayout input_layout;
   pipeline_->setVertexInputLayout(input_layout);
-  pipeline_->setShaderResourceBindings(srb_);
+  pipeline_->setShaderResourceBindings(base_texture_.srb);
   pipeline_->setRenderPassDescriptor(renderTarget()->renderPassDescriptor());
   if (!pipeline_->create()) {
     qWarning("MediaViewerWidget: failed to create graphics pipeline");
@@ -747,15 +809,9 @@ void MediaViewerWidget::initialize(QRhiCommandBuffer* /*cb*/) {
   composite_pipeline_->setShaderStages(
       {QRhiShaderStage(QRhiShaderStage::Vertex, vert), QRhiShaderStage(QRhiShaderStage::Fragment, frag)});
   composite_pipeline_->setVertexInputLayout(input_layout);
-  composite_pipeline_->setShaderResourceBindings(srb_);
+  composite_pipeline_->setShaderResourceBindings(base_texture_.srb);
   composite_pipeline_->setRenderPassDescriptor(renderTarget()->renderPassDescriptor());
-  QRhiGraphicsPipeline::TargetBlend image_blend;
-  image_blend.enable = true;
-  image_blend.srcColor = QRhiGraphicsPipeline::SrcAlpha;
-  image_blend.dstColor = QRhiGraphicsPipeline::OneMinusSrcAlpha;
-  image_blend.srcAlpha = QRhiGraphicsPipeline::One;
-  image_blend.dstAlpha = QRhiGraphicsPipeline::OneMinusSrcAlpha;
-  composite_pipeline_->setTargetBlends({image_blend});
+  composite_pipeline_->setTargetBlends({alphaBlend()});
   if (!composite_pipeline_->create()) {
     qWarning("MediaViewerWidget: failed to create composite graphics pipeline");
     delete composite_pipeline_;
@@ -770,45 +826,10 @@ void MediaViewerWidget::initialize(QRhiCommandBuffer* /*cb*/) {
     marker_uniform_buf_->create();
 
     // Initial VBO capacity ~64KB (≈ 2700 vertices = 340 bboxes' worth).
-    marker_vbo_capacity_ = 64 * 1024;
-    marker_vbo_ = r->newBuffer(QRhiBuffer::Dynamic, QRhiBuffer::VertexBuffer, static_cast<int>(marker_vbo_capacity_));
-    marker_vbo_->create();
-
-    marker_srb_ = r->newShaderResourceBindings();
-    marker_srb_->setBindings({
-        QRhiShaderResourceBinding::uniformBuffer(
-            0, QRhiShaderResourceBinding::VertexStage | QRhiShaderResourceBinding::FragmentStage, marker_uniform_buf_),
-    });
-    marker_srb_->create();
-
-    QRhiVertexInputLayout marker_layout;
-    QRhiVertexInputBinding binding(24);  // stride: 8 (vec2 pos) + 16 (vec4 color)
-    marker_layout.setBindings({binding});
-    QRhiVertexInputAttribute pos_attr(0, 0, QRhiVertexInputAttribute::Float2, 0);
-    QRhiVertexInputAttribute color_attr(0, 1, QRhiVertexInputAttribute::Float4, 8);
-    marker_layout.setAttributes({pos_attr, color_attr});
-
-    marker_pipeline_ = r->newGraphicsPipeline();
-    marker_pipeline_->setShaderStages(
-        {QRhiShaderStage(QRhiShaderStage::Vertex, marker_vert),
-         QRhiShaderStage(QRhiShaderStage::Fragment, marker_frag)});
-    marker_pipeline_->setTopology(QRhiGraphicsPipeline::Lines);
-    marker_pipeline_->setVertexInputLayout(marker_layout);
-    marker_pipeline_->setShaderResourceBindings(marker_srb_);
-    marker_pipeline_->setRenderPassDescriptor(renderTarget()->renderPassDescriptor());
-
-    QRhiGraphicsPipeline::TargetBlend blend;
-    blend.enable = true;
-    blend.srcColor = QRhiGraphicsPipeline::SrcAlpha;
-    blend.dstColor = QRhiGraphicsPipeline::OneMinusSrcAlpha;
-    blend.srcAlpha = QRhiGraphicsPipeline::One;
-    blend.dstAlpha = QRhiGraphicsPipeline::OneMinusSrcAlpha;
-    marker_pipeline_->setTargetBlends({blend});
-
-    if (!marker_pipeline_->create()) {
-      qWarning("MediaViewerWidget: failed to create marker pipeline");
-      delete marker_pipeline_;
-      marker_pipeline_ = nullptr;
+    if (createOverlayVbo(marker_overlay_, 64 * 1024) && createUniformOverlaySrb(marker_overlay_)) {
+      createOverlayGraphicsPipeline(
+          marker_overlay_, marker_vert, marker_frag, QRhiGraphicsPipeline::Lines, colorVertexInputLayout(),
+          "MediaViewerWidget: failed to create marker pipeline");
     }
   } else {
     qWarning("MediaViewerWidget: scene_lines shaders not loaded; markers disabled");
@@ -819,44 +840,10 @@ void MediaViewerWidget::initialize(QRhiCommandBuffer* /*cb*/) {
   auto quads_vert = loadShader(":/shaders/scene_quads.vert.qsb");
   auto quads_frag = loadShader(":/shaders/scene_quads.frag.qsb");
   if (quads_vert.isValid() && quads_frag.isValid() && marker_uniform_buf_ != nullptr) {
-    points_vbo_capacity_ = 64 * 1024;
-    points_vbo_ = r->newBuffer(QRhiBuffer::Dynamic, QRhiBuffer::VertexBuffer, static_cast<int>(points_vbo_capacity_));
-    points_vbo_->create();
-
-    points_srb_ = r->newShaderResourceBindings();
-    points_srb_->setBindings({
-        QRhiShaderResourceBinding::uniformBuffer(
-            0, QRhiShaderResourceBinding::VertexStage | QRhiShaderResourceBinding::FragmentStage, marker_uniform_buf_),
-    });
-    points_srb_->create();
-
-    QRhiVertexInputLayout points_layout;
-    QRhiVertexInputBinding p_binding(24);  // same stride as marker pipeline
-    points_layout.setBindings({p_binding});
-    QRhiVertexInputAttribute p_pos(0, 0, QRhiVertexInputAttribute::Float2, 0);
-    QRhiVertexInputAttribute p_color(0, 1, QRhiVertexInputAttribute::Float4, 8);
-    points_layout.setAttributes({p_pos, p_color});
-
-    points_pipeline_ = r->newGraphicsPipeline();
-    points_pipeline_->setShaderStages(
-        {QRhiShaderStage(QRhiShaderStage::Vertex, quads_vert), QRhiShaderStage(QRhiShaderStage::Fragment, quads_frag)});
-    points_pipeline_->setTopology(QRhiGraphicsPipeline::Triangles);
-    points_pipeline_->setVertexInputLayout(points_layout);
-    points_pipeline_->setShaderResourceBindings(points_srb_);
-    points_pipeline_->setRenderPassDescriptor(renderTarget()->renderPassDescriptor());
-
-    QRhiGraphicsPipeline::TargetBlend p_blend;
-    p_blend.enable = true;
-    p_blend.srcColor = QRhiGraphicsPipeline::SrcAlpha;
-    p_blend.dstColor = QRhiGraphicsPipeline::OneMinusSrcAlpha;
-    p_blend.srcAlpha = QRhiGraphicsPipeline::One;
-    p_blend.dstAlpha = QRhiGraphicsPipeline::OneMinusSrcAlpha;
-    points_pipeline_->setTargetBlends({p_blend});
-
-    if (!points_pipeline_->create()) {
-      qWarning("MediaViewerWidget: failed to create points pipeline");
-      delete points_pipeline_;
-      points_pipeline_ = nullptr;
+    if (createOverlayVbo(points_overlay_, 64 * 1024) && createUniformOverlaySrb(points_overlay_)) {
+      createOverlayGraphicsPipeline(
+          points_overlay_, quads_vert, quads_frag, QRhiGraphicsPipeline::Triangles, colorVertexInputLayout(),
+          "MediaViewerWidget: failed to create points pipeline");
     }
   } else if (!quads_vert.isValid() || !quads_frag.isValid()) {
     qWarning("MediaViewerWidget: scene_quads shaders not loaded; kPoints disabled");
@@ -867,45 +854,10 @@ void MediaViewerWidget::initialize(QRhiCommandBuffer* /*cb*/) {
   // rectangle expansion is CPU-side in expandToThickList — the shaders are
   // unchanged, only the topology differs.
   if (marker_vert.isValid() && marker_frag.isValid() && marker_uniform_buf_ != nullptr) {
-    thick_vbo_capacity_ = 64 * 1024;
-    thick_vbo_ = r->newBuffer(QRhiBuffer::Dynamic, QRhiBuffer::VertexBuffer, static_cast<int>(thick_vbo_capacity_));
-    thick_vbo_->create();
-
-    thick_srb_ = r->newShaderResourceBindings();
-    thick_srb_->setBindings({
-        QRhiShaderResourceBinding::uniformBuffer(
-            0, QRhiShaderResourceBinding::VertexStage | QRhiShaderResourceBinding::FragmentStage, marker_uniform_buf_),
-    });
-    thick_srb_->create();
-
-    QRhiVertexInputLayout thick_layout;
-    QRhiVertexInputBinding t_binding(24);
-    thick_layout.setBindings({t_binding});
-    QRhiVertexInputAttribute t_pos(0, 0, QRhiVertexInputAttribute::Float2, 0);
-    QRhiVertexInputAttribute t_color(0, 1, QRhiVertexInputAttribute::Float4, 8);
-    thick_layout.setAttributes({t_pos, t_color});
-
-    thick_pipeline_ = r->newGraphicsPipeline();
-    thick_pipeline_->setShaderStages(
-        {QRhiShaderStage(QRhiShaderStage::Vertex, marker_vert),
-         QRhiShaderStage(QRhiShaderStage::Fragment, marker_frag)});
-    thick_pipeline_->setTopology(QRhiGraphicsPipeline::Triangles);
-    thick_pipeline_->setVertexInputLayout(thick_layout);
-    thick_pipeline_->setShaderResourceBindings(thick_srb_);
-    thick_pipeline_->setRenderPassDescriptor(renderTarget()->renderPassDescriptor());
-
-    QRhiGraphicsPipeline::TargetBlend t_blend;
-    t_blend.enable = true;
-    t_blend.srcColor = QRhiGraphicsPipeline::SrcAlpha;
-    t_blend.dstColor = QRhiGraphicsPipeline::OneMinusSrcAlpha;
-    t_blend.srcAlpha = QRhiGraphicsPipeline::One;
-    t_blend.dstAlpha = QRhiGraphicsPipeline::OneMinusSrcAlpha;
-    thick_pipeline_->setTargetBlends({t_blend});
-
-    if (!thick_pipeline_->create()) {
-      qWarning("MediaViewerWidget: failed to create thick pipeline");
-      delete thick_pipeline_;
-      thick_pipeline_ = nullptr;
+    if (createOverlayVbo(thick_overlay_, 64 * 1024) && createUniformOverlaySrb(thick_overlay_)) {
+      createOverlayGraphicsPipeline(
+          thick_overlay_, marker_vert, marker_frag, QRhiGraphicsPipeline::Triangles, colorVertexInputLayout(),
+          "MediaViewerWidget: failed to create thick pipeline");
     }
   }
 
@@ -913,57 +865,32 @@ void MediaViewerWidget::initialize(QRhiCommandBuffer* /*cb*/) {
   auto text_vert = loadShader(":/shaders/scene_text.vert.qsb");
   auto text_frag = loadShader(":/shaders/scene_text.frag.qsb");
   if (text_vert.isValid() && text_frag.isValid() && marker_uniform_buf_ != nullptr) {
-    text_vbo_capacity_ = 32 * 1024;
-    text_vbo_ = r->newBuffer(QRhiBuffer::Dynamic, QRhiBuffer::VertexBuffer, static_cast<int>(text_vbo_capacity_));
-    text_vbo_->create();
+    if (createOverlayVbo(text_overlay_, 32 * 1024)) {
+      text_sampler_ = r->newSampler(
+          QRhiSampler::Linear, QRhiSampler::Linear, QRhiSampler::None, QRhiSampler::ClampToEdge,
+          QRhiSampler::ClampToEdge);
+      text_sampler_->create();
 
-    text_sampler_ = r->newSampler(
-        QRhiSampler::Linear, QRhiSampler::Linear, QRhiSampler::None, QRhiSampler::ClampToEdge,
-        QRhiSampler::ClampToEdge);
-    text_sampler_->create();
+      // Placeholder 1x1 alpha texture used only as the pipeline's layout-compat SRB.
+      // Real per-draw SRBs are stored in TextEntry inside text_cache_.
+      text_placeholder_tex_ = r->newTexture(QRhiTexture::R8, QSize(1, 1));
+      text_placeholder_tex_->create();
 
-    // Placeholder 1x1 alpha texture used only as the pipeline's layout-compat SRB.
-    // Real per-draw SRBs are stored in TextEntry inside text_cache_.
-    text_placeholder_tex_ = r->newTexture(QRhiTexture::R8, QSize(1, 1));
-    text_placeholder_tex_->create();
-
-    text_srb_ = r->newShaderResourceBindings();
-    text_srb_->setBindings({
-        QRhiShaderResourceBinding::uniformBuffer(
-            0, QRhiShaderResourceBinding::VertexStage | QRhiShaderResourceBinding::FragmentStage, marker_uniform_buf_),
-        QRhiShaderResourceBinding::sampledTexture(
-            1, QRhiShaderResourceBinding::FragmentStage, text_placeholder_tex_, text_sampler_),
-    });
-    text_srb_->create();
-
-    QRhiVertexInputLayout text_layout;
-    QRhiVertexInputBinding text_binding(32);  // pos vec2 + uv vec2 + color vec4 = 32 bytes
-    text_layout.setBindings({text_binding});
-    QRhiVertexInputAttribute text_pos(0, 0, QRhiVertexInputAttribute::Float2, 0);
-    QRhiVertexInputAttribute text_uv(0, 1, QRhiVertexInputAttribute::Float2, 8);
-    QRhiVertexInputAttribute text_color(0, 2, QRhiVertexInputAttribute::Float4, 16);
-    text_layout.setAttributes({text_pos, text_uv, text_color});
-
-    text_pipeline_ = r->newGraphicsPipeline();
-    text_pipeline_->setShaderStages(
-        {QRhiShaderStage(QRhiShaderStage::Vertex, text_vert), QRhiShaderStage(QRhiShaderStage::Fragment, text_frag)});
-    text_pipeline_->setTopology(QRhiGraphicsPipeline::Triangles);
-    text_pipeline_->setVertexInputLayout(text_layout);
-    text_pipeline_->setShaderResourceBindings(text_srb_);
-    text_pipeline_->setRenderPassDescriptor(renderTarget()->renderPassDescriptor());
-
-    QRhiGraphicsPipeline::TargetBlend tx_blend;
-    tx_blend.enable = true;
-    tx_blend.srcColor = QRhiGraphicsPipeline::SrcAlpha;
-    tx_blend.dstColor = QRhiGraphicsPipeline::OneMinusSrcAlpha;
-    tx_blend.srcAlpha = QRhiGraphicsPipeline::One;
-    tx_blend.dstAlpha = QRhiGraphicsPipeline::OneMinusSrcAlpha;
-    text_pipeline_->setTargetBlends({tx_blend});
-
-    if (!text_pipeline_->create()) {
-      qWarning("MediaViewerWidget: failed to create text pipeline");
-      delete text_pipeline_;
-      text_pipeline_ = nullptr;
+      text_overlay_.srb = r->newShaderResourceBindings();
+      text_overlay_.srb->setBindings({
+          QRhiShaderResourceBinding::uniformBuffer(
+              0, QRhiShaderResourceBinding::VertexStage | QRhiShaderResourceBinding::FragmentStage,
+              marker_uniform_buf_),
+          QRhiShaderResourceBinding::sampledTexture(
+              1, QRhiShaderResourceBinding::FragmentStage, text_placeholder_tex_, text_sampler_),
+      });
+      if (!text_overlay_.srb->create()) {
+        destroyOverlayPipeline(text_overlay_);
+      } else {
+        createOverlayGraphicsPipeline(
+            text_overlay_, text_vert, text_frag, QRhiGraphicsPipeline::Triangles, textVertexInputLayout(),
+            "MediaViewerWidget: failed to create text pipeline");
+      }
     }
   } else if (!text_vert.isValid() || !text_frag.isValid()) {
     qWarning("MediaViewerWidget: scene_text shaders not loaded; text disabled");
@@ -1012,13 +939,10 @@ void MediaViewerWidget::render(QRhiCommandBuffer* cb) {
           }
         } else if (frame->base.has_value() && !frame->base->isNull()) {
           pending_decoded_ = std::move(*frame->base);
-          pending_is_yuv_ = texturePathFor(pending_decoded_.format) == TexturePathFormat::kYUV420P;
-          pending_pixel_layers_.clear();
-          has_pending_pixel_layers_ = false;
-          pixel_layers_active_ = false;
+          resetPendingPixelLayers();
           inspector_frame_ = pending_decoded_;
           inspector_frame_changed = true;
-          has_pending_ = true;
+          has_pending_ = isUploadablePixelFormat(pending_decoded_.format);
         }
         if (!frame->overlays.empty()) {
           last_overlays_ = std::move(frame->overlays);
@@ -1050,151 +974,11 @@ void MediaViewerWidget::render(QRhiCommandBuffer* cb) {
     }
 
     if (has_pending_) {
-      if (pending_is_yuv_ && !pending_decoded_.isNull()) {
-        // YUV420P path: upload 3 planes to separate R8 textures
-        int w = pending_decoded_.width;
-        int h = pending_decoded_.height;
-        int uv_w = (w + 1) / 2;
-        int uv_h = (h + 1) / 2;
-        const uint8_t* pixel_data = pending_decoded_.pixels->data();
-        int y_size = w * h;
-        int uv_size = uv_w * uv_h;
-
-        if (w != tex_width_ || h != tex_height_ || current_pixel_format_ != TexturePathFormat::kYUV420P) {
-          // Recreate textures at correct size
-          tex_y_->destroy();
-          tex_y_->setFormat(QRhiTexture::R8);
-          tex_y_->setPixelSize(QSize(w, h));
-          tex_y_->create();
-
-          tex_u_->destroy();
-          tex_u_->setFormat(QRhiTexture::R8);
-          tex_u_->setPixelSize(QSize(uv_w, uv_h));
-          tex_u_->create();
-
-          tex_v_->destroy();
-          tex_v_->setFormat(QRhiTexture::R8);
-          tex_v_->setPixelSize(QSize(uv_w, uv_h));
-          tex_v_->create();
-
-          // Rebuild SRB with new textures
-          srb_->destroy();
-          srb_->setBindings({
-              QRhiShaderResourceBinding::uniformBuffer(
-                  0, QRhiShaderResourceBinding::VertexStage | QRhiShaderResourceBinding::FragmentStage, uniform_buf_),
-              QRhiShaderResourceBinding::sampledTexture(1, QRhiShaderResourceBinding::FragmentStage, tex_y_, sampler_),
-              QRhiShaderResourceBinding::sampledTexture(2, QRhiShaderResourceBinding::FragmentStage, tex_u_, sampler_),
-              QRhiShaderResourceBinding::sampledTexture(3, QRhiShaderResourceBinding::FragmentStage, tex_v_, sampler_),
-          });
-          srb_->create();
-
-          tex_width_ = w;
-          tex_height_ = h;
-          current_pixel_format_ = TexturePathFormat::kYUV420P;
-        }
-
-        QRhiTextureSubresourceUploadDescription y_desc(pixel_data, y_size);
-        y_desc.setSourceSize(QSize(w, h));
-        updates->uploadTexture(tex_y_, QRhiTextureUploadDescription({0, 0, y_desc}));
-
-        QRhiTextureSubresourceUploadDescription u_desc(pixel_data + y_size, uv_size);
-        u_desc.setSourceSize(QSize(uv_w, uv_h));
-        updates->uploadTexture(tex_u_, QRhiTextureUploadDescription({0, 0, u_desc}));
-
-        QRhiTextureSubresourceUploadDescription v_desc(pixel_data + y_size + uv_size, uv_size);
-        v_desc.setSourceSize(QSize(uv_w, uv_h));
-        updates->uploadTexture(tex_v_, QRhiTextureUploadDescription({0, 0, v_desc}));
-
-        frame_aspect_ = static_cast<float>(w) / static_cast<float>(h);
-
-      } else if (!pending_is_yuv_ && !pending_decoded_.isNull()) {
-        // RGB/RGBA DecodedFrame path: convert to RGBA8 and upload as single texture.
-        int w = pending_decoded_.width;
-        int h = pending_decoded_.height;
-        const uint8_t* src = pending_decoded_.pixels->data();
-        size_t src_size = pending_decoded_.pixels->size();
-
-        std::vector<uint8_t> rgba_buf;
-        const uint8_t* rgba_data = nullptr;
-        size_t rgba_size = 0;
-
-        bool is_bgr =
-            (pending_decoded_.format == PixelFormat::kBGR888 || pending_decoded_.format == PixelFormat::kBGRA8888);
-
-        if (pending_decoded_.format == PixelFormat::kRGBA8888) {
-          rgba_data = src;
-          rgba_size = src_size;
-        } else if (pending_decoded_.format == PixelFormat::kBGRA8888) {
-          // BGRA→RGBA: swap R and B channels
-          rgba_buf.resize(static_cast<size_t>(w) * static_cast<size_t>(h) * 4);
-          int pixel_count = w * h;
-          for (int i = 0; i < pixel_count; ++i) {
-            rgba_buf[i * 4 + 0] = src[i * 4 + 2];  // R ← B
-            rgba_buf[i * 4 + 1] = src[i * 4 + 1];  // G
-            rgba_buf[i * 4 + 2] = src[i * 4 + 0];  // B ← R
-            rgba_buf[i * 4 + 3] = src[i * 4 + 3];  // A
-          }
-          rgba_data = rgba_buf.data();
-          rgba_size = rgba_buf.size();
-        } else if (pending_decoded_.format == PixelFormat::kRGB888 || pending_decoded_.format == PixelFormat::kBGR888) {
-          // RGB/BGR→RGBA: insert alpha=255, swap R/B if BGR
-          rgba_buf.resize(static_cast<size_t>(w) * static_cast<size_t>(h) * 4);
-          int pixel_count = w * h;
-          for (int i = 0; i < pixel_count; ++i) {
-            rgba_buf[i * 4 + 0] = src[i * 3 + (is_bgr ? 2 : 0)];
-            rgba_buf[i * 4 + 1] = src[i * 3 + 1];
-            rgba_buf[i * 4 + 2] = src[i * 3 + (is_bgr ? 0 : 2)];
-            rgba_buf[i * 4 + 3] = 255;
-          }
-          rgba_data = rgba_buf.data();
-          rgba_size = rgba_buf.size();
-        } else if (pending_decoded_.format == PixelFormat::kMono8) {
-          // Mono8→RGBA: replicate luma to RGB, alpha=255
-          rgba_buf.resize(static_cast<size_t>(w) * static_cast<size_t>(h) * 4);
-          int pixel_count = w * h;
-          for (int i = 0; i < pixel_count; ++i) {
-            uint8_t g = src[i];
-            rgba_buf[i * 4 + 0] = g;
-            rgba_buf[i * 4 + 1] = g;
-            rgba_buf[i * 4 + 2] = g;
-            rgba_buf[i * 4 + 3] = 255;
-          }
-          rgba_data = rgba_buf.data();
-          rgba_size = rgba_buf.size();
-        }
-
-        if (rgba_data != nullptr) {
-          if (w != tex_width_ || h != tex_height_ || current_pixel_format_ != TexturePathFormat::kRGBA) {
-            tex_y_->destroy();
-            tex_y_->setFormat(QRhiTexture::RGBA8);
-            tex_y_->setPixelSize(QSize(w, h));
-            tex_y_->create();
-
-            srb_->destroy();
-            srb_->setBindings({
-                QRhiShaderResourceBinding::uniformBuffer(
-                    0, QRhiShaderResourceBinding::VertexStage | QRhiShaderResourceBinding::FragmentStage, uniform_buf_),
-                QRhiShaderResourceBinding::sampledTexture(
-                    1, QRhiShaderResourceBinding::FragmentStage, tex_y_, sampler_),
-                QRhiShaderResourceBinding::sampledTexture(
-                    2, QRhiShaderResourceBinding::FragmentStage, tex_u_, sampler_),
-                QRhiShaderResourceBinding::sampledTexture(
-                    3, QRhiShaderResourceBinding::FragmentStage, tex_v_, sampler_),
-            });
-            srb_->create();
-
-            tex_width_ = w;
-            tex_height_ = h;
-            current_pixel_format_ = TexturePathFormat::kRGBA;
-          }
-
-          QRhiTextureSubresourceUploadDescription sub_desc(rgba_data, static_cast<quint32>(rgba_size));
-          sub_desc.setSourceSize(QSize(w, h));
-          updates->uploadTexture(tex_y_, QRhiTextureUploadDescription({0, 0, sub_desc}));
-          frame_aspect_ = static_cast<float>(w) / static_cast<float>(h);
-        }
+      if (uploadDecodedFrameToTexture(pending_decoded_, base_texture_, updates)) {
+        tex_width_ = base_texture_.width;
+        tex_height_ = base_texture_.height;
+        frame_aspect_ = static_cast<float>(base_texture_.width) / static_cast<float>(base_texture_.height);
       }
-
       has_pending_ = false;
     }
   }
@@ -1205,12 +989,7 @@ void MediaViewerWidget::render(QRhiCommandBuffer* cb) {
 
   // Update uniforms
   QMatrix4x4 view = buildViewTransform(output_size);
-  updates->updateDynamicBuffer(uniform_buf_, 0, 64, view.constData());
-  updates->updateDynamicBuffer(uniform_buf_, 64, 64, kBT709);
-  int32_t fmt = static_cast<int32_t>(current_pixel_format_);
-  updates->updateDynamicBuffer(uniform_buf_, 128, 4, &fmt);
-  const float opacity = 1.0f;
-  updates->updateDynamicBuffer(uniform_buf_, 132, 4, &opacity);
+  updateTextureLayerUniform(base_texture_, view, updates);
   if (pixel_layers_active_) {
     for (auto& layer : pixel_layer_textures_) {
       updateTextureLayerUniform(layer, view, updates);
@@ -1219,11 +998,11 @@ void MediaViewerWidget::render(QRhiCommandBuffer* cb) {
 
   // ----- Marker pipeline: rebuild VBO + update uniforms -----
   size_t marker_vertex_count = 0;
-  if (marker_pipeline_ != nullptr) {
+  if (marker_overlay_.pipeline != nullptr) {
     if (overlays_dirty_) {
-      marker_vertex_data_.clear();
-      thick_vertex_data_.clear();
-      points_vertex_data_.clear();
+      marker_overlay_.vertex_data.clear();
+      thick_overlay_.vertex_data.clear();
+      points_overlay_.vertex_data.clear();
       size_t total_points = 0;
       for (const auto& sf : last_overlays_) {
         for (const auto& ia : sf.annotations) {
@@ -1232,75 +1011,40 @@ void MediaViewerWidget::render(QRhiCommandBuffer* cb) {
           }
         }
       }
-      marker_vertex_data_.reserve(total_points * 12);
-      thick_vertex_data_.reserve(total_points * 36);
-      points_vertex_data_.reserve(total_points * 36);
+      marker_overlay_.vertex_data.reserve(total_points * 12);
+      thick_overlay_.vertex_data.reserve(total_points * 36);
+      points_overlay_.vertex_data.reserve(total_points * 36);
       for (const auto& sf : last_overlays_) {
         for (const auto& ia : sf.annotations) {
           for (const auto& pa : ia.points) {
             if (pa.thickness > 1.5) {
-              expandToThickList(pa, thick_vertex_data_);
+              expandToThickList(pa, thick_overlay_.vertex_data);
             } else {
-              expandToLineList(pa, marker_vertex_data_);
+              expandToLineList(pa, marker_overlay_.vertex_data);
             }
-            expandLoopFillToTriangles(pa, points_vertex_data_);
-            expandKPointsToQuads(pa, points_vertex_data_);
+            expandLoopFillToTriangles(pa, points_overlay_.vertex_data);
+            expandKPointsToQuads(pa, points_overlay_.vertex_data);
           }
           for (const auto& ca : ia.circles) {
             const auto perim = circlePerimeter(ca, circleSegments(ca.radius));
             if (ca.thickness > 1.5) {
-              expandCircleOutlineToThick(ca, perim, thick_vertex_data_);
+              expandCircleOutlineToThick(ca, perim, thick_overlay_.vertex_data);
             } else {
-              expandCircleOutlineToLineList(ca, perim, marker_vertex_data_);
+              expandCircleOutlineToLineList(ca, perim, marker_overlay_.vertex_data);
             }
-            if (points_pipeline_ != nullptr) {
-              expandCircleFillToTriangleFan(ca, perim, points_vertex_data_);
+            if (points_overlay_.pipeline != nullptr) {
+              expandCircleFillToTriangleFan(ca, perim, points_overlay_.vertex_data);
             }
           }
         }
       }
-      const size_t needed = marker_vertex_data_.size() * sizeof(float);
-      if (needed > marker_vbo_capacity_) {
-        marker_vbo_->destroy();
-        marker_vbo_capacity_ = std::max(needed * 2, marker_vbo_capacity_);
-        marker_vbo_->setSize(static_cast<int>(marker_vbo_capacity_));
-        marker_vbo_->create();
-      }
-      if (needed > 0) {
-        updates->updateDynamicBuffer(marker_vbo_, 0, static_cast<int>(needed), marker_vertex_data_.data());
-      }
-
-      // ----- Thick lines VBO upload (same dirty cycle) -----
-      if (thick_pipeline_ != nullptr) {
-        const size_t t_needed = thick_vertex_data_.size() * sizeof(float);
-        if (t_needed > thick_vbo_capacity_) {
-          thick_vbo_->destroy();
-          thick_vbo_capacity_ = std::max(t_needed * 2, thick_vbo_capacity_);
-          thick_vbo_->setSize(static_cast<int>(thick_vbo_capacity_));
-          thick_vbo_->create();
-        }
-        if (t_needed > 0) {
-          updates->updateDynamicBuffer(thick_vbo_, 0, static_cast<int>(t_needed), thick_vertex_data_.data());
-        }
-      }
-
-      // ----- Points (Triangles) VBO upload — same data filled in the loop above -----
-      if (points_pipeline_ != nullptr) {
-        const size_t p_needed = points_vertex_data_.size() * sizeof(float);
-        if (p_needed > points_vbo_capacity_) {
-          points_vbo_->destroy();
-          points_vbo_capacity_ = std::max(p_needed * 2, points_vbo_capacity_);
-          points_vbo_->setSize(static_cast<int>(points_vbo_capacity_));
-          points_vbo_->create();
-        }
-        if (p_needed > 0) {
-          updates->updateDynamicBuffer(points_vbo_, 0, static_cast<int>(p_needed), points_vertex_data_.data());
-        }
-      }
+      uploadOverlayVertexData(marker_overlay_, updates);
+      uploadOverlayVertexData(thick_overlay_, updates);
+      uploadOverlayVertexData(points_overlay_, updates);
 
       // ----- Text rebuild (textured quads) -----
-      if (text_pipeline_ != nullptr) {
-        text_vertex_data_.clear();
+      if (text_overlay_.pipeline != nullptr) {
+        text_overlay_.vertex_data.clear();
         text_draw_items_.clear();
         constexpr size_t kFloatsPerTextQuad = 6 * 8;  // 6 verts × (pos2+uv2+color4) = 48 floats
         size_t total_texts = 0;
@@ -1309,7 +1053,7 @@ void MediaViewerWidget::render(QRhiCommandBuffer* cb) {
             total_texts += ia.texts.size();
           }
         }
-        text_vertex_data_.reserve(total_texts * kFloatsPerTextQuad);
+        text_overlay_.vertex_data.reserve(total_texts * kFloatsPerTextQuad);
         for (const auto& sf : last_overlays_) {
           for (const auto& ia : sf.annotations) {
             for (const auto& ta : ia.texts) {
@@ -1325,7 +1069,7 @@ void MediaViewerWidget::render(QRhiCommandBuffer* cb) {
               const float tg = static_cast<float>(ta.color.g) / 255.0f;
               const float tb = static_cast<float>(ta.color.b) / 255.0f;
               const float tap = static_cast<float>(ta.color.a) / 255.0f;
-              const size_t offset_bytes = text_vertex_data_.size() * sizeof(float);
+              const size_t offset_bytes = text_overlay_.vertex_data.size() * sizeof(float);
               const float quad[6][8] = {
                   {x0, y0, 0.0f, 0.0f, tr, tg, tb, tap}, {x1, y0, 1.0f, 0.0f, tr, tg, tb, tap},
                   {x1, y1, 1.0f, 1.0f, tr, tg, tb, tap}, {x0, y0, 0.0f, 0.0f, tr, tg, tb, tap},
@@ -1333,28 +1077,19 @@ void MediaViewerWidget::render(QRhiCommandBuffer* cb) {
               };
               for (const auto& v : quad) {
                 for (int k = 0; k < 8; ++k) {
-                  text_vertex_data_.push_back(v[k]);
+                  text_overlay_.vertex_data.push_back(v[k]);
                 }
               }
               text_draw_items_.push_back(TextDrawItem{entry->srb, offset_bytes});
             }
           }
         }
-        const size_t t_needed = text_vertex_data_.size() * sizeof(float);
-        if (t_needed > text_vbo_capacity_) {
-          text_vbo_->destroy();
-          text_vbo_capacity_ = std::max(t_needed * 2, text_vbo_capacity_);
-          text_vbo_->setSize(static_cast<int>(text_vbo_capacity_));
-          text_vbo_->create();
-        }
-        if (t_needed > 0) {
-          updates->updateDynamicBuffer(text_vbo_, 0, static_cast<int>(t_needed), text_vertex_data_.data());
-        }
+        uploadOverlayVertexData(text_overlay_, updates);
       }
 
       overlays_dirty_ = false;
     }
-    marker_vertex_count = marker_vertex_data_.size() / 6;  // 6 floats per vertex (vec2 + vec4)
+    marker_vertex_count = marker_overlay_.vertex_data.size() / 6;  // 6 floats per vertex (vec2 + vec4)
 
     if (tex_width_ > 0 && tex_height_ > 0) {
       MarkerUbo ubo{};
@@ -1367,8 +1102,8 @@ void MediaViewerWidget::render(QRhiCommandBuffer* cb) {
       updates->updateDynamicBuffer(marker_uniform_buf_, 0, kMarkerUniformBufSize, &ubo);
     }
   }
-  const size_t points_vertex_count = (points_pipeline_ != nullptr) ? points_vertex_data_.size() / 6 : 0;
-  const size_t thick_vertex_count = (thick_pipeline_ != nullptr) ? thick_vertex_data_.size() / 6 : 0;
+  const size_t points_vertex_count = (points_overlay_.pipeline != nullptr) ? points_overlay_.vertex_data.size() / 6 : 0;
+  const size_t thick_vertex_count = (thick_overlay_.pipeline != nullptr) ? thick_overlay_.vertex_data.size() / 6 : 0;
 
   cb->beginPass(rt, clear_color_, {1.0f, 0}, updates);
   if (pixel_layers_active_ && composite_pipeline_ != nullptr && !pixel_layer_textures_.empty()) {
@@ -1388,7 +1123,7 @@ void MediaViewerWidget::render(QRhiCommandBuffer* cb) {
     cb->setViewport(
         QRhiViewport(0, 0, static_cast<float>(output_size.width()), static_cast<float>(output_size.height())));
     cb->setScissor(imageScissor(view, output_size));
-    cb->setShaderResources(srb_);
+    cb->setShaderResources(base_texture_.srb);
     cb->draw(3);
   }
 
@@ -1399,34 +1134,34 @@ void MediaViewerWidget::render(QRhiCommandBuffer* cb) {
   // Viewport is reset on pipeline switch in some QRhi backends, so set explicitly.
 
   // Fills: kPoints quads + LineLoop fills + circle fills.
-  if (points_pipeline_ != nullptr && points_vertex_count > 0 && tex_width_ > 0) {
-    cb->setGraphicsPipeline(points_pipeline_);
+  if (points_overlay_.pipeline != nullptr && points_vertex_count > 0 && tex_width_ > 0) {
+    cb->setGraphicsPipeline(points_overlay_.pipeline);
     cb->setViewport(
         QRhiViewport(0, 0, static_cast<float>(output_size.width()), static_cast<float>(output_size.height())));
-    cb->setShaderResources(points_srb_);
-    const QRhiCommandBuffer::VertexInput pinput(points_vbo_, 0);
+    cb->setShaderResources(points_overlay_.srb);
+    const QRhiCommandBuffer::VertexInput pinput(points_overlay_.vbo, 0);
     cb->setVertexInput(0, 1, &pinput);
     cb->draw(static_cast<quint32>(points_vertex_count));
   }
 
   // Outlines: line primitives (kLineList/kLineStrip/kLineLoop) + circle outlines, 1 px.
-  if (marker_pipeline_ != nullptr && marker_vertex_count > 0 && tex_width_ > 0) {
-    cb->setGraphicsPipeline(marker_pipeline_);
+  if (marker_overlay_.pipeline != nullptr && marker_vertex_count > 0 && tex_width_ > 0) {
+    cb->setGraphicsPipeline(marker_overlay_.pipeline);
     cb->setViewport(
         QRhiViewport(0, 0, static_cast<float>(output_size.width()), static_cast<float>(output_size.height())));
-    cb->setShaderResources(marker_srb_);
-    const QRhiCommandBuffer::VertexInput vinput(marker_vbo_, 0);
+    cb->setShaderResources(marker_overlay_.srb);
+    const QRhiCommandBuffer::VertexInput vinput(marker_overlay_.vbo, 0);
     cb->setVertexInput(0, 1, &vinput);
     cb->draw(static_cast<quint32>(marker_vertex_count));
   }
 
   // Thick outlines: lines/circles with thickness > 1.5, expanded to triangles.
-  if (thick_pipeline_ != nullptr && thick_vertex_count > 0 && tex_width_ > 0) {
-    cb->setGraphicsPipeline(thick_pipeline_);
+  if (thick_overlay_.pipeline != nullptr && thick_vertex_count > 0 && tex_width_ > 0) {
+    cb->setGraphicsPipeline(thick_overlay_.pipeline);
     cb->setViewport(
         QRhiViewport(0, 0, static_cast<float>(output_size.width()), static_cast<float>(output_size.height())));
-    cb->setShaderResources(thick_srb_);
-    const QRhiCommandBuffer::VertexInput tinput(thick_vbo_, 0);
+    cb->setShaderResources(thick_overlay_.srb);
+    const QRhiCommandBuffer::VertexInput tinput(thick_overlay_.vbo, 0);
     cb->setVertexInput(0, 1, &tinput);
     cb->draw(static_cast<quint32>(thick_vertex_count));
   }
@@ -1434,13 +1169,13 @@ void MediaViewerWidget::render(QRhiCommandBuffer* cb) {
   // Text labels — drawn last so they sit on top of all other overlays. Each
   // text uses its own pre-created SRB (one per cached texture) so the bindings
   // are stable between submission and execution. One draw call per text.
-  if (text_pipeline_ != nullptr && !text_draw_items_.empty() && tex_width_ > 0) {
-    cb->setGraphicsPipeline(text_pipeline_);
+  if (text_overlay_.pipeline != nullptr && !text_draw_items_.empty() && tex_width_ > 0) {
+    cb->setGraphicsPipeline(text_overlay_.pipeline);
     cb->setViewport(
         QRhiViewport(0, 0, static_cast<float>(output_size.width()), static_cast<float>(output_size.height())));
     for (const auto& item : text_draw_items_) {
       cb->setShaderResources(item.srb);
-      const QRhiCommandBuffer::VertexInput txi(text_vbo_, static_cast<quint32>(item.vbo_offset_bytes));
+      const QRhiCommandBuffer::VertexInput txi(text_overlay_.vbo, static_cast<quint32>(item.vbo_offset_bytes));
       cb->setVertexInput(0, 1, &txi);
       cb->draw(6);  // 1 quad = 2 triangles = 6 vertices
     }

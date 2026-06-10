@@ -135,6 +135,18 @@ const SessionManager::ObjectParserSlot* SessionManager::findValidParserSlot(Obje
   return &it->second;
 }
 
+SessionManager::ParserBinding SessionManager::parserBindingForObjectTopic(ObjectTopicId id) const {
+  const auto* slot = findValidParserSlot(id);
+  if (slot == nullptr) {
+    return {};
+  }
+  return ParserBinding{
+      static_cast<MessageParserPluginBase*>(slot->handle->context()),
+      slot->mutex,
+      slot->handle,
+  };
+}
+
 std::shared_ptr<void> SessionManager::parserKeepaliveForObjectTopic(ObjectTopicId id) const {
   // shared_ptr<MessageParserHandle> -> shared_ptr<void>: holding it keeps the
   // handle (and thus the parser instance + plugin DSO) alive for the consumer.

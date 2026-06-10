@@ -17,7 +17,6 @@
 
 namespace PJ {
 
-class CodecPipeline;
 class CompositeMediaSource;
 class MediaViewerWidget;
 class SessionManager;
@@ -43,10 +42,6 @@ class Scene2DDockWidget : public SceneDockWidget {
   /// a pre-create call is intentionally not latched.
   void setPointInspectorEnabled(bool enabled);
   [[nodiscard]] bool pointInspectorEnabled() const noexcept;
-
-  /// Built-in still-image decode policy used by ImageLayer; non-image types have
-  /// no CodecPipeline here and return nullptr.
-  [[nodiscard]] static std::unique_ptr<CodecPipeline> makePipelineFor(sdk::BuiltinObjectType object_type);
 
   /// Single source of truth for the canonical object types the 2D scene family
   /// handles (render layers; the 2D family has no scene-wide config topics).
@@ -75,6 +70,8 @@ class Scene2DDockWidget : public SceneDockWidget {
  private:
   /// Connects live ObjectStore ingestion to jump visible layers to the data edge.
   void reconnectLiveSamples(SessionManager* session);
+  /// Drives visible layers and the 2D composite to the newest stored sample.
+  void driveVisibleLayersToLiveEdge();
   /// Seeds a freshly rebuilt composite from the last tracker/live time, or from
   /// the first visible layer with a retained tracker timestamp.
   void syncCompositeTimestamp(const std::vector<ISceneLayer*>& ordered_layers);

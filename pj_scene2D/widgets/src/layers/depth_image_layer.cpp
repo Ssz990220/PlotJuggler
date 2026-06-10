@@ -98,16 +98,26 @@ QWidget* DepthImageLayer::createConfigWidget(QWidget* parent) {
 std::unique_ptr<MediaSource> DepthImageLayer::createMediaSource(const SceneLayerContext& /*ctx*/) {
   auto* store = objectStore();
   if (store == nullptr) {
+    depth_source_ = nullptr;
     return nullptr;
   }
   auto source = std::make_unique<DepthPipelineSource>(store, topicId());
-  source->setColormap(colormap_);
-  source->setAutoRange(auto_range_);
-  if (!auto_range_) {
-    source->setRange(near_m_, far_m_);
-  }
-  source->setOpacity(opacity_);
+  depth_source_ = source.get();
+  applyTo(*source);
   return source;
+}
+
+void DepthImageLayer::onBeforeDetach() {
+  depth_source_ = nullptr;
+}
+
+void DepthImageLayer::applyTo(DepthPipelineSource& source) const {
+  source.setColormap(colormap_);
+  source.setAutoRange(auto_range_);
+  if (!auto_range_) {
+    source.setRange(near_m_, far_m_);
+  }
+  source.setOpacity(opacity_);
 }
 
 void DepthImageLayer::saveOptions(QDomElement& element) const {
@@ -144,22 +154,16 @@ bool DepthImageLayer::loadOptions(const QDomElement& element) {
 }
 
 void DepthImageLayer::applyOptions() {
-  auto* source = dynamic_cast<DepthPipelineSource*>(borrowedSource());
-  if (source == nullptr) {
+  if (depth_source_ == nullptr) {
     return;
   }
-  source->setColormap(colormap_);
-  source->setAutoRange(auto_range_);
-  if (!auto_range_) {
-    source->setRange(near_m_, far_m_);
-  }
-  source->setOpacity(opacity_);
+  applyTo(*depth_source_);
   // Colormap/range/opacity are baked into the decoded frame. The setters above
   // invalidate the source's cache, but only setTimestamp() re-decodes — so
   // re-apply the current tracker time to make the change visible immediately
   // instead of on the next tick.
   if (const auto ts = lastTrackerTimeNs(); ts.has_value()) {
-    source->setTimestamp(*ts);
+    depth_source_->setTimestamp(*ts);
   }
   emit repaintRequested();
 }

@@ -626,7 +626,7 @@ heap-use-after-free under ASAN. Fix: cache the map in a local variable
 before iterating.
 
 **Codec stages must validate input format and buffer size.** Pipeline
-stages like `SegmentationPalette` and `DepthToGrayscale` compute read
+stages like `SegmentationPalette` and `Mono16ToGrayscale` compute read
 lengths from `width*height` but never check `pixels->size()`. With
 malformed input, this is an out-of-bounds read.
 

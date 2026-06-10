@@ -2,9 +2,12 @@
 // SPDX-License-Identifier: MPL-2.0
 #include "pj_scene2d_widgets/layers/scene2d_layer.h"
 
+#include <QMetaObject>
+#include <QPointer>
 #include <QWidget>
 #include <chrono>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <utility>
@@ -129,6 +132,22 @@ void Scene2DLayer::setSource(std::unique_ptr<MediaSource> source) {
 
 MediaSource* Scene2DLayer::borrowedSource() const noexcept {
   return source_.get();
+}
+
+std::function<void()> Scene2DLayer::makeQueuedRepaintCallback() {
+  return [qp = QPointer<Scene2DLayer>(this)]() {
+    if (!qp) {
+      return;
+    }
+    QMetaObject::invokeMethod(
+        qp.data(),
+        [qp]() {
+          if (qp) {
+            emit qp->repaintRequested();
+          }
+        },
+        Qt::QueuedConnection);
+  };
 }
 
 void Scene2DLayer::onAfterAttach() {}

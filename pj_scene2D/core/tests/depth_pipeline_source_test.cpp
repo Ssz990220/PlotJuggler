@@ -49,6 +49,15 @@ std::vector<uint8_t> serializeDepth(
   return serializeDepthImage(depth);
 }
 
+const DecodedFrame* onlyPixelLayerFrame(const MediaFrame& frame) {
+  EXPECT_FALSE(frame.base.has_value());
+  if (frame.pixel_layers.size() != 1u) {
+    ADD_FAILURE() << "expected exactly one pixel layer, got " << frame.pixel_layers.size();
+    return nullptr;
+  }
+  return &frame.pixel_layers.front().frame;
+}
+
 TEST(DepthPipelineSourceTest, Decodes16UC1ToRgbaPixelLayer) {
   ObjectStore store;
   auto topic = registerDepthTopic(store);
@@ -67,17 +76,16 @@ TEST(DepthPipelineSourceTest, Decodes16UC1ToRgbaPixelLayer) {
 
   auto frame = source.takeFrame();
   ASSERT_TRUE(frame.has_value());
-  ASSERT_TRUE(frame->base.has_value());
-  EXPECT_EQ(frame->base->width, 4);
-  EXPECT_EQ(frame->base->height, 1);
-  EXPECT_EQ(frame->base->format, PixelFormat::kRGBA8888);
-  ASSERT_NE(frame->base->pixels, nullptr);
-  ASSERT_EQ(frame->base->pixels->size(), 16u);
-
-  ASSERT_EQ(frame->pixel_layers.size(), 1u);
+  const DecodedFrame* layer_frame = onlyPixelLayerFrame(*frame);
+  ASSERT_NE(layer_frame, nullptr);
+  EXPECT_EQ(layer_frame->width, 4);
+  EXPECT_EQ(layer_frame->height, 1);
+  EXPECT_EQ(layer_frame->format, PixelFormat::kRGBA8888);
+  ASSERT_NE(layer_frame->pixels, nullptr);
+  ASSERT_EQ(layer_frame->pixels->size(), 16u);
   EXPECT_FLOAT_EQ(frame->pixel_layers[0].opacity, 0.4f);
 
-  const auto& pixels = *frame->base->pixels;
+  const auto& pixels = *layer_frame->pixels;
   EXPECT_LT(pixels[0], pixels[4]);  // red rises as depth increases
   EXPECT_LT(pixels[4], pixels[8]);
   EXPECT_GT(pixels[2], pixels[6]);  // blue falls as depth increases
@@ -101,13 +109,99 @@ TEST(DepthPipelineSourceTest, Decodes32FC1Meters) {
 
   auto frame = source.takeFrame();
   ASSERT_TRUE(frame.has_value());
-  ASSERT_TRUE(frame->base.has_value());
-  EXPECT_EQ(frame->base->width, 2);
-  EXPECT_EQ(frame->base->height, 1);
-  EXPECT_EQ(frame->base->format, PixelFormat::kRGBA8888);
-  ASSERT_NE(frame->base->pixels, nullptr);
-  EXPECT_EQ(frame->base->pixels->size(), 8u);
-  EXPECT_NE((*frame->base->pixels)[0], (*frame->base->pixels)[4]);
+  const DecodedFrame* layer_frame = onlyPixelLayerFrame(*frame);
+  ASSERT_NE(layer_frame, nullptr);
+  EXPECT_EQ(layer_frame->width, 2);
+  EXPECT_EQ(layer_frame->height, 1);
+  EXPECT_EQ(layer_frame->format, PixelFormat::kRGBA8888);
+  ASSERT_NE(layer_frame->pixels, nullptr);
+  EXPECT_EQ(layer_frame->pixels->size(), 8u);
+  EXPECT_NE((*layer_frame->pixels)[0], (*layer_frame->pixels)[4]);
+}
+
+TEST(DepthPipelineSourceTest, AutoRangeMapsObservedMinMaxToColormapEndpoints) {
+  ObjectStore store;
+  auto topic = registerDepthTopic(store);
+  ASSERT_NE(topic.id, 0u);
+
+  const auto payload = makeU16Le({1000, 2000, 3000});
+  const auto bytes = serializeDepth(3, 1, "16UC1", payload);
+  ASSERT_TRUE(store.pushOwned(topic, 3'000, bytes).has_value());
+
+  DepthPipelineSource source(&store, topic);
+  source.setAutoRange(true);
+  source.setColormap(DepthColormap::kTurbo);
+  source.setTimestamp(3'000);
+
+  auto frame = source.takeFrame();
+  ASSERT_TRUE(frame.has_value());
+  const DecodedFrame* layer_frame = onlyPixelLayerFrame(*frame);
+  ASSERT_NE(layer_frame, nullptr);
+  ASSERT_NE(layer_frame->pixels, nullptr);
+  ASSERT_EQ(layer_frame->pixels->size(), 12u);
+
+  const auto& pixels = *layer_frame->pixels;
+  EXPECT_EQ(pixels[0], 0);  // min depth -> turbo blue endpoint
+  EXPECT_EQ(pixels[1], 0);
+  EXPECT_EQ(pixels[2], 255);
+  EXPECT_EQ(pixels[8], 255);  // max depth -> turbo red endpoint
+  EXPECT_EQ(pixels[9], 0);
+  EXPECT_EQ(pixels[10], 0);
+}
+
+TEST(DepthPipelineSourceTest, AutoRangeAllInvalidUsesFallbackRangeAndStaysTransparent) {
+  ObjectStore store;
+  auto topic = registerDepthTopic(store);
+  ASSERT_NE(topic.id, 0u);
+
+  const auto payload = makeU16Le({0, 0});
+  const auto bytes = serializeDepth(2, 1, "16UC1", payload);
+  ASSERT_TRUE(store.pushOwned(topic, 4'000, bytes).has_value());
+
+  DepthPipelineSource source(&store, topic);
+  source.setRange(2.0f, 2.0f);
+  source.setAutoRange(true);
+  source.setTimestamp(4'000);
+
+  auto frame = source.takeFrame();
+  ASSERT_TRUE(frame.has_value());
+  const DecodedFrame* layer_frame = onlyPixelLayerFrame(*frame);
+  ASSERT_NE(layer_frame, nullptr);
+  ASSERT_NE(layer_frame->pixels, nullptr);
+  ASSERT_EQ(layer_frame->pixels->size(), 8u);
+
+  const auto& pixels = *layer_frame->pixels;
+  EXPECT_EQ(pixels[3], 0);
+  EXPECT_EQ(pixels[7], 0);
+}
+
+TEST(DepthPipelineSourceTest, JetColormapOrdersNearBlueFarRed) {
+  ObjectStore store;
+  auto topic = registerDepthTopic(store);
+  ASSERT_NE(topic.id, 0u);
+
+  const auto payload = makeU16Le({1000, 2000, 3000});
+  const auto bytes = serializeDepth(3, 1, "16UC1", payload);
+  ASSERT_TRUE(store.pushOwned(topic, 5'000, bytes).has_value());
+
+  DepthPipelineSource source(&store, topic);
+  source.setAutoRange(false);
+  source.setRange(1.0f, 3.0f);
+  source.setColormap(DepthColormap::kJet);
+  source.setTimestamp(5'000);
+
+  auto frame = source.takeFrame();
+  ASSERT_TRUE(frame.has_value());
+  const DecodedFrame* layer_frame = onlyPixelLayerFrame(*frame);
+  ASSERT_NE(layer_frame, nullptr);
+  ASSERT_NE(layer_frame->pixels, nullptr);
+  ASSERT_EQ(layer_frame->pixels->size(), 12u);
+
+  const auto& pixels = *layer_frame->pixels;
+  EXPECT_LT(pixels[0], pixels[8]);   // red rises toward far depth
+  EXPECT_GT(pixels[2], pixels[10]);  // blue falls toward far depth
+  EXPECT_GT(pixels[5], pixels[1]);   // midpoint has the green peak
+  EXPECT_GT(pixels[5], pixels[9]);
 }
 
 }  // namespace

@@ -189,7 +189,7 @@ bool FfmpegDecoder::open(const AVCodecParameters* params) {
   return true;
 }
 
-int FfmpegDecoder::sendPacket(const uint8_t* data, size_t size, int64_t pts, int64_t dts) {
+int FfmpegDecoder::sendPacket(const uint8_t* data, size_t size, int64_t pts, int64_t dts, SendPolicy policy) {
   AVPacket* pkt = av_packet_alloc();
   // We point pkt->data at the caller's buffer and never set pkt->buf, so
   // avcodec_send_packet takes its own (ref-counted) copy of the bytes before it
@@ -205,16 +205,13 @@ int FfmpegDecoder::sendPacket(const uint8_t* data, size_t size, int64_t pts, int
   pkt->dts = dts;
 
   int ret = avcodec_send_packet(codec_ctx_, pkt);
-  if (ret == AVERROR(ENOMEM)) {
+  if (ret == AVERROR(ENOMEM) && policy != SendPolicy::kDecodeSkip) {
     // Surface pool exhaustion — flush and retry once
     avcodec_flush_buffers(codec_ctx_);
     ret = avcodec_send_packet(codec_ctx_, pkt);
   }
-  if (ret == AVERROR(EAGAIN)) {
-    // Decoder input full — drain a frame first, then retry the packet.
-    // CAUTION: the drained frame is DISCARDED; on a B-frame stream it can be the
-    // very frame a later request must display. Callers that cannot afford to
-    // lose outputs pump receiveFiltered() to EAGAIN and use sendOnly() instead.
+  if (ret == AVERROR(EAGAIN) && policy == SendPolicy::kCombinedDecode) {
+    // Legacy combined calls drain-and-discard on EAGAIN before retrying.
     AVFrame* drain_frame = av_frame_alloc();
     avcodec_receive_frame(codec_ctx_, drain_frame);
     av_frame_free(&drain_frame);
@@ -224,10 +221,7 @@ int FfmpegDecoder::sendPacket(const uint8_t* data, size_t size, int64_t pts, int
   return ret;
 }
 
-Expected<DecodedFrame> FfmpegDecoder::receiveFiltered(const std::function<bool(int64_t)>& want) {
-  if (codec_ctx_ == nullptr) {
-    return unexpected("decoder not open");
-  }
+Expected<DecodedFrame> FfmpegDecoder::receiveFrame(const std::function<bool(int64_t)>& want) {
   AVFrame* frame = av_frame_alloc();
   int ret = avcodec_receive_frame(codec_ctx_, frame);
   if (ret < 0) {
@@ -249,34 +243,30 @@ Expected<DecodedFrame> FfmpegDecoder::receiveFiltered(const std::function<bool(i
   return result;
 }
 
+Expected<DecodedFrame> FfmpegDecoder::receiveFiltered(const std::function<bool(int64_t)>& want) {
+  if (codec_ctx_ == nullptr) {
+    return unexpected("decoder not open");
+  }
+  return receiveFrame(want);
+}
+
 bool FfmpegDecoder::sendOnly(const uint8_t* data, size_t size, int64_t pts, int64_t dts) {
   if (codec_ctx_ == nullptr) {
     return false;
   }
-  AVPacket* pkt = av_packet_alloc();
-  // Same zero-copy contract as sendPacket: avcodec_send_packet takes its own
-  // ref-counted copy because pkt->buf is unset.
-  pkt->data = const_cast<uint8_t*>(data);
-  pkt->size = static_cast<int>(size);
-  pkt->pts = pts;
-  pkt->dts = dts;
-  int ret = avcodec_send_packet(codec_ctx_, pkt);
-  if (ret == AVERROR(ENOMEM)) {
-    // Surface pool exhaustion — flush and retry once.
-    avcodec_flush_buffers(codec_ctx_);
-    ret = avcodec_send_packet(codec_ctx_, pkt);
-  }
-  av_packet_free(&pkt);
+  // Streaming callers pre-drain the output queue; preserve ENOMEM retry only.
+  int ret = sendPacket(data, size, pts, dts, SendPolicy::kStreamingPump);
   return ret >= 0;
 }
 
-Expected<DecodedFrame> FfmpegDecoder::decode(
-    const uint8_t* data, size_t size, int64_t pts, int64_t dts, const CancelTokenPtr& cancel) {
+Expected<DecodedFrame> FfmpegDecoder::decodePacket(
+    const uint8_t* data, size_t size, int64_t pts, int64_t dts, const std::function<bool(int64_t)>& want,
+    const CancelTokenPtr& cancel) {
   if (codec_ctx_ == nullptr) {
     return unexpected("decoder not open");
   }
 
-  if (sendPacket(data, size, pts, dts) < 0) {
+  if (sendPacket(data, size, pts, dts, SendPolicy::kCombinedDecode) < 0) {
     return unexpected("avcodec_send_packet failed");
   }
 
@@ -284,58 +274,17 @@ Expected<DecodedFrame> FfmpegDecoder::decode(
     return unexpected("cancelled");
   }
 
-  AVFrame* frame = av_frame_alloc();
-  int ret = avcodec_receive_frame(codec_ctx_, frame);
-  if (ret < 0) {
-    av_frame_free(&frame);
-    if (ret == AVERROR(EAGAIN)) {
-      return unexpected("need more packets");
-    }
-    return unexpected("avcodec_receive_frame failed");
-  }
+  return receiveFrame(want);
+}
 
-  auto result = avFrameToDecodedFrame(frame);
-  if (result.has_value()) {
-    result->pts = frame->pts;
-  }
-  av_frame_free(&frame);
-  return result;
+Expected<DecodedFrame> FfmpegDecoder::decode(
+    const uint8_t* data, size_t size, int64_t pts, int64_t dts, const CancelTokenPtr& cancel) {
+  return decodePacket(data, size, pts, dts, std::function<bool(int64_t)>{}, cancel);
 }
 
 Expected<DecodedFrame> FfmpegDecoder::decodeFiltered(
     const uint8_t* data, size_t size, int64_t pts, int64_t dts, const std::function<bool(int64_t)>& want) {
-  if (codec_ctx_ == nullptr) {
-    return unexpected("decoder not open");
-  }
-
-  if (sendPacket(data, size, pts, dts) < 0) {
-    return unexpected("avcodec_send_packet failed");
-  }
-
-  AVFrame* frame = av_frame_alloc();
-  int ret = avcodec_receive_frame(codec_ctx_, frame);
-  if (ret < 0) {
-    av_frame_free(&frame);
-    if (ret == AVERROR(EAGAIN)) {
-      return unexpected("need more packets");
-    }
-    return unexpected("avcodec_receive_frame failed");
-  }
-
-  // Decide on the TRUE output PTS (B-frame reorder safe) whether to pay the
-  // HW-download + YUV conversion. Rejected frames advance decoder state only and
-  // come back null — the cheap path this primitive exists for.
-  if (want && !want(frame->pts)) {
-    av_frame_free(&frame);
-    return DecodedFrame{};  // isNull() == true
-  }
-
-  auto result = avFrameToDecodedFrame(frame);
-  if (result.has_value()) {
-    result->pts = frame->pts;
-  }
-  av_frame_free(&frame);
-  return result;
+  return decodePacket(data, size, pts, dts, want, CancelTokenPtr{});
 }
 
 int64_t FfmpegDecoder::decodeSkip(const uint8_t* data, size_t size, int64_t pts, int64_t dts) {
@@ -343,15 +292,8 @@ int64_t FfmpegDecoder::decodeSkip(const uint8_t* data, size_t size, int64_t pts,
     return -1;
   }
 
-  AVPacket* pkt = av_packet_alloc();
-  pkt->data = const_cast<uint8_t*>(data);
-  pkt->size = static_cast<int>(size);
-  pkt->pts = pts;
-  pkt->dts = dts;
-
-  int ret = avcodec_send_packet(codec_ctx_, pkt);
-  av_packet_free(&pkt);
-
+  // Preserve decodeSkip's historical no-retry send path, including EAGAIN.
+  int ret = sendPacket(data, size, pts, dts, SendPolicy::kDecodeSkip);
   if (ret < 0 && ret != AVERROR(EAGAIN)) {
     return -1;
   }

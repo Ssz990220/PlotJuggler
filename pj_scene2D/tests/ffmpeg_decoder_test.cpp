@@ -26,38 +26,44 @@ class FfmpegDecoderTest : public ::testing::Test {
     if (!std::filesystem::exists(kTestVideo)) {
       GTEST_SKIP() << "test_480p.mp4 not found";
     }
+
+    ASSERT_GE(avformat_open_input(&fmt_ctx_, kTestVideo.c_str(), nullptr, nullptr), 0);
+    ASSERT_GE(avformat_find_stream_info(fmt_ctx_, nullptr), 0);
+
+    for (unsigned i = 0; i < fmt_ctx_->nb_streams; ++i) {
+      if (fmt_ctx_->streams[i]->codecpar->codec_type == AVMEDIA_TYPE_VIDEO) {
+        video_idx_ = static_cast<int>(i);
+        break;
+      }
+    }
+    ASSERT_GE(video_idx_, 0);
+    ASSERT_TRUE(decoder_.open(fmt_ctx_->streams[video_idx_]->codecpar));
   }
+
+  void TearDown() override {
+    if (fmt_ctx_ != nullptr) {
+      avformat_close_input(&fmt_ctx_);
+    }
+  }
+
+  AVFormatContext* fmt_ctx_ = nullptr;
+  int video_idx_ = -1;
+  FfmpegDecoder decoder_;
 };
 
 TEST_F(FfmpegDecoderTest, DecodeFirstFrame) {
-  AVFormatContext* fmt_ctx = nullptr;
-  ASSERT_GE(avformat_open_input(&fmt_ctx, kTestVideo.c_str(), nullptr, nullptr), 0);
-  ASSERT_GE(avformat_find_stream_info(fmt_ctx, nullptr), 0);
-
-  int video_idx = -1;
-  for (unsigned i = 0; i < fmt_ctx->nb_streams; ++i) {
-    if (fmt_ctx->streams[i]->codecpar->codec_type == AVMEDIA_TYPE_VIDEO) {
-      video_idx = static_cast<int>(i);
-      break;
-    }
-  }
-  ASSERT_GE(video_idx, 0);
-
-  FfmpegDecoder decoder;
-  ASSERT_TRUE(decoder.open(fmt_ctx->streams[video_idx]->codecpar));
-
   // Read and decode until we get a frame
   AVPacket* pkt = av_packet_alloc();
   DecodedFrame frame;
   int packets_sent = 0;
 
-  while (av_read_frame(fmt_ctx, pkt) >= 0) {
-    if (pkt->stream_index != video_idx) {
+  while (av_read_frame(fmt_ctx_, pkt) >= 0) {
+    if (pkt->stream_index != video_idx_) {
       av_packet_unref(pkt);
       continue;
     }
 
-    auto result = decoder.decode(pkt->data, static_cast<size_t>(pkt->size), pkt->pts, pkt->dts);
+    auto result = decoder_.decode(pkt->data, static_cast<size_t>(pkt->size), pkt->pts, pkt->dts);
     av_packet_unref(pkt);
     ++packets_sent;
 
@@ -67,7 +73,6 @@ TEST_F(FfmpegDecoderTest, DecodeFirstFrame) {
     }
   }
   av_packet_free(&pkt);
-  avformat_close_input(&fmt_ctx);
 
   ASSERT_FALSE(frame.isNull()) << "no frame decoded after " << packets_sent << " packets";
   EXPECT_EQ(frame.width, 640);
@@ -80,32 +85,16 @@ TEST_F(FfmpegDecoderTest, DecodeFirstFrame) {
 // C2 contract: decode() must never return has_value() with isNull() frame.
 // Every successful decode must produce a valid frame.
 TEST_F(FfmpegDecoderTest, SuccessfulDecodeNeverReturnsNullFrame) {
-  AVFormatContext* fmt_ctx = nullptr;
-  ASSERT_GE(avformat_open_input(&fmt_ctx, kTestVideo.c_str(), nullptr, nullptr), 0);
-  ASSERT_GE(avformat_find_stream_info(fmt_ctx, nullptr), 0);
-
-  int video_idx = -1;
-  for (unsigned i = 0; i < fmt_ctx->nb_streams; ++i) {
-    if (fmt_ctx->streams[i]->codecpar->codec_type == AVMEDIA_TYPE_VIDEO) {
-      video_idx = static_cast<int>(i);
-      break;
-    }
-  }
-  ASSERT_GE(video_idx, 0);
-
-  FfmpegDecoder decoder;
-  ASSERT_TRUE(decoder.open(fmt_ctx->streams[video_idx]->codecpar));
-
   AVPacket* pkt = av_packet_alloc();
   int total_results = 0;
 
-  while (av_read_frame(fmt_ctx, pkt) >= 0 && total_results < 30) {
-    if (pkt->stream_index != video_idx) {
+  while (av_read_frame(fmt_ctx_, pkt) >= 0 && total_results < 30) {
+    if (pkt->stream_index != video_idx_) {
       av_packet_unref(pkt);
       continue;
     }
 
-    auto result = decoder.decode(pkt->data, static_cast<size_t>(pkt->size), pkt->pts, pkt->dts);
+    auto result = decoder_.decode(pkt->data, static_cast<size_t>(pkt->size), pkt->pts, pkt->dts);
     av_packet_unref(pkt);
 
     if (result.has_value()) {
@@ -115,38 +104,21 @@ TEST_F(FfmpegDecoderTest, SuccessfulDecodeNeverReturnsNullFrame) {
     }
   }
   av_packet_free(&pkt);
-  avformat_close_input(&fmt_ctx);
 
   EXPECT_GT(total_results, 0) << "should have decoded at least one frame";
 }
 
 TEST_F(FfmpegDecoderTest, DecodeMultipleFrames) {
-  AVFormatContext* fmt_ctx = nullptr;
-  ASSERT_GE(avformat_open_input(&fmt_ctx, kTestVideo.c_str(), nullptr, nullptr), 0);
-  ASSERT_GE(avformat_find_stream_info(fmt_ctx, nullptr), 0);
-
-  int video_idx = -1;
-  for (unsigned i = 0; i < fmt_ctx->nb_streams; ++i) {
-    if (fmt_ctx->streams[i]->codecpar->codec_type == AVMEDIA_TYPE_VIDEO) {
-      video_idx = static_cast<int>(i);
-      break;
-    }
-  }
-  ASSERT_GE(video_idx, 0);
-
-  FfmpegDecoder decoder;
-  ASSERT_TRUE(decoder.open(fmt_ctx->streams[video_idx]->codecpar));
-
   AVPacket* pkt = av_packet_alloc();
   int decoded_count = 0;
 
-  while (av_read_frame(fmt_ctx, pkt) >= 0 && decoded_count < 10) {
-    if (pkt->stream_index != video_idx) {
+  while (av_read_frame(fmt_ctx_, pkt) >= 0 && decoded_count < 10) {
+    if (pkt->stream_index != video_idx_) {
       av_packet_unref(pkt);
       continue;
     }
 
-    auto result = decoder.decode(pkt->data, static_cast<size_t>(pkt->size), pkt->pts, pkt->dts);
+    auto result = decoder_.decode(pkt->data, static_cast<size_t>(pkt->size), pkt->pts, pkt->dts);
     av_packet_unref(pkt);
 
     if (result.has_value() && !result->isNull()) {
@@ -154,45 +126,29 @@ TEST_F(FfmpegDecoderTest, DecodeMultipleFrames) {
     }
   }
   av_packet_free(&pkt);
-  avformat_close_input(&fmt_ctx);
 
   EXPECT_GE(decoded_count, 5) << "should decode at least 5 frames from the first packets";
 }
 
 TEST_F(FfmpegDecoderTest, FlushAndResume) {
-  AVFormatContext* fmt_ctx = nullptr;
-  ASSERT_GE(avformat_open_input(&fmt_ctx, kTestVideo.c_str(), nullptr, nullptr), 0);
-  ASSERT_GE(avformat_find_stream_info(fmt_ctx, nullptr), 0);
-
-  int video_idx = -1;
-  for (unsigned i = 0; i < fmt_ctx->nb_streams; ++i) {
-    if (fmt_ctx->streams[i]->codecpar->codec_type == AVMEDIA_TYPE_VIDEO) {
-      video_idx = static_cast<int>(i);
-      break;
-    }
-  }
-
-  FfmpegDecoder decoder;
-  ASSERT_TRUE(decoder.open(fmt_ctx->streams[video_idx]->codecpar));
-
   // Decode a few frames, then flush (simulating a seek)
   AVPacket* pkt = av_packet_alloc();
   int count = 0;
-  while (av_read_frame(fmt_ctx, pkt) >= 0 && count < 5) {
-    if (pkt->stream_index == video_idx) {
-      decoder.decode(pkt->data, static_cast<size_t>(pkt->size), pkt->pts, pkt->dts);
+  while (av_read_frame(fmt_ctx_, pkt) >= 0 && count < 5) {
+    if (pkt->stream_index == video_idx_) {
+      decoder_.decode(pkt->data, static_cast<size_t>(pkt->size), pkt->pts, pkt->dts);
       ++count;
     }
     av_packet_unref(pkt);
   }
 
-  decoder.flush();
+  decoder_.flush();
 
   // Continue decoding after flush — should not crash
   int post_flush = 0;
-  while (av_read_frame(fmt_ctx, pkt) >= 0 && post_flush < 5) {
-    if (pkt->stream_index == video_idx) {
-      auto result = decoder.decode(pkt->data, static_cast<size_t>(pkt->size), pkt->pts, pkt->dts);
+  while (av_read_frame(fmt_ctx_, pkt) >= 0 && post_flush < 5) {
+    if (pkt->stream_index == video_idx_) {
+      auto result = decoder_.decode(pkt->data, static_cast<size_t>(pkt->size), pkt->pts, pkt->dts);
       if (result.has_value() && !result->isNull()) {
         ++post_flush;
       }
@@ -200,34 +156,18 @@ TEST_F(FfmpegDecoderTest, FlushAndResume) {
     av_packet_unref(pkt);
   }
   av_packet_free(&pkt);
-  avformat_close_input(&fmt_ctx);
 
   EXPECT_GT(post_flush, 0) << "should decode frames after flush";
 }
 
 TEST_F(FfmpegDecoderTest, CancelStopsEarly) {
-  AVFormatContext* fmt_ctx = nullptr;
-  ASSERT_GE(avformat_open_input(&fmt_ctx, kTestVideo.c_str(), nullptr, nullptr), 0);
-  ASSERT_GE(avformat_find_stream_info(fmt_ctx, nullptr), 0);
-
-  int video_idx = -1;
-  for (unsigned i = 0; i < fmt_ctx->nb_streams; ++i) {
-    if (fmt_ctx->streams[i]->codecpar->codec_type == AVMEDIA_TYPE_VIDEO) {
-      video_idx = static_cast<int>(i);
-      break;
-    }
-  }
-
-  FfmpegDecoder decoder;
-  ASSERT_TRUE(decoder.open(fmt_ctx->streams[video_idx]->codecpar));
-
   auto token = makeCancelToken();
   token->cancel();
 
   AVPacket* pkt = av_packet_alloc();
-  while (av_read_frame(fmt_ctx, pkt) >= 0) {
-    if (pkt->stream_index == video_idx) {
-      auto result = decoder.decode(pkt->data, static_cast<size_t>(pkt->size), pkt->pts, pkt->dts, token);
+  while (av_read_frame(fmt_ctx_, pkt) >= 0) {
+    if (pkt->stream_index == video_idx_) {
+      auto result = decoder_.decode(pkt->data, static_cast<size_t>(pkt->size), pkt->pts, pkt->dts, token);
       av_packet_unref(pkt);
       EXPECT_FALSE(result.has_value());
       break;
@@ -235,7 +175,6 @@ TEST_F(FfmpegDecoderTest, CancelStopsEarly) {
     av_packet_unref(pkt);
   }
   av_packet_free(&pkt);
-  avformat_close_input(&fmt_ctx);
 }
 
 }  // namespace

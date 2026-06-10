@@ -13,30 +13,42 @@ set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTORCC ON)
 
 # --- pj_scene2d_widgets: image viewer (QRhiWidget), no mpv dependency ---
-add_library(pj_scene2d_widgets STATIC
+set(PJ_SCENE2D_WIDGETS_SOURCES
   src/Scene2DDockWidget.cpp
   src/layers/depth_image_layer.cpp
   src/layers/image_layer.cpp
   src/layers/scene2d_layer.cpp
   src/layers/scene_decoder_layer.cpp
-  src/layers/video_layer.cpp
   src/media_viewer_widget.cpp
   src/pixel_inspector.cpp
+  src/scene2d_pipelines.cpp
   include/pj_scene2d_widgets/Scene2DDockWidget.h
   include/pj_scene2d_widgets/layers/depth_image_layer.h
   include/pj_scene2d_widgets/layers/image_layer.h
   include/pj_scene2d_widgets/layers/scene2d_layer.h
   include/pj_scene2d_widgets/layers/scene_decoder_layer.h
-  include/pj_scene2d_widgets/layers/video_layer.h
   include/pj_scene2d_widgets/media_viewer_widget.h
   include/pj_scene2d_widgets/pixel_inspector.h
+  include/pj_scene2d_widgets/scene2d_pipelines.h
   shaders/shaders.qrc
 )
+
+get_target_property(_pj_scene2d_core_public_defs pj_scene2d_core INTERFACE_COMPILE_DEFINITIONS)
+set(PJ_SCENE2D_WIDGETS_HAS_FFMPEG FALSE)
+if(_pj_scene2d_core_public_defs AND "PJ_HAS_FFMPEG" IN_LIST _pj_scene2d_core_public_defs)
+  set(PJ_SCENE2D_WIDGETS_HAS_FFMPEG TRUE)
+  list(APPEND PJ_SCENE2D_WIDGETS_SOURCES
+    src/layers/video_layer.cpp
+    include/pj_scene2d_widgets/layers/video_layer.h
+  )
+endif()
+
+add_library(pj_scene2d_widgets STATIC ${PJ_SCENE2D_WIDGETS_SOURCES})
 target_include_directories(pj_scene2d_widgets PUBLIC include)
 target_compile_features(pj_scene2d_widgets PUBLIC cxx_std_20)
 target_compile_options(pj_scene2d_widgets PRIVATE ${PJ_WARNING_FLAGS} ${PJ_SANITIZER_FLAGS})
 target_link_libraries(pj_scene2d_widgets
-  PUBLIC pj_scene_common pj_scene2d_core pj_runtime Qt6::Widgets Qt6::Gui
+  PUBLIC pj_scene_common pj_scene2d_core pj_runtime Qt6::Widgets Qt6::Gui Qt6::GuiPrivate
 )
 
 # ---------------------------------------------------------------------------
@@ -44,7 +56,7 @@ target_link_libraries(pj_scene2d_widgets
 # ---------------------------------------------------------------------------
 
 if(PJ_BUILD_TESTS)
-  # Dispatch-table unit test: verifies makePipelineFor() returns the right
+  # Dispatch-table unit test: verifies makeScene2DPipelineFor() returns the right
   # built-in pipeline (or nullptr) per object type. Does not construct the
   # widget, so it does not require an RHI context.
   add_executable(scene2d_dock_widget_dispatch_test
@@ -77,12 +89,3 @@ if(PJ_BUILD_TESTS)
   target_compile_options(scene2d_dock_widget_test PRIVATE ${PJ_WARNING_FLAGS} ${PJ_SANITIZER_FLAGS})
   add_test(NAME scene2d_dock_widget_test COMMAND scene2d_dock_widget_test)
 endif()
-
-# QRhiWidget requires private Gui headers (rhi/qrhi.h)
-get_target_property(_qt6_gui_dir Qt6::Gui INTERFACE_INCLUDE_DIRECTORIES)
-foreach(_dir ${_qt6_gui_dir})
-  if(EXISTS "${_dir}/${Qt6_VERSION}/QtGui")
-    target_include_directories(pj_scene2d_widgets PUBLIC "${_dir}/${Qt6_VERSION}/QtGui")
-    break()
-  endif()
-endforeach()

@@ -83,16 +83,16 @@ class FfmpegDecoder {
   ///    or unexpected(...) on a hard error.
   /// Pump this until EAGAIN before each sendOnly(): libavcodec guarantees a send
   /// cannot return EAGAIN right after a receive did, which closes the window
-  /// where sendPacket's EAGAIN recovery silently DISCARDS a queued frame. On a
-  /// B-frame stream under load (big frames keeping the worker threads busy),
-  /// that discarded frame is the next request's display frame — a one-frame
+  /// where the combined decode path's EAGAIN recovery silently DISCARDS a queued
+  /// frame. On a B-frame stream under load (big frames keeping the worker threads
+  /// busy), that discarded frame is the next request's display frame — a one-frame
   /// "produced no frame" hiccup early in playback.
   Expected<DecodedFrame> receiveFiltered(const std::function<bool(int64_t)>& want);
 
-  /// Send one packet WITHOUT the blind receive-and-discard EAGAIN recovery of
-  /// the legacy combined calls (ENOMEM is still retried after a flush). Use
-  /// after pumping receiveFiltered() to EAGAIN. Returns false if the codec
-  /// rejects the packet.
+  /// Send one packet with the streaming-pump policy: WITHOUT the blind
+  /// receive-and-discard EAGAIN recovery of the legacy combined calls (ENOMEM is
+  /// still retried after a flush). Use after pumping receiveFiltered() to EAGAIN.
+  /// Returns false if the codec rejects the packet.
   bool sendOnly(const uint8_t* data, size_t size, int64_t pts, int64_t dts);
 
   /// Flush decoder state — mandatory after seek.
@@ -105,11 +105,20 @@ class FfmpegDecoder {
   [[nodiscard]] int height() const;
 
  private:
-  // Send one packet to the codec, copying the bytes (so the caller's buffer need
-  // not outlive the call) and applying the ENOMEM flush-retry + EAGAIN drain-retry
-  // robustness shared by decode()/decodeFiltered(). Returns avcodec_send_packet's
-  // result (>= 0 on success).
-  int sendPacket(const uint8_t* data, size_t size, int64_t pts, int64_t dts);
+  enum class SendPolicy {
+    kCombinedDecode,  // ENOMEM flush-retry + legacy EAGAIN drain/discard/retry.
+    kStreamingPump,   // ENOMEM flush-retry only; caller pre-drains output queue.
+    kDecodeSkip       // Preserve decodeSkip's historical no-retry send behavior.
+  };
+
+  Expected<DecodedFrame> decodePacket(
+      const uint8_t* data, size_t size, int64_t pts, int64_t dts, const std::function<bool(int64_t)>& want,
+      const CancelTokenPtr& cancel);
+  Expected<DecodedFrame> receiveFrame(const std::function<bool(int64_t)>& want);
+  // Send one packet to the codec, copying the bytes so the caller's buffer need
+  // not outlive the call. `policy` captures the public path's existing recovery
+  // semantics; returns avcodec_send_packet's result (>= 0 on success).
+  int sendPacket(const uint8_t* data, size_t size, int64_t pts, int64_t dts, SendPolicy policy);
   Expected<DecodedFrame> avFrameToDecodedFrame(AVFrame* frame);
 
   AVCodecContext* codec_ctx_ = nullptr;

@@ -13,6 +13,7 @@ set(PJ_SCENE2D_CORE_SOURCES
   src/image_pipeline_source.cpp
   src/undistort_remap.cpp
   src/image_rectifier.cpp
+  src/parser_object.cpp
   src/depth_pipeline_source.cpp
   src/scene_pipeline_source.cpp
   src/scene_entities_2d_decoder.cpp
@@ -64,6 +65,29 @@ if(PJ_BUILD_TESTS)
   find_package(mcap REQUIRED)
   find_package(nlohmann_json REQUIRED)
 
+  function(pj_scene2d_add_core_test test_name)
+    set(options RUN_IN_SOURCE_DIR SUPPRESS_MSVC_SETJMP_WARNING)
+    set(multiValueArgs SOURCES LIBS)
+    cmake_parse_arguments(PJ_SCENE2D_TEST "${options}" "" "${multiValueArgs}" ${ARGN})
+
+    add_executable(${test_name} ${PJ_SCENE2D_TEST_SOURCES})
+    target_link_libraries(${test_name} PRIVATE ${PJ_SCENE2D_TEST_LIBS})
+    target_compile_options(${test_name} PRIVATE ${PJ_WARNING_FLAGS} ${PJ_SANITIZER_FLAGS})
+    if(MSVC AND PJ_SCENE2D_TEST_SUPPRESS_MSVC_SETJMP_WARNING)
+      # Some test helpers call libpng's setjmp(png_jmpbuf(...)) with a
+      # PngWriteCtx on the stack. Same C4611 rationale as the library
+      # target above; suppress here for consistency across the module.
+      target_compile_options(${test_name} PRIVATE /wd4611)
+    endif()
+    if(PJ_SCENE2D_TEST_RUN_IN_SOURCE_DIR)
+      add_test(NAME ${test_name} COMMAND ${test_name}
+        WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+      )
+    else()
+      add_test(NAME ${test_name} COMMAND ${test_name})
+    endif()
+  endfunction()
+
   set(PJ_SCENE2D_CORE_TESTS
     ../tests/decoded_frame_test.cpp
     ../tests/cancel_token_test.cpp
@@ -82,79 +106,65 @@ if(PJ_BUILD_TESTS)
 
   foreach(test_src ${PJ_SCENE2D_CORE_TESTS})
     get_filename_component(test_name ${test_src} NAME_WE)
-    add_executable(${test_name} ${test_src})
-    target_link_libraries(${test_name} PRIVATE pj_scene2d_core libjpeg-turbo::libjpeg-turbo PNG::PNG GTest::gtest_main)
-    target_compile_options(${test_name} PRIVATE ${PJ_WARNING_FLAGS} ${PJ_SANITIZER_FLAGS})
-    if(MSVC)
-      # Some test helpers call libpng's setjmp(png_jmpbuf(...)) with a
-      # PngWriteCtx on the stack. Same C4611 rationale as the library
-      # target above; suppress here for consistency across the module.
-      target_compile_options(${test_name} PRIVATE /wd4611)
-    endif()
-    add_test(NAME ${test_name} COMMAND ${test_name})
+    pj_scene2d_add_core_test(${test_name}
+      SOURCES ${test_src}
+      LIBS pj_scene2d_core libjpeg-turbo::libjpeg-turbo PNG::PNG GTest::gtest_main
+      SUPPRESS_MSVC_SETJMP_WARNING
+    )
   endforeach()
 
   # Loader-side CDR adapter test. Builds the test alongside its adapter/palette
   # helper sources (the test's only consumers — they relocated here from the
   # former pj_scene2D/demos/ playground). nanocdr supplies the CDR reader and
   # pj_internal_fmt supplies fmt for marker_palette.cpp.
-  add_executable(cdr_to_image_annotation_test
-    ../tests/cdr_to_image_annotation_test.cpp
-    ../tests/cdr_detection2d_to_image_annotation.cpp
-    ../tests/cdr_yolo_to_image_annotation.cpp
-    ../tests/marker_palette.cpp
+  pj_scene2d_add_core_test(cdr_to_image_annotation_test
+    SOURCES
+      ../tests/cdr_to_image_annotation_test.cpp
+      ../tests/cdr_detection2d_to_image_annotation.cpp
+      ../tests/cdr_yolo_to_image_annotation.cpp
+      ../tests/marker_palette.cpp
+    LIBS pj_scene2d_core pj_base GTest::gtest_main nanocdr pj_internal_fmt
   )
   target_compile_features(cdr_to_image_annotation_test PRIVATE cxx_std_20)
-  target_compile_options(cdr_to_image_annotation_test PRIVATE
-    ${PJ_WARNING_FLAGS} ${PJ_SANITIZER_FLAGS}
-  )
-  target_link_libraries(cdr_to_image_annotation_test PRIVATE
-    pj_scene2d_core pj_base GTest::gtest_main nanocdr pj_internal_fmt
-  )
-  add_test(NAME cdr_to_image_annotation_test COMMAND cdr_to_image_annotation_test)
 
   # MCAP integration test (needs mcap + nlohmann_json + ObjectStore)
-  add_executable(mcap_integration_test ../tests/mcap_integration_test.cpp)
-  target_link_libraries(mcap_integration_test PRIVATE
-    pj_scene2d_core pj_datastore mcap::mcap nlohmann_json::nlohmann_json
-    libjpeg-turbo::libjpeg-turbo GTest::gtest_main
-  )
-  target_compile_options(mcap_integration_test PRIVATE ${PJ_WARNING_FLAGS} ${PJ_SANITIZER_FLAGS})
-  add_test(NAME mcap_integration_test COMMAND mcap_integration_test
-    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+  pj_scene2d_add_core_test(mcap_integration_test
+    SOURCES ../tests/mcap_integration_test.cpp
+    LIBS
+      pj_scene2d_core pj_datastore mcap::mcap nlohmann_json::nlohmann_json
+      libjpeg-turbo::libjpeg-turbo GTest::gtest_main
+    RUN_IN_SOURCE_DIR
   )
 
   # Streaming test: push + retention + concurrent read (M13)
-  add_executable(streaming_test ../tests/streaming_test.cpp)
-  target_link_libraries(streaming_test PRIVATE pj_scene2d_core pj_datastore GTest::gtest_main)
-  target_compile_options(streaming_test PRIVATE ${PJ_WARNING_FLAGS} ${PJ_SANITIZER_FLAGS})
-  add_test(NAME streaming_test COMMAND streaming_test)
+  pj_scene2d_add_core_test(streaming_test
+    SOURCES ../tests/streaming_test.cpp
+    LIBS pj_scene2d_core pj_datastore GTest::gtest_main
+  )
 
   # FFmpeg decoder test (needs test video file)
   if(PJ_SCENE2D_HAS_FFMPEG)
-    add_executable(ffmpeg_decoder_test ../tests/ffmpeg_decoder_test.cpp)
-    target_link_libraries(ffmpeg_decoder_test PRIVATE
-      pj_scene2d_core pj_datastore
-      ${PJ_SCENE2D_FFMPEG_TARGETS}
-      GTest::gtest_main
-    )
-    target_compile_options(ffmpeg_decoder_test PRIVATE ${PJ_WARNING_FLAGS} ${PJ_SANITIZER_FLAGS})
-    add_test(NAME ffmpeg_decoder_test COMMAND ffmpeg_decoder_test
-      WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+    pj_scene2d_add_core_test(ffmpeg_decoder_test
+      SOURCES ../tests/ffmpeg_decoder_test.cpp
+      LIBS
+        pj_scene2d_core pj_datastore
+        ${PJ_SCENE2D_FFMPEG_TARGETS}
+        GTest::gtest_main
+      RUN_IN_SOURCE_DIR
     )
     set_tests_properties(ffmpeg_decoder_test PROPERTIES
       ENVIRONMENT "LSAN_OPTIONS=suppressions=${CMAKE_CURRENT_SOURCE_DIR}/../tests/lsan_suppressions.txt"
     )
 
     # Thumbnail codec test (encode/decode/downscale — fixture-free)
-    add_executable(thumbnail_codec_test ../tests/thumbnail_codec_test.cpp)
-    target_link_libraries(thumbnail_codec_test PRIVATE
-      pj_scene2d_core pj_datastore
-      ${PJ_SCENE2D_FFMPEG_TARGETS}
-      libjpeg-turbo::libjpeg-turbo
-      GTest::gtest_main
+    pj_scene2d_add_core_test(thumbnail_codec_test
+      SOURCES ../tests/thumbnail_codec_test.cpp
+      LIBS
+        pj_scene2d_core pj_datastore
+        ${PJ_SCENE2D_FFMPEG_TARGETS}
+        libjpeg-turbo::libjpeg-turbo
+        GTest::gtest_main
     )
-    target_compile_options(thumbnail_codec_test PRIVATE ${PJ_WARNING_FLAGS} ${PJ_SANITIZER_FLAGS})
     # thumbnail_codec.cpp is the only test that uses libswscale (downscaling),
     # and swscale pulls libavutil transitively. The linker default DT_RUNPATH is
     # NOT searched for a dependency's own dependencies, so on a host without a
@@ -164,67 +174,57 @@ if(PJ_BUILD_TESTS)
     if(NOT MSVC)
       target_link_options(thumbnail_codec_test PRIVATE "LINKER:--disable-new-dtags")
     endif()
-    add_test(NAME thumbnail_codec_test COMMAND thumbnail_codec_test)
 
     # H.264 NAL utilities test
-    add_executable(h264_utils_test ../tests/h264_utils_test.cpp)
-    target_link_libraries(h264_utils_test PRIVATE
-      pj_scene2d_core pj_datastore
-      ${PJ_SCENE2D_FFMPEG_TARGETS}
-      GTest::gtest_main
-    )
-    target_compile_options(h264_utils_test PRIVATE ${PJ_WARNING_FLAGS} ${PJ_SANITIZER_FLAGS})
-    add_test(NAME h264_utils_test COMMAND h264_utils_test
-      WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+    pj_scene2d_add_core_test(h264_utils_test
+      SOURCES ../tests/h264_utils_test.cpp
+      LIBS
+        pj_scene2d_core pj_datastore
+        ${PJ_SCENE2D_FFMPEG_TARGETS}
+        GTest::gtest_main
+      RUN_IN_SOURCE_DIR
     )
 
     # Codec-generic video utilities test (format->codec_id map + keyframe oracles)
-    add_executable(video_codec_utils_test ../tests/video_codec_utils_test.cpp)
-    target_link_libraries(video_codec_utils_test PRIVATE
-      pj_scene2d_core pj_datastore
-      ${PJ_SCENE2D_FFMPEG_TARGETS}
-      GTest::gtest_main
+    pj_scene2d_add_core_test(video_codec_utils_test
+      SOURCES ../tests/video_codec_utils_test.cpp
+      LIBS
+        pj_scene2d_core pj_datastore
+        ${PJ_SCENE2D_FFMPEG_TARGETS}
+        GTest::gtest_main
     )
-    target_compile_options(video_codec_utils_test PRIVATE ${PJ_WARNING_FLAGS} ${PJ_SANITIZER_FLAGS})
-    add_test(NAME video_codec_utils_test COMMAND video_codec_utils_test)
 
     # StreamingVideoDecoder test (ObjectStore + FfmpegDecoder)
-    add_executable(streaming_video_decoder_test ../tests/streaming_video_decoder_test.cpp)
-    target_link_libraries(streaming_video_decoder_test PRIVATE
-      pj_scene2d_core pj_datastore
-      ${PJ_SCENE2D_FFMPEG_TARGETS}
-      GTest::gtest_main
-    )
-    target_compile_options(streaming_video_decoder_test PRIVATE ${PJ_WARNING_FLAGS} ${PJ_SANITIZER_FLAGS})
-    add_test(NAME streaming_video_decoder_test COMMAND streaming_video_decoder_test
-      WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+    pj_scene2d_add_core_test(streaming_video_decoder_test
+      SOURCES ../tests/streaming_video_decoder_test.cpp
+      LIBS
+        pj_scene2d_core pj_datastore
+        ${PJ_SCENE2D_FFMPEG_TARGETS}
+        GTest::gtest_main
+      RUN_IN_SOURCE_DIR
     )
 
     # Consumer-side zero-copy unwrap: store canonical PJ.VideoFrame wire messages
     # and decode them through a view-extractor that unwraps each to its Annex-B
     # data (the runtime's store-wire-bytes / defer-parse contract). Needs the
     # canonical codec (pj_base) + FFmpeg; uses test_mp4_demux.h to source frames.
-    add_executable(streaming_video_consumer_unwrap_test ../tests/streaming_video_consumer_unwrap_test.cpp)
-    target_link_libraries(streaming_video_consumer_unwrap_test PRIVATE
-      pj_scene2d_core pj_base pj_datastore
-      ${PJ_SCENE2D_FFMPEG_TARGETS}
-      GTest::gtest_main
-    )
-    target_compile_options(streaming_video_consumer_unwrap_test PRIVATE ${PJ_WARNING_FLAGS} ${PJ_SANITIZER_FLAGS})
-    add_test(NAME streaming_video_consumer_unwrap_test COMMAND streaming_video_consumer_unwrap_test
-      WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+    pj_scene2d_add_core_test(streaming_video_consumer_unwrap_test
+      SOURCES ../tests/streaming_video_consumer_unwrap_test.cpp
+      LIBS
+        pj_scene2d_core pj_base pj_datastore
+        ${PJ_SCENE2D_FFMPEG_TARGETS}
+        GTest::gtest_main
+      RUN_IN_SOURCE_DIR
     )
 
     # StreamingVideoSource test (MediaSource adapter for StreamingVideoDecoder)
-    add_executable(streaming_video_source_test2 ../tests/streaming_video_source_test.cpp)
-    target_link_libraries(streaming_video_source_test2 PRIVATE
-      pj_scene2d_core pj_datastore
-      ${PJ_SCENE2D_FFMPEG_TARGETS}
-      GTest::gtest_main
-    )
-    target_compile_options(streaming_video_source_test2 PRIVATE ${PJ_WARNING_FLAGS} ${PJ_SANITIZER_FLAGS})
-    add_test(NAME streaming_video_source_test2 COMMAND streaming_video_source_test2
-      WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+    pj_scene2d_add_core_test(streaming_video_source_test
+      SOURCES ../tests/streaming_video_source_test.cpp
+      LIBS
+        pj_scene2d_core pj_datastore
+        ${PJ_SCENE2D_FFMPEG_TARGETS}
+        GTest::gtest_main
+      RUN_IN_SOURCE_DIR
     )
 
     if(WIN32 AND PJ_SCENE2D_FFMPEG_BIN_DIRS)
@@ -245,12 +245,9 @@ if(PJ_BUILD_TESTS)
   endif()
 
   # Dual-store test: ObjectStore + DataEngine from same MCAP (M11)
-  add_executable(dual_store_test ../tests/dual_store_test.cpp)
-  target_link_libraries(dual_store_test PRIVATE
-    pj_scene2d_core pj_datastore mcap::mcap GTest::gtest_main
-  )
-  target_compile_options(dual_store_test PRIVATE ${PJ_WARNING_FLAGS} ${PJ_SANITIZER_FLAGS})
-  add_test(NAME dual_store_test COMMAND dual_store_test
-    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+  pj_scene2d_add_core_test(dual_store_test
+    SOURCES ../tests/dual_store_test.cpp
+    LIBS pj_scene2d_core pj_datastore mcap::mcap GTest::gtest_main
+    RUN_IN_SOURCE_DIR
   )
 endif()
