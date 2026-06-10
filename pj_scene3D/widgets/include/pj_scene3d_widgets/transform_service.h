@@ -51,6 +51,18 @@ class TransformService : public QObject {
   // messages) callers may run this on a worker thread.
   void ingestFrameTransformsForDataset(PJ::DatasetId dataset_id);
 
+  // Forgets a dataset's TF state so the next ingest re-reads the store: clears
+  // the ingest-done flag and empties the existing TransformBuffer IN PLACE
+  // (3D docks share that buffer by pointer, so they see the reset rather than
+  // holding a stale orphan). Call when the dataset's object topics no longer
+  // hold the data the buffer was built from: an in-place dataset replace
+  // (same-file reload) or the dataset's removal/eviction.
+  void invalidateDataset(PJ::DatasetId dataset_id);
+
+  // invalidateDataset() over every known dataset — the clear-all counterpart,
+  // paired with SessionManager::clearAllObjects() at the shell's wipe sites.
+  void invalidateAll();
+
  signals:
   // Emitted after ingestFrameTransformsForDataset finishes populating a
   // dataset's TransformBuffer, so 3D docks can render once TF is ready.

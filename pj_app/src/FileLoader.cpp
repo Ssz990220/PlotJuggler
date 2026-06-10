@@ -23,7 +23,6 @@
 
 #include "DialogPresenter.h"
 #include "FanoutConfig.h"
-#include "MainWindow.h"
 #include "pj_base/data_source_protocol.h"
 #include "pj_base/dataset.hpp"
 #include "pj_datastore/engine.hpp"
@@ -109,10 +108,12 @@ void FileLoader::openFromDialog(QWidget* dialog_parent) {
   // chrome — see pj_widgets/FileDialog.h. The native GTK dialog also
   // crashes on this app's libpng ABI skew (see the --exclude-libs,ALL
   // note in pj_app/CMakeLists.txt), so we avoid it both for look and
-  // for stability. Passing the MainWindow as the metrics source primes
-  // the toolbar icon size and keeps it in step via chromeMetricsChanged.
-  auto* metrics_source = dialog_parent != nullptr ? qobject_cast<MainWindow*>(dialog_parent->window()) : nullptr;
-  const QString path = FileDialog::getOpenFileName(dialog_parent, tr("Load Data"), last_dir, filter, metrics_source);
+  // for stability. The shell-injected picker threads MainWindow's chrome
+  // metrics into the dialog (toolbar icon size, kept in step via
+  // chromeMetricsChanged) — see setFilePicker().
+  const QString path = file_picker_ != nullptr
+                           ? file_picker_(dialog_parent, tr("Load Data"), last_dir, filter)
+                           : FileDialog::getOpenFileName(dialog_parent, tr("Load Data"), last_dir, filter);
   if (path.isEmpty()) {
     return;
   }
@@ -240,8 +241,11 @@ bool FileLoader::loadFile(const QString& path, QWidget* dialog_parent, const Loa
       session_.registerObjectTopicParser(id, std::move(parser));
     };
   }
+  // Must write into target_engine/target_store — the staged pair the swap
+  // consumes on the replace path (see the staging block above; pinned by
+  // file_loader_test).
   DataSourceRuntimeHost ingest_session(
-      engine, extensions_, dataset_id, source_handle, session_.objectStore(), source->id,
+      target_engine, extensions_, dataset_id, source_handle, target_store, source->id,
       std::move(object_parser_registrar), nullptr, nullptr, handle.libraryOwner());
   if (dialog_parent != nullptr) {
     ingest_session.setMessageBoxHandler(
@@ -469,6 +473,13 @@ bool FileLoader::loadFile(const QString& path, QWidget* dialog_parent, const Loa
   // importers the helper returns `{ config }` and the legacy flow runs unchanged.
   const auto fanouts = detail::extractFanout(config);
 
+  // Live DatasetIds that fanout entries actually loaded data into (Completed or
+  // Cancel-kept); the post-load TF ingest below runs on these. The pre-branch
+  // scratch dataset never qualifies — it stays empty in fanout mode, and on a
+  // replacing fanout its id is staged-engine-scoped (it may alias an unrelated
+  // live dataset).
+  std::vector<DatasetId> fanout_loaded_ids;
+
   if (fanouts.size() == 1) {
     // Single-instance: reuse the already-bound scratch handle + dataset.
     // issue #98: apply the plugin's dataset name BEFORE start() so the
@@ -609,6 +620,7 @@ bool FileLoader::loadFile(const QString& path, QWidget* dialog_parent, const Loa
       // (flushAll), then stop the outer loop so subsequent entries are
       // skipped.
       iter_ingest.flushAll();
+      fanout_loaded_ids.push_back(iter_dataset_id);
       if (user_action == CancelAction::Keep) {
         return EntryOutcome::Kept;
       }
@@ -653,7 +665,8 @@ bool FileLoader::loadFile(const QString& path, QWidget* dialog_parent, const Loa
   // on the staged engine/store, and "keep what was already parsed" means the
   // user wants those rows to replace the previous live data. Only Discard
   // suppresses the swap (the staged side is intentionally thrown away).
-  if (replacing && fanouts.size() == 1 && user_action != CancelAction::Discard) {
+  const bool swapped_in_place = replacing && fanouts.size() == 1 && user_action != CancelAction::Discard;
+  if (swapped_in_place) {
     // Single-instance reload: in-place replace swap. SessionManager owns the ordered, no-event-loop swap (invalidate
     // adapters -> engine + object replace -> parser remap -> re-index). It keeps the primary
     // DatasetId/TopicIds/ObjectTopicIds — and so curve keys + 2D dock bindings — stable, so widgets keep their
@@ -669,10 +682,14 @@ bool FileLoader::loadFile(const QString& path, QWidget* dialog_parent, const Loa
     catalog_.setDatasetDisplayName(existing_primary_id, detail::parseDisplayName(config));
   } else {
     // Legacy path (first load, or fanout-reload fallback). Tombstoned same-source datasets are now permanently gone;
-    // free their heavy ObjectStore topics (removeDataset only hid scalar data, which the engine keeps append-only).
-    // Eviction is deferred to here, not the tombstone site, because a mid-load failure rolls the tombstones back.
+    // free their heavy ObjectStore topics (removeDataset only hid scalar data, which the engine keeps append-only)
+    // and the TF state derived from them. Eviction is deferred to here, not the tombstone site, because a mid-load
+    // failure rolls the tombstones back.
     for (const DatasetId tombstoned_id : tombstoned_for_replace) {
       session_.evictDatasetObjects(tombstoned_id);
+      if (transform_service_ != nullptr) {
+        transform_service_->invalidateDataset(tombstoned_id);
+      }
     }
   }
   tombstoned_for_replace.clear();
@@ -686,7 +703,20 @@ bool FileLoader::loadFile(const QString& path, QWidget* dialog_parent, const Loa
   // the same TransformService. When no service is wired (non-3D builds)
   // TF ingest is simply skipped.
   if (transform_service_ != nullptr) {
-    transform_service_->ingestFrameTransformsForDataset(dataset_id);
+    if (swapped_in_place) {
+      // The primary id survived the swap but its object topics now hold the
+      // reloaded data. Ingest is idempotent per dataset, so without the
+      // invalidation it would skip and 3D views would keep the previous
+      // load's transforms.
+      transform_service_->invalidateDataset(existing_primary_id);
+      transform_service_->ingestFrameTransformsForDataset(existing_primary_id);
+    } else if (fanouts.size() == 1) {
+      transform_service_->ingestFrameTransformsForDataset(dataset_id);
+    } else {
+      for (const DatasetId loaded_id : fanout_loaded_ids) {
+        transform_service_->ingestFrameTransformsForDataset(loaded_id);
+      }
+    }
   }
 
   // Capture the plugin's canonical post-load state AFTER start() + ingest

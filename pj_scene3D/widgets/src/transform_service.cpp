@@ -42,6 +42,27 @@ std::shared_ptr<TransformBuffer> TransformService::transformBuffer(PJ::DatasetId
   return buf;
 }
 
+void TransformService::invalidateDataset(PJ::DatasetId dataset_id) {
+  transforms_populated_.erase(dataset_id);
+  if (auto it = transform_buffers_.find(dataset_id); it != transform_buffers_.end()) {
+    // Clear in place: 3D docks hold this buffer by shared_ptr, so swapping the
+    // map entry would leave them rendering the stale orphan forever.
+    it->second->clear();
+    qCInfo(lcTransformService) << "invalidateDataset" << dataset_id << ": TF buffer cleared";
+  }
+}
+
+void TransformService::invalidateAll() {
+  transforms_populated_.clear();
+  for (auto& [dataset_id, buffer] : transform_buffers_) {
+    (void)dataset_id;
+    buffer->clear();
+  }
+  if (!transform_buffers_.empty()) {
+    qCInfo(lcTransformService) << "invalidateAll:" << transform_buffers_.size() << "TF buffer(s) cleared";
+  }
+}
+
 void TransformService::ingestFrameTransformsForDataset(PJ::DatasetId dataset_id) {
   if (transforms_populated_.contains(dataset_id)) {
     qCInfo(lcTransformService) << "ingestFrameTransformsForDataset" << dataset_id << ": already populated, skipping";

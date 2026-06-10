@@ -194,7 +194,7 @@ PreferencesDialog::PreferencesDialog(Theme& theme, QWidget* parent)
   //      drained any queued repaint events. By that point the
   //      toggle's visual state and theme_.currentTheme() are
   //      guaranteed to match.
-  if (auto* main_window = qobject_cast<MainWindow*>(parent)) {
+  if (main_window != nullptr) {
     connect(
         main_window, &MainWindow::stylesheetChanged, this,
         [this](const QString&) { ui_->themeToggle->setEnabled(true); }, Qt::QueuedConnection);

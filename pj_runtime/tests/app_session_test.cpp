@@ -80,6 +80,8 @@ TEST(AppSessionTest, SeedPlaybackUsesScalarAndObjectTimeBounds) {
   ASSERT_TRUE(
       session.sessionManager().objectStore().pushOwned(*object_topic, 900, std::vector<uint8_t>{1}).has_value());
 
+  // Seeding reads the VISIBLE catalog (production rebuilds before seeding).
+  session.catalogModel().rebuildFromDatastore();
   EXPECT_TRUE(session.seedPlaybackFromSession());
   EXPECT_DOUBLE_EQ(session.playbackEngine().rangeMin().value, 100.0e-9);
   EXPECT_DOUBLE_EQ(session.playbackEngine().rangeMax().value, 900.0e-9);
@@ -100,6 +102,7 @@ TEST(AppSessionTest, SeedPlaybackUsesDisplayRelativeSecondsForShiftedDataset) {
   ASSERT_TRUE(dataset.has_value()) << dataset.error();
   addScalarSamples(session, *dataset, "/imu/x", {5'000'000'000LL, 9'000'000'000LL});
 
+  session.catalogModel().rebuildFromDatastore();
   EXPECT_TRUE(session.seedPlaybackFromSession());
   // Display seconds = (raw - 2e9)/1e9 -> [3, 7], NOT the absolute [5, 9] the old
   // offset-blind seeding produced.
@@ -117,6 +120,7 @@ TEST(AppSessionTest, SubsequentSeedPreservesCurrentTimeWhenNewRangeIsSubset) {
       session.sessionManager().dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "first.mcap"});
   ASSERT_TRUE(first_dataset.has_value()) << first_dataset.error();
   addScalarSamples(session, *first_dataset, "/imu/x", {100, 200});
+  session.catalogModel().rebuildFromDatastore();
   ASSERT_TRUE(session.seedPlaybackFromSession());
   session.playbackEngine().setCurrentTime(PJ::DisplaySeconds{150.0e-9});
 
@@ -125,10 +129,106 @@ TEST(AppSessionTest, SubsequentSeedPreservesCurrentTimeWhenNewRangeIsSubset) {
   ASSERT_TRUE(second_dataset.has_value()) << second_dataset.error();
   addScalarSamples(session, *second_dataset, "/imu/x", {120, 180});
 
+  session.catalogModel().rebuildFromDatastore();
   EXPECT_TRUE(session.seedPlaybackFromSession());
   EXPECT_DOUBLE_EQ(session.playbackEngine().rangeMin().value, 100.0e-9);
   EXPECT_DOUBLE_EQ(session.playbackEngine().rangeMax().value, 200.0e-9);
   EXPECT_DOUBLE_EQ(session.playbackEngine().currentTime().value, 150.0e-9);
+}
+
+// The DataEngine keeps a removed dataset's scalars (append-only tombstone),
+// but the playback timeline must track the VISIBLE catalog: once dataset A is
+// removed, loading dataset B must yield B's range, not A∪B.
+TEST(AppSessionTest, RemovedDatasetStopsContributingToPlaybackRange) {
+  QTemporaryDir dir;
+  ASSERT_TRUE(dir.isValid());
+  PJ::AppSession session(dir.path());
+
+  auto removed_dataset =
+      session.sessionManager().dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "old.mcap"});
+  ASSERT_TRUE(removed_dataset.has_value()) << removed_dataset.error();
+  addScalarSamples(session, *removed_dataset, "/imu/x", {100, 10'000});
+  session.catalogModel().rebuildFromDatastore();
+  ASSERT_TRUE(session.seedPlaybackFromSession());
+
+  ASSERT_TRUE(session.catalogModel().removeDataset(*removed_dataset));
+
+  auto loaded_dataset =
+      session.sessionManager().dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "new.mcap"});
+  ASSERT_TRUE(loaded_dataset.has_value()) << loaded_dataset.error();
+  addScalarSamples(session, *loaded_dataset, "/imu/x", {1'000, 2'000});
+  session.catalogModel().rebuildFromDatastore();
+  ASSERT_TRUE(session.seedPlaybackFromSession());
+
+  EXPECT_DOUBLE_EQ(session.playbackEngine().rangeMin().value, 1'000.0e-9)
+      << "removed dataset still stretches the timeline start";
+  EXPECT_DOUBLE_EQ(session.playbackEngine().rangeMax().value, 2'000.0e-9)
+      << "removed dataset still stretches the timeline end";
+}
+
+// Visibility is per-CURVE, not just per-dataset: trashing all of a topic's
+// curves must drop that topic's bounds from the playback range even while
+// sibling topics keep the dataset itself visible.
+TEST(AppSessionTest, TrashedCurvesStopContributingToPlaybackRange) {
+  QTemporaryDir dir;
+  ASSERT_TRUE(dir.isValid());
+  PJ::AppSession session(dir.path());
+
+  auto dataset =
+      session.sessionManager().dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "drive.mcap"});
+  ASSERT_TRUE(dataset.has_value()) << dataset.error();
+  addScalarSamples(session, *dataset, "/imu/x", {100, 200});
+  addScalarSamples(session, *dataset, "/gps/fix", {100, 1'000'000});
+  session.catalogModel().rebuildFromDatastore();
+  ASSERT_TRUE(session.seedPlaybackFromSession());
+  EXPECT_DOUBLE_EQ(session.playbackEngine().rangeMax().value, 1'000'000.0e-9);
+
+  // Trash the long topic's curves (the dataset stays visible through /imu/x).
+  std::vector<QString> trashed_keys;
+  for (const PJ::CatalogItem& item : session.catalogModel().items()) {
+    if (item.topic_name == QStringLiteral("/gps/fix")) {
+      trashed_keys.push_back(item.key);
+    }
+  }
+  ASSERT_FALSE(trashed_keys.empty());
+  session.catalogModel().removeItems(trashed_keys);
+
+  ASSERT_TRUE(session.seedPlaybackFromSession());
+  EXPECT_DOUBLE_EQ(session.playbackEngine().rangeMin().value, 100.0e-9);
+  EXPECT_DOUBLE_EQ(session.playbackEngine().rangeMax().value, 200.0e-9)
+      << "trashed topic's bounds must stop stretching the timeline";
+}
+
+// After a full catalog clear, the next seed behaves like a first load: range
+// snaps to the new data only (no union with the cleared bounds) and the
+// playhead snaps to the new start (no stale position carried over).
+TEST(AppSessionTest, ClearAllThenSeedSnapsPlaybackToNewData) {
+  QTemporaryDir dir;
+  ASSERT_TRUE(dir.isValid());
+  PJ::AppSession session(dir.path());
+
+  auto first_dataset =
+      session.sessionManager().dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "first.mcap"});
+  ASSERT_TRUE(first_dataset.has_value()) << first_dataset.error();
+  addScalarSamples(session, *first_dataset, "/imu/x", {100, 200});
+  session.catalogModel().rebuildFromDatastore();
+  ASSERT_TRUE(session.seedPlaybackFromSession());
+  session.playbackEngine().setCurrentTime(PJ::DisplaySeconds{150.0e-9});
+
+  session.catalogModel().clearAll();
+
+  auto second_dataset =
+      session.sessionManager().dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "second.mcap"});
+  ASSERT_TRUE(second_dataset.has_value()) << second_dataset.error();
+  addScalarSamples(session, *second_dataset, "/imu/x", {10, 90});
+  session.catalogModel().rebuildFromDatastore();
+  ASSERT_TRUE(session.seedPlaybackFromSession());
+
+  EXPECT_DOUBLE_EQ(session.playbackEngine().rangeMin().value, 10.0e-9);
+  EXPECT_DOUBLE_EQ(session.playbackEngine().rangeMax().value, 90.0e-9)
+      << "cleared dataset's bounds must not survive into the new range";
+  EXPECT_DOUBLE_EQ(session.playbackEngine().currentTime().value, 10.0e-9)
+      << "playhead must snap to the new data's start after a full clear";
 }
 
 TEST(AppSessionTest, ClearingCatalogForgetsRememberedCurveColors) {

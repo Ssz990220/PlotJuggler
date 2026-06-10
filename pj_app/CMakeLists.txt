@@ -93,6 +93,13 @@ target_link_libraries(pj_app PRIVATE
     Qt6::Xml
 )
 
+# -Werror guards against the bug class that bit the reload path: a merge that
+# drops wiring leaves an unused variable behind, which these flags turn into a
+# build failure instead of a silent regression.
+if(DEFINED PJ_WARNING_FLAGS)
+    target_compile_options(pj_app PRIVATE ${PJ_WARNING_FLAGS})
+endif()
+
 # Don't re-export symbols pulled in from static archive members. Without
 # this, Conan-built libpng/libjpeg/etc. symbols are exported globally from
 # pj_app and the dynamic linker can interpose them ahead of the system
@@ -195,4 +202,38 @@ if(PJ_BUILD_TESTS)
         target_compile_options(raster_key_map_test PRIVATE ${PJ_WARNING_FLAGS})
     endif()
     add_test(NAME RasterKeyMap COMMAND raster_key_map_test)
+
+    # End-to-end FileLoader pipeline test (same-file reload semantics). Compiles
+    # FileLoader + its two helper TUs directly (FileLoader has no MainWindow
+    # dependency by design — see setFilePicker) and ingests through the SDK's
+    # mock_file_source_plugin, staged into a temp extensions dir at runtime.
+    add_executable(file_loader_test
+        tests/file_loader_test.cpp
+        src/FileLoader.cpp
+        src/FileLoader.h
+        src/DialogPresenter.cpp
+        src/DialogPresenter.h
+        src/FanoutConfig.cpp
+        src/FanoutConfig.h
+    )
+    set_target_properties(file_loader_test PROPERTIES AUTOMOC ON)
+    target_include_directories(file_loader_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    target_compile_definitions(file_loader_test PRIVATE
+        PJ_MOCK_FILE_SOURCE_PLUGIN_PATH="$<TARGET_FILE:mock_file_source_plugin>"
+    )
+    # $<TARGET_FILE:...> in a compile definition does not create a build-order
+    # dependency; the plugin must exist when the test runs.
+    add_dependencies(file_loader_test mock_file_source_plugin)
+    target_link_libraries(file_loader_test PRIVATE
+        pj_runtime
+        pj_widgets
+        pj_scene3d_widgets
+        pj_dialog_engine_qt
+        Qt6::Widgets
+        GTest::gtest
+    )
+    if(DEFINED PJ_WARNING_FLAGS)
+        target_compile_options(file_loader_test PRIVATE ${PJ_WARNING_FLAGS})
+    endif()
+    add_test(NAME FileLoaderTest COMMAND file_loader_test)
 endif()

@@ -392,8 +392,8 @@ void StreamingSourceManager::workerLoop(DatasetId dataset_id) {
           // session) and idempotent. Solves the cold-start problem where the
           // plugin creates new object topics mid-stream (post-startSession)
           // and would otherwise miss the budget set by setObjectRetentionBudget.
-          if (auto it = sessions_.find(dataset_id); it != sessions_.end()) {
-            it->second->runtime_host_->setObjectRetentionBudget(window_ns, kStreamingObjectMemoryBudget);
+          if (auto session_it = sessions_.find(dataset_id); session_it != sessions_.end()) {
+            session_it->second->runtime_host_->setObjectRetentionBudget(window_ns, kStreamingObjectMemoryBudget);
           }
           // Trim the engine currently being written: B while paused (bounds the
           // tail), the primary while live. The frozen engine is never touched,

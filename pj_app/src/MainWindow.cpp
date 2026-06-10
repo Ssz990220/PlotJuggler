@@ -395,7 +395,7 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
 
   ui_->tabbedPlotWidget->setDataServices(&session_->sessionManager(), &session_->catalogModel());
   ui_->tabbedPlotWidget->setObjectWidgetFactory(
-      [this](const QString& kind, const ObjectDropSeed* seed, QWidget* parent) -> IDataWidget* {
+      [this](const QString& kind, const ObjectDropSeed* seed, QWidget* dock_parent) -> IDataWidget* {
         // One factory for both paths. Layout restore passes the saved XML tag as
         // `kind` with a null seed (the dock reloads its own state); a catalog
         // drop passes an empty kind with a seed, which we classify into a kind,
@@ -411,7 +411,7 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
                           : is2dSceneObjectType(seed->object_type) ? QStringLiteral("scene2d")
                                                                    : QString();
         }
-        IDataWidget* widget = makeSceneDock(resolved_kind, parent);
+        IDataWidget* widget = makeSceneDock(resolved_kind, dock_parent);
         if (widget == nullptr) {
           // Unknown kind: on a drop, tell the user why nothing appeared; on
           // restore (no seed) a null just means "not my kind" and is silent.
@@ -501,6 +501,10 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
     // low-level catalog op stays safe for speculative callers. Keep
     // lastLoadedSource for the quick-reload path (#99).
     session_->sessionManager().clearAllObjects();
+    // TF buffers derive from the just-evicted objects; drop them with the data.
+    if (transform_service_ != nullptr) {
+      transform_service_->invalidateAll();
+    }
     session_->catalogModel().clearAll();
     resetUndoHistory();
   });
@@ -719,8 +723,8 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
       &StreamingSourceManager::onPauseToggled);
 
   // Streaming → playback range wiring. The slider range is scoped to the
-  // active streaming dataset only — unioning with every dataset in the global
-  // store (as AppSession::seedPlaybackFromSession does for file loads) can
+  // active streaming dataset only — unioning with every catalog-visible
+  // dataset (as AppSession::seedPlaybackFromSession does for file loads) can
   // stretch the slider across unrelated historical data, leaving the actual
   // streamed window as a sliver where intermediate scrub positions resolve to
   // "before first entry" or "at the live edge" with nothing in between.
@@ -763,6 +767,14 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
   file_loader_ = std::make_unique<FileLoader>(
       session_->sessionManager(), session_->extensionCatalog(), session_->catalogModel(), this);
   file_loader_->setTransformService(transform_service_.get());
+  // Passing the MainWindow as the metrics source primes the file dialog's
+  // toolbar icon size and keeps it in step via chromeMetricsChanged. Injected
+  // here so FileLoader itself never links MainWindow (keeps it testable).
+  file_loader_->setFilePicker(
+      [](QWidget* dialog_parent, const QString& caption, const QString& dir, const QString& filter) {
+        auto* metrics_source = dialog_parent != nullptr ? qobject_cast<MainWindow*>(dialog_parent->window()) : nullptr;
+        return FileDialog::getOpenFileName(dialog_parent, caption, dir, filter, metrics_source);
+      });
   connect(ui_->leftPanel, &LeftPanel::loadDataRequested, this, &MainWindow::onLoadDataRequested);
   connect(ui_->leftPanel, &LeftPanel::reloadDataRequested, this, &MainWindow::onReloadDataRequested);
   connect(ui_->leftPanel, &LeftPanel::cloudToolboxRequested, this, &MainWindow::onCloudToolboxRequested);
@@ -773,14 +785,14 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
       [this](
           const QString& path, const QString& /*prefix*/, const QString& /*plugin_id*/,
           const QString& /*plugin_config_json*/) {
-        QSettings settings;
-        QStringList recent = settings.value(QStringLiteral("File/recent")).toStringList();
+        QSettings recent_settings;
+        QStringList recent = recent_settings.value(QStringLiteral("File/recent")).toStringList();
         recent.removeAll(path);
         recent.prepend(path);
         while (recent.size() > 5) {
           recent.removeLast();
         }
-        settings.setValue(QStringLiteral("File/recent"), recent);
+        recent_settings.setValue(QStringLiteral("File/recent"), recent);
         ui_->leftPanel->setRecentEnabled(true);
       });
   // Recent files reopen through the normal load flow, including the dialog.
@@ -788,10 +800,7 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
     file_loader_->loadFile(path, this);
   });
   // Enable the popup immediately when prior sessions recorded recent files.
-  {
-    QSettings settings;
-    ui_->leftPanel->setRecentEnabled(!settings.value(QStringLiteral("File/recent")).toStringList().isEmpty());
-  }
+  ui_->leftPanel->setRecentEnabled(!settings.value(QStringLiteral("File/recent")).toStringList().isEmpty());
 
   connect(ui_->actionMarketplace, &QAction::triggered, this, &MainWindow::onOpenMarketplace);
   connect(ui_->actionExit, &QAction::triggered, this, &QWidget::close);
@@ -1053,6 +1062,10 @@ void MainWindow::onCatalogTrashRequested(QStringList keys, bool covers_all) {
     // subscription sees them gone and resets 2D viewers (symmetric with the
     // "Remove all Datasets" path). Keep lastLoadedSource for reload.
     session_->sessionManager().clearAllObjects();
+    // TF buffers derive from the just-evicted objects; drop them with the data.
+    if (transform_service_ != nullptr) {
+      transform_service_->invalidateAll();
+    }
     catalog.clearAll();
     resetUndoHistory();
     return;
@@ -1071,6 +1084,13 @@ void MainWindow::onCatalogTrashRequested(QStringList keys, bool covers_all) {
   }
   session_->sessionManager().evictObjectTopics(trashed_objects);
   catalog.removeItems(std::vector<QString>(keys.begin(), keys.end()));
+  // Shrink the playback range to the surviving visible data right away,
+  // rather than only on the next load — unless a streaming dataset exists:
+  // the slider is then scoped to the active stream (see the streaming range
+  // wiring in the constructor) and a catalog-wide recompute would stomp it.
+  if (active_streaming_dataset_id_ == 0) {
+    session_->seedPlaybackFromSession();
+  }
   resetUndoHistory();
 }
 
@@ -1080,7 +1100,17 @@ void MainWindow::onRemoveDatasetRequested(DatasetId dataset_id) {
   // cleared()/itemsRemoved subscriptions then see the topics already gone and
   // each widget prunes its own pieces (curves / object layers).
   session_->sessionManager().evictDatasetObjects(dataset_id);
+  // The TF buffer was built from the just-evicted object topics; drop it so a
+  // later reload re-ingests instead of skipping on the populated guard.
+  if (transform_service_ != nullptr) {
+    transform_service_->invalidateDataset(dataset_id);
+  }
   session_->catalogModel().removeDataset(dataset_id);
+  // Shrink the playback range to the remaining data right away — unless a
+  // streaming dataset exists (the slider is scoped to the active stream).
+  if (active_streaming_dataset_id_ == 0) {
+    session_->seedPlaybackFromSession();
+  }
   resetUndoHistory();
 }
 
@@ -1768,7 +1798,8 @@ void MainWindow::loadLayoutFromPath(const QString& path) {
                      "currently loaded data?")
                       .arg(replay.resolved_path));
       QPushButton* reload_btn = box.addButton(tr("Reload original"), QMessageBox::AcceptRole);
-      QPushButton* current_btn = box.addButton(tr("Use current data"), QMessageBox::AcceptRole);
+      // "Use current data" is the fall-through: neither cancel nor reload.
+      box.addButton(tr("Use current data"), QMessageBox::AcceptRole);
       QPushButton* cancel_btn = box.addButton(tr("Cancel"), QMessageBox::RejectRole);
       box.setDefaultButton(reload_btn);
       box.exec();
@@ -2358,14 +2389,15 @@ std::optional<DatasetId> MainWindow::chooseActiveDataset(const std::vector<std::
 
 MainWindow::MissingCurveChoice MainWindow::promptMissingCurves(const QStringList& names) {
   static constexpr int kMaxShown = 10;
-  QString body = tr("The layout references %n curve(s) not present in the current data:", "", names.size());
+  const int name_count = static_cast<int>(names.size());
+  QString body = tr("The layout references %n curve(s) not present in the current data:", "", name_count);
   body += QStringLiteral("\n\n");
-  const int shown = std::min<int>(names.size(), kMaxShown);
+  const int shown = std::min(name_count, kMaxShown);
   for (int i = 0; i < shown; ++i) {
     body += QStringLiteral("  • ") + names[i] + QStringLiteral("\n");
   }
-  if (names.size() > kMaxShown) {
-    body += tr("  … and %n more\n", "", names.size() - kMaxShown);
+  if (name_count > kMaxShown) {
+    body += tr("  … and %n more\n", "", name_count - kMaxShown);
   }
   body += QStringLiteral("\n");
   body += tr("Choose how to handle them:");

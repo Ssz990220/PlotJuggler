@@ -36,15 +36,15 @@ QString expandPlaceholders(const QString& body, const std::map<QString, QString>
   QString out;
   out.reserve(body.size());
 
-  int i = 0;
+  qsizetype i = 0;
   while (i < body.size()) {
-    const int start = body.indexOf(QStringLiteral("${"), i);
+    const qsizetype start = body.indexOf(QStringLiteral("${"), i);
     if (start < 0) {
       out.append(QStringView{body}.mid(i));
       break;
     }
     out.append(QStringView{body}.mid(i, start - i));
-    const int end = body.indexOf(QLatin1Char('}'), start + 2);
+    const qsizetype end = body.indexOf(QLatin1Char('}'), start + 2);
     if (end < 0) {
       qCWarning(lcTheme) << "Unclosed ${...} token in QSS, leaving literal:" << body.mid(start, 32);
       out.append(QStringView{body}.mid(start));
@@ -80,7 +80,7 @@ QString parseAndExpand(const QString& qss, std::map<QString, QString>* tokens_ou
   while (i < lines.size() && !lines[i].contains(QLatin1String(kPaletteEndMarker))) {
     const QString trimmed = lines[i].trimmed();
     if (!trimmed.isEmpty() && !trimmed.startsWith(QLatin1String("//"))) {
-      const int colon = trimmed.indexOf(QLatin1Char(':'));
+      const qsizetype colon = trimmed.indexOf(QLatin1Char(':'));
       if (colon > 0) {
         QString key = trimmed.left(colon).trimmed();
         QString value = trimmed.mid(colon + 1).trimmed();

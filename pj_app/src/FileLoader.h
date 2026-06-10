@@ -4,6 +4,7 @@
 
 #include <QObject>
 #include <QString>
+#include <functional>
 
 #include "pj_base/types.hpp"
 
@@ -54,6 +55,16 @@ class FileLoader : public QObject {
   // directory is persisted in QSettings under "FileLoader/lastDir".
   void openFromDialog(QWidget* dialog_parent);
 
+  // Resolves the "pick a file" interaction inside openFromDialog(). The shell
+  // injects one that threads MainWindow's chrome metrics into PJ::FileDialog,
+  // keeping FileLoader free of a MainWindow link (which also makes it testable
+  // headlessly). Unset -> plain PJ::FileDialog::getOpenFileName, no metrics.
+  using FilePicker =
+      std::function<QString(QWidget* parent, const QString& caption, const QString& dir, const QString& filter)>;
+  void setFilePicker(FilePicker picker) {
+    file_picker_ = std::move(picker);
+  }
+
   // Programmatic entry point. Returns true on successful ingest.
   // Emits fileLoaded() on success and fileLoadFailed() on failure.
   bool loadFile(const QString& path, QWidget* dialog_parent = nullptr);
@@ -80,6 +91,7 @@ class FileLoader : public QObject {
   SessionManager& session_;
   ExtensionCatalogService& extensions_;
   CatalogModel& catalog_;
+  FilePicker file_picker_;
   TimeDomainId default_time_domain_id_ = 0;
   pj::scene3d::TransformService* transform_service_ = nullptr;
 };

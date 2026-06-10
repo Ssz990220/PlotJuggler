@@ -41,10 +41,12 @@ struct AcceptedPayload {
 
 // Result of a data-source dialog. payload is engaged iff outcome == kAccepted;
 // error is non-empty iff outcome == kPluginContractViolation.
+// NSDMIs keep partial designated-init construction warning-clean under
+// -Wmissing-field-initializers (pj_app builds with PJ_WARNING_FLAGS).
 struct DataSourceResult {
   Outcome outcome = Outcome::kNoDialog;
-  std::optional<AcceptedPayload> payload;
-  std::string error;
+  std::optional<AcceptedPayload> payload = std::nullopt;
+  std::string error = {};
 };
 
 // Inputs for showDataSourceDialog. Preconditions (NOT checked by the helper):

@@ -67,17 +67,20 @@ class AppSession : public QObject {
   // (issue #68); cleared whenever the catalog empties.
   [[nodiscard]] CurveColorRegistry& curveColorRegistry() const;
 
-  // Scans every dataset's topics + object topics for time bounds and applies
-  // them to the playback engine.
+  // Recomputes the playback range from the time bounds of the CATALOG-VISIBLE
+  // topics + object topics (per-topic granularity, not per-dataset).
+  // Visibility matters: the engine keeps removed/trashed topics' data
+  // (append-only tombstones), and those must not stretch the timeline.
+  // Recomputed from scratch each call, so the range also shrinks (remove or
+  // trash data, reload a shorter file). Caller contract: rebuild the catalog
+  // first, as the load/ingest paths already do.
   //
-  // First call (no prior seed): sets the range and snaps currentTime to the
-  // new minimum so the user lands at the start of the data.
+  // First seed after the session starts (or after the catalog emptied): also
+  // snaps currentTime to the new minimum so the user lands at the start of the
+  // data. Later seeds preserve the scrub position (setRange re-clamps it).
   //
-  // Subsequent calls: expand the range monotonically so additional file loads
-  // never shrink it, and leave currentTime alone so the user's scrub position
-  // is preserved across loads.
-  //
-  // Returns true if any topic with data was found and the engine was updated.
+  // Returns true if any visible topic with data was found and the engine was
+  // updated; false when there is none.
   bool seedPlaybackFromSession();
 
  private:
@@ -89,8 +92,9 @@ class AppSession : public QObject {
   // session-owned plugin handles die before loaded plugin libraries unload.
   std::unique_ptr<ExtensionCatalogService> extension_catalog_;
 
-  // Flips to true on the first successful seedPlaybackFromSession(). Used to
-  // distinguish "first load" (snap currentTime) from "additional load"
+  // Flips to true on the first successful seedPlaybackFromSession(); re-armed
+  // (set false) by the CatalogModel::cleared() hook when the catalog empties.
+  // Used to distinguish "first load" (snap currentTime) from "additional load"
   // (preserve currentTime).
   bool playback_seeded_ = false;
 };

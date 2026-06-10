@@ -19,7 +19,7 @@ namespace {
 // opaque qint64. The dock's topic id IS that opaque key.
 [[nodiscard]] ObjectTopicId toTopicId(qint64 id) {
   ObjectTopicId tid;
-  tid.id = static_cast<int64_t>(id);
+  tid.id = static_cast<uint32_t>(id);
   return tid;
 }
 }  // namespace
