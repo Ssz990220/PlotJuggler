@@ -3,6 +3,7 @@
 #include <gtest/gtest.h>
 
 #include <QApplication>
+#include <QDialogButtonBox>
 #include <QEventLoop>
 #include <QLabel>
 #include <QLineEdit>
@@ -120,6 +121,35 @@ TEST_F(PanelEngineTest, RequestCloseFiresCallback) {
 
   EXPECT_TRUE(fired);
   EXPECT_EQ(captured_reason, "import_complete");
+
+  delete panel;
+}
+
+TEST_F(PanelEngineTest, ButtonBoxRejectClosesPanel) {
+  // The panel's standard QDialogButtonBox (Close) is wired to the close path:
+  // connectWidgetSignals skips button-box buttons and the non-modal panel has
+  // no QDialog::reject, so without that wiring Close would be inert.
+  PJ::PanelEngine engine(makeMockHandle());
+  std::string captured_reason;
+  bool fired = false;
+  engine.onCloseRequested([&](std::string reason) {
+    captured_reason = std::move(reason);
+    fired = true;
+  });
+
+  QWidget* panel = engine.openPanel();
+  ASSERT_NE(panel, nullptr);
+
+  auto* button_box = panel->findChild<QDialogButtonBox*>("buttonBox");
+  ASSERT_NE(button_box, nullptr);
+  auto* close_btn = button_box->button(QDialogButtonBox::Close);
+  ASSERT_NE(close_btn, nullptr);
+  close_btn->click();
+
+  pumpEventLoop(10);
+
+  EXPECT_TRUE(fired);
+  EXPECT_EQ(captured_reason, "closed by user");
 
   delete panel;
 }

@@ -24,6 +24,7 @@ constexpr const char* kUiContent = R"(<?xml version="1.0" encoding="UTF-8"?>
    <item><widget class="QLabel" name="labelHello"><property name="text"><string>Hello</string></property></widget></item>
    <item><widget class="QLineEdit" name="textBox"/></item>
    <item><widget class="QPushButton" name="buttonClose"><property name="text"><string>Close</string></property></widget></item>
+   <item><widget class="QDialogButtonBox" name="buttonBox"><property name="standardButtons"><set>QDialogButtonBox::Close</set></property></widget></item>
   </layout>
  </widget>
 </ui>

@@ -235,6 +235,26 @@ QWidget* PanelEngine::openPanel() {
     }
   });
 
+  // 3b. Wire the panel's standard QDialogButtonBox (objectName "buttonBox").
+  // connectWidgetSignals deliberately skips buttons owned by a button box, and
+  // unlike a modal dialog the non-modal panel has no QDialog::accept/reject to
+  // fall back on — so without this the Close/OK buttons are inert (the reported
+  // bug: Close does nothing in every toolbox). Route them through the same
+  // close path as a plugin-requested __request_close.
+  if (auto* button_box = loaded->findChild<QDialogButtonBox*>(QStringLiteral("buttonBox"))) {
+    auto on_close = [this]() {
+      if (impl_->closed) {
+        return;
+      }
+      if (impl_->close_cb) {
+        impl_->close_cb("closed by user");
+      }
+      this->close();
+    };
+    QObject::connect(button_box, &QDialogButtonBox::rejected, this, on_close);
+    QObject::connect(button_box, &QDialogButtonBox::accepted, this, on_close);
+  }
+
   // 4. Install drop event filter for any declared drop targets.
   {
     WidgetDataView drop_view(initial_raw);
