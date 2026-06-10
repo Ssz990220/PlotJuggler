@@ -36,6 +36,14 @@ class MediaSource {
   /// Returns the latest MediaFrame (base pixels and/or overlays), or nullopt
   /// if nothing new since the last call.
   virtual std::optional<MediaFrame> takeFrame() = 0;
+
+  /// Clear any "already produced this timestamp" caches so the next
+  /// setTimestamp() re-decodes even at an unchanged time. The compositor calls
+  /// this after a layer rebuild (add/remove/visibility): the underlying sources
+  /// are re-seeded at the same tracker time and would otherwise dedup the
+  /// request away, leaving a stale or empty frame until the tracker next moves.
+  /// Default: no-op (sources without a timestamp cache need nothing).
+  virtual void invalidate() {}
 };
 
 }  // namespace PJ

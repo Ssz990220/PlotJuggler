@@ -12,11 +12,14 @@
 #include <string>
 #include <string_view>
 #include <thread>
+#include <unordered_map>
 
+#include "pj_base/builtin/camera_info.hpp"
 #include "pj_datastore/object_store.hpp"
 #include "pj_scene2d_core/codec_pipeline.h"
 #include "pj_scene2d_core/codecs.h"
 #include "pj_scene2d_core/media_source.h"
+#include "pj_scene2d_core/undistort_remap.h"
 
 namespace PJ {
 
@@ -91,10 +94,18 @@ class ImagePipelineSource : public MediaSource {
 
   void setTimestamp(int64_t ts_ns) override;
   std::optional<MediaFrame> takeFrame() override;
+  void invalidate() override;
 
   /// Install a notification fired (from the worker thread) every time
   /// takeFrame() has new data to return. Pass nullptr to clear.
   void setFrameReadyCallback(std::function<void()> cb);
+
+  /// Provide the camera calibration used to rectify decoded frames, keyed by
+  /// CameraInfo.frame_id. The owner (which has the session's parser registry)
+  /// parses each "<ns>/camera_info" topic and passes the result here. Must be
+  /// called on the main thread before the first setTimestamp(); empty disables
+  /// rectification (frames pass through unmodified).
+  void setCameraInfoMap(std::unordered_map<std::string, sdk::CameraInfo> by_frame_id);
 
  private:
   void workerLoop();
@@ -104,6 +115,23 @@ class ImagePipelineSource : public MediaSource {
   // display frame: raw/bayer encodings via the raw-or-bayer path (incl. grayscale
   // PNG-wrapped recovery), otherwise the jpeg/png/auto compressed cascade.
   std::optional<DecodedFrame> decodeCanonicalImage(const sdk::Image& img, int64_t pts, std::string_view topic_name);
+
+  // Lens-undistort a decoded frame in place when calibration exists for its
+  // frame_id, emitting it at the camera's native (calibrated) resolution so 2D
+  // annotation overlays authored in that space line up. No-op without calibration.
+  //
+  // ASSUMPTION (not a universal law): a usable CameraInfo for this frame implies
+  // the image is still in raw sensor space and its annotations are authored in the
+  // native *rectified* space (the Waymo / Foxglove / ROS image_proc convention).
+  // CameraInfo describes the lens, NOT whether THIS stream was already rectified,
+  // so a producer that logs a pre-rectified image alongside its CameraInfo would
+  // be rectified twice. See docs/TECHNICAL_NOTES.md §12 for the rationale and the
+  // known blind spot.
+  void rectifyIfCalibrated(DecodedFrame& df);
+
+  // Return the injected CameraInfo whose frame_id matches, or nullptr when none.
+  // A plain lookup into the map set by setCameraInfoMap(); worker-thread-only.
+  const sdk::CameraInfo* cameraInfoFor(const std::string& frame_id);
 
   // I/O config and codec state — read/written by worker thread only after
   // construction finishes. The main thread treats them as read-only after
@@ -126,12 +154,26 @@ class ImagePipelineSource : public MediaSource {
   AutoImageCodec auto_image_codec_;
   int64_t last_entry_ts_ = INT64_MIN;
 
+  // Rectification state. camera_info_by_frame_ is injected once (main thread,
+  // before first decode) via setCameraInfoMap; each camera's reverse map is then
+  // built on first use and reused thereafter (worker-thread-only).
+  std::unordered_map<std::string, sdk::CameraInfo> camera_info_by_frame_;
+  std::unordered_map<std::string, UndistortMap> undistort_by_frame_;
+  // Set true by the first setTimestamp() (main thread). Guards setCameraInfoMap:
+  // once a decode has been requested the worker may read camera_info_by_frame_
+  // unlocked, so a later injection would be a data race — it is refused instead.
+  bool timestamp_requested_ = false;
+
   // Request channel (main → worker).
   std::mutex request_mutex_;
   std::condition_variable request_cv_;
   int64_t requested_ts_ = INT64_MIN;
   int64_t last_requested_ts_ = INT64_MIN;  // main-thread-only dedup
   bool has_request_ = false;
+  // Set by invalidate() (under request_mutex_), consumed by the worker: clears
+  // the worker-side last_entry_ts_ dedup so the next decode re-runs even on the
+  // same entry (a composite rebuild needs a fresh frame at the unchanged time).
+  bool force_redecode_ = false;
   std::atomic<bool> running_{true};
 
   // Result channel (worker → main).

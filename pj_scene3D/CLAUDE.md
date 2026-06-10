@@ -46,7 +46,8 @@ see pj-official-plugins#122) decode ROS / CDR messages into canonical
 # Validation
 
 Before any commit, run the tests and check that they all pass
-(`tf_buffer_test`, `tf_buffer_hierarchy_test`, `occupancy_grid_reconstructor_test`).
+(`tf_buffer_test`, `tf_buffer_hierarchy_test`, `occupancy_grid_reconstructor_test`,
+`scene_entities_decode_test`).
 
 Make sure that all the markdown files in this folder are updated, if necessary.
 

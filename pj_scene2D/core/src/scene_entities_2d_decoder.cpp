@@ -2,9 +2,11 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include <algorithm>
+#include <any>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -225,22 +227,17 @@ void appendEntity(const sdk::SceneEntity& entity, ImageAnnotation& annotation) {
   }
 }
 
-}  // namespace
-
-Expected<SceneFrame> SceneEntities2DDecoder::decode(const uint8_t* data, size_t size) {
-  auto entities = deserializeSceneEntities(data, size);
-  if (!entities.has_value()) {
-    return unexpected(std::move(entities).error());
-  }
-
+// Project a canonical SceneEntities batch onto a 2D SceneFrame (the primitives'
+// xy footprints as annotations). Object-based: shared by both decode routes.
+[[nodiscard]] SceneFrame sceneEntitiesToFrame(const sdk::SceneEntities& entities) {
   SceneFrame frame;
   ImageAnnotation annotation;
-  if (!entities->entities.empty()) {
-    frame.timestamp = entities->entities.front().timestamp;
+  if (!entities.entities.empty()) {
+    frame.timestamp = entities.entities.front().timestamp;
     annotation.timestamp = frame.timestamp;
   }
 
-  for (const auto& entity : entities->entities) {
+  for (const auto& entity : entities.entities) {
     appendEntity(entity, annotation);
   }
 
@@ -248,6 +245,24 @@ Expected<SceneFrame> SceneEntities2DDecoder::decode(const uint8_t* data, size_t 
     frame.annotations.push_back(std::move(annotation));
   }
   return frame;
+}
+
+}  // namespace
+
+Expected<SceneFrame> SceneEntities2DDecoder::decode(const uint8_t* data, size_t size) {
+  auto entities = deserializeSceneEntities(data, size);
+  if (!entities.has_value()) {
+    return unexpected(std::move(entities).error());
+  }
+  return sceneEntitiesToFrame(*entities);
+}
+
+Expected<SceneFrame> SceneEntities2DDecoder::decode(const sdk::BuiltinObject& object) {
+  const auto* entities = std::any_cast<sdk::SceneEntities>(&object);
+  if (entities == nullptr) {
+    return unexpected(std::string("SceneEntities2DDecoder: object is not SceneEntities"));
+  }
+  return sceneEntitiesToFrame(*entities);
 }
 
 }  // namespace PJ

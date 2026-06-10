@@ -9,6 +9,7 @@ add_library(pj_scene3d_core STATIC
   src/camera/camera.cpp
   src/camera/camera_math.cpp
   src/occupancy_grid_reconstructor.cpp
+  src/scene_entities_decode.cpp
   src/tf/tf_buffer.cpp
   src/version.cpp
 )
@@ -28,6 +29,7 @@ if(PJ_BUILD_TESTS)
     ../tests/camera_near_far_test.cpp
     ../tests/camera_zoom_to_cursor_test.cpp
     ../tests/camera_state_transfer_test.cpp
+    ../tests/scene_entities_decode_test.cpp
     ../tests/tf_buffer_test.cpp
     ../tests/tf_buffer_hierarchy_test.cpp
   )

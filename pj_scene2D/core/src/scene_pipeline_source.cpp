@@ -6,11 +6,22 @@
 #include <cstdio>
 #include <utility>
 
+#include "pj_plugins/sdk/message_parser_plugin_base.hpp"
+
 namespace PJ {
 
 ScenePipelineSource::ScenePipelineSource(
     ObjectStore* store, ObjectTopicId topic, std::unique_ptr<ISceneDecoder> decoder)
     : store_(store), topic_(topic), decoder_(std::move(decoder)) {}
+
+ScenePipelineSource::ScenePipelineSource(
+    ObjectStore* store, ObjectTopicId topic, MessageParserPluginBase* parser, std::shared_ptr<std::mutex> parser_mutex,
+    std::unique_ptr<ISceneDecoder> decoder)
+    : store_(store),
+      topic_(topic),
+      decoder_(std::move(decoder)),
+      parser_(parser),
+      parser_mutex_(std::move(parser_mutex)) {}
 
 void ScenePipelineSource::setTimestamp(int64_t ts_ns) {
   if (ts_ns == last_ts_) {
@@ -34,15 +45,45 @@ void ScenePipelineSource::setTimestamp(int64_t ts_ns) {
     return;
   }
 
-  auto result = decoder_->decode(entry->payload.bytes.data(), entry->payload.bytes.size());
-  if (result.has_value()) {
-    pending_scene_ = std::move(*result);
-    pending_clear_ = false;
+  auto apply = [&](Expected<SceneFrame> result) {
+    if (result.has_value()) {
+      pending_scene_ = std::move(*result);
+    } else {
+      // Covers both decode failures and a parser contract violation (the decoder's
+      // decode(object) returns an error when the BuiltinObject isn't its type).
+      fprintf(
+          stderr, "[ScenePipelineSource] decode failed at ts=%lld: %s\n", static_cast<long long>(ts_ns),
+          result.error().c_str());
+      pending_scene_.reset();
+    }
+  };
+
+  if (parser_ != nullptr) {
+    // Parser-backed topic: the store holds the RAW source message. Run the parser
+    // to get the canonical object and decode that object directly — no serialize/
+    // deserialize round-trip (the 3D consumer decodes the object the same way).
+    // Hold the shared parser mutex for the parseObject call only (mirrors
+    // ImagePipelineSource::decodeAt): MessageParser plugins keep stateful scratch
+    // and aren't thread-safe across consumers of the same singleton.
+    auto invokeParser = [&] {
+      if (parser_mutex_) {
+        std::lock_guard<std::mutex> lock(*parser_mutex_);
+        return parser_->parseObject(entry->timestamp, entry->payload);
+      }
+      return parser_->parseObject(entry->timestamp, entry->payload);
+    };
+    auto record = invokeParser();
+    if (!record.has_value()) {
+      fprintf(
+          stderr, "[ScenePipelineSource] parseObject failed at ts=%lld: %s\n", static_cast<long long>(ts_ns),
+          record.error().c_str());
+      pending_scene_.reset();
+      return;
+    }
+    apply(decoder_->decode(record->object));
   } else {
-    fprintf(
-        stderr, "[ScenePipelineSource] decode failed at ts=%lld: %s\n", static_cast<long long>(ts_ns),
-        result.error().c_str());
-    markCleared();
+    // Canonical-producer topic: the store holds canonical bytes; decode as-is.
+    apply(decoder_->decode(entry->payload.bytes.data(), entry->payload.bytes.size()));
   }
 }
 
@@ -62,6 +103,13 @@ std::optional<MediaFrame> ScenePipelineSource::takeFrame() {
     return MediaFrame{};
   }
   return std::nullopt;
+}
+
+void ScenePipelineSource::invalidate() {
+  // Drop the timestamp dedup so the next setTimestamp re-decodes even at an
+  // unchanged time (composite rebuild re-seeds at the current tracker time).
+  last_ts_ = INT64_MIN;
+  pending_scene_.reset();
 }
 
 }  // namespace PJ

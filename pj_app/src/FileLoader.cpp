@@ -88,6 +88,12 @@ QString pluginConfigKey(const std::string& plugin_id) {
 void applyDefaultIngestPolicies(DataSourceRuntimeHost& session) {
   session.policyResolver().setDefault(PJ::sdk::ObjectIngestPolicy::kLazyObjectsEagerScalars);
   session.policyResolver().setForType(PJ::sdk::BuiltinObjectType::kPointCloud, PJ::sdk::ObjectIngestPolicy::kPureLazy);
+  // SceneEntities (markers) and ImageAnnotations carry no scalar fields — an
+  // eager-scalar parse would fail, so keep them pure-lazy like point clouds.
+  session.policyResolver().setForType(
+      PJ::sdk::BuiltinObjectType::kSceneEntities, PJ::sdk::ObjectIngestPolicy::kPureLazy);
+  session.policyResolver().setForType(
+      PJ::sdk::BuiltinObjectType::kImageAnnotations, PJ::sdk::ObjectIngestPolicy::kPureLazy);
   session.policyResolver().setForType(PJ::sdk::BuiltinObjectType::kVideoFrame, PJ::sdk::ObjectIngestPolicy::kPureLazy);
 }
 

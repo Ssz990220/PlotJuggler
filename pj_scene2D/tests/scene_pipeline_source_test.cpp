@@ -5,6 +5,7 @@
 
 #include <gtest/gtest.h>
 
+#include <any>
 #include <atomic>
 #include <cstdint>
 #include <cstring>
@@ -42,6 +43,19 @@ class MockDecoder final : public ISceneDecoder {
     ia.timestamp = ts;
     ia.points.resize(n);
     sf.annotations.push_back(std::move(ia));
+    return sf;
+  }
+
+  // Object route (parser-backed topics): take the canonical ImageAnnotations as-is.
+  Expected<SceneFrame> decode(const sdk::BuiltinObject& object) override {
+    calls.fetch_add(1, std::memory_order_relaxed);
+    const auto* ia = std::any_cast<sdk::ImageAnnotations>(&object);
+    if (ia == nullptr) {
+      return unexpected(std::string("mock decoder: object is not ImageAnnotations"));
+    }
+    SceneFrame sf;
+    sf.timestamp = ia->timestamp;
+    sf.annotations.push_back(*ia);
     return sf;
   }
 };

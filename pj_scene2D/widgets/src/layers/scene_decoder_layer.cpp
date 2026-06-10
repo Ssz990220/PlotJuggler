@@ -5,6 +5,7 @@
 #include <memory>
 #include <utility>
 
+#include "pj_runtime/SessionManager.h"
 #include "pj_scene2d_core/media_source.h"
 #include "pj_scene2d_core/scene_decoder.h"
 #include "pj_scene2d_core/scene_pipeline_source.h"
@@ -24,6 +25,16 @@ std::unique_ptr<MediaSource> SceneDecoderLayer::createMediaSource(const SceneLay
   auto decoder = makeSceneDecoder(schema_);
   if (decoder == nullptr) {
     return nullptr;
+  }
+  // Topics produced by a message parser (e.g. yolo_msgs/DetectionArray, markers)
+  // store the RAW source message under pure-lazy ingest; hand the parser to the
+  // source so it converts raw -> canonical before decoding. Topics whose loader
+  // writes canonical bytes directly have no parser and decode them as-is.
+  if (auto* session = sessionManager(); session != nullptr) {
+    if (auto* parser = session->parserForObjectTopic(topicId()); parser != nullptr) {
+      return std::make_unique<ScenePipelineSource>(
+          store, topicId(), parser, session->parserMutexForObjectTopic(topicId()), std::move(decoder));
+    }
   }
   return std::make_unique<ScenePipelineSource>(store, topicId(), std::move(decoder));
 }

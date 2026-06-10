@@ -15,18 +15,22 @@ set(PJ_SCENE3D_WIDGETS_SOURCES
   src/passes/grid_render_pass.cpp
   src/passes/pointcloud_render_pass.cpp
   src/passes/occupancy_grid_render_pass.cpp
+  src/passes/marker_render_pass.cpp
   src/render_pass.cpp
   src/scene_view_widget.cpp
   src/scene3d_layer.cpp
   src/layers/pointcloud_layer.cpp
   src/layers/occupancy_grid_layer.cpp
+  src/layers/scene_entities_layer.cpp
   src/Scene3DDockWidget.cpp
   src/transform_service.cpp
   include/pj_scene3d_widgets/scene_view_widget.h
   include/pj_scene3d_widgets/scene3d_layer.h
   include/pj_scene3d_widgets/layers/pointcloud_layer.h
   include/pj_scene3d_widgets/layers/occupancy_grid_layer.h
+  include/pj_scene3d_widgets/layers/scene_entities_layer.h
   include/pj_scene3d_widgets/passes/occupancy_grid_render_pass.h
+  include/pj_scene3d_widgets/passes/marker_render_pass.h
   include/pj_scene3d_widgets/gl/texture.h
   include/pj_scene3d_widgets/Scene3DDockWidget.h
   include/pj_scene3d_widgets/transform_service.h

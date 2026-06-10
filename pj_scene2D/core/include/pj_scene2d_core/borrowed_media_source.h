@@ -36,6 +36,12 @@ class BorrowedMediaSource final : public MediaSource {
     return source_->takeFrame();
   }
 
+  void invalidate() override {
+    if (source_ != nullptr) {
+      source_->invalidate();
+    }
+  }
+
  private:
   MediaSource* source_ = nullptr;
 };

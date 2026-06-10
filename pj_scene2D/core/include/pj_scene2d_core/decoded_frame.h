@@ -4,6 +4,7 @@
 
 #include <cstdint>
 #include <memory>
+#include <string>
 #include <vector>
 
 namespace PJ {
@@ -64,6 +65,7 @@ struct DecodedFrame {
   int height = 0;                                ///< Image height in pixels
   PixelFormat format = PixelFormat::kRGB888;     ///< Pixel layout in the buffer
   int64_t pts = -1;                              ///< Presentation timestamp (-1 if unknown)
+  std::string frame_id;  ///< Source frame (from sdk::Image); lets a consumer find the CameraInfo.
 
   /// True if no pixel data is present (null or empty buffer).
   [[nodiscard]] bool isNull() const noexcept {

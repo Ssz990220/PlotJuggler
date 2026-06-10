@@ -9,6 +9,7 @@
 #include <utility>
 #include <vector>
 
+#include "pj_scene2d_core/borrowed_media_source.h"
 #include "pj_scene2d_core/media_source.h"
 
 namespace PJ {
@@ -19,9 +20,14 @@ namespace {
 class MockSource final : public MediaSource {
  public:
   int set_calls = 0;
+  int invalidate_calls = 0;
   bool emit_base = false;
   int n_overlays = 0;
   int64_t base_w = 0;
+
+  void invalidate() override {
+    ++invalidate_calls;
+  }
 
   void setTimestamp(int64_t /*ts_ns*/) override {
     ++set_calls;
@@ -177,6 +183,58 @@ TEST(CompositeMediaSourceTest, NoNewDataReturnsNullopt) {
 
   // No setTimestamp call → mock's pending_ is empty → takeFrame returns nullopt
   EXPECT_FALSE(composite.takeFrame().has_value());
+}
+
+// Reproduces the "black on composite rebuild" symptom. On every layer change
+// (add / remove / show-hide) Scene2DDockWidget builds a FRESH CompositeMediaSource
+// wrapping the same underlying sources. The rebuilt composite starts with empty
+// per-layer caches, so its first takeFrame() yields nothing until every source
+// re-decodes — which for an async/lazy source (ImagePipelineSource, video) lands
+// a moment later, leaving the viewer black in between. adoptContributions() must
+// carry a persisting layer's last fused output into the rebuilt composite so it
+// paints the current frame immediately, with no re-decode.
+TEST(CompositeMediaSourceTest, RebuiltCompositeRetainsPersistingLayerFrame) {
+  MockSource src;
+  src.emit_base = true;
+  src.base_w = 640;
+
+  // Original composite: the source has produced and shown a frame at t=100.
+  CompositeMediaSource before;
+  before.addLayer(std::make_unique<BorrowedMediaSource>(&src), 1.0f, &src);
+  before.setTimestamp(100);
+  ASSERT_TRUE(before.takeFrame().has_value());
+
+  // Rebuild at the SAME tracker time, wrapping the SAME underlying source.
+  CompositeMediaSource after;
+  after.addLayer(std::make_unique<BorrowedMediaSource>(&src), 1.0f, &src);
+  after.adoptContributions(before);
+
+  // Without any new setTimestamp()/decode the rebuilt composite must still yield
+  // the current frame (otherwise: black until the async re-decode lands).
+  const int set_calls_before = src.set_calls;
+  auto frame = after.takeFrame();
+  ASSERT_TRUE(frame.has_value());
+  ASSERT_FALSE(frame->pixel_layers.empty());
+  EXPECT_EQ(frame->pixel_layers.front().frame.width, 640);
+  EXPECT_EQ(src.set_calls, set_calls_before);  // carried over, not re-decoded
+}
+
+// Complements RebuiltCompositeRetainsPersistingLayerFrame. Carry-over keeps
+// PERSISTING layers visible across a rebuild without re-decoding; invalidate()
+// is the other half — it must reach every layer's source so a source can drop
+// its per-timestamp dedup and re-decode at the unchanged time. That path is what
+// covers a re-shown previously-hidden layer (which carry-over CANNOT carry, since
+// it was excluded from the prior composite). So the two are not redundant.
+TEST(CompositeMediaSourceTest, InvalidateFansOutThroughBorrowedToSources) {
+  MockSource a;
+  MockSource b;
+  CompositeMediaSource composite;
+  composite.addLayer(std::make_unique<BorrowedMediaSource>(&a), 1.0f, &a);
+  composite.addLayer(std::make_unique<BorrowedMediaSource>(&b), 1.0f, &b);
+
+  composite.invalidate();
+  EXPECT_EQ(a.invalidate_calls, 1);  // composite -> BorrowedMediaSource -> source
+  EXPECT_EQ(b.invalidate_calls, 1);
 }
 
 }  // namespace

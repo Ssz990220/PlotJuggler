@@ -3,11 +3,13 @@
 
 #include <gtest/gtest.h>
 
+#include <any>
 #include <cstdint>
 #include <memory>
 #include <utility>
 #include <vector>
 
+#include "pj_base/builtin/image_annotations.hpp"
 #include "pj_base/builtin/scene_entities.hpp"
 #include "pj_base/builtin/scene_entities_codec.hpp"
 #include "pj_scene2d_core/scene_decoder.h"
@@ -86,6 +88,51 @@ TEST(SceneEntities2DDecoderTest, ProjectsRenderablePrimitivesToImageAnnotations)
   EXPECT_DOUBLE_EQ(annotation.circles.front().center.x, 50.0);
   EXPECT_DOUBLE_EQ(annotation.circles.front().center.y, 60.0);
   EXPECT_DOUBLE_EQ(annotation.circles.front().radius, 4.0);
+}
+
+TEST(SceneEntities2DDecoderTest, ObjectRouteMatchesByteRoute) {
+  // A-2: parser-backed topics decode the canonical object directly instead of
+  // re-serializing it to bytes and re-parsing. Both routes must agree exactly.
+  sdk::SceneEntities entities;
+  sdk::SceneEntity entity;
+  entity.timestamp = 7;
+  sdk::LinePrimitive line;
+  line.type = sdk::LineType::kLineStrip;
+  line.pose = poseAt(1.0, 2.0);
+  line.thickness = 2.0;
+  line.points = {{0.0, 0.0, 0.0}, {4.0, 0.0, 0.0}};
+  line.color = {10, 20, 30, 255};
+  entity.lines.push_back(std::move(line));
+  entities.entities.push_back(std::move(entity));
+
+  SceneEntities2DDecoder decoder;
+  const auto bytes = serializeSceneEntities(entities);
+  auto from_bytes = decoder.decode(bytes.data(), bytes.size());
+  ASSERT_TRUE(from_bytes.has_value()) << from_bytes.error();
+
+  const sdk::BuiltinObject object = entities;  // BuiltinObject == std::any
+  auto from_object = decoder.decode(object);
+  ASSERT_TRUE(from_object.has_value()) << from_object.error();
+
+  EXPECT_EQ(from_object->timestamp, from_bytes->timestamp);
+  ASSERT_EQ(from_object->annotations.size(), 1u);
+  ASSERT_EQ(from_bytes->annotations.size(), 1u);
+  const auto& obj_pts = from_object->annotations.front().points;
+  const auto& byte_pts = from_bytes->annotations.front().points;
+  ASSERT_EQ(obj_pts.size(), byte_pts.size());
+  ASSERT_EQ(obj_pts.size(), 1u);
+  EXPECT_EQ(obj_pts.front().topology, byte_pts.front().topology);
+  ASSERT_EQ(obj_pts.front().points.size(), byte_pts.front().points.size());
+  EXPECT_DOUBLE_EQ(obj_pts.front().points[0].x, byte_pts.front().points[0].x);
+  EXPECT_DOUBLE_EQ(obj_pts.front().points[1].x, byte_pts.front().points[1].x);
+}
+
+TEST(SceneEntities2DDecoderTest, ObjectRouteRejectsWrongType) {
+  // The object route any_casts: a BuiltinObject of the wrong kind must error,
+  // not silently drop (this is what surfaces a parser contract violation).
+  SceneEntities2DDecoder decoder;
+  const sdk::BuiltinObject not_entities = sdk::ImageAnnotations{};
+  EXPECT_FALSE(decoder.decode(not_entities).has_value());
 }
 
 }  // namespace

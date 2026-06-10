@@ -29,6 +29,7 @@
 #include "pj_scene3d_core/tf/tf_buffer.h"
 #include "pj_scene3d_widgets/layers/occupancy_grid_layer.h"
 #include "pj_scene3d_widgets/layers/pointcloud_layer.h"
+#include "pj_scene3d_widgets/layers/scene_entities_layer.h"
 #include "pj_scene3d_widgets/scene_view_widget.h"
 #include "pj_scene3d_widgets/transform_service.h"
 #include "pj_widgets/ComboBox.h"
@@ -44,6 +45,7 @@ using pj::scene3d::OccupancyGridLayer;
 using pj::scene3d::PointCloudLayer;
 using pj::scene3d::Scene3DLayer;
 using pj::scene3d::Scene3DLayerContext;
+using pj::scene3d::SceneEntitiesLayer;
 using pj::scene3d::SceneViewWidget;
 
 // Stable enum <-> on-disk-name table for the camera model, persisted in the
@@ -122,6 +124,15 @@ Scene3DDockWidget::Scene3DDockWidget(QWidget* parent) : SceneDockWidget(parent) 
         wireScene3DLayer(layer.get());
         return layer;
       });
+  layerFactory().registerType(
+      sdk::BuiltinObjectType::kSceneEntities,
+      [this](ObjectTopicId topic_id, sdk::BuiltinObjectType /*object_type*/, const QString& display_name)
+          -> std::unique_ptr<ISceneLayer> {
+        prepareTransformBufferForTopic(topic_id);
+        auto layer = std::make_unique<SceneEntitiesLayer>(topic_id, display_name, this);
+        wireScene3DLayer(layer.get());
+        return layer;
+      });
 
   frame_overlay_combo_ = new ComboBox(this);
   frame_overlay_combo_->setFocusPolicy(Qt::ClickFocus);
@@ -193,7 +204,7 @@ void Scene3DDockWidget::setTransformService(pj::scene3d::TransformService* servi
 bool Scene3DDockWidget::handlesObjectType(sdk::BuiltinObjectType object_type) {
   return object_type == sdk::BuiltinObjectType::kPointCloud ||
          object_type == sdk::BuiltinObjectType::kFrameTransforms ||
-         object_type == sdk::BuiltinObjectType::kOccupancyGrid;
+         object_type == sdk::BuiltinObjectType::kOccupancyGrid || object_type == sdk::BuiltinObjectType::kSceneEntities;
 }
 
 bool Scene3DDockWidget::addTopic(ObjectTopicId topic_id, sdk::BuiltinObjectType object_type, const QString& title) {
@@ -260,7 +271,8 @@ std::unique_ptr<SceneLayerContext> Scene3DDockWidget::makeContext() {
 }
 
 bool Scene3DDockWidget::acceptsObjectType(sdk::BuiltinObjectType object_type) const {
-  return object_type == sdk::BuiltinObjectType::kPointCloud || object_type == sdk::BuiltinObjectType::kOccupancyGrid;
+  return object_type == sdk::BuiltinObjectType::kPointCloud || object_type == sdk::BuiltinObjectType::kOccupancyGrid ||
+         object_type == sdk::BuiltinObjectType::kSceneEntities;
 }
 
 bool Scene3DDockWidget::handleSceneConfigTopic(

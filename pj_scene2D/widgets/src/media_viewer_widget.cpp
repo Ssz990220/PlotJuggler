@@ -1453,6 +1453,9 @@ void MediaViewerWidget::render(QRhiCommandBuffer* cb) {
     if (tex_width_ > 0 && tex_height_ > 0) {
       MarkerUbo ubo{};
       std::memcpy(ubo.view, view.constData(), sizeof(ubo.view));
+      // Annotation overlays are authored in the displayed image's pixel space.
+      // The decode pipeline rectifies a calibrated camera to its native (full)
+      // resolution, so the texture dimensions are the correct normalization base.
       ubo.frame_size[0] = static_cast<float>(tex_width_);
       ubo.frame_size[1] = static_cast<float>(tex_height_);
       updates->updateDynamicBuffer(marker_uniform_buf_, 0, kMarkerUniformBufSize, &ubo);

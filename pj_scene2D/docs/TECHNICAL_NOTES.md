@@ -620,3 +620,66 @@ malformed input, this is an out-of-bounds read.
 `RTLD_DEEPBIND` conflicts with ASAN's runtime interceptors. Fixed by
 defining `PJ_ASAN_ACTIVE` when sanitizers are enabled and skipping
 the flag in that case.
+
+## 12. Camera Rectification (2D annotation alignment)
+
+`ImagePipelineSource::rectifyIfCalibrated` (using `undistort_remap` +
+`image_rectifier`) exists to fix one specific symptom: 2D `ImageAnnotations`
+(YOLO boxes, masks, keypoints) rendering **misaligned** over the camera image
+in datasets like Waymo.
+
+### The problem it solves
+
+The misalignment is a **coordinate-space mismatch**, not a projection issue.
+2D detections are pixel coordinates — they need no geometric transform to draw.
+But in Waymo/Foxglove the annotations are authored in the camera's **native,
+rectified (lens-undistorted)** space (e.g. 1920×886), while PJ4 was displaying
+the **raw, distorted, subsampled** image (e.g. 480×221). Two mismatches stack:
+resolution (coords out of scale) and lens distortion (boxes drift, worst at the
+edges). A scale-only fix handles the first but not the second; full rectification
+(`K, D, R, P`) handles both, lifting the image into the annotations' space so the
+boxes land without touching a single detection coordinate.
+
+`frame_id` on `sdk::Image` is what pairs an image with its `CameraInfo` (each
+`<ns>/camera_info` topic is parsed and injected via `setCameraInfoMap`). The
+producer side (parser_protobuf / parser_ros) populates it.
+
+### Design choice: rectify the image, not warp the annotations
+
+Two ways to reconcile the spaces: (A) rectify the image to the annotation space,
+or (B) keep the raw image and distort every annotation vertex into raw space. We
+chose **A** — it matches Foxglove Studio, shows the undistorted image the detector
+actually "saw", and avoids applying the inverse map to every polygon/mask point.
+
+### ASSUMPTION and its known blind spot
+
+The decision rule is *"a usable `CameraInfo` exists for this image's `frame_id` ⟹
+rectify to native resolution."* That encodes an **assumption**: that the image is
+still in raw sensor space and the annotations live in native rectified space. True
+for Waymo / Foxglove / the ROS `image_proc` convention (detectors run on
+`image_rect`), but **not universal**, because:
+
+- **`CameraInfo` describes the lens, not the current image state.** The *same*
+  `CameraInfo` (same `K`/`D`/`frame_id`) accompanies both `/image_raw` and
+  `/image_rect`. Its presence does not tell us whether the pixels we're showing
+  are still distorted. So `isRectifiable()` is a *capability* check ("has usable
+  intrinsics"), **not** a "this image needs rectifying" decision.
+- **Failure mode 1 — double rectification:** a producer that logs a pre-rectified
+  image alongside its `CameraInfo` (`D ≠ 0`) gets undistorted a second time → the
+  image warps the wrong way, annotations drift.
+- **Failure mode 2 — raw-space detections:** if detections were computed on the
+  raw image (and thus already align with it), rectifying the image alone moves the
+  pixels but not the boxes → misalignment of a pair that was fine.
+
+The safe default still holds: **no `CameraInfo` / empty intrinsics / no `frame_id`
+→ raw passthrough, annotations overlay directly.** Other gaps: planar / 16-bit
+pixel formats pass through unrectified (`rectifyFrame` returns `nullopt`); a
+`CameraInfo` published *after* the layer attaches is not retro-applied.
+
+### If we ever need to close the blind spot
+
+Key the decision on something more explicit than "calibration exists": compare the
+annotation's reference `frameSize` against the displayed image, gate on the topic
+name (`*_raw*` vs `*_rect*`), skip when `D` is effectively zero, or expose a
+per-layer "rectify" toggle instead of deciding automatically. Out of scope for the
+first version; documented here so the assumption is a deliberate, visible choice.

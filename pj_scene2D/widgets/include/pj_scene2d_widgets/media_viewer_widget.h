@@ -10,6 +10,7 @@
 #include <QMatrix4x4>
 #include <QMouseEvent>
 #include <QRhiWidget>
+#include <QSize>
 #include <QWheelEvent>
 #include <atomic>
 #include <memory>

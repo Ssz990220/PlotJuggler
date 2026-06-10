@@ -197,8 +197,19 @@ void Scene2DDockWidget::syncViewLayers(const std::vector<ISceneLayer*>& ordered_
     if (scene2d_layer == nullptr || scene2d_layer->mediaSource() == nullptr) {
       continue;
     }
-    next->addLayer(std::make_unique<BorrowedMediaSource>(scene2d_layer->mediaSource()));
+    // Tag the layer with its underlying source pointer so the rebuilt composite
+    // can inherit this layer's last frame from the outgoing one (carry-over
+    // below), instead of starting blank and forcing a re-decode.
+    MediaSource* underlying = scene2d_layer->mediaSource();
+    next->addLayer(std::make_unique<BorrowedMediaSource>(underlying), 1.0f, underlying);
     composite_topic_order_.push_back(info.topic_id);
+  }
+
+  // Carry the persisting layers' current frame into the rebuilt composite so the
+  // viewer keeps showing them across the swap instead of going black until each
+  // source re-decodes (the "black until play" symptom on add/remove/hide).
+  if (composite_ != nullptr) {
+    next->adoptContributions(*composite_);
   }
 
   // Repoint the viewer at the new composite BEFORE the previous one is freed,
@@ -266,6 +277,11 @@ void Scene2DDockWidget::syncCompositeTimestamp(const std::vector<ISceneLayer*>& 
   if (composite_ == nullptr) {
     return;
   }
+  // A rebuild rewraps the same underlying sources, which still hold their
+  // per-timestamp dedup; invalidate first so the re-seed below re-decodes at the
+  // (usually unchanged) current time instead of leaving a stale/empty frame
+  // until the tracker next moves (the "black until play" symptom).
+  composite_->invalidate();
   const auto seed = seedTimestampNs(ordered_layers);
   if (seed.has_value()) {
     composite_->setTimestamp(*seed);

@@ -12,6 +12,8 @@ set(PJ_SCENE2D_CORE_SOURCES
   src/codec_pipeline.cpp
   src/codecs.cpp
   src/image_pipeline_source.cpp
+  src/undistort_remap.cpp
+  src/image_rectifier.cpp
   src/depth_pipeline_source.cpp
   src/scene_pipeline_source.cpp
   src/scene_entities_2d_decoder.cpp
@@ -68,6 +70,7 @@ if(PJ_BUILD_TESTS)
     ../tests/cancel_token_test.cpp
     ../tests/image_decoder_test.cpp
     ../tests/codecs_test.cpp
+    ../tests/undistort_remap_test.cpp
     ../tests/image_pipeline_source_test.cpp
     tests/depth_pipeline_source_test.cpp
     ../tests/scene_frame_test.cpp

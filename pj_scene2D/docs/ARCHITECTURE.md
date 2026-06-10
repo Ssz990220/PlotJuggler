@@ -415,12 +415,18 @@ Wire format spec, type catalog, and encoding rules live in
 `plotjuggler_sdk/pj_base/include/pj_base/builtin/image_annotations.hpp` and
 `plotjuggler_sdk/pj_base/include/pj_base/builtin/image_annotations_codec.hpp`.
 
+`ISceneDecoder` exposes **two** entry points; `ScenePipelineSource` (see §5)
+picks by ingest route:
+- `decode(bytes)` — canonical-producer topics: the store holds canonical bytes,
+  decoded as-is.
+- `decode(const sdk::BuiltinObject&)` — parser-backed topics: a `MessageParser`
+  already produced the canonical object, decoded directly (no serialize/
+  deserialize round-trip, mirroring the 3D consumer).
+
 **pj_scene2D's usage policy:** stateless decoder, one instance per
-scene/annotation layer for the layer's lifetime. `ScenePipelineSource`
-(see §5) owns the decoder and feeds it bytes pulled from `ObjectStore`
-at the active timestamp. Output is a `SceneFrame` ready for the
-compositor (§5.4) to merge with the base image and hand to the renderer
-(§7).
+scene/annotation layer for the layer's lifetime. `ScenePipelineSource` owns the
+decoder; its output is a `SceneFrame` ready for the compositor (§5.4) to merge
+with the base image and hand to the renderer (§7).
 
 **Source-format conversion is loader-side, not pj_scene2D's concern.**
 Per-source-format adapters (CDR `vision_msgs/msg/Detection2DArray`, CDR

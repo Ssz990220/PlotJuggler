@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <any>
+#include <cassert>
 #include <cstdio>
 #include <cstring>
 #include <exception>
@@ -17,9 +18,11 @@
 #include <unordered_set>
 #include <utility>
 
+#include "pj_base/builtin/camera_info.hpp"
 #include "pj_base/builtin/image.hpp"
 #include "pj_base/builtin/image_codec.hpp"
 #include "pj_plugins/sdk/message_parser_plugin_base.hpp"
+#include "pj_scene2d_core/image_rectifier.h"
 
 namespace PJ {
 
@@ -363,6 +366,9 @@ ImagePipelineSource::~ImagePipelineSource() {
 }
 
 void ImagePipelineSource::setTimestamp(int64_t ts_ns) {
+  // Mark that a decode has been requested: from here the worker may read
+  // camera_info_by_frame_, so setCameraInfoMap() must refuse late injection.
+  timestamp_requested_ = true;
   if (ts_ns == last_requested_ts_) {
     return;
   }
@@ -374,6 +380,18 @@ void ImagePipelineSource::setTimestamp(int64_t ts_ns) {
     has_request_ = true;
   }
   request_cv_.notify_one();
+}
+
+void ImagePipelineSource::invalidate() {
+  // Force the next setTimestamp() to re-request a decode even at the same time
+  // (the composite was rebuilt and our last frame was consumed). The worker
+  // re-delivers via the frame-ready callback, which schedules a repaint.
+  last_requested_ts_ = std::numeric_limits<int64_t>::min();
+  // Also clear the worker-side dedup: without this, decodeAt() resolves to the
+  // same entry as last time and early-returns nullopt, so the worker never
+  // produces a frame and the repaint never fires (the "black until play" bug).
+  std::lock_guard lock(request_mutex_);
+  force_redecode_ = true;
 }
 
 std::optional<MediaFrame> ImagePipelineSource::takeFrame() {
@@ -395,6 +413,7 @@ void ImagePipelineSource::setFrameReadyCallback(std::function<void()> cb) {
 void ImagePipelineSource::workerLoop() {
   while (running_.load()) {
     int64_t ts = 0;
+    bool force = false;
     {
       std::unique_lock lock(request_mutex_);
       request_cv_.wait(lock, [this] { return has_request_ || !running_.load(); });
@@ -403,8 +422,15 @@ void ImagePipelineSource::workerLoop() {
       }
       ts = requested_ts_;
       has_request_ = false;
+      force = force_redecode_;
+      force_redecode_ = false;
     }
 
+    // invalidate() asked for a fresh decode even at an unchanged entry: clear the
+    // dedup so decodeAt() doesn't early-return nullopt on the same frame.
+    if (force) {
+      last_entry_ts_ = INT64_MIN;
+    }
     // Exception barrier (§R5 / ARCHITECTURE §10.5): a throwing parser plugin or a
     // std::bad_alloc on pathological geometry must not escape the std::thread
     // callable (that calls std::terminate). Catch at the boundary, warn once, and
@@ -515,7 +541,12 @@ std::optional<DecodedFrame> ImagePipelineSource::decodeAt(int64_t ts_ns) {
           source_key_);
       return std::nullopt;
     }
-    return decodeCanonicalImage(*img, effective_ts, topic_name);
+    auto df = decodeCanonicalImage(*img, effective_ts, topic_name);
+    if (df.has_value()) {
+      df->frame_id = img->frame_id;  // carry the source frame so the viewer can find its CameraInfo.
+      rectifyIfCalibrated(*df);
+    }
+    return df;
   }
 
   if (canonical_image_codec_) {
@@ -527,7 +558,12 @@ std::optional<DecodedFrame> ImagePipelineSource::decodeAt(int64_t ts_ns) {
           warningKey(source_key_, "canonical-deserialize"), "{} deserializeImage failed: {}", source_key_, img.error());
       return std::nullopt;
     }
-    return decodeCanonicalImage(*img, entry->timestamp, topic_name);
+    auto df = decodeCanonicalImage(*img, entry->timestamp, topic_name);
+    if (df.has_value()) {
+      df->frame_id = img->frame_id;
+      rectifyIfCalibrated(*df);
+    }
+    return df;
   }
 
   if (pipeline_ == nullptr) {
@@ -544,6 +580,63 @@ std::optional<DecodedFrame> ImagePipelineSource::decodeAt(int64_t ts_ns) {
   }
   result->pts = entry->timestamp;
   return std::move(*result);
+}
+
+void ImagePipelineSource::setCameraInfoMap(std::unordered_map<std::string, sdk::CameraInfo> by_frame_id) {
+  // Must run on the main thread before the first setTimestamp(): the worker then
+  // reads camera_info_by_frame_ unlocked, relying on that request's request_mutex_
+  // barrier for visibility. A call after the first request would race the worker's
+  // read (UB on the map), so enforce the contract instead of only documenting it.
+  assert(!timestamp_requested_ && "setCameraInfoMap must be called before the first setTimestamp()");
+  if (timestamp_requested_) {
+    warnOnce(
+        warningKey(source_key_, "camera-info-late"),
+        "{} setCameraInfoMap called after the first setTimestamp(); ignored to avoid a worker race", source_key_);
+    return;
+  }
+  camera_info_by_frame_ = std::move(by_frame_id);
+}
+
+const sdk::CameraInfo* ImagePipelineSource::cameraInfoFor(const std::string& frame_id) {
+  if (frame_id.empty()) {
+    return nullptr;
+  }
+  const auto it = camera_info_by_frame_.find(frame_id);
+  return it != camera_info_by_frame_.end() ? &it->second : nullptr;
+}
+
+void ImagePipelineSource::rectifyIfCalibrated(DecodedFrame& df) {
+  if (df.frame_id.empty() || df.width <= 0 || df.height <= 0) {
+    return;
+  }
+  const sdk::CameraInfo* ci = cameraInfoFor(df.frame_id);
+  if (ci == nullptr || !isRectifiable(*ci)) {
+    return;  // no calibration for this frame -> leave the raw image as decoded.
+  }
+  // Build (cached per camera) a reverse map that outputs at the native calibration
+  // resolution, so the rectified image, the annotation pixel coords, and the
+  // overlay's frameSize all share one coordinate space (matches Foxglove). The map
+  // bakes in the source resolution (sx/sy scale), so a stream that changes decoded
+  // size mid-session must rebuild it — otherwise it would sample with stale scale.
+  auto it = undistort_by_frame_.find(df.frame_id);
+  if (it == undistort_by_frame_.end() || it->second.src_width != df.width || it->second.src_height != df.height) {
+    UndistortMap built =
+        computeUndistortMap(*ci, df.width, df.height, static_cast<int>(ci->width), static_cast<int>(ci->height));
+    it = undistort_by_frame_.insert_or_assign(df.frame_id, std::move(built)).first;
+  }
+  if (!it->second.valid()) {
+    return;
+  }
+  if (auto rect = rectifyFrame(df, it->second); rect.has_value()) {
+    df = std::move(*rect);
+  } else {
+    // CameraInfo exists but the decoded pixel format isn't one the rectifier
+    // resamples (planar/16-bit); the raw frame passes through unrectified.
+    warnOnce(
+        warningKey(source_key_, "rectify-unsupported-format"),
+        "{} frame_id='{}' has calibration but pixel format {} is not rectifiable; showing raw frame", source_key_,
+        df.frame_id, static_cast<int>(df.format));
+  }
 }
 
 std::optional<DecodedFrame> ImagePipelineSource::decodeCanonicalImage(
