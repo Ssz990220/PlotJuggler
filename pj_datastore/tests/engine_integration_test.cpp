@@ -309,6 +309,61 @@ TEST(EngineIntegrationTest, RetentionEviction) {
   }
 }
 
+// A live streaming source enforces a rolling retention window every tick. It must
+// trim ONLY its own dataset — a file the user loaded into the same engine must not
+// have its history silently evicted out from under it.
+TEST(EngineRetention, ScopedRetentionDoesNotEvictOtherDatasets) {
+  DataEngine engine;
+  DataWriter writer = engine.createWriter();
+  auto schema_or = writer.registerSchema("scoped_retention", makePrimitive("value", PrimitiveType::kFloat64));
+  ASSERT_TRUE(schema_or.has_value()) << schema_or.error();
+  const SchemaId schema_id = *schema_or;
+
+  auto make_topic = [&](const char* source) -> std::pair<DatasetId, TopicId> {
+    auto ds = engine.createDataset(DatasetDescriptor{.source_name = source, .time_domain_id = 0});
+    EXPECT_TRUE(ds.has_value());
+    TopicDescriptor td;
+    td.name = "sensor";
+    td.schema_id = schema_id;
+    td.max_chunk_rows = 100;
+    auto tid = writer.registerTopic(*ds, td);
+    EXPECT_TRUE(tid.has_value());
+    EXPECT_TRUE(writer.bindTopicWriter(*tid).has_value());
+    return {*ds, *tid};
+  };
+
+  auto [ds_file, topic_file] = make_topic("file_dataset");
+  auto [ds_stream, topic_stream] = make_topic("stream_dataset");
+
+  for (TopicId topic : {topic_file, topic_stream}) {
+    for (std::size_t i = 0; i < 3000; ++i) {
+      const Timestamp ts = static_cast<Timestamp>(i);
+      ASSERT_TRUE(writer.beginRow(topic, ts).has_value());
+      writer.set(topic, 0, static_cast<double>(i));
+      ASSERT_TRUE(writer.finishRow(topic).has_value());
+    }
+  }
+  engine.commitChunks(writer.flushAll());
+
+  auto count = [&](TopicId topic, Timestamp lo, Timestamp hi) -> std::size_t {
+    DataReader reader = engine.createReader();
+    std::size_t n = 0;
+    auto cur = reader.rangeQuery(QueryRange{.topic_id = topic, .t_min = lo, .t_max = hi});
+    EXPECT_TRUE(cur.has_value());
+    cur->forEach([&n](const SampleRow&) { ++n; });
+    return n;
+  };
+
+  ASSERT_GT(count(topic_file, 0, 999), 0U);
+  ASSERT_GT(count(topic_stream, 0, 999), 0U);
+
+  // Trim ONLY the streaming dataset.
+  engine.enforceRetention(1500, ds_stream);
+
+  EXPECT_EQ(count(topic_stream, 0, 999), 0U) << "streaming dataset's old data should be evicted";
+  EXPECT_GT(count(topic_file, 0, 999), 0U) << "file dataset's history must survive scoped streaming retention";
+}
+
 // ===========================================================================
 // Test 4: Schema evolution
 //

@@ -41,6 +41,10 @@ class TimelineWidget : public QWidget {
   void onEngineRateChanged(double rate);
 
   void onSliderValueChanged(double value);
+  // Slider handle released after a drag: flush any throttled-but-undelivered
+  // final position immediately so the released frame appears (and playback
+  // resumes) without waiting out the remaining throttle window.
+  void onSliderReleased();
   void onPlayToggled(bool checked);
   void onLoopToggled(bool checked);
   void onRateChanged(double value);

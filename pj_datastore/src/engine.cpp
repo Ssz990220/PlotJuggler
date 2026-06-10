@@ -221,6 +221,17 @@ void DataEngine::enforceRetention(Timestamp retention_window_ns) {
   }
 }
 
+void DataEngine::enforceRetention(Timestamp retention_window_ns, DatasetId dataset_id) {
+  for (auto it = impl_->topics.begin(); it != impl_->topics.end(); ++it) {
+    auto& storage = it.value();
+    if (storage.descriptor().dataset_id != dataset_id || storage.empty()) {
+      continue;
+    }
+    Timestamp t_max = storage.time_max();
+    storage.evictBefore(t_max - retention_window_ns);
+  }
+}
+
 Status DataEngine::flushTo(DataEngine& dst) {
   if (&dst == this) {
     return PJ::unexpected("flushTo: source and destination are the same engine");

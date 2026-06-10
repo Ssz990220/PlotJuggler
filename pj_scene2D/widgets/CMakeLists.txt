@@ -19,6 +19,7 @@ add_library(pj_scene2d_widgets STATIC
   src/layers/image_layer.cpp
   src/layers/scene2d_layer.cpp
   src/layers/scene_decoder_layer.cpp
+  src/layers/video_layer.cpp
   src/media_viewer_widget.cpp
   src/pixel_inspector.cpp
   include/pj_scene2d_widgets/Scene2DDockWidget.h
@@ -27,6 +28,7 @@ add_library(pj_scene2d_widgets STATIC
   include/pj_scene2d_widgets/layers/image_layer.h
   include/pj_scene2d_widgets/layers/scene2d_layer.h
   include/pj_scene2d_widgets/layers/scene_decoder_layer.h
+  include/pj_scene2d_widgets/layers/video_layer.h
   include/pj_scene2d_widgets/media_viewer_widget.h
   include/pj_scene2d_widgets/pixel_inspector.h
   shaders/shaders.qrc

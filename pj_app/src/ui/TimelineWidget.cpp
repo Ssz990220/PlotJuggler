@@ -64,6 +64,7 @@ TimelineWidget::TimelineWidget(QWidget* parent) : QWidget(parent), ui_(new Ui::T
   connect(&seek_throttle_timer_, &QTimer::timeout, this, &TimelineWidget::flushPendingSeek);
 
   connect(ui_->timeSlider, &RealSlider::realValueChanged, this, &TimelineWidget::onSliderValueChanged);
+  connect(ui_->timeSlider, &QSlider::sliderReleased, this, &TimelineWidget::onSliderReleased);
   connect(ui_->buttonPlay, &QPushButton::toggled, this, &TimelineWidget::onPlayToggled);
   // Icon-only sync: swap play_arrow ↔ pause whenever the toggle flips,
   // regardless of whether the change came from the user or from
@@ -144,6 +145,20 @@ void TimelineWidget::onSliderValueChanged(double value) {
   has_pending_seek_ = false;
   seek_throttle_timer_.start();
   engine_->setCurrentTime(displaySeconds(value));
+}
+
+void TimelineWidget::onSliderReleased() {
+  if (updating_from_engine_ || !engine_) {
+    return;
+  }
+  // Deliver the final drag position immediately rather than waiting out the
+  // throttle window — the frame the user released on should appear at once, and
+  // forward playback resumes from there with no extra latency.
+  if (has_pending_seek_) {
+    has_pending_seek_ = false;
+    seek_throttle_timer_.stop();
+    engine_->setCurrentTime(displaySeconds(pending_seek_value_));
+  }
 }
 
 void TimelineWidget::flushPendingSeek() {

@@ -49,14 +49,13 @@ std::optional<ObjectTopicId> ObjectStore::findTopic(DatasetId dataset_id, std::s
   return std::nullopt;
 }
 
-const ObjectTopicDescriptor& ObjectStore::descriptor(ObjectTopicId id) const {
+ObjectTopicDescriptor ObjectStore::descriptor(ObjectTopicId id) const {
   std::shared_lock lock(store_mutex_);
   const auto* s = findSeries(id);
   if (s == nullptr) {
-    static const ObjectTopicDescriptor kEmpty{};
-    return kEmpty;
+    return {};
   }
-  return s->descriptor;
+  return s->descriptor;  // copy under the lock — no reference escapes into the caller
 }
 
 std::vector<ObjectTopicId> ObjectStore::listTopics() const {
@@ -326,10 +325,13 @@ Status ObjectStore::flushTo(ObjectStore& dst) {
     plan.push_back({src_series.get(), dst_series});
   }
 
-  // Phase 2: execute the moves. Holding both store_mutex_ unique means no
-  // other reader or writer can observe an intermediate state; per-series
-  // mutexes are not needed because no concurrent access can occur.
+  // Phase 2: execute the moves. Holding both store_mutex_ unique blocks new
+  // readers/writers, but a reader that acquired an EntryTimestampsView BEFORE this
+  // call still holds only the series lock — drain those before reallocating the
+  // timestamp vectors we are about to move/insert into.
   for (auto& step : plan) {
+    drainSeriesReaders(*step.src);
+    drainSeriesReaders(*step.dst);
     for (auto& entry : step.src->entries) {
       step.dst->entries.push_back(std::move(entry));
     }
@@ -398,6 +400,11 @@ Expected<ObjectDatasetReplaceResult> ObjectStore::replaceDatasetFrom(
       primary_series = series.get();  // heap-owned: stays valid after emplace_back reallocs topics_
       topics_.emplace_back(primary_tid, std::move(series));
     }
+    // A matched primary series may have outstanding views (the staged one may too);
+    // drain both before replacing/moving their timestamp vectors. A freshly added
+    // primary_series has no readers yet, so its drain is uncontended.
+    drainSeriesReaders(*primary_series);
+    drainSeriesReaders(*staged_series);
     primary_series->entries = std::move(staged_series->entries);
     primary_series->entry_timestamps = std::move(staged_series->entry_timestamps);
     primary_series->memory_bytes = staged_series->memory_bytes;
@@ -426,12 +433,23 @@ void ObjectStore::removeTopic(ObjectTopicId id) {
 void ObjectStore::eraseTopicLocked(ObjectTopicId id) {
   auto it = std::find_if(topics_.begin(), topics_.end(), [&](const auto& pair) { return pair.first == id; });
   if (it != topics_.end()) {
+    drainSeriesReaders(*it->second);  // let outstanding views release before the series dies
     topics_.erase(it);
   }
 }
 
+void ObjectStore::drainSeriesReaders(ObjectSeries& series) {
+  // Acquire-and-release: blocks until in-flight shared readers drain. With
+  // store_mutex_ held exclusively by the caller, nothing can re-acquire the series
+  // lock after this returns, so the series is safe to destroy or mutate.
+  std::unique_lock<std::shared_mutex> drain(series.mutex);
+}
+
 void ObjectStore::clear() {
   std::unique_lock lock(store_mutex_);
+  for (auto& [tid, series] : topics_) {
+    drainSeriesReaders(*series);
+  }
   topics_.clear();
   next_id_ = 1;
 }

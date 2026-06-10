@@ -8,6 +8,7 @@
 
 #include <cstdint>
 #include <cstring>
+#include <string>
 #include <vector>
 
 namespace {
@@ -63,6 +64,35 @@ PJ::DecodedFrame rawBytesFrame(const std::vector<uint8_t>& bytes) {
   return frame;
 }
 
+// CRC-32 (PNG/zlib polynomial) over a byte range — used to re-stamp a patched
+// IHDR so png_read_info accepts our forged dimensions.
+uint32_t crc32Png(const uint8_t* data, size_t len) {
+  uint32_t crc = 0xFFFFFFFFu;
+  for (size_t i = 0; i < len; ++i) {
+    crc ^= data[i];
+    for (int bit = 0; bit < 8; ++bit) {
+      crc = (crc & 1u) ? (crc >> 1) ^ 0xEDB88320u : (crc >> 1);
+    }
+  }
+  return crc ^ 0xFFFFFFFFu;
+}
+
+// Rewrite a valid PNG's IHDR width/height to forge a giant declared size, fixing
+// the IHDR CRC so png_read_info still parses it. Layout: [8 sig][4 len][4 "IHDR"]
+// [4 width][4 height]...[4 CRC]; the CRC covers "IHDR" + the 13 data bytes.
+std::vector<uint8_t> pngWithPatchedDimensions(std::vector<uint8_t> png, uint32_t width, uint32_t height) {
+  auto put_be = [&](size_t off, uint32_t v) {
+    png[off + 0] = static_cast<uint8_t>(v >> 24);
+    png[off + 1] = static_cast<uint8_t>(v >> 16);
+    png[off + 2] = static_cast<uint8_t>(v >> 8);
+    png[off + 3] = static_cast<uint8_t>(v);
+  };
+  put_be(16, width);
+  put_be(20, height);
+  put_be(29, crc32Png(png.data() + 12, 17));
+  return png;
+}
+
 PJ::DecodedFrame mono8MosaicFrame(int width, int height, const std::vector<uint8_t>& mosaic) {
   PJ::DecodedFrame frame;
   frame.pixels = std::make_shared<std::vector<uint8_t>>(mosaic);
@@ -99,6 +129,20 @@ void expectRgb(const PJ::DecodedFrame& f, int x, int y, uint8_t r, uint8_t g, ui
 }
 
 }  // namespace
+
+TEST(PngCodecTest, RejectsAbsurdDimensionsBeforeAllocating) {
+  // A real 2x2 PNG with its IHDR forged to 11000x11000 (121 MP > the 100 MP cap).
+  // Without the cap the decoder value-initializes a ~240 MB buffer straight from
+  // these header bytes; the cap must reject up front with a dimension error.
+  auto small = makeMono16Png(2, 2, {0, 1000, 2000, 3000});
+  ASSERT_GT(small.size(), 33u);
+  auto huge = pngWithPatchedDimensions(small, 11000, 11000);
+
+  PJ::PngCodec codec;
+  auto result = codec.decode(rawBytesFrame(huge));
+  ASSERT_FALSE(result.has_value());
+  EXPECT_NE(result.error().find("dimension"), std::string::npos) << "got: " << result.error();
+}
 
 TEST(AutoImageCodecTest, NormalizesMono16PngToRgbGrayscale) {
   const std::vector<uint16_t> values = {0, 1000, 2000, 3000};

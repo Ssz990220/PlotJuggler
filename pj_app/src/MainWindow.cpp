@@ -400,7 +400,7 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
         // drop passes an empty kind with a seed, which we classify into a kind,
         // construct, and populate. Family routing for v0:
         //   3D-ish (kPointCloud/kFrameTransforms/kOccupancyGrid)                     → scene3d
-        //   2D-ish (kImage/kAssetVideo/kDepthImage/kImageAnnotations/kSceneEntities) → scene2d
+        //   2D-ish (kImage/kDepthImage/kImageAnnotations/kSceneEntities/kVideoFrame) → scene2d
         QString resolved_kind = kind;
         if (resolved_kind.isEmpty() && seed != nullptr) {
           // Classify the dropped object into a scene kind. kSceneEntities is both

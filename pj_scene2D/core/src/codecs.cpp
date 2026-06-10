@@ -10,6 +10,7 @@
 #include <array>
 #include <bit>
 #include <cstring>
+#include <string>
 #include <vector>
 
 namespace PJ {
@@ -42,6 +43,11 @@ Expected<DecodedFrame> JpegCodec::decode(const DecodedFrame& input) const {
   if (tjDecompressHeader2(static_cast<tjhandle>(tj_), const_cast<uint8_t*>(data), size, &width, &height, &subsamp) !=
       0) {
     return unexpected(std::string("JPEG header failed: ") + tjGetErrorStr());
+  }
+
+  // Reject crafted/corrupt geometry before allocating the pixel buffer from it.
+  if (!imageDimensionsWithinLimit(width, height)) {
+    return unexpected("JPEG image dimensions exceed limit: " + std::to_string(width) + "x" + std::to_string(height));
   }
 
   auto pixels = std::make_shared<std::vector<uint8_t>>(static_cast<size_t>(width) * static_cast<size_t>(height) * 3);
@@ -81,6 +87,21 @@ void pngReadCb(png_structp png, png_bytep out, png_size_t count) {
   ctx->offset += count;
 }
 
+// Runs png_read_image under libpng's setjmp inside ITS OWN frame, so no caller
+// local (the pixel buffer, the row-pointer vector, the format enum) lives across
+// the longjmp. That both (a) lets the caller's RAII objects unwind normally on a
+// corrupt/truncated IDAT — fixing the historical leak of placing setjmp before the
+// allocations — and (b) avoids GCC's -Wclobbered on those locals. Returns false if
+// libpng raised an error while reading the image.
+[[nodiscard]] bool pngReadImageGuarded(png_structp png, png_bytep* rows) {
+  // NOLINTNEXTLINE(cert-err52-cpp) — libpng's only error channel is setjmp/longjmp.
+  if (setjmp(png_jmpbuf(png))) {
+    return false;
+  }
+  png_read_image(png, rows);
+  return true;
+}
+
 bool hasJpegSignature(const uint8_t* data, size_t size) noexcept {
   return data != nullptr && size >= 3 && data[0] == 0xFF && data[1] == 0xD8 && data[2] == 0xFF;
 }
@@ -113,9 +134,11 @@ Expected<DecodedFrame> PngCodec::decode(const DecodedFrame& input) const {
     return unexpected("png_create_info_struct failed");
   }
 
+  // Region 1 — header. Only fixed-size libpng state exists here, so a longjmp out
+  // of png_read_info/png_read_update_info leaks nothing.
   if (setjmp(png_jmpbuf(png))) {
     png_destroy_read_struct(&png, &info, nullptr);
-    return unexpected("PNG decode failed");
+    return unexpected("PNG header read failed");
   }
 
   PngReadCtx ctx{data, size, 0};
@@ -124,6 +147,13 @@ Expected<DecodedFrame> PngCodec::decode(const DecodedFrame& input) const {
 
   auto width = static_cast<int>(png_get_image_width(png, info));
   auto height = static_cast<int>(png_get_image_height(png, info));
+
+  // Reject crafted/corrupt geometry BEFORE allocating the pixel buffer from it.
+  if (!imageDimensionsWithinLimit(width, height)) {
+    png_destroy_read_struct(&png, &info, nullptr);
+    return unexpected("PNG image dimensions exceed limit: " + std::to_string(width) + "x" + std::to_string(height));
+  }
+
   png_byte color_type = png_get_color_type(png, info);
   png_byte bit_depth = png_get_bit_depth(png, info);
 
@@ -171,7 +201,12 @@ Expected<DecodedFrame> PngCodec::decode(const DecodedFrame& input) const {
     rows[static_cast<size_t>(y)] = pixels->data() + static_cast<size_t>(y) * row_bytes;
   }
 
-  png_read_image(png, rows.data());
+  // The pixel read runs its setjmp in pngReadImageGuarded's own frame, so a
+  // corrupt/truncated IDAT unwinds `pixels`/`rows` here normally (no leak).
+  if (!pngReadImageGuarded(png, rows.data())) {
+    png_destroy_read_struct(&png, &info, nullptr);
+    return unexpected("PNG image read failed");
+  }
   png_destroy_read_struct(&png, &info, nullptr);
 
   DecodedFrame frame;

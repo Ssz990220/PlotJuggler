@@ -66,11 +66,16 @@ ffmpeg/*:with_libwebp=False
 ffmpeg/*:with_ssl=False
 ffmpeg/*:with_libalsa=False
 ffmpeg/*:with_pulse=False
-ffmpeg/*:with_vaapi=False
+# VAAPI hardware video decode (Linux; Intel/AMD GPUs). LGPL-safe: libva + libdrm
+# are MIT-licensed, not GPL/nonfree. BUILD hosts need the system libva-dev pkg —
+# the recipe's vaapi/system wrapper resolves libva via pkg-config. END users only
+# need the ubiquitous libva2 runtime (packaging pulls it in). Decode falls back to
+# software automatically when no usable GPU driver is present (FfmpegDecoder).
+ffmpeg/*:with_vaapi=True
 ffmpeg/*:with_vdpau=False
 ffmpeg/*:with_xcb=False
 ffmpeg/*:with_xlib=False
-ffmpeg/*:with_libdrm=False
+ffmpeg/*:with_libdrm=True
 ffmpeg/*:with_appkit=False
 ffmpeg/*:with_audiotoolbox=False
 ffmpeg/*:with_avfoundation=False

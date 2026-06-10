@@ -11,6 +11,7 @@
 #include <cstdint>
 #include <mutex>
 #include <optional>
+#include <stdexcept>
 #include <thread>
 #include <vector>
 
@@ -139,6 +140,7 @@ class CanonicalRgbParser final : public PJ::MessageParserPluginBase {
               .compressed_depth_min = std::nullopt,
               .compressed_depth_max = std::nullopt,
               .timestamp_ns = ts,
+              .frame_id = "",
           }}};
     };
     registerSchemaHandler("image", std::move(handler));
@@ -164,6 +166,7 @@ class CanonicalCompressedDepthParser final : public PJ::MessageParserPluginBase 
               .compressed_depth_min = 0.0f,
               .compressed_depth_max = 1.0f,
               .timestamp_ns = ts,
+              .frame_id = "",
           }}};
     };
     registerSchemaHandler("depth", std::move(handler));
@@ -193,6 +196,7 @@ class CanonicalRawParser final : public PJ::MessageParserPluginBase {
               .compressed_depth_min = std::nullopt,
               .compressed_depth_max = std::nullopt,
               .timestamp_ns = ts,
+              .frame_id = "",
           }}};
     };
     registerSchemaHandler("image", std::move(handler));
@@ -233,6 +237,7 @@ class RacyImageParser final : public PJ::MessageParserPluginBase {
               .compressed_depth_min = std::nullopt,
               .compressed_depth_max = std::nullopt,
               .timestamp_ns = ts,
+              .frame_id = "",
           }},
       };
       in_flight_.fetch_sub(1, std::memory_order_acq_rel);
@@ -249,6 +254,21 @@ class RacyImageParser final : public PJ::MessageParserPluginBase {
   std::atomic<int> in_flight_{0};
   std::atomic<bool> race_observed_{false};
   int scratch_ = 0;
+};
+
+// A parser whose parseObject throws — models a misbehaving plugin (or an
+// allocation failure on crafted geometry). The worker must catch at the thread
+// boundary; an uncaught throw out of the std::thread callable calls std::terminate.
+class ThrowingImageParser final : public PJ::MessageParserPluginBase {
+ public:
+  ThrowingImageParser() {
+    PJ::sdk::SchemaHandler handler;
+    handler.object_type = PJ::sdk::BuiltinObjectType::kImage;
+    handler.parse_object = [](PJ::Timestamp, PJ::sdk::PayloadView) -> PJ::Expected<PJ::sdk::ObjectRecord> {
+      throw std::runtime_error("parser blew up");
+    };
+    registerSchemaHandler("image", std::move(handler));
+  }
 };
 
 // Bridges the source's frame-ready callback (fired from the worker thread)
@@ -337,7 +357,7 @@ TEST(ImagePipelineSourceTest, ParserDrivenPathConsumesCanonicalImage) {
 
   CanonicalRgbParser parser;
   ASSERT_TRUE(parser.bindSchema("image", PJ::Span<const uint8_t>{}));
-  PJ::ImagePipelineSource source(&store, *topic, &parser);
+  PJ::ImagePipelineSource source(&store, *topic, &parser, /*parser_mutex=*/nullptr, /*parser_keepalive=*/nullptr);
   FrameSync sync;
   sync.install(source);
 
@@ -354,6 +374,31 @@ TEST(ImagePipelineSourceTest, ParserDrivenPathConsumesCanonicalImage) {
   ASSERT_EQ(*frame->base->pixels, (std::vector<uint8_t>{10, 20, 30}));
 }
 
+TEST(ImagePipelineSourceTest, ThrowingParserDoesNotTerminateProcess) {
+  PJ::ObjectStore store;
+  auto topic = store.registerTopic({PJ::DatasetId{1}, "/camera/image", "{}"});
+  ASSERT_TRUE(topic.has_value());
+  ASSERT_TRUE(store.pushOwned(*topic, 1'000, std::vector<uint8_t>{10, 20, 30}));
+  ASSERT_TRUE(store.pushOwned(*topic, 2'000, std::vector<uint8_t>{40, 50, 60}));
+
+  ThrowingImageParser parser;
+  ASSERT_TRUE(parser.bindSchema("image", PJ::Span<const uint8_t>{}));
+  PJ::ImagePipelineSource source(&store, *topic, &parser, /*parser_mutex=*/nullptr, /*parser_keepalive=*/nullptr);
+
+  // A parser that throws inside parseObject must NOT terminate the process: the
+  // worker catches at the thread boundary (ARCHITECTURE §10.5) and produces no
+  // frame. Without the barrier this aborts the entire test binary.
+  source.setTimestamp(1'000);
+  std::this_thread::sleep_for(kIdleSettleTime);
+  EXPECT_FALSE(source.takeFrame().has_value());
+
+  // The worker stays alive and responsive: a second (also-throwing) request is
+  // handled without crashing, and clean destruction still joins the worker.
+  source.setTimestamp(2'000);
+  std::this_thread::sleep_for(kIdleSettleTime);
+  EXPECT_FALSE(source.takeFrame().has_value());
+}
+
 TEST(ImagePipelineSourceTest, ParserDrivenCompressedDepthDecodesPngThenNormalizesMono16) {
   const std::vector<uint8_t> png = makeMono16Png(2, 2, {0, 1000, 2000, 3000});
   ASSERT_FALSE(png.empty());
@@ -365,7 +410,7 @@ TEST(ImagePipelineSourceTest, ParserDrivenCompressedDepthDecodesPngThenNormalize
 
   CanonicalCompressedDepthParser parser;
   ASSERT_TRUE(parser.bindSchema("depth", PJ::Span<const uint8_t>{}));
-  PJ::ImagePipelineSource source(&store, *topic, &parser);
+  PJ::ImagePipelineSource source(&store, *topic, &parser, /*parser_mutex=*/nullptr, /*parser_keepalive=*/nullptr);
   FrameSync sync;
   sync.install(source);
 
@@ -403,7 +448,7 @@ TEST(ImagePipelineSourceTest, ParserDrivenCompressedDepthRepairsChunkStreamStart
 
   CanonicalCompressedDepthParser parser;
   ASSERT_TRUE(parser.bindSchema("depth", PJ::Span<const uint8_t>{}));
-  PJ::ImagePipelineSource source(&store, *topic, &parser);
+  PJ::ImagePipelineSource source(&store, *topic, &parser, /*parser_mutex=*/nullptr, /*parser_keepalive=*/nullptr);
   FrameSync sync;
   sync.install(source);
 
@@ -438,7 +483,7 @@ TEST(ImagePipelineSourceTest, CoalescesBurstOfSetTimestampToSingleDecode) {
 
   CanonicalRgbParser parser;
   ASSERT_TRUE(parser.bindSchema("image", PJ::Span<const uint8_t>{}));
-  PJ::ImagePipelineSource source(&store, *topic, &parser);
+  PJ::ImagePipelineSource source(&store, *topic, &parser, /*parser_mutex=*/nullptr, /*parser_keepalive=*/nullptr);
   FrameSync sync;
   sync.install(source);
 
@@ -476,7 +521,8 @@ TEST(ImagePipelineSourceTest, DestructorJoinsWorkerEvenWithPendingRequest) {
     CanonicalRgbParser parser;
     ASSERT_TRUE(parser.bindSchema("image", PJ::Span<const uint8_t>{}));
 
-    auto source = std::make_unique<PJ::ImagePipelineSource>(&store, *topic, &parser);
+    auto source = std::make_unique<PJ::ImagePipelineSource>(
+        &store, *topic, &parser, /*parser_mutex=*/nullptr, /*parser_keepalive=*/nullptr);
     source->setTimestamp(1'000);
     // Destroy immediately — may be mid-decode. Destructor must join cleanly.
     source.reset();
@@ -500,8 +546,8 @@ TEST(ImagePipelineSourceTest, SharedParserMutexSerializesConcurrentSources) {
   ASSERT_TRUE(parser.bindSchema("image", PJ::Span<const uint8_t>{}));
 
   auto parser_mutex = std::make_shared<std::mutex>();
-  PJ::ImagePipelineSource source_a(&store, *topic, &parser, parser_mutex);
-  PJ::ImagePipelineSource source_b(&store, *topic, &parser, parser_mutex);
+  PJ::ImagePipelineSource source_a(&store, *topic, &parser, parser_mutex, /*parser_keepalive=*/nullptr);
+  PJ::ImagePipelineSource source_b(&store, *topic, &parser, parser_mutex, /*parser_keepalive=*/nullptr);
   FrameSync sync_a;
   FrameSync sync_b;
   sync_a.install(source_a);
@@ -542,7 +588,7 @@ TEST(ImagePipelineSourceTest, ParserDrivenRawRgb8WrappedInGrayscalePngDecodesToC
 
   CanonicalRawParser parser(2, 2, "rgb8", 6);
   ASSERT_TRUE(parser.bindSchema("image", PJ::Span<const uint8_t>{}));
-  PJ::ImagePipelineSource source(&store, *topic, &parser);
+  PJ::ImagePipelineSource source(&store, *topic, &parser, /*parser_mutex=*/nullptr, /*parser_keepalive=*/nullptr);
   FrameSync sync;
   sync.install(source);
 
@@ -590,7 +636,7 @@ TEST(ImagePipelineSourceTest, ParserDrivenBayerRggb8WrappedInGrayscalePngDemosai
 
   CanonicalRawParser parser(kW, kH, "bayer_rggb8", kW);
   ASSERT_TRUE(parser.bindSchema("image", PJ::Span<const uint8_t>{}));
-  PJ::ImagePipelineSource source(&store, *topic, &parser);
+  PJ::ImagePipelineSource source(&store, *topic, &parser, /*parser_mutex=*/nullptr, /*parser_keepalive=*/nullptr);
   FrameSync sync;
   sync.install(source);
 

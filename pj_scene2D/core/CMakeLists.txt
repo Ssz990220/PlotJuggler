@@ -21,12 +21,13 @@ set(PJ_SCENE2D_CORE_SOURCES
 if(PJ_SCENE2D_HAS_FFMPEG)
   list(APPEND PJ_SCENE2D_CORE_SOURCES
     src/ffmpeg_decoder.cpp
-    src/ffmpeg_backend.cpp
-    src/thumbnail_cache.cpp
+    src/thumbnail_codec.cpp
     src/h264_utils.cpp
+    src/video_codec_utils.cpp
     src/streaming_video_decoder.cpp
-    src/file_video_source.cpp
     src/streaming_video_source.cpp
+    src/video_frame_nal_extractor.cpp
+    src/entry_thumbnail_cache.cpp
   )
 endif()
 
@@ -91,6 +92,25 @@ if(PJ_BUILD_TESTS)
     add_test(NAME ${test_name} COMMAND ${test_name})
   endforeach()
 
+  # Loader-side CDR adapter test. Builds the test alongside its adapter/palette
+  # helper sources (the test's only consumers — they relocated here from the
+  # former pj_scene2D/demos/ playground). nanocdr supplies the CDR reader and
+  # pj_internal_fmt supplies fmt for marker_palette.cpp.
+  add_executable(cdr_to_image_annotation_test
+    ../tests/cdr_to_image_annotation_test.cpp
+    ../tests/cdr_detection2d_to_image_annotation.cpp
+    ../tests/cdr_yolo_to_image_annotation.cpp
+    ../tests/marker_palette.cpp
+  )
+  target_compile_features(cdr_to_image_annotation_test PRIVATE cxx_std_20)
+  target_compile_options(cdr_to_image_annotation_test PRIVATE
+    ${PJ_WARNING_FLAGS} ${PJ_SANITIZER_FLAGS}
+  )
+  target_link_libraries(cdr_to_image_annotation_test PRIVATE
+    pj_scene2d_core pj_base GTest::gtest_main nanocdr pj_internal_fmt
+  )
+  add_test(NAME cdr_to_image_annotation_test COMMAND cdr_to_image_annotation_test)
+
   # MCAP integration test (needs mcap + nlohmann_json + ObjectStore)
   add_executable(mcap_integration_test ../tests/mcap_integration_test.cpp)
   target_link_libraries(mcap_integration_test PRIVATE
@@ -124,18 +144,25 @@ if(PJ_BUILD_TESTS)
       ENVIRONMENT "LSAN_OPTIONS=suppressions=${CMAKE_CURRENT_SOURCE_DIR}/../tests/lsan_suppressions.txt"
     )
 
-    # ThumbnailCache test (thread safety, reopen, invalid files)
-    add_executable(thumbnail_cache_test ../tests/thumbnail_cache_test.cpp)
-    target_link_libraries(thumbnail_cache_test PRIVATE
+    # Thumbnail codec test (encode/decode/downscale — fixture-free)
+    add_executable(thumbnail_codec_test ../tests/thumbnail_codec_test.cpp)
+    target_link_libraries(thumbnail_codec_test PRIVATE
       pj_scene2d_core pj_datastore
       ${PJ_SCENE2D_FFMPEG_TARGETS}
       libjpeg-turbo::libjpeg-turbo
       GTest::gtest_main
     )
-    target_compile_options(thumbnail_cache_test PRIVATE ${PJ_WARNING_FLAGS} ${PJ_SANITIZER_FLAGS})
-    add_test(NAME thumbnail_cache_test COMMAND thumbnail_cache_test
-      WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
-    )
+    target_compile_options(thumbnail_codec_test PRIVATE ${PJ_WARNING_FLAGS} ${PJ_SANITIZER_FLAGS})
+    # thumbnail_codec.cpp is the only test that uses libswscale (downscaling),
+    # and swscale pulls libavutil transitively. The linker default DT_RUNPATH is
+    # NOT searched for a dependency's own dependencies, so on a host without a
+    # system FFmpeg (CI) the Conan libavutil.so resolves for direct-dep tests but
+    # not for libswscale -> libavutil here. Emit the (transitive) DT_RPATH instead
+    # so the Conan FFmpeg dir on the rpath resolves libavutil for libswscale too.
+    if(NOT MSVC)
+      target_link_options(thumbnail_codec_test PRIVATE "LINKER:--disable-new-dtags")
+    endif()
+    add_test(NAME thumbnail_codec_test COMMAND thumbnail_codec_test)
 
     # H.264 NAL utilities test
     add_executable(h264_utils_test ../tests/h264_utils_test.cpp)
@@ -149,6 +176,16 @@ if(PJ_BUILD_TESTS)
       WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
     )
 
+    # Codec-generic video utilities test (format->codec_id map + keyframe oracles)
+    add_executable(video_codec_utils_test ../tests/video_codec_utils_test.cpp)
+    target_link_libraries(video_codec_utils_test PRIVATE
+      pj_scene2d_core pj_datastore
+      ${PJ_SCENE2D_FFMPEG_TARGETS}
+      GTest::gtest_main
+    )
+    target_compile_options(video_codec_utils_test PRIVATE ${PJ_WARNING_FLAGS} ${PJ_SANITIZER_FLAGS})
+    add_test(NAME video_codec_utils_test COMMAND video_codec_utils_test)
+
     # StreamingVideoDecoder test (ObjectStore + FfmpegDecoder)
     add_executable(streaming_video_decoder_test ../tests/streaming_video_decoder_test.cpp)
     target_link_libraries(streaming_video_decoder_test PRIVATE
@@ -161,6 +198,21 @@ if(PJ_BUILD_TESTS)
       WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
     )
 
+    # Consumer-side zero-copy unwrap: store canonical PJ.VideoFrame wire messages
+    # and decode them through a view-extractor that unwraps each to its Annex-B
+    # data (the runtime's store-wire-bytes / defer-parse contract). Needs the
+    # canonical codec (pj_base) + FFmpeg; uses test_mp4_demux.h to source frames.
+    add_executable(streaming_video_consumer_unwrap_test ../tests/streaming_video_consumer_unwrap_test.cpp)
+    target_link_libraries(streaming_video_consumer_unwrap_test PRIVATE
+      pj_scene2d_core pj_base pj_datastore
+      ${PJ_SCENE2D_FFMPEG_TARGETS}
+      GTest::gtest_main
+    )
+    target_compile_options(streaming_video_consumer_unwrap_test PRIVATE ${PJ_WARNING_FLAGS} ${PJ_SANITIZER_FLAGS})
+    add_test(NAME streaming_video_consumer_unwrap_test COMMAND streaming_video_consumer_unwrap_test
+      WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+    )
+
     # StreamingVideoSource test (MediaSource adapter for StreamingVideoDecoder)
     add_executable(streaming_video_source_test2 ../tests/streaming_video_source_test.cpp)
     target_link_libraries(streaming_video_source_test2 PRIVATE
@@ -170,30 +222,6 @@ if(PJ_BUILD_TESTS)
     )
     target_compile_options(streaming_video_source_test2 PRIVATE ${PJ_WARNING_FLAGS} ${PJ_SANITIZER_FLAGS})
     add_test(NAME streaming_video_source_test2 COMMAND streaming_video_source_test2
-      WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
-    )
-
-    # FileVideoSource test (MediaSource adapter for FfmpegBackend)
-    add_executable(file_video_source_test ../tests/file_video_source_test.cpp)
-    target_link_libraries(file_video_source_test PRIVATE
-      pj_scene2d_core pj_datastore
-      ${PJ_SCENE2D_FFMPEG_TARGETS}
-      GTest::gtest_main
-    )
-    target_compile_options(file_video_source_test PRIVATE ${PJ_WARNING_FLAGS} ${PJ_SANITIZER_FLAGS})
-    add_test(NAME file_video_source_test COMMAND file_video_source_test
-      WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
-    )
-
-    # FfmpegBackend integration tests (play, scrub, seek)
-    add_executable(ffmpeg_backend_test ../tests/ffmpeg_backend_test.cpp)
-    target_link_libraries(ffmpeg_backend_test PRIVATE
-      pj_scene2d_core pj_datastore
-      ${PJ_SCENE2D_FFMPEG_TARGETS}
-      GTest::gtest_main
-    )
-    target_compile_options(ffmpeg_backend_test PRIVATE ${PJ_WARNING_FLAGS} ${PJ_SANITIZER_FLAGS})
-    add_test(NAME ffmpeg_backend_test COMMAND ffmpeg_backend_test
       WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
     )
 

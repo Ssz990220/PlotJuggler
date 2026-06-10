@@ -58,9 +58,13 @@ class ImagePipelineSource : public MediaSource {
   ///   of the same parser. MessageParser plugins aren't thread-safe (stateful
   ///   scratch), so sources sharing a parser pointer MUST share a mutex. Pass
   ///   nullptr only when the parser is private to this source (e.g. unit tests).
+  /// @param parser_keepalive  Opaque shared owner of the parser handle (parser
+  ///   instance + plugin DSO). Held for this source's whole lifetime so the
+  ///   parser can't be torn down / dlclosed under an in-flight parseObject on the
+  ///   worker thread. Get it from SessionManager::parserKeepaliveForObjectTopic.
   ImagePipelineSource(
       ObjectStore* store, ObjectTopicId topic, MessageParserPluginBase* parser,
-      std::shared_ptr<std::mutex> parser_mutex = nullptr);
+      std::shared_ptr<std::mutex> parser_mutex, std::shared_ptr<void> parser_keepalive);
 
   /// @param store  ObjectStore to query (not owned, must be non-null and outlive this source)
   /// @param topic  Topic ID to query via latestAt()
@@ -109,6 +113,11 @@ class ImagePipelineSource : public MediaSource {
   std::string source_key_;
   MessageParserPluginBase* parser_ = nullptr;
   std::shared_ptr<std::mutex> parser_mutex_;
+  // Keeps the parser handle (instance + plugin DSO) alive for this source's whole
+  // lifetime — see SessionManager::parserKeepaliveForObjectTopic. Dropped after
+  // the worker joins (destructor body), so parseObject can't run on a freed/
+  // dlclosed parser during teardown. Null when no parser is used.
+  std::shared_ptr<void> parser_keepalive_;
   std::unique_ptr<CodecPipeline> pipeline_;
   bool canonical_image_codec_ = false;
   JpegCodec jpeg_codec_;

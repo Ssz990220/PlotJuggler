@@ -11,6 +11,7 @@
 #include <vector>
 
 #include "pj_base/builtin/builtin_object.hpp"
+#include "pj_base/types.hpp"
 #include "pj_datastore/object_store.hpp"
 #include "pj_scene_common/scene_dock_widget.h"
 

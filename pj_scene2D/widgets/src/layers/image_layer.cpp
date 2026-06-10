@@ -13,10 +13,7 @@
 #include <string>
 #include <utility>
 
-#include "pj_base/builtin/asset_video.hpp"
-#include "pj_base/builtin/asset_video_codec.hpp"
 #include "pj_runtime/SessionManager.h"
-#include "pj_scene2d_core/file_video_source.h"
 #include "pj_scene2d_core/image_pipeline_source.h"
 #include "pj_scene2d_core/media_source.h"
 #include "pj_scene2d_widgets/Scene2DDockWidget.h"
@@ -49,35 +46,6 @@ std::unique_ptr<MediaSource> ImageLayer::createMediaSource(const SceneLayerConte
     return nullptr;
   }
 
-  if (objectType() == sdk::BuiltinObjectType::kAssetVideo) {
-    if (store->entryCount(topicId()) == 0) {
-      qCWarning(lcScene2DImageLayer) << "kAssetVideo topic_id=" << topicId().id << "has no entries";
-      return nullptr;
-    }
-    const auto entry = store->at(topicId(), 0);
-    if (!entry.has_value() || entry->payload.anchor == nullptr) {
-      qCWarning(lcScene2DImageLayer) << "kAssetVideo topic_id=" << topicId().id << "first entry has no payload";
-      return nullptr;
-    }
-    auto asset = deserializeAssetVideo(entry->payload.bytes.data(), entry->payload.bytes.size());
-    if (!asset.has_value()) {
-      qCWarning(lcScene2DImageLayer) << "deserializeAssetVideo failed for topic_id=" << topicId().id << ":"
-                                     << QString::fromStdString(asset.error());
-      return nullptr;
-    }
-    auto src = FileVideoSource::open(asset->file_path);
-    if (!src.has_value()) {
-      qCWarning(lcScene2DImageLayer) << "FileVideoSource::open failed for" << QString::fromStdString(asset->file_path)
-                                     << ":" << QString::fromStdString(src.error());
-      return nullptr;
-    }
-    if (asset->time_origin_ns.has_value()) {
-      (*src)->setEpochAnchorNs(*asset->time_origin_ns);
-    }
-    (*src)->setClipWindowNs(asset->start_ns, asset->end_ns);
-    return std::move(*src);
-  }
-
   if (objectType() != sdk::BuiltinObjectType::kImage) {
     return nullptr;
   }
@@ -93,8 +61,20 @@ std::unique_ptr<MediaSource> ImageLayer::createMediaSource(const SceneLayerConte
 
   std::unique_ptr<ImagePipelineSource> image_src;
   if (parser != nullptr) {
-    image_src =
-        std::make_unique<ImagePipelineSource>(store, topicId(), parser, session->parserMutexForObjectTopic(topicId()));
+    // Parser-mode: the decode worker calls parser->parseObject off the GUI
+    // thread, so pin the parser instance + plugin DSO via the keepalive for the
+    // worker's whole lifetime (mirrors VideoLayer). A null keepalive paired with
+    // a non-null parser means the topic was unregistered between the two lookups
+    // — refuse rather than hand the worker a parser that could be dlclosed under
+    // an in-flight call.
+    auto parser_keepalive = session->parserKeepaliveForObjectTopic(topicId());
+    if (parser_keepalive == nullptr) {
+      qCWarning(lcScene2DImageLayer) << "kImage topic_id=" << topicId().id
+                                     << "has no live parser keepalive — cannot safely decode image messages";
+      return nullptr;
+    }
+    image_src = std::make_unique<ImagePipelineSource>(
+        store, topicId(), parser, session->parserMutexForObjectTopic(topicId()), std::move(parser_keepalive));
   } else if (canonical_blob) {
     image_src = std::make_unique<ImagePipelineSource>(store, topicId(), ImagePipelineSource::CanonicalImageCodec{});
   } else {

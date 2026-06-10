@@ -41,6 +41,22 @@ TEST(Media2DDockDispatch, NonImageTypesHaveNoBuiltInPipeline) {
   EXPECT_EQ(PJ::Media2DDockWidget::makePipelineFor(PJ::sdk::BuiltinObjectType::kNone), nullptr);
 }
 
+TEST(Media2DDockDispatch, VideoFrameTopicIsHandled) {
+  // A per-frame canonical video topic (PJ.VideoFrame / Foxglove CompressedVideo)
+  // must be accepted by the 2D dock so it can be dropped and rendered through a
+  // VideoLayer. The scene-unify refactor relocated dock dispatch into the layer
+  // factory but never registered kVideoFrame, so handlesObjectType() silently
+  // refused every video drop. This pins the gate open.
+  EXPECT_TRUE(PJ::Media2DDockWidget::handlesObjectType(PJ::sdk::BuiltinObjectType::kVideoFrame));
+}
+
+TEST(Media2DDockDispatch, VideoFrameHasNoBuiltInPipeline) {
+  // Video is decoded by StreamingVideoSource (FFmpeg) on a worker thread, not a
+  // CodecPipeline, so makePipelineFor() stays nullptr for kVideoFrame — the
+  // VideoLayer builds the source directly.
+  EXPECT_EQ(PJ::Media2DDockWidget::makePipelineFor(PJ::sdk::BuiltinObjectType::kVideoFrame), nullptr);
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {

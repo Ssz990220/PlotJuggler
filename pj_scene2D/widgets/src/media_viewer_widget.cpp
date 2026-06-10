@@ -45,7 +45,15 @@ MediaViewerWidget::MediaViewerWidget(QWidget* parent) : QRhiWidget(parent) {
   (void)resources_initialized;
 }
 
-MediaViewerWidget::~MediaViewerWidget() = default;
+MediaViewerWidget::~MediaViewerWidget() {
+  // Qt does NOT call releaseResources() on widget destruction — only when the QRhi
+  // context changes (reparent / window move). Without this, every GPU resource
+  // (the pipelines, textures, buffers, samplers, SRBs, glyph cache and pixel-layer
+  // textures) leaks each time a dock destroys a viewer. releaseResources() is
+  // idempotent (it nulls each pointer), and the QRhiWidget base that owns the QRhi
+  // is destroyed AFTER this derived destructor, so the rhi is still alive here.
+  releaseResources();
+}
 
 void MediaViewerWidget::setClearColor(const QColor& color) {
   QColor next = color.isValid() ? color : QColor(Qt::white);

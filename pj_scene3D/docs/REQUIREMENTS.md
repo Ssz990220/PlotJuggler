@@ -194,7 +194,7 @@ The demo passes Phase 1 when, on the user-provided MCAP, all of the following ho
 
 ### Explicitly out of Phase 1
 
-assimp, URDF, tinyply, PCD reader, RGB-direct color mode, additional colormaps beyond Turbo, display-frame, follow-mode, TF Frames panel, picking, measurement, click-to-publish, gridmaps, markers, paths, laserscans, integration into `pj_app` (the Phase 1 demo is a standalone binary, mirroring `pj_scene2D/demos/`).
+assimp, URDF, tinyply, PCD reader, RGB-direct color mode, additional colormaps beyond Turbo, display-frame, follow-mode, TF Frames panel, picking, measurement, click-to-publish, gridmaps, markers, paths, laserscans, integration into `pj_app` (the Phase 1 demo is a standalone binary).
 
 ## 14. Stack (locked)
 

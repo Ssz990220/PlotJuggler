@@ -9,8 +9,10 @@
 #include <any>
 #include <cstdio>
 #include <cstring>
+#include <exception>
 #include <limits>
 #include <mutex>
+#include <optional>
 #include <string_view>
 #include <unordered_set>
 #include <utility>
@@ -99,7 +101,9 @@ std::optional<DecodedFrame> imageToDecodedFrame(const sdk::Image& img, const Raw
       return std::nullopt;
     }
     pixels->assign(img.data.data(), img.data.data() + expected);
-  } else if (img.row_step >= row_bytes && img.data.size() >= img.row_step * img.height) {
+  } else if (img.row_step >= row_bytes && img.data.size() >= static_cast<size_t>(img.row_step) * img.height) {
+    // size_t multiply: row_step*height in 32-bit can wrap to a tiny value and let
+    // a too-small buffer past the guard, OOB-reading in the per-row copy below.
     pixels->resize(expected);
     for (uint32_t r = 0; r < img.height; ++r) {
       const auto* src = img.data.data() + static_cast<size_t>(r) * img.row_step;
@@ -319,12 +323,14 @@ std::optional<DecodedFrame> decodeRawOrBayerImage(
 }  // namespace
 
 ImagePipelineSource::ImagePipelineSource(
-    ObjectStore* store, ObjectTopicId topic, MessageParserPluginBase* parser, std::shared_ptr<std::mutex> parser_mutex)
+    ObjectStore* store, ObjectTopicId topic, MessageParserPluginBase* parser, std::shared_ptr<std::mutex> parser_mutex,
+    std::shared_ptr<void> parser_keepalive)
     : store_(store),
       topic_(topic),
       source_key_(sourceLabel(store, topic)),
       parser_(parser),
-      parser_mutex_(std::move(parser_mutex)) {
+      parser_mutex_(std::move(parser_mutex)),
+      parser_keepalive_(std::move(parser_keepalive)) {
   worker_ = std::thread(&ImagePipelineSource::workerLoop, this);
 }
 
@@ -340,7 +346,16 @@ ImagePipelineSource::ImagePipelineSource(ObjectStore* store, ObjectTopicId topic
 }
 
 ImagePipelineSource::~ImagePipelineSource() {
-  running_.store(false);
+  // Flip running_ UNDER request_mutex_: the worker checks `!running_` inside its
+  // wait predicate while holding the same mutex, so storing it unlocked here can
+  // slip into the gap after the worker evaluates the predicate (running_ still
+  // true) but before it blocks — then notify_one() wakes nobody and the worker
+  // sleeps forever, hanging join(). (Root cause of the scene2d_dock_widget_test
+  // intermittent deadlock.)
+  {
+    std::lock_guard lock(request_mutex_);
+    running_.store(false);
+  }
   request_cv_.notify_one();
   if (worker_.joinable()) {
     worker_.join();
@@ -390,7 +405,18 @@ void ImagePipelineSource::workerLoop() {
       has_request_ = false;
     }
 
-    auto result = decodeAt(ts);
+    // Exception barrier (§R5 / ARCHITECTURE §10.5): a throwing parser plugin or a
+    // std::bad_alloc on pathological geometry must not escape the std::thread
+    // callable (that calls std::terminate). Catch at the boundary, warn once, and
+    // keep the worker alive to serve the next request.
+    std::optional<DecodedFrame> result;
+    try {
+      result = decodeAt(ts);
+    } catch (const std::exception& ex) {
+      warnOnce(warningKey(source_key_, "decode-exception"), "{} decode threw: {}", source_key_, ex.what());
+    } catch (...) {
+      warnOnce(warningKey(source_key_, "decode-exception"), "{} decode threw a non-std exception", source_key_);
+    }
     if (result.has_value() && !result->isNull()) {
       {
         std::lock_guard lock(result_mutex_);

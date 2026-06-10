@@ -1,3 +1,6 @@
+// Copyright 2026 Davide Faconti
+// SPDX-License-Identifier: MPL-2.0
+
 #include "pj_scene2d_core/depth_pipeline_source.h"
 
 #include <gtest/gtest.h>

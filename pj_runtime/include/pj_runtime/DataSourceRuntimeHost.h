@@ -60,10 +60,15 @@ class DataSourceRuntimeHost {
   // name. The manager then flips ingest between primary and secondary via
   // setObjectStoreTarget / setDataEngineTarget on each pause/resume. Both null
   // (file-load callers) → single-store behaviour, identical to before.
+  // `library_keepalive` is intentionally NON-defaulting (see the member doc below): a silent
+  // `{}` reintroduces the lazy-anchor use-after-dlclose crash, so every caller must pass the
+  // DSO token (`handle.libraryOwner()`). The trailing optional params also lost their defaults
+  // as a consequence — C++ forbids a non-defaulted parameter after a defaulted one — and every
+  // construction site already passes them explicitly.
   DataSourceRuntimeHost(
       DataEngine& engine, ExtensionCatalogService& catalog, DatasetId dataset_id, PJ_data_source_handle_t source_handle,
-      ObjectStore& object_store, std::string source_id = {}, ObjectTopicParserRegistrar parser_registrar = {},
-      ObjectStore* secondary_object_store = nullptr, DataEngine* secondary_data_engine = nullptr);
+      ObjectStore& object_store, std::string source_id, ObjectTopicParserRegistrar parser_registrar,
+      ObjectStore* secondary_object_store, DataEngine* secondary_data_engine, std::shared_ptr<void> library_keepalive);
 
   ~DataSourceRuntimeHost();
 
@@ -232,6 +237,11 @@ class DataSourceRuntimeHost {
   // Shared by lazy ObjectStore closures. Some source plugins wrap readers
   // whose deferred message fetch API is not safe to call concurrently.
   std::shared_ptr<std::mutex> lazy_fetch_mutex_;
+  // Keeps the producing DataSource plugin's DSO mapped for as long as any lazy
+  // ObjectStore payload anchor created by this host survives: a payload anchor's
+  // release fn is plugin code, so a cached ResolvedObjectEntry outliving the
+  // extension catalog would otherwise call a dangling pointer on teardown.
+  std::shared_ptr<void> library_keepalive_;
 
   MessageBoxHandler message_box_handler_;
   std::string last_error_;

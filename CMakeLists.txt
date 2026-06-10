@@ -13,6 +13,9 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 option(PJ4_BUILD_APP "Build the pj_app desktop shell" ON)
 option(PJ_ENABLE_SANITIZERS "Enable ASAN for Debug builds" OFF)
 option(PJ_ENABLE_TSAN "Enable ThreadSanitizer for Debug builds" OFF)
+# Standalone dev tools (pj_scene2D/tools, e.g. extract_frame). Off by default so
+# they don't cost a default/CI build; configure with -DPJ_BUILD_TOOLS=ON to build.
+option(PJ_BUILD_TOOLS "Build pj_scene2D dev tools" OFF)
 # Foundation build options. PJ_BUILD_TESTS feeds both the plotjuggler_sdk SDK
 # submodule and the pj_datastore module. The rest stay off for the PJ4 app
 # build: the SDK's ported-plugins collection, and pj_datastore's parquet
@@ -105,7 +108,9 @@ endif()
 # pj_scene2D depends on pj_datastore, which is now always built (above).
 add_subdirectory(pj_scene2D/core)
 add_subdirectory(pj_scene2D/widgets)
-add_subdirectory(pj_scene2D/demos)
+if(PJ_BUILD_TOOLS)
+    add_subdirectory(pj_scene2D/tools)
+endif()
 add_subdirectory(pj_scene3D/core)
 add_subdirectory(pj_scene3D/widgets)
 add_subdirectory(pj_marketplace)

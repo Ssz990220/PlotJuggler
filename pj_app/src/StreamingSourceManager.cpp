@@ -155,9 +155,15 @@ void StreamingSourceManager::onPauseToggled(bool paused) {
   }
   flushSecondaryIntoPrimary();
   flushSecondaryDataEngineIntoPrimary();
-  // DataEngine::flushTo moves chunks without trimming; re-trim the merged
-  // primary to the window (objects are already trimmed by ObjectStore::flushTo).
-  session_manager_.dataEngine().enforceRetention(static_cast<int64_t>(retention_seconds_) * 1'000'000'000LL);
+  // DataEngine::flushTo moves chunks without trimming; re-trim the merged primary
+  // to the window (objects are already trimmed by ObjectStore::flushTo). Scope the
+  // trim to each streaming dataset so a co-loaded file's history is left intact.
+  {
+    const auto window_ns = static_cast<int64_t>(retention_seconds_) * 1'000'000'000LL;
+    for (const auto& [streaming_dataset_id, _sess] : sessions_) {
+      session_manager_.dataEngine().enforceRetention(window_ns, streaming_dataset_id);
+    }
+  }
   // Catch-up nudge so consumers (PlotWidget auto-fit, Media2DDockWidget jump
   // to latest frame) land on the post-flush live edge. Mirrors PJ3 "flush at
   // play" semantics.
@@ -246,6 +252,13 @@ void StreamingSourceManager::startSession(const QString& plugin_id) {
     return;
   }
 
+  // Capture the plugin's DSO token BEFORE moving `handle` into the session. The
+  // streaming runtime host stores lazy ObjectStore anchors/fetchers that are
+  // plugin-DSO code and can outlive the catalog entry (mid-session marketplace
+  // reload, or app close), so the .so must stay mapped until those drop. Reading
+  // handle.libraryOwner() AFTER the std::move would yield a moved-from (null)
+  // token, silently disabling the protection — the exact gap this site had.
+  auto library_keepalive = handle.libraryOwner();
   auto session = std::make_unique<StreamingSession>(std::move(handle));
   session->plugin_id = source.name;
   session->dataset_id = dataset_id;
@@ -254,7 +267,7 @@ void StreamingSourceManager::startSession(const QString& plugin_id) {
       [this](ObjectTopicId id, std::unique_ptr<MessageParserHandle> parser) {
         session_manager_.registerObjectTopicParser(id, std::move(parser));
       },
-      secondary_object_store_.get(), secondary_data_engine_.get());
+      secondary_object_store_.get(), secondary_data_engine_.get(), std::move(library_keepalive));
 
   ServiceRegistryBuilder registry;
   session->runtime_host_->registerServices(registry);
@@ -384,11 +397,13 @@ void StreamingSourceManager::workerLoop(DatasetId dataset_id) {
           }
           // Trim the engine currently being written: B while paused (bounds the
           // tail), the primary while live. The frozen engine is never touched,
-          // preserving the primary snapshot for scrub-back.
+          // preserving the primary snapshot for scrub-back. Scope the trim to THIS
+          // streaming dataset so a file the user loaded into the same engine keeps
+          // its full history.
           if (paused_) {
-            secondary_data_engine_->enforceRetention(window_ns);
+            secondary_data_engine_->enforceRetention(window_ns, dataset_id);
           } else {
-            session_manager_.dataEngine().enforceRetention(window_ns);
+            session_manager_.dataEngine().enforceRetention(window_ns, dataset_id);
           }
 
           const auto topic_ids = session_manager_.createReader().listTopics(dataset_id);

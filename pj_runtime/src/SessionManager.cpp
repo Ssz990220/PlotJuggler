@@ -123,23 +123,33 @@ void SessionManager::registerObjectTopicParser(ObjectTopicId id, std::unique_ptr
   // Fresh mutex per registration: a re-registration swaps in a new parser, but
   // existing consumers still guard the old one. Reusing the lock would let the
   // new caller race with leftover work on the old parser pointer.
-  object_topic_parsers_[id.id] = ObjectParserSlot{std::move(parser), std::make_shared<std::mutex>()};
+  object_topic_parsers_[id.id] =
+      ObjectParserSlot{std::shared_ptr<MessageParserHandle>(std::move(parser)), std::make_shared<std::mutex>()};
+}
+
+const SessionManager::ObjectParserSlot* SessionManager::findValidParserSlot(ObjectTopicId id) const {
+  auto it = object_topic_parsers_.find(id.id);
+  if (it == object_topic_parsers_.end() || it->second.handle == nullptr || !it->second.handle->valid()) {
+    return nullptr;
+  }
+  return &it->second;
+}
+
+std::shared_ptr<void> SessionManager::parserKeepaliveForObjectTopic(ObjectTopicId id) const {
+  // shared_ptr<MessageParserHandle> -> shared_ptr<void>: holding it keeps the
+  // handle (and thus the parser instance + plugin DSO) alive for the consumer.
+  const auto* slot = findValidParserSlot(id);
+  return slot != nullptr ? slot->handle : nullptr;
 }
 
 MessageParserPluginBase* SessionManager::parserForObjectTopic(ObjectTopicId id) const {
-  auto it = object_topic_parsers_.find(id.id);
-  if (it == object_topic_parsers_.end() || it->second.handle == nullptr || !it->second.handle->valid()) {
-    return nullptr;
-  }
-  return static_cast<MessageParserPluginBase*>(it->second.handle->context());
+  const auto* slot = findValidParserSlot(id);
+  return slot != nullptr ? static_cast<MessageParserPluginBase*>(slot->handle->context()) : nullptr;
 }
 
 std::shared_ptr<std::mutex> SessionManager::parserMutexForObjectTopic(ObjectTopicId id) const {
-  auto it = object_topic_parsers_.find(id.id);
-  if (it == object_topic_parsers_.end() || it->second.handle == nullptr || !it->second.handle->valid()) {
-    return nullptr;
-  }
-  return it->second.mutex;
+  const auto* slot = findValidParserSlot(id);
+  return slot != nullptr ? slot->mutex : nullptr;
 }
 
 void SessionManager::recordLoadedSource(QString path, QString prefix, QString plugin_id, QString plugin_config_json) {

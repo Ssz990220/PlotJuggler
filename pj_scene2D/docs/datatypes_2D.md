@@ -15,7 +15,7 @@ has shipped yet:
 | `DepthImage` (§5) | ✅ Realised | `pj_base/builtin/depth_image.hpp` + `depth_image_utils.hpp` |
 | `SegmentationImage` (§6) | 🟡 Designed, not yet realised | — |
 | `ClassRegistry` (§7) | 🟡 Designed, not yet realised | — (likely lives next to SegmentationImage) |
-| `VideoFrame` (§8) | ✅ Realised | `pj_base/builtin/video_frame.hpp` + `video_frame_codec.hpp` (enum `kVideoFrame = 10`) |
+| `VideoFrame` (§8) | ✅ Realised + wired | `pj_base/builtin/video_frame.hpp` + `video_frame_codec.hpp` (wire layout matches Foxglove `CompressedVideo`: `timestamp=1, frame_id=2, data=3, format=4`). Loaded as a canonical object: parser_protobuf classifies `PJ.VideoFrame` / `foxglove.CompressedVideo`, parser_ros classifies `foxglove_msgs/CompressedVideo` → `kVideoFrame` ObjectTopic → rendered by `StreamingVideoSource` (parser-mode: unwraps each entry's message to its raw NAL span zero-copy, then `StreamingVideoDecoder`). |
 | `CameraCalibration` (§9, realised as `sdk::CameraInfo`) | ✅ Realised | `pj_base/builtin/camera_info.hpp` + `camera_info_codec.hpp` |
 | `PointCloud` (§10) | ✅ Realised | `pj_base/builtin/point_cloud.hpp` |
 | `ScenePrimitive` variants (§11) | 🟡 Designed, not yet realised | — |
@@ -571,8 +571,9 @@ on top of it. They are not part of the 3D scene graph.
 > source format (CDR `vision_msgs/msg/Detection2DArray`, `yolo_msgs/msg/DetectionArray`,
 > CSV, RLDS, etc.), fills an `ImageAnnotation`, and calls
 > `PJ::serializeImageAnnotation` before pushing canonical bytes to ObjectStore. PJ4's
-> reference adapters for the MCAP demo live in `pj_scene2D/demos/cdr_*_to_image_annotation.{h,cpp}`
-> and `marker_palette.{h,cpp}` (FNV-1a class-id palette + label formatter).
+> reference adapters live in `pj_scene2D/tests/cdr_*_to_image_annotation.{h,cpp}`
+> and `marker_palette.{h,cpp}` (FNV-1a class-id palette + label formatter), exercised
+> by `cdr_to_image_annotation_test`.
 
 `MediaViewerWidget` renders **every** `ImageAnnotation` primitive end-to-end through
 five QRhi pipelines:
@@ -662,7 +663,7 @@ encoding level (no separate `CompressedImage`) but split at the semantic level.
 | `JointState` | Plottable as time-series (scalars). Robot model visualization uses SceneEntity. |
 | `VoxelGrid` | Deferred. Can be added later as a Grid variant or new type. |
 | `Asset3D` (standalone) | Covered by ModelPrimitive inside SceneEntity. |
-| `AssetVideo` (whole file) | Deferred. Pre-recorded MP4 import is a file-source concern, not a scene type. |
+| `AssetVideo` (whole file) | Deferred for the host. `kAssetVideo` remains a reserved SDK enum slot (12) with no host decode path; per-frame `VideoFrame` (§8) is the canonical video model. |
 | `LaserScan` | Converted to PointCloud at ingest time (polar → cartesian). |
 | `GraphNodes` / `GraphEdges` | Rerun-specific. Deferred. |
 | `Log` | Deferred. Can be added later. |

@@ -18,34 +18,50 @@ void ScenePipelineSource::setTimestamp(int64_t ts_ns) {
   }
   last_ts_ = ts_ns;
 
+  // No annotation at this time: clear the overlays IF something is currently shown.
+  // Coalesced via last_emitted_empty_ so an already-clear layer emits nothing.
+  auto markCleared = [this] {
+    pending_scene_.reset();
+    pending_clear_ = !last_emitted_empty_;
+  };
+
   // Copy bytes out of the store before decoding — keep no series-mutex held
   // through the decode (lock-discipline pattern documented in
   // ObjectStore::entryTimestamps).
   auto entry = store_->latestAt(topic_, ts_ns);
   if (!entry.has_value() || entry->payload.anchor == nullptr || entry->payload.bytes.empty()) {
-    pending_scene_.reset();
+    markCleared();
     return;
   }
 
   auto result = decoder_->decode(entry->payload.bytes.data(), entry->payload.bytes.size());
   if (result.has_value()) {
     pending_scene_ = std::move(*result);
+    pending_clear_ = false;
   } else {
     fprintf(
         stderr, "[ScenePipelineSource] decode failed at ts=%lld: %s\n", static_cast<long long>(ts_ns),
         result.error().c_str());
-    pending_scene_.reset();
+    markCleared();
   }
 }
 
 std::optional<MediaFrame> ScenePipelineSource::takeFrame() {
-  if (!pending_scene_.has_value()) {
-    return std::nullopt;
+  if (pending_scene_.has_value()) {
+    MediaFrame mf;
+    mf.overlays.push_back(std::move(*pending_scene_));
+    pending_scene_.reset();
+    last_emitted_empty_ = false;
+    return mf;
   }
-  MediaFrame mf;
-  mf.overlays.push_back(std::move(*pending_scene_));
-  pending_scene_.reset();
-  return mf;
+  if (pending_clear_) {
+    // Empty-overlay frame: the compositor replaces this layer's overlays with an
+    // empty set, clearing the previously-shown annotations.
+    pending_clear_ = false;
+    last_emitted_empty_ = true;
+    return MediaFrame{};
+  }
+  return std::nullopt;
 }
 
 }  // namespace PJ

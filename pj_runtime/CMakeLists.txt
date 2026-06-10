@@ -90,6 +90,16 @@ if(PJ_BUILD_TESTS)
     )
     add_test(NAME CatalogModelTest COMMAND catalog_model_test)
 
+    add_executable(payload_anchor_test
+        tests/payload_anchor_test.cpp
+    )
+    target_compile_options(payload_anchor_test PRIVATE ${PJ_WARNING_FLAGS})
+    target_link_libraries(payload_anchor_test PRIVATE
+        pj_runtime
+        GTest::gtest_main
+    )
+    add_test(NAME PayloadAnchorTest COMMAND payload_anchor_test)
+
     add_executable(curve_color_registry_test
         tests/curve_color_registry_test.cpp
     )

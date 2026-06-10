@@ -2,11 +2,26 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 
+#include <cstdint>
 #include <memory>
 
 #include "pj_scene2d_core/codec_pipeline.h"
 
 namespace PJ {
+
+/// Upper bound on decoded image dimensions, enforced BEFORE allocating a pixel
+/// buffer from header-declared geometry. Decoders consume untrusted bytes (files,
+/// network); a crafted header can declare enormous dimensions that would drive a
+/// multi-gigabyte value-initialized allocation (or std::bad_alloc). 100 MP
+/// comfortably covers any real camera/video frame (8K is ~33 MP) while bounding
+/// the worst case.
+inline constexpr int64_t kMaxImagePixels = 100'000'000;
+
+/// True when (width, height) is a positive image size whose pixel count is within
+/// kMaxImagePixels. Computed in 64-bit so the product cannot overflow.
+[[nodiscard]] inline bool imageDimensionsWithinLimit(int width, int height) noexcept {
+  return width > 0 && height > 0 && static_cast<int64_t>(width) * static_cast<int64_t>(height) <= kMaxImagePixels;
+}
 
 /// JPEG → RGB888 via turbojpeg.
 class JpegCodec : public CodecStage {

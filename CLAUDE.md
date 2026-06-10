@@ -52,7 +52,7 @@ When adding files, use the owning module rather than creating new top-level fold
 - `pj_widgets/`: reusable Qt widgets and UI helpers that could be used by another Qt app. Depends only on Qt and the C++ standard library; no dependencies on `pj_runtime`, `pj_app`, or other PJ modules.
 - `pj_scene_common/`: backend-agnostic layered scene dock framework (`scene_layer.h`, `layer_factory.h`, `scene_dock_widget.h`) shared by the 2D/3D scene widget families. Rendering-specific view state stays in those families, not here.
 - `pj_plotting/`: Qwt plotting feature family. Put datastore adapters and plotting logic in `core/`, Qt/Qwt widgets in `widget/`, and focused tests in `tests/`.
-- `pj_scene2D/`: 2D media/scene feature family. Put independent media logic in `core/`, Qt viewer widgets in `widgets/`, runnable examples in `demos/`, and tests in `tests/`.
+- `pj_scene2D/`: 2D media/scene feature family. Put independent media logic in `core/`, Qt viewer widgets in `widgets/`, tests in `tests/`, and opt-in standalone dev utilities in `tools/` (gated by `PJ_BUILD_TOOLS`, off by default).
 - `pj_marketplace/`: extension registry, download, install/manage services, and marketplace UI.
 - `pj_dialog_host/`: Qt host/binding for plugin-provided dialogs. General app dialogs stay in `pj_app`; reusable dialog controls stay in `pj_widgets`.
 - `pj_scripting/`: future language-agnostic scripting engine. Do not place scripting code under `pj_app` or widget modules unless it is strictly UI/editor code.
@@ -161,6 +161,21 @@ aqt install-qt linux desktop 6.8.3 linux_gcc_64 \
     --modules qtcharts qtwebsockets \
     --outputdir ./.qt
 ```
+
+System build dependencies (Linux): the Conan FFmpeg build needs `libva-dev` and
+`libdrm-dev` on the build host, because `conanfile.txt` enables
+`ffmpeg/*:with_vaapi=True` / `with_libdrm=True` for VAAPI hardware video decode
+(the `FfmpegDecoder` GPU path; it falls back to software when no usable GPU
+driver is present). The recipe's `vaapi/system` + `libdrm` wrappers resolve
+`libva` / `libva-drm` via `pkg-config`, so these `-dev` packages must exist at
+build time:
+
+```bash
+sudo apt-get install libva-dev libdrm-dev
+```
+
+End users only need the ubiquitous `libva2` runtime (packaging pulls it in). CI
+installs these in `.github/workflows/linux-ci.yml`.
 
 Build (configures Conan, runs CMake, builds):
 

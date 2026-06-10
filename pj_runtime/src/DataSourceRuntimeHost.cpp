@@ -19,21 +19,28 @@
 #include "pj_plugins/host/message_parser_handle.hpp"
 #include "pj_plugins/host/service_registry_builder.hpp"
 #include "pj_runtime/ExtensionCatalogService.h"
+#include "pj_runtime/detail/payload_anchor.h"
 
 namespace PJ {
 
-namespace {
-Q_LOGGING_CATEGORY(lcIngest, "pj.runtime.ingest")
+namespace detail {
 
-// Wrap a C-ABI payload anchor as a shared_ptr<void> whose deleter calls
-// release exactly once at refcount zero. Null anchor.release → empty
-// shared_ptr: the caller MUST copy, since the buffer dies with the C-ABI call.
-sdk::BufferAnchor wrapPayloadAnchor(const PJ_payload_anchor_t& anchor) {
+sdk::BufferAnchor wrapPayloadAnchor(const PJ_payload_anchor_t& anchor, std::shared_ptr<void> library_keepalive) {
   if (anchor.release == nullptr) {
     return {};
   }
-  return sdk::BufferAnchor{std::shared_ptr<void>(anchor.ctx, anchor.release)};
+  // Host-side deleter (always mapped): calls the plugin's release while holding
+  // `library_keepalive`, so the producing DSO stays mapped for the call and is
+  // dlclosed only once every anchor copy is destroyed.
+  auto release = anchor.release;
+  return sdk::BufferAnchor{std::shared_ptr<void>(
+      anchor.ctx, [release, keepalive = std::move(library_keepalive)](void* ctx) noexcept { release(ctx); })};
 }
+
+}  // namespace detail
+
+namespace {
+Q_LOGGING_CATEGORY(lcIngest, "pj.runtime.ingest")
 
 std::vector<uint8_t> copyPayloadBytes(const PJ_payload_t& payload) {
   std::vector<uint8_t> bytes;
@@ -47,7 +54,8 @@ std::vector<uint8_t> copyPayloadBytes(const PJ_payload_t& payload) {
 // Anchor-bearing payload: captures the anchor so the buffer lives for the
 // ObjectStore entry's lifetime (zero copy). Null anchor (transient buffer):
 // copies the bytes into a shared_ptr<vector> that serves as its own anchor.
-std::function<sdk::PayloadView()> makeCapturedPayloadClosure(const PJ_payload_t& payload) {
+std::function<sdk::PayloadView()> makeCapturedPayloadClosure(
+    const PJ_payload_t& payload, std::shared_ptr<void> library_keepalive) {
   if (payload.anchor.release == nullptr) {
     auto bytes = std::make_shared<const std::vector<uint8_t>>(copyPayloadBytes(payload));
     return [bytes]() -> sdk::PayloadView {
@@ -57,7 +65,7 @@ std::function<sdk::PayloadView()> makeCapturedPayloadClosure(const PJ_payload_t&
       };
     };
   }
-  auto anchor = wrapPayloadAnchor(payload.anchor);
+  auto anchor = detail::wrapPayloadAnchor(payload.anchor, std::move(library_keepalive));
   const uint8_t* data = payload.data;
   uint64_t size = payload.size;
   return [anchor = std::move(anchor), data, size]() -> sdk::PayloadView {
@@ -69,17 +77,27 @@ std::function<sdk::PayloadView()> makeCapturedPayloadClosure(const PJ_payload_t&
 }
 
 struct FetcherOwner {
-  explicit FetcherOwner(PJ_message_data_fetcher_t fetcher_in) : fetcher(fetcher_in) {}
+  FetcherOwner(PJ_message_data_fetcher_t fetcher_in, std::shared_ptr<void> library_keepalive_in)
+      : library_keepalive(std::move(library_keepalive_in)), fetcher(fetcher_in) {}
 
   FetcherOwner(const FetcherOwner&) = delete;
   FetcherOwner& operator=(const FetcherOwner&) = delete;
 
   ~FetcherOwner() {
+    // fetcher.release is plugin-DSO code. The destructor BODY runs while
+    // library_keepalive is still held (members are destroyed only after the
+    // body completes), so the producing .so cannot be dlclosed underneath this
+    // call — even when this owner holds the LAST DSO reference (post-evict /
+    // app close). Hold the keepalive as a member here; do NOT rely on a
+    // separate lambda capture, whose destruction order relative to this owner
+    // is unspecified and would let the DSO unmap before fetcher.release runs.
     if (fetcher.release != nullptr) {
       fetcher.release(fetcher.ctx);
     }
   }
 
+  // The producing plugin's DSO token, held for the owner's whole lifetime.
+  std::shared_ptr<void> library_keepalive;
   PJ_message_data_fetcher_t fetcher;
 };
 
@@ -104,6 +122,9 @@ struct LazyFetchContext {
 // holding bytes until read time costs more than re-fetching.
 std::function<sdk::PayloadView()> makeLazyFetchClosure(
     std::shared_ptr<FetcherOwner> owner, std::shared_ptr<std::mutex> fetch_mutex, LazyFetchContext context) {
+  // The DSO keepalive lives inside `owner` (FetcherOwner), so it is the single
+  // source of truth here too — reach it via owner->library_keepalive when
+  // wrapping each fetched anchor, rather than a parallel capture.
   return [owner = std::move(owner), fetch_mutex = std::move(fetch_mutex),
           context = std::move(context)]() -> sdk::PayloadView {
     PJ_payload_t payload{};
@@ -145,7 +166,7 @@ std::function<sdk::PayloadView()> makeLazyFetchClosure(
       }
       return {};
     }
-    auto anchor = wrapPayloadAnchor(payload.anchor);
+    auto anchor = detail::wrapPayloadAnchor(payload.anchor, owner->library_keepalive);
     if (anchor == nullptr) {
       // No ownership — must copy because the buffer dies with this call.
       auto bytes = std::make_shared<const std::vector<uint8_t>>(copyPayloadBytes(payload));
@@ -216,7 +237,7 @@ const PJ_data_source_runtime_host_vtable_t DataSourceRuntimeHost::kVtable = {
 DataSourceRuntimeHost::DataSourceRuntimeHost(
     DataEngine& engine, ExtensionCatalogService& catalog, DatasetId dataset_id, PJ_data_source_handle_t source_handle,
     ObjectStore& object_store, std::string source_id, ObjectTopicParserRegistrar parser_registrar,
-    ObjectStore* secondary_object_store, DataEngine* secondary_data_engine)
+    ObjectStore* secondary_object_store, DataEngine* secondary_data_engine, std::shared_ptr<void> library_keepalive)
     : engine_(engine),
       catalog_(catalog),
       object_store_(object_store),
@@ -227,7 +248,8 @@ DataSourceRuntimeHost::DataSourceRuntimeHost(
       dataset_id_(dataset_id),
       source_write_host_(engine, source_handle),
       source_object_write_host_(object_store, dataset_id),
-      lazy_fetch_mutex_(std::make_shared<std::mutex>()) {}
+      lazy_fetch_mutex_(std::make_shared<std::mutex>()),
+      library_keepalive_(std::move(library_keepalive)) {}
 
 DataSourceRuntimeHost::~DataSourceRuntimeHost() = default;
 
@@ -552,7 +574,7 @@ bool DataSourceRuntimeHost::cbPushMessage(
     void* ctx, PJ_parser_binding_handle_t handle, int64_t timestamp_ns, PJ_message_data_fetcher_t fetch_message_data,
     PJ_error_t* out_error) noexcept {
   auto* self = static_cast<DataSourceRuntimeHost*>(ctx);
-  auto fetcher_owner = std::make_shared<FetcherOwner>(fetch_message_data);
+  auto fetcher_owner = std::make_shared<FetcherOwner>(fetch_message_data, self->library_keepalive_);
 
   try {
     auto it = self->parser_bindings_.find(handle.id);
@@ -612,7 +634,7 @@ bool DataSourceRuntimeHost::cbPushMessage(
     // Build the captured-payload closure FIRST, so the anchor lifetime binds
     // to the closure rather than this scope (no PayloadAnchorGuard needed): on
     // any abort below, dropping `captured_closure` releases the anchor cleanly.
-    auto captured_closure = makeCapturedPayloadClosure(payload);
+    auto captured_closure = makeCapturedPayloadClosure(payload, self->library_keepalive_);
 
     if (payload.data == nullptr && payload.size > 0) {
       return self->fail(out_error, "message data fetcher returned null data");

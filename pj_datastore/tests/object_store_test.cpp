@@ -6,6 +6,8 @@
 #include <gtest/gtest.h>
 
 #include <array>
+#include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <functional>
 #include <memory>
@@ -311,6 +313,42 @@ TEST(ObjectStoreTest, EntryTimestampsViewEmpty) {
   EXPECT_EQ(view.size(), 0u);
 }
 
+TEST(ObjectStoreTest, RemoveTopicWaitsForOutstandingTimestampsView) {
+  ObjectStore store;
+  auto id = registerTestTopic(store, "cam/video");
+  for (int i = 0; i < 5; ++i) {
+    store.pushOwned(id, i * 1'000'000, makePayload(8));
+  }
+
+  // An EntryTimestampsView holds the series read lock plus a raw pointer into the
+  // timestamp vector. removeTopic destroys the series (mutex + vector); if it does
+  // not first drain outstanding readers it frees memory the view still references
+  // (use-after-free) and destroys a still-locked mutex (UB). The observable
+  // contract of the fix: removeTopic must not complete while a view is alive.
+  std::atomic<bool> remove_done{false};
+  std::thread remover;
+  {
+    auto view = store.entryTimestamps(id);
+    ASSERT_EQ(view.size(), 5u);
+
+    remover = std::thread([&] {
+      store.removeTopic(id);
+      remove_done.store(true, std::memory_order_release);
+    });
+
+    // The remover must block until the view is released. A too-early completion
+    // (the bug) happens in microseconds, so a short wait reliably catches it.
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    EXPECT_FALSE(remove_done.load(std::memory_order_acquire))
+        << "removeTopic completed while an EntryTimestampsView was still alive (UAF window)";
+    EXPECT_EQ(view.size(), 5u);  // view data stays valid for its whole lifetime
+  }
+
+  remover.join();
+  EXPECT_TRUE(remove_done.load(std::memory_order_acquire));
+  EXPECT_EQ(store.entryCount(id), 0u);
+}
+
 // =========================================================================
 // pushLazy
 // =========================================================================
@@ -517,6 +555,38 @@ TEST(ObjectStoreTest, LazyEntriesZeroMemory) {
     });
   }
   EXPECT_EQ(store.memoryUsage(id), 0u);
+}
+
+// A pure-lazy entry (the policy file-backed PJ.VideoFrame topics use) must keep
+// its bytes NON-resident: the store holds only the fetcher closure, never the
+// payload. Each read re-invokes the fetcher, and once the caller drops the
+// resolved entry the anchor is the sole owner so the bytes are freed — which is
+// exactly what lets a locator-only fetcher read one access unit from a file on
+// demand without the whole video ever landing on the heap.
+TEST(ObjectStoreTest, LazyFetcherNotPinnedAcrossReads) {
+  ObjectStore store;
+  auto id = registerTestTopic(store);
+  int fetch_count = 0;
+  store.pushLazy(id, 0, [&fetch_count]() -> sdk::PayloadView {
+    ++fetch_count;
+    return sdk::makePayloadView(makePayload(64 * 1024));
+  });
+
+  EXPECT_EQ(store.memoryUsage(id), 0u);  // closure only — payload not counted
+
+  std::weak_ptr<const void> anchor_probe;
+  {
+    auto resolved = store.at(id, 0);
+    ASSERT_TRUE(resolved.has_value());
+    EXPECT_EQ(resolved->payload.bytes.size(), 64u * 1024u);
+    anchor_probe = resolved->payload.anchor;
+  }
+  EXPECT_TRUE(anchor_probe.expired()) << "ObjectStore pinned the lazy payload past the read";
+
+  // A second read fetches fresh rather than returning a cached buffer.
+  auto second = store.at(id, 0);
+  ASSERT_TRUE(second.has_value());
+  EXPECT_EQ(fetch_count, 2);
 }
 
 // =========================================================================

@@ -85,8 +85,14 @@ class DataEngine {
   ///   derived.onSourceCommitted(engine.commitChunks(writer.flushAll()));
   std::vector<PJ::TopicId> commitChunks(std::vector<std::pair<PJ::TopicId, TopicChunk>> chunks);
 
-  /// Evict old chunks outside the retention window.
+  /// Evict old chunks outside the retention window across ALL datasets.
   void enforceRetention(PJ::Timestamp retention_window_ns);
+
+  /// Evict old chunks outside the retention window for a SINGLE dataset, leaving
+  /// every other dataset untouched. A live streaming source must scope its rolling
+  /// retention to its own dataset so it does not silently trim the history of a
+  /// file the user loaded into the same engine.
+  void enforceRetention(PJ::Timestamp retention_window_ns, PJ::DatasetId dataset_id);
 
   /// Move every committed chunk into `dst`, leaving this engine's storages
   /// empty (datasets, topics, schemas, time domains stay registered). Topics

@@ -140,7 +140,10 @@ class ObjectStore {
   // parser-side write surface to a topic the source already registered.
   std::optional<ObjectTopicId> findTopic(DatasetId dataset_id, std::string_view topic_name) const;
 
-  const ObjectTopicDescriptor& descriptor(ObjectTopicId id) const;
+  // Returns a COPY (not a reference): the descriptor lives in lock-protected
+  // series storage that removeTopic/clear/replaceDatasetFrom can destroy, so a
+  // reference would dangle once the caller drops the (internal) lock.
+  ObjectTopicDescriptor descriptor(ObjectTopicId id) const;
 
   std::vector<ObjectTopicId> listTopics() const;
   std::vector<ObjectTopicId> listTopics(DatasetId dataset_id) const;
@@ -224,6 +227,14 @@ class ObjectStore {
   // Erase a topic from topics_. Caller must already hold store_mutex_ (used by
   // removeTopic under its own lock and by replaceDatasetFrom under the dual lock).
   void eraseTopicLocked(ObjectTopicId id);
+
+  // Wait out any in-flight shared readers (e.g. an EntryTimestampsView, which
+  // holds only the series lock — not store_mutex_) before `series` storage is
+  // destroyed or its timestamp vector reallocated. Caller MUST hold store_mutex_
+  // exclusively, so no new reader can find the series; taking the series lock
+  // exclusively then blocks until the outstanding readers release. Without this,
+  // destroying a still-locked series mutex is UB and the view's pointer dangles.
+  static void drainSeriesReaders(ObjectSeries& series);
 
   static std::optional<size_t> upperBoundIndex(const std::vector<Timestamp>& timestamps, Timestamp ts);
   static ResolvedObjectEntry resolveEntry(const ObjectEntry& entry);

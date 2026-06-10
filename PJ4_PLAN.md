@@ -101,7 +101,7 @@ The current repository already provides substantial infrastructure:
 - `pj_scene2D`
   - 2D/video visualization on top of `ObjectStore`
   - FFmpeg-backed video decode with HW acceleration, scrub optimizations, B-frame support
-  - `MediaSource` pull-based abstraction (`ImagePipelineSource`, `FileVideoSource`, `StreamingVideoSource`)
+  - `MediaSource` pull-based abstraction (`ImagePipelineSource`, `StreamingVideoSource`)
   - `pj_scene2d_widgets` QRhi widget with BT.709 YUV→RGB shader
 - `pj_marketplace`
   - extension installation and management UI/services (assumed done)

@@ -37,6 +37,13 @@ class ScenePipelineSource : public MediaSource {
   ObjectTopicId topic_;
   std::unique_ptr<ISceneDecoder> decoder_;
   std::optional<SceneFrame> pending_scene_;
+  // When the cursor moves to a time with no annotation (no entry, empty payload,
+  // or a decode failure) AFTER something was on screen, takeFrame() emits one
+  // empty-overlay frame so the compositor clears the stale overlays — returning
+  // nullopt would instead leave them up (the composite retains the last
+  // contribution). Coalesced so an already-clear layer publishes nothing new.
+  bool pending_clear_ = false;
+  bool last_emitted_empty_ = true;
   int64_t last_ts_ = INT64_MIN;
 };
 

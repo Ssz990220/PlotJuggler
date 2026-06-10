@@ -128,20 +128,34 @@ Qt handles conversion in the renderer.
 | H.264/AVC | Lowest | Baseline | Universal | Primary target |
 | H.265/HEVC | Low | ~40% better | Wide (GPU 2018+) | Supported |
 | AV1 | Medium | ~50% better | Growing (RTX 40+, RDNA 3+) | Supported |
-| VP9 | Medium | ~35% better | Moderate | Supported |
+| VP9 | Medium | ~35% better | Moderate | Not on the streaming path |
 
-VVC/H.266 has near-zero hardware support — not targeted.
+The streaming `VideoFrame` decode path supports **h264 / h265 / av1** only.
+`vp9` stays an accepted `VideoFrame.format` wire value (datatypes_2D §8) but has
+no renderer: it has an FFmpeg decoder yet no keyframe oracle (it cannot be
+sought), so `videoCodecIdFromFormat()` returns `AV_CODEC_ID_NONE` and the
+decoder rejects it with an explicit "unsupported video codec" error rather than
+mis-decoding. VVC/H.266 has near-zero hardware support — not targeted.
 
 ### B-Frame Support
 
 While Foxglove and Rerun conventions recommend no B-frames, the
-FfmpegBackend fully supports B-frame streams:
+streaming decode path (`StreamingVideoDecoder` / `FfmpegDecoder`)
+supports B-frame streams. With B-frames **decode order (DTS) differs from
+presentation order (PTS)**, and the pipeline must keep the two straight:
 
-- **PTS from AVFrame**: uses `AVFrame::pts` (presentation order) not
-  packet DTS (decode order). This is critical for correct timestamp
-  reporting with B-frame reordering.
-- Test coverage: `test_1080p_bframes.mp4` exercises B-frame handling
-  in both forward and backward scrub.
+- **The ObjectStore is keyed by DTS** (monotonic decode order — required for the
+  lazy/append index). The real PTS travels in the `VideoFrame.timestamp_ns`
+  payload and is surfaced to the decoder via `ExtractedFrame::pts`.
+- **Feed in DTS order, serve by PTS**: `serveForward` feeds packets in store
+  (DTS) order but sets `pkt->pts` to the real PTS, so `AVFrame::pts` comes back in
+  presentation order. `StreamingVideoDecoder` keeps a **presentation index**
+  (`pts_to_dts_`, built during the keyframe scan); `decodeAt(T)` resolves the
+  frame to show as the greatest PTS ≤ T, then seeks/feeds in decode order. Serving
+  is in PTS space (`ready_frames_`, `last_served_ts_`).
+- Without this, B-frame video plays back in decode order — frames jitter ("vibrate")
+  and the forward-continuation thrashes into per-frame GOP re-decodes (high CPU).
+  With no B-frames PTS == DTS, so all of the above is the identity.
 - For MCAP-stored video, I+P only (no B-frames) is still recommended
   for simpler seeking.
 
@@ -185,6 +199,29 @@ CompressedVideo, live streams):
 | Windows | D3D11VA → software |
 | macOS | VideoToolbox → software |
 
+### Device Selection
+
+`FfmpegDecoder::open()` does not hard-code the chain above. It iterates the HW
+backends the running FFmpeg was actually built with (`av_hwdevice_iterate_types`)
+and keeps the first that exposes a HW decode config for the stream's codec — so
+the binary's capabilities, not a static list, decide what is tried.
+
+For **VAAPI** the device is a specific DRM render node, and the choice matters on
+multi-GPU machines: `av_hwdevice_ctx_create(..., nullptr, ...)` opens the
+*default* node (`/dev/dri/renderD128`), which is frequently a GPU without a VAAPI
+driver (e.g. an NVIDIA dGPU on the proprietary driver) while the VAAPI-capable
+GPU sits on `renderD129`. `tryHwDevice()` therefore, for VAAPI on Linux:
+
+1. honors a `PJ_VAAPI_DEVICE=/dev/dri/renderD<N>` override (debugging/forcing);
+2. otherwise walks `/dev/dri/renderD128..191` and takes the first node whose
+   VAAPI driver initialises.
+
+This walk is Linux-only (`#ifdef __linux__`) — VAAPI itself is Linux-only, and
+every other backend (CUDA, D3D11VA, VideoToolbox) has no render-node concept and
+uses the library default device. A backend that opens but cannot actually decode
+the codec/profile degrades to software per-frame (the existing fallback), so we
+deliberately do **not** pre-query `vaQueryConfigProfiles`.
+
 ### GPU Zero-Copy Path
 
 The ideal path avoids GPU-to-CPU-to-GPU round-trips:
@@ -214,83 +251,40 @@ to QRhi texture. This is acceptable for typical robotics resolutions.
    frames
 5. Return the target frame
 
-### FfmpegBackend Scrub Optimizations
+### Repaint cadence: composite at the video frame rate
 
-The FfmpegBackend implements several optimizations beyond the basic
-seek algorithm:
+`MediaViewerWidget` is a `QRhiWidget` rendered **non-natively** (inside the
+widget / ADS dock hierarchy), so every repaint pays a GPU→CPU framebuffer
+readback (`QRhi::endOffscreenFrame`) plus a raster composite into the window
+backing store. The host advances the clock at ~60 Hz, but the picture only
+changes at the video frame rate (~25–30 fps) — so repainting on every tick, half
+of them on an unchanged frame, makes that compositing dominate playback CPU.
+The streaming video path (`StreamingVideoSource`) surfaces a new frame only
+when its worker delivers one, so the widget composites at frame rate rather
+than on every clock tick. The image / kVideoFrame branches keep an explicit
+`onTrackerTime` repaint because time-only overlay (annotation) updates surface
+via `render()`, not via a new base frame.
 
-- **Forward threshold** (`kForwardThreshold=100`): when the target is
-  within 100 frames of the current decode position, the backend
-  continues decoding forward instead of seeking. This avoids the
-  costly seek+flush+decode-from-keyframe cycle for small forward
-  jumps during interactive scrub.
+### EntryThumbnailCache (streaming thumbnails)
 
-- **decodeSkip**: intermediate frames between the keyframe and the
-  target are decoded without HW transfer or sws_scale. Only the
-  final target frame gets full decode with pixel conversion. This
-  reduces per-frame cost during forward decode significantly.
+`EntryThumbnailCache` provides instant backward scrub feedback for streaming
+`VideoFrame` topics by pre-decoding keyframes into HD-capped JPEG thumbnails:
 
-- **Min decode time** (60ms): after starting a decode, the backend
-  will not check for cancellation until at least 60ms have elapsed.
-  This prevents thrashing on fast scrub where every frame would be
-  cancelled before producing a result.
+- **Background build**: a dedicated builder thread decodes ~1 keyframe per
+  adaptive interval through its own per-build NAL extractor, encoding each via
+  the stateless `thumbnail_codec.h`.
 
-- **Seek throttle** (33ms / 30 Hz): seek requests are rate-limited
-  with duplicate elimination. Multiple seek requests within the
-  throttle window are collapsed to the most recent target.
+- **HD cap**: frames wider than 1280px (e.g., 4K/1080p) are downscaled to
+  ≤1280px before caching, bounding memory while keeping enough quality for a
+  scrub preview.
 
-- **B-frame PTS fix**: uses `AVFrame::pts` (presentation timestamp
-  from the decoder output) instead of the packet PTS. Packet PTS
-  is decode-order for B-frame streams, which causes incorrect
-  timestamp reporting.
+- **JPEG / YUV420P throughout**: thumbnails are stored as JPEG at quality 80.
+  Decompression outputs YUV420P directly, so the same BT.709 shader renders
+  both cached and live frames with no color mismatch.
 
-- **Direction-aware partial filter**: the `scrub_backward_` flag
-  suppresses partial publications during backward scrub. Forward
-  scrub publishes partials for smooth feedback. During backward
-  scrub, only the keyframe (instant feedback) and the final target
-  (completion) are published.
-
-- **Target refinement**: for backward scrub within the same GOP,
-  the keyframe is published immediately for instant backward visual
-  feedback, then intermediate frames are decoded via decodeSkip,
-  and the exact target replaces the keyframe. This eliminates
-  visible forward jumps.
-
-- **processEvents() delivery**: frame delivery uses
-  `QCoreApplication::processEvents()` instead of Qt event queue
-  signals. This ensures frames are delivered synchronously without
-  event queue latency.
-
-- **CancelToken integration**: the CancelToken is wired through to
-  the decoder layer, allowing cooperative cancellation at natural
-  checkpoints (between `avcodec_receive_frame` calls).
-
-### ThumbnailCache
-
-The ThumbnailCache provides instant backward scrub feedback by
-pre-decoding frames at file open time:
-
-- **Background pre-decode**: a dedicated thread decodes 1 frame per
-  second of video duration at open time. For a 60-second video, this
-  produces ~60 cached thumbnails.
-
-- **Auto-scale**: frames wider than 1920px (e.g., 4K) are scaled to
-  1920px width before caching. This bounds memory usage while keeping
-  sufficient quality for scrub preview.
-
-- **JPEG compression**: cached frames are stored as JPEG at quality
-  85. Typical sizes: ~90KB/frame for 1080p, ~133KB/frame for
-  4K-scaled-to-1920. A 60-second 1080p video uses ~5.4MB of cache.
-
-- **YUV420P throughout**: JPEG stores in YUV natively. Decompression
-  outputs YUV420P directly (via `tjDecompressToYUV2`). The same
-  BT.709 shader renders both cached and live frames, eliminating
-  color mismatches between the two paths.
-
-- **Usage pattern**: during backward scrub, the FfmpegBackend first
-  checks the ThumbnailCache for a frame near the target timestamp.
-  If found, it is delivered immediately as the "keyframe" feedback,
-  then the full-resolution decode replaces it.
+- **Usage pattern**: during backward scrub, `StreamingVideoSource` serves the
+  nearest-at-or-before thumbnail for instant feedback while the full-resolution
+  GOP decode settles.
 
 ### GOP-Aware Buffer Eviction
 
@@ -318,7 +312,8 @@ consumption.
 
 ## 5. Implementation Insights
 
-Lessons from the standalone pj_scene2D experiment and the mcap_player prototype.
+Lessons from the standalone pj_scene2D experiment and the mcap_player prototype
+(both since removed; retained here as architectural rationale).
 
 ### Timestamp Unit Conversion
 
@@ -374,11 +369,17 @@ path must not require the keyframe index (`keyframe_timestamps_` may be
 empty) or the original keyframe entry (may be evicted). Only backward
 seeks require a keyframe still in the store.
 
-**SPS/PPS extradata required for VAAPI.** Opening `FfmpegDecoder` with
-just `codec_id = AV_CODEC_ID_H264` and no `extradata` causes VAAPI
-"Failed to sync surface" errors. The fix: extract SPS+PPS NAL units
-from the first keyframe and set them as `AVCodecParameters::extradata`
-via `extractH264SpsPps()`. This lets VAAPI properly size its surface pool.
+**No extradata on the streaming decode path; HW format pinned via `get_format`.**
+The streaming decoder opens `FfmpegDecoder` from `codec_id` alone (via
+`makeVideoCodecParams(codec_id)`) with **no `extradata`**: the wire contract
+requires every keyframe to carry its parameter sets in-band (H.264 SPS/PPS, HEVC
+VPS/SPS/PPS, AV1 sequence header), which FFmpeg reads on the first keyframe. An
+earlier iteration pre-extracted SPS/PPS into `AVCodecParameters::extradata` to
+avoid VAAPI "Failed to sync surface"; that was replaced — `FfmpegDecoder` now
+selects the HW surface format deterministically in its `get_format` callback
+(`hwPixelFormatFor`/`pickHwFormat`) and falls back to software when the codec/GPU
+offers no HW config. `extractH264SpsPps()` survives in `h264_utils.h` but is no
+longer on the streaming decode path.
 
 **Never drain() during live streaming startup.** FFmpeg's `avcodec_send_packet(nullptr)`
 signals EOF and puts the codec in drain state. Subsequent `avcodec_send_packet` calls
@@ -536,11 +537,11 @@ is 4. See REQUIREMENTS.md Prerequisites and ARCHITECTURE.md §2/§4.
 
 ### Metadata Availability: Eager vs Lazy
 
-**Resolved:** Parse the first keyframe eagerly (one parse per channel,
-not per frame). `StreamingVideoDecoder` extracts SPS/PPS from the first
-keyframe via `extractH264SpsPps()` and initializes the decoder. For
-file-backed sources, `FfmpegBackend` gets dimensions from
-`AVCodecParameters` at open time. No lazy metadata deferral.
+**Resolved:** Initialize the decoder eagerly on the first keyframe (one open per
+channel, not per frame). `StreamingVideoDecoder` opens from the `codec_id`
+resolved from `VideoFrame.format` (`makeVideoCodecParams`, no extradata) and lets
+FFmpeg ingest that keyframe's in-band parameter sets — it does not pre-extract
+SPS/PPS. No lazy metadata deferral.
 
 ---
 
@@ -549,7 +550,7 @@ file-backed sources, `FfmpegBackend` gets dimensions from
 The `MediaSource` interface is the uniform frame-delivery contract
 between decoder backends and `MediaViewerWidget`. It replaces the
 originally-planned `PlaybackController` (which would have been a
-monolithic orchestrator conflicting with `FfmpegBackend`'s
+monolithic orchestrator conflicting with the streaming decode path's
 self-contained threading).
 
 **Interface:**
@@ -577,8 +578,6 @@ class MediaSource {
 - `ImagePipelineSource` — synchronous decode via CodecPipeline + ObjectStore.
 - `DepthPipelineSource` — synchronous depth-image decode pipeline.
 - `ScenePipelineSource` — synchronous scene-primitive decode pipeline.
-- `FileVideoSource` — wraps FfmpegBackend (self-contained threading);
-  poll-based `takeFrame()`.
 - `StreamingVideoSource` — wraps StreamingVideoDecoder on a dedicated
   worker thread; latest-wins.
 - `CompositeMediaSource` — fans `setTimestamp`/`takeFrame` out across N
@@ -611,11 +610,6 @@ Changed return type to `Expected<DecodedFrame>` with error strings.
 that is destroyed at the semicolon. Classic dangling iterator UB —
 heap-use-after-free under ASAN. Fix: cache the map in a local variable
 before iterating.
-
-**ThumbnailCache must clear frames on reopen.** `buildAsync()` called
-`stop()` but never cleared `frames_` or `total_bytes_`. Building from
-a new file appended thumbnails after the old ones, violating the sort
-invariant and returning stale frames from the previous video.
 
 **Codec stages must validate input format and buffer size.** Pipeline
 stages like `SegmentationPalette` and `DepthToGrayscale` compute read

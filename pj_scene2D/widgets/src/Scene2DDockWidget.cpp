@@ -24,6 +24,7 @@
 #include "pj_scene2d_widgets/layers/image_layer.h"
 #include "pj_scene2d_widgets/layers/scene2d_layer.h"
 #include "pj_scene2d_widgets/layers/scene_decoder_layer.h"
+#include "pj_scene2d_widgets/layers/video_layer.h"
 #include "pj_scene2d_widgets/media_viewer_widget.h"
 
 namespace PJ {
@@ -39,9 +40,9 @@ Scene2DDockWidget::Scene2DDockWidget(QWidget* parent) : SceneDockWidget(parent) 
         return std::make_unique<ImageLayer>(topic_id, object_type, display_name);
       });
   layerFactory().registerType(
-      sdk::BuiltinObjectType::kAssetVideo,
+      sdk::BuiltinObjectType::kVideoFrame,
       [](ObjectTopicId topic_id, sdk::BuiltinObjectType object_type, const QString& display_name) {
-        return std::make_unique<ImageLayer>(topic_id, object_type, display_name);
+        return std::make_unique<VideoLayer>(topic_id, object_type, display_name);
       });
   layerFactory().registerType(
       sdk::BuiltinObjectType::kDepthImage,
@@ -111,6 +112,8 @@ std::unique_ptr<CodecPipeline> Scene2DDockWidget::makePipelineFor(sdk::BuiltinOb
     case sdk::BuiltinObjectType::kMesh3D:
     case sdk::BuiltinObjectType::kVideoFrame:
     case sdk::BuiltinObjectType::kSceneEntities:
+    // kAssetVideo is a reserved SDK enum slot with no host decode path; listed
+    // to keep this exhaustive switch -Werror=switch clean.
     case sdk::BuiltinObjectType::kAssetVideo:
     case sdk::BuiltinObjectType::kRobotDescription:
     case sdk::BuiltinObjectType::kCameraInfo:
@@ -164,7 +167,7 @@ std::unique_ptr<SceneLayerContext> Scene2DDockWidget::makeContext() {
 bool Scene2DDockWidget::handlesObjectType(sdk::BuiltinObjectType object_type) {
   switch (object_type) {
     case sdk::BuiltinObjectType::kImage:
-    case sdk::BuiltinObjectType::kAssetVideo:
+    case sdk::BuiltinObjectType::kVideoFrame:
     case sdk::BuiltinObjectType::kDepthImage:
     case sdk::BuiltinObjectType::kImageAnnotations:
     case sdk::BuiltinObjectType::kSceneEntities:

@@ -92,6 +92,15 @@ class SessionManager : public QObject {
   // call. Returns nullptr if no parser is registered for the topic.
   [[nodiscard]] std::shared_ptr<std::mutex> parserMutexForObjectTopic(ObjectTopicId id) const;
 
+  // Shared keepalive for the parser handle behind parserForObjectTopic(id):
+  // holding it keeps the parser instance AND its plugin DSO mapped until the
+  // consumer drops it. Display sources run a decode worker that calls
+  // parseObject; on app shutdown the extension catalog (and the plugin DSO) can
+  // be torn down before that worker is joined, so the worker MUST hold this to
+  // avoid a use-after-free / use-after-dlclose. Returns nullptr if no parser is
+  // registered for the topic.
+  [[nodiscard]] std::shared_ptr<void> parserKeepaliveForObjectTopic(ObjectTopicId id) const;
+
   struct LoadedSource {
     QString path;
     QString prefix;
@@ -130,11 +139,18 @@ class SessionManager : public QObject {
 
  private:
   struct ObjectParserSlot {
-    std::unique_ptr<MessageParserHandle> handle;
+    // shared_ptr (not unique_ptr) so a display source can hold the handle alive
+    // past topic removal / app teardown — keeping the parser instance and its
+    // plugin DSO mapped until that source's decode worker is joined.
+    std::shared_ptr<MessageParserHandle> handle;
     // shared_ptr so consumers can keep the mutex alive past topic removal —
     // the lock guards their in-flight parseObject call to completion.
     std::shared_ptr<std::mutex> mutex;
   };
+
+  // Returns the slot for `id` iff it holds a live parser handle, else nullptr.
+  // Collapses the find + null + valid() guard shared by the parser* accessors.
+  [[nodiscard]] const ObjectParserSlot* findValidParserSlot(ObjectTopicId id) const;
 
   DataEngine data_engine_;
   ObjectStore object_store_;

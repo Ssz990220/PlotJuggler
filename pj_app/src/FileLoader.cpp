@@ -79,12 +79,17 @@ QString pluginConfigKey(const std::string& plugin_id) {
 }
 
 // Default ingest policies the app applies to every DataSourceRuntimeHost it
-// builds: scalars eager, objects lazy (decoded on pull), point clouds always
-// pure-lazy (they're the heaviest payload). Hoisted here so the pre-dialog
+// builds: scalars eager, objects lazy (decoded on pull), point clouds and
+// video frames always pure-lazy. Both carry the heaviest payloads, and for
+// file-backed video each entry's bitstream must stay NON-resident: pure-lazy
+// re-invokes the producer's fetcher on every read (it reads one access unit
+// from the file on demand) instead of fetching+pinning the bytes at ingest,
+// so a whole video never lands on the heap. Hoisted here so the pre-dialog
 // scratch session and the per-fanout loop iterations stay in lockstep.
 void applyDefaultIngestPolicies(DataSourceRuntimeHost& session) {
   session.policyResolver().setDefault(PJ::sdk::ObjectIngestPolicy::kLazyObjectsEagerScalars);
   session.policyResolver().setForType(PJ::sdk::BuiltinObjectType::kPointCloud, PJ::sdk::ObjectIngestPolicy::kPureLazy);
+  session.policyResolver().setForType(PJ::sdk::BuiltinObjectType::kVideoFrame, PJ::sdk::ObjectIngestPolicy::kPureLazy);
 }
 
 }  // namespace
@@ -237,9 +242,7 @@ bool FileLoader::loadFile(const QString& path, QWidget* dialog_parent, const Loa
   }
   DataSourceRuntimeHost ingest_session(
       engine, extensions_, dataset_id, source_handle, session_.objectStore(), source->id,
-      [this](ObjectTopicId id, std::unique_ptr<MessageParserHandle> parser) {
-        session_.registerObjectTopicParser(id, std::move(parser));
-      });
+      std::move(object_parser_registrar), nullptr, nullptr, handle.libraryOwner());
   if (dialog_parent != nullptr) {
     ingest_session.setMessageBoxHandler(
         [dialog_parent](int type, std::string_view title, std::string_view message, int buttons) -> int {
@@ -564,7 +567,8 @@ bool FileLoader::loadFile(const QString& path, QWidget* dialog_parent, const Loa
           engine, extensions_, iter_dataset_id, iter_source_handle, session_.objectStore(), source->id,
           [this](ObjectTopicId id, std::unique_ptr<MessageParserHandle> parser) {
             session_.registerObjectTopicParser(id, std::move(parser));
-          });
+          },
+          nullptr, nullptr, iter_handle.libraryOwner());
       applyDefaultIngestPolicies(iter_ingest);
 
       ServiceRegistryBuilder iter_registry;

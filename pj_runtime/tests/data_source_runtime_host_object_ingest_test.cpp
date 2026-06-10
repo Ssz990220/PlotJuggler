@@ -39,7 +39,9 @@ class DataSourceRuntimeHostObjectIngestTest : public ::testing::Test {
     dataset_id_ = static_cast<PJ::DatasetId>(*dataset_or);
     source_handle_ = PJ_data_source_handle_t{static_cast<uint32_t>(*dataset_or)};
     host_ = std::make_unique<PJ::DataSourceRuntimeHost>(
-        engine_, catalog_, dataset_id_, source_handle_, object_store_, "runtime_host_test_source");
+        engine_, catalog_, dataset_id_, source_handle_, object_store_, "runtime_host_test_source",
+        /*parser_registrar=*/nullptr, /*secondary_object_store=*/nullptr, /*secondary_data_engine=*/nullptr,
+        /*library_keepalive=*/nullptr);
     host_->registerServices(registry_builder_);
   }
 
@@ -180,6 +182,88 @@ TEST_F(DataSourceRuntimeHostObjectIngestTest, PushMessagePureLazyDefersFetchAndD
   EXPECT_EQ(fetch_calls->load(), 1);
 }
 
+// Regression for the kPureLazy capture-order use-after-dlclose: the FetcherOwner
+// must OWN the DSO keepalive so that ~FetcherOwner's fetcher.release (plugin code)
+// runs BEFORE the producing .so is dlclosed — even when the stored lazy closure is
+// the LAST holder of the DSO token (post-evict / app close). Before the fix the
+// lazy closure captured the keepalive as a sibling of the FetcherOwner, so it
+// dropped first and release jumped into unmapped memory.
+TEST_F(DataSourceRuntimeHostObjectIngestTest, PureLazyFetcherReleaseRunsWhileDsoStillMapped) {
+  bool dso_mapped = true;
+  bool released_while_mapped = false;
+  // Stand-in plugin DSO token: dropping its last copy "unloads" the .so.
+  auto library_keepalive =
+      std::shared_ptr<void>(reinterpret_cast<void*>(0x1), [&dso_mapped](void*) { dso_mapped = false; });
+
+  // ~ReleaseProbe runs when the fetcher callable is destroyed — i.e. exactly when
+  // ~FetcherOwner calls fetcher.release — recording whether the DSO was still
+  // mapped at that instant. An explicit ctor avoids a temporary whose destructor
+  // would fire (and record) prematurely.
+  struct ReleaseProbe {
+    bool* dso_mapped;
+    bool* released_while_mapped;
+    ReleaseProbe(bool* mapped, bool* released) : dso_mapped(mapped), released_while_mapped(released) {}
+    ~ReleaseProbe() {
+      if (dso_mapped != nullptr && released_while_mapped != nullptr) {
+        *released_while_mapped = *dso_mapped;
+      }
+    }
+  };
+
+  // Local host + store so their lifetimes are controlled independently. The store
+  // outlives the host: it holds the lazy closure that pins the DSO.
+  PJ::ObjectStore local_store;
+  auto local_dataset_or = engine_.createDataset(PJ::DatasetDescriptor{.source_name = "probe", .time_domain_id = 0});
+  ASSERT_TRUE(local_dataset_or.has_value()) << local_dataset_or.error();
+  const auto local_dataset = static_cast<PJ::DatasetId>(*local_dataset_or);
+  const PJ_data_source_handle_t local_handle{static_cast<uint32_t>(*local_dataset_or)};
+
+  auto local_host = std::make_unique<PJ::DataSourceRuntimeHost>(
+      engine_, catalog_, local_dataset, local_handle, local_store, "probe_source",
+      /*parser_registrar=*/nullptr, /*secondary_object_store=*/nullptr, /*secondary_data_engine=*/nullptr,
+      library_keepalive);
+  local_host->policyResolver().setDefault(PJ::sdk::ObjectIngestPolicy::kPureLazy);
+
+  PJ::ServiceRegistryBuilder local_registry;
+  local_host->registerServices(local_registry);
+  PJ::sdk::ServiceRegistry services(local_registry.view());
+  auto runtime_or = services.require<PJ::sdk::DataSourceRuntimeHostService>();
+  ASSERT_TRUE(runtime_or.has_value()) << runtime_or.error();
+  PJ::DataSourceRuntimeHostView runtime = *runtime_or;
+
+  auto binding_or = runtime.ensureParserBinding(
+      PJ::ParserBindingRequest{
+          .topic_name = "/camera/image",
+          .parser_encoding = "runtime_host_object",
+          .type_name = "mock/image",
+          .schema = PJ::Span<const uint8_t>{},
+          .parser_config_json = "{}",
+      });
+  ASSERT_TRUE(binding_or.has_value()) << binding_or.error();
+
+  // kPureLazy stores the fetcher closure without invoking it; the callable (and
+  // its ReleaseProbe) lives inside the FetcherOwner until the entry is destroyed.
+  auto probe = std::make_shared<ReleaseProbe>(&dso_mapped, &released_while_mapped);
+  const std::vector<uint8_t> payload{0x01, 0x02, 0x03, 0x04};
+  auto status = runtime.pushMessage(
+      *binding_or, 123, [payload, probe = std::move(probe)]() -> std::vector<uint8_t> { return payload; });
+  ASSERT_TRUE(status.has_value()) << status.error();
+
+  // Catalog teardown + producing handle death: drop the test's token and the host
+  // (its library_keepalive_ member). The stored lazy closure is now the ONLY DSO
+  // token holder and must keep the .so mapped.
+  library_keepalive.reset();
+  local_host.reset();
+  EXPECT_TRUE(dso_mapped) << "stored lazy closure must keep the producing DSO token mapped";
+  EXPECT_FALSE(released_while_mapped);
+
+  // Destroying the stored closure runs ~FetcherOwner -> fetcher.release; it MUST
+  // run before the DSO unloads.
+  local_store.clear();
+  EXPECT_TRUE(released_while_mapped) << "fetcher.release ran after the DSO unloaded (capture-order UAF)";
+  EXPECT_FALSE(dso_mapped) << "the keepalive drops once the stored closure is destroyed";
+}
+
 TEST_F(DataSourceRuntimeHostObjectIngestTest, PushMessageKeepsScalarOnlyTopicsEagerUnderLazyPolicy) {
   host_->policyResolver().setForTopic("/scalar/topic", PJ::sdk::ObjectIngestPolicy::kPureLazy);
 
@@ -231,7 +315,7 @@ TEST_F(DataSourceRuntimeHostObjectIngestTest, ObjectPushFollowsStoreTargetSwap) 
   PJ::ServiceRegistryBuilder builder;
   PJ::DataSourceRuntimeHost host(
       engine_, catalog_, dataset_id_, source_handle_, object_store_, "dual_store_src", {}, &secondary_object_store,
-      &secondary_engine);
+      &secondary_engine, /*library_keepalive=*/nullptr);
   host.policyResolver().setDefault(PJ::sdk::ObjectIngestPolicy::kEager);
   host.registerServices(builder);
 

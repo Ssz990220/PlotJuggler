@@ -15,7 +15,6 @@ namespace PJ {
 ///
 /// Concrete implementations:
 ///   ImagePipelineSource  — synchronous CodecPipeline + ObjectStore
-///   FileVideoSource      — wraps FfmpegBackend (file-based video)
 ///   StreamingVideoSource — wraps StreamingVideoDecoder + worker thread
 ///   ScenePipelineSource  — vector overlays decoded from ObjectStore
 ///   CompositeMediaSource — fans out across N layers, returns one MediaFrame

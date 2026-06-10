@@ -115,6 +115,35 @@ TEST(ScenePipelineSourceTest, TakeFrameConsumesPending) {
   EXPECT_FALSE(source.takeFrame().has_value());  // already consumed
 }
 
+TEST(ScenePipelineSourceTest, ScrubbingOffAnnotationEmitsClearingFrame) {
+  ObjectStore store;
+  auto topic = registerTopic(store, "annot");
+  store.pushOwned(topic, 1000, makeMockBytes(1000, 3));  // annotation at t=1000
+
+  ScenePipelineSource source(&store, topic, std::make_unique<MockDecoder>());
+
+  // Show the annotation.
+  source.setTimestamp(1000);
+  auto shown = source.takeFrame();
+  ASSERT_TRUE(shown.has_value());
+  ASSERT_EQ(shown->overlays.size(), 1u);
+
+  // Scrub BEFORE the first annotation. The overlay must be actively cleared: a
+  // frame with EMPTY overlays, not nullopt. nullopt is "no change", which the
+  // CompositeMediaSource treats as "keep the layer's previous contribution" — so
+  // the stale boxes would stay on screen.
+  source.setTimestamp(500);
+  auto cleared = source.takeFrame();
+  ASSERT_TRUE(cleared.has_value()) << "scrubbing off an annotation must emit a clearing frame, not nullopt";
+  EXPECT_TRUE(cleared->overlays.empty());
+
+  // Once cleared there is nothing new until the state changes again — no redundant
+  // clearing frames forcing a recomposite every tick.
+  EXPECT_FALSE(source.takeFrame().has_value());
+  source.setTimestamp(400);
+  EXPECT_FALSE(source.takeFrame().has_value());
+}
+
 TEST(ScenePipelineSourceTest, LatestAtSemantics) {
   ObjectStore store;
   auto topic = registerTopic(store, "annot");

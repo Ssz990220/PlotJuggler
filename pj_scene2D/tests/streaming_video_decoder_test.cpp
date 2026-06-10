@@ -5,12 +5,17 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <chrono>
 #include <cinttypes>
 #include <filesystem>
+#include <map>
+#include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
+#include "pj_base/sdk/platform.hpp"
 #include "pj_datastore/object_store.hpp"
 #include "test_mp4_demux.h"
 
@@ -975,6 +980,536 @@ TEST(StreamingVideoDecoderBframeTest, TimeToFirstFrame) {
   measure_first_frame("pj_scene2D/testdata/test_480p.mp4", "480p I+P");
   measure_first_frame("pj_scene2D/testdata/test_1080p.mp4", "1080p I+P");
   measure_first_frame("pj_scene2D/testdata/test_1080p_bframes.mp4", "1080p B-frames");
+}
+
+// ---------------------------------------------------------------------------
+// HEVC (H.265): end-to-end exercise of the codec-generic decode path on a real
+// stream. Fixture is a tiny libx265 clip (pj_scene2D/testdata/test_hevc.mp4),
+// regenerable with an ffmpeg that has libx265 (PJ4's FFmpeg is decoder-only):
+//   ffmpeg -f lavfi -i testsrc=size=320x240:rate=30:duration=2 -c:v libx265
+//   -x265-params keyint=15:min-keyint=15:no-scenecut=1 -pix_fmt yuv420p
+//   -tag:v hvc1 -an pj_scene2D/testdata/test_hevc.mp4
+// ---------------------------------------------------------------------------
+
+const std::string kHevcVideo = "pj_scene2D/testdata/test_hevc.mp4";
+
+// Raw-bytes entries carry no VideoFrame.format, so report the codec via a custom
+// extractor (mirrors the parser-mode extractor, which reads sdk::VideoFrame::format).
+StreamingVideoDecoder::NalExtractor formatExtractor(std::string format) {
+  return [format =
+              std::move(format)](const ResolvedObjectEntry& entry) -> Expected<StreamingVideoDecoder::ExtractedFrame> {
+    // These fixtures are pushed by PTS-as-store-key (no B-frames), so PTS == the
+    // entry's store key here.
+    return StreamingVideoDecoder::ExtractedFrame{entry.payload.bytes, format, entry.timestamp};
+  };
+}
+
+TEST(StreamingVideoDecoderHevcTest, DecodeAndKeyframeOracle) {
+  if (!std::filesystem::exists(kHevcVideo)) {
+    GTEST_SKIP() << "test_hevc.mp4 not found";
+  }
+  ASSERT_EQ(test::mp4VideoFormat(kHevcVideo), "h265") << "fixture must be HEVC";
+  auto packets = test::extractAnnexBPackets(kHevcVideo);
+  ASSERT_GT(packets.size(), 30u);
+
+  ObjectStore store;
+  auto topic = *store.registerTopic({0, "video/hevc", R"({"media_class":"video","encoding":"h265"})"});
+  for (const auto& pkt : packets) {
+    ASSERT_TRUE(store.pushOwned(topic, pkt.dts, pkt.data).has_value());
+  }
+
+  StreamingVideoDecoder decoder;
+  decoder.attach(&store, topic, formatExtractor("h265"));
+
+  // The HEVC IRAP keyframe oracle must find the fixture's keyframes (keyint=15
+  // over 60 frames -> ~4). A regressed oracle would find 0 and seeking would
+  // fail with "no keyframe yet".
+  EXPECT_GT(decoder.keyframeTimestamps().size(), 1u) << "HEVC keyframe oracle found no IRAP frames";
+
+  auto range = store.timeRange(topic);
+  auto result = decoder.decodeAt(range.second);
+  ASSERT_TRUE(result.has_value()) << result.error();
+  EXPECT_FALSE(result->isNull());
+  EXPECT_EQ(result->width, 320);
+  EXPECT_EQ(result->height, 240);
+  EXPECT_EQ(result->format, PixelFormat::kYUV420P);
+}
+
+TEST(StreamingVideoDecoderHevcTest, ScrubBackwardSeeksToIrap) {
+  if (!std::filesystem::exists(kHevcVideo)) {
+    GTEST_SKIP() << "test_hevc.mp4 not found";
+  }
+  auto packets = test::extractAnnexBPackets(kHevcVideo);
+  ASSERT_GT(packets.size(), 30u);
+
+  ObjectStore store;
+  auto topic = *store.registerTopic({0, "video/hevc_scrub", R"({"media_class":"video","encoding":"h265"})"});
+  for (const auto& pkt : packets) {
+    store.pushOwned(topic, pkt.dts, pkt.data);
+  }
+
+  StreamingVideoDecoder decoder;
+  decoder.attach(&store, topic, formatExtractor("h265"));
+
+  // Decode a late frame, then scrub back — forces a seek to a preceding IRAP.
+  // The fixture's first frames have negative DTS (encoder-delay convention), so
+  // this also guards the negative-timestamp keyframe-seek path.
+  auto later = decoder.decodeAt(packets[std::min<size_t>(50, packets.size() - 1)].dts);
+  ASSERT_TRUE(later.has_value()) << later.error();
+  auto earlier = decoder.decodeAt(packets[5].dts);
+  ASSERT_TRUE(earlier.has_value()) << earlier.error();
+  EXPECT_FALSE(earlier->isNull());
+  EXPECT_EQ(earlier->width, 320);
+}
+
+TEST(StreamingVideoDecoderHevcTest, ScrubReturnsExactlyRequestedFrame) {
+  if (!std::filesystem::exists(kHevcVideo)) {
+    GTEST_SKIP() << "test_hevc.mp4 not found";
+  }
+  auto packets = test::extractAnnexBPackets(kHevcVideo);
+  ASSERT_GT(packets.size(), 40u);
+
+  ObjectStore store;
+  auto topic = *store.registerTopic({0, "video/hevc_pts", R"({"media_class":"video","encoding":"h265"})"});
+  for (const auto& pkt : packets) {
+    store.pushOwned(topic, pkt.dts, pkt.data);
+  }
+
+  StreamingVideoDecoder decoder;
+  decoder.attach(&store, topic, formatExtractor("h265"));
+
+  // Scrub onto mid-buffer targets: the decoded frame must be EXACTLY the requested
+  // one. FFmpeg passes our packet pts straight through to frame->pts, so the frame
+  // produced by the target entry carries pts == that entry's timestamp. A decoder
+  // that returns "the first frame off the target packet" hands back an earlier
+  // frame — FFmpeg's reorder + frame-threading delay buffers the target. This
+  // exercises the seek path (20, then a backward jump to 25) and the forward
+  // fast-path (35, 45). Mixed order on purpose.
+  for (size_t idx : std::initializer_list<size_t>{20, 35, 45, 25}) {
+    const Timestamp target = packets[idx].dts;
+    auto result = decoder.decodeAt(target);
+    ASSERT_TRUE(result.has_value()) << "idx=" << idx << ": " << result.error();
+    ASSERT_FALSE(result->isNull()) << "idx=" << idx;
+    EXPECT_EQ(result->pts, target) << "idx=" << idx << " requested ts=" << target
+                                   << " but got a frame from pts=" << result->pts << " (decoder-delay slip)";
+  }
+}
+
+TEST(StreamingVideoDecoderHevcTest, ForwardPlaybackReturnsEachExactFrame) {
+  if (!std::filesystem::exists(kHevcVideo)) {
+    GTEST_SKIP() << "test_hevc.mp4 not found";
+  }
+  auto packets = test::extractAnnexBPackets(kHevcVideo);
+  ASSERT_GT(packets.size(), 40u);
+
+  ObjectStore store;
+  auto topic = *store.registerTopic({0, "video/hevc_seq", R"({"media_class":"video","encoding":"h265"})"});
+  for (const auto& pkt : packets) {
+    store.pushOwned(topic, pkt.dts, pkt.data);
+  }
+
+  StreamingVideoDecoder decoder;
+  decoder.attach(&store, topic, formatExtractor("h265"));
+
+  // Sequential forward playback across a contiguous mid-buffer run: every frame
+  // must be exactly the requested one (not a few frames behind), and the forward
+  // continuation must keep working step after step without re-seeking.
+  for (size_t idx = 10; idx <= 30; ++idx) {
+    const Timestamp target = packets[idx].dts;
+    auto result = decoder.decodeAt(target);
+    ASSERT_TRUE(result.has_value()) << "idx=" << idx << ": " << result.error();
+    ASSERT_FALSE(result->isNull()) << "idx=" << idx;
+    EXPECT_EQ(result->pts, target) << "idx=" << idx;
+  }
+}
+
+TEST(StreamingVideoDecoderHevcTest, UnsupportedCodecSurfacesError) {
+  // VP9 has a decoder in this FFmpeg but no keyframe oracle, so it is not in the
+  // supported set: it must fail with a clear error rather than decode without
+  // seek support (or mis-decode as H.264). Fixture-free.
+  ObjectStore store;
+  auto topic = *store.registerTopic({0, "video/badcodec", R"({"media_class":"video","encoding":"vp9"})"});
+  const std::vector<uint8_t> dummy = {0x00, 0x00, 0x00, 0x01, 0x42, 0x01};
+  for (int i = 0; i < 5; ++i) {
+    store.pushOwned(topic, static_cast<Timestamp>(i) * 1'000'000, dummy);
+  }
+  StreamingVideoDecoder decoder;
+  decoder.attach(&store, topic, formatExtractor("vp9"));
+  auto result = decoder.decodeAt(store.timeRange(topic).second);
+  ASSERT_FALSE(result.has_value());
+  EXPECT_NE(result.error().find("unsupported video codec"), std::string::npos) << "got: " << result.error();
+}
+
+// ---------------------------------------------------------------------------
+// AV1: end-to-end exercise on a real stream (OBU temporal units, not Annex-B).
+// Fixture is a tiny libaom-av1 clip (pj_scene2D/testdata/test_av1.mp4):
+//   ffmpeg -f lavfi -i testsrc=size=320x240:rate=30:duration=2 -c:v libaom-av1
+//   -usage realtime -cpu-used 8 -g 15 -keyint_min 15 -pix_fmt yuv420p
+//   -tag:v av01 -an pj_scene2D/testdata/test_av1.mp4
+// The test demuxer re-prepends the av1C sequence header to keyframes so each is
+// a self-contained temporal unit (the LOBF wire form the decoder expects).
+// ---------------------------------------------------------------------------
+
+const std::string kAv1Video = "pj_scene2D/testdata/test_av1.mp4";
+
+TEST(StreamingVideoDecoderAv1Test, DecodeAndKeyframeOracle) {
+  if (!std::filesystem::exists(kAv1Video)) {
+    GTEST_SKIP() << "test_av1.mp4 not found";
+  }
+  ASSERT_EQ(test::mp4VideoFormat(kAv1Video), "av1") << "fixture must be AV1";
+  auto packets = test::extractAnnexBPackets(kAv1Video);
+  ASSERT_GT(packets.size(), 30u);
+
+  ObjectStore store;
+  auto topic = *store.registerTopic({0, "video/av1", R"({"media_class":"video","encoding":"av1"})"});
+  for (const auto& pkt : packets) {
+    ASSERT_TRUE(store.pushOwned(topic, pkt.dts, pkt.data).has_value());
+  }
+
+  StreamingVideoDecoder decoder;
+  decoder.attach(&store, topic, formatExtractor("av1"));
+
+  // The AV1 sequence-header-OBU oracle must find the fixture's keyframes.
+  EXPECT_GT(decoder.keyframeTimestamps().size(), 1u) << "AV1 keyframe oracle found no sequence-header OBUs";
+
+  auto range = store.timeRange(topic);
+  auto result = decoder.decodeAt(range.second);
+  ASSERT_TRUE(result.has_value()) << result.error();
+  EXPECT_FALSE(result->isNull());
+  EXPECT_EQ(result->width, 320);
+  EXPECT_EQ(result->height, 240);
+  EXPECT_EQ(result->format, PixelFormat::kYUV420P);
+}
+
+TEST(StreamingVideoDecoderAv1Test, ScrubBackwardSeeksToKeyframe) {
+  if (!std::filesystem::exists(kAv1Video)) {
+    GTEST_SKIP() << "test_av1.mp4 not found";
+  }
+  auto packets = test::extractAnnexBPackets(kAv1Video);
+  ASSERT_GT(packets.size(), 30u);
+
+  ObjectStore store;
+  auto topic = *store.registerTopic({0, "video/av1_scrub", R"({"media_class":"video","encoding":"av1"})"});
+  for (const auto& pkt : packets) {
+    store.pushOwned(topic, pkt.dts, pkt.data);
+  }
+
+  StreamingVideoDecoder decoder;
+  decoder.attach(&store, topic, formatExtractor("av1"));
+
+  auto later = decoder.decodeAt(packets[std::min<size_t>(50, packets.size() - 1)].dts);
+  ASSERT_TRUE(later.has_value()) << later.error();
+  auto earlier = decoder.decodeAt(packets[5].dts);
+  ASSERT_TRUE(earlier.has_value()) << earlier.error();
+  EXPECT_FALSE(earlier->isNull());
+  EXPECT_EQ(earlier->width, 320);
+}
+
+// Direct, fixture-free regression for the negative-DTS keyframe-seek fix. FFmpeg
+// gives the first frames negative DTS (encoder-delay convention), so a keyframe
+// can sit at a negative ObjectStore timestamp. findKeyframeBefore must return it
+// (std::optional), not treat the negative value as the old "-1 = not found"
+// sentinel. Synthetic Annex-B: an IDR NAL the H.264 oracle detects, at a negative
+// timestamp; the bytes do not decode, but the keyframe lookup must still succeed.
+TEST(StreamingVideoDecoderNegativeDtsTest, KeyframeAtNegativeTimestampIsFound) {
+  const std::vector<uint8_t> idr = {0x00, 0x00, 0x00, 0x01, 0x65, 0x88, 0x80, 0x00};      // NAL type 5 (IDR)
+  const std::vector<uint8_t> non_idr = {0x00, 0x00, 0x00, 0x01, 0x41, 0x9a, 0x00, 0x00};  // NAL type 1
+
+  ObjectStore store;
+  auto topic = *store.registerTopic({0, "video/neg_dts", R"({"media_class":"video","encoding":"h264"})"});
+  ASSERT_TRUE(store.pushOwned(topic, -2'000'000, idr).has_value());  // keyframe at NEGATIVE timestamp
+  store.pushOwned(topic, -1'000'000, non_idr);
+  store.pushOwned(topic, 0, non_idr);
+  store.pushOwned(topic, 1'000'000, non_idr);
+
+  StreamingVideoDecoder decoder;
+  decoder.attach(&store, topic);
+
+  // The keyframe at the negative timestamp must be indexed.
+  auto kfs = decoder.keyframeTimestamps();
+  ASSERT_FALSE(kfs.empty());
+  EXPECT_LT(kfs.front(), 0) << "keyframe at negative DTS should be indexed";
+
+  // Seeking to a later frame must FIND that negative-timestamp keyframe, not
+  // reject it as "no keyframe before target" (the pre-fix -1-sentinel bug). The
+  // decode itself fails (synthetic bytes are not a real stream), but the failure
+  // must be a decode failure, not the keyframe lookup.
+  auto result = decoder.decodeAt(0);
+  if (!result.has_value()) {
+    EXPECT_NE(result.error(), "no keyframe before target")
+        << "negative-timestamp keyframe was wrongly rejected (the -1 sentinel bug)";
+  }
+}
+
+// ---------------------------------------------------------------------------
+// decodeSampled(): thumbnail-builder forward pass. Verifies the sampling cadence
+// and that the optimization (materialize pixels only for surfaced frames) holds.
+//
+// Default fixture is kTestVideo (skips in CI when absent). Point PJ_SAMPLED_BENCH
+// at a larger H.264 clip — ideally 4K — to get a representative speedup number:
+//   PJ_SAMPLED_BENCH=clip_3840x2160.mp4 ./streaming_video_decoder_test --gtest_filter='*Sampled*'
+// ---------------------------------------------------------------------------
+std::string sampledBenchVideo() {
+  // sdk::getEnv is the portable wrapper; a raw std::getenv trips MSVC C4996
+  // (deprecation) which the Windows CI build treats as an error under /WX.
+  if (const auto env = sdk::getEnv("PJ_SAMPLED_BENCH"); env && !env->empty()) {
+    return *env;
+  }
+  return kTestVideo;
+}
+
+TEST(StreamingVideoSampledTest, MaterializesOnlySurfacedFrames) {
+  const std::string path = sampledBenchVideo();
+  if (!std::filesystem::exists(path)) {
+    GTEST_SKIP() << path << " not found (set PJ_SAMPLED_BENCH to a local H.264 clip)";
+  }
+  auto packets = test::extractAnnexBPackets(path);
+  ASSERT_GT(packets.size(), 30u);
+
+  // extractAnnexBPackets yields packets in decode (file) order. Push them in that
+  // order under synthetic monotonic keys spaced by the clip's average frame
+  // duration, so the store hands the decoder decode order even for B-frame clips
+  // (real thumbnail builds key by DTS, which is decode order). Only the timestamp
+  // labels are synthetic — decode work, pixels, and timings are unaffected, and
+  // the ~1 s sampling interval still maps to roughly one frame per real second.
+  const size_t cap = std::min<size_t>(packets.size(), 1200);
+  int64_t min_pts = packets.front().timestamp;
+  int64_t max_pts = packets.front().timestamp;
+  for (size_t i = 0; i < cap; ++i) {
+    min_pts = std::min(min_pts, packets[i].timestamp);
+    max_pts = std::max(max_pts, packets[i].timestamp);
+  }
+  const int64_t step = std::max<int64_t>(1, (max_pts - min_pts) / static_cast<int64_t>(std::max<size_t>(1, cap - 1)));
+
+  ObjectStore store;
+  auto topic = *store.registerTopic({0, "video/test", R"({"media_class":"video","encoding":"h264"})"});
+  size_t keyframes = 0;
+  for (size_t i = 0; i < cap; ++i) {
+    if (packets[i].keyframe) {
+      ++keyframes;
+    }
+    auto bytes = packets[i].data;  // pushOwned takes ownership
+    ASSERT_TRUE(store.pushOwned(topic, static_cast<Timestamp>(i) * step, std::move(bytes)).has_value());
+  }
+
+  // Run decodeSampled at a given interval; collect surfaced PTS + wall-clock.
+  auto run = [&](Timestamp interval) {
+    StreamingVideoDecoder decoder;
+    decoder.attach(&store, topic);
+    std::vector<int64_t> surfaced;
+    const auto t0 = std::chrono::steady_clock::now();
+    decoder.decodeSampled(interval, [&](const DecodedFrame& frame) -> bool {
+      surfaced.push_back(frame.pts);
+      return true;
+    });
+    const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+    return std::make_pair(std::move(surfaced), ms);
+  };
+
+  // Which strategy does the 1/s cadence take on this clip? (keyframe-only when the
+  // source keyframes are already >= 1/s, else the forward materialize-gated pass.)
+  StreamingVideoDecoder probe;
+  probe.attach(&store, topic);
+  const bool keyframe_only = probe.sampledUsesKeyframeOnly(1'000'000'000);
+
+  // interval = 1 ns surfaces (materializes) ~every frame — the OLD decodeSampled
+  // cost. interval = 1 s is the optimized cadence.
+  auto [pts_full, ms_full] = run(1);
+  auto [pts_samp, ms_samp] = run(1'000'000'000);
+
+  ASSERT_FALSE(pts_samp.empty());
+  ASSERT_FALSE(pts_full.empty());
+  // The full pass must surface ~every frame (proves decode actually succeeded in
+  // decode order, not that we silently produced nothing).
+  EXPECT_GT(pts_full.size(), cap / 2) << "full pass should decode most frames";
+  EXPECT_LT(pts_samp.size(), pts_full.size()) << "sampled cadence must surface far fewer frames";
+  // Decoder emits in display order, so surfaced PTS are ascending in both runs.
+  for (size_t i = 1; i < pts_samp.size(); ++i) {
+    EXPECT_GT(pts_samp[i], pts_samp[i - 1]) << "sampled PTS must be strictly ascending";
+  }
+  for (size_t i = 1; i < pts_full.size(); ++i) {
+    EXPECT_GE(pts_full[i], pts_full[i - 1]) << "full-pass PTS must be non-descending";
+  }
+
+  std::fprintf(
+      stderr,
+      "[sampled-bench] %s  frames=%zu  keyframes=%zu  1/s strategy=%s\n"
+      "  full-materialize : %zu surfaced, %8.1f ms (%.2f ms/frame)\n"
+      "  sampled (1/s)    : %zu surfaced, %8.1f ms\n"
+      "  -> wall-clock %.1fx faster\n",
+      path.c_str(), pts_full.size(), keyframes, keyframe_only ? "keyframe-only" : "forward", pts_full.size(), ms_full,
+      ms_full / static_cast<double>(std::max<size_t>(1, pts_full.size())), pts_samp.size(), ms_samp,
+      ms_full / std::max(1e-6, ms_samp));
+}
+
+// Keyframe-dense source (the committed AV1 fixture is keyint=15 @ 30fps ≈ a
+// keyframe every 0.5 s): a 1 s cadence is already covered by keyframes, so
+// decodeSampled takes the keyframe-only fast path and still surfaces a valid,
+// ascending ~1/interval set. Runs in CI (fixture committed).
+TEST(StreamingVideoSampledTest, KeyframeDenseSourceUsesKeyframeOnly) {
+  if (!std::filesystem::exists(kAv1Video)) {
+    GTEST_SKIP() << "test_av1.mp4 not found";
+  }
+  auto packets = test::extractAnnexBPackets(kAv1Video);
+  ASSERT_GT(packets.size(), 30u);
+
+  ObjectStore store;
+  auto topic = *store.registerTopic({0, "video/av1", R"({"media_class":"video","encoding":"av1"})"});
+  for (const auto& pkt : packets) {
+    ASSERT_TRUE(store.pushOwned(topic, pkt.dts, pkt.data).has_value());
+  }
+
+  StreamingVideoDecoder decoder;
+  decoder.attach(&store, topic, formatExtractor("av1"));
+
+  // Dense keyframes cover a 1 s cadence -> keyframe-only; a 1 ns cadence is far
+  // finer than any keyframe spacing -> it cannot, so the forward pass is chosen.
+  EXPECT_TRUE(decoder.sampledUsesKeyframeOnly(1'000'000'000));
+  EXPECT_FALSE(decoder.sampledUsesKeyframeOnly(1));
+
+  std::vector<int64_t> surfaced;
+  decoder.decodeSampled(1'000'000'000, [&](const DecodedFrame& frame) -> bool {
+    EXPECT_FALSE(frame.isNull());
+    EXPECT_EQ(frame.format, PixelFormat::kYUV420P);
+    surfaced.push_back(frame.pts);
+    return true;
+  });
+  ASSERT_FALSE(surfaced.empty()) << "keyframe-only path surfaced nothing";
+  for (size_t i = 1; i < surfaced.size(); ++i) {
+    EXPECT_GT(surfaced[i], surfaced[i - 1]) << "surfaced PTS must be strictly ascending";
+  }
+}
+
+// ---------------------------------------------------------------------------
+// B-frame presentation order. With B-frames decode order (DTS) != presentation
+// order (PTS). The producer keys the store by DTS; the decoder must SERVE by PTS
+// so playback is in presentation order. Regression for the "vibration/cracks +
+// high CPU" bug, where frames played back in decode order.
+// ---------------------------------------------------------------------------
+
+const std::string kH264BframeVideo = "pj_scene2D/testdata/test_h264_bframes.mp4";
+
+TEST(StreamingVideoDecoderBframeOrderTest, SequentialPlaybackIsPresentationOrdered) {
+  if (!std::filesystem::exists(kH264BframeVideo)) {
+    GTEST_SKIP() << "test_h264_bframes.mp4 not found";
+  }
+  auto packets = test::extractAnnexBPackets(kH264BframeVideo);
+  ASSERT_GT(packets.size(), 10u);
+
+  // Precondition: the fixture really has B-frames (PTS non-monotonic in decode order).
+  bool has_bframes = false;
+  for (size_t i = 1; i < packets.size(); ++i) {
+    if (packets[i].timestamp < packets[i - 1].timestamp) {
+      has_bframes = true;
+      break;
+    }
+  }
+  ASSERT_TRUE(has_bframes) << "fixture must have B-frames (non-monotonic PTS)";
+
+  // Push keyed by DTS (decode order) — exactly what the lazy-VideoFrame producer does.
+  ObjectStore store;
+  auto topic = store.registerTopic({0, "video/bframe_order", R"({"media_class":"video","encoding":"h264"})"}).value();
+  auto dts_to_pts = std::make_shared<std::map<Timestamp, Timestamp>>();
+  for (const auto& p : packets) {
+    ASSERT_TRUE(store.pushOwned(topic, p.dts, p.data).has_value());
+    (*dts_to_pts)[p.dts] = p.timestamp;
+  }
+
+  // Parser-like extractor: supplies the real PTS per entry (as production does via
+  // VideoFrame.timestamp_ns), keyed off the entry's DTS store key.
+  StreamingVideoDecoder::NalExtractor extractor =
+      [dts_to_pts](const ResolvedObjectEntry& entry) -> Expected<StreamingVideoDecoder::ExtractedFrame> {
+    auto it = dts_to_pts->find(entry.timestamp);
+    Timestamp pts = (it != dts_to_pts->end()) ? it->second : entry.timestamp;
+    return StreamingVideoDecoder::ExtractedFrame{entry.payload.bytes, "h264", pts};
+  };
+
+  StreamingVideoDecoder decoder;
+  decoder.attach(&store, topic, extractor);
+
+  // Play forward through every presentation timestamp (PTS ascending) and assert
+  // each request returns the EXACT frame for that presentation time, strictly
+  // ascending — i.e. presentation order, not decode order. Before the fix the
+  // decoder served by DTS, so frame->pts would not match the requested PTS.
+  std::vector<Timestamp> pts_sorted;
+  pts_sorted.reserve(packets.size());
+  for (const auto& p : packets) {
+    pts_sorted.push_back(p.timestamp);
+  }
+  std::sort(pts_sorted.begin(), pts_sorted.end());
+
+  // Edge: a request at the timeline start (min DTS) lands before the first PTS with
+  // B-frames (IDR encoder-delay). It must still return the first presentable frame.
+  {
+    auto first = decoder.decodeAt(store.timeRange(topic).first);
+    ASSERT_TRUE(first.has_value()) << "decodeAt(stream start) failed: " << first.error();
+    ASSERT_FALSE(first->isNull());
+  }
+
+  std::optional<int64_t> prev;
+  int served = 0;
+  for (Timestamp want_pts : pts_sorted) {
+    auto frame = decoder.decodeAt(want_pts);
+    ASSERT_TRUE(frame.has_value()) << "decodeAt(" << want_pts << ") failed: " << frame.error();
+    ASSERT_FALSE(frame->isNull());
+    EXPECT_EQ(frame->width, 128);
+    EXPECT_EQ(frame->height, 128);
+    EXPECT_EQ(frame->pts, want_pts) << "served wrong frame — decode-order leak";
+    if (prev.has_value()) {
+      EXPECT_GT(frame->pts, *prev) << "presentation PTS must strictly increase";
+    }
+    prev = frame->pts;
+    ++served;
+  }
+  EXPECT_EQ(served, static_cast<int>(pts_sorted.size()));
+}
+
+// Deeper-reorder fixture (3 B-frames @60fps — the shape of real screencasts,
+// where the lead-in clamp + forward continuation can back up the codec queue):
+//   gst-launch-1.0 videotestsrc num-buffers=120 pattern=ball !
+//     video/x-raw,width=128,height=128,framerate=60/1 !
+//     x264enc bframes=3 b-adapt=false key-int-max=30 speed-preset=veryfast
+//     bitrate=64 ! h264parse ! mp4mux !
+//     filesink location=pj_scene2D/testdata/test_h264_bframes_deep.mp4
+const std::string kH264BframeDeepVideo = "pj_scene2D/testdata/test_h264_bframes_deep.mp4";
+
+TEST(StreamingVideoDecoderBframeOrderTest, TimelineSweepByStoreKeysLosesNoFrame) {
+  if (!std::filesystem::exists(kH264BframeDeepVideo)) {
+    GTEST_SKIP() << "test_h264_bframes_deep.mp4 not found";
+  }
+  auto packets = test::extractAnnexBPackets(kH264BframeDeepVideo);
+  ASSERT_GT(packets.size(), 10u);
+
+  ObjectStore store;
+  auto topic = store.registerTopic({0, "video/bframe_sweep", R"({"media_class":"video","encoding":"h264"})"}).value();
+  auto dts_to_pts = std::make_shared<std::map<Timestamp, Timestamp>>();
+  for (const auto& p : packets) {
+    ASSERT_TRUE(store.pushOwned(topic, p.dts, p.data).has_value());
+    (*dts_to_pts)[p.dts] = p.timestamp;
+  }
+  StreamingVideoDecoder::NalExtractor extractor =
+      [dts_to_pts](const ResolvedObjectEntry& entry) -> Expected<StreamingVideoDecoder::ExtractedFrame> {
+    auto it = dts_to_pts->find(entry.timestamp);
+    Timestamp pts = (it != dts_to_pts->end()) ? it->second : entry.timestamp;
+    return StreamingVideoDecoder::ExtractedFrame{entry.payload.bytes, "h264", pts};
+  };
+
+  StreamingVideoDecoder decoder;
+  decoder.attach(&store, topic, extractor);
+
+  // Sweep the timeline the way the PLAYBACK CLOCK does: by STORE keys (DTS),
+  // from the very first entry. The encoder-delay lead-in (several DTS keys all
+  // clamping to the first presented frame) lets the codec's output queue back
+  // up; the next send can then hit EAGAIN, whose legacy recovery silently
+  // DISCARDS the queued frame — the very frame the following request needs.
+  // Symptom: exactly one "forward decode produced no frame" hiccup early in
+  // playback, then recovery. Every request must produce a frame.
+  for (size_t i = 0; i < packets.size(); ++i) {
+    const Timestamp request_ts = packets[i].dts;
+    auto frame = decoder.decodeAt(request_ts);
+    ASSERT_TRUE(frame.has_value()) << "i=" << i << " decodeAt(" << request_ts << ") failed: " << frame.error();
+    ASSERT_FALSE(frame->isNull()) << "i=" << i;
+  }
 }
 
 }  // namespace

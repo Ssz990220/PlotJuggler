@@ -963,6 +963,10 @@ struct DatastoreToolboxObjectReadHostState {
   explicit DatastoreToolboxObjectReadHostState(ObjectStore& s) : store(s) {}
   ObjectStore& store;
   std::string last_error;
+  // Backing storage for the const char* returned by toolboxObjectTopicMetadata:
+  // ObjectStore::descriptor() now returns by value, so the pointer must outlive the
+  // call. Valid until the next toolboxObjectTopicMetadata() on this host.
+  std::string last_metadata;
 
   void setError(std::string msg) {
     last_error = std::move(msg);
@@ -1508,10 +1512,11 @@ bool toolboxObjectListTopics(
 const char* toolboxObjectTopicMetadata(void* ctx, PJ_object_topic_handle_t topic) noexcept {
   auto* impl = static_cast<DatastoreToolboxObjectReadHostState*>(ctx);
   try {
-    const auto& desc = impl->store.descriptor(ObjectTopicId{topic.id});
-    // Descriptor is stored in the series and lives as long as the topic;
-    // the pointer remains stable until the topic is removed.
-    return desc.metadata_json.c_str();
+    // descriptor() returns a copy; stash it on the host so the returned pointer
+    // outlives this call (stable until the next call on this host) rather than
+    // dangling into a destroyed temporary.
+    impl->last_metadata = impl->store.descriptor(ObjectTopicId{topic.id}).metadata_json;
+    return impl->last_metadata.c_str();
   } catch (...) {
     return nullptr;
   }

@@ -57,7 +57,7 @@ TEST_F(FfmpegDecoderTest, DecodeFirstFrame) {
       continue;
     }
 
-    auto result = decoder.decode(pkt->data, static_cast<size_t>(pkt->size), pkt->pts);
+    auto result = decoder.decode(pkt->data, static_cast<size_t>(pkt->size), pkt->pts, pkt->dts);
     av_packet_unref(pkt);
     ++packets_sent;
 
@@ -105,7 +105,7 @@ TEST_F(FfmpegDecoderTest, SuccessfulDecodeNeverReturnsNullFrame) {
       continue;
     }
 
-    auto result = decoder.decode(pkt->data, static_cast<size_t>(pkt->size), pkt->pts);
+    auto result = decoder.decode(pkt->data, static_cast<size_t>(pkt->size), pkt->pts, pkt->dts);
     av_packet_unref(pkt);
 
     if (result.has_value()) {
@@ -146,7 +146,7 @@ TEST_F(FfmpegDecoderTest, DecodeMultipleFrames) {
       continue;
     }
 
-    auto result = decoder.decode(pkt->data, static_cast<size_t>(pkt->size), pkt->pts);
+    auto result = decoder.decode(pkt->data, static_cast<size_t>(pkt->size), pkt->pts, pkt->dts);
     av_packet_unref(pkt);
 
     if (result.has_value() && !result->isNull()) {
@@ -180,7 +180,7 @@ TEST_F(FfmpegDecoderTest, FlushAndResume) {
   int count = 0;
   while (av_read_frame(fmt_ctx, pkt) >= 0 && count < 5) {
     if (pkt->stream_index == video_idx) {
-      decoder.decode(pkt->data, static_cast<size_t>(pkt->size), pkt->pts);
+      decoder.decode(pkt->data, static_cast<size_t>(pkt->size), pkt->pts, pkt->dts);
       ++count;
     }
     av_packet_unref(pkt);
@@ -192,7 +192,7 @@ TEST_F(FfmpegDecoderTest, FlushAndResume) {
   int post_flush = 0;
   while (av_read_frame(fmt_ctx, pkt) >= 0 && post_flush < 5) {
     if (pkt->stream_index == video_idx) {
-      auto result = decoder.decode(pkt->data, static_cast<size_t>(pkt->size), pkt->pts);
+      auto result = decoder.decode(pkt->data, static_cast<size_t>(pkt->size), pkt->pts, pkt->dts);
       if (result.has_value() && !result->isNull()) {
         ++post_flush;
       }
@@ -227,7 +227,7 @@ TEST_F(FfmpegDecoderTest, CancelStopsEarly) {
   AVPacket* pkt = av_packet_alloc();
   while (av_read_frame(fmt_ctx, pkt) >= 0) {
     if (pkt->stream_index == video_idx) {
-      auto result = decoder.decode(pkt->data, static_cast<size_t>(pkt->size), pkt->pts, token);
+      auto result = decoder.decode(pkt->data, static_cast<size_t>(pkt->size), pkt->pts, pkt->dts, token);
       av_packet_unref(pkt);
       EXPECT_FALSE(result.has_value());
       break;

@@ -10,8 +10,8 @@ namespace PJ {
 
 class MediaSource;
 
-// Scene2DLayer for a single Image topic: contributes an image MediaSource to the
-// composite. No per-layer configuration beyond the base.
+// Scene2DLayer for a single Image topic: contributes an image MediaSource to
+// the composite. No per-layer configuration beyond the base.
 class ImageLayer final : public Scene2DLayer {
   Q_OBJECT
  public:
