@@ -82,7 +82,8 @@ TEST_F(PanelEngineTest, InitialWidgetDataIsApplied) {
 }
 
 TEST_F(PanelEngineTest, TickPropagatesPluginStateChanges) {
-  PJ::PanelEngine engine(makeMockHandle(), {/*tick_interval_ms=*/10, /*enable_diff=*/true});
+  PJ::PanelEngine engine(
+      makeMockHandle(), {/*tick_interval_ms=*/10, /*enable_diff=*/true, /*catalog_key_resolver=*/{}});
   QWidget* panel = engine.openPanel();
   ASSERT_NE(panel, nullptr);
 
@@ -99,7 +100,8 @@ TEST_F(PanelEngineTest, TickPropagatesPluginStateChanges) {
 }
 
 TEST_F(PanelEngineTest, RequestCloseFiresCallback) {
-  PJ::PanelEngine engine(makeMockHandle(), {/*tick_interval_ms=*/10, /*enable_diff=*/true});
+  PJ::PanelEngine engine(
+      makeMockHandle(), {/*tick_interval_ms=*/10, /*enable_diff=*/true, /*catalog_key_resolver=*/{}});
   std::string captured_reason;
   bool fired = false;
   engine.onCloseRequested([&](std::string reason) {
@@ -123,7 +125,8 @@ TEST_F(PanelEngineTest, RequestCloseFiresCallback) {
 }
 
 TEST_F(PanelEngineTest, WidgetEventReachesPlugin) {
-  PJ::PanelEngine engine(makeMockHandle(), {/*tick_interval_ms=*/10, /*enable_diff=*/true});
+  PJ::PanelEngine engine(
+      makeMockHandle(), {/*tick_interval_ms=*/10, /*enable_diff=*/true, /*catalog_key_resolver=*/{}});
   QWidget* panel = engine.openPanel();
   ASSERT_NE(panel, nullptr);
 

@@ -15,6 +15,13 @@ namespace PJ {
 struct PanelEngineConfig {
   int tick_interval_ms = 50;
   bool enable_diff = true;
+
+  /// Optional resolver from a dragged catalog key (e.g.
+  /// "dataset:1/topic:1/column:2") to a human field name (e.g. "topic/field")
+  /// before the drop is delivered to the plugin's onItemsDropped. The PJ4 curve
+  /// tree drags opaque catalog keys; plugins (Quaternion, FFT, …) expect names.
+  /// If unset, or if it returns empty for a key, that key is delivered verbatim.
+  std::function<std::string(const std::string& catalog_key)> catalog_key_resolver;
 };
 
 /// Hosts a long-lived interactive panel built from a plugin's typed-dialog UI.

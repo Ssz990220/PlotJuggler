@@ -257,6 +257,9 @@ QWidget* PanelEngine::openPanel() {
       for (const auto& t : targets) {
         drop_filter->addTarget(t);
       }
+      if (impl_->config.catalog_key_resolver) {
+        drop_filter->setKeyResolver(impl_->config.catalog_key_resolver);
+      }
     }
   }
 
