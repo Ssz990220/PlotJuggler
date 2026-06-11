@@ -45,6 +45,7 @@ Pure C++ library. Contains everything that does not touch Qt:
 | Component | Header(s) | Role |
 |-----------|-----------|------|
 | `BorrowedMediaSource` | `borrowed_media_source.h` | Non-owning `MediaSource` adapter over an externally-owned source pointer. |
+| `AsyncFrameWorker` | `async_frame_worker.h` | Shared latest-wins decode-worker engine (request coalescing, optional cancellation, result mailbox, frame-ready callback, exception barrier, lost-wakeup-safe teardown) composed by the worker-backed sources. |
 | `CancelToken` | `cancel_token.h` | Shared atomic cancellation flag polled by streaming-video decode work. |
 | `CodecPipeline` | `codec_pipeline.h` | Ordered chain of `CodecStage` transforms from raw bytes to `DecodedFrame`. |
 | `Image codecs` | `codecs.h` | Built-in codec stages and image pipeline builders: JPEG, PNG, Mono16 normalization, Bayer, segmentation palette. |
@@ -181,13 +182,16 @@ open design space.
 
 ### 3.1 Latest-wins frame delivery
 
-The realized frame handoff is a pull-based latest-wins mailbox owned by each
-worker-backed `MediaSource`, not a standalone helper type. `ImagePipelineSource`
-and `StreamingVideoSource` both store the latest decoded `DecodedFrame` in an
-internal `std::optional<DecodedFrame> result_frame_` protected by
-`result_mutex_`; `takeFrame()` moves it into a `MediaFrame` and clears the slot.
+The realized frame handoff is a pull-based latest-wins mailbox implemented once
+in `AsyncFrameWorker` (`async_frame_worker.h`) — the shared decode-worker
+engine that `ImagePipelineSource` and `StreamingVideoSource` compose. The
+worker owns the request channel (latest-target-wins coalescing, optional
+per-request `CancelToken`), the single-slot result mailbox
+(`deposit()`/`take()` under its `result_mutex_`), the frame-ready callback,
+the exception barrier, and the lost-wakeup-safe teardown; each source supplies
+only its decode body. `takeFrame()` moves the taken frame into a `MediaFrame`.
 Synchronous sources (depth and scene entities) use the same latest-result
-contract without a worker mutex.
+contract without a worker.
 
 Properties:
 
@@ -592,22 +596,21 @@ class ImagePipelineSource : public MediaSource {
 };
 ```
 
-Internals: `setTimestamp` posts the target timestamp to the worker (request
-mutex + condition variable, latest-target-wins) and returns. The worker calls
-`store->latestAt(topic, ts)` → decodes → optionally rectifies
+Internals: `setTimestamp` forwards to the composed `AsyncFrameWorker` (§3.1),
+which coalesces targets latest-wins. The decode body runs on the worker
+thread: `store->latestAt(topic, ts)` → decodes → optionally rectifies
 (`rectifyIfCalibrated`: when `setCameraInfoMap()` provided a `CameraInfo` for
 the frame's `frame_id`, the decoded frame is lens-undistorted via
 `image_rectifier`/`undistort_remap` before publication; see TECHNICAL_NOTES
-"rectify the image, not warp the annotations") → stores the result in an
-internal `std::optional<DecodedFrame> result_frame_` under `result_mutex_`.
-`takeFrame` returns that frame and clears it (nullopt on second call). After
-depositing a frame the worker fires the optional `setFrameReadyCallback` (from
-the worker thread) so consumers re-poll `takeFrame()`.
+"rectify the image, not warp the annotations") → `deposit()`s into the
+worker's mailbox. `takeFrame` drains the mailbox into a `MediaFrame` (nullopt
+on second call); after each deposit the worker fires the optional
+`setFrameReadyCallback` (from the worker thread) so consumers re-poll.
 
-One worker thread with an inline result mailbox (no CancelToken: stale targets
-are coalesced by latest-target-wins rather than cancelled mid-decode).
-`setCameraInfoMap()` must be called before the first `setTimestamp()` — the
-worker reads the calibration map without further locking.
+Cancellation is left off for this source (stale targets are coalesced rather
+than cancelled mid-decode — image decodes are short). `setCameraInfoMap()`
+must be called before the first `setTimestamp()` — the worker reads the
+calibration map without further locking.
 
 ### 5.3 StreamingVideoSource
 
@@ -628,15 +631,15 @@ class StreamingVideoSource : public MediaSource {
 ```
 
 Internals:
-- `setTimestamp` posts a request to the worker thread (protected by
-  mutex + condition variable). If a previous decode is in flight, it
-  is cancelled via a `CancelToken` so the worker abandons the stale
-  target (notably a slow 4K GOP decode) and picks up the latest request
-  (latest-wins); `decodeAt`/`decodeRange` poll the token to preempt.
-- The worker calls `decoder_->decodeAt(ts, token)` and deposits the result
-  (via `depositFrame`) into an internal `std::optional<DecodedFrame>
-  result_frame_` guarded by `result_mutex_`.
-- `takeFrame` reads that result, clears it, and returns the latest frame.
+- `setTimestamp` forwards to the composed `AsyncFrameWorker` (§3.1), started
+  with cancellation enabled: a newer request (or teardown) cancels the
+  in-flight `CancelToken` so the worker abandons the stale target (notably a
+  slow 4K GOP decode) and picks up the latest request;
+  `decodeAt`/`decodeRange` poll the token to preempt.
+- The decode body (`decodeRequest`) publishes an instant thumbnail preview on
+  scrubs, then calls `decoder_->decodeAt(ts, token)` and `deposit()`s the
+  full-res result into the worker's mailbox.
+- `takeFrame` drains the mailbox into a `MediaFrame`.
 - After depositing a frame the worker fires the optional
   `setFrameReadyCallback` (from the worker thread) so consumers re-poll
   `takeFrame()` once the async decode completes. Without it a stopped scrub
@@ -969,8 +972,8 @@ pushing.
 | Thread | Responsibilities | Lock discipline |
 |--------|-----------------|-----------------|
 | **Qt main thread** | UI events, `widget->setTimestamp()`, `widget->render()` → `source->takeFrame()`, GPU upload | Posts async requests for image/video sources. Depth and scene sources decode synchronously in `setTimestamp()`, so those paths may spend decode time on the GUI thread |
-| **ImagePipelineSource worker** (1 per `ImagePipelineSource`) | ObjectStore lookup, parser/canonical-image handling, `CodecPipeline` decode, result deposit | Uses `request_mutex_`/`request_cv_` for latest-target requests and `result_mutex_` for the latest decoded frame. ObjectStore locks are released before codec work |
-| **StreamingVideoSource worker** (1 per `StreamingVideoSource`) | `StreamingVideoDecoder::decodeAt()`, `depositFrame()` (writes `result_frame_` under `result_mutex_`) | Acquires ObjectStore shared locks (released immediately after handle copy). Holds decoder-internal state exclusively |
+| **ImagePipelineSource worker** (an `AsyncFrameWorker`, 1 per source) | ObjectStore lookup, parser/canonical-image handling, `CodecPipeline` decode, result deposit | The shared `AsyncFrameWorker` engine: `request_mutex_`/`request_cv_` for latest-target requests, `result_mutex_` for the mailbox. ObjectStore locks are released before codec work |
+| **StreamingVideoSource worker** (an `AsyncFrameWorker`, 1 per source) | `StreamingVideoDecoder::decodeAt()`, thumbnail preview + full-res `deposit()` into the worker mailbox | Acquires ObjectStore shared locks (released immediately after handle copy). Holds decoder-internal state exclusively |
 | **DataSource poll thread** (1 per app, existing) | `DataSource::poll()` → `ObjectStore::pushOwned/pushLazy` | Acquires ObjectStore exclusive locks per push. Never touches decoders |
 | **EntryThumbnailCache builder** (1 per cache, bounded topics only) | Single forward decode pass producing HD-capped JPEG scrub thumbnails | Owns its own decoder/extractor; publishes tiles under `EntryThumbnailCache::mutex_`; never shares the playback decoder |
 
@@ -979,9 +982,9 @@ pushing.
 | Lock | Type | Protects | Held by |
 |------|------|----------|---------|
 | `ObjectSeries::mutex` (§OS3.4) | `shared_mutex` | Per-topic entry storage | Shared: image/video workers via `latestAt`/`at`/`indexAt`, and the Qt main thread for synchronous depth/scene `latestAt`. Exclusive: poll thread via `pushOwned`/`pushLazy`/eviction |
-| `ImagePipelineSource::request_mutex_` / `StreamingVideoSource::request_mutex_` | `mutex` | Latest target timestamp, request-present flag, condition-variable predicate; streaming also guards the active cancel token | Main: `setTimestamp()` posts/coalesces requests. Worker: waits, takes one request, clears the flag. Not held during ObjectStore lookup or decode |
-| `ImagePipelineSource::result_mutex_` / `StreamingVideoSource::result_mutex_` | `mutex` | Latest decoded-frame mailbox | Worker: deposit latest frame. Main: `takeFrame()`. Never held while ObjectStore or decoder locks are held |
-| `ImagePipelineSource::callback_mutex_` / `StreamingVideoSource::callback_mutex_` | `mutex` | The optional frame-ready callback slot | Main/layer: `setFrameReadyCallback()`. Worker: copies the callback under the lock, invokes it after release |
+| `AsyncFrameWorker::request_mutex_` (one per worker-backed source) | `mutex` | Latest target timestamp, request-present + force-redecode flags, condition-variable predicate; with cancellation enabled (video) also the active cancel token | Main: `setTimestamp()` posts/coalesces requests. Worker: waits, takes one request, clears the flag. Not held during ObjectStore lookup or decode |
+| `AsyncFrameWorker::result_mutex_` (one per worker-backed source) | `mutex` | Latest decoded-frame mailbox | Worker: deposit latest frame. Main: `takeFrame()`. Never held while ObjectStore or decoder locks are held |
+| `AsyncFrameWorker::callback_mutex_` (one per worker-backed source) | `mutex` | The optional frame-ready callback slot | Main/layer: `setFrameReadyCallback()`. Worker: copies the callback under the lock, invokes it after release |
 | `ImagePipelineSource::parser_mutex_` (`shared_ptr<std::mutex>`) | `mutex` | Serializes `MessageParser::parseObject` calls on a parser instance shared with the owning layer's keepalive | Worker: held across each `parseObject`. Shared with the layer that provided the parser binding |
 | `EntryThumbnailCache::mutex_` | `mutex` | Thumbnail tile map + byte budget | Builder thread: tile publish. Reader (video worker via `StreamingVideoSource`): `lookup()` |
 | `MediaViewerWidget::frame_mutex_` (widgets layer) | `mutex` | `media_source_` pointer, pending frame / pixel-layer staging, `inspector_frame_` | GUI thread at all four sites today (`setMediaSource`, `releaseResources`, `render`'s poll, inspector read); the lock keeps source swap and frame staging atomic |
@@ -1006,10 +1009,10 @@ acquired and released independently — never held simultaneously:
    keyframe vector (plain `std::vector`, no lock — only the owning worker
    thread touches it). When the planned `MediaIndexRegistry` lands (§6),
    this is the path that will switch to the shared registry instead.
-5. Worker acquires its source's `result_mutex_` → stores the complete
+5. Worker acquires its `AsyncFrameWorker`'s `result_mutex_` → stores the complete
    frame → releases.
 
-The main thread acquires the source `result_mutex_` only through
+The main thread acquires the worker `result_mutex_` only through
 `takeFrame()`, and never while holding ObjectStore locks. Synchronous
 `DepthPipelineSource` and `ScenePipelineSource` acquire ObjectStore shared
 locks inside `setTimestamp()`, copy the entry bytes/handle, release the store
@@ -1083,7 +1086,7 @@ What to take from each reference prototype and what to leave behind.
 
 | Component | Action | Target in pj_scene2D | Notes |
 |-----------|--------|-------------------|-------|
-| Latest-wins mailbox | **PORT CONCEPT ONLY** | `ImagePipelineSource` / `StreamingVideoSource` internals | The standalone helper was deleted; worker-backed sources keep the latest result inline as `result_frame_` under `result_mutex_` |
+| Latest-wins mailbox | **PORT CONCEPT ONLY** | `AsyncFrameWorker` (`async_frame_worker.h`) | The original standalone FrameSlot was deleted as dead; the concept now lives in the shared `AsyncFrameWorker` engine both worker-backed sources compose |
 | Direction-aware cancel-store | **NOT PORTED** | — | The host's only video path (`StreamingVideoSource`) uses a latest-wins request model with no partial publication, so direction-aware cancel-store is not needed. Retained as design rationale in §3.2 for a future file-backed decoder |
 | EOF decoder flush | **PORTED** as `FfmpegDecoder::flush()` | `FfmpegDecoder` | 3 lines: send NULL packet, drain buffered frames |
 | `ENOMEM` recovery | **PORTED** | `FfmpegDecoder` | On `AVERROR(ENOMEM)`: `avcodec_flush_buffers` + retry once. Hit during scrub testing |

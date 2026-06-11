@@ -2,19 +2,17 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 
-#include <atomic>
-#include <condition_variable>
 #include <cstdint>
 #include <functional>
 #include <memory>
 #include <mutex>
 #include <optional>
 #include <string>
-#include <thread>
 #include <unordered_map>
 
 #include "pj_base/builtin/camera_info.hpp"
 #include "pj_datastore/object_store.hpp"
+#include "pj_scene2d_core/async_frame_worker.h"
 #include "pj_scene2d_core/codec_pipeline.h"
 #include "pj_scene2d_core/codecs.h"
 #include "pj_scene2d_core/media_source.h"
@@ -107,7 +105,6 @@ class ImagePipelineSource : public MediaSource {
   void setCameraInfoMap(std::unordered_map<std::string, sdk::CameraInfo> by_frame_id);
 
  private:
-  void workerLoop();
   std::optional<DecodedFrame> decodeAt(int64_t ts_ns);
 
   // Decode one canonical sdk::Image (from a parser or a deserialized blob) into a
@@ -163,30 +160,11 @@ class ImagePipelineSource : public MediaSource {
   // unlocked, so a later injection would be a data race — it is refused instead.
   bool timestamp_requested_ = false;
 
-  // Request channel (main → worker).
-  std::mutex request_mutex_;
-  std::condition_variable request_cv_;
-  int64_t requested_ts_ = INT64_MIN;
-  int64_t last_requested_ts_ = INT64_MIN;  // main-thread-only dedup
-  bool has_request_ = false;
-  // Set by invalidate() (under request_mutex_), consumed by the worker: clears
-  // the worker-side last_entry_ts_ dedup so the next decode re-runs even on the
-  // same entry (a composite rebuild needs a fresh frame at the unchanged time).
-  bool force_redecode_ = false;
-  std::atomic<bool> running_{true};
-
-  // Result channel (worker → main).
-  std::mutex result_mutex_;
-  std::optional<DecodedFrame> result_frame_;
-
-  // Frame-ready notification.
-  std::mutex callback_mutex_;
-  std::function<void()> on_frame_ready_;
-
-  // Declared LAST so it joins before any field it touches goes away. The
-  // explicit join in the destructor body is the primary safety net; this
-  // ordering is defence in depth for incomplete construction.
-  std::thread worker_;
+  // The shared latest-wins worker engine (request/result/callback channels +
+  // thread + lost-wakeup-safe teardown). Declared LAST so its implicit stop()
+  // joins the worker before any member the decode closure touches goes away;
+  // the explicit stop() in the destructor body is the primary safety net.
+  AsyncFrameWorker worker_;
 };
 
 }  // namespace PJ

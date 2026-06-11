@@ -321,142 +321,108 @@ ImagePipelineSource::ImagePipelineSource(
       parser_(parser),
       parser_mutex_(std::move(parser_mutex)),
       parser_keepalive_(std::move(parser_keepalive)) {
-  worker_ = std::thread(&ImagePipelineSource::workerLoop, this);
+  worker_.start(
+      [this](const AsyncFrameWorker::Request& req, AsyncFrameWorker& worker) {
+        // invalidate() asked for a fresh decode even at an unchanged entry:
+        // clear the dedup so decodeAt() doesn't early-return on the same frame.
+        if (req.force_redecode) {
+          last_entry_ts_ = INT64_MIN;
+        }
+        auto result = decodeAt(req.target_ns);
+        if (result.has_value() && !result->isNull()) {
+          worker.deposit(std::move(*result));
+        }
+      },
+      [this](const char* what) {
+        if (what[0] != '\0') {
+          warnOnce(warningKey(source_key_, "decode-exception"), "{} decode threw: {}", source_key_, what);
+        } else {
+          warnOnce(warningKey(source_key_, "decode-exception"), "{} decode threw a non-std exception", source_key_);
+        }
+      });
 }
 
 ImagePipelineSource::ImagePipelineSource(
     ObjectStore* store, ObjectTopicId topic, std::unique_ptr<CodecPipeline> pipeline)
     : store_(store), topic_(topic), source_key_(sourceLabel(store, topic)), pipeline_(std::move(pipeline)) {
-  worker_ = std::thread(&ImagePipelineSource::workerLoop, this);
+  worker_.start(
+      [this](const AsyncFrameWorker::Request& req, AsyncFrameWorker& worker) {
+        // invalidate() asked for a fresh decode even at an unchanged entry:
+        // clear the dedup so decodeAt() doesn't early-return on the same frame.
+        if (req.force_redecode) {
+          last_entry_ts_ = INT64_MIN;
+        }
+        auto result = decodeAt(req.target_ns);
+        if (result.has_value() && !result->isNull()) {
+          worker.deposit(std::move(*result));
+        }
+      },
+      [this](const char* what) {
+        if (what[0] != '\0') {
+          warnOnce(warningKey(source_key_, "decode-exception"), "{} decode threw: {}", source_key_, what);
+        } else {
+          warnOnce(warningKey(source_key_, "decode-exception"), "{} decode threw a non-std exception", source_key_);
+        }
+      });
 }
 
 ImagePipelineSource::ImagePipelineSource(ObjectStore* store, ObjectTopicId topic, CanonicalImageCodec /*tag*/)
     : store_(store), topic_(topic), source_key_(sourceLabel(store, topic)), canonical_image_codec_(true) {
-  worker_ = std::thread(&ImagePipelineSource::workerLoop, this);
+  worker_.start(
+      [this](const AsyncFrameWorker::Request& req, AsyncFrameWorker& worker) {
+        // invalidate() asked for a fresh decode even at an unchanged entry:
+        // clear the dedup so decodeAt() doesn't early-return on the same frame.
+        if (req.force_redecode) {
+          last_entry_ts_ = INT64_MIN;
+        }
+        auto result = decodeAt(req.target_ns);
+        if (result.has_value() && !result->isNull()) {
+          worker.deposit(std::move(*result));
+        }
+      },
+      [this](const char* what) {
+        if (what[0] != '\0') {
+          warnOnce(warningKey(source_key_, "decode-exception"), "{} decode threw: {}", source_key_, what);
+        } else {
+          warnOnce(warningKey(source_key_, "decode-exception"), "{} decode threw a non-std exception", source_key_);
+        }
+      });
 }
 
 ImagePipelineSource::~ImagePipelineSource() {
-  // Flip running_ UNDER request_mutex_: the worker checks `!running_` inside its
-  // wait predicate while holding the same mutex, so storing it unlocked here can
-  // slip into the gap after the worker evaluates the predicate (running_ still
-  // true) but before it blocks — then notify_one() wakes nobody and the worker
-  // sleeps forever, hanging join(). (Root cause of the scene2d_dock_widget_test
-  // intermittent deadlock.)
-  {
-    std::lock_guard lock(request_mutex_);
-    running_.store(false);
-  }
-  request_cv_.notify_one();
-  if (worker_.joinable()) {
-    worker_.join();
-  }
+  // Stop and join the decode worker before any member its closure touches is
+  // destroyed (AsyncFrameWorker::stop handles the lost-wakeup hazard — the
+  // historical scene2d_dock_widget_test intermittent deadlock).
+  worker_.stop();
 }
 
 void ImagePipelineSource::setTimestamp(int64_t ts_ns) {
   // Mark that a decode has been requested: from here the worker may read
   // camera_info_by_frame_, so setCameraInfoMap() must refuse late injection.
   timestamp_requested_ = true;
-  if (ts_ns == last_requested_ts_) {
-    return;
-  }
-  last_requested_ts_ = ts_ns;
-
-  {
-    std::lock_guard lock(request_mutex_);
-    requested_ts_ = ts_ns;
-    has_request_ = true;
-  }
-  request_cv_.notify_one();
+  worker_.requestDecode(ts_ns);
 }
 
 void ImagePipelineSource::invalidate() {
-  // Force the next setTimestamp() to re-request a decode even at the same time
-  // (the composite was rebuilt and our last frame was consumed). The worker
-  // re-delivers via the frame-ready callback, which schedules a repaint.
-  last_requested_ts_ = std::numeric_limits<int64_t>::min();
-  // Also clear the worker-side dedup: without this, decodeAt() resolves to the
-  // same entry as last time and early-returns nullopt, so the worker never
-  // produces a frame and the repaint never fires (the "black until play" bug).
-  std::lock_guard lock(request_mutex_);
-  force_redecode_ = true;
+  // Force a re-decode even at an unchanged timestamp: the composite was rebuilt
+  // and our last frame was consumed. The worker re-delivers via the frame-ready
+  // callback, which schedules a repaint. (Without the force, decodeAt() resolves
+  // the same entry and early-returns — the "black until play" bug.)
+  worker_.invalidate();
 }
 
 std::optional<MediaFrame> ImagePipelineSource::takeFrame() {
-  std::lock_guard lock(result_mutex_);
-  if (!result_frame_.has_value()) {
+  auto frame = worker_.take();
+  if (!frame.has_value()) {
     return std::nullopt;
   }
   MediaFrame mf;
-  mf.base = std::move(*result_frame_);
-  result_frame_.reset();
+  mf.base = std::move(*frame);
   return mf;
 }
 
 void ImagePipelineSource::setFrameReadyCallback(std::function<void()> cb) {
-  std::lock_guard lock(callback_mutex_);
-  on_frame_ready_ = std::move(cb);
-}
-
-void ImagePipelineSource::workerLoop() {
-  while (running_.load()) {
-    int64_t ts = 0;
-    bool force = false;
-    {
-      std::unique_lock lock(request_mutex_);
-      request_cv_.wait(lock, [this] { return has_request_ || !running_.load(); });
-      if (!running_.load()) {
-        break;
-      }
-      ts = requested_ts_;
-      has_request_ = false;
-      force = force_redecode_;
-      force_redecode_ = false;
-    }
-
-    // invalidate() asked for a fresh decode even at an unchanged entry: clear the
-    // dedup so decodeAt() doesn't early-return nullopt on the same frame.
-    if (force) {
-      last_entry_ts_ = INT64_MIN;
-    }
-    // Exception barrier (§R5 / ARCHITECTURE §10.5): a throwing parser plugin or a
-    // std::bad_alloc on pathological geometry must not escape the std::thread
-    // callable (that calls std::terminate). Catch at the boundary, warn once, and
-    // keep the worker alive to serve the next request.
-    std::optional<DecodedFrame> result;
-    try {
-      result = decodeAt(ts);
-    } catch (const std::exception& ex) {
-      warnOnce(warningKey(source_key_, "decode-exception"), "{} decode threw: {}", source_key_, ex.what());
-    } catch (...) {
-      warnOnce(warningKey(source_key_, "decode-exception"), "{} decode threw a non-std exception", source_key_);
-    }
-    if (result.has_value() && !result->isNull()) {
-      {
-        std::lock_guard lock(result_mutex_);
-        result_frame_ = std::move(*result);
-      }
-      // Notify outside result_mutex_ so the callback can read the result via
-      // takeFrame() without contending. The callback is itself locked behind
-      // callback_mutex_ for safe replacement during a running worker.
-      std::function<void()> cb_copy;
-      {
-        std::lock_guard lock(callback_mutex_);
-        cb_copy = on_frame_ready_;
-      }
-      if (cb_copy) {
-        cb_copy();
-      }
-    }
-
-    // Pick up any newer request that arrived during decode — keeps latency
-    // bounded to one decode after the last setTimestamp.
-    {
-      std::lock_guard lock(request_mutex_);
-      if (has_request_) {
-        continue;
-      }
-    }
-  }
+  worker_.setFrameReadyCallback(std::move(cb));
 }
 
 std::optional<DecodedFrame> ImagePipelineSource::decodeAt(int64_t ts_ns) {

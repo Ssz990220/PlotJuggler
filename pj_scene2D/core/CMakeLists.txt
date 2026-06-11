@@ -18,6 +18,7 @@ set(PJ_SCENE2D_CORE_SOURCES
   src/scene_pipeline_source.cpp
   src/scene_entities_2d_decoder.cpp
   src/composite_media_source.cpp
+  src/async_frame_worker.cpp
 )
 
 if(PJ_SCENE2D_HAS_FFMPEG)
@@ -92,6 +93,7 @@ if(PJ_BUILD_TESTS)
     ../tests/decoded_frame_test.cpp
     ../tests/cancel_token_test.cpp
     ../tests/image_codecs_test.cpp
+    ../tests/async_frame_worker_test.cpp
     ../tests/codecs_test.cpp
     ../tests/undistort_remap_test.cpp
     ../tests/image_pipeline_source_test.cpp
