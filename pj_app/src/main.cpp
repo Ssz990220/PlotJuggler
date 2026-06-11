@@ -48,6 +48,9 @@ int main(int argc, char* argv[]) {
   QApplication app(argc, argv);
   QCoreApplication::setOrganizationName(QStringLiteral("PlotJuggler"));
   QCoreApplication::setApplicationName(QStringLiteral("PlotJuggler4"));
+  // Until a real release-versioning scheme lands, the About box and any
+  // diagnostics that embed applicationVersion() report a dev build.
+  QCoreApplication::setApplicationVersion(QStringLiteral("4.0.0-dev"));
   QApplication::setApplicationDisplayName(QStringLiteral("PlotJuggler 4"));
 
   // WidgetTuner: app-wide Polish-event filter that side-steps QSS

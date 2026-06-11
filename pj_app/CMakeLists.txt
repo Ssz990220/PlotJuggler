@@ -56,6 +56,9 @@ add_executable(pj_app
     src/ui/DiagnosticsDetailDialog.cpp
     src/ui/DiagnosticsDetailDialog.h
     src/ui/DiagnosticsDetailDialog.ui
+    src/ui/AboutDialog.cpp
+    src/ui/AboutDialog.h
+    src/ui/AboutDialog.ui
     src/ui/TimelineWidget.cpp
     src/ui/TimelineWidget.h
     src/ui/TimelineWidget.ui

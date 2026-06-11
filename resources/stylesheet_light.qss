@@ -74,14 +74,6 @@ scrollbar_handle_hover:  #148CD2
 slider_handle:           #999999
 slider_handle_hover:     #99ccff
 
-// ---- Menu bar -----------------------------------------------------
-// QMenuBar is the only chrome row that intentionally does *not* track
-// the theme — the light stylesheet inverts it (dark bar + light text)
-// so the top-of-window menu strip reads identically across themes.
-// These tokens encode that override; the body shouldn't re-hardcode them.
-menubar_background:      #333333
-menubar_text:            #eeeeee
-
 // ---- MessageBox per-theme overrides --------------------------------
 // See stylesheet_dark.qss for the rationale.
 destructive_text:        #CC00CC
@@ -440,10 +432,10 @@ QMenu#PJMenu::separator {
 }
 
 QMenu#PJMenu::right-arrow {
-    image: none;
-    width: 0;
-    height: 0;
-    margin: 0;
+    image: url(":/resources/svg/keyboard_arrow_right_light.svg");
+    width: 12px;
+    height: 12px;
+    margin-right: 4px;
 }
 
 QMenu#PJMenu::indicator {
@@ -507,19 +499,6 @@ QMenu#PJMenu QPushButton[destructive="true"]:hover {
     border: none;
     outline: none;
 }
-
-/* "Special" PJMenu items (e.g. PlotJuggler Marketplace, Exit) opt in
-   via `setProperty("special", true)`. They get the light_blue ->
-   light_purple gradient on hover, distinguishing them from neutral
-   items (solid light_blue) and destructive ones (solid light_purple). */
-QMenu#PJMenu QPushButton[special="true"]:hover {
-    background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
-                                stop:0 ${light_blue},
-                                stop:1 ${light_purple});
-    border: none;
-    outline: none;
-}
-
 
 /* QAbstractSpinBox -------------------------------------------------------
 
@@ -1137,12 +1116,14 @@ QSplitter::handle:pressed {
 
 /* QMenuBar ---------------------------------------------------------------
 
-https://doc.qt.io/qt-5/stylesheet-examples.html#customizing-qmenubar
+Embedded in the TitleBar chrome (TitleBar.ui), so it stays transparent
+and inherits titlebar_background; items highlight with the same overlay
+tones as the chrome buttons around them.
 
 --------------------------------------------------------------------------- */
 QMenuBar {
-  background: ${menubar_background};
-  color: ${menubar_text};
+  background: transparent;
+  color: ${default_text};
   border: none;
 }
 
@@ -1152,22 +1133,17 @@ QMenuBar:focus {
 
 QMenuBar::item {
   background: transparent;
-  padding: 4px;
+  padding: 4px 3px;
 }
 
 QMenuBar::item:selected {
-  padding: 4px;
-  background: transparent;
+  background: ${hover_overlay};
   border: none;
 }
 
 QMenuBar::item:pressed {
-  padding: 4px;
+  background: ${pressed_overlay};
   border: none;
-  background-color: ${scrollbar_handle_hover};
-  color: ${menubar_text};
-  margin-bottom: 0px;
-  padding-bottom: 0px;
 }
 
 

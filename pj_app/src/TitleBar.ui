@@ -63,7 +63,7 @@
       <enum>Qt::FocusPolicy::NoFocus</enum>
      </property>
      <property name="text">
-      <string>PlotJuggler</string>
+      <string/>
      </property>
      <property name="iconSize">
       <size>
@@ -72,10 +72,20 @@
       </size>
      </property>
      <property name="toolButtonStyle">
-      <enum>Qt::ToolButtonStyle::ToolButtonTextBesideIcon</enum>
+      <enum>Qt::ToolButtonStyle::ToolButtonIconOnly</enum>
      </property>
      <property name="autoRaise">
       <bool>true</bool>
+     </property>
+    </widget>
+   </item>
+   <item>
+    <widget class="QMenuBar" name="menuBar">
+     <property name="sizePolicy">
+      <sizepolicy hsizetype="Maximum" vsizetype="Fixed">
+       <horstretch>0</horstretch>
+       <verstretch>0</verstretch>
+      </sizepolicy>
      </property>
     </widget>
    </item>
@@ -93,7 +103,12 @@
     </spacer>
    </item>
    <item>
-    <widget class="QToolButton" name="buttonNotifications">
+    <layout class="QHBoxLayout" name="rightClusterLayout">
+     <property name="spacing">
+      <number>1</number>
+     </property>
+     <item>
+      <widget class="QToolButton" name="buttonNotifications">
      <property name="minimumSize">
       <size>
        <width>23</width>
@@ -124,109 +139,9 @@
      <property name="autoRaise">
       <bool>true</bool>
      </property>
-    </widget>
-   </item>
-   <item>
-    <widget class="QToolButton" name="buttonExtension">
-     <property name="minimumSize">
-      <size>
-       <width>23</width>
-       <height>23</height>
-      </size>
-     </property>
-     <property name="maximumSize">
-      <size>
-       <width>23</width>
-       <height>23</height>
-      </size>
-     </property>
-     <property name="focusPolicy">
-      <enum>Qt::FocusPolicy::NoFocus</enum>
-     </property>
-     <property name="toolTip">
-      <string>Extensions</string>
-     </property>
-     <property name="text">
-      <string/>
-     </property>
-     <property name="iconSize">
-      <size>
-       <width>20</width>
-       <height>20</height>
-      </size>
-     </property>
-     <property name="autoRaise">
-      <bool>true</bool>
-     </property>
-    </widget>
-   </item>
-   <item>
-    <widget class="QToolButton" name="buttonLayout">
-     <property name="minimumSize">
-      <size>
-       <width>23</width>
-       <height>23</height>
-      </size>
-     </property>
-     <property name="maximumSize">
-      <size>
-       <width>23</width>
-       <height>23</height>
-      </size>
-     </property>
-     <property name="focusPolicy">
-      <enum>Qt::FocusPolicy::NoFocus</enum>
-     </property>
-     <property name="toolTip">
-      <string>Layout</string>
-     </property>
-     <property name="text">
-      <string/>
-     </property>
-     <property name="iconSize">
-      <size>
-       <width>20</width>
-       <height>20</height>
-      </size>
-     </property>
-     <property name="autoRaise">
-      <bool>true</bool>
-     </property>
-    </widget>
-   </item>
-   <item>
-    <widget class="QToolButton" name="buttonPreferences">
-     <property name="minimumSize">
-      <size>
-       <width>23</width>
-       <height>23</height>
-      </size>
-     </property>
-     <property name="maximumSize">
-      <size>
-       <width>23</width>
-       <height>23</height>
-      </size>
-     </property>
-     <property name="focusPolicy">
-      <enum>Qt::FocusPolicy::NoFocus</enum>
-     </property>
-     <property name="toolTip">
-      <string>Preferences</string>
-     </property>
-     <property name="text">
-      <string/>
-     </property>
-     <property name="iconSize">
-      <size>
-       <width>20</width>
-       <height>20</height>
-      </size>
-     </property>
-     <property name="autoRaise">
-      <bool>true</bool>
-     </property>
-    </widget>
+      </widget>
+     </item>
+    </layout>
    </item>
    <item>
     <spacer name="windowControlsSpacer">
@@ -236,7 +151,12 @@
     </spacer>
    </item>
    <item>
-    <widget class="QToolButton" name="buttonMinimize">
+    <layout class="QHBoxLayout" name="windowControlsLayout">
+     <property name="spacing">
+      <number>1</number>
+     </property>
+     <item>
+      <widget class="QToolButton" name="buttonMinimize">
      <property name="minimumSize">
       <size>
        <width>23</width>
@@ -335,7 +255,9 @@
      <property name="autoRaise">
       <bool>true</bool>
      </property>
-    </widget>
+      </widget>
+     </item>
+    </layout>
    </item>
   </layout>
    </item>

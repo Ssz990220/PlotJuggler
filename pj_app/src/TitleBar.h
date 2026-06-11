@@ -20,26 +20,31 @@ namespace PJ {
 
 class DiagnosticsPopup;
 
-// Custom title bar for a frameless QMainWindow. Hosts the App / Tools /
-// Help popup buttons on the left and minimize / maximize / close on the
-// right. Empty regions act as the system-move handle; double-click on
-// empty regions toggles maximize.
+// Custom title bar for a frameless QMainWindow. Hosts the app icon and
+// a traditional QMenuBar (File / Toolbox / Help) on the left, and the
+// relocated panel toggles, the notification bell and minimize /
+// maximize / close on the right. Empty regions act as the system-move
+// handle; double-click on empty regions toggles maximize.
 class TitleBar : public QWidget {
   Q_OBJECT
  public:
   explicit TitleBar(QWidget* parent = nullptr);
   ~TitleBar() override;
 
-  // The TitleBar owns three popup menus that callers populate directly.
-  // appMenu() is the consolidated menu attached to the PlotJuggler icon
-  // (top-left), holding what used to be split across App / Tools / Help.
-  // layoutMenu() is the layout-button popup. extensionMenu() is the
-  // installed-extensions dropdown attached to buttonExtension; the
-  // caller subscribes to its aboutToShow to rebuild the entry list
-  // lazily.
-  [[nodiscard]] QMenu* appMenu() const;
-  [[nodiscard]] QMenu* layoutMenu() const;
-  [[nodiscard]] QMenu* extensionMenu() const;
+  // The TitleBar owns the QMenuBar's three popup menus; MainWindow
+  // populates them. fileMenu() holds layout load/save + marketplace +
+  // preferences + quit. toolboxMenu() and the Help "Installed
+  // Extensions" submenu are rebuilt lazily by the caller on
+  // aboutToShow, so they track the live extension catalog.
+  [[nodiscard]] QMenu* fileMenu() const;
+  [[nodiscard]] QMenu* toolboxMenu() const;
+  [[nodiscard]] QMenu* helpMenu() const;
+
+  // Inserts a widget into the right-side cluster, between the
+  // notification bell and the window controls. Repeated calls append
+  // left-to-right. Used by the shell to relocate the three
+  // panel-toggle buttons created by TabbedPlotWidget.
+  void addRightClusterWidget(QWidget* widget);
 
   // Wire the title-bar bell + diagnostics popup to a DiagnosticHistory.
   // The history is the single source of truth for diagnostics; the bell
@@ -50,10 +55,6 @@ class TitleBar : public QWidget {
   // Forwarded from buttonNotifications. Kept for callers that still want
   // the raw click event in addition to the built-in popup behaviour.
   void notificationsClicked();
-
-  // Emitted when the user clicks the cog button in the title bar.
-  // MainWindow handles it by opening the Preferences dialog.
-  void preferencesClicked();
 
   // Emitted when the user clicks a card in the diagnostics popup. The
   // owner (MainWindow) opens a frameless detail dialog in response.
@@ -84,9 +85,9 @@ class TitleBar : public QWidget {
   [[nodiscard]] bool isOnMoveHandle(const QPoint& pos) const;
 
   Ui::TitleBar* ui_;
-  QMenu* app_menu_ = nullptr;
-  QMenu* layout_menu_ = nullptr;
-  QMenu* extension_menu_ = nullptr;
+  QMenu* file_menu_ = nullptr;
+  QMenu* toolbox_menu_ = nullptr;
+  QMenu* help_menu_ = nullptr;
   DiagnosticsPopup* diagnostics_popup_ = nullptr;
   DiagnosticHistory* diagnostic_history_ = nullptr;
   // Single-shot timer that flips the bell icon back to its default

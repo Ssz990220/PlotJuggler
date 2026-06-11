@@ -224,7 +224,7 @@
   </widget>
   <action name="actionMarketplace">
    <property name="text">
-    <string>Marketplace…</string>
+    <string>Extensions Marketplace…</string>
    </property>
    <property name="shortcut">
     <string>Ctrl+Shift+M</string>
@@ -232,7 +232,10 @@
   </action>
   <action name="actionExit">
    <property name="text">
-    <string>Exit</string>
+    <string>Quit</string>
+   </property>
+   <property name="shortcut">
+    <string>Ctrl+Q</string>
    </property>
   </action>
  </widget>

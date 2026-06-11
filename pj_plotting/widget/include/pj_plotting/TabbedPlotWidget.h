@@ -52,9 +52,10 @@ class TabbedPlotWidget : public QWidget {
   [[nodiscard]] int dockerCount() const;
   PlotDocker* dockerAt(int index);
 
-  // Panel-toggle buttons mounted at the far right of the tab strip.
-  // Checkable; checked = panel visible. The MainWindow shell wires
-  // toggled() to show/hide the corresponding outer panel widget.
+  // Panel-toggle buttons. Created here but relocated by the MainWindow
+  // shell into the title bar (it reparents them after construction).
+  // The shell wires clicked() to show/hide the corresponding outer
+  // panel widget and swaps the filled/outlined glyph.
   [[nodiscard]] QPushButton* leftPanelButton() const {
     return button_left_panel_;
   }

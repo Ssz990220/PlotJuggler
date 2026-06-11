@@ -157,16 +157,27 @@ class MainWindow : public QMainWindow {
 
   void onShowPreferencesDialog();
 
-  // Rebuilds the title-bar Extensions popup from the current
-  // ExtensionCatalogService snapshot. Lists installed plugins (data
-  // sources, message parsers, toolboxes) followed by a separator and a
-  // "PlotJuggler Marketplace" entry that opens the marketplace dialog.
+  // Opens the modal About box (Help ▸ About PlotJuggler…).
+  void onShowAboutDialog();
+
+  // Rebuilds the Help ▸ Installed Extensions submenu from the current
+  // ExtensionCatalogService snapshot. Informational only (disabled
+  // entries): data sources, message parsers, toolboxes. Managing
+  // extensions happens in the Marketplace (File menu).
   void onRebuildExtensionsMenu();
 
-  // Launches a cloud-tagged toolbox by id (from LeftPanel::cloudToolboxRequested):
-  // builds a ToolboxRuntimeHost, binds the toolbox, hosts its dialog in a
-  // PanelEngine, and presents it in the chart area. Close tears it all down.
-  void onCloudToolboxRequested(const QString& plugin_id);
+  // Rebuilds the title-bar Toolbox menu from the current toolbox
+  // catalog. Lists only the launchable, *non-cloud* toolboxes (cloud
+  // toolboxes live in the Sources panel instead); each entry launches
+  // its toolbox via launchToolbox(). Built lazily on aboutToShow so it
+  // tracks whatever the catalog currently has loaded.
+  void onRebuildToolboxMenu();
+
+  // Launches a toolbox by id: builds a ToolboxRuntimeHost, binds the
+  // toolbox, hosts its dialog in a PanelEngine, and presents it in the
+  // chart area. Close tears it all down. Shared by the Toolbox menu and
+  // LeftPanel::cloudToolboxRequested ("cloud" is just a manifest tag).
+  void launchToolbox(const QString& plugin_id);
 
   void onThemeChanged(const QString& theme);
 
@@ -417,6 +428,8 @@ class MainWindow : public QMainWindow {
   std::unique_ptr<Theme> theme_;
   TitleBar* title_bar_ = nullptr;
   QMenu* recent_layouts_menu_ = nullptr;
+  // Help ▸ Installed Extensions — informational, rebuilt on aboutToShow.
+  QMenu* installed_extensions_menu_ = nullptr;
   // Local-panel header bands (grey "Curve Width" / "Curve Style" labels).
   // Kept as members so build_section's findChild lookups for the
   // exclusive radio buttons have a stable parent to query.
@@ -432,11 +445,7 @@ class MainWindow : public QMainWindow {
   // Stored so applyIcons() can re-tint them on theme change.
   QAction* action_load_layout_ = nullptr;
   QAction* action_save_layout_ = nullptr;
-  // The Exit menu item is a QWidgetAction-wrapped QPushButton so it
-  // can carry the `special` dynamic property used by the menu QSS
-  // to give it a gradient hover. Stored here so applyIcons() can
-  // re-tint its icon on theme change.
-  QPushButton* exit_menu_button_ = nullptr;
+  QAction* action_preferences_ = nullptr;
   std::deque<QByteArray> undo_states_;
   std::deque<QByteArray> redo_states_;
   QElapsedTimer undo_timer_;

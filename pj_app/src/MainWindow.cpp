@@ -13,6 +13,7 @@
 #include <QCloseEvent>
 #include <QColor>
 #include <QCoreApplication>
+#include <QDesktopServices>
 #include <QDomDocument>
 #include <QFile>
 #include <QFileInfo>
@@ -44,7 +45,6 @@
 #include <QToolTip>
 #include <QUrl>
 #include <QVBoxLayout>
-#include <QWidgetAction>
 #include <QWindow>
 #include <algorithm>
 #include <array>
@@ -52,6 +52,7 @@
 #include <cstdint>
 #include <limits>
 #include <memory>
+#include <nlohmann/json.hpp>
 #include <optional>
 #include <utility>
 #include <vector>
@@ -103,6 +104,7 @@
 #include "pj_widgets/SectionHeaderBand.h"
 #include "pj_widgets/SvgUtil.h"
 #include "scene_object_classification.h"
+#include "ui/AboutDialog.h"
 #include "ui/CurveListPanel.h"
 #include "ui/DiagnosticsDetailDialog.h"
 #include "ui/LeftPanel.h"
@@ -349,37 +351,56 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
   setWindowFlag(Qt::FramelessWindowHint, true);
   setMouseTracking(true);
 
-  // The TitleBar owns its three popup menus; we just push actions into
-  // them. The .ui no longer has a QMenuBar, so there's no reparenting
-  // to do and no stale action-association to leak between popups.
+  // The TitleBar owns the QMenuBar's popup menus; we just push actions
+  // into them.
   title_bar_ = new TitleBar(this);
-  // Marketplace moved out of the App menu. The title-bar Extension
-  // button now opens a popup of installed extensions with the
-  // marketplace entry at the bottom — populated on aboutToShow so the
-  // list reflects whatever the catalog currently has loaded.
-  connect(title_bar_->extensionMenu(), &QMenu::aboutToShow, this, &MainWindow::onRebuildExtensionsMenu);
   connect(title_bar_, &TitleBar::diagnosticActivated, this, [this](const DiagnosticRecord& r) {
     auto* dlg = new DiagnosticsDetailDialog(r, this);
     dlg->show();
   });
 
-  // Layout menu: Load... | Save... | Recent ▶ — Recent is rebuilt
-  // lazily from QSettings every time it's about to show, so the list
-  // stays in sync with whatever the most recent Load/Save did.
-  action_load_layout_ = title_bar_->layoutMenu()->addAction(tr("Load..."), this, &MainWindow::onLoadLayout);
-  action_save_layout_ = title_bar_->layoutMenu()->addAction(tr("Save..."), this, &MainWindow::onSaveLayout);
-  title_bar_->layoutMenu()->addSeparator();
-  recent_layouts_menu_ = title_bar_->layoutMenu()->addMenu(tr("Recent"));
+  // File menu: layout persistence + marketplace + preferences + quit.
+  // Recent Layouts is rebuilt lazily from QSettings on every
+  // aboutToShow so it stays in sync with the most recent Load/Save.
+  QMenu* file_menu = title_bar_->fileMenu();
+  action_load_layout_ = file_menu->addAction(tr("Load Layout..."), this, &MainWindow::onLoadLayout);
+  action_save_layout_ = file_menu->addAction(tr("Save Layout..."), this, &MainWindow::onSaveLayout);
+  recent_layouts_menu_ = file_menu->addMenu(tr("Recent Layouts"));
   recent_layouts_menu_->setObjectName(QStringLiteral("PJMenu"));
   connect(recent_layouts_menu_, &QMenu::aboutToShow, this, &MainWindow::onRebuildRecentLayoutsMenu);
-  // The chevron icon sits on the left of "Recent" (via the menuAction
-  // icon slot, like Load/Save above) and the standard right-side
-  // submenu indicator is hidden in QSS. The submenu itself is
-  // repositioned to open on the LEFT of the parent menu via the
-  // QEvent::Show branch in eventFilter().
-  recent_layouts_menu_->installEventFilter(this);
+  file_menu->addSeparator();
+  file_menu->addAction(ui_->actionMarketplace);
+  action_preferences_ = file_menu->addAction(tr("Preferences..."), this, &MainWindow::onShowPreferencesDialog);
+  file_menu->addSeparator();
+  file_menu->addAction(ui_->actionExit);
+
+  // Toolbox menu: lazily lists the launchable (non-cloud) toolboxes so
+  // the list reflects whatever the catalog currently has loaded.
+  connect(title_bar_->toolboxMenu(), &QMenu::aboutToShow, this, &MainWindow::onRebuildToolboxMenu);
+
+  // Help menu: About + web links + the informational extension list
+  // (rebuilt on aboutToShow; managing extensions happens in the
+  // Marketplace, reached from the File menu).
+  QMenu* help_menu = title_bar_->helpMenu();
+  help_menu->addAction(tr("About PlotJuggler..."), this, &MainWindow::onShowAboutDialog);
+  help_menu->addAction(
+      tr("Documentation"), this, []() { QDesktopServices::openUrl(QUrl(QStringLiteral("https://plotjuggler.io"))); });
+  help_menu->addAction(tr("Report an Issue"), this, []() {
+    QDesktopServices::openUrl(QUrl(QStringLiteral("https://github.com/PlotJuggler/PJ4/issues")));
+  });
+  help_menu->addSeparator();
+  installed_extensions_menu_ = help_menu->addMenu(tr("Installed Extensions"));
+  installed_extensions_menu_->setObjectName(QStringLiteral("PJMenu"));
+  connect(installed_extensions_menu_, &QMenu::aboutToShow, this, &MainWindow::onRebuildExtensionsMenu);
 
   setMenuWidget(title_bar_);
+
+  // The panel toggles live in the title bar's right cluster (left of
+  // the bell). TabbedPlotWidget creates them — reparenting here keeps
+  // the panelToggles() wiring and QSettings persistence untouched.
+  title_bar_->addRightClusterWidget(ui_->tabbedPlotWidget->leftPanelButton());
+  title_bar_->addRightClusterWidget(ui_->tabbedPlotWidget->bottomPanelButton());
+  title_bar_->addRightClusterWidget(ui_->tabbedPlotWidget->rightPanelButton());
 
   // The event filter sees mouse events delivered to any descendant of
   // this window. Required so a click on the TimelineWidget's empty
@@ -778,7 +799,7 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
       });
   connect(ui_->leftPanel, &LeftPanel::loadDataRequested, this, &MainWindow::onLoadDataRequested);
   connect(ui_->leftPanel, &LeftPanel::reloadDataRequested, this, &MainWindow::onReloadDataRequested);
-  connect(ui_->leftPanel, &LeftPanel::cloudToolboxRequested, this, &MainWindow::onCloudToolboxRequested);
+  connect(ui_->leftPanel, &LeftPanel::cloudToolboxRequested, this, &MainWindow::launchToolbox);
   connect(file_loader_.get(), &FileLoader::fileLoaded, this, &MainWindow::onFileLoaded);
   // Track successful loads for the recent-files popup.
   connect(
@@ -805,29 +826,6 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
 
   connect(ui_->actionMarketplace, &QAction::triggered, this, &MainWindow::onOpenMarketplace);
   connect(ui_->actionExit, &QAction::triggered, this, &QWidget::close);
-
-  // Preferences moved out of the dropdown to a dedicated cog button on
-  // the title bar — see TitleBar::preferencesClicked.
-  connect(title_bar_, &TitleBar::preferencesClicked, this, &MainWindow::onShowPreferencesDialog);
-
-  // Consolidated PlotJuggler menu. Diagnostics is no longer a menu entry —
-  // the title-bar bell popup is the single diagnostics view.
-  //
-  // Exit is wrapped as a QPushButton+QWidgetAction so the dynamic
-  // `special` property can drive its gradient-hover QSS rule. The
-  // button forwards its click to the original ui_->actionExit so all
-  // shortcut/menu-association wiring keeps working.
-  exit_menu_button_ = new QPushButton(ui_->actionExit->icon(), ui_->actionExit->text(), title_bar_->appMenu());
-  exit_menu_button_->setFlat(true);
-  exit_menu_button_->setProperty("special", true);
-  // Carries the source SVG path so the eventFilter Enter/Leave swap
-  // (in MainWindow::eventFilter) can re-render this icon dark while the
-  // gradient hover background is showing.
-  exit_menu_button_->setProperty("iconPath", QStringLiteral(":/resources/svg/logout.svg"));
-  connect(exit_menu_button_, &QPushButton::clicked, ui_->actionExit, &QAction::trigger);
-  auto* exit_widget_action = new QWidgetAction(title_bar_->appMenu());
-  exit_widget_action->setDefaultWidget(exit_menu_button_);
-  title_bar_->appMenu()->addAction(exit_widget_action);
 
   // Undo/Redo apply to plot-layout snapshots. They are keyboard-only
   // (Ctrl+Z / Ctrl+Y) and deliberately NOT in any menu. Registering them on
@@ -1120,6 +1118,11 @@ void MainWindow::onShowPreferencesDialog() {
   dlg.exec();
 }
 
+void MainWindow::onShowAboutDialog() {
+  AboutDialog dialog(this);
+  dialog.exec();
+}
+
 void MainWindow::onThemeChanged(const QString& theme) {
   qApp->setStyleSheet(theme_->expandedQss());
   const bool light = theme.contains("light");
@@ -1194,21 +1197,17 @@ void MainWindow::applyIcons(QString theme) {
     toggle.button->setIcon(LoadSvg(resolved, theme));
   }
   // Title-bar menus: their QActions persist across theme changes, so
-  // re-tint here. The Marketplace entry under the Extensions menu is
-  // rebuilt on each aboutToShow (see onRebuildExtensionsMenu) and gets
-  // the current theme directly.
+  // re-tint here.
   ui_->actionExit->setIcon(QIcon(LoadSvg(":/resources/svg/logout.svg", theme)));
-  if (exit_menu_button_ != nullptr) {
-    exit_menu_button_->setIcon(ui_->actionExit->icon());
+  ui_->actionMarketplace->setIcon(QIcon(LoadSvg(":/resources/svg/archive.svg", theme)));
+  if (action_preferences_ != nullptr) {
+    action_preferences_->setIcon(QIcon(LoadSvg(":/resources/svg/settings_cog_light.svg", theme)));
   }
   if (action_load_layout_ != nullptr) {
     action_load_layout_->setIcon(QIcon(LoadSvg(":/resources/svg/dashboard_load.svg", theme)));
   }
   if (action_save_layout_ != nullptr) {
     action_save_layout_->setIcon(QIcon(LoadSvg(":/resources/svg/save_as.svg", theme)));
-  }
-  if (recent_layouts_menu_ != nullptr) {
-    recent_layouts_menu_->menuAction()->setIcon(QIcon(LoadSvg(":/resources/svg/play_arrow_left.svg", theme)));
   }
 }
 
@@ -1691,7 +1690,7 @@ void MainWindow::onRebuildRecentLayoutsMenu() {
 }
 
 void MainWindow::onRebuildExtensionsMenu() {
-  QMenu* menu = title_bar_->extensionMenu();
+  QMenu* menu = installed_extensions_menu_;
   menu->clear();
 
   const auto& catalog = session_->extensionCatalog();
@@ -1714,23 +1713,56 @@ void MainWindow::onRebuildExtensionsMenu() {
     QAction* placeholder = menu->addAction(tr("(no extensions installed)"));
     placeholder->setEnabled(false);
   }
+}
 
-  menu->addSeparator();
-  // Marketplace is a "special" item — gradient hover. Wrapped as a
-  // QPushButton+QWidgetAction so QSS can target it via the
-  // `special` property. Rebuilt fresh on every popup so the icon
-  // matches the current theme without needing a member.
-  auto* marketplace_btn = new QPushButton(
-      QIcon(LoadSvg(":/resources/svg/archive.svg", theme_->currentTheme())), tr("PlotJuggler Marketplace"), menu);
-  marketplace_btn->setFlat(true);
-  marketplace_btn->setProperty("special", true);
-  // Same iconPath protocol as exit_menu_button_ — enables the dark-on-
-  // hover icon swap performed in MainWindow::eventFilter.
-  marketplace_btn->setProperty("iconPath", QStringLiteral(":/resources/svg/archive.svg"));
-  connect(marketplace_btn, &QPushButton::clicked, this, &MainWindow::onOpenMarketplace);
-  auto* marketplace_action = new QWidgetAction(menu);
-  marketplace_action->setDefaultWidget(marketplace_btn);
-  menu->addAction(marketplace_action);
+void MainWindow::onRebuildToolboxMenu() {
+  QMenu* menu = title_bar_->toolboxMenu();
+  menu->clear();
+  menu->setToolTipsVisible(true);
+
+  // List the launchable toolboxes: every loaded toolbox EXCEPT the
+  // cloud-tagged ones, which are reached from the Sources panel instead
+  // (same manifest "tags" check as LeftPanel::populateCloudToolboxes,
+  // inverted here). Each entry launches its toolbox into the chart area.
+  bool added_any = false;
+  for (const auto& toolbox : session_->extensionCatalog().toolboxes()) {
+    // A null vtable/manifest is a load failure already reported elsewhere.
+    const auto* vtable = toolbox.library.vtable();
+    if (vtable == nullptr || vtable->manifest_json == nullptr) {
+      continue;
+    }
+    const auto manifest = nlohmann::json::parse(vtable->manifest_json, nullptr, /*allow_exceptions=*/false);
+    bool is_cloud = false;
+    if (manifest.is_object()) {
+      if (auto it = manifest.find("tags"); it != manifest.end() && it->is_array()) {
+        for (const auto& tag : *it) {
+          if (tag.is_string() && tag.get<std::string>() == "cloud") {
+            is_cloud = true;
+            break;
+          }
+        }
+      }
+    }
+    if (is_cloud) {
+      continue;
+    }
+
+    const QString id = QString::fromStdString(toolbox.id);
+    const QString name = toolbox.name.empty() ? id : QString::fromStdString(toolbox.name);
+    QAction* action = menu->addAction(name);
+    if (manifest.is_object()) {
+      if (auto desc = manifest.find("description"); desc != manifest.end() && desc->is_string()) {
+        action->setToolTip(QString::fromStdString(desc->get<std::string>()));
+      }
+    }
+    connect(action, &QAction::triggered, this, [this, id]() { launchToolbox(id); });
+    added_any = true;
+  }
+
+  if (!added_any) {
+    QAction* placeholder = menu->addAction(tr("(no toolboxes available)"));
+    placeholder->setEnabled(false);
+  }
 }
 
 void MainWindow::loadLayoutFromPath(const QString& path) {
@@ -1961,39 +1993,6 @@ bool MainWindow::eventFilter(QObject* watched, QEvent* event) {
       w->setWindowFlag(Qt::NoDropShadowWindowHint, true);
     }
     return false;
-  }
-  // Reposition the Recent-layouts submenu to open on the LEFT of its
-  // parent (the Layout menu) instead of Qt's default rightward popup.
-  // Qt computes its preferred position before firing QEvent::Show, so
-  // we override here — the move() lands before the platform paints the
-  // popup window, avoiding a one-frame flicker.
-  if (type == QEvent::Show && watched == recent_layouts_menu_) {
-    QMenu* parent_menu = title_bar_ != nullptr ? title_bar_->layoutMenu() : nullptr;
-    if (parent_menu != nullptr && parent_menu->isVisible()) {
-      const int sub_width = recent_layouts_menu_->sizeHint().width();
-      const QPoint parent_top_left = parent_menu->mapToGlobal(QPoint(0, 0));
-      recent_layouts_menu_->move(parent_top_left.x() - sub_width, recent_layouts_menu_->y());
-    }
-    return false;
-  }
-  // Special-hover icon swap: PJMenu items with the "special" property
-  // (Exit, Marketplace, ...) paint a light blue→purple gradient on
-  // hover. In dark mode the icon is rendered with white ink and would
-  // vanish on that bright bg, so we swap to the light-theme-tinted
-  // (dark-ink) variant while the cursor is over the button. The SVG
-  // resource path is carried on the button as the "iconPath" dynamic
-  // property — only buttons that opted in receive the swap.
-  if ((type == QEvent::Enter || type == QEvent::Leave) && theme_ != nullptr &&
-      theme_->currentTheme() != QLatin1String("light")) {
-    auto* btn = qobject_cast<QPushButton*>(watched);
-    if (btn != nullptr && btn->property("special").toBool()) {
-      const QString svg_path = btn->property("iconPath").toString();
-      if (!svg_path.isEmpty()) {
-        const QString theme_for_icon = (type == QEvent::Enter) ? QStringLiteral("light") : theme_->currentTheme();
-        btn->setIcon(QIcon(LoadSvg(svg_path, theme_for_icon)));
-      }
-    }
-    // Don't return — let normal hover propagation continue.
   }
   if (type != QEvent::MouseMove && type != QEvent::MouseButtonPress) {
     return false;
@@ -3163,7 +3162,7 @@ void MainWindow::openEmbeddedConsole() {
   view->start(helper, dir + QStringLiteral("base.wad"));
 }
 
-void MainWindow::onCloudToolboxRequested(const QString& plugin_id) {
+void MainWindow::launchToolbox(const QString& plugin_id) {
   // Surface every failure on the diagnostic channel (the same sink the toolbox's
   // own on_message uses below), not just stderr, so a user-initiated launch that
   // fails is visible in the UI instead of silently doing nothing.
@@ -3171,7 +3170,7 @@ void MainWindow::onCloudToolboxRequested(const QString& plugin_id) {
     if (diagnostic_history_ != nullptr) {
       diagnostic_history_->record(DiagnosticLevel::kError, source, QStringLiteral("toolbox"), detail);
     }
-    qWarning("MainWindow::onCloudToolboxRequested: %s", qPrintable(detail));
+    qWarning("MainWindow::launchToolbox: %s", qPrintable(detail));
   };
 
   // 1. Find the toolbox in the catalog.

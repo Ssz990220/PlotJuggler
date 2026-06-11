@@ -96,7 +96,9 @@ nominally, `purple` on hover/pressed.
 Every horizontal chrome row in the app is **exactly 24 px tall**.
 That includes:
 
-- TitleBar (top app bar)
+- TitleBar (top app bar): app icon + embedded QMenuBar (File /
+  Toolbox / Help) on the left; notification bell, panel toggles and
+  window controls on the right
 - Sources / Datasets / Custom Series header bands
 - Playback row
 - Right-side toolbar column width (same value, vertical)
@@ -133,9 +135,10 @@ below.
   (TitleBar, dialog title bar) have an inner rect of `24 − 1 = 23`
   px. Buttons inside them are `23×23`.
 
-The tab strip's elements (`PlotTabFrame`, `[+]` button, panel
-toggles) are also `23×23`, because the strip is 23 px and they fill
-its inner rect.
+The tab strip's elements (`PlotTabFrame`, `[+]` button) are also
+`23×23`, because the strip is 23 px and they fill its inner rect.
+The panel toggles share that size but live in the TitleBar's right
+cluster (created by TabbedPlotWidget, reparented by the shell).
 
 Icons inside any chrome button are always `20×20`, leaving a 1–2 px
 ink-ring of padding inside the button. **Do not** override icon

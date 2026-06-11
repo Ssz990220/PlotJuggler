@@ -155,6 +155,7 @@
     <file alias="search.svg">svg/search.svg</file>
     <file alias="search_dark.svg">svg/search_dark.svg</file>
     <file alias="search_light.svg">svg/search_light.svg</file>
+    <file alias="service_toolbox.svg">svg/service_toolbox.svg</file>
     <file alias="settings_cog_dark.svg">svg/settings_cog_dark.svg</file>
     <file alias="settings_cog_light.svg">svg/settings_cog_light.svg</file>
     <file alias="share_eta.svg">svg/share_eta.svg</file>

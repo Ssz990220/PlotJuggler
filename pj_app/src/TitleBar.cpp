@@ -38,69 +38,25 @@ TitleBar::TitleBar(QWidget* parent) : QWidget(parent), ui_(new Ui::TitleBar) {
   // saved metrics via iconMetricsChanged after the connection is wired.
   applyIconMetrics();
 
-  // Tag every popup with objectName="PJMenu" so the QMenu#PJMenu rule
-  // in stylesheet_*.qss applies. The id+type selector outranks the
-  // cascading `QWidget { background: transparent }` rule that otherwise
-  // wins for popups when QSS is delivered via qApp->setStyleSheet.
-  app_menu_ = new QMenu(this);
-  layout_menu_ = new QMenu(this);
-  extension_menu_ = new QMenu(this);
-  for (QMenu* m : {app_menu_, layout_menu_, extension_menu_}) {
-    m->setObjectName(QStringLiteral("PJMenu"));
+  // Traditional menus, owned here so MainWindow can populate them.
+  // objectName "PJMenu" keeps the existing QMenu#PJMenu QSS applying to
+  // the popups (the id+type selector outranks the cascading
+  // `QWidget { background: transparent }` rule that otherwise wins for
+  // popups when QSS is delivered via qApp->setStyleSheet).
+  // setNativeMenuBar(false) forces in-window rendering even on desktops
+  // with a global menu bar — the menubar is part of our custom chrome,
+  // not the platform's.
+  file_menu_ = new QMenu(tr("&File"), this);
+  toolbox_menu_ = new QMenu(tr("&Toolbox"), this);
+  help_menu_ = new QMenu(tr("&Help"), this);
+  ui_->menuBar->setNativeMenuBar(false);
+  for (QMenu* menu : {file_menu_, toolbox_menu_, help_menu_}) {
+    menu->setObjectName(QStringLiteral("PJMenu"));
+    ui_->menuBar->addMenu(menu);
   }
   diagnostics_popup_ = new DiagnosticsPopup(this);
   diagnostics_popup_->setObjectName(QStringLiteral("DiagnosticsPopup"));
   connect(diagnostics_popup_, &DiagnosticsPopup::diagnosticActivated, this, &TitleBar::diagnosticActivated);
-
-  // Manual popup — never `QToolButton::setMenu(...)` — because Qt
-  // paints a dropdown arrow inside any button that has a menu set, and
-  // that glyph survives every `::menu-indicator` / `::menu-button` /
-  // `::menu-arrow` QSS suppression attempt. Popping by hand means the
-  // button doesn't "have" a menu from Qt's perspective — no arrow —
-  // while click → popup → outside-click-dismiss is identical UX.
-  //
-  // The `align_right` flag right-aligns the menu's top-right corner
-  // with the button's bottom-right corner. Necessary for buttons in
-  // the right-side cluster of the title bar — left-aligning a menu
-  // there would push it off the screen edge and force Qt to nudge it
-  // back, breaking visual alignment with the button.
-  //
-  // Order matters: we call popup() *before* measuring. Menus whose
-  // content is built lazily in `aboutToShow` (e.g. extension_menu_)
-  // have a stale 0-width `sizeHint()` until popup() fires the signal
-  // and populates them. Measuring beforehand was making the first
-  // click open the menu in the wrong spot, then subsequent clicks
-  // (with a now-correct cached size) land correctly — i.e. the
-  // "sometimes right, sometimes left" symptom.
-  auto wire_popup = [this](
-                        QToolButton* button, QMenu* menu, bool align_right = false, bool match_button_width = false) {
-    connect(button, &QToolButton::clicked, this, [button, menu, align_right, match_button_width]() {
-      // Provisional position at the button's bottom-left. popup()
-      // here triggers aboutToShow which populates dynamic content.
-      const QPoint provisional = button->mapToGlobal(QPoint(0, button->height()));
-      menu->popup(provisional);
-      // Ensure the menu spans at least the button's width — used for
-      // the app menu so the popup extends across both the logo and
-      // the "PlotJuggler" text rather than collapsing to its widest
-      // menu item alone.
-      if (match_button_width && menu->width() < button->width()) {
-        menu->setMinimumWidth(button->width());
-      }
-      // Now the menu has its real, populated width. Snap to the
-      // requested edge using width() (live size), not sizeHint().
-      if (align_right) {
-        const int dx = button->width() - menu->width();
-        menu->move(button->mapToGlobal(QPoint(dx, button->height())));
-      } else {
-        // QMenu::popup() applies an auto-shift for tool-button popups;
-        // pin back to the provisional point we asked for.
-        menu->move(provisional);
-      }
-    });
-  };
-  wire_popup(ui_->appIcon, app_menu_, /*align_right=*/false, /*match_button_width=*/true);
-  wire_popup(ui_->buttonLayout, layout_menu_, /*align_right=*/true);
-  wire_popup(ui_->buttonExtension, extension_menu_, /*align_right=*/true);
 
   // Bell flash: 5-s single-shot timer flips the icon back to its
   // default glyph after the most recent diagnostic. Restarted on each
@@ -124,7 +80,6 @@ TitleBar::TitleBar(QWidget* parent) : QWidget(parent), ui_(new Ui::TitleBar) {
       w->showMinimized();
     }
   });
-  connect(ui_->buttonPreferences, &QToolButton::clicked, this, &TitleBar::preferencesClicked);
   connect(ui_->buttonMaximize, &QToolButton::clicked, this, &TitleBar::onMaximizeClicked);
   connect(ui_->buttonClose, &QToolButton::clicked, this, [this]() {
     if (auto* w = window()) {
@@ -137,16 +92,26 @@ TitleBar::~TitleBar() {
   delete ui_;
 }
 
-QMenu* TitleBar::appMenu() const {
-  return app_menu_;
+QMenu* TitleBar::fileMenu() const {
+  return file_menu_;
 }
 
-QMenu* TitleBar::layoutMenu() const {
-  return layout_menu_;
+QMenu* TitleBar::toolboxMenu() const {
+  return toolbox_menu_;
 }
 
-QMenu* TitleBar::extensionMenu() const {
-  return extension_menu_;
+QMenu* TitleBar::helpMenu() const {
+  return help_menu_;
+}
+
+void TitleBar::addRightClusterWidget(QWidget* widget) {
+  if (widget == nullptr) {
+    return;
+  }
+  // Appends to the bell's group so the added widgets share its tight
+  // intra-group spacing; the spacer + outer layout spacing keep the
+  // group visually separate from the window controls.
+  ui_->rightClusterLayout->addWidget(widget);
 }
 
 void TitleBar::setDiagnosticHistory(DiagnosticHistory* history) {
@@ -196,19 +161,19 @@ void TitleBar::applyIconMetrics() {
 
   // Square chrome buttons — fixed extent on both axes.
   const QSize icon_sz(chrome_metrics_.icon_size, chrome_metrics_.icon_size);
-  const std::array<QToolButton*, 7> square_buttons{ui_->buttonNotifications, ui_->buttonExtension, ui_->buttonLayout,
-                                                   ui_->buttonPreferences,   ui_->buttonMinimize,  ui_->buttonMaximize,
-                                                   ui_->buttonClose};
+  const std::array<QToolButton*, 4> square_buttons{
+      ui_->buttonNotifications, ui_->buttonMinimize, ui_->buttonMaximize, ui_->buttonClose};
   for (QToolButton* btn : square_buttons) {
     btn->setMinimumSize(button_extent, button_extent);
     btn->setMaximumSize(button_extent, button_extent);
     btn->setIconSize(icon_sz);
   }
-  // App icon has text beside the glyph — height is fixed, width floats
-  // to fit the "PlotJuggler" label.
   ui_->appIcon->setMinimumHeight(button_extent);
   ui_->appIcon->setMaximumHeight(button_extent);
   ui_->appIcon->setIconSize(icon_sz);
+  // The menubar tracks the chrome-button height so its highlight rect
+  // matches the buttons around it.
+  ui_->menuBar->setFixedHeight(button_extent);
 }
 
 void TitleBar::changeEvent(QEvent* event) {
@@ -262,11 +227,8 @@ bool TitleBar::isOnMoveHandle(const QPoint& pos) const {
 
 void TitleBar::applyIcons(const QString& theme) {
   ui_->appIcon->setIcon(LoadSvg(":/resources/svg/plotjuggler.svg", theme));
-  ui_->buttonExtension->setIcon(LoadSvg(":/resources/svg/extension.svg", theme));
   ui_->buttonNotifications->setIcon(
       LoadSvg(bell_active_ ? ":/resources/svg/alarm-bell-active.svg" : ":/resources/svg/alarm-bell.svg", theme));
-  ui_->buttonLayout->setIcon(LoadSvg(":/resources/svg/mobile_layout.svg", theme));
-  ui_->buttonPreferences->setIcon(LoadSvg(":/resources/svg/settings_cog_light.svg", theme));
   ui_->buttonMinimize->setIcon(LoadSvg(":/resources/svg/minimize.svg", theme));
   ui_->buttonMaximize->setIcon(LoadSvg(":/resources/svg/maximize.svg", theme));
   ui_->buttonClose->setIcon(LoadSvg(":/resources/svg/close_windows_light.svg", theme));

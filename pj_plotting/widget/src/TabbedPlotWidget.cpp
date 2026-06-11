@@ -282,12 +282,11 @@ TabbedPlotWidget::TabbedPlotWidget(QString name, QWidget* parent) : QWidget(pare
 
   outer_layout->addWidget(tabs_inner_, 1);
 
-  // Panel-toggle buttons sit at the far right of the tab strip and
-  // control the surrounding shell panels (left column, timeline,
-  // right toolbar). Checkable — the icon is a fixed "Dock to <side>"
-  // glyph and the checked state mirrors the panel's visibility (driven
-  // by the MainWindow shell). Placed outside the scroll area so they
-  // remain pinned regardless of how many tabs are open.
+  // Panel-toggle buttons control the surrounding shell panels (left
+  // column, timeline, right toolbar). Created here so the accessors and
+  // the MainWindow wiring keep working, but NOT mounted in the tab
+  // strip: the shell reparents them into the title bar's right cluster
+  // (TitleBar::addRightClusterWidget) after construction.
   auto make_panel_button = [this](const char* tip) {
     auto* button = new QPushButton(this);
     button->setObjectName(QStringLiteral("plotTabsPanelButton"));
@@ -303,9 +302,6 @@ TabbedPlotWidget::TabbedPlotWidget(QString name, QWidget* parent) : QWidget(pare
   button_left_panel_ = make_panel_button(QT_TR_NOOP("Toggle left panel"));
   button_bottom_panel_ = make_panel_button(QT_TR_NOOP("Toggle bottom panel"));
   button_right_panel_ = make_panel_button(QT_TR_NOOP("Toggle right panel"));
-  outer_layout->addWidget(button_left_panel_, 0, Qt::AlignVCenter);
-  outer_layout->addWidget(button_bottom_panel_, 0, Qt::AlignVCenter);
-  outer_layout->addWidget(button_right_panel_, 0, Qt::AlignVCenter);
 
   root_layout->addWidget(tabs_bar_widget);
 
