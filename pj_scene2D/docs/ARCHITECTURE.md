@@ -276,9 +276,17 @@ Live cancellation today:
 - `DepthPipelineSource` / `ScenePipelineSource`: synchronous on the caller
   thread; no token is used.
 
-A new streaming-video request flips the previous token. The decoder returns
-early and `StreamingVideoSource` deposits no partial result; §3.2's
-direction-aware partial-publish rule is design rationale only.
+A new streaming-video request flips the previous token **only when it is a
+scrub** (backward, or a forward jump past the 0.5 s threshold — the worker's
+`Options::preempt_predicate`, supplied by `StreamingVideoSource`). A
+contiguous-playback step lets the in-flight decode finish: a cancel wipes the
+decoder's forward-continuation state and forces a full GOP re-seek, so
+unconditional preemption under a 60 Hz tracker would cancel every decode
+before it delivers and playback collapses to zero frames (measured: the 4 K
+playback benchmark went 0 → ~26 fps displayed when the predicate landed).
+On a genuine scrub the decoder returns early and `StreamingVideoSource`
+deposits no partial result; §3.2's direction-aware partial-publish rule is
+design rationale only.
 
 ---
 
@@ -632,10 +640,11 @@ class StreamingVideoSource : public MediaSource {
 
 Internals:
 - `setTimestamp` forwards to the composed `AsyncFrameWorker` (§3.1), started
-  with cancellation enabled: a newer request (or teardown) cancels the
-  in-flight `CancelToken` so the worker abandons the stale target (notably a
-  slow 4K GOP decode) and picks up the latest request;
-  `decodeAt`/`decodeRange` poll the token to preempt.
+  with cancellation enabled and a scrub-only preempt predicate: a newer
+  request cancels the in-flight `CancelToken` only on a backward / large-
+  forward jump (teardown always cancels), so a slow 4K GOP decode is abandoned
+  for scrubs while contiguous-playback ticks let it finish and ride the
+  forward continuation; `decodeAt`/`decodeRange` poll the token to preempt.
 - The decode body (`decodeRequest`) publishes an instant thumbnail preview on
   scrubs, then calls `decoder_->decodeAt(ts, token)` and `deposit()`s the
   full-res result into the worker's mailbox.

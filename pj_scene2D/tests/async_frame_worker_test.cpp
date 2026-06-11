@@ -184,12 +184,73 @@ TEST(AsyncFrameWorkerTest, CancelTokenPreemptsInFlightDecode) {
           std::this_thread::sleep_for(std::chrono::milliseconds(1));
         }
       },
-      failOnError, AsyncFrameWorker::Options{.use_cancel_token = true});
+      failOnError, AsyncFrameWorker::Options{.use_cancel_token = true, .preempt_predicate = {}});
 
   worker.requestDecode(1);
   ASSERT_TRUE(waitFor([&] { return started.load() == 1; }));
   worker.requestDecode(2);  // preempts decode #1 via its token
   ASSERT_TRUE(waitFor([&] { return cancelled_observed.load() >= 1; }));
+}
+
+TEST(AsyncFrameWorkerTest, PreemptPredicateGatesCancellation) {
+  // Contiguous-playback contract: a small forward step must NOT cancel the
+  // in-flight decode (a cancel costs the source a full GOP re-seek — see
+  // Options::preempt_predicate), while a large jump must preempt it.
+  std::mutex seen_mutex;
+  std::vector<int64_t> seen;
+  std::atomic<int> cancels_observed{0};
+  std::atomic<bool> gate_open{false};
+
+  AsyncFrameWorker worker;
+  worker.start(
+      [&](const AsyncFrameWorker::Request& req, AsyncFrameWorker& w) {
+        {
+          std::lock_guard lock(seen_mutex);
+          seen.push_back(req.target_ns);
+        }
+        while (true) {
+          if (req.cancel->isCancelled()) {
+            cancels_observed.fetch_add(1);
+            return;
+          }
+          if (gate_open.load()) {
+            w.deposit(tinyFrame(req.target_ns));
+            return;
+          }
+          std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+      },
+      failOnError,
+      AsyncFrameWorker::Options{
+          .use_cancel_token = true,
+          .preempt_predicate = [](Timestamp in_flight, Timestamp incoming) { return incoming - in_flight > 100; }});
+
+  worker.requestDecode(1000);
+  ASSERT_TRUE(waitFor([&] {
+    std::lock_guard lock(seen_mutex);
+    return seen.size() == 1;
+  }));
+
+  worker.requestDecode(1001);  // contiguous step: must NOT preempt
+  std::this_thread::sleep_for(std::chrono::milliseconds(30));
+  EXPECT_EQ(cancels_observed.load(), 0);
+
+  worker.requestDecode(2000);  // large jump: must preempt the in-flight decode
+  ASSERT_TRUE(waitFor([&] { return cancels_observed.load() == 1; }));
+
+  // The worker then serves the latest coalesced target (2000; 1001 was
+  // overwritten and never dispatched).
+  gate_open.store(true);
+  std::optional<DecodedFrame> got;
+  ASSERT_TRUE(waitFor([&] {
+    got = worker.take();
+    return got.has_value();
+  }));
+  EXPECT_EQ(got->pts, 2000);
+  std::lock_guard lock(seen_mutex);
+  ASSERT_EQ(seen.size(), 2u);
+  EXPECT_EQ(seen[0], 1000);
+  EXPECT_EQ(seen[1], 2000);
 }
 
 TEST(AsyncFrameWorkerTest, ExceptionBarrierKeepsWorkerServing) {

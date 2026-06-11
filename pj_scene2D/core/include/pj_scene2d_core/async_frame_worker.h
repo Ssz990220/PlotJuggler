@@ -75,6 +75,17 @@ class AsyncFrameWorker {
     /// request (or teardown) arrives. Off for sources whose decodes are cheap
     /// enough that latest-wins coalescing alone bounds latency.
     bool use_cancel_token = false;
+    /// Decides whether a new target should cancel the in-flight decode (only
+    /// consulted with use_cancel_token; teardown always cancels). Null =
+    /// always preempt. A source whose cancelled decode is expensive to resume
+    /// (StreamingVideoSource: any cancel forces a full GOP re-seek) must
+    /// return false for contiguous-playback steps — when ticks arrive faster
+    /// than one decode completes, unconditional preemption cancels EVERY
+    /// decode before it can deliver and playback collapses to zero frames.
+    /// Return true only for genuine scrubs (backward, or a forward jump too
+    /// large to ride the codec forward). Called from requestDecode() with the
+    /// request mutex held — keep it trivial and non-blocking.
+    std::function<bool(Timestamp in_flight_target, Timestamp new_target)> preempt_predicate;
   };
 
   /// Inert until start(). Members are placed so a default-constructed,
@@ -102,7 +113,8 @@ class AsyncFrameWorker {
   void stop();
 
   /// Post a decode target (latest-wins). Equal consecutive targets are
-  /// deduplicated; cancellation (when enabled) preempts the in-flight decode.
+  /// deduplicated; cancellation (when enabled and the preempt predicate
+  /// agrees) preempts the in-flight decode.
   void requestDecode(Timestamp ts_ns);
 
   /// Make the next dispatch carry force_redecode = true and drop the
@@ -137,9 +149,11 @@ class AsyncFrameWorker {
   Timestamp last_requested_ts_ = INT64_MIN;  // main-thread-only equal-target dedup
   bool has_request_ = false;
   bool force_redecode_ = false;
-  // In-flight decode token (only with Options::use_cancel_token). Guarded by
-  // request_mutex_; the worker installs a fresh token per dispatch.
+  // In-flight decode token and its dispatch target (only with
+  // Options::use_cancel_token). Guarded by request_mutex_; the worker installs
+  // a fresh token + target per dispatch. The target feeds preempt_predicate.
   CancelTokenPtr cancel_token_;
+  Timestamp in_flight_ts_ = INT64_MIN;
   // Atomic for the worker's unlocked outer-loop check; stop() still flips it
   // UNDER request_mutex_ so the flip can't slip between the wait predicate and
   // the block (the lost-wakeup hazard described in the class comment).

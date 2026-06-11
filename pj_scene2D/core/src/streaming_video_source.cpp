@@ -18,8 +18,15 @@ namespace PJ {
 
 namespace {
 // A scrub (vs contiguous playback) is a backward jump or a forward jump larger
-// than this; only then do we publish an instant thumbnail preview.
+// than this; only a scrub publishes an instant thumbnail preview and only a
+// scrub preempts the in-flight decode (see isScrub below).
 constexpr int64_t kScrubPreviewThresholdNs = 500'000'000;  // 0.5 s
+
+// Scrub test shared by the preview and the preempt predicate. `reference` is
+// the in-flight/last-decoded position, `target` the newly requested one.
+bool isScrub(int64_t reference, int64_t target) {
+  return reference == INT64_MIN || target < reference || (target - reference) > kScrubPreviewThresholdNs;
+}
 }  // namespace
 
 StreamingVideoSource::StreamingVideoSource(ObjectStore* store, ObjectTopicId topic)
@@ -70,7 +77,17 @@ void StreamingVideoSource::startWorker() {
           fprintf(stderr, "[StreamingVideoSource] decode threw: %s\n", what);
         }
       },
-      AsyncFrameWorker::Options{.use_cancel_token = true});
+      AsyncFrameWorker::Options{
+          .use_cancel_token = true,
+          // Preempt ONLY on scrubs. A cancelled decode wipes the decoder's
+          // forward-continuation state (StreamingVideoDecoder::serveForward
+          // on_cancelled), so the next request pays a full GOP re-seek; if
+          // contiguous playback ticks (one frame forward, ~16ms at 60 Hz)
+          // preempted too, every decode would be cancelled before delivering
+          // and playback would drop to zero frames. Letting the in-flight
+          // decode finish costs at most one frame of latency — the pending
+          // target is still latest-wins coalesced.
+          .preempt_predicate = [](Timestamp in_flight, Timestamp incoming) { return isScrub(in_flight, incoming); }});
 }
 
 void StreamingVideoSource::setTimestamp(int64_t ts_ns) {
@@ -101,13 +118,9 @@ void StreamingVideoSource::decodeRequest(const AsyncFrameWorker::Request& reques
   // Instant scrub preview: on a backward seek or a large forward jump, publish
   // the nearest thumbnail right away so the drag has feedback while the (slow,
   // 4K) GOP decode runs. The full-res frame replaces it below when ready.
-  if (thumbnail_cache_) {
-    const bool is_scrub =
-        last_decoded_ts_ == INT64_MIN || ts < last_decoded_ts_ || (ts - last_decoded_ts_) > kScrubPreviewThresholdNs;
-    if (is_scrub) {
-      if (auto preview = thumbnail_cache_->lookup(ts); preview.has_value()) {
-        worker.deposit(std::move(*preview));
-      }
+  if (thumbnail_cache_ && isScrub(last_decoded_ts_, ts)) {
+    if (auto preview = thumbnail_cache_->lookup(ts); preview.has_value()) {
+      worker.deposit(std::move(*preview));
     }
   }
 

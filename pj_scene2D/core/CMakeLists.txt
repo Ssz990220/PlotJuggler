@@ -229,6 +229,15 @@ if(PJ_BUILD_TESTS)
       RUN_IN_SOURCE_DIR
     )
 
+    # Playback-fluidity benchmark (skips unless PJ_BENCH_MP4 points at a file)
+    pj_scene2d_add_core_test(video_playback_bench_test
+      SOURCES ../tests/video_playback_bench_test.cpp
+      LIBS
+        pj_scene2d_core pj_datastore
+        ${PJ_SCENE2D_FFMPEG_TARGETS}
+        GTest::gtest_main
+    )
+
     if(WIN32 AND PJ_SCENE2D_FFMPEG_BIN_DIRS)
       # Windows is a non-blocking portability tracker (PJ4 v1 is Linux-only). Any
       # exe that transitively links pj_scene2d_core (the FFmpeg tests AND pj_app)

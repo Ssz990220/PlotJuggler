@@ -54,8 +54,10 @@ void AsyncFrameWorker::requestDecode(Timestamp ts_ns) {
     std::lock_guard lock(request_mutex_);
     requested_ts_ = ts_ns;
     has_request_ = true;
-    // Preempt the worker's in-flight decode so it abandons the stale target.
-    if (cancel_token_) {
+    // Preempt the worker's in-flight decode so it abandons the stale target —
+    // but only when the source's predicate agrees (a contiguous-playback step
+    // must let the decode finish: see Options::preempt_predicate).
+    if (cancel_token_ && (!options_.preempt_predicate || options_.preempt_predicate(in_flight_ts_, ts_ns))) {
       cancel_token_->cancel();
     }
   }
@@ -118,8 +120,10 @@ void AsyncFrameWorker::workerLoop() {
       has_request_ = false;
       force_redecode_ = false;
       if (options_.use_cancel_token) {
-        // Fresh token for this decode; a later requestDecode() cancels it.
+        // Fresh token for this decode; a later requestDecode() cancels it if
+        // the preempt predicate (fed the dispatch target) says so.
         cancel_token_ = makeCancelToken();
+        in_flight_ts_ = request.target_ns;
         request.cancel = cancel_token_;
       }
     }
