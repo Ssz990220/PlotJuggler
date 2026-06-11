@@ -170,6 +170,7 @@
     <file alias="tree.svg">svg/tree.svg</file>
     <file alias="tune.svg">svg/tune.svg</file>
     <file alias="upload_file.svg">svg/upload_file.svg</file>
+    <file alias="video.svg">svg/video.svg</file>
     <file alias="view_list.svg">svg/view_list.svg</file>
     <file alias="visibility.svg">svg/visibility.svg</file>
     <file alias="visibility_off.svg">svg/visibility_off.svg</file>
