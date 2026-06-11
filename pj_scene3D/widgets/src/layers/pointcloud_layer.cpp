@@ -16,21 +16,25 @@
 #include <QStackedWidget>
 #include <QVBoxLayout>
 #include <QWidget>
+#include <QtConcurrent>
 #include <algorithm>
 #include <bit>
 #include <cmath>
-#include <cstring>
 #include <glm/glm.hpp>
 #include <limits>
 #include <memory>
 #include <string_view>
+#include <utility>
 
+#include "pj_base/builtin/builtin_object.hpp"
+#include "pj_base/builtin/compressed_point_cloud.hpp"
 #include "pj_base/builtin/point_cloud.hpp"
 #include "pj_plugins/sdk/message_parser_plugin_base.hpp"
 #include "pj_runtime/SessionManager.h"
 #include "pj_runtime/Time.h"                // PJ::fromRaw, PJ::toRaw
 #include "pj_scene3d_core/camera/camera.h"  // AABB, expandAABB
 #include "pj_scene3d_core/pointcloud.h"
+#include "pj_scene3d_core/pointcloud_codecs.h"
 #include "pj_scene3d_widgets/parse_locked.h"
 #include "pj_widgets/ColorPickerPopup.h"
 #include "pj_widgets/DoubleScrubber.h"
@@ -41,6 +45,8 @@ namespace {
 Q_LOGGING_CATEGORY(lcPointCloudLayer, "pj.scene3d.layer.pointcloud")
 
 using PJ::Span;
+using PJ::sdk::BuiltinObjectType;
+using PJ::sdk::CompressedPointCloud;
 using PJ::sdk::PayloadView;
 using PJ::sdk::PointCloud;
 using PJ::sdk::PointField;
@@ -214,8 +220,9 @@ class SolidColorSwatch : public QPushButton {
 
 }  // namespace
 
-PointCloudLayer::PointCloudLayer(PJ::ObjectTopicId topic_id, QString display_name, QObject* parent)
-    : Scene3DLayer(parent), topic_id_(topic_id), display_name_(std::move(display_name)) {
+PointCloudLayer::PointCloudLayer(
+    PJ::ObjectTopicId topic_id, QString display_name, BuiltinObjectType object_type, QObject* parent)
+    : Scene3DLayer(parent), topic_id_(topic_id), display_name_(std::move(display_name)), object_type_(object_type) {
   // Push layer defaults to the pass at construction so the first paint
   // already reflects them (layer defaults are the design-spec values, not
   // the pass's "minimum visual change" defaults).
@@ -233,7 +240,7 @@ PointCloudLayer::~PointCloudLayer() = default;
 PJ::SceneLayerInfo PointCloudLayer::info() const {
   return PJ::SceneLayerInfo{
       .topic_id = topic_id_,
-      .object_type = PJ::sdk::BuiltinObjectType::kPointCloud,
+      .object_type = object_type_,
       .display_name = display_name_,
       .family_name = QStringLiteral("PointCloud"),
       .visible = visible_,
@@ -392,6 +399,23 @@ bool PointCloudLayer::attach(const PJ::SceneLayerContext& ctx) {
 }
 
 void PointCloudLayer::detach() {
+  if (decode_watcher_ != nullptr) {
+    decode_watcher_->disconnect(this);  // a late result must not touch a detached layer
+    decode_watcher_->cancel();
+    // Drop the watcher entirely: ensureDecodeWorker() only wires the finished signal
+    // when it creates one, so a kept-but-disconnected watcher would leave a
+    // re-attached layer decoding into the void.
+    decode_watcher_->deleteLater();
+    decode_watcher_ = nullptr;
+  }
+  pending_.reset();
+  decoded_cache_.reset();
+  decoded_cache_id_ = {};
+  inflight_ = {};
+  wanted_ = {};
+  failed_id_ = {};
+  last_pushed_id_ = {};
+  last_pushed_color_field_.clear();
   parser_ = nullptr;
   parser_mutex_.reset();
   ctx_ = {};
@@ -852,61 +876,62 @@ bool PointCloudLayer::bootstrap() {
     qCWarning(lcPointCloudLayer) << "bootstrap parseObject failed:" << QString::fromStdString(obj.error());
     return false;
   }
+  // Compressed topic (Draco / Cloudini): the wrapper gives frame_id without a
+  // decode, but the field list needs one. Decode the first sample asynchronously so
+  // attach never blocks the UI — fields populate when the result lands.
+  if (const auto* cpc = std::any_cast<CompressedPointCloud>(&obj->object)) {
+    requestDecode(*cpc, SampleId{first->timestamp, first->payload.bytes.size()});
+    return true;
+  }
+
   const auto* sdk_cloud = std::any_cast<PointCloud>(&obj->object);
   if (sdk_cloud == nullptr) {
     return false;
   }
-  if (sdk_cloud->frame_id != source_frame_) {
-    source_frame_ = sdk_cloud->frame_id;
-    emit sourceFrameChanged(QString::fromStdString(source_frame_));
-  }
+  updateSourceFrame(sdk_cloud->frame_id);
+  populateColorFields(*sdk_cloud);
+  return true;
+}
 
+void PointCloudLayer::populateColorFields(const PointCloud& cloud) {
   available_color_fields_.clear();
-  for (const auto& f : sdk_cloud->fields) {
+  for (const auto& f : cloud.fields) {
     if (f.name == "timestamp") {
       continue;
     }
     available_color_fields_.append(QString::fromStdString(f.name));
   }
-  color_field_ = defaultColorField(available_color_fields_).toStdString();
+  // Preserve an already-chosen field (e.g. one restored by xmlLoadState before the
+  // async first decode landed) when it's still present; only fall back to the default
+  // when the current selection is empty or no longer valid.
+  if (color_field_.empty() || !available_color_fields_.contains(QString::fromStdString(color_field_))) {
+    color_field_ = defaultColorField(available_color_fields_).toStdString();
+  }
   emit colorFieldsChanged(available_color_fields_);
   if (!color_field_.empty()) {
     emit currentColorFieldChanged(QString::fromStdString(color_field_));
   }
-  if (!source_frame_.empty()) {
-    emit fallbackFramesChanged(fallbackFrames());
-  }
-  return true;
 }
 
-void PointCloudLayer::renderAt(int64_t time_ns) {
-  if (ctx_.session == nullptr || parser_ == nullptr) {
+void PointCloudLayer::updateSourceFrame(const std::string& frame_id) {
+  // frame_id can change across samples (e.g. a recording bridging a config reload);
+  // keep the dock's orphan check and the fallback-frames list current.
+  if (frame_id == source_frame_) {
     return;
   }
-  PJ::ObjectStore& store = ctx_.session->objectStore();
-  auto resolved = store.latestAt(topic_id_, time_ns);
-  if (!resolved.has_value() || resolved->payload.bytes.empty()) {
-    return;
+  source_frame_ = frame_id;
+  emit sourceFrameChanged(QString::fromStdString(source_frame_));
+  emit fallbackFramesChanged(fallbackFrames());
+}
+
+void PointCloudLayer::pushCloud(const PointCloud& cloud, SampleId id) {
+  updateSourceFrame(cloud.frame_id);
+  if (available_color_fields_.isEmpty() && !cloud.fields.empty()) {
+    // Self-heal after a failed bootstrap (topic attached before its first sample):
+    // the first cloud that reaches the GPU also reveals the field set.
+    populateColorFields(cloud);
   }
-  auto obj = parseLocked(parser_, parser_mutex_, resolved->timestamp, resolved->payload);
-  if (!obj.has_value()) {
-    qCWarning(lcPointCloudLayer) << "renderAt parseObject failed:" << QString::fromStdString(obj.error());
-    return;
-  }
-  const auto* sdk_cloud = std::any_cast<PointCloud>(&obj->object);
-  if (sdk_cloud == nullptr) {
-    return;
-  }
-  // A topic's frame_id can change across samples (rare in practice, but
-  // common when a recording bridges across config reloads). Track it so
-  // the dock's orphan check stays accurate and the fallback-frames list
-  // sees the new frame even between bootstrap calls.
-  if (sdk_cloud->frame_id != source_frame_) {
-    source_frame_ = sdk_cloud->frame_id;
-    emit sourceFrameChanged(QString::fromStdString(source_frame_));
-    emit fallbackFramesChanged(fallbackFrames());
-  }
-  auto decoded = convertCanonical(*sdk_cloud, color_field_);
+  auto decoded = convertCanonical(cloud, color_field_);
 
   // Cache the source-frame bounds (TF is applied per-render in the shader, so the
   // decoded positions are in the cloud's own frame). Skip non-finite points.
@@ -929,7 +954,146 @@ void PointCloudLayer::renderAt(int64_t time_ns) {
   }
 
   cloud_pass_.setActiveCloud(std::make_shared<DecodedPointCloud>(std::move(decoded)));
+  last_pushed_id_ = id;
+  last_pushed_color_field_ = color_field_;
   emit repaintRequested();
+}
+
+void PointCloudLayer::renderAt(int64_t time_ns) {
+  if (ctx_.session == nullptr || parser_ == nullptr) {
+    return;
+  }
+  PJ::ObjectStore& store = ctx_.session->objectStore();
+  auto resolved = store.latestAt(topic_id_, time_ns);
+  if (!resolved.has_value() || resolved->payload.bytes.empty()) {
+    return;
+  }
+  // The tracker ticks at ~60 Hz but a topic publishes far slower, so the common case
+  // is "same sample, same color field" — skip the whole parse/convert/upload then.
+  // range_dirty_ only matters when auto-range will actually recompute in pushCloud.
+  const SampleId id{resolved->timestamp, resolved->payload.bytes.size()};
+  if (id == last_pushed_id_ && color_field_ == last_pushed_color_field_ && !(auto_range_ && range_dirty_)) {
+    return;
+  }
+  // Compressed sample already decoded? Re-convert from cache so repaints /
+  // color-field changes don't re-run the codec (or even the wrapper parse).
+  if (decoded_cache_ && decoded_cache_id_ == id) {
+    wanted_ = id;
+    pushCloud(*decoded_cache_, id);
+    return;
+  }
+  if (id == failed_id_) {
+    return;  // known-undecodable sample (bytes are immutable); don't retry at tracker rate
+  }
+  auto obj = parseLocked(parser_, parser_mutex_, resolved->timestamp, resolved->payload);
+  if (!obj.has_value()) {
+    qCWarning(lcPointCloudLayer) << "renderAt parseObject failed:" << QString::fromStdString(obj.error());
+    return;
+  }
+
+  // The mode is derived per-sample rather than latched at bootstrap, so a topic
+  // whose first sample arrives only after attach (failed bootstrap) still renders.
+  if (const auto* cpc = std::any_cast<CompressedPointCloud>(&obj->object)) {
+    requestDecode(*cpc, id);  // off the UI thread; pushes when ready
+    return;
+  }
+
+  const auto* sdk_cloud = std::any_cast<PointCloud>(&obj->object);
+  if (sdk_cloud == nullptr) {
+    return;
+  }
+  pushCloud(*sdk_cloud, id);
+}
+
+void PointCloudLayer::ensureDecodeWorker() {
+  if (decode_watcher_ == nullptr) {
+    decode_watcher_ = new QFutureWatcher<DecodeResult>(this);
+    connect(decode_watcher_, &QFutureWatcher<DecodeResult>::finished, this, &PointCloudLayer::onDecodeFinished);
+  }
+}
+
+void PointCloudLayer::requestDecode(const CompressedPointCloud& cloud, SampleId id) {
+  updateSourceFrame(cloud.frame_id);
+  wanted_ = id;  // a late decode of any other sample must not be painted
+  ensureDecodeWorker();
+  if (inflight_ == id) {
+    pending_.reset();  // the running decode is wanted again; drop any superseded sample
+    return;
+  }
+  // Gate on inflight_, NOT QFutureWatcher::isRunning(): a future can be finished with
+  // its finished() event still queued, and setFuture() in that window would silently
+  // drop the event (and the decoded result with it). inflight_ is reset only once
+  // onDecodeFinished() actually ran, so the pending queue catches that window too.
+  if (inflight_ != SampleId{}) {
+    pending_ = PendingDecode{cloud, id};  // the shared anchor keeps the blob alive
+    return;
+  }
+  startDecode(cloud, id);
+}
+
+void PointCloudLayer::startDecode(const CompressedPointCloud& cloud, SampleId id) {
+  inflight_ = id;
+  // Capture the wrapper by value — its BufferAnchor keeps the compressed bytes alive on
+  // the worker. This requires the anchored bytes to be IMMUTABLE, not merely alive:
+  // every in-tree producer either deep-copies (canonical codec) or anchors a const
+  // ObjectStore buffer, but a zero-copy parser reusing a scratch buffer would race the
+  // worker. The task touches no layer state (decodeCompressedPointCloud is a pure core
+  // function), so it stays safe even if the layer is destroyed mid-decode.
+  CompressedPointCloud snapshot = cloud;
+  decode_watcher_->setFuture(QtConcurrent::run([snapshot = std::move(snapshot), id]() -> DecodeResult {
+    DecodeResult result;
+    result.id = id;
+    auto decoded = decodeCompressedPointCloud(snapshot);
+    if (decoded.has_value()) {
+      result.cloud = std::make_shared<PointCloud>(std::move(decoded.value()));
+    } else {
+      result.error = QString::fromStdString(decoded.error());
+    }
+    return result;
+  }));
+}
+
+void PointCloudLayer::onDecodeFinished() {
+  const DecodeResult result = decode_watcher_->result();
+  inflight_ = {};
+  // Render this result only if it's still the sample the tracker wants. If the user
+  // scrubbed away while it decoded — even back onto a cached frame — it's stale: cache
+  // it (cheap, useful on scrub-back) but don't paint it over the live frame.
+  const bool is_current = result.id == wanted_;
+
+  if (result.cloud) {
+    decoded_cache_ = result.cloud;
+    decoded_cache_id_ = result.id;
+    if (available_color_fields_.isEmpty()) {
+      populateColorFields(*result.cloud);  // first successful decode reveals the field set
+    }
+    if (is_current) {
+      pushCloud(*result.cloud, result.id);
+    }
+  } else {
+    failed_id_ = result.id;  // memoize: renderAt won't re-request a sample that can never decode
+    if (is_current) {
+      qCWarning(lcPointCloudLayer) << "compressed point cloud decode failed:" << result.error;
+      // Match the raw path's malformed-cloud behavior (empty convertCanonical):
+      // clear the view rather than leaving the previous sample's points painted
+      // at the wrong tracker time.
+      cloud_pass_.setActiveCloud(std::make_shared<DecodedPointCloud>());
+      world_bounds_.reset();
+      last_pushed_id_ = {};
+      last_pushed_color_field_.clear();
+      emit repaintRequested();
+    }
+  }
+
+  // Drain the latest-wins queue — but only if the queued sample is still the one
+  // the tracker wants; decoding a stale one would evict the wanted cache entry.
+  if (pending_.has_value()) {
+    const PendingDecode next = std::move(*pending_);
+    pending_.reset();
+    if (next.id == wanted_ && next.id != failed_id_) {
+      startDecode(next.cloud, next.id);
+    }
+  }
 }
 
 void PointCloudLayer::refreshNow() {

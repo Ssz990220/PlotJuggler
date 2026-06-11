@@ -106,15 +106,19 @@ int cameraModelFromString(const QString& name) {
 Scene3DDockWidget::Scene3DDockWidget(QWidget* parent) : SceneDockWidget(parent) {
   setWindowTitle(tr("3D View"));
 
-  layerFactory().registerType(
-      sdk::BuiltinObjectType::kPointCloud,
-      [this](ObjectTopicId topic_id, sdk::BuiltinObjectType /*object_type*/, const QString& display_name)
-          -> std::unique_ptr<ISceneLayer> {
-        prepareTransformBufferForTopic(topic_id);
-        auto layer = std::make_unique<PointCloudLayer>(topic_id, display_name, this);
-        wireScene3DLayer(layer.get());
-        return layer;
-      });
+  // One dual-mode layer renders both raw and compressed clouds: PointCloudLayer
+  // detects a CompressedPointCloud per-sample and decodes it (off the UI thread)
+  // into the same render path, so both object types share this factory.
+  auto pointcloud_factory = [this](
+                                ObjectTopicId topic_id, sdk::BuiltinObjectType object_type,
+                                const QString& display_name) -> std::unique_ptr<ISceneLayer> {
+    prepareTransformBufferForTopic(topic_id);
+    auto layer = std::make_unique<PointCloudLayer>(topic_id, display_name, object_type, this);
+    wireScene3DLayer(layer.get());
+    return layer;
+  };
+  layerFactory().registerType(sdk::BuiltinObjectType::kPointCloud, pointcloud_factory);
+  layerFactory().registerType(sdk::BuiltinObjectType::kCompressedPointCloud, pointcloud_factory);
   layerFactory().registerType(
       sdk::BuiltinObjectType::kOccupancyGrid,
       [this](ObjectTopicId topic_id, sdk::BuiltinObjectType /*object_type*/, const QString& display_name)
@@ -203,6 +207,7 @@ void Scene3DDockWidget::setTransformService(pj::scene3d::TransformService* servi
 
 bool Scene3DDockWidget::handlesObjectType(sdk::BuiltinObjectType object_type) {
   return object_type == sdk::BuiltinObjectType::kPointCloud ||
+         object_type == sdk::BuiltinObjectType::kCompressedPointCloud ||
          object_type == sdk::BuiltinObjectType::kFrameTransforms ||
          object_type == sdk::BuiltinObjectType::kOccupancyGrid || object_type == sdk::BuiltinObjectType::kSceneEntities;
 }
@@ -271,8 +276,9 @@ std::unique_ptr<SceneLayerContext> Scene3DDockWidget::makeContext() {
 }
 
 bool Scene3DDockWidget::acceptsObjectType(sdk::BuiltinObjectType object_type) const {
-  return object_type == sdk::BuiltinObjectType::kPointCloud || object_type == sdk::BuiltinObjectType::kOccupancyGrid ||
-         object_type == sdk::BuiltinObjectType::kSceneEntities;
+  // The factory registrations in the constructor are the single source of truth
+  // for which render-layer types this dock can host.
+  return layerFactory().supports(object_type);
 }
 
 bool Scene3DDockWidget::handleSceneConfigTopic(
@@ -329,6 +335,10 @@ void Scene3DDockWidget::updateSceneBounds() {
 
 void Scene3DDockWidget::refreshView() {
   if (view_ != nullptr) {
+    // Async layer pushes (compressed-cloud decodes) arrive here via
+    // repaintRequested, possibly with no tracker tick in sight (paused), so the
+    // camera's scene bounds must refresh too. O(layers), cheap.
+    updateSceneBounds();
     view_->update();
   }
 }

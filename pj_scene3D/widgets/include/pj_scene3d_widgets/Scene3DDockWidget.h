@@ -47,9 +47,9 @@ class Scene3DDockWidget : public SceneDockWidget {
   void setTransformService(pj::scene3d::TransformService* service);
 
   /// Single source of truth for the canonical object types the 3D scene family
-  /// handles: render layers (kPointCloud, kOccupancyGrid — see acceptsObjectType)
-  /// plus scene-wide config topics (kFrameTransforms via handleSceneConfigTopic).
-  /// Host-side drop routing reads this.
+  /// handles: render layers (kPointCloud, kCompressedPointCloud, kOccupancyGrid,
+  /// kSceneEntities — see acceptsObjectType) plus scene-wide config topics
+  /// (kFrameTransforms via handleSceneConfigTopic). Host-side drop routing reads this.
   [[nodiscard]] static bool handlesObjectType(sdk::BuiltinObjectType object_type);
 
   bool addTopic(ObjectTopicId topic_id, sdk::BuiltinObjectType object_type, const QString& title);

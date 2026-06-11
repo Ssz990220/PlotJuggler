@@ -22,6 +22,10 @@ ffmpeg/8.1
 # the rich-trace backend is self-contained and needs no system -dev packages,
 # keeping the build portable across machines and CI.
 backward-cpp/1.6
+# pj_scene3D decodes compressed point clouds (Draco + Cloudini canonical objects).
+# cloudini transitively pulls lz4 + zstd; draco point-cloud compression is on by default.
+draco/1.5.7
+cloudini/1.2.2
 
 [options]
 fmt/*:header_only=True

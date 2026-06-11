@@ -40,6 +40,7 @@ PJ4's 3D visualization module — the sibling family to `pj_scene2D`, focused on
 - Rigid bodies (TF + URDF meshes).
 - Gridmaps (textured planes in a source frame).
 - Pointclouds (`sensor_msgs/PointCloud2` and equivalents).
+- Compressed pointclouds (`foxglove_msgs/CompressedPointCloud` + `point_cloud_interfaces/CompressedPointCloud2`), formats **Draco** and **Cloudini** — decoded into a `PointCloud` and rendered identically (see §3a).
 - 3D markers / visualization primitives (arrows, boxes, spheres, cylinders, line strips, text).
 - Paths (`nav_msgs/Path`, `PosesInFrame`).
 - Laserscans (`sensor_msgs/LaserScan`).
@@ -49,6 +50,36 @@ PJ4's 3D visualization module — the sibling family to `pj_scene2D`, focused on
 - **Pointclouds** (`sensor_msgs/PointCloud2`).
 
 Image+Pinhole (camera frustum + textured near-plane) from the original `PJ4_PLAN.md` §5.5 list is dropped from v1.
+
+### 3a. Compressed point clouds (Draco / Cloudini)
+
+A `CompressedPointCloud` canonical object carries `{timestamp, frame_id, format, data}` where
+`data` is a self-describing codec blob. `pj_scene3D` decodes it into a `PointCloud` and renders it
+through the **same** `PointCloudLayer` and `convertCanonical()` path as a raw cloud — one dual-mode
+layer, no separate widget.
+
+- **Formats:** `cloudini` (header-embedded schema; via `cloudini/1.2.2`) and `draco`
+  (`draco/1.5.7`). Plain `zstd_point_cloud_transport` is **out of scope** — its blob is not
+  self-describing (it relies on layout fields the canonical object does not carry).
+- **Wire sources:** the ROS parser emits the canonical object for both
+  `foxglove_msgs/CompressedPointCloud` (Foxglove ROS2 schema; its `pose` is read but dropped — clouds
+  are placed via TF on `frame_id`) and `point_cloud_interfaces/CompressedPointCloud2`
+  (ros-perception/point_cloud_transport). The parser only repackages bytes; it never decodes.
+- **Decode location:** `core/pointcloud_codecs.cpp` (`decodeCompressedPointCloud`), `draco` + `cloudini`
+  linked PRIVATE to `pj_scene3d_core` — mirrors `pj_scene2d_core` decoding JPEG/PNG.
+- **Off the UI thread:** decode is CPU-heavy (Draco ≈100 ms for ~1M points), so it runs on the Qt
+  thread pool (`QtConcurrent` + `QFutureWatcher`) with latest-wins coalescing; the decoded cloud is
+  cached per sample — identity is (store timestamp, payload byte size) — so repaints and color-field
+  changes don't re-decode, and a tracker tick that resolves to the already-pushed sample skips the
+  re-conversion/upload entirely. A sample whose decode fails clears the view (matching the raw
+  path's malformed-cloud behavior) and is never retried. Fast scrubbing of very large clouds may
+  show transient lag (the in-flight sample lands a frame late); async decode + the per-sample cache
+  keep the UI responsive.
+- **Field fidelity:** Cloudini `INT64`/`UINT64` fields (no PJ datatype) are dropped (their bytes
+  still occupy `point_step`, so surviving fields keep their offsets). Draco field names are
+  recovered from Draco attribute metadata when present (Foxglove / draco_point_cloud_transport store
+  the original name, e.g. `intensity`/`ring`), else inferred from attribute type (POSITION→x/y/z,
+  COLOR→red/green/blue/alpha, NORMAL→nx/ny/nz, else `generic_N`).
 
 ## 4. Scene composition model
 

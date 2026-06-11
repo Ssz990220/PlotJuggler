@@ -1,7 +1,7 @@
 set(CMAKE_AUTOMOC ON)
 
 find_package(OpenGL REQUIRED)
-find_package(Qt6 REQUIRED COMPONENTS Xml)
+find_package(Qt6 REQUIRED COMPONENTS Xml Concurrent)
 
 set(PJ_SCENE3D_WIDGETS_SOURCES
   src/gl/buffer.cpp
@@ -45,5 +45,5 @@ target_compile_options(pj_scene3d_widgets PRIVATE
 )
 target_link_libraries(pj_scene3d_widgets
   PUBLIC pj_scene3d_core pj_scene_common pj_runtime pj_plugin_runtime_catalog pj_widgets Qt6::Widgets Qt6::OpenGLWidgets Qt6::Xml OpenGL::GL
-  PRIVATE pj_internal_fmt
+  PRIVATE pj_internal_fmt Qt6::Concurrent
 )

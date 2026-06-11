@@ -16,6 +16,22 @@ see pj-official-plugins#122) decode ROS / CDR messages into canonical
 *consumes* those canonical objects and renders them. The core therefore stays
 "canonical-objects-in, render-structs-out", with **no `nanocdr` / CDR dependency**.
 
+**One carve-out — compressed point clouds.** A `CompressedPointCloud` is *already* a
+canonical object, but its payload is a self-describing codec blob (Draco / Cloudini).
+Turning it into a canonical `PointCloud` is canonical→canonical *transcoding*, not
+transport/CDR parsing, so it lives here: `core/pointcloud_codecs.{h,cpp}`
+(`decodeCompressedPointCloud()`), with `draco` + `cloudini` linked **PRIVATE** into
+`pj_scene3d_core` — the same shape as `pj_scene2d_core` decoding JPEG/PNG. The decode is
+CPU-heavy, so `PointCloudLayer` runs it on the Qt thread pool (`QtConcurrent` +
+`QFutureWatcher`, latest-wins coalescing) and never blocks the UI; the decoded
+`PointCloud` then flows through the **same** `convertCanonical()` path as a raw cloud.
+Notes: Cloudini `INT64`/`UINT64` fields have no PJ datatype and are dropped; Draco field
+names are recovered from Draco attribute metadata when present (Foxglove /
+`draco_point_cloud_transport` store the original name there), else inferred from the
+attribute type; plain `zstd_point_cloud_transport` is out of scope (its blob isn't
+self-describing). This is the *only* codec in the module — the no-`nanocdr`/CDR rule
+still holds for everything else.
+
 ## Layout
 
 - `core/` — pure geometry/scene logic, **no Qt or GL**. The TF buffer + frame
@@ -24,7 +40,9 @@ see pj-official-plugins#122) decode ROS / CDR messages into canonical
   patches), and the `DecodedPointCloud` render struct. Links only `glm`,
   `pj_base`, `nlohmann_json`. Key headers:
   `core/include/pj_scene3d_core/{tf/tf_buffer.h, tf/transform.h,
-  occupancy_grid_reconstructor.h, pointcloud.h}`.
+  occupancy_grid_reconstructor.h, pointcloud.h, pointcloud_codecs.h}`. The codec
+  decoders add a PRIVATE `draco` + `cloudini` link (compressed-cloud transcoding only —
+  see "Decoding boundary"); the public API stays `glm` / `pj_base` / `nlohmann_json`.
 - `widgets/` — Qt viewer (`SceneViewWidget`, a `QOpenGLWidget` embedded as a
   direct child of `Scene3DDockWidget`), render passes, layers, and
   `Scene3DDockWidget` (an `IDataWidget`). A right-click on the view delivers a
@@ -47,7 +65,7 @@ see pj-official-plugins#122) decode ROS / CDR messages into canonical
 
 Before any commit, run the tests and check that they all pass
 (`tf_buffer_test`, `tf_buffer_hierarchy_test`, `occupancy_grid_reconstructor_test`,
-`scene_entities_decode_test`).
+`scene_entities_decode_test`, `pointcloud_codecs_test`).
 
 Make sure that all the markdown files in this folder are updated, if necessary.
 

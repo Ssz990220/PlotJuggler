@@ -79,15 +79,17 @@ QString pluginConfigKey(const std::string& plugin_id) {
 
 // Default ingest policies the app applies to every DataSourceRuntimeHost it
 // builds: scalars eager, objects lazy (decoded on pull), point clouds and
-// video frames always pure-lazy. Both carry the heaviest payloads, and for
-// file-backed video each entry's bitstream must stay NON-resident: pure-lazy
-// re-invokes the producer's fetcher on every read (it reads one access unit
-// from the file on demand) instead of fetching+pinning the bytes at ingest,
-// so a whole video never lands on the heap. Hoisted here so the pre-dialog
-// scratch session and the per-fanout loop iterations stay in lockstep.
+// video frames always pure-lazy. Both carry the heaviest payloads; for a
+// CompressedPointCloud this defers the Draco/Cloudini transcode to the render
+// path, and for file-backed video it keeps each entry's bitstream NON-resident
+// by re-invoking the producer's fetcher on every read instead of pinning the
+// bytes at ingest. Hoisted here so the pre-dialog scratch session and the
+// per-fanout loop iterations stay in lockstep.
 void applyDefaultIngestPolicies(DataSourceRuntimeHost& session) {
   session.policyResolver().setDefault(PJ::sdk::ObjectIngestPolicy::kLazyObjectsEagerScalars);
   session.policyResolver().setForType(PJ::sdk::BuiltinObjectType::kPointCloud, PJ::sdk::ObjectIngestPolicy::kPureLazy);
+  session.policyResolver().setForType(
+      PJ::sdk::BuiltinObjectType::kCompressedPointCloud, PJ::sdk::ObjectIngestPolicy::kPureLazy);
   // SceneEntities (markers) and ImageAnnotations carry no scalar fields — an
   // eager-scalar parse would fail, so keep them pure-lazy like point clouds.
   session.policyResolver().setForType(

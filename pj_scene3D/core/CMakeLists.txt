@@ -4,11 +4,17 @@
 
 find_package(glm REQUIRED)
 find_package(nlohmann_json REQUIRED)
+# Compressed-point-cloud decoders (Draco + Cloudini). Linked PRIVATE: the codecs are
+# an implementation detail of pj_scene3d_core, mirroring how pj_scene2d_core links
+# libjpeg-turbo / libpng PRIVATE for image decode.
+find_package(draco REQUIRED)
+find_package(cloudini REQUIRED)
 
 add_library(pj_scene3d_core STATIC
   src/camera/camera.cpp
   src/camera/camera_math.cpp
   src/occupancy_grid_reconstructor.cpp
+  src/pointcloud_codecs.cpp
   src/scene_entities_decode.cpp
   src/tf/tf_buffer.cpp
   src/version.cpp
@@ -20,6 +26,7 @@ target_compile_options(pj_scene3d_core PRIVATE
 )
 target_link_libraries(pj_scene3d_core
   PUBLIC glm::glm pj_base nlohmann_json::nlohmann_json
+  PRIVATE draco::draco cloudini::cloudini
 )
 
 if(PJ_BUILD_TESTS)
@@ -40,4 +47,12 @@ if(PJ_BUILD_TESTS)
     target_compile_options(${test_name} PRIVATE ${PJ_WARNING_FLAGS} ${PJ_SANITIZER_FLAGS})
     add_test(NAME ${test_name} COMMAND ${test_name})
   endforeach()
+
+  # pointcloud_codecs_test drives the Draco + Cloudini *encoders* directly to build
+  # fixtures, so it links them explicitly (pj_scene3d_core links them PRIVATE).
+  add_executable(pointcloud_codecs_test ../tests/pointcloud_codecs_test.cpp)
+  target_link_libraries(pointcloud_codecs_test PRIVATE
+    pj_scene3d_core draco::draco cloudini::cloudini GTest::gtest_main)
+  target_compile_options(pointcloud_codecs_test PRIVATE ${PJ_WARNING_FLAGS} ${PJ_SANITIZER_FLAGS})
+  add_test(NAME pointcloud_codecs_test COMMAND pointcloud_codecs_test)
 endif()

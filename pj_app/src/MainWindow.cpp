@@ -438,8 +438,9 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
             MessageBox::warning(
                 this, tr("Cannot display topic"),
                 tr("This object topic cannot be displayed in a 3D view (object_type=%1). "
-                   "The 3D view requires a registered parser that emits a canonical "
-                   "PointCloud or FrameTransforms object.")
+                   "The 3D view requires a registered parser that emits one of its supported "
+                   "canonical objects (PointCloud, CompressedPointCloud, OccupancyGrid, "
+                   "SceneEntities, or FrameTransforms).")
                     .arg(static_cast<int>(seed->object_type)));
             return nullptr;
           }
