@@ -3250,12 +3250,31 @@ void MainWindow::launchToolbox(const QString& plugin_id) {
     report_error(source, tr("Toolbox '%1' returned no dialog").arg(source));
     return;
   }
-  auto* engine = new PanelEngine(DialogHandle::fromBorrowed(borrowed), {}, this);
+  // The curve tree drags opaque catalog keys ("dataset:N/topic:M/column:K"); the
+  // toolbox expects human field names ("topic/field"). CatalogModel owns that
+  // mapping, so resolve dropped keys to names before they reach onItemsDropped.
+  PanelEngineConfig panel_config;
+  panel_config.catalog_key_resolver = [this](const std::string& key) -> std::string {
+    auto descriptor = session_->catalogModel().curveDescriptor(QString::fromStdString(key));
+    if (!descriptor) {
+      return {};
+    }
+    return (descriptor->topic_name + "/" + descriptor->field_name).toStdString();
+  };
+  auto* engine = new PanelEngine(DialogHandle::fromBorrowed(borrowed), panel_config, this);
   QWidget* panel = engine->openPanel();
   if (panel == nullptr) {
     report_error(source, tr("Failed to build the panel UI for '%1'").arg(source));
     delete engine;
     return;
+  }
+
+  // QLineEdit (and friends) accept drops by default, so a drop landing on a field
+  // gets delivered there and never bubbles to the panel-root DropEventFilter.
+  // Clear acceptDrops on every descendant so any drop inside the panel reaches
+  // the root filter, which maps it to the declared drop target.
+  for (QWidget* child : panel->findChildren<QWidget*>()) {
+    child->setAcceptDrops(false);
   }
 
   // 5. Close -> restore + teardown. The captured session keeps the services +
