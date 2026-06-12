@@ -36,11 +36,7 @@ SceneLayerInfo Scene2DLayer::info() const {
 }
 
 PJ::Range<PJ::Timepoint> Scene2DLayer::timeRange() const {
-  if (store_ == nullptr || store_->entryCount(info_.topic_id) == 0) {
-    return {PJ::Timepoint::max(), PJ::Timepoint::min()};  // inverted: empty
-  }
-  const auto [lo, hi] = store_->timeRange(info_.topic_id);
-  return {PJ::fromRaw(lo), PJ::fromRaw(hi)};
+  return PJ::liveTopicTimeRange(store_, info_.topic_id);
 }
 
 bool Scene2DLayer::attach(const SceneLayerContext& ctx) {

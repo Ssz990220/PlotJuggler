@@ -81,8 +81,6 @@ class OccupancyGridLayer : public Scene3DLayer {
   QString fixed_frame_;
   PJ::Timepoint tracker_time_{};
   bool visible_ = true;
-  int64_t ts_first_ = 0;
-  int64_t ts_last_ = 0;
 
   // Per-instance display params; mirrored into grid_pass_ and edited through
   // createConfigWidget().

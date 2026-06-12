@@ -98,7 +98,6 @@ class SceneEntitiesLayer : public Scene3DLayer {
 
   bool visible_ = true;
   int64_t ts_first_ = 0;
-  int64_t ts_last_ = 0;
 
   // Viewer-side display overrides pushed wholesale to the pass. The override
   // color lives here as a normalized vec4; the config widget derives a QColor

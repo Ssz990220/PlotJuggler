@@ -211,7 +211,6 @@ class PointCloudLayer : public Scene3DLayer {
   bool visible_ = true;
   bool range_dirty_ = true;
   int64_t ts_first_ = 0;
-  int64_t ts_last_ = 0;
 
   // Source-frame bounds of the most recently decoded cloud (see worldBounds()).
   std::optional<AABB> world_bounds_;

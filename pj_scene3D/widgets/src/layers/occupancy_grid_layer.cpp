@@ -44,7 +44,20 @@ PJ::SceneLayerInfo OccupancyGridLayer::info() const {
 }
 
 PJ::Range<PJ::Timepoint> OccupancyGridLayer::timeRange() const {
-  return {PJ::fromRaw(ts_first_), PJ::fromRaw(ts_last_)};
+  const auto* store = ctx_.session != nullptr ? &ctx_.session->objectStore() : nullptr;
+  PJ::Range<PJ::Timepoint> range = PJ::liveTopicTimeRange(store, topic_id_);
+  if (updates_topic_.has_value()) {
+    // This is the one two-topic layer: in live mapping the OccupancyGridUpdate
+    // sibling routinely extends past the last full keyframe, so union its range
+    // in. Without it timeRange().max stops at the base topic, the dock's scrub
+    // clamp pins the tracker short of the newest patch, and the grid freezes at
+    // the last keyframe while updates keep arriving. Inverted-empty ranges from
+    // liveTopicTimeRange() fold away cleanly under min/max.
+    const auto updates = PJ::liveTopicTimeRange(store, *updates_topic_);
+    range.min = std::min(range.min, updates.min);
+    range.max = std::max(range.max, updates.max);
+  }
+  return range;
 }
 
 QStringList OccupancyGridLayer::fallbackFrames() const {
@@ -133,14 +146,6 @@ bool OccupancyGridLayer::bootstrap() {
     return false;
   }
   source_frame_ = grid->frame_id;
-
-  const auto base_range = store.timeRange(topic_id_);
-  ts_first_ = base_range.first;
-  ts_last_ = base_range.second;
-  if (updates_topic_.has_value()) {
-    const auto update_range = store.timeRange(*updates_topic_);
-    ts_last_ = std::max(ts_last_, update_range.second);
-  }
 
   if (!source_frame_.empty()) {
     emit sourceFrameChanged(QString::fromStdString(source_frame_));

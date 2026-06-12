@@ -465,6 +465,8 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
                     .arg(static_cast<int>(seed->object_type)));
             return nullptr;
           }
+          // A 3D-only stream must seed playback here too (see header doc).
+          seedStreamingPlaybackFromDrop();
           // currentTimeChanged only fires on changes, so a brand-new widget
           // never gets the current playhead — seed it now to render at the right
           // time immediately.
@@ -480,16 +482,7 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
                     .arg(static_cast<int>(seed->object_type)));
             return nullptr;
           }
-          // Dropping a streaming topic seeds the playback slider over the
-          // streamed window with the playhead at the live edge.
-          if (active_streaming_dataset_id_ != 0) {
-            streaming_playback_seeded_ = true;
-            if (const auto range = computeActiveStreamingRangeSec(); range.has_value()) {
-              auto& engine = session_->playbackEngine();
-              engine.setRange(displayRange(range->min, range->max));
-              engine.setCurrentTime(displaySeconds(range->max));
-            }
-          }
+          seedStreamingPlaybackFromDrop();
           media2d->setPointInspectorEnabled(show_points_);
           media2d->onTrackerTime(toAxisDouble(session_->playbackEngine().currentTime()));
         } else {
@@ -1488,6 +1481,18 @@ std::optional<Range<double>> MainWindow::computeActiveStreamingRangeSec() const 
   return Range<double>{
       .min = static_cast<double>(t_min) / kNanosecondsPerSecond,
       .max = static_cast<double>(t_max) / kNanosecondsPerSecond};
+}
+
+void MainWindow::seedStreamingPlaybackFromDrop() {
+  if (active_streaming_dataset_id_ == 0) {
+    return;
+  }
+  streaming_playback_seeded_ = true;
+  if (const auto range = computeActiveStreamingRangeSec(); range.has_value()) {
+    auto& engine = session_->playbackEngine();
+    engine.setRange(displayRange(range->min, range->max));
+    engine.setCurrentTime(displaySeconds(range->max));
+  }
 }
 
 DiagnosticSink MainWindow::diagnosticSink() const {

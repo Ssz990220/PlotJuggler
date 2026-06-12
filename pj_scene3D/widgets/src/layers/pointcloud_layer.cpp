@@ -248,7 +248,7 @@ PJ::SceneLayerInfo PointCloudLayer::info() const {
 }
 
 PJ::Range<PJ::Timepoint> PointCloudLayer::timeRange() const {
-  return {PJ::fromRaw(ts_first_), PJ::fromRaw(ts_last_)};
+  return PJ::liveTopicTimeRange(ctx_.session != nullptr ? &ctx_.session->objectStore() : nullptr, topic_id_);
 }
 
 QStringList PointCloudLayer::fallbackFrames() const {
@@ -382,9 +382,7 @@ bool PointCloudLayer::attach(const PJ::SceneLayerContext& ctx) {
   }
   PJ::ObjectStore& store = ctx_.session->objectStore();
   if (store.entryCount(topic_id_) > 0) {
-    const auto range = store.timeRange(topic_id_);
-    ts_first_ = range.first;
-    ts_last_ = range.second;
+    ts_first_ = store.timeRange(topic_id_).first;
   }
   if (!bootstrap()) {
     qCWarning(lcPointCloudLayer) << "attach: bootstrap failed for topic_id=" << topic_id_.id;

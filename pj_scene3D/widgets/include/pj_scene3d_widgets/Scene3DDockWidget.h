@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include <QList>
+#include <QObject>
 #include <QString>
 #include <QStringList>
 #include <cstdint>
@@ -42,7 +43,9 @@ class Scene3DDockWidget : public SceneDockWidget {
   explicit Scene3DDockWidget(QWidget* parent = nullptr);
   ~Scene3DDockWidget() override;
 
-  using SceneDockWidget::setSessionManager;
+  // Shadows the base setter to also (re)connect the live-samples slot that feeds
+  // streamed FrameTransform messages into the TF buffer (see reconnectLiveSamples).
+  void setSessionManager(SessionManager* session);
 
   void setTransformService(pj::scene3d::TransformService* service);
 
@@ -109,6 +112,16 @@ class Scene3DDockWidget : public SceneDockWidget {
 
  private:
   void prepareTransformBufferForTopic(ObjectTopicId topic_id);
+  // Connect to SessionManager::samplesIngested so streamed FrameTransform
+  // messages are accumulated into the dataset's TF buffer live (file load uses
+  // the bulk ingest instead). Re-callable: drops any prior connection first.
+  void reconnectLiveSamples(SessionManager* session);
+  // Advance every visible object layer (pointcloud / markers / occupancy) to the
+  // newest timestamp now present in the ObjectStore. Streaming's samplesIngested
+  // carries only scalar TopicIds, so — like the 2D dock — we ignore that list and
+  // query the store directly; without this the object layers stay frozen on their
+  // last decoded frame while only the TF buffer advances.
+  void driveVisibleLayersToLiveEdge();
   void wireScene3DLayer(pj::scene3d::Scene3DLayer* layer);
   void absorbFallbackFrames(pj::scene3d::Scene3DLayer* layer);
   void applyResolvedFixedFrame(const QString& frame);
@@ -124,6 +137,11 @@ class Scene3DDockWidget : public SceneDockWidget {
   pj::scene3d::TransformService* transform_service_ = nullptr;
   pj::scene3d::SceneViewWidget* view_ = nullptr;
   std::shared_ptr<pj::scene3d::TransformBuffer> tf_buffer_;
+  // Dataset that owns tf_buffer_, cached when the buffer is first bound so the
+  // live-samples slot can drive incremental TF ingest without re-deriving it.
+  DatasetId dataset_id_ = 0;
+  // Live streamed-TF ingest hookup (SessionManager::samplesIngested).
+  QMetaObject::Connection live_samples_conn_;
 
   QList<pj::scene3d::FrameRow> available_frames_;
   std::vector<std::string> fallback_frames_;

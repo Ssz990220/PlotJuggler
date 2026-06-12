@@ -13,6 +13,8 @@
 #include <QSettings>
 #include <QSvgRenderer>
 #include <Qt>
+#include <algorithm>
+#include <cstdint>
 
 #include "pj_runtime/PlaybackEngine.h"
 #include "pj_widgets/DoubleScrubber.h"
@@ -110,7 +112,16 @@ void TimelineWidget::onEngineTimeChanged(double t) {
 }
 
 void TimelineWidget::onEngineRangeChanged(double min, double max) {
-  const int steps = std::max(1, static_cast<int>((max - min) * 1000.0));
+  // Step count = ~millisecond resolution over the range, computed in 64-bit and
+  // clamped. Streaming seeds the engine range in absolute epoch seconds, so a
+  // large (or t≈0-polluted) span makes `(max-min)*1000` overflow a 32-bit int,
+  // wrapping to ≤0 and collapsing the RealSlider to two positions (start/end).
+  // kMaxSliderSteps caps the count at ms resolution over any realistic span —
+  // past sub-pixel granularity on any display — so a polluted span cannot
+  // produce an absurd count.
+  static constexpr int64_t kMaxSliderSteps = 10'000'000;
+  const auto raw_steps = static_cast<int64_t>((max - min) * 1000.0);
+  const int steps = static_cast<int>(std::clamp<int64_t>(raw_steps, 1, kMaxSliderSteps));
   updating_from_engine_ = true;
   ui_->timeSlider->setLimits(min, max, steps);
   updating_from_engine_ = false;

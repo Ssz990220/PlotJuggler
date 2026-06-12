@@ -205,6 +205,79 @@ void Scene3DDockWidget::setTransformService(pj::scene3d::TransformService* servi
   }
 }
 
+void Scene3DDockWidget::setSessionManager(SessionManager* session) {
+  SceneDockWidget::setSessionManager(session);
+  reconnectLiveSamples(session);
+}
+
+void Scene3DDockWidget::reconnectLiveSamples(SessionManager* session) {
+  if (live_samples_conn_) {
+    QObject::disconnect(live_samples_conn_);
+    live_samples_conn_ = {};
+  }
+  if (session == nullptr) {
+    return;
+  }
+  // Streamed FrameTransform messages must be folded into the TF buffer as they
+  // arrive: file load does this in one bulk pass (FileLoader), but streaming has
+  // no such pass, so without this the buffer stays empty and every sensor frame
+  // is orphan (red). samplesIngested fires on the UI thread after the retention
+  // trim, with live=true only while following a live stream — file load emits
+  // live=false and keeps using the bulk ingest, so file behavior is unchanged.
+  live_samples_conn_ =
+      connect(session, &SessionManager::samplesIngested, this, [this](const QVector<TopicId>&, bool live) {
+        if (!live || transform_service_ == nullptr || tf_buffer_ == nullptr) {
+          return;
+        }
+        transform_service_->ingestNewTransforms(dataset_id_);
+        // Recompute orphan states on every live tick (cheap, and only emits on a
+        // real flip): a sibling 3D dock sharing this dataset may have advanced the
+        // shared ingest cursor, so gating on our own call's return value would
+        // miss that. driveVisibleLayersToLiveEdge() then advances the object
+        // layers to the newest store data and repaints.
+        recomputeOrphanStates();
+        driveVisibleLayersToLiveEdge();
+      });
+}
+
+void Scene3DDockWidget::driveVisibleLayersToLiveEdge() {
+  if (sessionManager() == nullptr) {
+    return;
+  }
+  bool any = false;
+  int64_t latest = std::numeric_limits<int64_t>::lowest();
+  for (const SceneLayerInfo& info : layers()) {
+    ISceneLayer* layer = layerFor(info.topic_id);
+    if (!info.visible || layer == nullptr) {
+      continue;
+    }
+    // Consult the layer's own timeRange() rather than store.timeRange(topic_id):
+    // a multi-topic layer (OccupancyGrid + its _updates sibling) reports a live
+    // edge that the base topic alone would miss, freezing it at the last
+    // keyframe. Empty layers report an inverted range and are skipped.
+    const PJ::Range<PJ::Timepoint> range = layer->timeRange();
+    if (range.max < range.min) {
+      continue;
+    }
+    latest = std::max(latest, PJ::toRaw(range.max));
+    any = true;
+  }
+  if (!any) {
+    return;
+  }
+  noteTrackerTime(latest);
+  for (const SceneLayerInfo& info : layers()) {
+    if (ISceneLayer* layer = layerFor(info.topic_id); layer != nullptr && info.visible) {
+      layer->setTrackerTime(PJ::fromRaw(latest));
+    }
+  }
+  if (view_ != nullptr) {
+    view_->setTrackerTime(PJ::fromRaw(latest));
+    updateSceneBounds();  // cloud / grid geometry changes with tracker time
+  }
+  refreshView();
+}
+
 bool Scene3DDockWidget::handlesObjectType(sdk::BuiltinObjectType object_type) {
   return object_type == sdk::BuiltinObjectType::kPointCloud ||
          object_type == sdk::BuiltinObjectType::kCompressedPointCloud ||
@@ -353,6 +426,7 @@ void Scene3DDockWidget::prepareTransformBufferForTopic(ObjectTopicId topic_id) {
   }
   ObjectStore& store = sessionManager()->objectStore();
   const auto dataset_id = store.descriptor(topic_id).dataset_id;
+  dataset_id_ = dataset_id;  // cached for the live-samples TF ingest slot
   tf_buffer_ = transform_service_->transformBuffer(dataset_id);
   if (view_ != nullptr) {
     view_->setTransformBuffer(tf_buffer_);

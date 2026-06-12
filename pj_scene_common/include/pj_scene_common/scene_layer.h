@@ -37,6 +37,14 @@ struct SceneLayerContext {
   virtual ~SceneLayerContext() = default;
 };
 
+/// Live time range of a single ObjectStore topic, in the inverted-empty form
+/// `ISceneLayer::timeRange()` expects (`{Timepoint::max(), Timepoint::min()}`
+/// when `store` is null or the topic has no entries). Single-topic layers should
+/// return this verbatim from `timeRange()`: it reflects the store as it stands
+/// now, never a cached last-render range — a stale range pins the dock's scrub
+/// clamp to an evicted time during streaming and freezes the scene.
+[[nodiscard]] PJ::Range<PJ::Timepoint> liveTopicTimeRange(const ObjectStore* store, ObjectTopicId topic_id);
+
 /// Backend-neutral contract for one object topic in a layered scene.
 ///
 /// Implementations own the per-topic adapter state and expose changes through
@@ -55,6 +63,12 @@ class ISceneLayer : public QObject {
   /// inverted/empty range `{Timepoint::max(), Timepoint::min()}` if the layer
   /// carries no data (e.g. a static layer positioned purely by TF). The dock
   /// detects emptiness with `range.max < range.min`.
+  ///
+  /// MUST reflect the layer's data as it stands NOW — for a store-backed layer,
+  /// the live ObjectStore range, never a value cached at the last render. The
+  /// dock clamps the tracker to this range, so a stale range pins scrubbing to
+  /// an evicted time and freezes the scene during streaming. Single-topic layers
+  /// should delegate to `liveTopicTimeRange()`.
   [[nodiscard]] virtual PJ::Range<PJ::Timepoint> timeRange() const = 0;
 
   /// Binds the layer to shared scene services. Called once before updates.

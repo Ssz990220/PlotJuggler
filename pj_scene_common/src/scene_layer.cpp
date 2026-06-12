@@ -5,6 +5,14 @@
 
 namespace PJ {
 
+PJ::Range<PJ::Timepoint> liveTopicTimeRange(const ObjectStore* store, ObjectTopicId topic_id) {
+  if (store == nullptr || store->entryCount(topic_id) == 0) {
+    return {PJ::Timepoint::max(), PJ::Timepoint::min()};  // inverted: empty
+  }
+  const auto [lo, hi] = store->timeRange(topic_id);
+  return {PJ::fromRaw(lo), PJ::fromRaw(hi)};
+}
+
 ISceneLayer::ISceneLayer(QObject* parent) : QObject(parent) {}
 
 ISceneLayer::~ISceneLayer() = default;

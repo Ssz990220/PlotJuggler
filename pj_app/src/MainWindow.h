@@ -203,6 +203,13 @@ class MainWindow : public QMainWindow {
   // Shared by the live-ingest range update and the drop-to-view seeding.
   std::optional<Range<double>> computeActiveStreamingRangeSec() const;
 
+  // Seeds the streaming playback slider over the active streamed window, playhead
+  // at the live edge, and marks the session seeded so live ingests keep the range
+  // fresh. No-op when no streaming dataset is active. Called from BOTH the 2D and
+  // 3D drop-to-view branches: either family alone must establish the timeline, or
+  // a 3D-only stream never seeds and the slider stays stuck at the startup default.
+  void seedStreamingPlaybackFromDrop();
+
   // Records a user-visible plot layout change.
   void onUndoableChange();
 
