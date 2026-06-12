@@ -21,6 +21,8 @@ namespace pj::scene3d {
 // future selection / TF-axis / annotation work.
 class ArrowGizmo {
  public:
+  enum class Shading { kLit, kFlat };
+
   struct Params {
     // Total length from origin to arrow tip (cylinder + cone, in model units).
     float length = 1.0f;
@@ -58,10 +60,11 @@ class ArrowGizmo {
   // state (blend, depth test, etc.); this method only binds its own program
   // and VAO.
   //   mvp        : full projection * view * model transform.
-  //   normal_mat : mat3(view * model) — used to shade in view space so the
-  //                light direction is camera-stable.
+  //   normal_mat : mat3(view * model) — used when shading == kLit so the light
+  //                direction is camera-stable.
   //   color      : RGBA tint applied per-fragment.
-  void render(const glm::mat4& mvp, const glm::mat3& normal_mat, const glm::vec4& color);
+  void render(
+      const glm::mat4& mvp, const glm::mat3& normal_mat, const glm::vec4& color, Shading shading = Shading::kLit);
 
  private:
   void generateMesh();

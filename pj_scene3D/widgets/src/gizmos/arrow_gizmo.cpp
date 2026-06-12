@@ -18,9 +18,9 @@
 namespace pj::scene3d {
 namespace {
 
-// View-space Lambertian. Light direction is constant in view space so the
-// highlight stays in the same screen-relative position regardless of how
-// the arrow rotates — matches how RViz / Blender axis gizmos look.
+// View-space Lambertian by default. Light direction is constant in view space so
+// the highlight stays in the same screen-relative position regardless of how the
+// arrow rotates; marker annotations can request flat color with u_flat_color.
 constexpr std::string_view kVertSrc = R"(#version 450 core
 layout(location = 0) in vec3 in_pos;
 layout(location = 1) in vec3 in_normal;
@@ -36,8 +36,13 @@ void main() {
 constexpr std::string_view kFragSrc = R"(#version 450 core
 in vec3 v_normal_view;
 uniform vec4 u_color;
+uniform int u_flat_color;
 out vec4 frag_color;
 void main() {
+  if (u_flat_color != 0) {
+    frag_color = u_color;
+    return;
+  }
   const vec3 L = normalize(vec3(0.30, 0.55, 0.80));
   const float ambient = 0.35;
   float lambert = max(dot(normalize(v_normal_view), L), 0.0);
@@ -228,7 +233,7 @@ void ArrowGizmo::uploadMesh() {
   vao_.unbind();
 }
 
-void ArrowGizmo::render(const glm::mat4& mvp, const glm::mat3& normal_mat, const glm::vec4& color) {
+void ArrowGizmo::render(const glm::mat4& mvp, const glm::mat3& normal_mat, const glm::vec4& color, Shading shading) {
   if (!initialized_ || program_ == nullptr || index_data_.empty()) {
     return;
   }
@@ -236,6 +241,7 @@ void ArrowGizmo::render(const glm::mat4& mvp, const glm::mat3& normal_mat, const
   program_->setMat4("u_mvp", mvp);
   program_->setMat3("u_normal_mat", normal_mat);
   program_->setVec4("u_color", color);
+  program_->setInt("u_flat_color", shading == Shading::kFlat ? 1 : 0);
   vao_.bind();
   withGlFunctions([this](auto& f) {
     f.glDrawElements(GL_TRIANGLES, static_cast<GLsizei>(index_data_.size()), GL_UNSIGNED_INT, nullptr);

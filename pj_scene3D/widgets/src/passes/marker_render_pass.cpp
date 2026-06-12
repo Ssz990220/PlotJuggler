@@ -37,41 +37,36 @@ void setPolygonMode(GLenum mode) {
   }
 }
 
-// Instanced solid shader. Per-vertex: pos (loc 0) + normal (loc 1). Per-instance:
-// the world matrix (loc 2-5, four vec4 columns) + rgba color (loc 6). One shared
-// unit mesh per shape, one draw call per shape.
+// Instanced solid shader. Per-vertex: pos (loc 0). Per-instance: the world
+// matrix (loc 2-5, four vec4 columns) + rgba color (loc 6). One shared unit mesh
+// per shape, one draw call per shape.
 constexpr std::string_view kSolidVert = R"(#version 450 core
 layout(location = 0) in vec3 in_pos;
-layout(location = 1) in vec3 in_normal;
 layout(location = 2) in mat4 in_world;   // consumes locations 2,3,4,5
 layout(location = 6) in vec4 in_color;
 uniform mat4 u_view;
 uniform mat4 u_proj;
-out vec3 v_normal_view;
 out vec4 v_color;
 void main() {
-  mat4 view_world = u_view * in_world;
-  gl_Position = u_proj * view_world * vec4(in_pos, 1.0);
-  v_normal_view = mat3(view_world) * in_normal;
+  gl_Position = u_proj * u_view * in_world * vec4(in_pos, 1.0);
   v_color = in_color;
 }
 )";
 
-// Two-sided headlight Lambert: lit by the view-space normal's z, with ambient so
-// nothing goes fully black. Shared by every solid-mesh program.
-constexpr std::string_view kLambertFrag = R"(#version 450 core
-in vec3 v_normal_view;
+// Flat marker color: annotation geometry should show the exact marker color on
+// every face, independent of normal direction or camera orientation.
+constexpr std::string_view kFlatColorFrag = R"(#version 450 core
 in vec4 v_color;
 out vec4 frag_color;
 void main() {
-  vec3 n = normalize(v_normal_view);
-  float shade = 0.35 + 0.65 * abs(n.z);
-  frag_color = vec4(v_color.rgb * shade, v_color.a);
+  frag_color = v_color;
 }
 )";
 
 // Unit cube centred at the origin, side 1 (±0.5). 24 vertices (4 per face) so each
 // face carries its own flat normal. Interleaved: pos.xyz, normal.xyz.
+// Winding invariant: faces are CCW viewed from OUTSIDE — the instanced solid
+// draws cull GL_BACK and rely on every closed solid mesh keeping this.
 constexpr std::array<float, 24 * 6> kCubeVerts = {{
     0.5F,  -0.5F, -0.5F, 1,  0,  0,  0.5F,  0.5F,  -0.5F, 1,  0,  0,  0.5F,  0.5F,  0.5F,  1,  0,  0,
     0.5F,  -0.5F, 0.5F,  1,  0,  0,  -0.5F, -0.5F, 0.5F,  -1, 0,  0,  -0.5F, 0.5F,  0.5F,  -1, 0,  0,
@@ -88,6 +83,50 @@ constexpr std::array<std::uint32_t, 36> kCubeIndices = {{
     12, 13, 14, 12, 14, 15, 16, 17, 18, 16, 18, 19, 20, 21, 22, 20, 22, 23,
 }};
 
+// Cube edge overlay: front edges are drawn with the SAME per-instance color the
+// fill used (viewer override + opacity already baked in), scaled by this factor
+// and forced to alpha 1. Hidden/rear edges blend between the face color and that
+// front-edge color so they remain visible without reading as foreground edges.
+constexpr float kEdgeDarken = 0.6F;
+constexpr float kHiddenEdgeMix = 0.45F;
+constexpr float kEdgeVisibleEpsilon = 1e-4F;
+constexpr GLsizei kCubeEdgeVertexCount = 24;
+
+// Instanced cube-edge shader: same per-instance layout as kSolidVert (world at
+// loc 2-5, color at loc 6) so the edge VAO can replay the instance_vbo_ contents
+// the cube fill just used. Each edge endpoint also carries the two adjacent
+// outward face normals and the edge center; if neither adjacent face faces the
+// camera, the line is colored as a softer self-occluded edge. Fragment stage:
+// kLineFrag.
+constexpr std::string_view kEdgeVert = R"(#version 450 core
+layout(location = 0) in vec3 in_pos;
+layout(location = 1) in vec3 in_normal_a;
+layout(location = 2) in mat4 in_world;   // consumes locations 2,3,4,5
+layout(location = 6) in vec4 in_color;
+layout(location = 7) in vec3 in_normal_b;
+layout(location = 8) in vec3 in_edge_center;
+uniform mat4 u_view;
+uniform mat4 u_proj;
+uniform float u_edge_darken;
+uniform float u_hidden_edge_mix;
+uniform float u_edge_visible_epsilon;
+out vec4 v_color;
+void main() {
+  mat4 view_world = u_view * in_world;
+  mat3 normal_matrix = transpose(inverse(mat3(view_world)));
+  vec3 n_a = normalize(normal_matrix * in_normal_a);
+  vec3 n_b = normalize(normal_matrix * in_normal_b);
+  vec3 center_view = (view_world * vec4(in_edge_center, 1.0)).xyz;
+  float center_len = length(center_view);
+  vec3 to_camera = center_len > 1e-6 ? -center_view / center_len : vec3(0.0, 0.0, 1.0);
+  float facing = max(dot(n_a, to_camera), dot(n_b, to_camera));
+  vec3 front_color = in_color.rgb * u_edge_darken;
+  vec3 hidden_color = mix(in_color.rgb, front_color, u_hidden_edge_mix);
+  gl_Position = u_proj * view_world * vec4(in_pos, 1.0);
+  v_color = vec4(facing > u_edge_visible_epsilon ? front_color : hidden_color, 1.0);
+}
+)";
+
 // Per-instance record consumed by the solid shader (loc 2-6).
 struct InstanceData {
   glm::mat4 world;
@@ -101,6 +140,8 @@ struct Mesh {
 
 // Unit UV-sphere, radius 0.5 (matches the cube's ±0.5 extent under the same
 // `model` scale, so `size` decodes identically). Normal = position direction.
+// Triangles wind CCW viewed from outside (same invariant as the cube/cylinder);
+// the instanced solid draws cull GL_BACK and would erase the sphere otherwise.
 Mesh makeSphere(int rings, int sectors, float radius) {
   Mesh m;
   for (int r = 0; r <= rings; ++r) {
@@ -119,10 +160,31 @@ Mesh makeSphere(int rings, int sectors, float radius) {
     for (std::uint32_t s = 0; s < static_cast<std::uint32_t>(sectors); ++s) {
       const std::uint32_t a = r * stride + s;
       const std::uint32_t b = a + stride;
-      m.indices.insert(m.indices.end(), {a, b, a + 1, a + 1, b, b + 1});
+      m.indices.insert(m.indices.end(), {a, a + 1, b, a + 1, b + 1, b});
     }
   }
   return m;
+}
+
+// Record the per-instance world(loc 2-5)+color(loc 6) attribs of `instance_vbo`
+// into the currently bound VAO. Shared by the solid VAOs and the cube-edge VAO,
+// which replays the very same InstanceData records the cube fill consumed.
+void setupSolidInstanceAttribs(gl::Buffer& instance_vbo) {
+  instance_vbo.bind(GL_ARRAY_BUFFER);
+  withGlFunctions([](auto& functions) {
+    constexpr GLsizei istride = static_cast<GLsizei>(sizeof(InstanceData));
+    for (GLuint col = 0U; col < 4U; ++col) {
+      const GLuint loc = 2U + col;
+      functions.glEnableVertexAttribArray(loc);
+      functions.glVertexAttribPointer(
+          loc, 4, GL_FLOAT, GL_FALSE, istride, reinterpret_cast<const void*>(sizeof(glm::vec4) * col));
+      functions.glVertexAttribDivisor(loc, 1U);
+    }
+    functions.glEnableVertexAttribArray(6U);
+    functions.glVertexAttribPointer(
+        6U, 4, GL_FLOAT, GL_FALSE, istride, reinterpret_cast<const void*>(offsetof(InstanceData, color)));
+    functions.glVertexAttribDivisor(6U, 1U);
+  });
 }
 
 // Wire a solid-mesh VAO: per-vertex pos/normal from `mesh_vbo`, per-instance
@@ -141,52 +203,95 @@ void setupSolidVao(
     functions.glVertexAttribPointer(
         1U, 3, GL_FLOAT, GL_FALSE, stride, reinterpret_cast<const void*>(sizeof(float) * 3));
   });
-  instance_vbo.bind(GL_ARRAY_BUFFER);
-  withGlFunctions([](auto& functions) {
-    constexpr GLsizei istride = static_cast<GLsizei>(sizeof(InstanceData));
-    for (GLuint col = 0U; col < 4U; ++col) {
-      const GLuint loc = 2U + col;
-      functions.glEnableVertexAttribArray(loc);
-      functions.glVertexAttribPointer(
-          loc, 4, GL_FLOAT, GL_FALSE, istride, reinterpret_cast<const void*>(sizeof(glm::vec4) * col));
-      functions.glVertexAttribDivisor(loc, 1U);
-    }
-    functions.glEnableVertexAttribArray(6U);
-    functions.glVertexAttribPointer(
-        6U, 4, GL_FLOAT, GL_FALSE, istride, reinterpret_cast<const void*>(offsetof(InstanceData, color)));
-    functions.glVertexAttribDivisor(6U, 1U);
-  });
+  setupSolidInstanceAttribs(instance_vbo);
   mesh_ebo.uploadStatic(GL_ELEMENT_ARRAY_BUFFER, indices, ibytes);
   mesh_ebo.bind(GL_ELEMENT_ARRAY_BUFFER);  // record the EBO into the VAO
   vao.unbind();
 }
 
+std::array<float, static_cast<std::size_t>(kCubeEdgeVertexCount) * 12U> makeCubeEdgeVertices() {
+  std::array<float, static_cast<std::size_t>(kCubeEdgeVertexCount) * 12U> out{};
+  std::size_t i = 0;
+  const auto emitVertex = [&](const glm::vec3& p, const glm::vec3& n_a, const glm::vec3& n_b, const glm::vec3& center) {
+    const std::array<float, 12> v{p.x,   p.y,   p.z,   n_a.x,    n_a.y,    n_a.z,
+                                  n_b.x, n_b.y, n_b.z, center.x, center.y, center.z};
+    for (const float value : v) {
+      out[i++] = value;
+    }
+  };
+  const auto emitEdge = [&](const glm::vec3& a, const glm::vec3& b, const glm::vec3& n_a, const glm::vec3& n_b) {
+    const glm::vec3 center = (a + b) * 0.5F;
+    emitVertex(a, n_a, n_b, center);
+    emitVertex(b, n_a, n_b, center);
+  };
+
+  constexpr float h = 0.5F;
+  const glm::vec3 nx{-1.0F, 0.0F, 0.0F};
+  const glm::vec3 px{1.0F, 0.0F, 0.0F};
+  const glm::vec3 ny{0.0F, -1.0F, 0.0F};
+  const glm::vec3 py{0.0F, 1.0F, 0.0F};
+  const glm::vec3 nz{0.0F, 0.0F, -1.0F};
+  const glm::vec3 pz{0.0F, 0.0F, 1.0F};
+
+  emitEdge({-h, -h, -h}, {h, -h, -h}, ny, nz);
+  emitEdge({h, -h, -h}, {h, h, -h}, px, nz);
+  emitEdge({h, h, -h}, {-h, h, -h}, py, nz);
+  emitEdge({-h, h, -h}, {-h, -h, -h}, nx, nz);
+  emitEdge({-h, -h, h}, {h, -h, h}, ny, pz);
+  emitEdge({h, -h, h}, {h, h, h}, px, pz);
+  emitEdge({h, h, h}, {-h, h, h}, py, pz);
+  emitEdge({-h, h, h}, {-h, -h, h}, nx, pz);
+  emitEdge({-h, -h, -h}, {-h, -h, h}, nx, ny);
+  emitEdge({h, -h, -h}, {h, -h, h}, px, ny);
+  emitEdge({h, h, -h}, {h, h, h}, px, py);
+  emitEdge({-h, h, -h}, {-h, h, h}, nx, py);
+
+  return out;
+}
+
+// Wire the cube-edge VAO: per-edge endpoint records (pos + adjacent face
+// normals + edge center) from a static VBO plus the same instance attribs the
+// solid VAOs use, drawn as GL_LINES.
+void setupEdgeVao(gl::VertexArray& vao, gl::Buffer& edge_vbo, gl::Buffer& instance_vbo) {
+  vao.bind();
+  const auto edge_vertices = makeCubeEdgeVertices();
+  edge_vbo.uploadStatic(GL_ARRAY_BUFFER, edge_vertices.data(), static_cast<GLsizeiptr>(sizeof(edge_vertices)));
+  edge_vbo.bind(GL_ARRAY_BUFFER);
+  withGlFunctions([](auto& functions) {
+    constexpr GLsizei stride = static_cast<GLsizei>(sizeof(float) * 12);
+    functions.glEnableVertexAttribArray(0U);  // endpoint position
+    functions.glVertexAttribPointer(0U, 3, GL_FLOAT, GL_FALSE, stride, nullptr);
+    functions.glEnableVertexAttribArray(1U);  // first adjacent face normal
+    functions.glVertexAttribPointer(
+        1U, 3, GL_FLOAT, GL_FALSE, stride, reinterpret_cast<const void*>(sizeof(float) * 3));
+    functions.glEnableVertexAttribArray(7U);  // second adjacent face normal
+    functions.glVertexAttribPointer(
+        7U, 3, GL_FLOAT, GL_FALSE, stride, reinterpret_cast<const void*>(sizeof(float) * 6));
+    functions.glEnableVertexAttribArray(8U);  // edge center, for stable per-edge facing
+    functions.glVertexAttribPointer(
+        8U, 3, GL_FLOAT, GL_FALSE, stride, reinterpret_cast<const void*>(sizeof(float) * 9));
+  });
+  setupSolidInstanceAttribs(instance_vbo);
+  vao.unbind();
+}
+
 // --- Cylinder / cone -------------------------------------------------------
 // Own program: the per-instance taper (bottom/top radius scale) deforms the unit
-// mesh in the vertex shader. Per-vertex: pos(0), normal(1), taper_w(2). Per-instance:
+// mesh in the vertex shader. Per-vertex: pos(0), taper_w(2). Per-instance:
 // world(3-6), color(7), taper(8).
 constexpr std::string_view kCylVert = R"(#version 450 core
 layout(location = 0) in vec3 in_pos;
-layout(location = 1) in vec3 in_normal;
 layout(location = 2) in float in_taper_w;   // 0 at bottom (-z face), 1 at top (+z face)
 layout(location = 3) in mat4 in_world;      // consumes 3,4,5,6
 layout(location = 7) in vec4 in_color;
 layout(location = 8) in vec2 in_taper;      // (bottom_scale, top_scale)
 uniform mat4 u_view;
 uniform mat4 u_proj;
-out vec3 v_normal_view;
 out vec4 v_color;
 void main() {
   float rscale = mix(in_taper.x, in_taper.y, in_taper_w);
   vec3 p = vec3(in_pos.x * rscale, in_pos.y * rscale, in_pos.z);
-  vec3 n = in_normal;
-  if (abs(in_normal.z) < 0.5) {               // side wall: tilt normal by the cone slope
-    float dR = in_taper.y - in_taper.x;
-    n = normalize(vec3(in_normal.x, in_normal.y, -0.5 * dR));
-  }
-  mat4 view_world = u_view * in_world;
-  gl_Position = u_proj * view_world * vec4(p, 1.0);
-  v_normal_view = mat3(view_world) * n;
+  gl_Position = u_proj * u_view * in_world * vec4(p, 1.0);
   v_color = in_color;
 }
 )";
@@ -198,7 +303,8 @@ struct CylinderInstance {
 };
 
 // Unit cylinder: axis +Z, radius 0.5, height 1 (z in ±0.5). Stride-7 verts
-// (pos.xyz, normal.xyz, taper_w). Side wall + 2 caps.
+// (pos.xyz, normal.xyz, taper_w). Side wall + 2 caps. Triangles wind CCW viewed
+// from outside (same GL_BACK-culling invariant as the cube/sphere).
 Mesh makeCylinder(int seg, float radius, float half_h) {
   Mesh m;
   const auto push = [&](float px, float py, float pz, float nx, float ny, float nz, float tw) {
@@ -292,7 +398,7 @@ void setupCylinderVao(gl::VertexArray& vao, gl::Buffer& vbo, gl::Buffer& ebo, co
   vao.unbind();
 }
 
-// --- Lines (unlit) + triangles (Lambert) ----------------------------------
+// --- Lines + triangles (flat color) ---------------------------------------
 // One draw per batch; the VBO is re-streamed each frame. Vertices carry baked
 // (override-applied) colors so no color uniforms are needed.
 constexpr std::string_view kLineVert = R"(#version 450 core
@@ -311,15 +417,11 @@ void main() { frag_color = v_color; }
 
 constexpr std::string_view kTriVert = R"(#version 450 core
 layout(location = 0) in vec3 in_pos;
-layout(location = 1) in vec3 in_normal;
 layout(location = 2) in vec4 in_color;
 uniform mat4 u_mvp;
-uniform mat3 u_normal_mat;
-out vec3 v_normal_view;
 out vec4 v_color;
 void main() {
   gl_Position = u_mvp * vec4(in_pos, 1.0);
-  v_normal_view = u_normal_mat * in_normal;
   v_color = in_color;
 }
 )";
@@ -369,7 +471,7 @@ void MarkerRenderPass::setActive(std::shared_ptr<const DecodedSceneEntities> mar
 void MarkerRenderPass::initializeGL() {
   initialized_ = false;
 
-  auto result = gl::Program::fromSources(kSolidVert, kLambertFrag);
+  auto result = gl::Program::fromSources(kSolidVert, kFlatColorFrag);
   if (auto* program = std::get_if<gl::Program>(&result); program != nullptr) {
     solid_program_ = std::make_unique<gl::Program>(std::move(*program));
   } else {
@@ -390,7 +492,16 @@ void MarkerRenderPass::initializeGL() {
       static_cast<GLsizeiptr>(sphere.indices.size() * sizeof(std::uint32_t)), instance_vbo_);
   sphere_index_count_ = static_cast<int>(sphere.indices.size());
 
-  auto cyl_result = gl::Program::fromSources(kCylVert, kLambertFrag);
+  auto edge_result = gl::Program::fromSources(kEdgeVert, kLineFrag);
+  if (auto* program = std::get_if<gl::Program>(&edge_result); program != nullptr) {
+    edge_program_ = std::make_unique<gl::Program>(std::move(*program));
+    setupEdgeVao(edge_vao_, edge_vbo_, instance_vbo_);
+  } else {
+    fmt::print(stderr, "MarkerRenderPass edge shader error: {}\n", std::get<std::string>(edge_result));
+    edge_program_.reset();
+  }
+
+  auto cyl_result = gl::Program::fromSources(kCylVert, kFlatColorFrag);
   if (auto* program = std::get_if<gl::Program>(&cyl_result); program != nullptr) {
     cyl_program_ = std::make_unique<gl::Program>(std::move(*program));
     const Mesh cylinder = makeCylinder(24, 0.5F, 0.5F);
@@ -416,7 +527,7 @@ void MarkerRenderPass::initializeGL() {
     line_program_.reset();
   }
 
-  auto tri_result = gl::Program::fromSources(kTriVert, kLambertFrag);
+  auto tri_result = gl::Program::fromSources(kTriVert, kFlatColorFrag);
   if (auto* program = std::get_if<gl::Program>(&tri_result); program != nullptr) {
     tri_program_ = std::make_unique<gl::Program>(std::move(*program));
     setupTriVao(tri_vao_, tri_vbo_);
@@ -452,7 +563,9 @@ void MarkerRenderPass::render(const ViewParams& view_params, const FrameContext&
     return out;
   };
 
-  // Transparency: blend + drop depth writes when anything is translucent.
+  // Transparency: blend + drop depth writes when a viewer override makes the
+  // whole batch translucent. Per-instance alpha (e.g. foxglove CubePrimitives)
+  // is handled separately at the cube fill draw below.
   // Wireframe: glPolygonMode affects only filled prims (triangles/solids); GL_LINES
   // ignore it, so set it once for the whole pass and restore at the end.
   const bool translucent =
@@ -463,6 +576,14 @@ void MarkerRenderPass::render(const ViewParams& view_params, const FrameContext&
     if (translucent) {
       functions.glDepthMask(GL_FALSE);
     }
+    // Closed CCW-outward solids (cube/sphere/cylinder) cull back faces so a
+    // translucent solid tints each pixel through exactly ONE face instead of
+    // order-dependent front+back alpha stacking. GL_CULL_FACE is enabled only
+    // around those instanced draws — triangle lists (arbitrary user winding),
+    // lines, and the ArrowGizmo are never culled — and the engine otherwise
+    // assumes culling off, so every enable below is paired with a disable.
+    functions.glCullFace(GL_BACK);
+    functions.glFrontFace(GL_CCW);
   });
   setPolygonMode(overrides_.wireframe ? GL_LINE : GL_FILL);
 
@@ -499,12 +620,77 @@ void MarkerRenderPass::render(const ViewParams& view_params, const FrameContext&
   // --- Solids: cube + sphere (shared instanced program) ---
   const std::vector<InstanceData> cubes = buildSolids(batch.cubes);
   const std::vector<InstanceData> spheres = buildSolids(batch.spheres);
+
+  // Foxglove CubePrimitives carry translucency as per-instance alpha (already
+  // override-baked into the instance colors above), NOT via viewer overrides —
+  // the pass-wide `translucent` flag alone misses the common LiDAR-boxes case.
+  const bool cubes_translucent = translucent || std::any_of(cubes.begin(), cubes.end(), [](const InstanceData& inst) {
+                                   return inst.color.a < 0.999F;
+                                 });
   if (!cubes.empty() || !spheres.empty()) {
     solid_program_->use();
     solid_program_->setMat4("u_view", view);
     solid_program_->setMat4("u_proj", proj);
-    drawSolid(cube_vao_, cube_index_count_, cubes);
+    withGlFunctions([](auto& functions) { functions.glEnable(GL_CULL_FACE); });
+
+    // The cube FILL is polygon-offset away from the camera so the edge lines
+    // (drawn at the exact, un-offset depth) win the depth test instead of
+    // z-fighting the box's own faces. Offsetting the fill rather than biasing
+    // the lines keeps the line depth exact against the rest of the scene, and
+    // GL_POLYGON_OFFSET_FILL never perturbs line rasterization.
+    //
+    // A TRANSLUCENT fill additionally writes no depth: the offset only settles
+    // the fight at a shared surface — it cannot bridge the box's own depth
+    // extent — so a depth-written front face would occlude the rear edges and
+    // break the "all 12 edges visible" contract exactly when the box is
+    // see-through. Opaque fills keep writing depth: rear edges hidden by an
+    // opaque box is correct occlusion, not an artifact.
+    if (!cubes.empty()) {
+      withGlFunctions([cubes_translucent](auto& functions) {
+        functions.glEnable(GL_POLYGON_OFFSET_FILL);
+        functions.glPolygonOffset(1.0F, 1.0F);
+        if (cubes_translucent) {
+          functions.glDepthMask(GL_FALSE);
+        }
+      });
+      drawSolid(cube_vao_, cube_index_count_, cubes);
+      withGlFunctions([translucent, cubes_translucent](auto& functions) {
+        functions.glDisable(GL_POLYGON_OFFSET_FILL);
+        if (cubes_translucent && !translucent) {
+          functions.glDepthMask(GL_TRUE);  // back to the pass-wide mask (edges DO write depth)
+        }
+      });
+    }
+
+    // Cube edge overlay: replays the cube instances still in instance_vbo_, so
+    // it MUST run after the cube drawSolid and before the sphere one re-uploads
+    // that buffer. Edges are opaque (blend off) and never culled; the shader
+    // gives self-occluded/rear edges a softer color.
+    if (!cubes.empty() && edge_program_ != nullptr) {
+      withGlFunctions([](auto& functions) {
+        functions.glDisable(GL_BLEND);
+        functions.glDisable(GL_CULL_FACE);
+      });
+      edge_program_->use();
+      edge_program_->setMat4("u_view", view);
+      edge_program_->setMat4("u_proj", proj);
+      edge_program_->setFloat("u_edge_darken", kEdgeDarken);
+      edge_program_->setFloat("u_hidden_edge_mix", kHiddenEdgeMix);
+      edge_program_->setFloat("u_edge_visible_epsilon", kEdgeVisibleEpsilon);
+      edge_vao_.bind();
+      withGlFunctions([&cubes](auto& functions) {
+        functions.glDrawArraysInstanced(GL_LINES, 0, kCubeEdgeVertexCount, static_cast<GLsizei>(cubes.size()));
+      });
+      edge_vao_.unbind();
+      withGlFunctions([](auto& functions) {
+        functions.glEnable(GL_BLEND);
+        functions.glEnable(GL_CULL_FACE);
+      });
+      solid_program_->use();  // back to the solid program for the sphere draw
+    }
+
     drawSolid(sphere_vao_, sphere_index_count_, spheres);
+    withGlFunctions([](auto& functions) { functions.glDisable(GL_CULL_FACE); });
     unuseProgram();
   }
 
@@ -530,8 +716,10 @@ void MarkerRenderPass::render(const ViewParams& view_params, const FrameContext&
       cyl_program_->setMat4("u_proj", proj);
       cyl_vao_.bind();
       withGlFunctions([this, &cyls](auto& functions) {
+        functions.glEnable(GL_CULL_FACE);  // closed CCW-outward mesh, same as cube/sphere
         functions.glDrawElementsInstanced(
             GL_TRIANGLES, cyl_index_count_, GL_UNSIGNED_INT, nullptr, static_cast<GLsizei>(cyls.size()));
+        functions.glDisable(GL_CULL_FACE);
       });
       cyl_vao_.unbind();
       unuseProgram();
@@ -541,7 +729,8 @@ void MarkerRenderPass::render(const ViewParams& view_params, const FrameContext&
   // --- Arrows + axes (one unit ArrowGizmo; dims baked into the model matrix) ---
   if (!batch.arrows.empty() || !batch.axes.empty()) {
     const auto drawArrow = [&](const glm::mat4& world, const glm::vec4& color) {
-      marker_arrow_.render(proj * view * world, glm::mat3(view * world), applyOverride(color));
+      marker_arrow_.render(
+          proj * view * world, glm::mat3(view * world), applyOverride(color), ArrowGizmo::Shading::kFlat);
     };
 
     for (const auto& arrow : batch.arrows) {
@@ -609,7 +798,7 @@ void MarkerRenderPass::render(const ViewParams& view_params, const FrameContext&
     unuseProgram();
   }
 
-  // --- Triangles (Lambert; one streamed draw per batch) ---
+  // --- Triangles (flat color; one streamed draw per batch) ---
   if (tri_program_ != nullptr && !batch.triangles.empty()) {
     tri_program_->use();
     tri_vao_.bind();
@@ -632,7 +821,6 @@ void MarkerRenderPass::render(const ViewParams& view_params, const FrameContext&
       tri_vbo_.uploadStatic(GL_ARRAY_BUFFER, buf.data(), static_cast<GLsizeiptr>(buf.size() * sizeof(float)));
       const glm::mat4 world = *fw * tb.model;
       tri_program_->setMat4("u_mvp", proj * view * world);
-      tri_program_->setMat3("u_normal_mat", glm::mat3(view * world));
       const GLsizei count = static_cast<GLsizei>(tb.vertices.size());
       withGlFunctions([count](auto& functions) { functions.glDrawArrays(GL_TRIANGLES, 0, count); });
     }
@@ -640,9 +828,14 @@ void MarkerRenderPass::render(const ViewParams& view_params, const FrameContext&
     unuseProgram();
   }
 
-  // Restore GL state for sibling passes.
+  // Restore GL state for sibling passes (the rest of the engine assumes
+  // culling off; the per-draw disables above already guarantee it, this is
+  // the pass-exit invariant made explicit).
   setPolygonMode(GL_FILL);
-  withGlFunctions([](auto& functions) { functions.glDepthMask(GL_TRUE); });
+  withGlFunctions([](auto& functions) {
+    functions.glDepthMask(GL_TRUE);
+    functions.glDisable(GL_CULL_FACE);
+  });
 }
 
 void MarkerRenderPass::releaseGL() {
@@ -656,6 +849,9 @@ void MarkerRenderPass::releaseGL() {
   sphere_vbo_ = gl::Buffer{};
   sphere_ebo_ = gl::Buffer{};
   sphere_index_count_ = 0;
+  edge_program_.reset();
+  edge_vao_ = gl::VertexArray{};
+  edge_vbo_ = gl::Buffer{};
   cyl_program_.reset();
   cyl_vao_ = gl::VertexArray{};
   cyl_vbo_ = gl::Buffer{};

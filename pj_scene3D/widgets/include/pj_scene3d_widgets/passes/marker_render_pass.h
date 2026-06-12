@@ -84,6 +84,15 @@ class MarkerRenderPass : public IRenderPass {
   gl::Buffer sphere_ebo_;
   int sphere_index_count_ = 0;
 
+  // Cube edge overlay: every box also gets its 12 edges as opaque 1px lines.
+  // The shader colors front edges dark and self-occluded/rear edges with a
+  // softer contrast between the face and front-edge colors. Instanced over the
+  // SAME instance_vbo_ records the cube fill consumed, so the edge draw must run
+  // after the cube fill and before the sphere draw re-uploads that buffer.
+  std::unique_ptr<gl::Program> edge_program_;
+  gl::VertexArray edge_vao_;
+  gl::Buffer edge_vbo_;  // 24 GL_LINES endpoints: pos + adjacent face normals
+
   // Cylinder / cone / truncated-cone: its own program — the taper (per-instance
   // bottom/top radius scale) deforms the unit mesh in the vertex shader, so it
   // can't share the rigid solid path. Unit mesh: axis +Z, radius 0.5, height 1.
