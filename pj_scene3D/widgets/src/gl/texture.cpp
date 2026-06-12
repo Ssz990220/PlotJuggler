@@ -104,11 +104,62 @@ void Texture::uploadSub(int32_t x, int32_t y, uint32_t width, uint32_t height, c
   });
 }
 
+void Texture::allocate(GLenum internal_format, GLenum format, GLenum type, int width, int height) {
+  if (width <= 0 || height <= 0) {
+    return;
+  }
+
+  withGlFunctions([this, internal_format, format, type, width, height](auto& functions) {
+    if (id_ == 0U) {
+      functions.glGenTextures(1, &id_);
+    }
+    functions.glBindTexture(GL_TEXTURE_2D, id_);
+    functions.glTexImage2D(
+        GL_TEXTURE_2D, 0, static_cast<GLint>(internal_format), static_cast<GLsizei>(width),
+        static_cast<GLsizei>(height), 0, format, type, nullptr);
+    functions.glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    functions.glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    functions.glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    functions.glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+  });
+}
+
 void Texture::bind(int unit) {
   withGlFunctions([this, unit](auto& functions) {
     functions.glActiveTexture(GL_TEXTURE0 + static_cast<GLenum>(unit));
     functions.glBindTexture(GL_TEXTURE_2D, id_);
   });
+}
+
+Texture2D::Texture2D() = default;
+
+Texture2D::~Texture2D() {
+  if (id_ != 0U) {
+    withGlFunctionsNoThrow([this](auto& functions) { functions.glDeleteTextures(1, &id_); });
+  }
+}
+
+Texture2D::Texture2D(Texture2D&& other) noexcept : id_(std::exchange(other.id_, 0U)) {}
+
+Texture2D& Texture2D::operator=(Texture2D&& other) noexcept {
+  if (this != &other) {
+    if (id_ != 0U) {
+      withGlFunctionsNoThrow([this](auto& functions) { functions.glDeleteTextures(1, &id_); });
+    }
+    id_ = std::exchange(other.id_, 0U);
+  }
+  return *this;
+}
+
+GLuint Texture2D::id() const noexcept {
+  return id_;
+}
+
+void Texture2D::adopt(GLuint id) noexcept {
+  if (id_ != 0U && id_ != id) {
+    withGlFunctionsNoThrow([this](auto& functions) { functions.glDeleteTextures(1, &id_); });
+  }
+  id_ = id;
 }
 
 }  // namespace pj::scene3d::gl

@@ -235,6 +235,26 @@ void Program::setVec3(const char* name, const glm::vec3& v) {
   withGlFunctions([location, &v](auto& functions) { functions.glUniform3fv(location, 1, glm::value_ptr(v)); });
 }
 
+void Program::setVec2Array(const char* name, const glm::vec2* values, int count) {
+  const GLint location = uniformLocation(name);
+  if (location < 0 || values == nullptr || count <= 0) {
+    return;
+  }
+  withGlFunctions([location, values, count](auto& functions) {
+    functions.glUniform2fv(location, count, glm::value_ptr(values[0]));
+  });
+}
+
+void Program::setVec3Array(const char* name, const glm::vec3* values, int count) {
+  const GLint location = uniformLocation(name);
+  if (location < 0 || values == nullptr || count <= 0) {
+    return;
+  }
+  withGlFunctions([location, values, count](auto& functions) {
+    functions.glUniform3fv(location, count, glm::value_ptr(values[0]));
+  });
+}
+
 void Program::setVec4(const char* name, const glm::vec4& v) {
   const GLint location = uniformLocation(name);
   if (location < 0) {

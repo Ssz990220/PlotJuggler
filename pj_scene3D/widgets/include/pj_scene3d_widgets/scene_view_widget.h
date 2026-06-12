@@ -7,15 +7,21 @@
 #include <QPoint>
 #include <chrono>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
 #include "pj_runtime/Time.h"  // PJ::Timepoint
 #include "pj_scene3d_core/camera/camera.h"
 #include "pj_scene3d_core/tf/tf_buffer.h"
+#include "pj_scene3d_widgets/gl/program.h"
+#include "pj_scene3d_widgets/gl/vertex_array.h"
 #include "pj_scene3d_widgets/passes/axis_overlay_pass.h"
 #include "pj_scene3d_widgets/passes/axis_render_pass.h"
+#include "pj_scene3d_widgets/passes/edl_pass.h"
 #include "pj_scene3d_widgets/passes/grid_render_pass.h"
+#include "pj_scene3d_widgets/passes/ssao_pass.h"
+#include "pj_scene3d_widgets/scene_hdr_fbo.h"
 
 class QEvent;
 class QMouseEvent;
@@ -55,6 +61,26 @@ class SceneViewWidget : public QOpenGLWidget {
   GridRenderPass& gridPass() {
     return grid_;
   }
+  SsaoPass& ssaoPass() {
+    return ssao_;
+  }
+  EdlPass& edlPass() {
+    return edl_;
+  }
+
+  // Composite/look knobs (read in paintGL; call update() after changing).
+  // Defaults are the User's 2026-06-10 look-dev pick (mesh_viewer demo).
+  struct CompositeParams {
+    int tonemap_mode = 1;  // 0 None, 1 ACES, 2 AgX
+    float exposure = 1.1f;
+    float saturation = 1.2f;  // post-tonemap; data pixels only
+    float ao_strength = 1.0f;
+    bool ssao_enabled = true;
+    bool edl_enabled = true;
+  };
+  [[nodiscard]] CompositeParams& compositeParams() {
+    return composite_params_;
+  }
   [[nodiscard]] ICamera& camera() {
     return *camera_;
   }
@@ -75,6 +101,26 @@ class SceneViewWidget : public QOpenGLWidget {
 
   const std::string& fixedFrame() const {
     return fixed_frame_;
+  }
+
+  // Part C scene-controls fan-out (call update() after changing).
+  void setGridStyle(GridRenderPass::Style style) {
+    grid_.setStyle(style);
+  }
+  void setGridDivisions(int divisions) {
+    grid_.setDivisions(divisions);
+  }
+  void setGridExtentMetres(float extent_m) {
+    grid_.setExtentMetres(extent_m);
+  }
+  void setGizmoSize(float length_m) {
+    axes_.setAxisLength(length_m);
+  }
+  void setGizmoOpacity(float opacity) {
+    axes_.setOpacity(opacity);
+  }
+  void setGridVisible(bool visible) {
+    grid_visible_ = visible;
   }
 
   // Show/hide the per-frame TF axis triads. The TF buffer is still used to
@@ -107,11 +153,34 @@ class SceneViewWidget : public QOpenGLWidget {
   // (ADS dock/float/split) and destroys it on teardown; VAOs/FBOs aren't shared
   // across contexts, so stale handles must be dropped and rebuilt.
   void releaseGlResources();
+  // Compile the fullscreen passthrough used to present the resolved HDR color
+  // into the backing FBO. Per-context; rebuilt by initializeGL after recreation.
+  void initializePresentProgram();
+  // Clear + draw the full pass/layer sequence into the currently bound target.
+  // mask_alpha_writes applies the legacy Wayland alpha guard (direct-to-backing
+  // fallback only; the off-screen path forces alpha=1.0 in the present shader).
+  void renderScene(const ViewParams& view_params, const FrameContext& frame_ctx, bool mask_alpha_writes);
 
   // Owned passes that don't depend on the layer count.
   AxisRenderPass axes_;
   GridRenderPass grid_;
   AxisOverlayPass overlay_;
+  // Off-screen HDR render chain (Phase 0A): geometry renders into an RGBA16F +
+  // DEPTH32F FBO at the backing FBO's achieved MSAA count, is resolved to
+  // single-sample, and is presented to the backing FBO by the passthrough below.
+  // Per-context, like every pass: released in releaseGlResources, rebuilt lazily.
+  SceneHdrFbo scene_fbo_;
+  // Fullscreen passthrough (empty-VAO triangle) presenting the resolved color
+  // into the backing FBO; forces alpha=1.0 (the Wayland opaque-surface guard).
+  std::optional<gl::Program> present_program_;
+  gl::VertexArray present_vao_;
+  // Screen-space AO over the resolved depth (Phase D); composite multiplies its
+  // output into the HDR color. Degrades to no-AO when unavailable (u_has_ao=0).
+  SsaoPass ssao_;
+  // Eye-dome lighting over the resolved depth (Phase B); composite multiplies
+  // its shade factor into the HDR color. Same degrade rule as SSAO.
+  EdlPass edl_;
+  CompositeParams composite_params_;
 
   // Non-owning layer registry, in the order supplied by SceneDockWidget.
   std::vector<Scene3DLayer*> layers_;
@@ -136,6 +205,18 @@ class SceneViewWidget : public QOpenGLWidget {
   // Whether the TF axis triads are drawn (see setAxesVisible). Does not affect
   // layer frame resolution, only the axes pass.
   bool axes_visible_ = true;
+  // Whether the ground grid draws (Part C "Grid" eye toggle).
+  bool grid_visible_ = true;
+  // Achieved (driver-granted) MSAA sample count of this context's backing FBO,
+  // read in initializeGL — never assume the 4 that make_default_format requests.
+  int scene_samples_ = 0;
+  // Backing-FBO size in DEVICE pixels, read back from the viewport Qt sets
+  // before each paintGL (exact even at fractional DPR; resizeGL gets logical).
+  int device_width_px_ = 0;
+  int device_height_px_ = 0;
+  // One warning per context when the HDR chain is unavailable and paintGL falls
+  // back to direct-to-backing rendering; re-armed by initializeGL.
+  bool scene_fbo_fallback_logged_ = false;
 
   QPoint last_mouse_pos_;
   Qt::MouseButton active_button_{Qt::NoButton};

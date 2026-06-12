@@ -47,7 +47,14 @@ void main() {
   const float ambient = 0.35;
   float lambert = max(dot(normalize(v_normal_view), L), 0.0);
   vec3 lit = u_color.rgb * (ambient + (1.0 - ambient) * lambert);
-  frag_color = vec4(lit, u_color.a);
+  // Annotation draw (Phase 0B/Part C): u_color.a carries the gizmo OPACITY
+  // and, through the annotation blend mode SceneViewWidget::renderScene sets —
+  // blendFuncSeparate(SRC_ALPHA, 1-SRC_ALPHA, ZERO, 1-SRC_ALPHA) — also drives
+  // the tonemap-bypass marker: dstA' = dstA*(1-a), so at alpha 1 the pixel is
+  // fully annotation (marker 0, flat vivid color) and at lower opacities the
+  // marker scales with coverage. The color is linearized so the composite's
+  // bypass sRGB-encode restores it exactly.
+  frag_color = vec4(pow(max(lit, vec3(0.0)), vec3(2.2)), u_color.a);
 }
 )";
 

@@ -250,6 +250,7 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
     : QMainWindow(parent),
       ui_(new Ui::MainWindow),
       diagnostic_bridge_(new QtDiagnosticBridge(this)),
+      app_settings_(std::make_unique<QSettings>()),
       session_(std::make_unique<AppSession>(std::move(extensions_dir), diagnostic_bridge_->sink())),
       theme_(std::make_unique<Theme>()) {
   // The 3D transform service owns the per-dataset TF buffers + load-time
@@ -939,6 +940,7 @@ IDataWidget* MainWindow::makeSceneDock(const QString& kind, QWidget* parent) {
     auto* widget = new Scene3DDockWidget(parent);
     widget->setSessionManager(&session_->sessionManager());
     widget->setTransformService(transform_service_.get());
+    widget->setSettings(app_settings_.get());
     // No theme push needed: SceneViewWidget derives dark/light from its own
     // palette luminance and repaints on QEvent::PaletteChange.
     return widget;
@@ -1039,6 +1041,7 @@ void MainWindow::onFileLoaded(
   // pj_runtime concerns; we just relay. Prefix is empty in v1 until the
   // load dialog gains a prefix input.
   session_->sessionManager().recordLoadedSource(path, prefix, plugin_id, plugin_config_json);
+  // TODO(Prompt 6): route MCAP attachments to Scene3D dock once the load path exposes the extracted attachment map.
   session_->seedPlaybackFromSession();
   // A same-source reload evicts the old dataset's objects AFTER the removeDataset
   // signal fired, so re-run the coherence pass here to reset any 2D viewer still

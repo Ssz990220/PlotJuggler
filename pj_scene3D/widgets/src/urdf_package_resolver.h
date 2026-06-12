@@ -1,0 +1,121 @@
+#pragma once
+// Copyright 2026 Davide Faconti
+// SPDX-License-Identifier: MPL-2.0
+
+// Resolves mesh references found inside a URDF to a loadable local path / URL.
+//
+// Two entry points:
+//   resolveUri(uri, urdf_dir, source_is_url)  — URI-scheme dispatch + the guard.
+//   resolve(pkg, rel)                          — the package:// resolution chain.
+//
+// The "package://" GUARD: only package:// URIs ever enter the package chain.
+// Bare relative paths (e.g. "robotiq_arg85_description/meshes/x.stl") resolve
+// relative to urdf_dir and NEVER touch the package search — otherwise a bare
+// path that happens to look like a package name would wrongly match a same-named
+// search-root directory.
+//
+// Package identity is the directory BASENAME only — never a package.xml check.
+//
+// Plain C++ class (not a QObject). QSettings is INJECTED via setSettings(); the
+// resolver never `new QSettings`. Design: URDF_MESH_ASSET_RESOLUTION_DESIGN.md §3.
+
+#include <QByteArray>
+#include <QMap>
+#include <QSettings>
+#include <QString>
+#include <QStringList>
+#include <memory>
+#include <string>
+
+class QTemporaryDir;
+
+namespace pj::scene3d {
+
+// Outcome of a resolveUri() call.
+struct ResolvedMesh {
+  bool resolved{false};
+  std::string path;     // local filesystem path or fetchable URL when resolved
+  std::string package;  // the unresolved package name (when !resolved && was package://)
+  bool is_url{false};   // path is an http(s):// URL to fetch
+};
+
+class UrdfPackageResolver {
+ public:
+  UrdfPackageResolver();
+  ~UrdfPackageResolver();
+
+  UrdfPackageResolver(const UrdfPackageResolver&) = delete;
+  UrdfPackageResolver& operator=(const UrdfPackageResolver&) = delete;
+
+  // --- Injection / configuration -----------------------------------------
+
+  // QSettings is owned by the host (e.g. MainWindow's app settings). The
+  // resolver only reads/writes the two keys documented in the design.
+  void setSettings(QSettings* settings) {
+    settings_ = settings;
+  }
+
+  // Step-0 in-band attachment dictionary: name == verbatim mesh ref string.
+  void setMcapAttachments(QMap<QString, QByteArray> attachments) {
+    mcap_attachments_ = std::move(attachments);
+  }
+
+  // The canonical absolute MCAP path keys the per-MCAP remembered map (step 1).
+  void setMcapPath(const QString& canonical_mcap_path) {
+    mcap_path_ = canonical_mcap_path;
+  }
+
+  // Seed the search roots from the URDF dir, the MCAP dir, and the ROS-ish env
+  // vars ($ROS_PACKAGE_PATH, $AMENT_PREFIX_PATH/share, $COLCON_PREFIX_PATH/share).
+  // Idempotent: existing roots are not duplicated. Reads global roots from
+  // QSettings on first call. urdf_dir may be empty (Topic source).
+  void autoSeedSearchRoots(const QString& urdf_dir);
+
+  // Append a single search root (e.g. from the "Locate…" dialog). Idempotent.
+  void addSearchRoot(const QString& root);
+
+  const QStringList& searchRoots() const {
+    return search_roots_;
+  }
+
+  // --- Resolution ----------------------------------------------------------
+
+  // Full URI-scheme dispatch + guard. `urdf_dir` is the directory (or URL base)
+  // the URDF was loaded from; `source_is_url` gates http(s) refs.
+  ResolvedMesh resolveUri(const std::string& uri, const std::string& urdf_dir, bool source_is_url);
+
+  // The package:// chain (steps 0..4). Returns "" on miss and records `pkg` as
+  // unresolved (step 4). `urdf_dir` enables the ancestor heuristic (step 2);
+  // `source_is_url` selects the URL-segment variant of that heuristic.
+  std::string resolve(const std::string& pkg, const std::string& rel, const std::string& urdf_dir, bool source_is_url);
+
+  // Packages recorded unresolved since the last clearUnresolved(). For the
+  // status line / ask-once.
+  QStringList unresolvedPackages() const;
+  void clearUnresolved() {
+    unresolved_pkgs_.clear();
+  }
+
+  // Manually remember a package root (the "Locate…" result): writes the
+  // per-MCAP map AND appends to the global search roots.
+  void rememberPackageRoot(const std::string& pkg, const QString& root_dir);
+
+ private:
+  // Step helpers — each returns a non-empty path on hit.
+  std::string stepAttachment(const std::string& uri);
+  std::string stepRememberedMap(const std::string& pkg, const std::string& rel);
+  std::string stepAncestor(
+      const std::string& pkg, const std::string& rel, const std::string& urdf_dir, bool source_is_url);
+  std::string stepSearchRoots(const std::string& pkg, const std::string& rel);
+
+  QSettings* settings_{nullptr};
+  QMap<QString, QByteArray> mcap_attachments_;
+  QString mcap_path_;
+  QStringList search_roots_;
+  QStringList unresolved_pkgs_;
+  bool seeded_global_roots_{false};
+  // Attachments extracted to disk so a path can be returned; lives until exit.
+  std::unique_ptr<QTemporaryDir> attachment_dir_;
+};
+
+}  // namespace pj::scene3d

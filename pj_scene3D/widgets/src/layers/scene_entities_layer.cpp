@@ -3,20 +3,36 @@
 
 #include "pj_scene3d_widgets/layers/scene_entities_layer.h"
 
+#include <QByteArray>
 #include <QCheckBox>
+#include <QEventLoop>
+#include <QFile>
+#include <QFileInfo>
 #include <QFormLayout>
 #include <QLoggingCategory>
+#include <QNetworkAccessManager>
+#include <QNetworkReply>
+#include <QNetworkRequest>
 #include <QPushButton>
+#include <QTimer>
+#include <QUrl>
 #include <QVBoxLayout>
 #include <QWidget>
+#include <algorithm>
 #include <glm/glm.hpp>
+#include <glm/gtc/matrix_transform.hpp>
+#include <glm/gtc/quaternion.hpp>
+#include <limits>
 #include <memory>
+#include <optional>
 #include <string>
 #include <utility>
 
+#include "mesh_loader.h"
 #include "pj_base/builtin/scene_entities.hpp"
 #include "pj_plugins/sdk/message_parser_plugin_base.hpp"
 #include "pj_runtime/SessionManager.h"
+#include "pj_runtime/Time.h"
 #include "pj_scene3d_core/scene_entities_decode.h"
 #include "pj_scene3d_widgets/parse_locked.h"
 #include "pj_widgets/ColorPickerPopup.h"
@@ -38,10 +54,213 @@ void paintSwatch(QPushButton* button, const QColor& color) {
   button->setStyleSheet(QStringLiteral("background-color: %1; border: 1px solid #555; border-radius: 3px;")
                             .arg(color.name(QColor::HexRgb)));
 }
+
+glm::mat4 poseToMat4(const PJ::sdk::Pose& pose) {
+  const glm::quat q(
+      static_cast<float>(pose.orientation.w), static_cast<float>(pose.orientation.x),
+      static_cast<float>(pose.orientation.y), static_cast<float>(pose.orientation.z));
+  const glm::mat4 rot = glm::mat4_cast(q);
+  const glm::mat4 trans = glm::translate(
+      glm::mat4(1.0f), glm::vec3(
+                           static_cast<float>(pose.position.x), static_cast<float>(pose.position.y),
+                           static_cast<float>(pose.position.z)));
+  return trans * rot;
+}
+
+glm::vec3 scaleToVec3(const PJ::sdk::Vector3& scale) {
+  return {static_cast<float>(scale.x), static_cast<float>(scale.y), static_cast<float>(scale.z)};
+}
+
+glm::vec4 colorToVec4(const PJ::sdk::ColorRGBA& color) {
+  constexpr float kInv255 = 1.0f / 255.0f;
+  return {
+      static_cast<float>(color.r) * kInv255, static_cast<float>(color.g) * kInv255,
+      static_cast<float>(color.b) * kInv255, static_cast<float>(color.a) * kInv255};
+}
+
+std::string meshKey(PJ::ObjectTopicId topic_id, const std::string& entity_id, std::size_t model_index) {
+  return std::to_string(topic_id.id) + ":" + entity_id + ":" + std::to_string(model_index);
+}
+
+std::uint64_t fnv1a(const std::vector<std::uint8_t>& data) {
+  std::uint64_t hash = 1469598103934665603ULL;
+  for (std::uint8_t byte : data) {
+    hash ^= byte;
+    hash *= 1099511628211ULL;
+  }
+  return hash;
+}
+
+QString hintFromMediaType(const std::string& media_type, const std::string& url) {
+  const QString media = QString::fromStdString(media_type).toLower();
+  if (media == QLatin1String("model/gltf-binary") || media == QLatin1String("application/octet-stream+glb")) {
+    return QStringLiteral("glb");
+  }
+  if (media == QLatin1String("model/gltf+json") || media == QLatin1String("model/gltf")) {
+    return QStringLiteral("gltf");
+  }
+  if (media == QLatin1String("model/vnd.collada+xml")) {
+    return QStringLiteral("dae");
+  }
+  if (media == QLatin1String("model/stl")) {
+    return QStringLiteral("stl");
+  }
+  if (media == QLatin1String("model/obj")) {
+    return QStringLiteral("obj");
+  }
+  if (!media.isEmpty()) {
+    const qsizetype slash = media.lastIndexOf('/');
+    const QString suffix = slash >= 0 ? media.mid(slash + 1) : media;
+    if (!suffix.isEmpty() && !suffix.contains('+')) {
+      return suffix;
+    }
+  }
+  const QUrl parsed(QString::fromStdString(url));
+  const QString path = parsed.isValid() && !parsed.path().isEmpty() ? parsed.path() : QString::fromStdString(url);
+  return QFileInfo(path).suffix();
+}
+
+// Identity of a model's source bytes: content hash for embedded data, URL+type
+// for remote sources. A changed signature for the same mesh key forces a reload.
+std::string sourceSignature(const PJ::sdk::ModelPrimitive& primitive) {
+  if (!primitive.data.empty()) {
+    return "data:" + primitive.media_type + ":" + std::to_string(primitive.data.size()) + ":" +
+           std::to_string(fnv1a(primitive.data));
+  }
+  if (!primitive.url.empty()) {
+    return "url:" + primitive.url + ":" + primitive.media_type;
+  }
+  return {};
+}
+
+std::optional<QByteArray> readFileBytes(const QString& path, QString* error) {
+  QFile file(path);
+  if (!file.open(QIODevice::ReadOnly)) {
+    if (error != nullptr) {
+      *error = file.errorString();
+    }
+    return std::nullopt;
+  }
+  return file.readAll();
+}
+
+std::optional<QByteArray> readUrlBytesBlocking(const QString& url_text, QString* error) {
+  const QUrl url(url_text);
+  if (url.isLocalFile()) {
+    return readFileBytes(url.toLocalFile(), error);
+  }
+  if (url.scheme().isEmpty()) {
+    return readFileBytes(url_text, error);
+  }
+  if (url.scheme() != QStringLiteral("http") && url.scheme() != QStringLiteral("https")) {
+    if (error != nullptr) {
+      *error = QObject::tr("unsupported URL scheme");
+    }
+    return std::nullopt;
+  }
+
+  QNetworkAccessManager manager;
+  QNetworkReply* reply = manager.get(QNetworkRequest(url));
+  QEventLoop loop;
+  QTimer timeout;
+  timeout.setSingleShot(true);
+  QObject::connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
+  QObject::connect(&timeout, &QTimer::timeout, &loop, &QEventLoop::quit);
+  timeout.start(15000);
+  loop.exec();
+
+  if (timeout.isActive()) {
+    timeout.stop();
+  } else {
+    reply->abort();
+    reply->deleteLater();
+    if (error != nullptr) {
+      *error = QObject::tr("request timed out");
+    }
+    return std::nullopt;
+  }
+
+  if (reply->error() != QNetworkReply::NoError) {
+    if (error != nullptr) {
+      *error = reply->errorString();
+    }
+    reply->deleteLater();
+    return std::nullopt;
+  }
+  QByteArray bytes = reply->readAll();
+  reply->deleteLater();
+  return bytes;
+}
+
+// Lifetime expiry with overflow-safe boundary handling (lifetime_ns == 0 means
+// "never expires", per the SceneEntity contract).
+bool expiredAt(const PJ::sdk::SceneEntity& entity, int64_t time_ns) {
+  if (entity.lifetime_ns == 0) {
+    return false;
+  }
+  if (entity.lifetime_ns > 0 && entity.timestamp > std::numeric_limits<int64_t>::max() - entity.lifetime_ns) {
+    return false;
+  }
+  if (entity.lifetime_ns < 0 && entity.timestamp < std::numeric_limits<int64_t>::min() - entity.lifetime_ns) {
+    return true;
+  }
+  return entity.timestamp + entity.lifetime_ns < time_ns;
+}
+
+// Rough heap footprint of a decoded batch — the buffers that dominate (embedded
+// model bytes, line/triangle geometry), not exact allocator accounting.
+std::size_t estimateSnapshotBytes(const PJ::sdk::SceneEntities& batch) {
+  std::size_t bytes = sizeof(batch);
+  for (const auto& entity : batch.entities) {
+    bytes += sizeof(entity);
+    for (const auto& model : entity.models) {
+      bytes += model.data.size() + model.url.size() + model.media_type.size();
+    }
+    for (const auto& line : entity.lines) {
+      bytes += line.points.size() * sizeof(line.points[0]) + line.colors.size() * sizeof(line.colors[0]) +
+               line.indices.size() * sizeof(uint32_t);
+    }
+    for (const auto& triangle : entity.triangles) {
+      bytes += triangle.points.size() * sizeof(triangle.points[0]) +
+               triangle.colors.size() * sizeof(triangle.colors[0]) + triangle.indices.size() * sizeof(uint32_t);
+    }
+    for (const auto& text : entity.texts) {
+      bytes += sizeof(text) + text.text.size();
+    }
+    bytes += entity.arrows.size() * sizeof(PJ::sdk::ArrowPrimitive) +
+             entity.cubes.size() * sizeof(PJ::sdk::CubePrimitive) +
+             entity.spheres.size() * sizeof(PJ::sdk::SpherePrimitive) +
+             entity.cylinders.size() * sizeof(PJ::sdk::CylinderPrimitive) +
+             entity.axes.size() * sizeof(PJ::sdk::AxesPrimitive);
+  }
+  bytes += batch.deletions.size() * sizeof(PJ::sdk::SceneEntityDeletion);
+  return bytes;
+}
+
+// Decoded-batch cache budget. Past it, the lowest-UID batches are evicted and a
+// backward rebuild degrades to re-parsing them — bounded memory over speed
+// (file sessions never evict from the store, so the cache cannot rely on
+// retention pruning alone).
+constexpr std::size_t kSnapshotCacheMaxBytes = 256u * 1024u * 1024u;
 }  // namespace
 
+// One async mesh load per mesh key. `signature` identifies the source bytes so
+// a re-published model with new content reloads; `consumed` marks the future's
+// result as already drained into the mesh pass (or failed).
+struct SceneEntitiesLayer::MeshLoadRecord {
+  std::string key;
+  std::string signature;
+  QFuture<MeshData> future;
+  bool consumed{false};
+  bool failed{false};
+};
+
 SceneEntitiesLayer::SceneEntitiesLayer(PJ::ObjectTopicId topic_id, QString display_name, QObject* parent)
-    : Scene3DLayer(parent), topic_id_(topic_id), display_name_(std::move(display_name)) {}
+    : Scene3DLayer(parent),
+      topic_id_(topic_id),
+      display_name_(std::move(display_name)),
+      mesh_loader_(std::make_unique<MeshLoader>()),
+      mesh_pass_(std::make_unique<MeshRenderPass>()) {}
 
 SceneEntitiesLayer::~SceneEntitiesLayer() = default;
 
@@ -60,9 +279,15 @@ PJ::Range<PJ::Timepoint> SceneEntitiesLayer::timeRange() const {
 }
 
 QStringList SceneEntitiesLayer::fallbackFrames() const {
+  // The marker batch's source frame plus every distinct model-entity frame.
   QStringList out;
   if (!source_frame_.empty()) {
     out.append(QString::fromStdString(source_frame_));
+  }
+  for (const QString& frame : model_frames_) {
+    if (!out.contains(frame)) {
+      out.append(frame);
+    }
   }
   return out;
 }
@@ -112,6 +337,10 @@ bool SceneEntitiesLayer::attach(const PJ::SceneLayerContext& ctx) {
     qCWarning(lcSceneEntitiesLayer) << "attach: no parser for topic_id=" << topic_id_.id;
     return false;
   }
+  // A dataset reload (SessionManager::replaceDataset) re-attaches without a
+  // detach(): start from the pristine baseline so prior-generation state never
+  // skips or anchors the new generation's replay (or leaks out of accessors).
+  resetReplayState();
   PJ::ObjectStore& store = ctx_.session->objectStore();
   if (store.entryCount(topic_id_) > 0) {
     ts_first_ = store.timeRange(topic_id_).first;
@@ -122,19 +351,40 @@ bool SceneEntitiesLayer::attach(const PJ::SceneLayerContext& ctx) {
   }
   if (ts_first_ != 0) {
     renderAt(ts_first_);
+    rebuildModelStateAt(PJ::fromRaw(ts_first_));
   }
   return true;
 }
 
 void SceneEntitiesLayer::detach() {
   ctx_ = {};
+  resetReplayState();
+}
+
+void SceneEntitiesLayer::resetReplayState() {
+  // Drop the active marker batch too: on a detach-less re-attach with the topic
+  // still empty, renderAt() never runs, so a batch left here would keep drawing
+  // prior-generation markers. setActive only swaps a shared_ptr — no GL.
   pass_.setActive(nullptr);
+  source_frame_.clear();
+  decoded_at_ns_ = PJ::Timepoint{};
+  last_marker_uid_ = {};
+  ts_first_ = 0;
+  entities_.clear();
+  model_frames_.clear();
+  state_built_at_.reset();
+  last_applied_uid_ = {};
+  snapshot_cache_.clear();
+  snapshot_cache_bytes_ = 0;
+  mesh_loads_.clear();
+  mesh_pass_->clearMeshes();
 }
 
 void SceneEntitiesLayer::setTrackerTime(PJ::Timepoint time) {
   decoded_at_ns_ = time;
   if (visible_) {
     renderAt(PJ::toRaw(time));
+    ensureModelStateAt(time);
   }
 }
 
@@ -155,14 +405,24 @@ void SceneEntitiesLayer::setVisible(bool visible) {
 
 void SceneEntitiesLayer::initializeGL() {
   pass_.initializeGL();
+  mesh_pass_->initializeGL();
 }
 
 void SceneEntitiesLayer::render(const ViewParams& view_params, const FrameContext& frame_ctx) {
   pass_.render(view_params, frame_ctx);
+  // MarkerRenderPass tracks visibility internally (setVisible); the model path
+  // guards here. Mesh loads resolve on the thread pool, so drain them per frame.
+  if (!visible_) {
+    return;
+  }
+  ensureModelStateAt(frame_ctx.time);
+  pollMeshLoads();
+  mesh_pass_->renderVisuals(view_params, modelDrawCallsForFrame(frame_ctx), overrides_.opacity);
 }
 
 void SceneEntitiesLayer::releaseGL() {
   pass_.releaseGL();
+  mesh_pass_->releaseGL();
 }
 
 bool SceneEntitiesLayer::bootstrap() {
@@ -204,6 +464,13 @@ void SceneEntitiesLayer::renderAt(int64_t time_ns) {
   if (!resolved.has_value() || resolved->payload.bytes.empty()) {
     return;
   }
+  // Skip re-parsing + re-decoding when the active batch hasn't changed (scrubbing
+  // within one message's time window). SequentialUID is stable across ObjectStore
+  // front eviction, unlike a current deque index. Viewer color overrides apply at
+  // render time (setOverrides), not here, so they are unaffected by this guard.
+  if (last_marker_uid_ == resolved->sequential_uid) {
+    return;
+  }
   const auto binding = ctx_.session->parserBindingForObjectTopic(topic_id_);
   if (!binding) {
     return;
@@ -213,7 +480,7 @@ void SceneEntitiesLayer::renderAt(int64_t time_ns) {
     qCWarning(lcSceneEntitiesLayer) << "renderAt parseObject failed:" << QString::fromStdString(obj.error());
     return;
   }
-  const auto* batch = std::any_cast<PJ::sdk::SceneEntities>(&obj->object);
+  auto* batch = std::any_cast<PJ::sdk::SceneEntities>(&obj->object);
   if (batch == nullptr) {
     return;
   }
@@ -224,6 +491,13 @@ void SceneEntitiesLayer::renderAt(int64_t time_ns) {
     emit fallbackFramesChanged(fallbackFrames());
   }
   pass_.setActive(std::make_shared<const DecodedSceneEntities>(decodeSceneEntities(*batch)));
+  last_marker_uid_ = resolved->sequential_uid;
+  // Seed the model path's cache with this just-decoded batch so the subsequent
+  // ensureModelStateAt fold reuses it instead of re-parsing the SAME entry — a
+  // topic carrying both markers and a model (embedded GLB) would otherwise decode
+  // the message twice per tracker change (once here, once for the model state).
+  // Moved, not copied: the ObjectRecord is discarded right after.
+  cacheSnapshot(resolved->sequential_uid, std::make_shared<PJ::sdk::SceneEntities>(std::move(*batch)));
   emit repaintRequested();
 }
 
@@ -231,12 +505,342 @@ void SceneEntitiesLayer::refreshNow() {
   const int64_t t = decoded_at_ns_ != PJ::Timepoint{} ? PJ::toRaw(decoded_at_ns_) : ts_first_;
   if (t != 0) {
     renderAt(t);
+    ensureModelStateAt(PJ::fromRaw(t));
   }
 }
 
 void SceneEntitiesLayer::applyOverrides() {
   pass_.setOverrides(overrides_);
   emit repaintRequested();
+}
+
+std::vector<MeshRenderPass::DrawCall> SceneEntitiesLayer::modelDrawCallsForFrame(const FrameContext& frame_ctx) const {
+  std::vector<MeshRenderPass::DrawCall> draws;
+  for (const auto& [entity_id, entity] : entities_) {
+    const auto tf = frame_ctx.lookup(entity.frame_id);
+    if (!tf.has_value()) {
+      continue;
+    }
+    const glm::mat4 frame_model = glm::mat4(tf->matrix());
+    for (std::size_t i = 0; i < entity.models.size(); ++i) {
+      const PJ::sdk::ModelPrimitive& primitive = entity.models[i];
+      MeshRenderPass::DrawCall draw;
+      draw.kind = MeshRenderPass::GeometryKind::kMesh;
+      draw.mesh_key = meshKey(topic_id_, entity_id, i);
+      draw.model = frame_model * poseToMat4(primitive.pose);
+      draw.model = glm::scale(draw.model, scaleToVec3(primitive.scale));
+      if (primitive.override_color) {
+        draw.color = colorToVec4(primitive.color);
+        draw.use_vertex_color = false;
+      } else {
+        draw.color = glm::vec4(1.0f);
+        draw.use_vertex_color = true;
+      }
+      // The viewer-side recolor (config widget) trumps the message's own color,
+      // same as the marker path; the alpha channel is preserved.
+      if (overrides_.color_override) {
+        draw.color = glm::vec4(
+            overrides_.override_color.r, overrides_.override_color.g, overrides_.override_color.b, draw.color.a);
+        draw.use_vertex_color = false;
+      }
+      draws.push_back(std::move(draw));
+    }
+  }
+  return draws;
+}
+
+bool SceneEntitiesLayer::applyEntriesAfter(PJ::SequentialUID after_uid, PJ::SequentialUID target_uid) {
+  if (!target_uid.valid()) {
+    return false;
+  }
+  PJ::ObjectStore& store = ctx_.session->objectStore();
+  pruneSnapshotCacheBelow(store.firstSequentialUID(topic_id_));
+
+  bool applied = false;
+  // Step the topic's sparse UID sequence directly: UID allocation is process-wide,
+  // so consecutive entries of one topic are NOT consecutive integers — each step
+  // is one binary search instead of probing every interleaved value.
+  for (PJ::SequentialUID uid = store.nextUIDAfter(topic_id_, after_uid); uid.valid() && uid <= target_uid;
+       uid = store.nextUIDAfter(topic_id_, uid)) {
+    // Cache hit: re-fold the decoded batch (backward scrub / rebuild) without
+    // re-parsing — the protobuf decode of heavy embedded models is what hitched.
+    if (const auto cached = snapshot_cache_.find(uid); cached != snapshot_cache_.end()) {
+      applySnapshot(*cached->second.batch);
+      applied = true;
+      continue;
+    }
+    auto entry = store.at(topic_id_, uid);
+    if (!entry.has_value() || entry->payload.bytes.empty()) {
+      continue;  // evicted between the UID step and the resolve
+    }
+    const auto binding = ctx_.session->parserBindingForObjectTopic(topic_id_);
+    if (!binding) {
+      continue;
+    }
+    auto obj = parseLocked(binding, entry->timestamp, entry->payload);
+    if (!obj.has_value()) {
+      qCWarning(lcSceneEntitiesLayer) << "applyEntriesAfter parseObject failed:" << QString::fromStdString(obj.error());
+      continue;
+    }
+    auto* snapshot = std::any_cast<PJ::sdk::SceneEntities>(&obj->object);
+    if (snapshot != nullptr) {
+      applySnapshot(*snapshot);
+      // Moved, not copied: the ObjectRecord is discarded at the end of this step.
+      cacheSnapshot(uid, std::make_shared<PJ::sdk::SceneEntities>(std::move(*snapshot)));
+      applied = true;
+    }
+  }
+  return applied;
+}
+
+void SceneEntitiesLayer::cacheSnapshot(PJ::SequentialUID uid, std::shared_ptr<const PJ::sdk::SceneEntities> batch) {
+  if (!uid.valid() || batch == nullptr) {
+    return;
+  }
+  const auto [it, inserted] = snapshot_cache_.try_emplace(uid);
+  if (!inserted) {
+    return;
+  }
+  it->second.bytes = estimateSnapshotBytes(*batch);
+  it->second.batch = std::move(batch);
+  snapshot_cache_bytes_ += it->second.bytes;
+  // Evict lowest-UID first; keep at least one entry so the just-decoded batch
+  // is never thrown away by its own insertion.
+  while (snapshot_cache_bytes_ > kSnapshotCacheMaxBytes && snapshot_cache_.size() > 1) {
+    const auto oldest = snapshot_cache_.begin();
+    snapshot_cache_bytes_ -= oldest->second.bytes;
+    snapshot_cache_.erase(oldest);
+  }
+}
+
+void SceneEntitiesLayer::pruneSnapshotCacheBelow(PJ::SequentialUID first_retained_uid) {
+  if (!first_retained_uid.valid()) {
+    return;
+  }
+  const auto retained_begin = snapshot_cache_.lower_bound(first_retained_uid);
+  for (auto it = snapshot_cache_.begin(); it != retained_begin; ++it) {
+    snapshot_cache_bytes_ -= it->second.bytes;
+  }
+  snapshot_cache_.erase(snapshot_cache_.begin(), retained_begin);
+}
+
+void SceneEntitiesLayer::rebuildModelStateAt(PJ::Timepoint time) {
+  entities_.clear();
+  state_built_at_ = time;
+  last_applied_uid_ = {};
+
+  if (ctx_.session == nullptr) {
+    updateModelFrames();
+    return;
+  }
+  const auto target = ctx_.session->objectStore().latestAt(topic_id_, PJ::toRaw(time));
+  if (!target.has_value()) {
+    updateModelFrames();
+    return;
+  }
+  applyEntriesAfter({}, target->sequential_uid);
+  last_applied_uid_ = target->sequential_uid;
+  dropExpiredEntities(time);
+  updateModelFrames();
+  startMeshLoadsForCurrentEntities();
+}
+
+void SceneEntitiesLayer::ensureModelStateAt(PJ::Timepoint time) {
+  if (ctx_.session == nullptr) {
+    if (!state_built_at_.has_value() || *state_built_at_ != time) {
+      rebuildModelStateAt(time);
+    }
+    return;
+  }
+
+  PJ::ObjectStore& store = ctx_.session->objectStore();
+  const auto target = store.latestAt(topic_id_, PJ::toRaw(time));
+  if (state_built_at_.has_value() && *state_built_at_ == time) {
+    if (target.has_value() && target->sequential_uid == last_applied_uid_) {
+      return;  // Already built at this exact playhead and store entry.
+    }
+    if (!target.has_value() && !last_applied_uid_.valid()) {
+      return;  // Already built empty at this exact playhead.
+    }
+  }
+  // Incremental forward fold: when the playhead only advanced, parse just the
+  // batches appended since the last build instead of replaying the whole history
+  // (which would re-parse — and re-hash heavy embedded models in — every frame).
+  // Anything else (first build, backward scrub, jump) falls back to a full rebuild.
+  const bool can_incremental =
+      state_built_at_.has_value() && last_applied_uid_.valid() && PJ::toRaw(time) >= PJ::toRaw(*state_built_at_);
+  if (can_incremental) {
+    if (target.has_value() && target->sequential_uid >= last_applied_uid_) {
+      bool cursor_outside_window = false;
+      if (target->sequential_uid > last_applied_uid_) {
+        // Eviction is front-only, so "an unseen entry in (last_applied, target] was
+        // evicted" is exactly "the first retained UID passed the cursor". This also
+        // catches a dataset replace, which re-UIDs every entry (fresh generation).
+        // UID gaps alone signal nothing: allocation is process-global, so one
+        // topic's UIDs are inherently sparse.
+        const PJ::SequentialUID first_retained_uid = store.firstSequentialUID(topic_id_);
+        cursor_outside_window = !first_retained_uid.valid() || first_retained_uid > last_applied_uid_;
+      }
+      if (cursor_outside_window) {
+        rebuildModelStateAt(time);
+        emit repaintRequested();
+        return;
+      }
+      const bool applied_new = applyEntriesAfter(last_applied_uid_, target->sequential_uid);
+      last_applied_uid_ = target->sequential_uid;
+      state_built_at_ = time;
+      const bool dropped = dropExpiredEntities(time);
+      updateModelFrames();
+      if (applied_new) {
+        startMeshLoadsForCurrentEntities();
+      }
+      // renderAt's UID guard skips its per-tick repaint while the marker batch is
+      // unchanged, so model-state changes must request their own frame — without
+      // this, an entity erased by lifetime expiry lingers on screen. Gated on real
+      // change: render() also lands here, and an unconditional emit would request
+      // frames forever.
+      if (applied_new || dropped) {
+        emit repaintRequested();
+      }
+      return;
+    }
+  }
+  rebuildModelStateAt(time);
+  // A full rebuild can change the state arbitrarily; renderAt may not repaint
+  // (same active marker batch), so request the frame here. No loop risk: the
+  // next ensure at this playhead takes the built-at early-return above.
+  emit repaintRequested();
+}
+
+void SceneEntitiesLayer::applySnapshot(const PJ::sdk::SceneEntities& snapshot) {
+  for (const PJ::sdk::SceneEntity& entity : snapshot.entities) {
+    entities_[entity.id] = entity;
+  }
+  for (const PJ::sdk::SceneEntityDeletion& deletion : snapshot.deletions) {
+    if (deletion.type == PJ::sdk::SceneEntityDeletion::Type::kAll) {
+      for (auto it = entities_.begin(); it != entities_.end();) {
+        if (it->second.timestamp <= deletion.timestamp) {
+          it = entities_.erase(it);
+        } else {
+          ++it;
+        }
+      }
+      continue;
+    }
+    auto it = entities_.find(deletion.id);
+    if (it != entities_.end() && it->second.timestamp <= deletion.timestamp) {
+      entities_.erase(it);
+    }
+  }
+}
+
+bool SceneEntitiesLayer::dropExpiredEntities(PJ::Timepoint time) {
+  const int64_t time_ns = PJ::toRaw(time);
+  bool dropped = false;
+  for (auto it = entities_.begin(); it != entities_.end();) {
+    if (expiredAt(it->second, time_ns)) {
+      it = entities_.erase(it);
+      dropped = true;
+    } else {
+      ++it;
+    }
+  }
+  return dropped;
+}
+
+void SceneEntitiesLayer::updateModelFrames() {
+  QStringList frames;
+  for (const auto& [_, entity] : entities_) {
+    if (entity.frame_id.empty()) {
+      continue;
+    }
+    const QString frame = QString::fromStdString(entity.frame_id);
+    if (!frames.contains(frame)) {
+      frames.append(frame);
+    }
+  }
+  if (frames != model_frames_) {
+    model_frames_ = std::move(frames);
+    emit fallbackFramesChanged(fallbackFrames());
+  }
+}
+
+void SceneEntitiesLayer::startMeshLoadsForCurrentEntities() {
+  for (const auto& [entity_id, entity] : entities_) {
+    for (std::size_t i = 0; i < entity.models.size(); ++i) {
+      startMeshLoadIfNeeded(meshKey(topic_id_, entity_id, i), entity.models[i]);
+    }
+  }
+}
+
+void SceneEntitiesLayer::startMeshLoadIfNeeded(const std::string& key, const PJ::sdk::ModelPrimitive& primitive) {
+  const std::string signature = sourceSignature(primitive);
+  if (signature.empty()) {
+    return;
+  }
+  auto it =
+      std::find_if(mesh_loads_.begin(), mesh_loads_.end(), [&key](const auto& record) { return record->key == key; });
+  if (it != mesh_loads_.end() && (*it)->signature == signature) {
+    return;
+  }
+  // Same key, new source bytes: blank the stale mesh until the reload lands.
+  if (it != mesh_loads_.end()) {
+    mesh_pass_->setMeshData(key, MeshData{});
+  }
+
+  QByteArray bytes;
+  if (!primitive.data.empty()) {
+    bytes =
+        QByteArray(reinterpret_cast<const char*>(primitive.data.data()), static_cast<qsizetype>(primitive.data.size()));
+  } else {
+    QString error;
+    const auto fetched = readUrlBytesBlocking(QString::fromStdString(primitive.url), &error);
+    if (!fetched.has_value()) {
+      qCWarning(lcSceneEntitiesLayer) << "ModelPrimitive fetch failed for" << QString::fromStdString(primitive.url)
+                                      << ":" << error;
+      auto record = std::make_unique<MeshLoadRecord>();
+      record->key = key;
+      record->signature = signature;
+      record->consumed = true;
+      record->failed = true;
+      if (it != mesh_loads_.end()) {
+        *it = std::move(record);
+      } else {
+        mesh_loads_.push_back(std::move(record));
+      }
+      return;
+    }
+    bytes = *fetched;
+  }
+
+  auto record = std::make_unique<MeshLoadRecord>();
+  record->key = key;
+  record->signature = signature;
+  record->future = mesh_loader_->loadFromMemory(bytes, hintFromMediaType(primitive.media_type, primitive.url));
+  if (it != mesh_loads_.end()) {
+    *it = std::move(record);
+  } else {
+    mesh_loads_.push_back(std::move(record));
+  }
+}
+
+void SceneEntitiesLayer::pollMeshLoads() {
+  bool changed = false;
+  for (const auto& record : mesh_loads_) {
+    if (record->consumed || !record->future.isFinished()) {
+      continue;
+    }
+    MeshData data = record->future.result();
+    record->failed = !data.ok;
+    if (data.ok) {
+      mesh_pass_->setMeshData(record->key, std::move(data));
+    }
+    record->consumed = true;
+    changed = true;
+  }
+  if (changed) {
+    emit repaintRequested();
+  }
 }
 
 void SceneEntitiesLayer::setOpacity(float opacity) {

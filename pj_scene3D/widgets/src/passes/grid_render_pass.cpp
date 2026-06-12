@@ -8,11 +8,12 @@
 #include <QOpenGLContext>
 #include <QOpenGLExtraFunctions>
 #include <QOpenGLVersionFunctionsFactory>
-#include <array>
+#include <algorithm>
 #include <stdexcept>
 #include <string>
 #include <string_view>
 #include <variant>
+#include <vector>
 
 #include "pj_scene3d_widgets/gl/gl_functions.h"
 
@@ -31,27 +32,45 @@ uniform vec3 u_color;
 void main() { frag_color = vec4(u_color, 1.0); }
 )";
 
-std::array<glm::vec3, 44> makeGridVertices(float extent_m) {
-  std::array<glm::vec3, 44> vertices{};
-  const float scale = extent_m / 10.0f;
-  std::size_t index = 0U;
-
-  for (int i = 0; i <= 10; ++i) {
-    const float offset = (static_cast<float>(i) - 5.0f) * scale;
-    vertices[index] = glm::vec3{-5.0f * scale, offset, 0.0f};
-    ++index;
-    vertices[index] = glm::vec3{5.0f * scale, offset, 0.0f};
-    ++index;
+// Line grid: (divisions+1) lines per axis, 2 verts per line.
+std::vector<glm::vec3> makeLineVertices(float extent_m, int divisions) {
+  std::vector<glm::vec3> vertices;
+  vertices.reserve(static_cast<std::size_t>(divisions + 1) * 4U);
+  const float half = extent_m * 0.5f;
+  const float cell = extent_m / static_cast<float>(divisions);
+  for (int i = 0; i <= divisions; ++i) {
+    const float offset = -half + static_cast<float>(i) * cell;
+    vertices.emplace_back(-half, offset, 0.0f);
+    vertices.emplace_back(half, offset, 0.0f);
+    vertices.emplace_back(offset, -half, 0.0f);
+    vertices.emplace_back(offset, half, 0.0f);
   }
+  return vertices;
+}
 
-  for (int i = 0; i <= 10; ++i) {
-    const float offset = (static_cast<float>(i) - 5.0f) * scale;
-    vertices[index] = glm::vec3{offset, -5.0f * scale, 0.0f};
-    ++index;
-    vertices[index] = glm::vec3{offset, 5.0f * scale, 0.0f};
-    ++index;
+// Filled checkerboard: alternate cells as solid quads (2 triangles each); the
+// remaining cells show the background through, giving the classic checker look.
+std::vector<glm::vec3> makeCellVertices(float extent_m, int divisions) {
+  std::vector<glm::vec3> vertices;
+  const float half = extent_m * 0.5f;
+  const float cell = extent_m / static_cast<float>(divisions);
+  for (int i = 0; i < divisions; ++i) {
+    for (int j = 0; j < divisions; ++j) {
+      if (((i + j) & 1) != 0) {
+        continue;
+      }
+      const float x0 = -half + static_cast<float>(i) * cell;
+      const float y0 = -half + static_cast<float>(j) * cell;
+      const float x1 = x0 + cell;
+      const float y1 = y0 + cell;
+      vertices.emplace_back(x0, y0, 0.0f);
+      vertices.emplace_back(x1, y0, 0.0f);
+      vertices.emplace_back(x1, y1, 0.0f);
+      vertices.emplace_back(x0, y0, 0.0f);
+      vertices.emplace_back(x1, y1, 0.0f);
+      vertices.emplace_back(x0, y1, 0.0f);
+    }
   }
-
   return vertices;
 }
 
@@ -67,8 +86,18 @@ void GridRenderPass::initializeGL() {
     program_.reset();
     return;
   }
+  geometry_dirty_ = true;
+  rebuildGeometry();
+  initialized_ = true;
+}
 
-  const std::array<glm::vec3, 44> vertices = makeGridVertices(extent_m_);
+void GridRenderPass::rebuildGeometry() {
+  if (!geometry_dirty_) {
+    return;
+  }
+  const std::vector<glm::vec3> vertices =
+      style_ == Style::kLines ? makeLineVertices(extent_m_, divisions_) : makeCellVertices(extent_m_, divisions_);
+  vertex_count_ = static_cast<int>(vertices.size());
   vao_.bind();
   vbo_.uploadStatic(GL_ARRAY_BUFFER, vertices.data(), static_cast<GLsizeiptr>(sizeof(glm::vec3) * vertices.size()));
   withGlFunctions([](auto& functions) {
@@ -76,12 +105,15 @@ void GridRenderPass::initializeGL() {
     functions.glVertexAttribPointer(0U, 3, GL_FLOAT, GL_FALSE, static_cast<GLsizei>(sizeof(glm::vec3)), nullptr);
   });
   vao_.unbind();
-
-  initialized_ = true;
+  geometry_dirty_ = false;
 }
 
 void GridRenderPass::render(const ViewParams& view_params, [[maybe_unused]] const FrameContext& frame_ctx) {
   if (!initialized_ || program_ == nullptr) {
+    return;
+  }
+  rebuildGeometry();  // lazy: extent/divisions/style changed since last frame
+  if (vertex_count_ == 0) {
     return;
   }
 
@@ -91,7 +123,9 @@ void GridRenderPass::render(const ViewParams& view_params, [[maybe_unused]] cons
   program_->setMat4("u_mvp", mvp);
   program_->setVec3("u_color", color_);
   vao_.bind();
-  withGlFunctions([](auto& functions) { functions.glDrawArrays(GL_LINES, 0, 44); });
+  const GLenum mode = style_ == Style::kLines ? GL_LINES : GL_TRIANGLES;
+  const int count = vertex_count_;
+  withGlFunctions([mode, count](auto& functions) { functions.glDrawArrays(mode, 0, count); });
   vao_.unbind();
   unuseProgram();
 }
@@ -110,7 +144,25 @@ void GridRenderPass::setColor(const glm::vec3& color) {
 }
 
 void GridRenderPass::setExtentMetres(float extent_m) {
-  extent_m_ = extent_m;
+  if (extent_m_ != extent_m) {
+    extent_m_ = extent_m;
+    geometry_dirty_ = true;
+  }
+}
+
+void GridRenderPass::setDivisions(int divisions) {
+  divisions = std::clamp(divisions, 1, 200);
+  if (divisions_ != divisions) {
+    divisions_ = divisions;
+    geometry_dirty_ = true;
+  }
+}
+
+void GridRenderPass::setStyle(Style style) {
+  if (style_ != style) {
+    style_ = style;
+    geometry_dirty_ = true;
+  }
 }
 
 }  // namespace pj::scene3d

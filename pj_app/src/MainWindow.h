@@ -29,6 +29,7 @@ class QButtonGroup;
 class QCloseEvent;
 class QMenu;
 class QPushButton;
+class QSettings;
 class QStackedWidget;
 class QToolButton;
 
@@ -414,6 +415,11 @@ class MainWindow : public QMainWindow {
   DiagnosticHistory* diagnostic_history_ = nullptr;
   QAction* undo_action_ = nullptr;
   QAction* redo_action_ = nullptr;
+  // App-wide QSettings instance injected into each Scene3DDockWidget
+  // (setSettings) for URDF package-resolver persistence — per-MCAP package
+  // mappings and global search roots. Owned here so every dock shares one
+  // instance whose lifetime outlasts them all.
+  std::unique_ptr<QSettings> app_settings_;
   std::unique_ptr<AppSession> session_;
   // Owns the per-dataset 3D TF buffers + load-time ingest. Lives here in the
   // shell (not pj_runtime) so the runtime stays domain-neutral. Declared after

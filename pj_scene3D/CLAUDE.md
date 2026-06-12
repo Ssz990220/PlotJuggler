@@ -6,6 +6,9 @@ paths, laserscans), as a sibling widget family to `pj_scene2D`.
 
 The detailed set of requirements and goals lives in `pj_scene3D/docs/REQUIREMENTS.md`.
 You MUST read this file at the beginning of every section and after compacting.
+The as-built design — rendering pipeline (HDR/tonemap/SSAO/EDL), URDF/mesh
+subsystem, `package://` asset resolution, scene-controls bindings — lives in
+`pj_scene3D/docs/ARCHITECTURE.md`.
 
 ## Decoding boundary (important)
 
@@ -56,10 +59,42 @@ still holds for everything else.
     (a `glBindVertexArray(non-gen name)` flood + the map texture vanishing). Each
     view's GL context is therefore independent, which means a `QOpenGLWidget`
     *recreates* its context when ADS reparents the dock (dock/float/split). VAOs
-    and FBOs are per-context (never shared), so every `IRenderPass`/`Scene3DLayer`
-    (and `ArrowGizmo`) implements `releaseGL()`; `SceneViewWidget` calls it from
-    the dying context's `aboutToBeDestroyed` and rebuilds in `initializeGL`, so a
-    recreated context self-heals instead of binding stale handles or going blank.
+    and FBOs are per-context (never shared). Mesh textures are also
+    per-context: `MeshRenderPass::releaseGL()` clears its `Texture2D` cache under
+    the dying context and lazily reuploads path-keyed or embedded textures after
+    recreation.
+    Every `IRenderPass`/`Scene3DLayer` (and `ArrowGizmo`) implements
+    `releaseGL()`; `SceneViewWidget` calls it from the dying context's
+    `aboutToBeDestroyed` and rebuilds in `initializeGL`, so a recreated context
+    self-heals instead of binding stale handles or going blank. Since Phase 0A
+    the scene renders into `SceneHdrFbo` (a multisample RGBA16F+DEPTH32F chain
+    at the backing FBO's achieved sample count, resolved to single-sample and
+    presented via a fullscreen passthrough into `defaultFramebufferObject()`).
+    The chain and the present program are per-context like everything else:
+    released in `releaseGlResources()`, lazily rebuilt after recreation.
+  - Scene-wide look controls live on `SceneViewWidget` setters +
+    `CompositeParams` + `mesh_shading_params.h`. `pj_app`'s `Scene3DConfigPanel`
+    drives grid style/size/divisions/visibility, gizmo size/opacity/visibility,
+    mesh/collision opacity/visibility, and the Model/URDF selector (persisted in
+    QSettings under `pj_scene3d/scene_controls/*`). The phases-0B/D/B knobs
+    (tonemap/exposure/saturation/SSAO/EDL) are runtime APIs with baked defaults
+    — no app UI; the mesh_viewer demo exposes them for look-dev.
+  - `MeshData` carries per-vertex UV0 + tangents plus a per-`SubMesh` `Material`
+    (glTF 2.0 metallic-roughness, read via assimp's material abstraction so it
+    also covers DAE/OBJ/FBX): base-color/metallic-roughness/normal/occlusion/
+    emissive maps + factors + alpha mode. Each `TextureSource` is EITHER an
+    external file path OR inline bytes (embedded glTF/GLB `*N` images, still
+    PNG/JPEG-encoded), keyed by content hash. `MeshRenderPass` decodes both
+    (`QImage::fromData` for embedded), uploads color/emissive sRGB and data maps
+    (MR/normal/AO) linear, caches per-context by key plus texture color space,
+    and does full metalness-workflow shading + normal mapping + emissive. Visual
+    draws are split into opaque and best-effort translucent buckets (layer
+    opacity, override alpha, or glTF `BLEND`; no depth sort). Sources
+    without PBR (STL, procedural primitives) fall back to the scene-wide
+    `MeshShadingParams`.
+    Only compressed embedded images are supported (raw-RGBA `mHeight>0`, rare, is
+    skipped). Environment/IBL reflection is still out of scope — metals get
+    specular highlights but no environment reflection.
 
 # Validation
 
@@ -84,6 +119,7 @@ sections where we struggle to find the correct solution.
 
 # Collaboration model
 
-For this module, **Codex writes the implementation code**; Claude is the
-lead engineer + project manager (drafts the design + Codex prompts, reviews
-every Codex deliverable, surfaces diffs for user-approved commits).
+Claude implements directly (design, code, review, verification) and surfaces
+diffs for user-approved commits. **Codex delegation was discontinued by the
+User on 2026-06-09** — do not dispatch implementation work to Codex for this
+module.

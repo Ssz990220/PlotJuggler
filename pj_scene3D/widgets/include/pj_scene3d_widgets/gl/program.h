@@ -31,6 +31,10 @@ class Program {
   void setMat4(const char* name, const glm::mat4& m);
   void setMat3(const char* name, const glm::mat3& m);
   void setVec3(const char* name, const glm::vec3& v);
+  // Upload `count` consecutive vec2/vec3 elements into a GLSL array uniform.
+  // Like every setter here, requires use() first (glUniform*, not glProgramUniform*).
+  void setVec2Array(const char* name, const glm::vec2* values, int count);
+  void setVec3Array(const char* name, const glm::vec3* values, int count);
   void setVec4(const char* name, const glm::vec4& v);
   void setFloat(const char* name, float v);
   void setInt(const char* name, int v);

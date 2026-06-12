@@ -1,0 +1,51 @@
+<?xml version="1.0"?>
+<robot name="two_link">
+  <!-- A named material declared at the robot level, referenced by name below. -->
+  <material name="Blue">
+    <color rgba="0.0 0.0 1.0 1.0"/>
+  </material>
+
+  <link name="base_link">
+    <!-- Mesh via package:// (enters the resolver chain). -->
+    <visual>
+      <origin xyz="0 0 0.1" rpy="0 0 1.5708"/>
+      <geometry>
+        <mesh filename="package://demo_description/meshes/base.dae" scale="0.5 0.5 0.5"/>
+      </geometry>
+      <material name="Blue"/>
+    </visual>
+    <!-- A second visual on the same link: an inline-colored box primitive. -->
+    <visual>
+      <origin xyz="0.2 0 0" rpy="0 0 0"/>
+      <geometry>
+        <box size="0.3 0.2 0.1"/>
+      </geometry>
+      <material name="Red">
+        <color rgba="1.0 0.0 0.0 1.0"/>
+      </material>
+    </visual>
+    <!-- A bare relative collision mesh (must NOT enter the package chain). -->
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="meshes/base_collision.stl"/>
+      </geometry>
+    </collision>
+  </link>
+
+  <link name="arm_link">
+    <visual>
+      <origin xyz="0 0 0.5" rpy="0 0 0"/>
+      <geometry>
+        <cylinder radius="0.05" length="1.0"/>
+      </geometry>
+    </visual>
+    <!-- A bare relative path that looks like a package name: the guard must
+         resolve this against urdf_dir, NOT enter the package search. -->
+    <collision>
+      <geometry>
+        <mesh filename="robotiq_arg85_description/meshes/gripper.stl"/>
+      </geometry>
+    </collision>
+  </link>
+</robot>

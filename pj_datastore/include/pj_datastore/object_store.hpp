@@ -23,6 +23,7 @@
 #include "pj_base/expected.hpp"
 #include "pj_base/span.hpp"
 #include "pj_base/types.hpp"
+#include "pj_datastore/sequential_uid.hpp"
 
 namespace PJ {
 
@@ -67,12 +68,14 @@ using LazyCallback = std::function<sdk::PayloadView()>;
 
 struct ObjectEntry {
   Timestamp timestamp = 0;
+  SequentialUID sequential_uid;
   // Eager owned bytes or a lazy resolver; resolveEntry discriminates via std::get_if.
   std::variant<SharedBuffer, LazyCallback> payload;
 };
 
 struct ResolvedObjectEntry {
   Timestamp timestamp = 0;
+  SequentialUID sequential_uid;
   // Non-owning Span over the bytes plus an opaque anchor (any shared_ptr<T>).
   // Consumers read `payload.bytes`; retain `payload.anchor` to keep the bytes
   // alive past the resolve call. resolveEntry never casts the anchor.
@@ -162,8 +165,19 @@ class ObjectStore {
   std::optional<ResolvedObjectEntry> latestAt(ObjectTopicId id, Timestamp timestamp) const;
 
   std::optional<ResolvedObjectEntry> at(ObjectTopicId id, size_t index) const;
+  // Resolve by stable SequentialUID. Returns nullopt when the entry was evicted
+  // or the UID is invalid / from another topic generation.
+  std::optional<ResolvedObjectEntry> at(ObjectTopicId id, SequentialUID sequential_uid) const;
 
   std::optional<size_t> indexAt(ObjectTopicId id, Timestamp timestamp) const;
+  // First retained entry UID for this topic, or invalid when the topic is empty
+  // or unknown. Useful for detecting retention gaps in replay cursors.
+  SequentialUID firstSequentialUID(ObjectTopicId id) const;
+  // UID of the first retained entry with sequential_uid > after, or invalid when
+  // none remains (an invalid `after` starts from the first retained entry). UID
+  // allocation is process-global, so one topic's UIDs are sparse — replay cursors
+  // must step with this instead of probing every intermediate value.
+  SequentialUID nextUIDAfter(ObjectTopicId id, SequentialUID after) const;
 
   size_t entryCount(ObjectTopicId id) const;
 

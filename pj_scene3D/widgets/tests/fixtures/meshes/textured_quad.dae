@@ -1,0 +1,100 @@
+<?xml version="1.0" encoding="utf-8"?>
+<COLLADA xmlns="http://www.collada.org/2005/11/COLLADASchema" version="1.4.1">
+  <asset>
+    <created>2026-06-09T00:00:00Z</created>
+    <modified>2026-06-09T00:00:00Z</modified>
+    <unit name="meter" meter="1"/>
+    <up_axis>Z_UP</up_axis>
+  </asset>
+  <library_images>
+    <image id="red-image" name="red_4x4">
+      <init_from>red_4x4.png</init_from>
+    </image>
+  </library_images>
+  <library_effects>
+    <effect id="red-effect">
+      <profile_COMMON>
+        <newparam sid="red-surface">
+          <surface type="2D">
+            <init_from>red-image</init_from>
+          </surface>
+        </newparam>
+        <newparam sid="red-sampler">
+          <sampler2D>
+            <source>red-surface</source>
+          </sampler2D>
+        </newparam>
+        <technique sid="common">
+          <lambert>
+            <diffuse>
+              <texture texture="red-sampler" texcoord="UVSET0"/>
+            </diffuse>
+          </lambert>
+        </technique>
+      </profile_COMMON>
+    </effect>
+  </library_effects>
+  <library_materials>
+    <material id="red-material" name="red-material">
+      <instance_effect url="#red-effect"/>
+    </material>
+  </library_materials>
+  <library_geometries>
+    <geometry id="quad-mesh" name="textured_quad">
+      <mesh>
+        <source id="quad-positions">
+          <float_array id="quad-positions-array" count="12">
+            -0.5 -0.5 0  0.5 -0.5 0  0.5 0.5 0  -0.5 0.5 0
+          </float_array>
+          <technique_common>
+            <accessor source="#quad-positions-array" count="4" stride="3">
+              <param name="X" type="float"/>
+              <param name="Y" type="float"/>
+              <param name="Z" type="float"/>
+            </accessor>
+          </technique_common>
+        </source>
+        <source id="quad-texcoords">
+          <float_array id="quad-texcoords-array" count="8">
+            0 0  1 0  1 1  0 1
+          </float_array>
+          <technique_common>
+            <accessor source="#quad-texcoords-array" count="4" stride="2">
+              <param name="S" type="float"/>
+              <param name="T" type="float"/>
+            </accessor>
+          </technique_common>
+        </source>
+        <vertices id="quad-vertices">
+          <input semantic="POSITION" source="#quad-positions"/>
+        </vertices>
+        <triangles material="red-symbol" count="2">
+          <input semantic="VERTEX" source="#quad-vertices" offset="0"/>
+          <input semantic="TEXCOORD" source="#quad-texcoords" offset="1" set="0"/>
+          <p>
+            0 0  1 1  2 2
+            0 0  2 2  3 3
+          </p>
+        </triangles>
+      </mesh>
+    </geometry>
+  </library_geometries>
+  <library_visual_scenes>
+    <visual_scene id="scene" name="scene">
+      <node id="quad-node" name="textured_quad" type="NODE">
+        <instance_geometry url="#quad-mesh">
+          <bind_material>
+            <technique_common>
+              <instance_material symbol="red-symbol" target="#red-material">
+                <bind_vertex_input semantic="UVSET0" input_semantic="TEXCOORD" input_set="0"/>
+              </instance_material>
+            </technique_common>
+          </bind_material>
+        </instance_geometry>
+      </node>
+    </visual_scene>
+  </library_visual_scenes>
+  <scene>
+    <instance_visual_scene url="#scene"/>
+  </scene>
+</COLLADA>

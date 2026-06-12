@@ -20,6 +20,15 @@ class AxisRenderPass : public IRenderPass {
   void setAxisLength(float length_m);
   [[nodiscard]] float axisLength() const noexcept;
 
+  // Triad opacity (Part C "Gizmos opacity"): 1.0 = solid annotation (today's
+  // look); lower values blend with the scene via the annotation blend mode.
+  void setOpacity(float opacity) {
+    opacity_ = opacity;
+  }
+  [[nodiscard]] float opacity() const noexcept {
+    return opacity_;
+  }
+
  private:
   void rebuildGizmo();
 
@@ -28,6 +37,7 @@ class AxisRenderPass : public IRenderPass {
   // Per-axis radii are scaled off length so changes to setAxisLength keep
   // the silhouette aesthetically consistent.
   float axis_length_{0.15f};
+  float opacity_{1.0f};
   bool initialized_{false};
   ArrowGizmo arrow_;
 };

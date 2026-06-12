@@ -5,6 +5,7 @@
 
 #include <QEvent>
 #include <QGuiApplication>
+#include <QLoggingCategory>
 #include <QMouseEvent>
 #include <QOpenGLContext>
 #include <QOpenGLFunctions_4_5_Core>
@@ -13,16 +14,22 @@
 #include <QSurfaceFormat>
 #include <QWheelEvent>
 #include <algorithm>
+#include <cmath>
+#include <string_view>
 #include <utility>
+#include <variant>
 
 #include "pj_scene3d_core/tf/tf_buffer.h"
 #include "pj_scene3d_widgets/gl/debug.h"
+#include "pj_scene3d_widgets/gl/framebuffer.h"
 #include "pj_scene3d_widgets/render_pass.h"
 #include "pj_scene3d_widgets/scene3d_layer.h"
 
 namespace pj::scene3d {
 
 namespace {
+
+Q_LOGGING_CATEGORY(lcSceneViewWidget, "pj.scene3d.scene_view")
 
 QSurfaceFormat make_default_format() {
   QSurfaceFormat fmt;
@@ -38,6 +45,95 @@ QSurfaceFormat make_default_format() {
   fmt.setSwapInterval(1);  // vsync — caps render at ~60Hz on standard monitors
   return fmt;
 }
+
+constexpr std::string_view kPresentVertSrc = R"GLSL(
+#version 450 core
+out vec2 v_uv;
+
+void main() {
+  float x = float(gl_VertexID == 1) * 4.0 - 1.0;
+  float y = float(gl_VertexID == 2) * 4.0 - 1.0;
+  gl_Position = vec4(x, y, 0.0, 1.0);
+  v_uv = vec2(x, y) * 0.5 + 0.5;
+}
+)GLSL";
+
+// Composite/tonemap present (Phase 0B). The scene FBO now holds LINEAR-light
+// HDR; this pass tonemaps and applies the single manual sRGB encode (the
+// backing FBO is not sRGB-capable; GL_FRAMEBUFFER_SRGB stays disabled).
+// AgX: adapted from three.js tonemapping_pars_fragment (MIT; Filament/Sobotka
+// derived). ACES: Narkowicz (CC0). sRGB OETF: IEC 61966-2-1. Full license
+// texts: pj_scene3D/THIRDPARTY.md. Will become CompositePass : IPostPass when
+// EDL/SSAO inputs land (plan §A.6).
+constexpr std::string_view kPresentFragSrc = R"GLSL(
+#version 450 core
+in vec2 v_uv;
+out vec4 frag;
+uniform sampler2D u_scene;
+uniform sampler2D u_depth;
+uniform sampler2D u_ao;
+uniform bool u_has_ao = false;
+uniform sampler2D u_edl;
+uniform bool u_has_edl = false;
+uniform int u_tonemap_mode = 1;  // 0 None, 1 ACES, 2 AgX
+uniform float u_exposure = 1.1;
+uniform float u_ao_strength = 1.0;
+uniform float u_saturation = 1.2;  // post-tonemap saturation boost
+
+vec3 sRGB(vec3 c) {
+  bvec3 k = lessThanEqual(c, vec3(0.0031308));
+  return mix(1.055 * pow(max(c, vec3(0.0)), vec3(1.0 / 2.4)) - 0.055, c * 12.92, vec3(k));
+}
+vec3 ACES(vec3 x) {
+  return clamp((x * (2.51 * x + 0.03)) / (x * (2.43 * x + 0.59) + 0.14), 0.0, 1.0);
+}
+vec3 agxContrast(vec3 x) {
+  vec3 x2 = x * x;
+  vec3 x4 = x2 * x2;
+  return 15.5 * x4 * x2 - 40.14 * x4 * x + 31.96 * x4 - 6.868 * x2 * x + 0.4298 * x2 + 0.1191 * x - 0.00232;
+}
+// GLSL mat3 ctors are COLUMN-major; these match three.js's AgXInset/Outset
+// columns exactly. (Transposing them tints greys blue: the transposed outset's
+// blue row sums to ~1.22.)
+const mat3 AGX_IN = mat3(0.856627, 0.137319, 0.111898, 0.0951212, 0.761242, 0.0767994, 0.0482516, 0.101439, 0.811302);
+const mat3 AGX_OUT = mat3(1.127101, -0.141330, -0.141330, -0.110607, 1.157824, -0.110607, -0.016494, -0.016494, 1.251936);
+const mat3 S2R = mat3(0.627404, 0.069097, 0.016392, 0.329282, 0.919540, 0.088013, 0.043314, 0.011361, 0.895595);
+const mat3 R2S = mat3(1.660500, -0.124551, -0.018151, -0.587641, 1.132900, -0.100579, -0.072850, -0.008349, 1.118730);
+vec3 AgX(vec3 c) {
+  c = S2R * c;
+  c = AGX_IN * c;
+  c = max(c, vec3(1e-10));
+  c = log2(c);
+  c = clamp((c + 12.47393) / (4.026069 + 12.47393), 0.0, 1.0);
+  c = agxContrast(c);
+  c = AGX_OUT * c;
+  c = pow(max(c, vec3(0.0)), vec3(2.2));
+  c = R2S * c;
+  return clamp(c, 0.0, 1.0);
+}
+void main() {
+  vec4 scene = texture(u_scene, v_uv);
+  float depth = texture(u_depth, v_uv).r;
+  vec3 hdr = scene.rgb * u_exposure;
+  if (u_has_ao) {
+    hdr *= mix(1.0, texture(u_ao, v_uv).r, u_ao_strength);
+  }
+  if (u_has_edl) {
+    hdr *= texture(u_edl, v_uv).r;  // eye-dome shade factor (1 = untouched)
+  }
+  vec3 graded = u_tonemap_mode == 1 ? ACES(hdr) : u_tonemap_mode == 2 ? AgX(hdr) : clamp(hdr, vec3(0.0), vec3(1.0));
+  float luma = dot(graded, vec3(0.2126, 0.7152, 0.0722));
+  graded = clamp(mix(vec3(luma), graded, u_saturation), vec3(0.0), vec3(1.0));
+  if (depth >= 0.999999) {
+    graded = clamp(scene.rgb, vec3(0.0), vec3(1.0));
+  }
+  // scene.a is the annotation marker (TF axes/HUD write 0): bypass the grade so
+  // synthetic markers keep their flat vivid colors, while data objects (alpha 1)
+  // get the filmic look. MSAA resolve averages the marker, feathering the seam.
+  vec3 ldr = mix(clamp(scene.rgb, vec3(0.0), vec3(1.0)), graded, scene.a);
+  frag = vec4(sRGB(ldr), 1.0);  // alpha forced 1.0: the Wayland opaque-surface invariant
+}
+)GLSL";
 
 }  // namespace
 
@@ -133,6 +229,15 @@ void SceneViewWidget::initializeGL() {
       context(), &QOpenGLContext::aboutToBeDestroyed, this, &SceneViewWidget::releaseGlResources, Qt::DirectConnection);
 
   gl::installDebugCallback();
+  // The HDR scene FBO must match the backing FBO's ACHIEVED sample count (the
+  // driver may grant fewer than the 4 samples make_default_format() requests);
+  // <=1 selects the single-sample chain. Attachments are (re)allocated lazily in
+  // paintGL, sized from the viewport Qt set for the backing FBO.
+  scene_samples_ = std::max(context()->format().samples(), 0);
+  scene_fbo_.configure(scene_samples_);
+  initializePresentProgram();
+  scene_fbo_fallback_logged_ = false;  // a fresh context may succeed; re-arm the warning
+
   axes_.initializeGL();
   grid_.initializeGL();
   overlay_.initializeGL();
@@ -140,6 +245,16 @@ void SceneViewWidget::initializeGL() {
   // dynamically after the widget is already realised, so initializing
   // here would miss late entries. releaseGlResources() reset their lazy-init
   // guards, so they rebuild on the first paint after a context recreation.
+}
+
+void SceneViewWidget::initializePresentProgram() {
+  auto result = gl::Program::fromSources(kPresentVertSrc, kPresentFragSrc);
+  if (auto* program = std::get_if<gl::Program>(&result); program != nullptr) {
+    present_program_.emplace(std::move(*program));
+  } else {
+    qCWarning(lcSceneViewWidget) << "present shader error:" << std::get<std::string>(result).c_str();
+    present_program_.reset();
+  }
 }
 
 void SceneViewWidget::releaseGlResources() {
@@ -159,14 +274,151 @@ void SceneViewWidget::releaseGlResources() {
       layer->releaseGL();
     }
   }
+  // The HDR chain and the present program/VAO are per-context like every other
+  // GL object here; zeroing them under the dying context forces a clean lazy
+  // rebuild in the next context (initializeGL + first paint).
+  scene_fbo_.releaseGL();
+  ssao_.releaseGL();
+  edl_.releaseGL();
+  present_program_.reset();
+  present_vao_ = gl::VertexArray{};
   doneCurrent();
 }
 
 void SceneViewWidget::resizeGL(int /*w*/, int /*h*/) {
-  // Viewport is set by Qt; nothing extra to do.
+  // Nothing to do: Qt sets the backing-FBO viewport itself, and the HDR scene
+  // FBO is (re)sized lazily in paintGL from that viewport's device-pixel size.
+  // (Qt 6 passes LOGICAL units here, so the viewport read is the exact source.)
 }
 
 void SceneViewWidget::paintGL() {
+  auto* ctx = QOpenGLContext::currentContext();
+  auto* funcs = QOpenGLVersionFunctionsFactory::get<QOpenGLFunctions_4_5_Core>(ctx);
+  if (funcs == nullptr) {
+    return;
+  }
+
+  // Device-pixel size: Qt bound the backing FBO and set the viewport to its
+  // exact device size right before paintGL — reading it back is exact even at
+  // fractional DPR (Qt 6 passes LOGICAL units to resizeGL, so that is not).
+  GLint viewport[4] = {0, 0, 0, 0};
+  funcs->glGetIntegerv(GL_VIEWPORT, viewport);
+  device_width_px_ = viewport[2];
+  device_height_px_ = viewport[3];
+
+  // (Re)allocate the off-screen HDR chain; idempotent at unchanged size. If the
+  // chain or the present shader is unavailable, fall back to rendering directly
+  // into the backing FBO exactly as before Phase 0A (degrade, never go blank).
+  scene_fbo_.resize(device_width_px_, device_height_px_);
+  const bool offscreen = scene_fbo_.ready() && present_program_.has_value();
+  if (offscreen) {
+    scene_fbo_.bind();
+    funcs->glViewport(0, 0, device_width_px_, device_height_px_);
+  } else if (!scene_fbo_fallback_logged_) {
+    qCWarning(lcSceneViewWidget) << "HDR scene FBO unavailable — rendering directly into the backing framebuffer";
+    scene_fbo_fallback_logged_ = true;
+  }
+
+  const float aspect = static_cast<float>(width()) / static_cast<float>(std::max(height(), 1));
+  // viewport_width/height_px keep their historical LOGICAL-pixel semantics: the
+  // HUD overlay derives the device-pixel ratio as saved_vp[3] / viewport_height_px.
+  const ViewParams view_params{
+      camera_->viewMatrix(), camera_->projMatrix(aspect), height(), width(), camera_->position(),
+  };
+
+  // Grid never consults the TF buffer; safe to render even when tf_ is null.
+  static const TransformBuffer kEmptyBuffer;
+  const TransformBuffer& tf_ref = tf_ ? *tf_ : kEmptyBuffer;
+  // The TF-resolution triple, bundled for the passes/layers that need it.
+  // fixed_frame_ is the long-lived member (no per-frame string copy).
+  const FrameContext frame_ctx{tf_ref, fixed_frame_, render_time_};
+
+  // On the direct-to-backing fallback the legacy Wayland alpha guard applies
+  // (set inside renderScene, after the clear); the off-screen path instead
+  // forces alpha=1.0 in the present shader.
+  renderScene(view_params, frame_ctx, /*mask_alpha_writes=*/!offscreen);
+
+  if (!offscreen) {
+    // Restore the alpha write mask so the next frame's glClear repaints alpha=1.0.
+    funcs->glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+    return;
+  }
+
+  // Resolve MSAA -> single-sample, then present into the backing FBO. The blit
+  // and the fullscreen draw must cover the full target: clear any pass-leaked
+  // state (scissor/blend/depth) first rather than assuming the passes left it
+  // clean.
+  funcs->glDisable(GL_SCISSOR_TEST);
+  funcs->glDisable(GL_BLEND);
+  funcs->glDisable(GL_DEPTH_TEST);
+  funcs->glDepthMask(GL_TRUE);
+  funcs->glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+  scene_fbo_.resolve();
+
+  // SSAO over the resolved depth (Phase D). Runs in the post-chain state set
+  // above; binds its own FBOs, so it must precede the bindDefault below. The
+  // present degrades to no-AO (u_has_ao=0) when the pass is unavailable.
+  if (composite_params_.ssao_enabled) {
+    ssao_.initializeGL();
+    ssao_.resize(device_width_px_, device_height_px_);
+    ssao_.setDepthTexture(scene_fbo_.resolvedDepthTextureId());
+    ssao_.renderAo(view_params);
+  }
+  if (composite_params_.edl_enabled) {
+    edl_.initializeGL();
+    edl_.resize(device_width_px_, device_height_px_);
+    edl_.setDepthTexture(scene_fbo_.resolvedDepthTextureId());
+    edl_.renderEdl(view_params);
+  }
+
+  // Present as a fullscreen passthrough DRAW (not a blit): the backing FBO is
+  // itself multisampled, and single->MSAA blits are invalid while MSAA->MSAA
+  // blits require identical formats (ours is RGBA16F, Qt's is RGBA8). The
+  // shader forces alpha to 1.0, which keeps the Wayland opaque-surface
+  // invariant on this path (the role the old geometry-phase glColorMask guard
+  // played when geometry still wrote the backing FBO directly).
+  gl::Framebuffer::bindDefault(defaultFramebufferObject());
+  funcs->glViewport(0, 0, device_width_px_, device_height_px_);
+  present_program_->use();
+  funcs->glActiveTexture(GL_TEXTURE0);
+  funcs->glBindTexture(GL_TEXTURE_2D, scene_fbo_.resolvedColorTextureId());
+  present_program_->setInt("u_scene", 0);
+  funcs->glActiveTexture(GL_TEXTURE1);
+  funcs->glBindTexture(GL_TEXTURE_2D, scene_fbo_.resolvedDepthTextureId());
+  present_program_->setInt("u_depth", 1);
+  const bool ao_active = composite_params_.ssao_enabled && ssao_.ready();
+  present_program_->setInt("u_has_ao", ao_active ? 1 : 0);
+  if (ao_active) {
+    funcs->glActiveTexture(GL_TEXTURE2);
+    funcs->glBindTexture(GL_TEXTURE_2D, ssao_.outputTextureId());
+    present_program_->setInt("u_ao", 2);
+  }
+  const bool edl_active = composite_params_.edl_enabled && edl_.ready();
+  present_program_->setInt("u_has_edl", edl_active ? 1 : 0);
+  if (edl_active) {
+    funcs->glActiveTexture(GL_TEXTURE3);
+    funcs->glBindTexture(GL_TEXTURE_2D, edl_.outputTextureId());
+    present_program_->setInt("u_edl", 3);
+  }
+  present_program_->setInt("u_tonemap_mode", composite_params_.tonemap_mode);
+  present_program_->setFloat("u_exposure", composite_params_.exposure);
+  present_program_->setFloat("u_saturation", composite_params_.saturation);
+  present_program_->setFloat("u_ao_strength", composite_params_.ao_strength);
+  present_vao_.bind();
+  funcs->glDrawArrays(GL_TRIANGLES, 0, 3);
+  present_vao_.unbind();
+  funcs->glActiveTexture(GL_TEXTURE1);
+  funcs->glBindTexture(GL_TEXTURE_2D, 0);
+  funcs->glActiveTexture(GL_TEXTURE0);
+  funcs->glBindTexture(GL_TEXTURE_2D, 0);
+
+  // Leave depth/blend enabled — the state the legacy path ended each frame with.
+  funcs->glEnable(GL_DEPTH_TEST);
+  funcs->glEnable(GL_BLEND);
+}
+
+void SceneViewWidget::renderScene(
+    const ViewParams& view_params, const FrameContext& frame_ctx, bool mask_alpha_writes) {
   auto* ctx = QOpenGLContext::currentContext();
   auto* funcs = QOpenGLVersionFunctionsFactory::get<QOpenGLFunctions_4_5_Core>(ctx);
   if (funcs == nullptr) {
@@ -182,51 +434,65 @@ void SceneViewWidget::paintGL() {
   const QPalette pal = QGuiApplication::palette();
   const QColor window_bg = pal.color(QPalette::Window);
   const bool dark_theme = window_bg.valueF() < 0.5F;
-  const QColor bg = dark_theme ? QColor(45, 48, 56) : QColor(232, 234, 238);
+  const QColor bg = dark_theme ? QColor(45, 48, 56) : QColor(255, 255, 255);
   const QColor fg = dark_theme ? QColor(220, 220, 220) : QColor(40, 40, 40);
-  funcs->glClearColor(
-      static_cast<float>(bg.redF()), static_cast<float>(bg.greenF()), static_cast<float>(bg.blueF()), 1.0f);
+  // Off-screen path: the scene FBO is linear-light (the composite present
+  // re-encodes to sRGB), so display-referred theme colors must be linearized on
+  // write. The direct-to-backing fallback has no encode — leave them as-is there.
+  const bool linear_target = !mask_alpha_writes;
+  const auto lin = [linear_target](qreal c) {
+    return linear_target ? static_cast<float>(std::pow(c, 2.2)) : static_cast<float>(c);
+  };
+  funcs->glClearColor(lin(bg.redF()), lin(bg.greenF()), lin(bg.blueF()), 1.0f);
   constexpr float kGridBlend = 0.35f;
   grid_.setColor(
       glm::vec3{
-          static_cast<float>(bg.redF() * (1.0 - kGridBlend) + fg.redF() * kGridBlend),
-          static_cast<float>(bg.greenF() * (1.0 - kGridBlend) + fg.greenF() * kGridBlend),
-          static_cast<float>(bg.blueF() * (1.0 - kGridBlend) + fg.blueF() * kGridBlend),
+          lin(bg.redF() * (1.0 - kGridBlend) + fg.redF() * kGridBlend),
+          lin(bg.greenF() * (1.0 - kGridBlend) + fg.greenF() * kGridBlend),
+          lin(bg.blueF() * (1.0 - kGridBlend) + fg.blueF() * kGridBlend),
       });
   funcs->glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
   funcs->glEnable(GL_DEPTH_TEST);
   funcs->glEnable(GL_BLEND);
-  funcs->glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+  // The scene FBO's alpha is the per-pixel tonemap marker (1 = data, graded;
+  // 0 = annotation, raw). Data draws must RESTORE it — coverage-union alpha
+  // (ONE, ONE_MINUS_SRC_ALPHA): an opaque draw stamps 1, a translucent draw
+  // raises it proportionally, untouched annotation pixels keep 0. Preserving
+  // destination alpha instead (ZERO, ONE) left stale alpha-0 from occluded TF
+  // arrows under the robot body, ghosting raw arrow shapes through the mesh.
+  funcs->glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
 
-  // The 3D viewport is opaque. The clear above set the framebuffer alpha to 1.0;
-  // masking alpha writes keeps it there through every pass. RGB still blends
-  // normally (src.a is the blend *factor*, not an alpha write), so transparent
-  // content like the occupancy grid (opacity < 1) looks correct — but no pass,
-  // present or future, can lower the framebuffer's alpha. Without this, a
-  // sub-1.0 alpha left in the QOpenGLWidget's FBO makes the Wayland compositor
-  // treat those regions as translucent and bleed the previous frame through them
-  // (the semi-transparent "phantom" seen while zooming, absent from screenshots
-  // because grabFramebuffer reads opaque RGB). Restored at the end of paintGL so
-  // the next frame's glClear can repaint alpha (glClear honours the color mask).
-  funcs->glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_FALSE);
+  if (mask_alpha_writes) {
+    // Direct-to-backing path only. The 3D viewport is opaque: the clear above
+    // set the framebuffer alpha to 1.0, and masking alpha writes keeps it there
+    // through every pass. RGB still blends normally (src.a is the blend
+    // *factor*, not an alpha write), so transparent content like the occupancy
+    // grid (opacity < 1) looks correct — but no pass can lower the framebuffer's
+    // alpha. Without this, a sub-1.0 alpha left in the QOpenGLWidget's FBO makes
+    // the Wayland compositor treat those regions as translucent and bleed the
+    // previous frame through them. The caller restores the mask after rendering
+    // so the next frame's glClear can repaint alpha (glClear honours the mask).
+    funcs->glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_FALSE);
+  }
 
-  const float aspect = static_cast<float>(width()) / static_cast<float>(std::max(height(), 1));
-  const ViewParams view_params{
-      camera_->viewMatrix(),
-      camera_->projMatrix(aspect),
-      height(),
+  // Annotation blend mode (axes + HUD): frag alpha is the gizmo opacity; RGB
+  // blends normally while the alpha factors (ZERO, 1-SRC_ALPHA) DECREASE the
+  // tonemap-bypass marker by the annotation's coverage — at opacity 1 this is
+  // identical to the old blend-off + alpha-0 write (RGB=src, marker→0).
+  const auto annotation_blend = [funcs] {
+    funcs->glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_ZERO, GL_ONE_MINUS_SRC_ALPHA);
+  };
+  const auto data_blend = [funcs] {
+    funcs->glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
   };
 
-  // Grid never consults the TF buffer; safe to render even when tf_ is null.
-  static const TransformBuffer kEmptyBuffer;
-  const TransformBuffer& tf_ref = tf_ ? *tf_ : kEmptyBuffer;
-  // The TF-resolution triple, bundled for the passes/layers that need it.
-  // fixed_frame_ is the long-lived member (no per-frame string copy).
-  const FrameContext frame_ctx{tf_ref, fixed_frame_, render_time_};
-
-  grid_.render(view_params, frame_ctx);
+  if (grid_visible_) {
+    grid_.render(view_params, frame_ctx);
+  }
   if (tf_ && axes_visible_) {
+    annotation_blend();
     axes_.render(view_params, frame_ctx);
+    data_blend();
   }
   // Iterate layers in the order supplied by SceneDockWidget. Each layer is responsible
   // for its own GL state — initializeGL() is intentionally called per
@@ -247,11 +513,10 @@ void SceneViewWidget::paintGL() {
   }
 
   // Camera-orientation HUD (top-right by default). Drawn last so the solid
-  // arrows sit on top of every scene-space pass.
+  // arrows sit on top of every scene-space pass. Annotation, opacity 1.
+  annotation_blend();
   overlay_.render(view_params, frame_ctx);
-
-  // Restore the alpha write mask so the next frame's glClear repaints alpha=1.0.
-  funcs->glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+  data_blend();
 }
 
 void SceneViewWidget::setCameraModel(CameraModel model) {

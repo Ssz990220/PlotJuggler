@@ -245,7 +245,9 @@ void OccupancyGridLayer::setFixedFrame(const QString& frame) {
 
 void OccupancyGridLayer::setTrackerTime(PJ::Timepoint time) {
   tracker_time_ = time;
-  renderAt(PJ::toRaw(time));
+  // Defer the reconstruction to render() — see tracker_dirty_. Also stops a
+  // hidden layer from reconstructing on every tick (render() skips it instead).
+  tracker_dirty_ = true;
   emit repaintRequested();
 }
 
@@ -270,6 +272,13 @@ void OccupancyGridLayer::releaseGL() {
 void OccupancyGridLayer::render(const ViewParams& view_params, const FrameContext& frame_ctx) {
   if (!visible_) {
     return;
+  }
+  // Drain a pending tracker move (one reconstruction per painted frame; the
+  // reconstructor's incremental path keeps a forward step cheap). A layer hidden
+  // during the move keeps the flag set and catches up on its first visible frame.
+  if (tracker_dirty_) {
+    tracker_dirty_ = false;
+    renderAt(PJ::toRaw(frame_ctx.time));
   }
   grid_pass_.render(view_params, frame_ctx);
 }

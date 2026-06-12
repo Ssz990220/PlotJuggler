@@ -22,6 +22,10 @@ struct ViewParams {
   glm::mat4 proj;
   int viewport_height_px = 0;  // shaders that size primitives in world coords
                                // (e.g. PointcloudRenderPass) divide by this.
+  int viewport_width_px = 0;
+  glm::vec3 camera_pos_world{};
+  float near_plane = 0.05f;   // Placeholder until 0B: cameras recompute near/far
+  float far_plane = 1000.0f;  // inside projMatrix() and expose no accessors yet.
 };
 
 // The TF-resolution triple a pass needs to place frame-relative data into the
@@ -59,6 +63,15 @@ class IRenderPass {
   // invalid in the new one. After releaseGL the next initializeGL rebuilds
   // cleanly. Must be idempotent and safe to call with the dying context current.
   virtual void releaseGL() = 0;
+};
+
+// Contract for future screen-space post passes. They share the IRenderPass
+// lifecycle/render signature but also resize their render targets in device
+// pixels when the scene HDR chain changes size. No concrete post passes exist in
+// Phase 0A.
+class IPostPass : public IRenderPass {
+ public:
+  virtual void resize(int width_px, int height_px) = 0;
 };
 
 }  // namespace pj::scene3d

@@ -6,16 +6,21 @@
 #include <QAbstractItemView>
 #include <QDomDocument>
 #include <QDomElement>
+#include <QFileInfo>
 #include <QFontMetrics>
 #include <QIcon>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QLoggingCategory>
 #include <QPoint>
 #include <QResizeEvent>
+#include <QSettings>
 #include <QSignalBlocker>
 #include <QSizePolicy>
 #include <QStyle>
 #include <QStyleOptionComboBox>
 #include <QToolButton>
+#include <QUrl>
 #include <algorithm>
 #include <cctype>
 #include <chrono>
@@ -29,11 +34,13 @@
 #include "pj_scene3d_core/tf/tf_buffer.h"
 #include "pj_scene3d_widgets/layers/occupancy_grid_layer.h"
 #include "pj_scene3d_widgets/layers/pointcloud_layer.h"
+#include "pj_scene3d_widgets/layers/robot_model_layer.h"
 #include "pj_scene3d_widgets/layers/scene_entities_layer.h"
 #include "pj_scene3d_widgets/scene_view_widget.h"
 #include "pj_scene3d_widgets/transform_service.h"
 #include "pj_widgets/ComboBox.h"
 #include "pj_widgets/SvgUtil.h"
+#include "urdf_package_resolver.h"
 
 namespace PJ {
 
@@ -43,6 +50,7 @@ Q_LOGGING_CATEGORY(lcScene3DDock, "pj.scene3d.dock")
 using pj::scene3d::FrameRow;
 using pj::scene3d::OccupancyGridLayer;
 using pj::scene3d::PointCloudLayer;
+using pj::scene3d::RobotModelLayer;
 using pj::scene3d::Scene3DLayer;
 using pj::scene3d::Scene3DLayerContext;
 using pj::scene3d::SceneEntitiesLayer;
@@ -105,6 +113,7 @@ int cameraModelFromString(const QString& name) {
 
 Scene3DDockWidget::Scene3DDockWidget(QWidget* parent) : SceneDockWidget(parent) {
   setWindowTitle(tr("3D View"));
+  package_resolver_ = std::make_unique<pj::scene3d::UrdfPackageResolver>();
 
   // One dual-mode layer renders both raw and compressed clouds: PointCloudLayer
   // detects a CompressedPointCloud per-sample and decodes it (off the UI thread)
@@ -119,6 +128,22 @@ Scene3DDockWidget::Scene3DDockWidget(QWidget* parent) : SceneDockWidget(parent) 
   };
   layerFactory().registerType(sdk::BuiltinObjectType::kPointCloud, pointcloud_factory);
   layerFactory().registerType(sdk::BuiltinObjectType::kCompressedPointCloud, pointcloud_factory);
+  layerFactory().registerType(
+      sdk::BuiltinObjectType::kRobotDescription,
+      [this](ObjectTopicId topic_id, sdk::BuiltinObjectType /*object_type*/, const QString& display_name)
+          -> std::unique_ptr<ISceneLayer> {
+        const bool local_layer = isLocalRobotLayerId(topic_id);
+        if (!local_layer) {
+          prepareTransformBufferForTopic(topic_id);
+        }
+        auto layer = std::make_unique<RobotModelLayer>(topic_id, display_name, this);
+        layer->setPackageResolver(package_resolver_.get());
+        if (local_layer) {
+          layer->setSourceFile(QString());
+        }
+        wireScene3DLayer(layer.get());
+        return layer;
+      });
   layerFactory().registerType(
       sdk::BuiltinObjectType::kOccupancyGrid,
       [this](ObjectTopicId topic_id, sdk::BuiltinObjectType /*object_type*/, const QString& display_name)
@@ -185,6 +210,7 @@ Scene3DDockWidget::Scene3DDockWidget(QWidget* parent) : SceneDockWidget(parent) 
   // off the base SceneDockWidget layer* signals directly, so no relay is needed.
   connect(this, &SceneDockWidget::layerRemoved, this, [this](ObjectTopicId topic_id) {
     orphan_states_.erase(topicKey(topic_id));
+    local_robot_layer_ids_.erase(topic_id.id);
   });
 }
 
@@ -278,11 +304,27 @@ void Scene3DDockWidget::driveVisibleLayersToLiveEdge() {
   refreshView();
 }
 
+void Scene3DDockWidget::setSettings(QSettings* settings) {
+  settings_ = settings;
+  if (package_resolver_ != nullptr) {
+    package_resolver_->setSettings(settings_);
+  }
+}
+
+void Scene3DDockWidget::setMcapAttachments(QMap<QString, QByteArray> attachments) {
+  mcap_attachments_ = std::move(attachments);
+  if (package_resolver_ != nullptr) {
+    package_resolver_->setMcapAttachments(mcap_attachments_);
+  }
+}
+
 bool Scene3DDockWidget::handlesObjectType(sdk::BuiltinObjectType object_type) {
   return object_type == sdk::BuiltinObjectType::kPointCloud ||
          object_type == sdk::BuiltinObjectType::kCompressedPointCloud ||
          object_type == sdk::BuiltinObjectType::kFrameTransforms ||
-         object_type == sdk::BuiltinObjectType::kOccupancyGrid || object_type == sdk::BuiltinObjectType::kSceneEntities;
+         object_type == sdk::BuiltinObjectType::kOccupancyGrid ||
+         object_type == sdk::BuiltinObjectType::kRobotDescription ||
+         object_type == sdk::BuiltinObjectType::kSceneEntities;
 }
 
 bool Scene3DDockWidget::addTopic(ObjectTopicId topic_id, sdk::BuiltinObjectType object_type, const QString& title) {
@@ -304,6 +346,83 @@ bool Scene3DDockWidget::addTopic(ObjectTopicId topic_id, sdk::BuiltinObjectType 
     recomputeOrphanStates();
   }
   return accepted;
+}
+
+ObjectTopicId Scene3DDockWidget::addRobotModelLayer(const QString& urdf_path) {
+  const ObjectTopicId topic_id = allocateLocalRobotLayerId();
+  if (topic_id.id == 0) {
+    qCWarning(lcScene3DDock) << "addRobotModelLayer: exhausted local topic ids";
+    return ObjectTopicId{0};
+  }
+  const QString title = urdf_path.isEmpty() ? tr("Robot model") : QFileInfo(urdf_path).fileName();
+  if (!addTopic(topic_id, sdk::BuiltinObjectType::kRobotDescription, title)) {
+    local_robot_layer_ids_.erase(topic_id.id);
+    return ObjectTopicId{0};
+  }
+  // One-click flow: point the freshly created File-source layer at the chosen
+  // URDF immediately (the creator already forced kFile per the PUNCH-4 rule).
+  if (!urdf_path.isEmpty()) {
+    if (auto* layer = dynamic_cast<RobotModelLayer*>(layerFor(topic_id)); layer != nullptr) {
+      layer->setSourceFile(urdf_path);
+    }
+  }
+  return topic_id;
+}
+
+ObjectTopicId Scene3DDockWidget::addRobotModelLayerFromUrl(const QString& url) {
+  const ObjectTopicId topic_id = allocateLocalRobotLayerId();
+  if (topic_id.id == 0) {
+    qCWarning(lcScene3DDock) << "addRobotModelLayerFromUrl: exhausted local topic ids";
+    return ObjectTopicId{0};
+  }
+  const QString file_name = QUrl(url).fileName();
+  const QString title = file_name.isEmpty() ? url : file_name;
+  if (!addTopic(topic_id, sdk::BuiltinObjectType::kRobotDescription, title)) {
+    local_robot_layer_ids_.erase(topic_id.id);
+    return ObjectTopicId{0};
+  }
+  if (auto* layer = dynamic_cast<RobotModelLayer*>(layerFor(topic_id)); layer != nullptr) {
+    layer->setSourceUrl(url);
+  }
+  return topic_id;
+}
+
+QList<Scene3DDockWidget::RobotDescriptionTopic> Scene3DDockWidget::robotDescriptionTopics() const {
+  QList<RobotDescriptionTopic> result;
+  if (sessionManager() == nullptr) {
+    return result;
+  }
+  ObjectStore& store = sessionManager()->objectStore();
+  for (const ObjectTopicId topic_id : store.listTopics()) {
+    const ObjectTopicDescriptor& desc = store.descriptor(topic_id);
+    const QJsonDocument doc = QJsonDocument::fromJson(QByteArray::fromStdString(desc.metadata_json));
+    const auto parsed =
+        sdk::parseBuiltinObjectType(doc.object().value(QStringLiteral("builtin_object_type")).toString().toStdString());
+    if (parsed.value_or(sdk::BuiltinObjectType::kNone) == sdk::BuiltinObjectType::kRobotDescription) {
+      result.append({topic_id, QString::fromStdString(desc.topic_name)});
+    }
+  }
+  return result;
+}
+
+bool Scene3DDockWidget::revalidateObjects() {
+  if (sessionManager() == nullptr) {
+    return !layers().empty();
+  }
+  ObjectStore& store = sessionManager()->objectStore();
+  std::vector<ObjectTopicId> dead;
+  for (const SceneLayerInfo& info : layers()) {
+    if (isLocalRobotLayerId(info.topic_id)) {
+      continue;
+    }
+    if (store.descriptor(info.topic_id).topic_name.empty()) {
+      dead.push_back(info.topic_id);
+    }
+  }
+  for (const ObjectTopicId topic_id : dead) {
+    removeTopic(topic_id);
+  }
+  return !layers().empty();
 }
 
 bool Scene3DDockWidget::tryAcceptObjectTopic(
@@ -722,8 +841,58 @@ void Scene3DDockWidget::recomputeOrphanStates() {
   }
 }
 
+bool Scene3DDockWidget::isLocalRobotLayerId(ObjectTopicId topic_id) const {
+  return local_robot_layer_ids_.find(topic_id.id) != local_robot_layer_ids_.end();
+}
+
+ObjectTopicId Scene3DDockWidget::allocateLocalRobotLayerId() {
+  while (next_local_robot_topic_id_ > 0) {
+    ObjectTopicId topic_id;
+    topic_id.id = next_local_robot_topic_id_--;
+    if (layerFor(topic_id) == nullptr && local_robot_layer_ids_.insert(topic_id.id).second) {
+      return topic_id;
+    }
+  }
+  return {};
+}
+
 QDomElement Scene3DDockWidget::xmlSaveState(QDomDocument& doc) const {
-  QDomElement root = SceneDockWidget::xmlSaveState(doc);
+  QDomElement root = doc.createElement(xmlTag());
+  root.setAttribute(QStringLiteral("version"), QStringLiteral("1"));
+
+  ObjectStore* store = sessionManager() != nullptr ? &sessionManager()->objectStore() : nullptr;
+  for (const SceneLayerInfo& info : layers()) {
+    const bool local_layer = isLocalRobotLayerId(info.topic_id);
+    if (!local_layer && store == nullptr) {
+      continue;
+    }
+
+    QDomElement layer_el = doc.createElement(QStringLiteral("layer"));
+    if (local_layer) {
+      layer_el.setAttribute(QStringLiteral("local"), QStringLiteral("true"));
+      layer_el.setAttribute(QStringLiteral("dataset_id"), QStringLiteral("0"));
+      layer_el.setAttribute(QStringLiteral("topic_name"), QString());
+    } else {
+      const auto& desc = store->descriptor(info.topic_id);
+      layer_el.setAttribute(QStringLiteral("dataset_id"), QString::number(desc.dataset_id));
+      layer_el.setAttribute(QStringLiteral("topic_name"), QString::fromStdString(desc.topic_name));
+    }
+    const auto object_type_name = sdk::name(info.object_type);
+    layer_el.setAttribute(
+        QStringLiteral("object_type"),
+        QString::fromLatin1(object_type_name.data(), static_cast<qsizetype>(object_type_name.size())));
+    layer_el.setAttribute(QStringLiteral("display_name"), info.display_name);
+    layer_el.setAttribute(QStringLiteral("visible"), info.visible ? QStringLiteral("true") : QStringLiteral("false"));
+
+    if (ISceneLayer* layer = layerFor(info.topic_id); layer != nullptr) {
+      QDomElement payload = layer->xmlSaveState(doc);
+      if (!payload.isNull()) {
+        layer_el.appendChild(payload);
+      }
+    }
+    root.appendChild(layer_el);
+  }
+
   root.setAttribute(
       QStringLiteral("fixed_frame_mode"),
       fixed_frame_mode_ == FixedFrameMode::kAutoRoot ? QStringLiteral("auto_root") : QStringLiteral("explicit"));
@@ -744,12 +913,65 @@ bool Scene3DDockWidget::xmlLoadState(const QDomElement& element) {
 
   orphan_states_.clear();
   fallback_frames_.clear();
+  local_robot_layer_ids_.clear();
 
   const QString saved_mode = element.attribute(QStringLiteral("fixed_frame_mode"), QStringLiteral("auto_root"));
   const QString saved_frame = element.attribute(QStringLiteral("fixed_frame"));
 
-  if (!SceneDockWidget::xmlLoadState(element)) {
-    return false;
+  clearLayers();
+  if (sessionManager() != nullptr) {
+    for (QDomElement layer_el = element.firstChildElement(QStringLiteral("layer")); !layer_el.isNull();
+         layer_el = layer_el.nextSiblingElement(QStringLiteral("layer"))) {
+      const QString object_type_str = layer_el.attribute(QStringLiteral("object_type"));
+      const auto object_type_opt = sdk::parseBuiltinObjectType(object_type_str.toStdString());
+      if (!object_type_opt.has_value()) {
+        continue;
+      }
+      const QString display_name = layer_el.attribute(QStringLiteral("display_name"));
+      const bool visible =
+          layer_el.attribute(QStringLiteral("visible"), QStringLiteral("true")) == QStringLiteral("true");
+
+      ObjectTopicId topic_id;
+      const bool local_layer = layer_el.attribute(QStringLiteral("local")) == QStringLiteral("true");
+      if (local_layer) {
+        if (*object_type_opt != sdk::BuiltinObjectType::kRobotDescription) {
+          continue;
+        }
+        topic_id = allocateLocalRobotLayerId();
+        if (topic_id.id == 0) {
+          continue;
+        }
+      } else {
+        bool dataset_ok = false;
+        const auto dataset_value = layer_el.attribute(QStringLiteral("dataset_id")).toULongLong(&dataset_ok);
+        if (!dataset_ok || dataset_value > std::numeric_limits<uint32_t>::max()) {
+          continue;
+        }
+        const auto dataset_id = static_cast<DatasetId>(dataset_value);
+        const QString topic_name = layer_el.attribute(QStringLiteral("topic_name"));
+        const auto topic_id_opt = sessionManager()->objectStore().findTopic(dataset_id, topic_name.toStdString());
+        if (!topic_id_opt.has_value()) {
+          continue;
+        }
+        topic_id = *topic_id_opt;
+      }
+
+      if (!addTopic(topic_id, *object_type_opt, display_name)) {
+        if (local_layer) {
+          local_robot_layer_ids_.erase(topic_id.id);
+        }
+        continue;
+      }
+      if (ISceneLayer* layer = layerFor(topic_id); layer != nullptr) {
+        const QDomElement payload = layer_el.firstChildElement();
+        if (!payload.isNull()) {
+          layer->xmlLoadState(payload);
+        }
+      }
+      if (!visible) {
+        setLayerVisible(topic_id, false);
+      }
+    }
   }
 
   if (saved_mode == QStringLiteral("explicit") && !saved_frame.isEmpty()) {

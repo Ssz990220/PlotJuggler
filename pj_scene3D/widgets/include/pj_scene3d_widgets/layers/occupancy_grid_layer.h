@@ -62,6 +62,12 @@ class OccupancyGridLayer : public Scene3DLayer {
     return opacity_;
   }
 
+#ifdef PJ_SCENE3D_TEST_HOOKS
+  void renderAtForTest(int64_t time_ns) {
+    renderAt(time_ns);
+  }
+#endif
+
  private:
   // Decode the first base sample at attach to learn the source frame + time
   // range before render is called.
@@ -80,6 +86,11 @@ class OccupancyGridLayer : public Scene3DLayer {
   std::string source_frame_;
   QString fixed_frame_;
   PJ::Timepoint tracker_time_{};
+  // Set by setTrackerTime, consumed by render(): the reconstruction (base parse +
+  // update folds + texture upload) is deferred to the next painted frame instead
+  // of running eagerly per tracker tick. Qt coalesces repaints, so a fast scrub
+  // reconstructs only the final landed grid, not every skipped intermediate frame.
+  bool tracker_dirty_ = false;
   bool visible_ = true;
 
   // Per-instance display params; mirrored into grid_pass_ and edited through

@@ -99,6 +99,7 @@ Status ObjectStore::pushOwned(ObjectTopicId id, Timestamp timestamp, std::vector
 
   ObjectEntry entry;
   entry.timestamp = timestamp;
+  entry.sequential_uid = SequentialUID::getNext();
   entry.payload = std::move(shared_data);
   series->entries.push_back(std::move(entry));
   series->entry_timestamps.push_back(timestamp);
@@ -122,6 +123,7 @@ Status ObjectStore::pushLazy(ObjectTopicId id, Timestamp timestamp, LazyCallback
 
   ObjectEntry entry;
   entry.timestamp = timestamp;
+  entry.sequential_uid = SequentialUID::getNext();
   entry.payload = std::move(fetch);
   series->entries.push_back(std::move(entry));
   series->entry_timestamps.push_back(timestamp);
@@ -167,6 +169,37 @@ std::optional<ResolvedObjectEntry> ObjectStore::at(ObjectTopicId id, size_t inde
   return resolveEntry(series->entries[index]);
 }
 
+std::optional<ResolvedObjectEntry> ObjectStore::at(ObjectTopicId id, SequentialUID sequential_uid) const {
+  if (!sequential_uid.valid()) {
+    return std::nullopt;
+  }
+
+  std::shared_lock store_lock(store_mutex_);
+  const auto* series = findSeries(id);
+  if (series == nullptr) {
+    return std::nullopt;
+  }
+
+  std::shared_lock lock(series->mutex);
+  if (series->entries.empty()) {
+    return std::nullopt;
+  }
+
+  const SequentialUID first = series->entries.front().sequential_uid;
+  const SequentialUID last = series->entries.back().sequential_uid;
+  if (sequential_uid < first || sequential_uid > last) {
+    return std::nullopt;
+  }
+
+  const auto it = std::lower_bound(
+      series->entries.begin(), series->entries.end(), sequential_uid,
+      [](const ObjectEntry& entry, SequentialUID uid) { return entry.sequential_uid < uid; });
+  if (it == series->entries.end() || it->sequential_uid != sequential_uid) {
+    return std::nullopt;
+  }
+  return resolveEntry(*it);
+}
+
 std::optional<size_t> ObjectStore::indexAt(ObjectTopicId id, Timestamp timestamp) const {
   std::shared_lock store_lock(store_mutex_);
   const auto* series = findSeries(id);
@@ -185,6 +218,37 @@ std::optional<size_t> ObjectStore::indexAt(ObjectTopicId id, Timestamp timestamp
   }
   --it;
   return static_cast<size_t>(it - series->entry_timestamps.begin());
+}
+
+SequentialUID ObjectStore::firstSequentialUID(ObjectTopicId id) const {
+  std::shared_lock store_lock(store_mutex_);
+  const auto* series = findSeries(id);
+  if (series == nullptr) {
+    return {};
+  }
+
+  std::shared_lock lock(series->mutex);
+  if (series->entries.empty()) {
+    return {};
+  }
+  return series->entries.front().sequential_uid;
+}
+
+SequentialUID ObjectStore::nextUIDAfter(ObjectTopicId id, SequentialUID after) const {
+  std::shared_lock store_lock(store_mutex_);
+  const auto* series = findSeries(id);
+  if (series == nullptr) {
+    return {};
+  }
+
+  std::shared_lock lock(series->mutex);
+  const auto it = std::upper_bound(
+      series->entries.begin(), series->entries.end(), after,
+      [](SequentialUID uid, const ObjectEntry& entry) { return uid < entry.sequential_uid; });
+  if (it == series->entries.end()) {
+    return {};
+  }
+  return it->sequential_uid;
 }
 
 size_t ObjectStore::entryCount(ObjectTopicId id) const {
@@ -333,6 +397,7 @@ Status ObjectStore::flushTo(ObjectStore& dst) {
     drainSeriesReaders(*step.src);
     drainSeriesReaders(*step.dst);
     for (auto& entry : step.src->entries) {
+      entry.sequential_uid = SequentialUID::getNext();
       step.dst->entries.push_back(std::move(entry));
     }
     step.dst->entry_timestamps.insert(
@@ -406,6 +471,9 @@ Expected<ObjectDatasetReplaceResult> ObjectStore::replaceDatasetFrom(
     drainSeriesReaders(*primary_series);
     drainSeriesReaders(*staged_series);
     primary_series->entries = std::move(staged_series->entries);
+    for (auto& entry : primary_series->entries) {
+      entry.sequential_uid = SequentialUID::getNext();
+    }
     primary_series->entry_timestamps = std::move(staged_series->entry_timestamps);
     primary_series->memory_bytes = staged_series->memory_bytes;
     result.remapped.emplace_back(sid, primary_tid);
@@ -477,6 +545,7 @@ const ObjectStore::ObjectSeries* ObjectStore::findSeries(ObjectTopicId id) const
 ResolvedObjectEntry ObjectStore::resolveEntry(const ObjectEntry& entry) {
   ResolvedObjectEntry resolved;
   resolved.timestamp = entry.timestamp;
+  resolved.sequential_uid = entry.sequential_uid;
 
   if (const auto* owned = std::get_if<SharedBuffer>(&entry.payload)) {
     // Span the vector, anchor on the same shared_ptr — refcount bump, no copy.

@@ -247,6 +247,115 @@ TEST(ObjectStoreTest, AtOutOfRange) {
   EXPECT_FALSE(store.at(id, 999).has_value());
 }
 
+TEST(ObjectStoreTest, SequentialUIDSurvivesEviction) {
+  ObjectStore store;
+  auto id = registerTestTopic(store);
+  store.pushOwned(id, 100, makePayload(4, 0x01));
+  store.pushOwned(id, 200, makePayload(4, 0x02));
+  store.pushOwned(id, 300, makePayload(4, 0x03));
+
+  auto first = store.latestAt(id, 100);
+  ASSERT_TRUE(first.has_value());
+  EXPECT_TRUE(first->sequential_uid.valid());
+  auto second = store.latestAt(id, 200);
+  ASSERT_TRUE(second.has_value());
+  auto third = store.latestAt(id, 300);
+  ASSERT_TRUE(third.has_value());
+  EXPECT_LT(first->sequential_uid, second->sequential_uid);
+  EXPECT_LT(second->sequential_uid, third->sequential_uid);
+  EXPECT_EQ(store.firstSequentialUID(id), first->sequential_uid);
+
+  store.evictBefore(id, 250);
+  EXPECT_EQ(store.entryCount(id), 1u);
+  EXPECT_EQ(store.firstSequentialUID(id), third->sequential_uid);
+  EXPECT_FALSE(store.at(id, first->sequential_uid).has_value());
+
+  auto retained = store.at(id, third->sequential_uid);
+  ASSERT_TRUE(retained.has_value());
+  EXPECT_EQ(retained->timestamp, 300);
+  EXPECT_EQ(retained->payload.bytes[0], 0x03);
+
+  store.pushOwned(id, 400, makePayload(4, 0x04));
+  auto latest = store.latestAt(id, 999);
+  ASSERT_TRUE(latest.has_value());
+  EXPECT_LT(third->sequential_uid, latest->sequential_uid);
+  EXPECT_EQ(store.at(id, latest->sequential_uid)->timestamp, 400);
+}
+
+TEST(ObjectStoreTest, SequentialUIDLookupSurvivesInterleavedTopics) {
+  ObjectStore store;
+  auto first_topic = registerTestTopic(store, "first");
+  auto second_topic = registerTestTopic(store, "second");
+
+  ASSERT_TRUE(store.pushOwned(first_topic, 100, makePayload(4, 0x11)).has_value());
+  ASSERT_TRUE(store.pushOwned(second_topic, 150, makePayload(4, 0x22)).has_value());
+  ASSERT_TRUE(store.pushOwned(first_topic, 200, makePayload(4, 0x33)).has_value());
+
+  auto first_entry = store.latestAt(first_topic, 100);
+  ASSERT_TRUE(first_entry.has_value());
+  auto second_entry = store.latestAt(first_topic, 200);
+  ASSERT_TRUE(second_entry.has_value());
+  EXPECT_LT(first_entry->sequential_uid, second_entry->sequential_uid);
+
+  auto resolved = store.at(first_topic, second_entry->sequential_uid);
+  ASSERT_TRUE(resolved.has_value());
+  EXPECT_EQ(resolved->timestamp, 200);
+  EXPECT_EQ(resolved->payload.bytes[0], 0x33);
+}
+
+TEST(ObjectStoreTest, SequentialUIDOfOtherTopicResolvesNullopt) {
+  ObjectStore store;
+  auto first_topic = registerTestTopic(store, "first");
+  auto second_topic = registerTestTopic(store, "second");
+
+  ASSERT_TRUE(store.pushOwned(first_topic, 100, makePayload(4, 0x11)).has_value());
+  ASSERT_TRUE(store.pushOwned(second_topic, 150, makePayload(4, 0x22)).has_value());
+  ASSERT_TRUE(store.pushOwned(first_topic, 200, makePayload(4, 0x33)).has_value());
+
+  // The foreign UID falls inside first_topic's [first, last] UID range; the
+  // lookup must miss, not resolve a neighboring entry.
+  const auto foreign = store.latestAt(second_topic, 150);
+  ASSERT_TRUE(foreign.has_value());
+  EXPECT_FALSE(store.at(first_topic, foreign->sequential_uid).has_value());
+}
+
+TEST(ObjectStoreTest, NextUIDAfterStepsSparseTopicSequence) {
+  ObjectStore store;
+  auto walked = registerTestTopic(store, "walked");
+  auto noise = registerTestTopic(store, "noise");
+
+  // Interleave pushes so walked's UIDs are sparse in the global sequence.
+  ASSERT_TRUE(store.pushOwned(walked, 100, makePayload(4, 0x01)).has_value());
+  ASSERT_TRUE(store.pushOwned(noise, 110, makePayload(4, 0xEE)).has_value());
+  ASSERT_TRUE(store.pushOwned(noise, 120, makePayload(4, 0xEE)).has_value());
+  ASSERT_TRUE(store.pushOwned(walked, 200, makePayload(4, 0x02)).has_value());
+  ASSERT_TRUE(store.pushOwned(noise, 210, makePayload(4, 0xEE)).has_value());
+  ASSERT_TRUE(store.pushOwned(walked, 300, makePayload(4, 0x03)).has_value());
+
+  // An invalid `after` starts from the first retained entry.
+  const SequentialUID first = store.nextUIDAfter(walked, {});
+  EXPECT_EQ(first, store.firstSequentialUID(walked));
+  ASSERT_TRUE(first.valid());
+  EXPECT_EQ(store.at(walked, first)->timestamp, 100);
+
+  // Stepping yields exactly the topic's entries, skipping foreign UIDs.
+  const SequentialUID second = store.nextUIDAfter(walked, first);
+  ASSERT_TRUE(second.valid());
+  EXPECT_GT(second.value, first.value + 1) << "test setup should leave a UID gap";
+  EXPECT_EQ(store.at(walked, second)->timestamp, 200);
+  const SequentialUID third = store.nextUIDAfter(walked, second);
+  ASSERT_TRUE(third.valid());
+  EXPECT_EQ(store.at(walked, third)->timestamp, 300);
+
+  // Past the last entry, and for unknown topics: invalid.
+  EXPECT_FALSE(store.nextUIDAfter(walked, third).valid());
+  EXPECT_FALSE(store.nextUIDAfter(ObjectTopicId{9999}, {}).valid());
+
+  // Eviction moves the start of the walk to the new front.
+  store.evictBefore(walked, 250);
+  EXPECT_EQ(store.nextUIDAfter(walked, {}), third);
+}
+
 // =========================================================================
 // indexAt
 // =========================================================================
@@ -694,6 +803,15 @@ TEST(ObjectStoreFlushTest, AppendsToExistingDstEntries) {
   EXPECT_EQ(dst.at(dst_id, 1)->timestamp, 100);
   EXPECT_EQ(dst.at(dst_id, 2)->timestamp, 200);
   EXPECT_EQ(dst.at(dst_id, 3)->timestamp, 300);
+  const auto uid0 = dst.at(dst_id, 0)->sequential_uid;
+  const auto uid1 = dst.at(dst_id, 1)->sequential_uid;
+  const auto uid2 = dst.at(dst_id, 2)->sequential_uid;
+  const auto uid3 = dst.at(dst_id, 3)->sequential_uid;
+  EXPECT_LT(uid0, uid1);
+  EXPECT_LT(uid1, uid2);
+  EXPECT_LT(uid2, uid3);
+  EXPECT_EQ(dst.at(dst_id, uid2)->timestamp, 200);
+  EXPECT_EQ(dst.at(dst_id, uid3)->timestamp, 300);
 }
 
 TEST(ObjectStoreFlushTest, RejectsMonotonicityViolation) {
@@ -850,6 +968,7 @@ TEST(ObjectStoreReplaceTest, EntryMoveAndIdPreservation) {
   auto primary_id = primary.registerTopic({.dataset_id = 1, .topic_name = "cam/image", .metadata_json = "{}"});
   ASSERT_TRUE(primary_id.has_value());
   ASSERT_TRUE(primary.pushOwned(*primary_id, 10, makePayload(4, 0x11)).has_value());
+  const auto old_primary_uid = primary.latestAt(*primary_id, 10)->sequential_uid;
 
   auto staged_id = staged.registerTopic({.dataset_id = 7, .topic_name = "cam/image", .metadata_json = R"({"k":1})"});
   ASSERT_TRUE(staged_id.has_value());
@@ -866,6 +985,15 @@ TEST(ObjectStoreReplaceTest, EntryMoveAndIdPreservation) {
   EXPECT_EQ(res->remapped[0].first.id, staged_id->id);
   EXPECT_EQ(res->remapped[0].second.id, primary_id->id) << "primary ObjectTopicId preserved";
   EXPECT_TRUE(res->removed_topics.empty());
+  EXPECT_FALSE(primary.at(*primary_id, old_primary_uid).has_value()) << "replaced entries get fresh primary UIDs";
+  const auto uid0 = primary.at(*primary_id, 0)->sequential_uid;
+  const auto uid1 = primary.at(*primary_id, 1)->sequential_uid;
+  const auto uid2 = primary.at(*primary_id, 2)->sequential_uid;
+  EXPECT_EQ(primary.firstSequentialUID(*primary_id), uid0);
+  EXPECT_LT(uid0, uid1);
+  EXPECT_LT(uid1, uid2);
+  EXPECT_EQ(primary.at(*primary_id, uid0)->timestamp, 100);
+  EXPECT_EQ(primary.at(*primary_id, uid2)->timestamp, 300);
 }
 
 TEST(ObjectStoreReplaceTest, RemovedTopic) {

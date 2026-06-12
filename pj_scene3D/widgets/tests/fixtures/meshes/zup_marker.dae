@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="utf-8"?>
+<COLLADA xmlns="http://www.collada.org/2005/11/COLLADASchema" version="1.4.1">
+  <asset>
+    <created>2026-06-03T00:00:00Z</created>
+    <modified>2026-06-03T00:00:00Z</modified>
+    <unit name="meter" meter="1"/>
+    <up_axis>Z_UP</up_axis>
+  </asset>
+  <library_geometries>
+    <!-- Asymmetric spike: a small triangular base in the z=0 plane and an apex
+         high up at z=+1. Authored Z-up. A symmetric cube cannot reveal a 90deg
+         X-rotation; this spike makes the up-axis observable: the apex must stay
+         the highest-|z| vertex after loading iff geometry arrives Z-up. -->
+    <geometry id="spike-mesh" name="spike">
+      <mesh>
+        <source id="spike-positions">
+          <float_array id="spike-positions-array" count="12">
+            0.0 0.0 0.0
+            0.2 0.0 0.0
+            0.0 0.1 0.0
+            0.0 0.0 1.0
+          </float_array>
+          <technique_common>
+            <accessor source="#spike-positions-array" count="4" stride="3">
+              <param name="X" type="float"/>
+              <param name="Y" type="float"/>
+              <param name="Z" type="float"/>
+            </accessor>
+          </technique_common>
+        </source>
+        <vertices id="spike-vertices">
+          <input semantic="POSITION" source="#spike-positions"/>
+        </vertices>
+        <triangles count="4">
+          <input semantic="VERTEX" source="#spike-vertices" offset="0"/>
+          <p>
+            0 2 1
+            0 1 3
+            1 2 3
+            2 0 3
+          </p>
+        </triangles>
+      </mesh>
+    </geometry>
+  </library_geometries>
+  <library_visual_scenes>
+    <visual_scene id="scene" name="scene">
+      <node id="spike-node" name="spike" type="NODE">
+        <instance_geometry url="#spike-mesh"/>
+      </node>
+    </visual_scene>
+  </library_visual_scenes>
+  <scene>
+    <instance_visual_scene url="#scene"/>
+  </scene>
+</COLLADA>

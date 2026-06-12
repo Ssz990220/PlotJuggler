@@ -159,6 +159,9 @@ void main() {
     }
     base = sampleColormap(u_colormap_id, t);
   }
+  // Colormaps/solid colors are display-referred sRGB; the scene FBO is linear
+  // (Phase 0B: the composite present re-encodes to sRGB). Linearize on write.
+  base = pow(max(base, vec3(0.0)), vec3(2.2));
   frag_color = vec4(base * shading, 1.0);
 }
 )";
@@ -268,6 +271,9 @@ void main() {
     }
     base = sampleColormap(u_colormap_id, t);
   }
+  // Colormaps/solid colors are display-referred sRGB; the scene FBO is linear
+  // (Phase 0B: the composite present re-encodes to sRGB). Linearize on write.
+  base = pow(max(base, vec3(0.0)), vec3(2.2));
   frag_color = vec4(base * shading, 1.0);
 }
 )";
@@ -446,6 +452,11 @@ void PointcloudRenderPass::render(const ViewParams& view_params, const FrameCont
     return;
   }
 
+  // Point/cube clouds are opaque data. Draw them without blending so covered
+  // samples reset the scene FBO alpha marker to "grade me" instead of inheriting
+  // alpha=0 from TF/HUD annotations rendered earlier in the frame.
+  withGlFunctions([](auto& functions) { functions.glDisable(GL_BLEND); });
+
   const glm::mat4 model = glm::mat4(transform->matrix());
 
   if (shape_ == Shape::kCube && cube_program_ != nullptr) {
@@ -496,6 +507,7 @@ void PointcloudRenderPass::render(const ViewParams& view_params, const FrameCont
     });
     cube_vao_.unbind();
     unuseProgram();
+    withGlFunctions([](auto& functions) { functions.glEnable(GL_BLEND); });
     return;
   }
 
@@ -529,6 +541,7 @@ void PointcloudRenderPass::render(const ViewParams& view_params, const FrameCont
       [this](auto& functions) { functions.glDrawArrays(GL_POINTS, 0, static_cast<GLsizei>(vbo_point_count_)); });
   vao_.unbind();
   unuseProgram();
+  withGlFunctions([](auto& functions) { functions.glEnable(GL_BLEND); });
 }
 
 void PointcloudRenderPass::setActiveCloud(std::shared_ptr<const DecodedPointCloud> cloud) {

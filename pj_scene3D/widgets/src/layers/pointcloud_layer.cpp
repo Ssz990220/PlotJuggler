@@ -432,8 +432,12 @@ void PointCloudLayer::setFixedFrame(const QString& frame) {
 
 void PointCloudLayer::setTrackerTime(PJ::Timepoint time) {
   decoded_at_ns_ = time;
+  // Defer the heavy decode (parse + convertCanonical + GPU upload) to render():
+  // a fast scrub fires many ticks but Qt coalesces the repaints into one paint,
+  // so only the final cloud is decoded instead of every skipped frame x N topics.
+  tracker_dirty_ = true;
   if (visible_) {
-    renderAt(PJ::toRaw(time));
+    emit repaintRequested();
   }
 }
 
@@ -459,6 +463,14 @@ void PointCloudLayer::initializeGL() {
 }
 
 void PointCloudLayer::render(const ViewParams& view_params, const FrameContext& frame_ctx) {
+  // Drain a pending tracker move here (coalesced to one decode per painted frame).
+  // renderAt's own SampleId guard makes this cheap when the active sample is
+  // unchanged. frame_ctx.time and decoded_at_ns_ track the same playhead (the dock
+  // paints at the tracker time); refreshNow() re-decodes from the latter on un-hide.
+  if (visible_ && tracker_dirty_) {
+    tracker_dirty_ = false;
+    renderAt(PJ::toRaw(frame_ctx.time));
+  }
   cloud_pass_.render(view_params, frame_ctx);
 }
 

@@ -57,10 +57,11 @@ void AxisRenderPass::render(const ViewParams& view_params, const FrameContext& f
   static const glm::mat4 kZRotate = glm::rotate(glm::mat4{1.0f}, glm::radians(-90.0f), {0.0f, 1.0f, 0.0f});
 
   // Slightly desaturated R/G/B so adjacent frames don't clash visually with
-  // the HUD overlay (which uses the saturated triplets).
-  static constexpr glm::vec4 kColorX{0.95f, 0.30f, 0.30f, 1.0f};
-  static constexpr glm::vec4 kColorY{0.30f, 0.85f, 0.30f, 1.0f};
-  static constexpr glm::vec4 kColorZ{0.35f, 0.50f, 1.00f, 1.0f};
+  // the HUD overlay (which uses the saturated triplets). The alpha channel
+  // carries the Part-C "Gizmos opacity" (annotation coverage).
+  const glm::vec4 kColorX{0.95f, 0.30f, 0.30f, opacity_};
+  const glm::vec4 kColorY{0.30f, 0.85f, 0.30f, opacity_};
+  const glm::vec4 kColorZ{0.35f, 0.50f, 1.00f, opacity_};
 
   // Solid 3D arrows participate in normal depth ordering — back ones get
   // occluded by front ones, and arrows hide behind opaque scene geometry.

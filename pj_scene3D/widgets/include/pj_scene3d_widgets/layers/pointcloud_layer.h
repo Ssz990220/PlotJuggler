@@ -207,6 +207,11 @@ class PointCloudLayer : public Scene3DLayer {
   // The latest tracker time pushed to this layer; the Timepoint the cached VBO
   // was (re)decoded at. Used by refreshNow() to re-decode at the current playhead.
   PJ::Timepoint decoded_at_ns_{};
+  // Set by setTrackerTime, consumed by render(): the decode (parse + convert +
+  // GPU upload) is deferred to the next painted frame instead of running eagerly
+  // per tracker tick. Qt coalesces repaints, so a fast scrub that fires many ticks
+  // decodes only the final cloud once, not every skipped intermediate frame.
+  bool tracker_dirty_ = false;
 
   bool visible_ = true;
   bool range_dirty_ = true;

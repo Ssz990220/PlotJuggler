@@ -37,6 +37,7 @@ using LazyCallback = std::function<sdk::PayloadView()>;
 
 struct ObjectEntry {
   Timestamp timestamp;
+  SequentialUID sequential_uid;
   std::variant<SharedBuffer, LazyCallback> payload;
 };
 
@@ -51,6 +52,27 @@ different datasets.
 
 Entries in a topic must be pushed in monotonically non-decreasing timestamp
 order. Equal timestamps are allowed. Out-of-order writes fail.
+
+## Entry Identity (SequentialUID)
+
+Every entry carries a `SequentialUID` (`pj_datastore/sequential_uid.hpp`): a
+stable identity assigned at insert from a process-wide atomic counter (under the
+series write lock, so UIDs are strictly increasing within a topic). Value 0 is
+the invalid/default sentinel.
+
+Properties consumers can rely on:
+
+- **Stable across eviction.** Unlike a deque index, a UID is never renumbered or
+  reused when retention drops front entries. Replay cursors and decoded-payload
+  caches key on it safely.
+- **Sparse per topic.** Allocation is global across all topics, so consecutive
+  entries of one topic are *not* consecutive integers. Never iterate a topic by
+  incrementing UID values; step with `nextUIDAfter()`.
+- **A generation marker.** `flushTo()` and `replaceDatasetFrom()` assign fresh
+  UIDs to the entries they move into the destination topic. A cursor whose UID
+  falls below `firstSequentialUID()` therefore detects both "evicted past me"
+  and "dataset replaced" with one comparison (eviction is front-only, so the
+  first retained UID passing the cursor is exactly the missed-entry condition).
 
 ## Write Paths
 
@@ -77,7 +99,15 @@ unknown, empty, or has no entry at or before that time.
 
 `at(id, index)` resolves an entry by sequence index.
 
+`at(id, sequential_uid)` resolves an entry by stable UID (binary search; nullopt
+when evicted, invalid, or from another topic/generation).
+
 `indexAt(id, timestamp)` returns the index that `latestAt()` would resolve.
+
+`firstSequentialUID(id)` returns the first retained entry's UID;
+`nextUIDAfter(id, after)` returns the next retained UID strictly greater than
+`after` (an invalid `after` starts from the front). Together they let a replay
+cursor walk a topic's sparse UID sequence at one binary search per entry.
 
 `entryTimestamps(id)` returns an `EntryTimestampsView` that holds the series read
 lock while the timestamp span is inspected.
@@ -87,6 +117,7 @@ Resolved entries contain:
 ```cpp
 struct ResolvedObjectEntry {
   Timestamp timestamp;
+  SequentialUID sequential_uid;
   sdk::PayloadView payload;  // { Span<const uint8_t> bytes; BufferAnchor anchor; }
 };
 ```

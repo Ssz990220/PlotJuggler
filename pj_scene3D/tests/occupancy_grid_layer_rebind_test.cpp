@@ -110,6 +110,7 @@ TEST(OccupancyGridLayerRebind, ReloadSwapsParserWithoutTouchingStaleOne) {
 
   const int stale_calls_before = g_first_parser_calls.load();
   layer.setTrackerTime(PJ::fromRaw(100));
+  layer.renderAtForTest(100);
 
   EXPECT_EQ(g_first_parser_calls.load(), stale_calls_before)
       << "layer called the replaced (freed-in-production) parser after the reload swap";

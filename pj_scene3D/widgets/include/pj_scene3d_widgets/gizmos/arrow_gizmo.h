@@ -62,7 +62,9 @@ class ArrowGizmo {
   //   mvp        : full projection * view * model transform.
   //   normal_mat : mat3(view * model) — used when shading == kLit so the light
   //                direction is camera-stable.
-  //   color      : RGBA tint applied per-fragment.
+  //   color      : RGBA tint; the ALPHA is the annotation opacity/coverage,
+  //                written as frag alpha and consumed by renderScene's
+  //                annotation blend mode (1.0 = solid, today's look).
   void render(
       const glm::mat4& mvp, const glm::mat3& normal_mat, const glm::vec4& color, Shading shading = Shading::kLit);
 

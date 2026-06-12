@@ -2,14 +2,18 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 
+#include <QByteArray>
 #include <QList>
+#include <QMap>
 #include <QObject>
 #include <QString>
 #include <QStringList>
 #include <cstdint>
+#include <limits>
 #include <memory>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include "pj_base/builtin/builtin_object.hpp"
@@ -20,12 +24,14 @@
 #include "pj_scene_common/scene_layer.h"
 
 class QResizeEvent;
+class QSettings;
 class QToolButton;
 class QWidget;
 
 namespace pj::scene3d {
 class SceneViewWidget;
 class TransformService;
+class UrdfPackageResolver;
 }  // namespace pj::scene3d
 
 namespace PJ {
@@ -49,13 +55,23 @@ class Scene3DDockWidget : public SceneDockWidget {
 
   void setTransformService(pj::scene3d::TransformService* service);
 
+  // The owned GL view, for the app's scene-controls panel (grid/gizmo/look
+  // setters live on SceneViewWidget). Null until the dock realizes its view.
+  [[nodiscard]] pj::scene3d::SceneViewWidget* sceneView() {
+    return view_;
+  }
+
   /// Single source of truth for the canonical object types the 3D scene family
   /// handles: render layers (kPointCloud, kCompressedPointCloud, kOccupancyGrid,
-  /// kSceneEntities — see acceptsObjectType) plus scene-wide config topics
+  /// kRobotDescription, kSceneEntities — see acceptsObjectType) plus scene-wide config topics
   /// (kFrameTransforms via handleSceneConfigTopic). Host-side drop routing reads this.
   [[nodiscard]] static bool handlesObjectType(sdk::BuiltinObjectType object_type);
 
   bool addTopic(ObjectTopicId topic_id, sdk::BuiltinObjectType object_type, const QString& title);
+  bool revalidateObjects() override;
+
+  void setSettings(QSettings* settings);
+  void setMcapAttachments(QMap<QString, QByteArray> attachments);
 
   bool setSceneTopic(ObjectTopicId topic_id, sdk::BuiltinObjectType object_type, const QString& title) {
     return addTopic(topic_id, object_type, title);
@@ -86,7 +102,23 @@ class Scene3DDockWidget : public SceneDockWidget {
   };
   [[nodiscard]] OrphanSnapshot orphanState(ObjectTopicId topic_id) const;
 
+  // Store topics carrying a robot description (metadata builtin_object_type ==
+  // kRobotDescription), for the scene-controls panel's Model/URDF topic combo.
+  struct RobotDescriptionTopic {
+    ObjectTopicId topic_id;
+    QString name;
+  };
+  [[nodiscard]] QList<RobotDescriptionTopic> robotDescriptionTopics() const;
+
  public slots:
+  // Create a local File/URL robot layer (synthetic registry id, never passed to
+  // the ObjectStore). With a path, the layer loads that URDF immediately — the
+  // panel's one-click "Load URDF…" flow; empty = blank layer, configure later.
+  // Returns the layer's registry id ({0} on failure) so the caller can later
+  // removeTopic() it — the panel's per-row remove flow.
+  ObjectTopicId addRobotModelLayer(const QString& urdf_path = {});
+  // Same local-layer flow, loading the URDF over http(s) instead of from disk.
+  ObjectTopicId addRobotModelLayerFromUrl(const QString& url);
   void setFixedFrame(const QString& frame);
   void setFixedFrameAutoRoot();
   void setLayerVisible(ObjectTopicId topic_id, bool visible);
@@ -133,6 +165,8 @@ class Scene3DDockWidget : public SceneDockWidget {
   // and on tracker-time changes (cloud/grid geometry moves over time).
   void updateSceneBounds();
   void recomputeOrphanStates();
+  [[nodiscard]] bool isLocalRobotLayerId(ObjectTopicId topic_id) const;
+  ObjectTopicId allocateLocalRobotLayerId();
 
   pj::scene3d::TransformService* transform_service_ = nullptr;
   pj::scene3d::SceneViewWidget* view_ = nullptr;
@@ -142,6 +176,11 @@ class Scene3DDockWidget : public SceneDockWidget {
   DatasetId dataset_id_ = 0;
   // Live streamed-TF ingest hookup (SessionManager::samplesIngested).
   QMetaObject::Connection live_samples_conn_;
+  std::unique_ptr<pj::scene3d::UrdfPackageResolver> package_resolver_;
+  QSettings* settings_ = nullptr;
+  QMap<QString, QByteArray> mcap_attachments_;
+  uint32_t next_local_robot_topic_id_ = std::numeric_limits<uint32_t>::max();
+  std::unordered_set<uint32_t> local_robot_layer_ids_;
 
   QList<pj::scene3d::FrameRow> available_frames_;
   std::vector<std::string> fallback_frames_;

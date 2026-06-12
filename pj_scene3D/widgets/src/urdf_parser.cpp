@@ -1,0 +1,253 @@
+// Copyright 2026 Davide Faconti
+// SPDX-License-Identifier: MPL-2.0
+#include "urdf_parser.h"
+
+#include <QByteArray>
+#include <QDomDocument>
+#include <QDomElement>
+#include <QString>
+#include <QStringList>
+#include <array>
+#include <unordered_map>
+
+namespace pj::scene3d {
+
+namespace {
+
+// Parse a whitespace-separated list of doubles ("x y z") into a fixed array.
+// Returns false if fewer than N tokens parse.
+template <std::size_t N>
+bool parseDoubles(const QString& text, std::array<double, N>& out) {
+  const QStringList toks = text.simplified().split(' ', Qt::SkipEmptyParts);
+  if (static_cast<std::size_t>(toks.size()) < N) {
+    return false;
+  }
+  for (std::size_t i = 0; i < N; ++i) {
+    bool ok = false;
+    out[i] = toks[static_cast<int>(i)].toDouble(&ok);
+    if (!ok) {
+      return false;
+    }
+  }
+  return true;
+}
+
+double attrDouble(const QDomElement& el, const QString& name, double fallback) {
+  if (!el.hasAttribute(name)) {
+    return fallback;
+  }
+  bool ok = false;
+  const double v = el.attribute(name).toDouble(&ok);
+  return ok ? v : fallback;
+}
+
+// Read <origin xyz="..." rpy="..."/> into the LinkGeom (defaults: identity).
+void parseOrigin(const QDomElement& parent, LinkGeom& geom) {
+  const QDomElement origin = parent.firstChildElement(QStringLiteral("origin"));
+  if (origin.isNull()) {
+    return;
+  }
+  std::array<double, 3> xyz{0, 0, 0};
+  std::array<double, 3> rpy{0, 0, 0};
+  if (parseDoubles(origin.attribute(QStringLiteral("xyz")), xyz)) {
+    geom.origin_xyz = {xyz[0], xyz[1], xyz[2]};
+  }
+  if (parseDoubles(origin.attribute(QStringLiteral("rpy")), rpy)) {
+    geom.origin_rpy = {rpy[0], rpy[1], rpy[2]};
+  }
+}
+
+// Read <geometry> into a GeomShape. Mesh refs are dispatched to the resolver.
+// Returns false if no recognized child geometry is present.
+bool parseGeometry(
+    const QDomElement& parent, UrdfPackageResolver* resolver, const std::string& urdf_dir, bool source_is_url,
+    GeomShape& out) {
+  const QDomElement geo = parent.firstChildElement(QStringLiteral("geometry"));
+  if (geo.isNull()) {
+    return false;
+  }
+
+  if (const QDomElement box = geo.firstChildElement(QStringLiteral("box")); !box.isNull()) {
+    GeomBox b;
+    std::array<double, 3> s{1, 1, 1};
+    if (parseDoubles(box.attribute(QStringLiteral("size")), s)) {
+      b.size = {s[0], s[1], s[2]};
+    }
+    out = b;
+    return true;
+  }
+  if (const QDomElement cyl = geo.firstChildElement(QStringLiteral("cylinder")); !cyl.isNull()) {
+    GeomCylinder c;
+    c.radius = attrDouble(cyl, QStringLiteral("radius"), 1.0);
+    c.length = attrDouble(cyl, QStringLiteral("length"), 1.0);
+    out = c;
+    return true;
+  }
+  if (const QDomElement sph = geo.firstChildElement(QStringLiteral("sphere")); !sph.isNull()) {
+    GeomSphere s;
+    s.radius = attrDouble(sph, QStringLiteral("radius"), 1.0);
+    out = s;
+    return true;
+  }
+  if (const QDomElement mesh = geo.firstChildElement(QStringLiteral("mesh")); !mesh.isNull()) {
+    GeomMesh m;
+    m.filename = mesh.attribute(QStringLiteral("filename")).toStdString();
+    std::array<double, 3> sc{1, 1, 1};
+    if (parseDoubles(mesh.attribute(QStringLiteral("scale")), sc)) {
+      m.scale = {sc[0], sc[1], sc[2]};
+    }
+    if (resolver != nullptr && !m.filename.empty()) {
+      const ResolvedMesh r = resolver->resolveUri(m.filename, urdf_dir, source_is_url);
+      m.resolved = r.resolved;
+      m.resolved_path = r.path;
+    }
+    out = m;
+    return true;
+  }
+  return false;
+}
+
+// Resolve a <material> (inline <color rgba> or a named ref into `materials`).
+// Returns true and fills `geom.color`/`has_color` when a color is found.
+void parseMaterial(
+    const QDomElement& parent, const std::unordered_map<std::string, glm::vec4>& materials, LinkGeom& geom) {
+  const QDomElement mat = parent.firstChildElement(QStringLiteral("material"));
+  if (mat.isNull()) {
+    return;
+  }
+  const QDomElement color = mat.firstChildElement(QStringLiteral("color"));
+  if (!color.isNull()) {
+    std::array<double, 4> rgba{0.7, 0.7, 0.7, 1.0};
+    if (parseDoubles(color.attribute(QStringLiteral("rgba")), rgba)) {
+      geom.color = {
+          static_cast<float>(rgba[0]), static_cast<float>(rgba[1]), static_cast<float>(rgba[2]),
+          static_cast<float>(rgba[3])};
+      geom.has_color = true;
+      return;
+    }
+  }
+  // Named material reference: <material name="Foo"/> with no inline color.
+  const std::string name = mat.attribute(QStringLiteral("name")).toStdString();
+  if (!name.empty()) {
+    auto it = materials.find(name);
+    if (it != materials.end()) {
+      geom.color = it->second;
+      geom.has_color = true;
+    }
+  }
+}
+
+// Parse a single <visual> or <collision> into a LinkGeom. Returns false if it
+// has no recognizable geometry.
+bool parseGeomElement(
+    const QDomElement& el, UrdfPackageResolver* resolver, const std::string& urdf_dir, bool source_is_url,
+    const std::unordered_map<std::string, glm::vec4>& materials, LinkGeom& out) {
+  if (!parseGeometry(el, resolver, urdf_dir, source_is_url, out.shape)) {
+    return false;
+  }
+  parseOrigin(el, out);
+  parseMaterial(el, materials, out);
+  return true;
+}
+
+}  // namespace
+
+bool looksLikeXacro(const std::string& xml, const std::string& filename) {
+  if (!filename.empty()) {
+    const QString f = QString::fromStdString(filename);
+    if (f.endsWith(QLatin1String(".xacro"), Qt::CaseInsensitive)) {
+      return true;
+    }
+  }
+  // A `<xacro:` element opener. An `xmlns:xacro` namespace declaration ALONE is
+  // not treated as xacro — a plain (already-expanded) URDF may legitimately
+  // carry the namespace attribute and must still parse.
+  return QString::fromStdString(xml).contains(QLatin1String("<xacro:"));
+}
+
+std::pair<std::optional<RobotModel>, std::string> parseUrdf(
+    const std::string& xml, UrdfPackageResolver* resolver, const std::string& urdf_dir, bool source_is_url,
+    const std::string& filename) {
+  if (looksLikeXacro(xml, filename)) {
+    return {std::nullopt, "Unsupported format: xacro — run `xacro input.xacro > output.urdf` and load the result."};
+  }
+
+  QDomDocument doc;
+  const QByteArray bytes = QByteArray::fromStdString(xml);
+#if QT_VERSION >= QT_VERSION_CHECK(6, 5, 0)
+  const auto result = doc.setContent(bytes);
+  if (!result) {
+    return {std::nullopt, "Parse error: " + result.errorMessage.toStdString()};
+  }
+#else
+  QString error_msg;
+  int error_line = 0;
+  int error_col = 0;
+  if (!doc.setContent(bytes, &error_msg, &error_line, &error_col)) {
+    return {std::nullopt, "Parse error: " + error_msg.toStdString()};
+  }
+#endif
+
+  const QDomElement root = doc.documentElement();
+  if (root.isNull()) {
+    return {std::nullopt, "Parse error: empty document"};
+  }
+  // Format inference from the root element.
+  const QString root_tag = root.tagName();
+  if (root_tag != QStringLiteral("robot")) {
+    return {std::nullopt, "Format '" + root_tag.toStdString() + "' is not supported — only URDF"};
+  }
+
+  RobotModel model;
+
+  // Pass 1 — collect top-level named materials (<robot><material name color>).
+  std::unordered_map<std::string, glm::vec4> materials;
+  for (QDomElement mat = root.firstChildElement(QStringLiteral("material")); !mat.isNull();
+       mat = mat.nextSiblingElement(QStringLiteral("material"))) {
+    const std::string name = mat.attribute(QStringLiteral("name")).toStdString();
+    const QDomElement color = mat.firstChildElement(QStringLiteral("color"));
+    if (name.empty() || color.isNull()) {
+      continue;
+    }
+    std::array<double, 4> rgba{0.7, 0.7, 0.7, 1.0};
+    if (parseDoubles(color.attribute(QStringLiteral("rgba")), rgba)) {
+      materials[name] = {
+          static_cast<float>(rgba[0]), static_cast<float>(rgba[1]), static_cast<float>(rgba[2]),
+          static_cast<float>(rgba[3])};
+    }
+  }
+
+  // Pass 2 — links. <joint> is intentionally skipped.
+  for (QDomElement link_el = root.firstChildElement(QStringLiteral("link")); !link_el.isNull();
+       link_el = link_el.nextSiblingElement(QStringLiteral("link"))) {
+    RobotLink link;
+    link.name = link_el.attribute(QStringLiteral("name")).toStdString();
+
+    for (QDomElement v = link_el.firstChildElement(QStringLiteral("visual")); !v.isNull();
+         v = v.nextSiblingElement(QStringLiteral("visual"))) {
+      LinkGeom g;
+      if (parseGeomElement(v, resolver, urdf_dir, source_is_url, materials, g)) {
+        link.visuals.push_back(std::move(g));
+      }
+    }
+    for (QDomElement c = link_el.firstChildElement(QStringLiteral("collision")); !c.isNull();
+         c = c.nextSiblingElement(QStringLiteral("collision"))) {
+      LinkGeom g;
+      if (parseGeomElement(c, resolver, urdf_dir, source_is_url, materials, g)) {
+        link.collisions.push_back(std::move(g));
+      }
+    }
+
+    if (model.root_link.empty()) {
+      model.root_link = link.name;  // first declared link
+    }
+    model.links.push_back(std::move(link));
+  }
+
+  if (model.links.empty()) {
+    return {std::nullopt, "Parse error: <robot> has no <link> elements"};
+  }
+  return {std::move(model), std::string{}};
+}
+
+}  // namespace pj::scene3d

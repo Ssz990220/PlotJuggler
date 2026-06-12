@@ -115,6 +115,7 @@ add_library(pj_datastore STATIC
   src/plugin_data_host.cpp
   src/colormap_registry.cpp
   src/colormap_registry_host.cpp
+  src/sequential_uid.cpp
   src/object_store.cpp
 )
 target_include_directories(pj_datastore PUBLIC
@@ -160,6 +161,7 @@ if(PJ_BUILD_TESTS)
     tests/derived_engine_test.cpp
     tests/array_expansion_test.cpp
     tests/regression_test.cpp
+    tests/sequential_uid_test.cpp
     tests/object_store_test.cpp
     tests/plugin_data_host_object_test.cpp
     tests/plugin_data_host_object_read_test.cpp

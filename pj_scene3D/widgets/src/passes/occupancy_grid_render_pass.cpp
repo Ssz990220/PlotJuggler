@@ -85,6 +85,9 @@ void main() {
     float g = 1.0 - occ;  // map: free=white, occupied=black
     color = vec3(g, g, g);
   }
+  // LUT colors are display-referred sRGB; the scene FBO is linear (Phase 0B:
+  // the composite present re-encodes to sRGB). Linearize on write.
+  color = pow(color, vec3(2.2));
   frag = vec4(color, u_opacity);
 }
 )";
@@ -218,7 +221,9 @@ void OccupancyGridRenderPass::render(const ViewParams& view_params, const FrameC
 
   withGlFunctions([](auto& functions) {
     functions.glEnable(GL_BLEND);
-    functions.glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    // Coverage-union alpha restores the scene FBO's tonemap marker (see
+    // SceneViewWidget::renderScene).
+    functions.glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
     functions.glEnable(GL_POLYGON_OFFSET_FILL);
     functions.glPolygonOffset(-1.0f, -1.0f);  // pull toward camera to win over the ground/grid
     // Maps/costmaps are flat overlays, mutually coplanar at z=0. Writing depth

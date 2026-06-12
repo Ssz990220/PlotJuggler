@@ -1,0 +1,364 @@
+// Copyright 2026 Davide Faconti
+// SPDX-License-Identifier: MPL-2.0
+#include "mesh_loader.h"
+
+#include <gtest/gtest.h>
+
+#include <QByteArray>
+#include <QFile>
+#include <QFileInfo>
+#include <QFuture>
+#include <QString>
+#include <cmath>
+#include <glm/glm.hpp>
+#include <vector>
+
+namespace pj::scene3d {
+namespace {
+
+#ifndef PJ_SCENE3D_FIXTURES_DIR
+#error "PJ_SCENE3D_FIXTURES_DIR must be defined by the build"
+#endif
+
+QString fixturePath(const char* name) {
+  return QString(PJ_SCENE3D_FIXTURES_DIR) + "/meshes/" + QLatin1String(name);
+}
+
+QByteArray readFixtureBytes(const char* name) {
+  QFile f(fixturePath(name));
+  EXPECT_TRUE(f.open(QIODevice::ReadOnly)) << "missing fixture: " << name;
+  return f.readAll();
+}
+
+// Every emitted normal must be unit length (GenSmoothNormals guarantees them).
+void expectPopulatedNormals(const MeshData& mesh) {
+  ASSERT_FALSE(mesh.vertices.empty());
+  bool any_nonzero = false;
+  for (const auto& v : mesh.vertices) {
+    const float len = std::sqrt(v.normal.x * v.normal.x + v.normal.y * v.normal.y + v.normal.z * v.normal.z);
+    EXPECT_GT(len, 0.5f) << "degenerate normal";
+    if (len > 0.5f) {
+      any_nonzero = true;
+    }
+  }
+  EXPECT_TRUE(any_nonzero);
+}
+
+// Axis-aligned bounds of the loaded geometry, for orientation assertions.
+struct Bounds {
+  glm::vec3 min{0.0f};
+  glm::vec3 max{0.0f};
+  glm::vec3 extent() const {
+    return max - min;
+  }
+};
+
+Bounds computeBounds(const MeshData& mesh) {
+  Bounds b;
+  b.min = glm::vec3(1e9f);
+  b.max = glm::vec3(-1e9f);
+  for (const auto& v : mesh.vertices) {
+    b.min = glm::min(b.min, v.position);
+    b.max = glm::max(b.max, v.position);
+  }
+  return b;
+}
+
+// Indices must all be in range and form whole triangles.
+void expectValidIndices(const MeshData& mesh) {
+  ASSERT_FALSE(mesh.indices.empty());
+  EXPECT_EQ(mesh.indices.size() % 3, 0u);
+  for (auto idx : mesh.indices) {
+    EXPECT_LT(idx, mesh.vertices.size());
+  }
+
+  ASSERT_FALSE(mesh.submeshes.empty());
+  std::vector<bool> covered(mesh.indices.size(), false);
+  for (const SubMesh& submesh : mesh.submeshes) {
+    // Loader invariant: every emitted submesh carries a material (a neutral
+    // fallback when the source has none) — see SubMesh in mesh_data.h.
+    ASSERT_NE(submesh.material, nullptr);
+    EXPECT_EQ(submesh.index_count % 3, 0u);
+    ASSERT_LE(submesh.index_offset, mesh.indices.size());
+    ASSERT_LE(submesh.index_count, mesh.indices.size() - submesh.index_offset);
+    for (std::size_t i = submesh.index_offset; i < submesh.index_offset + submesh.index_count; ++i) {
+      covered[i] = true;
+    }
+  }
+  for (bool is_covered : covered) {
+    EXPECT_TRUE(is_covered);
+  }
+}
+
+// --- Path load: STL ---------------------------------------------------------
+
+TEST(MeshLoaderTest, LoadsStlFromPath) {
+  MeshLoader loader;
+  QFuture<MeshData> future = loader.load(fixturePath("cube.stl"));
+  const MeshData mesh = future.result();
+  ASSERT_TRUE(mesh.ok) << mesh.error.toStdString();
+  EXPECT_FALSE(mesh.vertices.empty());
+  expectValidIndices(mesh);
+  expectPopulatedNormals(mesh);
+  // A cube triangulates to 12 triangles.
+  EXPECT_EQ(mesh.indices.size(), 36u);
+}
+
+// --- Path load: Collada (DAE) -----------------------------------------------
+// Proves the assimp Conan `with_collada=True` option name is correct: a wrong
+// name silently disables the importer and this would return empty geometry.
+
+TEST(MeshLoaderTest, LoadsColladaFromPath) {
+  MeshLoader loader;
+  QFuture<MeshData> future = loader.load(fixturePath("cube.dae"));
+  const MeshData mesh = future.result();
+  ASSERT_TRUE(mesh.ok) << "DAE import returned empty — check assimp with_collada option: " << mesh.error.toStdString();
+  EXPECT_FALSE(mesh.vertices.empty());
+  expectValidIndices(mesh);
+  expectPopulatedNormals(mesh);
+  EXPECT_EQ(mesh.indices.size(), 36u);
+}
+
+// --- Coordinate system: Z_UP Collada arrives Z-up after loading -------------
+// Regression guard for the assimp Collada up-axis (Phase-2 review FIX 1).
+// assimp normalizes a <up_axis>Z_UP</up_axis> file to its internal Y-up via the
+// root-node transform; wantsZUpFlip("dae") then re-applies a +90deg X rotation
+// to land Z-up in our world. zup_marker.dae is an ASYMMETRIC spike (a symmetric
+// cube cannot reveal a 90deg X-rotation): apex authored at (0,0,1), base in z=0
+// extended slightly along +Y (0.1) so both the apex and the base feature pin
+// the orientation. Values below are the EMPIRICALLY-VERIFIED Z-up result —
+// if a future change drops or doubles the flip, this fails loudly.
+
+TEST(MeshLoaderTest, ColladaZUpFixtureLoadsZUp) {
+  MeshLoader loader;
+  const MeshData mesh = loader.load(fixturePath("zup_marker.dae")).result();
+  ASSERT_TRUE(mesh.ok) << mesh.error.toStdString();
+  expectValidIndices(mesh);
+
+  const Bounds b = computeBounds(mesh);
+  // Apex is the highest-|z| vertex and sits near z=+1; the +Y base feature is
+  // small (~0.1). After the flip, z-extent (~1.0) must dominate y-extent (~0.1).
+  EXPECT_GT(b.extent().z, 0.9f) << "Z-up apex collapsed — flip missing/wrong";
+  EXPECT_LT(b.extent().y, 0.3f) << "apex leaked into +Y — geometry still Y-up";
+  EXPECT_GT(b.extent().z, b.extent().y) << "max-z extent must dominate max-y extent for Z-up";
+  EXPECT_NEAR(b.max.z, 1.0f, 1e-3f) << "apex should land at z=+1";
+
+  // Find the apex (largest z) and confirm it is the authored (0,0,1).
+  const Vertex* apex = &mesh.vertices.front();
+  for (const auto& v : mesh.vertices) {
+    if (v.position.z > apex->position.z) {
+      apex = &v;
+    }
+  }
+  EXPECT_NEAR(apex->position.x, 0.0f, 1e-3f);
+  EXPECT_NEAR(apex->position.y, 0.0f, 1e-3f);
+  EXPECT_NEAR(apex->position.z, 1.0f, 1e-3f);
+}
+
+TEST(MeshLoaderTest, ColladaExtractsUvsAndResolvesTexturePath) {
+  MeshLoader loader;
+  const MeshData mesh = loader.load(fixturePath("textured_quad.dae")).result();
+  ASSERT_TRUE(mesh.ok) << mesh.error.toStdString();
+  expectValidIndices(mesh);
+
+  bool has_nonzero_uv = false;
+  for (const Vertex& vertex : mesh.vertices) {
+    if (std::abs(vertex.uv.x) > 1e-6f || std::abs(vertex.uv.y) > 1e-6f) {
+      has_nonzero_uv = true;
+      break;
+    }
+  }
+  EXPECT_TRUE(has_nonzero_uv);
+
+  ASSERT_FALSE(mesh.submeshes.empty());
+  const TextureSource& base = mesh.submeshes.front().material->base_color;
+  const QString texture_path = base.path;
+  const QFileInfo texture_info(texture_path);
+  EXPECT_TRUE(base.bytes.empty()) << "external .dae texture must resolve to a path, not inline bytes";
+  EXPECT_TRUE(texture_info.isAbsolute()) << texture_path.toStdString();
+  EXPECT_TRUE(texture_path.endsWith(QLatin1String("red_4x4.png"))) << texture_path.toStdString();
+  EXPECT_TRUE(texture_info.isFile()) << texture_path.toStdString();
+}
+
+// --- In-memory load (embedded path) -----------------------------------------
+// loadFromMemory feeds the format hint so assimp picks the importer for a
+// headerless buffer. We exercise the Collada bytes here and the binary glTF
+// (.glb) importer below — the .glb path is the real embedded format the Phase 4
+// Waymo SceneEntity will use.
+
+TEST(MeshLoaderTest, LoadsFromMemory) {
+  MeshLoader loader;
+  const QByteArray bytes = readFixtureBytes("cube.dae");
+  ASSERT_FALSE(bytes.isEmpty());
+  QFuture<MeshData> future = loader.loadFromMemory(bytes, QStringLiteral("dae"));
+  const MeshData mesh = future.result();
+  ASSERT_TRUE(mesh.ok) << mesh.error.toStdString();
+  expectValidIndices(mesh);
+  expectPopulatedNormals(mesh);
+}
+
+// --- In-memory load: binary glTF (.glb) -------------------------------------
+// Exercises the glTF importer in-memory (FIX 2): the Y->Z flip path is only
+// reachable via glTF, and that importer had no in-memory test. zup_marker.glb is
+// a hand-crafted single-triangle GLB (12-byte header + JSON chunk + BIN chunk,
+// produced with stdlib struct+json — no external libs). Loading via the "glb"
+// hint must yield non-empty geometry; loadFromMemory flips it to Z-up.
+
+TEST(MeshLoaderTest, LoadsGlbFromMemory) {
+  MeshLoader loader;
+  const QByteArray bytes = readFixtureBytes("zup_marker.glb");
+  ASSERT_FALSE(bytes.isEmpty());
+  QFuture<MeshData> future = loader.loadFromMemory(bytes, QStringLiteral("glb"));
+  const MeshData mesh = future.result();
+  ASSERT_TRUE(mesh.ok) << mesh.error.toStdString();
+  EXPECT_FALSE(mesh.vertices.empty());
+  expectValidIndices(mesh);
+  expectPopulatedNormals(mesh);
+  // One triangle -> 3 indices.
+  EXPECT_EQ(mesh.indices.size(), 3u);
+  // Authored Y-up apex at (0,1,0); loadFromMemory("glb") applies the Y->Z flip,
+  // so it must land Z-up at (0,0,1).
+  const Bounds b = computeBounds(mesh);
+  EXPECT_GT(b.extent().z, b.extent().y) << "glb apex still Y-up — flip not applied";
+  EXPECT_NEAR(b.max.z, 1.0f, 1e-3f) << "glb apex should land at z=+1 after flip";
+}
+
+// --- Embedded glTF material: textures-in-the-GLB + PBR factors ---------------
+// embedded_base.glb is a hand-built textured quad (stdlib struct+json, no libs)
+// whose base-color image is embedded as a bufferView PNG and whose material sets
+// metallic/roughness/emissive factors. This is the Waymo SceneEntity case: the
+// loader must extract the embedded image into inline bytes (not a path) and read
+// the PBR factors, rather than dropping the texture as "*N".
+
+TEST(MeshLoaderTest, EmbeddedGlbExtractsBaseColorTextureAndPbrFactors) {
+  MeshLoader loader;
+  const QByteArray bytes = readFixtureBytes("embedded_base.glb");
+  ASSERT_FALSE(bytes.isEmpty());
+  const MeshData mesh = loader.loadFromMemory(bytes, QStringLiteral("glb")).result();
+  ASSERT_TRUE(mesh.ok) << mesh.error.toStdString();
+  ASSERT_FALSE(mesh.submeshes.empty());
+
+  const Material& material = *mesh.submeshes.front().material;
+  // The embedded base-color image arrives as inline bytes (still PNG-encoded),
+  // keyed by content hash — no external path.
+  EXPECT_FALSE(material.base_color.empty());
+  EXPECT_FALSE(material.base_color.bytes.empty()) << "embedded base-color texture was dropped";
+  EXPECT_TRUE(material.base_color.path.isEmpty());
+  EXPECT_TRUE(material.base_color.key.rfind("emb:", 0) == 0) << material.base_color.key;
+
+  // PBR factors read from the material (not the renderer fallback).
+  EXPECT_TRUE(material.has_pbr);
+  EXPECT_NEAR(material.metallic_factor, 0.25f, 1e-3f);
+  EXPECT_NEAR(material.roughness_factor, 0.75f, 1e-3f);
+  EXPECT_NEAR(material.emissive_factor.x, 0.10f, 1e-3f);
+  EXPECT_NEAR(material.emissive_factor.y, 0.20f, 1e-3f);
+  EXPECT_NEAR(material.emissive_factor.z, 0.30f, 1e-3f);
+  EXPECT_EQ(material.alpha_mode, AlphaMode::kOpaque);
+
+  // Maps the fixture does not carry stay empty (no false positives).
+  EXPECT_TRUE(material.metallic_roughness.empty());
+  EXPECT_TRUE(material.normal.empty());
+  EXPECT_TRUE(material.emissive.empty());
+}
+
+// The embedded-texture cache key is a content hash, so re-loading the same bytes
+// yields the same key — this is what lets the renderer's per-context texture
+// cache survive GL-context recreation and dedup identical embedded images.
+TEST(MeshLoaderTest, EmbeddedTextureKeyIsStableAcrossLoads) {
+  MeshLoader loader;
+  const QByteArray bytes = readFixtureBytes("embedded_base.glb");
+  ASSERT_FALSE(bytes.isEmpty());
+  const MeshData a = loader.loadFromMemory(bytes, QStringLiteral("glb")).result();
+  const MeshData b = loader.loadFromMemory(bytes, QStringLiteral("glb")).result();
+  ASSERT_TRUE(a.ok && b.ok);
+  ASSERT_FALSE(a.submeshes.empty());
+  ASSERT_FALSE(b.submeshes.empty());
+  EXPECT_EQ(a.submeshes.front().material->base_color.key, b.submeshes.front().material->base_color.key);
+  EXPECT_FALSE(a.submeshes.front().material->base_color.key.empty());
+}
+
+// aiProcess_CalcTangentSpace must populate per-vertex tangents for normal mapping.
+// embedded_base.glb's UVs map U->+Y so the computed tangent is unambiguously not
+// the (1,0,0) default; after the glb Y->Z flip it lands at (0,0,1). Each tangent
+// must be unit length, orthogonal to the normal, and carry a +/-1 handedness.
+TEST(MeshLoaderTest, GeneratesTangentBasis) {
+  MeshLoader loader;
+  const QByteArray bytes = readFixtureBytes("embedded_base.glb");
+  ASSERT_FALSE(bytes.isEmpty());
+  const MeshData mesh = loader.loadFromMemory(bytes, QStringLiteral("glb")).result();
+  ASSERT_TRUE(mesh.ok) << mesh.error.toStdString();
+  ASSERT_FALSE(mesh.vertices.empty());
+
+  for (const Vertex& v : mesh.vertices) {
+    const glm::vec3 t(v.tangent);
+    EXPECT_NEAR(glm::length(t), 1.0f, 1e-3f) << "tangent must be unit length";
+    EXPECT_NEAR(glm::dot(glm::normalize(v.normal), t), 0.0f, 1e-3f) << "tangent must be orthogonal to normal";
+    EXPECT_TRUE(std::abs(v.tangent.w - 1.0f) < 1e-3f || std::abs(v.tangent.w + 1.0f) < 1e-3f)
+        << "handedness must be +/-1, was " << v.tangent.w;
+    EXPECT_GT(glm::length(t - glm::vec3(1.0f, 0.0f, 0.0f)), 0.5f) << "tangent looks like the unset default";
+  }
+}
+
+// --- Cache: same path returns the SAME cached future ------------------------
+// A cache HIT means the second load() must not re-run the importer. Comparing
+// vertex/index counts alone would also pass if it re-imported (deterministic
+// output), so that proves nothing. Instead we prove identity: load() returns
+// the cached QFuture by value, and copies of one future share the same
+// QFutureInterface result storage. The iterator's resultPointer therefore
+// aliases the same MeshData object for a hit; a cache miss (re-import) would
+// allocate a distinct future with its own storage at a different address.
+
+TEST(MeshLoaderTest, CachesByResolvedPath) {
+  MeshLoader loader;
+  QFuture<MeshData> first = loader.load(fixturePath("cube.stl"));
+  QFuture<MeshData> second = loader.load(fixturePath("cube.stl"));
+  ASSERT_TRUE(first.result().ok);
+  ASSERT_TRUE(second.result().ok);
+
+  // resultPointer of each future's first (and only) result element.
+  const MeshData* first_ptr = &(*first.constBegin());
+  const MeshData* second_ptr = &(*second.constBegin());
+  EXPECT_EQ(first_ptr, second_ptr) << "second load() re-imported instead of hitting the cache";
+
+  // A different path must NOT alias the cube.stl result.
+  QFuture<MeshData> other = loader.load(fixturePath("cube.dae"));
+  ASSERT_TRUE(other.result().ok);
+  EXPECT_NE(&(*other.constBegin()), first_ptr) << "distinct paths must not share a cache entry";
+}
+
+// --- glTF doubleSided -> Material::double_sided -------------------------------
+// double_sided.gltf is a minimal hand-written text glTF (single triangle,
+// base64 data-URI buffer) whose material sets "doubleSided": true. The loader
+// must surface it (via assimp's AI_MATKEY_TWOSIDED) so the renderer can drop
+// back-face culling for those submeshes.
+
+TEST(MeshLoaderTest, ReadsGltfDoubleSidedFlag) {
+  MeshLoader loader;
+  const MeshData mesh = loader.load(fixturePath("double_sided.gltf")).result();
+  ASSERT_TRUE(mesh.ok) << mesh.error.toStdString();
+  ASSERT_FALSE(mesh.submeshes.empty());
+  EXPECT_TRUE(mesh.submeshes.front().material->double_sided);
+}
+
+// And the default stays single-sided for a material that does not opt in.
+TEST(MeshLoaderTest, SingleSidedMaterialStaysCullable) {
+  MeshLoader loader;
+  const QByteArray bytes = readFixtureBytes("embedded_base.glb");
+  ASSERT_FALSE(bytes.isEmpty());
+  const MeshData mesh = loader.loadFromMemory(bytes, QStringLiteral("glb")).result();
+  ASSERT_TRUE(mesh.ok) << mesh.error.toStdString();
+  ASSERT_FALSE(mesh.submeshes.empty());
+  EXPECT_FALSE(mesh.submeshes.front().material->double_sided);
+}
+
+// --- Failure surfaces, never crashes ----------------------------------------
+
+TEST(MeshLoaderTest, MissingFileFailsCleanly) {
+  MeshLoader loader;
+  const MeshData mesh = loader.load(fixturePath("does_not_exist.stl")).result();
+  EXPECT_FALSE(mesh.ok);
+  EXPECT_FALSE(mesh.error.isEmpty());
+}
+
+}  // namespace
+}  // namespace pj::scene3d
