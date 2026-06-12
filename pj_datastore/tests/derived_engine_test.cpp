@@ -1260,5 +1260,94 @@ TEST(DerivedEngine, Uint64PrecisionRoundTrip) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Late (out-of-order) input commits
+//
+// Transforms have a strict sequential contract (ascending timestamps, state
+// across calls), so an input commit that lands at or before a node's already-
+// processed watermark cannot be applied incrementally — the node must reset
+// and fully replay its now-time-sorted input.
+// ---------------------------------------------------------------------------
+
+// Append one row (ts, value) to an existing scalar topic and commit.
+static void append_row(DataEngine& engine, PJ::TopicId topic_id, PJ::Timestamp ts, double value) {
+  DataWriter writer = engine.createWriter();
+  auto s = writer.beginRow(topic_id, ts);
+  (void)s;
+  writer.set(topic_id, 0, value);
+  auto s2 = writer.finishRow(topic_id);
+  (void)s2;
+  engine.commitChunks(writer.flushAll());
+}
+
+TEST(DerivedEngineTest, SisoLateInputCommitTriggersFullRecompute) {
+  DataEngine engine;
+  DerivedEngine derived(engine);
+  PJ::DatasetId ds = make_dataset(engine);
+
+  // Rows at t = 0..4 s on a slope-2 line: derivative is 2.0 everywhere.
+  PJ::TopicId src = make_linear_topic(engine, ds, 2.0, 5);
+  PJ::NodeId node = *derived.addSisoTransform(src, "deriv", ds, std::make_unique<DerivativeTransform>());
+  notify(derived, {src});
+  ASSERT_TRUE(derived.scheduleAll().has_value());
+  ASSERT_EQ(collect_values(engine, derived.outputTopics(node)[0]).size(), 4u);
+
+  // Late commit BEFORE the processed watermark: (2.5 s, 100.0), far off the line.
+  append_row(engine, src, 2'500'000'000LL, 100.0);
+  notify(derived, {src});
+  ASSERT_TRUE(derived.scheduleAll().has_value());
+
+  // Correct output = derivative over the merged, time-sorted input
+  // {0:0, 1:2, 2:4, 2.5:100, 3:6, 4:8}. A stateful incremental run that feeds
+  // the late row after t=4 (or skips it) produces different values.
+  const std::vector<std::pair<PJ::Timestamp, double>> expected = {
+      {1'000'000'000LL, 2.0},    {2'000'000'000LL, 2.0}, {2'500'000'000LL, 192.0},
+      {3'000'000'000LL, -188.0}, {4'000'000'000LL, 2.0},
+  };
+  const auto rows = collect_rows_col(engine, derived.outputTopics(node)[0]);
+  ASSERT_EQ(rows.size(), expected.size());
+  for (std::size_t i = 0; i < expected.size(); ++i) {
+    EXPECT_EQ(rows[i].first, expected[i].first) << "timestamp at row " << i;
+    EXPECT_NEAR(rows[i].second, expected[i].second, 1e-6) << "value at row " << i;
+  }
+}
+
+TEST(MimoTransformTest, MimoLateInputCommitTriggersFullRecompute) {
+  DataEngine engine;
+  DerivedEngine derived(engine);
+  PJ::DatasetId ds = make_dataset(engine);
+
+  // Matching timestamps t = 0..4 s on both inputs; sum = 3t.
+  PJ::TopicId t1 = make_linear_topic(engine, ds, 1.0, 5);
+  PJ::TopicId t2 = make_linear_topic(engine, ds, 2.0, 5);
+  PJ::NodeId node = *derived.addMimoTransform({t1, t2}, {"sum_out"}, ds, std::make_unique<SumMimoTransform>());
+  notify(derived, {t1, t2});
+  ASSERT_TRUE(derived.scheduleAll().has_value());
+  ASSERT_EQ(collect_rows_col(engine, derived.outputTopics(node)[0]).size(), 5u);
+
+  // Late commits BEFORE the watermark: both inputs gain a row at t = 2.5 s.
+  append_row(engine, t1, 2'500'000'000LL, 10.0);
+  append_row(engine, t2, 2'500'000'000LL, 20.0);
+  notify(derived, {t1, t2});
+  ASSERT_TRUE(derived.scheduleAll().has_value());
+
+  // The joined timestamp set now includes 2.5 s; a timestamp-watermark
+  // incremental run silently drops it.
+  const std::vector<std::pair<PJ::Timestamp, double>> expected = {
+      {0, 0.0},
+      {1'000'000'000LL, 3.0},
+      {2'000'000'000LL, 6.0},
+      {2'500'000'000LL, 30.0},
+      {3'000'000'000LL, 9.0},
+      {4'000'000'000LL, 12.0},
+  };
+  const auto rows = collect_rows_col(engine, derived.outputTopics(node)[0]);
+  ASSERT_EQ(rows.size(), expected.size());
+  for (std::size_t i = 0; i < expected.size(); ++i) {
+    EXPECT_EQ(rows[i].first, expected[i].first) << "timestamp at row " << i;
+    EXPECT_NEAR(rows[i].second, expected[i].second, 1e-6) << "value at row " << i;
+  }
+}
+
 }  // namespace
 }  // namespace PJ

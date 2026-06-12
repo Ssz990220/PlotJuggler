@@ -7,6 +7,7 @@
 #include <cassert>
 #include <cmath>
 #include <limits>
+#include <tuple>
 #include <utility>
 
 namespace PJ {
@@ -48,6 +49,33 @@ namespace {
   };
 }
 
+// Min-heap ordering for cursor frontiers: earliest (ts, chunk, row) on top.
+[[nodiscard]] bool frontierAfter(const CursorFrontier& a, const CursorFrontier& b) {
+  return std::tie(a.ts, a.chunk, a.row) > std::tie(b.ts, b.chunk, b.row);
+}
+
+// Replace the heap top with its in-chunk successor (has_next) or drop it.
+// O(1) when the successor is still the global minimum — which is every
+// advance when chunk ranges don't overlap; the heap only pays under overlap.
+void replaceHeapTop(std::vector<CursorFrontier>& heap, const CursorFrontier& next, bool has_next) {
+  if (has_next) {
+    const std::size_t n = heap.size();
+    const bool before_left = n <= 1 || !frontierAfter(next, heap[1]);
+    const bool before_right = n <= 2 || !frontierAfter(next, heap[2]);
+    if (before_left && before_right) {
+      heap.front() = next;
+      return;
+    }
+  }
+  std::pop_heap(heap.begin(), heap.end(), frontierAfter);
+  if (has_next) {
+    heap.back() = next;
+    std::push_heap(heap.begin(), heap.end(), frontierAfter);
+  } else {
+    heap.pop_back();
+  }
+}
+
 }  // namespace
 
 // ===========================================================================
@@ -56,28 +84,30 @@ namespace {
 
 RangeCursor::RangeCursor(const std::deque<TopicChunk>& chunks, Timestamp t_min, Timestamp t_max)
     : chunks_(&chunks), t_min_(t_min), t_max_(t_max) {
-  findFirstValid();
+  initFrontiers();
 }
 
 bool RangeCursor::valid() const noexcept {
-  return chunk_index_ < chunks_->size();
+  return !frontiers_.empty();
 }
 
 SampleRow RangeCursor::current() const {
   assert(valid());
-  const auto& chunk = (*chunks_)[chunk_index_];
-  return SampleRow{chunk.readTimestamp(row_index_), &chunk, row_index_};
+  const CursorFrontier& top = frontiers_.front();
+  return SampleRow{top.ts, &(*chunks_)[top.chunk], top.row};
 }
 
 void RangeCursor::advance() {
   assert(valid());
-  const auto& chunk = (*chunks_)[chunk_index_];
-  ++row_index_;
-  if (row_index_ >= chunk.stats.row_count) {
-    ++chunk_index_;
-    row_index_ = 0;
+  CursorFrontier next = frontiers_.front();
+  const TopicChunk& chunk = (*chunks_)[next.chunk];
+  ++next.row;
+  bool has_next = next.row < chunk.stats.row_count;
+  if (has_next) {
+    next.ts = chunk.readTimestamp(next.row);
+    has_next = next.ts <= t_max_;
   }
-  skipToValid();
+  replaceHeapTop(frontiers_, next, has_next);
 }
 
 void RangeCursor::forEach(std::function<void(const SampleRow&)> callback) {
@@ -88,89 +118,43 @@ void RangeCursor::forEach(std::function<void(const SampleRow&)> callback) {
 }
 
 void RangeCursor::forEachChunk(std::function<void(const ChunkRowRange&)> callback) {
-  while (chunk_index_ < chunks_->size()) {
-    const auto& chunk = (*chunks_)[chunk_index_];
-
-    // Skip chunks entirely before our range
-    if (chunk.stats.t_max < t_min_) {
-      ++chunk_index_;
+  for (const TopicChunk& chunk : *chunks_) {
+    // No early break: chunk ranges may overlap, so a later chunk can still
+    // intersect the query range even after one that lies past it.
+    if (chunk.stats.row_count == 0 || chunk.stats.t_max < t_min_ || chunk.stats.t_min > t_max_) {
       continue;
     }
-    // Stop if chunk is entirely after our range
-    if (chunk.stats.t_min > t_max_) {
-      break;
+    const auto ts_begin = chunk.timestamps.begin();
+    const auto ts_end = ts_begin + static_cast<std::ptrdiff_t>(chunk.stats.row_count);
+    const auto first_it = std::lower_bound(ts_begin, ts_end, t_min_);
+    const auto end_it = std::upper_bound(first_it, ts_end, t_max_);
+    if (first_it != end_it) {
+      callback(
+          ChunkRowRange{
+              &chunk, static_cast<std::size_t>(first_it - ts_begin), static_cast<std::size_t>(end_it - ts_begin)});
     }
-
-    // Find first valid row in this chunk (>= t_min_)
-    std::size_t first = row_index_;
-    while (first < chunk.stats.row_count && chunk.readTimestamp(first) < t_min_) {
-      ++first;
-    }
-
-    // Find one-past-last valid row in this chunk (<= t_max_)
-    std::size_t end = first;
-    while (end < chunk.stats.row_count && chunk.readTimestamp(end) <= t_max_) {
-      ++end;
-    }
-
-    if (first < end) {
-      callback(ChunkRowRange{&chunk, first, end});
-    }
-
-    // Move to next chunk
-    ++chunk_index_;
-    row_index_ = 0;
   }
   // Mark cursor exhausted
-  chunk_index_ = chunks_->size();
+  frontiers_.clear();
 }
 
-void RangeCursor::findFirstValid() {
+void RangeCursor::initFrontiers() {
   const auto& chunks = *chunks_;
-
-  // First chunk that could contain a row in range, i.e. whose t_max >= t_min_.
-  // Committed chunks are non-empty and time-ordered (each chunk's t_min >= the
-  // previous chunk's t_max), so t_max is non-decreasing across the deque and we
-  // can binary-search it.
-  const auto chunk_it = std::lower_bound(
-      chunks.begin(), chunks.end(), t_min_,
-      [](const TopicChunk& chunk, Timestamp value) { return chunk.stats.t_max < value; });
-  if (chunk_it == chunks.end()) {
-    // All data is strictly before t_min_.
-    chunk_index_ = chunks.size();
-    row_index_ = 0;
-    return;
+  for (std::size_t i = 0; i < chunks.size(); ++i) {
+    const TopicChunk& chunk = chunks[i];
+    if (chunk.stats.row_count == 0 || chunk.stats.t_max < t_min_ || chunk.stats.t_min > t_max_) {
+      continue;
+    }
+    // First row with timestamp >= t_min_ (chunks are internally sorted).
+    const auto ts_begin = chunk.timestamps.begin();
+    const auto ts_end = ts_begin + static_cast<std::ptrdiff_t>(chunk.stats.row_count);
+    const auto row_it = std::lower_bound(ts_begin, ts_end, t_min_);
+    if (row_it == ts_end || *row_it > t_max_) {
+      continue;
+    }
+    frontiers_.push_back(CursorFrontier{*row_it, i, static_cast<std::size_t>(row_it - ts_begin)});
   }
-  chunk_index_ = static_cast<std::size_t>(chunk_it - chunks.begin());
-
-  // First row with timestamp >= t_min_ within that chunk. Such a row exists
-  // because t_max (the chunk's last timestamp) >= t_min_.
-  const TopicChunk& chunk = *chunk_it;
-  const auto ts_begin = chunk.timestamps.begin();
-  const auto ts_end = ts_begin + static_cast<std::ptrdiff_t>(chunk.stats.row_count);
-  const auto row_it = std::lower_bound(ts_begin, ts_end, t_min_);
-  row_index_ = static_cast<std::size_t>(row_it - ts_begin);
-
-  // If the first row at or after t_min_ is already past t_max_, nothing in the
-  // deque falls inside [t_min_, t_max_].
-  if (row_it == ts_end || *row_it > t_max_) {
-    chunk_index_ = chunks.size();
-    row_index_ = 0;
-  }
-}
-
-void RangeCursor::skipToValid() {
-  if (!valid()) {
-    return;
-  }
-  const auto& chunk = (*chunks_)[chunk_index_];
-  Timestamp ts = chunk.readTimestamp(row_index_);
-  if (ts > t_max_) {
-    // Past the end of the query range
-    chunk_index_ = chunks_->size();
-    return;
-  }
-  // ts >= t_min_ is guaranteed by how we advance through sorted data
+  std::make_heap(frontiers_.begin(), frontiers_.end(), frontierAfter);
 }
 
 // ===========================================================================
@@ -178,30 +162,29 @@ void RangeCursor::skipToValid() {
 // ===========================================================================
 
 std::optional<SampleRow> latestAt(const std::deque<TopicChunk>& chunks, Timestamp t) {
-  // Last chunk that can contain a row at or before t, i.e. the latest chunk
-  // whose t_min <= t. Committed chunks are non-empty and have non-decreasing
-  // t_min, so upper_bound finds the first chunk strictly after t; the chunk
-  // before it is the answer. (At a shared boundary timestamp this selects the
-  // later chunk, matching the previous reverse-scan behaviour.)
-  const auto after = std::upper_bound(chunks.begin(), chunks.end(), t, [](Timestamp value, const TopicChunk& chunk) {
-    return value < chunk.stats.t_min;
-  });
-  if (after == chunks.begin()) {
-    // Empty deque, or every chunk starts strictly after t.
-    return std::nullopt;
+  // Chunk ranges may overlap (out-of-order ingest), so candidate chunks are
+  // scanned rather than binary-searched; each candidate contributes its last
+  // row with timestamp <= t (per-chunk binary search — chunks are internally
+  // sorted). Later-committed chunks win timestamp ties, matching the
+  // pre-overlap behaviour at shared chunk boundaries.
+  std::optional<SampleRow> best;
+  for (const TopicChunk& chunk : chunks) {
+    if (chunk.stats.row_count == 0 || chunk.stats.t_min > t) {
+      continue;
+    }
+    const auto ts_begin = chunk.timestamps.begin();
+    const auto ts_end = ts_begin + static_cast<std::ptrdiff_t>(chunk.stats.row_count);
+    const auto row_after = std::upper_bound(ts_begin, ts_end, t);
+    if (row_after == ts_begin) {
+      continue;  // unreachable for committed chunks (row 0 ts == t_min <= t)
+    }
+    const std::size_t row = static_cast<std::size_t>((row_after - 1) - ts_begin);
+    const Timestamp ts = chunk.readTimestamp(row);
+    if (!best.has_value() || ts >= best->timestamp) {
+      best = SampleRow{ts, &chunk, row};
+    }
   }
-  const TopicChunk& chunk = *(after - 1);
-
-  // Last row with timestamp <= t within that chunk. Such a row exists because
-  // the chunk's first timestamp (t_min) is <= t.
-  const auto ts_begin = chunk.timestamps.begin();
-  const auto ts_end = ts_begin + static_cast<std::ptrdiff_t>(chunk.stats.row_count);
-  const auto row_after = std::upper_bound(ts_begin, ts_end, t);
-  if (row_after == ts_begin) {
-    return std::nullopt;  // unreachable for committed chunks (row 0 ts == t_min <= t)
-  }
-  const std::size_t row = static_cast<std::size_t>((row_after - 1) - ts_begin);
-  return SampleRow{chunk.readTimestamp(row), &chunk, row};
+  return best;
 }
 
 // ===========================================================================
@@ -218,22 +201,24 @@ RangeCursor rangeQuery(const std::deque<TopicChunk>& chunks, Timestamp t_min, Ti
 
 SeriesCursor::SeriesCursor(const std::deque<TopicChunk>& chunks, std::size_t column_index, Range<Timestamp> time_range)
     : chunks_(&chunks), column_index_(column_index), time_range_(normalized(time_range)) {
-  skipToSample();
+  initFrontiers();
 }
 
 bool SeriesCursor::valid() const noexcept {
-  return chunk_index_ < chunks_->size();
+  return !frontiers_.empty();
 }
 
 SeriesSample SeriesCursor::current() const {
   assert(valid());
-  return makeSeriesSample((*chunks_)[chunk_index_], column_index_, row_index_);
+  const CursorFrontier& top = frontiers_.front();
+  return makeSeriesSample((*chunks_)[top.chunk], column_index_, top.row);
 }
 
 void SeriesCursor::advance() {
   assert(valid());
-  ++row_index_;
-  skipToSample();
+  CursorFrontier next = frontiers_.front();
+  ++next.row;
+  replaceHeapTop(frontiers_, next, nextSample(next));
 }
 
 void SeriesCursor::forEach(std::function<void(const SeriesSample&)> callback) {
@@ -243,40 +228,41 @@ void SeriesCursor::forEach(std::function<void(const SeriesSample&)> callback) {
   }
 }
 
-void SeriesCursor::skipToSample() {
-  while (chunk_index_ < chunks_->size()) {
-    const auto& chunk = (*chunks_)[chunk_index_];
+bool SeriesCursor::nextSample(CursorFrontier& frontier) const {
+  const TopicChunk& chunk = (*chunks_)[frontier.chunk];
+  while (frontier.row < chunk.stats.row_count) {
+    const Timestamp ts = chunk.readTimestamp(frontier.row);
+    if (ts > time_range_.max) {
+      return false;
+    }
+    if (ts >= time_range_.min && readSeriesValue(chunk, column_index_, frontier.row).has_value()) {
+      frontier.ts = ts;
+      return true;
+    }
+    ++frontier.row;
+  }
+  return false;
+}
 
-    if (chunk.stats.row_count == 0 || chunk.stats.t_max < time_range_.min || column_index_ >= chunk.columns.size()) {
-      ++chunk_index_;
-      row_index_ = 0;
+void SeriesCursor::initFrontiers() {
+  const auto& chunks = *chunks_;
+  for (std::size_t i = 0; i < chunks.size(); ++i) {
+    const TopicChunk& chunk = chunks[i];
+    // column_index_ bound check: earlier chunks may predate a mid-stream
+    // column addition. No early break — chunk ranges may overlap.
+    if (chunk.stats.row_count == 0 || chunk.stats.t_max < time_range_.min || chunk.stats.t_min > time_range_.max ||
+        column_index_ >= chunk.columns.size()) {
       continue;
     }
-
-    if (chunk.stats.t_min > time_range_.max) {
-      chunk_index_ = chunks_->size();
-      return;
+    const auto ts_begin = chunk.timestamps.begin();
+    const auto ts_end = ts_begin + static_cast<std::ptrdiff_t>(chunk.stats.row_count);
+    const auto row_it = std::lower_bound(ts_begin, ts_end, time_range_.min);
+    CursorFrontier frontier{0, i, static_cast<std::size_t>(row_it - ts_begin)};
+    if (nextSample(frontier)) {
+      frontiers_.push_back(frontier);
     }
-
-    while (row_index_ < chunk.stats.row_count) {
-      const Timestamp ts = chunk.readTimestamp(row_index_);
-      if (ts < time_range_.min) {
-        ++row_index_;
-        continue;
-      }
-      if (ts > time_range_.max) {
-        chunk_index_ = chunks_->size();
-        return;
-      }
-      if (readSeriesValue(chunk, column_index_, row_index_).has_value()) {
-        return;
-      }
-      ++row_index_;
-    }
-
-    ++chunk_index_;
-    row_index_ = 0;
   }
+  std::make_heap(frontiers_.begin(), frontiers_.end(), frontierAfter);
 }
 
 // ===========================================================================

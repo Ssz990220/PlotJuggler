@@ -83,11 +83,11 @@ Tracks per-column `ColumnStats` incrementally (min, max, null_count, is_constant
 
 ### Query Layer
 
-**`RangeCursor`** — Iterates rows in `[t_min, t_max]` across the chunk deque. Constructor binary-searches the deque for the first overlapping chunk and row. Supports:
-- `forEach(callback)` — per-row iteration via `SampleRow` (timestamp + chunk pointer + row index)
-- `forEachChunk(callback)` — bulk iteration via `ChunkRowRange` (chunk pointer + row start/end)
+**`RangeCursor`** — Iterates rows in `[t_min, t_max]` across the chunk deque. Chunk time ranges may overlap (out-of-order ingest), so the constructor seeds one frontier per intersecting chunk into a min-heap on (timestamp, chunk index). Supports:
+- `forEach(callback)` — per-row iteration via `SampleRow` (timestamp + chunk pointer + row index), in globally ascending timestamp order even across overlapping chunks; the heap advance is O(1) while chunks don't actually overlap
+- `forEachChunk(callback)` — bulk iteration via `ChunkRowRange` (chunk pointer + row start/end); runs are per-chunk sorted but delivered in commit order, so under overlap they may interleave in time — bulk consumers tolerate that or use `forEach`
 
-**`latestAt(chunks, t)`** — Binary search for the most recent row at or before timestamp `t`. Returns `optional<SampleRow>`.
+**`latestAt(chunks, t)`** — Scans candidate chunks (per-chunk binary search) for the most recent row at or before `t`; later-committed chunks win timestamp ties. Returns `optional<SampleRow>`.
 
 Both are free functions operating on `const std::deque<TopicChunk>&`.
 
@@ -151,6 +151,8 @@ Encoding selection in `TopicChunkBuilder::seal()`:
 **`VarValue = std::variant<int64_t, uint64_t, double, std::string>`** — Universal value type for transform I/O. Mapping: float32/float64 -> double, int8..int64/bool -> int64_t, uint64 -> uint64_t, string -> std::string.
 
 Incremental scheduling: each node tracks a `last_processed_chunk_id` watermark. `scheduleAll()` iterates only chunks with id > watermark, reads each row, calls `calculate()`, writes output via `beginRow`/`set`/`finishRow`, then flushes and commits.
+
+Out-of-order input: transforms have a strict ascending-timestamp contract, so before running a node the scheduler checks whether any not-yet-processed input chunk lands at or before the node's timestamp watermarks (`siso_last_ts` for SISO; `mimo_last_chunk_id` + `mimo_last_ts` for MIMO). Such late input triggers `recompute_batch` — reset transform state, clear outputs, fully replay over the time-merged input (the SISO replay feeds rows through the `RangeCursor` heap merge) — instead of incremental work.
 
 ### Color Map Layer
 
@@ -219,10 +221,10 @@ The host translates C ABI calls (ensureTopic, ensureField, appendRecord) into `D
 ## 5. Key Invariants
 
 - **Dense field IDs**: Field IDs within a topic are always 0, 1, 2, ... with no gaps.
-- **Monotonic timestamps**: Timestamps within a topic are monotonically non-decreasing. Enforced at `beginRow()` and `appendTimestamps()`.
+- **Per-chunk sorted timestamps**: rows may arrive out of order (`beginRow()` / `appendTimestamps()` accept regressions — rejecting them silently lost multi-publisher data); `seal()` stable-sorts rows, so every sealed chunk is internally non-decreasing and duplicate timestamps keep arrival order.
 - **ensureColumn guards**: Rejects new columns after a row is in progress. Invalidates stale 0-row builders when adding columns.
 - **expandArray seals first**: `expandArray()` seals the current builder before modifying column layout, preventing mid-chunk schema changes.
-- **Chunk ordering**: Each chunk's `t_min >= previous chunk's t_max`. Enforced by `TopicStorage::appendSealedChunk()`.
+- **Chunks may overlap in time**: `TopicStorage::appendSealedChunk()` accepts any chunk (deque stays commit-ordered). Queries merge across overlapping chunks; topic time extrema are scanned, never taken from the front/back chunks.
 - **Lazy validity bitmaps**: `TypedColumnBuffer` only allocates a `BitVector` on first `appendNull()`. Sealed chunks include validity only when `hasNulls()` is true.
 - **NaN for nulls**: `readColumnAsDoubles()` writes `NaN` at null positions, preventing confusion between null and zero.
 - **ChunkId monotonicity**: `TopicChunkBuilder` uses a `static atomic<ChunkId>` counter starting at 1. `kInvalidChunkId` (0) is the sentinel for "no chunk seen yet".

@@ -16,14 +16,10 @@ TopicStorage::TopicStorage(TopicId topic_id, TopicDescriptor descriptor)
     : topic_id_(topic_id), descriptor_(std::move(descriptor)) {}
 
 PJ::Status TopicStorage::appendSealedChunk(TopicChunk chunk) {
-  if (!sealed_chunks_.empty() && chunk.stats.t_min < sealed_chunks_.back().stats.t_max) {
-    // Reject any chunk whose t_min overlaps with the previous chunk's time range.
-    // Using t_max (not t_min) as the boundary: a new chunk starting exactly at
-    // the previous t_max is allowed (equal-boundary chunks from normal chunking).
-    return PJ::unexpected(
-        fmt::format(
-            "Overlapping chunk: new t_min={} < last t_max={}", chunk.stats.t_min, sealed_chunks_.back().stats.t_max));
-  }
+  // Chunks are stored in commit order. Each chunk is internally sorted, but
+  // out-of-order ingest means a chunk's time range may overlap earlier ones —
+  // queries merge across overlapping chunks instead of assuming disjoint
+  // ranges, so nothing is rejected (rejecting silently lost late data).
   sealed_chunks_.push_back(std::move(chunk));
   return PJ::okStatus();
 }
@@ -71,10 +67,14 @@ TopicMetadata TopicStorage::metadata() const {
     return meta;
   }
 
+  // Chunk ranges may overlap (out-of-order ingest), so the topic extrema are
+  // scanned, not taken from the first/last chunk.
   meta.time_range_min = sealed_chunks_.front().stats.t_min;
   meta.time_range_max = sealed_chunks_.back().stats.t_max;
 
   for (const auto& chunk : sealed_chunks_) {
+    meta.time_range_min = std::min(meta.time_range_min, chunk.stats.t_min);
+    meta.time_range_max = std::max(meta.time_range_max, chunk.stats.t_max);
     meta.total_row_count += chunk.stats.row_count;
 
     // Approximate byte size: sum encoded timestamp buffer + all encoded column buffers
@@ -124,14 +124,24 @@ Timestamp TopicStorage::time_min() const noexcept {
   if (sealed_chunks_.empty()) {
     return 0;
   }
-  return sealed_chunks_.front().stats.t_min;
+  // Scan: chunk ranges may overlap under out-of-order ingest.
+  Timestamp t_min = sealed_chunks_.front().stats.t_min;
+  for (const auto& chunk : sealed_chunks_) {
+    t_min = std::min(t_min, chunk.stats.t_min);
+  }
+  return t_min;
 }
 
 Timestamp TopicStorage::time_max() const noexcept {
   if (sealed_chunks_.empty()) {
     return 0;
   }
-  return sealed_chunks_.back().stats.t_max;
+  // Scan: chunk ranges may overlap under out-of-order ingest.
+  Timestamp t_max = sealed_chunks_.back().stats.t_max;
+  for (const auto& chunk : sealed_chunks_) {
+    t_max = std::max(t_max, chunk.stats.t_max);
+  }
+  return t_max;
 }
 
 void TopicStorage::updateSchema(SchemaId new_schema) {

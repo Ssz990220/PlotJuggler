@@ -791,10 +791,10 @@ TEST(EngineIntegrationTest, QueryReturnsErrorForMissingTopic) {
 }
 
 // ===========================================================================
-// Test 11: begin_row rejects out-of-order timestamp
+// Test 11: begin_row accepts out-of-order timestamps (lossless ingest)
 // ===========================================================================
 
-TEST(EngineIntegrationTest, BeginRowRejectsOutOfOrderTimestamp) {
+TEST(EngineIntegrationTest, BeginRowAcceptsOutOfOrderTimestamp) {
   DataEngine engine;
 
   auto dataset_id_or = engine.createDataset(DatasetDescriptor{.source_name = "test", .time_domain_id = 0});
@@ -811,9 +811,20 @@ TEST(EngineIntegrationTest, BeginRowRejectsOutOfOrderTimestamp) {
   writer.set(topic_id, 0, 1.0);
   ASSERT_TRUE(writer.finishRow(topic_id).has_value());
 
-  // Second row at t=100 (out of order) should fail
-  auto status = writer.beginRow(topic_id, 100);
-  EXPECT_FALSE(status.has_value());
+  // Second row at t=100 — a timestamp regression — is retained, not dropped:
+  // multi-publisher topics interleave regressing stamps (rows sort at seal).
+  ASSERT_TRUE(writer.beginRow(topic_id, 100).has_value());
+  writer.set(topic_id, 0, 2.0);
+  ASSERT_TRUE(writer.finishRow(topic_id).has_value());
+
+  engine.commitChunks(writer.flushAll());
+
+  DataReader reader = engine.createReader();
+  auto cursor = reader.rangeQuery(QueryRange{.topic_id = topic_id, .t_min = 0, .t_max = 300});
+  ASSERT_TRUE(cursor.has_value());
+  std::vector<Timestamp> timestamps;
+  cursor->forEach([&timestamps](const SampleRow& row) { timestamps.push_back(row.timestamp); });
+  EXPECT_EQ(timestamps, (std::vector<Timestamp>{100, 200}));
 }
 
 // ===========================================================================

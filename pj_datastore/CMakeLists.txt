@@ -156,6 +156,7 @@ if(PJ_BUILD_TESTS)
     tests/query_test.cpp
     tests/series_reader_test.cpp
     tests/engine_integration_test.cpp
+    tests/out_of_order_ingest_test.cpp
     tests/derived_engine_test.cpp
     tests/array_expansion_test.cpp
     tests/regression_test.cpp

@@ -266,9 +266,8 @@ PJ::Status DataWriter::beginRow(TopicId topic_id, Timestamp t) {
     return PJ::unexpected(fmt::format("Topic {} not found", topic_id));
   }
   auto& builder = getOrCreateBuilder(topic_id);
-  if (builder.rowCount() > 0 && t < builder.lastTimestamp()) {
-    return PJ::unexpected(fmt::format("Out-of-order timestamp: t={} < last_timestamp={}", t, builder.lastTimestamp()));
-  }
+  // Out-of-order timestamps are accepted (multi-publisher topics interleave
+  // regressing stamps); the builder sorts rows at seal.
   builder.beginRow(t);
   return PJ::okStatus();
 }
@@ -375,13 +374,6 @@ PJ::Status DataWriter::appendColumns(
     return PJ::okStatus();
   }
 
-  // Validate timestamp ordering
-  auto& builder = getOrCreateBuilder(topic_id);
-  if (builder.rowCount() > 0 && timestamps[0] < builder.lastTimestamp()) {
-    return PJ::unexpected(
-        fmt::format("Out-of-order timestamp: t={} < last_timestamp={}", timestamps[0], builder.lastTimestamp()));
-  }
-
   std::size_t offset = 0;
   const std::size_t total = timestamps.size();
 
@@ -444,7 +436,6 @@ Expected<ScalarSeriesHandle> DataWriter::registerScalarSeries(
 
 void DataWriter::appendScalar(const ScalarSeriesHandle& handle, Timestamp t, NumericValue value) {
   auto& builder = getOrCreateBuilder(handle.topic_id);
-  PJ_ASSERT(builder.rowCount() == 0 || t >= builder.lastTimestamp(), "append_scalar: out-of-order timestamp");
   builder.beginRow(t);
 
   const auto col = static_cast<std::size_t>(handle.value_field);

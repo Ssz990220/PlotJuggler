@@ -8,6 +8,8 @@
 #include <algorithm>
 #include <atomic>
 #include <cstdint>
+#include <cstring>
+#include <limits>
 #include <memory>
 #include <string>
 #include <vector>
@@ -17,6 +19,7 @@
 #include "pj_base/sdk/service_traits.hpp"
 #include "pj_datastore/engine.hpp"
 #include "pj_datastore/object_store.hpp"
+#include "pj_datastore/query.hpp"
 #include "pj_datastore/reader.hpp"
 #include "pj_plugins/host/service_registry_builder.hpp"
 #include "pj_runtime/DataSourceRuntimeHost.h"
@@ -361,6 +364,48 @@ TEST_F(DataSourceRuntimeHostObjectIngestTest, ObjectPushFollowsStoreTargetSwap) 
   push(400);
   EXPECT_EQ(object_store_.entryCount(*primary_topic), 2U);
   EXPECT_EQ(secondary_object_store.entryCount(*secondary_topic), 2U);
+}
+
+// Mode-B regression (amcl_test_bag): a topic interleaving publishers whose
+// embedded stamps disagree (amcl future-dates map->odom by seconds) must lose
+// NOTHING. Pre-fix, the datastore's monotonic append rejected every regressed
+// scalar row, which failed the whole pushMessage and silently dropped the
+// object entry with it — the 3D view's TF buffer then froze.
+TEST_F(DataSourceRuntimeHostObjectIngestTest, EmbeddedTimestampRegressionKeepsScalarsAndObjects) {
+  host_->policyResolver().setDefault(PJ::sdk::ObjectIngestPolicy::kEager);
+
+  auto binding_or = bindTopic("/tf_like", "mock/embedded_ts_image");
+  ASSERT_TRUE(binding_or.has_value()) << binding_or.error();
+
+  // Arrival order alternates the future-dated publisher (1000, 1100, ...)
+  // with the lagging one (901, 1001, ...); host receive times stay monotonic.
+  const std::vector<int64_t> embedded_stamps = {1000, 901, 1100, 1001, 1200, 1101};
+  for (std::size_t arrival_index = 0; arrival_index < embedded_stamps.size(); ++arrival_index) {
+    std::vector<uint8_t> payload(sizeof(int64_t));
+    std::memcpy(payload.data(), &embedded_stamps[arrival_index], sizeof(int64_t));
+    // pushPayload asserts the push succeeded — a regressed embedded stamp
+    // must not fail the message.
+    (void)pushPayload(*binding_or, static_cast<PJ::Timestamp>(10 + arrival_index), payload);
+  }
+  host_->flushAll();
+
+  // Every scalar row landed, timestamped by its embedded stamp and readable
+  // back in sorted order.
+  EXPECT_EQ(totalRowCount(), embedded_stamps.size());
+  PJ::DataReader reader(engine_);
+  const auto topics = reader.listTopics(dataset_id_);
+  ASSERT_FALSE(topics.empty());
+  auto cursor_or = reader.rangeQuery(
+      PJ::QueryRange{.topic_id = topics.front(), .t_min = 0, .t_max = std::numeric_limits<PJ::Timestamp>::max()});
+  ASSERT_TRUE(cursor_or.has_value()) << cursor_or.error();
+  std::vector<PJ::Timestamp> row_stamps;
+  cursor_or->forEach([&row_stamps](const PJ::SampleRow& row) { row_stamps.push_back(row.timestamp); });
+  EXPECT_EQ(row_stamps, (std::vector<PJ::Timestamp>{901, 1000, 1001, 1100, 1101, 1200}));
+
+  // Every object entry landed too (the TF-buffer feed in the real pipeline).
+  auto object_topic = object_store_.findTopic(dataset_id_, "/tf_like");
+  ASSERT_TRUE(object_topic.has_value());
+  EXPECT_EQ(object_store_.entryCount(*object_topic), embedded_stamps.size());
 }
 
 }  // namespace

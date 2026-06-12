@@ -14,7 +14,8 @@ Level-0 foundation library — a **top-level PJ4 module** (it was previously par
 - **`readNumericAsDouble()` does not null-check** — returns 0.0 at nulls. Use `isNull()` first, or batch via `readColumnAsDoubles()` which writes NaN at nulls. See `docs/USER_GUIDE.md §5`.
 - **Columns can appear mid-stream**: a new field after rows exist seals the current chunk; earlier chunks have fewer columns. Always bounds-check `col_index < chunk->columns.size()`. See `docs/USER_GUIDE.md §6` / `docs/REQUIREMENTS.md §4.5`.
 - **`readString()` returns a `string_view` into chunk dictionary memory** — must not outlive the chunk.
-- **Transforms have a strict sequential contract**: `calculate()` is called in ascending timestamp order; state persists across chunks and is cleared only by `reset()` before a batch recompute. See `include/pj_datastore/derived_engine.hpp`.
+- **Transforms have a strict sequential contract**: `calculate()` is called in ascending timestamp order; state persists across chunks and is cleared only by `reset()` before a batch recompute. A late (out-of-order) input commit therefore resets + fully replays the node. See `include/pj_datastore/derived_engine.hpp`.
+- **Out-of-order ingest is lossless**: appends accept timestamp regressions; rows sort per chunk at seal, and sealed chunks of a topic may overlap in time. Row cursors (`forEach`, `SeriesCursor`) merge to global timestamp order; `forEachChunk` bulk runs arrive in commit order and may overlap. See `docs/ARCHITECTURE.md` §5. (`DataEngine::flushTo` / `ObjectStore::flushTo` still enforce monotonicity at the streaming swap boundary — tracked follow-up.)
 - **`ObjectStore` is independent storage** alongside `DataEngine`, with its own mutex-per-series threading and lazy/owned payloads — it is NOT covered by `ARCHITECTURE.md`; read `docs/OBJECT_STORE_DESIGN.md`.
 
 ## Read deeper

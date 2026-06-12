@@ -16,6 +16,7 @@
 #include "pj_base/type_tree.hpp"
 #include "pj_datastore/chunk.hpp"
 #include "pj_datastore/engine.hpp"
+#include "pj_datastore/query.hpp"
 #include "pj_datastore/topic_storage.hpp"
 #include "pj_datastore/writer.hpp"
 
@@ -128,20 +129,15 @@ TEST(RegressionTest, Bug2_FinishBulkAppend_ColumnRowCountMismatch_TriggersUB) {
 }
 
 // ===========================================================================
-// Bug #3 — commitChunks() includes the rejected topic in the returned
-//          'changed' set even when appendSealedChunk fails
+// Bug #3 (recontracted) — out-of-order chunks are retained and reported
 //
-// engine.cpp:141-145
-//   PJ_ASSERT(status.has_value(), ...);   // no-op in Release
-//   (void)status;
-//   changed.push_back(topic_id);          // unconditional!
-//
-// When an out-of-order chunk is rejected by appendSealedChunk, the chunk is
-// discarded but the topic is still added to 'changed'. DerivedEngine then
-// marks dependent nodes dirty and schedules a spurious incremental run.
+// Historically appendSealedChunk rejected out-of-order chunks and commitChunks
+// still reported the topic as changed (spurious derived recomputes on dropped
+// data). Under lossless out-of-order ingest the chunk is retained, so the
+// topic IS changed and must be reported.
 // ===========================================================================
 
-TEST(RegressionTest, Bug3_CommitChunks_ReportsChangedTopicOnRejectedChunk) {
+TEST(RegressionTest, Bug3_CommitChunks_OutOfOrderChunkRetainedAndReported) {
   DataEngine engine;
   auto ds = *engine.createDataset(DatasetDescriptor{.source_name = "test", .time_domain_id = 0});
   DataWriter writer = engine.createWriter();
@@ -156,47 +152,59 @@ TEST(RegressionTest, Bug3_CommitChunks_ReportsChangedTopicOnRejectedChunk) {
   auto changed1 = engine.commitChunks(std::move(batch1));
   ASSERT_EQ(changed1.size(), 1u);
 
-  // Second commit: chunk at t=[50, 150] — out of order (t_min=50 < last t_min=100).
-  // appendSealedChunk rejects it. commitChunks should return an empty changed list
-  // without throwing.
-  //   - Debug (PJ_ASSERT_THROWS): currently throws std::runtime_error.
-  //   - Release: currently returns {tid} (ASSERT is a no-op; push_back is unconditional).
-  // Both behaviours are bugs. The correct behaviour is: return empty, no throw.
+  // Second commit: chunk at t=[50, 150] — out of order. Retained and reported.
   std::vector<std::pair<TopicId, TopicChunk>> batch2;
   batch2.emplace_back(tid, makeChunkWithRange(tid, 50, 150, 2));
   std::vector<TopicId> changed2;
   ASSERT_NO_THROW(changed2 = engine.commitChunks(std::move(batch2)));
-  EXPECT_TRUE(changed2.empty());
+  EXPECT_EQ(changed2, (std::vector<TopicId>{tid}));
+
+  const TopicStorage* storage = engine.getTopicStorage(tid);
+  ASSERT_NE(storage, nullptr);
+  EXPECT_EQ(storage->sealedChunks().size(), 2u);
+  EXPECT_EQ(storage->time_min(), 50);
+  EXPECT_EQ(storage->time_max(), 200);
 }
 
 // ===========================================================================
-// Bug #4 — appendSealedChunk accepts overlapping time ranges
+// Bug #4 (recontracted) — queries stay correct over overlapping chunks
 //
-// topic_storage.cpp:15
-//   if (!sealed_chunks_.empty() && chunk.stats.t_min < sealed_chunks_.back().stats.t_min)
-//
-// The guard only checks new.t_min < last.t_min. A chunk whose t_min falls
-// inside the previous chunk's [t_min, t_max] passes the check even though
-// it creates a temporal overlap. This violates the non-overlapping invariant
-// assumed by latestAt() and RangeCursor.
-//
-// Example: Chunk1=[100,500], Chunk2=[400,600]. 400 >= 100 → accepted (BUG).
+// Chunk ranges may overlap after out-of-order ingest. latestAt() and
+// RangeCursor no longer assume disjoint, time-ordered chunks: latestAt scans
+// candidate chunks (later-committed wins timestamp ties) and the row cursor
+// merges chunks into one globally time-ordered stream.
 // ===========================================================================
 
-TEST(RegressionTest, Bug4_AppendSealedChunk_AcceptsOverlappingTimeRange) {
+TEST(RegressionTest, Bug4_QueriesStayCorrectOverOverlappingChunks) {
   TopicDescriptor desc;
   desc.name = "t";
   desc.schema_id = 1;
   desc.dataset_id = 1;
   TopicStorage storage(/*topic_id=*/1, std::move(desc));
 
-  // Chunk1: t=[100, 500].
+  // Chunk1: rows at 100,200,300,400,500. Chunk2: rows at 400,500,600 —
+  // overlapping [400, 500].
   ASSERT_TRUE(storage.appendSealedChunk(makeChunkWithRange(1, 100, 500, 5)).has_value());
+  ASSERT_TRUE(storage.appendSealedChunk(makeChunkWithRange(1, 400, 600, 3)).has_value());
 
-  // Chunk2: t=[400, 600] — overlaps Chunk1 in [400, 500]. Should be rejected.
-  auto result = storage.appendSealedChunk(makeChunkWithRange(1, 400, 600, 3));
-  // BUG: currently has_value() == true (overlap silently accepted).
-  EXPECT_FALSE(result.has_value());
+  // Row cursor: one ascending stream across both chunks, duplicates included.
+  std::vector<Timestamp> timestamps;
+  rangeQuery(storage.sealedChunks(), 0, 1000).forEach([&timestamps](const SampleRow& row) {
+    timestamps.push_back(row.timestamp);
+  });
+  EXPECT_EQ(timestamps, (std::vector<Timestamp>{100, 200, 300, 400, 400, 500, 500, 600}));
+
+  // latestAt inside the overlap: both chunks hold a row at t=400; the
+  // later-committed chunk wins the tie (commit order).
+  const auto at_450 = latestAt(storage.sealedChunks(), 450);
+  ASSERT_TRUE(at_450.has_value());
+  EXPECT_EQ(at_450->timestamp, 400);
+  EXPECT_EQ(at_450->chunk, &storage.sealedChunks()[1]);
+
+  // latestAt past everything returns the global maximum.
+  const auto at_end = latestAt(storage.sealedChunks(), 1000);
+  ASSERT_TRUE(at_end.has_value());
+  EXPECT_EQ(at_end->timestamp, 600);
 }
 
 }  // namespace

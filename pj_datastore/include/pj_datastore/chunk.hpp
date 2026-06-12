@@ -200,6 +200,10 @@ class TopicChunkBuilder {
 
   void updateColumnStats(std::size_t col_index, double value);
 
+  // Stable-sort buffered rows by timestamp (no-op when already sorted).
+  // Called by seal() so out-of-order ingest still produces sorted chunks.
+  void sortRowsByTimestamp();
+
   // Bulk stats computation: single pass over column buffer data.
   // Called by finishBulkAppend() after both data and validity are set.
   // Reads from column buffer and skips null positions via validity bitmap.

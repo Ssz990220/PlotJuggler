@@ -192,6 +192,11 @@ struct DerivedNode {
   bool dirty = true;
   PJ::ChunkId last_processed_chunk_id = 0;                                 // SISO: chunk watermark
   PJ::Timestamp mimo_last_ts = std::numeric_limits<PJ::Timestamp>::min();  // MIMO: timestamp watermark
+  // Regression detection (out-of-order ingest): a not-yet-processed input
+  // chunk landing at or before these watermarks forces a reset + full replay,
+  // because transforms have a strict ascending-timestamp contract.
+  PJ::Timestamp siso_last_ts = std::numeric_limits<PJ::Timestamp>::min();  // SISO: last input ts fed
+  PJ::ChunkId mimo_last_chunk_id = 0;                                      // MIMO: last input chunk considered
 
   // Reusable decode buffers (avoid per-row allocation)
   VarValue in_val_buf = 0.0;           // SISO input
@@ -717,32 +722,59 @@ static PJ::Status run_siso_incremental(DerivedEngineImpl& /*impl*/, DataEngine& 
   PJ::ChunkId max_seen = node.last_processed_chunk_id;
   bool wrote_any = false;
   PJ::Timestamp out_ts = 0;
+  PJ::Status status = PJ::okStatus();
 
-  for (const TopicChunk& chunk : all_chunks) {
-    if (chunk.id <= node.last_processed_chunk_id) {
-      continue;
+  auto feed_row = [&](const TopicChunk& chunk, std::size_t row) {
+    if (!status.has_value()) {
+      return;  // an earlier row already failed; drain remaining callbacks
     }
-    max_seen = std::max(max_seen, chunk.id);
+    const PJ::Timestamp ts = chunk.timestamps[row];
+    node.in_val_buf = decode_as_varvalue(chunk, 0, row, node.siso_input_kind);
+    node.siso_last_ts = std::max(node.siso_last_ts, ts);
 
-    for (uint32_t i = 0; i < chunk.stats.row_count; ++i) {
-      PJ::Timestamp ts = chunk.timestamps[i];
-      node.in_val_buf = decode_as_varvalue(chunk, 0, i, node.siso_input_kind);
+    if (node.siso_op->calculate(ts, node.in_val_buf, out_ts, node.out_val_buf)) {
+      auto s = writer.beginRow(out_tid, out_ts);
+      if (!s.has_value()) {
+        status = std::move(s);
+        return;
+      }
+      write_varvalue(writer, out_tid, 0, node.out_val_buf, node.siso_output_kind);
+      s = writer.finishRow(out_tid);
+      if (!s.has_value()) {
+        status = std::move(s);
+        return;
+      }
+      wrote_any = true;
+    }
+  };
 
-      if (node.siso_op->calculate(ts, node.in_val_buf, out_ts, node.out_val_buf)) {
-        auto s = writer.beginRow(out_tid, out_ts);
-        if (!s.has_value()) {
-          return s;
-        }
-        write_varvalue(writer, out_tid, 0, node.out_val_buf, node.siso_output_kind);
-        s = writer.finishRow(out_tid);
-        if (!s.has_value()) {
-          return s;
-        }
-        wrote_any = true;
+  if (node.last_processed_chunk_id == 0) {
+    // Fresh node or post-reset replay: input chunks may overlap in time
+    // (out-of-order ingest), so feed rows through the merge cursor to honour
+    // the transform's ascending-timestamp contract.
+    for (const TopicChunk& chunk : all_chunks) {
+      max_seen = std::max(max_seen, chunk.id);
+    }
+    rangeQuery(all_chunks, std::numeric_limits<PJ::Timestamp>::min(), std::numeric_limits<PJ::Timestamp>::max())
+        .forEach([&feed_row](const SampleRow& row) { feed_row(*row.chunk, row.row_index); });
+  } else {
+    // Incremental: the scheduler verified the unprocessed chunks are
+    // time-ordered (it resets + replays otherwise), so commit order is
+    // ascending and per-chunk iteration is safe.
+    for (const TopicChunk& chunk : all_chunks) {
+      if (chunk.id <= node.last_processed_chunk_id) {
+        continue;
+      }
+      max_seen = std::max(max_seen, chunk.id);
+      for (uint32_t i = 0; i < chunk.stats.row_count; ++i) {
+        feed_row(chunk, i);
       }
     }
   }
 
+  if (!status.has_value()) {
+    return status;
+  }
   if (wrote_any) {
     auto chunks = writer.flushAll();
     engine.commitChunks(std::move(chunks));
@@ -771,6 +803,7 @@ static PJ::Status run_mimo_incremental(DerivedEngineImpl& /*impl*/, DataEngine& 
   };
   std::vector<std::vector<SampleLoc>> per_topic(num_inputs);
 
+  PJ::ChunkId max_chunk_seen = node.mimo_last_chunk_id;
   for (std::size_t i = 0; i < num_inputs; ++i) {
     const TopicStorage* storage = engine.getTopicStorage(node.mimo_input_topic_ids[i]);
     if (!storage) {
@@ -778,6 +811,7 @@ static PJ::Status run_mimo_incremental(DerivedEngineImpl& /*impl*/, DataEngine& 
           fmt::format("run_mimo_incremental: input topic {} not found", node.mimo_input_topic_ids[i]));
     }
     for (const TopicChunk& chunk : storage->sealedChunks()) {
+      max_chunk_seen = std::max(max_chunk_seen, chunk.id);
       if (chunk.stats.t_max <= node.mimo_last_ts) {
         continue;  // entire chunk already processed
       }
@@ -789,11 +823,22 @@ static PJ::Status run_mimo_incremental(DerivedEngineImpl& /*impl*/, DataEngine& 
         per_topic[i].push_back({ts, &chunk, r});
       }
     }
-    // Early exit: if any topic has no new data, no join is possible.
+  }
+  // Every committed chunk has now been considered — regression detection in
+  // the scheduler compares against this watermark. Updated even when the run
+  // produces no joins, so a fruitless chunk is not re-flagged forever.
+  node.mimo_last_chunk_id = max_chunk_seen;
+  for (std::size_t i = 0; i < num_inputs; ++i) {
+    // If any topic has no new data, no new join is possible.
     if (per_topic[i].empty()) {
       return PJ::okStatus();
     }
   }
+  // Chunks are gathered in commit order, which under out-of-order ingest is
+  // not time order; joined_ts is derived from topic 0, so sort it (stable:
+  // duplicate timestamps keep commit order for last-write-wins lookups).
+  std::stable_sort(
+      per_topic[0].begin(), per_topic[0].end(), [](const SampleLoc& a, const SampleLoc& b) { return a.ts < b.ts; });
 
   // 2. N-way timestamp intersection: find timestamps present in ALL input topics.
   //    Start from topic 0's sorted timestamps, remove any not in subsequent topics.
@@ -818,8 +863,8 @@ static PJ::Status run_mimo_incremental(DerivedEngineImpl& /*impl*/, DataEngine& 
   }
 
   // 2b. Deduplicate joined_ts: if topic[0] has two rows at the same timestamp,
-  //     that timestamp appears twice in joined_ts. We must process it exactly once
-  //     (joined_ts is already sorted because per_topic[0] preserves chunk order).
+  //     that timestamp appears twice in joined_ts. We must process it exactly
+  //     once (joined_ts is sorted — per_topic[0] was sorted above).
   {
     auto new_end = std::unique(joined_ts.begin(), joined_ts.end());
     joined_ts.erase(new_end, joined_ts.end());
@@ -874,12 +919,57 @@ static PJ::Status run_mimo_incremental(DerivedEngineImpl& /*impl*/, DataEngine& 
     engine.commitChunks(writer.flushAll());
   }
 
-  // Advance watermark to the last joined input timestamp.
-  // Data is monotonically increasing, so timestamps ≤ joined_ts.back() won't
-  // produce new joins in the future even if not all of them generated output.
+  // Advance watermark to the last joined input timestamp. Later input at or
+  // before this watermark is a regression — the scheduler detects it via
+  // mimo_last_chunk_id and resets + replays the node instead of running this
+  // incremental path.
   node.mimo_last_ts = joined_ts.back();
 
   return PJ::okStatus();
+}
+
+// ---------------------------------------------------------------------------
+// Out-of-order input detection
+// ---------------------------------------------------------------------------
+
+// True when a not-yet-processed input chunk lands at or before data this node
+// already consumed. Applying it incrementally would feed the transform out of
+// ascending-timestamp order (SISO) or silently skip joined rows (MIMO), so
+// the scheduler must reset + fully replay the node instead.
+static bool node_input_regressed(DataEngine& engine, const DerivedNode& node) {
+  if (!node.is_mimo) {
+    const TopicStorage* in_storage = engine.getTopicStorage(node.siso_input_topic_id);
+    if (in_storage == nullptr) {
+      return false;
+    }
+    // Walk unprocessed chunks in commit order: each must start at or after
+    // everything fed so far (including its predecessors in this same batch).
+    PJ::Timestamp watermark = node.siso_last_ts;
+    for (const TopicChunk& chunk : in_storage->sealedChunks()) {
+      if (chunk.id <= node.last_processed_chunk_id || chunk.stats.row_count == 0) {
+        continue;
+      }
+      if (chunk.stats.t_min < watermark) {
+        return true;
+      }
+      watermark = std::max(watermark, chunk.stats.t_max);
+    }
+    return false;
+  }
+  for (PJ::TopicId in_tid : node.mimo_input_topic_ids) {
+    const TopicStorage* in_storage = engine.getTopicStorage(in_tid);
+    if (in_storage == nullptr) {
+      continue;
+    }
+    for (const TopicChunk& chunk : in_storage->sealedChunks()) {
+      // <= : the MIMO gather skips rows at the watermark timestamp, so a late
+      // row exactly at it would otherwise be lost.
+      if (chunk.id > node.mimo_last_chunk_id && chunk.stats.row_count > 0 && chunk.stats.t_min <= node.mimo_last_ts) {
+        return true;
+      }
+    }
+  }
+  return false;
 }
 
 // ---------------------------------------------------------------------------
@@ -934,7 +1024,11 @@ PJ::Status DerivedEngine::scheduleActive(const std::unordered_set<PJ::NodeId>& a
     }
 
     PJ::Status s = PJ::okStatus();
-    if (!node.is_mimo) {
+    if (node_input_regressed(engine_, node)) {
+      // Late (out-of-order) input behind the node's watermark: reset + full
+      // replay over the now time-merged input instead of incremental work.
+      s = recompute_batch(node_id);
+    } else if (!node.is_mimo) {
       s = run_siso_incremental(*impl_, engine_, node);
     } else {
       s = run_mimo_incremental(*impl_, engine_, node);
@@ -991,10 +1085,12 @@ PJ::Status DerivedEngine::recompute_batch(PJ::NodeId node_id) {
     }
   }
 
-  // 3. Reset processed chunk watermark
+  // 3. Reset processed watermarks (chunk ids and timestamps)
   node.last_processed_chunk_id = 0;
+  node.siso_last_ts = std::numeric_limits<PJ::Timestamp>::min();
   if (node.is_mimo) {
     node.mimo_last_ts = std::numeric_limits<PJ::Timestamp>::min();
+    node.mimo_last_chunk_id = 0;
   }
 
   // 4. Full replay

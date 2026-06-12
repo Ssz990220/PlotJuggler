@@ -219,10 +219,10 @@ TEST(TopicStorageTest, UpdateSchema) {
 }
 
 // ===========================================================================
-// Test 9: Reject out-of-order chunk
+// Test 9: Accept out-of-order chunk (lossless out-of-order ingest)
 // ===========================================================================
 
-TEST(TopicStorageTest, RejectOutOfOrderChunk) {
+TEST(TopicStorageTest, AcceptsOutOfOrderChunk) {
   TopicDescriptor desc;
   desc.name = "order_topic";
   desc.schema_id = 1;
@@ -231,22 +231,23 @@ TEST(TopicStorageTest, RejectOutOfOrderChunk) {
 
   ASSERT_TRUE(storage.appendSealedChunk(make_test_chunk(9, 2000, 2900, 10)).has_value());
 
-  // Append a chunk with t_min < previous chunk's t_min — should fail
-  auto status = storage.appendSealedChunk(make_test_chunk(9, 1000, 1900, 10));
-  EXPECT_FALSE(status.has_value());
+  // A chunk entirely before the previous one is retained — rejecting it
+  // silently lost late-committed data (multi-publisher recordings).
+  ASSERT_TRUE(storage.appendSealedChunk(make_test_chunk(9, 1000, 1900, 10)).has_value());
 
-  // Only the first chunk should be stored
-  EXPECT_EQ(storage.sealedChunks().size(), 1U);
+  EXPECT_EQ(storage.sealedChunks().size(), 2U);
+  // Topic extrema scan all chunks instead of trusting front/back order.
+  EXPECT_EQ(storage.time_min(), 1000);
+  EXPECT_EQ(storage.time_max(), 2900);
 }
 
 // ===========================================================================
-// Test 10: Equal t_min chunks are allowed
+// Test 10: Accept overlapping chunk, including equal t_min
 // ===========================================================================
 
-TEST(TopicStorageTest, OverlappingChunkRejected_SameTMin) {
-  // A chunk whose t_min falls inside the previous chunk's [t_min, t_max] is an
-  // overlap and must be rejected.  This includes the case where t_min is equal
-  // (Chunk2.t_min=1000 < Chunk1.t_max=1900 → rejected).
+TEST(TopicStorageTest, AcceptsOverlappingChunk_SameTMin) {
+  // A chunk whose t_min falls inside the previous chunk's [t_min, t_max] is
+  // retained; queries merge across overlapping chunks.
   TopicDescriptor desc;
   desc.name = "overlap_tmin_topic";
   desc.schema_id = 1;
@@ -254,10 +255,10 @@ TEST(TopicStorageTest, OverlappingChunkRejected_SameTMin) {
   TopicStorage storage(/*topic_id=*/10, std::move(desc));
 
   ASSERT_TRUE(storage.appendSealedChunk(make_test_chunk(10, 1000, 1900, 10)).has_value());
-  // Same t_min — overlaps Chunk1 in [1000, 1900]: must be rejected.
-  EXPECT_FALSE(storage.appendSealedChunk(make_test_chunk(10, 1000, 1500, 5)).has_value());
+  ASSERT_TRUE(storage.appendSealedChunk(make_test_chunk(10, 1000, 1500, 5)).has_value());
 
-  EXPECT_EQ(storage.sealedChunks().size(), 1U);
+  EXPECT_EQ(storage.sealedChunks().size(), 2U);
+  EXPECT_EQ(storage.metadata().total_row_count, 15U);
 }
 
 }  // namespace

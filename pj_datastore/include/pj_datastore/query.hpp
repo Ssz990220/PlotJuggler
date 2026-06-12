@@ -77,6 +77,16 @@ struct ChunkRowRange {
   std::size_t row_end = 0;  // exclusive
 };
 
+/// One chunk's next unread row during a cursor merge. Chunks of a topic may
+/// overlap in time (out-of-order ingest), so row-at-a-time cursors keep one
+/// frontier per intersecting chunk in a min-heap on (ts, chunk index) — the
+/// tie-break keeps duplicate timestamps in commit order.
+struct CursorFrontier {
+  PJ::Timestamp ts = 0;
+  std::size_t chunk = 0;
+  std::size_t row = 0;
+};
+
 // Cursor for iterating range query results across chunks
 class RangeCursor {
  public:
@@ -91,22 +101,24 @@ class RangeCursor {
   /// Return current row descriptor.
   [[nodiscard]] SampleRow current() const;
 
-  // Iterate all results via callback (per-row)
+  /// Iterate all results via callback (per-row), in globally ascending
+  /// timestamp order even when chunk time ranges overlap.
   void forEach(std::function<void(const SampleRow&)> callback);
 
-  // Iterate chunk-at-a-time (bulk path)
+  /// Iterate chunk-at-a-time (bulk path). Runs are per-chunk sorted and
+  /// delivered in commit order; under out-of-order ingest, runs from different
+  /// chunks may overlap in time — bulk consumers must tolerate that (or use
+  /// forEach for a globally ordered stream). Exhausts the cursor.
   void forEachChunk(std::function<void(const ChunkRowRange&)> callback);
 
  private:
   const std::deque<TopicChunk>* chunks_;
   PJ::Timestamp t_min_;
   PJ::Timestamp t_max_;
-  std::size_t chunk_index_ = 0;
-  std::size_t row_index_ = 0;
+  // Min-heap; empty == exhausted. See CursorFrontier.
+  std::vector<CursorFrontier> frontiers_;
 
-  void findFirstValid();
-
-  void skipToValid();
+  void initFrontiers();
 };
 
 /// Cursor for iterating a topic column as a time series. It skips null rows by
@@ -132,10 +144,14 @@ class SeriesCursor {
   const std::deque<TopicChunk>* chunks_;
   std::size_t column_index_ = 0;
   PJ::Range<PJ::Timestamp> time_range_;
-  std::size_t chunk_index_ = 0;
-  std::size_t row_index_ = 0;
+  // Min-heap of value-bearing frontiers; empty == exhausted. Yields samples in
+  // globally ascending timestamp order across overlapping chunks.
+  std::vector<CursorFrontier> frontiers_;
 
-  void skipToSample();
+  void initFrontiers();
+  // Move `frontier` to its next value-bearing row inside the time range.
+  // Returns false when this chunk is exhausted for the cursor's range.
+  [[nodiscard]] bool nextSample(CursorFrontier& frontier) const;
 };
 
 /// View a topic column as a virtual vector of value-bearing time series

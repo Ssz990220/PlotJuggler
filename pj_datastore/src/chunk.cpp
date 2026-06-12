@@ -7,6 +7,7 @@
 #include <cstring>
 #include <limits>
 #include <memory>
+#include <numeric>
 #include <utility>
 #include <variant>
 
@@ -82,7 +83,8 @@ TopicChunkBuilder::TopicChunkBuilder(
 
 void TopicChunkBuilder::beginRow(Timestamp timestamp) {
   PJ_ASSERT(!row_in_progress_, "begin_row called while row already in progress");
-  PJ_ASSERT(timestamp >= last_timestamp_, "timestamps must be monotonically non-decreasing");
+  // Out-of-order timestamps are accepted: multi-publisher topics interleave
+  // regressing stamps. Rows are stable-sorted at seal().
   row_in_progress_ = true;
   current_timestamp_ = timestamp;
   last_timestamp_ = timestamp;
@@ -193,13 +195,14 @@ void TopicChunkBuilder::appendTimestamps(Span<const Timestamp> timestamps) {
     return;
   }
 
-  PJ_ASSERT(timestamps[0] >= last_timestamp_, "timestamps must be monotonically non-decreasing");
-
   timestamps_.reserve(timestamps_.size() + count);
   timestamps_.insert(timestamps_.end(), timestamps.begin(), timestamps.end());
 
-  stats_.t_min = std::min(stats_.t_min, timestamps[0]);
-  stats_.t_max = std::max(stats_.t_max, timestamps[count - 1]);
+  // The batch may be unsorted (out-of-order ingest): take true extrema, not
+  // the endpoints. Rows are stable-sorted at seal().
+  const auto [min_it, max_it] = std::minmax_element(timestamps.begin(), timestamps.end());
+  stats_.t_min = std::min(stats_.t_min, *min_it);
+  stats_.t_max = std::max(stats_.t_max, *max_it);
   last_timestamp_ = timestamps[count - 1];
 
   bulk_pending_rows_ = count;
@@ -455,7 +458,68 @@ void TopicChunkBuilder::updateColumnStats(std::size_t col_index, double value) {
 // seal
 // ---------------------------------------------------------------------------
 
+// Rows arrive in commit order, which under multi-publisher recordings is not
+// timestamp order. Seal sorted chunks so per-chunk binary searches and cursor
+// merging stay valid; stable, so duplicate timestamps keep arrival order.
+// Column stats are order-invariant (min/max/null_count) and encodings are
+// derived from the buffers during seal, so only the buffers are permuted.
+void TopicChunkBuilder::sortRowsByTimestamp() {
+  PJ_ASSERT(!row_in_progress_, "seal called while row in progress");
+  if (std::is_sorted(timestamps_.begin(), timestamps_.end())) {
+    return;
+  }
+  std::vector<std::size_t> perm(timestamps_.size());
+  std::iota(perm.begin(), perm.end(), 0);
+  std::stable_sort(
+      perm.begin(), perm.end(), [this](std::size_t a, std::size_t b) { return timestamps_[a] < timestamps_[b]; });
+
+  std::vector<Timestamp> sorted_ts;
+  sorted_ts.reserve(timestamps_.size());
+  for (const std::size_t row : perm) {
+    sorted_ts.push_back(timestamps_[row]);
+  }
+  timestamps_ = std::move(sorted_ts);
+
+  for (std::size_t i = 0; i < columns_.size(); ++i) {
+    TypedColumnBuffer& col = columns_[i];
+    PJ_ASSERT(col.rowCount() == perm.size(), "column/timestamp row count mismatch at seal");
+    const StorageKind kind = storageKindOf(column_descriptors_[i].logical_type);
+    TypedColumnBuffer sorted(column_descriptors_[i]);
+    for (const std::size_t row : perm) {
+      if (!col.isValid(row)) {
+        sorted.appendNull();
+        continue;
+      }
+      switch (kind) {
+        case StorageKind::kFloat32:
+          sorted.appendFloat32(col.readFloat32(row));
+          break;
+        case StorageKind::kFloat64:
+          sorted.appendFloat64(col.readFloat64(row));
+          break;
+        case StorageKind::kInt32:
+          sorted.appendInt32(col.readInt32(row));
+          break;
+        case StorageKind::kInt64:
+          sorted.appendInt64(col.readInt64(row));
+          break;
+        case StorageKind::kUint64:
+          sorted.appendUint64(col.readUint64(row));
+          break;
+        case StorageKind::kBool:
+          sorted.appendBool(col.readBool(row));
+          break;
+        case StorageKind::kString:
+          sorted.appendString(col.readString(row));
+          break;
+      }
+    }
+    col = std::move(sorted);
+  }
+}
+
 TopicChunk TopicChunkBuilder::seal() {
+  sortRowsByTimestamp();
   TopicChunk chunk;
   chunk.id = next_chunk_id_++;
   chunk.topic_id = topic_id_;

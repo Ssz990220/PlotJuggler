@@ -180,7 +180,7 @@ the holder + stream-builder helpers.
 ## 3. Timestamps
 
 - Type: `int64_t` (nanoseconds since Unix epoch)
-- Must be **monotonically increasing** within each topic
+- May arrive **out of order** within a topic (multi-publisher recordings): every row is retained, rows are sorted per chunk at seal, and row queries return timestamp order
 - Convert from seconds: `auto ts = static_cast<int64_t>(epoch_seconds * 1e9);`
 - **Never subtract a base time** — display-time subtraction belongs in the UI layer
 

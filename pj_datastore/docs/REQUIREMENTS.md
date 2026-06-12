@@ -45,7 +45,7 @@ Columnar time-series storage engine for PlotJuggler. Decouples data storage from
 - Sparse records: fields not included in a row are automatically null-filled
 - Fields may be introduced at any point during ingestion — not just before the first row. This is the expected behavior for variable-length sequences (ROS, Protobuf, DDS) and dynamic-schema formats (JSON). When a new field appears after rows exist, the engine seals the current chunk and continues with the expanded column set.
 - Pre-registration with `ensureField()` is an optional optimization for the minority of sources with a fixed, fully-known schema. It enables the faster bound-write path (`appendBoundRecord`) and avoids mid-stream chunk sealing.
-- Timestamps must be monotonically increasing within each topic (nanosecond resolution, absolute epoch time)
+- Out-of-order timestamps within a topic are accepted **losslessly** (nanosecond resolution, absolute epoch time): real recordings interleave publishers whose embedded stamps disagree (e.g. a localizer future-dating its transforms). Rows are stable-sorted per chunk at seal time and queries serve results in timestamp order.
 - Arrow IPC import: accept Arrow record batches for high-throughput bulk ingest
 
 ### 4.4 Storage
