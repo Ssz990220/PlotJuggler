@@ -9,6 +9,7 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QFormLayout>
+#include <QFutureWatcher>
 #include <QLoggingCategory>
 #include <QNetworkAccessManager>
 #include <QNetworkReply>
@@ -251,6 +252,12 @@ struct SceneEntitiesLayer::MeshLoadRecord {
   std::string key;
   std::string signature;
   QFuture<MeshData> future;
+  // GUI-thread completion hook: triggers pollMeshLoads() so a finished load
+  // requests the repaint that consumes it (the app paints on demand — render()
+  // alone would never run). Owned by the record so clearing/replacing the record
+  // (detach, signature change) destroys the watcher and severs the connection:
+  // a stale completion can never fire on a dead record.
+  std::unique_ptr<QFutureWatcher<MeshData>> watcher;
   bool consumed{false};
   bool failed{false};
 };
@@ -817,6 +824,12 @@ void SceneEntitiesLayer::startMeshLoadIfNeeded(const std::string& key, const PJ:
   record->key = key;
   record->signature = signature;
   record->future = mesh_loader_->loadFromMemory(bytes, hintFromMediaType(primitive.media_type, primitive.url));
+  // The watcher lives on this (GUI) thread; connect BEFORE setFuture so an
+  // already-finished load still signals. pollMeshLoads() drains the result and
+  // emits repaintRequested(), exactly as a render()-driven poll would.
+  record->watcher = std::make_unique<QFutureWatcher<MeshData>>();
+  connect(record->watcher.get(), &QFutureWatcher<MeshData>::finished, this, &SceneEntitiesLayer::pollMeshLoads);
+  record->watcher->setFuture(record->future);
   if (it != mesh_loads_.end()) {
     *it = std::move(record);
   } else {

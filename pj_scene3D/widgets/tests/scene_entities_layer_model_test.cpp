@@ -8,6 +8,9 @@
 
 #include <gtest/gtest.h>
 
+#include <QCoreApplication>
+#include <QElapsedTimer>
+#include <QEventLoop>
 #include <atomic>
 #include <cmath>
 #include <glm/gtc/matrix_transform.hpp>
@@ -138,6 +141,16 @@ void expectMatrixNear(const glm::mat4& actual, const glm::mat4& expected) {
       EXPECT_NEAR(actual[c][r], expected[c][r], 1e-5f) << "at column " << c << ", row " << r;
     }
   }
+}
+
+// QFutureWatcher delivers finished() through the event loop, so tests that wait
+// on mesh-load completion need a QCoreApplication (created once, lazily).
+void ensureCoreApplication() {
+  static int argc = 1;
+  static char arg0[] = "scene_entities_layer_model_test";
+  static char* argv[] = {arg0, nullptr};
+  static QCoreApplication app(argc, argv);
+  Q_UNUSED(app);
 }
 
 }  // namespace
@@ -478,6 +491,35 @@ TEST(SceneEntitiesLayerModelTest, DetachlessReattachAfterDatasetReplaceResetsSta
   EXPECT_EQ(layer.currentEntities().count("new_car"), 1u) << "new-generation entry skipped after re-attach";
   EXPECT_EQ(layer.currentEntities().count("old_car"), 0u);
   EXPECT_EQ(layer.sourceFrame(), QStringLiteral("new_frame"));
+}
+
+// Regression: a finished async ModelPrimitive mesh load must itself request the
+// repaint that consumes it (QFutureWatcher -> pollMeshLoads). The app paints
+// strictly on demand, so before the fix the result was only drained inside
+// render() and the placeholder cube lingered until the user scrubbed. After
+// attach() kicks the load, only the event loop is pumped here — no render() or
+// setTrackerTime() — and repaintRequested must still fire.
+TEST(SceneEntitiesLayerModelTest, MeshLoadCompletionRequestsRepaintWithoutRender) {
+  ensureCoreApplication();
+  PJ::SessionManager session;
+  const PJ::ObjectTopicId topic_id = registerTopic(session);
+  registerParser(session, topic_id);
+  pushSceneEntities(session, topic_id, 10, batchWithEntities({makeEntity("car", 10)}));
+
+  pj::scene3d::SceneEntitiesLayer layer(topic_id, QStringLiteral("/scene_entities"));
+  const auto ctx = makeContext(session);
+  ASSERT_TRUE(layer.attach(ctx));  // kicks the async mesh load for "car"
+
+  // Connect AFTER attach so synchronous emissions during attach can't count.
+  int repaints = 0;
+  QObject::connect(&layer, &pj::scene3d::SceneEntitiesLayer::repaintRequested, [&repaints] { ++repaints; });
+
+  QElapsedTimer timer;
+  timer.start();
+  while (repaints == 0 && timer.elapsed() < 5000) {
+    QCoreApplication::processEvents(QEventLoop::AllEvents, 50);
+  }
+  EXPECT_GT(repaints, 0) << "finished mesh load did not request a repaint (only render() would have consumed it)";
 }
 
 TEST(SceneEntitiesLayerModelTest, FrameCompositionAppliesTfPrimitivePoseAndScale) {

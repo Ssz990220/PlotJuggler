@@ -13,6 +13,7 @@
 #include <QFileInfo>
 #include <QFont>
 #include <QFormLayout>
+#include <QFutureWatcher>
 #include <QGroupBox>
 #include <QGuiApplication>
 #include <QHBoxLayout>
@@ -262,6 +263,12 @@ struct RobotModelLayer::MeshLoadRecord {
   std::string key;
   QString path;
   QFuture<MeshData> future;
+  // GUI-thread completion hook: triggers pollMeshLoads() so a finished load
+  // requests the repaint that consumes it (the app paints on demand — render()
+  // alone would never run). Owned by the record so clearing the records
+  // (detach, model reload) destroys the watcher and severs the connection: a
+  // stale completion can never fire on a dead record.
+  std::unique_ptr<QFutureWatcher<MeshData>> watcher;
   bool consumed{false};
   bool failed{false};
 };
@@ -996,6 +1003,11 @@ void RobotModelLayer::startMeshLoads() {
     record->key = mesh->resolved_path;
     record->path = QString::fromStdString(mesh->resolved_path);
     record->future = mesh_loader_->load(record->path);
+    // The watcher lives on this (GUI) thread; connect BEFORE setFuture so an
+    // already-finished load (cache hit) still signals.
+    record->watcher = std::make_unique<QFutureWatcher<MeshData>>();
+    connect(record->watcher.get(), &QFutureWatcher<MeshData>::finished, this, &RobotModelLayer::pollMeshLoads);
+    record->watcher->setFuture(record->future);
     mesh_loads_.push_back(std::move(record));
   };
   for (const RobotLink& link : model_->links) {
@@ -1028,6 +1040,9 @@ void RobotModelLayer::pollMeshLoads() {
   }
   if (changed) {
     emit meshLoadStatusChanged(loaded_mesh_count_, total_mesh_count_, unresolvedPackagesList());
+    // Swap the placeholder for the loaded mesh now — meshLoadStatusChanged only
+    // feeds the config-widget label and schedules no paint.
+    emit repaintRequested();
   }
 }
 

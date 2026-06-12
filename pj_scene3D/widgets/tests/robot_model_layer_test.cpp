@@ -5,6 +5,9 @@
 
 #include <gtest/gtest.h>
 
+#include <QCoreApplication>
+#include <QElapsedTimer>
+#include <QEventLoop>
 #include <memory>
 #include <optional>
 #include <string>
@@ -38,6 +41,22 @@ constexpr const char* kUnresolvedMeshUrdf = R"(
   </link>
 </robot>
 )";
+
+// URDF whose single visual mesh resolves immediately (file:// fixture path), so
+// attach() actually kicks an async MeshLoader load.
+const std::string& resolvedMeshUrdf() {
+  static const std::string text = std::string(R"(
+<robot name="resolved_mesh_robot">
+  <link name="base_link">
+    <visual>
+      <geometry><mesh filename="file://)") +
+                                  PJ_SCENE3D_FIXTURES_DIR + R"(/meshes/cube.stl"/></geometry>
+    </visual>
+  </link>
+</robot>
+)";
+  return text;
+}
 
 class UrdfRobotDescriptionParser final : public PJ::MessageParserPluginBase {
  public:
@@ -102,6 +121,27 @@ class UnresolvedMeshRobotDescriptionParser final : public PJ::MessageParserPlugi
   }
 };
 
+class ResolvedMeshRobotDescriptionParser final : public PJ::MessageParserPluginBase {
+ public:
+  ResolvedMeshRobotDescriptionParser() {
+    PJ::sdk::SchemaHandler handler;
+    handler.object_type = PJ::sdk::BuiltinObjectType::kRobotDescription;
+    handler.parse_object = [](PJ::Timestamp ts,
+                              PJ::sdk::PayloadView /*payload*/) -> PJ::Expected<PJ::sdk::ObjectRecord> {
+      return PJ::sdk::ObjectRecord{
+          .ts = std::nullopt,
+          .object = PJ::sdk::BuiltinObject{PJ::sdk::RobotDescription{
+              .timestamp_ns = ts,
+              .topic = "/robot_description",
+              .format = "urdf",
+              .text = resolvedMeshUrdf(),
+          }},
+      };
+    };
+    registerSchemaHandler("robot_description", std::move(handler));
+  }
+};
+
 const PJ_message_parser_vtable_t* urdfParserVtable() {
   static const PJ_message_parser_vtable_t* vt = PJ::MessageParserPluginBase::vtableWithCreate(
       []() noexcept -> void* { return new UrdfRobotDescriptionParser(); },
@@ -121,6 +161,23 @@ const PJ_message_parser_vtable_t* unresolvedMeshParserVtable() {
       []() noexcept -> void* { return new UnresolvedMeshRobotDescriptionParser(); },
       R"({"id":"robot-mesh-test","name":"Robot Mesh Test","version":"1.0.0","encoding":"test"})");
   return vt;
+}
+
+const PJ_message_parser_vtable_t* resolvedMeshParserVtable() {
+  static const PJ_message_parser_vtable_t* vt = PJ::MessageParserPluginBase::vtableWithCreate(
+      []() noexcept -> void* { return new ResolvedMeshRobotDescriptionParser(); },
+      R"({"id":"robot-resolved-mesh-test","name":"Robot Resolved Mesh Test","version":"1.0.0","encoding":"test"})");
+  return vt;
+}
+
+// QFutureWatcher delivers finished() through the event loop, so tests that wait
+// on mesh-load completion need a QCoreApplication (created once, lazily).
+void ensureCoreApplication() {
+  static int argc = 1;
+  static char arg0[] = "robot_model_layer_test";
+  static char* argv[] = {arg0, nullptr};
+  static QCoreApplication app(argc, argv);
+  Q_UNUSED(app);
 }
 
 PJ::ObjectTopicId registerTopic(PJ::SessionManager& session, std::string topic_name = "/robot_description") {
@@ -211,4 +268,36 @@ TEST(RobotModelLayerTest, UnresolvedPackageMeshIsCountedForPlaceholderRendering)
   EXPECT_EQ(layer.totalMeshCount(), 1);
   EXPECT_EQ(layer.unresolvedMeshCount(), 1);
   EXPECT_TRUE(layer.statusText().contains(QStringLiteral("packages unresolved")));
+}
+
+// Regression: a finished async URDF mesh load must itself request the repaint
+// that consumes it (QFutureWatcher -> pollMeshLoads). The app paints strictly on
+// demand, so before the fix the result was only drained inside render() and the
+// magenta placeholder lingered until the user scrubbed. After attach() kicks the
+// load, only the event loop is pumped here — no render() or setTrackerTime() —
+// and repaintRequested must still fire.
+TEST(RobotModelLayerTest, MeshLoadCompletionRequestsRepaintWithoutRender) {
+  ensureCoreApplication();
+  PJ::SessionManager session;
+  const PJ::ObjectTopicId topic_id = registerTopic(session);
+  registerParser(session, topic_id, resolvedMeshParserVtable());
+  pushWireBytes(session, topic_id);
+
+  pj::scene3d::RobotModelLayer layer(topic_id, QStringLiteral("/robot_description"));
+  const auto ctx = makeContext(session);
+  ASSERT_TRUE(layer.attach(ctx));  // parses the URDF and kicks the fixture mesh load
+  ASSERT_NE(layer.robotModel(), nullptr);
+  ASSERT_EQ(layer.totalMeshCount(), 1);
+  ASSERT_EQ(layer.unresolvedMeshCount(), 0) << "fixture mesh must resolve or no load is kicked";
+
+  // Connect AFTER attach so synchronous emissions during attach can't count.
+  int repaints = 0;
+  QObject::connect(&layer, &pj::scene3d::RobotModelLayer::repaintRequested, [&repaints] { ++repaints; });
+
+  QElapsedTimer timer;
+  timer.start();
+  while (repaints == 0 && timer.elapsed() < 5000) {
+    QCoreApplication::processEvents(QEventLoop::AllEvents, 50);
+  }
+  EXPECT_GT(repaints, 0) << "finished mesh load did not request a repaint (only render() would have consumed it)";
 }

@@ -176,7 +176,9 @@ class SceneEntitiesLayer : public Scene3DLayer {
   // Start an async mesh load for `key` unless its source bytes (signature) are
   // already loaded or loading; a changed signature blanks the mesh and reloads.
   void startMeshLoadIfNeeded(const std::string& key, const PJ::sdk::ModelPrimitive& primitive);
-  // Drain finished async loads into the mesh pass (called from render()).
+  // Drain finished async loads into the mesh pass and request a repaint when
+  // anything landed. Called from render() and from each load's QFutureWatcher,
+  // so a completed mesh shows up without waiting for an unrelated repaint.
   void pollMeshLoads();
 
   PJ::ObjectTopicId topic_id_;

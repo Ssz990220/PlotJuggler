@@ -113,6 +113,10 @@ class RobotModelLayer : public Scene3DLayer {
   bool applyRobotDescription(
       const QString& text, const QString& format, const QString& label, const QString& urdf_dir, bool source_is_url);
   void startMeshLoads();
+  // Drain finished async loads into the mesh pass; emits meshLoadStatusChanged
+  // + repaintRequested when anything landed. Called from render() and from each
+  // load's QFutureWatcher, so a completed mesh replaces its placeholder without
+  // waiting for an unrelated repaint.
   void pollMeshLoads();
   [[nodiscard]] MeshLoadRecord* meshLoadForKey(const std::string& key) const;
   [[nodiscard]] bool meshReady(const std::string& key) const;
