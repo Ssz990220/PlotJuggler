@@ -47,3 +47,22 @@ target_link_libraries(pj_scene3d_widgets
   PUBLIC pj_scene3d_core pj_scene_common pj_runtime pj_plugin_runtime_catalog pj_widgets Qt6::Widgets Qt6::OpenGLWidgets Qt6::Xml OpenGL::GL
   PRIVATE pj_internal_fmt Qt6::Concurrent
 )
+
+# ---------------------------------------------------------------------------
+# Tests
+# ---------------------------------------------------------------------------
+
+if(PJ_BUILD_TESTS)
+  # Regression: a file reload re-registers each surviving topic's parser slot;
+  # layers must re-resolve the parser through SessionManager per use instead of
+  # caching the raw pointer from attach() (use-after-free on the next tick).
+  add_executable(occupancy_grid_layer_rebind_test
+    ../tests/occupancy_grid_layer_rebind_test.cpp
+  )
+  target_link_libraries(occupancy_grid_layer_rebind_test PRIVATE
+    pj_scene3d_widgets
+    GTest::gtest
+  )
+  target_compile_options(occupancy_grid_layer_rebind_test PRIVATE ${PJ_WARNING_FLAGS} ${PJ_SANITIZER_FLAGS})
+  add_test(NAME occupancy_grid_layer_rebind_test COMMAND occupancy_grid_layer_rebind_test)
+endif()

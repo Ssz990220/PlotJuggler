@@ -108,9 +108,7 @@ bool SceneEntitiesLayer::attach(const PJ::SceneLayerContext& ctx) {
     return false;
   }
   ctx_ = scene3d_ctx;
-  parser_ = ctx_.session->parserForObjectTopic(topic_id_);
-  parser_mutex_ = ctx_.session->parserMutexForObjectTopic(topic_id_);
-  if (parser_ == nullptr) {
+  if (!ctx_.session->parserBindingForObjectTopic(topic_id_)) {
     qCWarning(lcSceneEntitiesLayer) << "attach: no parser for topic_id=" << topic_id_.id;
     return false;
   }
@@ -131,8 +129,6 @@ bool SceneEntitiesLayer::attach(const PJ::SceneLayerContext& ctx) {
 }
 
 void SceneEntitiesLayer::detach() {
-  parser_ = nullptr;
-  parser_mutex_.reset();
   ctx_ = {};
   pass_.setActive(nullptr);
 }
@@ -177,7 +173,11 @@ bool SceneEntitiesLayer::bootstrap() {
   if (!first.has_value() || first->payload.bytes.empty()) {
     return false;
   }
-  auto obj = parseLocked(parser_, parser_mutex_, first->timestamp, first->payload);
+  const auto binding = ctx_.session->parserBindingForObjectTopic(topic_id_);
+  if (!binding) {
+    return false;
+  }
+  auto obj = parseLocked(binding, first->timestamp, first->payload);
   if (!obj.has_value()) {
     qCWarning(lcSceneEntitiesLayer) << "bootstrap parseObject failed:" << QString::fromStdString(obj.error());
     return false;
@@ -198,7 +198,7 @@ bool SceneEntitiesLayer::bootstrap() {
 }
 
 void SceneEntitiesLayer::renderAt(int64_t time_ns) {
-  if (ctx_.session == nullptr || parser_ == nullptr) {
+  if (ctx_.session == nullptr) {
     return;
   }
   PJ::ObjectStore& store = ctx_.session->objectStore();
@@ -206,7 +206,11 @@ void SceneEntitiesLayer::renderAt(int64_t time_ns) {
   if (!resolved.has_value() || resolved->payload.bytes.empty()) {
     return;
   }
-  auto obj = parseLocked(parser_, parser_mutex_, resolved->timestamp, resolved->payload);
+  const auto binding = ctx_.session->parserBindingForObjectTopic(topic_id_);
+  if (!binding) {
+    return;
+  }
+  auto obj = parseLocked(binding, resolved->timestamp, resolved->payload);
   if (!obj.has_value()) {
     qCWarning(lcSceneEntitiesLayer) << "renderAt parseObject failed:" << QString::fromStdString(obj.error());
     return;

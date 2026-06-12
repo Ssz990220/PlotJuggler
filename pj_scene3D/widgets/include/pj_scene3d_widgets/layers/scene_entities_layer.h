@@ -8,15 +8,10 @@
 #include <chrono>
 #include <cstdint>
 #include <memory>
-#include <mutex>
 #include <string>
 
 #include "pj_scene3d_widgets/passes/marker_render_pass.h"
 #include "pj_scene3d_widgets/scene3d_layer.h"
-
-namespace PJ {
-class MessageParserPluginBase;
-}  // namespace PJ
 
 class QWidget;
 
@@ -92,10 +87,9 @@ class SceneEntitiesLayer : public Scene3DLayer {
   PJ::ObjectTopicId topic_id_;
   QString display_name_;
   Scene3DLayerContext ctx_;
-  PJ::MessageParserPluginBase* parser_ = nullptr;
-  // Per-topic mutex serialising parseObject across consumers (the SessionManager
-  // hands back a singleton parser). See parseLocked().
-  std::shared_ptr<std::mutex> parser_mutex_;
+  // Parsers are deliberately NOT cached: every decode resolves a fresh
+  // ParserBinding through ctx_.session (see parseLocked()), so a file reload
+  // that re-registers the topic's parser slot can never leave us dangling.
 
   std::string source_frame_;
   // The latest tracker time pushed to this entity; the time the cached batch was

@@ -6,6 +6,7 @@
 #include <mutex>
 
 #include "pj_plugins/sdk/message_parser_plugin_base.hpp"
+#include "pj_runtime/SessionManager.h"
 
 namespace pj::scene3d {
 
@@ -26,6 +27,15 @@ inline auto parseLocked(
     return parser->parseObject(ts, payload);
   }
   return parser->parseObject(ts, payload);
+}
+
+// Binding-snapshot form: resolves lifetime as well as locking. Fetch the
+// binding from SessionManager per use — a file reload re-registers the topic's
+// parser slot, so a parser pointer cached across calls dangles. The binding's
+// keepalive holds the parser instance (and its plugin DSO) alive for this call.
+inline auto parseLocked(
+    const PJ::SessionManager::ParserBinding& binding, PJ::Timestamp ts, const PJ::sdk::PayloadView& payload) {
+  return parseLocked(binding.parser, binding.mutex, ts, payload);
 }
 
 }  // namespace pj::scene3d

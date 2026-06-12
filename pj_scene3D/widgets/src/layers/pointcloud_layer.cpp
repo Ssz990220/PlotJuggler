@@ -376,9 +376,7 @@ bool PointCloudLayer::attach(const PJ::SceneLayerContext& ctx) {
     return false;
   }
   ctx_ = scene3d_ctx;
-  parser_ = ctx_.session->parserForObjectTopic(topic_id_);
-  parser_mutex_ = ctx_.session->parserMutexForObjectTopic(topic_id_);
-  if (parser_ == nullptr) {
+  if (!ctx_.session->parserBindingForObjectTopic(topic_id_)) {
     qCWarning(lcPointCloudLayer) << "attach: no parser for topic_id=" << topic_id_.id;
     return false;
   }
@@ -416,8 +414,6 @@ void PointCloudLayer::detach() {
   failed_id_ = {};
   last_pushed_id_ = {};
   last_pushed_color_field_.clear();
-  parser_ = nullptr;
-  parser_mutex_.reset();
   ctx_ = {};
   cloud_pass_.setActiveCloud(nullptr);
   world_bounds_.reset();
@@ -871,7 +867,11 @@ bool PointCloudLayer::bootstrap() {
   if (!first.has_value() || first->payload.bytes.empty()) {
     return false;
   }
-  auto obj = parseLocked(parser_, parser_mutex_, first->timestamp, first->payload);
+  const auto binding = ctx_.session->parserBindingForObjectTopic(topic_id_);
+  if (!binding) {
+    return false;
+  }
+  auto obj = parseLocked(binding, first->timestamp, first->payload);
   if (!obj.has_value()) {
     qCWarning(lcPointCloudLayer) << "bootstrap parseObject failed:" << QString::fromStdString(obj.error());
     return false;
@@ -960,7 +960,7 @@ void PointCloudLayer::pushCloud(const PointCloud& cloud, SampleId id) {
 }
 
 void PointCloudLayer::renderAt(int64_t time_ns) {
-  if (ctx_.session == nullptr || parser_ == nullptr) {
+  if (ctx_.session == nullptr) {
     return;
   }
   PJ::ObjectStore& store = ctx_.session->objectStore();
@@ -985,7 +985,11 @@ void PointCloudLayer::renderAt(int64_t time_ns) {
   if (id == failed_id_) {
     return;  // known-undecodable sample (bytes are immutable); don't retry at tracker rate
   }
-  auto obj = parseLocked(parser_, parser_mutex_, resolved->timestamp, resolved->payload);
+  const auto binding = ctx_.session->parserBindingForObjectTopic(topic_id_);
+  if (!binding) {
+    return;
+  }
+  auto obj = parseLocked(binding, resolved->timestamp, resolved->payload);
   if (!obj.has_value()) {
     qCWarning(lcPointCloudLayer) << "renderAt parseObject failed:" << QString::fromStdString(obj.error());
     return;

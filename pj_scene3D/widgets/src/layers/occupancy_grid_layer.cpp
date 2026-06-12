@@ -89,9 +89,7 @@ bool OccupancyGridLayer::attach(const PJ::SceneLayerContext& ctx) {
     return false;
   }
   ctx_ = scene3d_ctx;
-  parser_ = scene3d_ctx.session->parserForObjectTopic(topic_id_);
-  parser_mutex_ = scene3d_ctx.session->parserMutexForObjectTopic(topic_id_);
-  if (parser_ == nullptr) {
+  if (!scene3d_ctx.session->parserBindingForObjectTopic(topic_id_)) {
     qCWarning(lcOccGrid) << "attach: no parser for occupancy-grid topic" << topic_id_.id;
     return false;
   }
@@ -103,8 +101,6 @@ bool OccupancyGridLayer::attach(const PJ::SceneLayerContext& ctx) {
   const auto updates_id = store.findTopic(desc.dataset_id, desc.topic_name + "_updates");
   if (updates_id.has_value()) {
     updates_topic_ = *updates_id;
-    updates_parser_ = scene3d_ctx.session->parserForObjectTopic(*updates_id);
-    updates_parser_mutex_ = scene3d_ctx.session->parserMutexForObjectTopic(*updates_id);
   }
 
   grid_pass_.setColorScheme(color_scheme_);
@@ -114,10 +110,6 @@ bool OccupancyGridLayer::attach(const PJ::SceneLayerContext& ctx) {
 
 void OccupancyGridLayer::detach() {
   grid_pass_.clearGrid();
-  parser_ = nullptr;
-  parser_mutex_.reset();
-  updates_parser_ = nullptr;
-  updates_parser_mutex_.reset();
   updates_topic_.reset();
 }
 
@@ -127,7 +119,11 @@ bool OccupancyGridLayer::bootstrap() {
   if (!first.has_value() || first->payload.bytes.empty()) {
     return false;
   }
-  auto obj = parseLocked(parser_, parser_mutex_, first->timestamp, first->payload);
+  const auto binding = ctx_.session->parserBindingForObjectTopic(topic_id_);
+  if (!binding) {
+    return false;
+  }
+  auto obj = parseLocked(binding, first->timestamp, first->payload);
   if (!obj.has_value()) {
     qCWarning(lcOccGrid) << "bootstrap: parseObject failed:" << QString::fromStdString(obj.error());
     return false;
@@ -154,18 +150,25 @@ bool OccupancyGridLayer::bootstrap() {
 }
 
 void OccupancyGridLayer::renderAt(int64_t time_ns) {
-  if (ctx_.session == nullptr || parser_ == nullptr) {
+  if (ctx_.session == nullptr) {
     return;
   }
+  // Per-tick binding snapshots, alive for the whole reconstructAt call below.
+  const auto binding = ctx_.session->parserBindingForObjectTopic(topic_id_);
+  if (!binding) {
+    return;
+  }
+  const auto updates_binding = updates_topic_.has_value() ? ctx_.session->parserBindingForObjectTopic(*updates_topic_)
+                                                          : PJ::SessionManager::ParserBinding{};
   PJ::ObjectStore& store = ctx_.session->objectStore();
 
   // base_at(t): the latest full grid with ts <= t, decoded to sdk::OccupancyGrid.
-  auto base_at = [this, &store](PJ::Timestamp t) -> std::optional<PJ::sdk::OccupancyGrid> {
+  auto base_at = [this, &store, &binding](PJ::Timestamp t) -> std::optional<PJ::sdk::OccupancyGrid> {
     auto entry = store.latestAt(topic_id_, t);
     if (!entry.has_value() || entry->payload.bytes.empty()) {
       return std::nullopt;
     }
-    auto obj = parseLocked(parser_, parser_mutex_, entry->timestamp, entry->payload);
+    auto obj = parseLocked(binding, entry->timestamp, entry->payload);
     if (!obj.has_value()) {
       return std::nullopt;
     }
@@ -177,9 +180,10 @@ void OccupancyGridLayer::renderAt(int64_t time_ns) {
   };
 
   // updates_in(lo, hi): updates with lo < ts <= hi, ascending.
-  auto updates_in = [this, &store](PJ::Timestamp lo, PJ::Timestamp hi) -> std::vector<PJ::sdk::OccupancyGridUpdate> {
+  auto updates_in = [this, &store, &updates_binding](
+                        PJ::Timestamp lo, PJ::Timestamp hi) -> std::vector<PJ::sdk::OccupancyGridUpdate> {
     std::vector<PJ::sdk::OccupancyGridUpdate> out;
-    if (!updates_topic_.has_value() || updates_parser_ == nullptr) {
+    if (!updates_topic_.has_value() || !updates_binding) {
       return out;
     }
     const PJ::ObjectTopicId id = *updates_topic_;
@@ -195,7 +199,7 @@ void OccupancyGridLayer::renderAt(int64_t time_ns) {
       if (!entry.has_value() || entry->payload.bytes.empty()) {
         continue;
       }
-      auto obj = parseLocked(updates_parser_, updates_parser_mutex_, entry->timestamp, entry->payload);
+      auto obj = parseLocked(updates_binding, entry->timestamp, entry->payload);
       if (!obj.has_value()) {
         continue;
       }
