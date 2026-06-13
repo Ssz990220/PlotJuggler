@@ -18,7 +18,6 @@
 #include <QWidget>
 #include <QtConcurrent>
 #include <algorithm>
-#include <bit>
 #include <cmath>
 #include <glm/glm.hpp>
 #include <limits>
@@ -35,6 +34,7 @@
 #include "pj_scene3d_core/camera/camera.h"  // AABB, expandAABB
 #include "pj_scene3d_core/pointcloud.h"
 #include "pj_scene3d_core/pointcloud_codecs.h"
+#include "pj_scene3d_core/pointcloud_convert.h"  // convertCanonical, ConvertedPointCloud
 #include "pj_scene3d_widgets/parse_locked.h"
 #include "pj_widgets/ColorPickerPopup.h"
 #include "pj_widgets/DoubleScrubber.h"
@@ -44,119 +44,10 @@ namespace pj::scene3d {
 namespace {
 Q_LOGGING_CATEGORY(lcPointCloudLayer, "pj.scene3d.layer.pointcloud")
 
-using PJ::Span;
 using PJ::sdk::BuiltinObjectType;
 using PJ::sdk::CompressedPointCloud;
 using PJ::sdk::PayloadView;
 using PJ::sdk::PointCloud;
-using PJ::sdk::PointField;
-
-float readFloat32At(const uint8_t* p) {
-  uint32_t bits = static_cast<uint32_t>(p[0]) | (static_cast<uint32_t>(p[1]) << 8) |
-                  (static_cast<uint32_t>(p[2]) << 16) | (static_cast<uint32_t>(p[3]) << 24);
-  return std::bit_cast<float>(bits);
-}
-double readFloat64At(const uint8_t* p) {
-  uint64_t bits = 0;
-  for (int i = 0; i < 8; ++i) {
-    bits |= static_cast<uint64_t>(p[i]) << (8 * i);
-  }
-  return std::bit_cast<double>(bits);
-}
-float readScalarAt(const uint8_t* p, PointField::Datatype dt) {
-  using DT = PointField::Datatype;
-  switch (dt) {
-    case DT::kInt8:
-      return static_cast<float>(std::bit_cast<int8_t>(*p));
-    case DT::kUint8:
-      return static_cast<float>(*p);
-    case DT::kInt16: {
-      uint16_t bits = static_cast<uint16_t>(p[0]) | static_cast<uint16_t>(static_cast<uint16_t>(p[1]) << 8);
-      return static_cast<float>(std::bit_cast<int16_t>(bits));
-    }
-    case DT::kUint16:
-      return static_cast<float>(static_cast<uint16_t>(p[0]) | static_cast<uint16_t>(static_cast<uint16_t>(p[1]) << 8));
-    case DT::kInt32: {
-      uint32_t bits = static_cast<uint32_t>(p[0]) | (static_cast<uint32_t>(p[1]) << 8) |
-                      (static_cast<uint32_t>(p[2]) << 16) | (static_cast<uint32_t>(p[3]) << 24);
-      return static_cast<float>(std::bit_cast<int32_t>(bits));
-    }
-    case DT::kUint32: {
-      uint32_t bits = static_cast<uint32_t>(p[0]) | (static_cast<uint32_t>(p[1]) << 8) |
-                      (static_cast<uint32_t>(p[2]) << 16) | (static_cast<uint32_t>(p[3]) << 24);
-      return static_cast<float>(bits);
-    }
-    case DT::kFloat32:
-      return readFloat32At(p);
-    case DT::kFloat64:
-      return static_cast<float>(readFloat64At(p));
-    case DT::kUnknown:
-    default:
-      return 0.0f;
-  }
-}
-
-const PointField* findField(const std::vector<PointField>& fields, std::string_view name) {
-  const auto it =
-      std::find_if(fields.begin(), fields.end(), [name](const auto& f) { return std::string_view(f.name) == name; });
-  return it == fields.end() ? nullptr : &*it;
-}
-
-DecodedPointCloud convertCanonical(const PointCloud& src, std::string_view scalar_field) {
-  DecodedPointCloud out;
-  out.stamp = std::chrono::nanoseconds(src.timestamp_ns);
-  out.frame_id = src.frame_id;
-
-  if (src.is_bigendian) {
-    qCWarning(lcPointCloudLayer) << "PointCloud is big-endian; not supported, dropping";
-    return out;
-  }
-  const std::size_t n = static_cast<std::size_t>(src.width) * static_cast<std::size_t>(src.height);
-  if (n == 0 || src.point_step == 0 || src.data.empty()) {
-    return out;
-  }
-  const std::size_t step = src.point_step;
-  if (src.data.size() < n * step) {
-    qCWarning(lcPointCloudLayer) << "PointCloud data buffer too small:" << src.data.size() << "<" << n * step;
-    return out;
-  }
-  const PointField* xf = findField(src.fields, "x");
-  const PointField* yf = findField(src.fields, "y");
-  const PointField* zf = findField(src.fields, "z");
-  if (!xf || !yf || !zf) {
-    qCWarning(lcPointCloudLayer) << "PointCloud missing x/y/z fields";
-    return out;
-  }
-
-  auto readCoord = [&](const PointField* f, const uint8_t* base) {
-    if (f->datatype == PointField::Datatype::kFloat32) {
-      return readFloat32At(base + f->offset);
-    }
-    if (f->datatype == PointField::Datatype::kFloat64) {
-      return static_cast<float>(readFloat64At(base + f->offset));
-    }
-    return 0.0f;
-  };
-
-  out.positions.reserve(n);
-  for (std::size_t i = 0; i < n; ++i) {
-    const uint8_t* base = src.data.data() + i * step;
-    out.positions.push_back(glm::vec3{readCoord(xf, base), readCoord(yf, base), readCoord(zf, base)});
-  }
-
-  if (!scalar_field.empty()) {
-    const PointField* sf = findField(src.fields, scalar_field);
-    if (sf != nullptr) {
-      out.scalar.reserve(n);
-      for (std::size_t i = 0; i < n; ++i) {
-        const uint8_t* base = src.data.data() + i * step;
-        out.scalar.push_back(readScalarAt(base + sf->offset, sf->datatype));
-      }
-      out.scalar_field_name = std::string(scalar_field);
-    }
-  }
-  return out;
-}
 
 std::pair<float, float> computeScalarRange(const std::vector<float>& scalar) {
   float lo = std::numeric_limits<float>::max();
@@ -381,20 +272,32 @@ bool PointCloudLayer::attach(const PJ::SceneLayerContext& ctx) {
     return false;
   }
   PJ::ObjectStore& store = ctx_.session->objectStore();
+  ts_first_.reset();  // re-derive: a detachless re-attach (reload path) may see an emptied store
   if (store.entryCount(topic_id_) > 0) {
     ts_first_ = store.timeRange(topic_id_).first;
   }
+  // A reload swaps this topic's bytes under a stable ObjectTopicId, so every
+  // cached sample identity must reset with them (see onDatasetAboutToBeReplaced).
+  // disconnect first: the reload path re-attaches without an intervening detach.
+  disconnect(reload_connection_);
+  reload_connection_ = connect(
+      ctx_.session, &PJ::SessionManager::datasetAboutToBeReplaced, this, &PointCloudLayer::onDatasetAboutToBeReplaced);
   if (!bootstrap()) {
     qCWarning(lcPointCloudLayer) << "attach: bootstrap failed for topic_id=" << topic_id_.id;
     // Continue anyway — render will silently skip until a sample arrives.
   }
-  if (ts_first_ != 0) {
-    renderAt(ts_first_);
+  if (ts_first_.has_value()) {
+    renderAt(*ts_first_);
   }
   return true;
 }
 
 void PointCloudLayer::detach() {
+  disconnect(reload_connection_);
+  reload_connection_ = {};
+  drop_inflight_result_ = false;
+  ts_first_.reset();
+  decoded_at_ns_.reset();
   if (decode_watcher_ != nullptr) {
     decode_watcher_->disconnect(this);  // a late result must not touch a detached layer
     decode_watcher_->cancel();
@@ -422,12 +325,11 @@ void PointCloudLayer::setFixedFrame(const QString& frame) {
     return;
   }
   fixed_frame_ = frame;
-  // X/Y/Z color is world-frame anchored; switching the fixed-frame
-  // invalidates the cached range. Refit immediately so a stopped
-  // tracker still updates its colormap — otherwise the cloud paints
-  // with the previous frame's normalization until the next tick.
-  range_dirty_ = true;
-  refreshNow();
+  // Scalars are source-frame payload bytes (read in convertCanonical); the fixed-frame
+  // TF is applied only in the vertex shader. Switching the fixed frame therefore cannot
+  // change any scalar or its auto-range — only the rendered transform — so just repaint
+  // so the shader re-runs with the new source->fixed transform; no re-decode/refit needed.
+  emit repaintRequested();
 }
 
 void PointCloudLayer::setTrackerTime(PJ::Timepoint time) {
@@ -448,13 +350,9 @@ void PointCloudLayer::setVisible(bool visible) {
   visible_ = visible;
   cloud_pass_.setVisible(visible);
   emit visibilityChanged(visible);
-  // Un-hiding decodes at the current tracker time so the layer isn't
-  // stuck painting the geometry it had at the moment of hiding (the
-  // dock skips hidden layers in onTrackerTime, so any tracker moves
-  // while hidden are not reflected in the pass's VBO).
-  if (visible) {
-    refreshNow();
-  }
+  // Catch-up on un-hide is the dock's job: SceneDockWidget::setLayerVisible
+  // re-delivers the last tracker time (hidden layers receive no ticks), which
+  // marks tracker_dirty_ so the next paint decodes at the playhead.
   emit repaintRequested();
 }
 
@@ -466,7 +364,8 @@ void PointCloudLayer::render(const ViewParams& view_params, const FrameContext& 
   // Drain a pending tracker move here (coalesced to one decode per painted frame).
   // renderAt's own SampleId guard makes this cheap when the active sample is
   // unchanged. frame_ctx.time and decoded_at_ns_ track the same playhead (the dock
-  // paints at the tracker time); refreshNow() re-decodes from the latter on un-hide.
+  // paints at the tracker time); refreshNow() re-decodes from the latter on
+  // color-field / range changes.
   if (visible_ && tracker_dirty_) {
     tracker_dirty_ = false;
     renderAt(PJ::toRaw(frame_ctx.time));
@@ -941,26 +840,23 @@ void PointCloudLayer::pushCloud(const PointCloud& cloud, SampleId id) {
     // the first cloud that reaches the GPU also reveals the field set.
     populateColorFields(cloud);
   }
-  auto decoded = convertCanonical(cloud, color_field_);
+  ConvertedPointCloud converted = convertCanonical(cloud, color_field_);
+  DecodedPointCloud& decoded = converted.cloud;
 
-  // Cache the source-frame bounds (TF is applied per-render in the shader, so the
-  // decoded positions are in the cloud's own frame). Skip non-finite points.
-  AABB bounds;
-  for (const glm::vec3& p : decoded.positions) {
-    if (std::isfinite(p.x) && std::isfinite(p.y) && std::isfinite(p.z)) {
-      expandAABB(bounds, p);
-    }
-  }
-  world_bounds_ = bounds.valid ? std::optional<AABB>{bounds} : std::nullopt;
+  // convertCanonical accumulates the finite-point AABB in its single decode pass, so the
+  // source-frame bounds come back for free (TF is applied per-render in the shader, so the
+  // decoded positions stay in the cloud's own frame).
+  world_bounds_ = converted.bounds.valid ? std::optional<AABB>{converted.bounds} : std::nullopt;
 
-  if (!decoded.scalar.empty() && auto_range_) {
-    const bool is_spatial = color_field_ == "x" || color_field_ == "y" || color_field_ == "z";
-    if (range_dirty_ || is_spatial) {
-      const auto [lo, hi] = computeScalarRange(decoded.scalar);
-      cloud_pass_.setColormapRange(lo, hi);
-      range_dirty_ = false;
-      emit autoRangeComputed(lo, hi);
-    }
+  // The scalar is read straight from the message bytes in the cloud's source frame; the
+  // fixed-frame TF is applied only in the vertex shader, so changing the fixed frame cannot
+  // change any scalar — even for x/y/z coloring. Recompute the auto-range only when it is
+  // actually dirty (a new color field or a re-enabled auto-range), never per push.
+  if (!decoded.scalar.empty() && auto_range_ && range_dirty_) {
+    const auto [lo, hi] = computeScalarRange(decoded.scalar);
+    cloud_pass_.setColormapRange(lo, hi);
+    range_dirty_ = false;
+    emit autoRangeComputed(lo, hi);
   }
 
   cloud_pass_.setActiveCloud(std::make_shared<DecodedPointCloud>(std::move(decoded)));
@@ -978,22 +874,26 @@ void PointCloudLayer::renderAt(int64_t time_ns) {
   if (!resolved.has_value() || resolved->payload.bytes.empty()) {
     return;
   }
+  const SampleId id{resolved->timestamp, resolved->payload.bytes.size()};
+  // This sample is now the one the tracker wants — set it on EVERY path (also the
+  // raw push and the early-skip below), so a stale in-flight compressed decode of
+  // another sample is classified stale in onDecodeFinished instead of overwriting
+  // a newer cloud on a mixed-mode topic.
+  wanted_ = id;
   // The tracker ticks at ~60 Hz but a topic publishes far slower, so the common case
   // is "same sample, same color field" — skip the whole parse/convert/upload then.
   // range_dirty_ only matters when auto-range will actually recompute in pushCloud.
-  const SampleId id{resolved->timestamp, resolved->payload.bytes.size()};
   if (id == last_pushed_id_ && color_field_ == last_pushed_color_field_ && !(auto_range_ && range_dirty_)) {
     return;
   }
   // Compressed sample already decoded? Re-convert from cache so repaints /
   // color-field changes don't re-run the codec (or even the wrapper parse).
   if (decoded_cache_ && decoded_cache_id_ == id) {
-    wanted_ = id;
     pushCloud(*decoded_cache_, id);
     return;
   }
   if (id == failed_id_) {
-    return;  // known-undecodable sample (bytes are immutable); don't retry at tracker rate
+    return;  // known-undecodable sample; the memo holds until a reload swaps the bytes
   }
   const auto binding = ctx_.session->parserBindingForObjectTopic(topic_id_);
   if (!binding) {
@@ -1047,6 +947,7 @@ void PointCloudLayer::requestDecode(const CompressedPointCloud& cloud, SampleId 
 
 void PointCloudLayer::startDecode(const CompressedPointCloud& cloud, SampleId id) {
   inflight_ = id;
+  ++start_decode_count_;
   // Capture the wrapper by value — its BufferAnchor keeps the compressed bytes alive on
   // the worker. This requires the anchored bytes to be IMMUTABLE, not merely alive:
   // every in-tree producer either deep-copies (canonical codec) or anchors a const
@@ -1057,11 +958,27 @@ void PointCloudLayer::startDecode(const CompressedPointCloud& cloud, SampleId id
   decode_watcher_->setFuture(QtConcurrent::run([snapshot = std::move(snapshot), id]() -> DecodeResult {
     DecodeResult result;
     result.id = id;
-    auto decoded = decodeCompressedPointCloud(snapshot);
-    if (decoded.has_value()) {
-      result.cloud = std::make_shared<PointCloud>(std::move(decoded.value()));
-    } else {
-      result.error = QString::fromStdString(decoded.error());
+    // Exception barrier: decodeCompressedPointCloud is barriered internally, but
+    // the residue here (shared_ptr control block, error-string copy) can still
+    // throw under memory pressure. An exception stored in the future would be
+    // rethrown by decode_watcher_->result() ON THE GUI THREAD and terminate the
+    // app — module policy forbids worker exceptions reaching the GUI thread.
+    try {
+      auto decoded = decodeCompressedPointCloud(snapshot);
+      if (decoded.has_value()) {
+        result.cloud = std::make_shared<PointCloud>(std::move(decoded.value()));
+      } else {
+        result.error = QString::fromStdString(decoded.error());
+      }
+    } catch (const std::bad_alloc&) {
+      result.cloud.reset();
+      result.error = QStringLiteral("out of memory finalizing decoded point cloud");  // no-alloc literal
+    } catch (const std::exception& ex) {
+      result.cloud.reset();
+      result.error = QString::fromUtf8(ex.what());
+    } catch (...) {
+      result.cloud.reset();
+      result.error = QStringLiteral("unknown exception decoding point cloud");
     }
     return result;
   }));
@@ -1070,12 +987,20 @@ void PointCloudLayer::startDecode(const CompressedPointCloud& cloud, SampleId id
 void PointCloudLayer::onDecodeFinished() {
   const DecodeResult result = decode_watcher_->result();
   inflight_ = {};
+  // A dataset reload while this sample decoded means the result holds pre-reload
+  // content whose (timestamp, size) key may alias the new bytes: neither the
+  // cache nor the failure memo may keep it (wanted_ was reset too, so it can
+  // never paint). Still fall through to the pending drain below.
+  const bool drop_result = drop_inflight_result_;
+  drop_inflight_result_ = false;
   // Render this result only if it's still the sample the tracker wants. If the user
   // scrubbed away while it decoded — even back onto a cached frame — it's stale: cache
   // it (cheap, useful on scrub-back) but don't paint it over the live frame.
   const bool is_current = result.id == wanted_;
 
-  if (result.cloud) {
+  if (drop_result) {
+    // Discarded pre-reload result: no cache, no failed_id_, no paint.
+  } else if (result.cloud) {
     decoded_cache_ = result.cloud;
     decoded_cache_id_ = result.id;
     if (available_color_fields_.isEmpty()) {
@@ -1111,13 +1036,37 @@ void PointCloudLayer::onDecodeFinished() {
 }
 
 void PointCloudLayer::refreshNow() {
-  // Decode at the latest tracker time if known, else at ts_first_ (which
-  // is set by bootstrap before any tracker tick fires).
-  const int64_t decoded_raw = PJ::toRaw(decoded_at_ns_);
-  const int64_t t = decoded_raw != 0 ? decoded_raw : ts_first_;
-  if (t != 0) {
-    renderAt(t);
+  // Decode at the latest delivered tracker time, else at the first sample's
+  // stamp (captured in attach). Presence is explicit — 0 ns is a valid stamp,
+  // so a sim-time dataset starting at t=0 still refreshes.
+  if (decoded_at_ns_.has_value()) {
+    renderAt(PJ::toRaw(*decoded_at_ns_));
+  } else if (ts_first_.has_value()) {
+    renderAt(*ts_first_);
   }
+}
+
+void PointCloudLayer::onDatasetAboutToBeReplaced(PJ::DatasetId dataset_id) {
+  if (ctx_.session == nullptr || ctx_.session->objectStore().descriptor(topic_id_).dataset_id != dataset_id) {
+    return;
+  }
+  // replaceDataset keeps the ObjectTopicId stable while swapping the bytes, so a
+  // (timestamp, byte size) key can alias new content: the decode cache could serve
+  // stale points and failed_id_ would permanently refuse a now-valid sample.
+  decoded_cache_.reset();
+  decoded_cache_id_ = {};
+  failed_id_ = {};
+  last_pushed_id_ = {};
+  last_pushed_color_field_.clear();
+  pending_.reset();
+  wanted_ = {};
+  if (inflight_ != SampleId{}) {
+    drop_inflight_result_ = true;  // the in-flight worker is decoding pre-reload bytes
+  }
+  // The signal precedes the swap and replaceDataset runs no event loop, so the
+  // repaint scheduled here paints after the new bytes are in place.
+  tracker_dirty_ = true;
+  emit repaintRequested();
 }
 
 }  // namespace pj::scene3d

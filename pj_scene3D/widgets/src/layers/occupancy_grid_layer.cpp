@@ -111,19 +111,36 @@ bool OccupancyGridLayer::attach(const PJ::SceneLayerContext& ctx) {
   // convention). Absent → base-only mode (each full grid is a keyframe).
   PJ::ObjectStore& store = scene3d_ctx.session->objectStore();
   const auto& desc = store.descriptor(topic_id_);
-  const auto updates_id = store.findTopic(desc.dataset_id, desc.topic_name + "_updates");
-  if (updates_id.has_value()) {
-    updates_topic_ = *updates_id;
-  }
+  updates_topic_ = store.findTopic(desc.dataset_id, desc.topic_name + "_updates");
 
+  resetStreamingState();
   grid_pass_.setColorScheme(color_scheme_);
   grid_pass_.setOpacity(opacity_);
-  return bootstrap();
+  // Streaming-tolerant attach, matching PointCloudLayer/SceneEntitiesLayer: a grid
+  // topic can be attached before its first sample lands (layout restore at stream
+  // start, catalog drag). bootstrap() only pre-warms source_frame_ from the first
+  // keyframe — renderAt() self-heals it later — so a failure must NOT drop the
+  // layer (SceneDockWidget::attach discards on false). renderAt no-ops on an empty
+  // store, so we return true as long as session + parser binding exist.
+  if (!bootstrap()) {
+    qCWarning(lcOccGrid) << "attach: bootstrap failed for occupancy-grid topic" << topic_id_.id
+                         << "— render will skip until a sample arrives";
+  }
+  return true;
 }
 
 void OccupancyGridLayer::detach() {
   grid_pass_.clearGrid();
   updates_topic_.reset();
+  resetStreamingState();
+}
+
+void OccupancyGridLayer::resetStreamingState() {
+  base_cache_.reset();
+  base_cache_uid_ = {};
+  updates_cursor_ = {};
+  last_consumed_time_.reset();
+  reconstructor_.invalidate();
 }
 
 bool OccupancyGridLayer::bootstrap() {
@@ -167,11 +184,57 @@ void OccupancyGridLayer::renderAt(int64_t time_ns) {
                                                           : PJ::SessionManager::ParserBinding{};
   PJ::ObjectStore& store = ctx_.session->objectStore();
 
+  // Retroactive-ingest check (must run BEFORE reconstructAt). The reconstructor's
+  // forward path consumes only (last_t_, t] and assumes immutable history, but the
+  // live drive follows the fastest topic's edge — an update can be ingested later
+  // with ts <= the already-consumed time and would be skipped forever. Per-topic
+  // entries are appended in non-decreasing ts order with process-globally
+  // increasing UIDs, so checking the FIRST entry past the cursor suffices: if its
+  // ts is at-or-before the high-water consumed time, the timeline changed
+  // retroactively → discard all reconstructor state (snapshots may embed the
+  // missed window too) and rebuild from base + full replay. Conservative: a
+  // spurious invalidate only costs one full rebuild, never correctness.
+  PJ::SequentialUID cursor_candidate = updates_cursor_;
+  if (updates_topic_.has_value()) {
+    // Candidate for the post-reconstruct cursor: the highest UID with ts <= t as
+    // of NOW (UID order == ts order within a topic, so this is latestAt's entry).
+    // Captured pre-reconstruct: entries racing in mid-reconstruct keep UIDs above
+    // it and get re-examined (worst case re-applied via invalidate) next tick.
+    if (const auto consumed = store.latestAt(*updates_topic_, time_ns); consumed.has_value()) {
+      cursor_candidate = std::max(cursor_candidate, consumed->sequential_uid);
+    }
+    if (last_consumed_time_.has_value()) {
+      const PJ::SequentialUID first_new = store.nextUIDAfter(*updates_topic_, updates_cursor_);
+      if (first_new.valid()) {
+        const auto first_entry = store.at(*updates_topic_, first_new);
+        if (first_entry.has_value() && first_entry->timestamp <= *last_consumed_time_) {
+          // Snapshot-preserving rewind instead of a from-base full rebuild: under
+          // a latched base (one keyframe, then only updates) every late update on
+          // a costmap whose stamps trail a faster topic's live edge would trigger
+          // invalidate() + a full (base_ts, t] replay — cumulatively quadratic in
+          // session length. invalidateAfter() keeps the snapshots strictly before
+          // the late entry, rewinds last_t_ to the nearest one, and bounds the
+          // replay to the window since first_entry->timestamp.
+          reconstructor_.invalidateAfter(first_entry->timestamp);
+          // The detector's frame of reference moves to this render's t (the cursor
+          // below covers every entry with ts <= t). Keeping a stale high-water
+          // could re-flag a not-yet-consumed entry every tick (rebuild loop).
+          last_consumed_time_.reset();
+        }
+      }
+    }
+  }
+
   // base_at(t): the latest full grid with ts <= t, decoded to sdk::OccupancyGrid.
+  // Memoized on the entry's SequentialUID: the common case is the same keyframe
+  // tick after tick, and re-parsing deep-copies the full cell payload each time.
   auto base_at = [this, &store, &binding](PJ::Timestamp t) -> std::optional<PJ::sdk::OccupancyGrid> {
     auto entry = store.latestAt(topic_id_, t);
     if (!entry.has_value() || entry->payload.bytes.empty()) {
       return std::nullopt;
+    }
+    if (base_cache_.has_value() && entry->sequential_uid == base_cache_uid_) {
+      return base_cache_;  // same store entry → reuse the parsed grid
     }
     auto obj = parseLocked(binding, entry->timestamp, entry->payload);
     if (!obj.has_value()) {
@@ -181,10 +244,17 @@ void OccupancyGridLayer::renderAt(int64_t time_ns) {
     if (grid == nullptr) {
       return std::nullopt;
     }
-    return *grid;  // copy carries the anchor → bytes stay alive past the call
+    base_cache_uid_ = entry->sequential_uid;
+    base_cache_ = *grid;  // copy carries the anchor → bytes stay alive past the call
+    return base_cache_;
   };
 
-  // updates_in(lo, hi): updates with lo < ts <= hi, ascending.
+  // updates_in(lo, hi): updates with lo < ts <= hi, ascending. Traverses the
+  // topic by stable SequentialUID (the SceneEntitiesLayer::applyEntriesAfter
+  // pattern): raw indices shift when the streaming import thread evicts from the
+  // front mid-iteration, skipping or double-applying patches. UIDs are sparse
+  // per topic — step only via nextUIDAfter, never by incrementing. UID order ==
+  // ts order within a topic, so the walk can stop at the first entry past hi.
   auto updates_in = [this, &store, &updates_binding](
                         PJ::Timestamp lo, PJ::Timestamp hi) -> std::vector<PJ::sdk::OccupancyGridUpdate> {
     std::vector<PJ::sdk::OccupancyGridUpdate> out;
@@ -192,17 +262,21 @@ void OccupancyGridLayer::renderAt(int64_t time_ns) {
       return out;
     }
     const PJ::ObjectTopicId id = *updates_topic_;
-    const auto hi_idx = store.indexAt(id, hi);  // latest entry with ts <= hi
-    if (!hi_idx.has_value()) {
-      return out;  // nothing at or before hi
-    }
-    const auto lo_idx = store.indexAt(id, lo);  // latest with ts <= lo (excluded)
-    const std::size_t start = lo_idx.has_value() ? *lo_idx + 1 : 0;
-    const std::size_t count = store.entryCount(id);
-    for (std::size_t i = start; i <= *hi_idx && i < count; ++i) {
-      auto entry = store.at(id, i);
-      if (!entry.has_value() || entry->payload.bytes.empty()) {
-        continue;
+    // Boundary: the newest entry with ts <= lo; everything past its UID is the
+    // (lo, ...] suffix. Nullopt (empty topic, or all entries past lo) starts the
+    // walk from the first retained entry.
+    const auto boundary = store.latestAt(id, lo);
+    const PJ::SequentialUID start_after = boundary.has_value() ? boundary->sequential_uid : PJ::SequentialUID{};
+    for (PJ::SequentialUID uid = store.nextUIDAfter(id, start_after); uid.valid(); uid = store.nextUIDAfter(id, uid)) {
+      auto entry = store.at(id, uid);
+      if (!entry.has_value()) {
+        continue;  // evicted between the UID step and the resolve
+      }
+      if (entry->timestamp > hi) {
+        break;  // ts is non-decreasing along the UID walk — past the window
+      }
+      if (entry->timestamp <= lo || entry->payload.bytes.empty()) {
+        continue;  // equal-ts run appended at the boundary after the resolve
       }
       auto obj = parseLocked(updates_binding, entry->timestamp, entry->payload);
       if (!obj.has_value()) {
@@ -218,6 +292,14 @@ void OccupancyGridLayer::renderAt(int64_t time_ns) {
   };
 
   const GridUpdate update = reconstructor_.reconstructAt(time_ns, base_at, updates_in);
+  // Advance the retroactive-ingest cursor. Safe even on an Empty result: entries
+  // it covers are either applied, or re-read in full by the epoch rebuild the
+  // next successful reconstructAt performs (the window always restarts at the
+  // base keyframe after an invalidate).
+  updates_cursor_ = cursor_candidate;
+  last_consumed_time_ =
+      last_consumed_time_.has_value() ? std::max(*last_consumed_time_, PJ::Timestamp{time_ns}) : time_ns;
+
   const ReconstructedGrid& grid = update.grid;
   if (grid.empty()) {
     grid_pass_.clearGrid();
@@ -229,22 +311,25 @@ void OccupancyGridLayer::renderAt(int64_t time_ns) {
     emit fallbackFramesChanged(fallbackFrames());
   }
   // Anything but an incremental forward step (new epoch / backward seek) re-uploads
-  // the whole texture; an incremental update uploads just the changed rects.
+  // the whole texture; an incremental update uploads just the changed rects. The
+  // pass discards dirty_rects on a full rebuild, so only materialize the vector
+  // (potentially large after a backward-seek replay) on the incremental path.
+  const bool incremental = update.kind == GridUpdate::Kind::Incremental;
   grid_pass_.setGrid(
-      grid, update.kind != GridUpdate::Kind::Incremental,
-      std::vector<CellRect>(update.dirty.begin(), update.dirty.end()));
+      grid, !incremental,
+      incremental ? std::vector<CellRect>(update.dirty.begin(), update.dirty.end()) : std::vector<CellRect>{});
 }
 
 void OccupancyGridLayer::setFixedFrame(const QString& frame) {
   // The grid is frame-relative; the render pass places it per-frame via its
   // FrameContext lookup against the fixed frame, so no re-decode is needed —
-  // just request a paint.
-  fixed_frame_ = frame;
+  // just request a paint. The layer keeps no copy of the frame.
+  Q_UNUSED(frame);
   emit repaintRequested();
 }
 
 void OccupancyGridLayer::setTrackerTime(PJ::Timepoint time) {
-  tracker_time_ = time;
+  Q_UNUSED(time);  // render() reads frame_ctx.time via the tracker_dirty_ path
   // Defer the reconstruction to render() — see tracker_dirty_. Also stops a
   // hidden layer from reconstructing on every tick (render() skips it instead).
   tracker_dirty_ = true;
@@ -258,6 +343,8 @@ void OccupancyGridLayer::setVisible(bool visible) {
   visible_ = visible;
   grid_pass_.setVisible(visible);
   emit visibilityChanged(visible);
+  // Catch-up on un-hide is the dock's job: SceneDockWidget::setLayerVisible
+  // re-delivers the last tracker time, marking tracker_dirty_ for the next paint.
   emit repaintRequested();
 }
 

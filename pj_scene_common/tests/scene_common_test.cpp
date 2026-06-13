@@ -318,12 +318,77 @@ TEST(SceneDockWidgetTest, TrackerTimeClampsToLayerUnionAndForwardsToVisibleLayer
   EXPECT_TRUE(layer_b->trackerTimesNs().empty());
 
   layer_a->clearTrackerTimes();
+  layer_b->clearTrackerTimes();
   dock.setLayerVisible(topic(1), false);
   dock.setLayerVisible(topic(2), true);
+  // Un-hiding topic(2) re-delivers the last tracker time (100ns) clamped to its
+  // own range [300,400] -> 300, the M.25 catch-up. The subsequent tick clamps
+  // 500ns to the union's upper bound (400) and reaches only the visible layer.
   dock.onTrackerTime(500.0 / 1000000000.0);
 
   EXPECT_TRUE(layer_a->trackerTimesNs().empty());
+  EXPECT_EQ(layer_b->trackerTimesNs(), (std::vector<int64_t>{300, 400}));
+}
+
+// M.25: a hidden layer receives no tracker ticks (onTrackerTime skips it), so
+// it would otherwise repaint the geometry it held at the moment of hiding. On
+// un-hide the dock must re-deliver the current playhead, clamped to that layer's
+// own range exactly as registerLayer seeds it, so the layer catches up.
+TEST(SceneDockWidgetTest, UnhideRedeliversLastTrackerTimeClampedToLayerRange) {
+  g_fake_layer_configs.clear();
+  // layer_a spans the whole window; layer_b's range is a strict subset. This lets
+  // the un-hide clamp (per-LAYER) differ from onTrackerTime's clamp (per-UNION).
+  g_fake_layer_configs[1] = FakeLayerConfig{std::pair<int64_t, int64_t>{100, 500}};
+  g_fake_layer_configs[2] = FakeLayerConfig{std::pair<int64_t, int64_t>{300, 400}};
+  FakeSceneDock dock;
+  ASSERT_TRUE(dock.addTopic(topic(1), PJ::sdk::BuiltinObjectType::kPointCloud, QStringLiteral("cloud_a")));
+  ASSERT_TRUE(dock.addTopic(topic(2), PJ::sdk::BuiltinObjectType::kPointCloud, QStringLiteral("cloud_b")));
+  auto* layer_a = dynamic_cast<FakeLayer*>(dock.layerFor(topic(1)));
+  auto* layer_b = dynamic_cast<FakeLayer*>(dock.layerFor(topic(2)));
+  ASSERT_NE(layer_a, nullptr);
+  ASSERT_NE(layer_b, nullptr);
+
+  // Hide topic(2), then scrub past its range while it is hidden: it must NOT
+  // receive that tick (it is the stale-geometry condition the redelivery fixes).
+  dock.setLayerVisible(topic(2), false);
+  layer_a->clearTrackerTimes();
+  layer_b->clearTrackerTimes();
+  // Scrub above the union max; onTrackerTime clamps to the UNION ([100,500]) ->
+  // 500 reaches the still-visible layer_a, and the hidden layer_b gets nothing.
+  // (Clamping to a round bound also sidesteps the seconds<->ns double rounding.)
+  dock.onTrackerTime(900.0 / 1'000'000'000.0);
+  EXPECT_EQ(layer_a->trackerTimesNs(), (std::vector<int64_t>{500}));
+  EXPECT_TRUE(layer_b->trackerTimesNs().empty());
+
+  // Un-hiding catches up: the playhead (last_tracker_ == 500) is clamped to
+  // layer_b's OWN range [300,400] -> 400 and re-delivered so it leaves hide-time
+  // geometry. The 400 (not 500) proves the redelivery uses the per-layer clamp.
+  layer_b->clearTrackerTimes();
+  dock.setLayerVisible(topic(2), true);
   EXPECT_EQ(layer_b->trackerTimesNs(), (std::vector<int64_t>{400}));
+
+  // Idempotent: re-hiding then un-hiding with no intervening tick re-delivers the
+  // same time once (no double-deliver), and a no-op setVisible(true) does nothing.
+  layer_b->clearTrackerTimes();
+  dock.setLayerVisible(topic(2), true);  // already visible: no redelivery
+  EXPECT_TRUE(layer_b->trackerTimesNs().empty());
+}
+
+// M.25 edge: a layer hidden before the first tracker tick still catches up on
+// un-hide by being seeded with its own first frame (last_tracker_ is nullopt, so
+// the redelivery falls back to the layer's range minimum, like registerLayer).
+TEST(SceneDockWidgetTest, UnhideBeforeAnyTrackerTickSeedsLayerFirstFrame) {
+  g_fake_layer_configs.clear();
+  g_fake_layer_configs[1] = FakeLayerConfig{std::pair<int64_t, int64_t>{700, 900}};
+  FakeSceneDock dock;
+  ASSERT_TRUE(dock.addTopic(topic(1), PJ::sdk::BuiltinObjectType::kPointCloud, QStringLiteral("cloud")));
+  auto* layer = dynamic_cast<FakeLayer*>(dock.layerFor(topic(1)));
+  ASSERT_NE(layer, nullptr);
+
+  dock.setLayerVisible(topic(1), false);
+  layer->clearTrackerTimes();
+  dock.setLayerVisible(topic(1), true);
+  EXPECT_EQ(layer->trackerTimesNs(), (std::vector<int64_t>{700}));  // range minimum, no tick yet
 }
 
 TEST(SceneDockWidgetTest, XmlSaveLoadRoundTripsLayersOrderVisibilityAndPayload) {

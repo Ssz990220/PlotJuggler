@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cstring>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <span>
@@ -103,6 +104,16 @@ std::vector<std::string> dracoFieldNames(
   return names;
 }
 
+// row_step = point_step * width, computed in uint64 and clamped to UINT32_MAX so an
+// adversarial width/point_step product cannot silently wrap the uint32 field (L.10).
+// Real clouds never approach this; the clamp keeps the published canonical object's
+// row_step honest for any out-of-module consumer that addresses rows by it.
+uint32_t rowStepFor(uint32_t point_step, uint32_t width) {
+  const uint64_t row_step = static_cast<uint64_t>(point_step) * static_cast<uint64_t>(width);
+  return row_step > std::numeric_limits<uint32_t>::max() ? std::numeric_limits<uint32_t>::max()
+                                                         : static_cast<uint32_t>(row_step);
+}
+
 }  // namespace
 
 PJ::Expected<PJ::sdk::PointCloud> decodeCloudini(const PJ::sdk::CompressedPointCloud& cloud) {
@@ -140,7 +151,7 @@ PJ::Expected<PJ::sdk::PointCloud> decodeCloudini(const PJ::sdk::CompressedPointC
     // so mapping a (malformed) height==0 to 1 would claim width points backed by 0 bytes.
     out.height = info.height;
     out.point_step = info.point_step;
-    out.row_step = info.point_step * info.width;
+    out.row_step = rowStepFor(info.point_step, info.width);
     out.is_bigendian = false;
     out.is_dense = true;
 
@@ -232,7 +243,7 @@ PJ::Expected<PJ::sdk::PointCloud> decodeDraco(const PJ::sdk::CompressedPointClou
     out.width = num_points;
     out.height = 1;
     out.point_step = point_step;
-    out.row_step = point_step * num_points;
+    out.row_step = rowStepFor(point_step, num_points);
     out.is_bigendian = false;
     out.is_dense = true;
     out.fields = std::move(fields);

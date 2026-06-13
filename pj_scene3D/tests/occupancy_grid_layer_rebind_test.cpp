@@ -18,9 +18,9 @@
 #include <utility>
 #include <vector>
 
+#include "mock_parser_support.h"
 #include "pj_base/builtin/builtin_object.hpp"
 #include "pj_base/builtin/occupancy_grid.hpp"
-#include "pj_plugins/host/message_parser_handle.hpp"
 #include "pj_plugins/sdk/message_parser_plugin_base.hpp"
 #include "pj_runtime/SessionManager.h"
 #include "pj_runtime/Time.h"
@@ -29,50 +29,27 @@
 
 namespace {
 
+using namespace pj::scene3d::test;
+
 constexpr std::string_view kSchema = "mock/occupancy_grid";
 
 std::atomic<int> g_first_parser_calls{0};
 std::atomic<int> g_second_parser_calls{0};
+std::atomic<int> g_streaming_parser_calls{0};
 
-// Minimal parser producing a fixed 1x1 grid; bumps `counter` per parseObject.
-class CountingGridParser : public PJ::MessageParserPluginBase {
- public:
-  explicit CountingGridParser(std::atomic<int>* counter) {
-    registerSchemaHandler(
-        kSchema,
-        PJ::sdk::SchemaHandler{
-            .object_type = PJ::sdk::BuiltinObjectType::kOccupancyGrid,
-            .parse_scalars = {},
-            .parse_object =
-                [counter](PJ::Timestamp ts, PJ::sdk::PayloadView /*payload*/) -> PJ::Expected<PJ::sdk::ObjectRecord> {
-              counter->fetch_add(1);
-              static const uint8_t kCell[1] = {0};
-              PJ::sdk::OccupancyGrid grid;
-              grid.timestamp_ns = ts;
-              grid.frame_id = "map";
-              grid.resolution = 0.05;
-              grid.width = 1;
-              grid.height = 1;
-              grid.data = PJ::Span<const uint8_t>(kCell, 1);
-              return PJ::sdk::ObjectRecord{.ts = ts, .object = grid};
-            },
-        });
-  }
-};
-
-// Each call site must pass a distinct lambda type: vtableWithCreate() holds
-// one `static` vtable per CreateFn instantiation, so a shared plain function
-// pointer type would latch the first create function for both handles.
-template <typename CreateFn>
-std::unique_ptr<PJ::MessageParserHandle> makeBoundHandle(CreateFn create_fn) {
-  static constexpr const char* kManifest =
-      R"({"id":"counting-grid-parser","name":"Counting Grid Parser","version":"1.0.0","encoding":["mock"]})";
-  auto handle =
-      std::make_unique<PJ::MessageParserHandle>(PJ::MessageParserPluginBase::vtableWithCreate(create_fn, kManifest));
-  EXPECT_TRUE(handle->valid());
-  const auto bound = handle->bindSchema(kSchema, {});
-  EXPECT_TRUE(bound.has_value());
-  return handle;
+// Object-construction body for the mock grid parser: a fixed 1x1 grid. Counting
+// is handled by CountingObjectParser, so this is just the emit half (same
+// signature as SchemaHandler::parse_object).
+PJ::Expected<PJ::sdk::ObjectRecord> emitGrid(PJ::Timestamp ts, PJ::sdk::PayloadView /*payload*/) {
+  static const uint8_t kCell[1] = {0};
+  PJ::sdk::OccupancyGrid grid;
+  grid.timestamp_ns = ts;
+  grid.frame_id = "map";
+  grid.resolution = 0.05;
+  grid.width = 1;
+  grid.height = 1;
+  grid.data = PJ::Span<const uint8_t>(kCell, 1);
+  return PJ::sdk::ObjectRecord{.ts = ts, .object = grid};
 }
 
 TEST(OccupancyGridLayerRebind, ReloadSwapsParserWithoutTouchingStaleOne) {
@@ -86,8 +63,10 @@ TEST(OccupancyGridLayerRebind, ReloadSwapsParserWithoutTouchingStaleOne) {
   ASSERT_TRUE(topic_id.has_value());
   ASSERT_TRUE(store.pushOwned(*topic_id, 100, std::vector<uint8_t>{0x01}).has_value());
 
-  session.registerObjectTopicParser(
-      *topic_id, makeBoundHandle([]() noexcept -> void* { return new CountingGridParser(&g_first_parser_calls); }));
+  session.registerObjectTopicParser(*topic_id, makeBoundHandle(kSchema, []() noexcept -> void* {
+    return new CountingObjectParser(
+        kSchema, PJ::sdk::BuiltinObjectType::kOccupancyGrid, &g_first_parser_calls, &emitGrid);
+  }));
 
   pj::scene3d::Scene3DLayerContext ctx;
   ctx.session = &session;
@@ -105,8 +84,10 @@ TEST(OccupancyGridLayerRebind, ReloadSwapsParserWithoutTouchingStaleOne) {
   // Simulate the same-file reload: replaceDataset() re-registers the surviving
   // topic's parser under its stable id, overwriting the slot and dropping the
   // old handle.
-  session.registerObjectTopicParser(
-      *topic_id, makeBoundHandle([]() noexcept -> void* { return new CountingGridParser(&g_second_parser_calls); }));
+  session.registerObjectTopicParser(*topic_id, makeBoundHandle(kSchema, []() noexcept -> void* {
+    return new CountingObjectParser(
+        kSchema, PJ::sdk::BuiltinObjectType::kOccupancyGrid, &g_second_parser_calls, &emitGrid);
+  }));
 
   const int stale_calls_before = g_first_parser_calls.load();
   layer.setTrackerTime(PJ::fromRaw(100));
@@ -115,6 +96,53 @@ TEST(OccupancyGridLayerRebind, ReloadSwapsParserWithoutTouchingStaleOne) {
   EXPECT_EQ(g_first_parser_calls.load(), stale_calls_before)
       << "layer called the replaced (freed-in-production) parser after the reload swap";
   EXPECT_GE(g_second_parser_calls.load(), 1) << "layer did not rebind to the re-registered parser";
+}
+
+// M.21/M.22: a grid topic attached before its first sample (layout restore at
+// stream start, catalog drag onto a live session) must NOT be dropped. attach()
+// returns true as long as session + parser binding exist; bootstrap failing on
+// an empty store is a warn-and-continue, and the layer self-heals once a sample
+// lands. The sibling pointcloud/scene-entities layers already behave this way.
+TEST(OccupancyGridLayerStreamingAttach, AttachSucceedsBeforeFirstSampleAndSelfHeals) {
+  g_streaming_parser_calls.store(0);
+
+  PJ::SessionManager session;
+  PJ::ObjectStore& store = session.objectStore();
+
+  PJ::ObjectTopicDescriptor desc;
+  desc.dataset_id = 1;
+  desc.topic_name = "/map";
+  const auto topic_id = store.registerTopic(desc);
+  ASSERT_TRUE(topic_id.has_value());
+
+  // Parser registered, but NO sample pushed yet — the streaming-start case.
+  // The create function must be non-capturing (a plain fn ptr for vtableWithCreate),
+  // so it routes through a file-scope counter rather than a captured local.
+  session.registerObjectTopicParser(*topic_id, makeBoundHandle(kSchema, []() noexcept -> void* {
+    return new CountingObjectParser(
+        kSchema, PJ::sdk::BuiltinObjectType::kOccupancyGrid, &g_streaming_parser_calls, &emitGrid);
+  }));
+
+  pj::scene3d::Scene3DLayerContext ctx;
+  ctx.session = &session;
+  pj::scene3d::OccupancyGridLayer layer(*topic_id, QStringLiteral("map"));
+  ASSERT_TRUE(layer.attach(ctx)) << "attach must tolerate an empty store and keep the layer";
+  EXPECT_EQ(g_streaming_parser_calls.load(), 0) << "bootstrap on an empty store must not parse anything";
+
+  // A render before any sample is a no-op (empty reconstruction), not a crash.
+  layer.setTrackerTime(PJ::fromRaw(100));
+  layer.renderAtForTest(100);
+  EXPECT_TRUE(layer.reconstructedGridForTest().empty());
+
+  // First sample arrives post-attach: the layer self-heals on the next render.
+  ASSERT_TRUE(store.pushOwned(*topic_id, 100, std::vector<uint8_t>{0x01}).has_value());
+  layer.setTrackerTime(PJ::fromRaw(100));
+  layer.renderAtForTest(100);
+
+  EXPECT_GE(g_streaming_parser_calls.load(), 1) << "layer did not decode the first sample after it arrived";
+  const auto& grid = layer.reconstructedGridForTest();
+  EXPECT_FALSE(grid.empty());
+  EXPECT_EQ(grid.frame_id, "map");
 }
 
 }  // namespace

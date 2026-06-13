@@ -141,17 +141,21 @@ void SceneDockWidget::registerLayer(int64_t key, std::unique_ptr<ISceneLayer> la
   draw_order_.push_back(key);
 
   if (layer_raw->info().visible) {
-    const auto range = layer_raw->timeRange();
-    const PJ::Timepoint first = range.min;
-    const PJ::Timepoint last = range.max;
-    if (last_tracker_.has_value()) {
-      const PJ::Timepoint seed = (last >= first) ? std::clamp(*last_tracker_, first, last) : *last_tracker_;
-      layer_raw->setTrackerTime(seed);
-    } else if (last >= first) {
-      // No tracker tick yet: deliberately show the layer's first frame instead
-      // of fabricating a time (0 is a valid timestamp; absence is explicit).
-      layer_raw->setTrackerTime(first);
-    }
+    seedLayerTrackerTime(layer_raw);
+  }
+}
+
+void SceneDockWidget::seedLayerTrackerTime(ISceneLayer* layer) {
+  const auto range = layer->timeRange();
+  const PJ::Timepoint first = range.min;
+  const PJ::Timepoint last = range.max;
+  if (last_tracker_.has_value()) {
+    const PJ::Timepoint seed = (last >= first) ? std::clamp(*last_tracker_, first, last) : *last_tracker_;
+    layer->setTrackerTime(seed);
+  } else if (last >= first) {
+    // No tracker tick yet: deliberately show the layer's first frame instead
+    // of fabricating a time (0 is a valid timestamp; absence is explicit).
+    layer->setTrackerTime(first);
   }
 }
 
@@ -215,6 +219,13 @@ void SceneDockWidget::setLayerVisible(ObjectTopicId topic_id, bool visible) {
   const auto old_it = layer_visibility_cache_.find(key);
   const bool old_visible = old_it != layer_visibility_cache_.end() ? old_it->second : layer->info().visible;
   layer->setVisible(visible);
+  // Hidden layers receive no tracker ticks (onTrackerTime skips them), so on
+  // un-hide re-deliver the current playhead clamped to this layer's range (same
+  // seeding as registerLayer): the layer catches up instead of repainting the
+  // geometry it held at the moment of hiding.
+  if (visible && !old_visible) {
+    seedLayerTrackerTime(layer);
+  }
   const auto new_it = layer_visibility_cache_.find(key);
   if (new_it == layer_visibility_cache_.end() || new_it->second == old_visible) {
     recordLayerVisibility(topic_id, visible);

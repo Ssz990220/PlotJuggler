@@ -51,6 +51,9 @@ class SceneDockWidget : public QWidget, public IDataWidget, public IObjectViewer
   bool addTopic(ObjectTopicId topic_id, sdk::BuiltinObjectType object_type, const QString& title);
 
   void removeTopic(ObjectTopicId topic_id);
+  /// Un-hiding also re-delivers the last tracker time to the layer (hidden
+  /// layers receive no tracker ticks), so it catches up to the playhead instead
+  /// of repainting the geometry it held at the moment of hiding.
   void setLayerVisible(ObjectTopicId topic_id, bool visible);
 
   /// Applies a partial or complete draw order, appending omitted layers after it.
@@ -179,6 +182,13 @@ class SceneDockWidget : public QWidget, public IDataWidget, public IObjectViewer
   void wireLayerSignals(ISceneLayer* layer, ObjectTopicId topic_id);
   /// Records a constructed layer in the draw order and seeds its tracker time.
   void registerLayer(int64_t key, std::unique_ptr<ISceneLayer> layer);
+  /// Delivers the current playhead to a layer, clamped to that layer's own
+  /// range (a spanning layer bounds both ends; a latched one-shot layer keeps
+  /// its lone stamp). Used both when a layer is first registered and when it is
+  /// un-hidden, since hidden layers receive no tracker ticks and would otherwise
+  /// repaint the geometry they held at the moment of hiding. No-op when no
+  /// tracker tick has arrived yet and the layer has no usable range.
+  void seedLayerTrackerTime(ISceneLayer* layer);
 
   std::unordered_map<int64_t, std::unique_ptr<ISceneLayer>> layers_;
   std::vector<int64_t> draw_order_;

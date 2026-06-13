@@ -270,9 +270,11 @@ bool SceneEntitiesLayer::attach(const PJ::SceneLayerContext& ctx) {
     qCWarning(lcSceneEntitiesLayer) << "attach: bootstrap failed for topic_id=" << topic_id_.id;
     // Continue anyway — render will silently skip until a sample arrives.
   }
-  if (ts_first_ != 0) {
-    renderAt(ts_first_);
-    rebuildModelStateAt(PJ::fromRaw(ts_first_));
+  // Seed only when a first sample actually exists; gate on presence, not on a
+  // 0 sentinel (t=0 is a valid first timestamp under ROS sim time).
+  if (ts_first_.has_value()) {
+    renderAt(*ts_first_);
+    rebuildModelStateAt(PJ::fromRaw(*ts_first_));
   }
   return true;
 }
@@ -288,9 +290,8 @@ void SceneEntitiesLayer::resetReplayState() {
   // prior-generation markers. setActive only swaps a shared_ptr — no GL.
   pass_.setActive(nullptr);
   source_frame_.clear();
-  decoded_at_ns_ = PJ::Timepoint{};
   last_marker_uid_ = {};
-  ts_first_ = 0;
+  ts_first_.reset();
   entities_.clear();
   model_frames_.clear();
   state_built_at_.reset();
@@ -306,7 +307,6 @@ void SceneEntitiesLayer::resetReplayState() {
 }
 
 void SceneEntitiesLayer::setTrackerTime(PJ::Timepoint time) {
-  decoded_at_ns_ = time;
   if (visible_) {
     renderAt(PJ::toRaw(time));
     ensureModelStateAt(time);
@@ -320,11 +320,9 @@ void SceneEntitiesLayer::setVisible(bool visible) {
   visible_ = visible;
   pass_.setVisible(visible);
   emit visibilityChanged(visible);
-  // Un-hiding re-decodes at the current playhead: the dock skips hidden entities
-  // on tracker ticks, so the cached batch may be stale by the time we show again.
-  if (visible) {
-    refreshNow();
-  }
+  // Catch-up on un-hide is the dock's job: SceneDockWidget::setLayerVisible
+  // re-delivers the last tracker time (hidden layers receive no ticks), which
+  // setTrackerTime decodes at the playhead — so no refreshNow() here.
   emit repaintRequested();
 }
 
@@ -424,14 +422,6 @@ void SceneEntitiesLayer::renderAt(int64_t time_ns) {
   // Moved, not copied: the ObjectRecord is discarded right after.
   cacheSnapshot(resolved->sequential_uid, std::make_shared<PJ::sdk::SceneEntities>(std::move(*batch)));
   emit repaintRequested();
-}
-
-void SceneEntitiesLayer::refreshNow() {
-  const int64_t t = decoded_at_ns_ != PJ::Timepoint{} ? PJ::toRaw(decoded_at_ns_) : ts_first_;
-  if (t != 0) {
-    renderAt(t);
-    ensureModelStateAt(PJ::fromRaw(t));
-  }
 }
 
 void SceneEntitiesLayer::applyOverrides() {

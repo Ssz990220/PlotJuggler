@@ -103,7 +103,9 @@ OccupancyGridReconstructor::UpdatesProvider updatesProviderFor(const std::vector
         out.push_back(u);
       }
     }
-    std::sort(out.begin(), out.end(), [](const sdk::OccupancyGridUpdate& a, const sdk::OccupancyGridUpdate& b) {
+    // stable_sort: equal-ts updates keep insertion order, matching refReplay's
+    // vector-order application so the cross-check stays well-defined.
+    std::stable_sort(out.begin(), out.end(), [](const sdk::OccupancyGridUpdate& a, const sdk::OccupancyGridUpdate& b) {
       return a.timestamp_ns < b.timestamp_ns;
     });
     return out;
@@ -235,6 +237,87 @@ TEST(OccupancyGridReconstructorTest, SnapshotMemoryBudgetHonored) {
   for (const Timestamp t : {1000 + 10 * 800, 1000 + 10 * 300, 1000 + 10 * 50}) {
     EXPECT_EQ(r.reconstructAt(t, bp, up).grid.cells, refReplay(tl.bases.front(), tl.updates, t));
   }
+}
+
+// H.13 contract at the core boundary: when the timeline gains an entry BEHIND
+// the consumed cursor (live ingest jitter), the forward fast-path cannot see it
+// by design; invalidate() must force a full rebuild that picks it up.
+TEST(OccupancyGridReconstructorTest, LateEntryBehindCursorForcesRebuild) {
+  Timeline tl = makeTimeline(16, 50);  // updates at ts 1010..1500
+  const auto bp = baseProviderFor(tl.bases);
+  const auto up = updatesProviderFor(tl.updates);
+  OccupancyGridReconstructor r;
+
+  const Timestamp t_high = 1700;
+  r.reconstructAt(t_high, bp, up);  // forward cursor now at t_high
+
+  // The providers close over tl.updates by reference, so this append mutates
+  // the live timeline mid-test: a retroactive entry at ts 1600 < t_high.
+  const std::vector<sdk::OccupancyGridUpdate> updates_before = tl.updates;
+  tl.updates.push_back(makeUpdate(1600, 5, 5, 3, 3, std::vector<uint8_t>(9, 99)));
+
+  // Forward fast-path window (last_t_, t] is empty — the grid stays stale.
+  EXPECT_EQ(r.reconstructAt(t_high, bp, up).grid.cells, refReplay(tl.bases.front(), updates_before, t_high));
+
+  // invalidate() discards the epoch (and the snapshots that pre-date the late
+  // entry): the next call rebuilds from base + full replay and includes it.
+  r.invalidate();
+  const GridUpdate rebuilt = r.reconstructAt(t_high, bp, up);
+  EXPECT_EQ(rebuilt.kind, GridUpdate::Kind::Full);
+  EXPECT_EQ(rebuilt.grid.cells, refReplay(tl.bases.front(), tl.updates, t_high));
+  // Sanity: the late update actually changes the grid, so the check above is meaningful.
+  EXPECT_NE(rebuilt.grid.cells, refReplay(tl.bases.front(), updates_before, t_high));
+}
+
+// M.13: several updates share a timestamp straddling the snapshot stride (64).
+// A snapshot taken mid-way through the equal-ts run captures only a prefix of
+// the group, and the backward replay's exclusive lower bound (lo < ts) never
+// re-applies the rest — the restored grid diverges from a from-scratch replay.
+TEST(OccupancyGridReconstructorTest, DuplicateTimestampSnapshotBoundary) {
+  constexpr uint32_t kGrid = 16;
+  Timeline tl;
+  tl.bases.push_back(makeBase(1000, kGrid, kGrid, std::vector<uint8_t>(kGrid * kGrid, 0)));
+  // 100 updates in equal-ts groups of 5 (ts 1010, 1010, ..., 1020, ...): the
+  // 64th update — where the stride-driven snapshot fires — falls mid-group.
+  for (int i = 1; i <= 100; ++i) {
+    const Timestamp ts = 1000 + 10 * ((i - 1) / 5 + 1);
+    const int32_t x = (i * 3) % (kGrid - 2);
+    const int32_t y = (i * 7) % (kGrid - 2);
+    tl.updates.push_back(makeUpdate(ts, x, y, 2, 2, std::vector<uint8_t>(4, static_cast<uint8_t>(i))));
+  }
+  const auto bp = baseProviderFor(tl.bases);
+  const auto up = updatesProviderFor(tl.updates);
+
+  OccupancyGridReconstructor r;
+  r.reconstructAt(2000, bp, up);  // forward pass applies all 100, snapshotting en route
+
+  // Backward seeks landing on / just after the straddled group (ts 1130) must
+  // match the reference replay, which includes the WHOLE equal-ts group.
+  for (const Timestamp t : {Timestamp{1130}, Timestamp{1135}, Timestamp{1090}, Timestamp{1010}}) {
+    EXPECT_EQ(r.reconstructAt(t, bp, up).grid.cells, refReplay(tl.bases.front(), tl.updates, t))
+        << "backward mismatch at t=" << t;
+  }
+}
+
+// M.11/M.12: wire dims are untrusted — absurd width*height must yield Empty
+// instead of throwing a multi-exabyte allocation through the GUI thread, and
+// must not poison reconstruction of a later sane base on the same timeline.
+TEST(OccupancyGridReconstructorTest, OversizedDimsYieldEmpty) {
+  std::vector<sdk::OccupancyGrid> bases{makeBase(1000, 0xFFFFFFFFu, 0xFFFFFFFFu, std::vector<uint8_t>(16, 7))};
+  std::vector<sdk::OccupancyGridUpdate> updates;
+  const auto bp = baseProviderFor(bases);
+  const auto up = updatesProviderFor(updates);
+  OccupancyGridReconstructor r;
+
+  const GridUpdate update = r.reconstructAt(2000, bp, up);
+  EXPECT_EQ(update.kind, GridUpdate::Kind::Empty);
+  EXPECT_TRUE(update.grid.empty());
+
+  // A sane base later on the same timeline still reconstructs.
+  bases.push_back(makeBase(3000, 4, 4, std::vector<uint8_t>(16, 25)));
+  const GridUpdate recovered = r.reconstructAt(3500, bp, up);
+  EXPECT_EQ(recovered.kind, GridUpdate::Kind::Full);
+  EXPECT_EQ(recovered.grid.cells, refReplay(bases.back(), updates, 3500));
 }
 
 }  // namespace

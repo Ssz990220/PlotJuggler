@@ -156,8 +156,6 @@ class SceneEntitiesLayer : public Scene3DLayer {
   // Decode + push the batch at/before time_ns into the render pass. No-op when
   // there's no parser or the store has no sample at/before time_ns.
   void renderAt(int64_t time_ns);
-  // Re-decode at the current playhead after a visibility change.
-  void refreshNow();
   // Push the current overrides to the pass and request a repaint.
   void applyOverrides();
 
@@ -219,15 +217,15 @@ class SceneEntitiesLayer : public Scene3DLayer {
   // that re-registers the topic's parser slot can never leave us dangling.
 
   std::string source_frame_;
-  // The latest tracker time pushed to this entity; the time the cached batch was
-  // (re)decoded at. Used by refreshNow() to re-decode at the current playhead.
-  PJ::Timepoint decoded_at_ns_{};
   // Identity of the marker batch last decoded by renderAt; lets it skip
   // re-decoding the same message while scrubbing within one message's time window.
   PJ::SequentialUID last_marker_uid_;
 
   bool visible_ = true;
-  int64_t ts_first_ = 0;
+  // Timestamp of the topic's first entry, set by attach() only when the store
+  // already holds a sample. std::optional (not a 0 sentinel): 0 is a legitimate
+  // first timestamp under ROS sim time, so absence must be distinct from t=0.
+  std::optional<int64_t> ts_first_;
 
   // Viewer-side display overrides pushed wholesale to the pass. The override
   // color lives here as a normalized vec4; the config widget derives a QColor

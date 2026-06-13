@@ -4,6 +4,8 @@
 
 #include <algorithm>
 #include <cstring>
+#include <exception>
+#include <iterator>
 
 namespace pj::scene3d {
 
@@ -16,6 +18,42 @@ constexpr std::size_t kSnapshotStride = 64;
 
 OccupancyGridReconstructor::OccupancyGridReconstructor(std::size_t snapshot_budget_bytes)
     : snapshot_budget_bytes_(snapshot_budget_bytes) {}
+
+void OccupancyGridReconstructor::invalidate() {
+  grid_ = ReconstructedGrid{};
+  base_cells_.clear();
+  snapshots_.clear();
+  dirty_rects_.clear();
+  updates_since_snapshot_ = 0;
+  have_epoch_ = false;
+  last_t_ = 0;
+}
+
+void OccupancyGridReconstructor::invalidateAfter(PJ::Timestamp late_ts) {
+  if (!have_epoch_) {
+    return;
+  }
+  // A late entry at or before the base keyframe can't be re-included by a forward
+  // replay within this epoch (applyRange's lower bound is the base ts), so fall
+  // back to the full from-base rebuild on the next reconstructAt().
+  if (late_ts <= grid_.base_timestamp_ns) {
+    invalidate();
+    return;
+  }
+  // Drop every snapshot that could have skipped the late entry: a snapshot at
+  // ts >= late_ts was taken when the entry might already have been due but was
+  // not yet ingested. Snapshots strictly before late_ts only embed updates that
+  // genuinely predate it, so they remain trustworthy restore points.
+  const auto first_invalid = std::lower_bound(
+      snapshots_.begin(), snapshots_.end(), late_ts,
+      [](const Snapshot& snapshot, PJ::Timestamp value) { return snapshot.ts < value; });
+  snapshots_.erase(first_invalid, snapshots_.end());
+  updates_since_snapshot_ = 0;
+  // Rewind the forward cursor to the nearest surviving snapshot at-or-before the
+  // late entry (or the pristine base). The next forward reconstructAt() replays
+  // (last_t_, t] — which now re-includes the late entry and everything after it.
+  restoreNearestAtOrBefore(late_ts - 1);
+}
 
 std::size_t OccupancyGridReconstructor::snapshotBytes() const {
   std::size_t total = 0;
@@ -84,7 +122,16 @@ void OccupancyGridReconstructor::applyUpdate(const PJ::sdk::OccupancyGridUpdate&
 }
 
 void OccupancyGridReconstructor::pushSnapshot(PJ::Timestamp ts) {
-  snapshots_.push_back(Snapshot{ts, grid_.cells});
+  // A forward pass that follows a backward seek can emit a snapshot OLDER than
+  // already-cached ones: insert in ts order so restoreNearestAtOrBefore can
+  // binary-search. An equal-ts snapshot would be byte-identical state — skip it.
+  const auto pos = std::upper_bound(
+      snapshots_.begin(), snapshots_.end(), ts,
+      [](PJ::Timestamp value, const Snapshot& snapshot) { return value < snapshot.ts; });
+  if (pos != snapshots_.begin() && std::prev(pos)->ts == ts) {
+    return;
+  }
+  snapshots_.insert(pos, Snapshot{ts, grid_.cells});
 
   // Honor the memory budget: while over budget, decimate (drop every other
   // snapshot) so the survivors stay evenly spread across the timeline rather
@@ -109,28 +156,35 @@ void OccupancyGridReconstructor::applyRange(
     return;
   }
   const std::vector<PJ::sdk::OccupancyGridUpdate> ups = updates_in(lo, hi);
-  for (const auto& u : ups) {
-    applyUpdate(u);
-    if (allow_snapshots) {
-      if (++updates_since_snapshot_ >= kSnapshotStride) {
-        pushSnapshot(u.timestamp_ns);
-        updates_since_snapshot_ = 0;
-      }
+  for (std::size_t i = 0; i < ups.size(); ++i) {
+    const PJ::sdk::OccupancyGridUpdate& update = ups[i];
+    applyUpdate(update);
+    if (!allow_snapshots || ++updates_since_snapshot_ < kSnapshotStride) {
+      continue;
+    }
+    // Defer the snapshot to a timestamp boundary: taken mid-way through a run of
+    // equal-ts updates it would capture only a prefix of the group, and the
+    // backward replay's exclusive lower bound (lo < ts) would never re-apply the
+    // rest. The counter carries over, so the snapshot lands at the next boundary.
+    const bool mid_equal_ts_run = (i + 1 < ups.size()) && ups[i + 1].timestamp_ns == update.timestamp_ns;
+    if (!mid_equal_ts_run) {
+      pushSnapshot(update.timestamp_ns);
+      updates_since_snapshot_ = 0;
     }
   }
 }
 
 void OccupancyGridReconstructor::restoreNearestAtOrBefore(PJ::Timestamp t) {
-  // Largest-ts snapshot with ts <= t, else the pristine base keyframe.
-  const Snapshot* best = nullptr;
-  for (const auto& s : snapshots_) {
-    if (s.ts <= t && (best == nullptr || s.ts > best->ts)) {
-      best = &s;
-    }
-  }
-  if (best != nullptr) {
-    grid_.cells = best->cells;
-    last_t_ = best->ts;
+  // snapshots_ is ts-sorted (pushSnapshot inserts in order): binary-search the
+  // largest snapshot ts <= t, else fall back to the pristine base keyframe. The
+  // full-buffer copy is the documented memory-vs-replay tradeoff of the design.
+  const auto first_after = std::upper_bound(
+      snapshots_.begin(), snapshots_.end(), t,
+      [](PJ::Timestamp value, const Snapshot& snapshot) { return value < snapshot.ts; });
+  if (first_after != snapshots_.begin()) {
+    const Snapshot& best = *std::prev(first_after);
+    grid_.cells = best.cells;
+    last_t_ = best.ts;
   } else {
     grid_.cells = base_cells_;
     last_t_ = grid_.base_timestamp_ns;
@@ -144,34 +198,51 @@ GridUpdate OccupancyGridReconstructor::reconstructAt(
   const std::optional<PJ::sdk::OccupancyGrid> base = base_at(t);
   if (!base) {
     // No base grid at or before t — nothing to display.
-    grid_ = ReconstructedGrid{};
-    base_cells_.clear();
-    snapshots_.clear();
-    have_epoch_ = false;
-    last_t_ = 0;
+    invalidate();
     return GridUpdate{grid_, GridUpdate::Kind::Empty, {}};
   }
 
-  if (!have_epoch_ || base->timestamp_ns != grid_.base_timestamp_ns) {
-    // New epoch: a different (or first) base keyframe is now in effect.
-    resetToBase(*base);
-    applyRange(updates_in, grid_.base_timestamp_ns, t, /*allow_snapshots=*/true);
+  // Wire dims are untrusted (the canonical codec performs no width*height vs
+  // payload cross-check): cap the cell count BEFORE resetToBase() allocates
+  // from it, so a corrupt file cannot trigger a multi-GB / throwing assign.
+  if (static_cast<uint64_t>(base->width) * base->height > kMaxGridCells) {
+    invalidate();
+    return GridUpdate{grid_, GridUpdate::Kind::Empty, {}};
+  }
+
+  // Exception barrier: this runs on the GUI thread (renderAt → reconstructAt);
+  // an escaped bad_alloc/length_error from a hostile file would unwind through
+  // the Qt event loop and terminate the app (same hazard class as the codec
+  // barriers in pointcloud_codecs.cpp). Reset so one corrupt sample cannot
+  // poison subsequent frames either.
+  try {
+    if (!have_epoch_ || base->timestamp_ns != grid_.base_timestamp_ns) {
+      // New epoch: a different (or first) base keyframe is now in effect.
+      resetToBase(*base);
+      applyRange(updates_in, grid_.base_timestamp_ns, t, /*allow_snapshots=*/true);
+      last_t_ = t;
+      return GridUpdate{grid_, GridUpdate::Kind::Full, dirty_rects_};
+    }
+
+    if (t >= last_t_) {
+      // Forward within the epoch: apply only the new deltas incrementally.
+      applyRange(updates_in, last_t_, t, /*allow_snapshots=*/true);
+      last_t_ = t;
+      return GridUpdate{grid_, GridUpdate::Kind::Incremental, dirty_rects_};
+    }
+
+    // Backward within the epoch: restore the nearest snapshot (or base) and replay.
+    restoreNearestAtOrBefore(t);
+    applyRange(updates_in, last_t_, t, /*allow_snapshots=*/false);
     last_t_ = t;
     return GridUpdate{grid_, GridUpdate::Kind::Full, dirty_rects_};
+  } catch (const std::exception&) {
+    invalidate();
+    return GridUpdate{grid_, GridUpdate::Kind::Empty, {}};
+  } catch (...) {
+    invalidate();
+    return GridUpdate{grid_, GridUpdate::Kind::Empty, {}};
   }
-
-  if (t >= last_t_) {
-    // Forward within the epoch: apply only the new deltas incrementally.
-    applyRange(updates_in, last_t_, t, /*allow_snapshots=*/true);
-    last_t_ = t;
-    return GridUpdate{grid_, GridUpdate::Kind::Incremental, dirty_rects_};
-  }
-
-  // Backward within the epoch: restore the nearest snapshot (or base) and replay.
-  restoreNearestAtOrBefore(t);
-  applyRange(updates_in, last_t_, t, /*allow_snapshots=*/false);
-  last_t_ = t;
-  return GridUpdate{grid_, GridUpdate::Kind::Full, dirty_rects_};
 }
 
 }  // namespace pj::scene3d

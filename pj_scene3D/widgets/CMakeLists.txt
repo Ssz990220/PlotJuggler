@@ -74,6 +74,16 @@ target_link_libraries(pj_scene3d_widgets
 # ---------------------------------------------------------------------------
 
 if(PJ_BUILD_TESTS)
+  # Shared test scaffolding (mock_parser_support.h: makeBoundHandle /
+  # CountingObjectParser / registerObjectTopic / pumpUntil) lives in tests/; put
+  # it on every test target's include path (directory-scoped — tests only).
+  include_directories(${CMAKE_CURRENT_SOURCE_DIR}/tests)
+
+  # The coalescing test encodes valid fixtures with the Cloudini encoder, which
+  # pj_scene3d_core links PRIVATE — re-resolve the imported target here so the
+  # test can link it directly (same as pointcloud_codecs_test in core/).
+  find_package(cloudini REQUIRED)
+
   # Regression: a file reload re-registers each surviving topic's parser slot;
   # layers must re-resolve the parser through SessionManager per use instead of
   # caching the raw pointer from attach() (use-after-free on the next tick).
@@ -132,6 +142,64 @@ if(PJ_BUILD_TESTS)
   target_compile_definitions(scene3d_dock_persistence_test PRIVATE PJ_SCENE3D_TEST_HOOKS)
   target_compile_options(scene3d_dock_persistence_test PRIVATE ${PJ_WARNING_FLAGS} ${PJ_SANITIZER_FLAGS})
   add_test(NAME scene3d_dock_persistence_test COMMAND scene3d_dock_persistence_test)
+  # Layer-level coverage for the '<base>_updates' patch window: UID-based store
+  # traversal vs an independent cell-by-cell replay, the retroactive-ingest
+  # (behind-live-edge) invalidate path, and the base-keyframe parse memo.
+  add_executable(occupancy_grid_layer_updates_test
+    tests/occupancy_grid_layer_updates_test.cpp
+  )
+  target_link_libraries(occupancy_grid_layer_updates_test PRIVATE
+    pj_scene3d_widgets
+    GTest::gtest
+  )
+  target_compile_definitions(occupancy_grid_layer_updates_test PRIVATE PJ_SCENE3D_TEST_HOOKS)
+  target_compile_options(occupancy_grid_layer_updates_test PRIVATE ${PJ_WARNING_FLAGS} ${PJ_SANITIZER_FLAGS})
+  add_test(NAME occupancy_grid_layer_updates_test COMMAND occupancy_grid_layer_updates_test)
+
+  # PointCloudLayer sample-identity caches: reset on dataset replace (stale
+  # decoded/failed/pushed ids under a stable topic id), stamp-0 is data not a
+  # sentinel, and wanted_-gating of stale async decodes on mixed-mode topics.
+  add_executable(pointcloud_layer_cache_test
+    tests/pointcloud_layer_cache_test.cpp
+  )
+  target_link_libraries(pointcloud_layer_cache_test PRIVATE
+    pj_scene3d_widgets
+    GTest::gtest
+  )
+  target_compile_definitions(pointcloud_layer_cache_test PRIVATE PJ_SCENE3D_TEST_HOOKS)
+  target_compile_options(pointcloud_layer_cache_test PRIVATE ${PJ_WARNING_FLAGS} ${PJ_SANITIZER_FLAGS})
+  add_test(NAME pointcloud_layer_cache_test COMMAND pointcloud_layer_cache_test)
+
+  # M.65: pin PointCloudLayer's per-use parser binding (raw renderAt path still
+  # calls parseLocked on the UI thread per tick — a reintroduced cached pointer is
+  # a same-file-reload use-after-free). Mirrors occupancy_grid_layer_rebind_test.
+  add_executable(pointcloud_layer_rebind_test
+    ../tests/pointcloud_layer_rebind_test.cpp
+  )
+  target_link_libraries(pointcloud_layer_rebind_test PRIVATE
+    pj_scene3d_widgets
+    GTest::gtest
+  )
+  target_compile_definitions(pointcloud_layer_rebind_test PRIVATE PJ_SCENE3D_TEST_HOOKS)
+  target_compile_options(pointcloud_layer_rebind_test PRIVATE ${PJ_WARNING_FLAGS} ${PJ_SANITIZER_FLAGS})
+  add_test(NAME pointcloud_layer_rebind_test COMMAND pointcloud_layer_rebind_test)
+
+  # M.66: drive the latest-wins compressed-decode coalescing state machine
+  # (pending_ collapse, wanted_ staleness, failed_id_ memo) over the real
+  # QtConcurrent + QFutureWatcher path. Encodes valid fixtures with the Cloudini
+  # encoder (PRIVATE in pj_scene3d_core), so it links cloudini explicitly like
+  # pointcloud_codecs_test does.
+  add_executable(pointcloud_layer_coalescing_test
+    ../tests/pointcloud_layer_coalescing_test.cpp
+  )
+  target_link_libraries(pointcloud_layer_coalescing_test PRIVATE
+    pj_scene3d_widgets
+    cloudini::cloudini
+    GTest::gtest
+  )
+  target_compile_definitions(pointcloud_layer_coalescing_test PRIVATE PJ_SCENE3D_TEST_HOOKS)
+  target_compile_options(pointcloud_layer_coalescing_test PRIVATE ${PJ_WARNING_FLAGS} ${PJ_SANITIZER_FLAGS})
+  add_test(NAME pointcloud_layer_coalescing_test COMMAND pointcloud_layer_coalescing_test)
 
   # Pure (non-GL) URDF parser + package-resolver unit tests. They reach the
   # private src/ headers (urdf_parser.h / urdf_package_resolver.h) and use small

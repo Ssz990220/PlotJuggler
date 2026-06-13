@@ -126,6 +126,28 @@ class PointCloudLayer : public Scene3DLayer {
   void setAutoRange(bool enable);
   void setManualRange(float min_value, float max_value);
 
+#ifdef PJ_SCENE3D_TEST_HOOKS
+  void renderAtForTest(int64_t time_ns) {
+    renderAt(time_ns);
+  }
+  // Store stamp of the sample currently held by the render pass; nullopt when
+  // nothing is pushed (the default SampleId sentinel).
+  [[nodiscard]] std::optional<int64_t> lastPushedStampForTest() const {
+    return last_pushed_id_ == SampleId{} ? std::nullopt : std::optional<int64_t>{last_pushed_id_.stamp};
+  }
+  // True while an async compressed decode is in flight (or its finished event
+  // is still queued) — lets tests pump the loop until the result landed.
+  [[nodiscard]] bool decodeInFlightForTest() const {
+    return inflight_ != SampleId{};
+  }
+  // Number of times startDecode() actually dispatched a worker. The coalescing
+  // test asserts on this: a superseded pending sample, a known-failed sample,
+  // and a redundant re-request must NOT bump it.
+  [[nodiscard]] int startDecodeCountForTest() const {
+    return start_decode_count_;
+  }
+#endif
+
  signals:
   // Emitted whenever the color-field set or selection changes — the
   // config widget (if alive) listens and updates its combo without
@@ -141,8 +163,9 @@ class PointCloudLayer : public Scene3DLayer {
   // Identity of an ObjectStore sample, computable WITHOUT parsing the payload:
   // (store timestamp, stored payload byte size). The size disambiguates a
   // same-timestamp payload swap (the store allows duplicate stamps); a swap that
-  // also keeps the byte count is the accepted blind spot. The default
-  // {INT64_MIN, 0} is the "none" sentinel — no real sample ever equals it.
+  // also keeps the byte count is the accepted blind spot WITHIN one dataset
+  // generation (reloads reset all sample-id state — onDatasetAboutToBeReplaced).
+  // The default {INT64_MIN, 0} is the "none" sentinel — no real sample equals it.
   struct SampleId {
     int64_t stamp = std::numeric_limits<int64_t>::min();
     std::size_t size = 0;
@@ -167,9 +190,9 @@ class PointCloudLayer : public Scene3DLayer {
   // time_ns. Skips all work when the pass already holds exactly that
   // sample with the current color field (the common tracker tick).
   void renderAt(int64_t time_ns);
-  // Re-decode at the bootstrap time after a color-field or fixed-frame
-  // change so the renderer reflects the new state without waiting for
-  // the next tracker tick.
+  // Re-decode at the current playhead (or the first sample before any tracker
+  // tick) after a color-field or auto-range change, so the renderer reflects
+  // the new state without waiting for the next tracker tick.
   void refreshNow();
 
   // Convert a canonical PointCloud (raw, or freshly decompressed) into the render
@@ -193,6 +216,12 @@ class PointCloudLayer : public Scene3DLayer {
   void onDecodeFinished();
   void populateColorFields(const PJ::sdk::PointCloud& cloud);
 
+  // Invoked by SessionManager::datasetAboutToBeReplaced (any dataset; filtered to
+  // this layer's). A reload keeps the ObjectTopicId stable while swapping the
+  // store bytes, so every identity keyed on (timestamp, byte size) — decode
+  // cache, failure memo, pushed sample — must reset or it can alias new content.
+  void onDatasetAboutToBeReplaced(PJ::DatasetId dataset_id);
+
   PJ::ObjectTopicId topic_id_;
   QString display_name_;
   Scene3DLayerContext ctx_;
@@ -206,7 +235,9 @@ class PointCloudLayer : public Scene3DLayer {
   QString fixed_frame_;
   // The latest tracker time pushed to this layer; the Timepoint the cached VBO
   // was (re)decoded at. Used by refreshNow() to re-decode at the current playhead.
-  PJ::Timepoint decoded_at_ns_{};
+  // nullopt until the first tracker tick — 0 ns is a valid timestamp, so absence
+  // is explicit (the dock's stance; see SceneDockWidget::registerLayer).
+  std::optional<PJ::Timepoint> decoded_at_ns_;
   // Set by setTrackerTime, consumed by render(): the decode (parse + convert +
   // GPU upload) is deferred to the next painted frame instead of running eagerly
   // per tracker tick. Qt coalesces repaints, so a fast scrub that fires many ticks
@@ -215,7 +246,9 @@ class PointCloudLayer : public Scene3DLayer {
 
   bool visible_ = true;
   bool range_dirty_ = true;
-  int64_t ts_first_ = 0;
+  // Store stamp of the topic's first sample, captured at attach; nullopt when the
+  // store had no entries yet (0 is a valid stamp, so absence is explicit).
+  std::optional<int64_t> ts_first_;
 
   // Source-frame bounds of the most recently decoded cloud (see worldBounds()).
   std::optional<AABB> world_bounds_;
@@ -249,7 +282,20 @@ class PointCloudLayer : public Scene3DLayer {
   std::shared_ptr<PJ::sdk::PointCloud> decoded_cache_;  // last decoded cloud, reused on color-field change
   SampleId decoded_cache_id_;                           // identity of decoded_cache_
   SampleId wanted_;     // the sample the tracker currently wants; gates painting async results
-  SampleId failed_id_;  // last sample whose decode failed; never re-requested (store bytes are immutable)
+  SampleId failed_id_;  // last failed decode; not retried until a dataset reload swaps the store bytes
+
+  // Counts startDecode() dispatches; read only via startDecodeCountForTest(). Kept
+  // unconditional (not behind PJ_SCENE3D_TEST_HOOKS) so the class layout is identical
+  // in the library and in the test TUs — a macro-gated member would mismatch and
+  // read garbage from the test side.
+  int start_decode_count_ = 0;
+
+  // Lives only while attached: resets the sample-identity caches when a dataset
+  // reload swaps this topic's store bytes (see onDatasetAboutToBeReplaced).
+  QMetaObject::Connection reload_connection_;
+  // Set when a reload invalidates the sample currently decoding: its result is
+  // pre-reload content, so onDecodeFinished must not cache or memoize it.
+  bool drop_inflight_result_ = false;
 
   PointcloudRenderPass cloud_pass_;
 };

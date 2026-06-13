@@ -11,7 +11,8 @@
 #include <utility>
 
 #include "pj_base/builtin/builtin_object.hpp"
-#include "pj_datastore/object_store.hpp"  // PJ::ObjectTopicId
+#include "pj_base/builtin/occupancy_grid.hpp"
+#include "pj_datastore/object_store.hpp"  // PJ::ObjectTopicId, PJ::SequentialUID
 #include "pj_scene3d_core/occupancy_grid_reconstructor.h"
 #include "pj_scene3d_widgets/passes/occupancy_grid_render_pass.h"
 #include "pj_scene3d_widgets/scene3d_layer.h"
@@ -66,6 +67,11 @@ class OccupancyGridLayer : public Scene3DLayer {
   void renderAtForTest(int64_t time_ns) {
     renderAt(time_ns);
   }
+  // The grid as last reconstructed by renderAt (introspection for the
+  // store-window arithmetic); the reference is valid until the next renderAt.
+  [[nodiscard]] const ReconstructedGrid& reconstructedGridForTest() const {
+    return reconstructor_.grid();
+  }
 #endif
 
  private:
@@ -74,6 +80,11 @@ class OccupancyGridLayer : public Scene3DLayer {
   bool bootstrap();
   // Reconstruct the grid at time_ns and stage it into the render pass.
   void renderAt(int64_t time_ns);
+  // Drop the base-keyframe memo, the updates-topic cursor, and all reconstructor
+  // state. Called on attach/detach: the previous attachment's epoch identity and
+  // snapshots embed a timeline that may no longer exist (dataset replace, new
+  // session) — same shape as SceneEntitiesLayer::resetReplayState().
+  void resetStreamingState();
 
   PJ::ObjectTopicId topic_id_;
   QString display_name_;
@@ -83,9 +94,26 @@ class OccupancyGridLayer : public Scene3DLayer {
   // that re-registers the topic's parser slot can never leave us dangling.
   std::optional<PJ::ObjectTopicId> updates_topic_;
 
+  // Memo of the last parsed base keyframe, keyed by its store entry's
+  // SequentialUID (stable across front-eviction; minted fresh by dataset
+  // replace/flush, so a reload can never serve a stale grid). The copy's anchor
+  // keeps the decoded cell bytes alive. Without it, playback over a static map
+  // re-parses + deep-copies the full cell payload on every tracker tick.
+  PJ::SequentialUID base_cache_uid_{};
+  std::optional<PJ::sdk::OccupancyGrid> base_cache_;
+
+  // Retroactive-ingest detector for the '_updates' sibling. The live drive
+  // follows the fastest topic's edge, so the reconstructor's forward
+  // (last_t_, t] window can advance past the updates topic's ingest; an update
+  // landing later with ts <= the consumed time would be skipped forever.
+  // updates_cursor_ is the highest updates-topic UID accounted for at the last
+  // renderAt; last_consumed_time_ is the high-water reconstruction time. Both
+  // only grow between resets — renderAt() invalidates the reconstructor when an
+  // entry appears past the cursor with a timestamp at-or-before the high-water.
+  PJ::SequentialUID updates_cursor_{};
+  std::optional<PJ::Timestamp> last_consumed_time_;
+
   std::string source_frame_;
-  QString fixed_frame_;
-  PJ::Timepoint tracker_time_{};
   // Set by setTrackerTime, consumed by render(): the reconstruction (base parse +
   // update folds + texture upload) is deferred to the next painted frame instead
   // of running eagerly per tracker tick. Qt coalesces repaints, so a fast scrub

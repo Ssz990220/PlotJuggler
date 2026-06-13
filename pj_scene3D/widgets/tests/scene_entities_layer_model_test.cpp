@@ -28,6 +28,7 @@
 #include <utility>
 #include <vector>
 
+#include "mock_parser_support.h"
 #include "pj_base/builtin/scene_entities_codec.hpp"
 #include "pj_datastore/engine.hpp"
 #include "pj_datastore/object_store.hpp"
@@ -41,6 +42,8 @@
 
 namespace {
 
+using namespace pj::scene3d::test;
+
 // Counts parseObject invocations so a test can prove forward playback parses each
 // stored batch O(1) times (incremental) rather than O(history) per frame.
 std::atomic<int> g_parse_count{0};
@@ -50,85 +53,30 @@ std::atomic<int> g_parse_count{0};
 std::atomic<int> g_first_scene_parser_calls{0};
 std::atomic<int> g_second_scene_parser_calls{0};
 
-class SceneEntitiesParser final : public PJ::MessageParserPluginBase {
- public:
-  SceneEntitiesParser() {
-    PJ::sdk::SchemaHandler handler;
-    handler.object_type = PJ::sdk::BuiltinObjectType::kSceneEntities;
-    handler.parse_object = [](PJ::Timestamp /*ts*/,
-                              PJ::sdk::PayloadView payload) -> PJ::Expected<PJ::sdk::ObjectRecord> {
-      g_parse_count.fetch_add(1, std::memory_order_relaxed);
-      auto decoded = PJ::deserializeSceneEntities(payload.bytes.data(), payload.bytes.size());
-      if (!decoded.has_value()) {
-        return PJ::unexpected(std::move(decoded).error());
-      }
-      return PJ::sdk::ObjectRecord{
-          .ts = std::nullopt,
-          .object = PJ::sdk::BuiltinObject{std::move(*decoded)},
-      };
-    };
-    registerSchemaHandler("scene_entities", std::move(handler));
+// Object-construction body shared by every scene-entities mock parser in this
+// file: deserialize the payload into a SceneEntities batch and wrap it as an
+// ObjectRecord with no per-record timestamp (the store entry timestamp governs).
+// The per-parse counter bump is supplied by CountingObjectParser, not here.
+PJ::Expected<PJ::sdk::ObjectRecord> emitSceneEntities(PJ::Timestamp /*ts*/, PJ::sdk::PayloadView payload) {
+  auto decoded = PJ::deserializeSceneEntities(payload.bytes.data(), payload.bytes.size());
+  if (!decoded.has_value()) {
+    return PJ::unexpected(std::move(decoded).error());
   }
-};
-
-const PJ_message_parser_vtable_t* sceneEntitiesParserVtable() {
-  static const PJ_message_parser_vtable_t* vt = PJ::MessageParserPluginBase::vtableWithCreate(
-      []() noexcept -> void* { return new SceneEntitiesParser(); },
-      R"({"id":"scene-entities-test","name":"SceneEntities Test","version":"1.0.0","encoding":"test"})");
-  return vt;
-}
-
-// Like SceneEntitiesParser but bumps a caller-supplied counter, so a rebind test
-// can tell which parser instance a re-decode reached.
-class CountingSceneEntitiesParser final : public PJ::MessageParserPluginBase {
- public:
-  explicit CountingSceneEntitiesParser(std::atomic<int>* counter) {
-    PJ::sdk::SchemaHandler handler;
-    handler.object_type = PJ::sdk::BuiltinObjectType::kSceneEntities;
-    handler.parse_object =
-        [counter](PJ::Timestamp /*ts*/, PJ::sdk::PayloadView payload) -> PJ::Expected<PJ::sdk::ObjectRecord> {
-      counter->fetch_add(1, std::memory_order_relaxed);
-      auto decoded = PJ::deserializeSceneEntities(payload.bytes.data(), payload.bytes.size());
-      if (!decoded.has_value()) {
-        return PJ::unexpected(std::move(decoded).error());
-      }
-      return PJ::sdk::ObjectRecord{
-          .ts = std::nullopt,
-          .object = PJ::sdk::BuiltinObject{std::move(*decoded)},
-      };
-    };
-    registerSchemaHandler("scene_entities", std::move(handler));
-  }
-};
-
-// vtableWithCreate() caches one static vtable per CreateFn instantiation, so each
-// counting parser needs a distinct lambda type — a shared function-pointer type
-// would latch the first counter for both handles.
-template <typename CreateFn>
-const PJ_message_parser_vtable_t* countingSceneEntitiesVtable(CreateFn create_fn) {
-  static const PJ_message_parser_vtable_t* vt = PJ::MessageParserPluginBase::vtableWithCreate(
-      create_fn,
-      R"({"id":"scene-entities-counting","name":"SceneEntities Counting","version":"1.0.0","encoding":"test"})");
-  return vt;
-}
-
-void registerCountingParser(
-    PJ::SessionManager& session, PJ::ObjectTopicId topic_id, const PJ_message_parser_vtable_t* vtable) {
-  auto parser = std::make_unique<PJ::MessageParserHandle>(vtable);
-  ASSERT_TRUE(parser->bindSchema("scene_entities", PJ::Span<const uint8_t>{}));
-  session.registerObjectTopicParser(topic_id, std::move(parser));
+  return PJ::sdk::ObjectRecord{
+      .ts = std::nullopt,
+      .object = PJ::sdk::BuiltinObject{std::move(*decoded)},
+  };
 }
 
 PJ::ObjectTopicId registerTopic(PJ::SessionManager& session) {
-  auto topic = session.objectStore().registerTopic(
-      PJ::ObjectTopicDescriptor{.dataset_id = 1, .topic_name = "/scene_entities", .metadata_json = "{}"});
-  EXPECT_TRUE(topic.has_value());
-  return *topic;
+  return registerObjectTopic(session, "/scene_entities");
 }
 
 void registerParser(PJ::SessionManager& session, PJ::ObjectTopicId topic_id) {
-  auto parser = std::make_unique<PJ::MessageParserHandle>(sceneEntitiesParserVtable());
-  ASSERT_TRUE(parser->bindSchema("scene_entities", PJ::Span<const uint8_t>{}));
+  auto parser = makeBoundHandle("scene_entities", []() noexcept -> void* {
+    return new CountingObjectParser(
+        "scene_entities", PJ::sdk::BuiltinObjectType::kSceneEntities, &g_parse_count, &emitSceneEntities);
+  });
   session.registerObjectTopicParser(topic_id, std::move(parser));
 }
 
@@ -534,8 +482,10 @@ TEST(SceneEntitiesLayerModelTest, DetachlessReattachAfterDatasetReplaceResetsSta
   auto staged_topic = staged_store.registerTopic(
       PJ::ObjectTopicDescriptor{.dataset_id = 2, .topic_name = "/scene_entities", .metadata_json = "{}"});
   ASSERT_TRUE(staged_topic.has_value());
-  auto staged_parser = std::make_unique<PJ::MessageParserHandle>(sceneEntitiesParserVtable());
-  ASSERT_TRUE(staged_parser->bindSchema("scene_entities", PJ::Span<const uint8_t>{}));
+  auto staged_parser = makeBoundHandle("scene_entities", []() noexcept -> void* {
+    return new CountingObjectParser(
+        "scene_entities", PJ::sdk::BuiltinObjectType::kSceneEntities, &g_parse_count, &emitSceneEntities);
+  });
   std::vector<std::pair<PJ::ObjectTopicId, std::unique_ptr<PJ::MessageParserHandle>>> staged_parsers;
   staged_parsers.emplace_back(*staged_topic, std::move(staged_parser));
   session.replaceDataset(staged_engine, staged_store, /*staged_id=*/2, /*primary_id=*/1, std::move(staged_parsers));
@@ -557,6 +507,30 @@ TEST(SceneEntitiesLayerModelTest, DetachlessReattachAfterDatasetReplaceResetsSta
   EXPECT_EQ(layer.currentEntities().count("new_car"), 1u) << "new-generation entry skipped after re-attach";
   EXPECT_EQ(layer.currentEntities().count("old_car"), 0u);
   EXPECT_EQ(layer.sourceFrame(), QStringLiteral("new_frame"));
+}
+
+// Regression (L.23): attach() must seed the initial decode when the topic's
+// first sample sits at store timestamp 0 (ROS sim time commonly starts at t=0).
+// The old `ts_first_ != 0` sentinel conflated "no data" with a legitimate t=0
+// first sample, so the model state was never built at attach and the entity was
+// invisible until the next scrub. Presence is now tracked via std::optional, so
+// a t=0 first sample is seeded just like any other.
+TEST(SceneEntitiesLayerModelTest, AttachSeedsFirstSampleAtTimestampZero) {
+  PJ::SessionManager session;
+  const PJ::ObjectTopicId topic_id = registerTopic(session);
+  registerParser(session, topic_id);
+  // Store timestamp 0 — the first (and only) sample lands exactly at the epoch.
+  pushSceneEntities(session, topic_id, 0, batchWithEntities({makeEntity("sim_car", 0, "base_link")}));
+
+  pj::scene3d::SceneEntitiesLayer layer(topic_id, QStringLiteral("/scene_entities"));
+  const auto ctx = makeContext(session);
+  ASSERT_TRUE(layer.attach(ctx));
+
+  // No setTrackerTime() yet: attach() alone must have built the model state at
+  // t=0, so the entity is present immediately.
+  ASSERT_EQ(layer.currentEntities().count("sim_car"), 1u)
+      << "attach() skipped the t=0 first sample (0 treated as a 'no data' sentinel)";
+  EXPECT_EQ(layer.sourceFrame(), QStringLiteral("base_link"));
 }
 
 // Regression: a finished async ModelPrimitive mesh load must itself request the
@@ -767,9 +741,11 @@ TEST(SceneEntitiesLayerModelTest, ReloadSwapsParserWithoutTouchingStaleOne) {
 
   PJ::SessionManager session;
   const PJ::ObjectTopicId topic_id = registerTopic(session);
-  registerCountingParser(session, topic_id, countingSceneEntitiesVtable([]() noexcept -> void* {
-                           return new CountingSceneEntitiesParser(&g_first_scene_parser_calls);
-                         }));
+  session.registerObjectTopicParser(topic_id, makeBoundHandle("scene_entities", []() noexcept -> void* {
+                                      return new CountingObjectParser(
+                                          "scene_entities", PJ::sdk::BuiltinObjectType::kSceneEntities,
+                                          &g_first_scene_parser_calls, &emitSceneEntities);
+                                    }));
   pushSceneEntities(session, topic_id, 10, batchWithEntities({makeEntity("car", 10, "old_frame")}));
 
   pj::scene3d::SceneEntitiesLayer layer(topic_id, QStringLiteral("/scene_entities"));
@@ -786,9 +762,11 @@ TEST(SceneEntitiesLayerModelTest, ReloadSwapsParserWithoutTouchingStaleOne) {
 
   // Reload: re-register the topic's parser under its stable id and push a new
   // sample. The next tracker tick must decode through the new parser.
-  registerCountingParser(session, topic_id, countingSceneEntitiesVtable([]() noexcept -> void* {
-                           return new CountingSceneEntitiesParser(&g_second_scene_parser_calls);
-                         }));
+  session.registerObjectTopicParser(topic_id, makeBoundHandle("scene_entities", []() noexcept -> void* {
+                                      return new CountingObjectParser(
+                                          "scene_entities", PJ::sdk::BuiltinObjectType::kSceneEntities,
+                                          &g_second_scene_parser_calls, &emitSceneEntities);
+                                    }));
   pushSceneEntities(session, topic_id, 20, batchWithEntities({makeEntity("truck", 20, "new_frame")}));
 
   const int stale_calls_before = g_first_scene_parser_calls.load(std::memory_order_relaxed);
