@@ -193,8 +193,13 @@ jobs:
             ccache-linux-
 
       - name: Set ccache limits
+        # 2G, not 500M: the full compiled object set (esp. after the Qt 6.11
+        # bump, whose larger headers grew per-TU output) exceeds 500M, so a
+        # 500M cap thrashed — ccache evicted this build's own early objects
+        # mid-run (observed: 25 cleanups, 39% hit rate), leaving every later
+        # build permanently partially-cold. 2G holds the whole warm set.
         run: |
-          ccache --set-config=max_size=500M
+          ccache --set-config=max_size=2G
           ccache --set-config=compression=true
           ccache -z
 
