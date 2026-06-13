@@ -35,6 +35,7 @@
 #include "pj_scene3d_core/pointcloud.h"
 #include "pj_scene3d_core/pointcloud_codecs.h"
 #include "pj_scene3d_core/pointcloud_convert.h"  // convertCanonical, ConvertedPointCloud
+#include "pj_scene3d_core/tf/tf_buffer.h"        // source->fixed lookup for world-axis range
 #include "pj_scene3d_widgets/parse_locked.h"
 #include "pj_widgets/ColorPickerPopup.h"
 #include "pj_widgets/DoubleScrubber.h"
@@ -66,6 +67,21 @@ std::pair<float, float> computeScalarRange(const std::vector<float>& scalar) {
     hi = lo + 1.0f;
   }
   return {lo, hi};
+}
+
+// Fixed-frame spatial colour axis for a colour-field name: x->0, y->1, z->2, else
+// -1 (a non-spatial scalar field like intensity, coloured by its raw value).
+int spatialAxisIndex(const std::string& field) {
+  if (field == "x") {
+    return 0;
+  }
+  if (field == "y") {
+    return 1;
+  }
+  if (field == "z") {
+    return 2;
+  }
+  return -1;
 }
 
 QString defaultColorField(const QStringList& available) {
@@ -182,7 +198,7 @@ QDomElement PointCloudLayer::xmlSaveState(QDomDocument& doc) const {
   }();
   el.setAttribute(QStringLiteral("shape"), shape_str);
   el.setAttribute(QStringLiteral("size_meters"), QString::number(static_cast<double>(size_meters_), 'g', 6));
-  el.setAttribute(QStringLiteral("size_pixels"), QString::number(size_pixels_));
+  el.setAttribute(QStringLiteral("size_pixels"), QString::number(static_cast<double>(size_pixels_), 'g', 6));
   el.setAttribute(
       QStringLiteral("color_type"),
       color_type_ == PointcloudRenderPass::ColorType::kSolid ? QStringLiteral("solid") : QStringLiteral("field"));
@@ -214,7 +230,7 @@ bool PointCloudLayer::xmlLoadState(const QDomElement& element) {
   if (ok) {
     setSizeMeters(size_m);
   }
-  const int size_px = element.attribute(QStringLiteral("size_pixels"), QStringLiteral("2")).toInt(&ok);
+  const float size_px = element.attribute(QStringLiteral("size_pixels"), QStringLiteral("2")).toFloat(&ok);
   if (ok) {
     setSizePixels(size_px);
   }
@@ -325,10 +341,10 @@ void PointCloudLayer::setFixedFrame(const QString& frame) {
     return;
   }
   fixed_frame_ = frame;
-  // Scalars are source-frame payload bytes (read in convertCanonical); the fixed-frame
-  // TF is applied only in the vertex shader. Switching the fixed frame therefore cannot
-  // change any scalar or its auto-range — only the rendered transform — so just repaint
-  // so the shader re-runs with the new source->fixed transform; no re-decode/refit needed.
+  // Both the geometry transform and (for x/y/z colouring) the per-point colour + auto
+  // colormap range are derived in the render pass from the live source->fixed model, so
+  // a fixed-frame change is fully absorbed by re-running the shader — no re-decode or
+  // CPU refit. A bare repaint suffices. (Non-spatial scalars are frame-independent.)
   emit repaintRequested();
 }
 
@@ -530,7 +546,7 @@ QWidget* PointCloudLayer::createConfigWidget(QWidget* parent) {
   // otherwise (intensity, reflectance, ring index, …). Recomputed whenever
   // the color field changes.
   const auto apply_range_step = [this, range_min_spin, range_max_spin]() {
-    const bool is_spatial = color_field_ == "x" || color_field_ == "y" || color_field_ == "z";
+    const bool is_spatial = spatialAxisIndex(color_field_) >= 0;
     const double step = is_spatial ? 0.1 : 1.0;
     range_min_spin->setSingleStep(step);
     range_max_spin->setSingleStep(step);
@@ -570,7 +586,7 @@ QWidget* PointCloudLayer::createConfigWidget(QWidget* parent) {
 
   QObject::connect(size_spin, &PJ::DoubleScrubber::valueChanged, this, [this](double v) {
     if (shape_ == PointcloudRenderPass::Shape::kPoint) {
-      setSizePixels(static_cast<int>(v));
+      setSizePixels(static_cast<float>(v));
     } else {
       setSizeMeters(static_cast<float>(v));
     }
@@ -695,7 +711,7 @@ void PointCloudLayer::setSizeMeters(float meters) {
   emit repaintRequested();
 }
 
-void PointCloudLayer::setSizePixels(int pixels) {
+void PointCloudLayer::setSizePixels(float pixels) {
   if (size_pixels_ == pixels) {
     return;
   }
@@ -751,6 +767,19 @@ void PointCloudLayer::setAutoRange(bool enable) {
     range_dirty_ = true;
     refreshNow();
   } else {
+    // For a fixed-frame (x/y/z) axis, freeze at the world-axis range currently on
+    // screen so turning auto off doesn't snap to a stale (or sensor-local) manual
+    // value; seed the manual spinboxes with it. Then stop the pass's per-frame
+    // auto-range and pin the manual bounds.
+    const int axis = spatialAxisIndex(color_field_);
+    if (axis >= 0) {
+      if (const auto frozen = currentWorldAxisRange(axis)) {
+        manual_range_min_ = frozen->first;
+        manual_range_max_ = frozen->second;
+        emit autoRangeComputed(manual_range_min_, manual_range_max_);
+      }
+      cloud_pass_.setSpatialAutoBounds(std::nullopt);
+    }
     // Pin the pass to whatever manual values the layer is currently
     // holding so the colormap doesn't snap to stale auto-computed bounds.
     cloud_pass_.setColormapRange(manual_range_min_, manual_range_max_);
@@ -833,6 +862,18 @@ void PointCloudLayer::updateSourceFrame(const std::string& frame_id) {
   emit fallbackFramesChanged(fallbackFrames());
 }
 
+std::optional<std::pair<float, float>> PointCloudLayer::currentWorldAxisRange(int axis) const {
+  if (!world_bounds_ || ctx_.tf_buffer == nullptr || !decoded_at_ns_) {
+    return std::nullopt;
+  }
+  // fixed<-source at the tracker time — the same transform the render pass applies.
+  const auto tf = ctx_.tf_buffer->tryLookupTransform(fixed_frame_.toStdString(), source_frame_, *decoded_at_ns_);
+  if (!tf) {
+    return std::nullopt;
+  }
+  return transformedAabbAxisRange(*world_bounds_, glm::mat4(tf->matrix()), axis);
+}
+
 void PointCloudLayer::pushCloud(const PointCloud& cloud, SampleId id) {
   updateSourceFrame(cloud.frame_id);
   if (available_color_fields_.isEmpty() && !cloud.fields.empty()) {
@@ -840,7 +881,11 @@ void PointCloudLayer::pushCloud(const PointCloud& cloud, SampleId id) {
     // the first cloud that reaches the GPU also reveals the field set.
     populateColorFields(cloud);
   }
-  ConvertedPointCloud converted = convertCanonical(cloud, color_field_);
+  // Fixed-frame (x/y/z) colouring derives the colour from the GPU-transformed position
+  // (see PointcloudRenderPass::setScalarAxis), so there is no raw scalar to decode for it.
+  const int axis = spatialAxisIndex(color_field_);
+  ConvertedPointCloud converted =
+      convertCanonical(cloud, axis >= 0 ? std::string_view{} : std::string_view{color_field_});
   DecodedPointCloud& decoded = converted.cloud;
 
   // convertCanonical accumulates the finite-point AABB in its single decode pass, so the
@@ -848,15 +893,27 @@ void PointCloudLayer::pushCloud(const PointCloud& cloud, SampleId id) {
   // decoded positions stay in the cloud's own frame).
   world_bounds_ = converted.bounds.valid ? std::optional<AABB>{converted.bounds} : std::nullopt;
 
-  // The scalar is read straight from the message bytes in the cloud's source frame; the
-  // fixed-frame TF is applied only in the vertex shader, so changing the fixed frame cannot
-  // change any scalar — even for x/y/z coloring. Recompute the auto-range only when it is
-  // actually dirty (a new color field or a re-enabled auto-range), never per push.
-  if (!decoded.scalar.empty() && auto_range_ && range_dirty_) {
-    const auto [lo, hi] = computeScalarRange(decoded.scalar);
-    cloud_pass_.setColormapRange(lo, hi);
+  cloud_pass_.setScalarAxis(axis);
+  if (axis >= 0) {
+    // The pass derives both the per-point colour AND (when auto) the colormap range
+    // from these source bounds transformed by the live source->fixed model, so a
+    // fixed-frame or TF change needs no re-decode. Manual range pins explicit
+    // world-axis bounds; the shader still colours by the fixed-frame coordinate.
+    cloud_pass_.setSpatialAutoBounds(auto_range_ ? world_bounds_ : std::optional<AABB>{});
+    if (!auto_range_) {
+      cloud_pass_.setColormapRange(manual_range_min_, manual_range_max_);
+    }
     range_dirty_ = false;
-    emit autoRangeComputed(lo, hi);
+  } else {
+    // Non-spatial field: colour by the raw per-point scalar in the cloud's own frame.
+    // Recompute the auto-range only when actually dirty (new field / re-enabled auto).
+    cloud_pass_.setSpatialAutoBounds(std::nullopt);
+    if (!decoded.scalar.empty() && auto_range_ && range_dirty_) {
+      const auto [lo, hi] = computeScalarRange(decoded.scalar);
+      cloud_pass_.setColormapRange(lo, hi);
+      range_dirty_ = false;
+      emit autoRangeComputed(lo, hi);
+    }
   }
 
   cloud_pass_.setActiveCloud(std::make_shared<DecodedPointCloud>(std::move(decoded)));

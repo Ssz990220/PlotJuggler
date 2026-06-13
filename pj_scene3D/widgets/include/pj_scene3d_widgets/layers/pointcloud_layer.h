@@ -13,6 +13,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <utility>
 
 #include "pj_base/builtin/builtin_object.hpp"
 #include "pj_base/builtin/compressed_point_cloud.hpp"
@@ -90,7 +91,7 @@ class PointCloudLayer : public Scene3DLayer {
   [[nodiscard]] float sizeMeters() const {
     return size_meters_;
   }
-  [[nodiscard]] int sizePixels() const {
+  [[nodiscard]] float sizePixels() const {
     return size_pixels_;
   }
   [[nodiscard]] PointcloudRenderPass::ColorType colorType() const {
@@ -118,7 +119,7 @@ class PointCloudLayer : public Scene3DLayer {
   void setColorField(const QString& field);
   void setShape(PointcloudRenderPass::Shape shape);
   void setSizeMeters(float meters);
-  void setSizePixels(int pixels);
+  void setSizePixels(float pixels);
   void setColorType(PointcloudRenderPass::ColorType type);
   void setSolidColor(QColor color);
   void setColormap(PointcloudRenderPass::Colormap cm);
@@ -204,6 +205,12 @@ class PointCloudLayer : public Scene3DLayer {
   // Track a (possibly changing) source frame_id; notify the dock/panel on change.
   void updateSourceFrame(const std::string& frame_id);
 
+  // For a fixed-frame (x/y/z) colour axis: the [min,max] of that axis over the
+  // cached source bounds transformed into the fixed frame at the current tracker
+  // time. Used to freeze a sensible world-axis range when auto-range is switched
+  // off. std::nullopt when bounds/TF/time are unavailable (e.g. before first push).
+  [[nodiscard]] std::optional<std::pair<float, float>> currentWorldAxisRange(int axis) const;
+
   // --- Compressed-cloud async decode (Draco / Cloudini) ---
   // Compressed decode is CPU-heavy (~100ms for large Draco clouds), so it runs on the
   // Qt thread pool and never blocks the UI. requestDecode() records the request as
@@ -258,7 +265,7 @@ class PointCloudLayer : public Scene3DLayer {
   // always reflects what the user picked.
   PointcloudRenderPass::Shape shape_ = PointcloudRenderPass::Shape::kSphere;
   float size_meters_ = 0.01f;
-  int size_pixels_ = 2;
+  float size_pixels_ = 2.0f;
   PointcloudRenderPass::ColorType color_type_ = PointcloudRenderPass::ColorType::kField;
   QColor solid_color_{255, 255, 255};
   PointcloudRenderPass::Colormap colormap_ = PointcloudRenderPass::Colormap::kTurbo;

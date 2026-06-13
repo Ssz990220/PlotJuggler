@@ -2,9 +2,12 @@
 // SPDX-License-Identifier: MPL-2.0
 #pragma once
 
+#include <algorithm>
 #include <cstdint>
 #include <glm/glm.hpp>
+#include <limits>
 #include <string>
+#include <utility>
 
 namespace pj::scene3d {
 
@@ -55,6 +58,36 @@ inline AABB unionAABB(const AABB& a, const AABB& b) {
 // Length of the box's space diagonal (0 for a degenerate / point box).
 [[nodiscard]] inline float aabbDiagonal(const AABB& box) {
   return glm::length(box.max - box.min);
+}
+
+// Min/max of one axis (0=x, 1=y, 2=z) of `box` after transforming it by
+// `transform` — i.e. the extent of the box's image along a DESTINATION-frame axis.
+// Used to auto-range a point cloud colored by its FIXED-FRAME x/y/z: the per-point
+// colour is derived in the shader from the transformed position, so its colormap
+// bounds must be measured in that same destination frame, not in the box's own
+// source frame.
+//
+// Exact for the transformed BOX (all 8 corners are tested); for a sparse point set
+// inside the box this is a conservative (outer) bound — tight under translation and
+// yaw, slightly loose under large pitch/roll. Returns {0, 1} for an invalid box.
+// `axis` is clamped to [0, 2].
+[[nodiscard]] inline std::pair<float, float> transformedAabbAxisRange(
+    const AABB& box, const glm::mat4& transform, int axis) {
+  const int selected_axis = glm::clamp(axis, 0, 2);
+  if (!box.valid) {
+    return {0.0f, 1.0f};
+  }
+  float lo = std::numeric_limits<float>::max();
+  float hi = std::numeric_limits<float>::lowest();
+  for (int corner = 0; corner < 8; ++corner) {
+    const glm::vec3 source_corner{
+        (corner & 1) != 0 ? box.max.x : box.min.x, (corner & 2) != 0 ? box.max.y : box.min.y,
+        (corner & 4) != 0 ? box.max.z : box.min.z};
+    const float value = (transform * glm::vec4(source_corner, 1.0f))[selected_axis];
+    lo = std::min(lo, value);
+    hi = std::max(hi, value);
+  }
+  return {lo, hi};
 }
 
 // AABB of an occupancy grid given its origin (the grid's min corner, in the

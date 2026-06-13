@@ -27,6 +27,8 @@ layout(location = 0) in vec3 in_pos;
 layout(location = 1) in float in_scalar;
 uniform mat4 u_view_model;
 uniform mat4 u_proj;
+uniform mat4 u_model;          // source-frame -> fixed-frame; only for fixed-frame axis colour
+uniform int u_scalar_axis;     // -1 = colour by in_scalar; 0/1/2 = fixed-frame x/y/z
 uniform float u_range_min;
 uniform float u_range_max;
 uniform float u_world_radius;     // metres — used when u_use_perspective_size
@@ -58,8 +60,11 @@ void main() {
   } else {
     gl_PointSize = clamp(u_pixel_size, u_min_size_px, u_max_size_px);
   }
+  // Fixed-frame axis colouring: derive the colormap input from the GPU-transformed
+  // position (u_model * in_pos) so sensors at different mounts agree on world height.
+  float scalar = u_scalar_axis < 0 ? in_scalar : (u_model * vec4(in_pos, 1.0))[u_scalar_axis];
   float span = max(u_range_max - u_range_min, 1e-9);
-  v_normalized = clamp((in_scalar - u_range_min) / span, 0.0, 1.0);
+  v_normalized = clamp((scalar - u_range_min) / span, 0.0, 1.0);
 }
 )";
 
@@ -184,6 +189,7 @@ uniform mat4 u_proj;
 uniform float u_size_meters;
 uniform float u_range_min;
 uniform float u_range_max;
+uniform int u_scalar_axis;     // -1 = colour by in_instance_scalar; 0/1/2 = fixed-frame x/y/z
 
 out vec3 v_view_normal;
 out float v_normalized;
@@ -198,8 +204,10 @@ void main() {
   // Corner normals are in fixed-frame axes; bring them into view space for
   // the camera-relative key light in the fragment shader.
   v_view_normal = mat3(u_view) * in_corner_normal;
+  // Fixed-frame axis colouring reuses instance_in_fixed (already computed above).
+  float scalar = u_scalar_axis < 0 ? in_instance_scalar : instance_in_fixed[u_scalar_axis];
   float span = max(u_range_max - u_range_min, 1e-9);
-  v_normalized = clamp((in_instance_scalar - u_range_min) / span, 0.0, 1.0);
+  v_normalized = clamp((scalar - u_range_min) / span, 0.0, 1.0);
 }
 )";
 
@@ -435,6 +443,18 @@ void PointcloudRenderPass::render(const ViewParams& view_params, const FrameCont
 
   const glm::mat4 model = glm::mat4(transform->matrix());
 
+  // Fixed-frame axis auto-range: derive the colormap [min,max] from the source
+  // bounds transformed by THIS frame's model, so colour (computed per-point in the
+  // shader from the same model) and range stay consistent as the TF moves. Falls
+  // back to the explicit range (manual, or a non-spatial field's scalar range).
+  float effective_range_min = range_min_;
+  float effective_range_max = range_max_;
+  if (scalar_axis_ >= 0 && spatial_auto_bounds_.has_value()) {
+    const auto [axis_min, axis_max] = transformedAabbAxisRange(*spatial_auto_bounds_, model, scalar_axis_);
+    effective_range_min = axis_min;
+    effective_range_max = axis_max;
+  }
+
   if (shape_ == Shape::kCube && cube_program_ != nullptr) {
     // Lazy one-time wiring of the cube VAO's per-instance attribs to vbo_.
     // The buffer ID is stable across cloud swaps, so once set this stays
@@ -469,8 +489,9 @@ void PointcloudRenderPass::render(const ViewParams& view_params, const FrameCont
     cube_program_->setMat4("u_view", view_params.view);
     cube_program_->setMat4("u_proj", view_params.proj);
     cube_program_->setFloat("u_size_meters", size_meters_);
-    cube_program_->setFloat("u_range_min", range_min_);
-    cube_program_->setFloat("u_range_max", range_max_);
+    cube_program_->setFloat("u_range_min", effective_range_min);
+    cube_program_->setFloat("u_range_max", effective_range_max);
+    cube_program_->setInt("u_scalar_axis", scalar_axis_);
     cube_program_->setInt("u_color_mode", color_type_ == ColorType::kSolid ? 1 : 0);
     cube_program_->setVec3("u_solid_color", solid_color_);
     cube_program_->setInt("u_colormap_id", static_cast<int>(colormap_));
@@ -494,14 +515,15 @@ void PointcloudRenderPass::render(const ViewParams& view_params, const FrameCont
   const bool use_perspective_size = shape_ != Shape::kPoint;
   program_->use();
   program_->setMat4("u_view_model", view_model);
+  program_->setMat4("u_model", model);  // for fixed-frame axis colour (u_scalar_axis >= 0)
   program_->setMat4("u_proj", view_params.proj);
-  program_->setFloat("u_range_min", range_min_);
-  program_->setFloat("u_range_max", range_max_);
+  program_->setFloat("u_range_min", effective_range_min);
+  program_->setFloat("u_range_max", effective_range_max);
   // size_meters_ is user-facing as the sphere DIAMETER; the shader formula
   // is parameterised on radius (gl_PointSize ≈ 2*R*focal/depth). Halve here
   // so a "0.01 m" input renders as a 1 cm sphere, not a 2 cm one.
   program_->setFloat("u_world_radius", size_meters_ * 0.5f);
-  program_->setFloat("u_pixel_size", static_cast<float>(size_pixels_));
+  program_->setFloat("u_pixel_size", size_pixels_);
   // gl_PointSize rasterizes in DEVICE (framebuffer) pixels, so the world-radius
   // formula needs the device viewport height — on HiDPI the logical height would
   // shrink every perspective-sized point by 1/DPR (M.32). Fall back to the
@@ -517,6 +539,7 @@ void PointcloudRenderPass::render(const ViewParams& view_params, const FrameCont
   program_->setFloat("u_max_size_px", 32.0f * dpr);
   program_->setFloat("u_depth_threshold", 5.0f);
   program_->setInt("u_use_perspective_size", use_perspective_size ? 1 : 0);
+  program_->setInt("u_scalar_axis", scalar_axis_);
   program_->setInt("u_color_mode", color_type_ == ColorType::kSolid ? 1 : 0);
   program_->setVec3("u_solid_color", solid_color_);
   program_->setInt("u_colormap_id", static_cast<int>(colormap_));
@@ -540,12 +563,20 @@ void PointcloudRenderPass::setColormapRange(float min_value, float max_value) {
   range_max_ = max_value;
 }
 
+void PointcloudRenderPass::setScalarAxis(int axis) {
+  scalar_axis_ = (axis >= 0 && axis <= 2) ? axis : -1;
+}
+
+void PointcloudRenderPass::setSpatialAutoBounds(std::optional<AABB> source_bounds) {
+  spatial_auto_bounds_ = std::move(source_bounds);
+}
+
 void PointcloudRenderPass::setSizeMeters(float meters) {
   size_meters_ = std::max(0.0f, meters);
 }
 
-void PointcloudRenderPass::setSizePixels(int pixels) {
-  size_pixels_ = std::max(1, pixels);
+void PointcloudRenderPass::setSizePixels(float pixels) {
+  size_pixels_ = std::max(1.0f, pixels);
 }
 
 void PointcloudRenderPass::setShape(Shape shape) {

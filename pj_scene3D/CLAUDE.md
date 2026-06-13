@@ -116,6 +116,7 @@ Before any commit, run the tests and check that they all pass
 `occupancy_grid_bounds_test`, `occupancy_grid_layer_rebind_test`,
 `occupancy_grid_layer_updates_test`,
 `scene_entities_decode_test`, `pointcloud_codecs_test`,
+`aabb_axis_range_test`,
 `pointcloud_layer_cache_test`, `pointcloud_layer_rebind_test`,
 `pointcloud_layer_coalescing_test`, `camera_near_far_test`,
 `camera_zoom_to_cursor_test`, `camera_state_transfer_test`,

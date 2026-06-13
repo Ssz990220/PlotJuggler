@@ -4,7 +4,9 @@
 
 #include <glm/glm.hpp>
 #include <memory>
+#include <optional>
 
+#include "pj_scene3d_core/camera/camera.h"  // AABB
 #include "pj_scene3d_widgets/gl/buffer.h"
 #include "pj_scene3d_widgets/gl/program.h"
 #include "pj_scene3d_widgets/gl/vertex_array.h"
@@ -47,13 +49,29 @@ class PointcloudRenderPass : public IRenderPass {
   // Range used to normalize the scalar field to [0,1] for the colormap.
   void setColormapRange(float min_value, float max_value);
 
+  // FIXED-FRAME axis colouring. -1 (default) → colour by the uploaded per-point
+  // scalar attribute. 0/1/2 → ignore the attribute and colour by the x/y/z
+  // coordinate of the point AFTER the source→fixed model transform, computed on
+  // the GPU in the vertex shader. This keeps colour-by-height consistent across
+  // sensors at different mounts (the raw x/y/z field is sensor-local).
+  void setScalarAxis(int axis);
+
+  // Source-frame bounds that drive the auto colormap range when setScalarAxis()
+  // selected a spatial axis. When engaged, render() derives the [min,max] for
+  // that axis from these bounds transformed by the SAME per-frame model used to
+  // place the geometry — so colour and range never disagree as the TF moves.
+  // Pass std::nullopt to fall back to the explicit setColormapRange() values
+  // (manual range, or a non-spatial field's scalar range).
+  void setSpatialAutoBounds(std::optional<AABB> source_bounds);
+
   // World-coordinate radius for sphere shape (and side length for cube once
   // Stage 6 lands). Default 0.01 m = 1 cm — chosen to match the pre-Stage-5
   // visuals exactly. Stage 7's UI will surface a larger default.
   void setSizeMeters(float meters);
 
-  // Pixel size for kPoint shape (ignored in sphere/cube). Default 2 px.
-  void setSizePixels(int pixels);
+  // Pixel size for kPoint shape (ignored in sphere/cube). Fractional sizes are
+  // honoured (gl_PointSize is a float). Clamped to >= 1 px. Default 2 px.
+  void setSizePixels(float pixels);
 
   // Shape selector — see enum above. Default kSphere.
   void setShape(Shape shape);
@@ -87,8 +105,13 @@ class PointcloudRenderPass : public IRenderPass {
   bool cloud_dirty_{false};
   float range_min_{0.0f};
   float range_max_{1.0f};
+  // -1 → colour by uploaded scalar; 0/1/2 → colour by fixed-frame x/y/z (GPU).
+  int scalar_axis_{-1};
+  // Engaged only with scalar_axis_ >= 0: source-frame bounds whose transformed
+  // axis extent becomes the auto colormap range, recomputed per frame.
+  std::optional<AABB> spatial_auto_bounds_;
   float size_meters_{0.01f};
-  int size_pixels_{2};
+  float size_pixels_{2.0f};
   bool initialized_{false};
   bool visible_{true};
 

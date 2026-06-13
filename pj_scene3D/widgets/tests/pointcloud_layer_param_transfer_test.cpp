@@ -40,7 +40,7 @@ TEST(PointCloudLayerParamTransfer, SerializeApplyRoundTripsEveryParamBetweenReal
   // Push src away from EVERY default, so a no-op apply can't masquerade as a pass.
   src.setShape(PointcloudRenderPass::Shape::kPoint);          // default kSphere
   src.setSizeMeters(0.25f);                                   // default 0.01
-  src.setSizePixels(7);                                       // default 2
+  src.setSizePixels(7.5f);                                    // default 2; fractional must NOT truncate
   src.setColorType(PointcloudRenderPass::ColorType::kSolid);  // default kField
   src.setSolidColor(QColor(10, 20, 30));
   src.setColormap(PointcloudRenderPass::Colormap::kViridis);  // default kTurbo
@@ -57,7 +57,10 @@ TEST(PointCloudLayerParamTransfer, SerializeApplyRoundTripsEveryParamBetweenReal
   // Every user-tunable parameter transferred to the target layer.
   EXPECT_EQ(dst.shape(), src.shape());
   EXPECT_FLOAT_EQ(dst.sizeMeters(), src.sizeMeters());
-  EXPECT_EQ(dst.sizePixels(), src.sizePixels());
+  // Point size is fractional (the spinbox offers 0.5 steps and gl_PointSize is a
+  // float); it must survive set + XML round-trip without truncating to an int.
+  EXPECT_FLOAT_EQ(src.sizePixels(), 7.5f);
+  EXPECT_FLOAT_EQ(dst.sizePixels(), src.sizePixels());
   EXPECT_EQ(dst.colorType(), src.colorType());
   EXPECT_EQ(dst.solidColor(), src.solidColor());
   EXPECT_EQ(dst.colormap(), src.colormap());
