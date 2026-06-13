@@ -9,6 +9,7 @@
 #include "pj_scene3d_widgets/gl/texture.h"
 #include "pj_scene3d_widgets/gl/vertex_array.h"
 #include "pj_scene3d_widgets/render_pass.h"
+#include "pj_scene3d_widgets/scene_look_defaults.h"
 
 namespace pj::scene3d {
 
@@ -55,8 +56,8 @@ class EdlPass : public IPostPass {
   gl::Framebuffer fbo_;
   gl::Texture output_;
   GLuint depth_texture_id_{0};
-  float strength_{1.0f};
-  float radius_px_{0.6f};  // User look-dev default (plan spec was 1.4)
+  float strength_{look::kEdlStrength};
+  float radius_px_{look::kEdlRadiusPx};  // see scene_look_defaults.h (plan spec was 1.4)
   int width_{0};
   int height_{0};
   bool target_ready_{false};

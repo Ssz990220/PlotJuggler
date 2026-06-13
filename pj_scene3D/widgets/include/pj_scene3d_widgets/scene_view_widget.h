@@ -23,6 +23,7 @@
 #include "pj_scene3d_widgets/passes/grid_render_pass.h"
 #include "pj_scene3d_widgets/passes/ssao_pass.h"
 #include "pj_scene3d_widgets/scene_hdr_fbo.h"
+#include "pj_scene3d_widgets/scene_look_defaults.h"
 
 class QEvent;
 class QMouseEvent;
@@ -72,12 +73,13 @@ class SceneViewWidget : public QOpenGLWidget {
   // Composite/look knobs (read in paintGL; call update() after changing).
   // Defaults are the User's 2026-06-10 look-dev pick (mesh_viewer demo).
   struct CompositeParams {
-    int tonemap_mode = 1;  // 0 None, 1 ACES, 2 AgX
-    float exposure = 1.1f;
-    float saturation = 1.2f;  // post-tonemap; data pixels only
-    float ao_strength = 1.0f;
+    int tonemap_mode = look::kTonemapMode;  // 0 None, 1 ACES, 2 AgX, 3 Khronos PBR Neutral
+    float exposure = look::kExposure;
+    float saturation = look::kSaturation;  // post-tonemap; data pixels only
+    float ao_strength = look::kAoStrength;
     bool ssao_enabled = true;
     bool edl_enabled = true;
+    float edl_floor = look::kEdlFloor;  // EDL darkens toward floor*color (0 = old black; 1 = off)
   };
   [[nodiscard]] CompositeParams& compositeParams() {
     return composite_params_;

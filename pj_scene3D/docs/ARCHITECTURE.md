@@ -28,8 +28,9 @@ layers + passes → SceneHdrFbo (multisample RGBA16F + DEPTH32F)
 - **Linear light + tonemap (0B).** All color inputs are linearized (colormaps,
   occupancy LUT, vertex/base colors, theme colors; mesh diffuse textures upload
   as `GL_SRGB8_ALPHA8`). The composite applies exposure → tonemap
-  (None/ACES/AgX; AgX matrices are **column-major** GLSL `mat3` ctors) →
-  saturation → manual sRGB encode.
+  (None/ACES/AgX/Neutral; AgX matrices are **column-major** GLSL `mat3` ctors;
+  Neutral is the Khronos PBR Neutral mapper, which preserves colormap hue better
+  than ACES) → saturation → manual sRGB encode.
 - **Annotation alpha-marker.** The scene FBO's alpha is a per-pixel
   tonemap-bypass marker, not coverage: annotation passes (TF triads via
   `ArrowGizmo`, HUD overlay) write alpha 0 so they present flat and vivid,
@@ -44,13 +45,17 @@ layers + passes → SceneHdrFbo (multisample RGBA16F + DEPTH32F)
   ortho camera; the perspective near/far formula does not) with an in-shader
   4×4-tiled hash as the rotation noise. **EDL** is Potree-derived (8 circular
   neighbours, log-depth response). Both multiply into the composite and
-  degrade to no-ops when unavailable (`u_has_ao` / `u_has_edl`).
+  degrade to no-ops when unavailable (`u_has_ao` / `u_has_edl`); EDL's darkening
+  is floored (`CompositeParams::edl_floor`) so depth creases bottom out at a
+  hue-preserving dark grey, `floor·color`, rather than pure black (floor 0 = the
+  original multiply-to-black).
 - **Defaults** (look-dev, 2026-06-10): ACES, exposure 1.1, saturation 1.2,
-  SSAO on (strength 1, radius 0.5 m), EDL on (strength 1, radius 0.6 px).
+  SSAO on (strength 1, radius 0.5 m), EDL on (strength 1, radius 0.6 px, floor 0.3).
   Runtime knobs: `SceneViewWidget::compositeParams()`, `ssaoPass()`,
-  `edlPass()`, and the process-wide `meshShadingParams()` (roughness 0.6,
-  f0 0.06, ambient 1.0, direct 1.15 — a stopgap for a future per-scene
-  lighting object). Shader provenance/licenses: [`../THIRDPARTY.md`](../THIRDPARTY.md).
+  `edlPass()`, and the per-view `meshShadingParams()` (roughness 0.6, f0 0.06,
+  ambient 1.0, key/"sun" 1.15, fill 0.35, env-reflection 1.0, key-light dir
+  high/+X+Y — a stopgap for a future per-scene lighting object). Shader
+  provenance/licenses: [`../THIRDPARTY.md`](../THIRDPARTY.md).
 
 **GL context lifecycle (don't regress).** `QOpenGLWidget` recreates its context
 on every ADS reparent. Every pass, layer, the HDR chain, and the present
@@ -134,8 +139,12 @@ testable (`camera_near_far_test`, `camera_zoom_to_cursor_test`,
   by key plus texture color space. Sources without PBR factors fall back to
   `MeshShadingParams`.
 - **Rendering**: `MeshRenderPass` (metallic-roughness GGX + normal mapping +
-  occlusion + emissive + hemispheric ambient + camera headlight; no IBL, so
-  metals get specular highlights but no environment reflection) draws meshes by
+  occlusion + emissive + **analytic image-based ambient** — diffuse irradiance
+  plus a split-sum specular reflection of a procedural ground→sky environment
+  (Karis `envBRDFApprox`, no HDRI cubemap) — lit by a **fixed world key/"sun"
+  light** and a dimmer **camera-locked fill headlight**. Metals now reflect the
+  sky/ground gradient instead of reading near-black; a true prefiltered-cube IBL
+  from an HDRI is still future work) draws meshes by
   key and primitives from unit
   box/cylinder/sphere geometry (URDF cylinder is Z-aligned; sizes ride the
   model matrix). Unresolved meshes render a **magenta unit cube** —

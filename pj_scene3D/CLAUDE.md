@@ -102,8 +102,12 @@ still holds for everything else.
     without PBR (STL, procedural primitives) fall back to the scene-wide
     `MeshShadingParams`.
     Only compressed embedded images are supported (raw-RGBA `mHeight>0`, rare, is
-    skipped). Environment/IBL reflection is still out of scope — metals get
-    specular highlights but no environment reflection.
+    skipped). Mesh shading is lit by a fixed world key ("sun") light plus a
+    camera-locked fill headlight, with **analytic image-based ambient**: diffuse
+    irradiance plus a split-sum specular reflection of a procedural ground→sky
+    environment (Karis `envBRDFApprox`, no HDRI cubemap), so metals reflect the
+    sky/ground gradient instead of reading near-black. A true prefiltered-cube
+    IBL from an HDRI environment is still future work.
 
 # Validation
 

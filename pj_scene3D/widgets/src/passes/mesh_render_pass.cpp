@@ -10,6 +10,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <glm/geometric.hpp>
 #include <glm/gtc/matrix_inverse.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 #include <iterator>
@@ -101,7 +102,10 @@ uniform bool u_has_emissive_tex;
 
 uniform vec3 u_camera_pos;
 uniform float u_ambient_scale;
-uniform float u_direct_scale;
+uniform float u_direct_scale;     // fixed world key ("sun") light weight
+uniform vec3 u_key_dir;           // world-space direction TO the key light (Z-up)
+uniform float u_fill_scale;       // camera-locked headlight fill weight
+uniform float u_env_intensity;    // analytic specular IBL (env reflection) weight
 
 out vec4 frag;
 
@@ -122,6 +126,38 @@ float V_SmithGGXCorrelated(float NoV, float NoL, float a) {
 
 vec3 F_Schlick(vec3 f0, float VoH) {
   return f0 + (1.0 - f0) * pow(clamp(1.0 - VoH, 0.0, 1.0), 5.0);
+}
+
+// One analytic light's outgoing radiance (Lambert diffuse + GGX specular),
+// already weighted by N·L. Shared by the key and fill lights.
+vec3 shadeLight(vec3 N, vec3 V, float NoV, vec3 L, vec3 diffuse_color, vec3 f0, float a) {
+  vec3 H = normalize(V + L);
+  float NoL = max(dot(N, L), 0.0);
+  float NoH = max(dot(N, H), 0.0);
+  float VoH = max(dot(V, H), 0.0);
+  vec3 F = F_Schlick(f0, VoH);
+  float spec = D_GGX(NoH, a) * V_SmithGGXCorrelated(NoV, NoL, a);
+  return (diffuse_color / PI * (1.0 - F) + F * spec) * NoL;
+}
+
+// Karis' analytic "environment BRDF" — the split-sum DFG term without a LUT
+// (B. Karis, "Physically Based Shading on Mobile", Epic Games, 2014).
+vec2 envBRDFApprox(float NoV, float roughness) {
+  const vec4 c0 = vec4(-1.0, -0.0275, -0.572, 0.022);
+  const vec4 c1 = vec4(1.0, 0.0425, 1.04, -0.04);
+  vec4 r = roughness * c0 + c1;
+  float a004 = min(r.x * r.x, exp2(-9.28 * NoV)) * r.x + r.y;
+  return vec2(-1.04, 1.04) * a004 + r.zw;
+}
+
+// Procedural environment radiance for a world direction (Z-up): a ground->sky
+// vertical gradient. The same hemisphere the diffuse ambient integrates, so the
+// reflection and the ambient agree. Our analytic stand-in for an IBL prefiltered
+// cube — no texture, no extra pass.
+const vec3 kEnvGround = vec3(0.28, 0.27, 0.25);
+const vec3 kEnvSky = vec3(0.50, 0.52, 0.55);
+vec3 envRadiance(vec3 dir) {
+  return mix(kEnvGround, kEnvSky, clamp(dir.z * 0.5 + 0.5, 0.0, 1.0));
 }
 
 void main() {
@@ -168,26 +204,33 @@ void main() {
     N = normalize(v_TBN * n);
   }
   vec3 V = normalize(u_camera_pos - v_world_pos);
-  // Camera headlight: the key light follows the view so the side facing the
-  // viewer is always lit (RViz-style), with a small world-up bias for soft shape.
-  vec3 L = normalize(V + vec3(0.0, 0.0, 0.25));
-  vec3 H = normalize(V + L);
-  float NoL = max(dot(N, L), 0.0);
   float NoV = max(dot(N, V), 0.0);
-  float NoH = max(dot(N, H), 0.0);
-  float VoH = max(dot(V, H), 0.0);
 
   // Metalness workflow: metals take their f0 from albedo and have no diffuse.
   vec3 f0 = mix(vec3(u_dielectric_f0), base, metal);
   vec3 diffuse_color = base * (1.0 - metal);
-  vec3 F = F_Schlick(f0, VoH);
-  float spec = D_GGX(NoH, a) * V_SmithGGXCorrelated(NoV, NoL, a);
-  vec3 direct = (diffuse_color / PI * (1.0 - F) + F * spec) * NoL;
 
-  float hemi = dot(N, vec3(0.0, 0.0, 1.0)) * 0.5 + 0.5;
-  vec3 ambient = mix(vec3(0.28, 0.27, 0.25), vec3(0.50, 0.52, 0.55), hemi) * diffuse_color;
+  // Two analytic lights: a fixed world-space KEY ("sun") so shape reads the
+  // same as the camera orbits, plus a dimmer camera-locked FILL headlight so
+  // the viewer-facing side never goes black.
+  vec3 Lkey = u_key_dir;  // already unit-length (normalized once on upload in drawBatch)
+  vec3 Lfill = normalize(V + vec3(0.0, 0.0, 0.25));
+  vec3 direct = shadeLight(N, V, NoV, Lkey, diffuse_color, f0, a) * u_direct_scale +
+                shadeLight(N, V, NoV, Lfill, diffuse_color, f0, a) * u_fill_scale;
+
+  // Image-based ambient (analytic IBL): diffuse irradiance from the hemisphere
+  // plus split-sum specular reflection of the procedural environment. The
+  // specular term is what makes metals read as metal — a metal has ~no diffuse
+  // and so was previously almost black under ambient.
   float ao = u_has_ao_tex ? texture(u_ao_tex, v_uv).r : 1.0;
-  vec3 color = ambient * ao * u_ambient_scale + direct * u_direct_scale;
+  vec3 diffuse_ibl = envRadiance(N) * diffuse_color;
+  vec3 refl = reflect(-V, N);
+  vec3 prefiltered = envRadiance(mix(refl, N, roughness));  // roughness blur
+  vec2 dfg = envBRDFApprox(NoV, roughness);
+  vec3 specular_ibl = prefiltered * (f0 * dfg.x + dfg.y) * u_env_intensity;
+  vec3 ambient = (diffuse_ibl + specular_ibl) * ao * u_ambient_scale;
+
+  vec3 color = ambient + direct;
   if (u_collision) {
     color = mix(color, base, 0.35);
   }
@@ -748,6 +791,16 @@ void MeshRenderPass::drawBatch(
   // of inverting view per draw inside drawOne (L.56). SceneViewWidget already
   // fills camera_pos_world from camera_->position().
   program_->setVec3("u_camera_pos", view_params.camera_pos_world);
+  // Lighting/IBL knobs are also view-constant: the key light direction, the
+  // headlight fill weight, and the env-reflection weight are the same for every
+  // draw in the batch. Normalize the key dir here (guard against a zeroed dir).
+  const MeshShadingParams& batch_shading = view_params.shading;
+  glm::vec3 key_dir = batch_shading.key_light_dir;
+  const float key_len = glm::length(key_dir);
+  key_dir = key_len > 1e-6f ? key_dir / key_len : glm::vec3(0.0f, 0.0f, 1.0f);
+  program_->setVec3("u_key_dir", key_dir);
+  program_->setFloat("u_fill_scale", batch_shading.fill_light_scale);
+  program_->setFloat("u_env_intensity", batch_shading.env_intensity);
 
   if (collision) {
     withGlFunctions([](auto& functions) {

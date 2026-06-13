@@ -35,10 +35,27 @@ reference). License: **MIT**.
 Krzysztof Narkowicz, "ACES Filmic Tone Mapping Curve" (2016). Released by the
 author as **CC0 / public domain**.
 
+## Khronos PBR Neutral tonemapper (`scene_view_widget.cpp`, composite present shader)
+
+The `PBRNeutral` tone-mapping curve is the **Khronos PBR Neutral** tone mapper
+from the glTF Sample Viewer, adopted via three.js `NeutralToneMapping`
+(`tonemapping_pars_fragment.glsl.js`). License: **Apache-2.0** (Khronos) /
+**MIT** (three.js port). The three.js MIT text is reproduced under the AgX
+section above; the Apache-2.0 grant is the standard Khronos license.
+
 ## sRGB OETF (`scene_view_widget.cpp`, composite present shader)
 
 The piecewise sRGB encode function per **IEC 61966-2-1** (a standard formula,
 not copyrightable expression; listed for provenance).
+
+## Analytic environment BRDF (`passes/mesh_render_pass.cpp`, mesh fragment shader)
+
+`envBRDFApprox` is Brian Karis' analytic fit to the split-sum environment BRDF
+("Physically Based Shading on Mobile", Epic Games, 2014;
+https://www.unrealengine.com/blog/physically-based-shading-on-mobile). Released
+by the author for free use; a short polynomial, listed for provenance. The
+surrounding analytic-IBL ambient (procedural ground→sky `envRadiance`,
+roughness-blurred reflection prefilter) is original PJ4 code.
 
 ## SSAO (`passes/ssao_pass.cpp`)
 

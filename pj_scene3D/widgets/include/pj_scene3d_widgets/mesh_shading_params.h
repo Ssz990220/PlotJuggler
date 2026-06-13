@@ -2,6 +2,10 @@
 // SPDX-License-Identifier: MPL-2.0
 #pragma once
 
+#include <glm/vec3.hpp>
+
+#include "pj_scene3d_widgets/scene_look_defaults.h"
+
 namespace pj::scene3d {
 
 // Per-view mesh shading / scene-look knobs. Owned by each SceneViewWidget next to
@@ -12,13 +16,21 @@ namespace pj::scene3d {
 // docks therefore hold independent look state and never clobber each other.
 // Defaults are the User's 2026-06-10 look-dev pick (mesh_viewer demo).
 struct MeshShadingParams {
-  float roughness = 0.6f;          // visual-mesh GGX roughness (collision stays 0.85)
-  float reflectivity = 0.06f;      // dielectric f0
-  float ambient_scale = 1.0f;      // hemispheric ambient weight
-  float direct_scale = 1.15f;      // headlight weight
-  float mesh_opacity = 1.0f;       // visual meshes; 0 hides them (plan §9.3)
-  float collision_opacity = 0.4f;  // collision hulls (translucent overlay); 0 hides
-  bool meshes_visible = true;      // Part C eye toggles (independent of opacity)
+  float roughness = look::kRoughness;              // visual-mesh GGX roughness (collision stays 0.85)
+  float reflectivity = look::kReflectivity;        // dielectric f0
+  float ambient_scale = look::kAmbientScale;       // image-based ambient (diffuse + specular IBL) weight
+  float direct_scale = look::kKeyLightScale;       // fixed world key ("sun") light weight
+  float fill_light_scale = look::kFillLightScale;  // camera-locked headlight fill weight
+  float env_intensity = look::kEnvIntensity;       // analytic specular IBL (environment reflection) weight
+  // World-space direction TO the key light (Z-up); the shader normalizes it. A
+  // fixed sun keeps shape shading consistent as the camera orbits (vs the old
+  // camera-locked headlight). No app UI — a baked look-dev default, exposed by
+  // the mesh_viewer demo as azimuth/elevation sliders. Derived from the canonical
+  // azimuth/elevation defaults so the demo's sliders and this stay in lockstep.
+  glm::vec3 key_light_dir = look::keyDirFromAzEl(look::kKeyLightAzimuthDeg, look::kKeyLightElevationDeg);
+  float mesh_opacity = look::kMeshOpacity;            // visual meshes; 0 hides them (plan §9.3)
+  float collision_opacity = look::kCollisionOpacity;  // collision hulls (translucent overlay); 0 hides
+  bool meshes_visible = true;                         // Part C eye toggles (independent of opacity)
   bool collisions_visible = true;
 };
 

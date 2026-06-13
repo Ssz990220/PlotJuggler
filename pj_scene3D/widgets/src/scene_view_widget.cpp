@@ -68,9 +68,10 @@ void main() {
 // HDR; this pass tonemaps and applies the single manual sRGB encode (the
 // backing FBO is not sRGB-capable; GL_FRAMEBUFFER_SRGB stays disabled).
 // AgX: adapted from three.js tonemapping_pars_fragment (MIT; Filament/Sobotka
-// derived). ACES: Narkowicz (CC0). sRGB OETF: IEC 61966-2-1. Full license
-// texts: pj_scene3D/THIRDPARTY.md. Will become CompositePass : IPostPass when
-// EDL/SSAO inputs land (plan §A.6).
+// derived). ACES: Narkowicz (CC0). Neutral: Khronos PBR Neutral (Apache-2.0,
+// via three.js). sRGB OETF: IEC 61966-2-1. Full license texts:
+// pj_scene3D/THIRDPARTY.md. Will become CompositePass : IPostPass when EDL/SSAO
+// inputs land (plan §A.6).
 constexpr std::string_view kPresentFragSrc = R"GLSL(
 #version 450 core
 in vec2 v_uv;
@@ -81,9 +82,10 @@ uniform sampler2D u_ao;
 uniform bool u_has_ao = false;
 uniform sampler2D u_edl;
 uniform bool u_has_edl = false;
-uniform int u_tonemap_mode = 1;  // 0 None, 1 ACES, 2 AgX
+uniform int u_tonemap_mode = 1;  // 0 None, 1 ACES, 2 AgX, 3 Neutral
 uniform float u_exposure = 1.1;
 uniform float u_ao_strength = 1.0;
+uniform float u_edl_floor;         // set each frame from CompositeParams::edl_floor (look::kEdlFloor)
 uniform float u_saturation = 1.2;  // post-tonemap saturation boost
 
 vec3 sRGB(vec3 c) {
@@ -117,6 +119,27 @@ vec3 AgX(vec3 c) {
   c = R2S * c;
   return clamp(c, 0.0, 1.0);
 }
+// Khronos PBR Neutral tone mapper: preserves hue/saturation far better than
+// ACES (which shifts saturated colors), which matters when the scene is full of
+// turbo/viridis costmaps and colormapped clouds whose hue IS the data. Operates
+// in linear; output is linear [0,1]. Source: Khronos glTF Sample Viewer, via
+// three.js NeutralToneMapping.
+vec3 PBRNeutral(vec3 c) {
+  const float kStartCompression = 0.8 - 0.04;
+  const float kDesaturation = 0.15;
+  float x = min(c.r, min(c.g, c.b));
+  float offset = x < 0.08 ? x - 6.25 * x * x : 0.04;
+  c -= offset;
+  float peak = max(c.r, max(c.g, c.b));
+  if (peak < kStartCompression) {
+    return c;
+  }
+  float d = 1.0 - kStartCompression;
+  float new_peak = 1.0 - d * d / (peak + d - kStartCompression);
+  c *= new_peak / peak;
+  float g = 1.0 - 1.0 / (kDesaturation * (peak - new_peak) + 1.0);
+  return mix(c, vec3(new_peak), g);
+}
 void main() {
   vec4 scene = texture(u_scene, v_uv);
   float depth = texture(u_depth, v_uv).r;
@@ -125,9 +148,16 @@ void main() {
     hdr *= mix(1.0, texture(u_ao, v_uv).r, u_ao_strength);
   }
   if (u_has_edl) {
-    hdr *= texture(u_edl, v_uv).r;  // eye-dome shade factor (1 = untouched)
+    // Floor the eye-dome darkening so creases bottom out at a hue-preserving dark
+    // grey (u_edl_floor * color) instead of pure black. u_edl_floor == 0 is the
+    // original multiply-to-black behavior.
+    float edl = texture(u_edl, v_uv).r;  // shade factor (1 = untouched, →0 = max)
+    hdr *= mix(u_edl_floor, 1.0, edl);
   }
-  vec3 graded = u_tonemap_mode == 1 ? ACES(hdr) : u_tonemap_mode == 2 ? AgX(hdr) : clamp(hdr, vec3(0.0), vec3(1.0));
+  vec3 graded = u_tonemap_mode == 1   ? ACES(hdr)
+                : u_tonemap_mode == 2 ? AgX(hdr)
+                : u_tonemap_mode == 3 ? PBRNeutral(hdr)
+                                      : clamp(hdr, vec3(0.0), vec3(1.0));
   float luma = dot(graded, vec3(0.2126, 0.7152, 0.0722));
   graded = clamp(mix(vec3(luma), graded, u_saturation), vec3(0.0), vec3(1.0));
   if (depth >= 0.999999) {
@@ -436,6 +466,7 @@ void SceneViewWidget::paintGL() {
   present_program_->setFloat("u_exposure", composite_params_.exposure);
   present_program_->setFloat("u_saturation", composite_params_.saturation);
   present_program_->setFloat("u_ao_strength", composite_params_.ao_strength);
+  present_program_->setFloat("u_edl_floor", composite_params_.edl_floor);
   present_vao_.bind();
   funcs->glDrawArrays(GL_TRIANGLES, 0, 3);
   present_vao_.unbind();

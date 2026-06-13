@@ -11,6 +11,7 @@
 #include "pj_scene3d_widgets/gl/texture.h"
 #include "pj_scene3d_widgets/gl/vertex_array.h"
 #include "pj_scene3d_widgets/render_pass.h"
+#include "pj_scene3d_widgets/scene_look_defaults.h"
 
 namespace pj::scene3d {
 
@@ -68,8 +69,8 @@ class SsaoPass : public IPostPass {
   gl::Texture blur_ao_;
   std::vector<glm::vec3> kernel_;
   GLuint depth_texture_id_{0};
-  float radius_m_{0.5f};
-  float ao_power_{1.0f};
+  float radius_m_{look::kSsaoRadiusM};
+  float ao_power_{look::kSsaoPower};
   int width_{0};
   int height_{0};
   bool targets_ready_{false};

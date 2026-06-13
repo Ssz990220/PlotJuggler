@@ -23,26 +23,36 @@
 #include <QFileInfo>
 #include <QFormLayout>
 #include <QHBoxLayout>
+#include <QImage>
 #include <QLabel>
+#include <QSettings>
 #include <QSlider>
 #include <QString>
 #include <QStringList>
+#include <QTimer>
 #include <QWidget>
+#include <cmath>
 #include <cstdio>
 #include <functional>
+#include <glm/glm.hpp>
 #include <glm/gtc/quaternion.hpp>
+#include <limits>
 #include <memory>
 
 #include "pj_base/time.hpp"
 #include "pj_runtime/SessionManager.h"
+#include "pj_scene3d_core/camera/camera.h"
 #include "pj_scene3d_core/tf/tf_buffer.h"
 #include "pj_scene3d_core/tf/transform.h"
 #include "pj_scene3d_widgets/layers/robot_model_layer.h"
 #include "pj_scene3d_widgets/passes/mesh_render_pass.h"
+#include "pj_scene3d_widgets/scene_look_defaults.h"
 #include "pj_scene3d_widgets/scene_view_widget.h"
 #include "urdf_package_resolver.h"  // private widgets/src header, like the tests
 
 namespace {
+
+namespace look = pj::scene3d::look;  // canonical look defaults (scene_look_defaults.h)
 
 glm::dvec3 parseTriple(const QString& text) {
   const QStringList parts = text.split(' ', Qt::SkipEmptyParts);
@@ -137,7 +147,7 @@ QWidget* makeControls(pj::scene3d::SceneViewWidget& view) {
   const auto repaint = [&view] { view.update(); };
 
   auto* tonemap = new QComboBox;
-  tonemap->addItems({QStringLiteral("None"), QStringLiteral("ACES"), QStringLiteral("AgX")});
+  tonemap->addItems({QStringLiteral("None"), QStringLiteral("ACES"), QStringLiteral("AgX"), QStringLiteral("Neutral")});
   tonemap->setCurrentIndex(view.compositeParams().tonemap_mode);
   QObject::connect(tonemap, &QComboBox::currentIndexChanged, &view, [&view, repaint](int idx) {
     view.compositeParams().tonemap_mode = idx;
@@ -165,18 +175,23 @@ QWidget* makeControls(pj::scene3d::SceneViewWidget& view) {
     repaint();
   });
   form->addRow(ssao_box);
-  addSlider(form, QStringLiteral("AO strength"), 0, 100, 100, [&view, repaint](float v) {
-    view.compositeParams().ao_strength = v;
-    repaint();
-  });
-  addSlider(form, QStringLiteral("AO radius m"), 5, 200, 50, [&view, repaint](float v) {
-    view.ssaoPass().setRadius(v);
-    repaint();
-  });
-  addSlider(form, QStringLiteral("AO power"), 50, 500, 100, [&view, repaint](float v) {
-    view.ssaoPass().setPower(v);
-    repaint();
-  });
+  addSlider(
+      form, QStringLiteral("AO strength"), 0, 100, static_cast<int>(view.compositeParams().ao_strength * 100),
+      [&view, repaint](float v) {
+        view.compositeParams().ao_strength = v;
+        repaint();
+      });
+  addSlider(
+      form, QStringLiteral("AO radius m"), 5, 200, static_cast<int>(look::kSsaoRadiusM * 100),
+      [&view, repaint](float v) {
+        view.ssaoPass().setRadius(v);
+        repaint();
+      });
+  addSlider(
+      form, QStringLiteral("AO power"), 50, 500, static_cast<int>(look::kSsaoPower * 100), [&view, repaint](float v) {
+        view.ssaoPass().setPower(v);
+        repaint();
+      });
 
   auto* edl_box = new QCheckBox(QStringLiteral("EDL"));
   edl_box->setChecked(view.compositeParams().edl_enabled);
@@ -185,14 +200,24 @@ QWidget* makeControls(pj::scene3d::SceneViewWidget& view) {
     repaint();
   });
   form->addRow(edl_box);
-  addSlider(form, QStringLiteral("EDL strength"), 0, 400, 100, [&view, repaint](float v) {
-    view.edlPass().setStrength(v);
-    repaint();
-  });
-  addSlider(form, QStringLiteral("EDL radius px"), 10, 500, 60, [&view, repaint](float v) {
-    view.edlPass().setRadiusPx(v);
-    repaint();
-  });
+  addSlider(
+      form, QStringLiteral("EDL strength"), 0, 400, static_cast<int>(look::kEdlStrength * 100),
+      [&view, repaint](float v) {
+        view.edlPass().setStrength(v);
+        repaint();
+      });
+  addSlider(
+      form, QStringLiteral("EDL radius px"), 10, 500, static_cast<int>(look::kEdlRadiusPx * 100),
+      [&view, repaint](float v) {
+        view.edlPass().setRadiusPx(v);
+        repaint();
+      });
+  addSlider(
+      form, QStringLiteral("EDL floor"), 0, 100, static_cast<int>(view.compositeParams().edl_floor * 100),
+      [&view, repaint](float v) {
+        view.compositeParams().edl_floor = v;
+        repaint();
+      });
 
   // Per-view shading knobs: `view` outlives this panel (both owned by `window`),
   // so the lambdas can capture &shading safely, same as the compositeParams() rows.
@@ -216,9 +241,54 @@ QWidget* makeControls(pj::scene3d::SceneViewWidget& view) {
         repaint();
       });
   addSlider(
-      form, QStringLiteral("Direct light"), 0, 250, static_cast<int>(shading.direct_scale * 100),
+      form, QStringLiteral("Key light"), 0, 250, static_cast<int>(shading.direct_scale * 100),
       [&shading, repaint](float v) {
         shading.direct_scale = v;
+        repaint();
+      });
+  addSlider(
+      form, QStringLiteral("Fill light"), 0, 150, static_cast<int>(shading.fill_light_scale * 100),
+      [&shading, repaint](float v) {
+        shading.fill_light_scale = v;
+        repaint();
+      });
+
+  // Key-light direction as azimuth/elevation (degrees), shared by both sliders.
+  // Seeded from the canonical defaults so the sliders start matched to the struct.
+  auto key_angles = std::make_shared<glm::vec2>(look::kKeyLightAzimuthDeg, look::kKeyLightElevationDeg);
+  const auto applyKeyDir = [&shading, key_angles, repaint] {
+    shading.key_light_dir = look::keyDirFromAzEl(key_angles->x, key_angles->y);
+    repaint();
+  };
+  const auto addDegSlider =
+      [form](const QString& label, int min, int max, int value, const std::function<void(float)>& apply) {
+        auto* slider = new QSlider(Qt::Horizontal);
+        slider->setRange(min, max);
+        slider->setValue(value);
+        auto* name = new QLabel(QStringLiteral("%1 (%2°)").arg(label).arg(value));
+        QObject::connect(slider, &QSlider::valueChanged, name, [name, label, apply](int v) {
+          name->setText(QStringLiteral("%1 (%2°)").arg(label).arg(v));
+          apply(static_cast<float>(v));
+        });
+        form->addRow(name, slider);
+      };
+  addDegSlider(
+      QStringLiteral("Key azimuth"), -180, 180, static_cast<int>(look::kKeyLightAzimuthDeg),
+      [key_angles, applyKeyDir](float v) {
+        key_angles->x = v;
+        applyKeyDir();
+      });
+  addDegSlider(
+      QStringLiteral("Key elevation"), 0, 90, static_cast<int>(look::kKeyLightElevationDeg),
+      [key_angles, applyKeyDir](float v) {
+        key_angles->y = v;
+        applyKeyDir();
+      });
+
+  addSlider(
+      form, QStringLiteral("Env reflection"), 0, 200, static_cast<int>(shading.env_intensity * 100),
+      [&shading, repaint](float v) {
+        shading.env_intensity = v;
         repaint();
       });
 
@@ -231,18 +301,73 @@ QWidget* makeControls(pj::scene3d::SceneViewWidget& view) {
   return panel;
 }
 
+// Parsed command line. Positionals: <robot.urdf> [mesh-search-root]. Flags let a
+// script capture each look variant headlessly without driving the panel.
+struct CliOptions {
+  QString urdf;
+  QString search_root;
+  QString screenshot_path;                                 // empty => interactive (no auto-capture)
+  int delay_ms = 3000;                                     // wait for async mesh load before grabbing
+  int tonemap = -1;                                        // <0: keep default (0 None,1 ACES,2 AgX,3 Neutral)
+  float env = -1.0f;                                       // <0: keep default env-reflection intensity
+  float key_az = std::numeric_limits<float>::quiet_NaN();  // key-light azimuth deg
+  float key_el = std::numeric_limits<float>::quiet_NaN();  // key-light elevation deg
+};
+
+CliOptions parseCli(const QStringList& args) {
+  CliOptions opts;
+  // args[0] is the program name; flags consume the following token as their value.
+  for (int i = 1; i < args.size(); ++i) {
+    const QString& arg = args[i];
+    const auto next = [&args, &i]() -> QString { return ++i < args.size() ? args[i] : QString(); };
+    if (arg == QStringLiteral("--screenshot")) {
+      opts.screenshot_path = next();
+    } else if (arg == QStringLiteral("--delay-ms")) {
+      opts.delay_ms = next().toInt();
+    } else if (arg == QStringLiteral("--tonemap")) {
+      opts.tonemap = next().toInt();
+    } else if (arg == QStringLiteral("--env")) {
+      opts.env = next().toFloat();
+    } else if (arg == QStringLiteral("--key-az")) {
+      opts.key_az = next().toFloat();
+    } else if (arg == QStringLiteral("--key-el")) {
+      opts.key_el = next().toFloat();
+    } else if (opts.urdf.isEmpty()) {
+      opts.urdf = arg;
+    } else if (opts.search_root.isEmpty()) {
+      opts.search_root = arg;
+    }
+  }
+  return opts;
+}
+
 }  // namespace
+
+constexpr const char* kUsage =
+    "usage: scene3d_mesh_viewer <robot.urdf> [mesh-search-root]\n"
+    "  --screenshot <path>   render, save a PNG after --delay-ms, then exit\n"
+    "  --delay-ms <n>        wait before the screenshot grab (default 3000)\n"
+    "  --tonemap <0..3>      0 None, 1 ACES, 2 AgX, 3 Neutral\n"
+    "  --env <f>             env-reflection (analytic IBL) intensity\n"
+    "  --key-az <deg>        key-light azimuth      --key-el <deg> elevation\n";
 
 int main(int argc, char** argv) {
   QApplication app(argc, argv);
-  QString urdf_arg;
-  if (argc >= 2) {
-    urdf_arg = QString::fromLocal8Bit(argv[1]);
-  } else {
+  // Own QSettings scope (separate ini from the real app) for the persisted camera.
+  QApplication::setOrganizationName(QStringLiteral("PlotJuggler"));
+  QApplication::setApplicationName(QStringLiteral("scene3d_mesh_viewer"));
+  const CliOptions opts = parseCli(app.arguments());
+
+  QString urdf_arg = opts.urdf;
+  if (urdf_arg.isEmpty()) {
+    if (!opts.screenshot_path.isEmpty()) {
+      std::fprintf(stderr, "screenshot mode requires a URDF path\n%s", kUsage);
+      return 1;
+    }
     urdf_arg = QFileDialog::getOpenFileName(
         nullptr, QStringLiteral("Open URDF"), QString(), QStringLiteral("URDF files (*.urdf *.xml);;All files (*)"));
     if (urdf_arg.isEmpty()) {
-      std::fprintf(stderr, "usage: scene3d_mesh_viewer <robot.urdf> [mesh-search-root]\n");
+      std::fprintf(stderr, "%s", kUsage);
       return 1;
     }
   }
@@ -257,8 +382,8 @@ int main(int argc, char** argv) {
       qPrintable(root));
 
   pj::scene3d::UrdfPackageResolver resolver;
-  if (argc >= 3) {
-    resolver.addSearchRoot(QString::fromLocal8Bit(argv[2]));
+  if (!opts.search_root.isEmpty()) {
+    resolver.addSearchRoot(opts.search_root);
   }
 
   pj::scene3d::RobotModelLayer layer(PJ::ObjectTopicId{.id = 1}, QStringLiteral("mesh_viewer"));
@@ -283,9 +408,58 @@ int main(int argc, char** argv) {
   view->setLayers({&layer});
   view->setTrackerTime(PJ::fromRaw(0));
   QObject::connect(&layer, &pj::scene3d::Scene3DLayer::repaintRequested, view, qOverload<>(&QWidget::update));
+
+  // Camera persistence: restore the saved pose so framing is stable across runs
+  // (this also keeps --screenshot captures pixel-aligned for A/B comparisons).
+  // Save only on a clean interactive quit — a --screenshot run must NOT overwrite
+  // the saved framing with its transient default.
+  QSettings settings;
+  const QString saved_camera = settings.value(QStringLiteral("camera_state")).toString();
+  if (!saved_camera.isEmpty()) {
+    view->camera().adoptState(pj::scene3d::cameraStateFromJson(saved_camera.toStdString(), view->camera().state()));
+  }
+  if (opts.screenshot_path.isEmpty()) {
+    QObject::connect(&app, &QApplication::aboutToQuit, view, [view] {
+      QSettings save;
+      save.setValue(
+          QStringLiteral("camera_state"),
+          QString::fromStdString(pj::scene3d::cameraStateToJson(view->camera().state())));
+    });
+  }
+
+  // CLI look overrides, applied before makeControls (so the panel reflects them)
+  // and before the first paint / screenshot grab.
+  if (opts.tonemap >= 0) {
+    view->compositeParams().tonemap_mode = opts.tonemap;
+  }
+  auto& shading = view->meshShadingParams();
+  if (opts.env >= 0.0f) {
+    shading.env_intensity = opts.env;
+  }
+  if (!std::isnan(opts.key_az) || !std::isnan(opts.key_el)) {
+    const float az = std::isnan(opts.key_az) ? look::kKeyLightAzimuthDeg : opts.key_az;
+    const float el = std::isnan(opts.key_el) ? look::kKeyLightElevationDeg : opts.key_el;
+    shading.key_light_dir = look::keyDirFromAzEl(az, el);
+  }
+
   row->addWidget(view, /*stretch=*/1);
   row->addWidget(makeControls(*view));
   window.resize(1500, 840);
   window.show();
+
+  // Headless one-shot capture: render past the async mesh load, save a PNG via
+  // QOpenGLWidget::grabFramebuffer (offscreen-friendly), then quit. Lets a script
+  // capture each tonemap/env/key variant without a Wayland screenshot tool.
+  if (!opts.screenshot_path.isEmpty()) {
+    QTimer::singleShot(opts.delay_ms, view, [view, path = opts.screenshot_path] {
+      const QImage img = view->grabFramebuffer();
+      if (!img.isNull() && img.save(path)) {
+        std::printf("[mesh_viewer] screenshot saved: %s (%dx%d)\n", qPrintable(path), img.width(), img.height());
+      } else {
+        std::fprintf(stderr, "[mesh_viewer] screenshot FAILED: %s\n", qPrintable(path));
+      }
+      QApplication::quit();
+    });
+  }
   return QApplication::exec();
 }
