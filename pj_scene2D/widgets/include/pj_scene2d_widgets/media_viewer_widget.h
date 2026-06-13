@@ -229,24 +229,27 @@ class MediaViewerWidget : public QRhiWidget {
   // padding             (4 bytes)
   static constexpr int kUniformBufSize = 144;
 
-  // ----- Vector overlay pipeline (markers / annotations) -----
-  // Second QRhi pipeline that draws line primitives on top of the image
-  // pass, sharing the viewTransform so markers track pan/zoom/letterbox.
+  // ----- Vector overlay pipelines (markers / annotations) -----
+  // Drawn on top of the image pass, all sharing this uniform buffer so they
+  // track the same pan/zoom/letterbox view transform.
   QRhiBuffer* marker_uniform_buf_ = nullptr;
-  OverlayPipeline marker_overlay_;
   std::vector<SceneFrame> last_overlays_;  ///< persisted across renders
   bool overlays_dirty_ = false;            ///< rebuild VBO on next render
+  // Effective view scale (on-screen px per image px) the stroke geometry was last
+  // expanded at. Stroke width scales with zoom but is floored at 1px on screen,
+  // and that floor depends on this scale — so a change here, not just an
+  // annotation change, triggers re-expansion. 0 = never expanded.
+  double last_overlay_scale_ = 0.0;
 
-  // ----- kPoints quad pipeline (solid filled squares for kPoints topology) -----
-  // Third QRhi pipeline (Triangles topology) sharing marker_uniform_buf_ but
-  // with its own SRB and VBO. Each kPoints point becomes 2 triangles centred
-  // on the point with side = thickness.
+  // ----- Fills pipeline (Triangles): kPoints squares + LineLoop/circle fills.
+  // Shares marker_uniform_buf_ with its own SRB and VBO. -----
   OverlayPipeline points_overlay_;
 
-  // ----- Thick lines pipeline (Triangles topology, perpendicular expansion) -----
-  // Fourth QRhi pipeline. Used when PointsAnnotation.thickness > 1.5 (line
-  // primitives) or when CircleAnnotation.thickness > 1.5. Each segment expands
-  // CPU-side to 2 triangles forming a rectangle of width = thickness.
+  // ----- Outline pipeline (Triangles): all line/circle strokes. -----
+  // Each segment is expanded CPU-side (overlay_geometry::appendLineStrokes) to a
+  // quad whose width scales with zoom but is floored at 1px on screen so edges
+  // never vanish. Replaces the old native GL_LINES path, which gave only 1 px and
+  // could be guard-band culled when zoomed far in.
   OverlayPipeline thick_overlay_;
 
   // ----- Text pipeline (Triangles, textured quads with QPainter masks) -----

@@ -15,6 +15,7 @@
 #include <cstring>
 
 #include "pj_scene2d_core/media_source.h"
+#include "pj_scene2d_core/overlay_geometry.h"
 #include "pj_scene2d_widgets/pixel_inspector.h"
 
 void pjMediaQtInitResources() {
@@ -117,199 +118,9 @@ void MediaViewerWidget::setMediaSource(MediaSource* source) {
 
 namespace {
 
-inline void pushVertex(std::vector<float>& out, double x, double y, const ColorRGBA& c) {
-  out.push_back(static_cast<float>(x));
-  out.push_back(static_cast<float>(y));
-  out.push_back(static_cast<float>(c.r) / 255.0f);
-  out.push_back(static_cast<float>(c.g) / 255.0f);
-  out.push_back(static_cast<float>(c.b) / 255.0f);
-  out.push_back(static_cast<float>(c.a) / 255.0f);
-}
-
-inline void appendSegment(std::vector<float>& out, const Point2& a, const Point2& b, const ColorRGBA& c) {
-  pushVertex(out, a.x, a.y, c);
-  pushVertex(out, b.x, b.y, c);
-}
-
-inline void appendSegment(
-    std::vector<float>& out, const Point2& a, const Point2& b, const ColorRGBA& ca, const ColorRGBA& cb) {
-  pushVertex(out, a.x, a.y, ca);
-  pushVertex(out, b.x, b.y, cb);
-}
-
-inline ColorRGBA vertexColor(const PointsAnnotation& pa, size_t i) {
-  if (pa.colors.size() == pa.points.size()) {
-    return pa.colors[i];
-  }
-  return pa.color;
-}
-
-// 1 px native pipeline (Lines topology). Per-vertex colors honoured when
-// pa.colors.size() == pa.points.size(); otherwise pa.color is splatted.
-void expandToLineList(const PointsAnnotation& pa, std::vector<float>& out) {
-  const auto& pts = pa.points;
-  if (pts.size() < 2) {
-    return;
-  }
-  switch (pa.topology) {
-    case AnnotationTopology::kLineLoop:
-      for (size_t i = 0; i + 1 < pts.size(); ++i) {
-        appendSegment(out, pts[i], pts[i + 1], vertexColor(pa, i), vertexColor(pa, i + 1));
-      }
-      appendSegment(out, pts.back(), pts.front(), vertexColor(pa, pts.size() - 1), vertexColor(pa, 0));
-      break;
-    case AnnotationTopology::kLineStrip:
-      for (size_t i = 0; i + 1 < pts.size(); ++i) {
-        appendSegment(out, pts[i], pts[i + 1], vertexColor(pa, i), vertexColor(pa, i + 1));
-      }
-      break;
-    case AnnotationTopology::kLineList:
-      for (size_t i = 0; i + 1 < pts.size(); i += 2) {
-        appendSegment(out, pts[i], pts[i + 1], vertexColor(pa, i), vertexColor(pa, i + 1));
-      }
-      break;
-    case AnnotationTopology::kPoints:
-      // Handled by expandKPointsToQuads (Triangles pipeline).
-      break;
-  }
-}
-
-void expandKPointsToQuads(const PointsAnnotation& pa, std::vector<float>& out) {
-  if (pa.topology != AnnotationTopology::kPoints || pa.points.empty()) {
-    return;
-  }
-  const double h = pa.thickness * 0.5;
-  for (size_t i = 0; i < pa.points.size(); ++i) {
-    const auto& p = pa.points[i];
-    const ColorRGBA c = vertexColor(pa, i);
-    pushVertex(out, p.x - h, p.y - h, c);
-    pushVertex(out, p.x + h, p.y - h, c);
-    pushVertex(out, p.x + h, p.y + h, c);
-    pushVertex(out, p.x - h, p.y - h, c);
-    pushVertex(out, p.x + h, p.y + h, c);
-    pushVertex(out, p.x - h, p.y + h, c);
-  }
-}
-
-inline int circleSegments(double radius) {
-  return radius < 10.0 ? 32 : 64;
-}
-
-inline std::vector<Point2> circlePerimeter(const CircleAnnotation& c, int n) {
-  std::vector<Point2> out;
-  out.reserve(static_cast<size_t>(n));
-  const double step = 2.0 * 3.14159265358979323846 / static_cast<double>(n);
-  for (int i = 0; i < n; ++i) {
-    const double a = step * static_cast<double>(i);
-    out.push_back({c.center.x + c.radius * std::cos(a), c.center.y + c.radius * std::sin(a)});
-  }
-  return out;
-}
-
-// Each segment becomes 2 triangles forming a rectangle perpendicular to ab.
-// No miter joins — adjacent segments butt-join with a possible visible gap at
-// sharp angles, acceptable for bboxes and gentle polylines.
-inline void appendThickSegment(
-    std::vector<float>& out, const Point2& a, const Point2& b, const ColorRGBA& ca, const ColorRGBA& cb,
-    double thickness) {
-  const double dx = b.x - a.x;
-  const double dy = b.y - a.y;
-  const double len = std::sqrt(dx * dx + dy * dy);
-  if (len < 1e-6) {
-    return;
-  }
-  const double half = thickness * 0.5;
-  // Perpendicular unit vector × half thickness.
-  const double nx = -dy / len * half;
-  const double ny = dx / len * half;
-  const Point2 a1{a.x - nx, a.y - ny};
-  const Point2 a2{a.x + nx, a.y + ny};
-  const Point2 b1{b.x - nx, b.y - ny};
-  const Point2 b2{b.x + nx, b.y + ny};
-  pushVertex(out, a1.x, a1.y, ca);
-  pushVertex(out, a2.x, a2.y, ca);
-  pushVertex(out, b2.x, b2.y, cb);
-  pushVertex(out, a1.x, a1.y, ca);
-  pushVertex(out, b2.x, b2.y, cb);
-  pushVertex(out, b1.x, b1.y, cb);
-}
-
-void expandToThickList(const PointsAnnotation& pa, std::vector<float>& out) {
-  const auto& pts = pa.points;
-  if (pts.size() < 2) {
-    return;
-  }
-  const double t = pa.thickness;
-  switch (pa.topology) {
-    case AnnotationTopology::kLineLoop:
-      for (size_t i = 0; i + 1 < pts.size(); ++i) {
-        appendThickSegment(out, pts[i], pts[i + 1], vertexColor(pa, i), vertexColor(pa, i + 1), t);
-      }
-      appendThickSegment(out, pts.back(), pts.front(), vertexColor(pa, pts.size() - 1), vertexColor(pa, 0), t);
-      break;
-    case AnnotationTopology::kLineStrip:
-      for (size_t i = 0; i + 1 < pts.size(); ++i) {
-        appendThickSegment(out, pts[i], pts[i + 1], vertexColor(pa, i), vertexColor(pa, i + 1), t);
-      }
-      break;
-    case AnnotationTopology::kLineList:
-      for (size_t i = 0; i + 1 < pts.size(); i += 2) {
-        appendThickSegment(out, pts[i], pts[i + 1], vertexColor(pa, i), vertexColor(pa, i + 1), t);
-      }
-      break;
-    case AnnotationTopology::kPoints:
-      break;
-  }
-}
-
-void expandCircleOutlineToThick(const CircleAnnotation& c, const std::vector<Point2>& perim, std::vector<float>& out) {
-  if (c.color.a == 0 || c.radius <= 0.0) {
-    return;
-  }
-  for (size_t i = 0; i < perim.size(); ++i) {
-    appendThickSegment(out, perim[i], perim[(i + 1) % perim.size()], c.color, c.color, c.thickness);
-  }
-}
-
-// Triangle fan from points[0] — convex-only. Non-convex polygons render with
-// self-overlapping triangles (acceptable for bbox/triangle/regular shapes).
-void expandLoopFillToTriangles(const PointsAnnotation& pa, std::vector<float>& out) {
-  if (pa.topology != AnnotationTopology::kLineLoop || pa.fill_color.a == 0 || pa.points.size() < 3) {
-    return;
-  }
-  const Point2& p0 = pa.points[0];
-  for (size_t i = 1; i + 1 < pa.points.size(); ++i) {
-    pushVertex(out, p0.x, p0.y, pa.fill_color);
-    pushVertex(out, pa.points[i].x, pa.points[i].y, pa.fill_color);
-    pushVertex(out, pa.points[i + 1].x, pa.points[i + 1].y, pa.fill_color);
-  }
-}
-
-void expandCircleOutlineToLineList(
-    const CircleAnnotation& c, const std::vector<Point2>& perim, std::vector<float>& out) {
-  if (c.color.a == 0 || c.radius <= 0.0) {
-    return;
-  }
-  for (size_t i = 0; i < perim.size(); ++i) {
-    const Point2& a = perim[i];
-    const Point2& b = perim[(i + 1) % perim.size()];
-    appendSegment(out, a, b, c.color);
-  }
-}
-
-void expandCircleFillToTriangleFan(
-    const CircleAnnotation& c, const std::vector<Point2>& perim, std::vector<float>& out) {
-  if (c.fill_color.a == 0 || c.radius <= 0.0) {
-    return;
-  }
-  for (size_t i = 0; i < perim.size(); ++i) {
-    const Point2& a = perim[i];
-    const Point2& b = perim[(i + 1) % perim.size()];
-    pushVertex(out, c.center.x, c.center.y, c.fill_color);
-    pushVertex(out, a.x, a.y, c.fill_color);
-    pushVertex(out, b.x, b.y, c.fill_color);
-  }
-}
+// Overlay tessellation (lines/points/fills/circles) lives in the backend-agnostic
+// pj_scene2d_core/overlay_geometry.h so it can be unit-tested; only the
+// Qt/QRhi-specific helpers below remain here.
 
 QRhiScissor imageScissor(const QMatrix4x4& view, const QSize& output_size) {
   if (output_size.width() <= 0 || output_size.height() <= 0) {
@@ -431,7 +242,6 @@ void MediaViewerWidget::releaseResources() {
   delete remap_placeholder_tex_;
   remap_placeholder_tex_ = nullptr;
   clearPixelLayerTextures();
-  destroyOverlayPipeline(marker_overlay_);
   destroyOverlayPipeline(points_overlay_);
   destroyOverlayPipeline(thick_overlay_);
   destroyOverlayPipeline(text_overlay_);
@@ -913,19 +723,14 @@ void MediaViewerWidget::initialize(QRhiCommandBuffer* /*cb*/) {
     composite_pipeline_ = nullptr;
   }
 
-  // ----- Marker / overlay pipeline -----
+  // ----- Marker / overlay shaders + shared uniform -----
+  // scene_lines shaders drive the thick (Triangles) outline pipeline below; the
+  // uniform buffer (view + frame size) is shared by every overlay pipeline.
   auto marker_vert = loadShader(":/shaders/scene_lines.vert.qsb");
   auto marker_frag = loadShader(":/shaders/scene_lines.frag.qsb");
   if (marker_vert.isValid() && marker_frag.isValid()) {
     marker_uniform_buf_ = r->newBuffer(QRhiBuffer::Dynamic, QRhiBuffer::UniformBuffer, kMarkerUniformBufSize);
     marker_uniform_buf_->create();
-
-    // Initial VBO capacity ~64KB (≈ 2700 vertices = 340 bboxes' worth).
-    if (createOverlayVbo(marker_overlay_, 64 * 1024) && createUniformOverlaySrb(marker_overlay_)) {
-      createOverlayGraphicsPipeline(
-          marker_overlay_, marker_vert, marker_frag, QRhiGraphicsPipeline::Lines, colorVertexInputLayout(),
-          "MediaViewerWidget: failed to create marker pipeline");
-    }
   } else {
     qWarning("MediaViewerWidget: scene_lines shaders not loaded; markers disabled");
   }
@@ -944,10 +749,10 @@ void MediaViewerWidget::initialize(QRhiCommandBuffer* /*cb*/) {
     qWarning("MediaViewerWidget: scene_quads shaders not loaded; kPoints disabled");
   }
 
-  // ----- Thick lines pipeline (Triangles, reuses scene_lines shaders) -----
-  // Same vertex layout as marker (vec2 pos + vec4 color, stride 24). The
-  // rectangle expansion is CPU-side in expandToThickList — the shaders are
-  // unchanged, only the topology differs.
+  // ----- Outline pipeline (Triangles, reuses scene_lines shaders) -----
+  // All line/circle outlines render here. Each segment is expanded CPU-side
+  // (overlay_geometry::appendLineStrokes) into a cosmetic-width quad — same vertex
+  // layout as the fills (vec2 pos + vec4 color, stride 24), Triangles topology.
   if (marker_vert.isValid() && marker_frag.isValid() && marker_uniform_buf_ != nullptr) {
     if (createOverlayVbo(thick_overlay_, 64 * 1024) && createUniformOverlaySrb(thick_overlay_)) {
       createOverlayGraphicsPipeline(
@@ -1103,11 +908,28 @@ void MediaViewerWidget::render(QRhiCommandBuffer* cb) {
     }
   }
 
-  // ----- Marker pipeline: rebuild VBO + update uniforms -----
-  size_t marker_vertex_count = 0;
-  if (marker_overlay_.pipeline != nullptr) {
-    if (overlays_dirty_) {
-      marker_overlay_.vertex_data.clear();
+  // ----- Overlay geometry: rebuild VBOs + update uniforms -----
+  // Stroke widths are in image pixels, so they SCALE with zoom — but are floored
+  // so a stroke is never thinner than 1px on screen. Without that floor a stroke
+  // shown below ~1:1 goes sub-pixel and (no MSAA) drops edges depending on
+  // sub-pixel alignment — the "lines disappear when zoomed out" bug. The floor is
+  // expressed in screen pixels, so it depends on the effective view scale; stroke
+  // geometry is therefore re-expanded whenever that scale changes, not only when
+  // the annotation set changes. effective_scale = on-screen px per image px =
+  // zoom × aspect-preserving fit (so a single isotropic scalar is exact).
+  double effective_scale = 0.0;
+  if (tex_width_ > 0 && tex_height_ > 0 && output_size.width() > 0 && output_size.height() > 0) {
+    const double fit = std::min(
+        static_cast<double>(output_size.width()) / static_cast<double>(tex_width_),
+        static_cast<double>(output_size.height()) / static_cast<double>(tex_height_));
+    effective_scale = fit * static_cast<double>(zoom_);
+  }
+
+  if (marker_uniform_buf_ != nullptr && effective_scale > 0.0) {
+    const double image_px_per_screen_px = 1.0 / effective_scale;
+    const bool scale_changed =
+        std::abs(effective_scale - last_overlay_scale_) > 1e-6 * std::max(1.0, std::abs(last_overlay_scale_));
+    if (overlays_dirty_ || scale_changed) {
       thick_overlay_.vertex_data.clear();
       points_overlay_.vertex_data.clear();
       size_t total_points = 0;
@@ -1118,39 +940,28 @@ void MediaViewerWidget::render(QRhiCommandBuffer* cb) {
           }
         }
       }
-      marker_overlay_.vertex_data.reserve(total_points * 12);
       thick_overlay_.vertex_data.reserve(total_points * 36);
       points_overlay_.vertex_data.reserve(total_points * 36);
       for (const auto& sf : last_overlays_) {
         for (const auto& ia : sf.annotations) {
           for (const auto& pa : ia.points) {
-            if (pa.thickness > 1.5) {
-              expandToThickList(pa, thick_overlay_.vertex_data);
-            } else {
-              expandToLineList(pa, marker_overlay_.vertex_data);
-            }
-            expandLoopFillToTriangles(pa, points_overlay_.vertex_data);
-            expandKPointsToQuads(pa, points_overlay_.vertex_data);
+            overlay_geometry::appendLineStrokes(pa, image_px_per_screen_px, thick_overlay_.vertex_data);
+            overlay_geometry::appendLoopFill(pa, points_overlay_.vertex_data);
+            overlay_geometry::appendPointQuads(pa, image_px_per_screen_px, points_overlay_.vertex_data);
           }
           for (const auto& ca : ia.circles) {
-            const auto perim = circlePerimeter(ca, circleSegments(ca.radius));
-            if (ca.thickness > 1.5) {
-              expandCircleOutlineToThick(ca, perim, thick_overlay_.vertex_data);
-            } else {
-              expandCircleOutlineToLineList(ca, perim, marker_overlay_.vertex_data);
-            }
-            if (points_overlay_.pipeline != nullptr) {
-              expandCircleFillToTriangleFan(ca, perim, points_overlay_.vertex_data);
-            }
+            overlay_geometry::appendCircleStroke(ca, image_px_per_screen_px, thick_overlay_.vertex_data);
+            overlay_geometry::appendCircleFill(ca, points_overlay_.vertex_data);
           }
         }
       }
-      uploadOverlayVertexData(marker_overlay_, updates);
       uploadOverlayVertexData(thick_overlay_, updates);
       uploadOverlayVertexData(points_overlay_, updates);
+      last_overlay_scale_ = effective_scale;
 
-      // ----- Text rebuild (textured quads) -----
-      if (text_overlay_.pipeline != nullptr) {
+      // ----- Text rebuild (textured quads) — only when the annotation set
+      // changes; text size is not cosmetic, so a pure zoom change leaves it. -----
+      if (overlays_dirty_ && text_overlay_.pipeline != nullptr) {
         text_overlay_.vertex_data.clear();
         text_draw_items_.clear();
         constexpr size_t kFloatsPerTextQuad = 6 * 8;  // 6 verts × (pos2+uv2+color4) = 48 floats
@@ -1196,9 +1007,8 @@ void MediaViewerWidget::render(QRhiCommandBuffer* cb) {
 
       overlays_dirty_ = false;
     }
-    marker_vertex_count = marker_overlay_.vertex_data.size() / 6;  // 6 floats per vertex (vec2 + vec4)
 
-    if (tex_width_ > 0 && tex_height_ > 0) {
+    {
       MarkerUbo ubo{};
       std::memcpy(ubo.view, view.constData(), sizeof(ubo.view));
       // Annotation overlays are authored in the displayed image's pixel space.
@@ -1235,7 +1045,7 @@ void MediaViewerWidget::render(QRhiCommandBuffer* cb) {
   }
 
   // Second draw call: vector overlays (markers) on top of the image, blended.
-  // Draw order: image (already drawn) → fills (Triangles) → outlines (Lines).
+  // Draw order: image (already drawn) → fills (Triangles) → outlines (Triangles).
   // Rationale: fills must be UNDER strokes so that LineLoop fill_color does not
   // hide its own outline, and circle outlines render on top of circle fills.
   // Viewport is reset on pipeline switch in some QRhi backends, so set explicitly.
@@ -1251,18 +1061,9 @@ void MediaViewerWidget::render(QRhiCommandBuffer* cb) {
     cb->draw(static_cast<quint32>(points_vertex_count));
   }
 
-  // Outlines: line primitives (kLineList/kLineStrip/kLineLoop) + circle outlines, 1 px.
-  if (marker_overlay_.pipeline != nullptr && marker_vertex_count > 0 && tex_width_ > 0) {
-    cb->setGraphicsPipeline(marker_overlay_.pipeline);
-    cb->setViewport(
-        QRhiViewport(0, 0, static_cast<float>(output_size.width()), static_cast<float>(output_size.height())));
-    cb->setShaderResources(marker_overlay_.srb);
-    const QRhiCommandBuffer::VertexInput vinput(marker_overlay_.vbo, 0);
-    cb->setVertexInput(0, 1, &vinput);
-    cb->draw(static_cast<quint32>(marker_vertex_count));
-  }
-
-  // Thick outlines: lines/circles with thickness > 1.5, expanded to triangles.
+  // Outlines: all line/circle strokes, expanded to cosmetic-width triangles.
+  // (Native GL_LINES was retired — it gave only 1 px and could be guard-band
+  // culled when zoomed far in; triangles clip robustly and honour thickness.)
   if (thick_overlay_.pipeline != nullptr && thick_vertex_count > 0 && tex_width_ > 0) {
     cb->setGraphicsPipeline(thick_overlay_.pipeline);
     cb->setViewport(

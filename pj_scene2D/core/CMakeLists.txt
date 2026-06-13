@@ -19,6 +19,7 @@ set(PJ_SCENE2D_CORE_SOURCES
   src/scene_entities_2d_decoder.cpp
   src/composite_media_source.cpp
   src/async_frame_worker.cpp
+  src/overlay_geometry.cpp
 )
 
 if(PJ_SCENE2D_HAS_FFMPEG)
@@ -101,6 +102,7 @@ if(PJ_BUILD_TESTS)
     ../tests/scene_frame_test.cpp
     ../tests/scene_pipeline_source_test.cpp
     tests/scene_entities_2d_decoder_test.cpp
+    tests/overlay_geometry_test.cpp
     ../tests/composite_media_source_test.cpp
     tests/borrowed_media_source_test.cpp
     tests/composite_pixel_layers_test.cpp

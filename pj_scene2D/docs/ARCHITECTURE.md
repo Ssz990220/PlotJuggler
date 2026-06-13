@@ -90,7 +90,7 @@ handles per-frame `kVideoFrame` streaming topics (parser-mode
 |-----------|-----------|------|
 | `MediaViewerWidget` | `media_viewer_widget.h` | `QRhiWidget` subclass: GPU rendering via BT.709 YUV->RGB fragment shader (3 R8 textures for YUV420P), zoom/pan, RGB DecodedFrame path, GPU lens-rectification (§7.2), and `MediaSource` polling via `setMediaSource()` + `setTimestamp()` (§7) |
 | YUV shaders | `shaders/yuv_to_rgb.{vert,frag}` | BT.709 YUV420P->RGB conversion via 3 R8 textures; RGBA passthrough; native Mono8 (R8 expand) / BGRA (RGBA8 swizzle) paths; optional remap-LUT rectification (binding 4) — see §7.2 |
-| Overlay shaders | `shaders/scene_lines.{vert,frag}`, `shaders/scene_quads.{vert,frag}`, `shaders/scene_text.{vert,frag}` | Annotation overlay pipelines (§7.1): 1 px lines, solid fills / thick lines, textured text quads |
+| Overlay shaders | `shaders/scene_lines.{vert,frag}`, `shaders/scene_quads.{vert,frag}`, `shaders/scene_text.{vert,frag}` | Annotation overlay pipelines (§7.1): triangle strokes (scale-with-1px-floor), solid fills, textured text quads |
 
 The Qt layer is thin — it owns the GPU surface and polls the
 `MediaSource`'s `takeFrame()` at render rate. All decode logic,
@@ -807,7 +807,7 @@ and 4.
 ### 7.1 QRhiWidget — six pipelines
 
 `MediaViewerWidget` subclasses `QRhiWidget` (Qt 6.8+), which abstracts
-over Vulkan, Metal, D3D11, and OpenGL at runtime. The widget owns six
+over Vulkan, Metal, D3D11, and OpenGL at runtime. The widget owns five
 QRhi graphics pipelines that share the same `viewTransform` UBO so
 zoom/pan apply uniformly:
 
@@ -815,19 +815,32 @@ zoom/pan apply uniformly:
 |---|---|---|---|
 | 1 | Image | implicit (procedural fullscreen quad) | YUV420P → RGB (BT.709, 3 R8 textures), RGBA passthrough, native Mono8 (R8) / BGRA (RGBA8 swizzle), and optional GPU lens-rectification via a remap LUT (§7.2) |
 | 1b | Composite (pixel layers) | implicit (procedural fullscreen quad) | Alpha-blends N additional `MediaFrame::pixel_layers` over the base, each with its own SRB and per-layer `opacity`; used when `pixel_layers_active_` (member `composite_pipeline_`) |
-| 2 | Marker | `Lines` | 1 px line primitives (`thickness ≤ 1.5`) — bboxes, polylines, circle outlines |
-| 3 | Points | `Triangles` | Solid fills: `kPoints` quads, `LineLoop` fill, `CircleAnnotation` fill |
-| 4 | Thick lines | `Triangles` | Lines/circle outlines with `thickness > 1.5`, expanded CPU-side to perpendicular rectangles |
-| 5 | Text | `Triangles` (textured) | One quad per `TextAnnotation`, glyph mask sampled and tinted by per-vertex colour |
+| 2 | Fills (`points_overlay_`) | `Triangles` | Solid fills: `kPoints` quads, `LineLoop` fill, `CircleAnnotation` fill |
+| 3 | Outlines (`thick_overlay_`) | `Triangles` | **All** line/circle strokes, expanded CPU-side to perpendicular rectangles whose width scales with zoom but is floored at 1px on screen |
+| 4 | Text | `Triangles` (textured) | One quad per `TextAnnotation`, glyph mask sampled and tinted by per-vertex colour |
 
-Pipelines 2–5 share `marker_uniform_buf_` (the same `mat4 viewTransform + vec4 frameSize` UBO) but each has its own SRB and VBO so submissions don't trample each other's bindings.
+Pipelines 2–4 share `marker_uniform_buf_` (the same `mat4 viewTransform + vec4 frameSize` UBO) but each has its own SRB and VBO so submissions don't trample each other's bindings.
+
+**Stroke width (scale-with-floor).** Stroke geometry lives in the backend-agnostic
+`pj_scene2d_core/overlay_geometry.h` (unit-tested in `overlay_geometry_test.cpp`).
+Outline/point widths are in **image pixels**, so they scale with zoom (the view
+transform enlarges them as you zoom in), but the CPU expander **floors** the
+half-width so the stroke is never thinner than 1 px on screen. The floor is a
+screen-pixel value, converted to image units via `image_px_per_screen_px`
+(= 1 / effective view scale), so geometry is re-expanded when the view scale
+changes. This fixes the old bug where pure image-space strokes went sub-pixel when
+zoomed out — with no MSAA, edges then dropped out of rasterization depending on
+sub-pixel alignment → "some rectangle/cube lines disappear depending on zoom".
+The earlier native `GL_LINES` "Marker" pipeline (1 px, `thickness ≤ 1.5`) was
+**retired**: GL line clipping is guard-band-limited (whole segments can be culled
+when zoomed far in), whereas triangles clip robustly and honour thickness.
 
 Per-frame flow:
 
 1. Build `MediaFrame` via the attached `MediaSource`. Pixel data goes to texture upload; vector overlays go to CPU vertex builders.
-2. On a dirty cycle, walk `last_overlays_` once and dispatch each `PointsAnnotation` and `CircleAnnotation` to the correct CPU helper (`expandToLineList`, `expandToThickList`, `expandKPointsToQuads`, `expandLoopFillToTriangles`, `expandCircleOutline*`, `expandCircleFillToTriangleFan`). Per circle, `circlePerimeter` is computed once and reused for both outline and fill.
+2. Compute `effective_scale` (on-screen px per image px = zoom × aspect-preserving fit). Stroke/point geometry is re-expanded when the annotation set changes **or** `effective_scale` changes (since the 1px screen floor depends on it); fills and text are image-space and rebuild only on annotation change. Walk `last_overlays_` and dispatch each `PointsAnnotation`/`CircleAnnotation` to `overlay_geometry::{appendLineStrokes, appendPointQuads, appendLoopFill, appendCircleStroke, appendCircleFill}`.
 3. For each `TextAnnotation`, look up `(text, font_size_q)` in `text_cache_`. On miss, render a glyph mask with `QPainter` to a `QImage::Format_Alpha8`, upload as a `QRhiTexture::R8`, and create a per-entry SRB pointing at it (so per-draw rebinding cannot mix textures across instances).
-4. Issue draw calls in order `image → fills → 1 px lines → thick lines → text` so strokes always land on top of fills and labels on top of everything.
+4. Issue draw calls in order `image → fills → outlines → text` so strokes always land on top of fills and labels on top of everything.
 
 ### 7.2 Image shader: color conversion, native formats, GPU rectification
 
