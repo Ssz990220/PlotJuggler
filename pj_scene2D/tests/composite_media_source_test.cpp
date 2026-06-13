@@ -11,6 +11,7 @@
 
 #include "pj_scene2d_core/borrowed_media_source.h"
 #include "pj_scene2d_core/media_source.h"
+#include "pj_scene2d_core/undistort_remap.h"
 
 namespace PJ {
 namespace {
@@ -36,12 +37,15 @@ class MockSource final : public MediaSource {
     last_gpu_rectify = available;
   }
 
+  std::shared_ptr<const UndistortMap> base_rectify_map;  // attached to the emitted base frame when set
+
   void setTimestamp(int64_t /*ts_ns*/) override {
     ++set_calls;
     pending_.emplace();
     if (emit_base) {
       DecodedFrame df;
       df.width = static_cast<int>(base_w);
+      df.rectify_map = base_rectify_map;
       pending_->base = df;
     }
     for (int i = 0; i < n_overlays; ++i) {
@@ -199,6 +203,34 @@ TEST(CompositeMediaSourceTest, GpuRectificationAvailabilityFansOutToAllLayers) {
   EXPECT_TRUE(a_ptr->last_gpu_rectify);
   EXPECT_EQ(b_ptr->gpu_rectify_calls, 1);
   EXPECT_TRUE(b_ptr->last_gpu_rectify);
+}
+
+TEST(CompositeMediaSourceTest, PreservesRectifyMapWhenPromotingBaseToPixelLayer) {
+  // A camera image enters the composite as a layer's `base` and is reassembled
+  // into the composite's `pixel_layers`. The deferred-GPU-rectify handle must
+  // survive that promotion, or the widget's pixel-layer path cannot rectify it
+  // (the bug: composited cameras rendered raw + misaligned overlays).
+  UndistortMap built;
+  built.out_width = 1920;
+  built.out_height = 886;
+  built.src_width = 480;
+  built.src_height = 221;
+  auto map = std::make_shared<const UndistortMap>(built);
+  auto layer = std::make_unique<MockSource>();
+  auto* layer_ptr = layer.get();
+  layer_ptr->emit_base = true;
+  layer_ptr->base_w = 480;
+  layer_ptr->base_rectify_map = map;
+
+  CompositeMediaSource composite;
+  composite.addLayer(std::move(layer));
+  composite.setTimestamp(100);
+
+  auto frame = composite.takeFrame();
+  ASSERT_TRUE(frame.has_value());
+  ASSERT_FALSE(frame->pixel_layers.empty());
+  ASSERT_NE(frame->pixel_layers[0].frame.rectify_map, nullptr);
+  EXPECT_EQ(frame->pixel_layers[0].frame.rectify_map->out_width, 1920);
 }
 
 TEST(CompositeMediaSourceTest, NoNewDataReturnsNullopt) {

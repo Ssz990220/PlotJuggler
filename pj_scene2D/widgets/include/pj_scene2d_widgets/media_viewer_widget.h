@@ -152,6 +152,13 @@ class MediaViewerWidget : public QRhiWidget {
   // layer.tex_remap, rebinding the layer's SRB to it, and set layer.rectify=1.
   // The GPU then undistorts at draw time. Returns false on allocation failure.
   bool ensureRemapTexture(TextureLayerResources& layer, const UndistortMap& map, QRhiResourceUpdateBatch* updates);
+  // Upload `frame` into `layer` and apply GPU rectification when the frame carries
+  // a rectify_map and the backend supports it. Used by BOTH the base and the
+  // pixel-layer paths so they never diverge. Returns the LOGICAL (displayed) size
+  // — the map's output size when rectifying on GPU, else the uploaded texture size
+  // — for the caller to drive overlay/aspect/inspector coords; empty on failure.
+  [[nodiscard]] QSize uploadLayerFrame(
+      const DecodedFrame& frame, TextureLayerResources& layer, QRhiResourceUpdateBatch* updates);
   // Tell the attached source whether GPU rectification is available (probed in
   // initialize()). Re-applied when a source is attached. No lock taken here.
   void applyGpuRectifyCapability();

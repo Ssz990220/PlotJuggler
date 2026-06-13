@@ -744,6 +744,22 @@ void MediaViewerWidget::applyGpuRectifyCapability() {
   }
 }
 
+QSize MediaViewerWidget::uploadLayerFrame(
+    const DecodedFrame& frame, TextureLayerResources& layer, QRhiResourceUpdateBatch* updates) {
+  if (!uploadDecodedFrameToTexture(frame, layer, updates)) {
+    return {};
+  }
+  // GPU path: the uploaded frame is RAW; the displayed (logical) size — which
+  // annotation/aspect/inspector coords use — is the map's output size.
+  const bool rectify_on_gpu = gpu_rectify_supported_.load(std::memory_order_relaxed) && frame.rectify_map != nullptr &&
+                              ensureRemapTexture(layer, *frame.rectify_map, updates);
+  if (rectify_on_gpu) {
+    return {frame.rectify_map->out_width, frame.rectify_map->out_height};
+  }
+  layer.rectify = 0;
+  return {layer.width, layer.height};
+}
+
 void MediaViewerWidget::destroyOverlayPipeline(OverlayPipeline& overlay) {
   delete overlay.pipeline;
   delete overlay.srb;
@@ -1049,10 +1065,14 @@ void MediaViewerWidget::render(QRhiCommandBuffer* cb) {
       for (size_t i = 0; i < pending_pixel_layers_.size(); ++i) {
         auto& texture = pixel_layer_textures_[i];
         texture.opacity = std::clamp(pending_pixel_layers_[i].opacity, 0.0f, 1.0f);
-        if (uploadDecodedFrameToTexture(pending_pixel_layers_[i].frame, texture, updates) && !set_frame_size) {
-          tex_width_ = texture.width;
-          tex_height_ = texture.height;
-          frame_aspect_ = static_cast<float>(texture.width) / static_cast<float>(texture.height);
+        // Rectify each layer that carries a map (the camera image flows through
+        // here, not `base`, once it's inside a composite). The first uploadable
+        // layer's logical size drives the overlay/aspect/inspector coordinate space.
+        const QSize logical = uploadLayerFrame(pending_pixel_layers_[i].frame, texture, updates);
+        if (!logical.isEmpty() && !set_frame_size) {
+          tex_width_ = logical.width();
+          tex_height_ = logical.height();
+          frame_aspect_ = static_cast<float>(logical.width()) / static_cast<float>(logical.height());
           set_frame_size = true;
         }
       }
@@ -1060,22 +1080,11 @@ void MediaViewerWidget::render(QRhiCommandBuffer* cb) {
     }
 
     if (has_pending_) {
-      if (uploadDecodedFrameToTexture(pending_decoded_, base_texture_, updates)) {
-        // GPU rectification: the uploaded frame is RAW; the displayed (logical)
-        // size — which annotation/aspect/inspector coords use — is the map's
-        // output size, not the uploaded texture size.
-        const bool rectify_on_gpu = gpu_rectify_supported_.load(std::memory_order_relaxed) &&
-                                    pending_decoded_.rectify_map != nullptr &&
-                                    ensureRemapTexture(base_texture_, *pending_decoded_.rectify_map, updates);
-        if (rectify_on_gpu) {
-          tex_width_ = pending_decoded_.rectify_map->out_width;
-          tex_height_ = pending_decoded_.rectify_map->out_height;
-        } else {
-          base_texture_.rectify = 0;
-          tex_width_ = base_texture_.width;
-          tex_height_ = base_texture_.height;
-        }
-        frame_aspect_ = static_cast<float>(tex_width_) / static_cast<float>(tex_height_);
+      const QSize logical = uploadLayerFrame(pending_decoded_, base_texture_, updates);
+      if (!logical.isEmpty()) {
+        tex_width_ = logical.width();
+        tex_height_ = logical.height();
+        frame_aspect_ = static_cast<float>(logical.width()) / static_cast<float>(logical.height());
       }
       has_pending_ = false;
     }
