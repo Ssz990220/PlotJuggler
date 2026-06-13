@@ -83,7 +83,7 @@ QRectF DatastoreCurveAdapter::boundingRect() const {
     return cached_full_bounding_rect_;
   }
 
-  const Timestamp offset = displayOffsetNow_();
+  const DisplayOffset offset = displayOffsetNow_();
   const double x_min = rawNsToDisplaySeconds(bounds->time.min, offset);
   const double x_max = rawNsToDisplaySeconds(bounds->time.max, offset);
   cached_full_bounding_rect_ =
