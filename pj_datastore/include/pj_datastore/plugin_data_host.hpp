@@ -45,6 +45,14 @@ class DatastoreSourceWriteHost {
   // before the switch. Does not take ownership.
   void setTarget(DataEngine* target);
 
+  // Wire the secondary DataEngine for the streaming two-engine lockstep.
+  // Every ensureTopic/ensureField — including the lazy column auto-create
+  // inside append* — replays on the secondary using DataEngine::createTopic
+  // and DataEngine::createTopicField with the SAME id, so a setTarget swap
+  // never lands on an engine missing the topic/field a cached plugin handle
+  // refers to. Pass nullptr to disable mirroring. Does not take ownership.
+  void setSecondaryEngine(DataEngine* secondary);
+
  private:
   std::unique_ptr<DatastoreSourceWriteHostState> state_;
 };
@@ -99,6 +107,12 @@ class DatastoreParserWriteHost {
   // bound topic must exist in `target` with the same TopicId (the streaming
   // manager registers it lockstep on both engines). Does not take ownership.
   void setTarget(DataEngine* target);
+
+  // Wire the secondary DataEngine for streaming two-engine lockstep — see
+  // DatastoreSourceWriteHost::setSecondaryEngine. Closes the latent
+  // FieldHandle-stale bug for parser plugins that cache handles across
+  // messages (parser_protobuf et al.) on pause/resume.
+  void setSecondaryEngine(DataEngine* secondary);
 
  private:
   std::unique_ptr<DatastoreParserWriteHostState> state_;

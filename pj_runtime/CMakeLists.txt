@@ -152,4 +152,36 @@ if(PJ_BUILD_TESTS)
     )
     add_dependencies(data_source_runtime_host_object_ingest_test runtime_host_object_parser_plugin)
     add_test(NAME DataSourceRuntimeHostObjectIngestTest COMMAND data_source_runtime_host_object_ingest_test)
+
+    # Streaming pause/resume two-engine lockstep, exercised at the
+    # DataSourceRuntimeHost integration layer — the runtime-level companion to
+    # pj_datastore/tests/streaming_mirror_test.cpp. Those unit tests verify the
+    # createTopicField/setSecondaryEngine MECHANISM; these verify the host
+    # actually WIRES it (setSecondaryEngine on the source + each parser binding)
+    # and that a plugin's cached TopicHandle/FieldHandle survives a
+    # setDataEngineTarget pause/resume swap end to end. The caching parser
+    # plugin covers the parser-path variant (parser_protobuf-style cached
+    # FieldHandle) that the unit tests do not exercise.
+    add_library(streaming_caching_parser_plugin SHARED
+        tests/streaming_caching_parser_plugin.cpp
+    )
+    target_compile_features(streaming_caching_parser_plugin PRIVATE cxx_std_20)
+    target_compile_options(streaming_caching_parser_plugin PRIVATE ${PJ_WARNING_FLAGS})
+    target_link_libraries(streaming_caching_parser_plugin PRIVATE
+        pj_plugin_sdk
+    )
+
+    add_executable(data_source_runtime_host_stream_swap_test
+        tests/data_source_runtime_host_stream_swap_test.cpp
+    )
+    target_compile_definitions(data_source_runtime_host_stream_swap_test PRIVATE
+        PJ_STREAMING_CACHING_PARSER_PATH="$<TARGET_FILE:streaming_caching_parser_plugin>"
+    )
+    target_compile_options(data_source_runtime_host_stream_swap_test PRIVATE ${PJ_WARNING_FLAGS})
+    target_link_libraries(data_source_runtime_host_stream_swap_test PRIVATE
+        pj_runtime
+        GTest::gtest_main
+    )
+    add_dependencies(data_source_runtime_host_stream_swap_test streaming_caching_parser_plugin)
+    add_test(NAME DataSourceRuntimeHostStreamSwapTest COMMAND data_source_runtime_host_stream_swap_test)
 endif()

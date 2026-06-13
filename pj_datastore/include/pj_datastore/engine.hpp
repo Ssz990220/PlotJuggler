@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -53,6 +54,30 @@ class DataEngine {
   /// with that exact TopicId; otherwise the next id is auto-assigned.
   [[nodiscard]] PJ::Expected<PJ::TopicId> createTopic(
       PJ::DatasetId dataset_id, TopicDescriptor descriptor, PJ::TopicId requested_id = 0);
+
+  /// Symmetric counterpart to `createTopic(requested_id)` at the field/column
+  /// level. Adds a column to an existing topic; pass `requested_id` non-empty
+  /// to force a specific `FieldId` (used by the streaming pause/resume
+  /// two-engine lockstep — both engines must assign matching FieldIds for
+  /// the same (topic, field_name) pair so a plugin's cached `FieldHandle`
+  /// resolves on either side of the pause/resume target swap). Default
+  /// `std::nullopt` means auto-assign the next dense id.
+  ///
+  /// `FieldId` is dense from 0, so a sentinel like `0` would be ambiguous
+  /// with a legitimate forced-id-zero — `std::optional` makes the intent
+  /// explicit and unambiguous.
+  ///
+  /// Returns the assigned `FieldId`. Fails if:
+  /// - the topic does not exist
+  /// - a column with the same name already exists with a different type
+  /// - `requested_id` is set and clashes with an existing different
+  ///   (name, type) pair, or would create a non-dense column id
+  ///
+  /// If a column with the same (name, type) already exists, returns its
+  /// existing `FieldId` (idempotent re-mirror).
+  [[nodiscard]] PJ::Expected<PJ::FieldId> createTopicField(
+      PJ::TopicId topic_id, std::string_view field_name, PJ::PrimitiveType type,
+      std::optional<PJ::FieldId> requested_id = std::nullopt);
 
   /// Mutable topic storage lookup (nullptr if missing).
   [[nodiscard]] TopicStorage* getTopicStorage(PJ::TopicId id);

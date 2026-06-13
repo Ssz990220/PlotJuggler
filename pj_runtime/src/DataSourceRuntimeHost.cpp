@@ -249,7 +249,16 @@ DataSourceRuntimeHost::DataSourceRuntimeHost(
       source_write_host_(engine, source_handle),
       source_object_write_host_(object_store, dataset_id),
       lazy_fetch_mutex_(std::make_shared<std::mutex>()),
-      library_keepalive_(std::move(library_keepalive)) {}
+      library_keepalive_(std::move(library_keepalive)) {
+  // Wire the source-level write host with the secondary engine for the
+  // streaming pause/resume two-engine lockstep. Without this, a plugin that
+  // caches TopicHandle/FieldHandle on start() (e.g. data_stream_dummy) sees
+  // them go stale after the first pause — the secondary engine has no
+  // matching ids — and the worker dies on the first post-pause write.
+  // Mirroring happens inside DatastoreSourceWriteHost via DataEngine's new
+  // createTopic(requested_id) + createTopicField(requested_id) primitives.
+  source_write_host_.setSecondaryEngine(secondary_data_engine_);
+}
 
 DataSourceRuntimeHost::~DataSourceRuntimeHost() = default;
 
@@ -453,6 +462,14 @@ bool DataSourceRuntimeHost::cbEnsureParserBinding(
     }
 
     auto write_host = std::make_unique<DatastoreParserWriteHost>(self->engine_, topic_handle);
+    // Same lockstep wiring as the source-level write host (see the runtime
+    // host constructor). Closes the latent FieldHandle-stale bug for parser
+    // plugins that cache handles across messages (parser_protobuf et al.):
+    // every ensureField inside parserAppendRecord/appendBoundRecord is now
+    // mirrored to the secondary engine via DataEngine::createTopicField with
+    // the same FieldId, so the cached handle resolves after a pause/resume
+    // target swap.
+    write_host->setSecondaryEngine(self->secondary_data_engine_);
 
     // Build the service registry the parser binds against. The builder must
     // outlive bind() because the plugin may hold a view into it; we move it

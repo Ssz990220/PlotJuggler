@@ -120,6 +120,56 @@ Expected<TopicId> DataEngine::createTopic(DatasetId dataset_id, TopicDescriptor 
   return id;
 }
 
+Expected<FieldId> DataEngine::createTopicField(
+    TopicId topic_id, std::string_view field_name, PrimitiveType type, std::optional<FieldId> requested_id) {
+  auto topic_it = impl_->topics.find(topic_id);
+  if (topic_it == impl_->topics.end()) {
+    return PJ::unexpected(fmt::format("createTopicField: topic {} not found", topic_id));
+  }
+  TopicStorage& storage = topic_it.value();
+
+  // Idempotent re-mirror: if a column with this name already exists with the
+  // same type, return its id. With a non-matching type, fail loudly — the
+  // caller is racing two registrations with different shapes.
+  const auto& cols = storage.columnDescriptors();
+  for (const auto& col : cols) {
+    if (col.field_path == field_name) {
+      if (col.logical_type != type) {
+        return PJ::unexpected(
+            fmt::format("createTopicField: field '{}' already exists with a different type", field_name));
+      }
+      if (requested_id.has_value() && *requested_id != col.field_id) {
+        return PJ::unexpected(
+            fmt::format(
+                "createTopicField: field '{}' already exists with id {} but requested {}", field_name, col.field_id,
+                *requested_id));
+      }
+      return col.field_id;
+    }
+  }
+
+  // FieldIds are dense starting at 0. The next id is cols.size(). A forced
+  // requested_id of 0 is a legitimate value (first field of the topic), which
+  // is exactly why the sentinel for "auto" is std::nullopt, not 0.
+  const FieldId next_id = static_cast<FieldId>(cols.size());
+  if (requested_id.has_value() && *requested_id != next_id) {
+    return PJ::unexpected(
+        fmt::format(
+            "createTopicField: requested_id {} would create a non-dense field layout "
+            "(topic {} currently has {} columns; next dense id is {})",
+            *requested_id, topic_id, cols.size(), next_id));
+  }
+
+  std::vector<ColumnDescriptor> new_cols = cols;
+  ColumnDescriptor desc;
+  desc.field_id = next_id;
+  desc.logical_type = type;
+  desc.field_path = std::string(field_name);
+  new_cols.push_back(std::move(desc));
+  storage.setColumnDescriptors(std::move(new_cols));
+  return next_id;
+}
+
 TopicStorage* DataEngine::getTopicStorage(TopicId id) {
   auto it = impl_->topics.find(id);
   if (it == impl_->topics.end()) {

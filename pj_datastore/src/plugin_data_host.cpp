@@ -192,6 +192,15 @@ struct WriteCore {
 
   DataEngine& engine_;
   DataWriter writer_;
+  // Optional secondary engine for the streaming pause/resume two-engine
+  // lockstep. When non-null, every ensureTopic/ensureField that lands a new
+  // id in `engine_` is mirrored into `*secondary_engine_` with the SAME id —
+  // so a cached plugin TopicHandle/FieldHandle still resolves after the host
+  // swaps which engine is the active write target. Mirroring happens inside
+  // ensureTopic/ensureField so it covers both the explicit C-ABI register
+  // paths AND the lazy "first-write creates the column" paths inside
+  // appendRecord / appendBoundRecord / appendArrowStream.
+  DataEngine* secondary_engine_ = nullptr;
   std::string last_error_;
 
   struct DatasetTopicKey {
@@ -268,6 +277,28 @@ struct WriteCore {
     return true;
   }
 
+  // Idempotent re-mirror of a topic onto the secondary engine. Called on
+  // every successful ensureTopic path (including cache hits) so a previously
+  // failed mirror is retried instead of leaving the engines diverged forever
+  // behind the cache.
+  [[nodiscard]] bool mirrorTopicToSecondary(DatasetId dataset_id, TopicId topic_id, std::string_view topic_name) {
+    if (secondary_engine_ == nullptr) {
+      return true;
+    }
+    if (secondary_engine_->getTopicStorage(topic_id) != nullptr) {
+      return true;  // already mirrored (most common case)
+    }
+    TopicDescriptor desc;
+    desc.name = std::string(topic_name);
+    desc.schema_id = 0;
+    auto mirror_or = secondary_engine_->createTopic(dataset_id, std::move(desc), topic_id);
+    if (!mirror_or.has_value()) {
+      setError(fmt::format("secondary mirror createTopic failed: {}", mirror_or.error()));
+      return false;
+    }
+    return true;
+  }
+
   [[nodiscard]] bool ensureTopic(DataSourceHandle source, std::string_view topic_name, TopicHandle* out_topic) {
     const auto* dataset = engine_.getDataset(source.id);
     if (dataset == nullptr) {
@@ -277,6 +308,11 @@ struct WriteCore {
 
     DatasetTopicKey key{.dataset_id = source.id, .topic_name = std::string(topic_name)};
     if (auto it = topic_cache_.find(key); it != topic_cache_.end()) {
+      // Cache hit — but the secondary may still be missing this topic if a
+      // prior mirror failed; retry. No-op if already mirrored.
+      if (!mirrorTopicToSecondary(source.id, it->second.id, topic_name)) {
+        return false;
+      }
       *out_topic = it->second;
       last_error_.clear();
       return true;
@@ -287,6 +323,10 @@ struct WriteCore {
     for (TopicId tid : topic_ids) {
       const auto* storage = engine_.getTopicStorage(tid);
       if (storage != nullptr && storage->descriptor().name == topic_name) {
+        // Found in primary — same retry semantics on the secondary.
+        if (!mirrorTopicToSecondary(source.id, tid, topic_name)) {
+          return false;
+        }
         *out_topic = TopicHandle{.id = tid};
         topic_cache_.emplace(std::move(key), *out_topic);
         last_error_.clear();
@@ -300,6 +340,14 @@ struct WriteCore {
     auto tid_or = writer_.registerTopic(source.id, std::move(desc));
     if (!tid_or.has_value()) {
       setError(tid_or.error());
+      return false;
+    }
+
+    // Lockstep mirror to the secondary engine (streaming two-engine model).
+    // Forces the same TopicId on both sides so a later setTarget(secondary)
+    // swap finds the topic that the plugin's cached TopicHandle refers to.
+    // See DataEngine::createTopicField for the field-level counterpart.
+    if (!mirrorTopicToSecondary(source.id, *tid_or, topic_name)) {
       return false;
     }
 
@@ -359,6 +407,18 @@ struct WriteCore {
         setError(fmt::format("field '{}' already exists with a different type", field_name));
         return false;
       }
+      // Idempotent re-mirror on cache hit — if a previous mirror failed, this
+      // re-attempts it. createTopicField returns the existing FieldId when
+      // (name, type) already matches in the secondary, so it's a cheap no-op
+      // in the steady state.
+      if (secondary_engine_ != nullptr) {
+        auto mirror_or =
+            secondary_engine_->createTopicField(topic.id, field_name, type, std::optional<FieldId>{it->second.id});
+        if (!mirror_or.has_value()) {
+          setError(fmt::format("secondary mirror createTopicField failed: {}", mirror_or.error()));
+          return false;
+        }
+      }
       *out_field = it->second;
       last_error_.clear();
       return true;
@@ -368,6 +428,26 @@ struct WriteCore {
     if (!field_id_or.has_value()) {
       setError(field_id_or.error());
       return false;
+    }
+
+    // Lockstep mirror to the secondary engine (streaming two-engine model).
+    // Forces the same FieldId via DataEngine::createTopicField so that a
+    // cached FieldHandle resolves identically on either engine after a
+    // setTarget swap. Runs from EVERY path that lands here — explicit C-ABI
+    // ensureField AND the lazy "auto-create column on first non-null write"
+    // path inside appendRecord/appendBoundRecord/appendArrowStream — because
+    // they all funnel through this method.
+    //
+    // requested_id is wrapped in std::optional so FieldId 0 (the first field
+    // of any topic) is forced, not auto-assigned. A naive `FieldId == 0`
+    // sentinel would silently mis-assign the first field of every topic.
+    if (secondary_engine_ != nullptr) {
+      auto mirror_or =
+          secondary_engine_->createTopicField(topic.id, field_name, type, std::optional<FieldId>{*field_id_or});
+      if (!mirror_or.has_value()) {
+        setError(fmt::format("secondary mirror createTopicField failed: {}", mirror_or.error()));
+        return false;
+      }
     }
 
     *out_field = FieldHandle{.topic = topic, .id = *field_id_or};
@@ -910,23 +990,34 @@ struct ToolboxCore {
 
 struct DatastoreSourceWriteHostState {
   DatastoreSourceWriteHostState(DataEngine& engine, DataSourceHandle source_handle)
-      : core(std::make_unique<WriteCore>(engine)), source(source_handle) {}
+      : core(std::make_unique<WriteCore>(engine)), source(source_handle), primary_engine(&engine) {}
   // Held by pointer so setTarget() can rebind to a different engine (streaming
   // two-engine pause/resume) by reconstructing the WriteCore — WriteCore holds
   // DataEngine by reference and is not reseatable.
   std::unique_ptr<WriteCore> core;
   DataSourceHandle source;
+  // Streaming two-engine lockstep: remember the primary + secondary engines
+  // so setTarget can re-wire the new WriteCore's secondary_engine_ pointer to
+  // the OTHER engine, keeping mirrors symmetric. Both are raw pointers, not
+  // owning; the streaming manager outlives the host.
+  DataEngine* primary_engine = nullptr;
+  DataEngine* secondary_engine = nullptr;
 };
 
 struct DatastoreParserWriteHostState {
   DatastoreParserWriteHostState(DataEngine& engine, TopicHandle topic_handle)
-      : core(std::make_unique<WriteCore>(engine)), topic(topic_handle) {}
+      : core(std::make_unique<WriteCore>(engine)), topic(topic_handle), primary_engine(&engine) {}
   // Held by pointer so setTarget() can rebind to a different engine (streaming
   // two-store pause/resume) by reconstructing the WriteCore — its writer and
   // caches are engine-specific. WriteCore itself is not reassignable (holds a
   // DataEngine reference).
   std::unique_ptr<WriteCore> core;
   TopicHandle topic;
+  // Streaming two-engine lockstep — see DatastoreSourceWriteHostState. Closes
+  // the latent FieldHandle-stale bug for parser plugins that cache handles
+  // (parser_protobuf et al.) on pause/resume.
+  DataEngine* primary_engine = nullptr;
+  DataEngine* secondary_engine = nullptr;
 };
 
 struct DatastoreToolboxHostState {
@@ -1745,9 +1836,35 @@ void DatastoreSourceWriteHost::flushPending() {
 void DatastoreSourceWriteHost::setTarget(DataEngine* target) {
   // Seal + commit any open chunk to the current engine so no rows are lost,
   // then rebind to the new engine with a fresh WriteCore (its writer and
-  // per-engine caches must not carry over). Mirrors DatastoreParserWriteHost.
+  // per-engine caches must not carry over). Re-wire the new WriteCore's
+  // secondary_engine_ pointer to whichever engine is NOT the target so any
+  // new topic/field created while pointed at `target` mirrors back to the
+  // other side — both engines keep their TopicId/FieldId assignments in
+  // lockstep regardless of which one is currently active.
   state_->core->flushPending();
   state_->core = std::make_unique<WriteCore>(*target);
+  if (target == state_->primary_engine) {
+    state_->core->secondary_engine_ = state_->secondary_engine;
+  } else if (target == state_->secondary_engine) {
+    state_->core->secondary_engine_ = state_->primary_engine;
+  } else {
+    // Unknown target (e.g. an in-place dataset replace) — no mirror.
+    state_->core->secondary_engine_ = nullptr;
+    state_->primary_engine = target;
+  }
+}
+
+void DatastoreSourceWriteHost::setSecondaryEngine(DataEngine* secondary) {
+  // Wire the secondary engine for streaming pause/resume lockstep. Mirroring
+  // is bidirectional: the active WriteCore mirrors to whichever engine is
+  // the other one. Called once by the streaming runtime host right after
+  // construction; passing nullptr disables mirroring.
+  state_->secondary_engine = secondary;
+  if (state_->core != nullptr) {
+    // Whichever direction we're currently pointed at, mirror to the other.
+    state_->core->secondary_engine_ =
+        (&state_->core->engine_ == state_->primary_engine) ? secondary : state_->primary_engine;
+  }
 }
 
 DatastoreParserWriteHost::DatastoreParserWriteHost(DataEngine& engine, TopicHandle topic)
@@ -1766,11 +1883,30 @@ void DatastoreParserWriteHost::flushPending() {
 
 void DatastoreParserWriteHost::setTarget(DataEngine* target) {
   // Seal + commit any open chunk to the current engine so no rows are lost,
-  // then rebind to the new engine with a fresh WriteCore (its writer and
-  // per-engine caches must not carry over). The bound topic is expected to
-  // already exist in `target` with the same TopicId.
+  // then rebind to the new engine with a fresh WriteCore. The bound topic is
+  // expected to already exist in `target` with the same TopicId. Re-wires
+  // the new WriteCore's secondary_engine_ pointer to the OTHER engine for
+  // bidirectional lockstep mirroring (parsers that cache FieldHandle — e.g.
+  // parser_protobuf — would otherwise see stale ids after pause/resume).
   state_->core->flushPending();
   state_->core = std::make_unique<WriteCore>(*target);
+  if (target == state_->primary_engine) {
+    state_->core->secondary_engine_ = state_->secondary_engine;
+  } else if (target == state_->secondary_engine) {
+    state_->core->secondary_engine_ = state_->primary_engine;
+  } else {
+    state_->core->secondary_engine_ = nullptr;
+    state_->primary_engine = target;
+  }
+}
+
+void DatastoreParserWriteHost::setSecondaryEngine(DataEngine* secondary) {
+  // See DatastoreSourceWriteHost::setSecondaryEngine — same semantics.
+  state_->secondary_engine = secondary;
+  if (state_->core != nullptr) {
+    state_->core->secondary_engine_ =
+        (&state_->core->engine_ == state_->primary_engine) ? secondary : state_->primary_engine;
+  }
 }
 
 DatastoreToolboxHost::DatastoreToolboxHost(DataEngine& engine, ObjectStore& object_store)

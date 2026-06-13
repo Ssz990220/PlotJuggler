@@ -57,9 +57,13 @@ class DataSourceRuntimeHost {
   // streaming dual-store / dual-engine routing: every object topic (resp.
   // scalar topic) this host registers is mirrored into the secondary in
   // lockstep, so both share the same ObjectTopicId (resp. TopicId) per topic
-  // name. The manager then flips ingest between primary and secondary via
-  // setObjectStoreTarget / setDataEngineTarget on each pause/resume. Both null
-  // (file-load callers) → single-store behaviour, identical to before.
+  // name. For scalar topics the mirror extends to the field level — the source
+  // and per-binding write hosts get setSecondaryEngine(secondary_data_engine),
+  // so each ensureField also lands the same FieldId on both engines (via
+  // DataEngine::createTopicField) and a plugin's cached FieldHandle stays valid
+  // across the swap. The manager then flips ingest between primary and secondary
+  // via setObjectStoreTarget / setDataEngineTarget on each pause/resume. Both
+  // null (file-load callers) → single-store behaviour, identical to before.
   // `library_keepalive` is intentionally NON-defaulting (see the member doc below): a silent
   // `{}` reintroduces the lazy-anchor use-after-dlclose crash, so every caller must pass the
   // DSO token (`handle.libraryOwner()`). The trailing optional params also lost their defaults
