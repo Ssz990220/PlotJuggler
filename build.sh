@@ -3,11 +3,11 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 BUILD_DIR="${SCRIPT_DIR}/build"
-QT_DIR="${SCRIPT_DIR}/.qt/6.8.3/gcc_64"
+QT_DIR="${SCRIPT_DIR}/.qt/6.11.1/gcc_64"
 
 if [[ ! -d "$QT_DIR" ]]; then
-  echo "Qt 6.8.3 not found at ${QT_DIR}."
-  echo "Install it with: aqt install-qt linux desktop 6.8.3 linux_gcc_64 --modules qtcharts qtwebsockets --outputdir ${SCRIPT_DIR}/.qt"
+  echo "Qt 6.11.1 not found at ${QT_DIR}."
+  echo "Install it with: ./install_qt6.sh"
   exit 1
 fi
 

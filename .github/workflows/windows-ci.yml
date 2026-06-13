@@ -168,15 +168,30 @@ jobs:
         uses: actions/cache@v5
         with:
           path: .qt
-          key: qt-6.8.3-windows-msvc2022_64-qtcharts-qtwebsockets
+          key: qt-6.11.1-windows-msvc2022_64
 
-      - name: Install Qt 6.8.3 via aqt
+      - name: Install Qt 6.11.1 via aqt
+        # Inline (not install_qt6.sh): that script is Linux-only (gcc_64); this
+        # job needs the win64_msvc2022_64 build. Keep the version in sync with
+        # install_qt6.sh / the cache key above on upgrade.
         if: steps.qt-cache.outputs.cache-hit != 'true'
         shell: bash
         run: |
-          pip install aqtinstall
-          aqt install-qt windows desktop 6.8.3 win64_msvc2022_64 \
-            --modules qtcharts qtwebsockets --outputdir ./.qt
+          # Released aqt (<=3.3.0) can't install Qt >= 6.11 on Windows: Qt moved
+          # the Windows repo to per-arch folders and released aqt still requests
+          # the old nested path (miurahr/aqtinstall#959 / #1007), failing with
+          # "Failed to locate XML data for Qt version '6.11.1'". The fix (PR #1000)
+          # is merged but unreleased, so pin to that merge commit.
+          # TODO: revert to `pip install 'aqtinstall>=3.3.1'` once it ships.
+          pip install "git+https://github.com/miurahr/aqtinstall.git@8c3695d4a4e1ceabf6a74dc6c79681656dc6b74b"
+          # Retry with backoff for transient mirror failures.
+          attempt=0
+          until aqt install-qt windows desktop 6.11.1 win64_msvc2022_64 --outputdir ./.qt; do
+            attempt=$((attempt + 1))
+            if [ "$attempt" -ge 5 ]; then echo "aqt failed after ${attempt} attempts" >&2; exit 1; fi
+            echo "aqt attempt ${attempt} failed (transient mirror?); retrying in $((attempt * 15))s..."
+            sleep $((attempt * 15))
+          done
 
       - name: Install sccache
         # sccache is a compile-cache speedup, NOT load-bearing: the build is
@@ -236,9 +251,9 @@ jobs:
           # to an uncached (but correct) build instead of failing.
           SCCACHE_AVAILABLE: ${{ steps.setup_sccache.outcome == 'success' }}
         run: |
-          QT_DIR="$(pwd)/.qt/6.8.3/msvc2022_64"
+          QT_DIR="$(pwd)/.qt/6.11.1/msvc2022_64"
           if [[ ! -d "$QT_DIR" ]]; then
-            echo "::error::Qt 6.8.3 not found at $QT_DIR"
+            echo "::error::Qt 6.11.1 not found at $QT_DIR"
             exit 1
           fi
 
@@ -376,7 +391,7 @@ jobs:
         # (STATUS_DLL_NOT_FOUND) before any test code runs.
         shell: bash
         run: |
-          export PATH="$(pwd)/.qt/6.8.3/msvc2022_64/bin:$PATH"
+          export PATH="$(pwd)/.qt/6.11.1/msvc2022_64/bin:$PATH"
           # FFmpeg's Conan bin dir(s) are emitted at configure time by
           # pj_scene2D/core/CMakeLists.txt (Conan's package path is hashed and not
           # knowable here). Prepend each so every exe that transitively links

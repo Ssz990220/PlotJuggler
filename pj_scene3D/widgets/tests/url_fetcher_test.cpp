@@ -116,6 +116,27 @@ TEST(UrlFetcherTest, UnsupportedSchemeFailsAsynchronously) {
   EXPECT_TRUE(result.error.contains(QStringLiteral("unsupported URL scheme"))) << result.error.toStdString();
 }
 
+// Regression (Windows): an absolute path like "C:/dir/file.bin" becomes a QUrl
+// whose scheme() is the single-letter drive ("c"), NOT empty — so the fetcher
+// must still treat it as a local file, never reject it as an unsupported scheme.
+// Cross-platform check: point at a missing drive-letter path and assert the
+// failure is a FILE error, not "unsupported URL scheme 'c'".
+TEST(UrlFetcherTest, WindowsDriveLetterPathTreatedAsLocalFile) {
+  pj::scene3d::UrlFetcher fetcher;
+  bool called = false;
+  pj::scene3d::FetchResult result;
+  fetcher.fetch(
+      QUrl(QStringLiteral("C:/no/such/url_fetcher_test/drive.bin")),
+      [&called, &result](pj::scene3d::FetchResult fetched) {
+        called = true;
+        result = std::move(fetched);
+      });
+  ASSERT_TRUE(pumpUntil([&called]() { return called; }, 5000));
+  EXPECT_FALSE(result.ok);  // the file does not exist on the test host
+  EXPECT_FALSE(result.error.contains(QStringLiteral("unsupported URL scheme")))
+      << "drive-letter path misrouted as a URL scheme: " << result.error.toStdString();
+}
+
 // The lifetime guarantee layers rely on: destroying the fetcher while a request
 // is in flight aborts it and the callback never fires.
 TEST(UrlFetcherTest, DestructionDropsInFlightCallback) {

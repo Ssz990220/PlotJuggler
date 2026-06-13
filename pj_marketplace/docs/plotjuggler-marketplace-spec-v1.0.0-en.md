@@ -609,7 +609,7 @@ The commitment to plugin developers:
 - The registry declares `min_plotjuggler_version` for each extension
 - If the SDK changes incompatibly, PlotJuggler provides an internal adapter
 - **Existing plugins are never broken by PlotJuggler updates**
-- Stability target: Qt LTS 6.8 (support until 2028)
+- Stability target: Qt 6.11 now, migrating to Qt 6.12 LTS (5-year support) on release
 
 ---
 
@@ -888,7 +888,7 @@ marketplace/
 | ID    | Requirement                                       |
 | ----- | ------------------------------------------------- |
 | NF-01 | C++17 minimum                                     |
-| NF-02 | Qt 6.x Widgets (LTS 6.8 target)                   |
+| NF-02 | Qt 6.x Widgets (6.11; 6.12 LTS target)            |
 | NF-03 | Cross-platform: Linux, Windows, macOS             |
 | NF-04 | Build system: CMake                               |
 | NF-05 | Dependencies: Conan (current), Pixi (future)      |

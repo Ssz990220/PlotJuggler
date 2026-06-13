@@ -28,7 +28,8 @@ std::string fixtures() {
 class ScopedSettings {
  public:
   ScopedSettings() {
-    tmp_.open();
+    // QTemporaryFile::open() is [[nodiscard]] as of Qt 6.11; check it (we build -Werror).
+    EXPECT_TRUE(tmp_.open()) << "failed to create temp QSettings file";
     tmp_.close();
     settings_ = std::make_unique<QSettings>(tmp_.fileName(), QSettings::IniFormat);
   }

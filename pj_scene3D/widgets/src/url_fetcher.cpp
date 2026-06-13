@@ -8,6 +8,7 @@
 #include <QTimer>
 #include <QVariant>
 #include <memory>
+#include <optional>
 #include <utility>
 
 namespace pj::scene3d {
@@ -25,6 +26,27 @@ FetchResult readLocalFile(const QString& path) {
   return result;
 }
 
+// The local filesystem path for `url` when it denotes a local file, else
+// nullopt. Three local forms are recognized: a file:// URL, a scheme-less bare
+// path, and a Windows drive-letter path that QUrl mis-parses as a single-letter
+// "scheme" (e.g. QUrl("C:/dir/x") -> scheme "c", path "/dir/x"). Genuine
+// network/other schemes (http/https/ftp/...) return nullopt.
+std::optional<QString> localFilePath(const QUrl& url) {
+  if (url.isLocalFile()) {
+    return url.toLocalFile();
+  }
+  const QString scheme = url.scheme();
+  if (scheme.isEmpty()) {
+    return url.toString();
+  }
+  if (scheme.size() == 1 && scheme.at(0).isLetter()) {
+    // A one-letter "scheme" is a Windows drive letter, not a URL scheme:
+    // rebuild "<drive>:<path>" so QFile can open it.
+    return scheme + QStringLiteral(":") + url.path();
+  }
+  return std::nullopt;
+}
+
 }  // namespace
 
 UrlFetcher::UrlFetcher(QObject* parent) : QObject(parent) {}
@@ -34,14 +56,11 @@ void UrlFetcher::deliverLater(std::function<void(FetchResult)> on_done, FetchRes
 }
 
 void UrlFetcher::fetch(const QUrl& url, std::function<void(FetchResult)> on_done) {
-  // Local sources never touch the network: file:// URLs and scheme-less bare
-  // paths read straight from disk (still delivered asynchronously).
-  if (url.isLocalFile()) {
-    deliverLater(std::move(on_done), readLocalFile(url.toLocalFile()));
-    return;
-  }
-  if (url.scheme().isEmpty()) {
-    deliverLater(std::move(on_done), readLocalFile(url.toString()));
+  // Local sources never touch the network: file:// URLs, scheme-less bare paths,
+  // and Windows drive-letter paths read straight from disk (still delivered
+  // asynchronously). See localFilePath() for why the drive-letter case matters.
+  if (const std::optional<QString> local = localFilePath(url)) {
+    deliverLater(std::move(on_done), readLocalFile(*local));
     return;
   }
   if (url.scheme() != QStringLiteral("http") && url.scheme() != QStringLiteral("https")) {

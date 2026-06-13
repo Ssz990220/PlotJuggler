@@ -3,19 +3,19 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # Disable the IBus platform input context: it's loaded from the system Qt
-# install (often an older major version) and segfaults under Qt 6.8.
+# install (often an older major version) and segfaults under Qt 6.11.
 export QT_IM_MODULE=""
 
 # Native Wayland for ADS drag is patched in 3rdparty/Qt-Advanced-Docking/.
 # Uncomment the next line to fall back to XWayland if a regression appears.
 # export QT_QPA_PLATFORM=xcb
 
-# Point Qt plugin discovery at the bundled Qt 6.8.3 only. If the user's shell
+# Point Qt plugin discovery at the bundled Qt 6.11.1 only. If the user's shell
 # has QT_PLUGIN_PATH set to a stale Qt (e.g. /home/.../qt/6.4.2/plugins), Qt
 # scans it first, picks up the cert-only TLS backend there, then fails to load
 # its OpenSSL sibling (symbol mismatch against the newer libstdc++) and all
 # HTTPS traffic breaks — including the marketplace registry fetch.
-export QT_PLUGIN_PATH="${SCRIPT_DIR}/.qt/6.8.3/gcc_64/plugins"
+export QT_PLUGIN_PATH="${SCRIPT_DIR}/.qt/6.11.1/gcc_64/plugins"
 
 BIN="${SCRIPT_DIR}/build/pj_app/pj_app"
 

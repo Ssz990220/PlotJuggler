@@ -2,21 +2,24 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 
-#include <QtCharts/QChartView>
+#include <qwt_plot.h>
+
 #include <string>
 #include <utility>
 #include <vector>
 
-QT_BEGIN_NAMESPACE
-class QValueAxis;
-class QWheelEvent;
-QT_END_NAMESPACE
+class QEvent;
+class QObject;
+class QwtPlotZoomer;
 
 namespace PJ {
 
 /// Lightweight chart widget that renders named XY line series inside a QFrame.
-/// Created and managed by the widget binding layer — plugin authors never touch this directly.
-class ChartPreviewWidget : public QChartView {
+/// Created and managed by the widget binding layer — plugin authors never touch
+/// this directly. Built on the vendored Qwt (not Qt Charts), so the dialog host
+/// carries no Qt6::Charts dependency; the dialog-protocol chart API
+/// (setChartSeries / onChartViewChanged) is unaffected.
+class ChartPreviewWidget : public QwtPlot {
   Q_OBJECT
 
  public:
@@ -25,7 +28,7 @@ class ChartPreviewWidget : public QChartView {
   struct Series {
     std::string label;
     std::vector<std::pair<double, double>> points;
-    std::string color;  // optional hex "#rrggbb"; empty means use chart theme default
+    std::string color;  // optional hex "#rrggbb"; empty means use the built-in palette
   };
 
   void setSeries(const std::vector<Series>& series);
@@ -41,11 +44,12 @@ class ChartPreviewWidget : public QChartView {
   void viewChanged(double x_min, double x_max, double y_min, double y_max);
 
  protected:
-  void wheelEvent(QWheelEvent* event) override;
+  /// Wheel zoom is implemented here because the plot *canvas* (a child widget),
+  /// not this widget, receives wheel events — a wheelEvent() override never fires.
+  bool eventFilter(QObject* obj, QEvent* event) override;
 
  private:
-  QValueAxis* x_axis_ = nullptr;
-  QValueAxis* y_axis_ = nullptr;
+  QwtPlotZoomer* zoomer_ = nullptr;
   bool zoom_enabled_ = false;
 
   void emitViewChanged();

@@ -1,4 +1,4 @@
-find_package(Qt6 REQUIRED COMPONENTS Widgets UiTools Charts SvgWidgets)
+find_package(Qt6 REQUIRED COMPONENTS Widgets UiTools SvgWidgets)
 
 # Workaround: some Qt packages still publish AGL in transitive OpenGL links,
 # but that framework was removed in newer macOS SDKs.
@@ -47,9 +47,9 @@ target_link_libraries(pj_dialog_engine_qt
     PUBLIC
         pj_dialog_host
         pj_widgets
+        plotjuggler_qwt   # backs ChartPreviewWidget (replaced Qt6::Charts)
         Qt6::Widgets
         Qt6::UiTools
-        Qt6::Charts
         Qt6::SvgWidgets
 )
 

@@ -82,7 +82,7 @@ Every PJ4 module (anything matching `pj_*/`) owns:
   - **Standard module**: `docs/REQUIREMENTS.md` (the WHAT).
   - **Module with non-obvious internals**: add `docs/ARCHITECTURE.md` (the HOW). See `pj_scene2D/docs/` for the reference shape.
 
-Cross-cutting docs (porting strategy, glossary, ADRs) live in top-level `docs/`. Its scope is described in [`docs/README.md`](./docs/README.md).
+Cross-cutting docs (porting strategy, glossary, ADRs) live in top-level `docs/`. Its scope is described in [`docs/README.md`](./docs/README.md). Notably, [`docs/QT_NOTES.md`](./docs/QT_NOTES.md) records the current Qt baseline (6.11.1) and what changed since 6.8 — read it before using an unfamiliar Qt API.
 
 ### Module documentation index
 
@@ -128,7 +128,7 @@ The "wholesale lift" strategy for plot widgets (plan §5.3, §8) means porting f
 
 ## Build
 
-- **Qt 6.8** (required).
+- **Qt 6.11.1** (required). Install via [`./install_qt6.sh`](./install_qt6.sh) — the single source of truth for the Qt version. See [`docs/QT_NOTES.md`](./docs/QT_NOTES.md) for what changed since 6.8 (new APIs past most training cutoffs, deprecations, build floors).
 - **CMake + Conan**. CMake is the build driver; Conan provides external non-vendored dependencies.
 - **C++20**.
 - **Linux-only** for v1. The code **must stay portable** — no Linux-only APIs or POSIX-specific paths in module code; gate anything platform-specific behind the usual CMake / `#ifdef` guards so a future macOS/Windows build is a build-system problem, not a code problem.
@@ -139,7 +139,7 @@ Mirror PJ3's `3rdparty/` convention. Vendored deps live at `./3rdparty/<name>/` 
 
 Explicitly vendored (do not take from Conan or system packages):
 
-- **Qwt** — required for Qt 6.8 compatibility and for parity with PJ3 plot widgets.
+- **Qwt** — required for Qt 6 compatibility and for parity with PJ3 plot widgets.
 - **Qt-Advanced-Docking-System** — docking framework used by `pj_app`.
 - **nanocdr** — vendored via `add_subdirectory`.
 - **doomgeneric** — a vendored C engine whose sources are globbed directly into the `pj-raster-helper` target (not `add_subdirectory`'d). It and `raster_helper` form an optional, GPL-isolated standalone executable that PlotJuggler never links.
@@ -154,13 +154,18 @@ Conan, so rich traces need no system `-dev` packages.
 
 ### Compile instructions
 
-One-time setup (installs Qt 6.8.3 into `./.qt/`, ~1GB):
+One-time setup (installs Qt 6.11.1 into `./.qt/`, ~1GB):
 
 ```bash
-aqt install-qt linux desktop 6.8.3 linux_gcc_64 \
-    --modules qtcharts qtwebsockets \
-    --outputdir ./.qt
+./install_qt6.sh
 ```
+
+`install_qt6.sh` is the **single source of truth** for the Qt version PJ4 builds
+against — `build.sh`, `run.sh`, and Linux CI all expect Qt at
+`.qt/6.11.1/gcc_64`. To upgrade Qt, bump `QT_VERSION` there and the matching
+paths/cache-keys in `build.sh`, `run.sh`, `CMakeLists.txt`, and
+`.github/workflows/*` (Windows CI installs Qt inline because the script is
+Linux-only).
 
 System build dependencies (Linux): the Conan FFmpeg build needs `libva-dev` and
 `libdrm-dev` on the build host, because `conanfile.txt` enables
@@ -185,9 +190,9 @@ Build (configures Conan, runs CMake, builds):
 
 That script:
 
-1. Checks for `.qt/6.8.3/gcc_64/` and errors with the install command if missing.
+1. Checks for `.qt/6.11.1/gcc_64/` and tells you to run `./install_qt6.sh` if missing.
 2. Runs `conan install ... --output-folder=build --build=missing -s compiler.cppstd=20` (reads `conanfile.txt`).
-3. Configures CMake with `CMAKE_TOOLCHAIN_FILE=build/conan_toolchain.cmake` and `CMAKE_PREFIX_PATH=./.qt/6.8.3/gcc_64`.
+3. Configures CMake with `CMAKE_TOOLCHAIN_FILE=build/conan_toolchain.cmake` and `CMAKE_PREFIX_PATH=./.qt/6.11.1/gcc_64`.
 4. Builds with `cmake --build build -j$(nproc)`.
 
 Run the app:
@@ -196,7 +201,7 @@ Run the app:
 ./run.sh
 ```
 
-`run.sh` unsets `QT_IM_MODULE` before launching. Otherwise the IBus platform input context gets loaded from a system / older Qt install and segfaults under the Qt 6.8.3 runtime.
+`run.sh` unsets `QT_IM_MODULE` before launching. Otherwise the IBus platform input context gets loaded from a system / older Qt install and segfaults under the Qt 6.11.1 runtime.
 
 Re-running `./build.sh` after code changes does incremental builds. `ccache` is picked up automatically if installed.
 

@@ -159,14 +159,13 @@ jobs:
         uses: actions/cache@v5
         with:
           path: .qt
-          key: qt-6.8.3-linux-gcc_64-qtcharts-qtwebsockets
+          key: qt-6.11.1-linux-gcc_64
 
-      - name: Install Qt 6.8.3 via aqt
+      - name: Install Qt 6.11.1 via aqt
+        # Delegates to the repo-root install script (single source of truth for
+        # the Linux Qt version). It installs into ./.qt and no-ops if present.
         if: steps.qt-cache.outputs.cache-hit != 'true'
-        run: |
-          pip install aqtinstall
-          aqt install-qt linux desktop 6.8.3 linux_gcc_64 \
-            --modules qtcharts qtwebsockets --outputdir ./.qt
+        run: ./install_qt6.sh
 
       - name: Install Qt 6 + FFmpeg VAAPI system dependencies
         run: |
