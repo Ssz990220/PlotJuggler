@@ -16,6 +16,8 @@
 #include <QPalette>
 #include <QResizeEvent>
 #include <QScreen>
+#include <QStyle>
+#include <QStyleOptionFrame>
 #include <QTimer>
 #include <QVariantAnimation>
 #include <Qt>
@@ -46,12 +48,22 @@ void ScrubberBase::setPixelsPerStep(int px) {
   pixels_per_step_ = std::max(1, px);
 }
 
+int ScrubberBase::styledHeight() const {
+  // Ask the active style what a QLineEdit of this font is tall (CT_LineEdit).
+  // PJ::Style clamps every input to one height, so this is exactly what the line
+  // edits / combos / spin boxes beside the scrubber resolve to — tracking style,
+  // font and DPI with no hardcoded constant, and no throwaway widget per call.
+  QStyleOptionFrame opt;
+  opt.initFrom(this);
+  return style()->sizeFromContents(QStyle::CT_LineEdit, &opt, {80, fontMetrics().height()}, this).height();
+}
+
 QSize ScrubberBase::sizeHint() const {
-  return {80, fontMetrics().height() + 4};
+  return {80, styledHeight()};
 }
 
 QSize ScrubberBase::minimumSizeHint() const {
-  return {50, fontMetrics().height() + 2};
+  return {50, styledHeight()};
 }
 
 void ScrubberBase::valueRepaint() {

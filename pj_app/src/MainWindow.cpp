@@ -334,9 +334,10 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
   // snap or compact mode.
   ui_->rightToolbarSplitter->setStretchFactor(0, 1);
   ui_->rightToolbarSplitter->setStretchFactor(1, 0);
-  // 6 × 24-px Curve Style icons = 144 px; round up to 150 so the FlowLayout
-  // never wraps that strip into two rows.
-  ui_->localToolbarWidget->setMinimumWidth(150);
+  // Right side-panel floor: wide enough for the scene config panels' label
+  // columns (and well past the 6 × 24-px Curve Style icon strip so the
+  // FlowLayout never wraps it into two rows).
+  ui_->localToolbarWidget->setMinimumWidth(250);
   ui_->rightToolbarSplitter->setSizes({2000, 240});
   ui_->rightToolbarSplitter->setOpaqueResize(true);
 
@@ -681,9 +682,10 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
     ui_->timelineWidget->setMaximumHeight(playback_height);
 
     const int band_extent = (metrics.icon_size + metrics.icon_padding) + (2 * metrics.layout_padding);
-    // Local toolbar fits six chrome buttons on one row at the band
-    // extent, plus a small margin for the FlowLayout to wrap.
-    ui_->localToolbarWidget->setMinimumWidth((6 * band_extent) + 6);
+    // Local toolbar fits six chrome buttons on one row at the band extent, plus
+    // a small margin for the FlowLayout to wrap — but never narrower than the
+    // 250-px side-panel floor.
+    ui_->localToolbarWidget->setMinimumWidth(qMax((6 * band_extent) + 6, 250));
 
     if (!ui_->timelineStrip->isVisible()) {
       // Strip is hidden — keep the bottomPanel's max-height in sync

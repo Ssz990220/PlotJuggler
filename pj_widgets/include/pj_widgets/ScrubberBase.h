@@ -66,6 +66,11 @@ class ScrubberBase : public QWidget {
   // Subclasses call this after setting a new value to repaint.
   void valueRepaint();
 
+  // Height the active QStyle gives a QLineEdit at this font (CT_LineEdit). Drives
+  // sizeHint so scrubbers match the app's native input chrome (PJ::Style clamps
+  // every input to one height) under any style/DPI, with no hardcoded constant.
+  int styledHeight() const;
+
   void paintEvent(QPaintEvent* event) override;
   void mousePressEvent(QMouseEvent* event) override;
   void mouseMoveEvent(QMouseEvent* event) override;

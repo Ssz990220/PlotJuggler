@@ -4,16 +4,17 @@
 #include "ui/Scene3DConfigPanel.h"
 
 #include <QButtonGroup>
-#include <QComboBox>
 #include <QDialogButtonBox>
 #include <QEvent>
 #include <QFileDialog>
 #include <QFileInfo>
-#include <QFormLayout>
+#include <QGridLayout>
 #include <QHBoxLayout>
+#include <QLabel>
 #include <QLineEdit>
 #include <QMouseEvent>
 #include <QSettings>
+#include <QSize>
 #include <QToolButton>
 #include <QUrl>
 #include <QVBoxLayout>
@@ -29,6 +30,7 @@
 #include "pj_scene3d_widgets/scene_view_widget.h"
 #include "pj_scene_common/scene_dock_widget.h"
 #include "pj_scene_common/scene_layer.h"
+#include "pj_widgets/ComboBox.h"
 #include "pj_widgets/ConfigPanelHost.h"
 #include "pj_widgets/Dialog.h"
 #include "pj_widgets/DoubleScrubber.h"
@@ -49,6 +51,35 @@ constexpr auto kVisibilityOffPath = ":/resources/svg/visibility_off.svg";
 constexpr auto kTrashIconPath = ":/resources/svg/trash.svg";
 constexpr auto kAddIconPath = ":/resources/svg/add_circle.svg";
 
+// Trailing eye/add/trash button column: the scene-control grids reserve this
+// width in their 3rd column so every field's right edge lines up whether or not
+// the row carries a trailing button. kTrailingIconPx is the glyph size inside it.
+constexpr int kTrailingSlotWidth = 24;
+constexpr int kTrailingIconPx = 16;
+// Horizontal gap between grid columns; the robot-row HBox reuses it so the robot
+// name's right edge lands on the same x as the field column above.
+constexpr int kGridHSpacing = 8;
+
+// Uniform sizing for the inline eye/add/trash buttons so the trailing column is
+// pixel-aligned regardless of the platform style's default tool-button metrics.
+void sizeTrailingButton(QToolButton* button) {
+  button->setIconSize(QSize(kTrailingIconPx, kTrailingIconPx));
+  button->setFixedWidth(kTrailingSlotWidth);
+}
+
+// Add one [label | field | trailing] row to a 3-column scene-control grid.
+// Using a real grid column (not an in-cell spacer) keeps every field's right
+// edge and the trailing eye/add button aligned across rows by construction.
+// `trailing` may be null (column 2 stays reserved via setColumnMinimumWidth).
+void addGridRow(QGridLayout* grid, int& row, const QString& label, QWidget* field, QWidget* trailing = nullptr) {
+  grid->addWidget(new QLabel(label), row, 0);
+  grid->addWidget(field, row, 1);
+  if (trailing != nullptr) {
+    grid->addWidget(trailing, row, 2);
+  }
+  ++row;
+}
+
 // Small modal prompt on the shared Dialog chrome: a single field + OK/Cancel.
 // The field is parented into the dialog; values must be read before `dialog`
 // leaves scope, which is why each picker below returns the value, not a bool.
@@ -67,7 +98,7 @@ bool execFieldDialog(Dialog& dialog, const QString& title, QWidget* field) {
 std::optional<std::pair<ObjectTopicId, QString>> pickRobotDescriptionTopic(
     QWidget* parent, const QList<Scene3DDockWidget::RobotDescriptionTopic>& topics) {
   Dialog dialog(parent);
-  auto* combo = new QComboBox(dialog.contentWidget());
+  auto* combo = new ComboBox(dialog.contentWidget());
   for (const auto& topic : topics) {
     combo->addItem(topic.name, QVariant::fromValue(static_cast<uint>(topic.topic_id.id)));
   }
@@ -204,6 +235,7 @@ void Scene3DConfigPanel::buildSceneControls(QVBoxLayout* root) {
     eye->setAutoRaise(true);
     eye->setFocusPolicy(Qt::NoFocus);
     eye->setToolTip(tip);
+    sizeTrailingButton(eye);
     eye->setProperty("settings_key", QString::fromLatin1(key));
     eye->setChecked(settings.value(QString::fromLatin1(key), true).toBool());
     connect(eye, &QToolButton::toggled, this, [this, eye](bool checked) {
@@ -213,27 +245,32 @@ void Scene3DConfigPanel::buildSceneControls(QVBoxLayout* root) {
     });
     return eye;
   };
-  // Field + eye on one form row, eye hugging the control like the mockup.
-  const auto with_eye = [](QWidget* field, QToolButton* eye) {
-    auto* row = new QHBoxLayout;
-    row->setContentsMargins(0, 0, 0, 0);
-    row->addWidget(field, 1);
-    row->addWidget(eye);
-    return row;
-  };
-
   const auto add_band = [this, root](const QString& text) { root->addWidget(new SectionHeaderBand(text, this)); };
-  const auto add_form = [this, root]() {
+
+  // Each band's controls live in a 3-column grid: label | field | trailing
+  // button. Column 1 stretches; column 2 is pinned to the trailing-button width
+  // so plain rows line up with rows that carry an eye/add button — and the Grid
+  // and Transforms sections align with each other. (A QFormLayout can't share a
+  // trailing column across its rows, which is what caused the right-edge drift.)
+  // The label column (0) is pinned to a shared width after both grids are built
+  // (shareLabelColumn below) so the two sections' labels — and therefore fields —
+  // line up vertically even though they are separate layouts.
+  const auto add_grid = [this, root]() {
     auto* host = new QWidget(this);
-    auto* form = new QFormLayout(host);
-    form->setContentsMargins(8, 4, 8, 4);
+    auto* grid = new QGridLayout(host);
+    grid->setContentsMargins(8, 4, 8, 4);
+    grid->setHorizontalSpacing(kGridHSpacing);
+    grid->setVerticalSpacing(2);
+    grid->setColumnStretch(1, 1);
+    grid->setColumnMinimumWidth(2, kTrailingSlotWidth);
     root->addWidget(host);
-    return form;
+    return grid;
   };
 
   // --- Grid ---------------------------------------------------------------
   add_band(tr("Grid"));
-  QFormLayout* grid_form = add_form();
+  QGridLayout* grid_grid = add_grid();
+  int grid_row = 0;
 
   auto* style_row = new QHBoxLayout;
   style_row->setContentsMargins(0, 0, 0, 0);
@@ -262,14 +299,18 @@ void Scene3DConfigPanel::buildSceneControls(QVBoxLayout* root) {
   style_row->addWidget(grid_cells_button_);
   style_row->addWidget(grid_eye_);
   style_row->addStretch(1);
-  grid_form->addRow(tr("Style"), style_row);
+  // The style toggles are a strip, not a single field: keep the label in col 0
+  // and let the strip span the field + trailing columns.
+  grid_grid->addWidget(new QLabel(tr("Style")), grid_row, 0);
+  grid_grid->addLayout(style_row, grid_row, 1, 1, 2);
+  ++grid_row;
 
   grid_size_ = makeScrubber(1.0, 1000.0, 1.0, 10.0);
   grid_size_->setDecimals(0);
   wire(
       grid_size_, "grid_size", [this](const QVariant& v) { grid_size_->setValue(v.toDouble()); },
       qOverload<double>(&DoubleScrubber::valueChanged));
-  grid_form->addRow(tr("Size (m)"), grid_size_);
+  addGridRow(grid_grid, grid_row, tr("Size (m)"), grid_size_);
 
   grid_divisions_ = new IntScrubber;
   grid_divisions_->setRange(1, 200);
@@ -277,11 +318,12 @@ void Scene3DConfigPanel::buildSceneControls(QVBoxLayout* root) {
   wire(
       grid_divisions_, "grid_divisions", [this](const QVariant& v) { grid_divisions_->setValue(v.toInt()); },
       qOverload<int>(&IntScrubber::valueChanged));
-  grid_form->addRow(tr("Divisions"), grid_divisions_);
+  addGridRow(grid_grid, grid_row, tr("Divisions"), grid_divisions_);
 
   // --- Transforms and RobotModel --------------------------------------------
   add_band(tr("Transforms and RobotModel"));
-  QFormLayout* tm_form = add_form();
+  QGridLayout* tm_grid = add_grid();
+  int tm_row = 0;
 
   // "Frames" in the UI = the TF frame axis triads (gizmo_* internally and in
   // the persisted settings keys, kept for compatibility).
@@ -289,16 +331,16 @@ void Scene3DConfigPanel::buildSceneControls(QVBoxLayout* root) {
   wire(
       gizmo_size_, "gizmo_size", [this](const QVariant& v) { gizmo_size_->setValue(v.toDouble()); },
       qOverload<double>(&DoubleScrubber::valueChanged));
-  tm_form->addRow(tr("Frames size (m)"), gizmo_size_);
+  addGridRow(tm_grid, tm_row, tr("Frames size (m)"), gizmo_size_);
 
   gizmo_opacity_ = makeScrubber(0.0, 1.0, 0.1, 1.0);
   gizmo_eye_ = make_eye("gizmos_visible", tr("Show/hide the TF frames"));
   wire(
       gizmo_opacity_, "gizmo_opacity", [this](const QVariant& v) { gizmo_opacity_->setValue(v.toDouble()); },
       qOverload<double>(&DoubleScrubber::valueChanged));
-  tm_form->addRow(tr("Frames opacity"), with_eye(gizmo_opacity_, gizmo_eye_));
+  addGridRow(tm_grid, tm_row, tr("Frames opacity"), gizmo_opacity_, gizmo_eye_);
 
-  model_source_combo_ = new QComboBox;
+  model_source_combo_ = new ComboBox;
   model_source_combo_->addItem(tr("File"));
   model_source_combo_->addItem(tr("Topic"));
   model_source_combo_->addItem(tr("URL"));
@@ -306,26 +348,28 @@ void Scene3DConfigPanel::buildSceneControls(QVBoxLayout* root) {
   add_model_button_->setAutoRaise(true);
   add_model_button_->setFocusPolicy(Qt::NoFocus);
   add_model_button_->setToolTip(tr("Add a robot model from the selected source"));
-  auto* model_row = new QHBoxLayout;
-  model_row->setContentsMargins(0, 0, 0, 0);
-  model_row->addWidget(model_source_combo_, 1);
-  model_row->addWidget(add_model_button_);
-  tm_form->addRow(tr("Model/URDF"), model_row);
+  sizeTrailingButton(add_model_button_);
+  addGridRow(tm_grid, tm_row, tr("Model/URDF"), model_source_combo_, add_model_button_);
   connect(add_model_button_, &QToolButton::clicked, this, &Scene3DConfigPanel::onAddModelClicked);
 
   // One row per panel-added robot model (name + bin), appended below the
-  // Model/URDF row by addRobotRow.
-  robot_rows_layout_ = new QVBoxLayout;
+  // Model/URDF row by addRobotRow. Hosted in a widget that spans all three
+  // columns and stays hidden while empty — an empty grid row would otherwise
+  // reserve vertical spacing and leave a phantom gap under Model/URDF.
+  robot_rows_host_ = new QWidget(this);
+  robot_rows_layout_ = new QVBoxLayout(robot_rows_host_);
   robot_rows_layout_->setContentsMargins(0, 0, 0, 0);
   robot_rows_layout_->setSpacing(2);
-  tm_form->addRow(robot_rows_layout_);
+  robot_rows_host_->hide();
+  tm_grid->addWidget(robot_rows_host_, tm_row, 0, 1, 3);
+  ++tm_row;
 
   mesh_opacity_ = makeScrubber(0.0, 1.0, 0.1, 1.0);
   mesh_eye_ = make_eye("meshes_visible", tr("Show/hide visual meshes"));
   wire(
       mesh_opacity_, "mesh_opacity", [this](const QVariant& v) { mesh_opacity_->setValue(v.toDouble()); },
       qOverload<double>(&DoubleScrubber::valueChanged));
-  tm_form->addRow(tr("Meshes opacity"), with_eye(mesh_opacity_, mesh_eye_));
+  addGridRow(tm_grid, tm_row, tr("Meshes opacity"), mesh_opacity_, mesh_eye_);
 
   collision_opacity_ = makeScrubber(0.0, 1.0, 0.1, 0.4);
   collision_eye_ = make_eye("collisions_visible", tr("Show/hide collision meshes"));
@@ -333,7 +377,26 @@ void Scene3DConfigPanel::buildSceneControls(QVBoxLayout* root) {
       collision_opacity_, "collision_opacity",
       [this](const QVariant& v) { collision_opacity_->setValue(v.toDouble()); },
       qOverload<double>(&DoubleScrubber::valueChanged));
-  tm_form->addRow(tr("Collision opacity"), with_eye(collision_opacity_, collision_eye_));
+  addGridRow(tm_grid, tm_row, tr("Collision opacity"), collision_opacity_, collision_eye_);
+
+  // Pin both grids' label column to the widest label across BOTH sections, read
+  // back from the labels just added (no separate string list to keep in sync).
+  // Equal column 0 + fixed column 2 ⇒ the stretchy field column also lines up,
+  // so the Grid and Transforms sections align even though they are separate grids.
+  const auto widest_label = [](QGridLayout* grid) {
+    int width = 0;
+    for (int r = 0; r < grid->rowCount(); ++r) {
+      if (auto* item = grid->itemAtPosition(r, 0); item != nullptr) {
+        if (auto* label = qobject_cast<QLabel*>(item->widget()); label != nullptr) {
+          width = std::max(width, label->sizeHint().width());
+        }
+      }
+    }
+    return width;
+  };
+  const int label_col_w = std::max(widest_label(grid_grid), widest_label(tm_grid));
+  grid_grid->setColumnMinimumWidth(0, label_col_w);
+  tm_grid->setColumnMinimumWidth(0, label_col_w);
 }
 
 void Scene3DConfigPanel::applySceneControls() {
@@ -526,7 +589,7 @@ void Scene3DConfigPanel::addRobotRow(uint32_t topic_id_value, const QString& lab
   auto* row = new QWidget(this);
   auto* layout = new QHBoxLayout(row);
   layout->setContentsMargins(0, 0, 0, 0);
-  layout->setSpacing(2);
+  layout->setSpacing(kGridHSpacing);  // match the grid's column gap so the name's right edge lines up
   auto* name = new QLineEdit(label, row);
   name->setReadOnly(true);
   name->setFocusPolicy(Qt::NoFocus);
@@ -546,6 +609,7 @@ void Scene3DConfigPanel::addRobotRow(uint32_t topic_id_value, const QString& lab
   trash->setFocusPolicy(Qt::NoFocus);
   trash->setToolTip(tr("Remove this robot model"));
   trash->setIcon(LoadSvg(QLatin1String(kTrashIconPath), theme_));
+  sizeTrailingButton(trash);  // align with the Model/URDF add button column above
   layout->addWidget(trash);
   connect(trash, &QToolButton::clicked, this, [this, topic_id_value]() {
     if (bound_dock_ != nullptr) {
@@ -556,6 +620,7 @@ void Scene3DConfigPanel::addRobotRow(uint32_t topic_id_value, const QString& lab
   });
   robot_rows_layout_->addWidget(row);
   robot_rows_.emplace_back(topic_id_value, row);
+  robot_rows_host_->show();  // first row makes the (otherwise collapsed) host visible
 
   // Mirror the layer's status onto the name tooltip — the cheap error surface
   // for load failures ("Fetch failed …" / "Failed to read URDF …") that would
@@ -612,6 +677,9 @@ void Scene3DConfigPanel::removeRobotRowFor(uint32_t topic_id_value) {
   }
   it->second->deleteLater();
   robot_rows_.erase(it);
+  if (robot_rows_.empty()) {
+    robot_rows_host_->hide();  // collapse the form row again so no phantom gap remains
+  }
 }
 
 void Scene3DConfigPanel::bindDock(Scene3DDockWidget* dock) {
@@ -629,6 +697,7 @@ void Scene3DConfigPanel::bindDock(Scene3DDockWidget* dock) {
     row->deleteLater();
   }
   robot_rows_.clear();
+  robot_rows_host_->hide();  // back to collapsed until this dock's rows are rebuilt
 
   if (dock == nullptr) {
     updateSelectedLayerPane();

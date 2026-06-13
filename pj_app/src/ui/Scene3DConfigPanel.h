@@ -12,7 +12,6 @@
 
 #include "pj_datastore/object_store.hpp"
 
-class QComboBox;
 class QEvent;
 class QToolButton;
 class QVariant;
@@ -20,6 +19,7 @@ class QVBoxLayout;
 
 namespace PJ {
 
+class ComboBox;
 class ConfigPanelHost;
 class DoubleScrubber;
 class IntScrubber;
@@ -137,8 +137,11 @@ class Scene3DConfigPanel : public QWidget {
   // Topics list, so the source combo + add button + per-robot rows below are
   // their whole UI. robot_rows_ maps each panel-created layer id to its row
   // widget; cleared on rebind (rows belong to the dock they were added to).
-  QComboBox* model_source_combo_ = nullptr;
+  ComboBox* model_source_combo_ = nullptr;
   QToolButton* add_model_button_ = nullptr;
+  // Container for the per-robot rows; hidden while robot_rows_ is empty so the
+  // form row collapses (no phantom vertical gap under the Model/URDF row).
+  QWidget* robot_rows_host_ = nullptr;
   QVBoxLayout* robot_rows_layout_ = nullptr;
   std::vector<std::pair<uint32_t, QWidget*>> robot_rows_;
 };
