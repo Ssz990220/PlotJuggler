@@ -216,6 +216,7 @@ void ScrubberBase::mouseReleaseEvent(QMouseEvent* event) {
   }
   if (autorepeat_direction_ != 0) {
     stopAutoRepeat();
+    emit editingFinished();  // arrow click / autorepeat burst settled
     event->accept();
     return;
   }
@@ -291,6 +292,7 @@ void ScrubberBase::endDrag() {
   QCursor::setPos(press_screen_pos_);
   state_ = State::Idle;
   update();
+  emit editingFinished();  // drag gesture settled
 }
 
 void ScrubberBase::handleDragMove(const QPointF& global_pos) {
@@ -398,8 +400,11 @@ void ScrubberBase::exitEditMode(bool commit) {
     if (commit) {
       const QString t = line_edit_->text();
       // commitText returns false on parse error / out-of-range — the
-      // widget silently reverts to the prior value.
-      commitText(t);
+      // widget silently reverts to the prior value, so editingFinished
+      // fires only when the edit actually committed a valid value.
+      if (commitText(t)) {
+        emit editingFinished();
+      }
     }
     line_edit_->hide();
   }

@@ -23,7 +23,6 @@
 #include "pj_base/types.hpp"
 #include "pj_plotting/CurveTracker.h"
 #include "pj_widgets/ChromeMetrics.h"
-#include "pj_widgets/SettingsDebouncer.h"
 
 class QAction;
 class QButtonGroup;
@@ -106,7 +105,16 @@ class MainWindow : public QMainWindow {
     return chrome_metrics_;
   }
 
+  // Persist the current chrome metrics to QSettings in one write. The setters
+  // below only apply live (so a Preferences sizing-scrubber drag previews
+  // without thrashing the .ini); PreferencesDialog calls this on OK to commit.
+  void persistChromeMetrics() const;
+
  public slots:
+  // Apply-only: clamp, update chrome_metrics_, broadcast chromeMetricsChanged.
+  // These do NOT write QSettings — persistence is deferred to
+  // persistChromeMetrics() so dragging a sizing scrubber previews live but
+  // commits once (see PreferencesDialog).
   void setIconSize(int size);
   void setIconPadding(int padding);
   void setLayoutPadding(int padding);
@@ -525,10 +533,6 @@ class MainWindow : public QMainWindow {
   // Loaded from QSettings before any child widget is built so the first
   // applyIcons() of each widget already uses the saved metrics.
   ChromeMetrics chrome_metrics_;
-  // Debounces the chrome-metric setter writes: dragging a Preferences sizing
-  // scrubber applies live every tick but rewrites the .ini only once per settle
-  // window (root scope — the keys are already fully qualified, e.g. ui/icon_size).
-  SettingsDebouncer chrome_settings_writer_;
   // Three-state cycle for the playback tracker info level (line / +value /
   // +value+name). Default kValue matches PJ3 (mainwindow.cpp:154).
   CurveTracker::Parameter tracker_info_ = CurveTracker::kValue;

@@ -1201,7 +1201,6 @@ void MainWindow::setIconSize(int size) {
     return;
   }
   chrome_metrics_.icon_size = clamped;
-  chrome_settings_writer_.queue(kIconSizeKey, clamped);
   emit chromeMetricsChanged(chrome_metrics_);
 }
 
@@ -1211,7 +1210,6 @@ void MainWindow::setIconPadding(int padding) {
     return;
   }
   chrome_metrics_.icon_padding = clamped;
-  chrome_settings_writer_.queue(kIconPaddingKey, clamped);
   emit chromeMetricsChanged(chrome_metrics_);
 }
 
@@ -1221,7 +1219,6 @@ void MainWindow::setLayoutPadding(int padding) {
     return;
   }
   chrome_metrics_.layout_padding = clamped;
-  chrome_settings_writer_.queue(kLayoutPaddingKey, clamped);
   emit chromeMetricsChanged(chrome_metrics_);
 }
 
@@ -1231,8 +1228,16 @@ void MainWindow::setLayoutSpacing(int spacing) {
     return;
   }
   chrome_metrics_.layout_spacing = clamped;
-  chrome_settings_writer_.queue(kLayoutSpacingKey, clamped);
   emit chromeMetricsChanged(chrome_metrics_);
+}
+
+void MainWindow::persistChromeMetrics() const {
+  // One QSettings instance ⇒ one INI rewrite for all four keys on sync().
+  QSettings settings;
+  settings.setValue(kIconSizeKey, chrome_metrics_.icon_size);
+  settings.setValue(kIconPaddingKey, chrome_metrics_.icon_padding);
+  settings.setValue(kLayoutPaddingKey, chrome_metrics_.layout_padding);
+  settings.setValue(kLayoutSpacingKey, chrome_metrics_.layout_spacing);
 }
 
 void MainWindow::applyIcons(QString theme) {

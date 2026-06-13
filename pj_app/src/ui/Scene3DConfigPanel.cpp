@@ -35,6 +35,7 @@
 #include "pj_widgets/IntScrubber.h"
 #include "pj_widgets/LayerListView.h"
 #include "pj_widgets/MessageBox.h"
+#include "pj_widgets/ScrubberBase.h"
 #include "pj_widgets/SectionHeaderBand.h"
 #include "pj_widgets/SvgUtil.h"
 
@@ -117,8 +118,9 @@ DoubleScrubber* makeScrubber(double min, double max, double step, double value) 
 }  // namespace
 
 Scene3DConfigPanel::Scene3DConfigPanel(QWidget* parent) : QWidget(parent) {
-  // Scene-control persistence is debounced via settings_writer_ (apply stays
-  // live per tick; the QSettings write coalesces to once the drag settles).
+  // Scene-control changes apply live every tick (valueChanged) but persist
+  // only when the edit settles — scrubbers on ScrubberBase::editingFinished,
+  // toggles/style on click — so a drag is one INI write, not one per tick.
 
   // Zero outer margins so the section header bands (Grid · Transforms and
   // RobotModel · Topics · Settings) span edge-to-edge like the plotting
@@ -178,16 +180,16 @@ void Scene3DConfigPanel::buildSceneControls(QVBoxLayout* root) {
     if (const QVariant saved = settings.value(QString::fromLatin1(key)); saved.isValid()) {
       read(saved);
     }
-    connect(widget, signal, this, [this, widget]() {
-      // Persist debounced (one INI rewrite per settled drag, not per tick), but
-      // apply live every tick so the view tracks the scrubber.
+    // Apply live every tick so the view tracks the scrubber.
+    connect(widget, signal, this, [this]() { applySceneControls(); });
+    // Persist only when the scrub/edit settles — one INI rewrite per drag.
+    connect(widget, &ScrubberBase::editingFinished, this, [this, widget]() {
       const QString settings_key = widget->property("settings_key").toString();
       if (auto* dscrub = qobject_cast<DoubleScrubber*>(widget)) {
-        settings_writer_.queue(settings_key, dscrub->value());
+        persistControl(settings_key, dscrub->value());
       } else if (auto* iscrub = qobject_cast<IntScrubber*>(widget)) {
-        settings_writer_.queue(settings_key, iscrub->value());
+        persistControl(settings_key, iscrub->value());
       }
-      applySceneControls();
     });
   };
 
@@ -205,7 +207,7 @@ void Scene3DConfigPanel::buildSceneControls(QVBoxLayout* root) {
     eye->setProperty("settings_key", QString::fromLatin1(key));
     eye->setChecked(settings.value(QString::fromLatin1(key), true).toBool());
     connect(eye, &QToolButton::toggled, this, [this, eye](bool checked) {
-      settings_writer_.queue(eye->property("settings_key").toString(), checked);
+      persistControl(eye->property("settings_key").toString(), checked);
       setEyeIcon(eye, checked);
       applySceneControls();
     });
@@ -252,7 +254,7 @@ void Scene3DConfigPanel::buildSceneControls(QVBoxLayout* root) {
   const int saved_style = settings.value(QStringLiteral("grid_style"), 0).toInt();
   (saved_style == 1 ? grid_cells_button_ : grid_lines_button_)->setChecked(true);
   connect(style_group, &QButtonGroup::idClicked, this, [this](int id) {
-    settings_writer_.queue(QStringLiteral("grid_style"), id);
+    persistControl(QStringLiteral("grid_style"), id);
     applySceneControls();
   });
   grid_eye_ = make_eye("grid_visible", tr("Show/hide the grid"));
@@ -336,6 +338,12 @@ void Scene3DConfigPanel::buildSceneControls(QVBoxLayout* root) {
 
 void Scene3DConfigPanel::applySceneControls() {
   applySceneControlsTo(bound_dock_.data());
+}
+
+void Scene3DConfigPanel::persistControl(const QString& key, const QVariant& value) {
+  QSettings settings;
+  settings.beginGroup(QString::fromLatin1(kScene3dSceneControlsGroup));
+  settings.setValue(key, value);
 }
 
 void Scene3DConfigPanel::applySceneControlsTo(Scene3DDockWidget* dock) {

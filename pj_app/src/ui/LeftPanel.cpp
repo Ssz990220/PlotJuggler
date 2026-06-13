@@ -25,6 +25,7 @@
 #include <nlohmann/json.hpp>
 
 #include "pj_widgets/IntScrubber.h"
+#include "pj_widgets/ScrubberBase.h"
 #include "pj_widgets/SvgUtil.h"
 #include "ui_LeftPanel.h"
 
@@ -121,12 +122,14 @@ LeftPanel::LeftPanel(QWidget* parent) : QWidget(parent), ui_(new Ui::LeftPanel) 
       ui_->buttonStreamingPause, &QPushButton::toggled, this, [this](bool) { applyPauseButtonState(currentTheme()); });
   connect(ui_->comboStreaming, &QComboBox::currentTextChanged, this, &LeftPanel::streamingSourceChanged);
 
-  // Buffer scrubber: restore from QSettings on construct, persist (debounced) +
-  // emit on change. The scrubber emits per drag tick, so persist via
-  // settings_writer_ to coalesce the .ini rewrite to once the drag settles.
+  // Buffer scrubber: restore from QSettings on construct. The buffer length only
+  // matters once the user finishes adjusting it — reconfiguring the live stream
+  // on every drag tick is pointless churn — so both the reconfigure
+  // (streamingBufferChanged) and the QSettings write fire on editingFinished.
   ui_->streamingSpinBox->setValue(QSettings().value(kStreamingBufferKey, 5).toInt());
-  connect(ui_->streamingSpinBox, &IntScrubber::valueChanged, this, [this](int seconds) {
-    settings_writer_.queue(kStreamingBufferKey, seconds);
+  connect(ui_->streamingSpinBox, &ScrubberBase::editingFinished, this, [this]() {
+    const int seconds = ui_->streamingSpinBox->value();
+    QSettings().setValue(kStreamingBufferKey, seconds);
     emit streamingBufferChanged(seconds);
   });
 }

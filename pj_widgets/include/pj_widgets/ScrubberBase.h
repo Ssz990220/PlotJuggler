@@ -41,6 +41,15 @@ class ScrubberBase : public QWidget {
   QSize sizeHint() const override;
   QSize minimumSizeHint() const override;
 
+ signals:
+  // Emitted once when an interaction that may have changed the value
+  // *settles*: drag release, arrow-button release, or a committed inline
+  // keyboard edit. NOT emitted per drag tick and NOT on an Escape-revert.
+  // Connect persistence (e.g. a QSettings write) here and keep live preview
+  // on the subclass `valueChanged` — the value is fully tracked every tick,
+  // this only marks "the user stopped editing".
+  void editingFinished();
+
  protected:
   // Called by subclass on every drag step and on every arrow click. The
   // sign of `steps_signed` is the direction; magnitude is always 1 in

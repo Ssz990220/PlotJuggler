@@ -212,6 +212,13 @@ PreferencesDialog::PreferencesDialog(Theme& theme, QWidget* parent)
       main_window->setLayoutSpacing(original_metrics_.layout_spacing);
     }
   });
+  // The chrome setters above only apply live — commit to QSettings on OK. Cancel
+  // restores the snapshot and never persisted, so the .ini keeps the originals.
+  connect(this, &QDialog::accepted, this, [main_window]() {
+    if (main_window != nullptr) {
+      main_window->persistChromeMetrics();
+    }
+  });
 
   connect(ui_->buttonOk, &QPushButton::clicked, this, &QDialog::accept);
   connect(ui_->buttonCancel, &QPushButton::clicked, this, &QDialog::reject);

@@ -9,7 +9,6 @@
 
 #include "pj_plugins/host/plugin_runtime_catalog.hpp"
 #include "pj_widgets/ChromeMetrics.h"
-#include "pj_widgets/SettingsDebouncer.h"
 
 namespace Ui {
 class LeftPanel;
@@ -86,9 +85,6 @@ class LeftPanel : public QWidget {
   Ui::LeftPanel* ui_;
   // Chrome metrics from MainWindow::chromeMetricsChanged.
   ChromeMetrics chrome_metrics_;
-  // Debounces the streaming-buffer scrubber's QSettings write (one .ini rewrite
-  // per settle window, not per drag tick). Root scope — the key is qualified.
-  SettingsDebouncer settings_writer_;
 };
 
 }  // namespace PJ

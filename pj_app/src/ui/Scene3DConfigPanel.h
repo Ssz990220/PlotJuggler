@@ -11,11 +11,11 @@
 #include <vector>
 
 #include "pj_datastore/object_store.hpp"
-#include "pj_widgets/SettingsDebouncer.h"
 
 class QComboBox;
 class QEvent;
 class QToolButton;
+class QVariant;
 class QVBoxLayout;
 
 namespace PJ {
@@ -27,7 +27,7 @@ class LayerListView;
 class Scene3DDockWidget;
 
 // QSettings group for the scene-wide controls. Single source for both the
-// read side (buildSceneControls) and the write side (settings_writer_).
+// read side (buildSceneControls) and the write side (persistControl).
 inline constexpr char kScene3dSceneControlsGroup[] = "pj_scene3d/scene_controls";
 
 // Right-sidepanel page for the 3D scene: scene-wide controls (Grid · Transforms
@@ -69,6 +69,10 @@ class Scene3DConfigPanel : public QWidget {
   void buildSceneControls(QVBoxLayout* root);
   // Push every persisted scene-control value into the bound dock's view.
   void applySceneControls();
+  // Write one scene-control value to QSettings under kScene3dSceneControlsGroup.
+  // Called when an edit settles (scrubber editingFinished / toggle / style
+  // click) — apply is live per tick, persistence is once per settled change.
+  void persistControl(const QString& key, const QVariant& value);
   // Inverse of applySceneControls: REFLECT the bound dock's own scene-control
   // state in the panel widgets (signals blocked so it doesn't echo back). Called
   // on bind so focusing a dock shows ITS look — scene controls are per-dock, not
@@ -137,10 +141,6 @@ class Scene3DConfigPanel : public QWidget {
   QToolButton* add_model_button_ = nullptr;
   QVBoxLayout* robot_rows_layout_ = nullptr;
   std::vector<std::pair<uint32_t, QWidget*>> robot_rows_;
-
-  // Debounced QSettings persistence: scene-control changes apply live every tick
-  // but only flush to disk after the drag settles (one INI rewrite per drag).
-  SettingsDebouncer settings_writer_{QString::fromLatin1(kScene3dSceneControlsGroup), 250};
 };
 
 }  // namespace PJ
