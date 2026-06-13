@@ -17,6 +17,8 @@ class RecordingSource final : public MediaSource {
   int set_calls = 0;
   int take_calls = 0;
   int64_t last_ts = 0;
+  int gpu_rectify_calls = 0;
+  bool last_gpu_rectify = false;
   std::optional<MediaFrame> next_frame;
 
   void setTimestamp(int64_t ts_ns) override {
@@ -29,6 +31,11 @@ class RecordingSource final : public MediaSource {
     auto out = std::move(next_frame);
     next_frame.reset();
     return out;
+  }
+
+  void setGpuRectificationAvailable(bool available) override {
+    ++gpu_rectify_calls;
+    last_gpu_rectify = available;
   }
 };
 
@@ -59,6 +66,19 @@ TEST(BorrowedMediaSourceTest, ForwardsCallsToBorrowedSource) {
   ASSERT_TRUE(frame.has_value());
   ASSERT_TRUE(frame->base.has_value());
   EXPECT_EQ(frame->base->width, 640);
+}
+
+TEST(BorrowedMediaSourceTest, ForwardsGpuRectificationAvailability) {
+  RecordingSource source;
+  BorrowedMediaSource borrowed(&source);
+
+  borrowed.setGpuRectificationAvailable(true);
+  EXPECT_EQ(source.gpu_rectify_calls, 1);
+  EXPECT_TRUE(source.last_gpu_rectify);
+
+  // Null borrowed source must be a safe no-op.
+  BorrowedMediaSource empty;
+  empty.setGpuRectificationAvailable(true);  // no crash
 }
 
 TEST(BorrowedMediaSourceTest, CanRetargetOrClearBorrowedSource) {

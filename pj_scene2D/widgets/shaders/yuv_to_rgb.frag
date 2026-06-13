@@ -3,48 +3,78 @@
 layout(location = 0) in vec2 v_uv;
 layout(location = 0) out vec4 fragColor;
 
-// Y plane (or RGBA texture in passthrough mode)
+// Y plane (or RGBA / BGRA / R8-mono texture, depending on pixelFormat)
 layout(binding = 1) uniform sampler2D y_tex;
 // U plane (or packed UV for NV12)
 layout(binding = 2) uniform sampler2D u_tex;
 // V plane (unused for NV12/RGBA)
 layout(binding = 3) uniform sampler2D v_tex;
+// Rectification lookup: per output pixel, the SOURCE sample point in [0,1]
+// texture space (.rg); .r < 0 marks an out-of-bounds pixel (render black).
+// Sampled NEAREST so each output pixel gets its exact precomputed source coord.
+layout(binding = 4) uniform sampler2D remap_tex;
 
 layout(std140, binding = 0) uniform Uniforms {
     mat4 viewTransform;
     mat4 colorMatrix;
-    int pixelFormat;  // 0 = YUV420P, 1 = NV12, 2 = RGBA
+    int pixelFormat;  // 0 = YUV420P, 1 = NV12, 2 = RGBA, 3 = Mono8, 4 = BGRA
     float opacity;
+    int rectify;      // 1 = remap v_uv through remap_tex before sampling
 };
 
 void main()
 {
-    // Bounds check — black outside texture
+    // The quad spans the (rectified) image; clip anything outside it to black.
     if (v_uv.x < 0.0 || v_uv.x > 1.0 || v_uv.y < 0.0 || v_uv.y > 1.0) {
         fragColor = vec4(0.0, 0.0, 0.0, 1.0);
         return;
     }
 
+    vec2 uv = v_uv;
+    if (rectify == 1) {
+        // Look up the source sample point for this output pixel.
+        vec2 s = texture(remap_tex, v_uv).rg;
+        if (s.x < 0.0) {  // out-of-bounds sentinel -> black border
+            fragColor = vec4(0.0, 0.0, 0.0, 1.0);
+            return;
+        }
+        uv = s;
+    }
+
     // RGBA passthrough
     if (pixelFormat == 2) {
-        fragColor = texture(y_tex, v_uv);
+        fragColor = texture(y_tex, uv);
         fragColor.a *= opacity;
         return;
     }
 
+    // BGRA: swizzle to RGBA (uploaded verbatim, no CPU repack)
+    if (pixelFormat == 4) {
+        fragColor = texture(y_tex, uv).bgra;
+        fragColor.a *= opacity;
+        return;
+    }
+
+    // Mono8 (single R8 texture): expand gray to RGB
+    if (pixelFormat == 3) {
+        float g = texture(y_tex, uv).r;
+        fragColor = vec4(g, g, g, opacity);
+        return;
+    }
+
     // Sample Y (full resolution)
-    float y = texture(y_tex, v_uv).r;
+    float y = texture(y_tex, uv).r;
     float u, v;
 
     if (pixelFormat == 1) {
         // NV12: UV interleaved in a single RG texture
-        vec2 uv_val = texture(u_tex, v_uv).rg;
+        vec2 uv_val = texture(u_tex, uv).rg;
         u = uv_val.r;
         v = uv_val.g;
     } else {
         // YUV420P: separate U and V planes
-        u = texture(u_tex, v_uv).r;
-        v = texture(v_tex, v_uv).r;
+        u = texture(u_tex, uv).r;
+        v = texture(v_tex, uv).r;
     }
 
     // YUV → RGB via color matrix (BT.709 or BT.601)

@@ -59,6 +59,9 @@ class CompositeMediaSource : public MediaSource {
   void setTimestamp(int64_t ts_ns) override;
   std::optional<MediaFrame> takeFrame() override;
   void invalidate() override;
+  /// Fans the capability out to every owned layer (each rectifying layer decides
+  /// individually whether to defer undistortion to the GPU).
+  void setGpuRectificationAvailable(bool available) override;
 
  private:
   struct Layer {

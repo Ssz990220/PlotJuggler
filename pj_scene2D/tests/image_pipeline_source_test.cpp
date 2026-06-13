@@ -181,6 +181,36 @@ struct FrameSync {
 // because no frame was produced). 100 ms is generous for an in-memory store.
 constexpr std::chrono::milliseconds kIdleSettleTime{100};
 
+// Distortion-free calibration whose only effect is to lift the source to a
+// `out_w x out_h` native resolution — lets a rectification test assert the
+// output size without depending on a specific lens model.
+PJ::sdk::CameraInfo makeRescaleCalibration(const std::string& frame_id, uint32_t out_w, uint32_t out_h) {
+  PJ::sdk::CameraInfo ci;
+  ci.frame_id = frame_id;
+  ci.width = out_w;
+  ci.height = out_h;
+  ci.distortion_model = "plumb_bob";
+  ci.D = {0.0, 0.0, 0.0, 0.0, 0.0};
+  ci.K = {4.0, 0.0, static_cast<double>(out_w) / 2.0, 0.0, 4.0, static_cast<double>(out_h) / 2.0, 0.0, 0.0, 1.0};
+  ci.R = {1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0};
+  ci.P = {};  // zeroed -> computeUndistortMap falls back to K.
+  return ci;
+}
+
+// Serialize a raw rgb8 sdk::Image (pj_image_v1) carrying `frame_id` so the
+// CanonicalImageCodec source path can rectify it against a matching CameraInfo.
+std::vector<uint8_t> makeRawRgbBlob(
+    uint32_t w, uint32_t h, const std::string& frame_id, const std::vector<uint8_t>& rgb) {
+  PJ::sdk::Image img;
+  img.width = w;
+  img.height = h;
+  img.encoding = "rgb8";
+  img.row_step = w * 3;
+  img.frame_id = frame_id;
+  img.data = PJ::Span<const uint8_t>(rgb.data(), rgb.size());
+  return PJ::serializeImage(img);
+}
+
 }  // namespace
 
 TEST(ImagePipelineSourceTest, DeduplicatesResolvedEntryTimestampBeforeResolvingLazyPayload) {
@@ -616,4 +646,60 @@ TEST(ImagePipelineSourceTest, CanonicalCodecDecodesSerializedPngWrappedRgb8) {
   EXPECT_EQ(frame->base->format, PJ::PixelFormat::kRGB888);
   ASSERT_NE(frame->base->pixels, nullptr);
   EXPECT_EQ(*frame->base->pixels, rgb);
+}
+
+TEST(ImagePipelineSourceTest, CpuFallbackRectifiesToNativeResolutionWithNoMap) {
+  // Default mode (no GPU): the source rectifies on the worker and delivers a
+  // display-ready frame at native resolution, with no rectify_map attached.
+  const std::vector<uint8_t> rgb(static_cast<size_t>(4) * 3 * 3, 128);  // solid 4x3 rgb8
+  const std::vector<uint8_t> blob = makeRawRgbBlob(4, 3, "cam", rgb);
+  PJ::ObjectStore store;
+  auto topic = store.registerTopic(
+      {PJ::DatasetId{1}, "/camera/image", R"({"builtin_object_type":"kImage","image_codec":"pj_image_v1"})"});
+  ASSERT_TRUE(topic.has_value());
+  ASSERT_TRUE(store.pushOwned(*topic, 1'000, blob));
+
+  PJ::ImagePipelineSource source(&store, *topic, PJ::ImagePipelineSource::CanonicalImageCodec{});
+  source.setCameraInfoMap({{"cam", makeRescaleCalibration("cam", 8, 6)}});
+  FrameSync sync;
+  sync.install(source);
+
+  source.setTimestamp(1'000);
+  ASSERT_TRUE(sync.waitReady());
+  auto frame = source.takeFrame();
+  ASSERT_TRUE(frame.has_value());
+  ASSERT_TRUE(frame->base.has_value());
+  EXPECT_EQ(frame->base->width, 8);
+  EXPECT_EQ(frame->base->height, 6);
+  EXPECT_EQ(frame->base->rectify_map, nullptr);
+}
+
+TEST(ImagePipelineSourceTest, GpuModeKeepsRawFrameAndAttachesRectifyMap) {
+  // GPU mode: the worker leaves the frame raw and attaches the (cached) map so
+  // the widget rectifies at draw time. The logical (rectified) size lives on the
+  // map; the uploaded pixels stay at the smaller source resolution.
+  const std::vector<uint8_t> rgb(static_cast<size_t>(4) * 3 * 3, 128);
+  const std::vector<uint8_t> blob = makeRawRgbBlob(4, 3, "cam", rgb);
+  PJ::ObjectStore store;
+  auto topic = store.registerTopic(
+      {PJ::DatasetId{1}, "/camera/image", R"({"builtin_object_type":"kImage","image_codec":"pj_image_v1"})"});
+  ASSERT_TRUE(topic.has_value());
+  ASSERT_TRUE(store.pushOwned(*topic, 1'000, blob));
+
+  PJ::ImagePipelineSource source(&store, *topic, PJ::ImagePipelineSource::CanonicalImageCodec{});
+  source.setCameraInfoMap({{"cam", makeRescaleCalibration("cam", 8, 6)}});
+  source.setGpuRectificationAvailable(true);
+  FrameSync sync;
+  sync.install(source);
+
+  source.setTimestamp(1'000);
+  ASSERT_TRUE(sync.waitReady());
+  auto frame = source.takeFrame();
+  ASSERT_TRUE(frame.has_value());
+  ASSERT_TRUE(frame->base.has_value());
+  EXPECT_EQ(frame->base->width, 4);
+  EXPECT_EQ(frame->base->height, 3);
+  ASSERT_NE(frame->base->rectify_map, nullptr);
+  EXPECT_EQ(frame->base->rectify_map->out_width, 8);
+  EXPECT_EQ(frame->base->rectify_map->out_height, 6);
 }

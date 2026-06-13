@@ -234,5 +234,133 @@ TEST(UndistortRemapTest, DifferentSourceSizeGivesDifferentSampling) {
   EXPECT_NEAR(big.src_y[idx], small.src_y[idx] * 2.0F, 1.0F);
 }
 
+// --- fast CPU rectifier (precompute fallback path) --------------------------
+
+// A horizontal+vertical gradient so a bilinear-weight bug shows up as a pixel
+// mismatch (a solid image would hide weight errors).
+DecodedFrame makeGradientRgbFrame(int w, int h) {
+  DecodedFrame f;
+  f.width = w;
+  f.height = h;
+  f.format = PixelFormat::kRGB888;
+  f.frame_id = "cam";
+  f.pixels = std::make_shared<std::vector<uint8_t>>(static_cast<size_t>(w) * h * 3);
+  for (int y = 0; y < h; ++y) {
+    for (int x = 0; x < w; ++x) {
+      const size_t i = (static_cast<size_t>(y) * w + x) * 3;
+      (*f.pixels)[i + 0] = static_cast<uint8_t>((x * 255) / (w > 1 ? w - 1 : 1));
+      (*f.pixels)[i + 1] = static_cast<uint8_t>((y * 255) / (h > 1 ? h - 1 : 1));
+      (*f.pixels)[i + 2] = static_cast<uint8_t>((x + y) & 0xFF);
+    }
+  }
+  return f;
+}
+
+TEST(ImageRectifierFastTest, MatchesFloatReferenceWithinOne) {
+  // The fast precompute path must be visually identical to the float reference:
+  // build the same map both ways and compare every byte (±1 for float order).
+  const auto ci = cameraFrontCalibration();
+  const UndistortMap map = computeUndistortMap(ci, 480, 320, 960, 640);
+  ASSERT_TRUE(map.valid());
+  const DecodedFrame src = makeGradientRgbFrame(480, 320);
+
+  const auto ref = rectifyFrame(src, map);
+  ASSERT_TRUE(ref.has_value());
+
+  const UndistortMapFast fast = buildFastRectifyMap(map);
+  DecodedFrame out;
+  ASSERT_TRUE(rectifyFrameFast(src, fast, out));
+
+  EXPECT_EQ(out.width, ref->width);
+  EXPECT_EQ(out.height, ref->height);
+  EXPECT_EQ(out.format, ref->format);
+  EXPECT_EQ(out.frame_id, ref->frame_id);
+  ASSERT_EQ(out.pixels->size(), ref->pixels->size());
+  size_t mismatches = 0;
+  for (size_t i = 0; i < ref->pixels->size(); ++i) {
+    const int d = std::abs(static_cast<int>((*out.pixels)[i]) - static_cast<int>((*ref->pixels)[i]));
+    if (d > 1) {
+      ++mismatches;
+    }
+  }
+  EXPECT_EQ(mismatches, 0U);
+}
+
+TEST(ImageRectifierFastTest, ReusedBufferClearsOutOfBoundsToBlack) {
+  // Buffer reuse must not leak stale pixels: an out-of-bounds output pixel is
+  // black even when the reused buffer was pre-filled with garbage.
+  const DecodedFrame src = makeRgbFrame(8, 6, 255, 255, 255);
+  UndistortMap m = identityMap(8, 6);
+  m.src_width = 8;
+  m.src_height = 6;
+  m.src_x[0] = -100.0F;  // top-left output pixel points outside the source
+  m.src_y[0] = -100.0F;
+
+  const UndistortMapFast fast = buildFastRectifyMap(m);
+  DecodedFrame out;
+  out.pixels = std::make_shared<std::vector<uint8_t>>(static_cast<size_t>(8) * 6 * 3, 200);  // garbage pre-fill
+  ASSERT_TRUE(rectifyFrameFast(src, fast, out));
+  EXPECT_EQ((*out.pixels)[0], 0);
+  EXPECT_EQ((*out.pixels)[1], 0);
+  EXPECT_EQ((*out.pixels)[2], 0);
+  // An interior pixel still resolves to the solid source color.
+  const size_t center = (static_cast<size_t>(3) * 8 + 4) * 3;
+  EXPECT_EQ((*out.pixels)[center + 0], 255);
+}
+
+TEST(ImageRectifierFastTest, UnsupportedFormatReturnsFalse) {
+  DecodedFrame src = makeRgbFrame(8, 6, 1, 2, 3);
+  src.format = PixelFormat::kYUV420P;
+  src.pixels = std::make_shared<std::vector<uint8_t>>(expectedBufferSize(8, 6, PixelFormat::kYUV420P));
+  UndistortMap m = identityMap(8, 6);
+  m.src_width = 8;
+  m.src_height = 6;
+  DecodedFrame out;
+  EXPECT_FALSE(rectifyFrameFast(src, buildFastRectifyMap(m), out));
+}
+
+// --- GPU lookup-texture payload --------------------------------------------
+
+TEST(UndistortRemapTest, NormalizedRGAppliesHalfTexelAndSentinel) {
+  // The GPU LUT stores source sample points in [0,1] texture space with the
+  // half-texel offset that makes a GL_LINEAR sampler reproduce the CPU bilinear,
+  // and a negative sentinel for the out-of-bounds pixels the CPU leaves black.
+  UndistortMap m;
+  m.out_width = 2;
+  m.out_height = 1;
+  m.src_width = 10;
+  m.src_height = 8;
+  m.src_x = {3.0F, -100.0F};  // pixel 0 valid, pixel 1 out of bounds
+  m.src_y = {2.0F, 2.0F};
+
+  const std::vector<float> rg = undistortMapToNormalizedRG(m);
+  ASSERT_EQ(rg.size(), static_cast<size_t>(2) * 1 * 2);
+  EXPECT_NEAR(rg[0], (3.0F + 0.5F) / 10.0F, 1e-6F);
+  EXPECT_NEAR(rg[1], (2.0F + 0.5F) / 8.0F, 1e-6F);
+  EXPECT_LT(rg[2], 0.0F);  // out-of-bounds sentinel
+}
+
+TEST(UndistortRemapTest, NormalizedRGMatchesFloatMapOutOfBounds) {
+  // The LUT's out-of-bounds set must match the float rectifier's bound check
+  // exactly, so GPU and CPU paths black out the same border pixels.
+  const auto ci = cameraFrontCalibration();
+  const UndistortMap map = computeUndistortMap(ci, 1920, 1280, 1920, 1280);
+  ASSERT_TRUE(map.valid());
+  const std::vector<float> rg = undistortMapToNormalizedRG(map);
+  ASSERT_EQ(rg.size(), map.src_x.size() * 2);
+  for (size_t i = 0; i < map.src_x.size(); ++i) {
+    const float fx = map.src_x[i];
+    const float fy = map.src_y[i];
+    const int x0 = static_cast<int>(std::floor(fx));
+    const int y0 = static_cast<int>(std::floor(fy));
+    const bool oob = x0 < 0 || y0 < 0 || x0 + 1 >= map.src_width || y0 + 1 >= map.src_height;
+    if (oob) {
+      EXPECT_LT(rg[i * 2], 0.0F) << "expected sentinel at " << i;
+    } else {
+      EXPECT_GE(rg[i * 2], 0.0F) << "expected valid coord at " << i;
+    }
+  }
+}
+
 }  // namespace
 }  // namespace PJ

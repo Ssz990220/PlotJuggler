@@ -20,6 +20,7 @@
 
 #include "pj_scene2d_core/media_frame.h"
 #include "pj_scene2d_core/scene_frame.h"
+#include "pj_scene2d_core/undistort_remap.h"
 
 namespace PJ {
 
@@ -100,11 +101,15 @@ class MediaViewerWidget : public QRhiWidget {
   // Selects the YUV→RGB shader path. Values must match the `pixelFormat`
   // uniform contract in shaders/yuv_to_rgb.frag. kNV12 is RESERVED: the shader
   // branch exists, but no decoder emits NV12 and the upload support gate
-  // rejects it — wire the two-plane upload before producing it.
+  // rejects it — wire the two-plane upload before producing it. kMono8 (single
+  // R8 texture, expanded in-shader) and kBGRA (RGBA8 texture, swizzled
+  // in-shader) upload natively, skipping the CPU repack RGB/Mono used to need.
   enum class TexturePathFormat : int32_t {
     kYUV420P = 0,
     kNV12 = 1,
     kRGBA = 2,
+    kMono8 = 3,
+    kBGRA = 4,
   };
 
   // Single definition of the PixelFormat -> shader-path projection: planar YUV
@@ -117,12 +122,17 @@ class MediaViewerWidget : public QRhiWidget {
     QRhiTexture* tex_y = nullptr;
     QRhiTexture* tex_u = nullptr;
     QRhiTexture* tex_v = nullptr;
+    QRhiTexture* tex_remap = nullptr;  ///< RGBA32F rectification LUT (.rg = source UV); null -> bind placeholder.
     QRhiBuffer* uniform_buf = nullptr;
     QRhiShaderResourceBindings* srb = nullptr;
-    int width = 0;
-    int height = 0;
+    int width = 0;   ///< Uploaded texture width = SOURCE (raw) width on the GPU-rectify path.
+    int height = 0;  ///< Uploaded texture height.
     TexturePathFormat format = TexturePathFormat::kRGBA;
     float opacity = 1.0f;
+    int32_t rectify = 0;  ///< 1 when the shader must remap through tex_remap (GPU rectification).
+    int remap_w = 0;      ///< Size tex_remap was created at (the map's out_width/out_height).
+    int remap_h = 0;
+    const void* remap_map_key = nullptr;  ///< Identity of the UndistortMap tex_remap was uploaded from.
   };
 
   struct OverlayPipeline {
@@ -138,6 +148,13 @@ class MediaViewerWidget : public QRhiWidget {
   bool ensureTextureLayer(TextureLayerResources& layer);
   bool uploadDecodedFrameToTexture(
       const DecodedFrame& frame, TextureLayerResources& layer, QRhiResourceUpdateBatch* updates);
+  // Build/upload (once per map) the RGBA32F rectification LUT for `map` into
+  // layer.tex_remap, rebinding the layer's SRB to it, and set layer.rectify=1.
+  // The GPU then undistorts at draw time. Returns false on allocation failure.
+  bool ensureRemapTexture(TextureLayerResources& layer, const UndistortMap& map, QRhiResourceUpdateBatch* updates);
+  // Tell the attached source whether GPU rectification is available (probed in
+  // initialize()). Re-applied when a source is attached. No lock taken here.
+  void applyGpuRectifyCapability();
   void updateTextureLayerUniform(
       TextureLayerResources& layer, const QMatrix4x4& view, QRhiResourceUpdateBatch* updates) const;
   void destroyOverlayPipeline(OverlayPipeline& overlay);
@@ -153,6 +170,16 @@ class MediaViewerWidget : public QRhiWidget {
   QRhiGraphicsPipeline* pipeline_ = nullptr;
   QRhiGraphicsPipeline* composite_pipeline_ = nullptr;
   QRhiSampler* sampler_ = nullptr;
+  // NEAREST sampler for the rectification LUT: every output pixel must read its
+  // exact precomputed source coord (LINEAR would interpolate across the
+  // out-of-bounds sentinel and smear the border).
+  QRhiSampler* remap_sampler_ = nullptr;
+  // 1x1 RGBA32F placeholder bound at SRB slot 4 for layers that don't rectify, so
+  // every texture-layer pipeline shares one SRB layout.
+  QRhiTexture* remap_placeholder_tex_ = nullptr;
+  // True once initialize() confirms the backend can sample an RGBA32F LUT; gates
+  // whether the source is told to defer rectification to the GPU.
+  std::atomic_bool gpu_rectify_supported_{false};
   TextureLayerResources base_texture_;
 
   // MediaSource (not owned)
@@ -190,7 +217,9 @@ class MediaViewerWidget : public QRhiWidget {
   // mat4 viewTransform  (64 bytes, offset 0)
   // mat4 colorMatrix    (64 bytes, offset 64)
   // int  pixelFormat    (4 bytes, offset 128)
-  // padding             (12 bytes)
+  // float opacity       (4 bytes, offset 132)
+  // int  rectify        (4 bytes, offset 136)
+  // padding             (4 bytes)
   static constexpr int kUniformBufSize = 144;
 
   // ----- Vector overlay pipeline (markers / annotations) -----

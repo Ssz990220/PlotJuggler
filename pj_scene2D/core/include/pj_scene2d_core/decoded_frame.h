@@ -9,6 +9,8 @@
 
 namespace PJ {
 
+struct UndistortMap;  // pj_scene2d_core/undistort_remap.h — only held by shared_ptr here.
+
 /// Pixel format tag for decoded image data.
 enum class PixelFormat : uint8_t {
   kRGB888,
@@ -66,6 +68,15 @@ struct DecodedFrame {
   PixelFormat format = PixelFormat::kRGB888;     ///< Pixel layout in the buffer
   int64_t pts = -1;                              ///< Presentation timestamp (-1 if unknown)
   std::string frame_id;  ///< Source frame (from sdk::Image); lets a consumer find the CameraInfo.
+
+  /// Deferred-rectification handle. When non-null this frame is RAW (still in
+  /// source pixel space, `width`/`height` = source size) and the consumer must
+  /// rectify it through this map before display — the GPU path, where the widget
+  /// undistorts at draw time. The map's `out_width`/`out_height` is the logical
+  /// (rectified) display size that annotation/aspect/inspector coordinate spaces
+  /// use. Null means the frame is already display-ready (CPU path or no
+  /// calibration). Shared + immutable: many frames of one camera reuse it.
+  std::shared_ptr<const UndistortMap> rectify_map;
 
   /// True if no pixel data is present (null or empty buffer).
   [[nodiscard]] bool isNull() const noexcept {

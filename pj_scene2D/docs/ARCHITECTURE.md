@@ -56,9 +56,9 @@ Pure C++ library. Contains everything that does not touch Qt:
 | `FfmpegDecoder` | `ffmpeg_decoder.h` | FFmpeg AVCodecContext wrapper: HW-accel probing, guaranteed software fallback, YUV420P output (§R4.7). |
 | `H264 NAL utils` | `h264_utils.h` | H.264 Annex-B keyframe oracle (`isH264Keyframe`), used by codec-generic video helpers. |
 | `ImageAnnotation codec wrappers` | `image_annotation_codec.h` | Singular-named wrappers around the canonical SDK `ImageAnnotations` codec. |
-| `Image rectifier` | `image_rectifier.h` | Bilinear lens-undistortion of a `DecodedFrame` through a precomputed `UndistortMap` (interleaved 8-bit formats; planar/16-bit pass through unrectified). |
-| `Undistort remap` | `undistort_remap.h` | Per-camera reverse sampling map built from `CameraInfo` (K/D/R/P), consumed by the rectifier; see TECHNICAL_NOTES "rectify the image, not warp the annotations". |
-| `MediaSource` | `media_source.h` | Abstract frame-delivery interface: `setTimestamp` + `takeFrame` (§5) |
+| `Image rectifier` | `image_rectifier.h` | Bilinear lens-undistortion of a `DecodedFrame` (interleaved 8-bit formats; planar/16-bit pass through). `rectifyFrame` (float reference) and the fast CPU-fallback `rectifyFrameFast` (precomputed `UndistortMapFast`, reused buffer — bit-for-bit equal, ~2x faster) used when GPU rectification is unavailable. |
+| `Undistort remap` | `undistort_remap.h` | Per-camera reverse sampling map built from `CameraInfo` (K/D/R/P). `buildFastRectifyMap` derives the fixed-point CPU table; `undistortMapToNormalizedRG` packs the GPU LUT payload (source UV per output pixel, +0.5 half-texel, negative sentinel = out of bounds). See TECHNICAL_NOTES "rectify the image, not warp the annotations" and "GPU vs CPU rectification". |
+| `MediaSource` | `media_source.h` | Abstract frame-delivery interface: `setTimestamp` + `takeFrame` (§5), plus `setGpuRectificationAvailable` (capability the widget pushes down so a rectifying source defers undistortion to the GPU). |
 | `Parser object helper` | `parser_object.h` | Shared locked-`parseObject` helper over a `SessionManager::ParserBinding` snapshot (parser + mutex + keepalive); used by the image source and the VideoFrame NAL extractor. |
 | `ImagePipelineSource` | `image_pipeline_source.h` | `MediaSource` for images: wraps CodecPipeline + ObjectStore, decodes on a worker thread (§5.1) |
 | `MediaFrame` | `media_frame.h` | Multi-layer payload returned by `MediaSource`: legacy base frame, ordered pixel layers, and overlays. |
@@ -88,8 +88,8 @@ handles per-frame `kVideoFrame` streaming topics (parser-mode
 
 | Component | Header(s) | Role |
 |-----------|-----------|------|
-| `MediaViewerWidget` | `media_viewer_widget.h` | `QRhiWidget` subclass: GPU rendering via BT.709 YUV->RGB fragment shader (3 R8 textures for YUV420P), zoom/pan, RGB DecodedFrame path, and `MediaSource` polling via `setMediaSource()` + `setTimestamp()` (§7) |
-| YUV shaders | `shaders/yuv_to_rgb.{vert,frag}` | BT.709 YUV420P->RGB conversion via 3 R8 textures, plus RGBA passthrough for packed RGB uploads |
+| `MediaViewerWidget` | `media_viewer_widget.h` | `QRhiWidget` subclass: GPU rendering via BT.709 YUV->RGB fragment shader (3 R8 textures for YUV420P), zoom/pan, RGB DecodedFrame path, GPU lens-rectification (§7.2), and `MediaSource` polling via `setMediaSource()` + `setTimestamp()` (§7) |
+| YUV shaders | `shaders/yuv_to_rgb.{vert,frag}` | BT.709 YUV420P->RGB conversion via 3 R8 textures; RGBA passthrough; native Mono8 (R8 expand) / BGRA (RGBA8 swizzle) paths; optional remap-LUT rectification (binding 4) — see §7.2 |
 | Overlay shaders | `shaders/scene_lines.{vert,frag}`, `shaders/scene_quads.{vert,frag}`, `shaders/scene_text.{vert,frag}` | Annotation overlay pipelines (§7.1): 1 px lines, solid fills / thick lines, textured text quads |
 
 The Qt layer is thin — it owns the GPU surface and polls the
@@ -608,12 +608,27 @@ Internals: `setTimestamp` forwards to the composed `AsyncFrameWorker` (§3.1),
 which coalesces targets latest-wins. The decode body runs on the worker
 thread: `store->latestAt(topic, ts)` → decodes → optionally rectifies
 (`rectifyIfCalibrated`: when `setCameraInfoMap()` provided a `CameraInfo` for
-the frame's `frame_id`, the decoded frame is lens-undistorted via
-`image_rectifier`/`undistort_remap` before publication; see TECHNICAL_NOTES
-"rectify the image, not warp the annotations") → `deposit()`s into the
-worker's mailbox. `takeFrame` drains the mailbox into a `MediaFrame` (nullopt
-on second call); after each deposit the worker fires the optional
-`setFrameReadyCallback` (from the worker thread) so consumers re-poll.
+the frame's `frame_id`; see TECHNICAL_NOTES "rectify the image, not warp the
+annotations") → `deposit()`s into the worker's mailbox. `takeFrame` drains the
+mailbox into a `MediaFrame` (nullopt on second call); after each deposit the
+worker fires the optional `setFrameReadyCallback` (from the worker thread) so
+consumers re-poll.
+
+`rectifyIfCalibrated` chooses between two paths based on the
+`setGpuRectificationAvailable` flag the widget pushed down (atomic; a change
+calls `invalidate()` to re-decode in the new mode):
+
+- **GPU available (default once the widget confirms):** the worker leaves the
+  frame RAW and attaches the cached `shared_ptr<const UndistortMap>` to
+  `DecodedFrame::rectify_map`. The widget undistorts at draw time (§7.2). No CPU
+  resample, smaller upload.
+- **GPU unavailable (safe default until confirmed):** the worker rectifies on
+  the spot with `rectifyFrameFast` (a fixed-point `UndistortMapFast` into a
+  reused buffer) and delivers a display-ready native-resolution frame with
+  `rectify_map == nullptr`.
+
+Either way the *displayed* coordinate space is the camera's native (calibrated)
+resolution, so annotations / aspect / pixel-inspector stay aligned (§7.2).
 
 Cancellation is left off for this source (stale targets are coalesced rather
 than cancelled mid-decode — image decodes are short). `setCameraInfoMap()`
@@ -798,7 +813,7 @@ zoom/pan apply uniformly:
 
 | # | Pipeline | Topology | Responsibility |
 |---|---|---|---|
-| 1 | Image | implicit (procedural fullscreen quad) | YUV420P → RGB via BT.709 (3 R8 textures) or RGBA passthrough |
+| 1 | Image | implicit (procedural fullscreen quad) | YUV420P → RGB (BT.709, 3 R8 textures), RGBA passthrough, native Mono8 (R8) / BGRA (RGBA8 swizzle), and optional GPU lens-rectification via a remap LUT (§7.2) |
 | 1b | Composite (pixel layers) | implicit (procedural fullscreen quad) | Alpha-blends N additional `MediaFrame::pixel_layers` over the base, each with its own SRB and per-layer `opacity`; used when `pixel_layers_active_` (member `composite_pipeline_`) |
 | 2 | Marker | `Lines` | 1 px line primitives (`thickness ≤ 1.5`) — bboxes, polylines, circle outlines |
 | 3 | Points | `Triangles` | Solid fills: `kPoints` quads, `LineLoop` fill, `CircleAnnotation` fill |
@@ -814,10 +829,10 @@ Per-frame flow:
 3. For each `TextAnnotation`, look up `(text, font_size_q)` in `text_cache_`. On miss, render a glyph mask with `QPainter` to a `QImage::Format_Alpha8`, upload as a `QRhiTexture::R8`, and create a per-entry SRB pointing at it (so per-draw rebinding cannot mix textures across instances).
 4. Issue draw calls in order `image → fills → 1 px lines → thick lines → text` so strokes always land on top of fills and labels on top of everything.
 
-### 7.2 YUV-to-RGB shaders
+### 7.2 Image shader: color conversion, native formats, GPU rectification
 
-Fragment shader performs BT.709 color conversion using 3 R8 texture
-samplers:
+The image fragment shader (`yuv_to_rgb.frag`) branches on a `pixelFormat`
+uniform. BT.709 YUV420P uses 3 R8 samplers:
 
 ```glsl
 vec3 yuv = vec3(
@@ -828,9 +843,51 @@ vec3 yuv = vec3(
 fragColor = vec4(bt709_matrix * yuv, 1.0);
 ```
 
-BT.709 is used for all content. Both live-decoded frames and cached
-thumbnails pass through the same shader, eliminating color mismatches
-between the two paths.
+BT.709 is used for all content. Both live-decoded frames and cached thumbnails
+pass through the same shader, eliminating color mismatches between the two paths.
+
+**Native packed formats (no CPU repack).** Besides RGBA passthrough, the shader
+handles **Mono8** (uploaded as a single R8 texture, expanded to gray) and
+**BGRA8888** (uploaded verbatim to an RGBA8 texture, swizzled `.bgra`). Only
+RGB888/BGR888 (3-byte, no clean 4-byte-row GPU layout) still expand to RGBA on
+the CPU. This removes the per-frame `rgba_repack_buffer_` copy for the mono/BGRA
+cases.
+
+**GPU rectification (lens undistortion).** When the source delivers a RAW frame
+with a `DecodedFrame::rectify_map` (the GPU path; see §5.1), the shader remaps
+the output UV through a per-camera lookup texture before sampling:
+
+```glsl
+if (rectify == 1) {
+    vec2 s = texture(remap_tex, v_uv).rg;   // RGBA32F LUT, NEAREST
+    if (s.x < 0.0) { fragColor = vec4(0,0,0,1); return; }  // OOB sentinel
+    uv = s;                                  // sample the image at the source coord
+}
+```
+
+- The LUT (`remap_tex`, SRB binding 4) is `out_w × out_h` RGBA32F, built once per
+  camera by `undistortMapToNormalizedRG` and cached on the layer (keyed by map
+  identity). `.rg` is the normalized source coordinate with a +0.5 half-texel
+  offset so the LINEAR image fetch reproduces the CPU bilinear; the LUT itself is
+  sampled NEAREST so each output pixel gets its exact precomputed source coord.
+- **Logical-size decouple:** on the GPU path the *uploaded* texture is the small
+  RAW frame, but the widget reports the *logical* size as the map's
+  `out_width/out_height`. `tex_width_`/`tex_height_`/`frame_aspect_` and the
+  overlay `frameSize` UBO all use the logical size, so annotations, aspect
+  letterboxing, and the pixel inspector stay in the camera's native-resolution
+  space regardless of CPU-vs-GPU path. The point inspector maps the cursor in
+  logical space and reads the source pixel through the map.
+- **Capability handshake:** `MediaViewerWidget::initialize()` probes
+  `isTextureFormatSupported(RGBA32F)` (plus successful base-pipeline creation) and
+  calls `MediaSource::setGpuRectificationAvailable(...)`, fanned out through
+  `Composite`/`BorrowedMediaSource` to the `ImagePipelineSource` layers. The
+  default is the CPU-correct path until the widget confirms GPU support; a flip
+  re-decodes the current frame. Non-rectifying layers bind a 1×1 placeholder LUT
+  at slot 4 so all texture-layer SRBs share one layout.
+
+This moved lens undistortion off the decode worker threads (it was ~63–68% of
+process CPU) onto a single GPU texture lookup; see TECHNICAL_NOTES
+"GPU vs CPU rectification".
 
 ### 7.3 Zoom and pan
 

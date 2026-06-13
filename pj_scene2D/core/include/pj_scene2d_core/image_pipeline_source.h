@@ -2,6 +2,7 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 
+#include <atomic>
 #include <cstdint>
 #include <functional>
 #include <memory>
@@ -93,6 +94,11 @@ class ImagePipelineSource : public MediaSource {
   std::optional<MediaFrame> takeFrame() override;
   void invalidate() override;
 
+  /// Switch between GPU (raw frame + rectify_map) and CPU (resampled frame)
+  /// rectification. Thread-safe: callable from the widget thread at any time; a
+  /// change re-decodes the current frame in the new mode via invalidate().
+  void setGpuRectificationAvailable(bool available) override;
+
   /// Install a notification fired (from the worker thread) every time
   /// takeFrame() has new data to return. Pass nullptr to clear.
   void setFrameReadyCallback(std::function<void()> cb);
@@ -152,9 +158,16 @@ class ImagePipelineSource : public MediaSource {
 
   // Rectification state. camera_info_by_frame_ is injected once (main thread,
   // before first decode) via setCameraInfoMap; each camera's reverse map is then
-  // built on first use and reused thereafter (worker-thread-only).
+  // built on first use and reused thereafter (worker-thread-only). The map is held
+  // by shared_ptr so the GPU path can hand it to the widget via DecodedFrame; the
+  // fast (fixed-point) table is derived lazily and only used by the CPU path.
   std::unordered_map<std::string, sdk::CameraInfo> camera_info_by_frame_;
-  std::unordered_map<std::string, UndistortMap> undistort_by_frame_;
+  std::unordered_map<std::string, std::shared_ptr<const UndistortMap>> undistort_by_frame_;
+  std::unordered_map<std::string, UndistortMapFast> fast_by_frame_;
+  // True once the widget reports GPU rectification is available; then decode keeps
+  // frames raw and attaches the map. Atomic: written from the widget thread, read
+  // on the worker thread (the setter's invalidate() also re-decodes in the new mode).
+  std::atomic<bool> gpu_rectify_available_{false};
   // Set true by the first setTimestamp() (main thread). Guards setCameraInfoMap:
   // once a decode has been requested the worker may read camera_info_by_frame_
   // unlocked, so a later injection would be a data race — it is refused instead.

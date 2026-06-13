@@ -20,4 +20,16 @@ namespace PJ {
 /// caller to keep the original (unrectified) frame.
 [[nodiscard]] std::optional<DecodedFrame> rectifyFrame(const DecodedFrame& src, const UndistortMap& map);
 
+/// Rectify using a precomputed `UndistortMapFast` into a reused output frame —
+/// the fast fallback path. `out`'s pixel buffer is resized as needed and fully
+/// written (out-of-bounds pixels set to black), and its width/height/format/
+/// frame_id/pts are filled from `src` and the table, so a caller can keep one
+/// `DecodedFrame` across frames and avoid the per-frame allocation `rectifyFrame`
+/// does. Output is bit-for-bit equivalent to `rectifyFrame`.
+///
+/// Returns false (leaving `out` unchanged) when the table is invalid, `src` is
+/// invalid, the format is planar/16-bit (unsupported), or `src`'s size does not
+/// match the table's `src_width`/`src_height` (the table would index wrong pixels).
+[[nodiscard]] bool rectifyFrameFast(const DecodedFrame& src, const UndistortMapFast& fast, DecodedFrame& out);
+
 }  // namespace PJ

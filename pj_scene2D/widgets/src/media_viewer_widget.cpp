@@ -97,6 +97,9 @@ void MediaViewerWidget::resetView() {
 void MediaViewerWidget::setMediaSource(MediaSource* source) {
   std::lock_guard lock(frame_mutex_);
   media_source_ = source;
+  // Tell the new source whether the GPU can rectify (already probed if the widget
+  // is initialized; default false until then, which the next initialize() corrects).
+  applyGpuRectifyCapability();
   inspector_frame_ = {};
   point_inspector_active_.store(false, std::memory_order_relaxed);
   hidePointInspector();
@@ -385,13 +388,14 @@ QRhiVertexInputLayout textVertexInputLayout() {
 
 void setTextureLayerBindings(
     QRhiShaderResourceBindings* srb, QRhiBuffer* uniform_buf, QRhiTexture* tex_y, QRhiTexture* tex_u,
-    QRhiTexture* tex_v, QRhiSampler* sampler) {
+    QRhiTexture* tex_v, QRhiSampler* sampler, QRhiTexture* tex_remap, QRhiSampler* remap_sampler) {
   srb->setBindings({
       QRhiShaderResourceBinding::uniformBuffer(
           0, QRhiShaderResourceBinding::VertexStage | QRhiShaderResourceBinding::FragmentStage, uniform_buf),
       QRhiShaderResourceBinding::sampledTexture(1, QRhiShaderResourceBinding::FragmentStage, tex_y, sampler),
       QRhiShaderResourceBinding::sampledTexture(2, QRhiShaderResourceBinding::FragmentStage, tex_u, sampler),
       QRhiShaderResourceBinding::sampledTexture(3, QRhiShaderResourceBinding::FragmentStage, tex_v, sampler),
+      QRhiShaderResourceBinding::sampledTexture(4, QRhiShaderResourceBinding::FragmentStage, tex_remap, remap_sampler),
   });
 }
 
@@ -422,6 +426,10 @@ void MediaViewerWidget::releaseResources() {
   destroyTextureLayer(base_texture_);
   delete sampler_;
   sampler_ = nullptr;
+  delete remap_sampler_;
+  remap_sampler_ = nullptr;
+  delete remap_placeholder_tex_;
+  remap_placeholder_tex_ = nullptr;
   clearPixelLayerTextures();
   destroyOverlayPipeline(marker_overlay_);
   destroyOverlayPipeline(points_overlay_);
@@ -463,12 +471,13 @@ void MediaViewerWidget::destroyTextureLayer(TextureLayerResources& layer) {
   delete layer.tex_y;
   delete layer.tex_u;
   delete layer.tex_v;
+  delete layer.tex_remap;
   layer = {};
 }
 
 bool MediaViewerWidget::ensureTextureLayer(TextureLayerResources& layer) {
   auto* r = rhi();
-  if (r == nullptr || sampler_ == nullptr) {
+  if (r == nullptr || sampler_ == nullptr || remap_sampler_ == nullptr || remap_placeholder_tex_ == nullptr) {
     return false;
   }
   if (layer.uniform_buf == nullptr) {
@@ -489,7 +498,9 @@ bool MediaViewerWidget::ensureTextureLayer(TextureLayerResources& layer) {
   }
   if (layer.srb == nullptr) {
     layer.srb = r->newShaderResourceBindings();
-    setTextureLayerBindings(layer.srb, layer.uniform_buf, layer.tex_y, layer.tex_u, layer.tex_v, sampler_);
+    setTextureLayerBindings(
+        layer.srb, layer.uniform_buf, layer.tex_y, layer.tex_u, layer.tex_v, sampler_,
+        layer.tex_remap != nullptr ? layer.tex_remap : remap_placeholder_tex_, remap_sampler_);
     if (!layer.srb->create()) {
       destroyTextureLayer(layer);
       return false;
@@ -504,11 +515,13 @@ MediaViewerWidget::TexturePathFormat MediaViewerWidget::texturePathFor(PixelForm
       return TexturePathFormat::kYUV420P;
     case PixelFormat::kNV12:
       return TexturePathFormat::kNV12;  // reserved: see header — not produced yet
+    case PixelFormat::kMono8:
+      return TexturePathFormat::kMono8;  // R8 texture, expanded to gray in-shader
+    case PixelFormat::kBGRA8888:
+      return TexturePathFormat::kBGRA;  // RGBA8 texture, swizzled in-shader
     case PixelFormat::kRGB888:
     case PixelFormat::kRGBA8888:
     case PixelFormat::kBGR888:
-    case PixelFormat::kBGRA8888:
-    case PixelFormat::kMono8:
     case PixelFormat::kMono16:
       return TexturePathFormat::kRGBA;
   }
@@ -574,7 +587,9 @@ bool MediaViewerWidget::uploadDecodedFrameToTexture(
       layer.tex_v->create();
 
       layer.srb->destroy();
-      setTextureLayerBindings(layer.srb, layer.uniform_buf, layer.tex_y, layer.tex_u, layer.tex_v, sampler_);
+      setTextureLayerBindings(
+          layer.srb, layer.uniform_buf, layer.tex_y, layer.tex_u, layer.tex_v, sampler_,
+          layer.tex_remap != nullptr ? layer.tex_remap : remap_placeholder_tex_, remap_sampler_);
       layer.srb->create();
 
       layer.width = w;
@@ -596,25 +611,26 @@ bool MediaViewerWidget::uploadDecodedFrameToTexture(
     return true;
   }
 
-  const uint8_t* rgba_data = nullptr;
-  size_t rgba_size = 0;
-  const bool is_bgr = (frame.format == PixelFormat::kBGR888 || frame.format == PixelFormat::kBGRA8888);
+  // Single-plane upload. Mono8 and BGRA go to the GPU verbatim (R8 / RGBA8) and
+  // are expanded/swizzled in the shader — no CPU repack. RGB888/BGR888 (3-byte)
+  // have no clean 4-byte-row GPU layout, so they still expand to RGBA on the CPU.
+  const TexturePathFormat path = texturePathFor(frame.format);
+  QRhiTexture::Format tex_format = QRhiTexture::RGBA8;
+  const uint8_t* upload_data = nullptr;
+  size_t upload_size = 0;
 
-  if (frame.format == PixelFormat::kRGBA8888) {
-    rgba_data = src;
-    rgba_size = src_size;
-  } else if (frame.format == PixelFormat::kBGRA8888) {
-    rgba_repack_buffer_.resize(static_cast<size_t>(w) * static_cast<size_t>(h) * 4U);
-    const int pixel_count = w * h;
-    for (int i = 0; i < pixel_count; ++i) {
-      rgba_repack_buffer_[i * 4 + 0] = src[i * 4 + 2];
-      rgba_repack_buffer_[i * 4 + 1] = src[i * 4 + 1];
-      rgba_repack_buffer_[i * 4 + 2] = src[i * 4 + 0];
-      rgba_repack_buffer_[i * 4 + 3] = src[i * 4 + 3];
-    }
-    rgba_data = rgba_repack_buffer_.data();
-    rgba_size = rgba_repack_buffer_.size();
+  if (path == TexturePathFormat::kMono8) {
+    tex_format = QRhiTexture::R8;
+    upload_data = src;
+    upload_size = static_cast<size_t>(w) * static_cast<size_t>(h);
+  } else if (path == TexturePathFormat::kBGRA) {
+    upload_data = src;  // shader swizzles .bgra
+    upload_size = src_size;
+  } else if (frame.format == PixelFormat::kRGBA8888) {
+    upload_data = src;
+    upload_size = src_size;
   } else if (frame.format == PixelFormat::kRGB888 || frame.format == PixelFormat::kBGR888) {
+    const bool is_bgr = (frame.format == PixelFormat::kBGR888);
     rgba_repack_buffer_.resize(static_cast<size_t>(w) * static_cast<size_t>(h) * 4U);
     const int pixel_count = w * h;
     for (int i = 0; i < pixel_count; ++i) {
@@ -623,42 +639,32 @@ bool MediaViewerWidget::uploadDecodedFrameToTexture(
       rgba_repack_buffer_[i * 4 + 2] = src[i * 3 + (is_bgr ? 0 : 2)];
       rgba_repack_buffer_[i * 4 + 3] = 255;
     }
-    rgba_data = rgba_repack_buffer_.data();
-    rgba_size = rgba_repack_buffer_.size();
-  } else if (frame.format == PixelFormat::kMono8) {
-    rgba_repack_buffer_.resize(static_cast<size_t>(w) * static_cast<size_t>(h) * 4U);
-    const int pixel_count = w * h;
-    for (int i = 0; i < pixel_count; ++i) {
-      const uint8_t g = src[i];
-      rgba_repack_buffer_[i * 4 + 0] = g;
-      rgba_repack_buffer_[i * 4 + 1] = g;
-      rgba_repack_buffer_[i * 4 + 2] = g;
-      rgba_repack_buffer_[i * 4 + 3] = 255;
-    }
-    rgba_data = rgba_repack_buffer_.data();
-    rgba_size = rgba_repack_buffer_.size();
+    upload_data = rgba_repack_buffer_.data();
+    upload_size = rgba_repack_buffer_.size();
   }
 
-  if (rgba_data == nullptr) {
+  if (upload_data == nullptr) {
     return false;
   }
 
-  if (w != layer.width || h != layer.height || layer.format != TexturePathFormat::kRGBA) {
+  if (w != layer.width || h != layer.height || layer.format != path) {
     layer.tex_y->destroy();
-    layer.tex_y->setFormat(QRhiTexture::RGBA8);
+    layer.tex_y->setFormat(tex_format);
     layer.tex_y->setPixelSize(QSize(w, h));
     layer.tex_y->create();
 
     layer.srb->destroy();
-    setTextureLayerBindings(layer.srb, layer.uniform_buf, layer.tex_y, layer.tex_u, layer.tex_v, sampler_);
+    setTextureLayerBindings(
+        layer.srb, layer.uniform_buf, layer.tex_y, layer.tex_u, layer.tex_v, sampler_,
+        layer.tex_remap != nullptr ? layer.tex_remap : remap_placeholder_tex_, remap_sampler_);
     layer.srb->create();
 
     layer.width = w;
     layer.height = h;
-    layer.format = TexturePathFormat::kRGBA;
+    layer.format = path;
   }
 
-  QRhiTextureSubresourceUploadDescription sub_desc(rgba_data, static_cast<quint32>(rgba_size));
+  QRhiTextureSubresourceUploadDescription sub_desc(upload_data, static_cast<quint32>(upload_size));
   sub_desc.setSourceSize(QSize(w, h));
   updates->uploadTexture(layer.tex_y, QRhiTextureUploadDescription({0, 0, sub_desc}));
   return true;
@@ -674,6 +680,68 @@ void MediaViewerWidget::updateTextureLayerUniform(
   const int32_t fmt = static_cast<int32_t>(layer.format);
   updates->updateDynamicBuffer(layer.uniform_buf, 128, 4, &fmt);
   updates->updateDynamicBuffer(layer.uniform_buf, 132, 4, &layer.opacity);
+  updates->updateDynamicBuffer(layer.uniform_buf, 136, 4, &layer.rectify);
+}
+
+bool MediaViewerWidget::ensureRemapTexture(
+    TextureLayerResources& layer, const UndistortMap& map, QRhiResourceUpdateBatch* updates) {
+  auto* r = rhi();
+  if (r == nullptr || updates == nullptr || !map.valid()) {
+    return false;
+  }
+  const int out_w = map.out_width;
+  const int out_h = map.out_height;
+
+  // (Re)create the LUT texture when the rectified output size changes.
+  if (layer.tex_remap == nullptr || layer.remap_w != out_w || layer.remap_h != out_h) {
+    delete layer.tex_remap;
+    layer.tex_remap = r->newTexture(QRhiTexture::RGBA32F, QSize(out_w, out_h));
+    if (!layer.tex_remap->create()) {
+      delete layer.tex_remap;
+      layer.tex_remap = nullptr;
+      layer.remap_w = 0;
+      layer.remap_h = 0;
+      layer.remap_map_key = nullptr;
+      return false;
+    }
+    layer.remap_w = out_w;
+    layer.remap_h = out_h;
+    layer.remap_map_key = nullptr;  // force a re-upload into the new texture.
+    // Rebind slot 4 to the real LUT (was the placeholder).
+    layer.srb->destroy();
+    setTextureLayerBindings(
+        layer.srb, layer.uniform_buf, layer.tex_y, layer.tex_u, layer.tex_v, sampler_, layer.tex_remap, remap_sampler_);
+    if (!layer.srb->create()) {
+      return false;
+    }
+  }
+
+  // Upload the LUT only when the underlying map changes (calibration is constant
+  // per camera, so this runs once). RGBA32F: .rg = normalized source UV, .ba = 0.
+  if (layer.remap_map_key != static_cast<const void*>(&map)) {
+    const std::vector<float> rg = undistortMapToNormalizedRG(map);
+    if (rg.size() != static_cast<size_t>(out_w) * static_cast<size_t>(out_h) * 2) {
+      return false;
+    }
+    std::vector<float> rgba(static_cast<size_t>(out_w) * static_cast<size_t>(out_h) * 4, 0.0F);
+    for (size_t i = 0, n = static_cast<size_t>(out_w) * static_cast<size_t>(out_h); i < n; ++i) {
+      rgba[i * 4 + 0] = rg[i * 2 + 0];
+      rgba[i * 4 + 1] = rg[i * 2 + 1];
+    }
+    QRhiTextureSubresourceUploadDescription desc(rgba.data(), static_cast<quint32>(rgba.size() * sizeof(float)));
+    desc.setSourceSize(QSize(out_w, out_h));
+    updates->uploadTexture(layer.tex_remap, QRhiTextureUploadDescription({0, 0, desc}));
+    layer.remap_map_key = static_cast<const void*>(&map);
+  }
+
+  layer.rectify = 1;
+  return true;
+}
+
+void MediaViewerWidget::applyGpuRectifyCapability() {
+  if (media_source_ != nullptr) {
+    media_source_->setGpuRectificationAvailable(gpu_rectify_supported_.load(std::memory_order_relaxed));
+  }
 }
 
 void MediaViewerWidget::destroyOverlayPipeline(OverlayPipeline& overlay) {
@@ -782,6 +850,17 @@ void MediaViewerWidget::initialize(QRhiCommandBuffer* /*cb*/) {
   sampler_ = r->newSampler(
       QRhiSampler::Linear, QRhiSampler::Linear, QRhiSampler::None, QRhiSampler::ClampToEdge, QRhiSampler::ClampToEdge);
   sampler_->create();
+
+  // NEAREST sampler for the rectification LUT (exact per-output-pixel source coord).
+  remap_sampler_ = r->newSampler(
+      QRhiSampler::Nearest, QRhiSampler::Nearest, QRhiSampler::None, QRhiSampler::ClampToEdge,
+      QRhiSampler::ClampToEdge);
+  remap_sampler_->create();
+
+  // 1x1 RGBA32F placeholder bound at slot 4 for non-rectifying layers so all
+  // texture-layer SRBs share one binding layout.
+  remap_placeholder_tex_ = r->newTexture(QRhiTexture::RGBA32F, QSize(1, 1));
+  remap_placeholder_tex_->create();
 
   // Uniform buffer + placeholder textures (1x1) — resized on first frame.
   if (!ensureTextureLayer(base_texture_)) {
@@ -896,6 +975,13 @@ void MediaViewerWidget::initialize(QRhiCommandBuffer* /*cb*/) {
     qWarning("MediaViewerWidget: scene_text shaders not loaded; text disabled");
   }
 
+  // GPU rectification needs the base pipeline plus a sampleable RGBA32F LUT. When
+  // available, tell the source to defer rectification to the GPU (raw upload +
+  // map); otherwise it keeps rectifying on the CPU (the precompute fallback).
+  gpu_rectify_supported_.store(
+      pipeline_ != nullptr && r->isTextureFormatSupported(QRhiTexture::RGBA32F), std::memory_order_relaxed);
+  applyGpuRectifyCapability();
+
   if (has_pending_ || has_pending_pixel_layers_) {
     update();
   }
@@ -975,9 +1061,21 @@ void MediaViewerWidget::render(QRhiCommandBuffer* cb) {
 
     if (has_pending_) {
       if (uploadDecodedFrameToTexture(pending_decoded_, base_texture_, updates)) {
-        tex_width_ = base_texture_.width;
-        tex_height_ = base_texture_.height;
-        frame_aspect_ = static_cast<float>(base_texture_.width) / static_cast<float>(base_texture_.height);
+        // GPU rectification: the uploaded frame is RAW; the displayed (logical)
+        // size — which annotation/aspect/inspector coords use — is the map's
+        // output size, not the uploaded texture size.
+        const bool rectify_on_gpu = gpu_rectify_supported_.load(std::memory_order_relaxed) &&
+                                    pending_decoded_.rectify_map != nullptr &&
+                                    ensureRemapTexture(base_texture_, *pending_decoded_.rectify_map, updates);
+        if (rectify_on_gpu) {
+          tex_width_ = pending_decoded_.rectify_map->out_width;
+          tex_height_ = pending_decoded_.rectify_map->out_height;
+        } else {
+          base_texture_.rectify = 0;
+          tex_width_ = base_texture_.width;
+          tex_height_ = base_texture_.height;
+        }
+        frame_aspect_ = static_cast<float>(tex_width_) / static_cast<float>(tex_height_);
       }
       has_pending_ = false;
     }
@@ -1282,14 +1380,32 @@ void MediaViewerWidget::refreshPointInspector() {
     return;
   }
 
-  const auto image_point = widgetPointToImagePixel(
-      last_point_inspector_pos_, size(), QSize(frame.width, frame.height), zoom_, pan_x_, pan_y_);
+  // On the GPU-rectify path the frame is RAW: the displayed (logical) coordinate
+  // space is the map's output size, so the cursor maps there; the sampled value
+  // comes from the source pixel the map points at (the same one the GPU shows).
+  const bool gpu_rectified = frame.rectify_map != nullptr && frame.rectify_map->valid();
+  const int logical_w = gpu_rectified ? frame.rectify_map->out_width : frame.width;
+  const int logical_h = gpu_rectified ? frame.rectify_map->out_height : frame.height;
+
+  const auto image_point =
+      widgetPointToImagePixel(last_point_inspector_pos_, size(), QSize(logical_w, logical_h), zoom_, pan_x_, pan_y_);
   if (!image_point.has_value()) {
     hidePointInspector();
     return;
   }
 
-  auto crop = extractRgbCrop(frame, image_point->x(), image_point->y(), kPointInspectorCropSize);
+  int sample_x = image_point->x();
+  int sample_y = image_point->y();
+  if (gpu_rectified) {
+    const UndistortMap& map = *frame.rectify_map;
+    const int lx = std::clamp(image_point->x(), 0, map.out_width - 1);
+    const int ly = std::clamp(image_point->y(), 0, map.out_height - 1);
+    const size_t idx = static_cast<size_t>(ly) * static_cast<size_t>(map.out_width) + static_cast<size_t>(lx);
+    sample_x = static_cast<int>(std::lround(map.src_x[idx]));
+    sample_y = static_cast<int>(std::lround(map.src_y[idx]));
+  }
+
+  auto crop = extractRgbCrop(frame, sample_x, sample_y, kPointInspectorCropSize);
   if (crop.empty()) {
     hidePointInspector();
     return;

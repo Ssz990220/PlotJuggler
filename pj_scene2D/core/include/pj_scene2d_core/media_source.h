@@ -46,6 +46,14 @@ class MediaSource {
   /// request away, leaving a stale or empty frame until the tracker next moves.
   /// Default: no-op (sources without a timestamp cache need nothing).
   virtual void invalidate() {}
+
+  /// Tell the source whether its consumer (the widget) can rectify camera frames
+  /// on the GPU. When true, a rectifying source may deliver the RAW frame with a
+  /// DecodedFrame::rectify_map attached instead of paying for a CPU resample; when
+  /// false it must deliver a display-ready (already-rectified) frame. The widget
+  /// calls this once it has probed its GPU capability. Default: no-op (sources
+  /// that don't rectify, or always rectify on the CPU, ignore it).
+  virtual void setGpuRectificationAvailable(bool /*available*/) {}
 };
 
 }  // namespace PJ

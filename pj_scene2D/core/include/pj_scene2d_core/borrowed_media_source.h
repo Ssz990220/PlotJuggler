@@ -42,6 +42,13 @@ class BorrowedMediaSource final : public MediaSource {
     }
   }
 
+  /// Forwards the GPU-rectification capability to the borrowed source (no-op when none).
+  void setGpuRectificationAvailable(bool available) override {
+    if (source_ != nullptr) {
+      source_->setGpuRectificationAvailable(available);
+    }
+  }
+
  private:
   MediaSource* source_ = nullptr;
 };

@@ -24,9 +24,16 @@ class MockSource final : public MediaSource {
   bool emit_base = false;
   int n_overlays = 0;
   int64_t base_w = 0;
+  int gpu_rectify_calls = 0;
+  bool last_gpu_rectify = false;
 
   void invalidate() override {
     ++invalidate_calls;
+  }
+
+  void setGpuRectificationAvailable(bool available) override {
+    ++gpu_rectify_calls;
+    last_gpu_rectify = available;
   }
 
   void setTimestamp(int64_t /*ts_ns*/) override {
@@ -174,6 +181,24 @@ TEST(CompositeMediaSourceTest, SetTimestampForwardsToAllLayers) {
 
   EXPECT_EQ(a_ptr->set_calls, 3);
   EXPECT_EQ(b_ptr->set_calls, 3);
+}
+
+TEST(CompositeMediaSourceTest, GpuRectificationAvailabilityFansOutToAllLayers) {
+  auto a = std::make_unique<MockSource>();
+  auto b = std::make_unique<MockSource>();
+  auto* a_ptr = a.get();
+  auto* b_ptr = b.get();
+
+  CompositeMediaSource composite;
+  composite.addLayer(std::move(a));
+  composite.addLayer(std::move(b));
+
+  composite.setGpuRectificationAvailable(true);
+
+  EXPECT_EQ(a_ptr->gpu_rectify_calls, 1);
+  EXPECT_TRUE(a_ptr->last_gpu_rectify);
+  EXPECT_EQ(b_ptr->gpu_rectify_calls, 1);
+  EXPECT_TRUE(b_ptr->last_gpu_rectify);
 }
 
 TEST(CompositeMediaSourceTest, NoNewDataReturnsNullopt) {

@@ -559,16 +559,35 @@ void ImagePipelineSource::rectifyIfCalibrated(DecodedFrame& df) {
   // bakes in the source resolution (sx/sy scale), so a stream that changes decoded
   // size mid-session must rebuild it — otherwise it would sample with stale scale.
   auto it = undistort_by_frame_.find(df.frame_id);
-  if (it == undistort_by_frame_.end() || it->second.src_width != df.width || it->second.src_height != df.height) {
-    UndistortMap built =
-        computeUndistortMap(*ci, df.width, df.height, static_cast<int>(ci->width), static_cast<int>(ci->height));
+  if (it == undistort_by_frame_.end() || it->second->src_width != df.width || it->second->src_height != df.height) {
+    auto built = std::make_shared<const UndistortMap>(
+        computeUndistortMap(*ci, df.width, df.height, static_cast<int>(ci->width), static_cast<int>(ci->height)));
     it = undistort_by_frame_.insert_or_assign(df.frame_id, std::move(built)).first;
+    fast_by_frame_.erase(df.frame_id);  // the fast table is derived from the map; rebuild on next CPU use.
   }
-  if (!it->second.valid()) {
+  const std::shared_ptr<const UndistortMap>& map = it->second;
+  if (!map->valid()) {
     return;
   }
-  if (auto rect = rectifyFrame(df, it->second); rect.has_value()) {
-    df = std::move(*rect);
+
+  if (gpu_rectify_available_.load(std::memory_order_relaxed)) {
+    // GPU path: leave the frame raw (smaller upload) and hand the map to the
+    // widget, which rectifies at draw time. The map's out_width/out_height is the
+    // logical display size the overlay/aspect/inspector coordinate spaces use.
+    df.rectify_map = map;
+    return;
+  }
+
+  // CPU fallback: rectify now into a fresh buffer using the precomputed fixed-point
+  // table (hoists the per-frame floor()/bounds math out of the inner loop). The
+  // delivered frame is already at native resolution with no rectify_map.
+  auto fit = fast_by_frame_.find(df.frame_id);
+  if (fit == fast_by_frame_.end()) {
+    fit = fast_by_frame_.emplace(df.frame_id, buildFastRectifyMap(*map)).first;
+  }
+  DecodedFrame rectified;
+  if (rectifyFrameFast(df, fit->second, rectified)) {
+    df = std::move(rectified);
   } else {
     // CameraInfo exists but the decoded pixel format isn't one the rectifier
     // resamples (planar/16-bit); the raw frame passes through unrectified.
@@ -576,6 +595,15 @@ void ImagePipelineSource::rectifyIfCalibrated(DecodedFrame& df) {
         warningKey(source_key_, "rectify-unsupported-format"),
         "{} frame_id='{}' has calibration but pixel format {} is not rectifiable; showing raw frame", source_key_,
         df.frame_id, static_cast<int>(df.format));
+  }
+}
+
+void ImagePipelineSource::setGpuRectificationAvailable(bool available) {
+  const bool prev = gpu_rectify_available_.exchange(available, std::memory_order_relaxed);
+  if (prev != available) {
+    // Re-decode the current frame so it is re-delivered in the new mode (the
+    // worker would otherwise dedup the unchanged timestamp and keep the old frame).
+    invalidate();
   }
 }
 

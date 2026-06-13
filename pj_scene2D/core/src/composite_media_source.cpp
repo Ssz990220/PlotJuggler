@@ -64,6 +64,14 @@ void CompositeMediaSource::invalidate() {
   }
 }
 
+void CompositeMediaSource::setGpuRectificationAvailable(bool available) {
+  // Fan out so each rectifying layer (an ImagePipelineSource behind a
+  // BorrowedMediaSource) learns whether to defer undistortion to the GPU.
+  for (auto& layer : layers_) {
+    layer.source->setGpuRectificationAvailable(available);
+  }
+}
+
 std::optional<MediaFrame> CompositeMediaSource::takeFrame() {
   // Refresh the cached contribution of every layer that produced a new frame
   // this tick; layers that report nothing new keep their previous contribution.

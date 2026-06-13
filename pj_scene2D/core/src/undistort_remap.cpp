@@ -65,6 +65,15 @@ void distortEquidistant(double x, double y, const std::vector<double>& d, double
   return m == "equidistant" || m == "fisheye" || m == "kannala_brandt";
 }
 
+// The bilinear 2x2 neighborhood at floor(fx,fy) must be fully inside the source.
+// Shared by the fast-table builder and the GPU LUT so both black out exactly the
+// border pixels rectifyFrame() does.
+[[nodiscard]] bool bilinearTapInBounds(float fx, float fy, int sw, int sh) noexcept {
+  const int x0 = static_cast<int>(std::floor(fx));
+  const int y0 = static_cast<int>(std::floor(fy));
+  return x0 >= 0 && y0 >= 0 && x0 + 1 < sw && y0 + 1 < sh;
+}
+
 }  // namespace
 
 bool isRectifiable(const sdk::CameraInfo& ci) noexcept {
@@ -163,6 +172,71 @@ UndistortMap computeUndistortMap(const sdk::CameraInfo& ci, int src_w, int src_h
     }
   }
   return map;
+}
+
+UndistortMapFast buildFastRectifyMap(const UndistortMap& map) {
+  UndistortMapFast fast;
+  if (!map.valid() || map.src_width <= 0 || map.src_height <= 0) {
+    return fast;  // invalid -> caller treats as "do not rectify".
+  }
+  fast.out_width = map.out_width;
+  fast.out_height = map.out_height;
+  fast.src_width = map.src_width;
+  fast.src_height = map.src_height;
+
+  const int sw = map.src_width;
+  const int sh = map.src_height;
+  const auto n = static_cast<size_t>(map.out_width) * static_cast<size_t>(map.out_height);
+  fast.src_p0.resize(n);
+  fast.frac_x.resize(n);
+  fast.frac_y.resize(n);
+
+  for (size_t i = 0; i < n; ++i) {
+    const float fx = map.src_x[i];
+    const float fy = map.src_y[i];
+    if (!bilinearTapInBounds(fx, fy, sw, sh)) {
+      fast.src_p0[i] = -1;
+      fast.frac_x[i] = 0.0F;
+      fast.frac_y[i] = 0.0F;
+      continue;
+    }
+    const float x0f = std::floor(fx);
+    const float y0f = std::floor(fy);
+    const int x0 = static_cast<int>(x0f);
+    const int y0 = static_cast<int>(y0f);
+    fast.src_p0[i] = y0 * sw + x0;  // linear pixel index; rectifyFrameFast scales by channels.
+    fast.frac_x[i] = fx - x0f;
+    fast.frac_y[i] = fy - y0f;
+  }
+  return fast;
+}
+
+std::vector<float> undistortMapToNormalizedRG(const UndistortMap& map) {
+  std::vector<float> rg;
+  if (!map.valid() || map.src_width <= 0 || map.src_height <= 0) {
+    return rg;
+  }
+  const int sw = map.src_width;
+  const int sh = map.src_height;
+  const float inv_w = 1.0F / static_cast<float>(sw);
+  const float inv_h = 1.0F / static_cast<float>(sh);
+  const auto n = static_cast<size_t>(map.out_width) * static_cast<size_t>(map.out_height);
+  rg.resize(n * 2);
+
+  for (size_t i = 0; i < n; ++i) {
+    const float fx = map.src_x[i];
+    const float fy = map.src_y[i];
+    if (!bilinearTapInBounds(fx, fy, sw, sh)) {
+      rg[i * 2 + 0] = -1.0F;  // sentinel -> shader renders black.
+      rg[i * 2 + 1] = -1.0F;
+      continue;
+    }
+    // +0.5 half-texel: a GL_LINEAR sampler interpolates around texel centers, so
+    // this makes texture(src, uv) reproduce rectifyFrame's bilinear at (fx,fy).
+    rg[i * 2 + 0] = (fx + 0.5F) * inv_w;
+    rg[i * 2 + 1] = (fy + 0.5F) * inv_h;
+  }
+  return rg;
 }
 
 }  // namespace PJ

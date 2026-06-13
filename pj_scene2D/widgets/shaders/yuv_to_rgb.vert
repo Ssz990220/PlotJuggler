@@ -3,8 +3,9 @@
 layout(std140, binding = 0) uniform Uniforms {
     mat4 viewTransform;
     mat4 colorMatrix;
-    int pixelFormat;  // 0 = YUV420P, 1 = NV12, 2 = RGBA
+    int pixelFormat;  // 0 = YUV420P, 1 = NV12, 2 = RGBA, 3 = Mono8, 4 = BGRA
     float opacity;
+    int rectify;      // 1 = remap v_uv through remap_tex before sampling (frag-only use)
 };
 
 layout(location = 0) out vec2 v_uv;

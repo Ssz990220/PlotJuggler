@@ -2,6 +2,7 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 
+#include <cstdint>
 #include <string_view>
 #include <vector>
 
@@ -53,5 +54,43 @@ struct UndistortMap {
 /// @returns a `valid()` map, or an empty (invalid) map when `ci` lacks usable
 ///          intrinsics — callers treat an invalid map as "do not rectify".
 [[nodiscard]] UndistortMap computeUndistortMap(const sdk::CameraInfo& ci, int src_w, int src_h, int out_w, int out_h);
+
+/// Precomputed bilinear sampling table for the fast CPU fallback rectifier.
+///
+/// Derived once from an `UndistortMap`, it hoists the per-frame `floor()` and
+/// bounds math (the bottleneck of the scalar rectifier) out of the inner loop:
+/// each output pixel stores the linear index of its top-left source tap plus the
+/// two bilinear fractions. Sampling a frame then costs four multiply-adds per
+/// channel and no transcendental math. `src_width`/`src_height` are the source
+/// size the taps index into — a frame of a different size needs a rebuilt table.
+struct UndistortMapFast {
+  int out_width = 0;
+  int out_height = 0;
+  int src_width = 0;
+  int src_height = 0;
+  std::vector<int32_t> src_p0;  ///< Linear source pixel index of the top-left bilinear tap; -1 = out of bounds (black).
+  std::vector<float> frac_x;    ///< Horizontal bilinear fraction in [0,1).
+  std::vector<float> frac_y;    ///< Vertical bilinear fraction in [0,1).
+
+  [[nodiscard]] bool valid() const noexcept {
+    const auto n = static_cast<size_t>(out_width) * static_cast<size_t>(out_height);
+    return out_width > 0 && out_height > 0 && src_p0.size() == n && frac_x.size() == n && frac_y.size() == n;
+  }
+};
+
+/// Build the fast sampling table from a float `UndistortMap`. The result is
+/// bit-for-bit equivalent to what `rectifyFrame` computes per frame; an invalid
+/// or zero-source map yields an invalid table (caller treats it as "do not
+/// rectify").
+[[nodiscard]] UndistortMapFast buildFastRectifyMap(const UndistortMap& map);
+
+/// Pack an `UndistortMap` into a GPU lookup-texture payload: `out_w*out_h` RG
+/// pairs (row-major) giving, per output pixel, the SOURCE sample point normalized
+/// to [0,1] texture space — with the +0.5 half-texel offset that makes a
+/// `GL_LINEAR` sampler reproduce the CPU bilinear. Out-of-bounds output pixels
+/// (the same bound check `rectifyFrame` uses) are written as the sentinel
+/// `(-1,-1)` so the fragment shader can render them black. Empty if `map` is
+/// invalid.
+[[nodiscard]] std::vector<float> undistortMapToNormalizedRG(const UndistortMap& map);
 
 }  // namespace PJ

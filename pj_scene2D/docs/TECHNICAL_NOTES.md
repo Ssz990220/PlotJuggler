@@ -665,6 +665,33 @@ or (B) keep the raw image and distort every annotation vertex into raw space. We
 chose **A** — it matches Foxglove Studio, shows the undistorted image the detector
 actually "saw", and avoids applying the inverse map to every polygon/mask point.
 
+### GPU vs CPU rectification (where it runs)
+
+*Whether* to rectify is unchanged (the assumption below); *where* it runs is now
+chosen at runtime, because the float CPU resample was ~63–68% of process CPU
+(profiled) across the per-camera decode worker threads.
+
+- **GPU path (default when available).** The decode worker leaves the frame RAW
+  and attaches the cached `shared_ptr<const UndistortMap>` to
+  `DecodedFrame::rectify_map`. `MediaViewerWidget` rectifies in the image
+  fragment shader via an `RGBA32F` remap LUT (`undistortMapToNormalizedRG`,
+  NEAREST, +0.5 half-texel) — one extra texture lookup per pixel, and the upload
+  shrinks to the raw frame size. Works for YUV420P too (the shader remaps the UV,
+  then samples the planes).
+- **CPU fallback** (`rectifyFrameFast` + `UndistortMapFast`): a precomputed
+  source index + fixed-point bilinear fractions resampled into a reused buffer —
+  **bit-for-bit equal** to the float `rectifyFrame` (a unit test asserts zero
+  mismatches) and ~2× faster (34.1 → 16.6 ms/frame at 1920×1280 RGB). Used when
+  the backend can't sample an `RGBA32F` LUT.
+- **Selection.** A one-time capability handshake
+  (`MediaSource::setGpuRectificationAvailable`, probed by the widget in
+  `initialize()`, fanned out through `Composite`/`BorrowedMediaSource`) flips the
+  mode; the default is the CPU-correct path until the widget confirms GPU support,
+  and a flip calls `invalidate()` to re-decode. Both paths produce the identical
+  displayed image at native calibration resolution, so the annotation /
+  aspect / pixel-inspector contract holds regardless of path (see
+  ARCHITECTURE §7.2 for the logical-size decouple).
+
 ### ASSUMPTION and its known blind spot
 
 The decision rule is *"a usable `CameraInfo` exists for this image's `frame_id` ⟹
@@ -686,8 +713,9 @@ for Waymo / Foxglove / the ROS `image_proc` convention (detectors run on
   pixels but not the boxes → misalignment of a pair that was fine.
 
 The safe default still holds: **no `CameraInfo` / empty intrinsics / no `frame_id`
-→ raw passthrough, annotations overlay directly.** Other gaps: planar / 16-bit
-pixel formats pass through unrectified (`rectifyFrame` returns `nullopt`); a
+→ raw passthrough, annotations overlay directly.** Other gaps: on the CPU path,
+planar / 16-bit pixel formats pass through unrectified (`rectifyFrameFast` /
+`rectifyFrame` return false / `nullopt`) — the GPU path does rectify YUV420P; a
 `CameraInfo` published *after* the layer attaches is not retro-applied.
 
 ### If we ever need to close the blind spot
