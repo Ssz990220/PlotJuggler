@@ -357,10 +357,10 @@ Implemented and wired into `pj_app` (built via `add_subdirectory(pj_scene3D/core
 - Widget base: `QOpenGLWidget` subclass (`SceneViewWidget`), hand-rolled scene (no Qt 3D, no Qt 3D scene graph)
 - 3D math: **GLM** (GLSL-matching types, `glm::slerp` for TF interpolation, header-only conan dep)
 - Mesh loading: **assimp** (conan dep)
-- URDF parsing: `QXmlStreamReader`
+- URDF parsing: `QDomDocument` (see `pj_scene3D/docs/ARCHITECTURE.md`)
 - Pointcloud decoders: hand-rolled (PCD, `PointCloud2`)
 - Marker primitives: hand-rolled geometry generators
-- Text rendering: `QPainter` + `QFont` → `QImage` → QRhi texture
+- Text rendering: `QPainter` + `QFont` → `QImage` → GL texture
 - Image decoding: reuse `pj_scene2D`
 - Coordinate convention: **ROS Z-up**
 

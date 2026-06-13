@@ -1,7 +1,8 @@
 # pj_scene3D — third-party derived GLSL
 
-Shader snippets in this module derived from external sources. Each carries a
-`// Derived from:` note at its definition; full attributions live here.
+Shader snippets in this module derived from external sources. Each file
+carrying derived shader code opens with a comment block naming the source;
+full license texts live here.
 
 ## AgX tonemapper (`scene_view_widget.cpp`, composite present shader)
 

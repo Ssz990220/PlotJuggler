@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| Status | Shipping incrementally (core landed; widgets follow) |
+| Status | Shipped (v1 feature-complete: TF, pointclouds, occupancy grids, markers, URDF/mesh, HDR/SSAO/EDL, live streaming) |
 | Date | 2026-05-17 (rev. 2026-05-30) |
 | Scope | What, not how |
 | Supersedes | `PJ4_PLAN.md` §5.5 (refinement) |
@@ -16,10 +16,12 @@ This document is the source of truth for the *intent* of `pj_scene3D`. It delibe
 > `pj_base/builtin` objects (`PointCloud`, `FrameTransforms`, `OccupancyGrid`,
 > `OccupancyGridUpdate`) and publish them to the `ObjectStore`; `pj_scene3D`
 > consumes those objects from the store on tracker change and renders them.
-> Pointclouds, TF, and occupancy grids / costmaps are implemented. The Phase-1
-> sections below are retained as historical intent — read "lazy host-side CDR
-> decode of `PointCloud2`" as "consume the canonical `PointCloud` object the
-> plugin already decoded".
+> Pointclouds, TF, and occupancy grids / costmaps are implemented. 3D markers
+> (`SceneEntitiesLayer` — visualization_msgs/MarkerArray-equivalent
+> `kSceneEntities` topics) and URDF/mesh robot models (`RobotModelLayer`) are
+> also implemented. The Phase-1 sections below are retained as historical intent
+> — read "lazy host-side CDR decode of `PointCloud2`" as "consume the canonical
+> `PointCloud` object the plugin already decoded".
 
 ## 1. Purpose & target users
 
@@ -37,11 +39,11 @@ PJ4's 3D visualization module — the sibling family to `pj_scene2D`, focused on
 ## 3. Supported data types
 
 **Full v1 target** (six types):
-- Rigid bodies (TF + URDF meshes).
+- Rigid bodies (TF + URDF meshes). *(implemented)*
 - Gridmaps (textured planes in a source frame).
-- Pointclouds (`sensor_msgs/PointCloud2` and equivalents).
-- Compressed pointclouds (`foxglove_msgs/CompressedPointCloud` + `point_cloud_interfaces/CompressedPointCloud2`), formats **Draco** and **Cloudini** — decoded into a `PointCloud` and rendered identically (see §3a).
-- 3D markers / visualization primitives (arrows, boxes, spheres, cylinders, line strips, text).
+- Pointclouds (`sensor_msgs/PointCloud2` and equivalents). *(implemented)*
+- Compressed pointclouds (`foxglove_msgs/CompressedPointCloud` + `point_cloud_interfaces/CompressedPointCloud2`), formats **Draco** and **Cloudini** — decoded into a `PointCloud` and rendered identically (see §3a). *(implemented)*
+- 3D markers / visualization primitives (arrows, boxes, spheres, cylinders, line strips, text). *(implemented — `SceneEntitiesLayer`)*
 - Paths (`nav_msgs/Path`, `PosesInFrame`).
 - Laserscans (`sensor_msgs/LaserScan`).
 
@@ -59,8 +61,9 @@ through the **same** `PointCloudLayer` and `convertCanonical()` path as a raw cl
 layer, no separate widget.
 
 - **Formats:** `cloudini` (header-embedded schema; via `cloudini/1.2.2`) and `draco`
-  (`draco/1.5.7`). Plain `zstd_point_cloud_transport` is **out of scope** — its blob is not
-  self-describing (it relies on layout fields the canonical object does not carry).
+  (`draco/1.5.6` — pinned to 1.5.6 to match the `assimp/5.4.3` glTF importer requirement;
+  see `conanfile.txt`). Plain `zstd_point_cloud_transport` is **out of scope** — its blob is
+  not self-describing (it relies on layout fields the canonical object does not carry).
 - **Wire sources:** the ROS parser emits the canonical object for both
   `foxglove_msgs/CompressedPointCloud` (Foxglove ROS2 schema; its `pose` is read but dropped — clouds
   are placed via TF on `frame_id`) and `point_cloud_interfaces/CompressedPointCloud2`
@@ -106,7 +109,9 @@ layer, no separate widget.
 
 **Coordinate convention**: ROS Z-up (per `PJ4_PLAN.md` §5.5).
 
-**Deferred from v1**: WASD / FPS mode, TopDownOrtho, XY Orbit, bookmark / saved views, animated transitions, `F`-recenter-on-selected-drawable.
+**Implemented**: Orbit, XYOrbit, TopDownOrtho, and Fly (WASD / FPS) — all four selectable via the scene-controls combo. Zoom-to-cursor and Home control are also implemented.
+
+**Still deferred**: bookmark / saved views, animated transitions, `F`-recenter-on-selected-drawable.
 
 ## 7. Multi-widget behavior
 
@@ -134,22 +139,41 @@ This matches the pattern `pj_scene2D` already uses for video playback.
 
 The TF buffer is the central runtime data structure that makes scrub-replay work for 3D data. Its requirements:
 
-- **Per-dataset**: one TF buffer per loaded dataset. Lifetime owned at the session level by `pj_runtime::SessionManager`.
-- **PJ4-native** at the type level: not coupled to ROS message types. DataSource plugins decode wire formats into PJ4 SE(3) samples and push them in.
-- **Filled at ingest**, not lazy: as DataSource plugins read TF samples from the source (file or stream), they push directly into the buffer. TF data is small enough that eager decoding fits easily in memory.
+- **Per-dataset**: one `TransformBuffer` per loaded dataset. Ownership lives in
+  `TransformService` (`pj_scene3d_widgets`), not in `pj_runtime::SessionManager` — the
+  runtime must stay domain-neutral and must not depend on 3D-specific types.
+  `TransformService` exposes the buffer as a `shared_ptr` so every 3D dock attached to the
+  same dataset shares the already-populated buffer without re-walking the store.
+- **PJ4-native** at the type level: not coupled to ROS message types. DataSource plugins
+  decode wire formats into canonical `FrameTransforms` objects and publish them to the
+  `ObjectStore`; `TransformService` consumes those objects.
+- **Filled via the ObjectStore**, not by direct plugin push. `TransformService` probes every
+  object topic via `SessionManager::parserBindingForObjectTopic()`, classifies TF topics at
+  most once, and ingests entries using a per-topic timestamp cursor (`TfCursor`) that guards
+  against double-ingest. Two ingest paths share the same cursor logic:
+  - **Bulk (file load):** `ingestFrameTransformsForDataset()` sweeps the whole topic history
+    in one call on a worker thread; emits `datasetTransformsReady` when done.
+  - **Incremental (live streaming):** `ingestNewTransforms()` is called on each
+    `SessionManager::samplesIngested` signal; it ingests only entries newer than the cursor
+    and returns `true` if the buffer changed. `Scene3DDockWidget::driveVisibleLayersToLiveEdge()`
+    then advances the visible layers to the new live edge.
 
 ### Behavioral contract
 
 Behavioral contract of `TransformBuffer` (`core/include/pj_scene3d_core/tf/tf_buffer.h`):
 
 - **`T_target_from_source` convention** (same as ROS tf2): `lookupTransform(target, source, t)` returns the transform `T` such that `p_target = T * p_source`.
-- **Tree, not DAG**: each child frame has exactly one parent. Reparenting attempts are rejected.
+- **Tree, not DAG**: each child frame has exactly one parent. Two forms of malformed input are rejected: a reparent conflict (child already claimed under a different parent) returns `SetTransformError::ReparentConflict`; a self-loop edge (child == parent) returns `SetTransformError::SelfLoop` to prevent `chainToRoot` from hanging on corrupt TF data. Both are non-throwing — a bulk ingest continues past dropped edges.
 - **Zero-order hold (ZOH) sample lookup**, *not* linear interpolation:
   - `t` equal to a stored stamp → that sample.
   - `t` strictly between two stamps → the *earlier* sample (sample-and-hold).
   - `t > latest stamp` → the latest sample (forward extrapolation by hold).
-  - `t < earliest stamp` → no result (no backward extrapolation).
-  - Static transforms always resolve regardless of `t`.
+  - `t < earliest stamp on any edge` → no result (`NoSampleAtTime`).
+
+  Transforms with a single sample (e.g. `/tf_static` entries) resolve for all
+  `t >= their stamp` and hold forward indefinitely; for `t` strictly before
+  that stamp, `NoSampleAtTime` is returned. In practice `/tf_static` is stamped
+  at recording start, so this slice never occurs during normal scrub replay.
 
   This is a deliberate departure from tf2's default linear interpolation. The ZOH semantic answers "what was the system's belief at time *t*?" rather than "what would a smooth interpolation of the recorded data look like at time *t*?". For scrub replay over recorded data, the first question is the correct one — the system never actually held an interpolated pose.
 
@@ -253,7 +277,7 @@ The TF prototype has been promoted into `pj_scene3D/core/include/pj_scene3d_core
 
 **Unchanged** from the prototype:
 - The `T_target_from_source` convention.
-- Tree-not-DAG enforcement: a reparent conflict (a child already claimed under a different parent) is rejected — `setTransform` returns `PJ::unexpected(SetTransformError::ReparentConflict)` and drops that one edge (non-throwing), so a bulk ingest continues.
+- Tree-not-DAG enforcement: a reparent conflict (a child already claimed under a different parent) and a self-loop edge (child == parent) are both rejected — `setTransform` returns `PJ::unexpected(SetTransformError::ReparentConflict)` or `SetTransformError::SelfLoop` respectively, dropping that one edge (non-throwing) so a bulk ingest continues. Self-loop rejection fires first to prevent `chainToRoot` from hanging on malformed TF data.
 - Common-ancestor walk algorithm.
 - Per-edge `std::deque` sample storage with 10-second cache window pruning.
 - The `Transform` struct (translation + unit quaternion).

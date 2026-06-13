@@ -1,13 +1,16 @@
 # Intro
 
 The purpose of this module is to implement 3D visualization of robotics data
-(TF, pointclouds, occupancy grids / costmaps, and over time meshes, markers,
-paths, laserscans), as a sibling widget family to `pj_scene2D`.
+(TF, pointclouds, occupancy grids / costmaps, meshes / URDF robot models, and
+scene entities (markers)); paths and laserscans remain future work. Sibling
+widget family to `pj_scene2D`.
 
 The detailed set of requirements and goals lives in `pj_scene3D/docs/REQUIREMENTS.md`.
 You MUST read this file at the beginning of every section and after compacting.
 The as-built design — rendering pipeline (HDR/tonemap/SSAO/EDL), URDF/mesh
-subsystem, `package://` asset resolution, scene-controls bindings — lives in
+subsystem, `package://` asset resolution, scene-controls bindings, camera
+system (four pluggable models, adaptive near/far, zoom-to-cursor, XML
+persistence), and live-streaming data path — lives in
 `pj_scene3D/docs/ARCHITECTURE.md`.
 
 ## Decoding boundary (important)
@@ -43,12 +46,18 @@ still holds for everything else.
   patches), and the `DecodedPointCloud` render struct. Links only `glm`,
   `pj_base`, `nlohmann_json`. Key headers:
   `core/include/pj_scene3d_core/{tf/tf_buffer.h, tf/transform.h,
-  occupancy_grid_reconstructor.h, pointcloud.h, pointcloud_codecs.h}`. The codec
+  occupancy_grid_reconstructor.h, pointcloud.h, pointcloud_codecs.h,
+  camera/camera.h, camera/camera_math.h, robot_model.h,
+  scene_entities_decode.h, scene_entities_render.h}`. The codec
   decoders add a PRIVATE `draco` + `cloudini` link (compressed-cloud transcoding only —
   see "Decoding boundary"); the public API stays `glm` / `pj_base` / `nlohmann_json`.
 - `widgets/` — Qt viewer (`SceneViewWidget`, a `QOpenGLWidget` embedded as a
   direct child of `Scene3DDockWidget`), render passes, layers, and
-  `Scene3DDockWidget` (an `IDataWidget`). A right-click on the view delivers a
+  `Scene3DDockWidget` (an `IDataWidget`). Key public headers:
+  `widgets/include/pj_scene3d_widgets/{Scene3DDockWidget.h,
+  transform_service.h, scene3d_layer.h, mesh_data.h, mesh_shading_params.h,
+  passes/mesh_render_pass.h, layers/robot_model_layer.h,
+  layers/scene_entities_layer.h}`. A right-click on the view delivers a
   native `QContextMenuEvent` that the host `DockWidget`'s event filter catches,
   so the 3D scene gets the same standard menu (Split Horizontally/Vertically,
   Clear) as other widgets with no view-side context-menu code. *Landing
@@ -105,7 +114,9 @@ Before any commit, run the tests and check that they all pass
 `scene_entities_decode_test`, `pointcloud_codecs_test`,
 `pointcloud_layer_cache_test`, `pointcloud_layer_rebind_test`,
 `pointcloud_layer_coalescing_test`, `camera_near_far_test`,
-`camera_zoom_to_cursor_test`, `camera_state_transfer_test`).
+`camera_zoom_to_cursor_test`, `camera_state_transfer_test`,
+`urdf_parser_test`, `urdf_package_resolver_test`, `mesh_loader_test`,
+`robot_model_layer_test`, `scene_entities_layer_model_test`).
 
 Make sure that all the markdown files in this folder are updated, if necessary.
 

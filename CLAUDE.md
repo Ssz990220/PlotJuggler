@@ -27,7 +27,7 @@ PJ4/
 ├── pj_datastore/            # Level 0 columnar store + ObjectStore + DerivedEngine (moved out of the submodule)
 ├── pj_scene_common/         # backend-agnostic layered scene dock framework, shared by the scene widget families
 ├── pj_scene2D/              # 2D scene widget family: core logic, Qt widgets, demos, tests
-├── pj_scene3D/              # 3D scene widget family: core (TF, pointcloud, occupancy-grid) + OpenGL widgets
+├── pj_scene3D/              # 3D scene widget family: TF, pointclouds, occupancy grids, URDF/mesh, markers; HDR/SSAO/EDL pipeline + OpenGL widgets, demos
 ├── pj_marketplace/          # extension install/manage
 ├── pj_dialog_host/          # Qt host for plugin-provided dialogs
 ├── pj_scripting/            # Lua today, Python pluggable later (not yet created)
@@ -56,7 +56,7 @@ When adding files, use the owning module rather than creating new top-level fold
 - `pj_marketplace/`: extension registry, download, install/manage services, and marketplace UI.
 - `pj_dialog_host/`: Qt host/binding for plugin-provided dialogs. General app dialogs stay in `pj_app`; reusable dialog controls stay in `pj_widgets`.
 - `pj_scripting/`: future language-agnostic scripting engine. Do not place scripting code under `pj_app` or widget modules unless it is strictly UI/editor code.
-- `pj_scene3D/`: 3D scene widget family (robotics viz): TF, pointclouds, occupancy grids, URDF/mesh. Independent 3D logic in `core/`, OpenGL widgets in `widgets/`, tests in `tests/`. Do not add 3D rendering code elsewhere.
+- `pj_scene3D/`: 3D scene widget family (robotics viz): TF, pointclouds, occupancy grids, URDF/mesh, markers. Independent 3D logic in `core/`, OpenGL widgets in `widgets/`, tests in `tests/`, opt-in dev demos in `demos/` (gated by `PJ_BUILD_TOOLS`, off by default). Do not add 3D rendering code elsewhere.
 - `resources/`: shared app resources registered in `resources.qrc`; module-local test/demo assets should live with that module.
 - `3rdparty/`: vendored source dependencies added via CMake `add_subdirectory`. Conan/system dependencies do not belong here.
 - `thirdparty/`: GPLv2/shareware license + source-offer compliance artifacts (`thirdparty/retro/`) shipped alongside the separately-licensed `pj-raster-helper`; distinct from `3rdparty/` (CMake-vendored sources). The root `CMakeLists.txt` installs these next to the helper binary.
@@ -96,7 +96,7 @@ Cross-cutting docs (porting strategy, glossary, ADRs) live in top-level `docs/`.
 | `pj_scene_common` | [pj_scene_common/CLAUDE.md](./pj_scene_common/CLAUDE.md) | — |
 | `pj_scene2D` | [pj_scene2D/CLAUDE.md](./pj_scene2D/CLAUDE.md) | [docs/](./pj_scene2D/docs/) — REQUIREMENTS, ARCHITECTURE, TECHNICAL_NOTES, datatypes_2D, … |
 | `pj_marketplace` | [pj_marketplace/README.md](./pj_marketplace/README.md) | [docs/](./pj_marketplace/docs/) — REQUIREMENTS, ARCHITECTURE, USER_MANUAL, marketplace-spec |
-| `pj_scene3D` | [pj_scene3D/CLAUDE.md](./pj_scene3D/CLAUDE.md) | [docs/](./pj_scene3D/docs/) — REQUIREMENTS, ARCHITECTURE, CAMERA_MODELS_DESIGN, CAMERA_OVERHAUL_PLAN |
+| `pj_scene3D` | [pj_scene3D/CLAUDE.md](./pj_scene3D/CLAUDE.md) | [docs/](./pj_scene3D/docs/) — REQUIREMENTS, [ARCHITECTURE](./pj_scene3D/docs/ARCHITECTURE.md) (rendering pipeline, cameras, URDF/mesh) |
 | `pj_datastore` | [pj_datastore/CLAUDE.md](./pj_datastore/CLAUDE.md) | [docs/](./pj_datastore/docs/) — REQUIREMENTS, ARCHITECTURE, USER_GUIDE, OBJECT_STORE_DESIGN |
 | `plotjuggler_sdk/` (submodule) | [plotjuggler_sdk/CLAUDE.md](./plotjuggler_sdk/CLAUDE.md) | submodule owns its own `docs/` tree |
 
@@ -212,7 +212,7 @@ Submodule: `git submodule update --init --recursive` on first clone.
 
 Parity-plus with PJ3: file + streaming sources, 11 built-in transforms, undo/redo, derived-series editor (incl. Lua via `pj_scripting`), reactive scripts (via Toolbox + `onTimeChanged`), multi-tab workspace, marketplace install UI, all toolboxes.
 
-The 3D widget family ships as `pj_scene3D` (built and wired into `pj_app` via `Scene3DDockWidget`): TF, pointclouds, occupancy grids, axis/grid render passes, pluggable camera models, URDF/mesh robot models, and the HDR/tonemap/SSAO/EDL rendering pipeline — see `pj_scene3D/docs/ARCHITECTURE.md` for the as-built design, `docs/REQUIREMENTS.md` + plan §5.5 for scope.
+The 3D widget family ships as `pj_scene3D` (built and wired into `pj_app` via `Scene3DDockWidget`): TF, pointclouds, occupancy grids, axis/grid render passes, SceneEntities/markers, pluggable camera models, URDF/mesh robot models, the HDR/tonemap/SSAO/EDL rendering pipeline, live/streaming TF+object ingest (`TransformService` + `driveVisibleLayersToLiveEdge`), and per-use parser bindings (`parse_locked.h`) — see `pj_scene3D/docs/ARCHITECTURE.md` for the as-built design, `docs/REQUIREMENTS.md` + plan §5.5 for scope.
 
 ## Non-goals (explicitly deferred)
 

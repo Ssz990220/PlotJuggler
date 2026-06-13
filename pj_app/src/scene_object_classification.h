@@ -11,8 +11,8 @@ namespace PJ {
 // Host-side routing/iconography forwarders. Each scene family owns its accepted
 // type set (the dock's static handlesObjectType, next to the code implementing
 // support); these aliases exist so shell code reads as policy. kSceneEntities is
-// currently 2D-only (the 3D family has no marker layer yet), so dropped markers
-// route to scene2d; the factory ladder gives 3D precedence if that ever changes.
+// handled by both families; the factory ladder gives 3D precedence (3D is tried
+// first, 2D falls back for types the 3D family does not claim).
 [[nodiscard]] inline bool is3dSceneObjectType(sdk::BuiltinObjectType type) {
   return Scene3DDockWidget::handlesObjectType(type);
 }

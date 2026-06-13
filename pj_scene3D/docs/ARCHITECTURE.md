@@ -58,6 +58,58 @@ program implement `releaseGL()` (wired to the dying context's
 `aboutToBeDestroyed`) and rebuild lazily — VAOs/FBOs/textures are per-context,
 never shared. The app deliberately does NOT set `AA_ShareOpenGLContexts`.
 
+## Camera system
+
+The camera is an interchangeable controller over a shared, serializable pose,
+deliberately in `pj_scene3d_core` (Qt/GL-free) so the math is headless unit-
+testable (`camera_near_far_test`, `camera_zoom_to_cursor_test`,
+`camera_state_transfer_test`).
+
+- **`ICamera` + `CameraState`** (`core/include/pj_scene3d_core/camera/camera.h`):
+  `CameraState` (focal, radius, azimuth, elevation, fov_y, ortho_scale,
+  perspective) is the pose every model exports via `state()` and adopts via
+  `adoptState()`, so switching models preserves where you were looking.
+  `SceneViewWidget` holds a `std::unique_ptr<ICamera>`; `setCameraModel` does
+  capture → construct → `adoptState` → swap.
+- **Four models, selectable.** `SceneViewWidget::CameraModel` enumerates
+  `{ Orbit, XYOrbit, Fly, TopDownOrtho }` — that order is load-bearing because
+  the overlay combo's index casts directly to it. Inheritance: `OrbitCamera`
+  (perspective spherical orbit, Z-up; non-`final`), `XYOrbitCamera : OrbitCamera`
+  (orbit pivot locked to the z=0 ground plane), `TopDownOrthoCamera : ICamera`
+  (orthographic bird's-eye, rotatable about +Z — the robotics "2D mode" for
+  costmaps/grids), `FlyCamera : ICamera` (first-person free eye + yaw/pitch, no
+  orbit pivot: LEFT looks around, pan strafes, wheel dollies forward).
+- **Adaptive near/far** (`core/src/camera/camera_math.cpp`, `adaptiveNearFar`):
+  `near = max(d·1e-2, 1e-3)` from the working distance only (so close inspection
+  never clips), `far = max(d·4, scene_reach)·1.5` (reaches the whole scene), then
+  `near = max(near, far/1e5)` — a ratio cap that bounds depth precision.
+  `scene_reach` is the scene AABB diagonal plus the focal-to-center distance.
+  `TopDownOrthoCamera` uses its own flat-scene guard instead (near/far measured
+  against the eye height above the focal plus the scene's vertical extent), so a
+  zoomed-in costmap never clips the ground.
+- **Zoom-to-cursor** (wheel): a homothety about the world point under the cursor —
+  the eye **and** focal are scaled toward the cursor target by `pow(0.9, ticks)`,
+  so the hovered point stays pixel-locked by construction; a degenerate ray (no
+  ground/focal-plane hit) falls back to center-of-view `zoom()`. Right-drag stays
+  center-of-view zoom. On `FlyCamera` zoom-to-cursor degenerates to a forward
+  dolly by design.
+- **Scene bounds.** `Scene3DLayer::worldBounds()` returns an optional source-frame
+  `AABB`; `PointCloudLayer`, `OccupancyGridLayer`, and `RobotModelLayer` override
+  it. `Scene3DDockWidget` unions the visible layers' boxes (`unionAABB`) and pushes
+  the result to `SceneViewWidget::setSceneBounds` → the active camera, feeding the
+  adaptive near/far above. No reporting layer → invalid AABB → working-distance
+  fallback.
+- **Overlay UI.** `Scene3DDockWidget` overlays a `camera_model_combo_`
+  (`{Orbit, XYOrbit, Fly, Top-down ortho}`) and a `home_button_` (Home icon,
+  resets the active model to its default view — not fit-to-scene), positioned
+  top-right just left of the corner gizmo. They are children of the dock, not the
+  `QOpenGLWidget`, and `raise()`'d above it (ADS native-window z-order).
+- **Persistence.** `xmlSaveState` writes the active model as a stable string id
+  (`orbit` / `xy_orbit` / `fly` / `top_down_ortho` — independent of the enum
+  integer / combo order) plus the `CameraState` as JSON (`cameraStateToJson`);
+  `xmlLoadState` restores both, sanitizing the state so a corrupt layout can never
+  drive a degenerate view.
+
 ## URDF / robot-model subsystem
 
 - **Parser** (`widgets/src/urdf_parser.{h,cpp}`): `QDomDocument`-based;
@@ -98,6 +150,38 @@ never shared. The app deliberately does NOT set `AA_ShareOpenGLContexts`.
   2262) nor clamp the playhead to its latch timestamp. The dock skips
   inverted ranges and still delivers live tracker time.
 
+## Streaming / live-data path
+
+TF, pointclouds, and markers ingest live as well as from a file. File load uses
+a single bulk pass — `TransformService::ingestFrameTransformsForDataset` reads
+every `FrameTransforms` message in the dataset into the core `TransformBuffer`
+and emits `datasetTransformsReady`, then `onTrackerTime` drives the layers.
+Streaming has no such pass, so the dock wires the incremental path:
+
+- `Scene3DDockWidget::setSessionManager` shadows the base to also call
+  `reconnectLiveSamples`, which connects `SessionManager::samplesIngested`
+  (fired on the UI thread after each retention trim, `live == true` only while
+  following a live stream; file load emits `live == false` and stays on the
+  bulk path).
+- On each live tick, `TransformService::ingestNewTransforms` advances a
+  per-topic store cursor and folds only the new `FrameTransforms` into the
+  buffer — cheap, and a no-op when nothing new arrived. Without it the TF buffer
+  stays empty and every sensor frame is orphaned (red).
+- `driveVisibleLayersToLiveEdge` then queries each visible layer's `timeRange()`
+  for the newest timestamp now in the `ObjectStore` and drives `setTrackerTime`
+  on every visible layer (consulting the *layer's* range, not the store's per
+  base-topic range, so a multi-topic layer like OccupancyGrid + its `_updates`
+  sibling does not freeze at its last keyframe). Without this, object layers
+  would stall while only the TF buffer advanced.
+
+`TransformService` is a `widgets/`-level wrapper over the Qt/GL-free core
+`TransformBuffer`. It owns no parser handle: each ingest resolves the topic's
+binding through `SessionManager::parserBindingForObjectTopic` and decodes under
+`parseLocked` (parse-locked per use — never a cached binding). Streaming uses a
+finite `TransformBuffer` cache window (default 10 s) so a growing live stream
+trims old samples and stays memory-bounded; the bulk file path constructs the
+buffer with eviction disabled, since the whole recording is fed in up front.
+
 ## Asset resolution (`package://` for a non-ROS app)
 
 `UrdfPackageResolver` — URI scheme dispatch first:
@@ -129,8 +213,8 @@ layers; `package://pkg/rel` → the chain below, stop at first hit:
 
 Failure semantics: never silent. Missing meshes → magenta cubes + status
 counts; wrong folder picked → explicit "expected a subdirectory named <pkg>"
-error; URDF latch not yet received → 500 ms-throttled re-check with a 10 s
-timeout message; HTTP mesh fetches are capped at 4 concurrent.
+error; URDF latch not yet received → an indefinite 500 ms-throttled re-check
+with a permanent "Waiting for …" status (no timeout escalation).
 
 ## Scene-controls panel (pj_app)
 

@@ -86,8 +86,8 @@ struct MarkerText {
   glm::mat4 model{1.0F};
   glm::vec4 color{1.0F};
   std::string text;
-  float font_size = 0.0F;
-  bool billboard = false;
+  float font_size = 0.0F;  // world-space metres (always; the SDK's scale_invariant flag is not propagated here)
+  bool billboard = false;  // true = text plane always faces the camera (screen-aligned)
   std::uint32_t frame_index = 0;
 };
 

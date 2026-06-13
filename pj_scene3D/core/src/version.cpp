@@ -3,7 +3,7 @@
 
 #include "pj_scene3d_core/version.h"
 namespace pj::scene3d {
-// Reserve a real TU for Phase 1's version stamp. Future translation units
-// land alongside as the core grows in T2+.
+// Vestigial scaffolding: kPhase has no real consumer (see version.h). This TU
+// exists only to anchor the self-assert until a real version surface lands.
 static_assert(kPhase == 1, "Phase mismatch");
 }  // namespace pj::scene3d
