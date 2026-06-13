@@ -15,6 +15,7 @@
 #include "pj_base/types.hpp"
 #include "pj_datastore/query.hpp"
 #include "pj_runtime/CurveDescriptor.h"
+#include "pj_runtime/Time.h"
 
 namespace PJ {
 
@@ -42,7 +43,7 @@ class DatastoreCurveAdapter final : public QwtSeriesData<QPointF> {
  private:
   void ensureChunkIndex_() const;
   [[nodiscard]] QPointF readPoint_(const SeriesSample& sample) const;
-  [[nodiscard]] Timestamp displayOffsetNow_() const;
+  [[nodiscard]] DisplayOffset displayOffsetNow_() const;
 
   SessionManager* session_ = nullptr;
   CurveDescriptor source_;
@@ -56,12 +57,12 @@ class DatastoreCurveAdapter final : public QwtSeriesData<QPointF> {
   mutable QRectF cached_full_bounding_rect_;
   mutable bool full_bounding_rect_valid_ = false;
 
-  // Cached display-time offset (raw_ns). Resolved live on first use after an
+  // Cached display-time offset. Resolved live on first use after an
   // invalidation; invalidated in onTopicCommitted/onDataCleared so it tracks
   // time-domain reconfiguration through the same signals that drive sample
   // re-indexing. Removing this cache makes readPoint_() pay 2 DataEngine
   // lookups per sample, which dominates per-curve paint cost.
-  mutable Timestamp cached_display_offset_ns_ = 0;
+  mutable DisplayOffset cached_display_offset_;
   mutable bool cached_display_offset_valid_ = false;
 };
 

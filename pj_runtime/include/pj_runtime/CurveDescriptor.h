@@ -18,7 +18,6 @@ struct CurveDescriptor {
   DatasetId dataset_id;
   std::size_t column_index;
   QString field_path;
-  Timestamp display_offset_ns;
 };
 
 }  // namespace PJ

@@ -59,7 +59,6 @@ class DatastoreCurveAdapterTest : public ::testing::Test {
         .dataset_id = dataset_id_,
         .column_index = 0,
         .field_path = "value",
-        .display_offset_ns = kDisplayOffset,
     };
     adapter_ = std::make_unique<DatastoreCurveAdapter>(&session_, descriptor_);
   }
@@ -240,7 +239,6 @@ TEST(PointSeriesXYTest, SameTopicPairsRowsByIndex) {
       .dataset_id = *dataset_or,
       .column_index = 0,
       .field_path = "x",
-      .display_offset_ns = 0,
   };
   CurveDescriptor y_descriptor{
       .name = "/xy/y",
@@ -248,7 +246,6 @@ TEST(PointSeriesXYTest, SameTopicPairsRowsByIndex) {
       .dataset_id = *dataset_or,
       .column_index = 1,
       .field_path = "y",
-      .display_offset_ns = 0,
   };
 
   PointSeriesXY series(&session, x_descriptor, y_descriptor);
@@ -306,7 +303,6 @@ TEST(PointSeriesXYTest, DifferentTopicsPairOnlyExactTimestampsAndInvalidateOnCom
       .dataset_id = *dataset_or,
       .column_index = 0,
       .field_path = "value",
-      .display_offset_ns = 0,
   };
   CurveDescriptor y_descriptor{
       .name = "/y/value",
@@ -314,7 +310,6 @@ TEST(PointSeriesXYTest, DifferentTopicsPairOnlyExactTimestampsAndInvalidateOnCom
       .dataset_id = *dataset_or,
       .column_index = 0,
       .field_path = "value",
-      .display_offset_ns = 0,
   };
 
   PointSeriesXY series(&session, x_descriptor, y_descriptor);

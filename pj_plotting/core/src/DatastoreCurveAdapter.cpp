@@ -30,12 +30,12 @@ namespace {
 // (raw - offset)/1e9 arithmetic lives in exactly one place. Caller is responsible
 // for finite-checking display_sec — Qwt rects from real viewports are always
 // bounded; the upstream call sites guard against NaN/inf.
-[[nodiscard]] Timestamp displaySecondsToRawNs(double display_sec, Timestamp display_offset_ns) noexcept {
-  return displaySecondsToRaw(fromAxisDouble(display_sec), DisplayOffset{Duration{display_offset_ns}});
+[[nodiscard]] Timestamp displaySecondsToRawNs(double display_sec, DisplayOffset offset) noexcept {
+  return displaySecondsToRaw(fromAxisDouble(display_sec), offset);
 }
 
-[[nodiscard]] double rawNsToDisplaySeconds(Timestamp raw_ns, Timestamp display_offset_ns) noexcept {
-  return toAxisDouble(rawToDisplaySeconds(raw_ns, DisplayOffset{Duration{display_offset_ns}}));
+[[nodiscard]] double rawNsToDisplaySeconds(Timestamp raw_ns, DisplayOffset offset) noexcept {
+  return toAxisDouble(rawToDisplaySeconds(raw_ns, offset));
 }
 
 [[nodiscard]] bool isAllRowsWindow(Timestamp t_min, Timestamp t_max) noexcept {
@@ -101,7 +101,7 @@ void DatastoreCurveAdapter::setRectOfInterest(const QRectF& rect) {
     next_min = std::numeric_limits<Timestamp>::min();
     next_max = std::numeric_limits<Timestamp>::max();
   } else {
-    const Timestamp offset = displayOffsetNow_();
+    const DisplayOffset offset = displayOffsetNow_();
     const Timestamp left = displaySecondsToRawNs(rect.left(), offset);
     const Timestamp right = displaySecondsToRawNs(rect.right(), offset);
     next_min = std::min(left, right);
@@ -132,7 +132,7 @@ std::optional<std::pair<double, double>> DatastoreCurveAdapter::visibleYRange(
   if (!std::isfinite(x_min_sec) || !std::isfinite(x_max_sec)) {
     bounds = series_or->bounds();
   } else {
-    const Timestamp offset = displayOffsetNow_();
+    const DisplayOffset offset = displayOffsetNow_();
     const Timestamp raw_a = displaySecondsToRawNs(x_min_sec, offset);
     const Timestamp raw_b = displaySecondsToRawNs(x_max_sec, offset);
     bounds = series_or->bounds(Range<Timestamp>{.min = std::min(raw_a, raw_b), .max = std::max(raw_a, raw_b)});
@@ -238,27 +238,27 @@ QPointF DatastoreCurveAdapter::readPoint_(const SeriesSample& sample) const {
   return {rawNsToDisplaySeconds(sample.timestamp, displayOffsetNow_()), sample.value};
 }
 
-Timestamp DatastoreCurveAdapter::displayOffsetNow_() const {
+DisplayOffset DatastoreCurveAdapter::displayOffsetNow_() const {
   if (cached_display_offset_valid_) {
-    return cached_display_offset_ns_;
+    return cached_display_offset_;
   }
 
-  // Live lookup — never fall back to source_.display_offset_ns, which is a
-  // snapshot taken at catalog-build time. The cache below is invalidated by
-  // onTopicCommitted / onDataCleared so it tracks time-domain reconfiguration
-  // through the same signals that drive sample re-indexing.
-  Timestamp offset = 0;
+  // Live lookup — the display offset is read from the dataset's TimeDomain on
+  // demand, never from a catalog-build-time snapshot. The cache below is
+  // invalidated by onTopicCommitted / onDataCleared so it tracks time-domain
+  // reconfiguration through the same signals that drive sample re-indexing.
+  DisplayOffset offset;
   if (session_ != nullptr) {
     const DatasetInfo* dataset = session_->dataEngine().getDataset(source_.dataset_id);
     if (dataset != nullptr && dataset->time_domain.id != 0) {
       const TimeDomain* time_domain = session_->dataEngine().getTimeDomain(dataset->time_domain.id);
       if (time_domain != nullptr) {
-        offset = time_domain->display_offset;
+        offset = offsetOf(*time_domain);
       }
     }
   }
 
-  cached_display_offset_ns_ = offset;
+  cached_display_offset_ = offset;
   cached_display_offset_valid_ = true;
   return offset;
 }

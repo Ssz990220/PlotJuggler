@@ -117,7 +117,6 @@ struct QStringHash {
       .dataset_id = item.dataset_id,
       .column_index = scalar->column_index,
       .field_path = scalar->field_path,
-      .display_offset_ns = scalar->display_offset_ns,
   };
 }
 
@@ -398,12 +397,6 @@ void CatalogModel::rebuildFromDatastore() {
       removed_names_for_dataset = &it->second;
     }
 
-    const DatasetInfo* dataset = engine.getDataset(dataset_id);
-    const TimeDomain* time_domain = nullptr;
-    if (dataset != nullptr && dataset->time_domain.id != 0) {
-      time_domain = engine.getTimeDomain(dataset->time_domain.id);
-    }
-    const Timestamp display_offset = time_domain != nullptr ? time_domain->display_offset : 0;
     const auto dataset_label_it = dataset_labels.find(dataset_id);
     const QString dataset_label =
         dataset_label_it != dataset_labels.end() ? dataset_label_it->second : effectiveBaseLabel(dataset_id);
@@ -442,7 +435,6 @@ void CatalogModel::rebuildFromDatastore() {
                              .field_path = QString::fromStdString(column.field_path),
                              .topic_id = topic_id,
                              .column_index = column_index,
-                             .display_offset_ns = display_offset,
                          },
                  });
       }

@@ -26,7 +26,6 @@ struct ScalarFieldPayload {
   QString field_path;
   TopicId topic_id = 0;
   std::size_t column_index = 0;
-  Timestamp display_offset_ns = 0;
 };
 
 // Object-topic payload: time-indexed canonical-object stream from the object
