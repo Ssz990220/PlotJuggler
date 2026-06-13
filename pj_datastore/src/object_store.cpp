@@ -153,7 +153,27 @@ std::optional<ResolvedObjectEntry> ObjectStore::latestAt(ObjectTopicId id, Times
   }
   --it;
   auto idx = static_cast<size_t>(it - series->entry_timestamps.begin());
-  return resolveEntry(series->entries[idx]);
+  const ObjectEntry& entry = series->entries[idx];
+
+  // Warm cache: a ~60 Hz reader landing on the same sample as last time is served
+  // without re-invoking the (possibly decompressing/file-backed) lazy fetcher.
+  // Keyed by sequential_uid, which is never reused, so a hit is always the exact
+  // same entry. The lock is released before resolveEntry() so a slow decode on a
+  // miss never blocks concurrent readers of this series.
+  {
+    std::lock_guard cache_guard(series->cache_mutex);
+    if (series->cached_latest && series->cached_latest->sequential_uid == entry.sequential_uid) {
+      return *series->cached_latest;
+    }
+  }
+  ResolvedObjectEntry resolved = resolveEntry(entry);
+  // Don't memoize a failed/empty resolve — let the next read retry instead of
+  // latching the failure.
+  if (!resolved.payload.bytes.empty()) {
+    std::lock_guard cache_guard(series->cache_mutex);
+    series->cached_latest = resolved;
+  }
+  return resolved;
 }
 
 std::optional<ResolvedObjectEntry> ObjectStore::at(ObjectTopicId id, size_t index) const {
@@ -408,6 +428,14 @@ Status ObjectStore::flushTo(ObjectStore& dst) {
     step.src->entries.clear();
     step.src->entry_timestamps.clear();
     step.src->memory_bytes = 0;
+    // src's entries were moved out (and re-UIDed into dst); its warm cache now
+    // refers to entries it no longer owns. dst keeps its cache: its pre-existing
+    // entries are untouched, and any newly-appended entry has a fresh UID that
+    // simply misses.
+    {
+      std::lock_guard src_cache(step.src->cache_mutex);
+      step.src->cached_latest.reset();
+    }
 
     const Timestamp newest = step.dst->entry_timestamps.empty() ? 0 : step.dst->entry_timestamps.back();
     applyRetention(*step.dst, newest);
@@ -480,6 +508,16 @@ Expected<ObjectDatasetReplaceResult> ObjectStore::replaceDatasetFrom(
     primary_series->memory_bytes = staged_series->memory_bytes;
     result.remapped.emplace_back(sid, primary_tid);
     staged_series->memory_bytes = 0;  // entries/timestamps already moved-from
+    // Both series' warm caches now refer to replaced/moved-from entries (the
+    // primary's entries are wholly new, with fresh UIDs); drop them.
+    {
+      std::lock_guard primary_cache(primary_series->cache_mutex);
+      primary_series->cached_latest.reset();
+    }
+    {
+      std::lock_guard staged_cache(staged_series->cache_mutex);
+      staged_series->cached_latest.reset();
+    }
   }
 
   // Remove primary topics the reloaded dataset no longer provides.
@@ -567,6 +605,14 @@ void ObjectStore::evictFront(ObjectSeries& series) {
   }
 
   const auto& front = series.entries.front();
+  // Drop the warm cache if it holds the entry being evicted, so its bytes are
+  // released with the entry rather than pinned past its lifetime.
+  {
+    std::lock_guard cache_guard(series.cache_mutex);
+    if (series.cached_latest && series.cached_latest->sequential_uid == front.sequential_uid) {
+      series.cached_latest.reset();
+    }
+  }
   if (const auto* owned = std::get_if<SharedBuffer>(&front.payload); owned != nullptr && *owned) {
     series.memory_bytes -= (*owned)->size();
   }

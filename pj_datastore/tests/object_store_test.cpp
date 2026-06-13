@@ -221,6 +221,101 @@ TEST(ObjectStoreTest, LatestAtAfterLast) {
 }
 
 // =========================================================================
+// latestAt warm cache (per-topic memo)
+// =========================================================================
+
+// A ~60 Hz renderer calls latestAt every frame, but object topics publish far
+// slower, so consecutive calls usually land on the SAME sample. The warm cache
+// must serve those repeats WITHOUT re-invoking the (possibly decompressing) lazy
+// fetcher — that redundant per-frame fetch is what the profiler flagged.
+TEST(ObjectStoreTest, LatestAtMemoizesRepeatedSample) {
+  ObjectStore store;
+  auto id = registerTestTopic(store);
+  int fetch_count = 0;
+  store.pushLazy(id, 100, [&fetch_count]() -> sdk::PayloadView {
+    ++fetch_count;
+    return sdk::makePayloadView(makePayload(1000, 0x07));
+  });
+
+  auto a = store.latestAt(id, 150);
+  ASSERT_TRUE(a.has_value());
+  EXPECT_EQ(fetch_count, 1);
+
+  auto b = store.latestAt(id, 150);  // same sample
+  ASSERT_TRUE(b.has_value());
+  EXPECT_EQ(fetch_count, 1) << "repeated latestAt on the same sample must not re-fetch";
+  EXPECT_EQ(b->timestamp, 100);
+  ASSERT_FALSE(b->payload.bytes.empty());
+  EXPECT_EQ(b->payload.bytes[0], 0x07);
+}
+
+// The cache holds ONE entry: a genuinely different sample must re-resolve, and
+// returning to a cached sample must hit again.
+TEST(ObjectStoreTest, LatestAtRefetchesOnSampleChange) {
+  ObjectStore store;
+  auto id = registerTestTopic(store);
+  int fetch_count = 0;
+  auto fetcher = [&fetch_count]() -> sdk::PayloadView {
+    ++fetch_count;
+    return sdk::makePayloadView(makePayload(8));
+  };
+  store.pushLazy(id, 100, fetcher);
+  store.pushLazy(id, 200, fetcher);
+
+  ASSERT_TRUE(store.latestAt(id, 100).has_value());  // sample @100
+  EXPECT_EQ(fetch_count, 1);
+  ASSERT_TRUE(store.latestAt(id, 100).has_value());  // same → cached
+  EXPECT_EQ(fetch_count, 1);
+  ASSERT_TRUE(store.latestAt(id, 250).has_value());  // sample @200 → refetch
+  EXPECT_EQ(fetch_count, 2);
+  ASSERT_TRUE(store.latestAt(id, 250).has_value());  // same → cached
+  EXPECT_EQ(fetch_count, 2);
+}
+
+// A failed/empty resolve must NOT be cached, so a transient failure is retried
+// on the next read rather than latched. (latestAt still returns an entry whose
+// payload is empty — emptiness, not nullopt, is the failure signal here.)
+TEST(ObjectStoreTest, LatestAtDoesNotCacheEmptyResolve) {
+  ObjectStore store;
+  auto id = registerTestTopic(store);
+  int fetch_count = 0;
+  store.pushLazy(id, 100, [&fetch_count]() -> sdk::PayloadView {
+    ++fetch_count;
+    return {};  // resolve failure: empty payload
+  });
+
+  auto r1 = store.latestAt(id, 150);
+  ASSERT_TRUE(r1.has_value());
+  EXPECT_TRUE(r1->payload.bytes.empty());
+  EXPECT_EQ(fetch_count, 1);
+
+  auto r2 = store.latestAt(id, 150);
+  ASSERT_TRUE(r2.has_value());
+  EXPECT_EQ(fetch_count, 2) << "an empty resolve must not be memoized (retry next read)";
+}
+
+// The warm cache keeps the most-recent entry resident across reads, but drops it
+// when that entry is evicted (so it never pins bytes past the entry's lifetime).
+TEST(ObjectStoreTest, LatestAtCacheReleasesEvictedEntry) {
+  ObjectStore store;
+  auto id = registerTestTopic(store);
+  store.pushLazy(id, 100, []() -> sdk::PayloadView { return sdk::makePayloadView(makePayload(4096)); });
+  store.pushLazy(id, 200, []() -> sdk::PayloadView { return sdk::makePayloadView(makePayload(8)); });
+
+  std::weak_ptr<const void> probe;
+  {
+    auto a = store.latestAt(id, 150);  // caches @100
+    ASSERT_TRUE(a.has_value());
+    probe = a->payload.anchor;
+  }
+  // Caller dropped its copy, but the warm cache still pins @100.
+  EXPECT_FALSE(probe.expired());
+
+  store.evictBefore(id, 150);  // evicts @100 — the cached entry
+  EXPECT_TRUE(probe.expired()) << "evicting the cached entry must release its warm copy";
+}
+
+// =========================================================================
 // at(index)
 // =========================================================================
 

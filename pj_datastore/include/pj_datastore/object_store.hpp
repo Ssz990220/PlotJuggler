@@ -234,6 +234,17 @@ class ObjectStore {
     RetentionBudget budget;
     size_t memory_bytes = 0;
     mutable std::shared_mutex mutex;
+
+    // Warm cache for latestAt: the most-recently-resolved entry, keyed by its
+    // sequential_uid. A ~60 Hz reader that keeps landing on the same sample
+    // (a topic publishing slower than the render rate) is served from here
+    // instead of re-invoking a lazy fetcher that may decompress/read a file.
+    // Holds at most ONE materialized payload per topic — reset when that entry
+    // is evicted or the series is replaced. `cache_mutex` is separate from
+    // `mutex` (which latestAt holds only shared) and is never held across a
+    // resolve, so a slow decode can't block other readers of this series.
+    mutable std::mutex cache_mutex;
+    mutable std::optional<ResolvedObjectEntry> cached_latest;
   };
 
   ObjectSeries* findSeries(ObjectTopicId id);

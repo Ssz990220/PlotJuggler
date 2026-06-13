@@ -92,18 +92,21 @@ TEST(PluginDataHostObjectTest, PushLazyRetainsClosureUntilEviction) {
   auto status = f.host.pushLazy(topic, 42, closure);
   ASSERT_TRUE(status.has_value()) << status.error();
 
-  // Each read invokes the fetch closure.
+  // First read invokes the fetch closure and returns its bytes.
   auto first = f.store.latestAt(ObjectTopicId{topic.id}, 42);
   ASSERT_TRUE(first.has_value());
   ASSERT_NE(first->payload.anchor, nullptr);
   EXPECT_TRUE(
       std::equal(
           first->payload.bytes.begin(), first->payload.bytes.end(), shared->payload.begin(), shared->payload.end()));
-  EXPECT_GE(shared->fetch_calls.load(), 1);
+  EXPECT_EQ(shared->fetch_calls.load(), 1);
 
+  // A second read of the SAME sample is served from latestAt's warm cache, so the
+  // closure is NOT re-invoked. It remains retained (alive) for a later cache miss —
+  // the eviction checks below confirm it is only released when the entry is evicted.
   auto second = f.store.latestAt(ObjectTopicId{topic.id}, 42);
   ASSERT_TRUE(second.has_value());
-  EXPECT_GE(shared->fetch_calls.load(), 2);
+  EXPECT_EQ(shared->fetch_calls.load(), 1);
 
   // Destroy has not been invoked yet — the entry is still alive.
   // (The test's `shared` is one ref; the closure captured in the store is

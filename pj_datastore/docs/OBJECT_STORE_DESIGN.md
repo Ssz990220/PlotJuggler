@@ -80,13 +80,14 @@ Properties consumers can rely on:
 shared buffer owned by the store. Owned entries contribute to `memoryUsage()`.
 
 `pushLazy(id, timestamp, fetch)` stores a callable instead of bytes. The callable
-is invoked on each read and returns a `sdk::PayloadView` — a `Span<const uint8_t>`
+is invoked on resolve and returns a `sdk::PayloadView` — a `Span<const uint8_t>`
 paired with a type-erased `BufferAnchor` that keeps those bytes alive for as long
 as the resolved view is held. The producer anchors on whatever already owns the
 bytes (a decompressed chunk, an mmap, or a fresh allocation via
 `sdk::makePayloadView`), so the store never copies on resolve. Lazy entries do not
 contribute to `memoryUsage()` because the store retains the callable, not the
-fetched bytes.
+fetched bytes. The callable runs on every `at()` read; `latestAt()` repeats of the
+same sample are served from a warm cache without re-invoking it (see Read Paths).
 
 Both write paths apply the topic retention budget after the new entry is
 inserted.
@@ -127,6 +128,35 @@ independently of later store mutation (eviction, removal, or `clear()`). For an
 owned entry the anchor is the store's `SharedBuffer`; for a lazy entry it is
 whatever the fetcher anchored on. An empty `anchor` means "no bytes".
 
+### Warm cache (latestAt)
+
+A ~60 Hz scene renderer calls `latestAt(topic, t)` every frame, but object topics
+publish far slower, so consecutive calls usually resolve the *same* sample. To
+avoid re-invoking a lazy fetcher (which, for the MCAP source, re-decompresses a
+chunk and re-copies the payload) on every frame, each series keeps a one-slot warm
+cache: the most-recently-resolved `ResolvedObjectEntry`, keyed by its
+`sequential_uid`.
+
+- **Scope.** Only `latestAt()` consults and populates the cache. `at(index)` and
+  `at(uid)` always resolve fresh, preserving their per-read semantics (a prefetch
+  or replay walk through `at()` therefore cannot evict the renderer's current
+  sample).
+- **Hit/miss.** A hit (cached `sequential_uid` matches the looked-up entry)
+  returns the cached entry without invoking the fetcher. A miss resolves once and
+  caches the result — but only if the payload is non-empty, so a failed/empty
+  resolve is retried on the next read rather than latched.
+- **Identity is exact.** `SequentialUID` is never reused, so a hit is always the
+  same entry; no validation against the underlying bytes is needed.
+- **Invalidation.** The slot is dropped when its entry is evicted (`evictFront`
+  matching the cached UID) and when the series is replaced or flushed
+  (`replaceDatasetFrom`, `flushTo`). A plain `push` never needs to invalidate: a
+  new entry has a new UID, so a query mapping to it simply misses.
+- **Residency.** For a lazy topic this keeps at most one materialized payload
+  resident per topic (the current sample) — a deliberate relaxation of "lazy
+  entries are never resident". It never holds more than the current entry, so the
+  whole series (e.g. a full video) is never brought into memory. The warm payload
+  is not counted by `memoryUsage()` (which tracks owned buffers only).
+
 ## Retention
 
 Retention is configured per topic:
@@ -152,6 +182,27 @@ The store has one global shared mutex for topic lookup and one shared mutex per
 topic series. Reads can proceed concurrently with reads on the same or different
 topics. Writes take the target topic's exclusive lock. Topic registration,
 removal, and `clear()` take the global exclusive lock.
+
+The warm cache (above) has its own small per-series mutex, distinct from the
+series shared mutex. `latestAt` holds the series mutex only in shared mode and
+never holds the cache mutex across `resolveEntry()` (a lazy fetch), so a slow
+decode on a miss cannot block other readers of the series. A lazy fetcher is
+always invoked outside every store lock.
+
+### Deferred: off-thread prefetch
+
+A background worker that warms upcoming samples ahead of the playhead was
+considered, to move genuine new-frame decompression off the GUI thread entirely.
+It is **deferred**: for the MCAP source, all cold fetches of a source serialize on
+a single per-source mutex (`DataSourceRuntimeHost::lazy_fetch_mutex_`) plus
+`ColdChunkStore`'s own mutex, because the cold reader is a single-cursor
+`FileReader` that is not concurrent-safe. A background decompress would hold that
+mutex and block a concurrent GUI fetch — even for an already-warm chunk — for the
+decompress duration, relocating the stall rather than removing it. Making prefetch
+genuinely off-load the work requires concurrent-izing that single-cursor reader
+(finer `ColdChunkStore` locking, or a second reader sharing the chunk cache),
+which is the real cost of this feature; the prefetch controller itself is the easy
+part.
 
 ## Plugin ABI Bridge
 
