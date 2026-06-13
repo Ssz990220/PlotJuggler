@@ -28,6 +28,7 @@
 #include "pj_scene3d_widgets/layers/robot_model_layer.h"
 #include "pj_scene3d_widgets/mesh_shading_params.h"
 #include "pj_scene3d_widgets/scene_view_widget.h"
+#include "pj_scene_common/layer_params.h"
 #include "pj_scene_common/scene_dock_widget.h"
 #include "pj_scene_common/scene_layer.h"
 #include "pj_widgets/ComboBox.h"
@@ -78,6 +79,18 @@ void addGridRow(QGridLayout* grid, int& row, const QString& label, QWidget* fiel
     grid->addWidget(trailing, row, 2);
   }
   ++row;
+}
+
+// App-wide clipboard for layer parameters: Copy stores the source layer's
+// serialized params plus its family; Paste applies them to a same-family layer.
+// Static (process-wide) so a copy in one 3D dock can be pasted into another.
+struct LayerParamClipboard {
+  QString xml;
+  QString family;
+};
+LayerParamClipboard& layerParamClipboard() {
+  static LayerParamClipboard clipboard;
+  return clipboard;
 }
 
 // Small modal prompt on the shared Dialog chrome: a single field + OK/Cancel.
@@ -175,6 +188,35 @@ Scene3DConfigPanel::Scene3DConfigPanel(QWidget* parent) : QWidget(parent) {
   auto* settings_host = new QWidget(this);
   auto* settings_layout = new QVBoxLayout(settings_host);
   settings_layout->setContentsMargins(8, 4, 8, 4);
+
+  // Right-aligned copy / paste / apply-to-family row, just below the Settings
+  // header. Glyphs are set theme-aware in applyIcons(); enabled state tracks the
+  // selection + clipboard via updateParamsToolbarState().
+  auto* params_toolbar = new QWidget(settings_host);
+  auto* params_toolbar_layout = new QHBoxLayout(params_toolbar);
+  params_toolbar_layout->setContentsMargins(0, 0, 0, 0);
+  params_toolbar_layout->setSpacing(2);
+  params_toolbar_layout->addStretch(1);
+  const auto make_param_button = [params_toolbar](const QString& tip) {
+    auto* button = new QToolButton(params_toolbar);
+    button->setAutoRaise(true);
+    button->setFocusPolicy(Qt::NoFocus);
+    button->setIconSize(QSize(20, 20));
+    button->setFixedSize(24, 24);
+    button->setToolTip(tip);
+    return button;
+  };
+  params_copy_ = make_param_button(tr("Copy parameters"));
+  params_paste_ = make_param_button(tr("Paste parameters"));
+  params_apply_all_ = make_param_button(tr("Apply these parameters to all topics of the same type"));
+  params_toolbar_layout->addWidget(params_copy_);
+  params_toolbar_layout->addWidget(params_paste_);
+  params_toolbar_layout->addWidget(params_apply_all_);
+  settings_layout->addWidget(params_toolbar);
+  connect(params_copy_, &QToolButton::clicked, this, &Scene3DConfigPanel::onCopyParams);
+  connect(params_paste_, &QToolButton::clicked, this, &Scene3DConfigPanel::onPasteParams);
+  connect(params_apply_all_, &QToolButton::clicked, this, &Scene3DConfigPanel::onApplyParamsToFamily);
+
   config_host_ = new ConfigPanelHost(settings_host);
   settings_layout->addWidget(config_host_);
   settings_layout->addStretch(1);
@@ -507,6 +549,15 @@ void Scene3DConfigPanel::applyIcons() {
   if (add_model_button_ != nullptr) {
     add_model_button_->setIcon(LoadSvg(QLatin1String(kAddIconPath), theme_));
   }
+  if (params_copy_ != nullptr) {
+    params_copy_->setIcon(LoadSvg(QStringLiteral(":/resources/svg/copy.svg"), theme_));
+  }
+  if (params_paste_ != nullptr) {
+    params_paste_->setIcon(LoadSvg(QStringLiteral(":/resources/svg/paste.svg"), theme_));
+  }
+  if (params_apply_all_ != nullptr) {
+    params_apply_all_->setIcon(LoadSvg(QStringLiteral(":/resources/svg/format_paint.svg"), theme_));
+  }
   for (const auto& [id, row] : robot_rows_) {
     if (auto* trash = row->findChild<QToolButton*>()) {
       trash->setIcon(LoadSvg(QLatin1String(kTrashIconPath), theme_));
@@ -771,6 +822,8 @@ void Scene3DConfigPanel::onLayerAdded(ObjectTopicId topic_id) {
   layer_list_->addRow(rowFromLayerInfo(info));
   const auto warning = bound_dock_->orphanState(topic_id);
   layer_list_->setRowWarning(static_cast<qint64>(topic_id.id), warning.is_orphan, warning.reason);
+  // A new same-family sibling can enable the apply-to-family button.
+  updateParamsToolbarState();
 }
 
 void Scene3DConfigPanel::onLayerRemoved(ObjectTopicId topic_id) {
@@ -809,6 +862,122 @@ void Scene3DConfigPanel::updateSelectedLayerPane() {
     return;
   }
   config_host_->setConfigWidget(layer->createConfigWidget(config_host_));
+  updateParamsToolbarState();
+}
+
+void Scene3DConfigPanel::onCopyParams() {
+  if (bound_dock_ == nullptr) {
+    return;
+  }
+  const auto selected = selectedTopicId();
+  if (!selected.has_value()) {
+    return;
+  }
+  ISceneLayer* layer = bound_dock_->layerFor(*selected);
+  const auto family = familyOf(*selected);
+  if (layer == nullptr || !family.has_value()) {
+    return;
+  }
+  layerParamClipboard() = LayerParamClipboard{serializeLayerParams(*layer), *family};
+  updateParamsToolbarState();
+}
+
+void Scene3DConfigPanel::onPasteParams() {
+  if (bound_dock_ == nullptr) {
+    return;
+  }
+  const auto selected = selectedTopicId();
+  if (!selected.has_value()) {
+    return;
+  }
+  ISceneLayer* layer = bound_dock_->layerFor(*selected);
+  const auto family = familyOf(*selected);
+  const LayerParamClipboard& clip = layerParamClipboard();
+  if (layer == nullptr || clip.xml.isEmpty() || !family.has_value() || clip.family != *family) {
+    return;
+  }
+  if (applyLayerParams(*layer, clip.xml)) {
+    // The visible config widget was built from the pre-paste values; rebuild it
+    // so its controls reflect what was just applied.
+    updateSelectedLayerPane();
+  }
+}
+
+void Scene3DConfigPanel::onApplyParamsToFamily() {
+  if (bound_dock_ == nullptr) {
+    return;
+  }
+  const auto selected = selectedTopicId();
+  if (!selected.has_value()) {
+    return;
+  }
+  ISceneLayer* source = bound_dock_->layerFor(*selected);
+  const auto family = familyOf(*selected);
+  if (source == nullptr || !family.has_value()) {
+    return;
+  }
+  const QString xml = serializeLayerParams(*source);
+  if (xml.isEmpty()) {
+    return;
+  }
+  // Push the source's params onto every other layer of the same family. The
+  // source itself is left untouched, so its open config widget stays valid.
+  for (const SceneLayerInfo& info : bound_dock_->layers()) {
+    if (info.topic_id == *selected || info.family_name != *family) {
+      continue;
+    }
+    if (ISceneLayer* target = bound_dock_->layerFor(info.topic_id); target != nullptr) {
+      // Best-effort across siblings: the blob came from a valid serialize of a
+      // same-family layer, so a single failure shouldn't abort the rest.
+      [[maybe_unused]] const bool applied = applyLayerParams(*target, xml);
+    }
+  }
+}
+
+void Scene3DConfigPanel::updateParamsToolbarState() {
+  if (params_copy_ == nullptr) {
+    return;
+  }
+  std::optional<ObjectTopicId> selected;
+  ISceneLayer* layer = nullptr;
+  if (bound_dock_ != nullptr) {
+    selected = selectedTopicId();
+    if (selected.has_value()) {
+      layer = bound_dock_->layerFor(*selected);
+    }
+  }
+  const bool has_layer = layer != nullptr;
+
+  QString selected_family;
+  int same_family_siblings = 0;
+  if (has_layer) {
+    if (const auto family = familyOf(*selected); family.has_value()) {
+      selected_family = *family;
+      for (const SceneLayerInfo& info : bound_dock_->layers()) {
+        if (!(info.topic_id == *selected) && info.family_name == selected_family) {
+          ++same_family_siblings;
+        }
+      }
+    }
+  }
+
+  const LayerParamClipboard& clip = layerParamClipboard();
+  params_copy_->setEnabled(has_layer);
+  params_paste_->setEnabled(
+      has_layer && !clip.xml.isEmpty() && !selected_family.isEmpty() && clip.family == selected_family);
+  params_apply_all_->setEnabled(has_layer && same_family_siblings > 0);
+}
+
+std::optional<QString> Scene3DConfigPanel::familyOf(ObjectTopicId topic_id) const {
+  if (bound_dock_ == nullptr) {
+    return std::nullopt;
+  }
+  for (const SceneLayerInfo& info : bound_dock_->layers()) {
+    if (info.topic_id == topic_id) {
+      return info.family_name;
+    }
+  }
+  return std::nullopt;
 }
 
 std::optional<ObjectTopicId> Scene3DConfigPanel::selectedTopicId() const {

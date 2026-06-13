@@ -190,6 +190,20 @@ if(PJ_BUILD_TESTS)
   target_compile_options(pointcloud_layer_cache_test PRIVATE ${PJ_WARNING_FLAGS} ${PJ_SANITIZER_FLAGS})
   add_test(NAME pointcloud_layer_cache_test COMMAND pointcloud_layer_cache_test)
 
+  # Copy/paste/apply-to-family: serializeLayerParams/applyLayerParams must
+  # round-trip every PointCloudLayer parameter (the data path the Scene3D config
+  # panel's copy/paste toolbar drives).
+  add_executable(pointcloud_layer_param_transfer_test
+    tests/pointcloud_layer_param_transfer_test.cpp
+  )
+  target_link_libraries(pointcloud_layer_param_transfer_test PRIVATE
+    pj_scene3d_widgets
+    pj_scene_common
+    GTest::gtest
+  )
+  target_compile_options(pointcloud_layer_param_transfer_test PRIVATE ${PJ_WARNING_FLAGS} ${PJ_SANITIZER_FLAGS})
+  add_test(NAME pointcloud_layer_param_transfer_test COMMAND pointcloud_layer_param_transfer_test)
+
   # M.65: pin PointCloudLayer's per-use parser binding (raw renderAt path still
   # calls parseLocked on the UI thread per tick — a reintroduced cached pointer is
   # a same-file-reload use-after-free). Mirrors occupancy_grid_layer_rebind_test.

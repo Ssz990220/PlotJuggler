@@ -109,11 +109,27 @@ class Scene3DConfigPanel : public QWidget {
   void disconnectFromDock();
   void rebuildLayerList();
   void updateSelectedLayerPane();
+  // Copy/paste/apply-to-family of the selected layer's parameters. Copy stashes
+  // the serialized params (+ family) in an app-wide clipboard; paste applies them
+  // to the selected layer when the family matches; apply-to-family pushes the
+  // selected layer's params onto every other same-family layer in the dock.
+  void onCopyParams();
+  void onPasteParams();
+  void onApplyParamsToFamily();
+  // Enable/disable the three params buttons for the current selection + clipboard.
+  void updateParamsToolbarState();
+  // family_name of the layer for topic_id on the bound dock, or nullopt.
+  [[nodiscard]] std::optional<QString> familyOf(ObjectTopicId topic_id) const;
   [[nodiscard]] std::optional<ObjectTopicId> selectedTopicId() const;
   [[nodiscard]] std::vector<ObjectTopicId> topicOrderFromIds(const std::vector<qint64>& ids) const;
 
   LayerListView* layer_list_ = nullptr;
   ConfigPanelHost* config_host_ = nullptr;
+  // Copy / paste / apply-to-family toolbar under the Settings header; acts on the
+  // Topics-list selection via serialize/applyLayerParams (pj_scene_common).
+  QToolButton* params_copy_ = nullptr;
+  QToolButton* params_paste_ = nullptr;
+  QToolButton* params_apply_all_ = nullptr;
   QPointer<Scene3DDockWidget> bound_dock_;
   QString theme_{QStringLiteral("light")};
 

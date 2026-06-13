@@ -209,6 +209,18 @@ After a rebuild meant to pick up a C++ change, confirm the file actually recompi
 
 Submodule: `git submodule update --init --recursive` on first clone.
 
+Worktrees: the ~1GB Qt install lives only in the primary checkout (under
+`plotjuggler_sdk/.qt`, surfaced at the repo root as `.qt`). A fresh `git worktree`
+gets its own empty `plotjuggler_sdk` submodule with no Qt, so `build.sh`/`run.sh`
+won't find `.qt/6.11.1/gcc_64`. **Always add a `.qt` symlink in a new worktree**,
+pointing at the primary checkout's install by **absolute** path (not a relative
+copy of the root symlink — that would resolve to the worktree's own empty
+submodule):
+
+```bash
+ln -s /home/davide/ws_plotjuggler/PJ4/plotjuggler_sdk/.qt <worktree>/.qt
+```
+
 ## UI conventions
 
 - **Prefer `.ui` files over programmatic widget construction.** Widgets, layouts, menus, toolbars, dialogs — build them in Qt Designer (`.ui`) and load via `uic`. Use `AUTOUIC` in the module's `CMakeLists.txt`. Drop to hand-written `QWidget` subclasses only when the construction is genuinely dynamic (e.g. widgets created at runtime from plugin metadata) or when I explicitly ask for it.

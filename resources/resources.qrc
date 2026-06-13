@@ -49,6 +49,7 @@
     <file alias="colored_charts.svg">svg/colored_charts.svg</file>
     <file alias="contract.svg">svg/contract.svg</file>
     <file alias="copy.svg">svg/copy.svg</file>
+    <file alias="copy_all.svg">svg/copy_all.svg</file>
     <file alias="create_new_folder.svg">svg/create_new_folder.svg</file>
     <file alias="cube.svg">svg/cube.svg</file>
     <file alias="dark_mode_light.svg">svg/dark_mode_light.svg</file>
@@ -69,6 +70,7 @@
     <file alias="file_open.svg">svg/file_open.svg</file>
     <file alias="filter_list.svg">svg/filter_list.svg</file>
     <file alias="folder_open.svg">svg/folder_open.svg</file>
+    <file alias="format_paint.svg">svg/format_paint.svg</file>
     <file alias="fullscreen.svg">svg/fullscreen.svg</file>
     <file alias="green_circle.svg">svg/green_circle.svg</file>
     <file alias="grid.svg">svg/grid.svg</file>

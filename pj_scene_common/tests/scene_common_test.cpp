@@ -22,6 +22,7 @@
 #include "pj_datastore/engine.hpp"
 #include "pj_runtime/SessionManager.h"
 #include "pj_scene_common/layer_factory.h"
+#include "pj_scene_common/layer_params.h"
 #include "pj_scene_common/scene_dock_widget.h"
 #include "pj_scene_common/scene_layer.h"
 
@@ -656,6 +657,36 @@ TEST(SceneDockWidgetTest, ConfigTopicIsConsumedWithoutCreatingLayer) {
   EXPECT_EQ(added_count, 0);
   EXPECT_EQ(dock.layerFor(topic(5)), nullptr);
   EXPECT_TRUE(dock.layers().empty());
+}
+
+// serializeLayerParams + applyLayerParams are the copy/paste backbone for the
+// 3D config panel: copy serializes one layer's xmlSaveState blob, paste applies
+// it to another. FakeLayer's "payload" attribute stands in for real per-layer
+// params (shape, size, colormap, …).
+TEST(LayerParamsTest, RoundTripCopiesParamsBetweenLayers) {
+  FakeLayer source(topic(1), PJ::sdk::BuiltinObjectType::kPointCloud, QStringLiteral("src"));
+  source.setPayload(QStringLiteral("alpha"));
+
+  const QString xml = PJ::serializeLayerParams(source);
+  ASSERT_FALSE(xml.isEmpty());
+  EXPECT_TRUE(xml.contains(QStringLiteral("alpha")));
+
+  FakeLayer target(topic(2), PJ::sdk::BuiltinObjectType::kPointCloud, QStringLiteral("dst"));
+  ASSERT_TRUE(target.payload().isEmpty());
+
+  EXPECT_TRUE(PJ::applyLayerParams(target, xml));
+  EXPECT_EQ(target.payload(), QStringLiteral("alpha"));
+}
+
+// Empty / malformed input must be rejected and leave the target untouched, so a
+// paste from an empty clipboard or a corrupted blob never silently wipes params.
+TEST(LayerParamsTest, ApplyRejectsEmptyAndMalformedXmlLeavingTargetUntouched) {
+  FakeLayer target(topic(1), PJ::sdk::BuiltinObjectType::kPointCloud, QStringLiteral("dst"));
+  target.setPayload(QStringLiteral("keep"));
+
+  EXPECT_FALSE(PJ::applyLayerParams(target, QString()));
+  EXPECT_FALSE(PJ::applyLayerParams(target, QStringLiteral("<broken")));
+  EXPECT_EQ(target.payload(), QStringLiteral("keep"));
 }
 
 int main(int argc, char** argv) {
