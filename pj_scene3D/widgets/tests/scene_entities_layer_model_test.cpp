@@ -11,6 +11,11 @@
 #include <QCoreApplication>
 #include <QElapsedTimer>
 #include <QEventLoop>
+#include <QHostAddress>
+#include <QSettings>
+#include <QTcpServer>
+#include <QTemporaryDir>
+#include <QUrl>
 #include <atomic>
 #include <cmath>
 #include <glm/gtc/matrix_transform.hpp>
@@ -40,6 +45,11 @@ namespace {
 // stored batch O(1) times (incremental) rather than O(history) per frame.
 std::atomic<int> g_parse_count{0};
 
+// Rebind-test parse counters. vtableWithCreate() requires a non-capturing create
+// function, so the counting parsers reach these via file scope.
+std::atomic<int> g_first_scene_parser_calls{0};
+std::atomic<int> g_second_scene_parser_calls{0};
+
 class SceneEntitiesParser final : public PJ::MessageParserPluginBase {
  public:
   SceneEntitiesParser() {
@@ -66,6 +76,47 @@ const PJ_message_parser_vtable_t* sceneEntitiesParserVtable() {
       []() noexcept -> void* { return new SceneEntitiesParser(); },
       R"({"id":"scene-entities-test","name":"SceneEntities Test","version":"1.0.0","encoding":"test"})");
   return vt;
+}
+
+// Like SceneEntitiesParser but bumps a caller-supplied counter, so a rebind test
+// can tell which parser instance a re-decode reached.
+class CountingSceneEntitiesParser final : public PJ::MessageParserPluginBase {
+ public:
+  explicit CountingSceneEntitiesParser(std::atomic<int>* counter) {
+    PJ::sdk::SchemaHandler handler;
+    handler.object_type = PJ::sdk::BuiltinObjectType::kSceneEntities;
+    handler.parse_object =
+        [counter](PJ::Timestamp /*ts*/, PJ::sdk::PayloadView payload) -> PJ::Expected<PJ::sdk::ObjectRecord> {
+      counter->fetch_add(1, std::memory_order_relaxed);
+      auto decoded = PJ::deserializeSceneEntities(payload.bytes.data(), payload.bytes.size());
+      if (!decoded.has_value()) {
+        return PJ::unexpected(std::move(decoded).error());
+      }
+      return PJ::sdk::ObjectRecord{
+          .ts = std::nullopt,
+          .object = PJ::sdk::BuiltinObject{std::move(*decoded)},
+      };
+    };
+    registerSchemaHandler("scene_entities", std::move(handler));
+  }
+};
+
+// vtableWithCreate() caches one static vtable per CreateFn instantiation, so each
+// counting parser needs a distinct lambda type — a shared function-pointer type
+// would latch the first counter for both handles.
+template <typename CreateFn>
+const PJ_message_parser_vtable_t* countingSceneEntitiesVtable(CreateFn create_fn) {
+  static const PJ_message_parser_vtable_t* vt = PJ::MessageParserPluginBase::vtableWithCreate(
+      create_fn,
+      R"({"id":"scene-entities-counting","name":"SceneEntities Counting","version":"1.0.0","encoding":"test"})");
+  return vt;
+}
+
+void registerCountingParser(
+    PJ::SessionManager& session, PJ::ObjectTopicId topic_id, const PJ_message_parser_vtable_t* vtable) {
+  auto parser = std::make_unique<PJ::MessageParserHandle>(vtable);
+  ASSERT_TRUE(parser->bindSchema("scene_entities", PJ::Span<const uint8_t>{}));
+  session.registerObjectTopicParser(topic_id, std::move(parser));
 }
 
 PJ::ObjectTopicId registerTopic(PJ::SessionManager& session) {
@@ -143,14 +194,29 @@ void expectMatrixNear(const glm::mat4& actual, const glm::mat4& expected) {
   }
 }
 
-// QFutureWatcher delivers finished() through the event loop, so tests that wait
-// on mesh-load completion need a QCoreApplication (created once, lazily).
-void ensureCoreApplication() {
-  static int argc = 1;
-  static char arg0[] = "scene_entities_layer_model_test";
-  static char* argv[] = {arg0, nullptr};
-  static QCoreApplication app(argc, argv);
-  Q_UNUSED(app);
+// Point default-constructed QSettings (which the layer's remote-fetch gate
+// reads) at a throwaway INI file under a temp dir, so these tests neither read
+// nor pollute the developer's real settings.
+void isolateSettings() {
+  static QTemporaryDir settings_dir;
+  ASSERT_TRUE(settings_dir.isValid());
+  QSettings::setPath(QSettings::IniFormat, QSettings::UserScope, settings_dir.path());
+  QSettings::setDefaultFormat(QSettings::IniFormat);
+  QCoreApplication::setOrganizationName(QStringLiteral("pj_scene3d_tests"));
+  QCoreApplication::setApplicationName(QStringLiteral("scene_entities_layer_model_test"));
+}
+
+PJ::sdk::SceneEntity makeUrlEntity(std::string id, PJ::Timestamp timestamp, std::string url, std::string media_type) {
+  PJ::sdk::SceneEntity entity;
+  entity.id = std::move(id);
+  entity.timestamp = timestamp;
+  entity.frame_id = "base_link";
+  PJ::sdk::ModelPrimitive primitive;
+  primitive.scale = {.x = 1.0, .y = 1.0, .z = 1.0};
+  primitive.media_type = std::move(media_type);
+  primitive.url = std::move(url);
+  entity.models.push_back(std::move(primitive));
+  return entity;
 }
 
 }  // namespace
@@ -500,7 +566,6 @@ TEST(SceneEntitiesLayerModelTest, DetachlessReattachAfterDatasetReplaceResetsSta
 // attach() kicks the load, only the event loop is pumped here — no render() or
 // setTrackerTime() — and repaintRequested must still fire.
 TEST(SceneEntitiesLayerModelTest, MeshLoadCompletionRequestsRepaintWithoutRender) {
-  ensureCoreApplication();
   PJ::SessionManager session;
   const PJ::ObjectTopicId topic_id = registerTopic(session);
   registerParser(session, topic_id);
@@ -563,4 +628,251 @@ TEST(SceneEntitiesLayerModelTest, FrameCompositionAppliesTfPrimitivePoseAndScale
   EXPECT_NEAR(draws.front().color.g, 51.0f / 255.0f, 1e-6f);
   EXPECT_NEAR(draws.front().color.b, 76.0f / 255.0f, 1e-6f);
   EXPECT_NEAR(draws.front().color.a, 102.0f / 255.0f, 1e-6f);
+}
+
+// H.8: a DATA-SUPPLIED http(s) model URL must not be fetched without the
+// explicit opt-in (QSettings pj_scene3d/allow_remote_model_fetch, default off):
+// opening a crafted dataset is an SSRF / beacon vector. The block must be
+// recorded once (no per-tick re-check), surfaced through remoteFetchNotice(),
+// and produce zero network egress — proven by a local listener that would see
+// any connection attempt.
+TEST(SceneEntitiesLayerModelTest, RemoteModelUrlIsBlockedWithoutOptIn) {
+  isolateSettings();
+  QSettings settings;
+  settings.setValue(QStringLiteral("pj_scene3d/allow_remote_model_fetch"), false);
+  settings.sync();
+
+  QTcpServer server;
+  ASSERT_TRUE(server.listen(QHostAddress::LocalHost, 0));
+  int connections = 0;
+  QObject::connect(&server, &QTcpServer::newConnection, &server, [&connections]() { ++connections; });
+
+  PJ::SessionManager session;
+  const PJ::ObjectTopicId topic_id = registerTopic(session);
+  registerParser(session, topic_id);
+  const std::string url = "http://127.0.0.1:" + std::to_string(server.serverPort()) + "/model.glb";
+  pushSceneEntities(session, topic_id, 10, batchWithEntities({makeUrlEntity("remote", 10, url, "model/gltf-binary")}));
+
+  pj::scene3d::SceneEntitiesLayer layer(topic_id, QStringLiteral("/scene_entities"));
+  QString notice_from_signal;
+  QObject::connect(
+      &layer, &pj::scene3d::SceneEntitiesLayer::remoteFetchNoticeChanged,
+      [&notice_from_signal](const QString& notice) { notice_from_signal = notice; });
+  const auto ctx = makeContext(session);
+  ASSERT_TRUE(layer.attach(ctx));
+  layer.setTrackerTime(PJ::fromRaw(15));
+
+  EXPECT_TRUE(layer.remoteFetchNotice().contains(QStringLiteral("Remote model fetch is disabled")))
+      << layer.remoteFetchNotice().toStdString();
+  EXPECT_TRUE(layer.remoteFetchNotice().contains(QStringLiteral("allow_remote_model_fetch")));
+  EXPECT_EQ(notice_from_signal, layer.remoteFetchNotice()) << "notice signal did not track the accessor";
+
+  // Pump: even an asynchronous fetch would have to open a socket toward us.
+  QElapsedTimer timer;
+  timer.start();
+  while (timer.elapsed() < 300) {
+    QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
+  }
+  EXPECT_EQ(connections, 0) << "blocked model URL still produced network egress";
+}
+
+// Counterpart of the consent gate: LOCAL model URLs (file:// or bare paths) are
+// disk reads, not network egress, so they keep working with the opt-in off —
+// now asynchronously (fetch + import resolve through the event loop and request
+// their own repaint, never blocking attach()/render()).
+TEST(SceneEntitiesLayerModelTest, LocalFileModelUrlLoadsWithoutOptIn) {
+  isolateSettings();
+  QSettings settings;
+  settings.setValue(QStringLiteral("pj_scene3d/allow_remote_model_fetch"), false);
+  settings.sync();
+
+  PJ::SessionManager session;
+  const PJ::ObjectTopicId topic_id = registerTopic(session);
+  registerParser(session, topic_id);
+  const QString fixture = QString(PJ_SCENE3D_FIXTURES_DIR) + QStringLiteral("/meshes/cube.stl");
+  pushSceneEntities(
+      session, topic_id, 10,
+      batchWithEntities(
+          {makeUrlEntity("local", 10, QUrl::fromLocalFile(fixture).toString().toStdString(), "model/stl")}));
+
+  pj::scene3d::SceneEntitiesLayer layer(topic_id, QStringLiteral("/scene_entities"));
+  const auto ctx = makeContext(session);
+  ASSERT_TRUE(layer.attach(ctx));  // kicks the async file fetch + import
+
+  int repaints = 0;
+  QObject::connect(&layer, &pj::scene3d::SceneEntitiesLayer::repaintRequested, [&repaints] { ++repaints; });
+
+  QElapsedTimer timer;
+  timer.start();
+  while (repaints == 0 && timer.elapsed() < 5000) {
+    QCoreApplication::processEvents(QEventLoop::AllEvents, 50);
+  }
+  EXPECT_GT(repaints, 0) << "async local-URL mesh load never landed";
+  EXPECT_TRUE(layer.remoteFetchNotice().isEmpty())
+      << "local file URL tripped the remote gate: " << layer.remoteFetchNotice().toStdString();
+}
+
+// A URL record exists BEFORE its bytes do (pending fetch, future default-
+// invalid). pollMeshLoads — driven here by a sibling embedded-data record's
+// completion watcher — must skip the pending record instead of calling
+// result() on an invalid future (which would crash). The remote URL points at
+// a never-responding local server, so the record is guaranteed still pending
+// when the embedded record drains.
+TEST(SceneEntitiesLayerModelTest, PendingUrlFetchRecordIsSkippedByPoll) {
+  isolateSettings();
+  QSettings settings;
+  settings.setValue(QStringLiteral("pj_scene3d/allow_remote_model_fetch"), true);
+  settings.sync();
+
+  QTcpServer server;  // accepts and never responds: the fetch stays in flight
+  ASSERT_TRUE(server.listen(QHostAddress::LocalHost, 0));
+
+  PJ::SessionManager session;
+  const PJ::ObjectTopicId topic_id = registerTopic(session);
+  registerParser(session, topic_id);
+  const std::string url = "http://127.0.0.1:" + std::to_string(server.serverPort()) + "/slow.glb";
+  pushSceneEntities(
+      session, topic_id, 10,
+      batchWithEntities({makeUrlEntity("pending", 10, url, "model/gltf-binary"), makeEntity("embedded", 10)}));
+
+  pj::scene3d::SceneEntitiesLayer layer(topic_id, QStringLiteral("/scene_entities"));
+  const auto ctx = makeContext(session);
+  ASSERT_TRUE(layer.attach(ctx));  // URL record pending + embedded import kicked
+
+  int repaints = 0;
+  QObject::connect(&layer, &pj::scene3d::SceneEntitiesLayer::repaintRequested, [&repaints] { ++repaints; });
+
+  // The embedded record's watcher fires pollMeshLoads while the URL record is
+  // still future-less; surviving that poll (and emitting the repaint) is the test.
+  QElapsedTimer timer;
+  timer.start();
+  while (repaints == 0 && timer.elapsed() < 5000) {
+    QCoreApplication::processEvents(QEventLoop::AllEvents, 50);
+  }
+  EXPECT_GT(repaints, 0) << "embedded mesh record never drained";
+
+  // Reset the opt-in so no other test inherits an enabled gate.
+  settings.setValue(QStringLiteral("pj_scene3d/allow_remote_model_fetch"), false);
+  settings.sync();
+}
+
+// Contract pin (sibling of RobotModelLayerTest.ReloadSwapsParserWithoutTouchingStaleOne):
+// SceneEntitiesLayer already resolves the parser binding per use (renderAt /
+// rebuildModelStateAt fetch parserBindingForObjectTopic), so a same-file reload
+// that re-registers the topic's parser slot must transparently rebind. This
+// passes today and gates against a regression to a cached raw pointer.
+TEST(SceneEntitiesLayerModelTest, ReloadSwapsParserWithoutTouchingStaleOne) {
+  g_first_scene_parser_calls.store(0, std::memory_order_relaxed);
+  g_second_scene_parser_calls.store(0, std::memory_order_relaxed);
+
+  PJ::SessionManager session;
+  const PJ::ObjectTopicId topic_id = registerTopic(session);
+  registerCountingParser(session, topic_id, countingSceneEntitiesVtable([]() noexcept -> void* {
+                           return new CountingSceneEntitiesParser(&g_first_scene_parser_calls);
+                         }));
+  pushSceneEntities(session, topic_id, 10, batchWithEntities({makeEntity("car", 10, "old_frame")}));
+
+  pj::scene3d::SceneEntitiesLayer layer(topic_id, QStringLiteral("/scene_entities"));
+  const auto ctx = makeContext(session);
+  ASSERT_TRUE(layer.attach(ctx));
+  layer.setTrackerTime(PJ::fromRaw(15));
+  ASSERT_EQ(layer.currentEntities().count("car"), 1u);
+  EXPECT_GE(g_first_scene_parser_calls.load(std::memory_order_relaxed), 1);
+
+  // Keep the first parser's memory readable so a stale-pointer regression would
+  // be a deterministic wrong-parser hit rather than UB.
+  const auto stale_guard = session.parserKeepaliveForObjectTopic(topic_id);
+  ASSERT_NE(stale_guard, nullptr);
+
+  // Reload: re-register the topic's parser under its stable id and push a new
+  // sample. The next tracker tick must decode through the new parser.
+  registerCountingParser(session, topic_id, countingSceneEntitiesVtable([]() noexcept -> void* {
+                           return new CountingSceneEntitiesParser(&g_second_scene_parser_calls);
+                         }));
+  pushSceneEntities(session, topic_id, 20, batchWithEntities({makeEntity("truck", 20, "new_frame")}));
+
+  const int stale_calls_before = g_first_scene_parser_calls.load(std::memory_order_relaxed);
+  layer.setTrackerTime(PJ::fromRaw(25));  // new sample active -> re-decode
+
+  EXPECT_EQ(g_first_scene_parser_calls.load(std::memory_order_relaxed), stale_calls_before)
+      << "layer called the replaced (freed-in-production) parser after the reload swap";
+  EXPECT_GE(g_second_scene_parser_calls.load(std::memory_order_relaxed), 1)
+      << "layer did not rebind to the re-registered parser";
+  EXPECT_EQ(layer.currentEntities().count("truck"), 1u);
+}
+
+// Regression (H.7): a single batch containing a kAll deletion PLUS replacement
+// entities at the same timestamp must leave those entities present. The SDK
+// contract says deletions remove PRIOR entities; Foxglove uses this pattern
+// ("DELETEALL then ADD in one message") as the canonical scene republish.
+// Before the fix, applySnapshot() upserted entities first so the kAll deletion
+// (deletion.timestamp == entity.timestamp → `<=` matches) erased the just-added
+// entities, leaving the model path with nothing to draw.
+TEST(SceneEntitiesLayerModelTest, DeleteAllPlusEntitiesInSameBatchLeavesEntitiesPresent) {
+  PJ::SessionManager session;
+  const PJ::ObjectTopicId topic_id = registerTopic(session);
+  registerParser(session, topic_id);
+
+  // Batch 0: two prior-generation entities at t=10.
+  pushSceneEntities(session, topic_id, 10, batchWithEntities({makeEntity("prior_a", 10), makeEntity("prior_b", 10)}));
+
+  // Batch 1 at t=20: kAll deletion (ts=20) + two replacement entities (ts=20).
+  // All timestamps are identical — this is the canonical DELETEALL+re-add
+  // republish pattern that the `deletion.timestamp <= entity.timestamp` gate
+  // was incorrectly matching after the old upsert-first order.
+  PJ::sdk::SceneEntityDeletion kall;
+  kall.type = PJ::sdk::SceneEntityDeletion::Type::kAll;
+  kall.timestamp = 20;
+
+  PJ::sdk::SceneEntities batch;
+  batch.deletions = {kall};
+  batch.entities = {makeEntity("new_a", 20), makeEntity("new_b", 20)};
+  pushSceneEntities(session, topic_id, 20, batch);
+
+  pj::scene3d::SceneEntitiesLayer layer(topic_id, QStringLiteral("/scene_entities"));
+  const auto ctx = makeContext(session);
+  ASSERT_TRUE(layer.attach(ctx));
+  layer.setTrackerTime(PJ::fromRaw(25));
+
+  // Prior entities must be gone; replacement entities must survive.
+  EXPECT_EQ(layer.currentEntities().count("prior_a"), 0u) << "prior entity leaked past kAll deletion";
+  EXPECT_EQ(layer.currentEntities().count("prior_b"), 0u) << "prior entity leaked past kAll deletion";
+  EXPECT_EQ(layer.currentEntities().count("new_a"), 1u) << "same-batch replacement entity was deleted";
+  EXPECT_EQ(layer.currentEntities().count("new_b"), 1u) << "same-batch replacement entity was deleted";
+  EXPECT_EQ(layer.currentEntities().size(), 2u);
+}
+
+// Regression (H.7) second pin: a kAll deletion in batch N+1 must still erase
+// batch N's entities (verifies the reorder did not break ordinary cross-batch
+// deletion, which was already correct before the fix).
+TEST(SceneEntitiesLayerModelTest, CrossBatchDeleteAllErasesOlderBatchEntities) {
+  PJ::SessionManager session;
+  const PJ::ObjectTopicId topic_id = registerTopic(session);
+  registerParser(session, topic_id);
+
+  // Batch 0 at t=10: two entities.
+  pushSceneEntities(session, topic_id, 10, batchWithEntities({makeEntity("e0", 10), makeEntity("e1", 10)}));
+
+  // Batch 1 at t=20: kAll deletion only (no replacement entities).
+  PJ::sdk::SceneEntityDeletion kall;
+  kall.type = PJ::sdk::SceneEntityDeletion::Type::kAll;
+  kall.timestamp = 20;
+  pushSceneEntities(session, topic_id, 20, batchWithDeletions({kall}));
+
+  pj::scene3d::SceneEntitiesLayer layer(topic_id, QStringLiteral("/scene_entities"));
+  const auto ctx = makeContext(session);
+  ASSERT_TRUE(layer.attach(ctx));
+  layer.setTrackerTime(PJ::fromRaw(25));
+
+  EXPECT_TRUE(layer.currentEntities().empty()) << "kAll deletion in a subsequent batch did not erase earlier entities";
+}
+
+// Custom main: QFutureWatcher/UrlFetcher tests need an event loop, and the
+// QCoreApplication must die BEFORE exit handlers run — QtNetwork (loaded by the
+// layer's UrlFetcher) registers global cleanup that a function-local-static app
+// would outlive, crashing at exit (pj_marketplace's download_manager_test pattern).
+int main(int argc, char** argv) {
+  QCoreApplication app(argc, argv);
+  testing::InitGoogleTest(&argc, argv);
+  return RUN_ALL_TESTS();
 }

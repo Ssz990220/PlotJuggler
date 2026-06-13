@@ -7,22 +7,30 @@
 // them. Per the design "Crucial framing": the URDF is a frame→visual decoration
 // map (links only); TF owns kinematics, so <joint> is never represented here.
 
-#include <cmath>
 #include <cstdint>
-#include <glm/glm.hpp>
 #include <string>
 #include <variant>
 #include <vector>
 
+// originToMat4 builds the URDF RPY rotation via glm::eulerAngleZYX, which lives in
+// the experimental gtx tree (the only gtx header in pj_scene3D); the define is the
+// supported opt-in for that helper.
+#define GLM_ENABLE_EXPERIMENTAL
+#include <glm/glm.hpp>
+#include <glm/gtx/euler_angles.hpp>
+
 namespace pj::scene3d {
 
-// Geometry kind discriminator for GeomShape. Mesh is the resolved/unresolved
-// reference path; primitives carry their dimensions inline.
-enum class GeomKind : std::uint8_t {
-  kBox,
-  kCylinder,
-  kSphere,
-  kMesh,
+// Why a mesh reference did not resolve to a loadable path. Pure data so both the
+// resolver (which sets it) and the layer (which reports it in the status line)
+// can speak it without depending on Qt. kNone means resolved (or never attempted).
+enum class MeshResolveIssue : std::uint8_t {
+  kNone,               // resolved, or no resolution attempted
+  kBlockedHttp,        // http(s) ref dropped because the source is not a URL
+  kMalformedRef,       // package:// URI with no "/<rel>" part
+  kNoAnchor,           // bare relative ref but no urdf_dir to anchor it
+  kUnresolvedPackage,  // package:// chain exhausted (unknown package)
+  kMissingFile,        // an absolute/anchored path that does not exist on disk
 };
 
 // <box size="x y z"/>
@@ -50,22 +58,15 @@ struct GeomMesh {
   glm::dvec3 scale{1.0, 1.0, 1.0};
   std::string resolved_path;  // empty until resolved
   bool resolved{false};
+  // Filled by the resolver (via urdf_parser) when !resolved: why it failed and,
+  // for a package:// miss, the offending package name (empty otherwise). The
+  // layer derives its per-model unresolved-package list and status hints from
+  // these instead of a resolver-global tally (the resolver is dock-shared).
+  MeshResolveIssue issue{MeshResolveIssue::kNone};
+  std::string unresolved_package;  // package name on kUnresolvedPackage; else ""
 };
 
 using GeomShape = std::variant<GeomBox, GeomCylinder, GeomSphere, GeomMesh>;
-
-inline GeomKind kindOf(const GeomShape& s) {
-  switch (s.index()) {
-    case 0:
-      return GeomKind::kBox;
-    case 1:
-      return GeomKind::kCylinder;
-    case 2:
-      return GeomKind::kSphere;
-    default:
-      return GeomKind::kMesh;
-  }
-}
 
 // One <visual> or <collision> element: a shape, its origin offset within the
 // link frame (translation + RPY), and an optional material color.
@@ -94,26 +95,13 @@ struct RobotModel {
 };
 
 // Compose a link/visual origin into a 4x4 matrix: translate(xyz) * Rz * Ry * Rx
-// (URDF RPY convention: intrinsic X-Y-Z == extrinsic Z-Y-X applied as Rz·Ry·Rx).
+// (URDF RPY convention: extrinsic (fixed-axis) X-Y-Z == intrinsic Z-Y'-X'',
+// applied as Rz(yaw)*Ry(pitch)*Rx(roll)). The product order is load-bearing — a
+// "fix" toward Rx*Ry*Rz would silently break every URDF visual origin.
 inline glm::dmat4 originToMat4(const glm::dvec3& xyz, const glm::dvec3& rpy) {
-  const double cr = std::cos(rpy.x), sr = std::sin(rpy.x);  // roll  (X)
-  const double cp = std::cos(rpy.y), sp = std::sin(rpy.y);  // pitch (Y)
-  const double cy = std::cos(rpy.z), sy = std::sin(rpy.z);  // yaw   (Z)
-
-  // R = Rz(yaw) * Ry(pitch) * Rx(roll), expanded.
-  glm::dmat4 m(1.0);
-  m[0][0] = cy * cp;
-  m[0][1] = sy * cp;
-  m[0][2] = -sp;
-  m[1][0] = cy * sp * sr - sy * cr;
-  m[1][1] = sy * sp * sr + cy * cr;
-  m[1][2] = cp * sr;
-  m[2][0] = cy * sp * cr + sy * sr;
-  m[2][1] = sy * sp * cr - cy * sr;
-  m[2][2] = cp * cr;
-  m[3][0] = xyz.x;
-  m[3][1] = xyz.y;
-  m[3][2] = xyz.z;
+  // eulerAngleZYX(yaw, pitch, roll) == Rz(yaw)*Ry(pitch)*Rx(roll), the URDF order.
+  glm::dmat4 m = glm::eulerAngleZYX(rpy.z, rpy.y, rpy.x);
+  m[3] = glm::dvec4(xyz, 1.0);
   return m;
 }
 

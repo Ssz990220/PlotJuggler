@@ -11,8 +11,10 @@
 #include <vector>
 
 #include "pj_datastore/object_store.hpp"
+#include "pj_widgets/SettingsDebouncer.h"
 
 class QComboBox;
+class QEvent;
 class QToolButton;
 class QVBoxLayout;
 
@@ -24,21 +26,34 @@ class IntScrubber;
 class LayerListView;
 class Scene3DDockWidget;
 
+// QSettings group for the scene-wide controls. Single source for both the
+// read side (buildSceneControls) and the write side (settings_writer_).
+inline constexpr char kScene3dSceneControlsGroup[] = "pj_scene3d/scene_controls";
+
 // Right-sidepanel page for the 3D scene: scene-wide controls (Grid · Transforms
 // and RobotModel — plan §9 Part C) above the per-topic layer list. Scene
 // controls persist in QSettings (pj_scene3d/scene_controls/*) and are applied
 // to every dock this panel binds, so all 3D views share one look. The
 // Model/URDF row adds robot-model layers to the bound dock (File dialog /
-// robot_description topic picker / URL prompt, chosen by the source combo);
-// each added robot gets a row below with a bin button to remove it. Layers
-// added by drag-and-drop are never touched and don't get a row.
+// robot_description topic picker / URL prompt, chosen by the source combo).
+//
+// Robot-model rows are derived from dock state, not from the act of adding:
+// EVERY kRobotDescription layer on the bound dock gets exactly one row, rebuilt
+// in rebuildLayerList()/onLayerAdded() on bind, dock switch, and layout restore
+// (the rows belong to the dock, so a rebind clears and rebuilds them). Robot
+// layers stay OUT of the Topics list; their row is their whole list-side UI.
+// Clicking a row binds the Settings host to that layer's config widget, so the
+// source combo / status text / Retry are reachable.
 class Scene3DConfigPanel : public QWidget {
   Q_OBJECT
  public:
   explicit Scene3DConfigPanel(QWidget* parent = nullptr);
-  ~Scene3DConfigPanel() override = default;
 
   void bindDock(Scene3DDockWidget* dock);
+
+  // Routes a left-click on a robot row's name field to showRobotLayerConfig.
+  // The row's topic id rides on the watched widget's "robot_topic_id" property.
+  bool eventFilter(QObject* watched, QEvent* event) override;
 
  public slots:
   void onStylesheetChanged(QString theme);
@@ -59,11 +74,16 @@ class Scene3DConfigPanel : public QWidget {
   // File opens a file dialog (last dir remembered), Topic a dialog listing the
   // dataset's robot_description topics, URL a dialog with a line edit.
   void onAddModelClicked();
-  // Append/remove the per-robot row (name + bin button) for a layer this
-  // panel created. Rows are panel-created-only: drag-and-drop robot layers
-  // don't get one.
+  // Append/remove the per-robot row (name + bin button) for a kRobotDescription
+  // layer on the bound dock. Idempotent: a no-op if a row for topic_id_value
+  // already exists, so repeated rebuilds and the add-then-layerAdded double-fire
+  // both collapse to one row. The row is clickable — it binds config_host_ to
+  // the layer's config widget so its source combo / status / Retry are reachable.
   void addRobotRow(uint32_t topic_id_value, const QString& label, const QString& tooltip);
   void removeRobotRowFor(uint32_t topic_id_value);
+  // Bind the Settings host to the config widget of the kRobotDescription layer
+  // for topic_id_value, when one exists on the bound dock. Called from a row click.
+  void showRobotLayerConfig(uint32_t topic_id_value);
   void disconnectFromDock();
   void rebuildLayerList();
   void updateSelectedLayerPane();
@@ -99,6 +119,10 @@ class Scene3DConfigPanel : public QWidget {
   QToolButton* add_model_button_ = nullptr;
   QVBoxLayout* robot_rows_layout_ = nullptr;
   std::vector<std::pair<uint32_t, QWidget*>> robot_rows_;
+
+  // Debounced QSettings persistence: scene-control changes apply live every tick
+  // but only flush to disk after the drag settles (one INI rewrite per drag).
+  SettingsDebouncer settings_writer_{QString::fromLatin1(kScene3dSceneControlsGroup), 250};
 };
 
 }  // namespace PJ

@@ -9,6 +9,7 @@
 #include <QFileInfo>
 #include <QFuture>
 #include <QString>
+#include <QTemporaryDir>
 #include <cmath>
 #include <glm/glm.hpp>
 #include <vector>
@@ -358,6 +359,111 @@ TEST(MeshLoaderTest, MissingFileFailsCleanly) {
   const MeshData mesh = loader.load(fixturePath("does_not_exist.stl")).result();
   EXPECT_FALSE(mesh.ok);
   EXPECT_FALSE(mesh.error.isEmpty());
+}
+
+// --- evict(): drop one cache entry so the next load() re-imports -------------
+// M.30 regression: failed futures used to be cached forever, so Retry silently
+// never retried. Sequence: cache the import, corrupt the file (the cache must
+// still serve the OLD result — proving no silent re-import), evict, re-load —
+// the genuine re-import now sees the corrupted bytes and fails.
+
+TEST(MeshLoaderTest, EvictForcesReimportOfChangedFile) {
+  QTemporaryDir dir;
+  ASSERT_TRUE(dir.isValid());
+  const QString path = dir.filePath(QStringLiteral("evict_me.stl"));
+  {
+    QFile fixture(fixturePath("cube.stl"));
+    ASSERT_TRUE(fixture.copy(path));
+  }
+
+  MeshLoader loader;
+  const MeshData first = loader.load(path).result();
+  ASSERT_TRUE(first.ok) << first.error.toStdString();
+
+  {
+    QFile file(path);
+    ASSERT_TRUE(file.open(QIODevice::WriteOnly | QIODevice::Truncate));
+    file.write("definitely not a mesh");
+  }
+  const MeshData cached = loader.load(path).result();
+  EXPECT_TRUE(cached.ok) << "load() re-imported without evict() — cache identity regression";
+
+  loader.evict(path);
+  const MeshData reimported = loader.load(path).result();
+  EXPECT_FALSE(reimported.ok) << "evict() did not drop the cached entry (old result still served)";
+}
+
+// --- COLLADA up-axis override (M.28) ----------------------------------------
+// load(path, flip_override) lets the layer force the Y->Z flip on/off, honoring
+// the "Ignore COLLADA up_axis" toggle. zup_marker.dae is authored Z_UP: assimp
+// normalizes it to internal Y-up, and the DEFAULT load (flip=true) re-applies the
+// +90deg X flip to land the apex at z=+1. With flip_override=false the flip is
+// skipped, so the apex stays at the assimp-internal Y-up position (y=+1). The two
+// overrides must therefore yield DIFFERENT geometry.
+
+TEST(MeshLoaderTest, ColladaFlipOverrideChangesGeometry) {
+  MeshLoader loader;
+  const MeshData flipped = loader.load(fixturePath("zup_marker.dae"), /*flip_override=*/true).result();
+  const MeshData unflipped = loader.load(fixturePath("zup_marker.dae"), /*flip_override=*/false).result();
+  ASSERT_TRUE(flipped.ok) << flipped.error.toStdString();
+  ASSERT_TRUE(unflipped.ok) << unflipped.error.toStdString();
+
+  // Default flip lands the apex at z=+1 (matches ColladaZUpFixtureLoadsZUp).
+  const Bounds flipped_bounds = computeBounds(flipped);
+  EXPECT_NEAR(flipped_bounds.max.z, 1.0f, 1e-3f) << "flipped apex should land at z=+1";
+
+  // Without the flip the geometry stays in assimp's internal Y-up: the apex
+  // height moves into +Y instead, so the z-extent collapses relative to flipped.
+  const Bounds unflipped_bounds = computeBounds(unflipped);
+  EXPECT_GT(unflipped_bounds.extent().y, 0.9f) << "unflipped apex should extend along +Y (still Y-up)";
+  EXPECT_LT(unflipped_bounds.extent().z, 0.3f) << "unflipped geometry must not be Z-up";
+
+  // The override is part of the cache key, so the same path under two overrides
+  // produces distinct cache slots (different result storage), not one shared
+  // entry that would hand back the previously-flipped MeshData.
+  const MeshData* flipped_ptr = &(*loader.load(fixturePath("zup_marker.dae"), true).constBegin());
+  const MeshData* unflipped_ptr = &(*loader.load(fixturePath("zup_marker.dae"), false).constBegin());
+  EXPECT_NE(flipped_ptr, unflipped_ptr) << "flip variants must occupy distinct cache slots";
+}
+
+// The default (no override) must match the explicit-true override for a format
+// that flips, and re-loading the same default hits the same cache slot.
+TEST(MeshLoaderTest, ColladaDefaultMatchesExplicitFlip) {
+  MeshLoader loader;
+  const MeshData* default_ptr = &(*loader.load(fixturePath("zup_marker.dae")).constBegin());
+  const MeshData* explicit_ptr = &(*loader.load(fixturePath("zup_marker.dae"), /*flip_override=*/true).constBegin());
+  ASSERT_TRUE(loader.load(fixturePath("zup_marker.dae")).result().ok);
+  // wantsZUpFlip("dae") == true, so the default and explicit-true share the slot.
+  EXPECT_EQ(default_ptr, explicit_ptr) << "default flip for .dae must equal explicit flip_override=true";
+}
+
+// evict(path) must drop BOTH flip variants so a Retry re-imports regardless of
+// which override was in effect (the cache is keyed by path+effective-flip).
+TEST(MeshLoaderTest, EvictDropsBothFlipVariants) {
+  QTemporaryDir dir;
+  ASSERT_TRUE(dir.isValid());
+  const QString path = dir.filePath(QStringLiteral("evict_both.dae"));
+  {
+    QFile fixture(fixturePath("cube.dae"));
+    ASSERT_TRUE(fixture.copy(path));
+  }
+
+  MeshLoader loader;
+  ASSERT_TRUE(loader.load(path, /*flip_override=*/true).result().ok);
+  ASSERT_TRUE(loader.load(path, /*flip_override=*/false).result().ok);
+
+  {
+    QFile file(path);
+    ASSERT_TRUE(file.open(QIODevice::WriteOnly | QIODevice::Truncate));
+    file.write("definitely not a mesh");
+  }
+  // Both variants are still served from cache (no re-import yet).
+  EXPECT_TRUE(loader.load(path, true).result().ok);
+  EXPECT_TRUE(loader.load(path, false).result().ok);
+
+  loader.evict(path);
+  EXPECT_FALSE(loader.load(path, true).result().ok) << "evict() left the flip=true variant cached";
+  EXPECT_FALSE(loader.load(path, false).result().ok) << "evict() left the flip=false variant cached";
 }
 
 }  // namespace

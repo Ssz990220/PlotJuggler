@@ -7,13 +7,11 @@
 #include <QComboBox>
 #include <QDir>
 #include <QDomElement>
-#include <QEventLoop>
 #include <QFile>
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QFont>
 #include <QFormLayout>
-#include <QFutureWatcher>
 #include <QGroupBox>
 #include <QGuiApplication>
 #include <QHBoxLayout>
@@ -24,21 +22,16 @@
 #include <QLineEdit>
 #include <QListWidget>
 #include <QLoggingCategory>
-#include <QNetworkAccessManager>
-#include <QNetworkReply>
-#include <QNetworkRequest>
 #include <QPainter>
 #include <QPalette>
 #include <QPointer>
 #include <QPushButton>
 #include <QSettings>
 #include <QSignalBlocker>
-#include <QTimer>
 #include <QToolButton>
 #include <QUrl>
 #include <QVBoxLayout>
 #include <QVariant>
-#include <algorithm>
 #include <any>
 #include <limits>
 #include <memory>
@@ -46,6 +39,7 @@
 #include <string>
 #include <utility>
 
+#include "mesh_load_set.h"
 #include "mesh_loader.h"
 #include "pj_base/builtin/robot_description.hpp"
 #include "pj_plugins/sdk/message_parser_plugin_base.hpp"
@@ -57,6 +51,7 @@
 #include "pj_widgets/SvgUtil.h"
 #include "urdf_package_resolver.h"
 #include "urdf_parser.h"
+#include "url_fetcher.h"
 
 namespace pj::scene3d {
 namespace {
@@ -195,51 +190,6 @@ std::optional<QString> readTextFile(const QString& path, QString* error) {
   return QString::fromUtf8(file.readAll());
 }
 
-std::optional<QString> readUrlBlocking(const QString& url_text, QString* error) {
-  const QUrl url(url_text);
-  if (url.isLocalFile()) {
-    return readTextFile(url.toLocalFile(), error);
-  }
-  if (url.scheme() != QStringLiteral("http") && url.scheme() != QStringLiteral("https")) {
-    if (error != nullptr) {
-      *error = QObject::tr("unsupported URL scheme");
-    }
-    return std::nullopt;
-  }
-
-  QNetworkAccessManager manager;
-  QNetworkReply* reply = manager.get(QNetworkRequest(url));
-  QEventLoop loop;
-  QTimer timeout;
-  timeout.setSingleShot(true);
-  QObject::connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
-  QObject::connect(&timeout, &QTimer::timeout, &loop, &QEventLoop::quit);
-  timeout.start(15000);
-  loop.exec();
-
-  if (timeout.isActive()) {
-    timeout.stop();
-  } else {
-    reply->abort();
-    reply->deleteLater();
-    if (error != nullptr) {
-      *error = QObject::tr("request timed out");
-    }
-    return std::nullopt;
-  }
-
-  if (reply->error() != QNetworkReply::NoError) {
-    if (error != nullptr) {
-      *error = reply->errorString();
-    }
-    reply->deleteLater();
-    return std::nullopt;
-  }
-  const QString text = QString::fromUtf8(reply->readAll());
-  reply->deleteLater();
-  return text;
-}
-
 QString urlDirectory(const QString& url_text) {
   QUrl url(url_text);
   QString path = url.path();
@@ -259,20 +209,6 @@ glm::vec3 toVec3(const glm::dvec3& v) {
 
 }  // namespace
 
-struct RobotModelLayer::MeshLoadRecord {
-  std::string key;
-  QString path;
-  QFuture<MeshData> future;
-  // GUI-thread completion hook: triggers pollMeshLoads() so a finished load
-  // requests the repaint that consumes it (the app paints on demand — render()
-  // alone would never run). Owned by the record so clearing the records
-  // (detach, model reload) destroys the watcher and severs the connection: a
-  // stale completion can never fire on a dead record.
-  std::unique_ptr<QFutureWatcher<MeshData>> watcher;
-  bool consumed{false};
-  bool failed{false};
-};
-
 RobotModelLayer::RobotModelLayer(PJ::ObjectTopicId topic_id, QString display_name, QObject* parent)
     : Scene3DLayer(parent),
       topic_id_(topic_id),
@@ -281,7 +217,8 @@ RobotModelLayer::RobotModelLayer(PJ::ObjectTopicId topic_id, QString display_nam
       source_value_(display_name_),
       owned_resolver_(std::make_unique<UrdfPackageResolver>()),
       mesh_loader_(std::make_unique<MeshLoader>()),
-      mesh_pass_(std::make_unique<MeshRenderPass>()) {
+      mesh_pass_(std::make_unique<MeshRenderPass>()),
+      mesh_loads_(std::make_unique<MeshLoadSet>()) {
   resolver_ = owned_resolver_.get();
 }
 
@@ -323,6 +260,15 @@ QDomElement RobotModelLayer::xmlSaveState(QDomDocument& doc) const {
   QDomElement el = doc.createElement(QStringLiteral("robot_model"));
   el.setAttribute(QStringLiteral("source_type"), sourceTypeToString(source_type_));
   el.setAttribute(QStringLiteral("source_value"), source_value_);
+  // For a topic source, source_value_ is only a display string. Persist the
+  // resolvable identity (dataset_id + topic_name) so restore re-binds the SAME
+  // topic even when the user switched the config combo to a different one
+  // (source_topic_id_ != the constructor's topic_id_).
+  if (source_type_ == SourceType::kTopic && ctx_.session != nullptr) {
+    const auto desc = ctx_.session->objectStore().descriptor(source_topic_id_);
+    el.setAttribute(QStringLiteral("source_topic_name"), QString::fromStdString(desc.topic_name));
+    el.setAttribute(QStringLiteral("source_dataset_id"), static_cast<uint>(desc.dataset_id));
+  }
   el.setAttribute(QStringLiteral("frame_prefix"), frame_prefix_);
   el.setAttribute(QStringLiteral("display_mode"), displayModeToString(display_mode_));
   el.setAttribute(QStringLiteral("visible"), visible_ ? QStringLiteral("true") : QStringLiteral("false"));
@@ -350,7 +296,28 @@ bool RobotModelLayer::xmlLoadState(const QDomElement& element) {
   }
   ignore_collada_up_axis_ =
       element.attribute(QStringLiteral("ignore_collada_up_axis"), QStringLiteral("false")) == QStringLiteral("true");
-  if (ctx_.session != nullptr) {
+  // display_mode_ / frame_prefix_ / visible_ were just assigned directly above,
+  // bypassing the setters; loadFromCurrentSource() below also sets this, but be
+  // explicit so the restore path is self-evidently covered.
+  draws_dirty_ = true;
+  // Re-resolve a persisted topic source by its (dataset_id, topic_name) identity
+  // rather than trusting the constructor's default binding — the user may have
+  // switched the source combo to a different topic before saving.
+  if (source_type_ == SourceType::kTopic && ctx_.session != nullptr &&
+      element.hasAttribute(QStringLiteral("source_topic_name"))) {
+    // A malformed/absent dataset id parses to 0, which simply misses findTopic
+    // and lands on the visible "not found" status below.
+    const auto dataset_id = static_cast<PJ::DatasetId>(element.attribute(QStringLiteral("source_dataset_id")).toUInt());
+    const std::string topic_name = element.attribute(QStringLiteral("source_topic_name")).toStdString();
+    const auto resolved = ctx_.session->objectStore().findTopic(dataset_id, topic_name);
+    if (resolved.has_value()) {
+      setSourceTopic(*resolved);  // re-binds source_topic_id_ and loads the model
+    } else {
+      // Keep the constructor binding (source_topic_id_ unchanged) and surface why
+      // nothing loaded instead of silently restoring the wrong / empty model.
+      setStatus(tr("Topic '%1' not found in this dataset").arg(QString::fromStdString(topic_name)));
+    }
+  } else if (ctx_.session != nullptr) {
     loadFromCurrentSource();
   }
   emit infoChanged();
@@ -367,13 +334,13 @@ bool RobotModelLayer::attach(const PJ::SceneLayerContext& ctx) {
       qCWarning(lcRobotModelLayer) << "attach: session is null";
       return false;
     }
-    parser_ = ctx_.session->parserForObjectTopic(source_topic_id_);
-    parser_mutex_ = ctx_.session->parserMutexForObjectTopic(source_topic_id_);
-    if (parser_ == nullptr) {
+    // Existence check only — the binding is re-resolved per decode (see
+    // tryLoadTopicDescription) so a reload that swaps the parser slot rebinds us.
+    if (!ctx_.session->parserBindingForObjectTopic(source_topic_id_)) {
       qCWarning(lcRobotModelLayer) << "attach: no parser for robot-description topic" << source_topic_id_.id;
       return false;
     }
-    const auto& desc = ctx_.session->objectStore().descriptor(source_topic_id_);
+    const auto desc = ctx_.session->objectStore().descriptor(source_topic_id_);
     if (source_value_.isEmpty()) {
       source_value_ = QString::fromStdString(desc.topic_name);
     }
@@ -383,23 +350,32 @@ bool RobotModelLayer::attach(const PJ::SceneLayerContext& ctx) {
 }
 
 void RobotModelLayer::detach() {
+  // Abort any in-flight URL fetch: a detached layer must not apply late results.
+  ++url_fetch_generation_;
+  url_fetcher_.reset();
   model_.reset();
-  mesh_loads_.clear();
+  mesh_loads_->clear();
+  cached_visual_draws_.clear();
+  cached_collision_draws_.clear();
+  draws_dirty_ = true;
   if (mesh_pass_) {
     mesh_pass_->clearMeshes();
   }
-  parser_ = nullptr;
-  parser_mutex_.reset();
   ctx_ = {};
 }
 
 void RobotModelLayer::setFixedFrame(const QString& frame) {
   fixed_frame_ = frame;
+  draws_dirty_ = true;
   emit repaintRequested();
 }
 
 void RobotModelLayer::setTrackerTime(PJ::Timepoint time) {
   tracker_time_ = time;
+  // TF reaches this layer ONLY via tracker ticks (the dock drives setTrackerTime
+  // on every live ingest tick and every scrub), so this is where TF-driven pose
+  // changes invalidate the draw cache.
+  draws_dirty_ = true;
   if (source_type_ == SourceType::kTopic && latch_pending_) {
     const auto now = std::chrono::steady_clock::now();
     if (last_latch_retry_ == std::chrono::steady_clock::time_point{} ||
@@ -416,6 +392,10 @@ void RobotModelLayer::setVisible(bool visible) {
     return;
   }
   visible_ = visible;
+  if (visible) {
+    // The cache may predate the hide (TF advanced while we skipped render).
+    draws_dirty_ = true;
+  }
   emit visibilityChanged(visible);
   emit infoChanged();
   emit repaintRequested();
@@ -427,14 +407,11 @@ void RobotModelLayer::initializeGL() {
   }
 }
 
-void RobotModelLayer::render(const ViewParams& view_params, const FrameContext& frame_ctx) {
-  if (!visible_ || !mesh_pass_ || !model_.has_value()) {
-    return;
-  }
-  pollMeshLoads();
-
-  std::vector<MeshRenderPass::DrawCall> visual_draws;
-  std::vector<MeshRenderPass::DrawCall> pending_collision_draws;
+void RobotModelLayer::rebuildDrawCache(const FrameContext& frame_ctx) {
+  // Reuse the member vectors (clear, never realloc fresh locals) so a steady
+  // robot does not churn the heap every time the cache invalidates.
+  cached_visual_draws_.clear();
+  cached_collision_draws_.clear();
 
   const glm::vec4 placeholder_color{1.0f, 0.0f, 1.0f, 1.0f};
 
@@ -477,14 +454,19 @@ void RobotModelLayer::render(const ViewParams& view_params, const FrameContext& 
     }
 
     if (collision) {
-      pending_collision_draws.push_back(std::move(draw));
+      cached_collision_draws_.push_back(std::move(draw));
     } else {
-      visual_draws.push_back(std::move(draw));
+      cached_visual_draws_.push_back(std::move(draw));
     }
   };
 
+  // frame_prefix_ is constant across this rebuild; convert it once instead of
+  // a QString concat + toStdString round-trip per link. rebuildDrawCache runs
+  // for every link on every draws_dirty_ rebuild (i.e. every tracker tick during
+  // playback), so the empty-prefix common case looks up link.name with no alloc.
+  const std::string frame_prefix = frame_prefix_.toStdString();
   for (const RobotLink& link : model_->links) {
-    const auto tf = frame_ctx.lookup(linkFrameName(link.name).toStdString());
+    const auto tf = frame_prefix.empty() ? frame_ctx.lookup(link.name) : frame_ctx.lookup(frame_prefix + link.name);
     if (!tf.has_value()) {
       continue;
     }
@@ -499,21 +481,40 @@ void RobotModelLayer::render(const ViewParams& view_params, const FrameContext& 
         append_geom(geom, link_model, false);
       }
     } else {
+      // kAuto: visuals when present, else collisions rendered AS visuals (see the
+      // DisplayMode doc-comment, review L.21) — append with collision=false so
+      // they land in the visuals group, not the collision sliders.
       const auto& geoms = link.visuals.empty() ? link.collisions : link.visuals;
       for (const LinkGeom& geom : geoms) {
         append_geom(geom, link_model, false);
       }
     }
   }
+}
+
+void RobotModelLayer::render(const ViewParams& view_params, const FrameContext& frame_ctx) {
+  if (!visible_ || !mesh_pass_ || !model_.has_value()) {
+    return;
+  }
+  pollMeshLoads();
+
+  // The DrawCall lists are camera-independent, so we rebuild them only when an
+  // invalidating setter / TF tick / mesh-load drain flagged draws_dirty_; a
+  // camera-only repaint (orbit/zoom) reuses the cache (review M.48).
+  if (draws_dirty_) {
+    rebuildDrawCache(frame_ctx);
+    draws_dirty_ = false;
+  }
 
   // Scene-wide opacities (Part C "Meshes"/"Collision" sliders); 0 hides the
-  // group entirely. The per-layer DisplayMode stays the structural override.
+  // group entirely. These gates stay per-frame — only the draw list is cached.
+  // The per-layer DisplayMode stays the structural override.
   const MeshShadingParams& shading = meshShadingParams();
   if (shading.meshes_visible && shading.mesh_opacity > 0.0f) {
-    mesh_pass_->renderVisuals(view_params, visual_draws, shading.mesh_opacity);
+    mesh_pass_->renderVisuals(view_params, cached_visual_draws_, shading.mesh_opacity);
   }
   if (shading.collisions_visible && shading.collision_opacity > 0.0f) {
-    mesh_pass_->renderCollisions(view_params, pending_collision_draws, shading.collision_opacity);
+    mesh_pass_->renderCollisions(view_params, cached_collision_draws_, shading.collision_opacity);
   }
 }
 
@@ -521,10 +522,6 @@ void RobotModelLayer::releaseGL() {
   if (mesh_pass_) {
     mesh_pass_->releaseGL();
   }
-}
-
-std::optional<AABB> RobotModelLayer::worldBounds() const {
-  return std::nullopt;
 }
 
 QWidget* RobotModelLayer::createConfigWidget(QWidget* parent) {
@@ -681,6 +678,7 @@ QWidget* RobotModelLayer::createConfigWidget(QWidget* parent) {
       } else {
         status = tr("%1  •  %2/%2 meshes").arg(prefix).arg(total_mesh_count_);
       }
+      status += unresolvedIssueClause();
     }
     status_label->setText(status);
     locate_button->setVisible(!unresolvedPackagesList().isEmpty());
@@ -817,9 +815,8 @@ void RobotModelLayer::setSourceTopic(PJ::ObjectTopicId topic_id, QString display
     source_value_ = display_name_;
   }
   if (ctx_.session != nullptr) {
-    parser_ = ctx_.session->parserForObjectTopic(source_topic_id_);
-    parser_mutex_ = ctx_.session->parserMutexForObjectTopic(source_topic_id_);
-    if (parser_ == nullptr) {
+    // Existence check only; the actual decode re-resolves the binding per use.
+    if (!ctx_.session->parserBindingForObjectTopic(source_topic_id_)) {
       setStatus(tr("No parser for %1").arg(source_value_));
       return;
     }
@@ -844,6 +841,7 @@ void RobotModelLayer::setFramePrefix(QString prefix) {
     return;
   }
   frame_prefix_ = std::move(prefix);
+  draws_dirty_ = true;  // changes which TF frames each link resolves against
   emit sourceFrameChanged(sourceFrame());
   emit fallbackFramesChanged(fallbackFrames());
   emit repaintRequested();
@@ -854,6 +852,7 @@ void RobotModelLayer::setDisplayMode(DisplayMode mode) {
     return;
   }
   display_mode_ = mode;
+  draws_dirty_ = true;  // visuals/collisions selection changes the draw list
   emit repaintRequested();
 }
 
@@ -862,12 +861,20 @@ void RobotModelLayer::setFallbackColor(QColor color) {
     return;
   }
   fallback_color_ = std::move(color);
+  draws_dirty_ = true;
   emit repaintRequested();
 }
 
 void RobotModelLayer::setIgnoreColladaUpAxis(bool ignore) {
+  if (ignore_collada_up_axis_ == ignore) {
+    return;
+  }
   ignore_collada_up_axis_ = ignore;
-  emit repaintRequested();
+  // The flip is baked into the loaded MeshData, so the toggle must reload from
+  // the current source. loadFromCurrentSource() clears the loader cache, so the
+  // .dae meshes re-import with the new effective flip (it also re-resolves the
+  // override per path in startMeshLoads).
+  loadFromCurrentSource();
 }
 
 QString RobotModelLayer::linkFrameName(const std::string& link_name) const {
@@ -875,12 +882,25 @@ QString RobotModelLayer::linkFrameName(const std::string& link_name) const {
 }
 
 bool RobotModelLayer::loadFromCurrentSource() {
+  // Any in-flight URL fetch is now stale: its result must not clobber the
+  // newly-selected source when it lands.
+  ++url_fetch_generation_;
   model_.reset();
-  mesh_loads_.clear();
+  mesh_loads_->clear();
+  // Stale draws must not survive a source switch; render() also guards on
+  // model_, but rebuild on the next render once a new model lands. Covers
+  // setIgnoreColladaUpAxis, attach, and the kUrl fetch-pending window.
+  draws_dirty_ = true;
   total_mesh_count_ = 0;
   unresolved_mesh_count_ = 0;
   loaded_mesh_count_ = 0;
   latch_pending_ = false;
+  if (mesh_loader_) {
+    // Release the previous model's cached MeshData and make Retry/Locate
+    // genuinely re-import (failed loads included) instead of replaying the
+    // cached future.
+    mesh_loader_->clearCache();
+  }
   if (mesh_pass_) {
     mesh_pass_->clearMeshes();
   }
@@ -889,34 +909,55 @@ bool RobotModelLayer::loadFromCurrentSource() {
     return tryLoadTopicDescription();
   }
 
-  QString error;
-  std::optional<QString> text;
-  QString label = source_value_;
-  QString urdf_dir;
-  bool source_is_url = false;
-  if (source_type_ == SourceType::kFile) {
-    text = readTextFile(source_value_, &error);
-    urdf_dir = QFileInfo(source_value_).absolutePath();
-  } else {
+  if (source_type_ == SourceType::kUrl) {
+    if (!url_fetcher_) {
+      url_fetcher_ = std::make_unique<UrlFetcher>();
+    }
     setStatus(tr("Fetching %1").arg(source_value_));
-    text = readUrlBlocking(source_value_, &error);
-    urdf_dir = urlDirectory(source_value_);
-    source_is_url = true;
+    const QString url_text = source_value_;
+    const uint64_t generation = url_fetch_generation_;
+    // Fire-and-forget kickoff: attach()/xmlLoadState (and undo/redo restores)
+    // no longer block on the network. The layer-owned fetcher's destruction is
+    // the primary lifetime guard; the QPointer is insurance.
+    QPointer<RobotModelLayer> guard(this);
+    url_fetcher_->fetch(QUrl(url_text), [this, guard, generation, url_text](const FetchResult& fetched) {
+      if (guard.isNull() || generation != url_fetch_generation_) {
+        return;  // layer destroyed, or a newer load superseded this fetch
+      }
+      if (!fetched.ok) {
+        setStatus(tr("Fetch failed (%1)").arg(fetched.error));
+        return;
+      }
+      const QString text = QString::fromUtf8(fetched.bytes);
+      applyRobotDescription(text, formatFromXml(text), url_text, urlDirectory(url_text), /*source_is_url=*/true);
+    });
+    return true;
   }
+
+  QString error;
+  const std::optional<QString> text = readTextFile(source_value_, &error);
   if (!text.has_value()) {
-    setStatus(
-        source_type_ == SourceType::kUrl ? tr("Fetch failed (%1)").arg(error)
-                                         : tr("Failed to read URDF: %1").arg(error));
+    setStatus(tr("Failed to read URDF: %1").arg(error));
     return false;
   }
-  return applyRobotDescription(*text, formatFromXml(*text), label, urdf_dir, source_is_url);
+  return applyRobotDescription(
+      *text, formatFromXml(*text), source_value_, QFileInfo(source_value_).absolutePath(), /*source_is_url=*/false);
 }
 
 bool RobotModelLayer::tryLoadTopicDescription() {
-  if (ctx_.session == nullptr || parser_ == nullptr) {
+  if (ctx_.session == nullptr) {
     return false;
   }
+  // Resolve a fresh binding per use: a file reload re-registers the topic's
+  // parser slot, so a pointer cached across calls would dangle.
+  const auto binding = ctx_.session->parserBindingForObjectTopic(source_topic_id_);
   PJ::ObjectStore& store = ctx_.session->objectStore();
+  if (!binding) {
+    const QString topic =
+        source_value_.isEmpty() ? QString::fromStdString(store.descriptor(source_topic_id_).topic_name) : source_value_;
+    setStatus(tr("No parser for %1").arg(topic));
+    return false;
+  }
   const auto entry = store.latestAt(source_topic_id_, std::numeric_limits<PJ::Timestamp>::max());
   if (!entry.has_value() || entry->payload.bytes.empty()) {
     latch_pending_ = true;
@@ -927,7 +968,7 @@ bool RobotModelLayer::tryLoadTopicDescription() {
     return true;
   }
 
-  auto obj = parseLocked(parser_, parser_mutex_, entry->timestamp, entry->payload);
+  auto obj = parseLocked(binding, entry->timestamp, entry->payload);
   if (!obj.has_value()) {
     setStatus(tr("Parse error: %1").arg(QString::fromStdString(obj.error())));
     return false;
@@ -951,7 +992,8 @@ bool RobotModelLayer::applyRobotDescription(
   }
 
   if (resolver_ != nullptr) {
-    resolver_->clearUnresolved();
+    // No clearUnresolved(): the resolver no longer keeps a global tally (the
+    // unresolved list is derived per-model from model_ — see M.29).
     resolver_->autoSeedSearchRoots(urdf_dir);
   }
   auto parsed = parseUrdf(text.toStdString(), resolver_, urdf_dir.toStdString(), source_is_url, label.toStdString());
@@ -961,16 +1003,17 @@ bool RobotModelLayer::applyRobotDescription(
   }
 
   model_ = std::move(parsed.first);
+  draws_dirty_ = true;  // a new model: render() must rebuild the draw lists
   startMeshLoads();
   updateMeshCounters();
   const QStringList unresolved = unresolvedPackagesList();
-  const QString mesh_status = unresolved_mesh_count_ > 0
-                                  ? tr("URDF: %1  •  %2/%3 meshes  •  %4 packages unresolved")
-                                        .arg(label)
-                                        .arg(total_mesh_count_ - unresolved_mesh_count_)
-                                        .arg(total_mesh_count_)
-                                        .arg(unresolved.size())
-                                  : tr("URDF: %1  •  %2/%2 meshes").arg(label).arg(total_mesh_count_);
+  QString mesh_status = unresolved_mesh_count_ > 0 ? tr("URDF: %1  •  %2/%3 meshes  •  %4 packages unresolved")
+                                                         .arg(label)
+                                                         .arg(total_mesh_count_ - unresolved_mesh_count_)
+                                                         .arg(total_mesh_count_)
+                                                         .arg(unresolved.size())
+                                                   : tr("URDF: %1  •  %2/%2 meshes").arg(label).arg(total_mesh_count_);
+  mesh_status += unresolvedIssueClause();
   setStatus(mesh_status);
   emit sourceFrameChanged(sourceFrame());
   emit fallbackFramesChanged(fallbackFrames());
@@ -984,31 +1027,26 @@ void RobotModelLayer::startMeshLoads() {
   if (!model_.has_value() || mesh_loader_ == nullptr) {
     return;
   }
-  std::vector<std::string> started;
+  // Dispatch only: the counters are owned entirely by updateMeshCounters(). The
+  // map dedups by resolved path, so links sharing a mesh file kick one load.
+  // COLLADA flip override is scoped to .dae/.collada (the checkbox's intent):
+  // force the Y->Z flip OFF only for those, otherwise let the loader decide.
   auto start = [&](const LinkGeom& geom) {
     const auto* mesh = std::get_if<GeomMesh>(&geom.shape);
-    if (mesh == nullptr) {
+    if (mesh == nullptr || !mesh->resolved || mesh->resolved_path.empty()) {
       return;
     }
-    ++total_mesh_count_;
-    if (!mesh->resolved || mesh->resolved_path.empty()) {
-      ++unresolved_mesh_count_;
-      return;
+    if (mesh_loads_->find(mesh->resolved_path) != nullptr) {
+      return;  // already dispatched this path
     }
-    if (std::find(started.begin(), started.end(), mesh->resolved_path) != started.end()) {
-      return;
-    }
-    started.push_back(mesh->resolved_path);
-    auto record = std::make_unique<MeshLoadRecord>();
-    record->key = mesh->resolved_path;
-    record->path = QString::fromStdString(mesh->resolved_path);
-    record->future = mesh_loader_->load(record->path);
-    // The watcher lives on this (GUI) thread; connect BEFORE setFuture so an
-    // already-finished load (cache hit) still signals.
-    record->watcher = std::make_unique<QFutureWatcher<MeshData>>();
-    connect(record->watcher.get(), &QFutureWatcher<MeshData>::finished, this, &RobotModelLayer::pollMeshLoads);
-    record->watcher->setFuture(record->future);
-    mesh_loads_.push_back(std::move(record));
+    const QString path = QString::fromStdString(mesh->resolved_path);
+    const QString suffix = QFileInfo(path).suffix().toLower();
+    const bool is_collada = suffix == QLatin1String("dae") || suffix == QLatin1String("collada");
+    const std::optional<bool> flip_override =
+        (ignore_collada_up_axis_ && is_collada) ? std::optional<bool>(false) : std::nullopt;
+    MeshLoadEntry& entry = mesh_loads_->insertOrReplace(mesh->resolved_path, mesh->resolved_path);
+    entry.future = mesh_loader_->load(path, flip_override);
+    mesh_loads_->arm(entry, this, [this]() { pollMeshLoads(); });
   };
   for (const RobotLink& link : model_->links) {
     for (const LinkGeom& geom : link.visuals) {
@@ -1024,21 +1062,19 @@ void RobotModelLayer::pollMeshLoads() {
   if (!mesh_pass_) {
     return;
   }
-  bool changed = false;
-  for (const auto& record : mesh_loads_) {
-    if (record->consumed || !record->future.isFinished()) {
-      continue;
-    }
-    MeshData data = record->future.result();
-    record->failed = !data.ok;
-    if (data.ok) {
-      mesh_pass_->setMeshData(record->key, std::move(data));
-      ++loaded_mesh_count_;
-    }
-    record->consumed = true;
-    changed = true;
-  }
-  if (changed) {
+  // Evict failed paths from the loader so a Retry re-imports instead of being
+  // handed the cached failure forever (M.30).
+  const MeshLoadSet::DrainResult drained =
+      mesh_loads_->drain(*mesh_pass_, [this](const std::string& key, const MeshLoadEntry&) {
+        if (mesh_loader_ != nullptr) {
+          mesh_loader_->evict(QString::fromStdString(key));
+        }
+      });
+  if (drained.changed) {
+    // A placeholder cube must swap to the freshly-loaded mesh, so the cached
+    // draw lists are now stale (meshReady() flips for the drained keys).
+    draws_dirty_ = true;
+    updateMeshCounters();  // recompute loaded_mesh_count_ from ready() entries
     emit meshLoadStatusChanged(loaded_mesh_count_, total_mesh_count_, unresolvedPackagesList());
     // Swap the placeholder for the loaded mesh now — meshLoadStatusChanged only
     // feeds the config-widget label and schedules no paint.
@@ -1046,34 +1082,30 @@ void RobotModelLayer::pollMeshLoads() {
   }
 }
 
-RobotModelLayer::MeshLoadRecord* RobotModelLayer::meshLoadForKey(const std::string& key) const {
-  for (const auto& record : mesh_loads_) {
-    if (record->key == key) {
-      return record.get();
-    }
-  }
-  return nullptr;
-}
-
 bool RobotModelLayer::meshReady(const std::string& key) const {
-  const MeshLoadRecord* record = meshLoadForKey(key);
-  return record != nullptr && record->consumed && !record->failed;
+  return mesh_loads_->ready(key);
 }
 
 void RobotModelLayer::updateMeshCounters() {
+  total_mesh_count_ = 0;
+  unresolved_mesh_count_ = 0;
+  loaded_mesh_count_ = 0;
   if (!model_.has_value()) {
     return;
   }
-  total_mesh_count_ = 0;
-  unresolved_mesh_count_ = 0;
+  // Single traversal, all counts per-geometry mesh reference (links sharing one
+  // file each count once). A reference is unresolved when it has no resolved
+  // path; loaded when its resolved path's async load is ready().
   auto count = [&](const LinkGeom& geom) {
     const auto* mesh = std::get_if<GeomMesh>(&geom.shape);
     if (mesh == nullptr) {
       return;
     }
     ++total_mesh_count_;
-    if (!mesh->resolved) {
+    if (!mesh->resolved || mesh->resolved_path.empty()) {
       ++unresolved_mesh_count_;
+    } else if (mesh_loads_->ready(mesh->resolved_path)) {
+      ++loaded_mesh_count_;
     }
   };
   for (const RobotLink& link : model_->links) {
@@ -1095,7 +1127,72 @@ void RobotModelLayer::setStatus(QString status) {
 }
 
 QStringList RobotModelLayer::unresolvedPackagesList() const {
-  return resolver_ != nullptr ? resolver_->unresolvedPackages() : QStringList{};
+  // Per-MODEL, not resolver-global: the resolver is dock-shared across robot
+  // layers, so deriving the list from this layer's own model_ keeps one robot's
+  // unresolved packages from polluting a sibling's status/Locate (review M.29).
+  // Distinct package names, in first-seen order.
+  QStringList packages;
+  if (!model_.has_value()) {
+    return packages;
+  }
+  auto collect = [&](const LinkGeom& geom) {
+    const auto* mesh = std::get_if<GeomMesh>(&geom.shape);
+    if (mesh == nullptr || mesh->unresolved_package.empty()) {
+      return;
+    }
+    const QString package = QString::fromStdString(mesh->unresolved_package);
+    if (!packages.contains(package)) {
+      packages.append(package);
+    }
+  };
+  for (const RobotLink& link : model_->links) {
+    for (const LinkGeom& geom : link.visuals) {
+      collect(geom);
+    }
+    for (const LinkGeom& geom : link.collisions) {
+      collect(geom);
+    }
+  }
+  return packages;
+}
+
+QString RobotModelLayer::unresolvedIssueClause() const {
+  if (!model_.has_value()) {
+    return {};
+  }
+  // Count unresolved meshes by reason kind so the status line stays actionable
+  // beyond the generic "N packages unresolved" (which only covers package://
+  // misses). kBlockedHttp and kMissingFile are the kinds the user can do nothing
+  // about via Locate, so we name them explicitly (review L.31).
+  int blocked_http = 0;
+  int missing_file = 0;
+  auto tally = [&](const LinkGeom& geom) {
+    const auto* mesh = std::get_if<GeomMesh>(&geom.shape);
+    if (mesh == nullptr) {
+      return;
+    }
+    if (mesh->issue == MeshResolveIssue::kBlockedHttp) {
+      ++blocked_http;
+    } else if (mesh->issue == MeshResolveIssue::kMissingFile) {
+      ++missing_file;
+    }
+  };
+  for (const RobotLink& link : model_->links) {
+    for (const LinkGeom& geom : link.visuals) {
+      tally(geom);
+    }
+    for (const LinkGeom& geom : link.collisions) {
+      tally(geom);
+    }
+  }
+  QString clause;
+  if (blocked_http > 0) {
+    clause += tr("  •  %n http ref(s) blocked (file-source URDF)", nullptr, blocked_http);
+  }
+  if (missing_file > 0) {
+    clause += tr("  •  %n absolute path(s) missing", nullptr, missing_file);
+  }
+  return clause;
 }
 
 }  // namespace pj::scene3d

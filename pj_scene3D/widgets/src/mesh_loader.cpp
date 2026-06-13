@@ -14,6 +14,7 @@
 #include <assimp/Importer.hpp>
 #include <cstdint>
 #include <cstdio>
+#include <exception>
 #include <glm/gtc/matrix_transform.hpp>
 #include <string>
 #include <vector>
@@ -335,51 +336,88 @@ bool MeshLoader::wantsZUpFlip(const QString& format_hint) {
 }
 
 MeshData MeshLoader::importFromFile(const QString& path, bool flip_to_z_up) {
-  Assimp::Importer importer;
-  const aiScene* scene = importer.ReadFile(path.toStdString(), kPostProcessFlags);
-  if (scene == nullptr) {
-    MeshData out;
-    out.error = QString::fromUtf8(importer.GetErrorString());
-    if (out.error.isEmpty()) {
-      out.error = QStringLiteral("assimp failed to import %1").arg(path);
+  // Exception barrier: assimp drives allocations from file-declared counts and
+  // buildMeshData reserves from them too, so hostile input can throw
+  // bad_alloc/length_error. This runs on a QtConcurrent worker — an escaped
+  // exception would be rethrown by QFuture::result() on the GUI thread (inside
+  // paintGL) and terminate the app. Mirrors pointcloud_codecs.cpp's barriers.
+  try {
+    Assimp::Importer importer;
+    const aiScene* scene = importer.ReadFile(path.toStdString(), kPostProcessFlags);
+    if (scene == nullptr) {
+      MeshData out;
+      out.error = QString::fromUtf8(importer.GetErrorString());
+      if (out.error.isEmpty()) {
+        out.error = QStringLiteral("assimp failed to import %1").arg(path);
+      }
+      return out;
     }
+    return buildMeshData(scene, flip_to_z_up, path, QFileInfo(path).absolutePath());
+  } catch (const std::exception& ex) {
+    MeshData out;
+    out.error = QStringLiteral("mesh import of %1 threw: %2").arg(path, QString::fromUtf8(ex.what()));
+    return out;
+  } catch (...) {
+    MeshData out;
+    out.error = QStringLiteral("mesh import of %1 threw an unknown exception").arg(path);
     return out;
   }
-  return buildMeshData(scene, flip_to_z_up, path, QFileInfo(path).absolutePath());
 }
 
 MeshData MeshLoader::importFromMemory(const QByteArray& bytes, const QString& format_hint, bool flip_to_z_up) {
-  Assimp::Importer importer;
-  const std::string hint = format_hint.toStdString();
-  const aiScene* scene = importer.ReadFileFromMemory(
-      bytes.constData(), static_cast<std::size_t>(bytes.size()), kPostProcessFlags,
-      hint.empty() ? nullptr : hint.c_str());
-  if (scene == nullptr) {
-    MeshData out;
-    out.error = QString::fromUtf8(importer.GetErrorString());
-    if (out.error.isEmpty()) {
-      out.error = QStringLiteral("assimp failed to import %1 buffer").arg(format_hint);
+  // Same exception barrier as importFromFile (see the comment there).
+  try {
+    Assimp::Importer importer;
+    const std::string hint = format_hint.toStdString();
+    const aiScene* scene = importer.ReadFileFromMemory(
+        bytes.constData(), static_cast<std::size_t>(bytes.size()), kPostProcessFlags,
+        hint.empty() ? nullptr : hint.c_str());
+    if (scene == nullptr) {
+      MeshData out;
+      out.error = QString::fromUtf8(importer.GetErrorString());
+      if (out.error.isEmpty()) {
+        out.error = QStringLiteral("assimp failed to import %1 buffer").arg(format_hint);
+      }
+      return out;
     }
+    // Embedded buffers (glTF/GLB, the Waymo path) keep their per-submesh materials:
+    // embedded textures are extracted into Material::base_color etc. by readMaterial,
+    // so there is no external base_dir to resolve against and nothing to flatten.
+    return buildMeshData(scene, flip_to_z_up, QStringLiteral("<memory:%1>").arg(format_hint), QString{});
+  } catch (const std::exception& ex) {
+    MeshData out;
+    out.error = QStringLiteral("mesh import of %1 buffer threw: %2").arg(format_hint, QString::fromUtf8(ex.what()));
+    return out;
+  } catch (...) {
+    MeshData out;
+    out.error = QStringLiteral("mesh import of %1 buffer threw an unknown exception").arg(format_hint);
     return out;
   }
-  // Embedded buffers (glTF/GLB, the Waymo path) keep their per-submesh materials:
-  // embedded textures are extracted into Material::base_color etc. by readMaterial,
-  // so there is no external base_dir to resolve against and nothing to flatten.
-  return buildMeshData(scene, flip_to_z_up, QStringLiteral("<memory:%1>").arg(format_hint), QString{});
 }
 
-QFuture<MeshData> MeshLoader::load(const QString& resolved_path) {
+namespace {
+// Compose the cache key from the resolved path and the effective flip. A NUL
+// byte separates them: NUL cannot appear in a filesystem path, so the two flip
+// variants of one path can never collide with each other or with another path.
+QString meshCacheKey(const QString& resolved_path, bool flip) {
+  return resolved_path + QLatin1Char('\0') + QLatin1Char(flip ? '1' : '0');
+}
+}  // namespace
+
+QFuture<MeshData> MeshLoader::load(const QString& resolved_path, std::optional<bool> flip_override) {
+  // assimp infers the format from the extension. The effective flip is the
+  // caller's override when given, else the per-format default (wantsZUpFlip):
+  // DAE/glTF arrive Y-up and flip; STL/OBJ stay as-is.
+  const bool flip = flip_override.value_or(wantsZUpFlip(QFileInfo(resolved_path).suffix()));
+  const QString key = meshCacheKey(resolved_path, flip);
   QMutexLocker lock(&cache_mutex_);
-  auto it = cache_.find(resolved_path);
+  auto it = cache_.find(key);
   if (it != cache_.end()) {
     return it.value();
   }
-  // assimp infers the format from the extension. wantsZUpFlip() decides the
-  // Y->Z rotation per format: DAE/glTF arrive Y-up and flip; STL/OBJ stay as-is.
-  const bool flip = wantsZUpFlip(QFileInfo(resolved_path).suffix());
   QFuture<MeshData> future =
       QtConcurrent::run([resolved_path, flip]() { return MeshLoader::importFromFile(resolved_path, flip); });
-  cache_.insert(resolved_path, future);
+  cache_.insert(key, future);
   return future;
 }
 
@@ -393,6 +431,14 @@ QFuture<MeshData> MeshLoader::loadFromMemory(const QByteArray& bytes, const QStr
 void MeshLoader::clearCache() {
   QMutexLocker lock(&cache_mutex_);
   cache_.clear();
+}
+
+void MeshLoader::evict(const QString& resolved_path) {
+  QMutexLocker lock(&cache_mutex_);
+  // The cache is keyed by path+effective-flip; remove both flip variants so a
+  // Retry re-imports regardless of which override was in effect at load time.
+  cache_.remove(meshCacheKey(resolved_path, false));
+  cache_.remove(meshCacheKey(resolved_path, true));
 }
 
 }  // namespace pj::scene3d

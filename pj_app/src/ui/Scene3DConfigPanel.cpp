@@ -6,11 +6,13 @@
 #include <QButtonGroup>
 #include <QComboBox>
 #include <QDialogButtonBox>
+#include <QEvent>
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QFormLayout>
 #include <QHBoxLayout>
 #include <QLineEdit>
+#include <QMouseEvent>
 #include <QSettings>
 #include <QToolButton>
 #include <QUrl>
@@ -22,6 +24,7 @@
 #include <vector>
 
 #include "pj_scene3d_widgets/Scene3DDockWidget.h"
+#include "pj_scene3d_widgets/layers/robot_model_layer.h"
 #include "pj_scene3d_widgets/mesh_shading_params.h"
 #include "pj_scene3d_widgets/scene_view_widget.h"
 #include "pj_scene_common/scene_dock_widget.h"
@@ -39,7 +42,6 @@ namespace PJ {
 
 namespace {
 
-constexpr char kSettingsGroup[] = "pj_scene3d/scene_controls";
 constexpr char kUrdfBrowseDirKey[] = "pj_scene3d/urdf_browse_dir";
 constexpr auto kVisibilityOnPath = ":/resources/svg/visibility.svg";
 constexpr auto kVisibilityOffPath = ":/resources/svg/visibility_off.svg";
@@ -115,6 +117,9 @@ DoubleScrubber* makeScrubber(double min, double max, double step, double value) 
 }  // namespace
 
 Scene3DConfigPanel::Scene3DConfigPanel(QWidget* parent) : QWidget(parent) {
+  // Scene-control persistence is debounced via settings_writer_ (apply stays
+  // live per tick; the QSettings write coalesces to once the drag settles).
+
   // Zero outer margins so the section header bands (Grid · Transforms and
   // RobotModel · Topics · Settings) span edge-to-edge like the plotting
   // panel's Curve Width / Curve Style bands; each content block under a band
@@ -165,7 +170,7 @@ Scene3DConfigPanel::Scene3DConfigPanel(QWidget* parent) : QWidget(parent) {
 
 void Scene3DConfigPanel::buildSceneControls(QVBoxLayout* root) {
   QSettings settings;
-  settings.beginGroup(QString::fromLatin1(kSettingsGroup));
+  settings.beginGroup(QString::fromLatin1(kScene3dSceneControlsGroup));
   // Each control: init from QSettings (defaults = the User's look-dev pick),
   // persist + re-apply to the bound dock on every change.
   const auto wire = [this, &settings](auto* widget, const char* key, auto read, auto signal) {
@@ -174,13 +179,13 @@ void Scene3DConfigPanel::buildSceneControls(QVBoxLayout* root) {
       read(saved);
     }
     connect(widget, signal, this, [this, widget]() {
-      QSettings s;
-      s.beginGroup(QString::fromLatin1(kSettingsGroup));
+      // Persist debounced (one INI rewrite per settled drag, not per tick), but
+      // apply live every tick so the view tracks the scrubber.
       const QString settings_key = widget->property("settings_key").toString();
       if (auto* dscrub = qobject_cast<DoubleScrubber*>(widget)) {
-        s.setValue(settings_key, dscrub->value());
+        settings_writer_.queue(settings_key, dscrub->value());
       } else if (auto* iscrub = qobject_cast<IntScrubber*>(widget)) {
-        s.setValue(settings_key, iscrub->value());
+        settings_writer_.queue(settings_key, iscrub->value());
       }
       applySceneControls();
     });
@@ -200,9 +205,7 @@ void Scene3DConfigPanel::buildSceneControls(QVBoxLayout* root) {
     eye->setProperty("settings_key", QString::fromLatin1(key));
     eye->setChecked(settings.value(QString::fromLatin1(key), true).toBool());
     connect(eye, &QToolButton::toggled, this, [this, eye](bool checked) {
-      QSettings s;
-      s.beginGroup(QString::fromLatin1(kSettingsGroup));
-      s.setValue(eye->property("settings_key").toString(), checked);
+      settings_writer_.queue(eye->property("settings_key").toString(), checked);
       eye->setIcon(LoadSvg(QLatin1String(checked ? kVisibilityOnPath : kVisibilityOffPath), theme_));
       applySceneControls();
     });
@@ -249,9 +252,7 @@ void Scene3DConfigPanel::buildSceneControls(QVBoxLayout* root) {
   const int saved_style = settings.value(QStringLiteral("grid_style"), 0).toInt();
   (saved_style == 1 ? grid_cells_button_ : grid_lines_button_)->setChecked(true);
   connect(style_group, &QButtonGroup::idClicked, this, [this](int id) {
-    QSettings s;
-    s.beginGroup(QString::fromLatin1(kSettingsGroup));
-    s.setValue(QStringLiteral("grid_style"), id);
+    settings_writer_.queue(QStringLiteral("grid_style"), id);
     applySceneControls();
   });
   grid_eye_ = make_eye("grid_visible", tr("Show/hide the grid"));
@@ -394,6 +395,9 @@ void Scene3DConfigPanel::onAddModelClicked() {
       if (path.isEmpty()) {
         return;
       }
+      if (bound_dock_ == nullptr) {
+        return;  // the modal event loop can outlive the dock
+      }
       settings.setValue(QString::fromLatin1(kUrdfBrowseDirKey), QFileInfo(path).absolutePath());
       const uint32_t id = bound_dock_->addRobotModelLayer(path).id;
       if (id != 0) {
@@ -411,6 +415,11 @@ void Scene3DConfigPanel::onAddModelClicked() {
       if (!picked.has_value()) {
         return;
       }
+      if (bound_dock_ == nullptr) {
+        return;  // the modal event loop can outlive the dock
+      }
+      // addRobotRow is idempotent, so the row created here is harmless when the
+      // layerAdded signal (or a pre-existing layer) would have added it anyway.
       if (bound_dock_->addTopic(picked->first, sdk::BuiltinObjectType::kRobotDescription, picked->second)) {
         addRobotRow(picked->first.id, picked->second, picked->second);
       }
@@ -420,6 +429,9 @@ void Scene3DConfigPanel::onAddModelClicked() {
       const auto url = promptUrdfUrl(this);
       if (!url.has_value()) {
         return;
+      }
+      if (bound_dock_ == nullptr) {
+        return;  // the modal event loop can outlive the dock
       }
       const uint32_t id = bound_dock_->addRobotModelLayerFromUrl(*url).id;
       if (id != 0) {
@@ -434,6 +446,14 @@ void Scene3DConfigPanel::onAddModelClicked() {
 }
 
 void Scene3DConfigPanel::addRobotRow(uint32_t topic_id_value, const QString& label, const QString& tooltip) {
+  // Idempotent: rows are derived from dock state and rebuilt on every bind, and
+  // both onAddModelClicked and the layerAdded signal can target the same id.
+  const auto existing = std::find_if(
+      robot_rows_.begin(), robot_rows_.end(), [&](const auto& pair) { return pair.first == topic_id_value; });
+  if (existing != robot_rows_.end()) {
+    return;
+  }
+
   auto* row = new QWidget(this);
   auto* layout = new QHBoxLayout(row);
   layout->setContentsMargins(0, 0, 0, 0);
@@ -443,6 +463,12 @@ void Scene3DConfigPanel::addRobotRow(uint32_t topic_id_value, const QString& lab
   name->setFocusPolicy(Qt::NoFocus);
   name->setAlignment(Qt::AlignCenter);
   name->setToolTip(tooltip);
+  // Clicking the name field selects the robot: it binds the Settings host to the
+  // layer's config widget (source combo / status / Retry). The id rides on a
+  // property so the panel's eventFilter can route the press without per-row state.
+  name->setProperty("robot_topic_id", topic_id_value);
+  name->setCursor(Qt::PointingHandCursor);
+  name->installEventFilter(this);
   layout->addWidget(name, 1);
   auto* trash = new QToolButton(row);
   // Same flat styling as the topic-row trash buttons (QSS keys on this name).
@@ -461,6 +487,52 @@ void Scene3DConfigPanel::addRobotRow(uint32_t topic_id_value, const QString& lab
   });
   robot_rows_layout_->addWidget(row);
   robot_rows_.emplace_back(topic_id_value, row);
+
+  // Mirror the layer's status onto the name tooltip — the cheap error surface
+  // for load failures ("Fetch failed …" / "Failed to read URDF …") that would
+  // otherwise be invisible until the row is clicked. Kept fresh via the signal.
+  if (bound_dock_ != nullptr) {
+    ObjectTopicId topic_id;
+    topic_id.id = topic_id_value;
+    if (auto* robot = qobject_cast<pj::scene3d::RobotModelLayer*>(bound_dock_->layerFor(topic_id))) {
+      const QString status = robot->statusText();
+      if (!status.isEmpty()) {
+        name->setToolTip(status);
+      }
+      connect(
+          robot, &pj::scene3d::RobotModelLayer::statusTextChanged, name, [name, tooltip](const QString& status_text) {
+            name->setToolTip(status_text.isEmpty() ? tooltip : status_text);
+          });
+    }
+  }
+}
+
+void Scene3DConfigPanel::showRobotLayerConfig(uint32_t topic_id_value) {
+  if (bound_dock_ == nullptr) {
+    return;
+  }
+  ObjectTopicId topic_id;
+  topic_id.id = topic_id_value;
+  ISceneLayer* layer = bound_dock_->layerFor(topic_id);
+  if (layer == nullptr) {
+    return;
+  }
+  // Robot layers aren't in the Topics list, so the list selection is unrelated;
+  // last click wins on config_host_ (the list selection stays as-is).
+  config_host_->setConfigWidget(layer->createConfigWidget(config_host_));
+}
+
+bool Scene3DConfigPanel::eventFilter(QObject* watched, QEvent* event) {
+  if (event->type() == QEvent::MouseButtonPress) {
+    auto* mouse = static_cast<QMouseEvent*>(event);
+    if (mouse->button() == Qt::LeftButton) {
+      const QVariant topic_id = watched->property("robot_topic_id");
+      if (topic_id.isValid()) {
+        showRobotLayerConfig(topic_id.toUInt());
+      }
+    }
+  }
+  return QWidget::eventFilter(watched, event);
 }
 
 void Scene3DConfigPanel::removeRobotRowFor(uint32_t topic_id_value) {
@@ -521,8 +593,11 @@ void Scene3DConfigPanel::rebuildLayerList() {
   const auto layers = bound_dock_->layers();
   rows.reserve(layers.size());
   for (const SceneLayerInfo& info : layers) {
-    // Robot-model layers are owned by the Model/URDF selector, not the list.
+    // Robot-model layers stay out of the Topics list; they get a dedicated row
+    // under the Model/URDF selector, rebuilt here from dock state (so layout
+    // restore and dock switches recover the rows — bindDock cleared them).
     if (info.object_type == sdk::BuiltinObjectType::kRobotDescription) {
+      addRobotRow(info.topic_id.id, info.display_name, info.display_name);
       continue;
     }
     rows.push_back(rowFromLayerInfo(info));
@@ -550,7 +625,10 @@ void Scene3DConfigPanel::onLayerAdded(ObjectTopicId topic_id) {
   }
   const SceneLayerInfo info = layer->info();
   if (info.object_type == sdk::BuiltinObjectType::kRobotDescription) {
-    return;  // robot layers live in the Model/URDF selector, not the list
+    // Robot layers get a Model/URDF row, not a Topics-list row. Idempotent, so
+    // a row already created by onAddModelClicked is not duplicated here.
+    addRobotRow(info.topic_id.id, info.display_name, info.display_name);
+    return;
   }
   layer_list_->addRow(rowFromLayerInfo(info));
   const auto warning = bound_dock_->orphanState(topic_id);

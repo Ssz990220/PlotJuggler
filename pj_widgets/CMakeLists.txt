@@ -23,6 +23,7 @@ add_library(pj_widgets STATIC
     src/RecentFilesMenu.cpp
     src/ScrubberBase.cpp
     src/SectionHeaderBand.cpp
+    src/SettingsDebouncer.cpp
     src/ToggleSwitch.cpp
     src/VisualizationPlaceholderWidget.cpp
     include/pj_widgets/ChromeMetrics.h
@@ -49,6 +50,7 @@ add_library(pj_widgets STATIC
     include/pj_widgets/RecentFilesMenu.h
     include/pj_widgets/ScrubberBase.h
     include/pj_widgets/SectionHeaderBand.h
+    include/pj_widgets/SettingsDebouncer.h
     include/pj_widgets/Style.h
     include/pj_widgets/SvgUtil.h
     include/pj_widgets/ThemeColors.h

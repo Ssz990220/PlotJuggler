@@ -32,6 +32,7 @@ set(PJ_SCENE3D_WIDGETS_SOURCES
   src/urdf_parser.cpp
   src/urdf_package_resolver.cpp
   src/mesh_loader.cpp
+  src/url_fetcher.cpp
   src/Scene3DDockWidget.cpp
   src/transform_service.cpp
   include/pj_scene3d_widgets/scene_view_widget.h
@@ -95,6 +96,7 @@ if(PJ_BUILD_TESTS)
     mesh_render_pass_test
     robot_model_layer_test
     scene_entities_layer_model_test
+    url_fetcher_test
   )
   foreach(test_name ${PJ_SCENE3D_WIDGETS_TESTS})
     add_executable(${test_name} tests/${test_name}.cpp)
@@ -105,4 +107,11 @@ if(PJ_BUILD_TESTS)
     target_compile_options(${test_name} PRIVATE ${PJ_WARNING_FLAGS} ${PJ_SANITIZER_FLAGS})
     add_test(NAME ${test_name} COMMAND ${test_name})
   endforeach()
+  # These tests stand up in-process QTcpServer endpoints / talk Qt networking
+  # directly; pj_scene3d_widgets links Qt6::Network only PRIVATEly.
+  target_link_libraries(url_fetcher_test PRIVATE Qt6::Network)
+  target_link_libraries(scene_entities_layer_model_test PRIVATE Qt6::Network)
+  # The robot-model test asserts the render() draw-cache invalidation set via the
+  # PJ_SCENE3D_TEST_HOOKS-gated drawsDirtyForTest()/clearDrawsDirtyForTest().
+  target_compile_definitions(robot_model_layer_test PRIVATE PJ_SCENE3D_TEST_HOOKS)
 endif()

@@ -14,6 +14,13 @@ namespace pj::scene3d {
 
 namespace {
 
+// Bound on the synchronous GUI-thread DOM parse. Real URDFs are well under 10 MB
+// of text; 32 MB is a generous safety margin. QDomDocument::setContent blocks the
+// UI for the full parse duration, so we reject anything above this before handing
+// it to Qt. (Entity-expansion and external-entity risks are already mitigated by
+// Qt 6's QXmlStreamReader layer, so the residual risk is only UI-freeze.)
+constexpr std::size_t kMaxUrdfBytes = 32u * 1024u * 1024u;
+
 // Parse a whitespace-separated list of doubles ("x y z") into a fixed array.
 // Returns false if fewer than N tokens parse.
 template <std::size_t N>
@@ -100,6 +107,8 @@ bool parseGeometry(
       const ResolvedMesh r = resolver->resolveUri(m.filename, urdf_dir, source_is_url);
       m.resolved = r.resolved;
       m.resolved_path = r.path;
+      m.issue = r.issue;
+      m.unresolved_package = r.package;
     }
     out = m;
     return true;
@@ -107,24 +116,34 @@ bool parseGeometry(
   return false;
 }
 
-// Resolve a <material> (inline <color rgba> or a named ref into `materials`).
-// Returns true and fills `geom.color`/`has_color` when a color is found.
+// Read a <color rgba="r g b a"/> element into a vec4. Returns nullopt when the
+// element is null or "rgba" fails to parse; default {0.7,0.7,0.7,1.0} lives
+// here so both callers share the same fallback.
+std::optional<glm::vec4> readColorRgba(const QDomElement& color_el) {
+  if (color_el.isNull()) {
+    return std::nullopt;
+  }
+  std::array<double, 4> rgba{0.7, 0.7, 0.7, 1.0};
+  if (!parseDoubles(color_el.attribute(QStringLiteral("rgba")), rgba)) {
+    return std::nullopt;
+  }
+  return glm::vec4{
+      static_cast<float>(rgba[0]), static_cast<float>(rgba[1]), static_cast<float>(rgba[2]),
+      static_cast<float>(rgba[3])};
+}
+
+// Fills geom.color and sets geom.has_color when an inline or named color is
+// found; otherwise leaves the LinkGeom defaults.
 void parseMaterial(
     const QDomElement& parent, const std::unordered_map<std::string, glm::vec4>& materials, LinkGeom& geom) {
   const QDomElement mat = parent.firstChildElement(QStringLiteral("material"));
   if (mat.isNull()) {
     return;
   }
-  const QDomElement color = mat.firstChildElement(QStringLiteral("color"));
-  if (!color.isNull()) {
-    std::array<double, 4> rgba{0.7, 0.7, 0.7, 1.0};
-    if (parseDoubles(color.attribute(QStringLiteral("rgba")), rgba)) {
-      geom.color = {
-          static_cast<float>(rgba[0]), static_cast<float>(rgba[1]), static_cast<float>(rgba[2]),
-          static_cast<float>(rgba[3])};
-      geom.has_color = true;
-      return;
-    }
+  if (auto rgba = readColorRgba(mat.firstChildElement(QStringLiteral("color")))) {
+    geom.color = *rgba;
+    geom.has_color = true;
+    return;
   }
   // Named material reference: <material name="Foo"/> with no inline color.
   const std::string name = mat.attribute(QStringLiteral("name")).toStdString();
@@ -171,6 +190,12 @@ std::pair<std::optional<RobotModel>, std::string> parseUrdf(
   if (looksLikeXacro(xml, filename)) {
     return {std::nullopt, "Unsupported format: xacro — run `xacro input.xacro > output.urdf` and load the result."};
   }
+  if (xml.size() > kMaxUrdfBytes) {
+    const double size_mib = static_cast<double>(xml.size()) / (1024.0 * 1024.0);
+    return {
+        std::nullopt,
+        "robot_description too large (" + std::to_string(static_cast<int>(size_mib + 0.5)) + " MiB, limit 32 MiB)"};
+  }
 
   QDomDocument doc;
   const QByteArray bytes = QByteArray::fromStdString(xml);
@@ -205,15 +230,11 @@ std::pair<std::optional<RobotModel>, std::string> parseUrdf(
   for (QDomElement mat = root.firstChildElement(QStringLiteral("material")); !mat.isNull();
        mat = mat.nextSiblingElement(QStringLiteral("material"))) {
     const std::string name = mat.attribute(QStringLiteral("name")).toStdString();
-    const QDomElement color = mat.firstChildElement(QStringLiteral("color"));
-    if (name.empty() || color.isNull()) {
+    if (name.empty()) {
       continue;
     }
-    std::array<double, 4> rgba{0.7, 0.7, 0.7, 1.0};
-    if (parseDoubles(color.attribute(QStringLiteral("rgba")), rgba)) {
-      materials[name] = {
-          static_cast<float>(rgba[0]), static_cast<float>(rgba[1]), static_cast<float>(rgba[2]),
-          static_cast<float>(rgba[3])};
+    if (auto rgba = readColorRgba(mat.firstChildElement(QStringLiteral("color")))) {
+      materials[name] = *rgba;
     }
   }
 

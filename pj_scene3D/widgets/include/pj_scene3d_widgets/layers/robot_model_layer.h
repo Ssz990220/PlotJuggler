@@ -8,31 +8,64 @@
 #include <chrono>
 #include <cstdint>
 #include <memory>
-#include <mutex>
 #include <optional>
 #include <string>
 #include <vector>
 
 #include "pj_datastore/object_store.hpp"
 #include "pj_scene3d_core/robot_model.h"
+// Needed in full (not forward-declared) because render() memoizes
+// std::vector<MeshRenderPass::DrawCall> members — a nested type that requires
+// the enclosing class to be complete. The header is public + self-contained
+// (it pulls mesh_data.h, no private src/ include), exactly as the sibling
+// scene_entities_layer.h already includes it.
+#include "pj_scene3d_widgets/passes/mesh_render_pass.h"
 #include "pj_scene3d_widgets/scene3d_layer.h"
-
-namespace PJ {
-class MessageParserPluginBase;
-}  // namespace PJ
 
 class QWidget;
 
 namespace pj::scene3d {
 
 class MeshLoader;
-class MeshRenderPass;
+class MeshLoadSet;
 class UrdfPackageResolver;
+class UrlFetcher;
 
+// Scene3DLayer that renders a robot's URDF (links, primitive geometry, and
+// async-loaded meshes) posed by the live TF tree. Unlike the per-tick store
+// layers it decodes its description at most once per source change and then
+// latches, so it is not a hot path.
+//
+// Three source modes (SourceType):
+//   - kTopic: a robot_description object topic in the ObjectStore, decoded
+//     through the topic's MessageParser. The first sample is latched; while the
+//     topic is still empty the layer waits and retries on each tracker tick.
+//   - kFile:  a local URDF/XML file read directly.
+//   - kUrl:   a file://, http://, or https:// URL fetched ASYNCHRONOUSLY:
+//     loadFromCurrentSource() (attach, xmlLoadState, the config widget) only
+//     kicks the fetch off and the model is applied when the bytes land. The
+//     layer never blocks the GUI thread on the network.
+//
+// Parser lifetime (kTopic): like its sibling store layers, parsers are
+// deliberately NOT cached. Every decode resolves a fresh ParserBinding through
+// ctx_.session (see parseLocked()), so a file reload that re-registers the
+// topic's parser slot can never leave us decoding through a freed handle.
+//
+// The layer is deliberately bounds-less: it contributes nothing to the camera's
+// scene-fit AABB (it inherits Scene3DLayer::worldBounds()'s std::nullopt
+// default). A robot is posed by the live TF tree, which the camera already
+// frames through the other store-backed layers, so adding its links to the fit
+// would pull the camera around as joints move.
 class RobotModelLayer : public Scene3DLayer {
   Q_OBJECT
  public:
   enum class SourceType { kTopic, kFile, kUrl };
+  // kVisual: render only <visual> geometry; kCollision: render only <collision>
+  // geometry (through the collision opacity/visibility group). kAuto: per link,
+  // its <visual> geometry when present, else its <collision> geometry rendered
+  // AS visuals (the mesh opacity/visibility group, NOT the collision sliders) —
+  // deliberate, so collision-only URDFs render solid by default instead of
+  // ghosting at the collision group's 0.4 default opacity (review L.21).
   enum class DisplayMode { kAuto, kVisual, kCollision };
 
   RobotModelLayer(PJ::ObjectTopicId topic_id, QString display_name, QObject* parent = nullptr);
@@ -55,7 +88,8 @@ class RobotModelLayer : public Scene3DLayer {
   void initializeGL() override;
   void render(const ViewParams& view_params, const FrameContext& frame_ctx) override;
   void releaseGL() override;
-  [[nodiscard]] std::optional<AABB> worldBounds() const override;
+  // worldBounds(): inherits Scene3DLayer's std::nullopt default (this layer is
+  // bounds-less by design — see the class doc-comment).
 
   QWidget* createConfigWidget(QWidget* parent) override;
 
@@ -66,6 +100,11 @@ class RobotModelLayer : public Scene3DLayer {
   void setFramePrefix(QString prefix);
   void setDisplayMode(DisplayMode mode);
   void setFallbackColor(QColor color);
+  // Toggle the COLLADA up-axis override. When true, .dae/.collada meshes load
+  // with the Y->Z flip forced OFF (the loader otherwise flips them — see
+  // MeshLoader::load flip_override); other formats (STL/OBJ/glTF) are unaffected.
+  // Changing the value reloads from the current source (clearing the loader
+  // cache) so the new flip takes effect; an unchanged value is a no-op.
   void setIgnoreColladaUpAxis(bool ignore);
 
   [[nodiscard]] SourceType sourceType() const {
@@ -100,36 +139,67 @@ class RobotModelLayer : public Scene3DLayer {
   }
   [[nodiscard]] QString linkFrameName(const std::string& link_name) const;
 
+#ifdef PJ_SCENE3D_TEST_HOOKS
+  // Exposes the render() memoization dirty flag so a GL-less test can assert the
+  // invalidation set: setters that change geometry flip it back on. Whether
+  // render() consumes (clears) it cannot be exercised here — that path needs a
+  // live GL context the unit harness does not provide, so the test clears the
+  // flag manually (mimicking what render() does after a rebuild) and checks that
+  // each invalidating call re-sets it.
+  [[nodiscard]] bool drawsDirtyForTest() const {
+    return draws_dirty_;
+  }
+  void clearDrawsDirtyForTest() {
+    draws_dirty_ = false;
+  }
+#endif
+
  signals:
+  // Mesh-load progress. UNIT: all three of loaded/total/unresolved count
+  // per-GEOMETRY mesh references, NOT unique files — several links sharing one
+  // mesh file each count once, and `loaded` reaches `total` once their shared
+  // file is imported. (unresolved_packages, by contrast, is the resolver's
+  // distinct-package list.) updateMeshCounters() is the single source of truth.
   void meshLoadStatusChanged(int loaded, int total, QStringList unresolved_packages);
   void unresolvedPackages(QStringList packages);
   void statusTextChanged(const QString& status);
 
  private:
-  struct MeshLoadRecord;
-
+  // Rebuild cached_visual_draws_ / cached_collision_draws_ from the model posed
+  // by frame_ctx's TF lookups. Called by render() only when draws_dirty_.
+  void rebuildDrawCache(const FrameContext& frame_ctx);
   bool loadFromCurrentSource();
   bool tryLoadTopicDescription();
   bool applyRobotDescription(
       const QString& text, const QString& format, const QString& label, const QString& urdf_dir, bool source_is_url);
   void startMeshLoads();
-  // Drain finished async loads into the mesh pass; emits meshLoadStatusChanged
-  // + repaintRequested when anything landed. Called from render() and from each
-  // load's QFutureWatcher, so a completed mesh replaces its placeholder without
-  // waiting for an unrelated repaint.
+  // Drain finished async loads into the mesh pass, recompute the loaded counter,
+  // then emit meshLoadStatusChanged + repaintRequested when anything landed.
+  // Called from render() and from each load's QFutureWatcher, so a completed
+  // mesh replaces its placeholder without waiting for an unrelated repaint.
   void pollMeshLoads();
-  [[nodiscard]] MeshLoadRecord* meshLoadForKey(const std::string& key) const;
+  // O(1): the resolved-path-keyed load finished successfully. Per-frame draw path.
   [[nodiscard]] bool meshReady(const std::string& key) const;
+  // Single source of truth for all three counters: one traversal of every
+  // per-geometry mesh reference. ++total per GeomMesh; ++unresolved when the
+  // mesh is unresolved or has no resolved_path; ++loaded when its resolved path's
+  // load is ready(). startMeshLoads() does NOT touch the counters.
   void updateMeshCounters();
   void setStatus(QString status);
+  // Distinct unresolved package names for THIS model (not the dock-shared
+  // resolver's global tally), in first-seen order. Empty when all resolved.
   [[nodiscard]] QStringList unresolvedPackagesList() const;
+  // A short " • N http refs blocked / N absolute paths missing" suffix for the
+  // status line, covering the unresolved kinds Locate cannot fix. Empty when
+  // there are none.
+  [[nodiscard]] QString unresolvedIssueClause() const;
 
   PJ::ObjectTopicId topic_id_;
   PJ::ObjectTopicId source_topic_id_;
   QString display_name_;
   Scene3DLayerContext ctx_;
-  PJ::MessageParserPluginBase* parser_ = nullptr;
-  std::shared_ptr<std::mutex> parser_mutex_;
+  // No parser pointer is cached here: tryLoadTopicDescription() resolves a fresh
+  // ParserBinding per decode (see the class lifetime note above).
 
   SourceType source_type_{SourceType::kTopic};
   QString source_value_;
@@ -149,11 +219,39 @@ class RobotModelLayer : public Scene3DLayer {
   int unresolved_mesh_count_{0};
   int loaded_mesh_count_{0};
 
+  // Memoized per-link DrawCall lists, rebuilt by render() only when
+  // draws_dirty_. The lists are camera-independent (model matrices, colors,
+  // mesh keys — no view/projection), so a camera-only repaint (orbit/zoom)
+  // reuses them; the opacity/visibility gates and view_params stay per-frame.
+  // INVALIDATION SET — must be kept exhaustive by construction. draws_dirty_ is
+  // set in every place that can change the geometry: setTrackerTime (TF reaches
+  // the layer ONLY via tracker ticks, which the dock drives on every live
+  // ingest tick and every scrub, so TF-driven pose changes are covered — the
+  // one residual is a TF mutation at an unchanged playhead with no tracker
+  // tick, which renders one frame stale), setFixedFrame, setFramePrefix,
+  // setDisplayMode, setFallbackColor, setIgnoreColladaUpAxis, setVisible(true)
+  // (the cache may predate a hide), applyRobotDescription, xmlLoadState, detach,
+  // and pollMeshLoads when a drain reported a change (a placeholder cube must
+  // swap to the real mesh). When adding a new setter that affects geometry, add
+  // it to this set.
+  std::vector<MeshRenderPass::DrawCall> cached_visual_draws_;
+  std::vector<MeshRenderPass::DrawCall> cached_collision_draws_;
+  bool draws_dirty_{true};
+
   std::unique_ptr<UrdfPackageResolver> owned_resolver_;
   UrdfPackageResolver* resolver_{nullptr};
   std::unique_ptr<MeshLoader> mesh_loader_;
   std::unique_ptr<MeshRenderPass> mesh_pass_;
-  std::vector<std::unique_ptr<MeshLoadRecord>> mesh_loads_;
+  // Async mesh loads keyed by resolved path. Held by unique_ptr so this header
+  // can forward-declare MeshLoadSet (its definition lives in the private src/).
+  std::unique_ptr<MeshLoadSet> mesh_loads_;
+  // Async fetcher for the kUrl source, owned by the layer: destroying the layer
+  // (or detach()) aborts an in-flight fetch and drops its callback.
+  std::unique_ptr<UrlFetcher> url_fetcher_;
+  // Monotonic stamp bumped by every loadFromCurrentSource()/detach(); a URL
+  // fetch result is applied only if no newer load superseded it (source
+  // switched, Retry pressed, layer detached).
+  uint64_t url_fetch_generation_{0};
 };
 
 }  // namespace pj::scene3d

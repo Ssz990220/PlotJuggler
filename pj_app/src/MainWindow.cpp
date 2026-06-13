@@ -1145,7 +1145,7 @@ void MainWindow::setIconSize(int size) {
     return;
   }
   chrome_metrics_.icon_size = clamped;
-  QSettings().setValue(QString::fromLatin1(kIconSizeKey), clamped);
+  chrome_settings_writer_.queue(kIconSizeKey, clamped);
   emit chromeMetricsChanged(chrome_metrics_);
 }
 
@@ -1155,7 +1155,7 @@ void MainWindow::setIconPadding(int padding) {
     return;
   }
   chrome_metrics_.icon_padding = clamped;
-  QSettings().setValue(QString::fromLatin1(kIconPaddingKey), clamped);
+  chrome_settings_writer_.queue(kIconPaddingKey, clamped);
   emit chromeMetricsChanged(chrome_metrics_);
 }
 
@@ -1165,7 +1165,7 @@ void MainWindow::setLayoutPadding(int padding) {
     return;
   }
   chrome_metrics_.layout_padding = clamped;
-  QSettings().setValue(QString::fromLatin1(kLayoutPaddingKey), clamped);
+  chrome_settings_writer_.queue(kLayoutPaddingKey, clamped);
   emit chromeMetricsChanged(chrome_metrics_);
 }
 
@@ -1175,7 +1175,7 @@ void MainWindow::setLayoutSpacing(int spacing) {
     return;
   }
   chrome_metrics_.layout_spacing = clamped;
-  QSettings().setValue(QString::fromLatin1(kLayoutSpacingKey), clamped);
+  chrome_settings_writer_.queue(kLayoutSpacingKey, clamped);
   emit chromeMetricsChanged(chrome_metrics_);
 }
 

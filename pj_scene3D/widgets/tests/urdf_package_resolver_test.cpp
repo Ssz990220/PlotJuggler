@@ -61,16 +61,41 @@ TEST(UrdfResolver, BarePathJoinsUrdfDirAndSkipsPackageSearch) {
   const ResolvedMesh m = r.resolveUri("demo_description/meshes/x.stl", "/urdf/dir", false);
   EXPECT_TRUE(m.resolved);
   EXPECT_EQ(m.path, "/urdf/dir/demo_description/meshes/x.stl");
-  EXPECT_TRUE(r.unresolvedPackages().isEmpty());  // chain never ran
+  // The chain never ran: no package recorded on the result.
+  EXPECT_TRUE(m.package.empty());
+  EXPECT_EQ(m.issue, MeshResolveIssue::kNone);
 }
 
 TEST(UrdfResolver, HttpBlockedForNonUrlSource) {
   UrdfPackageResolver r;
   const ResolvedMesh blocked = r.resolveUri("https://host/m.stl", "/dir", /*source_is_url=*/false);
   EXPECT_FALSE(blocked.resolved);
+  EXPECT_EQ(blocked.issue, MeshResolveIssue::kBlockedHttp);
+  EXPECT_TRUE(blocked.package.empty());  // not a package:// ref
   const ResolvedMesh allowed = r.resolveUri("https://host/m.stl", "https://host/", /*source_is_url=*/true);
   EXPECT_TRUE(allowed.resolved);
   EXPECT_TRUE(allowed.is_url);
+  EXPECT_EQ(allowed.issue, MeshResolveIssue::kNone);
+}
+
+// An absolute filesystem path that exists is returned verbatim (NOT joined onto
+// urdf_dir); a missing one is unresolved with kMissingFile (review M.36).
+TEST(UrdfResolver, AbsolutePathPassthroughAndMissing) {
+  UrdfPackageResolver r;
+  QTemporaryFile existing;
+  ASSERT_TRUE(existing.open());
+  existing.write("STL");
+  existing.close();
+  const std::string abs = existing.fileName().toStdString();
+  const ResolvedMesh hit = r.resolveUri(abs, "/some/urdf/dir", /*source_is_url=*/false);
+  EXPECT_TRUE(hit.resolved);
+  EXPECT_EQ(hit.path, abs);  // verbatim, not "/some/urdf/dir" + abs
+  EXPECT_FALSE(hit.is_url);
+  EXPECT_EQ(hit.issue, MeshResolveIssue::kNone);
+
+  const ResolvedMesh miss = r.resolveUri("/does/not/exist/arm.stl", "/some/urdf/dir", /*source_is_url=*/false);
+  EXPECT_FALSE(miss.resolved);
+  EXPECT_EQ(miss.issue, MeshResolveIssue::kMissingFile);
 }
 
 // ---------------------------------------------------------------------------
@@ -165,18 +190,28 @@ TEST(UrdfResolver, Step3_AutoSeedFromEnv) {
 }
 
 // ---------------------------------------------------------------------------
-// Chain step 4 — unresolved recorded for ask-once
+// Chain miss — unresolved package is reported on the result (not a global tally)
 // ---------------------------------------------------------------------------
 
-TEST(UrdfResolver, Step4_UnresolvedRecorded) {
+TEST(UrdfResolver, PackageMissReportedOnResult) {
   UrdfPackageResolver r;  // no attachments, no settings, no roots
+  // resolve() (the package chain) returns "" on a miss; resolveUri() surfaces
+  // the offending package + reason in the return value (no resolver-global tally).
   const std::string p = r.resolve("ghost_pkg", "meshes/x.stl", "", false);
   EXPECT_TRUE(p.empty());
-  ASSERT_EQ(r.unresolvedPackages().size(), 1);
-  EXPECT_EQ(r.unresolvedPackages().first(), "ghost_pkg");
-  // Idempotent: a second miss for the same pkg does not duplicate.
-  r.resolve("ghost_pkg", "meshes/y.stl", "", false);
-  EXPECT_EQ(r.unresolvedPackages().size(), 1);
+  const ResolvedMesh m = r.resolveUri("package://ghost_pkg/meshes/x.stl", "", false);
+  EXPECT_FALSE(m.resolved);
+  EXPECT_EQ(m.package, "ghost_pkg");
+  EXPECT_EQ(m.issue, MeshResolveIssue::kUnresolvedPackage);
+}
+
+// A malformed package:// URI (no "/rel" part) is reported as kMalformedRef.
+TEST(UrdfResolver, MalformedPackageUriReported) {
+  UrdfPackageResolver r;
+  const ResolvedMesh m = r.resolveUri("package://justpkg", "", false);
+  EXPECT_FALSE(m.resolved);
+  EXPECT_EQ(m.issue, MeshResolveIssue::kMalformedRef);
+  EXPECT_TRUE(m.package.empty());
 }
 
 // ---------------------------------------------------------------------------
@@ -196,17 +231,15 @@ TEST(UrdfResolver, AttachmentTakesPriorityOverSearchRoot) {
   EXPECT_EQ(f.readAll(), QByteArray("ATTACHED"));  // not the on-disk search-root file
 }
 
-// rememberPackageRoot persists globally + clears the unresolved entry.
-TEST(UrdfResolver, RememberClearsUnresolvedAndPersists) {
+// rememberPackageRoot persists globally and makes the package resolvable.
+TEST(UrdfResolver, RememberPersistsAndResolves) {
   ScopedSettings s;
   UrdfPackageResolver r;
   r.setSettings(s.get());
   r.setMcapPath("/data/x.mcap");
   EXPECT_TRUE(r.resolve("demo_description", "meshes/base.stl", "", false).empty());
-  EXPECT_TRUE(r.unresolvedPackages().contains("demo_description"));
 
   r.rememberPackageRoot("demo_description", QString::fromStdString(fixtures() + "/search_root/demo_description"));
-  EXPECT_FALSE(r.unresolvedPackages().contains("demo_description"));
   // Now resolvable via the freshly-added global root.
   const std::string p = r.resolve("demo_description", "meshes/base.stl", "", false);
   EXPECT_EQ(p, fixtures() + "/search_root/demo_description/meshes/base.stl");
@@ -229,6 +262,85 @@ TEST(UrdfResolver, RememberEnablesCrossDatasetSearchRoot) {
   r2.autoSeedSearchRoots("");           // loads the persisted global root (the PARENT dir)
   const std::string p = r2.resolve("demo_description", "meshes/base.stl", "", false);
   EXPECT_EQ(p, fixtures() + "/search_root/demo_description/meshes/base.stl");
+}
+
+// ---------------------------------------------------------------------------
+// Attachment extraction: collision-proof on-disk names + immutable rewrite-skip
+// ---------------------------------------------------------------------------
+
+// Two well-formed refs that flatten to the SAME name ("package://pkg/a/b.stl" vs
+// "package://pkg/a_b.stl" both -> "package___pkg_a_b.stl") must extract to
+// DISTINCT files with their respective bytes — the hash prefix disambiguates
+// them (review L.32).
+TEST(UrdfResolver, CollidingAttachmentRefsExtractToDistinctFiles) {
+  UrdfPackageResolver r;
+  QMap<QString, QByteArray> att;
+  att.insert("package://pkg/a/b.stl", QByteArray("FIRST"));
+  att.insert("package://pkg/a_b.stl", QByteArray("SECOND"));
+  r.setMcapAttachments(att);
+
+  const ResolvedMesh first = r.resolveUri("package://pkg/a/b.stl", "", false);
+  const ResolvedMesh second = r.resolveUri("package://pkg/a_b.stl", "", false);
+  ASSERT_TRUE(first.resolved);
+  ASSERT_TRUE(second.resolved);
+  EXPECT_NE(first.path, second.path);  // distinct on-disk files, no overwrite
+
+  QFile f1(QString::fromStdString(first.path));
+  ASSERT_TRUE(f1.open(QIODevice::ReadOnly));
+  EXPECT_EQ(f1.readAll(), QByteArray("FIRST"));
+  QFile f2(QString::fromStdString(second.path));
+  ASSERT_TRUE(f2.open(QIODevice::ReadOnly));
+  EXPECT_EQ(f2.readAll(), QByteArray("SECOND"));
+}
+
+// A second resolve of the same attachment returns the same path WITHOUT
+// rewriting the file (immutable content) — guards the truncation-under-assimp
+// race (review M.42). We overwrite the extracted bytes out-of-band, resolve
+// again, and assert the resolver left our bytes intact (it did not reopen
+// WriteOnly).
+TEST(UrdfResolver, AttachmentReResolveDoesNotRewrite) {
+  UrdfPackageResolver r;
+  QMap<QString, QByteArray> att;
+  att.insert("package://demo/mesh.stl", QByteArray("ORIGINAL"));
+  r.setMcapAttachments(att);
+
+  const ResolvedMesh first = r.resolveUri("package://demo/mesh.stl", "", false);
+  ASSERT_TRUE(first.resolved);
+  // Tamper with the extracted file out-of-band.
+  {
+    QFile tamper(QString::fromStdString(first.path));
+    ASSERT_TRUE(tamper.open(QIODevice::WriteOnly | QIODevice::Truncate));
+    tamper.write("TAMPERED");
+    tamper.close();
+  }
+  const ResolvedMesh second = r.resolveUri("package://demo/mesh.stl", "", false);
+  ASSERT_TRUE(second.resolved);
+  EXPECT_EQ(second.path, first.path);
+  // The resolver must NOT have rewritten the (immutable) file with attachment
+  // bytes — our tampered content is still there.
+  QFile check(QString::fromStdString(second.path));
+  ASSERT_TRUE(check.open(QIODevice::ReadOnly));
+  EXPECT_EQ(check.readAll(), QByteArray("TAMPERED"));
+}
+
+// setMcapAttachments replaces the map AND resets the extraction dir, so a stale
+// file from the previous map cannot be served for a new ref.
+TEST(UrdfResolver, SetAttachmentsResetsExtractionDir) {
+  UrdfPackageResolver r;
+  QMap<QString, QByteArray> first_map;
+  first_map.insert("package://demo/mesh.stl", QByteArray("OLD"));
+  r.setMcapAttachments(first_map);
+  const ResolvedMesh old = r.resolveUri("package://demo/mesh.stl", "", false);
+  ASSERT_TRUE(old.resolved);
+
+  QMap<QString, QByteArray> second_map;
+  second_map.insert("package://demo/mesh.stl", QByteArray("NEW"));
+  r.setMcapAttachments(second_map);
+  const ResolvedMesh fresh = r.resolveUri("package://demo/mesh.stl", "", false);
+  ASSERT_TRUE(fresh.resolved);
+  QFile f(QString::fromStdString(fresh.path));
+  ASSERT_TRUE(f.open(QIODevice::ReadOnly));
+  EXPECT_EQ(f.readAll(), QByteArray("NEW"));
 }
 
 }  // namespace

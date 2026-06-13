@@ -108,3 +108,21 @@ set_target_properties(layer_list_view_test PROPERTIES
 )
 
 add_test(NAME LayerListViewTest COMMAND layer_list_view_test)
+
+add_executable(settings_debouncer_test settings_debouncer_test.cpp)
+
+target_link_libraries(settings_debouncer_test PRIVATE
+    pj_widgets
+    GTest::gtest
+    Qt6::Test
+)
+
+if(DEFINED PJ_WARNING_FLAGS)
+    target_compile_options(settings_debouncer_test PRIVATE ${PJ_WARNING_FLAGS})
+endif()
+
+set_target_properties(settings_debouncer_test PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
+)
+
+add_test(NAME SettingsDebouncer COMMAND settings_debouncer_test)

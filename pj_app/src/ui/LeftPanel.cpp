@@ -121,10 +121,12 @@ LeftPanel::LeftPanel(QWidget* parent) : QWidget(parent), ui_(new Ui::LeftPanel) 
       ui_->buttonStreamingPause, &QPushButton::toggled, this, [this](bool) { applyPauseButtonState(currentTheme()); });
   connect(ui_->comboStreaming, &QComboBox::currentTextChanged, this, &LeftPanel::streamingSourceChanged);
 
-  // Buffer scrubber: restore from QSettings on construct, persist + emit on change.
+  // Buffer scrubber: restore from QSettings on construct, persist (debounced) +
+  // emit on change. The scrubber emits per drag tick, so persist via
+  // settings_writer_ to coalesce the .ini rewrite to once the drag settles.
   ui_->streamingSpinBox->setValue(QSettings().value(kStreamingBufferKey, 5).toInt());
   connect(ui_->streamingSpinBox, &IntScrubber::valueChanged, this, [this](int seconds) {
-    QSettings().setValue(kStreamingBufferKey, seconds);
+    settings_writer_.queue(kStreamingBufferKey, seconds);
     emit streamingBufferChanged(seconds);
   });
 }

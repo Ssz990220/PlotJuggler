@@ -10,10 +10,10 @@
 #include <cstring>
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
-#include <glm/gtc/quaternion.hpp>
 #include <stdexcept>
 #include <utility>
 
+#include "pj_scene3d_core/scene_entities_decode.h"  // poseToMat4 (shared Pose->mat4)
 #include "pj_scene3d_core/tf/tf_buffer.h"
 #include "pj_scene3d_core/tf/transform.h"
 
@@ -39,17 +39,6 @@ void withGlFunctions(Callback&& callback) {
   }
   functions->initializeOpenGLFunctions();
   callback(*functions);
-}
-
-glm::mat4 poseToMat4(const PJ::sdk::Pose& p) {
-  const glm::quat q(
-      static_cast<float>(p.orientation.w), static_cast<float>(p.orientation.x), static_cast<float>(p.orientation.y),
-      static_cast<float>(p.orientation.z));
-  const glm::mat4 rot = glm::mat4_cast(q);
-  const glm::mat4 trans = glm::translate(
-      glm::mat4(1.0f),
-      glm::vec3(static_cast<float>(p.position.x), static_cast<float>(p.position.y), static_cast<float>(p.position.z)));
-  return trans * rot;
 }
 
 // Unit quad in the local xy-plane: in_uv in [0,1]^2 doubles as position and

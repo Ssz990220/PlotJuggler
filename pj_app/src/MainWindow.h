@@ -23,6 +23,7 @@
 #include "pj_base/types.hpp"
 #include "pj_plotting/CurveTracker.h"
 #include "pj_widgets/ChromeMetrics.h"
+#include "pj_widgets/SettingsDebouncer.h"
 
 class QAction;
 class QButtonGroup;
@@ -524,6 +525,10 @@ class MainWindow : public QMainWindow {
   // Loaded from QSettings before any child widget is built so the first
   // applyIcons() of each widget already uses the saved metrics.
   ChromeMetrics chrome_metrics_;
+  // Debounces the chrome-metric setter writes: dragging a Preferences sizing
+  // scrubber applies live every tick but rewrites the .ini only once per settle
+  // window (root scope — the keys are already fully qualified, e.g. ui/icon_size).
+  SettingsDebouncer chrome_settings_writer_;
   // Three-state cycle for the playback tracker info level (line / +value /
   // +value+name). Default kValue matches PJ3 (mainwindow.cpp:154).
   CurveTracker::Parameter tracker_info_ = CurveTracker::kValue;

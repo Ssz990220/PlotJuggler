@@ -8,14 +8,36 @@
 #include <glm/gtc/quaternion.hpp>
 
 namespace pj::scene3d {
-namespace {
 
-glm::vec4 toVec4(const PJ::sdk::ColorRGBA& c) {
-  return {c.r / 255.0F, c.g / 255.0F, c.b / 255.0F, c.a / 255.0F};
+glm::mat4 poseToMat4(const PJ::sdk::Pose& pose) {
+  const glm::mat4 t = glm::translate(
+      glm::mat4(1.0F), glm::vec3(
+                           static_cast<float>(pose.position.x), static_cast<float>(pose.position.y),
+                           static_cast<float>(pose.position.z)));
+  const glm::quat q(
+      static_cast<float>(pose.orientation.w), static_cast<float>(pose.orientation.x),
+      static_cast<float>(pose.orientation.y), static_cast<float>(pose.orientation.z));
+  return t * glm::mat4_cast(glm::normalize(q));
 }
 
-glm::vec3 toVec3(const PJ::sdk::Point3& p) {
-  return {static_cast<float>(p.x), static_cast<float>(p.y), static_cast<float>(p.z)};
+glm::vec3 toVec3(const PJ::sdk::Point3& point) {
+  return {static_cast<float>(point.x), static_cast<float>(point.y), static_cast<float>(point.z)};
+}
+
+glm::vec3 toVec3(const PJ::sdk::Vector3& vec) {
+  return {static_cast<float>(vec.x), static_cast<float>(vec.y), static_cast<float>(vec.z)};
+}
+
+glm::vec4 toVec4(const PJ::sdk::ColorRGBA& color) {
+  return {color.r / 255.0F, color.g / 255.0F, color.b / 255.0F, color.a / 255.0F};
+}
+
+namespace {
+
+// Local model matrix for a solid primitive: pose-aligned, then non-uniformly
+// scaled by its bounding extents (cube side lengths, sphere/ellipsoid diameters).
+glm::mat4 solidModel(const PJ::sdk::Pose& pose, const PJ::sdk::Vector3& size) {
+  return poseToMat4(pose) * glm::scale(glm::mat4(1.0F), toVec3(size));
 }
 
 // Intern a frame_id into `frames`, returning its index. Frames per batch are
@@ -30,48 +52,20 @@ std::uint32_t internFrame(std::vector<std::string>& frames, const std::string& i
   return static_cast<std::uint32_t>(frames.size() - 1);
 }
 
-// Compose a primitive's LOCAL model matrix from its pose: T * R, so the rotation
-// acts about the pose's own origin and is then offset to the position (the
-// correct rigid-body-pose semantics; R * T would orbit the frame origin).
-// The rotation stays a quaternion all the way to the matrix (no Euler round-trip,
-// no gimbal lock). Two gotchas handled here: the canonical sdk::Quaternion is
-// {x, y, z, w} but glm::quat takes (w, x, y, z); and we normalize defensively in
-// case a producer emits a non-unit quaternion (mat4_cast assumes unit length).
-glm::mat4 poseMatrix(const PJ::sdk::Pose& pose) {
-  const glm::mat4 t = glm::translate(
-      glm::mat4(1.0F), glm::vec3(
-                           static_cast<float>(pose.position.x), static_cast<float>(pose.position.y),
-                           static_cast<float>(pose.position.z)));
-  const glm::quat q(
-      static_cast<float>(pose.orientation.w), static_cast<float>(pose.orientation.x),
-      static_cast<float>(pose.orientation.y), static_cast<float>(pose.orientation.z));
-  return t * glm::mat4_cast(glm::normalize(q));
-}
-
 void decodeEntity(const PJ::sdk::SceneEntity& entity, DecodedSceneEntities& out) {
   const std::uint32_t frame = internFrame(out.frames, entity.frame_id);
 
   for (const auto& cube : entity.cubes) {
-    const glm::mat4 model = poseMatrix(cube.pose) *
-                            glm::scale(
-                                glm::mat4(1.0F), glm::vec3(
-                                                     static_cast<float>(cube.size.x), static_cast<float>(cube.size.y),
-                                                     static_cast<float>(cube.size.z)));
-    out.cubes.push_back({model, toVec4(cube.color), frame});
+    out.cubes.push_back({solidModel(cube.pose, cube.size), toVec4(cube.color), frame});
   }
 
   for (const auto& sphere : entity.spheres) {
-    const glm::mat4 model = poseMatrix(sphere.pose) * glm::scale(
-                                                          glm::mat4(1.0F), glm::vec3(
-                                                                               static_cast<float>(sphere.size.x),
-                                                                               static_cast<float>(sphere.size.y),
-                                                                               static_cast<float>(sphere.size.z)));
-    out.spheres.push_back({model, toVec4(sphere.color), frame});
+    out.spheres.push_back({solidModel(sphere.pose, sphere.size), toVec4(sphere.color), frame});
   }
 
   for (const auto& line : entity.lines) {
     MarkerLineBatch batch;
-    batch.model = poseMatrix(line.pose);
+    batch.model = poseToMat4(line.pose);
     batch.color = toVec4(line.color);
     batch.thickness = static_cast<float>(line.thickness);
     batch.frame_index = frame;
@@ -128,29 +122,25 @@ void decodeEntity(const PJ::sdk::SceneEntity& entity, DecodedSceneEntities& out)
   }
 
   for (const auto& cyl : entity.cylinders) {
-    const glm::mat4 model =
-        poseMatrix(cyl.pose) *
-        glm::scale(
-            glm::mat4(1.0F),
-            glm::vec3(static_cast<float>(cyl.size.x), static_cast<float>(cyl.size.y), static_cast<float>(cyl.size.z)));
     out.cylinders.push_back(
-        {model, toVec4(cyl.color), static_cast<float>(cyl.bottom_scale), static_cast<float>(cyl.top_scale), frame});
+        {solidModel(cyl.pose, cyl.size), toVec4(cyl.color), static_cast<float>(cyl.bottom_scale),
+         static_cast<float>(cyl.top_scale), frame});
   }
 
   for (const auto& arrow : entity.arrows) {
     out.arrows.push_back(
-        {poseMatrix(arrow.pose), toVec4(arrow.color), static_cast<float>(arrow.shaft_length),
+        {poseToMat4(arrow.pose), toVec4(arrow.color), static_cast<float>(arrow.shaft_length),
          static_cast<float>(arrow.shaft_diameter), static_cast<float>(arrow.head_length),
          static_cast<float>(arrow.head_diameter), frame});
   }
 
   for (const auto& ax : entity.axes) {
-    out.axes.push_back({poseMatrix(ax.pose), static_cast<float>(ax.length), static_cast<float>(ax.thickness), frame});
+    out.axes.push_back({poseToMat4(ax.pose), static_cast<float>(ax.length), static_cast<float>(ax.thickness), frame});
   }
 
   for (const auto& tri : entity.triangles) {
     MarkerTriangleBatch batch;
-    batch.model = poseMatrix(tri.pose);
+    batch.model = poseToMat4(tri.pose);
     batch.color = toVec4(tri.color);
     batch.frame_index = frame;
 
@@ -198,7 +188,7 @@ void decodeEntity(const PJ::sdk::SceneEntity& entity, DecodedSceneEntities& out)
       continue;
     }
     out.texts.push_back(
-        {poseMatrix(text.pose), toVec4(text.color), text.text, static_cast<float>(text.font_size), text.billboard,
+        {poseToMat4(text.pose), toVec4(text.color), text.text, static_cast<float>(text.font_size), text.billboard,
          frame});
   }
 }

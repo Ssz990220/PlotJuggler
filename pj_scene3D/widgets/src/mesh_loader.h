@@ -13,6 +13,7 @@
 #include <QHash>
 #include <QMutex>
 #include <QString>
+#include <optional>
 
 #include "pj_scene3d_widgets/mesh_data.h"
 
@@ -26,16 +27,28 @@ class MeshLoader {
   MeshLoader() = default;
 
   // Load from a resolved filesystem path. Returns a cached future when the same
-  // path was loaded before. assimp infers the format from the file extension.
-  QFuture<MeshData> load(const QString& resolved_path);
+  // (path, effective-flip) pair was loaded before. assimp infers the format from
+  // the file extension. `flip_override`, when set, forces the Y-up -> Z-up flip
+  // on (true) or off (false) instead of the per-format default (wantsZUpFlip);
+  // RobotModelLayer passes false here to honor the COLLADA "ignore up_axis"
+  // toggle. The effective flip is part of the cache key, so toggling the override
+  // yields a distinct entry rather than the previously-flipped cached MeshData.
+  QFuture<MeshData> load(const QString& resolved_path, std::optional<bool> flip_override = std::nullopt);
 
   // Load from an in-memory buffer (embedded glTF / Waymo path, design §3). The
   // `format_hint` is an assimp extension hint without the dot (e.g. "glb",
   // "gltf", "dae") so assimp can pick the importer for headerless buffers.
   QFuture<MeshData> loadFromMemory(const QByteArray& bytes, const QString& format_hint);
 
-  // Drop all cached results (e.g. when a dataset is swapped out).
+  // Drop all cached results (e.g. when the layer switches to another URDF).
   void clearCache();
+
+  // Drop one cached path so the next load() of it re-imports. Evicts BOTH flip
+  // variants of the path (the cache is keyed by path+effective-flip), so callers
+  // need not know which override was in effect. Callers evict failed loads (a
+  // Retry would otherwise be handed the cached failure forever). An in-flight
+  // future keeps running detached; its result is simply no longer shared.
+  void evict(const QString& resolved_path);
 
   // Synchronous workers — exposed for unit tests and reused by the async paths.
   // `flip_to_z_up` applies the explicit Y-up -> Z-up (+90deg about X) into our

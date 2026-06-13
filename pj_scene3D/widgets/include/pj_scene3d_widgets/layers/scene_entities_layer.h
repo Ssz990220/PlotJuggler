@@ -2,6 +2,7 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 
+#include <QByteArray>
 #include <QColor>
 #include <QString>
 #include <QStringList>
@@ -25,6 +26,9 @@ class QWidget;
 namespace pj::scene3d {
 
 class MeshLoader;
+class MeshLoadSet;
+struct MeshLoadEntry;
+class UrlFetcher;
 
 // Concrete Scene3DLayer for a single visualization_msgs/MarkerArray-equivalent
 // topic (canonical sdk::SceneEntities, type kSceneEntities). Renders two
@@ -38,7 +42,12 @@ class MeshLoader;
 //   a MeshRenderPass plus an assimp MeshLoader. Model state is *stateful*: all
 //   batches up to the tracker time are replayed into an id-keyed entity map
 //   (replace-by-id, deletions, lifetime expiry, per SceneUpdate semantics) and
-//   mesh bytes load asynchronously with signature-based caching.
+//   mesh bytes load asynchronously with signature-based caching. URL sources
+//   are fetched asynchronously (UrlFetcher); DATA-SUPPLIED http(s) URLs are
+//   consent-gated behind the QSettings bool "pj_scene3d/allow_remote_model_fetch"
+//   (default OFF — a crafted dataset must not drive network egress), while
+//   local file URLs / bare paths always work. Blocked or failed URLs surface
+//   through remoteFetchNotice().
 //
 // Known divergence (follow-up): the marker path shows only the latest batch,
 // so markers from earlier batches with different entity ids disappear, while
@@ -120,9 +129,18 @@ class SceneEntitiesLayer : public Scene3DLayer {
   }
   [[nodiscard]] std::vector<MeshRenderPass::DrawCall> modelDrawCallsForFrame(const FrameContext& frame_ctx) const;
 
- private:
-  struct MeshLoadRecord;
+  // Human-readable status of the model-URL fetch path (URLs blocked by the
+  // remote-fetch consent gate, or failed fetches); empty when there is nothing
+  // to surface. Shown by the config widget; remoteFetchNoticeChanged tracks it.
+  [[nodiscard]] QString remoteFetchNotice() const {
+    return remote_fetch_notice_;
+  }
 
+ signals:
+  // remoteFetchNotice() changed (possibly back to empty).
+  void remoteFetchNoticeChanged(const QString& notice);
+
+ private:
   // Decode the first sample once at attach so we know the source frame and time
   // range before render is called.
   bool bootstrap();
@@ -157,8 +175,12 @@ class SceneEntitiesLayer : public Scene3DLayer {
   // with nextUIDAfter (cache-first, parse on miss). A default/invalid after_uid
   // starts from the first retained entry. Returns true if a snapshot was applied.
   bool applyEntriesAfter(PJ::SequentialUID after_uid, PJ::SequentialUID target_uid);
-  // Fold one decoded batch into entities_: upsert by entity id, then apply the
-  // batch's deletions (kAll / kMatchingId, gated on the deletion timestamp).
+  // Fold one decoded batch into entities_: apply the batch's deletions FIRST
+  // (against the pre-batch map), then upsert by entity id. Order matters:
+  // the SDK contract says deletions remove PRIOR entities; applying them first
+  // lets the DELETEALL+re-add republish pattern work (deletion and new entities
+  // in the same batch at the same timestamp → deletions clear old, upserts add
+  // new). kAll / kMatchingId branches are gated on the deletion timestamp.
   void applySnapshot(const PJ::sdk::SceneEntities& snapshot);
   // Erase entities whose lifetime elapsed before `time`. Returns true when at
   // least one entity was erased (the caller owes a repaint).
@@ -174,8 +196,16 @@ class SceneEntitiesLayer : public Scene3DLayer {
   // Kick startMeshLoadIfNeeded for every model of every live entity.
   void startMeshLoadsForCurrentEntities();
   // Start an async mesh load for `key` unless its source bytes (signature) are
-  // already loaded or loading; a changed signature blanks the mesh and reloads.
+  // already loaded, loading, fetching, or recorded as blocked/failed; a changed
+  // signature blanks the mesh and reloads. URL sources go through url_fetcher_
+  // (never synchronously); remote http(s) URLs are consent-gated (see class doc).
   void startMeshLoadIfNeeded(const std::string& key, const PJ::sdk::ModelPrimitive& primitive);
+  // Kick the assimp import of `bytes` on the entry: creates the future and the
+  // #PR183 completion watcher that drives pollMeshLoads -> repaintRequested.
+  void startRecordImport(MeshLoadEntry& entry, const QByteArray& bytes, const QString& format_hint);
+  // Recompute remote_fetch_notice_ from the current records and emit
+  // remoteFetchNoticeChanged when the text actually changed.
+  void updateRemoteFetchNotice();
   // Drain finished async loads into the mesh pass and request a repaint when
   // anything landed. Called from render() and from each load's QFutureWatcher,
   // so a completed mesh shows up without waiting for an unrelated repaint.
@@ -234,7 +264,17 @@ class SceneEntitiesLayer : public Scene3DLayer {
   QStringList model_frames_;
   std::unique_ptr<MeshLoader> mesh_loader_;
   std::unique_ptr<MeshRenderPass> mesh_pass_;
-  std::vector<std::unique_ptr<MeshLoadRecord>> mesh_loads_;
+  // Async mesh loads keyed by meshKey() ("topic:entity:index"); each entry's
+  // identity is the model source signature (a re-published model with new bytes
+  // replaces the entry). Held by unique_ptr so this header can forward-declare
+  // MeshLoadSet (its definition lives in the private src/).
+  std::unique_ptr<MeshLoadSet> mesh_loads_;
+  // Async fetcher for URL-sourced models, owned by the layer: destroying the
+  // layer (or resetReplayState) aborts in-flight fetches and drops their
+  // callbacks, so a completion can never touch a dead record list.
+  std::unique_ptr<UrlFetcher> url_fetcher_;
+  // Cached remoteFetchNotice() text (see accessor).
+  QString remote_fetch_notice_;
 };
 
 }  // namespace pj::scene3d

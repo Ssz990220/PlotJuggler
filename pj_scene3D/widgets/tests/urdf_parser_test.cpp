@@ -9,6 +9,7 @@
 #include <fstream>
 #include <sstream>
 #include <string>
+#include <variant>
 
 #include "pj_scene3d_core/robot_model.h"
 #include "urdf_package_resolver.h"
@@ -77,7 +78,7 @@ TEST(UrdfParser, PrimitiveGeometriesParsed) {
   const RobotLink* base = findLink(*model, "base_link");
   ASSERT_NE(base, nullptr);
   // visuals[1] is the box primitive.
-  ASSERT_EQ(kindOf(base->visuals[1].shape), GeomKind::kBox);
+  ASSERT_TRUE(std::holds_alternative<GeomBox>(base->visuals[1].shape));
   const auto& box = std::get<GeomBox>(base->visuals[1].shape);
   EXPECT_DOUBLE_EQ(box.size.x, 0.3);
   EXPECT_DOUBLE_EQ(box.size.y, 0.2);
@@ -85,7 +86,7 @@ TEST(UrdfParser, PrimitiveGeometriesParsed) {
 
   const RobotLink* arm = findLink(*model, "arm_link");
   ASSERT_NE(arm, nullptr);
-  ASSERT_EQ(kindOf(arm->visuals[0].shape), GeomKind::kCylinder);
+  ASSERT_TRUE(std::holds_alternative<GeomCylinder>(arm->visuals[0].shape));
   const auto& cyl = std::get<GeomCylinder>(arm->visuals[0].shape);
   EXPECT_DOUBLE_EQ(cyl.radius, 0.05);
   EXPECT_DOUBLE_EQ(cyl.length, 1.0);
@@ -145,9 +146,10 @@ TEST(UrdfParser, BarePathLooksLikePackageResolvesAgainstUrdfDir) {
   EXPECT_TRUE(mesh.resolved);  // resolved as a bare relative path …
   // … against urdf_dir, NOT via the package search (which never ran).
   EXPECT_EQ(mesh.resolved_path, urdf_dir + "/robotiq_arg85_description/meshes/gripper.stl");
-  // The guard kept this bare path out of the package chain: it is NEVER recorded
-  // as an unresolved package. (demo_description, a real package:// ref, may be.)
-  EXPECT_FALSE(resolver.unresolvedPackages().contains("robotiq_arg85_description"));
+  // The guard kept this bare path out of the package chain: no package is
+  // recorded on the mesh. (demo_description, a real package:// ref, would be.)
+  EXPECT_TRUE(mesh.unresolved_package.empty());
+  EXPECT_EQ(mesh.issue, MeshResolveIssue::kNone);
 }
 
 TEST(UrdfParser, PackageRefRecordedUnresolvedWhenNoRoots) {
@@ -160,7 +162,9 @@ TEST(UrdfParser, PackageRefRecordedUnresolvedWhenNoRoots) {
   ASSERT_NE(base, nullptr);
   const auto& mesh = std::get<GeomMesh>(base->visuals[0].shape);
   EXPECT_FALSE(mesh.resolved);
-  EXPECT_TRUE(resolver.unresolvedPackages().contains("demo_description"));
+  // The unresolved package now travels on the mesh, not a resolver-global tally.
+  EXPECT_EQ(mesh.unresolved_package, "demo_description");
+  EXPECT_EQ(mesh.issue, MeshResolveIssue::kUnresolvedPackage);
 }
 
 TEST(UrdfParser, XacroRejectedWithExplicitError) {
@@ -202,6 +206,25 @@ TEST(UrdfParser, JointsIgnored) {
   auto [model, err] = parseUrdf(xml, &resolver, "", false);
   ASSERT_TRUE(model.has_value()) << err;
   EXPECT_EQ(model->links.size(), 2u);  // a + b; the joint contributed no link
+}
+
+TEST(UrdfParser, OversizedInputRejectedWithSizeInMessage) {
+  // Build a string just over the 32 MiB cap by padding with XML comment content.
+  // We don't attempt to parse real XML — the check fires before setContent.
+  constexpr std::size_t kLimitBytes = 32u * 1024u * 1024u;
+  // Wrap the padding in a minimal valid XML prefix so looksLikeXacro passes.
+  const std::string prefix = "<?xml version=\"1.0\"?><robot name=\"x\"><!-- ";
+  const std::string suffix = " --><link name=\"a\"/></robot>";
+  const std::size_t pad_size = kLimitBytes + 1 - prefix.size() - suffix.size();
+  std::string xml = prefix + std::string(pad_size, 'x') + suffix;
+  ASSERT_GT(xml.size(), kLimitBytes);
+
+  UrdfPackageResolver resolver;
+  auto [model, err] = parseUrdf(xml, &resolver, "", false);
+  EXPECT_FALSE(model.has_value());
+  // Error must mention the size so the user understands why it was rejected.
+  EXPECT_NE(err.find("MiB"), std::string::npos) << "error was: " << err;
+  EXPECT_NE(err.find("32"), std::string::npos) << "error was: " << err;
 }
 
 }  // namespace

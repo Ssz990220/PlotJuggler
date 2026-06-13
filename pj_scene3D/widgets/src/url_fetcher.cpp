@@ -1,0 +1,100 @@
+// Copyright 2026 Davide Faconti
+// SPDX-License-Identifier: MPL-2.0
+#include "url_fetcher.h"
+
+#include <QFile>
+#include <QNetworkReply>
+#include <QNetworkRequest>
+#include <QTimer>
+#include <QVariant>
+#include <memory>
+#include <utility>
+
+namespace pj::scene3d {
+namespace {
+
+FetchResult readLocalFile(const QString& path) {
+  FetchResult result;
+  QFile file(path);
+  if (!file.open(QIODevice::ReadOnly)) {
+    result.error = file.errorString();
+    return result;
+  }
+  result.bytes = file.readAll();
+  result.ok = true;
+  return result;
+}
+
+}  // namespace
+
+UrlFetcher::UrlFetcher(QObject* parent) : QObject(parent) {}
+
+void UrlFetcher::deliverLater(std::function<void(FetchResult)> on_done, FetchResult result) {
+  QTimer::singleShot(0, this, [on_done = std::move(on_done), result = std::move(result)]() { on_done(result); });
+}
+
+void UrlFetcher::fetch(const QUrl& url, std::function<void(FetchResult)> on_done) {
+  // Local sources never touch the network: file:// URLs and scheme-less bare
+  // paths read straight from disk (still delivered asynchronously).
+  if (url.isLocalFile()) {
+    deliverLater(std::move(on_done), readLocalFile(url.toLocalFile()));
+    return;
+  }
+  if (url.scheme().isEmpty()) {
+    deliverLater(std::move(on_done), readLocalFile(url.toString()));
+    return;
+  }
+  if (url.scheme() != QStringLiteral("http") && url.scheme() != QStringLiteral("https")) {
+    FetchResult result;
+    result.error = tr("unsupported URL scheme '%1'").arg(url.scheme());
+    deliverLater(std::move(on_done), std::move(result));
+    return;
+  }
+
+  QNetworkRequest request(url);
+  // Bounded redirects with no https->http downgrade (see the class contract for
+  // why this is the chosen policy) and a transfer timeout instead of a
+  // hand-rolled wall-clock QTimer.
+  request.setAttribute(QNetworkRequest::RedirectPolicyAttribute, QNetworkRequest::NoLessSafeRedirectPolicy);
+  request.setMaximumRedirectsAllowed(4);
+  request.setTransferTimeout(15000);
+
+  QNetworkReply* reply = manager_.get(request);
+  // Size cap: abort as soon as either the declared Content-Length (headers,
+  // metaDataChanged) or the bytes actually buffered (readyRead) exceed
+  // kMaxFetchBytes. Deliberately NOT downloadProgress: Qt throttles it (~100 ms
+  // choke, bypassed only at completion), so a trickling over-cap response could
+  // evade enforcement. `capped` disambiguates our own abort from a genuine
+  // network error in the finished handler. bytesAvailable() counts the whole
+  // buffered body because nothing reads the reply before finished.
+  auto capped = std::make_shared<bool>(false);
+  const auto enforce_cap = [reply, capped]() {
+    if (*capped) {
+      return;
+    }
+    const QVariant declared = reply->header(QNetworkRequest::ContentLengthHeader);
+    if ((declared.isValid() && declared.toLongLong() > kMaxFetchBytes) || reply->bytesAvailable() > kMaxFetchBytes) {
+      *capped = true;
+      reply->abort();
+    }
+  };
+  connect(reply, &QNetworkReply::metaDataChanged, this, enforce_cap);
+  connect(reply, &QNetworkReply::readyRead, this, enforce_cap);
+  // `this` as context: destroying the fetcher severs this connection (and the
+  // reply, a child of manager_, is aborted), so the callback is dropped.
+  connect(reply, &QNetworkReply::finished, this, [reply, capped, on_done = std::move(on_done)]() {
+    reply->deleteLater();
+    FetchResult result;
+    if (*capped) {
+      result.error = tr("response exceeds the %1 MiB limit").arg(kMaxFetchBytes / (1024 * 1024));
+    } else if (reply->error() != QNetworkReply::NoError) {
+      result.error = reply->errorString();
+    } else {
+      result.bytes = reply->readAll();
+      result.ok = true;
+    }
+    on_done(std::move(result));
+  });
+}
+
+}  // namespace pj::scene3d

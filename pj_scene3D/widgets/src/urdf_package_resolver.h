@@ -27,16 +27,25 @@
 #include <memory>
 #include <string>
 
+#include "pj_scene3d_core/robot_model.h"
+
 class QTemporaryDir;
 
 namespace pj::scene3d {
 
-// Outcome of a resolveUri() call.
+// Outcome of a resolveUri() call. Unresolved tracking is per-call (carried out
+// in the return value), NOT resolver-global: the resolver is dock-shared across
+// robot layers, so a global tally would let one layer's load wipe/pollute a
+// sibling's (review M.29). The layer collects `package`/`issue` into its own
+// per-model set.
 struct ResolvedMesh {
   bool resolved{false};
   std::string path;     // local filesystem path or fetchable URL when resolved
   std::string package;  // the unresolved package name (when !resolved && was package://)
   bool is_url{false};   // path is an http(s):// URL to fetch
+  // Why resolution failed (kNone when resolved). The layer folds this into its
+  // status line ("N http refs blocked", "N absolute paths missing", …).
+  MeshResolveIssue issue{MeshResolveIssue::kNone};
 };
 
 class UrdfPackageResolver {
@@ -56,9 +65,11 @@ class UrdfPackageResolver {
   }
 
   // Step-0 in-band attachment dictionary: name == verbatim mesh ref string.
-  void setMcapAttachments(QMap<QString, QByteArray> attachments) {
-    mcap_attachments_ = std::move(attachments);
-  }
+  // Replaces the whole map, so any files already extracted from a previous map
+  // may now be stale; the extraction dir is reset here to close that hole (a
+  // fresh QTemporaryDir is lazily created on the next attachment hit). Defined
+  // out-of-line because resetting the unique_ptr needs QTemporaryDir complete.
+  void setMcapAttachments(QMap<QString, QByteArray> attachments);
 
   // The canonical absolute MCAP path keys the per-MCAP remembered map (step 1).
   void setMcapPath(const QString& canonical_mcap_path) {
@@ -84,17 +95,11 @@ class UrdfPackageResolver {
   // the URDF was loaded from; `source_is_url` gates http(s) refs.
   ResolvedMesh resolveUri(const std::string& uri, const std::string& urdf_dir, bool source_is_url);
 
-  // The package:// chain (steps 0..4). Returns "" on miss and records `pkg` as
-  // unresolved (step 4). `urdf_dir` enables the ancestor heuristic (step 2);
+  // The package:// chain (steps 0..3). Returns "" on miss; the caller records
+  // the unresolved package (the resolver keeps no global tally — see
+  // ResolvedMesh). `urdf_dir` enables the ancestor heuristic (step 2);
   // `source_is_url` selects the URL-segment variant of that heuristic.
   std::string resolve(const std::string& pkg, const std::string& rel, const std::string& urdf_dir, bool source_is_url);
-
-  // Packages recorded unresolved since the last clearUnresolved(). For the
-  // status line / ask-once.
-  QStringList unresolvedPackages() const;
-  void clearUnresolved() {
-    unresolved_pkgs_.clear();
-  }
 
   // Manually remember a package root (the "Locate…" result): writes the
   // per-MCAP map AND appends to the global search roots.
@@ -112,9 +117,10 @@ class UrdfPackageResolver {
   QMap<QString, QByteArray> mcap_attachments_;
   QString mcap_path_;
   QStringList search_roots_;
-  QStringList unresolved_pkgs_;
   bool seeded_global_roots_{false};
-  // Attachments extracted to disk so a path can be returned; lives until exit.
+  // Attachments extracted to disk so a path can be returned; lives until exit or
+  // a setMcapAttachments() that resets it. Content is immutable for the dir's
+  // lifetime, so stepAttachment never rewrites an already-extracted file.
   std::unique_ptr<QTemporaryDir> attachment_dir_;
 };
 

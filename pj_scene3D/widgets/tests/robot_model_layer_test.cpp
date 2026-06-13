@@ -6,8 +6,13 @@
 #include <gtest/gtest.h>
 
 #include <QCoreApplication>
+#include <QDomDocument>
 #include <QElapsedTimer>
 #include <QEventLoop>
+#include <QFile>
+#include <QTemporaryDir>
+#include <QUrl>
+#include <atomic>
 #include <memory>
 #include <optional>
 #include <string>
@@ -51,6 +56,23 @@ const std::string& resolvedMeshUrdf() {
     <visual>
       <geometry><mesh filename="file://)") +
                                   PJ_SCENE3D_FIXTURES_DIR + R"(/meshes/cube.stl"/></geometry>
+    </visual>
+  </link>
+</robot>
+)";
+  return text;
+}
+
+// URDF whose single visual mesh is a resolved .dae (file:// fixture path). The
+// COLLADA up-axis override only affects .dae/.collada, so this exercises the
+// setIgnoreColladaUpAxis reload path.
+const std::string& resolvedColladaMeshUrdf() {
+  static const std::string text = std::string(R"(
+<robot name="collada_mesh_robot">
+  <link name="base_link">
+    <visual>
+      <geometry><mesh filename="file://)") +
+                                  PJ_SCENE3D_FIXTURES_DIR + R"(/meshes/cube.dae"/></geometry>
     </visual>
   </link>
 </robot>
@@ -142,6 +164,75 @@ class ResolvedMeshRobotDescriptionParser final : public PJ::MessageParserPluginB
   }
 };
 
+// Rebind-test parse counters. vtableWithCreate() requires a non-capturing create
+// function, so the counting parsers reach these via file scope rather than a
+// lambda capture.
+std::atomic<int> g_first_urdf_parser_calls{0};
+std::atomic<int> g_second_urdf_parser_calls{0};
+// Counts decodes of the resolved-collada URDF so the up-axis toggle test can
+// prove setIgnoreColladaUpAxis re-decoded the source.
+std::atomic<int> g_collada_urdf_parser_calls{0};
+
+// Emits the resolved-collada URDF and counts each decode, for the up-axis toggle
+// reload test.
+class CountingColladaUrdfParser final : public PJ::MessageParserPluginBase {
+ public:
+  CountingColladaUrdfParser() {
+    PJ::sdk::SchemaHandler handler;
+    handler.object_type = PJ::sdk::BuiltinObjectType::kRobotDescription;
+    handler.parse_object = [](PJ::Timestamp ts,
+                              PJ::sdk::PayloadView /*payload*/) -> PJ::Expected<PJ::sdk::ObjectRecord> {
+      g_collada_urdf_parser_calls.fetch_add(1);
+      return PJ::sdk::ObjectRecord{
+          .ts = std::nullopt,
+          .object = PJ::sdk::BuiltinObject{PJ::sdk::RobotDescription{
+              .timestamp_ns = ts,
+              .topic = "/robot_description",
+              .format = "urdf",
+              .text = resolvedColladaMeshUrdf(),
+          }},
+      };
+    };
+    registerSchemaHandler("robot_description", std::move(handler));
+  }
+};
+
+// Counts parseObject invocations so a rebind test can prove which parser a
+// re-decode reached. Emits a fixed minimal URDF so the layer still parses a
+// valid model.
+class CountingUrdfParser final : public PJ::MessageParserPluginBase {
+ public:
+  explicit CountingUrdfParser(std::atomic<int>* counter) {
+    PJ::sdk::SchemaHandler handler;
+    handler.object_type = PJ::sdk::BuiltinObjectType::kRobotDescription;
+    handler.parse_object =
+        [counter](PJ::Timestamp ts, PJ::sdk::PayloadView /*payload*/) -> PJ::Expected<PJ::sdk::ObjectRecord> {
+      counter->fetch_add(1);
+      return PJ::sdk::ObjectRecord{
+          .ts = std::nullopt,
+          .object = PJ::sdk::BuiltinObject{PJ::sdk::RobotDescription{
+              .timestamp_ns = ts,
+              .topic = "/robot_description",
+              .format = "urdf",
+              .text = kDecodedUrdf,
+          }},
+      };
+    };
+    registerSchemaHandler("robot_description", std::move(handler));
+  }
+};
+
+// vtableWithCreate() holds one static vtable per CreateFn instantiation, so each
+// counting parser needs its own distinct lambda type — a shared function-pointer
+// type would latch the first counter for both handles.
+template <typename CreateFn>
+const PJ_message_parser_vtable_t* countingUrdfVtable(CreateFn create_fn) {
+  static const PJ_message_parser_vtable_t* vt = PJ::MessageParserPluginBase::vtableWithCreate(
+      create_fn,
+      R"({"id":"robot-counting-urdf-test","name":"Robot Counting URDF Test","version":"1.0.0","encoding":"test"})");
+  return vt;
+}
+
 const PJ_message_parser_vtable_t* urdfParserVtable() {
   static const PJ_message_parser_vtable_t* vt = PJ::MessageParserPluginBase::vtableWithCreate(
       []() noexcept -> void* { return new UrdfRobotDescriptionParser(); },
@@ -170,14 +261,11 @@ const PJ_message_parser_vtable_t* resolvedMeshParserVtable() {
   return vt;
 }
 
-// QFutureWatcher delivers finished() through the event loop, so tests that wait
-// on mesh-load completion need a QCoreApplication (created once, lazily).
-void ensureCoreApplication() {
-  static int argc = 1;
-  static char arg0[] = "robot_model_layer_test";
-  static char* argv[] = {arg0, nullptr};
-  static QCoreApplication app(argc, argv);
-  Q_UNUSED(app);
+const PJ_message_parser_vtable_t* colladaMeshParserVtable() {
+  static const PJ_message_parser_vtable_t* vt = PJ::MessageParserPluginBase::vtableWithCreate(
+      []() noexcept -> void* { return new CountingColladaUrdfParser(); },
+      R"({"id":"robot-collada-mesh-test","name":"Robot Collada Mesh Test","version":"1.0.0","encoding":"test"})");
+  return vt;
 }
 
 PJ::ObjectTopicId registerTopic(PJ::SessionManager& session, std::string topic_name = "/robot_description") {
@@ -270,6 +358,49 @@ TEST(RobotModelLayerTest, UnresolvedPackageMeshIsCountedForPlaceholderRendering)
   EXPECT_TRUE(layer.statusText().contains(QStringLiteral("packages unresolved")));
 }
 
+// M.48: render() memoizes the per-link DrawCall lists and rebuilds them only
+// when draws_dirty_ is set, so a camera-only repaint reuses the cache. This
+// asserts the invalidation set: every geometry-affecting call must re-flag the
+// cache. render() itself (which clears the flag) needs a GL context the harness
+// lacks, so we clear the flag manually via the test hook before each call.
+TEST(RobotModelLayerTest, DrawCacheInvalidationSetIsExhaustive) {
+  PJ::SessionManager session;
+  const PJ::ObjectTopicId topic_id = registerTopic(session);
+  registerParser(session, topic_id, urdfParserVtable());
+  pushWireBytes(session, topic_id);
+
+  pj::scene3d::RobotModelLayer layer(topic_id, QStringLiteral("/robot_description"));
+  const auto ctx = makeContext(session);
+  ASSERT_TRUE(layer.attach(ctx));
+  ASSERT_NE(layer.robotModel(), nullptr);
+  // attach() -> loadFromCurrentSource()/applyRobotDescription() leave the cache
+  // dirty so the first render() builds it.
+  EXPECT_TRUE(layer.drawsDirtyForTest());
+
+  // Each geometry-affecting call must re-set the flag after a (simulated) render.
+  const auto expect_dirties = [&](const char* what, auto&& mutate) {
+    layer.clearDrawsDirtyForTest();
+    mutate();
+    EXPECT_TRUE(layer.drawsDirtyForTest()) << what << " did not invalidate the draw cache";
+  };
+
+  expect_dirties("setTrackerTime", [&]() { layer.setTrackerTime(PJ::fromRaw(123)); });
+  expect_dirties("setFixedFrame", [&]() { layer.setFixedFrame(QStringLiteral("map")); });
+  expect_dirties("setFramePrefix", [&]() { layer.setFramePrefix(QStringLiteral("robotA/")); });
+  expect_dirties("setDisplayMode", [&]() { layer.setDisplayMode(pj::scene3d::RobotModelLayer::DisplayMode::kVisual); });
+  expect_dirties("setFallbackColor", [&]() { layer.setFallbackColor(QColor(10, 20, 30)); });
+
+  // setVisible(false) must NOT touch the flag (the cache is simply not consumed
+  // while hidden); setVisible(true) must, since TF may have advanced meanwhile.
+  layer.clearDrawsDirtyForTest();
+  layer.setVisible(false);
+  EXPECT_FALSE(layer.drawsDirtyForTest()) << "hiding the layer should not dirty the cache";
+  layer.setVisible(true);
+  EXPECT_TRUE(layer.drawsDirtyForTest()) << "un-hiding the layer must dirty the cache";
+
+  expect_dirties("detach", [&]() { layer.detach(); });
+}
+
 // Regression: a finished async URDF mesh load must itself request the repaint
 // that consumes it (QFutureWatcher -> pollMeshLoads). The app paints strictly on
 // demand, so before the fix the result was only drained inside render() and the
@@ -277,7 +408,6 @@ TEST(RobotModelLayerTest, UnresolvedPackageMeshIsCountedForPlaceholderRendering)
 // load, only the event loop is pumped here — no render() or setTrackerTime() —
 // and repaintRequested must still fire.
 TEST(RobotModelLayerTest, MeshLoadCompletionRequestsRepaintWithoutRender) {
-  ensureCoreApplication();
   PJ::SessionManager session;
   const PJ::ObjectTopicId topic_id = registerTopic(session);
   registerParser(session, topic_id, resolvedMeshParserVtable());
@@ -300,4 +430,188 @@ TEST(RobotModelLayerTest, MeshLoadCompletionRequestsRepaintWithoutRender) {
     QCoreApplication::processEvents(QEventLoop::AllEvents, 50);
   }
   EXPECT_GT(repaints, 0) << "finished mesh load did not request a repaint (only render() would have consumed it)";
+}
+
+// M.28 regression: the "Ignore COLLADA up_axis" toggle must actually reload the
+// model (the flip is baked into the loaded MeshData, so a bare repaint would do
+// nothing). Toggling setIgnoreColladaUpAxis on a .dae-mesh URDF re-decodes the
+// source and re-kicks the mesh load; an unchanged value is a no-op.
+TEST(RobotModelLayerTest, ColladaUpAxisToggleReloadsModel) {
+  g_collada_urdf_parser_calls.store(0);
+
+  PJ::SessionManager session;
+  const PJ::ObjectTopicId topic_id = registerTopic(session);
+  registerParser(session, topic_id, colladaMeshParserVtable());
+  pushWireBytes(session, topic_id);
+
+  pj::scene3d::RobotModelLayer layer(topic_id, QStringLiteral("/robot_description"));
+  const auto ctx = makeContext(session);
+  ASSERT_TRUE(layer.attach(ctx));
+  ASSERT_NE(layer.robotModel(), nullptr);
+  ASSERT_EQ(layer.totalMeshCount(), 1);
+  ASSERT_EQ(layer.unresolvedMeshCount(), 0) << "the .dae fixture mesh must resolve";
+  const int decodes_after_attach = g_collada_urdf_parser_calls.load();
+  ASSERT_GE(decodes_after_attach, 1);
+
+  // Toggling the flag must re-decode the source (loadFromCurrentSource), so the
+  // .dae re-imports under the new effective flip.
+  layer.setIgnoreColladaUpAxis(true);
+  EXPECT_GT(g_collada_urdf_parser_calls.load(), decodes_after_attach)
+      << "setIgnoreColladaUpAxis did not reload the model";
+  EXPECT_NE(layer.robotModel(), nullptr) << "model dropped after the up-axis toggle";
+  EXPECT_EQ(layer.totalMeshCount(), 1);
+
+  // Setting the same value again is a no-op (no extra decode).
+  const int decodes_after_toggle = g_collada_urdf_parser_calls.load();
+  layer.setIgnoreColladaUpAxis(true);
+  EXPECT_EQ(g_collada_urdf_parser_calls.load(), decodes_after_toggle)
+      << "an unchanged setIgnoreColladaUpAxis must not reload";
+
+  // Drain the kicked mesh load so its watcher fires (and is severed) before
+  // teardown, then assert the reloaded mesh actually loaded: the watcher-driven
+  // pollMeshLoads recomputes loaded_mesh_count_ to total via updateMeshCounters.
+  int repaints = 0;
+  QObject::connect(
+      &layer, &pj::scene3d::RobotModelLayer::meshLoadStatusChanged,
+      [&repaints](int, int, const QStringList&) { ++repaints; });
+  QElapsedTimer timer;
+  timer.start();
+  while (repaints == 0 && timer.elapsed() < 5000) {
+    QCoreApplication::processEvents(QEventLoop::AllEvents, 50);
+  }
+  EXPECT_GT(repaints, 0) << "reloaded .dae mesh load never completed (no meshLoadStatusChanged)";
+}
+
+// Regression for the file-reload UAF (PR #175 pattern): SessionManager::
+// replaceDataset() re-registers each surviving topic's parser slot, destroying
+// the previous MessageParserHandle. A layer that cached the raw parser pointer
+// at attach() then decodes through freed memory on the next re-decode.
+//
+// The robot layer's risk is the latch-retry path: attach() on an empty topic
+// arms latch_pending_, and every setTrackerTime() while pending re-invokes
+// tryLoadTopicDescription(). With a cached parser_ that decode reaches the freed
+// handle after a reload; resolving the binding per use rebinds it to the new
+// parser. This test drives exactly that path (attach empty -> reload -> push ->
+// tick past the 500ms retry interval) so it FAILS on the cached-pointer code and
+// passes once the binding is resolved per use.
+TEST(RobotModelLayerTest, ReloadSwapsParserWithoutTouchingStaleOne) {
+  g_first_urdf_parser_calls.store(0);
+  g_second_urdf_parser_calls.store(0);
+
+  PJ::SessionManager session;
+  const PJ::ObjectTopicId topic_id = registerTopic(session);
+  registerParser(session, topic_id, countingUrdfVtable([]() noexcept -> void* {
+                   return new CountingUrdfParser(&g_first_urdf_parser_calls);
+                 }));
+  // NOTE: no payload yet — attach must latch and wait for the first sample.
+
+  pj::scene3d::RobotModelLayer layer(topic_id, QStringLiteral("/robot_description"));
+  const auto ctx = makeContext(session);
+  ASSERT_TRUE(layer.attach(ctx));
+  ASSERT_EQ(layer.robotModel(), nullptr);  // nothing to decode yet -> latched
+  EXPECT_EQ(g_first_urdf_parser_calls.load(), 0);
+
+  // Keep the first parser's memory readable from the test so the buggy
+  // stale-pointer call below is a deterministic wrong-parser hit rather than UB.
+  // Production holds no such guard — there the same call is a use-after-free.
+  const auto stale_guard = session.parserKeepaliveForObjectTopic(topic_id);
+  ASSERT_NE(stale_guard, nullptr);
+
+  // Simulate the same-file reload: re-register the surviving topic's parser under
+  // its stable id, overwriting the slot and dropping the old handle. Then the new
+  // generation's first sample arrives.
+  registerParser(session, topic_id, countingUrdfVtable([]() noexcept -> void* {
+                   return new CountingUrdfParser(&g_second_urdf_parser_calls);
+                 }));
+  pushWireBytes(session, topic_id);
+
+  // The latch retry is rate-limited to 500ms; wait it out so the next tick fires
+  // tryLoadTopicDescription() (and pump the event loop in case anything posted).
+  QElapsedTimer timer;
+  timer.start();
+  while (timer.elapsed() < 600) {
+    QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
+  }
+  layer.setTrackerTime(PJ::fromRaw(123));  // pending + interval elapsed -> retry decode
+
+  EXPECT_EQ(g_first_urdf_parser_calls.load(), 0)
+      << "layer called the replaced (freed-in-production) parser after the reload swap";
+  EXPECT_GE(g_second_urdf_parser_calls.load(), 1) << "layer did not rebind to the re-registered parser";
+  EXPECT_NE(layer.robotModel(), nullptr) << "latch retry did not decode the new sample";
+}
+
+// M.49/H.14 regression: the kUrl source must not block the caller. setSourceUrl
+// (and therefore attach()/xmlLoadState restores and undo/redo) only kicks the
+// fetch off — nothing is applied synchronously — and the model lands later
+// through the event loop. The old code spun a nested QEventLoop here, which
+// both froze the UI for up to 15s and allowed re-entrant layer destruction.
+TEST(RobotModelLayerTest, UrlSourceLoadsAsynchronouslyFromFileUrl) {
+  QTemporaryDir dir;
+  ASSERT_TRUE(dir.isValid());
+  const QString urdf_path = dir.filePath(QStringLiteral("decoded.urdf"));
+  {
+    QFile file(urdf_path);
+    ASSERT_TRUE(file.open(QIODevice::WriteOnly));
+    file.write(kDecodedUrdf);
+  }
+
+  pj::scene3d::RobotModelLayer layer(PJ::ObjectTopicId{.id = 1}, QStringLiteral("robot"));
+  layer.setSourceUrl(QUrl::fromLocalFile(urdf_path).toString());
+
+  // Asynchronous kickoff: nothing may have been applied before returning.
+  EXPECT_EQ(layer.robotModel(), nullptr) << "kUrl load applied synchronously (blocking-fetch regression)";
+  EXPECT_TRUE(layer.statusText().contains(QStringLiteral("Fetching"))) << layer.statusText().toStdString();
+
+  QElapsedTimer timer;
+  timer.start();
+  while (layer.robotModel() == nullptr && timer.elapsed() < 5000) {
+    QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
+  }
+  ASSERT_NE(layer.robotModel(), nullptr) << "async URL fetch never applied the model; status: "
+                                         << layer.statusText().toStdString();
+  EXPECT_EQ(layer.robotModel()->root_link, "base_link");
+  EXPECT_FALSE(layer.statusText().contains(QStringLiteral("Fetching")));
+}
+
+// M.27: a kTopic robot layer must persist enough identity (dataset + topic name)
+// that xmlLoadState re-resolves the same topic and re-decodes its model. The
+// round trip must survive a fresh layer wired to a different default topic id.
+TEST(RobotModelLayerTest, TopicSourceIdentitySurvivesSaveLoadRoundTrip) {
+  PJ::SessionManager session;
+  const PJ::ObjectTopicId topic_id = registerTopic(session, "/robot_description");
+  registerParser(session, topic_id, urdfParserVtable());
+  pushWireBytes(session, topic_id);
+
+  pj::scene3d::RobotModelLayer source_layer(topic_id, QStringLiteral("/robot_description"));
+  const auto ctx = makeContext(session);
+  ASSERT_TRUE(source_layer.attach(ctx));
+  ASSERT_NE(source_layer.robotModel(), nullptr);
+
+  QDomDocument doc;
+  const QDomElement saved = source_layer.xmlSaveState(doc);
+
+  // A second topic with a different id stands in for "the constructor default no
+  // longer points at /robot_description" — the restore must re-resolve by name.
+  // It has its own (SDF) parser, so a layer left on this default would decode the
+  // WRONG, unsupported model; only re-resolution by name yields the URDF.
+  const PJ::ObjectTopicId other_id = registerTopic(session, "/other_description");
+  ASSERT_NE(other_id.id, topic_id.id);
+  registerParser(session, other_id, sdfParserVtable());
+  pushWireBytes(session, other_id);
+
+  pj::scene3d::RobotModelLayer restored_layer(other_id, QStringLiteral("/other_description"));
+  ASSERT_TRUE(restored_layer.attach(ctx));
+  ASSERT_TRUE(restored_layer.xmlLoadState(saved));
+  ASSERT_NE(restored_layer.robotModel(), nullptr) << "restored layer did not re-resolve the persisted source topic";
+  EXPECT_EQ(restored_layer.robotModel()->root_link, "base_link");
+}
+
+// Custom main: QFutureWatcher/UrlFetcher tests need an event loop, and the
+// QCoreApplication must die BEFORE exit handlers run — QtNetwork (loaded by the
+// layer's UrlFetcher) registers global cleanup that a function-local-static app
+// would outlive, crashing at exit (pj_marketplace's download_manager_test pattern).
+int main(int argc, char** argv) {
+  QCoreApplication app(argc, argv);
+  testing::InitGoogleTest(&argc, argv);
+  return RUN_ALL_TESTS();
 }

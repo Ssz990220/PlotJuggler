@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MPL-2.0
 #include "urdf_package_resolver.h"
 
+#include <QCryptographicHash>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
@@ -34,6 +35,11 @@ QString joinPath(const QString& root, const std::string& rel) {
 
 UrdfPackageResolver::UrdfPackageResolver() = default;
 UrdfPackageResolver::~UrdfPackageResolver() = default;
+
+void UrdfPackageResolver::setMcapAttachments(QMap<QString, QByteArray> attachments) {
+  mcap_attachments_ = std::move(attachments);
+  attachment_dir_.reset();  // drop files extracted from the previous map
+}
 
 void UrdfPackageResolver::addSearchRoot(const QString& root) {
   if (root.isEmpty()) {
@@ -98,6 +104,8 @@ ResolvedMesh UrdfPackageResolver::resolveUri(const std::string& uri, const std::
       out.resolved = true;
       out.is_url = true;
       out.path = uri;
+    } else {
+      out.issue = MeshResolveIssue::kBlockedHttp;
     }
     return out;
   }
@@ -106,6 +114,7 @@ ResolvedMesh UrdfPackageResolver::resolveUri(const std::string& uri, const std::
     const QString rest = quri.mid(static_cast<int>(std::string("package://").size()));
     const qsizetype slash = rest.indexOf('/');
     if (slash <= 0) {
+      out.issue = MeshResolveIssue::kMalformedRef;
       return out;  // malformed package URI
     }
     const std::string pkg = rest.left(slash).toStdString();
@@ -118,6 +127,22 @@ ResolvedMesh UrdfPackageResolver::resolveUri(const std::string& uri, const std::
       out.is_url = path.rfind("http://", 0) == 0 || path.rfind("https://", 0) == 0;
     } else {
       out.package = pkg;
+      out.issue = MeshResolveIssue::kUnresolvedPackage;
+    }
+    return out;
+  }
+
+  // Absolute filesystem path (POSIX "/..." or a Windows drive "C:/..."): return
+  // it verbatim — joining it onto urdf_dir would mangle it. Machine-generated
+  // URDFs (xacro $(find) expansion, MoveIt) emit absolute mesh paths. Apply the
+  // same existence-check-else-unresolved policy as the package steps so a
+  // missing file surfaces in the status instead of resolving to a dead path.
+  if (QDir::isAbsolutePath(quri)) {
+    if (QFileInfo::exists(quri)) {
+      out.resolved = true;
+      out.path = uri;
+    } else {
+      out.issue = MeshResolveIssue::kMissingFile;
     }
     return out;
   }
@@ -125,6 +150,7 @@ ResolvedMesh UrdfPackageResolver::resolveUri(const std::string& uri, const std::
   // Bare relative path — the GUARD. Never enters the package chain. Resolve
   // relative to urdf_dir (filesystem join, or URL base concatenation).
   if (urdf_dir.empty()) {
+    out.issue = MeshResolveIssue::kNoAnchor;
     return out;  // Topic source with no dir: a bare path has nothing to anchor.
   }
   const QString base = QString::fromStdString(urdf_dir);
@@ -153,11 +179,7 @@ std::string UrdfPackageResolver::resolve(
   if (std::string p = stepSearchRoots(pkg, rel); !p.empty()) {
     return p;
   }
-  // Step 4 — record unresolved for ask-once.
-  const QString qpkg = QString::fromStdString(pkg);
-  if (!unresolved_pkgs_.contains(qpkg)) {
-    unresolved_pkgs_.append(qpkg);
-  }
+  // Miss: the caller records `pkg` (the resolver keeps no global tally).
   return {};
 }
 
@@ -173,11 +195,23 @@ std::string UrdfPackageResolver::stepAttachment(const std::string& uri) {
   if (!attachment_dir_->isValid()) {
     return {};
   }
-  // Flatten the ref to a unique on-disk filename, keeping the extension so the
-  // mesh loader can sniff the format.
+  // On-disk filename = "<8-hex-sha1-of-key>_<flattened-ref>". The flatten alone
+  // is lossy/non-injective (e.g. "package://a/b.stl" and "package://a_b.stl" both
+  // flatten identically), so two distinct refs would collide and overwrite each
+  // other. Prefixing a hash of the verbatim key makes the name collision-proof
+  // while the flattened tail keeps the original extension last for format
+  // sniffing. (Path traversal is already neutralized: '/' becomes '_'.)
   QString flat = key;
   flat.replace(QRegularExpression("[^A-Za-z0-9._-]"), "_");
-  const QString out_path = attachment_dir_->filePath(flat);
+  const QString digest =
+      QString::fromLatin1(QCryptographicHash::hash(key.toUtf8(), QCryptographicHash::Sha1).toHex()).left(8);
+  const QString out_path = attachment_dir_->filePath(digest + '_' + flat);
+  // Attachment content is immutable for the dir's lifetime (setMcapAttachments
+  // resets the dir), so an already-extracted file is never rewritten — this
+  // avoids truncating bytes under an in-flight assimp read on Retry/Locate.
+  if (QFileInfo::exists(out_path)) {
+    return out_path.toStdString();
+  }
   QFile f(out_path);
   if (!f.open(QIODevice::WriteOnly)) {
     return {};
@@ -263,7 +297,7 @@ std::string UrdfPackageResolver::stepSearchRoots(const std::string& pkg, const s
     const QString pkg_dir = joinPath(root, pkg);
     // Package identity = directory basename only. No package.xml check. Accept
     // only when the mesh file itself exists (mirrors stepAncestor) — a bare
-    // package-dir stub missing the mesh must fall through to step 4, not yield a
+    // package-dir stub missing the mesh must miss (return ""), not yield a
     // false-positive path the loader would silently fail to open.
     if (QFileInfo(pkg_dir).isDir()) {
       const QString candidate = joinPath(pkg_dir, rel);
@@ -273,10 +307,6 @@ std::string UrdfPackageResolver::stepSearchRoots(const std::string& pkg, const s
     }
   }
   return {};
-}
-
-QStringList UrdfPackageResolver::unresolvedPackages() const {
-  return unresolved_pkgs_;
 }
 
 void UrdfPackageResolver::rememberPackageRoot(const std::string& pkg, const QString& root_dir) {
@@ -309,7 +339,6 @@ void UrdfPackageResolver::rememberPackageRoot(const std::string& pkg, const QStr
       settings_->setValue(QString::fromLatin1(kPerMcapKey), top);
     }
   }
-  unresolved_pkgs_.removeAll(qpkg);
 }
 
 }  // namespace pj::scene3d
