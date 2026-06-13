@@ -221,7 +221,10 @@ with a permanent "Waiting for …" status (no timeout escalation).
 `Scene3DConfigPanel` (right side-panel) drives scene-wide state, persisted in
 QSettings `pj_scene3d/scene_controls/*` and re-applied to every dock it binds:
 grid style/size/divisions/visibility (`GridRenderPass` rebuilds geometry
-lazily at render time), TF-frame size/opacity/visibility, mesh/collision
+lazily at render time; style toggles between a plain line grid and a full
+two-tone **checkerboard** with the grid lines overlaid — all three colors
+auto-derived from the active theme, no user color controls), TF-frame
+size/opacity/visibility, mesh/collision
 opacity/visibility, and the **Model/URDF** row — a File/Topic/URL source
 combo plus an add button; each added robot gets a row with a remove button.
 Robot layers are panel-managed: filtered out of the Topics list (the

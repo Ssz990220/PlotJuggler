@@ -476,13 +476,19 @@ void SceneViewWidget::renderScene(
     return linear_target ? static_cast<float>(std::pow(c, 2.2)) : static_cast<float>(c);
   };
   funcs->glClearColor(lin(bg.redF()), lin(bg.greenF()), lin(bg.blueF()), 1.0f);
-  constexpr float kGridBlend = 0.35f;
-  grid_.setColor(
-      glm::vec3{
-          lin(bg.redF() * (1.0 - kGridBlend) + fg.redF() * kGridBlend),
-          lin(bg.greenF() * (1.0 - kGridBlend) + fg.greenF() * kGridBlend),
-          lin(bg.blueF() * (1.0 - kGridBlend) + fg.blueF() * kGridBlend),
-      });
+  // Grid colors are derived from the theme (no user color controls). blend(t) is
+  // the linearized bg→fg mix at fraction t. The line color is the high-contrast
+  // 0.35 blend (unchanged); the two checkerboard tile tones are subtler blends
+  // just above the background, so the lines read clearly on top of the fill.
+  const auto blend = [&](double frac) {
+    return glm::vec3{
+        lin(bg.redF() * (1.0 - frac) + fg.redF() * frac),
+        lin(bg.greenF() * (1.0 - frac) + fg.greenF() * frac),
+        lin(bg.blueF() * (1.0 - frac) + fg.blueF() * frac),
+    };
+  };
+  grid_.setColor(blend(0.35));                    // grid lines
+  grid_.setCellColors(blend(0.10), blend(0.24));  // checkerboard tile tones (A, B)
   funcs->glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
   funcs->glEnable(GL_DEPTH_TEST);
   funcs->glEnable(GL_BLEND);

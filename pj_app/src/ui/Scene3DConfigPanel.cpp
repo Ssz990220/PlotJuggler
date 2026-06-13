@@ -244,7 +244,7 @@ void Scene3DConfigPanel::buildSceneControls(QVBoxLayout* root) {
     return button;
   };
   grid_lines_button_ = make_style_button(tr("Line grid"));
-  grid_cells_button_ = make_style_button(tr("Filled cells"));
+  grid_cells_button_ = make_style_button(tr("Checkerboard"));
   auto* style_group = new QButtonGroup(this);
   style_group->setExclusive(true);
   style_group->addButton(grid_lines_button_, 0);

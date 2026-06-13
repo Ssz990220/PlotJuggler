@@ -15,6 +15,7 @@ set(PJ_SCENE3D_WIDGETS_SOURCES
   src/gizmos/arrow_gizmo.cpp
   src/passes/axis_overlay_pass.cpp
   src/passes/axis_render_pass.cpp
+  src/passes/grid_geometry.cpp
   src/passes/grid_render_pass.cpp
   src/passes/pointcloud_render_pass.cpp
   src/passes/occupancy_grid_render_pass.cpp
@@ -84,6 +85,10 @@ if(PJ_BUILD_TESTS)
   # test can link it directly (same as pointcloud_codecs_test in core/).
   find_package(cloudini REQUIRED)
 
+  # grid_geometry_test links glm directly (the widgets lib gets it transitively
+  # via pj_scene3d_core, but this test compiles the geometry source standalone).
+  find_package(glm REQUIRED)
+
   # Regression: a file reload re-registers each surviving topic's parser slot;
   # layers must re-resolve the parser through SessionManager per use instead of
   # caching the raw pointer from attach() (use-after-free on the next tick).
@@ -97,6 +102,21 @@ if(PJ_BUILD_TESTS)
   target_compile_definitions(occupancy_grid_layer_rebind_test PRIVATE PJ_SCENE3D_TEST_HOOKS)
   target_compile_options(occupancy_grid_layer_rebind_test PRIVATE ${PJ_WARNING_FLAGS} ${PJ_SANITIZER_FLAGS})
   add_test(NAME occupancy_grid_layer_rebind_test COMMAND occupancy_grid_layer_rebind_test)
+
+  # Pure (no GL/Qt) ground-grid geometry: full-checkerboard cell coverage +
+  # per-vertex parity, and the line-grid vertex counts. Compiles the geometry
+  # source directly and links only glm — no widgets/Qt/GL in this test.
+  add_executable(grid_geometry_test
+    tests/grid_geometry_test.cpp
+    src/passes/grid_geometry.cpp
+  )
+  target_include_directories(grid_geometry_test PRIVATE include)
+  target_link_libraries(grid_geometry_test PRIVATE
+    glm::glm
+    GTest::gtest_main
+  )
+  target_compile_options(grid_geometry_test PRIVATE ${PJ_WARNING_FLAGS} ${PJ_SANITIZER_FLAGS})
+  add_test(NAME grid_geometry_test COMMAND grid_geometry_test)
 
   # H.20: full coverage for TransformService's incremental UID-keyed TF ingest —
   # the heart of PR #174 (live + scrubbable streaming TF) and the bulk file path.
