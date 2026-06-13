@@ -6,35 +6,15 @@
 #include <fmt/core.h>
 
 #include <QOpenGLContext>
-#include <QOpenGLExtraFunctions>
 #include <QOpenGLFunctions_4_5_Core>
 #include <QOpenGLVersionFunctionsFactory>
 #include <cstdio>
-#include <stdexcept>
 #include <string_view>
+
+#include "pj_scene3d_widgets/gl/gl_functions.h"
 
 namespace pj::scene3d::gl {
 namespace {
-
-template <typename Callback>
-decltype(auto) withGlFunctions(Callback&& callback) {
-  QOpenGLContext* context = QOpenGLContext::currentContext();
-  if (context == nullptr) {
-    throw std::runtime_error("No current OpenGL context");
-  }
-
-  if (auto* functions = QOpenGLVersionFunctionsFactory::get<QOpenGLFunctions_4_5_Core>(context); functions != nullptr) {
-    functions->initializeOpenGLFunctions();
-    return callback(*functions);
-  }
-
-  QOpenGLExtraFunctions* functions = context->extraFunctions();
-  if (functions == nullptr) {
-    throw std::runtime_error("No OpenGL functions available");
-  }
-  functions->initializeOpenGLFunctions();
-  return callback(*functions);
-}
 
 std::string_view sourceLabel(GLenum source) {
   switch (source) {
@@ -95,7 +75,10 @@ std::string_view severityLabel(GLenum severity) {
   }
 }
 
-void debugMessageCallback(
+// QOPENGLF_APIENTRY expands to GLAPIENTRY / __stdcall / empty as appropriate for
+// the platform — required so the driver's callback ABI matches the function pointer
+// type passed to glDebugMessageCallback.
+void QOPENGLF_APIENTRY debugMessageCallback(
     GLenum source, GLenum type, GLuint id, GLenum severity, GLsizei length, const GLchar* message,
     const void* user_param) {
   static_cast<void>(user_param);
@@ -114,9 +97,37 @@ void debugMessageCallback(
 
 }  // namespace
 
+bool debugOutputRequested() {
+#ifndef NDEBUG
+  return true;
+#else
+  return qEnvironmentVariableIntValue("PJ_GL_DEBUG") != 0;
+#endif
+}
+
 void installDebugCallback() {
+  if (!debugOutputRequested()) {
+    return;
+  }
+
+  // Guard availability: KHR_debug is core in GL 4.3+; check extension on older
+  // contexts so we never call glDebugMessageCallback on a context that doesn't
+  // have it.
+  QOpenGLContext* ctx = QOpenGLContext::currentContext();
+  if (ctx == nullptr) {
+    return;
+  }
+  const QSurfaceFormat fmt = ctx->format();
+  const bool has_debug = (fmt.version() >= qMakePair(4, 3)) || ctx->hasExtension(QByteArrayLiteral("GL_KHR_debug"));
+  if (!has_debug) {
+    return;
+  }
+
   withGlFunctions([](auto& functions) {
     functions.glEnable(GL_DEBUG_OUTPUT);
+    // GL_DEBUG_OUTPUT_SYNCHRONOUS is only useful in an explicit debugging session
+    // (it serializes all GL calls to the CPU thread). We only reach here when the
+    // user opted in (debug build or PJ_GL_DEBUG=1), so the cost is acceptable.
     functions.glEnable(GL_DEBUG_OUTPUT_SYNCHRONOUS);
     functions.glDebugMessageCallback(&debugMessageCallback, nullptr);
     functions.glDebugMessageControl(GL_DONT_CARE, GL_DONT_CARE, GL_DONT_CARE, 0, nullptr, GL_TRUE);

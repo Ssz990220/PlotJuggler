@@ -6,19 +6,19 @@
 #include <fmt/core.h>
 
 #include <QImage>
-#include <QOpenGLContext>
-#include <QOpenGLExtraFunctions>
-#include <QOpenGLVersionFunctionsFactory>
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <glm/gtc/matrix_inverse.hpp>
 #include <glm/gtc/matrix_transform.hpp>
+#include <iterator>
 #include <numbers>
 #include <string_view>
 #include <utility>
 #include <variant>
+
+#include "pj_scene3d_widgets/gl/gl_functions.h"
 
 namespace pj::scene3d {
 namespace {
@@ -33,25 +33,6 @@ struct GpuVertex {
 static_assert(sizeof(GpuVertex) == 64);
 static_assert(offsetof(GpuVertex, uv) == 40);
 static_assert(offsetof(GpuVertex, tangent) == 48);
-
-template <typename Callback>
-void withGlFunctions(Callback&& callback) {
-  QOpenGLContext* context = QOpenGLContext::currentContext();
-  if (context == nullptr) {
-    return;
-  }
-  if (auto* functions = QOpenGLVersionFunctionsFactory::get<QOpenGLFunctions_4_5_Core>(context); functions != nullptr) {
-    functions->initializeOpenGLFunctions();
-    callback(*functions);
-    return;
-  }
-  QOpenGLExtraFunctions* functions = context->extraFunctions();
-  if (functions == nullptr) {
-    return;
-  }
-  functions->initializeOpenGLFunctions();
-  callback(*functions);
-}
 
 constexpr std::string_view kVertSrc = R"(#version 450 core
 layout(location = 0) in vec3 in_pos;
@@ -100,7 +81,7 @@ uniform vec4 u_object_tint;        // per-draw override tint (URDF/marker color)
 uniform vec3 u_emissive_factor;
 uniform float u_metallic;
 uniform float u_roughness;
-uniform float u_dielectric_f0;     // f0 for non-metals (scene MeshShadingParams)
+uniform float u_dielectric_f0;     // f0 for non-metals (view MeshShadingParams)
 uniform float u_opacity;
 uniform bool u_use_vertex_color;
 uniform bool u_collision;
@@ -324,11 +305,6 @@ MeshData makeSphere() {
 
 }  // namespace
 
-MeshShadingParams& meshShadingParams() {
-  static MeshShadingParams params;
-  return params;
-}
-
 const MeshRenderPass::CachedTexture* MeshRenderPass::findCachedTexture(
     const std::vector<CachedTexture>& cache, std::string_view key, TextureColorSpace color_space) {
   const auto it = std::find_if(cache.begin(), cache.end(), [key, color_space](const CachedTexture& item) {
@@ -381,6 +357,9 @@ void MeshRenderPass::initializeGL() {
 void MeshRenderPass::render(const ViewParams& /*view_params*/, const FrameContext& /*frame_ctx*/) {}
 
 void MeshRenderPass::releaseGL() {
+  // Free anything retired by clearMeshes() first — the view calls releaseGL()
+  // under the dying context's makeCurrent, the right place to delete its names.
+  drainRetired();
   textures_.clear();
   program_.reset();
   initialized_ = false;
@@ -401,8 +380,24 @@ void MeshRenderPass::releaseGL() {
 }
 
 void MeshRenderPass::clearMeshes() {
+  // Context-free: move the GL wrappers onto the retirement lists instead of
+  // destroying them here (this runs on the GUI thread from layer detach /
+  // source swaps with no GL context current). drainRetired() frees them later
+  // under the owning context. See the header for the deferred-teardown contract.
+  retired_textures_.insert(
+      retired_textures_.end(), std::make_move_iterator(textures_.begin()), std::make_move_iterator(textures_.end()));
   textures_.clear();
+  retired_meshes_.insert(
+      retired_meshes_.end(), std::make_move_iterator(meshes_.begin()), std::make_move_iterator(meshes_.end()));
   meshes_.clear();
+}
+
+void MeshRenderPass::drainRetired() {
+  // The wrapper destructors glDelete* against the current context, so this MUST
+  // be called under the owning context (drawBatch inside paintGL, or releaseGL
+  // under SceneViewWidget's makeCurrent).
+  retired_textures_.clear();
+  retired_meshes_.clear();
 }
 
 void MeshRenderPass::setMeshData(const std::string& key, MeshData data) {
@@ -597,11 +592,11 @@ void MeshRenderPass::drawOne(
     return;
   }
   const glm::mat3 normal_mat = glm::inverseTranspose(glm::mat3(draw.model));
-  const MeshShadingParams& shading = meshShadingParams();
+  const MeshShadingParams& shading = view_params.shading;
   program_->setMat4("u_model", draw.model);
   program_->setMat4("u_view", view_params.view);
   program_->setMat4("u_proj", view_params.proj);
-  program_->setVec3("u_camera_pos", glm::vec3(glm::inverse(view_params.view)[3]));
+  // u_camera_pos is view-constant and set once per batch in drawBatch (L.56).
   program_->setMat3("u_normal_mat", normal_mat);
   program_->setFloat("u_opacity", opacity);
   program_->setInt("u_use_vertex_color", draw.use_vertex_color ? 1 : 0);
@@ -730,6 +725,10 @@ void MeshRenderPass::drawBatch(
     return;
   }
 
+  // We are inside paintGL with the owning context current — the safe point to
+  // free anything clearMeshes() retired since the last draw.
+  drainRetired();
+
   // Save the caller's blend state: this pass toggles GL_BLEND per bucket and
   // must not leak the change to later passes (HUD/overlays render after meshes).
   bool blend_was_enabled = false;
@@ -745,6 +744,10 @@ void MeshRenderPass::drawBatch(
 
   program_->use();
   program_->setInt("u_collision", collision ? 1 : 0);
+  // View-constant across every draw in this batch, so set it once here instead
+  // of inverting view per draw inside drawOne (L.56). SceneViewWidget already
+  // fills camera_pos_world from camera_->position().
+  program_->setVec3("u_camera_pos", view_params.camera_pos_world);
 
   if (collision) {
     withGlFunctions([](auto& functions) {

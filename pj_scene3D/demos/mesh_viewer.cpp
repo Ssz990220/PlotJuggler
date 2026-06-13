@@ -194,7 +194,9 @@ QWidget* makeControls(pj::scene3d::SceneViewWidget& view) {
     repaint();
   });
 
-  auto& shading = pj::scene3d::meshShadingParams();
+  // Per-view shading knobs: `view` outlives this panel (both owned by `window`),
+  // so the lambdas can capture &shading safely, same as the compositeParams() rows.
+  auto& shading = view.meshShadingParams();
   addSlider(
       form, QStringLiteral("Roughness"), 5, 100, static_cast<int>(shading.roughness * 100),
       [&shading, repaint](float v) {

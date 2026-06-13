@@ -4,10 +4,12 @@
 
 namespace pj::scene3d {
 
-// Scene-wide mesh shading knobs, shared by every MeshRenderPass instance.
-// Pre-Part-C-SceneLighting stopgap: a process-wide setting keeps the look
-// consistent across docks and lets the scene-controls panel / mesh_viewer demo
-// tune it live. Read per draw — mutate freely from the GUI thread.
+// Per-view mesh shading / scene-look knobs. Owned by each SceneViewWidget next to
+// CompositeParams (SceneViewWidget::meshShadingParams()) and copied into ViewParams
+// every frame, so the bound view's mesh/collision opacity and shading reach the
+// MeshRenderPass through render-time plumbing rather than a process-global. Read per
+// draw; mutate freely from the GUI thread (call view->update() afterwards). Two 3D
+// docks therefore hold independent look state and never clobber each other.
 // Defaults are the User's 2026-06-10 look-dev pick (mesh_viewer demo).
 struct MeshShadingParams {
   float roughness = 0.6f;          // visual-mesh GGX roughness (collision stays 0.85)
@@ -19,6 +21,5 @@ struct MeshShadingParams {
   bool meshes_visible = true;      // Part C eye toggles (independent of opacity)
   bool collisions_visible = true;
 };
-[[nodiscard]] MeshShadingParams& meshShadingParams();
 
 }  // namespace pj::scene3d

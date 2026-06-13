@@ -161,19 +161,23 @@ void SceneDockWidget::removeTopic(ObjectTopicId topic_id) {
   if (it == layers_.end()) {
     return;
   }
-  if (it->second != nullptr) {
-    it->second->detach();
-  }
-  // Mutate -> reconcile view -> notify. Keep the removed layer alive until after
-  // syncViewLayers() repoints the view off this layer's backend and observers are
-  // notified, so a paint triggered from a layerRemoved slot never renders a
-  // composite borrowing a detached/destroyed source. Destroyed at scope exit.
+  // Mutate -> reconcile view -> detach -> notify. syncViewLayers() drives
+  // SceneViewWidget::setLayers, which runs releaseGL() on the dropped layer under
+  // makeCurrent. detach() MUST follow that, because for GL-owning layers detach
+  // tears down GL-bearing containers (e.g. mesh/texture caches) with no context
+  // current — running it first orphans those resources before the contexted
+  // releaseGL can free them. Keep the removed layer alive until after the
+  // notification so a paint from a layerRemoved slot never borrows a destroyed
+  // source. Destroyed at scope exit.
   std::unique_ptr<ISceneLayer> removed = std::move(it->second);
   layers_.erase(it);
   layer_visibility_cache_.erase(key);
   draw_order_.erase(std::remove(draw_order_.begin(), draw_order_.end(), key), draw_order_.end());
   syncViewLayers();
   refreshView();
+  if (removed != nullptr) {
+    removed->detach();
+  }
   emit layerRemoved(topic_id);
 }
 
@@ -525,11 +529,11 @@ void SceneDockWidget::clearLayers() {
   if (layers_.empty()) {
     return;
   }
-  // Mirror removeTopic()'s ordering for the clear-all case: re-point the view
-  // off every layer (a sync with an empty draw order) while the layers are
-  // still alive, so a view holding raw layer pointers can drop and release
-  // them safely (the 3D view releases each layer's GL resources here). Only
-  // then detach; the retired layers are destroyed at scope exit.
+  // Contract (same ordering removeTopic now uses): re-point the view off every
+  // layer (a sync with an empty draw order) while the layers are still alive, so
+  // the view runs each layer's releaseGL() under its current context BEFORE any
+  // detach. Only then detach (which, for GL-owning layers, tears down GL-bearing
+  // caches with no context current). The retired layers are destroyed at scope exit.
   auto retired = std::move(layers_);
   layers_.clear();
   draw_order_.clear();

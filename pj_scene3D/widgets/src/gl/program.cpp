@@ -5,56 +5,14 @@
 
 #include <fmt/format.h>
 
-#include <QOpenGLContext>
-#include <QOpenGLExtraFunctions>
-#include <QOpenGLVersionFunctionsFactory>
 #include <limits>
-#include <stdexcept>
+#include <string>
 #include <utility>
+
+#include "pj_scene3d_widgets/gl/gl_functions.h"
 
 namespace pj::scene3d::gl {
 namespace {
-
-template <typename Callback>
-decltype(auto) withGlFunctions(Callback&& callback) {
-  QOpenGLContext* context = QOpenGLContext::currentContext();
-  if (context == nullptr) {
-    throw std::runtime_error("No current OpenGL context");
-  }
-
-  if (auto* functions = QOpenGLVersionFunctionsFactory::get<QOpenGLFunctions_4_5_Core>(context); functions != nullptr) {
-    functions->initializeOpenGLFunctions();
-    return callback(*functions);
-  }
-
-  QOpenGLExtraFunctions* functions = context->extraFunctions();
-  if (functions == nullptr) {
-    throw std::runtime_error("No OpenGL functions available");
-  }
-  functions->initializeOpenGLFunctions();
-  return callback(*functions);
-}
-
-template <typename Callback>
-void withGlFunctionsNoThrow(Callback&& callback) noexcept {
-  QOpenGLContext* context = QOpenGLContext::currentContext();
-  if (context == nullptr) {
-    return;
-  }
-
-  if (auto* functions = QOpenGLVersionFunctionsFactory::get<QOpenGLFunctions_4_5_Core>(context); functions != nullptr) {
-    functions->initializeOpenGLFunctions();
-    callback(*functions);
-    return;
-  }
-
-  QOpenGLExtraFunctions* functions = context->extraFunctions();
-  if (functions == nullptr) {
-    return;
-  }
-  functions->initializeOpenGLFunctions();
-  callback(*functions);
-}
 
 std::string trimNullTerminator(std::string log) {
   while (!log.empty() && log.back() == '\0') {
@@ -131,22 +89,30 @@ GLuint compileShader(
 
 }  // namespace
 
-Program::Program(GLuint id) : id_(id) {}
+Program::Program(GLuint id) : id_(id), owning_context_(QOpenGLContext::currentContext()) {}
 
 Program::~Program() {
-  if (id_ != 0U) {
+  if (id_ != 0U && deleteAllowedInCurrentContext(owning_context_)) {
     withGlFunctionsNoThrow([this](auto& functions) { functions.glDeleteProgram(id_); });
   }
 }
 
-Program::Program(Program&& other) noexcept : id_(std::exchange(other.id_, 0U)) {}
+Program::Program(Program&& other) noexcept
+    : id_(std::exchange(other.id_, 0U)),
+      owning_context_(std::exchange(other.owning_context_, nullptr)),
+      uniform_locations_(std::move(other.uniform_locations_)) {
+  other.uniform_locations_.clear();
+}
 
 Program& Program::operator=(Program&& other) noexcept {
   if (this != &other) {
-    if (id_ != 0U) {
+    if (id_ != 0U && deleteAllowedInCurrentContext(owning_context_)) {
       withGlFunctionsNoThrow([this](auto& functions) { functions.glDeleteProgram(id_); });
     }
     id_ = std::exchange(other.id_, 0U);
+    owning_context_ = std::exchange(other.owning_context_, nullptr);
+    uniform_locations_ = std::move(other.uniform_locations_);
+    other.uniform_locations_.clear();
   }
   return *this;
 }
@@ -206,7 +172,13 @@ GLuint Program::id() const noexcept {
 }
 
 GLint Program::uniformLocation(const char* name) {
-  return withGlFunctions([this, name](auto& functions) { return functions.glGetUniformLocation(id_, name); });
+  if (auto it = uniform_locations_.find(name); it != uniform_locations_.end()) {
+    return it->second;
+  }
+  const GLint location =
+      withGlFunctions([this, name](auto& functions) { return functions.glGetUniformLocation(id_, name); });
+  uniform_locations_.emplace(name, location);
+  return location;
 }
 
 void Program::setMat4(const char* name, const glm::mat4& m) {

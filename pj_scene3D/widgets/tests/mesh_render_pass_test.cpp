@@ -97,5 +97,25 @@ TEST(MeshRenderPassTest, DrawNeedsVisualBlendingRouting) {
   EXPECT_FALSE(MeshRenderPass::drawNeedsVisualBlending(draw, false, 1.0f));
 }
 
+// --- Per-view shading plumbing (WP4: retired the process-global singleton) ----
+
+// MeshShadingParams now travels per-frame inside ViewParams::shading (drawOne and
+// RobotModelLayer::render read it from there), so two views carry independent look
+// state. A regression to a shared process-global would make these aliases.
+TEST(MeshRenderPassTest, ViewParamsCarryIndependentShadingPerView) {
+  ViewParams view_a{};
+  ViewParams view_b{};
+
+  // Default-initialized to the same look-dev defaults, but distinct storage.
+  EXPECT_EQ(view_a.shading.mesh_opacity, MeshShadingParams{}.mesh_opacity);
+  EXPECT_NE(&view_a.shading, &view_b.shading) << "shading must be per-ViewParams, not a shared global";
+
+  // Mutating one view's copy (the Scene3DConfigPanel path) must not touch the other.
+  view_a.shading.mesh_opacity = 0.25f;
+  view_a.shading.collisions_visible = false;
+  EXPECT_EQ(view_b.shading.mesh_opacity, MeshShadingParams{}.mesh_opacity);
+  EXPECT_TRUE(view_b.shading.collisions_visible);
+}
+
 }  // namespace
 }  // namespace pj::scene3d

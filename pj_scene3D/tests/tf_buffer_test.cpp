@@ -13,6 +13,7 @@
 #include <stdexcept>
 #include <string>
 #include <utility>
+#include <vector>
 
 namespace PJ {
 namespace {
@@ -221,6 +222,34 @@ TEST(TransformBufferTest, Introspection) {
   if (latest_b.has_value()) {
     EXPECT_EQ(*latest_b, tp(12ns));
   }
+}
+
+// The out-param getAllFrames overload (used by the axis pass to reuse capacity
+// across frames) must produce the same frame set as the by-value version and
+// must CLEAR pre-existing content in the caller's vector first.
+TEST(TransformBufferTest, GetAllFramesOutParamMatchesAndClears) {
+  TransformBuffer buffer;
+  (void)buffer.setTransform(makeStamped("world", "A", tp(11ns), makeTranslation(1.0)));
+  (void)buffer.setTransform(makeStamped("world", "B", tp(12ns), makeTranslation(2.0)));
+  (void)buffer.setTransform(makeStamped("A", "C", tp(13ns), makeTranslation(3.0)));
+
+  // Pre-seed stale entries to prove the overload clears before refilling.
+  std::vector<std::string> scratch{"stale_one", "stale_two"};
+  buffer.getAllFrames(scratch);
+
+  const std::set<std::string> got(scratch.begin(), scratch.end());
+  const std::set<std::string> expected{"world", "A", "B", "C"};
+  EXPECT_EQ(scratch.size(), 4U);
+  EXPECT_EQ(got, expected);
+
+  // Same content as the by-value overload it now delegates to.
+  const auto by_value = buffer.getAllFrames();
+  EXPECT_EQ(std::set<std::string>(by_value.begin(), by_value.end()), got);
+
+  // Reuse on an empty buffer empties the vector (clear actually runs).
+  TransformBuffer empty;
+  empty.getAllFrames(scratch);
+  EXPECT_TRUE(scratch.empty());
 }
 
 TEST(TransformBufferTest, TryLookupNoThrow) {

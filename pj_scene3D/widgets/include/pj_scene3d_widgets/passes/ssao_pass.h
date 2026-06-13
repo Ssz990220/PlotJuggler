@@ -3,7 +3,7 @@
 #pragma once
 
 #include <glm/glm.hpp>
-#include <memory>
+#include <optional>
 #include <vector>
 
 #include "pj_scene3d_widgets/gl/framebuffer.h"
@@ -59,8 +59,8 @@ class SsaoPass : public IPostPass {
  private:
   bool buildPrograms();
 
-  std::unique_ptr<gl::Program> ssao_program_;
-  std::unique_ptr<gl::Program> blur_program_;
+  std::optional<gl::Program> ssao_program_;
+  std::optional<gl::Program> blur_program_;
   gl::VertexArray fullscreen_vao_;
   gl::Framebuffer raw_fbo_;
   gl::Framebuffer blur_fbo_;
@@ -74,6 +74,10 @@ class SsaoPass : public IPostPass {
   int height_{0};
   bool targets_ready_{false};
   bool initialized_{false};
+  // Latches that initializeGL ran in THIS context (whether or not compilation
+  // succeeded), so a per-context shader failure isn't re-attempted every frame.
+  // Cleared by releaseGL() so context recreation rebuilds.
+  bool attempted_{false};
 };
 
 }  // namespace pj::scene3d

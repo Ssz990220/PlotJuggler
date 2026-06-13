@@ -3,11 +3,8 @@
 
 #include "pj_scene3d_widgets/passes/axis_render_pass.h"
 
-#include <QOpenGLContext>
-#include <QOpenGLExtraFunctions>
-#include <QOpenGLVersionFunctionsFactory>
-#include <glm/gtc/matrix_transform.hpp>
-#include <stdexcept>
+#include <array>
+#include <glm/glm.hpp>
 
 #include "pj_scene3d_core/tf/tf_buffer.h"
 #include "pj_scene3d_widgets/gl/gl_functions.h"
@@ -32,6 +29,8 @@ ArrowGizmo::Params paramsForLength(float length) {
 void AxisRenderPass::initializeGL() {
   arrow_.initializeGL(paramsForLength(axis_length_));
   initialized_ = true;
+  // initializeGL already built from the latest axis_length_.
+  gizmo_dirty_ = false;
 }
 
 void AxisRenderPass::releaseGL() {
@@ -39,29 +38,23 @@ void AxisRenderPass::releaseGL() {
   initialized_ = false;
 }
 
-void AxisRenderPass::rebuildGizmo() {
-  if (initialized_) {
-    arrow_.rebuild(paramsForLength(axis_length_));
-  }
-}
-
 void AxisRenderPass::render(const ViewParams& view_params, const FrameContext& frame_ctx) {
   if (!initialized_) {
     return;
   }
 
-  // Per-axis model-space rotations: the gizmo points along +X. To draw the
-  // Y arrow we rotate +X to +Y (+90° around +Z); for Z we rotate +X to +Z
-  // (-90° around +Y).
-  static const glm::mat4 kYRotate = glm::rotate(glm::mat4{1.0f}, glm::radians(90.0f), {0.0f, 0.0f, 1.0f});
-  static const glm::mat4 kZRotate = glm::rotate(glm::mat4{1.0f}, glm::radians(-90.0f), {0.0f, 1.0f, 0.0f});
+  // Flush a deferred length change (setAxisLength) under the now-current context.
+  if (gizmo_dirty_) {
+    arrow_.rebuild(paramsForLength(axis_length_));
+    gizmo_dirty_ = false;
+  }
 
   // Slightly desaturated R/G/B so adjacent frames don't clash visually with
   // the HUD overlay (which uses the saturated triplets). The alpha channel
   // carries the Part-C "Gizmos opacity" (annotation coverage).
-  const glm::vec4 kColorX{0.95f, 0.30f, 0.30f, opacity_};
-  const glm::vec4 kColorY{0.30f, 0.85f, 0.30f, opacity_};
-  const glm::vec4 kColorZ{0.35f, 0.50f, 1.00f, opacity_};
+  const std::array<glm::vec4, 3> colors{
+      glm::vec4{0.95f, 0.30f, 0.30f, opacity_}, glm::vec4{0.30f, 0.85f, 0.30f, opacity_},
+      glm::vec4{0.35f, 0.50f, 1.00f, opacity_}};
 
   // Solid 3D arrows participate in normal depth ordering — back ones get
   // occluded by front ones, and arrows hide behind opaque scene geometry.
@@ -70,21 +63,20 @@ void AxisRenderPass::render(const ViewParams& view_params, const FrameContext& f
     f.glLineWidth(1.0f);
   });
 
-  for (const std::string& frame : frame_ctx.tf.getAllFrames()) {
+  // Reuse the scratch vector's capacity across frames instead of allocating a
+  // fresh frame-name vector every paint (L.54). Bind the arrow program ONCE
+  // for the whole pass: N frames now cost 1 program bind, not 3N (L.54/L.93).
+  frame_ctx.tf.getAllFrames(frames_scratch_);
+  arrow_.bindForRender();
+  for (const std::string& frame : frames_scratch_) {
     const auto transform = frame_ctx.lookup(frame);
     if (!transform.has_value()) {
       continue;
     }
-
     const glm::mat4 frame_model = glm::mat4(transform->matrix());
-    const glm::mat4 mx = frame_model;
-    const glm::mat4 my = frame_model * kYRotate;
-    const glm::mat4 mz = frame_model * kZRotate;
-
-    arrow_.render(view_params.proj * view_params.view * mx, glm::mat3(view_params.view * mx), kColorX);
-    arrow_.render(view_params.proj * view_params.view * my, glm::mat3(view_params.view * my), kColorY);
-    arrow_.render(view_params.proj * view_params.view * mz, glm::mat3(view_params.view * mz), kColorZ);
+    renderTriadBound(arrow_, view_params.proj, view_params.view, frame_model, glm::mat4{1.0f}, colors);
   }
+  arrow_.unbindAfterRender();
 }
 
 void AxisRenderPass::setAxisLength(float length_m) {
@@ -92,7 +84,10 @@ void AxisRenderPass::setAxisLength(float length_m) {
     return;
   }
   axis_length_ = length_m;
-  rebuildGizmo();
+  // Defer the GL rebuild to render(): this setter is reachable from a GUI slot
+  // with no (or a foreign) GL context current. initializeGL builds from the
+  // latest length, so dirtying only matters once we are already initialized.
+  gizmo_dirty_ = initialized_;
 }
 
 float AxisRenderPass::axisLength() const noexcept {

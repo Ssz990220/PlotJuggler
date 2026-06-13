@@ -488,10 +488,10 @@ void RobotModelLayer::render(const ViewParams& view_params, const FrameContext& 
     draws_dirty_ = false;
   }
 
-  // Scene-wide opacities (Part C "Meshes"/"Collision" sliders); 0 hides the
-  // group entirely. These gates stay per-frame — only the draw list is cached.
-  // The per-layer DisplayMode stays the structural override.
-  const MeshShadingParams& shading = meshShadingParams();
+  // Per-view opacities (Part C "Meshes"/"Collision" sliders); 0 hides the group
+  // entirely. These gates stay per-frame — only the draw list is cached. The
+  // per-layer DisplayMode stays the structural override.
+  const MeshShadingParams& shading = view_params.shading;
   if (shading.meshes_visible && shading.mesh_opacity > 0.0f) {
     mesh_pass_->renderVisuals(view_params, cached_visual_draws_, shading.mesh_opacity);
   }

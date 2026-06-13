@@ -5,36 +5,17 @@
 
 #include <fmt/core.h>
 
-#include <QOpenGLContext>
-#include <QOpenGLExtraFunctions>
-#include <QOpenGLVersionFunctionsFactory>
 #include <cmath>
+#include <optional>
 #include <random>
 #include <string>
 #include <string_view>
 #include <variant>
 
+#include "pj_scene3d_widgets/gl/gl_functions.h"
+
 namespace pj::scene3d {
 namespace {
-
-template <typename Callback>
-void withGlFunctions(Callback&& callback) {
-  QOpenGLContext* context = QOpenGLContext::currentContext();
-  if (context == nullptr) {
-    return;
-  }
-  if (auto* functions = QOpenGLVersionFunctionsFactory::get<QOpenGLFunctions_4_5_Core>(context); functions != nullptr) {
-    functions->initializeOpenGLFunctions();
-    callback(*functions);
-    return;
-  }
-  QOpenGLExtraFunctions* functions = context->extraFunctions();
-  if (functions == nullptr) {
-    return;
-  }
-  functions->initializeOpenGLFunctions();
-  callback(*functions);
-}
 
 constexpr int kKernelSize = 32;  // perf default per plan §A.5 (64 = quality)
 
@@ -136,21 +117,26 @@ void main() {
 }
 )GLSL";
 
-std::unique_ptr<gl::Program> compileOrWarn(std::string_view vert, std::string_view frag, const char* what) {
+std::optional<gl::Program> compileOrWarn(std::string_view vert, std::string_view frag, const char* what) {
   auto result = gl::Program::fromSources(vert, frag);
   if (auto* program = std::get_if<gl::Program>(&result); program != nullptr) {
-    return std::make_unique<gl::Program>(std::move(*program));
+    return std::optional<gl::Program>(std::move(*program));
   }
   fmt::print(stderr, "SsaoPass {} shader error: {}\n", what, std::get<std::string>(result));
-  return nullptr;
+  return std::nullopt;
 }
 
 }  // namespace
 
 void SsaoPass::initializeGL() {
-  if (initialized_) {
+  // Latch the attempt, not the success: a per-context shader-compile failure
+  // must not retry every frame (paintGL calls this each frame while SSAO is on).
+  // ready() still gates renderAo + the composite's u_has_ao, so the feature
+  // safely degrades. releaseGL() clears attempted_ so recreation rebuilds.
+  if (attempted_) {
     return;
   }
+  attempted_ = true;
   initialized_ = buildPrograms();
   if (kernel_.empty()) {
     // Hemisphere kernel, denser near the origin (LearnOpenGL lerp-scale).
@@ -171,7 +157,7 @@ void SsaoPass::initializeGL() {
 bool SsaoPass::buildPrograms() {
   ssao_program_ = compileOrWarn(kFullscreenVertSrc, kSsaoFragSrc, "ssao");
   blur_program_ = compileOrWarn(kFullscreenVertSrc, kBlurFragSrc, "blur");
-  return ssao_program_ != nullptr && blur_program_ != nullptr;
+  return ssao_program_.has_value() && blur_program_.has_value();
 }
 
 void SsaoPass::render(const ViewParams& /*view_params*/, const FrameContext& /*frame_ctx*/) {}
@@ -254,6 +240,7 @@ void SsaoPass::releaseGL() {
   height_ = 0;
   targets_ready_ = false;
   initialized_ = false;
+  attempted_ = false;
 }
 
 GLuint SsaoPass::outputTextureId() const noexcept {

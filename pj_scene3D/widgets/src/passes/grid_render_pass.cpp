@@ -5,11 +5,7 @@
 
 #include <fmt/core.h>
 
-#include <QOpenGLContext>
-#include <QOpenGLExtraFunctions>
-#include <QOpenGLVersionFunctionsFactory>
 #include <algorithm>
-#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <variant>

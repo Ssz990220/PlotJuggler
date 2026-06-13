@@ -469,7 +469,12 @@ void MarkerRenderPass::setActive(std::shared_ptr<const DecodedSceneEntities> mar
 }
 
 void MarkerRenderPass::initializeGL() {
-  initialized_ = false;
+  // Idempotent: SceneViewWidget::renderScene calls this on every paint. releaseGL
+  // clears initialized_, so context recreation still rebuilds. Failure paths
+  // below leave initialized_ false (matching PointcloudRenderPass).
+  if (initialized_) {
+    return;
+  }
 
   auto result = gl::Program::fromSources(kSolidVert, kFlatColorFrag);
   if (auto* program = std::get_if<gl::Program>(&result); program != nullptr) {
@@ -572,7 +577,13 @@ void MarkerRenderPass::render(const ViewParams& view_params, const FrameContext&
       overrides_.opacity < 0.999F || (overrides_.color_override && overrides_.override_color.a < 0.999F);
   withGlFunctions([translucent](auto& functions) {
     functions.glEnable(GL_BLEND);
-    functions.glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    // Coverage-union alpha (ONE, ONE_MINUS_SRC_ALPHA on the alpha channel) — the
+    // SceneViewWidget::renderScene data contract that RESTORES the per-pixel
+    // tonemap marker (dstA' = srcA + dstA*(1-srcA)). A plain glBlendFunc here set
+    // alpha to srcA*srcA + dstA*(1-srcA), under-restoring the marker so occluded
+    // annotation pixels ghosted through translucent markers (M.31). Now identical
+    // to the ambient state, so no separate restore is needed at pass exit.
+    functions.glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
     if (translucent) {
       functions.glDepthMask(GL_FALSE);
     }
@@ -747,8 +758,13 @@ void MarkerRenderPass::render(const ViewParams& view_params, const FrameContext&
     }
 
     if (!batch.axes.empty()) {
-      const glm::mat4 to_y = glm::rotate(glm::mat4(1.0F), glm::radians(90.0F), glm::vec3(0, 0, 1));
-      const glm::mat4 to_z = glm::rotate(glm::mat4(1.0F), glm::radians(-90.0F), glm::vec3(0, 1, 0));
+      // X red / Y green / Z blue, viewer override + opacity baked in CPU-side.
+      // renderTriadBound owns the +Y/+Z arm rotations and brackets the program
+      // bind once for the whole axes batch (L.54/L.93). kFlat preserves the
+      // unlit marker shading drawArrow used.
+      const std::array<glm::vec4, 3> colors{
+          applyOverride({1, 0, 0, 1}), applyOverride({0, 1, 0, 1}), applyOverride({0, 0, 1, 1})};
+      marker_arrow_.bindForRender();
       for (const auto& ax : batch.axes) {
         if (ax.frame_index >= frame_world.size()) {
           continue;
@@ -761,10 +777,9 @@ void MarkerRenderPass::render(const ViewParams& view_params, const FrameContext&
         const glm::mat4 s = glm::scale(
             glm::mat4(1.0F),
             glm::vec3(std::max(ax.length, 1e-3F), std::max(ax.thickness, 1e-3F), std::max(ax.thickness, 1e-3F)));
-        drawArrow(base * s, {1, 0, 0, 1});         // X red
-        drawArrow(base * to_y * s, {0, 1, 0, 1});  // Y green
-        drawArrow(base * to_z * s, {0, 0, 1, 1});  // Z blue
+        renderTriadBound(marker_arrow_, proj, view, base, s, colors, ArrowGizmo::Shading::kFlat);
       }
+      marker_arrow_.unbindAfterRender();
     }
   }
 

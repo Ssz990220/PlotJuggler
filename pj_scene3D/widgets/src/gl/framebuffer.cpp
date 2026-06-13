@@ -3,74 +3,30 @@
 
 #include "pj_scene3d_widgets/gl/framebuffer.h"
 
-#include <QOpenGLContext>
-#include <QOpenGLExtraFunctions>
-#include <QOpenGLVersionFunctionsFactory>
-#include <stdexcept>
 #include <utility>
 
+#include "pj_scene3d_widgets/gl/gl_functions.h"
+
 namespace pj::scene3d::gl {
-namespace {
-
-template <typename Callback>
-decltype(auto) withGlFunctions(Callback&& callback) {
-  QOpenGLContext* context = QOpenGLContext::currentContext();
-  if (context == nullptr) {
-    throw std::runtime_error("No current OpenGL context");
-  }
-
-  if (auto* functions = QOpenGLVersionFunctionsFactory::get<QOpenGLFunctions_4_5_Core>(context); functions != nullptr) {
-    functions->initializeOpenGLFunctions();
-    return callback(*functions);
-  }
-
-  QOpenGLExtraFunctions* functions = context->extraFunctions();
-  if (functions == nullptr) {
-    throw std::runtime_error("No OpenGL functions available");
-  }
-  functions->initializeOpenGLFunctions();
-  return callback(*functions);
-}
-
-template <typename Callback>
-void withGlFunctionsNoThrow(Callback&& callback) noexcept {
-  QOpenGLContext* context = QOpenGLContext::currentContext();
-  if (context == nullptr) {
-    return;
-  }
-
-  if (auto* functions = QOpenGLVersionFunctionsFactory::get<QOpenGLFunctions_4_5_Core>(context); functions != nullptr) {
-    functions->initializeOpenGLFunctions();
-    callback(*functions);
-    return;
-  }
-
-  QOpenGLExtraFunctions* functions = context->extraFunctions();
-  if (functions == nullptr) {
-    return;
-  }
-  functions->initializeOpenGLFunctions();
-  callback(*functions);
-}
-
-}  // namespace
 
 Framebuffer::Framebuffer() = default;
 
 Framebuffer::~Framebuffer() {
-  if (id_ != 0U) {
+  if (id_ != 0U && deleteAllowedInCurrentContext(owning_context_)) {
     withGlFunctionsNoThrow([this](auto& functions) { functions.glDeleteFramebuffers(1, &id_); });
   }
 }
 
-Framebuffer::Framebuffer(Framebuffer&& other) noexcept : id_(std::exchange(other.id_, 0U)) {}
+Framebuffer::Framebuffer(Framebuffer&& other) noexcept
+    : id_(std::exchange(other.id_, 0U)), owning_context_(std::exchange(other.owning_context_, nullptr)) {}
 
 Framebuffer& Framebuffer::operator=(Framebuffer&& other) noexcept {
   if (this != &other) {
-    if (id_ != 0U) {
+    if (id_ != 0U && deleteAllowedInCurrentContext(owning_context_)) {
       withGlFunctionsNoThrow([this](auto& functions) { functions.glDeleteFramebuffers(1, &id_); });
     }
     id_ = std::exchange(other.id_, 0U);
+    owning_context_ = std::exchange(other.owning_context_, nullptr);
   }
   return *this;
 }
@@ -83,6 +39,7 @@ void Framebuffer::bind(GLenum target) {
   withGlFunctions([this, target](auto& functions) {
     if (id_ == 0U) {
       functions.glGenFramebuffers(1, &id_);
+      owning_context_ = QOpenGLContext::currentContext();
     }
     functions.glBindFramebuffer(target, id_);
   });

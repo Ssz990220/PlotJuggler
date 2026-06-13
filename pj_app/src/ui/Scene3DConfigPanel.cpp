@@ -206,7 +206,7 @@ void Scene3DConfigPanel::buildSceneControls(QVBoxLayout* root) {
     eye->setChecked(settings.value(QString::fromLatin1(key), true).toBool());
     connect(eye, &QToolButton::toggled, this, [this, eye](bool checked) {
       settings_writer_.queue(eye->property("settings_key").toString(), checked);
-      eye->setIcon(LoadSvg(QLatin1String(checked ? kVisibilityOnPath : kVisibilityOffPath), theme_));
+      setEyeIcon(eye, checked);
       applySceneControls();
     });
     return eye;
@@ -346,6 +346,10 @@ void Scene3DConfigPanel::applySceneControlsTo(Scene3DDockWidget* dock) {
   if (view == nullptr) {
     return;
   }
+  // The scene-control field set is mirrored across FOUR sites — keep them in sync
+  // when adding a control (a miss is silent, no compile error): this push,
+  // loadControlsFromDock (reflect-on-bind), and Scene3DDockWidget's
+  // xmlSaveState/xmlLoadState (per-dock layout persistence).
   view->setGridVisible(grid_eye_->isChecked());
   view->setGridStyle(
       grid_cells_button_->isChecked() ? pj::scene3d::GridRenderPass::Style::kFilledCells
@@ -356,12 +360,65 @@ void Scene3DConfigPanel::applySceneControlsTo(Scene3DDockWidget* dock) {
   view->setGizmoSize(static_cast<float>(gizmo_size_->value()));
   view->setGizmoOpacity(static_cast<float>(gizmo_opacity_->value()));
 
-  auto& shading = pj::scene3d::meshShadingParams();
+  // Per-view look knobs: drives only the bound dock's view. Sibling docks keep
+  // their own MeshShadingParams and converge when the panel rebinds and applies.
+  auto& shading = view->meshShadingParams();
   shading.meshes_visible = mesh_eye_->isChecked();
   shading.mesh_opacity = static_cast<float>(mesh_opacity_->value());
   shading.collisions_visible = collision_eye_->isChecked();
   shading.collision_opacity = static_cast<float>(collision_opacity_->value());
   view->update();
+}
+
+void Scene3DConfigPanel::loadControlsFromDock(Scene3DDockWidget* dock) {
+  if (dock == nullptr) {
+    return;
+  }
+  auto* view = dock->sceneView();
+  if (view == nullptr) {
+    return;
+  }
+  // Inverse of applySceneControlsTo (keep the field set in sync — 4 sites).
+  // Reflect the dock's OWN look in the widgets without echoing it straight back
+  // through the change handlers (which would re-apply + re-persist). Scrubbers
+  // are blocked; the eye toggles are set + their icon refreshed by hand (the
+  // toggled handler that normally swaps the icon is suppressed by the blocker).
+  const auto set_eye = [this](QToolButton* eye, bool on) {
+    const QSignalBlocker block(eye);
+    eye->setChecked(on);
+    setEyeIcon(eye, on);
+  };
+
+  {
+    const QSignalBlocker b_grid_size(grid_size_);
+    const QSignalBlocker b_grid_div(grid_divisions_);
+    const QSignalBlocker b_gizmo_size(gizmo_size_);
+    const QSignalBlocker b_gizmo_op(gizmo_opacity_);
+    const QSignalBlocker b_mesh_op(mesh_opacity_);
+    const QSignalBlocker b_coll_op(collision_opacity_);
+
+    grid_size_->setValue(view->gridExtentMetres());
+    grid_divisions_->setValue(view->gridDivisions());
+    gizmo_size_->setValue(view->gizmoSize());
+    gizmo_opacity_->setValue(view->gizmoOpacity());
+
+    const auto& shading = view->meshShadingParams();
+    mesh_opacity_->setValue(shading.mesh_opacity);
+    collision_opacity_->setValue(shading.collision_opacity);
+    set_eye(mesh_eye_, shading.meshes_visible);
+    set_eye(collision_eye_, shading.collisions_visible);
+  }
+
+  // idClicked (the connected signal) fires only on user clicks, not programmatic
+  // setChecked, so the exclusive style group needs no blocker.
+  (view->gridStyle() == pj::scene3d::GridRenderPass::Style::kFilledCells ? grid_cells_button_ : grid_lines_button_)
+      ->setChecked(true);
+  set_eye(grid_eye_, view->gridVisible());
+  set_eye(gizmo_eye_, view->axesVisible());
+}
+
+void Scene3DConfigPanel::setEyeIcon(QToolButton* eye, bool on) {
+  eye->setIcon(LoadSvg(QLatin1String(on ? kVisibilityOnPath : kVisibilityOffPath), theme_));
 }
 
 void Scene3DConfigPanel::applyIcons() {
@@ -373,7 +430,7 @@ void Scene3DConfigPanel::applyIcons() {
   }
   for (QToolButton* eye : {grid_eye_, gizmo_eye_, mesh_eye_, collision_eye_}) {
     if (eye != nullptr) {
-      eye->setIcon(LoadSvg(QLatin1String(eye->isChecked() ? kVisibilityOnPath : kVisibilityOffPath), theme_));
+      setEyeIcon(eye, eye->isChecked());
     }
   }
   if (add_model_button_ != nullptr) {
@@ -571,7 +628,7 @@ void Scene3DConfigPanel::bindDock(Scene3DDockWidget* dock) {
   }
 
   rebuildLayerList();
-  applySceneControls();  // every dock this panel binds shares the saved look
+  loadControlsFromDock(dock);  // reflect THIS dock's look; controls are per-dock
 
   connect(dock, &SceneDockWidget::layerAdded, this, &Scene3DConfigPanel::onLayerAdded);
   connect(dock, &SceneDockWidget::layerRemoved, this, &Scene3DConfigPanel::onLayerRemoved);

@@ -5,6 +5,8 @@
 
 #include <gtest/gtest.h>
 
+#include <cmath>
+
 #include "pj_scene3d_core/camera/camera.h"
 
 using pj::scene3d::CameraState;
@@ -13,6 +15,7 @@ using pj::scene3d::cameraStateToJson;
 using pj::scene3d::FlyCamera;
 using pj::scene3d::OrbitCamera;
 using pj::scene3d::TopDownOrthoCamera;
+using pj::scene3d::XYOrbitCamera;
 
 TEST(CameraReset, OrbitDefaults) {
   OrbitCamera cam;
@@ -62,7 +65,10 @@ TEST(CameraReset, FlyDefaultsLookAtOrigin) {
 
 TEST(CameraStateTransfer, OrbitToTopDownToOrbitRoundTrip) {
   CameraState s;
-  s.focal = glm::vec3{3.0f, -2.0f, 1.0f};
+  // focal.z = 0: TopDownOrtho's invariant is a ground-level pivot, so it flattens
+  // focal.z on adopt (M.9). A round-trip through it is only lossless for a
+  // ground-level focal — which is the realistic bird's-eye case anyway.
+  s.focal = glm::vec3{3.0f, -2.0f, 0.0f};
   s.radius = 42.0f;
   s.azimuth = 0.7f;
   s.elevation = 0.4f;
@@ -75,6 +81,7 @@ TEST(CameraStateTransfer, OrbitToTopDownToOrbitRoundTrip) {
   top_down.adoptState(orbit.state());
   EXPECT_FALSE(top_down.state().perspective);
   EXPECT_FLOAT_EQ(top_down.state().ortho_scale, 42.0f);  // seeded from radius
+  EXPECT_NEAR(top_down.state().focal.z, 0.0f, 1e-4f);    // pivot re-locked to the floor
 
   OrbitCamera orbit2;
   orbit2.adoptState(top_down.state());
@@ -85,6 +92,106 @@ TEST(CameraStateTransfer, OrbitToTopDownToOrbitRoundTrip) {
   EXPECT_NEAR(r.focal.z, s.focal.z, 1e-4f);
   EXPECT_NEAR(r.azimuth, s.azimuth, 1e-4f);
   EXPECT_NEAR(r.radius, s.radius, 1e-4f);  // radius → ortho_scale → radius
+}
+
+// ---------------------------------------------------------------------------
+// Fly round-trip + cross-model transfer (H.2 / L.146 / L.147 regression gate).
+//
+// CameraState's azimuth/elevation parameterize the FOCAL-TO-EYE direction
+// (OrbitCamera::position() = focal + radius*sphericalDir(az, el)). FlyCamera::state()
+// must therefore export the focal-to-eye direction, not its own forward (eye-to-focal)
+// look direction, or any model adopting a Fly state teleports forward and flips 180°.
+// ---------------------------------------------------------------------------
+
+TEST(CameraStateTransfer, FlyRoundTripPreservesPose) {
+  FlyCamera fly;
+  fly.rotate(150.0f, -60.0f);  // yaw/pitch away from the default
+  fly.pan(40.0f, 25.0f);       // translate the eye
+
+  const glm::vec3 eye_before = fly.position();
+  const glm::vec3 fwd_before = glm::normalize(fly.state().focal - eye_before);
+
+  FlyCamera fly2;
+  fly2.adoptState(fly.state());
+
+  EXPECT_NEAR(fly2.position().x, eye_before.x, 1e-3f);
+  EXPECT_NEAR(fly2.position().y, eye_before.y, 1e-3f);
+  EXPECT_NEAR(fly2.position().z, eye_before.z, 1e-3f);
+  const glm::vec3 fwd_after = glm::normalize(fly2.state().focal - fly2.position());
+  EXPECT_NEAR(glm::dot(fwd_before, fwd_after), 1.0f, 1e-3f);
+}
+
+TEST(CameraStateTransfer, FlyToOrbitContinuity) {
+  FlyCamera fly;
+  fly.rotate(220.0f, -40.0f);  // yaw right + pitch up
+  fly.pan(-30.0f, 50.0f);
+
+  const glm::vec3 fly_eye = fly.position();
+  const glm::vec3 fly_forward = glm::normalize(fly.state().focal - fly_eye);
+
+  OrbitCamera orbit;
+  orbit.adoptState(fly.state());
+
+  // The orbit eye must land on the fly eye, and the orbit's look direction
+  // (focal - eye) must match the fly's forward — no teleport, no 180° flip.
+  EXPECT_NEAR(orbit.position().x, fly_eye.x, 1e-3f);
+  EXPECT_NEAR(orbit.position().y, fly_eye.y, 1e-3f);
+  EXPECT_NEAR(orbit.position().z, fly_eye.z, 1e-3f);
+  const glm::vec3 orbit_forward = glm::normalize(orbit.state().focal - orbit.position());
+  EXPECT_NEAR(glm::dot(orbit_forward, fly_forward), 1.0f, 1e-3f);
+}
+
+TEST(CameraStateTransfer, FlyPreservesFovY) {
+  // A custom fov_y set on an orbit view must survive a switch into Fly and back
+  // (Fly stores/emits fov_y; projMatrix uses it instead of the old 45° literal).
+  OrbitCamera orbit;
+  CameraState s;
+  s.fov_y = glm::radians(60.0f);
+  orbit.adoptState(s);
+
+  FlyCamera fly;
+  fly.adoptState(orbit.state());
+  EXPECT_NEAR(fly.state().fov_y, glm::radians(60.0f), 1e-4f);
+
+  // proj[1][1] == 1/tan(fov_y/2) for a glm::perspective with aspect 1.
+  const glm::mat4 proj = fly.projMatrix(1.0f);
+  EXPECT_NEAR(proj[1][1], 1.0f / std::tan(glm::radians(30.0f)), 1e-3f);
+}
+
+TEST(CameraStateTransfer, XYOrbitAdoptFlattensFocal) {
+  // Adopting an elevated-pivot perspective state must re-lock the pivot to the
+  // floor (z=0) while keeping the eye fixed — the XYOrbit floor invariant.
+  CameraState s;
+  s.focal = glm::vec3{2.0f, -3.0f, 4.0f};  // pivot off the floor
+  s.radius = 12.0f;
+  s.azimuth = 0.5f;
+  s.elevation = 0.6f;
+  s.perspective = true;
+
+  OrbitCamera reference;  // same state through a plain orbit, to read the eye
+  reference.adoptState(s);
+  const glm::vec3 eye_before = reference.position();
+
+  XYOrbitCamera xy;
+  xy.adoptState(s);
+  EXPECT_NEAR(xy.state().focal.z, 0.0f, 1e-4f);
+  EXPECT_NEAR(xy.position().x, eye_before.x, 1e-3f);
+  EXPECT_NEAR(xy.position().y, eye_before.y, 1e-3f);
+  EXPECT_NEAR(xy.position().z, eye_before.z, 1e-3f);
+}
+
+TEST(CameraStateTransfer, TopDownAdoptFlattensFocalZ) {
+  // TopDownOrtho's invariant is a ground-level pivot; adopting a perspective
+  // state with an elevated focal must reset focal.z to 0 (else its far plane,
+  // derived around the focal, clips the whole ground scene to blank).
+  CameraState s;
+  s.focal = glm::vec3{1.0f, 2.0f, 50.0f};
+  s.radius = 5.0f;
+  s.perspective = true;
+
+  TopDownOrthoCamera top_down;
+  top_down.adoptState(s);
+  EXPECT_NEAR(top_down.state().focal.z, 0.0f, 1e-4f);
 }
 
 TEST(CameraStateSerialize, JsonRoundTrip) {

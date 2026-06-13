@@ -3,12 +3,8 @@
 
 #include "pj_scene3d_widgets/passes/axis_overlay_pass.h"
 
-#include <QOpenGLContext>
-#include <QOpenGLExtraFunctions>
-#include <QOpenGLVersionFunctionsFactory>
 #include <array>
 #include <glm/gtc/matrix_transform.hpp>
-#include <stdexcept>
 
 #include "pj_scene3d_widgets/gl/gl_functions.h"
 
@@ -16,9 +12,10 @@ namespace pj::scene3d {
 
 void AxisOverlayPass::setArrowParams(const ArrowGizmo::Params& params) {
   arrow_params_ = params;
-  if (initialized_) {
-    arrow_.rebuild(params);
-  }
+  // Defer the GL rebuild to render(): this setter may run from a GUI slot with
+  // no (or a foreign) GL context current. initializeGL consumes arrow_params_,
+  // so dirtying only matters once we are already initialized.
+  params_dirty_ = initialized_;
 }
 
 void AxisOverlayPass::initializeGL() {
@@ -27,6 +24,8 @@ void AxisOverlayPass::initializeGL() {
   }
   arrow_.initializeGL(arrow_params_);
   initialized_ = true;
+  // initializeGL already built from the latest arrow_params_.
+  params_dirty_ = false;
 }
 
 void AxisOverlayPass::releaseGL() {
@@ -37,6 +36,12 @@ void AxisOverlayPass::releaseGL() {
 void AxisOverlayPass::render(const ViewParams& view_params, const FrameContext& /*frame_ctx*/) {
   if (!initialized_) {
     return;
+  }
+
+  // Flush a deferred params change (setArrowParams) under the now-current context.
+  if (params_dirty_) {
+    arrow_.rebuild(arrow_params_);
+    params_dirty_ = false;
   }
 
   // Save the outer viewport so we can restore it after drawing the HUD.
@@ -90,20 +95,14 @@ void AxisOverlayPass::render(const ViewParams& view_params, const FrameContext& 
   const glm::mat4 ortho = glm::ortho(-1.3f, 1.3f, -1.3f, 1.3f, -10.0f, 10.0f);
   const glm::mat4 view = glm::mat4(glm::mat3(view_params.view));
 
-  // Arrow mesh points along +X. Per-axis model matrices rotate that into
-  // +Y and +Z respectively. View is the scene camera's rotation only, so
-  // the triad tracks orbit motion.
-  const glm::mat4 model_x{1.0f};
-  const glm::mat4 model_y = glm::rotate(glm::mat4{1.0f}, glm::radians(90.0f), {0.0f, 0.0f, 1.0f});
-  const glm::mat4 model_z = glm::rotate(glm::mat4{1.0f}, glm::radians(-90.0f), {0.0f, 1.0f, 0.0f});
+  // View is the scene camera's rotation only, so the triad tracks orbit motion.
+  // renderTriadBound owns the +Y/+Z arm rotations (shared with the axis pass).
+  const std::array<glm::vec4, 3> colors{
+      glm::vec4{1.00f, 0.30f, 0.30f, 1.0f}, glm::vec4{0.35f, 0.85f, 0.35f, 1.0f}, glm::vec4{0.40f, 0.55f, 1.00f, 1.0f}};
 
-  const glm::vec4 col_x{1.00f, 0.30f, 0.30f, 1.0f};
-  const glm::vec4 col_y{0.35f, 0.85f, 0.35f, 1.0f};
-  const glm::vec4 col_z{0.40f, 0.55f, 1.00f, 1.0f};
-
-  arrow_.render(ortho * view * model_x, glm::mat3(view * model_x), col_x);
-  arrow_.render(ortho * view * model_y, glm::mat3(view * model_y), col_y);
-  arrow_.render(ortho * view * model_z, glm::mat3(view * model_z), col_z);
+  arrow_.bindForRender();
+  renderTriadBound(arrow_, ortho, view, glm::mat4{1.0f}, glm::mat4{1.0f}, colors);
+  arrow_.unbindAfterRender();
 
   // Restore the outer viewport for any subsequent passes.
   withGlFunctions([&](auto& f) { f.glViewport(saved_vp[0], saved_vp[1], saved_vp[2], saved_vp[3]); });

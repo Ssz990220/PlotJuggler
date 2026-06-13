@@ -3,43 +3,21 @@
 #include "pj_scene3d_widgets/passes/occupancy_grid_render_pass.h"
 
 #include <QLoggingCategory>
-#include <QOpenGLContext>
-#include <QOpenGLExtraFunctions>
-#include <QOpenGLVersionFunctionsFactory>
 #include <QString>
 #include <cstring>
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
-#include <stdexcept>
 #include <utility>
 
 #include "pj_scene3d_core/scene_entities_decode.h"  // poseToMat4 (shared Pose->mat4)
 #include "pj_scene3d_core/tf/tf_buffer.h"
 #include "pj_scene3d_core/tf/transform.h"
+#include "pj_scene3d_widgets/gl/gl_functions.h"
 
 namespace pj::scene3d {
 namespace {
 
 Q_LOGGING_CATEGORY(lcOccGridPass, "pj.scene3d.occupancy_grid_pass")
-
-template <typename Callback>
-void withGlFunctions(Callback&& callback) {
-  QOpenGLContext* context = QOpenGLContext::currentContext();
-  if (context == nullptr) {
-    return;
-  }
-  if (auto* functions = QOpenGLVersionFunctionsFactory::get<QOpenGLFunctions_4_5_Core>(context); functions != nullptr) {
-    functions->initializeOpenGLFunctions();
-    callback(*functions);
-    return;
-  }
-  QOpenGLExtraFunctions* functions = context->extraFunctions();
-  if (functions == nullptr) {
-    return;
-  }
-  functions->initializeOpenGLFunctions();
-  callback(*functions);
-}
 
 // Unit quad in the local xy-plane: in_uv in [0,1]^2 doubles as position and
 // texture coordinate (row-major cell (r,c) ↔ uv (c/width, r/height)).
@@ -223,7 +201,13 @@ void OccupancyGridRenderPass::render(const ViewParams& view_params, const FrameC
     functions.glDrawArrays(GL_TRIANGLES, 0, 6);
     functions.glDepthMask(GL_TRUE);
     functions.glDisable(GL_POLYGON_OFFSET_FILL);
-    functions.glDisable(GL_BLEND);
+    // Restore the scene's ambient blend state rather than disabling blend: leave
+    // GL_BLEND enabled and re-issue the coverage-union data blend, so later layers
+    // and the HUD (drawn after all layers) keep the SceneViewWidget::renderScene
+    // contract. Disabling here leaked unblended state into the rest of the frame
+    // (H.10): the HUD wrote alpha=1.0 and was tonemapped, and any following
+    // translucent mesh visual rendered fully opaque.
+    functions.glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
   });
 }
 

@@ -8,6 +8,7 @@
 #include <string>
 
 #include "pj_scene3d_core/tf/transform.h"
+#include "pj_scene3d_widgets/mesh_shading_params.h"
 
 namespace pj::scene3d {
 
@@ -17,15 +18,29 @@ namespace pj::scene3d {
 class TransformBuffer;
 
 // Camera + viewport state. Needed by every pass, TF-aware or not.
+//
+// Two viewport sizes are carried because they differ on HiDPI. viewport_*_px are
+// LOGICAL (Qt widget) pixels, kept for the historical pass semantics (e.g. the
+// HUD overlay derives DPR = device_height_px / viewport_height_px). device_*_px
+// are FRAMEBUFFER pixels — the units gl_PointSize rasterizes in and glViewport
+// expects — so any pass sizing primitives for the backing FBO must use them.
+// device_height_px / viewport_height_px is the device-pixel ratio. When a caller
+// hand-builds ViewParams without the device fields (they default to 0), passes
+// fall back to the logical size.
 struct ViewParams {
   glm::mat4 view;
   glm::mat4 proj;
-  int viewport_height_px = 0;  // shaders that size primitives in world coords
-                               // (e.g. PointcloudRenderPass) divide by this.
+  int viewport_height_px = 0;  // LOGICAL widget pixels (see struct doc).
   int viewport_width_px = 0;
   glm::vec3 camera_pos_world{};
-  float near_plane = 0.05f;   // Placeholder until 0B: cameras recompute near/far
-  float far_plane = 1000.0f;  // inside projMatrix() and expose no accessors yet.
+  int device_width_px = 0;   // FRAMEBUFFER pixels (gl_PointSize, glViewport).
+  int device_height_px = 0;  // FRAMEBUFFER pixels; 0 means "fall back to logical".
+  // The bound view's mesh/collision look knobs, copied per frame by paintGL from
+  // SceneViewWidget::meshShadingParams(). The mesh passes read it here instead of a
+  // process-global, so sibling docks render independent opacity. Kept LAST so the
+  // existing positional aggregate initializers (which omit it) keep compiling and
+  // default-init it.
+  MeshShadingParams shading{};
 };
 
 // The TF-resolution triple a pass needs to place frame-relative data into the
@@ -65,12 +80,14 @@ class IRenderPass {
   virtual void releaseGL() = 0;
 };
 
-// Contract for future screen-space post passes. They share the IRenderPass
-// lifecycle/render signature but also resize their render targets in device
-// pixels when the scene HDR chain changes size. No concrete post passes exist in
-// Phase 0A.
+// Contract for screen-space post passes. They share the IRenderPass
+// lifecycle/render signature but also resize their render targets in DEVICE
+// (framebuffer) pixels — matching the resolved scene HDR chain — when it changes
+// size. The shipped implementations are SsaoPass and EdlPass; SceneViewWidget
+// drives resize() with the backing FBO's device size each frame.
 class IPostPass : public IRenderPass {
  public:
+  // width_px/height_px are DEVICE (framebuffer) pixels, not logical widget pixels.
   virtual void resize(int width_px, int height_px) = 0;
 };
 

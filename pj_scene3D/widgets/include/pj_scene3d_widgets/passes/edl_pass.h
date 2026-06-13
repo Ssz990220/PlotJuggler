@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MPL-2.0
 #pragma once
 
+#include <optional>
+
 #include "pj_scene3d_widgets/gl/framebuffer.h"
 #include "pj_scene3d_widgets/gl/program.h"
 #include "pj_scene3d_widgets/gl/texture.h"
@@ -48,7 +50,7 @@ class EdlPass : public IPostPass {
   [[nodiscard]] bool ready() const noexcept;
 
  private:
-  std::unique_ptr<gl::Program> program_;
+  std::optional<gl::Program> program_;
   gl::VertexArray fullscreen_vao_;
   gl::Framebuffer fbo_;
   gl::Texture output_;
@@ -59,6 +61,10 @@ class EdlPass : public IPostPass {
   int height_{0};
   bool target_ready_{false};
   bool initialized_{false};
+  // Latches that initializeGL ran in THIS context (whether or not compilation
+  // succeeded), so a per-context shader failure isn't re-attempted every frame.
+  // Cleared by releaseGL() so context recreation rebuilds.
+  bool attempted_{false};
 };
 
 }  // namespace pj::scene3d

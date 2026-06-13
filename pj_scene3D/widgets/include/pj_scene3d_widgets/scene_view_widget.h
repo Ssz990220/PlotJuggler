@@ -16,6 +16,7 @@
 #include "pj_scene3d_core/tf/tf_buffer.h"
 #include "pj_scene3d_widgets/gl/program.h"
 #include "pj_scene3d_widgets/gl/vertex_array.h"
+#include "pj_scene3d_widgets/mesh_shading_params.h"
 #include "pj_scene3d_widgets/passes/axis_overlay_pass.h"
 #include "pj_scene3d_widgets/passes/axis_render_pass.h"
 #include "pj_scene3d_widgets/passes/edl_pass.h"
@@ -81,6 +82,13 @@ class SceneViewWidget : public QOpenGLWidget {
   [[nodiscard]] CompositeParams& compositeParams() {
     return composite_params_;
   }
+
+  // This view's mesh/collision look knobs (read in paintGL into ViewParams::shading;
+  // call update() after changing). Per-view, so two 3D docks diverge independently —
+  // the scene-controls panel drives only its bound view's copy.
+  [[nodiscard]] MeshShadingParams& meshShadingParams() {
+    return shading_params_;
+  }
   [[nodiscard]] ICamera& camera() {
     return *camera_;
   }
@@ -121,6 +129,29 @@ class SceneViewWidget : public QOpenGLWidget {
   }
   void setGridVisible(bool visible) {
     grid_visible_ = visible;
+  }
+
+  // Per-view scene-control readback (the inverse of the setters above) so the
+  // config panel can REFLECT the focused dock's own look on bind, and the dock
+  // can persist it per-dock in xmlSaveState — each 3D view keeps independent
+  // grid/frame/mesh settings rather than sharing one global look.
+  [[nodiscard]] bool gridVisible() const {
+    return grid_visible_;
+  }
+  [[nodiscard]] GridRenderPass::Style gridStyle() const {
+    return grid_.style();
+  }
+  [[nodiscard]] int gridDivisions() const {
+    return grid_.divisions();
+  }
+  [[nodiscard]] float gridExtentMetres() const {
+    return grid_.extentMetres();
+  }
+  [[nodiscard]] float gizmoSize() const {
+    return axes_.axisLength();
+  }
+  [[nodiscard]] float gizmoOpacity() const {
+    return axes_.opacity();
   }
 
   // Show/hide the per-frame TF axis triads. The TF buffer is still used to
@@ -181,6 +212,8 @@ class SceneViewWidget : public QOpenGLWidget {
   // its shade factor into the HDR color. Same degrade rule as SSAO.
   EdlPass edl_;
   CompositeParams composite_params_;
+  // Per-view mesh/collision look knobs, copied into ViewParams::shading each paintGL.
+  MeshShadingParams shading_params_;
 
   // Non-owning layer registry, in the order supplied by SceneDockWidget.
   std::vector<Scene3DLayer*> layers_;
@@ -207,13 +240,6 @@ class SceneViewWidget : public QOpenGLWidget {
   bool axes_visible_ = true;
   // Whether the ground grid draws (Part C "Grid" eye toggle).
   bool grid_visible_ = true;
-  // Achieved (driver-granted) MSAA sample count of this context's backing FBO,
-  // read in initializeGL — never assume the 4 that make_default_format requests.
-  int scene_samples_ = 0;
-  // Backing-FBO size in DEVICE pixels, read back from the viewport Qt sets
-  // before each paintGL (exact even at fractional DPR; resizeGL gets logical).
-  int device_width_px_ = 0;
-  int device_height_px_ = 0;
   // One warning per context when the HDR chain is unavailable and paintGL falls
   // back to direct-to-backing rendering; re-armed by initializeGL.
   bool scene_fbo_fallback_logged_ = false;

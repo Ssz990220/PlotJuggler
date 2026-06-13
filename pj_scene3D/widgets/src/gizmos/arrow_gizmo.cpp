@@ -5,15 +5,15 @@
 
 #include <fmt/core.h>
 
-#include <QOpenGLContext>
-#include <QOpenGLExtraFunctions>
-#include <QOpenGLVersionFunctionsFactory>
 #include <algorithm>
+#include <array>
 #include <cmath>
+#include <glm/gtc/matrix_transform.hpp>
 #include <numbers>
-#include <stdexcept>
 #include <string_view>
 #include <variant>
+
+#include "pj_scene3d_widgets/gl/gl_functions.h"
 
 namespace pj::scene3d {
 namespace {
@@ -58,24 +58,6 @@ void main() {
 }
 )";
 
-template <typename Callback>
-decltype(auto) withGlFunctions(Callback&& callback) {
-  QOpenGLContext* context = QOpenGLContext::currentContext();
-  if (context == nullptr) {
-    throw std::runtime_error("No current OpenGL context");
-  }
-  if (auto* functions = QOpenGLVersionFunctionsFactory::get<QOpenGLFunctions_4_5_Core>(context); functions != nullptr) {
-    functions->initializeOpenGLFunctions();
-    return callback(*functions);
-  }
-  QOpenGLExtraFunctions* functions = context->extraFunctions();
-  if (functions == nullptr) {
-    throw std::runtime_error("No OpenGL functions available");
-  }
-  functions->initializeOpenGLFunctions();
-  return callback(*functions);
-}
-
 bool paramsEqual(const ArrowGizmo::Params& a, const ArrowGizmo::Params& b) {
   return a.length == b.length && a.shaft_radius == b.shaft_radius && a.head_length == b.head_length &&
          a.head_radius == b.head_radius && a.segments == b.segments;
@@ -105,6 +87,9 @@ void ArrowGizmo::initializeGL(const Params& params) {
   }
 }
 
+// REQUIRES a current GL context when initialized_: generateMesh()/uploadMesh()
+// bind the VAO and upload buffers, which throw with no context current and
+// target a foreign context if the wrong one is current.
 void ArrowGizmo::rebuild(const Params& params) {
   if (paramsEqual(params, params_)) {
     return;
@@ -241,10 +226,22 @@ void ArrowGizmo::uploadMesh() {
 }
 
 void ArrowGizmo::render(const glm::mat4& mvp, const glm::mat3& normal_mat, const glm::vec4& color, Shading shading) {
+  bindForRender();
+  drawBound(mvp, normal_mat, color, shading);
+  unbindAfterRender();
+}
+
+void ArrowGizmo::bindForRender() {
   if (!initialized_ || program_ == nullptr || index_data_.empty()) {
     return;
   }
   program_->use();
+}
+
+void ArrowGizmo::drawBound(const glm::mat4& mvp, const glm::mat3& normal_mat, const glm::vec4& color, Shading shading) {
+  if (!initialized_ || program_ == nullptr || index_data_.empty()) {
+    return;
+  }
   program_->setMat4("u_mvp", mvp);
   program_->setMat3("u_normal_mat", normal_mat);
   program_->setVec4("u_color", color);
@@ -254,7 +251,30 @@ void ArrowGizmo::render(const glm::mat4& mvp, const glm::mat3& normal_mat, const
     f.glDrawElements(GL_TRIANGLES, static_cast<GLsizei>(index_data_.size()), GL_UNSIGNED_INT, nullptr);
   });
   vao_.unbind();
+}
+
+void ArrowGizmo::unbindAfterRender() {
+  if (!initialized_ || program_ == nullptr || index_data_.empty()) {
+    return;
+  }
   withGlFunctions([](auto& f) { f.glUseProgram(0U); });
+}
+
+void renderTriadBound(
+    ArrowGizmo& arrow, const glm::mat4& proj, const glm::mat4& view, const glm::mat4& base, const glm::mat4& arm_scale,
+    const std::array<glm::vec4, 3>& colors, ArrowGizmo::Shading shading) {
+  // The gizmo points along +X. Rotate +X -> +Y (+90° about +Z) and +X -> +Z
+  // (-90° about +Y). Single source of truth for the three triad call sites.
+  static const glm::mat4 kYRotate = glm::rotate(glm::mat4{1.0f}, glm::radians(90.0f), {0.0f, 0.0f, 1.0f});
+  static const glm::mat4 kZRotate = glm::rotate(glm::mat4{1.0f}, glm::radians(-90.0f), {0.0f, 1.0f, 0.0f});
+
+  const glm::mat4 model_x = base * arm_scale;
+  const glm::mat4 model_y = base * kYRotate * arm_scale;
+  const glm::mat4 model_z = base * kZRotate * arm_scale;
+
+  arrow.drawBound(proj * view * model_x, glm::mat3(view * model_x), colors[0], shading);
+  arrow.drawBound(proj * view * model_y, glm::mat3(view * model_y), colors[1], shading);
+  arrow.drawBound(proj * view * model_z, glm::mat3(view * model_z), colors[2], shading);
 }
 
 }  // namespace pj::scene3d

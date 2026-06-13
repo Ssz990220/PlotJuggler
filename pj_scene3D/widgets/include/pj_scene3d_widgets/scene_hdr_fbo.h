@@ -35,10 +35,14 @@ class SceneHdrFbo {
 
   // Allocate or resize all per-context FBO attachments in device pixels.
   // Idempotent when size is unchanged and the attachment ids are still present.
+  // Side effect: when it actually reallocates, it leaves one of the internal
+  // FBOs bound to GL_FRAMEBUFFER — the caller must rebind its intended render
+  // target (e.g. bind() for the off-screen path, or bindDefault() for the
+  // direct-to-backing fallback) before drawing.
   void resize(int device_w, int device_h);
 
   // Bind the geometry render FBO. This is the MSAA FBO when samples > 1 and the
-  // single-sample resolve FBO otherwise.
+  // single-sample resolve FBO otherwise. Changes the GL_FRAMEBUFFER binding.
   void bind();
 
   // Resolve multisample color+depth into the single-sample FBO. No-op when the
@@ -64,6 +68,12 @@ class SceneHdrFbo {
 
  private:
   [[nodiscard]] bool hasAllocatedIds() const noexcept;
+  // Bind resolve_fbo_, (re)allocate its single-sample RGBA16F color +
+  // DEPTH32F depth attachments, set the draw/read buffer, and return its
+  // completeness. Shared by both resize() branches (L.97); single-sources the
+  // depth format the resolve() blit depends on. REQUIRES a current context and
+  // leaves resolve_fbo_ bound on return; resize() does the final ready_ wiring.
+  [[nodiscard]] bool allocateResolveFbo();
   void deleteMultisampleTextures() noexcept;
 
   int samples_{0};

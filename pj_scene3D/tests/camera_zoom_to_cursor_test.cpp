@@ -159,3 +159,26 @@ TEST(ZoomToCursor, UpwardSkyPixelStaysFinite) {
   EXPECT_TRUE(std::isfinite(cam.state().radius));
   EXPECT_LE(cam.state().radius, before);  // a zoom-in shrinks (or holds) the radius, no blow-up
 }
+
+TEST(ZoomToCursor, HorizonGrazeDoesNotTeleport) {
+  // Low elevation + a cursor just below the horizon makes the z=0 ground ray graze
+  // the plane: t blows up to hundreds of metres. Without a hit-distance cap the
+  // homothety flings the camera. The fix rejects the grazing ground hit and falls
+  // through to the focal-plane anchor, keeping the move bounded (M.6).
+  OrbitCamera cam;
+  CameraState s;
+  s.focal = glm::vec3{0.0f};
+  s.radius = 10.0f;
+  s.azimuth = 0.0f;
+  s.elevation = glm::radians(3.0f);  // nearly horizontal — grazing geometry
+  cam.adoptState(s);
+
+  const glm::vec3 before = cam.position();
+  // A pixel just above the screen centre → a ray grazing the ground ~48 m out,
+  // far beyond max(sceneReach, 4*radius)=40 m: the ground hit must be rejected.
+  cam.zoomToCursor(1.0f, glm::vec2{400.0f, 270.0f}, kW, kH);
+
+  const float moved = glm::length(cam.position() - before);
+  EXPECT_LT(moved, 0.5f * s.radius) << "grazing-horizon zoom teleported the camera";
+  EXPECT_TRUE(std::isfinite(cam.position().x) && std::isfinite(cam.position().y));
+}

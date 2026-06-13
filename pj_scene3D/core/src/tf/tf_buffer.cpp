@@ -296,6 +296,12 @@ std::optional<TimePoint> TransformBuffer::latestCommonTime(const std::string& ta
 }
 
 std::vector<std::string> TransformBuffer::getAllFrames() const {
+  std::vector<std::string> out;
+  getAllFrames(out);
+  return out;
+}
+
+void TransformBuffer::getAllFrames(std::vector<std::string>& out) const {
   std::shared_lock lock(parents_mutex_);
 
   std::unordered_set<std::string> frames;
@@ -305,7 +311,8 @@ std::vector<std::string> TransformBuffer::getAllFrames() const {
     frames.insert(link.parent);
   }
 
-  return {frames.begin(), frames.end()};
+  out.clear();
+  out.insert(out.end(), frames.begin(), frames.end());
 }
 
 std::optional<std::string> TransformBuffer::getParent(const std::string& child) const {

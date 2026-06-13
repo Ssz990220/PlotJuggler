@@ -2,13 +2,17 @@
 // SPDX-License-Identifier: MPL-2.0
 #pragma once
 
+#include <QOpenGLContext>
 #include <QOpenGLFunctions_4_5_Core>
+#include <QPointer>
 
 namespace pj::scene3d::gl {
 
 // Move-only RAII wrapper for one OpenGL framebuffer object name.
-// Mirrors gl::Buffer: the FBO name is generated lazily on first bind and deleted
-// only when a current context exists. This class owns no attachments.
+// Mirrors gl::Buffer: the FBO name is generated lazily on first bind, recording
+// the then-current context as the owner, and is deleted only when that owning
+// context (or a sharing one) is current — otherwise the id is dropped. This
+// class owns no attachments.
 class Framebuffer {
  public:
   Framebuffer();
@@ -35,6 +39,7 @@ class Framebuffer {
 
  private:
   GLuint id_{0};
+  QPointer<QOpenGLContext> owning_context_;
 };
 
 }  // namespace pj::scene3d::gl

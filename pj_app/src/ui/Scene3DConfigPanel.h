@@ -69,6 +69,11 @@ class Scene3DConfigPanel : public QWidget {
   void buildSceneControls(QVBoxLayout* root);
   // Push every persisted scene-control value into the bound dock's view.
   void applySceneControls();
+  // Inverse of applySceneControls: REFLECT the bound dock's own scene-control
+  // state in the panel widgets (signals blocked so it doesn't echo back). Called
+  // on bind so focusing a dock shows ITS look — scene controls are per-dock, not
+  // a shared global look. Edits then apply to that dock alone.
+  void loadControlsFromDock(Scene3DDockWidget* dock);
 
  public:
   // Push every persisted scene-control value into an arbitrary dock's view
@@ -79,6 +84,10 @@ class Scene3DConfigPanel : public QWidget {
 
  private:
   void applyIcons();
+  // Set a visibility eye-toggle's glyph (visibility / visibility_off) for the
+  // given checked state in the current theme. Shared by make_eye's toggled
+  // handler, applyIcons, and loadControlsFromDock's signal-blocked load.
+  void setEyeIcon(QToolButton* eye, bool on);
   // "+" button: add a robot model via the mode picked in the source combo —
   // File opens a file dialog (last dir remembered), Topic a dialog listing the
   // dataset's robot_description topics, URL a dialog with a line edit.

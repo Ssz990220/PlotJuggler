@@ -2,6 +2,7 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 
+#include <array>
 #include <cstdint>
 #include <glm/glm.hpp>
 #include <memory>
@@ -42,7 +43,10 @@ class ArrowGizmo {
   void initializeGL(const Params& params);
 
   // Re-tessellate and re-upload the mesh. No-op if `params` matches the
-  // current state. Call after initializeGL.
+  // current state. Call after initializeGL. REQUIRES the owning GL context to be
+  // current: it binds the VAO and uploads VBO/EBO, which throw with no context
+  // current and corrupt a foreign context if the wrong one is current. GUI-slot
+  // callers must defer this to a paint (see AxisRenderPass/AxisOverlayPass).
   void rebuild(const Params& params);
 
   // Drop the GL program + buffers and reset to the pre-initializeGL state, so
@@ -68,6 +72,19 @@ class ArrowGizmo {
   void render(
       const glm::mat4& mvp, const glm::mat3& normal_mat, const glm::vec4& color, Shading shading = Shading::kLit);
 
+  // Split render API for callers that draw many arrows in a row (TF-frame
+  // triads), to avoid N redundant program binds. Call bindForRender() once,
+  // then drawBound() per arrow, then unbindAfterRender() once. drawBound()
+  // assumes the program is already current (bindForRender did program_->use())
+  // and skips the per-call use()/glUseProgram(0) that render() pays. Mixing
+  // drawBound() with render() (which binds/unbinds its own program) inside one
+  // bind scope is a usage error. All three are no-ops when the gizmo isn't
+  // initialized, so callers don't need to re-check.
+  void bindForRender();
+  void drawBound(
+      const glm::mat4& mvp, const glm::mat3& normal_mat, const glm::vec4& color, Shading shading = Shading::kLit);
+  void unbindAfterRender();
+
  private:
   void generateMesh();
   void uploadMesh();
@@ -82,5 +99,26 @@ class ArrowGizmo {
   std::vector<float> vertex_data_;  // interleaved (pos.xyz, normal.xyz)
   std::vector<uint32_t> index_data_;
 };
+
+// Draw a single coordinate-frame triad (X/Y/Z arrows) with one bound program.
+// The ArrowGizmo mesh points along +X; this owns the two model-space rotations
+// that orient the +Y and +Z arms (rotate +90° about +Z, rotate -90° about +Y),
+// so the three call sites that re-derived them (AxisRenderPass, AxisOverlayPass,
+// MarkerRenderPass axes) share one source of truth.
+//
+// Composition per arm (preserving each caller's exact order):
+//   mvp    = proj * view * (base * rot * arm_scale)
+//   normal = mat3(view * base * rot * arm_scale)
+// where rot is identity/kYRotate/kZRotate for X/Y/Z. arm_scale lets the marker
+// path bake per-axis length/thickness in; pass identity when not needed.
+//
+// PRECONDITION: arrow.bindForRender() must already have been called (the program
+// is current). Issues three drawBound() calls and does NOT bind/unbind the
+// program — the caller brackets a whole triad batch with bindForRender/
+// unbindAfterRender. `shading` matches the caller's prior render() shading
+// (kLit for the axis/HUD triads, kFlat for marker axes).
+void renderTriadBound(
+    ArrowGizmo& arrow, const glm::mat4& proj, const glm::mat4& view, const glm::mat4& base, const glm::mat4& arm_scale,
+    const std::array<glm::vec4, 3>& colors, ArrowGizmo::Shading shading = ArrowGizmo::Shading::kLit);
 
 }  // namespace pj::scene3d

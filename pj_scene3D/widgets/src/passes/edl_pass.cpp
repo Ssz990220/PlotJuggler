@@ -5,37 +5,17 @@
 
 #include <fmt/core.h>
 
-#include <QOpenGLContext>
-#include <QOpenGLExtraFunctions>
-#include <QOpenGLVersionFunctionsFactory>
+#include <array>
 #include <cmath>
 #include <numbers>
 #include <string>
 #include <string_view>
 #include <variant>
-#include <vector>
+
+#include "pj_scene3d_widgets/gl/gl_functions.h"
 
 namespace pj::scene3d {
 namespace {
-
-template <typename Callback>
-void withGlFunctions(Callback&& callback) {
-  QOpenGLContext* context = QOpenGLContext::currentContext();
-  if (context == nullptr) {
-    return;
-  }
-  if (auto* functions = QOpenGLVersionFunctionsFactory::get<QOpenGLFunctions_4_5_Core>(context); functions != nullptr) {
-    functions->initializeOpenGLFunctions();
-    callback(*functions);
-    return;
-  }
-  QOpenGLExtraFunctions* functions = context->extraFunctions();
-  if (functions == nullptr) {
-    return;
-  }
-  functions->initializeOpenGLFunctions();
-  callback(*functions);
-}
 
 constexpr std::string_view kFullscreenVertSrc = R"GLSL(
 #version 450 core
@@ -98,12 +78,17 @@ void main() {
 }  // namespace
 
 void EdlPass::initializeGL() {
-  if (initialized_) {
+  // Latch the attempt, not the success: a per-context shader-compile failure
+  // must not retry every frame (paintGL calls this each frame while EDL is on).
+  // ready() still gates renderEdl + the composite's u_has_edl, so the feature
+  // safely degrades. releaseGL() clears attempted_ so recreation rebuilds.
+  if (attempted_) {
     return;
   }
+  attempted_ = true;
   auto result = gl::Program::fromSources(kFullscreenVertSrc, kEdlFragSrc);
   if (auto* program = std::get_if<gl::Program>(&result); program != nullptr) {
-    program_ = std::make_unique<gl::Program>(std::move(*program));
+    program_.emplace(std::move(*program));
     initialized_ = true;
   } else {
     fmt::print(stderr, "EdlPass shader error: {}\n", std::get<std::string>(result));
@@ -149,13 +134,16 @@ void EdlPass::renderEdl(const ViewParams& view_params) {
   program_->setFloat("u_strength", strength_);
   program_->setFloat("u_radius_px", radius_px_);
   // 8 unit-circle neighbour directions (Potree's circular sampling pattern).
-  std::vector<glm::vec2> offsets;
-  offsets.reserve(8);
-  for (int i = 0; i < 8; ++i) {
-    const float angle = 2.0f * std::numbers::pi_v<float> * static_cast<float>(i) / 8.0f;
-    offsets.emplace_back(std::cos(angle), std::sin(angle));
-  }
-  program_->setVec2Array("u_offsets", offsets.data(), static_cast<int>(offsets.size()));
+  // Constant for the program's lifetime, so compute them once (L.55).
+  static const std::array<glm::vec2, 8> kOffsets = [] {
+    std::array<glm::vec2, 8> values{};
+    for (int i = 0; i < 8; ++i) {
+      const float angle = 2.0f * std::numbers::pi_v<float> * static_cast<float>(i) / 8.0f;
+      values[i] = glm::vec2(std::cos(angle), std::sin(angle));
+    }
+    return values;
+  }();
+  program_->setVec2Array("u_offsets", kOffsets.data(), static_cast<int>(kOffsets.size()));
   fullscreen_vao_.bind();
   withGlFunctions([](auto& functions) { functions.glDrawArrays(GL_TRIANGLES, 0, 3); });
   fullscreen_vao_.unbind();
@@ -174,6 +162,7 @@ void EdlPass::releaseGL() {
   height_ = 0;
   target_ready_ = false;
   initialized_ = false;
+  attempted_ = false;
 }
 
 GLuint EdlPass::outputTextureId() const noexcept {

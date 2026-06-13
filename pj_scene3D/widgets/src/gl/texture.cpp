@@ -2,70 +2,30 @@
 // SPDX-License-Identifier: MPL-2.0
 #include "pj_scene3d_widgets/gl/texture.h"
 
-#include <QOpenGLContext>
-#include <QOpenGLExtraFunctions>
-#include <QOpenGLVersionFunctionsFactory>
-#include <stdexcept>
 #include <utility>
 
+#include "pj_scene3d_widgets/gl/gl_functions.h"
+
 namespace pj::scene3d::gl {
-namespace {
-
-template <typename Callback>
-decltype(auto) withGlFunctions(Callback&& callback) {
-  QOpenGLContext* context = QOpenGLContext::currentContext();
-  if (context == nullptr) {
-    throw std::runtime_error("No current OpenGL context");
-  }
-  if (auto* functions = QOpenGLVersionFunctionsFactory::get<QOpenGLFunctions_4_5_Core>(context); functions != nullptr) {
-    functions->initializeOpenGLFunctions();
-    return callback(*functions);
-  }
-  QOpenGLExtraFunctions* functions = context->extraFunctions();
-  if (functions == nullptr) {
-    throw std::runtime_error("No OpenGL functions available");
-  }
-  functions->initializeOpenGLFunctions();
-  return callback(*functions);
-}
-
-template <typename Callback>
-void withGlFunctionsNoThrow(Callback&& callback) noexcept {
-  QOpenGLContext* context = QOpenGLContext::currentContext();
-  if (context == nullptr) {
-    return;
-  }
-  if (auto* functions = QOpenGLVersionFunctionsFactory::get<QOpenGLFunctions_4_5_Core>(context); functions != nullptr) {
-    functions->initializeOpenGLFunctions();
-    callback(*functions);
-    return;
-  }
-  QOpenGLExtraFunctions* functions = context->extraFunctions();
-  if (functions == nullptr) {
-    return;
-  }
-  functions->initializeOpenGLFunctions();
-  callback(*functions);
-}
-
-}  // namespace
 
 Texture::Texture() = default;
 
 Texture::~Texture() {
-  if (id_ != 0U) {
+  if (id_ != 0U && deleteAllowedInCurrentContext(owning_context_)) {
     withGlFunctionsNoThrow([this](auto& functions) { functions.glDeleteTextures(1, &id_); });
   }
 }
 
-Texture::Texture(Texture&& other) noexcept : id_(std::exchange(other.id_, 0U)) {}
+Texture::Texture(Texture&& other) noexcept
+    : id_(std::exchange(other.id_, 0U)), owning_context_(std::exchange(other.owning_context_, nullptr)) {}
 
 Texture& Texture::operator=(Texture&& other) noexcept {
   if (this != &other) {
-    if (id_ != 0U) {
+    if (id_ != 0U && deleteAllowedInCurrentContext(owning_context_)) {
       withGlFunctionsNoThrow([this](auto& functions) { functions.glDeleteTextures(1, &id_); });
     }
     id_ = std::exchange(other.id_, 0U);
+    owning_context_ = std::exchange(other.owning_context_, nullptr);
   }
   return *this;
 }
@@ -78,6 +38,7 @@ void Texture::upload(uint32_t width, uint32_t height, const uint8_t* data) {
   withGlFunctions([this, width, height, data](auto& functions) {
     if (id_ == 0U) {
       functions.glGenTextures(1, &id_);
+      owning_context_ = QOpenGLContext::currentContext();
     }
     functions.glBindTexture(GL_TEXTURE_2D, id_);
     functions.glPixelStorei(GL_UNPACK_ALIGNMENT, 1);  // R8 rows are not 4-byte aligned
@@ -112,6 +73,7 @@ void Texture::allocate(GLenum internal_format, GLenum format, GLenum type, int w
   withGlFunctions([this, internal_format, format, type, width, height](auto& functions) {
     if (id_ == 0U) {
       functions.glGenTextures(1, &id_);
+      owning_context_ = QOpenGLContext::currentContext();
     }
     functions.glBindTexture(GL_TEXTURE_2D, id_);
     functions.glTexImage2D(
@@ -134,19 +96,21 @@ void Texture::bind(int unit) {
 Texture2D::Texture2D() = default;
 
 Texture2D::~Texture2D() {
-  if (id_ != 0U) {
+  if (id_ != 0U && deleteAllowedInCurrentContext(owning_context_)) {
     withGlFunctionsNoThrow([this](auto& functions) { functions.glDeleteTextures(1, &id_); });
   }
 }
 
-Texture2D::Texture2D(Texture2D&& other) noexcept : id_(std::exchange(other.id_, 0U)) {}
+Texture2D::Texture2D(Texture2D&& other) noexcept
+    : id_(std::exchange(other.id_, 0U)), owning_context_(std::exchange(other.owning_context_, nullptr)) {}
 
 Texture2D& Texture2D::operator=(Texture2D&& other) noexcept {
   if (this != &other) {
-    if (id_ != 0U) {
+    if (id_ != 0U && deleteAllowedInCurrentContext(owning_context_)) {
       withGlFunctionsNoThrow([this](auto& functions) { functions.glDeleteTextures(1, &id_); });
     }
     id_ = std::exchange(other.id_, 0U);
+    owning_context_ = std::exchange(other.owning_context_, nullptr);
   }
   return *this;
 }
@@ -156,10 +120,11 @@ GLuint Texture2D::id() const noexcept {
 }
 
 void Texture2D::adopt(GLuint id) noexcept {
-  if (id_ != 0U && id_ != id) {
+  if (id_ != 0U && id_ != id && deleteAllowedInCurrentContext(owning_context_)) {
     withGlFunctionsNoThrow([this](auto& functions) { functions.glDeleteTextures(1, &id_); });
   }
   id_ = id;
+  owning_context_ = id == 0U ? nullptr : QOpenGLContext::currentContext();
 }
 
 }  // namespace pj::scene3d::gl

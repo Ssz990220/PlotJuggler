@@ -2,6 +2,9 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 
+#include <string>
+#include <vector>
+
 #include "pj_scene3d_widgets/gizmos/arrow_gizmo.h"
 #include "pj_scene3d_widgets/render_pass.h"
 
@@ -17,6 +20,9 @@ class AxisRenderPass : public IRenderPass {
   void render(const ViewParams& view_params, const FrameContext& frame_ctx) override;
   void releaseGL() override;
 
+  // Set the triad arrow length in metres. Safe to call from any GUI slot with
+  // no GL context current: the length is remembered and the gizmo is rebuilt on
+  // the next paint (render()), where the owning context is guaranteed current.
   void setAxisLength(float length_m);
   [[nodiscard]] float axisLength() const noexcept;
 
@@ -30,8 +36,6 @@ class AxisRenderPass : public IRenderPass {
   }
 
  private:
-  void rebuildGizmo();
-
   // Defaults: 0.15 m total length, thin shaft and small cone head — proper
   // 3D arrows at the scale you'd expect for a small robot's TF frames.
   // Per-axis radii are scaled off length so changes to setAxisLength keep
@@ -39,7 +43,13 @@ class AxisRenderPass : public IRenderPass {
   float axis_length_{0.15f};
   float opacity_{1.0f};
   bool initialized_{false};
+  // Set when setAxisLength changes the length while initialized_; consumed at
+  // the top of render() so the GL rebuild runs under a current context.
+  bool gizmo_dirty_{false};
   ArrowGizmo arrow_;
+  // Reused across frames by render() to avoid a per-frame heap allocation of
+  // the frame-name list (L.54). Only ever touched on the render thread.
+  std::vector<std::string> frames_scratch_;
 };
 
 }  // namespace pj::scene3d

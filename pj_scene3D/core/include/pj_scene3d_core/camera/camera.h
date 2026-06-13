@@ -170,6 +170,11 @@ class XYOrbitCamera final : public OrbitCamera {
  public:
   void pan(float dx_pixels, float dy_pixels) override;
   void zoomToCursor(float scroll_ticks, glm::vec2 cursor_px, int viewport_w, int viewport_h) override;
+  // Re-lock the pivot to the floor (z=0) after adopting an arbitrary pose, keeping
+  // the eye fixed — without this, an adopted off-floor pivot makes the inherited
+  // center-zoom/rotate orbit an airborne point and the first pan snaps the eye
+  // vertically (the stale focal.z is zeroed). See OrbitCamera::adoptState for the base.
+  void adoptState(const CameraState& state) override;
 };
 
 // Orthographic bird's-eye camera looking straight down -Z, rotatable about the
@@ -201,6 +206,12 @@ class TopDownOrthoCamera final : public ICamera {
   void adoptState(const CameraState& state) override;
 
  private:
+  // Eye height above the focal plane, shared verbatim by position() and
+  // projMatrix() so they can never desync (M.7/M.8). It is the zoom-driven base
+  // height PLUS a scene-aware lift that keeps geometry above the focal plane in
+  // front of the near plane no matter how far the user zooms in.
+  [[nodiscard]] float eyeHeight() const;
+
   CameraState state_{};
   AABB scene_bounds_{};
 };
@@ -233,10 +244,18 @@ class FlyCamera final : public ICamera {
   void resetToDefault();                        // eye (5,5,10) looking at the origin
   [[nodiscard]] glm::vec3 forward() const;      // unit view direction from yaw/pitch
   [[nodiscard]] float workingDistance() const;  // synthetic focal distance for near/far
+  // Motion-step basis: workingDistance() floored at kFlyNominalDistance so pan/zoom
+  // steps never collapse to ~0 near the AABB center (where workingDistance() → 0).
+  [[nodiscard]] float motionDistance() const;
 
   glm::vec3 eye_{5.0f, 5.0f, 10.0f};
   float yaw_{0.0f};
   float pitch_{0.0f};
+  // Fly has no orbit radius or ortho frustum, but it must round-trip every
+  // CameraState field across model switches (camera.h:77-81). fov_y_ drives its
+  // own projection; ortho_scale_ is carried verbatim for a later switch to ortho.
+  float fov_y_{glm::radians(45.0f)};
+  float ortho_scale_{5.0f};
   AABB scene_bounds_{};
 };
 

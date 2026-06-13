@@ -43,6 +43,12 @@ QSurfaceFormat make_default_format() {
   // does not, so without this the grid/TF/pointcloud edges alias.
   fmt.setSamples(4);
   fmt.setSwapInterval(1);  // vsync — caps render at ~60Hz on standard monitors
+  // Request a debug context only when GL debug output is actually wanted; a
+  // DebugContext has measurable CPU overhead on some drivers (extra validation
+  // layer), so it must not be on by default in release builds.
+  if (gl::debugOutputRequested()) {
+    fmt.setOption(QSurfaceFormat::DebugContext);
+  }
   return fmt;
 }
 
@@ -233,8 +239,8 @@ void SceneViewWidget::initializeGL() {
   // driver may grant fewer than the 4 samples make_default_format() requests);
   // <=1 selects the single-sample chain. Attachments are (re)allocated lazily in
   // paintGL, sized from the viewport Qt set for the backing FBO.
-  scene_samples_ = std::max(context()->format().samples(), 0);
-  scene_fbo_.configure(scene_samples_);
+  const int scene_samples = std::max(context()->format().samples(), 0);
+  scene_fbo_.configure(scene_samples);
   initializePresentProgram();
   scene_fbo_fallback_logged_ = false;  // a fresh context may succeed; re-arm the warning
 
@@ -251,6 +257,19 @@ void SceneViewWidget::initializePresentProgram() {
   auto result = gl::Program::fromSources(kPresentVertSrc, kPresentFragSrc);
   if (auto* program = std::get_if<gl::Program>(&result); program != nullptr) {
     present_program_.emplace(std::move(*program));
+    // The sampler units are CONSTANT (u_scene=0, u_depth=1, u_ao=2, u_edl=3) — set
+    // them once at build time rather than every frame in paintGL (L.57). Only the
+    // texture *binds* and the value/flag uniforms change per frame.
+    present_program_->use();
+    present_program_->setInt("u_scene", 0);
+    present_program_->setInt("u_depth", 1);
+    present_program_->setInt("u_ao", 2);
+    present_program_->setInt("u_edl", 3);
+    if (auto* ctx = QOpenGLContext::currentContext(); ctx != nullptr) {
+      if (auto* funcs = QOpenGLVersionFunctionsFactory::get<QOpenGLFunctions_4_5_Core>(ctx); funcs != nullptr) {
+        funcs->glUseProgram(0);
+      }
+    }
   } else {
     qCWarning(lcSceneViewWidget) << "present shader error:" << std::get<std::string>(result).c_str();
     present_program_.reset();
@@ -303,27 +322,42 @@ void SceneViewWidget::paintGL() {
   // fractional DPR (Qt 6 passes LOGICAL units to resizeGL, so that is not).
   GLint viewport[4] = {0, 0, 0, 0};
   funcs->glGetIntegerv(GL_VIEWPORT, viewport);
-  device_width_px_ = viewport[2];
-  device_height_px_ = viewport[3];
+  // Per-paint locals (recomputed each frame from the viewport Qt just set);
+  // there is no cross-frame device-size state worth keeping as a member.
+  const int device_width_px = viewport[2];
+  const int device_height_px = viewport[3];
 
   // (Re)allocate the off-screen HDR chain; idempotent at unchanged size. If the
   // chain or the present shader is unavailable, fall back to rendering directly
   // into the backing FBO exactly as before Phase 0A (degrade, never go blank).
-  scene_fbo_.resize(device_width_px_, device_height_px_);
+  scene_fbo_.resize(device_width_px, device_height_px);
   const bool offscreen = scene_fbo_.ready() && present_program_.has_value();
   if (offscreen) {
     scene_fbo_.bind();
-    funcs->glViewport(0, 0, device_width_px_, device_height_px_);
-  } else if (!scene_fbo_fallback_logged_) {
-    qCWarning(lcSceneViewWidget) << "HDR scene FBO unavailable — rendering directly into the backing framebuffer";
-    scene_fbo_fallback_logged_ = true;
+    funcs->glViewport(0, 0, device_width_px, device_height_px);
+  } else {
+    // Fallback: render directly into the backing FBO. scene_fbo_.resize() above
+    // leaves an off-screen FBO bound whenever it reallocates (M.33), so we must
+    // explicitly rebind the backing target here — otherwise renderScene would
+    // draw into the off-screen (possibly incomplete) FBO.
+    gl::Framebuffer::bindDefault(defaultFramebufferObject());
+    funcs->glViewport(0, 0, device_width_px, device_height_px);
+    if (!scene_fbo_fallback_logged_) {
+      qCWarning(lcSceneViewWidget) << "HDR scene FBO unavailable — rendering directly into the backing framebuffer";
+      scene_fbo_fallback_logged_ = true;
+    }
   }
 
   const float aspect = static_cast<float>(width()) / static_cast<float>(std::max(height(), 1));
   // viewport_width/height_px keep their historical LOGICAL-pixel semantics: the
   // HUD overlay derives the device-pixel ratio as saved_vp[3] / viewport_height_px.
+  // device_*_px carry the FRAMEBUFFER size so passes that size primitives in
+  // device pixels (gl_PointSize in PointcloudRenderPass) get the HiDPI-correct
+  // value instead of the logical height.
   const ViewParams view_params{
-      camera_->viewMatrix(), camera_->projMatrix(aspect), height(), width(), camera_->position(),
+      camera_->viewMatrix(), camera_->projMatrix(aspect), height(), width(), camera_->position(), device_width_px,
+      device_height_px,
+      shading_params_,  // this view's mesh/collision look knobs (per-view, see header)
   };
 
   // Grid never consults the TF buffer; safe to render even when tf_ is null.
@@ -360,13 +394,13 @@ void SceneViewWidget::paintGL() {
   // present degrades to no-AO (u_has_ao=0) when the pass is unavailable.
   if (composite_params_.ssao_enabled) {
     ssao_.initializeGL();
-    ssao_.resize(device_width_px_, device_height_px_);
+    ssao_.resize(device_width_px, device_height_px);
     ssao_.setDepthTexture(scene_fbo_.resolvedDepthTextureId());
     ssao_.renderAo(view_params);
   }
   if (composite_params_.edl_enabled) {
     edl_.initializeGL();
-    edl_.resize(device_width_px_, device_height_px_);
+    edl_.resize(device_width_px, device_height_px);
     edl_.setDepthTexture(scene_fbo_.resolvedDepthTextureId());
     edl_.renderEdl(view_params);
   }
@@ -378,27 +412,25 @@ void SceneViewWidget::paintGL() {
   // invariant on this path (the role the old geometry-phase glColorMask guard
   // played when geometry still wrote the backing FBO directly).
   gl::Framebuffer::bindDefault(defaultFramebufferObject());
-  funcs->glViewport(0, 0, device_width_px_, device_height_px_);
+  funcs->glViewport(0, 0, device_width_px, device_height_px);
+  // u_scene/u_depth/u_ao/u_edl sampler units are constant and were set once at
+  // program build (initializePresentProgram); only the binds and flags vary here.
   present_program_->use();
   funcs->glActiveTexture(GL_TEXTURE0);
   funcs->glBindTexture(GL_TEXTURE_2D, scene_fbo_.resolvedColorTextureId());
-  present_program_->setInt("u_scene", 0);
   funcs->glActiveTexture(GL_TEXTURE1);
   funcs->glBindTexture(GL_TEXTURE_2D, scene_fbo_.resolvedDepthTextureId());
-  present_program_->setInt("u_depth", 1);
   const bool ao_active = composite_params_.ssao_enabled && ssao_.ready();
   present_program_->setInt("u_has_ao", ao_active ? 1 : 0);
   if (ao_active) {
     funcs->glActiveTexture(GL_TEXTURE2);
     funcs->glBindTexture(GL_TEXTURE_2D, ssao_.outputTextureId());
-    present_program_->setInt("u_ao", 2);
   }
   const bool edl_active = composite_params_.edl_enabled && edl_.ready();
   present_program_->setInt("u_has_edl", edl_active ? 1 : 0);
   if (edl_active) {
     funcs->glActiveTexture(GL_TEXTURE3);
     funcs->glBindTexture(GL_TEXTURE_2D, edl_.outputTextureId());
-    present_program_->setInt("u_edl", 3);
   }
   present_program_->setInt("u_tonemap_mode", composite_params_.tonemap_mode);
   present_program_->setFloat("u_exposure", composite_params_.exposure);
@@ -507,6 +539,12 @@ void SceneViewWidget::renderScene(
       if (layer == nullptr) {
         continue;
       }
+      // Re-assert the ambient blend state before each layer (defense in depth):
+      // a pass that leaks a different blend func/enable (H.10/M.31) can't then
+      // poison the rest of the frame, so each layer starts from the data
+      // contract regardless of what the previous one left behind.
+      funcs->glEnable(GL_BLEND);
+      data_blend();
       layer->initializeGL();
       layer->render(view_params, frame_ctx);
     }

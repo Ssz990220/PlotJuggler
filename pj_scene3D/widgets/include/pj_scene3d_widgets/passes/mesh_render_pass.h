@@ -97,11 +97,30 @@ class MeshRenderPass : public IRenderPass {
   void render(const ViewParams& view_params, const FrameContext& frame_ctx) override;
   void releaseGL() override;
 
+  // Drop all keyed meshes and cached textures. Safe to call with NO GL context
+  // current (e.g. from a layer's detach()/source-swap on the GUI thread): the GL
+  // wrappers are moved onto retirement lists, not destroyed here. Their GL
+  // teardown is deferred to the next drawBatch()/releaseGL(), which run under the
+  // owning context — so handles free in the right context instead of leaking or
+  // deleting a sibling view's names.
   void clearMeshes();
+  // Store/replace a keyed mesh's CPU data; the GL upload is deferred to the next
+  // drawBatch() under a current context. Safe to call off the GL thread.
   void setMeshData(const std::string& key, MeshData data);
 
-  void renderVisuals(const ViewParams& view_params, const std::vector<DrawCall>& draws, float opacity = 1.0f);
-  void renderCollisions(const ViewParams& view_params, const std::vector<DrawCall>& draws, float opacity = 0.4f);
+  // Draw the opaque + translucent visual buckets. REQUIRES a current GL context
+  // (call only from a layer's render()). Establishes its own blend state: opaque
+  // draws with GL_BLEND off, then translucent draws with a coverage-union alpha
+  // blend and a read-only depth buffer (not depth-sorted); the caller's
+  // GL_BLEND enable is saved and restored. `opacity` multiplies material/vertex
+  // alpha and selects the translucent bucket when < 1; callers pass the per-view
+  // MeshShadingParams::mesh_opacity.
+  void renderVisuals(const ViewParams& view_params, const std::vector<DrawCall>& draws, float opacity);
+  // Draw the collision overlay. REQUIRES a current GL context. Establishes a
+  // coverage-union alpha blend with the depth mask OFF (overlay-on-top); the
+  // caller's GL_BLEND enable is saved and restored. `opacity` multiplies
+  // material/vertex alpha; callers pass MeshShadingParams::collision_opacity.
+  void renderCollisions(const ViewParams& view_params, const std::vector<DrawCall>& draws, float opacity);
 
  private:
   struct MeshResource {
@@ -145,6 +164,11 @@ class MeshRenderPass : public IRenderPass {
   [[nodiscard]] GLuint textureIdFor(const TextureSource& source, TextureColorSpace color_space);
   void drawOne(const ViewParams& view_params, const DrawCall& draw, MeshResource& resource, float opacity);
   void drawBatch(const ViewParams& view_params, const std::vector<DrawCall>& draws, float opacity, bool collision);
+  // Destroy meshes/textures retired by clearMeshes(). MUST run under the owning
+  // GL context: it clears retired_meshes_/retired_textures_, whose gl wrapper
+  // destructors glDelete* against the current context. Called from drawBatch()
+  // (inside paintGL) and releaseGL() (the view runs it under makeCurrent).
+  void drainRetired();
 
   // Per-submesh material uniform locations, queried once when the program links
   // (initializeGL) instead of re-querying ~11 string-keyed locations per draw per
@@ -172,6 +196,11 @@ class MeshRenderPass : public IRenderPass {
   // clearMeshes()/releaseGL(), which is acceptable for static URDFs but a slow
   // leak for streaming mesh swaps.
   std::vector<CachedTexture> textures_;
+  // Meshes/textures retired by clearMeshes() but not yet destroyed: clearMeshes()
+  // may run with no GL context current, so the GL wrappers wait here until
+  // drainRetired() (drawBatch/releaseGL) frees them under the owning context.
+  std::vector<CachedTexture> retired_textures_;
+  std::vector<std::pair<std::string, MeshResource>> retired_meshes_;
   MeshResource cube_;
   MeshResource cylinder_;
   MeshResource sphere_;

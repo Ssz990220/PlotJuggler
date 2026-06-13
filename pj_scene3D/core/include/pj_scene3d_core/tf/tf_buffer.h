@@ -122,6 +122,11 @@ class TransformBuffer {
   [[nodiscard]] std::optional<TimePoint> latestCommonTime(const std::string& target, const std::string& source) const;
 
   [[nodiscard]] std::vector<std::string> getAllFrames() const;
+  // Same result as getAllFrames(), but refills the caller's vector (cleared
+  // first) so it can reuse capacity across calls — used by per-frame render
+  // passes to avoid a heap allocation every paint. Same locking as the
+  // by-value overload, which now delegates here.
+  void getAllFrames(std::vector<std::string>& out) const;
   [[nodiscard]] std::optional<std::string> getParent(const std::string& child) const;
   [[nodiscard]] std::optional<TimePoint> getLatestSample(const std::string& child) const;
 

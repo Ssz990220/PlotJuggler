@@ -1021,6 +1021,28 @@ QDomElement Scene3DDockWidget::xmlSaveState(QDomDocument& doc) const {
         QStringLiteral("camera_state"),
         QString::fromStdString(pj::scene3d::cameraStateToJson(view_->camera().state())));
   }
+  if (view_ != nullptr) {
+    // Per-dock scene-look controls travel WITH the layout (export/import), so a
+    // restored layout gives each view its own grid/frame/mesh look instead of a
+    // shared global one. The QSettings group is only the seed for brand-new docks.
+    // Field set mirrors Scene3DConfigPanel::applySceneControlsTo (keep in sync; 4 sites).
+    const auto bool_attr = [](bool value) { return value ? QStringLiteral("true") : QStringLiteral("false"); };
+    QDomElement sc = doc.createElement(QStringLiteral("scene_controls"));
+    sc.setAttribute(QStringLiteral("grid_visible"), bool_attr(view_->gridVisible()));
+    sc.setAttribute(
+        QStringLiteral("grid_style"), view_->gridStyle() == pj::scene3d::GridRenderPass::Style::kFilledCells ? 1 : 0);
+    sc.setAttribute(QStringLiteral("grid_extent_m"), view_->gridExtentMetres());
+    sc.setAttribute(QStringLiteral("grid_divisions"), view_->gridDivisions());
+    sc.setAttribute(QStringLiteral("axes_visible"), bool_attr(view_->axesVisible()));
+    sc.setAttribute(QStringLiteral("gizmo_size_m"), view_->gizmoSize());
+    sc.setAttribute(QStringLiteral("gizmo_opacity"), view_->gizmoOpacity());
+    const auto& shading = view_->meshShadingParams();
+    sc.setAttribute(QStringLiteral("meshes_visible"), bool_attr(shading.meshes_visible));
+    sc.setAttribute(QStringLiteral("mesh_opacity"), shading.mesh_opacity);
+    sc.setAttribute(QStringLiteral("collisions_visible"), bool_attr(shading.collisions_visible));
+    sc.setAttribute(QStringLiteral("collision_opacity"), shading.collision_opacity);
+    root.appendChild(sc);
+  }
   return root;
 }
 
@@ -1161,6 +1183,36 @@ bool Scene3DDockWidget::xmlLoadState(const QDomElement& element) {
     const QString camera_state = element.attribute(QStringLiteral("camera_state"));
     if (!camera_state.isEmpty()) {
       view_->camera().adoptState(pj::scene3d::cameraStateFromJson(camera_state.toStdString(), view_->camera().state()));
+    }
+    // Per-dock scene controls: override the global seed applied at view creation
+    // (sceneViewReady -> applySceneControlsTo) with this dock's saved look. Older
+    // layouts have no <scene_controls> child -> keep the seed. Each attribute
+    // falls back to the current value so a partial element never zeroes a control.
+    // Field set mirrors Scene3DConfigPanel::applySceneControlsTo (keep in sync; 4 sites).
+    if (const QDomElement sc = element.firstChildElement(QStringLiteral("scene_controls")); !sc.isNull()) {
+      const auto bool_attr = [&sc](const QString& key, bool fallback) {
+        return sc.attribute(key, fallback ? QStringLiteral("true") : QStringLiteral("false")) == QStringLiteral("true");
+      };
+      view_->setGridVisible(bool_attr(QStringLiteral("grid_visible"), view_->gridVisible()));
+      view_->setGridStyle(
+          sc.attribute(QStringLiteral("grid_style"), QStringLiteral("0")).toInt() == 1
+              ? pj::scene3d::GridRenderPass::Style::kFilledCells
+              : pj::scene3d::GridRenderPass::Style::kLines);
+      view_->setGridExtentMetres(
+          sc.attribute(QStringLiteral("grid_extent_m"), QString::number(view_->gridExtentMetres())).toFloat());
+      view_->setGridDivisions(
+          sc.attribute(QStringLiteral("grid_divisions"), QString::number(view_->gridDivisions())).toInt());
+      view_->setAxesVisible(bool_attr(QStringLiteral("axes_visible"), view_->axesVisible()));
+      view_->setGizmoSize(sc.attribute(QStringLiteral("gizmo_size_m"), QString::number(view_->gizmoSize())).toFloat());
+      view_->setGizmoOpacity(
+          sc.attribute(QStringLiteral("gizmo_opacity"), QString::number(view_->gizmoOpacity())).toFloat());
+      auto& shading = view_->meshShadingParams();
+      shading.meshes_visible = bool_attr(QStringLiteral("meshes_visible"), shading.meshes_visible);
+      shading.mesh_opacity =
+          sc.attribute(QStringLiteral("mesh_opacity"), QString::number(shading.mesh_opacity)).toFloat();
+      shading.collisions_visible = bool_attr(QStringLiteral("collisions_visible"), shading.collisions_visible);
+      shading.collision_opacity =
+          sc.attribute(QStringLiteral("collision_opacity"), QString::number(shading.collision_opacity)).toFloat();
     }
     view_->update();
   }

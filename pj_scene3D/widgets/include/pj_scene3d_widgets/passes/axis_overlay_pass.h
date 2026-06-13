@@ -42,8 +42,9 @@ class AxisOverlayPass : public IRenderPass {
   }
 
   // Arrow geometry knobs (length / shaft radius / head length / head radius
-  // / tessellation). Forwarded to the underlying ArrowGizmo. Safe to call
-  // before initializeGL — the params are remembered and applied on init.
+  // / tessellation). Forwarded to the underlying ArrowGizmo. Safe to call from
+  // any GUI slot with no GL context current: the params are remembered and the
+  // gizmo is rebuilt lazily under a current context (next render()/initializeGL).
   void setArrowParams(const ArrowGizmo::Params& params);
 
  private:
@@ -51,6 +52,9 @@ class AxisOverlayPass : public IRenderPass {
   int margin_px_ = kDefaultMarginPx;
   Corner corner_ = Corner::kTopRight;
   bool initialized_ = false;
+  // Set when setArrowParams changes params while initialized_; consumed at the
+  // top of render() so the GL rebuild runs under a current context.
+  bool params_dirty_ = false;
   ArrowGizmo arrow_;
   // HUD-specific defaults (unit-axes fit inside the [-1.3, 1.3] HUD frustum).
   // Designated initializers keep member order aligned with ArrowGizmo::Params.

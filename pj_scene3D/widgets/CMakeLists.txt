@@ -144,6 +144,7 @@ if(PJ_BUILD_TESTS)
     robot_model_layer_test
     scene_entities_layer_model_test
     url_fetcher_test
+    gl_owning_context_test
   )
   foreach(test_name ${PJ_SCENE3D_WIDGETS_TESTS})
     add_executable(${test_name} tests/${test_name}.cpp)

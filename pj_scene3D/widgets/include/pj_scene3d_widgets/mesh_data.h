@@ -65,7 +65,7 @@ enum class AlphaMode { kOpaque, kMask, kBlend };
 // abstraction so it also covers DAE/OBJ/FBX. Factors multiply their textures;
 // any texture slot may be empty. `has_pbr` is false for sources that carry no
 // PBR keys (STL, untextured primitives) — the renderer then falls back to the
-// scene-wide MeshShadingParams roughness/reflectivity so their look is unchanged.
+// per-view MeshShadingParams roughness/reflectivity so their look is unchanged.
 struct Material {
   glm::vec4 base_color_factor{0.7f, 0.7f, 0.7f, 1.0f};
   float metallic_factor{0.0f};

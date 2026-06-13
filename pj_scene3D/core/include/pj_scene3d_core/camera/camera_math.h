@@ -22,12 +22,12 @@ struct Ray {
 
 // Decoupled adaptive near/far for a perspective camera. `working_distance` is the
 // eye-to-focal distance (orbit radius); `scene_reach` is sceneReach() (0 = unknown).
-//   near  = max(working_distance * 1e-2, 1e-3)   — from working distance ONLY, so
-//           close inspection never clips regardless of how large the scene is.
-//   far   = max(working_distance * 4, scene_reach) * 1.5
-//   near  = max(near, far / 1e5)                 — ratio cap to bound depth precision.
+//   near_plane  = max(working_distance * 1e-2, 1e-3)   — from working distance ONLY, so
+//                 close inspection never clips regardless of how large the scene is.
+//   far_plane   = max(working_distance * 4, scene_reach) * 1.5
+//   near_plane  = max(near_plane, far_plane / 1e5)     — ratio cap to bound depth precision.
 // Writes results to out-params (kept testable without constructing a projection).
-void adaptiveNearFar(float working_distance, float scene_reach, float& near, float& far);
+void adaptiveNearFar(float working_distance, float scene_reach, float& near_plane, float& far_plane);
 
 // Build the world-space ray through a pixel. `cursor_px` is in Qt widget
 // coordinates (origin top-left, y increasing downward); the y-flip into NDC is

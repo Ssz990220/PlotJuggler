@@ -3,71 +3,13 @@
 
 #include "pj_scene3d_widgets/scene_hdr_fbo.h"
 
-#include <QOpenGLContext>
-#include <QOpenGLExtraFunctions>
-#include <QOpenGLVersionFunctionsFactory>
 #include <algorithm>
-#include <stdexcept>
 #include <utility>
+
+#include "pj_scene3d_widgets/gl/gl_functions.h"
 
 namespace pj::scene3d {
 namespace {
-
-template <typename Callback>
-decltype(auto) withGlFunctions(Callback&& callback) {
-  QOpenGLContext* context = QOpenGLContext::currentContext();
-  if (context == nullptr) {
-    throw std::runtime_error("No current OpenGL context");
-  }
-
-  if (auto* functions = QOpenGLVersionFunctionsFactory::get<QOpenGLFunctions_4_5_Core>(context); functions != nullptr) {
-    functions->initializeOpenGLFunctions();
-    return callback(*functions);
-  }
-
-  QOpenGLExtraFunctions* functions = context->extraFunctions();
-  if (functions == nullptr) {
-    throw std::runtime_error("No OpenGL functions available");
-  }
-  functions->initializeOpenGLFunctions();
-  return callback(*functions);
-}
-
-template <typename Callback>
-void withGlFunctionsNoThrow(Callback&& callback) noexcept {
-  QOpenGLContext* context = QOpenGLContext::currentContext();
-  if (context == nullptr) {
-    return;
-  }
-
-  if (auto* functions = QOpenGLVersionFunctionsFactory::get<QOpenGLFunctions_4_5_Core>(context); functions != nullptr) {
-    functions->initializeOpenGLFunctions();
-    callback(*functions);
-    return;
-  }
-
-  QOpenGLExtraFunctions* functions = context->extraFunctions();
-  if (functions == nullptr) {
-    return;
-  }
-  functions->initializeOpenGLFunctions();
-  callback(*functions);
-}
-
-template <typename Callback>
-decltype(auto) withCoreGlFunctions(Callback&& callback) {
-  QOpenGLContext* context = QOpenGLContext::currentContext();
-  if (context == nullptr) {
-    throw std::runtime_error("No current OpenGL context");
-  }
-
-  auto* functions = QOpenGLVersionFunctionsFactory::get<QOpenGLFunctions_4_5_Core>(context);
-  if (functions == nullptr) {
-    throw std::runtime_error("No OpenGL 4.5 Core functions available");
-  }
-  functions->initializeOpenGLFunctions();
-  return callback(*functions);
-}
 
 void attachDrawBuffer() {
   withGlFunctions([](auto& functions) {
@@ -149,27 +91,35 @@ void SceneHdrFbo::resize(int device_w, int device_h) {
   height_ = device_h;
 
   if (samples_ > 1) {
+    // The backing FBO's achieved sample count (the seed for samples_) is bounded
+    // by GL_MAX_SAMPLES, but our float color/depth multisample TEXTURES are
+    // bounded by the (spec-allows-lower) GL_MAX_COLOR/DEPTH_TEXTURE_SAMPLES.
+    // glTexImage2DMultisample raises GL_INVALID_OPERATION above those limits and
+    // leaves the chain incomplete (L.40), so clamp here. One-way clamp of the
+    // member is fine: configure() re-seeds it per context.
+    withCoreGlFunctions([this](auto& functions) {
+      GLint max_color_samples = 0;
+      GLint max_depth_samples = 0;
+      functions.glGetIntegerv(GL_MAX_COLOR_TEXTURE_SAMPLES, &max_color_samples);
+      functions.glGetIntegerv(GL_MAX_DEPTH_TEXTURE_SAMPLES, &max_depth_samples);
+      samples_ = std::min({samples_, max_color_samples, max_depth_samples});
+    });
+  }
+
+  if (samples_ > 1) {
     render_fbo_.bind();
     allocateMultisampleTexture(msaa_color_, GL_COLOR_ATTACHMENT0, GL_RGBA16F, samples_, width_, height_);
     allocateMultisampleTexture(msaa_depth_, GL_DEPTH_ATTACHMENT, GL_DEPTH_COMPONENT32F, samples_, width_, height_);
     attachDrawBuffer();
     const bool render_complete = render_fbo_.checkComplete();
-
-    resolve_fbo_.bind();
-    resolve_color_.allocate(GL_RGBA16F, GL_RGBA, GL_HALF_FLOAT, width_, height_);
-    withGlFunctions([this](auto& functions) {
-      functions.glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, resolve_color_.id(), 0);
-    });
-    resolve_depth_.allocate(GL_DEPTH_COMPONENT32F, GL_DEPTH_COMPONENT, GL_FLOAT, width_, height_);
-    withGlFunctions([this](auto& functions) {
-      functions.glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D, resolve_depth_.id(), 0);
-    });
-    attachDrawBuffer();
-    const bool resolve_complete = resolve_fbo_.checkComplete();
-    ready_ = render_complete && resolve_complete;
+    ready_ = render_complete && allocateResolveFbo();
     return;
   }
 
+  ready_ = allocateResolveFbo();
+}
+
+bool SceneHdrFbo::allocateResolveFbo() {
   resolve_fbo_.bind();
   resolve_color_.allocate(GL_RGBA16F, GL_RGBA, GL_HALF_FLOAT, width_, height_);
   withGlFunctions([this](auto& functions) {
@@ -180,7 +130,7 @@ void SceneHdrFbo::resize(int device_w, int device_h) {
     functions.glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D, resolve_depth_.id(), 0);
   });
   attachDrawBuffer();
-  ready_ = resolve_fbo_.checkComplete();
+  return resolve_fbo_.checkComplete();
 }
 
 void SceneHdrFbo::bind() {

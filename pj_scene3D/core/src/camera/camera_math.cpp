@@ -14,10 +14,10 @@ float sceneReach(const AABB& bounds, const glm::vec3& focal) {
   return aabbDiagonal(bounds) + glm::length(focal - aabbCenter(bounds));
 }
 
-void adaptiveNearFar(float working_distance, float scene_reach, float& near, float& far) {
-  near = std::max(working_distance * 1e-2f, 1e-3f);
-  far = std::max(working_distance * 4.0f, scene_reach) * 1.5f;
-  near = std::max(near, far / 1e5f);  // ratio cap → bounded depth precision
+void adaptiveNearFar(float working_distance, float scene_reach, float& near_plane, float& far_plane) {
+  near_plane = std::max(working_distance * 1e-2f, 1e-3f);
+  far_plane = std::max(working_distance * 4.0f, scene_reach) * 1.5f;
+  near_plane = std::max(near_plane, far_plane / 1e5f);  // ratio cap → bounded depth precision
 }
 
 Ray unprojectRay(glm::vec2 cursor_px, int viewport_w, int viewport_h, const glm::mat4& view, const glm::mat4& proj) {

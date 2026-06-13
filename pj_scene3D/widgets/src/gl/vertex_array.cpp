@@ -3,74 +3,30 @@
 
 #include "pj_scene3d_widgets/gl/vertex_array.h"
 
-#include <QOpenGLContext>
-#include <QOpenGLExtraFunctions>
-#include <QOpenGLVersionFunctionsFactory>
-#include <stdexcept>
 #include <utility>
 
+#include "pj_scene3d_widgets/gl/gl_functions.h"
+
 namespace pj::scene3d::gl {
-namespace {
-
-template <typename Callback>
-decltype(auto) withGlFunctions(Callback&& callback) {
-  QOpenGLContext* context = QOpenGLContext::currentContext();
-  if (context == nullptr) {
-    throw std::runtime_error("No current OpenGL context");
-  }
-
-  if (auto* functions = QOpenGLVersionFunctionsFactory::get<QOpenGLFunctions_4_5_Core>(context); functions != nullptr) {
-    functions->initializeOpenGLFunctions();
-    return callback(*functions);
-  }
-
-  QOpenGLExtraFunctions* functions = context->extraFunctions();
-  if (functions == nullptr) {
-    throw std::runtime_error("No OpenGL functions available");
-  }
-  functions->initializeOpenGLFunctions();
-  return callback(*functions);
-}
-
-template <typename Callback>
-void withGlFunctionsNoThrow(Callback&& callback) noexcept {
-  QOpenGLContext* context = QOpenGLContext::currentContext();
-  if (context == nullptr) {
-    return;
-  }
-
-  if (auto* functions = QOpenGLVersionFunctionsFactory::get<QOpenGLFunctions_4_5_Core>(context); functions != nullptr) {
-    functions->initializeOpenGLFunctions();
-    callback(*functions);
-    return;
-  }
-
-  QOpenGLExtraFunctions* functions = context->extraFunctions();
-  if (functions == nullptr) {
-    return;
-  }
-  functions->initializeOpenGLFunctions();
-  callback(*functions);
-}
-
-}  // namespace
 
 VertexArray::VertexArray() = default;
 
 VertexArray::~VertexArray() {
-  if (id_ != 0U) {
+  if (id_ != 0U && deleteAllowedInCurrentContext(owning_context_)) {
     withGlFunctionsNoThrow([this](auto& functions) { functions.glDeleteVertexArrays(1, &id_); });
   }
 }
 
-VertexArray::VertexArray(VertexArray&& other) noexcept : id_(std::exchange(other.id_, 0U)) {}
+VertexArray::VertexArray(VertexArray&& other) noexcept
+    : id_(std::exchange(other.id_, 0U)), owning_context_(std::exchange(other.owning_context_, nullptr)) {}
 
 VertexArray& VertexArray::operator=(VertexArray&& other) noexcept {
   if (this != &other) {
-    if (id_ != 0U) {
+    if (id_ != 0U && deleteAllowedInCurrentContext(owning_context_)) {
       withGlFunctionsNoThrow([this](auto& functions) { functions.glDeleteVertexArrays(1, &id_); });
     }
     id_ = std::exchange(other.id_, 0U);
+    owning_context_ = std::exchange(other.owning_context_, nullptr);
   }
   return *this;
 }
@@ -83,6 +39,7 @@ void VertexArray::bind() {
   withGlFunctions([this](auto& functions) {
     if (id_ == 0U) {
       functions.glGenVertexArrays(1, &id_);
+      owning_context_ = QOpenGLContext::currentContext();
     }
     functions.glBindVertexArray(id_);
   });
