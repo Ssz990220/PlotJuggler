@@ -28,6 +28,9 @@ std::unique_ptr<CodecPipeline> makeScene2DPipelineFor(sdk::BuiltinObjectType obj
     case sdk::BuiltinObjectType::kCameraInfo:
     case sdk::BuiltinObjectType::kOccupancyGridUpdate:
     case sdk::BuiltinObjectType::kLog:
+    // kPosesInFrame is a 3D pose-array geometry type with no 2D decode path;
+    // listed to keep this exhaustive switch -Werror=switch clean.
+    case sdk::BuiltinObjectType::kPosesInFrame:
       return nullptr;
   }
   return nullptr;

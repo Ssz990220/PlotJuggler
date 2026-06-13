@@ -11,7 +11,7 @@
 #include <string>
 #include <vector>
 
-#include "pj_runtime/Time.h"  // PJ::Timepoint
+#include "pj_base/time.hpp"  // PJ::Timepoint
 #include "pj_scene3d_core/camera/camera.h"
 #include "pj_scene3d_core/tf/tf_buffer.h"
 #include "pj_scene3d_widgets/gl/program.h"

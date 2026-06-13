@@ -18,11 +18,12 @@
 #include <vector>
 
 #include "pj_base/expected.hpp"
+#include "pj_base/time.hpp"
 #include "pj_scene3d_core/tf/transform.h"
 
 namespace pj::scene3d {
 
-using Duration = std::chrono::nanoseconds;
+using Duration = PJ::Duration;
 
 // Why setTransform rejected a single edge. Every value is a recoverable *data*
 // error in a bulk feed (a real bag can carry any of these), not a programmer

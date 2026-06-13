@@ -2,16 +2,17 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 
-// PJ4's canonical time vocabulary: the one place PJ4-owned code names time. It
-// sits just above the FROZEN int64-ns spine (PJ::Timestamp, in the read-only
-// plotjuggler_sdk submodule) and converts at the named seams below — the spine
-// stays int64 across storage/ABI/wire, chrono lives only above it. Three
-// concepts, kept un-mixable by the type system:
-//   * Timepoint      — absolute instant (sys_time<nanoseconds>, Unix epoch).
-//   * Duration       — a span (nanoseconds); Timepoint + Timepoint won't compile.
-//   * DisplaySeconds — display-relative seconds (raw - display_offset) the Qwt
-//                      axis / PlaybackEngine speak; a strong double, so absolute
-//                      seconds can't masquerade as a display coordinate.
+// PJ4's DISPLAY-relative time vocabulary: the app-level coordinate the Qwt axis
+// and PlaybackEngine speak, layered on top of the absolute time spine in
+// pj_base/time.hpp (PJ::Timepoint / PJ::Duration / fromRaw / toRaw). The spine
+// stays int64 across storage/ABI/wire and its chrono mirror now lives in pj_base
+// so every layer can name absolute time; the DISPLAY types below stay here
+// because the per-dataset display offset is an app-presentation policy, not an
+// SDK concern. Two concepts, kept un-mixable by the type system:
+//   * DisplayOffset   — the per-dataset shift (a strong-named Duration).
+//   * DisplaySeconds  — display-relative seconds (raw - display_offset) the Qwt
+//                       axis / PlaybackEngine speak; a strong double, so absolute
+//                       seconds can't masquerade as a display coordinate.
 //
 // DisplaySeconds wraps a double (not an opaque enum) so display-axis math stays
 // natural; the safety lives at toDisplaySeconds()/rawToDisplaySeconds(), which
@@ -20,18 +21,19 @@
 #include <chrono>
 #include <compare>
 
-#include "pj_base/dataset.hpp"     // PJ::TimeDomain (display_offset)
-#include "pj_base/types.hpp"       // PJ::Timestamp, PJ::Range
-#include "pj_runtime/constants.h"  // PJ::kNanosecondsPerSecond (single source of truth)
+#include "pj_base/dataset.hpp"  // PJ::TimeDomain (display_offset)
+#include "pj_base/time.hpp"     // PJ::Timepoint, PJ::Duration, fromRaw/toRaw (absolute spine)
+#include "pj_base/types.hpp"    // PJ::Timestamp, PJ::Range
 
 namespace PJ {
 
-/// An ABSOLUTE wall-clock instant, nanosecond precision, Unix epoch. Lossless
-/// mirror of PJ::Timestamp (C++20 guarantees system_clock's epoch == Unix epoch).
-using Timepoint = std::chrono::sys_time<std::chrono::nanoseconds>;
-
-/// A length of time (a span, not a point): retention windows, lifetimes, deltas.
-using Duration = std::chrono::nanoseconds;
+/// Seconds <-> nanoseconds conversion factor for the IDataWidget boundary
+/// (tracker time travels as seconds in a bare double; storage timestamps are
+/// int64 nanoseconds). Derived from std::chrono so the ratio can never drift
+/// from the time types it converts between. Prefer converting through
+/// std::chrono::duration directly where practical (it adds nothing at -O2); use
+/// this constant where a plain multiplier/divisor reads better.
+inline constexpr double kNanosecondsPerSecond = static_cast<double>(std::chrono::nanoseconds::period::den);
 
 /// The per-dataset display shift carried as a strong-named Duration, so call
 /// sites read "this is the subtrahend that turns a Timepoint into display time"
@@ -79,25 +81,6 @@ using DisplayRange = PJ::Range<DisplaySeconds>;
 /// each app/UI call site.
 [[nodiscard]] constexpr DisplayRange displayRange(double min_seconds, double max_seconds) noexcept {
   return DisplayRange{displaySeconds(min_seconds), displaySeconds(max_seconds)};
-}
-
-// --- absolute spine seam: int64-ns <-> Timepoint (apply on the PJ4 side only) ---
-
-/// Lift an int64-ns PJ::Timestamp out of the frozen spine into a Timepoint.
-[[nodiscard]] constexpr Timepoint fromRaw(Timestamp ns) noexcept {
-  return Timepoint{Duration{ns}};
-}
-
-/// Lower a Timepoint back to the int64-ns spine, immediately before crossing a
-/// frozen storage/ABI boundary (DataWriter, the C-ABI trampolines, the codecs).
-[[nodiscard]] constexpr Timestamp toRaw(Timepoint t) noexcept {
-  return t.time_since_epoch().count();
-}
-
-/// Lift a frozen int64 interval into an absolute Timepoint interval (reuses
-/// PJ::Range, never std::pair).
-[[nodiscard]] constexpr Range<Timepoint> fromRawRange(const Range<Timestamp>& r) noexcept {
-  return {fromRaw(r.min), fromRaw(r.max)};
 }
 
 // --- display seam: the offset is MANDATORY, so raw->display can't be skipped ---

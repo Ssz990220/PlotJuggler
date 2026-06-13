@@ -28,9 +28,9 @@
 #include "pj_base/builtin/builtin_object.hpp"
 #include "pj_base/builtin/compressed_point_cloud.hpp"
 #include "pj_base/builtin/point_cloud.hpp"
+#include "pj_base/time.hpp"  // PJ::fromRaw, PJ::toRaw
 #include "pj_plugins/sdk/message_parser_plugin_base.hpp"
 #include "pj_runtime/SessionManager.h"
-#include "pj_runtime/Time.h"                // PJ::fromRaw, PJ::toRaw
 #include "pj_scene3d_core/camera/camera.h"  // AABB, expandAABB
 #include "pj_scene3d_core/pointcloud.h"
 #include "pj_scene3d_core/pointcloud_codecs.h"

@@ -12,8 +12,8 @@
 #include <utility>
 
 #include "pj_base/builtin/builtin_object.hpp"
+#include "pj_base/time.hpp"  // PJ::Timepoint, PJ::Range, fromRaw/toRaw
 #include "pj_datastore/object_store.hpp"
-#include "pj_runtime/Time.h"  // PJ::Timepoint, PJ::Range, fromRaw/toRaw
 
 namespace PJ {
 

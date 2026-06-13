@@ -21,9 +21,9 @@
 #include "mock_parser_support.h"
 #include "pj_base/builtin/builtin_object.hpp"
 #include "pj_base/builtin/occupancy_grid.hpp"
+#include "pj_base/time.hpp"
 #include "pj_plugins/sdk/message_parser_plugin_base.hpp"
 #include "pj_runtime/SessionManager.h"
-#include "pj_runtime/Time.h"
 #include "pj_scene3d_widgets/layers/occupancy_grid_layer.h"
 #include "pj_scene3d_widgets/scene3d_layer.h"
 

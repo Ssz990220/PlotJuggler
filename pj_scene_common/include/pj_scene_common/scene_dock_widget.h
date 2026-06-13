@@ -15,10 +15,10 @@
 #include <vector>
 
 #include "pj_base/builtin/builtin_object.hpp"
+#include "pj_base/time.hpp"  // PJ::Timepoint, fromRaw/toRaw
 #include "pj_datastore/object_store.hpp"
 #include "pj_runtime/IDataWidget.h"
 #include "pj_runtime/IObjectViewer.h"
-#include "pj_runtime/Time.h"  // PJ::Timepoint, fromRaw/toRaw
 #include "pj_scene_common/layer_factory.h"
 #include "pj_scene_common/scene_layer.h"
 

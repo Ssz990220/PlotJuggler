@@ -12,8 +12,8 @@
 #include <optional>
 #include <utility>
 
+#include "pj_base/time.hpp"  // PJ::fromRaw, PJ::toRaw
 #include "pj_runtime/SessionManager.h"
-#include "pj_runtime/Time.h"  // PJ::fromRaw, PJ::toRaw
 #include "pj_scene2d_core/media_source.h"
 
 namespace PJ {

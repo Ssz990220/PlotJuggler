@@ -7,14 +7,16 @@
 #include <glm/gtc/quaternion.hpp>
 #include <string>
 
+#include "pj_base/time.hpp"  // PJ::Timepoint (absolute spine)
+
 namespace pj::scene3d {
 
-// An ABSOLUTE frame stamp (nanoseconds, Unix epoch) — structurally identical to
-// PJ::Timepoint in pj_runtime/Time.h, but defined here so pj_scene3d_core stays
-// pj_runtime-free. Being a time_point (not a bare nanoseconds duration) keeps it
-// un-mixable with Duration: TimePoint - TimePoint is a Duration, TimePoint +
-// TimePoint won't compile.
-using TimePoint = std::chrono::sys_time<std::chrono::nanoseconds>;
+// An ABSOLUTE frame stamp: the scene3d spelling of PJ::Timepoint. The absolute
+// time spine now lives in pj_base/time.hpp, so pj_scene3d_core aliases it
+// directly instead of re-declaring a structurally-identical shadow. Being a
+// time_point (not a bare Duration) keeps it un-mixable: TimePoint - TimePoint is
+// a Duration, TimePoint + TimePoint won't compile.
+using TimePoint = PJ::Timepoint;
 
 // A rigid SE(3) pose (translation + rotation). INVARIANT: `q` must be a unit
 // quaternion. inverse() uses the conjugate as the rotational inverse and

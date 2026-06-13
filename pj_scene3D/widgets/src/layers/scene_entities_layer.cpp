@@ -25,9 +25,9 @@
 #include "mesh_load_set.h"
 #include "mesh_loader.h"
 #include "pj_base/builtin/scene_entities.hpp"
+#include "pj_base/time.hpp"
 #include "pj_plugins/sdk/message_parser_plugin_base.hpp"
 #include "pj_runtime/SessionManager.h"
-#include "pj_runtime/Time.h"
 #include "pj_scene3d_core/scene_entities_decode.h"
 #include "pj_scene3d_widgets/parse_locked.h"
 #include "pj_widgets/ColorPickerPopup.h"
@@ -582,8 +582,7 @@ void SceneEntitiesLayer::ensureModelStateAt(PJ::Timepoint time) {
   // batches appended since the last build instead of replaying the whole history
   // (which would re-parse — and re-hash heavy embedded models in — every frame).
   // Anything else (first build, backward scrub, jump) falls back to a full rebuild.
-  const bool can_incremental =
-      state_built_at_.has_value() && last_applied_uid_.valid() && PJ::toRaw(time) >= PJ::toRaw(*state_built_at_);
+  const bool can_incremental = state_built_at_.has_value() && last_applied_uid_.valid() && time >= *state_built_at_;
   if (can_incremental) {
     if (target.has_value() && target->sequential_uid >= last_applied_uid_) {
       bool cursor_outside_window = false;

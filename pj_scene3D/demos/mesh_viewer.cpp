@@ -33,8 +33,8 @@
 #include <glm/gtc/quaternion.hpp>
 #include <memory>
 
+#include "pj_base/time.hpp"
 #include "pj_runtime/SessionManager.h"
-#include "pj_runtime/Time.h"
 #include "pj_scene3d_core/tf/tf_buffer.h"
 #include "pj_scene3d_core/tf/transform.h"
 #include "pj_scene3d_widgets/layers/robot_model_layer.h"
