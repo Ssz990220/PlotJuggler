@@ -99,14 +99,14 @@ TEST(UrdfResolver, AbsolutePathPassthroughAndMissing) {
 }
 
 // ---------------------------------------------------------------------------
-// Chain step 0 — MCAP attachment exact-name lookup
+// Chain step 0 — embedded-asset exact-name lookup
 // ---------------------------------------------------------------------------
 
 TEST(UrdfResolver, Step0_AttachmentExactNameHit) {
   UrdfPackageResolver r;
   QMap<QString, QByteArray> att;
   att.insert("package://demo_description/meshes/base.dae", QByteArray("DAE-BYTES"));
-  r.setMcapAttachments(att);
+  r.setEmbeddedAssets(att);
 
   const ResolvedMesh m = r.resolveUri("package://demo_description/meshes/base.dae", "", false);
   ASSERT_TRUE(m.resolved);
@@ -117,21 +117,21 @@ TEST(UrdfResolver, Step0_AttachmentExactNameHit) {
 }
 
 // ---------------------------------------------------------------------------
-// Chain step 1 — remembered per-MCAP map (QSettings)
+// Chain step 1 — remembered per-source map (QSettings)
 // ---------------------------------------------------------------------------
 
-TEST(UrdfResolver, Step1_RememberedPerMcapMapHit) {
+TEST(UrdfResolver, Step1_RememberedPerSourceMapHit) {
   ScopedSettings s;
   UrdfPackageResolver r;
   r.setSettings(s.get());
-  r.setMcapPath("/data/run42.mcap");
-  // rememberPackageRoot writes both the per-MCAP map and the global roots.
+  r.setSourcePath("/data/run42.dat");
+  // rememberPackageRoot writes both the per-source map and the global roots.
   r.rememberPackageRoot("demo_description", QString::fromStdString(fixtures() + "/search_root/demo_description"));
 
-  // A fresh resolver reading the same settings + mcap path resolves via step 1.
+  // A fresh resolver reading the same settings + source path resolves via step 1.
   UrdfPackageResolver r2;
   r2.setSettings(s.get());
-  r2.setMcapPath("/data/run42.mcap");
+  r2.setSourcePath("/data/run42.dat");
   const std::string p = r2.resolve("demo_description", "meshes/base.stl", "", false);
   EXPECT_EQ(p, fixtures() + "/search_root/demo_description/meshes/base.stl");
 }
@@ -194,7 +194,7 @@ TEST(UrdfResolver, Step3_AutoSeedFromEnv) {
 // ---------------------------------------------------------------------------
 
 TEST(UrdfResolver, PackageMissReportedOnResult) {
-  UrdfPackageResolver r;  // no attachments, no settings, no roots
+  UrdfPackageResolver r;  // no assets, no settings, no roots
   // resolve() (the package chain) returns "" on a miss; resolveUri() surfaces
   // the offending package + reason in the return value (no resolver-global tally).
   const std::string p = r.resolve("ghost_pkg", "meshes/x.stl", "", false);
@@ -223,7 +223,7 @@ TEST(UrdfResolver, AttachmentTakesPriorityOverSearchRoot) {
   r.addSearchRoot(QString::fromStdString(fixtures() + "/search_root"));
   QMap<QString, QByteArray> att;
   att.insert("package://demo_description/meshes/base.stl", QByteArray("ATTACHED"));
-  r.setMcapAttachments(att);
+  r.setEmbeddedAssets(att);
 
   const std::string p = r.resolve("demo_description", "meshes/base.stl", "", false);
   QFile f(QString::fromStdString(p));
@@ -236,7 +236,7 @@ TEST(UrdfResolver, RememberPersistsAndResolves) {
   ScopedSettings s;
   UrdfPackageResolver r;
   r.setSettings(s.get());
-  r.setMcapPath("/data/x.mcap");
+  r.setSourcePath("/data/x.dat");
   EXPECT_TRUE(r.resolve("demo_description", "meshes/base.stl", "", false).empty());
 
   r.rememberPackageRoot("demo_description", QString::fromStdString(fixtures() + "/search_root/demo_description"));
@@ -246,20 +246,20 @@ TEST(UrdfResolver, RememberPersistsAndResolves) {
 }
 
 // rememberPackageRoot must enable cross-dataset (step-3) resolution: a FRESH
-// resolver on a DIFFERENT mcap (so the per-MCAP map, step 1, misses) resolves
+// resolver on a DIFFERENT source (so the per-source map, step 1, misses) resolves
 // via the persisted GLOBAL search root. Regression guard for the
 // parent-vs-package-dir double-nesting bug (which made step 3 silently miss).
 TEST(UrdfResolver, RememberEnablesCrossDatasetSearchRoot) {
   ScopedSettings s;
   UrdfPackageResolver r1;
   r1.setSettings(s.get());
-  r1.setMcapPath("/data/first.mcap");
+  r1.setSourcePath("/data/first.dat");
   r1.rememberPackageRoot("demo_description", QString::fromStdString(fixtures() + "/search_root/demo_description"));
 
   UrdfPackageResolver r2;
   r2.setSettings(s.get());
-  r2.setMcapPath("/data/second.mcap");  // different mcap → step 1 cannot hit
-  r2.autoSeedSearchRoots("");           // loads the persisted global root (the PARENT dir)
+  r2.setSourcePath("/data/second.dat");  // different source → step 1 cannot hit
+  r2.autoSeedSearchRoots("");            // loads the persisted global root (the PARENT dir)
   const std::string p = r2.resolve("demo_description", "meshes/base.stl", "", false);
   EXPECT_EQ(p, fixtures() + "/search_root/demo_description/meshes/base.stl");
 }
@@ -277,7 +277,7 @@ TEST(UrdfResolver, CollidingAttachmentRefsExtractToDistinctFiles) {
   QMap<QString, QByteArray> att;
   att.insert("package://pkg/a/b.stl", QByteArray("FIRST"));
   att.insert("package://pkg/a_b.stl", QByteArray("SECOND"));
-  r.setMcapAttachments(att);
+  r.setEmbeddedAssets(att);
 
   const ResolvedMesh first = r.resolveUri("package://pkg/a/b.stl", "", false);
   const ResolvedMesh second = r.resolveUri("package://pkg/a_b.stl", "", false);
@@ -302,7 +302,7 @@ TEST(UrdfResolver, AttachmentReResolveDoesNotRewrite) {
   UrdfPackageResolver r;
   QMap<QString, QByteArray> att;
   att.insert("package://demo/mesh.stl", QByteArray("ORIGINAL"));
-  r.setMcapAttachments(att);
+  r.setEmbeddedAssets(att);
 
   const ResolvedMesh first = r.resolveUri("package://demo/mesh.stl", "", false);
   ASSERT_TRUE(first.resolved);
@@ -323,19 +323,19 @@ TEST(UrdfResolver, AttachmentReResolveDoesNotRewrite) {
   EXPECT_EQ(check.readAll(), QByteArray("TAMPERED"));
 }
 
-// setMcapAttachments replaces the map AND resets the extraction dir, so a stale
+// setEmbeddedAssets replaces the map AND resets the extraction dir, so a stale
 // file from the previous map cannot be served for a new ref.
 TEST(UrdfResolver, SetAttachmentsResetsExtractionDir) {
   UrdfPackageResolver r;
   QMap<QString, QByteArray> first_map;
   first_map.insert("package://demo/mesh.stl", QByteArray("OLD"));
-  r.setMcapAttachments(first_map);
+  r.setEmbeddedAssets(first_map);
   const ResolvedMesh old = r.resolveUri("package://demo/mesh.stl", "", false);
   ASSERT_TRUE(old.resolved);
 
   QMap<QString, QByteArray> second_map;
   second_map.insert("package://demo/mesh.stl", QByteArray("NEW"));
-  r.setMcapAttachments(second_map);
+  r.setEmbeddedAssets(second_map);
   const ResolvedMesh fresh = r.resolveUri("package://demo/mesh.stl", "", false);
   ASSERT_TRUE(fresh.resolved);
   QFile f(QString::fromStdString(fresh.path));

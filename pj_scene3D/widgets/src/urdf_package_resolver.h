@@ -64,19 +64,19 @@ class UrdfPackageResolver {
     settings_ = settings;
   }
 
-  // Step-0 in-band attachment dictionary: name == verbatim mesh ref string.
+  // Step-0 in-band embedded-asset dictionary: name == verbatim mesh ref string.
   // Replaces the whole map, so any files already extracted from a previous map
   // may now be stale; the extraction dir is reset here to close that hole (a
-  // fresh QTemporaryDir is lazily created on the next attachment hit). Defined
+  // fresh QTemporaryDir is lazily created on the next embedded-asset hit). Defined
   // out-of-line because resetting the unique_ptr needs QTemporaryDir complete.
-  void setMcapAttachments(QMap<QString, QByteArray> attachments);
+  void setEmbeddedAssets(QMap<QString, QByteArray> assets);
 
-  // The canonical absolute MCAP path keys the per-MCAP remembered map (step 1).
-  void setMcapPath(const QString& canonical_mcap_path) {
-    mcap_path_ = canonical_mcap_path;
+  // The dataset source path keys the per-source remembered map (step 1).
+  void setSourcePath(const QString& source_path) {
+    source_path_ = source_path;
   }
 
-  // Seed the search roots from the URDF dir, the MCAP dir, and the ROS-ish env
+  // Seed the search roots from the URDF dir, the source dir, and the ROS-ish env
   // vars ($ROS_PACKAGE_PATH, $AMENT_PREFIX_PATH/share, $COLCON_PREFIX_PATH/share).
   // Idempotent: existing roots are not duplicated. Reads global roots from
   // QSettings on first call. urdf_dir may be empty (Topic source).
@@ -102,26 +102,26 @@ class UrdfPackageResolver {
   std::string resolve(const std::string& pkg, const std::string& rel, const std::string& urdf_dir, bool source_is_url);
 
   // Manually remember a package root (the "Locate…" result): writes the
-  // per-MCAP map AND appends to the global search roots.
+  // per-source map AND appends to the global search roots.
   void rememberPackageRoot(const std::string& pkg, const QString& root_dir);
 
  private:
   // Step helpers — each returns a non-empty path on hit.
-  std::string stepAttachment(const std::string& uri);
+  std::string stepEmbeddedAsset(const std::string& uri);
   std::string stepRememberedMap(const std::string& pkg, const std::string& rel);
   std::string stepAncestor(
       const std::string& pkg, const std::string& rel, const std::string& urdf_dir, bool source_is_url);
   std::string stepSearchRoots(const std::string& pkg, const std::string& rel);
 
   QSettings* settings_{nullptr};
-  QMap<QString, QByteArray> mcap_attachments_;
-  QString mcap_path_;
+  QMap<QString, QByteArray> embedded_assets_;
+  QString source_path_;
   QStringList search_roots_;
   bool seeded_global_roots_{false};
-  // Attachments extracted to disk so a path can be returned; lives until exit or
-  // a setMcapAttachments() that resets it. Content is immutable for the dir's
-  // lifetime, so stepAttachment never rewrites an already-extracted file.
-  std::unique_ptr<QTemporaryDir> attachment_dir_;
+  // Assets extracted to disk so a path can be returned; lives until exit or a
+  // setEmbeddedAssets() that resets it. Content is immutable for the dir's
+  // lifetime, so stepEmbeddedAsset never rewrites an already-extracted file.
+  std::unique_ptr<QTemporaryDir> extracted_assets_dir_;
 };
 
 }  // namespace pj::scene3d

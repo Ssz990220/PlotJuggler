@@ -71,6 +71,13 @@ class StreamingSourceManager : public QObject {
   // start() has returned successfully.
   void streamStarted(DatasetId dataset_id);
 
+  // Emitted on the UI thread when a streaming dataset's object-retention window
+  // is established or changes (session start, and on every buffer-size change for
+  // each active session). `window_ns` is the time window the ObjectStore trims
+  // each topic to. Consumers that retain history derived from those objects (the
+  // 3D TF buffer) use it to bound their own memory in step with the store.
+  void retentionWindowChanged(DatasetId dataset_id, qint64 window_ns);
+
   // Emitted on the UI thread after a worker has exited and the session has
   // been torn down. `reason` carries the cooperative-stop message ("user
   // stop", "plugin poll error: ...", etc.).

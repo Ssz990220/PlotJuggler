@@ -62,7 +62,11 @@ class SceneDockWidget : public QWidget, public IDataWidget, public IObjectViewer
   /// Returns a non-owning pointer to the layer for a topic, or nullptr.
   [[nodiscard]] ISceneLayer* layerFor(ObjectTopicId topic_id) const;
 
-  void setSessionManager(SessionManager* session);
+  /// Stores the SessionManager pointer and notifies the subclass via the
+  /// virtual override. Subclasses that need to extend session wiring (e.g. to
+  /// reconnect a live-samples slot) must override this and call the base first —
+  /// the base stores the pointer and subclass wiring depends on it being set.
+  virtual void setSessionManager(SessionManager* session);
 
  signals:
   void layerAdded(ObjectTopicId topic_id);
@@ -100,6 +104,15 @@ class SceneDockWidget : public QWidget, public IDataWidget, public IObjectViewer
   /// Requests a view repaint after layer state changes.
   virtual void refreshView();
 
+  /// Lets subclasses trigger a full view reconcile (re-push the ordered layer
+  /// list through syncViewLayers) after a scene-wide state change — e.g. a
+  /// fixed-frame change that the subclass's syncViewLayers override fans out to
+  /// every layer. The subclass owns what reconciliation means; the base just
+  /// exposes the private no-arg syncViewLayers() that rebuilds the order.
+  void reconcileViewLayers() {
+    syncViewLayers();
+  }
+
   /// Last tracker time forwarded to the layers (ns, already clamped by
   /// clampToLayerRange), or nullopt when no tracker tick (or live nudge) has
   /// arrived yet — 0 is a valid timestamp, so absence is explicit. For derived
@@ -125,12 +138,30 @@ class SceneDockWidget : public QWidget, public IDataWidget, public IObjectViewer
   /// the base destructor cannot reconcile the view for them.
   void clearLayers();
 
+  /// Forces the lazily-created scene view to exist now (no-op once created).
+  /// The base normally defers view creation to a queued singleShot; restore
+  /// paths that apply view state synchronously (fixed frame, camera pose) must
+  /// force the view first, or those writes are silently dropped while view_ is
+  /// still null.
+  void ensureSceneViewCreated();
+
+  /// The source label of a dataset (file path / capture name), or empty when the
+  /// id is unknown. Persisted alongside the raw DatasetId so a saved layout can
+  /// re-resolve a layer across sessions where load order assigned a different id.
+  [[nodiscard]] static QString datasetSourceName(const SessionManager* session, DatasetId dataset_id);
+
+  /// Maps a saved (dataset_id, source) pair to a currently-loaded DatasetId.
+  /// Prefers a source-name match over the raw id, because DatasetIds are a
+  /// load-order counter and are not stable across sessions; falls back to the
+  /// saved id when it still resolves, else nullopt (dataset not loaded).
+  [[nodiscard]] static std::optional<DatasetId> resolveDatasetId(
+      const SessionManager* session, DatasetId saved_id, const QString& saved_source);
+
  private:
   /// Result of an add attempt, separating the two outcomes addTopic's bool used
   /// to conflate ("layer created" vs "consumed as a scene-config topic").
   enum class AddOutcome { LayerAdded, ConsumedAsConfig, Rejected };
 
-  void ensureSceneViewCreated();
   [[nodiscard]] PJ::Timepoint clampToLayerRange(PJ::Timepoint time) const;
   [[nodiscard]] std::vector<ISceneLayer*> orderedLayerPtrs() const;
   void syncViewLayers();

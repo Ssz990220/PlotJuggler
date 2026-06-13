@@ -4,11 +4,13 @@
 #include "pj_scene3d_widgets/transform_service.h"
 
 #include <QLoggingCategory>
+#include <QThread>
 #include <algorithm>
 #include <chrono>
+#include <cstddef>
+#include <cstdint>
 #include <glm/glm.hpp>
 #include <glm/gtc/quaternion.hpp>
-#include <limits>
 #include <memory>
 
 #include "pj_base/builtin/builtin_object.hpp"
@@ -28,12 +30,13 @@ struct IngestStats {
   std::size_t ingested = 0;
   std::size_t dropped_reparent = 0;   // child claimed by two parents
   std::size_t dropped_self_loop = 0;  // child == parent
+  std::size_t dropped_invalid = 0;    // empty name / non-unit rotation / non-finite translation
 };
 
 // Decode one object entry already known to belong to a FrameTransforms topic and
 // push each of its edges into the buffer. A malformed edge (reparent conflict /
-// self-loop) is a recoverable data error in a real bag: count it and keep going
-// rather than aborting.
+// self-loop / invalid frame data) is a recoverable data error in a real bag:
+// count it and keep going rather than aborting.
 void ingestEntry(
     PJ::Timestamp ts, const PJ::sdk::PayloadView& payload, const PJ::SessionManager::ParserBinding& parser_binding,
     TransformBuffer& tf_buffer, IngestStats& stats) {
@@ -52,12 +55,23 @@ void ingestEntry(
     st.child_frame = t.child_frame_id;
     st.transform.t = glm::dvec3{t.translation.x, t.translation.y, t.translation.z};
     st.transform.q = glm::dquat{t.rotation.w, t.rotation.x, t.rotation.y, t.rotation.z};
-    if (const auto result = tf_buffer.setTransform(st); result.has_value()) {
+    const auto result = tf_buffer.setTransform(st);
+    if (result.has_value()) {
       ++stats.ingested;
-    } else if (result.error() == SetTransformError::ReparentConflict) {
-      ++stats.dropped_reparent;
-    } else {
-      ++stats.dropped_self_loop;
+      continue;
+    }
+    switch (result.error()) {
+      case SetTransformError::ReparentConflict:
+        ++stats.dropped_reparent;
+        break;
+      case SetTransformError::SelfLoop:
+        ++stats.dropped_self_loop;
+        break;
+      case SetTransformError::InvalidFrameName:
+      case SetTransformError::InvalidRotation:
+      case SetTransformError::NonFiniteTranslation:
+        ++stats.dropped_invalid;
+        break;
     }
   }
 }
@@ -72,31 +86,51 @@ std::shared_ptr<TransformBuffer> TransformService::transformBuffer(PJ::DatasetId
   if (it != transform_buffers_.end()) {
     return it->second;
   }
-  // Keep the full history: ingestFrameTransformsForDataset() bulk-loads the
-  // entire dataset's TF up front, so a rolling cache window would trim every
-  // dynamic edge to its last samples and make objects in dynamic frames (e.g. a
-  // local costmap in `odom`) resolve only near the end of the timeline.
+  // Default to keeping the full history: ingestFrameTransformsForDataset()
+  // bulk-loads the entire dataset's TF up front, so a rolling cache window would
+  // trim every dynamic edge to its last samples and make objects in dynamic
+  // frames (e.g. a local costmap in `odom`) resolve only near the end of the
+  // timeline. Live-streaming datasets override this with setLiveCacheWindow() to
+  // bound memory in step with the ObjectStore retention budget.
   auto buf = std::make_shared<TransformBuffer>(TransformBuffer::kKeepAll);
   transform_buffers_[dataset_id] = buf;
   return buf;
 }
 
 void TransformService::invalidateDataset(PJ::DatasetId dataset_id) {
+  Q_ASSERT(QThread::currentThread() == thread());
+  PJ::ObjectStore& object_store = session_.objectStore();
   // Cursor-model equivalent of forgetting the old transforms_populated_ flag:
   // drop the per-topic ingest cursors (and not-a-TF classifications) for this
   // dataset's topics so the next ingest re-reads their TF history from scratch
-  // into the cleared buffer. Best-effort by listTopics — if the dataset was
-  // evicted its topics are already gone, leaving only harmless dead cursor keys.
-  for (const auto& topic_id : session_.objectStore().listTopics(dataset_id)) {
+  // into the cleared buffer.
+  for (const auto& topic_id : object_store.listTopics(dataset_id)) {
     tf_cursors_.erase(topic_id.id);
     non_tf_topics_.erase(topic_id.id);
   }
+  // listTopics only resolves topics the dataset still has, so the loop above
+  // misses keys for topics this reload/eviction already removed (on the reload
+  // path replaceDataset drops removed_topics before we run; on the tombstone
+  // path the caller must invalidate BEFORE eviction). Sweep the maps and erase
+  // any key whose store descriptor is now empty so dead cursors do not leak
+  // across reloads.
+  std::erase_if(tf_cursors_, [&object_store](const auto& entry) {
+    return object_store.descriptor(PJ::ObjectTopicId{entry.first}).topic_name.empty();
+  });
+  std::erase_if(non_tf_topics_, [&object_store](uint32_t key) {
+    return object_store.descriptor(PJ::ObjectTopicId{key}).topic_name.empty();
+  });
   if (auto it = transform_buffers_.find(dataset_id); it != transform_buffers_.end()) {
     // Clear in place: 3D docks hold this buffer by shared_ptr, so swapping the
     // map entry would leave them rendering the stale orphan forever.
     it->second->clear();
     qCInfo(lcTransformService) << "invalidateDataset" << dataset_id << ": TF buffer cleared";
   }
+}
+
+void TransformService::setLiveCacheWindow(PJ::DatasetId dataset_id, std::chrono::nanoseconds window) {
+  Q_ASSERT(QThread::currentThread() == thread());
+  transformBuffer(dataset_id)->setCacheWindow(window);
 }
 
 void TransformService::invalidateAll() {
@@ -112,9 +146,10 @@ void TransformService::invalidateAll() {
 }
 
 void TransformService::ingestFrameTransformsForDataset(PJ::DatasetId dataset_id) {
-  // Bulk path: every cursor starts at INT64_MIN, so this ingests the whole
-  // history in one pass (file load); ingestNewerThanCursor creates the buffer.
-  // datasetTransformsReady tells 3D docks the tree is ready to render.
+  Q_ASSERT(QThread::currentThread() == thread());
+  // Bulk path: every cursor starts at the invalid (begin-of-history) UID, so
+  // this ingests the whole history in one pass (file load); ingestNewerThanCursor
+  // creates the buffer. datasetTransformsReady tells 3D docks the tree is ready.
   const bool changed = ingestNewerThanCursor(dataset_id);
   qCInfo(lcTransformService) << "ingestFrameTransformsForDataset" << dataset_id << ": bulk ingest, changed=" << changed;
   emit datasetTransformsReady(dataset_id);
@@ -125,6 +160,7 @@ bool TransformService::ingestNewTransforms(PJ::DatasetId dataset_id) {
 }
 
 bool TransformService::ingestNewerThanCursor(PJ::DatasetId dataset_id) {
+  Q_ASSERT(QThread::currentThread() == thread());
   PJ::ObjectStore& object_store = session_.objectStore();
   auto tf_buffer = transformBuffer(dataset_id);
   IngestStats stats;
@@ -154,61 +190,47 @@ bool TransformService::ingestNewerThanCursor(PJ::DatasetId dataset_id) {
         continue;  // can't classify yet; retry next tick
       }
       auto probe_obj = parseLocked(parser_binding, probe->timestamp, probe->payload);
-      if (!probe_obj.has_value() ||
-          PJ::sdk::typeOf(probe_obj->object) != PJ::sdk::BuiltinObjectType::kFrameTransforms) {
-        non_tf_topics_.insert(key);
+      if (!probe_obj.has_value()) {
+        // Parse FAILED (transient corruption / a parser that failed this tick) —
+        // do NOT blacklist the topic. A single bad newest message must not
+        // permanently suppress TF ingest; retry classification next tick.
+        qCDebug(lcTransformService) << "ingestNewerThanCursor: classification probe parse failed on topic" << key
+                                    << "- retrying next tick";
+        continue;
+      }
+      if (PJ::sdk::typeOf(probe_obj->object) != PJ::sdk::BuiltinObjectType::kFrameTransforms) {
+        non_tf_topics_.insert(key);  // parsed cleanly as a different type: settled, never re-probe
         continue;
       }
       cursor_it = tf_cursors_.try_emplace(key).first;
     }
 
+    // Step the topic's sparse UID sequence forward from the cursor. UIDs are
+    // stable across front-eviction and per-topic SPARSE (process-global
+    // allocation), so this can never skip an un-ingested entry the way a raw
+    // index window did under concurrent eviction, and equal-timestamp entries
+    // get distinct UIDs so a late same-stamp arrival is still reached. Each step
+    // re-resolves under a fresh series lock (mirrors PR #179's entities path); an
+    // entry evicted between the UID step and the at() resolve is simply gone.
     TfCursor& cursor = cursor_it->second;
-    // indexAt is at-or-before, so it lands ON the cursor timestamp (or its last
-    // duplicate). Back up over the contiguous run of entries at exactly the
-    // cursor timestamp: a late equal-stamp arrival appends into that run, and we
-    // must re-scan it to find the ones past count_at_timestamp. On first
-    // classification the cursor timestamp is INT64_MIN, so indexAt is nullopt and
-    // begin == 0 — the whole history is ingested.
-    const auto start = object_store.indexAt(topic_id, cursor.timestamp);
-    std::size_t begin = start.has_value() ? *start + 1 : 0;
-    while (begin > 0) {
-      auto prev = object_store.at(topic_id, begin - 1);
-      if (!prev.has_value() || prev->timestamp != cursor.timestamp) {
-        break;
-      }
-      --begin;
-    }
-
-    PJ::Timestamp newest_seen = cursor.timestamp;
-    std::size_t count_at_newest = cursor.count_at_timestamp;
-    std::size_t passed_at_cursor_ts = 0;  // entries == cursor.timestamp walked this scan
-    const std::size_t end = object_store.entryCount(topic_id);
-    for (std::size_t i = begin; i < end; ++i) {
-      auto entry = object_store.at(topic_id, i);
-      if (!entry.has_value() || entry->payload.bytes.empty() || entry->timestamp < cursor.timestamp) {
-        continue;
-      }
-      if (entry->timestamp == cursor.timestamp && passed_at_cursor_ts++ < cursor.count_at_timestamp) {
-        continue;  // already ingested on an earlier tick
+    for (PJ::SequentialUID uid = object_store.nextUIDAfter(topic_id, cursor.last_ingested); uid.valid();
+         uid = object_store.nextUIDAfter(topic_id, uid)) {
+      cursor.last_ingested = uid;
+      auto entry = object_store.at(topic_id, uid);
+      if (!entry.has_value() || entry->payload.bytes.empty()) {
+        continue;  // evicted between the UID step and the resolve, or empty payload
       }
       ingestEntry(entry->timestamp, entry->payload, parser_binding, *tf_buffer, stats);
-      if (entry->timestamp > newest_seen) {
-        newest_seen = entry->timestamp;
-        count_at_newest = 1;
-      } else {  // == newest_seen (entries are timestamp-sorted, so never <)
-        ++count_at_newest;
-      }
     }
-    cursor.timestamp = newest_seen;
-    cursor.count_at_timestamp = count_at_newest;
   }
 
   if (stats.ingested != 0) {
     qCDebug(lcTransformService) << "ingestNewerThanCursor" << dataset_id << ": +" << stats.ingested << "transform(s)";
   }
-  if (stats.dropped_reparent != 0 || stats.dropped_self_loop != 0) {
+  if (stats.dropped_reparent != 0 || stats.dropped_self_loop != 0 || stats.dropped_invalid != 0) {
     qCWarning(lcTransformService) << "ingestNewerThanCursor" << dataset_id << ": dropped" << stats.dropped_reparent
-                                  << "reparent-conflict and" << stats.dropped_self_loop << "self-loop edge(s)";
+                                  << "reparent-conflict," << stats.dropped_self_loop << "self-loop, and"
+                                  << stats.dropped_invalid << "invalid edge(s)";
   }
   return stats.ingested != 0;
 }

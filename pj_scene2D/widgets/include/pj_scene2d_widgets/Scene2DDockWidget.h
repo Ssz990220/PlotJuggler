@@ -34,7 +34,7 @@ class Scene2DDockWidget : public SceneDockWidget {
 
   /// Stores a non-owning SessionManager pointer in the base and reconnects the
   /// live-sample follow connection. Replacing the session drops the old connection.
-  void setSessionManager(SessionManager* session);
+  void setSessionManager(SessionManager* session) override;
   /// Adds a 2D render layer for the topic. Returns false when the object type is
   /// unsupported or layer attach fails; success also updates the dock title.
   bool setImageTopic(ObjectTopicId topic_id, sdk::BuiltinObjectType object_type, const QString& title);

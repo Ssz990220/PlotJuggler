@@ -1,0 +1,555 @@
+// Copyright 2026 Davide Faconti
+// SPDX-License-Identifier: MPL-2.0
+//
+// Coverage for TransformService's incremental TF ingest (H.20). The UID-keyed
+// cursor in ingestNewerThanCursor() is the heart of PR #174 (live + scrubbable
+// streaming TF) and the bulk file path both, yet shipped with zero tests — the
+// amcl-bag frozen-TF and out-of-order-ingest history shows how easily this
+// cursor/eviction logic drifts. These tests exercise it with only a
+// SessionManager + a mock FrameTransforms parser: no GL, no Qt widgets.
+//
+// Test map (a-f from the review Fix block; g-j are UID/eviction/window extras):
+//   (a) bulk ingest resolves transforms across the whole stamp range
+//   (b) N one-at-a-time incremental ingests == one bulk ingest (same buffer)
+//   (c) a redundant ingest with nothing new returns false and changes nothing
+//   (d) a non-TF topic is classified once and never re-decoded (parse counter)
+//   (e) a reparent-conflict edge drops; the rest resolve; ingest continues
+//   (f) invalidateDataset clears the SAME shared_ptr in place
+//   (g) equal-timestamp late append: a same-stamp arrival is NOT lost (UID cursor)
+//   (h) eviction continuity: ingest continues past a front-evicted gap
+//   (i) transient probe failure (M.34): a topic that fails parse once is not
+//       permanently blacklisted — it classifies as TF on a later tick
+//   (j) live window (H.11): an over-window edge drops old samples but the newest
+//       resolves; a single-sample (static-like) edge still resolves at late stamps
+
+#include "pj_scene3d_widgets/transform_service.h"
+
+#include <gtest/gtest.h>
+
+#include <QCoreApplication>
+#include <QString>
+#include <algorithm>
+#include <atomic>
+#include <chrono>
+#include <cstdint>
+#include <cstring>
+#include <memory>
+#include <string>
+#include <string_view>
+#include <vector>
+
+#include "pj_base/builtin/builtin_object.hpp"
+#include "pj_base/builtin/frame_transforms.hpp"
+#include "pj_base/builtin/occupancy_grid.hpp"
+#include "pj_plugins/host/message_parser_handle.hpp"
+#include "pj_plugins/sdk/message_parser_plugin_base.hpp"
+#include "pj_runtime/SessionManager.h"
+#include "pj_scene3d_core/tf/tf_buffer.h"
+
+namespace {
+
+using pj::scene3d::TimePoint;
+using pj::scene3d::TransformBuffer;
+using pj::scene3d::TransformService;
+
+constexpr std::string_view kTfSchema = "mock/frame_transforms";
+constexpr std::string_view kGridSchema = "mock/occupancy_grid";
+
+// -----------------------------------------------------------------------------
+// Trivial self-describing payload format for the mock parsers.
+//
+// A FrameTransforms payload is a flat byte buffer: each edge is a 6-byte record
+// {parent_index, child_index, stamp_offset_ns(int32 LE)}. Frame name for index N
+// is the literal "f<N>". The stamp offset is added to the entry's store
+// timestamp so a single payload can carry several edges at distinct sensor
+// stamps. An empty payload is a no-op (zero edges). This keeps the mock
+// capture-free so makeBoundHandle's create lambda has no captures (see below).
+// -----------------------------------------------------------------------------
+
+constexpr std::size_t kEdgeRecordBytes = 6;
+
+std::string frameName(uint8_t index) {
+  return "f" + std::to_string(static_cast<int>(index));
+}
+
+void appendEdge(std::vector<uint8_t>& payload, uint8_t parent_index, uint8_t child_index, int32_t stamp_offset_ns) {
+  payload.push_back(parent_index);
+  payload.push_back(child_index);
+  uint32_t bits = 0;
+  std::memcpy(&bits, &stamp_offset_ns, sizeof(bits));
+  payload.push_back(static_cast<uint8_t>(bits & 0xFFU));
+  payload.push_back(static_cast<uint8_t>((bits >> 8) & 0xFFU));
+  payload.push_back(static_cast<uint8_t>((bits >> 16) & 0xFFU));
+  payload.push_back(static_cast<uint8_t>((bits >> 24) & 0xFFU));
+}
+
+// One edge, parent f<parent>-child f<child>, at the entry's own store timestamp.
+std::vector<uint8_t> edgePayload(uint8_t parent_index, uint8_t child_index) {
+  std::vector<uint8_t> payload;
+  appendEdge(payload, parent_index, child_index, /*stamp_offset_ns=*/0);
+  return payload;
+}
+
+PJ::sdk::FrameTransforms decodeFrameTransforms(PJ::Timestamp entry_ts, const PJ::sdk::PayloadView& payload) {
+  PJ::sdk::FrameTransforms result;
+  const auto& bytes = payload.bytes;
+  for (std::size_t offset = 0; offset + kEdgeRecordBytes <= bytes.size(); offset += kEdgeRecordBytes) {
+    const uint8_t parent_index = bytes[offset];
+    const uint8_t child_index = bytes[offset + 1];
+    uint32_t bits = static_cast<uint32_t>(bytes[offset + 2]) | (static_cast<uint32_t>(bytes[offset + 3]) << 8) |
+                    (static_cast<uint32_t>(bytes[offset + 4]) << 16) | (static_cast<uint32_t>(bytes[offset + 5]) << 24);
+    int32_t stamp_offset_ns = 0;
+    std::memcpy(&stamp_offset_ns, &bits, sizeof(stamp_offset_ns));
+
+    PJ::sdk::FrameTransform edge;
+    edge.timestamp = entry_ts + stamp_offset_ns;
+    edge.parent_frame_id = frameName(parent_index);
+    edge.child_frame_id = frameName(child_index);
+    edge.translation = {1.0, 2.0, 3.0};
+    edge.rotation = {0.0, 0.0, 0.0, 1.0};  // identity (w=1) — a valid unit quaternion
+    result.transforms.push_back(std::move(edge));
+  }
+  return result;
+}
+
+// FrameTransforms parser that decodes the format above and bumps `counter` once
+// per parseObject call (so a test can assert how many times the topic was
+// decoded). The first call may be forced to fail when `fail_first` is engaged —
+// covers the transient-probe-failure path (M.34).
+class CountingTfParser : public PJ::MessageParserPluginBase {
+ public:
+  CountingTfParser(std::atomic<int>* counter, std::atomic<bool>* fail_first) {
+    registerSchemaHandler(
+        kTfSchema,
+        PJ::sdk::SchemaHandler{
+            .object_type = PJ::sdk::BuiltinObjectType::kFrameTransforms,
+            .parse_scalars = {},
+            .parse_object = [counter, fail_first](
+                                PJ::Timestamp ts, PJ::sdk::PayloadView payload) -> PJ::Expected<PJ::sdk::ObjectRecord> {
+              if (counter != nullptr) {
+                counter->fetch_add(1);
+              }
+              if (fail_first != nullptr && fail_first->exchange(false)) {
+                return PJ::unexpected(std::string("forced transient parse failure"));
+              }
+              return PJ::sdk::ObjectRecord{.ts = ts, .object = decodeFrameTransforms(ts, payload)};
+            },
+        });
+  }
+};
+
+// Non-TF parser: always emits a 1x1 OccupancyGrid and bumps `counter` per call,
+// so a test can prove the classification probe never re-decodes a non-TF topic.
+class CountingGridParser : public PJ::MessageParserPluginBase {
+ public:
+  explicit CountingGridParser(std::atomic<int>* counter) {
+    registerSchemaHandler(
+        kGridSchema,
+        PJ::sdk::SchemaHandler{
+            .object_type = PJ::sdk::BuiltinObjectType::kOccupancyGrid,
+            .parse_scalars = {},
+            .parse_object =
+                [counter](PJ::Timestamp ts, PJ::sdk::PayloadView /*payload*/) -> PJ::Expected<PJ::sdk::ObjectRecord> {
+              if (counter != nullptr) {
+                counter->fetch_add(1);
+              }
+              static const uint8_t kCell[1] = {0};
+              PJ::sdk::OccupancyGrid grid;
+              grid.timestamp_ns = ts;
+              grid.frame_id = "map";
+              grid.resolution = 0.05;
+              grid.width = 1;
+              grid.height = 1;
+              grid.data = PJ::Span<const uint8_t>(kCell, 1);
+              return PJ::sdk::ObjectRecord{.ts = ts, .object = grid};
+            },
+        });
+  }
+};
+
+// Each call site must pass a distinct lambda type: vtableWithCreate() holds one
+// `static` vtable per CreateFn instantiation, so a shared plain function-pointer
+// type would latch the first create function for every handle (see the rebind
+// test's identical note). The bound schema is selected per call.
+template <typename CreateFn>
+std::unique_ptr<PJ::MessageParserHandle> makeBoundHandle(std::string_view schema, CreateFn create_fn) {
+  static constexpr const char* kManifest =
+      R"({"id":"counting-tf-parser","name":"Counting TF Parser","version":"1.0.0","encoding":["mock"]})";
+  auto handle =
+      std::make_unique<PJ::MessageParserHandle>(PJ::MessageParserPluginBase::vtableWithCreate(create_fn, kManifest));
+  EXPECT_TRUE(handle->valid());
+  const auto bound = handle->bindSchema(schema, {});
+  EXPECT_TRUE(bound.has_value());
+  return handle;
+}
+
+PJ::ObjectTopicId registerTopic(PJ::ObjectStore& store, PJ::DatasetId dataset_id, const std::string& name) {
+  PJ::ObjectTopicDescriptor desc;
+  desc.dataset_id = dataset_id;
+  desc.topic_name = name;
+  const auto topic_id = store.registerTopic(desc);
+  EXPECT_TRUE(topic_id.has_value());
+  return *topic_id;
+}
+
+// True iff a lookup at `stamp` for child<-its-known-parent succeeds. Looks up the
+// child relative to the world root (frame "f0" in every fixture below), so the
+// whole composed chain must be resolvable.
+bool resolves(const TransformBuffer& buffer, const std::string& target, const std::string& source, int64_t stamp_ns) {
+  return buffer.tryLookupTransform(target, source, TimePoint{std::chrono::nanoseconds(stamp_ns)}).has_value();
+}
+
+// -----------------------------------------------------------------------------
+// (a) Bulk ingest resolves transforms across the whole stamp range.
+// -----------------------------------------------------------------------------
+TEST(TransformService, BulkIngestResolvesAcrossStampRange) {
+  PJ::SessionManager session;
+  PJ::ObjectStore& store = session.objectStore();
+  const auto topic = registerTopic(store, /*dataset_id=*/1, "/tf");
+
+  // A 3-deep chain f0 -> f1 -> f2 published at three increasing stamps.
+  const std::vector<int64_t> stamps = {100, 200, 300};
+  for (const int64_t stamp : stamps) {
+    std::vector<uint8_t> payload;
+    appendEdge(payload, /*parent=*/0, /*child=*/1, /*offset=*/0);
+    appendEdge(payload, /*parent=*/1, /*child=*/2, /*offset=*/0);
+    ASSERT_TRUE(store.pushOwned(topic, stamp, std::move(payload)).has_value());
+  }
+
+  session.registerObjectTopicParser(
+      topic, makeBoundHandle(kTfSchema, []() noexcept -> void* { return new CountingTfParser(nullptr, nullptr); }));
+
+  TransformService service(session);
+  service.ingestFrameTransformsForDataset(/*dataset_id=*/1);
+
+  auto buffer = service.transformBuffer(/*dataset_id=*/1);
+  ASSERT_NE(buffer, nullptr);
+  for (const int64_t stamp : stamps) {
+    EXPECT_TRUE(resolves(*buffer, "f0", "f2", stamp)) << "f0<-f2 must resolve at stamp " << stamp;
+  }
+  // The dynamic edge resolves over the whole range, not just the last sample.
+  EXPECT_TRUE(resolves(*buffer, "f0", "f2", 100));
+  EXPECT_TRUE(resolves(*buffer, "f0", "f2", 300));
+
+  std::vector<std::string> frames = buffer->getAllFrames();
+  std::sort(frames.begin(), frames.end());
+  EXPECT_EQ(frames, (std::vector<std::string>{"f0", "f1", "f2"}));
+}
+
+// -----------------------------------------------------------------------------
+// (b) Equivalence: N one-at-a-time incremental ingests == one bulk ingest.
+// -----------------------------------------------------------------------------
+TEST(TransformService, IncrementalEqualsBulk) {
+  // Bulk: dataset 1, all N entries present before a single ingest.
+  PJ::SessionManager bulk_session;
+  PJ::ObjectStore& bulk_store = bulk_session.objectStore();
+  const auto bulk_topic = registerTopic(bulk_store, /*dataset_id=*/1, "/tf");
+
+  // Incremental: dataset 2, entries pushed one at a time with an ingest after each.
+  PJ::SessionManager inc_session;
+  PJ::ObjectStore& inc_store = inc_session.objectStore();
+  const auto inc_topic = registerTopic(inc_store, /*dataset_id=*/2, "/tf");
+
+  bulk_session.registerObjectTopicParser(bulk_topic, makeBoundHandle(kTfSchema, []() noexcept -> void* {
+                                           return new CountingTfParser(nullptr, nullptr);
+                                         }));
+  inc_session.registerObjectTopicParser(
+      inc_topic, makeBoundHandle(kTfSchema, []() noexcept -> void* { return new CountingTfParser(nullptr, nullptr); }));
+
+  TransformService bulk_service(bulk_session);
+  TransformService inc_service(inc_session);
+
+  const std::vector<int64_t> stamps = {100, 150, 200, 250, 300};
+  // Feed the incremental side one entry per ingest tick.
+  for (const int64_t stamp : stamps) {
+    ASSERT_TRUE(inc_store.pushOwned(inc_topic, stamp, edgePayload(/*parent=*/0, /*child=*/1)).has_value());
+    inc_service.ingestNewTransforms(/*dataset_id=*/2);
+  }
+  // Feed the bulk side everything up front, then ingest once.
+  for (const int64_t stamp : stamps) {
+    ASSERT_TRUE(bulk_store.pushOwned(bulk_topic, stamp, edgePayload(/*parent=*/0, /*child=*/1)).has_value());
+  }
+  bulk_service.ingestFrameTransformsForDataset(/*dataset_id=*/1);
+
+  auto bulk_buffer = bulk_service.transformBuffer(/*dataset_id=*/1);
+  auto inc_buffer = inc_service.transformBuffer(/*dataset_id=*/2);
+
+  std::vector<std::string> bulk_frames = bulk_buffer->getAllFrames();
+  std::vector<std::string> inc_frames = inc_buffer->getAllFrames();
+  std::sort(bulk_frames.begin(), bulk_frames.end());
+  std::sort(inc_frames.begin(), inc_frames.end());
+  EXPECT_EQ(bulk_frames, inc_frames);
+
+  // Lookups must agree at every published stamp (the dynamic edge has a distinct
+  // sample at each), proving the incremental path reconstructed the same history.
+  for (const int64_t stamp : stamps) {
+    const auto bulk_tf = bulk_buffer->tryLookupTransform("f0", "f1", TimePoint{std::chrono::nanoseconds(stamp)});
+    const auto inc_tf = inc_buffer->tryLookupTransform("f0", "f1", TimePoint{std::chrono::nanoseconds(stamp)});
+    ASSERT_TRUE(bulk_tf.has_value()) << "bulk lookup at " << stamp;
+    ASSERT_TRUE(inc_tf.has_value()) << "incremental lookup at " << stamp;
+    EXPECT_EQ(bulk_tf->t, inc_tf->t);
+  }
+}
+
+// -----------------------------------------------------------------------------
+// (c) Idempotency: a redundant ingest with nothing new returns false and the
+//     buffer is unchanged (revision stable, lookups stable).
+// -----------------------------------------------------------------------------
+TEST(TransformService, RedundantIngestIsNoOp) {
+  PJ::SessionManager session;
+  PJ::ObjectStore& store = session.objectStore();
+  const auto topic = registerTopic(store, /*dataset_id=*/1, "/tf");
+  ASSERT_TRUE(store.pushOwned(topic, 100, edgePayload(/*parent=*/0, /*child=*/1)).has_value());
+
+  session.registerObjectTopicParser(
+      topic, makeBoundHandle(kTfSchema, []() noexcept -> void* { return new CountingTfParser(nullptr, nullptr); }));
+
+  TransformService service(session);
+  EXPECT_TRUE(service.ingestNewTransforms(/*dataset_id=*/1)) << "first ingest applies the one edge";
+
+  auto buffer = service.transformBuffer(/*dataset_id=*/1);
+  const uint64_t revision_after_first = buffer->revision();
+
+  // No new entries pushed: a second ingest must be a pure no-op.
+  EXPECT_FALSE(service.ingestNewTransforms(/*dataset_id=*/1)) << "redundant ingest must report no change";
+  EXPECT_EQ(buffer->revision(), revision_after_first) << "redundant ingest must not touch the buffer";
+  EXPECT_TRUE(resolves(*buffer, "f0", "f1", 100));
+}
+
+// -----------------------------------------------------------------------------
+// (d) Non-TF memo: a topic that parses as a non-FrameTransforms object is
+//     classified exactly once and never re-decoded across ticks.
+// -----------------------------------------------------------------------------
+TEST(TransformService, NonTfTopicClassifiedOnce) {
+  PJ::SessionManager session;
+  PJ::ObjectStore& store = session.objectStore();
+  const auto grid_topic = registerTopic(store, /*dataset_id=*/1, "/map");
+  ASSERT_TRUE(store.pushOwned(grid_topic, 100, std::vector<uint8_t>{0x00}).has_value());
+
+  static std::atomic<int> grid_parse_calls{0};
+  grid_parse_calls.store(0);
+  session.registerObjectTopicParser(grid_topic, makeBoundHandle(kGridSchema, []() noexcept -> void* {
+                                      return new CountingGridParser(&grid_parse_calls);
+                                    }));
+
+  TransformService service(session);
+  service.ingestNewTransforms(/*dataset_id=*/1);
+  // Push another entry and ingest again: a re-probe here would re-decode it.
+  ASSERT_TRUE(store.pushOwned(grid_topic, 200, std::vector<uint8_t>{0x00}).has_value());
+  service.ingestNewTransforms(/*dataset_id=*/1);
+
+  EXPECT_EQ(grid_parse_calls.load(), 1) << "a non-TF topic must be classified by a single probe, never re-decoded";
+  // The grid topic must contribute no frames (it was never ingested as TF).
+  EXPECT_TRUE(service.transformBuffer(/*dataset_id=*/1)->getAllFrames().empty());
+}
+
+// -----------------------------------------------------------------------------
+// (e) Reparent conflict: one entry carrying edges [f1<-f0, f1<-f2, f3<-f0] — the
+//     conflicting edge (f1 claimed by two parents) drops; the rest resolve.
+// -----------------------------------------------------------------------------
+TEST(TransformService, ReparentConflictDropsOneEdgeContinues) {
+  PJ::SessionManager session;
+  PJ::ObjectStore& store = session.objectStore();
+  const auto topic = registerTopic(store, /*dataset_id=*/1, "/tf");
+
+  // child f1 first parented to f0, then conflictingly to f2; child f3 to f0.
+  std::vector<uint8_t> payload;
+  appendEdge(payload, /*parent=*/0, /*child=*/1, /*offset=*/0);  // f0 -> f1   (kept)
+  appendEdge(payload, /*parent=*/2, /*child=*/1, /*offset=*/0);  // f2 -> f1   (reparent conflict, dropped)
+  appendEdge(payload, /*parent=*/0, /*child=*/3, /*offset=*/0);  // f0 -> f3   (kept)
+  ASSERT_TRUE(store.pushOwned(topic, 100, std::move(payload)).has_value());
+
+  session.registerObjectTopicParser(
+      topic, makeBoundHandle(kTfSchema, []() noexcept -> void* { return new CountingTfParser(nullptr, nullptr); }));
+
+  TransformService service(session);
+  service.ingestFrameTransformsForDataset(/*dataset_id=*/1);
+  auto buffer = service.transformBuffer(/*dataset_id=*/1);
+
+  // f1 stays parented to f0 (the first edge won); f3 resolves too.
+  EXPECT_EQ(buffer->getParent("f1"), std::optional<std::string>("f0"));
+  EXPECT_TRUE(resolves(*buffer, "f0", "f1", 100));
+  EXPECT_TRUE(resolves(*buffer, "f0", "f3", 100));
+  // f2 is still a known frame (it appeared as a parent) but never became f1's parent.
+  EXPECT_NE(buffer->getParent("f1"), std::optional<std::string>("f2"));
+}
+
+// -----------------------------------------------------------------------------
+// (f) invalidateDataset clears the SAME shared_ptr in place (docks hold it by
+//     pointer, so a swap would orphan them).
+// -----------------------------------------------------------------------------
+TEST(TransformService, InvalidateClearsBufferInPlace) {
+  PJ::SessionManager session;
+  PJ::ObjectStore& store = session.objectStore();
+  const auto topic = registerTopic(store, /*dataset_id=*/1, "/tf");
+  ASSERT_TRUE(store.pushOwned(topic, 100, edgePayload(/*parent=*/0, /*child=*/1)).has_value());
+
+  session.registerObjectTopicParser(
+      topic, makeBoundHandle(kTfSchema, []() noexcept -> void* { return new CountingTfParser(nullptr, nullptr); }));
+
+  TransformService service(session);
+  service.ingestFrameTransformsForDataset(/*dataset_id=*/1);
+
+  auto buffer_before = service.transformBuffer(/*dataset_id=*/1);
+  ASSERT_FALSE(buffer_before->getAllFrames().empty());
+
+  service.invalidateDataset(/*dataset_id=*/1);
+
+  // SAME pointer, now empty — not a freshly swapped-in buffer.
+  auto buffer_after = service.transformBuffer(/*dataset_id=*/1);
+  EXPECT_EQ(buffer_before.get(), buffer_after.get()) << "invalidate must clear in place, not swap the shared_ptr";
+  EXPECT_TRUE(buffer_before->getAllFrames().empty()) << "the held pointer must observe the cleared state";
+}
+
+// -----------------------------------------------------------------------------
+// (g) Equal-timestamp late append: e1@T (edge f1<-f0), ingest, then e2@T (edge
+//     f2<-f0) at the SAME store timestamp, ingest. The old timestamp-only cursor
+//     lost the second same-stamp entry forever; the UID cursor must reach it.
+// -----------------------------------------------------------------------------
+TEST(TransformService, EqualTimestampLateAppendNotLost) {
+  PJ::SessionManager session;
+  PJ::ObjectStore& store = session.objectStore();
+  const auto topic = registerTopic(store, /*dataset_id=*/1, "/tf");
+
+  ASSERT_TRUE(store.pushOwned(topic, 100, edgePayload(/*parent=*/0, /*child=*/1)).has_value());
+
+  session.registerObjectTopicParser(
+      topic, makeBoundHandle(kTfSchema, []() noexcept -> void* { return new CountingTfParser(nullptr, nullptr); }));
+
+  TransformService service(session);
+  service.ingestNewTransforms(/*dataset_id=*/1);
+  auto buffer = service.transformBuffer(/*dataset_id=*/1);
+  EXPECT_TRUE(resolves(*buffer, "f0", "f1", 100));
+
+  // Second entry at the SAME timestamp 100, carrying a different edge.
+  ASSERT_TRUE(store.pushOwned(topic, 100, edgePayload(/*parent=*/0, /*child=*/2)).has_value());
+  EXPECT_TRUE(service.ingestNewTransforms(/*dataset_id=*/1)) << "a same-stamp late entry must still be ingested";
+
+  EXPECT_TRUE(resolves(*buffer, "f0", "f1", 100)) << "first same-stamp edge stays";
+  EXPECT_TRUE(resolves(*buffer, "f0", "f2", 100)) << "second same-stamp edge must NOT be lost (UID cursor)";
+}
+
+// -----------------------------------------------------------------------------
+// (h) Eviction continuity: a memory budget forces front-eviction between two
+//     ingest calls. Ingest must continue past the gap (UIDs are stable across
+//     eviction) and the newest edges must resolve. A pre-eviction sample that the
+//     store no longer holds is unrecoverable by design — we assert only the
+//     newest survives, never claiming the evicted one is still present.
+// -----------------------------------------------------------------------------
+TEST(TransformService, EvictionContinuity) {
+  PJ::SessionManager session;
+  PJ::ObjectStore& store = session.objectStore();
+  const auto topic = registerTopic(store, /*dataset_id=*/1, "/tf");
+
+  session.registerObjectTopicParser(
+      topic, makeBoundHandle(kTfSchema, []() noexcept -> void* { return new CountingTfParser(nullptr, nullptr); }));
+
+  TransformService service(session);
+  // Use a live cache window so the buffer keeps the late samples (a kKeepAll bulk
+  // buffer would too, but this matches the streaming code path under test).
+  service.setLiveCacheWindow(/*dataset_id=*/1, std::chrono::nanoseconds(std::chrono::seconds(3600)));
+
+  // First batch of dynamic edges f0->f1, then ingest.
+  for (int64_t stamp = 100; stamp <= 130; stamp += 10) {
+    ASSERT_TRUE(store.pushOwned(topic, stamp, edgePayload(/*parent=*/0, /*child=*/1)).has_value());
+  }
+  service.ingestNewTransforms(/*dataset_id=*/1);
+
+  // Tighten the memory budget so the NEXT pushes front-evict earlier entries:
+  // each edge payload is kEdgeRecordBytes bytes, so a 2-entry budget keeps only
+  // the two newest entries of the topic.
+  PJ::RetentionBudget budget;
+  budget.max_memory_bytes = kEdgeRecordBytes * 2;
+  store.setRetentionBudget(topic, budget);
+
+  // Push enough late entries to drive front-eviction below the cursor's position.
+  for (int64_t stamp = 200; stamp <= 260; stamp += 10) {
+    ASSERT_TRUE(store.pushOwned(topic, stamp, edgePayload(/*parent=*/0, /*child=*/1)).has_value());
+  }
+  ASSERT_LT(store.entryCount(topic), 7u) << "budget should have evicted the front entries";
+
+  // Ingest must continue past the evicted gap — no infinite loop, no hang — and
+  // the newest edge must resolve.
+  EXPECT_TRUE(service.ingestNewTransforms(/*dataset_id=*/1)) << "ingest must continue past the eviction gap";
+  auto buffer = service.transformBuffer(/*dataset_id=*/1);
+  EXPECT_TRUE(resolves(*buffer, "f0", "f1", 260)) << "the newest post-eviction edge must resolve";
+}
+
+// -----------------------------------------------------------------------------
+// (i) Transient probe failure (M.34): a parser whose parse_object fails the first
+//     call then succeeds. After two ticks the topic IS classified TF and its
+//     transforms land — a single bad newest message must not blacklist it.
+// -----------------------------------------------------------------------------
+TEST(TransformService, TransientProbeFailureNotBlacklisted) {
+  PJ::SessionManager session;
+  PJ::ObjectStore& store = session.objectStore();
+  const auto topic = registerTopic(store, /*dataset_id=*/1, "/tf");
+  ASSERT_TRUE(store.pushOwned(topic, 100, edgePayload(/*parent=*/0, /*child=*/1)).has_value());
+
+  static std::atomic<bool> fail_first{true};
+  fail_first.store(true);
+  session.registerObjectTopicParser(
+      topic, makeBoundHandle(kTfSchema, []() noexcept -> void* { return new CountingTfParser(nullptr, &fail_first); }));
+
+  TransformService service(session);
+  // First tick: the classification probe parse FAILS — the topic must NOT be
+  // blacklisted; the buffer stays empty for now.
+  service.ingestNewTransforms(/*dataset_id=*/1);
+  auto buffer = service.transformBuffer(/*dataset_id=*/1);
+  EXPECT_TRUE(buffer->getAllFrames().empty()) << "the failed probe must not have ingested anything";
+
+  // Second tick: the parser now succeeds — the topic classifies as TF and ingests.
+  EXPECT_TRUE(service.ingestNewTransforms(/*dataset_id=*/1)) << "a transient failure must not permanently suppress TF";
+  EXPECT_TRUE(resolves(*buffer, "f0", "f1", 100)) << "the topic must classify as TF on a later tick";
+}
+
+// -----------------------------------------------------------------------------
+// (j) Live window (H.11): a small cache window drops over-window samples on a busy
+//     edge, but the newest still resolves; a single-sample (static-like) edge
+//     resolves at late stamps thanks to the always-keep-last invariant.
+// -----------------------------------------------------------------------------
+TEST(TransformService, LiveWindowDropsOldKeepsNewAndStatic) {
+  PJ::SessionManager session;
+  PJ::ObjectStore& store = session.objectStore();
+  const auto dynamic_topic = registerTopic(store, /*dataset_id=*/1, "/tf");
+  const auto static_topic = registerTopic(store, /*dataset_id=*/1, "/tf_static");
+
+  session.registerObjectTopicParser(dynamic_topic, makeBoundHandle(kTfSchema, []() noexcept -> void* {
+                                      return new CountingTfParser(nullptr, nullptr);
+                                    }));
+  session.registerObjectTopicParser(static_topic, makeBoundHandle(kTfSchema, []() noexcept -> void* {
+                                      return new CountingTfParser(nullptr, nullptr);
+                                    }));
+
+  TransformService service(session);
+  // 50 ns rolling window. Stamps are in ns directly.
+  service.setLiveCacheWindow(/*dataset_id=*/1, std::chrono::nanoseconds(50));
+
+  // Static-like edge f0->f1: a SINGLE sample published once, early.
+  ASSERT_TRUE(store.pushOwned(static_topic, 100, edgePayload(/*parent=*/0, /*child=*/1)).has_value());
+
+  // Busy dynamic edge f1->f2 spanning well past the 50 ns window.
+  for (int64_t stamp = 100; stamp <= 300; stamp += 25) {
+    ASSERT_TRUE(store.pushOwned(dynamic_topic, stamp, edgePayload(/*parent=*/1, /*child=*/2)).has_value());
+  }
+  service.ingestFrameTransformsForDataset(/*dataset_id=*/1);
+  auto buffer = service.transformBuffer(/*dataset_id=*/1);
+
+  // The dynamic edge dropped its old samples: a stamp far below (newest - window)
+  // no longer resolves on that edge, but the newest does.
+  EXPECT_FALSE(resolves(*buffer, "f1", "f2", 100)) << "an over-window-old dynamic sample must have been evicted";
+  EXPECT_TRUE(resolves(*buffer, "f1", "f2", 300)) << "the newest dynamic sample must resolve";
+
+  // The single-sample static edge resolves at a late stamp (always-keep-last).
+  EXPECT_TRUE(resolves(*buffer, "f0", "f1", 300)) << "a single-sample (static) edge must resolve at late stamps";
+  // And the full composed chain f0<-f2 resolves at the newest stamp.
+  EXPECT_TRUE(resolves(*buffer, "f0", "f2", 300)) << "static+dynamic compose at the live edge";
+}
+
+}  // namespace
+
+int main(int argc, char** argv) {
+  QCoreApplication app(argc, argv);
+  ::testing::InitGoogleTest(&argc, argv);
+  return RUN_ALL_TESTS();
+}

@@ -31,6 +31,16 @@ class IDataWidget {
 
   virtual QWidget* widget() = 0;
 
+  /// Called with the playback cursor position as **display-axis seconds**:
+  /// `time = toAxisDouble(currentTime())`, which equals `raw_ns * 1e-9` minus
+  /// the session's DisplayOffset (see Time.h).  Today no production code sets a
+  /// nonzero DisplayOffset, so display-axis seconds and absolute seconds are
+  /// identical in practice — but implementors MUST NOT treat this value as an
+  /// absolute store timestamp. Converting to an absolute Timepoint requires
+  /// re-adding the DisplayOffset: `toAbsolute(time, offsetOf(domain))`.
+  /// SceneDockWidget::onTrackerTime and Scene3DDockWidget::driveVisibleLayersToLiveEdge
+  /// are the two scene-family entry points; they must remain consistent (both
+  /// ultimately call pushTrackerTimeToView with absolute ns).
   virtual void onTrackerTime(double time) = 0;
 
   // Optional hook: a host (DockWidget) may offer a freshly-dropped object

@@ -417,7 +417,7 @@ class MainWindow : public QMainWindow {
   QAction* undo_action_ = nullptr;
   QAction* redo_action_ = nullptr;
   // App-wide QSettings instance injected into each Scene3DDockWidget
-  // (setSettings) for URDF package-resolver persistence — per-MCAP package
+  // (setSettings) for URDF package-resolver persistence — per-source package
   // mappings and global search roots. Owned here so every dock shares one
   // instance whose lifetime outlasts them all.
   std::unique_ptr<QSettings> app_settings_;

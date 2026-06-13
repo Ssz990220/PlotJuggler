@@ -15,6 +15,7 @@
 #include <shared_mutex>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -257,7 +258,13 @@ class ObjectStore {
   void applyRetention(ObjectSeries& series, Timestamp newest_ts);
 
   mutable std::shared_mutex store_mutex_;
+  // topics_ is the ordered source of truth: listTopics/replaceDatasetFrom/flushTo
+  // iterate it in registration order. series_index_ is an acceleration map from
+  // topic id to ObjectSeries*. ObjectSeries are heap-owned by unique_ptr so
+  // their addresses are stable across topics_ reallocs. Must only be touched
+  // under store_mutex_ held exclusively; kept in exact sync with topics_.
   std::vector<std::pair<ObjectTopicId, std::unique_ptr<ObjectSeries>>> topics_;
+  std::unordered_map<uint32_t, ObjectSeries*> series_index_;
   uint32_t next_id_ = 1;
 };
 

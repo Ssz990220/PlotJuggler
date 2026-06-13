@@ -28,6 +28,15 @@ struct SceneLayerInfo {
   bool visible = true;
 };
 
+/// Single keying convention for the per-topic layer/orphan maps shared by the
+/// base dock and its subclasses (the uint32 topic id widened to int64). One
+/// definition so the dock's layer map and a subclass's orphan map provably key
+/// the same way; if the convention ever changes (e.g. to disambiguate
+/// dataset+topic) both sides change together.
+[[nodiscard]] inline int64_t topicKey(ObjectTopicId topic_id) {
+  return static_cast<int64_t>(topic_id.id);
+}
+
 /// Non-owning services passed to a layer when it is attached to a scene dock.
 ///
 /// Scene families can derive from this context to expose renderer-specific

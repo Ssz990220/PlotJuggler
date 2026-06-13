@@ -1051,5 +1051,87 @@ TEST(ObjectStoreReplaceTest, AddedTopic) {
   EXPECT_EQ(primary.findTopic(1, "cam/image")->id, img->id) << "existing topic id preserved";
 }
 
+// =========================================================================
+// series_index_ invariants (M.45 regression)
+// =========================================================================
+
+// Register 3 topics, push entries, remove the middle topic, re-register a
+// topic with the same name as the removed one, and verify that all surviving
+// topics resolve correctly and the removed id returns empty/nullopt.
+TEST(ObjectStoreIndexTest, RemoveMiddleThenReregisterSameName) {
+  ObjectStore store;
+  auto id_a = store.registerTopic({.dataset_id = 1, .topic_name = "topic/a", .metadata_json = "{}"});
+  auto id_b = store.registerTopic({.dataset_id = 1, .topic_name = "topic/b", .metadata_json = "{}"});
+  auto id_c = store.registerTopic({.dataset_id = 1, .topic_name = "topic/c", .metadata_json = "{}"});
+  ASSERT_TRUE(id_a.has_value());
+  ASSERT_TRUE(id_b.has_value());
+  ASSERT_TRUE(id_c.has_value());
+
+  ASSERT_TRUE(store.pushOwned(*id_a, 100, makePayload(4, 0xAA)).has_value());
+  ASSERT_TRUE(store.pushOwned(*id_b, 100, makePayload(4, 0xBB)).has_value());
+  ASSERT_TRUE(store.pushOwned(*id_c, 100, makePayload(4, 0xCC)).has_value());
+
+  // Remove the middle topic; id_b must become unreachable.
+  store.removeTopic(*id_b);
+  EXPECT_EQ(store.entryCount(*id_b), 0u);
+  EXPECT_FALSE(store.latestAt(*id_b, 200).has_value());
+  EXPECT_FALSE(store.at(*id_b, 0).has_value());
+  EXPECT_FALSE(store.findTopic(1, "topic/b").has_value());
+  EXPECT_EQ(store.descriptor(*id_b).topic_name, "");
+
+  // Survivors must still resolve correctly.
+  EXPECT_EQ(store.entryCount(*id_a), 1u);
+  EXPECT_EQ(store.entryCount(*id_c), 1u);
+  EXPECT_EQ(store.latestAt(*id_a, 200)->payload.bytes[0], 0xAA);
+  EXPECT_EQ(store.latestAt(*id_c, 200)->payload.bytes[0], 0xCC);
+  EXPECT_EQ(store.descriptor(*id_a).topic_name, "topic/a");
+  EXPECT_EQ(store.descriptor(*id_c).topic_name, "topic/c");
+
+  // Re-register a topic with the same name as the removed one; it gets a fresh id.
+  auto id_b2 = store.registerTopic({.dataset_id = 1, .topic_name = "topic/b", .metadata_json = R"({"v":2})"});
+  ASSERT_TRUE(id_b2.has_value());
+  EXPECT_NE(id_b2->id, id_b->id);
+  ASSERT_TRUE(store.pushOwned(*id_b2, 200, makePayload(4, 0xDD)).has_value());
+  EXPECT_EQ(store.entryCount(*id_b2), 1u);
+  EXPECT_EQ(store.latestAt(*id_b2, 300)->payload.bytes[0], 0xDD);
+  EXPECT_EQ(store.findTopic(1, "topic/b")->id, id_b2->id);
+  EXPECT_EQ(store.descriptor(*id_b2).metadata_json, R"({"v":2})");
+
+  // Old removed id still resolves nothing.
+  EXPECT_EQ(store.entryCount(*id_b), 0u);
+  EXPECT_FALSE(store.latestAt(*id_b, 300).has_value());
+
+  // listTopics sees exactly 3 topics (a, c, b2).
+  EXPECT_EQ(store.listTopics(1).size(), 3u);
+}
+
+// Exercise clear() then re-register: all previously valid ids become unreachable
+// and new registrations work correctly after the wipe.
+TEST(ObjectStoreIndexTest, ClearThenReregister) {
+  ObjectStore store;
+  auto id_x = store.registerTopic({.dataset_id = 1, .topic_name = "topic/x", .metadata_json = "{}"});
+  auto id_y = store.registerTopic({.dataset_id = 1, .topic_name = "topic/y", .metadata_json = "{}"});
+  ASSERT_TRUE(id_x.has_value());
+  ASSERT_TRUE(id_y.has_value());
+  ASSERT_TRUE(store.pushOwned(*id_x, 100, makePayload(4, 0x11)).has_value());
+  ASSERT_TRUE(store.pushOwned(*id_y, 100, makePayload(4, 0x22)).has_value());
+
+  store.clear();
+
+  // Both old ids are gone.
+  EXPECT_EQ(store.entryCount(*id_x), 0u);
+  EXPECT_EQ(store.entryCount(*id_y), 0u);
+  EXPECT_FALSE(store.latestAt(*id_x, 200).has_value());
+  EXPECT_TRUE(store.listTopics().empty());
+
+  // Re-registration succeeds and produces working topics.
+  auto id_new = store.registerTopic({.dataset_id = 1, .topic_name = "topic/x", .metadata_json = "{}"});
+  ASSERT_TRUE(id_new.has_value());
+  ASSERT_TRUE(store.pushOwned(*id_new, 300, makePayload(4, 0x33)).has_value());
+  EXPECT_EQ(store.entryCount(*id_new), 1u);
+  EXPECT_EQ(store.latestAt(*id_new, 400)->payload.bytes[0], 0x33);
+  EXPECT_EQ(store.findTopic(1, "topic/x")->id, id_new->id);
+}
+
 }  // namespace
 }  // namespace PJ

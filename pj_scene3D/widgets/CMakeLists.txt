@@ -32,6 +32,7 @@ set(PJ_SCENE3D_WIDGETS_SOURCES
   src/urdf_parser.cpp
   src/urdf_package_resolver.cpp
   src/mesh_loader.cpp
+  src/object_topic_metadata.cpp
   src/url_fetcher.cpp
   src/Scene3DDockWidget.cpp
   src/transform_service.cpp
@@ -51,6 +52,7 @@ set(PJ_SCENE3D_WIDGETS_SOURCES
   include/pj_scene3d_widgets/gl/framebuffer.h
   include/pj_scene3d_widgets/scene_hdr_fbo.h
   include/pj_scene3d_widgets/mesh_shading_params.h
+  include/pj_scene3d_widgets/object_topic_metadata.h
   include/pj_scene3d_widgets/Scene3DDockWidget.h
   include/pj_scene3d_widgets/transform_service.h
   include/pj_scene3d_widgets/parse_locked.h
@@ -85,6 +87,51 @@ if(PJ_BUILD_TESTS)
   target_compile_definitions(occupancy_grid_layer_rebind_test PRIVATE PJ_SCENE3D_TEST_HOOKS)
   target_compile_options(occupancy_grid_layer_rebind_test PRIVATE ${PJ_WARNING_FLAGS} ${PJ_SANITIZER_FLAGS})
   add_test(NAME occupancy_grid_layer_rebind_test COMMAND occupancy_grid_layer_rebind_test)
+
+  # H.20: full coverage for TransformService's incremental UID-keyed TF ingest —
+  # the heart of PR #174 (live + scrubbable streaming TF) and the bulk file path.
+  # Pure logic against a SessionManager + a mock FrameTransforms parser; no GL,
+  # no widgets. Custom main (QCoreApplication for the QObject service).
+  add_executable(transform_service_test
+    tests/transform_service_test.cpp
+  )
+  target_link_libraries(transform_service_test PRIVATE
+    pj_scene3d_widgets
+    GTest::gtest
+  )
+  target_compile_options(transform_service_test PRIVATE ${PJ_WARNING_FLAGS} ${PJ_SANITIZER_FLAGS})
+  add_test(NAME transform_service_test COMMAND transform_service_test)
+
+  # Regression: a TF-only 3D dock (FrameTransforms consumed as config, zero
+  # layers) must survive revalidateObjects (H.4), and the TF/dataset binding must
+  # reset+rebind when the bound dataset's topics are removed (M.17). Needs the
+  # PJ_SCENE3D_TEST_HOOKS accessors and a QApplication (the dock is a QWidget).
+  add_executable(scene3d_dock_streaming_test
+    tests/scene3d_dock_streaming_test.cpp
+  )
+  target_link_libraries(scene3d_dock_streaming_test PRIVATE
+    pj_scene3d_widgets
+    GTest::gtest
+  )
+  target_compile_definitions(scene3d_dock_streaming_test PRIVATE PJ_SCENE3D_TEST_HOOKS)
+  target_compile_options(scene3d_dock_streaming_test PRIVATE ${PJ_WARNING_FLAGS} ${PJ_SANITIZER_FLAGS})
+  add_test(NAME scene3d_dock_streaming_test COMMAND scene3d_dock_streaming_test)
+
+  # Regression: layout persistence round-trips FrameTransforms config topics
+  # (M.18), re-resolves dataset identity by stable source name across sessions
+  # (M.55), and forces the lazily-created view so a saved explicit fixed frame
+  # survives a zero-layer restore (M.19). Needs the PJ_SCENE3D_TEST_HOOKS
+  # accessors and a QApplication (the dock is a QWidget).
+  add_executable(scene3d_dock_persistence_test
+    tests/scene3d_dock_persistence_test.cpp
+  )
+  target_link_libraries(scene3d_dock_persistence_test PRIVATE
+    pj_scene3d_widgets
+    GTest::gtest
+  )
+  target_compile_definitions(scene3d_dock_persistence_test PRIVATE PJ_SCENE3D_TEST_HOOKS)
+  target_compile_options(scene3d_dock_persistence_test PRIVATE ${PJ_WARNING_FLAGS} ${PJ_SANITIZER_FLAGS})
+  add_test(NAME scene3d_dock_persistence_test COMMAND scene3d_dock_persistence_test)
 
   # Pure (non-GL) URDF parser + package-resolver unit tests. They reach the
   # private src/ headers (urdf_parser.h / urdf_package_resolver.h) and use small

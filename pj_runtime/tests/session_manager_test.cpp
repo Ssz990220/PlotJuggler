@@ -4,8 +4,13 @@
 #include <gtest/gtest.h>
 
 #include <QString>
+#include <atomic>
 #include <chrono>
+#include <memory>
+#include <thread>
 
+#include "pj_plugins/host/message_parser_handle.hpp"
+#include "pj_plugins/sdk/message_parser_plugin_base.hpp"
 #include "pj_runtime/SessionManager.h"
 
 namespace {
@@ -171,6 +176,73 @@ TEST(SessionManagerTimeTest, DisplayOffsetIsZeroForDefaultDomainAndUnknownDatase
   ASSERT_TRUE(dataset.has_value());
   EXPECT_EQ(session.displayOffset(*dataset).value, std::chrono::nanoseconds{0});  // default (id 0) domain
   EXPECT_EQ(session.displayOffset(9999).value, std::chrono::nanoseconds{0});      // unknown dataset
+}
+
+// Trivial parser whose only job is to exist (vt_/ctx_ non-null) so the slot is
+// reported valid by SessionManager. The concurrency canary never calls parse;
+// it only races (re-)registration against per-tick binding reads.
+class NoopParser : public PJ::MessageParserPluginBase {};
+
+std::unique_ptr<PJ::MessageParserHandle> makeNoopHandle() {
+  static constexpr const char* kManifest =
+      R"({"id":"noop-parser","name":"Noop Parser","version":"1.0.0","encoding":["mock"]})";
+  // One static vtable per CreateFn instantiation; the create fn allocates a fresh
+  // NoopParser each call, so every handle owns a distinct instance.
+  auto handle = std::make_unique<PJ::MessageParserHandle>(
+      PJ::MessageParserPluginBase::vtableWithCreate([]() noexcept -> void* { return new NoopParser; }, kManifest));
+  EXPECT_TRUE(handle->valid());
+  return handle;
+}
+
+// Crash / TSan canary for the parser-slot race (H.12): the streaming worker
+// re-registers fresh handles for the same ObjectTopicId in a tight loop while
+// the GUI thread resolves the per-use binding and touches the parser through the
+// keepalive. Deterministic (fixed iteration count, no sleeps) so it reproduces
+// the unsynchronized-map UB and the replace-frees-live-parser hazard reliably
+// under a sanitizer; a plain run just exercises the lock discipline.
+TEST(SessionManagerParserRaceTest, ConcurrentRegisterAndBindIsSafe) {
+  PJ::SessionManager session;
+  const PJ::ObjectTopicId topic{42};
+
+  // Seed one parser so the reader sees a binding immediately.
+  session.registerObjectTopicParser(topic, makeNoopHandle());
+
+  constexpr int kIterations = 5000;
+  std::atomic<bool> writer_done{false};
+
+  std::thread writer([&] {
+    for (int iteration = 0; iteration < kIterations; ++iteration) {
+      // Each registration overwrites the slot, dropping the previous handle —
+      // exactly the cross-thread replacement that used to free a parser out from
+      // under a reader holding only a raw pointer.
+      session.registerObjectTopicParser(topic, makeNoopHandle());
+    }
+    writer_done.store(true, std::memory_order_release);
+  });
+
+  // Reader loop: take a per-use snapshot, and when truthy, dereference the parser
+  // through the binding's keepalive — the keepalive is what must keep a replaced
+  // parser alive for the duration of this access.
+  std::size_t valid_bindings = 0;
+  std::size_t manifest_bytes = 0;  // sink so the manifest read is not optimized away
+  while (!writer_done.load(std::memory_order_acquire)) {
+    PJ::SessionManager::ParserBinding binding = session.parserBindingForObjectTopic(topic);
+    if (binding) {
+      // keepalive holds the handle (and DSO) mapped; reading manifest() exercises
+      // the parser instance the snapshot named, even if the writer just replaced
+      // the slot.
+      const auto* handle = static_cast<const PJ::MessageParserHandle*>(binding.keepalive.get());
+      manifest_bytes += handle->manifest().size();
+      ++valid_bindings;
+    }
+  }
+  writer.join();
+  EXPECT_GT(manifest_bytes, 0U);  // keeps the keepalive-deref in the binary
+
+  // Drain any in-flight replacement, then assert a final binding is valid.
+  PJ::SessionManager::ParserBinding final_binding = session.parserBindingForObjectTopic(topic);
+  EXPECT_TRUE(static_cast<bool>(final_binding)) << "topic must still have a valid parser after the race";
+  EXPECT_GT(valid_bindings, 0U) << "reader never observed a valid binding";
 }
 
 }  // namespace

@@ -105,18 +105,27 @@ never shared. The app deliberately does NOT set `AA_ShareOpenGLContexts`.
 (never enters the package chain); `http(s)://` → allowed only for URL-source
 layers; `package://pkg/rel` → the chain below, stop at first hit:
 
-1. **Remembered per-MCAP mapping** — QSettings
-   `pj_scene3d/urdf_per_mcap_packages`, keyed by canonical MCAP path.
+0. **In-band embedded-asset lookup** — exact-name match against the embedded
+   asset dictionary (`stepEmbeddedAsset`). The dataset source plugin (not the
+   host) is what may carry such assets — e.g. files embedded in the container —
+   surfaced format-neutrally via `setEmbeddedAssets`. Built and unit-tested, but
+   **not yet connected to the app load path**: `MainWindow::onFileLoaded` does
+   not yet surface the extracted asset map, so `setEmbeddedAssets` stays empty in
+   production and this step is currently inert. (Steps 1+ — the per-source
+   remembered map and auto-seeded search roots — *are* wired: `onFileLoaded` and
+   `makeSceneDock` feed `setSourcePath` the loaded source path.)
+1. **Remembered per-source mapping** — QSettings
+   `pj_scene3d/urdf_per_source_packages`, keyed by the dataset's source path.
 2. **Ancestor heuristic** — walk up from the URDF's dir (≤10 levels) looking
    for a directory whose basename == `pkg`, accepting only if
    `candidate/rel` exists (prevents wrong-folder false positives). URL
-   sources use the Foxglove URL-segment variant.
-3. **Search roots** — ordered list auto-seeded from the URDF dir, the MCAP's
-   dir, `$ROS_PACKAGE_PATH`, and `$AMENT_PREFIX_PATH`/`$COLCON_PREFIX_PATH`
+   sources use the URL-segment variant.
+3. **Search roots** — ordered list auto-seeded from the URDF dir, the source
+   file's dir, `$ROS_PACKAGE_PATH`, and `$AMENT_PREFIX_PATH`/`$COLCON_PREFIX_PATH`
    (+`/share`), all via `qEnvironmentVariable` — zero ROS dependency.
    Package identity is directory basename only; no `package.xml` check.
 4. **Ask once** — unresolved packages surface on the layer's status text;
-   a chosen root is stored per-MCAP and globally, then pending meshes retry.
+   a chosen root is stored per-source and globally, then pending meshes retry.
 
 Failure semantics: never silent. Missing meshes → magenta cubes + status
 counts; wrong folder picked → explicit "expected a subdirectory named <pkg>"

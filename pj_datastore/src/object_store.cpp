@@ -36,6 +36,7 @@ Expected<ObjectTopicId> ObjectStore::registerTopic(
   auto series = std::make_unique<ObjectSeries>();
   series->descriptor = descriptor;
   topics_.emplace_back(id, std::move(series));
+  series_index_.emplace(id.id, topics_.back().second.get());
   return id;
 }
 
@@ -464,6 +465,7 @@ Expected<ObjectDatasetReplaceResult> ObjectStore::replaceDatasetFrom(
       series->descriptor.dataset_id = primary_id;
       primary_series = series.get();  // heap-owned: stays valid after emplace_back reallocs topics_
       topics_.emplace_back(primary_tid, std::move(series));
+      series_index_.emplace(primary_tid.id, primary_series);
     }
     // A matched primary series may have outstanding views (the staged one may too);
     // drain both before replacing/moving their timestamp vectors. A freshly added
@@ -502,6 +504,7 @@ void ObjectStore::eraseTopicLocked(ObjectTopicId id) {
   auto it = std::find_if(topics_.begin(), topics_.end(), [&](const auto& pair) { return pair.first == id; });
   if (it != topics_.end()) {
     drainSeriesReaders(*it->second);  // let outstanding views release before the series dies
+    series_index_.erase(id.id);
     topics_.erase(it);
   }
 }
@@ -519,27 +522,20 @@ void ObjectStore::clear() {
     drainSeriesReaders(*series);
   }
   topics_.clear();
+  series_index_.clear();
   next_id_ = 1;
 }
 
 // --- Private helpers ---
 
 ObjectStore::ObjectSeries* ObjectStore::findSeries(ObjectTopicId id) {
-  for (auto& [tid, series] : topics_) {
-    if (tid == id) {
-      return series.get();
-    }
-  }
-  return nullptr;
+  auto it = series_index_.find(id.id);
+  return it != series_index_.end() ? it->second : nullptr;
 }
 
 const ObjectStore::ObjectSeries* ObjectStore::findSeries(ObjectTopicId id) const {
-  for (const auto& [tid, series] : topics_) {
-    if (tid == id) {
-      return series.get();
-    }
-  }
-  return nullptr;
+  auto it = series_index_.find(id.id);
+  return it != series_index_.end() ? it->second : nullptr;
 }
 
 ResolvedObjectEntry ObjectStore::resolveEntry(const ObjectEntry& entry) {

@@ -104,30 +104,44 @@ void SessionManager::replaceDataset(
 
 void SessionManager::registerObjectTopicParser(ObjectTopicId id, std::unique_ptr<MessageParserHandle> parser) {
   const bool incoming_valid = parser != nullptr && parser->valid();
-  if (!incoming_valid) {
-    // Do not silently drop a previously valid registration just because the
-    // caller handed us an invalid replacement — that produced "topic suddenly
-    // can't be decoded anymore" with no diagnostic. Keep the prior parser and
-    // warn loudly so the operator can see something is wrong with the binding.
-    const auto existing = object_topic_parsers_.find(id.id);
-    if (existing != object_topic_parsers_.end() && existing->second.handle != nullptr &&
-        existing->second.handle->valid()) {
-      qCWarning(lcSession) << "registerObjectTopicParser: ignoring invalid replacement for topic" << id.id
-                           << "(previous valid parser preserved)";
+  // The old slot is moved out under the lock and destroyed AFTER it releases:
+  // its dtor runs MessageParserHandle teardown (potentially dlclose), which must
+  // never run while holding object_parsers_mutex_.
+  ObjectParserSlot replaced_slot;
+  {
+    std::unique_lock lock(object_parsers_mutex_);
+    if (!incoming_valid) {
+      // Do not silently drop a previously valid registration just because the
+      // caller handed us an invalid replacement — that produced "topic suddenly
+      // can't be decoded anymore" with no diagnostic. Keep the prior parser and
+      // warn loudly so the operator can see something is wrong with the binding.
+      const auto existing = object_topic_parsers_.find(id.id);
+      if (existing != object_topic_parsers_.end() && existing->second.handle != nullptr &&
+          existing->second.handle->valid()) {
+        qCWarning(lcSession) << "registerObjectTopicParser: ignoring invalid replacement for topic" << id.id
+                             << "(previous valid parser preserved)";
+        return;
+      }
+      qCWarning(lcSession) << "registerObjectTopicParser: invalid parser for topic" << id.id
+                           << "— erasing registration";
+      if (existing != object_topic_parsers_.end()) {
+        replaced_slot = std::move(existing->second);
+        object_topic_parsers_.erase(existing);
+      }
       return;
     }
-    qCWarning(lcSession) << "registerObjectTopicParser: invalid parser for topic" << id.id << "— erasing registration";
-    object_topic_parsers_.erase(id.id);
-    return;
+    // Fresh mutex per registration: a re-registration swaps in a new parser, but
+    // existing consumers still guard the old one. Reusing the lock would let the
+    // new caller race with leftover work on the old parser pointer.
+    ObjectParserSlot fresh{std::shared_ptr<MessageParserHandle>(std::move(parser)), std::make_shared<std::mutex>()};
+    auto& slot = object_topic_parsers_[id.id];
+    replaced_slot = std::move(slot);  // keep the old handle off the lock-held dtor path
+    slot = std::move(fresh);
   }
-  // Fresh mutex per registration: a re-registration swaps in a new parser, but
-  // existing consumers still guard the old one. Reusing the lock would let the
-  // new caller race with leftover work on the old parser pointer.
-  object_topic_parsers_[id.id] =
-      ObjectParserSlot{std::shared_ptr<MessageParserHandle>(std::move(parser)), std::make_shared<std::mutex>()};
+  // replaced_slot destructs here, after the lock is released.
 }
 
-const SessionManager::ObjectParserSlot* SessionManager::findValidParserSlot(ObjectTopicId id) const {
+const SessionManager::ObjectParserSlot* SessionManager::findValidParserSlotLocked(ObjectTopicId id) const {
   auto it = object_topic_parsers_.find(id.id);
   if (it == object_topic_parsers_.end() || it->second.handle == nullptr || !it->second.handle->valid()) {
     return nullptr;
@@ -136,10 +150,13 @@ const SessionManager::ObjectParserSlot* SessionManager::findValidParserSlot(Obje
 }
 
 SessionManager::ParserBinding SessionManager::parserBindingForObjectTopic(ObjectTopicId id) const {
-  const auto* slot = findValidParserSlot(id);
+  std::shared_lock lock(object_parsers_mutex_);
+  const auto* slot = findValidParserSlotLocked(id);
   if (slot == nullptr) {
     return {};
   }
+  // Copy the shared_ptrs out under the lock so the snapshot keeps the parser
+  // alive even if the streaming worker replaces the slot right after we release.
   return ParserBinding{
       static_cast<MessageParserPluginBase*>(slot->handle->context()),
       slot->mutex,
@@ -150,17 +167,23 @@ SessionManager::ParserBinding SessionManager::parserBindingForObjectTopic(Object
 std::shared_ptr<void> SessionManager::parserKeepaliveForObjectTopic(ObjectTopicId id) const {
   // shared_ptr<MessageParserHandle> -> shared_ptr<void>: holding it keeps the
   // handle (and thus the parser instance + plugin DSO) alive for the consumer.
-  const auto* slot = findValidParserSlot(id);
+  std::shared_lock lock(object_parsers_mutex_);
+  const auto* slot = findValidParserSlotLocked(id);
   return slot != nullptr ? slot->handle : nullptr;
 }
 
 MessageParserPluginBase* SessionManager::parserForObjectTopic(ObjectTopicId id) const {
-  const auto* slot = findValidParserSlot(id);
+  // Returns a RAW pointer with no keepalive: only safe for synchronous GUI-thread
+  // use that does not outlive the call. Cross-thread / cached consumers must take
+  // parserBindingForObjectTopic and hold its keepalive instead.
+  std::shared_lock lock(object_parsers_mutex_);
+  const auto* slot = findValidParserSlotLocked(id);
   return slot != nullptr ? static_cast<MessageParserPluginBase*>(slot->handle->context()) : nullptr;
 }
 
 std::shared_ptr<std::mutex> SessionManager::parserMutexForObjectTopic(ObjectTopicId id) const {
-  const auto* slot = findValidParserSlot(id);
+  std::shared_lock lock(object_parsers_mutex_);
+  const auto* slot = findValidParserSlotLocked(id);
   return slot != nullptr ? slot->mutex : nullptr;
 }
 
@@ -174,16 +197,34 @@ void SessionManager::evictDatasetObjects(DatasetId dataset_id) {
 }
 
 void SessionManager::evictObjectTopics(const std::vector<ObjectTopicId>& topic_ids) {
+  // removeTopic touches the ObjectStore, not the parser map, so keep it out of
+  // the parser lock. Erased slots are collected and destroyed after the lock
+  // releases: a slot dtor may run plugin teardown (dlclose), which must not run
+  // under object_parsers_mutex_.
+  std::vector<ObjectParserSlot> erased_slots;
+  erased_slots.reserve(topic_ids.size());
   for (const ObjectTopicId topic_id : topic_ids) {
     object_store_.removeTopic(topic_id);
     // Topic gone: drop its parser too, so a reload (fresh ObjectTopicId) re-registers cleanly.
-    object_topic_parsers_.erase(topic_id.id);
+    std::unique_lock lock(object_parsers_mutex_);
+    if (const auto it = object_topic_parsers_.find(topic_id.id); it != object_topic_parsers_.end()) {
+      erased_slots.push_back(std::move(it->second));
+      object_topic_parsers_.erase(it);
+    }
   }
+  // erased_slots destructs here, after the last unlock.
 }
 
 void SessionManager::clearAllObjects() {
   object_store_.clear();
-  object_topic_parsers_.clear();
+  // Swap the map into a local under the lock, then let it destruct after the
+  // lock releases — slot dtors may run plugin teardown (dlclose).
+  std::unordered_map<uint32_t, ObjectParserSlot> drained;
+  {
+    std::unique_lock lock(object_parsers_mutex_);
+    drained.swap(object_topic_parsers_);
+  }
+  // drained destructs here, after the lock is released.
 }
 
 }  // namespace PJ

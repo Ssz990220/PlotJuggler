@@ -4,6 +4,7 @@
 #include "pj_scene_common/scene_dock_widget.h"
 
 #include <QBoxLayout>
+#include <QLoggingCategory>
 #include <QSizePolicy>
 #include <QTimer>
 #include <algorithm>
@@ -23,9 +24,7 @@ namespace PJ {
 
 namespace {
 
-[[nodiscard]] int64_t topicKey(ObjectTopicId topic_id) {
-  return static_cast<int64_t>(topic_id.id);
-}
+Q_LOGGING_CATEGORY(lcSceneDock, "pj.scene.dock")
 
 [[nodiscard]] QString objectTypeName(sdk::BuiltinObjectType object_type) {
   const auto name = sdk::name(object_type);
@@ -258,9 +257,13 @@ ISceneLayer* SceneDockWidget::layerFor(ObjectTopicId topic_id) const {
 }
 
 void SceneDockWidget::onTrackerTime(double time) {
-  // IDataWidget delivers tracker time as seconds in a bare double; convert via
-  // chrono instead of a hand-rolled 1e9 factor. NaN/inf carry no position and are
-  // UB to cast, so drop them; saturate finite out-of-range values before casting.
+  // `time` is display-axis seconds (raw_ns * 1e-9 minus DisplayOffset). Today
+  // DisplayOffset is always zero (no production callers of setDisplayOffset), so
+  // this is equivalent to absolute seconds — but a future nonzero offset would
+  // require routing through toAbsolute(time, offsetOf(domain)) before converting
+  // to a raw Timepoint. Convert via chrono instead of a hand-rolled 1e9 factor.
+  // NaN/inf carry no position and are UB to cast, so drop them; saturate finite
+  // out-of-range values before casting.
   const double ns_d = std::chrono::duration<double, std::nano>(std::chrono::duration<double>(time)).count();
   if (!std::isfinite(ns_d)) {
     return;
@@ -301,6 +304,7 @@ QDomElement SceneDockWidget::xmlSaveState(QDomDocument& doc) const {
 
     QDomElement layer_el = doc.createElement(QStringLiteral("layer"));
     layer_el.setAttribute(QStringLiteral("dataset_id"), QString::number(desc.dataset_id));
+    layer_el.setAttribute(QStringLiteral("dataset_source"), datasetSourceName(session_, desc.dataset_id));
     layer_el.setAttribute(QStringLiteral("topic_name"), QString::fromStdString(desc.topic_name));
     layer_el.setAttribute(QStringLiteral("object_type"), objectTypeName(info.object_type));
     layer_el.setAttribute(QStringLiteral("display_name"), info.display_name);
@@ -326,6 +330,7 @@ bool SceneDockWidget::xmlLoadState(const QDomElement& element) {
     return true;
   }
 
+  int unresolved_layers = 0;
   for (QDomElement layer_el = element.firstChildElement(QStringLiteral("layer")); !layer_el.isNull();
        layer_el = layer_el.nextSiblingElement(QStringLiteral("layer"))) {
     bool dataset_ok = false;
@@ -333,7 +338,8 @@ bool SceneDockWidget::xmlLoadState(const QDomElement& element) {
     if (!dataset_ok || dataset_value > std::numeric_limits<uint32_t>::max()) {
       continue;
     }
-    const auto dataset_id = static_cast<DatasetId>(dataset_value);
+    const auto saved_id = static_cast<DatasetId>(dataset_value);
+    const QString saved_source = layer_el.attribute(QStringLiteral("dataset_source"));
     const QString topic_name = layer_el.attribute(QStringLiteral("topic_name"));
     const QString object_type_str = layer_el.attribute(QStringLiteral("object_type"));
     const QString display_name = layer_el.attribute(QStringLiteral("display_name"));
@@ -344,8 +350,16 @@ bool SceneDockWidget::xmlLoadState(const QDomElement& element) {
     if (!object_type_opt.has_value()) {
       continue;
     }
-    const auto topic_id_opt = session_->objectStore().findTopic(dataset_id, topic_name.toStdString());
+    // Re-resolve the dataset by stable source name (load order is not stable
+    // across sessions), then look up the topic under the resolved id.
+    const auto dataset_id_opt = resolveDatasetId(session_, saved_id, saved_source);
+    if (!dataset_id_opt.has_value()) {
+      ++unresolved_layers;
+      continue;
+    }
+    const auto topic_id_opt = session_->objectStore().findTopic(*dataset_id_opt, topic_name.toStdString());
     if (!topic_id_opt.has_value()) {
+      ++unresolved_layers;
       continue;
     }
     if (addLayer(*topic_id_opt, *object_type_opt, display_name) != AddOutcome::LayerAdded) {
@@ -360,6 +374,9 @@ bool SceneDockWidget::xmlLoadState(const QDomElement& element) {
     if (!visible) {
       setLayerVisible(*topic_id_opt, false);
     }
+  }
+  if (unresolved_layers > 0) {
+    qCWarning(lcSceneDock) << unresolved_layers << "saved layer(s) could not be restored (dataset not loaded)";
   }
   syncViewLayers();
   refreshView();
@@ -376,6 +393,39 @@ const LayerFactory& SceneDockWidget::layerFactory() const {
 
 SessionManager* SceneDockWidget::sessionManager() const {
   return session_;
+}
+
+QString SceneDockWidget::datasetSourceName(const SessionManager* session, DatasetId dataset_id) {
+  if (session == nullptr) {
+    return {};
+  }
+  const PJ::DatasetInfo* info = const_cast<SessionManager*>(session)->dataEngine().getDataset(dataset_id);
+  return info != nullptr ? QString::fromStdString(info->source_name) : QString();
+}
+
+std::optional<DatasetId> SceneDockWidget::resolveDatasetId(
+    const SessionManager* session, DatasetId saved_id, const QString& saved_source) {
+  if (session == nullptr) {
+    return std::nullopt;
+  }
+  DataEngine& engine = const_cast<SessionManager*>(session)->dataEngine();
+  // Prefer the stable source name: DatasetIds are a load-order counter, so the
+  // same file can carry a different id between sessions. An empty saved source
+  // (older layouts) skips straight to the id fallback.
+  if (!saved_source.isEmpty()) {
+    const std::string wanted = saved_source.toStdString();
+    for (const DatasetId candidate : engine.listDatasets()) {
+      const PJ::DatasetInfo* info = engine.getDataset(candidate);
+      if (info != nullptr && info->source_name == wanted) {
+        return candidate;
+      }
+    }
+  }
+  // Fallback: the raw id, but only if it still resolves to a loaded dataset.
+  if (engine.getDataset(saved_id) != nullptr) {
+    return saved_id;
+  }
+  return std::nullopt;
 }
 
 QString SceneDockWidget::xmlTag() const {

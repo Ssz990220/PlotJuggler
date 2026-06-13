@@ -121,6 +121,12 @@ void StreamingSourceManager::onBufferChanged(int seconds) {
   // workerLoop below), so simply storing the new value is enough — the
   // change reaches every live session on the next iteration (~50 ms).
   retention_seconds_ = seconds;
+  // Re-publish the window to history-retaining consumers (the 3D TF buffer):
+  // the worker only re-applies the ObjectStore budget, not the derived caches.
+  const auto window_ns = static_cast<qint64>(retention_seconds_) * 1'000'000'000LL;
+  for (const auto& [dataset_id, _sess] : sessions_) {
+    emit retentionWindowChanged(dataset_id, window_ns);
+  }
 }
 
 void StreamingSourceManager::onStartRequested() {
@@ -354,6 +360,9 @@ void StreamingSourceManager::startSession(const QString& plugin_id) {
   worker_ptr->start();
 
   emit streamStarted(dataset_id);
+  // Publish the new session's retention window so history-retaining consumers
+  // (the 3D TF buffer) can bound themselves in step with the ObjectStore.
+  emit retentionWindowChanged(dataset_id, static_cast<qint64>(retention_seconds_) * 1'000'000'000LL);
 }
 
 void StreamingSourceManager::workerLoop(DatasetId dataset_id) {

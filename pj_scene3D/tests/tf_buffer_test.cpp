@@ -8,6 +8,7 @@
 #include <array>
 #include <chrono>
 #include <cmath>
+#include <limits>
 #include <set>
 #include <stdexcept>
 #include <string>
@@ -16,6 +17,7 @@
 namespace PJ {
 namespace {
 
+using pj::scene3d::Duration;
 using pj::scene3d::SetTransformError;
 using pj::scene3d::StampedTransform;
 using pj::scene3d::TimePoint;
@@ -61,11 +63,11 @@ TEST(TransformBufferTest, ZOHBoundary) {
 
   const std::array<TimePoint, 3> samples{tp(10ns), tp(20ns), tp(30ns)};
   for (const TimePoint stamp : samples) {
-    buffer.setTransform(makeStamped("world", "A", stamp, makeTranslationFromStamp(stamp)));
+    (void)buffer.setTransform(makeStamped("world", "A", stamp, makeTranslationFromStamp(stamp)));
   }
 
   EXPECT_FALSE(buffer.tryLookupTransform("world", "A", tp(5ns)).has_value());
-  EXPECT_THROW(buffer.lookupTransform("world", "A", tp(5ns)), std::runtime_error);
+  EXPECT_THROW((void)buffer.lookupTransform("world", "A", tp(5ns)), std::runtime_error);
 
   const std::array<std::pair<TimePoint, double>, 6> queries{
       {{tp(10ns), 10.0}, {tp(15ns), 10.0}, {tp(20ns), 20.0}, {tp(25ns), 20.0}, {tp(30ns), 30.0}, {tp(35ns), 30.0}}};
@@ -80,8 +82,8 @@ TEST(TransformBufferTest, TreeWalkComposition) {
   TransformBuffer buffer;
   const TimePoint stamp = tp(100ns);
 
-  buffer.setTransform(makeStamped("map", "odom", stamp, makeTranslation(10.0, 0.0, 0.0)));
-  buffer.setTransform(makeStamped("odom", "base_link", stamp, makeTranslation(0.0, 2.0, 0.0)));
+  (void)buffer.setTransform(makeStamped("map", "odom", stamp, makeTranslation(10.0, 0.0, 0.0)));
+  (void)buffer.setTransform(makeStamped("odom", "base_link", stamp, makeTranslation(0.0, 2.0, 0.0)));
 
   const auto transform = buffer.lookupTransform("base_link", "map", stamp);
   expectTranslation(transform, -10.0, -2.0, 0.0);
@@ -107,7 +109,7 @@ TEST(TransformBufferTest, SingleSampleHoldsForward) {
   TransformBuffer buffer;
   const auto transform = makeTranslation(42.0, -7.0, 3.0);
 
-  buffer.setTransform(makeStamped("world", "A", TimePoint{}, transform));
+  (void)buffer.setTransform(makeStamped("world", "A", TimePoint{}, transform));
 
   const auto distant_future = tp(std::chrono::hours(24));
   expectTranslation(buffer.lookupTransform("world", "A", TimePoint{}), 42.0, -7.0, 3.0);
@@ -129,7 +131,7 @@ TEST(TransformBufferTest, SingleSampleHoldsForward) {
 // regardless of the topic name, so the bug cannot exist.
 TEST(TransformBufferTest, NamespacedStaticResolvesWithoutTopicHint) {
   TransformBuffer buffer;
-  buffer.setTransform(makeStamped("base_link", "camera", TimePoint{}, makeTranslation(0.5, 0.0, 1.0)));
+  (void)buffer.setTransform(makeStamped("base_link", "camera", TimePoint{}, makeTranslation(0.5, 0.0, 1.0)));
 
   for (const TimePoint stamp : {tp(0ns), tp(1'000'000'000ns), tp(999'000'000'000ns)}) {
     const auto tf = buffer.tryLookupTransform("base_link", "camera", stamp);
@@ -145,7 +147,7 @@ TEST(TransformBufferTest, RepublishedStaticUsesNearestPrevious) {
   TransformBuffer buffer(TransformBuffer::kKeepAll);
   const auto value = makeTranslation(9.0, 0.0, 0.0);
   for (const TimePoint stamp : {tp(0s), tp(1s), tp(2s)}) {
-    buffer.setTransform(makeStamped("map", "sensor", stamp, value));
+    (void)buffer.setTransform(makeStamped("map", "sensor", stamp, value));
   }
   expectTranslation(buffer.lookupTransform("map", "sensor", tp(0s)), 9.0);
   expectTranslation(buffer.lookupTransform("map", "sensor", tp(5s)), 9.0);  // held forward past last stamp
@@ -160,7 +162,7 @@ TEST(TransformBufferTest, RepublishedStaticUsesNearestPrevious) {
 TEST(TransformBufferTest, StoppedDynamicKeepsResolvingUnderFiniteWindow) {
   TransformBuffer buffer(10ns);  // tiny rolling window
   for (const TimePoint stamp : {tp(0ns), tp(5ns), tp(10ns)}) {
-    buffer.setTransform(makeStamped("odom", "base", stamp, makeTranslationFromStamp(stamp)));
+    (void)buffer.setTransform(makeStamped("odom", "base", stamp, makeTranslationFromStamp(stamp)));
   }
   // The edge stops here. A query far in the future still holds the last sample.
   ASSERT_TRUE(buffer.tryLookupTransform("odom", "base", tp(1'000'000ns)).has_value());
@@ -173,8 +175,8 @@ TEST(TransformBufferTest, StoppedDynamicKeepsResolvingUnderFiniteWindow) {
 // retained tail orphans — the inherent cost of a finite window, absent under kKeepAll.
 TEST(TransformBufferTest, FiniteWindowPinsMostRecentSample) {
   TransformBuffer buffer(10ns);
-  buffer.setTransform(makeStamped("map", "odom", tp(0ns), makeTranslation(0.0)));
-  buffer.setTransform(makeStamped("map", "odom", tp(100ns), makeTranslation(100.0)));  // jump >> window
+  (void)buffer.setTransform(makeStamped("map", "odom", tp(0ns), makeTranslation(0.0)));
+  (void)buffer.setTransform(makeStamped("map", "odom", tp(100ns), makeTranslation(100.0)));  // jump >> window
 
   // Most recent sample pinned and resolving...
   ASSERT_TRUE(buffer.tryLookupTransform("map", "odom", tp(200ns)).has_value());
@@ -187,9 +189,9 @@ TEST(TransformBufferTest, Introspection) {
   TransformBuffer buffer;
   const TimePoint stamp_a = tp(11ns);
 
-  buffer.setTransform(makeStamped("world", "A", stamp_a, makeTranslation(1.0)));
-  buffer.setTransform(makeStamped("world", "B", tp(12ns), makeTranslation(2.0)));
-  buffer.setTransform(makeStamped("A", "C", tp(13ns), makeTranslation(3.0)));
+  (void)buffer.setTransform(makeStamped("world", "A", stamp_a, makeTranslation(1.0)));
+  (void)buffer.setTransform(makeStamped("world", "B", tp(12ns), makeTranslation(2.0)));
+  (void)buffer.setTransform(makeStamped("A", "C", tp(13ns), makeTranslation(3.0)));
 
   const auto all_frames = buffer.getAllFrames();
   const std::set<std::string> frames(all_frames.begin(), all_frames.end());
@@ -224,13 +226,13 @@ TEST(TransformBufferTest, Introspection) {
 TEST(TransformBufferTest, TryLookupNoThrow) {
   TransformBuffer buffer;
 
-  buffer.setTransform(makeStamped("world", "A", tp(10ns), makeTranslation(1.0)));
+  (void)buffer.setTransform(makeStamped("world", "A", tp(10ns), makeTranslation(1.0)));
 
   EXPECT_FALSE(buffer.tryLookupTransform("world", "missing", tp(10ns)).has_value());
-  EXPECT_THROW(buffer.lookupTransform("world", "missing", tp(10ns)), std::runtime_error);
+  EXPECT_THROW((void)buffer.lookupTransform("world", "missing", tp(10ns)), std::runtime_error);
 
   EXPECT_FALSE(buffer.tryLookupTransform("world", "A", tp(5ns)).has_value());
-  EXPECT_THROW(buffer.lookupTransform("world", "A", tp(5ns)), std::runtime_error);
+  EXPECT_THROW((void)buffer.lookupTransform("world", "A", tp(5ns)), std::runtime_error);
 }
 
 TEST(TransformBufferTest, CyclicTreeDoesNotHang) {
@@ -239,8 +241,8 @@ TEST(TransformBufferTest, CyclicTreeDoesNotHang) {
   // Malformed TF tree: A and B parent each other. Neither call is a reparent
   // (each child's parent is set exactly once), so the reparent guard does not
   // reject it. chainToRoot must still terminate.
-  buffer.setTransform(makeStamped("B", "A", tp(10ns), makeTranslation(1.0)));
-  buffer.setTransform(makeStamped("A", "B", tp(10ns), makeTranslation(2.0)));
+  (void)buffer.setTransform(makeStamped("B", "A", tp(10ns), makeTranslation(1.0)));
+  (void)buffer.setTransform(makeStamped("A", "B", tp(10ns), makeTranslation(2.0)));
 
   // Walking A toward its root traverses the cycle; this must return cleanly
   // rather than spin forever. No path exists to an unrelated frame.
@@ -266,7 +268,7 @@ TEST(TransformBufferTest, DefaultWindowEvictsHistoryAfterBulkIngest) {
   TransformBuffer buffer;  // default 10s window
   const std::array<TimePoint, 4> stamps{tp(0s), tp(5s), tp(11s), tp(12s)};
   for (const TimePoint stamp : stamps) {
-    buffer.setTransform(makeStamped("map", "odom", stamp, makeTranslationFromStamp(stamp)));
+    (void)buffer.setTransform(makeStamped("map", "odom", stamp, makeTranslationFromStamp(stamp)));
   }
   // cutoff = 12s - 10s = 2s, so the 0s sample is evicted: a lookup at 1s fails...
   EXPECT_FALSE(buffer.tryLookupTransform("map", "odom", tp(1s)).has_value());
@@ -280,7 +282,7 @@ TEST(TransformBufferTest, KeepAllRetainsFullHistoryAfterBulkIngest) {
   TransformBuffer buffer(TransformBuffer::kKeepAll);
   const std::array<TimePoint, 4> stamps{tp(0s), tp(5s), tp(11s), tp(12s)};
   for (const TimePoint stamp : stamps) {
-    buffer.setTransform(makeStamped("map", "odom", stamp, makeTranslationFromStamp(stamp)));
+    (void)buffer.setTransform(makeStamped("map", "odom", stamp, makeTranslationFromStamp(stamp)));
   }
   // Early sample retained: lookup at 1s holds the 0s value (ZOH).
   ASSERT_TRUE(buffer.tryLookupTransform("map", "odom", tp(1s)).has_value());
@@ -294,10 +296,139 @@ TEST(TransformBufferTest, QuaternionNormalize) {
   TransformBuffer buffer;
   const Transform unnormalized{{1.0, 2.0, 3.0}, glm::dquat{2.0, 0.0, 0.0, 0.0}};
 
-  buffer.setTransform(makeStamped("world", "A", tp(10ns), unnormalized));
+  (void)buffer.setTransform(makeStamped("world", "A", tp(10ns), unnormalized));
 
   const auto transform = buffer.lookupTransform("world", "A", tp(10ns));
   EXPECT_NEAR(quaternionNorm(transform.q), 1.0, kTolerance);
+}
+
+// A zero-length quaternion (a realistic wire value: an uninitialized publisher or
+// a proto3 decoder that doesn't default w=1) would normalize to all-NaN and
+// silently poison every lookup through the edge. It must be rejected, not stored.
+TEST(TransformBufferTest, ZeroQuaternionRejected) {
+  TransformBuffer buffer;
+  const Transform zero_rot{{1.0, 2.0, 3.0}, glm::dquat{0.0, 0.0, 0.0, 0.0}};
+
+  const auto result = buffer.setTransform(makeStamped("world", "A", tp(10ns), zero_rot));
+  ASSERT_FALSE(result.has_value());
+  EXPECT_EQ(result.error(), SetTransformError::InvalidRotation);
+  // No edge stored, so the frame is unknown.
+  EXPECT_FALSE(buffer.getParent("A").has_value());
+  EXPECT_FALSE(buffer.tryLookupTransform("world", "A", tp(10ns)).has_value());
+}
+
+TEST(TransformBufferTest, NaNQuaternionRejected) {
+  TransformBuffer buffer;
+  const double nan = std::nan("");
+  const Transform nan_rot{{1.0, 2.0, 3.0}, glm::dquat{nan, 0.0, 0.0, 1.0}};
+
+  const auto result = buffer.setTransform(makeStamped("world", "A", tp(10ns), nan_rot));
+  ASSERT_FALSE(result.has_value());
+  EXPECT_EQ(result.error(), SetTransformError::InvalidRotation);
+  EXPECT_FALSE(buffer.getParent("A").has_value());
+}
+
+TEST(TransformBufferTest, NonFiniteTranslationRejected) {
+  TransformBuffer buffer;
+  const double inf = std::numeric_limits<double>::infinity();
+  const Transform bad_t{{std::nan(""), 0.0, inf}, glm::dquat{1.0, 0.0, 0.0, 0.0}};
+
+  const auto result = buffer.setTransform(makeStamped("world", "A", tp(10ns), bad_t));
+  ASSERT_FALSE(result.has_value());
+  EXPECT_EQ(result.error(), SetTransformError::NonFiniteTranslation);
+  EXPECT_FALSE(buffer.getParent("A").has_value());
+}
+
+TEST(TransformBufferTest, EmptyFrameNameRejected) {
+  TransformBuffer buffer;
+
+  const auto empty_parent = buffer.setTransform(makeStamped("", "child", tp(10ns), makeTranslation(1.0)));
+  ASSERT_FALSE(empty_parent.has_value());
+  EXPECT_EQ(empty_parent.error(), SetTransformError::InvalidFrameName);
+
+  const auto empty_child = buffer.setTransform(makeStamped("parent", "", tp(10ns), makeTranslation(1.0)));
+  ASSERT_FALSE(empty_child.has_value());
+  EXPECT_EQ(empty_child.error(), SetTransformError::InvalidFrameName);
+
+  // Neither phantom "" frame leaked into the buffer.
+  EXPECT_TRUE(buffer.getAllFrames().empty());
+}
+
+// areConnected is a pure reachability predicate (no time arg): true once a common
+// ancestor exists, regardless of per-edge sample times.
+TEST(TransformBufferTest, AreConnectedReportsReachability) {
+  TransformBuffer buffer;
+  (void)buffer.setTransform(makeStamped("map", "odom", tp(10ns), makeTranslation(1.0)));
+  (void)buffer.setTransform(makeStamped("odom", "base", tp(10ns), makeTranslation(1.0)));
+  (void)buffer.setTransform(makeStamped("world", "drone", tp(10ns), makeTranslation(1.0)));
+
+  EXPECT_TRUE(buffer.areConnected("map", "base"));
+  EXPECT_TRUE(buffer.areConnected("base", "map"));
+  EXPECT_TRUE(buffer.areConnected("base", "base"));   // identity
+  EXPECT_FALSE(buffer.areConnected("map", "drone"));  // separate forest
+  EXPECT_FALSE(buffer.areConnected("map", "ghost"));  // unknown frame
+}
+
+// setCacheWindow trims existing histories with the same rule as ingest eviction,
+// always keeping the last sample per edge so recent lookups still succeed.
+TEST(TransformBufferTest, SetCacheWindowTrimsButKeepsLastSample) {
+  TransformBuffer buffer(TransformBuffer::kKeepAll);
+  const std::array<TimePoint, 4> stamps{tp(0s), tp(5s), tp(11s), tp(12s)};
+  for (const TimePoint stamp : stamps) {
+    (void)buffer.setTransform(makeStamped("map", "odom", stamp, makeTranslationFromStamp(stamp)));
+  }
+  // Under kKeepAll the full history is present: an early lookup resolves.
+  ASSERT_TRUE(buffer.tryLookupTransform("map", "odom", tp(1s)).has_value());
+
+  buffer.setCacheWindow(10s);
+  EXPECT_EQ(buffer.cacheWindow(), Duration(10s));
+
+  // cutoff = 12s - 10s = 2s, so the 0s sample is evicted retroactively.
+  EXPECT_FALSE(buffer.tryLookupTransform("map", "odom", tp(1s)).has_value());
+  // The retained tail (and so any recent stamp) still resolves.
+  EXPECT_TRUE(buffer.tryLookupTransform("map", "odom", tp(11s)).has_value());
+  EXPECT_TRUE(buffer.tryLookupTransform("map", "odom", tp(12s)).has_value());
+}
+
+// A single-sample (static) edge survives any window: setCacheWindow never empties
+// an edge, so a static frame stays resolvable forever.
+TEST(TransformBufferTest, SetCacheWindowKeepsStaticEdge) {
+  TransformBuffer buffer(TransformBuffer::kKeepAll);
+  (void)buffer.setTransform(makeStamped("base_link", "camera", tp(0s), makeTranslation(0.5)));
+
+  buffer.setCacheWindow(1ns);  // aggressively small window
+  const auto distant_future = tp(std::chrono::hours(24));
+  ASSERT_TRUE(buffer.tryLookupTransform("base_link", "camera", distant_future).has_value());
+  expectTranslation(buffer.lookupTransform("base_link", "camera", distant_future), 0.5);
+}
+
+// revision() bumps on every successful insert/replace and on clear(), but NOT on
+// a rejected edge — it is a change-detection token for callers gating recompute.
+TEST(TransformBufferTest, RevisionBumpsOnMutationNotOnReject) {
+  TransformBuffer buffer;
+  const uint64_t initial = buffer.revision();
+
+  ASSERT_TRUE(buffer.setTransform(makeStamped("world", "A", tp(10ns), makeTranslation(1.0))).has_value());
+  const uint64_t after_insert = buffer.revision();
+  EXPECT_GT(after_insert, initial);
+
+  // In-place replace at the same stamp is still a mutation: bump.
+  ASSERT_TRUE(buffer.setTransform(makeStamped("world", "A", tp(10ns), makeTranslation(2.0))).has_value());
+  EXPECT_GT(buffer.revision(), after_insert);
+  const uint64_t after_replace = buffer.revision();
+
+  // A rejected edge (self-loop) does not bump.
+  EXPECT_FALSE(buffer.setTransform(makeStamped("B", "B", tp(20ns), makeTranslation(1.0))).has_value());
+  EXPECT_EQ(buffer.revision(), after_replace);
+
+  // A rejected invalid-rotation edge does not bump either.
+  const Transform zero_rot{{0.0, 0.0, 0.0}, glm::dquat{0.0, 0.0, 0.0, 0.0}};
+  EXPECT_FALSE(buffer.setTransform(makeStamped("world", "C", tp(30ns), zero_rot)).has_value());
+  EXPECT_EQ(buffer.revision(), after_replace);
+
+  // clear() bumps.
+  buffer.clear();
+  EXPECT_GT(buffer.revision(), after_replace);
 }
 
 }  // namespace

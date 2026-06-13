@@ -15,9 +15,6 @@
 #include <QGroupBox>
 #include <QGuiApplication>
 #include <QHBoxLayout>
-#include <QJsonDocument>
-#include <QJsonObject>
-#include <QJsonValue>
 #include <QLabel>
 #include <QLineEdit>
 #include <QListWidget>
@@ -45,6 +42,7 @@
 #include "pj_plugins/sdk/message_parser_plugin_base.hpp"
 #include "pj_runtime/SessionManager.h"
 #include "pj_runtime/Time.h"
+#include "pj_scene3d_widgets/object_topic_metadata.h"
 #include "pj_scene3d_widgets/parse_locked.h"
 #include "pj_scene3d_widgets/passes/mesh_render_pass.h"
 #include "pj_widgets/ColorPickerPopup.h"
@@ -129,22 +127,6 @@ RobotModelLayer::DisplayMode displayModeFromString(const QString& s) {
     return RobotModelLayer::DisplayMode::kCollision;
   }
   return RobotModelLayer::DisplayMode::kAuto;
-}
-
-PJ::sdk::BuiltinObjectType objectTypeFromMetadata(const std::string& metadata_json) {
-  if (metadata_json.empty()) {
-    return PJ::sdk::BuiltinObjectType::kNone;
-  }
-  const QJsonDocument doc = QJsonDocument::fromJson(QByteArray::fromStdString(metadata_json));
-  if (!doc.isObject()) {
-    return PJ::sdk::BuiltinObjectType::kNone;
-  }
-  const QJsonValue value = doc.object().value(QStringLiteral("builtin_object_type"));
-  if (!value.isString()) {
-    return PJ::sdk::BuiltinObjectType::kNone;
-  }
-  const auto parsed = PJ::sdk::parseBuiltinObjectType(value.toString().toStdString());
-  return parsed.value_or(PJ::sdk::BuiltinObjectType::kNone);
 }
 
 void addObjectTopicToCombo(QComboBox* combo, PJ::ObjectTopicId topic_id, const PJ::ObjectTopicDescriptor& desc) {
@@ -549,7 +531,7 @@ QWidget* RobotModelLayer::createConfigWidget(QWidget* parent) {
     PJ::ObjectStore& store = ctx_.session->objectStore();
     for (const PJ::ObjectTopicId topic_id : store.listTopics()) {
       const PJ::ObjectTopicDescriptor& desc = store.descriptor(topic_id);
-      if (objectTypeFromMetadata(desc.metadata_json) == PJ::sdk::BuiltinObjectType::kRobotDescription) {
+      if (builtinObjectTypeFor(desc) == PJ::sdk::BuiltinObjectType::kRobotDescription) {
         addObjectTopicToCombo(topic_combo, topic_id, desc);
       }
     }

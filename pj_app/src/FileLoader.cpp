@@ -694,10 +694,13 @@ bool FileLoader::loadFile(const QString& path, QWidget* dialog_parent, const Loa
     // and the TF state derived from them. Eviction is deferred to here, not the tombstone site, because a mid-load
     // failure rolls the tombstones back.
     for (const DatasetId tombstoned_id : tombstoned_for_replace) {
-      session_.evictDatasetObjects(tombstoned_id);
+      // Invalidate BEFORE eviction: invalidateDataset's cursor cleanup walks
+      // listTopics(tombstoned_id), so the topics must still resolve. Evicting
+      // first would empty that list and leak every per-topic cursor key.
       if (transform_service_ != nullptr) {
         transform_service_->invalidateDataset(tombstoned_id);
       }
+      session_.evictDatasetObjects(tombstoned_id);
     }
   }
   tombstoned_for_replace.clear();
@@ -705,7 +708,7 @@ bool FileLoader::loadFile(const QString& path, QWidget* dialog_parent, const Loa
   catalog_.rebuildFromDatastore();  // T6 (replace path): same keys ⇒ no spurious itemsRemoved
 
   // Per pj_scene3D REQUIREMENTS §9: TF buffer is per-dataset, populated
-  // eagerly at MCAP load time. Synchronous so drag-dropping a 3D topic
+  // eagerly at dataset-load time. Synchronous so drag-dropping a 3D topic
   // is instant — the cost lives in the (expected-to-be-slow) load path,
   // not in interaction. Scene3DDockWidget borrows the shared buffer from
   // the same TransformService. When no service is wired (non-3D builds)

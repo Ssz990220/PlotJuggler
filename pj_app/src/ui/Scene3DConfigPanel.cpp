@@ -335,10 +335,14 @@ void Scene3DConfigPanel::buildSceneControls(QVBoxLayout* root) {
 }
 
 void Scene3DConfigPanel::applySceneControls() {
-  if (bound_dock_ == nullptr) {
+  applySceneControlsTo(bound_dock_.data());
+}
+
+void Scene3DConfigPanel::applySceneControlsTo(Scene3DDockWidget* dock) {
+  if (dock == nullptr) {
     return;
   }
-  auto* view = bound_dock_->sceneView();
+  auto* view = dock->sceneView();
   if (view == nullptr) {
     return;
   }

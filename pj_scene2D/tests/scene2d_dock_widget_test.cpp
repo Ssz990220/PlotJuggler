@@ -17,6 +17,12 @@
 namespace {
 
 PJ::ObjectTopicId registerTopic(PJ::SessionManager& session, uint32_t dataset_id, const std::string& topic_name) {
+  // The dock now re-resolves a saved layer's dataset by source name on restore
+  // (M.55), so the dataset must exist in the engine — mirror production, where
+  // the ObjectStore and DataEngine are kept in lockstep. Registering the same id
+  // twice is a harmless no-op (first writer wins).
+  (void)session.dataEngine().createDataset(
+      PJ::DatasetDescriptor{.source_name = "dataset_" + std::to_string(dataset_id), .time_domain_id = 0}, dataset_id);
   auto topic = session.objectStore().registerTopic(PJ::ObjectTopicDescriptor{dataset_id, topic_name, {}});
   EXPECT_TRUE(topic.has_value());
   return topic.has_value() ? *topic : PJ::ObjectTopicId{};

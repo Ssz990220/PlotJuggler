@@ -8,6 +8,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <shared_mutex>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -25,8 +26,13 @@ namespace PJ {
 
 class MessageParserPluginBase;
 
-// Owns the datastore for the current app session. v1 commit calls are expected
-// on the GUI thread so plot adapters never observe mutation during paint.
+// Owns the datastore for the current app session. v1 scalar commit calls are
+// expected on the GUI thread so plot adapters never observe mutation during
+// paint. The object-topic parser registry is the exception: it is written from
+// the streaming worker thread (the registrar callback fires when a plugin
+// discovers a topic mid-stream) and read from the GUI thread every render tick,
+// so it carries its own lock (object_parsers_mutex_) — see the parser* accessors
+// and object_topic_parsers_ for the contract.
 class SessionManager : public QObject {
   Q_OBJECT
  public:
@@ -83,6 +89,15 @@ class SessionManager : public QObject {
       DataEngine& staged_engine, ObjectStore& staged_store, DatasetId staged_id, DatasetId primary_id,
       std::vector<std::pair<ObjectTopicId, std::unique_ptr<MessageParserHandle>>> staged_object_parsers);
 
+  // Registers (or replaces) the parser for one object topic. Called from the
+  // streaming worker thread via the registrar callback when a plugin discovers a
+  // topic mid-stream; takes object_parsers_mutex_ exclusively. A replacement
+  // installs a fresh ObjectParserSlot but never frees a parser a consumer still
+  // holds: ParserBinding captures the keepalive (the old handle's shared_ptr), so
+  // an in-flight parse keeps running against its snapshot until that binding
+  // drops. The replaced slot is destructed AFTER the lock is released — its dtor
+  // can run plugin teardown (and potentially dlclose), which must not happen
+  // under the parser lock.
   void registerObjectTopicParser(ObjectTopicId id, std::unique_ptr<MessageParserHandle> parser);
   struct ParserBinding {
     MessageParserPluginBase* parser = nullptr;
@@ -96,6 +111,13 @@ class SessionManager : public QObject {
 
   /// Returns the parser pointer, shared parse mutex, and DSO keepalive for one
   /// object topic as a single snapshot. Empty when no valid parser is registered.
+  ///
+  /// Thread-safety: read from the GUI thread every render tick while the streaming
+  /// worker may concurrently (re-)register the same topic; the read takes
+  /// object_parsers_mutex_ shared, copies the three shared_ptrs out, and releases.
+  /// A subsequent slot replacement never frees a parser this snapshot still names:
+  /// take the binding per use and HOLD its keepalive across the parseObject call —
+  /// do not cache the raw `parser` pointer past the snapshot's lifetime.
   [[nodiscard]] ParserBinding parserBindingForObjectTopic(ObjectTopicId id) const;
   [[nodiscard]] MessageParserPluginBase* parserForObjectTopic(ObjectTopicId id) const;
 
@@ -163,11 +185,24 @@ class SessionManager : public QObject {
 
   // Returns the slot for `id` iff it holds a live parser handle, else nullptr.
   // Collapses the find + null + valid() guard shared by the parser* accessors.
-  [[nodiscard]] const ObjectParserSlot* findValidParserSlot(ObjectTopicId id) const;
+  // Precondition: the caller already holds object_parsers_mutex_ (shared is
+  // enough). Does NOT lock itself — so locking accessors never recurse into the
+  // mutex, and the returned pointer stays valid only while that lock is held.
+  [[nodiscard]] const ObjectParserSlot* findValidParserSlotLocked(ObjectTopicId id) const;
 
   DataEngine data_engine_;
   ObjectStore object_store_;
   CurveColorRegistry curve_color_registry_;
+  // Per-object-topic parser slots. WRITTEN from the streaming worker thread (the
+  // registrar callback fires when a plugin discovers/replaces a topic mid-stream)
+  // and READ from the GUI thread on every render tick (each scene3D layer +
+  // TransformService resolves its binding per use). Guarded by
+  // object_parsers_mutex_: shared on the parser* accessors, exclusive on
+  // register/evict/clear. Slot replacement keeps the keepalive shared_ptr
+  // semantics — a replaced slot is destroyed OUTSIDE the lock (its dtor may run
+  // plugin teardown / dlclose), and any ParserBinding snapshot keeps the replaced
+  // parser alive for the consumer that captured it.
+  mutable std::shared_mutex object_parsers_mutex_;
   std::unordered_map<uint32_t, ObjectParserSlot> object_topic_parsers_;
   std::optional<LoadedSource> last_loaded_source_;
 };

@@ -15,7 +15,7 @@
 namespace pj::scene3d {
 
 namespace {
-constexpr char kPerMcapKey[] = "pj_scene3d/urdf_per_mcap_packages";
+constexpr char kPerSourceKey[] = "pj_scene3d/urdf_per_source_packages";
 constexpr char kSearchRootsKey[] = "pj_scene3d/urdf_search_roots";
 constexpr int kAncestorDepthCap = 10;
 
@@ -36,9 +36,9 @@ QString joinPath(const QString& root, const std::string& rel) {
 UrdfPackageResolver::UrdfPackageResolver() = default;
 UrdfPackageResolver::~UrdfPackageResolver() = default;
 
-void UrdfPackageResolver::setMcapAttachments(QMap<QString, QByteArray> attachments) {
-  mcap_attachments_ = std::move(attachments);
-  attachment_dir_.reset();  // drop files extracted from the previous map
+void UrdfPackageResolver::setEmbeddedAssets(QMap<QString, QByteArray> assets) {
+  embedded_assets_ = std::move(assets);
+  extracted_assets_dir_.reset();  // drop files extracted from the previous map
 }
 
 void UrdfPackageResolver::addSearchRoot(const QString& root) {
@@ -64,8 +64,8 @@ void UrdfPackageResolver::autoSeedSearchRoots(const QString& urdf_dir) {
   if (!urdf_dir.isEmpty()) {
     addSearchRoot(urdf_dir);
   }
-  if (!mcap_path_.isEmpty()) {
-    addSearchRoot(QFileInfo(mcap_path_).absolutePath());
+  if (!source_path_.isEmpty()) {
+    addSearchRoot(QFileInfo(source_path_).absolutePath());
   }
 
   // Path-list env vars split on the native separator (':' POSIX, ';' Windows —
@@ -162,12 +162,12 @@ ResolvedMesh UrdfPackageResolver::resolveUri(const std::string& uri, const std::
 
 std::string UrdfPackageResolver::resolve(
     const std::string& pkg, const std::string& rel, const std::string& urdf_dir, bool source_is_url) {
-  // Step 0 — MCAP attachment exact-name lookup.
+  // Step 0 — embedded-asset exact-name lookup.
   const std::string uri = "package://" + pkg + "/" + rel;
-  if (std::string p = stepAttachment(uri); !p.empty()) {
+  if (std::string p = stepEmbeddedAsset(uri); !p.empty()) {
     return p;
   }
-  // Step 1 — remembered per-MCAP map.
+  // Step 1 — remembered per-source map.
   if (std::string p = stepRememberedMap(pkg, rel); !p.empty()) {
     return p;
   }
@@ -183,16 +183,16 @@ std::string UrdfPackageResolver::resolve(
   return {};
 }
 
-std::string UrdfPackageResolver::stepAttachment(const std::string& uri) {
+std::string UrdfPackageResolver::stepEmbeddedAsset(const std::string& uri) {
   const QString key = QString::fromStdString(uri);
-  auto it = mcap_attachments_.constFind(key);
-  if (it == mcap_attachments_.constEnd()) {
+  auto it = embedded_assets_.constFind(key);
+  if (it == embedded_assets_.constEnd()) {
     return {};
   }
-  if (!attachment_dir_) {
-    attachment_dir_ = std::make_unique<QTemporaryDir>();
+  if (!extracted_assets_dir_) {
+    extracted_assets_dir_ = std::make_unique<QTemporaryDir>();
   }
-  if (!attachment_dir_->isValid()) {
+  if (!extracted_assets_dir_->isValid()) {
     return {};
   }
   // On-disk filename = "<8-hex-sha1-of-key>_<flattened-ref>". The flatten alone
@@ -205,8 +205,8 @@ std::string UrdfPackageResolver::stepAttachment(const std::string& uri) {
   flat.replace(QRegularExpression("[^A-Za-z0-9._-]"), "_");
   const QString digest =
       QString::fromLatin1(QCryptographicHash::hash(key.toUtf8(), QCryptographicHash::Sha1).toHex()).left(8);
-  const QString out_path = attachment_dir_->filePath(digest + '_' + flat);
-  // Attachment content is immutable for the dir's lifetime (setMcapAttachments
+  const QString out_path = extracted_assets_dir_->filePath(digest + '_' + flat);
+  // Asset content is immutable for the dir's lifetime (setEmbeddedAssets
   // resets the dir), so an already-extracted file is never rewritten — this
   // avoids truncating bytes under an in-flight assimp read on Retry/Locate.
   if (QFileInfo::exists(out_path)) {
@@ -222,15 +222,15 @@ std::string UrdfPackageResolver::stepAttachment(const std::string& uri) {
 }
 
 std::string UrdfPackageResolver::stepRememberedMap(const std::string& pkg, const std::string& rel) {
-  if (settings_ == nullptr || mcap_path_.isEmpty()) {
+  if (settings_ == nullptr || source_path_.isEmpty()) {
     return {};
   }
-  const QVariantMap top = settings_->value(QString::fromLatin1(kPerMcapKey)).toMap();
-  const QVariant per_mcap = top.value(mcap_path_);
-  if (!per_mcap.isValid()) {
+  const QVariantMap top = settings_->value(QString::fromLatin1(kPerSourceKey)).toMap();
+  const QVariant per_source = top.value(source_path_);
+  if (!per_source.isValid()) {
     return {};
   }
-  const QVariantMap pkg_map = per_mcap.toMap();
+  const QVariantMap pkg_map = per_source.toMap();
   const QString root = pkg_map.value(QString::fromStdString(pkg)).toString();
   if (root.isEmpty()) {
     return {};
@@ -313,7 +313,7 @@ void UrdfPackageResolver::rememberPackageRoot(const std::string& pkg, const QStr
   const QString qpkg = QString::fromStdString(pkg);
   // `root_dir` is the resolved PACKAGE directory (the folder named <pkg> that
   // contains `rel`). The two consumers need DIFFERENT levels:
-  //   - per-MCAP map  -> stepRememberedMap does joinPath(root, rel)        -> store the package dir
+  //   - per-source map  -> stepRememberedMap does joinPath(root, rel)        -> store the package dir
   //   - search roots  -> stepSearchRoots does joinPath(root, pkg) + rel    -> store the PARENT
   // Storing the package dir in both (the old bug) double-nested <pkg>/<pkg> in
   // step 3, silently breaking cross-dataset reuse.
@@ -330,13 +330,13 @@ void UrdfPackageResolver::rememberPackageRoot(const std::string& pkg, const QStr
       global.append(parent);
       settings_->setValue(QString::fromLatin1(kSearchRootsKey), global);
     }
-    // Persist the PACKAGE dir to the per-MCAP remembered map (reopen repeatability).
-    if (!mcap_path_.isEmpty()) {
-      QVariantMap top = settings_->value(QString::fromLatin1(kPerMcapKey)).toMap();
-      QVariantMap pkg_map = top.value(mcap_path_).toMap();
+    // Persist the PACKAGE dir to the per-source remembered map (reopen repeatability).
+    if (!source_path_.isEmpty()) {
+      QVariantMap top = settings_->value(QString::fromLatin1(kPerSourceKey)).toMap();
+      QVariantMap pkg_map = top.value(source_path_).toMap();
       pkg_map.insert(qpkg, pkg_dir);
-      top.insert(mcap_path_, pkg_map);
-      settings_->setValue(QString::fromLatin1(kPerMcapKey), top);
+      top.insert(source_path_, pkg_map);
+      settings_->setValue(QString::fromLatin1(kPerSourceKey), top);
     }
   }
 }

@@ -4,13 +4,16 @@
 
 #include <chrono>
 #include <cstddef>
+#include <cstdint>
 #include <deque>
 #include <nlohmann/json_fwd.hpp>
 #include <optional>
+#include <set>
 #include <shared_mutex>
 #include <string>
 #include <string_view>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -21,12 +24,21 @@ namespace pj::scene3d {
 
 using Duration = std::chrono::nanoseconds;
 
-// Why setTransform rejected a single edge. Both are recoverable *data* errors in
-// a bulk feed (a real bag can carry either), not programmer errors — callers
-// count/log and continue rather than aborting the whole ingest.
+// Why setTransform rejected a single edge. Every value is a recoverable *data*
+// error in a bulk feed (a real bag can carry any of these), not a programmer
+// error — callers count/log and continue rather than aborting the whole ingest.
 enum class SetTransformError {
-  ReparentConflict,  // child already parented to a different frame
-  SelfLoop,          // child == parent (a frame relative to itself)
+  // Child is already parented to a *different* frame. Deliberate divergence from
+  // tf2, which lets the latest published parent win: we drop every post-reparent
+  // edge for that child *forever* (the frame freezes at its last pre-reparent
+  // pose), rather than start a new history. Surfaced only as an aggregate
+  // caller-side drop counter, never per-edge in the UI — see L.102 in the
+  // 2026-06-12 scene3D review for the rationale and trade-off.
+  ReparentConflict,
+  SelfLoop,              // child == parent (a frame relative to itself)
+  InvalidFrameName,      // parent_frame or child_frame is empty
+  InvalidRotation,       // quaternion has non-finite components or |q|^2 < 1e-12
+  NonFiniteTranslation,  // translation has a non-finite (NaN/Inf) component
 };
 
 // Why a TF lookup failed. An enum (not a string) keeps render-loop misses
@@ -74,38 +86,72 @@ class TransformBuffer {
   // edge rather than aborting the whole load. There is no static/dynamic flag: a
   // transform published once (/tf_static, however it is namespaced) is just a
   // single-sample history that resolves at every later time via nearest-previous.
-  PJ::Expected<void, SetTransformError> setTransform(const StampedTransform& tf);
+  // Validation order (each a recoverable SetTransformError, see the enum):
+  // InvalidFrameName -> InvalidRotation -> NonFiniteTranslation -> SelfLoop ->
+  // ReparentConflict. The name + rotation + translation checks run *before* the
+  // self-loop / reparent checks (and before glm::normalize), so a zero-length or
+  // NaN quaternion never reaches normalize and never poisons a lookup.
+  [[nodiscard]] PJ::Expected<void, SetTransformError> setTransform(const StampedTransform& tf);
 
   // Throwing lookup (tf2 ergonomics): the SE(3) target<-source transform at
   // `stamp`, or throws std::runtime_error if unavailable. Thin wrapper over
   // tryLookupTransform.
-  Transform lookupTransform(const std::string& target, const std::string& source, TimePoint stamp) const;
+  [[nodiscard]] Transform lookupTransform(const std::string& target, const std::string& source, TimePoint stamp) const;
 
   // Non-throwing lookup — the primary accessor. Returns the transform or a
-  // LookupError reason; lookupTransform/canTransform are sugar over it.
-  PJ::Expected<Transform, LookupError> tryLookupTransform(
+  // LookupError reason; lookupTransform is sugar over it.
+  [[nodiscard]] PJ::Expected<Transform, LookupError> tryLookupTransform(
       const std::string& target, const std::string& source, TimePoint stamp) const;
 
-  // True iff tryLookupTransform would succeed at `stamp`.
-  bool canTransform(const std::string& target, const std::string& source, TimePoint stamp) const;
+  // True iff `target` and `source` share a common ancestor in the forest, i.e. a
+  // transform between them could be composed at *some* time. A pure connectivity
+  // predicate (no time argument, no per-edge sample bound) — strictly cheaper
+  // than latestCommonTime for callers that only need reachability.
+  [[nodiscard]] bool areConnected(const std::string& target, const std::string& source) const;
 
   // Newest time at which every edge between the two frames has a sample
   // (single-sample edges hold for all time, so they impose no bound). nullopt if
-  // the frames are disconnected.
-  std::optional<TimePoint> latestCommonTime(const std::string& target, const std::string& source) const;
+  // the frames are disconnected. CONTRACT SURPRISE: when the connecting path is
+  // made up *entirely* of single-sample edges (the all-static case), the result
+  // is an ENGAGED TimePoint{} (the Unix epoch sentinel), meaning "connected and
+  // valid at any time at or after the newest single-sample stamp on the path" —
+  // NOT nullopt. A caller that feeds the returned time straight into
+  // tryLookupTransform may therefore get NoSampleAtTime on a pure-static path
+  // (real stamps are all > epoch); callers wanting only reachability should use
+  // areConnected() instead.
+  [[nodiscard]] std::optional<TimePoint> latestCommonTime(const std::string& target, const std::string& source) const;
 
-  std::vector<std::string> getAllFrames() const;
-  std::optional<std::string> getParent(const std::string& child) const;
-  std::optional<TimePoint> getLatestSample(const std::string& child) const;
+  [[nodiscard]] std::vector<std::string> getAllFrames() const;
+  [[nodiscard]] std::optional<std::string> getParent(const std::string& child) const;
+  [[nodiscard]] std::optional<TimePoint> getLatestSample(const std::string& child) const;
 
   // Depth-annotated DFS pre-order of the TF forest. Roots and same-parent
-  // siblings are alphabetically sorted; cycle-safe via visited set.
-  std::vector<FrameRow> getFrameHierarchy() const;
+  // siblings are alphabetically sorted; cycle-safe via visited set. Frames inside
+  // a parent cycle (no reachable root) are still emitted at depth 0 so a broken
+  // tree never vanishes silently from the fixed-frame combo.
+  [[nodiscard]] std::vector<FrameRow> getFrameHierarchy() const;
 
   // Same forest as `getFrameHierarchy`, shaped as nested JSON:
   //   [ { "name": "odom", "children": [ { "name": "base_link", ... } ] }, ... ]
   // Intended for debug dumps, scripting integration, and layout-file diffs.
-  nlohmann::json getFrameHierarchyJson() const;
+  [[nodiscard]] nlohmann::json getFrameHierarchyJson() const;
+
+  // Replace the rolling cache window and immediately trim every edge to it using
+  // the SAME rule as setTransform's eviction (per-edge cutoff = newest stamp -
+  // `window`), always keeping at least the last sample per edge — that invariant
+  // is what keeps a stopped / once-published (static) frame resolvable forever.
+  // Pass kKeepAll to disable eviction (and drop nothing). Used to switch a buffer
+  // from file (kKeepAll) to live-streaming (finite) retention without rebuilding.
+  void setCacheWindow(Duration window);
+  [[nodiscard]] Duration cacheWindow() const;
+
+  // Monotonic change-detection token: bumps under the write lock on every
+  // successful setTransform insert/replace and in clear(). Lets a caller gate
+  // expensive recomputation (orphan state, hierarchy) on "did the buffer change
+  // since I last looked?" without diffing. A bump does NOT imply connectivity
+  // changed (an in-place sample replace bumps it too) — it is strictly "any
+  // mutation since".
+  [[nodiscard]] uint64_t revision() const noexcept;
 
   void clear();
 
@@ -149,19 +195,54 @@ class TransformBuffer {
     bool found = false;
   };
 
+  // Strict-weak-order comparator for frame names as a std::set/std::map key.
+  // Orders case-insensitively (matching frameNameLess, the user-facing display
+  // order) but tie-breaks case-sensitively, so two names differing only by ASCII
+  // case ("Lidar" vs "lidar") are distinct keys and neither is silently dropped
+  // from the hierarchy — frame identity stays case-sensitive everywhere.
+  struct FrameNameLess {
+    bool operator()(const std::string& a, const std::string& b) const noexcept;
+  };
+
+  // parent -> case-insensitively-sorted children, plus the forest roots and the
+  // full frame set. Built once per hierarchy call under the caller's shared_lock
+  // so getFrameHierarchy and getFrameHierarchyJson share one root-detection +
+  // sibling-ordering definition (they previously duplicated it verbatim).
+  using ChildrenMap = std::unordered_map<std::string, std::set<std::string, FrameNameLess>>;
+  using RootSet = std::set<std::string, FrameNameLess>;
+  struct ForestIndex {
+    ChildrenMap children;
+    RootSet roots;
+    std::unordered_set<std::string> all_frames;  // lets callers emit cycle members no root reaches
+  };
+
   std::unordered_map<std::string, ParentLink> parents_;
   mutable std::shared_mutex parents_mutex_;
   Duration cache_window_;
+  // Bumped on every successful mutation (see revision()); guarded by
+  // parents_mutex_ (write side under unique_lock, read side under shared_lock).
+  uint64_t revision_ = 0;
 
   static std::optional<Transform> sampleAt(const EdgeHistory& h, TimePoint t);
-  // Walk `frame` to its root, recording each hop's resolved edge. Cycle-safe: a
-  // repeated frame stops the walk so a malformed tree fails cleanly.
-  std::vector<ChainHop> chainToRoot(const std::string& frame) const;
+  // Walk `frame` to its root, recording each hop's resolved edge into `out`
+  // (cleared at entry). Cycle-safe: a repeated frame stops the walk so a
+  // malformed tree fails cleanly. Caller-supplied output so hot lookups can
+  // reuse scratch storage instead of heap-allocating a vector per call.
+  void chainToRoot(const std::string& frame, std::vector<ChainHop>& out) const;
   // Lowest common ancestor of two chains (shared by lookup + latestCommonTime).
   static MeetPoint findCommonAncestor(const std::vector<ChainHop>& src, const std::vector<ChainHop>& tgt);
   // True if `frame` appears anywhere in the buffer (as a child or a parent).
   // Used only on the lookup-failure path to classify Unknown* vs Disconnected.
   bool isKnownFrame(const std::string& frame) const;
+  // Build the children/roots/all_frames index from parents_. Caller holds the
+  // shared_lock. Roots are "frames never seen as a child"; a parent cycle yields
+  // a frame with no reachable root, so callers DFS the roots first, then any
+  // not-yet-visited frame at depth 0 to surface cycle members too.
+  ForestIndex buildForestIndexLocked() const;
+  // Trim `samples` to cache_window_ in place: drop any sample older than
+  // (newest stamp - cache_window_) while always keeping at least the last one.
+  // No-op when cache_window_ == kKeepAll. Caller holds the unique_lock.
+  void evictEdgeLocked(std::deque<EdgeHistory::Sample>& samples) const;
   PJ::Expected<Transform, LookupError> lookupTransformImpl(
       const std::string& target, const std::string& source, TimePoint stamp) const;
 };

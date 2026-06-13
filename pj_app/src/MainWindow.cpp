@@ -48,6 +48,7 @@
 #include <QWindow>
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <limits>
@@ -447,15 +448,19 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
         if (seed == nullptr) {
           // Restore path: hand back the empty dock; PlotDocker then calls
           // xmlLoadState() to repopulate its topics and per-layer config.
+          // Seed the playhead FIRST so the dock's last_tracker_ is set before
+          // xmlLoadState's registerLayer runs: each restored layer then comes up
+          // at the current playhead instead of its first sample. currentTimeChanged
+          // only fires on changes, so a freshly-built widget never gets it
+          // otherwise — and this same restore path rebuilds docks on undo/redo (M.1).
+          widget->onTrackerTime(toAxisDouble(session_->playbackEngine().currentTime()));
           return widget;
         }
 
-        // Drop path: populate the first topic and apply view side-effects. The
-        // populate call is family-specific until both 2D and 3D scene docks use
-        // tryAcceptObjectTopic().
+        // Drop path: populate the first topic and apply view side-effects.
         QWidget* qwidget = widget->widget();
         if (auto* scene3d = qobject_cast<Scene3DDockWidget*>(qwidget)) {
-          if (!scene3d->setSceneTopic(seed->topic_id, seed->object_type, seed->title)) {
+          if (!scene3d->addTopic(seed->topic_id, seed->object_type, seed->title)) {
             scene3d->deleteLater();
             MessageBox::warning(
                 this, tr("Cannot display topic"),
@@ -755,6 +760,20 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
   connect(streaming_manager_.get(), &StreamingSourceManager::streamStarted, this, [this](DatasetId id) {
     active_streaming_dataset_id_ = id;
   });
+  // Bound the 3D TF buffer's history for live-streaming datasets in step with
+  // the ObjectStore retention window, so a long streaming session doesn't retain
+  // every TF sample forever (H.11). File loads keep the buffer's kKeepAll
+  // default. The factor keeps TF resolvable slightly past the oldest scrubbable
+  // object entry — the store and the TF buffer trim on independent ticks, so the
+  // headroom avoids a TF lookup failing on a frame whose object still exists.
+  if (transform_service_ != nullptr) {
+    connect(
+        streaming_manager_.get(), &StreamingSourceManager::retentionWindowChanged, this,
+        [this](DatasetId id, qint64 window_ns) {
+          constexpr int kTfWindowHeadroomFactor = 2;
+          transform_service_->setLiveCacheWindow(id, std::chrono::nanoseconds(kTfWindowHeadroomFactor * window_ns));
+        });
+  }
   connect(
       &session_->sessionManager(), &SessionManager::samplesIngested, this, [this](const QVector<TopicId>&, bool live) {
         if (!streaming_playback_seeded_ || !live) {
@@ -941,6 +960,25 @@ IDataWidget* MainWindow::makeSceneDock(const QString& kind, QWidget* parent) {
     widget->setSessionManager(&session_->sessionManager());
     widget->setTransformService(transform_service_.get());
     widget->setSettings(app_settings_.get());
+    // Seed the resolver's per-source remembered-roots map + auto search roots
+    // from the most recent load. Single-path approximation (the dock's own
+    // dataset may differ in a multi-file session); see setSourcePath's doc.
+    if (const auto src = session_->sessionManager().lastLoadedSource(); src.has_value()) {
+      widget->setSourcePath(src->path);
+    }
+    // Apply the persisted scene controls once the lazily-created view exists, so
+    // a dock created by layout restore (never bound to the panel) still matches
+    // the shared look. Connect for the deferred view, and apply now if it is
+    // already realized (M.3). The QSettings schema stays owned by the panel.
+    if (scene3d_config_panel_ != nullptr) {
+      auto* panel = scene3d_config_panel_;
+      connect(widget, &Scene3DDockWidget::sceneViewReady, panel, [panel, widget]() {
+        panel->applySceneControlsTo(widget);
+      });
+      if (widget->sceneView() != nullptr) {
+        panel->applySceneControlsTo(widget);
+      }
+    }
     // No theme push needed: SceneViewWidget derives dark/light from its own
     // palette luminance and repaints on QEvent::PaletteChange.
     return widget;
@@ -1041,7 +1079,20 @@ void MainWindow::onFileLoaded(
   // pj_runtime concerns; we just relay. Prefix is empty in v1 until the
   // load dialog gains a prefix input.
   session_->sessionManager().recordLoadedSource(path, prefix, plugin_id, plugin_config_json);
-  // TODO(Prompt 6): route MCAP attachments to Scene3D dock once the load path exposes the extracted attachment map.
+  // Feed the loaded source path to every existing 3D dock so its URDF package
+  // resolver can key per-source remembered roots and auto-seed search roots from
+  // the file's directory (M.2/M.16). Docks created later pick it up from
+  // lastLoadedSource() in makeSceneDock.
+  forEachDock([&path](DockWidget* dock) {
+    if (dock->objectWidget() == nullptr) {
+      return;
+    }
+    if (auto* scene3d = qobject_cast<Scene3DDockWidget*>(dock->objectWidget()->widget())) {
+      scene3d->setSourcePath(path);
+    }
+  });
+  // TODO(embedded-assets): route in-band embedded assets to Scene3D docks once the
+  // load path surfaces the extracted asset map (resolver step 0).
   session_->seedPlaybackFromSession();
   // A same-source reload evicts the old dataset's objects AFTER the removeDataset
   // signal fired, so re-run the coherence pass here to reset any 2D viewer still
@@ -1090,16 +1141,21 @@ void MainWindow::onCatalogTrashRequested(QStringList keys, bool covers_all) {
 }
 
 void MainWindow::onRemoveDatasetRequested(DatasetId dataset_id) {
-  // Confirmed removal: evict the dataset's objects first, then tombstone its
-  // scalars (kept in the engine). Order matters — the catalog's
-  // cleared()/itemsRemoved subscriptions then see the topics already gone and
-  // each widget prunes its own pieces (curves / object layers).
-  session_->sessionManager().evictDatasetObjects(dataset_id);
-  // The TF buffer was built from the just-evicted object topics; drop it so a
-  // later reload re-ingests instead of skipping on the populated guard.
+  // Confirmed removal: evict the dataset's objects, then tombstone its scalars
+  // (kept in the engine). The catalog's cleared()/itemsRemoved subscriptions
+  // then see the topics already gone and each widget prunes its own pieces
+  // (curves / object layers).
+  //
+  // The TF buffer was built from these object topics; drop it so a later reload
+  // re-ingests instead of skipping on the populated guard. Invalidate BEFORE
+  // eviction (L.1/L.28): invalidateDataset's primary cleanup walks
+  // listTopics(dataset_id), which is empty once eviction runs — so evicting
+  // first would leave the per-topic cursor cleanup to the descriptor-empty
+  // fallback sweep only.
   if (transform_service_ != nullptr) {
     transform_service_->invalidateDataset(dataset_id);
   }
+  session_->sessionManager().evictDatasetObjects(dataset_id);
   session_->catalogModel().removeDataset(dataset_id);
   // Shrink the playback range to the remaining data right away — unless a
   // streaming dataset exists (the slider is scoped to the active stream).

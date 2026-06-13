@@ -3,13 +3,14 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include <QObject>
-#include <cstddef>
-#include <limits>
+#include <chrono>
+#include <cstdint>
 #include <memory>
 #include <unordered_map>
 #include <unordered_set>
 
 #include "pj_base/types.hpp"
+#include "pj_datastore/sequential_uid.hpp"
 
 namespace PJ {
 class SessionManager;
@@ -30,6 +31,13 @@ class TransformBuffer;
 // One TransformBuffer per dataset is created lazily and shared by every 3D
 // dock attached to that dataset, so dropping a second pointcloud is instant
 // (no re-walk of every TF entry). Per pj_scene3D REQUIREMENTS §9.
+//
+// THREADING: every method must run on the GUI thread (the QObject's own
+// thread). The internal cursor / classification containers are unsynchronized,
+// and the streaming samplesIngested slot already drives ingestNewTransforms on
+// every tick from the GUI thread — so there is no safe worker-thread entry point.
+// The individual ObjectStore / TransformBuffer reads are themselves
+// thread-safe, but the service's bookkeeping around them is not.
 class TransformService : public QObject {
   Q_OBJECT
  public:
@@ -45,15 +53,25 @@ class TransformService : public QObject {
 
   // Bulk path: ingests a dataset's full TF history into its TransformBuffer at
   // file load. Probes every object topic via parseObject to detect
-  // FrameTransforms schemas, then runs the shared cursor ingest with every
-  // cursor at its INT64_MIN start, so one pass covers the whole history. The
-  // per-topic cursors guard against double-ingest, so a redundant call ingests
-  // nothing new — but it still re-emits datasetTransformsReady (it is NOT a
-  // silent no-op). Emits datasetTransformsReady when done.
+  // FrameTransforms schemas, then runs the shared UID cursor ingest with every
+  // cursor at its invalid (begin-of-history) start, so one pass covers the whole
+  // history. The per-topic cursors guard against double-ingest, so a redundant
+  // call ingests nothing new — but it still re-emits datasetTransformsReady (it
+  // is NOT a silent no-op). Emits datasetTransformsReady when done.
   //
-  // Synchronous; blocks the calling thread. For large MCAPs (100K+ TF
-  // messages) callers may run this on a worker thread.
+  // Threading: GUI-thread only, like every TransformService method (see the
+  // class comment). Synchronous; blocks the calling thread for the whole TF
+  // history.
   void ingestFrameTransformsForDataset(PJ::DatasetId dataset_id);
+
+  // Bound the dataset's TransformBuffer to a rolling cache window so a
+  // live-streaming session does not retain every TF sample forever. Trims
+  // per-edge to (newest stamp - `window`) but always keeps the last sample of
+  // each edge, so static / once-published frames stay resolvable. File loads
+  // never call this and keep the buffer's kKeepAll default (see transformBuffer).
+  // Reconfiguring is cheap and can be re-issued whenever the retention budget
+  // changes; GUI-thread only.
+  void setLiveCacheWindow(PJ::DatasetId dataset_id, std::chrono::nanoseconds window);
 
   // Forgets a dataset's TF state so the next ingest re-reads the store: drops the
   // per-topic ingest cursors and non-TF classifications, and empties the existing
@@ -67,11 +85,17 @@ class TransformService : public QObject {
   // paired with SessionManager::clearAllObjects() at the shell's wipe sites.
   void invalidateAll();
 
-  // Incremental, timestamp-keyed ingest of TF entries that arrived since the
-  // last call for this dataset. Cheap no-op when nothing is new (the common
-  // streaming tick). Safe to call repeatedly; never double-ingests an entry
-  // (a per-topic timestamp cursor guards it). Returns true if the buffer
-  // changed, so the caller can recompute orphan states + repaint only then.
+  // Incremental, UID-keyed ingest of TF entries that arrived since the last call
+  // for this dataset. Cheap no-op when nothing is new (the common streaming
+  // tick). Safe to call repeatedly; never double-ingests an entry (a per-topic
+  // SequentialUID cursor guards it). GUI-thread only.
+  //
+  // The bool reports whether THIS call applied any transforms — NOT a reliable
+  // "something changed" signal for repaint gating: the per-topic cursor is
+  // shared across sibling docks, so a sibling tick may have already advanced it
+  // and this call returns false while the buffer did change. Live followers
+  // should gate repaint on TransformBuffer::revision() instead. The return is
+  // kept because ingestFrameTransformsForDataset still logs it.
   bool ingestNewTransforms(PJ::DatasetId dataset_id);
 
  signals:
@@ -80,23 +104,24 @@ class TransformService : public QObject {
   void datasetTransformsReady(PJ::DatasetId dataset_id);
 
  private:
-  // Shared core: for every TF topic in the dataset, ingest entries whose
-  // timestamp is newer than the per-topic cursor. Both the bulk file path and
-  // the incremental streaming path go through here. Returns true if any
-  // transform was applied.
+  // Shared core: for every TF topic in the dataset, step the per-topic UID
+  // cursor forward (ObjectStore::nextUIDAfter) and ingest each newly retained
+  // entry. Both the bulk file path and the incremental streaming path go through
+  // here. GUI-thread only. Returns true if any transform was applied.
   bool ingestNewerThanCursor(PJ::DatasetId dataset_id);
 
-  // Per-topic ingest cursor: the newest timestamp already pushed into the buffer
-  // plus how many entries at exactly that timestamp were ingested. The count is
-  // load-bearing — ObjectStore allows equal-timestamp appends, and the streaming
-  // worker pushes concurrently with the ingest tick, so a second entry sharing
-  // the newest timestamp can land after a tick's scan. A bare-timestamp cursor
-  // skips it forever (indexAt is at-or-before, so it walks past the late arrival
-  // every later pass); the count lets the next tick re-scan that timestamp's run
-  // and ingest only the entries beyond the ones already taken.
+  // Per-topic ingest cursor: the SequentialUID of the last entry pushed into the
+  // buffer. A UID is stable across front-eviction and per-topic SPARSE (UID
+  // allocation is process-global), so the next tick steps strictly forward with
+  // ObjectStore::nextUIDAfter — never by incrementing the value. This fixes both
+  // the index-shift TOCTOU (a concurrent front-eviction can never move a
+  // not-yet-ingested entry below the cursor) and the equal-timestamp skip (UIDs
+  // are unique even when timestamps tie) that a timestamp cursor suffered.
+  // Default-constructed (invalid) UID means "ingest from the first retained
+  // entry" — the bulk file-load start. An entry evicted before its UID is
+  // reached is unrecoverable by design: the store no longer holds it.
   struct TfCursor {
-    PJ::Timestamp timestamp = std::numeric_limits<PJ::Timestamp>::min();
-    std::size_t count_at_timestamp = 0;
+    PJ::SequentialUID last_ingested;
   };
 
   PJ::SessionManager& session_;

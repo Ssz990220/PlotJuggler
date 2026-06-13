@@ -16,6 +16,12 @@ namespace pj::scene3d {
 // TimePoint won't compile.
 using TimePoint = std::chrono::sys_time<std::chrono::nanoseconds>;
 
+// A rigid SE(3) pose (translation + rotation). INVARIANT: `q` must be a unit
+// quaternion. inverse() uses the conjugate as the rotational inverse and
+// operator*/matrix() compose assuming |q| == 1; a non-unit q yields silently
+// wrong results. TransformBuffer normalizes on write, so transforms read back
+// from it always satisfy this — but the direct constructor does NOT normalize,
+// so a caller building a Transform by hand must pass an already-normalized q.
 struct Transform {
   glm::dvec3 t{0.0};
   glm::dquat q{1.0, 0.0, 0.0, 0.0};

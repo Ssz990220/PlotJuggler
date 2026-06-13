@@ -69,6 +69,15 @@ class Scene3DConfigPanel : public QWidget {
   void buildSceneControls(QVBoxLayout* root);
   // Push every persisted scene-control value into the bound dock's view.
   void applySceneControls();
+
+ public:
+  // Push every persisted scene-control value into an arbitrary dock's view
+  // (not just bound_dock_). Used to bring a dock created by layout restore up to
+  // the shared look the moment its lazily-created view exists, even if the panel
+  // never bound it (M.3). No-op when the dock's view is not yet realized.
+  void applySceneControlsTo(Scene3DDockWidget* dock);
+
+ private:
   void applyIcons();
   // "+" button: add a robot model via the mode picked in the source combo —
   // File opens a file dialog (last dir remembered), Topic a dialog listing the

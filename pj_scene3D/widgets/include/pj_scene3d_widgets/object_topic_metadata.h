@@ -1,0 +1,16 @@
+// Copyright 2026 Davide Faconti
+// SPDX-License-Identifier: MPL-2.0
+#pragma once
+
+#include "pj_base/builtin/builtin_object.hpp"
+#include "pj_datastore/object_store.hpp"
+
+namespace pj::scene3d {
+
+/// Decode the 'builtin_object_type' key from an ObjectTopicDescriptor's
+/// metadata_json (the store-level metadata contract). Returns kNone when the
+/// field is absent, not a string, or unrecognised. Single decoder so the dock
+/// and any layer config widget share one parse path and can't silently diverge.
+[[nodiscard]] PJ::sdk::BuiltinObjectType builtinObjectTypeFor(const PJ::ObjectTopicDescriptor& descriptor);
+
+}  // namespace pj::scene3d

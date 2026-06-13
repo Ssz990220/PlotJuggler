@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cmath>
 #include <deque>
 #include <map>
 #include <mutex>
@@ -23,8 +24,37 @@ TransformBuffer::TransformBuffer(Duration cache_window) : cache_window_(cache_wi
 
 TransformBuffer::~TransformBuffer() = default;
 
+namespace {
+
+bool isFinite(const glm::dvec3& v) {
+  return std::isfinite(v.x) && std::isfinite(v.y) && std::isfinite(v.z);
+}
+
+bool isFinite(const glm::dquat& q) {
+  return std::isfinite(q.w) && std::isfinite(q.x) && std::isfinite(q.y) && std::isfinite(q.z);
+}
+
+}  // namespace
+
 PJ::Expected<void, SetTransformError> TransformBuffer::setTransform(const StampedTransform& tf) {
   std::unique_lock lock(parents_mutex_);
+
+  // Validate the wire data BEFORE the structural checks (and before
+  // glm::normalize): an empty name, a zero-length / NaN quaternion, or a
+  // non-finite translation is a recoverable data error a real bag can carry, and
+  // a zero-length quaternion normalized to all-NaN would otherwise be stored and
+  // silently poison every lookup composing through that edge.
+  if (tf.parent_frame.empty() || tf.child_frame.empty()) {
+    return PJ::unexpected(SetTransformError::InvalidFrameName);
+  }
+  // glm::dot of a quaternion is w*w + x*x + y*y + z*z (the squared norm). Reject
+  // a degenerate quaternion before normalize divides by (near-)zero.
+  if (!isFinite(tf.transform.q) || glm::dot(tf.transform.q, tf.transform.q) < 1e-12) {
+    return PJ::unexpected(SetTransformError::InvalidRotation);
+  }
+  if (!isFinite(tf.transform.t)) {
+    return PJ::unexpected(SetTransformError::NonFiniteTranslation);
+  }
 
   if (tf.child_frame == tf.parent_frame) {
     // A frame relative to itself is the identity; storing it would create a
@@ -33,6 +63,9 @@ PJ::Expected<void, SetTransformError> TransformBuffer::setTransform(const Stampe
   }
 
   auto& link = parents_[tf.child_frame];
+  // The empty-name reject above makes this sentinel sound: link.parent is empty
+  // ONLY for a freshly default-constructed link (never for a real edge), so an
+  // empty parent unambiguously means "no link yet", not "child<-empty parent".
   if (!link.parent.empty() && link.parent != tf.parent_frame) {
     // A second publisher claims this child under a different parent. Drop this
     // one edge rather than aborting the whole bulk ingest.
@@ -58,6 +91,12 @@ PJ::Expected<void, SetTransformError> TransformBuffer::setTransform(const Stampe
     }
   }
 
+  evictEdgeLocked(samples);
+  ++revision_;
+  return {};
+}
+
+void TransformBuffer::evictEdgeLocked(std::deque<EdgeHistory::Sample>& samples) const {
   // kKeepAll disables eviction: bulk-ingested bounded sources (a loaded file)
   // feed the whole recording up front, so a rolling window would trim every
   // edge to its tail and break lookups earlier in the timeline. Under a finite
@@ -68,13 +107,13 @@ PJ::Expected<void, SetTransformError> TransformBuffer::setTransform(const Stampe
   // persistence to every edge uniformly. (The current cutoff is per-edge-relative
   // so the guard is presently belt-and-suspenders, but it pins the invariant
   // should eviction ever switch to a global clock.)
-  if (cache_window_ < kKeepAll) {
-    const auto cutoff = samples.back().first - cache_window_;
-    while (samples.size() > 1 && samples.front().first < cutoff) {
-      samples.pop_front();
-    }
+  if (samples.empty() || cache_window_ >= kKeepAll) {
+    return;
   }
-  return {};
+  const auto cutoff = samples.back().first - cache_window_;
+  while (samples.size() > 1 && samples.front().first < cutoff) {
+    samples.pop_front();
+  }
 }
 
 std::optional<Transform> TransformBuffer::sampleAt(const EdgeHistory& h, TimePoint t) {
@@ -92,9 +131,9 @@ std::optional<Transform> TransformBuffer::sampleAt(const EdgeHistory& h, TimePoi
   return std::prev(hi)->second;
 }
 
-std::vector<TransformBuffer::ChainHop> TransformBuffer::chainToRoot(const std::string& frame) const {
-  std::vector<ChainHop> chain;
-  chain.push_back(ChainHop{frame, nullptr});
+void TransformBuffer::chainToRoot(const std::string& frame, std::vector<ChainHop>& out) const {
+  out.clear();
+  out.push_back(ChainHop{frame, nullptr});
   for (std::string cur = frame;;) {
     auto it = parents_.find(cur);
     if (it == parents_.end()) {
@@ -102,19 +141,18 @@ std::vector<TransformBuffer::ChainHop> TransformBuffer::chainToRoot(const std::s
     }
     // Record the resolved edge on the hop we just added, then advance to the
     // parent — so lookup composition reuses it instead of re-hashing `cur`.
-    chain.back().link = &it->second;
+    out.back().link = &it->second;
     cur = it->second.parent;
     // Cycle guard: a repeated frame means a malformed tree (e.g. A→B→A, which
     // the reparent guard does not catch). Stop so the lookup fails cleanly
     // instead of spinning. Linear scan — chains are short, so this beats a
     // per-lookup hash set.
-    const bool seen = std::any_of(chain.begin(), chain.end(), [&cur](const ChainHop& h) { return h.frame == cur; });
+    const bool seen = std::any_of(out.begin(), out.end(), [&cur](const ChainHop& hop) { return hop.frame == cur; });
     if (seen) {
       break;
     }
-    chain.push_back(ChainHop{cur, nullptr});
+    out.push_back(ChainHop{cur, nullptr});
   }
-  return chain;
 }
 
 TransformBuffer::MeetPoint TransformBuffer::findCommonAncestor(
@@ -150,8 +188,14 @@ PJ::Expected<Transform, LookupError> TransformBuffer::lookupTransformImpl(
     return Transform::identity();
   }
 
-  const auto tgt_chain = chainToRoot(target);
-  const auto src_chain = chainToRoot(source);
+  // Reuse per-thread scratch instead of heap-allocating two vectors per lookup
+  // (this is the per-frame, per-link render hot path). Safe: chainToRoot results
+  // never escape this locked region, and lookups never recurse, so the two
+  // buffers can't be aliased mid-walk.
+  static thread_local std::vector<ChainHop> tgt_chain;
+  static thread_local std::vector<ChainHop> src_chain;
+  chainToRoot(target, tgt_chain);
+  chainToRoot(source, src_chain);
 
   const MeetPoint meet = findCommonAncestor(src_chain, tgt_chain);
   if (!meet.found) {
@@ -206,15 +250,25 @@ PJ::Expected<Transform, LookupError> TransformBuffer::tryLookupTransform(
   return lookupTransformImpl(target, source, stamp);
 }
 
-bool TransformBuffer::canTransform(const std::string& target, const std::string& source, TimePoint stamp) const {
-  return tryLookupTransform(target, source, stamp).has_value();
+bool TransformBuffer::areConnected(const std::string& target, const std::string& source) const {
+  if (target == source) {
+    return true;
+  }
+  std::shared_lock lock(parents_mutex_);
+  static thread_local std::vector<ChainHop> tgt_chain;
+  static thread_local std::vector<ChainHop> src_chain;
+  chainToRoot(target, tgt_chain);
+  chainToRoot(source, src_chain);
+  return findCommonAncestor(src_chain, tgt_chain).found;
 }
 
 std::optional<TimePoint> TransformBuffer::latestCommonTime(const std::string& target, const std::string& source) const {
   std::shared_lock lock(parents_mutex_);
 
-  const auto tgt_chain = chainToRoot(target);
-  const auto src_chain = chainToRoot(source);
+  static thread_local std::vector<ChainHop> tgt_chain;
+  static thread_local std::vector<ChainHop> src_chain;
+  chainToRoot(target, tgt_chain);
+  chainToRoot(source, src_chain);
 
   const MeetPoint meet = findCommonAncestor(src_chain, tgt_chain);
   if (!meet.found) {
@@ -282,50 +336,71 @@ std::optional<TimePoint> TransformBuffer::getLatestSample(const std::string& chi
 void TransformBuffer::clear() {
   std::unique_lock lock(parents_mutex_);
   parents_.clear();
+  ++revision_;
 }
 
-namespace {
-
-// Case-insensitive less for frame names. Frame identity stays case-sensitive
-// in the TF buffer (parents_ uses unordered_map<string,...>); this comparator
-// is for *display order* only so e.g. "Omniwheel_1" interleaves with
-// "imu_link" instead of clustering before all lowercase frames.
-struct FrameNameLess {
-  bool operator()(const std::string& a, const std::string& b) const noexcept {
-    return frameNameLess(a, b);
+void TransformBuffer::setCacheWindow(Duration window) {
+  std::unique_lock lock(parents_mutex_);
+  cache_window_ = window;
+  // Apply the new window retroactively so a buffer switched from kKeepAll (file)
+  // to a finite window (live) is trimmed immediately, not only on the next write
+  // per edge. evictEdgeLocked keeps the last sample per edge, so static frames
+  // stay resolvable. Not a content change for change-detection purposes (the set
+  // of resolvable times only shrinks at the tail), so revision_ is left alone.
+  for (auto& [child, link] : parents_) {
+    evictEdgeLocked(link.history.samples);
   }
-};
+}
 
-// parent -> case-insensitively-sorted children. Built once per public-method
-// call so callers see a consistent snapshot under one shared_lock. Outer map
-// key (parent name) is identity-only, never compared for order.
-using ChildrenMap = std::unordered_map<std::string, std::set<std::string, FrameNameLess>>;
-using RootSet = std::set<std::string, FrameNameLess>;
+Duration TransformBuffer::cacheWindow() const {
+  std::shared_lock lock(parents_mutex_);
+  return cache_window_;
+}
 
-}  // namespace
+uint64_t TransformBuffer::revision() const noexcept {
+  std::shared_lock lock(parents_mutex_);
+  return revision_;
+}
+
+bool TransformBuffer::FrameNameLess::operator()(const std::string& a, const std::string& b) const noexcept {
+  // Case-insensitive display order with a case-sensitive tie-break: still a
+  // strict weak order, but two names equal under frameNameLess ("Lidar" vs
+  // "lidar") stay DISTINCT keys, so neither collapses out of a std::set the way
+  // a pure case-insensitive comparator would (it treats equivalent keys as
+  // duplicates). Frame identity is case-sensitive everywhere else; this keeps
+  // the hierarchy consistent with getAllFrames/lookups.
+  if (frameNameLess(a, b)) {
+    return true;
+  }
+  if (frameNameLess(b, a)) {
+    return false;
+  }
+  return a < b;
+}
+
+TransformBuffer::ForestIndex TransformBuffer::buildForestIndexLocked() const {
+  ForestIndex index;
+  std::unordered_set<std::string> non_root;
+  for (const auto& [child, link] : parents_) {
+    index.children[link.parent].insert(child);
+    index.all_frames.insert(child);
+    index.all_frames.insert(link.parent);
+    non_root.insert(child);
+  }
+  for (const auto& frame : index.all_frames) {
+    if (non_root.count(frame) == 0) {
+      index.roots.insert(frame);
+    }
+  }
+  return index;
+}
 
 std::vector<FrameRow> TransformBuffer::getFrameHierarchy() const {
   std::shared_lock lock(parents_mutex_);
-
-  ChildrenMap children;
-  std::unordered_set<std::string> all_frames;
-  std::unordered_set<std::string> non_root;
-  for (const auto& [child, link] : parents_) {
-    children[link.parent].insert(child);
-    all_frames.insert(child);
-    all_frames.insert(link.parent);
-    non_root.insert(child);
-  }
-
-  RootSet roots;
-  for (const auto& f : all_frames) {
-    if (non_root.count(f) == 0) {
-      roots.insert(f);
-    }
-  }
+  const ForestIndex index = buildForestIndexLocked();
 
   std::vector<FrameRow> rows;
-  rows.reserve(all_frames.size());
+  rows.reserve(index.all_frames.size());
   std::unordered_set<std::string> visited;
 
   auto dfs = [&](auto& self, const std::string& name, int depth) -> void {
@@ -333,8 +408,8 @@ std::vector<FrameRow> TransformBuffer::getFrameHierarchy() const {
       return;
     }
     rows.push_back(FrameRow{name, depth});
-    auto it = children.find(name);
-    if (it == children.end()) {
+    auto it = index.children.find(name);
+    if (it == index.children.end()) {
       return;
     }
     for (const auto& child : it->second) {
@@ -342,31 +417,28 @@ std::vector<FrameRow> TransformBuffer::getFrameHierarchy() const {
     }
   };
 
-  for (const auto& r : roots) {
-    dfs(dfs, r, 0);
+  for (const auto& root : index.roots) {
+    dfs(dfs, root, 0);
+  }
+  // A parent cycle (e.g. map<->odom) leaves its members with no reachable root,
+  // so they would otherwise vanish from the hierarchy entirely. Emit any frame
+  // still unvisited as its own depth-0 entry (sorted for stable output) so a
+  // broken tree degrades to a flat list rather than disappearing.
+  RootSet leftover;
+  for (const auto& frame : index.all_frames) {
+    if (visited.count(frame) == 0) {
+      leftover.insert(frame);
+    }
+  }
+  for (const auto& frame : leftover) {
+    dfs(dfs, frame, 0);
   }
   return rows;
 }
 
 nlohmann::json TransformBuffer::getFrameHierarchyJson() const {
   std::shared_lock lock(parents_mutex_);
-
-  ChildrenMap children;
-  std::unordered_set<std::string> all_frames;
-  std::unordered_set<std::string> non_root;
-  for (const auto& [child, link] : parents_) {
-    children[link.parent].insert(child);
-    all_frames.insert(child);
-    all_frames.insert(link.parent);
-    non_root.insert(child);
-  }
-
-  RootSet roots;
-  for (const auto& f : all_frames) {
-    if (non_root.count(f) == 0) {
-      roots.insert(f);
-    }
-  }
+  const ForestIndex index = buildForestIndexLocked();
 
   std::unordered_set<std::string> visited;
   auto build = [&](auto& self, const std::string& name) -> nlohmann::json {
@@ -376,8 +448,8 @@ nlohmann::json TransformBuffer::getFrameHierarchyJson() const {
     if (!visited.insert(name).second) {
       return node;  // cycle guard — emit node with no children
     }
-    auto it = children.find(name);
-    if (it != children.end()) {
+    auto it = index.children.find(name);
+    if (it != index.children.end()) {
       for (const auto& child : it->second) {
         node["children"].push_back(self(self, child));
       }
@@ -386,8 +458,19 @@ nlohmann::json TransformBuffer::getFrameHierarchyJson() const {
   };
 
   nlohmann::json out = nlohmann::json::array();
-  for (const auto& r : roots) {
-    out.push_back(build(build, r));
+  for (const auto& root : index.roots) {
+    out.push_back(build(build, root));
+  }
+  // Same cycle handling as getFrameHierarchy: surface any frame no root reaches
+  // (cycle members) as its own top-level entry so the two views stay identical.
+  RootSet leftover;
+  for (const auto& frame : index.all_frames) {
+    if (visited.count(frame) == 0) {
+      leftover.insert(frame);
+    }
+  }
+  for (const auto& frame : leftover) {
+    out.push_back(build(build, frame));
   }
   return out;
 }
