@@ -20,6 +20,7 @@
 #include "pj_runtime/SessionManager.h"
 #include "pj_scene3d_core/camera/camera.h"  // AABB, occupancyGridBounds
 #include "pj_scene3d_widgets/parse_locked.h"
+#include "pj_widgets/ComboBox.h"
 #include "pj_widgets/DoubleScrubber.h"
 
 namespace pj::scene3d {
@@ -409,7 +410,7 @@ QWidget* OccupancyGridLayer::createConfigWidget(QWidget* parent) {
   form->setSpacing(6);
   outer->addLayout(form);
 
-  auto* scheme_combo = new QComboBox(container);
+  auto* scheme_combo = new PJ::ComboBox(container);
   scheme_combo->addItem(tr("Map (grayscale)"), static_cast<int>(OccupancyGridRenderPass::ColorScheme::kMap));
   scheme_combo->addItem(tr("Costmap"), static_cast<int>(OccupancyGridRenderPass::ColorScheme::kCostmap));
   scheme_combo->setCurrentIndex(color_scheme_ == OccupancyGridRenderPass::ColorScheme::kCostmap ? 1 : 0);

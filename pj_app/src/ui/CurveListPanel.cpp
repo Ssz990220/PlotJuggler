@@ -418,7 +418,7 @@ void CurveListPanel::applyIcons(QString theme) {
   }
   ui_->buttonDatasetsMenu->setIcon(LoadSvg(":/resources/svg/more_vert.svg", theme));
   ui_->buttonCustomMenu->setIcon(LoadSvg(":/resources/svg/more_vert.svg", theme));
-  ui_->buttonAddCustom->setIcon(LoadSvg(":/resources/svg/add_tab.svg", theme));
+  ui_->buttonAddCustom->setIcon(LoadSvg(":/resources/svg/add.svg", theme));
   if (clear_all_button_ != nullptr) {
     clear_all_button_->setIcon(LoadSvg(":/resources/svg/trash.svg", theme));
   }

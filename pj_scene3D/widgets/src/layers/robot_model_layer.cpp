@@ -3,7 +3,6 @@
 
 #include "pj_scene3d_widgets/layers/robot_model_layer.h"
 
-#include <QCheckBox>
 #include <QComboBox>
 #include <QDir>
 #include <QDomElement>
@@ -19,10 +18,8 @@
 #include <QLineEdit>
 #include <QListWidget>
 #include <QLoggingCategory>
-#include <QPainter>
 #include <QPalette>
 #include <QPointer>
-#include <QPushButton>
 #include <QSettings>
 #include <QSignalBlocker>
 #include <QToolButton>
@@ -45,7 +42,9 @@
 #include "pj_scene3d_widgets/object_topic_metadata.h"
 #include "pj_scene3d_widgets/parse_locked.h"
 #include "pj_scene3d_widgets/passes/mesh_render_pass.h"
-#include "pj_widgets/ColorPickerPopup.h"
+#include "pj_widgets/CheckButton.h"
+#include "pj_widgets/ColorPickerWidget.h"
+#include "pj_widgets/ComboBox.h"
 #include "pj_widgets/SvgUtil.h"
 #include "urdf_package_resolver.h"
 #include "urdf_parser.h"
@@ -56,34 +55,6 @@ namespace {
 Q_LOGGING_CATEGORY(lcRobotModelLayer, "pj.scene3d.layer.robot_model")
 
 constexpr auto kLatchRetryInterval = std::chrono::milliseconds(500);
-
-class ColorSwatch : public QPushButton {
- public:
-  explicit ColorSwatch(QColor color, QWidget* parent = nullptr) : QPushButton(parent), color_(std::move(color)) {
-    setCursor(Qt::PointingHandCursor);
-    setFlat(true);
-    setFocusPolicy(Qt::NoFocus);
-    setFixedSize(22, 22);
-  }
-
-  void setColor(QColor color) {
-    color_ = std::move(color);
-    update();
-  }
-
- protected:
-  void paintEvent(QPaintEvent* /*event*/) override {
-    QPainter painter(this);
-    painter.setRenderHint(QPainter::Antialiasing, true);
-    painter.setPen(Qt::NoPen);
-    painter.setBrush(color_);
-    const QRectF rect(3.0, 3.0, width() - 6.0, height() - 6.0);
-    painter.drawRoundedRect(rect, 3.0, 3.0);
-  }
-
- private:
-  QColor color_;
-};
 
 QString sourceTypeToString(RobotModelLayer::SourceType type) {
   switch (type) {
@@ -517,7 +488,7 @@ QWidget* RobotModelLayer::createConfigWidget(QWidget* parent) {
   form->setSpacing(6);
   outer->addLayout(form);
 
-  auto* source_combo = new QComboBox(container);
+  auto* source_combo = new PJ::ComboBox(container);
   source_combo->addItem(tr("Topic"), static_cast<int>(SourceType::kTopic));
   source_combo->addItem(tr("File"), static_cast<int>(SourceType::kFile));
   source_combo->addItem(tr("URL"), static_cast<int>(SourceType::kUrl));
@@ -526,7 +497,7 @@ QWidget* RobotModelLayer::createConfigWidget(QWidget* parent) {
   }
   form->addRow(tr("Source"), source_combo);
 
-  auto* topic_combo = new QComboBox(container);
+  auto* topic_combo = new PJ::ComboBox(container);
   if (ctx_.session != nullptr) {
     PJ::ObjectStore& store = ctx_.session->objectStore();
     for (const PJ::ObjectTopicId topic_id : store.listTopics()) {
@@ -609,19 +580,20 @@ QWidget* RobotModelLayer::createConfigWidget(QWidget* parent) {
   prefix_edit->setPlaceholderText(tr("e.g. robot1/"));
   form->addRow(tr("Frame prefix"), prefix_edit);
 
-  auto* mode_combo = new QComboBox(container);
+  auto* mode_combo = new PJ::ComboBox(container);
   mode_combo->addItem(tr("Auto"), static_cast<int>(DisplayMode::kAuto));
   mode_combo->addItem(tr("Visual"), static_cast<int>(DisplayMode::kVisual));
   mode_combo->addItem(tr("Collision"), static_cast<int>(DisplayMode::kCollision));
   mode_combo->setCurrentIndex(static_cast<int>(display_mode_));
   form->addRow(tr("Display mode"), mode_combo);
 
-  auto* color_button = new ColorSwatch(fallback_color_, container);
+  auto* color_button = new PJ::ColorPickerWidget(container);
+  color_button->setColor(fallback_color_);
   form->addRow(tr("Color"), color_button);
 
-  auto* collada_box = new QCheckBox(container);
+  auto* collada_box = new PJ::CheckButton(tr("Ignore COLLADA up_axis"), container);
   collada_box->setChecked(ignore_collada_up_axis_);
-  form->addRow(tr("Ignore COLLADA up_axis"), collada_box);
+  form->addRow(collada_box);
 
   auto* group = new QGroupBox(tr("Mesh resolution"), container);
   group->setCheckable(true);
@@ -763,20 +735,8 @@ QWidget* RobotModelLayer::createConfigWidget(QWidget* parent) {
   connect(mode_combo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this, mode_combo](int) {
     setDisplayMode(static_cast<DisplayMode>(mode_combo->currentData().toInt()));
   });
-  connect(color_button, &QPushButton::clicked, this, [this, container, color_button]() {
-    auto* popup = new PJ::ColorPickerPopup(container);
-    popup->setAttribute(Qt::WA_DeleteOnClose);
-    popup->setColor(fallback_color_);
-    connect(popup, &PJ::ColorPickerPopup::colorChanged, this, [this, color_button](QColor color) {
-      if (color.isValid()) {
-        setFallbackColor(color);
-        color_button->setColor(color);
-      }
-    });
-    popup->move(color_button->mapToGlobal(QPoint(0, color_button->height() + 2)));
-    popup->show();
-  });
-  connect(collada_box, &QCheckBox::toggled, this, &RobotModelLayer::setIgnoreColladaUpAxis);
+  connect(color_button, &PJ::ColorPickerWidget::colorChanged, this, &RobotModelLayer::setFallbackColor);
+  connect(collada_box, &PJ::CheckButton::toggled, this, &RobotModelLayer::setIgnoreColladaUpAxis);
   connect(this, &RobotModelLayer::statusTextChanged, container, [refresh_status](const QString&) { refresh_status(); });
   connect(this, &RobotModelLayer::meshLoadStatusChanged, container, [refresh_status](int, int, const QStringList&) {
     refresh_status();

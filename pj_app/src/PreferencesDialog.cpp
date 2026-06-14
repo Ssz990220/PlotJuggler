@@ -159,6 +159,8 @@ PreferencesDialog::PreferencesDialog(Theme& theme, QWidget* parent)
   // theme, moon visible in the right slot. "ON" reads as the
   // bright/active state.
   //
+  // Larger than the compact 34x18 default so the sun/moon icons read clearly.
+  ui_->themeToggle->setFixedSize(44, 24);
   // Icons are forced to white so they read clearly against the
   // colored track (blue when on, gray when off).
   ui_->themeToggle->setLeftIcon(LoadWhiteFillIcon(QStringLiteral(":/resources/svg/light_mode_light.svg")));

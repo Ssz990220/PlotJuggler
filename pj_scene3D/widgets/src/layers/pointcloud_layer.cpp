@@ -9,7 +9,6 @@
 #include <QIcon>
 #include <QLabel>
 #include <QLoggingCategory>
-#include <QPainter>
 #include <QPushButton>
 #include <QSignalBlocker>
 #include <QSize>
@@ -37,8 +36,11 @@
 #include "pj_scene3d_core/pointcloud_convert.h"  // convertCanonical, ConvertedPointCloud
 #include "pj_scene3d_core/tf/tf_buffer.h"        // source->fixed lookup for world-axis range
 #include "pj_scene3d_widgets/parse_locked.h"
-#include "pj_widgets/ColorPickerPopup.h"
+#include "pj_widgets/CheckButton.h"
+#include "pj_widgets/ColorPickerWidget.h"
+#include "pj_widgets/ComboBox.h"
 #include "pj_widgets/DoubleScrubber.h"
+#include "pj_widgets/Style.h"  // PJ::Style::kInputHeight
 
 namespace pj::scene3d {
 
@@ -90,40 +92,6 @@ QString defaultColorField(const QStringList& available) {
   }
   return available.contains(QStringLiteral("intensity")) ? QStringLiteral("intensity") : available.first();
 }
-
-// Square swatch button — same shape as CurveEditor's curve-color button so
-// the pointcloud Solid picker reads as part of the same visual family.
-class SolidColorSwatch : public QPushButton {
- public:
-  explicit SolidColorSwatch(QColor color, QWidget* parent = nullptr) : QPushButton(parent), color_(color) {
-    setCursor(Qt::PointingHandCursor);
-    setFlat(true);
-    setFocusPolicy(Qt::NoFocus);
-    setFixedSize(22, 22);
-  }
-  void setColor(QColor color) {
-    if (color_ == color) {
-      return;
-    }
-    color_ = color;
-    update();
-  }
-
- protected:
-  void paintEvent(QPaintEvent* /*event*/) override {
-    QPainter painter(this);
-    painter.setRenderHint(QPainter::Antialiasing, true);
-    painter.setPen(Qt::NoPen);
-    painter.setBrush(color_);
-    const int extent = std::max(6, std::min(width(), height()) - 4);
-    const QRectF swatch_rect((width() - extent) / 2.0, (height() - extent) / 2.0, extent, extent);
-    const qreal radius = std::max<qreal>(2.0, extent * 0.22);
-    painter.drawRoundedRect(swatch_rect, radius, radius);
-  }
-
- private:
-  QColor color_;
-};
 
 }  // namespace
 
@@ -405,7 +373,7 @@ QWidget* PointCloudLayer::createConfigWidget(QWidget* parent) {
   outer->addLayout(form);
 
   // --- Shape ----------------------------------------------------------------
-  auto* shape_combo = new QComboBox(container);
+  auto* shape_combo = new PJ::ComboBox(container);
   shape_combo->addItem(tr("sphere"), static_cast<int>(PointcloudRenderPass::Shape::kSphere));
   shape_combo->addItem(tr("point"), static_cast<int>(PointcloudRenderPass::Shape::kPoint));
   shape_combo->addItem(tr("cube"), static_cast<int>(PointcloudRenderPass::Shape::kCube));
@@ -434,7 +402,7 @@ QWidget* PointCloudLayer::createConfigWidget(QWidget* parent) {
   form->addRow(tr("Point size:"), size_spin);
 
   // --- Color type (Solid + per-field) ---------------------------------------
-  auto* color_type_combo = new QComboBox(container);
+  auto* color_type_combo = new PJ::ComboBox(container);
   const auto rebuild_color_type_combo = [color_type_combo, this]() {
     QSignalBlocker block(color_type_combo);
     color_type_combo->clear();
@@ -456,13 +424,14 @@ QWidget* PointCloudLayer::createConfigWidget(QWidget* parent) {
   auto* color_stack = new QStackedWidget(container);
   form->addRow(tr("Color config:"), color_stack);
 
-  // Page 0: Solid — rounded-square swatch, click opens ColorPickerPopup
-  // (same recipe as CurveEditor for visual consistency across panels).
+  // Page 0: Solid — the shared ColorPickerWidget swatch (opens a ColorPickerPopup
+  // on click), consistent with every other layer's colour control.
   auto* solid_page = new QWidget(color_stack);
   auto* solid_layout = new QHBoxLayout(solid_page);
   solid_layout->setContentsMargins(0, 0, 0, 0);
   solid_layout->setAlignment(Qt::AlignLeft | Qt::AlignTop);
-  auto* color_button = new SolidColorSwatch(solid_color_, solid_page);
+  auto* color_button = new PJ::ColorPickerWidget(solid_page);
+  color_button->setColor(solid_color_);
   solid_layout->addWidget(color_button);
   solid_layout->addStretch();
   color_stack->addWidget(solid_page);
@@ -487,7 +456,7 @@ QWidget* PointCloudLayer::createConfigWidget(QWidget* parent) {
   auto* colormap_row_layout = new QHBoxLayout(colormap_row);
   colormap_row_layout->setContentsMargins(0, 0, 0, 0);
   colormap_row_layout->setSpacing(6);
-  auto* colormap_combo = new QComboBox(colormap_row);
+  auto* colormap_combo = new PJ::ComboBox(colormap_row);
   colormap_combo->addItem(QStringLiteral("turbo"), static_cast<int>(PointcloudRenderPass::Colormap::kTurbo));
   colormap_combo->addItem(QStringLiteral("viridis"), static_cast<int>(PointcloudRenderPass::Colormap::kViridis));
   colormap_combo->addItem(QStringLiteral("plasma"), static_cast<int>(PointcloudRenderPass::Colormap::kPlasma));
@@ -515,11 +484,9 @@ QWidget* PointCloudLayer::createConfigWidget(QWidget* parent) {
   color_stack->setCurrentIndex(color_type_ == PointcloudRenderPass::ColorType::kSolid ? 0 : 1);
 
   // --- Range: row on the OUTER form (auto button as the field) ---
-  auto* auto_btn = new QPushButton(tr("auto"), container);
-  auto_btn->setCheckable(true);
+  auto* auto_btn = new PJ::CheckButton(tr("auto"), container);
   auto_btn->setChecked(auto_range_);
   auto_btn->setFocusPolicy(Qt::NoFocus);
-  auto_btn->setStyleSheet(kToggleButtonQss);
   auto* auto_row = new QWidget(container);
   auto* auto_row_layout = new QHBoxLayout(auto_row);
   auto_row_layout->setContentsMargins(0, 0, 0, 0);
@@ -608,27 +575,14 @@ QWidget* PointCloudLayer::createConfigWidget(QWidget* parent) {
         apply_range_visibility(auto_range_);
       });
 
-  QObject::connect(color_button, &QPushButton::clicked, this, [this, container, color_button]() {
-    auto* popup = new PJ::ColorPickerPopup(container);
-    popup->setAttribute(Qt::WA_DeleteOnClose);
-    popup->setColor(solid_color_);
-    QObject::connect(popup, &PJ::ColorPickerPopup::colorChanged, this, [this, color_button](QColor c) {
-      if (c.isValid()) {
-        setSolidColor(c);
-        color_button->setColor(c);
-      }
-    });
-    const QPoint global = color_button->mapToGlobal(QPoint(0, color_button->height() + 2));
-    popup->move(global);
-    popup->show();
-  });
+  QObject::connect(color_button, &PJ::ColorPickerWidget::colorChanged, this, [this](QColor c) { setSolidColor(c); });
 
   QObject::connect(
       colormap_combo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this, colormap_combo](int) {
         setColormap(static_cast<PointcloudRenderPass::Colormap>(colormap_combo->currentData().toInt()));
       });
 
-  QObject::connect(auto_btn, &QPushButton::toggled, this, [this, apply_range_visibility](bool on) {
+  QObject::connect(auto_btn, &PJ::CheckButton::toggled, this, [this, apply_range_visibility](bool on) {
     setAutoRange(on);
     apply_range_visibility(on);
   });
@@ -664,20 +618,13 @@ QWidget* PointCloudLayer::createConfigWidget(QWidget* parent) {
     }
   });
 
-  // Uniform row height keyed to the DoubleScrubber's natural sizeHint —
-  // the scrubber is the reference style for the panel, so combos / spins
-  // / toggles all clamp to its height. The scrubber itself is left alone.
-  const int row_h = std::max(size_spin->sizeHint().height(), 22);
-  for (QWidget* w :
-       {static_cast<QWidget*>(shape_combo), static_cast<QWidget*>(color_type_combo),
-        static_cast<QWidget*>(colormap_combo), static_cast<QWidget*>(auto_btn)}) {
-    w->setMinimumHeight(row_h);
-    w->setMaximumHeight(row_h);
-  }
-  // Invert button: square, sized to the row height so it lines up with
-  // the colormap combo it sits beside.
-  invert_btn->setFixedSize(row_h, row_h);
-  invert_btn->setIconSize(QSize(row_h - 6, row_h - 6));
+  // Combos and scrubbers get their uniform compact height from the QSS
+  // (input_outer_height). The two custom toggle buttons (auto, invert) carry an
+  // inline stylesheet that the input QSS rules can't reach, so pin them to the
+  // same input height here so the whole panel lines up.
+  const int input_h = PJ::Style::kInputHeight;
+  invert_btn->setFixedSize(input_h, input_h);
+  invert_btn->setIconSize(QSize(input_h - 6, input_h - 6));
 
   return container;
 }

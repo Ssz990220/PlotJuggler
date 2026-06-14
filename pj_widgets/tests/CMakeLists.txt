@@ -126,3 +126,60 @@ set_target_properties(scrubber_base_test PROPERTIES
 )
 
 add_test(NAME ScrubberBase COMMAND scrubber_base_test)
+
+add_executable(check_button_test check_button_test.cpp)
+
+target_link_libraries(check_button_test PRIVATE
+    pj_widgets
+    GTest::gtest
+    Qt6::Test
+    Qt6::Widgets
+)
+
+if(DEFINED PJ_WARNING_FLAGS)
+    target_compile_options(check_button_test PRIVATE ${PJ_WARNING_FLAGS})
+endif()
+
+set_target_properties(check_button_test PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
+)
+
+add_test(NAME CheckButton COMMAND check_button_test)
+
+add_executable(color_picker_widget_test color_picker_widget_test.cpp)
+
+target_link_libraries(color_picker_widget_test PRIVATE
+    pj_widgets
+    GTest::gtest
+    Qt6::Test
+    Qt6::Widgets
+)
+
+if(DEFINED PJ_WARNING_FLAGS)
+    target_compile_options(color_picker_widget_test PRIVATE ${PJ_WARNING_FLAGS})
+endif()
+
+set_target_properties(color_picker_widget_test PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
+)
+
+add_test(NAME ColorPickerWidget COMMAND color_picker_widget_test)
+
+add_executable(style_input_height_test style_input_height_test.cpp)
+
+target_link_libraries(style_input_height_test PRIVATE
+    pj_widgets
+    GTest::gtest
+    Qt6::Test
+    Qt6::Widgets
+)
+
+if(DEFINED PJ_WARNING_FLAGS)
+    target_compile_options(style_input_height_test PRIVATE ${PJ_WARNING_FLAGS})
+endif()
+
+set_target_properties(style_input_height_test PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
+)
+
+add_test(NAME StyleInputHeight COMMAND style_input_height_test)

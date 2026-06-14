@@ -22,7 +22,9 @@ Widgets:
 | `ProgressDialog.h` | `QProgressDialog` replacement on the `Dialog` chrome: message + bar + up to two stop buttons. Domain-neutral — reports `Action::Primary` / `Action::Secondary` (sticky, polled via `action()` or the `stopRequested` signal) and leaves their meaning to the caller. No close affordance (base ✕ hidden, Esc swallowed). |
 | `RecentFilesMenu.h` | `QMenu` populated from a persistent recent-files list. |
 | `ColorPickerPopup.h` | Compact popup color picker. |
-| `ToggleSwitch.h` | iOS-style toggle replacement for `QCheckBox`. |
+| `ColorPickerWidget.h` | Standard fixed-size colour swatch button that opens a `ColorPickerPopup`; the one reusable replacement for the per-layer swatch buttons each module used to hand-roll. `colorChanged()` fires only on user picks; `setColor()` is silent. |
+| `CheckButton.h` | Checkable "pill" toggle button — the label sits inside an accent-filled (checked) / accent-outlined (unchecked) capsule. A labelled, click-the-whole-control alternative to `QCheckBox`; distinct from `ToggleSwitch` (a sliding switch with no inline text). |
+| `ToggleSwitch.h` | iOS-style sliding-switch toggle replacement for `QCheckBox`. |
 | `IntScrubber.h` / `DoubleScrubber.h` / `ScrubberBase.h` | Drag-to-scrub numeric inputs. |
 | `SectionHeaderBand.h` | 24-px titlebar-tone section header strip (leading indent baked in); background themed once via the `PJ--SectionHeaderBand` QSS class rule, so instances need no per-objectName stylesheet registration. |
 | `RealSlider.h` | Floating-point `QSlider`. |

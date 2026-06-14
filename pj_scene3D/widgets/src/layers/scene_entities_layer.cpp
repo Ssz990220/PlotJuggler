@@ -4,12 +4,11 @@
 #include "pj_scene3d_widgets/layers/scene_entities_layer.h"
 
 #include <QByteArray>
-#include <QCheckBox>
 #include <QFileInfo>
 #include <QFormLayout>
+#include <QHBoxLayout>
 #include <QLabel>
 #include <QLoggingCategory>
-#include <QPushButton>
 #include <QSettings>
 #include <QUrl>
 #include <QVBoxLayout>
@@ -30,8 +29,9 @@
 #include "pj_runtime/SessionManager.h"
 #include "pj_scene3d_core/scene_entities_decode.h"
 #include "pj_scene3d_widgets/parse_locked.h"
-#include "pj_widgets/ColorPickerPopup.h"
+#include "pj_widgets/ColorPickerWidget.h"
 #include "pj_widgets/DoubleScrubber.h"
+#include "pj_widgets/ToggleSwitch.h"
 #include "url_fetcher.h"
 
 namespace pj::scene3d {
@@ -43,12 +43,6 @@ Q_LOGGING_CATEGORY(lcSceneEntitiesLayer, "pj.scene3d.entity.markers")
 // first entity (per-entity frame overrides are a v2 refinement).
 std::string batchSourceFrame(const PJ::sdk::SceneEntities& batch) {
   return batch.entities.empty() ? std::string{} : batch.entities.front().frame_id;
-}
-
-// Repaint a swatch button so its face shows the current override color.
-void paintSwatch(QPushButton* button, const QColor& color) {
-  button->setStyleSheet(QStringLiteral("background-color: %1; border: 1px solid #555; border-radius: 3px;")
-                            .arg(color.name(QColor::HexRgb)));
 }
 
 std::string meshKey(PJ::ObjectTopicId topic_id, const std::string& entity_id, std::size_t model_index) {
@@ -829,10 +823,11 @@ QWidget* SceneEntitiesLayer::createConfigWidget(QWidget* parent) {
   auto* container = new QWidget(parent);
   auto* outer = new QVBoxLayout(container);
   outer->setContentsMargins(0, 0, 0, 0);
-  outer->setSpacing(6);
+  outer->setSpacing(4);
   auto* form = new QFormLayout();
   form->setContentsMargins(0, 0, 0, 0);
-  form->setSpacing(6);
+  form->setHorizontalSpacing(8);
+  form->setVerticalSpacing(4);
   outer->addLayout(form);
 
   // Opacity (always active): multiplies every primitive's alpha.
@@ -845,45 +840,36 @@ QWidget* SceneEntitiesLayer::createConfigWidget(QWidget* parent) {
   QObject::connect(
       opacity_spin, &PJ::DoubleScrubber::valueChanged, this, [this](double v) { setOpacity(static_cast<float>(v)); });
 
-  // Override color: a checkbox gating a swatch button. The marker protocol has
-  // no override field — this is a viewer-only recolor of every primitive.
-  auto* override_chk = new QCheckBox(tr("Override color"), container);
-  override_chk->setChecked(overrides_.color_override);
-  form->addRow(override_chk);
+  // Override color: a sliding switch + swatch on one row. The marker protocol
+  // has no override field — this is a viewer-only recolor of every primitive.
+  // Picking a color auto-enables it.
+  auto* override_row = new QWidget(container);
+  auto* override_layout = new QHBoxLayout(override_row);
+  override_layout->setContentsMargins(0, 0, 0, 0);
+  override_layout->setSpacing(8);
+  auto* override_toggle = new PJ::ToggleSwitch(override_row);
+  override_toggle->setChecked(overrides_.color_override, /*animate=*/false);
+  auto* swatch = new PJ::ColorPickerWidget(override_row);
+  swatch->setColor(overrideColor());
+  override_layout->addWidget(override_toggle);
+  override_layout->addWidget(swatch);
+  override_layout->addStretch();
+  form->addRow(tr("Override color:"), override_row);
 
-  // The swatch stays clickable regardless of the checkbox: picking a color
-  // auto-enables the override (ticks the box) so the recolor is immediate —
-  // otherwise the button looks dead until the user discovers the gate.
-  auto* swatch = new QPushButton(container);
-  swatch->setFixedWidth(48);
-  paintSwatch(swatch, overrideColor());
-  form->addRow(tr("Color:"), swatch);
-
-  QObject::connect(override_chk, &QCheckBox::toggled, this, [this](bool on) { setColorOverrideEnabled(on); });
-  QObject::connect(swatch, &QPushButton::clicked, this, [this, container, swatch, override_chk]() {
-    auto* popup = new PJ::ColorPickerPopup(container);
-    popup->setAttribute(Qt::WA_DeleteOnClose);
-    popup->setColor(overrideColor());
-    QObject::connect(popup, &PJ::ColorPickerPopup::colorChanged, this, [this, swatch, override_chk](QColor c) {
-      if (c.isValid()) {
-        setOverrideColor(c);
-        paintSwatch(swatch, c);
-        // Picking a color implies the user wants it applied: tick the box
-        // (which routes through setColorOverrideEnabled via its toggled slot).
-        if (!override_chk->isChecked()) {
-          override_chk->setChecked(true);
-        }
-      }
-    });
-    popup->move(swatch->mapToGlobal(QPoint(0, swatch->height() + 2)));
-    popup->show();
+  QObject::connect(override_toggle, &PJ::ToggleSwitch::toggled, this, [this](bool on) { setColorOverrideEnabled(on); });
+  QObject::connect(swatch, &PJ::ColorPickerWidget::colorChanged, this, [this, override_toggle](QColor c) {
+    setOverrideColor(c);
+    if (!override_toggle->isChecked()) {
+      override_toggle->setChecked(true);  // picking implies enable (visual slide)
+    }
+    setColorOverrideEnabled(true);  // apply now; the toggled-driven call lags the slide animation
   });
 
   // Wireframe (always active): draws mesh primitives as edges.
-  auto* wire_chk = new QCheckBox(tr("Wireframe"), container);
-  wire_chk->setChecked(overrides_.wireframe);
-  form->addRow(wire_chk);
-  QObject::connect(wire_chk, &QCheckBox::toggled, this, [this](bool on) { setWireframe(on); });
+  auto* wire_toggle = new PJ::ToggleSwitch(container);
+  wire_toggle->setChecked(overrides_.wireframe, /*animate=*/false);
+  form->addRow(tr("Wireframe:"), wire_toggle);
+  QObject::connect(wire_toggle, &PJ::ToggleSwitch::toggled, this, [this](bool on) { setWireframe(on); });
 
   // Remote-fetch notice (consent-gate blocks / failed model-URL fetches).
   // Hidden while there is nothing to surface.

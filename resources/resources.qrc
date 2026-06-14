@@ -15,7 +15,7 @@
     <file alias="add_circle.svg">svg/add_circle.svg</file>
     <file alias="add_column.svg">svg/add_column.svg</file>
     <file alias="add_row.svg">svg/add_row.svg</file>
-    <file alias="add_tab.svg">svg/add_tab.svg</file>
+    <file alias="add.svg">svg/add.svg</file>
     <file alias="alarm-bell-active.svg">svg/alarm-bell-active.svg</file>
     <file alias="alarm-bell.svg">svg/alarm-bell.svg</file>
     <file alias="apps_box.svg">svg/apps_box.svg</file>

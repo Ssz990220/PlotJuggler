@@ -22,8 +22,10 @@ namespace PJ {
 //
 // Geometry follows the widget's current size: the thumb diameter
 // is `height - 2*kThumbMargin`, slots are width/2 each. Default
-// sizeHint() is 56x32 — change with setFixedSize / setMinimumSize
-// if you need bigger.
+// sizeHint() is a compact 34x18, and the constructor pins a Fixed
+// size policy so a form/grid field column can't stretch it —
+// override with setFixedSize for a larger switch (e.g. an
+// icon-bearing toggle).
 class ToggleSwitch : public QWidget {
   Q_OBJECT
   Q_PROPERTY(bool checked READ isChecked WRITE setChecked NOTIFY toggled)

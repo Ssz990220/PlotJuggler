@@ -40,6 +40,7 @@
 #include "pj_widgets/MessageBox.h"
 #include "pj_widgets/ScrubberBase.h"
 #include "pj_widgets/SectionHeaderBand.h"
+#include "pj_widgets/Style.h"  // PJ::Style::kInputHeight (uniform row height)
 #include "pj_widgets/SvgUtil.h"
 
 namespace PJ {
@@ -50,13 +51,16 @@ constexpr char kUrdfBrowseDirKey[] = "pj_scene3d/urdf_browse_dir";
 constexpr auto kVisibilityOnPath = ":/resources/svg/visibility.svg";
 constexpr auto kVisibilityOffPath = ":/resources/svg/visibility_off.svg";
 constexpr auto kTrashIconPath = ":/resources/svg/trash.svg";
-constexpr auto kAddIconPath = ":/resources/svg/add_circle.svg";
+constexpr auto kAddIconPath = ":/resources/svg/add.svg";
 
 // Trailing eye/add/trash button column: the scene-control grids reserve this
 // width in their 3rd column so every field's right edge lines up whether or not
 // the row carries a trailing button. kTrailingIconPx is the glyph size inside it.
-constexpr int kTrailingSlotWidth = 24;
-constexpr int kTrailingIconPx = 16;
+// Every side-panel SVG-icon button is a 20x20 square (matching the Topics table's
+// eye/trash, which are kDefaultRowHeight==20 square), so the icon column reads as
+// one consistent size and the rows stay compact.
+constexpr int kTrailingSlotWidth = 20;
+constexpr int kTrailingIconPx = 20;
 // Horizontal gap between grid columns; the robot-row HBox reuses it so the robot
 // name's right edge lands on the same x as the field column above.
 constexpr int kGridHSpacing = 8;
@@ -65,7 +69,10 @@ constexpr int kGridHSpacing = 8;
 // pixel-aligned regardless of the platform style's default tool-button metrics.
 void sizeTrailingButton(QToolButton* button) {
   button->setIconSize(QSize(kTrailingIconPx, kTrailingIconPx));
-  button->setFixedWidth(kTrailingSlotWidth);
+  // Fixed HEIGHT too (== the input height), else the tool button's natural
+  // height (~24-26px) inflates its grid row above the 20px inputs and loosens
+  // the row spacing.
+  button->setFixedSize(kTrailingSlotWidth, PJ::Style::kInputHeight);
 }
 
 // Add one [label | field | trailing] row to a 3-column scene-control grid.
@@ -73,7 +80,7 @@ void sizeTrailingButton(QToolButton* button) {
 // edge and the trailing eye/add button aligned across rows by construction.
 // `trailing` may be null (column 2 stays reserved via setColumnMinimumWidth).
 void addGridRow(QGridLayout* grid, int& row, const QString& label, QWidget* field, QWidget* trailing = nullptr) {
-  grid->addWidget(new QLabel(label), row, 0);
+  grid->addWidget(new QLabel(label + QStringLiteral(":")), row, 0);
   grid->addWidget(field, row, 1);
   if (trailing != nullptr) {
     grid->addWidget(trailing, row, 2);
@@ -201,8 +208,8 @@ Scene3DConfigPanel::Scene3DConfigPanel(QWidget* parent) : QWidget(parent) {
     auto* button = new QToolButton(params_toolbar);
     button->setAutoRaise(true);
     button->setFocusPolicy(Qt::NoFocus);
-    button->setIconSize(QSize(20, 20));
-    button->setFixedSize(24, 24);
+    button->setIconSize(QSize(PJ::Style::kInputHeight, PJ::Style::kInputHeight));
+    button->setFixedSize(PJ::Style::kInputHeight, PJ::Style::kInputHeight);  // 20x20 like every icon button
     button->setToolTip(tip);
     return button;
   };
@@ -302,7 +309,7 @@ void Scene3DConfigPanel::buildSceneControls(QVBoxLayout* root) {
     auto* grid = new QGridLayout(host);
     grid->setContentsMargins(8, 4, 8, 4);
     grid->setHorizontalSpacing(kGridHSpacing);
-    grid->setVerticalSpacing(2);
+    grid->setVerticalSpacing(4);
     grid->setColumnStretch(1, 1);
     grid->setColumnMinimumWidth(2, kTrailingSlotWidth);
     root->addWidget(host);
@@ -322,6 +329,8 @@ void Scene3DConfigPanel::buildSceneControls(QVBoxLayout* root) {
     button->setAutoRaise(true);
     button->setFocusPolicy(Qt::NoFocus);
     button->setToolTip(tip);
+    button->setIconSize(QSize(PJ::Style::kInputHeight, PJ::Style::kInputHeight));
+    button->setFixedSize(PJ::Style::kInputHeight, PJ::Style::kInputHeight);  // 20x20 like every icon button
     return button;
   };
   grid_lines_button_ = make_style_button(tr("Line grid"));
@@ -343,7 +352,7 @@ void Scene3DConfigPanel::buildSceneControls(QVBoxLayout* root) {
   style_row->addStretch(1);
   // The style toggles are a strip, not a single field: keep the label in col 0
   // and let the strip span the field + trailing columns.
-  grid_grid->addWidget(new QLabel(tr("Style")), grid_row, 0);
+  grid_grid->addWidget(new QLabel(tr("Style") + QStringLiteral(":")), grid_row, 0);
   grid_grid->addLayout(style_row, grid_row, 1, 1, 2);
   ++grid_row;
 

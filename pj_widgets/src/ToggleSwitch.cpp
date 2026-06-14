@@ -12,8 +12,8 @@
 namespace PJ {
 
 namespace {
-constexpr int kDefaultWidth = 44;
-constexpr int kDefaultHeight = 24;
+constexpr int kDefaultWidth = 34;
+constexpr int kDefaultHeight = 18;
 constexpr int kThumbMargin = 3;  // gap between thumb and track edge
 constexpr int kAnimationMs = 180;
 constexpr int kIconInset = 4;  // padding between slot rect and icon
@@ -24,6 +24,10 @@ ToggleSwitch::ToggleSwitch(QWidget* parent)
   setFocusPolicy(Qt::TabFocus);
   setCursor(Qt::PointingHandCursor);
   setAttribute(Qt::WA_Hover, true);
+  // Pin to the compact default size so the switch never gets stretched by a
+  // form/grid field column; callers that want a different size override with
+  // setFixedSize (e.g. the larger themed theme-toggle in PreferencesDialog).
+  setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
   anim_->setDuration(kAnimationMs);
   anim_->setEasingCurve(QEasingCurve::OutCubic);
   // toggled fires only when the slide animation reaches its end —

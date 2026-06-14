@@ -51,7 +51,7 @@ target_include_directories(pj_scene2d_widgets PUBLIC include)
 target_compile_features(pj_scene2d_widgets PUBLIC cxx_std_20)
 target_compile_options(pj_scene2d_widgets PRIVATE ${PJ_WARNING_FLAGS} ${PJ_SANITIZER_FLAGS})
 target_link_libraries(pj_scene2d_widgets
-  PUBLIC pj_scene_common pj_scene2d_core pj_runtime Qt6::Widgets Qt6::Gui Qt6::GuiPrivate
+  PUBLIC pj_scene_common pj_scene2d_core pj_runtime pj_widgets Qt6::Widgets Qt6::Gui Qt6::GuiPrivate
 )
 
 # ---------------------------------------------------------------------------

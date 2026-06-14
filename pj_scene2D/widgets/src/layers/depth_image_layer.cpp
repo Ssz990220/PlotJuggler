@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: MPL-2.0
 #include "pj_scene2d_widgets/layers/depth_image_layer.h"
 
-#include <QCheckBox>
 #include <QComboBox>
 #include <QDoubleSpinBox>
 #include <QFormLayout>
@@ -11,6 +10,7 @@
 #include <memory>
 
 #include "pj_scene2d_core/media_source.h"
+#include "pj_widgets/CheckButton.h"
 
 namespace PJ {
 
@@ -45,9 +45,9 @@ QWidget* DepthImageLayer::createConfigWidget(QWidget* parent) {
   colormap->setCurrentIndex(colormap_ == DepthColormap::kJet ? 1 : 0);
   layout->addRow(tr("Colormap"), colormap);
 
-  auto* auto_range = new QCheckBox(widget);
+  auto* auto_range = new PJ::CheckButton(tr("Auto range"), widget);
   auto_range->setChecked(auto_range_);
-  layout->addRow(tr("Auto range"), auto_range);
+  layout->addRow(auto_range);
 
   auto* near_spin = new QDoubleSpinBox(widget);
   near_spin->setRange(0.0, 100000.0);
@@ -77,7 +77,7 @@ QWidget* DepthImageLayer::createConfigWidget(QWidget* parent) {
   connect(colormap, &QComboBox::currentIndexChanged, this, [this](int index) {
     setColormap(index == 1 ? DepthColormap::kJet : DepthColormap::kTurbo);
   });
-  connect(auto_range, &QCheckBox::toggled, this, [this, near_spin, far_spin](bool enabled) {
+  connect(auto_range, &PJ::CheckButton::toggled, this, [this, near_spin, far_spin](bool enabled) {
     near_spin->setEnabled(!enabled);
     far_spin->setEnabled(!enabled);
     setAutoRange(enabled);

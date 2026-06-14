@@ -98,11 +98,18 @@ chrome_border_width:       1
 // Keep DoubleScrubber's ScrubberBase::kCornerRadiusPx in lockstep.
 corner_radius:             4
 
-// Min content height shared by every input-chrome widget (QLineEdit,
-// QAbstractSpinBox, PJ::ComboBox) so text fields, spin boxes and combo
-// boxes resolve to one identical outer height. Retune the whole family
-// from this single value.
+// Single source of truth for the compact input height. Every input widget
+// resolves to `input_outer_height` (20px) outer:
+//   * self-painted widgets (ScrubberBase, PJ::CheckButton, PJ::ColorPickerWidget)
+//     have no QSS border/padding, so their min/max-height IS the outer height ->
+//     pinned directly to input_outer_height.
+//   * native widgets (QLineEdit, QAbstractSpinBox, PJ::ComboBox) carry a 1px
+//     border and zero vertical padding, so their content height is
+//     input_min_height = input_outer_height - 2 (the two borders).
+// Retune the whole family from these two values (keep PJ::Style::kInputHeight,
+// the no-stylesheet fallback, equal to input_outer_height).
 input_min_height:          18
+input_outer_height:        20
 
 //------- PALETTE END --------
 
@@ -144,11 +151,12 @@ QLineEdit {
     background: ${input_background};
     border: 1px solid ${border_default};
     border-radius: ${corner_radius}px;
-    padding-top: 2px;
-    padding-bottom: 2px;
+    padding-top: 0px;
+    padding-bottom: 0px;
     padding-left: ${chrome_spacing}px;
     padding-right: ${chrome_spacing}px;
     min-height: ${input_min_height}px;
+    max-height: ${input_min_height}px;
 }
 
 QLineEdit:hover,
@@ -493,12 +501,13 @@ QAbstractSpinBox {
   background-color: ${input_background};
   border: 1px solid ${border_default};
   color: ${default_text};
-  padding-top: 2px;
-  padding-bottom: 2px;
+  padding-top: 0px;
+  padding-bottom: 0px;
   padding-left: ${chrome_spacing}px;
   padding-right: ${chrome_spacing}px;
   border-radius: ${corner_radius}px;
   min-height: ${input_min_height}px;
+  max-height: ${input_min_height}px;
 }
 
 QAbstractSpinBox:up-button {
@@ -799,11 +808,12 @@ QComboBox {
     selection-color: ${selection_text};
     border: 1px solid ${border_default};
     border-radius: ${corner_radius}px;
-    padding-top: 2px;
-    padding-bottom: 2px;
+    padding-top: 0px;
+    padding-bottom: 0px;
     padding-left: ${chrome_spacing}px;
     padding-right: 22px;
     min-height: ${input_min_height}px;
+    max-height: ${input_min_height}px;
 }
 
 QComboBox:hover,
@@ -1325,6 +1335,39 @@ QWidget#widgetLabelLegend {
    registration. The leading indent is baked into the widget. */
 PJ--SectionHeaderBand {
     background-color: ${titlebar_background};
+}
+
+/* Pill toggle (pj_widgets CheckButton): self-painted, so its colours come
+   through Qt stylesheet qproperties. Checked reads as a "selected chip" using
+   the same selection tokens as the rest of the app: accent border, selection
+   fill, selection label. */
+PJ--CheckButton {
+    qproperty-accentColor: ${border_checked};
+    qproperty-borderColor: ${border_default};
+    qproperty-checkedFillColor: ${item_selection_background};
+    qproperty-textColor: ${default_text};
+}
+
+/* Self-painted input widgets (scrubbers, pill toggle, colour swatch) have no
+   QSS border/padding of their own, so min/max-height IS their outer height.
+   Pin them to input_outer_height so they match the native inputs + each other. */
+PJ--ScrubberBase, PJ--CheckButton, PJ--ColorPickerWidget {
+    min-height: ${input_outer_height}px;
+    max-height: ${input_outer_height}px;
+}
+
+/* Scene-control icon buttons (eye / add / trash / grid-style / copy-paste) sit in
+   grid layouts, so QStyleSheetStyle — not the C++ setFixedSize — governs their size
+   once the app stylesheet is active. On HiDPI the tool-button icon metric can be
+   24px, which would otherwise grow the button to ~26px and break the alignment.
+   Pin every QToolButton in the panel to the input height so they match the inputs
+   and the Topics-table eyes (which are setGeometry'd to the same size). */
+PJ--Scene3DConfigPanel QToolButton {
+    min-width: ${input_outer_height}px;
+    max-width: ${input_outer_height}px;
+    min-height: ${input_outer_height}px;
+    max-height: ${input_outer_height}px;
+    padding: 0px;
 }
 
 /* 2-px leading padding so the section titles ("Sources", "Datasets",

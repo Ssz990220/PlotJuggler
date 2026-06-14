@@ -32,25 +32,27 @@ class Style : public QProxyStyle {
     return QProxyStyle::styleHint(hint, option, widget, return_data);
   }
 
-  // Compact input chrome: Fusion sizes line edits / combo boxes / spin boxes a
-  // few px taller than the text needs (~25 px at 10 pt). Trim every input to one
-  // compact height so rows read tight, but never below font + 2 so text fits.
+  // FALLBACK ONLY. Compact input height for when NO stylesheet is active (e.g.
+  // a unit test that constructs widgets without the app QSS). In the running app
+  // the QSS is the source of truth: once qApp->setStyleSheet() runs, a
+  // QStyleSheetStyle wraps this style and governs input height from the
+  // `input_outer_height` / `input_min_height` tokens in
+  // resources/stylesheet_*.qss — this override is then bypassed. Kept so inputs
+  // still resolve to one sane height without a stylesheet; mirrors the QSS outer
+  // height, so the two never disagree.
   QSize sizeFromContents(
       ContentsType type, const QStyleOption* option, const QSize& size, const QWidget* widget) const override {
     QSize s = QProxyStyle::sizeFromContents(type, option, size, widget);
     if (type == CT_LineEdit || type == CT_ComboBox || type == CT_SpinBox) {
-      const int floor_h = option ? option->fontMetrics.height() + 2 : kInputHeight;
-      s.setHeight(std::max(std::min(s.height(), kInputHeight), floor_h));
+      s.setHeight(kInputHeight);
     }
     return s;
   }
 
-  // The single governing height for ALL input chrome (line edits, combos, spin
-  // boxes, and — via ScrubberBase::styledHeight querying CT_LineEdit — the
-  // scrubbers). Fusion computes input height in sizeFromContents BEFORE the
-  // stylesheet runs, so QSS can't set it; this constant is the one place to
-  // retune it. The QSS `input_min_height` token is only a lower floor and does
-  // not change the outer height once it is below this value.
+  // The compact input outer height. The PRIMARY knob is the QSS token
+  // `input_outer_height` (which the app actually uses); keep this C++ mirror in
+  // lockstep with it (like ThemeColors mirrors the palette) so the no-stylesheet
+  // fallback above matches what the stylesheet produces.
   static constexpr int kInputHeight = 20;
 };
 

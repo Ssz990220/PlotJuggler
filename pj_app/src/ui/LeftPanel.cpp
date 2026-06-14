@@ -253,7 +253,7 @@ void LeftPanel::applyIcons(QString theme) {
   ui_->buttonLoadDatafile->setIcon(LoadSvg(":/resources/svg/upload_file.svg", theme));
   ui_->buttonReloadData->setIcon(LoadSvg(":/resources/svg/restore_page.svg", theme));
   ui_->buttonRecentFiles->setIcon(LoadSvg(":/resources/svg/play_arrow.svg", theme));
-  ui_->buttonStreamingOptions->setIcon(LoadSvg(":/resources/svg/add_tab.svg", theme));
+  ui_->buttonStreamingOptions->setIcon(LoadSvg(":/resources/svg/add.svg", theme));
   applyPauseButtonState(theme);
 
   const QSize icon_sz(chrome_metrics_.icon_size, chrome_metrics_.icon_size);

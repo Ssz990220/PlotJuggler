@@ -513,7 +513,7 @@ void TabbedPlotWidget::onChromeMetricsChanged(const ChromeMetrics& metrics) {
 
 void TabbedPlotWidget::onStylesheetChanged(QString theme) {
   if (button_add_tab_ != nullptr) {
-    button_add_tab_->setIcon(LoadSvg(":/resources/svg/add_tab.svg", theme));
+    button_add_tab_->setIcon(LoadSvg(":/resources/svg/add.svg", theme));
   }
   // Panel-toggle button icons are owned by MainWindow because their
   // open/close glyph depends on the live visibility of the target
