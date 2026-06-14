@@ -1,0 +1,48 @@
+#pragma once
+// Copyright 2026 Davide Faconti
+// SPDX-License-Identifier: MPL-2.0
+
+#include <glm/glm.hpp>
+#include <vector>
+
+#include "pj_base/builtin/poses_in_frame.hpp"
+
+namespace pj::scene3d {
+
+// One instanced arrow arm of a pose's coordinate triad. `model` is the
+// FRAME-LOCAL transform (pose * arm-rotation * uniform scale) — the fixed-frame
+// TF transform is applied later as a render-time uniform, NOT baked here, so TF
+// and camera motion cost zero instance re-upload. `color` is RGBA with the
+// gizmo opacity in alpha (consumed by the annotation blend path).
+struct PoseTriadInstance {
+  glm::mat4 model;
+  glm::vec4 color;
+};
+
+// How a PosesInFrame is expanded into arm instances. Geometry (`x_arrow_only`)
+// and coloring (`override_color`) are independent: you can recolor a full triad
+// or keep a single X arm in its natural red. Kept separate from the message so a
+// knob edit re-expands the same decoded sample cheaply.
+struct PoseTriadStyle {
+  // Arm length in meters — a uniform scale of the unit arrow, so thickness stays
+  // proportional, matching the TF "Frames" gizmos.
+  float axis_length = 0.15f;
+  // Clamped to [0,1] and written to every arm's color alpha.
+  float opacity = 1.0f;
+  // Draw only the local +X arm (1 instance/pose) instead of the full XYZ triad.
+  bool x_arrow_only = false;
+  // Replace the per-axis R/G/B with `color`, in BOTH triad and X-only modes, so
+  // every arm of every pose shares one user color.
+  bool override_color = false;
+  // The shared color used iff `override_color` (rgb; alpha comes from `opacity`).
+  glm::vec3 color = glm::vec3(0.95f, 0.30f, 0.30f);
+};
+
+// Expand a PosesInFrame into arm instances per `style`. Each pose becomes either
+// a full coordinate triad (X red, Y green, Z blue, in that order -> 3 arms) or a
+// single X-axis arm (`x_arrow_only` -> 1 arm); `override_color` recolors whichever
+// arms are produced. Empty in -> empty out. Pure CPU geometry: no Qt, no GL.
+[[nodiscard]] std::vector<PoseTriadInstance> buildPoseTriadInstances(
+    const PJ::sdk::PosesInFrame& msg, const PoseTriadStyle& style);
+
+}  // namespace pj::scene3d

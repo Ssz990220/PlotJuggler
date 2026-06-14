@@ -1,0 +1,378 @@
+// Copyright 2026 Davide Faconti
+// SPDX-License-Identifier: MPL-2.0
+#include "pj_scene3d_widgets/layers/poses_in_frame_layer.h"
+
+#include <QColor>
+#include <QDomElement>
+#include <QFormLayout>
+#include <QHBoxLayout>
+#include <QLoggingCategory>
+#include <QVBoxLayout>
+#include <QWidget>
+#include <algorithm>
+#include <any>
+#include <glm/glm.hpp>
+#include <optional>
+
+#include "pj_base/builtin/poses_in_frame.hpp"
+#include "pj_base/time.hpp"  // PJ::toRaw
+#include "pj_plugins/sdk/message_parser_plugin_base.hpp"
+#include "pj_runtime/SessionManager.h"
+#include "pj_scene3d_core/tf/transform.h"
+#include "pj_scene3d_widgets/parse_locked.h"
+#include "pj_scene3d_widgets/render_pass.h"  // ViewParams, FrameContext
+#include "pj_widgets/ColorPickerWidget.h"
+#include "pj_widgets/DoubleScrubber.h"
+#include "pj_widgets/ToggleSwitch.h"
+
+namespace pj::scene3d {
+
+namespace {
+Q_LOGGING_CATEGORY(lcPoses, "pj.scene3d.poses_in_frame")
+}  // namespace
+
+PosesInFrameLayer::PosesInFrameLayer(PJ::ObjectTopicId topic_id, QString display_name, QObject* parent)
+    : Scene3DLayer(parent), topic_id_(topic_id), display_name_(std::move(display_name)) {}
+
+PosesInFrameLayer::~PosesInFrameLayer() = default;
+
+PJ::SceneLayerInfo PosesInFrameLayer::info() const {
+  return PJ::SceneLayerInfo{
+      .topic_id = topic_id_,
+      .object_type = PJ::sdk::BuiltinObjectType::kPosesInFrame,
+      .display_name = display_name_,
+      .family_name = QStringLiteral("PosesInFrame"),
+      .visible = visible_,
+  };
+}
+
+PJ::Range<PJ::Timepoint> PosesInFrameLayer::timeRange() const {
+  const auto* store = ctx_.session != nullptr ? &ctx_.session->objectStore() : nullptr;
+  return PJ::liveTopicTimeRange(store, topic_id_);
+}
+
+QStringList PosesInFrameLayer::fallbackFrames() const {
+  if (source_frame_.empty()) {
+    return {};
+  }
+  return {QString::fromStdString(source_frame_)};
+}
+
+QString PosesInFrameLayer::sourceFrame() const {
+  return QString::fromStdString(source_frame_);
+}
+
+QDomElement PosesInFrameLayer::xmlSaveState(QDomDocument& doc) const {
+  QDomElement el = doc.createElement(QStringLiteral("poses_in_frame"));
+  el.setAttribute(QStringLiteral("gizmo_size"), static_cast<double>(gizmo_size_));
+  el.setAttribute(QStringLiteral("gizmo_opacity"), static_cast<double>(gizmo_opacity_));
+  el.setAttribute(QStringLiteral("x_arrow_only"), x_arrow_only_ ? 1 : 0);
+  el.setAttribute(QStringLiteral("override_color"), override_color_enabled_ ? 1 : 0);
+  el.setAttribute(QStringLiteral("override_color_value"), override_color_.name(QColor::HexRgb));
+  return el;
+}
+
+bool PosesInFrameLayer::xmlLoadState(const QDomElement& element) {
+  if (element.tagName() != QStringLiteral("poses_in_frame")) {
+    return false;
+  }
+  bool ok = false;
+  const float size = element.attribute(QStringLiteral("gizmo_size"), QStringLiteral("0.15")).toFloat(&ok);
+  if (ok) {
+    setGizmoSize(size);
+  }
+  const float opacity = element.attribute(QStringLiteral("gizmo_opacity"), QStringLiteral("1.0")).toFloat(&ok);
+  if (ok) {
+    setGizmoOpacity(opacity);
+  }
+  setXArrowOnly(element.attribute(QStringLiteral("x_arrow_only"), QStringLiteral("0")) == QStringLiteral("1"));
+  setOverrideColorEnabled(
+      element.attribute(QStringLiteral("override_color"), QStringLiteral("0")) == QStringLiteral("1"));
+  const QColor color(element.attribute(QStringLiteral("override_color_value")));
+  if (color.isValid()) {
+    setOverrideColor(color);
+  }
+  return true;
+}
+
+bool PosesInFrameLayer::attach(const PJ::SceneLayerContext& ctx) {
+  const auto& scene3d_ctx = static_cast<const Scene3DLayerContext&>(ctx);
+  if (scene3d_ctx.session == nullptr) {
+    qCWarning(lcPoses) << "attach: session is null";
+    return false;
+  }
+  ctx_ = scene3d_ctx;
+  if (!scene3d_ctx.session->parserBindingForObjectTopic(topic_id_)) {
+    qCWarning(lcPoses) << "attach: no parser for poses topic" << topic_id_.id;
+    return false;
+  }
+  resetReplayState();
+  // Streaming-tolerant: a topic can be attached before its first sample lands
+  // (layout restore at stream start, catalog drag). bootstrap() only pre-warms
+  // source_frame_; renderAt() self-heals it, so a failure must NOT drop the layer
+  // (SceneDockWidget::attach discards on false).
+  if (!bootstrap()) {
+    qCWarning(lcPoses) << "attach: bootstrap deferred for poses topic" << topic_id_.id
+                       << "— render will start once a sample arrives";
+  }
+  return true;
+}
+
+void PosesInFrameLayer::detach() {
+  resetReplayState();
+}
+
+void PosesInFrameLayer::resetReplayState() {
+  instances_.clear();
+  pass_.setInstances({});
+  staged_uid_ = {};
+  staged_revision_ = -1;
+  source_frame_.clear();
+}
+
+void PosesInFrameLayer::updateSourceFrame(const std::string& frame_id) {
+  if (frame_id == source_frame_) {
+    return;
+  }
+  source_frame_ = frame_id;
+  emit sourceFrameChanged(QString::fromStdString(source_frame_));
+  emit fallbackFramesChanged(fallbackFrames());
+}
+
+bool PosesInFrameLayer::bootstrap() {
+  PJ::ObjectStore& store = ctx_.session->objectStore();
+  auto first = store.at(topic_id_, 0);
+  if (!first.has_value() || first->payload.bytes.empty()) {
+    return false;
+  }
+  const auto binding = ctx_.session->parserBindingForObjectTopic(topic_id_);
+  if (!binding) {
+    return false;
+  }
+  auto obj = parseLocked(binding, first->timestamp, first->payload);
+  if (!obj.has_value()) {
+    qCWarning(lcPoses) << "bootstrap: parseObject failed:" << QString::fromStdString(obj.error());
+    return false;
+  }
+  const auto* msg = std::any_cast<PJ::sdk::PosesInFrame>(&obj->object);
+  if (msg == nullptr) {
+    return false;
+  }
+  updateSourceFrame(msg->frame_id);
+  return true;
+}
+
+void PosesInFrameLayer::renderAt(int64_t time_ns) {
+  if (ctx_.session == nullptr) {
+    return;
+  }
+  PJ::ObjectStore& store = ctx_.session->objectStore();
+  auto entry = store.latestAt(topic_id_, time_ns);
+  if (!entry.has_value() || entry->payload.bytes.empty()) {
+    // No sample at/before this time -> show nothing.
+    if (!instances_.empty()) {
+      instances_.clear();
+      pass_.setInstances({});
+    }
+    staged_uid_ = {};
+    return;
+  }
+  // Scrub coalescing: the same store entry under the same style is already staged.
+  if (entry->sequential_uid == staged_uid_ && style_revision_ == staged_revision_) {
+    return;
+  }
+  // Per-use binding fetch (never cached) — a reload re-registers the parser slot.
+  const auto binding = ctx_.session->parserBindingForObjectTopic(topic_id_);
+  if (!binding) {
+    return;
+  }
+  auto obj = parseLocked(binding, entry->timestamp, entry->payload);
+  if (!obj.has_value()) {
+    return;
+  }
+  const auto* msg = std::any_cast<PJ::sdk::PosesInFrame>(&obj->object);
+  if (msg == nullptr) {
+    return;
+  }
+  updateSourceFrame(msg->frame_id);
+  instances_ = buildPoseTriadInstances(
+      *msg, PoseTriadStyle{
+                .axis_length = gizmo_size_,
+                .opacity = gizmo_opacity_,
+                .x_arrow_only = x_arrow_only_,
+                .override_color = override_color_enabled_,
+                .color = glm::vec3(override_color_.redF(), override_color_.greenF(), override_color_.blueF()),
+            });
+  pass_.setInstances(instances_);
+  staged_uid_ = entry->sequential_uid;
+  staged_revision_ = style_revision_;
+}
+
+void PosesInFrameLayer::setFixedFrame(const QString& frame) {
+  // The poses are frame-relative; render() re-resolves the fixed frame each paint
+  // via FrameContext, so a change only needs a repaint.
+  Q_UNUSED(frame);
+  emit repaintRequested();
+}
+
+void PosesInFrameLayer::setTrackerTime(PJ::Timepoint time) {
+  Q_UNUSED(time);  // render() reads frame_ctx.time via the tracker_dirty_ path
+  tracker_dirty_ = true;
+  emit repaintRequested();
+}
+
+void PosesInFrameLayer::setVisible(bool visible) {
+  if (visible_ == visible) {
+    return;
+  }
+  visible_ = visible;
+  emit visibilityChanged(visible);
+  // Catch-up on un-hide is the dock's job (it re-delivers the last tracker time).
+  emit repaintRequested();
+}
+
+void PosesInFrameLayer::initializeGL() {
+  pass_.initializeGL();
+}
+
+void PosesInFrameLayer::releaseGL() {
+  pass_.releaseGL();
+}
+
+void PosesInFrameLayer::render(const ViewParams& view_params, const FrameContext& frame_ctx) {
+  if (!visible_) {
+    return;
+  }
+  // Drain a pending tracker move or style edit (one expansion per painted frame).
+  if (tracker_dirty_) {
+    tracker_dirty_ = false;
+    renderAt(PJ::toRaw(frame_ctx.time));
+  }
+  if (source_frame_.empty() || instances_.empty()) {
+    return;  // nothing decoded yet, or an empty pose set
+  }
+  const auto transform = frame_ctx.lookup(source_frame_);
+  if (!transform.has_value()) {
+    return;  // orphan: source frame can't resolve into the fixed frame -> draw nothing
+  }
+  pass_.render(view_params, glm::mat4(transform->matrix()));
+}
+
+void PosesInFrameLayer::setGizmoSize(float meters) {
+  const float clamped = std::clamp(meters, 0.01f, 100.0f);
+  if (gizmo_size_ == clamped) {
+    return;
+  }
+  gizmo_size_ = clamped;
+  ++style_revision_;
+  tracker_dirty_ = true;  // re-expand the current sample on the next paint
+  emit repaintRequested();
+}
+
+void PosesInFrameLayer::setGizmoOpacity(float opacity) {
+  const float clamped = std::clamp(opacity, 0.0f, 1.0f);
+  if (gizmo_opacity_ == clamped) {
+    return;
+  }
+  gizmo_opacity_ = clamped;
+  ++style_revision_;
+  tracker_dirty_ = true;
+  emit repaintRequested();
+}
+
+void PosesInFrameLayer::setXArrowOnly(bool x_arrow_only) {
+  if (x_arrow_only_ == x_arrow_only) {
+    return;
+  }
+  x_arrow_only_ = x_arrow_only;
+  ++style_revision_;
+  tracker_dirty_ = true;  // re-expand the current sample (triad <-> single arm)
+  emit repaintRequested();
+}
+
+void PosesInFrameLayer::setOverrideColorEnabled(bool enabled) {
+  if (override_color_enabled_ == enabled) {
+    return;
+  }
+  override_color_enabled_ = enabled;
+  ++style_revision_;
+  tracker_dirty_ = true;  // re-expand: per-axis RGB <-> shared override color
+  emit repaintRequested();
+}
+
+void PosesInFrameLayer::setOverrideColor(QColor color) {
+  if (override_color_ == color) {
+    return;
+  }
+  override_color_ = color;
+  ++style_revision_;
+  // Only changes what is drawn while the override is enabled, but bump
+  // unconditionally so the next paint reflects it immediately when it is.
+  tracker_dirty_ = true;
+  emit repaintRequested();
+}
+
+QWidget* PosesInFrameLayer::createConfigWidget(QWidget* parent) {
+  auto* container = new QWidget(parent);
+  auto* outer = new QVBoxLayout(container);
+  outer->setContentsMargins(0, 0, 0, 0);
+  outer->setSpacing(4);
+  auto* form = new QFormLayout();
+  form->setContentsMargins(0, 0, 0, 0);
+  form->setHorizontalSpacing(8);
+  form->setVerticalSpacing(4);
+  outer->addLayout(form);
+
+  auto* size_spin = new PJ::DoubleScrubber(container);
+  size_spin->setRange(0.01, 5.0);
+  size_spin->setDecimals(3);
+  size_spin->setSingleStep(0.01);
+  size_spin->setValue(static_cast<double>(gizmo_size_));
+  form->addRow(tr("Arrow length (m):"), size_spin);
+  QObject::connect(
+      size_spin, &PJ::DoubleScrubber::valueChanged, this, [this](double v) { setGizmoSize(static_cast<float>(v)); });
+
+  auto* opacity_spin = new PJ::DoubleScrubber(container);
+  opacity_spin->setRange(0.0, 1.0);
+  opacity_spin->setDecimals(2);
+  opacity_spin->setSingleStep(0.05);
+  opacity_spin->setValue(static_cast<double>(gizmo_opacity_));
+  form->addRow(tr("Opacity:"), opacity_spin);
+  QObject::connect(opacity_spin, &PJ::DoubleScrubber::valueChanged, this, [this](double v) {
+    setGizmoOpacity(static_cast<float>(v));
+  });
+
+  // "X Arrow only" geometry toggle: a single X arm per pose instead of the triad.
+  auto* x_only_toggle = new PJ::ToggleSwitch(container);
+  x_only_toggle->setChecked(x_arrow_only_, /*animate=*/false);
+  form->addRow(tr("X Arrow only:"), x_only_toggle);
+  QObject::connect(x_only_toggle, &PJ::ToggleSwitch::toggled, this, [this](bool on) { setXArrowOnly(on); });
+
+  // Override color: the sliding switch + swatch sit on one row. Recolors the
+  // single X arm OR the whole triad; picking a color auto-enables the override.
+  auto* override_row = new QWidget(container);
+  auto* override_layout = new QHBoxLayout(override_row);
+  override_layout->setContentsMargins(0, 0, 0, 0);
+  override_layout->setSpacing(8);
+  auto* override_toggle = new PJ::ToggleSwitch(override_row);
+  override_toggle->setChecked(override_color_enabled_, /*animate=*/false);
+  auto* swatch = new PJ::ColorPickerWidget(override_row);
+  swatch->setColor(override_color_);
+  override_layout->addWidget(override_toggle);
+  override_layout->addWidget(swatch);
+  override_layout->addStretch();
+  form->addRow(tr("Override color:"), override_row);
+
+  QObject::connect(override_toggle, &PJ::ToggleSwitch::toggled, this, [this](bool on) { setOverrideColorEnabled(on); });
+  QObject::connect(swatch, &PJ::ColorPickerWidget::colorChanged, this, [this, override_toggle](QColor c) {
+    setOverrideColor(c);
+    if (!override_toggle->isChecked()) {
+      override_toggle->setChecked(true);  // picking implies enable (visual slide)
+    }
+    setOverrideColorEnabled(true);  // apply now; the toggled-driven call lags the slide animation
+  });
+
+  return container;
+}
+
+}  // namespace pj::scene3d

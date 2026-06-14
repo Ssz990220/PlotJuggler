@@ -121,6 +121,52 @@ testable (`camera_near_far_test`, `camera_zoom_to_cursor_test`,
   `xmlLoadState` restores both, sanitizing the state so a corrupt layout can never
   drive a degenerate view.
 
+## Pose-array layer (`PosesInFrame`)
+
+`PosesInFrameLayer` renders a `PJ.PosesInFrame` topic (`geometry_msgs/PoseArray` /
+`foxglove.PosesInFrame` equivalent — a flat list of poses in **one** `frame_id`,
+not a TF tree) as a per-pose coordinate-axis **triad** gizmo, with per-layer params:
+**arrow length** (m), **opacity**, an **X-arrow-only** geometry mode (draw a single
+X arrow per pose instead of the triad — useful for dense pose arrays where full
+triads clutter), and an orthogonal **color override** (recolor every arm with one
+shared color). Geometry and coloring are independent: you can recolor a full triad
+or keep a single X arm in its natural red. Defaults (0.15 m, 1.0, off, off) and the
+desaturated X/Y/Z colors match the TF "Frames" gizmos.
+
+- **Pure expansion (core, GL-free, unit-tested).** `buildPoseTriadInstances(msg,
+  PoseTriadStyle{axis_length, opacity, x_arrow_only, override_color, color})`
+  (`core/poses_in_frame_render.{h,cpp}`) turns each pose into three
+  `PoseTriadInstance{mat4 model, vec4 color}` arms — `poseToMat4(pose) · arm-rotation ·
+  scale(size)`, frame-LOCAL, with `opacity` in the color alpha. The arm rotations
+  (+X→+Y / +X→+Z) and colors mirror `renderTriadBound` / `AxisRenderPass`. The style
+  struct keeps geometry (`x_arrow_only` → 1 arm vs 3) separate from coloring
+  (`override_color` → every produced arm takes the shared `color`, else its natural
+  per-axis R/G/B), so an un-overridden X-only arm is still red.
+- **GPU-instanced draw.** `PosesRenderPass` (`passes/poses_render_pass.{h,cpp}`) owns
+  one unit-arrow mesh (shared with `ArrowGizmo` via `gizmos/arrow_mesh.{h,cpp}`) plus
+  an instance VBO (per-instance `mat4 model` at locs 2–5 + `vec4 color` at loc 6,
+  divisor 1 — the `MarkerRenderPass` solid-instancing layout). **Key efficiency
+  choice:** the per-instance model is frame-LOCAL and the fixed-frame TF transform is
+  a `u_frame_world` uniform, so the instance buffer re-uploads only when the sample /
+  size / opacity changes — TF and camera motion cost nothing. All `3·N` arms draw in
+  one `glDrawElementsInstanced`, so a thousands-of-poses AMCL particle cloud stays one
+  draw call. Lit shading + annotation blend (bracketed like the TF axes) keep the look
+  identical to the frame gizmos.
+- **Ingest.** Mirrors `OccupancyGridLayer`: `attach` bootstraps the source frame;
+  `setTrackerTime` defers to `render()`, which decodes `store.latestAt(t)` via a
+  **per-use** `parseLocked` binding (never cached — the reload-UAF rule), expands, and
+  stages into the pass. A `SequentialUID`-keyed coalescing guard skips redundant
+  decodes while scrubbing within one message; a `style_revision_` bump forces the
+  current sample to re-expand after any style edit. `render` resolves
+  `frame_ctx.lookup(frame_id)` once — an unresolvable frame draws nothing (orphan).
+- **Params persistence.** `xmlSaveState`/`xmlLoadState` round-trip `<poses_in_frame
+  gizmo_size gizmo_opacity x_arrow_only override_color override_color_value>`, which
+  also makes the params copy/paste/apply-to-family-able through `pj_scene_common`'s
+  `serializeLayerParams`/`applyLayerParams`. The config widget's "Override color"
+  checkbox + always-visible "Color:" swatch reuse `SceneEntitiesLayer`'s marker-recolor
+  text and layout (picking a color auto-ticks the box) for cross-layer consistency.
+  No host edits.
+
 ## URDF / robot-model subsystem
 
 - **Parser** (`widgets/src/urdf_parser.{h,cpp}`): `QDomDocument`-based;

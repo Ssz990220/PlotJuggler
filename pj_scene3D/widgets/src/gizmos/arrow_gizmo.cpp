@@ -5,14 +5,12 @@
 
 #include <fmt/core.h>
 
-#include <algorithm>
 #include <array>
-#include <cmath>
 #include <glm/gtc/matrix_transform.hpp>
-#include <numbers>
 #include <string_view>
 #include <variant>
 
+#include "pj_scene3d_widgets/gizmos/arrow_mesh.h"
 #include "pj_scene3d_widgets/gl/gl_functions.h"
 
 namespace pj::scene3d {
@@ -114,96 +112,13 @@ void ArrowGizmo::releaseGL() {
 }
 
 void ArrowGizmo::generateMesh() {
-  vertex_data_.clear();
-  index_data_.clear();
-
-  const int segments = std::max(params_.segments, 3);
-  const float length = std::max(params_.length, 0.0f);
-  const float head_length = std::clamp(params_.head_length, 0.0f, length);
-  const float shaft_length = length - head_length;
-  const float shaft_radius = std::max(params_.shaft_radius, 0.0f);
-  const float head_radius = std::max(params_.head_radius, 0.0f);
-  const float two_pi = 2.0f * std::numbers::pi_v<float>;
-
-  auto pushVertex = [&](float px, float py, float pz, float nx, float ny, float nz) {
-    vertex_data_.insert(vertex_data_.end(), {px, py, pz, nx, ny, nz});
-  };
-
-  // ---- Cylinder shaft (lateral surface) ----
-  // Two rings of `segments` vertices: x=0 (back) and x=shaft_length (front).
-  // Per-vertex radial normals -> smooth shading around the cylinder.
-  const uint32_t shaft_back = static_cast<uint32_t>(vertex_data_.size() / 6);
-  for (int ring = 0; ring < 2; ++ring) {
-    const float x = (ring == 0) ? 0.0f : shaft_length;
-    for (int i = 0; i < segments; ++i) {
-      const float theta = two_pi * static_cast<float>(i) / static_cast<float>(segments);
-      const float c = std::cos(theta);
-      const float s = std::sin(theta);
-      pushVertex(x, shaft_radius * c, shaft_radius * s, 0.0f, c, s);
-    }
-  }
-  for (int i = 0; i < segments; ++i) {
-    const int next = (i + 1) % segments;
-    const uint32_t a = shaft_back + i;
-    const uint32_t b = shaft_back + next;
-    const uint32_t c = shaft_back + segments + next;
-    const uint32_t d = shaft_back + segments + i;
-    index_data_.insert(index_data_.end(), {a, b, c, a, c, d});
-  }
-
-  // ---- Cone base disc (faces -X, sits between shaft and head) ----
-  // Closes off any visible gap when head_radius > shaft_radius.
-  const uint32_t disc_center = static_cast<uint32_t>(vertex_data_.size() / 6);
-  pushVertex(shaft_length, 0.0f, 0.0f, -1.0f, 0.0f, 0.0f);
-  for (int i = 0; i < segments; ++i) {
-    const float theta = two_pi * static_cast<float>(i) / static_cast<float>(segments);
-    pushVertex(shaft_length, head_radius * std::cos(theta), head_radius * std::sin(theta), -1.0f, 0.0f, 0.0f);
-  }
-  for (int i = 0; i < segments; ++i) {
-    const int next = (i + 1) % segments;
-    index_data_.insert(
-        index_data_.end(),
-        {disc_center, disc_center + 1U + static_cast<uint32_t>(next), disc_center + 1U + static_cast<uint32_t>(i)});
-  }
-
-  // ---- Cone head (lateral surface) ----
-  // Normal at a base-ring point: (head_radius, head_length*cos, head_length*sin) / sqrt(R^2 + H^2)
-  // (derived from circumferential × axial cross product).
-  const float norm_len = std::sqrt(head_radius * head_radius + head_length * head_length);
-  const float nx_cone = (norm_len > 0.0f) ? head_radius / norm_len : 1.0f;
-  const uint32_t cone_ring = static_cast<uint32_t>(vertex_data_.size() / 6);
-  for (int i = 0; i < segments; ++i) {
-    const float theta = two_pi * static_cast<float>(i) / static_cast<float>(segments);
-    const float c = std::cos(theta);
-    const float s = std::sin(theta);
-    const float ny = (norm_len > 0.0f) ? head_length * c / norm_len : 0.0f;
-    const float nz = (norm_len > 0.0f) ? head_length * s / norm_len : 0.0f;
-    pushVertex(shaft_length, head_radius * c, head_radius * s, nx_cone, ny, nz);
-  }
-  const uint32_t cone_tip = static_cast<uint32_t>(vertex_data_.size() / 6);
-  pushVertex(length, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f);
-  for (int i = 0; i < segments; ++i) {
-    const int next = (i + 1) % segments;
-    index_data_.insert(
-        index_data_.end(), {cone_ring + static_cast<uint32_t>(i), cone_ring + static_cast<uint32_t>(next), cone_tip});
-  }
-
-  // ---- Back cap on the shaft (faces -X) ----
-  // Cosmetic — makes the arrow look closed if viewed end-on. Wound CCW
-  // when viewed from -X (outside) so backface culling keeps it visible.
-  const uint32_t back_center = static_cast<uint32_t>(vertex_data_.size() / 6);
-  pushVertex(0.0f, 0.0f, 0.0f, -1.0f, 0.0f, 0.0f);
-  for (int i = 0; i < segments; ++i) {
-    const float theta = two_pi * static_cast<float>(i) / static_cast<float>(segments);
-    pushVertex(0.0f, shaft_radius * std::cos(theta), shaft_radius * std::sin(theta), -1.0f, 0.0f, 0.0f);
-  }
-  for (int i = 0; i < segments; ++i) {
-    const int next = (i + 1) % segments;
-    index_data_.insert(
-        index_data_.end(),
-        {back_center, back_center + 1U + static_cast<uint32_t>(next), back_center + 1U + static_cast<uint32_t>(i)});
-  }
-
+  // Delegate to the shared CPU tessellator (the single source of truth also used
+  // by PosesRenderPass's instanced arrows), then keep the bytes for uploadMesh().
+  ArrowMeshData mesh = buildArrowMesh(
+      ArrowMeshParams{
+          params_.length, params_.shaft_radius, params_.head_length, params_.head_radius, params_.segments});
+  vertex_data_ = std::move(mesh.vertices);
+  index_data_ = std::move(mesh.indices);
   mesh_dirty_ = false;
 }
 

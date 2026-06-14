@@ -16,6 +16,7 @@ add_library(pj_scene3d_core STATIC
   src/occupancy_grid_reconstructor.cpp
   src/pointcloud_codecs.cpp
   src/pointcloud_convert.cpp
+  src/poses_in_frame_render.cpp
   src/scene_entities_decode.cpp
   src/tf/tf_buffer.cpp
   src/version.cpp
@@ -39,6 +40,7 @@ if(PJ_BUILD_TESTS)
     ../tests/camera_near_far_test.cpp
     ../tests/camera_zoom_to_cursor_test.cpp
     ../tests/camera_state_transfer_test.cpp
+    ../tests/poses_in_frame_render_test.cpp
     ../tests/scene_entities_decode_test.cpp
     ../tests/tf_buffer_test.cpp
     ../tests/tf_buffer_hierarchy_test.cpp

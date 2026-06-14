@@ -14,6 +14,7 @@ set(PJ_SCENE3D_WIDGETS_SOURCES
   src/gl/gpu_profiler.cpp
   src/scene_hdr_fbo.cpp
   src/gizmos/arrow_gizmo.cpp
+  src/gizmos/arrow_mesh.cpp
   src/passes/axis_overlay_pass.cpp
   src/passes/axis_render_pass.cpp
   src/passes/grid_geometry.cpp
@@ -21,6 +22,7 @@ set(PJ_SCENE3D_WIDGETS_SOURCES
   src/passes/pointcloud_render_pass.cpp
   src/passes/occupancy_grid_render_pass.cpp
   src/passes/marker_render_pass.cpp
+  src/passes/poses_render_pass.cpp
   src/passes/mesh_render_pass.cpp
   src/passes/ssao_pass.cpp
   src/passes/edl_pass.cpp
@@ -29,6 +31,7 @@ set(PJ_SCENE3D_WIDGETS_SOURCES
   src/scene3d_layer.cpp
   src/layers/pointcloud_layer.cpp
   src/layers/occupancy_grid_layer.cpp
+  src/layers/poses_in_frame_layer.cpp
   src/layers/scene_entities_layer.cpp
   src/layers/robot_model_layer.cpp
   src/urdf_parser.cpp
@@ -43,10 +46,12 @@ set(PJ_SCENE3D_WIDGETS_SOURCES
   include/pj_scene3d_widgets/mesh_data.h
   include/pj_scene3d_widgets/layers/pointcloud_layer.h
   include/pj_scene3d_widgets/layers/occupancy_grid_layer.h
+  include/pj_scene3d_widgets/layers/poses_in_frame_layer.h
   include/pj_scene3d_widgets/layers/scene_entities_layer.h
   include/pj_scene3d_widgets/layers/robot_model_layer.h
   include/pj_scene3d_widgets/passes/occupancy_grid_render_pass.h
   include/pj_scene3d_widgets/passes/marker_render_pass.h
+  include/pj_scene3d_widgets/passes/poses_render_pass.h
   include/pj_scene3d_widgets/passes/mesh_render_pass.h
   include/pj_scene3d_widgets/passes/ssao_pass.h
   include/pj_scene3d_widgets/passes/edl_pass.h
@@ -206,6 +211,21 @@ if(PJ_BUILD_TESTS)
   )
   target_compile_options(pointcloud_layer_param_transfer_test PRIVATE ${PJ_WARNING_FLAGS} ${PJ_SANITIZER_FLAGS})
   add_test(NAME pointcloud_layer_param_transfer_test COMMAND pointcloud_layer_param_transfer_test)
+
+  # PosesInFrameLayer: tracker-time decode -> triad expansion, scrub coalescing,
+  # size/opacity re-expansion, empty/orphan edges, the per-use parseLocked rebind
+  # guard, and the copy/paste/apply-to-family param round-trip (serializeLayerParams).
+  add_executable(poses_in_frame_layer_test
+    tests/poses_in_frame_layer_test.cpp
+  )
+  target_link_libraries(poses_in_frame_layer_test PRIVATE
+    pj_scene3d_widgets
+    pj_scene_common
+    GTest::gtest
+  )
+  target_compile_definitions(poses_in_frame_layer_test PRIVATE PJ_SCENE3D_TEST_HOOKS)
+  target_compile_options(poses_in_frame_layer_test PRIVATE ${PJ_WARNING_FLAGS} ${PJ_SANITIZER_FLAGS})
+  add_test(NAME poses_in_frame_layer_test COMMAND poses_in_frame_layer_test)
 
   # M.65: pin PointCloudLayer's per-use parser binding (raw renderAt path still
   # calls parseLocked on the UI thread per tick — a reintroduced cached pointer is

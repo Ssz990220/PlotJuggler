@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| Status | Shipped (v1 feature-complete: TF, pointclouds, occupancy grids, markers, URDF/mesh, HDR/SSAO/EDL, live streaming) |
+| Status | Shipped (v1 feature-complete: TF, pointclouds, occupancy grids, markers, pose arrays, URDF/mesh, HDR/SSAO/EDL, live streaming) |
 | Date | 2026-05-17 (rev. 2026-05-30) |
 | Scope | What, not how |
 | Supersedes | `PJ4_PLAN.md` §5.5 (refinement) |
@@ -18,8 +18,9 @@ This document is the source of truth for the *intent* of `pj_scene3D`. It delibe
 > consumes those objects from the store on tracker change and renders them.
 > Pointclouds, TF, and occupancy grids / costmaps are implemented. 3D markers
 > (`SceneEntitiesLayer` — visualization_msgs/MarkerArray-equivalent
-> `kSceneEntities` topics) and URDF/mesh robot models (`RobotModelLayer`) are
-> also implemented. The Phase-1 sections below are retained as historical intent
+> `kSceneEntities` topics), URDF/mesh robot models (`RobotModelLayer`), and pose
+> arrays (`PosesInFrameLayer` — `geometry_msgs/PoseArray` / `foxglove.PosesInFrame`
+> drawn as per-pose coordinate-triad gizmos) are also implemented. The Phase-1 sections below are retained as historical intent
 > — read "lazy host-side CDR decode of `PointCloud2`" as "consume the canonical
 > `PointCloud` object the plugin already decoded".
 
@@ -44,7 +45,8 @@ PJ4's 3D visualization module — the sibling family to `pj_scene2D`, focused on
 - Pointclouds (`sensor_msgs/PointCloud2` and equivalents). *(implemented)*
 - Compressed pointclouds (`foxglove_msgs/CompressedPointCloud` + `point_cloud_interfaces/CompressedPointCloud2`), formats **Draco** and **Cloudini** — decoded into a `PointCloud` and rendered identically (see §3a). *(implemented)*
 - 3D markers / visualization primitives (arrows, boxes, spheres, cylinders, line strips, text). *(implemented — `SceneEntitiesLayer`)*
-- Paths (`nav_msgs/Path`, `PosesInFrame`).
+- Pose arrays (`geometry_msgs/PoseArray`, `foxglove.PosesInFrame` → canonical `PosesInFrame`), drawn as per-pose coordinate-triad gizmos with customizable arrow length + opacity, an X-arrow-only geometry mode, and an orthogonal color override (one shared color across all arms, in either mode). *(implemented — `PosesInFrameLayer`)*
+- Paths (`nav_msgs/Path`).
 - Laserscans (`sensor_msgs/LaserScan`).
 
 **Phase 1 subset** (two types):

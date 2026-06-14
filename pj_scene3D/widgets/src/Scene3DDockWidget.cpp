@@ -32,6 +32,7 @@
 #include "pj_scene3d_core/tf/tf_buffer.h"
 #include "pj_scene3d_widgets/layers/occupancy_grid_layer.h"
 #include "pj_scene3d_widgets/layers/pointcloud_layer.h"
+#include "pj_scene3d_widgets/layers/poses_in_frame_layer.h"
 #include "pj_scene3d_widgets/layers/robot_model_layer.h"
 #include "pj_scene3d_widgets/layers/scene_entities_layer.h"
 #include "pj_scene3d_widgets/object_topic_metadata.h"
@@ -49,6 +50,7 @@ Q_LOGGING_CATEGORY(lcScene3DDock, "pj.scene3d.dock")
 using pj::scene3d::FrameRow;
 using pj::scene3d::OccupancyGridLayer;
 using pj::scene3d::PointCloudLayer;
+using pj::scene3d::PosesInFrameLayer;
 using pj::scene3d::RobotModelLayer;
 using pj::scene3d::Scene3DLayer;
 using pj::scene3d::Scene3DLayerContext;
@@ -154,6 +156,15 @@ Scene3DDockWidget::Scene3DDockWidget(QWidget* parent) : SceneDockWidget(parent) 
           -> std::unique_ptr<ISceneLayer> {
         prepareTransformBufferForTopic(topic_id);
         auto layer = std::make_unique<SceneEntitiesLayer>(topic_id, display_name, this);
+        wireScene3DLayer(layer.get());
+        return layer;
+      });
+  layerFactory().registerType(
+      sdk::BuiltinObjectType::kPosesInFrame,
+      [this](ObjectTopicId topic_id, sdk::BuiltinObjectType /*object_type*/, const QString& display_name)
+          -> std::unique_ptr<ISceneLayer> {
+        prepareTransformBufferForTopic(topic_id);
+        auto layer = std::make_unique<PosesInFrameLayer>(topic_id, display_name, this);
         wireScene3DLayer(layer.get());
         return layer;
       });
@@ -353,7 +364,7 @@ bool Scene3DDockWidget::handlesObjectType(sdk::BuiltinObjectType object_type) {
          object_type == sdk::BuiltinObjectType::kFrameTransforms ||
          object_type == sdk::BuiltinObjectType::kOccupancyGrid ||
          object_type == sdk::BuiltinObjectType::kRobotDescription ||
-         object_type == sdk::BuiltinObjectType::kSceneEntities;
+         object_type == sdk::BuiltinObjectType::kSceneEntities || object_type == sdk::BuiltinObjectType::kPosesInFrame;
 }
 
 bool Scene3DDockWidget::addTopic(ObjectTopicId topic_id, sdk::BuiltinObjectType object_type, const QString& title) {

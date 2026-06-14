@@ -1,8 +1,9 @@
 # Intro
 
 The purpose of this module is to implement 3D visualization of robotics data
-(TF, pointclouds, occupancy grids / costmaps, meshes / URDF robot models, and
-scene entities (markers)); paths and laserscans remain future work. Sibling
+(TF, pointclouds, occupancy grids / costmaps, meshes / URDF robot models,
+scene entities (markers), and pose arrays (`PosesInFrame`, drawn as per-pose
+coordinate-triad gizmos)); paths and laserscans remain future work. Sibling
 widget family to `pj_scene2D`.
 
 The detailed set of requirements and goals lives in `pj_scene3D/docs/REQUIREMENTS.md`.
@@ -119,6 +120,7 @@ Before any commit, run the tests and check that they all pass
 `occupancy_grid_layer_updates_test`,
 `scene_entities_decode_test`, `pointcloud_codecs_test`,
 `aabb_axis_range_test`,
+`poses_in_frame_render_test`, `poses_in_frame_layer_test`,
 `pointcloud_layer_cache_test`, `pointcloud_layer_rebind_test`,
 `pointcloud_layer_coalescing_test`, `camera_near_far_test`,
 `camera_zoom_to_cursor_test`, `camera_state_transfer_test`,
