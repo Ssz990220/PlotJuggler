@@ -35,8 +35,11 @@ class Texture {
   // creating). `data` is row-major width*height bytes.
   void uploadSub(int32_t x, int32_t y, uint32_t width, uint32_t height, const uint8_t* data);
 
-  // Allocate storage for an uninitialized single-sample 2D texture.
-  void allocate(GLenum internal_format, GLenum format, GLenum type, int width, int height);
+  // Allocate storage for an uninitialized single-sample 2D texture. `filter` is
+  // the min/mag filter (GL_NEAREST default; GL_LINEAR for a render target that
+  // gets downsampled by a fullscreen pass, e.g. supersampled scene color — but
+  // never for a depth attachment, where averaging depth corrupts reconstruction).
+  void allocate(GLenum internal_format, GLenum format, GLenum type, int width, int height, GLenum filter = GL_NEAREST);
 
   void bind(int unit);
 

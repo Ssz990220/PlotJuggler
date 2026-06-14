@@ -132,7 +132,11 @@ void EdlPass::renderEdl(const ViewParams& view_params) {
   program_->setInt("u_depth", 0);
   program_->setMat4("u_inv_proj", glm::inverse(view_params.proj));
   program_->setFloat("u_strength", strength_);
-  program_->setFloat("u_radius_px", radius_px_);
+  // Scale the neighbour radius by the supersample factor: the depth texture is
+  // render_scale x larger under SSAA, so a fixed pixel radius would otherwise
+  // shrink the EDL footprint (thinner/weaker outlines). Multiplying keeps the
+  // device/world footprint — hence the look — invariant to the render scale.
+  program_->setFloat("u_radius_px", radius_px_ * view_params.render_scale);
   // 8 unit-circle neighbour directions (Potree's circular sampling pattern).
   // Constant for the program's lifetime, so compute them once (L.55).
   static const std::array<glm::vec2, 8> kOffsets = [] {

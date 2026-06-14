@@ -29,8 +29,10 @@
 #include <QSlider>
 #include <QString>
 #include <QStringList>
+#include <QSurfaceFormat>
 #include <QTimer>
 #include <QWidget>
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <functional>
@@ -38,6 +40,7 @@
 #include <glm/gtc/quaternion.hpp>
 #include <limits>
 #include <memory>
+#include <vector>
 
 #include "pj_base/time.hpp"
 #include "pj_runtime/SessionManager.h"
@@ -145,6 +148,43 @@ QWidget* makeControls(pj::scene3d::SceneViewWidget& view) {
   auto* form = new QFormLayout(panel);
   form->setContentsMargins(8, 8, 8, 8);
   const auto repaint = [&view] { view.update(); };
+
+  // ---- Anti-aliasing + live perf HUD (what this view exists to explore) ------
+  // A repaint timer keeps the scene re-rendering while the HUD is on so the
+  // GPU/CPU numbers tick live and settle (a single frame's GPU time is noisy).
+  auto* live_timer = new QTimer(&view);
+  live_timer->setInterval(16);  // ~60 Hz request; vsync caps the real rate
+  QObject::connect(live_timer, &QTimer::timeout, &view, qOverload<>(&QWidget::update));
+
+  auto* hud_box = new QCheckBox(QStringLiteral("Perf HUD — live GPU/CPU ms (key: P)"));
+  hud_box->setChecked(true);
+  view.setShowPerfHud(true);
+  live_timer->start();
+  QObject::connect(hud_box, &QCheckBox::toggled, &view, [&view, live_timer](bool on) {
+    view.setShowPerfHud(on);
+    if (on) {
+      live_timer->start();
+    } else {
+      live_timer->stop();
+      view.update();  // one repaint to clear the overlay
+    }
+  });
+  form->addRow(hud_box);
+
+  // MSAA: anti-aliases geometry silhouettes only (4 / 8 coverage steps). Cheap;
+  // does nothing for in-triangle specular shimmer. Index i -> 2^i samples.
+  auto* msaa = new QComboBox;
+  msaa->addItems({QStringLiteral("Off (1x)"), QStringLiteral("2x"), QStringLiteral("4x"), QStringLiteral("8x")});
+  msaa->setCurrentIndex(2);  // 4x — matches the app default
+  view.setSceneSamples(4);
+  QObject::connect(msaa, &QComboBox::currentIndexChanged, &view, [&view](int idx) { view.setSceneSamples(1 << idx); });
+  form->addRow(QStringLiteral("MSAA"), msaa);
+
+  // Supersample (SSAA): render the scene at scale x device px and downsample.
+  // Anti-aliases BOTH silhouettes and shading; cost grows ~scale^2. 1.0 = off.
+  // Tip: with SSAA > 1, drop MSAA to Off — SSAA already covers edges and the
+  // MSAA resolve at supersampled resolution is pure waste (watch the HUD).
+  addSlider(form, QStringLiteral("Supersample"), 100, 200, 100, [&view](float v) { view.setRenderScale(v); });
 
   auto* tonemap = new QComboBox;
   tonemap->addItems({QStringLiteral("None"), QStringLiteral("ACES"), QStringLiteral("AgX"), QStringLiteral("Neutral")});
@@ -312,6 +352,11 @@ struct CliOptions {
   float env = -1.0f;                                       // <0: keep default env-reflection intensity
   float key_az = std::numeric_limits<float>::quiet_NaN();  // key-light azimuth deg
   float key_el = std::numeric_limits<float>::quiet_NaN();  // key-light elevation deg
+  bool benchmark = false;                                  // run the anti-aliasing GPU-cost sweep, print a table, exit
+  int bench_frames = 150;                                  // timed frames collected per config
+  QString bench_csv;                                       // optional CSV dump of the per-config medians
+  int msaa = -1;                                           // <0: keep default; else off-screen MSAA samples (1/2/4/8)
+  float ssaa = -1.0f;  // <0: keep default; else supersampling render scale (e.g. 1.5)
 };
 
 CliOptions parseCli(const QStringList& args) {
@@ -322,6 +367,16 @@ CliOptions parseCli(const QStringList& args) {
     const auto next = [&args, &i]() -> QString { return ++i < args.size() ? args[i] : QString(); };
     if (arg == QStringLiteral("--screenshot")) {
       opts.screenshot_path = next();
+    } else if (arg == QStringLiteral("--benchmark")) {
+      opts.benchmark = true;
+    } else if (arg == QStringLiteral("--bench-frames")) {
+      opts.bench_frames = next().toInt();
+    } else if (arg == QStringLiteral("--bench-csv")) {
+      opts.bench_csv = next();
+    } else if (arg == QStringLiteral("--msaa")) {
+      opts.msaa = next().toInt();
+    } else if (arg == QStringLiteral("--ssaa")) {
+      opts.ssaa = next().toFloat();
     } else if (arg == QStringLiteral("--delay-ms")) {
       opts.delay_ms = next().toInt();
     } else if (arg == QStringLiteral("--tonemap")) {
@@ -341,12 +396,176 @@ CliOptions parseCli(const QStringList& args) {
   return opts;
 }
 
+// ---- Anti-aliasing GPU-cost benchmark --------------------------------------
+
+// Linear-interpolated percentile of a sample set (pct in [0,1]). Sorts a copy.
+double percentile(std::vector<double> samples, double pct) {
+  if (samples.empty()) {
+    return 0.0;
+  }
+  std::sort(samples.begin(), samples.end());
+  const double pos = pct * static_cast<double>(samples.size() - 1);
+  const auto lo = static_cast<std::size_t>(std::floor(pos));
+  const auto hi = static_cast<std::size_t>(std::ceil(pos));
+  if (lo == hi) {
+    return samples[lo];
+  }
+  return samples[lo] + (samples[hi] - samples[lo]) * (pos - static_cast<double>(lo));
+}
+
+// Approximate VRAM of the off-screen scene chain at (w x h) render pixels:
+// resolved RGBA16F color (8B/px) + D32F depth (4B/px), plus the multisample
+// color+depth attachments (samples x each) when MSAA is active. This is the
+// dominant, SSAA-scaling term; SSAO/EDL add a little more on top.
+double sceneFboMegabytes(int width_px, int height_px, int samples) {
+  const double px = static_cast<double>(width_px) * static_cast<double>(height_px);
+  double bytes = px * 8.0 + px * 4.0;
+  if (samples > 1) {
+    bytes += (px * 8.0 + px * 4.0) * static_cast<double>(samples);
+  }
+  return bytes / (1024.0 * 1024.0);
+}
+
+struct BenchConfig {
+  int samples;  // requested off-screen MSAA (1 disables MSAA)
+  float scale;  // supersampling factor (1.0 = native)
+};
+
+// Sweep {MSAA 1,2,4,8} x {scale 1.0,1.5,2.0}, driven off the view's
+// frameSwapped signal. Per config: discard `warmup` frames (GL_TIME_ELAPSED
+// results read back a few frames late), collect `frames` GPU/CPU samples, print
+// the row, advance. Quits when the sweep is exhausted. State lives on the heap,
+// kept alive by the lambda captured into the connection.
+void runBenchmark(pj::scene3d::SceneViewWidget* view, const CliOptions& opts) {
+  struct State {
+    std::vector<BenchConfig> configs;
+    std::size_t idx = 0;
+    int warmup = 24;
+    int frames = 150;
+    int warmup_left = 0;
+    int measure_left = 0;
+    std::vector<double> gpu;
+    std::vector<double> cpu;
+    int dev_w = 0;
+    int dev_h = 0;
+    QString csv;
+    std::vector<QString> csv_rows;
+  };
+  auto state = std::make_shared<State>();
+  state->warmup = 24;  // discarded per config; covers the GPU readback latency
+  state->frames = std::max(8, opts.bench_frames);
+  state->csv = opts.bench_csv;
+  for (int samples : {1, 2, 4, 8}) {
+    for (float scale : {1.0f, 1.5f, 2.0f}) {
+      state->configs.push_back(BenchConfig{samples, scale});
+    }
+  }
+
+  const qreal dpr = view->devicePixelRatioF();
+  state->dev_w = static_cast<int>(std::lround(view->width() * dpr));
+  state->dev_h = static_cast<int>(std::lround(view->height() * dpr));
+
+  std::printf("\n[mesh_viewer] anti-aliasing benchmark — %s\n", qPrintable(QFileInfo(opts.urdf).fileName()));
+  std::printf(
+      "  device %dx%d (DPR %.2f)   vsync OFF   frames/config %d (warmup %d)\n", state->dev_w, state->dev_h,
+      static_cast<double>(dpr), state->frames, state->warmup);
+  std::printf("  GPU ms = GL_TIME_ELAPSED (moving avg); CPU ms = paintGL submission (should stay flat)\n\n");
+  std::printf("  MSAA  SSAA   GPU med   GPU p95   CPU med   sceneFBO\n");
+  std::printf("  ----  -----  --------  --------  --------  --------\n");
+  std::fflush(stdout);
+  if (!state->csv.isEmpty()) {
+    state->csv_rows.push_back(QStringLiteral("msaa,ssaa,gpu_med_ms,gpu_p95_ms,cpu_med_ms,scenefbo_mb"));
+  }
+
+  const auto apply = [view](const BenchConfig& cfg) {
+    view->setSceneSamples(cfg.samples);
+    view->setRenderScale(cfg.scale);
+  };
+
+  // The GPU/CPU profiler is gated on the perf HUD; enable it so the sweep
+  // collects timings (the overlay also draws on the benchmark frames — harmless).
+  view->setShowPerfHud(true);
+  apply(state->configs[0]);
+  state->warmup_left = state->warmup;
+  state->measure_left = state->frames;
+
+  QObject::connect(view, &QOpenGLWidget::frameSwapped, view, [view, state, apply]() {
+    if (state->idx >= state->configs.size()) {
+      return;
+    }
+    if (state->warmup_left > 0) {
+      --state->warmup_left;
+    } else if (state->measure_left > 0) {
+      // Only count a frame once a fresh GPU result is available (post-warmup it
+      // always is); otherwise keep spinning without consuming the budget.
+      if (view->hasGpuResult()) {
+        state->gpu.push_back(view->gpuFrameMillis());
+        state->cpu.push_back(view->cpuFrameMillis());
+        --state->measure_left;
+      }
+    } else {
+      const BenchConfig& cfg = state->configs[state->idx];
+      const int got_samples = view->achievedSceneSamples();
+      const double gpu_med = percentile(state->gpu, 0.5);
+      const double gpu_p95 = percentile(state->gpu, 0.95);
+      const double cpu_med = percentile(state->cpu, 0.5);
+      const int eff_w = static_cast<int>(std::lround(static_cast<float>(state->dev_w) * cfg.scale));
+      const int eff_h = static_cast<int>(std::lround(static_cast<float>(state->dev_h) * cfg.scale));
+      const double mb = sceneFboMegabytes(eff_w, eff_h, got_samples);
+      std::printf(
+          "  %3dx  %4.1fx  %7.2f   %7.2f   %7.2f   %5.0f MB\n", got_samples, static_cast<double>(cfg.scale), gpu_med,
+          gpu_p95, cpu_med, mb);
+      std::fflush(stdout);
+      if (!state->csv.isEmpty()) {
+        state->csv_rows.push_back(QStringLiteral("%1,%2,%3,%4,%5,%6")
+                                      .arg(got_samples)
+                                      .arg(static_cast<double>(cfg.scale))
+                                      .arg(gpu_med, 0, 'f', 3)
+                                      .arg(gpu_p95, 0, 'f', 3)
+                                      .arg(cpu_med, 0, 'f', 3)
+                                      .arg(mb, 0, 'f', 1));
+      }
+
+      ++state->idx;
+      if (state->idx >= state->configs.size()) {
+        std::printf("\n[mesh_viewer] benchmark done.\n");
+        if (!state->csv.isEmpty()) {
+          QFile csv_file(state->csv);
+          if (csv_file.open(QIODevice::WriteOnly | QIODevice::Text)) {
+            for (const QString& row : state->csv_rows) {
+              csv_file.write(row.toUtf8());
+              csv_file.write("\n");
+            }
+            std::printf("[mesh_viewer] csv: %s\n", qPrintable(state->csv));
+          }
+        }
+        std::fflush(stdout);
+        QApplication::quit();
+        return;
+      }
+      apply(state->configs[state->idx]);
+      state->gpu.clear();
+      state->cpu.clear();
+      state->warmup_left = state->warmup;
+      state->measure_left = state->frames;
+    }
+    view->update();  // free-run the next frame (vsync off)
+  });
+
+  view->update();  // start the loop
+}
+
 }  // namespace
 
 constexpr const char* kUsage =
     "usage: scene3d_mesh_viewer <robot.urdf> [mesh-search-root]\n"
     "  --screenshot <path>   render, save a PNG after --delay-ms, then exit\n"
-    "  --delay-ms <n>        wait before the screenshot grab (default 3000)\n"
+    "  --delay-ms <n>        wait before the screenshot grab / benchmark start (default 3000)\n"
+    "  --benchmark           sweep MSAA x supersampling, print a GPU/CPU cost table, exit\n"
+    "  --bench-frames <n>    timed frames per config (default 150)\n"
+    "  --bench-csv <path>    also write the per-config medians as CSV\n"
+    "  --msaa <1|2|4|8>      preset off-screen MSAA samples\n"
+    "  --ssaa <scale>        preset supersampling render scale (e.g. 1.5, 2.0)\n"
     "  --tonemap <0..3>      0 None, 1 ACES, 2 AgX, 3 Neutral\n"
     "  --env <f>             env-reflection (analytic IBL) intensity\n"
     "  --key-az <deg>        key-light azimuth      --key-el <deg> elevation\n";
@@ -418,7 +637,7 @@ int main(int argc, char** argv) {
   if (!saved_camera.isEmpty()) {
     view->camera().adoptState(pj::scene3d::cameraStateFromJson(saved_camera.toStdString(), view->camera().state()));
   }
-  if (opts.screenshot_path.isEmpty()) {
+  if (opts.screenshot_path.isEmpty() && !opts.benchmark) {
     QObject::connect(&app, &QApplication::aboutToQuit, view, [view] {
       QSettings save;
       save.setValue(
@@ -443,14 +662,46 @@ int main(int argc, char** argv) {
   }
 
   row->addWidget(view, /*stretch=*/1);
-  row->addWidget(makeControls(*view));
+  if (!opts.benchmark) {
+    // The benchmark needs a stable, full-window view size for reproducible
+    // device dims; the look-dev panel only gets in the way there.
+    row->addWidget(makeControls(*view));
+  }
+  // CLI AA presets win over the panel defaults (makeControls seeds MSAA 4x /
+  // scale 1.0); applied after it so --msaa/--ssaa drive A/B screenshots.
+  if (opts.msaa > 0) {
+    view->setSceneSamples(opts.msaa);
+  }
+  if (opts.ssaa > 0.0f) {
+    view->setRenderScale(opts.ssaa);
+  }
   window.resize(1500, 840);
+
+  if (opts.benchmark) {
+    // Free-run (no vsync) so the sweep measures true GPU cost rather than the
+    // 60 Hz cap and finishes in seconds. Must be set before the widget is shown.
+    QSurfaceFormat fmt = view->format();
+    fmt.setSwapInterval(0);
+    view->setFormat(fmt);
+  }
   window.show();
 
   // Headless one-shot capture: render past the async mesh load, save a PNG via
   // QOpenGLWidget::grabFramebuffer (offscreen-friendly), then quit. Lets a script
   // capture each tonemap/env/key variant without a Wayland screenshot tool.
-  if (!opts.screenshot_path.isEmpty()) {
+  if (opts.benchmark) {
+    QTimer::singleShot(opts.delay_ms, view, [view, opts] {
+      // Save one framed frame so the operator can confirm the robot fills the
+      // view (coverage drives fragment cost) before trusting the numbers.
+      const QImage img = view->grabFramebuffer();
+      if (!img.isNull()) {
+        const QString path = QStringLiteral("/tmp/bench_first_frame.png");
+        img.save(path);
+        std::printf("[mesh_viewer] framing preview: %s (%dx%d)\n", qPrintable(path), img.width(), img.height());
+      }
+      runBenchmark(view, opts);
+    });
+  } else if (!opts.screenshot_path.isEmpty()) {
     QTimer::singleShot(opts.delay_ms, view, [view, path = opts.screenshot_path] {
       const QImage img = view->grabFramebuffer();
       if (!img.isNull() && img.save(path)) {

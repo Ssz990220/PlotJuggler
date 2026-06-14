@@ -77,8 +77,10 @@ still holds for everything else.
     `aboutToBeDestroyed` and rebuilds in `initializeGL`, so a recreated context
     self-heals instead of binding stale handles or going blank. Since Phase 0A
     the scene renders into `SceneHdrFbo` (a multisample RGBA16F+DEPTH32F chain
-    at the backing FBO's achieved sample count, resolved to single-sample and
-    presented via a fullscreen passthrough into `defaultFramebufferObject()`).
+    at a fixed sample count — `kDefaultMsaaSamples`, independent of the context's
+    negotiated samples, which are 0 once composited in an ADS dock — resolved to
+    single-sample and presented via a fullscreen passthrough into
+    `defaultFramebufferObject()`).
     The chain and the present program are per-context like everything else:
     released in `releaseGlResources()`, lazily rebuilt after recreation.
   - Scene-wide look controls live on `SceneViewWidget` setters +

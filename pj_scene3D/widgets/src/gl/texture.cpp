@@ -65,12 +65,12 @@ void Texture::uploadSub(int32_t x, int32_t y, uint32_t width, uint32_t height, c
   });
 }
 
-void Texture::allocate(GLenum internal_format, GLenum format, GLenum type, int width, int height) {
+void Texture::allocate(GLenum internal_format, GLenum format, GLenum type, int width, int height, GLenum filter) {
   if (width <= 0 || height <= 0) {
     return;
   }
 
-  withGlFunctions([this, internal_format, format, type, width, height](auto& functions) {
+  withGlFunctions([this, internal_format, format, type, width, height, filter](auto& functions) {
     if (id_ == 0U) {
       functions.glGenTextures(1, &id_);
       owning_context_ = QOpenGLContext::currentContext();
@@ -79,8 +79,8 @@ void Texture::allocate(GLenum internal_format, GLenum format, GLenum type, int w
     functions.glTexImage2D(
         GL_TEXTURE_2D, 0, static_cast<GLint>(internal_format), static_cast<GLsizei>(width),
         static_cast<GLsizei>(height), 0, format, type, nullptr);
-    functions.glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-    functions.glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    functions.glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, static_cast<GLint>(filter));
+    functions.glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, static_cast<GLint>(filter));
     functions.glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     functions.glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
   });

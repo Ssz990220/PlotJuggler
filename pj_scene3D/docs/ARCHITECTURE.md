@@ -18,10 +18,16 @@ layers + passes → SceneHdrFbo (multisample RGBA16F + DEPTH32F)
                 → composite/present (fullscreen triangle → backing FBO)
 ```
 
-- **HDR chain (0A).** The render FBO is created at the backing FBO's *achieved*
-  MSAA sample count (`context()->format().samples()` — never assume the 4 that
-  was requested). MSAA→MSAA blits with mismatched formats are illegal, so the
-  resolve target is always single-sample; the present pass draws into
+- **HDR chain (0A).** The render FBO is created at a fixed MSAA sample count
+  (`kDefaultMsaaSamples`, clamped to `GL_MAX_*_TEXTURE_SAMPLES`) — INDEPENDENT of
+  the QOpenGLWidget's negotiated `context()->format().samples()`, which is 0 once
+  the view is composited inside an ADS dock (the backing store is single-sample).
+  Because SceneHdrFbo owns its own multisample textures and the present is a
+  fullscreen draw, the single-sample backing FBO never undoes the already-resolved
+  anti-aliasing — so the scene is 4x MSAA docked, not just in the demo. (Seeding
+  the chain from the context's samples was the bug that made MSAA silently vanish
+  in the app.) MSAA→MSAA blits with mismatched formats are illegal, so the resolve
+  target is always single-sample; the present pass draws into
   `defaultFramebufferObject()` (never FBO 0 — QOpenGLWidget renders off-screen).
   When the chain is unavailable the widget falls back to direct-to-backing
   rendering (one warning per context).

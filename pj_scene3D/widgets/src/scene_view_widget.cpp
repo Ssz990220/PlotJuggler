@@ -4,13 +4,17 @@
 #include "pj_scene3d_widgets/scene_view_widget.h"
 
 #include <QEvent>
+#include <QFontMetrics>
 #include <QGuiApplication>
+#include <QKeyEvent>
 #include <QLoggingCategory>
 #include <QMouseEvent>
 #include <QOpenGLContext>
 #include <QOpenGLFunctions_4_5_Core>
 #include <QOpenGLVersionFunctionsFactory>
+#include <QPainter>
 #include <QPalette>
+#include <QString>
 #include <QSurfaceFormat>
 #include <QWheelEvent>
 #include <algorithm>
@@ -22,6 +26,7 @@
 #include "pj_scene3d_core/tf/tf_buffer.h"
 #include "pj_scene3d_widgets/gl/debug.h"
 #include "pj_scene3d_widgets/gl/framebuffer.h"
+#include "pj_scene3d_widgets/gl/gl_functions.h"  // unuseProgram()
 #include "pj_scene3d_widgets/render_pass.h"
 #include "pj_scene3d_widgets/scene3d_layer.h"
 
@@ -31,17 +36,24 @@ namespace {
 
 Q_LOGGING_CATEGORY(lcSceneViewWidget, "pj.scene3d.scene_view")
 
+// Desired MSAA for the offscreen scene HDR chain. SceneHdrFbo owns its own
+// multisample textures (resolved to single-sample, then composited by a
+// fullscreen draw), so its sample count is INDEPENDENT of the window/context: a
+// QOpenGLWidget composited in an ADS dock reports context samples==0, yet the
+// chain can still be 4x. Seeding from this constant rather than the context is
+// what makes MSAA work docked, not just in the more top-level demo.
+inline constexpr int kDefaultMsaaSamples = 4;
+
 QSurfaceFormat make_default_format() {
   QSurfaceFormat fmt;
   fmt.setVersion(4, 5);
   fmt.setProfile(QSurfaceFormat::CoreProfile);
   fmt.setDepthBufferSize(24);
-  // 4x MSAA. Requested explicitly because a QOpenGLWidget renders into an FBO
-  // sized by the format's concrete sample count — the default (-1, "don't
-  // care") yields a single-sampled FBO. The previous native QOpenGLWindow got
-  // multisampling incidentally from the platform's default visual; the FBO path
-  // does not, so without this the grid/TF/pointcloud edges alias.
-  fmt.setSamples(4);
+  // MSAA on the backing FBO. Composited in an ADS dock the app context negotiates
+  // samples==0 regardless (Qt's QOpenGLWidget backing store is single-sample); the
+  // scene's AA comes from the independent SceneHdrFbo chain, so this only governs
+  // the rare direct-to-backing fallback. paintGL must glEnable(GL_MULTISAMPLE).
+  fmt.setSamples(kDefaultMsaaSamples);
   fmt.setSwapInterval(1);  // vsync — caps render at ~60Hz on standard monitors
   // Request a debug context only when GL debug output is actually wanted; a
   // DebugContext has measurable CPU overhead on some drivers (extra validation
@@ -177,6 +189,9 @@ SceneViewWidget::SceneViewWidget(QWidget* parent) : QOpenGLWidget(parent) {
   setFormat(make_default_format());
   setMinimumSize(320, 240);
   setMouseTracking(false);
+  // Accept keyboard focus so the 'P' perf-HUD toggle reaches keyPressEvent
+  // (click/tab focus; harmless to the dock's existing mouse interaction).
+  setFocusPolicy(Qt::StrongFocus);
 }
 
 SceneViewWidget::~SceneViewWidget() {
@@ -265,11 +280,12 @@ void SceneViewWidget::initializeGL() {
       context(), &QOpenGLContext::aboutToBeDestroyed, this, &SceneViewWidget::releaseGlResources, Qt::DirectConnection);
 
   gl::installDebugCallback();
-  // The HDR scene FBO must match the backing FBO's ACHIEVED sample count (the
-  // driver may grant fewer than the 4 samples make_default_format() requests);
-  // <=1 selects the single-sample chain. Attachments are (re)allocated lazily in
-  // paintGL, sized from the viewport Qt set for the backing FBO.
-  const int scene_samples = std::max(context()->format().samples(), 0);
+  // Seed the scene HDR FBO's MSAA from the fixed default, NOT the context's
+  // negotiated samples (0 when composited in an ADS dock) — SceneHdrFbo is an
+  // independent multisample chain that clamps to GL_MAX_*_TEXTURE_SAMPLES. The
+  // benchmark sweep overrides the level via setSceneSamples. Attachments are
+  // (re)allocated lazily in paintGL.
+  const int scene_samples = scene_samples_override_ >= 0 ? scene_samples_override_ : kDefaultMsaaSamples;
   scene_fbo_.configure(scene_samples);
   initializePresentProgram();
   scene_fbo_fallback_logged_ = false;  // a fresh context may succeed; re-arm the warning
@@ -329,6 +345,7 @@ void SceneViewWidget::releaseGlResources() {
   scene_fbo_.releaseGL();
   ssao_.releaseGL();
   edl_.releaseGL();
+  scene_profiler_.releaseGL();
   present_program_.reset();
   present_vao_ = gl::VertexArray{};
   doneCurrent();
@@ -347,6 +364,14 @@ void SceneViewWidget::paintGL() {
     return;
   }
 
+  // Perf instrumentation is gated on the HUD: when it's off (the production
+  // default), the scene pays nothing for timing it doesn't display. The CPU
+  // stopwatch and the GPU timer bracket the whole scene render.
+  if (show_perf_hud_) {
+    cpu_timer_.restart();
+    scene_profiler_.beginFrame();
+  }
+
   // Device-pixel size: Qt bound the backing FBO and set the viewport to its
   // exact device size right before paintGL — reading it back is exact even at
   // fractional DPR (Qt 6 passes LOGICAL units to resizeGL, so that is not).
@@ -357,16 +382,31 @@ void SceneViewWidget::paintGL() {
   const int device_width_px = viewport[2];
   const int device_height_px = viewport[3];
 
+  // Supersampling: the off-screen HDR chain renders at scale x device pixels and
+  // the present pass downsamples to device resolution (true SSAA). scale == 1.0
+  // (the default) reproduces the original path byte-for-byte. Floor at 1px so a
+  // tiny widget can't request a zero-sized FBO.
+  const float scale = render_scale_;
+  const int scene_width_px = std::max(1, static_cast<int>(std::lround(static_cast<float>(device_width_px) * scale)));
+  const int scene_height_px = std::max(1, static_cast<int>(std::lround(static_cast<float>(device_height_px) * scale)));
+
   // (Re)allocate the off-screen HDR chain; idempotent at unchanged size. If the
   // chain or the present shader is unavailable, fall back to rendering directly
   // into the backing FBO exactly as before Phase 0A (degrade, never go blank).
-  scene_fbo_.resize(device_width_px, device_height_px);
+  scene_fbo_.resize(scene_width_px, scene_height_px);
   const bool offscreen = scene_fbo_.ready() && present_program_.has_value();
   if (offscreen) {
     scene_fbo_.bind();
-    funcs->glViewport(0, 0, device_width_px, device_height_px);
+    funcs->glViewport(0, 0, scene_width_px, scene_height_px);
+    // Multisample rasterization must be explicitly enabled when drawing into our
+    // own multisample FBO: GL_MULTISAMPLE defaults to enabled in the spec, but
+    // relying on that left the MSAA buffer allocated and resolved yet producing
+    // zero edge anti-aliasing (every sample got the single-sample value). Enable
+    // it here so coverage actually varies per sample. Harmless at samples == 1.
+    funcs->glEnable(GL_MULTISAMPLE);
   } else {
-    // Fallback: render directly into the backing FBO. scene_fbo_.resize() above
+    // Fallback: render directly into the backing FBO at device resolution (no
+    // supersampling without the off-screen chain). scene_fbo_.resize() above
     // leaves an off-screen FBO bound whenever it reallocates (M.33), so we must
     // explicitly rebind the backing target here — otherwise renderScene would
     // draw into the off-screen (possibly incomplete) FBO.
@@ -378,16 +418,30 @@ void SceneViewWidget::paintGL() {
     }
   }
 
+  // Pixel dims fed to passes that size primitives in device pixels: the scene
+  // render resolution when off-screen (so gl_PointSize etc. supersample with the
+  // buffer and the post passes match it), the backing size on the fallback path.
+  const int render_width_px = offscreen ? scene_width_px : device_width_px;
+  const int render_height_px = offscreen ? scene_height_px : device_height_px;
+
   const float aspect = static_cast<float>(width()) / static_cast<float>(std::max(height(), 1));
   // viewport_width/height_px keep their historical LOGICAL-pixel semantics: the
   // HUD overlay derives the device-pixel ratio as saved_vp[3] / viewport_height_px.
-  // device_*_px carry the FRAMEBUFFER size so passes that size primitives in
-  // device pixels (gl_PointSize in PointcloudRenderPass) get the HiDPI-correct
-  // value instead of the logical height.
+  // device_*_px carry the (possibly supersampled) FRAMEBUFFER size so passes that
+  // size primitives in device pixels (gl_PointSize in PointcloudRenderPass) and
+  // the screen-space post passes match the buffer they draw into.
   const ViewParams view_params{
-      camera_->viewMatrix(), camera_->projMatrix(aspect), height(), width(), camera_->position(), device_width_px,
-      device_height_px,
+      camera_->viewMatrix(),
+      camera_->projMatrix(aspect),
+      height(),
+      width(),
+      camera_->position(),
+      render_width_px,
+      render_height_px,
       shading_params_,  // this view's mesh/collision look knobs (per-view, see header)
+      // Supersample factor for the offscreen post passes (EDL radius scaling); the
+      // fallback path renders at device res and runs no post passes, so 1.0 there.
+      offscreen ? render_scale_ : 1.0f,
   };
 
   // Grid never consults the TF buffer; safe to render even when tf_ is null.
@@ -405,6 +459,7 @@ void SceneViewWidget::paintGL() {
   if (!offscreen) {
     // Restore the alpha write mask so the next frame's glClear repaints alpha=1.0.
     funcs->glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+    finishFrameInstrumentation();
     return;
   }
 
@@ -421,16 +476,18 @@ void SceneViewWidget::paintGL() {
 
   // SSAO over the resolved depth (Phase D). Runs in the post-chain state set
   // above; binds its own FBOs, so it must precede the bindDefault below. The
-  // present degrades to no-AO (u_has_ao=0) when the pass is unavailable.
+  // present degrades to no-AO (u_has_ao=0) when the pass is unavailable. Sized to
+  // the off-screen (supersampled) resolution so the AO aligns with the resolved
+  // scene texture and its cost is measured at the true render resolution.
   if (composite_params_.ssao_enabled) {
     ssao_.initializeGL();
-    ssao_.resize(device_width_px, device_height_px);
+    ssao_.resize(scene_width_px, scene_height_px);
     ssao_.setDepthTexture(scene_fbo_.resolvedDepthTextureId());
     ssao_.renderAo(view_params);
   }
   if (composite_params_.edl_enabled) {
     edl_.initializeGL();
-    edl_.resize(device_width_px, device_height_px);
+    edl_.resize(scene_width_px, scene_height_px);
     edl_.setDepthTexture(scene_fbo_.resolvedDepthTextureId());
     edl_.renderEdl(view_params);
   }
@@ -478,6 +535,8 @@ void SceneViewWidget::paintGL() {
   // Leave depth/blend enabled — the state the legacy path ended each frame with.
   funcs->glEnable(GL_DEPTH_TEST);
   funcs->glEnable(GL_BLEND);
+
+  finishFrameInstrumentation();
 }
 
 void SceneViewWidget::renderScene(
@@ -673,6 +732,112 @@ void SceneViewWidget::changeEvent(QEvent* event) {
     update();
   }
   QOpenGLWidget::changeEvent(event);
+}
+
+void SceneViewWidget::keyPressEvent(QKeyEvent* event) {
+  if (event->key() == Qt::Key_P) {
+    setShowPerfHud(!show_perf_hud_);
+    event->accept();
+    return;
+  }
+  QOpenGLWidget::keyPressEvent(event);
+}
+
+void SceneViewWidget::setShowPerfHud(bool on) {
+  if (show_perf_hud_ == on) {
+    return;
+  }
+  show_perf_hud_ = on;
+  update();
+}
+
+void SceneViewWidget::setRenderScale(float scale) {
+  // Clamp to a sane band: below 1 is downsampling (blurry, pointless here) and
+  // above 4 risks exhausting VRAM / GL_MAX_TEXTURE_SIZE on large viewports.
+  const float clamped = std::clamp(scale, 1.0f, 4.0f);
+  if (render_scale_ == clamped) {
+    return;
+  }
+  render_scale_ = clamped;
+  update();
+}
+
+void SceneViewWidget::setSceneSamples(int samples) {
+  scene_samples_override_ = samples;
+  // Reconfigure immediately so the next paint reallocates at the new count. A
+  // current context lets configure()'s release actually free the old chain
+  // (otherwise the handles are merely dropped — a transient leak until repaint).
+  if (context() != nullptr) {
+    makeCurrent();
+    scene_fbo_.configure(samples);
+    doneCurrent();
+  }
+  update();
+}
+
+int SceneViewWidget::achievedSceneSamples() const {
+  return scene_fbo_.samples();
+}
+
+void SceneViewWidget::drawPerfHud() {
+  // QPainter over the QOpenGLWidget's FBO — the documented 2D-over-3D path. The
+  // scene passes left a program/VAO bound; reset the program so the paint
+  // engine starts from a clean slate (it manages its own VAO).
+  unuseProgram();
+
+  QStringList lines;
+  if (scene_profiler_.hasResult()) {
+    lines << QStringLiteral("GPU  %1 ms").arg(scene_profiler_.averageMillis(), 0, 'f', 2);
+  } else {
+    lines << QStringLiteral("GPU  --");
+  }
+  lines << QStringLiteral("CPU  %1 ms").arg(cpuFrameMillis(), 0, 'f', 2);
+  lines << QStringLiteral("MSAA %1x").arg(achievedSceneSamples());
+
+  QPainter painter(this);
+  painter.setRenderHint(QPainter::TextAntialiasing, true);
+  QFont font = painter.font();
+  font.setFamily(QStringLiteral("monospace"));
+  font.setStyleHint(QFont::Monospace);
+  font.setPointSizeF(9.5);
+  painter.setFont(font);
+
+  const QFontMetrics metrics(font);
+  int text_w = 0;
+  for (const QString& line : lines) {
+    text_w = std::max(text_w, metrics.horizontalAdvance(line));
+  }
+  const int pad = 8;
+  const int line_h = metrics.height();
+  const int box_w = text_w + 2 * pad;
+  const int box_h = line_h * static_cast<int>(lines.size()) + 2 * pad;
+  // Bottom-left corner — clear of the top-left fixed-frame overlay combo the
+  // Scene3D dock places over the view.
+  const QRect box(8, height() - box_h - 8, box_w, box_h);
+
+  painter.setPen(Qt::NoPen);
+  painter.setBrush(QColor(0, 0, 0, 150));
+  painter.drawRoundedRect(box, 4, 4);
+
+  painter.setPen(QColor(235, 235, 235));
+  int y = box.top() + pad + metrics.ascent();
+  for (const QString& line : lines) {
+    painter.drawText(box.left() + pad, y, line);
+    y += line_h;
+  }
+}
+
+void SceneViewWidget::finishFrameInstrumentation() {
+  // Gated on the HUD to match the beginFrame()/restart() guard at the top of
+  // paintGL, so production frames that don't display the numbers don't measure
+  // them. The CPU stopwatch stops BEFORE the HUD draw so the overlay's own cost
+  // doesn't pollute the scene's CPU number.
+  if (!show_perf_hud_) {
+    return;
+  }
+  scene_profiler_.endFrame();
+  cpu_avg_.add(static_cast<double>(cpu_timer_.nsecsElapsed()) / 1.0e6);
+  drawPerfHud();
 }
 
 }  // namespace pj::scene3d

@@ -63,6 +63,12 @@ class SceneHdrFbo {
   // Current allocation size in device pixels.
   [[nodiscard]] QSize size() const noexcept;
 
+  // Sample count the chain is actually allocated at (after the GL_MAX_*_SAMPLES
+  // clamp in resize()); 1 when the single-sample path is active.
+  [[nodiscard]] int samples() const noexcept {
+    return samples_ <= 1 ? 1 : samples_;
+  }
+
   // True when the currently allocated chain is complete and usable.
   [[nodiscard]] bool ready() const noexcept;
 

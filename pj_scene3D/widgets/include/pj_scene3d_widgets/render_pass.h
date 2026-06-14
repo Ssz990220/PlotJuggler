@@ -37,10 +37,17 @@ struct ViewParams {
   int device_height_px = 0;  // FRAMEBUFFER pixels; 0 means "fall back to logical".
   // The bound view's mesh/collision look knobs, copied per frame by paintGL from
   // SceneViewWidget::meshShadingParams(). The mesh passes read it here instead of a
-  // process-global, so sibling docks render independent opacity. Kept LAST so the
-  // existing positional aggregate initializers (which omit it) keep compiling and
-  // default-init it.
+  // process-global, so sibling docks render independent opacity.
   MeshShadingParams shading{};
+  // Supersampling factor in effect this frame (the off-screen chain renders at
+  // render_scale x device pixels). A screen-space post pass whose parameters are
+  // in PIXELS should multiply them by this so its footprint stays invariant to
+  // the render resolution. Today only EDL's neighbour radius does (its depth-cue
+  // outlines would otherwise shrink under supersampling); SSAO's blur tile has
+  // the same dependency and is a known gap — harmless while supersampling is off
+  // by default. 1.0 = no supersampling. Kept LAST so existing positional
+  // aggregate initializers default-init it.
+  float render_scale = 1.0f;
 };
 
 // The TF-resolution triple a pass needs to place frame-relative data into the

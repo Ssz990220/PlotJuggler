@@ -11,6 +11,7 @@ set(PJ_SCENE3D_WIDGETS_SOURCES
   src/gl/debug.cpp
   src/gl/texture.cpp
   src/gl/framebuffer.cpp
+  src/gl/gpu_profiler.cpp
   src/scene_hdr_fbo.cpp
   src/gizmos/arrow_gizmo.cpp
   src/passes/axis_overlay_pass.cpp
@@ -51,6 +52,8 @@ set(PJ_SCENE3D_WIDGETS_SOURCES
   include/pj_scene3d_widgets/passes/edl_pass.h
   include/pj_scene3d_widgets/gl/texture.h
   include/pj_scene3d_widgets/gl/framebuffer.h
+  include/pj_scene3d_widgets/gl/gpu_profiler.h
+  include/pj_scene3d_widgets/moving_average.h
   include/pj_scene3d_widgets/scene_hdr_fbo.h
   include/pj_scene3d_widgets/mesh_shading_params.h
   include/pj_scene3d_widgets/object_topic_metadata.h

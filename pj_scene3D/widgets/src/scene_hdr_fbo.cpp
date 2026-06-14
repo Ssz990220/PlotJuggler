@@ -121,7 +121,10 @@ void SceneHdrFbo::resize(int device_w, int device_h) {
 
 bool SceneHdrFbo::allocateResolveFbo() {
   resolve_fbo_.bind();
-  resolve_color_.allocate(GL_RGBA16F, GL_RGBA, GL_HALF_FLOAT, width_, height_);
+  // LINEAR on the resolved color so a supersampled scene (render scale > 1)
+  // box-averages correctly when the present pass downsamples it to device res;
+  // at scale 1 the present samples texel centers 1:1, so LINEAR == NEAREST there.
+  resolve_color_.allocate(GL_RGBA16F, GL_RGBA, GL_HALF_FLOAT, width_, height_, GL_LINEAR);
   withGlFunctions([this](auto& functions) {
     functions.glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, resolve_color_.id(), 0);
   });
