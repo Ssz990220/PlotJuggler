@@ -218,6 +218,10 @@ if(PJ_BUILD_TESTS)
         src/DialogPresenter.h
         src/FanoutConfig.cpp
         src/FanoutConfig.h
+        # FileLoader's same-source match uses LayoutXml::isSamePath for full-path
+        # dataset identity; the standalone test target must link its definition.
+        src/LayoutXml.cpp
+        src/LayoutXml.h
     )
     set_target_properties(file_loader_test PROPERTIES AUTOMOC ON)
     target_include_directories(file_loader_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)

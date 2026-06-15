@@ -143,12 +143,29 @@ class SessionManager : public QObject {
     QString plugin_config_json;  // Plugin's saveConfig() JSON at load time.
   };
 
-  [[nodiscard]] std::optional<LoadedSource> lastLoadedSource() const noexcept {
-    return last_loaded_source_;
+  // All data files loaded into this session, in load order (deduped by path —
+  // see recordLoadedSource). The layout-save path serializes one <fileInfo> per
+  // entry so a multi-file session round-trips; callers that only care about the
+  // most recent file use lastLoadedSource() instead.
+  [[nodiscard]] const std::vector<LoadedSource>& loadedSources() const noexcept {
+    return loaded_sources_;
   }
+  // The most recently loaded source, or nullopt if none. Backs the quick-reload
+  // button, the 3D dock's source-path seeding, and the layout same-source check.
+  [[nodiscard]] std::optional<LoadedSource> lastLoadedSource() const noexcept {
+    if (loaded_sources_.empty()) {
+      return std::nullopt;
+    }
+    return loaded_sources_.back();
+  }
+  // Records a loaded file. If a source with the same `path` is already tracked,
+  // its entry is updated in place (preserving list order — a reload keeps the
+  // file's position); otherwise the source is appended. This dedup-by-path keeps
+  // reloads from growing duplicate <fileInfo> entries while additive loads of
+  // distinct files all persist.
   void recordLoadedSource(QString path, QString prefix, QString plugin_id = {}, QString plugin_config_json = {});
   void clearLoadedSource() noexcept {
-    last_loaded_source_.reset();
+    loaded_sources_.clear();
   }
 
   // Object eviction. DataEngine scalars are append-only, so dataset removal keeps
@@ -204,7 +221,7 @@ class SessionManager : public QObject {
   // parser alive for the consumer that captured it.
   mutable std::shared_mutex object_parsers_mutex_;
   std::unordered_map<uint32_t, ObjectParserSlot> object_topic_parsers_;
-  std::optional<LoadedSource> last_loaded_source_;
+  std::vector<LoadedSource> loaded_sources_;
 };
 
 }  // namespace PJ

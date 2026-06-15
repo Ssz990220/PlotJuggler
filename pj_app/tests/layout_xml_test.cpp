@@ -100,25 +100,41 @@ QDomDocument buildDataSourceDoc(
   return doc;
 }
 
-TEST(ExtractDataSource, EmptyDocReturnsEmptyRef) {
-  QDomDocument doc;
-  const DataSourceRef ref = PJ::LayoutXml::extractDataSource(doc, QDir::current());
-  EXPECT_TRUE(ref.resolved_path.isEmpty());
-  EXPECT_TRUE(ref.plugin_id.isEmpty());
-  EXPECT_TRUE(ref.plugin_config_json.isEmpty());
+// Appends an extra <fileInfo> to an existing data-source doc, so a single doc
+// can carry multiple loaded files (mirrors a multi-file session save).
+void appendFileInfo(
+    QDomDocument& doc, const QString& filename, const QString& prefix = QString(), const QString& plugin_id = QString(),
+    const QString& plugin_json = QString()) {
+  QDomElement wrapper = doc.documentElement().firstChildElement(QStringLiteral("previouslyLoaded_Datafiles"));
+  QDomElement file_info = doc.createElement(QStringLiteral("fileInfo"));
+  file_info.setAttribute(QStringLiteral("filename"), filename);
+  file_info.setAttribute(QStringLiteral("prefix"), prefix);
+  if (!plugin_id.isEmpty()) {
+    QDomElement plugin = doc.createElement(QStringLiteral("plugin"));
+    plugin.setAttribute(QStringLiteral("ID"), plugin_id);
+    PJ::LayoutXml::appendJsonAsCdata(doc, plugin, plugin_json);
+    file_info.appendChild(plugin);
+  }
+  wrapper.appendChild(file_info);
 }
 
-TEST(ExtractDataSource, MissingWrapperReturnsEmptyRef) {
+TEST(ExtractDataSource, EmptyDocReturnsEmptyList) {
+  QDomDocument doc;
+  const QList<DataSourceRef> refs = PJ::LayoutXml::extractDataSource(doc, QDir::current());
+  EXPECT_TRUE(refs.isEmpty());
+}
+
+TEST(ExtractDataSource, MissingWrapperReturnsEmptyList) {
   QDomDocument doc;
   doc.appendChild(doc.createElement(QStringLiteral("root")));
-  const DataSourceRef ref = PJ::LayoutXml::extractDataSource(doc, QDir::current());
-  EXPECT_TRUE(ref.resolved_path.isEmpty());
+  const QList<DataSourceRef> refs = PJ::LayoutXml::extractDataSource(doc, QDir::current());
+  EXPECT_TRUE(refs.isEmpty());
 }
 
-TEST(ExtractDataSource, EmptyFilenameAttributeReturnsEmpty) {
+TEST(ExtractDataSource, EmptyFilenameAttributeIsSkipped) {
   const QDomDocument doc = buildDataSourceDoc(QStringLiteral(""));
-  const DataSourceRef ref = PJ::LayoutXml::extractDataSource(doc, QDir::current());
-  EXPECT_TRUE(ref.resolved_path.isEmpty());
+  const QList<DataSourceRef> refs = PJ::LayoutXml::extractDataSource(doc, QDir::current());
+  EXPECT_TRUE(refs.isEmpty());
 }
 
 TEST(ExtractDataSource, AbsolutePathPassesThrough) {
@@ -127,24 +143,27 @@ TEST(ExtractDataSource, AbsolutePathPassesThrough) {
   // it at the current drive and the equality check would fail.
   const QString abs = QDir::tempPath() + QStringLiteral("/some_data.mcap");
   const QDomDocument doc = buildDataSourceDoc(abs);
-  const DataSourceRef ref = PJ::LayoutXml::extractDataSource(doc, QDir(QDir::rootPath()));
-  EXPECT_EQ(ref.resolved_path, QFileInfo(abs).absoluteFilePath());
+  const QList<DataSourceRef> refs = PJ::LayoutXml::extractDataSource(doc, QDir(QDir::rootPath()));
+  ASSERT_EQ(refs.size(), 1);
+  EXPECT_EQ(refs.front().resolved_path, QFileInfo(abs).absoluteFilePath());
 }
 
 TEST(ExtractDataSource, RelativePathIsAnchoredAtLayoutDir) {
   const QDomDocument doc = buildDataSourceDoc(QStringLiteral("data/run.csv"));
-  const DataSourceRef ref = PJ::LayoutXml::extractDataSource(doc, QDir(QStringLiteral("/tmp/layouts")));
-  EXPECT_EQ(ref.resolved_path, QStringLiteral("/tmp/layouts/data/run.csv"));
+  const QList<DataSourceRef> refs = PJ::LayoutXml::extractDataSource(doc, QDir(QStringLiteral("/tmp/layouts")));
+  ASSERT_EQ(refs.size(), 1);
+  EXPECT_EQ(refs.front().resolved_path, QStringLiteral("/tmp/layouts/data/run.csv"));
 }
 
 TEST(ExtractDataSource, PluginIdAndCdataJsonRoundTrip) {
   const QString json = QStringLiteral(R"({"topics":["a","b"]})");
   const QDomDocument doc =
       buildDataSourceDoc(QStringLiteral("/tmp/x.mcap"), QStringLiteral("robot"), QStringLiteral("DataLoad MCAP"), json);
-  const DataSourceRef ref = PJ::LayoutXml::extractDataSource(doc, QDir::current());
-  EXPECT_EQ(ref.prefix, QStringLiteral("robot"));
-  EXPECT_EQ(ref.plugin_id, QStringLiteral("DataLoad MCAP"));
-  EXPECT_EQ(ref.plugin_config_json, json);
+  const QList<DataSourceRef> refs = PJ::LayoutXml::extractDataSource(doc, QDir::current());
+  ASSERT_EQ(refs.size(), 1);
+  EXPECT_EQ(refs.front().prefix, QStringLiteral("robot"));
+  EXPECT_EQ(refs.front().plugin_id, QStringLiteral("DataLoad MCAP"));
+  EXPECT_EQ(refs.front().plugin_config_json, json);
 }
 
 TEST(ExtractDataSource, PluginCdataWithClosingSequenceRoundTrips) {
@@ -154,8 +173,46 @@ TEST(ExtractDataSource, PluginCdataWithClosingSequenceRoundTrips) {
   // CDATA splitting survives the actual file pipeline.
   QDomDocument reparsed;
   ASSERT_TRUE(reparsed.setContent(doc.toByteArray(2)));
-  const DataSourceRef ref = PJ::LayoutXml::extractDataSource(reparsed, QDir::current());
-  EXPECT_EQ(ref.plugin_config_json, json);
+  const QList<DataSourceRef> refs = PJ::LayoutXml::extractDataSource(reparsed, QDir::current());
+  ASSERT_EQ(refs.size(), 1);
+  EXPECT_EQ(refs.front().plugin_config_json, json);
+}
+
+TEST(ExtractDataSource, MultipleFileInfosParsedInOrder) {
+  // A multi-file session: two distinct files, each with its own plugin config.
+  // Host-absolute paths (QDir::tempPath()) — a hardcoded POSIX "/tmp/x" is
+  // drive-relative on Windows, so extractDataSource would re-anchor it and the
+  // equality check would fail.
+  const QString abs_a = QDir::tempPath() + QStringLiteral("/a.mcap");
+  const QString abs_b = QDir::tempPath() + QStringLiteral("/b.mcap");
+  const QString json_a = QStringLiteral(R"({"topics":["/a"]})");
+  const QString json_b = QStringLiteral(R"({"topics":["/b"]})");
+  QDomDocument doc = buildDataSourceDoc(abs_a, QString(), QStringLiteral("DataLoad MCAP"), json_a);
+  appendFileInfo(doc, abs_b, QStringLiteral("robot"), QStringLiteral("DataLoad MCAP"), json_b);
+
+  const QList<DataSourceRef> refs = PJ::LayoutXml::extractDataSource(doc, QDir::current());
+  ASSERT_EQ(refs.size(), 2);
+  EXPECT_EQ(refs[0].resolved_path, QFileInfo(abs_a).absoluteFilePath());
+  EXPECT_EQ(refs[0].plugin_config_json, json_a);
+  EXPECT_EQ(refs[1].resolved_path, QFileInfo(abs_b).absoluteFilePath());
+  EXPECT_EQ(refs[1].prefix, QStringLiteral("robot"));
+  EXPECT_EQ(refs[1].plugin_config_json, json_b);
+}
+
+TEST(ExtractDataSource, MultiFileSurvivesSerializeReparse) {
+  // The full file pipeline: build two fileInfos, serialize, reparse, and
+  // confirm both come back in order — the round-trip a saved/loaded layout takes.
+  // Host-absolute paths so the assertion holds cross-platform (see above).
+  const QString abs_a = QDir::tempPath() + QStringLiteral("/a.mcap");
+  const QString abs_b = QDir::tempPath() + QStringLiteral("/b.mcap");
+  QDomDocument doc = buildDataSourceDoc(abs_a);
+  appendFileInfo(doc, abs_b);
+  QDomDocument reparsed;
+  ASSERT_TRUE(reparsed.setContent(doc.toByteArray(2)));
+  const QList<DataSourceRef> refs = PJ::LayoutXml::extractDataSource(reparsed, QDir::current());
+  ASSERT_EQ(refs.size(), 2);
+  EXPECT_EQ(refs[0].resolved_path, QFileInfo(abs_a).absoluteFilePath());
+  EXPECT_EQ(refs[1].resolved_path, QFileInfo(abs_b).absoluteFilePath());
 }
 
 // ---------- isSamePath ------------------------------------------------------

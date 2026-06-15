@@ -29,21 +29,46 @@ TEST(SessionManagerSourceTest, RecordLoadedSourceStoresPathAndPrefix) {
   EXPECT_EQ(src->prefix, QStringLiteral("robot"));
 }
 
-TEST(SessionManagerSourceTest, RecordLoadedSourceOverwritesPrevious) {
+TEST(SessionManagerSourceTest, RecordLoadedSourceAppendsDistinctPaths) {
   PJ::SessionManager session;
   session.recordLoadedSource(QStringLiteral("/tmp/a.csv"), QString());
   session.recordLoadedSource(QStringLiteral("/tmp/b.csv"), QStringLiteral("p"));
+  // Both distinct files are tracked, in load order.
+  const auto& sources = session.loadedSources();
+  ASSERT_EQ(sources.size(), 2u);
+  EXPECT_EQ(sources[0].path, QStringLiteral("/tmp/a.csv"));
+  EXPECT_EQ(sources[1].path, QStringLiteral("/tmp/b.csv"));
+  // lastLoadedSource() is the most recent.
   const auto src = session.lastLoadedSource();
   ASSERT_TRUE(src.has_value());
   EXPECT_EQ(src->path, QStringLiteral("/tmp/b.csv"));
   EXPECT_EQ(src->prefix, QStringLiteral("p"));
 }
 
+TEST(SessionManagerSourceTest, RecordLoadedSourceReplacesSamePathInPlace) {
+  PJ::SessionManager session;
+  session.recordLoadedSource(QStringLiteral("/tmp/a.csv"), QString());
+  session.recordLoadedSource(QStringLiteral("/tmp/b.csv"), QStringLiteral("p"));
+  // Re-recording an existing path (a reload) updates it in place, keeping its
+  // position and not growing the list.
+  session.recordLoadedSource(
+      QStringLiteral("/tmp/a.csv"), QStringLiteral("robot"), QStringLiteral("CSV"), QStringLiteral(R"({"x":1})"));
+  const auto& sources = session.loadedSources();
+  ASSERT_EQ(sources.size(), 2u);
+  EXPECT_EQ(sources[0].path, QStringLiteral("/tmp/a.csv"));
+  EXPECT_EQ(sources[0].prefix, QStringLiteral("robot"));
+  EXPECT_EQ(sources[0].plugin_id, QStringLiteral("CSV"));
+  EXPECT_EQ(sources[0].plugin_config_json, QStringLiteral(R"({"x":1})"));
+  EXPECT_EQ(sources[1].path, QStringLiteral("/tmp/b.csv"));
+}
+
 TEST(SessionManagerSourceTest, ClearLoadedSourceResetsToEmpty) {
   PJ::SessionManager session;
   session.recordLoadedSource(QStringLiteral("/tmp/a.csv"), QString());
+  session.recordLoadedSource(QStringLiteral("/tmp/b.csv"), QString());
   session.clearLoadedSource();
   EXPECT_FALSE(session.lastLoadedSource().has_value());
+  EXPECT_TRUE(session.loadedSources().empty());
 }
 
 TEST(SessionManagerSourceTest, RecordLoadedSourceStoresPluginIdAndConfig) {

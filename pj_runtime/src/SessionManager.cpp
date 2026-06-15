@@ -5,6 +5,7 @@
 
 #include <QLoggingCategory>
 #include <QString>
+#include <algorithm>
 #include <cstdint>
 #include <unordered_map>
 
@@ -188,8 +189,17 @@ std::shared_ptr<std::mutex> SessionManager::parserMutexForObjectTopic(ObjectTopi
 }
 
 void SessionManager::recordLoadedSource(QString path, QString prefix, QString plugin_id, QString plugin_config_json) {
-  last_loaded_source_ =
-      LoadedSource{std::move(path), std::move(prefix), std::move(plugin_id), std::move(plugin_config_json)};
+  LoadedSource source{std::move(path), std::move(prefix), std::move(plugin_id), std::move(plugin_config_json)};
+  // Dedup by path: a reload of an already-tracked file updates its entry in
+  // place (keeping list order) rather than appending a duplicate.
+  const auto it = std::find_if(loaded_sources_.begin(), loaded_sources_.end(), [&source](const LoadedSource& existing) {
+    return existing.path == source.path;
+  });
+  if (it != loaded_sources_.end()) {
+    *it = std::move(source);
+  } else {
+    loaded_sources_.push_back(std::move(source));
+  }
 }
 
 void SessionManager::evictDatasetObjects(DatasetId dataset_id) {

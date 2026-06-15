@@ -13,16 +13,19 @@
 #include <QSettings>
 #include <QString>
 #include <QStringList>
+#include <algorithm>
 #include <cstdint>
 #include <functional>
 #include <nlohmann/json.hpp>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
 #include "DialogPresenter.h"
 #include "FanoutConfig.h"
+#include "LayoutXml.h"
 #include "pj_base/data_source_protocol.h"
 #include "pj_base/dataset.hpp"
 #include "pj_datastore/engine.hpp"
@@ -182,25 +185,38 @@ bool FileLoader::loadFile(const QString& path, QWidget* dialog_parent, const Loa
   const std::string display_name_utf8 = display_name.toStdString();
 
   // Same-source handling: layout replay reuses the existing DatasetId; an interactive load/reload replaces the
-  // dataset's data in place, keeping its DatasetId/TopicIds (and so all curve keys) stable. Matching is by file
-  // basename, so same-basename files are one source.
+  // dataset's data in place, keeping its DatasetId/TopicIds (and so all curve keys) stable. The engine names
+  // datasets by basename, so the basename match is only a pre-filter — reuse is gated on full-path identity
+  // below, so two different files that share a basename (e.g. log.mcap in separate run dirs) stay distinct
+  // datasets instead of the second silently aliasing the first.
   DatasetId existing_primary_id = 0;
   for (const auto existing_id : engine.listDatasets()) {
     const DatasetInfo* info = engine.getDataset(existing_id);
     if (info == nullptr || info->source_name != display_name_utf8) {
       continue;
     }
+    // Basename matches; require the same file on disk too. A dataset with no
+    // recorded path (created outside FileLoader, e.g. streaming/test data)
+    // keeps the legacy basename-only behavior.
+    if (const auto path_it = dataset_source_path_.find(existing_id);
+        path_it != dataset_source_path_.end() && !LayoutXml::isSamePath(path_it->second, path)) {
+      continue;
+    }
     if (hints.prefer_reuse) {
       // Reuse the id referenced by the layout; keep the recorded config
-      // when legacy XML has no preset.
+      // when legacy XML has no preset. Match the recorded source by path
+      // (not just the most-recent one) so a multi-file session recovers the
+      // right file's config when reloading any of its sources.
       QString emit_config = hints.preset_config_json;
       if (emit_config.isEmpty()) {
-        const auto prev = session_.lastLoadedSource();
-        if (prev.has_value() && prev->path == path) {
-          emit_config = prev->plugin_config_json;
+        const auto& prior = session_.loadedSources();
+        const auto it = std::find_if(prior.begin(), prior.end(), [&path](const auto& src) { return src.path == path; });
+        if (it != prior.end()) {
+          emit_config = it->plugin_config_json;
         }
       }
       catalog_.restoreDataset(existing_id);
+      dataset_source_path_[existing_id] = path;
       emit fileLoaded(path, QString(), source_name, emit_config);
       return true;
     }
@@ -742,8 +758,30 @@ bool FileLoader::loadFile(const QString& path, QWidget* dialog_parent, const Loa
     captured_config.clear();
   }
 
+  // Remember which file each dataset came from so a later load of a DIFFERENT
+  // file sharing this basename is not mistaken for a reload of it (the match
+  // loop above gates reuse on this). Single-instance: the stable id is the
+  // primary on the replace path, else the freshly created one. Fanout: each
+  // dataset that actually took data.
+  if (fanouts.size() == 1) {
+    dataset_source_path_[swapped_in_place ? existing_primary_id : dataset_id] = path;
+  } else {
+    for (const DatasetId loaded_id : fanout_loaded_ids) {
+      dataset_source_path_[loaded_id] = path;
+    }
+  }
+
   emit fileLoaded(path, QString(), source_name, QString::fromStdString(captured_config));
   return true;
+}
+
+QString FileLoader::sourcePathForDataset(DatasetId dataset_id) const {
+  const auto it = dataset_source_path_.find(dataset_id);
+  return it != dataset_source_path_.end() ? it->second : QString();
+}
+
+void FileLoader::untrackDataset(DatasetId dataset_id) {
+  dataset_source_path_.erase(dataset_id);
 }
 
 bool FileLoader::loadFile(const QString& path, QWidget* dialog_parent) {

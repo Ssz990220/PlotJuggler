@@ -5,6 +5,7 @@
 #include <QObject>
 #include <QString>
 #include <functional>
+#include <unordered_map>
 
 #include "pj_base/types.hpp"
 
@@ -77,6 +78,15 @@ class FileLoader : public QObject {
     transform_service_ = service;
   }
 
+  // Full filesystem path the given dataset was loaded from, or empty if this
+  // loader did not create it (e.g. a streaming or test dataset, or an id it has
+  // since forgotten). The shell uses this to translate a DatasetId back to the
+  // SessionManager loaded-source entry when a dataset is removed.
+  [[nodiscard]] QString sourcePathForDataset(DatasetId dataset_id) const;
+  // Drop the dataset->path association after the dataset is removed, so the map
+  // does not retain ids the engine no longer has. Safe to call for unknown ids.
+  void untrackDataset(DatasetId dataset_id);
+
  signals:
   void fileLoaded(
       const QString& path, const QString& prefix, const QString& plugin_id, const QString& plugin_config_json);
@@ -94,6 +104,12 @@ class FileLoader : public QObject {
   FilePicker file_picker_;
   TimeDomainId default_time_domain_id_ = 0;
   pj::scene3d::TransformService* transform_service_ = nullptr;
+  // Full path each loaded dataset came from. The engine identifies datasets by
+  // basename (DatasetInfo::source_name) only, so the same-source match below
+  // consults this to keep two different files that share a basename distinct
+  // instead of aliasing the second onto the first. DatasetIds are monotonic and
+  // never recycled, so a stale entry for a removed id can never mis-resolve.
+  std::unordered_map<DatasetId, QString> dataset_source_path_;
 };
 
 }  // namespace PJ

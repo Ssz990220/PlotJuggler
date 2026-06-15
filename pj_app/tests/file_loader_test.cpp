@@ -12,8 +12,10 @@
 #include <gtest/gtest.h>
 
 #include <QApplication>
+#include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QSet>
 #include <QSettings>
 #include <QTemporaryDir>
 #include <memory>
@@ -159,6 +161,99 @@ TEST_F(FileLoaderTest, ReloadWithMultipleDatasetsLeavesOthersIntact) {
   EXPECT_EQ(singleTopicRowCount(dataset_a), 3) << "reloading b must not touch dataset a";
   EXPECT_EQ(singleTopicRowCount(dataset_b), 3) << "dataset b must be replaced in place";
   EXPECT_EQ(catalog().items().size(), 2u) << "curve tree must keep both datasets' curves";
+}
+
+// Two files that share a basename but live in different directories (e.g.
+// run1/log.mcap and run2/log.mcap — common for per-run robotics logs) must load
+// as TWO distinct datasets. The same-source match keys on full-path identity,
+// not basename, so the second file is not mistaken for a reload of the first
+// (which would silently alias its data and lose the second file entirely).
+TEST_F(FileLoaderTest, SameBasenameDifferentDirsLoadAsDistinctDatasets) {
+  ASSERT_TRUE(QDir(data_dir_.path()).mkpath(QStringLiteral("runA")));
+  ASSERT_TRUE(QDir(data_dir_.path()).mkpath(QStringLiteral("runB")));
+  const QString path_a = makeMockFile(QStringLiteral("runA/log.mock"));
+  const QString path_b = makeMockFile(QStringLiteral("runB/log.mock"));
+  ASSERT_TRUE(load(path_a));
+  ASSERT_TRUE(load(path_b));
+
+  EXPECT_EQ(session().createReader().listDatasets().size(), 2u)
+      << "same-basename files in different dirs must be distinct datasets, not aliased";
+  EXPECT_EQ(catalog().items().size(), 2u) << "both files' curves must appear in the tree";
+}
+
+// The layout-reload path (prefer_reuse) of two same-basename files in different
+// dirs must likewise restore both — the multi-file layout feature this depends
+// on. Pre-fix the second prefer_reuse load reused the first dataset and emitted
+// no new one, collapsing the session to a single file.
+TEST_F(FileLoaderTest, LayoutReloadOfSameBasenameDifferentDirsRestoresBoth) {
+  ASSERT_TRUE(QDir(data_dir_.path()).mkpath(QStringLiteral("runA")));
+  ASSERT_TRUE(QDir(data_dir_.path()).mkpath(QStringLiteral("runB")));
+  const QString path_a = makeMockFile(QStringLiteral("runA/log.mock"));
+  const QString path_b = makeMockFile(QStringLiteral("runB/log.mock"));
+  PJ::LoadHints hints;
+  hints.expected_plugin_id = QStringLiteral("Mock File Source");
+  hints.preset_config_json = QStringLiteral("{}");
+  hints.skip_dialog = true;
+  hints.prefer_reuse = true;  // mimic a layout replay
+  ASSERT_TRUE(loader_->loadFile(path_a, nullptr, hints));
+  ASSERT_TRUE(loader_->loadFile(path_b, nullptr, hints));
+
+  EXPECT_EQ(session().createReader().listDatasets().size(), 2u)
+      << "layout reload of two same-basename files must restore two datasets";
+}
+
+// FileLoader maps each loaded dataset back to the file it came from (so the
+// shell can drop the right loaded-source entry when a dataset is removed).
+// untrackDataset clears that association.
+TEST_F(FileLoaderTest, SourcePathForDatasetTracksLoadedFileAndUntracks) {
+  ASSERT_TRUE(load());  // loads mock_path_ (sensors.mock)
+  const PJ::DatasetId id = datasetNamed("sensors.mock");
+  ASSERT_NE(id, 0u);
+  EXPECT_EQ(loader_->sourcePathForDataset(id), mock_path_);
+  // An unknown id has no recorded path.
+  EXPECT_TRUE(loader_->sourcePathForDataset(id + 1000).isEmpty());
+
+  loader_->untrackDataset(id);
+  EXPECT_TRUE(loader_->sourcePathForDataset(id).isEmpty()) << "untrackDataset must drop the association";
+}
+
+// Core of the resurrection fix (MainWindow::appendDataSourceElement's liveness
+// filter): once a dataset is removed, the file it came from must drop out of the
+// set of source paths still backing a live dataset — otherwise a saved layout
+// would re-list and resurrect it on reload. Exercised with the real
+// CatalogModel + FileLoader (the XML emission itself lives in MainWindow).
+TEST_F(FileLoaderTest, RemovedDatasetDropsFromLiveSourcePaths) {
+  const QString path_a = makeMockFile(QStringLiteral("a.mock"));
+  const QString path_b = makeMockFile(QStringLiteral("b.mock"));
+  ASSERT_TRUE(load(path_a));
+  ASSERT_TRUE(load(path_b));
+  const PJ::DatasetId id_a = datasetNamed("a.mock");
+  ASSERT_NE(id_a, 0u);
+
+  // The set of source paths still backing a live catalog dataset — exactly how
+  // appendDataSourceElement decides which <fileInfo> entries to write.
+  const auto livePaths = [&]() {
+    QSet<QString> paths;
+    for (const auto& [id, name] : catalog().datasets()) {
+      (void)name;
+      if (const QString p = loader_->sourcePathForDataset(id); !p.isEmpty()) {
+        paths.insert(p);
+      }
+    }
+    return paths;
+  };
+
+  EXPECT_TRUE(livePaths().contains(path_a));
+  EXPECT_TRUE(livePaths().contains(path_b));
+
+  // Remove dataset a the way MainWindow::onRemoveDatasetRequested does.
+  session().evictDatasetObjects(id_a);
+  catalog().removeDataset(id_a);
+  loader_->untrackDataset(id_a);
+
+  const QSet<QString> live = livePaths();
+  EXPECT_FALSE(live.contains(path_a)) << "removed dataset's file must not be a live source (no resurrection)";
+  EXPECT_TRUE(live.contains(path_b)) << "surviving dataset's file stays a live source";
 }
 
 }  // namespace

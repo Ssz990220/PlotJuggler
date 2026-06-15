@@ -42,11 +42,13 @@ struct DataSourceRef {
 // transparently on read.
 void appendJsonAsCdata(QDomDocument& doc, QDomElement& parent, const QString& json);
 
-// Reads <previouslyLoaded_Datafiles>/<fileInfo> and the optional
-// <plugin> child. resolved_path is absolute — relatives are anchored
-// at `layout_dir`. Returns an empty resolved_path when the element is
-// absent, malformed, or carries no filename.
-[[nodiscard]] DataSourceRef extractDataSource(const QDomDocument& doc, const QDir& layout_dir);
+// Reads every <previouslyLoaded_Datafiles>/<fileInfo> and its optional
+// <plugin> child, one DataSourceRef per file in document order. Each
+// resolved_path is absolute — relatives are anchored at `layout_dir`.
+// fileInfo entries with no filename are skipped. Returns an empty list when
+// the wrapper element is absent or holds no usable fileInfo. Multiple entries
+// support multi-file sessions; single-file layouts yield a one-element list.
+[[nodiscard]] QList<DataSourceRef> extractDataSource(const QDomDocument& doc, const QDir& layout_dir);
 
 // True iff both paths resolve to the same on-disk file. Used by the
 // layout-load data-source replay to decide whether the currently

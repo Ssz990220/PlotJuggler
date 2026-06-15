@@ -18,7 +18,6 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QIcon>
-#include <QInputDialog>
 #include <QKeySequence>
 #include <QLabel>
 #include <QLoggingCategory>
@@ -1159,6 +1158,11 @@ void MainWindow::onRemoveDatasetRequested(DatasetId dataset_id) {
   }
   session_->sessionManager().evictDatasetObjects(dataset_id);
   session_->catalogModel().removeDataset(dataset_id);
+  // Drop this dataset's file association (hygiene). Resurrection is prevented by
+  // the layout-save liveness filter (appendDataSourceElement), not by mutating
+  // loaded_sources_ — that list is kept whole so the quick-reload button still
+  // works after a removal.
+  file_loader_->untrackDataset(dataset_id);
   // Shrink the playback range to the remaining data right away — unless a
   // streaming dataset exists (the slider is scoped to the active stream).
   if (active_streaming_dataset_id_ == 0) {
@@ -1881,28 +1885,51 @@ void MainWindow::loadLayoutFromPath(const QString& path) {
   // the save-time intent; this is the load-time override.
   const QString binding = root.attribute(QStringLiteral("binding"), QStringLiteral("source"));
   const QDir layout_dir(QFileInfo(path).absoluteDir());
-  const LayoutXml::DataSourceRef replay = LayoutXml::extractDataSource(doc, layout_dir);
-  if (binding != QStringLiteral("generic") && !replay.resolved_path.isEmpty()) {
-    const auto current_source = session_->sessionManager().lastLoadedSource();
-    // A remembered source counts as loaded only while the catalog has data.
-    const bool same_source_loaded = current_source.has_value() &&
-                                    LayoutXml::isSamePath(current_source->path, replay.resolved_path) &&
-                                    !session_->catalogModel().isEmpty();
-    if (same_source_loaded) {
-      // The referenced file is already loaded; nothing to reload.
-    } else if (!QFileInfo::exists(replay.resolved_path)) {
-      emitDiagnostic(
-          DiagnosticLevel::kWarning, "Layout", "data-source-missing",
-          tr("Layout's data source '%1' does not exist on disk; applying to current data.").arg(replay.resolved_path));
-    } else {
+  const QList<LayoutXml::DataSourceRef> replays = LayoutXml::extractDataSource(doc, layout_dir);
+  if (binding != QStringLiteral("generic") && !replays.empty()) {
+    // Classify each referenced file: already loaded (skip), missing on disk
+    // (warn + skip), or reloadable. A file counts as already loaded only while
+    // the catalog has data — a remembered-but-cleared source must reload.
+    const auto& loaded = session_->sessionManager().loadedSources();
+    const bool catalog_has_data = !session_->catalogModel().isEmpty();
+    QList<LayoutXml::DataSourceRef> pending;
+    for (const auto& replay : replays) {
+      if (replay.resolved_path.isEmpty()) {
+        continue;
+      }
+      const bool already_loaded =
+          catalog_has_data && std::any_of(loaded.begin(), loaded.end(), [&replay](const auto& src) {
+            return LayoutXml::isSamePath(src.path, replay.resolved_path);
+          });
+      if (already_loaded) {
+        continue;
+      }
+      if (!QFileInfo::exists(replay.resolved_path)) {
+        emitDiagnostic(
+            DiagnosticLevel::kWarning, "Layout", "data-source-missing",
+            tr("Layout's data source '%1' does not exist on disk; applying to current data.")
+                .arg(replay.resolved_path));
+        continue;
+      }
+      pending.push_back(replay);
+    }
+
+    if (!pending.empty()) {
+      // One consolidated prompt for the whole pending set (never one box per
+      // file). "Use current data" is the fall-through: neither cancel nor reload.
+      QStringList file_lines;
+      file_lines.reserve(pending.size());
+      for (const auto& replay : pending) {
+        file_lines.push_back(QStringLiteral("  %1").arg(replay.resolved_path));
+      }
       QMessageBox box(this);
       box.setIcon(QMessageBox::Question);
       box.setWindowTitle(tr("Load Layout"));
-      box.setText(tr("This layout was saved with data source:\n  %1\n\nReload it, or apply the layout to the "
-                     "currently loaded data?")
-                      .arg(replay.resolved_path));
+      box.setText(tr("This layout was saved with %n data source(s):\n%1\n\nReload them, or apply the layout to the "
+                     "currently loaded data?",
+                     nullptr, static_cast<int>(pending.size()))
+                      .arg(file_lines.join(QLatin1Char('\n'))));
       QPushButton* reload_btn = box.addButton(tr("Reload original"), QMessageBox::AcceptRole);
-      // "Use current data" is the fall-through: neither cancel nor reload.
       box.addButton(tr("Use current data"), QMessageBox::AcceptRole);
       QPushButton* cancel_btn = box.addButton(tr("Cancel"), QMessageBox::RejectRole);
       box.setDefaultButton(reload_btn);
@@ -1911,39 +1938,38 @@ void MainWindow::loadLayoutFromPath(const QString& path) {
         return;
       }
       if (box.clickedButton() == reload_btn) {
-        LoadHints hints{
-            .expected_plugin_id = replay.plugin_id,
-            .preset_config_json = replay.plugin_config_json,
-            .skip_dialog = !replay.plugin_id.isEmpty() && !replay.plugin_config_json.isEmpty(),
-            .prefer_reuse = true,
-        };
-        // FileLoader shows its own error dialog on failure; fall through and
-        // let the unresolved-curve handling below catch an empty load.
-        file_loader_->loadFile(replay.resolved_path, this, hints);
+        // Load each pending file. Distinct files append as separate datasets
+        // (FileLoader replaces in place only on a basename match), so the full
+        // multi-file session is restored. FileLoader shows its own error dialog
+        // on failure; fall through and let the unresolved-curve handling below
+        // catch an empty load.
+        for (const auto& replay : pending) {
+          LoadHints hints{
+              .expected_plugin_id = replay.plugin_id,
+              .preset_config_json = replay.plugin_config_json,
+              .skip_dialog = !replay.plugin_id.isEmpty() && !replay.plugin_config_json.isEmpty(),
+              .prefer_reuse = true,
+          };
+          file_loader_->loadFile(replay.resolved_path, this, hints);
+        }
       }
     }
   }
 
-  // 3. Pick the target dataset and rebind every curve's stable topic+field
-  // path to that dataset's concrete keys. A layout built on one recording
-  // thus reuses on a similar one (same topics/fields). Paths the dataset
-  // can't provide are surfaced via the missing-curve prompt.
-  const auto datasets = session_->catalogModel().datasets();
-  if (datasets.empty()) {
+  // 3. Rebind every curve's stable topic+field path to a concrete catalog key.
+  // Each curve resolves against whichever loaded dataset actually holds its
+  // topic+field (first match in load order), so a multi-file layout restores
+  // each plot against its own source — and a layout built on one recording still
+  // reuses on a similar one (same topics/fields). This mirrors the undo/redo
+  // restore (rebindToCurrentSession); there is deliberately no "apply to which
+  // dataset?" prompt — a saved layout binds to its data, not to one chosen set.
+  // Paths no loaded dataset can provide are surfaced via the missing-curve prompt.
+  if (session_->catalogModel().datasets().empty()) {
     MessageBox::warning(
         this, tr("Load Layout"), tr("No data is loaded. Open a data source before applying this layout."));
     return;
   }
-  const std::optional<DatasetId> target = chooseActiveDataset(datasets);
-  if (!target.has_value()) {
-    return;  // user cancelled the dataset chooser
-  }
-  const DatasetId target_id = *target;
-  const QList<LayoutXml::SeriesPath> unresolved =
-      LayoutXml::rebindCurveKeys(doc, [this, target_id](const LayoutXml::SeriesPath& p) -> std::optional<QString> {
-        const auto descriptor = session_->catalogModel().descriptorForPath(target_id, p.topic, p.field);
-        return descriptor.has_value() ? std::optional<QString>(descriptor->name) : std::nullopt;
-      });
+  const QList<LayoutXml::SeriesPath> unresolved = rebindCurvesToLoadedDatasets(doc);
   if (!unresolved.isEmpty()) {
     QStringList shown;
     shown.reserve(unresolved.size());
@@ -2108,12 +2134,13 @@ void MainWindow::onUndoableChange() {
   pushUndoState();
 }
 
-void MainWindow::rebindToCurrentSession(QDomDocument& doc) {
+QList<LayoutXml::SeriesPath> MainWindow::rebindCurvesToLoadedDatasets(QDomDocument& doc) {
+  // Resolve each curve's stable topic+field against whichever loaded dataset
+  // actually holds it (first match in load order). Shared by layout load and
+  // undo/redo restore so both bind curves identically; returns the paths no
+  // loaded dataset could provide (the caller decides whether to prompt).
   const auto datasets = session_->catalogModel().datasets();
-  // Unresolved paths are intentionally ignored here: undo/redo restores
-  // silently (no missing-curve prompt), and a curve whose data is gone is
-  // simply dropped on restore.
-  (void)LayoutXml::rebindCurveKeys(doc, [this, &datasets](const LayoutXml::SeriesPath& p) -> std::optional<QString> {
+  return LayoutXml::rebindCurveKeys(doc, [this, &datasets](const LayoutXml::SeriesPath& p) -> std::optional<QString> {
     for (const auto& [id, name] : datasets) {
       (void)name;
       if (const auto descriptor = session_->catalogModel().descriptorForPath(id, p.topic, p.field)) {
@@ -2122,6 +2149,13 @@ void MainWindow::rebindToCurrentSession(QDomDocument& doc) {
     }
     return std::nullopt;
   });
+}
+
+void MainWindow::rebindToCurrentSession(QDomDocument& doc) {
+  // Unresolved paths are intentionally ignored here: undo/redo restores
+  // silently (no missing-curve prompt), and a curve whose data is gone is
+  // simply dropped on restore.
+  (void)rebindCurvesToLoadedDatasets(doc);
 }
 
 void MainWindow::onUndo() {
@@ -2169,47 +2203,76 @@ void MainWindow::onRedo() {
 }
 
 QDomElement MainWindow::appendDataSourceElement(QDomDocument& doc, const QDir& layout_dir) const {
-  const auto src = session_->sessionManager().lastLoadedSource();
+  const auto& sources = session_->sessionManager().loadedSources();
   // Do not save a data-source reference after the catalog was cleared.
-  if (!src.has_value() || session_->catalogModel().isEmpty()) {
+  if (sources.empty() || session_->catalogModel().isEmpty()) {
     return QDomElement();
   }
-  QDomElement wrapper = doc.createElement(QStringLiteral("previouslyLoaded_Datafiles"));
-  QDomElement file_info = doc.createElement(QStringLiteral("fileInfo"));
 
-  const QFileInfo info(src->path);
-  const QString abs = info.absoluteFilePath();
-  const QString rel = layout_dir.relativeFilePath(abs);
-  // Prefer the relative form when the data lives at or beneath the layout
-  // dir; fall back to absolute when it escapes. This diverges from PJ3,
-  // which always stores relative — PJ4 avoids brittle ../.. paths so that
-  // moving a layout file doesn't silently break the data reference.
-  // A relative path is a "subpath" only when Qt's relativeFilePath did
-  // NOT emit a "../" prefix or the literal ".." path. The earlier check
-  // (`!rel.startsWith("..")`) would misclassify legitimate filenames
-  // like "..foo" or "..bar/data.csv" as escaping the dir.
-  const bool is_subpath = rel != QStringLiteral("..") && !rel.startsWith(QStringLiteral("../"));
-  file_info.setAttribute(QStringLiteral("filename"), is_subpath ? rel : abs);
-  file_info.setAttribute(QStringLiteral("prefix"), src->prefix);
-
-  // Emit the plugin sub-element whenever the plugin id is known. An
-  // empty saveConfig payload is legitimate (some plugins have no
-  // user-tunable state) and must NOT cause us to skip — otherwise
-  // those plugins would re-prompt on every layout reload. Empty
-  // plugin_id means the loader didn't capture a plugin (legacy path
-  // or saveConfig failure); only that case skips the child.
-  if (!src->plugin_id.isEmpty()) {
-    QDomElement plugin = doc.createElement(QStringLiteral("plugin"));
-    plugin.setAttribute(QStringLiteral("ID"), src->plugin_id);
-    // CDATA so the JSON survives round-tripping without XML escape mangling.
-    // appendJsonAsCdata splits across multiple CDATA sections when the JSON
-    // contains a literal "]]>" sequence (otherwise it'd terminate the
-    // CDATA early and corrupt the layout file).
-    LayoutXml::appendJsonAsCdata(doc, plugin, src->plugin_config_json);
-    file_info.appendChild(plugin);
+  // Persist only sources that still back a live dataset. A dataset whose curves
+  // were all removed (Remove Dataset, or trashing every topic) drops out of
+  // datasets(), so its file is neither serialized here nor resurrected on the
+  // next reload — while loaded_sources_ itself stays intact for the quick-reload
+  // button (which keys off lastLoadedSource, not this list). FileLoader owns the
+  // DatasetId->path link the engine's basename-only DatasetInfo can't provide.
+  QSet<QString> live_paths;
+  for (const auto& [id, name] : session_->catalogModel().datasets()) {
+    (void)name;
+    if (const QString src_path = file_loader_->sourcePathForDataset(id); !src_path.isEmpty()) {
+      live_paths.insert(src_path);
+    }
   }
 
-  wrapper.appendChild(file_info);
+  QDomElement wrapper = doc.createElement(QStringLiteral("previouslyLoaded_Datafiles"));
+
+  // One <fileInfo> per loaded file, in load order, so a multi-file session
+  // round-trips. Old PJ4 readers that only read the first child degrade to the
+  // first file; new readers restore them all.
+  for (const auto& src : sources) {
+    if (!live_paths.contains(src.path)) {
+      continue;  // dataset removed since load; don't resurrect it on reload
+    }
+    QDomElement file_info = doc.createElement(QStringLiteral("fileInfo"));
+
+    const QFileInfo info(src.path);
+    const QString abs = info.absoluteFilePath();
+    const QString rel = layout_dir.relativeFilePath(abs);
+    // Prefer the relative form when the data lives at or beneath the layout
+    // dir; fall back to absolute when it escapes. This diverges from PJ3,
+    // which always stores relative — PJ4 avoids brittle ../.. paths so that
+    // moving a layout file doesn't silently break the data reference.
+    // A relative path is a "subpath" only when Qt's relativeFilePath did
+    // NOT emit a "../" prefix or the literal ".." path. The earlier check
+    // (`!rel.startsWith("..")`) would misclassify legitimate filenames
+    // like "..foo" or "..bar/data.csv" as escaping the dir.
+    const bool is_subpath = rel != QStringLiteral("..") && !rel.startsWith(QStringLiteral("../"));
+    file_info.setAttribute(QStringLiteral("filename"), is_subpath ? rel : abs);
+    file_info.setAttribute(QStringLiteral("prefix"), src.prefix);
+
+    // Emit the plugin sub-element whenever the plugin id is known. An
+    // empty saveConfig payload is legitimate (some plugins have no
+    // user-tunable state) and must NOT cause us to skip — otherwise
+    // those plugins would re-prompt on every layout reload. Empty
+    // plugin_id means the loader didn't capture a plugin (legacy path
+    // or saveConfig failure); only that case skips the child.
+    if (!src.plugin_id.isEmpty()) {
+      QDomElement plugin = doc.createElement(QStringLiteral("plugin"));
+      plugin.setAttribute(QStringLiteral("ID"), src.plugin_id);
+      // CDATA so the JSON survives round-tripping without XML escape mangling.
+      // appendJsonAsCdata splits across multiple CDATA sections when the JSON
+      // contains a literal "]]>" sequence (otherwise it'd terminate the
+      // CDATA early and corrupt the layout file).
+      LayoutXml::appendJsonAsCdata(doc, plugin, src.plugin_config_json);
+      file_info.appendChild(plugin);
+    }
+
+    wrapper.appendChild(file_info);
+  }
+  // Every source was filtered out (all their datasets are gone): emit nothing
+  // rather than an empty <previouslyLoaded_Datafiles> wrapper.
+  if (!wrapper.hasChildNodes()) {
+    return QDomElement();
+  }
   return wrapper;
 }
 
@@ -2429,33 +2492,6 @@ void MainWindow::restoreChromeState(const QDomElement& element) {
   if (element.hasAttribute(QStringLiteral("timeline_splitter_sizes"))) {
     apply_splitter(ui_->timelineSplitter, element.attribute(QStringLiteral("timeline_splitter_sizes")));
   }
-}
-
-std::optional<DatasetId> MainWindow::chooseActiveDataset(const std::vector<std::pair<DatasetId, QString>>& datasets) {
-  if (datasets.size() == 1) {
-    return datasets.front().first;
-  }
-  QStringList names;
-  names.reserve(static_cast<int>(datasets.size()));
-  for (const auto& [id, name] : datasets) {
-    (void)id;
-    names.push_back(name);
-  }
-  // Default to the most-recently-loaded dataset (datasets are load-ordered).
-  const int default_index = static_cast<int>(datasets.size()) - 1;
-  bool ok = false;
-  const QString chosen = QInputDialog::getItem(
-      this, tr("Apply Layout"), tr("Apply this layout to which dataset?"), names, default_index,
-      /*editable=*/false, &ok);
-  if (!ok) {
-    return std::nullopt;
-  }
-  for (const auto& [id, name] : datasets) {
-    if (name == chosen) {
-      return id;
-    }
-  }
-  return std::nullopt;
 }
 
 MainWindow::MissingCurveChoice MainWindow::promptMissingCurves(const QStringList& names) {

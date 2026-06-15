@@ -19,6 +19,7 @@
 #include <utility>
 #include <vector>
 
+#include "LayoutXml.h"
 #include "pj_base/diagnostic_sink.hpp"
 #include "pj_base/types.hpp"
 #include "pj_plotting/CurveTracker.h"
@@ -310,16 +311,16 @@ class MainWindow : public QMainWindow {
   void recordRecentLayout(const QString& path);
   [[nodiscard]] QStringList recentLayouts() const;
 
-  // Picks the dataset a layout's curves bind to. Returns the sole dataset
-  // when only one is loaded; otherwise prompts the user (defaulting to the
-  // most-recently-loaded). nullopt means the user cancelled the chooser.
-  [[nodiscard]] std::optional<DatasetId> chooseActiveDataset(
-      const std::vector<std::pair<DatasetId, QString>>& datasets);
+  // Rewrites every curve's stable topic+field path to a concrete catalog key,
+  // resolving across all loaded datasets (first dataset that has the path).
+  // Returns the stable paths no loaded dataset could provide. Shared by layout
+  // load (which prompts on the unresolved set) and undo/redo restore.
+  [[nodiscard]] QList<LayoutXml::SeriesPath> rebindCurvesToLoadedDatasets(QDomDocument& doc);
 
-  // Rewrites every curve's stable topic+field path to a concrete catalog key
-  // in the currently-loaded data (first dataset that has the path). Used by
-  // undo/redo restore, whose snapshots carry stable paths, not the per-load
-  // keys — so a snapshot survives an intervening data reload.
+  // Thin wrapper over rebindCurvesToLoadedDatasets that discards the unresolved
+  // set: undo/redo restores silently (no missing-curve prompt), so a curve
+  // whose data is gone is simply dropped. Snapshots carry stable paths, not
+  // per-load keys, so a snapshot survives an intervening data reload.
   void rebindToCurrentSession(QDomDocument& doc);
 
   // kPlaceholders was removed: the SessionManager API for registering

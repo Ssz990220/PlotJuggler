@@ -6,6 +6,7 @@
 #include <QDomNodeList>
 #include <QFileInfo>
 #include <QSet>
+#include <utility>
 #include <vector>
 
 namespace PJ::LayoutXml {
@@ -33,33 +34,36 @@ void appendJsonAsCdata(QDomDocument& doc, QDomElement& parent, const QString& js
   }
 }
 
-DataSourceRef extractDataSource(const QDomDocument& doc, const QDir& layout_dir) {
-  DataSourceRef info;
+QList<DataSourceRef> extractDataSource(const QDomDocument& doc, const QDir& layout_dir) {
+  QList<DataSourceRef> sources;
   const QDomElement wrapper = doc.documentElement().firstChildElement(QStringLiteral("previouslyLoaded_Datafiles"));
   if (wrapper.isNull()) {
-    return info;
+    return sources;
   }
-  const QDomElement file_info = wrapper.firstChildElement(QStringLiteral("fileInfo"));
-  if (file_info.isNull()) {
-    return info;
-  }
-  const QString filename = file_info.attribute(QStringLiteral("filename"));
-  if (filename.isEmpty()) {
-    return info;
-  }
-  const QFileInfo qfi(filename);
-  info.resolved_path = qfi.isAbsolute() ? qfi.absoluteFilePath() : layout_dir.absoluteFilePath(filename);
-  info.prefix = file_info.attribute(QStringLiteral("prefix"));
+  // Walk every <fileInfo> sibling, not just the first: a multi-file session
+  // saves one per loaded data file (see MainWindow::appendDataSourceElement).
+  for (QDomElement file_info = wrapper.firstChildElement(QStringLiteral("fileInfo")); !file_info.isNull();
+       file_info = file_info.nextSiblingElement(QStringLiteral("fileInfo"))) {
+    const QString filename = file_info.attribute(QStringLiteral("filename"));
+    if (filename.isEmpty()) {
+      continue;
+    }
+    DataSourceRef info;
+    const QFileInfo qfi(filename);
+    info.resolved_path = qfi.isAbsolute() ? qfi.absoluteFilePath() : layout_dir.absoluteFilePath(filename);
+    info.prefix = file_info.attribute(QStringLiteral("prefix"));
 
-  const QDomElement plugin = file_info.firstChildElement(QStringLiteral("plugin"));
-  if (!plugin.isNull()) {
-    info.plugin_id = plugin.attribute(QStringLiteral("ID"));
-    // QDomElement::text() concatenates all child text/CDATA — exactly
-    // the round-trip of doc.createCDATASection above.
-    info.plugin_config_json = plugin.text();
+    const QDomElement plugin = file_info.firstChildElement(QStringLiteral("plugin"));
+    if (!plugin.isNull()) {
+      info.plugin_id = plugin.attribute(QStringLiteral("ID"));
+      // QDomElement::text() concatenates all child text/CDATA — exactly
+      // the round-trip of doc.createCDATASection above.
+      info.plugin_config_json = plugin.text();
+    }
+    sources.push_back(std::move(info));
   }
 
-  return info;
+  return sources;
 }
 
 QString SeriesPath::display() const {
