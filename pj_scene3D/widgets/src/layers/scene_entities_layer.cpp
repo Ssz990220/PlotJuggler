@@ -111,17 +111,22 @@ bool remoteModelFetchAllowed() {
 
 // Lifetime expiry with overflow-safe boundary handling (lifetime_ns == 0 means
 // "never expires", per the SceneEntity contract).
-bool expiredAt(const PJ::sdk::SceneEntity& entity, int64_t time_ns) {
+// anchor_ns is the entity's lifetime-expiry origin = the ObjectStore entry
+// timestamp it was folded from (the tracker's clock), NOT entity.timestamp: under
+// streaming the entry is host-stamped while entity.timestamp keeps the original
+// sensor epoch, so comparing entity.timestamp against the tracker would expire
+// every finite-lifetime entity instantly.
+bool expiredAt(const PJ::sdk::SceneEntity& entity, int64_t anchor_ns, int64_t time_ns) {
   if (entity.lifetime_ns == 0) {
     return false;
   }
-  if (entity.lifetime_ns > 0 && entity.timestamp > std::numeric_limits<int64_t>::max() - entity.lifetime_ns) {
+  if (entity.lifetime_ns > 0 && anchor_ns > std::numeric_limits<int64_t>::max() - entity.lifetime_ns) {
     return false;
   }
-  if (entity.lifetime_ns < 0 && entity.timestamp < std::numeric_limits<int64_t>::min() - entity.lifetime_ns) {
+  if (entity.lifetime_ns < 0 && anchor_ns < std::numeric_limits<int64_t>::min() - entity.lifetime_ns) {
     return true;
   }
-  return entity.timestamp + entity.lifetime_ns < time_ns;
+  return anchor_ns + entity.lifetime_ns < time_ns;
 }
 
 // Rough heap footprint of a decoded batch — the buffers that dominate (embedded
@@ -287,6 +292,7 @@ void SceneEntitiesLayer::resetReplayState() {
   last_marker_uid_ = {};
   ts_first_.reset();
   entities_.clear();
+  entity_expiry_anchor_ns_.clear();
   model_frames_.clear();
   state_built_at_.reset();
   last_applied_uid_ = {};
@@ -414,7 +420,8 @@ void SceneEntitiesLayer::renderAt(int64_t time_ns) {
   // topic carrying both markers and a model (embedded GLB) would otherwise decode
   // the message twice per tracker change (once here, once for the model state).
   // Moved, not copied: the ObjectRecord is discarded right after.
-  cacheSnapshot(resolved->sequential_uid, std::make_shared<PJ::sdk::SceneEntities>(std::move(*batch)));
+  cacheSnapshot(
+      resolved->sequential_uid, std::make_shared<PJ::sdk::SceneEntities>(std::move(*batch)), resolved->timestamp);
   emit repaintRequested();
 }
 
@@ -474,7 +481,7 @@ bool SceneEntitiesLayer::applyEntriesAfter(PJ::SequentialUID after_uid, PJ::Sequ
     // Cache hit: re-fold the decoded batch (backward scrub / rebuild) without
     // re-parsing — the protobuf decode of heavy embedded models is what hitched.
     if (const auto cached = snapshot_cache_.find(uid); cached != snapshot_cache_.end()) {
-      applySnapshot(*cached->second.batch);
+      applySnapshot(*cached->second.batch, cached->second.store_ns);
       applied = true;
       continue;
     }
@@ -493,16 +500,17 @@ bool SceneEntitiesLayer::applyEntriesAfter(PJ::SequentialUID after_uid, PJ::Sequ
     }
     auto* snapshot = std::any_cast<PJ::sdk::SceneEntities>(&obj->object);
     if (snapshot != nullptr) {
-      applySnapshot(*snapshot);
+      applySnapshot(*snapshot, entry->timestamp);
       // Moved, not copied: the ObjectRecord is discarded at the end of this step.
-      cacheSnapshot(uid, std::make_shared<PJ::sdk::SceneEntities>(std::move(*snapshot)));
+      cacheSnapshot(uid, std::make_shared<PJ::sdk::SceneEntities>(std::move(*snapshot)), entry->timestamp);
       applied = true;
     }
   }
   return applied;
 }
 
-void SceneEntitiesLayer::cacheSnapshot(PJ::SequentialUID uid, std::shared_ptr<const PJ::sdk::SceneEntities> batch) {
+void SceneEntitiesLayer::cacheSnapshot(
+    PJ::SequentialUID uid, std::shared_ptr<const PJ::sdk::SceneEntities> batch, int64_t store_ns) {
   if (!uid.valid() || batch == nullptr) {
     return;
   }
@@ -512,6 +520,7 @@ void SceneEntitiesLayer::cacheSnapshot(PJ::SequentialUID uid, std::shared_ptr<co
   }
   it->second.bytes = estimateSnapshotBytes(*batch);
   it->second.batch = std::move(batch);
+  it->second.store_ns = store_ns;
   snapshot_cache_bytes_ += it->second.bytes;
   // Evict lowest-UID first; keep at least one entry so the just-decoded batch
   // is never thrown away by its own insertion.
@@ -535,6 +544,7 @@ void SceneEntitiesLayer::pruneSnapshotCacheBelow(PJ::SequentialUID first_retaine
 
 void SceneEntitiesLayer::rebuildModelStateAt(PJ::Timepoint time) {
   entities_.clear();
+  entity_expiry_anchor_ns_.clear();
   state_built_at_ = time;
   last_applied_uid_ = {};
 
@@ -620,7 +630,7 @@ void SceneEntitiesLayer::ensureModelStateAt(PJ::Timepoint time) {
   emit repaintRequested();
 }
 
-void SceneEntitiesLayer::applySnapshot(const PJ::sdk::SceneEntities& snapshot) {
+void SceneEntitiesLayer::applySnapshot(const PJ::sdk::SceneEntities& snapshot, int64_t ingest_ns) {
   // Deletions act on PRIOR state (entities accumulated before this batch), per
   // the SDK scene_entities.hpp contract. Foxglove's reference impl applies
   // deletions first for exactly this reason: the canonical DELETEALL+re-add
@@ -631,7 +641,7 @@ void SceneEntitiesLayer::applySnapshot(const PJ::sdk::SceneEntities& snapshot) {
     if (deletion.type == PJ::sdk::SceneEntityDeletion::Type::kAll) {
       for (auto it = entities_.begin(); it != entities_.end();) {
         if (it->second.timestamp <= deletion.timestamp) {
-          it = entities_.erase(it);
+          it = eraseEntity(it);
         } else {
           ++it;
         }
@@ -640,20 +650,32 @@ void SceneEntitiesLayer::applySnapshot(const PJ::sdk::SceneEntities& snapshot) {
     }
     auto it = entities_.find(deletion.id);
     if (it != entities_.end() && it->second.timestamp <= deletion.timestamp) {
-      entities_.erase(it);
+      eraseEntity(it);
     }
   }
   for (const PJ::sdk::SceneEntity& entity : snapshot.entities) {
     entities_[entity.id] = entity;
+    // Anchor lifetime expiry on the ingest (tracker-clock) timestamp, not the
+    // entity's embedded sensor epoch — see expiredAt(). Written in lockstep with
+    // every entities_ insert; eraseEntity() drops both together.
+    entity_expiry_anchor_ns_[entity.id] = ingest_ns;
   }
+}
+
+std::map<std::string, PJ::sdk::SceneEntity>::iterator SceneEntitiesLayer::eraseEntity(
+    std::map<std::string, PJ::sdk::SceneEntity>::iterator it) {
+  entity_expiry_anchor_ns_.erase(it->first);
+  return entities_.erase(it);
 }
 
 bool SceneEntitiesLayer::dropExpiredEntities(PJ::Timepoint time) {
   const int64_t time_ns = PJ::toRaw(time);
   bool dropped = false;
   for (auto it = entities_.begin(); it != entities_.end();) {
-    if (expiredAt(it->second, time_ns)) {
-      it = entities_.erase(it);
+    // .at(): the anchor is written in lockstep with every entities_ insert
+    // (applySnapshot) and erased via eraseEntity, so a miss is a broken invariant.
+    if (expiredAt(it->second, entity_expiry_anchor_ns_.at(it->first), time_ns)) {
+      it = eraseEntity(it);
       dropped = true;
     } else {
       ++it;

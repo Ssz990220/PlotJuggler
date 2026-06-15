@@ -89,7 +89,7 @@ layer, no separate widget.
 ## 4. Scene composition model
 
 - **All layers are frame-locked, always.** On every render, a layer in source frame F is re-transformed via TF to the widget's fixed-frame at the current tracker time. There is no per-layer opt-out and no world-snapshot semantic (Foxglove's per-layer `frame_locked=false` toggle is intentionally not adopted).
-- **No decay or lifetime in v1.** A layer persists until the producer topic emits a new sample on the same key. Accumulation over time is by re-emission, not by hold-and-fade.
+- **Marker lifetime is honored; no fade/decay.** Most layers persist until the producer re-emits on the same key. `SceneEntitiesLayer` additionally honors each `SceneEntity`'s `lifetime_ns` (`0` = never expires): the entity is dropped once the tracker passes its expiry. Expiry is anchored on the **ingest (ObjectStore entry) timestamp** the entity was folded from — the host/tracker clock — not the entity's embedded sensor timestamp, which under live streaming rides a different epoch. There is still no hold-and-fade: an expired entity disappears, it does not decay.
 
 ## 5. Frame model
 
@@ -200,7 +200,7 @@ Third-party drawable type registration by plugins. Out of v1 scope. Built-in dra
 - **Hot reload** of plugin-provided drawable types.
 - **macOS / Windows support** in v1 (Linux-only per `CLAUDE.md`).
 - **Per-layer Foxglove-style `frame_locked` opt-in** — chose always-locked (§4).
-- **Decay time / marker lifetime** — chose no-decay (§4).
+- **Decay / fade-out animation** — an expired marker disappears, it does not fade. (Marker `lifetime_ns` expiry itself **is** implemented — see §4.)
 - **Out-of-core / surveying-scale pointclouds** (>500M points).
 - **Costmap-3D, ESDF, octomap, voxel grids** beyond OccupancyGrid.
 

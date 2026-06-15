@@ -243,6 +243,31 @@ finite `TransformBuffer` cache window (default 10 s) so a growing live stream
 trims old samples and stays memory-bounded; the bulk file path constructs the
 buffer with eviction disabled, since the whole recording is fed in up front.
 
+### SceneEntities lifetime expiry & the decoded-batch cache
+
+`SceneEntitiesLayer` replays every batch up to the tracker time into an id-keyed
+entity map (replace-by-id, deletions, lifetime expiry). Two mechanisms support this
+on the live path:
+
+- **Dual-clock lifetime anchor.** A `SceneEntity` carries an embedded `timestamp`
+  (sensor epoch) and an optional `lifetime_ns`. Under streaming the ObjectStore entry
+  is *host*-stamped (tracker clock), a different epoch from the sensor timestamp.
+  Expiry must therefore compare against the ingest timestamp, not `entity.timestamp` —
+  otherwise every finite-lifetime entity expires the instant it is folded (the bug that
+  hid the streamed car mesh). The layer keeps a parallel map `entity_expiry_anchor_ns_`
+  (keyed identically to `entities_`) holding each entity's ingest timestamp;
+  `expiredAt()` tests `anchor + lifetime < tracker` (overflow-safe; `lifetime == 0` ⇒
+  never). The single erase choke-point `eraseEntity()` drops the entity and its anchor
+  in lockstep, so the two maps never drift. Deletion gating is intentionally *not*
+  re-anchored: deletions carry sensor-epoch timestamps, so
+  `deletion.timestamp <= entity.timestamp` stays on the entity clock.
+- **Decoded-batch snapshot cache.** Backward scrubs and jumps rebuild the entity map
+  from scratch; re-parsing heavy embedded glTF every time hitched the scrub.
+  `snapshot_cache_` (keyed by `SequentialUID`, byte-budgeted at `kSnapshotCacheMaxBytes`,
+  oldest-UID eviction) holds decoded batches so a rebuild re-folds without re-parsing.
+  Each cache entry records `store_ns` (the ingest timestamp) alongside the batch, so a
+  cache-hit re-fold restores the *same* lifetime anchor a fresh parse would have produced.
+
 ## Asset resolution (`package://` for a non-ROS app)
 
 `UrdfPackageResolver` — URI scheme dispatch first:

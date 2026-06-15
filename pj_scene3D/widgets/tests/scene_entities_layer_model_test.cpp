@@ -229,6 +229,158 @@ TEST(SceneEntitiesLayerModelTest, LifetimeDropsEntityAfterExpiry) {
   EXPECT_TRUE(layer.currentEntities().empty());
 }
 
+// The dual-clock regression guard. Under live streaming the ObjectStore entry is
+// host-stamped (tracker clock) while entity.timestamp keeps the sensor epoch; expiry
+// must anchor on the ingest timestamp, not entity.timestamp — otherwise a finite
+// lifetime expires the instant the entity is folded (the bug that hid the streamed car
+// mesh). Pre-fix this failed at the FIRST assert: 1000 + 50 = 1050 < 1'000'040.
+TEST(SceneEntitiesLayerModelTest, LifetimeAnchorsOnStoreTimeNotEntityTimestamp) {
+  PJ::SessionManager session;
+  const PJ::ObjectTopicId topic_id = registerTopic(session);
+  registerParser(session, topic_id);
+  PJ::sdk::SceneEntity entity = makeEntity("streamed", /*timestamp=*/1'000);  // sensor epoch, far in the past
+  entity.lifetime_ns = 50;
+  pushSceneEntities(session, topic_id, /*store_ts=*/1'000'000, batchWithEntities({entity}));  // host-clock anchor
+
+  pj::scene3d::SceneEntitiesLayer layer(topic_id, QStringLiteral("/scene_entities"));
+  const auto ctx = makeContext(session);
+  ASSERT_TRUE(layer.attach(ctx));
+
+  layer.setTrackerTime(PJ::fromRaw(1'000'040));  // within [anchor, anchor + lifetime) = [1'000'000, 1'000'050)
+  EXPECT_EQ(layer.currentEntities().count("streamed"), 1u);
+
+  layer.setTrackerTime(PJ::fromRaw(1'000'051));  // past anchor + lifetime
+  EXPECT_TRUE(layer.currentEntities().empty());
+}
+
+// Guards CachedSnapshot::store_ns: a backward scrub rebuilds the entity map by re-folding
+// decoded batches from the cache (no re-parse), and must restore each entity's ingest-time
+// anchor from store_ns. If the anchor were not cached, the re-fold would fall back to a
+// wrong epoch and "keep" (anchored at store_ts 2000 ⇒ expires 2100) would vanish at 2060.
+TEST(SceneEntitiesLayerModelTest, CacheHitReFoldRestoresStoreAnchor) {
+  PJ::SessionManager session;
+  const PJ::ObjectTopicId topic_id = registerTopic(session);
+  registerParser(session, topic_id);
+  PJ::sdk::SceneEntity keep = makeEntity("keep", /*timestamp=*/1'000);
+  keep.lifetime_ns = 100;  // anchored at store_ts 2000 ⇒ expires at 2100
+  pushSceneEntities(session, topic_id, /*store_ts=*/2'000, batchWithEntities({keep}));
+  pushSceneEntities(session, topic_id, /*store_ts=*/2'050, batchWithEntities({makeEntity("other", 1'001)}));
+
+  pj::scene3d::SceneEntitiesLayer layer(topic_id, QStringLiteral("/scene_entities"));
+  const auto ctx = makeContext(session);
+  ASSERT_TRUE(layer.attach(ctx));
+
+  layer.setTrackerTime(PJ::fromRaw(2'060));  // play forward past both batches: caches both
+  ASSERT_EQ(layer.currentEntities().count("keep"), 1u);
+  layer.setTrackerTime(PJ::fromRaw(2'500));  // overshoot so the next move is a backward full rebuild
+
+  g_parse_count.store(0, std::memory_order_relaxed);
+  layer.setTrackerTime(PJ::fromRaw(2'060));              // scrub back → rebuild re-folds from cache
+  EXPECT_EQ(layer.currentEntities().count("keep"), 1u);  // restored anchor 2000, NOT entity.timestamp 1000
+  EXPECT_LE(g_parse_count.load(std::memory_order_relaxed), 2)
+      << "backward scrub re-parsed the history instead of re-folding from the cache";
+
+  layer.setTrackerTime(PJ::fromRaw(2'101));  // just past the restored expiry boundary (2000 + 100)
+  EXPECT_EQ(layer.currentEntities().count("keep"), 0u);
+}
+
+// lifetime_ns == 0 is the SceneEntity contract's "persist until replaced/deleted"
+// sentinel: the entity must survive arbitrarily far past its anchor.
+TEST(SceneEntitiesLayerModelTest, ZeroLifetimeNeverExpires) {
+  PJ::SessionManager session;
+  const PJ::ObjectTopicId topic_id = registerTopic(session);
+  registerParser(session, topic_id);
+  PJ::sdk::SceneEntity entity = makeEntity("forever", /*timestamp=*/10);
+  entity.lifetime_ns = 0;  // never expires
+  pushSceneEntities(session, topic_id, /*store_ts=*/10, batchWithEntities({entity}));
+
+  pj::scene3d::SceneEntitiesLayer layer(topic_id, QStringLiteral("/scene_entities"));
+  const auto ctx = makeContext(session);
+  ASSERT_TRUE(layer.attach(ctx));
+
+  layer.setTrackerTime(PJ::fromRaw(10'000'000));
+  EXPECT_EQ(layer.currentEntities().count("forever"), 1u);
+}
+
+// A negative lifetime_ns means the entity is already past expiry at its anchor; the
+// overflow-safe branch must drop it for any tracker time at-or-after the anchor.
+TEST(SceneEntitiesLayerModelTest, NegativeLifetimeExpiresImmediately) {
+  PJ::SessionManager session;
+  const PJ::ObjectTopicId topic_id = registerTopic(session);
+  registerParser(session, topic_id);
+  PJ::sdk::SceneEntity entity = makeEntity("doomed", /*timestamp=*/10);
+  entity.lifetime_ns = -5;
+  pushSceneEntities(session, topic_id, /*store_ts=*/100, batchWithEntities({entity}));
+
+  pj::scene3d::SceneEntitiesLayer layer(topic_id, QStringLiteral("/scene_entities"));
+  const auto ctx = makeContext(session);
+  ASSERT_TRUE(layer.attach(ctx));
+
+  layer.setTrackerTime(PJ::fromRaw(100));  // anchor + (-5) = 95 < 100 ⇒ expired
+  EXPECT_TRUE(layer.currentEntities().empty());
+}
+
+// The fix re-anchored EXPIRY on the ingest timestamp but deliberately left DELETION
+// gating on entity.timestamp (deletions carry sensor-epoch stamps). This pins that
+// asymmetry: a future "make it consistent" refactor that switched the gate to the anchor
+// would wrongly erase "survivor" (anchor 1400 <= 1500) and fail here.
+TEST(SceneEntitiesLayerModelTest, MatchingIdDeletionGateUsesEntityTimestampNotAnchor) {
+  PJ::SessionManager session;
+  const PJ::ObjectTopicId topic_id = registerTopic(session);
+  registerParser(session, topic_id);
+  // Anchors (store_ts) and entity.timestamps deliberately disagree across the deletion
+  // boundary 1500: survivor's ts is past it, its anchor is before it.
+  pushSceneEntities(
+      session, topic_id, /*store_ts=*/1'400, batchWithEntities({makeEntity("survivor", /*timestamp=*/1'600)}));
+  pushSceneEntities(
+      session, topic_id, /*store_ts=*/2'000, batchWithEntities({makeEntity("target", /*timestamp=*/1'000)}));
+  PJ::sdk::SceneEntityDeletion del_target;
+  del_target.type = PJ::sdk::SceneEntityDeletion::Type::kMatchingId;
+  del_target.timestamp = 1'500;
+  del_target.id = "target";
+  PJ::sdk::SceneEntityDeletion del_survivor = del_target;
+  del_survivor.id = "survivor";
+  pushSceneEntities(session, topic_id, /*store_ts=*/3'000, batchWithDeletions({del_target, del_survivor}));
+
+  pj::scene3d::SceneEntitiesLayer layer(topic_id, QStringLiteral("/scene_entities"));
+  const auto ctx = makeContext(session);
+  ASSERT_TRUE(layer.attach(ctx));
+
+  layer.setTrackerTime(PJ::fromRaw(3'500));
+  EXPECT_EQ(layer.currentEntities().count("target"), 0u);    // entity.ts 1000 <= 1500 ⇒ deleted
+  EXPECT_EQ(layer.currentEntities().count("survivor"), 1u);  // entity.ts 1600 > 1500 ⇒ survives (anchor 1400 unused)
+}
+
+// The lockstep invariant under churn: deleting an entity drops its anchor (eraseEntity),
+// and re-adding it writes a FRESH anchor (applySnapshot upsert). A stale anchor (100) would
+// expire "blink" at 1100 and lose it by 5500; the refreshed anchor (5000) keeps it to 6000.
+TEST(SceneEntitiesLayerModelTest, ReAddAfterDeletionRefreshesAnchor) {
+  PJ::SessionManager session;
+  const PJ::ObjectTopicId topic_id = registerTopic(session);
+  registerParser(session, topic_id);
+  PJ::sdk::SceneEntity first = makeEntity("blink", /*timestamp=*/10);
+  first.lifetime_ns = 1'000;  // anchor 100 ⇒ would expire at 1100
+  pushSceneEntities(session, topic_id, /*store_ts=*/100, batchWithEntities({first}));
+  PJ::sdk::SceneEntityDeletion del;
+  del.type = PJ::sdk::SceneEntityDeletion::Type::kMatchingId;
+  del.timestamp = 20;  // entity.ts 10 <= 20 ⇒ erased
+  del.id = "blink";
+  pushSceneEntities(session, topic_id, /*store_ts=*/200, batchWithDeletions({del}));
+  PJ::sdk::SceneEntity again = makeEntity("blink", /*timestamp=*/30);
+  again.lifetime_ns = 1'000;  // fresh anchor 5000 ⇒ expires at 6000
+  pushSceneEntities(session, topic_id, /*store_ts=*/5'000, batchWithEntities({again}));
+
+  pj::scene3d::SceneEntitiesLayer layer(topic_id, QStringLiteral("/scene_entities"));
+  const auto ctx = makeContext(session);
+  ASSERT_TRUE(layer.attach(ctx));
+
+  layer.setTrackerTime(PJ::fromRaw(5'500));  // alive only if the anchor was refreshed to 5000
+  EXPECT_EQ(layer.currentEntities().count("blink"), 1u);
+
+  layer.setTrackerTime(PJ::fromRaw(6'001));  // past 5000 + 1000
+  EXPECT_TRUE(layer.currentEntities().empty());
+}
+
 // Forward playback folds only newly-appended batches (incremental) instead of
 // re-parsing the whole history every frame. This must produce exactly the same
 // entity state a full rebuild does — across replace-by-id, deletions, and new

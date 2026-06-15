@@ -179,14 +179,22 @@ class SceneEntitiesLayer : public Scene3DLayer {
   // lets the DELETEALL+re-add republish pattern work (deletion and new entities
   // in the same batch at the same timestamp → deletions clear old, upserts add
   // new). kAll / kMatchingId branches are gated on the deletion timestamp.
-  void applySnapshot(const PJ::sdk::SceneEntities& snapshot);
+  // ingest_ns is the ObjectStore entry timestamp the batch came from (the
+  // tracker's clock); it becomes each upserted entity's lifetime-expiry anchor.
+  void applySnapshot(const PJ::sdk::SceneEntities& snapshot, int64_t ingest_ns);
   // Erase entities whose lifetime elapsed before `time`. Returns true when at
   // least one entity was erased (the caller owes a repaint).
   bool dropExpiredEntities(PJ::Timepoint time);
+  // Erase an entity and its lifetime-expiry anchor in lockstep — the single owner
+  // of the "entities_ and entity_expiry_anchor_ns_ never drift" invariant. Returns
+  // the iterator following the erased element (like std::map::erase).
+  std::map<std::string, PJ::sdk::SceneEntity>::iterator eraseEntity(
+      std::map<std::string, PJ::sdk::SceneEntity>::iterator it);
   // Insert a decoded batch into snapshot_cache_, tracking the byte estimate and
   // evicting lowest-UID batches once the budget is exceeded. No-op when the UID
-  // is invalid or already cached.
-  void cacheSnapshot(PJ::SequentialUID uid, std::shared_ptr<const PJ::sdk::SceneEntities> batch);
+  // is invalid or already cached. store_ns is the entry timestamp, kept so a
+  // cache-hit re-fold can restore each entity's expiry anchor.
+  void cacheSnapshot(PJ::SequentialUID uid, std::shared_ptr<const PJ::sdk::SceneEntities> batch, int64_t store_ns);
   // Drop cached batches below the store's first retained UID (retention pruning).
   void pruneSnapshotCacheBelow(PJ::SequentialUID first_retained_uid);
   // Recompute the distinct entity frames feeding fallbackFrames().
@@ -248,6 +256,7 @@ class SceneEntitiesLayer : public Scene3DLayer {
   struct CachedSnapshot {
     std::shared_ptr<const PJ::sdk::SceneEntities> batch;
     std::size_t bytes = 0;
+    int64_t store_ns = 0;  // ObjectStore entry timestamp; restores the expiry anchor on a cache-hit re-fold.
   };
   // Decoded-batch cache keyed by ObjectStore SequentialUID, so a full rebuild
   // (backward scrub / jump) re-folds retained entities WITHOUT re-parsing the
@@ -259,6 +268,14 @@ class SceneEntitiesLayer : public Scene3DLayer {
   // so without this budget the cache would grow with the whole topic history.
   std::size_t snapshot_cache_bytes_ = 0;
   std::map<std::string, PJ::sdk::SceneEntity> entities_;
+  // Per-entity lifetime-expiry anchor = the ObjectStore entry timestamp the entity
+  // was folded from (the tracker's clock). Decouples expiry from the entity's
+  // embedded sensor timestamp, which under streaming is host-stamped on a different
+  // epoch — comparing the two clocks expired every finite-lifetime entity instantly.
+  // A parallel map (not a field on the stored SceneEntity) keeps this host-side anchor
+  // out of the SDK value type and matches the sibling layers' id-keyed parallel-container
+  // style; eraseEntity() is the single owner that keeps it in lockstep with entities_.
+  std::map<std::string, int64_t> entity_expiry_anchor_ns_;
   QStringList model_frames_;
   std::unique_ptr<MeshLoader> mesh_loader_;
   std::unique_ptr<MeshRenderPass> mesh_pass_;
