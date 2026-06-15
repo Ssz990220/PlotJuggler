@@ -24,6 +24,7 @@
 #include "pj_base/types.hpp"
 #include "pj_plotting/CurveTracker.h"
 #include "pj_widgets/ChromeMetrics.h"
+#include "pj_widgets/VisualizationKind.h"
 
 class QAction;
 class QButtonGroup;
@@ -194,6 +195,11 @@ class MainWindow : public QMainWindow {
 
   // Wires callbacks for a newly created plot tab.
   void onPlotTabAdded(PlotDocker* docker);
+
+  // A placeholder 2D/3D icon was clicked: builds an empty scene dock of the
+  // matching kind (the shell owns the family→kind mapping) and adopts it into
+  // `dock`. Plot clicks are handled inside DockWidget itself.
+  void onObjectFamilyRequested(DockWidget* dock, VisualizationKind family);
 
   // Routes the focused DockWidget to the right config page and updates
   // the curve-editor binding. Plot-only state changes still go through
@@ -419,6 +425,12 @@ class MainWindow : public QMainWindow {
   // layout-restore paths of the object-widget factory; returns nullptr for an
   // unknown kind.
   IDataWidget* makeSceneDock(const QString& kind, QWidget* parent);
+
+  // makeSceneDock + seed the new dock's playhead to the current time, so a
+  // freshly built empty dock renders at the right moment (currentTimeChanged
+  // only fires on changes). Shared by the factory's restore branch and the
+  // click-to-create path. Returns nullptr for an unknown kind.
+  IDataWidget* makeSeededEmptyObjectDock(const QString& kind, QWidget* parent);
 
   Ui::MainWindow* ui_;
   QtDiagnosticBridge* diagnostic_bridge_ = nullptr;

@@ -81,6 +81,7 @@ SceneDockWidget::AddOutcome SceneDockWidget::addLayer(
     return AddOutcome::Rejected;
   }
   if (handleSceneConfigTopic(topic_id, object_type, title)) {
+    ever_had_content_ = true;
     return AddOutcome::ConsumedAsConfig;
   }
 
@@ -88,6 +89,7 @@ SceneDockWidget::AddOutcome SceneDockWidget::addLayer(
   if (layer == nullptr) {
     return AddOutcome::Rejected;
   }
+  ever_had_content_ = true;
   wireLayerSignals(layer.get(), topic_id);
   registerLayer(key, std::move(layer));
 
@@ -186,8 +188,19 @@ void SceneDockWidget::removeTopic(ObjectTopicId topic_id) {
 }
 
 bool SceneDockWidget::revalidateObjects() {
-  if (session_ == nullptr || layers_.empty()) {
-    return !layers_.empty();
+  // The keep-if-never-populated rule lives HERE (non-virtual) so no override can
+  // forget it: an intentionally-empty dock (click-created or restored empty,
+  // never populated) survives, while a dock whose content was all evicted resets
+  // to the placeholder. Subclasses only customize the family-specific prune.
+  return pruneEvictedObjects() || !ever_had_content_;
+}
+
+bool SceneDockWidget::pruneEvictedObjects() {
+  if (layers_.empty()) {
+    return false;
+  }
+  if (session_ == nullptr) {
+    return true;  // layers present but no store to validate against — keep them
   }
   // A live topic carries a name; an evicted one resolves to the empty
   // descriptor. Collect first — removeTopic() mutates layers_ and runs the

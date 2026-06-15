@@ -12,6 +12,7 @@
 
 #include "pj_base/builtin/builtin_object.hpp"
 #include "pj_datastore/object_store.hpp"
+#include "pj_widgets/VisualizationKind.h"
 
 namespace PJ {
 
@@ -78,6 +79,13 @@ class PlotDocker : public ads::CDockManager {
   // nullptr when ADS focus moves to no widget.
   void dockFocused(DockWidget* dock);
   void undoableChange();
+  // Re-emit of DockWidget::objectFamilyRequested, so the shell (the only
+  // scene-kind-aware module) can build + adopt an empty object widget when a
+  // placeholder 2D/3D icon is clicked.
+  void objectFamilyRequested(DockWidget* dock, VisualizationKind family);
+  // Re-emit of DockWidget::firstObjectTopicAdded — an empty click-created object
+  // dock received its first topic, so the shell can seed streaming playback.
+  void firstObjectTopicAdded();
 
  private:
   void ensureAtLeastOneWidget();

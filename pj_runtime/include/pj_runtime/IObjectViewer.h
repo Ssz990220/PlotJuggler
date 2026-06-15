@@ -10,8 +10,11 @@ class IObjectViewer {
   virtual ~IObjectViewer() = default;
 
   // Pull-based re-validation against the live ObjectStore: drop layers whose topic
-  // was evicted, keep the rest. Returns true if at least one live layer remains;
-  // false when empty, in which case the shell resets the dock to the placeholder.
+  // was evicted, keep the rest. Returns true if the dock should be kept — either a
+  // live layer remains, OR the dock is intentionally empty (never populated: a
+  // click-created or restored-empty scene). Returns false only when a dock that
+  // *had* content is now empty because it was all evicted, in which case the shell
+  // resets it to the placeholder.
   virtual bool revalidateObjects() = 0;
 };
 

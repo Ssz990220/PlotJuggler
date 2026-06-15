@@ -7,6 +7,8 @@
 #include <QWidget>
 #include <vector>
 
+#include "pj_widgets/VisualizationKind.h"
+
 class QAction;
 class QContextMenuEvent;
 class QDragEnterEvent;
@@ -20,8 +22,9 @@ class QToolButton;
 namespace PJ {
 
 // Neutral dock content shown before the user chooses a visualization family.
-// Icons are visual affordances only; drops decide which concrete widget to
-// create.
+// The Plot / 2D / 3D icons are clickable: a click emits visualizationRequested
+// so the host can convert the dock into an *empty* widget of that family. A
+// catalog drop still creates-and-populates the matching widget directly.
 class VisualizationPlaceholderWidget : public QWidget {
   Q_OBJECT
  public:
@@ -38,6 +41,9 @@ class VisualizationPlaceholderWidget : public QWidget {
   void catalogItemsDropped(QStringList keys);
   void splitHorizontalRequested();
   void splitVerticalRequested();
+  // Emitted when the user clicks one of the family icons. The host converts the
+  // placeholder into an empty widget of that family (no data bound yet).
+  void visualizationRequested(VisualizationKind kind);
 
  protected:
   void contextMenuEvent(QContextMenuEvent* event) override;

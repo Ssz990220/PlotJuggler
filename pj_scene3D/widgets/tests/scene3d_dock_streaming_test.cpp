@@ -42,6 +42,36 @@ PJ::ObjectTopicId registerTfTopic(PJ::ObjectStore& store, PJ::DatasetId dataset_
   return *topic_id;
 }
 
+TEST(Scene3DDockStreaming, RevalidateWithoutSessionKeepsNeverPopulatedDock) {
+  // No session set (e.g. mid teardown / session swap): a never-populated 3D dock
+  // must still be kept, not reported empty and wiped to the placeholder.
+  PJ::Scene3DDockWidget dock;
+  EXPECT_TRUE(dock.revalidateObjects());
+}
+
+TEST(Scene3DDockStreaming, EmptyDockSurvivesRevalidateUntilItHasHeldContent) {
+  PJ::SessionManager session;
+  pj::scene3d::TransformService transform_service(session);
+
+  PJ::Scene3DDockWidget dock;
+  dock.setSessionManager(&session);
+  dock.setTransformService(&transform_service);
+
+  // A click-created, never-populated 3D dock (no layers, no config topics) must
+  // survive a catalog change (e.g. a dataset load), so syncWidgetsToCatalog does
+  // not reset it to the placeholder.
+  EXPECT_TRUE(dock.layers().empty());
+  EXPECT_TRUE(dock.revalidateObjects());
+
+  // Once it has held a config topic that is then evicted, it reports empty so the
+  // shell can reset it — same as the eviction path for a populated dock.
+  const auto tf_topic = registerTfTopic(session.objectStore(), /*dataset_id=*/1, "/tf");
+  ASSERT_TRUE(dock.addTopic(tf_topic, PJ::sdk::BuiltinObjectType::kFrameTransforms, QStringLiteral("tf")));
+  EXPECT_TRUE(dock.revalidateObjects());
+  session.objectStore().removeTopic(tf_topic);
+  EXPECT_FALSE(dock.revalidateObjects());
+}
+
 TEST(Scene3DDockStreaming, TfOnlyDockSurvivesRevalidateUntilTopicEvicted) {
   PJ::SessionManager session;
   pj::scene3d::TransformService transform_service(session);

@@ -12,6 +12,7 @@
 #include "pj_base/builtin/builtin_object.hpp"
 #include "pj_datastore/object_store.hpp"
 #include "pj_runtime/IDataWidget.h"
+#include "pj_widgets/VisualizationKind.h"
 
 namespace PJ {
 
@@ -53,6 +54,13 @@ class DockWidget : public ads::CDockWidget, public IDataWidget {
   // it just constructed and then call xmlLoadState on it.
   void setObjectWidget(IDataWidget* widget);
   IDataWidget* releaseObjectWidget();
+  // Installs a host-built *empty* object widget into the placeholder dock (the
+  // click-to-create path): same wiring as setObjectWidget plus the user-action
+  // side effects (undoable change + focus) the drop path performs, and it arms
+  // the streaming-seed gate so the widget's first dropped topic emits
+  // firstObjectTopicAdded. A null `widget` (factory refused / unknown kind)
+  // reverts to the placeholder rather than leaving a blank dock.
+  void adoptObjectWidget(IDataWidget* widget);
   void setPlaceholderWidget();
   DockToolbar* toolBar();
   QString name() const;
@@ -80,9 +88,22 @@ class DockWidget : public ads::CDockWidget, public IDataWidget {
  signals:
   void undoableChange();
   void plotWidgetCreated(PlotWidget* plot);
+  // A placeholder scene icon (2D/3D) was clicked. pj_plotting stays agnostic to
+  // scene families, so it asks the shell (which alone maps families to concrete
+  // "scene2d"/"scene3d" kinds) to build the empty widget and adopt it back via
+  // adoptObjectWidget(). `dock` is the dock to populate.
+  void objectFamilyRequested(DockWidget* dock, VisualizationKind family);
+  // An empty (click-created) object widget just received its FIRST topic in
+  // place. The shell uses this to seed live-streaming playback, which the
+  // placeholder→drop path otherwise does at creation time. Fires once per
+  // click-create cycle (the gate is re-armed if the dock is cleared and re-adopted).
+  void firstObjectTopicAdded();
 
  private slots:
   void onCatalogItemsDropped(const QStringList& keys);
+  // Routes a placeholder icon click: Plot is handled here (this dock owns plots);
+  // scene families are forwarded via objectFamilyRequested for the shell to build.
+  void onVisualizationRequested(VisualizationKind kind);
 
  private:
   bool eventFilter(QObject* watched, QEvent* event) override;
@@ -103,6 +124,12 @@ class DockWidget : public ads::CDockWidget, public IDataWidget {
   VisualizationPlaceholderWidget* placeholder_widget_ = nullptr;
   PlotWidget* plot_widget_ = nullptr;
   IDataWidget* object_widget_ = nullptr;
+  // True between adoptObjectWidget() (empty click-created object widget) and its
+  // first absorbed topic; gates the one-shot firstObjectTopicAdded emission.
+  // Reset by clearCurrentContent so a replaced/cleared widget never carries it.
+  // Deliberately NOT set on the factory/drop path (onCatalogItemsDropped), which
+  // already seeds streaming at creation — arming it there would double-fire.
+  bool object_widget_awaiting_first_topic_ = false;
   DockToolbar* toolbar_ = nullptr;
   QString state_id_;
 };

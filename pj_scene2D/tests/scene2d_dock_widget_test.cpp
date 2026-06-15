@@ -105,6 +105,59 @@ TEST(Scene2DDockWidget, XmlRoundTripRestoresLayerOrderAndVisibility) {
   EXPECT_FALSE(restored_layers[1].visible);
 }
 
+TEST(Scene2DDockWidget, EmptyPlaceholderActiveUntilFirstVisibleLayer) {
+  PJ::SessionManager session;
+  const auto image = registerTopic(session, 5, "/camera/image");
+
+  PJ::Scene2DDockWidget dock;
+  dock.setSessionManager(&session);
+
+  // A fresh, empty dock shows the placeholder rather than a blank GPU surface.
+  EXPECT_TRUE(dock.emptyPlaceholderActiveForTesting());
+
+  // The first visible layer fronts the viewer instead.
+  ASSERT_TRUE(dock.addTopic(image, PJ::sdk::BuiltinObjectType::kImage, QStringLiteral("image")));
+  EXPECT_FALSE(dock.emptyPlaceholderActiveForTesting());
+
+  // Hiding the only layer empties the composite, so the placeholder returns.
+  dock.setLayerVisible(image, false);
+  EXPECT_TRUE(dock.emptyPlaceholderActiveForTesting());
+
+  // Showing it again brings the viewer back.
+  dock.setLayerVisible(image, true);
+  EXPECT_FALSE(dock.emptyPlaceholderActiveForTesting());
+
+  // Removing the last layer also returns to the placeholder.
+  dock.removeTopic(image);
+  EXPECT_TRUE(dock.emptyPlaceholderActiveForTesting());
+}
+
+TEST(Scene2DDockWidget, RevalidateKeepsNeverPopulatedDockButResetsEvictedOne) {
+  PJ::SessionManager session;
+
+  PJ::Scene2DDockWidget dock;
+  dock.setSessionManager(&session);
+
+  // A click-created, never-populated dock must survive catalog churn (e.g. a
+  // later dataset load), so the shell does NOT reset it to the placeholder.
+  EXPECT_TRUE(dock.revalidateObjects());
+
+  // Once it has held a topic and that topic is evicted, it reports empty so the
+  // shell can reset it to the neutral placeholder — the original eviction behavior.
+  const auto image = registerTopic(session, 9, "/camera/image");
+  ASSERT_TRUE(dock.addTopic(image, PJ::sdk::BuiltinObjectType::kImage, QStringLiteral("image")));
+  EXPECT_TRUE(dock.revalidateObjects());  // live layer remains
+  session.objectStore().removeTopic(image);
+  EXPECT_FALSE(dock.revalidateObjects());  // had content, now evicted -> reset
+}
+
+TEST(Scene2DDockWidget, RevalidateWithoutSessionKeepsNeverPopulatedDock) {
+  // No session set (e.g. mid teardown / session swap): a never-populated dock
+  // must still be kept, not reported empty and wiped to the placeholder.
+  PJ::Scene2DDockWidget dock;
+  EXPECT_TRUE(dock.revalidateObjects());
+}
+
 int main(int argc, char** argv) {
   qputenv("QT_QPA_PLATFORM", QByteArray("offscreen"));
   ::testing::InitGoogleTest(&argc, argv);

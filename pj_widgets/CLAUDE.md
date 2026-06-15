@@ -31,7 +31,7 @@ Widgets:
 | `FlowLayout.h` | Standard Qt example flow layout. |
 | `ElidingLabel.h` | `QLabel` that elides instead of clipping. |
 | `CurveTreeView.h` | Tree view tuned for PlotJuggler's curve catalog (no runtime coupling — model is plugged in by the caller). |
-| `VisualizationPlaceholderWidget.h` | Placeholder shown when no data widget is bound. |
+| `VisualizationPlaceholderWidget.h` | Placeholder shown when no data widget is bound. The Plot / 2D / 3D icons are clickable: a click emits `visualizationRequested(VisualizationKind)` so the host converts the dock into an empty widget of that family (a catalog drop still creates-and-populates directly). |
 | `RasterStreamView.h` | Hosts an external renderer process and paints its framebuffer (streamed over shared memory via the `raster_ipc/` contract) in a panel; forwards key input through an injectable translator. Pure Qt, no window embedding. |
 | `RasterFrame.h` | Decodes a `raster_ipc` shared-memory frame into a `QImage` (consumer side of the protocol). |
 
@@ -42,6 +42,7 @@ Helpers (header-only or small):
 | `ChromeMetrics.h` | Shared icon/layout spacing constants for dialog chrome, broadcast from MainWindow. Defaults `{icon_size=20, icon_padding=4, layout_padding=0, layout_spacing=0}`. |
 | `Style.h` | Common style accessors. |
 | `SvgUtil.h` | Helpers to load and recolor SVG resources. |
+| `VisualizationKind.h` | Neutral `enum class VisualizationKind { Plot, Scene2D, Scene3D }` — the UI vocabulary `VisualizationPlaceholderWidget` emits; the app shell maps the scene families to concrete `"scene2d"`/`"scene3d"` object-widget kinds. |
 
 ## UI convention
 

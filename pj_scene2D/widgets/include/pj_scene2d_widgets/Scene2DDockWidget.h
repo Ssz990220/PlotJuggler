@@ -15,6 +15,10 @@
 #include "pj_datastore/object_store.hpp"
 #include "pj_scene_common/scene_dock_widget.h"
 
+class QEvent;
+class QLabel;
+class QStackedWidget;
+
 namespace PJ {
 
 class CompositeMediaSource;
@@ -51,12 +55,20 @@ class Scene2DDockWidget : public SceneDockWidget {
   [[nodiscard]] size_t compositeLayerCountForTesting() const noexcept;
   /// Mirrors the visible CompositeMediaSource layer order after syncViewLayers().
   [[nodiscard]] std::vector<ObjectTopicId> compositeTopicOrderForTesting() const;
+  /// True while the empty-state placeholder (the greyed image icon) should be
+  /// shown instead of the GPU viewer — i.e. there are no visible layers.
+  [[nodiscard]] bool emptyPlaceholderActiveForTesting() const noexcept {
+    return empty_placeholder_active_;
+  }
 
  protected:
   /// Workspace XML tag for the 2D scene dock.
   [[nodiscard]] QString xmlTag() const override;
-  /// Builds the QRhi bootstrap child plus the real MediaViewerWidget.
+  /// Builds the QRhi bootstrap child plus the real MediaViewerWidget, fronted by
+  /// a stacked empty-state placeholder shown until the first layer arrives.
   QWidget* createSceneView() override;
+  /// Re-tints the placeholder icon when the palette/theme changes.
+  void changeEvent(QEvent* event) override;
   /// Supplies the current session pointer to Scene2DLayer::attach().
   std::unique_ptr<SceneLayerContext> makeContext() override;
   /// Keeps generic SceneDockWidget routing aligned with the static host classifier.
@@ -68,6 +80,14 @@ class Scene2DDockWidget : public SceneDockWidget {
   void refreshView() override;
 
  private:
+  /// Builds the centered, greyed image-SVG placeholder shown while the dock is
+  /// empty (a nicer "drop a topic here" affordance than a blank GPU surface).
+  QWidget* makeEmptyPlaceholder(QWidget* parent);
+  /// Re-renders the placeholder icon for the active theme (LoadSvg ink tint).
+  void retintEmptyPlaceholder();
+  /// Switches the stacked view between the placeholder and the viewer to match
+  /// empty_placeholder_active_. No-op until createSceneView() has run.
+  void applyEmptyPlaceholderState();
   /// Connects live ObjectStore ingestion to jump visible layers to the data edge.
   void reconnectLiveSamples(SessionManager* session);
   /// Drives visible layers and the 2D composite to the newest stored sample.
@@ -84,6 +104,16 @@ class Scene2DDockWidget : public SceneDockWidget {
   // The real viewer is non-owning here; Qt parent ownership is the container made
   // by createSceneView(), while composite_ owns the source it polls.
   MediaViewerWidget* viewer_ = nullptr;
+  // Stacked front for the scene view: page 0 is the empty-state placeholder page
+  // (built by makeEmptyPlaceholder(), holding empty_placeholder_icon_), page 1 is
+  // the viewer. Stacking (not overlaying) avoids compositing a raster label over
+  // the QRhiWidget's surface. Both null until createSceneView() runs.
+  QStackedWidget* view_stack_ = nullptr;
+  QLabel* empty_placeholder_icon_ = nullptr;
+  // Whether the empty-state placeholder should front the viewer (no visible
+  // layers). Tracked independently of the (lazily created) view so it is correct
+  // the moment createSceneView() runs.
+  bool empty_placeholder_active_ = true;
   std::unique_ptr<CompositeMediaSource> composite_;
   // Live-follow subscription; reconnectLiveSamples owns disconnect/replacement.
   QMetaObject::Connection live_samples_conn_;

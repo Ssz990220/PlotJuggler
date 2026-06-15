@@ -442,7 +442,10 @@ QList<Scene3DDockWidget::RobotDescriptionTopic> Scene3DDockWidget::robotDescript
   return result;
 }
 
-bool Scene3DDockWidget::revalidateObjects() {
+bool Scene3DDockWidget::pruneEvictedObjects() {
+  // Family-specific prune only; the base revalidateObjects() adds the keep-if-
+  // never-populated rule. Reports whether any live render layer or config topic
+  // remains (a TF-only dock stays alive via config_topics_).
   if (sessionManager() == nullptr) {
     return !layers().empty() || !config_topics_.empty();
   }

@@ -68,7 +68,6 @@ class Scene3DDockWidget : public SceneDockWidget {
   [[nodiscard]] static bool handlesObjectType(sdk::BuiltinObjectType object_type);
 
   bool addTopic(ObjectTopicId topic_id, sdk::BuiltinObjectType object_type, const QString& title);
-  bool revalidateObjects() override;
 
   void setSettings(QSettings* settings);
   void setEmbeddedAssets(QMap<QString, QByteArray> assets);
@@ -152,6 +151,10 @@ class Scene3DDockWidget : public SceneDockWidget {
   [[nodiscard]] bool acceptsObjectType(sdk::BuiltinObjectType object_type) const override;
   bool handleSceneConfigTopic(
       ObjectTopicId topic_id, sdk::BuiltinObjectType object_type, const QString& title) override;
+  // Also prunes evicted FrameTransforms config topics (no render layer) and resets
+  // the TF binding when its dataset is gone; the base adds the keep-if-never-
+  // populated rule, so this only reports whether live layers/config remain.
+  bool pruneEvictedObjects() override;
   void syncViewLayers(const std::vector<ISceneLayer*>& ordered_layers) override;
   void refreshView() override;
   [[nodiscard]] QString xmlTag() const override;

@@ -194,6 +194,37 @@ void DockWidget::setPlaceholderWidget() {
   connect(placeholder_widget_, &VisualizationPlaceholderWidget::splitVerticalRequested, this, [this]() {
     splitVertical();
   });
+  connect(
+      placeholder_widget_, &VisualizationPlaceholderWidget::visualizationRequested, this,
+      &DockWidget::onVisualizationRequested);
+}
+
+void DockWidget::onVisualizationRequested(VisualizationKind kind) {
+  if (kind == VisualizationKind::Plot) {
+    // This dock owns plot widgets, so it builds the empty plot itself.
+    ensurePlotWidget();
+    emit undoableChange();
+    focusSelf();
+    return;
+  }
+  // Scene families: the shell owns the family→kind mapping and dock construction.
+  // It builds the empty widget and hands it back via adoptObjectWidget().
+  emit objectFamilyRequested(this, kind);
+}
+
+void DockWidget::adoptObjectWidget(IDataWidget* widget) {
+  if (widget == nullptr) {
+    // Build failed (unknown kind / factory refusal): keep a usable placeholder.
+    setPlaceholderWidget();
+    return;
+  }
+  setObjectWidget(widget);
+  // setObjectWidget cleared the gate via clearCurrentContent; arm it now so the
+  // first topic dropped into this empty widget seeds streaming playback.
+  object_widget_awaiting_first_topic_ = true;
+  setName(QStringLiteral("..."));
+  emit undoableChange();
+  focusSelf();
 }
 
 DockToolbar* DockWidget::toolBar() {
@@ -248,9 +279,9 @@ bool DockWidget::eventFilter(QObject* watched, QEvent* event) {
       }
       // Catalog drops on the *live* content widget — once the placeholder
       // is gone, this filter is the only thing that hears the drop. Used by
-      // multi-topic widgets (Scene3D) to absorb additional topics. The
-      // factory replacement path stays as a fallback inside
-      // onCatalogItemsDropped when the existing widget refuses the family.
+      // multi-topic widgets (Scene3D) to absorb additional topics; a topic the
+      // committed widget can't host is rejected by onCatalogItemsDropped (no
+      // family-switching replacement — that only happens from the placeholder).
       case QEvent::DragEnter:
       case QEvent::DragMove: {
         auto* drag = static_cast<QDropEvent*>(event);
@@ -305,6 +336,8 @@ DockWidget* DockWidget::splitInto(ads::DockWidgetArea dock_area, PlotWidget* plo
 
   connect(new_widget, &DockWidget::undoableChange, parent_docker, &PlotDocker::undoableChange);
   connect(new_widget, &DockWidget::plotWidgetCreated, parent_docker, &PlotDocker::plotWidgetAdded);
+  connect(new_widget, &DockWidget::objectFamilyRequested, parent_docker, &PlotDocker::objectFamilyRequested);
+  connect(new_widget, &DockWidget::firstObjectTopicAdded, parent_docker, &PlotDocker::firstObjectTopicAdded);
   emit undoableChange();
   emit parent_docker->dockAdded(new_widget);
   if (new_widget->plotWidget() != nullptr) {
@@ -332,6 +365,11 @@ void DockWidget::onCatalogItemsDropped(const QStringList& keys) {
   }
 
   if (isScalarField(*first_item)) {
+    // A committed object dock (2D/3D) hosts no scalar curves — reject the drop
+    // rather than replacing the object view with a plot.
+    if (object_widget_ != nullptr) {
+      return;
+    }
     PlotWidget* plot = ensurePlotWidget();
     bool changed = false;
     for (const QString& key : keys) {
@@ -387,17 +425,34 @@ void DockWidget::onCatalogItemsDropped(const QStringList& keys) {
   // success we don't replace the widget — only the topic list grows.
   if (object_widget_ != nullptr) {
     if (offer_keys_to(object_widget_, /*start_index=*/0) > 0) {
+      if (object_widget_awaiting_first_topic_) {
+        // First topic into an empty click-created dock: name it after that topic
+        // (matching the placeholder→drop path) and seed streaming playback, which
+        // that path otherwise does at creation. Both happen once per dock.
+        object_widget_awaiting_first_topic_ = false;
+        setName(first_item->topic_name);
+        emit firstObjectTopicAdded();
+      }
       emit undoableChange();
       focusSelf();
       return;
     }
-    // Existing widget refused all keys (wrong family) — fall through and
-    // replace it with a fresh factory-created one.
+    // A committed object dock refused the dropped topic(s) — a different family
+    // (e.g. an image dropped on a 3D view, or a pointcloud on a 2D view). Reject
+    // the drop rather than silently replacing the dock with another family; the
+    // user switches families via Clear or the placeholder icons, not by drop.
+    return;
   }
 
-  // The factory itself decides which object types it can host — returning
-  // nullptr means "I can't render this", which we surface by reverting to
-  // the placeholder so the user sees an explicit "not supported" affordance.
+  // A committed plot dock hosts no object topics — reject rather than replacing
+  // the plot (and its curves) with an object view.
+  if (plot_widget_ != nullptr) {
+    return;
+  }
+
+  // Placeholder state only: the factory classifies the object type and builds the
+  // matching dock. A null return ("I can't render this") reverts to the
+  // placeholder so the user sees an explicit "not supported" affordance.
   const QString title = title_for(*first_item);
   clearCurrentContent(true);
   // Drop path: empty kind + a seed for the first topic. The factory classifies
@@ -456,6 +511,7 @@ void DockWidget::clearCurrentContent(bool delete_content) {
   placeholder_widget_ = nullptr;
   plot_widget_ = nullptr;
   object_widget_ = nullptr;
+  object_widget_awaiting_first_topic_ = false;
 }
 
 void DockWidget::installObjectContextMenuFilter(QWidget* root) {

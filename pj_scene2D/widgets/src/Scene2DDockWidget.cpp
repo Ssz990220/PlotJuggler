@@ -3,7 +3,12 @@
 #include "pj_scene2d_widgets/Scene2DDockWidget.h"
 
 #include <QBoxLayout>
+#include <QEvent>
+#include <QGraphicsOpacityEffect>
+#include <QLabel>
+#include <QPixmap>
 #include <QSizePolicy>
+#include <QStackedWidget>
 #include <algorithm>
 #include <array>
 #include <cstdint>
@@ -25,6 +30,7 @@
 #include "pj_scene2d_widgets/layers/video_layer.h"
 #endif
 #include "pj_scene2d_widgets/media_viewer_widget.h"
+#include "pj_widgets/SvgUtil.h"
 
 namespace PJ {
 
@@ -153,14 +159,70 @@ QWidget* Scene2DDockWidget::createSceneView() {
   bootstrap_->setMaximumSize(0, 0);
   layout->addWidget(bootstrap_);
 
-  viewer_ = new MediaViewerWidget(container);
+  // Page 0 = empty-state placeholder, page 1 = GPU viewer. A stack (rather than
+  // an overlay) keeps the raster placeholder off the QRhiWidget's surface, where
+  // it would not composite reliably.
+  view_stack_ = new QStackedWidget(container);
+  layout->addWidget(view_stack_, /*stretch=*/1);
+  view_stack_->addWidget(makeEmptyPlaceholder(view_stack_));
+
+  viewer_ = new MediaViewerWidget(view_stack_);
   viewer_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
-  layout->addWidget(viewer_);
+  view_stack_->addWidget(viewer_);
   if (composite_ != nullptr) {
     viewer_->setMediaSource(composite_.get());
   }
 
+  applyEmptyPlaceholderState();
   return container;
+}
+
+QWidget* Scene2DDockWidget::makeEmptyPlaceholder(QWidget* parent) {
+  auto* page = new QWidget(parent);
+  page->setObjectName(QStringLiteral("scene2dEmptyPlaceholder"));
+
+  auto* layout = new QVBoxLayout(page);
+  layout->setContentsMargins(0, 0, 0, 0);
+
+  empty_placeholder_icon_ = new QLabel(page);
+  empty_placeholder_icon_->setObjectName(QStringLiteral("scene2dEmptyPlaceholderIcon"));
+  empty_placeholder_icon_->setAlignment(Qt::AlignCenter);
+  // Dim the icon so it reads as a "drop a topic here" watermark, not chrome.
+  auto* opacity = new QGraphicsOpacityEffect(empty_placeholder_icon_);
+  opacity->setOpacity(0.35);
+  empty_placeholder_icon_->setGraphicsEffect(opacity);
+
+  layout->addStretch(1);
+  layout->addWidget(empty_placeholder_icon_, 0, Qt::AlignCenter);
+  layout->addStretch(1);
+
+  retintEmptyPlaceholder();
+  return page;
+}
+
+void Scene2DDockWidget::retintEmptyPlaceholder() {
+  if (empty_placeholder_icon_ == nullptr) {
+    return;
+  }
+  // Same 2D glyph the dock-level placeholder offers, tinted to the theme ink.
+  constexpr int kIconPx = 96;
+  const QPixmap pixmap = RenderSvgPixmap(
+      QStringLiteral(":/resources/svg/image.svg"), currentTheme(), QSize(kIconPx, kIconPx),
+      empty_placeholder_icon_->devicePixelRatioF());
+  empty_placeholder_icon_->setPixmap(pixmap);
+}
+
+void Scene2DDockWidget::applyEmptyPlaceholderState() {
+  if (view_stack_ != nullptr) {
+    view_stack_->setCurrentIndex(empty_placeholder_active_ ? 0 : 1);
+  }
+}
+
+void Scene2DDockWidget::changeEvent(QEvent* event) {
+  SceneDockWidget::changeEvent(event);
+  if (event != nullptr && (event->type() == QEvent::PaletteChange || event->type() == QEvent::StyleChange)) {
+    retintEmptyPlaceholder();
+  }
 }
 
 std::unique_ptr<SceneLayerContext> Scene2DDockWidget::makeContext() {
@@ -220,6 +282,9 @@ void Scene2DDockWidget::syncViewLayers(const std::vector<ISceneLayer*>& ordered_
   }
   // `previous` is destroyed here, after the viewer no longer references it.
   syncCompositeTimestamp(ordered_layers);
+  // Show the placeholder iff no visible layer feeds the viewer.
+  empty_placeholder_active_ = composite_topic_order_.empty();
+  applyEmptyPlaceholderState();
   refreshView();
 }
 

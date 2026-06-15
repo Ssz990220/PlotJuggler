@@ -22,7 +22,7 @@
 namespace PJ {
 namespace {
 
-QToolButton* makeIconButton(const QString& icon_path, const QString& tooltip, bool enabled, QWidget* parent) {
+QToolButton* makeIconButton(const QString& icon_path, const QString& tooltip, QWidget* parent) {
   auto* button = new QToolButton(parent);
   // Icon is theme-tinted by the caller via LoadSvg+setIcon after the
   // button is created; the placeholder also re-tints on theme changes.
@@ -32,8 +32,9 @@ QToolButton* makeIconButton(const QString& icon_path, const QString& tooltip, bo
   button->setAutoRaise(true);
   button->setFocusPolicy(Qt::NoFocus);
   button->setToolTip(tooltip);
-  button->setEnabled(enabled);
-  button->setCursor(Qt::ArrowCursor);
+  // All three families are selectable now (the 3D icon used to be disabled, so
+  // it rendered greyed). The pointing-hand cursor signals that they're clickable.
+  button->setCursor(Qt::PointingHandCursor);
   return button;
 }
 
@@ -78,17 +79,21 @@ VisualizationPlaceholderWidget::VisualizationPlaceholderWidget(QWidget* parent) 
   const struct {
     const char* path;
     const char* tooltip;
-    bool enabled;
+    const char* object_name;
+    VisualizationKind kind;
   } specs[] = {
-      {":/resources/svg/line_axis.svg", QT_TR_NOOP("Plot"), true},
-      {":/resources/svg/image.svg", QT_TR_NOOP("2D"), true},
-      {":/resources/svg/cube.svg", QT_TR_NOOP("3D"), false},
+      {":/resources/svg/line_axis.svg", QT_TR_NOOP("Plot"), "buttonVizPlot", VisualizationKind::Plot},
+      {":/resources/svg/image.svg", QT_TR_NOOP("2D"), "buttonVizScene2D", VisualizationKind::Scene2D},
+      {":/resources/svg/cube.svg", QT_TR_NOOP("3D"), "buttonVizScene3D", VisualizationKind::Scene3D},
   };
   icon_buttons_.reserve(std::size(specs));
   for (const auto& spec : specs) {
-    auto* button = makeIconButton(QString::fromLatin1(spec.path), tr(spec.tooltip), spec.enabled, this);
+    auto* button = makeIconButton(QString::fromLatin1(spec.path), tr(spec.tooltip), this);
+    button->setObjectName(QString::fromLatin1(spec.object_name));
     button->setAcceptDrops(true);
     button->installEventFilter(this);
+    const VisualizationKind kind = spec.kind;
+    connect(button, &QToolButton::clicked, this, [this, kind]() { emit visualizationRequested(kind); });
     layout->addWidget(button);
     icon_buttons_.push_back({button, QString::fromLatin1(spec.path)});
   }

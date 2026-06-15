@@ -434,30 +434,27 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
                           : is2dSceneObjectType(seed->object_type) ? QStringLiteral("scene2d")
                                                                    : QString();
         }
-        IDataWidget* widget = makeSceneDock(resolved_kind, dock_parent);
-        if (widget == nullptr) {
-          // Unknown kind: on a drop, tell the user why nothing appeared; on
-          // restore (no seed) a null just means "not my kind" and is silent.
-          if (seed != nullptr) {
-            MessageBox::warning(
-                this, tr("Cannot display topic"),
-                tr("This object topic cannot be displayed (object_type=%1).").arg(static_cast<int>(seed->object_type)));
-          }
-          return nullptr;
-        }
         if (seed == nullptr) {
-          // Restore path: hand back the empty dock; PlotDocker then calls
-          // xmlLoadState() to repopulate its topics and per-layer config.
-          // Seed the playhead FIRST so the dock's last_tracker_ is set before
-          // xmlLoadState's registerLayer runs: each restored layer then comes up
-          // at the current playhead instead of its first sample. currentTimeChanged
-          // only fires on changes, so a freshly-built widget never gets it
-          // otherwise — and this same restore path rebuilds docks on undo/redo (M.1).
-          widget->onTrackerTime(toAxisDouble(session_->playbackEngine().currentTime()));
-          return widget;
+          // Restore / click-create path: build the empty dock and seed its
+          // playhead. On restore, PlotDocker then calls xmlLoadState() to
+          // repopulate topics + per-layer config; on click-create the dock waits
+          // for its first dropped topic. Seeding first means each restored layer
+          // comes up at the current playhead, not its first sample
+          // (currentTimeChanged only fires on changes; this path also rebuilds
+          // docks on undo/redo — M.1). An unknown kind yields nullptr, which on
+          // this (seedless) path just means "not my kind" and is silent.
+          return makeSeededEmptyObjectDock(resolved_kind, dock_parent);
         }
 
-        // Drop path: populate the first topic and apply view side-effects.
+        // Drop path: build, then populate the first topic and apply view
+        // side-effects. An unknown kind here is a real failure — tell the user.
+        IDataWidget* widget = makeSceneDock(resolved_kind, dock_parent);
+        if (widget == nullptr) {
+          MessageBox::warning(
+              this, tr("Cannot display topic"),
+              tr("This object topic cannot be displayed (object_type=%1).").arg(static_cast<int>(seed->object_type)));
+          return nullptr;
+        }
         QWidget* qwidget = widget->widget();
         if (auto* scene3d = qobject_cast<Scene3DDockWidget*>(qwidget)) {
           if (!scene3d->addTopic(seed->topic_id, seed->object_type, seed->title)) {
@@ -992,6 +989,42 @@ IDataWidget* MainWindow::makeSceneDock(const QString& kind, QWidget* parent) {
   return nullptr;
 }
 
+IDataWidget* MainWindow::makeSeededEmptyObjectDock(const QString& kind, QWidget* parent) {
+  IDataWidget* widget = makeSceneDock(kind, parent);
+  if (widget != nullptr) {
+    widget->onTrackerTime(toAxisDouble(session_->playbackEngine().currentTime()));
+  }
+  return widget;
+}
+
+void MainWindow::onObjectFamilyRequested(DockWidget* dock, VisualizationKind family) {
+  if (dock == nullptr) {
+    return;
+  }
+  // The shell is the only module that maps a UI family to a concrete object-widget
+  // kind. A switch (no default) makes a future enumerator a compile error here —
+  // the one site that owns the mapping. Plot never reaches this slot (DockWidget
+  // builds plots itself), so it is a defensive no-op.
+  QString kind;
+  switch (family) {
+    case VisualizationKind::Scene2D:
+      kind = QStringLiteral("scene2d");
+      break;
+    case VisualizationKind::Scene3D:
+      kind = QStringLiteral("scene3d");
+      break;
+    case VisualizationKind::Plot:
+      return;
+  }
+  IDataWidget* widget = makeSeededEmptyObjectDock(kind, dock);
+  if (widget == nullptr) {
+    // Both scene kinds are valid, so this is a programming error rather than a
+    // user-facing one — log it instead of silently leaving the placeholder.
+    qCWarning(lcMain) << "onObjectFamilyRequested: could not build scene dock for kind" << kind;
+  }
+  dock->adoptObjectWidget(widget);  // null still reverts to a usable placeholder
+}
+
 MainWindow::~MainWindow() {
   // Break the widget-owned pointers to services before session_ destroys
   // the engine — guarantees no late signal dereferences a dead pointer.
@@ -1284,6 +1317,13 @@ void MainWindow::onPlotTabAdded(PlotDocker* docker) {
   // it as dockFocused(DockWidget*) so MainWindow can route to the right
   // sidepanel page (plot config / 2D / 3D) without pulling in ADS types.
   connect(docker, &PlotDocker::dockFocused, this, &MainWindow::onDockFocused, Qt::UniqueConnection);
+  // Placeholder 2D/3D icon click → build + adopt the empty scene dock here (the
+  // shell owns the family→kind mapping). The first topic dropped into such an
+  // empty dock seeds streaming playback, matching the placeholder→drop path.
+  connect(docker, &PlotDocker::objectFamilyRequested, this, &MainWindow::onObjectFamilyRequested, Qt::UniqueConnection);
+  connect(
+      docker, &PlotDocker::firstObjectTopicAdded, this, &MainWindow::seedStreamingPlaybackFromDrop,
+      Qt::UniqueConnection);
   for (int index = 0; index < docker->plotCount(); ++index) {
     if (DockWidget* dock = docker->plotAt(index)) {
       onPlotAdded(dock->plotWidget());

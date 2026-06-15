@@ -42,10 +42,12 @@ class SceneDockWidget : public QWidget, public IDataWidget, public IObjectViewer
   QDomElement xmlSaveState(QDomDocument& doc) const override;
   bool xmlLoadState(const QDomElement& element) override;
 
-  /// IObjectViewer: drops layers whose ObjectStore topic was evicted (empty
-  /// descriptor) via the regular removal path, and reports whether any live
-  /// layer remains so the shell can reset an emptied dock to its placeholder.
-  bool revalidateObjects() override;
+  /// IObjectViewer: non-virtual template method. Runs pruneEvictedObjects() (the
+  /// family-specific eviction sweep) and then applies the keep-if-never-populated
+  /// rule centrally, so a never-populated dock survives and only an evicted-to-
+  /// empty one resets. `final` so subclasses customize pruneEvictedObjects(), not
+  /// this — the keep rule can't be forgotten by an override.
+  bool revalidateObjects() final;
 
   /// Accepts a topic as either a render layer or a scene-wide config topic.
   bool addTopic(ObjectTopicId topic_id, sdk::BuiltinObjectType object_type, const QString& title);
@@ -160,6 +162,21 @@ class SceneDockWidget : public QWidget, public IDataWidget, public IObjectViewer
   [[nodiscard]] static std::optional<DatasetId> resolveDatasetId(
       const SessionManager* session, DatasetId saved_id, const QString& saved_source);
 
+  /// Family-specific eviction sweep for revalidateObjects(): drop layers (and, in
+  /// Scene3D, config topics) whose ObjectStore topic was evicted, and return
+  /// whether any live content remains. The non-virtual revalidateObjects() owns
+  /// the keep-if-never-populated rule, so an override here only prunes — it must
+  /// NOT re-implement the never-populated short-circuit.
+  virtual bool pruneEvictedObjects();
+
+  /// Whether this dock has ever held content (a render layer or a scene-config
+  /// topic), live or restored. Latched true on the first add, never cleared. Lets
+  /// revalidateObjects() distinguish an intentionally-empty dock (click-created /
+  /// restored empty — keep it) from one whose content was all evicted (reset it).
+  [[nodiscard]] bool everHadContent() const noexcept {
+    return ever_had_content_;
+  }
+
  private:
   /// Result of an add attempt, separating the two outcomes addTopic's bool used
   /// to conflate ("layer created" vs "consumed as a scene-config topic").
@@ -197,6 +214,10 @@ class SceneDockWidget : public QWidget, public IDataWidget, public IObjectViewer
   std::optional<PJ::Timepoint> last_tracker_;
   QWidget* scene_view_ = nullptr;
   std::unordered_map<int64_t, bool> layer_visibility_cache_;
+  // Latched true the first time any layer or config topic is added (see
+  // everHadContent()); never cleared, so an evicted-to-empty dock stays
+  // distinguishable from a never-populated one.
+  bool ever_had_content_ = false;
 };
 
 }  // namespace PJ

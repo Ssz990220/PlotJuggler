@@ -7,15 +7,20 @@
 
 #include <QAction>
 #include <QApplication>
+#include <QDomDocument>
 #include <QDragEnterEvent>
 #include <QDragMoveEvent>
 #include <QDropEvent>
 #include <QMetaObject>
 #include <QMimeData>
+#include <QMouseEvent>
 #include <QStringList>
 #include <QToolButton>
 #include <QtGlobal>
+#include <optional>
 #include <string_view>
+#include <utility>
+#include <vector>
 
 #include "pj_datastore/writer.hpp"
 #include "pj_plotting/DockWidget.h"
@@ -25,6 +30,7 @@
 #include "pj_runtime/IDataWidget.h"
 #include "pj_runtime/SessionManager.h"
 #include "pj_widgets/CurveTreeView.h"
+#include "pj_widgets/VisualizationKind.h"
 #include "pj_widgets/VisualizationPlaceholderWidget.h"
 
 namespace {
@@ -73,6 +79,69 @@ class FakeObjectWidget : public QWidget, public PJ::IDataWidget {
 
   void onTrackerTime(double /*time*/) override {}
 };
+
+// Persists a non-null element tagged like a real scene dock (<scene2d>/<scene3d>),
+// so an *empty* instance still round-trips through layout save/restore instead of
+// being skipped. Mirrors SceneDockWidget::xmlSaveState's "always emit a root".
+class FakeStatefulObjectWidget : public QWidget, public PJ::IDataWidget {
+ public:
+  explicit FakeStatefulObjectWidget(QString tag, QWidget* parent = nullptr) : QWidget(parent), tag_(std::move(tag)) {}
+
+  QWidget* widget() override {
+    return this;
+  }
+  void onTrackerTime(double /*time*/) override {}
+  QDomElement xmlSaveState(QDomDocument& doc) const override {
+    QDomElement element = doc.createElement(tag_);
+    element.setAttribute(QStringLiteral("version"), QStringLiteral("1"));
+    return element;
+  }
+  bool xmlLoadState(const QDomElement& /*element*/) override {
+    return true;
+  }
+
+ private:
+  QString tag_;
+};
+
+// Accepts every offered object topic in place (like the multi-topic 3D dock), so
+// a drop onto an already-mounted empty widget exercises DockWidget's "offer"
+// path rather than the factory-replace path.
+class FakeAcceptingObjectWidget : public QWidget, public PJ::IDataWidget {
+ public:
+  using QWidget::QWidget;
+
+  QWidget* widget() override {
+    return this;
+  }
+  void onTrackerTime(double /*time*/) override {}
+  bool tryAcceptObjectTopic(
+      PJ::ObjectTopicId /*topic_id*/, PJ::sdk::BuiltinObjectType /*object_type*/, const QString& /*title*/) override {
+    ++accepted_count_;
+    return true;
+  }
+
+  int acceptedCount() const {
+    return accepted_count_;
+  }
+
+ private:
+  int accepted_count_ = 0;
+};
+
+void registerImageObjectTopic(PJ::SessionManager& session, PJ::DatasetId dataset_id, std::string_view topic_name) {
+  auto topic_or = session.objectStore().registerTopic(
+      PJ::ObjectTopicDescriptor{
+          .dataset_id = dataset_id,
+          .topic_name = std::string(topic_name),
+          .metadata_json = R"({"builtin_object_type":"kImage"})",
+      });
+  EXPECT_TRUE(topic_or.has_value()) << topic_or.error();
+}
+
+QToolButton* iconButton(QWidget* placeholder, const char* object_name) {
+  return placeholder->findChild<QToolButton*>(QString::fromLatin1(object_name));
+}
 
 QAction* findActionByText(QObject* parent, const QString& text) {
   for (auto* action : parent->findChildren<QAction*>()) {
@@ -551,6 +620,368 @@ TEST(DockWidgetPlaceholderTest, PlaceholderAcceptsCatalogDragMoveAndIconDrop) {
   EXPECT_TRUE(icon_drop.isAccepted());
   EXPECT_EQ(drop_count, 1);
   EXPECT_EQ(dropped_keys, QStringList{QStringLiteral("dataset:/camera/image")});
+}
+
+TEST(VisualizationPlaceholderTest, ThreeDIconIsEnabledAndNamed) {
+  // The 3D icon used to render disabled (greyed); it must now be enabled and
+  // full-tinted like the others. All three carry stable objectNames.
+  TestPlaceholderWidget placeholder;
+  for (const char* name : {"buttonVizPlot", "buttonVizScene2D", "buttonVizScene3D"}) {
+    auto* button = iconButton(&placeholder, name);
+    ASSERT_NE(button, nullptr) << name;
+    EXPECT_TRUE(button->isEnabled()) << name;
+  }
+}
+
+TEST(VisualizationPlaceholderTest, IconClicksEmitVisualizationRequested) {
+  TestPlaceholderWidget placeholder;
+  std::vector<PJ::VisualizationKind> requested;
+  QObject::connect(
+      &placeholder, &PJ::VisualizationPlaceholderWidget::visualizationRequested, &placeholder,
+      [&](PJ::VisualizationKind kind) { requested.push_back(kind); });
+
+  iconButton(&placeholder, "buttonVizPlot")->click();
+  iconButton(&placeholder, "buttonVizScene2D")->click();
+  iconButton(&placeholder, "buttonVizScene3D")->click();
+
+  ASSERT_EQ(requested.size(), 3U);
+  EXPECT_EQ(requested[0], PJ::VisualizationKind::Plot);
+  EXPECT_EQ(requested[1], PJ::VisualizationKind::Scene2D);
+  EXPECT_EQ(requested[2], PJ::VisualizationKind::Scene3D);
+}
+
+TEST(VisualizationPlaceholderTest, RealMouseClickPassesThroughDragFilterAndEmits) {
+  // The icon buttons carry the placeholder's drag event filter (for catalog
+  // drops). A plain mouse click must still reach the button and emit the request
+  // — i.e. the filter must not swallow press/release. click() bypasses the
+  // filter, so drive real QMouseEvents through it.
+  TestPlaceholderWidget placeholder;
+  placeholder.resize(400, 200);
+  placeholder.show();
+  auto* button = iconButton(&placeholder, "buttonVizScene3D");
+  ASSERT_NE(button, nullptr);
+  ASSERT_TRUE(button->isEnabled());
+
+  std::optional<PJ::VisualizationKind> got;
+  QObject::connect(
+      &placeholder, &PJ::VisualizationPlaceholderWidget::visualizationRequested, &placeholder,
+      [&](PJ::VisualizationKind kind) { got = kind; });
+
+  const QPointF local = button->rect().center();
+  const QPointF global = button->mapToGlobal(local.toPoint());
+  QMouseEvent press(QEvent::MouseButtonPress, local, global, Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+  QMouseEvent release(QEvent::MouseButtonRelease, local, global, Qt::LeftButton, Qt::NoButton, Qt::NoModifier);
+  QApplication::sendEvent(button, &press);
+  QApplication::sendEvent(button, &release);
+
+  ASSERT_TRUE(got.has_value());
+  EXPECT_EQ(*got, PJ::VisualizationKind::Scene3D);
+}
+
+TEST(DockWidgetPlaceholderTest, PlotIconClickConvertsPlaceholderToEmptyPlot) {
+  PJ::SessionManager session;
+  PJ::CatalogModel catalog(&session);
+  PJ::PlotDocker docker(QStringLiteral("test"), &session, &catalog);
+  auto* dock = docker.plotAt(0);
+  ASSERT_NE(dock, nullptr);
+  auto* placeholder = dock->findChild<PJ::VisualizationPlaceholderWidget*>();
+  ASSERT_NE(placeholder, nullptr);
+
+  iconButton(placeholder, "buttonVizPlot")->click();
+
+  ASSERT_NE(dock->plotWidget(), nullptr);
+  EXPECT_EQ(dock->objectWidget(), nullptr);
+  EXPECT_EQ(dock->plotWidget()->curveList().size(), 0U);  // empty plot, no curves
+}
+
+TEST(DockWidgetPlaceholderTest, SceneIconClickRequestsObjectFamilyWithoutBuildingWidget) {
+  PJ::SessionManager session;
+  PJ::CatalogModel catalog(&session);
+  PJ::PlotDocker docker(QStringLiteral("test"), &session, &catalog);
+  auto* dock = docker.plotAt(0);
+  ASSERT_NE(dock, nullptr);
+
+  // Both the DockWidget signal and the PlotDocker re-emit must carry the dock +
+  // family, so MainWindow (the only scene-kind-aware module) can build the dock.
+  PJ::DockWidget* dock_signal_arg = nullptr;
+  PJ::VisualizationKind dock_kind = PJ::VisualizationKind::Plot;
+  int dock_count = 0;
+  QObject::connect(dock, &PJ::DockWidget::objectFamilyRequested, dock, [&](PJ::DockWidget* d, PJ::VisualizationKind k) {
+    dock_signal_arg = d;
+    dock_kind = k;
+    ++dock_count;
+  });
+  PJ::VisualizationKind docker_kind = PJ::VisualizationKind::Plot;
+  int docker_count = 0;
+  QObject::connect(
+      &docker, &PJ::PlotDocker::objectFamilyRequested, &docker, [&](PJ::DockWidget* /*d*/, PJ::VisualizationKind k) {
+        docker_kind = k;
+        ++docker_count;
+      });
+
+  auto* placeholder = dock->findChild<PJ::VisualizationPlaceholderWidget*>();
+  ASSERT_NE(placeholder, nullptr);
+  iconButton(placeholder, "buttonVizScene3D")->click();
+
+  EXPECT_EQ(dock_count, 1);
+  EXPECT_EQ(dock_signal_arg, dock);
+  EXPECT_EQ(dock_kind, PJ::VisualizationKind::Scene3D);
+  EXPECT_EQ(docker_count, 1);
+  EXPECT_EQ(docker_kind, PJ::VisualizationKind::Scene3D);
+  // The dock does not build the widget itself — that stays MainWindow's job.
+  EXPECT_EQ(dock->objectWidget(), nullptr);
+  EXPECT_EQ(dock->plotWidget(), nullptr);
+}
+
+TEST(DockWidgetPlaceholderTest, AdoptObjectWidgetInstallsEmptyObjectWidget) {
+  PJ::SessionManager session;
+  PJ::CatalogModel catalog(&session);
+  PJ::PlotDocker docker(QStringLiteral("test"), &session, &catalog);
+  auto* dock = docker.plotAt(0);
+  ASSERT_NE(dock, nullptr);
+  int undoable_count = 0;
+  QObject::connect(dock, &PJ::DockWidget::undoableChange, dock, [&]() { ++undoable_count; });
+
+  auto* widget = new FakeObjectWidget();
+  dock->adoptObjectWidget(widget);
+
+  EXPECT_EQ(dock->objectWidget(), static_cast<PJ::IDataWidget*>(widget));
+  EXPECT_EQ(dock->plotWidget(), nullptr);
+  EXPECT_EQ(dock->name(), QStringLiteral("..."));
+  EXPECT_EQ(undoable_count, 1);
+}
+
+TEST(DockWidgetPlaceholderTest, AdoptNullObjectWidgetRevertsToPlaceholder) {
+  PJ::SessionManager session;
+  PJ::CatalogModel catalog(&session);
+  PJ::PlotDocker docker(QStringLiteral("test"), &session, &catalog);
+  auto* dock = docker.plotAt(0);
+  ASSERT_NE(dock, nullptr);
+
+  // A null build (unknown kind / factory refusal) must leave a usable placeholder
+  // rather than a blank dock.
+  dock->adoptObjectWidget(nullptr);
+
+  EXPECT_EQ(dock->objectWidget(), nullptr);
+  EXPECT_EQ(dock->plotWidget(), nullptr);
+  EXPECT_NE(dock->findChild<PJ::VisualizationPlaceholderWidget*>(), nullptr);
+}
+
+TEST(DockWidgetPlaceholderTest, EmptyObjectWidgetSurvivesLayoutSaveRestore) {
+  // Corner case behind the click-to-create-empty path: an empty object dock must
+  // round-trip through xmlSaveState/xmlLoadState (undo/redo + layout save). It must
+  // NOT be skipped on save, and must come back as an object widget, not a plot.
+  PJ::SessionManager session;
+  PJ::CatalogModel catalog(&session);
+
+  PJ::PlotDocker docker(QStringLiteral("test"), &session, &catalog);
+  docker.setObjectWidgetFactory(
+      [](const QString& kind, const PJ::ObjectDropSeed*, QWidget* parent) -> PJ::IDataWidget* {
+        return new FakeStatefulObjectWidget(kind.isEmpty() ? QStringLiteral("scene3d") : kind, parent);
+      });
+  auto* dock = docker.plotAt(0);
+  ASSERT_NE(dock, nullptr);
+  dock->adoptObjectWidget(new FakeStatefulObjectWidget(QStringLiteral("scene3d")));
+  ASSERT_NE(dock->objectWidget(), nullptr);
+
+  QDomDocument doc;
+  const QDomElement saved = docker.xmlSaveState(doc);
+  doc.appendChild(saved);
+  EXPECT_FALSE(saved.elementsByTagName(QStringLiteral("scene3d")).isEmpty()) << "empty object dock was skipped on save";
+
+  PJ::PlotDocker restored(QStringLiteral("test2"), &session, &catalog);
+  restored.setObjectWidgetFactory(
+      [](const QString& kind, const PJ::ObjectDropSeed*, QWidget* parent) -> PJ::IDataWidget* {
+        return new FakeStatefulObjectWidget(kind, parent);
+      });
+  ASSERT_TRUE(restored.xmlLoadState(saved));
+  auto* restored_dock = restored.plotAt(0);
+  ASSERT_NE(restored_dock, nullptr);
+  EXPECT_NE(restored_dock->objectWidget(), nullptr);
+  EXPECT_EQ(restored_dock->plotWidget(), nullptr);
+}
+
+TEST(DockWidgetPlaceholderTest, FirstObjectTopicAddedFiresOnceForAdoptedEmptyWidget) {
+  // Streaming seed: an empty click-created dock has no data to play, so adopt does
+  // NOT seed playback. When its FIRST topic is dropped (absorbed in place), the
+  // dock signals firstObjectTopicAdded so the host can seed live playback — and it
+  // must fire exactly once (subsequent topics are normal additions).
+  PJ::SessionManager session;
+  PJ::CatalogModel catalog(&session);
+  auto dataset = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "stream.mcap"});
+  ASSERT_TRUE(dataset.has_value()) << dataset.error();
+  registerImageObjectTopic(session, *dataset, "/camera/a");
+  registerImageObjectTopic(session, *dataset, "/camera/b");
+  catalog.rebuildFromDatastore();
+  const auto items = catalog.items();
+  ASSERT_EQ(items.size(), 2U);
+
+  PJ::PlotDocker docker(QStringLiteral("test"), &session, &catalog);
+  // A factory is required for the object-drop path to reach the in-place "offer",
+  // even though the adopted widget is the one that absorbs the topics.
+  docker.setObjectWidgetFactory([](const QString&, const PJ::ObjectDropSeed*, QWidget* parent) -> PJ::IDataWidget* {
+    return new FakeAcceptingObjectWidget(parent);
+  });
+  auto* dock = docker.plotAt(0);
+  ASSERT_NE(dock, nullptr);
+  dock->adoptObjectWidget(new FakeAcceptingObjectWidget());
+
+  int seed_count = 0;
+  QObject::connect(dock, &PJ::DockWidget::firstObjectTopicAdded, dock, [&]() { ++seed_count; });
+
+  ASSERT_TRUE(
+      QMetaObject::invokeMethod(
+          dock, "onCatalogItemsDropped", Qt::DirectConnection, Q_ARG(QStringList, QStringList{items[0].key})));
+  EXPECT_EQ(seed_count, 1);
+  // First topic also names the dock (like the placeholder→drop path), so it no
+  // longer reads "..." once populated.
+  EXPECT_EQ(dock->name(), items[0].topic_name);
+
+  ASSERT_TRUE(
+      QMetaObject::invokeMethod(
+          dock, "onCatalogItemsDropped", Qt::DirectConnection, Q_ARG(QStringList, QStringList{items[1].key})));
+  EXPECT_EQ(seed_count, 1);                      // not re-fired for the second topic
+  EXPECT_EQ(dock->name(), items[0].topic_name);  // name stays the first topic's
+}
+
+TEST(DockWidgetPlaceholderTest, IncompatibleObjectDropOntoCommittedObjectWidgetIsRejected) {
+  // A committed object dock that refuses the dropped topic (a different family,
+  // e.g. an image dropped on a 3D view or a pointcloud on a 2D view) must keep
+  // its widget — NOT be replaced by a factory-created one of the other family.
+  PJ::SessionManager session;
+  PJ::CatalogModel catalog(&session);
+  auto dataset = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "drive.mcap"});
+  ASSERT_TRUE(dataset.has_value()) << dataset.error();
+  registerImageObjectTopic(session, *dataset, "/camera/image");
+  catalog.rebuildFromDatastore();
+  const auto items = catalog.items();
+  ASSERT_EQ(items.size(), 1U);
+
+  PJ::PlotDocker docker(QStringLiteral("test"), &session, &catalog);
+  int factory_calls = 0;
+  docker.setObjectWidgetFactory([&](const QString&, const PJ::ObjectDropSeed*, QWidget* parent) -> PJ::IDataWidget* {
+    ++factory_calls;
+    return new FakeObjectWidget(parent);
+  });
+  auto* dock = docker.plotAt(0);
+  ASSERT_NE(dock, nullptr);
+
+  auto* mounted = new FakeObjectWidget();  // refuses every offered topic
+  dock->adoptObjectWidget(mounted);
+  factory_calls = 0;
+
+  ASSERT_TRUE(
+      QMetaObject::invokeMethod(
+          dock, "onCatalogItemsDropped", Qt::DirectConnection, Q_ARG(QStringList, QStringList{items[0].key})));
+
+  EXPECT_EQ(dock->objectWidget(), static_cast<PJ::IDataWidget*>(mounted));  // same widget, not replaced
+  EXPECT_EQ(factory_calls, 0);                                              // no replacement built
+}
+
+TEST(DockWidgetPlaceholderTest, ScalarDropOntoCommittedObjectWidgetIsRejected) {
+  // The mirror case: a scalar dropped on a committed object dock must not replace
+  // it with a plot.
+  PJ::SessionManager session;
+  PJ::CatalogModel catalog(&session);
+  auto dataset = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "drive.mcap"});
+  ASSERT_TRUE(dataset.has_value()) << dataset.error();
+  ASSERT_NE(addScalarTopic(session, *dataset, "/imu/accel"), 0U);
+  const auto curves = catalog.curves();
+  ASSERT_EQ(curves.size(), 1U);
+
+  PJ::PlotDocker docker(QStringLiteral("test"), &session, &catalog);
+  auto* dock = docker.plotAt(0);
+  ASSERT_NE(dock, nullptr);
+  auto* mounted = new FakeObjectWidget();
+  dock->adoptObjectWidget(mounted);
+
+  ASSERT_TRUE(
+      QMetaObject::invokeMethod(
+          dock, "onCatalogItemsDropped", Qt::DirectConnection, Q_ARG(QStringList, QStringList{curves[0].name})));
+
+  EXPECT_EQ(dock->objectWidget(), static_cast<PJ::IDataWidget*>(mounted));
+  EXPECT_EQ(dock->plotWidget(), nullptr);  // no plot replaced the object dock
+}
+
+TEST(DockWidgetPlaceholderTest, CompatibleObjectDropOntoCommittedWidgetIsAcceptedInPlace) {
+  // Regression: a compatible object drop is still absorbed in place (not rejected).
+  PJ::SessionManager session;
+  PJ::CatalogModel catalog(&session);
+  auto dataset = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "drive.mcap"});
+  ASSERT_TRUE(dataset.has_value()) << dataset.error();
+  registerImageObjectTopic(session, *dataset, "/camera/image");
+  catalog.rebuildFromDatastore();
+  const auto items = catalog.items();
+  ASSERT_EQ(items.size(), 1U);
+
+  PJ::PlotDocker docker(QStringLiteral("test"), &session, &catalog);
+  int factory_calls = 0;
+  docker.setObjectWidgetFactory([&](const QString&, const PJ::ObjectDropSeed*, QWidget* parent) -> PJ::IDataWidget* {
+    ++factory_calls;
+    return new FakeAcceptingObjectWidget(parent);
+  });
+  auto* dock = docker.plotAt(0);
+  ASSERT_NE(dock, nullptr);
+  auto* mounted = new FakeAcceptingObjectWidget();  // accepts every offered topic
+  dock->adoptObjectWidget(mounted);
+  factory_calls = 0;
+
+  ASSERT_TRUE(
+      QMetaObject::invokeMethod(
+          dock, "onCatalogItemsDropped", Qt::DirectConnection, Q_ARG(QStringList, QStringList{items[0].key})));
+
+  EXPECT_EQ(dock->objectWidget(), static_cast<PJ::IDataWidget*>(mounted));  // same widget kept
+  EXPECT_EQ(factory_calls, 0);                                              // absorbed, not rebuilt
+  EXPECT_EQ(mounted->acceptedCount(), 1);                                   // topic was taken
+}
+
+TEST(DockWidgetPlaceholderTest, ObjectDropOntoCommittedPlotIsRejected) {
+  // The fourth cross-family combination: an object topic dropped on a committed
+  // plot dock must be rejected, not replace the plot (which would destroy its
+  // curves).
+  PJ::SessionManager session;
+  PJ::CatalogModel catalog(&session);
+  auto dataset = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "drive.mcap"});
+  ASSERT_TRUE(dataset.has_value()) << dataset.error();
+  ASSERT_NE(addScalarTopic(session, *dataset, "/imu/accel"), 0U);
+  registerImageObjectTopic(session, *dataset, "/camera/image");
+  catalog.rebuildFromDatastore();
+
+  const auto curves = catalog.curves();
+  ASSERT_EQ(curves.size(), 1U);
+  QString image_key;
+  for (const auto& item : catalog.items()) {
+    if (PJ::isObjectTopic(item)) {
+      image_key = item.key;
+      break;
+    }
+  }
+  ASSERT_FALSE(image_key.isEmpty());
+
+  PJ::PlotDocker docker(QStringLiteral("test"), &session, &catalog);
+  int factory_calls = 0;
+  docker.setObjectWidgetFactory([&](const QString&, const PJ::ObjectDropSeed*, QWidget* parent) -> PJ::IDataWidget* {
+    ++factory_calls;
+    return new FakeObjectWidget(parent);
+  });
+  auto* dock = docker.plotAt(0);
+  ASSERT_NE(dock, nullptr);
+
+  // Commit the dock to a plot with one curve.
+  ASSERT_TRUE(
+      QMetaObject::invokeMethod(
+          dock, "onCatalogItemsDropped", Qt::DirectConnection, Q_ARG(QStringList, QStringList{curves[0].name})));
+  ASSERT_NE(dock->plotWidget(), nullptr);
+  ASSERT_EQ(dock->plotWidget()->curveList().size(), 1U);
+
+  // Dropping an object topic must be rejected: the plot and its curve are kept.
+  ASSERT_TRUE(
+      QMetaObject::invokeMethod(
+          dock, "onCatalogItemsDropped", Qt::DirectConnection, Q_ARG(QStringList, QStringList{image_key})));
+  EXPECT_NE(dock->plotWidget(), nullptr);
+  EXPECT_EQ(dock->plotWidget()->curveList().size(), 1U);
+  EXPECT_EQ(dock->objectWidget(), nullptr);
+  EXPECT_EQ(factory_calls, 0);
 }
 
 int main(int argc, char** argv) {
