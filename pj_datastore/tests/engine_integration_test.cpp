@@ -5,6 +5,8 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <limits>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <variant>
@@ -753,20 +755,111 @@ TEST(EngineIntegrationTest, RetentionWorksWithNegativeTimestamps) {
   EXPECT_FALSE(storage->empty());
   EXPECT_EQ(storage->timeMax(), 0);
 
-  // Enforce retention with window of 500: evictBefore(0 - 500 = -500)
-  // Chunks with t_max < -500 should be evicted.
-  // Our single chunk spans [-1000, 0], so t_max=0 > -500 → not evicted.
+  // Enforce retention with window 500: evictBefore(0 - 500 = -500). The single
+  // chunk spans [-1000, 0], so t_max=0 >= -500 → it is not whole-chunk evicted;
+  // it straddles the cutoff. Retention still applies LOGICALLY via the floor:
+  // rows older than -500 become invisible. (Regression guard: the signed
+  // negative cutoff must work — the "no floor" sentinel is Timestamp::min, not 0,
+  // so an un-evicted topic with negative stamps would otherwise clamp to 0.)
   engine.enforceRetention(500);
 
-  // Data should still be present (the chunk wasn't evicted)
+  // The straddling chunk is physically retained, but the floor is the cutoff.
   EXPECT_FALSE(storage->empty());
+  EXPECT_EQ(storage->retentionFloor(), -500);
+  EXPECT_EQ(storage->timeMin(), -500);
 
+  // An open read returns only the retained window [-500, 0]: rows
+  // -500,-400,-300,-200,-100,0 = 6 samples (rows older than -500 are hidden).
   DataReader reader = engine.createReader();
   auto cursor_or = reader.rangeQuery(QueryRange{.topic_id = handle.topic_id, .t_min = -1000, .t_max = 0});
   ASSERT_TRUE(cursor_or.has_value()) << cursor_or.error();
   std::size_t count = 0;
   cursor_or->forEach([&count](const SampleRow&) { ++count; });
-  EXPECT_EQ(count, 11U);
+  EXPECT_EQ(count, 6U);
+}
+
+// ===========================================================================
+// Retention floor hides a straddling chunk's sub-floor rows from EVERY read
+// path. This is the datastore-level reproduction of the streaming derived/
+// filter overshoot: one big chunk spans the whole tail, retention cuts inside
+// it, the chunk stays physically retained, but no client read may see its
+// pre-cutoff rows.
+// ===========================================================================
+
+TEST(EngineIntegrationTest, RetentionFloorHidesStraddlingRowsFromAllReads) {
+  DataEngine engine;
+  auto dataset_id_or = engine.createDataset(DatasetDescriptor{.source_name = "test", .time_domain_id = 0});
+  ASSERT_TRUE(dataset_id_or.has_value()) << dataset_id_or.error();
+  DatasetId dataset_id = *dataset_id_or;
+
+  DataWriter writer = engine.createWriter();
+  auto handle_or = writer.registerScalarSeries(dataset_id, "ramp", NumericType::kFloat64);
+  ASSERT_TRUE(handle_or.has_value()) << handle_or.error();
+  ScalarSeriesHandle handle = *handle_or;
+
+  // 50 samples at t = 0,10,...,490 -> a single chunk (default max_chunk_rows).
+  for (int i = 0; i < 50; ++i) {
+    writer.appendScalar(handle, static_cast<Timestamp>(i * 10), static_cast<double>(i));
+  }
+  engine.commitChunks(writer.flushAll());
+
+  const TopicStorage* storage = engine.getTopicStorage(handle.topic_id);
+  ASSERT_NE(storage, nullptr);
+  ASSERT_EQ(storage->sealedChunks().size(), 1U);  // one big chunk spanning [0, 490]
+
+  // Window 200: timeMax=490 -> evictBefore(290). The chunk straddles 290
+  // (t_min=0 < 290 <= t_max=490), so it is physically RETAINED...
+  engine.enforceRetention(200);
+  EXPECT_EQ(storage->sealedChunks().size(), 1U);  // still physically present
+  EXPECT_EQ(storage->retentionFloor(), 290);
+
+  DataReader reader = engine.createReader();
+
+  // (1) metadata / axis: minimum is the floor, not the chunk's physical t_min.
+  const auto meta = reader.getMetadata(handle.topic_id);
+  ASSERT_TRUE(meta.has_value());
+  EXPECT_EQ(meta->time_range_min, 290);
+  EXPECT_EQ(meta->time_range_max, 490);
+
+  // (2) series bounds + samples: only ts >= 290.
+  auto series_or = reader.series(handle.topic_id, 0);
+  ASSERT_TRUE(series_or.has_value()) << series_or.error();
+  const SeriesReader series = *series_or;
+  EXPECT_EQ(series.size(), 21U);  // ts 290,300,...,490
+  const auto bounds = series.bounds();
+  ASSERT_TRUE(bounds.has_value());
+  EXPECT_EQ(bounds->time.min, 290);
+  EXPECT_EQ(bounds->time.max, 490);
+  const auto first = series.sampleAt(0);
+  ASSERT_TRUE(first.has_value());
+  EXPECT_EQ(first->timestamp, 290);
+
+  // (3) rangeQuery with an open window: first row is 290, count is 21.
+  auto cursor_or = reader.rangeQuery(
+      QueryRange{
+          .topic_id = handle.topic_id,
+          .t_min = std::numeric_limits<Timestamp>::min(),
+          .t_max = std::numeric_limits<Timestamp>::max()});
+  ASSERT_TRUE(cursor_or.has_value()) << cursor_or.error();
+  std::optional<Timestamp> first_ts;
+  std::size_t row_count = 0;
+  cursor_or->forEach([&](const SampleRow& row) {
+    if (!first_ts.has_value()) {
+      first_ts = row.timestamp;
+    }
+    ++row_count;
+  });
+  EXPECT_EQ(first_ts.value_or(-1), 290);
+  EXPECT_EQ(row_count, 21U);
+
+  // (4) latestAt must not zero-order-hold across the floor.
+  auto below = reader.latestAt(QueryPoint{.topic_id = handle.topic_id, .t = 250});
+  ASSERT_TRUE(below.has_value());
+  EXPECT_FALSE(below->has_value());  // no visible sample at-or-before 250
+  auto above = reader.latestAt(QueryPoint{.topic_id = handle.topic_id, .t = 350});
+  ASSERT_TRUE(above.has_value());
+  ASSERT_TRUE(above->has_value());
+  EXPECT_EQ(above->value().timestamp, 350);
 }
 
 // ===========================================================================

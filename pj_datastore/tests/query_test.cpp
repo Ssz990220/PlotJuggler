@@ -7,6 +7,7 @@
 
 #include <cstdint>
 #include <deque>
+#include <limits>
 #include <vector>
 
 #include "pj_base/types.hpp"
@@ -294,6 +295,108 @@ TEST(QueryTest, ForEachChunkNoResults) {
   std::size_t count = 0;
   cursor.forEachChunk([&](const ChunkRowRange& /*range*/) { ++count; });
   EXPECT_EQ(count, 0u);
+}
+
+// =========================================================================
+// SeriesReader retention-floor tests
+//
+// A SeriesReader constructed with floor F must behave as if rows with
+// timestamp < F do not exist — through EVERY method (the retention-window
+// contract). The straddling chunk still physically holds those rows.
+// All cases share one chunk t=[0,490] step 10 (value == row index) that
+// straddles a floor of 200.
+// =========================================================================
+
+class SeriesReaderFloorTest : public ::testing::Test {
+ protected:
+  void SetUp() override {
+    chunks_.push_back(makeTestChunk(0, 50, 10));
+  }
+  std::deque<TopicChunk> chunks_;
+};
+
+TEST_F(SeriesReaderFloorTest, HidesSubFloorRows) {
+  const SeriesReader series(chunks_, /*column_index=*/0, /*retention_floor=*/200);
+
+  EXPECT_EQ(series.size(), 30u);  // rows 20..49
+  EXPECT_FALSE(series.empty());
+
+  const auto first = series.sampleAt(0);
+  ASSERT_TRUE(first.has_value());
+  EXPECT_EQ(first->timestamp, 200);
+  EXPECT_DOUBLE_EQ(first->value, 20.0);
+
+  const auto last = series.sampleAt(29);
+  ASSERT_TRUE(last.has_value());
+  EXPECT_EQ(last->timestamp, 490);
+}
+
+TEST_F(SeriesReaderFloorTest, BoundsExcludeSubFloor) {
+  const SeriesReader series(chunks_, 0, /*retention_floor=*/200);
+
+  // The default (open) bounds must still respect the floor.
+  const auto bounds = series.bounds();
+  ASSERT_TRUE(bounds.has_value());
+  EXPECT_EQ(bounds->time.min, 200);
+  EXPECT_EQ(bounds->time.max, 490);
+  EXPECT_DOUBLE_EQ(bounds->value.min, 20.0);
+  EXPECT_DOUBLE_EQ(bounds->value.max, 49.0);
+  EXPECT_EQ(bounds->sample_count, 30u);
+}
+
+TEST_F(SeriesReaderFloorTest, SamplesCursorSkipsSubFloor) {
+  const SeriesReader series(chunks_, 0, /*retention_floor=*/200);
+
+  // An explicitly-open sample window must be raised up to the floor.
+  std::vector<Timestamp> seen;
+  auto cursor = series.samples(
+      Range<Timestamp>{.min = std::numeric_limits<Timestamp>::min(), .max = std::numeric_limits<Timestamp>::max()});
+  cursor.forEach([&](const SeriesSample& s) { seen.push_back(s.timestamp); });
+  ASSERT_FALSE(seen.empty());
+  EXPECT_EQ(seen.front(), 200);
+  EXPECT_EQ(seen.size(), 30u);
+}
+
+TEST_F(SeriesReaderFloorTest, IndexLookupsRespectFloor) {
+  const SeriesReader series(chunks_, 0, /*retention_floor=*/200);
+
+  // A point below the floor has no sample at-or-before it.
+  EXPECT_FALSE(series.indexAtOrBeforeTime(150).has_value());
+  EXPECT_FALSE(series.sampleAtOrBeforeTime(150).has_value());
+
+  // At-or-after a sub-floor time resolves to the first retained sample (ts=200).
+  const auto after = series.indexAtOrAfterTime(150);
+  ASSERT_TRUE(after.has_value());
+  EXPECT_EQ(*after, 0u);
+  const auto after_sample = series.sampleAtOrAfterTime(150);
+  ASSERT_TRUE(after_sample.has_value());
+  EXPECT_EQ(after_sample->timestamp, 200);
+
+  // Within the retained range, indices count only retained samples:
+  // ts 200,210,220,230,240,250 -> indices 0..5.
+  const auto before = series.indexAtOrBeforeTime(250);
+  ASSERT_TRUE(before.has_value());
+  EXPECT_EQ(*before, 5u);
+}
+
+TEST_F(SeriesReaderFloorTest, WindowEntirelyBelowFloorIsEmpty) {
+  const SeriesReader series(chunks_, 0, /*retention_floor=*/200);
+
+  // A window entirely below the floor must yield NOTHING: raising the lower
+  // bound up to the floor must not invert the range back into visibility.
+  std::size_t n = 0;
+  series.samples(Range<Timestamp>{.min = 0, .max = 150}).forEach([&](const SeriesSample&) { ++n; });
+  EXPECT_EQ(n, 0u);
+  EXPECT_FALSE(series.bounds(Range<Timestamp>{.min = 0, .max = 150}).has_value());
+}
+
+TEST_F(SeriesReaderFloorTest, DefaultIsNoFloor) {
+  // No floor argument -> existing behavior (no rows hidden).
+  const SeriesReader series(chunks_, 0);
+  EXPECT_EQ(series.size(), 50u);
+  const auto bounds = series.bounds();
+  ASSERT_TRUE(bounds.has_value());
+  EXPECT_EQ(bounds->time.min, 0);
 }
 
 }  // namespace

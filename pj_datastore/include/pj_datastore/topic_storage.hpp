@@ -47,7 +47,9 @@ struct TopicMetadata {
   Timestamp time_range_min = 0;
   /// Maximum timestamp across retained chunks.
   Timestamp time_range_max = 0;
-  /// Total rows across retained chunks.
+  /// Total PHYSICAL rows across retained chunks. Unlike time_range_min (clamped
+  /// to the retention floor), this counts a straddling chunk's sub-floor rows
+  /// too — it is a storage/memory metric, not the logical visible-sample count.
   uint64_t total_row_count = 0;
   /// Approximate total memory footprint across retained chunks.
   uint64_t total_byte_size = 0;  // approximate
@@ -78,6 +80,10 @@ class TopicStorage {
   void clearChunks() noexcept;
 
   /// Access retained sealed chunks in commit order.
+  /// CAVEAT: a chunk straddling the retention floor still physically holds rows
+  /// with timestamp < retentionFloor(). Those rows are logically evicted; callers
+  /// that read values here must skip rows below retentionFloor() (or read through
+  /// DataReader, which enforces the floor for you).
   [[nodiscard]] const std::deque<TopicChunk>& sealedChunks() const noexcept;
 
   /// Store column layout for schema_id==0 topics (populated at writer registration time).
@@ -104,6 +110,15 @@ class TopicStorage {
 
   /// Maximum timestamp of retained chunks (0 if empty).
   [[nodiscard]] Timestamp timeMax() const noexcept;
+
+  /// Logical retention floor: the most recent `t_keep_min` ever passed to
+  /// evictBefore(). Data with timestamp < this is logically evicted and must
+  /// never be observed through any read path — even though the straddling chunk
+  /// that physically holds it survives whole-chunk eviction (the chunk lingers as
+  /// lazy GC state). Absolute ns; the "no floor" value is kNoRetentionFloor.
+  /// Raised monotonically by evictBefore(); reset by clearChunks(). See the
+  /// sealedChunks() caveat.
+  [[nodiscard]] Timestamp retentionFloor() const noexcept;
 
   /// Update descriptor schema id for future writes.
   void updateSchema(SchemaId new_schema);
@@ -140,6 +155,10 @@ class TopicStorage {
   std::vector<ColumnDescriptor> column_descriptors_;  // for schema_id==0 topics
   uint32_t max_observed_array_length_ = 0;
   uint32_t truncated_sample_count_ = 0;
+  // Logical retention floor (absolute ns). evictBefore() raises this to the
+  // requested cutoff; read accessors clamp to it so rows below it stay invisible
+  // even while their straddling chunk remains physically retained (lazy GC).
+  Timestamp retention_floor_ = kNoRetentionFloor;
   // Authoritative expansion count per variable-length array field path.
   // Shared across all DataWriter instances writing to this topic.
   std::unordered_map<std::string, uint32_t> array_expansion_counts_;

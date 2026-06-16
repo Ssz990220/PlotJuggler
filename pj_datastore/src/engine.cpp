@@ -316,6 +316,10 @@ Status DataEngine::flushTo(DataEngine& dst) {
           "flushTo: destination has no topic '" + src_storage.descriptor().name + "' for dataset " +
           std::to_string(src_storage.descriptor().dataset_id));
     }
+    // The source is a staging engine that is never retention-evicted, so its
+    // timeMin() is the physical minimum (no retention-floor clamp in play). The
+    // flushTo contract assumes the source carries no floor; if it ever did, the
+    // clamped timeMin() could let physically-older source rows past this check.
     if (!dst_storage->empty() && src_storage.timeMin() < dst_storage->timeMax()) {
       return PJ::unexpected("flushTo: monotonicity violation for topic '" + src_storage.descriptor().name + "'");
     }

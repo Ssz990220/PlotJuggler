@@ -136,9 +136,13 @@ void PointSeriesXY::buildSameTopicIndex() const {
     return;
   }
 
+  const Timestamp retention_floor = storage->retentionFloor();
   for (const TopicChunk& chunk : storage->sealedChunks()) {
     const std::size_t row_count = chunk.stats.row_count;
     for (std::size_t row = 0; row < row_count; ++row) {
+      if (chunk.readTimestamp(row) < retention_floor) {
+        continue;  // logically evicted by retention — never expose pre-floor rows
+      }
       const double x_value = readY(chunk, x_source_.column_index, row);
       const double y_value = readY(chunk, y_source_.column_index, row);
       if (!std::isfinite(x_value) || !std::isfinite(y_value)) {
@@ -190,6 +194,7 @@ std::vector<PointSeriesXY::RowRef> PointSeriesXY::rowsFor(TopicId topic_id) cons
     return rows;
   }
 
+  const Timestamp retention_floor = storage->retentionFloor();
   const auto& chunks = storage->sealedChunks();
   std::size_t row_count = 0;
   for (const TopicChunk& chunk : chunks) {
@@ -199,6 +204,9 @@ std::vector<PointSeriesXY::RowRef> PointSeriesXY::rowsFor(TopicId topic_id) cons
 
   for (const TopicChunk& chunk : chunks) {
     for (std::size_t row = 0; row < chunk.stats.row_count; ++row) {
+      if (chunk.readTimestamp(row) < retention_floor) {
+        continue;  // logically evicted by retention
+      }
       rows.push_back(RowRef{.chunk = &chunk, .row = row});
     }
   }

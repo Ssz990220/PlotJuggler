@@ -5,6 +5,7 @@
 
 #include <fmt/format.h>
 
+#include <algorithm>
 #include <utility>
 #include <variant>
 
@@ -35,10 +36,19 @@ void TopicStorage::evictBefore(Timestamp t_keep_min) {
   if (end_to_remove > 0) {
     sealed_chunks_.erase(sealed_chunks_.begin(), sealed_chunks_.begin() + static_cast<std::ptrdiff_t>(end_to_remove));
   }
+
+  // Raise the logical retention floor to the requested cutoff. Whole-chunk
+  // eviction above can only drop chunks entirely older than t_keep_min; a chunk
+  // straddling the cutoff stays, but the floor makes its sub-cutoff rows
+  // invisible to every read path (timeMin/metadata clamp; readers clamp their
+  // lower bound). The floor only rises, so a smaller later cutoff is a no-op.
+  retention_floor_ = std::max(retention_floor_, t_keep_min);
 }
 
 void TopicStorage::clearChunks() noexcept {
   sealed_chunks_.clear();
+  // A full replace/reload retains no data, so it must carry no stale floor.
+  retention_floor_ = kNoRetentionFloor;
 }
 
 void TopicStorage::setColumnDescriptors(std::vector<ColumnDescriptor> descs) noexcept {
@@ -105,6 +115,10 @@ TopicMetadata TopicStorage::metadata() const {
     }
   }
 
+  // Clamp the reported minimum up to the retention floor: a straddling chunk's
+  // sub-floor rows are logically evicted, so the catalog/axis must not see them.
+  meta.time_range_min = std::max(meta.time_range_min, retention_floor_);
+
   return meta;
 }
 
@@ -129,7 +143,9 @@ Timestamp TopicStorage::timeMin() const noexcept {
   for (const auto& chunk : sealed_chunks_) {
     t_min = std::min(t_min, chunk.stats.t_min);
   }
-  return t_min;
+  // Clamp up to the retention floor: rows below it are logically evicted even
+  // when a straddling chunk still physically holds them.
+  return std::max(t_min, retention_floor_);
 }
 
 Timestamp TopicStorage::timeMax() const noexcept {
@@ -142,6 +158,10 @@ Timestamp TopicStorage::timeMax() const noexcept {
     t_max = std::max(t_max, chunk.stats.t_max);
   }
   return t_max;
+}
+
+Timestamp TopicStorage::retentionFloor() const noexcept {
+  return retention_floor_;
 }
 
 void TopicStorage::updateSchema(SchemaId new_schema) {

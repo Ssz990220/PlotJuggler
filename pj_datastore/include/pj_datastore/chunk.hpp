@@ -26,6 +26,12 @@ using PJ::Span;
 using PJ::Timestamp;
 using PJ::TopicId;
 
+/// "No retention floor" sentinel. A read accessor treats a row as logically
+/// evicted only when its timestamp is < the floor, so the sentinel must sit
+/// below every real stamp: numeric_limits<Timestamp>::min(), NOT 0 (Timestamp
+/// is signed and 0 is a valid timestamp).
+inline constexpr Timestamp kNoRetentionFloor = std::numeric_limits<Timestamp>::min();
+
 struct ColumnStats {
   /// Number of null rows in this column within the chunk.
   uint32_t null_count = 0;

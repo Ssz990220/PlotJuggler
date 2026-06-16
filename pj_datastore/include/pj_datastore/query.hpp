@@ -127,7 +127,12 @@ class RangeCursor {
 class SeriesCursor {
  public:
   /// Construct cursor over [time_range.min, time_range.max] from committed chunks.
-  SeriesCursor(const std::deque<TopicChunk>& chunks, std::size_t column_index, PJ::Range<PJ::Timestamp> time_range);
+  /// The effective lower bound is raised to `retention_floor` (the "no floor"
+  /// value is kNoRetentionFloor), so logically-evicted rows are never yielded and
+  /// a window lying entirely below the floor yields nothing.
+  SeriesCursor(
+      const std::deque<TopicChunk>& chunks, std::size_t column_index, PJ::Range<PJ::Timestamp> time_range,
+      PJ::Timestamp retention_floor = kNoRetentionFloor);
 
   [[nodiscard]] bool valid() const noexcept;
 
@@ -158,8 +163,14 @@ class SeriesCursor {
 /// samples. Null rows are storage details and are not visible through this API.
 class SeriesReader {
  public:
-  /// Construct a series reader over committed chunks.
-  SeriesReader(const std::deque<TopicChunk>& chunks, std::size_t column_index);
+  /// Construct a series reader over committed chunks. Samples with timestamp <
+  /// `retention_floor` are logically evicted and are never exposed by ANY method
+  /// (size/sampleAt/index lookups/samples/bounds) — the retention-window
+  /// contract. The "no floor" value is kNoRetentionFloor; the floor only raises
+  /// the read lower bound, never mutating the chunks.
+  SeriesReader(
+      const std::deque<TopicChunk>& chunks, std::size_t column_index,
+      PJ::Timestamp retention_floor = kNoRetentionFloor);
 
   /// Number of samples in the virtual series.
   [[nodiscard]] std::size_t size() const;
@@ -194,10 +205,18 @@ class SeriesReader {
  private:
   const std::deque<TopicChunk>* chunks_;
   std::size_t column_index_ = 0;
+  // Samples with timestamp < this are invisible to every method (retention
+  // floor). kNoRetentionFloor = no floor. Set by DataReader::series() from the
+  // topic's floor.
+  PJ::Timestamp retention_floor_ = kNoRetentionFloor;
 };
 
-// Find the most recent sample at or before time t; nullopt if none exists.
-[[nodiscard]] std::optional<SampleRow> latestAt(const std::deque<TopicChunk>& chunks, PJ::Timestamp t);
+// Find the most recent sample at or before time t; nullopt if none exists, or
+// if the latest such sample is below `retention_floor` (logically evicted) —
+// this keeps a zero-order hold from reaching across the retention boundary. The
+// "no floor" value is kNoRetentionFloor.
+[[nodiscard]] std::optional<SampleRow> latestAt(
+    const std::deque<TopicChunk>& chunks, PJ::Timestamp t, PJ::Timestamp retention_floor = kNoRetentionFloor);
 
 // Create a range cursor
 [[nodiscard]] RangeCursor rangeQuery(const std::deque<TopicChunk>& chunks, PJ::Timestamp t_min, PJ::Timestamp t_max);

@@ -890,7 +890,13 @@ struct ToolboxCore {
     auto* ts_child = array->children[0];
     auto* val_child = array->children[1];
 
+    // Rows below the topic's retention floor are logically evicted: a toolbox
+    // plugin reading this series must not see them (the retention contract).
+    const auto retention_floor = storage->retentionFloor();
     for (const auto& chunk : storage->sealedChunks()) {
+      if (chunk.stats.t_max < retention_floor) {
+        continue;  // whole chunk below the floor
+      }
       int col_index = -1;
       for (std::size_t i = 0; i < chunk.columns.size(); ++i) {
         if (chunk.columns[i].descriptor->field_id == field.id) {
@@ -904,7 +910,13 @@ struct ToolboxCore {
       const auto col_sz = static_cast<std::size_t>(col_index);
 
       for (uint32_t row = 0; row < chunk.stats.row_count; ++row) {
-        if (ArrowArrayAppendInt(ts_child, chunk.readTimestamp(row)) != NANOARROW_OK) {
+        // Skip logically-evicted rows; ts_child and val_child stay in sync
+        // because both appends are gated by this single guard.
+        const auto ts = chunk.readTimestamp(row);
+        if (ts < retention_floor) {
+          continue;
+        }
+        if (ArrowArrayAppendInt(ts_child, ts) != NANOARROW_OK) {
           write.setError("readSeriesArrow: timestamp append failed");
           return false;
         }

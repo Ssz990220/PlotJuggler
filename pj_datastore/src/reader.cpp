@@ -5,6 +5,7 @@
 
 #include <fmt/format.h>
 
+#include <algorithm>
 #include <deque>
 #include <optional>
 #include <string>
@@ -151,7 +152,11 @@ Expected<RangeCursor> DataReader::rangeQuery(const QueryRange& range) const {
   if (storage == nullptr) {
     return PJ::unexpected(fmt::format("Topic {} not found", range.topic_id));
   }
-  return PJ::rangeQuery(storage->sealedChunks(), range.t_min, range.t_max);
+  // Raise the lower bound to the topic's retention floor so a straddling chunk's
+  // logically-evicted rows are never returned (RangeCursor skips rows < t_min,
+  // and yields nothing when t_min > t_max — i.e. a window entirely below floor).
+  const Timestamp t_min = std::max(range.t_min, storage->retentionFloor());
+  return PJ::rangeQuery(storage->sealedChunks(), t_min, range.t_max);
 }
 
 PJ::Expected<std::optional<SampleRow>> DataReader::latestAt(const QueryPoint& point) const {
@@ -159,7 +164,7 @@ PJ::Expected<std::optional<SampleRow>> DataReader::latestAt(const QueryPoint& po
   if (storage == nullptr) {
     return PJ::unexpected(fmt::format("Topic {} not found", point.topic_id));
   }
-  return PJ::latestAt(storage->sealedChunks(), point.t);
+  return PJ::latestAt(storage->sealedChunks(), point.t, storage->retentionFloor());
 }
 
 Expected<SeriesReader> DataReader::series(TopicId topic_id, std::size_t column_index) const {
@@ -177,7 +182,7 @@ Expected<SeriesReader> DataReader::series(TopicId topic_id, std::size_t column_i
     return PJ::unexpected(fmt::format("Column {} in topic {} is not a numeric series", column_index, topic_id));
   }
 
-  return SeriesReader(storage->sealedChunks(), column_index);
+  return SeriesReader(storage->sealedChunks(), column_index, storage->retentionFloor());
 }
 
 }  // namespace PJ

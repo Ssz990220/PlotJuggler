@@ -119,7 +119,11 @@ TEST(TopicStorageTest, EvictSome) {
   // Chunk 3 (t_max=3900 >= 2500) -> kept
   storage.evictBefore(2500);
   EXPECT_EQ(storage.sealedChunks().size(), 2U);
-  EXPECT_EQ(storage.timeMin(), 2000);
+  // Chunk 2 straddles the cutoff (t_min=2000 < 2500 <= t_max=2900): it survives
+  // whole-chunk eviction, but the retention floor hides its rows below 2500, so
+  // the visible minimum is the cutoff, not the chunk's physical t_min (2000).
+  EXPECT_EQ(storage.retentionFloor(), 2500);
+  EXPECT_EQ(storage.timeMin(), 2500);
   EXPECT_EQ(storage.timeMax(), 3900);
 }
 
@@ -259,6 +263,121 @@ TEST(TopicStorageTest, AcceptsOverlappingChunk_SameTMin) {
 
   EXPECT_EQ(storage.sealedChunks().size(), 2U);
   EXPECT_EQ(storage.metadata().total_row_count, 15U);
+}
+
+// ===========================================================================
+// Test 11: Retention floor raised by a straddling eviction
+// ===========================================================================
+
+TEST(TopicStorageTest, RetentionFloorRaisedByStraddlingEvict) {
+  TopicDescriptor desc;
+  desc.name = "floor_topic";
+  desc.schema_id = 1;
+
+  TopicStorage storage(/*topic_id=*/11, std::move(desc));
+
+  // A small, fully-old chunk plus one BIG chunk that spans the whole tail.
+  ASSERT_TRUE(storage.appendSealedChunk(makeTestChunk(11, 1000, 1900, 10)).has_value());
+  ASSERT_TRUE(storage.appendSealedChunk(makeTestChunk(11, 2000, 5000, 31)).has_value());
+
+  // Evict before 3000 — INSIDE the big chunk (t_min=2000 < 3000 <= t_max=5000).
+  storage.evictBefore(3000);
+
+  // The small chunk (t_max=1900 < 3000) is physically dropped. The big chunk is
+  // kept ENTIRELY (whole-chunk eviction can't trim it), but the floor rises to
+  // the cutoff and hides everything below it.
+  EXPECT_EQ(storage.sealedChunks().size(), 1U);
+  EXPECT_EQ(storage.retentionFloor(), 3000);
+  EXPECT_EQ(storage.timeMin(), 3000);                  // clamped to floor, NOT physical t_min (2000)
+  EXPECT_EQ(storage.metadata().time_range_min, 3000);  // metadata clamps too
+  EXPECT_EQ(storage.timeMax(), 5000);                  // unchanged
+  EXPECT_EQ(storage.metadata().time_range_max, 5000);
+}
+
+// ===========================================================================
+// Test 12: Retention floor is monotonic
+// ===========================================================================
+
+TEST(TopicStorageTest, RetentionFloorIsMonotonic) {
+  TopicDescriptor desc;
+  desc.name = "floor_mono_topic";
+  desc.schema_id = 1;
+
+  TopicStorage storage(/*topic_id=*/12, std::move(desc));
+  ASSERT_TRUE(storage.appendSealedChunk(makeTestChunk(12, 1000, 5000, 41)).has_value());
+
+  storage.evictBefore(3000);
+  EXPECT_EQ(storage.retentionFloor(), 3000);
+
+  // A later eviction with an EARLIER cutoff must not lower the floor.
+  storage.evictBefore(2000);
+  EXPECT_EQ(storage.retentionFloor(), 3000);
+  EXPECT_EQ(storage.timeMin(), 3000);
+}
+
+// ===========================================================================
+// Test 13: clearChunks() resets the retention floor
+// ===========================================================================
+
+TEST(TopicStorageTest, ClearChunksResetsRetentionFloor) {
+  TopicDescriptor desc;
+  desc.name = "floor_clear_topic";
+  desc.schema_id = 1;
+
+  TopicStorage storage(/*topic_id=*/13, std::move(desc));
+  ASSERT_TRUE(storage.appendSealedChunk(makeTestChunk(13, 1000, 5000, 41)).has_value());
+  storage.evictBefore(3000);
+  ASSERT_EQ(storage.retentionFloor(), 3000);
+
+  // A full replace/reload (replaceDatasetFrom -> clearChunks) has no retained
+  // data, so it must carry no stale floor.
+  storage.clearChunks();
+  EXPECT_EQ(storage.retentionFloor(), kNoRetentionFloor);
+}
+
+// ===========================================================================
+// Test: a default (un-evicted) topic must not clamp negative timestamps
+// ===========================================================================
+
+TEST(TopicStorageTest, NoFloorDoesNotClampNegativeTimestamps) {
+  // Timestamp is signed: a topic with negative timestamps and NO eviction must
+  // report its true (negative) minimum. The "no floor" sentinel is
+  // numeric_limits<Timestamp>::min(), NOT 0 (0 is a valid stamp).
+  TopicDescriptor desc;
+  desc.name = "neg_ts_topic";
+  desc.schema_id = 1;
+
+  TopicStorage storage(/*topic_id=*/15, std::move(desc));
+  ASSERT_TRUE(storage.appendSealedChunk(makeTestChunk(15, -1000, -100, 10)).has_value());
+
+  EXPECT_EQ(storage.retentionFloor(), kNoRetentionFloor);
+  EXPECT_EQ(storage.timeMin(), -1000);
+  EXPECT_EQ(storage.metadata().time_range_min, -1000);
+}
+
+// ===========================================================================
+// Test 14: Two straddling chunks under out-of-order ingest
+// ===========================================================================
+
+TEST(TopicStorageTest, RetentionFloorTwoStraddlingChunksOutOfOrder) {
+  // Out-of-order ingest can leave more than one chunk straddling the cutoff.
+  // The floor (a single clamp) handles them uniformly.
+  TopicDescriptor desc;
+  desc.name = "floor_ooo_topic";
+  desc.schema_id = 1;
+
+  TopicStorage storage(/*topic_id=*/14, std::move(desc));
+  ASSERT_TRUE(storage.appendSealedChunk(makeTestChunk(14, 2000, 4000, 21)).has_value());  // straddles 3000
+  ASSERT_TRUE(storage.appendSealedChunk(makeTestChunk(14, 1000, 3500, 26)).has_value());  // OOO, also straddles 3000
+
+  storage.evictBefore(3000);
+
+  // Neither chunk has t_max < 3000, so both are physically retained...
+  EXPECT_EQ(storage.sealedChunks().size(), 2U);
+  // ...but the floor hides everything below 3000.
+  EXPECT_EQ(storage.retentionFloor(), 3000);
+  EXPECT_EQ(storage.timeMin(), 3000);
+  EXPECT_EQ(storage.metadata().time_range_min, 3000);
 }
 
 }  // namespace

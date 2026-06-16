@@ -161,7 +161,7 @@ void RangeCursor::initFrontiers() {
 // latest_at
 // ===========================================================================
 
-std::optional<SampleRow> latestAt(const std::deque<TopicChunk>& chunks, Timestamp t) {
+std::optional<SampleRow> latestAt(const std::deque<TopicChunk>& chunks, Timestamp t, Timestamp retention_floor) {
   // Chunk ranges may overlap (out-of-order ingest), so candidate chunks are
   // scanned rather than binary-searched; each candidate contributes its last
   // row with timestamp <= t (per-chunk binary search — chunks are internally
@@ -169,7 +169,9 @@ std::optional<SampleRow> latestAt(const std::deque<TopicChunk>& chunks, Timestam
   // pre-overlap behaviour at shared chunk boundaries.
   std::optional<SampleRow> best;
   for (const TopicChunk& chunk : chunks) {
-    if (chunk.stats.row_count == 0 || chunk.stats.t_min > t) {
+    // Skip empty chunks, chunks beginning after t, and chunks entirely below the
+    // retention floor (all their rows are logically evicted).
+    if (chunk.stats.row_count == 0 || chunk.stats.t_min > t || chunk.stats.t_max < retention_floor) {
       continue;
     }
     const auto ts_begin = chunk.timestamps.begin();
@@ -180,6 +182,9 @@ std::optional<SampleRow> latestAt(const std::deque<TopicChunk>& chunks, Timestam
     }
     const std::size_t row = static_cast<std::size_t>((row_after - 1) - ts_begin);
     const Timestamp ts = chunk.readTimestamp(row);
+    if (ts < retention_floor) {
+      continue;  // the latest sample at-or-before t is logically evicted
+    }
     if (!best.has_value() || ts >= best->timestamp) {
       best = SampleRow{ts, &chunk, row};
     }
@@ -199,8 +204,16 @@ RangeCursor rangeQuery(const std::deque<TopicChunk>& chunks, Timestamp t_min, Ti
 // SeriesCursor
 // ===========================================================================
 
-SeriesCursor::SeriesCursor(const std::deque<TopicChunk>& chunks, std::size_t column_index, Range<Timestamp> time_range)
+SeriesCursor::SeriesCursor(
+    const std::deque<TopicChunk>& chunks, std::size_t column_index, Range<Timestamp> time_range,
+    Timestamp retention_floor)
     : chunks_(&chunks), column_index_(column_index), time_range_(normalized(time_range)) {
+  // Raise the lower bound to the retention floor AFTER normalization so an
+  // entirely-below-floor window cannot be swapped back into visibility. From
+  // here the floor is just the cursor's lower time bound: initFrontiers seeks to
+  // it and nextSample rejects rows below it, so an inverted [floor, max] window
+  // naturally yields nothing.
+  time_range_.min = std::max(time_range_.min, retention_floor);
   initFrontiers();
 }
 
@@ -269,16 +282,20 @@ void SeriesCursor::initFrontiers() {
 // SeriesReader
 // ===========================================================================
 
-SeriesReader::SeriesReader(const std::deque<TopicChunk>& chunks, std::size_t column_index)
-    : chunks_(&chunks), column_index_(column_index) {}
+SeriesReader::SeriesReader(const std::deque<TopicChunk>& chunks, std::size_t column_index, Timestamp retention_floor)
+    : chunks_(&chunks), column_index_(column_index), retention_floor_(retention_floor) {}
 
 std::size_t SeriesReader::size() const {
   std::size_t count = 0;
   for (const TopicChunk& chunk : *chunks_) {
-    if (column_index_ >= chunk.columns.size()) {
+    // Skip a chunk entirely below the floor (all its rows are logically evicted).
+    if (column_index_ >= chunk.columns.size() || chunk.stats.t_max < retention_floor_) {
       continue;
     }
     for (std::size_t row = 0; row < chunk.stats.row_count; ++row) {
+      if (chunk.readTimestamp(row) < retention_floor_) {
+        continue;  // below the retention floor: logically evicted
+      }
       if (readSeriesValue(chunk, column_index_, row).has_value()) {
         ++count;
       }
@@ -294,10 +311,13 @@ bool SeriesReader::empty() const {
 std::optional<SeriesSample> SeriesReader::sampleAt(std::size_t index) const {
   std::size_t series_index = 0;
   for (const TopicChunk& chunk : *chunks_) {
-    if (column_index_ >= chunk.columns.size()) {
+    if (column_index_ >= chunk.columns.size() || chunk.stats.t_max < retention_floor_) {
       continue;
     }
     for (std::size_t row = 0; row < chunk.stats.row_count; ++row) {
+      if (chunk.readTimestamp(row) < retention_floor_) {
+        continue;  // logically evicted: not part of the virtual series
+      }
       if (!readSeriesValue(chunk, column_index_, row).has_value()) {
         continue;
       }
@@ -314,7 +334,7 @@ std::optional<std::size_t> SeriesReader::indexAtOrBeforeTime(Timestamp t) const 
   std::optional<std::size_t> latest;
   std::size_t series_index = 0;
   for (const TopicChunk& chunk : *chunks_) {
-    if (chunk.stats.row_count == 0 || column_index_ >= chunk.columns.size()) {
+    if (chunk.stats.row_count == 0 || column_index_ >= chunk.columns.size() || chunk.stats.t_max < retention_floor_) {
       continue;
     }
     if (chunk.stats.t_min > t) {
@@ -324,6 +344,9 @@ std::optional<std::size_t> SeriesReader::indexAtOrBeforeTime(Timestamp t) const 
       const Timestamp ts = chunk.readTimestamp(row);
       if (ts > t) {
         return latest;
+      }
+      if (ts < retention_floor_) {
+        continue;  // logically evicted: not part of the virtual series
       }
       if (readSeriesValue(chunk, column_index_, row).has_value()) {
         latest = series_index;
@@ -337,11 +360,14 @@ std::optional<std::size_t> SeriesReader::indexAtOrBeforeTime(Timestamp t) const 
 std::optional<std::size_t> SeriesReader::indexAtOrAfterTime(Timestamp t) const {
   std::size_t series_index = 0;
   for (const TopicChunk& chunk : *chunks_) {
-    if (chunk.stats.row_count == 0 || column_index_ >= chunk.columns.size()) {
+    if (chunk.stats.row_count == 0 || column_index_ >= chunk.columns.size() || chunk.stats.t_max < retention_floor_) {
       continue;
     }
     if (chunk.stats.t_max < t) {
       for (std::size_t row = 0; row < chunk.stats.row_count; ++row) {
+        if (chunk.readTimestamp(row) < retention_floor_) {
+          continue;  // logically evicted: does not advance the virtual index
+        }
         if (readSeriesValue(chunk, column_index_, row).has_value()) {
           ++series_index;
         }
@@ -349,10 +375,14 @@ std::optional<std::size_t> SeriesReader::indexAtOrAfterTime(Timestamp t) const {
       continue;
     }
     for (std::size_t row = 0; row < chunk.stats.row_count; ++row) {
+      const Timestamp ts = chunk.readTimestamp(row);
+      if (ts < retention_floor_) {
+        continue;  // logically evicted
+      }
       if (!readSeriesValue(chunk, column_index_, row).has_value()) {
         continue;
       }
-      if (chunk.readTimestamp(row) >= t) {
+      if (ts >= t) {
         return series_index;
       }
       ++series_index;
@@ -372,7 +402,10 @@ std::optional<SeriesSample> SeriesReader::sampleAtOrAfterTime(Timestamp t) const
 }
 
 SeriesCursor SeriesReader::samples(Range<Timestamp> time_range) const {
-  return SeriesCursor(*chunks_, column_index_, time_range);
+  // The cursor raises its own lower bound to the retention floor, so logically-
+  // evicted rows are never yielded (and a window entirely below the floor yields
+  // nothing).
+  return SeriesCursor(*chunks_, column_index_, time_range, retention_floor_);
 }
 
 std::optional<SeriesBounds> SeriesReader::bounds() const {
