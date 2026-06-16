@@ -37,6 +37,7 @@ if(PJ_BUILD_TESTS)
     ../tests/occupancy_grid_bounds_test.cpp
     ../tests/pointcloud_convert_test.cpp
     ../tests/aabb_axis_range_test.cpp
+    ../tests/frame_picking_test.cpp
     ../tests/camera_near_far_test.cpp
     ../tests/camera_zoom_to_cursor_test.cpp
     ../tests/camera_state_transfer_test.cpp

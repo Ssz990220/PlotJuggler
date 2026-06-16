@@ -24,6 +24,11 @@ ArrowGizmo::Params paramsForLength(float length) {
   return p;
 }
 
+// Luminance gain applied to the hovered frame's triad colors so the highlighted
+// gizmo reads brighter than its neighbours. >1 boosts toward white (clamped);
+// values feed the HDR pipeline so a moderate push is plenty.
+constexpr float kHighlightGain = 1.8f;
+
 }  // namespace
 
 void AxisRenderPass::initializeGL() {
@@ -56,6 +61,18 @@ void AxisRenderPass::render(const ViewParams& view_params, const FrameContext& f
       glm::vec4{0.95f, 0.30f, 0.30f, opacity_}, glm::vec4{0.30f, 0.85f, 0.30f, opacity_},
       glm::vec4{0.35f, 0.50f, 1.00f, opacity_}};
 
+  // Brightened copy for the hovered frame's triad (luminance highlight), built
+  // only when a frame is actually hovered. Alpha (the gizmo-opacity marker) is
+  // preserved; only the RGB luminance is boosted.
+  const bool has_highlight = !highlighted_frame_.empty();
+  std::array<glm::vec4, 3> highlight_colors{};
+  if (has_highlight) {
+    for (std::size_t axis = 0; axis < colors.size(); ++axis) {
+      highlight_colors[axis] =
+          glm::vec4(glm::min(glm::vec3(colors[axis]) * kHighlightGain, glm::vec3(1.0f)), colors[axis].a);
+    }
+  }
+
   // Solid 3D arrows participate in normal depth ordering — back ones get
   // occluded by front ones, and arrows hide behind opaque scene geometry.
   withGlFunctions([](auto& f) {
@@ -74,7 +91,10 @@ void AxisRenderPass::render(const ViewParams& view_params, const FrameContext& f
       continue;
     }
     const glm::mat4 frame_model = glm::mat4(transform->matrix());
-    renderTriadBound(arrow_, view_params.proj, view_params.view, frame_model, glm::mat4{1.0f}, colors);
+    const bool highlighted = has_highlight && frame == highlighted_frame_;
+    renderTriadBound(
+        arrow_, view_params.proj, view_params.view, frame_model, glm::mat4{1.0f},
+        highlighted ? highlight_colors : colors);
   }
   arrow_.unbindAfterRender();
 }

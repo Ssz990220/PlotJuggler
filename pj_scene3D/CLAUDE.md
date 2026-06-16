@@ -47,7 +47,7 @@ still holds for everything else.
   patches), and the `DecodedPointCloud` render struct. Links only `glm`,
   `pj_base`, `nlohmann_json`. Key headers:
   `core/include/pj_scene3d_core/{tf/tf_buffer.h, tf/transform.h,
-  occupancy_grid_reconstructor.h, pointcloud.h, pointcloud_codecs.h,
+  tf/frame_picking.h, occupancy_grid_reconstructor.h, pointcloud.h, pointcloud_codecs.h,
   camera/camera.h, camera/camera_math.h, robot_model.h,
   scene_entities_decode.h, scene_entities_render.h}`. The codec
   decoders add a PRIVATE `draco` + `cloudini` link (compressed-cloud transcoding only —
@@ -119,7 +119,7 @@ Before any commit, run the tests and check that they all pass
 `occupancy_grid_bounds_test`, `occupancy_grid_layer_rebind_test`,
 `occupancy_grid_layer_updates_test`,
 `scene_entities_decode_test`, `pointcloud_codecs_test`,
-`aabb_axis_range_test`,
+`aabb_axis_range_test`, `frame_picking_test`,
 `poses_in_frame_render_test`, `poses_in_frame_layer_test`,
 `pointcloud_layer_cache_test`, `pointcloud_layer_rebind_test`,
 `pointcloud_layer_coalescing_test`, `camera_near_far_test`,

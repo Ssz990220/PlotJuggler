@@ -14,6 +14,8 @@
 #include <QOpenGLVersionFunctionsFactory>
 #include <QPainter>
 #include <QPalette>
+#include <QPen>
+#include <QPointF>
 #include <QString>
 #include <QSurfaceFormat>
 #include <QWheelEvent>
@@ -183,12 +185,28 @@ void main() {
 }
 )GLSL";
 
+// Cursor pick radius for TF frame hover labels, in logical pixels: a frame whose
+// projected origin is within this distance of the cursor is labelled. Generous
+// enough to grab a small triad without snapping across a dense frame cluster.
+constexpr float kHoverRadiusPx = 20.0f;
+
+// Paint the standard translucent rounded HUD-panel background shared by the
+// on-screen overlays (perf HUD, hover label). The caller draws its own text on
+// top; this only fills the box so the radius/fill recipe lives in one place.
+void fillHudPanel(QPainter& painter, const QRect& box, int fill_alpha) {
+  painter.setPen(Qt::NoPen);
+  painter.setBrush(QColor(0, 0, 0, fill_alpha));
+  painter.drawRoundedRect(box, 4, 4);
+}
+
 }  // namespace
 
 SceneViewWidget::SceneViewWidget(QWidget* parent) : QOpenGLWidget(parent) {
   setFormat(makeDefaultFormat());
   setMinimumSize(320, 240);
-  setMouseTracking(false);
+  // Track motion with no button pressed so hover over a TF frame can show its
+  // name (updateHoverFrame). Camera gestures still gate on a held button.
+  setMouseTracking(true);
   // Accept keyboard focus so the 'P' perf-HUD toggle reaches keyPressEvent
   // (click/tab focus; harmless to the dock's existing mouse interaction).
   setFocusPolicy(Qt::StrongFocus);
@@ -444,12 +462,20 @@ void SceneViewWidget::paintGL() {
       offscreen ? render_scale_ : 1.0f,
   };
 
+  // Cache proj*view for the hover hit-test (a mouse-move event, async from
+  // paint) and the label draw, so both use the exact matrices this frame used.
+  last_view_proj_ = view_params.proj * view_params.view;
+
   // Grid never consults the TF buffer; safe to render even when tf_ is null.
   static const TransformBuffer k_empty_buffer;
   const TransformBuffer& tf_ref = tf_ ? *tf_ : k_empty_buffer;
   // The TF-resolution triple, bundled for the passes/layers that need it.
   // fixed_frame_ is the long-lived member (no per-frame string copy).
   const FrameContext frame_ctx{tf_ref, fixed_frame_, render_time_};
+
+  // Push the current hover highlight to the TF axis pass before it draws, so the
+  // hovered frame's triad renders brighter than its neighbours.
+  axes_.setHighlightedFrame(hovered_frame_.value_or(std::string{}));
 
   // On the direct-to-backing fallback the legacy Wayland alpha guard applies
   // (set inside renderScene, after the clear); the off-screen path instead
@@ -460,6 +486,7 @@ void SceneViewWidget::paintGL() {
     // Restore the alpha write mask so the next frame's glClear repaints alpha=1.0.
     funcs->glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
     finishFrameInstrumentation();
+    drawHoverLabel(frame_ctx);  // QPainter overlay, after all GL submission
     return;
   }
 
@@ -537,6 +564,7 @@ void SceneViewWidget::paintGL() {
   funcs->glEnable(GL_BLEND);
 
   finishFrameInstrumentation();
+  drawHoverLabel(frame_ctx);  // QPainter overlay, after all GL submission
 }
 
 void SceneViewWidget::renderScene(
@@ -684,6 +712,12 @@ void SceneViewWidget::setSceneBounds(const AABB& bounds) {
 void SceneViewWidget::mousePressEvent(QMouseEvent* event) {
   last_mouse_pos_ = event->position().toPoint();
   active_button_ = event->button();
+  // Hide any hover label for the duration of a camera gesture; it re-appears on
+  // the next button-free move (the hit-test below only runs with no button).
+  if (hovered_frame_.has_value()) {
+    hovered_frame_.reset();
+    update();
+  }
 }
 
 void SceneViewWidget::mouseReleaseEvent(QMouseEvent* event) {
@@ -697,6 +731,8 @@ void SceneViewWidget::mouseReleaseEvent(QMouseEvent* event) {
 
 void SceneViewWidget::mouseMoveEvent(QMouseEvent* event) {
   if (active_button_ == Qt::NoButton) {
+    // No gesture in progress: this is a hover. Update the TF frame label.
+    updateHoverFrame(event->position());
     return;
   }
   const QPoint current = event->position().toPoint();
@@ -718,6 +754,51 @@ void SceneViewWidget::mouseMoveEvent(QMouseEvent* event) {
   }
 
   update();
+}
+
+void SceneViewWidget::leaveEvent(QEvent* event) {
+  if (hovered_frame_.has_value()) {
+    hovered_frame_.reset();
+    update();
+  }
+  QOpenGLWidget::leaveEvent(event);
+}
+
+void SceneViewWidget::updateHoverFrame(const QPointF& pos_logical) {
+  std::optional<std::string> picked;
+  // Only label when the triads are actually drawn and a TF buffer exists; the
+  // label is an affordance for the visible gizmos, not the raw transform tree.
+  if (axes_visible_ && tf_) {
+    const TransformBuffer& tf_ref = *tf_;
+    const FrameContext frame_ctx{tf_ref, fixed_frame_, render_time_};
+    tf_ref.getAllFrames(hover_all_frames_);
+
+    // Project each origin, keeping hover_points_ index-aligned with
+    // hover_all_frames_: a frame that can't resolve or is behind the camera gets
+    // an off-screen sentinel (always outside the pick radius) so the winning
+    // index still maps straight back to hover_all_frames_.
+    const glm::vec2 kOffscreen{-1.0e6f, -1.0e6f};
+    hover_points_.clear();
+    hover_points_.reserve(hover_all_frames_.size());
+    const glm::vec2 viewport{static_cast<float>(width()), static_cast<float>(height())};
+    for (const std::string& name : hover_all_frames_) {
+      const auto transform = frame_ctx.lookup(name);
+      const auto projected =
+          transform.has_value() ? projectFrameOrigin(last_view_proj_, viewport, glm::vec3(transform->t)) : std::nullopt;
+      hover_points_.push_back(projected.value_or(kOffscreen));
+    }
+
+    const glm::vec2 cursor{static_cast<float>(pos_logical.x()), static_cast<float>(pos_logical.y())};
+    const auto idx = pickNearestFrame(hover_points_, cursor, kHoverRadiusPx);
+    if (idx.has_value()) {
+      picked = hover_all_frames_[*idx];
+    }
+  }
+
+  if (picked != hovered_frame_) {
+    hovered_frame_ = std::move(picked);
+    update();  // repaint only when the hovered frame actually changes
+  }
 }
 
 void SceneViewWidget::wheelEvent(QWheelEvent* event) {
@@ -815,9 +896,7 @@ void SceneViewWidget::drawPerfHud() {
   // Scene3D dock places over the view.
   const QRect box(8, height() - box_h - 8, box_w, box_h);
 
-  painter.setPen(Qt::NoPen);
-  painter.setBrush(QColor(0, 0, 0, 150));
-  painter.drawRoundedRect(box, 4, 4);
+  fillHudPanel(painter, box, 150);
 
   painter.setPen(QColor(235, 235, 235));
   int y = box.top() + pad + metrics.ascent();
@@ -825,6 +904,56 @@ void SceneViewWidget::drawPerfHud() {
     painter.drawText(box.left() + pad, y, line);
     y += line_h;
   }
+}
+
+void SceneViewWidget::drawHoverLabel(const FrameContext& frame_ctx) {
+  if (!hovered_frame_.has_value() || !axes_visible_) {
+    return;
+  }
+  // Re-project the live origin so the box tracks the frame as the scene streams
+  // or the camera moves between the hover hit-test and this paint.
+  const auto transform = frame_ctx.lookup(*hovered_frame_);
+  if (!transform.has_value()) {
+    return;  // frame went away (e.g. eviction); drop the label silently
+  }
+  const glm::vec2 viewport{static_cast<float>(width()), static_cast<float>(height())};
+  const auto anchor = projectFrameOrigin(last_view_proj_, viewport, glm::vec3(transform->t));
+  if (!anchor.has_value()) {
+    return;  // now behind the camera
+  }
+
+  // Reset the program the scene passes left bound; the paint engine starts clean
+  // (same prelude as drawPerfHud).
+  unuseProgram();
+
+  QPainter painter(this);
+  painter.setRenderHint(QPainter::TextAntialiasing, true);
+  const QString text = QString::fromStdString(*hovered_frame_);
+  QFont font = painter.font();
+  font.setPointSizeF(9.5);
+  painter.setFont(font);
+
+  const QFontMetrics metrics(font);
+  constexpr int pad = 6;
+  const QSize text_size = metrics.size(Qt::TextSingleLine, text);
+  const int box_w = text_size.width() + 2 * pad;
+  const int box_h = text_size.height() + 2 * pad;
+
+  // Anchor just above-right of the frame origin, then clamp inside the widget so
+  // a frame near an edge keeps its label fully visible.
+  const int box_x = std::clamp(static_cast<int>(std::lround(anchor->x)) + 12, 2, std::max(2, width() - box_w - 2));
+  const int box_y =
+      std::clamp(static_cast<int>(std::lround(anchor->y)) - box_h - 12, 2, std::max(2, height() - box_h - 2));
+  const QRect box(box_x, box_y, box_w, box_h);
+
+  fillHudPanel(painter, box, 170);
+  painter.setPen(QColor(235, 235, 235));
+  painter.drawText(box.adjusted(pad, pad, -pad, -pad), Qt::AlignLeft | Qt::AlignVCenter, text);
+
+  // A small ring on the frame origin ties the label to the gizmo it names.
+  painter.setBrush(Qt::NoBrush);
+  painter.setPen(QPen(QColor(255, 255, 255, 200), 1.5));
+  painter.drawEllipse(QPointF(anchor->x, anchor->y), 3.0, 3.0);
 }
 
 void SceneViewWidget::finishFrameInstrumentation() {

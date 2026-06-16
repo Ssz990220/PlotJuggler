@@ -35,6 +35,13 @@ class AxisRenderPass : public IRenderPass {
     return opacity_;
   }
 
+  // Name of the frame whose triad is drawn brighter (hover highlight), or empty
+  // for none. Pushed by SceneViewWidget each paint from its hover state; the
+  // match is by exact frame name. No GL work — just stored for the next render().
+  void setHighlightedFrame(std::string frame) {
+    highlighted_frame_ = std::move(frame);
+  }
+
  private:
   // Defaults: 0.15 m total length, thin shaft and small cone head — proper
   // 3D arrows at the scale you'd expect for a small robot's TF frames.
@@ -50,6 +57,8 @@ class AxisRenderPass : public IRenderPass {
   // Reused across frames by render() to avoid a per-frame heap allocation of
   // the frame-name list (L.54). Only ever touched on the render thread.
   std::vector<std::string> frames_scratch_;
+  // Frame to draw highlighted (hover), or empty for none. See setHighlightedFrame.
+  std::string highlighted_frame_;
 };
 
 }  // namespace pj::scene3d

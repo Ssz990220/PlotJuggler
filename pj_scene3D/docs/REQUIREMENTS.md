@@ -50,7 +50,7 @@ PJ4's 3D visualization module — the sibling family to `pj_scene2D`, focused on
 - Laserscans (`sensor_msgs/LaserScan`).
 
 **Phase 1 subset** (two types):
-- **TF axes** as 3D gizmos — substituting for the URDF mesh path since real mesh assets are not available for the Phase 1 input data. This is a permanent first-class display, not a placeholder.
+- **TF axes** as 3D gizmos — substituting for the URDF mesh path since real mesh assets are not available for the Phase 1 input data. This is a permanent first-class display, not a placeholder. Hovering a triad shows the frame's name in a small label (screen-space pick of the nearest frame origin; see ARCHITECTURE.md "TF frame hover labels").
 - **Pointclouds** (`sensor_msgs/PointCloud2`).
 
 Image+Pinhole (camera frustum + textured near-plane) from the original `PJ4_PLAN.md` §5.5 list is dropped from v1.

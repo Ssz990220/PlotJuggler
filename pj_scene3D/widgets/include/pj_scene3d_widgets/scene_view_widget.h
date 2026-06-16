@@ -14,6 +14,7 @@
 
 #include "pj_base/time.hpp"  // PJ::Timepoint
 #include "pj_scene3d_core/camera/camera.h"
+#include "pj_scene3d_core/tf/frame_picking.h"
 #include "pj_scene3d_core/tf/tf_buffer.h"
 #include "pj_scene3d_widgets/gl/gpu_profiler.h"
 #include "pj_scene3d_widgets/gl/program.h"
@@ -225,6 +226,9 @@ class SceneViewWidget : public QOpenGLWidget {
   void mousePressEvent(QMouseEvent* event) override;
   void mouseReleaseEvent(QMouseEvent* event) override;
   void mouseMoveEvent(QMouseEvent* event) override;
+  // Clears any TF frame hover label when the cursor leaves the view, so a stale
+  // name doesn't linger after the mouse moves off the widget.
+  void leaveEvent(QEvent* event) override;
   void wheelEvent(QWheelEvent* event) override;
   void changeEvent(QEvent* event) override;
   void keyPressEvent(QKeyEvent* event) override;
@@ -234,6 +238,17 @@ class SceneViewWidget : public QOpenGLWidget {
   // Called at the end of paintGL when show_perf_hud_; uses the latest harvested
   // profiler result (a few frames stale, which is imperceptible for a HUD).
   void drawPerfHud();
+  // Hover hit-test: project every resolvable TF frame origin with the last
+  // painted proj*view and pick the one under `pos_logical` (logical widget
+  // pixels). Updates hovered_frame_ and repaints only when the result changes.
+  // A no-op (and clears any hover) when axes are hidden or there is no TF buffer.
+  void updateHoverFrame(const QPointF& pos_logical);
+  // Draw the hovered TF frame's name in a small HUD box anchored at the frame's
+  // CURRENT projected position (re-projected from frame_ctx so it tracks the
+  // frame as the scene streams / camera moves). QPainter over the presented FBO,
+  // same 2D-over-3D path as drawPerfHud. No-op when nothing is hovered or the
+  // frame no longer resolves. Call last in paintGL, after all GL submission.
+  void drawHoverLabel(const FrameContext& frame_ctx);
   // Close the GPU timer, record the CPU submission time, and draw the HUD — the
   // shared tail of both paintGL exits. Gated on show_perf_hud_.
   void finishFrameInstrumentation();
@@ -322,6 +337,21 @@ class SceneViewWidget : public QOpenGLWidget {
 
   QPoint last_mouse_pos_;
   Qt::MouseButton active_button_{Qt::NoButton};
+
+  // ---- TF frame hover-label state ------------------------------------------
+  // proj*view from the most recent paintGL, so the hover hit-test (a mouse-move
+  // event, async from paint) projects frame origins with the exact matrices the
+  // scene was last drawn with. Identity until the first paint.
+  glm::mat4 last_view_proj_{1.0f};
+  // The TF frame currently under the cursor, or empty when none. Holds only the
+  // name; the label re-projects the live origin each paint so it stays glued.
+  std::optional<std::string> hovered_frame_;
+  // Reused across hover hit-tests to avoid per-event heap churn (the cursor can
+  // emit many move events per second). hover_points_ is INDEX-ALIGNED with
+  // hover_all_frames_ — a frame that doesn't project gets an off-screen sentinel
+  // — so the winning pick index maps straight back to a frame name.
+  std::vector<std::string> hover_all_frames_;
+  std::vector<glm::vec2> hover_points_;
 
   // Connection to the current GL context's aboutToBeDestroyed signal. Rewired to
   // each new context in initializeGL and disconnected in the destructor so the

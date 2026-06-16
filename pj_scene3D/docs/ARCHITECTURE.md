@@ -69,6 +69,21 @@ program implement `releaseGL()` (wired to the dying context's
 `aboutToBeDestroyed`) and rebuild lazily — VAOs/FBOs/textures are per-context,
 never shared. The app deliberately does NOT set `AA_ShareOpenGLContexts`.
 
+**TF frame hover labels.** Hovering a TF axis triad shows the frame's name in a
+small HUD box and draws that triad brighter. The pick is pure screen-space and
+lives in `SceneViewWidget`: `paintGL` caches `proj*view`, and a button-free
+`mouseMoveEvent` projects every resolvable frame origin through the GL-free,
+unit-tested `core/tf/frame_picking.h` (`projectFrameOrigin` + `pickNearestFrame`)
+and takes the one closest to the cursor within ~20 logical px (first on an exact
+tie). The label is a `QPainter` overlay drawn at the tail of `paintGL` — the same
+2D-over-3D path as the perf HUD — re-projecting the live origin so it stays glued
+to the frame as the scene streams. The highlight is the one place this touches
+the draw pass: `paintGL` pushes the hovered frame to `AxisRenderPass::setHighlightedFrame`,
+which luminance-boosts that frame's triad colors. Gated on the triads being
+visible; cleared on a camera gesture and on leave. Occlusion is ignored for now
+(a frame hidden behind geometry still labels); a one-texel depth-reject is the
+planned refinement.
+
 ## Camera system
 
 The camera is an interchangeable controller over a shared, serializable pose,
