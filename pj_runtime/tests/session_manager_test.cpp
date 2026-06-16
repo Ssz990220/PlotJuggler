@@ -6,9 +6,14 @@
 #include <QString>
 #include <atomic>
 #include <chrono>
+#include <cstdint>
 #include <memory>
+#include <optional>
+#include <string_view>
 #include <thread>
+#include <vector>
 
+#include "pj_datastore/writer.hpp"
 #include "pj_plugins/host/message_parser_handle.hpp"
 #include "pj_plugins/sdk/message_parser_plugin_base.hpp"
 #include "pj_runtime/SessionManager.h"
@@ -268,6 +273,141 @@ TEST(SessionManagerParserRaceTest, ConcurrentRegisterAndBindIsSafe) {
   PJ::SessionManager::ParserBinding final_binding = session.parserBindingForObjectTopic(topic);
   EXPECT_TRUE(static_cast<bool>(final_binding)) << "topic must still have a valid parser after the race";
   EXPECT_GT(valid_bindings, 0U) << "reader never observed a valid binding";
+}
+
+// --- datasetDisplayRange: the offset-aware range primitive shared by the
+// streaming-playback seed (so its origin matches AppSession's file-load seed) ---
+
+void writeScalarSamples(
+    PJ::SessionManager& session, PJ::DatasetId dataset_id, std::string_view topic,
+    std::vector<PJ::Timestamp> timestamps) {
+  PJ::DataWriter writer = session.dataEngine().createWriter();
+  auto handle = writer.registerScalarSeries(dataset_id, topic, PJ::NumericType::kFloat64);
+  ASSERT_TRUE(handle.has_value()) << handle.error();
+  for (const PJ::Timestamp timestamp : timestamps) {
+    writer.appendScalar(*handle, timestamp, 1.0);
+  }
+  ASSERT_FALSE(session.commitChunks(writer.flushAll()).empty());
+}
+
+TEST(SessionManagerRangeTest, DatasetDisplayRangeUnionsScalarAndObjectBoundsInDisplaySeconds) {
+  PJ::SessionManager session;
+  auto dataset = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "drive.mcap"});
+  ASSERT_TRUE(dataset.has_value()) << dataset.error();
+  writeScalarSamples(session, *dataset, "/imu/x", {100, 200});
+
+  auto object_topic = session.objectStore().registerTopic(
+      PJ::ObjectTopicDescriptor{
+          .dataset_id = *dataset,
+          .topic_name = "/camera/image",
+          .metadata_json = R"({"builtin_object_type":"kImage"})",
+      });
+  ASSERT_TRUE(object_topic.has_value()) << object_topic.error();
+  ASSERT_TRUE(session.objectStore().pushOwned(*object_topic, 900, std::vector<uint8_t>{1}).has_value());
+
+  // Min from the scalar topic (100 ns), max from the object topic (900 ns); no
+  // offset, so display seconds == raw / 1e9.
+  const auto range = session.datasetDisplayRange(*dataset);
+  ASSERT_TRUE(range.has_value());
+  EXPECT_DOUBLE_EQ(range->min.value, 100.0e-9);
+  EXPECT_DOUBLE_EQ(range->max.value, 900.0e-9);
+}
+
+TEST(SessionManagerRangeTest, DatasetDisplayRangeAppliesDatasetDisplayOffset) {
+  PJ::SessionManager session;
+  // A dataset on a time domain shifted by +2 s (display_time = raw - 2e9).
+  auto domain = session.dataEngine().createTimeDomain("shifted");
+  ASSERT_TRUE(domain.has_value()) << domain.error();
+  session.dataEngine().setDisplayOffset(*domain, 2'000'000'000LL);
+  auto dataset = session.dataEngine().createDataset(
+      PJ::DatasetDescriptor{.source_name = "shifted.mcap", .time_domain_id = *domain});
+  ASSERT_TRUE(dataset.has_value()) << dataset.error();
+  writeScalarSamples(session, *dataset, "/imu/x", {5'000'000'000LL, 9'000'000'000LL});
+
+  // Display seconds = (raw - 2e9)/1e9 -> [3, 7], matching the file-load seed
+  // (AppSessionTest.SeedPlaybackUsesDisplayRelativeSecondsForShiftedDataset) and
+  // NOT the offset-blind absolute [5, 9] the old streaming path produced.
+  const auto range = session.datasetDisplayRange(*dataset);
+  ASSERT_TRUE(range.has_value());
+  EXPECT_DOUBLE_EQ(range->min.value, 3.0);
+  EXPECT_DOUBLE_EQ(range->max.value, 7.0);
+}
+
+TEST(SessionManagerRangeTest, DatasetDisplayRangeIsNulloptForEmptyDataset) {
+  PJ::SessionManager session;
+  auto dataset = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "empty.mcap"});
+  ASSERT_TRUE(dataset.has_value()) << dataset.error();
+  EXPECT_FALSE(session.datasetDisplayRange(*dataset).has_value());
+}
+
+// --- "Use time offset": the per-dataset relative-time frame ---
+
+// Creates a dataset (on the implicit default domain — no domain offset needed,
+// the time-offset shift is computed from data) and writes scalar samples.
+PJ::DatasetId addDataset(
+    PJ::SessionManager& session, std::string_view source, std::string_view topic,
+    std::vector<PJ::Timestamp> timestamps) {
+  auto dataset = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = std::string(source)});
+  EXPECT_TRUE(dataset.has_value()) << dataset.error();
+  writeScalarSamples(session, *dataset, topic, std::move(timestamps));
+  return *dataset;
+}
+
+TEST(SessionManagerTimeOffsetTest, DefaultsOffWithZeroOffset) {
+  PJ::SessionManager session;
+  const PJ::DatasetId a = addDataset(session, "a.mcap", "/a", {5'000'000'000LL, 9'000'000'000LL});
+  EXPECT_FALSE(session.useTimeOffset());
+  EXPECT_EQ(session.displayOffset(a).value.count(), 0);
+}
+
+TEST(SessionManagerTimeOffsetTest, RebasesEachDatasetToItsOwnStart) {
+  PJ::SessionManager session;
+  // Two datasets recorded at different epochs.
+  const PJ::DatasetId a = addDataset(session, "a.mcap", "/a", {5'000'000'000LL, 9'000'000'000LL});
+  const PJ::DatasetId b = addDataset(session, "b.mcap", "/b", {3'000'000'000LL, 4'000'000'000LL});
+
+  session.setUseTimeOffset(true);
+  EXPECT_TRUE(session.useTimeOffset());
+  // EACH dataset re-bases to ITS OWN earliest sample (not a shared global min),
+  // so both start at display second 0 — their starts align.
+  EXPECT_EQ(session.displayOffset(a).value.count(), 5'000'000'000LL);
+  EXPECT_EQ(session.displayOffset(b).value.count(), 3'000'000'000LL);
+  const auto range_a = session.datasetDisplayRange(a);
+  const auto range_b = session.datasetDisplayRange(b);
+  ASSERT_TRUE(range_a.has_value());
+  ASSERT_TRUE(range_b.has_value());
+  EXPECT_DOUBLE_EQ(range_a->min.value, 0.0);
+  EXPECT_DOUBLE_EQ(range_b->min.value, 0.0);
+  EXPECT_DOUBLE_EQ(range_a->max.value, 4.0);  // (9e9 - 5e9)/1e9
+  EXPECT_DOUBLE_EQ(range_b->max.value, 1.0);  // (4e9 - 3e9)/1e9
+
+  session.setUseTimeOffset(false);
+  EXPECT_FALSE(session.useTimeOffset());
+  EXPECT_EQ(session.displayOffset(a).value.count(), 0);
+  const auto range_a_off = session.datasetDisplayRange(a);
+  ASSERT_TRUE(range_a_off.has_value());
+  EXPECT_DOUBLE_EQ(range_a_off->min.value, 5.0);  // back to absolute epoch seconds
+}
+
+TEST(SessionManagerTimeOffsetTest, DisplayOffsetChangedEmittedOnFrameFlip) {
+  PJ::SessionManager session;
+  int changes = 0;
+  QObject::connect(&session, &PJ::SessionManager::displayOffsetChanged, &session, [&changes]() { ++changes; });
+
+  session.setUseTimeOffset(true);  // off -> on : one change
+  EXPECT_EQ(changes, 1);
+  session.setUseTimeOffset(true);  // already on : no emit
+  EXPECT_EQ(changes, 1);
+  session.setUseTimeOffset(false);  // on -> off : one change
+  EXPECT_EQ(changes, 2);
+}
+
+TEST(SessionManagerTimeOffsetTest, EmptyDatasetHasZeroOffsetWhenEnabled) {
+  PJ::SessionManager session;
+  auto empty = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "empty.mcap"});
+  ASSERT_TRUE(empty.has_value()) << empty.error();
+  session.setUseTimeOffset(true);
+  EXPECT_EQ(session.displayOffset(*empty).value.count(), 0);
 }
 
 }  // namespace

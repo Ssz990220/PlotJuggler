@@ -7,6 +7,7 @@
 #include <QString>
 #include <algorithm>
 #include <cstdint>
+#include <limits>
 #include <unordered_map>
 
 #include "pj_plugins/sdk/message_parser_plugin_base.hpp"
@@ -26,21 +27,100 @@ DataReader SessionManager::createReader() const {
 }
 
 DisplayOffset SessionManager::displayOffset(DatasetId dataset_id) const {
-  // Live lookup via the time-domain map: the dataset's own time_domain is a
-  // snapshot from createDataset, so reading its display_offset directly would go
-  // stale after setDisplayOffset. Same discipline as DatastoreCurveAdapter.
+  // Base shift from the dataset's TimeDomain. Live lookup via the time-domain
+  // map: the dataset's own time_domain is a snapshot from createDataset, so
+  // reading its display_offset directly would go stale after setDisplayOffset.
+  // (Latent today — no production caller of setDisplayOffset.)
+  Timestamp offset_ns = 0;
   if (const DatasetInfo* dataset = data_engine_.getDataset(dataset_id);
       dataset != nullptr && dataset->time_domain.id != 0) {
     if (const TimeDomain* domain = data_engine_.getTimeDomain(dataset->time_domain.id)) {
-      return offsetOf(*domain);
+      offset_ns = domain->display_offset;
     }
   }
-  return DisplayOffset{};  // unknown dataset or default domain → no shift
+  // "Use time offset" layers a per-dataset shift on top: the dataset's OWN
+  // earliest sample, so its axis starts near zero. Computed live so it tracks
+  // loads; this is the single seam for future fine-tuned alignment.
+  if (use_time_offset_) {
+    offset_ns += datasetMinTimestamp(dataset_id);
+  }
+  return DisplayOffset{Duration{offset_ns}};
+}
+
+std::optional<std::pair<Timestamp, Timestamp>> SessionManager::datasetRawBounds(DatasetId dataset_id) const {
+  // The one scalar(DataEngine) + object(ObjectStore) time-bounds union. Shared by
+  // datasetDisplayRange (needs both ends) and datasetMinTimestamp (min only).
+  const DataReader reader = createReader();
+  Timestamp t_min = std::numeric_limits<Timestamp>::max();
+  Timestamp t_max = std::numeric_limits<Timestamp>::min();
+  bool found = false;
+  for (const TopicId topic_id : reader.listTopics(dataset_id)) {
+    const auto metadata = reader.getMetadata(topic_id);
+    if (metadata.has_value() && metadata->total_row_count > 0) {
+      t_min = std::min(t_min, metadata->time_range_min);
+      t_max = std::max(t_max, metadata->time_range_max);
+      found = true;
+    }
+  }
+  for (const ObjectTopicId object_topic_id : object_store_.listTopics(dataset_id)) {
+    if (object_store_.entryCount(object_topic_id) > 0) {
+      const auto [object_min, object_max] = object_store_.timeRange(object_topic_id);
+      t_min = std::min(t_min, object_min);
+      t_max = std::max(t_max, object_max);
+      found = true;
+    }
+  }
+  if (!found) {
+    return std::nullopt;
+  }
+  return std::pair{t_min, t_max};
+}
+
+Timestamp SessionManager::datasetMinTimestamp(DatasetId dataset_id) const {
+  // Memoized: the earliest sample is near-static (only an earlier-stamped ingest
+  // moves it), yet displayOffset() reads it on hot paths — per playback tick from
+  // scene docks and once per catalog item from seedPlaybackFromSession. The cache
+  // is cleared on every commit/ingest, so a stale min can't outlive a data change
+  // that could lower it. Empty datasets aren't cached, so the first real sample
+  // recomputes.
+  if (const auto it = dataset_min_cache_.find(dataset_id); it != dataset_min_cache_.end()) {
+    return it->second;
+  }
+  const auto bounds = datasetRawBounds(dataset_id);
+  if (!bounds) {
+    return 0;
+  }
+  dataset_min_cache_.emplace(dataset_id, bounds->first);
+  return bounds->first;
+}
+
+void SessionManager::setUseTimeOffset(bool use) {
+  if (use_time_offset_ == use) {
+    return;
+  }
+  use_time_offset_ = use;
+  // The per-dataset shifts follow automatically in displayOffset(); tell every
+  // offset reader (curve adapters, scenes, the playback seed) to re-resolve.
+  emit displayOffsetChanged();
+}
+
+std::optional<DisplayRange> SessionManager::datasetDisplayRange(DatasetId dataset_id) const {
+  const auto bounds = datasetRawBounds(dataset_id);
+  if (!bounds) {
+    return std::nullopt;
+  }
+  // The single raw-ns -> display-seconds crossing for the streaming range, via
+  // the dataset's own offset — identical to the file-load seed (both origins
+  // match) so a bare raw-ns range can never reach the playback axis.
+  const DisplayOffset offset = displayOffset(dataset_id);
+  return DisplayRange{
+      .min = rawToDisplaySeconds(bounds->first, offset), .max = rawToDisplaySeconds(bounds->second, offset)};
 }
 
 std::vector<TopicId> SessionManager::commitChunks(std::vector<std::pair<TopicId, TopicChunk>> chunks) {
   auto changed = data_engine_.commitChunks(std::move(chunks));
   if (!changed.empty()) {
+    dataset_min_cache_.clear();  // new samples may lower a dataset's earliest stamp
     QVector<TopicId> ids;
     ids.reserve(static_cast<qsizetype>(changed.size()));
     for (const TopicId id : changed) {
@@ -55,6 +135,7 @@ void SessionManager::notifyIngest(QVector<TopicId> ids, bool live) {
   if (ids.isEmpty()) {
     return;
   }
+  dataset_min_cache_.clear();  // direct-write ingest (incl. objects, reload) may move the earliest stamp
   emit samplesIngested(std::move(ids), live);
 }
 

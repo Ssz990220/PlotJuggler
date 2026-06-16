@@ -21,6 +21,7 @@
 
 #include "LayoutXml.h"
 #include "pj_base/diagnostic_sink.hpp"
+#include "pj_base/time.hpp"  // PJ::Timepoint — the frame-invariant absolute instant the reference line stores
 #include "pj_base/types.hpp"
 #include "pj_plotting/CurveTracker.h"
 #include "pj_widgets/ChromeMetrics.h"
@@ -215,10 +216,22 @@ class MainWindow : public QMainWindow {
   // Updates playback time from a plot tracker move.
   void onTrackerMovedFromWidget(QPointF point);
 
-  // Seconds-domain range spanning all data in the active streaming dataset, or
-  // nullopt when no streaming session is active or it holds no data yet.
-  // Shared by the live-ingest range update and the drop-to-view seeding.
-  std::optional<Range<double>> computeActiveStreamingRangeSec() const;
+  // "Use time offset" toggled: flip the SessionManager frame (plots re-fit via
+  // displayOffsetChanged), re-seed the playback range, and shift the playhead by
+  // the per-dataset offset delta so the cursor stays on the same real instant.
+  void onUseTimeOffsetToggled(bool checked);
+
+  // The representative dataset whose offset frames the global playhead and blue
+  // reference line: the active streaming dataset, else the first loaded one (0
+  // when the session is empty). Single-dataset sessions are exact; multi-dataset
+  // alignment is the future refinement the displayOffset seam leaves room for.
+  [[nodiscard]] DatasetId representativeDatasetId() const;
+
+  // The blue reference line's position in display-axis seconds, PROJECTED on
+  // demand from reference_instant_ through the current representative-dataset
+  // offset. nullopt when no reference is set. Re-evaluated on every frame change
+  // (displayOffsetChanged), so the line tracks the offset instead of going stale.
+  [[nodiscard]] std::optional<double> referenceDisplaySeconds() const;
 
   // Seeds the streaming playback slider over the active streamed window, playhead
   // at the live edge, and marks the session seeded so live ingests keep the range
@@ -524,6 +537,10 @@ class MainWindow : public QMainWindow {
   QToolButton* button_ratio_ = nullptr;
   QToolButton* button_dots_ = nullptr;
   QToolButton* button_reference_point_ = nullptr;
+  // Re-bases the time axis to start near zero (each dataset relative to its own
+  // earliest sample) instead of absolute Unix-epoch time. The frame state lives
+  // in SessionManager; this button mirrors it.
+  QToolButton* button_t0_ = nullptr;
   // Global-column "Legend" button — single icon that combines a corner
   // picker (left-click) with a show/hide toggle (right-click). Checked
   // while the legend is shown at one of the four corners; unchecked
@@ -550,8 +567,12 @@ class MainWindow : public QMainWindow {
   // +value+name). Default kValue matches PJ3 (mainwindow.cpp:154).
   CurveTracker::Parameter tracker_info_ = CurveTracker::kValue;
   // Session-only — PJ3 doesn't persist this either. Set at toggle-ON to the
-  // current playback time; tracker renders Δ values until cleared.
-  std::optional<double> reference_time_;
+  // playback instant; tracker renders Δ values until cleared. Stored as a
+  // frame-invariant absolute Timepoint (NOT a display coordinate) so the blue
+  // line holds its instant when the display offset shifts — the "Use time
+  // offset" toggle, or a load that lowers a dataset's earliest stamp. The axis
+  // position is derived on demand by referenceDisplaySeconds().
+  std::optional<Timepoint> reference_instant_;
   // PJ3 parity: 1:1 aspect is the expected default for XY plots.
   bool keep_ratio_ = true;
 };

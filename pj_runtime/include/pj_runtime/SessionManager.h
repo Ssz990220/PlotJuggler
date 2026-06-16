@@ -62,10 +62,39 @@ class SessionManager : public QObject {
 
   [[nodiscard]] DataReader createReader() const;
 
-  /// Per-dataset display shift (display_time = raw_time - offset), read LIVE from
-  /// the time-domain map (the dataset's own snapshot can go stale after
-  /// setDisplayOffset). Zero for an unknown dataset or the default (id 0) domain.
+  /// Per-dataset display shift (display_time = raw_time - offset). Combines the
+  /// dataset's TimeDomain offset (latent; configured only in tests today) with
+  /// the "Use time offset" shift: when enabled, the dataset's OWN earliest
+  /// timestamp, so its axis starts near zero. Read LIVE (no stale snapshot).
   [[nodiscard]] DisplayOffset displayOffset(DatasetId dataset_id) const;
+
+  /// Time bounds of ONE dataset's data — scalar topics (DataEngine) and object
+  /// topics (ObjectStore) unioned — in DISPLAY-relative seconds (display_time =
+  /// raw_time - the dataset's display_offset). nullopt when the dataset holds no
+  /// data. Centralizes the raw-ns -> display-seconds conversion so the streaming
+  /// playback seed shares the file-load seed's offset-aware origin
+  /// (AppSession::seedPlaybackFromSession); a bare raw-ns range can never reach
+  /// the playback axis offset-blind.
+  [[nodiscard]] std::optional<DisplayRange> datasetDisplayRange(DatasetId dataset_id) const;
+
+  // --- "Use time offset": re-base each dataset's axis between absolute Unix-epoch
+  // seconds and seconds-relative-to-its-own-start. The shift is PER-DATASET (each
+  // dataset re-bases to its own earliest sample), so with several datasets each
+  // starts at zero and their starts align — a deliberate UI choice. Only the
+  // boolean is state; per-dataset shifts are computed live from data bounds in
+  // displayOffset(), which is also the seam for future fine-tuned alignment. ---
+
+  /// Whether the relative-time frame is enabled. Default off (neutral); the app
+  /// shell sets the user-facing policy (PJ3 parity = on) via setUseTimeOffset.
+  [[nodiscard]] bool useTimeOffset() const noexcept {
+    return use_time_offset_;
+  }
+
+  /// Flip the frame and emit displayOffsetChanged() on an actual change. The
+  /// numeric shifts follow automatically (displayOffset recomputes per dataset),
+  /// so callers only re-render: drop curve-adapter offset caches + replot,
+  /// re-seed the playback range, and shift the playhead by the per-dataset delta.
+  void setUseTimeOffset(bool use);
 
   [[nodiscard]] std::vector<TopicId> commitChunks(std::vector<std::pair<TopicId, TopicChunk>> chunks);
 
@@ -189,7 +218,21 @@ class SessionManager : public QObject {
   // DatasetId/TopicIds stay valid (unlike catalog removal), only chunks change.
   void datasetAboutToBeReplaced(PJ::DatasetId dataset_id);
 
+  // Emitted when the shared display offset changes (the "Use time offset" frame
+  // toggled, or a load moved the earliest sample). No topic changed, so plot
+  // widgets must drop EVERY curve adapter's cached offset and replot — a
+  // per-topic samplesIngested would skip them all.
+  void displayOffsetChanged();
+
  private:
+  // [min, max] raw-ns bounds across one dataset's scalar + object topics, or
+  // nullopt when it holds no data. The one time-bounds union loop.
+  [[nodiscard]] std::optional<std::pair<Timestamp, Timestamp>> datasetRawBounds(DatasetId dataset_id) const;
+
+  // Earliest raw-ns timestamp of one dataset (0 when empty), memoized in
+  // dataset_min_cache_. The per-dataset shift "Use time offset" subtracts.
+  [[nodiscard]] Timestamp datasetMinTimestamp(DatasetId dataset_id) const;
+
   struct ObjectParserSlot {
     // shared_ptr (not unique_ptr) so a display source can hold the handle alive
     // past topic removal / app teardown — keeping the parser instance and its
@@ -210,6 +253,12 @@ class SessionManager : public QObject {
   DataEngine data_engine_;
   ObjectStore object_store_;
   CurveColorRegistry curve_color_registry_;
+  // "Use time offset" frame state. Neutral default (off); the app shell drives
+  // the user-facing default (on, PJ3 parity) through setUseTimeOffset.
+  bool use_time_offset_ = false;
+  // Per-dataset earliest-stamp memo for displayOffset() (read per playback tick +
+  // per catalog item). Cleared on every commit/ingest so it can't go stale.
+  mutable std::unordered_map<DatasetId, Timestamp> dataset_min_cache_;
   // Per-object-topic parser slots. WRITTEN from the streaming worker thread (the
   // registrar callback fires when a plugin discovers/replaces a topic mid-stream)
   // and READ from the GUI thread on every render tick (each scene3D layer +

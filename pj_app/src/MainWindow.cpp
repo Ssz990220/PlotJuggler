@@ -725,6 +725,13 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
   connect(&playback, &PlaybackEngine::currentTimeChanged, this, [this](double time) {
     forEachDock([time](DockWidget* dock) { dock->onTrackerTime(time); });
   });
+  // Frame change (the "Use time offset" toggle today, any future re-base): the
+  // blue reference line stores a frame-invariant instant, so re-project it
+  // through the new offset and re-push — keeping it pinned to its instant rather
+  // than stranded off the re-fitted axis.
+  connect(&session_->sessionManager(), &SessionManager::displayOffsetChanged, this, [this]() {
+    forEachPlot([this](PlotWidget* plot) { plot->setReferenceLine(referenceDisplaySeconds()); });
+  });
 
   streaming_manager_ = std::make_unique<StreamingSourceManager>(
       session_->sessionManager(), session_->extensionCatalog(), session_->catalogModel(), this, this);
@@ -777,10 +784,11 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
         if (!streaming_playback_seeded_ || !live) {
           return;
         }
-        if (const auto range = computeActiveStreamingRangeSec(); range.has_value()) {
+        if (const auto range = session_->sessionManager().datasetDisplayRange(active_streaming_dataset_id_);
+            range.has_value()) {
           auto& engine = session_->playbackEngine();
-          engine.setRange(displayRange(range->min, range->max));
-          engine.setCurrentTime(displaySeconds(range->max));
+          engine.setRange(*range);
+          engine.setCurrentTime(range->max);
         }
       });
 
@@ -860,6 +868,13 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
 
   // Plot-layout changes from TabbedPlotWidget feed the undo stack.
   connect(ui_->tabbedPlotWidget, &TabbedPlotWidget::undoableChange, this, &MainWindow::onUndoableChange);
+
+  // Apply the persisted "Use time offset" frame before the toolbar is built so
+  // its button seeds from the live SessionManager state. Default on (PJ3 parity):
+  // axes read relative seconds out of the box. No data yet, so this just sets the
+  // flag; the per-dataset shift applies live once data loads.
+  session_->sessionManager().setUseTimeOffset(
+      QSettings().value(QStringLiteral("MainWindow.useTimeOffset"), true).toBool());
 
   // Global column on the right of the plot area — Chart + Legend icons,
   // pinned at 24 px wide, never collapses. Always visible regardless of
@@ -1462,7 +1477,7 @@ void MainWindow::applyGlobalToggles(PlotWidget* plot) {
   plot->setShowPoints(show_points_);
   plot->setGridVisible(activate_grid_);
   applyDots(plot);
-  plot->setReferenceLine(reference_time_);
+  plot->setReferenceLine(referenceDisplaySeconds());
   plot->setKeepRatioXY(keep_ratio_);
   applyLegendStatus(plot);
   plot->setTrackerParameter(tracker_info_);
@@ -1557,40 +1572,54 @@ void MainWindow::onTrackerMovedFromWidget(QPointF point) {
   session_->playbackEngine().setCurrentTime(displaySeconds(point.x()));
 }
 
-std::optional<Range<double>> MainWindow::computeActiveStreamingRangeSec() const {
-  if (active_streaming_dataset_id_ == 0) {
+DatasetId MainWindow::representativeDatasetId() const {
+  if (active_streaming_dataset_id_ != 0) {
+    return active_streaming_dataset_id_;
+  }
+  if (const auto datasets = session_->sessionManager().dataEngine().listDatasets(); !datasets.empty()) {
+    return datasets.front();
+  }
+  return 0;
+}
+
+std::optional<double> MainWindow::referenceDisplaySeconds() const {
+  if (!reference_instant_.has_value()) {
     return std::nullopt;
   }
-  const auto reader = session_->sessionManager().createReader();
-  const auto& object_store = session_->sessionManager().objectStore();
+  // Project the frame-invariant instant into the CURRENT frame, exactly as a
+  // curve adapter projects its raw samples — line and data share one offset, so
+  // the line can never drift off the re-fitted axis.
+  const DisplayOffset offset = session_->sessionManager().displayOffset(representativeDatasetId());
+  return toAxisDouble(toDisplaySeconds(*reference_instant_, offset));
+}
 
-  Timestamp t_min = std::numeric_limits<Timestamp>::max();
-  Timestamp t_max = std::numeric_limits<Timestamp>::min();
-  bool found = false;
+void MainWindow::onUseTimeOffsetToggled(bool checked) {
+  auto& sm = session_->sessionManager();
+  auto& engine = session_->playbackEngine();
 
-  for (const TopicId topic_id : reader.listTopics(active_streaming_dataset_id_)) {
-    const auto metadata = reader.getMetadata(topic_id);
-    if (metadata.has_value() && metadata->total_row_count > 0) {
-      t_min = std::min(t_min, metadata->time_range_min);
-      t_max = std::max(t_max, metadata->time_range_max);
-      found = true;
+  // Representative dataset frames the playhead; the blue reference re-projects
+  // through the same dataset (referenceDisplaySeconds, on displayOffsetChanged).
+  const DatasetId representative = representativeDatasetId();
+  const DisplayOffset old_offset = sm.displayOffset(representative);
+  const DisplaySeconds old_time = engine.currentTime();
+
+  sm.setUseTimeOffset(checked);  // emits displayOffsetChanged -> every plot re-fits in the new frame
+
+  const DisplayOffset new_offset = sm.displayOffset(representative);
+
+  // Re-seed the slider range in the new frame (same choke points as a load).
+  if (active_streaming_dataset_id_ != 0) {
+    if (const auto range = sm.datasetDisplayRange(active_streaming_dataset_id_); range.has_value()) {
+      engine.setRange(*range);
     }
+  } else {
+    session_->seedPlaybackFromSession();
   }
-  for (const ObjectTopicId object_topic_id : object_store.listTopics(active_streaming_dataset_id_)) {
-    if (object_store.entryCount(object_topic_id) > 0) {
-      const auto [obj_min, obj_max] = object_store.timeRange(object_topic_id);
-      t_min = std::min(t_min, obj_min);
-      t_max = std::max(t_max, obj_max);
-      found = true;
-    }
-  }
-  if (!found) {
-    return std::nullopt;
-  }
-
-  return Range<double>{
-      .min = static_cast<double>(t_min) / kNanosecondsPerSecond,
-      .max = static_cast<double>(t_max) / kNanosecondsPerSecond};
+  // Keep the cursor on the same real instant: freeze it as an absolute Timepoint
+  // in the old frame, then re-project into the new one — the Time.h round-trip,
+  // no hand-rolled chrono delta.
+  const Timepoint instant = toAbsolute(old_time, old_offset);
+  engine.setCurrentTime(toDisplaySeconds(instant, new_offset));
 }
 
 void MainWindow::seedStreamingPlaybackFromDrop() {
@@ -1598,10 +1627,11 @@ void MainWindow::seedStreamingPlaybackFromDrop() {
     return;
   }
   streaming_playback_seeded_ = true;
-  if (const auto range = computeActiveStreamingRangeSec(); range.has_value()) {
+  if (const auto range = session_->sessionManager().datasetDisplayRange(active_streaming_dataset_id_);
+      range.has_value()) {
     auto& engine = session_->playbackEngine();
-    engine.setRange(displayRange(range->min, range->max));
-    engine.setCurrentTime(displaySeconds(range->max));
+    engine.setRange(*range);
+    engine.setCurrentTime(range->max);
   }
 }
 
@@ -2603,6 +2633,9 @@ QDomDocument MainWindow::xmlSaveState() const {
   QDomElement ratio = doc.createElement(QStringLiteral("ratio"));
   ratio.setAttribute(QStringLiteral("enabled"), bool_attr(button_ratio_->isChecked()));
   root.appendChild(ratio);
+  QDomElement use_time_offset = doc.createElement(QStringLiteral("use_time_offset"));
+  use_time_offset.setAttribute(QStringLiteral("enabled"), bool_attr(button_t0_->isChecked()));
+  root.appendChild(use_time_offset);
   return doc;
 }
 
@@ -2670,6 +2703,17 @@ bool MainWindow::xmlLoadState(const QDomDocument& state_document) {
     dots_ = read_bool(dots, dots_);
     button_dots_->setChecked(dots_);
     QSettings().setValue(QStringLiteral("MainWindow.buttonDots"), dots_);
+  }
+  const QDomElement use_time_offset = root.firstChildElement(QStringLiteral("use_time_offset"));
+  if (!use_time_offset.isNull()) {
+    const bool enabled = read_bool(use_time_offset, session_->sessionManager().useTimeOffset());
+    // On the file-load path applying_state_ is false, so setChecked fires the
+    // toggled slot (its own re-seed + plot re-fit) and the setUseTimeOffset below
+    // is a no-op. On undo/redo (applying_state_ true) the slot is suppressed and
+    // setUseTimeOffset is the single apply, with the snapshot supplying the range.
+    button_t0_->setChecked(enabled);
+    QSettings().setValue(QStringLiteral("MainWindow.useTimeOffset"), enabled);
+    session_->sessionManager().setUseTimeOffset(enabled);
   }
   const QDomElement tracker_info_el = root.firstChildElement(QStringLiteral("tracker_info"));
   if (!tracker_info_el.isNull()) {
@@ -2904,6 +2948,10 @@ void MainWindow::buildGlobalToolbar() {
   button_reference_point_ = add_button(
       "buttonReferencePoint", ":/resources/svg/reference_line.svg",
       "Drop a blue reference line at the playback position; values render as delta from there");
+  button_t0_ = add_button(
+      "buttonTimeOffset", ":/resources/svg/t0.svg",
+      "Use time offset: show time relative to each dataset's start (axis begins at 0) instead of "
+      "absolute time");
   auto make_checkable = [](QToolButton* btn, bool initial_checked) {
     btn->setCheckable(true);
     btn->setChecked(initial_checked);
@@ -2914,6 +2962,9 @@ void MainWindow::buildGlobalToolbar() {
   make_checkable(button_ratio_, keep_ratio_);
   make_checkable(button_dots_, dots_);
   make_checkable(button_reference_point_, false);
+  // Mirrors the frame the SessionManager already holds (applied from QSettings
+  // at startup, before this runs).
+  make_checkable(button_t0_, session_->sessionManager().useTimeOffset());
   // buttonZoomOut is a one-shot action, not a toggle — no make_checkable.
   connect(button_zoom_out_, &QToolButton::clicked, this, [this]() {
     linkedZoomOut();
@@ -2959,15 +3010,25 @@ void MainWindow::buildGlobalToolbar() {
     forEachPlot([checked](PlotWidget* plot) { plot->setKeepRatioXY(checked); });
   });
   // Session-only state — not persisted to QSettings, not in xmlSaveState.
-  // Captures the playback time at the moment of click; subsequent scrubbing
-  // does not move the reference.
+  // Captures the playback INSTANT at the moment of click (frame-invariant, via
+  // toAbsolute); subsequent scrubbing does not move the reference, and a frame
+  // change re-projects it rather than orphaning a stale display coordinate.
   connect(button_reference_point_, &QToolButton::toggled, this, [this](bool checked) {
     if (applying_state_) {
       return;
     }
-    reference_time_ =
-        checked ? std::optional<double>{toAxisDouble(session_->playbackEngine().currentTime())} : std::nullopt;
-    forEachPlot([this](PlotWidget* plot) { plot->setReferenceLine(reference_time_); });
+    reference_instant_ = checked ? std::optional<Timepoint>{toAbsolute(
+                                       session_->playbackEngine().currentTime(),
+                                       session_->sessionManager().displayOffset(representativeDatasetId()))}
+                                 : std::nullopt;
+    forEachPlot([this](PlotWidget* plot) { plot->setReferenceLine(referenceDisplaySeconds()); });
+  });
+  connect(button_t0_, &QToolButton::toggled, this, [this](bool checked) {
+    if (applying_state_) {
+      return;
+    }
+    QSettings().setValue(QStringLiteral("MainWindow.useTimeOffset"), checked);
+    onUseTimeOffsetToggled(checked);
   });
 
   // Trailing stretch pins the icon stack at the top of the column.

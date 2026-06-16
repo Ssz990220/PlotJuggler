@@ -119,6 +119,7 @@ class PlotWidget : public PlotWidgetBase {
   CatalogModel* catalog_ = nullptr;
   QMetaObject::Connection samples_ingested_connection_;
   QMetaObject::Connection dataset_replace_connection_;
+  QMetaObject::Connection display_offset_connection_;
   DragInfo dragging_;
   CurveTracker* tracker_ = nullptr;
   CurveTracker* reference_tracker_ = nullptr;

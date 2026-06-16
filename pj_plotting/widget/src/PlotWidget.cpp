@@ -1117,6 +1117,9 @@ void PlotWidget::reconnectDataSignals() {
   if (dataset_replace_connection_) {
     disconnect(dataset_replace_connection_);
   }
+  if (display_offset_connection_) {
+    disconnect(display_offset_connection_);
+  }
   if (session_ == nullptr) {
     return;
   }
@@ -1183,6 +1186,36 @@ void PlotWidget::reconnectDataSignals() {
         }
       },
       Qt::DirectConnection);
+
+  // "Use time offset" toggled (or otherwise re-based): every curve's x shifts by
+  // a constant and NO topic changed, so a per-topic samplesIngested would skip
+  // them all. Drop each time-series adapter's cached offset and re-fit, since the
+  // prior zoom rect (in display seconds) no longer frames the shifted data.
+  display_offset_connection_ = connect(session_, &SessionManager::displayOffsetChanged, this, [this]() {
+    bool changed = false;
+    for (auto& info : curveList()) {
+      if (auto* adapter = dynamic_cast<DatastoreCurveAdapter*>(info.curve->data())) {
+        adapter->onTopicCommitted();
+        changed = true;
+      }
+    }
+    if (changed) {
+      resetZoom();
+    }
+    // The curves just moved to the new frame, so each tracker's cached
+    // intersection markers (the circles) were sampled against the OLD data and
+    // view rect — re-sample them at their current positions against the re-fit
+    // curves. Order-independent with the app's reference re-projection: whichever
+    // of {reposition, this redraw} runs last re-samples against re-fit data, so
+    // the blue line keeps its dots across the toggle.
+    if (tracker_ != nullptr) {
+      tracker_->redraw();
+    }
+    if (reference_tracker_ != nullptr) {
+      reference_tracker_->redraw();
+    }
+    replot();
+  });
 }
 
 }  // namespace PJ

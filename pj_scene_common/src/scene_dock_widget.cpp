@@ -285,26 +285,28 @@ ISceneLayer* SceneDockWidget::layerFor(ObjectTopicId topic_id) const {
 }
 
 void SceneDockWidget::onTrackerTime(double time) {
-  // `time` is display-axis seconds (raw_ns * 1e-9 minus DisplayOffset). Today
-  // DisplayOffset is always zero (no production callers of setDisplayOffset), so
-  // this is equivalent to absolute seconds — but a future nonzero offset would
-  // require routing through toAbsolute(time, offsetOf(domain)) before converting
-  // to a raw Timepoint. Convert via chrono instead of a hand-rolled 1e9 factor.
-  // NaN/inf carry no position and are UB to cast, so drop them; saturate finite
-  // out-of-range values before casting.
-  const double ns_d = std::chrono::duration<double, std::nano>(std::chrono::duration<double>(time)).count();
-  if (!std::isfinite(ns_d)) {
+  // `time` is display-axis seconds. Recover the ABSOLUTE instant the scene
+  // stores objects by, by adding back the dataset's "Use time offset" shift
+  // (display = raw - offset). A scene dock shows one dataset today, so a single
+  // representative offset (from any layer's dataset — they share one) is exact; a
+  // future mixed-dataset dock would convert per layer. NaN/inf carry no position.
+  if (!std::isfinite(time)) {
     return;
   }
-  int64_t raw_ns = 0;
-  if (ns_d >= static_cast<double>(std::numeric_limits<int64_t>::max())) {
-    raw_ns = std::numeric_limits<int64_t>::max();
-  } else if (ns_d <= static_cast<double>(std::numeric_limits<int64_t>::lowest())) {
-    raw_ns = std::numeric_limits<int64_t>::lowest();
-  } else {
-    raw_ns = static_cast<int64_t>(ns_d);
+  PJ::DisplayOffset offset;
+  if (session_ != nullptr) {
+    for (const auto& [key, layer] : layers_) {
+      if (layer == nullptr) {
+        continue;
+      }
+      const DatasetId dataset_id = session_->objectStore().descriptor(layer->info().topic_id).dataset_id;
+      if (dataset_id != 0) {
+        offset = session_->displayOffset(dataset_id);
+        break;
+      }
+    }
   }
-  const PJ::Timepoint clamped = clampToLayerRange(PJ::fromRaw(raw_ns));
+  const PJ::Timepoint clamped = clampToLayerRange(PJ::toAbsolute(PJ::displaySeconds(time), offset));
   last_tracker_ = clamped;
   for (auto& [key, layer] : layers_) {
     if (layer != nullptr && layer->info().visible) {

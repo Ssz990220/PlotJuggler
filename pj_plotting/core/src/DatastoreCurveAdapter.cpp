@@ -243,19 +243,15 @@ DisplayOffset DatastoreCurveAdapter::displayOffsetNow() const {
     return cached_display_offset_;
   }
 
-  // Live lookup — the display offset is read from the dataset's TimeDomain on
-  // demand, never from a catalog-build-time snapshot. The cache below is
-  // invalidated by onTopicCommitted / onDataCleared so it tracks time-domain
-  // reconfiguration through the same signals that drive sample re-indexing.
+  // Live lookup via SessionManager::displayOffset — the single offset seam
+  // (TimeDomain shift + the per-dataset "Use time offset" shift), never a
+  // catalog-build-time snapshot. The cache below is invalidated by
+  // onTopicCommitted / onDataCleared (and the offset-toggle reuses that same
+  // invalidation) so it tracks offset reconfiguration through the signals that
+  // already drive sample re-indexing.
   DisplayOffset offset;
   if (session_ != nullptr) {
-    const DatasetInfo* dataset = session_->dataEngine().getDataset(source_.dataset_id);
-    if (dataset != nullptr && dataset->time_domain.id != 0) {
-      const TimeDomain* time_domain = session_->dataEngine().getTimeDomain(dataset->time_domain.id);
-      if (time_domain != nullptr) {
-        offset = offsetOf(*time_domain);
-      }
-    }
+    offset = session_->displayOffset(source_.dataset_id);
   }
 
   cached_display_offset_ = offset;
