@@ -48,8 +48,10 @@ SceneHdrFbo::SceneHdrFbo(SceneHdrFbo&& other) noexcept
       resolve_fbo_(std::move(other.resolve_fbo_)),
       resolve_color_(std::move(other.resolve_color_)),
       resolve_depth_(std::move(other.resolve_depth_)),
+      resolve_mask_(std::move(other.resolve_mask_)),
       msaa_color_(std::exchange(other.msaa_color_, 0U)),
-      msaa_depth_(std::exchange(other.msaa_depth_, 0U)) {}
+      msaa_depth_(std::exchange(other.msaa_depth_, 0U)),
+      msaa_mask_(std::exchange(other.msaa_mask_, 0U)) {}
 
 SceneHdrFbo& SceneHdrFbo::operator=(SceneHdrFbo&& other) noexcept {
   if (this != &other) {
@@ -62,8 +64,10 @@ SceneHdrFbo& SceneHdrFbo::operator=(SceneHdrFbo&& other) noexcept {
     resolve_fbo_ = std::move(other.resolve_fbo_);
     resolve_color_ = std::move(other.resolve_color_);
     resolve_depth_ = std::move(other.resolve_depth_);
+    resolve_mask_ = std::move(other.resolve_mask_);
     msaa_color_ = std::exchange(other.msaa_color_, 0U);
     msaa_depth_ = std::exchange(other.msaa_depth_, 0U);
+    msaa_mask_ = std::exchange(other.msaa_mask_, 0U);
   }
   return *this;
 }
@@ -110,6 +114,9 @@ void SceneHdrFbo::resize(int device_w, int device_h) {
     render_fbo_.bind();
     allocateMultisampleTexture(msaa_color_, GL_COLOR_ATTACHMENT0, GL_RGBA16F, samples_, width_, height_);
     allocateMultisampleTexture(msaa_depth_, GL_DEPTH_ATTACHMENT, GL_DEPTH_COMPONENT32F, samples_, width_, height_);
+    // R8 "is-mesh" mask alongside color/depth, same sample count. Only the mesh
+    // pass enables this draw buffer, so it stays 0 outside mesh pixels.
+    allocateMultisampleTexture(msaa_mask_, kMaskAttachment, GL_R8, samples_, width_, height_);
     attachDrawBuffer();
     const bool render_complete = render_fbo_.checkComplete();
     ready_ = render_complete && allocateResolveFbo();
@@ -132,6 +139,12 @@ bool SceneHdrFbo::allocateResolveFbo() {
   withGlFunctions([this](auto& functions) {
     functions.glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D, resolve_depth_.id(), 0);
   });
+  // Single-sample R8 mask. In the samples <= 1 path this is the live render
+  // target the mesh pass writes; in the MSAA path resolve() blits into it.
+  resolve_mask_.allocate(GL_R8, GL_RED, GL_UNSIGNED_BYTE, width_, height_);
+  withGlFunctions([this](auto& functions) {
+    functions.glFramebufferTexture2D(GL_FRAMEBUFFER, kMaskAttachment, GL_TEXTURE_2D, resolve_mask_.id(), 0);
+  });
   attachDrawBuffer();
   return resolve_fbo_.checkComplete();
 }
@@ -144,21 +157,34 @@ void SceneHdrFbo::bind() {
   }
 }
 
-void SceneHdrFbo::resolve() {
+void SceneHdrFbo::resolve(bool resolve_mask) {
   if (!ready_ || samples_ <= 1) {
     return;
   }
 
-  withGlFunctions([this](auto& functions) {
+  withGlFunctions([this, resolve_mask](auto& functions) {
     functions.glBindFramebuffer(GL_READ_FRAMEBUFFER, render_fbo_.id());
     functions.glBindFramebuffer(GL_DRAW_FRAMEBUFFER, resolve_fbo_.id());
-    const GLenum draw_buffer = GL_COLOR_ATTACHMENT0;
+    const GLenum color_buffer = GL_COLOR_ATTACHMENT0;
     functions.glReadBuffer(GL_COLOR_ATTACHMENT0);
     // Plural form: QOpenGLExtraFunctions has no singular glDrawBuffer, and this
     // generic lambda instantiates for both function sets.
-    functions.glDrawBuffers(1, &draw_buffer);
+    functions.glDrawBuffers(1, &color_buffer);
     functions.glBlitFramebuffer(
         0, 0, width_, height_, 0, 0, width_, height_, GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT, GL_NEAREST);
+    if (resolve_mask) {
+      // Resolve the mask attachment in its own pass: glBlitFramebuffer resolves
+      // one color attachment at a time (selected by read/draw buffer). Skipped
+      // when EDL is off — nothing samples the mask, so the blit would be waste.
+      const GLenum mask_buffer = kMaskAttachment;
+      functions.glReadBuffer(kMaskAttachment);
+      functions.glDrawBuffers(1, &mask_buffer);
+      functions.glBlitFramebuffer(0, 0, width_, height_, 0, 0, width_, height_, GL_COLOR_BUFFER_BIT, GL_NEAREST);
+      // Leave both FBOs reading/drawing COLOR_ATTACHMENT0 — the state the rest of
+      // the frame and the next frame's geometry pass assume.
+      functions.glReadBuffer(GL_COLOR_ATTACHMENT0);
+      functions.glDrawBuffers(1, &color_buffer);
+    }
   });
 }
 
@@ -166,6 +192,7 @@ void SceneHdrFbo::releaseGL() {
   deleteMultisampleTextures();
   resolve_color_ = gl::Texture{};
   resolve_depth_ = gl::Texture{};
+  resolve_mask_ = gl::Texture{};
   render_fbo_ = gl::Framebuffer{};
   resolve_fbo_ = gl::Framebuffer{};
   width_ = 0;
@@ -181,6 +208,10 @@ GLuint SceneHdrFbo::resolvedDepthTextureId() const noexcept {
   return resolve_depth_.id();
 }
 
+GLuint SceneHdrFbo::resolvedMaskTextureId() const noexcept {
+  return resolve_mask_.id();
+}
+
 QSize SceneHdrFbo::size() const noexcept {
   return QSize(width_, height_);
 }
@@ -190,17 +221,17 @@ bool SceneHdrFbo::ready() const noexcept {
 }
 
 bool SceneHdrFbo::hasAllocatedIds() const noexcept {
-  if (resolve_fbo_.id() == 0U || resolve_color_.id() == 0U || resolve_depth_.id() == 0U) {
+  if (resolve_fbo_.id() == 0U || resolve_color_.id() == 0U || resolve_depth_.id() == 0U || resolve_mask_.id() == 0U) {
     return false;
   }
   if (samples_ <= 1) {
     return true;
   }
-  return render_fbo_.id() != 0U && msaa_color_ != 0U && msaa_depth_ != 0U;
+  return render_fbo_.id() != 0U && msaa_color_ != 0U && msaa_depth_ != 0U && msaa_mask_ != 0U;
 }
 
 void SceneHdrFbo::deleteMultisampleTextures() noexcept {
-  if (msaa_color_ == 0U && msaa_depth_ == 0U) {
+  if (msaa_color_ == 0U && msaa_depth_ == 0U && msaa_mask_ == 0U) {
     return;
   }
 
@@ -212,6 +243,10 @@ void SceneHdrFbo::deleteMultisampleTextures() noexcept {
     if (msaa_depth_ != 0U) {
       functions.glDeleteTextures(1, &msaa_depth_);
       msaa_depth_ = 0U;
+    }
+    if (msaa_mask_ != 0U) {
+      functions.glDeleteTextures(1, &msaa_mask_);
+      msaa_mask_ = 0U;
     }
   });
 }

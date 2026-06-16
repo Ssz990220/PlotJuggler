@@ -51,5 +51,11 @@ inline constexpr float kSsaoRadiusM = 0.5f;  // SSAO sample radius (metres)
 inline constexpr float kSsaoPower = 1.0f;    // SSAO contrast exponent
 inline constexpr float kEdlStrength = 1.0f;  // EDL response strength
 inline constexpr float kEdlRadiusPx = 0.6f;  // EDL neighbour radius (pixels; plan spec was 1.4)
+// Per-neighbour clamp on the log-depth gap (EDL is mesh-only). Surface creases
+// produce gaps far below this, so they are unaffected; only a mesh pixel's
+// silhouette — against a farther mesh, a non-mesh pixel (point cloud / grid /
+// axes), or the empty background — exceeds it and gets bounded, turning a solid
+// black band into a graded outline. Raising it darkens/widens that outline.
+inline constexpr float kEdlMaxGap = 0.02f;
 
 }  // namespace pj::scene3d::look

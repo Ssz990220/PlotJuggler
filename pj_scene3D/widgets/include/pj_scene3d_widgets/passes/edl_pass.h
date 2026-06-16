@@ -35,12 +35,29 @@ class EdlPass : public IPostPass {
     depth_texture_id_ = depth_texture_id;
   }
 
+  // The resolved single-sample R8 "is-mesh" mask (SceneHdrFbo::resolvedMaskTextureId).
+  // EDL is restricted to mesh pixels: non-mesh pixels (point clouds, grid,
+  // occupancy, axes, background) are left untouched and act as "far" so they
+  // neither receive the contour nor cast one. 0 disables the restriction (every
+  // pixel treated as mesh) — a degenerate whole-scene contour, not the historical
+  // pre-mask look; unreachable in the app, where EDL only runs with a mask bound.
+  void setMaskTexture(GLuint mask_texture_id) {
+    mask_texture_id_ = mask_texture_id;
+  }
+
   // Tunables (plan §A.4). Read per frame; GUI-thread safe.
   void setStrength(float strength) {
     strength_ = strength;
   }
   void setRadiusPx(float radius_px) {
     radius_px_ = radius_px;
+  }
+  // Per-neighbour log-depth-gap clamp. Bounds the large mesh-silhouette gap (where
+  // a neighbour is a farther mesh or a non-mesh pixel) so it renders as a graded
+  // outline rather than a solid band; surface creases (much smaller gaps) are
+  // unaffected. See look::kEdlMaxGap.
+  void setMaxGap(float max_gap) {
+    max_gap_ = max_gap;
   }
 
   // Compute the shade factor into the internal target.
@@ -56,8 +73,10 @@ class EdlPass : public IPostPass {
   gl::Framebuffer fbo_;
   gl::Texture output_;
   GLuint depth_texture_id_{0};
+  GLuint mask_texture_id_{0};  // R8 is-mesh mask; 0 = no restriction
   float strength_{look::kEdlStrength};
   float radius_px_{look::kEdlRadiusPx};  // see scene_look_defaults.h (plan spec was 1.4)
+  float max_gap_{look::kEdlMaxGap};      // per-neighbour gap clamp (bounds silhouette outline width)
   int width_{0};
   int height_{0};
   bool target_ready_{false};

@@ -45,9 +45,14 @@ struct ViewParams {
   // the render resolution. Today only EDL's neighbour radius does (its depth-cue
   // outlines would otherwise shrink under supersampling); SSAO's blur tile has
   // the same dependency and is a known gap — harmless while supersampling is off
-  // by default. 1.0 = no supersampling. Kept LAST so existing positional
-  // aggregate initializers default-init it.
+  // by default. 1.0 = no supersampling.
   float render_scale = 1.0f;
+  // When true, the mesh pass also writes the scene FBO's R8 "is-mesh" mask
+  // (COLOR_ATTACHMENT1) by enabling that draw buffer around its draws, so EDL can
+  // restrict the eye-dome contour to mesh surfaces. Set only on the off-screen
+  // path (the direct-to-backing fallback has no mask attachment). Kept LAST so
+  // existing positional aggregate initializers default-init it (to false).
+  bool write_mesh_mask = false;
 };
 
 // The TF-resolution triple a pass needs to place frame-relative data into the

@@ -46,8 +46,10 @@ class SceneHdrFbo {
   void bind();
 
   // Resolve multisample color+depth into the single-sample FBO. No-op when the
-  // chain is configured single-sample.
-  void resolve();
+  // chain is configured single-sample. `resolve_mask` additionally resolves the
+  // is-mesh mask attachment (a second fullscreen blit) — pass it only when EDL
+  // will sample the mask this frame, so the blit is skipped when EDL is off.
+  void resolve(bool resolve_mask);
 
   // Delete every GL object owned by this chain under the current dying context.
   void releaseGL();
@@ -59,6 +61,17 @@ class SceneHdrFbo {
   // Return the single-sample depth texture id for post passes. In the samples <=
   // 1 path, this texture is also the render depth attachment.
   [[nodiscard]] GLuint resolvedDepthTextureId() const noexcept;
+
+  // Return the single-sample "is-mesh" mask texture id (R8) for post passes — 1
+  // where the mesh pass drew, 0 elsewhere. Written via COLOR_ATTACHMENT1 (only
+  // the mesh pass enables that draw buffer) and resolved alongside color/depth.
+  // EDL uses it to restrict the eye-dome contour to mesh surfaces. In the
+  // samples <= 1 path this is also the render mask attachment.
+  [[nodiscard]] GLuint resolvedMaskTextureId() const noexcept;
+
+  // The color-attachment index the mesh mask lives at. Render code enables this
+  // draw buffer only around mesh draws so non-mesh passes leave the mask cleared.
+  static constexpr GLenum kMaskAttachment = GL_COLOR_ATTACHMENT1;
 
   // Current allocation size in device pixels.
   [[nodiscard]] QSize size() const noexcept;
@@ -91,8 +104,10 @@ class SceneHdrFbo {
   gl::Framebuffer resolve_fbo_;
   gl::Texture resolve_color_;
   gl::Texture resolve_depth_;
+  gl::Texture resolve_mask_;  // single-sample R8 "is-mesh" mask (COLOR_ATTACHMENT1)
   GLuint msaa_color_{0};
   GLuint msaa_depth_{0};
+  GLuint msaa_mask_{0};  // multisample R8 mask, resolved into resolve_mask_
 };
 
 }  // namespace pj::scene3d

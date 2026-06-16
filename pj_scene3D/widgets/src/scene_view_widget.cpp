@@ -20,6 +20,7 @@
 #include <QSurfaceFormat>
 #include <QWheelEvent>
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <string_view>
 #include <utility>
@@ -164,7 +165,9 @@ void main() {
   if (u_has_edl) {
     // Floor the eye-dome darkening so creases bottom out at a hue-preserving dark
     // grey (u_edl_floor * color) instead of pure black. u_edl_floor == 0 is the
-    // original multiply-to-black behavior.
+    // original multiply-to-black behavior. EDL is mesh-only (the pass outputs 1
+    // for non-mesh pixels), so point clouds / grid / background pass through
+    // unchanged here.
     float edl = texture(u_edl, v_uv).r;  // shade factor (1 = untouched, →0 = max)
     hdr *= mix(u_edl_floor, 1.0, edl);
   }
@@ -460,6 +463,11 @@ void SceneViewWidget::paintGL() {
       // Supersample factor for the offscreen post passes (EDL radius scaling); the
       // fallback path renders at device res and runs no post passes, so 1.0 there.
       offscreen ? render_scale_ : 1.0f,
+      // write_mesh_mask: have the mesh pass mark the scene FBO's is-mesh mask so
+      // EDL can restrict its contour to meshes. Only on the off-screen path (the
+      // fallback FBO has no mask attachment) and only when EDL is on (else the
+      // extra draw-buffer toggling is wasted).
+      offscreen && composite_params_.edl_enabled,
   };
 
   // Cache proj*view for the hover hit-test (a mouse-move event, async from
@@ -499,7 +507,8 @@ void SceneViewWidget::paintGL() {
   funcs->glDisable(GL_DEPTH_TEST);
   funcs->glDepthMask(GL_TRUE);
   funcs->glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
-  scene_fbo_.resolve();
+  // Resolve the mask attachment only when EDL will sample it this frame.
+  scene_fbo_.resolve(composite_params_.edl_enabled);
 
   // SSAO over the resolved depth (Phase D). Runs in the post-chain state set
   // above; binds its own FBOs, so it must precede the bindDefault below. The
@@ -516,6 +525,8 @@ void SceneViewWidget::paintGL() {
     edl_.initializeGL();
     edl_.resize(scene_width_px, scene_height_px);
     edl_.setDepthTexture(scene_fbo_.resolvedDepthTextureId());
+    // Restrict the contour to mesh surfaces (point clouds/grid/background excluded).
+    edl_.setMaskTexture(scene_fbo_.resolvedMaskTextureId());
     edl_.renderEdl(view_params);
   }
 
@@ -608,6 +619,20 @@ void SceneViewWidget::renderScene(
   grid_.setColor(blend(0.35));                    // grid lines
   grid_.setCellColors(blend(0.10), blend(0.24));  // checkerboard tile tones (A, B)
   funcs->glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+  // Clear the is-mesh mask (COLOR_ATTACHMENT1) to 0 each frame so only the mesh
+  // pass marks it. The glClear above only touches the FBO's standing draw buffer
+  // (COLOR_ATTACHMENT0) + depth, so the mask gets its own clear, which needs its
+  // draw buffer temporarily enabled. Off-screen + EDL only (mirrors the
+  // write_mesh_mask flag); the fallback path has no mask attachment. !mask_alpha_writes
+  // == offscreen already implies the chain is ready, so no separate ready() check.
+  if (!mask_alpha_writes && composite_params_.edl_enabled) {
+    const std::array<GLenum, 2> both{GL_COLOR_ATTACHMENT0, SceneHdrFbo::kMaskAttachment};
+    const GLenum color_only = GL_COLOR_ATTACHMENT0;
+    const std::array<GLfloat, 4> zero{0.0F, 0.0F, 0.0F, 0.0F};
+    funcs->glDrawBuffers(2, both.data());
+    funcs->glClearBufferfv(GL_COLOR, 1, zero.data());  // draw-buffer index 1 == mask
+    funcs->glDrawBuffers(1, &color_only);              // restore color-only for non-mesh passes
+  }
   funcs->glEnable(GL_DEPTH_TEST);
   funcs->glEnable(GL_BLEND);
   // The scene FBO's alpha is the per-pixel tonemap marker (1 = data, graded;

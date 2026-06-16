@@ -11,10 +11,10 @@ full design rationale). The WHAT lives in [REQUIREMENTS.md](./REQUIREMENTS.md).
 Per frame, `SceneViewWidget::paintGL`:
 
 ```
-layers + passes → SceneHdrFbo (multisample RGBA16F + DEPTH32F)
-                → resolve blit (single-sample color + depth)
+layers + passes → SceneHdrFbo (multisample RGBA16F + DEPTH32F + R8 is-mesh mask)
+                → resolve blit (single-sample color + depth + mask)
                 → SsaoPass (R16F AO, box-blurred)   [reads resolved depth]
-                → EdlPass  (R16F shade factor)      [reads resolved depth]
+                → EdlPass  (R16F shade factor)      [reads resolved depth + mask]
                 → composite/present (fullscreen triangle → backing FBO)
 ```
 
@@ -46,17 +46,36 @@ layers + passes → SceneHdrFbo (multisample RGBA16F + DEPTH32F)
   meshes). Gizmo opacity rides the gizmo color's alpha through
   `glBlendFuncSeparate(SRC_ALPHA, ONE_MINUS_SRC_ALPHA, ZERO, ONE_MINUS_SRC_ALPHA)`.
 - **Background bypass.** Far-plane pixels (depth == 1) keep the exact theme
-  color, ungraded — the background never shifts with the tonemap.
+  color, ungraded (no tonemap/saturation) — the background never shifts with the
+  tonemap.
+- **Is-mesh mask (EDL gating).** EDL is restricted to **mesh surfaces** — point
+  clouds, grid, occupancy, axes and the empty background get no eye-dome contour.
+  The scene FBO carries a second color attachment (`SceneHdrFbo::kMaskAttachment`,
+  R8), cleared to 0 each frame; only `MeshRenderPass` enables that draw buffer (its
+  fragment shader writes 1.0 to `location = 1`) — driven by `ViewParams::write_mesh_mask`,
+  set on the off-screen + EDL-on path. The mask is resolved alongside color/depth
+  and sampled by EDL. There is no separate object-class G-buffer: the alpha channel
+  is the tonemap marker and is identical (1) for meshes and point clouds, so the
+  mask is the only per-pixel mesh signal.
 - **SSAO** reconstructs view position via `u_inv_proj` (works under the
   ortho camera; the perspective near/far formula does not) with an in-shader
-  4×4-tiled hash as the rotation noise. **EDL** is Potree-derived (8 circular
-  neighbours, log-depth response). Both multiply into the composite and
-  degrade to no-ops when unavailable (`u_has_ao` / `u_has_edl`); EDL's darkening
-  is floored (`CompositeParams::edl_floor`) so depth creases bottom out at a
+  4×4-tiled hash as the rotation noise; it still applies scene-wide. **EDL** is
+  Potree-derived (8 circular neighbours, log-depth response) but **mesh-only**: a
+  mesh pixel is darkened when a neighbour is FARTHER — or is non-mesh, which the
+  shader reads as "far" (`FAR_SENTINEL`) via the mask. So the mesh's silhouette
+  against the void, point clouds, or farther meshes, plus the near side of its
+  creases, get the contour; point clouds neither receive it nor cast it. Each
+  per-neighbour log-depth gap is clamped to `look::kEdlMaxGap` so the huge
+  silhouette gap reads as a graded outline rather than a solid black band; creases
+  (much smaller gaps) are unaffected. With no mask bound EDL falls back to
+  unrestricted (every pixel treated as mesh). Both passes multiply into the
+  composite and degrade to no-ops when unavailable (`u_has_ao` / `u_has_edl`); EDL's
+  darkening is floored (`CompositeParams::edl_floor`) so it bottoms out at a
   hue-preserving dark grey, `floor·color`, rather than pure black (floor 0 = the
   original multiply-to-black).
 - **Defaults** (look-dev, 2026-06-10): ACES, exposure 1.1, saturation 1.2,
-  SSAO on (strength 1, radius 0.5 m), EDL on (strength 1, radius 0.6 px, floor 0.3).
+  SSAO on (strength 1, radius 0.5 m), EDL on (strength 1, radius 0.6 px, floor 0.3,
+  max gap 0.02).
   Runtime knobs: `SceneViewWidget::compositeParams()`, `ssaoPass()`,
   `edlPass()`, and the per-view `meshShadingParams()` (roughness 0.6, f0 0.06,
   ambient 1.0, key/"sun" 1.15, fill 0.35, env-reflection 1.0, key-light dir

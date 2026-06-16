@@ -253,6 +253,11 @@ QWidget* makeControls(pj::scene3d::SceneViewWidget& view) {
         repaint();
       });
   addSlider(
+      form, QStringLiteral("EDL max gap"), 0, 20, static_cast<int>(look::kEdlMaxGap * 100), [&view, repaint](float v) {
+        view.edlPass().setMaxGap(v);
+        repaint();
+      });
+  addSlider(
       form, QStringLiteral("EDL floor"), 0, 100, static_cast<int>(view.compositeParams().edl_floor * 100),
       [&view, repaint](float v) {
         view.compositeParams().edl_floor = v;

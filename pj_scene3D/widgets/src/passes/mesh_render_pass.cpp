@@ -108,6 +108,14 @@ uniform float u_fill_scale;       // camera-locked headlight fill weight
 uniform float u_env_intensity;    // analytic specular IBL (env reflection) weight
 
 out vec4 frag;
+// "Is-mesh" mask for EDL (scene FBO COLOR_ATTACHMENT1). Written unconditionally;
+// it only lands in the mask texture when the mesh pass enables that draw buffer
+// (ViewParams::write_mesh_mask), and is harmlessly discarded otherwise. A vec4
+// (not a float) so its source alpha is a DEFINED 1.0 under the translucent /
+// collision blend (GL_SRC_ALPHA): the write stays a full 1.0 for any mesh pixel
+// regardless of mesh opacity — only the MSAA resolve averages it at silhouette
+// edges. The R8 target keeps just .r.
+layout(location = 1) out vec4 frag_mesh_mask;
 
 const float PI = 3.14159265;
 
@@ -242,6 +250,7 @@ void main() {
   color += emissive;
 
   frag = vec4(color, alpha);
+  frag_mesh_mask = vec4(1.0);
 }
 )";
 
@@ -777,11 +786,18 @@ void MeshRenderPass::drawBatch(
   bool blend_was_enabled = false;
   withGlFunctions(
       [&blend_was_enabled](auto& functions) { blend_was_enabled = functions.glIsEnabled(GL_BLEND) == GL_TRUE; });
-  const auto restore_blend = [blend_was_enabled](auto& functions) {
+  // Both pieces of pass-local GL state to undo on every exit path: the per-bucket
+  // blend enable, and (when masking) the mask draw buffer enabled further down.
+  const bool write_mask = view_params.write_mesh_mask;
+  const auto restore_pass_state = [blend_was_enabled, write_mask](auto& functions) {
     if (blend_was_enabled) {
       functions.glEnable(GL_BLEND);
     } else {
       functions.glDisable(GL_BLEND);
+    }
+    if (write_mask) {
+      const GLenum color_only = GL_COLOR_ATTACHMENT0;
+      functions.glDrawBuffers(1, &color_only);  // restore color-only for non-mesh passes
     }
   };
 
@@ -802,6 +818,24 @@ void MeshRenderPass::drawBatch(
   program_->setFloat("u_fill_scale", batch_shading.fill_light_scale);
   program_->setFloat("u_env_intensity", batch_shading.env_intensity);
 
+  // EDL mesh mask: enable COLOR_ATTACHMENT1 only for the duration of the mesh
+  // draws, so mesh pixels mark the scene FBO's R8 is-mesh mask (the frag shader
+  // writes 1.0 to that location). Non-mesh passes never enable this draw buffer,
+  // so the mask stays at its cleared 0 for them. Restored to color-only before
+  // returning. Off-screen path only — the direct-to-backing fallback FBO has no
+  // mask attachment (ViewParams::write_mesh_mask gates that). The frag shader emits
+  // vec4(1.0) to the mask, so its source alpha is 1 and the write survives the
+  // per-bucket blend as a full 1.0 for opaque AND translucent/collision meshes;
+  // only the MSAA resolve averages it down at silhouette edges, which EDL's
+  // inclusive (> 0.01) threshold still counts. restore_pass_state (above) restores
+  // color-only on exit.
+  if (write_mask) {
+    withGlFunctions([](auto& functions) {
+      const GLenum buffers[2] = {GL_COLOR_ATTACHMENT0, GL_COLOR_ATTACHMENT1};
+      functions.glDrawBuffers(2, buffers);
+    });
+  }
+
   if (collision) {
     withGlFunctions([](auto& functions) {
       functions.glEnable(GL_BLEND);
@@ -814,9 +848,9 @@ void MeshRenderPass::drawBatch(
     for (const DrawCall& draw : draws) {
       drawOne(view_params, draw, *resourceForDraw(draw), opacity);
     }
-    withGlFunctions([&restore_blend](auto& functions) {
+    withGlFunctions([&restore_pass_state](auto& functions) {
       functions.glDepthMask(GL_TRUE);
-      restore_blend(functions);
+      restore_pass_state(functions);
       functions.glUseProgram(0U);
     });
     return;
@@ -864,8 +898,8 @@ void MeshRenderPass::drawBatch(
     withGlFunctions([](auto& functions) { functions.glDepthMask(GL_TRUE); });
   }
 
-  withGlFunctions([&restore_blend](auto& functions) {
-    restore_blend(functions);
+  withGlFunctions([&restore_pass_state](auto& functions) {
+    restore_pass_state(functions);
     functions.glUseProgram(0U);
   });
 }
