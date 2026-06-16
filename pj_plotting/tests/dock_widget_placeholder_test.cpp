@@ -499,6 +499,8 @@ TEST(DockWidgetPlaceholderTest, ImageObjectDropConvertsPlaceholderToMedia2D) {
   EXPECT_EQ(dock->plotWidget(), nullptr);
   EXPECT_TRUE(factory_called);
   EXPECT_NE(dock->objectWidget(), nullptr);
+  // Dragging a topic onto the placeholder does NOT rename the dock; it keeps "...".
+  EXPECT_EQ(dock->name(), QStringLiteral("..."));
 }
 
 TEST(DockWidgetPlaceholderTest, ClearObjectContentRestoresPlaceholder) {
@@ -833,15 +835,15 @@ TEST(DockWidgetPlaceholderTest, FirstObjectTopicAddedFiresOnceForAdoptedEmptyWid
       QMetaObject::invokeMethod(
           dock, "onCatalogItemsDropped", Qt::DirectConnection, Q_ARG(QStringList, QStringList{items[0].key})));
   EXPECT_EQ(seed_count, 1);
-  // First topic also names the dock (like the placeholder→drop path), so it no
-  // longer reads "..." once populated.
-  EXPECT_EQ(dock->name(), items[0].topic_name);
+  // Dragging a topic must NOT rename the dock — it keeps its default "..." name
+  // (the user renames it explicitly via the title bar if they want to).
+  EXPECT_EQ(dock->name(), QStringLiteral("..."));
 
   ASSERT_TRUE(
       QMetaObject::invokeMethod(
           dock, "onCatalogItemsDropped", Qt::DirectConnection, Q_ARG(QStringList, QStringList{items[1].key})));
-  EXPECT_EQ(seed_count, 1);                      // not re-fired for the second topic
-  EXPECT_EQ(dock->name(), items[0].topic_name);  // name stays the first topic's
+  EXPECT_EQ(seed_count, 1);                        // not re-fired for the second topic
+  EXPECT_EQ(dock->name(), QStringLiteral("..."));  // still the default name after a second drop
 }
 
 TEST(DockWidgetPlaceholderTest, IncompatibleObjectDropOntoCommittedObjectWidgetIsRejected) {

@@ -426,11 +426,11 @@ void DockWidget::onCatalogItemsDropped(const QStringList& keys) {
   if (object_widget_ != nullptr) {
     if (offer_keys_to(object_widget_, /*start_index=*/0) > 0) {
       if (object_widget_awaiting_first_topic_) {
-        // First topic into an empty click-created dock: name it after that topic
-        // (matching the placeholder→drop path) and seed streaming playback, which
-        // that path otherwise does at creation. Both happen once per dock.
+        // First topic into an empty click-created dock: seed streaming playback,
+        // which the placeholder→drop path otherwise does at creation. Fires once
+        // per dock. The dock keeps its "..." name — dragging a topic does NOT
+        // rename the dock (the user renames it explicitly via the title if wanted).
         object_widget_awaiting_first_topic_ = false;
-        setName(first_item->topic_name);
         emit firstObjectTopicAdded();
       }
       emit undoableChange();
@@ -470,7 +470,7 @@ void DockWidget::onCatalogItemsDropped(const QStringList& keys) {
   // visible frame around the content. The object widget is responsible for
   // its own sizing/scrolling if any is needed.
   setWidget(content_widget_, ads::CDockWidget::ForceNoScrollArea);
-  setName(first_item->topic_name);
+  // The dock keeps its default "..." name — dragging a topic does NOT rename it.
   // Multi-select drop: hand the remaining keys to the new widget so it
   // can absorb the rest of the selection (Scene3D / future multi-topic
   // viewers benefit; single-topic widgets refuse and we drop them
