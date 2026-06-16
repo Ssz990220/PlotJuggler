@@ -105,7 +105,6 @@ class PlotWidget : public PlotWidgetBase {
 
   void buildActions();
   void canvasContextMenuTriggered(const QPoint& pos);
-  [[nodiscard]] CurveInfo* curveAtPosition(const QPoint& pos);
   void setAxisScale(QwtAxisId axis_id, double min, double max);
   void reconnectDataSignals();
   [[nodiscard]] QStringList decodeCurveDrop(const QMimeData* mime_data, const QString& format) const;

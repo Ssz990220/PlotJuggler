@@ -11,7 +11,6 @@
 #include <qwt_symbol.h>
 #include <qwt_text.h>
 
-#include <QColorDialog>
 #include <QDataStream>
 #include <QDragEnterEvent>
 #include <QDragLeaveEvent>
@@ -910,7 +909,6 @@ void PlotWidget::canvasContextMenuTriggered(const QPoint& pos) {
     return;
   }
 
-  CurveInfo* selected_curve = curveAtPosition(pos);
   QMenu menu(qwtPlot());
   menu.setObjectName(QStringLiteral("PJMenu"));
   // Refresh icons with the active theme on every popup so the
@@ -922,25 +920,6 @@ void PlotWidget::canvasContextMenuTriggered(const QPoint& pos) {
   action_zoom_out_->setIcon(QIcon(loadSvg(":/resources/svg/zoom_max.svg", theme)));
   action_zoom_out_horizontal_->setIcon(QIcon(loadSvg(":/resources/svg/zoom_horizontal.svg", theme)));
   action_zoom_out_vertical_->setIcon(QIcon(loadSvg(":/resources/svg/zoom_vertical.svg", theme)));
-  if (selected_curve != nullptr) {
-    menu.addAction(
-        QIcon(loadSvg(":/resources/svg/color_background.svg", theme)), tr("Change color..."), this,
-        [this, selected_curve]() {
-          const QColor current_color = selected_curve->curve->pen().color();
-          const QColor next_color = QColorDialog::getColor(current_color, this, tr("Pick curve color"));
-          if (next_color.isValid()) {
-            onChangeCurveColor(selected_curve->source_name, next_color);
-            emit undoableChange();
-          }
-        });
-    menu.addAction(
-        QIcon(loadSvg(":/resources/svg/trash.svg", theme)), tr("Remove curve"), this, [this, selected_curve]() {
-          removeCurve(selected_curve->source_name);
-          emit undoableChange();
-          replot();
-        });
-    menu.addSeparator();
-  }
   menu.addAction(action_split_horizontal_);
   menu.addAction(action_split_vertical_);
   menu.addSeparator();
@@ -951,45 +930,6 @@ void PlotWidget::canvasContextMenuTriggered(const QPoint& pos) {
   menu.addAction(action_remove_all_curves_);
   action_remove_all_curves_->setEnabled(!curveList().empty());
   menu.exec(qwtPlot()->canvas()->mapToGlobal(pos));
-}
-
-PlotWidget::CurveInfo* PlotWidget::curveAtPosition(const QPoint& pos) {
-  const QwtPlotItem* legend_item = legend()->itemAt(pos);
-  if (legend_item != nullptr) {
-    for (CurveInfo& info : curveList()) {
-      if (info.curve == legend_item) {
-        return &info;
-      }
-    }
-  }
-
-  CurveInfo* best_curve = nullptr;
-  double best_distance = std::numeric_limits<double>::max();
-  constexpr double kHitDistancePixels = 8.0;
-  constexpr std::size_t kMaxHitTestSamples = 2000;
-  for (CurveInfo& info : curveList()) {
-    if (info.curve == nullptr || !info.curve->isVisible() || info.curve->dataSize() == 0) {
-      continue;
-    }
-    const std::size_t sample_count = info.curve->dataSize();
-    const std::size_t step = std::max<std::size_t>(1, sample_count / kMaxHitTestSamples);
-    for (std::size_t index = 0; index < sample_count; index += step) {
-      const QPointF sample = info.curve->sample(index);
-      if (!std::isfinite(sample.x()) || !std::isfinite(sample.y())) {
-        continue;
-      }
-      const double x = qwtPlot()->transform(QwtPlot::xBottom, sample.x());
-      const double y = qwtPlot()->transform(QwtPlot::yLeft, sample.y());
-      const double dx = x - pos.x();
-      const double dy = y - pos.y();
-      const double distance = std::sqrt(dx * dx + dy * dy);
-      if (distance < best_distance) {
-        best_distance = distance;
-        best_curve = &info;
-      }
-    }
-  }
-  return best_distance <= kHitDistancePixels ? best_curve : nullptr;
 }
 
 void PlotWidget::setAxisScale(QwtAxisId axis_id, double min, double max) {
