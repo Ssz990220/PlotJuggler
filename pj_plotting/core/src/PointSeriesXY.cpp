@@ -57,20 +57,20 @@ PointSeriesXY::PointSeriesXY(SessionManager* session, CurveDescriptor x_source, 
       cached_bounding_rect_(invalidRect()) {}
 
 std::size_t PointSeriesXY::size() const {
-  ensureAlignmentIndex_();
+  ensureAlignmentIndex();
   return pairs_.size();
 }
 
 QPointF PointSeriesXY::sample(std::size_t index) const {
-  ensureAlignmentIndex_();
+  ensureAlignmentIndex();
   if (index >= pairs_.size()) {
     return invalidPoint();
   }
-  return readPoint_(pairs_[index]);
+  return readPoint(pairs_[index]);
 }
 
 QRectF PointSeriesXY::boundingRect() const {
-  ensureAlignmentIndex_();
+  ensureAlignmentIndex();
   if (bounding_rect_valid_) {
     return cached_bounding_rect_;
   }
@@ -83,7 +83,7 @@ QRectF PointSeriesXY::boundingRect() const {
   bool found_y = false;
 
   for (const PairSlot& slot : pairs_) {
-    const QPointF point = readPoint_(slot);
+    const QPointF point = readPoint(slot);
     updateFiniteRange(point.x(), x_min, x_max, found_x);
     updateFiniteRange(point.y(), y_min, y_max, found_y);
   }
@@ -108,7 +108,7 @@ void PointSeriesXY::onDataCleared() {
   cached_bounding_rect_ = invalidRect();
 }
 
-void PointSeriesXY::ensureAlignmentIndex_() const {
+void PointSeriesXY::ensureAlignmentIndex() const {
   if (!alignment_dirty_) {
     return;
   }
@@ -122,15 +122,15 @@ void PointSeriesXY::ensureAlignmentIndex_() const {
   }
 
   if (x_source_.topic_id == y_source_.topic_id) {
-    buildSameTopicIndex_();
+    buildSameTopicIndex();
   } else {
-    buildDifferentTopicIndex_();
+    buildDifferentTopicIndex();
   }
 
   alignment_dirty_ = false;
 }
 
-void PointSeriesXY::buildSameTopicIndex_() const {
+void PointSeriesXY::buildSameTopicIndex() const {
   const TopicStorage* storage = session_->dataEngine().getTopicStorage(x_source_.topic_id);
   if (storage == nullptr) {
     return;
@@ -149,9 +149,9 @@ void PointSeriesXY::buildSameTopicIndex_() const {
   }
 }
 
-void PointSeriesXY::buildDifferentTopicIndex_() const {
-  const auto x_rows = rowsFor_(x_source_.topic_id);
-  const auto y_rows = rowsFor_(y_source_.topic_id);
+void PointSeriesXY::buildDifferentTopicIndex() const {
+  const auto x_rows = rowsFor(x_source_.topic_id);
+  const auto y_rows = rowsFor(y_source_.topic_id);
 
   std::size_t x_index = 0;
   std::size_t y_index = 0;
@@ -183,7 +183,7 @@ void PointSeriesXY::buildDifferentTopicIndex_() const {
   }
 }
 
-std::vector<PointSeriesXY::RowRef> PointSeriesXY::rowsFor_(TopicId topic_id) const {
+std::vector<PointSeriesXY::RowRef> PointSeriesXY::rowsFor(TopicId topic_id) const {
   std::vector<RowRef> rows;
   const TopicStorage* storage = session_->dataEngine().getTopicStorage(topic_id);
   if (storage == nullptr) {
@@ -205,7 +205,7 @@ std::vector<PointSeriesXY::RowRef> PointSeriesXY::rowsFor_(TopicId topic_id) con
   return rows;
 }
 
-QPointF PointSeriesXY::readPoint_(const PairSlot& slot) const {
+QPointF PointSeriesXY::readPoint(const PairSlot& slot) const {
   if (slot.x_chunk == nullptr || slot.y_chunk == nullptr) {
     return invalidPoint();
   }

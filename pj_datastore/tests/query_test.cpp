@@ -16,7 +16,7 @@ namespace PJ {
 namespace {
 
 // Helper: build a test chunk with sequential timestamps.
-TopicChunk make_test_chunk(Timestamp t_start, uint32_t num_rows, Timestamp step) {
+TopicChunk makeTestChunk(Timestamp t_start, uint32_t num_rows, Timestamp step) {
   std::vector<ColumnDescriptor> cols = {{0, PrimitiveType::kFloat32, "value"}};
   TopicChunkBuilder builder(1, 1, cols, num_rows);
   for (uint32_t i = 0; i < num_rows; ++i) {
@@ -31,7 +31,7 @@ TopicChunk make_test_chunk(Timestamp t_start, uint32_t num_rows, Timestamp step)
 // Helper: build a chunk from an explicit (possibly non-uniform / duplicated)
 // timestamp list. The column value equals the row index, so a returned
 // row_index can be cross-checked against value.
-TopicChunk make_chunk_from_timestamps(const std::vector<Timestamp>& ts) {
+TopicChunk makeChunkFromTimestamps(const std::vector<Timestamp>& ts) {
   std::vector<ColumnDescriptor> cols = {{0, PrimitiveType::kFloat32, "value"}};
   TopicChunkBuilder builder(1, 1, cols, static_cast<uint32_t>(ts.size()));
   for (std::size_t i = 0; i < ts.size(); ++i) {
@@ -48,10 +48,10 @@ TopicChunk make_chunk_from_timestamps(const std::vector<Timestamp>& ts) {
 //   Chunk 2: t=[200, 290], step=10
 //   Chunk 3: t=[300, 390], step=10
 //   Chunk 4: t=[400, 490], step=10
-std::deque<TopicChunk> make_standard_chunks() {
+std::deque<TopicChunk> makeStandardChunks() {
   std::deque<TopicChunk> chunks;
   for (int i = 0; i < 5; ++i) {
-    chunks.push_back(make_test_chunk(static_cast<Timestamp>(i) * 100, 10, 10));
+    chunks.push_back(makeTestChunk(static_cast<Timestamp>(i) * 100, 10, 10));
   }
   return chunks;
 }
@@ -61,7 +61,7 @@ std::deque<TopicChunk> make_standard_chunks() {
 // =========================================================================
 
 TEST(QueryTest, RangeQuerySpanningTwoChunks) {
-  auto chunks = make_standard_chunks();
+  auto chunks = makeStandardChunks();
   auto cursor = rangeQuery(chunks, 150, 250);
 
   std::vector<Timestamp> timestamps;
@@ -80,7 +80,7 @@ TEST(QueryTest, RangeQuerySpanningTwoChunks) {
 }
 
 TEST(QueryTest, RangeQueryWithinSingleChunk) {
-  auto chunks = make_standard_chunks();
+  auto chunks = makeStandardChunks();
   auto cursor = rangeQuery(chunks, 100, 190);
 
   std::size_t count = 0;
@@ -92,13 +92,13 @@ TEST(QueryTest, RangeQueryWithinSingleChunk) {
 }
 
 TEST(QueryTest, RangeQueryHittingNoChunks) {
-  auto chunks = make_standard_chunks();
+  auto chunks = makeStandardChunks();
   auto cursor = rangeQuery(chunks, 500, 600);
   EXPECT_FALSE(cursor.valid());
 }
 
 TEST(QueryTest, RangeQueryAllData) {
-  auto chunks = make_standard_chunks();
+  auto chunks = makeStandardChunks();
   auto cursor = rangeQuery(chunks, 0, 490);
 
   std::size_t count = 0;
@@ -110,7 +110,7 @@ TEST(QueryTest, RangeQueryAllData) {
 }
 
 TEST(QueryTest, RangeQueryExactChunkBoundary) {
-  auto chunks = make_standard_chunks();
+  auto chunks = makeStandardChunks();
   // query [100, 199] should return only samples from chunk 1: 100..190
   auto cursor = rangeQuery(chunks, 100, 199);
 
@@ -127,7 +127,7 @@ TEST(QueryTest, RangeQueryExactChunkBoundary) {
 }
 
 TEST(QueryTest, ForEachCallback) {
-  auto chunks = make_standard_chunks();
+  auto chunks = makeStandardChunks();
   auto cursor = rangeQuery(chunks, 200, 390);
 
   std::size_t count = 0;
@@ -140,34 +140,34 @@ TEST(QueryTest, ForEachCallback) {
 // =========================================================================
 
 TEST(QueryTest, LatestAtInMiddleOfChunk) {
-  auto chunks = make_standard_chunks();
+  auto chunks = makeStandardChunks();
   auto result = latestAt(chunks, 155);
   ASSERT_TRUE(result.has_value());
   EXPECT_EQ(result->timestamp, 150);
 }
 
 TEST(QueryTest, LatestAtExactTimestamp) {
-  auto chunks = make_standard_chunks();
+  auto chunks = makeStandardChunks();
   auto result = latestAt(chunks, 200);
   ASSERT_TRUE(result.has_value());
   EXPECT_EQ(result->timestamp, 200);
 }
 
 TEST(QueryTest, LatestAtBeforeAllData) {
-  auto chunks = make_standard_chunks();
+  auto chunks = makeStandardChunks();
   auto result = latestAt(chunks, -10);
   EXPECT_FALSE(result.has_value());
 }
 
 TEST(QueryTest, LatestAtAfterAllData) {
-  auto chunks = make_standard_chunks();
+  auto chunks = makeStandardChunks();
   auto result = latestAt(chunks, 1000);
   ASSERT_TRUE(result.has_value());
   EXPECT_EQ(result->timestamp, 490);
 }
 
 TEST(QueryTest, LatestAtBetweenChunks) {
-  auto chunks = make_standard_chunks();
+  auto chunks = makeStandardChunks();
   // t=95 is between chunk 0 (t_max=90) and chunk 1 (t_min=100)
   auto result = latestAt(chunks, 95);
   ASSERT_TRUE(result.has_value());
@@ -181,7 +181,7 @@ TEST(QueryTest, LatestAtBetweenChunks) {
 TEST(QueryTest, LatestAtWithDuplicateTimestampsReturnsLastDuplicate) {
   std::deque<TopicChunk> chunks;
   // Rows:           0    1    2    3    4
-  chunks.push_back(make_chunk_from_timestamps({10, 20, 20, 20, 30}));
+  chunks.push_back(makeChunkFromTimestamps({10, 20, 20, 20, 30}));
 
   auto result = latestAt(chunks, 20);
   ASSERT_TRUE(result.has_value());
@@ -193,7 +193,7 @@ TEST(QueryTest, LatestAtWithDuplicateTimestampsReturnsLastDuplicate) {
 TEST(QueryTest, RangeQueryWithDuplicateTimestampsStartsAtFirstDuplicate) {
   std::deque<TopicChunk> chunks;
   // Rows:           0    1    2    3    4
-  chunks.push_back(make_chunk_from_timestamps({10, 20, 20, 20, 30}));
+  chunks.push_back(makeChunkFromTimestamps({10, 20, 20, 20, 30}));
 
   auto cursor = rangeQuery(chunks, 20, 20);
   std::vector<std::size_t> rows;
@@ -208,8 +208,8 @@ TEST(QueryTest, RangeQueryWithDuplicateTimestampsStartsAtFirstDuplicate) {
 
 TEST(QueryTest, LatestAtAtSharedChunkBoundarySelectsLaterChunk) {
   std::deque<TopicChunk> chunks;
-  chunks.push_back(make_chunk_from_timestamps({70, 80, 90}));    // chunk A, t_max=90
-  chunks.push_back(make_chunk_from_timestamps({90, 100, 110}));  // chunk B, t_min=90
+  chunks.push_back(makeChunkFromTimestamps({70, 80, 90}));    // chunk A, t_max=90
+  chunks.push_back(makeChunkFromTimestamps({90, 100, 110}));  // chunk B, t_min=90
 
   auto result = latestAt(chunks, 90);
   ASSERT_TRUE(result.has_value());
@@ -220,7 +220,7 @@ TEST(QueryTest, LatestAtAtSharedChunkBoundarySelectsLaterChunk) {
 }
 
 TEST(QueryTest, RangeQuerySingleTimestampPoint) {
-  auto chunks = make_standard_chunks();
+  auto chunks = makeStandardChunks();
   // Degenerate inclusive range [200, 200] hits exactly one row.
   auto cursor = rangeQuery(chunks, 200, 200);
   std::vector<Timestamp> timestamps;
@@ -250,7 +250,7 @@ TEST(QueryTest, EmptyDequeLatestAt) {
 // =========================================================================
 
 TEST(QueryTest, ForEachChunkMatchesForEach) {
-  auto chunks = make_standard_chunks();
+  auto chunks = makeStandardChunks();
 
   // Collect per-row results via for_each
   auto cursor1 = rangeQuery(chunks, 150, 350);
@@ -273,7 +273,7 @@ TEST(QueryTest, ForEachChunkMatchesForEach) {
 }
 
 TEST(QueryTest, ForEachChunkAllData) {
-  auto chunks = make_standard_chunks();
+  auto chunks = makeStandardChunks();
   auto cursor = rangeQuery(chunks, 0, 490);
 
   std::size_t total_rows = 0;
@@ -288,7 +288,7 @@ TEST(QueryTest, ForEachChunkAllData) {
 }
 
 TEST(QueryTest, ForEachChunkNoResults) {
-  auto chunks = make_standard_chunks();
+  auto chunks = makeStandardChunks();
   auto cursor = rangeQuery(chunks, 500, 600);
 
   std::size_t count = 0;

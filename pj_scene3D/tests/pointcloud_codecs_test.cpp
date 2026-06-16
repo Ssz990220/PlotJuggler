@@ -211,21 +211,21 @@ TEST(PointcloudCodecs, CloudiniDropsInt64FieldKeepingOffsets) {
   // Layout per point (point_step 16): x@0 (f32), big@4 (int64), y@12 (f32). INT64 has no
   // PJ datatype, so the decoder must DROP "big" while leaving x@0 and y@12 readable at
   // their original offsets — the byte still occupies point_step.
-  constexpr int n = 10;
-  constexpr uint32_t step = 16;
-  std::vector<uint8_t> raw(static_cast<size_t>(n) * step);
-  for (int i = 0; i < n; ++i) {
+  constexpr int kN = 10;
+  constexpr uint32_t kStep = 16;
+  std::vector<uint8_t> raw(static_cast<size_t>(kN) * kStep);
+  for (int i = 0; i < kN; ++i) {
     const float x = static_cast<float>(i) * 0.5f;
     const float y = static_cast<float>(i) * 2.0f;
     const int64_t big = 1000 + i;
-    std::memcpy(&raw[static_cast<size_t>(i) * step + 0], &x, 4);
-    std::memcpy(&raw[static_cast<size_t>(i) * step + 4], &big, 8);
-    std::memcpy(&raw[static_cast<size_t>(i) * step + 12], &y, 4);
+    std::memcpy(&raw[static_cast<size_t>(i) * kStep + 0], &x, 4);
+    std::memcpy(&raw[static_cast<size_t>(i) * kStep + 4], &big, 8);
+    std::memcpy(&raw[static_cast<size_t>(i) * kStep + 12], &y, 4);
   }
   Cloudini::EncodingInfo info;
-  info.width = n;
+  info.width = kN;
   info.height = 1;
-  info.point_step = step;
+  info.point_step = kStep;
   info.encoding_opt = Cloudini::EncodingOptions::NONE;
   info.compression_opt = Cloudini::CompressionOption::ZSTD;
   info.fields = {
@@ -248,28 +248,28 @@ TEST(PointcloudCodecs, CloudiniDropsInt64FieldKeepingOffsets) {
   ASSERT_NE(fy, nullptr);
   EXPECT_EQ(fx->offset, 0u);
   EXPECT_EQ(fy->offset, 12u) << "surviving field offset must be preserved";
-  for (int i = 0; i < n; ++i) {
+  for (int i = 0; i < kN; ++i) {
     EXPECT_FLOAT_EQ(readFloat(pc, i, *fx), static_cast<float>(i) * 0.5f);
     EXPECT_FLOAT_EQ(readFloat(pc, i, *fy), static_cast<float>(i) * 2.0f);
   }
 }
 
 TEST(PointcloudCodecs, CloudiniOrganizedCloudHeightGreaterThanOne) {
-  constexpr uint32_t w = 4;
-  constexpr uint32_t h = 3;  // organized cloud: 12 points in a 4x3 grid
-  const auto pts = makePoints(static_cast<int>(w * h));
-  const auto blob = encodeCloudini(pts, w, h);
+  constexpr uint32_t kW = 4;
+  constexpr uint32_t kH = 3;  // organized cloud: 12 points in a 4x3 grid
+  const auto pts = makePoints(static_cast<int>(kW * kH));
+  const auto blob = encodeCloudini(pts, kW, kH);
 
   const auto result = pj::scene3d::decodeCloudini(wrap(blob, "cloudini", "f", 1));
   ASSERT_TRUE(result.has_value()) << result.error();
   const auto& pc = result.value();
-  EXPECT_EQ(pc.width, w);
-  EXPECT_EQ(pc.height, h);
-  ASSERT_GE(pc.data.size(), static_cast<size_t>(w) * h * pc.point_step) << "full organized buffer";
+  EXPECT_EQ(pc.width, kW);
+  EXPECT_EQ(pc.height, kH);
+  ASSERT_GE(pc.data.size(), static_cast<size_t>(kW) * kH * pc.point_step) << "full organized buffer";
   // A point in row 1 (index w) must decode correctly, proving height>1 isn't truncated.
   const PointField* fx = findField(pc, "x");
   ASSERT_NE(fx, nullptr);
-  EXPECT_FLOAT_EQ(readFloat(pc, static_cast<int>(w), *fx), pts[w].x);
+  EXPECT_FLOAT_EQ(readFloat(pc, static_cast<int>(kW), *fx), pts[kW].x);
 }
 
 TEST(PointcloudCodecs, DracoRecoversAttributeNameFromMetadata) {
@@ -323,12 +323,12 @@ TEST(PointcloudCodecs, DracoConvertsNonFloatColorAttribute) {
   // COLOR is uint8 in the bitstream; the all-float32 repack must go through the
   // ConvertValue fallback (the float32 memcpy fast-path doesn't apply) and yield
   // the raw 0..255 component values as floats.
-  constexpr int n = 8;
+  constexpr int kN = 8;
   draco::PointCloudBuilder builder;
-  builder.Start(n);
+  builder.Start(kN);
   const int pos_att = builder.AddAttribute(draco::GeometryAttribute::POSITION, 3, draco::DT_FLOAT32);
   const int col_att = builder.AddAttribute(draco::GeometryAttribute::COLOR, 4, draco::DT_UINT8);
-  for (int i = 0; i < n; ++i) {
+  for (int i = 0; i < kN; ++i) {
     const float xyz[3] = {static_cast<float>(i), 0.0f, 0.0f};
     const uint8_t rgba[4] = {
         static_cast<uint8_t>(10 * i), static_cast<uint8_t>(5 * i), static_cast<uint8_t>(2 * i), 255};
@@ -353,7 +353,7 @@ TEST(PointcloudCodecs, DracoConvertsNonFloatColorAttribute) {
   ASSERT_NE(fr, nullptr);
   ASSERT_NE(fa, nullptr);
   EXPECT_EQ(fr->datatype, PointField::Datatype::kFloat32);
-  for (int i = 0; i < n; ++i) {
+  for (int i = 0; i < kN; ++i) {
     EXPECT_NEAR(readFloat(out, i, *fx), static_cast<float>(i), 1e-3);
     EXPECT_FLOAT_EQ(readFloat(out, i, *fr), static_cast<float>(10 * i));
     EXPECT_FLOAT_EQ(readFloat(out, i, *fa), 255.0f);

@@ -19,13 +19,13 @@ DiagnosticsCard::DiagnosticsCard(const DiagnosticRecord& record, QWidget* parent
   ui_->setupUi(this);
 
   ui_->cardLevelIcon->setPixmap(
-      RenderSvgPixmap(levelIconPath(record_.level), currentTheme(), QSize(16, 16), devicePixelRatioF()));
+      renderSvgPixmap(levelIconPath(record_.level), currentTheme(), QSize(16, 16), devicePixelRatioF()));
   ui_->cardTimestamp->setText(record_.timestamp.toString(QStringLiteral("HH:mm:ss")));
   ui_->cardMessage->setToolTip(record_.message);
   ui_->cardMessage->installEventFilter(this);
   applyElidedMessage();
 
-  ui_->cardCopyButton->setIcon(LoadSvg(":/resources/svg/copy.svg", currentTheme()));
+  ui_->cardCopyButton->setIcon(loadSvg(":/resources/svg/copy.svg", currentTheme()));
 
   connect(ui_->cardCopyButton, &QToolButton::clicked, this, [this]() { emit copyRequested(record_); });
 }

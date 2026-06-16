@@ -101,7 +101,7 @@ class SceneViewWidget : public QOpenGLWidget {
 
   // Selectable camera controllers. Enumerator order matches the combo-box order
   // in Scene3DDockWidget, so a combo index casts directly to a CameraModel.
-  enum class CameraModel { Orbit, XYOrbit, Fly, TopDownOrtho };
+  enum class CameraModel { kOrbit, kXyOrbit, kFly, kTopDownOrtho };
   // Switch the active controller, carrying the current pose across so the view
   // doesn't jump (capture state → construct → adoptState → swap → repaint).
   void setCameraModel(CameraModel model);

@@ -120,9 +120,9 @@ QDomElement saveChildNodesState(QDomDocument& doc, QWidget* widget) {
 }
 
 struct LayoutNode {
-  enum class Type { Area, Splitter };
+  enum class Type { kArea, kSplitter };
 
-  Type type = Type::Area;
+  Type type = Type::kArea;
   Qt::Orientation orientation = Qt::Horizontal;
   QVector<double> size_ratios;
   QString area_id;
@@ -139,7 +139,7 @@ LayoutNode parseLayoutNode(const QDomElement& element) {
   }
 
   if (element.tagName() == QStringLiteral("DockSplitter")) {
-    node.type = LayoutNode::Type::Splitter;
+    node.type = LayoutNode::Type::kSplitter;
     node.valid = true;
     node.orientation = element.attribute(QStringLiteral("orientation")).startsWith(QStringLiteral("|")) ? Qt::Horizontal
                                                                                                         : Qt::Vertical;
@@ -161,7 +161,7 @@ LayoutNode parseLayoutNode(const QDomElement& element) {
   }
 
   if (element.tagName() == QStringLiteral("DockArea")) {
-    node.type = LayoutNode::Type::Area;
+    node.type = LayoutNode::Type::kArea;
     node.valid = true;
     node.area_id = element.attribute(QStringLiteral("id"));
     node.area_name = element.attribute(QStringLiteral("name"));
@@ -183,10 +183,10 @@ LayoutNode parseLayoutNode(const QDomElement& element) {
 // empty-object-widget construction at the top of the restore tree.
 QDomElement firstLeafElement(const LayoutNode& node) {
   const LayoutNode* cur = &node;
-  while (cur->type == LayoutNode::Type::Splitter && !cur->children.isEmpty()) {
+  while (cur->type == LayoutNode::Type::kSplitter && !cur->children.isEmpty()) {
     cur = &cur->children.front();
   }
-  if (cur->type == LayoutNode::Type::Area && !cur->plots.isEmpty()) {
+  if (cur->type == LayoutNode::Type::kArea && !cur->plots.isEmpty()) {
     return cur->plots.front();
   }
   return {};
@@ -222,7 +222,7 @@ class RestorePlotPool {
   }
 
   PlotWidget* takeFirstForNode(const LayoutNode& node) {
-    if (node.type == LayoutNode::Type::Area) {
+    if (node.type == LayoutNode::Type::kArea) {
       return takeForArea(node);
     }
     for (const LayoutNode& child : node.children) {
@@ -314,7 +314,7 @@ void restoreNode(
     return;
   }
 
-  if (node.type == LayoutNode::Type::Area) {
+  if (node.type == LayoutNode::Type::kArea) {
     widget->setStateId(node.area_id);
     widget->setName(node.area_name.isEmpty() ? QStringLiteral("...") : node.area_name);
 

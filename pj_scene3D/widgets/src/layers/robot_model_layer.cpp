@@ -540,7 +540,7 @@ QWidget* RobotModelLayer::createConfigWidget(QWidget* parent) {
   browse_button->setAutoRaise(true);
   browse_button->setFocusPolicy(Qt::NoFocus);
   browse_button->setToolTip(tr("Browse for a URDF file"));
-  browse_button->setIcon(PJ::LoadSvg(QStringLiteral(":/resources/svg/folder_open.svg"), icon_theme));
+  browse_button->setIcon(PJ::loadSvg(QStringLiteral(":/resources/svg/folder_open.svg"), icon_theme));
   file_layout->addWidget(file_edit, 1);
   file_layout->addWidget(browse_button);
   form->addRow(QString(), file_row);
@@ -553,7 +553,7 @@ QWidget* RobotModelLayer::createConfigWidget(QWidget* parent) {
   load_button->setAutoRaise(true);
   load_button->setFocusPolicy(Qt::NoFocus);
   load_button->setToolTip(tr("Fetch the URDF from this URL"));
-  load_button->setIcon(PJ::LoadSvg(QStringLiteral(":/resources/svg/import.svg"), icon_theme));
+  load_button->setIcon(PJ::loadSvg(QStringLiteral(":/resources/svg/import.svg"), icon_theme));
   url_layout->addWidget(url_edit, 1);
   url_layout->addWidget(load_button);
   form->addRow(QString(), url_row);

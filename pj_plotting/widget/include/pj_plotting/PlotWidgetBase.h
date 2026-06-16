@@ -28,7 +28,7 @@ class PlotMagnifier;
 class PlotPanner;
 class PlotZoomer;
 
-enum class LineWidth { kPoints1_0 = 0, kPoints1_5 = 1, kPoints2_0 = 2, kPoints3_0 = 3 };
+enum class LineWidth { kPoints10 = 0, kPoints15 = 1, kPoints20 = 2, kPoints30 = 3 };
 
 [[nodiscard]] double lineWidthValue(LineWidth line_width) noexcept;
 [[nodiscard]] double dotWidthValue(LineWidth line_width) noexcept;
@@ -151,7 +151,7 @@ class PlotWidgetBase : public QWidget {
   bool xy_mode_ = false;
   QRectF max_zoom_rect_;
   bool keep_aspect_ratio_ = false;
-  LineWidth line_width_ = LineWidth::kPoints1_0;
+  LineWidth line_width_ = LineWidth::kPoints10;
   int next_color_index_ = 0;
 };
 

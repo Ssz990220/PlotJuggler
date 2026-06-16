@@ -67,7 +67,7 @@ TitleBar::TitleBar(QWidget* parent) : QWidget(parent), ui_(new Ui::TitleBar) {
   bell_idle_timer_->setInterval(5000);
   connect(bell_idle_timer_, &QTimer::timeout, this, [this]() {
     bell_active_ = false;
-    ui_->buttonNotifications->setIcon(LoadSvg(":/resources/svg/alarm-bell.svg", currentTheme()));
+    ui_->buttonNotifications->setIcon(loadSvg(":/resources/svg/alarm-bell.svg", currentTheme()));
   });
 
   applyIcons(currentTheme());
@@ -131,7 +131,7 @@ void TitleBar::onDiagnosticRecorded(const DiagnosticRecord& /*r*/) {
   // timer on each new record means a steady stream of logs keeps the
   // active glyph showing until the stream pauses for a full interval.
   bell_active_ = true;
-  ui_->buttonNotifications->setIcon(LoadSvg(":/resources/svg/alarm-bell-active.svg", currentTheme()));
+  ui_->buttonNotifications->setIcon(loadSvg(":/resources/svg/alarm-bell-active.svg", currentTheme()));
   bell_idle_timer_->start();
 }
 
@@ -226,12 +226,12 @@ bool TitleBar::isOnMoveHandle(const QPoint& pos) const {
 }
 
 void TitleBar::applyIcons(const QString& theme) {
-  ui_->appIcon->setIcon(LoadSvg(":/resources/svg/plotjuggler.svg", theme));
+  ui_->appIcon->setIcon(loadSvg(":/resources/svg/plotjuggler.svg", theme));
   ui_->buttonNotifications->setIcon(
-      LoadSvg(bell_active_ ? ":/resources/svg/alarm-bell-active.svg" : ":/resources/svg/alarm-bell.svg", theme));
-  ui_->buttonMinimize->setIcon(LoadSvg(":/resources/svg/minimize.svg", theme));
-  ui_->buttonMaximize->setIcon(LoadSvg(":/resources/svg/maximize.svg", theme));
-  ui_->buttonClose->setIcon(LoadSvg(":/resources/svg/close_windows_light.svg", theme));
+      loadSvg(bell_active_ ? ":/resources/svg/alarm-bell-active.svg" : ":/resources/svg/alarm-bell.svg", theme));
+  ui_->buttonMinimize->setIcon(loadSvg(":/resources/svg/minimize.svg", theme));
+  ui_->buttonMaximize->setIcon(loadSvg(":/resources/svg/maximize.svg", theme));
+  ui_->buttonClose->setIcon(loadSvg(":/resources/svg/close_windows_light.svg", theme));
 }
 
 }  // namespace PJ

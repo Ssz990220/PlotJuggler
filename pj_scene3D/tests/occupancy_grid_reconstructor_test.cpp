@@ -149,7 +149,7 @@ TEST(OccupancyGridReconstructorTest, BaseOnlyNoUpdates) {
   EXPECT_EQ(g.height, 8u);
   EXPECT_EQ(g.cells, refReplay(tl.bases.front(), tl.updates, 2000));
   // First call with a base in effect → a full (re)build, not incremental.
-  EXPECT_EQ(update.kind, GridUpdate::Kind::Full);
+  EXPECT_EQ(update.kind, GridUpdate::Kind::kFull);
 }
 
 TEST(OccupancyGridReconstructorTest, NoBaseYieldsEmpty) {
@@ -157,7 +157,7 @@ TEST(OccupancyGridReconstructorTest, NoBaseYieldsEmpty) {
   OccupancyGridReconstructor r;
   const GridUpdate update = r.reconstructAt(500, baseProviderFor(tl.bases), updatesProviderFor(tl.updates));
   EXPECT_TRUE(update.grid.empty());
-  EXPECT_EQ(update.kind, GridUpdate::Kind::Empty);
+  EXPECT_EQ(update.kind, GridUpdate::Kind::kEmpty);
 }
 
 // THE crux: any sequence of scrub targets (forward, backward, jumps, repeats)
@@ -263,7 +263,7 @@ TEST(OccupancyGridReconstructorTest, LateEntryBehindCursorForcesRebuild) {
   // entry): the next call rebuilds from base + full replay and includes it.
   r.invalidate();
   const GridUpdate rebuilt = r.reconstructAt(t_high, bp, up);
-  EXPECT_EQ(rebuilt.kind, GridUpdate::Kind::Full);
+  EXPECT_EQ(rebuilt.kind, GridUpdate::Kind::kFull);
   EXPECT_EQ(rebuilt.grid.cells, refReplay(tl.bases.front(), tl.updates, t_high));
   // Sanity: the late update actually changes the grid, so the check above is meaningful.
   EXPECT_NE(rebuilt.grid.cells, refReplay(tl.bases.front(), updates_before, t_high));
@@ -310,13 +310,13 @@ TEST(OccupancyGridReconstructorTest, OversizedDimsYieldEmpty) {
   OccupancyGridReconstructor r;
 
   const GridUpdate update = r.reconstructAt(2000, bp, up);
-  EXPECT_EQ(update.kind, GridUpdate::Kind::Empty);
+  EXPECT_EQ(update.kind, GridUpdate::Kind::kEmpty);
   EXPECT_TRUE(update.grid.empty());
 
   // A sane base later on the same timeline still reconstructs.
   bases.push_back(makeBase(3000, 4, 4, std::vector<uint8_t>(16, 25)));
   const GridUpdate recovered = r.reconstructAt(3500, bp, up);
-  EXPECT_EQ(recovered.kind, GridUpdate::Kind::Full);
+  EXPECT_EQ(recovered.kind, GridUpdate::Kind::kFull);
   EXPECT_EQ(recovered.grid.cells, refReplay(bases.back(), updates, 3500));
 }
 

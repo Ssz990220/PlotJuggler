@@ -13,7 +13,7 @@ namespace PJ {
 namespace {
 
 // Helper: create a ColumnDescriptor for a given PrimitiveType.
-ColumnDescriptor make_descriptor(PrimitiveType type, std::string path = "test_field") {
+ColumnDescriptor makeDescriptor(PrimitiveType type, std::string path = "test_field") {
   return ColumnDescriptor{.field_id = 0, .logical_type = type, .field_path = std::move(path)};
 }
 
@@ -21,7 +21,7 @@ ColumnDescriptor make_descriptor(PrimitiveType type, std::string path = "test_fi
 // 1. Float32 append/read
 // -----------------------------------------------------------------------
 TEST(TypedColumnBufferTest, Float32AppendRead) {
-  TypedColumnBuffer buf(make_descriptor(PrimitiveType::kFloat32));
+  TypedColumnBuffer buf(makeDescriptor(PrimitiveType::kFloat32));
   buf.appendFloat32(1.5f);
   buf.appendFloat32(-3.14f);
   buf.appendFloat32(0.0f);
@@ -36,7 +36,7 @@ TEST(TypedColumnBufferTest, Float32AppendRead) {
 // 2. Float64 append/read
 // -----------------------------------------------------------------------
 TEST(TypedColumnBufferTest, Float64AppendRead) {
-  TypedColumnBuffer buf(make_descriptor(PrimitiveType::kFloat64));
+  TypedColumnBuffer buf(makeDescriptor(PrimitiveType::kFloat64));
   buf.appendFloat64(2.718281828459045);
   buf.appendFloat64(-1e308);
 
@@ -49,7 +49,7 @@ TEST(TypedColumnBufferTest, Float64AppendRead) {
 // 3. Int32 append/read (including negative)
 // -----------------------------------------------------------------------
 TEST(TypedColumnBufferTest, Int32AppendRead) {
-  TypedColumnBuffer buf(make_descriptor(PrimitiveType::kInt32));
+  TypedColumnBuffer buf(makeDescriptor(PrimitiveType::kInt32));
   buf.appendInt32(42);
   buf.appendInt32(-100);
   buf.appendInt32(0);
@@ -64,7 +64,7 @@ TEST(TypedColumnBufferTest, Int32AppendRead) {
 // 4. Int64 append/read (large values)
 // -----------------------------------------------------------------------
 TEST(TypedColumnBufferTest, Int64AppendRead) {
-  TypedColumnBuffer buf(make_descriptor(PrimitiveType::kInt64));
+  TypedColumnBuffer buf(makeDescriptor(PrimitiveType::kInt64));
   buf.appendInt64(INT64_MAX);
   buf.appendInt64(INT64_MIN);
   buf.appendInt64(0);
@@ -79,7 +79,7 @@ TEST(TypedColumnBufferTest, Int64AppendRead) {
 // 5. Uint64 append/read (uint8 logical type widens to uint64 storage)
 // -----------------------------------------------------------------------
 TEST(TypedColumnBufferTest, Uint64AppendRead) {
-  TypedColumnBuffer buf(make_descriptor(PrimitiveType::kUint64));
+  TypedColumnBuffer buf(makeDescriptor(PrimitiveType::kUint64));
   buf.appendUint64(255);
   buf.appendUint64(0);
   buf.appendUint64(18000000000000000000ULL);
@@ -94,7 +94,7 @@ TEST(TypedColumnBufferTest, Uint64AppendRead) {
 // 6. Bool append/read
 // -----------------------------------------------------------------------
 TEST(TypedColumnBufferTest, BoolAppendRead) {
-  TypedColumnBuffer buf(make_descriptor(PrimitiveType::kBool));
+  TypedColumnBuffer buf(makeDescriptor(PrimitiveType::kBool));
   buf.appendBool(true);
   buf.appendBool(false);
   buf.appendBool(true);
@@ -109,7 +109,7 @@ TEST(TypedColumnBufferTest, BoolAppendRead) {
 // 7. String append/read
 // -----------------------------------------------------------------------
 TEST(TypedColumnBufferTest, StringAppendRead) {
-  TypedColumnBuffer buf(make_descriptor(PrimitiveType::kString));
+  TypedColumnBuffer buf(makeDescriptor(PrimitiveType::kString));
   buf.appendString("hello");
   buf.appendString("world");
   buf.appendString("test");
@@ -124,7 +124,7 @@ TEST(TypedColumnBufferTest, StringAppendRead) {
 // 8. Null handling
 // -----------------------------------------------------------------------
 TEST(TypedColumnBufferTest, NullHandling) {
-  TypedColumnBuffer buf(make_descriptor(PrimitiveType::kFloat32));
+  TypedColumnBuffer buf(makeDescriptor(PrimitiveType::kFloat32));
   buf.appendFloat32(1.0f);
   buf.appendNull();
   buf.appendFloat32(3.0f);
@@ -143,7 +143,7 @@ TEST(TypedColumnBufferTest, NullHandling) {
 // 9. has_nulls
 // -----------------------------------------------------------------------
 TEST(TypedColumnBufferTest, HasNulls) {
-  TypedColumnBuffer buf(make_descriptor(PrimitiveType::kInt32));
+  TypedColumnBuffer buf(makeDescriptor(PrimitiveType::kInt32));
   EXPECT_FALSE(buf.hasNulls());
 
   buf.appendInt32(10);
@@ -157,7 +157,7 @@ TEST(TypedColumnBufferTest, HasNulls) {
 // 10. row_count increments correctly
 // -----------------------------------------------------------------------
 TEST(TypedColumnBufferTest, RowCountIncrements) {
-  TypedColumnBuffer buf(make_descriptor(PrimitiveType::kFloat64));
+  TypedColumnBuffer buf(makeDescriptor(PrimitiveType::kFloat64));
   EXPECT_EQ(buf.rowCount(), 0u);
 
   buf.appendFloat64(1.0);
@@ -177,7 +177,7 @@ TEST(TypedColumnBufferTest, RowCountIncrements) {
 // 11. read_as_double for float32
 // -----------------------------------------------------------------------
 TEST(TypedColumnBufferTest, ReadAsDoubleFloat32) {
-  TypedColumnBuffer buf(make_descriptor(PrimitiveType::kFloat32));
+  TypedColumnBuffer buf(makeDescriptor(PrimitiveType::kFloat32));
   buf.appendFloat32(1.5f);
 
   EXPECT_DOUBLE_EQ(buf.readAsDouble(0), 1.5);
@@ -187,7 +187,7 @@ TEST(TypedColumnBufferTest, ReadAsDoubleFloat32) {
 // 12. read_as_double for int32
 // -----------------------------------------------------------------------
 TEST(TypedColumnBufferTest, ReadAsDoubleInt32) {
-  TypedColumnBuffer buf(make_descriptor(PrimitiveType::kInt32));
+  TypedColumnBuffer buf(makeDescriptor(PrimitiveType::kInt32));
   buf.appendInt32(42);
 
   EXPECT_DOUBLE_EQ(buf.readAsDouble(0), 42.0);
@@ -197,7 +197,7 @@ TEST(TypedColumnBufferTest, ReadAsDoubleInt32) {
 // 13. Multiple strings of varying lengths
 // -----------------------------------------------------------------------
 TEST(TypedColumnBufferTest, MultipleStringsVaryingLengths) {
-  TypedColumnBuffer buf(make_descriptor(PrimitiveType::kString));
+  TypedColumnBuffer buf(makeDescriptor(PrimitiveType::kString));
   buf.appendString("a");
   buf.appendString("bb");
   buf.appendString("ccc");
@@ -216,7 +216,7 @@ TEST(TypedColumnBufferTest, MultipleStringsVaryingLengths) {
 // 14. Empty string
 // -----------------------------------------------------------------------
 TEST(TypedColumnBufferTest, EmptyString) {
-  TypedColumnBuffer buf(make_descriptor(PrimitiveType::kString));
+  TypedColumnBuffer buf(makeDescriptor(PrimitiveType::kString));
   buf.appendString("");
 
   EXPECT_EQ(buf.rowCount(), 1u);
@@ -228,7 +228,7 @@ TEST(TypedColumnBufferTest, EmptyString) {
 // Additional: descriptor accessor
 // -----------------------------------------------------------------------
 TEST(TypedColumnBufferTest, DescriptorAccessor) {
-  auto desc = make_descriptor(PrimitiveType::kFloat64, "position.x");
+  auto desc = makeDescriptor(PrimitiveType::kFloat64, "position.x");
   TypedColumnBuffer buf(desc);
 
   EXPECT_EQ(buf.descriptor().logical_type, PrimitiveType::kFloat64);
@@ -239,7 +239,7 @@ TEST(TypedColumnBufferTest, DescriptorAccessor) {
 // Additional: read_as_double for bool
 // -----------------------------------------------------------------------
 TEST(TypedColumnBufferTest, ReadAsDoubleBool) {
-  TypedColumnBuffer buf(make_descriptor(PrimitiveType::kBool));
+  TypedColumnBuffer buf(makeDescriptor(PrimitiveType::kBool));
   buf.appendBool(true);
   buf.appendBool(false);
 
@@ -251,7 +251,7 @@ TEST(TypedColumnBufferTest, ReadAsDoubleBool) {
 // Additional: read_as_double for string returns NaN
 // -----------------------------------------------------------------------
 TEST(TypedColumnBufferTest, ReadAsDoubleStringReturnsNaN) {
-  TypedColumnBuffer buf(make_descriptor(PrimitiveType::kString));
+  TypedColumnBuffer buf(makeDescriptor(PrimitiveType::kString));
   buf.appendString("hello");
 
   EXPECT_TRUE(std::isnan(buf.readAsDouble(0)));
@@ -261,7 +261,7 @@ TEST(TypedColumnBufferTest, ReadAsDoubleStringReturnsNaN) {
 // Additional: null in string column
 // -----------------------------------------------------------------------
 TEST(TypedColumnBufferTest, NullInStringColumn) {
-  TypedColumnBuffer buf(make_descriptor(PrimitiveType::kString));
+  TypedColumnBuffer buf(makeDescriptor(PrimitiveType::kString));
   buf.appendString("hello");
   buf.appendNull();
   buf.appendString("world");
@@ -279,7 +279,7 @@ TEST(TypedColumnBufferTest, NullInStringColumn) {
 // Additional: buffer accessors are non-empty after appends
 // -----------------------------------------------------------------------
 TEST(TypedColumnBufferTest, ValueBufferNonEmpty) {
-  TypedColumnBuffer buf(make_descriptor(PrimitiveType::kInt32));
+  TypedColumnBuffer buf(makeDescriptor(PrimitiveType::kInt32));
   EXPECT_TRUE(buf.valueBuffer().empty());
 
   buf.appendInt32(10);
@@ -288,7 +288,7 @@ TEST(TypedColumnBufferTest, ValueBufferNonEmpty) {
 }
 
 TEST(TypedColumnBufferTest, OffsetsBufferForStrings) {
-  TypedColumnBuffer buf(make_descriptor(PrimitiveType::kString));
+  TypedColumnBuffer buf(makeDescriptor(PrimitiveType::kString));
   EXPECT_TRUE(buf.offsetsBuffer().empty());
 
   buf.appendString("hi");
@@ -300,7 +300,7 @@ TEST(TypedColumnBufferTest, OffsetsBufferForStrings) {
 // Bulk append: Float32
 // -----------------------------------------------------------------------
 TEST(TypedColumnBufferTest, BulkFloat32AppendRead) {
-  TypedColumnBuffer buf(make_descriptor(PrimitiveType::kFloat32));
+  TypedColumnBuffer buf(makeDescriptor(PrimitiveType::kFloat32));
   const float data[] = {1.0f, 2.0f, 3.0f, 4.0f, 5.0f};
   buf.appendFloat32Bulk(Span<const float>(data, 5));
 
@@ -314,7 +314,7 @@ TEST(TypedColumnBufferTest, BulkFloat32AppendRead) {
 // Bulk append: Float64
 // -----------------------------------------------------------------------
 TEST(TypedColumnBufferTest, BulkFloat64AppendRead) {
-  TypedColumnBuffer buf(make_descriptor(PrimitiveType::kFloat64));
+  TypedColumnBuffer buf(makeDescriptor(PrimitiveType::kFloat64));
   const double data[] = {1.1, 2.2, 3.3};
   buf.appendFloat64Bulk(Span<const double>(data, 3));
 
@@ -328,7 +328,7 @@ TEST(TypedColumnBufferTest, BulkFloat64AppendRead) {
 // Bulk append: Int32
 // -----------------------------------------------------------------------
 TEST(TypedColumnBufferTest, BulkInt32AppendRead) {
-  TypedColumnBuffer buf(make_descriptor(PrimitiveType::kInt32));
+  TypedColumnBuffer buf(makeDescriptor(PrimitiveType::kInt32));
   const int32_t data[] = {-100, 0, 42, 999};
   buf.appendInt32Bulk(Span<const int32_t>(data, 4));
 
@@ -342,7 +342,7 @@ TEST(TypedColumnBufferTest, BulkInt32AppendRead) {
 // Bulk append: Int64
 // -----------------------------------------------------------------------
 TEST(TypedColumnBufferTest, BulkInt64AppendRead) {
-  TypedColumnBuffer buf(make_descriptor(PrimitiveType::kInt64));
+  TypedColumnBuffer buf(makeDescriptor(PrimitiveType::kInt64));
   const int64_t data[] = {INT64_MIN, 0, INT64_MAX};
   buf.appendInt64Bulk(Span<const int64_t>(data, 3));
 
@@ -356,7 +356,7 @@ TEST(TypedColumnBufferTest, BulkInt64AppendRead) {
 // Bulk append: Uint64
 // -----------------------------------------------------------------------
 TEST(TypedColumnBufferTest, BulkUint64AppendRead) {
-  TypedColumnBuffer buf(make_descriptor(PrimitiveType::kUint64));
+  TypedColumnBuffer buf(makeDescriptor(PrimitiveType::kUint64));
   const uint64_t data[] = {0, 255, 18000000000000000000ULL};
   buf.appendUint64Bulk(Span<const uint64_t>(data, 3));
 
@@ -370,7 +370,7 @@ TEST(TypedColumnBufferTest, BulkUint64AppendRead) {
 // Bulk append: Bool
 // -----------------------------------------------------------------------
 TEST(TypedColumnBufferTest, BulkBoolAppendRead) {
-  TypedColumnBuffer buf(make_descriptor(PrimitiveType::kBool));
+  TypedColumnBuffer buf(makeDescriptor(PrimitiveType::kBool));
   const uint8_t data[] = {1, 0, 1, 1, 0};
   buf.appendBoolBulk(Span<const uint8_t>(data, 5));
 
@@ -386,7 +386,7 @@ TEST(TypedColumnBufferTest, BulkBoolAppendRead) {
 // Bulk append: Strings
 // -----------------------------------------------------------------------
 TEST(TypedColumnBufferTest, BulkStringAppendRead) {
-  TypedColumnBuffer buf(make_descriptor(PrimitiveType::kString));
+  TypedColumnBuffer buf(makeDescriptor(PrimitiveType::kString));
   // "hello" "world" "!"
   const char string_data[] = "helloworld!";
   const uint32_t offsets[] = {0, 5, 10, 11};
@@ -402,7 +402,7 @@ TEST(TypedColumnBufferTest, BulkStringAppendRead) {
 // Bulk append: Validity bitmap
 // -----------------------------------------------------------------------
 TEST(TypedColumnBufferTest, BulkValidityBitmap) {
-  TypedColumnBuffer buf(make_descriptor(PrimitiveType::kFloat32));
+  TypedColumnBuffer buf(makeDescriptor(PrimitiveType::kFloat32));
   const float data[] = {1.0f, 0.0f, 3.0f, 0.0f};
   buf.appendFloat32Bulk(Span<const float>(data, 4));
 
@@ -421,7 +421,7 @@ TEST(TypedColumnBufferTest, BulkValidityBitmap) {
 // Bulk append: Mixed single + bulk
 // -----------------------------------------------------------------------
 TEST(TypedColumnBufferTest, BulkAfterSingleAppend) {
-  TypedColumnBuffer buf(make_descriptor(PrimitiveType::kFloat32));
+  TypedColumnBuffer buf(makeDescriptor(PrimitiveType::kFloat32));
   buf.appendFloat32(1.0f);
   buf.appendFloat32(2.0f);
 
@@ -440,7 +440,7 @@ TEST(TypedColumnBufferTest, BulkAfterSingleAppend) {
 // Bulk append: Zero count is a no-op
 // -----------------------------------------------------------------------
 TEST(TypedColumnBufferTest, BulkZeroCount) {
-  TypedColumnBuffer buf(make_descriptor(PrimitiveType::kFloat32));
+  TypedColumnBuffer buf(makeDescriptor(PrimitiveType::kFloat32));
   buf.appendFloat32Bulk(Span<const float>());
   EXPECT_EQ(buf.rowCount(), 0u);
 }
@@ -449,7 +449,7 @@ TEST(TypedColumnBufferTest, BulkZeroCount) {
 // Bulk append: Strings with non-zero base offset
 // -----------------------------------------------------------------------
 TEST(TypedColumnBufferTest, BulkStringsNonZeroBaseOffset) {
-  TypedColumnBuffer buf(make_descriptor(PrimitiveType::kString));
+  TypedColumnBuffer buf(makeDescriptor(PrimitiveType::kString));
   // Simulates Arrow-style offsets that don't start at 0
   const char string_data[] = "XXXXXhelloworld";
   const uint32_t offsets[] = {5, 10, 15};  // 2 strings: "hello", "world"
@@ -464,7 +464,7 @@ TEST(TypedColumnBufferTest, BulkStringsNonZeroBaseOffset) {
 // Bulk append: Validity with bit_offset
 // -----------------------------------------------------------------------
 TEST(TypedColumnBufferTest, BulkValidityWithBitOffset) {
-  TypedColumnBuffer buf(make_descriptor(PrimitiveType::kInt32));
+  TypedColumnBuffer buf(makeDescriptor(PrimitiveType::kInt32));
   const int32_t data[] = {10, 20, 30};
   buf.appendInt32Bulk(Span<const int32_t>(data, 3));
 

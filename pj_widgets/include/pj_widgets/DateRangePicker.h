@@ -82,8 +82,8 @@ class CalendarWidget : public QWidget {
   QDate range_to_;
   QDate hover_date_;
 
-  enum class State { Idle, Selecting, Committed };
-  State state_ = State::Idle;
+  enum class State { kIdle, kSelecting, kCommitted };
+  State state_ = State::kIdle;
   bool mediated_ = false;
 };
 

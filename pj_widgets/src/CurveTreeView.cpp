@@ -159,9 +159,9 @@ void setTopicIconDecoration(QTreeWidgetItem* item, bool is_image_topic, bool is_
   item->setData(kNameColumn, k3dObjectTopicRole, is_3d_object_topic);
   QIcon icon;
   if (is_image_topic) {
-    icon = QIcon(LoadSvg(QStringLiteral(":/resources/svg/image.svg"), theme));
+    icon = QIcon(loadSvg(QStringLiteral(":/resources/svg/image.svg"), theme));
   } else if (is_3d_object_topic) {
-    icon = QIcon(LoadSvg(QStringLiteral(":/resources/svg/cube.svg"), theme));
+    icon = QIcon(loadSvg(QStringLiteral(":/resources/svg/cube.svg"), theme));
   }
   item->setIcon(kNameColumn, icon);
 }
@@ -171,9 +171,9 @@ void refreshTopicIcons(QTreeWidgetItem* item, const QString& theme) {
     return;
   }
   if (item->data(kNameColumn, kImageTopicRole).toBool()) {
-    item->setIcon(kNameColumn, QIcon(LoadSvg(QStringLiteral(":/resources/svg/image.svg"), theme)));
+    item->setIcon(kNameColumn, QIcon(loadSvg(QStringLiteral(":/resources/svg/image.svg"), theme)));
   } else if (item->data(kNameColumn, k3dObjectTopicRole).toBool()) {
-    item->setIcon(kNameColumn, QIcon(LoadSvg(QStringLiteral(":/resources/svg/cube.svg"), theme)));
+    item->setIcon(kNameColumn, QIcon(loadSvg(QStringLiteral(":/resources/svg/cube.svg"), theme)));
   }
   for (int i = 0; i < item->childCount(); ++i) {
     refreshTopicIcons(item->child(i), theme);
@@ -310,7 +310,7 @@ QTreeWidgetItem* CurveTreeView::ensureGroup(const QString& path) {
 }
 
 void CurveTreeView::addCurve(const QString& name) {
-  addCurve(name, SortMode::Immediate);
+  addCurve(name, SortMode::kImmediate);
 }
 
 void CurveTreeView::addCurves(const std::vector<QString>& names) {
@@ -320,7 +320,7 @@ void CurveTreeView::addCurves(const std::vector<QString>& names) {
   const bool updates_were_enabled = updatesEnabled();
   setUpdatesEnabled(false);
   for (const QString& name : names) {
-    addCurve(name, SortMode::Deferred);
+    addCurve(name, SortMode::kDeferred);
   }
   sortTree();
   setUpdatesEnabled(updates_were_enabled);
@@ -339,7 +339,7 @@ void CurveTreeView::addCurve(const QString& name, SortMode sort_mode) {
   item->setData(kNameColumn, Qt::UserRole, name);
   item->setData(kNameColumn, kSearchRole, name);
   item->setFlags(item->flags() | Qt::ItemIsDragEnabled | Qt::ItemIsSelectable);
-  if (sort_mode == SortMode::Immediate) {
+  if (sort_mode == SortMode::kImmediate) {
     sortTree();
   }
 }
@@ -368,11 +368,11 @@ void CurveTreeView::addCurve(const CurvePath& path) {
           .is_image_topic = false,
           .is_3d_object_topic = false,
       },
-      SortMode::Immediate);
+      SortMode::kImmediate);
 }
 
 void CurveTreeView::addCatalogItem(const CurvePath& path) {
-  addCatalogItem(path, SortMode::Immediate);
+  addCatalogItem(path, SortMode::kImmediate);
 }
 
 void CurveTreeView::addCatalogItems(const std::vector<CurvePath>& paths) {
@@ -382,7 +382,7 @@ void CurveTreeView::addCatalogItems(const std::vector<CurvePath>& paths) {
   const bool updates_were_enabled = updatesEnabled();
   setUpdatesEnabled(false);
   for (const CurvePath& path : paths) {
-    addCatalogItem(path, SortMode::Deferred);
+    addCatalogItem(path, SortMode::kDeferred);
   }
   sortTree();
   setUpdatesEnabled(updates_were_enabled);
@@ -391,7 +391,7 @@ void CurveTreeView::addCatalogItems(const std::vector<CurvePath>& paths) {
 void CurveTreeView::addCatalogItem(const CurvePath& path, SortMode sort_mode) {
   const QString tree_path = treePathFromCurvePath(path);
   QTreeWidgetItem* item = nullptr;
-  if (view_mode_ == ViewMode::ShowTopics) {
+  if (view_mode_ == ViewMode::kShowTopics) {
     // Dataset and topic are atomic (topic shown verbatim). The field still
     // splits on '/' after '.' → '/' so nested struct fields fan out as
     // sub-folders under the topic node.
@@ -440,7 +440,7 @@ void CurveTreeView::addCatalogItem(const CurvePath& path, SortMode sort_mode) {
     setTopicIconDecoration(item, path.is_image_topic, path.is_3d_object_topic, currentTheme());
   }
   item->setData(kNameColumn, kSearchRole, tree_path);
-  if (sort_mode == SortMode::Immediate) {
+  if (sort_mode == SortMode::kImmediate) {
     sortTree();
   }
 }

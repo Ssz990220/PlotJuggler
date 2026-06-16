@@ -16,14 +16,14 @@
 
 namespace {
 
-using PJ::LayoutXml::DataSourceRef;
+using PJ::layout_xml::DataSourceRef;
 
 // ---------- appendJsonAsCdata ----------------------------------------------
 
 QString roundTripJson(const QString& input) {
   QDomDocument doc;
   QDomElement plugin = doc.createElement(QStringLiteral("plugin"));
-  PJ::LayoutXml::appendJsonAsCdata(doc, plugin, input);
+  PJ::layout_xml::appendJsonAsCdata(doc, plugin, input);
   doc.appendChild(plugin);
 
   // Round-trip through serialize -> reparse to confirm the document
@@ -93,7 +93,7 @@ QDomDocument buildDataSourceDoc(
   if (!plugin_id.isEmpty()) {
     QDomElement plugin = doc.createElement(QStringLiteral("plugin"));
     plugin.setAttribute(QStringLiteral("ID"), plugin_id);
-    PJ::LayoutXml::appendJsonAsCdata(doc, plugin, plugin_json);
+    PJ::layout_xml::appendJsonAsCdata(doc, plugin, plugin_json);
     file_info.appendChild(plugin);
   }
   wrapper.appendChild(file_info);
@@ -112,7 +112,7 @@ void appendFileInfo(
   if (!plugin_id.isEmpty()) {
     QDomElement plugin = doc.createElement(QStringLiteral("plugin"));
     plugin.setAttribute(QStringLiteral("ID"), plugin_id);
-    PJ::LayoutXml::appendJsonAsCdata(doc, plugin, plugin_json);
+    PJ::layout_xml::appendJsonAsCdata(doc, plugin, plugin_json);
     file_info.appendChild(plugin);
   }
   wrapper.appendChild(file_info);
@@ -120,20 +120,20 @@ void appendFileInfo(
 
 TEST(ExtractDataSource, EmptyDocReturnsEmptyList) {
   QDomDocument doc;
-  const QList<DataSourceRef> refs = PJ::LayoutXml::extractDataSource(doc, QDir::current());
+  const QList<DataSourceRef> refs = PJ::layout_xml::extractDataSource(doc, QDir::current());
   EXPECT_TRUE(refs.isEmpty());
 }
 
 TEST(ExtractDataSource, MissingWrapperReturnsEmptyList) {
   QDomDocument doc;
   doc.appendChild(doc.createElement(QStringLiteral("root")));
-  const QList<DataSourceRef> refs = PJ::LayoutXml::extractDataSource(doc, QDir::current());
+  const QList<DataSourceRef> refs = PJ::layout_xml::extractDataSource(doc, QDir::current());
   EXPECT_TRUE(refs.isEmpty());
 }
 
 TEST(ExtractDataSource, EmptyFilenameAttributeIsSkipped) {
   const QDomDocument doc = buildDataSourceDoc(QStringLiteral(""));
-  const QList<DataSourceRef> refs = PJ::LayoutXml::extractDataSource(doc, QDir::current());
+  const QList<DataSourceRef> refs = PJ::layout_xml::extractDataSource(doc, QDir::current());
   EXPECT_TRUE(refs.isEmpty());
 }
 
@@ -143,14 +143,14 @@ TEST(ExtractDataSource, AbsolutePathPassesThrough) {
   // it at the current drive and the equality check would fail.
   const QString abs = QDir::tempPath() + QStringLiteral("/some_data.mcap");
   const QDomDocument doc = buildDataSourceDoc(abs);
-  const QList<DataSourceRef> refs = PJ::LayoutXml::extractDataSource(doc, QDir(QDir::rootPath()));
+  const QList<DataSourceRef> refs = PJ::layout_xml::extractDataSource(doc, QDir(QDir::rootPath()));
   ASSERT_EQ(refs.size(), 1);
   EXPECT_EQ(refs.front().resolved_path, QFileInfo(abs).absoluteFilePath());
 }
 
 TEST(ExtractDataSource, RelativePathIsAnchoredAtLayoutDir) {
   const QDomDocument doc = buildDataSourceDoc(QStringLiteral("data/run.csv"));
-  const QList<DataSourceRef> refs = PJ::LayoutXml::extractDataSource(doc, QDir(QStringLiteral("/tmp/layouts")));
+  const QList<DataSourceRef> refs = PJ::layout_xml::extractDataSource(doc, QDir(QStringLiteral("/tmp/layouts")));
   ASSERT_EQ(refs.size(), 1);
   EXPECT_EQ(refs.front().resolved_path, QStringLiteral("/tmp/layouts/data/run.csv"));
 }
@@ -159,7 +159,7 @@ TEST(ExtractDataSource, PluginIdAndCdataJsonRoundTrip) {
   const QString json = QStringLiteral(R"({"topics":["a","b"]})");
   const QDomDocument doc =
       buildDataSourceDoc(QStringLiteral("/tmp/x.mcap"), QStringLiteral("robot"), QStringLiteral("DataLoad MCAP"), json);
-  const QList<DataSourceRef> refs = PJ::LayoutXml::extractDataSource(doc, QDir::current());
+  const QList<DataSourceRef> refs = PJ::layout_xml::extractDataSource(doc, QDir::current());
   ASSERT_EQ(refs.size(), 1);
   EXPECT_EQ(refs.front().prefix, QStringLiteral("robot"));
   EXPECT_EQ(refs.front().plugin_id, QStringLiteral("DataLoad MCAP"));
@@ -173,7 +173,7 @@ TEST(ExtractDataSource, PluginCdataWithClosingSequenceRoundTrips) {
   // CDATA splitting survives the actual file pipeline.
   QDomDocument reparsed;
   ASSERT_TRUE(reparsed.setContent(doc.toByteArray(2)));
-  const QList<DataSourceRef> refs = PJ::LayoutXml::extractDataSource(reparsed, QDir::current());
+  const QList<DataSourceRef> refs = PJ::layout_xml::extractDataSource(reparsed, QDir::current());
   ASSERT_EQ(refs.size(), 1);
   EXPECT_EQ(refs.front().plugin_config_json, json);
 }
@@ -190,7 +190,7 @@ TEST(ExtractDataSource, MultipleFileInfosParsedInOrder) {
   QDomDocument doc = buildDataSourceDoc(abs_a, QString(), QStringLiteral("DataLoad MCAP"), json_a);
   appendFileInfo(doc, abs_b, QStringLiteral("robot"), QStringLiteral("DataLoad MCAP"), json_b);
 
-  const QList<DataSourceRef> refs = PJ::LayoutXml::extractDataSource(doc, QDir::current());
+  const QList<DataSourceRef> refs = PJ::layout_xml::extractDataSource(doc, QDir::current());
   ASSERT_EQ(refs.size(), 2);
   EXPECT_EQ(refs[0].resolved_path, QFileInfo(abs_a).absoluteFilePath());
   EXPECT_EQ(refs[0].plugin_config_json, json_a);
@@ -209,7 +209,7 @@ TEST(ExtractDataSource, MultiFileSurvivesSerializeReparse) {
   appendFileInfo(doc, abs_b);
   QDomDocument reparsed;
   ASSERT_TRUE(reparsed.setContent(doc.toByteArray(2)));
-  const QList<DataSourceRef> refs = PJ::LayoutXml::extractDataSource(reparsed, QDir::current());
+  const QList<DataSourceRef> refs = PJ::layout_xml::extractDataSource(reparsed, QDir::current());
   ASSERT_EQ(refs.size(), 2);
   EXPECT_EQ(refs[0].resolved_path, QFileInfo(abs_a).absoluteFilePath());
   EXPECT_EQ(refs[1].resolved_path, QFileInfo(abs_b).absoluteFilePath());
@@ -225,9 +225,9 @@ TEST(ExtractDataSource, MultiFileSurvivesSerializeReparse) {
 // isSamePath() is what gates that decision now.
 
 TEST(IsSamePath, EmptyInputsAreNotSame) {
-  EXPECT_FALSE(PJ::LayoutXml::isSamePath(QString(), QString()));
-  EXPECT_FALSE(PJ::LayoutXml::isSamePath(QStringLiteral("/tmp/x"), QString()));
-  EXPECT_FALSE(PJ::LayoutXml::isSamePath(QString(), QStringLiteral("/tmp/x")));
+  EXPECT_FALSE(PJ::layout_xml::isSamePath(QString(), QString()));
+  EXPECT_FALSE(PJ::layout_xml::isSamePath(QStringLiteral("/tmp/x"), QString()));
+  EXPECT_FALSE(PJ::layout_xml::isSamePath(QString(), QStringLiteral("/tmp/x")));
 }
 
 TEST(IsSamePath, DifferentExistingFilesAreNotSame) {
@@ -240,7 +240,7 @@ TEST(IsSamePath, DifferentExistingFilesAreNotSame) {
   const QString b = dir.filePath(QStringLiteral("zeg.mcap"));
   ASSERT_TRUE(QFile(a).open(QIODevice::WriteOnly));
   ASSERT_TRUE(QFile(b).open(QIODevice::WriteOnly));
-  EXPECT_FALSE(PJ::LayoutXml::isSamePath(a, b));
+  EXPECT_FALSE(PJ::layout_xml::isSamePath(a, b));
 }
 
 TEST(IsSamePath, IdenticalAbsolutePathsAreSame) {
@@ -248,7 +248,7 @@ TEST(IsSamePath, IdenticalAbsolutePathsAreSame) {
   ASSERT_TRUE(dir.isValid());
   const QString p = dir.filePath(QStringLiteral("log.mcap"));
   ASSERT_TRUE(QFile(p).open(QIODevice::WriteOnly));
-  EXPECT_TRUE(PJ::LayoutXml::isSamePath(p, p));
+  EXPECT_TRUE(PJ::layout_xml::isSamePath(p, p));
 }
 
 TEST(IsSamePath, RelativeAndAbsoluteFormsOfSameFileAreSame) {
@@ -261,7 +261,7 @@ TEST(IsSamePath, RelativeAndAbsoluteFormsOfSameFileAreSame) {
 
   const QString cwd_before = QDir::currentPath();
   ASSERT_TRUE(QDir::setCurrent(dir.path()));
-  EXPECT_TRUE(PJ::LayoutXml::isSamePath(abs, QStringLiteral("log.mcap")));
+  EXPECT_TRUE(PJ::layout_xml::isSamePath(abs, QStringLiteral("log.mcap")));
   EXPECT_TRUE(QDir::setCurrent(cwd_before));
 }
 
@@ -269,37 +269,39 @@ TEST(IsSamePath, NonexistentPathsAreNotSame) {
   // canonicalFilePath() returns empty for missing files; treating those
   // as "same" would mean two layouts that reference deleted files would
   // skip the reload prompt — the opposite of helpful.
-  EXPECT_FALSE(PJ::LayoutXml::isSamePath(QStringLiteral("/nonexistent/a.mcap"), QStringLiteral("/nonexistent/b.mcap")));
-  EXPECT_FALSE(PJ::LayoutXml::isSamePath(QStringLiteral("/nonexistent/a.mcap"), QStringLiteral("/nonexistent/a.mcap")));
+  EXPECT_FALSE(
+      PJ::layout_xml::isSamePath(QStringLiteral("/nonexistent/a.mcap"), QStringLiteral("/nonexistent/b.mcap")));
+  EXPECT_FALSE(
+      PJ::layout_xml::isSamePath(QStringLiteral("/nonexistent/a.mcap"), QStringLiteral("/nonexistent/a.mcap")));
 }
 
 TEST(EnsureLayoutExtension, AppendsWhenNoExtension) {
-  EXPECT_EQ(PJ::LayoutXml::ensureLayoutExtension(QStringLiteral("my_layout")), QStringLiteral("my_layout.pj4.xml"));
+  EXPECT_EQ(PJ::layout_xml::ensureLayoutExtension(QStringLiteral("my_layout")), QStringLiteral("my_layout.pj4.xml"));
   EXPECT_EQ(
-      PJ::LayoutXml::ensureLayoutExtension(QStringLiteral("/home/user/setup")),
+      PJ::layout_xml::ensureLayoutExtension(QStringLiteral("/home/user/setup")),
       QStringLiteral("/home/user/setup.pj4.xml"));
 }
 
 TEST(EnsureLayoutExtension, LeavesCorrectExtensionUntouched) {
   EXPECT_EQ(
-      PJ::LayoutXml::ensureLayoutExtension(QStringLiteral("my_layout.pj4.xml")), QStringLiteral("my_layout.pj4.xml"));
+      PJ::layout_xml::ensureLayoutExtension(QStringLiteral("my_layout.pj4.xml")), QStringLiteral("my_layout.pj4.xml"));
 }
 
 TEST(EnsureLayoutExtension, RespectsAnyUserSpecifiedExtension) {
   // Contract is "append only when no extension is specified", so a name the
   // user deliberately gave another suffix is left alone rather than turned
   // into a double extension like notes.txt.pj4.xml.
-  EXPECT_EQ(PJ::LayoutXml::ensureLayoutExtension(QStringLiteral("notes.txt")), QStringLiteral("notes.txt"));
-  EXPECT_EQ(PJ::LayoutXml::ensureLayoutExtension(QStringLiteral("my.layout")), QStringLiteral("my.layout"));
+  EXPECT_EQ(PJ::layout_xml::ensureLayoutExtension(QStringLiteral("notes.txt")), QStringLiteral("notes.txt"));
+  EXPECT_EQ(PJ::layout_xml::ensureLayoutExtension(QStringLiteral("my.layout")), QStringLiteral("my.layout"));
 }
 
 TEST(EnsureLayoutExtension, EmptyInEmptyOut) {
-  EXPECT_EQ(PJ::LayoutXml::ensureLayoutExtension(QString()), QString());
+  EXPECT_EQ(PJ::layout_xml::ensureLayoutExtension(QString()), QString());
 }
 
 // ---------- SeriesPath / extractSeriesPaths / rebindCurveKeys ---------------
 
-using PJ::LayoutXml::SeriesPath;
+using PJ::layout_xml::SeriesPath;
 
 // A doc with one <root><plot>; callers append <curve> elements to the plot.
 struct PlotDoc {
@@ -340,7 +342,7 @@ TEST(ExtractSeriesPaths, CollectsTimeSeriesTopicField) {
   PlotDoc pd = makePlotDoc();
   addTsCurve(pd, QStringLiteral("/imu"), QStringLiteral("accel.x"));
   addTsCurve(pd, QStringLiteral("/imu"), QStringLiteral("accel.y"));
-  const QList<SeriesPath> paths = PJ::LayoutXml::extractSeriesPaths(pd.doc);
+  const QList<SeriesPath> paths = PJ::layout_xml::extractSeriesPaths(pd.doc);
   ASSERT_EQ(paths.size(), 2);
   EXPECT_EQ(paths[0], (SeriesPath{QStringLiteral("/imu"), QStringLiteral("accel.x")}));
   EXPECT_EQ(paths[1], (SeriesPath{QStringLiteral("/imu"), QStringLiteral("accel.y")}));
@@ -352,7 +354,7 @@ TEST(ExtractSeriesPaths, CollectsXyAxesAndDeduplicates) {
   const SeriesPath y{QStringLiteral("/t"), QStringLiteral("b")};
   addXyCurve(pd, x, y);
   addTsCurve(pd, QStringLiteral("/t"), QStringLiteral("a"));  // duplicate of x
-  const QList<SeriesPath> paths = PJ::LayoutXml::extractSeriesPaths(pd.doc);
+  const QList<SeriesPath> paths = PJ::layout_xml::extractSeriesPaths(pd.doc);
   ASSERT_EQ(paths.size(), 2);
   EXPECT_EQ(paths[0], x);
   EXPECT_EQ(paths[1], y);
@@ -363,7 +365,7 @@ TEST(ExtractSeriesPaths, SkipsCurvesWithoutStableIdentity) {
   QDomElement legacy = pd.doc.createElement(QStringLiteral("curve"));
   legacy.setAttribute(QStringLiteral("name"), QStringLiteral("dataset:1/topic:2/column:0"));
   pd.plot.appendChild(legacy);
-  EXPECT_TRUE(PJ::LayoutXml::extractSeriesPaths(pd.doc).isEmpty());
+  EXPECT_TRUE(PJ::layout_xml::extractSeriesPaths(pd.doc).isEmpty());
 }
 
 TEST(RebindCurveKeys, SetsNameForResolvedTimeSeries) {
@@ -375,7 +377,7 @@ TEST(RebindCurveKeys, SetsNameForResolvedTimeSeries) {
     }
     return std::nullopt;
   };
-  const QList<SeriesPath> unresolved = PJ::LayoutXml::rebindCurveKeys(pd.doc, resolve);
+  const QList<SeriesPath> unresolved = PJ::layout_xml::rebindCurveKeys(pd.doc, resolve);
   EXPECT_TRUE(unresolved.isEmpty());
   EXPECT_EQ(c.attribute(QStringLiteral("name")), QStringLiteral("dataset:7/topic:3/column:0"));
 }
@@ -385,7 +387,7 @@ TEST(RebindCurveKeys, ClearsNameAndReportsUnresolvedTimeSeries) {
   QDomElement c = addTsCurve(pd, QStringLiteral("/missing"), QStringLiteral("f"));
   c.setAttribute(QStringLiteral("name"), QStringLiteral("stale_key"));  // stale from prior session
   const auto resolve = [](const SeriesPath&) -> std::optional<QString> { return std::nullopt; };
-  const QList<SeriesPath> unresolved = PJ::LayoutXml::rebindCurveKeys(pd.doc, resolve);
+  const QList<SeriesPath> unresolved = PJ::layout_xml::rebindCurveKeys(pd.doc, resolve);
   ASSERT_EQ(unresolved.size(), 1);
   EXPECT_EQ(unresolved[0], (SeriesPath{QStringLiteral("/missing"), QStringLiteral("f")}));
   EXPECT_FALSE(c.hasAttribute(QStringLiteral("name")));  // stale key cleared, won't mis-resolve
@@ -406,7 +408,7 @@ TEST(RebindCurveKeys, ResolvesXyOnlyWhenBothAxesMatch) {
     }
     return std::nullopt;
   };
-  const QList<SeriesPath> unresolved = PJ::LayoutXml::rebindCurveKeys(pd.doc, resolve);
+  const QList<SeriesPath> unresolved = PJ::layout_xml::rebindCurveKeys(pd.doc, resolve);
   EXPECT_EQ(both.attribute(QStringLiteral("curve_x")), QStringLiteral("kx"));
   EXPECT_EQ(both.attribute(QStringLiteral("curve_y")), QStringLiteral("ky"));
   EXPECT_FALSE(half.hasAttribute(QStringLiteral("curve_x")));  // partial → both cleared
@@ -420,7 +422,7 @@ TEST(StripUnresolvedCurves, RemovesOnlyKeylessCurves) {
   QDomElement keep = addTsCurve(pd, QStringLiteral("/t"), QStringLiteral("a"));
   keep.setAttribute(QStringLiteral("name"), QStringLiteral("resolved_key"));
   addTsCurve(pd, QStringLiteral("/t"), QStringLiteral("b"));  // no name → unresolved
-  PJ::LayoutXml::stripUnresolvedCurves(pd.doc);
+  PJ::layout_xml::stripUnresolvedCurves(pd.doc);
   const QDomNodeList curves = pd.doc.elementsByTagName(QStringLiteral("curve"));
   ASSERT_EQ(curves.size(), 1);
   EXPECT_EQ(curves.at(0).toElement().attribute(QStringLiteral("name")), QStringLiteral("resolved_key"));

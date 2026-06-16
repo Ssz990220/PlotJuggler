@@ -27,7 +27,7 @@
 #include "qss_preprocessor.h"
 
 namespace {
-using pj_widgets_demos::ApplyTheme;
+using pj_widgets_demos::applyTheme;
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -44,7 +44,7 @@ int main(int argc, char** argv) {
       theme = QString::fromLocal8Bit(argv[++i]);
     }
   }
-  ApplyTheme(theme);
+  applyTheme(theme);
 
   auto* root = new QWidget;
   root->setObjectName(QStringLiteral("ConfigPanel"));

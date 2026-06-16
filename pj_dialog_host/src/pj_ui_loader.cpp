@@ -18,7 +18,7 @@ PjUiLoader::PjUiLoader(QObject* parent) : QUiLoader(parent) {
 QWidget* PjUiLoader::createWidget(const QString& class_name, QWidget* parent, const QString& name) {
   QWidget* w = nullptr;
   if (class_name == QLatin1String("RangeSlider")) {
-    w = new RangeSlider(Qt::Horizontal, RangeSlider::DoubleHandles, parent);
+    w = new RangeSlider(Qt::Horizontal, RangeSlider::kDoubleHandles, parent);
   } else if (class_name == QLatin1String("DateRangePicker")) {
     w = new DateRangePicker(parent);
   } else if (class_name == QLatin1String("CredentialsEditor")) {

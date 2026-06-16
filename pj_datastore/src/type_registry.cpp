@@ -20,7 +20,7 @@ namespace {
 // For enums: uses the underlying primitive_type.
 // For arrays: uses the element_type's primitive_type (if primitive/enum).
 // For structs: recurses into children.
-void flatten_leaf_types_impl(
+void flattenLeafTypesImpl(
     const PJ::TypeTreeNode& node, std::string_view prefix,
     std::vector<std::pair<std::string, PJ::PrimitiveType>>& out) {
   std::string current_path = prefix.empty() ? node.name : fmt::format("{}.{}", prefix, node.name);
@@ -44,7 +44,7 @@ void flatten_leaf_types_impl(
       return;
     case PJ::TypeKind::kStruct:
       for (const auto& child : node.children) {
-        flatten_leaf_types_impl(*child, current_path, out);
+        flattenLeafTypesImpl(*child, current_path, out);
       }
       return;
   }
@@ -52,7 +52,7 @@ void flatten_leaf_types_impl(
 
 // Flatten starting from root, skipping the root struct name (same convention
 // as flatten_field_paths).
-std::vector<std::pair<std::string, PJ::PrimitiveType>> flatten_leaf_types(const PJ::TypeTreeNode& root) {
+std::vector<std::pair<std::string, PJ::PrimitiveType>> flattenLeafTypes(const PJ::TypeTreeNode& root) {
   std::vector<std::pair<std::string, PJ::PrimitiveType>> result;
   if (root.kind != PJ::TypeKind::kStruct) {
     if (root.primitive_type.has_value()) {
@@ -61,7 +61,7 @@ std::vector<std::pair<std::string, PJ::PrimitiveType>> flatten_leaf_types(const 
     return result;
   }
   for (const auto& child : root.children) {
-    flatten_leaf_types_impl(*child, "", result);
+    flattenLeafTypesImpl(*child, "", result);
   }
   return result;
 }
@@ -122,8 +122,8 @@ PJ::Status TypeRegistry::evolveSchema(PJ::SchemaId id, std::shared_ptr<PJ::TypeT
   }
 
   const auto& old_tree = it->second;
-  auto old_leaves = flatten_leaf_types(*old_tree);
-  auto new_leaves = flatten_leaf_types(*updated_tree);
+  auto old_leaves = flattenLeafTypes(*old_tree);
+  auto new_leaves = flattenLeafTypes(*updated_tree);
 
   // Build a map from path -> PrimitiveType for the new tree
   tsl::robin_map<std::string, PJ::PrimitiveType> new_leaf_map;

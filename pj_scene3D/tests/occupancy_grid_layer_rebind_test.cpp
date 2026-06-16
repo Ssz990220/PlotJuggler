@@ -41,14 +41,14 @@ std::atomic<int> g_streaming_parser_calls{0};
 // is handled by CountingObjectParser, so this is just the emit half (same
 // signature as SchemaHandler::parse_object).
 PJ::Expected<PJ::sdk::ObjectRecord> emitGrid(PJ::Timestamp ts, PJ::sdk::PayloadView /*payload*/) {
-  static const uint8_t kCell[1] = {0};
+  static const uint8_t k_cell[1] = {0};
   PJ::sdk::OccupancyGrid grid;
   grid.timestamp_ns = ts;
   grid.frame_id = "map";
   grid.resolution = 0.05;
   grid.width = 1;
   grid.height = 1;
-  grid.data = PJ::Span<const uint8_t>(kCell, 1);
+  grid.data = PJ::Span<const uint8_t>(k_cell, 1);
   return PJ::sdk::ObjectRecord{.ts = ts, .object = grid};
 }
 

@@ -33,7 +33,7 @@ class RawBuffer {
 
   [[nodiscard]] const uint8_t* data() const noexcept;
 
-  [[nodiscard]] uint8_t* mutable_data() noexcept;
+  [[nodiscard]] uint8_t* mutableData() noexcept;
 
   [[nodiscard]] std::size_t size() const noexcept;
 
@@ -87,7 +87,7 @@ class BitVector {
   [[nodiscard]] const uint8_t* data() const noexcept;
 
   /// Return mutable underlying bytes.
-  [[nodiscard]] uint8_t* mutable_data() noexcept;
+  [[nodiscard]] uint8_t* mutableData() noexcept;
 
   /// Return byte count of packed storage.
   [[nodiscard]] std::size_t sizeBytes() const noexcept;

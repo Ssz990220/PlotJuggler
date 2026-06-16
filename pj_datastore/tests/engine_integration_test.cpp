@@ -751,7 +751,7 @@ TEST(EngineIntegrationTest, RetentionWorksWithNegativeTimestamps) {
   const TopicStorage* storage = engine.getTopicStorage(handle.topic_id);
   ASSERT_NE(storage, nullptr);
   EXPECT_FALSE(storage->empty());
-  EXPECT_EQ(storage->time_max(), 0);
+  EXPECT_EQ(storage->timeMax(), 0);
 
   // Enforce retention with window of 500: evictBefore(0 - 500 = -500)
   // Chunks with t_max < -500 should be evicted.
@@ -898,10 +898,10 @@ TEST(EngineIntegrationTest, BulkAppendColumnsMultiChunk) {
   TopicId topic_id = *topic_id_or;
 
   // Prepare 1000 rows of bulk data
-  constexpr std::size_t N = 1000;
-  std::vector<Timestamp> timestamps(N);
-  std::vector<float> x_vals(N), y_vals(N), z_vals(N);
-  for (std::size_t i = 0; i < N; ++i) {
+  constexpr std::size_t kN = 1000;
+  std::vector<Timestamp> timestamps(kN);
+  std::vector<float> x_vals(kN), y_vals(kN), z_vals(kN);
+  for (std::size_t i = 0; i < kN; ++i) {
     timestamps[i] = static_cast<Timestamp>(i) * 1000;
     x_vals[i] = static_cast<float>(i) * 0.1F;
     y_vals[i] = static_cast<float>(i) * 0.2F;
@@ -909,9 +909,9 @@ TEST(EngineIntegrationTest, BulkAppendColumnsMultiChunk) {
   }
 
   std::vector<ColumnData> columns = {
-      ColumnData::Float32(0, x_vals),
-      ColumnData::Float32(1, y_vals),
-      ColumnData::Float32(2, z_vals),
+      ColumnData::float32(0, x_vals),
+      ColumnData::float32(1, y_vals),
+      ColumnData::float32(2, z_vals),
   };
   auto status = writer.appendColumns(topic_id, timestamps, columns);
   ASSERT_TRUE(status.has_value()) << status.error();
@@ -929,13 +929,13 @@ TEST(EngineIntegrationTest, BulkAppendColumnsMultiChunk) {
   DataReader reader = engine.createReader();
   std::size_t count = 0;
   auto cursor_or =
-      reader.rangeQuery(QueryRange{.topic_id = topic_id, .t_min = 0, .t_max = static_cast<Timestamp>(N - 1) * 1000});
+      reader.rangeQuery(QueryRange{.topic_id = topic_id, .t_min = 0, .t_max = static_cast<Timestamp>(kN - 1) * 1000});
   ASSERT_TRUE(cursor_or.has_value()) << cursor_or.error();
   cursor_or->forEach([&count](const SampleRow& row) {
     ASSERT_NE(row.chunk, nullptr);
     ++count;
   });
-  EXPECT_EQ(count, N);
+  EXPECT_EQ(count, kN);
 
   // Spot-check specific values via latest_at
   auto latest_or = reader.latestAt(QueryPoint{.topic_id = topic_id, .t = 500 * 1000});
@@ -966,7 +966,7 @@ TEST(EngineIntegrationTest, BulkAppendErrorHandling) {
     const Timestamp ts[] = {1};
     const float vals[] = {1.0F};
     std::vector<ColumnData> cols = {
-        ColumnData::Float32(0, Span<const float>(vals, 1)),
+        ColumnData::float32(0, Span<const float>(vals, 1)),
     };
     auto status = writer.appendColumns(999, Span<const Timestamp>(ts, 1), cols);
     EXPECT_FALSE(status.has_value());
@@ -984,7 +984,7 @@ TEST(EngineIntegrationTest, BulkAppendErrorHandling) {
     const Timestamp ts[] = {1, 2, 3};
     const float vals[] = {1.0F, 2.0F};  // 2 values, 3 timestamps
     std::vector<ColumnData> cols = {
-        ColumnData::Float32(0, Span<const float>(vals, 2)),
+        ColumnData::float32(0, Span<const float>(vals, 2)),
     };
     auto status = writer.appendColumns(tid, Span<const Timestamp>(ts, 3), cols);
     EXPECT_FALSE(status.has_value());

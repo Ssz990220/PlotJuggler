@@ -74,7 +74,7 @@ struct StreamingSourceManager::StreamingSession {
   std::string plugin_id;
   DatasetId dataset_id = 0;
   DataSourceHandle handle;
-  std::unique_ptr<DataSourceRuntimeHost> runtime_host_;
+  std::unique_ptr<DataSourceRuntimeHost> runtime_host;
   std::unique_ptr<QThread> worker;
 
   explicit StreamingSession(DataSourceHandle&& h) : handle(std::move(h)) {}
@@ -97,8 +97,8 @@ StreamingSourceManager::~StreamingSourceManager() {
   // Cooperative stop + join for every live session. We can't go through
   // onWorkerFinished here because the UI event loop won't run again.
   for (auto& [dataset_id, sess] : sessions_) {
-    if (sess->runtime_host_ != nullptr) {
-      sess->runtime_host_->requestStop("manager shutdown");
+    if (sess->runtime_host != nullptr) {
+      sess->runtime_host->requestStop("manager shutdown");
     }
   }
   for (auto& [dataset_id, sess] : sessions_) {
@@ -145,8 +145,8 @@ void StreamingSourceManager::onPauseToggled(bool paused) {
     // families. The primary stays frozen by absence of writes — that's
     // what consumers (Scene2DDockWidget, PlotWidget) read while paused.
     for (auto& [_id, sess] : sessions_) {
-      sess->runtime_host_->setObjectStoreTarget(secondary_object_store_.get());
-      sess->runtime_host_->setDataEngineTarget(secondary_data_engine_.get());
+      sess->runtime_host->setObjectStoreTarget(secondary_object_store_.get());
+      sess->runtime_host->setDataEngineTarget(secondary_data_engine_.get());
     }
     return;
   }
@@ -156,8 +156,8 @@ void StreamingSourceManager::onPauseToggled(bool paused) {
   auto& primary_store = session_manager_.objectStore();
   auto& primary_engine = session_manager_.dataEngine();
   for (auto& [_id, sess] : sessions_) {
-    sess->runtime_host_->setObjectStoreTarget(&primary_store);
-    sess->runtime_host_->setDataEngineTarget(&primary_engine);
+    sess->runtime_host->setObjectStoreTarget(&primary_store);
+    sess->runtime_host->setDataEngineTarget(&primary_engine);
   }
   flushSecondaryIntoPrimary();
   flushSecondaryDataEngineIntoPrimary();
@@ -268,7 +268,7 @@ void StreamingSourceManager::startSession(const QString& plugin_id) {
   auto session = std::make_unique<StreamingSession>(std::move(handle));
   session->plugin_id = source.name;
   session->dataset_id = dataset_id;
-  session->runtime_host_ = std::make_unique<DataSourceRuntimeHost>(
+  session->runtime_host = std::make_unique<DataSourceRuntimeHost>(
       engine, extensions_, dataset_id, source_handle, session_manager_.objectStore(), source.name,
       [this](ObjectTopicId id, std::unique_ptr<MessageParserHandle> parser) {
         session_manager_.registerObjectTopicParser(id, std::move(parser));
@@ -276,7 +276,7 @@ void StreamingSourceManager::startSession(const QString& plugin_id) {
       secondary_object_store_.get(), secondary_data_engine_.get(), std::move(library_keepalive));
 
   ServiceRegistryBuilder registry;
-  session->runtime_host_->registerServices(registry);
+  session->runtime_host->registerServices(registry);
 
   if (auto status = session->handle.bind(registry.view()); !status) {
     emit streamError(
@@ -372,15 +372,15 @@ void StreamingSourceManager::workerLoop(DatasetId dataset_id) {
   }
   StreamingSession* sess = it->second.get();
 
-  while (!sess->runtime_host_->stopRequested()) {
+  while (!sess->runtime_host->stopRequested()) {
     if (auto status = sess->handle.poll(); !status) {
       const QString err = QString::fromStdString(status.error());
       QMetaObject::invokeMethod(
           this, [this, dataset_id, err]() { emit streamError(dataset_id, err); }, Qt::QueuedConnection);
-      sess->runtime_host_->requestStop(std::string("plugin poll error: ") + err.toStdString());
+      sess->runtime_host->requestStop(std::string("plugin poll error: ") + err.toStdString());
       break;
     }
-    sess->runtime_host_->flushPending();
+    sess->runtime_host->flushPending();
     // Broadcast live-advance on the UI thread so plot adapters invalidate
     // their sample caches AND follow-live consumers auto-fit. The write
     // host wrote directly through DataEngine and bypassed SessionManager's
@@ -402,7 +402,7 @@ void StreamingSourceManager::workerLoop(DatasetId dataset_id) {
           // plugin creates new object topics mid-stream (post-startSession)
           // and would otherwise miss the budget set by setObjectRetentionBudget.
           if (auto session_it = sessions_.find(dataset_id); session_it != sessions_.end()) {
-            session_it->second->runtime_host_->setObjectRetentionBudget(window_ns, kStreamingObjectMemoryBudget);
+            session_it->second->runtime_host->setObjectRetentionBudget(window_ns, kStreamingObjectMemoryBudget);
           }
           // Trim the engine currently being written: B while paused (bounds the
           // tail), the primary while live. The frozen engine is never touched,
@@ -428,7 +428,7 @@ void StreamingSourceManager::workerLoop(DatasetId dataset_id) {
   }
 
   sess->handle.stop();
-  sess->runtime_host_->flushAll();
+  sess->runtime_host->flushAll();
 
   QMetaObject::invokeMethod(this, [this, dataset_id]() { onWorkerFinished(dataset_id); }, Qt::QueuedConnection);
 }
@@ -439,7 +439,7 @@ void StreamingSourceManager::onWorkerFinished(DatasetId dataset_id) {
     return;
   }
   StreamingSession* sess = it->second.get();
-  const QString reason = QString::fromStdString(sess->runtime_host_->lastError());
+  const QString reason = QString::fromStdString(sess->runtime_host->lastError());
 
   if (sess->worker != nullptr) {
     sess->worker->wait();
@@ -451,7 +451,7 @@ void StreamingSourceManager::onWorkerFinished(DatasetId dataset_id) {
 
 void StreamingSourceManager::requestStopAll(const QString& reason) {
   for (auto& [dataset_id, sess] : sessions_) {
-    sess->runtime_host_->requestStop(reason.toStdString());
+    sess->runtime_host->requestStop(reason.toStdString());
   }
 }
 

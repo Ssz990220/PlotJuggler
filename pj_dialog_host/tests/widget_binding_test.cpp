@@ -83,7 +83,7 @@ TEST(PjUiLoader, RegistersBuildingBlocks) {
 TEST(WidgetBindingRangeSlider, AppliesBoundsValuesAndTimeSpan) {
   qapp();
   QWidget root;
-  auto* slider = new PJ::RangeSlider(Qt::Horizontal, PJ::RangeSlider::DoubleHandles, &root);
+  auto* slider = new PJ::RangeSlider(Qt::Horizontal, PJ::RangeSlider::kDoubleHandles, &root);
   slider->setObjectName("rangeSlider");
 
   PJ::WidgetData wd;
@@ -93,9 +93,9 @@ TEST(WidgetBindingRangeSlider, AppliesBoundsValuesAndTimeSpan) {
   PJ::WidgetDataView view(wd.toJson());
   PJ::applyWidgetData(&root, view);
 
-  EXPECT_EQ(slider->GetMaximun(), 1000);
-  EXPECT_EQ(slider->GetLowerValue(), 200);
-  EXPECT_EQ(slider->GetUpperValue(), 800);
+  EXPECT_EQ(slider->getMaximun(), 1000);
+  EXPECT_EQ(slider->getLowerValue(), 200);
+  EXPECT_EQ(slider->getUpperValue(), 800);
   EXPECT_TRUE(slider->floatingLabelsVisible());
 }
 

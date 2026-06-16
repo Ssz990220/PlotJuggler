@@ -39,7 +39,7 @@ struct SpanInputStreamData {
   int64_t offset;
 };
 
-ArrowErrorCode span_input_stream_read(
+ArrowErrorCode spanInputStreamRead(
     ArrowIpcInputStream* stream, uint8_t* buf, int64_t buf_size_bytes, int64_t* size_read_out, ArrowError* /*error*/) {
   auto* s = static_cast<SpanInputStreamData*>(stream->private_data);
   const int64_t available = s->size - s->offset;
@@ -52,15 +52,15 @@ ArrowErrorCode span_input_stream_read(
   return NANOARROW_OK;
 }
 
-void span_input_stream_release(ArrowIpcInputStream* stream) {
+void spanInputStreamRelease(ArrowIpcInputStream* stream) {
   delete static_cast<SpanInputStreamData*>(stream->private_data);
   stream->private_data = nullptr;
   stream->release = nullptr;
 }
 
-void init_span_input_stream(ArrowIpcInputStream* stream, PJ::Span<const uint8_t> span) {
-  stream->read = span_input_stream_read;
-  stream->release = span_input_stream_release;
+void initSpanInputStream(ArrowIpcInputStream* stream, PJ::Span<const uint8_t> span) {
+  stream->read = spanInputStreamRead;
+  stream->release = spanInputStreamRelease;
   stream->private_data = new SpanInputStreamData{span.data(), static_cast<int64_t>(span.size()), 0};
 }
 
@@ -68,7 +68,7 @@ void init_span_input_stream(ArrowIpcInputStream* stream, PJ::Span<const uint8_t>
 // nanoarrow ArrowType → PrimitiveType
 // ---------------------------------------------------------------------------
 
-std::optional<PrimitiveType> nanoarrow_type_to_primitive(ArrowType type) {
+std::optional<PrimitiveType> nanoarrowTypeToPrimitive(ArrowType type) {
   switch (type) {
     case NANOARROW_TYPE_INT8:
       return PrimitiveType::kInt8;
@@ -111,7 +111,7 @@ struct ColumnDataWithBuffer {
   std::vector<uint32_t> offset_buf;
 };
 
-ColumnDataWithBuffer make_column_data_nanoarrow(
+ColumnDataWithBuffer makeColumnDataNanoarrow(
     const ArrowArrayView* child, const ArrowColumnMapping& mapping, int64_t length) {
   ColumnDataWithBuffer result;
   const auto sk = storageKindOf(mapping.pj_type);
@@ -128,19 +128,19 @@ ColumnDataWithBuffer make_column_data_nanoarrow(
 
   switch (sk) {
     case StorageKind::kFloat32: {
-      result.col_data = ColumnData::Float32(
+      result.col_data = ColumnData::float32(
           mapping.pj_column_index, Span<const float>(child->buffer_views[1].data.as_float + child->offset, n),
           validity_view);
       break;
     }
     case StorageKind::kFloat64: {
-      result.col_data = ColumnData::Float64(
+      result.col_data = ColumnData::float64(
           mapping.pj_column_index, Span<const double>(child->buffer_views[1].data.as_double + child->offset, n),
           validity_view);
       break;
     }
     case StorageKind::kInt32: {
-      result.col_data = ColumnData::Int32(
+      result.col_data = ColumnData::int32(
           mapping.pj_column_index, Span<const int32_t>(child->buffer_views[1].data.as_int32 + child->offset, n),
           validity_view);
       break;
@@ -153,12 +153,12 @@ ColumnDataWithBuffer make_column_data_nanoarrow(
           for (int64_t i = 0; i < length; ++i) {
             result.int64_buf[static_cast<std::size_t>(i)] = ArrowArrayViewGetIntUnsafe(child, i);
           }
-          result.col_data = ColumnData::Int64(
+          result.col_data = ColumnData::int64(
               mapping.pj_column_index, Span<const int64_t>(result.int64_buf.data(), n), validity_view);
           break;
         }
         case PrimitiveType::kInt64: {
-          result.col_data = ColumnData::Int64(
+          result.col_data = ColumnData::int64(
               mapping.pj_column_index, Span<const int64_t>(child->buffer_views[1].data.as_int64 + child->offset, n),
               validity_view);
           break;
@@ -177,12 +177,12 @@ ColumnDataWithBuffer make_column_data_nanoarrow(
           for (int64_t i = 0; i < length; ++i) {
             result.uint64_buf[static_cast<std::size_t>(i)] = ArrowArrayViewGetUIntUnsafe(child, i);
           }
-          result.col_data = ColumnData::Uint64(
+          result.col_data = ColumnData::uint64(
               mapping.pj_column_index, Span<const uint64_t>(result.uint64_buf.data(), n), validity_view);
           break;
         }
         case PrimitiveType::kUint64: {
-          result.col_data = ColumnData::Uint64(
+          result.col_data = ColumnData::uint64(
               mapping.pj_column_index, Span<const uint64_t>(child->buffer_views[1].data.as_uint64 + child->offset, n),
               validity_view);
           break;
@@ -201,7 +201,7 @@ ColumnDataWithBuffer make_column_data_nanoarrow(
       // Store in uint64_buf as raw bytes
       result.uint64_buf.resize((n + sizeof(uint64_t) - 1) / sizeof(uint64_t));
       std::memcpy(result.uint64_buf.data(), bool_buf.data(), n);
-      result.col_data = ColumnData::Bool(
+      result.col_data = ColumnData::boolean(
           mapping.pj_column_index, Span<const uint8_t>(reinterpret_cast<const uint8_t*>(result.uint64_buf.data()), n),
           validity_view);
       break;
@@ -213,7 +213,7 @@ ColumnDataWithBuffer make_column_data_nanoarrow(
       for (std::size_t i = 0; i <= n; ++i) {
         result.offset_buf[i] = static_cast<uint32_t>(offsets_ptr[i]);
       }
-      result.col_data = ColumnData::String(
+      result.col_data = ColumnData::string(
           mapping.pj_column_index, Span<const uint32_t>(result.offset_buf.data(), n + 1),
           Span<const char>(
               child->buffer_views[2].data.as_char, static_cast<std::size_t>(child->buffer_views[2].size_bytes)),
@@ -256,7 +256,7 @@ ColumnDataWithBuffer make_column_data_nanoarrow(
   return false;
 }
 
-[[nodiscard]] Status rescale_to_nanoseconds(std::vector<Timestamp>& values, ArrowTimeUnit unit) {
+[[nodiscard]] Status rescaleToNanoseconds(std::vector<Timestamp>& values, ArrowTimeUnit unit) {
   Timestamp ns_per_tick = 1;
   switch (unit) {
     case NANOARROW_TIME_UNIT_SECOND:
@@ -285,7 +285,7 @@ ColumnDataWithBuffer make_column_data_nanoarrow(
 /// Extract timestamps (as int64 ns) from an ArrowArrayView child column. @p unit
 /// is the column's Arrow time unit (s/ms/us/ns) when it is a TIMESTAMP; raw
 /// integer columns pass NANOARROW_TIME_UNIT_NANO and are taken as ns verbatim.
-Expected<std::vector<Timestamp>> extract_timestamps_nanoarrow(
+Expected<std::vector<Timestamp>> extractTimestampsNanoarrow(
     const ArrowArrayView* view, int64_t length, ArrowTimeUnit unit) {
   const auto n = static_cast<std::size_t>(length);
   std::vector<Timestamp> result(n);
@@ -309,14 +309,14 @@ Expected<std::vector<Timestamp>> extract_timestamps_nanoarrow(
     return result;
   }
 
-  Status scale_status = rescale_to_nanoseconds(result, unit);
+  Status scale_status = rescaleToNanoseconds(result, unit);
   if (!scale_status.has_value()) {
     return unexpected(scale_status.error());
   }
   return result;
 }
 
-std::vector<Timestamp> generate_sequential_timestamps(int64_t length) {
+std::vector<Timestamp> generateSequentialTimestamps(int64_t length) {
   const auto n = static_cast<std::size_t>(length);
   std::vector<Timestamp> result(n);
   for (int64_t i = 0; i < length; ++i) {
@@ -348,7 +348,7 @@ PJ::Expected<std::pair<std::shared_ptr<PJ::TypeTreeNode>, std::vector<ArrowColum
       continue;  // skip unrecognized types
     }
 
-    auto pj_type = nanoarrow_type_to_primitive(view.type);
+    auto pj_type = nanoarrowTypeToPrimitive(view.type);
     if (!pj_type.has_value()) {
       continue;  // skip unsupported types
     }
@@ -425,14 +425,13 @@ PJ::Status ingestBatchesFromStream(
         return PJ::unexpected(
             fmt::format("timestamp_column {} out of range ({} children)", timestamp_column, array_view->n_children));
       }
-      auto timestamps_or =
-          extract_timestamps_nanoarrow(array_view->children[timestamp_column], num_rows, timestamp_unit);
+      auto timestamps_or = extractTimestampsNanoarrow(array_view->children[timestamp_column], num_rows, timestamp_unit);
       if (!timestamps_or.has_value()) {
         return unexpected(timestamps_or.error());
       }
       timestamps = std::move(*timestamps_or);
     } else {
-      timestamps = generate_sequential_timestamps(num_rows);
+      timestamps = generateSequentialTimestamps(num_rows);
     }
 
     std::vector<ColumnDataWithBuffer> col_buffers;
@@ -442,7 +441,7 @@ PJ::Status ingestBatchesFromStream(
         return PJ::unexpected(fmt::format("Arrow column index {} out of range", mapping.arrow_column_index));
       }
       col_buffers.push_back(
-          make_column_data_nanoarrow(array_view->children[mapping.arrow_column_index], mapping, num_rows));
+          makeColumnDataNanoarrow(array_view->children[mapping.arrow_column_index], mapping, num_rows));
     }
 
     std::vector<ColumnData> col_data_vec;
@@ -469,7 +468,7 @@ PJ::Status ingestBatchesFromStream(
 PJ::Expected<std::pair<std::shared_ptr<PJ::TypeTreeNode>, std::vector<ArrowColumnMapping>>> schemaFromIpc(
     PJ::Span<const uint8_t> ipc_stream) {
   ArrowIpcInputStream input;
-  init_span_input_stream(&input, ipc_stream);
+  initSpanInputStream(&input, ipc_stream);
 
   nanoarrow::UniqueArrayStream stream;
   int rc = ArrowIpcArrayStreamReaderInit(stream.get(), &input, nullptr);
@@ -514,7 +513,7 @@ PJ::Status importIpcStream(
     DataWriter& writer, TopicId topic_id, PJ::Span<const uint8_t> ipc_stream,
     const std::vector<ArrowColumnMapping>& mappings, int timestamp_column) {
   ArrowIpcInputStream input;
-  init_span_input_stream(&input, ipc_stream);
+  initSpanInputStream(&input, ipc_stream);
 
   nanoarrow::UniqueArrayStream stream;
   int rc = ArrowIpcArrayStreamReaderInit(stream.get(), &input, nullptr);

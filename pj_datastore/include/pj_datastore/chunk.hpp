@@ -183,7 +183,7 @@ class TopicChunkBuilder {
   TopicId topic_id_;
   SchemaId schema_id_;
   uint32_t max_rows_;
-  static inline std::atomic<ChunkId> next_chunk_id_{1};  // monotonic counter
+  static inline std::atomic<ChunkId> next_chunk_id{1};  // monotonic counter
 
   std::vector<Timestamp> timestamps_;
   std::vector<TypedColumnBuffer> columns_;

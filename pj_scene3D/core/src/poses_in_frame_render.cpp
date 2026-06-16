@@ -17,12 +17,12 @@ std::vector<PoseTriadInstance> buildPoseTriadInstances(const PJ::sdk::PosesInFra
   // look identical to the TF "Frames" gizmos. Per-axis colors mirror
   // AxisRenderPass (desaturated R/G/B). Both are pure viewer conventions, kept
   // here so the expansion stays GL-free and unit-testable.
-  static const std::array<glm::mat4, 3> kArm = {{
+  static const std::array<glm::mat4, 3> k_arm = {{
       glm::mat4(1.0f),
       glm::rotate(glm::mat4(1.0f), glm::radians(90.0f), glm::vec3(0.0f, 0.0f, 1.0f)),
       glm::rotate(glm::mat4(1.0f), glm::radians(-90.0f), glm::vec3(0.0f, 1.0f, 0.0f)),
   }};
-  static const std::array<glm::vec3, 3> kRgb = {{
+  static const std::array<glm::vec3, 3> k_rgb = {{
       {0.95f, 0.30f, 0.30f},
       {0.30f, 0.85f, 0.30f},
       {0.35f, 0.50f, 1.00f},
@@ -41,8 +41,8 @@ std::vector<PoseTriadInstance> buildPoseTriadInstances(const PJ::sdk::PosesInFra
   for (const PJ::sdk::Pose& pose : msg.poses) {
     const glm::mat4 base = poseToMat4(pose);
     for (std::size_t arm = 0; arm < arm_count; ++arm) {
-      const glm::vec3 rgb = style.override_color ? style.color : kRgb[arm];
-      instances.push_back({base * kArm[arm] * scale, glm::vec4(rgb, alpha)});
+      const glm::vec3 rgb = style.override_color ? style.color : k_rgb[arm];
+      instances.push_back({base * k_arm[arm] * scale, glm::vec4(rgb, alpha)});
     }
   }
   return instances;

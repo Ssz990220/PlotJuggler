@@ -472,7 +472,7 @@ PlotTabFrame* TabbedPlotWidget::createTabFrame(const QString& tab_name, PlotDock
   const int chrome_extent = std::max(
       1, (chrome_metrics_.icon_size + chrome_metrics_.icon_padding) - 1 + (2 * chrome_metrics_.layout_padding));
   frame->setFixedHeight(chrome_extent);
-  frame->closeButton()->setIcon(LoadSvg(":/resources/svg/close-button.svg", currentTheme()));
+  frame->closeButton()->setIcon(loadSvg(":/resources/svg/close-button.svg", currentTheme()));
   connect(frame, &PlotTabFrame::clicked, this, [this, frame]() { onTabFrameClicked(frame); });
   connect(frame, &PlotTabFrame::renameCommitted, this, [this, frame](const QString& new_name) {
     onTabRenameRequested(frame, new_name);
@@ -513,12 +513,12 @@ void TabbedPlotWidget::onChromeMetricsChanged(const ChromeMetrics& metrics) {
 
 void TabbedPlotWidget::onStylesheetChanged(QString theme) {
   if (button_add_tab_ != nullptr) {
-    button_add_tab_->setIcon(LoadSvg(":/resources/svg/add.svg", theme));
+    button_add_tab_->setIcon(loadSvg(":/resources/svg/add.svg", theme));
   }
   // Panel-toggle button icons are owned by MainWindow because their
   // open/close glyph depends on the live visibility of the target
   // panel — knowledge this widget intentionally doesn't have.
-  const QIcon close_icon = LoadSvg(":/resources/svg/close-button.svg", theme);
+  const QIcon close_icon = loadSvg(":/resources/svg/close-button.svg", theme);
   for (const TabEntry& entry : tabs_) {
     if (auto* close_btn = entry.frame->closeButton()) {
       close_btn->setIcon(close_icon);

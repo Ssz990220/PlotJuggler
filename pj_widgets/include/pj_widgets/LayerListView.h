@@ -67,7 +67,7 @@ namespace detail {
 // Moves the element at index `from` so it lands at the drop position `to`
 // (interpreted against the pre-removal list, matching the drop indicator).
 // Returns `ids` unchanged when `from` is out of range.
-[[nodiscard]] std::vector<qint64> ReorderIds(std::vector<qint64> ids, int from, int to);
+[[nodiscard]] std::vector<qint64> reorderIds(std::vector<qint64> ids, int from, int to);
 
 }  // namespace detail
 

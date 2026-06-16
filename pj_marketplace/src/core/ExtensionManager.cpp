@@ -196,8 +196,8 @@ PendingInstallIntent readPendingInstallIntent(const QString& root) {
     intent.error = QString("Staged install registry intent has unsafe id: %1").arg(id_error);
     return intent;
   }
-  static const QRegularExpression kVersionRe(QStringLiteral("^[0-9A-Za-z._+-]+$"));
-  if (!kVersionRe.match(version).hasMatch()) {
+  static const QRegularExpression k_version_re(QStringLiteral("^[0-9A-Za-z._+-]+$"));
+  if (!k_version_re.match(version).hasMatch()) {
     intent.error = QString("Staged install registry intent has unsafe version \"%1\"").arg(version);
     return intent;
   }
@@ -324,14 +324,14 @@ void ExtensionManager::doInstall(const Extension& ext, bool staging, bool allow_
         pending_id_.clear();
         pending_op_id_ = -1;
 
-        auto failAfterExtraction = [&](const QString& message) {
+        auto fail_after_extraction = [&](const QString& message) {
           removeDirectoryIfSet(transaction_root);
           pending_extract_dir_.clear();
           emitInstallFailure(finished_id, message);
         };
 
         if (const QString tx_error = validateTransactionContents(transaction_root, ext.id); !tx_error.isEmpty()) {
-          failAfterExtraction(tx_error);
+          fail_after_extraction(tx_error);
           return;
         }
 
@@ -339,24 +339,25 @@ void ExtensionManager::doInstall(const Extension& ext, bool staging, bool allow_
         const DirectoryDiscovery discovered = discoverExtensionDirectory(root);
         const QString validation_error = validateRegistryIntent(discovered, ext.id, ext.version);
         if (!validation_error.isEmpty()) {
-          failAfterExtraction(validation_error);
+          fail_after_extraction(validation_error);
           return;
         }
 
         if (staging) {
           QString intent_error;
           if (!writePendingInstallIntent(root, ext, &intent_error)) {
-            failAfterExtraction(intent_error);
+            fail_after_extraction(intent_error);
             return;
           }
 
           const QString staged_root = pendingRoot(pending_dir_, ext.id);
           if (QDir(staged_root).exists() && !QDir(staged_root).removeRecursively()) {
-            failAfterExtraction(QString("Could not replace existing staged install directory \"%1\"").arg(staged_root));
+            fail_after_extraction(
+                QString("Could not replace existing staged install directory \"%1\"").arg(staged_root));
             return;
           }
           if (!QDir().rename(root, staged_root)) {
-            failAfterExtraction(QString("Could not stage install to \"%1\"").arg(staged_root));
+            fail_after_extraction(QString("Could not stage install to \"%1\"").arg(staged_root));
             return;
           }
 
@@ -369,11 +370,11 @@ void ExtensionManager::doInstall(const Extension& ext, bool staging, bool allow_
 
         const QString dst = extRoot(extensions_dir_, ext.id);
         if (QDir(dst).exists() && !QDir(dst).removeRecursively()) {
-          failAfterExtraction(QString("Could not replace existing extension directory \"%1\"").arg(dst));
+          fail_after_extraction(QString("Could not replace existing extension directory \"%1\"").arg(dst));
           return;
         }
         if (!QDir().rename(root, dst)) {
-          failAfterExtraction(QString("Could not promote install to \"%1\"").arg(dst));
+          fail_after_extraction(QString("Could not promote install to \"%1\"").arg(dst));
           return;
         }
 
@@ -384,7 +385,7 @@ void ExtensionManager::doInstall(const Extension& ext, bool staging, bool allow_
         const QString final_error = validateRegistryIntent(final_check, ext.id, ext.version);
         if (!final_error.isEmpty()) {
           QDir(dst).removeRecursively();
-          failAfterExtraction(QString("Post-promotion validation failed: %1").arg(final_error));
+          fail_after_extraction(QString("Post-promotion validation failed: %1").arg(final_error));
           return;
         }
 
@@ -531,7 +532,7 @@ void ExtensionManager::applyPendingInstalls() {
       continue;
     }
 
-    auto failStagedInstall = [&](const QString& signal_id, const QString& message) {
+    auto fail_staged_install = [&](const QString& signal_id, const QString& message) {
       qWarning(
           "ExtensionManager: staged install '%s' failed validation: %s", qPrintable(staged_dir), qPrintable(message));
       QString final_message = message;
@@ -553,17 +554,17 @@ void ExtensionManager::applyPendingInstalls() {
     };
 
     if (staged_name.isEmpty()) {
-      failStagedInstall(staged_name, "Staged install directory has no id");
+      fail_staged_install(staged_name, "Staged install directory has no id");
       continue;
     }
 
     const PendingInstallIntent intent = readPendingInstallIntent(staged_dir);
     if (!intent.valid) {
-      failStagedInstall(staged_name, intent.error);
+      fail_staged_install(staged_name, intent.error);
       continue;
     }
     if (intent.id != staged_name) {
-      failStagedInstall(
+      fail_staged_install(
           staged_name,
           QString("Staged install directory \"%1\" does not match registry id \"%2\"").arg(staged_name, intent.id));
       continue;
@@ -572,7 +573,7 @@ void ExtensionManager::applyPendingInstalls() {
     const DirectoryDiscovery discovered = discoverExtensionDirectory(staged_dir);
     const QString validation_error = validateRegistryIntent(discovered, intent.id, intent.version);
     if (!validation_error.isEmpty()) {
-      failStagedInstall(intent.id, validation_error);
+      fail_staged_install(intent.id, validation_error);
       continue;
     }
 

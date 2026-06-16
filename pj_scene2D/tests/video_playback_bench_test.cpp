@@ -96,30 +96,30 @@ LatencyStats summarize(std::vector<double>& samples_ms) {
 
 class VideoPlaybackBench : public ::testing::Test {
  protected:
-  static LoadedVideo* video_;
+  static LoadedVideo* video;
 
   static void SetUpTestSuite() {
     const auto path = sdk::getEnv("PJ_BENCH_MP4");
     if (!path.has_value()) {
       return;
     }
-    video_ = loadVideo(*path);
-    if (video_ != nullptr && video_->packet_count > 0) {
-      const double duration_s = static_cast<double>(video_->t_max - video_->t_min) / kNsPerSec;
+    video = loadVideo(*path);
+    if (video != nullptr && video->packet_count > 0) {
+      const double duration_s = static_cast<double>(video->t_max - video->t_min) / kNsPerSec;
       fprintf(
           stderr, "[bench] %s: codec=%s packets=%zu keyframes=%zu (GOP ~%zu) duration=%.1fs\n", path->c_str(),
-          video_->codec.c_str(), video_->packet_count, video_->keyframe_count,
-          video_->packet_count / std::max<size_t>(video_->keyframe_count, 1), duration_s);
+          video->codec.c_str(), video->packet_count, video->keyframe_count,
+          video->packet_count / std::max<size_t>(video->keyframe_count, 1), duration_s);
     }
   }
 
   static void TearDownTestSuite() {
-    delete video_;
-    video_ = nullptr;
+    delete video;
+    video = nullptr;
   }
 
   void SetUp() override {
-    if (video_ == nullptr || video_->packet_count == 0) {
+    if (video == nullptr || video->packet_count == 0) {
       GTEST_SKIP() << "set PJ_BENCH_MP4=<file.mp4> to run the playback benchmark";
     }
   }
@@ -127,7 +127,7 @@ class VideoPlaybackBench : public ::testing::Test {
   /// Wall-clock-paced playback through StreamingVideoSource at `tick_hz`,
   /// covering `media_seconds` of media. Returns delivered-frame stats.
   void runPlaybackSim(double tick_hz, double media_seconds) {
-    StreamingVideoSource source(&video_->store, video_->topic);
+    StreamingVideoSource source(&video->store, video->topic);
 
     std::atomic<int> deposits{0};
     source.setFrameReadyCallback([&deposits] { deposits.fetch_add(1, std::memory_order_relaxed); });
@@ -139,7 +139,7 @@ class VideoPlaybackBench : public ::testing::Test {
     std::set<int64_t> distinct_pts;
     auto next_tick = std::chrono::steady_clock::now();
     for (int i = 0; i < ticks; ++i) {
-      source.setTimestamp(video_->t_min + static_cast<int64_t>(i) * tick_ns);
+      source.setTimestamp(video->t_min + static_cast<int64_t>(i) * tick_ns);
       if (auto frame = source.takeFrame(); frame.has_value() && frame->base.has_value() && !frame->base->isNull()) {
         ++taken;
         distinct_pts.insert(frame->base->pts);
@@ -165,21 +165,21 @@ class VideoPlaybackBench : public ::testing::Test {
   }
 };
 
-LoadedVideo* VideoPlaybackBench::video_ = nullptr;
+LoadedVideo* VideoPlaybackBench::video = nullptr;
 
 TEST_F(VideoPlaybackBench, A_SequentialDecodeThroughput) {
   StreamingVideoDecoder decoder;
-  decoder.attach(&video_->store, video_->topic);
+  decoder.attach(&video->store, video->topic);
 
-  const int64_t frame_step = (video_->t_max - video_->t_min) / static_cast<int64_t>(video_->packet_count - 1);
-  const int frames = std::min<int>(240, static_cast<int>(video_->packet_count) - 1);
+  const int64_t frame_step = (video->t_max - video->t_min) / static_cast<int64_t>(video->packet_count - 1);
+  const int frames = std::min<int>(240, static_cast<int>(video->packet_count) - 1);
 
   std::vector<double> latencies_ms;
   latencies_ms.reserve(static_cast<size_t>(frames));
   int decoded = 0;
   const auto t0 = std::chrono::steady_clock::now();
   for (int i = 0; i < frames; ++i) {
-    const Timestamp target = video_->t_min + static_cast<int64_t>(i) * frame_step;
+    const Timestamp target = video->t_min + static_cast<int64_t>(i) * frame_step;
     const auto call_start = std::chrono::steady_clock::now();
     auto result = decoder.decodeAt(target, nullptr);
     const auto call_end = std::chrono::steady_clock::now();

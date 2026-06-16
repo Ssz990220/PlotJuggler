@@ -35,20 +35,20 @@ enum class SetTransformError {
   // pose), rather than start a new history. Surfaced only as an aggregate
   // caller-side drop counter, never per-edge in the UI — see L.102 in the
   // 2026-06-12 scene3D review for the rationale and trade-off.
-  ReparentConflict,
-  SelfLoop,              // child == parent (a frame relative to itself)
-  InvalidFrameName,      // parent_frame or child_frame is empty
-  InvalidRotation,       // quaternion has non-finite components or |q|^2 < 1e-12
-  NonFiniteTranslation,  // translation has a non-finite (NaN/Inf) component
+  kReparentConflict,
+  kSelfLoop,              // child == parent (a frame relative to itself)
+  kInvalidFrameName,      // parent_frame or child_frame is empty
+  kInvalidRotation,       // quaternion has non-finite components or |q|^2 < 1e-12
+  kNonFiniteTranslation,  // translation has a non-finite (NaN/Inf) component
 };
 
 // Why a TF lookup failed. An enum (not a string) keeps render-loop misses
 // allocation-free; the throwing wrapper maps it back to a message.
 enum class LookupError {
-  UnknownSource,   // source frame not present in the buffer
-  UnknownTarget,   // target frame not present in the buffer
-  Disconnected,    // both frames known but no common ancestor (incl. broken cycles)
-  NoSampleAtTime,  // an edge on the connecting path has no sample at the requested time
+  kUnknownSource,   // source frame not present in the buffer
+  kUnknownTarget,   // target frame not present in the buffer
+  kDisconnected,    // both frames known but no common ancestor (incl. broken cycles)
+  kNoSampleAtTime,  // an edge on the connecting path has no sample at the requested time
 };
 
 // Case-insensitive (ASCII) less for frame names. Frame identity stays
@@ -171,10 +171,10 @@ class TransformBuffer {
 
     std::deque<Sample> samples;
 
-    static bool less_stamp(const Sample& sample, TimePoint stamp) {
+    static bool lessStamp(const Sample& sample, TimePoint stamp) {
       return sample.first < stamp;
     }
-    static bool stamp_less(TimePoint stamp, const Sample& sample) {
+    static bool stampLess(TimePoint stamp, const Sample& sample) {
       return stamp < sample.first;
     }
   };

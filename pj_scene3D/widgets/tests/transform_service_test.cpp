@@ -153,14 +153,14 @@ class CountingGridParser : public PJ::MessageParserPluginBase {
               if (counter != nullptr) {
                 counter->fetch_add(1);
               }
-              static const uint8_t kCell[1] = {0};
+              static const uint8_t k_cell[1] = {0};
               PJ::sdk::OccupancyGrid grid;
               grid.timestamp_ns = ts;
               grid.frame_id = "map";
               grid.resolution = 0.05;
               grid.width = 1;
               grid.height = 1;
-              grid.data = PJ::Span<const uint8_t>(kCell, 1);
+              grid.data = PJ::Span<const uint8_t>(k_cell, 1);
               return PJ::sdk::ObjectRecord{.ts = ts, .object = grid};
             },
         });

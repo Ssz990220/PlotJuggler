@@ -14,7 +14,7 @@ using PJ::Span;
 namespace {
 
 // Write an index in the given byte width
-void write_index(RawBuffer& buf, uint32_t index, uint8_t bytes) {
+void writeIndex(RawBuffer& buf, uint32_t index, uint8_t bytes) {
   switch (bytes) {
     case 1: {
       auto v = static_cast<uint8_t>(index);
@@ -34,7 +34,7 @@ void write_index(RawBuffer& buf, uint32_t index, uint8_t bytes) {
 }
 
 // Read an index at the given byte width
-[[nodiscard]] uint32_t read_index(const uint8_t* data, std::size_t row, uint8_t bytes) {
+[[nodiscard]] uint32_t readIndex(const uint8_t* data, std::size_t row, uint8_t bytes) {
   switch (bytes) {
     case 1: {
       uint8_t v = 0;
@@ -218,7 +218,7 @@ FrameOfReferenceEncoded forEncode(
 
 namespace {
 
-uint64_t for_read_offset(const uint8_t* data, std::size_t row, uint8_t offset_bytes) {
+uint64_t forReadOffset(const uint8_t* data, std::size_t row, uint8_t offset_bytes) {
   switch (offset_bytes) {
     case 1: {
       uint8_t v = 0;
@@ -241,12 +241,12 @@ uint64_t for_read_offset(const uint8_t* data, std::size_t row, uint8_t offset_by
 }  // namespace
 
 double forDecodeOneAsDouble(const FrameOfReferenceEncoded& enc, std::size_t row) {
-  const uint64_t offset = for_read_offset(enc.offsets.data(), row, enc.offset_bytes);
+  const uint64_t offset = forReadOffset(enc.offsets.data(), row, enc.offset_bytes);
   return static_cast<double>(enc.reference) + static_cast<double>(offset);
 }
 
 int64_t forDecodeOneAsInt64(const FrameOfReferenceEncoded& enc, std::size_t row) {
-  const uint64_t offset = for_read_offset(enc.offsets.data(), row, enc.offset_bytes);
+  const uint64_t offset = forReadOffset(enc.offsets.data(), row, enc.offset_bytes);
   return enc.reference + static_cast<int64_t>(offset);
 }
 
@@ -330,14 +330,14 @@ DictionaryEncoded dictionaryEncodeStrings(
   result.indices.reserve(row_count * result.index_bytes);
 
   for (uint32_t idx : temp_indices) {
-    write_index(result.indices, idx, result.index_bytes);
+    writeIndex(result.indices, idx, result.index_bytes);
   }
 
   return result;
 }
 
 std::string_view dictionaryLookup(const DictionaryEncoded& encoded, std::size_t row) {
-  uint32_t index = read_index(encoded.indices.data(), row, encoded.index_bytes);
+  uint32_t index = readIndex(encoded.indices.data(), row, encoded.index_bytes);
   if (index >= encoded.dictionary.size()) {
     return {};
   }
@@ -360,7 +360,7 @@ PackedBools packBools(Span<const uint8_t> values) {
   std::size_t num_bytes = (count + 7) / 8;
   result.bits.resize(num_bytes);
 
-  uint8_t* bit_data = result.bits.mutable_data();
+  uint8_t* bit_data = result.bits.mutableData();
   std::memset(bit_data, 0, num_bytes);
 
   for (std::size_t i = 0; i < count; ++i) {

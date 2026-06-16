@@ -169,7 +169,7 @@ class DerivedEngine {
   PJ::Status scheduleActive(const std::unordered_set<PJ::NodeId>& active_nodes);
 
   // Full history recompute: clear output, reset transform, replay all input.
-  PJ::Status recompute_batch(PJ::NodeId node_id);
+  PJ::Status recomputeBatch(PJ::NodeId node_id);
 
  private:
   DataEngine& engine_;

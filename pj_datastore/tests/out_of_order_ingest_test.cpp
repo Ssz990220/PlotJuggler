@@ -121,7 +121,7 @@ TEST(OutOfOrderIngestTest, BatchAppendAcceptsUnsortedTimestamps) {
 
   const std::vector<Timestamp> timestamps = {300, 100, 200};
   const std::vector<double> values = {3.0, 1.0, 2.0};
-  const ColumnData column = ColumnData::Float64(0, Span<const double>(values.data(), values.size()));
+  const ColumnData column = ColumnData::float64(0, Span<const double>(values.data(), values.size()));
   ASSERT_TRUE(writer
                   .appendColumns(
                       handle->topic_id, Span<const Timestamp>(timestamps.data(), timestamps.size()),

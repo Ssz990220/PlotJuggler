@@ -26,12 +26,12 @@ namespace {
 /// Default matplotlib "tab10" palette — 10 distinct colors, used to color a
 /// series when it carries no explicit hex color (Qwt has no automatic theme).
 const std::vector<QColor>& kDefaultPalette() {
-  static const std::vector<QColor> kPalette = {
+  static const std::vector<QColor> k_palette = {
       QColor(0x1f, 0x77, 0xb4), QColor(0xff, 0x7f, 0x0e), QColor(0x2c, 0xa0, 0x2c), QColor(0xd6, 0x27, 0x28),
       QColor(0x94, 0x67, 0xbd), QColor(0x8c, 0x56, 0x4b), QColor(0xe3, 0x77, 0xc2), QColor(0x7f, 0x7f, 0x7f),
       QColor(0xbc, 0xbd, 0x22), QColor(0x17, 0xbe, 0xcf),
   };
-  return kPalette;
+  return k_palette;
 }
 }  // namespace
 

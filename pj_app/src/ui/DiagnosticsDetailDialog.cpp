@@ -39,8 +39,8 @@ DiagnosticsDetailDialog::DiagnosticsDetailDialog(const DiagnosticRecord& record,
   ui_->setupUi(body);
   contentLayout()->addWidget(body);
 
-  ui_->buttonCopy->setIcon(LoadSvg(":/resources/svg/copy.svg", currentTheme()));
-  connect(ui_->buttonCopy, &QToolButton::clicked, this, [this, record]() {
+  ui_->buttonCopy->setIcon(loadSvg(":/resources/svg/copy.svg", currentTheme()));
+  connect(ui_->buttonCopy, &QToolButton::clicked, this, [record]() {
     QGuiApplication::clipboard()->setText(record.message);
   });
 

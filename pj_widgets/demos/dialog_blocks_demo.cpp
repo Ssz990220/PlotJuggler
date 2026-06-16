@@ -34,7 +34,7 @@ int main(int argc, char** argv) {
   auto* slider_box = new QGroupBox(QStringLiteral("RangeSlider (two handles)"));
   auto* slider_layout = new QVBoxLayout(slider_box);
 
-  auto* slider = new PJ::RangeSlider(Qt::Horizontal, PJ::RangeSlider::DoubleHandles);
+  auto* slider = new PJ::RangeSlider(Qt::Horizontal, PJ::RangeSlider::kDoubleHandles);
   slider->setMinimum(0);
   slider->setMaximum(1000);
   slider->setLowerValue(200);
@@ -50,7 +50,7 @@ int main(int argc, char** argv) {
   slider_layout->addWidget(range_label);
   auto update_range = [slider, range_label]() {
     range_label->setText(
-        QStringLiteral("lower = %1   upper = %2").arg(slider->GetLowerValue()).arg(slider->GetUpperValue()));
+        QStringLiteral("lower = %1   upper = %2").arg(slider->getLowerValue()).arg(slider->getUpperValue()));
   };
   QObject::connect(slider, &PJ::RangeSlider::lowerValueChanged, range_label, [update_range](int) { update_range(); });
   QObject::connect(slider, &PJ::RangeSlider::upperValueChanged, range_label, [update_range](int) { update_range(); });

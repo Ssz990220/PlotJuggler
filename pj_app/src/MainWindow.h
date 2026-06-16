@@ -321,7 +321,7 @@ class MainWindow : public QMainWindow {
   // resolving across all loaded datasets (first dataset that has the path).
   // Returns the stable paths no loaded dataset could provide. Shared by layout
   // load (which prompts on the unresolved set) and undo/redo restore.
-  [[nodiscard]] QList<LayoutXml::SeriesPath> rebindCurvesToLoadedDatasets(QDomDocument& doc);
+  [[nodiscard]] QList<layout_xml::SeriesPath> rebindCurvesToLoadedDatasets(QDomDocument& doc);
 
   // Thin wrapper over rebindCurvesToLoadedDatasets that discards the unresolved
   // set: undo/redo restores silently (no missing-curve prompt), so a curve

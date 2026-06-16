@@ -46,11 +46,11 @@ namespace {
 }
 
 [[nodiscard]] QColor colorFromIndex(int index) {
-  static const std::array<QColor, 8> kColors = {
+  static const std::array<QColor, 8> k_colors = {
       QColor("#1f77b4"), QColor("#d62728"), QColor("#1ac938"), QColor("#ff7f0e"),
       QColor("#f14cc1"), QColor("#9467bd"), QColor("#17becf"), QColor("#bcbd22"),
   };
-  return kColors[static_cast<std::size_t>(index) % kColors.size()];
+  return k_colors[static_cast<std::size_t>(index) % k_colors.size()];
 }
 
 }  // namespace

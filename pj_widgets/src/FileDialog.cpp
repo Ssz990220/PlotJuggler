@@ -38,9 +38,9 @@ constexpr int kInputRowHeightPx = 24;
 // Re-skin a QFileDialog toolbar button identified by objectName with one
 // of the app's themed SVG icons. Silent no-op when the button is missing
 // (defensive against Qt internal renames between versions).
-void ApplySvgIcon(QFileDialog* dialog, const char* object_name, const QString& svg_resource) {
+void applySvgIcon(QFileDialog* dialog, const char* object_name, const QString& svg_resource) {
   if (auto* button = dialog->findChild<QToolButton*>(QString::fromLatin1(object_name))) {
-    button->setIcon(QIcon(LoadSvg(svg_resource, currentTheme())));
+    button->setIcon(QIcon(loadSvg(svg_resource, currentTheme())));
   }
 }
 
@@ -64,16 +64,16 @@ FileDialog::FileDialog(QWidget* parent) : Dialog(parent) {
   // Swap Qt's stock SP_FileDialog* icons (native theme glyphs that clash
   // with our flat chrome) for our keyboard_arrow_* chevrons. LoadSvg
   // re-tints for the active theme automatically.
-  ApplySvgIcon(inner_, "backButton", ":/resources/svg/keyboard_arrow_left_dark.svg");
-  ApplySvgIcon(inner_, "forwardButton", ":/resources/svg/keyboard_arrow_right_dark.svg");
-  ApplySvgIcon(inner_, "toParentButton", ":/resources/svg/keyboard_arrow_up_dark.svg");
-  ApplySvgIcon(inner_, "newFolderButton", ":/resources/svg/create_new_folder.svg");
+  applySvgIcon(inner_, "backButton", ":/resources/svg/keyboard_arrow_left_dark.svg");
+  applySvgIcon(inner_, "forwardButton", ":/resources/svg/keyboard_arrow_right_dark.svg");
+  applySvgIcon(inner_, "toParentButton", ":/resources/svg/keyboard_arrow_up_dark.svg");
+  applySvgIcon(inner_, "newFolderButton", ":/resources/svg/create_new_folder.svg");
   // QFileDialog's "list mode" is the columns-of-icons display, "detail
   // mode" is the table with name/size/type/date columns — match Material's
   // visual convention: Grid View for the icon-grid mode, View List for
   // the row-with-metadata mode.
-  ApplySvgIcon(inner_, "listModeButton", ":/resources/svg/grid_view.svg");
-  ApplySvgIcon(inner_, "detailModeButton", ":/resources/svg/view_list.svg");
+  applySvgIcon(inner_, "listModeButton", ":/resources/svg/grid_view.svg");
+  applySvgIcon(inner_, "detailModeButton", ":/resources/svg/view_list.svg");
 
   // Prime icon size from ChromeMetrics defaults. Callers (or the
   // templated static helpers) override with the live MainWindow values

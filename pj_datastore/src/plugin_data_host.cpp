@@ -188,10 +188,10 @@ void flattenColumnsImpl(
 }  // namespace
 
 struct WriteCore {
-  explicit WriteCore(DataEngine& engine) : engine_(engine), writer_(engine.createWriter()) {}
+  explicit WriteCore(DataEngine& data_engine) : engine(data_engine), writer(data_engine.createWriter()) {}
 
-  DataEngine& engine_;
-  DataWriter writer_;
+  DataEngine& engine;
+  DataWriter writer;
   // Optional secondary engine for the streaming pause/resume two-engine
   // lockstep. When non-null, every ensureTopic/ensureField that lands a new
   // id in `engine_` is mirrored into `*secondary_engine_` with the SAME id —
@@ -200,8 +200,8 @@ struct WriteCore {
   // ensureTopic/ensureField so it covers both the explicit C-ABI register
   // paths AND the lazy "first-write creates the column" paths inside
   // appendRecord / appendBoundRecord / appendArrowStream.
-  DataEngine* secondary_engine_ = nullptr;
-  std::string last_error_;
+  DataEngine* secondary_engine = nullptr;
+  std::string last_error;
 
   struct DatasetTopicKey {
     DatasetId dataset_id;
@@ -254,26 +254,26 @@ struct WriteCore {
     }
   };
 
-  tsl::robin_map<DatasetTopicKey, TopicHandle, DatasetTopicKeyHash> topic_cache_;
-  tsl::robin_map<TopicFieldKey, FieldHandle, TopicFieldKeyHash> field_cache_;
-  tsl::robin_map<TopicFieldIdKey, PrimitiveType, TopicFieldIdKeyHash> field_types_;
+  tsl::robin_map<DatasetTopicKey, TopicHandle, DatasetTopicKeyHash> topic_cache;
+  tsl::robin_map<TopicFieldKey, FieldHandle, TopicFieldKeyHash> field_cache;
+  tsl::robin_map<TopicFieldIdKey, PrimitiveType, TopicFieldIdKeyHash> field_types;
 
   void setError(std::string message) {
-    last_error_ = std::move(message);
+    last_error = std::move(message);
   }
 
   [[nodiscard]] const char* lastError() const {
-    return last_error_.empty() ? nullptr : last_error_.c_str();
+    return last_error.empty() ? nullptr : last_error.c_str();
   }
 
   [[nodiscard]] bool createDataSource(std::string_view name, DataSourceHandle* out_source) {
-    auto id_or = engine_.createDataset(DatasetDescriptor{.source_name = std::string(name), .time_domain_id = 0});
+    auto id_or = engine.createDataset(DatasetDescriptor{.source_name = std::string(name), .time_domain_id = 0});
     if (!id_or.has_value()) {
       setError(id_or.error());
       return false;
     }
     *out_source = DataSourceHandle{.id = *id_or};
-    last_error_.clear();
+    last_error.clear();
     return true;
   }
 
@@ -282,16 +282,16 @@ struct WriteCore {
   // failed mirror is retried instead of leaving the engines diverged forever
   // behind the cache.
   [[nodiscard]] bool mirrorTopicToSecondary(DatasetId dataset_id, TopicId topic_id, std::string_view topic_name) {
-    if (secondary_engine_ == nullptr) {
+    if (secondary_engine == nullptr) {
       return true;
     }
-    if (secondary_engine_->getTopicStorage(topic_id) != nullptr) {
+    if (secondary_engine->getTopicStorage(topic_id) != nullptr) {
       return true;  // already mirrored (most common case)
     }
     TopicDescriptor desc;
     desc.name = std::string(topic_name);
     desc.schema_id = 0;
-    auto mirror_or = secondary_engine_->createTopic(dataset_id, std::move(desc), topic_id);
+    auto mirror_or = secondary_engine->createTopic(dataset_id, std::move(desc), topic_id);
     if (!mirror_or.has_value()) {
       setError(fmt::format("secondary mirror createTopic failed: {}", mirror_or.error()));
       return false;
@@ -300,36 +300,36 @@ struct WriteCore {
   }
 
   [[nodiscard]] bool ensureTopic(DataSourceHandle source, std::string_view topic_name, TopicHandle* out_topic) {
-    const auto* dataset = engine_.getDataset(source.id);
+    const auto* dataset = engine.getDataset(source.id);
     if (dataset == nullptr) {
       setError(fmt::format("data source {} not found", source.id));
       return false;
     }
 
     DatasetTopicKey key{.dataset_id = source.id, .topic_name = std::string(topic_name)};
-    if (auto it = topic_cache_.find(key); it != topic_cache_.end()) {
+    if (auto it = topic_cache.find(key); it != topic_cache.end()) {
       // Cache hit — but the secondary may still be missing this topic if a
       // prior mirror failed; retry. No-op if already mirrored.
       if (!mirrorTopicToSecondary(source.id, it->second.id, topic_name)) {
         return false;
       }
       *out_topic = it->second;
-      last_error_.clear();
+      last_error.clear();
       return true;
     }
 
-    auto topic_ids = engine_.listTopics(source.id);
+    auto topic_ids = engine.listTopics(source.id);
     std::sort(topic_ids.begin(), topic_ids.end());
     for (TopicId tid : topic_ids) {
-      const auto* storage = engine_.getTopicStorage(tid);
+      const auto* storage = engine.getTopicStorage(tid);
       if (storage != nullptr && storage->descriptor().name == topic_name) {
         // Found in primary — same retry semantics on the secondary.
         if (!mirrorTopicToSecondary(source.id, tid, topic_name)) {
           return false;
         }
         *out_topic = TopicHandle{.id = tid};
-        topic_cache_.emplace(std::move(key), *out_topic);
-        last_error_.clear();
+        topic_cache.emplace(std::move(key), *out_topic);
+        last_error.clear();
         return true;
       }
     }
@@ -337,7 +337,7 @@ struct WriteCore {
     TopicDescriptor desc;
     desc.name = std::string(topic_name);
     desc.schema_id = 0;
-    auto tid_or = writer_.registerTopic(source.id, std::move(desc));
+    auto tid_or = writer.registerTopic(source.id, std::move(desc));
     if (!tid_or.has_value()) {
       setError(tid_or.error());
       return false;
@@ -352,24 +352,24 @@ struct WriteCore {
     }
 
     *out_topic = TopicHandle{.id = *tid_or};
-    topic_cache_.emplace(std::move(key), *out_topic);
-    last_error_.clear();
+    topic_cache.emplace(std::move(key), *out_topic);
+    last_error.clear();
     return true;
   }
 
   [[nodiscard]] bool lookupFieldType(TopicHandle topic, FieldId field_id, PrimitiveType* out_type) {
     const TopicFieldIdKey key{.topic_id = topic.id, .field_id = field_id};
-    if (auto it = field_types_.find(key); it != field_types_.end()) {
+    if (auto it = field_types.find(key); it != field_types.end()) {
       *out_type = it->second;
       return true;
     }
 
-    const auto* storage = engine_.getTopicStorage(topic.id);
+    const auto* storage = engine.getTopicStorage(topic.id);
     if (storage == nullptr) {
       setError(fmt::format("topic {} not found", topic.id));
       return false;
     }
-    const auto columns = effectiveColumns(engine_, *storage);
+    const auto columns = effectiveColumns(engine, *storage);
     const auto* desc = findFieldDescriptor(columns, field_id);
     if (desc == nullptr) {
       setError(fmt::format("field {} not found in topic {}", field_id, topic.id));
@@ -377,14 +377,14 @@ struct WriteCore {
     }
 
     *out_type = desc->logical_type;
-    field_types_[key] = desc->logical_type;
-    field_cache_[{.topic_id = topic.id, .field_name = desc->field_path}] = FieldHandle{.topic = topic, .id = field_id};
+    field_types[key] = desc->logical_type;
+    field_cache[{.topic_id = topic.id, .field_name = desc->field_path}] = FieldHandle{.topic = topic, .id = field_id};
     return true;
   }
 
   [[nodiscard]] bool ensureField(
       TopicHandle topic, std::string_view field_name, PJ_primitive_type_t abi_type, FieldHandle* out_field) {
-    const auto* storage = engine_.getTopicStorage(topic.id);
+    const auto* storage = engine.getTopicStorage(topic.id);
     if (storage == nullptr) {
       setError(fmt::format("topic {} not found", topic.id));
       return false;
@@ -398,7 +398,7 @@ struct WriteCore {
     const PrimitiveType type = *type_or;
 
     TopicFieldKey key{.topic_id = topic.id, .field_name = std::string(field_name)};
-    if (auto it = field_cache_.find(key); it != field_cache_.end()) {
+    if (auto it = field_cache.find(key); it != field_cache.end()) {
       PrimitiveType existing{};
       if (!lookupFieldType(topic, it->second.id, &existing)) {
         return false;
@@ -411,20 +411,20 @@ struct WriteCore {
       // re-attempts it. createTopicField returns the existing FieldId when
       // (name, type) already matches in the secondary, so it's a cheap no-op
       // in the steady state.
-      if (secondary_engine_ != nullptr) {
+      if (secondary_engine != nullptr) {
         auto mirror_or =
-            secondary_engine_->createTopicField(topic.id, field_name, type, std::optional<FieldId>{it->second.id});
+            secondary_engine->createTopicField(topic.id, field_name, type, std::optional<FieldId>{it->second.id});
         if (!mirror_or.has_value()) {
           setError(fmt::format("secondary mirror createTopicField failed: {}", mirror_or.error()));
           return false;
         }
       }
       *out_field = it->second;
-      last_error_.clear();
+      last_error.clear();
       return true;
     }
 
-    auto field_id_or = writer_.ensureColumn(topic.id, field_name, type);
+    auto field_id_or = writer.ensureColumn(topic.id, field_name, type);
     if (!field_id_or.has_value()) {
       setError(field_id_or.error());
       return false;
@@ -441,9 +441,9 @@ struct WriteCore {
     // requested_id is wrapped in std::optional so FieldId 0 (the first field
     // of any topic) is forced, not auto-assigned. A naive `FieldId == 0`
     // sentinel would silently mis-assign the first field of every topic.
-    if (secondary_engine_ != nullptr) {
+    if (secondary_engine != nullptr) {
       auto mirror_or =
-          secondary_engine_->createTopicField(topic.id, field_name, type, std::optional<FieldId>{*field_id_or});
+          secondary_engine->createTopicField(topic.id, field_name, type, std::optional<FieldId>{*field_id_or});
       if (!mirror_or.has_value()) {
         setError(fmt::format("secondary mirror createTopicField failed: {}", mirror_or.error()));
         return false;
@@ -451,9 +451,9 @@ struct WriteCore {
     }
 
     *out_field = FieldHandle{.topic = topic, .id = *field_id_or};
-    field_cache_.emplace(std::move(key), *out_field);
-    field_types_[{.topic_id = topic.id, .field_id = *field_id_or}] = type;
-    last_error_.clear();
+    field_cache.emplace(std::move(key), *out_field);
+    field_types[{.topic_id = topic.id, .field_id = *field_id_or}] = type;
+    last_error.clear();
     return true;
   }
 
@@ -474,40 +474,40 @@ struct WriteCore {
       TopicId topic_id, std::size_t col_index, PrimitiveType logical_type, const PJ_scalar_value_t& value) {
     switch (logical_type) {
       case PrimitiveType::kFloat32:
-        writer_.set(topic_id, col_index, value.data.as_float32);
+        writer.set(topic_id, col_index, value.data.as_float32);
         break;
       case PrimitiveType::kFloat64:
-        writer_.set(topic_id, col_index, value.data.as_float64);
+        writer.set(topic_id, col_index, value.data.as_float64);
         break;
       case PrimitiveType::kInt8:
-        writer_.set(topic_id, col_index, static_cast<int64_t>(value.data.as_int8));
+        writer.set(topic_id, col_index, static_cast<int64_t>(value.data.as_int8));
         break;
       case PrimitiveType::kInt16:
-        writer_.set(topic_id, col_index, static_cast<int64_t>(value.data.as_int16));
+        writer.set(topic_id, col_index, static_cast<int64_t>(value.data.as_int16));
         break;
       case PrimitiveType::kInt32:
-        writer_.set(topic_id, col_index, value.data.as_int32);
+        writer.set(topic_id, col_index, value.data.as_int32);
         break;
       case PrimitiveType::kInt64:
-        writer_.set(topic_id, col_index, value.data.as_int64);
+        writer.set(topic_id, col_index, value.data.as_int64);
         break;
       case PrimitiveType::kUint8:
-        writer_.set(topic_id, col_index, static_cast<uint64_t>(value.data.as_uint8));
+        writer.set(topic_id, col_index, static_cast<uint64_t>(value.data.as_uint8));
         break;
       case PrimitiveType::kUint16:
-        writer_.set(topic_id, col_index, static_cast<uint64_t>(value.data.as_uint16));
+        writer.set(topic_id, col_index, static_cast<uint64_t>(value.data.as_uint16));
         break;
       case PrimitiveType::kUint32:
-        writer_.set(topic_id, col_index, static_cast<uint64_t>(value.data.as_uint32));
+        writer.set(topic_id, col_index, static_cast<uint64_t>(value.data.as_uint32));
         break;
       case PrimitiveType::kUint64:
-        writer_.set(topic_id, col_index, value.data.as_uint64);
+        writer.set(topic_id, col_index, value.data.as_uint64);
         break;
       case PrimitiveType::kBool:
-        writer_.set(topic_id, col_index, value.data.as_bool != 0);
+        writer.set(topic_id, col_index, value.data.as_bool != 0);
         break;
       case PrimitiveType::kString:
-        writer_.set(topic_id, col_index, toStringView(value.data.as_string));
+        writer.set(topic_id, col_index, toStringView(value.data.as_string));
         break;
       case PrimitiveType::kUnspecified:
         break;
@@ -516,7 +516,7 @@ struct WriteCore {
 
   [[nodiscard]] bool appendRecord(
       TopicHandle topic, Timestamp timestamp, const PJ_named_field_value_t* fields, std::size_t field_count) {
-    if (engine_.getTopicStorage(topic.id) == nullptr) {
+    if (engine.getTopicStorage(topic.id) == nullptr) {
       setError(fmt::format("topic {} not found", topic.id));
       return false;
     }
@@ -539,8 +539,8 @@ struct WriteCore {
       if (field.is_null) {
         // Null values: look up existing field by name.
         TopicFieldKey key{.topic_id = topic.id, .field_name = std::string(name)};
-        auto it = field_cache_.find(key);
-        if (it == field_cache_.end()) {
+        auto it = field_cache.find(key);
+        if (it == field_cache.end()) {
           // Field has never been seen. Check if this is a typed null (the ABI
           // carries value.type even when is_null is true). A valid type lets
           // us create the column now; an untyped null (kNull) is silently
@@ -577,30 +577,30 @@ struct WriteCore {
       }
     }
 
-    auto begin_status = writer_.beginRow(topic.id, timestamp);
+    auto begin_status = writer.beginRow(topic.id, timestamp);
     if (!begin_status.has_value()) {
       setError(begin_status.error());
       return false;
     }
     for (const auto& field : resolved) {
       if (field.raw->is_null) {
-        writer_.setNull(topic.id, static_cast<std::size_t>(field.handle.id));
+        writer.setNull(topic.id, static_cast<std::size_t>(field.handle.id));
       } else {
         setFieldValue(topic.id, static_cast<std::size_t>(field.handle.id), field.type, field.raw->value);
       }
     }
-    auto finish_status = writer_.finishRow(topic.id);
+    auto finish_status = writer.finishRow(topic.id);
     if (!finish_status.has_value()) {
       setError(finish_status.error());
       return false;
     }
-    last_error_.clear();
+    last_error.clear();
     return true;
   }
 
   [[nodiscard]] bool appendBoundRecord(
       TopicHandle topic, Timestamp timestamp, const PJ_bound_field_value_t* fields, std::size_t field_count) {
-    if (engine_.getTopicStorage(topic.id) == nullptr) {
+    if (engine.getTopicStorage(topic.id) == nullptr) {
       setError(fmt::format("topic {} not found", topic.id));
       return false;
     }
@@ -632,24 +632,24 @@ struct WriteCore {
       resolved.push_back({type, &field});
     }
 
-    auto begin_status = writer_.beginRow(topic.id, timestamp);
+    auto begin_status = writer.beginRow(topic.id, timestamp);
     if (!begin_status.has_value()) {
       setError(begin_status.error());
       return false;
     }
     for (const auto& field : resolved) {
       if (field.raw->is_null) {
-        writer_.setNull(topic.id, static_cast<std::size_t>(field.raw->field.id));
+        writer.setNull(topic.id, static_cast<std::size_t>(field.raw->field.id));
       } else {
         setFieldValue(topic.id, static_cast<std::size_t>(field.raw->field.id), field.type, field.raw->value);
       }
     }
-    auto finish_status = writer_.finishRow(topic.id);
+    auto finish_status = writer.finishRow(topic.id);
     if (!finish_status.has_value()) {
       setError(finish_status.error());
       return false;
     }
-    last_error_.clear();
+    last_error.clear();
     return true;
   }
 
@@ -665,7 +665,7 @@ struct WriteCore {
       setError("append_arrow_stream: null stream");
       return false;
     }
-    if (engine_.getTopicStorage(topic.id) == nullptr) {
+    if (engine.getTopicStorage(topic.id) == nullptr) {
       setError(fmt::format("topic {} not found", topic.id));
       return false;
     }
@@ -699,19 +699,19 @@ struct WriteCore {
       return false;
     }
 
-    auto status = arrow_import::importArrowStream(writer_, topic.id, stream, mappings, ts_arrow_col);
+    auto status = arrow_import::importArrowStream(writer, topic.id, stream, mappings, ts_arrow_col);
     if (!status.has_value()) {
       setError(status.error());
       return false;
     }
-    last_error_.clear();
+    last_error.clear();
     return true;
   }
 
   void flushPending() {
-    auto flushed = writer_.flushAll();
+    auto flushed = writer.flushAll();
     if (!flushed.empty()) {
-      engine_.commitChunks(std::move(flushed));
+      engine.commitChunks(std::move(flushed));
     }
   }
 };
@@ -734,33 +734,33 @@ PJ_string_view_t storeString(CatalogSnapshotState& state, std::string_view value
 }
 
 struct ToolboxCore {
-  explicit ToolboxCore(DataEngine& engine) : write(engine), engine_(engine) {}
+  explicit ToolboxCore(DataEngine& data_engine) : write(data_engine), engine(data_engine) {}
 
   WriteCore write;
-  DataEngine& engine_;
+  DataEngine& engine;
 
   [[nodiscard]] bool acquireCatalogSnapshot(PJ_catalog_snapshot_t* out_snapshot) {
     auto* state = new CatalogSnapshotState{};
-    auto dataset_ids = engine_.listDatasets();
+    auto dataset_ids = engine.listDatasets();
     std::sort(dataset_ids.begin(), dataset_ids.end());
     state->data_sources.reserve(dataset_ids.size());
 
     for (DatasetId ds_id : dataset_ids) {
-      const auto* dataset = engine_.getDataset(ds_id);
+      const auto* dataset = engine.getDataset(ds_id);
       if (dataset == nullptr) {
         continue;
       }
 
       const uint32_t first_topic = static_cast<uint32_t>(state->topics.size());
-      auto topic_ids = engine_.listTopics(ds_id);
+      auto topic_ids = engine.listTopics(ds_id);
       std::sort(topic_ids.begin(), topic_ids.end());
       for (TopicId tid : topic_ids) {
-        const auto* storage = engine_.getTopicStorage(tid);
+        const auto* storage = engine.getTopicStorage(tid);
         if (storage == nullptr) {
           continue;
         }
         const uint32_t first_field = static_cast<uint32_t>(state->fields.size());
-        const auto columns = effectiveColumns(engine_, *storage);
+        const auto columns = effectiveColumns(engine, *storage);
         for (const auto& col : columns) {
           state->fields.push_back(
               PJ_field_info_t{
@@ -798,7 +798,7 @@ struct ToolboxCore {
         .release_ctx = state,
         .release = releaseCatalogSnapshot,
     };
-    write.last_error_.clear();
+    write.last_error.clear();
     return true;
   }
 
@@ -813,12 +813,12 @@ struct ToolboxCore {
       return false;
     }
 
-    const auto* storage = engine_.getTopicStorage(field.topic.id);
+    const auto* storage = engine.getTopicStorage(field.topic.id);
     if (storage == nullptr) {
       write.setError(fmt::format("topic {} not found", field.topic.id));
       return false;
     }
-    const auto columns = effectiveColumns(engine_, *storage);
+    const auto columns = effectiveColumns(engine, *storage);
     const auto* desc = findFieldDescriptor(columns, field.id);
     if (desc == nullptr) {
       write.setError(fmt::format("field {} not found in topic {}", field.id, field.topic.id));
@@ -983,7 +983,7 @@ struct ToolboxCore {
     // callbacks; the UniqueXxx destructors become no-ops).
     ArrowSchemaMove(schema.get(), out_schema);
     ArrowArrayMove(array.get(), out_array);
-    write.last_error_.clear();
+    write.last_error.clear();
     return true;
   }
 };
@@ -1329,7 +1329,7 @@ bool toolboxRegisterObjectTopic(
   // Validate the source handle against the engine — same check used by
   // scalar ensureTopic so the toolbox can't register a topic against a
   // dataset that doesn't exist.
-  if (impl->core.engine_.getDataset(source.id) == nullptr) {
+  if (impl->core.engine.getDataset(source.id) == nullptr) {
     impl->setObjectError(fmt::format("data source {} not found", source.id));
     propagateError(out_error, impl->object_last_error.c_str());
     return false;
@@ -1844,12 +1844,12 @@ void DatastoreSourceWriteHost::setTarget(DataEngine* target) {
   state_->core->flushPending();
   state_->core = std::make_unique<WriteCore>(*target);
   if (target == state_->primary_engine) {
-    state_->core->secondary_engine_ = state_->secondary_engine;
+    state_->core->secondary_engine = state_->secondary_engine;
   } else if (target == state_->secondary_engine) {
-    state_->core->secondary_engine_ = state_->primary_engine;
+    state_->core->secondary_engine = state_->primary_engine;
   } else {
     // Unknown target (e.g. an in-place dataset replace) — no mirror.
-    state_->core->secondary_engine_ = nullptr;
+    state_->core->secondary_engine = nullptr;
     state_->primary_engine = target;
   }
 }
@@ -1862,8 +1862,8 @@ void DatastoreSourceWriteHost::setSecondaryEngine(DataEngine* secondary) {
   state_->secondary_engine = secondary;
   if (state_->core != nullptr) {
     // Whichever direction we're currently pointed at, mirror to the other.
-    state_->core->secondary_engine_ =
-        (&state_->core->engine_ == state_->primary_engine) ? secondary : state_->primary_engine;
+    state_->core->secondary_engine =
+        (&state_->core->engine == state_->primary_engine) ? secondary : state_->primary_engine;
   }
 }
 
@@ -1891,11 +1891,11 @@ void DatastoreParserWriteHost::setTarget(DataEngine* target) {
   state_->core->flushPending();
   state_->core = std::make_unique<WriteCore>(*target);
   if (target == state_->primary_engine) {
-    state_->core->secondary_engine_ = state_->secondary_engine;
+    state_->core->secondary_engine = state_->secondary_engine;
   } else if (target == state_->secondary_engine) {
-    state_->core->secondary_engine_ = state_->primary_engine;
+    state_->core->secondary_engine = state_->primary_engine;
   } else {
-    state_->core->secondary_engine_ = nullptr;
+    state_->core->secondary_engine = nullptr;
     state_->primary_engine = target;
   }
 }
@@ -1904,8 +1904,8 @@ void DatastoreParserWriteHost::setSecondaryEngine(DataEngine* secondary) {
   // See DatastoreSourceWriteHost::setSecondaryEngine — same semantics.
   state_->secondary_engine = secondary;
   if (state_->core != nullptr) {
-    state_->core->secondary_engine_ =
-        (&state_->core->engine_ == state_->primary_engine) ? secondary : state_->primary_engine;
+    state_->core->secondary_engine =
+        (&state_->core->engine == state_->primary_engine) ? secondary : state_->primary_engine;
   }
 }
 

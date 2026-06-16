@@ -65,10 +65,10 @@ struct CameraModelName {
   const char* id;
 };
 constexpr CameraModelName kCameraModelNames[] = {
-    {SceneViewWidget::CameraModel::Orbit, "orbit"},
-    {SceneViewWidget::CameraModel::XYOrbit, "xy_orbit"},
-    {SceneViewWidget::CameraModel::Fly, "fly"},
-    {SceneViewWidget::CameraModel::TopDownOrtho, "top_down_ortho"},
+    {SceneViewWidget::CameraModel::kOrbit, "orbit"},
+    {SceneViewWidget::CameraModel::kXyOrbit, "xy_orbit"},
+    {SceneViewWidget::CameraModel::kFly, "fly"},
+    {SceneViewWidget::CameraModel::kTopDownOrtho, "top_down_ortho"},
 };
 
 QString cameraModelToString(int combo_index) {
@@ -200,7 +200,7 @@ Scene3DDockWidget::Scene3DDockWidget(QWidget* parent) : SceneDockWidget(parent) 
   // Bundled Material "home" glyph (resources.qrc). Pinned to the light-theme
   // ink so it stays dark on this always-light overlay button, even when the
   // app is in dark mode (theme-following ink would render near-invisible here).
-  home_button_->setIcon(PJ::LoadSvg(QStringLiteral(":/resources/svg/home.svg")));
+  home_button_->setIcon(PJ::loadSvg(QStringLiteral(":/resources/svg/home.svg")));
   home_button_->setStyleSheet(QStringLiteral(
       "QToolButton { background-color: rgba(255, 255, 255, 200); border: 1px solid rgba(60, 60, 60, 180); "
       "padding: 2px; border-radius: 3px; }"));  // symmetric padding: this is a square icon-only button

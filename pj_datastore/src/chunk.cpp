@@ -20,7 +20,7 @@ namespace {
 // Dispatch a callable with the correct numeric type tag.
 // Returns true if kind is numeric (kFloat32..kUint64), false for kBool/kString.
 template <typename F>
-bool dispatch_numeric_kind(StorageKind kind, F&& fn) {
+bool dispatchNumericKind(StorageKind kind, F&& fn) {
   switch (kind) {
     case StorageKind::kFloat32:
       fn(static_cast<const float*>(nullptr));
@@ -44,12 +44,12 @@ bool dispatch_numeric_kind(StorageKind kind, F&& fn) {
 
 // Read a raw numeric value from a buffer, dispatching on StorageKind.
 template <typename R>
-[[nodiscard]] R read_raw_as(const RawBuffer& buf, StorageKind kind, std::size_t row) {
+[[nodiscard]] R readRawAs(const RawBuffer& buf, StorageKind kind, std::size_t row) {
   const std::size_t elem_size = storageKindSize(kind);
   const uint8_t* ptr = buf.data() + row * elem_size;
 
   R result{};
-  dispatch_numeric_kind(kind, [&]<typename T>(const T* /*tag*/) {
+  dispatchNumericKind(kind, [&]<typename T>(const T* /*tag*/) {
     T v{};
     std::memcpy(&v, ptr, sizeof(v));
     result = static_cast<R>(v);
@@ -336,7 +336,7 @@ void TopicChunkBuilder::computeBulkNumericStats(
     last_column_values_[col_index] = prev;
   };
 
-  if (!dispatch_numeric_kind(kind, process)) {
+  if (!dispatchNumericKind(kind, process)) {
     if (kind == StorageKind::kBool) {
       const auto* buf = col.valueBuffer().data();
       double prev = last_column_values_[col_index];
@@ -521,7 +521,7 @@ void TopicChunkBuilder::sortRowsByTimestamp() {
 TopicChunk TopicChunkBuilder::seal() {
   sortRowsByTimestamp();
   TopicChunk chunk;
-  chunk.id = next_chunk_id_++;
+  chunk.id = next_chunk_id++;
   chunk.topic_id = topic_id_;
   chunk.schema_version = schema_id_;
   chunk.stats = stats_;
@@ -661,7 +661,7 @@ double TopicChunk::readNumericAsDouble(std::size_t col_index, std::size_t row) c
   return std::visit(
       overloaded{
           [&](const RawBuffer& buf) {
-            return read_raw_as<double>(buf, storageKindOf(col.descriptor->logical_type), row);
+            return readRawAs<double>(buf, storageKindOf(col.descriptor->logical_type), row);
           },
           [](const encoding::ConstantEncoded& enc) { return encoding::constantDecodeAsDouble(enc); },
           [row](const encoding::FrameOfReferenceEncoded& enc) { return encoding::forDecodeOneAsDouble(enc, row); },
@@ -675,7 +675,7 @@ int64_t TopicChunk::readNumericAsInt64(std::size_t col_index, std::size_t row) c
   return std::visit(
       overloaded{
           [&](const RawBuffer& buf) {
-            return read_raw_as<int64_t>(buf, storageKindOf(col.descriptor->logical_type), row);
+            return readRawAs<int64_t>(buf, storageKindOf(col.descriptor->logical_type), row);
           },
           [](const encoding::ConstantEncoded& enc) { return encoding::constantDecodeAsInt64(enc); },
           [row](const encoding::FrameOfReferenceEncoded& enc) { return encoding::forDecodeOneAsInt64(enc, row); },
@@ -689,7 +689,7 @@ uint64_t TopicChunk::readNumericAsUint64(std::size_t col_index, std::size_t row)
   return std::visit(
       overloaded{
           [&](const RawBuffer& buf) {
-            return read_raw_as<uint64_t>(buf, storageKindOf(col.descriptor->logical_type), row);
+            return readRawAs<uint64_t>(buf, storageKindOf(col.descriptor->logical_type), row);
           },
           [](const encoding::ConstantEncoded& enc) { return encoding::constantDecodeAsUint64(enc); },
           [row](const encoding::FrameOfReferenceEncoded& enc) {
@@ -747,7 +747,7 @@ void TopicChunk::readColumnAsDoubles(std::size_t col_index, Span<double> out, st
                 out[i] = static_cast<double>(v);
               }
             };
-            if (!dispatch_numeric_kind(kind, convert)) {
+            if (!dispatchNumericKind(kind, convert)) {
               std::fill(out.begin(), out.end(), std::numeric_limits<double>::quiet_NaN());
             }
           },

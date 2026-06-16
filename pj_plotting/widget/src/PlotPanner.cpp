@@ -70,7 +70,7 @@ void PlotPanner::widgetMousePressEvent(QMouseEvent* event) {
   getMouseButton(button, modifiers);
 
   if (event->button() == button && event->modifiers() == modifiers) {
-    const QPixmap& pixmap = LoadSvg(":/resources/svg/move_view.svg", currentTheme());
+    const QPixmap& pixmap = loadSvg(":/resources/svg/move_view.svg", currentTheme());
     QApplication::setOverrideCursor(QCursor(pixmap.scaled(24, 24)));
     cursor_overridden_ = true;
   }

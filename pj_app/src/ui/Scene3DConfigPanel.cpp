@@ -540,15 +540,15 @@ void Scene3DConfigPanel::loadControlsFromDock(Scene3DDockWidget* dock) {
 }
 
 void Scene3DConfigPanel::setEyeIcon(QToolButton* eye, bool on) {
-  eye->setIcon(LoadSvg(QLatin1String(on ? kVisibilityOnPath : kVisibilityOffPath), theme_));
+  eye->setIcon(loadSvg(QLatin1String(on ? kVisibilityOnPath : kVisibilityOffPath), theme_));
 }
 
 void Scene3DConfigPanel::applyIcons() {
   if (grid_lines_button_ != nullptr) {
-    grid_lines_button_->setIcon(LoadSvg(QStringLiteral(":/resources/svg/grid_4x4.svg"), theme_));
+    grid_lines_button_->setIcon(loadSvg(QStringLiteral(":/resources/svg/grid_4x4.svg"), theme_));
   }
   if (grid_cells_button_ != nullptr) {
-    grid_cells_button_->setIcon(LoadSvg(QStringLiteral(":/resources/svg/grid_view.svg"), theme_));
+    grid_cells_button_->setIcon(loadSvg(QStringLiteral(":/resources/svg/grid_view.svg"), theme_));
   }
   for (QToolButton* eye : {grid_eye_, gizmo_eye_, mesh_eye_, collision_eye_}) {
     if (eye != nullptr) {
@@ -556,20 +556,20 @@ void Scene3DConfigPanel::applyIcons() {
     }
   }
   if (add_model_button_ != nullptr) {
-    add_model_button_->setIcon(LoadSvg(QLatin1String(kAddIconPath), theme_));
+    add_model_button_->setIcon(loadSvg(QLatin1String(kAddIconPath), theme_));
   }
   if (params_copy_ != nullptr) {
-    params_copy_->setIcon(LoadSvg(QStringLiteral(":/resources/svg/copy.svg"), theme_));
+    params_copy_->setIcon(loadSvg(QStringLiteral(":/resources/svg/copy.svg"), theme_));
   }
   if (params_paste_ != nullptr) {
-    params_paste_->setIcon(LoadSvg(QStringLiteral(":/resources/svg/paste.svg"), theme_));
+    params_paste_->setIcon(loadSvg(QStringLiteral(":/resources/svg/paste.svg"), theme_));
   }
   if (params_apply_all_ != nullptr) {
-    params_apply_all_->setIcon(LoadSvg(QStringLiteral(":/resources/svg/format_paint.svg"), theme_));
+    params_apply_all_->setIcon(loadSvg(QStringLiteral(":/resources/svg/format_paint.svg"), theme_));
   }
   for (const auto& [id, row] : robot_rows_) {
     if (auto* trash = row->findChild<QToolButton*>()) {
-      trash->setIcon(LoadSvg(QLatin1String(kTrashIconPath), theme_));
+      trash->setIcon(loadSvg(QLatin1String(kTrashIconPath), theme_));
     }
   }
 }
@@ -668,7 +668,7 @@ void Scene3DConfigPanel::addRobotRow(uint32_t topic_id_value, const QString& lab
   trash->setAutoRaise(true);
   trash->setFocusPolicy(Qt::NoFocus);
   trash->setToolTip(tr("Remove this robot model"));
-  trash->setIcon(LoadSvg(QLatin1String(kTrashIconPath), theme_));
+  trash->setIcon(loadSvg(QLatin1String(kTrashIconPath), theme_));
   sizeTrailingButton(trash);  // align with the Model/URDF add button column above
   layout->addWidget(trash);
   connect(trash, &QToolButton::clicked, this, [this, topic_id_value]() {

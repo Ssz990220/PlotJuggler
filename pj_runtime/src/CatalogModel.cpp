@@ -352,7 +352,7 @@ void CatalogModel::rebuildFromDatastore() {
   // overrides the file-derived source_name label, with the same '/'→'_'
   // normalization as baseDatasetLabel so it participates in the duplicate-label
   // ordinal disambiguation below. Absent/empty ⇒ the source_name label.
-  const auto effectiveBaseLabel = [this, &engine](DatasetId id) -> QString {
+  const auto effective_base_label = [this, &engine](DatasetId id) -> QString {
     if (const auto it = impl_->dataset_display_overrides.find(id);
         it != impl_->dataset_display_overrides.end() && !it->second.isEmpty()) {
       QString label = it->second;
@@ -368,7 +368,7 @@ void CatalogModel::rebuildFromDatastore() {
     if (impl_->removed_datasets.count(dataset_id) > 0) {
       continue;
     }
-    ++label_counts[effectiveBaseLabel(dataset_id)];
+    ++label_counts[effective_base_label(dataset_id)];
   }
 
   tsl::robin_map<QString, int, QStringHash> label_ordinals;
@@ -376,7 +376,7 @@ void CatalogModel::rebuildFromDatastore() {
     if (impl_->removed_datasets.count(dataset_id) > 0) {
       continue;
     }
-    const QString base_label = effectiveBaseLabel(dataset_id);
+    const QString base_label = effective_base_label(dataset_id);
     QString label = base_label;
     if (label_counts[base_label] > 1) {
       const int ordinal = ++label_ordinals[base_label];
@@ -399,7 +399,7 @@ void CatalogModel::rebuildFromDatastore() {
 
     const auto dataset_label_it = dataset_labels.find(dataset_id);
     const QString dataset_label =
-        dataset_label_it != dataset_labels.end() ? dataset_label_it->second : effectiveBaseLabel(dataset_id);
+        dataset_label_it != dataset_labels.end() ? dataset_label_it->second : effective_base_label(dataset_id);
 
     for (const TopicId topic_id : reader.listTopics(dataset_id)) {
       const auto metadata = reader.getMetadata(topic_id);

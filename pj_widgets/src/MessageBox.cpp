@@ -16,15 +16,15 @@ namespace PJ {
 namespace {
 
 // Maps the C++ enum to the string the QSS selectors key off.
-const char* RoleToToken(MessageBox::ButtonRole role) {
+const char* roleToToken(MessageBox::ButtonRole role) {
   switch (role) {
-    case MessageBox::PrimaryRole:
+    case MessageBox::kPrimaryRole:
       return "primary";
-    case MessageBox::NeutralRole:
+    case MessageBox::kNeutralRole:
       return "neutral";
-    case MessageBox::DestructiveRole:
+    case MessageBox::kDestructiveRole:
       return "destructive";
-    case MessageBox::CancelRole:
+    case MessageBox::kCancelRole:
       return "cancel";
   }
   return "neutral";
@@ -129,12 +129,12 @@ bool MessageBox::dontShowAgainChecked() const {
 QPushButton* MessageBox::addButton(const QString& label, ButtonRole role) {
   auto* btn = new QPushButton(label, this);
   btn->setObjectName(QStringLiteral("pjMessageBoxButton"));
-  btn->setProperty("msgbox_role", QLatin1String(RoleToToken(role)));
+  btn->setProperty("msgbox_role", QLatin1String(roleToToken(role)));
   // Disable autoDefault so Enter doesn't trigger a non-primary button just
   // because focus traversed onto it. The primary button still receives
   // default-button focus.
   btn->setAutoDefault(false);
-  btn->setDefault(role == PrimaryRole);
+  btn->setDefault(role == kPrimaryRole);
 
   const int index = static_cast<int>(buttons_.size());
   buttons_.append(btn);
@@ -158,7 +158,7 @@ void MessageBox::keyPressEvent(QKeyEvent* event) {
     // that supply a Cancel button get its index returned. Otherwise reject
     // with clicked_index_ = -1.
     for (int i = 0; i < button_roles_.size(); ++i) {
-      if (button_roles_[i] == CancelRole) {
+      if (button_roles_[i] == kCancelRole) {
         clicked_index_ = i;
         accept();
         return;
@@ -176,7 +176,7 @@ void MessageBox::information(QWidget* parent, const QString& title, const QStrin
   MessageBox dlg(parent);
   dlg.setTitle(title);
   dlg.setText(text);
-  dlg.addButton(tr("OK"), PrimaryRole);
+  dlg.addButton(tr("OK"), kPrimaryRole);
   dlg.exec();
 }
 
@@ -184,7 +184,7 @@ void MessageBox::warning(QWidget* parent, const QString& title, const QString& t
   MessageBox dlg(parent);
   dlg.setTitle(title);
   dlg.setText(text);
-  dlg.addButton(tr("OK"), PrimaryRole);
+  dlg.addButton(tr("OK"), kPrimaryRole);
   dlg.exec();
 }
 
@@ -192,7 +192,7 @@ void MessageBox::critical(QWidget* parent, const QString& title, const QString& 
   MessageBox dlg(parent);
   dlg.setTitle(title);
   dlg.setText(text);
-  dlg.addButton(tr("OK"), PrimaryRole);
+  dlg.addButton(tr("OK"), kPrimaryRole);
   dlg.exec();
 }
 

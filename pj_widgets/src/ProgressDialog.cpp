@@ -35,12 +35,12 @@ ProgressDialog::ProgressDialog(QWidget* parent) : Dialog(parent) {
   secondary_->hide();
 
   connect(primary_, &QPushButton::clicked, this, [this]() {
-    action_ = Action::Primary;
+    action_ = Action::kPrimary;
     hide();
     emit stopRequested(action_);
   });
   connect(secondary_, &QPushButton::clicked, this, [this]() {
-    action_ = Action::Secondary;
+    action_ = Action::kSecondary;
     hide();
     emit stopRequested(action_);
   });
@@ -65,7 +65,7 @@ void ProgressDialog::configureButton(
     QPushButton* button, const QString& label, const QString& icon_path, const QString& tooltip) {
   button->setText(label);
   button->setToolTip(tooltip);
-  button->setIcon(icon_path.isEmpty() ? QIcon() : QIcon(LoadSvg(icon_path, currentTheme())));
+  button->setIcon(icon_path.isEmpty() ? QIcon() : QIcon(loadSvg(icon_path, currentTheme())));
   button->setVisible(!label.isEmpty());
 }
 

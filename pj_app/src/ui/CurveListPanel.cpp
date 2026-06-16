@@ -126,7 +126,7 @@ CurveListPanel::CurveListPanel(QWidget* parent) : QWidget(parent), ui_(new Ui::C
   const bool preserve_topic_name = settings.value(QLatin1String(kPreserveTopicNameKey), true).toBool();
   preserve_topic_name_check_->setChecked(preserve_topic_name);
   tree_view_->setViewMode(
-      preserve_topic_name ? CurveTreeView::ViewMode::ShowTopics : CurveTreeView::ViewMode::Hierarchical);
+      preserve_topic_name ? CurveTreeView::ViewMode::kShowTopics : CurveTreeView::ViewMode::kHierarchical);
   auto* preserve_topic_name_action = new QWidgetAction(datasets_menu);
   preserve_topic_name_action->setDefaultWidget(preserve_topic_name_check_);
   datasets_menu->addAction(preserve_topic_name_action);
@@ -324,7 +324,7 @@ void CurveListPanel::onPreserveTopicNameToggled(bool checked) {
     QSettings settings;
     settings.setValue(QLatin1String(kPreserveTopicNameKey), checked);
   }
-  tree_view_->setViewMode(checked ? CurveTreeView::ViewMode::ShowTopics : CurveTreeView::ViewMode::Hierarchical);
+  tree_view_->setViewMode(checked ? CurveTreeView::ViewMode::kShowTopics : CurveTreeView::ViewMode::kHierarchical);
   rebuildTree(tree_view_, catalog_);
   tree_view_->applyFilter(ui_->lineEditFilter->text());
 }
@@ -366,7 +366,7 @@ void CurveListPanel::onTreeContextMenu(const QPoint& pos) {
 
   const int choice = MessageBox::question(
       this, tr("Remove dataset"), tr("Are you sure you want to remove '%1' and its data?").arg(dataset_name),
-      {{tr("Remove"), MessageBox::DestructiveRole}, {tr("Cancel"), MessageBox::CancelRole}});
+      {{tr("Remove"), MessageBox::kDestructiveRole}, {tr("Cancel"), MessageBox::kCancelRole}});
   if (choice == 0) {
     emit removeDatasetRequested(dataset_id);
   }
@@ -416,16 +416,16 @@ void CurveListPanel::applyIcons(QString theme) {
   if (tree_view_ != nullptr) {
     tree_view_->refreshIcons(theme);
   }
-  ui_->buttonDatasetsMenu->setIcon(LoadSvg(":/resources/svg/more_vert.svg", theme));
-  ui_->buttonCustomMenu->setIcon(LoadSvg(":/resources/svg/more_vert.svg", theme));
-  ui_->buttonAddCustom->setIcon(LoadSvg(":/resources/svg/add.svg", theme));
+  ui_->buttonDatasetsMenu->setIcon(loadSvg(":/resources/svg/more_vert.svg", theme));
+  ui_->buttonCustomMenu->setIcon(loadSvg(":/resources/svg/more_vert.svg", theme));
+  ui_->buttonAddCustom->setIcon(loadSvg(":/resources/svg/add.svg", theme));
   if (clear_all_button_ != nullptr) {
-    clear_all_button_->setIcon(LoadSvg(":/resources/svg/trash.svg", theme));
+    clear_all_button_->setIcon(loadSvg(":/resources/svg/trash.svg", theme));
   }
   if (delete_custom_button_ != nullptr) {
-    delete_custom_button_->setIcon(LoadSvg(":/resources/svg/delete_forever.svg", theme));
+    delete_custom_button_->setIcon(loadSvg(":/resources/svg/delete_forever.svg", theme));
   }
-  const QIcon search_icon(LoadSvg(":/resources/svg/search_light.svg", theme));
+  const QIcon search_icon(loadSvg(":/resources/svg/search_light.svg", theme));
   ui_->buttonSearchTimeseries->setIcon(search_icon);
   ui_->buttonSearchCustom->setIcon(search_icon);
 

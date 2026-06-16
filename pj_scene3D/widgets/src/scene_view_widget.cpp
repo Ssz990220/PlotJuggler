@@ -44,7 +44,7 @@ Q_LOGGING_CATEGORY(lcSceneViewWidget, "pj.scene3d.scene_view")
 // what makes MSAA work docked, not just in the more top-level demo.
 inline constexpr int kDefaultMsaaSamples = 4;
 
-QSurfaceFormat make_default_format() {
+QSurfaceFormat makeDefaultFormat() {
   QSurfaceFormat fmt;
   fmt.setVersion(4, 5);
   fmt.setProfile(QSurfaceFormat::CoreProfile);
@@ -186,7 +186,7 @@ void main() {
 }  // namespace
 
 SceneViewWidget::SceneViewWidget(QWidget* parent) : QOpenGLWidget(parent) {
-  setFormat(make_default_format());
+  setFormat(makeDefaultFormat());
   setMinimumSize(320, 240);
   setMouseTracking(false);
   // Accept keyboard focus so the 'P' perf-HUD toggle reaches keyPressEvent
@@ -445,8 +445,8 @@ void SceneViewWidget::paintGL() {
   };
 
   // Grid never consults the TF buffer; safe to render even when tf_ is null.
-  static const TransformBuffer kEmptyBuffer;
-  const TransformBuffer& tf_ref = tf_ ? *tf_ : kEmptyBuffer;
+  static const TransformBuffer k_empty_buffer;
+  const TransformBuffer& tf_ref = tf_ ? *tf_ : k_empty_buffer;
   // The TF-resolution triple, bundled for the passes/layers that need it.
   // fixed_frame_ is the long-lived member (no per-frame string copy).
   const FrameContext frame_ctx{tf_ref, fixed_frame_, render_time_};
@@ -657,16 +657,16 @@ void SceneViewWidget::setCameraModel(CameraModel model) {
   const CameraState carried = camera_->state();
   std::unique_ptr<ICamera> next;
   switch (model) {
-    case CameraModel::Orbit:
+    case CameraModel::kOrbit:
       next = std::make_unique<OrbitCamera>();
       break;
-    case CameraModel::TopDownOrtho:
+    case CameraModel::kTopDownOrtho:
       next = std::make_unique<TopDownOrthoCamera>();
       break;
-    case CameraModel::Fly:
+    case CameraModel::kFly:
       next = std::make_unique<FlyCamera>();
       break;
-    case CameraModel::XYOrbit:
+    case CameraModel::kXyOrbit:
       next = std::make_unique<XYOrbitCamera>();
       break;
   }

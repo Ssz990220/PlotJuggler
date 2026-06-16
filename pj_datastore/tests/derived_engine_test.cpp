@@ -30,7 +30,7 @@ namespace {
 // ---------------------------------------------------------------------------
 
 // Create a dataset and return its id.
-static PJ::DatasetId make_dataset(DataEngine& engine, const std::string& name = "test") {
+static PJ::DatasetId makeDataset(DataEngine& engine, const std::string& name = "test") {
   auto id_or = engine.createDataset(PJ::DatasetDescriptor{.source_name = name, .time_domain_id = 0});
   return *id_or;
 }
@@ -38,7 +38,7 @@ static PJ::DatasetId make_dataset(DataEngine& engine, const std::string& name = 
 // Write `n` rows to a float64 scalar topic with value = slope * (t_ns / 1e9).
 // Commits the chunk. Returns the TopicId.
 // Timestamps: 0, step_ns, 2*step_ns, ...
-static PJ::TopicId make_linear_topic(
+static PJ::TopicId makeLinearTopic(
     DataEngine& engine, PJ::DatasetId dataset_id, double slope, int n, PJ::Timestamp step_ns = 1'000'000'000LL) {
   DataWriter writer = engine.createWriter();
   auto handle_or = writer.registerScalarSeries(dataset_id, "src", PJ::NumericType::kFloat64);
@@ -54,7 +54,7 @@ static PJ::TopicId make_linear_topic(
 }
 
 // Append `n` more rows to an existing scalar topic (continuing timestamps from start_i).
-static void append_linear_rows(
+static void appendLinearRows(
     DataEngine& engine, PJ::TopicId src_topic_id, double slope, int n, int start_i,
     PJ::Timestamp step_ns = 1'000'000'000LL) {
   // We need to write to an existing topic via begin_row / set_float64 / finish_row.
@@ -72,7 +72,7 @@ static void append_linear_rows(
 }
 
 // Collect all float64 values from a topic in timestamp order.
-static std::vector<double> collect_values(DataEngine& engine, PJ::TopicId topic_id) {
+static std::vector<double> collectValues(DataEngine& engine, PJ::TopicId topic_id) {
   const TopicStorage* storage = engine.getTopicStorage(topic_id);
   if (!storage) {
     return {};
@@ -90,7 +90,7 @@ static void notify(DerivedEngine& derived, std::initializer_list<PJ::TopicId> to
 }
 
 // Collect (timestamp, value) pairs.
-static std::vector<std::pair<PJ::Timestamp, double>> collect_rows(DataEngine& engine, PJ::TopicId topic_id) {
+static std::vector<std::pair<PJ::Timestamp, double>> collectRows(DataEngine& engine, PJ::TopicId topic_id) {
   const TopicStorage* storage = engine.getTopicStorage(topic_id);
   if (!storage) {
     return {};
@@ -168,9 +168,9 @@ TEST(DerivativeTransformTest, OutputKind_IsFloat64) {
 TEST(DerivedEngineTest, AddTransform_CreatesOutputTopic) {
   DataEngine engine;
   DerivedEngine derived(engine);
-  PJ::DatasetId ds = make_dataset(engine);
+  PJ::DatasetId ds = makeDataset(engine);
 
-  PJ::TopicId src = make_linear_topic(engine, ds, 1.0, 5);
+  PJ::TopicId src = makeLinearTopic(engine, ds, 1.0, 5);
   auto node_or = derived.addSisoTransform(src, "deriv", ds, std::make_unique<DerivativeTransform>());
   ASSERT_TRUE(node_or.has_value()) << node_or.error();
   PJ::NodeId node = *node_or;
@@ -184,9 +184,9 @@ TEST(DerivedEngineTest, AddTransform_CreatesOutputTopic) {
 TEST(DerivedEngineTest, AddTransform_DuplicateOutputName_Fails) {
   DataEngine engine;
   DerivedEngine derived(engine);
-  PJ::DatasetId ds = make_dataset(engine);
+  PJ::DatasetId ds = makeDataset(engine);
 
-  PJ::TopicId src = make_linear_topic(engine, ds, 1.0, 5);
+  PJ::TopicId src = makeLinearTopic(engine, ds, 1.0, 5);
   ASSERT_TRUE(derived.addSisoTransform(src, "deriv", ds, std::make_unique<DerivativeTransform>()).has_value());
   // Same output name → should fail
   auto r = derived.addSisoTransform(src, "deriv", ds, std::make_unique<DerivativeTransform>());
@@ -196,7 +196,7 @@ TEST(DerivedEngineTest, AddTransform_DuplicateOutputName_Fails) {
 TEST(DerivedEngineTest, AddTransform_UnknownInputTopic_Fails) {
   DataEngine engine;
   DerivedEngine derived(engine);
-  PJ::DatasetId ds = make_dataset(engine);
+  PJ::DatasetId ds = makeDataset(engine);
 
   auto r = derived.addSisoTransform(9999u, "deriv", ds, std::make_unique<DerivativeTransform>());
   EXPECT_FALSE(r.has_value());
@@ -209,9 +209,9 @@ TEST(DerivedEngineTest, AddTransform_UnknownInputTopic_Fails) {
 TEST(DerivedEngineTest, TopologicalOrder_SingleNode) {
   DataEngine engine;
   DerivedEngine derived(engine);
-  PJ::DatasetId ds = make_dataset(engine);
+  PJ::DatasetId ds = makeDataset(engine);
 
-  PJ::TopicId src = make_linear_topic(engine, ds, 1.0, 5);
+  PJ::TopicId src = makeLinearTopic(engine, ds, 1.0, 5);
   PJ::NodeId n = *derived.addSisoTransform(src, "d1", ds, std::make_unique<DerivativeTransform>());
   auto order = derived.topologicalOrder();
   ASSERT_EQ(order.size(), 1u);
@@ -222,9 +222,9 @@ TEST(DerivedEngineTest, TopologicalOrder_Chain_ABOrder) {
   // A → B: output of A is input of B. Order must be [A, B].
   DataEngine engine;
   DerivedEngine derived(engine);
-  PJ::DatasetId ds = make_dataset(engine);
+  PJ::DatasetId ds = makeDataset(engine);
 
-  PJ::TopicId src = make_linear_topic(engine, ds, 1.0, 10);
+  PJ::TopicId src = makeLinearTopic(engine, ds, 1.0, 10);
   PJ::NodeId a = *derived.addSisoTransform(src, "d1", ds, std::make_unique<DerivativeTransform>());
   PJ::TopicId a_out = derived.outputTopics(a)[0];
   PJ::NodeId b = *derived.addSisoTransform(a_out, "d2", ds, std::make_unique<DerivativeTransform>());
@@ -239,9 +239,9 @@ TEST(DerivedEngineTest, TopologicalOrder_Fork) {
   // A → B and A → C: A must appear before both B and C.
   DataEngine engine;
   DerivedEngine derived(engine);
-  PJ::DatasetId ds = make_dataset(engine);
+  PJ::DatasetId ds = makeDataset(engine);
 
-  PJ::TopicId src = make_linear_topic(engine, ds, 1.0, 10);
+  PJ::TopicId src = makeLinearTopic(engine, ds, 1.0, 10);
   PJ::NodeId a = *derived.addSisoTransform(src, "d1", ds, std::make_unique<DerivativeTransform>());
   PJ::TopicId a_out = derived.outputTopics(a)[0];
   PJ::NodeId b = *derived.addSisoTransform(a_out, "d2", ds, std::make_unique<DerivativeTransform>());
@@ -262,9 +262,9 @@ TEST(DerivedEngineTest, TopologicalOrder_Fork) {
 TEST(DerivedEngineTest, DirtyPropagation_SourceChanged) {
   DataEngine engine;
   DerivedEngine derived(engine);
-  PJ::DatasetId ds = make_dataset(engine);
+  PJ::DatasetId ds = makeDataset(engine);
 
-  PJ::TopicId src = make_linear_topic(engine, ds, 1.0, 5);
+  PJ::TopicId src = makeLinearTopic(engine, ds, 1.0, 5);
   PJ::NodeId n = *derived.addSisoTransform(src, "d1", ds, std::make_unique<DerivativeTransform>());
 
   // Run schedule to clear dirty flag
@@ -272,13 +272,13 @@ TEST(DerivedEngineTest, DirtyPropagation_SourceChanged) {
   ASSERT_TRUE(derived.scheduleAll().has_value());
 
   // Append more data and notify
-  append_linear_rows(engine, src, 1.0, 5, 5);
+  appendLinearRows(engine, src, 1.0, 5, 5);
   notify(derived, {src});
 
   // Node must be dirty again — schedule should produce more rows
-  auto before = collect_values(engine, derived.outputTopics(n)[0]).size();
+  auto before = collectValues(engine, derived.outputTopics(n)[0]).size();
   ASSERT_TRUE(derived.scheduleAll().has_value());
-  auto after = collect_values(engine, derived.outputTopics(n)[0]).size();
+  auto after = collectValues(engine, derived.outputTopics(n)[0]).size();
   EXPECT_GT(after, before);
 }
 
@@ -287,9 +287,9 @@ TEST(DerivedEngineTest, DirtyPropagation_Chain) {
   // subsequent schedule runs B.
   DataEngine engine;
   DerivedEngine derived(engine);
-  PJ::DatasetId ds = make_dataset(engine);
+  PJ::DatasetId ds = makeDataset(engine);
 
-  PJ::TopicId src = make_linear_topic(engine, ds, 1.0, 10);
+  PJ::TopicId src = makeLinearTopic(engine, ds, 1.0, 10);
   PJ::NodeId a = *derived.addSisoTransform(src, "d1", ds, std::make_unique<DerivativeTransform>());
   PJ::TopicId a_out = derived.outputTopics(a)[0];
   PJ::NodeId b = *derived.addSisoTransform(a_out, "d2", ds, std::make_unique<DerivativeTransform>());
@@ -298,8 +298,8 @@ TEST(DerivedEngineTest, DirtyPropagation_Chain) {
   ASSERT_TRUE(derived.scheduleAll().has_value());
 
   // Both A and B should have been processed
-  EXPECT_FALSE(collect_values(engine, derived.outputTopics(a)[0]).empty());
-  EXPECT_FALSE(collect_values(engine, derived.outputTopics(b)[0]).empty());
+  EXPECT_FALSE(collectValues(engine, derived.outputTopics(a)[0]).empty());
+  EXPECT_FALSE(collectValues(engine, derived.outputTopics(b)[0]).empty());
 }
 
 // ---------------------------------------------------------------------------
@@ -310,14 +310,14 @@ TEST(DerivedEngineTest, Schedule_ProducesCorrectDerivative) {
   // slope=2.0, step=1s, 11 rows → derivative is always 2.0 (10 rows output)
   DataEngine engine;
   DerivedEngine derived(engine);
-  PJ::DatasetId ds = make_dataset(engine);
+  PJ::DatasetId ds = makeDataset(engine);
 
-  PJ::TopicId src = make_linear_topic(engine, ds, 2.0, 11);
+  PJ::TopicId src = makeLinearTopic(engine, ds, 2.0, 11);
   PJ::NodeId node = *derived.addSisoTransform(src, "deriv", ds, std::make_unique<DerivativeTransform>());
   notify(derived, {src});
   ASSERT_TRUE(derived.scheduleAll().has_value());
 
-  auto vals = collect_values(engine, derived.outputTopics(node)[0]);
+  auto vals = collectValues(engine, derived.outputTopics(node)[0]);
   ASSERT_EQ(vals.size(), 10u);
   for (double v : vals) {
     EXPECT_NEAR(v, 2.0, 1e-6);
@@ -327,18 +327,18 @@ TEST(DerivedEngineTest, Schedule_ProducesCorrectDerivative) {
 TEST(DerivedEngineTest, Schedule_SecondCallNoNewChunks_NoOp) {
   DataEngine engine;
   DerivedEngine derived(engine);
-  PJ::DatasetId ds = make_dataset(engine);
+  PJ::DatasetId ds = makeDataset(engine);
 
-  PJ::TopicId src = make_linear_topic(engine, ds, 1.0, 5);
+  PJ::TopicId src = makeLinearTopic(engine, ds, 1.0, 5);
   PJ::NodeId node = *derived.addSisoTransform(src, "d1", ds, std::make_unique<DerivativeTransform>());
   notify(derived, {src});
   ASSERT_TRUE(derived.scheduleAll().has_value());
 
-  auto count1 = collect_values(engine, derived.outputTopics(node)[0]).size();
+  auto count1 = collectValues(engine, derived.outputTopics(node)[0]).size();
 
   // No new data — second schedule should not change output count
   ASSERT_TRUE(derived.scheduleAll().has_value());
-  auto count2 = collect_values(engine, derived.outputTopics(node)[0]).size();
+  auto count2 = collectValues(engine, derived.outputTopics(node)[0]).size();
   EXPECT_EQ(count1, count2);
 }
 
@@ -346,10 +346,10 @@ TEST(DerivedEngineTest, Schedule_Lazy_SkipsInactiveNode) {
   // Two independent source nodes. schedule({a}) should not run b.
   DataEngine engine;
   DerivedEngine derived(engine);
-  PJ::DatasetId ds = make_dataset(engine);
+  PJ::DatasetId ds = makeDataset(engine);
 
-  PJ::TopicId src1 = make_linear_topic(engine, ds, 1.0, 5);
-  PJ::TopicId src2 = make_linear_topic(engine, ds, 2.0, 5);
+  PJ::TopicId src1 = makeLinearTopic(engine, ds, 1.0, 5);
+  PJ::TopicId src2 = makeLinearTopic(engine, ds, 2.0, 5);
 
   PJ::NodeId a = *derived.addSisoTransform(src1, "da", ds, std::make_unique<DerivativeTransform>());
   PJ::NodeId b = *derived.addSisoTransform(src2, "db", ds, std::make_unique<DerivativeTransform>());
@@ -358,8 +358,8 @@ TEST(DerivedEngineTest, Schedule_Lazy_SkipsInactiveNode) {
   // Only process node A
   ASSERT_TRUE(derived.scheduleActive({a}).has_value());
 
-  auto a_vals = collect_values(engine, derived.outputTopics(a)[0]);
-  auto b_vals = collect_values(engine, derived.outputTopics(b)[0]);
+  auto a_vals = collectValues(engine, derived.outputTopics(a)[0]);
+  auto b_vals = collectValues(engine, derived.outputTopics(b)[0]);
 
   EXPECT_FALSE(a_vals.empty());  // A was processed
   EXPECT_TRUE(b_vals.empty());   // B was skipped
@@ -368,9 +368,9 @@ TEST(DerivedEngineTest, Schedule_Lazy_SkipsInactiveNode) {
 TEST(DerivedEngineTest, Schedule_Chain_BothNodesRun) {
   DataEngine engine;
   DerivedEngine derived(engine);
-  PJ::DatasetId ds = make_dataset(engine);
+  PJ::DatasetId ds = makeDataset(engine);
 
-  PJ::TopicId src = make_linear_topic(engine, ds, 1.0, 12);
+  PJ::TopicId src = makeLinearTopic(engine, ds, 1.0, 12);
   PJ::NodeId a = *derived.addSisoTransform(src, "d1", ds, std::make_unique<DerivativeTransform>());
   PJ::TopicId a_out = derived.outputTopics(a)[0];
   PJ::NodeId b = *derived.addSisoTransform(a_out, "d2", ds, std::make_unique<DerivativeTransform>());
@@ -379,11 +379,11 @@ TEST(DerivedEngineTest, Schedule_Chain_BothNodesRun) {
   ASSERT_TRUE(derived.scheduleAll().has_value());
 
   // A: 11 derivative rows of linear → all constant
-  auto a_vals = collect_values(engine, derived.outputTopics(a)[0]);
+  auto a_vals = collectValues(engine, derived.outputTopics(a)[0]);
   EXPECT_EQ(a_vals.size(), 11u);
 
   // B: derivative of constant → all zero (10 rows, first suppressed)
-  auto b_vals = collect_values(engine, derived.outputTopics(b)[0]);
+  auto b_vals = collectValues(engine, derived.outputTopics(b)[0]);
   EXPECT_EQ(b_vals.size(), 10u);
   for (double v : b_vals) {
     EXPECT_NEAR(v, 0.0, 1e-6);
@@ -397,20 +397,20 @@ TEST(DerivedEngineTest, Schedule_Chain_BothNodesRun) {
 TEST(DerivedEngineTest, RecomputeBatch_ClearsAndRegenerates) {
   DataEngine engine;
   DerivedEngine derived(engine);
-  PJ::DatasetId ds = make_dataset(engine);
+  PJ::DatasetId ds = makeDataset(engine);
 
-  PJ::TopicId src = make_linear_topic(engine, ds, 1.0, 6);
+  PJ::TopicId src = makeLinearTopic(engine, ds, 1.0, 6);
   PJ::NodeId node = *derived.addSisoTransform(src, "d1", ds, std::make_unique<DerivativeTransform>());
   notify(derived, {src});
   ASSERT_TRUE(derived.scheduleAll().has_value());
 
-  auto before = collect_values(engine, derived.outputTopics(node)[0]);
+  auto before = collectValues(engine, derived.outputTopics(node)[0]);
   ASSERT_FALSE(before.empty());
 
   // recompute_batch clears output and replays from scratch
-  ASSERT_TRUE(derived.recompute_batch(node).has_value());
+  ASSERT_TRUE(derived.recomputeBatch(node).has_value());
 
-  auto after = collect_values(engine, derived.outputTopics(node)[0]);
+  auto after = collectValues(engine, derived.outputTopics(node)[0]);
   EXPECT_EQ(before.size(), after.size());
   for (std::size_t i = 0; i < before.size(); ++i) {
     EXPECT_NEAR(before[i], after[i], 1e-9);
@@ -424,16 +424,16 @@ TEST(DerivedEngineTest, RecomputeBatch_ClearsAndRegenerates) {
 TEST(DerivedEngineTest, Parity_SingleChunk) {
   DataEngine engine;
   DerivedEngine derived(engine);
-  PJ::DatasetId ds = make_dataset(engine);
+  PJ::DatasetId ds = makeDataset(engine);
 
-  PJ::TopicId src = make_linear_topic(engine, ds, 3.0, 11);
+  PJ::TopicId src = makeLinearTopic(engine, ds, 3.0, 11);
   PJ::NodeId node = *derived.addSisoTransform(src, "d1", ds, std::make_unique<DerivativeTransform>());
   notify(derived, {src});
   ASSERT_TRUE(derived.scheduleAll().has_value());
-  auto incremental = collect_values(engine, derived.outputTopics(node)[0]);
+  auto incremental = collectValues(engine, derived.outputTopics(node)[0]);
 
-  ASSERT_TRUE(derived.recompute_batch(node).has_value());
-  auto batch = collect_values(engine, derived.outputTopics(node)[0]);
+  ASSERT_TRUE(derived.recomputeBatch(node).has_value());
+  auto batch = collectValues(engine, derived.outputTopics(node)[0]);
 
   ASSERT_EQ(incremental.size(), batch.size());
   for (std::size_t i = 0; i < batch.size(); ++i) {
@@ -446,25 +446,25 @@ TEST(DerivedEngineTest, Parity_TwoChunks_CrossBoundary) {
   // over naturally in the incremental path.
   DataEngine engine;
   DerivedEngine derived(engine);
-  PJ::DatasetId ds = make_dataset(engine);
+  PJ::DatasetId ds = makeDataset(engine);
 
   // Chunk 1: 20 rows (forces auto-chunk at 1024 capacity — but step_ns large enough
   // that all rows stay in one chunk unless we push more)
-  PJ::TopicId src = make_linear_topic(engine, ds, 2.0, 20);
+  PJ::TopicId src = makeLinearTopic(engine, ds, 2.0, 20);
   PJ::NodeId node = *derived.addSisoTransform(src, "d1", ds, std::make_unique<DerivativeTransform>());
   notify(derived, {src});
   ASSERT_TRUE(derived.scheduleAll().has_value());
 
   // Chunk 2: append 20 more rows
-  append_linear_rows(engine, src, 2.0, 20, 20);
+  appendLinearRows(engine, src, 2.0, 20, 20);
   notify(derived, {src});
   ASSERT_TRUE(derived.scheduleAll().has_value());
 
-  auto incremental = collect_values(engine, derived.outputTopics(node)[0]);
+  auto incremental = collectValues(engine, derived.outputTopics(node)[0]);
 
   // Batch recompute and compare
-  ASSERT_TRUE(derived.recompute_batch(node).has_value());
-  auto batch = collect_values(engine, derived.outputTopics(node)[0]);
+  ASSERT_TRUE(derived.recomputeBatch(node).has_value());
+  auto batch = collectValues(engine, derived.outputTopics(node)[0]);
 
   ASSERT_EQ(incremental.size(), batch.size());
   for (std::size_t i = 0; i < batch.size(); ++i) {
@@ -475,25 +475,25 @@ TEST(DerivedEngineTest, Parity_TwoChunks_CrossBoundary) {
 TEST(DerivedEngineTest, Parity_ThreeChunks) {
   DataEngine engine;
   DerivedEngine derived(engine);
-  PJ::DatasetId ds = make_dataset(engine);
+  PJ::DatasetId ds = makeDataset(engine);
 
-  PJ::TopicId src = make_linear_topic(engine, ds, 5.0, 10);
+  PJ::TopicId src = makeLinearTopic(engine, ds, 5.0, 10);
   PJ::NodeId node = *derived.addSisoTransform(src, "d1", ds, std::make_unique<DerivativeTransform>());
   notify(derived, {src});
   ASSERT_TRUE(derived.scheduleAll().has_value());
 
-  append_linear_rows(engine, src, 5.0, 10, 10);
+  appendLinearRows(engine, src, 5.0, 10, 10);
   notify(derived, {src});
   ASSERT_TRUE(derived.scheduleAll().has_value());
 
-  append_linear_rows(engine, src, 5.0, 10, 20);
+  appendLinearRows(engine, src, 5.0, 10, 20);
   notify(derived, {src});
   ASSERT_TRUE(derived.scheduleAll().has_value());
 
-  auto incremental = collect_values(engine, derived.outputTopics(node)[0]);
+  auto incremental = collectValues(engine, derived.outputTopics(node)[0]);
 
-  ASSERT_TRUE(derived.recompute_batch(node).has_value());
-  auto batch = collect_values(engine, derived.outputTopics(node)[0]);
+  ASSERT_TRUE(derived.recomputeBatch(node).has_value());
+  auto batch = collectValues(engine, derived.outputTopics(node)[0]);
 
   ASSERT_EQ(incremental.size(), batch.size());
   for (std::size_t i = 0; i < batch.size(); ++i) {
@@ -506,7 +506,7 @@ TEST(DerivedEngineTest, Parity_ThreeChunks) {
 TEST(DerivedEngineTest, CommitCycle_ReturnValueDrivesNotify) {
   DataEngine engine;
   DerivedEngine derived(engine);
-  PJ::DatasetId ds = make_dataset(engine);
+  PJ::DatasetId ds = makeDataset(engine);
 
   DataWriter writer = engine.createWriter();
   auto handle = *writer.registerScalarSeries(ds, "sig", PJ::NumericType::kFloat64);
@@ -521,7 +521,7 @@ TEST(DerivedEngineTest, CommitCycle_ReturnValueDrivesNotify) {
   }
   derived.onSourceCommitted(engine.commitChunks(writer.flushAll()));
   ASSERT_TRUE(derived.scheduleAll().has_value());
-  auto after_frame1 = collect_values(engine, out).size();
+  auto after_frame1 = collectValues(engine, out).size();
   EXPECT_GT(after_frame1, 0u);
 
   // Frame 2: write 5 more samples.
@@ -530,7 +530,7 @@ TEST(DerivedEngineTest, CommitCycle_ReturnValueDrivesNotify) {
   }
   derived.onSourceCommitted(engine.commitChunks(writer.flushAll()));
   ASSERT_TRUE(derived.scheduleAll().has_value());
-  auto after_frame2 = collect_values(engine, out).size();
+  auto after_frame2 = collectValues(engine, out).size();
   EXPECT_GT(after_frame2, after_frame1);
 
   // Verify return value: single topic flushed → exactly one ID returned.
@@ -548,7 +548,7 @@ TEST(DerivedEngineTest, CommitCycle_ReturnValueDrivesNotify) {
 TEST(DerivedEngineTest, AddTransform_NoCommittedChunks_Succeeds) {
   DataEngine engine;
   DerivedEngine derived(engine);
-  PJ::DatasetId ds = make_dataset(engine);
+  PJ::DatasetId ds = makeDataset(engine);
 
   // Create a topic with a few rows but do NOT commit any chunks.
   DataWriter writer = engine.createWriter();
@@ -607,7 +607,7 @@ class DiffMimoTransform : public IMIMOTransform {
 };
 
 // Collect (timestamp, value) pairs for a given column index.
-static std::vector<std::pair<PJ::Timestamp, double>> collect_rows_col(
+static std::vector<std::pair<PJ::Timestamp, double>> collectRowsCol(
     DataEngine& engine, PJ::TopicId topic_id, std::size_t col = 0) {
   const TopicStorage* storage = engine.getTopicStorage(topic_id);
   if (!storage) {
@@ -628,10 +628,10 @@ static std::vector<std::pair<PJ::Timestamp, double>> collect_rows_col(
 TEST(MimoTransformTest, AddMimo_CreatesOutputTopic) {
   DataEngine engine;
   DerivedEngine derived(engine);
-  PJ::DatasetId ds = make_dataset(engine);
+  PJ::DatasetId ds = makeDataset(engine);
 
-  PJ::TopicId t1 = make_linear_topic(engine, ds, 1.0, 5);
-  PJ::TopicId t2 = make_linear_topic(engine, ds, 2.0, 5);
+  PJ::TopicId t1 = makeLinearTopic(engine, ds, 1.0, 5);
+  PJ::TopicId t2 = makeLinearTopic(engine, ds, 2.0, 5);
 
   auto node_or = derived.addMimoTransform({t1, t2}, {"sum_out"}, ds, std::make_unique<SumMimoTransform>());
   ASSERT_TRUE(node_or.has_value()) << node_or.error();
@@ -646,7 +646,7 @@ TEST(MimoTransformTest, AddMimo_CreatesOutputTopic) {
 TEST(MimoTransformTest, AddMimo_UnknownInputTopic_Fails) {
   DataEngine engine;
   DerivedEngine derived(engine);
-  PJ::DatasetId ds = make_dataset(engine);
+  PJ::DatasetId ds = makeDataset(engine);
 
   auto r = derived.addMimoTransform({9999u}, {"out"}, ds, std::make_unique<SumMimoTransform>());
   EXPECT_FALSE(r.has_value());
@@ -655,10 +655,10 @@ TEST(MimoTransformTest, AddMimo_UnknownInputTopic_Fails) {
 TEST(MimoTransformTest, AddMimo_DuplicateOutputName_Fails) {
   DataEngine engine;
   DerivedEngine derived(engine);
-  PJ::DatasetId ds = make_dataset(engine);
+  PJ::DatasetId ds = makeDataset(engine);
 
-  PJ::TopicId t1 = make_linear_topic(engine, ds, 1.0, 5);
-  PJ::TopicId t2 = make_linear_topic(engine, ds, 2.0, 5);
+  PJ::TopicId t1 = makeLinearTopic(engine, ds, 1.0, 5);
+  PJ::TopicId t2 = makeLinearTopic(engine, ds, 2.0, 5);
 
   ASSERT_TRUE(derived.addMimoTransform({t1, t2}, {"dup"}, ds, std::make_unique<SumMimoTransform>()).has_value());
   // Same output name in same dataset must fail.
@@ -669,10 +669,10 @@ TEST(MimoTransformTest, AddMimo_DuplicateOutputName_Fails) {
 TEST(MimoTransformTest, AddMimo_MultipleOutputTopics) {
   DataEngine engine;
   DerivedEngine derived(engine);
-  PJ::DatasetId ds = make_dataset(engine);
+  PJ::DatasetId ds = makeDataset(engine);
 
-  PJ::TopicId t1 = make_linear_topic(engine, ds, 1.0, 5);
-  PJ::TopicId t2 = make_linear_topic(engine, ds, 2.0, 5);
+  PJ::TopicId t1 = makeLinearTopic(engine, ds, 1.0, 5);
+  PJ::TopicId t2 = makeLinearTopic(engine, ds, 2.0, 5);
 
   // DiffMimoTransform produces 1 output; use two separate nodes for two outputs.
   auto node_or = derived.addMimoTransform({t1, t2}, {"diff_out"}, ds, std::make_unique<DiffMimoTransform>());
@@ -691,7 +691,7 @@ TEST(MimoTransformTest, JoinSemantics_OnlyMatchingTimestamps) {
   // t=1 and t=3 are in A but not B → no output row.
   DataEngine engine;
   DerivedEngine derived(engine);
-  PJ::DatasetId ds = make_dataset(engine);
+  PJ::DatasetId ds = makeDataset(engine);
 
   // Topic A: t = 0,1,2,3,4 s, value = i seconds
   PJ::TopicId ta;
@@ -723,7 +723,7 @@ TEST(MimoTransformTest, JoinSemantics_OnlyMatchingTimestamps) {
   notify(derived, {ta, tb});
   ASSERT_TRUE(derived.scheduleAll().has_value());
 
-  auto rows = collect_rows_col(engine, derived.outputTopics(*node_or)[0]);
+  auto rows = collectRowsCol(engine, derived.outputTopics(*node_or)[0]);
   ASSERT_EQ(rows.size(), 3u);               // only t=0,2,4 produce output
   EXPECT_NEAR(rows[0].second, 0.0, 1e-9);   // 0+0
   EXPECT_NEAR(rows[1].second, 6.0, 1e-9);   // 2+4
@@ -734,7 +734,7 @@ TEST(MimoTransformTest, JoinSemantics_NoCommonTimestamps_NoOutput) {
   // A: t=0,1 s;  B: t=2,3 s → no overlap → no output rows
   DataEngine engine;
   DerivedEngine derived(engine);
-  PJ::DatasetId ds = make_dataset(engine);
+  PJ::DatasetId ds = makeDataset(engine);
 
   PJ::TopicId ta;
   {
@@ -762,7 +762,7 @@ TEST(MimoTransformTest, JoinSemantics_NoCommonTimestamps_NoOutput) {
   notify(derived, {ta, tb});
   ASSERT_TRUE(derived.scheduleAll().has_value());
 
-  EXPECT_TRUE(collect_values(engine, derived.outputTopics(*node_or)[0]).empty());
+  EXPECT_TRUE(collectValues(engine, derived.outputTopics(*node_or)[0]).empty());
 }
 
 // ---------------------------------------------------------------------------
@@ -774,10 +774,10 @@ TEST(MimoTransformTest, Schedule_ProducesCorrectSum) {
   // A[i] = 1.0 * i, B[i] = 2.0 * i. Sum[i] = 3.0 * i.
   DataEngine engine;
   DerivedEngine derived(engine);
-  PJ::DatasetId ds = make_dataset(engine);
+  PJ::DatasetId ds = makeDataset(engine);
 
-  PJ::TopicId t1 = make_linear_topic(engine, ds, 1.0, 10);
-  PJ::TopicId t2 = make_linear_topic(engine, ds, 2.0, 10);
+  PJ::TopicId t1 = makeLinearTopic(engine, ds, 1.0, 10);
+  PJ::TopicId t2 = makeLinearTopic(engine, ds, 2.0, 10);
 
   auto node_or = derived.addMimoTransform({t1, t2}, {"sum"}, ds, std::make_unique<SumMimoTransform>());
   ASSERT_TRUE(node_or.has_value()) << node_or.error();
@@ -786,7 +786,7 @@ TEST(MimoTransformTest, Schedule_ProducesCorrectSum) {
   notify(derived, {t1, t2});
   ASSERT_TRUE(derived.scheduleAll().has_value());
 
-  auto rows = collect_rows_col(engine, out);
+  auto rows = collectRowsCol(engine, out);
   ASSERT_EQ(rows.size(), 10u);
   for (int i = 0; i < 10; ++i) {
     double expected = 3.0 * static_cast<double>(i);  // (1.0 + 2.0) * i
@@ -797,10 +797,10 @@ TEST(MimoTransformTest, Schedule_ProducesCorrectSum) {
 TEST(MimoTransformTest, Schedule_IncrementalTwoChunks) {
   DataEngine engine;
   DerivedEngine derived(engine);
-  PJ::DatasetId ds = make_dataset(engine);
+  PJ::DatasetId ds = makeDataset(engine);
 
-  PJ::TopicId t1 = make_linear_topic(engine, ds, 1.0, 10);
-  PJ::TopicId t2 = make_linear_topic(engine, ds, 2.0, 10);
+  PJ::TopicId t1 = makeLinearTopic(engine, ds, 1.0, 10);
+  PJ::TopicId t2 = makeLinearTopic(engine, ds, 2.0, 10);
 
   auto node_or = derived.addMimoTransform({t1, t2}, {"sum"}, ds, std::make_unique<SumMimoTransform>());
   ASSERT_TRUE(node_or.has_value()) << node_or.error();
@@ -808,16 +808,16 @@ TEST(MimoTransformTest, Schedule_IncrementalTwoChunks) {
 
   notify(derived, {t1, t2});
   ASSERT_TRUE(derived.scheduleAll().has_value());
-  std::size_t after_first = collect_values(engine, out).size();
+  std::size_t after_first = collectValues(engine, out).size();
   EXPECT_EQ(after_first, 10u);
 
   // Second batch of data
-  append_linear_rows(engine, t1, 1.0, 10, 10);
-  append_linear_rows(engine, t2, 2.0, 10, 10);
+  appendLinearRows(engine, t1, 1.0, 10, 10);
+  appendLinearRows(engine, t2, 2.0, 10, 10);
   notify(derived, {t1, t2});
   ASSERT_TRUE(derived.scheduleAll().has_value());
 
-  std::size_t after_second = collect_values(engine, out).size();
+  std::size_t after_second = collectValues(engine, out).size();
   EXPECT_EQ(after_second, 20u);
 }
 
@@ -828,10 +828,10 @@ TEST(MimoTransformTest, Schedule_IncrementalTwoChunks) {
 TEST(MimoTransformTest, Parity_IncrementalMatchesBatch_SingleChunk) {
   DataEngine engine;
   DerivedEngine derived(engine);
-  PJ::DatasetId ds = make_dataset(engine);
+  PJ::DatasetId ds = makeDataset(engine);
 
-  PJ::TopicId t1 = make_linear_topic(engine, ds, 1.0, 10);
-  PJ::TopicId t2 = make_linear_topic(engine, ds, 3.0, 10);
+  PJ::TopicId t1 = makeLinearTopic(engine, ds, 1.0, 10);
+  PJ::TopicId t2 = makeLinearTopic(engine, ds, 3.0, 10);
 
   auto node_or = derived.addMimoTransform({t1, t2}, {"sum"}, ds, std::make_unique<SumMimoTransform>());
   ASSERT_TRUE(node_or.has_value()) << node_or.error();
@@ -840,10 +840,10 @@ TEST(MimoTransformTest, Parity_IncrementalMatchesBatch_SingleChunk) {
 
   notify(derived, {t1, t2});
   ASSERT_TRUE(derived.scheduleAll().has_value());
-  auto incremental = collect_values(engine, out);
+  auto incremental = collectValues(engine, out);
 
-  ASSERT_TRUE(derived.recompute_batch(node).has_value());
-  auto batch = collect_values(engine, out);
+  ASSERT_TRUE(derived.recomputeBatch(node).has_value());
+  auto batch = collectValues(engine, out);
 
   ASSERT_EQ(incremental.size(), batch.size());
   for (std::size_t i = 0; i < batch.size(); ++i) {
@@ -854,10 +854,10 @@ TEST(MimoTransformTest, Parity_IncrementalMatchesBatch_SingleChunk) {
 TEST(MimoTransformTest, Parity_IncrementalMatchesBatch_MultipleChunks) {
   DataEngine engine;
   DerivedEngine derived(engine);
-  PJ::DatasetId ds = make_dataset(engine);
+  PJ::DatasetId ds = makeDataset(engine);
 
-  PJ::TopicId t1 = make_linear_topic(engine, ds, 1.0, 10);
-  PJ::TopicId t2 = make_linear_topic(engine, ds, 2.0, 10);
+  PJ::TopicId t1 = makeLinearTopic(engine, ds, 1.0, 10);
+  PJ::TopicId t2 = makeLinearTopic(engine, ds, 2.0, 10);
 
   auto node_or = derived.addMimoTransform({t1, t2}, {"sum"}, ds, std::make_unique<SumMimoTransform>());
   ASSERT_TRUE(node_or.has_value()) << node_or.error();
@@ -867,15 +867,15 @@ TEST(MimoTransformTest, Parity_IncrementalMatchesBatch_MultipleChunks) {
   notify(derived, {t1, t2});
   ASSERT_TRUE(derived.scheduleAll().has_value());
 
-  append_linear_rows(engine, t1, 1.0, 10, 10);
-  append_linear_rows(engine, t2, 2.0, 10, 10);
+  appendLinearRows(engine, t1, 1.0, 10, 10);
+  appendLinearRows(engine, t2, 2.0, 10, 10);
   notify(derived, {t1, t2});
   ASSERT_TRUE(derived.scheduleAll().has_value());
 
-  auto incremental = collect_values(engine, out);
+  auto incremental = collectValues(engine, out);
 
-  ASSERT_TRUE(derived.recompute_batch(node).has_value());
-  auto batch = collect_values(engine, out);
+  ASSERT_TRUE(derived.recomputeBatch(node).has_value());
+  auto batch = collectValues(engine, out);
 
   ASSERT_EQ(incremental.size(), batch.size());
   for (std::size_t i = 0; i < batch.size(); ++i) {
@@ -894,10 +894,10 @@ TEST(MimoTransformTest, ChainedSisoThenMimo) {
   // MIMO sum = 5.0 for each output row.
   DataEngine engine;
   DerivedEngine derived(engine);
-  PJ::DatasetId ds = make_dataset(engine);
+  PJ::DatasetId ds = makeDataset(engine);
 
-  PJ::TopicId src1 = make_linear_topic(engine, ds, 2.0, 11);
-  PJ::TopicId src2 = make_linear_topic(engine, ds, 3.0, 11);
+  PJ::TopicId src1 = makeLinearTopic(engine, ds, 2.0, 11);
+  PJ::TopicId src2 = makeLinearTopic(engine, ds, 3.0, 11);
 
   PJ::NodeId n1 = *derived.addSisoTransform(src1, "d1", ds, std::make_unique<DerivativeTransform>());
   PJ::NodeId n2 = *derived.addSisoTransform(src2, "d2", ds, std::make_unique<DerivativeTransform>());
@@ -911,7 +911,7 @@ TEST(MimoTransformTest, ChainedSisoThenMimo) {
   notify(derived, {src1, src2});
   ASSERT_TRUE(derived.scheduleAll().has_value());
 
-  auto vals = collect_values(engine, sum_out);
+  auto vals = collectValues(engine, sum_out);
   EXPECT_FALSE(vals.empty());
   for (double v : vals) {
     EXPECT_NEAR(v, 5.0, 1e-6);
@@ -932,7 +932,7 @@ TEST(MimoTransformTest, DuplicateTimestamp_ProducesOneOutputRow) {
   // Bug: without dedup, joined_ts=[0,5,5,10] → 4 output rows, t=5 appears twice.
   DataEngine engine;
   DerivedEngine derived(engine);
-  PJ::DatasetId ds = make_dataset(engine);
+  PJ::DatasetId ds = makeDataset(engine);
 
   PJ::TopicId ta;
   {
@@ -963,7 +963,7 @@ TEST(MimoTransformTest, DuplicateTimestamp_ProducesOneOutputRow) {
   notify(derived, {ta, tb});
   ASSERT_TRUE(derived.scheduleAll().has_value());
 
-  auto rows = collect_rows_col(engine, derived.outputTopics(*node_or)[0]);
+  auto rows = collectRowsCol(engine, derived.outputTopics(*node_or)[0]);
   // Must produce exactly 3 rows (t=0, t=5, t=10), not 4.
   ASSERT_EQ(rows.size(), 3u) << "Duplicate timestamp in input caused duplicate output rows";
   EXPECT_NEAR(rows[0].second, 10.0, 1e-9);  // 0+10
@@ -984,7 +984,7 @@ TEST(MimoTransformTest, Parity_StaggeredChunks_IncrementalMatchesBatch) {
   // Expected joins: t=0,2,4,6,8,10,12,14 (8 rows)
   DataEngine engine;
   DerivedEngine derived(engine);
-  PJ::DatasetId ds = make_dataset(engine);
+  PJ::DatasetId ds = makeDataset(engine);
 
   // Register both topics upfront
   DataWriter wa = engine.createWriter();
@@ -1022,11 +1022,11 @@ TEST(MimoTransformTest, Parity_StaggeredChunks_IncrementalMatchesBatch) {
   derived.onSourceCommitted(engine.commitChunks(wb.flushAll()));
   ASSERT_TRUE(derived.scheduleAll().has_value());
 
-  auto incremental = collect_rows_col(engine, out);
+  auto incremental = collectRowsCol(engine, out);
   ASSERT_EQ(incremental.size(), 8u) << "Expected 8 joined rows (even timestamps 0..14)";
 
-  ASSERT_TRUE(derived.recompute_batch(node).has_value());
-  auto batch = collect_rows_col(engine, out);
+  ASSERT_TRUE(derived.recomputeBatch(node).has_value());
+  auto batch = collectRowsCol(engine, out);
 
   ASSERT_EQ(incremental.size(), batch.size());
   for (std::size_t i = 0; i < batch.size(); ++i) {
@@ -1067,10 +1067,10 @@ class AccumulatingSumMimoTransform : public IMIMOTransform {
 TEST(MimoTransformTest, StatefulTransform_RecomputeBatchCallsReset) {
   DataEngine engine;
   DerivedEngine derived(engine);
-  PJ::DatasetId ds = make_dataset(engine);
+  PJ::DatasetId ds = makeDataset(engine);
 
-  PJ::TopicId t1 = make_linear_topic(engine, ds, 1.0, 5);
-  PJ::TopicId t2 = make_linear_topic(engine, ds, 1.0, 5);
+  PJ::TopicId t1 = makeLinearTopic(engine, ds, 1.0, 5);
+  PJ::TopicId t2 = makeLinearTopic(engine, ds, 1.0, 5);
 
   auto node_or = derived.addMimoTransform({t1, t2}, {"acc"}, ds, std::make_unique<AccumulatingSumMimoTransform>());
   ASSERT_TRUE(node_or.has_value()) << node_or.error();
@@ -1079,11 +1079,11 @@ TEST(MimoTransformTest, StatefulTransform_RecomputeBatchCallsReset) {
 
   notify(derived, {t1, t2});
   ASSERT_TRUE(derived.scheduleAll().has_value());
-  auto incremental = collect_values(engine, out);
+  auto incremental = collectValues(engine, out);
 
   // recompute_batch must reset the transform and produce identical output
-  ASSERT_TRUE(derived.recompute_batch(node).has_value());
-  auto batch = collect_values(engine, out);
+  ASSERT_TRUE(derived.recomputeBatch(node).has_value());
+  auto batch = collectValues(engine, out);
 
   ASSERT_EQ(incremental.size(), batch.size());
   for (std::size_t i = 0; i < batch.size(); ++i) {
@@ -1101,7 +1101,7 @@ TEST(MimoTransformTest, StatefulTransform_RecomputeBatchCallsReset) {
 TEST(MimoTransformTest, PartialNotify_DoesNotAdvanceWatermark) {
   DataEngine engine;
   DerivedEngine derived(engine);
-  PJ::DatasetId ds = make_dataset(engine);
+  PJ::DatasetId ds = makeDataset(engine);
 
   // Register both topics; initially only commit data for t1
   DataWriter w1 = engine.createWriter();
@@ -1124,7 +1124,7 @@ TEST(MimoTransformTest, PartialNotify_DoesNotAdvanceWatermark) {
   ASSERT_TRUE(derived.scheduleAll().has_value());
 
   // No output: t2 has no data yet
-  EXPECT_TRUE(collect_values(engine, out).empty());
+  EXPECT_TRUE(collectValues(engine, out).empty());
 
   // Now commit t2 with the SAME timestamps as t1
   for (int i = 0; i < 5; ++i) {
@@ -1134,7 +1134,7 @@ TEST(MimoTransformTest, PartialNotify_DoesNotAdvanceWatermark) {
   ASSERT_TRUE(derived.scheduleAll().has_value());
 
   // Now all 5 joins should be found (watermark was NOT advanced by the first schedule)
-  auto rows = collect_rows_col(engine, out);
+  auto rows = collectRowsCol(engine, out);
   ASSERT_EQ(rows.size(), 5u) << "Watermark advanced incorrectly; missed joins after lazy topic";
   for (int i = 0; i < 5; ++i) {
     EXPECT_NEAR(rows[i].second, static_cast<double>(i) + static_cast<double>(i * 2), 1e-9);
@@ -1159,9 +1159,9 @@ class WrongOutputKindsMimoTransform : public IMIMOTransform {
 TEST(MimoTransformTest, WrongOutputKindsCount_Fails) {
   DataEngine engine;
   DerivedEngine derived(engine);
-  PJ::DatasetId ds = make_dataset(engine);
+  PJ::DatasetId ds = makeDataset(engine);
 
-  PJ::TopicId t1 = make_linear_topic(engine, ds, 1.0, 5);
+  PJ::TopicId t1 = makeLinearTopic(engine, ds, 1.0, 5);
   // One output topic name but op returns two kinds → error
   auto r = derived.addMimoTransform({t1}, {"single_out"}, ds, std::make_unique<WrongOutputKindsMimoTransform>());
   EXPECT_FALSE(r.has_value());
@@ -1171,9 +1171,9 @@ TEST(MimoTransformTest, TopologicalOrder_MimoComesAfterSiso) {
   // n1: src→d1, n2: src→d2, n_mimo: (d1,d2)→sum. Order: n1,n2 before n_mimo.
   DataEngine engine;
   DerivedEngine derived(engine);
-  PJ::DatasetId ds = make_dataset(engine);
+  PJ::DatasetId ds = makeDataset(engine);
 
-  PJ::TopicId src = make_linear_topic(engine, ds, 1.0, 5);
+  PJ::TopicId src = makeLinearTopic(engine, ds, 1.0, 5);
   PJ::NodeId n1 = *derived.addSisoTransform(src, "d1", ds, std::make_unique<DerivativeTransform>());
   PJ::NodeId n2 = *derived.addSisoTransform(src, "d2", ds, std::make_unique<DerivativeTransform>());
   PJ::TopicId d1_out = derived.outputTopics(n1)[0];
@@ -1211,7 +1211,7 @@ class Uint64IdentityTransform : public ISISOTransform {
 
 TEST(DerivedEngine, Uint64PrecisionRoundTrip) {
   DataEngine engine;
-  auto ds = make_dataset(engine);
+  auto ds = makeDataset(engine);
 
   // Create a uint64 scalar topic with values that exceed double precision (>2^53)
   // and exceed int64_t range (>INT64_MAX).
@@ -1270,7 +1270,7 @@ TEST(DerivedEngine, Uint64PrecisionRoundTrip) {
 // ---------------------------------------------------------------------------
 
 // Append one row (ts, value) to an existing scalar topic and commit.
-static void append_row(DataEngine& engine, PJ::TopicId topic_id, PJ::Timestamp ts, double value) {
+static void appendRow(DataEngine& engine, PJ::TopicId topic_id, PJ::Timestamp ts, double value) {
   DataWriter writer = engine.createWriter();
   auto s = writer.beginRow(topic_id, ts);
   (void)s;
@@ -1283,17 +1283,17 @@ static void append_row(DataEngine& engine, PJ::TopicId topic_id, PJ::Timestamp t
 TEST(DerivedEngineTest, SisoLateInputCommitTriggersFullRecompute) {
   DataEngine engine;
   DerivedEngine derived(engine);
-  PJ::DatasetId ds = make_dataset(engine);
+  PJ::DatasetId ds = makeDataset(engine);
 
   // Rows at t = 0..4 s on a slope-2 line: derivative is 2.0 everywhere.
-  PJ::TopicId src = make_linear_topic(engine, ds, 2.0, 5);
+  PJ::TopicId src = makeLinearTopic(engine, ds, 2.0, 5);
   PJ::NodeId node = *derived.addSisoTransform(src, "deriv", ds, std::make_unique<DerivativeTransform>());
   notify(derived, {src});
   ASSERT_TRUE(derived.scheduleAll().has_value());
-  ASSERT_EQ(collect_values(engine, derived.outputTopics(node)[0]).size(), 4u);
+  ASSERT_EQ(collectValues(engine, derived.outputTopics(node)[0]).size(), 4u);
 
   // Late commit BEFORE the processed watermark: (2.5 s, 100.0), far off the line.
-  append_row(engine, src, 2'500'000'000LL, 100.0);
+  appendRow(engine, src, 2'500'000'000LL, 100.0);
   notify(derived, {src});
   ASSERT_TRUE(derived.scheduleAll().has_value());
 
@@ -1304,7 +1304,7 @@ TEST(DerivedEngineTest, SisoLateInputCommitTriggersFullRecompute) {
       {1'000'000'000LL, 2.0},    {2'000'000'000LL, 2.0}, {2'500'000'000LL, 192.0},
       {3'000'000'000LL, -188.0}, {4'000'000'000LL, 2.0},
   };
-  const auto rows = collect_rows_col(engine, derived.outputTopics(node)[0]);
+  const auto rows = collectRowsCol(engine, derived.outputTopics(node)[0]);
   ASSERT_EQ(rows.size(), expected.size());
   for (std::size_t i = 0; i < expected.size(); ++i) {
     EXPECT_EQ(rows[i].first, expected[i].first) << "timestamp at row " << i;
@@ -1315,19 +1315,19 @@ TEST(DerivedEngineTest, SisoLateInputCommitTriggersFullRecompute) {
 TEST(MimoTransformTest, MimoLateInputCommitTriggersFullRecompute) {
   DataEngine engine;
   DerivedEngine derived(engine);
-  PJ::DatasetId ds = make_dataset(engine);
+  PJ::DatasetId ds = makeDataset(engine);
 
   // Matching timestamps t = 0..4 s on both inputs; sum = 3t.
-  PJ::TopicId t1 = make_linear_topic(engine, ds, 1.0, 5);
-  PJ::TopicId t2 = make_linear_topic(engine, ds, 2.0, 5);
+  PJ::TopicId t1 = makeLinearTopic(engine, ds, 1.0, 5);
+  PJ::TopicId t2 = makeLinearTopic(engine, ds, 2.0, 5);
   PJ::NodeId node = *derived.addMimoTransform({t1, t2}, {"sum_out"}, ds, std::make_unique<SumMimoTransform>());
   notify(derived, {t1, t2});
   ASSERT_TRUE(derived.scheduleAll().has_value());
-  ASSERT_EQ(collect_rows_col(engine, derived.outputTopics(node)[0]).size(), 5u);
+  ASSERT_EQ(collectRowsCol(engine, derived.outputTopics(node)[0]).size(), 5u);
 
   // Late commits BEFORE the watermark: both inputs gain a row at t = 2.5 s.
-  append_row(engine, t1, 2'500'000'000LL, 10.0);
-  append_row(engine, t2, 2'500'000'000LL, 20.0);
+  appendRow(engine, t1, 2'500'000'000LL, 10.0);
+  appendRow(engine, t2, 2'500'000'000LL, 20.0);
   notify(derived, {t1, t2});
   ASSERT_TRUE(derived.scheduleAll().has_value());
 
@@ -1341,7 +1341,7 @@ TEST(MimoTransformTest, MimoLateInputCommitTriggersFullRecompute) {
       {3'000'000'000LL, 9.0},
       {4'000'000'000LL, 12.0},
   };
-  const auto rows = collect_rows_col(engine, derived.outputTopics(node)[0]);
+  const auto rows = collectRowsCol(engine, derived.outputTopics(node)[0]);
   ASSERT_EQ(rows.size(), expected.size());
   for (std::size_t i = 0; i < expected.size(); ++i) {
     EXPECT_EQ(rows[i].first, expected[i].first) << "timestamp at row " << i;

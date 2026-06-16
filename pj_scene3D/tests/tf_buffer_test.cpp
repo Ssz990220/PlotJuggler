@@ -99,7 +99,7 @@ TEST(TransformBufferTest, ReparentingIsRejected) {
   // ReparentConflict (not thrown), so a bulk ingest can drop it and continue.
   const auto result = buffer.setTransform(makeStamped("foo", "A", tp(20ns), makeTranslation(2.0)));
   ASSERT_FALSE(result.has_value());
-  EXPECT_EQ(result.error(), SetTransformError::ReparentConflict);
+  EXPECT_EQ(result.error(), SetTransformError::kReparentConflict);
 }
 
 // A transform published once resolves at its stamp and every later time, with no
@@ -285,7 +285,7 @@ TEST(TransformBufferTest, SelfParentIgnored) {
   // self-loop in the parent map; it is reported as a dropped SelfLoop edge.
   const auto result = buffer.setTransform(makeStamped("A", "A", tp(10ns), makeTranslation(1.0)));
   ASSERT_FALSE(result.has_value());
-  EXPECT_EQ(result.error(), SetTransformError::SelfLoop);
+  EXPECT_EQ(result.error(), SetTransformError::kSelfLoop);
 
   EXPECT_FALSE(buffer.getParent("A").has_value());
 }
@@ -340,7 +340,7 @@ TEST(TransformBufferTest, ZeroQuaternionRejected) {
 
   const auto result = buffer.setTransform(makeStamped("world", "A", tp(10ns), zero_rot));
   ASSERT_FALSE(result.has_value());
-  EXPECT_EQ(result.error(), SetTransformError::InvalidRotation);
+  EXPECT_EQ(result.error(), SetTransformError::kInvalidRotation);
   // No edge stored, so the frame is unknown.
   EXPECT_FALSE(buffer.getParent("A").has_value());
   EXPECT_FALSE(buffer.tryLookupTransform("world", "A", tp(10ns)).has_value());
@@ -353,7 +353,7 @@ TEST(TransformBufferTest, NaNQuaternionRejected) {
 
   const auto result = buffer.setTransform(makeStamped("world", "A", tp(10ns), nan_rot));
   ASSERT_FALSE(result.has_value());
-  EXPECT_EQ(result.error(), SetTransformError::InvalidRotation);
+  EXPECT_EQ(result.error(), SetTransformError::kInvalidRotation);
   EXPECT_FALSE(buffer.getParent("A").has_value());
 }
 
@@ -364,7 +364,7 @@ TEST(TransformBufferTest, NonFiniteTranslationRejected) {
 
   const auto result = buffer.setTransform(makeStamped("world", "A", tp(10ns), bad_t));
   ASSERT_FALSE(result.has_value());
-  EXPECT_EQ(result.error(), SetTransformError::NonFiniteTranslation);
+  EXPECT_EQ(result.error(), SetTransformError::kNonFiniteTranslation);
   EXPECT_FALSE(buffer.getParent("A").has_value());
 }
 
@@ -373,11 +373,11 @@ TEST(TransformBufferTest, EmptyFrameNameRejected) {
 
   const auto empty_parent = buffer.setTransform(makeStamped("", "child", tp(10ns), makeTranslation(1.0)));
   ASSERT_FALSE(empty_parent.has_value());
-  EXPECT_EQ(empty_parent.error(), SetTransformError::InvalidFrameName);
+  EXPECT_EQ(empty_parent.error(), SetTransformError::kInvalidFrameName);
 
   const auto empty_child = buffer.setTransform(makeStamped("parent", "", tp(10ns), makeTranslation(1.0)));
   ASSERT_FALSE(empty_child.has_value());
-  EXPECT_EQ(empty_child.error(), SetTransformError::InvalidFrameName);
+  EXPECT_EQ(empty_child.error(), SetTransformError::kInvalidFrameName);
 
   // Neither phantom "" frame leaked into the buffer.
   EXPECT_TRUE(buffer.getAllFrames().empty());

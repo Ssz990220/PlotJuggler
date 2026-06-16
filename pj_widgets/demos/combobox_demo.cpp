@@ -24,10 +24,10 @@
 
 namespace {
 
-using pj_widgets_demos::ApplyTheme;
+using pj_widgets_demos::applyTheme;
 
 // Populates a fresh PJ::ComboBox with a labelled variant. Caller owns.
-QComboBox* MakeCombo(const QString& variant, QWidget* parent) {
+QComboBox* makeCombo(const QString& variant, QWidget* parent) {
   auto* combo = new PJ::ComboBox(parent);
   if (variant == QStringLiteral("basic")) {
     combo->addItems(
@@ -53,13 +53,13 @@ QComboBox* MakeCombo(const QString& variant, QWidget* parent) {
   return combo;
 }
 
-QWidget* MakeRow(const QString& label, const QString& variant, QWidget* parent) {
+QWidget* makeRow(const QString& label, const QString& variant, QWidget* parent) {
   auto* row = new QWidget(parent);
   auto* lay = new QFormLayout(row);
   lay->setContentsMargins(0, 0, 0, 0);
   lay->setHorizontalSpacing(12);
   auto* lbl = new QLabel(label, row);
-  lay->addRow(lbl, MakeCombo(variant, row));
+  lay->addRow(lbl, makeCombo(variant, row));
   return row;
 }
 
@@ -78,7 +78,7 @@ int main(int argc, char** argv) {
     }
   }
 
-  ApplyTheme(interactive_theme);
+  applyTheme(interactive_theme);
 
   QMainWindow win;
   win.setWindowTitle(QStringLiteral("PJ QComboBox demo"));
@@ -87,11 +87,11 @@ int main(int argc, char** argv) {
   lay->setContentsMargins(20, 20, 20, 20);
   lay->setSpacing(12);
 
-  lay->addWidget(MakeRow(QStringLiteral("Basic"), QStringLiteral("basic"), central));
-  lay->addWidget(MakeRow(QStringLiteral("Long content"), QStringLiteral("long"), central));
-  lay->addWidget(MakeRow(QStringLiteral("Many items"), QStringLiteral("many"), central));
-  lay->addWidget(MakeRow(QStringLiteral("Editable"), QStringLiteral("editable"), central));
-  lay->addWidget(MakeRow(QStringLiteral("Disabled"), QStringLiteral("disabled"), central));
+  lay->addWidget(makeRow(QStringLiteral("Basic"), QStringLiteral("basic"), central));
+  lay->addWidget(makeRow(QStringLiteral("Long content"), QStringLiteral("long"), central));
+  lay->addWidget(makeRow(QStringLiteral("Many items"), QStringLiteral("many"), central));
+  lay->addWidget(makeRow(QStringLiteral("Editable"), QStringLiteral("editable"), central));
+  lay->addWidget(makeRow(QStringLiteral("Disabled"), QStringLiteral("disabled"), central));
 
   // Reference: a DoubleScrubber for side-by-side comparison of the closed
   // input chrome — the QComboBox above should look visually consistent.
@@ -110,7 +110,7 @@ int main(int argc, char** argv) {
   auto* toggle = new QPushButton(QStringLiteral("Toggle theme (currently: %1)").arg(interactive_theme), central);
   QObject::connect(toggle, &QPushButton::clicked, central, [toggle, theme = interactive_theme]() mutable {
     theme = (theme == QStringLiteral("dark")) ? QStringLiteral("light") : QStringLiteral("dark");
-    ApplyTheme(theme);
+    applyTheme(theme);
     toggle->setText(QStringLiteral("Toggle theme (currently: %1)").arg(theme));
   });
   lay->addWidget(toggle);

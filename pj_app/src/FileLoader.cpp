@@ -135,7 +135,7 @@ void FileLoader::openFromDialog(QWidget* dialog_parent) {
 bool FileLoader::loadFile(const QString& path, QWidget* dialog_parent, const LoadHints& hints) {
   // Restore same-source datasets if a replacement load is cancelled or fails.
   std::vector<DatasetId> tombstoned_for_replace;
-  const auto rollbackTombstones = [&]() {
+  const auto rollback_tombstones = [&]() {
     for (const DatasetId id : tombstoned_for_replace) {
       catalog_.restoreDataset(id);
     }
@@ -144,7 +144,7 @@ bool FileLoader::loadFile(const QString& path, QWidget* dialog_parent, const Loa
 
   // One unified failure path — log, optionally pop a dialog, emit signal.
   const auto fail = [&](const QString& reason) -> bool {
-    rollbackTombstones();
+    rollback_tombstones();
     qCWarning(lcFileLoader).noquote() << reason;
     if (dialog_parent != nullptr) {
       MessageBox::warning(dialog_parent, tr("Load failed"), reason);
@@ -199,7 +199,7 @@ bool FileLoader::loadFile(const QString& path, QWidget* dialog_parent, const Loa
     // recorded path (created outside FileLoader, e.g. streaming/test data)
     // keeps the legacy basename-only behavior.
     if (const auto path_it = dataset_source_path_.find(existing_id);
-        path_it != dataset_source_path_.end() && !LayoutXml::isSamePath(path_it->second, path)) {
+        path_it != dataset_source_path_.end() && !layout_xml::isSamePath(path_it->second, path)) {
       continue;
     }
     if (hints.prefer_reuse) {
@@ -277,35 +277,35 @@ bool FileLoader::loadFile(const QString& path, QWidget* dialog_parent, const Loa
           const QString q_title = QString::fromUtf8(title.data(), static_cast<int>(title.size()));
           const QString q_text = QString::fromUtf8(message.data(), static_cast<int>(message.size()));
 
-          QMessageBox msgBox(dialog_parent);
-          msgBox.setWindowTitle(q_title);
-          msgBox.setText(q_text);
+          QMessageBox msg_box(dialog_parent);
+          msg_box.setWindowTitle(q_title);
+          msg_box.setText(q_text);
           switch (type) {
             case PJ_MESSAGE_BOX_WARNING:
-              msgBox.setIcon(QMessageBox::Warning);
+              msg_box.setIcon(QMessageBox::Warning);
               break;
             case PJ_MESSAGE_BOX_ERROR:
-              msgBox.setIcon(QMessageBox::Critical);
+              msg_box.setIcon(QMessageBox::Critical);
               break;
             case PJ_MESSAGE_BOX_QUESTION:
-              msgBox.setIcon(QMessageBox::Question);
+              msg_box.setIcon(QMessageBox::Question);
               break;
             default:
-              msgBox.setIcon(QMessageBox::Information);
+              msg_box.setIcon(QMessageBox::Information);
               break;
           }
-          QPushButton* btn_ok = (buttons & PJ_MSG_BTN_OK) ? msgBox.addButton(QMessageBox::Ok) : nullptr;
-          QPushButton* btn_cancel = (buttons & PJ_MSG_BTN_CANCEL) ? msgBox.addButton(QMessageBox::Cancel) : nullptr;
-          QPushButton* btn_yes = (buttons & PJ_MSG_BTN_YES) ? msgBox.addButton(QMessageBox::Yes) : nullptr;
-          QPushButton* btn_no = (buttons & PJ_MSG_BTN_NO) ? msgBox.addButton(QMessageBox::No) : nullptr;
+          QPushButton* btn_ok = (buttons & PJ_MSG_BTN_OK) ? msg_box.addButton(QMessageBox::Ok) : nullptr;
+          QPushButton* btn_cancel = (buttons & PJ_MSG_BTN_CANCEL) ? msg_box.addButton(QMessageBox::Cancel) : nullptr;
+          QPushButton* btn_yes = (buttons & PJ_MSG_BTN_YES) ? msg_box.addButton(QMessageBox::Yes) : nullptr;
+          QPushButton* btn_no = (buttons & PJ_MSG_BTN_NO) ? msg_box.addButton(QMessageBox::No) : nullptr;
           QPushButton* btn_continue = (buttons & PJ_MSG_BTN_CONTINUE)
-                                          ? msgBox.addButton(QObject::tr("Continue"), QMessageBox::AcceptRole)
+                                          ? msg_box.addButton(QObject::tr("Continue"), QMessageBox::AcceptRole)
                                           : nullptr;
           QPushButton* btn_abort =
-              (buttons & PJ_MSG_BTN_ABORT) ? msgBox.addButton(QObject::tr("Abort"), QMessageBox::RejectRole) : nullptr;
+              (buttons & PJ_MSG_BTN_ABORT) ? msg_box.addButton(QObject::tr("Abort"), QMessageBox::RejectRole) : nullptr;
 
-          msgBox.exec();
-          const auto* clicked = msgBox.clickedButton();
+          msg_box.exec();
+          const auto* clicked = msg_box.clickedButton();
           if (clicked == btn_continue) {
             return PJ_MSG_BTN_CONTINUE;
           }
@@ -396,7 +396,7 @@ bool FileLoader::loadFile(const QString& path, QWidget* dialog_parent, const Loa
                       .arg(QString::fromStdString(dlg.error)));
     }
     if (dlg.outcome == dialog_presenter::Outcome::kRejected) {
-      rollbackTombstones();
+      rollback_tombstones();
       return false;
     }
     if (dlg.payload.has_value()) {
@@ -439,8 +439,8 @@ bool FileLoader::loadFile(const QString& path, QWidget* dialog_parent, const Loa
   //   - Discard: stop reading and throw the partial data away (no flush,
   //              evict ObjectStore payloads, drop the dataset).
   // None  = no user request, the import ran to completion.
-  enum class CancelAction { None, Keep, Discard };
-  CancelAction user_action = CancelAction::None;
+  enum class CancelAction { kNone, kKeep, kDiscard };
+  CancelAction user_action = CancelAction::kNone;
 
   // App-styled progress dialog with two stop buttons. It is domain-neutral:
   // it reports Primary / Secondary and we map those to CancelAction here
@@ -455,8 +455,8 @@ bool FileLoader::loadFile(const QString& path, QWidget* dialog_parent, const Loa
 
   // Progress callbacks are re-wired per ingest_session (once for single-instance,
   // N times in fanout mode) — the dialog itself is shared.
-  auto wireProgress = [&](DataSourceRuntimeHost& session) {
-    session.onProgressStart = [&](std::string_view label, uint64_t total, bool cancellable) {
+  auto wire_progress = [&](DataSourceRuntimeHost& session) {
+    session.on_progress_start = [&](std::string_view label, uint64_t total, bool cancellable) {
       const QString title = QString::fromUtf8(label.data(), static_cast<int>(label.size()));
       progress_dlg.setDialogTitle(title);
       progress_dlg.setMessage(QString{});
@@ -468,24 +468,24 @@ bool FileLoader::loadFile(const QString& path, QWidget* dialog_parent, const Loa
       }
       QCoreApplication::processEvents();
     };
-    session.onProgressUpdate = [&](uint64_t current) -> bool {
+    session.on_progress_update = [&](uint64_t current) -> bool {
       progress_dlg.setValue(static_cast<int>(current));
       QCoreApplication::processEvents();
       switch (progress_dlg.action()) {
-        case ProgressDialog::Action::Primary:
-          user_action = CancelAction::Keep;
+        case ProgressDialog::Action::kPrimary:
+          user_action = CancelAction::kKeep;
           break;
-        case ProgressDialog::Action::Secondary:
-          user_action = CancelAction::Discard;
+        case ProgressDialog::Action::kSecondary:
+          user_action = CancelAction::kDiscard;
           break;
-        case ProgressDialog::Action::None:
+        case ProgressDialog::Action::kNone:
           return true;
       }
       session.requestStop(
-          user_action == CancelAction::Keep ? "cancelled by user (keep partial)" : "cancelled by user (discard)");
+          user_action == CancelAction::kKeep ? "cancelled by user (keep partial)" : "cancelled by user (discard)");
       return false;
     };
-    session.onProgressFinish = [&]() {
+    session.on_progress_finish = [&]() {
       progress_dlg.setValue(progress_dlg.maximum());
       QCoreApplication::processEvents();
     };
@@ -517,7 +517,7 @@ bool FileLoader::loadFile(const QString& path, QWidget* dialog_parent, const Loa
     if (const QString plugin_name = detail::parseDisplayName(config); !replacing && !plugin_name.isEmpty()) {
       catalog_.setDatasetDisplayName(dataset_id, plugin_name);
     }
-    wireProgress(ingest_session);
+    wire_progress(ingest_session);
     if (auto status = handle.start(); !status) {
       progress_dlg.hide();
       return fail(tr("Plugin '%1': start failed: %2").arg(source_name, QString::fromStdString(status.error())));
@@ -537,7 +537,7 @@ bool FileLoader::loadFile(const QString& path, QWidget* dialog_parent, const Loa
     // Cancel(keep) path: fall through to flushAll() so the rows parsed before
     // the user clicked Cancel surface in the tree. Replace-on-cancel is still
     // refused below (the swap requires a complete read).
-    if (user_action == CancelAction::Discard) {
+    if (user_action == CancelAction::kDiscard) {
       qCWarning(lcFileLoader) << "[FileLoader] import discarded by user; partial data dropped";
       if (!replacing) {
         session_.evictDatasetObjects(dataset_id);
@@ -545,7 +545,7 @@ bool FileLoader::loadFile(const QString& path, QWidget* dialog_parent, const Loa
       }
       return false;
     }
-    if (user_action == CancelAction::Keep) {
+    if (user_action == CancelAction::kKeep) {
       qCInfo(lcFileLoader) << "[FileLoader] import cancelled by user; keeping the partial load";
     }
     ingest_session.flushAll();
@@ -563,7 +563,7 @@ bool FileLoader::loadFile(const QString& path, QWidget* dialog_parent, const Loa
     // Outcomes per fanout entry. Kept keeps the entry's partial flush
     // ("Cancel" — stop here but keep what was already parsed); Discarded
     // throws it away. Both stop the outer loop.
-    enum class EntryOutcome { Completed, Failed, Kept, Discarded };
+    enum class EntryOutcome { kCompleted, kFailed, kKept, kDiscarded };
 
     const QString basename = QFileInfo(path).completeBaseName();
     // issue #98: let the plugin name the dataset root. `display_name` (if the
@@ -581,13 +581,14 @@ bool FileLoader::loadFile(const QString& path, QWidget* dialog_parent, const Loa
     // context-rich warning on every failure mode so partial imports are
     // diagnosable from the log alone. Returns Failed before the import starts,
     // Cancelled if the user cancelled during it, else Completed.
-    auto runFanoutEntry = [&](std::size_t idx, const std::string& cfg_i, const QString& iter_display) -> EntryOutcome {
+    auto run_fanout_entry = [&](std::size_t idx, const std::string& cfg_i,
+                                const QString& iter_display) -> EntryOutcome {
       auto iter_dataset_or =
           engine.createDataset(DatasetDescriptor{.source_name = iter_display.toStdString(), .time_domain_id = td_id});
       if (!iter_dataset_or.has_value()) {
         qCWarning(lcFileLoader) << "[FileLoader] fanout[" << idx
                                 << "]: createDataset failed:" << QString::fromStdString(iter_dataset_or.error());
-        return EntryOutcome::Failed;
+        return EntryOutcome::kFailed;
       }
       const auto iter_dataset_id = static_cast<DatasetId>(*iter_dataset_or);
       const PJ_data_source_handle_t iter_source_handle{static_cast<uint32_t>(iter_dataset_id)};
@@ -595,7 +596,7 @@ bool FileLoader::loadFile(const QString& path, QWidget* dialog_parent, const Loa
       DataSourceHandle iter_handle = source->library.createHandle();
       if (!iter_handle.valid()) {
         qCWarning(lcFileLoader) << "[FileLoader] fanout[" << idx << "]: createHandle failed";
-        return EntryOutcome::Failed;
+        return EntryOutcome::kFailed;
       }
 
       DataSourceRuntimeHost iter_ingest(
@@ -612,22 +613,22 @@ bool FileLoader::loadFile(const QString& path, QWidget* dialog_parent, const Loa
       if (auto status = iter_handle.bind(iter_registry.view()); !status) {
         qCWarning(lcFileLoader) << "[FileLoader] fanout[" << idx
                                 << "]: bind failed:" << QString::fromStdString(status.error());
-        return EntryOutcome::Failed;
+        return EntryOutcome::kFailed;
       }
       if (auto status = iter_handle.loadConfig(cfg_i); !status) {
         qCWarning(lcFileLoader) << "[FileLoader] fanout[" << idx
                                 << "]: loadConfig failed:" << QString::fromStdString(status.error());
-        return EntryOutcome::Failed;
+        return EntryOutcome::kFailed;
       }
 
-      wireProgress(iter_ingest);
+      wire_progress(iter_ingest);
       progress_dlg.setMessage(tr("Importing %1 (%2/%3)").arg(iter_display).arg(idx + 1).arg(fanouts.size()));
 
       if (auto status = iter_handle.start(); !status) {
         progress_dlg.hide();
         qCWarning(lcFileLoader) << "[FileLoader] fanout[" << idx
                                 << "]: start failed:" << QString::fromStdString(status.error());
-        return EntryOutcome::Failed;
+        return EntryOutcome::kFailed;
       }
       // Discard = drop this entry entirely. Skip flushAll() so its buffered
       // scalar rows never become visible, then evict the immediately-written
@@ -635,20 +636,20 @@ bool FileLoader::loadFile(const QString& path, QWidget* dialog_parent, const Loa
       // user_action can only have flipped during this entry's import, since
       // the loop breaks on Keep/Discard. Entries that already Completed stay
       // loaded.
-      if (user_action == CancelAction::Discard) {
+      if (user_action == CancelAction::kDiscard) {
         session_.evictDatasetObjects(iter_dataset_id);
         catalog_.removeDataset(iter_dataset_id);
-        return EntryOutcome::Discarded;
+        return EntryOutcome::kDiscarded;
       }
       // Cancel(Keep) = keep what was already parsed for this entry
       // (flushAll), then stop the outer loop so subsequent entries are
       // skipped.
       iter_ingest.flushAll();
       fanout_loaded_ids.push_back(iter_dataset_id);
-      if (user_action == CancelAction::Keep) {
-        return EntryOutcome::Kept;
+      if (user_action == CancelAction::kKeep) {
+        return EntryOutcome::kKept;
       }
-      return EntryOutcome::Completed;
+      return EntryOutcome::kCompleted;
     };
 
     for (std::size_t i = 0; i < fanouts.size(); ++i) {
@@ -656,21 +657,21 @@ bool FileLoader::loadFile(const QString& path, QWidget* dialog_parent, const Loa
       const QString suffix = detail::parseDisplaySuffix(cfg_i, QString::number(i + 1));
       const QString iter_display = base + QChar('/') + suffix;
 
-      switch (runFanoutEntry(i, cfg_i, iter_display)) {
-        case EntryOutcome::Completed:
+      switch (run_fanout_entry(i, cfg_i, iter_display)) {
+        case EntryOutcome::kCompleted:
           ++completed;
           break;
-        case EntryOutcome::Failed:
+        case EntryOutcome::kFailed:
           ++failed;
           failed_labels << iter_display;
           break;
-        case EntryOutcome::Kept:
+        case EntryOutcome::kKept:
           // Cancel: this entry kept its partial flush; the remaining entries
           // are skipped.
           ++completed;
           stopped = true;
           break;
-        case EntryOutcome::Discarded:
+        case EntryOutcome::kDiscarded:
           // Discard: this entry is dropped; the remaining entries are skipped.
           stopped = true;
           break;
@@ -689,7 +690,7 @@ bool FileLoader::loadFile(const QString& path, QWidget* dialog_parent, const Loa
   // on the staged engine/store, and "keep what was already parsed" means the
   // user wants those rows to replace the previous live data. Only Discard
   // suppresses the swap (the staged side is intentionally thrown away).
-  const bool swapped_in_place = replacing && fanouts.size() == 1 && user_action != CancelAction::Discard;
+  const bool swapped_in_place = replacing && fanouts.size() == 1 && user_action != CancelAction::kDiscard;
   if (swapped_in_place) {
     // Single-instance reload: in-place replace swap. SessionManager owns the ordered, no-event-loop swap (invalidate
     // adapters -> engine + object replace -> parser remap -> re-index). It keeps the primary

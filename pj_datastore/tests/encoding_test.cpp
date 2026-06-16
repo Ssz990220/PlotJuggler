@@ -27,7 +27,7 @@ struct StringColumnData {
   std::vector<uint8_t> values;
 };
 
-StringColumnData make_string_column(const std::vector<std::string>& strings) {
+StringColumnData makeStringColumn(const std::vector<std::string>& strings) {
   StringColumnData col;
 
   // offsets: (strings.size() + 1) uint32_t entries
@@ -53,7 +53,7 @@ StringColumnData make_string_column(const std::vector<std::string>& strings) {
 // ==========================================================================
 
 TEST(DictionaryEncoding, RepeatedStrings) {
-  auto col = make_string_column({"base", "world", "base", "base"});
+  auto col = makeStringColumn({"base", "world", "base", "base"});
 
   auto encoded = dictionaryEncodeStrings(Span<const uint8_t>(col.offsets), Span<const uint8_t>(col.values), 4);
 
@@ -69,7 +69,7 @@ TEST(DictionaryEncoding, RepeatedStrings) {
 }
 
 TEST(DictionaryEncoding, AllUniqueStrings) {
-  auto col = make_string_column({"alpha", "beta", "gamma", "delta"});
+  auto col = makeStringColumn({"alpha", "beta", "gamma", "delta"});
 
   auto encoded = dictionaryEncodeStrings(Span<const uint8_t>(col.offsets), Span<const uint8_t>(col.values), 4);
 
@@ -79,7 +79,7 @@ TEST(DictionaryEncoding, AllUniqueStrings) {
 
 TEST(DictionaryEncoding, LookupCorrectness) {
   std::vector<std::string> strings = {"foo", "bar", "baz", "foo", "qux"};
-  auto col = make_string_column(strings);
+  auto col = makeStringColumn(strings);
 
   auto encoded = dictionaryEncodeStrings(Span<const uint8_t>(col.offsets), Span<const uint8_t>(col.values), 5);
 
@@ -148,15 +148,15 @@ TEST(PackedBools, Empty) {
 // ==========================================================================
 
 TEST(ConstantEncoding, Float64) {
-  constexpr std::size_t count = 100;
-  std::vector<uint8_t> buf(count * sizeof(double));
-  for (std::size_t i = 0; i < count; ++i) {
+  constexpr std::size_t kCount = 100;
+  std::vector<uint8_t> buf(kCount * sizeof(double));
+  for (std::size_t i = 0; i < kCount; ++i) {
     double val = 3.14;
     std::memcpy(buf.data() + i * sizeof(double), &val, sizeof(double));
   }
 
-  auto enc = constantEncode(buf, StorageKind::kFloat64, count);
-  EXPECT_EQ(enc.count, count);
+  auto enc = constantEncode(buf, StorageKind::kFloat64, kCount);
+  EXPECT_EQ(enc.count, kCount);
   EXPECT_EQ(enc.value_kind, StorageKind::kFloat64);
   EXPECT_EQ(enc.value_size, sizeof(double));
 
@@ -164,15 +164,15 @@ TEST(ConstantEncoding, Float64) {
 }
 
 TEST(ConstantEncoding, Int32) {
-  constexpr std::size_t count = 100;
-  std::vector<uint8_t> buf(count * sizeof(int32_t));
-  for (std::size_t i = 0; i < count; ++i) {
+  constexpr std::size_t kCount = 100;
+  std::vector<uint8_t> buf(kCount * sizeof(int32_t));
+  for (std::size_t i = 0; i < kCount; ++i) {
     int32_t val = -42;
     std::memcpy(buf.data() + i * sizeof(int32_t), &val, sizeof(int32_t));
   }
 
-  auto enc = constantEncode(buf, StorageKind::kInt32, count);
-  EXPECT_EQ(enc.count, count);
+  auto enc = constantEncode(buf, StorageKind::kInt32, kCount);
+  EXPECT_EQ(enc.count, kCount);
   EXPECT_EQ(enc.value_kind, StorageKind::kInt32);
 
   EXPECT_DOUBLE_EQ(constantDecodeAsDouble(enc), -42.0);
@@ -184,75 +184,75 @@ TEST(ConstantEncoding, Int32) {
 
 TEST(FOREncoding, NarrowRange_Int32) {
   // Values [1000..1100]: range=100, fits in uint8
-  constexpr std::size_t count = 101;
-  std::vector<uint8_t> buf(count * sizeof(int32_t));
-  for (std::size_t i = 0; i < count; ++i) {
+  constexpr std::size_t kCount = 101;
+  std::vector<uint8_t> buf(kCount * sizeof(int32_t));
+  for (std::size_t i = 0; i < kCount; ++i) {
     auto val = static_cast<int32_t>(1000 + i);
     std::memcpy(buf.data() + i * sizeof(int32_t), &val, sizeof(int32_t));
   }
 
-  auto enc = forEncode(buf, StorageKind::kInt32, count, 1000, 1100);
+  auto enc = forEncode(buf, StorageKind::kInt32, kCount, 1000, 1100);
   EXPECT_EQ(enc.offset_bytes, 1);
   EXPECT_EQ(enc.reference, 1000);
-  EXPECT_EQ(enc.count, count);
-  EXPECT_EQ(enc.offsets.size(), count * 1);  // 1 byte per offset
+  EXPECT_EQ(enc.count, kCount);
+  EXPECT_EQ(enc.offsets.size(), kCount * 1);  // 1 byte per offset
 
   // Verify round-trip all values
-  for (std::size_t i = 0; i < count; ++i) {
+  for (std::size_t i = 0; i < kCount; ++i) {
     EXPECT_DOUBLE_EQ(forDecodeOneAsDouble(enc, i), 1000.0 + static_cast<double>(i)) << "row " << i;
   }
 }
 
 TEST(FOREncoding, MediumRange_Int32) {
   // Values [0..50000]: range=50000, fits in uint16
-  constexpr std::size_t count = 501;
-  std::vector<uint8_t> buf(count * sizeof(int32_t));
-  for (std::size_t i = 0; i < count; ++i) {
+  constexpr std::size_t kCount = 501;
+  std::vector<uint8_t> buf(kCount * sizeof(int32_t));
+  for (std::size_t i = 0; i < kCount; ++i) {
     auto val = static_cast<int32_t>(i * 100);
     std::memcpy(buf.data() + i * sizeof(int32_t), &val, sizeof(int32_t));
   }
 
-  auto enc = forEncode(buf, StorageKind::kInt32, count, 0, 50000);
+  auto enc = forEncode(buf, StorageKind::kInt32, kCount, 0, 50000);
   EXPECT_EQ(enc.offset_bytes, 2);
   EXPECT_EQ(enc.reference, 0);
 
-  for (std::size_t i = 0; i < count; ++i) {
+  for (std::size_t i = 0; i < kCount; ++i) {
     EXPECT_DOUBLE_EQ(forDecodeOneAsDouble(enc, i), static_cast<double>(i * 100)) << "row " << i;
   }
 }
 
 TEST(FOREncoding, NegativeRange_Int64) {
   // Values [-100..100]: range=200, fits in uint8 (int64 storage)
-  constexpr std::size_t count = 201;
-  std::vector<uint8_t> buf(count * sizeof(int64_t));
-  for (std::size_t i = 0; i < count; ++i) {
+  constexpr std::size_t kCount = 201;
+  std::vector<uint8_t> buf(kCount * sizeof(int64_t));
+  for (std::size_t i = 0; i < kCount; ++i) {
     auto val = static_cast<int64_t>(-100 + static_cast<int64_t>(i));
     std::memcpy(buf.data() + i * sizeof(int64_t), &val, sizeof(int64_t));
   }
 
-  auto enc = forEncode(buf, StorageKind::kInt64, count, -100, 100);
+  auto enc = forEncode(buf, StorageKind::kInt64, kCount, -100, 100);
   EXPECT_EQ(enc.offset_bytes, 1);
   EXPECT_EQ(enc.reference, -100);
 
-  for (std::size_t i = 0; i < count; ++i) {
+  for (std::size_t i = 0; i < kCount; ++i) {
     EXPECT_DOUBLE_EQ(forDecodeOneAsDouble(enc, i), -100.0 + static_cast<double>(i)) << "row " << i;
   }
 }
 
 TEST(FOREncoding, BulkDecode) {
-  constexpr std::size_t count = 50;
-  std::vector<uint8_t> buf(count * sizeof(int32_t));
-  for (std::size_t i = 0; i < count; ++i) {
+  constexpr std::size_t kCount = 50;
+  std::vector<uint8_t> buf(kCount * sizeof(int32_t));
+  for (std::size_t i = 0; i < kCount; ++i) {
     auto val = static_cast<int32_t>(500 + i);
     std::memcpy(buf.data() + i * sizeof(int32_t), &val, sizeof(int32_t));
   }
 
-  auto enc = forEncode(buf, StorageKind::kInt32, count, 500, 549);
+  auto enc = forEncode(buf, StorageKind::kInt32, kCount, 500, 549);
 
-  std::vector<double> out(count);
+  std::vector<double> out(kCount);
   forDecodeRangeAsDoubles(enc, out, 0);
 
-  for (std::size_t i = 0; i < count; ++i) {
+  for (std::size_t i = 0; i < kCount; ++i) {
     EXPECT_DOUBLE_EQ(out[i], 500.0 + static_cast<double>(i)) << "row " << i;
   }
 
@@ -288,7 +288,7 @@ TEST(DictionaryEncoding, NarrowIndices) {
         break;
     }
   }
-  auto col = make_string_column(data);
+  auto col = makeStringColumn(data);
 
   auto encoded = dictionaryEncodeStrings(Span<const uint8_t>(col.offsets), Span<const uint8_t>(col.values), 1000);
 
@@ -317,7 +317,7 @@ TEST(DictionaryEncoding, MediumIndices) {
   for (int i = 0; i < 600; ++i) {
     data.push_back(dict_values[static_cast<std::size_t>(i % 300)]);
   }
-  auto col = make_string_column(data);
+  auto col = makeStringColumn(data);
 
   auto encoded = dictionaryEncodeStrings(Span<const uint8_t>(col.offsets), Span<const uint8_t>(col.values), 600);
 

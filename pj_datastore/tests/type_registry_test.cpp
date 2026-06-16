@@ -16,7 +16,7 @@ namespace PJ {
 namespace {
 
 // Helper: build a simple struct with two float64 fields (x, y)
-std::shared_ptr<TypeTreeNode> make_point_schema() {
+std::shared_ptr<TypeTreeNode> makePointSchema() {
   return makeStruct(
       "Point", {
                    makePrimitive("x", PrimitiveType::kFloat64),
@@ -25,7 +25,7 @@ std::shared_ptr<TypeTreeNode> make_point_schema() {
 }
 
 // Helper: build a struct with three float64 fields (x, y, z)
-std::shared_ptr<TypeTreeNode> make_point3d_schema() {
+std::shared_ptr<TypeTreeNode> makePoint3dSchema() {
   return makeStruct(
       "Point3D", {
                      makePrimitive("x", PrimitiveType::kFloat64),
@@ -37,7 +37,7 @@ std::shared_ptr<TypeTreeNode> make_point3d_schema() {
 // 1. Register a schema, lookup by ID: returns correct tree
 TEST(TypeRegistryTest, RegisterAndLookupById) {
   TypeRegistry registry;
-  auto tree = make_point_schema();
+  auto tree = makePointSchema();
   auto* raw_ptr = tree.get();
 
   auto result = registry.registerSchema("Point", tree);
@@ -54,7 +54,7 @@ TEST(TypeRegistryTest, RegisterAndLookupById) {
 // 2. Register a schema, find by name: returns correct ID
 TEST(TypeRegistryTest, RegisterAndFindByName) {
   TypeRegistry registry;
-  auto tree = make_point_schema();
+  auto tree = makePointSchema();
 
   auto result = registry.registerSchema("Point", tree);
   ASSERT_TRUE(result.has_value()) << result.error();
@@ -68,10 +68,10 @@ TEST(TypeRegistryTest, RegisterAndFindByName) {
 TEST(TypeRegistryTest, RegisterDuplicateNameFails) {
   TypeRegistry registry;
 
-  auto result1 = registry.registerSchema("Point", make_point_schema());
+  auto result1 = registry.registerSchema("Point", makePointSchema());
   ASSERT_TRUE(result1.has_value()) << result1.error();
 
-  auto result2 = registry.registerSchema("Point", make_point_schema());
+  auto result2 = registry.registerSchema("Point", makePointSchema());
   ASSERT_FALSE(result2.has_value());
 }
 
@@ -79,7 +79,7 @@ TEST(TypeRegistryTest, RegisterDuplicateNameFails) {
 TEST(TypeRegistryTest, RegisterOrGetNewName) {
   TypeRegistry registry;
 
-  auto result = registry.registerOrGet("Point", make_point_schema());
+  auto result = registry.registerOrGet("Point", makePointSchema());
   ASSERT_TRUE(result.has_value()) << result.error();
 
   // Verify it was actually registered
@@ -96,11 +96,11 @@ TEST(TypeRegistryTest, RegisterOrGetNewName) {
 TEST(TypeRegistryTest, RegisterOrGetExistingName) {
   TypeRegistry registry;
 
-  auto result1 = registry.registerSchema("Point", make_point_schema());
+  auto result1 = registry.registerSchema("Point", makePointSchema());
   ASSERT_TRUE(result1.has_value()) << result1.error();
 
   // register_or_get should return the same ID, ignoring the new tree
-  auto result2 = registry.registerOrGet("Point", make_point3d_schema());
+  auto result2 = registry.registerOrGet("Point", makePoint3dSchema());
   ASSERT_TRUE(result2.has_value()) << result2.error();
   EXPECT_EQ(*result1, *result2);
 
@@ -127,13 +127,13 @@ TEST(TypeRegistryTest, FindByNameUnknownReturnsNullopt) {
 TEST(TypeRegistryTest, EvolveSchemaAdditiveChange) {
   TypeRegistry registry;
 
-  auto original = make_point_schema();
+  auto original = makePointSchema();
   auto result = registry.registerSchema("Point", original);
   ASSERT_TRUE(result.has_value()) << result.error();
   SchemaId id = *result;
 
   // Evolve: add a z field
-  auto evolved = make_point3d_schema();
+  auto evolved = makePoint3dSchema();
   auto* evolved_ptr = evolved.get();
   PJ::Status status = registry.evolveSchema(id, evolved);
   ASSERT_TRUE(status.has_value()) << status.error();
@@ -150,12 +150,12 @@ TEST(TypeRegistryTest, EvolveSchemaRemovedFieldFails) {
   TypeRegistry registry;
 
   // Start with 3 fields
-  auto original = make_point3d_schema();
+  auto original = makePoint3dSchema();
   auto result = registry.registerSchema("Point3D", original);
   ASSERT_TRUE(result.has_value()) << result.error();
 
   // Try to evolve to 2 fields (removing z)
-  auto reduced = make_point_schema();
+  auto reduced = makePointSchema();
   PJ::Status status = registry.evolveSchema(*result, reduced);
   ASSERT_FALSE(status.has_value());
 }
@@ -164,7 +164,7 @@ TEST(TypeRegistryTest, EvolveSchemaRemovedFieldFails) {
 TEST(TypeRegistryTest, EvolveSchemaTypeChangeFails) {
   TypeRegistry registry;
 
-  auto original = make_point_schema();  // x: float64, y: float64
+  auto original = makePointSchema();  // x: float64, y: float64
   auto result = registry.registerSchema("Point", original);
   ASSERT_TRUE(result.has_value()) << result.error();
 
@@ -183,7 +183,7 @@ TEST(TypeRegistryTest, EvolveSchemaTypeChangeFails) {
 TEST(TypeRegistryTest, EvolveSchemaUnknownIdFails) {
   TypeRegistry registry;
 
-  PJ::Status status = registry.evolveSchema(999, make_point_schema());
+  PJ::Status status = registry.evolveSchema(999, makePointSchema());
   ASSERT_FALSE(status.has_value());
 }
 
@@ -192,7 +192,7 @@ TEST(TypeRegistryTest, MultipleSchemas) {
   TypeRegistry registry;
 
   auto tree_a = makePrimitive("temp", PrimitiveType::kFloat32);
-  auto tree_b = make_point_schema();
+  auto tree_b = makePointSchema();
   auto tree_c = makeStruct(
       "Pose", {
                   makePrimitive("frame", PrimitiveType::kString),

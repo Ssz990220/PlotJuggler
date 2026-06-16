@@ -78,12 +78,12 @@ struct OneBatchStreamState {
   std::string last_error_buf;
 };
 
-int onebatch_get_schema(ArrowArrayStream* stream, ArrowSchema* out) {
+int onebatchGetSchema(ArrowArrayStream* stream, ArrowSchema* out) {
   auto* s = static_cast<OneBatchStreamState*>(stream->private_data);
   return ArrowSchemaDeepCopy(s->schema.get(), out);
 }
 
-int onebatch_get_next(ArrowArrayStream* stream, ArrowArray* out) {
+int onebatchGetNext(ArrowArrayStream* stream, ArrowArray* out) {
   auto* s = static_cast<OneBatchStreamState*>(stream->private_data);
   if (s->exhausted) {
     out->release = nullptr;  // sentinel for end-of-stream per Arrow spec
@@ -94,12 +94,12 @@ int onebatch_get_next(ArrowArrayStream* stream, ArrowArray* out) {
   return NANOARROW_OK;
 }
 
-const char* onebatch_get_last_error(ArrowArrayStream* stream) {
+const char* onebatchGetLastError(ArrowArrayStream* stream) {
   auto* s = static_cast<OneBatchStreamState*>(stream->private_data);
   return s->last_error_buf.empty() ? nullptr : s->last_error_buf.c_str();
 }
 
-void onebatch_release(ArrowArrayStream* stream) {
+void onebatchRelease(ArrowArrayStream* stream) {
   delete static_cast<OneBatchStreamState*>(stream->private_data);
   stream->private_data = nullptr;
   stream->release = nullptr;
@@ -107,10 +107,10 @@ void onebatch_release(ArrowArrayStream* stream) {
 
 void initOneBatchStream(ArrowArrayStream* out_stream, BuiltStream built) {
   auto* state = new OneBatchStreamState{std::move(built.schema), std::move(built.array), false, {}};
-  out_stream->get_schema = onebatch_get_schema;
-  out_stream->get_next = onebatch_get_next;
-  out_stream->get_last_error = onebatch_get_last_error;
-  out_stream->release = onebatch_release;
+  out_stream->get_schema = onebatchGetSchema;
+  out_stream->get_next = onebatchGetNext;
+  out_stream->get_last_error = onebatchGetLastError;
+  out_stream->release = onebatchRelease;
   out_stream->private_data = state;
 }
 

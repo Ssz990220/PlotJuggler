@@ -49,13 +49,13 @@ struct CellRect {
 struct GridUpdate {
   /// How the grid changed since the previous reconstructAt().
   enum class Kind {
-    Full,         ///< Whole grid rebuilt (new epoch or backward seek) — full upload.
-    Incremental,  ///< Only `dirty` rects changed (forward seek) — partial upload.
-    Empty,        ///< No base grid at this time — nothing to display.
+    kFull,         ///< Whole grid rebuilt (new epoch or backward seek) — full upload.
+    kIncremental,  ///< Only `dirty` rects changed (forward seek) — partial upload.
+    kEmpty,        ///< No base grid at this time — nothing to display.
   };
 
   const ReconstructedGrid& grid;
-  Kind kind = Kind::Full;
+  Kind kind = Kind::kFull;
   std::span<const CellRect> dirty;  ///< Changed rects; meaningful only for Incremental.
 };
 

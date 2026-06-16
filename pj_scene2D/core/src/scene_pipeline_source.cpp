@@ -31,7 +31,7 @@ void ScenePipelineSource::setTimestamp(int64_t ts_ns) {
 
   // No annotation at this time: clear the overlays IF something is currently shown.
   // Coalesced via last_emitted_empty_ so an already-clear layer emits nothing.
-  auto markCleared = [this] {
+  auto mark_cleared = [this] {
     pending_scene_.reset();
     pending_clear_ = !last_emitted_empty_;
   };
@@ -41,7 +41,7 @@ void ScenePipelineSource::setTimestamp(int64_t ts_ns) {
   // ObjectStore::entryTimestamps).
   auto entry = store_->latestAt(topic_, ts_ns);
   if (!entry.has_value() || entry->payload.anchor == nullptr || entry->payload.bytes.empty()) {
-    markCleared();
+    mark_cleared();
     return;
   }
 
@@ -65,14 +65,14 @@ void ScenePipelineSource::setTimestamp(int64_t ts_ns) {
     // Hold the shared parser mutex for the parseObject call only (mirrors
     // ImagePipelineSource::decodeAt): MessageParser plugins keep stateful scratch
     // and aren't thread-safe across consumers of the same singleton.
-    auto invokeParser = [&] {
+    auto invoke_parser = [&] {
       if (parser_mutex_) {
         std::lock_guard<std::mutex> lock(*parser_mutex_);
         return parser_->parseObject(entry->timestamp, entry->payload);
       }
       return parser_->parseObject(entry->timestamp, entry->payload);
     };
-    auto record = invokeParser();
+    auto record = invoke_parser();
     if (!record.has_value()) {
       fprintf(
           stderr, "[ScenePipelineSource] parseObject failed at ts=%lld: %s\n", static_cast<long long>(ts_ns),

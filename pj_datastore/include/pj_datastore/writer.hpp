@@ -73,25 +73,25 @@ struct ColumnData {
   [[nodiscard]] StorageKind kind() const;
 
   // Convenience factories
-  static ColumnData Float32(std::size_t col, PJ::Span<const float> values, PJ::BitSpan validity = {}) {
+  static ColumnData float32(std::size_t col, PJ::Span<const float> values, PJ::BitSpan validity = {}) {
     return {col, Data{values}, validity};
   }
-  static ColumnData Float64(std::size_t col, PJ::Span<const double> values, PJ::BitSpan validity = {}) {
+  static ColumnData float64(std::size_t col, PJ::Span<const double> values, PJ::BitSpan validity = {}) {
     return {col, Data{values}, validity};
   }
-  static ColumnData Int32(std::size_t col, PJ::Span<const int32_t> values, PJ::BitSpan validity = {}) {
+  static ColumnData int32(std::size_t col, PJ::Span<const int32_t> values, PJ::BitSpan validity = {}) {
     return {col, Data{values}, validity};
   }
-  static ColumnData Int64(std::size_t col, PJ::Span<const int64_t> values, PJ::BitSpan validity = {}) {
+  static ColumnData int64(std::size_t col, PJ::Span<const int64_t> values, PJ::BitSpan validity = {}) {
     return {col, Data{values}, validity};
   }
-  static ColumnData Uint64(std::size_t col, PJ::Span<const uint64_t> values, PJ::BitSpan validity = {}) {
+  static ColumnData uint64(std::size_t col, PJ::Span<const uint64_t> values, PJ::BitSpan validity = {}) {
     return {col, Data{values}, validity};
   }
-  static ColumnData Bool(std::size_t col, PJ::Span<const uint8_t> values, PJ::BitSpan validity = {}) {
+  static ColumnData boolean(std::size_t col, PJ::Span<const uint8_t> values, PJ::BitSpan validity = {}) {
     return {col, Data{values}, validity};
   }
-  static ColumnData String(
+  static ColumnData string(
       std::size_t col, PJ::Span<const uint32_t> offsets, PJ::Span<const char> str_data, PJ::BitSpan validity = {}) {
     return {col, Data{StringData{offsets, str_data}}, validity};
   }

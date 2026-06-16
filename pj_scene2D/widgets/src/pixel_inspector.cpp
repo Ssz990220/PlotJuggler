@@ -260,24 +260,24 @@ void PixelInspector::paintEvent(QPaintEvent* /*event*/) {
   painter.setFont(mono);
   painter.setPen(Qt::white);
 
-  constexpr int line_h = 20;
-  painter.drawText(info_x, info_y + line_h, QStringLiteral("Position: %1, %2").arg(image_x_).arg(image_y_));
-  info_y += line_h + 8;
+  constexpr int kLineH = 20;
+  painter.drawText(info_x, info_y + kLineH, QStringLiteral("Position: %1, %2").arg(image_x_).arg(image_y_));
+  info_y += kLineH + 8;
   painter.drawText(
-      info_x, info_y + line_h,
+      info_x, info_y + kLineH,
       QStringLiteral("RGB: %1, %2, %3")
           .arg(static_cast<int>(center.r), 3)
           .arg(static_cast<int>(center.g), 3)
           .arg(static_cast<int>(center.b), 3));
-  info_y += line_h + 4;
+  info_y += kLineH + 4;
 
   const QString hex = QStringLiteral("#%1%2%3")
                           .arg(static_cast<int>(center.r), 2, 16, QChar('0'))
                           .arg(static_cast<int>(center.g), 2, 16, QChar('0'))
                           .arg(static_cast<int>(center.b), 2, 16, QChar('0'))
                           .toUpper();
-  painter.drawText(info_x, info_y + line_h, hex);
-  info_y += line_h + 12;
+  painter.drawText(info_x, info_y + kLineH, hex);
+  info_y += kLineH + 12;
 
   painter.fillRect(info_x, info_y, kSwatchSize, kSwatchSize, QColor(center.r, center.g, center.b));
   painter.setPen(QPen(QColor(100, 100, 100), 1));

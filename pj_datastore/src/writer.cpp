@@ -63,17 +63,17 @@ std::size_t ColumnData::rowCount() const {
 }
 
 StorageKind ColumnData::kind() const {
-  static constexpr StorageKind kinds[] = {
+  static constexpr StorageKind kInds[] = {
       StorageKind::kFloat32, StorageKind::kFloat64, StorageKind::kInt32,  StorageKind::kInt64,
       StorageKind::kUint64,  StorageKind::kBool,    StorageKind::kString,
   };
-  return kinds[data.index()];
+  return kInds[data.index()];
 }
 
 namespace {
 
 /// Map NumericType to PrimitiveType (same enum values, different enum types).
-constexpr PrimitiveType numeric_to_primitive(NumericType nt) noexcept {
+constexpr PrimitiveType numericToPrimitive(NumericType nt) noexcept {
   switch (nt) {
     case NumericType::kFloat32:
       return PrimitiveType::kFloat32;
@@ -100,17 +100,17 @@ constexpr PrimitiveType numeric_to_primitive(NumericType nt) noexcept {
 }
 
 // Forward declarations — flatten_columns_impl and flatten_array_element_impl are mutually recursive.
-void flatten_columns_impl(
+void flattenColumnsImpl(
     const TypeTreeNode& node, std::string_view prefix, FieldId& next_field_id, std::vector<ColumnDescriptor>& out);
 
 // Expand one array element (at path `element_path`, e.g., "poses[0]") into ColumnDescriptors.
 // Handles: struct element (recurse into children), primitive/enum element (single column).
-void flatten_array_element_impl(
+void flattenArrayElementImpl(
     const TypeTreeNode& element_type, std::string_view element_path, FieldId& next_field_id,
     std::vector<ColumnDescriptor>& out) {
   if (element_type.kind == TypeKind::kStruct) {
     for (const auto& child : element_type.children) {
-      flatten_columns_impl(*child, element_path, next_field_id, out);
+      flattenColumnsImpl(*child, element_path, next_field_id, out);
     }
   } else {
     ColumnDescriptor desc;
@@ -123,13 +123,13 @@ void flatten_array_element_impl(
 
 /// Recursively flatten a type tree into ColumnDescriptors, collecting both
 /// field paths and PrimitiveTypes for each leaf node.
-void flatten_columns_impl(
+void flattenColumnsImpl(
     const TypeTreeNode& node, std::string_view prefix, FieldId& next_field_id, std::vector<ColumnDescriptor>& out) {
   std::string current_path = prefix.empty() ? node.name : fmt::format("{}.{}", prefix, node.name);
 
   if (node.kind == TypeKind::kStruct) {
     for (const auto& child : node.children) {
-      flatten_columns_impl(*child, current_path, next_field_id, out);
+      flattenColumnsImpl(*child, current_path, next_field_id, out);
     }
     return;
   }
@@ -139,7 +139,7 @@ void flatten_columns_impl(
       // Fixed-size: expand all elements now at schema registration time
       for (uint32_t i = 0; i < *node.fixed_array_size; ++i) {
         std::string elem_path = fmt::format("{}[{}]", current_path, i);
-        flatten_array_element_impl(*node.element_type, elem_path, next_field_id, out);
+        flattenArrayElementImpl(*node.element_type, elem_path, next_field_id, out);
       }
     }
     // Variable-length: 0 columns initially — caller uses expandArray() to grow dynamically
@@ -157,7 +157,7 @@ void flatten_columns_impl(
 // Find a TypeTreeNode child by dotted path relative to root's children.
 // E.g., find_child_at_path(root, "body.poses") returns the "poses" node inside "body".
 // Returns nullptr if any segment is not found or path passes through a non-struct.
-const TypeTreeNode* find_child_at_path(const TypeTreeNode& root, std::string_view path) {
+const TypeTreeNode* findChildAtPath(const TypeTreeNode& root, std::string_view path) {
   std::string_view remaining = path;
   const TypeTreeNode* cur = &root;
   while (!remaining.empty()) {
@@ -320,7 +320,7 @@ void DataWriter::setNull(TopicId topic_id, std::size_t col_index) {
 
 namespace {
 
-void append_single_column_to_builder(
+void appendSingleColumnToBuilder(
     TopicChunkBuilder& builder, const ColumnData& col, std::size_t offset, std::size_t batch_size) {
   std::visit(
       overloaded{
@@ -383,7 +383,7 @@ PJ::Status DataWriter::appendColumns(
 
     b.appendTimestamps(timestamps.subspan(offset, batch_size));
     for (const auto& col : columns) {
-      append_single_column_to_builder(b, col, offset, batch_size);
+      appendSingleColumnToBuilder(b, col, offset, batch_size);
     }
     b.finishBulkAppend();
 
@@ -417,7 +417,7 @@ Expected<ScalarSeriesHandle> DataWriter::registerScalarSeries(
   // Build a single column descriptor for the "value" field
   ColumnDescriptor col_desc;
   col_desc.field_id = 0;
-  col_desc.logical_type = numeric_to_primitive(value_type);
+  col_desc.logical_type = numericToPrimitive(value_type);
   col_desc.field_path = "value";
 
   std::vector<ColumnDescriptor> columns;
@@ -602,7 +602,7 @@ PJ::Expected<uint32_t> DataWriter::expandArray(
   // Typed topics: validate the array field against the schema before touching any state.
   const TypeTreeNode* array_node = nullptr;
   if (type_tree) {
-    array_node = find_child_at_path(*type_tree, array_field_path);
+    array_node = findChildAtPath(*type_tree, array_field_path);
     if (!array_node) {
       return PJ::unexpected(fmt::format("expand_array: field '{}' not found in schema", array_field_path));
     }
@@ -685,7 +685,7 @@ PJ::Expected<uint32_t> DataWriter::expandArray(
         }
       }
       if (!already_exists) {
-        flatten_array_element_impl(*array_node->element_type, elem_prefix, next_field_id, cols);
+        flattenArrayElementImpl(*array_node->element_type, elem_prefix, next_field_id, cols);
       }
     }
   }
@@ -767,7 +767,7 @@ std::vector<ColumnDescriptor> DataWriter::buildColumnDescriptors(const TypeTreeN
   }
 
   for (const auto& child : root.children) {
-    flatten_columns_impl(*child, "", next_id, result);
+    flattenColumnsImpl(*child, "", next_id, result);
   }
   return result;
 }

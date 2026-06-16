@@ -19,9 +19,9 @@ namespace {
 // (PJLightBlue/PJLightPurple/PJPurple are identical in light + dark, and
 // border_default #B0B0BF vs #c0c0c0 is imperceptible), so hardcoding them here
 // matches the playback slider on both themes without reading the theme.
-const int scHandleWidth = 8;   // timeSlider handle: 6px content + 1px border each side = 8px rendered
-const int scTrackHeight = 24;  // timeSlider groove + handle height (px)
-const int scLeftRightMargin = 1;
+const int kScHandleWidth = 8;   // timeSlider handle: 6px content + 1px border each side = 8px rendered
+const int kScTrackHeight = 24;  // timeSlider groove + handle height (px)
+const int kScLeftRightMargin = 1;
 
 const QColor kGrooveBorder(0xB0, 0xB0, 0xBF);  // border_default
 const QColor kSelection(0xC2, 0xDC, 0xFF);     // PJLightBlue (selected-range fill)
@@ -32,365 +32,358 @@ const QColor kDisabledInk(0x80, 0x80, 0x80);   // muted grey when the slider is 
 
 }  // namespace
 
-RangeSlider::RangeSlider(QWidget* aParent) : QWidget(aParent) {
+RangeSlider::RangeSlider(QWidget* a_parent) : QWidget(a_parent) {
   setMouseTracking(true);
 }
 
-RangeSlider::RangeSlider(Qt::Orientation ori, Options t, QWidget* aParent)
-    : QWidget(aParent), orientation(ori), type(t) {
+RangeSlider::RangeSlider(Qt::Orientation ori, Options t, QWidget* a_parent)
+    : QWidget(a_parent), orientation_(ori), type_(t) {
   setMouseTracking(true);
 }
 
-void RangeSlider::paintEvent(QPaintEvent* aEvent) {
-  Q_UNUSED(aEvent);
+void RangeSlider::paintEvent(QPaintEvent* a_event) {
+  Q_UNUSED(a_event);
   QPainter painter(this);
 
   // Groove geometry: a full-height rectangular track (timeSlider shape).
-  QRectF backgroundRect;
-  if (orientation == Qt::Horizontal) {
-    backgroundRect =
-        QRectF(scLeftRightMargin, (height() - scTrackHeight) / 2.0, width() - scLeftRightMargin * 2, scTrackHeight);
+  QRectF background_rect;
+  if (orientation_ == Qt::Horizontal) {
+    background_rect =
+        QRectF(kScLeftRightMargin, (height() - kScTrackHeight) / 2.0, width() - kScLeftRightMargin * 2, kScTrackHeight);
   } else {
-    backgroundRect =
-        QRectF((width() - scTrackHeight) / 2.0, scLeftRightMargin, scTrackHeight, height() - scLeftRightMargin * 2);
+    background_rect =
+        QRectF((width() - kScTrackHeight) / 2.0, kScLeftRightMargin, kScTrackHeight, height() - kScLeftRightMargin * 2);
   }
 
   const bool enabled = isEnabled();
-  const QRectF leftHandleRect = firstHandleRect();
-  const QRectF rightHandleRect = secondHandleRect();
+  const QRectF left_handle_rect = firstHandleRect();
+  const QRectF right_handle_rect = secondHandleRect();
   painter.setRenderHint(QPainter::Antialiasing, false);
 
   // 1. Selected-range fill (between the two handles) — PJLightBlue, like the
   //    playback slider's played sub-page. Drawn first; the groove border is
   //    stroked on top so it always reads crisply.
-  QRectF selectedRect(backgroundRect);
-  if (orientation == Qt::Horizontal) {
-    selectedRect.setLeft(type.testFlag(LeftHandle) ? leftHandleRect.right() : leftHandleRect.left());
-    selectedRect.setRight(type.testFlag(RightHandle) ? rightHandleRect.left() : rightHandleRect.right());
+  QRectF selected_rect(background_rect);
+  if (orientation_ == Qt::Horizontal) {
+    selected_rect.setLeft(type_.testFlag(kLeftHandle) ? left_handle_rect.right() : left_handle_rect.left());
+    selected_rect.setRight(type_.testFlag(kRightHandle) ? right_handle_rect.left() : right_handle_rect.right());
   } else {
-    selectedRect.setTop(type.testFlag(LeftHandle) ? leftHandleRect.bottom() : leftHandleRect.top());
-    selectedRect.setBottom(type.testFlag(RightHandle) ? rightHandleRect.top() : rightHandleRect.bottom());
+    selected_rect.setTop(type_.testFlag(kLeftHandle) ? left_handle_rect.bottom() : left_handle_rect.top());
+    selected_rect.setBottom(type_.testFlag(kRightHandle) ? right_handle_rect.top() : right_handle_rect.bottom());
   }
   painter.setPen(Qt::NoPen);
   painter.setBrush(enabled ? kSelection : kDisabledInk);
-  painter.drawRect(selectedRect);
+  painter.drawRect(selected_rect);
 
   // 2. Groove outline — transparent body + 1px border (timeSlider groove:
   //    widget_background is transparent, border = border_default, square corners).
   painter.setPen(QPen(kGrooveBorder, 1));
   painter.setBrush(Qt::NoBrush);
-  painter.drawRect(backgroundRect.adjusted(0.5, 0.5, -0.5, -0.5));
+  painter.drawRect(background_rect.adjusted(0.5, 0.5, -0.5, -0.5));
 
-  if (mShowTicks) {
-    drawTicks(painter, backgroundRect);
+  if (show_ticks_) {
+    drawTicks(painter, background_rect);
   }
 
   // 3. Handles — thin full-height grips (timeSlider handle shape): PJLightPurple
   //    at rest, PJPurple when hovered or pressed, with a PJPurple border.
-  auto paintHandle = [&](const QRectF& r, bool active) {
+  auto paint_handle = [&](const QRectF& r, bool active) {
     painter.setPen(QPen(enabled ? kHandleBorder : kDisabledInk, 1));
     painter.setBrush(!enabled ? kDisabledInk.lighter(125) : (active ? kHandleActive : kHandle));
     painter.drawRect(r.adjusted(0.5, 0.5, -0.5, -0.5));
   };
-  if (type.testFlag(LeftHandle)) {
-    paintHandle(leftHandleRect, mFirstHandlePressed || mHoveredHandle == 1);
+  if (type_.testFlag(kLeftHandle)) {
+    paint_handle(left_handle_rect, first_handle_pressed_ || hovered_handle_ == 1);
   }
-  if (type.testFlag(RightHandle)) {
-    paintHandle(rightHandleRect, mSecondHandlePressed || mHoveredHandle == 2);
+  if (type_.testFlag(kRightHandle)) {
+    paint_handle(right_handle_rect, second_handle_pressed_ || hovered_handle_ == 2);
   }
 
-  if (mFloatingLabels) {
+  if (floating_labels_) {
     drawFloatingLabels(painter);
   }
 }
 
 QRectF RangeSlider::firstHandleRect() const {
-  float percentage = (mLowerValue - mMinimum) * 1.0 / mInterval;
-  return handleRect(percentage * validLength() + scLeftRightMargin);
+  float percentage = (lower_value_ - minimum_) * 1.0 / interval_;
+  return handleRect(percentage * validLength() + kScLeftRightMargin);
 }
 
 QRectF RangeSlider::secondHandleRect() const {
-  float percentage = (mUpperValue - mMinimum) * 1.0 / mInterval;
-  return handleRect(percentage * validLength() + scLeftRightMargin + (type.testFlag(LeftHandle) ? scHandleWidth : 0));
+  float percentage = (upper_value_ - minimum_) * 1.0 / interval_;
+  return handleRect(
+      percentage * validLength() + kScLeftRightMargin + (type_.testFlag(kLeftHandle) ? kScHandleWidth : 0));
 }
 
-QRectF RangeSlider::handleRect(int aValue) const {
+QRectF RangeSlider::handleRect(int a_value) const {
   // Thin grip spanning the full track height (timeSlider handle: 6px wide,
   // groove-tall), centered across the short axis.
-  if (orientation == Qt::Horizontal) {
-    return QRect(aValue, (height() - scTrackHeight) / 2, scHandleWidth, scTrackHeight);
+  if (orientation_ == Qt::Horizontal) {
+    return QRect(a_value, (height() - kScTrackHeight) / 2, kScHandleWidth, kScTrackHeight);
   } else {
-    return QRect((width() - scTrackHeight) / 2, aValue, scTrackHeight, scHandleWidth);
+    return QRect((width() - kScTrackHeight) / 2, a_value, kScTrackHeight, kScHandleWidth);
   }
 }
 
-void RangeSlider::mousePressEvent(QMouseEvent* aEvent) {
-  if (aEvent->buttons() & Qt::LeftButton) {
-    int posCheck, posMax, posValue, firstHandleRectPosValue, secondHandleRectPosValue;
-    posCheck = (orientation == Qt::Horizontal) ? aEvent->pos().y() : aEvent->pos().x();
-    posMax = (orientation == Qt::Horizontal) ? height() : width();
-    posValue = (orientation == Qt::Horizontal) ? aEvent->pos().x() : aEvent->pos().y();
-    firstHandleRectPosValue = (orientation == Qt::Horizontal) ? firstHandleRect().x() : firstHandleRect().y();
-    secondHandleRectPosValue = (orientation == Qt::Horizontal) ? secondHandleRect().x() : secondHandleRect().y();
+void RangeSlider::mousePressEvent(QMouseEvent* a_event) {
+  if (a_event->buttons() & Qt::LeftButton) {
+    int pos_check, pos_max, pos_value, first_handle_rect_pos_value, second_handle_rect_pos_value;
+    pos_check = (orientation_ == Qt::Horizontal) ? a_event->pos().y() : a_event->pos().x();
+    pos_max = (orientation_ == Qt::Horizontal) ? height() : width();
+    pos_value = (orientation_ == Qt::Horizontal) ? a_event->pos().x() : a_event->pos().y();
+    first_handle_rect_pos_value = (orientation_ == Qt::Horizontal) ? firstHandleRect().x() : firstHandleRect().y();
+    second_handle_rect_pos_value = (orientation_ == Qt::Horizontal) ? secondHandleRect().x() : secondHandleRect().y();
 
     // Floating labels double as hit-test targets.
-    const bool on_lower_label = mFloatingLabels && !mLowerLabelRect.isNull() && mLowerLabelRect.contains(aEvent->pos());
-    const bool on_upper_label = mFloatingLabels && !mUpperLabelRect.isNull() && mUpperLabelRect.contains(aEvent->pos());
+    const bool on_lower_label =
+        floating_labels_ && !lower_label_rect_.isNull() && lower_label_rect_.contains(a_event->pos());
+    const bool on_upper_label =
+        floating_labels_ && !upper_label_rect_.isNull() && upper_label_rect_.contains(a_event->pos());
     const bool on_center_label =
-        mFloatingLabels && !mCenterLabelRect.isNull() && mCenterLabelRect.contains(aEvent->pos());
+        floating_labels_ && !center_label_rect_.isNull() && center_label_rect_.contains(a_event->pos());
 
-    mSecondHandlePressed =
-        on_upper_label || (!on_lower_label && !on_center_label && secondHandleRect().contains(aEvent->pos()));
-    mFirstHandlePressed =
-        on_lower_label || (!mSecondHandlePressed && !on_center_label && firstHandleRect().contains(aEvent->pos()));
-    mRangeDragActive = false;
+    second_handle_pressed_ =
+        on_upper_label || (!on_lower_label && !on_center_label && secondHandleRect().contains(a_event->pos()));
+    first_handle_pressed_ =
+        on_lower_label || (!second_handle_pressed_ && !on_center_label && firstHandleRect().contains(a_event->pos()));
+    range_drag_active_ = false;
 
-    if (mFirstHandlePressed) {
-      mDelta = posValue - (firstHandleRectPosValue + scHandleWidth / 2);
-    } else if (mSecondHandlePressed) {
-      mDelta = posValue - (secondHandleRectPosValue + scHandleWidth / 2);
-    } else if (on_center_label && type.testFlag(DoubleHandles)) {
-      mRangeDragActive = true;
-      mRangeDragStartPos = posValue;
-      mRangeDragLowerStart = mLowerValue;
-      mRangeDragUpperStart = mUpperValue;
+    if (first_handle_pressed_) {
+      delta_ = pos_value - (first_handle_rect_pos_value + kScHandleWidth / 2);
+    } else if (second_handle_pressed_) {
+      delta_ = pos_value - (second_handle_rect_pos_value + kScHandleWidth / 2);
+    } else if (on_center_label && type_.testFlag(kDoubleHandles)) {
+      range_drag_active_ = true;
+      range_drag_start_pos_ = pos_value;
+      range_drag_lower_start_ = lower_value_;
+      range_drag_upper_start_ = upper_value_;
     } else if (
-        type.testFlag(DoubleHandles) && posValue > firstHandleRectPosValue + scHandleWidth &&
-        posValue < secondHandleRectPosValue && posCheck >= 2 && posCheck <= posMax - 2) {
-      mRangeDragActive = true;
-      mRangeDragStartPos = posValue;
-      mRangeDragLowerStart = mLowerValue;
-      mRangeDragUpperStart = mUpperValue;
-    } else if (posCheck >= 2 && posCheck <= posMax - 2) {
-      int step = mInterval / 10 < 1 ? 1 : mInterval / 10;
-      if (posValue < firstHandleRectPosValue) {
-        setLowerValue(mLowerValue - step);
-      } else if (posValue > secondHandleRectPosValue + scHandleWidth) {
-        setUpperValue(mUpperValue + step);
+        type_.testFlag(kDoubleHandles) && pos_value > first_handle_rect_pos_value + kScHandleWidth &&
+        pos_value < second_handle_rect_pos_value && pos_check >= 2 && pos_check <= pos_max - 2) {
+      range_drag_active_ = true;
+      range_drag_start_pos_ = pos_value;
+      range_drag_lower_start_ = lower_value_;
+      range_drag_upper_start_ = upper_value_;
+    } else if (pos_check >= 2 && pos_check <= pos_max - 2) {
+      int step = interval_ / 10 < 1 ? 1 : interval_ / 10;
+      if (pos_value < first_handle_rect_pos_value) {
+        setLowerValue(lower_value_ - step);
+      } else if (pos_value > second_handle_rect_pos_value + kScHandleWidth) {
+        setUpperValue(upper_value_ + step);
       }
     }
   }
 
-  maybeShowHandleTooltip(aEvent->globalPosition().toPoint(), aEvent->pos());
+  maybeShowHandleTooltip(a_event->globalPosition().toPoint(), a_event->pos());
 }
 
-void RangeSlider::mouseMoveEvent(QMouseEvent* aEvent) {
-  if (aEvent->buttons() & Qt::LeftButton) {
-    int posValue, firstHandleRectPosValue, secondHandleRectPosValue;
-    posValue = (orientation == Qt::Horizontal) ? aEvent->pos().x() : aEvent->pos().y();
-    firstHandleRectPosValue = (orientation == Qt::Horizontal) ? firstHandleRect().x() : firstHandleRect().y();
-    secondHandleRectPosValue = (orientation == Qt::Horizontal) ? secondHandleRect().x() : secondHandleRect().y();
+void RangeSlider::mouseMoveEvent(QMouseEvent* a_event) {
+  if (a_event->buttons() & Qt::LeftButton) {
+    int pos_value, first_handle_rect_pos_value, second_handle_rect_pos_value;
+    pos_value = (orientation_ == Qt::Horizontal) ? a_event->pos().x() : a_event->pos().y();
+    first_handle_rect_pos_value = (orientation_ == Qt::Horizontal) ? firstHandleRect().x() : firstHandleRect().y();
+    second_handle_rect_pos_value = (orientation_ == Qt::Horizontal) ? secondHandleRect().x() : secondHandleRect().y();
 
-    if (mRangeDragActive) {
-      int pixelDelta = posValue - mRangeDragStartPos;
-      int valueDelta = static_cast<int>(pixelDelta * 1.0 / validLength() * mInterval);
-      int newLower = mRangeDragLowerStart + valueDelta;
-      int newUpper = mRangeDragUpperStart + valueDelta;
+    if (range_drag_active_) {
+      int pixel_delta = pos_value - range_drag_start_pos_;
+      int value_delta = static_cast<int>(pixel_delta * 1.0 / validLength() * interval_);
+      int new_lower = range_drag_lower_start_ + value_delta;
+      int new_upper = range_drag_upper_start_ + value_delta;
 
-      if (newLower < mMinimum) {
-        newUpper += (mMinimum - newLower);
-        newLower = mMinimum;
+      if (new_lower < minimum_) {
+        new_upper += (minimum_ - new_lower);
+        new_lower = minimum_;
       }
-      if (newUpper > mMaximum) {
-        newLower -= (newUpper - mMaximum);
-        newUpper = mMaximum;
+      if (new_upper > maximum_) {
+        new_lower -= (new_upper - maximum_);
+        new_upper = maximum_;
       }
-      newLower = std::max(newLower, mMinimum);
-      newUpper = std::min(newUpper, mMaximum);
+      new_lower = std::max(new_lower, minimum_);
+      new_upper = std::min(new_upper, maximum_);
 
-      setLowerValue(newLower);
-      setUpperValue(newUpper);
-    } else if (mFirstHandlePressed && type.testFlag(LeftHandle)) {
-      if (posValue - mDelta + scHandleWidth / 2 <= secondHandleRectPosValue) {
+      setLowerValue(new_lower);
+      setUpperValue(new_upper);
+    } else if (first_handle_pressed_ && type_.testFlag(kLeftHandle)) {
+      if (pos_value - delta_ + kScHandleWidth / 2 <= second_handle_rect_pos_value) {
         setLowerValue(
-            (posValue - mDelta - scLeftRightMargin - scHandleWidth / 2) * 1.0 / validLength() * mInterval + mMinimum);
+            (pos_value - delta_ - kScLeftRightMargin - kScHandleWidth / 2) * 1.0 / validLength() * interval_ +
+            minimum_);
       } else {
-        setLowerValue(mUpperValue);
+        setLowerValue(upper_value_);
       }
-    } else if (mSecondHandlePressed && type.testFlag(RightHandle)) {
-      if (firstHandleRectPosValue + scHandleWidth * (type.testFlag(DoubleHandles) ? 1.5 : 0.5) <= posValue - mDelta) {
+    } else if (second_handle_pressed_ && type_.testFlag(kRightHandle)) {
+      if (first_handle_rect_pos_value + kScHandleWidth * (type_.testFlag(kDoubleHandles) ? 1.5 : 0.5) <=
+          pos_value - delta_) {
         setUpperValue(
-            (posValue - mDelta - scLeftRightMargin - scHandleWidth / 2 -
-             (type.testFlag(DoubleHandles) ? scHandleWidth : 0)) *
-                1.0 / validLength() * mInterval +
-            mMinimum);
+            (pos_value - delta_ - kScLeftRightMargin - kScHandleWidth / 2 -
+             (type_.testFlag(kDoubleHandles) ? kScHandleWidth : 0)) *
+                1.0 / validLength() * interval_ +
+            minimum_);
       } else {
-        setUpperValue(mLowerValue);
+        setUpperValue(lower_value_);
       }
     }
   }
 
   // Hover tint (timeSlider parity): when not dragging, light up the handle the
   // cursor is over in PJPurple.
-  if (!(aEvent->buttons() & Qt::LeftButton)) {
-    const QPointF p = aEvent->position();
+  if (!(a_event->buttons() & Qt::LeftButton)) {
+    const QPointF p = a_event->position();
     int hovered = 0;
-    if (type.testFlag(LeftHandle) && firstHandleRect().contains(p)) {
+    if (type_.testFlag(kLeftHandle) && firstHandleRect().contains(p)) {
       hovered = 1;
-    } else if (type.testFlag(RightHandle) && secondHandleRect().contains(p)) {
+    } else if (type_.testFlag(kRightHandle) && secondHandleRect().contains(p)) {
       hovered = 2;
     }
-    mHoveredHandle = hovered;
+    hovered_handle_ = hovered;
   }
 
   update();
-  maybeShowHandleTooltip(aEvent->globalPosition().toPoint(), aEvent->pos());
+  maybeShowHandleTooltip(a_event->globalPosition().toPoint(), a_event->pos());
 }
 
-void RangeSlider::mouseReleaseEvent(QMouseEvent* aEvent) {
-  Q_UNUSED(aEvent);
+void RangeSlider::mouseReleaseEvent(QMouseEvent* a_event) {
+  Q_UNUSED(a_event);
 
-  mFirstHandlePressed = false;
-  mSecondHandlePressed = false;
-  mRangeDragActive = false;
+  first_handle_pressed_ = false;
+  second_handle_pressed_ = false;
+  range_drag_active_ = false;
   update();
 
-  if (mShowHandleValueTooltip) {
+  if (show_handle_value_tooltip_) {
     QToolTip::hideText();
-    mTooltipVisible = false;
+    tooltip_visible_ = false;
   }
 }
 
-void RangeSlider::changeEvent(QEvent* aEvent) {
+void RangeSlider::changeEvent(QEvent* a_event) {
   // Repaint on enable/disable so the groove/handles switch to/from the muted
   // (disabled) palette.
-  if (aEvent->type() == QEvent::EnabledChange) {
+  if (a_event->type() == QEvent::EnabledChange) {
     update();
   }
 }
 
 void RangeSlider::leaveEvent(QEvent* e) {
   QWidget::leaveEvent(e);
-  if (mHoveredHandle != 0) {
-    mHoveredHandle = 0;
+  if (hovered_handle_ != 0) {
+    hovered_handle_ = 0;
     update();
   }
   QToolTip::hideText();
-  mTooltipVisible = false;
+  tooltip_visible_ = false;
 }
 
 QSize RangeSlider::minimumSizeHint() const {
-  int h = scTrackHeight;
-  if (mFloatingLabels) {
+  int h = kScTrackHeight;
+  if (floating_labels_) {
     QFontMetrics fm(font());
     int label_row = fm.height() + 6 + 4;  // label_height + gap
     h += label_row * 2;
   }
-  return QSize(scHandleWidth * 2 + scLeftRightMargin * 2, h);
+  return QSize(kScHandleWidth * 2 + kScLeftRightMargin * 2, h);
 }
 
-int RangeSlider::GetMinimun() const {
-  return mMinimum;
+int RangeSlider::getMinimun() const {
+  return minimum_;
 }
-void RangeSlider::SetMinimum(int aMinimum) {
-  setMinimum(aMinimum);
+int RangeSlider::getMaximun() const {
+  return maximum_;
 }
-int RangeSlider::GetMaximun() const {
-  return mMaximum;
+int RangeSlider::getLowerValue() const {
+  return lower_value_;
 }
-void RangeSlider::SetMaximum(int aMaximum) {
-  setMaximum(aMaximum);
-}
-int RangeSlider::GetLowerValue() const {
-  return mLowerValue;
-}
-void RangeSlider::SetLowerValue(int aLowerValue) {
-  setLowerValue(aLowerValue);
-}
-int RangeSlider::GetUpperValue() const {
-  return mUpperValue;
-}
-void RangeSlider::SetUpperValue(int aUpperValue) {
-  setUpperValue(aUpperValue);
+int RangeSlider::getUpperValue() const {
+  return upper_value_;
 }
 
-void RangeSlider::setLowerValue(int aLowerValue) {
-  if (aLowerValue > mMaximum) {
-    aLowerValue = mMaximum;
+void RangeSlider::setLowerValue(int a_lower_value) {
+  if (a_lower_value > maximum_) {
+    a_lower_value = maximum_;
   }
-  if (aLowerValue < mMinimum) {
-    aLowerValue = mMinimum;
+  if (a_lower_value < minimum_) {
+    a_lower_value = minimum_;
   }
-  mLowerValue = aLowerValue;
-  emit lowerValueChanged(mLowerValue);
+  lower_value_ = a_lower_value;
+  emit lowerValueChanged(lower_value_);
   update();
 }
 
-void RangeSlider::setUpperValue(int aUpperValue) {
-  if (aUpperValue > mMaximum) {
-    aUpperValue = mMaximum;
+void RangeSlider::setUpperValue(int a_upper_value) {
+  if (a_upper_value > maximum_) {
+    a_upper_value = maximum_;
   }
-  if (aUpperValue < mMinimum) {
-    aUpperValue = mMinimum;
+  if (a_upper_value < minimum_) {
+    a_upper_value = minimum_;
   }
-  mUpperValue = aUpperValue;
-  emit upperValueChanged(mUpperValue);
+  upper_value_ = a_upper_value;
+  emit upperValueChanged(upper_value_);
   update();
 }
 
-void RangeSlider::setMinimum(int aMinimum) {
-  if (aMinimum <= mMaximum) {
-    mMinimum = aMinimum;
+void RangeSlider::setMinimum(int a_minimum) {
+  if (a_minimum <= maximum_) {
+    minimum_ = a_minimum;
   } else {
-    int oldMax = mMaximum;
-    mMinimum = oldMax;
-    mMaximum = aMinimum;
+    int old_max = maximum_;
+    minimum_ = old_max;
+    maximum_ = a_minimum;
   }
-  mInterval = mMaximum - mMinimum;
+  interval_ = maximum_ - minimum_;
   update();
 
-  setLowerValue(mMinimum);
-  setUpperValue(mMaximum);
+  setLowerValue(minimum_);
+  setUpperValue(maximum_);
 
-  emit rangeChanged(mMinimum, mMaximum);
+  emit rangeChanged(minimum_, maximum_);
 }
 
-void RangeSlider::setMaximum(int aMaximum) {
-  if (aMaximum >= mMinimum) {
-    mMaximum = aMaximum;
+void RangeSlider::setMaximum(int a_maximum) {
+  if (a_maximum >= minimum_) {
+    maximum_ = a_maximum;
   } else {
-    int oldMin = mMinimum;
-    mMaximum = oldMin;
-    mMinimum = aMaximum;
+    int old_min = minimum_;
+    maximum_ = old_min;
+    minimum_ = a_maximum;
   }
-  mInterval = mMaximum - mMinimum;
+  interval_ = maximum_ - minimum_;
   update();
 
-  setLowerValue(mMinimum);
-  setUpperValue(mMaximum);
+  setLowerValue(minimum_);
+  setUpperValue(maximum_);
 
-  emit rangeChanged(mMinimum, mMaximum);
+  emit rangeChanged(minimum_, maximum_);
 }
 
 int RangeSlider::validLength() const {
-  int len = (orientation == Qt::Horizontal) ? width() : height();
-  return len - scLeftRightMargin * 2 - scHandleWidth * (type.testFlag(DoubleHandles) ? 2 : 1);
+  int len = (orientation_ == Qt::Horizontal) ? width() : height();
+  return len - kScLeftRightMargin * 2 - kScHandleWidth * (type_.testFlag(kDoubleHandles) ? 2 : 1);
 }
 
-void RangeSlider::SetRange(int aMinimum, int aMaximum) {
-  setMinimum(aMinimum);
-  setMaximum(aMaximum);
+void RangeSlider::setRange(int a_minimum, int a_maximum) {
+  setMinimum(a_minimum);
+  setMaximum(a_maximum);
 }
 
 void RangeSlider::setOptions(Options t) {
-  type = t;
+  type_ = t;
   update();
 }
 
 void RangeSlider::setMinTickPixelSpacing(int px) {
-  mMinTickPx = px;
+  min_tick_px_ = px;
   update();
 }
 void RangeSlider::setShowTickLabels(bool on) {
-  mShowTickLabels = on;
+  show_tick_labels_ = on;
   update();
 }
 void RangeSlider::setShowTicks(bool on) {
-  mShowTicks = on;
+  show_ticks_ = on;
   update();
 }
 bool RangeSlider::showTicks() const {
-  return mShowTicks;
+  return show_ticks_;
 }
 
 int RangeSlider::niceStep(int raw) const {
@@ -423,96 +416,96 @@ int RangeSlider::firstTick(int min, int step) const {
   return (r == 0) ? min : (min + (step - r));
 }
 
-void RangeSlider::drawTicks(QPainter& painter, const QRectF& backgroundRect) {
-  if (mInterval <= 0) {
+void RangeSlider::drawTicks(QPainter& painter, const QRectF& background_rect) {
+  if (interval_ <= 0) {
     return;
   }
-  int pxLen = validLength();
-  if (pxLen <= 0) {
+  int px_len = validLength();
+  if (px_len <= 0) {
     return;
   }
-  int approxCount = std::max(2, pxLen / std::max(10, mMinTickPx));
-  int idealStep = std::max(1, (mMaximum - mMinimum) / approxCount);
-  int step = niceStep(idealStep);
-  int start = firstTick(mMinimum, step);
+  int approx_count = std::max(2, px_len / std::max(10, min_tick_px_));
+  int ideal_step = std::max(1, (maximum_ - minimum_) / approx_count);
+  int step = niceStep(ideal_step);
+  int start = firstTick(minimum_, step);
 
   QFontMetrics fm(painter.font());
-  int majorLen = 10;
-  int minorLen = 6;
-  int minorStep = step / 2;
-  if (minorStep < 1) {
-    minorStep = 1;
+  int major_len = 10;
+  int minor_len = 6;
+  int minor_step = step / 2;
+  if (minor_step < 1) {
+    minor_step = 1;
   }
 
-  auto valueToPos = [&](int value) {
-    const float percentage = (value - mMinimum) * 1.0f / mInterval;
-    const int offset = scLeftRightMargin + (type.testFlag(DoubleHandles) ? scHandleWidth : 0);
-    const int base = static_cast<int>(percentage * pxLen) + offset;
+  auto value_to_pos = [&](int value) {
+    const float percentage = (value - minimum_) * 1.0f / interval_;
+    const int offset = kScLeftRightMargin + (type_.testFlag(kDoubleHandles) ? kScHandleWidth : 0);
+    const int base = static_cast<int>(percentage * px_len) + offset;
     return base;
   };
 
   painter.setPen(Qt::gray);
 
-  for (int v = start; v <= mMaximum; v += minorStep) {
+  for (int v = start; v <= maximum_; v += minor_step) {
     bool major = ((v - start) % step) == 0;
-    int pos = valueToPos(v);
+    int pos = value_to_pos(v);
 
-    if (orientation == Qt::Horizontal) {
-      int y = backgroundRect.bottom();
-      painter.drawLine(pos, y, pos, y + (major ? majorLen : minorLen));
-      if (major && mShowTickLabels) {
+    if (orientation_ == Qt::Horizontal) {
+      int y = background_rect.bottom();
+      painter.drawLine(pos, y, pos, y + (major ? major_len : minor_len));
+      if (major && show_tick_labels_) {
         QString txt = QString::number(v);
         int w = fm.horizontalAdvance(txt);
-        painter.drawText(pos - w / 2, y + majorLen + fm.ascent() + 2, txt);
+        painter.drawText(pos - w / 2, y + major_len + fm.ascent() + 2, txt);
       }
     } else {
-      int x = backgroundRect.right();
-      painter.drawLine(x, pos, x + (major ? majorLen : minorLen), pos);
-      if (major && mShowTickLabels) {
+      int x = background_rect.right();
+      painter.drawLine(x, pos, x + (major ? major_len : minor_len), pos);
+      if (major && show_tick_labels_) {
         QString txt = QString::number(v);
-        painter.drawText(x + majorLen + 4, pos + fm.ascent() / 2, txt);
+        painter.drawText(x + major_len + 4, pos + fm.ascent() / 2, txt);
       }
     }
   }
 }
 
 void RangeSlider::setShowHandleValueTooltip(bool on) {
-  mShowHandleValueTooltip = on;
+  show_handle_value_tooltip_ = on;
   if (!on) {
     QToolTip::hideText();
-    mTooltipVisible = false;
+    tooltip_visible_ = false;
   }
 }
 
 bool RangeSlider::showHandleValueTooltip() const {
-  return mShowHandleValueTooltip;
+  return show_handle_value_tooltip_;
 }
 
 QString RangeSlider::handleValueText(bool left) const {
-  return QString::number(left ? mLowerValue : mUpperValue);
+  return QString::number(left ? lower_value_ : upper_value_);
 }
 
-void RangeSlider::maybeShowHandleTooltip(const QPoint& globalPos, const QPoint& localPos) {
-  if (!mShowHandleValueTooltip) {
+void RangeSlider::maybeShowHandleTooltip(const QPoint& global_pos, const QPoint& local_pos) {
+  if (!show_handle_value_tooltip_) {
     return;
   }
-  bool overLeft = type.testFlag(LeftHandle) && firstHandleRect().contains(localPos);
-  bool overRight = type.testFlag(RightHandle) && secondHandleRect().contains(localPos);
-  if (mFirstHandlePressed && type.testFlag(LeftHandle)) {
-    overLeft = true;
+  bool over_left = type_.testFlag(kLeftHandle) && firstHandleRect().contains(local_pos);
+  bool over_right = type_.testFlag(kRightHandle) && secondHandleRect().contains(local_pos);
+  if (first_handle_pressed_ && type_.testFlag(kLeftHandle)) {
+    over_left = true;
   }
-  if (mSecondHandlePressed && type.testFlag(RightHandle)) {
-    overRight = true;
+  if (second_handle_pressed_ && type_.testFlag(kRightHandle)) {
+    over_right = true;
   }
-  if (overLeft) {
-    QToolTip::showText(globalPos, handleValueText(true), this);
-    mTooltipVisible = true;
-  } else if (overRight) {
-    QToolTip::showText(globalPos, handleValueText(false), this);
-    mTooltipVisible = true;
-  } else if (mTooltipVisible) {
+  if (over_left) {
+    QToolTip::showText(global_pos, handleValueText(true), this);
+    tooltip_visible_ = true;
+  } else if (over_right) {
+    QToolTip::showText(global_pos, handleValueText(false), this);
+    tooltip_visible_ = true;
+  } else if (tooltip_visible_) {
     QToolTip::hideText();
-    mTooltipVisible = false;
+    tooltip_visible_ = false;
   }
 }
 
@@ -523,9 +516,9 @@ int RangeSlider::toInt(double v) const {
 double RangeSlider::toReal(int v) const {
   return static_cast<double>(v);
 }
-void RangeSlider::setRangeReal(double minV, double maxV, int /*decimals*/) {
-  setMinimum(static_cast<int>(minV));
-  setMaximum(static_cast<int>(maxV));
+void RangeSlider::setRangeReal(double min_v, double max_v, int /*decimals*/) {
+  setMinimum(static_cast<int>(min_v));
+  setMaximum(static_cast<int>(max_v));
 }
 void RangeSlider::setLowerValueReal(double v) {
   setLowerValue(toInt(v));
@@ -534,45 +527,45 @@ void RangeSlider::setUpperValueReal(double v) {
   setUpperValue(toInt(v));
 }
 double RangeSlider::lowerValueReal() const {
-  return toReal(mLowerValue);
+  return toReal(lower_value_);
 }
 double RangeSlider::upperValueReal() const {
-  return toReal(mUpperValue);
+  return toReal(upper_value_);
 }
 int RangeSlider::decimals() const {
   return 0;
 }
 
 void RangeSlider::setFloatingLabelsVisible(bool on) {
-  mFloatingLabels = on;
+  floating_labels_ = on;
   update();
 }
 bool RangeSlider::floatingLabelsVisible() const {
-  return mFloatingLabels;
+  return floating_labels_;
 }
 
 void RangeSlider::setLabelFormatter(std::function<QString(double)> formatter) {
-  mLabelFormatter = std::move(formatter);
+  label_formatter_ = std::move(formatter);
   update();
 }
 void RangeSlider::setCenterLabelFormatter(std::function<QString(double, double)> formatter) {
-  mCenterLabelFormatter = std::move(formatter);
+  center_label_formatter_ = std::move(formatter);
   update();
 }
 
 QString RangeSlider::formatHandleValue(double value) const {
-  if (mLabelFormatter) {
-    return mLabelFormatter(value);
+  if (label_formatter_) {
+    return label_formatter_(value);
   }
   return handleValueText(value == lowerValueReal());
 }
 
 void RangeSlider::drawFloatingLabels(QPainter& painter) {
-  mLowerLabelRect = QRect();
-  mUpperLabelRect = QRect();
-  mCenterLabelRect = QRect();
+  lower_label_rect_ = QRect();
+  upper_label_rect_ = QRect();
+  center_label_rect_ = QRect();
 
-  if (orientation != Qt::Horizontal) {
+  if (orientation_ != Qt::Horizontal) {
     return;
   }
 
@@ -582,10 +575,10 @@ void RangeSlider::drawFloatingLabels(QPainter& painter) {
   QFontMetrics fm(label_font);
 
   const int label_height = fm.height() + 6;
-  const int handle_top = (height() - scTrackHeight) / 2;
+  const int handle_top = (height() - kScTrackHeight) / 2;
   const int label_y = handle_top - label_height - 2;
 
-  auto drawLabel = [&](const QRectF& handle_rect, const QString& text) -> QRect {
+  auto draw_label = [&](const QRectF& handle_rect, const QString& text) -> QRect {
     if (text.isEmpty()) {
       return QRect();
     }
@@ -601,15 +594,15 @@ void RangeSlider::drawFloatingLabels(QPainter& painter) {
     return rect;
   };
 
-  if (type.testFlag(LeftHandle)) {
-    mLowerLabelRect = drawLabel(firstHandleRect(), formatHandleValue(static_cast<double>(mLowerValue)));
+  if (type_.testFlag(kLeftHandle)) {
+    lower_label_rect_ = draw_label(firstHandleRect(), formatHandleValue(static_cast<double>(lower_value_)));
   }
-  if (type.testFlag(RightHandle)) {
-    mUpperLabelRect = drawLabel(secondHandleRect(), formatHandleValue(static_cast<double>(mUpperValue)));
+  if (type_.testFlag(kRightHandle)) {
+    upper_label_rect_ = draw_label(secondHandleRect(), formatHandleValue(static_cast<double>(upper_value_)));
   }
 
-  if (mCenterLabelFormatter) {
-    QString center_text = mCenterLabelFormatter(static_cast<double>(mLowerValue), static_cast<double>(mUpperValue));
+  if (center_label_formatter_) {
+    QString center_text = center_label_formatter_(static_cast<double>(lower_value_), static_cast<double>(upper_value_));
     if (!center_text.isEmpty()) {
       QRectF left_rect = firstHandleRect();
       QRectF right_rect = secondHandleRect();
@@ -617,7 +610,7 @@ void RangeSlider::drawFloatingLabels(QPainter& painter) {
       int text_width = fm.horizontalAdvance(center_text) + 8;
       int cx = static_cast<int>(center_x) - text_width / 2;
       cx = std::max(0, std::min(cx, width() - text_width));
-      const int handle_bottom = (height() + scTrackHeight) / 2;
+      const int handle_bottom = (height() + kScTrackHeight) / 2;
       int center_label_y = handle_bottom + 2;
       QRect rect(cx, center_label_y, text_width, label_height);
       // Bordered duration chip: 1px PJLightBlue outline around the blue fill.
@@ -626,7 +619,7 @@ void RangeSlider::drawFloatingLabels(QPainter& painter) {
       painter.drawRoundedRect(rect, 4, 4);
       painter.setPen(Qt::white);
       painter.drawText(rect, Qt::AlignCenter, center_text);
-      mCenterLabelRect = rect;
+      center_label_rect_ = rect;
     }
   }
 }

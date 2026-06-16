@@ -232,7 +232,7 @@ TEST_F(FileLoaderTest, RemovedDatasetDropsFromLiveSourcePaths) {
 
   // The set of source paths still backing a live catalog dataset — exactly how
   // appendDataSourceElement decides which <fileInfo> entries to write.
-  const auto livePaths = [&]() {
+  const auto live_paths = [&]() {
     QSet<QString> paths;
     for (const auto& [id, name] : catalog().datasets()) {
       (void)name;
@@ -243,15 +243,15 @@ TEST_F(FileLoaderTest, RemovedDatasetDropsFromLiveSourcePaths) {
     return paths;
   };
 
-  EXPECT_TRUE(livePaths().contains(path_a));
-  EXPECT_TRUE(livePaths().contains(path_b));
+  EXPECT_TRUE(live_paths().contains(path_a));
+  EXPECT_TRUE(live_paths().contains(path_b));
 
   // Remove dataset a the way MainWindow::onRemoveDatasetRequested does.
   session().evictDatasetObjects(id_a);
   catalog().removeDataset(id_a);
   loader_->untrackDataset(id_a);
 
-  const QSet<QString> live = livePaths();
+  const QSet<QString> live = live_paths();
   EXPECT_FALSE(live.contains(path_a)) << "removed dataset's file must not be a live source (no resurrection)";
   EXPECT_TRUE(live.contains(path_b)) << "surviving dataset's file stays a live source";
 }

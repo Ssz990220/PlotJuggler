@@ -83,8 +83,8 @@ class ScrubberBase : public QWidget {
   bool eventFilter(QObject* obj, QEvent* event) override;
 
  private:
-  enum class State { Idle, Armed, Dragging, Editing };
-  enum class Zone { LeftArrow, RightArrow, Body };
+  enum class State { kIdle, kArmed, kDragging, kEditing };
+  enum class Zone { kLeftArrow, kRightArrow, kBody };
 
   // Hit-rect helpers
   QRect leftArrowRect() const;
@@ -126,7 +126,7 @@ class ScrubberBase : public QWidget {
   static constexpr int kHoverFadeMs = 120;
 
   // State
-  State state_ = State::Idle;
+  State state_ = State::kIdle;
   bool is_hovered_ = false;
   qreal hover_alpha_ = 0.0;
 

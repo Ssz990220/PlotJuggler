@@ -12,9 +12,9 @@ namespace PJ {
 
 RecentFilesMenu::RecentFilesMenu(QString settings_key, int max_entries, QWidget* parent)
     : QObject(parent),
-      settings_key_(std::move(settings_key)),
-      max_entries_(max_entries),
-      files_(QSettings().value(settings_key_).toStringList()),
+      kSettingsKey(std::move(settings_key)),
+      kMaxEntries(max_entries),
+      files_(QSettings().value(kSettingsKey).toStringList()),
       menu_(new QMenu(parent)),
       clear_action_(new QAction(tr("Clear Recent"), this)) {
   connect(clear_action_, &QAction::triggered, this, &RecentFilesMenu::clear);
@@ -28,7 +28,7 @@ void RecentFilesMenu::record(const QString& path) {
   const bool was_empty = files_.isEmpty();
   files_.removeAll(path);
   files_.prepend(path);
-  while (files_.size() > max_entries_) {
+  while (files_.size() > kMaxEntries) {
     files_.removeLast();
   }
   rebuildMenu();
@@ -71,7 +71,7 @@ void RecentFilesMenu::rebuildMenu() {
 }
 
 void RecentFilesMenu::persist() const {
-  QSettings().setValue(settings_key_, files_);
+  QSettings().setValue(kSettingsKey, files_);
 }
 
 }  // namespace PJ

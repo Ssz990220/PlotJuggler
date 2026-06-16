@@ -418,8 +418,8 @@ QDomElement PlotWidget::xmlSaveState(QDomDocument& doc) const {
   // snapshot alike — the path is re-resolved against the current dataset(s) to
   // the concrete key (PJ::LayoutXml::rebindCurveKeys), so the saved form stays
   // valid across reloads and similar datasets.
-  const auto writeStablePath = [&](QDomElement& element, const QString& topic_attr, const QString& field_attr,
-                                   const QString& key) {
+  const auto write_stable_path = [&](QDomElement& element, const QString& topic_attr, const QString& field_attr,
+                                     const QString& key) {
     if (catalog_ == nullptr) {
       return;
     }
@@ -440,10 +440,10 @@ QDomElement PlotWidget::xmlSaveState(QDomDocument& doc) const {
     curve_element.setAttribute(
         QStringLiteral("visible"), info.curve->isVisible() ? QStringLiteral("true") : QStringLiteral("false"));
     if (auto* xy_series = dynamic_cast<PointSeriesXY*>(info.curve->data())) {
-      writeStablePath(curve_element, QStringLiteral("x_topic"), QStringLiteral("x_field"), xy_series->xSource().name);
-      writeStablePath(curve_element, QStringLiteral("y_topic"), QStringLiteral("y_field"), xy_series->ySource().name);
+      write_stable_path(curve_element, QStringLiteral("x_topic"), QStringLiteral("x_field"), xy_series->xSource().name);
+      write_stable_path(curve_element, QStringLiteral("y_topic"), QStringLiteral("y_field"), xy_series->ySource().name);
     } else {
-      writeStablePath(curve_element, QStringLiteral("topic"), QStringLiteral("field"), info.source_name);
+      write_stable_path(curve_element, QStringLiteral("topic"), QStringLiteral("field"), info.source_name);
     }
     plot_element.appendChild(curve_element);
   }
@@ -916,15 +916,15 @@ void PlotWidget::canvasContextMenuTriggered(const QPoint& pos) {
   // Refresh icons with the active theme on every popup so the
   // glyphs stay correctly tinted after a theme switch.
   const QString theme = currentTheme();
-  action_split_horizontal_->setIcon(QIcon(LoadSvg(":/resources/svg/add_column.svg", theme)));
-  action_split_vertical_->setIcon(QIcon(LoadSvg(":/resources/svg/add_row.svg", theme)));
-  action_remove_all_curves_->setIcon(QIcon(LoadSvg(":/resources/svg/delete_forever.svg", theme)));
-  action_zoom_out_->setIcon(QIcon(LoadSvg(":/resources/svg/zoom_max.svg", theme)));
-  action_zoom_out_horizontal_->setIcon(QIcon(LoadSvg(":/resources/svg/zoom_horizontal.svg", theme)));
-  action_zoom_out_vertical_->setIcon(QIcon(LoadSvg(":/resources/svg/zoom_vertical.svg", theme)));
+  action_split_horizontal_->setIcon(QIcon(loadSvg(":/resources/svg/add_column.svg", theme)));
+  action_split_vertical_->setIcon(QIcon(loadSvg(":/resources/svg/add_row.svg", theme)));
+  action_remove_all_curves_->setIcon(QIcon(loadSvg(":/resources/svg/delete_forever.svg", theme)));
+  action_zoom_out_->setIcon(QIcon(loadSvg(":/resources/svg/zoom_max.svg", theme)));
+  action_zoom_out_horizontal_->setIcon(QIcon(loadSvg(":/resources/svg/zoom_horizontal.svg", theme)));
+  action_zoom_out_vertical_->setIcon(QIcon(loadSvg(":/resources/svg/zoom_vertical.svg", theme)));
   if (selected_curve != nullptr) {
     menu.addAction(
-        QIcon(LoadSvg(":/resources/svg/color_background.svg", theme)), tr("Change color..."), this,
+        QIcon(loadSvg(":/resources/svg/color_background.svg", theme)), tr("Change color..."), this,
         [this, selected_curve]() {
           const QColor current_color = selected_curve->curve->pen().color();
           const QColor next_color = QColorDialog::getColor(current_color, this, tr("Pick curve color"));
@@ -934,7 +934,7 @@ void PlotWidget::canvasContextMenuTriggered(const QPoint& pos) {
           }
         });
     menu.addAction(
-        QIcon(LoadSvg(":/resources/svg/trash.svg", theme)), tr("Remove curve"), this, [this, selected_curve]() {
+        QIcon(loadSvg(":/resources/svg/trash.svg", theme)), tr("Remove curve"), this, [this, selected_curve]() {
           removeCurve(selected_curve->source_name);
           emit undoableChange();
           replot();
@@ -1028,13 +1028,13 @@ bool PlotWidget::allCurvesKnown(const QStringList& curves) const {
 
 QString PlotWidget::lineWidthToString(LineWidth width) {
   switch (width) {
-    case LineWidth::kPoints1_0:
+    case LineWidth::kPoints10:
       return QStringLiteral("1.0");
-    case LineWidth::kPoints1_5:
+    case LineWidth::kPoints15:
       return QStringLiteral("1.5");
-    case LineWidth::kPoints2_0:
+    case LineWidth::kPoints20:
       return QStringLiteral("2.0");
-    case LineWidth::kPoints3_0:
+    case LineWidth::kPoints30:
       return QStringLiteral("3.0");
   }
   return QStringLiteral("1.0");
@@ -1042,15 +1042,15 @@ QString PlotWidget::lineWidthToString(LineWidth width) {
 
 LineWidth PlotWidget::lineWidthFromString(QString value) {
   if (value == QStringLiteral("1.5")) {
-    return LineWidth::kPoints1_5;
+    return LineWidth::kPoints15;
   }
   if (value == QStringLiteral("2.0")) {
-    return LineWidth::kPoints2_0;
+    return LineWidth::kPoints20;
   }
   if (value == QStringLiteral("3.0")) {
-    return LineWidth::kPoints3_0;
+    return LineWidth::kPoints30;
   }
-  return LineWidth::kPoints1_0;
+  return LineWidth::kPoints10;
 }
 
 QString PlotWidget::curveStyleToString(CurveStyle style) {

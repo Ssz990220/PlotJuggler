@@ -55,15 +55,15 @@ std::atomic<int> g_mixed_parser_calls{0};
 // test::CountingObjectParser at the registration call site.
 PJ::Expected<PJ::sdk::ObjectRecord> emitMixedCloud(PJ::Timestamp ts, PJ::sdk::PayloadView /*payload*/) {
   if (ts >= kCompressedStampThreshold) {
-    static const uint8_t kBlob[4] = {0xDE, 0xAD, 0xBE, 0xEF};
+    static const uint8_t k_blob[4] = {0xDE, 0xAD, 0xBE, 0xEF};
     PJ::sdk::CompressedPointCloud cloud;
     cloud.timestamp_ns = ts;
     cloud.frame_id = "lidar";
     cloud.format = "bogus";  // decodeCompressedPointCloud must fail on it
-    cloud.data = PJ::Span<const uint8_t>(kBlob, sizeof(kBlob));
+    cloud.data = PJ::Span<const uint8_t>(k_blob, sizeof(k_blob));
     return PJ::sdk::ObjectRecord{.ts = ts, .object = cloud};
   }
-  static const float kPoint[3] = {1.0f, 2.0f, 3.0f};
+  static const float k_point[3] = {1.0f, 2.0f, 3.0f};
   PJ::sdk::PointCloud cloud;
   cloud.timestamp_ns = ts;
   cloud.frame_id = "lidar";
@@ -75,7 +75,7 @@ PJ::Expected<PJ::sdk::ObjectRecord> emitMixedCloud(PJ::Timestamp ts, PJ::sdk::Pa
       PJ::sdk::PointField{"x", 0, PJ::sdk::PointField::Datatype::kFloat32, 1},
       PJ::sdk::PointField{"y", 4, PJ::sdk::PointField::Datatype::kFloat32, 1},
       PJ::sdk::PointField{"z", 8, PJ::sdk::PointField::Datatype::kFloat32, 1}};
-  cloud.data = PJ::Span<const uint8_t>(reinterpret_cast<const uint8_t*>(kPoint), sizeof(kPoint));
+  cloud.data = PJ::Span<const uint8_t>(reinterpret_cast<const uint8_t*>(k_point), sizeof(k_point));
   return PJ::sdk::ObjectRecord{.ts = ts, .object = cloud};
 }
 

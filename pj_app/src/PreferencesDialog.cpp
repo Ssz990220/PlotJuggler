@@ -39,7 +39,7 @@ constexpr int kDefaultLayoutSpacing = 2;
 // fill on the sun/moon SVGs reads as muddy dark-gray-on-blue. Recolor
 // to pure white at load time so the glyphs pop against either track
 // tone. Used only here — keep it local rather than promoting a helper.
-QIcon LoadWhiteFillIcon(const QString& resource_path) {
+QIcon loadWhiteFillIcon(const QString& resource_path) {
   QFile file(resource_path);
   if (!file.open(QFile::ReadOnly | QFile::Text)) {
     return {};
@@ -143,7 +143,7 @@ PreferencesDialog::PreferencesDialog(Theme& theme, QWidget* parent)
   // already feed MainWindow's setters, so the running app live-
   // previews the reset and Cancel still reverts to the dialog's
   // open-time snapshot.
-  ui_->buttonResetDefaults->setIcon(LoadSvg(":/resources/svg/restore_page.svg", theme_.currentTheme()));
+  ui_->buttonResetDefaults->setIcon(loadSvg(":/resources/svg/restore_page.svg", theme_.currentTheme()));
   connect(ui_->buttonResetDefaults, &QToolButton::clicked, this, [this]() {
     ui_->iconSizeScrubber->setValue(kDefaultIconSize);
     ui_->iconPaddingScrubber->setValue(kDefaultIconPadding);
@@ -163,8 +163,8 @@ PreferencesDialog::PreferencesDialog(Theme& theme, QWidget* parent)
   ui_->themeToggle->setFixedSize(44, 24);
   // Icons are forced to white so they read clearly against the
   // colored track (blue when on, gray when off).
-  ui_->themeToggle->setLeftIcon(LoadWhiteFillIcon(QStringLiteral(":/resources/svg/light_mode_light.svg")));
-  ui_->themeToggle->setRightIcon(LoadWhiteFillIcon(QStringLiteral(":/resources/svg/dark_mode_light.svg")));
+  ui_->themeToggle->setLeftIcon(loadWhiteFillIcon(QStringLiteral(":/resources/svg/light_mode_light.svg")));
+  ui_->themeToggle->setRightIcon(loadWhiteFillIcon(QStringLiteral(":/resources/svg/dark_mode_light.svg")));
   // Snap the toggle to the active theme without animating — the
   // dialog opens with the thumb already at its correct endpoint,
   // not mid-slide from 0 to 1 across the first 180ms after open.

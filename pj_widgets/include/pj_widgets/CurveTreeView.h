@@ -33,7 +33,7 @@ class CurveTreeView : public QTreeWidget {
   // ShowTopics: dataset and topic stay as literal nodes (topic shown
   // verbatim, e.g. "/camera/image"); the field still splits on '/' so
   // nested struct fields show up as sub-folders below the topic.
-  enum class ViewMode { Hierarchical, ShowTopics };
+  enum class ViewMode { kHierarchical, kShowTopics };
 
   explicit CurveTreeView(QWidget* parent = nullptr);
 
@@ -86,7 +86,7 @@ class CurveTreeView : public QTreeWidget {
   void resizeEvent(QResizeEvent* event) override;
 
  private:
-  enum class SortMode { Immediate, Deferred };
+  enum class SortMode { kImmediate, kDeferred };
 
   void addCurve(const QString& name, SortMode sort_mode);
   void addCatalogItem(const CurvePath& path, SortMode sort_mode);
@@ -112,7 +112,7 @@ class CurveTreeView : public QTreeWidget {
   // resizes inside the handler re-fire the signal, which would otherwise
   // cause an infinite ping-pong between Name and Value.
   bool adjusting_columns_ = false;
-  ViewMode view_mode_ = ViewMode::Hierarchical;
+  ViewMode view_mode_ = ViewMode::kHierarchical;
 };
 
 }  // namespace PJ

@@ -36,8 +36,8 @@ class RecentFilesMenu : public QObject {
   void rebuildMenu();
   void persist() const;
 
-  const QString settings_key_;
-  const int max_entries_;
+  const QString kSettingsKey;
+  const int kMaxEntries;
   QStringList files_;
   QMenu* menu_ = nullptr;
   QAction* clear_action_ = nullptr;

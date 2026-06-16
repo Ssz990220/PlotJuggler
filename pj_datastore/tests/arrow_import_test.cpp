@@ -34,7 +34,7 @@ namespace {
 
 // Build an IPC byte buffer from a schema + array. The array must be a struct
 // array whose children are the column arrays.
-std::vector<uint8_t> serialize_to_ipc(ArrowSchema* schema, ArrowArray* array) {
+std::vector<uint8_t> serializeToIpc(ArrowSchema* schema, ArrowArray* array) {
   // Create output buffer
   ArrowBuffer out_buf;
   ArrowBufferInit(&out_buf);
@@ -73,7 +73,7 @@ std::vector<uint8_t> serialize_to_ipc(ArrowSchema* schema, ArrowArray* array) {
 }
 
 // Serialize multiple batches into a single IPC stream
-std::vector<uint8_t> serialize_batches_to_ipc(ArrowSchema* schema, std::vector<ArrowArray*> batches) {
+std::vector<uint8_t> serializeBatchesToIpc(ArrowSchema* schema, std::vector<ArrowArray*> batches) {
   ArrowBuffer out_buf;
   ArrowBufferInit(&out_buf);
 
@@ -139,7 +139,7 @@ TEST(ArrowImportTest, SchemaFromIpc) {
   ASSERT_EQ(ArrowArrayStartAppending(array.get()), NANOARROW_OK);
   ASSERT_EQ(ArrowArrayFinishBuildingDefault(array.get(), nullptr), NANOARROW_OK);
 
-  auto ipc_bytes = serialize_to_ipc(schema.get(), array.get());
+  auto ipc_bytes = serializeToIpc(schema.get(), array.get());
 
   auto result_or = schemaFromIpc(PJ::Span<const uint8_t>(ipc_bytes.data(), ipc_bytes.size()));
   ASSERT_TRUE(result_or.has_value()) << result_or.error();
@@ -188,13 +188,13 @@ TEST(ArrowImportTest, ImportFloat32) {
   ASSERT_EQ(ArrowSchemaSetName(schema->children[1], "y"), NANOARROW_OK);
 
   // Build array with 100 rows
-  constexpr int64_t N = 100;
+  constexpr int64_t kN = 100;
   nanoarrow::UniqueArray array;
   ASSERT_EQ(ArrowArrayInitFromSchema(array.get(), schema.get(), nullptr), NANOARROW_OK);
   ASSERT_EQ(ArrowArrayStartAppending(array.get()), NANOARROW_OK);
 
-  std::vector<float> x_vals(N), y_vals(N);
-  for (int64_t i = 0; i < N; ++i) {
+  std::vector<float> x_vals(kN), y_vals(kN);
+  for (int64_t i = 0; i < kN; ++i) {
     x_vals[static_cast<std::size_t>(i)] = static_cast<float>(i) * 0.1F;
     y_vals[static_cast<std::size_t>(i)] = static_cast<float>(i) * 0.2F;
 
@@ -209,7 +209,7 @@ TEST(ArrowImportTest, ImportFloat32) {
 
   ASSERT_EQ(ArrowArrayFinishBuildingDefault(array.get(), nullptr), NANOARROW_OK);
 
-  auto ipc_bytes = serialize_to_ipc(schema.get(), array.get());
+  auto ipc_bytes = serializeToIpc(schema.get(), array.get());
 
   // Parse schema and register
   auto [type_tree, mappings] = *schemaFromIpc(PJ::Span<const uint8_t>(ipc_bytes.data(), ipc_bytes.size()));
@@ -231,14 +231,14 @@ TEST(ArrowImportTest, ImportFloat32) {
   // Verify round-trip
   DataReader reader = engine.createReader();
   std::size_t count = 0;
-  auto cursor_or = reader.rangeQuery(QueryRange{.topic_id = topic_id, .t_min = 0, .t_max = N - 1});
+  auto cursor_or = reader.rangeQuery(QueryRange{.topic_id = topic_id, .t_min = 0, .t_max = kN - 1});
   ASSERT_TRUE(cursor_or.has_value()) << cursor_or.error();
   cursor_or->forEach([&](const SampleRow& row) {
     auto x = static_cast<float>(row.chunk->readNumericAsDouble(0, row.row_index));
     EXPECT_FLOAT_EQ(x, x_vals[count]);
     ++count;
   });
-  EXPECT_EQ(count, static_cast<std::size_t>(N));
+  EXPECT_EQ(count, static_cast<std::size_t>(kN));
 }
 
 // ===========================================================================
@@ -265,12 +265,12 @@ TEST(ArrowImportTest, ImportWithTimestampColumn) {
   ASSERT_EQ(ArrowSchemaSetType(schema->children[1], NANOARROW_TYPE_DOUBLE), NANOARROW_OK);
   ASSERT_EQ(ArrowSchemaSetName(schema->children[1], "value"), NANOARROW_OK);
 
-  constexpr int64_t N = 50;
+  constexpr int64_t kN = 50;
   nanoarrow::UniqueArray array;
   ASSERT_EQ(ArrowArrayInitFromSchema(array.get(), schema.get(), nullptr), NANOARROW_OK);
   ASSERT_EQ(ArrowArrayStartAppending(array.get()), NANOARROW_OK);
 
-  for (int64_t i = 0; i < N; ++i) {
+  for (int64_t i = 0; i < kN; ++i) {
     ASSERT_EQ(ArrowArrayAppendInt(array->children[0], i * 1000), NANOARROW_OK);
     ASSERT_EQ(ArrowArrayAppendDouble(array->children[1], static_cast<double>(i) * 0.5), NANOARROW_OK);
     ASSERT_EQ(ArrowArrayFinishElement(array.get()), NANOARROW_OK);
@@ -278,7 +278,7 @@ TEST(ArrowImportTest, ImportWithTimestampColumn) {
 
   ASSERT_EQ(ArrowArrayFinishBuildingDefault(array.get(), nullptr), NANOARROW_OK);
 
-  auto ipc_bytes = serialize_to_ipc(schema.get(), array.get());
+  auto ipc_bytes = serializeToIpc(schema.get(), array.get());
 
   // Only map "value" column (not timestamp)
   std::vector<ArrowColumnMapping> mappings = {{
@@ -339,18 +339,18 @@ void expectTimestampColumnRescalesToNanos(const TimestampImportCase& test_case) 
   ASSERT_EQ(ArrowSchemaSetType(schema->children[1], NANOARROW_TYPE_DOUBLE), NANOARROW_OK);
   ASSERT_EQ(ArrowSchemaSetName(schema->children[1], "value"), NANOARROW_OK);
 
-  constexpr int64_t N = 10;
+  constexpr int64_t kN = 10;
   nanoarrow::UniqueArray array;
   ASSERT_EQ(ArrowArrayInitFromSchema(array.get(), schema.get(), nullptr), NANOARROW_OK);
   ASSERT_EQ(ArrowArrayStartAppending(array.get()), NANOARROW_OK);
-  for (int64_t i = 0; i < N; ++i) {
+  for (int64_t i = 0; i < kN; ++i) {
     ASSERT_EQ(ArrowArrayAppendInt(array->children[0], (i + 1) * test_case.ticks_per_second), NANOARROW_OK);
     ASSERT_EQ(ArrowArrayAppendDouble(array->children[1], static_cast<double>(i)), NANOARROW_OK);
     ASSERT_EQ(ArrowArrayFinishElement(array.get()), NANOARROW_OK);
   }
   ASSERT_EQ(ArrowArrayFinishBuildingDefault(array.get(), nullptr), NANOARROW_OK);
 
-  auto ipc_bytes = serialize_to_ipc(schema.get(), array.get());
+  auto ipc_bytes = serializeToIpc(schema.get(), array.get());
 
   std::vector<ArrowColumnMapping> mappings = {{
       .arrow_column_index = 1,
@@ -427,7 +427,7 @@ TEST(ArrowImportTest, ImportTimestampColumnRejectsUnitScalingOverflow) {
   ASSERT_EQ(ArrowArrayFinishElement(array.get()), NANOARROW_OK);
   ASSERT_EQ(ArrowArrayFinishBuildingDefault(array.get(), nullptr), NANOARROW_OK);
 
-  auto ipc_bytes = serialize_to_ipc(schema.get(), array.get());
+  auto ipc_bytes = serializeToIpc(schema.get(), array.get());
 
   std::vector<ArrowColumnMapping> mappings = {{
       .arrow_column_index = 1,
@@ -487,7 +487,7 @@ TEST(ArrowImportTest, ImportStrings) {
 
   ASSERT_EQ(ArrowArrayFinishBuildingDefault(array.get(), nullptr), NANOARROW_OK);
 
-  auto ipc_bytes = serialize_to_ipc(schema.get(), array.get());
+  auto ipc_bytes = serializeToIpc(schema.get(), array.get());
 
   auto [type_tree, mappings] = *schemaFromIpc(PJ::Span<const uint8_t>(ipc_bytes.data(), ipc_bytes.size()));
   auto sid = *writer.registerSchema("str_schema", type_tree);
@@ -547,7 +547,7 @@ TEST(ArrowImportTest, ImportNarrowIntegerWidening) {
 
   ASSERT_EQ(ArrowArrayFinishBuildingDefault(array.get(), nullptr), NANOARROW_OK);
 
-  auto ipc_bytes = serialize_to_ipc(schema.get(), array.get());
+  auto ipc_bytes = serializeToIpc(schema.get(), array.get());
 
   auto [type_tree, mappings] = *schemaFromIpc(PJ::Span<const uint8_t>(ipc_bytes.data(), ipc_bytes.size()));
   auto sid = *writer.registerSchema("i8_schema", type_tree);
@@ -593,19 +593,19 @@ TEST(ArrowImportTest, ImportLargeDataset) {
   ASSERT_EQ(ArrowSchemaSetType(schema->children[0], NANOARROW_TYPE_DOUBLE), NANOARROW_OK);
   ASSERT_EQ(ArrowSchemaSetName(schema->children[0], "value"), NANOARROW_OK);
 
-  constexpr int64_t N = 500;
+  constexpr int64_t kN = 500;
   nanoarrow::UniqueArray array;
   ASSERT_EQ(ArrowArrayInitFromSchema(array.get(), schema.get(), nullptr), NANOARROW_OK);
   ASSERT_EQ(ArrowArrayStartAppending(array.get()), NANOARROW_OK);
 
-  for (int64_t i = 0; i < N; ++i) {
+  for (int64_t i = 0; i < kN; ++i) {
     ASSERT_EQ(ArrowArrayAppendDouble(array->children[0], static_cast<double>(i)), NANOARROW_OK);
     ASSERT_EQ(ArrowArrayFinishElement(array.get()), NANOARROW_OK);
   }
 
   ASSERT_EQ(ArrowArrayFinishBuildingDefault(array.get(), nullptr), NANOARROW_OK);
 
-  auto ipc_bytes = serialize_to_ipc(schema.get(), array.get());
+  auto ipc_bytes = serializeToIpc(schema.get(), array.get());
 
   auto [type_tree, mappings] = *schemaFromIpc(PJ::Span<const uint8_t>(ipc_bytes.data(), ipc_bytes.size()));
   auto sid = *writer.registerSchema("tbl_schema", type_tree);
@@ -623,10 +623,10 @@ TEST(ArrowImportTest, ImportLargeDataset) {
 
   DataReader reader = engine.createReader();
   std::size_t count = 0;
-  auto cursor_or = reader.rangeQuery(QueryRange{.topic_id = tid, .t_min = 0, .t_max = N - 1});
+  auto cursor_or = reader.rangeQuery(QueryRange{.topic_id = tid, .t_min = 0, .t_max = kN - 1});
   ASSERT_TRUE(cursor_or.has_value());
   cursor_or->forEach([&](const SampleRow&) { ++count; });
-  EXPECT_EQ(count, static_cast<std::size_t>(N));
+  EXPECT_EQ(count, static_cast<std::size_t>(kN));
 }
 
 // ===========================================================================
@@ -667,7 +667,7 @@ TEST(ArrowImportTest, ImportWithNulls) {
 
   ASSERT_EQ(ArrowArrayFinishBuildingDefault(array.get(), nullptr), NANOARROW_OK);
 
-  auto ipc_bytes = serialize_to_ipc(schema.get(), array.get());
+  auto ipc_bytes = serializeToIpc(schema.get(), array.get());
 
   auto [type_tree, mappings] = *schemaFromIpc(PJ::Span<const uint8_t>(ipc_bytes.data(), ipc_bytes.size()));
   auto sid = *writer.registerSchema("null_schema", type_tree);

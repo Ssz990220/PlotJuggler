@@ -172,17 +172,17 @@ Mesh makeSphere(int rings, int sectors, float radius) {
 void setupSolidInstanceAttribs(gl::Buffer& instance_vbo) {
   instance_vbo.bind(GL_ARRAY_BUFFER);
   withGlFunctions([](auto& functions) {
-    constexpr GLsizei istride = static_cast<GLsizei>(sizeof(InstanceData));
+    constexpr GLsizei kIstride = static_cast<GLsizei>(sizeof(InstanceData));
     for (GLuint col = 0U; col < 4U; ++col) {
       const GLuint loc = 2U + col;
       functions.glEnableVertexAttribArray(loc);
       functions.glVertexAttribPointer(
-          loc, 4, GL_FLOAT, GL_FALSE, istride, reinterpret_cast<const void*>(sizeof(glm::vec4) * col));
+          loc, 4, GL_FLOAT, GL_FALSE, kIstride, reinterpret_cast<const void*>(sizeof(glm::vec4) * col));
       functions.glVertexAttribDivisor(loc, 1U);
     }
     functions.glEnableVertexAttribArray(6U);
     functions.glVertexAttribPointer(
-        6U, 4, GL_FLOAT, GL_FALSE, istride, reinterpret_cast<const void*>(offsetof(InstanceData, color)));
+        6U, 4, GL_FLOAT, GL_FALSE, kIstride, reinterpret_cast<const void*>(offsetof(InstanceData, color)));
     functions.glVertexAttribDivisor(6U, 1U);
   });
 }
@@ -196,12 +196,12 @@ void setupSolidVao(
   mesh_vbo.uploadStatic(GL_ARRAY_BUFFER, verts, vbytes);
   mesh_vbo.bind(GL_ARRAY_BUFFER);
   withGlFunctions([](auto& functions) {
-    constexpr GLsizei stride = static_cast<GLsizei>(sizeof(float) * 6);
+    constexpr GLsizei kStride = static_cast<GLsizei>(sizeof(float) * 6);
     functions.glEnableVertexAttribArray(0U);
-    functions.glVertexAttribPointer(0U, 3, GL_FLOAT, GL_FALSE, stride, nullptr);
+    functions.glVertexAttribPointer(0U, 3, GL_FLOAT, GL_FALSE, kStride, nullptr);
     functions.glEnableVertexAttribArray(1U);
     functions.glVertexAttribPointer(
-        1U, 3, GL_FLOAT, GL_FALSE, stride, reinterpret_cast<const void*>(sizeof(float) * 3));
+        1U, 3, GL_FLOAT, GL_FALSE, kStride, reinterpret_cast<const void*>(sizeof(float) * 3));
   });
   setupSolidInstanceAttribs(instance_vbo);
   mesh_ebo.uploadStatic(GL_ELEMENT_ARRAY_BUFFER, indices, ibytes);
@@ -212,20 +212,21 @@ void setupSolidVao(
 std::array<float, static_cast<std::size_t>(kCubeEdgeVertexCount) * 12U> makeCubeEdgeVertices() {
   std::array<float, static_cast<std::size_t>(kCubeEdgeVertexCount) * 12U> out{};
   std::size_t i = 0;
-  const auto emitVertex = [&](const glm::vec3& p, const glm::vec3& n_a, const glm::vec3& n_b, const glm::vec3& center) {
+  const auto emit_vertex = [&](const glm::vec3& p, const glm::vec3& n_a, const glm::vec3& n_b,
+                               const glm::vec3& center) {
     const std::array<float, 12> v{p.x,   p.y,   p.z,   n_a.x,    n_a.y,    n_a.z,
                                   n_b.x, n_b.y, n_b.z, center.x, center.y, center.z};
     for (const float value : v) {
       out[i++] = value;
     }
   };
-  const auto emitEdge = [&](const glm::vec3& a, const glm::vec3& b, const glm::vec3& n_a, const glm::vec3& n_b) {
+  const auto emit_edge = [&](const glm::vec3& a, const glm::vec3& b, const glm::vec3& n_a, const glm::vec3& n_b) {
     const glm::vec3 center = (a + b) * 0.5F;
-    emitVertex(a, n_a, n_b, center);
-    emitVertex(b, n_a, n_b, center);
+    emit_vertex(a, n_a, n_b, center);
+    emit_vertex(b, n_a, n_b, center);
   };
 
-  constexpr float h = 0.5F;
+  constexpr float kH = 0.5F;
   const glm::vec3 nx{-1.0F, 0.0F, 0.0F};
   const glm::vec3 px{1.0F, 0.0F, 0.0F};
   const glm::vec3 ny{0.0F, -1.0F, 0.0F};
@@ -233,18 +234,18 @@ std::array<float, static_cast<std::size_t>(kCubeEdgeVertexCount) * 12U> makeCube
   const glm::vec3 nz{0.0F, 0.0F, -1.0F};
   const glm::vec3 pz{0.0F, 0.0F, 1.0F};
 
-  emitEdge({-h, -h, -h}, {h, -h, -h}, ny, nz);
-  emitEdge({h, -h, -h}, {h, h, -h}, px, nz);
-  emitEdge({h, h, -h}, {-h, h, -h}, py, nz);
-  emitEdge({-h, h, -h}, {-h, -h, -h}, nx, nz);
-  emitEdge({-h, -h, h}, {h, -h, h}, ny, pz);
-  emitEdge({h, -h, h}, {h, h, h}, px, pz);
-  emitEdge({h, h, h}, {-h, h, h}, py, pz);
-  emitEdge({-h, h, h}, {-h, -h, h}, nx, pz);
-  emitEdge({-h, -h, -h}, {-h, -h, h}, nx, ny);
-  emitEdge({h, -h, -h}, {h, -h, h}, px, ny);
-  emitEdge({h, h, -h}, {h, h, h}, px, py);
-  emitEdge({-h, h, -h}, {-h, h, h}, nx, py);
+  emit_edge({-kH, -kH, -kH}, {kH, -kH, -kH}, ny, nz);
+  emit_edge({kH, -kH, -kH}, {kH, kH, -kH}, px, nz);
+  emit_edge({kH, kH, -kH}, {-kH, kH, -kH}, py, nz);
+  emit_edge({-kH, kH, -kH}, {-kH, -kH, -kH}, nx, nz);
+  emit_edge({-kH, -kH, kH}, {kH, -kH, kH}, ny, pz);
+  emit_edge({kH, -kH, kH}, {kH, kH, kH}, px, pz);
+  emit_edge({kH, kH, kH}, {-kH, kH, kH}, py, pz);
+  emit_edge({-kH, kH, kH}, {-kH, -kH, kH}, nx, pz);
+  emit_edge({-kH, -kH, -kH}, {-kH, -kH, kH}, nx, ny);
+  emit_edge({kH, -kH, -kH}, {kH, -kH, kH}, px, ny);
+  emit_edge({kH, kH, -kH}, {kH, kH, kH}, px, py);
+  emit_edge({-kH, kH, -kH}, {-kH, kH, kH}, nx, py);
 
   return out;
 }
@@ -258,18 +259,18 @@ void setupEdgeVao(gl::VertexArray& vao, gl::Buffer& edge_vbo, gl::Buffer& instan
   edge_vbo.uploadStatic(GL_ARRAY_BUFFER, edge_vertices.data(), static_cast<GLsizeiptr>(sizeof(edge_vertices)));
   edge_vbo.bind(GL_ARRAY_BUFFER);
   withGlFunctions([](auto& functions) {
-    constexpr GLsizei stride = static_cast<GLsizei>(sizeof(float) * 12);
+    constexpr GLsizei kStride = static_cast<GLsizei>(sizeof(float) * 12);
     functions.glEnableVertexAttribArray(0U);  // endpoint position
-    functions.glVertexAttribPointer(0U, 3, GL_FLOAT, GL_FALSE, stride, nullptr);
+    functions.glVertexAttribPointer(0U, 3, GL_FLOAT, GL_FALSE, kStride, nullptr);
     functions.glEnableVertexAttribArray(1U);  // first adjacent face normal
     functions.glVertexAttribPointer(
-        1U, 3, GL_FLOAT, GL_FALSE, stride, reinterpret_cast<const void*>(sizeof(float) * 3));
+        1U, 3, GL_FLOAT, GL_FALSE, kStride, reinterpret_cast<const void*>(sizeof(float) * 3));
     functions.glEnableVertexAttribArray(7U);  // second adjacent face normal
     functions.glVertexAttribPointer(
-        7U, 3, GL_FLOAT, GL_FALSE, stride, reinterpret_cast<const void*>(sizeof(float) * 6));
+        7U, 3, GL_FLOAT, GL_FALSE, kStride, reinterpret_cast<const void*>(sizeof(float) * 6));
     functions.glEnableVertexAttribArray(8U);  // edge center, for stable per-edge facing
     functions.glVertexAttribPointer(
-        8U, 3, GL_FLOAT, GL_FALSE, stride, reinterpret_cast<const void*>(sizeof(float) * 9));
+        8U, 3, GL_FLOAT, GL_FALSE, kStride, reinterpret_cast<const void*>(sizeof(float) * 9));
   });
   setupSolidInstanceAttribs(instance_vbo);
   vao.unbind();
@@ -362,33 +363,33 @@ void setupCylinderVao(gl::VertexArray& vao, gl::Buffer& vbo, gl::Buffer& ebo, co
   vbo.uploadStatic(GL_ARRAY_BUFFER, mesh.verts.data(), static_cast<GLsizeiptr>(mesh.verts.size() * sizeof(float)));
   vbo.bind(GL_ARRAY_BUFFER);
   withGlFunctions([](auto& functions) {
-    constexpr GLsizei stride = static_cast<GLsizei>(sizeof(float) * 7);
+    constexpr GLsizei kStride = static_cast<GLsizei>(sizeof(float) * 7);
     functions.glEnableVertexAttribArray(0U);
-    functions.glVertexAttribPointer(0U, 3, GL_FLOAT, GL_FALSE, stride, nullptr);
+    functions.glVertexAttribPointer(0U, 3, GL_FLOAT, GL_FALSE, kStride, nullptr);
     functions.glEnableVertexAttribArray(1U);
     functions.glVertexAttribPointer(
-        1U, 3, GL_FLOAT, GL_FALSE, stride, reinterpret_cast<const void*>(sizeof(float) * 3));
+        1U, 3, GL_FLOAT, GL_FALSE, kStride, reinterpret_cast<const void*>(sizeof(float) * 3));
     functions.glEnableVertexAttribArray(2U);
     functions.glVertexAttribPointer(
-        2U, 1, GL_FLOAT, GL_FALSE, stride, reinterpret_cast<const void*>(sizeof(float) * 6));
+        2U, 1, GL_FLOAT, GL_FALSE, kStride, reinterpret_cast<const void*>(sizeof(float) * 6));
   });
   inst.bind(GL_ARRAY_BUFFER);
   withGlFunctions([](auto& functions) {
-    constexpr GLsizei istride = static_cast<GLsizei>(sizeof(CylinderInstance));
+    constexpr GLsizei kIstride = static_cast<GLsizei>(sizeof(CylinderInstance));
     for (GLuint col = 0U; col < 4U; ++col) {
       const GLuint loc = 3U + col;
       functions.glEnableVertexAttribArray(loc);
       functions.glVertexAttribPointer(
-          loc, 4, GL_FLOAT, GL_FALSE, istride, reinterpret_cast<const void*>(sizeof(glm::vec4) * col));
+          loc, 4, GL_FLOAT, GL_FALSE, kIstride, reinterpret_cast<const void*>(sizeof(glm::vec4) * col));
       functions.glVertexAttribDivisor(loc, 1U);
     }
     functions.glEnableVertexAttribArray(7U);
     functions.glVertexAttribPointer(
-        7U, 4, GL_FLOAT, GL_FALSE, istride, reinterpret_cast<const void*>(offsetof(CylinderInstance, color)));
+        7U, 4, GL_FLOAT, GL_FALSE, kIstride, reinterpret_cast<const void*>(offsetof(CylinderInstance, color)));
     functions.glVertexAttribDivisor(7U, 1U);
     functions.glEnableVertexAttribArray(8U);
     functions.glVertexAttribPointer(
-        8U, 2, GL_FLOAT, GL_FALSE, istride, reinterpret_cast<const void*>(offsetof(CylinderInstance, taper)));
+        8U, 2, GL_FLOAT, GL_FALSE, kIstride, reinterpret_cast<const void*>(offsetof(CylinderInstance, taper)));
     functions.glVertexAttribDivisor(8U, 1U);
   });
   ebo.uploadStatic(
@@ -431,12 +432,12 @@ void setupLineVao(gl::VertexArray& vao, gl::Buffer& vbo) {
   vao.bind();
   vbo.bind(GL_ARRAY_BUFFER);
   withGlFunctions([](auto& functions) {
-    constexpr GLsizei stride = static_cast<GLsizei>(sizeof(float) * 7);
+    constexpr GLsizei kStride = static_cast<GLsizei>(sizeof(float) * 7);
     functions.glEnableVertexAttribArray(0U);
-    functions.glVertexAttribPointer(0U, 3, GL_FLOAT, GL_FALSE, stride, nullptr);
+    functions.glVertexAttribPointer(0U, 3, GL_FLOAT, GL_FALSE, kStride, nullptr);
     functions.glEnableVertexAttribArray(1U);
     functions.glVertexAttribPointer(
-        1U, 4, GL_FLOAT, GL_FALSE, stride, reinterpret_cast<const void*>(sizeof(float) * 3));
+        1U, 4, GL_FLOAT, GL_FALSE, kStride, reinterpret_cast<const void*>(sizeof(float) * 3));
   });
   vao.unbind();
 }
@@ -446,15 +447,15 @@ void setupTriVao(gl::VertexArray& vao, gl::Buffer& vbo) {
   vao.bind();
   vbo.bind(GL_ARRAY_BUFFER);
   withGlFunctions([](auto& functions) {
-    constexpr GLsizei stride = static_cast<GLsizei>(sizeof(float) * 10);
+    constexpr GLsizei kStride = static_cast<GLsizei>(sizeof(float) * 10);
     functions.glEnableVertexAttribArray(0U);
-    functions.glVertexAttribPointer(0U, 3, GL_FLOAT, GL_FALSE, stride, nullptr);
+    functions.glVertexAttribPointer(0U, 3, GL_FLOAT, GL_FALSE, kStride, nullptr);
     functions.glEnableVertexAttribArray(1U);
     functions.glVertexAttribPointer(
-        1U, 3, GL_FLOAT, GL_FALSE, stride, reinterpret_cast<const void*>(sizeof(float) * 3));
+        1U, 3, GL_FLOAT, GL_FALSE, kStride, reinterpret_cast<const void*>(sizeof(float) * 3));
     functions.glEnableVertexAttribArray(2U);
     functions.glVertexAttribPointer(
-        2U, 4, GL_FLOAT, GL_FALSE, stride, reinterpret_cast<const void*>(sizeof(float) * 6));
+        2U, 4, GL_FLOAT, GL_FALSE, kStride, reinterpret_cast<const void*>(sizeof(float) * 6));
   });
   vao.unbind();
 }
@@ -562,7 +563,7 @@ void MarkerRenderPass::render(const ViewParams& view_params, const FrameContext&
 
   // Viewer overrides, applied CPU-side into the baked colors: replace rgb when
   // color-override is on, and multiply alpha by the opacity slider.
-  const auto applyOverride = [this](const glm::vec4& c) {
+  const auto apply_override = [this](const glm::vec4& c) {
     glm::vec4 out = overrides_.color_override ? overrides_.override_color : c;
     out.a *= overrides_.opacity;
     return out;
@@ -598,7 +599,7 @@ void MarkerRenderPass::render(const ViewParams& view_params, const FrameContext&
   });
   setPolygonMode(overrides_.wireframe ? GL_LINE : GL_FILL);
 
-  const auto buildSolids = [&](const std::vector<MarkerSolid>& list) {
+  const auto build_solids = [&](const std::vector<MarkerSolid>& list) {
     std::vector<InstanceData> out;
     out.reserve(list.size());
     for (const auto& prim : list) {
@@ -609,12 +610,12 @@ void MarkerRenderPass::render(const ViewParams& view_params, const FrameContext&
       if (!fw.has_value()) {
         continue;  // unresolved frame
       }
-      out.push_back({*fw * prim.model, applyOverride(prim.color)});
+      out.push_back({*fw * prim.model, apply_override(prim.color)});
     }
     return out;
   };
 
-  const auto drawSolid = [&](gl::VertexArray& vao, int index_count, const std::vector<InstanceData>& instances) {
+  const auto draw_solid = [&](gl::VertexArray& vao, int index_count, const std::vector<InstanceData>& instances) {
     if (instances.empty()) {
       return;
     }
@@ -629,8 +630,8 @@ void MarkerRenderPass::render(const ViewParams& view_params, const FrameContext&
   };
 
   // --- Solids: cube + sphere (shared instanced program) ---
-  const std::vector<InstanceData> cubes = buildSolids(batch.cubes);
-  const std::vector<InstanceData> spheres = buildSolids(batch.spheres);
+  const std::vector<InstanceData> cubes = build_solids(batch.cubes);
+  const std::vector<InstanceData> spheres = build_solids(batch.spheres);
 
   // Foxglove CubePrimitives carry translucency as per-instance alpha (already
   // override-baked into the instance colors above), NOT via viewer overrides —
@@ -664,7 +665,7 @@ void MarkerRenderPass::render(const ViewParams& view_params, const FrameContext&
           functions.glDepthMask(GL_FALSE);
         }
       });
-      drawSolid(cube_vao_, cube_index_count_, cubes);
+      draw_solid(cube_vao_, cube_index_count_, cubes);
       withGlFunctions([translucent, cubes_translucent](auto& functions) {
         functions.glDisable(GL_POLYGON_OFFSET_FILL);
         if (cubes_translucent && !translucent) {
@@ -700,7 +701,7 @@ void MarkerRenderPass::render(const ViewParams& view_params, const FrameContext&
       solid_program_->use();  // back to the solid program for the sphere draw
     }
 
-    drawSolid(sphere_vao_, sphere_index_count_, spheres);
+    draw_solid(sphere_vao_, sphere_index_count_, spheres);
     withGlFunctions([](auto& functions) { functions.glDisable(GL_CULL_FACE); });
     unuseProgram();
   }
@@ -717,7 +718,7 @@ void MarkerRenderPass::render(const ViewParams& view_params, const FrameContext&
       if (!fw.has_value()) {
         continue;
       }
-      cyls.push_back({*fw * cyl.model, applyOverride(cyl.color), {cyl.bottom_scale, cyl.top_scale}});
+      cyls.push_back({*fw * cyl.model, apply_override(cyl.color), {cyl.bottom_scale, cyl.top_scale}});
     }
     if (!cyls.empty()) {
       cyl_instance_vbo_.uploadStatic(
@@ -739,9 +740,9 @@ void MarkerRenderPass::render(const ViewParams& view_params, const FrameContext&
 
   // --- Arrows + axes (one unit ArrowGizmo; dims baked into the model matrix) ---
   if (!batch.arrows.empty() || !batch.axes.empty()) {
-    const auto drawArrow = [&](const glm::mat4& world, const glm::vec4& color) {
+    const auto draw_arrow = [&](const glm::mat4& world, const glm::vec4& color) {
       marker_arrow_.render(
-          proj * view * world, glm::mat3(view * world), applyOverride(color), ArrowGizmo::Shading::kFlat);
+          proj * view * world, glm::mat3(view * world), apply_override(color), ArrowGizmo::Shading::kFlat);
     };
 
     for (const auto& arrow : batch.arrows) {
@@ -754,7 +755,7 @@ void MarkerRenderPass::render(const ViewParams& view_params, const FrameContext&
       }
       const float total = std::max(arrow.shaft_length + arrow.head_length, 1e-4F);
       const float diam = std::max({arrow.head_diameter, arrow.shaft_diameter, 1e-4F});
-      drawArrow(*fw * arrow.model * glm::scale(glm::mat4(1.0F), glm::vec3(total, diam, diam)), arrow.color);
+      draw_arrow(*fw * arrow.model * glm::scale(glm::mat4(1.0F), glm::vec3(total, diam, diam)), arrow.color);
     }
 
     if (!batch.axes.empty()) {
@@ -763,7 +764,7 @@ void MarkerRenderPass::render(const ViewParams& view_params, const FrameContext&
       // bind once for the whole axes batch (L.54/L.93). kFlat preserves the
       // unlit marker shading drawArrow used.
       const std::array<glm::vec4, 3> colors{
-          applyOverride({1, 0, 0, 1}), applyOverride({0, 1, 0, 1}), applyOverride({0, 0, 1, 1})};
+          apply_override({1, 0, 0, 1}), apply_override({0, 1, 0, 1}), apply_override({0, 0, 1, 1})};
       marker_arrow_.bindForRender();
       for (const auto& ax : batch.axes) {
         if (ax.frame_index >= frame_world.size()) {
@@ -798,7 +799,7 @@ void MarkerRenderPass::render(const ViewParams& view_params, const FrameContext&
       std::vector<float> buf;
       buf.reserve(lb.vertices.size() * 7);
       for (std::size_t i = 0; i < lb.vertices.size(); ++i) {
-        const glm::vec4 col = applyOverride(lb.colors.empty() ? lb.color : lb.colors[i]);
+        const glm::vec4 col = apply_override(lb.colors.empty() ? lb.color : lb.colors[i]);
         const glm::vec3& p = lb.vertices[i];
         buf.insert(buf.end(), {p.x, p.y, p.z, col.r, col.g, col.b, col.a});
       }
@@ -828,7 +829,7 @@ void MarkerRenderPass::render(const ViewParams& view_params, const FrameContext&
       std::vector<float> buf;
       buf.reserve(tb.vertices.size() * 10);
       for (std::size_t i = 0; i < tb.vertices.size(); ++i) {
-        const glm::vec4 col = applyOverride(tb.colors.empty() ? tb.color : tb.colors[i]);
+        const glm::vec4 col = apply_override(tb.colors.empty() ? tb.color : tb.colors[i]);
         const glm::vec3& p = tb.vertices[i];
         const glm::vec3& n = tb.normals[i];
         buf.insert(buf.end(), {p.x, p.y, p.z, n.x, n.y, n.z, col.r, col.g, col.b, col.a});

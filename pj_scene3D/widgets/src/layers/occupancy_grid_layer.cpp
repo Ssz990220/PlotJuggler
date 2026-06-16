@@ -315,7 +315,7 @@ void OccupancyGridLayer::renderAt(int64_t time_ns) {
   // the whole texture; an incremental update uploads just the changed rects. The
   // pass discards dirty_rects on a full rebuild, so only materialize the vector
   // (potentially large after a backward-seek replay) on the incremental path.
-  const bool incremental = update.kind == GridUpdate::Kind::Incremental;
+  const bool incremental = update.kind == GridUpdate::Kind::kIncremental;
   grid_pass_.setGrid(
       grid, !incremental,
       incremental ? std::vector<CellRect>(update.dirty.begin(), update.dirty.end()) : std::vector<CellRect>{});

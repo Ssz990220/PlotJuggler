@@ -170,7 +170,7 @@ void DiagnosticsPopup::onCopyRequested(const DiagnosticRecord& item, Diagnostics
     return;
   }
   const QIcon original = button->icon();
-  button->setIcon(LoadSvg(":/resources/svg/check.svg", currentTheme()));
+  button->setIcon(loadSvg(":/resources/svg/check.svg", currentTheme()));
   QTimer::singleShot(250, button, [button, original]() { button->setIcon(original); });
 }
 

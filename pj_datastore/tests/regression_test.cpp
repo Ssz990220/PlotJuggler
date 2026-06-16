@@ -162,8 +162,8 @@ TEST(RegressionTest, Bug3_CommitChunks_OutOfOrderChunkRetainedAndReported) {
   const TopicStorage* storage = engine.getTopicStorage(tid);
   ASSERT_NE(storage, nullptr);
   EXPECT_EQ(storage->sealedChunks().size(), 2u);
-  EXPECT_EQ(storage->time_min(), 50);
-  EXPECT_EQ(storage->time_max(), 200);
+  EXPECT_EQ(storage->timeMin(), 50);
+  EXPECT_EQ(storage->timeMax(), 200);
 }
 
 // ===========================================================================

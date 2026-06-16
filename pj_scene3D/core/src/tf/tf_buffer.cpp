@@ -45,21 +45,21 @@ PJ::Expected<void, SetTransformError> TransformBuffer::setTransform(const Stampe
   // a zero-length quaternion normalized to all-NaN would otherwise be stored and
   // silently poison every lookup composing through that edge.
   if (tf.parent_frame.empty() || tf.child_frame.empty()) {
-    return PJ::unexpected(SetTransformError::InvalidFrameName);
+    return PJ::unexpected(SetTransformError::kInvalidFrameName);
   }
   // glm::dot of a quaternion is w*w + x*x + y*y + z*z (the squared norm). Reject
   // a degenerate quaternion before normalize divides by (near-)zero.
   if (!isFinite(tf.transform.q) || glm::dot(tf.transform.q, tf.transform.q) < 1e-12) {
-    return PJ::unexpected(SetTransformError::InvalidRotation);
+    return PJ::unexpected(SetTransformError::kInvalidRotation);
   }
   if (!isFinite(tf.transform.t)) {
-    return PJ::unexpected(SetTransformError::NonFiniteTranslation);
+    return PJ::unexpected(SetTransformError::kNonFiniteTranslation);
   }
 
   if (tf.child_frame == tf.parent_frame) {
     // A frame relative to itself is the identity; storing it would create a
     // self-loop in the parent map and hang chainToRoot. Drop it (recoverable).
-    return PJ::unexpected(SetTransformError::SelfLoop);
+    return PJ::unexpected(SetTransformError::kSelfLoop);
   }
 
   auto& link = parents_[tf.child_frame];
@@ -69,7 +69,7 @@ PJ::Expected<void, SetTransformError> TransformBuffer::setTransform(const Stampe
   if (!link.parent.empty() && link.parent != tf.parent_frame) {
     // A second publisher claims this child under a different parent. Drop this
     // one edge rather than aborting the whole bulk ingest.
-    return PJ::unexpected(SetTransformError::ReparentConflict);
+    return PJ::unexpected(SetTransformError::kReparentConflict);
   }
 
   link.parent = tf.parent_frame;
@@ -83,7 +83,7 @@ PJ::Expected<void, SetTransformError> TransformBuffer::setTransform(const Stampe
   if (samples.empty() || tf.stamp > samples.back().first) {
     samples.emplace_back(tf.stamp, normalized);
   } else {
-    auto it = std::lower_bound(samples.begin(), samples.end(), tf.stamp, EdgeHistory::less_stamp);
+    auto it = std::lower_bound(samples.begin(), samples.end(), tf.stamp, EdgeHistory::lessStamp);
     if (it != samples.end() && it->first == tf.stamp) {
       it->second = normalized;
     } else {
@@ -124,7 +124,7 @@ std::optional<Transform> TransformBuffer::sampleAt(const EdgeHistory& h, TimePoi
   // single-sample edge therefore resolves at every t >= its stamp. A query
   // strictly before the first sample has no value yet (the frame had not been
   // announced at that time) -> nullopt.
-  auto hi = std::upper_bound(h.samples.begin(), h.samples.end(), t, EdgeHistory::stamp_less);
+  auto hi = std::upper_bound(h.samples.begin(), h.samples.end(), t, EdgeHistory::stampLess);
   if (hi == h.samples.begin()) {
     return std::nullopt;
   }
@@ -202,12 +202,12 @@ PJ::Expected<Transform, LookupError> TransformBuffer::lookupTransformImpl(
     // Distinguish "frame not in the buffer" from "known but disconnected". The
     // O(n) scans run only on this (rare) failure path, never in the steady loop.
     if (!isKnownFrame(source)) {
-      return PJ::unexpected(LookupError::UnknownSource);
+      return PJ::unexpected(LookupError::kUnknownSource);
     }
     if (!isKnownFrame(target)) {
-      return PJ::unexpected(LookupError::UnknownTarget);
+      return PJ::unexpected(LookupError::kUnknownTarget);
     }
-    return PJ::unexpected(LookupError::Disconnected);
+    return PJ::unexpected(LookupError::kDisconnected);
   }
 
   // Compose source->common, then common->target inverse. Every hop below the
@@ -216,7 +216,7 @@ PJ::Expected<Transform, LookupError> TransformBuffer::lookupTransformImpl(
   for (std::size_t i = 0; i < meet.src_k; ++i) {
     const auto sample = sampleAt(src_chain[i].link->history, stamp);
     if (!sample) {
-      return PJ::unexpected(LookupError::NoSampleAtTime);
+      return PJ::unexpected(LookupError::kNoSampleAtTime);
     }
     t_common_from_source = (*sample) * t_common_from_source;
   }
@@ -225,7 +225,7 @@ PJ::Expected<Transform, LookupError> TransformBuffer::lookupTransformImpl(
   for (std::size_t i = 0; i < meet.tgt_k; ++i) {
     const auto sample = sampleAt(tgt_chain[i].link->history, stamp);
     if (!sample) {
-      return PJ::unexpected(LookupError::NoSampleAtTime);
+      return PJ::unexpected(LookupError::kNoSampleAtTime);
     }
     t_common_from_target = (*sample) * t_common_from_target;
   }

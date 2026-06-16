@@ -576,7 +576,7 @@ TEST(CatalogModelReloadTest, ObjectReplaceKeepsObjectTopicKey) {
   ASSERT_TRUE(session.objectStore().pushOwned(*obj, 100, std::vector<uint8_t>(4, 0)).has_value());
   catalog.rebuildFromDatastore();
 
-  auto objectKey = [](const std::vector<PJ::CatalogItem>& items) -> QString {
+  auto object_key = [](const std::vector<PJ::CatalogItem>& items) -> QString {
     for (const auto& item : items) {
       if (PJ::isObjectTopic(item)) {
         return item.key;
@@ -584,7 +584,7 @@ TEST(CatalogModelReloadTest, ObjectReplaceKeepsObjectTopicKey) {
     }
     return {};
   };
-  const QString key_before = objectKey(catalog.items());
+  const QString key_before = object_key(catalog.items());
   ASSERT_FALSE(key_before.isEmpty());
 
   PJ::ObjectStore staged;
@@ -600,7 +600,7 @@ TEST(CatalogModelReloadTest, ObjectReplaceKeepsObjectTopicKey) {
   ASSERT_TRUE(session.objectStore().replaceDatasetFrom(staged, 9, *primary).has_value());
   catalog.rebuildFromDatastore();
 
-  EXPECT_EQ(objectKey(catalog.items()), key_before) << "object topic key (ObjectTopicId) must be stable across reload";
+  EXPECT_EQ(object_key(catalog.items()), key_before) << "object topic key (ObjectTopicId) must be stable across reload";
   EXPECT_EQ(removed_emissions, 0);
 }
 

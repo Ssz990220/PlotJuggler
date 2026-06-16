@@ -131,11 +131,11 @@ void ArrowGizmo::uploadMesh() {
   ebo_.uploadStatic(
       GL_ELEMENT_ARRAY_BUFFER, index_data_.data(), static_cast<GLsizeiptr>(sizeof(uint32_t) * index_data_.size()));
   withGlFunctions([](auto& f) {
-    constexpr GLsizei stride = static_cast<GLsizei>(sizeof(float) * 6);
+    constexpr GLsizei kStride = static_cast<GLsizei>(sizeof(float) * 6);
     f.glEnableVertexAttribArray(0U);
-    f.glVertexAttribPointer(0U, 3, GL_FLOAT, GL_FALSE, stride, nullptr);
+    f.glVertexAttribPointer(0U, 3, GL_FLOAT, GL_FALSE, kStride, nullptr);
     f.glEnableVertexAttribArray(1U);
-    f.glVertexAttribPointer(1U, 3, GL_FLOAT, GL_FALSE, stride, reinterpret_cast<const void*>(sizeof(float) * 3));
+    f.glVertexAttribPointer(1U, 3, GL_FLOAT, GL_FALSE, kStride, reinterpret_cast<const void*>(sizeof(float) * 3));
   });
   vao_.unbind();
 }
@@ -180,12 +180,12 @@ void renderTriadBound(
     const std::array<glm::vec4, 3>& colors, ArrowGizmo::Shading shading) {
   // The gizmo points along +X. Rotate +X -> +Y (+90° about +Z) and +X -> +Z
   // (-90° about +Y). Single source of truth for the three triad call sites.
-  static const glm::mat4 kYRotate = glm::rotate(glm::mat4{1.0f}, glm::radians(90.0f), {0.0f, 0.0f, 1.0f});
-  static const glm::mat4 kZRotate = glm::rotate(glm::mat4{1.0f}, glm::radians(-90.0f), {0.0f, 1.0f, 0.0f});
+  static const glm::mat4 k_y_rotate = glm::rotate(glm::mat4{1.0f}, glm::radians(90.0f), {0.0f, 0.0f, 1.0f});
+  static const glm::mat4 k_z_rotate = glm::rotate(glm::mat4{1.0f}, glm::radians(-90.0f), {0.0f, 1.0f, 0.0f});
 
   const glm::mat4 model_x = base * arm_scale;
-  const glm::mat4 model_y = base * kYRotate * arm_scale;
-  const glm::mat4 model_z = base * kZRotate * arm_scale;
+  const glm::mat4 model_y = base * k_y_rotate * arm_scale;
+  const glm::mat4 model_z = base * k_z_rotate * arm_scale;
 
   arrow.drawBound(proj * view * model_x, glm::mat3(view * model_x), colors[0], shading);
   arrow.drawBound(proj * view * model_y, glm::mat3(view * model_y), colors[1], shading);

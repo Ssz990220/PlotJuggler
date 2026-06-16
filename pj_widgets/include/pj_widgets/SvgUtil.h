@@ -33,7 +33,7 @@ inline QString currentTheme() {
 //      with the theme too.
 //   3. Material Symbols SVGs without any explicit fill — we inject a
 //      `fill="..."` on the root `<svg>` so paths inherit the theme ink.
-inline void RecolorSvgInk(QByteArray& svg_data, bool light_theme) {
+inline void recolorSvgInk(QByteArray& svg_data, bool light_theme) {
   // PJ4 theme palette: light = Jet, dark = Platinum.
   const QByteArray ink = light_theme ? QByteArray("#3D3D3D") : QByteArray("#E0E0E0");
   const QByteArray opposite = light_theme ? QByteArray("#E0E0E0") : QByteArray("#3D3D3D");
@@ -67,7 +67,7 @@ inline void RecolorSvgInk(QByteArray& svg_data, bool light_theme) {
 // Load an SVG from a resource path, recoloring monochrome content (#000000 /
 // #ffffff) for the requested theme. Results are cached per (path, theme).
 // Caller must use this on the GUI thread only — the cache maps are not locked.
-inline const QPixmap& LoadSvg(const QString& filename, const QString& style_name = "light") {
+inline const QPixmap& loadSvg(const QString& filename, const QString& style_name = "light") {
   static std::map<QString, QPixmap> light_images;
   static std::map<QString, QPixmap> dark_images;
   const bool light_theme = style_name.contains("light");
@@ -88,7 +88,7 @@ inline const QPixmap& LoadSvg(const QString& filename, const QString& style_name
   QByteArray svg_data = file.readAll();
   file.close();
 
-  RecolorSvgInk(svg_data, light_theme);
+  recolorSvgInk(svg_data, light_theme);
 
   QSvgRenderer renderer(svg_data);
   QImage image(64, 64, QImage::Format_ARGB32);
@@ -108,7 +108,7 @@ inline const QPixmap& LoadSvg(const QString& filename, const QString& style_name
 // pixmap blurs; this renders fresh at logical_size * dpr pixels and
 // stamps the DPR on the result so Qt halves it back to logical units.
 // Not cached — call sparingly (e.g. once per widget construction).
-inline QPixmap RenderSvgPixmap(
+inline QPixmap renderSvgPixmap(
     const QString& filename, const QString& style_name, const QSize& logical_size, qreal dpr) {
   QFile file(filename);
   if (!file.open(QFile::ReadOnly | QFile::Text)) {
@@ -118,7 +118,7 @@ inline QPixmap RenderSvgPixmap(
   QByteArray svg_data = file.readAll();
   file.close();
   const bool light_theme = style_name.contains("light");
-  RecolorSvgInk(svg_data, light_theme);
+  recolorSvgInk(svg_data, light_theme);
   QSvgRenderer renderer(svg_data);
   const QSize physical = logical_size * dpr;
   QImage image(physical, QImage::Format_ARGB32);

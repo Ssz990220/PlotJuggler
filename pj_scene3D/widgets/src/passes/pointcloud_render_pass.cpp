@@ -352,8 +352,8 @@ void PointcloudRenderPass::initializeGL() {
   if (initialized_) {
     return;
   }
-  static const std::string kPointcloudFragSrc = makePointcloudFragSrc();
-  auto result = gl::Program::fromSources(kPointcloudVertSrc, kPointcloudFragSrc);
+  static const std::string k_pointcloud_frag_src = makePointcloudFragSrc();
+  auto result = gl::Program::fromSources(kPointcloudVertSrc, k_pointcloud_frag_src);
   if (auto* program = std::get_if<gl::Program>(&result); program != nullptr) {
     program_ = std::make_unique<gl::Program>(std::move(*program));
   } else {
@@ -362,8 +362,8 @@ void PointcloudRenderPass::initializeGL() {
     return;
   }
 
-  static const std::string kCubeFragSrc = makeCubeFragSrc();
-  auto cube_result = gl::Program::fromSources(kCubeVertSrc, kCubeFragSrc);
+  static const std::string k_cube_frag_src = makeCubeFragSrc();
+  auto cube_result = gl::Program::fromSources(kCubeVertSrc, k_cube_frag_src);
   if (auto* program = std::get_if<gl::Program>(&cube_result); program != nullptr) {
     cube_program_ = std::make_unique<gl::Program>(std::move(*program));
   } else {

@@ -94,16 +94,16 @@ class TopicStorage {
   [[nodiscard]] const TopicDescriptor& descriptor() const noexcept;
 
   /// Topic identifier.
-  [[nodiscard]] TopicId topic_id() const noexcept;
+  [[nodiscard]] TopicId topicId() const noexcept;
 
   /// True if no chunks are retained.
   [[nodiscard]] bool empty() const noexcept;
 
   /// Minimum timestamp of retained chunks (0 if empty).
-  [[nodiscard]] Timestamp time_min() const noexcept;
+  [[nodiscard]] Timestamp timeMin() const noexcept;
 
   /// Maximum timestamp of retained chunks (0 if empty).
-  [[nodiscard]] Timestamp time_max() const noexcept;
+  [[nodiscard]] Timestamp timeMax() const noexcept;
 
   /// Update descriptor schema id for future writes.
   void updateSchema(SchemaId new_schema);

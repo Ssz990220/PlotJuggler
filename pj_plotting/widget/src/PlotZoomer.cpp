@@ -37,7 +37,7 @@ void PlotZoomer::widgetMouseMoveEvent(QMouseEvent* event) {
     const QRectF zoom_rect = invTransform(rect.normalized());
     if (zoom_rect.width() > minZoomSize().width() && zoom_rect.height() > minZoomSize().height()) {
       if (!zoom_enabled_) {
-        const QPixmap& pixmap = LoadSvg(":/resources/svg/zoom_in.svg", currentTheme());
+        const QPixmap& pixmap = loadSvg(":/resources/svg/zoom_in.svg", currentTheme());
         QApplication::setOverrideCursor(QCursor(pixmap.scaled(24, 24)));
         zoom_enabled_ = true;
         setRubberBand(RectRubberBand);

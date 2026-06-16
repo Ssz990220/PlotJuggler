@@ -20,7 +20,7 @@
 
 namespace {
 
-using pj_widgets_demos::ApplyTheme;
+using pj_widgets_demos::applyTheme;
 
 }  // namespace
 
@@ -37,7 +37,7 @@ int main(int argc, char** argv) {
     }
   }
 
-  ApplyTheme(interactive_theme);
+  applyTheme(interactive_theme);
 
   QMainWindow win;
   win.setWindowTitle(QStringLiteral("PJ MessageBox demo"));
@@ -68,9 +68,9 @@ int main(int argc, char** argv) {
     bool dont_show = false;
     const int chosen = PJ::MessageBox::question(
         &win, QStringLiteral("Close pane?"), QStringLiteral("You have 1 process running in this pane."),
-        {{QStringLiteral("Yes, close"), PJ::MessageBox::PrimaryRole},
-         {QStringLiteral("Show running processes"), PJ::MessageBox::NeutralRole},
-         {QStringLiteral("Cancel"), PJ::MessageBox::CancelRole}},
+        {{QStringLiteral("Yes, close"), PJ::MessageBox::kPrimaryRole},
+         {QStringLiteral("Show running processes"), PJ::MessageBox::kNeutralRole},
+         {QStringLiteral("Cancel"), PJ::MessageBox::kCancelRole}},
         &dont_show);
     qInfo() << "chosen=" << chosen << "dont_show_again=" << dont_show;
   });
@@ -78,15 +78,15 @@ int main(int argc, char** argv) {
     const int chosen = PJ::MessageBox::question(
         &win, QStringLiteral("Delete dataset?"),
         QStringLiteral("This will permanently remove 'experiment_42.bag' and its derived series."),
-        {{QStringLiteral("Delete"), PJ::MessageBox::DestructiveRole},
-         {QStringLiteral("Cancel"), PJ::MessageBox::CancelRole}});
+        {{QStringLiteral("Delete"), PJ::MessageBox::kDestructiveRole},
+         {QStringLiteral("Cancel"), PJ::MessageBox::kCancelRole}});
     qInfo() << "chosen=" << chosen;
   });
 
   auto* toggle = new QPushButton(QStringLiteral("Toggle theme (currently: %1)").arg(interactive_theme), central);
   QObject::connect(toggle, &QPushButton::clicked, central, [toggle, theme = interactive_theme]() mutable {
     theme = (theme == QStringLiteral("dark")) ? QStringLiteral("light") : QStringLiteral("dark");
-    ApplyTheme(theme);
+    applyTheme(theme);
     toggle->setText(QStringLiteral("Toggle theme (currently: %1)").arg(theme));
   });
   lay->addWidget(toggle);

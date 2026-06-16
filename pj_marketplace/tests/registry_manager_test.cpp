@@ -269,7 +269,7 @@ TEST_F(RegistryManagerTest, ParsesPlatformArtifacts) {
 // compatibleExtensions(platform) returns only entries whose `platforms` map
 // contains the requested key, while extensions() stays untouched.
 TEST_F(RegistryManagerTest, CompatibleExtensionsFiltersByRequestedPlatform) {
-  static const QByteArray kMixedPlatformsJson = R"({
+  static const QByteArray k_mixed_platforms_json = R"({
     "extensions": [
       { "id": "linux-only", "name": "Linux Only", "version": "1.0.0",
         "platforms": { "linux-x86_64": { "url": "u1", "checksum": "sha256:1" } } },
@@ -287,7 +287,7 @@ TEST_F(RegistryManagerTest, CompatibleExtensionsFiltersByRequestedPlatform) {
   RegistryManager mgr;
   QSignalSpy spy_finished(&mgr, &RegistryManager::fetchFinished);
 
-  server_->setResponseBody(kMixedPlatformsJson);
+  server_->setResponseBody(k_mixed_platforms_json);
   mgr.fetchRegistry(server_->url());
   ASSERT_TRUE(spy_finished.wait(3000));
 

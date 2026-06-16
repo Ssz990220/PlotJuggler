@@ -17,7 +17,7 @@ namespace pj_widgets_demos {
 
 namespace {
 
-QString ExpandPlaceholders(const QString& body, const std::map<QString, QString>& palette) {
+QString expandPlaceholders(const QString& body, const std::map<QString, QString>& palette) {
   QString out;
   out.reserve(body.size());
   qsizetype i = 0;
@@ -48,7 +48,7 @@ QString ExpandPlaceholders(const QString& body, const std::map<QString, QString>
 
 }  // namespace
 
-QString LoadAndExpandQss(const QString& theme) {
+QString loadAndExpandQss(const QString& theme) {
   const QString path = QStringLiteral("%1/stylesheet_%2.qss").arg(QStringLiteral(PJ_QSS_DIR), theme);
   QFile file(path);
   if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
@@ -87,11 +87,11 @@ QString LoadAndExpandQss(const QString& theme) {
     body.append(lines[i]);
     body.append(QLatin1Char('\n'));
   }
-  return ExpandPlaceholders(body, palette);
+  return expandPlaceholders(body, palette);
 }
 
-void ApplyTheme(const QString& theme) {
-  qApp->setStyleSheet(LoadAndExpandQss(theme));
+void applyTheme(const QString& theme) {
+  qApp->setStyleSheet(loadAndExpandQss(theme));
   QSettings().setValue(QStringLiteral("StyleSheet::theme"), theme);
 }
 

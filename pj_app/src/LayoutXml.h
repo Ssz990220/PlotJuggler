@@ -11,7 +11,7 @@
 #include <functional>
 #include <optional>
 
-namespace PJ::LayoutXml {
+namespace PJ::layout_xml {
 
 // Canonical layout-file extension, leading dot included. Double extension
 // so the files read as XML to editors/tools while staying identifiable as
@@ -98,4 +98,4 @@ using SeriesKeyResolver = std::function<std::optional<QString>(const SeriesPath&
 // isn't invalidated mid-iteration.
 void stripUnresolvedCurves(QDomDocument& doc);
 
-}  // namespace PJ::LayoutXml
+}  // namespace PJ::layout_xml

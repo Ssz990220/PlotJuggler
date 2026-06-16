@@ -24,32 +24,6 @@
 
 namespace PJ {
 
-namespace {
-
-// Rasterise a monochrome Material SVG at a given logical size, honouring the
-// caller widget's devicePixelRatio so QLabel::setPixmap stays crisp on HiDPI
-// screens. Applies the same #000000 / #ffffff recolour as LoadSvg.
-QPixmap renderSvgPixmap(const QString& path, const QString& theme, const QSize& logical_size, qreal dpr) {
-  QFile file(path);
-  if (!file.open(QFile::ReadOnly | QFile::Text)) {
-    return {};
-  }
-  QByteArray svg_data = file.readAll();
-  file.close();
-  RecolorSvgInk(svg_data, theme.contains("light"));
-  QSvgRenderer renderer(svg_data);
-  const QSize physical = logical_size * dpr;
-  QImage image(physical, QImage::Format_ARGB32);
-  image.fill(Qt::transparent);
-  QPainter painter(&image);
-  renderer.render(&painter);
-  painter.end();
-  QPixmap pm = QPixmap::fromImage(image);
-  pm.setDevicePixelRatio(dpr);
-  return pm;
-}
-}  // namespace
-
 TimelineWidget::TimelineWidget(QWidget* parent) : QWidget(parent), ui_(new Ui::TimelineWidget) {
   ui_->setupUi(this);
 
@@ -231,7 +205,7 @@ void TimelineWidget::applyIcons(QString theme) {
   const QSize icon_sz(chrome_metrics_.icon_size, chrome_metrics_.icon_size);
   const int button_extent = chrome_metrics_.icon_size + chrome_metrics_.icon_padding;
   const int band_extent = button_extent + (2 * chrome_metrics_.layout_padding);
-  ui_->playbackLoop->setIcon(LoadSvg(":/resources/svg/loop.svg", theme));
+  ui_->playbackLoop->setIcon(loadSvg(":/resources/svg/loop.svg", theme));
   ui_->playbackLoop->setIconSize(icon_sz);
   ui_->playbackLoop->setMinimumSize(button_extent, button_extent);
   ui_->playbackLoop->setMaximumSize(button_extent, button_extent);
@@ -268,7 +242,7 @@ void TimelineWidget::applyIcons(QString theme) {
 
 void TimelineWidget::applyPlayPauseIcon(const QString& theme) {
   const char* icon = ui_->buttonPlay->isChecked() ? ":/resources/svg/pause.svg" : ":/resources/svg/play_arrow.svg";
-  ui_->buttonPlay->setIcon(LoadSvg(QString::fromLatin1(icon), theme));
+  ui_->buttonPlay->setIcon(loadSvg(QString::fromLatin1(icon), theme));
 }
 
 }  // namespace PJ

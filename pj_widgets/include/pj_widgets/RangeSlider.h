@@ -20,23 +20,19 @@ class RangeSlider : public QWidget {
   Q_ENUMS(RangeSliderTypes)
 
  public:
-  enum Option { NoHandle = 0x0, LeftHandle = 0x1, RightHandle = 0x2, DoubleHandles = LeftHandle | RightHandle };
+  enum Option { kNoHandle = 0x0, kLeftHandle = 0x1, kRightHandle = 0x2, kDoubleHandles = kLeftHandle | kRightHandle };
   Q_DECLARE_FLAGS(Options, Option)
 
   explicit RangeSlider(QWidget* parent = nullptr);
-  RangeSlider(Qt::Orientation ori, Options t = DoubleHandles, QWidget* parent = nullptr);
+  RangeSlider(Qt::Orientation ori, Options t = kDoubleHandles, QWidget* parent = nullptr);
 
   QSize minimumSizeHint() const override;
 
-  int GetMinimun() const;
-  void SetMinimum(int aMinimum);
-  int GetMaximun() const;
-  void SetMaximum(int aMaximum);
-  int GetLowerValue() const;
-  void SetLowerValue(int aLowerValue);
-  int GetUpperValue() const;
-  void SetUpperValue(int aUpperValue);
-  void SetRange(int aMinimum, int aMaximum);
+  int getMinimun() const;
+  int getMaximun() const;
+  int getLowerValue() const;
+  int getUpperValue() const;
+  void setRange(int a_minimum, int a_maximum);
 
   void setOptions(Options t);
   void setMinTickPixelSpacing(int px);
@@ -55,7 +51,7 @@ class RangeSlider : public QWidget {
 
   bool showTicks() const;
 
-  void setRangeReal(double minV, double maxV, int decimals);
+  void setRangeReal(double min_v, double max_v, int decimals);
   void setLowerValueReal(double v);
   void setUpperValueReal(double v);
   double lowerValueReal() const;
@@ -65,71 +61,71 @@ class RangeSlider : public QWidget {
   double toReal(int v) const;
 
  protected:
-  void paintEvent(QPaintEvent* aEvent) override;
-  void mousePressEvent(QMouseEvent* aEvent) override;
-  void mouseMoveEvent(QMouseEvent* aEvent) override;
-  void mouseReleaseEvent(QMouseEvent* aEvent) override;
-  void changeEvent(QEvent* aEvent) override;
+  void paintEvent(QPaintEvent* a_event) override;
+  void mousePressEvent(QMouseEvent* a_event) override;
+  void mouseMoveEvent(QMouseEvent* a_event) override;
+  void mouseReleaseEvent(QMouseEvent* a_event) override;
+  void changeEvent(QEvent* a_event) override;
   void leaveEvent(QEvent* e) override;
 
   QRectF firstHandleRect() const;
   QRectF secondHandleRect() const;
-  QRectF handleRect(int aValue) const;
+  QRectF handleRect(int a_value) const;
 
  signals:
-  void lowerValueChanged(int aLowerValue);
-  void upperValueChanged(int aUpperValue);
-  void rangeChanged(int aMin, int aMax);
+  void lowerValueChanged(int a_lower_value);
+  void upperValueChanged(int a_upper_value);
+  void rangeChanged(int a_min, int a_max);
 
  public slots:
-  void setLowerValue(int aLowerValue);
-  void setUpperValue(int aUpperValue);
-  void setMinimum(int aMinimum);
-  void setMaximum(int aMaximum);
+  void setLowerValue(int a_lower_value);
+  void setUpperValue(int a_upper_value);
+  void setMinimum(int a_minimum);
+  void setMaximum(int a_maximum);
 
  private:
   Q_DISABLE_COPY(RangeSlider)
   int validLength() const;
 
-  int mMinimum = 0;
-  int mMaximum = 100;
-  int mLowerValue = 0;
-  int mUpperValue = 100;
-  bool mFirstHandlePressed = false;
-  bool mSecondHandlePressed = false;
-  bool mRangeDragActive = false;
-  int mHoveredHandle = 0;  // 0 none, 1 first, 2 second — drives the PJPurple hover tint (timeSlider parity)
-  int mRangeDragStartPos = 0;
-  int mRangeDragLowerStart = 0;
-  int mRangeDragUpperStart = 0;
-  int mInterval = 100;
-  int mDelta = 0;
-  Qt::Orientation orientation = Qt::Horizontal;
-  Options type = DoubleHandles;
+  int minimum_ = 0;
+  int maximum_ = 100;
+  int lower_value_ = 0;
+  int upper_value_ = 100;
+  bool first_handle_pressed_ = false;
+  bool second_handle_pressed_ = false;
+  bool range_drag_active_ = false;
+  int hovered_handle_ = 0;  // 0 none, 1 first, 2 second — drives the PJPurple hover tint (timeSlider parity)
+  int range_drag_start_pos_ = 0;
+  int range_drag_lower_start_ = 0;
+  int range_drag_upper_start_ = 0;
+  int interval_ = 100;
+  int delta_ = 0;
+  Qt::Orientation orientation_ = Qt::Horizontal;
+  Options type_ = kDoubleHandles;
 
-  int mMinTickPx = 45;
-  bool mShowTicks = true;
-  bool mShowTickLabels = true;
+  int min_tick_px_ = 45;
+  bool show_ticks_ = true;
+  bool show_tick_labels_ = true;
 
-  void drawTicks(QPainter& painter, const QRectF& backgroundRect);
+  void drawTicks(QPainter& painter, const QRectF& background_rect);
   int niceStep(int raw) const;
   int firstTick(int min, int step) const;
 
-  bool mShowHandleValueTooltip = true;
-  bool mTooltipVisible = false;
+  bool show_handle_value_tooltip_ = true;
+  bool tooltip_visible_ = false;
 
-  bool mFloatingLabels = false;
-  std::function<QString(double)> mLabelFormatter;
-  std::function<QString(double, double)> mCenterLabelFormatter;
+  bool floating_labels_ = false;
+  std::function<QString(double)> label_formatter_;
+  std::function<QString(double, double)> center_label_formatter_;
 
-  QRect mLowerLabelRect;
-  QRect mUpperLabelRect;
-  QRect mCenterLabelRect;
+  QRect lower_label_rect_;
+  QRect upper_label_rect_;
+  QRect center_label_rect_;
 
   void drawFloatingLabels(QPainter& painter);
   QString formatHandleValue(double value) const;
 
-  void maybeShowHandleTooltip(const QPoint& globalPos, const QPoint& localPos);
+  void maybeShowHandleTooltip(const QPoint& global_pos, const QPoint& local_pos);
   QString handleValueText(bool left) const;
 };
 

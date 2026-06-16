@@ -37,7 +37,7 @@ const uint8_t* RawBuffer::data() const noexcept {
   return data_.data();
 }
 
-uint8_t* RawBuffer::mutable_data() noexcept {
+uint8_t* RawBuffer::mutableData() noexcept {
   return data_.data();
 }
 
@@ -127,7 +127,7 @@ const uint8_t* BitVector::data() const noexcept {
   return bytes_.data();
 }
 
-uint8_t* BitVector::mutable_data() noexcept {
+uint8_t* BitVector::mutableData() noexcept {
   return bytes_.data();
 }
 

@@ -199,7 +199,7 @@ GridUpdate OccupancyGridReconstructor::reconstructAt(
   if (!base) {
     // No base grid at or before t — nothing to display.
     invalidate();
-    return GridUpdate{grid_, GridUpdate::Kind::Empty, {}};
+    return GridUpdate{grid_, GridUpdate::Kind::kEmpty, {}};
   }
 
   // Wire dims are untrusted (the canonical codec performs no width*height vs
@@ -207,7 +207,7 @@ GridUpdate OccupancyGridReconstructor::reconstructAt(
   // from it, so a corrupt file cannot trigger a multi-GB / throwing assign.
   if (static_cast<uint64_t>(base->width) * base->height > kMaxGridCells) {
     invalidate();
-    return GridUpdate{grid_, GridUpdate::Kind::Empty, {}};
+    return GridUpdate{grid_, GridUpdate::Kind::kEmpty, {}};
   }
 
   // Exception barrier: this runs on the GUI thread (renderAt → reconstructAt);
@@ -221,27 +221,27 @@ GridUpdate OccupancyGridReconstructor::reconstructAt(
       resetToBase(*base);
       applyRange(updates_in, grid_.base_timestamp_ns, t, /*allow_snapshots=*/true);
       last_t_ = t;
-      return GridUpdate{grid_, GridUpdate::Kind::Full, dirty_rects_};
+      return GridUpdate{grid_, GridUpdate::Kind::kFull, dirty_rects_};
     }
 
     if (t >= last_t_) {
       // Forward within the epoch: apply only the new deltas incrementally.
       applyRange(updates_in, last_t_, t, /*allow_snapshots=*/true);
       last_t_ = t;
-      return GridUpdate{grid_, GridUpdate::Kind::Incremental, dirty_rects_};
+      return GridUpdate{grid_, GridUpdate::Kind::kIncremental, dirty_rects_};
     }
 
     // Backward within the epoch: restore the nearest snapshot (or base) and replay.
     restoreNearestAtOrBefore(t);
     applyRange(updates_in, last_t_, t, /*allow_snapshots=*/false);
     last_t_ = t;
-    return GridUpdate{grid_, GridUpdate::Kind::Full, dirty_rects_};
+    return GridUpdate{grid_, GridUpdate::Kind::kFull, dirty_rects_};
   } catch (const std::exception&) {
     invalidate();
-    return GridUpdate{grid_, GridUpdate::Kind::Empty, {}};
+    return GridUpdate{grid_, GridUpdate::Kind::kEmpty, {}};
   } catch (...) {
     invalidate();
-    return GridUpdate{grid_, GridUpdate::Kind::Empty, {}};
+    return GridUpdate{grid_, GridUpdate::Kind::kEmpty, {}};
   }
 }
 

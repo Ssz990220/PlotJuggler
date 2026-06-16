@@ -19,7 +19,7 @@ namespace {
 // Helper: create a vector of ColumnDescriptors
 // ---------------------------------------------------------------------------
 
-ColumnDescriptor make_col(FieldId id, PrimitiveType type, std::string path) {
+ColumnDescriptor makeCol(FieldId id, PrimitiveType type, std::string path) {
   return ColumnDescriptor{id, type, std::move(path)};
 }
 
@@ -29,9 +29,9 @@ ColumnDescriptor make_col(FieldId id, PrimitiveType type, std::string path) {
 
 TEST(ChunkTest, BuildAndSealFloat32Chunk) {
   std::vector<ColumnDescriptor> cols = {
-      make_col(1, PrimitiveType::kFloat32, "x"),
-      make_col(2, PrimitiveType::kFloat32, "y"),
-      make_col(3, PrimitiveType::kFloat32, "z"),
+      makeCol(1, PrimitiveType::kFloat32, "x"),
+      makeCol(2, PrimitiveType::kFloat32, "y"),
+      makeCol(3, PrimitiveType::kFloat32, "z"),
   };
   TopicChunkBuilder builder(/*topic_id=*/10, /*schema_id=*/1, std::move(cols), /*max_rows=*/100);
 
@@ -82,9 +82,9 @@ TEST(ChunkTest, BuildAndSealFloat32Chunk) {
 
 TEST(ChunkTest, ReadBackSealedValues) {
   std::vector<ColumnDescriptor> cols = {
-      make_col(1, PrimitiveType::kFloat32, "x"),
-      make_col(2, PrimitiveType::kFloat64, "y"),
-      make_col(3, PrimitiveType::kInt32, "z"),
+      makeCol(1, PrimitiveType::kFloat32, "x"),
+      makeCol(2, PrimitiveType::kFloat64, "y"),
+      makeCol(3, PrimitiveType::kInt32, "z"),
   };
   TopicChunkBuilder builder(/*topic_id=*/20, /*schema_id=*/2, std::move(cols), /*max_rows=*/100);
 
@@ -130,7 +130,7 @@ TEST(ChunkTest, ReadBackSealedValues) {
 
 TEST(ChunkTest, IsFull) {
   std::vector<ColumnDescriptor> cols = {
-      make_col(1, PrimitiveType::kFloat32, "val"),
+      makeCol(1, PrimitiveType::kFloat32, "val"),
   };
   TopicChunkBuilder builder(/*topic_id=*/30, /*schema_id=*/1, std::move(cols), /*max_rows=*/3);
 
@@ -153,7 +153,7 @@ TEST(ChunkTest, IsFull) {
 
 TEST(ChunkTest, StringColumn) {
   std::vector<ColumnDescriptor> cols = {
-      make_col(1, PrimitiveType::kString, "label"),
+      makeCol(1, PrimitiveType::kString, "label"),
   };
   TopicChunkBuilder builder(/*topic_id=*/40, /*schema_id=*/1, std::move(cols), /*max_rows=*/100);
 
@@ -183,7 +183,7 @@ TEST(ChunkTest, StringColumn) {
 
 TEST(ChunkTest, BoolColumn) {
   std::vector<ColumnDescriptor> cols = {
-      make_col(1, PrimitiveType::kBool, "flag"),
+      makeCol(1, PrimitiveType::kBool, "flag"),
   };
   TopicChunkBuilder builder(/*topic_id=*/50, /*schema_id=*/1, std::move(cols), /*max_rows=*/100);
 
@@ -209,7 +209,7 @@ TEST(ChunkTest, BoolColumn) {
 
 TEST(ChunkTest, NullHandling) {
   std::vector<ColumnDescriptor> cols = {
-      make_col(1, PrimitiveType::kFloat64, "val"),
+      makeCol(1, PrimitiveType::kFloat64, "val"),
   };
   TopicChunkBuilder builder(/*topic_id=*/60, /*schema_id=*/1, std::move(cols), /*max_rows=*/100);
 
@@ -257,9 +257,9 @@ TEST(ChunkTest, NullHandling) {
 
 TEST(ChunkTest, MixedTypes) {
   std::vector<ColumnDescriptor> cols = {
-      make_col(1, PrimitiveType::kFloat32, "position"),
-      make_col(2, PrimitiveType::kString, "label"),
-      make_col(3, PrimitiveType::kBool, "active"),
+      makeCol(1, PrimitiveType::kFloat32, "position"),
+      makeCol(2, PrimitiveType::kString, "label"),
+      makeCol(3, PrimitiveType::kBool, "active"),
   };
   TopicChunkBuilder builder(/*topic_id=*/70, /*schema_id=*/1, std::move(cols), /*max_rows=*/100);
 
@@ -313,8 +313,8 @@ TEST(ChunkTest, MixedTypes) {
 
 TEST(ChunkTest, ColumnStatsNumeric) {
   std::vector<ColumnDescriptor> cols = {
-      make_col(1, PrimitiveType::kFloat64, "varying"),
-      make_col(2, PrimitiveType::kFloat64, "constant"),
+      makeCol(1, PrimitiveType::kFloat64, "varying"),
+      makeCol(2, PrimitiveType::kFloat64, "constant"),
   };
   TopicChunkBuilder builder(/*topic_id=*/80, /*schema_id=*/1, std::move(cols), /*max_rows=*/100);
 
@@ -350,7 +350,7 @@ TEST(ChunkTest, ColumnStatsNumeric) {
 
 TEST(ChunkTest, UniqueChunkIds) {
   std::vector<ColumnDescriptor> cols = {
-      make_col(1, PrimitiveType::kFloat32, "val"),
+      makeCol(1, PrimitiveType::kFloat32, "val"),
   };
 
   TopicChunkBuilder builder1(1, 1, cols, 10);
@@ -378,10 +378,10 @@ TEST(ChunkTest, IntegerTypesRoundTrip) {
   // int8/int16 logical types widen to int64 storage; int32 has its own storage;
   // uint8/uint16/uint32 widen to uint64 storage.
   std::vector<ColumnDescriptor> cols = {
-      make_col(1, PrimitiveType::kInt8, "i8"),    make_col(2, PrimitiveType::kInt16, "i16"),
-      make_col(3, PrimitiveType::kInt32, "i32"),  make_col(4, PrimitiveType::kInt64, "i64"),
-      make_col(5, PrimitiveType::kUint8, "u8"),   make_col(6, PrimitiveType::kUint16, "u16"),
-      make_col(7, PrimitiveType::kUint32, "u32"), make_col(8, PrimitiveType::kUint64, "u64"),
+      makeCol(1, PrimitiveType::kInt8, "i8"),    makeCol(2, PrimitiveType::kInt16, "i16"),
+      makeCol(3, PrimitiveType::kInt32, "i32"),  makeCol(4, PrimitiveType::kInt64, "i64"),
+      makeCol(5, PrimitiveType::kUint8, "u8"),   makeCol(6, PrimitiveType::kUint16, "u16"),
+      makeCol(7, PrimitiveType::kUint32, "u32"), makeCol(8, PrimitiveType::kUint64, "u64"),
   };
   TopicChunkBuilder builder(/*topic_id=*/90, /*schema_id=*/1, std::move(cols), /*max_rows=*/100);
 
@@ -416,7 +416,7 @@ TEST(ChunkTest, IntegerTypesRoundTrip) {
 
 TEST(ChunkTest, NoNullsIsNullReturnsFalse) {
   std::vector<ColumnDescriptor> cols = {
-      make_col(1, PrimitiveType::kFloat32, "val"),
+      makeCol(1, PrimitiveType::kFloat32, "val"),
   };
   TopicChunkBuilder builder(/*topic_id=*/100, /*schema_id=*/1, std::move(cols), /*max_rows=*/100);
 
@@ -439,7 +439,7 @@ TEST(ChunkTest, NoNullsIsNullReturnsFalse) {
 
 TEST(ChunkTest, StringColumnStats) {
   std::vector<ColumnDescriptor> cols = {
-      make_col(1, PrimitiveType::kString, "tag"),
+      makeCol(1, PrimitiveType::kString, "tag"),
   };
   TopicChunkBuilder builder(/*topic_id=*/110, /*schema_id=*/1, std::move(cols), /*max_rows=*/100);
 
@@ -464,7 +464,7 @@ TEST(ChunkTest, StringColumnStats) {
 
 TEST(ChunkTest, EmptyChunk) {
   std::vector<ColumnDescriptor> cols = {
-      make_col(1, PrimitiveType::kFloat32, "val"),
+      makeCol(1, PrimitiveType::kFloat32, "val"),
   };
   TopicChunkBuilder builder(/*topic_id=*/120, /*schema_id=*/1, std::move(cols), /*max_rows=*/100);
 
@@ -482,7 +482,7 @@ TEST(ChunkTest, EmptyChunk) {
 
 TEST(ChunkTest, BulkReadFloat32) {
   std::vector<ColumnDescriptor> cols = {
-      make_col(1, PrimitiveType::kFloat32, "x"),
+      makeCol(1, PrimitiveType::kFloat32, "x"),
   };
   TopicChunkBuilder builder(/*topic_id=*/130, /*schema_id=*/1, std::move(cols), /*max_rows=*/100);
 
@@ -517,7 +517,7 @@ TEST(ChunkTest, BulkReadFloat32) {
 
 TEST(ChunkTest, BulkReadInt64) {
   std::vector<ColumnDescriptor> cols = {
-      make_col(1, PrimitiveType::kInt64, "val"),
+      makeCol(1, PrimitiveType::kInt64, "val"),
   };
   TopicChunkBuilder builder(/*topic_id=*/140, /*schema_id=*/1, std::move(cols), /*max_rows=*/100);
 
@@ -544,8 +544,8 @@ TEST(ChunkTest, BulkReadInt64) {
 
 TEST(ChunkTest, BulkReadBoolStringReturnsNaN) {
   std::vector<ColumnDescriptor> cols = {
-      make_col(1, PrimitiveType::kBool, "flag"),
-      make_col(2, PrimitiveType::kString, "label"),
+      makeCol(1, PrimitiveType::kBool, "flag"),
+      makeCol(2, PrimitiveType::kString, "label"),
   };
   TopicChunkBuilder builder(/*topic_id=*/150, /*schema_id=*/1, std::move(cols), /*max_rows=*/100);
 
@@ -578,7 +578,7 @@ TEST(ChunkTest, BulkReadBoolStringReturnsNaN) {
 
 TEST(ChunkTest, BulkReadZeroRows) {
   std::vector<ColumnDescriptor> cols = {
-      make_col(1, PrimitiveType::kFloat64, "x"),
+      makeCol(1, PrimitiveType::kFloat64, "x"),
   };
   TopicChunkBuilder builder(/*topic_id=*/160, /*schema_id=*/1, std::move(cols), /*max_rows=*/100);
 
@@ -600,7 +600,7 @@ TEST(ChunkTest, BulkReadZeroRows) {
 
 TEST(ChunkTest, ConstantIntColumnGetsConstantEncoding) {
   std::vector<ColumnDescriptor> cols = {
-      make_col(1, PrimitiveType::kInt32, "const_val"),
+      makeCol(1, PrimitiveType::kInt32, "const_val"),
   };
   TopicChunkBuilder builder(/*topic_id=*/200, /*schema_id=*/1, std::move(cols), /*max_rows=*/1000);
 
@@ -633,7 +633,7 @@ TEST(ChunkTest, ConstantIntColumnGetsConstantEncoding) {
 
 TEST(ChunkTest, ConstantFloatColumnGetsConstantEncoding) {
   std::vector<ColumnDescriptor> cols = {
-      make_col(1, PrimitiveType::kFloat64, "const_f64"),
+      makeCol(1, PrimitiveType::kFloat64, "const_f64"),
   };
   TopicChunkBuilder builder(/*topic_id=*/201, /*schema_id=*/1, std::move(cols), /*max_rows=*/1000);
 
@@ -658,7 +658,7 @@ TEST(ChunkTest, ConstantFloatColumnGetsConstantEncoding) {
 
 TEST(ChunkTest, NarrowRangeIntColumnGetsFOR) {
   std::vector<ColumnDescriptor> cols = {
-      make_col(1, PrimitiveType::kInt32, "narrow"),
+      makeCol(1, PrimitiveType::kInt32, "narrow"),
   };
   TopicChunkBuilder builder(/*topic_id=*/202, /*schema_id=*/1, std::move(cols), /*max_rows=*/1000);
 
@@ -695,7 +695,7 @@ TEST(ChunkTest, NarrowRangeIntColumnGetsFOR) {
 
 TEST(ChunkTest, WideRangeIntColumnStaysRaw) {
   std::vector<ColumnDescriptor> cols = {
-      make_col(1, PrimitiveType::kInt32, "wide"),
+      makeCol(1, PrimitiveType::kInt32, "wide"),
   };
   TopicChunkBuilder builder(/*topic_id=*/203, /*schema_id=*/1, std::move(cols), /*max_rows=*/1000);
 
@@ -722,8 +722,8 @@ TEST(ChunkTest, WideRangeIntColumnStaysRaw) {
 
 TEST(ChunkTest, FloatColumnAlwaysStaysRaw) {
   std::vector<ColumnDescriptor> cols = {
-      make_col(1, PrimitiveType::kFloat32, "f32"),
-      make_col(2, PrimitiveType::kFloat64, "f64"),
+      makeCol(1, PrimitiveType::kFloat32, "f32"),
+      makeCol(2, PrimitiveType::kFloat64, "f64"),
   };
   TopicChunkBuilder builder(/*topic_id=*/204, /*schema_id=*/1, std::move(cols), /*max_rows=*/1000);
 
@@ -747,7 +747,7 @@ TEST(ChunkTest, FloatColumnAlwaysStaysRaw) {
 
 TEST(ChunkTest, ConstantBoolGetsConstantEncoding) {
   std::vector<ColumnDescriptor> cols = {
-      make_col(1, PrimitiveType::kBool, "always_true"),
+      makeCol(1, PrimitiveType::kBool, "always_true"),
   };
   TopicChunkBuilder builder(/*topic_id=*/205, /*schema_id=*/1, std::move(cols), /*max_rows=*/1000);
 
@@ -772,15 +772,15 @@ TEST(ChunkTest, ConstantBoolGetsConstantEncoding) {
 
 TEST(ChunkTest, BulkAppendFloat32) {
   std::vector<ColumnDescriptor> cols = {
-      make_col(1, PrimitiveType::kFloat32, "x"),
-      make_col(2, PrimitiveType::kFloat32, "y"),
+      makeCol(1, PrimitiveType::kFloat32, "x"),
+      makeCol(2, PrimitiveType::kFloat32, "y"),
   };
   TopicChunkBuilder builder(/*topic_id=*/500, /*schema_id=*/1, std::move(cols), /*max_rows=*/1000);
 
-  constexpr std::size_t N = 100;
-  std::vector<Timestamp> ts(N);
-  std::vector<float> x_vals(N), y_vals(N);
-  for (std::size_t i = 0; i < N; ++i) {
+  constexpr std::size_t kN = 100;
+  std::vector<Timestamp> ts(kN);
+  std::vector<float> x_vals(kN), y_vals(kN);
+  for (std::size_t i = 0; i < kN; ++i) {
     ts[i] = static_cast<Timestamp>(i) * 10;
     x_vals[i] = static_cast<float>(i) * 1.0F;
     y_vals[i] = static_cast<float>(i) * 2.0F;
@@ -800,7 +800,7 @@ TEST(ChunkTest, BulkAppendFloat32) {
   EXPECT_EQ(chunk.stats.t_max, 990);
 
   // Verify round-trip
-  for (std::size_t i = 0; i < N; ++i) {
+  for (std::size_t i = 0; i < kN; ++i) {
     EXPECT_EQ(chunk.readTimestamp(i), static_cast<Timestamp>(i) * 10);
     EXPECT_FLOAT_EQ(static_cast<float>(chunk.readNumericAsDouble(0, i)), x_vals[i]);
     EXPECT_FLOAT_EQ(static_cast<float>(chunk.readNumericAsDouble(1, i)), y_vals[i]);
@@ -813,7 +813,7 @@ TEST(ChunkTest, BulkAppendFloat32) {
 
 TEST(ChunkTest, BulkAppendStats) {
   std::vector<ColumnDescriptor> cols = {
-      make_col(1, PrimitiveType::kFloat64, "val"),
+      makeCol(1, PrimitiveType::kFloat64, "val"),
   };
   TopicChunkBuilder builder(/*topic_id=*/501, /*schema_id=*/1, std::move(cols), /*max_rows=*/1000);
 
@@ -837,14 +837,14 @@ TEST(ChunkTest, BulkAppendStats) {
 
 TEST(ChunkTest, BulkAppendConstantColumn) {
   std::vector<ColumnDescriptor> cols = {
-      make_col(1, PrimitiveType::kInt32, "const"),
+      makeCol(1, PrimitiveType::kInt32, "const"),
   };
   TopicChunkBuilder builder(/*topic_id=*/502, /*schema_id=*/1, std::move(cols), /*max_rows=*/1000);
 
-  constexpr std::size_t N = 50;
-  std::vector<Timestamp> ts(N);
-  std::vector<int32_t> vals(N, 42);
-  for (std::size_t i = 0; i < N; ++i) {
+  constexpr std::size_t kN = 50;
+  std::vector<Timestamp> ts(kN);
+  std::vector<int32_t> vals(kN, 42);
+  for (std::size_t i = 0; i < kN; ++i) {
     ts[i] = static_cast<Timestamp>(i);
   }
 
@@ -859,7 +859,7 @@ TEST(ChunkTest, BulkAppendConstantColumn) {
 
   TopicChunk chunk = builder.seal();
   EXPECT_EQ(chunk.columnEncoding(0), EncodingType::kConstant);
-  for (std::size_t i = 0; i < N; ++i) {
+  for (std::size_t i = 0; i < kN; ++i) {
     EXPECT_DOUBLE_EQ(chunk.readNumericAsDouble(0, i), 42.0);
   }
 }
@@ -870,7 +870,7 @@ TEST(ChunkTest, BulkAppendConstantColumn) {
 
 TEST(ChunkTest, BulkAppendStrings) {
   std::vector<ColumnDescriptor> cols = {
-      make_col(1, PrimitiveType::kString, "name"),
+      makeCol(1, PrimitiveType::kString, "name"),
   };
   TopicChunkBuilder builder(/*topic_id=*/503, /*schema_id=*/1, std::move(cols), /*max_rows=*/1000);
 
@@ -896,7 +896,7 @@ TEST(ChunkTest, BulkAppendStrings) {
 
 TEST(ChunkTest, BulkRemainingCapacity) {
   std::vector<ColumnDescriptor> cols = {
-      make_col(1, PrimitiveType::kFloat32, "x"),
+      makeCol(1, PrimitiveType::kFloat32, "x"),
   };
   TopicChunkBuilder builder(/*topic_id=*/504, /*schema_id=*/1, std::move(cols), /*max_rows=*/100);
 
@@ -917,7 +917,7 @@ TEST(ChunkTest, BulkRemainingCapacity) {
 
 TEST(ChunkTest, BulkAppendWithValidity) {
   std::vector<ColumnDescriptor> cols = {
-      make_col(1, PrimitiveType::kFloat64, "val"),
+      makeCol(1, PrimitiveType::kFloat64, "val"),
   };
   TopicChunkBuilder builder(/*topic_id=*/505, /*schema_id=*/1, std::move(cols), /*max_rows=*/1000);
 
@@ -945,9 +945,9 @@ TEST(ChunkTest, BulkAppendWithValidity) {
 
 TEST(ChunkTest, BulkAppendMixedTypes) {
   std::vector<ColumnDescriptor> cols = {
-      make_col(1, PrimitiveType::kFloat32, "f32"),
-      make_col(2, PrimitiveType::kInt64, "i64"),
-      make_col(3, PrimitiveType::kBool, "b"),
+      makeCol(1, PrimitiveType::kFloat32, "f32"),
+      makeCol(2, PrimitiveType::kInt64, "i64"),
+      makeCol(3, PrimitiveType::kBool, "b"),
   };
   TopicChunkBuilder builder(/*topic_id=*/506, /*schema_id=*/1, std::move(cols), /*max_rows=*/1000);
 
@@ -977,7 +977,7 @@ TEST(ChunkTest, BulkAppendMixedTypes) {
 
 TEST(ChunkTest, ReadInt64PrecisionConstant) {
   std::vector<ColumnDescriptor> cols = {
-      make_col(1, PrimitiveType::kInt64, "big"),
+      makeCol(1, PrimitiveType::kInt64, "big"),
   };
   TopicChunkBuilder builder(/*topic_id=*/700, /*schema_id=*/1, std::move(cols), /*max_rows=*/100);
 
@@ -1001,7 +1001,7 @@ TEST(ChunkTest, ReadInt64PrecisionConstant) {
 
 TEST(ChunkTest, ReadInt64PrecisionFOR) {
   std::vector<ColumnDescriptor> cols = {
-      make_col(1, PrimitiveType::kInt64, "big"),
+      makeCol(1, PrimitiveType::kInt64, "big"),
   };
   TopicChunkBuilder builder(/*topic_id=*/701, /*schema_id=*/1, std::move(cols), /*max_rows=*/100);
 
@@ -1030,7 +1030,7 @@ TEST(ChunkTest, ReadInt64PrecisionFOR) {
 
 TEST(ChunkTest, ReadUint64PrecisionConstant) {
   std::vector<ColumnDescriptor> cols = {
-      make_col(1, PrimitiveType::kUint64, "big_u"),
+      makeCol(1, PrimitiveType::kUint64, "big_u"),
   };
   TopicChunkBuilder builder(/*topic_id=*/702, /*schema_id=*/1, std::move(cols), /*max_rows=*/100);
 
@@ -1057,7 +1057,7 @@ TEST(ChunkTest, ReadUint64PrecisionConstant) {
 
 TEST(ChunkTest, Int64StatsPreservePrecision) {
   std::vector<ColumnDescriptor> cols = {
-      make_col(1, PrimitiveType::kInt64, "precise"),
+      makeCol(1, PrimitiveType::kInt64, "precise"),
   };
   TopicChunkBuilder builder(/*topic_id=*/703, /*schema_id=*/1, std::move(cols), /*max_rows=*/100);
 
@@ -1093,7 +1093,7 @@ TEST(ChunkTest, Int64StatsPreservePrecision) {
 
 TEST(ChunkTest, FOREncodeLargeRange) {
   std::vector<ColumnDescriptor> cols = {
-      make_col(1, PrimitiveType::kInt64, "wide_for"),
+      makeCol(1, PrimitiveType::kInt64, "wide_for"),
   };
   TopicChunkBuilder builder(/*topic_id=*/704, /*schema_id=*/1, std::move(cols), /*max_rows=*/100);
 

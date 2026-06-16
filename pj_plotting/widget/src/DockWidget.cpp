@@ -66,7 +66,7 @@ DockWidget::DockWidget(
   connect(toolbar_->buttonSplitHorizontal(), &QPushButton::clicked, this, [this]() { splitHorizontal(); });
   connect(toolbar_->buttonSplitVertical(), &QPushButton::clicked, this, [this]() { splitVertical(); });
 
-  auto fullscreenAction = [this]() {
+  auto fullscreen_action = [this]() {
     auto* parent_docker = qobject_cast<PlotDocker*>(dockManager());
     if (!parent_docker) {
       return;
@@ -81,7 +81,7 @@ DockWidget::DockWidget(
       toolbar_->buttonClose()->setHidden(fullscreen);
     }
   };
-  connect(toolbar_->buttonFullscreen(), &QPushButton::clicked, this, fullscreenAction);
+  connect(toolbar_->buttonFullscreen(), &QPushButton::clicked, this, fullscreen_action);
 
   connect(toolbar_->buttonClose(), &QPushButton::pressed, this, [this]() {
     dockAreaWidget()->closeArea();
@@ -200,7 +200,7 @@ void DockWidget::setPlaceholderWidget() {
 }
 
 void DockWidget::onVisualizationRequested(VisualizationKind kind) {
-  if (kind == VisualizationKind::Plot) {
+  if (kind == VisualizationKind::kPlot) {
     // This dock owns plot widgets, so it builds the empty plot itself.
     ensurePlotWidget();
     emit undoableChange();
@@ -546,15 +546,15 @@ void DockWidget::showObjectContextMenu(const QPoint& global_pos) {
   const QString theme = currentTheme();
   QMenu menu(this);
   menu.setObjectName(QStringLiteral("PJMenu"));
-  menu.addAction(QIcon(LoadSvg(":/resources/svg/add_column.svg", theme)), tr("Split Horizontally"), this, [this]() {
+  menu.addAction(QIcon(loadSvg(":/resources/svg/add_column.svg", theme)), tr("Split Horizontally"), this, [this]() {
     splitHorizontal();
   });
-  menu.addAction(QIcon(LoadSvg(":/resources/svg/add_row.svg", theme)), tr("Split Vertically"), this, [this]() {
+  menu.addAction(QIcon(loadSvg(":/resources/svg/add_row.svg", theme)), tr("Split Vertically"), this, [this]() {
     splitVertical();
   });
   menu.addSeparator();
   menu.addAction(
-      QIcon(LoadSvg(":/resources/svg/clear.svg", theme)), tr("Clear"), this, [this]() { clearToPlaceholder(); });
+      QIcon(loadSvg(":/resources/svg/clear.svg", theme)), tr("Clear"), this, [this]() { clearToPlaceholder(); });
   menu.exec(global_pos);
 }
 

@@ -61,15 +61,15 @@ void ingestEntry(
       continue;
     }
     switch (result.error()) {
-      case SetTransformError::ReparentConflict:
+      case SetTransformError::kReparentConflict:
         ++stats.dropped_reparent;
         break;
-      case SetTransformError::SelfLoop:
+      case SetTransformError::kSelfLoop:
         ++stats.dropped_self_loop;
         break;
-      case SetTransformError::InvalidFrameName:
-      case SetTransformError::InvalidRotation:
-      case SetTransformError::NonFiniteTranslation:
+      case SetTransformError::kInvalidFrameName:
+      case SetTransformError::kInvalidRotation:
+      case SetTransformError::kNonFiniteTranslation:
         ++stats.dropped_invalid;
         break;
     }

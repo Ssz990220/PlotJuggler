@@ -31,10 +31,10 @@ class MessageBox : public QDialog {
   // Visual role applied to each button. The dialog sets this via the
   // `msgbox_role` dynamic property; the QSS keys off it.
   enum ButtonRole {
-    PrimaryRole,      // Gradient at rest. The recommended affirmative action.
-    NeutralRole,      // Solid neutral surface.
-    DestructiveRole,  // Neutral surface with purple text; light_purple hover.
-    CancelRole,       // Subtler surface. Esc / window-close return this button's index.
+    kPrimaryRole,      // Gradient at rest. The recommended affirmative action.
+    kNeutralRole,      // Solid neutral surface.
+    kDestructiveRole,  // Neutral surface with purple text; light_purple hover.
+    kCancelRole,       // Subtler surface. Esc / window-close return this button's index.
   };
 
   struct ButtonSpec {

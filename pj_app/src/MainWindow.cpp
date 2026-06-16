@@ -583,7 +583,7 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
       target->setVisible(now_visible);
       const QString icon = now_visible ? icon_on : icon_off;
       button->setProperty("iconPath", icon);
-      button->setIcon(LoadSvg(icon, theme_->currentTheme()));
+      button->setIcon(loadSvg(icon, theme_->currentTheme()));
       QSettings().setValue(QString::fromLatin1(key), now_visible);
       // Bottom-panel toggle: also collapse/restore the splitter so the
       // playback stays glued to the top with no empty gap below when
@@ -1007,13 +1007,13 @@ void MainWindow::onObjectFamilyRequested(DockWidget* dock, VisualizationKind fam
   // builds plots itself), so it is a defensive no-op.
   QString kind;
   switch (family) {
-    case VisualizationKind::Scene2D:
+    case VisualizationKind::kScene2D:
       kind = QStringLiteral("scene2d");
       break;
-    case VisualizationKind::Scene3D:
+    case VisualizationKind::kScene3D:
       kind = QStringLiteral("scene3d");
       break;
-    case VisualizationKind::Plot:
+    case VisualizationKind::kPlot:
       return;
   }
   IDataWidget* widget = makeSeededEmptyObjectDock(kind, dock);
@@ -1290,20 +1290,20 @@ void MainWindow::applyIcons(QString theme) {
     // paint before the toggle handler has run.
     const QString icon_path = toggle.button->property("iconPath").toString();
     const QString resolved = icon_path.isEmpty() ? QString::fromLatin1(toggle.icon_path_on) : icon_path;
-    toggle.button->setIcon(LoadSvg(resolved, theme));
+    toggle.button->setIcon(loadSvg(resolved, theme));
   }
   // Title-bar menus: their QActions persist across theme changes, so
   // re-tint here.
-  ui_->actionExit->setIcon(QIcon(LoadSvg(":/resources/svg/logout.svg", theme)));
-  ui_->actionMarketplace->setIcon(QIcon(LoadSvg(":/resources/svg/archive.svg", theme)));
+  ui_->actionExit->setIcon(QIcon(loadSvg(":/resources/svg/logout.svg", theme)));
+  ui_->actionMarketplace->setIcon(QIcon(loadSvg(":/resources/svg/archive.svg", theme)));
   if (action_preferences_ != nullptr) {
-    action_preferences_->setIcon(QIcon(LoadSvg(":/resources/svg/settings_cog_light.svg", theme)));
+    action_preferences_->setIcon(QIcon(loadSvg(":/resources/svg/settings_cog_light.svg", theme)));
   }
   if (action_load_layout_ != nullptr) {
-    action_load_layout_->setIcon(QIcon(LoadSvg(":/resources/svg/dashboard_load.svg", theme)));
+    action_load_layout_->setIcon(QIcon(loadSvg(":/resources/svg/dashboard_load.svg", theme)));
   }
   if (action_save_layout_ != nullptr) {
-    action_save_layout_->setIcon(QIcon(LoadSvg(":/resources/svg/save_as.svg", theme)));
+    action_save_layout_->setIcon(QIcon(loadSvg(":/resources/svg/save_as.svg", theme)));
   }
 }
 
@@ -1402,7 +1402,7 @@ void MainWindow::setLegendStatus(LegendStatus position) {
     button_legend_->setChecked(visible);
     const QString icon = legendCornerIcon(visible ? position : previous_legend_corner_);
     button_legend_->setProperty("iconPath", icon);
-    button_legend_->setIcon(LoadSvg(icon, theme_->currentTheme()));
+    button_legend_->setIcon(loadSvg(icon, theme_->currentTheme()));
   }
   forEachPlot([this](PlotWidget* plot) { applyLegendStatus(plot); });
 }
@@ -1748,7 +1748,7 @@ void MainWindow::onSaveLayout() {
   const QString start_dir = QSettings().value(kLastLayoutDirKey, QDir::currentPath()).toString();
   // setDefaultSuffix (passed through PJ::FileDialog) wants the extension
   // without the leading dot.
-  const QString default_suffix = QString::fromLatin1(LayoutXml::kLayoutExtension).mid(1);
+  const QString default_suffix = QString::fromLatin1(layout_xml::kLayoutExtension).mid(1);
 
   // Checked = source-bound: embed the data-source reference so opening the
   // layout reloads this exact file. Unchecked = generic: the layout carries
@@ -1764,7 +1764,7 @@ void MainWindow::onSaveLayout() {
   }
   // Backstops the dialog's defaultSuffix: a bare typed name (no extension)
   // becomes a .pj4.xml file even if the platform dialog skipped the suffix.
-  const QString save_path = LayoutXml::ensureLayoutExtension(result.path);
+  const QString save_path = layout_xml::ensureLayoutExtension(result.path);
   QSettings().setValue(kLastLayoutDirKey, QFileInfo(save_path).absolutePath());
   const bool include_data_source = !result.option_states.empty() && result.option_states[0];
   saveLayoutToPath(save_path, include_data_source);
@@ -1925,21 +1925,21 @@ void MainWindow::loadLayoutFromPath(const QString& path) {
   // the save-time intent; this is the load-time override.
   const QString binding = root.attribute(QStringLiteral("binding"), QStringLiteral("source"));
   const QDir layout_dir(QFileInfo(path).absoluteDir());
-  const QList<LayoutXml::DataSourceRef> replays = LayoutXml::extractDataSource(doc, layout_dir);
+  const QList<layout_xml::DataSourceRef> replays = layout_xml::extractDataSource(doc, layout_dir);
   if (binding != QStringLiteral("generic") && !replays.empty()) {
     // Classify each referenced file: already loaded (skip), missing on disk
     // (warn + skip), or reloadable. A file counts as already loaded only while
     // the catalog has data — a remembered-but-cleared source must reload.
     const auto& loaded = session_->sessionManager().loadedSources();
     const bool catalog_has_data = !session_->catalogModel().isEmpty();
-    QList<LayoutXml::DataSourceRef> pending;
+    QList<layout_xml::DataSourceRef> pending;
     for (const auto& replay : replays) {
       if (replay.resolved_path.isEmpty()) {
         continue;
       }
       const bool already_loaded =
           catalog_has_data && std::any_of(loaded.begin(), loaded.end(), [&replay](const auto& src) {
-            return LayoutXml::isSamePath(src.path, replay.resolved_path);
+            return layout_xml::isSamePath(src.path, replay.resolved_path);
           });
       if (already_loaded) {
         continue;
@@ -2009,18 +2009,18 @@ void MainWindow::loadLayoutFromPath(const QString& path) {
         this, tr("Load Layout"), tr("No data is loaded. Open a data source before applying this layout."));
     return;
   }
-  const QList<LayoutXml::SeriesPath> unresolved = rebindCurvesToLoadedDatasets(doc);
+  const QList<layout_xml::SeriesPath> unresolved = rebindCurvesToLoadedDatasets(doc);
   if (!unresolved.isEmpty()) {
     QStringList shown;
     shown.reserve(unresolved.size());
-    for (const LayoutXml::SeriesPath& sp : unresolved) {
+    for (const layout_xml::SeriesPath& sp : unresolved) {
       shown.push_back(sp.display());
     }
     switch (promptMissingCurves(shown)) {
       case MissingCurveChoice::kCancel:
         return;
       case MissingCurveChoice::kRemove:
-        LayoutXml::stripUnresolvedCurves(doc);
+        layout_xml::stripUnresolvedCurves(doc);
         break;
     }
   }
@@ -2174,13 +2174,13 @@ void MainWindow::onUndoableChange() {
   pushUndoState();
 }
 
-QList<LayoutXml::SeriesPath> MainWindow::rebindCurvesToLoadedDatasets(QDomDocument& doc) {
+QList<layout_xml::SeriesPath> MainWindow::rebindCurvesToLoadedDatasets(QDomDocument& doc) {
   // Resolve each curve's stable topic+field against whichever loaded dataset
   // actually holds it (first match in load order). Shared by layout load and
   // undo/redo restore so both bind curves identically; returns the paths no
   // loaded dataset could provide (the caller decides whether to prompt).
   const auto datasets = session_->catalogModel().datasets();
-  return LayoutXml::rebindCurveKeys(doc, [this, &datasets](const LayoutXml::SeriesPath& p) -> std::optional<QString> {
+  return layout_xml::rebindCurveKeys(doc, [this, &datasets](const layout_xml::SeriesPath& p) -> std::optional<QString> {
     for (const auto& [id, name] : datasets) {
       (void)name;
       if (const auto descriptor = session_->catalogModel().descriptorForPath(id, p.topic, p.field)) {
@@ -2302,7 +2302,7 @@ QDomElement MainWindow::appendDataSourceElement(QDomDocument& doc, const QDir& l
       // appendJsonAsCdata splits across multiple CDATA sections when the JSON
       // contains a literal "]]>" sequence (otherwise it'd terminate the
       // CDATA early and corrupt the layout file).
-      LayoutXml::appendJsonAsCdata(doc, plugin, src.plugin_config_json);
+      layout_xml::appendJsonAsCdata(doc, plugin, src.plugin_config_json);
       file_info.appendChild(plugin);
     }
 
@@ -2370,7 +2370,7 @@ void MainWindow::applyPanelVisibility(QWidget* target, bool wanted) {
     t.target->setVisible(wanted);
     const QString icon = QString::fromLatin1(wanted ? t.icon_path_on : t.icon_path_off);
     t.button->setProperty("iconPath", icon);
-    t.button->setIcon(LoadSvg(icon, theme_->currentTheme()));
+    t.button->setIcon(loadSvg(icon, theme_->currentTheme()));
     return;
   }
 }
@@ -2838,7 +2838,7 @@ void MainWindow::buildGlobalToolbar() {
     const int button_extent = chrome_metrics_.icon_size + chrome_metrics_.icon_padding;
     btn->setFixedSize(button_extent, button_extent);
     btn->setIconSize(QSize(chrome_metrics_.icon_size, chrome_metrics_.icon_size));
-    btn->setIcon(LoadSvg(QString::fromLatin1(icon_path), theme_->currentTheme()));
+    btn->setIcon(loadSvg(QString::fromLatin1(icon_path), theme_->currentTheme()));
     btn->setToolTip(tr(tooltip));
     outer->addWidget(btn);
     return btn;
@@ -2979,7 +2979,7 @@ void MainWindow::buildGlobalToolbar() {
     for (auto* btn : ui_->globalToolbarWidget->findChildren<QToolButton*>()) {
       const QString path = btn->property("iconPath").toString();
       if (!path.isEmpty()) {
-        btn->setIcon(LoadSvg(path, theme));
+        btn->setIcon(loadSvg(path, theme));
       }
     }
   });
@@ -3060,7 +3060,7 @@ void MainWindow::buildLocalToolbar() {
       const int button_extent = chrome_metrics_.icon_size + chrome_metrics_.icon_padding;
       btn->setFixedSize(button_extent, button_extent);
       btn->setIconSize(QSize(chrome_metrics_.icon_size, chrome_metrics_.icon_size));
-      btn->setIcon(LoadSvg(QString::fromLatin1(spec.icon_path), theme_->currentTheme()));
+      btn->setIcon(loadSvg(QString::fromLatin1(spec.icon_path), theme_->currentTheme()));
       btn->setToolTip(tr(spec.tooltip));
       connect(btn, &QToolButton::clicked, this, spec.on_click);
       flow->addWidget(btn);
@@ -3155,7 +3155,7 @@ void MainWindow::buildLocalToolbar() {
     for (auto* btn : ui_->localToolbarWidget->findChildren<QToolButton*>()) {
       const QString path = btn->property("iconPath").toString();
       if (!path.isEmpty()) {
-        btn->setIcon(LoadSvg(path, theme));
+        btn->setIcon(loadSvg(path, theme));
       }
     }
   });

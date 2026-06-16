@@ -9,7 +9,7 @@
 #include <utility>
 #include <vector>
 
-namespace PJ::LayoutXml {
+namespace PJ::layout_xml {
 
 QString ensureLayoutExtension(const QString& path) {
   if (path.isEmpty() || !QFileInfo(path).suffix().isEmpty()) {
@@ -203,4 +203,4 @@ bool isSamePath(const QString& a, const QString& b) {
   return canon_a == canon_b;
 }
 
-}  // namespace PJ::LayoutXml
+}  // namespace PJ::layout_xml

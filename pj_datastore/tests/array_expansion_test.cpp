@@ -553,41 +553,41 @@ TEST(ArrayExpansionTest, SecondWriter_PicksUpExpandedLayout) {
   DatasetId ds = *engine.createDataset(PJ::DatasetDescriptor{.source_name = "t"});
 
   // Writer A: register schema + topic, expand and write
-  DataWriter writerA = engine.createWriter();
+  DataWriter writer_a = engine.createWriter();
   auto data_arr = PJ::makeArray("data", PJ::makePrimitive("", PJ::PrimitiveType::kFloat64), std::nullopt);
   auto root = PJ::makeStruct("msg", {data_arr});
-  auto sid = *writerA.registerSchema("second_writer_schema", root);
+  auto sid = *writer_a.registerSchema("second_writer_schema", root);
 
   TopicDescriptor desc;
   desc.name = "second_writer_topic";
   desc.schema_id = sid;
-  auto topic_id = *writerA.registerTopic(ds, desc);
+  auto topic_id = *writer_a.registerTopic(ds, desc);
 
-  auto expand_result = writerA.expandArray(topic_id, "data", 3u);
+  auto expand_result = writer_a.expandArray(topic_id, "data", 3u);
   ASSERT_TRUE(expand_result.has_value()) << expand_result.error();
   ASSERT_EQ(*expand_result, 3u);
 
-  ASSERT_TRUE(writerA.beginRow(topic_id, 1000).has_value());
-  writerA.set(topic_id, 0, 10.0);
-  writerA.set(topic_id, 1, 20.0);
-  writerA.set(topic_id, 2, 30.0);
-  ASSERT_TRUE(writerA.finishRow(topic_id).has_value());
-  engine.commitChunks(writerA.flushAll());
+  ASSERT_TRUE(writer_a.beginRow(topic_id, 1000).has_value());
+  writer_a.set(topic_id, 0, 10.0);
+  writer_a.set(topic_id, 1, 20.0);
+  writer_a.set(topic_id, 2, 30.0);
+  ASSERT_TRUE(writer_a.finishRow(topic_id).has_value());
+  engine.commitChunks(writer_a.flushAll());
 
   // Writer B: a brand new DataWriter on the same engine/topic.
   // It must see the 3-column layout that Writer A established.
-  DataWriter writerB = engine.createWriter();
+  DataWriter writer_b = engine.createWriter();
 
   // Verify column count via bind_topic_writer
-  auto handle = writerB.bindTopicWriter(topic_id);
+  auto handle = writer_b.bindTopicWriter(topic_id);
   ASSERT_TRUE(handle.has_value()) << handle.error();
   // BUG: This will be 0 instead of 3 before the fix.
   EXPECT_EQ(handle->field_ids.size(), 3u) << "Writer B must inherit the 3-column layout expanded by Writer A";
 
   // Also verify field resolution works correctly
-  EXPECT_EQ(*writerB.resolveField(topic_id, "data[0]"), 0u);
-  EXPECT_EQ(*writerB.resolveField(topic_id, "data[1]"), 1u);
-  EXPECT_EQ(*writerB.resolveField(topic_id, "data[2]"), 2u);
+  EXPECT_EQ(*writer_b.resolveField(topic_id, "data[0]"), 0u);
+  EXPECT_EQ(*writer_b.resolveField(topic_id, "data[1]"), 1u);
+  EXPECT_EQ(*writer_b.resolveField(topic_id, "data[2]"), 2u);
 }
 
 // ─────────────────────────────────────────────────────────────────
@@ -677,40 +677,40 @@ TEST(ArrayExpansionTest, SecondWriter_ReExpandSameField_DoesNotDuplicateColumns)
   DatasetId ds = *engine.createDataset(PJ::DatasetDescriptor{.source_name = "t"});
 
   // Writer A creates topic and expands data[] to 3.
-  DataWriter writerA = engine.createWriter();
+  DataWriter writer_a = engine.createWriter();
   auto data_arr = PJ::makeArray("data", PJ::makePrimitive("", PJ::PrimitiveType::kFloat64), std::nullopt);
   auto root = PJ::makeStruct("msg", {data_arr});
-  auto sid = *writerA.registerSchema("reexpand_schema", root);
+  auto sid = *writer_a.registerSchema("reexpand_schema", root);
 
   TopicDescriptor desc;
   desc.name = "reexpand_topic";
   desc.schema_id = sid;
-  auto topic_id = *writerA.registerTopic(ds, desc);
+  auto topic_id = *writer_a.registerTopic(ds, desc);
 
-  auto r1 = writerA.expandArray(topic_id, "data", 3u);
+  auto r1 = writer_a.expandArray(topic_id, "data", 3u);
   ASSERT_TRUE(r1.has_value()) << r1.error();
   ASSERT_EQ(*r1, 3u);
 
   // Writer B starts fresh, then expands the same field to 5.
-  DataWriter writerB = engine.createWriter();
-  auto before = writerB.bindTopicWriter(topic_id);
+  DataWriter writer_b = engine.createWriter();
+  auto before = writer_b.bindTopicWriter(topic_id);
   ASSERT_TRUE(before.has_value()) << before.error();
   ASSERT_EQ(before->field_ids.size(), 3u);
 
-  auto r2 = writerB.expandArray(topic_id, "data", 5u);
+  auto r2 = writer_b.expandArray(topic_id, "data", 5u);
   ASSERT_TRUE(r2.has_value()) << r2.error();
   EXPECT_EQ(*r2, 5u);
 
   // Expected layout is exactly data[0..4] => 5 columns total.
-  auto after = writerB.bindTopicWriter(topic_id);
+  auto after = writer_b.bindTopicWriter(topic_id);
   ASSERT_TRUE(after.has_value()) << after.error();
   EXPECT_EQ(after->field_ids.size(), 5u)
       << "Re-expanding in a new writer must append only new indices [3..4], not duplicate [0..2]";
-  EXPECT_EQ(*writerB.resolveField(topic_id, "data[0]"), 0u);
-  EXPECT_EQ(*writerB.resolveField(topic_id, "data[1]"), 1u);
-  EXPECT_EQ(*writerB.resolveField(topic_id, "data[2]"), 2u);
-  EXPECT_EQ(*writerB.resolveField(topic_id, "data[3]"), 3u);
-  EXPECT_EQ(*writerB.resolveField(topic_id, "data[4]"), 4u);
+  EXPECT_EQ(*writer_b.resolveField(topic_id, "data[0]"), 0u);
+  EXPECT_EQ(*writer_b.resolveField(topic_id, "data[1]"), 1u);
+  EXPECT_EQ(*writer_b.resolveField(topic_id, "data[2]"), 2u);
+  EXPECT_EQ(*writer_b.resolveField(topic_id, "data[3]"), 3u);
+  EXPECT_EQ(*writer_b.resolveField(topic_id, "data[4]"), 4u);
 }
 
 // ─────────────────────────────────────────────────────────────────
@@ -959,24 +959,24 @@ TEST(ArrayExpansionTest, Schemaless_EnsureColumn_MultipleColumns_WriteAndRead) {
 TEST(ArrayExpansionTest, Schemaless_EnsureColumn_SecondWriter_PicksUpLayout) {
   DataEngine engine;
   DatasetId ds = *engine.createDataset(PJ::DatasetDescriptor{.source_name = "t"});
-  DataWriter writerA = engine.createWriter();
+  DataWriter writer_a = engine.createWriter();
 
   TopicDescriptor desc;
   desc.name = "sl_ec_second_writer";
   desc.schema_id = 0;
-  auto topic_id = *writerA.registerTopic(ds, desc);
+  auto topic_id = *writer_a.registerTopic(ds, desc);
 
-  ASSERT_TRUE(writerA.ensureColumn(topic_id, "v", PJ::PrimitiveType::kFloat64).has_value());
-  ASSERT_TRUE(writerA.beginRow(topic_id, 1000).has_value());
-  writerA.set(topic_id, 0, 99.0);
-  ASSERT_TRUE(writerA.finishRow(topic_id).has_value());
-  engine.commitChunks(writerA.flushAll());
+  ASSERT_TRUE(writer_a.ensureColumn(topic_id, "v", PJ::PrimitiveType::kFloat64).has_value());
+  ASSERT_TRUE(writer_a.beginRow(topic_id, 1000).has_value());
+  writer_a.set(topic_id, 0, 99.0);
+  ASSERT_TRUE(writer_a.finishRow(topic_id).has_value());
+  engine.commitChunks(writer_a.flushAll());
 
-  DataWriter writerB = engine.createWriter();
-  auto handle = writerB.bindTopicWriter(topic_id);
+  DataWriter writer_b = engine.createWriter();
+  auto handle = writer_b.bindTopicWriter(topic_id);
   ASSERT_TRUE(handle.has_value()) << handle.error();
   ASSERT_EQ(handle->field_ids.size(), 1u);
-  EXPECT_EQ(*writerB.resolveField(topic_id, "v"), 0u);
+  EXPECT_EQ(*writer_b.resolveField(topic_id, "v"), 0u);
 }
 
 TEST(ArrayExpansionTest, Schemaless_EnsureColumn_WhileRowInProgress_ReturnsError) {

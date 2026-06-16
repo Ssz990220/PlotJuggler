@@ -209,8 +209,8 @@ bool primeKeyframeParamSets(AVCodecParameters* params, const uint8_t* data, size
     }
     if (is_param_set && end > hdr) {
       seen_types.insert(nal_type);
-      const uint8_t kStartCode[4] = {0x00, 0x00, 0x00, 0x01};
-      extradata.insert(extradata.end(), kStartCode, kStartCode + 4);
+      const uint8_t k_start_code[4] = {0x00, 0x00, 0x00, 0x01};
+      extradata.insert(extradata.end(), k_start_code, k_start_code + 4);
       extradata.insert(extradata.end(), data + hdr, data + end);
     }
     hdr = next_hdr;

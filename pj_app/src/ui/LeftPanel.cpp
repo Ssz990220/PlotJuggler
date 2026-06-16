@@ -178,7 +178,7 @@ void LeftPanel::setStreamingSources(const QStringList& names) {
 void LeftPanel::applyPauseButtonState(QString theme) {
   const bool paused = ui_->buttonStreamingPause->isChecked();
   ui_->buttonStreamingPause->setIcon(
-      LoadSvg(paused ? ":/resources/svg/play_arrow.svg" : ":/resources/svg/pause.svg", theme));
+      loadSvg(paused ? ":/resources/svg/play_arrow.svg" : ":/resources/svg/pause.svg", theme));
   ui_->buttonStreamingPause->setToolTip(paused ? tr("Resume streaming") : tr("Pause streaming"));
 }
 
@@ -247,13 +247,13 @@ void LeftPanel::restoreSourcesState(const QDomElement& element) {
 }
 
 void LeftPanel::applyIcons(QString theme) {
-  ui_->tabFile->setIcon(LoadSvg(":/resources/svg/draft.svg", theme));
-  ui_->tabStream->setIcon(LoadSvg(":/resources/svg/cast.svg", theme));
-  ui_->tabCloud->setIcon(LoadSvg(":/resources/svg/cloud.svg", theme));
-  ui_->buttonLoadDatafile->setIcon(LoadSvg(":/resources/svg/upload_file.svg", theme));
-  ui_->buttonReloadData->setIcon(LoadSvg(":/resources/svg/restore_page.svg", theme));
-  ui_->buttonRecentFiles->setIcon(LoadSvg(":/resources/svg/play_arrow.svg", theme));
-  ui_->buttonStreamingOptions->setIcon(LoadSvg(":/resources/svg/add.svg", theme));
+  ui_->tabFile->setIcon(loadSvg(":/resources/svg/draft.svg", theme));
+  ui_->tabStream->setIcon(loadSvg(":/resources/svg/cast.svg", theme));
+  ui_->tabCloud->setIcon(loadSvg(":/resources/svg/cloud.svg", theme));
+  ui_->buttonLoadDatafile->setIcon(loadSvg(":/resources/svg/upload_file.svg", theme));
+  ui_->buttonReloadData->setIcon(loadSvg(":/resources/svg/restore_page.svg", theme));
+  ui_->buttonRecentFiles->setIcon(loadSvg(":/resources/svg/play_arrow.svg", theme));
+  ui_->buttonStreamingOptions->setIcon(loadSvg(":/resources/svg/add.svg", theme));
   applyPauseButtonState(theme);
 
   const QSize icon_sz(chrome_metrics_.icon_size, chrome_metrics_.icon_size);
@@ -292,7 +292,7 @@ void LeftPanel::applyIcons(QString theme) {
   ui_->streamingSpinBox->setMaximumHeight(button_extent);
   ui_->labelBuffer->setMinimumSize(button_extent, button_extent);
   ui_->labelBuffer->setMaximumSize(button_extent, button_extent);
-  ui_->labelBuffer->setPixmap(RenderSvgPixmap(":/resources/svg/share_eta.svg", theme, icon_sz, devicePixelRatioF()));
+  ui_->labelBuffer->setPixmap(renderSvgPixmap(":/resources/svg/share_eta.svg", theme, icon_sz, devicePixelRatioF()));
   // Push layout_padding into every relevant layout — Sources header,
   // the file/stream/cloud page outer layouts, and the two streaming
   // rows. Spacing follows so individual items inside a row gain the

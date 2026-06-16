@@ -22,7 +22,7 @@ ArrowMeshData buildArrowMesh(const ArrowMeshParams& params) {
   const float head_radius = std::max(params.head_radius, 0.0f);
   const float two_pi = 2.0f * std::numbers::pi_v<float>;
 
-  auto pushVertex = [&](float px, float py, float pz, float nx, float ny, float nz) {
+  auto push_vertex = [&](float px, float py, float pz, float nx, float ny, float nz) {
     vertex_data.insert(vertex_data.end(), {px, py, pz, nx, ny, nz});
   };
 
@@ -36,7 +36,7 @@ ArrowMeshData buildArrowMesh(const ArrowMeshParams& params) {
       const float theta = two_pi * static_cast<float>(i) / static_cast<float>(segments);
       const float c = std::cos(theta);
       const float s = std::sin(theta);
-      pushVertex(x, shaft_radius * c, shaft_radius * s, 0.0f, c, s);
+      push_vertex(x, shaft_radius * c, shaft_radius * s, 0.0f, c, s);
     }
   }
   for (int i = 0; i < segments; ++i) {
@@ -51,10 +51,10 @@ ArrowMeshData buildArrowMesh(const ArrowMeshParams& params) {
   // ---- Cone base disc (faces -X, sits between shaft and head) ----
   // Closes off any visible gap when head_radius > shaft_radius.
   const uint32_t disc_center = static_cast<uint32_t>(vertex_data.size() / 6);
-  pushVertex(shaft_length, 0.0f, 0.0f, -1.0f, 0.0f, 0.0f);
+  push_vertex(shaft_length, 0.0f, 0.0f, -1.0f, 0.0f, 0.0f);
   for (int i = 0; i < segments; ++i) {
     const float theta = two_pi * static_cast<float>(i) / static_cast<float>(segments);
-    pushVertex(shaft_length, head_radius * std::cos(theta), head_radius * std::sin(theta), -1.0f, 0.0f, 0.0f);
+    push_vertex(shaft_length, head_radius * std::cos(theta), head_radius * std::sin(theta), -1.0f, 0.0f, 0.0f);
   }
   for (int i = 0; i < segments; ++i) {
     const int next = (i + 1) % segments;
@@ -75,10 +75,10 @@ ArrowMeshData buildArrowMesh(const ArrowMeshParams& params) {
     const float s = std::sin(theta);
     const float ny = (norm_len > 0.0f) ? head_length * c / norm_len : 0.0f;
     const float nz = (norm_len > 0.0f) ? head_length * s / norm_len : 0.0f;
-    pushVertex(shaft_length, head_radius * c, head_radius * s, nx_cone, ny, nz);
+    push_vertex(shaft_length, head_radius * c, head_radius * s, nx_cone, ny, nz);
   }
   const uint32_t cone_tip = static_cast<uint32_t>(vertex_data.size() / 6);
-  pushVertex(length, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f);
+  push_vertex(length, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f);
   for (int i = 0; i < segments; ++i) {
     const int next = (i + 1) % segments;
     index_data.insert(
@@ -89,10 +89,10 @@ ArrowMeshData buildArrowMesh(const ArrowMeshParams& params) {
   // Cosmetic — makes the arrow look closed if viewed end-on. Wound CCW
   // when viewed from -X (outside) so backface culling keeps it visible.
   const uint32_t back_center = static_cast<uint32_t>(vertex_data.size() / 6);
-  pushVertex(0.0f, 0.0f, 0.0f, -1.0f, 0.0f, 0.0f);
+  push_vertex(0.0f, 0.0f, 0.0f, -1.0f, 0.0f, 0.0f);
   for (int i = 0; i < segments; ++i) {
     const float theta = two_pi * static_cast<float>(i) / static_cast<float>(segments);
-    pushVertex(0.0f, shaft_radius * std::cos(theta), shaft_radius * std::sin(theta), -1.0f, 0.0f, 0.0f);
+    push_vertex(0.0f, shaft_radius * std::cos(theta), shaft_radius * std::sin(theta), -1.0f, 0.0f, 0.0f);
   }
   for (int i = 0; i < segments; ++i) {
     const int next = (i + 1) % segments;

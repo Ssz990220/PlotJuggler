@@ -39,7 +39,7 @@ class ProgressDialog : public Dialog {
  public:
   // Which stop button the user pressed, or None if neither was (the operation
   // ran to completion).
-  enum class Action { None, Primary, Secondary };
+  enum class Action { kNone, kPrimary, kSecondary };
 
   explicit ProgressDialog(QWidget* parent = nullptr);
   ~ProgressDialog() override;
@@ -69,7 +69,7 @@ class ProgressDialog : public Dialog {
     return action_;
   }
   void resetAction() {
-    action_ = Action::None;
+    action_ = Action::kNone;
   }
 
  signals:
@@ -86,7 +86,7 @@ class ProgressDialog : public Dialog {
   QProgressBar* bar_ = nullptr;
   QPushButton* primary_ = nullptr;
   QPushButton* secondary_ = nullptr;
-  Action action_ = Action::None;
+  Action action_ = Action::kNone;
 };
 
 }  // namespace PJ

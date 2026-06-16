@@ -230,9 +230,9 @@ void appendNode(
 
   for (unsigned int i = 0; i < node->mNumMeshes; ++i) {
     const aiMesh* mesh = scene->mMeshes[node->mMeshes[i]];
-    static const std::shared_ptr<const Material> kFallback = std::make_shared<const Material>();
+    static const std::shared_ptr<const Material> k_fallback = std::make_shared<const Material>();
     const std::shared_ptr<const Material>& material =
-        mesh->mMaterialIndex < materials.size() ? materials[mesh->mMaterialIndex] : kFallback;
+        mesh->mMaterialIndex < materials.size() ? materials[mesh->mMaterialIndex] : k_fallback;
     const auto base_index = static_cast<std::uint32_t>(out.vertices.size());
 
     out.vertices.reserve(out.vertices.size() + mesh->mNumVertices);

@@ -70,7 +70,7 @@ bool SceneDockWidget::tryAcceptObjectTopic(
 bool SceneDockWidget::addTopic(ObjectTopicId topic_id, sdk::BuiltinObjectType object_type, const QString& title) {
   // Public accept/refuse contract: both "layer added" and "consumed as config"
   // count as accepted. Callers needing the distinction use addLayer().
-  return addLayer(topic_id, object_type, title) != AddOutcome::Rejected;
+  return addLayer(topic_id, object_type, title) != AddOutcome::kRejected;
 }
 
 SceneDockWidget::AddOutcome SceneDockWidget::addLayer(
@@ -78,16 +78,16 @@ SceneDockWidget::AddOutcome SceneDockWidget::addLayer(
   ensureSceneViewCreated();
   const int64_t key = topicKey(topic_id);
   if (layers_.find(key) != layers_.end()) {
-    return AddOutcome::Rejected;
+    return AddOutcome::kRejected;
   }
   if (handleSceneConfigTopic(topic_id, object_type, title)) {
     ever_had_content_ = true;
-    return AddOutcome::ConsumedAsConfig;
+    return AddOutcome::kConsumedAsConfig;
   }
 
   std::unique_ptr<ISceneLayer> layer = createAndAttachLayer(topic_id, object_type, title);
   if (layer == nullptr) {
-    return AddOutcome::Rejected;
+    return AddOutcome::kRejected;
   }
   ever_had_content_ = true;
   wireLayerSignals(layer.get(), topic_id);
@@ -98,7 +98,7 @@ SceneDockWidget::AddOutcome SceneDockWidget::addLayer(
   syncViewLayers();
   refreshView();
   emit layerAdded(topic_id);
-  return AddOutcome::LayerAdded;
+  return AddOutcome::kLayerAdded;
 }
 
 std::unique_ptr<ISceneLayer> SceneDockWidget::createAndAttachLayer(
@@ -390,7 +390,7 @@ bool SceneDockWidget::xmlLoadState(const QDomElement& element) {
       ++unresolved_layers;
       continue;
     }
-    if (addLayer(*topic_id_opt, *object_type_opt, display_name) != AddOutcome::LayerAdded) {
+    if (addLayer(*topic_id_opt, *object_type_opt, display_name) != AddOutcome::kLayerAdded) {
       continue;  // rejected, or consumed as a scene-config topic: no layer to restore
     }
     if (ISceneLayer* layer = layerFor(*topic_id_opt); layer != nullptr) {

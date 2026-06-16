@@ -111,15 +111,15 @@ TEST(PointCloudConvert, DecodesXyzAndIntScalarWithSignExtension) {
       {"intensity", 12, DT::kInt16, 1},
   };
   std::vector<uint8_t> bytes;
-  auto pushPoint = [&](float x, float y, float z, int16_t scalar) {
+  auto push_point = [&](float x, float y, float z, int16_t scalar) {
     putBytes(bytes, leBytes(x).data(), 4);
     putBytes(bytes, leBytes(y).data(), 4);
     putBytes(bytes, leBytes(z).data(), 4);
     putBytes(bytes, leBytes(scalar).data(), 2);
     bytes.insert(bytes.end(), {0, 0});  // 2 bytes padding to reach point_step 16
   };
-  pushPoint(1.0f, 2.0f, 3.0f, -100);
-  pushPoint(-4.0f, 5.0f, 6.0f, 200);
+  push_point(1.0f, 2.0f, 3.0f, -100);
+  push_point(-4.0f, 5.0f, 6.0f, 200);
 
   const PointCloud cloud = makeCloud(/*width=*/2, /*point_step=*/16, std::move(fields), std::move(bytes));
   const ConvertedPointCloud out = convertCanonical(cloud, "intensity");
@@ -172,13 +172,13 @@ TEST(PointCloudConvert, NonFinitePointsExcludedFromBounds) {
   };
   const float nan = std::numeric_limits<float>::quiet_NaN();
   std::vector<uint8_t> bytes;
-  auto pushPoint = [&](float x, float y, float z) {
+  auto push_point = [&](float x, float y, float z) {
     putBytes(bytes, leBytes(x).data(), 4);
     putBytes(bytes, leBytes(y).data(), 4);
     putBytes(bytes, leBytes(z).data(), 4);
   };
-  pushPoint(nan, nan, nan);     // dropped from AABB
-  pushPoint(7.0f, 8.0f, 9.0f);  // sole finite point defines the box
+  push_point(nan, nan, nan);     // dropped from AABB
+  push_point(7.0f, 8.0f, 9.0f);  // sole finite point defines the box
 
   const PointCloud cloud = makeCloud(/*width=*/2, /*point_step=*/12, std::move(fields), std::move(bytes));
   const ConvertedPointCloud out = convertCanonical(cloud, "");

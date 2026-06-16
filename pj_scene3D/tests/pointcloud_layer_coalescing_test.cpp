@@ -106,12 +106,12 @@ PJ::sdk::CompressedPointCloud wrapValid(PJ::Timestamp ts) {
 }
 
 PJ::sdk::CompressedPointCloud wrapGarbage(PJ::Timestamp ts) {
-  static const uint8_t kBlob[4] = {0xDE, 0xAD, 0xBE, 0xEF};
+  static const uint8_t k_blob[4] = {0xDE, 0xAD, 0xBE, 0xEF};
   PJ::sdk::CompressedPointCloud cloud;
   cloud.timestamp_ns = ts;
   cloud.frame_id = "lidar";
   cloud.format = "bogus";  // decodeCompressedPointCloud rejects the unknown format
-  cloud.data = PJ::Span<const uint8_t>(kBlob, sizeof(kBlob));
+  cloud.data = PJ::Span<const uint8_t>(k_blob, sizeof(k_blob));
   return cloud;
 }
 

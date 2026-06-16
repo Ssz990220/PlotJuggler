@@ -38,9 +38,9 @@ namespace PJ {
 
 namespace {
 
-constexpr int Rows = 6;
-constexpr int Cols = 7;
-constexpr int HeaderPad = 8;
+constexpr int kRows = 6;
+constexpr int kCols = 7;
+constexpr int kHeaderPad = 8;
 
 const QColor kFromHintColor(0x2e, 0xcc, 0x71);  // green
 const QColor kToHintColor(0xe7, 0x4c, 0x3c);    // red
@@ -185,12 +185,12 @@ void CalendarWidget::clearRange() {
   range_from_ = QDate();
   range_to_ = QDate();
   hover_date_ = QDate();
-  state_ = State::Idle;
+  state_ = State::kIdle;
   update();
 }
 
 int CalendarWidget::headerHeight() const {
-  return fontMetrics().height() * 2 + HeaderPad * 3;
+  return fontMetrics().height() * 2 + kHeaderPad * 3;
 }
 
 int CalendarWidget::firstDayColumn() const {
@@ -200,9 +200,9 @@ int CalendarWidget::firstDayColumn() const {
 
 QRect CalendarWidget::cellRect(int row, int col) const {
   int hh = headerHeight();
-  int cellW = width() / Cols;
-  int cellH = (height() - hh) / Rows;
-  return QRect(col * cellW, hh + row * cellH, cellW, cellH);
+  int cell_w = width() / kCols;
+  int cell_h = (height() - hh) / kRows;
+  return QRect(col * cell_w, hh + row * cell_h, cell_w, cell_h);
 }
 
 QDate CalendarWidget::dateAtPosition(const QPoint& pos) const {
@@ -210,15 +210,15 @@ QDate CalendarWidget::dateAtPosition(const QPoint& pos) const {
   if (pos.y() < hh) {
     return QDate();
   }
-  int cellW = width() / Cols;
-  int cellH = (height() - hh) / Rows;
-  int col = pos.x() / cellW;
-  int row = (pos.y() - hh) / cellH;
-  if (col < 0 || col >= Cols || row < 0 || row >= Rows) {
+  int cell_w = width() / kCols;
+  int cell_h = (height() - hh) / kRows;
+  int col = pos.x() / cell_w;
+  int row = (pos.y() - hh) / cell_h;
+  if (col < 0 || col >= kCols || row < 0 || row >= kRows) {
     return QDate();
   }
-  int dayIndex = row * Cols + col - firstDayColumn();
-  int day = dayIndex + 1;
+  int day_index = row * kCols + col - firstDayColumn();
+  int day = day_index + 1;
   if (day < 1 || day > QDate(year_, month_, 1).daysInMonth()) {
     return QDate();
   }
@@ -237,103 +237,103 @@ void CalendarWidget::paintEvent(QPaintEvent* /*event*/) {
   p.fillRect(rect(), tok.surface);
 
   int hh = headerHeight();
-  int cellW = width() / Cols;
-  int fmH = fontMetrics().height();
+  int cell_w = width() / kCols;
+  int fm_h = fontMetrics().height();
 
   // Month/Year title
-  QFont titleFont = font();
-  titleFont.setBold(true);
-  titleFont.setPointSize(font().pointSize() + 2);
-  p.setFont(titleFont);
+  QFont title_font = font();
+  title_font.setBold(true);
+  title_font.setPointSize(font().pointSize() + 2);
+  p.setFont(title_font);
   QString title = QDate(year_, month_, 1).toString("MMMM yyyy");
   p.setPen(tok.text);
-  p.drawText(QRect(0, 0, width(), fmH + HeaderPad * 2), Qt::AlignCenter, title);
+  p.drawText(QRect(0, 0, width(), fm_h + kHeaderPad * 2), Qt::AlignCenter, title);
 
   // Day name headers
   p.setFont(font());
-  static const char* dayNames[] = {"Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"};
-  int dayHeaderY = fmH + HeaderPad * 2;
-  QColor weekendColor(0xef, 0x53, 0x50);
-  QColor headerColor = tok.muted;
-  for (int c = 0; c < Cols; ++c) {
-    QRect r(c * cellW, dayHeaderY, cellW, fmH + HeaderPad);
-    p.setPen((c >= 5) ? weekendColor : headerColor);
-    p.drawText(r, Qt::AlignCenter, dayNames[c]);
+  static const char* day_names[] = {"Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"};
+  int day_header_y = fm_h + kHeaderPad * 2;
+  QColor weekend_color(0xef, 0x53, 0x50);
+  QColor header_color = tok.muted;
+  for (int c = 0; c < kCols; ++c) {
+    QRect r(c * cell_w, day_header_y, cell_w, fm_h + kHeaderPad);
+    p.setPen((c >= 5) ? weekend_color : header_color);
+    p.drawText(r, Qt::AlignCenter, day_names[c]);
   }
 
   // Effective range for painting
-  QDate effFrom = range_from_;
-  QDate effTo = range_to_;
-  if (effFrom.isValid() && !effTo.isValid() && hover_date_.isValid()) {
-    effTo = hover_date_;
+  QDate eff_from = range_from_;
+  QDate eff_to = range_to_;
+  if (eff_from.isValid() && !eff_to.isValid() && hover_date_.isValid()) {
+    eff_to = hover_date_;
   }
-  if (effFrom.isValid() && effTo.isValid() && effFrom > effTo) {
-    std::swap(effFrom, effTo);
+  if (eff_from.isValid() && eff_to.isValid() && eff_from > eff_to) {
+    std::swap(eff_from, eff_to);
   }
 
-  int daysInMonth = QDate(year_, month_, 1).daysInMonth();
-  int firstCol = firstDayColumn();
+  int days_in_month = QDate(year_, month_, 1).daysInMonth();
+  int first_col = firstDayColumn();
 
-  QColor fromColor(0x2e, 0xcc, 0x71);
-  QColor toColor(0xe7, 0x4c, 0x3c);
-  QColor rangeColor = tok.selection_range;
-  rangeColor.setAlpha(60);
-  QColor hoverBrush = tok.hover_fill;
-  QColor hoverBorder = tok.hover_border;
+  QColor from_color(0x2e, 0xcc, 0x71);
+  QColor to_color(0xe7, 0x4c, 0x3c);
+  QColor range_color = tok.selection_range;
+  range_color.setAlpha(60);
+  QColor hover_brush = tok.hover_fill;
+  QColor hover_border = tok.hover_border;
 
-  for (int day = 1; day <= daysInMonth; ++day) {
-    int idx = (day - 1) + firstCol;
-    int row = idx / Cols;
-    int col = idx % Cols;
+  for (int day = 1; day <= days_in_month; ++day) {
+    int idx = (day - 1) + first_col;
+    int row = idx / kCols;
+    int col = idx % kCols;
     QRect cell = cellRect(row, col);
     QDate date(year_, month_, day);
 
-    bool isFrom = effFrom.isValid() && date == effFrom;
-    bool isTo = effTo.isValid() && date == effTo;
-    bool inRange = effFrom.isValid() && effTo.isValid() && date > effFrom && date < effTo;
-    bool isHovered = hover_date_.isValid() && date == hover_date_ && !isFrom && !isTo && !inRange;
+    bool is_from = eff_from.isValid() && date == eff_from;
+    bool is_to = eff_to.isValid() && date == eff_to;
+    bool in_range = eff_from.isValid() && eff_to.isValid() && date > eff_from && date < eff_to;
+    bool is_hovered = hover_date_.isValid() && date == hover_date_ && !is_from && !is_to && !in_range;
 
     QRect inner = cell.adjusted(1, 1, -1, -1);
-    if (isFrom) {
-      p.setBrush(fromColor);
+    if (is_from) {
+      p.setBrush(from_color);
       p.setPen(Qt::NoPen);
       p.drawRoundedRect(inner, 6, 6);
-    } else if (isTo) {
-      p.setBrush(toColor);
+    } else if (is_to) {
+      p.setBrush(to_color);
       p.setPen(Qt::NoPen);
       p.drawRoundedRect(inner, 6, 6);
-    } else if (inRange) {
-      p.setBrush(rangeColor);
+    } else if (in_range) {
+      p.setBrush(range_color);
       p.setPen(Qt::NoPen);
       p.drawRect(inner);
-    } else if (isHovered) {
-      p.setBrush(hoverBrush);
-      p.setPen(QPen(hoverBorder, 1));
+    } else if (is_hovered) {
+      p.setBrush(hover_brush);
+      p.setPen(QPen(hover_border, 1));
       p.drawRoundedRect(inner, 4, 4);
     }
 
-    QColor textColor;
-    if (isFrom || isTo) {
-      textColor = Qt::white;
+    QColor text_color;
+    if (is_from || is_to) {
+      text_color = Qt::white;
     } else if (col >= 5) {
-      textColor = weekendColor;
+      text_color = weekend_color;
     } else {
-      textColor = tok.text;
+      text_color = tok.text;
     }
-    p.setPen(textColor);
+    p.setPen(text_color);
     p.setFont(font());
     p.drawText(cell, Qt::AlignCenter, QString::number(day));
   }
 
-  QColor gridColor = tok.border;
-  gridColor.setAlpha(80);
-  p.setPen(QPen(gridColor, 0.5));
-  for (int r = 0; r <= Rows; ++r) {
+  QColor grid_color = tok.border;
+  grid_color.setAlpha(80);
+  p.setPen(QPen(grid_color, 0.5));
+  for (int r = 0; r <= kRows; ++r) {
     QRect cell = cellRect(r, 0);
     p.drawLine(0, cell.y(), width(), cell.y());
   }
-  for (int c = 0; c <= Cols; ++c) {
-    int x = c * cellW;
+  for (int c = 0; c <= kCols; ++c) {
+    int x = c * cell_w;
     p.drawLine(x, hh, x, height());
   }
 }
@@ -344,7 +344,7 @@ void CalendarWidget::mouseMoveEvent(QMouseEvent* event) {
   if (date.isValid()) {
     if (mediated_) {
       emit dateHovered(date);
-    } else if (state_ == State::Selecting) {
+    } else if (state_ == State::kSelecting) {
       hover_date_ = date;
       update();
     } else if (hover_date_ != date) {
@@ -374,20 +374,20 @@ void CalendarWidget::mousePressEvent(QMouseEvent* event) {
     return;
   }
   switch (state_) {
-    case State::Idle:
+    case State::kIdle:
       range_from_ = date;
       range_to_ = QDate();
-      state_ = State::Selecting;
+      state_ = State::kSelecting;
       break;
-    case State::Selecting:
+    case State::kSelecting:
       range_to_ = date;
       if (range_from_ > range_to_) {
         std::swap(range_from_, range_to_);
       }
       hover_date_ = QDate();
-      state_ = State::Committed;
+      state_ = State::kCommitted;
       break;
-    case State::Committed:
+    case State::kCommitted:
       if (qAbs(range_from_.daysTo(date)) <= qAbs(range_to_.daysTo(date))) {
         range_from_ = date;
       } else {
@@ -416,7 +416,7 @@ void CalendarWidget::mouseDoubleClickEvent(QMouseEvent* event) {
   range_from_ = date;
   range_to_ = date;
   hover_date_ = QDate();
-  state_ = State::Committed;
+  state_ = State::kCommitted;
   update();
 }
 
@@ -437,8 +437,8 @@ void CalendarWidget::leaveEvent(QEvent* event) {
 TimePickerWidget::TimePickerWidget(QWidget* parent) : QWidget(parent) {
   auto* layout = new QHBoxLayout(this);
 
-  auto makeTimeGroup = [&](QLabel*& dateLabel, QSpinBox*& hour, QSpinBox*& minute, QComboBox*& ampm) {
-    dateLabel = new QLabel("---");
+  auto make_time_group = [&](QLabel*& date_label, QSpinBox*& hour, QSpinBox*& minute, QComboBox*& ampm) {
+    date_label = new QLabel("---");
     hour = new QSpinBox;
     hour->setRange(1, 12);
     hour->setWrapping(true);
@@ -459,34 +459,34 @@ TimePickerWidget::TimePickerWidget(QWidget* parent) : QWidget(parent) {
     // Wider than the 56px spin boxes: a combo adds the ~18px drop-down arrow on
     // top of the app QSS's ~28px horizontal padding, so 64px clipped "AM"/"PM".
     ampm->setFixedWidth(76);
-    layout->addWidget(dateLabel);
+    layout->addWidget(date_label);
     layout->addWidget(hour);
     layout->addWidget(colon);
     layout->addWidget(minute);
     layout->addWidget(ampm);
   };
 
-  makeTimeGroup(from_date_label_, from_hour_, from_minute_, from_am_pm_);
+  make_time_group(from_date_label_, from_hour_, from_minute_, from_am_pm_);
   from_hour_->setValue(12);
   from_minute_->setValue(0);
   from_am_pm_->setCurrentIndex(0);
 
   layout->addSpacing(16);
 
-  makeTimeGroup(to_date_label_, to_hour_, to_minute_, to_am_pm_);
+  make_time_group(to_date_label_, to_hour_, to_minute_, to_am_pm_);
   to_hour_->setValue(11);
   to_minute_->setValue(59);
   to_am_pm_->setCurrentIndex(1);
 
   layout->addStretch();
 
-  auto emitChanged = [this]() { emit timeChanged(); };
-  connect(from_hour_, QOverload<int>::of(&QSpinBox::valueChanged), this, emitChanged);
-  connect(from_minute_, QOverload<int>::of(&QSpinBox::valueChanged), this, emitChanged);
-  connect(from_am_pm_, QOverload<int>::of(&QComboBox::currentIndexChanged), this, emitChanged);
-  connect(to_hour_, QOverload<int>::of(&QSpinBox::valueChanged), this, emitChanged);
-  connect(to_minute_, QOverload<int>::of(&QSpinBox::valueChanged), this, emitChanged);
-  connect(to_am_pm_, QOverload<int>::of(&QComboBox::currentIndexChanged), this, emitChanged);
+  auto emit_changed = [this]() { emit timeChanged(); };
+  connect(from_hour_, QOverload<int>::of(&QSpinBox::valueChanged), this, emit_changed);
+  connect(from_minute_, QOverload<int>::of(&QSpinBox::valueChanged), this, emit_changed);
+  connect(from_am_pm_, QOverload<int>::of(&QComboBox::currentIndexChanged), this, emit_changed);
+  connect(to_hour_, QOverload<int>::of(&QSpinBox::valueChanged), this, emit_changed);
+  connect(to_minute_, QOverload<int>::of(&QSpinBox::valueChanged), this, emit_changed);
+  connect(to_am_pm_, QOverload<int>::of(&QComboBox::currentIndexChanged), this, emit_changed);
 }
 
 void TimePickerWidget::setFromDate(const QDate& date) {
@@ -561,39 +561,39 @@ DualCalendarWidget::DualCalendarWidget(QWidget* parent)
   right_min_year_ = right_year_;
   right_min_month_ = right_month_;
 
-  const QSize btnSize(32, 24);
+  const QSize btn_size(32, 24);
   for (auto* b : {left_prev_, right_prev_}) {
     b->setText(leftArrowGlyph());
-    b->setFixedSize(btnSize);
+    b->setFixedSize(btn_size);
   }
   for (auto* b : {left_next_, right_next_}) {
     b->setText(rightArrowGlyph());
-    b->setFixedSize(btnSize);
+    b->setFixedSize(btn_size);
   }
 
-  auto* leftNav = new QHBoxLayout;
-  leftNav->addWidget(left_prev_);
-  leftNav->addStretch();
-  leftNav->addWidget(left_next_);
-  auto* leftCol = new QVBoxLayout;
-  leftCol->addLayout(leftNav);
-  auto* leftCal = new CalendarWidget;
-  leftCal->setMediated(true);
-  calendars_.append(leftCal);
-  leftCol->addWidget(leftCal);
+  auto* left_nav = new QHBoxLayout;
+  left_nav->addWidget(left_prev_);
+  left_nav->addStretch();
+  left_nav->addWidget(left_next_);
+  auto* left_col = new QVBoxLayout;
+  left_col->addLayout(left_nav);
+  auto* left_cal = new CalendarWidget;
+  left_cal->setMediated(true);
+  calendars_.append(left_cal);
+  left_col->addWidget(left_cal);
   connect(left_prev_, &QPushButton::clicked, this, &DualCalendarWidget::leftPrev);
   connect(left_next_, &QPushButton::clicked, this, &DualCalendarWidget::leftNext);
 
-  auto* rightNav = new QHBoxLayout;
-  rightNav->addWidget(right_prev_);
-  rightNav->addStretch();
-  rightNav->addWidget(right_next_);
-  auto* rightCol = new QVBoxLayout;
-  rightCol->addLayout(rightNav);
-  auto* rightCal = new CalendarWidget;
-  rightCal->setMediated(true);
-  calendars_.append(rightCal);
-  rightCol->addWidget(rightCal);
+  auto* right_nav = new QHBoxLayout;
+  right_nav->addWidget(right_prev_);
+  right_nav->addStretch();
+  right_nav->addWidget(right_next_);
+  auto* right_col = new QVBoxLayout;
+  right_col->addLayout(right_nav);
+  auto* right_cal = new CalendarWidget;
+  right_cal->setMediated(true);
+  calendars_.append(right_cal);
+  right_col->addWidget(right_cal);
   connect(right_prev_, &QPushButton::clicked, this, &DualCalendarWidget::rightPrev);
   connect(right_next_, &QPushButton::clicked, this, &DualCalendarWidget::rightNext);
 
@@ -603,11 +603,11 @@ DualCalendarWidget::DualCalendarWidget(QWidget* parent)
     connect(cal, &CalendarWidget::hoverLeft, this, &DualCalendarWidget::onHoverLeft);
   }
 
-  auto* mainLayout = new QHBoxLayout(this);
-  mainLayout->setContentsMargins(8, 8, 8, 8);
-  mainLayout->setSpacing(16);
-  mainLayout->addLayout(leftCol);
-  mainLayout->addLayout(rightCol);
+  auto* main_layout = new QHBoxLayout(this);
+  main_layout->setContentsMargins(8, 8, 8, 8);
+  main_layout->setSpacing(16);
+  main_layout->addLayout(left_col);
+  main_layout->addLayout(right_col);
 
   updateCalendars();
 }
@@ -642,15 +642,15 @@ void DualCalendarWidget::setExternalRange(const QDate& from, const QDate& to) {
     advanceMonth(new_left_year, new_left_month, -1);
   }
 
-  auto monthBefore = [](int y1, int m1, int y2, int m2) { return y1 < y2 || (y1 == y2 && m1 < m2); };
-  if (monthBefore(left_max_year_, left_max_month_, new_left_year, new_left_month)) {
+  auto month_before = [](int y1, int m1, int y2, int m2) { return y1 < y2 || (y1 == y2 && m1 < m2); };
+  if (month_before(left_max_year_, left_max_month_, new_left_year, new_left_month)) {
     new_left_year = left_max_year_;
     new_left_month = left_max_month_;
   }
   int left_plus_one_y = new_left_year;
   int left_plus_one_m = new_left_month;
   advanceMonth(left_plus_one_y, left_plus_one_m, 1);
-  if (monthBefore(new_right_year, new_right_month, left_plus_one_y, left_plus_one_m)) {
+  if (month_before(new_right_year, new_right_month, left_plus_one_y, left_plus_one_m)) {
     new_right_year = left_plus_one_y;
     new_right_month = left_plus_one_m;
   }
@@ -680,33 +680,33 @@ void DualCalendarWidget::leftPrev() {
 }
 
 void DualCalendarWidget::leftNext() {
-  int candYear = left_year_, candMonth = left_month_;
-  advanceMonth(candYear, candMonth, 1);
-  if (candYear > left_max_year_ || (candYear == left_max_year_ && candMonth > left_max_month_)) {
+  int cand_year = left_year_, cand_month = left_month_;
+  advanceMonth(cand_year, cand_month, 1);
+  if (cand_year > left_max_year_ || (cand_year == left_max_year_ && cand_month > left_max_month_)) {
     return;
   }
-  if (candYear > right_year_ || (candYear == right_year_ && candMonth >= right_month_)) {
+  if (cand_year > right_year_ || (cand_year == right_year_ && cand_month >= right_month_)) {
     return;
   }
-  left_year_ = candYear;
-  left_month_ = candMonth;
+  left_year_ = cand_year;
+  left_month_ = cand_month;
   updateCalendars();
 }
 
 void DualCalendarWidget::rightPrev() {
-  int candYear = right_year_, candMonth = right_month_;
-  advanceMonth(candYear, candMonth, -1);
-  if (candYear < left_year_ || (candYear == left_year_ && candMonth <= left_month_)) {
+  int cand_year = right_year_, cand_month = right_month_;
+  advanceMonth(cand_year, cand_month, -1);
+  if (cand_year < left_year_ || (cand_year == left_year_ && cand_month <= left_month_)) {
     return;
   }
   const bool currently_ge_min =
       right_year_ > right_min_year_ || (right_year_ == right_min_year_ && right_month_ >= right_min_month_);
   if (currently_ge_min &&
-      (candYear < right_min_year_ || (candYear == right_min_year_ && candMonth < right_min_month_))) {
+      (cand_year < right_min_year_ || (cand_year == right_min_year_ && cand_month < right_min_month_))) {
     return;
   }
-  right_year_ = candYear;
-  right_month_ = candMonth;
+  right_year_ = cand_year;
+  right_month_ = cand_month;
   updateCalendars();
 }
 
@@ -723,38 +723,39 @@ void DualCalendarWidget::updateCalendars() {
 }
 
 void DualCalendarWidget::updateNavButtons() {
-  int lnY = left_year_, lnM = left_month_;
-  advanceMonth(lnY, lnM, 1);
-  bool atMax = lnY > left_max_year_ || (lnY == left_max_year_ && lnM > left_max_month_);
-  bool atRight = lnY > right_year_ || (lnY == right_year_ && lnM >= right_month_);
-  left_next_->setEnabled(!atMax && !atRight);
+  int ln_y = left_year_, ln_m = left_month_;
+  advanceMonth(ln_y, ln_m, 1);
+  bool at_max = ln_y > left_max_year_ || (ln_y == left_max_year_ && ln_m > left_max_month_);
+  bool at_right = ln_y > right_year_ || (ln_y == right_year_ && ln_m >= right_month_);
+  left_next_->setEnabled(!at_max && !at_right);
 
-  int rpY = right_year_, rpM = right_month_;
-  advanceMonth(rpY, rpM, -1);
+  int rp_y = right_year_, rp_m = right_month_;
+  advanceMonth(rp_y, rp_m, -1);
   const bool currently_ge_min =
       right_year_ > right_min_year_ || (right_year_ == right_min_year_ && right_month_ >= right_min_month_);
-  bool atMinimum = currently_ge_min && (rpY < right_min_year_ || (rpY == right_min_year_ && rpM < right_min_month_));
-  bool atLeft = rpY < left_year_ || (rpY == left_year_ && rpM <= left_month_);
-  right_prev_->setEnabled(!atMinimum && !atLeft);
+  bool at_minimum =
+      currently_ge_min && (rp_y < right_min_year_ || (rp_y == right_min_year_ && rp_m < right_min_month_));
+  bool at_left = rp_y < left_year_ || (rp_y == left_year_ && rp_m <= left_month_);
+  right_prev_->setEnabled(!at_minimum && !at_left);
 
   left_prev_->setEnabled(true);
   right_next_->setEnabled(true);
 
   // Direction hint: color the arrow text green/red when clicking it would
   // reveal the start/end date (currently outside both calendars' views).
-  const int fromL = monthCmp(range_from_, left_year_, left_month_);
-  const int fromR = monthCmp(range_from_, right_year_, right_month_);
-  const int toL = monthCmp(range_to_, left_year_, left_month_);
-  const int toR = monthCmp(range_to_, right_year_, right_month_);
+  const int from_l = monthCmp(range_from_, left_year_, left_month_);
+  const int from_r = monthCmp(range_from_, right_year_, right_month_);
+  const int to_l = monthCmp(range_to_, left_year_, left_month_);
+  const int to_r = monthCmp(range_to_, right_year_, right_month_);
 
-  const bool from_before_l = fromL < 0;
-  const bool from_in_gap = fromL > 0 && fromR < 0;
-  const bool from_after_r = fromR > 0;
-  const bool to_before_l = toL < 0;
-  const bool to_in_gap = toL > 0 && toR < 0;
-  const bool to_after_r = toR > 0;
+  const bool from_before_l = from_l < 0;
+  const bool from_in_gap = from_l > 0 && from_r < 0;
+  const bool from_after_r = from_r > 0;
+  const bool to_before_l = to_l < 0;
+  const bool to_in_gap = to_l > 0 && to_r < 0;
+  const bool to_after_r = to_r > 0;
 
-  auto applyHint = [](QPushButton* btn, bool hint_from, bool hint_to) {
+  auto apply_hint = [](QPushButton* btn, bool hint_from, bool hint_to) {
     QString color;
     if (hint_from) {
       color = kFromHintColor.name();
@@ -764,10 +765,10 @@ void DualCalendarWidget::updateNavButtons() {
     btn->setStyleSheet(color.isEmpty() ? QString() : QStringLiteral("color: %1; font-weight: bold;").arg(color));
   };
 
-  applyHint(left_prev_, from_before_l, to_before_l);
-  applyHint(left_next_, from_in_gap, to_in_gap);
-  applyHint(right_prev_, from_in_gap, to_in_gap);
-  applyHint(right_next_, from_after_r, to_after_r);
+  apply_hint(left_prev_, from_before_l, to_before_l);
+  apply_hint(left_next_, from_in_gap, to_in_gap);
+  apply_hint(right_prev_, from_in_gap, to_in_gap);
+  apply_hint(right_next_, from_after_r, to_after_r);
 }
 
 void DualCalendarWidget::onDateClicked(const QDate& date) {
@@ -800,21 +801,21 @@ void DualCalendarWidget::onHoverLeft() {
 }
 
 void DualCalendarWidget::broadcastState() {
-  QDate effFrom = range_from_;
-  QDate effTo = range_to_;
+  QDate eff_from = range_from_;
+  QDate eff_to = range_to_;
   if (selecting_ && hover_date_.isValid()) {
-    effTo = hover_date_;
+    eff_to = hover_date_;
   }
-  if (effFrom.isValid() && effTo.isValid() && effFrom > effTo) {
-    std::swap(effFrom, effTo);
+  if (eff_from.isValid() && eff_to.isValid() && eff_from > eff_to) {
+    std::swap(eff_from, eff_to);
   }
   for (auto* cal : calendars_) {
-    cal->setRange(effFrom, effTo);
+    cal->setRange(eff_from, eff_to);
     cal->setHoverDate(hover_date_);
   }
   updateNavButtons();
-  if (selecting_ && effFrom.isValid() && effTo.isValid()) {
-    emit rangePreview(effFrom, effTo);
+  if (selecting_ && eff_from.isValid() && eff_to.isValid()) {
+    emit rangePreview(eff_from, eff_to);
   }
 }
 

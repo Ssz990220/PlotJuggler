@@ -21,14 +21,14 @@ namespace PJ {
 
 PJ::Expected<void, QString> DownloadManager::extractFromMemory(
     const QByteArray& data, const QString& destination_dir) const {
-  QDir destDir(destination_dir);
-  if (!destDir.exists() && !destDir.mkpath(QStringLiteral("."))) {
+  QDir dest_dir(destination_dir);
+  if (!dest_dir.exists() && !dest_dir.mkpath(QStringLiteral("."))) {
     return PJ::unexpected(QStringLiteral("Could not create destination directory: %1").arg(destination_dir));
   }
 
   // Trailing separator ensures prefix check is exact and not fooled by
   // sibling directories sharing a common prefix (e.g. /tmp/foo vs /tmp/foo_evil).
-  const QString safe_root = destDir.absolutePath() + QLatin1Char('/');
+  const QString safe_root = dest_dir.absolutePath() + QLatin1Char('/');
 
   auto archive_deleter = [](struct archive* a) { archive_read_free(a); };
   std::unique_ptr<struct archive, decltype(archive_deleter)> a(archive_read_new(), archive_deleter);
@@ -44,7 +44,7 @@ PJ::Expected<void, QString> DownloadManager::extractFromMemory(
   int r;
   while ((r = archive_read_next_header(a.get(), &entry)) == ARCHIVE_OK) {
     const QString entry_name = QString::fromUtf8(archive_entry_pathname(entry));
-    const QString target_path = destDir.filePath(entry_name);
+    const QString target_path = dest_dir.filePath(entry_name);
 
     // Guard against path-traversal attacks (e.g. entries containing "../")
     if (!QFileInfo(target_path).absoluteFilePath().startsWith(safe_root)) {
@@ -52,7 +52,7 @@ PJ::Expected<void, QString> DownloadManager::extractFromMemory(
     }
 
     if (archive_entry_filetype(entry) == AE_IFDIR) {
-      destDir.mkpath(entry_name);
+      dest_dir.mkpath(entry_name);
       continue;
     }
 
@@ -60,8 +60,8 @@ PJ::Expected<void, QString> DownloadManager::extractFromMemory(
     QFileInfo fi(target_path);
     QDir().mkpath(fi.absolutePath());
 
-    QFile outFile(target_path);
-    if (!outFile.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+    QFile out_file(target_path);
+    if (!out_file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
       return PJ::unexpected(QStringLiteral("No write permission for: %1").arg(target_path));
     }
 
@@ -74,13 +74,13 @@ PJ::Expected<void, QString> DownloadManager::extractFromMemory(
         break;
       }
       if (rc != ARCHIVE_OK) {
-        outFile.close();
+        out_file.close();
         return PJ::unexpected(QStringLiteral("Error reading ZIP entry '%1': %2")
                                   .arg(entry_name, QString::fromUtf8(archive_error_string(a.get()))));
       }
-      outFile.write(static_cast<const char*>(buf), static_cast<qint64>(size));
+      out_file.write(static_cast<const char*>(buf), static_cast<qint64>(size));
     }
-    outFile.close();
+    out_file.close();
   }
 
   if (r != ARCHIVE_EOF) {

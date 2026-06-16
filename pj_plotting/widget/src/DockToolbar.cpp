@@ -130,12 +130,12 @@ bool DockToolbar::eventFilter(QObject* object, QEvent* event) {
 }
 
 void DockToolbar::onStylesheetChanged(QString theme) {
-  expand_icon_ = LoadSvg(":/resources/svg/expand.svg", theme);
-  collapse_icon_ = LoadSvg(":/resources/svg/collapse.svg", theme);
+  expand_icon_ = loadSvg(":/resources/svg/expand.svg", theme);
+  collapse_icon_ = loadSvg(":/resources/svg/collapse.svg", theme);
   setButtonIcon(ui_->buttonFullscreen, fullscreen_mode_ ? collapse_icon_ : expand_icon_);
-  setButtonIcon(ui_->buttonClose, LoadSvg(":/resources/svg/close-button.svg", theme));
-  setButtonIcon(ui_->buttonSplitHorizontal, LoadSvg(":/resources/svg/add_column.svg", theme));
-  setButtonIcon(ui_->buttonSplitVertical, LoadSvg(":/resources/svg/add_row.svg", theme));
+  setButtonIcon(ui_->buttonClose, loadSvg(":/resources/svg/close-button.svg", theme));
+  setButtonIcon(ui_->buttonSplitHorizontal, loadSvg(":/resources/svg/add_column.svg", theme));
+  setButtonIcon(ui_->buttonSplitVertical, loadSvg(":/resources/svg/add_row.svg", theme));
 }
 
 }  // namespace PJ

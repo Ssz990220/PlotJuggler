@@ -180,7 +180,7 @@ class SceneDockWidget : public QWidget, public IDataWidget, public IObjectViewer
  private:
   /// Result of an add attempt, separating the two outcomes addTopic's bool used
   /// to conflate ("layer created" vs "consumed as a scene-config topic").
-  enum class AddOutcome { LayerAdded, ConsumedAsConfig, Rejected };
+  enum class AddOutcome { kLayerAdded, kConsumedAsConfig, kRejected };
 
   [[nodiscard]] PJ::Timepoint clampToLayerRange(PJ::Timepoint time) const;
   [[nodiscard]] std::vector<ISceneLayer*> orderedLayerPtrs() const;

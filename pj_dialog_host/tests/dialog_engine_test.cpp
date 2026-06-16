@@ -382,7 +382,7 @@ TEST(TableBinding, VisibleRowsHideAndShowFilteredRows) {
   tw->setObjectName("tbl");
 
   const std::vector<std::vector<std::string>> rows = {{"a0", "b0"}, {"a1", "b1"}, {"a2", "b2"}};
-  auto withVisible = [&](const std::vector<int>& visible) {
+  auto with_visible = [&](const std::vector<int>& visible) {
     nlohmann::json d;
     d["tbl"]["headers"] = {"A", "B"};
     d["tbl"]["rows"] = rows;
@@ -390,7 +390,7 @@ TEST(TableBinding, VisibleRowsHideAndShowFilteredRows) {
     return d.dump();
   };
 
-  PJ::applyWidgetData(&root, PJ::WidgetDataView(withVisible({1})));
+  PJ::applyWidgetData(&root, PJ::WidgetDataView(with_visible({1})));
   ASSERT_EQ(tw->rowCount(), 3);
   EXPECT_TRUE(tw->isRowHidden(0));
   EXPECT_FALSE(tw->isRowHidden(1));
@@ -398,7 +398,7 @@ TEST(TableBinding, VisibleRowsHideAndShowFilteredRows) {
 
   // Widen the filter — rows unchanged, so the item rebuild is skipped, but the
   // hidden state must still update.
-  PJ::applyWidgetData(&root, PJ::WidgetDataView(withVisible({0, 1, 2})));
+  PJ::applyWidgetData(&root, PJ::WidgetDataView(with_visible({0, 1, 2})));
   EXPECT_FALSE(tw->isRowHidden(0));
   EXPECT_FALSE(tw->isRowHidden(1));
   EXPECT_FALSE(tw->isRowHidden(2));

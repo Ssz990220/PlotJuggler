@@ -27,7 +27,7 @@ constexpr uint32_t kChunkSize = 16'384;
 // Helpers
 // ---------------------------------------------------------------------------
 
-ColumnDescriptor make_descriptor(PrimitiveType type, std::string path) {
+ColumnDescriptor makeDescriptor(PrimitiveType type, std::string path) {
   return ColumnDescriptor{/*field_id=*/0, type, std::move(path)};
 }
 
@@ -55,7 +55,7 @@ struct TestData {
   }
 };
 
-static const TestData& get_test_data() {
+static const TestData& getTestData() {
   static TestData data;
   return data;
 }
@@ -65,8 +65,8 @@ static const TestData& get_test_data() {
 // ===========================================================================
 
 void BM_Builder_RowAtATime_Float32(benchmark::State& state) {
-  const auto& data = get_test_data();
-  std::vector<ColumnDescriptor> cols = {make_descriptor(PrimitiveType::kFloat32, "value")};
+  const auto& data = getTestData();
+  std::vector<ColumnDescriptor> cols = {makeDescriptor(PrimitiveType::kFloat32, "value")};
 
   for (auto _ : state) {
     TopicChunkBuilder builder(1, 1, cols, kRowCount);
@@ -83,8 +83,8 @@ void BM_Builder_RowAtATime_Float32(benchmark::State& state) {
 }
 
 void BM_Builder_Bulk_Float32(benchmark::State& state) {
-  const auto& data = get_test_data();
-  std::vector<ColumnDescriptor> cols = {make_descriptor(PrimitiveType::kFloat32, "value")};
+  const auto& data = getTestData();
+  std::vector<ColumnDescriptor> cols = {makeDescriptor(PrimitiveType::kFloat32, "value")};
 
   for (auto _ : state) {
     TopicChunkBuilder builder(1, 1, cols, kRowCount);
@@ -106,8 +106,8 @@ BENCHMARK(BM_Builder_Bulk_Float32);
 // ===========================================================================
 
 void BM_Builder_RowAtATime_Int64(benchmark::State& state) {
-  const auto& data = get_test_data();
-  std::vector<ColumnDescriptor> cols = {make_descriptor(PrimitiveType::kInt64, "value")};
+  const auto& data = getTestData();
+  std::vector<ColumnDescriptor> cols = {makeDescriptor(PrimitiveType::kInt64, "value")};
 
   for (auto _ : state) {
     TopicChunkBuilder builder(1, 1, cols, kRowCount);
@@ -124,8 +124,8 @@ void BM_Builder_RowAtATime_Int64(benchmark::State& state) {
 }
 
 void BM_Builder_Bulk_Int64(benchmark::State& state) {
-  const auto& data = get_test_data();
-  std::vector<ColumnDescriptor> cols = {make_descriptor(PrimitiveType::kInt64, "value")};
+  const auto& data = getTestData();
+  std::vector<ColumnDescriptor> cols = {makeDescriptor(PrimitiveType::kInt64, "value")};
 
   for (auto _ : state) {
     TopicChunkBuilder builder(1, 1, cols, kRowCount);
@@ -149,10 +149,10 @@ BENCHMARK(BM_Builder_Bulk_Int64);
 constexpr int kMultiColCount = 10;
 
 void BM_Builder_RowAtATime_MultiCol(benchmark::State& state) {
-  const auto& data = get_test_data();
+  const auto& data = getTestData();
   std::vector<ColumnDescriptor> cols;
   for (int c = 0; c < kMultiColCount; ++c) {
-    cols.push_back(make_descriptor(PrimitiveType::kFloat32, "col_" + std::to_string(c)));
+    cols.push_back(makeDescriptor(PrimitiveType::kFloat32, "col_" + std::to_string(c)));
   }
 
   for (auto _ : state) {
@@ -172,10 +172,10 @@ void BM_Builder_RowAtATime_MultiCol(benchmark::State& state) {
 }
 
 void BM_Builder_Bulk_MultiCol(benchmark::State& state) {
-  const auto& data = get_test_data();
+  const auto& data = getTestData();
   std::vector<ColumnDescriptor> cols;
   for (int c = 0; c < kMultiColCount; ++c) {
-    cols.push_back(make_descriptor(PrimitiveType::kFloat32, "col_" + std::to_string(c)));
+    cols.push_back(makeDescriptor(PrimitiveType::kFloat32, "col_" + std::to_string(c)));
   }
 
   for (auto _ : state) {
@@ -200,7 +200,7 @@ BENCHMARK(BM_Builder_Bulk_MultiCol);
 // ===========================================================================
 
 void BM_Writer_RowAtATime_Float32(benchmark::State& state) {
-  const auto& data = get_test_data();
+  const auto& data = getTestData();
 
   // Build type tree once outside the loop (structure is cheap, reusable)
   auto value_field = makePrimitive("value", PrimitiveType::kFloat32);
@@ -229,7 +229,7 @@ void BM_Writer_RowAtATime_Float32(benchmark::State& state) {
 }
 
 void BM_Writer_AppendColumns_Float32(benchmark::State& state) {
-  const auto& data = get_test_data();
+  const auto& data = getTestData();
 
   auto value_field = makePrimitive("value", PrimitiveType::kFloat32);
   auto root = makeStruct("data", {value_field});
@@ -244,7 +244,7 @@ void BM_Writer_AppendColumns_Float32(benchmark::State& state) {
     desc.schema_id = schema_id;
     auto topic_id = *writer.registerTopic(ds_id, desc);
 
-    std::vector<ColumnData> columns = {ColumnData::Float32(0, data.floats)};
+    std::vector<ColumnData> columns = {ColumnData::float32(0, data.floats)};
     (void)writer.appendColumns(topic_id, data.timestamps, columns);
     auto chunks = writer.flush(topic_id);
     benchmark::DoNotOptimize(chunks);

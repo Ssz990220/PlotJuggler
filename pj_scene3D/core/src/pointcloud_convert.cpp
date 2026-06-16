@@ -123,7 +123,7 @@ ConvertedPointCloud convertCanonical(const PointCloud& src, std::string_view sca
     }
   }
 
-  auto readCoord = [](const PointField* field, const uint8_t* base) -> float {
+  auto read_coord = [](const PointField* field, const uint8_t* base) -> float {
     if (field->datatype == PointField::Datatype::kFloat32) {
       return readFloat32At(base + field->offset);
     }
@@ -144,7 +144,7 @@ ConvertedPointCloud convertCanonical(const PointCloud& src, std::string_view sca
   // AABB all read from the same `base` so large clouds touch each point once (L.50).
   for (std::size_t point_index = 0; point_index < point_count; ++point_index) {
     const uint8_t* base = src.data.data() + point_index * step;
-    const glm::vec3 position{readCoord(xf, base), readCoord(yf, base), readCoord(zf, base)};
+    const glm::vec3 position{read_coord(xf, base), read_coord(yf, base), read_coord(zf, base)};
     out.cloud.positions.push_back(position);
     if (std::isfinite(position.x) && std::isfinite(position.y) && std::isfinite(position.z)) {
       expandAABB(out.bounds, position);

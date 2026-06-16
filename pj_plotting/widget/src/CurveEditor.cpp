@@ -179,7 +179,7 @@ CurveEditor::CurveEditor(QWidget* parent) : QWidget(parent), ui_(new Ui::CurveEd
   auto* clear_all_button = new QPushButton(tr("Clear all curves"), curves_menu);
   clear_all_button->setFlat(true);
   clear_all_button->setProperty("destructive", true);
-  clear_all_button->setIcon(LoadSvg(":/resources/svg/trash.svg", current_theme_));
+  clear_all_button->setIcon(loadSvg(":/resources/svg/trash.svg", current_theme_));
   connect(clear_all_button, &QPushButton::clicked, this, [this, curves_menu]() {
     curves_menu->hide();
     if (plot_ == nullptr) {
@@ -327,10 +327,10 @@ void CurveEditor::appendRow(const QString& curve_key, const QString& display_nam
   visibility->setFocusPolicy(Qt::NoFocus);
   visibility->setIconSize(QSize(row_height_, row_height_));
   visibility->setChecked(visible);
-  visibility->setIcon(LoadSvg(visible ? kVisibilityOnPath : kVisibilityOffPath, current_theme_));
+  visibility->setIcon(loadSvg(visible ? kVisibilityOnPath : kVisibilityOffPath, current_theme_));
   visibility->setToolTip(tr("Toggle curve visibility"));
   connect(visibility, &QToolButton::toggled, this, [this, curve_key, visibility](bool checked) {
-    visibility->setIcon(LoadSvg(checked ? kVisibilityOnPath : kVisibilityOffPath, current_theme_));
+    visibility->setIcon(loadSvg(checked ? kVisibilityOnPath : kVisibilityOffPath, current_theme_));
     onVisibilityToggled(curve_key, checked);
   });
 
@@ -348,7 +348,7 @@ void CurveEditor::appendRow(const QString& curve_key, const QString& display_nam
   trash->setAutoRaise(true);
   trash->setFocusPolicy(Qt::NoFocus);
   trash->setIconSize(QSize(row_height_, row_height_));
-  trash->setIcon(LoadSvg(kTrashIconPath, current_theme_));
+  trash->setIcon(loadSvg(kTrashIconPath, current_theme_));
   trash->setToolTip(tr("Remove this curve from its plot"));
   connect(trash, &QToolButton::clicked, this, [this, curve_key]() {
     if (plot_ == nullptr) {
@@ -465,8 +465,8 @@ void CurveEditor::onChromeMetricsChanged(const ChromeMetrics& metrics) {
 void CurveEditor::onStylesheetChanged(QString theme) {
   current_theme_ = std::move(theme);
   // Header chrome icons: search glyph + kebab.
-  ui_->buttonSearchCurves->setIcon(LoadSvg(":/resources/svg/search_light.svg", current_theme_));
-  ui_->buttonCurvesMenu->setIcon(LoadSvg(":/resources/svg/more_vert.svg", current_theme_));
+  ui_->buttonSearchCurves->setIcon(loadSvg(":/resources/svg/search_light.svg", current_theme_));
+  ui_->buttonCurvesMenu->setIcon(loadSvg(":/resources/svg/more_vert.svg", current_theme_));
   // Re-tint every row's visibility + trash toggles to the new theme ink.
   // The buttons are owned by the row widgets stored as itemWidget on each
   // QListWidgetItem; QObject::findChildren walks that subtree.
@@ -477,9 +477,9 @@ void CurveEditor::onStylesheetChanged(QString theme) {
     }
     for (auto* button : row->findChildren<QToolButton*>()) {
       if (button->property(kVisibilityButtonProperty).isValid()) {
-        button->setIcon(LoadSvg(button->isChecked() ? kVisibilityOnPath : kVisibilityOffPath, current_theme_));
+        button->setIcon(loadSvg(button->isChecked() ? kVisibilityOnPath : kVisibilityOffPath, current_theme_));
       } else if (button->property(kTrashButtonProperty).isValid()) {
-        button->setIcon(LoadSvg(kTrashIconPath, current_theme_));
+        button->setIcon(loadSvg(kTrashIconPath, current_theme_));
       }
     }
   }

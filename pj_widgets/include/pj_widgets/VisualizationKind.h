@@ -9,6 +9,6 @@ namespace PJ {
 // are mapped to the concrete object-widget "kinds" ("scene2d"/"scene3d") by the
 // app shell (the only module that knows scene families), so pj_widgets and
 // pj_plotting stay agnostic to them.
-enum class VisualizationKind { Plot, Scene2D, Scene3D };
+enum class VisualizationKind { kPlot, kScene2D, kScene3D };
 
 }  // namespace PJ

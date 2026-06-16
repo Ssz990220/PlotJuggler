@@ -73,7 +73,7 @@ class LayerRowWidget : public QWidget {
     refreshIcons();
 
     connect(eye_, &QToolButton::toggled, this, [this](bool checked) {
-      eye_->setIcon(LoadSvg(checked ? kVisibilityOnPath : kVisibilityOffPath, current_theme_));
+      eye_->setIcon(loadSvg(checked ? kVisibilityOnPath : kVisibilityOffPath, current_theme_));
       emit visibilityToggled(id_, checked);
     });
     connect(trash_, &QToolButton::clicked, this, [this]() { emit removeClicked(id_); });
@@ -101,7 +101,7 @@ class LayerRowWidget : public QWidget {
     }
     QSignalBlocker block(eye_);
     eye_->setChecked(visible);
-    eye_->setIcon(LoadSvg(visible ? kVisibilityOnPath : kVisibilityOffPath, current_theme_));
+    eye_->setIcon(loadSvg(visible ? kVisibilityOnPath : kVisibilityOffPath, current_theme_));
   }
 
   void setDisplayName(const QString& name) {
@@ -183,9 +183,9 @@ class LayerRowWidget : public QWidget {
   void refreshIcons() {
     const QSize sz(row_height_, row_height_);
     eye_->setIconSize(sz);
-    eye_->setIcon(LoadSvg(eye_->isChecked() ? kVisibilityOnPath : kVisibilityOffPath, current_theme_));
+    eye_->setIcon(loadSvg(eye_->isChecked() ? kVisibilityOnPath : kVisibilityOffPath, current_theme_));
     trash_->setIconSize(sz);
-    trash_->setIcon(LoadSvg(kTrashIconPath, current_theme_));
+    trash_->setIcon(loadSvg(kTrashIconPath, current_theme_));
   }
 
   qint64 id_;
@@ -488,14 +488,14 @@ void LayerListView::onRowMoved(int from, int to) {
     return;
   }
   const qint64 moved = ids[static_cast<std::size_t>(from)];
-  ids = detail::ReorderIds(std::move(ids), from, to);
+  ids = detail::reorderIds(std::move(ids), from, to);
   rebuildFromOrder(ids, moved);
   emit reordered(ids);
 }
 
 namespace detail {
 
-std::vector<qint64> ReorderIds(std::vector<qint64> ids, int from, int to) {
+std::vector<qint64> reorderIds(std::vector<qint64> ids, int from, int to) {
   if (from < 0 || from >= static_cast<int>(ids.size())) {
     return ids;
   }

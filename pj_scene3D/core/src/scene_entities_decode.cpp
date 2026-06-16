@@ -78,8 +78,8 @@ void decodeEntity(const PJ::sdk::SceneEntity& entity, DecodedSceneEntities& out)
     // `indices` comes from the (untrusted) message: map a logical position to its
     // point index and reject out-of-range references instead of reading OOB.
     const auto resolve = [&](std::size_t i) { return line.indices.empty() ? i : line.indices[i]; };
-    const auto pointAt = [&](std::size_t idx) { return toVec3(line.points[idx]); };
-    const auto colorAt = [&](std::size_t idx) { return toVec4(line.colors[idx]); };
+    const auto point_at = [&](std::size_t idx) { return toVec3(line.points[idx]); };
+    const auto color_at = [&](std::size_t idx) { return toVec4(line.colors[idx]); };
 
     // Expand topology into GL_LINES pairs, skipping any segment that references
     // an out-of-range vertex (per_vertex_color implies colors.size()==points.size()).
@@ -89,11 +89,11 @@ void decodeEntity(const PJ::sdk::SceneEntity& entity, DecodedSceneEntities& out)
       if (ia >= point_count || ib >= point_count) {
         return;
       }
-      batch.vertices.push_back(pointAt(ia));
-      batch.vertices.push_back(pointAt(ib));
+      batch.vertices.push_back(point_at(ia));
+      batch.vertices.push_back(point_at(ib));
       if (per_vertex_color) {
-        batch.colors.push_back(colorAt(ia));
-        batch.colors.push_back(colorAt(ib));
+        batch.colors.push_back(color_at(ia));
+        batch.colors.push_back(color_at(ib));
       }
     };
     switch (line.type) {
@@ -149,8 +149,8 @@ void decodeEntity(const PJ::sdk::SceneEntity& entity, DecodedSceneEntities& out)
     const bool per_vertex_color = tri.colors.size() == tri.points.size();
     // `indices` is untrusted message data — resolve and bounds-check each vertex.
     const auto resolve = [&](std::size_t i) { return tri.indices.empty() ? i : tri.indices[i]; };
-    const auto pointAt = [&](std::size_t idx) { return toVec3(tri.points[idx]); };
-    const auto colorAt = [&](std::size_t idx) { return toVec4(tri.colors[idx]); };
+    const auto point_at = [&](std::size_t idx) { return toVec3(tri.points[idx]); };
+    const auto color_at = [&](std::size_t idx) { return toVec4(tri.colors[idx]); };
 
     for (std::size_t i = 0; i + 2 < count; i += 3) {
       const std::size_t ia = resolve(i);
@@ -159,9 +159,9 @@ void decodeEntity(const PJ::sdk::SceneEntity& entity, DecodedSceneEntities& out)
       if (ia >= point_count || ib >= point_count || ic >= point_count) {
         continue;  // out-of-range index in the message — skip this triangle
       }
-      const glm::vec3 a = pointAt(ia);
-      const glm::vec3 b = pointAt(ib);
-      const glm::vec3 c = pointAt(ic);
+      const glm::vec3 a = point_at(ia);
+      const glm::vec3 b = point_at(ib);
+      const glm::vec3 c = point_at(ic);
       // Flat normal, shared by the triple. Coincident/colinear points (valid input
       // from producers, e.g. degenerate padding triangles) give a zero cross, which
       // glm::normalize turns into NaN — that would poison the whole triangle in the
@@ -175,7 +175,7 @@ void decodeEntity(const PJ::sdk::SceneEntity& entity, DecodedSceneEntities& out)
       batch.vertices.insert(batch.vertices.end(), {a, b, c});
       batch.normals.insert(batch.normals.end(), {n, n, n});
       if (per_vertex_color) {
-        batch.colors.insert(batch.colors.end(), {colorAt(ia), colorAt(ib), colorAt(ic)});
+        batch.colors.insert(batch.colors.end(), {color_at(ia), color_at(ib), color_at(ic)});
       }
     }
     if (!batch.vertices.empty()) {

@@ -19,7 +19,7 @@ namespace {
 // Helper: build and seal a test chunk with given time range
 // ---------------------------------------------------------------------------
 
-TopicChunk make_test_chunk(TopicId topic_id, Timestamp t_start, Timestamp t_end, uint32_t num_rows) {
+TopicChunk makeTestChunk(TopicId topic_id, Timestamp t_start, Timestamp t_end, uint32_t num_rows) {
   std::vector<ColumnDescriptor> cols = {{0, PrimitiveType::kFloat32, "value"}};
   TopicChunkBuilder builder(topic_id, /*schema_id=*/1, cols, num_rows);
   Timestamp step = (num_rows > 1) ? (t_end - t_start) / static_cast<Timestamp>(num_rows - 1) : 0;
@@ -43,9 +43,9 @@ TEST(TopicStorageTest, AppendChunks) {
 
   TopicStorage storage(/*topic_id=*/1, std::move(desc));
 
-  ASSERT_TRUE(storage.appendSealedChunk(make_test_chunk(1, 1000, 1900, 10)).has_value());
-  ASSERT_TRUE(storage.appendSealedChunk(make_test_chunk(1, 2000, 2900, 10)).has_value());
-  ASSERT_TRUE(storage.appendSealedChunk(make_test_chunk(1, 3000, 3900, 10)).has_value());
+  ASSERT_TRUE(storage.appendSealedChunk(makeTestChunk(1, 1000, 1900, 10)).has_value());
+  ASSERT_TRUE(storage.appendSealedChunk(makeTestChunk(1, 2000, 2900, 10)).has_value());
+  ASSERT_TRUE(storage.appendSealedChunk(makeTestChunk(1, 3000, 3900, 10)).has_value());
 
   EXPECT_EQ(storage.sealedChunks().size(), 3U);
 }
@@ -62,15 +62,15 @@ TEST(TopicStorageTest, TimeMinMax) {
   TopicStorage storage(/*topic_id=*/2, std::move(desc));
 
   // Empty storage returns 0
-  EXPECT_EQ(storage.time_min(), 0);
-  EXPECT_EQ(storage.time_max(), 0);
+  EXPECT_EQ(storage.timeMin(), 0);
+  EXPECT_EQ(storage.timeMax(), 0);
 
-  ASSERT_TRUE(storage.appendSealedChunk(make_test_chunk(2, 1000, 1900, 10)).has_value());
-  ASSERT_TRUE(storage.appendSealedChunk(make_test_chunk(2, 2000, 2900, 10)).has_value());
-  ASSERT_TRUE(storage.appendSealedChunk(make_test_chunk(2, 3000, 3900, 10)).has_value());
+  ASSERT_TRUE(storage.appendSealedChunk(makeTestChunk(2, 1000, 1900, 10)).has_value());
+  ASSERT_TRUE(storage.appendSealedChunk(makeTestChunk(2, 2000, 2900, 10)).has_value());
+  ASSERT_TRUE(storage.appendSealedChunk(makeTestChunk(2, 3000, 3900, 10)).has_value());
 
-  EXPECT_EQ(storage.time_min(), 1000);
-  EXPECT_EQ(storage.time_max(), 3900);
+  EXPECT_EQ(storage.timeMin(), 1000);
+  EXPECT_EQ(storage.timeMax(), 3900);
 }
 
 // ===========================================================================
@@ -84,9 +84,9 @@ TEST(TopicStorageTest, EvictNone) {
 
   TopicStorage storage(/*topic_id=*/3, std::move(desc));
 
-  ASSERT_TRUE(storage.appendSealedChunk(make_test_chunk(3, 1000, 1900, 10)).has_value());
-  ASSERT_TRUE(storage.appendSealedChunk(make_test_chunk(3, 2000, 2900, 10)).has_value());
-  ASSERT_TRUE(storage.appendSealedChunk(make_test_chunk(3, 3000, 3900, 10)).has_value());
+  ASSERT_TRUE(storage.appendSealedChunk(makeTestChunk(3, 1000, 1900, 10)).has_value());
+  ASSERT_TRUE(storage.appendSealedChunk(makeTestChunk(3, 2000, 2900, 10)).has_value());
+  ASSERT_TRUE(storage.appendSealedChunk(makeTestChunk(3, 3000, 3900, 10)).has_value());
 
   // Evict before the first chunk's t_min -- nothing should be removed
   storage.evictBefore(500);
@@ -109,9 +109,9 @@ TEST(TopicStorageTest, EvictSome) {
 
   TopicStorage storage(/*topic_id=*/4, std::move(desc));
 
-  ASSERT_TRUE(storage.appendSealedChunk(make_test_chunk(4, 1000, 1900, 10)).has_value());
-  ASSERT_TRUE(storage.appendSealedChunk(make_test_chunk(4, 2000, 2900, 10)).has_value());
-  ASSERT_TRUE(storage.appendSealedChunk(make_test_chunk(4, 3000, 3900, 10)).has_value());
+  ASSERT_TRUE(storage.appendSealedChunk(makeTestChunk(4, 1000, 1900, 10)).has_value());
+  ASSERT_TRUE(storage.appendSealedChunk(makeTestChunk(4, 2000, 2900, 10)).has_value());
+  ASSERT_TRUE(storage.appendSealedChunk(makeTestChunk(4, 3000, 3900, 10)).has_value());
 
   // Evict chunks whose t_max < 2500
   // Chunk 1 (t_max=1900 < 2500) -> evicted
@@ -119,8 +119,8 @@ TEST(TopicStorageTest, EvictSome) {
   // Chunk 3 (t_max=3900 >= 2500) -> kept
   storage.evictBefore(2500);
   EXPECT_EQ(storage.sealedChunks().size(), 2U);
-  EXPECT_EQ(storage.time_min(), 2000);
-  EXPECT_EQ(storage.time_max(), 3900);
+  EXPECT_EQ(storage.timeMin(), 2000);
+  EXPECT_EQ(storage.timeMax(), 3900);
 }
 
 // ===========================================================================
@@ -134,16 +134,16 @@ TEST(TopicStorageTest, EvictAll) {
 
   TopicStorage storage(/*topic_id=*/5, std::move(desc));
 
-  ASSERT_TRUE(storage.appendSealedChunk(make_test_chunk(5, 1000, 1900, 10)).has_value());
-  ASSERT_TRUE(storage.appendSealedChunk(make_test_chunk(5, 2000, 2900, 10)).has_value());
-  ASSERT_TRUE(storage.appendSealedChunk(make_test_chunk(5, 3000, 3900, 10)).has_value());
+  ASSERT_TRUE(storage.appendSealedChunk(makeTestChunk(5, 1000, 1900, 10)).has_value());
+  ASSERT_TRUE(storage.appendSealedChunk(makeTestChunk(5, 2000, 2900, 10)).has_value());
+  ASSERT_TRUE(storage.appendSealedChunk(makeTestChunk(5, 3000, 3900, 10)).has_value());
 
   // Evict with t_keep_min beyond all chunks
   storage.evictBefore(5000);
   EXPECT_TRUE(storage.empty());
   EXPECT_EQ(storage.sealedChunks().size(), 0U);
-  EXPECT_EQ(storage.time_min(), 0);
-  EXPECT_EQ(storage.time_max(), 0);
+  EXPECT_EQ(storage.timeMin(), 0);
+  EXPECT_EQ(storage.timeMax(), 0);
 }
 
 // ===========================================================================
@@ -158,9 +158,9 @@ TEST(TopicStorageTest, Metadata) {
 
   TopicStorage storage(/*topic_id=*/6, std::move(desc));
 
-  ASSERT_TRUE(storage.appendSealedChunk(make_test_chunk(6, 1000, 1900, 10)).has_value());
-  ASSERT_TRUE(storage.appendSealedChunk(make_test_chunk(6, 2000, 2900, 10)).has_value());
-  ASSERT_TRUE(storage.appendSealedChunk(make_test_chunk(6, 3000, 3900, 10)).has_value());
+  ASSERT_TRUE(storage.appendSealedChunk(makeTestChunk(6, 1000, 1900, 10)).has_value());
+  ASSERT_TRUE(storage.appendSealedChunk(makeTestChunk(6, 2000, 2900, 10)).has_value());
+  ASSERT_TRUE(storage.appendSealedChunk(makeTestChunk(6, 3000, 3900, 10)).has_value());
 
   TopicMetadata meta = storage.metadata();
 
@@ -189,7 +189,7 @@ TEST(TopicStorageTest, Empty) {
   EXPECT_TRUE(storage.empty());
 
   // After appending, not empty
-  ASSERT_TRUE(storage.appendSealedChunk(make_test_chunk(7, 1000, 1900, 10)).has_value());
+  ASSERT_TRUE(storage.appendSealedChunk(makeTestChunk(7, 1000, 1900, 10)).has_value());
   EXPECT_FALSE(storage.empty());
 
   // After evicting all, empty again
@@ -229,16 +229,16 @@ TEST(TopicStorageTest, AcceptsOutOfOrderChunk) {
 
   TopicStorage storage(/*topic_id=*/9, std::move(desc));
 
-  ASSERT_TRUE(storage.appendSealedChunk(make_test_chunk(9, 2000, 2900, 10)).has_value());
+  ASSERT_TRUE(storage.appendSealedChunk(makeTestChunk(9, 2000, 2900, 10)).has_value());
 
   // A chunk entirely before the previous one is retained — rejecting it
   // silently lost late-committed data (multi-publisher recordings).
-  ASSERT_TRUE(storage.appendSealedChunk(make_test_chunk(9, 1000, 1900, 10)).has_value());
+  ASSERT_TRUE(storage.appendSealedChunk(makeTestChunk(9, 1000, 1900, 10)).has_value());
 
   EXPECT_EQ(storage.sealedChunks().size(), 2U);
   // Topic extrema scan all chunks instead of trusting front/back order.
-  EXPECT_EQ(storage.time_min(), 1000);
-  EXPECT_EQ(storage.time_max(), 2900);
+  EXPECT_EQ(storage.timeMin(), 1000);
+  EXPECT_EQ(storage.timeMax(), 2900);
 }
 
 // ===========================================================================
@@ -254,8 +254,8 @@ TEST(TopicStorageTest, AcceptsOverlappingChunk_SameTMin) {
 
   TopicStorage storage(/*topic_id=*/10, std::move(desc));
 
-  ASSERT_TRUE(storage.appendSealedChunk(make_test_chunk(10, 1000, 1900, 10)).has_value());
-  ASSERT_TRUE(storage.appendSealedChunk(make_test_chunk(10, 1000, 1500, 5)).has_value());
+  ASSERT_TRUE(storage.appendSealedChunk(makeTestChunk(10, 1000, 1900, 10)).has_value());
+  ASSERT_TRUE(storage.appendSealedChunk(makeTestChunk(10, 1000, 1500, 5)).has_value());
 
   EXPECT_EQ(storage.sealedChunks().size(), 2U);
   EXPECT_EQ(storage.metadata().total_row_count, 15U);

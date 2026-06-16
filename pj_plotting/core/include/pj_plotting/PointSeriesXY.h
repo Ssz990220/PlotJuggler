@@ -50,11 +50,11 @@ class PointSeriesXY final : public QwtSeriesData<QPointF> {
     std::size_t row = 0;
   };
 
-  void ensureAlignmentIndex_() const;
-  void buildSameTopicIndex_() const;
-  void buildDifferentTopicIndex_() const;
-  [[nodiscard]] std::vector<RowRef> rowsFor_(TopicId topic_id) const;
-  [[nodiscard]] QPointF readPoint_(const PairSlot& slot) const;
+  void ensureAlignmentIndex() const;
+  void buildSameTopicIndex() const;
+  void buildDifferentTopicIndex() const;
+  [[nodiscard]] std::vector<RowRef> rowsFor(TopicId topic_id) const;
+  [[nodiscard]] QPointF readPoint(const PairSlot& slot) const;
 
   SessionManager* session_ = nullptr;
   CurveDescriptor x_source_;

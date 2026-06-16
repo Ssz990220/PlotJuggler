@@ -108,7 +108,7 @@ std::int64_t sliderToNs(int pos, int slider_max, std::int64_t min_ns, std::int64
 // ResizeToContents re-measure a full rebuild triggers, and lets streamed detail
 // fill in cell-by-cell instead of snapping in all at once. Only a row/column
 // count change forces a full rebuild.
-static void apply_table_rows(QTableWidget* tw, const std::vector<std::vector<std::string>>& rows) {
+static void applyTableRows(QTableWidget* tw, const std::vector<std::vector<std::string>>& rows) {
   const bool same_shape = static_cast<std::size_t>(tw->rowCount()) == rows.size() &&
                           (rows.empty() || static_cast<std::size_t>(tw->columnCount()) == rows.front().size());
   if (same_shape) {
@@ -139,7 +139,7 @@ static void apply_table_rows(QTableWidget* tw, const std::vector<std::vector<std
 }
 
 // True when `tw`'s header labels already equal `headers`.
-static bool table_matches_headers(const QTableWidget* tw, const QStringList& headers) {
+static bool tableMatchesHeaders(const QTableWidget* tw, const QStringList& headers) {
   if (tw->columnCount() != headers.size()) {
     return false;
   }
@@ -166,7 +166,7 @@ static bool table_matches_headers(const QTableWidget* tw, const QStringList& hea
 // .ui predefines column headers (e.g. MCAP's tableWidget) match the plugin's
 // setTableHeaders() verbatim, so a label-change gate would skip them entirely
 // and leave the .ui's default Interactive sizing — the very bug this fixes.
-static void InstallTreeLikeHeader(QTableWidget* tw) {
+static void installTreeLikeHeader(QTableWidget* tw) {
   auto* header = tw->horizontalHeader();
   if (header->count() == 0 || tw->property("pjTreeLikeHeader").toBool()) {
     return;
@@ -187,7 +187,7 @@ static void InstallTreeLikeHeader(QTableWidget* tw) {
   }
 }
 
-static void apply_to_widget(QWidget* w, std::string_view name, const PJ::WidgetDataView& view) {
+static void applyToWidget(QWidget* w, std::string_view name, const PJ::WidgetDataView& view) {
   const QSignalBlocker blocker(w);
 
   // --- Generic properties (any widget) ---
@@ -402,16 +402,16 @@ static void apply_to_widget(QWidget* w, std::string_view name, const PJ::WidgetD
       // they actually changed. The sizing setup below is separate: it must also
       // run for dialogs whose .ui predefines matching headers (e.g. MCAP), where
       // this branch is skipped — hence InstallTreeLikeHeader lives outside it.
-      if (!table_matches_headers(tw, hdr)) {
+      if (!tableMatchesHeaders(tw, hdr)) {
         tw->setColumnCount(static_cast<int>(hdr.size()));
         tw->setHorizontalHeaderLabels(hdr);
       }
       // First column fills the width, the rest hug content. Idempotent + guarded,
       // so calling it on every delivery is cheap (port/fix of #90).
-      InstallTreeLikeHeader(tw);
+      installTreeLikeHeader(tw);
     }
     if (auto v = view.tableRows(name)) {
-      apply_table_rows(tw, *v);
+      applyTableRows(tw, *v);
     }
     // Row visibility (live filtering): hide rows not in the visible set. Absent
     // (clearVisibleRows ⇒ nullopt) means "no change"; an empty set hides all.
@@ -486,7 +486,7 @@ static void apply_to_widget(QWidget* w, std::string_view name, const PJ::WidgetD
     if (auto icon_name = view.buttonIconName(name)) {
       const QString path = resolveNamedIconPath(*icon_name);
       if (!path.isEmpty()) {
-        btn->setIcon(QIcon(LoadSvg(path, currentTheme())));
+        btn->setIcon(QIcon(loadSvg(path, currentTheme())));
       }
     }
     return;
@@ -532,7 +532,7 @@ static void apply_to_widget(QWidget* w, std::string_view name, const PJ::WidgetD
       const std::int64_t min_ns = span->first;
       const std::int64_t max_ns = span->second;
       if (max_ns > min_ns) {
-        const int slider_max = rs->GetMaximun();
+        const int slider_max = rs->getMaximun();
         rs->setShowTicks(false);
         rs->setShowTickLabels(false);
         rs->setShowHandleValueTooltip(false);
@@ -616,7 +616,7 @@ void applyWidgetData(QWidget* root, const PJ::WidgetDataView& view) {
     if (!w) {
       continue;
     }
-    apply_to_widget(w, name, view);
+    applyToWidget(w, name, view);
   }
 }
 
@@ -624,7 +624,7 @@ void applyWidgetData(QWidget* root, const PJ::WidgetDataView& view) {
 // connect_widget_signals — wire Qt signals to WidgetEventBuilder output
 // ---------------------------------------------------------------------------
 
-static bool is_internal_widget_name(const QString& name) {
+static bool isInternalWidgetName(const QString& name) {
   return name.startsWith("qt_");
 }
 
@@ -649,7 +649,7 @@ void connectWidgetSignals(QWidget* root, WidgetEventCallback callback) {
 
   for (auto* w : root->findChildren<QWidget*>()) {
     QString qname = w->objectName();
-    if (qname.isEmpty() || is_internal_widget_name(qname)) {
+    if (qname.isEmpty() || isInternalWidgetName(qname)) {
       continue;
     }
     std::string name = qname.toStdString();
@@ -770,7 +770,7 @@ void connectWidgetSignals(QWidget* root, WidgetEventCallback callback) {
       // Both handle signals coalesce into one rangeChanged event carrying the
       // current lower+upper, so dragging either handle keeps the plugin in sync.
       auto emit_range = [callback, name, rs]() {
-        callback(name, WidgetEventBuilder::rangeChanged(rs->GetLowerValue(), rs->GetUpperValue()));
+        callback(name, WidgetEventBuilder::rangeChanged(rs->getLowerValue(), rs->getUpperValue()));
       };
       QObject::connect(rs, &RangeSlider::lowerValueChanged, rs, [emit_range](int) { emit_range(); });
       QObject::connect(rs, &RangeSlider::upperValueChanged, rs, [emit_range](int) { emit_range(); });

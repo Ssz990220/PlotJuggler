@@ -45,7 +45,7 @@ WarningsAsErrors: >
   modernize-use-nullptr,
   modernize-use-override,
   performance-move-const-arg,
-  # readability-identifier-naming,  # temporarily disabled during rename migration
+  readability-identifier-naming,
 
 HeaderFilterRegex: '.*'
 
@@ -98,6 +98,28 @@ CheckOptions:
     value: CamelCase
   - key: readability-identifier-naming.TemplateParameterCase
     value: CamelCase
+  # const/constexpr LOCALS follow lower_case (house style), NOT the k-prefixed
+  # Constant policy above (which stays in force for file-scope/global constants).
+  - key: readability-identifier-naming.LocalConstantCase
+    value: lower_case
+  - key: readability-identifier-naming.LocalConstantPrefix
+    value: ''
+  - key: readability-identifier-naming.LocalVariableCase
+    value: lower_case
+  # `PJ` is the documented flat project namespace (an acronym) and `Ui` is
+  # uic-generated; both are exempt from the lower_case namespace rule.
+  - key: readability-identifier-naming.NamespaceIgnoredRegexp
+    value: '^(PJ|Ui)$'
+  # Google Benchmark functions follow the framework's `BM_` convention (referenced
+  # by the BENCHMARK() macro), and `PJ_*` are extern "C" C-ABI plugin entry points
+  # (e.g. PJ_get_dialog_vtable, dlsym-resolved) sometimes forward-declared in app
+  # code; exempt both from camelBack.
+  - key: readability-identifier-naming.FunctionIgnoredRegexp
+    value: '(BM_|PJ_).*'
+  # `overloaded` is the canonical std::visit lambda-overload-set idiom (struct +
+  # CTAD deduction guide); conventionally lower-case, exempt from CamelCase.
+  - key: readability-identifier-naming.StructIgnoredRegexp
+    value: '^overloaded$'
 
   # --- Function size limits ---
   - key: readability-function-size.LineThreshold

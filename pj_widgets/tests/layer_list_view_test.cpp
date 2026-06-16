@@ -185,38 +185,38 @@ TEST(LayerListViewTest, AddRowIgnoresDuplicateId) {
 // ReorderIds is the pure arithmetic behind drag-reorder (onRowMoved). `to` is a
 // drop position in [0, size], as produced by the drop indicator.
 TEST(ReorderIdsTest, MoveToEnd) {
-  EXPECT_EQ(PJ::detail::ReorderIds(ids({10, 20, 30, 40}), 0, 4), ids({20, 30, 40, 10}));
+  EXPECT_EQ(PJ::detail::reorderIds(ids({10, 20, 30, 40}), 0, 4), ids({20, 30, 40, 10}));
 }
 
 TEST(ReorderIdsTest, MoveToFront) {
-  EXPECT_EQ(PJ::detail::ReorderIds(ids({10, 20, 30, 40}), 3, 0), ids({40, 10, 20, 30}));
+  EXPECT_EQ(PJ::detail::reorderIds(ids({10, 20, 30, 40}), 3, 0), ids({40, 10, 20, 30}));
 }
 
 TEST(ReorderIdsTest, MoveDownPastOneNeighbour) {
-  EXPECT_EQ(PJ::detail::ReorderIds(ids({10, 20, 30, 40}), 1, 3), ids({10, 30, 20, 40}));
+  EXPECT_EQ(PJ::detail::reorderIds(ids({10, 20, 30, 40}), 1, 3), ids({10, 30, 20, 40}));
 }
 
 TEST(ReorderIdsTest, MoveUp) {
-  EXPECT_EQ(PJ::detail::ReorderIds(ids({10, 20, 30, 40}), 2, 1), ids({10, 30, 20, 40}));
+  EXPECT_EQ(PJ::detail::reorderIds(ids({10, 20, 30, 40}), 2, 1), ids({10, 30, 20, 40}));
 }
 
 TEST(ReorderIdsTest, DropOntoSelfIsNoOp) {
-  EXPECT_EQ(PJ::detail::ReorderIds(ids({10, 20, 30}), 1, 1), ids({10, 20, 30}));
+  EXPECT_EQ(PJ::detail::reorderIds(ids({10, 20, 30}), 1, 1), ids({10, 20, 30}));
 }
 
 TEST(ReorderIdsTest, DropJustBelowSelfIsNoOp) {
   // from=0, to=1 means "drop right below where it already is" — the dst-- guard
   // must collapse this to a no-op.
-  EXPECT_EQ(PJ::detail::ReorderIds(ids({10, 20, 30}), 0, 1), ids({10, 20, 30}));
+  EXPECT_EQ(PJ::detail::reorderIds(ids({10, 20, 30}), 0, 1), ids({10, 20, 30}));
 }
 
 TEST(ReorderIdsTest, ToBeyondSizeClampsToEnd) {
-  EXPECT_EQ(PJ::detail::ReorderIds(ids({10, 20, 30}), 0, 9), ids({20, 30, 10}));
+  EXPECT_EQ(PJ::detail::reorderIds(ids({10, 20, 30}), 0, 9), ids({20, 30, 10}));
 }
 
 TEST(ReorderIdsTest, OutOfRangeFromReturnsUnchanged) {
-  EXPECT_EQ(PJ::detail::ReorderIds(ids({10, 20, 30}), -1, 0), ids({10, 20, 30}));
-  EXPECT_EQ(PJ::detail::ReorderIds(ids({10, 20, 30}), 3, 0), ids({10, 20, 30}));
+  EXPECT_EQ(PJ::detail::reorderIds(ids({10, 20, 30}), -1, 0), ids({10, 20, 30}));
+  EXPECT_EQ(PJ::detail::reorderIds(ids({10, 20, 30}), 3, 0), ids({10, 20, 30}));
 }
 
 TEST(ConfigPanelHostTest, ReplacesConfigWidgetAndDeletesPreviousLater) {

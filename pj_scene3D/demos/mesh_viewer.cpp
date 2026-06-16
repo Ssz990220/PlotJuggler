@@ -296,11 +296,11 @@ QWidget* makeControls(pj::scene3d::SceneViewWidget& view) {
   // Key-light direction as azimuth/elevation (degrees), shared by both sliders.
   // Seeded from the canonical defaults so the sliders start matched to the struct.
   auto key_angles = std::make_shared<glm::vec2>(look::kKeyLightAzimuthDeg, look::kKeyLightElevationDeg);
-  const auto applyKeyDir = [&shading, key_angles, repaint] {
+  const auto apply_key_dir = [&shading, key_angles, repaint] {
     shading.key_light_dir = look::keyDirFromAzEl(key_angles->x, key_angles->y);
     repaint();
   };
-  const auto addDegSlider =
+  const auto add_deg_slider =
       [form](const QString& label, int min, int max, int value, const std::function<void(float)>& apply) {
         auto* slider = new QSlider(Qt::Horizontal);
         slider->setRange(min, max);
@@ -312,17 +312,17 @@ QWidget* makeControls(pj::scene3d::SceneViewWidget& view) {
         });
         form->addRow(name, slider);
       };
-  addDegSlider(
+  add_deg_slider(
       QStringLiteral("Key azimuth"), -180, 180, static_cast<int>(look::kKeyLightAzimuthDeg),
-      [key_angles, applyKeyDir](float v) {
+      [key_angles, apply_key_dir](float v) {
         key_angles->x = v;
-        applyKeyDir();
+        apply_key_dir();
       });
-  addDegSlider(
+  add_deg_slider(
       QStringLiteral("Key elevation"), 0, 90, static_cast<int>(look::kKeyLightElevationDeg),
-      [key_angles, applyKeyDir](float v) {
+      [key_angles, apply_key_dir](float v) {
         key_angles->y = v;
-        applyKeyDir();
+        apply_key_dir();
       });
 
   addSlider(

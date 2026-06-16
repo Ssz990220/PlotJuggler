@@ -48,17 +48,17 @@ DatastoreCurveAdapter::DatastoreCurveAdapter(SessionManager* session, CurveDescr
     : session_(session), source_(std::move(source)), cached_full_bounding_rect_(invalidRect()) {}
 
 std::size_t DatastoreCurveAdapter::size() const {
-  ensureChunkIndex_();
+  ensureChunkIndex();
   return sample_index_.size();
 }
 
 QPointF DatastoreCurveAdapter::sample(std::size_t index) const {
-  ensureChunkIndex_();
+  ensureChunkIndex();
   if (index >= sample_index_.size()) {
     return invalidPoint();
   }
 
-  return readPoint_(sample_index_[index]);
+  return readPoint(sample_index_[index]);
 }
 
 QRectF DatastoreCurveAdapter::boundingRect() const {
@@ -83,7 +83,7 @@ QRectF DatastoreCurveAdapter::boundingRect() const {
     return cached_full_bounding_rect_;
   }
 
-  const DisplayOffset offset = displayOffsetNow_();
+  const DisplayOffset offset = displayOffsetNow();
   const double x_min = rawNsToDisplaySeconds(bounds->time.min, offset);
   const double x_max = rawNsToDisplaySeconds(bounds->time.max, offset);
   cached_full_bounding_rect_ =
@@ -101,7 +101,7 @@ void DatastoreCurveAdapter::setRectOfInterest(const QRectF& rect) {
     next_min = std::numeric_limits<Timestamp>::min();
     next_max = std::numeric_limits<Timestamp>::max();
   } else {
-    const DisplayOffset offset = displayOffsetNow_();
+    const DisplayOffset offset = displayOffsetNow();
     const Timestamp left = displaySecondsToRawNs(rect.left(), offset);
     const Timestamp right = displaySecondsToRawNs(rect.right(), offset);
     next_min = std::min(left, right);
@@ -132,7 +132,7 @@ std::optional<std::pair<double, double>> DatastoreCurveAdapter::visibleYRange(
   if (!std::isfinite(x_min_sec) || !std::isfinite(x_max_sec)) {
     bounds = series_or->bounds();
   } else {
-    const DisplayOffset offset = displayOffsetNow_();
+    const DisplayOffset offset = displayOffsetNow();
     const Timestamp raw_a = displaySecondsToRawNs(x_min_sec, offset);
     const Timestamp raw_b = displaySecondsToRawNs(x_max_sec, offset);
     bounds = series_or->bounds(Range<Timestamp>{.min = std::min(raw_a, raw_b), .max = std::max(raw_a, raw_b)});
@@ -163,17 +163,17 @@ std::optional<QPointF> DatastoreCurveAdapter::sampleFromTime(double display_time
     return std::nullopt;
   }
 
-  const Timestamp raw_time = displaySecondsToRawNs(display_time_sec, displayOffsetNow_());
+  const Timestamp raw_time = displaySecondsToRawNs(display_time_sec, displayOffsetNow());
   auto series_or = session_->createReader().series(source_.topic_id, source_.column_index);
   if (!series_or.has_value()) {
     return std::nullopt;
   }
 
   const auto sample = series_or->sampleAtOrBeforeTime(raw_time);
-  return sample.has_value() ? std::optional<QPointF>{readPoint_(*sample)} : std::nullopt;
+  return sample.has_value() ? std::optional<QPointF>{readPoint(*sample)} : std::nullopt;
 }
 
-void DatastoreCurveAdapter::ensureChunkIndex_() const {
+void DatastoreCurveAdapter::ensureChunkIndex() const {
   if (!sample_index_dirty_) {
     return;
   }
@@ -230,15 +230,15 @@ void DatastoreCurveAdapter::ensureChunkIndex_() const {
   sample_index_dirty_ = false;
 }
 
-QPointF DatastoreCurveAdapter::readPoint_(const SeriesSample& sample) const {
+QPointF DatastoreCurveAdapter::readPoint(const SeriesSample& sample) const {
   if (sample.chunk == nullptr) {
     return invalidPoint();
   }
 
-  return {rawNsToDisplaySeconds(sample.timestamp, displayOffsetNow_()), sample.value};
+  return {rawNsToDisplaySeconds(sample.timestamp, displayOffsetNow()), sample.value};
 }
 
-DisplayOffset DatastoreCurveAdapter::displayOffsetNow_() const {
+DisplayOffset DatastoreCurveAdapter::displayOffsetNow() const {
   if (cached_display_offset_valid_) {
     return cached_display_offset_;
   }

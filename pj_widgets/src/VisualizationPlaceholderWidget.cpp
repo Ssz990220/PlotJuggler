@@ -82,9 +82,9 @@ VisualizationPlaceholderWidget::VisualizationPlaceholderWidget(QWidget* parent) 
     const char* object_name;
     VisualizationKind kind;
   } specs[] = {
-      {":/resources/svg/line_axis.svg", QT_TR_NOOP("Plot"), "buttonVizPlot", VisualizationKind::Plot},
-      {":/resources/svg/image.svg", QT_TR_NOOP("2D"), "buttonVizScene2D", VisualizationKind::Scene2D},
-      {":/resources/svg/cube.svg", QT_TR_NOOP("3D"), "buttonVizScene3D", VisualizationKind::Scene3D},
+      {":/resources/svg/line_axis.svg", QT_TR_NOOP("Plot"), "buttonVizPlot", VisualizationKind::kPlot},
+      {":/resources/svg/image.svg", QT_TR_NOOP("2D"), "buttonVizScene2D", VisualizationKind::kScene2D},
+      {":/resources/svg/cube.svg", QT_TR_NOOP("3D"), "buttonVizScene3D", VisualizationKind::kScene3D},
   };
   icon_buttons_.reserve(std::size(specs));
   for (const auto& spec : specs) {
@@ -112,7 +112,7 @@ void VisualizationPlaceholderWidget::onStylesheetChanged(const QString& theme) {
   // to 48x48 here -- visible blur on the larger placeholder buttons.
   for (const auto& entry : icon_buttons_) {
     const QSize icon_size = entry.button->iconSize();
-    const QPixmap pixmap = RenderSvgPixmap(entry.icon_path, theme, icon_size, devicePixelRatioF());
+    const QPixmap pixmap = renderSvgPixmap(entry.icon_path, theme, icon_size, devicePixelRatioF());
     entry.button->setIcon(QIcon(pixmap));
   }
 }
@@ -179,8 +179,8 @@ void VisualizationPlaceholderWidget::showSplitContextMenu(const QPoint& global_p
 }
 
 void VisualizationPlaceholderWidget::updateSplitActionIcons(const QString& theme) {
-  action_split_horizontal_->setIcon(QIcon(LoadSvg(":/resources/svg/add_column.svg", theme)));
-  action_split_vertical_->setIcon(QIcon(LoadSvg(":/resources/svg/add_row.svg", theme)));
+  action_split_horizontal_->setIcon(QIcon(loadSvg(":/resources/svg/add_column.svg", theme)));
+  action_split_vertical_->setIcon(QIcon(loadSvg(":/resources/svg/add_row.svg", theme)));
 }
 
 }  // namespace PJ

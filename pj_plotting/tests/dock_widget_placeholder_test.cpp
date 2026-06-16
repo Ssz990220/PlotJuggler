@@ -645,9 +645,9 @@ TEST(VisualizationPlaceholderTest, IconClicksEmitVisualizationRequested) {
   iconButton(&placeholder, "buttonVizScene3D")->click();
 
   ASSERT_EQ(requested.size(), 3U);
-  EXPECT_EQ(requested[0], PJ::VisualizationKind::Plot);
-  EXPECT_EQ(requested[1], PJ::VisualizationKind::Scene2D);
-  EXPECT_EQ(requested[2], PJ::VisualizationKind::Scene3D);
+  EXPECT_EQ(requested[0], PJ::VisualizationKind::kPlot);
+  EXPECT_EQ(requested[1], PJ::VisualizationKind::kScene2D);
+  EXPECT_EQ(requested[2], PJ::VisualizationKind::kScene3D);
 }
 
 TEST(VisualizationPlaceholderTest, RealMouseClickPassesThroughDragFilterAndEmits) {
@@ -675,7 +675,7 @@ TEST(VisualizationPlaceholderTest, RealMouseClickPassesThroughDragFilterAndEmits
   QApplication::sendEvent(button, &release);
 
   ASSERT_TRUE(got.has_value());
-  EXPECT_EQ(*got, PJ::VisualizationKind::Scene3D);
+  EXPECT_EQ(*got, PJ::VisualizationKind::kScene3D);
 }
 
 TEST(DockWidgetPlaceholderTest, PlotIconClickConvertsPlaceholderToEmptyPlot) {
@@ -704,14 +704,14 @@ TEST(DockWidgetPlaceholderTest, SceneIconClickRequestsObjectFamilyWithoutBuildin
   // Both the DockWidget signal and the PlotDocker re-emit must carry the dock +
   // family, so MainWindow (the only scene-kind-aware module) can build the dock.
   PJ::DockWidget* dock_signal_arg = nullptr;
-  PJ::VisualizationKind dock_kind = PJ::VisualizationKind::Plot;
+  PJ::VisualizationKind dock_kind = PJ::VisualizationKind::kPlot;
   int dock_count = 0;
   QObject::connect(dock, &PJ::DockWidget::objectFamilyRequested, dock, [&](PJ::DockWidget* d, PJ::VisualizationKind k) {
     dock_signal_arg = d;
     dock_kind = k;
     ++dock_count;
   });
-  PJ::VisualizationKind docker_kind = PJ::VisualizationKind::Plot;
+  PJ::VisualizationKind docker_kind = PJ::VisualizationKind::kPlot;
   int docker_count = 0;
   QObject::connect(
       &docker, &PJ::PlotDocker::objectFamilyRequested, &docker, [&](PJ::DockWidget* /*d*/, PJ::VisualizationKind k) {
@@ -725,9 +725,9 @@ TEST(DockWidgetPlaceholderTest, SceneIconClickRequestsObjectFamilyWithoutBuildin
 
   EXPECT_EQ(dock_count, 1);
   EXPECT_EQ(dock_signal_arg, dock);
-  EXPECT_EQ(dock_kind, PJ::VisualizationKind::Scene3D);
+  EXPECT_EQ(dock_kind, PJ::VisualizationKind::kScene3D);
   EXPECT_EQ(docker_count, 1);
-  EXPECT_EQ(docker_kind, PJ::VisualizationKind::Scene3D);
+  EXPECT_EQ(docker_kind, PJ::VisualizationKind::kScene3D);
   // The dock does not build the widget itself — that stays MainWindow's job.
   EXPECT_EQ(dock->objectWidget(), nullptr);
   EXPECT_EQ(dock->plotWidget(), nullptr);

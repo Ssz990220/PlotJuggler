@@ -82,28 +82,28 @@ void PosesRenderPass::initializeGL() {
       GL_ARRAY_BUFFER, mesh.vertices.data(), static_cast<GLsizeiptr>(sizeof(float) * mesh.vertices.size()));
   vbo_.bind(GL_ARRAY_BUFFER);
   withGlFunctions([](auto& f) {
-    constexpr GLsizei stride = static_cast<GLsizei>(sizeof(float) * 6);
+    constexpr GLsizei kStride = static_cast<GLsizei>(sizeof(float) * 6);
     f.glEnableVertexAttribArray(0U);
-    f.glVertexAttribPointer(0U, 3, GL_FLOAT, GL_FALSE, stride, nullptr);
+    f.glVertexAttribPointer(0U, 3, GL_FLOAT, GL_FALSE, kStride, nullptr);
     f.glEnableVertexAttribArray(1U);
-    f.glVertexAttribPointer(1U, 3, GL_FLOAT, GL_FALSE, stride, reinterpret_cast<const void*>(sizeof(float) * 3));
+    f.glVertexAttribPointer(1U, 3, GL_FLOAT, GL_FALSE, kStride, reinterpret_cast<const void*>(sizeof(float) * 3));
   });
 
   // Per-instance attribs sourced from instance_vbo_ (still empty — the VAO only
   // records the buffer+layout binding here; data lands on the first render).
   instance_vbo_.bind(GL_ARRAY_BUFFER);
   withGlFunctions([](auto& f) {
-    constexpr GLsizei istride = static_cast<GLsizei>(sizeof(PoseTriadInstance));
+    constexpr GLsizei kIstride = static_cast<GLsizei>(sizeof(PoseTriadInstance));
     for (GLuint col = 0U; col < 4U; ++col) {
       const GLuint loc = 2U + col;
       f.glEnableVertexAttribArray(loc);
       f.glVertexAttribPointer(
-          loc, 4, GL_FLOAT, GL_FALSE, istride, reinterpret_cast<const void*>(sizeof(glm::vec4) * col));
+          loc, 4, GL_FLOAT, GL_FALSE, kIstride, reinterpret_cast<const void*>(sizeof(glm::vec4) * col));
       f.glVertexAttribDivisor(loc, 1U);
     }
     f.glEnableVertexAttribArray(6U);
     f.glVertexAttribPointer(
-        6U, 4, GL_FLOAT, GL_FALSE, istride, reinterpret_cast<const void*>(offsetof(PoseTriadInstance, color)));
+        6U, 4, GL_FLOAT, GL_FALSE, kIstride, reinterpret_cast<const void*>(offsetof(PoseTriadInstance, color)));
     f.glVertexAttribDivisor(6U, 1U);
   });
 

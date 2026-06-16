@@ -139,7 +139,7 @@ void EdlPass::renderEdl(const ViewParams& view_params) {
   program_->setFloat("u_radius_px", radius_px_ * view_params.render_scale);
   // 8 unit-circle neighbour directions (Potree's circular sampling pattern).
   // Constant for the program's lifetime, so compute them once (L.55).
-  static const std::array<glm::vec2, 8> kOffsets = [] {
+  static const std::array<glm::vec2, 8> k_offsets = [] {
     std::array<glm::vec2, 8> values{};
     for (int i = 0; i < 8; ++i) {
       const float angle = 2.0f * std::numbers::pi_v<float> * static_cast<float>(i) / 8.0f;
@@ -147,7 +147,7 @@ void EdlPass::renderEdl(const ViewParams& view_params) {
     }
     return values;
   }();
-  program_->setVec2Array("u_offsets", kOffsets.data(), static_cast<int>(kOffsets.size()));
+  program_->setVec2Array("u_offsets", k_offsets.data(), static_cast<int>(k_offsets.size()));
   fullscreen_vao_.bind();
   withGlFunctions([](auto& functions) { functions.glDrawArrays(GL_TRIANGLES, 0, 3); });
   fullscreen_vao_.unbind();

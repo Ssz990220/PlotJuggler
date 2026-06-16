@@ -266,29 +266,29 @@ Material solidColorMaterial(glm::vec4 color) {
 }
 
 MeshData makeCube(glm::vec4 color) {
-  constexpr glm::vec3 positions[] = {
+  constexpr glm::vec3 kPositions[] = {
       {0.5f, -0.5f, -0.5f},  {0.5f, -0.5f, 0.5f},  {0.5f, 0.5f, 0.5f},   {0.5f, 0.5f, -0.5f},   {-0.5f, -0.5f, 0.5f},
       {-0.5f, -0.5f, -0.5f}, {-0.5f, 0.5f, -0.5f}, {-0.5f, 0.5f, 0.5f},  {-0.5f, 0.5f, -0.5f},  {0.5f, 0.5f, -0.5f},
       {0.5f, 0.5f, 0.5f},    {-0.5f, 0.5f, 0.5f},  {-0.5f, -0.5f, 0.5f}, {0.5f, -0.5f, 0.5f},   {0.5f, -0.5f, -0.5f},
       {-0.5f, -0.5f, -0.5f}, {-0.5f, -0.5f, 0.5f}, {-0.5f, 0.5f, 0.5f},  {0.5f, 0.5f, 0.5f},    {0.5f, -0.5f, 0.5f},
       {0.5f, -0.5f, -0.5f},  {0.5f, 0.5f, -0.5f},  {-0.5f, 0.5f, -0.5f}, {-0.5f, -0.5f, -0.5f},
   };
-  constexpr glm::vec3 normals[] = {
+  constexpr glm::vec3 kNormals[] = {
       {1, 0, 0}, {1, 0, 0}, {1, 0, 0}, {1, 0, 0}, {-1, 0, 0}, {-1, 0, 0}, {-1, 0, 0}, {-1, 0, 0},
       {0, 1, 0}, {0, 1, 0}, {0, 1, 0}, {0, 1, 0}, {0, -1, 0}, {0, -1, 0}, {0, -1, 0}, {0, -1, 0},
       {0, 0, 1}, {0, 0, 1}, {0, 0, 1}, {0, 0, 1}, {0, 0, -1}, {0, 0, -1}, {0, 0, -1}, {0, 0, -1},
   };
-  constexpr std::uint32_t indices[] = {
+  constexpr std::uint32_t kIndices[] = {
       0,  1,  2,  0,  2,  3,  4,  5,  6,  4,  6,  7,  8,  9,  10, 8,  10, 11,
       12, 13, 14, 12, 14, 15, 16, 17, 18, 16, 18, 19, 20, 21, 22, 20, 22, 23,
   };
   MeshData out;
   out.ok = true;
-  out.vertices.reserve(std::size(positions));
-  for (std::size_t i = 0; i < std::size(positions); ++i) {
-    out.vertices.push_back(Vertex{positions[i], normals[i], color});
+  out.vertices.reserve(std::size(kPositions));
+  for (std::size_t i = 0; i < std::size(kPositions); ++i) {
+    out.vertices.push_back(Vertex{kPositions[i], kNormals[i], color});
   }
-  out.indices.assign(std::begin(indices), std::end(indices));
+  out.indices.assign(std::begin(kIndices), std::end(kIndices));
   out.submeshes.push_back(SubMesh{0, out.indices.size(), std::make_shared<const Material>(solidColorMaterial(color))});
   return out;
 }
@@ -668,7 +668,7 @@ void MeshRenderPass::drawOne(
     const GLint loc_alpha_mode = uniforms_.alpha_mode;
     const GLint loc_alpha_cutoff = uniforms_.alpha_cutoff;
 
-    const auto bindUnit = [&functions](int unit, GLuint texture_id) {
+    const auto bind_unit = [&functions](int unit, GLuint texture_id) {
       functions.glActiveTexture(static_cast<GLenum>(GL_TEXTURE0 + unit));
       functions.glBindTexture(GL_TEXTURE_2D, texture_id);
     };
@@ -696,11 +696,11 @@ void MeshRenderPass::drawOne(
       const GLuint normal_tex = textureIdFor(mat.normal, textureColorSpaceForSlot(MaterialTextureSlot::kNormal));
       const GLuint ao_tex = textureIdFor(mat.occlusion, textureColorSpaceForSlot(MaterialTextureSlot::kOcclusion));
       const GLuint emissive_tex = textureIdFor(mat.emissive, textureColorSpaceForSlot(MaterialTextureSlot::kEmissive));
-      bindUnit(0, base_tex);
-      bindUnit(1, mr_tex);
-      bindUnit(2, normal_tex);
-      bindUnit(3, ao_tex);
-      bindUnit(4, emissive_tex);
+      bind_unit(0, base_tex);
+      bind_unit(1, mr_tex);
+      bind_unit(2, normal_tex);
+      bind_unit(3, ao_tex);
+      bind_unit(4, emissive_tex);
       if (loc_has_base >= 0) {
         functions.glUniform1i(loc_has_base, base_tex != 0U ? 1 : 0);
       }
@@ -777,7 +777,7 @@ void MeshRenderPass::drawBatch(
   bool blend_was_enabled = false;
   withGlFunctions(
       [&blend_was_enabled](auto& functions) { blend_was_enabled = functions.glIsEnabled(GL_BLEND) == GL_TRUE; });
-  const auto restoreBlend = [blend_was_enabled](auto& functions) {
+  const auto restore_blend = [blend_was_enabled](auto& functions) {
     if (blend_was_enabled) {
       functions.glEnable(GL_BLEND);
     } else {
@@ -814,9 +814,9 @@ void MeshRenderPass::drawBatch(
     for (const DrawCall& draw : draws) {
       drawOne(view_params, draw, *resourceForDraw(draw), opacity);
     }
-    withGlFunctions([&restoreBlend](auto& functions) {
+    withGlFunctions([&restore_blend](auto& functions) {
       functions.glDepthMask(GL_TRUE);
-      restoreBlend(functions);
+      restore_blend(functions);
       functions.glUseProgram(0U);
     });
     return;
@@ -864,8 +864,8 @@ void MeshRenderPass::drawBatch(
     withGlFunctions([](auto& functions) { functions.glDepthMask(GL_TRUE); });
   }
 
-  withGlFunctions([&restoreBlend](auto& functions) {
-    restoreBlend(functions);
+  withGlFunctions([&restore_blend](auto& functions) {
+    restore_blend(functions);
     functions.glUseProgram(0U);
   });
 }

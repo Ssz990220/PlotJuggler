@@ -112,7 +112,7 @@ const TopicDescriptor& TopicStorage::descriptor() const noexcept {
   return descriptor_;
 }
 
-TopicId TopicStorage::topic_id() const noexcept {
+TopicId TopicStorage::topicId() const noexcept {
   return topic_id_;
 }
 
@@ -120,7 +120,7 @@ bool TopicStorage::empty() const noexcept {
   return sealed_chunks_.empty();
 }
 
-Timestamp TopicStorage::time_min() const noexcept {
+Timestamp TopicStorage::timeMin() const noexcept {
   if (sealed_chunks_.empty()) {
     return 0;
   }
@@ -132,7 +132,7 @@ Timestamp TopicStorage::time_min() const noexcept {
   return t_min;
 }
 
-Timestamp TopicStorage::time_max() const noexcept {
+Timestamp TopicStorage::timeMax() const noexcept {
   if (sealed_chunks_.empty()) {
     return 0;
   }

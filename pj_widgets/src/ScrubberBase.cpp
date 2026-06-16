@@ -39,7 +39,7 @@ ScrubberBase::ScrubberBase(QWidget* parent) : QWidget(parent) {
 }
 
 ScrubberBase::~ScrubberBase() {
-  if (state_ == State::Dragging && cursor_hidden_during_drag_) {
+  if (state_ == State::kDragging && cursor_hidden_during_drag_) {
     QApplication::restoreOverrideCursor();
   }
 }
@@ -84,24 +84,24 @@ QRect ScrubberBase::centerRect() const {
 
 ScrubberBase::Zone ScrubberBase::zoneAt(const QPoint& pos) const {
   if (leftArrowRect().contains(pos)) {
-    return Zone::LeftArrow;
+    return Zone::kLeftArrow;
   }
   if (rightArrowRect().contains(pos)) {
-    return Zone::RightArrow;
+    return Zone::kRightArrow;
   }
-  return Zone::Body;
+  return Zone::kBody;
 }
 
 void ScrubberBase::updateCursorForPos(const QPoint& pos) {
-  if (state_ == State::Dragging || state_ == State::Editing) {
+  if (state_ == State::kDragging || state_ == State::kEditing) {
     return;
   }
   switch (zoneAt(pos)) {
-    case Zone::LeftArrow:
-    case Zone::RightArrow:
+    case Zone::kLeftArrow:
+    case Zone::kRightArrow:
       setCursor(Qt::PointingHandCursor);
       break;
-    case Zone::Body:
+    case Zone::kBody:
       setCursor(Qt::SizeHorCursor);
       break;
   }
@@ -139,7 +139,7 @@ void ScrubberBase::paintEvent(QPaintEvent*) {
   // pixel boundaries (otherwise antialiasing smears the edge across two
   // rows/columns and the rectangle looks uneven).
   qreal active_mix = hover_alpha_;
-  if (state_ == State::Dragging || state_ == State::Editing || hasFocus()) {
+  if (state_ == State::kDragging || state_ == State::kEditing || hasFocus()) {
     active_mix = 1.0;
   }
   const QColor mixed(
@@ -153,15 +153,15 @@ void ScrubberBase::paintEvent(QPaintEvent*) {
   p.drawPath(stroke_path);
 
   // Centre text (skip while editing — the QLineEdit covers it)
-  if (state_ != State::Editing) {
+  if (state_ != State::kEditing) {
     p.setPen(pal.color(QPalette::Text));
     p.drawText(centerRect(), Qt::AlignCenter, displayText());
   }
 
   // Arrows: only fade in while hovered
-  if (hover_alpha_ > 0.0 && state_ != State::Editing) {
-    const QPixmap& left = LoadSvg(":/resources/svg/keyboard_arrow_left_light.svg", currentTheme());
-    const QPixmap& right = LoadSvg(":/resources/svg/keyboard_arrow_right_light.svg", currentTheme());
+  if (hover_alpha_ > 0.0 && state_ != State::kEditing) {
+    const QPixmap& left = loadSvg(":/resources/svg/keyboard_arrow_left_light.svg", currentTheme());
+    const QPixmap& right = loadSvg(":/resources/svg/keyboard_arrow_right_light.svg", currentTheme());
     p.setOpacity(hover_alpha_);
     const QSize icon_size(12, 12);
     auto draw = [&](const QPixmap& pm, const QRect& zone) {
@@ -181,18 +181,18 @@ void ScrubberBase::mousePressEvent(QMouseEvent* event) {
     return;
   }
   switch (zoneAt(event->pos())) {
-    case Zone::LeftArrow:
+    case Zone::kLeftArrow:
       stepBy(-1);
       startAutoRepeat(-1);
       event->accept();
       return;
-    case Zone::RightArrow:
+    case Zone::kRightArrow:
       stepBy(+1);
       startAutoRepeat(+1);
       event->accept();
       return;
-    case Zone::Body:
-      state_ = State::Armed;
+    case Zone::kBody:
+      state_ = State::kArmed;
       press_screen_pos_ = event->globalPosition().toPoint();
       last_drag_global_ = event->globalPosition();
       accumulated_pixels_ = 0.0;
@@ -203,17 +203,17 @@ void ScrubberBase::mousePressEvent(QMouseEvent* event) {
 }
 
 void ScrubberBase::mouseMoveEvent(QMouseEvent* event) {
-  if (state_ == State::Idle) {
+  if (state_ == State::kIdle) {
     updateCursorForPos(event->pos());
   }
-  if (state_ == State::Armed) {
+  if (state_ == State::kArmed) {
     const qreal dx = event->globalPosition().x() - press_screen_pos_.x();
     const qreal dy = event->globalPosition().y() - press_screen_pos_.y();
     if (std::sqrt(dx * dx + dy * dy) > kClickDragThreshold) {
       startDrag();
     }
   }
-  if (state_ == State::Dragging) {
+  if (state_ == State::kDragging) {
     handleDragMove(event->globalPosition());
     event->accept();
     return;
@@ -232,14 +232,14 @@ void ScrubberBase::mouseReleaseEvent(QMouseEvent* event) {
     event->accept();
     return;
   }
-  if (state_ == State::Armed) {
+  if (state_ == State::kArmed) {
     // No drag happened — treat as click ⇒ enter edit.
-    state_ = State::Idle;
+    state_ = State::kIdle;
     enterEditMode();
     event->accept();
     return;
   }
-  if (state_ == State::Dragging) {
+  if (state_ == State::kDragging) {
     endDrag();
     event->accept();
     return;
@@ -250,7 +250,7 @@ void ScrubberBase::mouseReleaseEvent(QMouseEvent* event) {
 void ScrubberBase::mouseDoubleClickEvent(QMouseEvent* event) {
   // Double-click on the body fast-paths into edit. Double-click on an
   // arrow falls through to mousePressEvent so it just steps twice.
-  if (event->button() == Qt::LeftButton && state_ != State::Editing && zoneAt(event->pos()) == Zone::Body) {
+  if (event->button() == Qt::LeftButton && state_ != State::kEditing && zoneAt(event->pos()) == Zone::kBody) {
     enterEditMode();
     event->accept();
     return;
@@ -272,7 +272,7 @@ void ScrubberBase::leaveEvent(QEvent* event) {
 }
 
 void ScrubberBase::resizeEvent(QResizeEvent* event) {
-  if (line_edit_ && state_ == State::Editing) {
+  if (line_edit_ && state_ == State::kEditing) {
     line_edit_->setGeometry(centerRect());
   }
   QWidget::resizeEvent(event);
@@ -290,7 +290,7 @@ void ScrubberBase::keyPressEvent(QKeyEvent* event) {
 }
 
 void ScrubberBase::startDrag() {
-  state_ = State::Dragging;
+  state_ = State::kDragging;
   if (cursor_hidden_during_drag_) {
     QApplication::setOverrideCursor(Qt::BlankCursor);
   }
@@ -302,7 +302,7 @@ void ScrubberBase::endDrag() {
     QApplication::restoreOverrideCursor();
   }
   QCursor::setPos(press_screen_pos_);
-  state_ = State::Idle;
+  state_ = State::kIdle;
   update();
   emit editingFinished();  // drag gesture settled
 }
@@ -351,7 +351,7 @@ QLineEdit* ScrubberBase::ensureLineEdit() {
   // Enter commits; Escape and focus-out both revert (handled in
   // eventFilter — editingFinished is too coarse, it fires for both).
   connect(line_edit_, &QLineEdit::returnPressed, this, [this]() {
-    if (state_ == State::Editing) {
+    if (state_ == State::kEditing) {
       exitEditMode(/*commit=*/true);
     }
   });
@@ -360,7 +360,7 @@ QLineEdit* ScrubberBase::ensureLineEdit() {
 }
 
 bool ScrubberBase::eventFilter(QObject* obj, QEvent* event) {
-  if (state_ == State::Editing) {
+  if (state_ == State::kEditing) {
     // Line-edit-targeted: Escape and FocusOut both revert.
     if (obj == line_edit_) {
       if (event->type() == QEvent::FocusOut) {
@@ -386,11 +386,11 @@ bool ScrubberBase::eventFilter(QObject* obj, QEvent* event) {
 }
 
 void ScrubberBase::enterEditMode() {
-  if (state_ == State::Editing) {
+  if (state_ == State::kEditing) {
     return;
   }
   QLineEdit* le = ensureLineEdit();
-  state_ = State::Editing;
+  state_ = State::kEditing;
   le->setText(displayText());
   le->setGeometry(centerRect());
   le->show();
@@ -403,10 +403,10 @@ void ScrubberBase::enterEditMode() {
 }
 
 void ScrubberBase::exitEditMode(bool commit) {
-  if (state_ != State::Editing) {
+  if (state_ != State::kEditing) {
     return;
   }
-  state_ = State::Idle;
+  state_ = State::kIdle;
   qApp->removeEventFilter(this);
   if (line_edit_) {
     if (commit) {

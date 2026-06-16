@@ -206,7 +206,7 @@ void Scene2DDockWidget::retintEmptyPlaceholder() {
   }
   // Same 2D glyph the dock-level placeholder offers, tinted to the theme ink.
   constexpr int kIconPx = 96;
-  const QPixmap pixmap = RenderSvgPixmap(
+  const QPixmap pixmap = renderSvgPixmap(
       QStringLiteral(":/resources/svg/image.svg"), currentTheme(), QSize(kIconPx, kIconPx),
       empty_placeholder_icon_->devicePixelRatioF());
   empty_placeholder_icon_->setPixmap(pixmap);

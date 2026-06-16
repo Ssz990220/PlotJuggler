@@ -21,7 +21,7 @@ namespace {
 // Hit-test band width around the dialog edge that triggers a resize.
 constexpr int kResizeMargin = 6;
 
-Qt::CursorShape CursorForEdges(Qt::Edges edges) {
+Qt::CursorShape cursorForEdges(Qt::Edges edges) {
   switch (static_cast<int>(edges)) {
     case Qt::TopEdge | Qt::LeftEdge:
     case Qt::BottomEdge | Qt::RightEdge:
@@ -88,7 +88,7 @@ QLayout* Dialog::contentLayout() const {
 }
 
 void Dialog::applyIcons() {
-  ui_->buttonClose->setIcon(LoadSvg(":/resources/svg/close_windows_light.svg", currentTheme()));
+  ui_->buttonClose->setIcon(loadSvg(":/resources/svg/close_windows_light.svg", currentTheme()));
 }
 
 void Dialog::mousePressEvent(QMouseEvent* event) {
@@ -141,7 +141,7 @@ bool Dialog::eventFilter(QObject* watched, QEvent* event) {
 
   if (type == QEvent::MouseMove) {
     if (edges != 0) {
-      setCursor(CursorForEdges(edges));
+      setCursor(cursorForEdges(edges));
     } else {
       unsetCursor();
     }

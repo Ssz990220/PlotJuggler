@@ -265,7 +265,7 @@ void DataEngine::enforceRetention(Timestamp retention_window_ns) {
   for (auto it = impl_->topics.begin(); it != impl_->topics.end(); ++it) {
     auto& storage = it.value();
     if (!storage.empty()) {
-      Timestamp t_max = storage.time_max();
+      Timestamp t_max = storage.timeMax();
       storage.evictBefore(t_max - retention_window_ns);
     }
   }
@@ -277,7 +277,7 @@ void DataEngine::enforceRetention(Timestamp retention_window_ns, DatasetId datas
     if (storage.descriptor().dataset_id != dataset_id || storage.empty()) {
       continue;
     }
-    Timestamp t_max = storage.time_max();
+    Timestamp t_max = storage.timeMax();
     storage.evictBefore(t_max - retention_window_ns);
   }
 }
@@ -316,7 +316,7 @@ Status DataEngine::flushTo(DataEngine& dst) {
           "flushTo: destination has no topic '" + src_storage.descriptor().name + "' for dataset " +
           std::to_string(src_storage.descriptor().dataset_id));
     }
-    if (!dst_storage->empty() && src_storage.time_min() < dst_storage->time_max()) {
+    if (!dst_storage->empty() && src_storage.timeMin() < dst_storage->timeMax()) {
       return PJ::unexpected("flushTo: monotonicity violation for topic '" + src_storage.descriptor().name + "'");
     }
     plan.push_back({&src_storage, dst_storage});
@@ -340,7 +340,7 @@ void DataEngine::adoptChunksFrom(TopicStorage& dst, TopicStorage& src) {
   // Appends — callers that need replace semantics clear dst first.
   std::deque<TopicChunk> drained = std::move(src.sealed_chunks_);
   src.sealed_chunks_.clear();  // post-move state: deque is valid but empty.
-  const TopicId dst_id = dst.topic_id();
+  const TopicId dst_id = dst.topicId();
   for (auto& chunk : drained) {
     chunk.topic_id = dst_id;
     dst.sealed_chunks_.push_back(std::move(chunk));

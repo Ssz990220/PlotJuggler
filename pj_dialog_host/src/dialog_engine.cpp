@@ -32,7 +32,7 @@ DialogEngine::DialogEngine(PJ::DialogHandle handle, DialogEngineConfig config)
 // JSON diff: compute which widget keys changed between old and new data
 // ---------------------------------------------------------------------------
 
-static nlohmann::json compute_diff(const nlohmann::json& old_data, const nlohmann::json& new_data) {
+static nlohmann::json computeDiff(const nlohmann::json& old_data, const nlohmann::json& new_data) {
   nlohmann::json diff = nlohmann::json::object();
   for (const auto& [key, val] : new_data.items()) {
     if (!old_data.contains(key) || old_data[key] != val) {
@@ -53,7 +53,7 @@ struct ApplyResult {
   std::optional<std::string> sub_dialog_ui;
 };
 
-static ApplyResult apply_and_diff(
+static ApplyResult applyAndDiff(
     QWidget* root, PJ::DialogHandle& handle, nlohmann::json& prev_data, bool enable_diff, int& diff_apply_count) {
   std::string raw = handle.widget_data();
   nlohmann::json new_data = nlohmann::json::parse(raw, nullptr, false);
@@ -71,7 +71,7 @@ static ApplyResult apply_and_diff(
   new_data.erase("__request_sub_dialog");
 
   if (enable_diff) {
-    nlohmann::json diff = compute_diff(prev_data, new_data);
+    nlohmann::json diff = computeDiff(prev_data, new_data);
     if (!diff.empty()) {
       PJ::WidgetDataView view(diff.dump());
       applyWidgetData(root, view);
@@ -347,7 +347,7 @@ DialogResult DialogEngine::showDialog(QWidget* parent) {
           new_data.erase("__request_accept");
           new_data.erase("__request_sub_dialog");
           if (config_.enable_diff) {
-            nlohmann::json diff = compute_diff(parser_prev_data, new_data);
+            nlohmann::json diff = computeDiff(parser_prev_data, new_data);
             if (!diff.empty()) {
               PJ::WidgetDataView view(diff.dump());
               applyWidgetData(parser_dialog_widget, view);
@@ -451,7 +451,7 @@ DialogResult DialogEngine::showDialog(QWidget* parent) {
   connectWidgetSignals(binding_root, [&](const std::string& name, const std::string& event_json) {
     stats_.event_count++;
     if (handle_.sendEvent(name, event_json)) {
-      auto ar = apply_and_diff(binding_root, handle_, prev_data, config_.enable_diff, stats_.diff_apply_count);
+      auto ar = applyAndDiff(binding_root, handle_, prev_data, config_.enable_diff, stats_.diff_apply_count);
       if (ar.wants_accept) {
         dialog->accept();
         return;
@@ -476,7 +476,7 @@ DialogResult DialogEngine::showDialog(QWidget* parent) {
       auto* drop_filter = new DropEventFilter(dialog, [&](const std::string& name, const std::string& event_json) {
         stats_.event_count++;
         if (handle_.sendEvent(name, event_json)) {
-          auto ar = apply_and_diff(binding_root, handle_, prev_data, config_.enable_diff, stats_.diff_apply_count);
+          auto ar = applyAndDiff(binding_root, handle_, prev_data, config_.enable_diff, stats_.diff_apply_count);
           if (ar.wants_accept) {
             dialog->accept();
             return;
@@ -496,7 +496,7 @@ DialogResult DialogEngine::showDialog(QWidget* parent) {
   QObject::connect(&tick_timer, &QTimer::timeout, [&]() {
     stats_.tick_count++;
     if (handle_.tick()) {
-      auto ar = apply_and_diff(binding_root, handle_, prev_data, config_.enable_diff, stats_.diff_apply_count);
+      auto ar = applyAndDiff(binding_root, handle_, prev_data, config_.enable_diff, stats_.diff_apply_count);
       maybe_open_sub_dialog(ar);
     }
   });

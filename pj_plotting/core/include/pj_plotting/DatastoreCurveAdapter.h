@@ -41,9 +41,9 @@ class DatastoreCurveAdapter final : public QwtSeriesData<QPointF> {
   [[nodiscard]] std::optional<QPointF> sampleFromTime(double display_time_sec) const;
 
  private:
-  void ensureChunkIndex_() const;
-  [[nodiscard]] QPointF readPoint_(const SeriesSample& sample) const;
-  [[nodiscard]] DisplayOffset displayOffsetNow_() const;
+  void ensureChunkIndex() const;
+  [[nodiscard]] QPointF readPoint(const SeriesSample& sample) const;
+  [[nodiscard]] DisplayOffset displayOffsetNow() const;
 
   SessionManager* session_ = nullptr;
   CurveDescriptor source_;
