@@ -162,6 +162,16 @@ class SceneDockWidget : public QWidget, public IDataWidget, public IObjectViewer
   [[nodiscard]] static std::optional<DatasetId> resolveDatasetId(
       const SessionManager* session, DatasetId saved_id, const QString& saved_source);
 
+  /// The dataset whose display-offset represents this dock's time domain when
+  /// onTrackerTime() recovers the absolute tracker instant. The base scans render
+  /// layers and returns the first non-zero dataset_id (else 0). Subclasses that own
+  /// time-bearing topics with NO render layer (e.g. a TF-only 3D dock, whose
+  /// FrameTransforms topic is config, not a layer) override to supply their dataset
+  /// when the base scan returns 0 — without it the offset defaults to zero and
+  /// display seconds are mistaken for absolute. Backend-agnostic: the base only
+  /// forwards the id to session_->displayOffset().
+  [[nodiscard]] virtual DatasetId representativeDatasetId() const;
+
   /// Family-specific eviction sweep for revalidateObjects(): drop layers (and, in
   /// Scene3D, config topics) whose ObjectStore topic was evicted, and return
   /// whether any live content remains. The non-virtual revalidateObjects() owns

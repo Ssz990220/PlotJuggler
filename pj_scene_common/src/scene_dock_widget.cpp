@@ -288,22 +288,15 @@ void SceneDockWidget::onTrackerTime(double time) {
   // `time` is display-axis seconds. Recover the ABSOLUTE instant the scene
   // stores objects by, by adding back the dataset's "Use time offset" shift
   // (display = raw - offset). A scene dock shows one dataset today, so a single
-  // representative offset (from any layer's dataset — they share one) is exact; a
+  // representative offset (representativeDatasetId() -> displayOffset) is exact; a
   // future mixed-dataset dock would convert per layer. NaN/inf carry no position.
   if (!std::isfinite(time)) {
     return;
   }
   PJ::DisplayOffset offset;
   if (session_ != nullptr) {
-    for (const auto& [key, layer] : layers_) {
-      if (layer == nullptr) {
-        continue;
-      }
-      const DatasetId dataset_id = session_->objectStore().descriptor(layer->info().topic_id).dataset_id;
-      if (dataset_id != 0) {
-        offset = session_->displayOffset(dataset_id);
-        break;
-      }
+    if (const DatasetId repr_id = representativeDatasetId(); repr_id != 0) {
+      offset = session_->displayOffset(repr_id);
     }
   }
   const PJ::Timepoint clamped = clampToLayerRange(PJ::toAbsolute(PJ::displaySeconds(time), offset));
@@ -314,6 +307,24 @@ void SceneDockWidget::onTrackerTime(double time) {
     }
   }
   refreshView();
+}
+
+DatasetId SceneDockWidget::representativeDatasetId() const {
+  // First non-zero dataset_id among render layers. Guarded so a direct subclass
+  // call with no session is safe (onTrackerTime already gates on session_).
+  if (session_ == nullptr) {
+    return 0;
+  }
+  for (const auto& [key, layer] : layers_) {
+    if (layer == nullptr) {
+      continue;
+    }
+    const DatasetId dataset_id = session_->objectStore().descriptor(layer->info().topic_id).dataset_id;
+    if (dataset_id != 0) {
+      return dataset_id;
+    }
+  }
+  return 0;
 }
 
 QDomElement SceneDockWidget::xmlSaveState(QDomDocument& doc) const {

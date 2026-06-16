@@ -122,6 +122,13 @@ class Scene3DDockWidget : public SceneDockWidget {
   [[nodiscard]] bool hasTransformBufferForTest() const {
     return tf_buffer_ != nullptr;
   }
+  // The last tracker instant forwarded to the layers/view (raw ns), already
+  // converted display->absolute and clamped. Lets tests assert the "Use time
+  // offset" shift is recovered for a layer-less (TF-only) dock without an
+  // OpenGL view; reaches the protected base accessor.
+  [[nodiscard]] std::optional<int64_t> lastTrackerNsForTest() const {
+    return lastTrackerNs();
+  }
 #endif
 
  public slots:
@@ -155,6 +162,12 @@ class Scene3DDockWidget : public SceneDockWidget {
   // the TF binding when its dataset is gone; the base adds the keep-if-never-
   // populated rule, so this only reports whether live layers/config remain.
   bool pruneEvictedObjects() override;
+  // A TF-only dock consumes FrameTransforms as a config topic and creates no render
+  // layer, so the base layers_ scan returns 0; fall back to dataset_id_ (the bound
+  // TF dataset, kept in sync by prepareTransformBufferForTopic /
+  // resetTransformBindingIfDatasetGone) so onTrackerTime recovers the "Use time
+  // offset" shift. Returns 0 only when fully unbound.
+  [[nodiscard]] DatasetId representativeDatasetId() const override;
   void syncViewLayers(const std::vector<ISceneLayer*>& ordered_layers) override;
   void refreshView() override;
   [[nodiscard]] QString xmlTag() const override;

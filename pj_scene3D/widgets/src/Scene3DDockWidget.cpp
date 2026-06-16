@@ -499,6 +499,13 @@ void Scene3DDockWidget::onTrackerTime(double time) {
   }
 }
 
+DatasetId Scene3DDockWidget::representativeDatasetId() const {
+  // A TF-only dock has no render layer for the base to find, so fall back to the
+  // bound TF dataset; a dock with render layers keeps the base's layer-derived id.
+  const DatasetId from_layers = SceneDockWidget::representativeDatasetId();
+  return (from_layers != 0) ? from_layers : dataset_id_;
+}
+
 QWidget* Scene3DDockWidget::createSceneView() {
   auto* view = new pj::scene3d::SceneViewWidget();
   view_ = view;

@@ -130,6 +130,78 @@ TEST(Scene3DDockStreaming, RebindsToSecondDatasetAfterFirstRemoved) {
   EXPECT_EQ(dock.boundDatasetIdForTest(), 2u);
 }
 
+// Regression (PR #212 "Use time offset"): a TF-only dock consumes /tf as a config
+// topic and creates NO render layer, so the base onTrackerTime() layers_-only scan
+// found no dataset, defaulted the display offset to zero, and treated display
+// seconds as absolute. The TF buffer is keyed by ABSOLUTE ns, so the lookup found
+// nothing — TF rendered only with the toggle OFF. With the toggle ON,
+// onTrackerTime(0.0) must recover offset == kBaseNs and drive the view at kBaseNs.
+TEST(Scene3DDockStreaming, TfOnlyDockTrackerTimeRecoversAbsoluteOffset) {
+  static constexpr int64_t kBaseNs = 1'700'000'000'000'000'000LL;  // ~2023-11 in epoch ns
+
+  PJ::SessionManager session;
+  pj::scene3d::TransformService transform_service(session);
+  PJ::ObjectStore& store = session.objectStore();
+
+  // Register /tf and push one entry at kBaseNs so datasetMinTimestamp(1) == kBaseNs
+  // (datasetRawBounds unions the ObjectStore).
+  PJ::ObjectTopicDescriptor desc;
+  desc.dataset_id = 1;
+  desc.topic_name = "/tf";
+  const auto topic_id_opt = store.registerTopic(desc);
+  ASSERT_TRUE(topic_id_opt.has_value());
+  const PJ::ObjectTopicId tf_topic = *topic_id_opt;
+  ASSERT_TRUE(store.pushOwned(tf_topic, kBaseNs, std::vector<uint8_t>{0x00}).has_value());
+
+  PJ::Scene3DDockWidget dock;
+  dock.setSessionManager(&session);
+  dock.setTransformService(&transform_service);
+
+  // Consume /tf as a config topic (handleSceneConfigTopic path) -> no render layer.
+  ASSERT_TRUE(dock.addTopic(tf_topic, PJ::sdk::BuiltinObjectType::kFrameTransforms, QStringLiteral("/tf")));
+  ASSERT_TRUE(dock.layers().empty()) << "a FrameTransforms topic must not create a render layer";
+  ASSERT_EQ(dock.boundDatasetIdForTest(), 1u) << "dataset_id_ must be set by the config path";
+
+  // "Use time offset" ON (PJ3-parity default in the app; SessionManager default is OFF).
+  session.setUseTimeOffset(true);
+
+  // display 0.0 (start of the relative axis) -> absolute = 0 + offset = kBaseNs.
+  // RED before the fix: lastTrackerNs() == 0 (empty layers_, offset stayed zero).
+  dock.onTrackerTime(0.0);
+  const auto ns = dock.lastTrackerNsForTest();
+  ASSERT_TRUE(ns.has_value());
+  EXPECT_EQ(*ns, kBaseNs);
+}
+
+// Guard: with the toggle OFF the absolute path is unchanged — displayOffset(1) == 0,
+// so onTrackerTime(5.0) yields exactly 5e9 ns (integer ns, no double drift).
+TEST(Scene3DDockStreaming, TfOnlyDockTrackerTimeToggleOffIsRawSeconds) {
+  static constexpr int64_t kBaseNs = 1'700'000'000'000'000'000LL;
+
+  PJ::SessionManager session;
+  pj::scene3d::TransformService transform_service(session);
+  PJ::ObjectStore& store = session.objectStore();
+
+  PJ::ObjectTopicDescriptor desc;
+  desc.dataset_id = 1;
+  desc.topic_name = "/tf";
+  const auto topic_id_opt = store.registerTopic(desc);
+  ASSERT_TRUE(topic_id_opt.has_value());
+  const PJ::ObjectTopicId tf_topic = *topic_id_opt;
+  ASSERT_TRUE(store.pushOwned(tf_topic, kBaseNs, std::vector<uint8_t>{0x00}).has_value());
+
+  PJ::Scene3DDockWidget dock;
+  dock.setSessionManager(&session);
+  dock.setTransformService(&transform_service);
+  ASSERT_TRUE(dock.addTopic(tf_topic, PJ::sdk::BuiltinObjectType::kFrameTransforms, QStringLiteral("/tf")));
+
+  session.setUseTimeOffset(false);
+  dock.onTrackerTime(5.0);
+  const auto ns = dock.lastTrackerNsForTest();
+  ASSERT_TRUE(ns.has_value());
+  EXPECT_EQ(*ns, static_cast<int64_t>(5LL * 1'000'000'000LL));
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
