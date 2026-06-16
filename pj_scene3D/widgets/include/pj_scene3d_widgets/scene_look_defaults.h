@@ -30,9 +30,9 @@ inline glm::vec3 keyDirFromAzEl(float az_deg, float el_deg) {
 // ---- Mesh shading (MeshShadingParams) ----
 inline constexpr float kRoughness = 0.6f;              // visual-mesh GGX roughness
 inline constexpr float kReflectivity = 0.06f;          // dielectric f0
-inline constexpr float kAmbientScale = 1.0f;           // image-based ambient weight
-inline constexpr float kKeyLightScale = 1.15f;         // fixed world "sun" weight
-inline constexpr float kFillLightScale = 0.35f;        // camera-locked fill weight
+inline constexpr float kAmbientScale = 0.5f;           // image-based ambient weight
+inline constexpr float kKeyLightScale = 1.6f;          // fixed world "sun" weight
+inline constexpr float kFillLightScale = 0.5f;         // camera-locked fill weight
 inline constexpr float kEnvIntensity = 1.0f;           // analytic specular IBL weight
 inline constexpr float kKeyLightAzimuthDeg = 40.0f;    // key-light azimuth (Z-up)
 inline constexpr float kKeyLightElevationDeg = 55.0f;  // key-light elevation
@@ -41,13 +41,13 @@ inline constexpr float kCollisionOpacity = 0.4f;
 
 // ---- Composite / post (CompositeParams) ----
 inline constexpr int kTonemapMode = 1;  // 0 None, 1 ACES, 2 AgX, 3 Neutral
-inline constexpr float kExposure = 1.1f;
-inline constexpr float kSaturation = 1.2f;  // post-tonemap saturation boost
+inline constexpr float kExposure = 1.3f;
+inline constexpr float kSaturation = 1.3f;  // post-tonemap saturation boost
 inline constexpr float kAoStrength = 1.0f;  // SSAO blend into the composite
 inline constexpr float kEdlFloor = 0.3f;    // EDL darkens toward floor*color
 
 // ---- Screen-space passes (SsaoPass / EdlPass) ----
-inline constexpr float kSsaoRadiusM = 0.5f;  // SSAO sample radius (metres)
+inline constexpr float kSsaoRadiusM = 0.4f;  // SSAO sample radius (metres)
 inline constexpr float kSsaoPower = 1.0f;    // SSAO contrast exponent
 inline constexpr float kEdlStrength = 1.0f;  // EDL response strength
 inline constexpr float kEdlRadiusPx = 0.6f;  // EDL neighbour radius (pixels; plan spec was 1.4)
