@@ -22,8 +22,10 @@
 // across the recreation.
 //
 // Skips cleanly when no usable GL context is available (e.g. a headless dev box
-// without xvfb); CI runs the whole suite under `xvfb-run`, which provides a
-// software GL context, so it executes there.
+// without xvfb) OR when the context is too old for the scene's `#version 450`
+// shaders. Linux CI runs under `xvfb-run` + Mesa llvmpipe, which reports GL 4.5,
+// so it executes there. Windows CI's software GL is only a GL 3.0 / GLSL 1.30
+// context — it cannot compile the scene shaders, so this test skips there.
 
 #include <gtest/gtest.h>
 
@@ -33,7 +35,10 @@
 #include <QImage>
 #include <QMouseEvent>
 #include <QOpenGLContext>
+#include <QOpenGLFunctions>
 #include <QPalette>
+#include <QString>
+#include <QStringList>
 #include <QVBoxLayout>
 #include <QWidget>
 #include <algorithm>
@@ -104,6 +109,33 @@ bool haveGl(const SceneViewWidget& view) {
   return view.context() != nullptr && view.context()->isValid();
 }
 
+// (major, minor) of the live GL context as the DRIVER reports it via
+// glGetString(GL_VERSION) — NOT the requested QSurfaceFormat. main() asks for a
+// 4.5 core context, and that request can survive into context()->format() even
+// when the driver only granted an older context, so the format would lie. The
+// version string is authoritative. Returns (0, 0) when the context is unusable
+// or the string is unparsable (e.g. "OpenGL ES …"), which the caller treats as
+// "too old". Reading it needs the context current, so this makes it current on
+// its own surface and releases it again; the per-test grabFramebuffer() calls
+// re-make it current as usual, so this is side-effect-free for the widget.
+std::pair<int, int> liveGlVersion(const SceneViewWidget& view) {
+  QOpenGLContext* ctx = view.context();
+  if (ctx == nullptr || !ctx->isValid()) {
+    return {0, 0};
+  }
+  QSurface* surface = ctx->surface();
+  if (surface == nullptr || !ctx->makeCurrent(surface)) {
+    const QSurfaceFormat fmt = ctx->format();  // fallback: can't make current
+    return {fmt.majorVersion(), fmt.minorVersion()};
+  }
+  const auto* version = reinterpret_cast<const char*>(ctx->functions()->glGetString(GL_VERSION));
+  ctx->doneCurrent();
+  // Desktop GL_VERSION begins "MAJOR.MINOR…" (e.g. "4.5 (Core Profile) Mesa…",
+  // "4.6.0 NVIDIA…"). Take the leading token and split on '.'.
+  const QStringList parts = QString::fromLatin1(version).section(QLatin1Char(' '), 0, 0).split(QLatin1Char('.'));
+  return {parts.value(0).toInt(), parts.value(1).toInt()};
+}
+
 // Stands up a shown SceneViewWidget on a real GL context and owns the reparent
 // that recreates that context. Both HUD tests share this prelude; the fixture
 // still creates and destroys a FRESH widget + context per test (the property the
@@ -130,6 +162,18 @@ class HudOverlayGlTest : public ::testing::Test {
     QApplication::processEvents();
     if (!haveGl(*view_)) {
       GTEST_SKIP() << "No usable OpenGL context (headless without xvfb/GL).";
+    }
+    // A context can be valid yet too old to compile the scene's shaders: every
+    // scene3D shader is `#version 450` (GL 4.5). Linux CI's llvmpipe reports GL
+    // 4.5 and renders; Windows CI's software GL is a GL 3.0 / GLSL 1.30 context,
+    // so GridRenderPass/ArrowGizmo fail to compile, nothing renders, and there
+    // is no HUD/scene footprint to detect — the assertions would fail on a scene
+    // that physically cannot draw. Skip when the live context is below 4.5,
+    // exactly as we skip when there is no GL at all.
+    const auto gl_version = liveGlVersion(*view_);
+    if (gl_version < std::pair<int, int>(4, 5)) {
+      GTEST_SKIP() << "GL " << gl_version.first << "." << gl_version.second
+                   << " context cannot compile the scene's #version 450 shaders (need GL 4.5)";
     }
   }
 
