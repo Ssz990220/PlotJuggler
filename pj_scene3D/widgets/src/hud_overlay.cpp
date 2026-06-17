@@ -1,0 +1,69 @@
+// Copyright 2026 Davide Faconti
+// SPDX-License-Identifier: MPL-2.0
+
+#include "pj_scene3d_widgets/hud_overlay.h"
+
+#include <QFontMetrics>
+#include <QPainter>
+#include <QRectF>
+#include <QSize>
+#include <algorithm>
+#include <cmath>
+
+namespace pj::scene3d {
+
+QImage renderHudPanel(
+    const QStringList& lines, const QFont& font, qreal device_pixel_ratio, int padding, int panel_alpha,
+    const QColor& text_color) {
+  // Nothing to draw: no lines, or every line empty. A null image lets the caller
+  // skip the blit entirely.
+  const bool has_text = std::any_of(lines.cbegin(), lines.cend(), [](const QString& line) { return !line.isEmpty(); });
+  if (!has_text) {
+    return QImage{};
+  }
+
+  const qreal dpr = device_pixel_ratio > 0.0 ? device_pixel_ratio : 1.0;
+  const QFontMetrics metrics(font);
+  const int line_h = metrics.height();
+
+  // Logical (device-independent) box: widest line advance + symmetric padding.
+  int text_w = 0;
+  for (const QString& line : lines) {
+    text_w = std::max(text_w, metrics.horizontalAdvance(line));
+  }
+  const int box_w = text_w + 2 * padding;
+  const int box_h = line_h * static_cast<int>(lines.size()) + 2 * padding;
+
+  // Allocate at PHYSICAL resolution (logical * dpr) and tag the image with the
+  // ratio, so painting below — and the caller's drawImage() — work in logical
+  // coordinates and stay crisp at any DPR. This is the property the GL glyph
+  // atlas failed to honour across a context recreation (see header).
+  const int phys_w = static_cast<int>(std::lround(box_w * dpr));
+  const int phys_h = static_cast<int>(std::lround(box_h * dpr));
+  QImage image(QSize(phys_w, phys_h), QImage::Format_ARGB32_Premultiplied);
+  image.setDevicePixelRatio(dpr);
+  image.fill(Qt::transparent);
+
+  QPainter painter(&image);
+  painter.setRenderHint(QPainter::Antialiasing, true);
+  painter.setRenderHint(QPainter::TextAntialiasing, true);
+  painter.setFont(font);
+
+  // Translucent rounded panel (the recipe formerly in SceneViewWidget's
+  // fillHudPanel): black fill at panel_alpha, 4px corner radius.
+  painter.setPen(Qt::NoPen);
+  painter.setBrush(QColor(0, 0, 0, panel_alpha));
+  painter.drawRoundedRect(QRectF(0, 0, box_w, box_h), 4, 4);
+
+  // Lines left-aligned, stacked top to bottom on successive baselines.
+  painter.setPen(text_color);
+  int baseline = padding + metrics.ascent();
+  for (const QString& line : lines) {
+    painter.drawText(padding, baseline, line);
+    baseline += line_h;
+  }
+  painter.end();
+  return image;
+}
+
+}  // namespace pj::scene3d

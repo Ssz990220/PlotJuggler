@@ -4,7 +4,7 @@
 #include "pj_scene3d_widgets/scene_view_widget.h"
 
 #include <QEvent>
-#include <QFontMetrics>
+#include <QFont>
 #include <QGuiApplication>
 #include <QKeyEvent>
 #include <QLoggingCategory>
@@ -30,6 +30,7 @@
 #include "pj_scene3d_widgets/gl/debug.h"
 #include "pj_scene3d_widgets/gl/framebuffer.h"
 #include "pj_scene3d_widgets/gl/gl_functions.h"  // unuseProgram()
+#include "pj_scene3d_widgets/hud_overlay.h"
 #include "pj_scene3d_widgets/render_pass.h"
 #include "pj_scene3d_widgets/scene3d_layer.h"
 
@@ -192,15 +193,6 @@ void main() {
 // projected origin is within this distance of the cursor is labelled. Generous
 // enough to grab a small triad without snapping across a dense frame cluster.
 constexpr float kHoverRadiusPx = 20.0f;
-
-// Paint the standard translucent rounded HUD-panel background shared by the
-// on-screen overlays (perf HUD, hover label). The caller draws its own text on
-// top; this only fills the box so the radius/fill recipe lives in one place.
-void fillHudPanel(QPainter& painter, const QRect& box, int fill_alpha) {
-  painter.setPen(Qt::NoPen);
-  painter.setBrush(QColor(0, 0, 0, fill_alpha));
-  painter.drawRoundedRect(box, 4, 4);
-}
 
 }  // namespace
 
@@ -900,35 +892,26 @@ void SceneViewWidget::drawPerfHud() {
   lines << QStringLiteral("CPU  %1 ms").arg(cpuFrameMillis(), 0, 'f', 2);
   lines << QStringLiteral("MSAA %1x").arg(achievedSceneSamples());
 
-  QPainter painter(this);
-  painter.setRenderHint(QPainter::TextAntialiasing, true);
-  QFont font = painter.font();
+  QFont font;
   font.setFamily(QStringLiteral("monospace"));
   font.setStyleHint(QFont::Monospace);
   font.setPointSizeF(9.5);
-  painter.setFont(font);
 
-  const QFontMetrics metrics(font);
-  int text_w = 0;
-  for (const QString& line : lines) {
-    text_w = std::max(text_w, metrics.horizontalAdvance(line));
+  // Rasterize the panel + text on the CPU and blit it: a glyph-atlas-free path
+  // that survives the GL context recreation ADS triggers on dock reparent /
+  // layout restore (see hud_overlay.h). drawImage is a plain textured quad.
+  const QImage panel =
+      renderHudPanel(lines, font, devicePixelRatioF(), /*padding=*/8, /*panel_alpha=*/150, QColor(235, 235, 235));
+  if (panel.isNull()) {
+    return;
   }
-  const int pad = 8;
-  const int line_h = metrics.height();
-  const int box_w = text_w + 2 * pad;
-  const int box_h = line_h * static_cast<int>(lines.size()) + 2 * pad;
+  const QSizeF box = panel.deviceIndependentSize();
   // Bottom-left corner — clear of the top-left fixed-frame overlay combo the
   // Scene3D dock places over the view.
-  const QRect box(8, height() - box_h - 8, box_w, box_h);
+  const QPointF top_left(8.0, height() - box.height() - 8.0);
 
-  fillHudPanel(painter, box, 150);
-
-  painter.setPen(QColor(235, 235, 235));
-  int y = box.top() + pad + metrics.ascent();
-  for (const QString& line : lines) {
-    painter.drawText(box.left() + pad, y, line);
-    y += line_h;
-  }
+  QPainter painter(this);
+  painter.drawImage(top_left, panel);
 }
 
 void SceneViewWidget::drawHoverLabel(const FrameContext& frame_ctx) {
@@ -951,31 +934,33 @@ void SceneViewWidget::drawHoverLabel(const FrameContext& frame_ctx) {
   // (same prelude as drawPerfHud).
   unuseProgram();
 
-  QPainter painter(this);
-  painter.setRenderHint(QPainter::TextAntialiasing, true);
-  const QString text = QString::fromStdString(*hovered_frame_);
-  QFont font = painter.font();
+  // Rasterize the label on the CPU and blit it (glyph-atlas-free — see
+  // hud_overlay.h / drawPerfHud) so it stays crisp after a layout-restore
+  // context recreation. The connector ring below is a vector draw, which the GL
+  // paint engine renders correctly regardless.
+  QFont font;
   font.setPointSizeF(9.5);
-  painter.setFont(font);
-
-  const QFontMetrics metrics(font);
-  constexpr int pad = 6;
-  const QSize text_size = metrics.size(Qt::TextSingleLine, text);
-  const int box_w = text_size.width() + 2 * pad;
-  const int box_h = text_size.height() + 2 * pad;
+  const QImage panel = renderHudPanel(
+      {QString::fromStdString(*hovered_frame_)}, font, devicePixelRatioF(),
+      /*padding=*/6, /*panel_alpha=*/170, QColor(235, 235, 235));
+  if (panel.isNull()) {
+    return;
+  }
+  const QSizeF box = panel.deviceIndependentSize();
+  const int box_w = static_cast<int>(std::lround(box.width()));
+  const int box_h = static_cast<int>(std::lround(box.height()));
 
   // Anchor just above-right of the frame origin, then clamp inside the widget so
   // a frame near an edge keeps its label fully visible.
   const int box_x = std::clamp(static_cast<int>(std::lround(anchor->x)) + 12, 2, std::max(2, width() - box_w - 2));
   const int box_y =
       std::clamp(static_cast<int>(std::lround(anchor->y)) - box_h - 12, 2, std::max(2, height() - box_h - 2));
-  const QRect box(box_x, box_y, box_w, box_h);
 
-  fillHudPanel(painter, box, 170);
-  painter.setPen(QColor(235, 235, 235));
-  painter.drawText(box.adjusted(pad, pad, -pad, -pad), Qt::AlignLeft | Qt::AlignVCenter, text);
+  QPainter painter(this);
+  painter.drawImage(QPointF(box_x, box_y), panel);
 
   // A small ring on the frame origin ties the label to the gizmo it names.
+  painter.setRenderHint(QPainter::Antialiasing, true);
   painter.setBrush(Qt::NoBrush);
   painter.setPen(QPen(QColor(255, 255, 255, 200), 1.5));
   painter.drawEllipse(QPointF(anchor->x, anchor->y), 3.0, 3.0);

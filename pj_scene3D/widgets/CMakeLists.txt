@@ -41,6 +41,8 @@ set(PJ_SCENE3D_WIDGETS_SOURCES
   src/url_fetcher.cpp
   src/Scene3DDockWidget.cpp
   src/transform_service.cpp
+  src/hud_overlay.cpp
+  include/pj_scene3d_widgets/hud_overlay.h
   include/pj_scene3d_widgets/scene_view_widget.h
   include/pj_scene3d_widgets/scene3d_layer.h
   include/pj_scene3d_widgets/mesh_data.h
@@ -257,6 +259,33 @@ if(PJ_BUILD_TESTS)
   target_compile_definitions(pointcloud_layer_coalescing_test PRIVATE PJ_SCENE3D_TEST_HOOKS)
   target_compile_options(pointcloud_layer_coalescing_test PRIVATE ${PJ_WARNING_FLAGS} ${PJ_SANITIZER_FLAGS})
   add_test(NAME pointcloud_layer_coalescing_test COMMAND pointcloud_layer_coalescing_test)
+
+  # CPU-rasterized HUD panel (perf HUD + TF hover label): correct sizing,
+  # DPR-independent logical layout, actual glyph pixels, multi-line growth, and
+  # the empty->null contract. Needs a QApplication for the font system; no GL.
+  add_executable(hud_overlay_test
+    tests/hud_overlay_test.cpp
+  )
+  target_link_libraries(hud_overlay_test PRIVATE
+    pj_scene3d_widgets
+    GTest::gtest
+  )
+  target_compile_options(hud_overlay_test PRIVATE ${PJ_WARNING_FLAGS} ${PJ_SANITIZER_FLAGS})
+  add_test(NAME hud_overlay_test COMMAND hud_overlay_test)
+
+  # Real-GL integration test: renders the perf HUD on an actual OpenGL context,
+  # forces the dock-reparent context recreation that corrupted HUD text in #214,
+  # and asserts the overlay survives. Skips when no GL is available; CI runs it
+  # under xvfb-run. Needs a QApplication (custom main) so it links GTest::gtest.
+  add_executable(hud_overlay_gl_test
+    tests/hud_overlay_gl_test.cpp
+  )
+  target_link_libraries(hud_overlay_gl_test PRIVATE
+    pj_scene3d_widgets
+    GTest::gtest
+  )
+  target_compile_options(hud_overlay_gl_test PRIVATE ${PJ_WARNING_FLAGS} ${PJ_SANITIZER_FLAGS})
+  add_test(NAME hud_overlay_gl_test COMMAND hud_overlay_gl_test)
 
   # Pure (non-GL) URDF parser + package-resolver unit tests. They reach the
   # private src/ headers (urdf_parser.h / urdf_package_resolver.h) and use small

@@ -94,9 +94,15 @@ lives in `SceneViewWidget`: `paintGL` caches `proj*view`, and a button-free
 `mouseMoveEvent` projects every resolvable frame origin through the GL-free,
 unit-tested `core/tf/frame_picking.h` (`projectFrameOrigin` + `pickNearestFrame`)
 and takes the one closest to the cursor within ~20 logical px (first on an exact
-tie). The label is a `QPainter` overlay drawn at the tail of `paintGL` — the same
-2D-over-3D path as the perf HUD — re-projecting the live origin so it stays glued
-to the frame as the scene streams. The highlight is the one place this touches
+tie). The label is drawn at the tail of `paintGL` as a 2D overlay — the same path
+as the perf HUD — re-projecting the live origin so it stays glued to the frame as
+the scene streams. Its text and panel are **CPU-rasterized into a `QImage` and
+blitted with `drawImage`** (`hud_overlay.h::renderHudPanel`), *not* painted as
+`QPainter` text on the GL widget: the latter relies on Qt's per-GL-context glyph
+atlas, which does not survive the context recreation ADS triggers on dock reparent
+/ **layout restore**, leaving glyphs doubled/garbled while vector fills stayed
+correct (the original #214 bug). `drawImage` is a plain textured quad — no glyph
+atlas, immune to recreation and DPR changes. The highlight is the one place this touches
 the draw pass: `paintGL` pushes the hovered frame to `AxisRenderPass::setHighlightedFrame`,
 which luminance-boosts that frame's triad colors. Gated on the triads being
 visible; cleared on a camera gesture and on leave. Occlusion is ignored for now

@@ -76,7 +76,15 @@ still holds for everything else.
     Every `IRenderPass`/`Scene3DLayer` (and `ArrowGizmo`) implements
     `releaseGL()`; `SceneViewWidget` calls it from the dying context's
     `aboutToBeDestroyed` and rebuilds in `initializeGL`, so a recreated context
-    self-heals instead of binding stale handles or going blank. Since Phase 0A
+    self-heals instead of binding stale handles or going blank.
+    **The one GL resource the widget cannot rebuild is Qt's own:** `QPainter`
+    text painted directly on the view caches glyphs in a per-context atlas that
+    does NOT survive this recreation (notably on layout restore), so the text
+    renders doubled/garbled while vector fills stay correct. The 2D overlays
+    (perf HUD, TF hover label) therefore CPU-rasterize their text into a `QImage`
+    and `drawImage()` it (`hud_overlay.h::renderHudPanel`) — a glyph-atlas-free
+    textured-quad blit. Never paint HUD/overlay text with `QPainter` glyphs on
+    the GL view; rasterize-then-blit instead. Since Phase 0A
     the scene renders into `SceneHdrFbo` (a multisample RGBA16F+DEPTH32F chain
     at a fixed sample count — `kDefaultMsaaSamples`, independent of the context's
     negotiated samples, which are 0 once composited in an ADS dock — resolved to
@@ -119,7 +127,7 @@ Before any commit, run the tests and check that they all pass
 `occupancy_grid_bounds_test`, `occupancy_grid_layer_rebind_test`,
 `occupancy_grid_layer_updates_test`,
 `scene_entities_decode_test`, `pointcloud_codecs_test`,
-`aabb_axis_range_test`, `frame_picking_test`,
+`aabb_axis_range_test`, `frame_picking_test`, `hud_overlay_test`,
 `poses_in_frame_render_test`, `poses_in_frame_layer_test`,
 `pointcloud_layer_cache_test`, `pointcloud_layer_rebind_test`,
 `pointcloud_layer_coalescing_test`, `camera_near_far_test`,
