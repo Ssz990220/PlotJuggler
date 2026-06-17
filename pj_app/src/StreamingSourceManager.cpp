@@ -25,6 +25,7 @@
 #include "pj_plugins/host/message_parser_handle.hpp"
 #include "pj_plugins/host/service_registry_builder.hpp"
 #include "pj_runtime/CatalogModel.h"
+#include "pj_runtime/DataProcessorService.h"
 #include "pj_runtime/DataSourceRuntimeHost.h"
 #include "pj_runtime/ExtensionCatalogService.h"
 #include "pj_runtime/SessionManager.h"
@@ -161,6 +162,13 @@ void StreamingSourceManager::onPauseToggled(bool paused) {
   }
   flushSecondaryIntoPrimary();
   flushSecondaryDataEngineIntoPrimary();
+  // Catch up eager filters on the whole paused tail now merged into the primary,
+  // BEFORE re-trimming, so a stateful integral consumes the soon-to-be-evicted
+  // interval (the pause/resume arm of the streaming correctness order).
+  for (const auto& [streaming_dataset_id, _catchup_sess] : sessions_) {
+    const auto filter_inputs = session_manager_.createReader().listTopics(streaming_dataset_id);
+    (void)session_manager_.dataProcessorService().advanceOnCommit(filter_inputs);
+  }
   // DataEngine::flushTo moves chunks without trimming; re-trim the merged primary
   // to the window (objects are already trimmed by ObjectStore::flushTo). Scope the
   // trim to each streaming dataset so a co-loaded file's history is left intact.
@@ -404,6 +412,18 @@ void StreamingSourceManager::workerLoop(DatasetId dataset_id) {
           if (auto session_it = sessions_.find(dataset_id); session_it != sessions_.end()) {
             session_it->second->runtime_host->setObjectRetentionBudget(window_ns, kStreamingObjectMemoryBudget);
           }
+          // Run eager filters over the freshly committed input BEFORE retention
+          // can evict it (the streaming correctness order, plan §5/D6): a stateful
+          // node must consume every sample before it ages out of the window. On
+          // the UI thread here, serialized with the Filter Editor's own
+          // apply/update and with the retention trim just below. While paused the
+          // writes land in the secondary engine (no DerivedEngine); the resume
+          // catch-up advances the whole buffered tail before re-trimming.
+          if (!paused_) {
+            const auto filter_inputs = session_manager_.createReader().listTopics(dataset_id);
+            (void)session_manager_.dataProcessorService().advanceOnCommit(filter_inputs);
+          }
+
           // Trim the engine currently being written: B while paused (bounds the
           // tail), the primary while live. The frozen engine is never touched,
           // preserving the primary snapshot for scrub-back. Scope the trim to THIS

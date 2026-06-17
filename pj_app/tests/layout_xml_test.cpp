@@ -75,6 +75,59 @@ TEST(AppendJsonAsCdata, RoundTripsUnicodeAndAngleBrackets) {
   EXPECT_EQ(roundTripJson(in), in);
 }
 
+// ---------- directCdataText (params vs <source_fallback> separation) --------
+//
+// A <processor> layout element (M7) carries its params as a DIRECT CDATA child
+// AND an optional <source_fallback> CHILD ELEMENT holding the filter's Luau
+// source. QDomElement::text() recurses the whole subtree, so reading params via
+// processor.text() would slurp the embedded source in too. directCdataText reads
+// only the element's own direct CDATA, keeping the two payloads independent.
+
+QDomElement buildProcessorWithSource(QDomDocument& doc, const QString& params, const QString& source) {
+  QDomElement processor = doc.createElement(QStringLiteral("processor"));
+  PJ::layout_xml::appendJsonAsCdata(doc, processor, params);  // params: a direct CDATA child
+  QDomElement src = doc.createElement(QStringLiteral("source_fallback"));
+  PJ::layout_xml::appendJsonAsCdata(doc, src, source);
+  processor.appendChild(src);  // source: nested inside a child element
+  doc.appendChild(processor);
+  return processor;
+}
+
+TEST(DirectCdataText, ReadsOwnPayloadIgnoringChildElement) {
+  QDomDocument doc;
+  const QString params = QStringLiteral(R"({"value_scale":2.5})");
+  const QString source = QStringLiteral("return { id='scale', create=function(p) end }");
+  QDomElement processor = buildProcessorWithSource(doc, params, source);
+
+  EXPECT_EQ(PJ::layout_xml::directCdataText(processor), params);
+  EXPECT_EQ(processor.firstChildElement(QStringLiteral("source_fallback")).text(), source);
+  // Document the gotcha being guarded against: text() recurses and merges both.
+  EXPECT_EQ(processor.text(), params + source);
+}
+
+TEST(DirectCdataText, SurvivesSerializeReparseWithClosingCdata) {
+  QDomDocument doc;
+  const QString params = QStringLiteral(R"({"pat":"a ]]> b"})");
+  const QString source = QStringLiteral("-- ]]> in source\nreturn {}");
+  buildProcessorWithSource(doc, params, source);
+
+  QDomDocument reparsed;
+  ASSERT_TRUE(reparsed.setContent(doc.toByteArray(2)));
+  const QDomElement processor = reparsed.documentElement();
+  EXPECT_EQ(PJ::layout_xml::directCdataText(processor), params);
+  EXPECT_EQ(processor.firstChildElement(QStringLiteral("source_fallback")).text(), source);
+}
+
+TEST(DirectCdataText, EmptyWhenNoDirectCdata) {
+  QDomDocument doc;
+  QDomElement processor = doc.createElement(QStringLiteral("processor"));
+  QDomElement src = doc.createElement(QStringLiteral("source_fallback"));
+  PJ::layout_xml::appendJsonAsCdata(doc, src, QStringLiteral("source-only"));
+  processor.appendChild(src);
+  doc.appendChild(processor);
+  EXPECT_TRUE(PJ::layout_xml::directCdataText(processor).isEmpty());
+}
+
 // ---------- extractDataSource ----------------------------------------------
 
 QDomDocument buildDataSourceDoc(

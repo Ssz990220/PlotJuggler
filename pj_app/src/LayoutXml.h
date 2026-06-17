@@ -42,6 +42,14 @@ struct DataSourceRef {
 // transparently on read.
 void appendJsonAsCdata(QDomDocument& doc, QDomElement& parent, const QString& json);
 
+// Concatenates ONLY the direct CDATA/text child nodes of `element`, skipping any
+// nested child *elements*. QDomElement::text() recurses the entire subtree, so an
+// element that holds its own CDATA payload alongside a child element with its own
+// CDATA (e.g. a <processor> carrying params-CDATA plus a <source_fallback> child
+// holding the filter's Luau source) cannot read its own payload via text()
+// without the child's leaking in. This reads the element's own payload only.
+[[nodiscard]] QString directCdataText(const QDomElement& element);
+
 // Reads every <previouslyLoaded_Datafiles>/<fileInfo> and its optional
 // <plugin> child, one DataSourceRef per file in document order. Each
 // resolved_path is absolute — relatives are anchored at `layout_dir`.

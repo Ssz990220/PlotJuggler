@@ -34,6 +34,16 @@ void appendJsonAsCdata(QDomDocument& doc, QDomElement& parent, const QString& js
   }
 }
 
+QString directCdataText(const QDomElement& element) {
+  QString out;
+  for (QDomNode n = element.firstChild(); !n.isNull(); n = n.nextSibling()) {
+    if (n.isCDATASection() || n.isText()) {
+      out += n.nodeValue();  // child *elements* (e.g. <source_fallback>) are skipped
+    }
+  }
+  return out;
+}
+
 QList<DataSourceRef> extractDataSource(const QDomDocument& doc, const QDir& layout_dir) {
   QList<DataSourceRef> sources;
   const QDomElement wrapper = doc.documentElement().firstChildElement(QStringLiteral("previouslyLoaded_Datafiles"));

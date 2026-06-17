@@ -83,6 +83,7 @@ target_link_libraries(pj_app PRIVATE
     pj_runtime
     pj_widgets
     pj_plotting
+    pj_scripting
     pj_scene2d_widgets
     pj_scene3d_widgets
     pj_marketplace_ui

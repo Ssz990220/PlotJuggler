@@ -25,6 +25,7 @@
 #include <QMessageBox>
 #include <QMouseEvent>
 #include <QPalette>
+#include <QPointer>
 #include <QPushButton>
 #include <QSaveFile>
 #include <QScopedValueRollback>
@@ -67,6 +68,7 @@
 #include "TitleBar.h"
 #include "pj_base/dataset.hpp"
 #include "pj_base/types.hpp"
+#include "pj_datastore/data_processor.hpp"
 #include "pj_datastore/engine.hpp"
 #include "pj_datastore/object_store.hpp"
 #include "pj_datastore/reader.hpp"
@@ -76,6 +78,7 @@
 #include "pj_plotting/CurveEditor.h"
 #include "pj_plotting/CurveTracker.h"
 #include "pj_plotting/DockWidget.h"
+#include "pj_plotting/FilterEditorPanel.h"
 #include "pj_plotting/PlotDocker.h"
 #include "pj_plotting/PlotWidget.h"
 #include "pj_plotting/TabbedPlotWidget.h"
@@ -85,6 +88,7 @@
 #include "pj_plugins/host_qt/panel_engine.hpp"
 #include "pj_runtime/AppSession.h"
 #include "pj_runtime/CatalogModel.h"
+#include "pj_runtime/DataProcessorService.h"
 #include "pj_runtime/DiagnosticHistory.h"
 #include "pj_runtime/ExtensionCatalogService.h"
 #include "pj_runtime/IObjectViewer.h"
@@ -866,8 +870,10 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
   connect(redo_action_, &QAction::triggered, this, &MainWindow::onRedo);
   addAction(redo_action_);
 
-  // Plot-layout changes from TabbedPlotWidget feed the undo stack.
-  connect(ui_->tabbedPlotWidget, &TabbedPlotWidget::undoableChange, this, &MainWindow::onUndoableChange);
+  // Plot-layout changes from TabbedPlotWidget feed the undo stack. Wrapped in a lambda
+  // because onUndoableChange now takes a (defaulted) force_new_state arg, and Qt's
+  // function-pointer connect rejects a slot whose arity exceeds the signal's.
+  connect(ui_->tabbedPlotWidget, &TabbedPlotWidget::undoableChange, this, [this] { onUndoableChange(); });
 
   // Apply the persisted "Use time offset" frame before the toolbar is built so
   // its button seeds from the live SessionManager state. Default on (PJ3 parity):
@@ -1353,6 +1359,7 @@ void MainWindow::onPlotAdded(PlotWidget* plot) {
   }
   connect(plot, &PlotWidget::rectChanged, this, &MainWindow::onPlotZoomChanged, Qt::UniqueConnection);
   connect(plot, &PlotWidget::trackerMoved, this, &MainWindow::onTrackerMovedFromWidget, Qt::UniqueConnection);
+  connect(plot, &PlotWidget::filterEditorRequested, this, &MainWindow::openFilterEditor, Qt::UniqueConnection);
   connect(plot, &PlotWidget::statusMessageRequested, this, [this](const QString& message) {
     emitDiagnostic(DiagnosticLevel::kInfo, "Plot", "status", message);
   });
@@ -1361,6 +1368,66 @@ void MainWindow::onPlotAdded(PlotWidget* plot) {
   if (curve_editor_ != nullptr && curve_editor_->plot() == nullptr) {
     bindEditorToPlot(plot);
   }
+}
+
+void MainWindow::openFilterEditor(std::vector<CurveDescriptor> sources, PlotWidget* origin) {
+  if (origin == nullptr || session_ == nullptr) {
+    return;
+  }
+  // Snapshot the source colours so the preview's before/after curves match the
+  // post-Apply result (the filtered output inherits the source's colour).
+  QHash<QString, QColor> source_colors;
+  for (const auto& [key, color] : origin->curveColors()) {
+    source_colors.insert(key, color);
+  }
+
+  auto* panel = new FilterEditorPanel(
+      &session_->sessionManager(), &session_->catalogModel(), std::move(sources), std::move(source_colors));
+
+  // Apply: replace each source curve with its filtered output, in place, on the
+  // originating plot, then restore the chart area. Guard `origin` with QPointer in
+  // case its dock was torn down while the panel was open.
+  const QPointer<PlotWidget> origin_guard(origin);
+  connect(
+      panel, &FilterEditorPanel::applied, this,
+      [this, origin_guard](const QList<QPair<QString, QString>>& replacements) {
+        if (origin_guard != nullptr) {
+          for (const auto& replacement : replacements) {
+            origin_guard->replaceCurve(replacement.first, replacement.second);
+          }
+          origin_guard->replot();
+          // Force a discrete undo entry: applying/removing a filter must never coalesce
+          // into a preceding edit, so each filter op is its own undo step.
+          onUndoableChange(/*force_new_state=*/true);
+        }
+        restoreCentralArea();
+      });
+  connect(panel, &FilterEditorPanel::closed, this, [this]() { restoreCentralArea(); });
+  connect(panel, &FilterEditorPanel::diagnostic, this, [this](const QString& message) {
+    emitDiagnostic(DiagnosticLevel::kWarning, "Filter", "apply", message);
+  });
+
+  if (!presentPanel(panel)) {
+    // Another chart-area panel (e.g. a toolbox) is already open.
+    emitDiagnostic(DiagnosticLevel::kWarning, "Filter", "panel", tr("Close the open panel before applying a filter"));
+    panel->deleteLater();
+    return;
+  }
+  syncFilterEditorPreviewDisplay();  // the preview adopts the app's grid/style/width
+}
+
+void MainWindow::syncFilterEditorPreviewDisplay() {
+  auto* panel = qobject_cast<FilterEditorPanel*>(current_panel_);
+  if (panel == nullptr) {
+    return;
+  }
+  const int width_id = QSettings().value(QStringLiteral("MainWindow.curveWidth"), 0).toInt();
+  const double width = (width_id >= 0 && width_id < static_cast<int>(kWidthButtonSpecs.size()))
+                           ? kWidthButtonSpecs[width_id].second
+                           : 1.0;
+  const int style =
+      QSettings().value(QStringLiteral("MainWindow.curveStyle"), static_cast<int>(PlotWidgetBase::kLines)).toInt();
+  panel->setPreviewDisplay(activate_grid_, style, width);
 }
 
 namespace {
@@ -2026,12 +2093,12 @@ void MainWindow::loadLayoutFromPath(const QString& path) {
     }
   }
 
-  // 3. Rebind every curve's stable topic+field path to a concrete catalog key.
-  // Each curve resolves against whichever loaded dataset actually holds its
+  // 3. Filters + curve rebinding + plot apply happen together in restoreWorkspaceState
+  // below. Each curve resolves against whichever loaded dataset actually holds its
   // topic+field (first match in load order), so a multi-file layout restores
   // each plot against its own source — and a layout built on one recording still
-  // reuses on a similar one (same topics/fields). This mirrors the undo/redo
-  // restore (rebindToCurrentSession); there is deliberately no "apply to which
+  // reuses on a similar one (same topics/fields). This is the same restore path
+  // undo/redo uses; there is deliberately no "apply to which
   // dataset?" prompt — a saved layout binds to its data, not to one chosen set.
   // Paths no loaded dataset can provide are surfaced via the missing-curve prompt.
   if (session_->catalogModel().datasets().empty()) {
@@ -2039,33 +2106,25 @@ void MainWindow::loadLayoutFromPath(const QString& path) {
         this, tr("Load Layout"), tr("No data is loaded. Open a data source before applying this layout."));
     return;
   }
-  const QList<layout_xml::SeriesPath> unresolved = rebindCurvesToLoadedDatasets(doc);
-  if (!unresolved.isEmpty()) {
-    QStringList shown;
-    shown.reserve(unresolved.size());
-    for (const layout_xml::SeriesPath& sp : unresolved) {
-      shown.push_back(sp.display());
-    }
-    switch (promptMissingCurves(shown)) {
-      case MissingCurveChoice::kCancel:
-        return;
-      case MissingCurveChoice::kRemove:
-        layout_xml::stripUnresolvedCurves(doc);
-        break;
-    }
-  }
-
-  // 4. Apply. If step 2 already reloaded a data source AND this fails,
-  // we leave the world half-mutated: the new data is loaded but the
-  // user's plots/panels never came back. Rolling back a synchronous
-  // ingest is not currently feasible (FileLoader has no "unload" API
-  // and the DataEngine doesn't support transactional commits). The
-  // warning is the best signal we can offer.
-  if (!xmlLoadState(doc)) {
-    MessageBox::warning(
-        this, tr("Load Layout"),
-        tr("Layout was parsed but could not be applied. If a data source was reloaded, it is still loaded."));
-    return;
+  // 4. Recreate filters, rebind curves, and apply plots/toggles through the ONE restore
+  // path shared with undo/redo (kPrompt: a curve no loaded dataset can provide raises the
+  // missing-curve prompt). Filters are recreated BEFORE the curve rebind so each derived
+  // output topic is in the catalog. Panel/chrome restores below stay layout-only.
+  switch (restoreWorkspaceState(doc, MissingCurvePolicy::kPrompt)) {
+    case RestoreResult::kCancelled:
+      return;  // user aborted at the missing-curve prompt
+    case RestoreResult::kFailed:
+      // If step 2 already reloaded a data source AND apply failed, the world is left
+      // half-mutated: the new data is loaded but the user's plots/panels never came
+      // back. Rolling back a synchronous ingest is not currently feasible (FileLoader
+      // has no "unload" API and the DataEngine doesn't support transactional commits).
+      // The warning is the best signal we can offer.
+      MessageBox::warning(
+          this, tr("Load Layout"),
+          tr("Layout was parsed but could not be applied. If a data source was reloaded, it is still loaded."));
+      return;
+    case RestoreResult::kApplied:
+      break;
   }
 
   // 4a. Restore curve-list content state (filters + show_topics/show_values toggles).
@@ -2107,6 +2166,9 @@ void MainWindow::saveLayoutToPath(const QString& path, bool include_data_source)
   doc.documentElement().appendChild(ui_->leftPanel->saveSourcesState(doc));
   doc.documentElement().appendChild(ui_->curveListPanel->saveListState(doc));
   doc.documentElement().appendChild(saveChromeState(doc));
+  // NOTE: <data_processors> is already emitted by xmlSaveState() (it is part of THE
+  // snapshot now, shared with undo/redo); do not append it again here or the layout
+  // would carry two copies.
   // QSaveFile gives us write-temp + rename atomicity: a partial write
   // (disk full, signal, broken NFS) leaves the user's prior layout
   // untouched. commit() does the rename; cancelWriting() abandons the
@@ -2131,6 +2193,104 @@ void MainWindow::saveLayoutToPath(const QString& path, bool include_data_source)
   }
   recordRecentLayout(path);
   emitDiagnostic(DiagnosticLevel::kInfo, "Layout", "saved", tr("Saved layout: %1").arg(QFileInfo(path).fileName()));
+}
+
+QDomElement MainWindow::saveDataProcessors(QDomDocument& doc) const {
+  QDomElement element = doc.createElement(QStringLiteral("data_processors"));
+  for (const auto& recipe : session_->sessionManager().dataProcessorService().recipes()) {
+    // Resolve the input column to a stable (topic, field) path so it rebinds on
+    // reload exactly like a plotted curve.
+    const QString input_key = QStringLiteral("dataset:%1/topic:%2/column:%3")
+                                  .arg(recipe.dataset_id)
+                                  .arg(recipe.input_topic_id)
+                                  .arg(recipe.input_column_index);
+    const std::optional<CurveDescriptor> input_desc = session_->catalogModel().curveDescriptor(input_key);
+    if (!input_desc.has_value()) {
+      continue;  // input field is gone; nothing to persist
+    }
+    QDomElement processor = doc.createElement(QStringLiteral("processor"));
+    processor.setAttribute(QStringLiteral("input_topic"), input_desc->topic_name);
+    processor.setAttribute(QStringLiteral("input_field"), input_desc->field_path);
+    processor.setAttribute(QStringLiteral("processor_id"), QString::fromStdString(recipe.processor_id));
+    processor.setAttribute(QStringLiteral("output_name"), QString::fromStdString(recipe.output_name));
+    if (recipe.processor) {
+      layout_xml::appendJsonAsCdata(doc, processor, QString::fromStdString(recipe.processor->saveParams()));
+    }
+    // Embed the filter's Luau source so the layout reopens on a machine without
+    // this filter installed (resolved by restore's source_fallback leg). A named
+    // child element, NOT a second direct CDATA child — restore reads params via
+    // directCdataText, which ignores child elements. Empty for native C++ builtins.
+    if (!recipe.filter_source.empty()) {
+      QDomElement source_el = doc.createElement(QStringLiteral("source_fallback"));
+      layout_xml::appendJsonAsCdata(doc, source_el, QString::fromStdString(recipe.filter_source));
+      processor.appendChild(source_el);
+    }
+    element.appendChild(processor);
+  }
+  return element;
+}
+
+void MainWindow::restoreDataProcessors(const QDomElement& root) {
+  // Reconcile the live filter set to this snapshot: drop ALL current filters first,
+  // then recreate the snapshot's set. This makes restore idempotent for undo/redo (no
+  // duplicate or output-name-colliding filters) and correct for a layout load onto an
+  // existing session. A snapshot with NO <data_processors> still falls through to clear
+  // every filter; the rebuild at the end MUST run on both branches so the now-retired
+  // outputs leave the catalog.
+  auto& service = session_->sessionManager().dataProcessorService();
+  service.clearAllFilters();
+
+  const QDomElement element = root.firstChildElement(QStringLiteral("data_processors"));
+  const auto datasets = session_->catalogModel().datasets();
+  // A null <data_processors> yields a null firstChildElement, so this loop runs zero
+  // times — the clear above is then the whole effect.
+  for (QDomElement processor = element.firstChildElement(QStringLiteral("processor")); !processor.isNull();
+       processor = processor.nextSiblingElement(QStringLiteral("processor"))) {
+    const QString input_topic = processor.attribute(QStringLiteral("input_topic"));
+    const QString input_field = processor.attribute(QStringLiteral("input_field"));
+    // Resolve the input against whichever loaded dataset holds it (first match in
+    // load order), so a multi-file layout restores each filter against its source.
+    std::optional<CurveDescriptor> input_desc;
+    for (const auto& [dataset_id, dataset_name] : datasets) {
+      (void)dataset_name;
+      if (auto descriptor = session_->catalogModel().descriptorForPath(dataset_id, input_topic, input_field)) {
+        input_desc = std::move(descriptor);
+        break;
+      }
+    }
+    if (!input_desc.has_value()) {
+      // The filter's source signal isn't in any loaded dataset -> the filter is
+      // dropped. Tell the user which one, mirroring the unknown/apply-failed cases
+      // below (otherwise a derived series silently vanishes on layout load).
+      emitDiagnostic(
+          DiagnosticLevel::kWarning, "Layout", "processor-input-missing",
+          tr("Layout filter on '%1/%2' has no matching data; skipping.").arg(input_topic, input_field));
+      continue;
+    }
+    const std::string id = processor.attribute(QStringLiteral("processor_id")).toStdString();
+    // Params are the <processor>'s OWN direct CDATA — directCdataText ignores the
+    // <source_fallback> child (QDomElement::text() would recurse and merge them).
+    const QString params = layout_xml::directCdataText(processor);
+    const QString source_fallback = processor.firstChildElement(QStringLiteral("source_fallback")).text();
+    // Resolve order: live catalogue → embedded source → transitional C++ builtin.
+    std::unique_ptr<proc::DataProcessor> built = service.makeRestoredProcessor(
+        id, params.isEmpty() ? std::string("{}") : params.toStdString(), source_fallback.toStdString());
+    if (!built) {
+      emitDiagnostic(
+          DiagnosticLevel::kWarning, "Layout", "processor-unknown",
+          tr("Layout filter '%1' is unknown to this PlotJuggler; skipping.").arg(QString::fromStdString(id)));
+      continue;
+    }
+    const auto applied = service.applyFilter(
+        input_desc->topic_id, input_desc->dataset_id, std::move(built),
+        processor.attribute(QStringLiteral("output_name")).toStdString(), input_desc->column_index);
+    if (!applied.has_value()) {
+      emitDiagnostic(
+          DiagnosticLevel::kWarning, "Layout", "processor-apply-failed",
+          tr("Could not restore filter: %1").arg(QString::fromStdString(applied.error())));
+    }
+  }
+  session_->catalogModel().rebuildFromDatastore();
 }
 
 void MainWindow::recordRecentLayout(const QString& path) {
@@ -2197,11 +2357,11 @@ bool MainWindow::eventFilter(QObject* watched, QEvent* event) {
   return false;
 }
 
-void MainWindow::onUndoableChange() {
+void MainWindow::onUndoableChange(bool force_new_state) {
   if (applying_state_) {
     return;
   }
-  pushUndoState();
+  pushUndoState(force_new_state);
 }
 
 QList<layout_xml::SeriesPath> MainWindow::rebindCurvesToLoadedDatasets(QDomDocument& doc) {
@@ -2221,11 +2381,32 @@ QList<layout_xml::SeriesPath> MainWindow::rebindCurvesToLoadedDatasets(QDomDocum
   });
 }
 
-void MainWindow::rebindToCurrentSession(QDomDocument& doc) {
-  // Unresolved paths are intentionally ignored here: undo/redo restores
-  // silently (no missing-curve prompt), and a curve whose data is gone is
-  // simply dropped on restore.
-  (void)rebindCurvesToLoadedDatasets(doc);
+MainWindow::RestoreResult MainWindow::restoreWorkspaceState(QDomDocument& doc, MissingCurvePolicy policy) {
+  const QDomElement root = doc.documentElement();
+  // 1. Recreate the snapshot's filters first, so each derived output topic is in the
+  //    catalog and its plotted (derived) curve resolves like any other curve.
+  restoreDataProcessors(root);
+  // 2. Rebind every curve's stable topic+field to a concrete catalog key.
+  const QList<layout_xml::SeriesPath> unresolved = rebindCurvesToLoadedDatasets(doc);
+  if (policy == MissingCurvePolicy::kPrompt && !unresolved.isEmpty()) {
+    QStringList shown;
+    shown.reserve(unresolved.size());
+    for (const layout_xml::SeriesPath& sp : unresolved) {
+      shown.push_back(sp.display());
+    }
+    switch (promptMissingCurves(shown)) {
+      case MissingCurveChoice::kCancel:
+        return RestoreResult::kCancelled;
+      case MissingCurveChoice::kRemove:
+        layout_xml::stripUnresolvedCurves(doc);
+        break;
+    }
+  }
+  // kSilentDrop (undo/redo): unresolved curves are left to drop during xmlLoadState's
+  // bind — a snapshot survives an intervening data reload because it carries stable
+  // topic/field paths, not per-load keys.
+  // 3. Apply plots + global toggles.
+  return xmlLoadState(doc) ? RestoreResult::kApplied : RestoreResult::kFailed;
 }
 
 void MainWindow::onUndo() {
@@ -2237,10 +2418,12 @@ void MainWindow::onUndo() {
   undo_states_.pop_back();
   QDomDocument doc;
   doc.setContent(undo_states_.back());
-  rebindToCurrentSession(doc);
+  // Restore the COMPLETE snapshot (filters + curves + plots/toggles) under
+  // applying_state_ so the catalog-rebuild signals fired by the filter reconcile do not
+  // re-enter onUndoableChange and push spurious undo states.
   const bool loaded = [&] {
     QScopedValueRollback guard(applying_state_, true);
-    return xmlLoadState(doc);
+    return restoreWorkspaceState(doc, MissingCurvePolicy::kSilentDrop) == RestoreResult::kApplied;
   }();
 
   if (!loaded) {
@@ -2259,10 +2442,12 @@ void MainWindow::onRedo() {
   redo_states_.pop_back();
   QDomDocument doc;
   doc.setContent(undo_states_.back());
-  rebindToCurrentSession(doc);
+  // Restore the COMPLETE snapshot (filters + curves + plots/toggles) under
+  // applying_state_ so the catalog-rebuild signals fired by the filter reconcile do not
+  // re-enter onUndoableChange and push spurious undo states.
   const bool loaded = [&] {
     QScopedValueRollback guard(applying_state_, true);
-    return xmlLoadState(doc);
+    return restoreWorkspaceState(doc, MissingCurvePolicy::kSilentDrop) == RestoreResult::kApplied;
   }();
 
   if (!loaded) {
@@ -2636,6 +2821,12 @@ QDomDocument MainWindow::xmlSaveState() const {
   QDomElement use_time_offset = doc.createElement(QStringLiteral("use_time_offset"));
   use_time_offset.setAttribute(QStringLiteral("enabled"), bool_attr(button_t0_->isChecked()));
   root.appendChild(use_time_offset);
+
+  // Data-Processor filters are workspace/data state, so they belong in THE snapshot
+  // used by undo/redo (not just layout save). Without this, undoing across a filter's
+  // creation drops its derived curve (its output topic is never recreated on restore).
+  // saveLayoutToPath therefore no longer appends this separately.
+  root.appendChild(saveDataProcessors(doc));
   return doc;
 }
 
@@ -2989,6 +3180,7 @@ void MainWindow::buildGlobalToolbar() {
     activate_grid_ = checked;
     QSettings().setValue(QStringLiteral("MainWindow.buttonActivateGrid"), checked);
     forEachPlot([checked](PlotWidget* plot) { plot->setGridVisible(checked); });
+    syncFilterEditorPreviewDisplay();
   });
   connect(button_dots_, &QToolButton::toggled, this, [this](bool checked) {
     if (applying_state_) {
@@ -3156,8 +3348,9 @@ void MainWindow::buildLocalToolbar() {
     btn->setChecked(i == initial_width_id);
     width_button_group_->addButton(btn, i);
   }
-  connect(width_button_group_, &QButtonGroup::idClicked, this, [](int width_id) {
+  connect(width_button_group_, &QButtonGroup::idClicked, this, [this](int width_id) {
     QSettings().setValue(QStringLiteral("MainWindow.curveWidth"), width_id);
+    syncFilterEditorPreviewDisplay();
   });
 
   curve_style_header_ = build_section(
@@ -3205,8 +3398,9 @@ void MainWindow::buildLocalToolbar() {
   }
   // Persist the selection so the same style sticks across sessions, and
   // apply it once to existing plots so curves match the checked button.
-  connect(style_button_group_, &QButtonGroup::idClicked, this, [](int style_value) {
+  connect(style_button_group_, &QButtonGroup::idClicked, this, [this](int style_value) {
     QSettings().setValue(QStringLiteral("MainWindow.curveStyle"), style_value);
+    syncFilterEditorPreviewDisplay();
   });
 
   // Re-tint all local-panel tool buttons when the theme rolls. Each

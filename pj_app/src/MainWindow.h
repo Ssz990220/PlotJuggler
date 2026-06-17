@@ -24,6 +24,7 @@
 #include "pj_base/time.hpp"  // PJ::Timepoint — the frame-invariant absolute instant the reference line stores
 #include "pj_base/types.hpp"
 #include "pj_plotting/CurveTracker.h"
+#include "pj_runtime/CurveDescriptor.h"  // openFilterEditor takes std::vector<CurveDescriptor> by value
 #include "pj_widgets/ChromeMetrics.h"
 #include "pj_widgets/VisualizationKind.h"
 
@@ -210,6 +211,16 @@ class MainWindow : public QMainWindow {
   // Wires callbacks for a newly created plot widget.
   void onPlotAdded(PlotWidget* plot);
 
+  // Opens the Filter Editor as a chart-area takeover panel (presentPanel) scoped
+  // to `sources`. On Apply each filtered output replaces its source curve on
+  // `origin` (PlotWidget::replaceCurve — same colour, in place); Close/Apply
+  // restore the chart area.
+  void openFilterEditor(std::vector<CurveDescriptor> sources, PlotWidget* origin);
+  // Push the current global grid / curve-style / curve-width onto an open Filter
+  // Editor's preview plot so it matches the real plots. No-op unless the presented
+  // panel is a FilterEditorPanel. Called on open and from the viz-toolbar handlers.
+  void syncFilterEditorPreviewDisplay();
+
   // Mirrors X zoom to linked plots.
   void onPlotZoomChanged(PlotWidget* modified, QRectF rect);
 
@@ -240,8 +251,10 @@ class MainWindow : public QMainWindow {
   // a 3D-only stream never seeds and the slider stays stuck at the startup default.
   void seedStreamingPlaybackFromDrop();
 
-  // Records a user-visible plot layout change.
-  void onUndoableChange();
+  // Records a user-visible plot layout change. `force_new_state` pushes a fresh,
+  // non-coalescing undo entry — set it for discrete operations that must never merge
+  // into a preceding edit (e.g. applying/removing a filter).
+  void onUndoableChange(bool force_new_state = false);
 
   // Restores the previous layout snapshot.
   void onUndo();
@@ -336,11 +349,25 @@ class MainWindow : public QMainWindow {
   // load (which prompts on the unresolved set) and undo/redo restore.
   [[nodiscard]] QList<layout_xml::SeriesPath> rebindCurvesToLoadedDatasets(QDomDocument& doc);
 
-  // Thin wrapper over rebindCurvesToLoadedDatasets that discards the unresolved
-  // set: undo/redo restores silently (no missing-curve prompt), so a curve
-  // whose data is gone is simply dropped. Snapshots carry stable paths, not
-  // per-load keys, so a snapshot survives an intervening data reload.
-  void rebindToCurrentSession(QDomDocument& doc);
+  // How a complete-snapshot restore handles curves no loaded dataset can provide.
+  enum class MissingCurvePolicy {
+    kPrompt,      ///< layout load: prompt the user (cancel aborts, remove strips them)
+    kSilentDrop,  ///< undo/redo: silently drop a curve whose data is gone (no prompt)
+  };
+  // Outcome of restoreWorkspaceState.
+  enum class RestoreResult {
+    kApplied,    ///< plots/toggles applied to the session
+    kCancelled,  ///< user cancelled at the missing-curve prompt (kPrompt only)
+    kFailed,     ///< xmlLoadState rejected the document
+  };
+  // Restore a COMPLETE workspace snapshot (filters + curve rebinding + plots/toggles)
+  // onto the live session — the single restore path shared by layout load and undo/redo,
+  // so the two can never drift (that drift is what let undo silently drop filters).
+  // Order matters: recreate the snapshot's filters FIRST (so each derived output topic
+  // is in the catalog), then rebind curve keys, then apply plots+toggles via
+  // xmlLoadState. Snapshots carry stable topic/field paths, not per-load keys, so one
+  // survives an intervening data reload. Callers run it under applying_state_ as needed.
+  [[nodiscard]] RestoreResult restoreWorkspaceState(QDomDocument& doc, MissingCurvePolicy policy);
 
   // kPlaceholders was removed: the SessionManager API for registering
   // empty placeholder series doesn't exist yet, so the "Create empty
@@ -378,6 +405,17 @@ class MainWindow : public QMainWindow {
   // setVisible + setProperty + setIcon path used by restoreRightPanelState
   // so QSettings stays untouched.
   void restoreChromeState(const QDomElement& element);
+
+  // Serializes every live filter (DataProcessorService recipe) into a
+  // <data_processors> block, storing the INPUT as a stable (topic, field) path
+  // so it rebinds on reload. Restore re-applies each filter onto the target
+  // dataset BEFORE curve-key rebinding, so the materialized output topics are in
+  // the catalog and the filtered curves resolve like any other curve.
+  [[nodiscard]] QDomElement saveDataProcessors(QDomDocument& doc) const;
+  // Resolves each saved filter's input against whichever loaded dataset holds it
+  // (first match in load order, mirroring rebindCurvesToLoadedDatasets), so a
+  // multi-file layout restores each filter against its own source.
+  void restoreDataProcessors(const QDomElement& root);
 
   // Applies a panel-visibility flip via the PanelToggle struct that owns
   // the target widget: direct setVisible + icon swap on the toggle
