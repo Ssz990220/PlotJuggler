@@ -16,6 +16,11 @@ option(PJ_ENABLE_TSAN "Enable ThreadSanitizer for Debug builds" OFF)
 # Standalone dev tools (pj_scene2D/tools, e.g. extract_frame). Off by default so
 # they don't cost a default/CI build; configure with -DPJ_BUILD_TOOLS=ON to build.
 option(PJ_BUILD_TOOLS "Build pj_scene2D dev tools" OFF)
+# Standalone GPLv2 render helper (raster_helper, links vendored doomgeneric).
+# Off by default: PlotJuggler links none of it, and compiling the doomgeneric C
+# engine only costs time on a default/CI build. Configure with
+# -DPJ_BUILD_RASTER_HELPER=ON to build it (also requires the vendored source).
+option(PJ_BUILD_RASTER_HELPER "Build the standalone pj-raster-helper (doomgeneric)" OFF)
 # Foundation build options. PJ_BUILD_TESTS feeds both the plotjuggler_sdk SDK
 # submodule and the pj_datastore module. The rest stay off for the PJ4 app
 # build: the SDK's ported-plugins collection, and pj_datastore's parquet
@@ -131,9 +136,16 @@ if(PJ4_BUILD_APP)
 endif()
 
 # External GPL render helper (separate executable; PlotJuggler links none of it).
-# Built only when the vendored engine source is present.
-if(EXISTS "${CMAKE_SOURCE_DIR}/3rdparty/doomgeneric/doomgeneric/doomgeneric.h")
-    add_subdirectory(raster_helper)
+# Opt-in (PJ_BUILD_RASTER_HELPER, off by default) and only when the vendored
+# engine source is present.
+if(PJ_BUILD_RASTER_HELPER)
+    if(EXISTS "${CMAKE_SOURCE_DIR}/3rdparty/doomgeneric/doomgeneric/doomgeneric.h")
+        add_subdirectory(raster_helper)
+    else()
+        message(WARNING
+            "PJ_BUILD_RASTER_HELPER=ON but 3rdparty/doomgeneric source is missing; "
+            "run 'git submodule update --init --recursive'. Skipping pj-raster-helper.")
+    endif()
 endif()
 
 if(TARGET pj-raster-helper)
