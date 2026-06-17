@@ -346,10 +346,10 @@ Range<double> PlotWidgetBase::getVisualizationRangeY(Range<double> range_x) cons
     }
 
     if (const auto* adapter = dynamic_cast<const DatastoreCurveAdapter*>(info.curve->data())) {
-      const auto y_range = adapter->visibleYRange(range_x.min, range_x.max);
+      const auto y_range = adapter->visibleYRange(range_x);
       if (y_range.has_value()) {
-        bottom = std::min(bottom, y_range->first);
-        top = std::max(top, y_range->second);
+        bottom = std::min(bottom, y_range->min);
+        top = std::max(top, y_range->max);
       }
       continue;
     }

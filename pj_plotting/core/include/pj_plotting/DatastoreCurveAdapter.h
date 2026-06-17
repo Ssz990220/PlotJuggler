@@ -21,24 +21,43 @@ namespace PJ {
 
 class SessionManager;
 
-class DatastoreCurveAdapter final : public QwtSeriesData<QPointF> {
+// Not `final`: FilteredCurveAdapter derives from it so a filter-output preview
+// rides the SAME samplesIngested -> onTopicCommitted() refresh path as the raw
+// ghost (see FilteredCurveAdapter.h). The data accessors are already virtual via
+// QwtSeriesData; the commit/clear hooks are made virtual for that subclass.
+class DatastoreCurveAdapter : public QwtSeriesData<QPointF> {
  public:
   DatastoreCurveAdapter(SessionManager* session, CurveDescriptor source);
+  ~DatastoreCurveAdapter() override = default;
 
   std::size_t size() const override;
   QPointF sample(std::size_t index) const override;
   QRectF boundingRect() const override;
   void setRectOfInterest(const QRectF& rect) override;
 
-  [[nodiscard]] std::optional<std::pair<double, double>> visibleYRange(double x_min_sec, double x_max_sec) const;
+  // Y extent over the given display-x window — the fast path PlotWidget uses to
+  // auto-fit the Y axis (it queries the store's per-range bounds rather than the
+  // visible sample buffer). virtual so a derived curve (FilteredCurveAdapter)
+  // reports its OWN output range instead of this raw input range.
+  [[nodiscard]] virtual std::optional<Range<double>> visibleYRange(Range<double> x_range_sec) const;
 
-  void onTopicCommitted();
-  void onDataCleared();
+  // Invalidate the cached sample index / bounds so the next read re-queries the
+  // store. PlotWidget calls these from its samplesIngested / dataset-replace
+  // handlers; a subclass overrides them to refresh its own derived cache too.
+  virtual void onTopicCommitted();
+  virtual void onDataCleared();
 
   [[nodiscard]] const CurveDescriptor& source() const noexcept {
     return source_;
   }
   [[nodiscard]] std::optional<QPointF> sampleFromTime(double display_time_sec) const;
+
+ protected:
+  // The session a subclass needs to read the input column / resolve the display
+  // offset. May be null (constructed without a session); callers null-check.
+  [[nodiscard]] SessionManager* session() const noexcept {
+    return session_;
+  }
 
  private:
   void ensureChunkIndex() const;

@@ -157,15 +157,15 @@ TEST_F(DatastoreCurveAdapterTest, BoundsCacheInvalidatesOnTopicCommittedAndDataC
 }
 
 TEST_F(DatastoreCurveAdapterTest, VisibleYRangeUsesSeriesSamples) {
-  const auto full_chunk = adapter_->visibleYRange(2.0, 5.0);
+  const auto full_chunk = adapter_->visibleYRange(Range<double>{.min = 2.0, .max = 5.0});
   ASSERT_TRUE(full_chunk.has_value());
-  EXPECT_DOUBLE_EQ(full_chunk->first, 14.0);
-  EXPECT_DOUBLE_EQ(full_chunk->second, 17.0);
+  EXPECT_DOUBLE_EQ(full_chunk->min, 14.0);
+  EXPECT_DOUBLE_EQ(full_chunk->max, 17.0);
 
-  const auto partial = adapter_->visibleYRange(3.0, 4.0);
+  const auto partial = adapter_->visibleYRange(Range<double>{.min = 3.0, .max = 4.0});
   ASSERT_TRUE(partial.has_value());
-  EXPECT_DOUBLE_EQ(partial->first, 16.0);
-  EXPECT_DOUBLE_EQ(partial->second, 16.0);
+  EXPECT_DOUBLE_EQ(partial->min, 16.0);
+  EXPECT_DOUBLE_EQ(partial->max, 16.0);
 }
 
 TEST_F(DatastoreCurveAdapterTest, TopicCommitGrowsIndexedSize) {
@@ -347,7 +347,7 @@ TEST_F(DatastoreCurveAdapterTest, MissingTopicReturnsNanWithoutCrashing) {
   const QPointF s = dangling.sample(0);
   EXPECT_TRUE(std::isnan(s.y()));
   EXPECT_FALSE(dangling.boundingRect().isValid());
-  EXPECT_FALSE(dangling.visibleYRange(0.0, 10.0).has_value());
+  EXPECT_FALSE(dangling.visibleYRange(Range<double>{.min = 0.0, .max = 10.0}).has_value());
   EXPECT_FALSE(dangling.sampleFromTime(0.0).has_value());
 }
 

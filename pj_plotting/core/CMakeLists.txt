@@ -2,8 +2,10 @@ find_package(Qt6 REQUIRED COMPONENTS Core)
 
 add_library(pj_plotting_core STATIC
     src/DatastoreCurveAdapter.cpp
+    src/FilteredCurveAdapter.cpp
     src/PointSeriesXY.cpp
     include/pj_plotting/DatastoreCurveAdapter.h
+    include/pj_plotting/FilteredCurveAdapter.h
     include/pj_plotting/PointSeriesXY.h
 )
 

@@ -117,8 +117,7 @@ void DatastoreCurveAdapter::setRectOfInterest(const QRectF& rect) {
   sample_index_dirty_ = true;
 }
 
-std::optional<std::pair<double, double>> DatastoreCurveAdapter::visibleYRange(
-    double x_min_sec, double x_max_sec) const {
+std::optional<Range<double>> DatastoreCurveAdapter::visibleYRange(Range<double> x_range_sec) const {
   if (session_ == nullptr) {
     return std::nullopt;
   }
@@ -129,19 +128,19 @@ std::optional<std::pair<double, double>> DatastoreCurveAdapter::visibleYRange(
   }
 
   std::optional<SeriesBounds> bounds;
-  if (!std::isfinite(x_min_sec) || !std::isfinite(x_max_sec)) {
+  if (!std::isfinite(x_range_sec.min) || !std::isfinite(x_range_sec.max)) {
     bounds = series_or->bounds();
   } else {
     const DisplayOffset offset = displayOffsetNow();
-    const Timestamp raw_a = displaySecondsToRawNs(x_min_sec, offset);
-    const Timestamp raw_b = displaySecondsToRawNs(x_max_sec, offset);
+    const Timestamp raw_a = displaySecondsToRawNs(x_range_sec.min, offset);
+    const Timestamp raw_b = displaySecondsToRawNs(x_range_sec.max, offset);
     bounds = series_or->bounds(Range<Timestamp>{.min = std::min(raw_a, raw_b), .max = std::max(raw_a, raw_b)});
   }
 
   if (!bounds.has_value()) {
     return std::nullopt;
   }
-  return std::pair<double, double>{bounds->value.min, bounds->value.max};
+  return bounds->value;
 }
 
 void DatastoreCurveAdapter::onTopicCommitted() {

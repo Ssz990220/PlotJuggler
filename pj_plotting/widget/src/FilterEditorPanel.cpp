@@ -32,6 +32,7 @@
 #include "pj_datastore/engine.hpp"
 #include "pj_datastore/query.hpp"
 #include "pj_datastore/topic_storage.hpp"
+#include "pj_plotting/FilteredCurveAdapter.h"
 #include "pj_plotting/ParameterForm.h"
 #include "pj_plotting/PlotWidget.h"
 #include "pj_plotting/PlotWidgetBase.h"
@@ -543,62 +544,6 @@ void FilterEditorPanel::scheduleRefresh() {
   }
 }
 
-QVector<QPointF> FilterEditorPanel::previewFilteredPoints(
-    const CurveDescriptor& input, const QString& source_key) const {
-  QVector<QPointF> points;
-  // A FRESH processor per source, resolved from THIS source's own config (processors are
-  // stateful, so previewing source B must not inherit source A's accumulator, and each source
-  // must run through its own filter — not the currently-visible one).
-  std::unique_ptr<proc::DataProcessor> processor = processorForSource(source_key);
-  if (!processor || session_ == nullptr) {
-    return points;  // "No Transform" -> nothing to overlay
-  }
-
-  // Run the filter over the ENTIRE input column (not a prefix), so the preview
-  // covers the whole series — same backend as Apply.
-  std::vector<proc::Sample> samples;
-  if (const TopicStorage* storage = session_->dataEngine().getTopicStorage(input.topic_id); storage != nullptr) {
-    const std::size_t col = input.column_index;
-    auto cursor = rangeQuery(storage->sealedChunks(), 0, std::numeric_limits<Timestamp>::max());
-    cursor.forEach([&](const SampleRow& row) {
-      if (col >= row.chunk->columns.size()) {
-        return;  // column not present in this (earlier) chunk
-      }
-      samples.push_back(
-          proc::Sample::scalar(row.timestamp, PJ::VarValue(row.chunk->readNumericAsDouble(col, row.row_index))));
-    });
-  }
-  if (samples.empty()) {
-    return points;
-  }
-
-  // Display offset for this dataset via the SAME seam the ghost uses
-  // (DatastoreCurveAdapter::displayOffsetNow -> SessionManager::displayOffset), so the
-  // filtered x stays aligned with the ghost. offsetOf(time_domain) was WRONG here: it
-  // returns only the time-domain base offset and omits the "Use time offset" per-dataset
-  // shift (datasetMin) that displayOffset() layers on, so with t0 active the filtered
-  // curve was stranded in absolute time while the ghost moved to relative time.
-  const DisplayOffset offset = session_->displayOffset(input.dataset_id);
-
-  const std::vector<proc::Sample> out = processor->applyBatch(samples);
-  points.reserve(static_cast<int>(out.size()));
-  for (const proc::Sample& sample : out) {
-    const double secs = toAxisDouble(rawToDisplaySeconds(sample.raw_ts_ns, offset));
-    const double val = std::visit(
-        [](auto&& value) -> double {
-          using T = std::decay_t<decltype(value)>;
-          if constexpr (std::is_same_v<T, std::string>) {
-            return 0.0;
-          } else {
-            return static_cast<double>(value);
-          }
-        },
-        sample.value());
-    points.push_back(QPointF(secs, val));
-  }
-  return points;
-}
-
 void FilterEditorPanel::refreshPreview() {
   if (!preview_plot_ || session_ == nullptr) {
     return;
@@ -653,10 +598,18 @@ void FilterEditorPanel::refreshPreview() {
       if (auto* ghost = preview_plot_->addCurve(entry.input.name, entry.color); ghost != nullptr) {
         entry.ghost = ghost->curve;
       }
-      // Filtered = an in-memory curve, keyed uniquely PER source (the `__filter_
-      // preview__` prefix never collides with a catalog topic). Seeded empty; its
-      // samples + legend title are set below.
-      auto* series = new QwtPointSeriesData();
+      // Filtered = a lazy datastore-backed curve that runs THIS source's filter
+      // over the input column on read. It reports the input topic as its source,
+      // so PlotWidget's samplesIngested handler refreshes it on the SAME signal as
+      // the ghost — the filtered "after" tracks streaming with no timer/extra
+      // wiring here. The factory builds a FRESH processor each recompute from the
+      // CURRENT config, so parameter edits take effect on the next invalidate().
+      // Keyed uniquely PER source (the `__filter_preview__` prefix never collides
+      // with a catalog topic). Legend title + visibility are set below.
+      auto factory = [this, source_key = entry.source_key]() -> std::unique_ptr<proc::DataProcessor> {
+        return processorForSource(source_key);
+      };
+      auto* series = new FilteredCurveAdapter(session_, entry.input, std::move(factory));
       const QString filtered_key = kFilteredPreviewTitle + entry.input.name;
       if (auto* info = preview_plot_->addCurve(filtered_key, series, entry.color, tr("filtered")); info != nullptr) {
         entry.filtered = info->curve;
@@ -709,8 +662,14 @@ void FilterEditorPanel::refreshPreview() {
         title = readableName(entry.input) + "[" + transform_label + "]";
       }
       entry.filtered->setTitle(title.isEmpty() ? tr("filtered") : title);
-      entry.filtered->setSamples(
-          entry_active ? previewFilteredPoints(entry.input, entry.source_key) : QVector<QPointF>{});
+      // The adapter computes its own samples lazily; just mark it stale so a
+      // parameter edit (which keeps the same ghost set) re-runs the filter on the
+      // next paint. Streaming ingest invalidates it independently via PlotWidget's
+      // samplesIngested handler. When inactive ("No Transform") the factory returns
+      // nullptr -> empty curve, so hiding it is enough.
+      if (auto* adapter = dynamic_cast<FilteredCurveAdapter*>(entry.filtered->data()); adapter != nullptr) {
+        adapter->invalidate();
+      }
       entry.filtered->setVisible(entry_active);
     }
   }

@@ -940,6 +940,79 @@ TEST(FilterEditorPanelTest, AutoZoomRefitsOnTransformChange) {
   EXPECT_GT(preview->maxZoomRect().top(), 0.9);  // refit to include the filtered max (1)
 }
 
+// During streaming, the filtered "after" curve must TRACK newly ingested samples,
+// not freeze at what it showed when the panel opened. The ghost is datastore-backed
+// and refreshes on samplesIngested via PlotWidget's own handler; the filtered curve
+// is a FilteredCurveAdapter that reports the SAME input topic, so the identical
+// handler refreshes it too — no panel-side samplesIngested connection, no timer.
+TEST(FilterEditorPanelTest, PreviewFilteredCurveTracksStreamingIngest) {
+  PJ::SessionManager session;
+  PJ::CatalogModel catalog(&session);
+  auto dataset = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "stream"});
+  ASSERT_TRUE(dataset.has_value()) << dataset.error();
+
+  // Keep the writer + handle so we can append more later — exactly how a streaming
+  // source grows a topic (append -> flush -> append -> flush).
+  PJ::DataWriter writer = session.dataEngine().createWriter();
+  auto handle = writer.registerScalarSeries(*dataset, "/random", PJ::NumericType::kFloat64);
+  ASSERT_TRUE(handle.has_value()) << handle.error();
+  for (int i = 0; i < 3; ++i) {
+    writer.appendScalar(*handle, static_cast<PJ::Timestamp>(i + 1) * 1'000'000, static_cast<double>(i));
+  }
+  ASSERT_FALSE(session.commitChunks(writer.flushAll()).empty());
+
+  PJ::CurveDescriptor source;
+  for (const auto& curve : catalog.curves()) {
+    if (const auto d = catalog.curveDescriptor(curve.name); d && d->topic_id == handle->topic_id) {
+      source = *d;
+    }
+  }
+  ASSERT_FALSE(source.name.isEmpty());
+
+  PJ::FilterEditorPanel panel(&session, &catalog, {source}, {});
+  auto* transform_list = panel.findChild<QListWidget*>("transform_list");
+  auto* series_list = panel.findChild<QListWidget*>("series_list");
+  auto* preview = panel.findChild<PJ::PlotWidget*>();
+  ASSERT_NE(transform_list, nullptr);
+  ASSERT_NE(series_list, nullptr);
+  ASSERT_NE(preview, nullptr);
+
+  selectTransform(transform_list, QStringLiteral("absolute"));
+  series_list->setCurrentRow(0, QItemSelectionModel::ClearAndSelect);
+
+  const QString kFilteredPrefix = QStringLiteral("__filter_preview__");
+  const auto filtered_size = [&]() -> std::size_t {
+    for (const auto& info : preview->curveList()) {
+      if (info.source_name.startsWith(kFilteredPrefix)) {
+        return info.curve->data()->size();
+      }
+    }
+    return 0U;
+  };
+  const auto pump_until = [&](std::size_t target, int budget_ms) {
+    QElapsedTimer elapsed;
+    elapsed.start();
+    while (elapsed.elapsed() < budget_ms && filtered_size() < target) {
+      QApplication::processEvents(QEventLoop::AllEvents, 50);
+    }
+  };
+
+  // The initial debounced refresh mirrors the 3 starting samples.
+  pump_until(3U, 500);
+  ASSERT_EQ(filtered_size(), 3U);
+
+  // Stream three more samples into the SAME topic and commit (emits samplesIngested).
+  for (int i = 3; i < 6; ++i) {
+    writer.appendScalar(*handle, static_cast<PJ::Timestamp>(i + 1) * 1'000'000, static_cast<double>(i));
+  }
+  ASSERT_FALSE(session.commitChunks(writer.flushAll()).empty());
+
+  // No user interaction: PlotWidget's samplesIngested handler invalidates the
+  // filtered adapter (it reports this input topic), so it recomputes to 6.
+  pump_until(6U, 800);
+  EXPECT_EQ(filtered_size(), 6U);
+}
+
 int main(int argc, char** argv) {
   if (!qEnvironmentVariableIsSet("QT_QPA_PLATFORM")) {
     qputenv("QT_QPA_PLATFORM", "offscreen");

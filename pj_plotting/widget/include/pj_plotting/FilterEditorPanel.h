@@ -102,12 +102,6 @@ class FilterEditorPanel : public QWidget {
   void applyPreviewDisplay();
   void scheduleRefresh();  // debounced trigger; coalesces rapid parameter edits
   void refreshPreview();
-  // Run THIS source's configured filter (resolved via processorForSource — its own
-  // remembered transform, or the visible form as a fallback) over `input`'s whole column
-  // with a FRESH processor (processors are stateful — each previewed source must start from
-  // a clean state), mapped onto the dataset's display-offset axis so the result aligns with
-  // the ghost. Empty when no transform is active.
-  [[nodiscard]] QVector<QPointF> previewFilteredPoints(const CurveDescriptor& input, const QString& source_key) const;
   // When the single selected source is itself a filter output, switch to EDIT
   // mode: preselect its transform and repopulate the panels from its recipe, so
   // Apply updates that filter in place (mirrors PJ3's re-open-and-edit).

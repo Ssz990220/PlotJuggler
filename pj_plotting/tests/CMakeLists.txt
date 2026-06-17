@@ -11,6 +11,17 @@ target_link_libraries(datastore_curve_adapter_test PRIVATE
 
 add_test(NAME DatastoreCurveAdapterTest COMMAND datastore_curve_adapter_test)
 
+add_executable(filtered_curve_adapter_test
+    filtered_curve_adapter_test.cpp
+)
+
+target_link_libraries(filtered_curve_adapter_test PRIVATE
+    pj_plotting_core
+    GTest::gtest_main
+)
+
+add_test(NAME FilteredCurveAdapterTest COMMAND filtered_curve_adapter_test)
+
 add_executable(dock_widget_placeholder_test
     dock_widget_placeholder_test.cpp
 )
