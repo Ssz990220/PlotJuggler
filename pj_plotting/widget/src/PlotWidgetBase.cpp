@@ -279,7 +279,9 @@ bool PlotWidgetBase::isEmpty() const noexcept {
 std::map<QString, QColor> PlotWidgetBase::curveColors() const {
   std::map<QString, QColor> colors;
   for (const auto& info : plot_->curve_list) {
-    colors.insert({info.curve->title().text(), info.curve->pen().color()});
+    // Key by source_name (the catalog key), not the display title, so consumers can
+    // match against CurveDescriptor::name.
+    colors.insert({info.source_name, info.curve->pen().color()});
   }
   return colors;
 }

@@ -1,0 +1,238 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>FilterEditorPanel</class>
+ <widget class="QWidget" name="FilterEditorPanel">
+  <property name="windowTitle">
+   <string>Filter Editor</string>
+  </property>
+  <layout class="QVBoxLayout" name="mainLayout">
+   <property name="spacing"><number>8</number></property>
+   <property name="leftMargin"><number>10</number></property>
+   <property name="topMargin"><number>10</number></property>
+   <property name="rightMargin"><number>10</number></property>
+   <property name="bottomMargin"><number>10</number></property>
+
+   <!-- Preview header: label + AutoZoom toggle (top-right, over the preview) -->
+   <item>
+    <layout class="QHBoxLayout" name="previewHeaderRow">
+     <item>
+      <widget class="QLabel" name="previewLabel">
+       <property name="text"><string>&lt;b&gt;Preview&lt;/b&gt;</string></property>
+      </widget>
+     </item>
+     <item><spacer name="previewHeaderSpacer"><property name="orientation"><enum>Qt::Horizontal</enum></property><property name="sizeHint" stdset="0"><size><width>40</width><height>20</height></size></property></spacer></item>
+     <item>
+      <widget class="QCheckBox" name="autozoom_check">
+       <property name="text"><string>AutoZoom</string></property>
+       <property name="checked"><bool>true</bool></property>
+      </widget>
+     </item>
+    </layout>
+   </item>
+
+   <!-- Preview chart and controls in a user-resizable vertical splitter -->
+   <item>
+    <widget class="QSplitter" name="previewSplitter">
+     <property name="orientation"><enum>Qt::Vertical</enum></property>
+     <property name="childrenCollapsible"><bool>false</bool></property>
+     <widget class="QFrame" name="chart_preview">
+     <property name="frameShape"><enum>QFrame::StyledPanel</enum></property>
+     <property name="sizePolicy">
+      <sizepolicy hsizetype="Expanding" vsizetype="Expanding">
+       <horstretch>0</horstretch><verstretch>2</verstretch>
+      </sizepolicy>
+     </property>
+     <property name="minimumSize"><size><width>0</width><height>180</height></size></property>
+    </widget>
+    <widget class="QWidget" name="controlsPane" native="true">
+     <layout class="QVBoxLayout" name="controlsVLayout">
+      <property name="leftMargin"><number>0</number></property>
+      <property name="topMargin"><number>4</number></property>
+      <property name="rightMargin"><number>0</number></property>
+      <property name="bottomMargin"><number>0</number></property>
+      <property name="spacing"><number>6</number></property>
+      <item>
+     <!-- Source curve | Transform + params -->
+     <layout class="QHBoxLayout" name="columnsLayout">
+     <property name="spacing"><number>10</number></property>
+
+     <!-- Left: source curve list -->
+     <item>
+      <widget class="QWidget" name="leftPanel" native="true">
+       <property name="minimumSize"><size><width>220</width><height>0</height></size></property>
+       <property name="maximumSize"><size><width>320</width><height>16777215</height></size></property>
+       <layout class="QVBoxLayout" name="leftLayout">
+        <property name="leftMargin"><number>0</number></property>
+        <property name="topMargin"><number>0</number></property>
+        <property name="rightMargin"><number>0</number></property>
+        <property name="bottomMargin"><number>0</number></property>
+        <item>
+         <widget class="QLabel" name="sourceLabel">
+          <property name="text"><string>&lt;b&gt;Source curve:&lt;/b&gt;</string></property>
+         </widget>
+        </item>
+        <item>
+         <widget class="QListWidget" name="series_list">
+          <property name="sizePolicy">
+           <sizepolicy hsizetype="Expanding" vsizetype="Expanding">
+            <horstretch>0</horstretch><verstretch>1</verstretch>
+           </sizepolicy>
+          </property>
+          <property name="selectionMode">
+           <enum>QAbstractItemView::ExtendedSelection</enum>
+          </property>
+         </widget>
+        </item>
+       </layout>
+      </widget>
+     </item>
+
+     <!-- Column separator (theme-coloured via QSS [separatorLine="true"]) -->
+     <item>
+      <widget class="QFrame" name="filterColumnSep1" native="true">
+       <property name="minimumSize"><size><width>1</width><height>0</height></size></property>
+       <property name="maximumSize"><size><width>1</width><height>16777215</height></size></property>
+       <property name="sizePolicy"><sizepolicy hsizetype="Fixed" vsizetype="Expanding"><horstretch>0</horstretch><verstretch>0</verstretch></sizepolicy></property>
+       <property name="separatorLine" stdset="0"><bool>true</bool></property>
+      </widget>
+     </item>
+
+     <!-- Center column: alias + transform list -->
+     <item>
+      <widget class="QWidget" name="centerPanel" native="true">
+       <property name="minimumSize"><size><width>200</width><height>0</height></size></property>
+       <property name="maximumSize"><size><width>340</width><height>16777215</height></size></property>
+       <layout class="QVBoxLayout" name="centerLayout">
+        <property name="leftMargin"><number>0</number></property>
+        <property name="topMargin"><number>0</number></property>
+        <property name="rightMargin"><number>0</number></property>
+        <property name="bottomMargin"><number>0</number></property>
+
+        <!-- Alias row - mirrors PJ3 plotwidget_transforms.ui lineEditAlias -->
+        <item>
+         <layout class="QHBoxLayout" name="aliasRow">
+          <item>
+           <widget class="QLabel" name="aliasLabel">
+            <property name="text"><string>Alias:</string></property>
+            <property name="alignment"><set>Qt::AlignRight|Qt::AlignVCenter</set></property>
+           </widget>
+          </item>
+          <item>
+           <widget class="QLineEdit" name="alias_edit">
+            <property name="minimumSize"><size><width>140</width><height>0</height></size></property>
+            <property name="toolTip"><string>Name of the filtered output series (editable)</string></property>
+           </widget>
+          </item>
+         </layout>
+        </item>
+
+        <item>
+         <widget class="QLabel" name="transformLabel">
+          <property name="text"><string>&lt;b&gt;Transform:&lt;/b&gt;</string></property>
+         </widget>
+        </item>
+        <item>
+         <widget class="QListWidget" name="transform_list">
+          <property name="minimumSize"><size><width>180</width><height>0</height></size></property>
+         </widget>
+        </item>
+       </layout>
+      </widget>
+     </item>
+
+     <!-- Column separator (theme-coloured via QSS [separatorLine="true"]) -->
+     <item>
+      <widget class="QFrame" name="filterColumnSep2" native="true">
+       <property name="minimumSize"><size><width>1</width><height>0</height></size></property>
+       <property name="maximumSize"><size><width>1</width><height>16777215</height></size></property>
+       <property name="sizePolicy"><sizepolicy hsizetype="Fixed" vsizetype="Expanding"><horstretch>0</horstretch><verstretch>0</verstretch></sizepolicy></property>
+       <property name="separatorLine" stdset="0"><bool>true</bool></property>
+      </widget>
+     </item>
+
+     <!-- Right column: parameter panels -->
+     <item>
+      <widget class="QWidget" name="paramsPanel" native="true">
+       <layout class="QVBoxLayout" name="paramsColLayout">
+        <property name="leftMargin"><number>0</number></property>
+        <property name="topMargin"><number>0</number></property>
+        <property name="rightMargin"><number>0</number></property>
+        <property name="bottomMargin"><number>0</number></property>
+        <item>
+         <!-- Parameters-column header: Copy / Paste / Apply-to-all icon buttons
+              (theme-aware QToolButtons appended in C++, matching the scene3d
+              settings toolbar), pushed to the right. -->
+         <layout class="QHBoxLayout" name="autozoomRow">
+          <property name="spacing"><number>2</number></property>
+          <item>
+           <spacer name="autozoomSpacer">
+            <property name="orientation"><enum>Qt::Horizontal</enum></property>
+            <property name="sizeHint" stdset="0"><size><width>40</width><height>20</height></size></property>
+           </spacer>
+          </item>
+         </layout>
+        </item>
+        <item>
+         <widget class="QWidget" name="paramsArea" native="true">
+            <layout class="QVBoxLayout" name="paramsLayout">
+             <property name="leftMargin"><number>0</number></property>
+             <property name="topMargin"><number>0</number></property>
+             <property name="rightMargin"><number>0</number></property>
+             <property name="bottomMargin"><number>0</number></property>
+
+        <!-- The per-filter parameter editor is generated at runtime from the
+             selected Luau filter class's schema (ParameterForm, inserted at
+             index 0 in C++). The old hardcoded panel_* widgets were removed in
+             M9. Only the bottom spacer remains as a static child. -->
+        <item>
+         <spacer name="rightSpacer">
+          <property name="orientation"><enum>Qt::Vertical</enum></property>
+          <property name="sizeHint" stdset="0"><size><width>20</width><height>0</height></size></property>
+         </spacer>
+        </item>
+            </layout>
+           </widget>
+          </item>
+         </layout>
+        </widget>
+       </item>
+      </layout>
+      </item>
+      <item>
+       <widget class="QFrame" name="filterBottomSeparator" native="true">
+        <property name="minimumSize"><size><width>0</width><height>1</height></size></property>
+        <property name="maximumSize"><size><width>16777215</width><height>1</height></size></property>
+        <property name="separatorLine" stdset="0"><bool>true</bool></property>
+       </widget>
+      </item>
+     </layout>
+     </widget>
+   </widget>
+   </item>
+
+   <!-- Status (left) + Close / Apply (right) -->
+   <item>
+    <layout class="QHBoxLayout" name="buttonBar">
+     <item><widget class="QLabel" name="status_label"><property name="text"><string></string></property></widget></item>
+     <item>
+      <spacer name="buttonBarSpacer">
+       <property name="orientation"><enum>Qt::Horizontal</enum></property>
+       <property name="sizeHint" stdset="0"><size><width>40</width><height>20</height></size></property>
+      </spacer>
+     </item>
+     <item><widget class="QPushButton" name="cancel_btn"><property name="text"><string>Cancel</string></property></widget></item>
+     <item><widget class="QPushButton" name="save_btn"><property name="text"><string>Save</string></property><property name="default"><bool>true</bool></property></widget></item>
+     <item><widget class="QPushButton" name="generate_btn"><property name="text"><string>Generate time series</string></property><property name="toolTip"><string>Apply the filter and add the result as a new persistent series in the datastore and curve tree</string></property></widget></item>
+    </layout>
+   </item>
+
+  </layout>
+ </widget>
+ <customwidgets>
+  <customwidget>
+   <class>PJ::ComboBox</class>
+   <extends>QComboBox</extends>
+   <header>pj_widgets/ComboBox.h</header>
+  </customwidget>
+ </customwidgets>
+</ui>

@@ -77,6 +77,7 @@
     <file alias="folder_open.svg">svg/folder_open.svg</file>
     <file alias="format_paint.svg">svg/format_paint.svg</file>
     <file alias="fullscreen.svg">svg/fullscreen.svg</file>
+    <file alias="function.svg">svg/function.svg</file>
     <file alias="green_circle.svg">svg/green_circle.svg</file>
     <file alias="grid.svg">svg/grid.svg</file>
     <file alias="grid_4x4.svg">svg/grid_4x4.svg</file>

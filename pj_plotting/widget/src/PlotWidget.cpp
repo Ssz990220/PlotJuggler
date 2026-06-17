@@ -37,6 +37,7 @@
 #include "pj_plotting/PointSeriesXY.h"
 #include "pj_runtime/CatalogModel.h"
 #include "pj_runtime/CurveColorRegistry.h"
+#include "pj_runtime/CurveDescriptor.h"
 #include "pj_runtime/SessionManager.h"
 #include "pj_widgets/SvgUtil.h"
 
@@ -182,6 +183,26 @@ PlotWidget::CurveInfo* PlotWidget::addCurve(const QString& name, QColor color) {
   updateMaximumZoomArea();
   replot();
   return info;
+}
+
+void PlotWidget::replaceCurve(const QString& source_key, const QString& output_key) {
+  // No-op (header contract) if services are unset or the output is not in the catalog: never
+  // drop the existing source curve when the replacement could not actually be added.
+  if (session_ == nullptr || catalog_ == nullptr || !catalog_->curveDescriptor(output_key).has_value()) {
+    return;
+  }
+  // Inherit the source curve's colour, if it is currently plotted, so the
+  // filtered output takes its place with the same colour (PJ3 transform-in-place).
+  QColor color = Qt::transparent;
+  for (const CurveInfo& info : curveList()) {
+    if (info.source_name == source_key && info.curve != nullptr) {
+      color = info.curve->pen().color();
+      break;
+    }
+  }
+  removeCurve(source_key);      // no-op if the source is not currently plotted
+  addCurve(output_key, color);  // explicit colour honoured as-is; transparent => palette
+  replot();
 }
 
 PlotWidget::CurveInfo* PlotWidget::addCurveXY(const QString& x_name, const QString& y_name, QColor color) {
@@ -928,6 +949,16 @@ void PlotWidget::canvasContextMenuTriggered(const QPoint& pos) {
   action_zoom_out_->setIcon(QIcon(loadSvg(":/resources/svg/zoom_max.svg", theme)));
   action_zoom_out_horizontal_->setIcon(QIcon(loadSvg(":/resources/svg/zoom_horizontal.svg", theme)));
   action_zoom_out_vertical_->setIcon(QIcon(loadSvg(":/resources/svg/zoom_vertical.svg", theme)));
+  // Apply Filter...: open the Filter Editor scoped to this plot's curves. On
+  // Save it applies the chosen filter (via DataProcessorService) and adds the
+  // resulting filtered curve(s) to this plot.
+  if (session_ != nullptr && catalog_ != nullptr && !curveList().empty()) {
+    menu.addAction(QIcon(loadSvg(":/resources/svg/function.svg", theme)), tr("Apply Filter..."), this, [this]() {
+      launchFilterEditor();
+    });
+    menu.addSeparator();
+  }
+
   menu.addAction(action_split_horizontal_);
   menu.addAction(action_split_vertical_);
   menu.addSeparator();
@@ -938,6 +969,25 @@ void PlotWidget::canvasContextMenuTriggered(const QPoint& pos) {
   menu.addAction(action_remove_all_curves_);
   action_remove_all_curves_->setEnabled(!curveList().empty());
   menu.exec(qwtPlot()->canvas()->mapToGlobal(pos));
+}
+
+void PlotWidget::launchFilterEditor() {
+  if (session_ == nullptr || catalog_ == nullptr) {
+    return;
+  }
+  std::vector<CurveDescriptor> sources;
+  for (const CurveInfo& info : curveList()) {
+    if (const auto descriptor = catalog_->curveDescriptor(info.source_name)) {
+      sources.push_back(*descriptor);
+    }
+  }
+  if (sources.empty()) {
+    return;
+  }
+  // The Filter Editor is a chart-area takeover panel owned by the host (it needs
+  // MainWindow::presentPanel), so request it rather than constructing it here.
+  // On Apply the host calls replaceCurve() on this plot for each result.
+  emit filterEditorRequested(std::move(sources), this);
 }
 
 void PlotWidget::setAxisScale(QwtAxisId axis_id, double min, double max) {

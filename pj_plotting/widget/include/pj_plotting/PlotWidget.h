@@ -11,9 +11,11 @@
 #include <QRectF>
 #include <QStringList>
 #include <optional>
+#include <vector>
 
 #include "pj_plotting/CurveTracker.h"
 #include "pj_plotting/PlotWidgetBase.h"
+#include "pj_runtime/CurveDescriptor.h"
 
 class QDragEnterEvent;
 class QDragLeaveEvent;
@@ -35,6 +37,13 @@ class PlotWidget : public PlotWidgetBase {
   using PlotWidgetBase::addCurve;
   CurveInfo* addCurve(const QString& name, QColor color = Qt::transparent);
   CurveInfo* addCurveXY(const QString& x_name, const QString& y_name, QColor color = Qt::transparent);
+
+  // Replace the curve plotting `source_key` with one plotting `output_key`, the
+  // new curve inheriting the source's color and taking its place (PJ3 in-place
+  // transform semantics — the Filter Editor's "filtered series replaces the
+  // input, same colour"). If `source_key` is absent, `output_key` is simply
+  // added. No-op if data services are unset or `output_key` is not in the catalog.
+  void replaceCurve(const QString& source_key, const QString& output_key);
 
   // Drops curves whose source key is gone from the catalog (XY drops if either X
   // or Y source is gone), keeps the rest. One replot; returns whether anything
@@ -58,6 +67,11 @@ class PlotWidget : public PlotWidgetBase {
   // this off does not hide the playback red line.
   void setShowPoints(bool show);
   [[nodiscard]] bool showPoints() const noexcept;
+  // Enable/disable the canvas right-click context menu (off for read-only
+  // previews, e.g. the Filter Editor's preview plot). Default on.
+  void setContextMenuEnabled(bool enabled) noexcept {
+    context_menu_enabled_ = enabled;
+  }
   [[nodiscard]] QString stateId() const;
   void setStateId(QString id);
   [[nodiscard]] QDomElement xmlSaveState(QDomDocument& doc) const;
@@ -88,6 +102,10 @@ class PlotWidget : public PlotWidgetBase {
   void splitHorizontal();
   void splitVertical();
   void curveColorChanged(QString curve_name, QColor color);
+  // "Apply Filter…" was chosen for this plot's curves. The host opens the Filter
+  // Editor panel (chart-area takeover) scoped to `sources` and, on Apply, calls
+  // `origin->replaceCurve()` so the filtered output replaces each source in place.
+  void filterEditorRequested(std::vector<CurveDescriptor> sources, PlotWidget* origin);
 
  protected:
   bool eventFilter(QObject* obj, QEvent* event) override;
@@ -110,6 +128,9 @@ class PlotWidget : public PlotWidgetBase {
 
   void buildActions();
   void canvasContextMenuTriggered(const QPoint& pos);
+  // Open the Filter Editor scoped to this plot's curves; on Save, add the
+  // resulting filtered curve(s) to this plot.
+  void launchFilterEditor();
   void setAxisScale(QwtAxisId axis_id, double min, double max);
   void reconnectDataSignals();
   [[nodiscard]] QStringList decodeCurveDrop(const QMimeData* mime_data, const QString& format) const;

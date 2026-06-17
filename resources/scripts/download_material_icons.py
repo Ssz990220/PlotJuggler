@@ -88,6 +88,7 @@ ICON_MAPPING: dict[str, tuple[str, dict[str, str]]] = {
     "copy_all.svg":                        ("Copy All",                   {}),
     "create_new_folder.svg":               ("Create New Folder",          {}),
     "cube.svg":                            ("Deployed Code",              {}),
+    "function.svg":                        ("Function",                   {}),
     "dark_mode_light.svg":                 ("Dark Mode",                  {"fill_color": "#FFFFFF"}),
     "dashboard_load.svg":                  ("Dashboard 2 Gear",           {}),
     "database.svg":                        ("Database",                   {}),

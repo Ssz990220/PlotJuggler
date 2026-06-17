@@ -55,6 +55,9 @@ class PlotWidgetBase : public QWidget {
   [[nodiscard]] const std::list<CurveInfo>& curveList() const noexcept;
   [[nodiscard]] std::list<CurveInfo>& curveList() noexcept;
   [[nodiscard]] bool isEmpty() const noexcept;
+  // Keyed by each curve's stable source_name (catalog key, == CurveDescriptor::name),
+  // NOT its display title — so callers can correlate a plotted curve's colour with a
+  // descriptor (e.g. the Filter Editor matching its source list to plot colours).
   [[nodiscard]] std::map<QString, QColor> curveColors() const;
   [[nodiscard]] CurveInfo* curveFromTitle(const QString& title);
 

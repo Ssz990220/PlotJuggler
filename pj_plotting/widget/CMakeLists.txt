@@ -3,6 +3,9 @@ find_package(Qt6 REQUIRED COMPONENTS Core Gui Widgets OpenGLWidgets Xml)
 add_library(pj_plotting STATIC
     src/CurveEditor.cpp
     src/CurveEditor.ui
+    src/FilterEditorPanel.cpp
+    src/FilterEditorPanel.ui
+    src/ParameterForm.cpp
     src/CurveTracker.cpp
     src/DockToolbar.cpp
     src/DockToolbar.ui
@@ -17,6 +20,8 @@ add_library(pj_plotting STATIC
     src/PlotZoomer.cpp
     src/TabbedPlotWidget.cpp
     include/pj_plotting/CurveEditor.h
+    include/pj_plotting/FilterEditorPanel.h
+    include/pj_plotting/ParameterForm.h
     include/pj_plotting/CurveTracker.h
     include/pj_plotting/DockToolbar.h
     include/pj_plotting/DockWidget.h
@@ -51,6 +56,8 @@ target_link_libraries(pj_plotting PUBLIC
     Qt6::Widgets
     Qt6::OpenGLWidgets
     Qt6::Xml
+    pj_scripting  # PUBLIC: public headers (FilterEditorPanel.h, ParameterForm.h) expose pj_scripting types
   PRIVATE
+    pj_datastore  # DataProcessor (applyBatch preview) — formerly pj_proc
     pj_widgets
 )

@@ -1296,7 +1296,8 @@ QDialog QWidget#dialogTitleBar {
    covered by a widget's own border (timelineStrip top, plot tab strip
    bottom, splitter handles). All use the same ink. */
 QFrame#timelineSeparator,
-QFrame#plotTabsSeparator {
+QFrame#plotTabsSeparator,
+QFrame[separatorLine="true"] {
     background-color: ${border_default};
 }
 
