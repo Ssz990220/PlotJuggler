@@ -209,17 +209,22 @@ After a rebuild meant to pick up a C++ change, confirm the file actually recompi
 
 Submodule: `git submodule update --init --recursive` on first clone.
 
-Worktrees: the ~1GB Qt install lives only in the primary checkout (under
-`plotjuggler_sdk/.qt`, surfaced at the repo root as `.qt`). A fresh `git worktree`
-gets its own empty `plotjuggler_sdk` submodule with no Qt, so `build.sh`/`run.sh`
-won't find `.qt/6.11.1/gcc_64`. **Always add a `.qt` symlink in a new worktree**,
-pointing at the primary checkout's install by **absolute** path (not a relative
-copy of the root symlink — that would resolve to the worktree's own empty
-submodule):
+Worktrees: use the **`./worktree-new.sh`** / **`./worktree-rm.sh`** helpers at the
+repo root rather than hand-rolling `git worktree`:
 
 ```bash
-ln -s /home/davide/ws_plotjuggler/PJ4/plotjuggler_sdk/.qt <worktree>/.qt
+./worktree-new.sh fix/foo            # .worktrees/foo, branched off origin/main
+./worktree-rm.sh  foo                # after the PR merges (deletes the branch too)
 ```
+
+They handle the two things the manual path keeps getting wrong: the ~1GB Qt
+install lives only in the primary checkout (under `plotjuggler_sdk/.qt`, surfaced
+at the repo root as `.qt`), so a fresh worktree needs a `.qt` symlink to it by
+**absolute** path (a relative copy of the root symlink resolves to the worktree's
+own empty submodule); and the submodules are initialized by borrowing the primary
+checkout's objects (`--reference`, local + offline) instead of re-cloning from
+GitHub. Set-up-only by default (seconds); pass `--build` to compile. The scripts
+resolve the primary checkout themselves, so they work from any worktree.
 
 ## UI conventions
 
