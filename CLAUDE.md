@@ -30,7 +30,7 @@ PJ4/
 ├── pj_scene3D/              # 3D scene widget family: TF, pointclouds, occupancy grids, URDF/mesh, markers; HDR/SSAO/EDL pipeline + OpenGL widgets, demos
 ├── pj_marketplace/          # extension install/manage
 ├── pj_dialog_host/          # Qt host for plugin-provided dialogs
-├── pj_scripting/            # Lua today, Python pluggable later (not yet created)
+├── pj_scripting/            # Luau filter engine: self-describing filter classes for Data Processors
 ├── pj_runtime/              # services layer (Qt allowed, no Qt6::Widgets link)
 ├── pj_widgets/              # reusable Qt widgets and UI helpers
 ├── pj_plotting/             # Qwt plotting widget family: core adapters, Qt widgets, tests
@@ -55,7 +55,7 @@ When adding files, use the owning module rather than creating new top-level fold
 - `pj_scene2D/`: 2D media/scene feature family. Put independent media logic in `core/`, Qt viewer widgets in `widgets/`, tests in `tests/`, and opt-in standalone dev utilities in `tools/` (gated by `PJ_BUILD_TOOLS`, off by default).
 - `pj_marketplace/`: extension registry, download, install/manage services, and marketplace UI.
 - `pj_dialog_host/`: Qt host/binding for plugin-provided dialogs. General app dialogs stay in `pj_app`; reusable dialog controls stay in `pj_widgets`.
-- `pj_scripting/`: future language-agnostic scripting engine. Do not place scripting code under `pj_app` or widget modules unless it is strictly UI/editor code.
+- `pj_scripting/`: Luau filter engine for Data Processors — self-describing `.luau` filter classes behind a language-agnostic `ScriptEngine` seam (Python out-of-process is a future drop-in). It layers Luau onto the `PJ::proc::DataProcessor` base owned by `pj_datastore`. Do not place scripting code under `pj_app` or widget modules unless it is strictly UI/editor code.
 - `pj_scene3D/`: 3D scene widget family (robotics viz): TF, pointclouds, occupancy grids, URDF/mesh, markers. Independent 3D logic in `core/`, OpenGL widgets in `widgets/`, tests in `tests/`, opt-in dev demos in `demos/` (gated by `PJ_BUILD_TOOLS`, off by default). Do not add 3D rendering code elsewhere.
 - `resources/`: shared app resources registered in `resources.qrc`; module-local test/demo assets should live with that module.
 - `3rdparty/`: vendored source dependencies added via CMake `add_subdirectory`. Conan/system dependencies do not belong here.
@@ -98,6 +98,7 @@ Cross-cutting docs (porting strategy, glossary, ADRs) live in top-level `docs/`.
 | `pj_marketplace` | [pj_marketplace/README.md](./pj_marketplace/README.md) | [docs/](./pj_marketplace/docs/) — REQUIREMENTS, ARCHITECTURE, USER_MANUAL, marketplace-spec |
 | `pj_scene3D` | [pj_scene3D/CLAUDE.md](./pj_scene3D/CLAUDE.md) | [docs/](./pj_scene3D/docs/) — REQUIREMENTS, [ARCHITECTURE](./pj_scene3D/docs/ARCHITECTURE.md) (rendering pipeline, cameras, URDF/mesh) |
 | `pj_datastore` | [pj_datastore/CLAUDE.md](./pj_datastore/CLAUDE.md) | [docs/](./pj_datastore/docs/) — REQUIREMENTS, ARCHITECTURE, USER_GUIDE, OBJECT_STORE_DESIGN |
+| `pj_scripting` | [pj_scripting/CLAUDE.md](./pj_scripting/CLAUDE.md) | [docs/](./pj_scripting/docs/) — FILTER_CLASS |
 | `plotjuggler_sdk/` (submodule) | [plotjuggler_sdk/CLAUDE.md](./plotjuggler_sdk/CLAUDE.md) | submodule owns its own `docs/` tree |
 
 ### Freshness discipline

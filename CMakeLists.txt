@@ -69,6 +69,9 @@ add_subdirectory(plotjuggler_sdk)
 # pj_datastore: columnar store + DerivedEngine + the data-processor execution
 # substrate (DataProcessor base + ProcessorSisoAdapter, formerly pj_proc).
 add_subdirectory(pj_datastore)
+# pj_scripting: Luau filter engine for Data Processors (self-describing filter
+# classes). Depends on pj_datastore (added above) + Conan Luau. See its CLAUDE.md.
+add_subdirectory(pj_scripting)
 
 # ---------------------------------------------------------------------------
 # Vendored third-party

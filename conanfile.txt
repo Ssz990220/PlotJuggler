@@ -9,6 +9,13 @@ glm/1.0.1
 benchmark/1.9.5
 nanoarrow/0.7.0
 nlohmann_json/3.12.0
+# Luau (Roblox's sandboxed Lua dialect) — the engine for self-describing filter
+# classes (Approach A). Hand-bound in
+# pj_scripting (NOT sol2 — Luau has an incompatible C++-linkage API). CMake targets
+# Luau::VM / Luau::Compiler / Luau::CodeGen; find_package(Luau). (The retired
+# PUC-Lua/sol2 LuaProcessor's lua/5.4.7 dep was dropped in M9; the standalone
+# engine_shootout benchmarks pin their own lua/luajit via their own conanfiles.)
+luau/0.700
 mcap/2.1.1
 zstd/1.5.5
 fast_float/8.1.0
