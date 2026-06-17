@@ -2406,7 +2406,17 @@ MainWindow::RestoreResult MainWindow::restoreWorkspaceState(QDomDocument& doc, M
   // bind — a snapshot survives an intervening data reload because it carries stable
   // topic/field paths, not per-load keys.
   // 3. Apply plots + global toggles.
-  return xmlLoadState(doc) ? RestoreResult::kApplied : RestoreResult::kFailed;
+  if (!xmlLoadState(doc)) {
+    return RestoreResult::kFailed;
+  }
+  // 4. Seed the just-recreated docks with the current playhead. currentTimeChanged
+  // only fires on a CHANGE, so a freshly restored dock would sit at no-tracker-time
+  // until the next scrub — scene docks then render blank (TF lookups / image decode
+  // key off the tracker instant). Same seeding the drag-drop / click-create paths do
+  // (MainWindow.cpp:480, makeSeededEmptyObjectDock); here it covers layout load + undo/redo.
+  const double now = toAxisDouble(session_->playbackEngine().currentTime());
+  forEachDock([now](DockWidget* dock) { dock->onTrackerTime(now); });
+  return RestoreResult::kApplied;
 }
 
 void MainWindow::onUndo() {
