@@ -211,6 +211,15 @@ class PointCloudLayer : public Scene3DLayer {
   // off. std::nullopt when bounds/TF/time are unavailable (e.g. before first push).
   [[nodiscard]] std::optional<std::pair<float, float>> currentWorldAxisRange(int axis) const;
 
+  // Shared body of setAutoRange. `seed_manual_from_world` governs the auto-OFF
+  // path: true (interactive toggle) seeds the manual range from the world-axis
+  // range currently on screen so colours don't jump; false (state restore) keeps
+  // the existing manual_range_min_/max_ verbatim. Restore MUST pass false — the
+  // dock attach()es the layer (rendering the first sample, so world_bounds_ is
+  // already populated) before calling xmlLoadState, so seeding would overwrite
+  // the just-restored saved range with the recomputed data range.
+  void applyAutoRange(bool enable, bool seed_manual_from_world);
+
   // --- Compressed-cloud async decode (Draco / Cloudini) ---
   // Compressed decode is CPU-heavy (~100ms for large Draco clouds), so it runs on the
   // Qt thread pool and never blocks the UI. requestDecode() records the request as

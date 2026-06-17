@@ -237,9 +237,14 @@ bool PointCloudLayer::xmlLoadState(const QDomElement& element) {
   if (ok_min && ok_max) {
     setManualRange(r_min, r_max);
   }
-  // Auto-range is applied last so the manual range above doesn't get
-  // overwritten by an auto-recompute on the next cloud swap.
-  setAutoRange(element.attribute(QStringLiteral("auto_range"), QStringLiteral("true")) == QStringLiteral("true"));
+  // Restore the auto-range flag WITHOUT seeding the manual range from the current
+  // world-axis bounds. The dock attach()es the layer (which renders the first
+  // sample, so world_bounds_ is already populated) BEFORE calling xmlLoadState,
+  // so the interactive freeze would overwrite the manual range just restored
+  // above with the recomputed data range. The saved values are authoritative.
+  const bool auto_on =
+      element.attribute(QStringLiteral("auto_range"), QStringLiteral("true")) == QStringLiteral("true");
+  applyAutoRange(auto_on, /*seed_manual_from_world=*/false);
 
   return true;
 }
@@ -704,6 +709,12 @@ void PointCloudLayer::setInvertLut(bool invert) {
 }
 
 void PointCloudLayer::setAutoRange(bool enable) {
+  // Interactive entry point (config widget toggle): seed the manual range from
+  // the world-axis range on screen when turning auto off.
+  applyAutoRange(enable, /*seed_manual_from_world=*/true);
+}
+
+void PointCloudLayer::applyAutoRange(bool enable, bool seed_manual_from_world) {
   if (auto_range_ == enable) {
     return;
   }
@@ -713,25 +724,29 @@ void PointCloudLayer::setAutoRange(bool enable) {
     // autoRangeComputed so the panel's hidden spinboxes refresh.
     range_dirty_ = true;
     refreshNow();
-  } else {
-    // For a fixed-frame (x/y/z) axis, freeze at the world-axis range currently on
-    // screen so turning auto off doesn't snap to a stale (or sensor-local) manual
-    // value; seed the manual spinboxes with it. Then stop the pass's per-frame
-    // auto-range and pin the manual bounds.
-    const int axis = spatialAxisIndex(color_field_);
-    if (axis >= 0) {
+    return;
+  }
+  // Auto off: pin the colormap to the manual range. An interactive toggle seeds
+  // that manual range from the world-axis range currently on screen (so the
+  // colours don't snap to a stale or sensor-local value); state restore passes
+  // seed_manual_from_world=false because the saved range_min/range_max are
+  // authoritative — world_bounds_ is already populated by attach(), so seeding
+  // would overwrite them with the recomputed data range.
+  const int axis = spatialAxisIndex(color_field_);
+  if (axis >= 0) {
+    if (seed_manual_from_world) {
       if (const auto frozen = currentWorldAxisRange(axis)) {
         manual_range_min_ = frozen->first;
         manual_range_max_ = frozen->second;
-        emit autoRangeComputed(manual_range_min_, manual_range_max_);
       }
-      cloud_pass_.setSpatialAutoBounds(std::nullopt);
     }
-    // Pin the pass to whatever manual values the layer is currently
-    // holding so the colormap doesn't snap to stale auto-computed bounds.
-    cloud_pass_.setColormapRange(manual_range_min_, manual_range_max_);
-    emit repaintRequested();
+    cloud_pass_.setSpatialAutoBounds(std::nullopt);
   }
+  // Pin the pass to the manual values the layer now holds so the colormap doesn't
+  // snap to stale auto-computed bounds, and refresh the panel's spinboxes to match.
+  cloud_pass_.setColormapRange(manual_range_min_, manual_range_max_);
+  emit autoRangeComputed(manual_range_min_, manual_range_max_);
+  emit repaintRequested();
 }
 
 void PointCloudLayer::setManualRange(float min_value, float max_value) {
