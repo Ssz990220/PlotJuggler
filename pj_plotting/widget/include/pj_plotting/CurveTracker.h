@@ -31,6 +31,14 @@ class CurveTracker : public QObject {
   [[nodiscard]] bool isEnabled() const noexcept {
     return visible_;
   }
+  [[nodiscard]] Parameter parameter() const noexcept {
+    return parameter_;
+  }
+  // Whether the floating value box ("time : … / curve values") is currently
+  // shown. Always hidden in kLineOnly mode.
+  [[nodiscard]] bool valueBoxVisible() const noexcept {
+    return text_marker_ != nullptr && text_marker_->isVisible();
+  }
 
  public slots:
   void setPosition(const QPointF& pos);
@@ -42,6 +50,12 @@ class CurveTracker : public QObject {
   }
 
  private:
+  // The display parameter that permits a value box at all (kLineOnly never does).
+  // Single home for the rule shared by setEnabled() and setPosition().
+  [[nodiscard]] bool valueBoxAllowed() const noexcept {
+    return parameter_ != kLineOnly;
+  }
+
   QPointF previous_tracker_point_;
   std::optional<QPointF> reference_pos_;
   std::vector<QwtPlotMarker*> point_markers_;

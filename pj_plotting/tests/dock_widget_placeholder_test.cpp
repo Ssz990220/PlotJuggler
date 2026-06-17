@@ -27,6 +27,7 @@
 #include "pj_plotting/DockWidget.h"
 #include "pj_plotting/PlotDocker.h"
 #include "pj_plotting/PlotWidget.h"
+#include "pj_plotting/TabbedPlotWidget.h"
 #include "pj_runtime/CatalogModel.h"
 #include "pj_runtime/IDataWidget.h"
 #include "pj_runtime/SessionManager.h"
@@ -1096,6 +1097,207 @@ TEST(DockWidgetPlaceholderTest, ObjectDropOntoCommittedPlotIsRejected) {
   EXPECT_EQ(dock->plotWidget()->curveList().size(), 1U);
   EXPECT_EQ(dock->objectWidget(), nullptr);
   EXPECT_EQ(factory_calls, 0);
+}
+
+// ---------- plotWidgetAdded fires for every creation path -------------------
+//
+// MainWindow applies the global view toggles (grid, dots, legend, and the time
+// TRACKER display level) to each plot through its onPlotAdded slot, which is
+// wired to PlotDocker::plotWidgetAdded. If a creation path forgets to emit that
+// signal, the new plot silently keeps CurveTracker's constructor default
+// (kValue) and ignores the user's global tracker setting. These tests pin the
+// signal for each way a plot can be born.
+
+// Simulates MainWindow: every plot that announces itself gets the global tracker
+// parameter applied, exactly as applyGlobalToggles() does.
+struct TrackerConfigHarness {
+  TrackerConfigHarness(PJ::PlotDocker& docker, PJ::CurveTracker::Parameter global) : global_param(global) {
+    QObject::connect(&docker, &PJ::PlotDocker::plotWidgetAdded, &docker, [this](PJ::PlotWidget* plot) {
+      ++added_count;
+      if (plot != nullptr) {
+        plot->setTrackerParameter(global_param);
+      }
+    });
+  }
+  PJ::CurveTracker::Parameter global_param;
+  int added_count = 0;
+};
+
+TEST(NewPlotTrackerConfig, DropCreatedPlotInheritsGlobalTrackerParameter) {
+  PJ::SessionManager session;
+  PJ::CatalogModel catalog(&session);
+  auto dataset = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "drive.mcap"});
+  ASSERT_TRUE(dataset.has_value()) << dataset.error();
+  ASSERT_NE(addScalarTopic(session, *dataset, "/imu/accel"), 0U);
+  const auto curves = catalog.curves();
+  ASSERT_EQ(curves.size(), 1U);
+
+  PJ::PlotDocker docker(QStringLiteral("test"), &session, &catalog);
+  TrackerConfigHarness harness(docker, PJ::CurveTracker::kLineOnly);
+
+  auto* dock = docker.plotAt(0);
+  ASSERT_NE(dock, nullptr);
+  ASSERT_TRUE(
+      QMetaObject::invokeMethod(
+          dock, "onCatalogItemsDropped", Qt::DirectConnection, Q_ARG(QStringList, QStringList{curves[0].name})));
+
+  ASSERT_NE(dock->plotWidget(), nullptr);
+  EXPECT_EQ(harness.added_count, 1) << "plotWidgetAdded must fire when a drop creates the plot";
+  EXPECT_EQ(dock->plotWidget()->trackerParameter(), PJ::CurveTracker::kLineOnly);
+}
+
+TEST(NewPlotTrackerConfig, IconClickCreatedPlotInheritsGlobalTrackerParameter) {
+  // The PR #211 path: clicking the placeholder's plot icon builds an empty plot
+  // via onVisualizationRequested(kPlot) -> ensurePlotWidget().
+  PJ::SessionManager session;
+  PJ::CatalogModel catalog(&session);
+  PJ::PlotDocker docker(QStringLiteral("test"), &session, &catalog);
+  TrackerConfigHarness harness(docker, PJ::CurveTracker::kLineOnly);
+
+  auto* dock = docker.plotAt(0);
+  ASSERT_NE(dock, nullptr);
+  auto* placeholder = dock->findChild<PJ::VisualizationPlaceholderWidget*>();
+  ASSERT_NE(placeholder, nullptr);
+  iconButton(placeholder, "buttonVizPlot")->click();
+
+  ASSERT_NE(dock->plotWidget(), nullptr);
+  EXPECT_EQ(harness.added_count, 1) << "plotWidgetAdded must fire when the placeholder icon creates the plot";
+  EXPECT_EQ(dock->plotWidget()->trackerParameter(), PJ::CurveTracker::kLineOnly);
+}
+
+TEST(NewPlotTrackerConfig, SplitCreatedPlotInheritsGlobalTrackerParameter) {
+  // Splitting yields a new placeholder dock; dropping a curve into it creates the
+  // plot. The split-born dock must also be wired so its plot announces itself.
+  PJ::SessionManager session;
+  PJ::CatalogModel catalog(&session);
+  auto dataset = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "drive.mcap"});
+  ASSERT_TRUE(dataset.has_value()) << dataset.error();
+  ASSERT_NE(addScalarTopic(session, *dataset, "/imu/accel"), 0U);
+  const auto curves = catalog.curves();
+  ASSERT_EQ(curves.size(), 1U);
+
+  PJ::PlotDocker docker(QStringLiteral("test"), &session, &catalog);
+  TrackerConfigHarness harness(docker, PJ::CurveTracker::kLineOnly);
+
+  auto* dock0 = docker.plotAt(0);
+  ASSERT_NE(dock0, nullptr);
+  auto* dock1 = splitFrom(docker, dock0, 2);
+  ASSERT_NE(dock1, nullptr);
+  ASSERT_TRUE(
+      QMetaObject::invokeMethod(
+          dock1, "onCatalogItemsDropped", Qt::DirectConnection, Q_ARG(QStringList, QStringList{curves[0].name})));
+
+  ASSERT_NE(dock1->plotWidget(), nullptr);
+  EXPECT_EQ(dock1->plotWidget()->trackerParameter(), PJ::CurveTracker::kLineOnly);
+}
+
+TEST(NewPlotTrackerConfig, PlotInSecondTabInheritsGlobalTrackerParameter) {
+  // The screenshot scenario: a plot created in a SECOND tab. Mimics MainWindow's
+  // tab wiring exactly — tabAdded wires the new docker's plotWidgetAdded, and the
+  // tab created in the TabbedPlotWidget constructor is wired separately (the role
+  // wireExistingPlots() plays at startup).
+  PJ::SessionManager session;
+  PJ::CatalogModel catalog(&session);
+  auto dataset = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "drive.mcap"});
+  ASSERT_TRUE(dataset.has_value()) << dataset.error();
+  ASSERT_NE(addScalarTopic(session, *dataset, "/imu/accel"), 0U);
+  const auto curves = catalog.curves();
+  ASSERT_EQ(curves.size(), 1U);
+
+  PJ::TabbedPlotWidget tabbed(QStringLiteral("main"));
+  tabbed.setDataServices(&session, &catalog);
+
+  const auto global_param = PJ::CurveTracker::kLineOnly;
+  const auto wire_docker = [global_param](PJ::PlotDocker* docker) {
+    QObject::connect(docker, &PJ::PlotDocker::plotWidgetAdded, docker, [global_param](PJ::PlotWidget* plot) {
+      if (plot != nullptr) {
+        plot->setTrackerParameter(global_param);
+      }
+    });
+  };
+  QObject::connect(
+      &tabbed, &PJ::TabbedPlotWidget::tabAdded, &tabbed, [&](PJ::PlotDocker* docker) { wire_docker(docker); });
+  for (int index = 0; index < tabbed.dockerCount(); ++index) {
+    wire_docker(tabbed.dockerAt(index));
+  }
+
+  PJ::PlotDocker* tab2 = tabbed.addTab(QStringLiteral("tab2"));
+  ASSERT_NE(tab2, nullptr);
+  auto* dock = tab2->plotAt(0);
+  ASSERT_NE(dock, nullptr);
+  ASSERT_TRUE(
+      QMetaObject::invokeMethod(
+          dock, "onCatalogItemsDropped", Qt::DirectConnection, Q_ARG(QStringList, QStringList{curves[0].name})));
+
+  ASSERT_NE(dock->plotWidget(), nullptr);
+  EXPECT_EQ(dock->plotWidget()->trackerParameter(), global_param);
+}
+
+// ---------- kLineOnly tracker keeps its value box hidden --------------------
+//
+// The real bug behind "the new plot's tracker ignores the global line-only
+// setting and shows a box": the tracker PARAMETER is applied correctly, but
+// CurveTracker::setEnabled() force-shows the value box, and several callers
+// (PlotWidget::addCurve, setTrackerEnabled, …) re-enable the tracker WITHOUT a
+// following setPosition to re-apply the parameter-based visibility. So adding a
+// curve to a line-only plot resurrects a stale "time : …" box.
+
+TEST(NewPlotTrackerConfig, LineOnlyTrackerKeepsValueBoxHiddenWhenCurveAdded) {
+  PJ::SessionManager session;
+  PJ::CatalogModel catalog(&session);
+  auto dataset = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "drive.mcap"});
+  ASSERT_TRUE(dataset.has_value()) << dataset.error();
+  ASSERT_NE(addScalarTopic(session, *dataset, "/imu/accel"), 0U);
+  const auto curves = catalog.curves();
+  ASSERT_EQ(curves.size(), 1U);
+
+  PJ::PlotWidget plot(&session, &catalog);
+  plot.setTrackerParameter(PJ::CurveTracker::kLineOnly);
+  ASSERT_FALSE(plot.trackerValueBoxVisible());
+
+  // The user's path: drag a curve in. addCurve() re-enables the tracker; a
+  // line-only tracker must not resurrect its value box.
+  ASSERT_NE(plot.addCurve(curves[0].name), nullptr);
+  EXPECT_FALSE(plot.trackerValueBoxVisible());
+}
+
+TEST(NewPlotTrackerConfig, LineOnlyTrackerStaysHiddenWhenReEnabled) {
+  // The restore/undo path: xmlLoadState calls setTrackerEnabled(true) after the
+  // global toggles already set kLineOnly. Re-enabling must not show the box.
+  PJ::SessionManager session;
+  PJ::CatalogModel catalog(&session);
+  auto dataset = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "drive.mcap"});
+  ASSERT_TRUE(dataset.has_value()) << dataset.error();
+  ASSERT_NE(addScalarTopic(session, *dataset, "/imu/accel"), 0U);
+  const auto curves = catalog.curves();
+  ASSERT_EQ(curves.size(), 1U);
+
+  PJ::PlotWidget plot(&session, &catalog);
+  ASSERT_NE(plot.addCurve(curves[0].name), nullptr);
+  plot.setTrackerParameter(PJ::CurveTracker::kLineOnly);
+  ASSERT_FALSE(plot.trackerValueBoxVisible());
+
+  plot.setTrackerEnabled(true);
+  EXPECT_FALSE(plot.trackerValueBoxVisible());
+}
+
+TEST(NewPlotTrackerConfig, ValueTrackerShowsValueBoxWhenCurveAdded) {
+  // The mirror invariant: a line+value tracker MUST keep its value box when a
+  // curve is added. (Regression guard — an over-broad kLineOnly fix once routed
+  // setEnabled through setPosition, which hid the box for kValue because the
+  // view isn't fit yet at addCurve time.)
+  PJ::SessionManager session;
+  PJ::CatalogModel catalog(&session);
+  auto dataset = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "drive.mcap"});
+  ASSERT_TRUE(dataset.has_value()) << dataset.error();
+  ASSERT_NE(addScalarTopic(session, *dataset, "/imu/accel"), 0U);
+  const auto curves = catalog.curves();
+  ASSERT_EQ(curves.size(), 1U);
+
+  PJ::PlotWidget plot(&session, &catalog);
+  plot.setTrackerParameter(PJ::CurveTracker::kValue);
+  ASSERT_NE(plot.addCurve(curves[0].name), nullptr);
+  EXPECT_TRUE(plot.trackerValueBoxVisible());
 }
 
 int main(int argc, char** argv) {

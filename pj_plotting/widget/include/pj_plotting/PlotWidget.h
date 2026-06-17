@@ -46,6 +46,11 @@ class PlotWidget : public PlotWidgetBase {
   void setTrackerEnabled(bool enabled);
   [[nodiscard]] bool trackerEnabled() const noexcept;
   void setTrackerParameter(CurveTracker::Parameter parameter);
+  // The tracker's current display level (line only / line + value / + name).
+  [[nodiscard]] CurveTracker::Parameter trackerParameter() const noexcept;
+  // Whether the playback tracker's floating value box is currently visible
+  // (always hidden in line-only mode).
+  [[nodiscard]] bool trackerValueBoxVisible() const noexcept;
   // Sets (or clears, when nullopt) a blue reference line. While set, the red
   // playback tracker renders values as deltas from this X. No-op on XY plots.
   void setReferenceLine(std::optional<double> reference_x_sec);

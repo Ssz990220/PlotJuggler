@@ -274,6 +274,14 @@ void PlotWidget::setTrackerParameter(CurveTracker::Parameter parameter) {
   }
 }
 
+CurveTracker::Parameter PlotWidget::trackerParameter() const noexcept {
+  return tracker_ != nullptr ? tracker_->parameter() : CurveTracker::kValue;
+}
+
+bool PlotWidget::trackerValueBoxVisible() const noexcept {
+  return tracker_ != nullptr && tracker_->valueBoxVisible();
+}
+
 void PlotWidget::setShowPoints(bool show) {
   show_points_ = show;
   if (!show) {

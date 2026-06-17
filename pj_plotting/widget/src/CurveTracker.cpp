@@ -66,7 +66,13 @@ void CurveTracker::setParameter(Parameter parameter) {
 void CurveTracker::setEnabled(bool enable) {
   visible_ = enable;
   line_marker_->setVisible(enable);
-  text_marker_->setVisible(enable);
+  // Gate the box on the parameter here rather than force it visible — that is
+  // what stopped a re-enabled line-only tracker (when a curve is added, or on
+  // layout restore) from resurrecting a stale "time : …" box. We deliberately
+  // don't route through setPosition()'s richer in-view check: callers like
+  // PlotWidget::addCurve() re-enable before the view is fit, which would
+  // wrongly hide a line+value box until the next scrub.
+  text_marker_->setVisible(enable && valueBoxAllowed());
   for (auto* marker : point_markers_) {
     marker->setVisible(enable);
   }
@@ -176,7 +182,7 @@ void CurveTracker::setPosition(const QPointF& tracker_position) {
   QString marker_html = QStringLiteral("<font color=%1>time : %2%3</font><br>")
                             .arg(text_color.name(), QString::number(tracker_position.x(), 'f', precision), time_delta);
 
-  if (parameter_ != kLineOnly) {
+  if (valueBoxAllowed()) {
     int line_index = 0;
     for (auto it = text_lines.rbegin(); it != text_lines.rend(); ++it) {
       const LineParts& parts = it->second;
@@ -215,7 +221,7 @@ void CurveTracker::setPosition(const QPointF& tracker_position) {
     text_marker_->setXValue(tracker_position.x() - view_rect.width() * 0.02 - text_width);
   }
 
-  text_marker_->setVisible(visible_points > 0 && visible_ && parameter_ != kLineOnly);
+  text_marker_->setVisible(visible_points > 0 && visible_ && valueBoxAllowed());
   previous_tracker_point_ = tracker_position;
 }
 
