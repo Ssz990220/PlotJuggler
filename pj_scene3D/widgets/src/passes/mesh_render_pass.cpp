@@ -837,7 +837,18 @@ void MeshRenderPass::drawBatch(
   }
 
   if (collision) {
-    withGlFunctions([](auto& functions) {
+    // At full opacity the user wants a SOLID hull, so render collision through the
+    // opaque path: blend off (frag alpha overwrites the tonemap marker, like the
+    // opaque visual bucket below) and depth writes on, so the hull occludes both
+    // the visual mesh and itself. Below full opacity, keep the translucent overlay
+    // (blend on, depth writes off) so the real robot shows through — depth-write
+    // OFF is exactly why a blended hull reads see-through even at lower opacities.
+    const bool solid = opacity >= 0.999f;
+    withGlFunctions([solid](auto& functions) {
+      if (solid) {
+        functions.glDisable(GL_BLEND);
+        return;
+      }
       functions.glEnable(GL_BLEND);
       // Coverage-union alpha raises the scene FBO's tonemap marker by the
       // hull's coverage instead of preserving stale annotation markers (see

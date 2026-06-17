@@ -48,8 +48,10 @@ double attrDouble(const QDomElement& el, const QString& name, double fallback) {
   return ok ? v : fallback;
 }
 
-// Read <origin xyz="..." rpy="..."/> into the LinkGeom (defaults: identity).
-void parseOrigin(const QDomElement& parent, LinkGeom& geom) {
+// Read <origin xyz="..." rpy="..."/> into any target with origin_xyz/origin_rpy
+// (LinkGeom or RobotJoint). Missing attributes leave the target's defaults.
+template <typename T>
+void parseOriginInto(const QDomElement& parent, T& out) {
   const QDomElement origin = parent.firstChildElement(QStringLiteral("origin"));
   if (origin.isNull()) {
     return;
@@ -57,10 +59,10 @@ void parseOrigin(const QDomElement& parent, LinkGeom& geom) {
   std::array<double, 3> xyz{0, 0, 0};
   std::array<double, 3> rpy{0, 0, 0};
   if (parseDoubles(origin.attribute(QStringLiteral("xyz")), xyz)) {
-    geom.origin_xyz = {xyz[0], xyz[1], xyz[2]};
+    out.origin_xyz = {xyz[0], xyz[1], xyz[2]};
   }
   if (parseDoubles(origin.attribute(QStringLiteral("rpy")), rpy)) {
-    geom.origin_rpy = {rpy[0], rpy[1], rpy[2]};
+    out.origin_rpy = {rpy[0], rpy[1], rpy[2]};
   }
 }
 
@@ -164,9 +166,32 @@ bool parseGeomElement(
   if (!parseGeometry(el, resolver, urdf_dir, source_is_url, out.shape)) {
     return false;
   }
-  parseOrigin(el, out);
+  parseOriginInto(el, out);
   parseMaterial(el, materials, out);
   return true;
+}
+
+// Map a URDF joint `type` attribute to JointType (unknown/empty ⇒ kOther).
+JointType jointTypeFromString(const QString& type) {
+  if (type == QStringLiteral("fixed")) {
+    return JointType::kFixed;
+  }
+  if (type == QStringLiteral("revolute")) {
+    return JointType::kRevolute;
+  }
+  if (type == QStringLiteral("continuous")) {
+    return JointType::kContinuous;
+  }
+  if (type == QStringLiteral("prismatic")) {
+    return JointType::kPrismatic;
+  }
+  if (type == QStringLiteral("floating")) {
+    return JointType::kFloating;
+  }
+  if (type == QStringLiteral("planar")) {
+    return JointType::kPlanar;
+  }
+  return JointType::kOther;
 }
 
 }  // namespace
@@ -263,6 +288,24 @@ std::pair<std::optional<RobotModel>, std::string> parseUrdf(
       model.root_link = link.name;  // first declared link
     }
     model.links.push_back(std::move(link));
+  }
+
+  // Pass 3 — joints. We keep the kinematic edge (parent/child/type/origin) so a
+  // FIXED joint can later be injected as a static TF bridge for a frame the data
+  // never publishes; link poses still come from the live TF tree. A joint missing
+  // its parent or child link is skipped (it cannot define an edge).
+  for (QDomElement joint_el = root.firstChildElement(QStringLiteral("joint")); !joint_el.isNull();
+       joint_el = joint_el.nextSiblingElement(QStringLiteral("joint"))) {
+    RobotJoint joint;
+    joint.name = joint_el.attribute(QStringLiteral("name")).toStdString();
+    joint.type = jointTypeFromString(joint_el.attribute(QStringLiteral("type")));
+    joint.parent = joint_el.firstChildElement(QStringLiteral("parent")).attribute(QStringLiteral("link")).toStdString();
+    joint.child = joint_el.firstChildElement(QStringLiteral("child")).attribute(QStringLiteral("link")).toStdString();
+    if (joint.parent.empty() || joint.child.empty()) {
+      continue;
+    }
+    parseOriginInto(joint_el, joint);
+    model.joints.push_back(std::move(joint));
   }
 
   if (model.links.empty()) {

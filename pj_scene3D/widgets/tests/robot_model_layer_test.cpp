@@ -13,6 +13,8 @@
 #include <QTemporaryDir>
 #include <QUrl>
 #include <atomic>
+#include <glm/glm.hpp>
+#include <glm/gtc/quaternion.hpp>
 #include <memory>
 #include <optional>
 #include <string>
@@ -23,6 +25,7 @@
 #include "pj_plugins/sdk/message_parser_plugin_base.hpp"
 #include "pj_runtime/SessionManager.h"
 #include "pj_scene3d_core/tf/tf_buffer.h"
+#include "pj_scene3d_core/tf/transform.h"
 
 namespace {
 
@@ -34,6 +37,47 @@ constexpr const char* kDecodedUrdf = R"(
     </visual>
   </link>
   <link name="tool0"/>
+</robot>
+)";
+
+// A two-link robot whose child link is attached ONLY by a FIXED joint. Mirrors
+// the DROID gripper case: the data publishes the parent frame but never the child,
+// so the child renders only if the URDF's fixed joint is bridged into TF.
+constexpr const char* kBridgeUrdf = R"(
+<robot name="bridge">
+  <link name="base_link"/>
+  <joint name="mount" type="fixed">
+    <parent link="base_link"/>
+    <child link="gripper_base"/>
+    <origin xyz="0 0 0.1"/>
+  </joint>
+  <link name="gripper_base"/>
+</robot>
+)";
+
+// A mixed model: a link with a <visual> plus a collision-ONLY sublink attached by
+// a fixed joint (mirrors panda_link*_sc self-collision capsules on the DROID arm).
+constexpr const char* kMixedCollisionUrdf = R"(
+<robot name="mixed">
+  <link name="body">
+    <visual><geometry><box size="1 1 1"/></geometry></visual>
+  </link>
+  <joint name="sc" type="fixed">
+    <parent link="body"/><child link="body_sc"/><origin xyz="0 0 0"/>
+  </joint>
+  <link name="body_sc">
+    <collision><geometry><sphere radius="0.5"/></geometry></collision>
+  </link>
+</robot>
+)";
+
+// An entirely-collision model (no <visual> anywhere): kAuto must promote it to the
+// visuals group so it renders solid (review L.21).
+constexpr const char* kAllCollisionUrdf = R"(
+<robot name="allcol">
+  <link name="solid">
+    <collision><geometry><sphere radius="0.5"/></geometry></collision>
+  </link>
 </robot>
 )";
 
@@ -116,6 +160,61 @@ class SdfRobotDescriptionParser final : public PJ::MessageParserPluginBase {
               .format = "sdf",
               .text = "<sdf/>",
           }},
+      };
+    };
+    registerSchemaHandler("robot_description", std::move(handler));
+  }
+};
+
+class BridgeUrdfRobotDescriptionParser final : public PJ::MessageParserPluginBase {
+ public:
+  BridgeUrdfRobotDescriptionParser() {
+    PJ::sdk::SchemaHandler handler;
+    handler.object_type = PJ::sdk::BuiltinObjectType::kRobotDescription;
+    handler.parse_object = [](PJ::Timestamp ts,
+                              PJ::sdk::PayloadView /*payload*/) -> PJ::Expected<PJ::sdk::ObjectRecord> {
+      return PJ::sdk::ObjectRecord{
+          .ts = std::nullopt,
+          .object = PJ::sdk::BuiltinObject{PJ::sdk::RobotDescription{
+              .timestamp_ns = ts,
+              .topic = "/robot_description",
+              .format = "urdf",
+              .text = kBridgeUrdf,
+          }},
+      };
+    };
+    registerSchemaHandler("robot_description", std::move(handler));
+  }
+};
+
+class MixedCollisionRobotDescriptionParser final : public PJ::MessageParserPluginBase {
+ public:
+  MixedCollisionRobotDescriptionParser() {
+    PJ::sdk::SchemaHandler handler;
+    handler.object_type = PJ::sdk::BuiltinObjectType::kRobotDescription;
+    handler.parse_object = [](PJ::Timestamp ts,
+                              PJ::sdk::PayloadView /*payload*/) -> PJ::Expected<PJ::sdk::ObjectRecord> {
+      return PJ::sdk::ObjectRecord{
+          .ts = std::nullopt,
+          .object = PJ::sdk::BuiltinObject{PJ::sdk::RobotDescription{
+              .timestamp_ns = ts, .topic = "/robot_description", .format = "urdf", .text = kMixedCollisionUrdf}},
+      };
+    };
+    registerSchemaHandler("robot_description", std::move(handler));
+  }
+};
+
+class AllCollisionRobotDescriptionParser final : public PJ::MessageParserPluginBase {
+ public:
+  AllCollisionRobotDescriptionParser() {
+    PJ::sdk::SchemaHandler handler;
+    handler.object_type = PJ::sdk::BuiltinObjectType::kRobotDescription;
+    handler.parse_object = [](PJ::Timestamp ts,
+                              PJ::sdk::PayloadView /*payload*/) -> PJ::Expected<PJ::sdk::ObjectRecord> {
+      return PJ::sdk::ObjectRecord{
+          .ts = std::nullopt,
+          .object = PJ::sdk::BuiltinObject{PJ::sdk::RobotDescription{
+              .timestamp_ns = ts, .topic = "/robot_description", .format = "urdf", .text = kAllCollisionUrdf}},
       };
     };
     registerSchemaHandler("robot_description", std::move(handler));
@@ -244,6 +343,27 @@ const PJ_message_parser_vtable_t* sdfParserVtable() {
   static const PJ_message_parser_vtable_t* vt = PJ::MessageParserPluginBase::vtableWithCreate(
       []() noexcept -> void* { return new SdfRobotDescriptionParser(); },
       R"({"id":"robot-sdf-test","name":"Robot SDF Test","version":"1.0.0","encoding":"test"})");
+  return vt;
+}
+
+const PJ_message_parser_vtable_t* bridgeParserVtable() {
+  static const PJ_message_parser_vtable_t* vt = PJ::MessageParserPluginBase::vtableWithCreate(
+      []() noexcept -> void* { return new BridgeUrdfRobotDescriptionParser(); },
+      R"({"id":"robot-bridge-test","name":"Robot Bridge URDF Test","version":"1.0.0","encoding":"test"})");
+  return vt;
+}
+
+const PJ_message_parser_vtable_t* mixedCollisionParserVtable() {
+  static const PJ_message_parser_vtable_t* vt = PJ::MessageParserPluginBase::vtableWithCreate(
+      []() noexcept -> void* { return new MixedCollisionRobotDescriptionParser(); },
+      R"({"id":"robot-mixed-col-test","name":"Robot Mixed Collision Test","version":"1.0.0","encoding":"test"})");
+  return vt;
+}
+
+const PJ_message_parser_vtable_t* allCollisionParserVtable() {
+  static const PJ_message_parser_vtable_t* vt = PJ::MessageParserPluginBase::vtableWithCreate(
+      []() noexcept -> void* { return new AllCollisionRobotDescriptionParser(); },
+      R"({"id":"robot-all-col-test","name":"Robot All Collision Test","version":"1.0.0","encoding":"test"})");
   return vt;
 }
 
@@ -604,6 +724,129 @@ TEST(RobotModelLayerTest, TopicSourceIdentitySurvivesSaveLoadRoundTrip) {
   ASSERT_TRUE(restored_layer.xmlLoadState(saved));
   ASSERT_NE(restored_layer.robotModel(), nullptr) << "restored layer did not re-resolve the persisted source topic";
   EXPECT_EQ(restored_layer.robotModel()->root_link, "base_link");
+}
+
+// Seed "scene -> child" (identity) into a buffer.
+void seedSceneChild(pj::scene3d::TransformBuffer& buf, const std::string& child) {
+  pj::scene3d::StampedTransform tf;
+  tf.stamp = PJ::fromRaw(1000);
+  tf.parent_frame = "scene";
+  tf.child_frame = child;
+  tf.transform = pj::scene3d::Transform{glm::dvec3(0, 0, 0), glm::dquat(1, 0, 0, 0)};
+  ASSERT_TRUE(buf.setTransform(tf).has_value());
+}
+
+// The DROID gripper bug: the layer must bridge the URDF's fixed joints into the
+// buffer it actually RENDERS against (frame_ctx.tf — the dock's live buffer), not
+// the ctx_ snapshot captured at attach (which can be null/stale). Drive the draw
+// rebuild with a live buffer distinct from the attach-time context to prove the
+// render buffer is the one bridged.
+TEST(RobotModelLayerTest, FixedJointBridgeReconnectsChildFrameInRenderBuffer) {
+  PJ::SessionManager session;
+  const PJ::ObjectTopicId topic_id = registerTopic(session);
+  registerParser(session, topic_id, bridgeParserVtable());
+  pushWireBytes(session, topic_id);
+
+  pj::scene3d::RobotModelLayer layer(topic_id, QStringLiteral("/robot_description"));
+  const auto ctx = makeContext(session);  // attach-time context (its buffer is NOT the one we render against)
+  ASSERT_TRUE(layer.attach(ctx));
+  ASSERT_NE(layer.robotModel(), nullptr);
+  ASSERT_EQ(layer.robotModel()->joints.size(), 1u);
+
+  // The live render buffer the dock feeds via frame_ctx — a distinct object that
+  // publishes base_link under scene but never the fixed-joint child gripper_base.
+  pj::scene3d::TransformBuffer live;
+  seedSceneChild(live, "base_link");
+  EXPECT_FALSE(live.tryLookupTransform("scene", "gripper_base", PJ::fromRaw(2000)).has_value());
+
+  const std::string fixed_frame = "scene";
+  const pj::scene3d::FrameContext frame_ctx{live, fixed_frame, PJ::fromRaw(2000)};
+  layer.rebuildDrawCacheForTest(frame_ctx);
+
+  const auto tf = live.tryLookupTransform("scene", "gripper_base", PJ::fromRaw(2000));
+  ASSERT_TRUE(tf.has_value()) << "fixed-joint mount must be bridged into the LIVE render buffer";
+  EXPECT_NEAR(tf->t.z, 0.1, 1e-9);
+}
+
+// The bridge frames must carry the layer's frame prefix, or they would not match
+// the prefixed names the link poses are looked up under.
+TEST(RobotModelLayerTest, FixedJointBridgeAppliesFramePrefix) {
+  PJ::SessionManager session;
+  const PJ::ObjectTopicId topic_id = registerTopic(session);
+  registerParser(session, topic_id, bridgeParserVtable());
+  pushWireBytes(session, topic_id);
+
+  pj::scene3d::RobotModelLayer layer(topic_id, QStringLiteral("/robot_description"));
+  layer.setFramePrefix(QStringLiteral("robot1/"));
+  const auto ctx = makeContext(session);
+  ASSERT_TRUE(layer.attach(ctx));
+  ASSERT_NE(layer.robotModel(), nullptr);
+
+  pj::scene3d::TransformBuffer live;
+  seedSceneChild(live, "robot1/base_link");
+
+  const std::string fixed_frame = "scene";
+  const pj::scene3d::FrameContext frame_ctx{live, fixed_frame, PJ::fromRaw(2000)};
+  layer.rebuildDrawCacheForTest(frame_ctx);
+
+  const auto tf = live.tryLookupTransform("scene", "robot1/gripper_base", PJ::fromRaw(2000));
+  ASSERT_TRUE(tf.has_value()) << "prefixed bridge frame should resolve in the render buffer";
+  EXPECT_NEAR(tf->t.z, 0.1, 1e-9);
+}
+
+// kAuto in a MIXED model: a collision-only sublink (the self-collision capsules)
+// must land in the COLLISION draw group so the Collision toggle/opacity hides it —
+// NOT be promoted into the visuals group where only the Meshes toggle reaches it.
+TEST(RobotModelLayerTest, AutoModeCollisionOnlyLinkRendersInCollisionGroupWhenModelHasVisuals) {
+  PJ::SessionManager session;
+  const PJ::ObjectTopicId topic_id = registerTopic(session);
+  registerParser(session, topic_id, mixedCollisionParserVtable());
+  pushWireBytes(session, topic_id);
+
+  pj::scene3d::RobotModelLayer layer(topic_id, QStringLiteral("/robot_description"));  // kAuto default
+  const auto ctx = makeContext(session);
+  ASSERT_TRUE(layer.attach(ctx));
+  ASSERT_NE(layer.robotModel(), nullptr);
+
+  pj::scene3d::TransformBuffer live;
+  seedSceneChild(live, "body");  // the fixed joint body->body_sc is bridged by the rebuild
+
+  const std::string fixed_frame = "scene";
+  const pj::scene3d::FrameContext frame_ctx{live, fixed_frame, PJ::fromRaw(2000)};
+  layer.rebuildDrawCacheForTest(frame_ctx);
+
+  EXPECT_EQ(layer.visualDrawCountForTest(), 1) << "the body's <visual> box";
+  EXPECT_EQ(layer.collisionDrawCountForTest(), 1) << "body_sc collision sphere must be in the collision group";
+
+  // Collision geometry with no <material> gets an orange tint (RViz convention).
+  const glm::vec4 color = layer.firstCollisionDrawColorForTest();
+  EXPECT_NEAR(color.r, 1.0f, 1e-3);
+  EXPECT_NEAR(color.g, 0.5f, 1e-3);
+  EXPECT_NEAR(color.b, 0.1f, 1e-3);
+}
+
+// kAuto in an ENTIRELY-collision model: promote to the visuals group so it renders
+// solid instead of ghosting at the collision opacity (review L.21 preserved).
+TEST(RobotModelLayerTest, AutoModeAllCollisionModelPromotesToVisuals) {
+  PJ::SessionManager session;
+  const PJ::ObjectTopicId topic_id = registerTopic(session);
+  registerParser(session, topic_id, allCollisionParserVtable());
+  pushWireBytes(session, topic_id);
+
+  pj::scene3d::RobotModelLayer layer(topic_id, QStringLiteral("/robot_description"));  // kAuto default
+  const auto ctx = makeContext(session);
+  ASSERT_TRUE(layer.attach(ctx));
+  ASSERT_NE(layer.robotModel(), nullptr);
+
+  pj::scene3d::TransformBuffer live;
+  seedSceneChild(live, "solid");
+
+  const std::string fixed_frame = "scene";
+  const pj::scene3d::FrameContext frame_ctx{live, fixed_frame, PJ::fromRaw(2000)};
+  layer.rebuildDrawCacheForTest(frame_ctx);
+
+  EXPECT_EQ(layer.visualDrawCountForTest(), 1) << "collision-only model promoted to visuals";
+  EXPECT_EQ(layer.collisionDrawCountForTest(), 0);
 }
 
 // Custom main: QFutureWatcher/UrlFetcher tests need an event loop, and the

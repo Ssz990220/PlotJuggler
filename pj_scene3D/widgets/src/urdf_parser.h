@@ -2,11 +2,15 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 
-// URDF → RobotModel parser (QDomDocument-based). Parses <robot>/<link> only;
-// per <visual>/<collision> it reads <origin>, <geometry>, and <material>.
-// Multiple visuals/collisions per link are supported.
+// URDF → RobotModel parser (QDomDocument-based). Parses <robot>/<link> and
+// <joint>; per <visual>/<collision> it reads <origin>, <geometry>, and
+// <material>. Multiple visuals/collisions per link are supported.
 //
-// <joint> is IGNORED entirely — TF owns kinematics (design "Crucial framing").
+// <joint> is parsed into RobotModel::joints (name/type/parent/child/origin), but
+// TF still owns kinematics: joints exist only so a FIXED joint can be injected as
+// a static TF edge to bridge a frame the data never publishes (see
+// robot_model_bridges.h). axis/limit/mimic are not parsed (movable-joint
+// articulation is deferred).
 //
 // xacro is detected (a `<xacro:` element or a .xacro filename) and rejected with
 // an explicit error string — never a cryptic XML parse failure. Format is

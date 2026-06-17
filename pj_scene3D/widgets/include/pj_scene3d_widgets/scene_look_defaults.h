@@ -5,6 +5,7 @@
 #include <cmath>
 #include <glm/trigonometric.hpp>
 #include <glm/vec3.hpp>
+#include <glm/vec4.hpp>
 
 // Single source of truth for the 3D scene's default LOOK parameters — the values
 // that MeshShadingParams, CompositeParams, SsaoPass and EdlPass bake as their
@@ -38,6 +39,9 @@ inline constexpr float kKeyLightAzimuthDeg = 40.0f;    // key-light azimuth (Z-u
 inline constexpr float kKeyLightElevationDeg = 55.0f;  // key-light elevation
 inline constexpr float kMeshOpacity = 1.0f;
 inline constexpr float kCollisionOpacity = 0.4f;
+// Tint for collision geometry that has no <material> (RViz convention) — keeps
+// collision hulls visually distinct from the visual meshes.
+inline constexpr glm::vec4 kCollisionDefaultColor{1.0f, 0.5f, 0.1f, 1.0f};
 
 // ---- Composite / post (CompositeParams) ----
 inline constexpr int kTonemapMode = 1;  // 0 None, 1 ACES, 2 AgX, 3 Neutral

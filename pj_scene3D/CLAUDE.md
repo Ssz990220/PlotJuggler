@@ -133,7 +133,8 @@ Before any commit, run the tests and check that they all pass
 `pointcloud_layer_coalescing_test`, `camera_near_far_test`,
 `camera_zoom_to_cursor_test`, `camera_state_transfer_test`,
 `urdf_parser_test`, `urdf_package_resolver_test`, `mesh_loader_test`,
-`robot_model_layer_test`, `scene_entities_layer_model_test`).
+`robot_model_bridges_test`, `robot_model_layer_test`,
+`scene_entities_layer_model_test`).
 
 Make sure that all the markdown files in this folder are updated, if necessary.
 

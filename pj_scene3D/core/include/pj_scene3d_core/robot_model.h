@@ -4,8 +4,11 @@
 
 // Pure URDF data model — no Qt, no assimp, no GL. The URDF parser
 // (pj_scene3d_widgets/urdf_parser) fills these structs; render passes consume
-// them. Per the design "Crucial framing": the URDF is a frame→visual decoration
-// map (links only); TF owns kinematics, so <joint> is never represented here.
+// them. The URDF is primarily a frame→visual decoration map (links) posed by the
+// live TF tree — TF still owns kinematics. Joints ARE represented now, but only so
+// a FIXED joint can be injected as a static TF edge to bridge a frame the data
+// never publishes (e.g. a gripper mount); see robot_model_bridges.h. Movable
+// joints are parsed and classified but not yet articulated.
 
 #include <cstdint>
 #include <string>
@@ -17,6 +20,7 @@
 // supported opt-in for that helper.
 #define GLM_ENABLE_EXPERIMENTAL
 #include <glm/glm.hpp>
+#include <glm/gtc/quaternion.hpp>
 #include <glm/gtx/euler_angles.hpp>
 
 namespace pj::scene3d {
@@ -79,19 +83,40 @@ struct LinkGeom {
 };
 
 // One <link>: its name (== TF frame name) plus all visual & collision geoms.
-// Joints are intentionally absent — TF positions every link.
+// A link is posed by the TF frame of the same name; joints (below) only matter
+// when the data's TF lacks an edge a FIXED joint can supply.
 struct RobotLink {
   std::string name;
   std::vector<LinkGeom> visuals;
   std::vector<LinkGeom> collisions;
 };
 
-// The parsed robot: every link keyed by name, plus the inferred root link name
-// (first link declared; URDF has no explicit root without the joint graph,
-// which we deliberately ignore).
+// URDF joint type. Only kFixed is currently consumed (as a static TF bridge);
+// the movable kinds are parsed and classified for the future articulation work
+// but otherwise unused. kOther covers any unrecognized type string.
+enum class JointType : std::uint8_t { kFixed, kRevolute, kContinuous, kPrismatic, kFloating, kPlanar, kOther };
+
+// One <joint>: the kinematic edge parent_link → child_link with its static origin
+// offset (translation + RPY). axis/limit/mimic are intentionally NOT parsed yet —
+// they are only needed to articulate movable joints, which is deferred. `parent`
+// and `child` are link names (== TF frame names).
+struct RobotJoint {
+  std::string name;
+  std::string parent;
+  std::string child;
+  JointType type{JointType::kOther};
+  glm::dvec3 origin_xyz{0.0, 0.0, 0.0};
+  glm::dvec3 origin_rpy{0.0, 0.0, 0.0};  // roll, pitch, yaw (radians)
+};
+
+// The parsed robot: every link keyed by name, the inferred root link name (first
+// link declared; URDF has no explicit root without walking the joint graph), and
+// every joint. Joints are used only to bridge TF gaps (see robot_model_bridges.h);
+// link poses still come from the live TF tree.
 struct RobotModel {
   std::string root_link;
   std::vector<RobotLink> links;
+  std::vector<RobotJoint> joints;
 };
 
 // Compose a link/visual origin into a 4x4 matrix: translate(xyz) * Rz * Ry * Rx
@@ -103,6 +128,15 @@ inline glm::dmat4 originToMat4(const glm::dvec3& xyz, const glm::dvec3& rpy) {
   glm::dmat4 m = glm::eulerAngleZYX(rpy.z, rpy.y, rpy.x);
   m[3] = glm::dvec4(xyz, 1.0);
   return m;
+}
+
+// Quaternion form of a URDF RPY rotation, for the (translation + quaternion)
+// StampedTransform used by the TF buffer. Built via quat_cast of the SAME
+// eulerAngleZYX matrix originToMat4 uses, so the quaternion and the matrix share
+// one rotation convention by construction — keep it that way (a hand-rolled
+// qz*qy*qx could drift from originToMat4 and silently mis-orient bridged frames).
+inline glm::dquat rpyToQuat(const glm::dvec3& rpy) {
+  return glm::normalize(glm::quat_cast(glm::eulerAngleZYX(rpy.z, rpy.y, rpy.x)));
 }
 
 }  // namespace pj::scene3d

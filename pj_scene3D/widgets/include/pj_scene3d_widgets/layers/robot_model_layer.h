@@ -14,6 +14,7 @@
 
 #include "pj_datastore/object_store.hpp"
 #include "pj_scene3d_core/robot_model.h"
+#include "pj_scene3d_core/tf/transform.h"  // StampedTransform (cached fixed-joint bridges)
 // Needed in full (not forward-declared) because render() memoizes
 // std::vector<MeshRenderPass::DrawCall> members — a nested type that requires
 // the enclosing class to be complete. The header is public + self-contained
@@ -61,11 +62,14 @@ class RobotModelLayer : public Scene3DLayer {
  public:
   enum class SourceType { kTopic, kFile, kUrl };
   // kVisual: render only <visual> geometry; kCollision: render only <collision>
-  // geometry (through the collision opacity/visibility group). kAuto: per link,
-  // its <visual> geometry when present, else its <collision> geometry rendered
-  // AS visuals (the mesh opacity/visibility group, NOT the collision sliders) —
-  // deliberate, so collision-only URDFs render solid by default instead of
-  // ghosting at the collision group's 0.4 default opacity (review L.21).
+  // geometry (through the collision opacity/visibility group). kAuto: a link's
+  // <visual> geometry when it has any; a collision-only link is promoted to the
+  // visuals group (rendered solid) ONLY when the WHOLE model has no visuals, so an
+  // all-collision URDF renders solid instead of ghosting at the collision group's
+  // default opacity (review L.21). In a MIXED model (some links have visuals), a
+  // collision-only link is auxiliary geometry (e.g. self-collision capsules) and
+  // renders in the COLLISION group so the Collision opacity/visibility toggle
+  // controls it rather than overlaying the visuals as an unhideable solid.
   enum class DisplayMode { kAuto, kVisual, kCollision };
 
   RobotModelLayer(PJ::ObjectTopicId topic_id, QString display_name, QObject* parent = nullptr);
@@ -152,6 +156,23 @@ class RobotModelLayer : public Scene3DLayer {
   void clearDrawsDirtyForTest() {
     draws_dirty_ = false;
   }
+  // Runs the (GL-free) draw-cache rebuild — which injects the fixed-joint TF
+  // bridges into frame_ctx.tf — so a test can assert the buffer the layer renders
+  // against gets bridged, without standing up a GL context.
+  void rebuildDrawCacheForTest(const FrameContext& frame_ctx) {
+    rebuildDrawCache(frame_ctx);
+  }
+  // Draw-group sizes after the last rebuild — lets a GL-less test assert which
+  // group (visuals vs collision) a link's geometry landed in.
+  [[nodiscard]] int visualDrawCountForTest() const {
+    return static_cast<int>(cached_visual_draws_.size());
+  }
+  [[nodiscard]] int collisionDrawCountForTest() const {
+    return static_cast<int>(cached_collision_draws_.size());
+  }
+  [[nodiscard]] glm::vec4 firstCollisionDrawColorForTest() const {
+    return cached_collision_draws_.empty() ? glm::vec4(0.0f) : cached_collision_draws_.front().color;
+  }
 #endif
 
  signals:
@@ -168,6 +189,14 @@ class RobotModelLayer : public Scene3DLayer {
   // Rebuild cached_visual_draws_ / cached_collision_draws_ from the model posed
   // by frame_ctx's TF lookups. Called by render() only when draws_dirty_.
   void rebuildDrawCache(const FrameContext& frame_ctx);
+  // Recompute static_bridges_ from the current model_, with frame_prefix_ applied
+  // to each parent/child frame. Called when the model loads or the prefix changes.
+  void rebuildStaticBridges();
+  // Inject any not-yet-present fixed-joint bridge into `buf`. Idempotent + guarded
+  // (never overrides real /tf) and cheap, so rebuildDrawCache calls it every
+  // rebuild against the LIVE render buffer (frame_ctx.tf) — which self-heals after
+  // a buffer clear (same-file reload). No-op when static_bridges_ is empty.
+  void ensureStaticBridges(TransformBuffer& buf);
   bool loadFromCurrentSource();
   bool tryLoadTopicDescription();
   bool applyRobotDescription(
@@ -215,6 +244,14 @@ class RobotModelLayer : public Scene3DLayer {
   PJ::Timepoint tracker_time_{};
 
   std::optional<RobotModel> model_;
+  // Cached fixed-joint TF bridges (frame_prefix_ already applied), rebuilt on
+  // model load / prefix change. Re-asserted into ctx_.tf_buffer each tracker tick
+  // by ensureStaticBridges() so links the data's /tf never places (e.g. a gripper
+  // mount) still resolve. Empty when the model has no fixed joints.
+  std::vector<StampedTransform> static_bridges_;
+  // True iff any link has visual geometry; gates kAuto's collision-only promotion
+  // (rebuildDrawCache). Cached at model load — it only depends on the latched model.
+  bool model_has_visuals_{false};
   int total_mesh_count_{0};
   int unresolved_mesh_count_{0};
   int loaded_mesh_count_{0};

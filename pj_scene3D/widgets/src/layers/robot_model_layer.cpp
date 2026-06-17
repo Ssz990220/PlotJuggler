@@ -39,9 +39,11 @@
 #include "pj_base/time.hpp"
 #include "pj_plugins/sdk/message_parser_plugin_base.hpp"
 #include "pj_runtime/SessionManager.h"
+#include "pj_scene3d_core/robot_model_bridges.h"
 #include "pj_scene3d_widgets/object_topic_metadata.h"
 #include "pj_scene3d_widgets/parse_locked.h"
 #include "pj_scene3d_widgets/passes/mesh_render_pass.h"
+#include "pj_scene3d_widgets/scene_look_defaults.h"
 #include "pj_widgets/CheckButton.h"
 #include "pj_widgets/ColorPickerWidget.h"
 #include "pj_widgets/ComboBox.h"
@@ -307,6 +309,8 @@ void RobotModelLayer::detach() {
   ++url_fetch_generation_;
   url_fetcher_.reset();
   model_.reset();
+  static_bridges_.clear();
+  model_has_visuals_ = false;
   mesh_loads_->clear();
   cached_visual_draws_.clear();
   cached_collision_draws_.clear();
@@ -366,6 +370,15 @@ void RobotModelLayer::rebuildDrawCache(const FrameContext& frame_ctx) {
   cached_visual_draws_.clear();
   cached_collision_draws_.clear();
 
+  // Bridge the URDF's fixed joints into the buffer we actually pose links against:
+  // frame_ctx.tf is the dock's LIVE buffer, whereas ctx_.tf_buffer is a snapshot
+  // taken at attach that can be null/stale if the layer attached before the
+  // dataset bound (or was rebound on reload). Guarded + idempotent, so re-running
+  // every rebuild is cheap and self-heals after a buffer clear. const_cast is safe
+  // here: TransformBuffer is internally synchronized and rebuildDrawCache runs on
+  // the GUI thread; FrameContext only hands the buffer to passes read-only.
+  ensureStaticBridges(const_cast<TransformBuffer&>(frame_ctx.tf));
+
   const glm::vec4 placeholder_color{1.0f, 0.0f, 1.0f, 1.0f};
 
   auto append_geom = [&](const LinkGeom& geom, const glm::mat4& link_model, bool collision) {
@@ -374,6 +387,11 @@ void RobotModelLayer::rebuildDrawCache(const FrameContext& frame_ctx) {
     if (geom.has_color) {
       draw.use_vertex_color = false;
       draw.color = geom.color;
+    } else if (collision) {
+      // Collision geometry with no <material>: orange tint so hulls read as
+      // distinct from the visual meshes (RViz convention).
+      draw.use_vertex_color = false;
+      draw.color = look::kCollisionDefaultColor;
     } else {
       draw.use_vertex_color = true;
       draw.color = glm::vec4(1.0f);
@@ -434,12 +452,22 @@ void RobotModelLayer::rebuildDrawCache(const FrameContext& frame_ctx) {
         append_geom(geom, link_model, false);
       }
     } else {
-      // kAuto: visuals when present, else collisions rendered AS visuals (see the
-      // DisplayMode doc-comment, review L.21) — append with collision=false so
-      // they land in the visuals group, not the collision sliders.
-      const auto& geoms = link.visuals.empty() ? link.collisions : link.visuals;
-      for (const LinkGeom& geom : geoms) {
-        append_geom(geom, link_model, false);
+      // kAuto: render a link's visuals when it has them. A collision-only link is
+      // promoted to the visuals group (rendered solid) ONLY when the whole model
+      // has no visuals (review L.21 — an all-collision URDF must not ghost at the
+      // collision opacity). In a MIXED model (this one has visual links), a
+      // collision-only link is auxiliary geometry — e.g. the self-collision
+      // capsules of panda_link*_sc — so it renders in the COLLISION group and
+      // obeys the Collision opacity/visibility toggle instead of overlaying the
+      // visuals as an unhideable solid.
+      if (!link.visuals.empty()) {
+        for (const LinkGeom& geom : link.visuals) {
+          append_geom(geom, link_model, false);
+        }
+      } else {
+        for (const LinkGeom& geom : link.collisions) {
+          append_geom(geom, link_model, /*collision=*/model_has_visuals_);
+        }
       }
     }
   }
@@ -783,10 +811,34 @@ void RobotModelLayer::setFramePrefix(QString prefix) {
     return;
   }
   frame_prefix_ = std::move(prefix);
-  draws_dirty_ = true;  // changes which TF frames each link resolves against
+  draws_dirty_ = true;     // changes which TF frames each link resolves against
+  rebuildStaticBridges();  // bridge frames carry the prefix too
   emit sourceFrameChanged(sourceFrame());
   emit fallbackFramesChanged(fallbackFrames());
   emit repaintRequested();
+}
+
+void RobotModelLayer::rebuildStaticBridges() {
+  static_bridges_.clear();
+  if (!model_.has_value()) {
+    return;
+  }
+  static_bridges_ = fixedJointStaticTransforms(*model_);
+  if (frame_prefix_.isEmpty()) {
+    return;
+  }
+  const std::string prefix = frame_prefix_.toStdString();
+  for (StampedTransform& bridge : static_bridges_) {
+    bridge.parent_frame = prefix + bridge.parent_frame;
+    bridge.child_frame = prefix + bridge.child_frame;
+  }
+}
+
+void RobotModelLayer::ensureStaticBridges(TransformBuffer& buf) {
+  if (static_bridges_.empty()) {
+    return;
+  }
+  injectMissingStaticTransforms(buf, static_bridges_);
 }
 
 void RobotModelLayer::setDisplayMode(DisplayMode mode) {
@@ -945,7 +997,18 @@ bool RobotModelLayer::applyRobotDescription(
   }
 
   model_ = std::move(parsed.first);
-  draws_dirty_ = true;  // a new model: render() must rebuild the draw lists
+  draws_dirty_ = true;     // a new model: render() must rebuild the draw lists
+  rebuildStaticBridges();  // cache the fixed-joint TF bridges for this model
+  // Whether ANY link has visual geometry — gates kAuto's collision-only promotion
+  // (see rebuildDrawCache). Depends only on the latched model, so cache it once
+  // here instead of rescanning every rebuild.
+  model_has_visuals_ = false;
+  for (const RobotLink& link : model_->links) {
+    if (!link.visuals.empty()) {
+      model_has_visuals_ = true;
+      break;
+    }
+  }
   startMeshLoads();
   updateMeshCounters();
   const QStringList unresolved = unresolvedPackagesList();

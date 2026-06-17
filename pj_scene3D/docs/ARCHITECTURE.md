@@ -212,9 +212,24 @@ desaturated X/Y/Z colors match the TF "Frames" gizmos.
 - **Parser** (`widgets/src/urdf_parser.{h,cpp}`): `QDomDocument`-based;
   reads `<link>` visuals/collisions (origin, geometry, material). Geometry is
   the `GeomShape` variant — box/cylinder/sphere primitives **and** meshes.
-  `<joint>` is deliberately ignored: **TF owns kinematics**; the robot model is
-  a decoration on the TF tree. xacro is detected (element prefix or filename)
-  and rejected with an actionable error, never a cryptic XML failure.
+  `<joint>` is parsed into `RobotModel::joints` (name/type/parent/child/origin),
+  but **TF still owns kinematics**: link poses come from the live TF tree. xacro is
+  detected (element prefix or filename) and rejected with an actionable error,
+  never a cryptic XML failure.
+- **Fixed-joint TF bridges** (`core/robot_model_bridges.{h,cpp}`): a URDF may
+  contain a frame the data's `/tf` never publishes — classically a gripper rigidly
+  mounted to an arm flange, where the mount transform lives only in the URDF (the
+  DROID arm-droid dataset is exactly this). `fixedJointStaticTransforms()` turns
+  each **fixed** joint into a static (`/tf_static`-style, epoch-stamped)
+  `StampedTransform`; `RobotModelLayer` caches them (frame-prefixed) and
+  `ensureStaticBridges()` re-asserts them into the dataset `TransformBuffer` every
+  tracker tick via `injectMissingStaticTransforms()`. The inject is **guarded**
+  (`getParent(child)==nullopt` — never overrides a frame the data publishes),
+  **idempotent**, and **self-healing** (a same-file reload that clears the buffer
+  re-bridges on the next tick). Once a gripper base is bridged, the movable
+  knuckle frames the data *does* publish under it cascade into resolvability on
+  their own. Movable-joint articulation (a `JointState` source, `<mimic>`,
+  default-to-0) is deferred.
 - **Sources.** A `RobotModelLayer` reads its URDF from a store topic
   (`kRobotDescription`, decoded via the topic's parser — payload bytes are
   CDR-framed, never cast to a string), a local file, or an http(s) URL.
@@ -242,9 +257,12 @@ desaturated X/Y/Z colors match the TF "Frames" gizmos.
   model matrix). Unresolved meshes render a **magenta unit cube** —
   intentionally ugly, impossible to mistake for data. Visual meshes are split
   into opaque and best-effort translucent draws (layer opacity, override alpha,
-  or glTF `BLEND`; no depth sort); collision meshes draw as a translucent
-  overlay after opaque geometry. Scene-wide opacity/visibility comes from
-  `meshShadingParams()`.
+  or glTF `BLEND`; no depth sort). Collision geometry with no `<material>` gets
+  an **orange tint** (RViz convention) so hulls read as distinct from the visual
+  meshes; it renders as a **translucent overlay** (blend on, depth-writes off, so
+  the real robot shows through) below full opacity, and as a **solid, occluding**
+  hull at opacity ≈ 1.0 (the opaque path: blend off, depth-writes on). Scene-wide
+  opacity/visibility comes from `meshShadingParams()`.
 - **Time contract**: `RobotModelLayer::timeRange()` returns the inverted
   sentinel `{Timepoint::max(), Timepoint::min()}` — a static decoration must
   neither widen the playback timeline (`{0, INT64_MAX}` would balloon it to

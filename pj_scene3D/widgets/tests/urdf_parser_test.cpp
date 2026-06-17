@@ -39,6 +39,16 @@ const RobotLink* findLink(const RobotModel& m, const std::string& name) {
   return nullptr;
 }
 
+// Find a joint by name (helper; joints are an unordered vector).
+const RobotJoint* findJoint(const RobotModel& m, const std::string& name) {
+  for (const auto& j : m.joints) {
+    if (j.name == name) {
+      return &j;
+    }
+  }
+  return nullptr;
+}
+
 TEST(UrdfParser, ParsesTwoLinkModel) {
   const std::string xml = readFixture("two_link.urdf");
   UrdfPackageResolver resolver;  // no roots seeded ⇒ package:// will be unresolved
@@ -191,21 +201,47 @@ TEST(UrdfParser, MalformedXmlRejected) {
   EXPECT_FALSE(err.empty());
 }
 
-TEST(UrdfParser, JointsIgnored) {
-  // A <joint> between the links must be silently ignored (TF owns kinematics).
+TEST(UrdfParser, JointsParsedButCreateNoLinks) {
+  // <joint> elements are now recorded in model.joints (used to bridge TF gaps),
+  // but they still contribute no <link> — TF owns kinematics, joints only fill in
+  // edges the data leaves out.
   const std::string xml = R"(<?xml version="1.0"?>
     <robot name="jr">
       <link name="a"/>
       <joint name="a_to_b" type="fixed">
         <parent link="a"/><child link="b"/>
-        <origin xyz="1 2 3"/>
+        <origin xyz="1 2 3" rpy="0 0 1.5707963267948966"/>
       </joint>
       <link name="b"/>
+      <joint name="b_to_c" type="revolute">
+        <parent link="b"/><child link="c"/>
+        <origin xyz="0 0 0.5"/>
+        <axis xyz="0 0 1"/>
+      </joint>
+      <link name="c"/>
     </robot>)";
   UrdfPackageResolver resolver;
   auto [model, err] = parseUrdf(xml, &resolver, "", false);
   ASSERT_TRUE(model.has_value()) << err;
-  EXPECT_EQ(model->links.size(), 2u);  // a + b; the joint contributed no link
+  EXPECT_EQ(model->links.size(), 3u);  // a + b + c; the joints contributed no link
+
+  ASSERT_EQ(model->joints.size(), 2u);
+  const RobotJoint* fixed = findJoint(*model, "a_to_b");
+  ASSERT_NE(fixed, nullptr);
+  EXPECT_EQ(fixed->type, JointType::kFixed);
+  EXPECT_EQ(fixed->parent, "a");
+  EXPECT_EQ(fixed->child, "b");
+  EXPECT_DOUBLE_EQ(fixed->origin_xyz.x, 1.0);
+  EXPECT_DOUBLE_EQ(fixed->origin_xyz.y, 2.0);
+  EXPECT_DOUBLE_EQ(fixed->origin_xyz.z, 3.0);
+  EXPECT_NEAR(fixed->origin_rpy.z, 1.5707963267948966, 1e-9);
+
+  const RobotJoint* movable = findJoint(*model, "b_to_c");
+  ASSERT_NE(movable, nullptr);
+  EXPECT_EQ(movable->type, JointType::kRevolute);  // classified, but not a fixed bridge
+  EXPECT_EQ(movable->parent, "b");
+  EXPECT_EQ(movable->child, "c");
+  EXPECT_DOUBLE_EQ(movable->origin_xyz.z, 0.5);
 }
 
 TEST(UrdfParser, OversizedInputRejectedWithSizeInMessage) {
