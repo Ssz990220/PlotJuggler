@@ -66,6 +66,8 @@ find_package(fmt REQUIRED)
 # ---------------------------------------------------------------------------
 
 add_subdirectory(plotjuggler_sdk)
+# pj_datastore: columnar store + DerivedEngine + the data-processor execution
+# substrate (DataProcessor base + ProcessorSisoAdapter, formerly pj_proc).
 add_subdirectory(pj_datastore)
 
 # ---------------------------------------------------------------------------

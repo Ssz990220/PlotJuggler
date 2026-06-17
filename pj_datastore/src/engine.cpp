@@ -250,6 +250,11 @@ std::vector<TopicId> DataEngine::commitChunks(
       if (!status.has_value()) {
         continue;  // chunk rejected (e.g. out-of-order); do not mark topic as changed
       }
+      // A topic that receives real data is no longer "absent": un-retire it so a
+      // recomputed filter output (retired by a reload's replaceDatasetFrom) reappears in
+      // listTopics()/the catalog once its fresh chunks land. Mirrors the un-retire-on-
+      // readopt at replaceDatasetFrom.
+      impl_->retired_topic_ids.erase(topic_id);
       if (changed.empty() || changed.back() != topic_id) {
         changed.push_back(topic_id);
       }
@@ -280,6 +285,23 @@ void DataEngine::enforceRetention(Timestamp retention_window_ns, DatasetId datas
     Timestamp t_max = storage.timeMax();
     storage.evictBefore(t_max - retention_window_ns);
   }
+}
+
+void DataEngine::retireTopic(TopicId topic_id) {
+  // Mirror replaceDatasetFrom's retire: exclude the id from listTopics (the catalog
+  // drops it on the next rebuild) but keep its TopicStorage object so a cached reader
+  // pointer dereferences an empty deque, never freed memory.
+  auto it = impl_->topics.find(topic_id);
+  if (it == impl_->topics.end()) {
+    return;  // unknown id — nothing to retire
+  }
+  // Reclaim the materialized chunks now. A re-applied filter mints a fresh TopicId, so a
+  // retired derived output's storage can never be reused — keeping its series resident
+  // would leak across undo/redo + layout-load cycles. The TopicStorage object stays (only
+  // the deque is emptied); adapters re-create a fresh reader per access, so no live
+  // TopicChunk* survives the clear (the same precondition replaceDatasetFrom relies on).
+  it.value().clearChunks();
+  impl_->retired_topic_ids.insert(topic_id);
 }
 
 Status DataEngine::flushTo(DataEngine& dst) {

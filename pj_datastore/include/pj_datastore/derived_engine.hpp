@@ -71,6 +71,19 @@ class ISISOTransform {
   /// may produce output on a different time grid than their input.
   /// When true is returned, out_time must be >= all previously returned out_times.
   virtual bool calculate(PJ::Timestamp time, const VarValue& input, PJ::Timestamp& out_time, VarValue& out_value) = 0;
+
+  /// True once the op has hit an unrecoverable error (e.g. a script runtime error)
+  /// so a returned `false` from calculate() means FAILED, not "row suppressed". The
+  /// engine checks this after a batch and surfaces it as a Status error instead of
+  /// silently committing a truncated/empty output. Default: never fails.
+  [[nodiscard]] virtual bool failed() const {
+    return false;
+  }
+  /// Human-readable reason for `failed()`, or empty.
+  [[nodiscard]] virtual const std::string& error() const {
+    static const std::string kNone;
+    return kNone;
+  }
 };
 
 // ---------------------------------------------------------------------------
@@ -120,7 +133,7 @@ class DerivedEngine {
   // Creates one scalar output topic (StorageKind from op->outputKind()).
   // Returns error if:
   //   - input_topic_id does not exist
-  //   - input topic has more than one column
+  //   - input_column_index is out of range (>= the input topic's column count)
   //   - output_topic_name already registered within output_dataset_id
   //
   // Topics created via DataWriter::registerScalarSeries (schema_id == 0)
@@ -130,9 +143,14 @@ class DerivedEngine {
   // Returns error if the column layout cannot be determined (e.g. a topic
   // created with schema_id==0 via the low-level register_topic API with no
   // committed chunks and no stored column descriptors).
+  //
+  // input_column_index selects which leaf column of a (possibly multi-column)
+  // input topic feeds the transform. Default 0 = the first/only column. The
+  // index counts flattened leaf columns in DFS order (fixed arrays expanded
+  // element-wise) — the same order DataReader and the chunk column layout use.
   [[nodiscard]] PJ::Expected<PJ::NodeId> addSisoTransform(
       PJ::TopicId input_topic_id, std::string output_topic_name, PJ::DatasetId output_dataset_id,
-      std::unique_ptr<ISISOTransform> op);
+      std::unique_ptr<ISISOTransform> op, std::size_t input_column_index = 0);
 
   // ---- MIMO -----------------------------------------------------------------
   // All input topics must be single-column (scalar).
@@ -170,6 +188,14 @@ class DerivedEngine {
 
   // Full history recompute: clear output, reset transform, replay all input.
   PJ::Status recomputeBatch(PJ::NodeId node_id);
+
+  // Replace a SISO node's transform op IN PLACE (same node id, same output topic
+  // id) and fully recompute. Lets a filter's parameters be edited without
+  // dropping and recreating the output topic, so the plot curve keeps its
+  // binding. Errors if the node is unknown, is MIMO, or op is null. The output
+  // StorageKind is unchanged (the materialized topic's schema is fixed); the new
+  // op's values are coerced to it.
+  [[nodiscard]] PJ::Status replaceSisoTransform(PJ::NodeId node_id, std::unique_ptr<ISISOTransform> op);
 
  private:
   DataEngine& engine_;

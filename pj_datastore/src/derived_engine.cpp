@@ -49,6 +49,40 @@ static std::optional<PJ::PrimitiveType> findFirstLeaf(const PJ::TypeTreeNode& no
   return std::nullopt;
 }
 
+// Return the PrimitiveType of the flat leaf column at index `target` (0-based).
+// Arrays are expanded element-wise exactly like count_leaf_fields_impl / the
+// chunk column layout, so `target` matches the engine's column index. `seen`
+// accumulates the number of leaves visited so far (start at 0).
+static std::optional<PJ::PrimitiveType> nthLeafPrimitive(
+    const PJ::TypeTreeNode& node, std::size_t target, std::size_t& seen) {
+  switch (node.kind) {
+    case PJ::TypeKind::kPrimitive:
+    case PJ::TypeKind::kEnum:
+      if (seen == target) {
+        return node.primitive_type;
+      }
+      ++seen;
+      return std::nullopt;
+    case PJ::TypeKind::kStruct:
+      for (const auto& child : node.children) {
+        if (auto r = nthLeafPrimitive(*child, target, seen)) {
+          return r;
+        }
+      }
+      return std::nullopt;
+    case PJ::TypeKind::kArray:
+      if (node.element_type && node.fixed_array_size.has_value()) {
+        for (uint32_t i = 0; i < *node.fixed_array_size; ++i) {
+          if (auto r = nthLeafPrimitive(*node.element_type, target, seen)) {
+            return r;
+          }
+        }
+      }
+      return std::nullopt;  // dynamic array contributes no columns
+  }
+  return std::nullopt;
+}
+
 static PJ::PrimitiveType storageKindToPrimitive(StorageKind k) {
   switch (k) {
     case StorageKind::kFloat32:
@@ -176,6 +210,7 @@ struct DerivedNode {
 
   // SISO fields
   PJ::TopicId siso_input_topic_id = 0;
+  std::size_t siso_input_column_index = 0;  // which leaf column of the input topic feeds the op
   StorageKind siso_input_kind = StorageKind::kFloat64;
   StorageKind siso_output_kind = StorageKind::kFloat64;
   std::unique_ptr<ISISOTransform> siso_op;
@@ -289,7 +324,7 @@ static std::string checkCycle(
 
 PJ::Expected<PJ::NodeId> DerivedEngine::addSisoTransform(
     PJ::TopicId input_topic_id, std::string output_topic_name, PJ::DatasetId output_dataset_id,
-    std::unique_ptr<ISISOTransform> op) {
+    std::unique_ptr<ISISOTransform> op, std::size_t input_column_index) {
   // 1. Check input topic exists
   const TopicStorage* in_storage = engine_.getTopicStorage(input_topic_id);
   if (!in_storage) {
@@ -309,7 +344,10 @@ PJ::Expected<PJ::NodeId> DerivedEngine::addSisoTransform(
     const PJ::TypeTreeNode* root = engine_.typeRegistry().lookup(schema_id);
     if (root) {
       num_cols = PJ::countLeafFields(*root);
-      leaf_primitive = findFirstLeaf(*root);
+      if (input_column_index < num_cols) {
+        std::size_t seen = 0;
+        leaf_primitive = nthLeafPrimitive(*root, input_column_index, seen);
+      }
     }
   }
 
@@ -319,7 +357,9 @@ PJ::Expected<PJ::NodeId> DerivedEngine::addSisoTransform(
     const auto& stored = in_storage->columnDescriptors();
     if (!stored.empty()) {
       num_cols = stored.size();
-      leaf_primitive = stored[0].logical_type;
+      if (input_column_index < num_cols) {
+        leaf_primitive = stored[input_column_index].logical_type;
+      }
     }
   }
 
@@ -328,7 +368,9 @@ PJ::Expected<PJ::NodeId> DerivedEngine::addSisoTransform(
     const auto& chunks = in_storage->sealedChunks();
     if (!chunks.empty() && !chunks[0].columns.empty()) {
       num_cols = chunks[0].columns.size();
-      leaf_primitive = chunks[0].columns[0].descriptor->logical_type;
+      if (input_column_index < num_cols) {
+        leaf_primitive = chunks[0].columns[input_column_index].descriptor->logical_type;
+      }
     }
   }
 
@@ -339,12 +381,14 @@ PJ::Expected<PJ::NodeId> DerivedEngine::addSisoTransform(
             " (no schema_id, no stored column layout, and no committed chunks)",
             input_topic_id));
   }
-  if (num_cols != 1) {
+  if (input_column_index >= num_cols) {
     return PJ::unexpected(
-        fmt::format("add_siso_transform: SISO requires single-column input, got {} columns", num_cols));
+        fmt::format(
+            "add_siso_transform: input column {} out of range (topic {} has {} columns)", input_column_index,
+            input_topic_id, num_cols));
   }
   if (!leaf_primitive) {
-    return PJ::unexpected("add_siso_transform: could not determine leaf primitive type");
+    return PJ::unexpected("add_siso_transform: could not determine leaf primitive type for the selected column");
   }
   StorageKind in_kind = storageKindOf(*leaf_primitive);
 
@@ -390,6 +434,7 @@ PJ::Expected<PJ::NodeId> DerivedEngine::addSisoTransform(
   node.id = node_id;
   node.is_mimo = false;
   node.siso_input_topic_id = input_topic_id;
+  node.siso_input_column_index = input_column_index;
   node.siso_input_kind = in_kind;
   node.siso_output_kind = out_kind;
   node.siso_op = std::move(op);
@@ -728,8 +773,14 @@ static PJ::Status runSisoIncremental(DerivedEngineImpl& /*impl*/, DataEngine& en
     if (!status.has_value()) {
       return;  // an earlier row already failed; drain remaining callbacks
     }
+    // Columns can appear mid-stream: an earlier chunk may have fewer columns
+    // than the selected index. Such a chunk carries no sample for this field, so
+    // skip the row (no input → no state change for a stateful op).
+    if (node.siso_input_column_index >= chunk.columns.size()) {
+      return;
+    }
     const PJ::Timestamp ts = chunk.timestamps[row];
-    node.in_val_buf = decodeAsVarvalue(chunk, 0, row, node.siso_input_kind);
+    node.in_val_buf = decodeAsVarvalue(chunk, node.siso_input_column_index, row, node.siso_input_kind);
     node.siso_last_ts = std::max(node.siso_last_ts, ts);
 
     if (node.siso_op->calculate(ts, node.in_val_buf, out_ts, node.out_val_buf)) {
@@ -773,13 +824,23 @@ static PJ::Status runSisoIncremental(DerivedEngineImpl& /*impl*/, DataEngine& en
   }
 
   if (!status.has_value()) {
-    return status;
+    return status;  // hard writer error: do not commit, do not advance the watermark (retry next commit)
+  }
+  // A sticky op failure (e.g. a Luau runtime error) makes calculate() return false for every
+  // sample. Surface it as a Status error AND drop the staged rows: a batch that ends in failure
+  // is an untrustworthy truncation. `writer` is function-local, so simply not flushing it
+  // discards the staged rows cleanly (no rollback API needed). On a post-reset replay the old
+  // output was already cleared by recomputeBatch, so the output is left empty rather than
+  // stale-partial — both correct. Advance the watermark so a sticky-failed node is not re-run
+  // every commit.
+  if (node.siso_op && node.siso_op->failed()) {
+    node.last_processed_chunk_id = max_seen;
+    return PJ::unexpected(node.siso_op->error());
   }
   if (wrote_any) {
     auto chunks = writer.flushAll();
     engine.commitChunks(std::move(chunks));
   }
-
   node.last_processed_chunk_id = max_seen;
   return PJ::okStatus();
 }
@@ -1013,6 +1074,9 @@ PJ::Status DerivedEngine::scheduleActive(const std::unordered_set<PJ::NodeId>& a
     }
   }
 
+  // The first per-node failure is remembered and returned, but a failed node must
+  // NOT abort the others — one bad filter must not freeze every derived series.
+  PJ::Status first_error = PJ::okStatus();
   for (PJ::NodeId node_id : order) {
     if (!active_nodes.empty() && !filter.contains(node_id)) {
       continue;
@@ -1034,11 +1098,16 @@ PJ::Status DerivedEngine::scheduleActive(const std::unordered_set<PJ::NodeId>& a
       s = runMimoIncremental(*impl_, engine_, node);
     }
 
+    node.dirty = false;  // processed even on failure, so a sticky-failed node does
+                         // not re-run (and block healthy nodes) every commit
     if (!s.has_value()) {
-      return s;
+      // Surface the failure via the returned Status, but keep running the other
+      // nodes. The failed node's downstream is left as-is (its input is bad).
+      if (first_error.has_value()) {
+        first_error = std::move(s);  // remember only the first
+      }
+      continue;
     }
-
-    node.dirty = false;
 
     // Propagate dirty to downstream nodes
     auto dit = impl_->downstream_of.find(node_id);
@@ -1052,23 +1121,21 @@ PJ::Status DerivedEngine::scheduleActive(const std::unordered_set<PJ::NodeId>& a
     }
   }
 
-  return PJ::okStatus();
+  return first_error;
 }
 
 // ---------------------------------------------------------------------------
 // recompute_batch
 // ---------------------------------------------------------------------------
 
-PJ::Status DerivedEngine::recomputeBatch(PJ::NodeId node_id) {
-  auto it = impl_->nodes.find(node_id);
-  if (it == impl_->nodes.end()) {
-    return PJ::unexpected(fmt::format("recompute_batch: node {} not found", node_id));
-  }
-  DerivedNode& node = it.value();
-
+// Clear ONE node's output, reset its op + watermarks, and fully replay its input. The
+// per-node primitive behind recomputeBatch's self+downstream cascade — does NOT touch
+// downstream nodes. clearChunks (not retireTopic) keeps every TopicStorage alive so cached
+// reader pointers stay valid.
+static PJ::Status recomputeNodeSelfOnly(DerivedEngineImpl& impl, DataEngine& engine, DerivedNode& node) {
   // 1. Clear all output chunks unconditionally.
   for (PJ::TopicId out_tid : node.output_topic_ids) {
-    TopicStorage* storage = engine_.getTopicStorage(out_tid);
+    TopicStorage* storage = engine.getTopicStorage(out_tid);
     if (storage) {
       storage->clearChunks();
     }
@@ -1096,9 +1163,9 @@ PJ::Status DerivedEngine::recomputeBatch(PJ::NodeId node_id) {
   // 4. Full replay
   PJ::Status s = PJ::okStatus();
   if (!node.is_mimo) {
-    s = runSisoIncremental(*impl_, engine_, node);
+    s = runSisoIncremental(impl, engine, node);
   } else {
-    s = runMimoIncremental(*impl_, engine_, node);
+    s = runMimoIncremental(impl, engine, node);
   }
 
   if (!s.has_value()) {
@@ -1106,6 +1173,79 @@ PJ::Status DerivedEngine::recomputeBatch(PJ::NodeId node_id) {
   }
   node.dirty = false;
   return PJ::okStatus();
+}
+
+PJ::Status DerivedEngine::recomputeBatch(PJ::NodeId node_id) {
+  auto it = impl_->nodes.find(node_id);
+  if (it == impl_->nodes.end()) {
+    return PJ::unexpected(fmt::format("recompute_batch: node {} not found", node_id));
+  }
+
+  // Recompute the target node itself first. If it fails, its downstream inputs are bad —
+  // stop and surface the error (don't cascade onto an empty/failed upstream).
+  PJ::Status self = recomputeNodeSelfOnly(*impl_, engine_, it.value());
+  if (!self.has_value()) {
+    return self;
+  }
+
+  // Cascade: a rewritten output must propagate to every chained filter downstream (a filter
+  // of a filter), else editing/reloading the upstream leaves the downstream stale. Collect
+  // the transitive downstream set (BFS over downstream_of), then recompute each in
+  // topological order via a FULL reset+replay — never the incremental path, whose watermark
+  // would skip the rewritten upstream output. Mirror scheduleActive's resilience: keep
+  // cascading the rest of the set and return only the first error.
+  tsl::robin_set<PJ::NodeId> reachable;
+  std::queue<PJ::NodeId> bfs;
+  bfs.push(node_id);
+  while (!bfs.empty()) {
+    PJ::NodeId curr = bfs.front();
+    bfs.pop();
+    auto dit = impl_->downstream_of.find(curr);
+    if (dit == impl_->downstream_of.end()) {
+      continue;
+    }
+    for (PJ::NodeId down : dit->second) {
+      if (impl_->nodes.contains(down) && reachable.insert(down).second) {
+        bfs.push(down);
+      }
+    }
+  }
+  if (reachable.empty()) {
+    return PJ::okStatus();
+  }
+
+  PJ::Status first_error = PJ::okStatus();
+  for (PJ::NodeId nid : topologicalOrder()) {
+    if (!reachable.contains(nid)) {
+      continue;
+    }
+    PJ::Status s = recomputeNodeSelfOnly(*impl_, engine_, impl_->nodes.at(nid));
+    if (!s.has_value() && first_error.has_value()) {
+      first_error = std::move(s);  // remember only the first downstream error
+    }
+  }
+  return first_error;
+}
+
+// ---------------------------------------------------------------------------
+// replace_siso_transform
+// ---------------------------------------------------------------------------
+
+PJ::Status DerivedEngine::replaceSisoTransform(PJ::NodeId node_id, std::unique_ptr<ISISOTransform> op) {
+  if (!op) {
+    return PJ::unexpected("replace_siso_transform: null transform op");
+  }
+  auto it = impl_->nodes.find(node_id);
+  if (it == impl_->nodes.end()) {
+    return PJ::unexpected(fmt::format("replace_siso_transform: node {} not found", node_id));
+  }
+  DerivedNode& node = it.value();
+  if (node.is_mimo) {
+    return PJ::unexpected(fmt::format("replace_siso_transform: node {} is not a SISO node", node_id));
+  }
+  node.siso_op = std::move(op);
+  // recomputeBatch clears the (same) output topic, resets state, and replays.
+  return recomputeBatch(node_id);
 }
 
 }  // namespace PJ

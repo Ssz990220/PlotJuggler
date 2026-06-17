@@ -119,6 +119,18 @@ class DataEngine {
   /// file the user loaded into the same engine.
   void enforceRetention(PJ::Timestamp retention_window_ns, PJ::DatasetId dataset_id);
 
+  /// Retire a single topic: clear its chunks (reclaiming the materialized series) and
+  /// exclude its id from `listTopics` (so the catalog drops it on the next rebuild),
+  /// while keeping the `TopicStorage` object alive — so any cached reader pointer sees
+  /// an empty deque rather than freed memory. The chunk reclaim matters for derived/
+  /// filter outputs: a re-applied filter mints a fresh id, so a retired output's storage
+  /// can never be reused and would otherwise leak across undo/redo + layout-load cycles.
+  /// Same hide-but-keep mechanism `replaceDatasetFrom` uses for primary-only topics (it
+  /// clears chunks too). Used when a filter's producing node is removed (e.g. undo of a
+  /// filter), since there is no scalar topic-teardown API. Idempotent; no-op for an
+  /// unknown id.
+  void retireTopic(PJ::TopicId topic_id);
+
   /// Move every committed chunk into `dst`, leaving this engine's storages
   /// empty (datasets, topics, schemas, time domains stay registered). Topics
   /// are matched by descriptor (`dataset_id` + `name`); both engines must have

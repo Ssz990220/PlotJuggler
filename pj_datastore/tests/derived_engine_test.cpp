@@ -203,6 +203,231 @@ TEST(DerivedEngineTest, AddTransform_UnknownInputTopic_Fails) {
 }
 
 // ---------------------------------------------------------------------------
+// Field selection: bind a SISO node to ONE column of a multi-column topic
+// (single-column field selection; the "got 33 columns" fix).
+// ---------------------------------------------------------------------------
+
+// Pass-through SISO: emits the (float64) input value unchanged, so a test can
+// assert exactly which input column the node read.
+class IdentityTransform : public ISISOTransform {
+ public:
+  bool calculate(PJ::Timestamp time, const VarValue& input, PJ::Timestamp& out_time, VarValue& out_value) override {
+    out_time = time;
+    out_value = std::get<double>(input);
+    return true;
+  }
+};
+
+// Doubles the (float64) input value — used to verify an in-place op swap.
+class ScaleByTwoTransform : public ISISOTransform {
+ public:
+  bool calculate(PJ::Timestamp time, const VarValue& input, PJ::Timestamp& out_time, VarValue& out_value) override {
+    out_time = time;
+    out_value = 2.0 * std::get<double>(input);
+    return true;
+  }
+};
+
+// Emits the first N rows (identity), then goes sticky-failed: calculate() returns false and
+// failed()==true thereafter — models a Luau filter that errors mid-stream. reset() rearms it.
+class FailAfterNTransform : public ISISOTransform {
+ public:
+  explicit FailAfterNTransform(int n) : n_(n) {}
+  void reset() override {
+    seen_ = 0;
+    failed_ = false;
+  }
+  bool calculate(PJ::Timestamp time, const VarValue& input, PJ::Timestamp& out_time, VarValue& out_value) override {
+    if (seen_ >= n_) {
+      failed_ = true;
+      return false;
+    }
+    ++seen_;
+    out_time = time;
+    out_value = std::get<double>(input);
+    return true;
+  }
+  [[nodiscard]] bool failed() const override {
+    return failed_;
+  }
+  [[nodiscard]] const std::string& error() const override {
+    static const std::string kErr = "FailAfterNTransform: boom";
+    return kErr;
+  }
+
+ private:
+  int n_;
+  int seen_ = 0;
+  bool failed_ = false;
+};
+
+// Build a committed 3-column float64 topic "xyz". For row i in [0,n):
+//   col0 (x) = i, col1 (y) = 100+i, col2 (z) = 200+i; ts = 1000+i (ascending).
+static PJ::TopicId make_three_column_topic(DataEngine& engine, PJ::DatasetId ds, int n) {
+  DataWriter writer = engine.createWriter();
+  auto schema = makeStruct(
+      "xyz", {makePrimitive("x", PrimitiveType::kFloat64), makePrimitive("y", PrimitiveType::kFloat64),
+              makePrimitive("z", PrimitiveType::kFloat64)});
+  PJ::SchemaId schema_id = *writer.registerSchema("xyz", schema);
+  TopicDescriptor td;
+  td.name = "xyz_topic";
+  td.schema_id = schema_id;
+  td.dataset_id = ds;
+  PJ::TopicId tid = *writer.registerTopic(ds, td);
+  for (int i = 0; i < n; ++i) {
+    PJ::Timestamp ts = 1000 + i;
+    (void)writer.beginRow(tid, ts);
+    writer.set(tid, 0, static_cast<double>(i));
+    writer.set(tid, 1, static_cast<double>(100 + i));
+    writer.set(tid, 2, static_cast<double>(200 + i));
+    (void)writer.finishRow(tid);
+  }
+  engine.commitChunks(writer.flushAll());
+  return tid;
+}
+
+TEST(DerivedEngineFieldSelectTest, SisoBindsSelectedColumn) {
+  DataEngine engine;
+  DerivedEngine derived(engine);
+  PJ::DatasetId ds = makeDataset(engine);
+  PJ::TopicId tid = make_three_column_topic(engine, ds, 5);
+
+  // Bind to column 1 (y = 100+i) of a 3-column topic.
+  auto node_or =
+      derived.addSisoTransform(tid, "y_id", ds, std::make_unique<IdentityTransform>(), /*input_column_index=*/1);
+  ASSERT_TRUE(node_or.has_value()) << node_or.error();
+  ASSERT_TRUE(derived.scheduleAll().has_value());
+
+  auto vals = collectValues(engine, derived.outputTopics(*node_or)[0]);
+  ASSERT_EQ(vals.size(), 5u);
+  for (int i = 0; i < 5; ++i) {
+    EXPECT_DOUBLE_EQ(vals[static_cast<std::size_t>(i)], static_cast<double>(100 + i));  // col 1, not col 0 (=i)
+  }
+}
+
+TEST(DerivedEngineFieldSelectTest, SisoColumnOutOfRange_Fails) {
+  DataEngine engine;
+  DerivedEngine derived(engine);
+  PJ::DatasetId ds = makeDataset(engine);
+  PJ::TopicId tid = make_three_column_topic(engine, ds, 3);
+
+  // Only columns 0..2 exist; column 3 is out of range.
+  auto r = derived.addSisoTransform(tid, "bad", ds, std::make_unique<IdentityTransform>(), /*input_column_index=*/3);
+  EXPECT_FALSE(r.has_value());
+}
+
+TEST(DerivedEngineFieldSelectTest, SisoDefaultColumnIsZero) {
+  // Existing call sites pass no column index → must still bind column 0.
+  DataEngine engine;
+  DerivedEngine derived(engine);
+  PJ::DatasetId ds = makeDataset(engine);
+  PJ::TopicId tid = make_three_column_topic(engine, ds, 4);
+
+  auto node_or = derived.addSisoTransform(tid, "x_id", ds, std::make_unique<IdentityTransform>());
+  ASSERT_TRUE(node_or.has_value()) << node_or.error();
+  ASSERT_TRUE(derived.scheduleAll().has_value());
+
+  auto vals = collectValues(engine, derived.outputTopics(*node_or)[0]);
+  ASSERT_EQ(vals.size(), 4u);
+  for (int i = 0; i < 4; ++i) {
+    EXPECT_DOUBLE_EQ(vals[static_cast<std::size_t>(i)], static_cast<double>(i));  // col 0
+  }
+}
+
+TEST(DerivedEngineFieldSelectTest, ReplaceSisoTransform_InPlaceRecompute) {
+  DataEngine engine;
+  DerivedEngine derived(engine);
+  PJ::DatasetId ds = makeDataset(engine);
+  PJ::TopicId tid = make_three_column_topic(engine, ds, 5);
+
+  // Identity on column 1 (y = 100+i).
+  auto node_or = derived.addSisoTransform(tid, "y", ds, std::make_unique<IdentityTransform>(), 1);
+  ASSERT_TRUE(node_or.has_value()) << node_or.error();
+  ASSERT_TRUE(derived.scheduleAll().has_value());
+  const PJ::TopicId out_tid = derived.outputTopics(*node_or)[0];
+
+  auto before = collectValues(engine, out_tid);
+  ASSERT_EQ(before.size(), 5u);
+  EXPECT_DOUBLE_EQ(before[0], 100.0);
+
+  // Swap identity for a doubling op: same node, same output topic id, recomputed.
+  auto status = derived.replaceSisoTransform(*node_or, std::make_unique<ScaleByTwoTransform>());
+  ASSERT_TRUE(status.has_value()) << status.error();
+  EXPECT_EQ(derived.outputTopics(*node_or)[0], out_tid);
+
+  auto after = collectValues(engine, out_tid);
+  ASSERT_EQ(after.size(), 5u);
+  for (int i = 0; i < 5; ++i) {
+    EXPECT_DOUBLE_EQ(after[static_cast<std::size_t>(i)], 2.0 * static_cast<double>(100 + i));
+  }
+}
+
+// [b] A filter that errors mid-stream must NOT commit its truncated prefix as if it were
+// valid data: a batch that ends in failure is dropped entirely (Status carries the error).
+TEST(DerivedEngineFieldSelectTest, PartialFailure_DoesNotCommitTruncatedOutput) {
+  DataEngine engine;
+  DerivedEngine derived(engine);
+  PJ::DatasetId ds = makeDataset(engine);
+  PJ::TopicId tid = make_three_column_topic(engine, ds, 5);  // col0 = {0,1,2,3,4}
+
+  auto node = derived.addSisoTransform(tid, "fail", ds, std::make_unique<FailAfterNTransform>(2));
+  ASSERT_TRUE(node.has_value()) << node.error();
+
+  EXPECT_FALSE(derived.scheduleAll().has_value());                             // failure surfaced as Status
+  EXPECT_TRUE(collectValues(engine, derived.outputTopics(*node)[0]).empty());  // no truncated 2-row prefix
+}
+
+// [b] A recompute (op swap) whose new op fails must leave NO stale/partial output —
+// recompute cleared the old output first, so a failed replay must not commit a prefix.
+TEST(DerivedEngineFieldSelectTest, RecomputeBatch_FailureLeavesNoStaleOutput) {
+  DataEngine engine;
+  DerivedEngine derived(engine);
+  PJ::DatasetId ds = makeDataset(engine);
+  PJ::TopicId tid = make_three_column_topic(engine, ds, 5);
+
+  auto node = derived.addSisoTransform(tid, "scale", ds, std::make_unique<ScaleByTwoTransform>());
+  ASSERT_TRUE(node.has_value()) << node.error();
+  ASSERT_TRUE(derived.scheduleAll().has_value());
+  const PJ::TopicId out_tid = derived.outputTopics(*node)[0];
+  ASSERT_EQ(collectValues(engine, out_tid).size(), 5u);  // healthy output first
+
+  EXPECT_FALSE(derived.replaceSisoTransform(*node, std::make_unique<FailAfterNTransform>(2)).has_value());
+  EXPECT_TRUE(collectValues(engine, out_tid).empty());  // failed replay left nothing, not a 2-row prefix
+}
+
+// [a] Editing a filter that feeds another filter must refresh the whole downstream chain,
+// not just the edited node. x -> A -> B; swap A's op and assert B reflects the new A output.
+TEST(DerivedEngineFieldSelectTest, ReplaceSisoTransform_RecomputesDownstreamChain) {
+  DataEngine engine;
+  DerivedEngine derived(engine);
+  PJ::DatasetId ds = makeDataset(engine);
+  PJ::TopicId x = make_three_column_topic(engine, ds, 5);  // col0 = {0,1,2,3,4}
+
+  auto a = derived.addSisoTransform(x, "A", ds, std::make_unique<IdentityTransform>());
+  ASSERT_TRUE(a.has_value()) << a.error();
+  const PJ::TopicId a_out = derived.outputTopics(*a)[0];
+  auto b = derived.addSisoTransform(a_out, "B", ds, std::make_unique<IdentityTransform>());
+  ASSERT_TRUE(b.has_value()) << b.error();
+  const PJ::TopicId b_out = derived.outputTopics(*b)[0];
+  ASSERT_TRUE(derived.scheduleAll().has_value());
+
+  EXPECT_EQ(collectValues(engine, a_out), (std::vector<double>{0, 1, 2, 3, 4}));
+  EXPECT_EQ(collectValues(engine, b_out), (std::vector<double>{0, 1, 2, 3, 4}));
+
+  // Swap A identity -> doubling. The downstream B must follow to {0,2,4,6,8}, not stay stale.
+  ASSERT_TRUE(derived.replaceSisoTransform(*a, std::make_unique<ScaleByTwoTransform>()).has_value());
+  EXPECT_EQ(collectValues(engine, a_out), (std::vector<double>{0, 2, 4, 6, 8}));
+  EXPECT_EQ(collectValues(engine, b_out), (std::vector<double>{0, 2, 4, 6, 8}));
+  EXPECT_EQ(collectValues(engine, b_out).size(), 5u);  // exact N — guards a future incremental-append regression
+}
+
+TEST(DerivedEngineFieldSelectTest, ReplaceSisoTransform_RejectsBadNode) {
+  DataEngine engine;
+  DerivedEngine derived(engine);
+  EXPECT_FALSE(derived.replaceSisoTransform(9999u, std::make_unique<IdentityTransform>()).has_value());
+}
+
+// ---------------------------------------------------------------------------
 // topological_order
 // ---------------------------------------------------------------------------
 

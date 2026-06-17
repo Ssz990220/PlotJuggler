@@ -1505,5 +1505,76 @@ TEST(DataEngineExplicitIdTest, DuplicateExplicitIdsAreRejected) {
   EXPECT_FALSE(engine.createTopic(*dataset, TopicDescriptor{.name = "duplicate"}, *topic).has_value());
 }
 
+// retireTopic hides a topic from listTopics (so the catalog drops it) while keeping
+// its TopicStorage alive — the mechanism used to hide a derived/filter output topic
+// whose producing node was removed (e.g. undo of a filter), without a teardown API.
+TEST(EngineIntegrationTest, RetireTopicHidesFromListButKeepsStorage) {
+  DataEngine engine;
+  auto ds = engine.createDataset(DatasetDescriptor{.source_name = "s", .time_domain_id = 0});
+  ASSERT_TRUE(ds.has_value()) << ds.error();
+  DataWriter w = engine.createWriter();
+  auto h = w.registerScalarSeries(*ds, "x", NumericType::kFloat64);
+  ASSERT_TRUE(h.has_value()) << h.error();
+  const TopicId tid = h->topic_id;
+  w.appendScalar(*h, 1000, 1.0);
+  engine.commitChunks(w.flushAll());
+
+  const auto contains = [](const std::vector<TopicId>& v, TopicId id) {
+    for (const TopicId t : v) {
+      if (t == id) {
+        return true;
+      }
+    }
+    return false;
+  };
+
+  EXPECT_TRUE(contains(engine.listTopics(*ds), tid));  // present before retiring
+  ASSERT_NE(engine.getTopicStorage(tid), nullptr);
+  EXPECT_FALSE(engine.getTopicStorage(tid)->sealedChunks().empty());  // has materialized data
+
+  engine.retireTopic(tid);
+
+  EXPECT_FALSE(contains(engine.listTopics(*ds), tid));               // hidden from the catalog
+  ASSERT_NE(engine.getTopicStorage(tid), nullptr);                   // storage object kept alive (reader-pointer safe)
+  EXPECT_TRUE(engine.getTopicStorage(tid)->sealedChunks().empty());  // chunks reclaimed — no per-cycle leak
+}
+
+// commitChunks un-retires a topic that receives fresh data. A reload retires every
+// primary-only topic (replaceDatasetFrom), which includes a filter's materialized output;
+// when the filter recomputes and commits chunks back to that same topic id, the topic must
+// reappear in listTopics()/the catalog — otherwise reloaded filter curves stay hidden.
+TEST(EngineIntegrationTest, CommitChunksUnretiresPreviouslyRetiredTopic) {
+  DataEngine engine;
+  auto ds = engine.createDataset(DatasetDescriptor{.source_name = "s", .time_domain_id = 0});
+  ASSERT_TRUE(ds.has_value()) << ds.error();
+  DataWriter w = engine.createWriter();
+  auto h = w.registerScalarSeries(*ds, "x", NumericType::kFloat64);
+  ASSERT_TRUE(h.has_value()) << h.error();
+  const TopicId tid = h->topic_id;
+  w.appendScalar(*h, 1000, 1.0);
+  engine.commitChunks(w.flushAll());
+
+  const auto contains = [](const std::vector<TopicId>& v, TopicId id) {
+    for (const TopicId t : v) {
+      if (t == id) {
+        return true;
+      }
+    }
+    return false;
+  };
+
+  engine.retireTopic(tid);
+  ASSERT_FALSE(contains(engine.listTopics(*ds), tid));  // hidden after retire
+
+  // Commit a fresh chunk to the SAME topic id via the original handle — what a filter
+  // recompute does after a reload (it writes back to its known output topic id).
+  w.appendScalar(*h, 2000, 2.0);
+  engine.commitChunks(w.flushAll());
+
+  EXPECT_TRUE(contains(engine.listTopics(*ds), tid));  // un-retired by the commit
+  ASSERT_NE(engine.getTopicStorage(tid), nullptr);
+  EXPECT_FALSE(engine.getTopicStorage(tid)->sealedChunks().empty());  // has the new data
+}
+
 }  // namespace
 }  // namespace PJ
