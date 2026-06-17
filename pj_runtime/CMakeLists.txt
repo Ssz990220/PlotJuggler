@@ -9,6 +9,7 @@ add_library(pj_runtime STATIC
     src/AppSession.cpp
     src/CatalogModel.cpp
     src/CurveColorRegistry.cpp
+    src/DataProcessorService.cpp
     src/DataSourceRuntimeHost.cpp
     src/DiagnosticHistory.cpp
     src/ExtensionCatalogService.cpp
@@ -20,6 +21,7 @@ add_library(pj_runtime STATIC
     include/pj_runtime/CatalogModel.h
     include/pj_runtime/CurveColorRegistry.h
     include/pj_runtime/CurveDescriptor.h
+    include/pj_runtime/DataProcessorService.h
     include/pj_runtime/DataSourceRuntimeHost.h
     include/pj_runtime/DiagnosticHistory.h
     include/pj_runtime/ExtensionCatalogService.h
@@ -49,6 +51,7 @@ target_link_libraries(pj_runtime PUBLIC
   PRIVATE
     tsl::robin_map
     pj_internal_fmt
+    pj_scripting  # DataProcessorService routes by-id applyFilter through the Luau FilterCatalogue
 )
 
 if(PJ_BUILD_TESTS)
@@ -61,6 +64,17 @@ if(PJ_BUILD_TESTS)
         GTest::gtest_main
     )
     add_test(NAME TimeTest COMMAND time_test)
+
+    add_executable(data_processor_service_test
+        tests/data_processor_service_test.cpp
+    )
+    target_compile_options(data_processor_service_test PRIVATE ${PJ_WARNING_FLAGS})
+    target_link_libraries(data_processor_service_test PRIVATE
+        pj_runtime
+        pj_scripting  # M1: re-prove the streaming gate through a Luau LuaSisoTransform
+        GTest::gtest_main
+    )
+    add_test(NAME DataProcessorServiceTest COMMAND data_processor_service_test)
 
     add_executable(app_session_test
         tests/app_session_test.cpp

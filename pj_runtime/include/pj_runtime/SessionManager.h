@@ -25,6 +25,7 @@
 namespace PJ {
 
 class MessageParserPluginBase;
+class DataProcessorService;
 
 // Owns the datastore for the current app session. v1 scalar commit calls are
 // expected on the GUI thread so plot adapters never observe mutation during
@@ -58,6 +59,14 @@ class SessionManager : public QObject {
   // the catalog empties.
   [[nodiscard]] CurveColorRegistry& curveColorRegistry() noexcept {
     return curve_color_registry_;
+  }
+
+  // The session's data-processor service (filters/transforms run as eager
+  // DerivedEngine nodes over this session's DataEngine). Plot widgets reach it
+  // through the SessionManager pointer they already hold — the same "not threaded
+  // through widget constructors" access pattern as curveColorRegistry above.
+  [[nodiscard]] DataProcessorService& dataProcessorService() noexcept {
+    return *processor_service_;
   }
 
   [[nodiscard]] DataReader createReader() const;
@@ -259,6 +268,9 @@ class SessionManager : public QObject {
   // Per-dataset earliest-stamp memo for displayOffset() (read per playback tick +
   // per catalog item). Cleared on every commit/ingest so it can't go stale.
   mutable std::unordered_map<DatasetId, Timestamp> dataset_min_cache_;
+  // Owns the session's filter/transform engine; constructed in the ctor body
+  // after data_engine_ is alive (it binds a DerivedEngine to data_engine_).
+  std::unique_ptr<DataProcessorService> processor_service_;
   // Per-object-topic parser slots. WRITTEN from the streaming worker thread (the
   // registrar callback fires when a plugin discovers/replaces a topic mid-stream)
   // and READ from the GUI thread on every render tick (each scene3D layer +

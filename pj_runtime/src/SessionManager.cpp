@@ -3,14 +3,19 @@
 
 #include "pj_runtime/SessionManager.h"
 
+#include <QFile>
 #include <QLoggingCategory>
 #include <QString>
 #include <algorithm>
 #include <cstdint>
 #include <limits>
+#include <memory>
 #include <unordered_map>
 
 #include "pj_plugins/sdk/message_parser_plugin_base.hpp"
+#include "pj_runtime/DataProcessorService.h"
+#include "pj_scripting/filter_catalogue.h"
+#include "pj_scripting/script_engine.h"
 
 namespace PJ {
 
@@ -18,7 +23,27 @@ namespace {
 Q_LOGGING_CATEGORY(lcSession, "pj.runtime.session")
 }  // namespace
 
-SessionManager::SessionManager(QObject* parent) : QObject(parent) {}
+SessionManager::SessionManager(QObject* parent) : QObject(parent) {
+  // data_engine_ is already alive (member init precedes the ctor body), so the
+  // processor service can bind its DerivedEngine to it.
+  processor_service_ = std::make_unique<DataProcessorService>(data_engine_);
+
+  // Install the bundled Luau filter catalogue so applied/restored filters resolve
+  // to Luau classes. The resource is embedded in the app; it is absent only in a
+  // headless unit test, where that binary installs its own catalogue if it needs
+  // filters (there is no native C++ builtin fallback after M9).
+  auto catalogue = std::make_shared<scripting::FilterCatalogue>(scripting::makeLuauEngine());
+  if (QFile f(QStringLiteral(":/filters/builtin_filters.luau")); f.open(QIODevice::ReadOnly)) {
+    if (auto added = catalogue->addBundledSource(f.readAll().toStdString(), "bundled"); !added.has_value()) {
+      qCWarning(lcSession) << "filter catalogue load failed:" << QString::fromStdString(added.error());
+    }
+  }
+  // Install only a non-empty catalogue: a headless binary without the embedded
+  // resource simply has no filters rather than an empty registry.
+  if (!catalogue->entries().empty()) {
+    processor_service_->setFilterCatalogue(std::move(catalogue));
+  }
+}
 
 SessionManager::~SessionManager() = default;
 
@@ -119,15 +144,25 @@ std::optional<DisplayRange> SessionManager::datasetDisplayRange(DatasetId datase
 
 std::vector<TopicId> SessionManager::commitChunks(std::vector<std::pair<TopicId, TopicChunk>> chunks) {
   auto changed = data_engine_.commitChunks(std::move(chunks));
-  if (!changed.empty()) {
-    dataset_min_cache_.clear();  // new samples may lower a dataset's earliest stamp
-    QVector<TopicId> ids;
-    ids.reserve(static_cast<qsizetype>(changed.size()));
-    for (const TopicId id : changed) {
-      ids.push_back(id);
-    }
-    emit samplesIngested(std::move(ids), /*live=*/false);
+  if (changed.empty()) {
+    return changed;
   }
+  dataset_min_cache_.clear();  // new samples may lower a dataset's earliest stamp
+  // Run eager filters over the freshly committed input, then notify both the raw
+  // and the derived output topics so filtered curves refresh. (Loaded files keep
+  // full history, so there is no retention race on this path.)
+  const std::vector<TopicId> derived_outputs =
+      processor_service_ ? processor_service_->advanceOnCommit(changed) : std::vector<TopicId>{};
+
+  QVector<TopicId> ids;
+  ids.reserve(static_cast<qsizetype>(changed.size() + derived_outputs.size()));
+  for (const TopicId id : changed) {
+    ids.push_back(id);
+  }
+  for (const TopicId id : derived_outputs) {
+    ids.push_back(id);
+  }
+  emit samplesIngested(std::move(ids), /*live=*/false);
   return changed;
 }
 
@@ -180,7 +215,18 @@ void SessionManager::replaceDataset(
     qCWarning(lcSession).noquote() << "replaceDataset (objects):" << QString::fromStdString(objects.error());
   }
 
-  // (4) Re-index the (already-cleared) adapters against the swapped-in data.
+  // (4) Recompute the filters whose input was just swapped: a reload replaces the
+  // input chunks wholesale, so the derived output must be reset+replayed (not
+  // appended). Notify those outputs too, so plots showing filtered curves refresh.
+  if (processor_service_ && !changed.isEmpty()) {
+    const std::vector<TopicId> outputs =
+        processor_service_->recomputeForReplacedSources(std::vector<TopicId>(changed.begin(), changed.end()));
+    for (const TopicId out : outputs) {
+      changed.push_back(out);
+    }
+  }
+
+  // (5) Re-index the (already-cleared) adapters against the swapped-in data.
   notifyIngest(std::move(changed), /*live=*/false);
 }
 
