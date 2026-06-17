@@ -292,17 +292,20 @@ void applySplitterSizes(const LayoutNode& node, const QVector<DockWidget*>& widg
     return;
   }
 
-  int total_size = 0;
-  for (DockWidget* widget : widgets) {
-    total_size += node.orientation == Qt::Horizontal ? widget->width() : widget->height();
-  }
-  if (total_size <= 0) {
-    total_size = static_cast<int>(widgets.size()) * 100;
-  }
-
+  // Express the saved ratios as large relative weights instead of scaling them by
+  // the widgets' *current* pixel sizes. During layout restore the docker is not
+  // laid out at its final size yet — TabbedPlotWidget builds a brand-new PlotDocker
+  // per tab and restores into it before it is shown — so widget->width()/height()
+  // report placeholder geometry that distorts the proportions (and the splitter
+  // later "grows" to fit, pulling the split toward 50/50). QSplitter::setSizes only
+  // stores relative weights: when the splitter is first laid out it shrinks these
+  // oversized hints to fit, distributing space proportionally, so a large common
+  // scale reproduces the saved ratios exactly regardless of when the dock area
+  // becomes visible.
+  constexpr double kRelativeScale = 1'000'000.0;
   QList<int> sizes;
   for (double ratio : node.size_ratios) {
-    sizes.push_back(std::max(1, static_cast<int>(ratio * static_cast<double>(total_size))));
+    sizes.push_back(std::max(1, static_cast<int>(ratio * kRelativeScale)));
   }
   splitter->setSizes(sizes);
 }

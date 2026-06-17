@@ -14,6 +14,7 @@
 #include <QMetaObject>
 #include <QMimeData>
 #include <QMouseEvent>
+#include <QSplitter>
 #include <QStringList>
 #include <QToolButton>
 #include <QtGlobal>
@@ -801,6 +802,117 @@ TEST(DockWidgetPlaceholderTest, EmptyObjectWidgetSurvivesLayoutSaveRestore) {
   ASSERT_NE(restored_dock, nullptr);
   EXPECT_NE(restored_dock->objectWidget(), nullptr);
   EXPECT_EQ(restored_dock->plotWidget(), nullptr);
+}
+
+TEST(DockLayoutSizeTest, RestorePreservesSplitterProportions) {
+  // Save an asymmetric split, then restore it into a *fresh* docker that has not
+  // been shown/sized yet (the path TabbedPlotWidget takes: every tab gets a brand
+  // new PlotDocker, then xmlLoadState runs before it is laid out). The restored
+  // splitter must keep the saved proportions once shown.
+  PJ::SessionManager session;
+  PJ::CatalogModel catalog(&session);
+
+  PJ::PlotDocker source(QStringLiteral("src"), &session, &catalog);
+  source.resize(1000, 600);
+  source.show();
+  QApplication::processEvents();
+
+  auto* dock0 = source.plotAt(0);
+  ASSERT_NE(dock0, nullptr);
+  auto* dock1 = splitFrom(source, dock0, 2);
+  ASSERT_NE(dock1, nullptr);
+
+  // Force a known, strongly asymmetric 80/20 horizontal split.
+  QSplitter* src_splitter = nullptr;
+  for (QSplitter* splitter : source.findChildren<QSplitter*>()) {
+    if (splitter->count() == 2) {
+      src_splitter = splitter;
+      break;
+    }
+  }
+  ASSERT_NE(src_splitter, nullptr);
+  src_splitter->setSizes({800, 200});
+  QApplication::processEvents();
+
+  QDomDocument doc;
+  const QDomElement saved = source.xmlSaveState(doc);
+
+  // Restore into a fresh docker, never shown before xmlLoadState.
+  PJ::PlotDocker restored(QStringLiteral("dst"), &session, &catalog);
+  ASSERT_TRUE(restored.xmlLoadState(saved));
+  restored.resize(1000, 600);
+  restored.show();
+  QApplication::processEvents();
+
+  QSplitter* dst_splitter = nullptr;
+  for (QSplitter* splitter : restored.findChildren<QSplitter*>()) {
+    if (splitter->count() == 2) {
+      dst_splitter = splitter;
+      break;
+    }
+  }
+  ASSERT_NE(dst_splitter, nullptr);
+  const QList<int> sizes = dst_splitter->sizes();
+  const double total = static_cast<double>(sizes[0] + sizes[1]);
+  ASSERT_GT(total, 0.0);
+  const double ratio0 = static_cast<double>(sizes[0]) / total;
+  // The saved layout is 80/20. The bug collapsed it toward 50/50 because the
+  // restore measured widget geometry before the docker was laid out.
+  EXPECT_NEAR(ratio0, 0.8, 0.02) << "restored sizes=" << sizes[0] << "," << sizes[1];
+}
+
+TEST(DockLayoutSizeTest, RestorePreservesThreeWaySplitterProportions) {
+  // A 3-way asymmetric split exercises a multi-child splitter, where geometry-based
+  // restore distorts every pane, not just one boundary.
+  PJ::SessionManager session;
+  PJ::CatalogModel catalog(&session);
+
+  PJ::PlotDocker source(QStringLiteral("src"), &session, &catalog);
+  source.resize(1200, 600);
+  source.show();
+  QApplication::processEvents();
+
+  auto* dock0 = source.plotAt(0);
+  ASSERT_NE(dock0, nullptr);
+  auto* dock1 = splitFrom(source, dock0, 2);
+  ASSERT_NE(dock1, nullptr);
+  auto* dock2 = splitFrom(source, dock1, 3);
+  ASSERT_NE(dock2, nullptr);
+
+  QSplitter* src_splitter = nullptr;
+  for (QSplitter* splitter : source.findChildren<QSplitter*>()) {
+    if (splitter->count() == 3) {
+      src_splitter = splitter;
+      break;
+    }
+  }
+  ASSERT_NE(src_splitter, nullptr);
+  src_splitter->setSizes({600, 360, 240});  // 50 / 30 / 20
+  QApplication::processEvents();
+
+  QDomDocument doc;
+  const QDomElement saved = source.xmlSaveState(doc);
+
+  PJ::PlotDocker restored(QStringLiteral("dst"), &session, &catalog);
+  ASSERT_TRUE(restored.xmlLoadState(saved));
+  restored.resize(1200, 600);
+  restored.show();
+  QApplication::processEvents();
+
+  QSplitter* dst_splitter = nullptr;
+  for (QSplitter* splitter : restored.findChildren<QSplitter*>()) {
+    if (splitter->count() == 3) {
+      dst_splitter = splitter;
+      break;
+    }
+  }
+  ASSERT_NE(dst_splitter, nullptr);
+  const QList<int> sizes = dst_splitter->sizes();
+  const double total = static_cast<double>(sizes[0] + sizes[1] + sizes[2]);
+  ASSERT_GT(total, 0.0);
+  EXPECT_NEAR(sizes[0] / total, 0.50, 0.02) << "sizes=" << sizes[0] << "," << sizes[1] << "," << sizes[2];
+  EXPECT_NEAR(sizes[1] / total, 0.30, 0.02) << "sizes=" << sizes[0] << "," << sizes[1] << "," << sizes[2];
+  EXPECT_NEAR(sizes[2] / total, 0.20, 0.02) << "sizes=" << sizes[0] << "," << sizes[1] << "," << sizes[2];
 }
 
 TEST(DockWidgetPlaceholderTest, FirstObjectTopicAddedFiresOnceForAdoptedEmptyWidget) {
