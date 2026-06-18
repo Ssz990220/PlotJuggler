@@ -51,7 +51,7 @@ Pure C++ library. Contains everything that does not touch Qt:
 | `Image codecs` | `codecs.h` | Built-in codec stages and image pipeline builders: JPEG, PNG, Mono16 normalization, Bayer, segmentation palette. |
 | `CompositeMediaSource` | `composite_media_source.h` | Multi-layer fan-out: owns N `MediaSource`s and fuses their `MediaFrame`s (§5.4 / §8). |
 | `DecodedFrame` | `decoded_frame.h` | RAII wrapper for decoded pixel data (YUV planes or packed RGB/RGBA buffers). |
-| `DepthPipelineSource` | `depth_pipeline_source.h` | Synchronous `MediaSource` for canonical `DepthImage` payloads: deserializes and colormaps to RGBA. |
+| `DepthPipelineSource` | `depth_pipeline_source.h` | `MediaSource` for depth-encoded `Image` topics (16UC1 / 32FC1 / compressedDepth via `resolveImage`): decodes on an `AsyncFrameWorker` (off the UI thread, like the image/video sources — the compressedDepth PNG inflate is too heavy for the main thread) and emits a raw float32 (`kDepthR32F`) frame + `DepthColorParams`; the colormap/range/invert are applied on the GPU. |
 | `EntryThumbnailCache` | `entry_thumbnail_cache.h` | Background HD-capped JPEG thumbnail cache for streaming `VideoFrame` scrub previews (§4.1). |
 | `FfmpegDecoder` | `ffmpeg_decoder.h` | FFmpeg AVCodecContext wrapper: HW-accel probing, guaranteed software fallback, YUV420P output (§R4.7). |
 | `H264 NAL utils` | `h264_utils.h` | H.264 Annex-B keyframe oracle (`isH264Keyframe`), used by codec-generic video helpers. |
@@ -89,7 +89,7 @@ handles per-frame `kVideoFrame` streaming topics (parser-mode
 | Component | Header(s) | Role |
 |-----------|-----------|------|
 | `MediaViewerWidget` | `media_viewer_widget.h` | `QRhiWidget` subclass: GPU rendering via BT.709 YUV->RGB fragment shader (3 R8 textures for YUV420P), zoom/pan, RGB DecodedFrame path, GPU lens-rectification (§7.2), and `MediaSource` polling via `setMediaSource()` + `setTimestamp()` (§7) |
-| YUV shaders | `shaders/yuv_to_rgb.{vert,frag}` | BT.709 YUV420P->RGB conversion via 3 R8 textures; RGBA passthrough; native Mono8 (R8 expand) / BGRA (RGBA8 swizzle) paths; optional remap-LUT rectification (binding 4) — see §7.2 |
+| YUV shaders | `shaders/yuv_to_rgb.{vert,frag}` | BT.709 YUV420P->RGB conversion via 3 R8 textures; RGBA passthrough; native Mono8 (R8 expand) / BGRA (RGBA8 swizzle) paths; depth colormap (`pixelFormat == 5`: R32F depth in `y_tex`, normalized by near/far and looked up in the colormap LUT in `u_tex`); optional remap-LUT rectification (binding 4) — see §7.2 |
 | Overlay shaders | `shaders/scene_lines.{vert,frag}`, `shaders/scene_quads.{vert,frag}`, `shaders/scene_text.{vert,frag}` | Annotation overlay pipelines (§7.1): triangle strokes (scale-with-1px-floor), solid fills, textured text quads |
 
 The Qt layer is thin — it owns the GPU surface and polls the
@@ -137,7 +137,8 @@ Main thread                            MediaSource (internal)
      │               │                      │
      │               ├─ [ImagePipeline]  post to worker ──► store->indexAt/at → decode()
      │               ├─ [StreamingVideo] post to worker ──► decoder_.decodeAt(ts)
-     │               └─ [Depth/Scene]    latestAt(ts) → synchronous decode
+     │               ├─ [DepthPipeline]  post to worker ──► resolveImage → R32F decode
+     │               └─ [Scene]          latestAt(ts) → synchronous decode
      │                                      │
      ├─ widget->render()                    │
      │       │                              │
@@ -155,8 +156,8 @@ Main thread                            MediaSource (internal)
 On each application tick:
 
 1. The main thread calls `widget->setTimestamp(ts_ns)`, which forwards
-   to the attached `MediaSource`. Image and streaming-video sources post
-   a request to their internal workers; depth and scene sources decode
+   to the attached `MediaSource`. Image, streaming-video, and depth sources
+   post a request to their internal workers; the scene source decodes
    synchronously on the caller thread.
 2. The main thread triggers a repaint (calls `widget->update()`).
 3. In `render()`, the widget calls `source->takeFrame()` to get the
@@ -184,13 +185,14 @@ open design space.
 
 The realized frame handoff is a pull-based latest-wins mailbox implemented once
 in `AsyncFrameWorker` (`async_frame_worker.h`) — the shared decode-worker
-engine that `ImagePipelineSource` and `StreamingVideoSource` compose. The
+engine that `ImagePipelineSource`, `StreamingVideoSource`, and
+`DepthPipelineSource` compose. The
 worker owns the request channel (latest-target-wins coalescing, optional
 per-request `CancelToken`), the single-slot result mailbox
 (`deposit()`/`take()` under its `result_mutex_`), the frame-ready callback,
 the exception barrier, and the lost-wakeup-safe teardown; each source supplies
 only its decode body. `takeFrame()` moves the taken frame into a `MediaFrame`.
-Synchronous sources (depth and scene entities) use the same latest-result
+The remaining synchronous source (scene entities) uses the same latest-result
 contract without a worker.
 
 Properties:
@@ -271,10 +273,9 @@ class CancelToken {
 Live cancellation today:
 
 - `StreamingVideoDecoder`: between NAL units (after each `avcodec_receive_frame`).
-- `ImagePipelineSource`: no mid-decode cancellation today; stale image targets
-  are coalesced before the worker starts the next decode.
-- `DepthPipelineSource` / `ScenePipelineSource`: synchronous on the caller
-  thread; no token is used.
+- `ImagePipelineSource` / `DepthPipelineSource`: no mid-decode cancellation
+  today; stale targets are coalesced before the worker starts the next decode.
+- `ScenePipelineSource`: synchronous on the caller thread; no token is used.
 
 A new streaming-video request flips the previous token **only when it is a
 scrub** (backward, or a forward jump past the 0.5 s threshold — the worker's
@@ -813,7 +814,7 @@ zoom/pan apply uniformly:
 
 | # | Pipeline | Topology | Responsibility |
 |---|---|---|---|
-| 1 | Image | implicit (procedural fullscreen quad) | YUV420P → RGB (BT.709, 3 R8 textures), RGBA passthrough, native Mono8 (R8) / BGRA (RGBA8 swizzle), and optional GPU lens-rectification via a remap LUT (§7.2) |
+| 1 | Image | implicit (procedural fullscreen quad) | YUV420P → RGB (BT.709, 3 R8 textures), RGBA passthrough, native Mono8 (R8) / BGRA (RGBA8 swizzle), depth colormap (R32F depth + colormap LUT, `pixelFormat == 5`), and optional GPU lens-rectification via a remap LUT (§7.2) |
 | 1b | Composite (pixel layers) | implicit (procedural fullscreen quad) | Alpha-blends N additional `MediaFrame::pixel_layers` over the base, each with its own SRB and per-layer `opacity`; used when `pixel_layers_active_` (member `composite_pipeline_`) |
 | 2 | Fills (`points_overlay_`) | `Triangles` | Solid fills: `kPoints` quads, `LineLoop` fill, `CircleAnnotation` fill |
 | 3 | Outlines (`thick_overlay_`) | `Triangles` | **All** line/circle strokes, expanded CPU-side to perpendicular rectangles whose width scales with zoom but is floored at 1px on screen |
@@ -1050,8 +1051,8 @@ pushing.
 
 | Thread | Responsibilities | Lock discipline |
 |--------|-----------------|-----------------|
-| **Qt main thread** | UI events, `widget->setTimestamp()`, `widget->render()` → `source->takeFrame()`, GPU upload | Posts async requests for image/video sources. Depth and scene sources decode synchronously in `setTimestamp()`, so those paths may spend decode time on the GUI thread |
-| **ImagePipelineSource worker** (an `AsyncFrameWorker`, 1 per source) | ObjectStore lookup, parser/canonical-image handling, `CodecPipeline` decode, result deposit | The shared `AsyncFrameWorker` engine: `request_mutex_`/`request_cv_` for latest-target requests, `result_mutex_` for the mailbox. ObjectStore locks are released before codec work |
+| **Qt main thread** | UI events, `widget->setTimestamp()`, `widget->render()` → `source->takeFrame()`, GPU upload | Posts async requests for image/video/depth sources. Only the scene source decodes synchronously in `setTimestamp()`, so only that path may spend decode time on the GUI thread |
+| **ImagePipelineSource / DepthPipelineSource worker** (an `AsyncFrameWorker`, 1 per source) | ObjectStore lookup, parser/canonical-image handling, `CodecPipeline` decode (or the depth R32F decode incl. compressedDepth PNG inflate), result deposit | The shared `AsyncFrameWorker` engine: `request_mutex_`/`request_cv_` for latest-target requests, `result_mutex_` for the mailbox. ObjectStore locks are released before codec work |
 | **StreamingVideoSource worker** (an `AsyncFrameWorker`, 1 per source) | `StreamingVideoDecoder::decodeAt()`, thumbnail preview + full-res `deposit()` into the worker mailbox | Acquires ObjectStore shared locks (released immediately after handle copy). Holds decoder-internal state exclusively |
 | **DataSource poll thread** (1 per app, existing) | `DataSource::poll()` → `ObjectStore::pushOwned/pushLazy` | Acquires ObjectStore exclusive locks per push. Never touches decoders |
 | **EntryThumbnailCache builder** (1 per cache, bounded topics only) | Single forward decode pass producing HD-capped JPEG scrub thumbnails | Owns its own decoder/extractor; publishes tiles under `EntryThumbnailCache::mutex_`; never shares the playback decoder |
@@ -1060,7 +1061,7 @@ pushing.
 
 | Lock | Type | Protects | Held by |
 |------|------|----------|---------|
-| `ObjectSeries::mutex` (§OS3.4) | `shared_mutex` | Per-topic entry storage | Shared: image/video workers via `latestAt`/`at`/`indexAt`, and the Qt main thread for synchronous depth/scene `latestAt`. Exclusive: poll thread via `pushOwned`/`pushLazy`/eviction |
+| `ObjectSeries::mutex` (§OS3.4) | `shared_mutex` | Per-topic entry storage | Shared: image/video/depth workers via `latestAt`/`at`/`indexAt`, and the Qt main thread for the synchronous scene `latestAt`. Exclusive: poll thread via `pushOwned`/`pushLazy`/eviction |
 | `AsyncFrameWorker::request_mutex_` (one per worker-backed source) | `mutex` | Latest target timestamp, request-present + force-redecode flags, condition-variable predicate; with cancellation enabled (video) also the active cancel token | Main: `setTimestamp()` posts/coalesces requests. Worker: waits, takes one request, clears the flag. Not held during ObjectStore lookup or decode |
 | `AsyncFrameWorker::result_mutex_` (one per worker-backed source) | `mutex` | Latest decoded-frame mailbox | Worker: deposit latest frame. Main: `takeFrame()`. Never held while ObjectStore or decoder locks are held |
 | `AsyncFrameWorker::callback_mutex_` (one per worker-backed source) | `mutex` | The optional frame-ready callback slot | Main/layer: `setFrameReadyCallback()`. Worker: copies the callback under the lock, invokes it after release |
@@ -1103,7 +1104,7 @@ lock, then decode and retain a pending frame without `request_mutex_` or
 - **ObjectStore shared_mutex**: at typical media frame rates (30-60
   fps), the push thread holds an exclusive lock for ~1 us per entry
   (deque append + timestamp vector append + optional eviction).
-  Worker threads and synchronous depth/scene calls hold shared locks
+  Worker threads and the synchronous scene calls hold shared locks
   for ~1 us per query (binary search + shared_ptr copy). Contention is
   effectively zero.
 - **Source request mutex**: held for one timestamp/cancel-token update

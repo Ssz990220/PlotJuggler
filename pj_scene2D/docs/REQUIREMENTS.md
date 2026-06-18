@@ -480,9 +480,9 @@ internal state.
 
 The number of worker threads per widget is an **implementation detail**,
 not part of the contract. Worker-backed sources (`ImagePipelineSource`,
-`StreamingVideoSource`) own their own request/result channels today;
-synchronous sources (`DepthPipelineSource`, `ScenePipelineSource`) publish
-their next result directly from `setTimestamp()`. Either way, three
+`StreamingVideoSource`, `DepthPipelineSource`) own their own request/result
+channels today; the synchronous source (`ScenePipelineSource`) publishes
+its next result directly from `setTimestamp()`. Either way, three
 contractual guarantees hold:
 
 1. Decoders for different layers do not share internal state.
@@ -515,9 +515,9 @@ reintroduce push-based delivery.
 video decodes are cancelled before completion. The shipped sources do not
 publish partial decode results: `StreamingVideoSource` cancels stale GOP
 work with a `CancelToken` and deposits only complete decoded frames;
-`ImagePipelineSource` coalesces stale timestamp requests before the worker
-starts the next decode; depth and scene sources decode synchronously on the
-caller thread. The video_player_lab direction-aware partial-publish rule
+`ImagePipelineSource` and `DepthPipelineSource` coalesce stale timestamp
+requests before the worker starts the next decode; the scene source decodes
+synchronously on the caller thread. The video_player_lab direction-aware partial-publish rule
 (forward partials allowed, backward partials suppressed) is preserved as
 design rationale in `ARCHITECTURE.md §3.2` for a future file-backed decoder,
 not as current behavior.

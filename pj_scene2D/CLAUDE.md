@@ -16,7 +16,10 @@ compressedDepth) — there is no `kDepthImage` producer. `Scene2DDockWidget` pee
 manual near-far range) and everything else to the plain `ImageLayer`. Both
 `ImagePipelineSource` and `DepthPipelineSource` obtain the `sdk::Image` from a store
 entry through one shared seam — `image_resolve.h::resolveImage` (the topic's
-MessageParser when present, else the canonical `pj_image_v1` codec).
+MessageParser when present, else the canonical `pj_image_v1` codec). The depth decode
+— including the heavy compressedDepth PNG inflate — runs **off the UI thread** on an
+`AsyncFrameWorker`, like the image/video sources; `setTimestamp()` posts and returns,
+`takeFrame()` polls, and a frame-ready callback drives the repaint.
 
 The colormap is applied **on the GPU**: `DepthPipelineSource` emits a raw float
 depth frame (`PixelFormat::kDepthR32F`) plus `DepthColorParams` (near/far/invert/

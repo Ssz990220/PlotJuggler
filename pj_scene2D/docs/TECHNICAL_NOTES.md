@@ -576,8 +576,8 @@ class MediaSource {
 
 **Key properties:**
 - `setTimestamp()` is called by the main thread when the global time
-  changes. Image and streaming-video sources post to an internal worker
-  thread; depth and scene sources decode synchronously on the caller thread.
+  changes. Image, streaming-video, and depth sources post to an internal
+  worker thread; the scene source decodes synchronously on the caller thread.
 - `takeFrame()` is called by the main thread at render rate. Returns
   the latest `MediaFrame` (base pixels and/or overlays), or nullopt if
   nothing new since the last call.
@@ -588,8 +588,9 @@ class MediaSource {
 **Concrete implementations** (all in `pj_scene2d_core`):
 - `ImagePipelineSource` — worker-backed image decode via `CodecPipeline`
   + `ObjectStore`; latest decoded result is polled by `takeFrame()`.
-- `DepthPipelineSource` — synchronous depth-image deserialize + colormap
-  in `setTimestamp()`.
+- `DepthPipelineSource` — worker-backed depth decode (R32F + GPU colormap
+  params; the compressedDepth PNG inflate runs off the UI thread); latest
+  result polled by `takeFrame()`.
 - `ScenePipelineSource` — synchronous scene/annotation decode in
   `setTimestamp()`.
 - `StreamingVideoSource` — worker-backed `StreamingVideoDecoder`; latest-wins
