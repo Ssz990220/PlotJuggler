@@ -38,13 +38,6 @@ namespace {
 
 constexpr auto kPreserveTopicNameKey = "CurveListPanel/show_topics";
 
-// The image icon marks "2D-viewable" in general: stills (raw or compressed),
-// video streams, depth images, and image annotations all carry it.
-bool is2dMediaObjectType(sdk::BuiltinObjectType type) {
-  return type == sdk::BuiltinObjectType::kImage || type == sdk::BuiltinObjectType::kVideoFrame ||
-         type == sdk::BuiltinObjectType::kDepthImage || type == sdk::BuiltinObjectType::kImageAnnotations;
-}
-
 CurveTreeView::CurvePath treePathFromCatalogItem(const CatalogItem& item) {
   const auto* scalar = asScalarField(item);
   const auto* object_topic = asObjectTopic(item);
@@ -55,7 +48,7 @@ CurveTreeView::CurvePath treePathFromCatalogItem(const CatalogItem& item) {
       .topic = item.topic_name,
       .field = scalar != nullptr ? scalar->field_name : QString{},
       .selectable = scalar != nullptr,
-      .is_image_topic = is2dMediaObjectType(object_type),
+      .is_image_topic = isImageFamilyObjectType(object_type),
       .is_3d_object_topic = is3dSceneObjectType(object_type),
   };
 }

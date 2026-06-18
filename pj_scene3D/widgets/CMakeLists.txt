@@ -29,6 +29,7 @@ set(PJ_SCENE3D_WIDGETS_SOURCES
   src/render_pass.cpp
   src/scene_view_widget.cpp
   src/scene3d_layer.cpp
+  src/layers/depth_cloud_layer.cpp
   src/layers/pointcloud_layer.cpp
   src/layers/occupancy_grid_layer.cpp
   src/layers/poses_in_frame_layer.cpp
@@ -46,6 +47,7 @@ set(PJ_SCENE3D_WIDGETS_SOURCES
   include/pj_scene3d_widgets/scene_view_widget.h
   include/pj_scene3d_widgets/scene3d_layer.h
   include/pj_scene3d_widgets/mesh_data.h
+  include/pj_scene3d_widgets/layers/depth_cloud_layer.h
   include/pj_scene3d_widgets/layers/pointcloud_layer.h
   include/pj_scene3d_widgets/layers/occupancy_grid_layer.h
   include/pj_scene3d_widgets/layers/poses_in_frame_layer.h
@@ -213,6 +215,35 @@ if(PJ_BUILD_TESTS)
   )
   target_compile_options(pointcloud_layer_param_transfer_test PRIVATE ${PJ_WARNING_FLAGS} ${PJ_SANITIZER_FLAGS})
   add_test(NAME pointcloud_layer_param_transfer_test COMMAND pointcloud_layer_param_transfer_test)
+
+  # DepthCloudLayer: a depth-encoded sdk::Image + CameraInfo (matched by frame_id)
+  # back-project into points via the kImage path; color images opt out; the
+  # encoding gate (isDepthEncoding) is pinned.
+  add_executable(depth_cloud_layer_test
+    tests/depth_cloud_layer_test.cpp
+  )
+  target_link_libraries(depth_cloud_layer_test PRIVATE
+    pj_scene3d_widgets
+    GTest::gtest
+  )
+  target_compile_definitions(depth_cloud_layer_test PRIVATE PJ_SCENE3D_TEST_HOOKS)
+  target_compile_options(depth_cloud_layer_test PRIVATE ${PJ_WARNING_FLAGS} ${PJ_SANITIZER_FLAGS})
+  add_test(NAME depth_cloud_layer_test COMMAND depth_cloud_layer_test)
+
+  # Dock-level depth/color gate: Scene3DDockWidget::addTopic accepts a depth-
+  # encoded kImage as a DepthCloud layer and refuses a color kImage (the
+  # "droppable into 3D" guarantee behind drag-drop absorption). The dock is a
+  # QWidget, so this links GTest::gtest and supplies a QApplication main.
+  add_executable(scene3d_dock_depth_gate_test
+    tests/scene3d_dock_depth_gate_test.cpp
+  )
+  target_link_libraries(scene3d_dock_depth_gate_test PRIVATE
+    pj_scene3d_widgets
+    GTest::gtest
+  )
+  target_compile_definitions(scene3d_dock_depth_gate_test PRIVATE PJ_SCENE3D_TEST_HOOKS)
+  target_compile_options(scene3d_dock_depth_gate_test PRIVATE ${PJ_WARNING_FLAGS} ${PJ_SANITIZER_FLAGS})
+  add_test(NAME scene3d_dock_depth_gate_test COMMAND scene3d_dock_depth_gate_test)
 
   # PosesInFrameLayer: tracker-time decode -> triad expansion, scrub coalescing,
   # size/opacity re-expansion, empty/orphan edges, the per-use parseLocked rebind

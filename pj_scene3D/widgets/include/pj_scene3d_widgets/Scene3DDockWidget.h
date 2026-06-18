@@ -177,6 +177,14 @@ class Scene3DDockWidget : public SceneDockWidget {
   void onAvailableFrames(const QList<pj::scene3d::FrameRow>& frames);
 
  private:
+  // Shared body of addTopic(). enforce_image_gate runs the kImage depth-encoding
+  // gate (firstSampleIsDepthEncoded) — true for interactive adds (drop / family
+  // switch), false for layout restore, which trusts the saved layer type because
+  // the topic's first sample may not be loaded yet (gating on an absent sample
+  // would silently drop a saved DepthCloud layer).
+  bool addTopicImpl(
+      ObjectTopicId topic_id, sdk::BuiltinObjectType object_type, const QString& title, bool enforce_image_gate);
+
   void prepareTransformBufferForTopic(ObjectTopicId topic_id);
   // After a tracked topic is dropped, reset the TF binding (tf_buffer_/dataset_id_
   // → null/0, push the empty buffer to the view) when no remaining tracked topic

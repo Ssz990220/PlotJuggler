@@ -13,6 +13,7 @@ find_package(cloudini REQUIRED)
 add_library(pj_scene3d_core STATIC
   src/camera/camera.cpp
   src/camera/camera_math.cpp
+  src/depth_backproject.cpp
   src/occupancy_grid_reconstructor.cpp
   src/pointcloud_codecs.cpp
   src/pointcloud_convert.cpp
@@ -36,6 +37,7 @@ if(PJ_BUILD_TESTS)
   set(PJ_SCENE3D_CORE_TESTS
     ../tests/occupancy_grid_reconstructor_test.cpp
     ../tests/occupancy_grid_bounds_test.cpp
+    ../tests/depth_backproject_test.cpp
     ../tests/pointcloud_convert_test.cpp
     ../tests/aabb_axis_range_test.cpp
     ../tests/frame_picking_test.cpp

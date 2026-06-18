@@ -21,4 +21,20 @@ namespace PJ {
   return Scene2DDockWidget::handlesObjectType(type);
 }
 
+// The image-family object types — those a 2D media viewer renders: stills
+// (kImage, raw or compressed), depth images (kImage with a depth encoding, or
+// kDepthImage), video (kVideoFrame), and image annotations. Used for the curve-
+// list "2D-viewable" icon and for placeholder-drop routing.
+//
+// A depth-encoded kImage is ALSO hostable in 3D (DepthCloud), but the depth-vs-
+// color split is an `encoding` (payload) distinction, not a type one — so it is
+// resolved by the consumer (the dock peeking a sample), never here. Because this
+// predicate cannot tell depth from color, placeholder-drop routing treats the
+// whole family as 2D-first; depth→3D is an explicit action (drop onto an
+// existing 3D dock, or "Open in 3D view").
+[[nodiscard]] inline bool isImageFamilyObjectType(sdk::BuiltinObjectType type) {
+  return type == sdk::BuiltinObjectType::kImage || type == sdk::BuiltinObjectType::kVideoFrame ||
+         type == sdk::BuiltinObjectType::kDepthImage || type == sdk::BuiltinObjectType::kImageAnnotations;
+}
+
 }  // namespace PJ

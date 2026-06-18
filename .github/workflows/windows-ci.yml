@@ -106,7 +106,16 @@ jobs:
         id: conan_cache
         shell: pwsh
         run: |
-          $hash = (Get-FileHash conanfile.txt -Algorithm SHA256).Hash.Substring(0, 16).ToLower()
+          # Cache identity = CACHE_VERSION salt + conanfile.txt hash. Bump the salt
+          # to evict a poisoned cache: the ghcr.io tag for a given conanfile can be
+          # saved incomplete (e.g. a recipe export folder missing), after which every
+          # restoring build dies at `conan install` with "fmt/<ver>: Cannot load
+          # recipe ... conanfile.py not found". A re-run restores the same bad blob,
+          # so the only fix is a new cache identity that forces a clean cold rebuild
+          # (and a fresh save on the next push-to-main).
+          $cacheVersion = "v2"
+          $fileHash = (Get-FileHash conanfile.txt -Algorithm SHA256).Hash.Substring(0, 16).ToLower()
+          $hash = "$cacheVersion-$fileHash"
           $owner = "${{ github.repository_owner }}".ToLower()
           $tag = "ghcr.io/$owner/pj4-conan-cache:windows-msvc-relwithdebinfo-$hash"
           "hash=$hash" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
@@ -161,7 +170,7 @@ jobs:
           path: ~/.conan2
           key: conan-windows-msvc-relwithdebinfo-${{ steps.conan_cache.outputs.hash }}
           restore-keys: |
-            conan-windows-msvc-relwithdebinfo-
+            conan-windows-msvc-relwithdebinfo-v2-
 
       - name: Cache Qt
         id: qt-cache

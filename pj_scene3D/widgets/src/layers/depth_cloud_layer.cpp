@@ -1,0 +1,523 @@
+// Copyright 2026 Davide Faconti
+// SPDX-License-Identifier: MPL-2.0
+
+#include "pj_scene3d_widgets/layers/depth_cloud_layer.h"
+
+#include <QComboBox>
+#include <QFormLayout>
+#include <QImage>
+#include <QLoggingCategory>
+#include <QVBoxLayout>
+#include <QWidget>
+#include <cstring>
+#include <memory>
+#include <utility>
+#include <vector>
+
+#include "pj_base/builtin/builtin_object.hpp"
+#include "pj_base/builtin/camera_info.hpp"
+#include "pj_base/builtin/image.hpp"
+#include "pj_base/time.hpp"  // PJ::fromRaw, PJ::toRaw
+#include "pj_plugins/sdk/message_parser_plugin_base.hpp"
+#include "pj_runtime/SessionManager.h"
+#include "pj_scene3d_core/camera/camera.h"  // AABB, expandAABB
+#include "pj_scene3d_core/pointcloud.h"     // DecodedPointCloud
+#include "pj_scene3d_widgets/object_topic_metadata.h"
+#include "pj_scene3d_widgets/parse_locked.h"
+#include "pj_widgets/ComboBox.h"
+#include "pj_widgets/DoubleScrubber.h"
+
+namespace pj::scene3d {
+
+namespace {
+Q_LOGGING_CATEGORY(lcDepthCloudLayer, "pj.scene3d.layer.depthcloud")
+
+using PJ::sdk::BuiltinObjectType;
+using PJ::sdk::CameraInfo;
+using PJ::sdk::Image;
+
+}  // namespace
+
+bool isDepthEncoding(const std::string& encoding) {
+  // Metric depth carriers only. mono16 is excluded on purpose: it is commonly a
+  // grayscale camera, and offering every mono16 topic as a DepthCloud would be wrong.
+  return encoding == "16UC1" || encoding == "32FC1" || encoding == "compressedDepth";
+}
+
+DepthCloudLayer::DepthCloudLayer(
+    PJ::ObjectTopicId topic_id, QString display_name, BuiltinObjectType object_type, QObject* parent)
+    : Scene3DLayer(parent), topic_id_(topic_id), display_name_(std::move(display_name)), object_type_(object_type) {
+  cloud_pass_.setShape(PointcloudRenderPass::Shape::kPoint);
+  cloud_pass_.setSizePixels(point_size_px_);
+  cloud_pass_.setColorType(PointcloudRenderPass::ColorType::kField);
+  cloud_pass_.setScalarAxis(-1);  // color by the uploaded depth scalar
+  cloud_pass_.setColormap(colormap_);
+}
+
+DepthCloudLayer::~DepthCloudLayer() = default;
+
+PJ::SceneLayerInfo DepthCloudLayer::info() const {
+  return PJ::SceneLayerInfo{
+      .topic_id = topic_id_,
+      .object_type = object_type_,
+      .display_name = display_name_,
+      .family_name = QStringLiteral("DepthCloud"),
+      .visible = visible_,
+  };
+}
+
+PJ::Range<PJ::Timepoint> DepthCloudLayer::timeRange() const {
+  return PJ::liveTopicTimeRange(ctx_.session != nullptr ? &ctx_.session->objectStore() : nullptr, topic_id_);
+}
+
+QStringList DepthCloudLayer::fallbackFrames() const {
+  QStringList out;
+  if (!source_frame_.empty()) {
+    out.append(QString::fromStdString(source_frame_));
+  }
+  return out;
+}
+
+QString DepthCloudLayer::sourceFrame() const {
+  return QString::fromStdString(source_frame_);
+}
+
+bool DepthCloudLayer::attach(const PJ::SceneLayerContext& ctx) {
+  const auto& scene3d_ctx = static_cast<const Scene3DLayerContext&>(ctx);
+  if (scene3d_ctx.session == nullptr) {
+    qCWarning(lcDepthCloudLayer) << "attach: session is null";
+    return false;
+  }
+  ctx_ = scene3d_ctx;
+  if (!ctx_.session->parserBindingForObjectTopic(topic_id_)) {
+    qCWarning(lcDepthCloudLayer) << "attach: no parser for topic_id=" << topic_id_.id;
+    return false;
+  }
+  PJ::ObjectStore& store = ctx_.session->objectStore();
+  ts_first_.reset();
+  if (store.entryCount(topic_id_) > 0) {
+    ts_first_ = store.timeRange(topic_id_).first;
+  }
+  if (ts_first_.has_value()) {
+    renderAt(*ts_first_);
+  }
+  return true;
+}
+
+void DepthCloudLayer::detach() {
+  ts_first_.reset();
+  decoded_at_ns_.reset();
+  last_pushed_id_ = {};
+  last_point_count_ = 0;
+  world_bounds_.reset();
+  intrinsics_cache_.reset();
+  ctx_ = {};
+  cloud_pass_.setActiveCloud(nullptr);
+}
+
+void DepthCloudLayer::setFixedFrame(const QString& frame) {
+  if (fixed_frame_ == frame) {
+    return;
+  }
+  fixed_frame_ = frame;
+  if (source_frame_.empty()) {
+    last_pushed_id_ = {};  // placed in the fixed frame -> re-stamp frame_id
+    refreshNow();
+  }
+  emit repaintRequested();
+}
+
+void DepthCloudLayer::setTrackerTime(PJ::Timepoint time) {
+  decoded_at_ns_ = time;
+  tracker_dirty_ = true;
+  if (visible_) {
+    emit repaintRequested();
+  }
+}
+
+void DepthCloudLayer::setVisible(bool visible) {
+  if (visible_ == visible) {
+    return;
+  }
+  visible_ = visible;
+  cloud_pass_.setVisible(visible);
+  emit visibilityChanged(visible);
+  emit repaintRequested();
+}
+
+void DepthCloudLayer::initializeGL() {
+  cloud_pass_.initializeGL();
+}
+
+void DepthCloudLayer::render(const ViewParams& view_params, const FrameContext& frame_ctx) {
+  if (visible_ && tracker_dirty_) {
+    tracker_dirty_ = false;
+    renderAt(PJ::toRaw(frame_ctx.time));
+  }
+  cloud_pass_.render(view_params, frame_ctx);
+}
+
+void DepthCloudLayer::releaseGL() {
+  cloud_pass_.releaseGL();
+}
+
+void DepthCloudLayer::setColormap(PointcloudRenderPass::Colormap cm) {
+  if (colormap_ == cm) {
+    return;
+  }
+  colormap_ = cm;
+  cloud_pass_.setColormap(colormap_);
+  emit repaintRequested();
+}
+
+void DepthCloudLayer::setPointSizePixels(float pixels) {
+  if (point_size_px_ == pixels) {
+    return;
+  }
+  point_size_px_ = pixels;
+  cloud_pass_.setSizePixels(point_size_px_);
+  emit repaintRequested();
+}
+
+void DepthCloudLayer::setMinDepth(float metres) {
+  if (min_depth_m_ == metres) {
+    return;
+  }
+  min_depth_m_ = metres;
+  last_pushed_id_ = {};
+  refreshNow();
+}
+
+void DepthCloudLayer::setMaxDepth(float metres) {
+  if (max_depth_m_ == metres) {
+    return;
+  }
+  max_depth_m_ = metres;
+  last_pushed_id_ = {};
+  refreshNow();
+}
+
+QDomElement DepthCloudLayer::xmlSaveState(QDomDocument& doc) const {
+  QDomElement el = doc.createElement(QStringLiteral("depthcloud"));
+  auto colormap_str = [&]() -> QString {
+    switch (colormap_) {
+      case PointcloudRenderPass::Colormap::kTurbo:
+        return QStringLiteral("turbo");
+      case PointcloudRenderPass::Colormap::kViridis:
+        return QStringLiteral("viridis");
+      case PointcloudRenderPass::Colormap::kPlasma:
+        return QStringLiteral("plasma");
+      case PointcloudRenderPass::Colormap::kGrayscale:
+        return QStringLiteral("grayscale");
+    }
+    return QStringLiteral("turbo");
+  }();
+  el.setAttribute(QStringLiteral("colormap"), colormap_str);
+  el.setAttribute(QStringLiteral("point_size_px"), QString::number(static_cast<double>(point_size_px_), 'g', 6));
+  el.setAttribute(QStringLiteral("min_depth"), QString::number(static_cast<double>(min_depth_m_), 'g', 6));
+  el.setAttribute(QStringLiteral("max_depth"), QString::number(static_cast<double>(max_depth_m_), 'g', 6));
+  return el;
+}
+
+bool DepthCloudLayer::xmlLoadState(const QDomElement& element) {
+  if (element.isNull() || element.tagName() != QStringLiteral("depthcloud")) {
+    return false;
+  }
+  const QString cm_str = element.attribute(QStringLiteral("colormap"), QStringLiteral("turbo"));
+  if (cm_str == QStringLiteral("viridis")) {
+    setColormap(PointcloudRenderPass::Colormap::kViridis);
+  } else if (cm_str == QStringLiteral("plasma")) {
+    setColormap(PointcloudRenderPass::Colormap::kPlasma);
+  } else if (cm_str == QStringLiteral("grayscale")) {
+    setColormap(PointcloudRenderPass::Colormap::kGrayscale);
+  } else {
+    setColormap(PointcloudRenderPass::Colormap::kTurbo);
+  }
+  bool ok = false;
+  const float ps = element.attribute(QStringLiteral("point_size_px"), QStringLiteral("2")).toFloat(&ok);
+  if (ok) {
+    setPointSizePixels(ps);
+  }
+  const float nd = element.attribute(QStringLiteral("min_depth"), QStringLiteral("0")).toFloat(&ok);
+  if (ok) {
+    setMinDepth(nd);
+  }
+  const float fd = element.attribute(QStringLiteral("max_depth"), QStringLiteral("0")).toFloat(&ok);
+  if (ok) {
+    setMaxDepth(fd);
+  }
+  return true;
+}
+
+QWidget* DepthCloudLayer::createConfigWidget(QWidget* parent) {
+  auto* container = new QWidget(parent);
+  auto* outer = new QVBoxLayout(container);
+  outer->setContentsMargins(0, 0, 0, 0);
+  outer->setSpacing(6);
+  auto* form = new QFormLayout();
+  form->setContentsMargins(0, 0, 0, 0);
+  form->setSpacing(6);
+  outer->addLayout(form);
+
+  auto* colormap_combo = new PJ::ComboBox(container);
+  colormap_combo->addItem(QStringLiteral("turbo"), static_cast<int>(PointcloudRenderPass::Colormap::kTurbo));
+  colormap_combo->addItem(QStringLiteral("viridis"), static_cast<int>(PointcloudRenderPass::Colormap::kViridis));
+  colormap_combo->addItem(QStringLiteral("plasma"), static_cast<int>(PointcloudRenderPass::Colormap::kPlasma));
+  colormap_combo->addItem(QStringLiteral("grayscale"), static_cast<int>(PointcloudRenderPass::Colormap::kGrayscale));
+  colormap_combo->setCurrentIndex(static_cast<int>(colormap_));
+  form->addRow(tr("Colormap:"), colormap_combo);
+
+  auto* size_spin = new PJ::DoubleScrubber(container);
+  size_spin->setSuffix(QStringLiteral(" px"));
+  size_spin->setDecimals(1);
+  size_spin->setSingleStep(0.5);
+  size_spin->setRange(1.0, 32.0);
+  size_spin->setValue(static_cast<double>(point_size_px_));
+  form->addRow(tr("Point size:"), size_spin);
+
+  auto* min_spin = new PJ::DoubleScrubber(container);
+  min_spin->setSuffix(QStringLiteral(" m"));
+  min_spin->setDecimals(2);
+  min_spin->setSingleStep(0.1);
+  min_spin->setRange(0.0, 1000.0);
+  min_spin->setValue(static_cast<double>(min_depth_m_));
+  form->addRow(tr("Min depth:"), min_spin);
+
+  auto* max_spin = new PJ::DoubleScrubber(container);
+  max_spin->setSuffix(QStringLiteral(" m"));
+  max_spin->setDecimals(2);
+  max_spin->setSingleStep(0.1);
+  max_spin->setRange(0.0, 1000.0);  // 0 = no far clip
+  max_spin->setValue(static_cast<double>(max_depth_m_));
+  form->addRow(tr("Max depth:"), max_spin);
+
+  QObject::connect(
+      colormap_combo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this, colormap_combo](int) {
+        setColormap(static_cast<PointcloudRenderPass::Colormap>(colormap_combo->currentData().toInt()));
+      });
+  QObject::connect(size_spin, &PJ::DoubleScrubber::valueChanged, this, [this](double v) {
+    setPointSizePixels(static_cast<float>(v));
+  });
+  QObject::connect(
+      min_spin, &PJ::DoubleScrubber::valueChanged, this, [this](double v) { setMinDepth(static_cast<float>(v)); });
+  QObject::connect(
+      max_spin, &PJ::DoubleScrubber::valueChanged, this, [this](double v) { setMaxDepth(static_cast<float>(v)); });
+
+  return container;
+}
+
+std::optional<PJ::sdk::DepthImage> DepthCloudLayer::toDepthView(const Image& image, std::vector<uint8_t>& scratch) {
+  PJ::sdk::DepthImage view;
+  if (image.encoding == "16UC1" || image.encoding == "32FC1") {
+    view.width = image.width;
+    view.height = image.height;
+    view.encoding = image.encoding;
+    view.data = image.data;  // zero-copy view; the image's anchor keeps it alive
+    return view;
+  }
+  if (image.encoding == "compressedDepth") {
+    // PNG-decode (the 12-byte ROS header was already stripped by the parser, which
+    // also set compressed_depth_min/max). RealSense depth is 16UC1 (millimetres),
+    // so we read 16-bit grayscale directly. 32FC1 inverse-quantized compressedDepth
+    // is not yet handled (TODO: use compressed_depth_min/max + the quant params).
+    QImage png;
+    if (!png.loadFromData(image.data.data(), static_cast<int>(image.data.size()))) {
+      qCWarning(lcDepthCloudLayer) << "compressedDepth: PNG decode failed";
+      return std::nullopt;
+    }
+    if (png.format() != QImage::Format_Grayscale16) {
+      png = png.convertToFormat(QImage::Format_Grayscale16);
+    }
+    const int w = png.width();
+    const int h = png.height();
+    if (w <= 0 || h <= 0) {
+      return std::nullopt;
+    }
+    scratch.resize(static_cast<size_t>(w) * static_cast<size_t>(h) * 2U);
+    for (int y = 0; y < h; ++y) {
+      std::memcpy(scratch.data() + static_cast<size_t>(y) * w * 2U, png.constScanLine(y), static_cast<size_t>(w) * 2U);
+    }
+    view.width = static_cast<uint32_t>(w);
+    view.height = static_cast<uint32_t>(h);
+    view.encoding = "16UC1";  // decoded 16-bit depth in millimetres
+    view.data = PJ::Span<const uint8_t>(scratch.data(), scratch.size());
+    return view;
+  }
+  return std::nullopt;  // non-depth encoding
+}
+
+DepthIntrinsics DepthCloudLayer::resolveIntrinsics(const std::string& frame_id, int64_t time_ns) {
+  if (ctx_.session == nullptr) {
+    return {};
+  }
+  PJ::ObjectStore& store = ctx_.session->objectStore();
+
+  // Fast path: intrinsics for this frame_id are memoized and the CameraInfo that
+  // supplied them is unchanged at the playhead (same sample identity, verified
+  // without a parse). Calibration is latched/constant, so this skips re-scanning
+  // every topic and re-parsing every CameraInfo on each depth frame.
+  if (intrinsics_cache_.has_value() && intrinsics_cache_->frame_id == frame_id) {
+    const auto resolved = store.latestAt(intrinsics_cache_->camera_topic, time_ns);
+    if (resolved.has_value() &&
+        SampleId{resolved->timestamp, resolved->payload.bytes.size()} == intrinsics_cache_->camera_sample) {
+      return intrinsics_cache_->intr;
+    }
+  }
+
+  const PJ::DatasetId dataset_id = store.descriptor(topic_id_).dataset_id;
+
+  // frame_id is the authoritative join key between a depth image and its
+  // CameraInfo (matching Foxglove's frame_id rule / Rerun's camera hierarchy) —
+  // never the topic name. An exact frame_id match wins outright. Otherwise we may
+  // fall back to a lone CameraInfo, but ONLY when the choice is unambiguous (a
+  // single camera, or a frame-less image); with multiple cameras and no match we
+  // refuse rather than risk pairing the wrong camera's intrinsics.
+  std::optional<DepthIntrinsics> lone;  // the sole usable CameraInfo, if exactly one
+  PJ::ObjectTopicId lone_topic;         // its topic + sample identity, to memoize the fallback
+  SampleId lone_sample;
+  int valid_count = 0;
+  for (const PJ::ObjectTopicId id : store.listTopics()) {
+    const PJ::ObjectTopicDescriptor desc = store.descriptor(id);
+    if (desc.dataset_id != dataset_id || builtinObjectTypeFor(desc) != BuiltinObjectType::kCameraInfo) {
+      continue;
+    }
+    // latestAt() yields the CameraInfo sample at-or-before the playhead, which
+    // also covers the common latched/once-published calibration.
+    auto resolved = store.latestAt(id, time_ns);
+    if (!resolved.has_value()) {
+      continue;
+    }
+    const auto binding = ctx_.session->parserBindingForObjectTopic(id);
+    if (!binding) {
+      continue;
+    }
+    auto obj = parseLocked(binding, resolved->timestamp, resolved->payload);
+    if (!obj.has_value()) {
+      continue;
+    }
+    const auto* ci = std::any_cast<CameraInfo>(&obj->object);
+    if (ci == nullptr) {
+      continue;
+    }
+    const DepthIntrinsics intr = intrinsicsFromK(ci->K, ci->width, ci->height);
+    if (!intr.valid()) {
+      continue;
+    }
+    const SampleId sample{resolved->timestamp, resolved->payload.bytes.size()};
+    if (!frame_id.empty() && ci->frame_id == frame_id) {
+      intrinsics_cache_ = IntrinsicsCache{frame_id, id, sample, intr};  // exact match -> memoize
+      return intr;
+    }
+    ++valid_count;
+    lone = intr;  // remember in case it turns out to be the only one
+    lone_topic = id;
+    lone_sample = sample;
+  }
+
+  // No exact frame_id match. Use a lone CameraInfo only when unambiguous.
+  if (valid_count == 1 && lone.has_value()) {
+    if (!frame_id.empty()) {
+      qCDebug(lcDepthCloudLayer) << "no CameraInfo matches frame" << QString::fromStdString(frame_id)
+                                 << "; using the only CameraInfo present in the dataset";
+    }
+    intrinsics_cache_ = IntrinsicsCache{frame_id, lone_topic, lone_sample, *lone};  // lone fallback -> memoize
+    return *lone;
+  }
+  if (valid_count > 1) {
+    qCWarning(lcDepthCloudLayer) << "no CameraInfo matches frame" << QString::fromStdString(frame_id) << "and"
+                                 << valid_count << "cameras are present — refusing to guess intrinsics";
+  }
+  intrinsics_cache_.reset();  // refuse / none available -> never serve a stale memo
+  return {};                  // invalid -> renderAt() surfaces the user-facing warning
+}
+
+void DepthCloudLayer::renderAt(int64_t time_ns) {
+  if (ctx_.session == nullptr) {
+    return;
+  }
+  PJ::ObjectStore& store = ctx_.session->objectStore();
+  auto resolved = store.latestAt(topic_id_, time_ns);
+  if (!resolved.has_value() || resolved->payload.bytes.empty()) {
+    return;
+  }
+  const SampleId id{resolved->timestamp, resolved->payload.bytes.size()};
+  if (id == last_pushed_id_) {
+    return;  // same sample already on the GPU
+  }
+  const auto binding = ctx_.session->parserBindingForObjectTopic(topic_id_);
+  if (!binding) {
+    return;
+  }
+  auto obj = parseLocked(binding, resolved->timestamp, resolved->payload);
+  if (!obj.has_value()) {
+    qCWarning(lcDepthCloudLayer) << "renderAt parseObject failed:" << QString::fromStdString(obj.error());
+    return;
+  }
+  const auto* image = std::any_cast<Image>(&obj->object);
+  if (image == nullptr) {
+    return;
+  }
+  updateSourceFrame(image->frame_id);
+
+  std::vector<uint8_t> scratch;  // keeps decoded compressedDepth bytes alive through depthToPoints
+  const auto depth_view = toDepthView(*image, scratch);
+  if (!depth_view.has_value()) {
+    emit warningChanged(true, tr("Not a depth image (encoding '%1')").arg(QString::fromStdString(image->encoding)));
+    return;
+  }
+
+  const DepthIntrinsics intr = resolveIntrinsics(image->frame_id, time_ns);
+  if (!intr.valid()) {
+    qCWarning(lcDepthCloudLayer) << "renderAt: no CameraInfo intrinsics for frame"
+                                 << QString::fromStdString(image->frame_id);
+    emit warningChanged(
+        true, tr("No CameraInfo intrinsics for frame '%1'").arg(QString::fromStdString(image->frame_id)));
+    return;
+  }
+
+  BackprojectOptions opts;
+  opts.min_depth_m = min_depth_m_;
+  opts.max_depth_m = max_depth_m_;
+  std::vector<float> scalar;
+  AABB bounds;
+  PJ::Range<float> scalar_range{0.0f, 1.0f};
+  // One pass yields positions, depth scalars, the world AABB, and the colormap
+  // range together — no separate AABB or min/max sweep over the ~1 point/pixel.
+  std::vector<glm::vec3> points = depthToPoints(*depth_view, intr, opts, &scalar, &bounds, &scalar_range);
+
+  DecodedPointCloud decoded;
+  // No frame on the image -> place in the fixed frame so the geometry is visible.
+  decoded.frame_id = image->frame_id.empty() ? fixed_frame_.toStdString() : image->frame_id;
+  decoded.scalar_field_name = "depth";
+
+  world_bounds_ = bounds.valid ? std::optional<AABB>{bounds} : std::nullopt;
+  cloud_pass_.setColormapRange(scalar_range.min, scalar_range.max);
+
+  last_point_count_ = points.size();
+  decoded.positions = std::move(points);
+  decoded.scalar = std::move(scalar);
+  cloud_pass_.setActiveCloud(std::make_shared<DecodedPointCloud>(std::move(decoded)));
+
+  last_pushed_id_ = id;
+  emit warningChanged(false, QString());
+  emit repaintRequested();
+}
+
+void DepthCloudLayer::refreshNow() {
+  if (decoded_at_ns_.has_value()) {
+    renderAt(PJ::toRaw(*decoded_at_ns_));
+  } else if (ts_first_.has_value()) {
+    renderAt(*ts_first_);
+  }
+}
+
+void DepthCloudLayer::updateSourceFrame(const std::string& frame_id) {
+  if (frame_id == source_frame_) {
+    return;
+  }
+  source_frame_ = frame_id;
+  emit sourceFrameChanged(QString::fromStdString(source_frame_));
+  emit fallbackFramesChanged(fallbackFrames());
+}
+
+}  // namespace pj::scene3d

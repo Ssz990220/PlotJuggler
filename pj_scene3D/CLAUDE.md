@@ -2,9 +2,29 @@
 
 The purpose of this module is to implement 3D visualization of robotics data
 (TF, pointclouds, occupancy grids / costmaps, meshes / URDF robot models,
-scene entities (markers), and pose arrays (`PosesInFrame`, drawn as per-pose
-coordinate-triad gizmos)); paths and laserscans remain future work. Sibling
+scene entities (markers), pose arrays (`PosesInFrame`, drawn as per-pose
+coordinate-triad gizmos), and depth images back-projected into point clouds
+(`DepthCloudLayer`)); paths and laserscans remain future work. Sibling
 widget family to `pj_scene2D`.
+
+Depth images arrive as `sdk::Image` with a depth `encoding` (there is no
+`kDepthImage` producer — the parser can't distinguish depth from color at
+schema-classification time), so `DepthCloudLayer` is registered on `kImage` and
+the dock gates topics by peeking the first sample's `encoding`
+(`isDepthEncoding`). Intrinsics come from a `CameraInfo` joined to the image by
+**`frame_id`** — the authoritative key (never the topic name, matching Foxglove's
+`frame_id` rule / Rerun's camera hierarchy). An exact `frame_id` match wins; with
+no match `resolveIntrinsics` falls back to a lone `CameraInfo` only when
+unambiguous (a single camera, or a frame-less image) and otherwise refuses rather
+than pair the wrong camera. The back-projection math is the Qt-free core
+`depth_backproject.{h,cpp}`; the POC feeds the result through the existing
+`PointcloudRenderPass` (a GPU attributeless pass is a planned follow-up).
+
+Drag-drop: because depth and color share `kImage`, an empty-placeholder drop of
+*any* image opens the **2D** viewer (host policy in `pj_app`); a depth image
+reaches a 3D dock by being dropped onto an existing one (`addTopic`'s encoding
+gate absorbs depth, refuses color) or via the 3D family switch on an empty dock.
+A one-click "Open in 3D view" curve-list action is a planned convenience.
 
 The detailed set of requirements and goals lives in `pj_scene3D/docs/REQUIREMENTS.md`.
 You MUST read this file at the beginning of every section and after compacting.
@@ -130,7 +150,8 @@ Before any commit, run the tests and check that they all pass
 `aabb_axis_range_test`, `frame_picking_test`, `hud_overlay_test`,
 `poses_in_frame_render_test`, `poses_in_frame_layer_test`,
 `pointcloud_layer_cache_test`, `pointcloud_layer_rebind_test`,
-`pointcloud_layer_coalescing_test`, `camera_near_far_test`,
+`pointcloud_layer_coalescing_test`, `depth_backproject_test`,
+`depth_cloud_layer_test`, `scene3d_dock_depth_gate_test`, `camera_near_far_test`,
 `camera_zoom_to_cursor_test`, `camera_state_transfer_test`,
 `urdf_parser_test`, `urdf_package_resolver_test`, `mesh_loader_test`,
 `robot_model_bridges_test`, `robot_model_layer_test`,

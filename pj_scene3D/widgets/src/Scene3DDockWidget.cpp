@@ -30,12 +30,14 @@
 #include "pj_base/builtin/builtin_object.hpp"
 #include "pj_runtime/SessionManager.h"
 #include "pj_scene3d_core/tf/tf_buffer.h"
+#include "pj_scene3d_widgets/layers/depth_cloud_layer.h"
 #include "pj_scene3d_widgets/layers/occupancy_grid_layer.h"
 #include "pj_scene3d_widgets/layers/pointcloud_layer.h"
 #include "pj_scene3d_widgets/layers/poses_in_frame_layer.h"
 #include "pj_scene3d_widgets/layers/robot_model_layer.h"
 #include "pj_scene3d_widgets/layers/scene_entities_layer.h"
 #include "pj_scene3d_widgets/object_topic_metadata.h"
+#include "pj_scene3d_widgets/parse_locked.h"
 #include "pj_scene3d_widgets/scene_view_widget.h"
 #include "pj_scene3d_widgets/transform_service.h"
 #include "pj_widgets/ComboBox.h"
@@ -47,6 +49,7 @@ namespace PJ {
 namespace {
 Q_LOGGING_CATEGORY(lcScene3DDock, "pj.scene3d.dock")
 
+using pj::scene3d::DepthCloudLayer;
 using pj::scene3d::FrameRow;
 using pj::scene3d::OccupancyGridLayer;
 using pj::scene3d::PointCloudLayer;
@@ -106,6 +109,28 @@ int cameraModelFromString(const QString& name) {
   return frames.isEmpty() ? QString() : QString::fromStdString(frames.first().name);
 }
 
+// True when topic_id's first stored sample is an sdk::Image with a DEPTH encoding.
+// The kImage type alone can't distinguish depth from color, so the dock peeks the
+// first sample (the parser can't — classify_schema sees no payload) to offer only
+// depth images as DepthClouds. False when there is no sample yet or it can't decode.
+[[nodiscard]] bool firstSampleIsDepthEncoded(PJ::SessionManager& session, ObjectTopicId topic_id) {
+  PJ::ObjectStore& store = session.objectStore();
+  auto first = store.at(topic_id, static_cast<size_t>(0));
+  if (!first.has_value() || first->payload.bytes.empty()) {
+    return false;
+  }
+  const auto binding = session.parserBindingForObjectTopic(topic_id);
+  if (!binding) {
+    return false;
+  }
+  auto obj = pj::scene3d::parseLocked(binding, first->timestamp, first->payload);
+  if (!obj.has_value()) {
+    return false;
+  }
+  const auto* image = std::any_cast<PJ::sdk::Image>(&obj->object);
+  return image != nullptr && pj::scene3d::isDepthEncoding(image->encoding);
+}
+
 }  // namespace
 
 Scene3DDockWidget::Scene3DDockWidget(QWidget* parent) : SceneDockWidget(parent) {
@@ -125,6 +150,19 @@ Scene3DDockWidget::Scene3DDockWidget(QWidget* parent) : SceneDockWidget(parent) 
   };
   layerFactory().registerType(sdk::BuiltinObjectType::kPointCloud, pointcloud_factory);
   layerFactory().registerType(sdk::BuiltinObjectType::kCompressedPointCloud, pointcloud_factory);
+  // Depth image -> back-projected point cloud ("DepthCloud"). Depth arrives as
+  // sdk::Image with a depth encoding (no kDepthImage producer exists); addTopic()
+  // gates kImage topics so only depth-encoded ones become DepthClouds. Intrinsics
+  // come from a CameraInfo topic matched by frame_id; see DepthCloudLayer.
+  layerFactory().registerType(
+      sdk::BuiltinObjectType::kImage,
+      [this](ObjectTopicId topic_id, sdk::BuiltinObjectType object_type, const QString& display_name)
+          -> std::unique_ptr<ISceneLayer> {
+        prepareTransformBufferForTopic(topic_id);
+        auto layer = std::make_unique<DepthCloudLayer>(topic_id, display_name, object_type, this);
+        wireScene3DLayer(layer.get());
+        return layer;
+      });
   layerFactory().registerType(
       sdk::BuiltinObjectType::kRobotDescription,
       [this](ObjectTopicId topic_id, sdk::BuiltinObjectType /*object_type*/, const QString& display_name)
@@ -364,10 +402,20 @@ bool Scene3DDockWidget::handlesObjectType(sdk::BuiltinObjectType object_type) {
          object_type == sdk::BuiltinObjectType::kFrameTransforms ||
          object_type == sdk::BuiltinObjectType::kOccupancyGrid ||
          object_type == sdk::BuiltinObjectType::kRobotDescription ||
-         object_type == sdk::BuiltinObjectType::kSceneEntities || object_type == sdk::BuiltinObjectType::kPosesInFrame;
+         object_type == sdk::BuiltinObjectType::kSceneEntities ||
+         object_type == sdk::BuiltinObjectType::kPosesInFrame ||
+         // kImage is accepted only for DEPTH-encoded images; addTopic() peeks the
+         // first sample's encoding and rejects color images (which share kImage).
+         object_type == sdk::BuiltinObjectType::kImage;
 }
 
 bool Scene3DDockWidget::addTopic(ObjectTopicId topic_id, sdk::BuiltinObjectType object_type, const QString& title) {
+  // Interactive add (drop / family switch): enforce the kImage depth-encoding gate.
+  return addTopicImpl(topic_id, object_type, title, /*enforce_image_gate=*/true);
+}
+
+bool Scene3DDockWidget::addTopicImpl(
+    ObjectTopicId topic_id, sdk::BuiltinObjectType object_type, const QString& title, bool enforce_image_gate) {
   if (sessionManager() == nullptr) {
     qCWarning(lcScene3DDock) << "addTopic: session is null";
     return false;
@@ -377,6 +425,15 @@ bool Scene3DDockWidget::addTopic(ObjectTopicId topic_id, sdk::BuiltinObjectType 
   }
   if (!handlesObjectType(object_type)) {
     qCWarning(lcScene3DDock) << "addTopic: unsupported object_type" << static_cast<int>(object_type);
+    return false;
+  }
+  // Encoding gate: a kImage topic is a DepthCloud only when its samples are depth
+  // pixels. Color images share kImage and must not become 3D layers. Skipped on the
+  // restore path (enforce_image_gate=false): a saved DepthCloud layer was already
+  // validated as depth when created, and its first sample may not be loaded yet at
+  // restore time — gating on an absent sample would silently drop the layer (C1).
+  if (enforce_image_gate && object_type == sdk::BuiltinObjectType::kImage &&
+      !firstSampleIsDepthEncoded(*sessionManager(), topic_id)) {
     return false;
   }
 
@@ -1134,7 +1191,11 @@ bool Scene3DDockWidget::xmlLoadState(const QDomElement& element) {
         topic_id = *topic_id_opt;
       }
 
-      if (!addTopic(topic_id, *object_type_opt, display_name)) {
+      // Restore trusts the saved layer type: a persisted kImage layer was a
+      // DepthCloud when saved, and its first sample may not be loaded yet here, so
+      // the interactive depth-encoding gate must not run (it would silently drop the
+      // layer — C1). enforce_image_gate=false.
+      if (!addTopicImpl(topic_id, *object_type_opt, display_name, /*enforce_image_gate=*/false)) {
         if (local_layer) {
           local_robot_layer_ids_.erase(topic_id.id);
         }

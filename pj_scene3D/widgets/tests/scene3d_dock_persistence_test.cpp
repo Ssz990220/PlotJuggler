@@ -23,8 +23,14 @@
 #include <QDomDocument>
 #include <QDomElement>
 #include <QString>
+#include <array>
+#include <cstdint>
+#include <string_view>
+#include <vector>
 
+#include "mock_parser_support.h"
 #include "pj_base/builtin/builtin_object.hpp"
+#include "pj_base/builtin/image.hpp"
 #include "pj_base/dataset.hpp"
 #include "pj_datastore/object_store.hpp"
 #include "pj_runtime/SessionManager.h"
@@ -56,6 +62,50 @@ DatasetTopic registerTfDataset(
   const auto topic_or = session.objectStore().registerTopic(desc);
   EXPECT_TRUE(topic_or.has_value());
   EXPECT_TRUE(session.objectStore().pushOwned(*topic_or, 100, std::vector<uint8_t>{0x00}).has_value());
+  return {dataset_id, *topic_or};
+}
+
+using namespace pj::scene3d::test;
+
+constexpr std::string_view kImageSchema = "mock/image";
+const std::array<float, 4> kDepthPixels = {1.0f, 2.0f, 3.0f, 4.0f};
+
+// A mock depth parser: ignores the payload and always yields a 32FC1 (depth) Image,
+// so firstSampleIsDepthEncoded sees "depth" whenever a sample exists.
+PJ::Expected<PJ::sdk::ObjectRecord> emitDepthImage(PJ::Timestamp ts, PJ::sdk::PayloadView /*p*/) {
+  PJ::sdk::Image img;
+  img.width = 2;
+  img.height = 2;
+  img.encoding = "32FC1";
+  img.frame_id = "cam";
+  img.timestamp_ns = ts;
+  img.data = PJ::Span<const uint8_t>(reinterpret_cast<const uint8_t*>(kDepthPixels.data()), kDepthPixels.size() * 4U);
+  return PJ::sdk::ObjectRecord{.ts = ts, .object = img};
+}
+
+// Like registerTfDataset, but for a depth-encoded kImage topic: registers a depth
+// parser and, only when push_sample is true, pushes one sample. With
+// push_sample=false the topic resolves (findTopic) but the ObjectStore holds no
+// entry to peek — the "layout restored before the first frame arrives" case.
+DatasetTopic registerDepthDataset(
+    PJ::SessionManager& session, const std::string& source_name, const std::string& topic_name, bool push_sample) {
+  auto dataset_or =
+      session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = source_name, .time_domain_id = 0});
+  EXPECT_TRUE(dataset_or.has_value());
+  const PJ::DatasetId dataset_id = *dataset_or;
+
+  PJ::ObjectTopicDescriptor desc;
+  desc.dataset_id = dataset_id;
+  desc.topic_name = topic_name;
+  desc.metadata_json = R"({"builtin_object_type":"kImage"})";
+  const auto topic_or = session.objectStore().registerTopic(desc);
+  EXPECT_TRUE(topic_or.has_value());
+  if (push_sample) {
+    EXPECT_TRUE(session.objectStore().pushOwned(*topic_or, 100, std::vector<uint8_t>{0x01}).has_value());
+  }
+  session.registerObjectTopicParser(*topic_or, makeBoundHandle(kImageSchema, []() noexcept -> void* {
+    return new CountingObjectParser(kImageSchema, PJ::sdk::BuiltinObjectType::kImage, nullptr, &emitDepthImage);
+  }));
   return {dataset_id, *topic_or};
 }
 
@@ -152,6 +202,42 @@ TEST(Scene3DDockPersistence, ExplicitFixedFrameSurvivesZeroLayerRestore) {
   EXPECT_FALSE(dock.isAutoRootMode()) << "explicit fixed-frame mode must survive restore (M.19)";
   ASSERT_NE(dock.sceneView(), nullptr) << "restore must force the lazily-created view";
   EXPECT_EQ(dock.currentFixedFrame(), QStringLiteral("map"));
+}
+
+// C1 regression: a saved DepthCloud (kImage) layer must restore even when its
+// topic has no stored sample yet — the layout was applied before the first frame
+// arrived (streaming, or a still-loading file). The interactive add path gates
+// kImage on the first sample's encoding (firstSampleIsDepthEncoded), but on restore
+// there may be no sample to peek; the layer was already validated as depth when the
+// user created it, so restore must trust the saved type, not silently drop it (the
+// drop was also invisible: unresolved_topics counts only dataset/topic-id
+// resolution failures, which both succeeded here).
+TEST(Scene3DDockPersistence, DepthCloudLayerRestoresBeforeFirstSample) {
+  PJ::SessionManager session;
+  pj::scene3d::TransformService transform_service(session);
+  // Topic resolves (dataset + topic registered, parser bound) but no sample yet.
+  const DatasetTopic topic = registerDepthDataset(session, "cam.dat", "/cam/depth/image", /*push_sample=*/false);
+
+  // Hand-built saved state: one kImage (DepthCloud) layer, resolvable by source.
+  QDomDocument doc;
+  QDomElement state = doc.createElement(QStringLiteral("scene3d"));
+  state.setAttribute(QStringLiteral("version"), QStringLiteral("1"));
+  QDomElement layer_el = doc.createElement(QStringLiteral("layer"));
+  layer_el.setAttribute(QStringLiteral("object_type"), QStringLiteral("kImage"));
+  layer_el.setAttribute(QStringLiteral("display_name"), QStringLiteral("depth"));
+  layer_el.setAttribute(QStringLiteral("dataset_id"), QString::number(topic.dataset_id));
+  layer_el.setAttribute(QStringLiteral("dataset_source"), QStringLiteral("cam.dat"));
+  layer_el.setAttribute(QStringLiteral("topic_name"), QStringLiteral("/cam/depth/image"));
+  state.appendChild(layer_el);
+  doc.appendChild(state);
+
+  PJ::Scene3DDockWidget dock;
+  dock.setSessionManager(&session);
+  dock.setTransformService(&transform_service);
+  ASSERT_TRUE(dock.xmlLoadState(state));
+
+  EXPECT_EQ(dock.layers().size(), 1U) << "a saved DepthCloud layer must restore even before its first sample arrives "
+                                         "(the encoding gate belongs to the interactive add path, not restore)";
 }
 
 }  // namespace

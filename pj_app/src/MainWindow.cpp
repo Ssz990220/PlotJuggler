@@ -431,12 +431,19 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
         //   2D-ish (kImage/kDepthImage/kImageAnnotations/kSceneEntities/kVideoFrame) → scene2d
         QString resolved_kind = kind;
         if (resolved_kind.isEmpty() && seed != nullptr) {
-          // Classify the dropped object into a scene kind. kSceneEntities is both
-          // 2D and 3D; is3d wins here (markers are primarily 3D), but a 2D dock
-          // still accepts markers dropped onto an existing scene. Neither → "".
-          resolved_kind = is3dSceneObjectType(seed->object_type)   ? QStringLiteral("scene3d")
-                          : is2dSceneObjectType(seed->object_type) ? QStringLiteral("scene2d")
-                                                                   : QString();
+          // Classify the dropped object into a scene kind.
+          //  - Image-family types (incl. depth-encoded kImage) open the 2D viewer
+          //    on a placeholder drop. A depth image is also hostable in 3D, but
+          //    depth→3D is an explicit action (drop onto an existing 3D dock, or
+          //    "Open in 3D view"); routing 2D-first also means a *color* image is
+          //    never auto-routed to a 3D dock that would then reject it.
+          //  - kSceneEntities is both 2D and 3D; is3d wins (markers are primarily
+          //    3D), but a 2D dock still accepts markers dropped onto it.
+          //  - Neither → "".
+          resolved_kind = isImageFamilyObjectType(seed->object_type) ? QStringLiteral("scene2d")
+                          : is3dSceneObjectType(seed->object_type)   ? QStringLiteral("scene3d")
+                          : is2dSceneObjectType(seed->object_type)   ? QStringLiteral("scene2d")
+                                                                     : QString();
         }
         if (seed == nullptr) {
           // Restore / click-create path: build the empty dock and seed its
