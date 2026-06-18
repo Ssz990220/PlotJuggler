@@ -320,8 +320,25 @@ std::optional<PJ::sdk::DepthImage> DepthCloudLayer::toDepthView(const Image& ima
     // also set compressed_depth_min/max). RealSense depth is 16UC1 (millimetres),
     // so we read 16-bit grayscale directly. 32FC1 inverse-quantized compressedDepth
     // is not yet handled (TODO: use compressed_depth_min/max + the quant params).
+    //
+    // Some streams (e.g. RealSense bags) carry a BARE PNG that begins at the IHDR
+    // chunk type, missing the 8-byte signature + the IHDR length field; restore them
+    // so QImage accepts it (mirrors the 2D depth path's toDepthImage). Without this,
+    // QImage rejects the payload and the layer reports "Not a depth image".
+    static constexpr uchar kPngPrefix[] = {0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D};
+    const uchar* png_data = image.data.data();
+    int png_size = static_cast<int>(image.data.size());
+    std::vector<uchar> repaired;
+    if (image.data.size() >= 4 && png_data[0] == 'I' && png_data[1] == 'H' && png_data[2] == 'D' &&
+        png_data[3] == 'R') {
+      repaired.reserve(sizeof(kPngPrefix) + image.data.size());
+      repaired.insert(repaired.end(), kPngPrefix, kPngPrefix + sizeof(kPngPrefix));
+      repaired.insert(repaired.end(), png_data, png_data + image.data.size());
+      png_data = repaired.data();
+      png_size = static_cast<int>(repaired.size());
+    }
     QImage png;
-    if (!png.loadFromData(image.data.data(), static_cast<int>(image.data.size()))) {
+    if (!png.loadFromData(png_data, png_size)) {
       qCWarning(lcDepthCloudLayer) << "compressedDepth: PNG decode failed";
       return std::nullopt;
     }

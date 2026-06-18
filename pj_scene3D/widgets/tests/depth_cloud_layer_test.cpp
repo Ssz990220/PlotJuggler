@@ -10,7 +10,10 @@
 
 #include <gtest/gtest.h>
 
+#include <QBuffer>
+#include <QByteArray>
 #include <QCoreApplication>
+#include <QImage>
 #include <array>
 #include <cstdint>
 #include <optional>
@@ -66,6 +69,42 @@ PJ::Expected<PJ::sdk::ObjectRecord> emitCameraInfo(PJ::Timestamp ts, PJ::sdk::Pa
   ci.timestamp_ns = ts;
   ci.K = {100.0, 0.0, 0.5, 0.0, 100.0, 0.5, 0.0, 0.0, 1.0};  // fx=fy=100, cx=cy=0.5
   return PJ::sdk::ObjectRecord{.ts = ts, .object = ci};
+}
+
+// A 2x2 16-bit-grayscale PNG carrying kDepthsM in millimetres, STRIPPED of its
+// 8-byte signature + 4-byte IHDR length so it begins at the "IHDR" chunk type —
+// the headerless shape RealSense compressedDepth leaves after the parser. Built
+// once; the returned bytes back a long-lived Span.
+const std::vector<uint8_t>& barePngDepthBytes() {
+  static const std::vector<uint8_t> bytes = [] {
+    QImage img(2, 2, QImage::Format_Grayscale16);
+    for (int y = 0; y < 2; ++y) {
+      auto* line = reinterpret_cast<uint16_t*>(img.scanLine(y));
+      for (int x = 0; x < 2; ++x) {
+        line[x] = static_cast<uint16_t>(kDepthsM[y * 2 + x] * 1000.0f);  // metres -> mm
+      }
+    }
+    QByteArray png;
+    QBuffer buf(&png);
+    buf.open(QIODevice::WriteOnly);
+    img.save(&buf, "PNG");
+    buf.close();
+    const QByteArray bare = png.mid(12);  // drop 8-byte signature + 4-byte IHDR length
+    return std::vector<uint8_t>(bare.begin(), bare.end());
+  }();
+  return bytes;
+}
+
+PJ::Expected<PJ::sdk::ObjectRecord> emitCompressedDepthImage(PJ::Timestamp ts, PJ::sdk::PayloadView /*payload*/) {
+  const std::vector<uint8_t>& png = barePngDepthBytes();
+  PJ::sdk::Image img;
+  img.width = 2;
+  img.height = 2;
+  img.encoding = "compressedDepth";
+  img.frame_id = "cam";
+  img.timestamp_ns = ts;
+  img.data = PJ::Span<const uint8_t>(png.data(), png.size());
+  return PJ::sdk::ObjectRecord{.ts = ts, .object = img};
 }
 
 // A depth image in a chosen frame (function pointers can't capture, so the frame
@@ -143,6 +182,48 @@ TEST(DepthCloudLayer, BackProjects32FC1UsingCameraInfoIntrinsics) {
   ASSERT_TRUE(layer.attach(ctx));
 
   // attach() renders the first sample: 4 valid pixels -> 4 back-projected points.
+  EXPECT_EQ(layer.lastPushedStampForTest(), std::optional<int64_t>{100});
+  EXPECT_EQ(layer.lastPointCountForTest(), 4U);
+  EXPECT_EQ(layer.sourceFrameForTest(), QStringLiteral("cam"));
+}
+
+// RealSense compressedDepth arrives as a BARE PNG (no signature). toDepthView must
+// restore the signature before decoding, or QImage rejects it and the layer reports
+// "Not a depth image". Regression for that fringe — without the repair this yields 0
+// points.
+TEST(DepthCloudLayer, BackProjectsBarePngCompressedDepth) {
+  // The fixture really is headerless (begins at the IHDR chunk type, no signature).
+  const std::vector<uint8_t>& png = barePngDepthBytes();
+  ASSERT_GE(png.size(), 4U);
+  EXPECT_EQ(png[0], 'I');
+  EXPECT_EQ(png[1], 'H');
+  EXPECT_EQ(png[2], 'D');
+  EXPECT_EQ(png[3], 'R');
+
+  PJ::SessionManager session;
+  PJ::ObjectStore& store = session.objectStore();
+
+  const PJ::ObjectTopicId depth = registerTypedTopic(store, "/cam/depth/image", "kImage");
+  const PJ::ObjectTopicId info = registerTypedTopic(store, "/cam/depth/camera_info", "kCameraInfo");
+  ASSERT_TRUE(store.pushOwned(depth, 100, std::vector<uint8_t>{0x01}).has_value());
+  ASSERT_TRUE(store.pushOwned(info, 100, std::vector<uint8_t>{0x02}).has_value());
+
+  session.registerObjectTopicParser(depth, makeBoundHandle(kDepthSchema, []() noexcept -> void* {
+                                      return new CountingObjectParser(
+                                          kDepthSchema, PJ::sdk::BuiltinObjectType::kImage, nullptr,
+                                          &emitCompressedDepthImage);
+                                    }));
+  session.registerObjectTopicParser(
+      info, makeBoundHandle(kInfoSchema, []() noexcept -> void* {
+        return new CountingObjectParser(kInfoSchema, PJ::sdk::BuiltinObjectType::kCameraInfo, nullptr, &emitCameraInfo);
+      }));
+
+  pj::scene3d::Scene3DLayerContext ctx;
+  ctx.session = &session;
+  pj::scene3d::DepthCloudLayer layer(depth, QStringLiteral("depth"), PJ::sdk::BuiltinObjectType::kImage);
+  ASSERT_TRUE(layer.attach(ctx));
+
+  // The bare PNG decodes (16UC1 mm) and back-projects to 4 points (== the 32FC1 case).
   EXPECT_EQ(layer.lastPushedStampForTest(), std::optional<int64_t>{100});
   EXPECT_EQ(layer.lastPointCountForTest(), 4U);
   EXPECT_EQ(layer.sourceFrameForTest(), QStringLiteral("cam"));
