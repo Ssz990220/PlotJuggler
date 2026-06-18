@@ -224,7 +224,7 @@ A ROS2 MCAP file (provided by the user) containing at minimum:
 - **TF axes**: one XYZ axis triad (red = X, green = Y, blue = Z) per frame in the active dataset's TF buffer. Fixed world-space size (per-widget uniform, e.g., 0.3 m). No name labels. No parent-to-child connecting lines.
 - **Origin grid**: a 10×10 grid of 1-metre squares on the ground plane (Z = 0) at the world origin, drawn in a subdued color. Always visible in Phase 1 (no per-widget toggle yet). Renders in the fixed-frame (i.e., translates/rotates with whichever frame the user selects as fixed).
 - **Pointcloud**: rendered as `GL_POINTS` (single VBO, no LOD), in its source frame, re-transformed to the widget's fixed-frame each frame via the TF buffer.
-- **Pointcloud coloring**: a per-display dropdown selects the source scalar field from `{ X, Y, Z, intensity, ring }`. The dropdown is populated by inspecting the first decoded cloud's `fields` schema (the `timestamp` field is explicitly ignored). The selected field drives a **Turbo colormap**. For a **spatial axis (X/Y/Z)** the colormap input is the coordinate in the **fixed frame**, computed on the GPU from the same source→fixed transform that places the geometry — so sensors at different mounts agree on world height (the raw x/y/z field is sensor-local). Its auto-range is derived per frame from the cloud's source-AABB transformed by that live model, so colour and range track TF motion without a re-decode. Non-spatial fields (intensity, ring, …) colour by the raw per-point value and auto-fit to the cloud's min/max; both spatial and non-spatial ranges are held across tracker scrub so colors stay stable.
+- **Pointcloud coloring**: a per-display dropdown selects the source scalar field from `{ X, Y, Z, intensity, ring }`. The dropdown is populated by inspecting the first decoded cloud's `fields` schema (the `timestamp` field is explicitly ignored). The selected field drives a **colormap** — Phase 1 shipped Turbo only; the current build offers the shared `PJ::Colormap` set (turbo / viridis / plasma / grayscale, from `pj_widgets/Colormap.h`, the same colors as the 2D depth view). For a **spatial axis (X/Y/Z)** the colormap input is the coordinate in the **fixed frame**, computed on the GPU from the same source→fixed transform that places the geometry — so sensors at different mounts agree on world height (the raw x/y/z field is sensor-local). Its auto-range is derived per frame from the cloud's source-AABB transformed by that live model, so colour and range track TF motion without a re-decode. Non-spatial fields (intensity, ring, …) colour by the raw per-point value and auto-fit to the cloud's min/max; both spatial and non-spatial ranges are held across tracker scrub so colors stay stable.
 
 ### Phase 1 UI
 
@@ -252,6 +252,12 @@ The demo passes Phase 1 when, on the user-provided MCAP, all of the following ho
 ### Explicitly out of Phase 1
 
 assimp, URDF, tinyply, PCD reader, RGB-direct color mode, additional colormaps beyond Turbo, display-frame, follow-mode, TF Frames panel, picking, measurement, click-to-publish, gridmaps, paths, laserscans, integration into `pj_app` (the Phase 1 demo is a standalone binary, mirroring `pj_scene2D/demos/`).
+
+> **Note (post–Phase 1):** several of the above have since shipped — URDF/mesh
+> models (assimp), occupancy grids, the additional colormaps, depth-image
+> back-projection (`DepthCloudLayer`), and full `pj_app` integration. This list
+> is the historical Phase-1 boundary; for the current as-built feature set see
+> `CLAUDE.md` and `ARCHITECTURE.md`.
 
 ## 14. Stack (locked)
 

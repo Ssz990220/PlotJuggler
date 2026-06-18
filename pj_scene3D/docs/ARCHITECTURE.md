@@ -207,6 +207,42 @@ desaturated X/Y/Z colors match the TF "Frames" gizmos.
   text and layout (picking a color auto-ticks the box) for cross-layer consistency.
   No host edits.
 
+## Depth-cloud layer (`DepthCloudLayer`)
+
+Back-projects a depth image into a 3D point cloud (one point per valid pixel),
+colored by depth. Sibling of the 2D depth view — same data, different geometry.
+
+- **No `kDepthImage` producer.** Depth arrives as an `sdk::Image` with a depth
+  `encoding`; the parser can't tell depth from color at schema-classification
+  time. So `DepthCloudLayer` is registered on `kImage` and the dock **gates** a
+  topic by peeking the first sample's `encoding`
+  (`isDepthEncoding`: `16UC1` / `32FC1` / `compressedDepth`) — color images are
+  refused. Because the two share `kImage`, an empty-placeholder image drop opens
+  the **2D** viewer (host policy in `pj_app`); a depth image reaches a 3D dock by
+  being dropped onto an existing one or via the 3D family switch.
+- **Decode (`toDepthView`).** `16UC1`/`32FC1` alias the image bytes (zero-copy).
+  `compressedDepth` is PNG-decoded via `QImage` to a `16UC1` (millimetre) view —
+  including a **bare-PNG signature repair**: RealSense bags carry a headerless PNG
+  that begins at the `IHDR` chunk, so the 8-byte signature + IHDR length are
+  restored before decode (mirrors the 2D path's `toDepthImage`; the matching
+  parser-side ConfigHeader handling is `parser_ros`). 32FC1 inverse-quantized
+  compressedDepth is not yet handled.
+- **Intrinsics by `frame_id`.** A `CameraInfo` is joined to the image by
+  **`frame_id`** (authoritative, never the topic name — matches Foxglove's rule /
+  Rerun's camera hierarchy). An exact match wins; with none, `resolveIntrinsics`
+  falls back to a lone `CameraInfo` only when unambiguous, else refuses rather
+  than pair the wrong camera. The result is memoized by `(frame_id, CameraInfo
+  SampleId)` and revalidated parse-free via `latestAt`.
+- **Back-projection.** The math is the Qt-free core `depth_backproject.{h,cpp}`
+  (`depthToPoints` / `depthToColoredPoints`); a single pass yields positions, the
+  per-point depth scalar, the world AABB, and the colormap range together.
+- **Render + color.** The POC feeds the points through the existing
+  `PointcloudRenderPass` (a dedicated GPU attributeless / `texelFetch` pass is a
+  planned follow-up). Depth is colored through the **shared** `PJ::Colormap`
+  (turbo / viridis / plasma / grayscale, `pj_widgets/Colormap.h`) — the same
+  source of truth as the 2D depth view and the pointcloud field coloring.
+- **Config.** Per-layer colormap, point size, and a min/max depth range.
+
 ## URDF / robot-model subsystem
 
 - **Parser** (`widgets/src/urdf_parser.{h,cpp}`): `QDomDocument`-based;
