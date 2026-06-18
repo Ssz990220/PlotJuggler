@@ -132,6 +132,12 @@ class PlotWidget : public PlotWidgetBase {
   // resulting filtered curve(s) to this plot.
   void launchFilterEditor();
   void setAxisScale(QwtAxisId axis_id, double min, double max);
+  // The representative per-dataset display offset (in seconds) for this plot's
+  // time axis: the offset of the first datastore-backed curve's dataset. Used to
+  // convert the saved X-axis range between display-relative and absolute time at
+  // the layout save/load boundary (xmlSaveState/xmlLoadState). Returns 0 when
+  // there is no session or no datastore-backed curve — then display == absolute.
+  [[nodiscard]] double displayOffsetSeconds() const;
   void reconnectDataSignals();
   [[nodiscard]] QStringList decodeCurveDrop(const QMimeData* mime_data, const QString& format) const;
   [[nodiscard]] bool allCurvesKnown(const QStringList& curves) const;

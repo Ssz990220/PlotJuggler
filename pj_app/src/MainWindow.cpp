@@ -140,7 +140,11 @@ constexpr auto kLastLayoutDirKey = "MainWindow.lastLayoutDirectory";
 // v2: curves identified by stable topic+field path (rebound per-dataset on
 // load) instead of the opaque per-load catalog key; <root binding=...> marks
 // generic vs source-bound layouts.
-constexpr int kLayoutSchemaVersion = 2;
+// v3: per-plot <range> stores the X (time) axis in ABSOLUTE seconds, flagged
+// x_absolute="true" (an older binary would misread it as display-relative); the
+// global toolbar toggles + panel visibility are no longer serialized (they are
+// QSettings-only app preferences, not document state).
+constexpr int kLayoutSchemaVersion = 3;
 constexpr double kTwoPi = 6.28318530717958647692;
 constexpr int kTestSampleCount = 1000;
 constexpr double kTestDurationSeconds = 10.0;
@@ -2553,11 +2557,10 @@ QDomElement MainWindow::appendDataSourceElement(QDomDocument& doc, const QDir& l
 QDomElement MainWindow::saveRightPanelState(QDomDocument& doc) const {
   QDomElement element = doc.createElement(QStringLiteral("right_panel_state"));
 
-  if (ui_->localToolbarWidget != nullptr) {
-    element.setAttribute(
-        QStringLiteral("visible"),
-        ui_->localToolbarWidget->isVisible() ? QStringLiteral("true") : QStringLiteral("false"));
-  }
+  // The right panel's open/closed state (the panel-visibility toggle button) is
+  // an app-wide QSettings preference, NOT document state, so it is deliberately
+  // not serialized into the layout/undo snapshot. Only the panel's geometry and
+  // curve width/style live here.
 
   // Curve Width: the radio's checkedId is a loop index (0..3); map it
   // back to the canonical double via kWidthButtonSpecs so we encode the
@@ -2592,35 +2595,12 @@ QDomElement MainWindow::saveRightPanelState(QDomDocument& doc) const {
   return element;
 }
 
-void MainWindow::applyPanelVisibility(QWidget* target, bool wanted) {
-  if (target == nullptr || target->isVisible() == wanted) {
-    return;
-  }
-  const auto toggles = panelToggles(ui_);
-  for (const PanelToggle& t : toggles) {
-    if (t.target != target) {
-      continue;
-    }
-    t.target->setVisible(wanted);
-    const QString icon = QString::fromLatin1(wanted ? t.icon_path_on : t.icon_path_off);
-    t.button->setProperty("iconPath", icon);
-    t.button->setIcon(loadSvg(icon, theme_->currentTheme()));
-    return;
-  }
-}
-
 void MainWindow::restoreRightPanelState(const QDomElement& element) {
   if (element.isNull() || element.tagName() != QStringLiteral("right_panel_state")) {
     return;
   }
 
-  // Visibility: re-create the side-effects of a button click (toggle
-  // target + swap icon) without writing to QSettings. Diff-against-
-  // current avoids needless flips.
-  if (element.hasAttribute(QStringLiteral("visible"))) {
-    const bool wanted = element.attribute(QStringLiteral("visible")) == QStringLiteral("true");
-    applyPanelVisibility(ui_->localToolbarWidget, wanted);
-  }
+  // Panel visibility is intentionally not restored (see saveRightPanelState).
 
   // Curve Width: look up the button whose canonical value fuzzy-matches
   // the layout's stored value. Block group signals so the idClicked
@@ -2683,16 +2663,9 @@ void MainWindow::restoreRightPanelState(const QDomElement& element) {
 QDomElement MainWindow::saveChromeState(QDomDocument& doc) const {
   QDomElement element = doc.createElement(QStringLiteral("chrome_state"));
 
-  if (ui_->leftColumn != nullptr) {
-    element.setAttribute(
-        QStringLiteral("left_visible"),
-        ui_->leftColumn->isVisible() ? QStringLiteral("true") : QStringLiteral("false"));
-  }
-  if (ui_->timelineStrip != nullptr) {
-    element.setAttribute(
-        QStringLiteral("bottom_visible"),
-        ui_->timelineStrip->isVisible() ? QStringLiteral("true") : QStringLiteral("false"));
-  }
+  // The left/bottom panel-visibility toggle buttons are app-wide QSettings
+  // preferences, NOT document state, so their open/closed state is deliberately
+  // not serialized here. Only the splitter geometry below is persisted.
 
   const auto join_sizes = [](QSplitter* splitter) {
     QStringList parts;
@@ -2719,23 +2692,8 @@ void MainWindow::restoreChromeState(const QDomElement& element) {
     return;
   }
 
-  if (element.hasAttribute(QStringLiteral("left_visible"))) {
-    const bool wanted = element.attribute(QStringLiteral("left_visible")) == QStringLiteral("true");
-    applyPanelVisibility(ui_->leftColumn, wanted);
-  }
-  if (element.hasAttribute(QStringLiteral("bottom_visible"))) {
-    const bool wanted = element.attribute(QStringLiteral("bottom_visible")) == QStringLiteral("true");
-    applyPanelVisibility(ui_->timelineStrip, wanted);
-    // Replay the bottom-panel splitter clamp the click handler does so
-    // the user can't drag the splitter handle to re-introduce empty
-    // space below the playback bar when the strip is hidden. timeline_
-    // splitter_sizes (if present) is applied below and supersedes this.
-    if (!wanted && ui_->bottomPanel != nullptr && ui_->timelineWidget != nullptr) {
-      ui_->bottomPanel->setMaximumHeight(ui_->timelineWidget->minimumHeight());
-    } else if (wanted && ui_->bottomPanel != nullptr) {
-      ui_->bottomPanel->setMaximumHeight(QWIDGETSIZE_MAX);
-    }
-  }
+  // Panel visibility is intentionally not restored (see saveChromeState).
+  // Only the splitter geometry below is applied.
 
   // Splitter sizes: only apply when parsed length matches the splitter's
   // widget count. Mismatch -> silent no-op.
@@ -2806,33 +2764,13 @@ QDomDocument MainWindow::xmlSaveState() const {
 
   root.appendChild(ui_->tabbedPlotWidget->xmlSaveState(doc));
 
-  QDomElement link_x = doc.createElement(QStringLiteral("link_x"));
-  link_x.setAttribute(
-      QStringLiteral("enabled"), button_link_->isChecked() ? QStringLiteral("true") : QStringLiteral("false"));
-  root.appendChild(link_x);
-
-  const auto bool_attr = [](bool v) { return v ? QStringLiteral("true") : QStringLiteral("false"); };
-  QDomElement show_points = doc.createElement(QStringLiteral("show_points"));
-  show_points.setAttribute(QStringLiteral("enabled"), bool_attr(button_show_point_->isChecked()));
-  root.appendChild(show_points);
-  QDomElement legend_status = doc.createElement(QStringLiteral("legend_status"));
-  legend_status.setAttribute(QStringLiteral("value"), QString::number(static_cast<int>(legend_status_)));
-  root.appendChild(legend_status);
-  QDomElement activate_grid = doc.createElement(QStringLiteral("activate_grid"));
-  activate_grid.setAttribute(QStringLiteral("enabled"), bool_attr(button_grid_->isChecked()));
-  root.appendChild(activate_grid);
-  QDomElement dots = doc.createElement(QStringLiteral("dots"));
-  dots.setAttribute(QStringLiteral("enabled"), bool_attr(button_dots_->isChecked()));
-  root.appendChild(dots);
-  QDomElement tracker_info = doc.createElement(QStringLiteral("tracker_info"));
-  tracker_info.setAttribute(QStringLiteral("value"), QString::number(static_cast<int>(tracker_info_)));
-  root.appendChild(tracker_info);
-  QDomElement ratio = doc.createElement(QStringLiteral("ratio"));
-  ratio.setAttribute(QStringLiteral("enabled"), bool_attr(button_ratio_->isChecked()));
-  root.appendChild(ratio);
-  QDomElement use_time_offset = doc.createElement(QStringLiteral("use_time_offset"));
-  use_time_offset.setAttribute(QStringLiteral("enabled"), bool_attr(button_t0_->isChecked()));
-  root.appendChild(use_time_offset);
+  // The global toolbar toggles (link X, show-point, legend, grid, dots, tracker
+  // mode, 1:1 ratio, "Use time offset") are deliberately NOT serialized here.
+  // They are app-wide UI preferences persisted in QSettings, not document state,
+  // so neither a layout file nor any undo/redo snapshot (which shares this
+  // serializer) carries them. This is also what lets the per-plot <range> store
+  // ABSOLUTE time safely: the restored range frames the right instant no matter
+  // which way the "Use time offset" toggle is set when the layout is loaded.
 
   // Data-Processor filters are workspace/data state, so they belong in THE snapshot
   // used by undo/redo (not just layout save). Without this, undoing across a filter's
@@ -2871,74 +2809,11 @@ bool MainWindow::xmlLoadState(const QDomDocument& state_document) {
   }
   wireExistingPlots();
 
-  const QDomElement link_x = root.firstChildElement(QStringLiteral("link_x"));
-  if (!link_x.isNull()) {
-    button_link_->setChecked(
-        link_x.attribute(QStringLiteral("enabled"), QStringLiteral("true")) == QStringLiteral("true") ||
-        link_x.attribute(QStringLiteral("enabled")) == QStringLiteral("1"));
-  }
-
-  // Toggle states: read attributes, write QSettings, set button check
-  // state. applying_state_ is true around this whole call, so the
-  // toggled lambdas no-op — we apply once at the end via forEachPlot.
-  const auto read_bool = [](const QDomElement& e, bool fallback) {
-    if (e.isNull()) {
-      return fallback;
-    }
-    const QString v = e.attribute(QStringLiteral("enabled"));
-    return v == QStringLiteral("true") || v == QStringLiteral("1");
-  };
-  const QDomElement show_points = root.firstChildElement(QStringLiteral("show_points"));
-  const QDomElement activate_grid = root.firstChildElement(QStringLiteral("activate_grid"));
-  const QDomElement dots = root.firstChildElement(QStringLiteral("dots"));
-  const QDomElement legend_status = root.firstChildElement(QStringLiteral("legend_status"));
-  if (!show_points.isNull()) {
-    show_points_ = read_bool(show_points, show_points_);
-    button_show_point_->setChecked(show_points_);
-    QSettings().setValue(QStringLiteral("MainWindow.buttonShowpoint"), show_points_);
-  }
-  if (!activate_grid.isNull()) {
-    activate_grid_ = read_bool(activate_grid, activate_grid_);
-    button_grid_->setChecked(activate_grid_);
-    QSettings().setValue(QStringLiteral("MainWindow.buttonActivateGrid"), activate_grid_);
-  }
-  if (!dots.isNull()) {
-    dots_ = read_bool(dots, dots_);
-    button_dots_->setChecked(dots_);
-    QSettings().setValue(QStringLiteral("MainWindow.buttonDots"), dots_);
-  }
-  const QDomElement use_time_offset = root.firstChildElement(QStringLiteral("use_time_offset"));
-  if (!use_time_offset.isNull()) {
-    const bool enabled = read_bool(use_time_offset, session_->sessionManager().useTimeOffset());
-    // On the file-load path applying_state_ is false, so setChecked fires the
-    // toggled slot (its own re-seed + plot re-fit) and the setUseTimeOffset below
-    // is a no-op. On undo/redo (applying_state_ true) the slot is suppressed and
-    // setUseTimeOffset is the single apply, with the snapshot supplying the range.
-    button_t0_->setChecked(enabled);
-    QSettings().setValue(QStringLiteral("MainWindow.useTimeOffset"), enabled);
-    session_->sessionManager().setUseTimeOffset(enabled);
-  }
-  const QDomElement tracker_info_el = root.firstChildElement(QStringLiteral("tracker_info"));
-  if (!tracker_info_el.isNull()) {
-    tracker_info_ = static_cast<CurveTracker::Parameter>(
-        tracker_info_el.attribute(QStringLiteral("value"), QString::number(static_cast<int>(tracker_info_))).toInt());
-    QSettings().setValue(QStringLiteral("MainWindow.timeTrackerSetting"), static_cast<int>(tracker_info_));
-    updateTimeTrackerIcon();
-  }
-  const QDomElement ratio = root.firstChildElement(QStringLiteral("ratio"));
-  if (!ratio.isNull()) {
-    keep_ratio_ = read_bool(ratio, keep_ratio_);
-    button_ratio_->setChecked(keep_ratio_);
-    QSettings().setValue(QStringLiteral("MainWindow.buttonRatio"), keep_ratio_);
-  }
-  if (!legend_status.isNull()) {
-    const auto new_status = static_cast<LegendStatus>(
-        legend_status.attribute(QStringLiteral("value"), QString::number(static_cast<int>(legend_status_))).toInt());
-    // Routes through setLegendStatus to refresh button checked / icon
-    // state; the forEachPlot call inside is redundant with the
-    // applyGlobalToggles loop below but harmless.
-    setLegendStatus(new_status);
-  }
+  // The global toolbar toggles are no longer read from the layout/undo document
+  // (see xmlSaveState) — they are app-wide QSettings preferences. Freshly loaded
+  // plots still adopt the CURRENT global toggle state below, so a restored
+  // layout stays visually consistent with the rest of the app without the
+  // document dictating the toggle positions.
   forEachPlot([this](PlotWidget* plot) { applyGlobalToggles(plot); });
   applyShowPointsTo2DWidgets();
   return true;

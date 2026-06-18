@@ -395,15 +395,15 @@ class MainWindow : public QMainWindow {
   // layout-driven UI changes don't mutate the global per-user defaults.
   void restoreRightPanelState(const QDomElement& element);
 
-  // Builds <chrome_state left_visible="..." bottom_visible="..."
-  // main_splitter_sizes="..." timeline_splitter_sizes="..."/>. Covers
-  // cross-panel chrome that isn't owned by an individual panel widget.
+  // Builds <chrome_state main_splitter_sizes="..." timeline_splitter_sizes="..."/>.
+  // Covers cross-panel chrome geometry that isn't owned by an individual panel
+  // widget. Panel open/closed state is NOT serialized — it is a QSettings-backed
+  // app preference, not document state.
   [[nodiscard]] QDomElement saveChromeState(QDomDocument& doc) const;
 
-  // Applies <chrome_state> attributes individually; missing or mismatched
-  // values are silently ignored. Visibility goes through the same
-  // setVisible + setProperty + setIcon path used by restoreRightPanelState
-  // so QSettings stays untouched.
+  // Applies <chrome_state> splitter geometry individually; missing or mismatched
+  // values are silently ignored. Panel visibility is intentionally left as-is
+  // (see saveChromeState).
   void restoreChromeState(const QDomElement& element);
 
   // Serializes every live filter (DataProcessorService recipe) into a
@@ -416,13 +416,6 @@ class MainWindow : public QMainWindow {
   // (first match in load order, mirroring rebindCurvesToLoadedDatasets), so a
   // multi-file layout restores each filter against its own source.
   void restoreDataProcessors(const QDomElement& root);
-
-  // Applies a panel-visibility flip via the PanelToggle struct that owns
-  // the target widget: direct setVisible + icon swap on the toggle
-  // button, no QSettings write, no toggle-handler reentry. Used by
-  // restoreRightPanelState and restoreChromeState. No-op when target is
-  // null OR its current visibility already matches `wanted`.
-  void applyPanelVisibility(QWidget* target, bool wanted);
 
   // Serializes the current app layout state.
   [[nodiscard]] QDomDocument xmlSaveState() const;

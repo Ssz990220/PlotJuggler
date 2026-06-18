@@ -27,6 +27,7 @@
 #include <QUuid>
 #include <QVector>
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <limits>
 #include <set>
@@ -436,8 +437,23 @@ QDomElement PlotWidget::xmlSaveState(QDomDocument& doc) const {
     QDomElement range_element = doc.createElement(QStringLiteral("range"));
     range_element.setAttribute(QStringLiteral("bottom"), QString::number(rect.bottom(), 'f', 6));
     range_element.setAttribute(QStringLiteral("top"), QString::number(rect.top(), 'f', 6));
-    range_element.setAttribute(QStringLiteral("left"), QString::number(rect.left(), 'f', 6));
-    range_element.setAttribute(QStringLiteral("right"), QString::number(rect.right(), 'f', 6));
+    // The X axis of a time-series plot is TIME: persist it in ABSOLUTE seconds,
+    // not the display-relative seconds the Qwt axis speaks (display = absolute -
+    // offset; see pj_runtime/Time.h). PJ4's display offset is per-dataset and
+    // live, so a display-relative range only frames the right instant for the
+    // offset present at save time — storing absolute makes the restored range
+    // correct regardless of the offset state at load (the "Use time offset"
+    // toggle, reloaded data, a layout shared between machines). XY plots' X is a
+    // value, not time, so they keep their raw axis coordinates.
+    if (isXYPlot()) {
+      range_element.setAttribute(QStringLiteral("left"), QString::number(rect.left(), 'f', 6));
+      range_element.setAttribute(QStringLiteral("right"), QString::number(rect.right(), 'f', 6));
+    } else {
+      const double offset_sec = displayOffsetSeconds();
+      range_element.setAttribute(QStringLiteral("left"), QString::number(rect.left() + offset_sec, 'f', 6));
+      range_element.setAttribute(QStringLiteral("right"), QString::number(rect.right() + offset_sec, 'f', 6));
+      range_element.setAttribute(QStringLiteral("x_absolute"), QStringLiteral("true"));
+    }
     plot_element.appendChild(range_element);
   }
 
@@ -581,8 +597,19 @@ bool PlotWidget::xmlLoadState(const QDomElement& plot_element, bool autozoom) {
   if (!range_element.isNull() && autozoom) {
     rect.setBottom(range_element.attribute(QStringLiteral("bottom")).toDouble());
     rect.setTop(range_element.attribute(QStringLiteral("top")).toDouble());
-    rect.setLeft(range_element.attribute(QStringLiteral("left")).toDouble());
-    rect.setRight(range_element.attribute(QStringLiteral("right")).toDouble());
+    double left = range_element.attribute(QStringLiteral("left")).toDouble();
+    double right = range_element.attribute(QStringLiteral("right")).toDouble();
+    // X stored as absolute time (see xmlSaveState): convert back to the display
+    // coordinate using the offset in effect NOW (display = absolute - offset).
+    // Legacy layouts (no x_absolute marker) already hold display-relative
+    // seconds, so they load verbatim — never reinterpreted as absolute.
+    if (range_element.attribute(QStringLiteral("x_absolute")) == QStringLiteral("true")) {
+      const double offset_sec = displayOffsetSeconds();
+      left -= offset_sec;
+      right -= offset_sec;
+    }
+    rect.setLeft(left);
+    rect.setRight(right);
   }
   // Fall back to zoomOut when no <range> was saved or the saved rect is
   // degenerate (zero-width or zero-height). Without this, an old layout
@@ -995,6 +1022,26 @@ void PlotWidget::setAxisScale(QwtAxisId axis_id, double min, double max) {
     std::swap(min, max);
   }
   qwtPlot()->setAxisScale(axis_id, min, max);
+}
+
+double PlotWidget::displayOffsetSeconds() const {
+  if (session_ == nullptr) {
+    return 0.0;
+  }
+  // The axis is shared across curves; in the common case they share a dataset
+  // (hence one offset). When they don't, the first datastore-backed curve's
+  // dataset is the representative — the same rule must hold at save and load so
+  // the absolute<->display round-trip is stable.
+  for (const CurveInfo& info : curveList()) {
+    if (info.curve == nullptr) {
+      continue;
+    }
+    if (const auto* adapter = dynamic_cast<const DatastoreCurveAdapter*>(info.curve->data())) {
+      const DisplayOffset offset = session_->displayOffset(adapter->source().dataset_id);
+      return std::chrono::duration<double>(offset.value).count();
+    }
+  }
+  return 0.0;
 }
 
 QStringList PlotWidget::decodeCurveDrop(const QMimeData* mime_data, const QString& format) const {
