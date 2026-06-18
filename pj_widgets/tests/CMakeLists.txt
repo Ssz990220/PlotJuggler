@@ -183,3 +183,22 @@ set_target_properties(style_input_height_test PROPERTIES
 )
 
 add_test(NAME StyleInputHeight COMMAND style_input_height_test)
+
+add_executable(progress_bar_test progress_bar_test.cpp)
+
+target_link_libraries(progress_bar_test PRIVATE
+    pj_widgets
+    GTest::gtest
+    Qt6::Test
+    Qt6::Widgets
+)
+
+if(DEFINED PJ_WARNING_FLAGS)
+    target_compile_options(progress_bar_test PRIVATE ${PJ_WARNING_FLAGS})
+endif()
+
+set_target_properties(progress_bar_test PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
+)
+
+add_test(NAME ProgressBar COMMAND progress_bar_test)

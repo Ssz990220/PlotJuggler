@@ -111,6 +111,16 @@ corner_radius:             4
 input_min_height:          18
 input_outer_height:        20
 
+// ---- PJ::ProgressBar (the rounded "Loading …" bar) -----------------
+// Dark-theme counterpart of the light mockup: a light-grey outline and a
+// dark inset trough so the bar reads on the dark chrome, with the same
+// light-blue accent fill. Text stays light so it reads on both the dark
+// trough and the blue fill it crosses.
+progress_border:  #8a8a8a
+progress_trough:  #2f2f38
+progress_fill:    #4a86c4
+progress_text:    #f0f0f0
+
 //------- PALETTE END --------
 
 QWidget {
@@ -1780,4 +1790,26 @@ QFrame#dataViewContainer {
     border: 1px solid ${border_default};
     border-left: none;
     padding: 4px 0px;
+}
+
+/* PJ::ProgressBar — the rounded "Loading …" bar. Scoped to the subclass so
+   the plain QProgressBar in ProgressDialog keeps the default look. The caption
+   is the QProgressBar format() string, drawn once on top of the fill in a
+   single colour (it does not split where the fill crosses behind it). */
+PJ--ProgressBar {
+    border: 2px solid ${progress_border};
+    border-radius: 11px;
+    background: ${progress_trough};
+    text-align: center;
+    color: ${progress_text};
+    min-height: 30px;
+    font-size: 11pt;
+}
+
+/* The fill is inset via `margin` so it floats inside the outline; its own
+   border-radius rounds the trailing edge as it grows. */
+PJ--ProgressBar::chunk {
+    background-color: ${progress_fill};
+    border-radius: 8px;
+    margin: 2px;
 }
