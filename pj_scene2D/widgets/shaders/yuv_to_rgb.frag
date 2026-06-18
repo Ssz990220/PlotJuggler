@@ -17,9 +17,13 @@ layout(binding = 4) uniform sampler2D remap_tex;
 layout(std140, binding = 0) uniform Uniforms {
     mat4 viewTransform;
     mat4 colorMatrix;
-    int pixelFormat;  // 0 = YUV420P, 1 = NV12, 2 = RGBA, 3 = Mono8, 4 = BGRA
+    int pixelFormat;  // 0 = YUV420P, 1 = NV12, 2 = RGBA, 3 = Mono8, 4 = BGRA, 5 = Depth
     float opacity;
     int rectify;      // 1 = remap v_uv through remap_tex before sampling
+    int invert;       // depth: 1 = mirror the colormap (t -> 1 - t)
+    float near_m;     // depth: range start (metres)
+    float far_m;      // depth: range end (metres)
+    int colormap_id;  // depth: LUT row (DepthColormap id)
 };
 
 void main()
@@ -39,6 +43,26 @@ void main()
             return;
         }
         uv = s;
+    }
+
+    // Depth (R32F in y_tex): normalize metric depth by [near,far] and map through
+    // the colormap LUT (u_tex: 256 wide x 4 colormap rows). 0 == no-data.
+    if (pixelFormat == 5) {
+        float d = texture(y_tex, uv).r;
+        if (!(d > 0.0)) {
+            fragColor = vec4(0.0, 0.0, 0.0, 0.0);
+            return;
+        }
+        float t = clamp((d - near_m) / max(far_m - near_m, 1e-6), 0.0, 1.0);
+        if (invert == 1) {
+            t = 1.0 - t;
+        }
+        // 4.0 is the LUT row count; MUST equal PJ::kColormapCount (pj_widgets/Colormap.h).
+        // If a colormap is appended there, bump this divisor and recompile the .qsb.
+        float row = (float(colormap_id) + 0.5) / 4.0;
+        vec3 c = texture(u_tex, vec2(t, row)).rgb;
+        fragColor = vec4(c, opacity);
+        return;
     }
 
     // RGBA passthrough

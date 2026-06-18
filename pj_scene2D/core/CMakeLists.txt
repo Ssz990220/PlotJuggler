@@ -10,6 +10,7 @@ pj_scene2d_find_ffmpeg(PJ_SCENE2D_HAS_FFMPEG PJ_SCENE2D_FFMPEG_TARGETS PJ_SCENE2
 set(PJ_SCENE2D_CORE_SOURCES
   src/codec_pipeline.cpp
   src/codecs.cpp
+  src/image_resolve.cpp
   src/image_pipeline_source.cpp
   src/undistort_remap.cpp
   src/image_rectifier.cpp

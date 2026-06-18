@@ -4,6 +4,7 @@ add_library(pj_widgets STATIC
     src/CheckButton.cpp
     src/ColorPickerPopup.cpp
     src/ColorPickerWidget.cpp
+    src/Colormap.cpp
     src/ComboBox.cpp
     src/ComboBoxGradientDelegate.cpp
     src/ConfigPanelHost.cpp
@@ -32,6 +33,7 @@ add_library(pj_widgets STATIC
     include/pj_widgets/ChromeMetrics.h
     include/pj_widgets/ColorPickerPopup.h
     include/pj_widgets/ColorPickerWidget.h
+    include/pj_widgets/Colormap.h
     include/pj_widgets/ComboBox.h
     include/pj_widgets/ComboBoxGradientDelegate.h
     include/pj_widgets/ConfigPanelHost.h

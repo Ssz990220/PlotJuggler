@@ -11,6 +11,7 @@
 #include "pj_scene3d_widgets/gl/program.h"
 #include "pj_scene3d_widgets/gl/vertex_array.h"
 #include "pj_scene3d_widgets/render_pass.h"
+#include "pj_widgets/Colormap.h"  // shared Colormap enum + colormapGlsl()
 
 namespace pj::scene3d {
 
@@ -31,8 +32,10 @@ class PointcloudRenderPass : public IRenderPass {
   //   kSolid — single uniform color, scalar ignored.
   enum class ColorType { kField, kSolid };
 
-  // Colormap selector (used only in ColorType::kField mode).
-  enum class Colormap { kTurbo, kViridis, kPlasma, kGrayscale };
+  // Colormap selector (used only in ColorType::kField mode). The colormap set +
+  // its math (CPU LUT and the in-shader GLSL) is shared with the 2D depth view
+  // via pj_widgets/Colormap.h, so a scalar maps to the same colour in both views.
+  using Colormap = ::PJ::Colormap;
 
   PointcloudRenderPass();
   ~PointcloudRenderPass() override;

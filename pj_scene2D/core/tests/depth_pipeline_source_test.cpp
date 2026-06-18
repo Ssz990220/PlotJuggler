@@ -5,14 +5,18 @@
 
 #include <gtest/gtest.h>
 
+#include <chrono>
+#include <condition_variable>
 #include <cstdint>
 #include <cstring>
+#include <mutex>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
 
-#include "pj_base/builtin/depth_image.hpp"
-#include "pj_base/builtin/depth_image_codec.hpp"
+#include "pj_base/builtin/image.hpp"
+#include "pj_base/builtin/image_codec.hpp"
 
 namespace PJ {
 namespace {
@@ -38,15 +42,17 @@ std::vector<uint8_t> makeF32Le(const std::vector<float>& values) {
   return bytes;
 }
 
+// Serializes a depth-encoded sdk::Image (the type the depth source consumes —
+// there is no kDepthImage producer).
 std::vector<uint8_t> serializeDepth(
     uint32_t width, uint32_t height, const std::string& encoding, std::vector<uint8_t> payload) {
-  sdk::DepthImage depth;
-  depth.timestamp_ns = 1'234;
-  depth.width = width;
-  depth.height = height;
-  depth.encoding = encoding;
-  depth.data = Span<const uint8_t>(payload.data(), payload.size());
-  return serializeDepthImage(depth);
+  sdk::Image img;
+  img.timestamp_ns = 1'234;
+  img.width = width;
+  img.height = height;
+  img.encoding = encoding;
+  img.data = Span<const uint8_t>(payload.data(), payload.size());
+  return serializeImage(img);
 }
 
 const DecodedFrame* onlyPixelLayerFrame(const MediaFrame& frame) {
@@ -58,42 +64,82 @@ const DecodedFrame* onlyPixelLayerFrame(const MediaFrame& frame) {
   return &frame.pixel_layers.front().frame;
 }
 
-TEST(DepthPipelineSourceTest, Decodes16UC1ToRgbaPixelLayer) {
+// Bridges the source's worker-thread frame-ready callback to a condition variable
+// the test can block on (decoding is now off-thread). Install AFTER the set*()
+// calls and before the first setTimestamp().
+struct FrameSync {
+  std::mutex mutex;
+  std::condition_variable cv;
+  bool ready = false;
+
+  void install(DepthPipelineSource& source) {
+    source.setFrameReadyCallback([this] {
+      std::lock_guard<std::mutex> lock(mutex);
+      ready = true;
+      cv.notify_all();
+    });
+  }
+
+  bool waitReady(std::chrono::milliseconds timeout = std::chrono::seconds(2)) {
+    std::unique_lock<std::mutex> lock(mutex);
+    if (cv.wait_for(lock, timeout, [this] { return ready; })) {
+      ready = false;
+      return true;
+    }
+    return false;
+  }
+};
+
+// Post `ts`, block until the worker decodes a frame, then hand it back.
+std::optional<MediaFrame> pumpFrameAt(DepthPipelineSource& source, FrameSync& sync, int64_t ts) {
+  source.setTimestamp(ts);
+  EXPECT_TRUE(sync.waitReady()) << "decode worker produced no frame within the timeout";
+  return source.takeFrame();
+}
+
+TEST(DepthPipelineSourceTest, EmitsRawDepthFloatsWithParams) {
   ObjectStore store;
   auto topic = registerDepthTopic(store);
   ASSERT_NE(topic.id, 0u);
 
-  const auto payload = makeU16Le({1000, 2000, 3000, 0});
+  const auto payload = makeU16Le({1000, 2000, 3000, 0});  // mm; 0 == no-data
   const auto bytes = serializeDepth(4, 1, "16UC1", payload);
   ASSERT_TRUE(store.pushOwned(topic, 1'000, bytes).has_value());
 
   DepthPipelineSource source(&store, topic);
-  source.setAutoRange(false);
   source.setRange(1.0f, 3.0f);
-  source.setColormap(DepthColormap::kTurbo);
+  source.setColormap(0);  // opaque id == pj_widgets Colormap::kTurbo
   source.setOpacity(0.4f);
-  source.setTimestamp(1'000);
+  FrameSync sync;
+  sync.install(source);
 
-  auto frame = source.takeFrame();
+  auto frame = pumpFrameAt(source, sync, 1'000);
   ASSERT_TRUE(frame.has_value());
   const DecodedFrame* layer_frame = onlyPixelLayerFrame(*frame);
   ASSERT_NE(layer_frame, nullptr);
   EXPECT_EQ(layer_frame->width, 4);
   EXPECT_EQ(layer_frame->height, 1);
-  EXPECT_EQ(layer_frame->format, PixelFormat::kRGBA8888);
+  EXPECT_EQ(layer_frame->format, PixelFormat::kDepthR32F);
   ASSERT_NE(layer_frame->pixels, nullptr);
-  ASSERT_EQ(layer_frame->pixels->size(), 16u);
+  ASSERT_EQ(layer_frame->pixels->size(), 4u * sizeof(float));
   EXPECT_FLOAT_EQ(frame->pixel_layers[0].opacity, 0.4f);
 
-  const auto& pixels = *layer_frame->pixels;
-  EXPECT_LT(pixels[0], pixels[4]);  // red rises as depth increases
-  EXPECT_LT(pixels[4], pixels[8]);
-  EXPECT_GT(pixels[2], pixels[6]);  // blue falls as depth increases
-  EXPECT_GT(pixels[6], pixels[10]);
-  EXPECT_EQ(pixels[15], 0);  // zero depth is invalid/transparent
+  // Raw metric depth (mm -> m); the invalid sample becomes 0 (the shader's no-data).
+  const auto* depths = reinterpret_cast<const float*>(layer_frame->pixels->data());
+  EXPECT_FLOAT_EQ(depths[0], 1.0f);
+  EXPECT_FLOAT_EQ(depths[1], 2.0f);
+  EXPECT_FLOAT_EQ(depths[2], 3.0f);
+  EXPECT_FLOAT_EQ(depths[3], 0.0f);
+
+  // The colormap params travel with the frame for the GPU shader.
+  EXPECT_TRUE(layer_frame->depth.active);
+  EXPECT_FLOAT_EQ(layer_frame->depth.near_m, 1.0f);
+  EXPECT_FLOAT_EQ(layer_frame->depth.far_m, 3.0f);
+  EXPECT_FALSE(layer_frame->depth.invert);
+  EXPECT_EQ(layer_frame->depth.colormap, 0u);  // kTurbo
 }
 
-TEST(DepthPipelineSourceTest, Decodes32FC1Meters) {
+TEST(DepthPipelineSourceTest, Emits32FC1FloatsPassthrough) {
   ObjectStore store;
   auto topic = registerDepthTopic(store);
   ASSERT_NE(topic.id, 0u);
@@ -103,105 +149,41 @@ TEST(DepthPipelineSourceTest, Decodes32FC1Meters) {
   ASSERT_TRUE(store.pushOwned(topic, 2'000, bytes).has_value());
 
   DepthPipelineSource source(&store, topic);
-  source.setAutoRange(false);
   source.setRange(0.5f, 1.5f);
-  source.setTimestamp(2'000);
+  FrameSync sync;
+  sync.install(source);
 
-  auto frame = source.takeFrame();
+  auto frame = pumpFrameAt(source, sync, 2'000);
   ASSERT_TRUE(frame.has_value());
   const DecodedFrame* layer_frame = onlyPixelLayerFrame(*frame);
   ASSERT_NE(layer_frame, nullptr);
-  EXPECT_EQ(layer_frame->width, 2);
-  EXPECT_EQ(layer_frame->height, 1);
-  EXPECT_EQ(layer_frame->format, PixelFormat::kRGBA8888);
-  ASSERT_NE(layer_frame->pixels, nullptr);
-  EXPECT_EQ(layer_frame->pixels->size(), 8u);
-  EXPECT_NE((*layer_frame->pixels)[0], (*layer_frame->pixels)[4]);
+  EXPECT_EQ(layer_frame->format, PixelFormat::kDepthR32F);
+  ASSERT_EQ(layer_frame->pixels->size(), 2u * sizeof(float));
+  const auto* depths = reinterpret_cast<const float*>(layer_frame->pixels->data());
+  EXPECT_FLOAT_EQ(depths[0], 0.5f);
+  EXPECT_FLOAT_EQ(depths[1], 1.5f);
 }
 
-TEST(DepthPipelineSourceTest, AutoRangeMapsObservedMinMaxToColormapEndpoints) {
+TEST(DepthPipelineSourceTest, DepthParamsCarryInvertAndColormap) {
   ObjectStore store;
   auto topic = registerDepthTopic(store);
   ASSERT_NE(topic.id, 0u);
 
-  const auto payload = makeU16Le({1000, 2000, 3000});
-  const auto bytes = serializeDepth(3, 1, "16UC1", payload);
-  ASSERT_TRUE(store.pushOwned(topic, 3'000, bytes).has_value());
+  const auto bytes = serializeDepth(1, 1, "16UC1", makeU16Le({1000}));
+  ASSERT_TRUE(store.pushOwned(topic, 7'000, bytes).has_value());
 
   DepthPipelineSource source(&store, topic);
-  source.setAutoRange(true);
-  source.setColormap(DepthColormap::kTurbo);
-  source.setTimestamp(3'000);
+  source.setColormap(2);  // opaque id == pj_widgets Colormap::kPlasma
+  source.setInvert(true);
+  FrameSync sync;
+  sync.install(source);
 
-  auto frame = source.takeFrame();
+  auto frame = pumpFrameAt(source, sync, 7'000);
   ASSERT_TRUE(frame.has_value());
   const DecodedFrame* layer_frame = onlyPixelLayerFrame(*frame);
   ASSERT_NE(layer_frame, nullptr);
-  ASSERT_NE(layer_frame->pixels, nullptr);
-  ASSERT_EQ(layer_frame->pixels->size(), 12u);
-
-  const auto& pixels = *layer_frame->pixels;
-  EXPECT_EQ(pixels[0], 0);  // min depth -> turbo blue endpoint
-  EXPECT_EQ(pixels[1], 0);
-  EXPECT_EQ(pixels[2], 255);
-  EXPECT_EQ(pixels[8], 255);  // max depth -> turbo red endpoint
-  EXPECT_EQ(pixels[9], 0);
-  EXPECT_EQ(pixels[10], 0);
-}
-
-TEST(DepthPipelineSourceTest, AutoRangeAllInvalidUsesFallbackRangeAndStaysTransparent) {
-  ObjectStore store;
-  auto topic = registerDepthTopic(store);
-  ASSERT_NE(topic.id, 0u);
-
-  const auto payload = makeU16Le({0, 0});
-  const auto bytes = serializeDepth(2, 1, "16UC1", payload);
-  ASSERT_TRUE(store.pushOwned(topic, 4'000, bytes).has_value());
-
-  DepthPipelineSource source(&store, topic);
-  source.setRange(2.0f, 2.0f);
-  source.setAutoRange(true);
-  source.setTimestamp(4'000);
-
-  auto frame = source.takeFrame();
-  ASSERT_TRUE(frame.has_value());
-  const DecodedFrame* layer_frame = onlyPixelLayerFrame(*frame);
-  ASSERT_NE(layer_frame, nullptr);
-  ASSERT_NE(layer_frame->pixels, nullptr);
-  ASSERT_EQ(layer_frame->pixels->size(), 8u);
-
-  const auto& pixels = *layer_frame->pixels;
-  EXPECT_EQ(pixels[3], 0);
-  EXPECT_EQ(pixels[7], 0);
-}
-
-TEST(DepthPipelineSourceTest, JetColormapOrdersNearBlueFarRed) {
-  ObjectStore store;
-  auto topic = registerDepthTopic(store);
-  ASSERT_NE(topic.id, 0u);
-
-  const auto payload = makeU16Le({1000, 2000, 3000});
-  const auto bytes = serializeDepth(3, 1, "16UC1", payload);
-  ASSERT_TRUE(store.pushOwned(topic, 5'000, bytes).has_value());
-
-  DepthPipelineSource source(&store, topic);
-  source.setAutoRange(false);
-  source.setRange(1.0f, 3.0f);
-  source.setColormap(DepthColormap::kJet);
-  source.setTimestamp(5'000);
-
-  auto frame = source.takeFrame();
-  ASSERT_TRUE(frame.has_value());
-  const DecodedFrame* layer_frame = onlyPixelLayerFrame(*frame);
-  ASSERT_NE(layer_frame, nullptr);
-  ASSERT_NE(layer_frame->pixels, nullptr);
-  ASSERT_EQ(layer_frame->pixels->size(), 12u);
-
-  const auto& pixels = *layer_frame->pixels;
-  EXPECT_LT(pixels[0], pixels[8]);   // red rises toward far depth
-  EXPECT_GT(pixels[2], pixels[10]);  // blue falls toward far depth
-  EXPECT_GT(pixels[5], pixels[1]);   // midpoint has the green peak
-  EXPECT_GT(pixels[5], pixels[9]);
+  EXPECT_TRUE(layer_frame->depth.invert);
+  EXPECT_EQ(layer_frame->depth.colormap, 2u);  // kPlasma
 }
 
 }  // namespace

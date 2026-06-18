@@ -24,6 +24,7 @@ namespace {
     case PixelFormat::kMono16:
     case PixelFormat::kYUV420P:
     case PixelFormat::kNV12:
+    case PixelFormat::kDepthR32F:
       return 0;
   }
   return 0;

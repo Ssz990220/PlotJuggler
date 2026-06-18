@@ -41,6 +41,7 @@ Helpers (header-only or small):
 | Header | Role |
 |---|---|
 | `ChromeMetrics.h` | Shared icon/layout spacing constants for dialog chrome, broadcast from MainWindow. Defaults `{icon_size=20, icon_padding=4, layout_padding=0, layout_spacing=0}`. |
+| `Colormap.h` | Shared scientific colormaps (turbo/viridis/plasma/grayscale): the `Colormap` enum, `colorFor()`, `buildColormapLut()` (a CPU RGBA8 LUT for LUT-sampling GPU backends — the 2D depth shader) and `colormapGlsl()` (the *same* polynomials as GLSL, injected into in-shader backends — the 3D pointcloud pass). One source of truth so a scalar maps to the same colour in the 2D and 3D views. Qt-free / no `pj_base` (returns a plain `ColormapRgb`, not `sdk::ColorRGBA`). |
 | `Style.h` | Common style accessors. |
 | `SvgUtil.h` | Helpers to load and recolor SVG resources. |
 | `VisualizationKind.h` | Neutral `enum class VisualizationKind { Plot, Scene2D, Scene3D }` — the UI vocabulary `VisualizationPlaceholderWidget` emits; the app shell maps the scene families to concrete `"scene2d"`/`"scene3d"` object-widget kinds. |

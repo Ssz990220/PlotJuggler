@@ -21,6 +21,7 @@ enum class PixelFormat : uint8_t {
   kMono16,
   kYUV420P,
   kNV12,
+  kDepthR32F,  // single-channel float32 metric depth; GPU-colormapped in the media shader
 };
 
 /// Compute the expected pixel buffer size in bytes for a given format and dimensions.
@@ -48,9 +49,23 @@ enum class PixelFormat : uint8_t {
       size_t uv_h = (h + 1) / 2;
       return w * h + w * uv_h;
     }
+    case PixelFormat::kDepthR32F:
+      return w * h * 4;
   }
   return 0;
 }
+
+/// Per-frame parameters for GPU depth colormapping (PixelFormat::kDepthR32F). The
+/// media shader maps raw metric depth (metres) through a colormap LUT: normalize
+/// by [near_m, far_m], optionally invert, then look up colormap row. `active` is
+/// true only for depth frames.
+struct DepthColorParams {
+  float near_m = 0.0f;
+  float far_m = 1.0f;
+  bool invert = false;
+  uint8_t colormap = 0;  ///< colormap id (pj_widgets Colormap) == LUT row
+  bool active = false;
+};
 
 /// Decoded pixel buffer produced by decoders and codec stages
 /// and consumed by MediaViewerWidget for GPU upload.
@@ -77,6 +92,9 @@ struct DecodedFrame {
   /// use. Null means the frame is already display-ready (CPU path or no
   /// calibration). Shared + immutable: many frames of one camera reuse it.
   std::shared_ptr<const UndistortMap> rectify_map;
+
+  /// GPU depth-colormap parameters; `depth.active` is set only for kDepthR32F frames.
+  DepthColorParams depth;
 
   /// True if no pixel data is present (null or empty buffer).
   [[nodiscard]] bool isNull() const noexcept {

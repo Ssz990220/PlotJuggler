@@ -23,6 +23,7 @@
 #include "pj_base/builtin/image_codec.hpp"
 #include "pj_plugins/sdk/message_parser_plugin_base.hpp"
 #include "pj_scene2d_core/image_rectifier.h"
+#include "pj_scene2d_core/image_resolve.h"
 #include "pj_scene2d_core/parser_object.h"
 
 namespace PJ {
@@ -205,6 +206,7 @@ std::optional<DecodedFrame> toMono8Mosaic(const DecodedFrame& frame) {
     case PixelFormat::kMono16:
     case PixelFormat::kYUV420P:
     case PixelFormat::kNV12:
+    case PixelFormat::kDepthR32F:
       return std::nullopt;
   }
   const auto& src = *frame.pixels;
@@ -456,17 +458,16 @@ std::optional<DecodedFrame> ImagePipelineSource::decodeAt(int64_t ts_ns) {
   }
   last_entry_ts_ = entry->timestamp;
 
-  if (parser_ != nullptr) {
-    // entry->payload already is a PayloadView (bytes + anchor); pass it through
-    // verbatim so the anchor's lifetime extends across the parser call.
-    sdk::PayloadView payload = entry->payload;
-    auto parsed = parseObjectAs<sdk::Image>(
-        *parser_, parser_mutex_, entry->timestamp, payload, sdk::BuiltinObjectType::kImage, "sdk::Image");
-    if (!parsed.has_value()) {
-      const ParserObjectError& error = parsed.error();
+  if (parser_ != nullptr || canonical_image_codec_) {
+    // Resolve the entry's bytes into a canonical sdk::Image (via the parser, or by
+    // deserializing a pj_image_v1 blob), then run the shared decode + rectify path.
+    // resolveImage is the single source of truth, shared with DepthPipelineSource.
+    auto resolved = resolveImage(parser_, parser_mutex_, canonical_image_codec_, entry->timestamp, entry->payload);
+    if (!resolved.has_value()) {
+      const ParserObjectError& error = resolved.error();
       switch (error.kind) {
         case ParserObjectErrorKind::kParseFailed:
-          warnOnce(warningKey(source_key_, "parseObject"), "{} {}", source_key_, error.message);
+          warnOnce(warningKey(source_key_, "resolve-image"), "{} {}", source_key_, error.message);
           break;
         case ParserObjectErrorKind::kWrongObjectKind:
           warnOnce(
@@ -479,28 +480,9 @@ std::optional<DecodedFrame> ImagePipelineSource::decodeAt(int64_t ts_ns) {
       }
       return std::nullopt;
     }
-    const PJ::Timestamp effective_ts = parsed->record.ts.value_or(entry->timestamp);
-    const sdk::Image& img = *parsed->value;
-    auto df = decodeCanonicalImage(img, effective_ts);
+    auto df = decodeCanonicalImage(resolved->image, resolved->pts);
     if (df.has_value()) {
-      df->frame_id = img.frame_id;  // carry the source frame so the viewer can find its CameraInfo.
-      rectifyIfCalibrated(*df);
-    }
-    return df;
-  }
-
-  if (canonical_image_codec_) {
-    // Each entry's bytes are a serialized sdk::Image (pj_base pj_image_v1 codec).
-    // Deserialize per frame, then run the shared canonical-image decode path.
-    auto img = deserializeImage(entry->payload.bytes.data(), entry->payload.bytes.size());
-    if (!img.has_value()) {
-      warnOnce(
-          warningKey(source_key_, "canonical-deserialize"), "{} deserializeImage failed: {}", source_key_, img.error());
-      return std::nullopt;
-    }
-    auto df = decodeCanonicalImage(*img, entry->timestamp);
-    if (df.has_value()) {
-      df->frame_id = img->frame_id;
+      df->frame_id = resolved->image.frame_id;  // carry the source frame so the viewer can find its CameraInfo.
       rectifyIfCalibrated(*df);
     }
     return df;

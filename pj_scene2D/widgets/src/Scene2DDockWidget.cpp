@@ -21,6 +21,7 @@
 #include "pj_runtime/SessionManager.h"
 #include "pj_scene2d_core/borrowed_media_source.h"
 #include "pj_scene2d_core/composite_media_source.h"
+#include "pj_scene2d_core/image_resolve.h"
 #include "pj_scene2d_core/scene_decoder.h"
 #include "pj_scene2d_widgets/layers/depth_image_layer.h"
 #include "pj_scene2d_widgets/layers/image_layer.h"
@@ -61,6 +62,31 @@ std::unique_ptr<ISceneLayer> createDepthImageLayer(
   return std::make_unique<DepthImageLayer>(topic_id, object_type, display_name);
 }
 
+// True for the depth `encoding` strings the DepthImageLayer colormaps. A scene2D-
+// local copy: scene3D's identical predicate lives in a sibling widget family this
+// module must not depend on.
+[[nodiscard]] bool isDepthEncoding(const std::string& encoding) {
+  return encoding == "16UC1" || encoding == "32FC1" || encoding == "compressedDepth";
+}
+
+// Peek a kImage topic's first sample and report whether it is depth-encoded.
+// Depth and color share kImage, so the dock picks the layer from the payload's
+// encoding (resolving one sample via the parser or canonical codec) — the consumer
+// can classify depth-vs-color even though the parser can't at schema time.
+[[nodiscard]] bool firstSampleIsDepthEncoded(SessionManager* session, ObjectTopicId topic_id) {
+  if (session == nullptr) {
+    return false;
+  }
+  auto first = session->objectStore().at(topic_id, static_cast<size_t>(0));
+  if (!first.has_value() || first->payload.bytes.empty()) {
+    return false;
+  }
+  const auto binding = session->parserBindingForObjectTopic(topic_id);
+  const bool canonical = binding.parser == nullptr;
+  auto resolved = resolveImage(binding.parser, binding.mutex, canonical, first->timestamp, first->payload);
+  return resolved.has_value() && isDepthEncoding(resolved->image.encoding);
+}
+
 std::unique_ptr<ISceneLayer> createImageAnnotationsLayer(
     ObjectTopicId topic_id, sdk::BuiltinObjectType object_type, const QString& display_name) {
   return std::make_unique<SceneDecoderLayer>(
@@ -95,8 +121,21 @@ Scene2DDockWidget::Scene2DDockWidget(QWidget* parent) : SceneDockWidget(parent) 
   setWindowTitle(tr("2D View"));
 
   for (const LayerRegistration& registration : kLayerRegistrations) {
+    if (registration.object_type == sdk::BuiltinObjectType::kImage) {
+      continue;  // kImage is registered below with an encoding-aware dispatcher.
+    }
     layerFactory().registerType(registration.object_type, registration.creator);
   }
+  // kImage covers BOTH color and depth (they share the type). Route depth-encoded
+  // images to the colormap DepthImageLayer and everything else to ImageLayer, by
+  // peeking the topic's first sample's encoding.
+  layerFactory().registerType(
+      sdk::BuiltinObjectType::kImage,
+      [this](ObjectTopicId topic_id, sdk::BuiltinObjectType object_type, const QString& display_name) {
+        return firstSampleIsDepthEncoded(sessionManager(), topic_id)
+                   ? createDepthImageLayer(topic_id, object_type, display_name)
+                   : createImageLayer(topic_id, object_type, display_name);
+      });
 }
 
 Scene2DDockWidget::~Scene2DDockWidget() {

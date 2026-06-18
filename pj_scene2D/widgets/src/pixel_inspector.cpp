@@ -138,6 +138,10 @@ std::optional<InspectorRgb> pixelRgbAt(const DecodedFrame& frame, int x, int y) 
       const uint8_t gray = static_cast<uint8_t>(value >> 8);
       return InspectorRgb{gray, gray, gray};
     }
+    case PixelFormat::kDepthR32F:
+      // Raw metric depth; the displayed color is computed in the shader (LUT), so
+      // there is no RGB to sample from the frame buffer.
+      return std::nullopt;
   }
   return std::nullopt;
 }

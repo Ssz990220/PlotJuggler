@@ -9,6 +9,27 @@ keyframe indexing, compositing) and `pj_scene2d_widgets` (Qt — the
 top of `pj_scene_common`). pj_scene2D is a read-only consumer of
 `pj_datastore::ObjectStore`; it never writes to storage.
 
+**Depth images** arrive as `sdk::Image` with a depth `encoding` (16UC1 / 32FC1 /
+compressedDepth) — there is no `kDepthImage` producer. `Scene2DDockWidget` peeks a
+`kImage` topic's first sample and routes depth-encoded images to the colormap
+`DepthImageLayer` (per-layer colormap turbo/viridis/plasma/grayscale, invert, and a
+manual near-far range) and everything else to the plain `ImageLayer`. Both
+`ImagePipelineSource` and `DepthPipelineSource` obtain the `sdk::Image` from a store
+entry through one shared seam — `image_resolve.h::resolveImage` (the topic's
+MessageParser when present, else the canonical `pj_image_v1` codec).
+
+The colormap is applied **on the GPU**: `DepthPipelineSource` emits a raw float
+depth frame (`PixelFormat::kDepthR32F`) plus `DepthColorParams` (near/far/invert/
+colormap), and `MediaViewerWidget`'s media shader (`pixelFormat == 5`) normalizes by
+[near,far] and looks the result up in a colormap LUT (`u_tex`, built once from
+`pj_widgets/Colormap.h::buildColormapLut`). So there is no per-pixel CPU colormap, and
+changing colormap/range/invert is a uniform write with no re-decode. The colormap set
++ its math live **once** in `pj_widgets/Colormap.h` (`Colormap` enum, `colorFor()`,
+`buildColormapLut()`, and `colormapGlsl()` for the 3D in-shader path), shared with the
+3D pointcloud colouring so a scalar maps to the same colour in both views. The Qt-free
+core stays decoupled: `DepthPipelineSource::setColormap` takes an opaque `uint8_t`
+colormap id (== `Colormap` value == LUT row), not the enum.
+
 ## Docs
 
 Read in this order:
@@ -22,6 +43,7 @@ Read in this order:
 
 - `core/include/pj_scene2d_core/media_source.h` — the uniform `setTimestamp`/`takeFrame` frame-delivery contract everything plugs into.
 - `core/include/pj_scene2d_core/image_pipeline_source.h`, `streaming_video_source.h`, `depth_pipeline_source.h`, `scene_pipeline_source.h`, `composite_media_source.h` — the concrete `MediaSource` implementations.
+- `core/include/pj_scene2d_core/image_resolve.h` — `resolveImage`, the single seam that turns a store entry into an `sdk::Image` (parser or canonical codec); shared by the image and depth pipeline sources.
 - `core/include/pj_scene2d_core/streaming_video_decoder.h`, `ffmpeg_decoder.h` — GOP-aware streaming video decode on top of FFmpeg.
 - `core/include/pj_scene2d_core/overlay_geometry.h` — backend-agnostic tessellation of annotation overlays (lines/points/fills/circles) into GPU vertex data; stroke width scales with zoom but is **floored at 1px on screen** so edges never go sub-pixel and vanish.
 - `widgets/include/pj_scene2d_widgets/media_viewer_widget.h` — the `QRhiWidget` renderer (YUV/RGB pipelines + annotation overlays).

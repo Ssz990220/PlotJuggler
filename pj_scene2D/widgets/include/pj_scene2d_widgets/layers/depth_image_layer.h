@@ -8,6 +8,7 @@
 
 #include "pj_scene2d_core/depth_pipeline_source.h"
 #include "pj_scene2d_widgets/layers/scene2d_layer.h"
+#include "pj_widgets/Colormap.h"  // shared Colormap enum
 
 namespace PJ {
 
@@ -33,15 +34,16 @@ class DepthImageLayer final : public Scene2DLayer {
  private:
   void applyTo(DepthPipelineSource& source) const;
   void applyOptions();
-  void setColormap(DepthColormap colormap);
-  void setAutoRange(bool enabled);
+  void setColormap(Colormap colormap);
+  void setInvert(bool invert);
   void setRange(float near_m, float far_m);
-  void setOpacity(float opacity);
 
-  DepthColormap colormap_ = DepthColormap::kTurbo;
+  Colormap colormap_ = Colormap::kTurbo;
+  bool invert_ = false;
+  // Manual near/far range in metres (no auto-fit — auto flickered per frame).
   float near_m_ = 0.0f;
-  float far_m_ = 10.0f;
-  bool auto_range_ = true;
+  float far_m_ = 4.0f;
+  // Opacity is plumbed through to the source (kept at 1.0); no UI control yet.
   float opacity_ = 1.0f;
   DepthPipelineSource* depth_source_ = nullptr;
 };

@@ -202,3 +202,20 @@ set_target_properties(progress_bar_test PROPERTIES
 )
 
 add_test(NAME ProgressBar COMMAND progress_bar_test)
+
+add_executable(colormap_test colormap_test.cpp)
+
+target_link_libraries(colormap_test PRIVATE
+    pj_widgets
+    GTest::gtest_main
+)
+
+if(DEFINED PJ_WARNING_FLAGS)
+    target_compile_options(colormap_test PRIVATE ${PJ_WARNING_FLAGS})
+endif()
+
+set_target_properties(colormap_test PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
+)
+
+add_test(NAME Colormap COMMAND colormap_test)

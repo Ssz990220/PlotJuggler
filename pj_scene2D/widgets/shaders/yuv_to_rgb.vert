@@ -3,9 +3,13 @@
 layout(std140, binding = 0) uniform Uniforms {
     mat4 viewTransform;
     mat4 colorMatrix;
-    int pixelFormat;  // 0 = YUV420P, 1 = NV12, 2 = RGBA, 3 = Mono8, 4 = BGRA
+    int pixelFormat;  // 0 = YUV420P, 1 = NV12, 2 = RGBA, 3 = Mono8, 4 = BGRA, 5 = Depth
     float opacity;
     int rectify;      // 1 = remap v_uv through remap_tex before sampling (frag-only use)
+    int invert;       // depth: 1 = mirror the colormap (t -> 1 - t)
+    float near_m;     // depth: range start (metres)
+    float far_m;      // depth: range end (metres)
+    int colormap_id;  // depth: LUT row (DepthColormap id)
 };
 
 layout(location = 0) out vec2 v_uv;

@@ -11,8 +11,11 @@
 #include <string>
 #include <vector>
 
+#include "pj_base/builtin/image.hpp"
+#include "pj_base/builtin/image_codec.hpp"
 #include "pj_runtime/SessionManager.h"
 #include "pj_scene2d_widgets/Scene2DDockWidget.h"
+#include "pj_scene2d_widgets/layers/depth_image_layer.h"
 
 namespace {
 
@@ -46,7 +49,72 @@ std::vector<uint32_t> layerIds(const std::vector<PJ::SceneLayerInfo>& layers) {
   return out;
 }
 
+// Serialize a canonical sdk::Image — the bytes a no-parser image topic stores.
+std::vector<uint8_t> makeImageBytes(
+    uint32_t width, uint32_t height, const std::string& encoding, std::vector<uint8_t> pixels) {
+  PJ::sdk::Image img;
+  img.timestamp_ns = 100;
+  img.width = width;
+  img.height = height;
+  img.encoding = encoding;
+  img.data = PJ::Span<const uint8_t>(pixels.data(), pixels.size());
+  return PJ::serializeImage(img);
+}
+
+// The layer family ("Depth" / "Image") the dock created for a topic.
+QString familyFor(const std::vector<PJ::SceneLayerInfo>& layers, PJ::ObjectTopicId topic) {
+  for (const auto& layer : layers) {
+    if (layer.topic_id.id == topic.id) {
+      return layer.family_name;
+    }
+  }
+  return {};
+}
+
 }  // namespace
+
+TEST(DepthImageLayer, XmlRoundTripPreservesColormapInvertAndRange) {
+  PJ::DepthImageLayer layer(PJ::ObjectTopicId{1}, PJ::sdk::BuiltinObjectType::kImage, QStringLiteral("depth"));
+
+  QDomDocument doc;
+  QDomElement in = doc.createElement(QStringLiteral("scene2d_layer"));
+  in.setAttribute(QStringLiteral("colormap"), QStringLiteral("plasma"));
+  in.setAttribute(QStringLiteral("invert"), QStringLiteral("true"));
+  in.setAttribute(QStringLiteral("near_m"), QStringLiteral("1.5"));
+  in.setAttribute(QStringLiteral("far_m"), QStringLiteral("7"));
+  ASSERT_TRUE(layer.xmlLoadState(in));
+
+  // Saving after loading must reproduce every depth-display attribute verbatim.
+  const QDomElement out = layer.xmlSaveState(doc);
+  EXPECT_EQ(out.attribute(QStringLiteral("colormap")), QStringLiteral("plasma"));
+  EXPECT_EQ(out.attribute(QStringLiteral("invert")), QStringLiteral("true"));
+  EXPECT_FLOAT_EQ(out.attribute(QStringLiteral("near_m")).toFloat(), 1.5f);
+  EXPECT_FLOAT_EQ(out.attribute(QStringLiteral("far_m")).toFloat(), 7.0f);
+}
+
+TEST(Scene2DDockWidget, RoutesDepthEncodedImageToDepthLayer) {
+  PJ::SessionManager session;
+  const auto depth = registerTopic(session, 1, "/camera/depth/image");
+  const auto color = registerTopic(session, 1, "/camera/color/image");
+  // One canonical sdk::Image sample each (no parser -> the dock resolves the first
+  // sample via the canonical codec to read its encoding).
+  ASSERT_TRUE(session.objectStore()
+                  .pushOwned(depth, 100, makeImageBytes(2, 2, "16UC1", std::vector<uint8_t>(2 * 2 * 2, 0x10)))
+                  .has_value());
+  ASSERT_TRUE(session.objectStore()
+                  .pushOwned(color, 100, makeImageBytes(2, 2, "rgb8", std::vector<uint8_t>(2 * 2 * 3, 0x20)))
+                  .has_value());
+
+  PJ::Scene2DDockWidget dock;
+  dock.setSessionManager(&session);
+  ASSERT_TRUE(dock.addTopic(depth, PJ::sdk::BuiltinObjectType::kImage, QStringLiteral("depth")));
+  ASSERT_TRUE(dock.addTopic(color, PJ::sdk::BuiltinObjectType::kImage, QStringLiteral("color")));
+
+  // A depth-encoded kImage routes to the colormap DepthImageLayer; a color kImage
+  // (same type) stays on the plain ImageLayer.
+  EXPECT_EQ(familyFor(dock.layers(), depth), QStringLiteral("Depth"));
+  EXPECT_EQ(familyFor(dock.layers(), color), QStringLiteral("Image"));
+}
 
 TEST(Scene2DDockWidget, CompositeTracksVisibilityAndOrder) {
   PJ::SessionManager session;

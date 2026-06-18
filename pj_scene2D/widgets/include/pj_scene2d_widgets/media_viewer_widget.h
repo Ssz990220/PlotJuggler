@@ -110,6 +110,7 @@ class MediaViewerWidget : public QRhiWidget {
     kRGBA = 2,
     kMono8 = 3,
     kBGRA = 4,
+    kDepth = 5,  ///< R32F metric depth; colormapped via a LUT in u_tex (GPU)
   };
 
   // Single definition of the PixelFormat -> shader-path projection: planar YUV
@@ -133,6 +134,11 @@ class MediaViewerWidget : public QRhiWidget {
     int remap_w = 0;      ///< Size tex_remap was created at (the map's out_width/out_height).
     int remap_h = 0;
     const void* remap_map_key = nullptr;  ///< Identity of the UndistortMap tex_remap was uploaded from.
+    // Depth colormap params (kDepth path) -> written into the uniform buffer for the shader.
+    int32_t invert = 0;
+    float near_m = 0.0f;
+    float far_m = 1.0f;
+    int32_t colormap = 0;
   };
 
   struct OverlayPipeline {
@@ -220,14 +226,19 @@ class MediaViewerWidget : public QRhiWidget {
   std::atomic_bool point_inspector_enabled_{false};
   std::atomic_bool point_inspector_active_{false};
 
-  // Uniform buffer layout (std140):
-  // mat4 viewTransform  (64 bytes, offset 0)
-  // mat4 colorMatrix    (64 bytes, offset 64)
-  // int  pixelFormat    (4 bytes, offset 128)
+  // Uniform buffer layout (std140) — must match the Uniforms block in
+  // shaders/yuv_to_rgb.{vert,frag} field-for-field:
+  // mat4  viewTransform (64 bytes, offset 0)
+  // mat4  colorMatrix   (64 bytes, offset 64)
+  // int   pixelFormat   (4 bytes, offset 128)
   // float opacity       (4 bytes, offset 132)
-  // int  rectify        (4 bytes, offset 136)
-  // padding             (4 bytes)
-  static constexpr int kUniformBufSize = 144;
+  // int   rectify       (4 bytes, offset 136)
+  // int   invert        (4 bytes, offset 140)  — depth path
+  // float near_m        (4 bytes, offset 144)  — depth path
+  // float far_m         (4 bytes, offset 148)  — depth path
+  // int   colormap_id   (4 bytes, offset 152)  — depth path
+  // padding             (4 bytes, → 160, a multiple of the mat4 base alignment)
+  static constexpr int kUniformBufSize = 160;
 
   // ----- Vector overlay pipelines (markers / annotations) -----
   // Drawn on top of the image pass, all sharing this uniform buffer so they

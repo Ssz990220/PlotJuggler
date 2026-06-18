@@ -17,6 +17,7 @@
 #include "pj_scene2d_core/media_source.h"
 #include "pj_scene2d_core/overlay_geometry.h"
 #include "pj_scene2d_widgets/pixel_inspector.h"
+#include "pj_widgets/Colormap.h"  // shared Colormap enum + buildColormapLut + colormapGlsl
 
 void pjMediaQtInitResources() {
   Q_INIT_RESOURCE(shaders);
@@ -197,13 +198,19 @@ QRhiVertexInputLayout textVertexInputLayout() {
   return layout;
 }
 
+// `y_sampler` filters the y-plane (binding 1) independently of the u/v planes
+// (binding 2/3, `sampler`). The depth path needs this: its R32F depth in y_tex
+// must be sampled NEAREST so a pixel never interpolates a valid metric depth with
+// the 0.0 no-data sentinel (that would paint a "near"-colored fringe around depth
+// holes/silhouettes), while its colormap LUT in u_tex still wants LINEAR.
 void setTextureLayerBindings(
     QRhiShaderResourceBindings* srb, QRhiBuffer* uniform_buf, QRhiTexture* tex_y, QRhiTexture* tex_u,
-    QRhiTexture* tex_v, QRhiSampler* sampler, QRhiTexture* tex_remap, QRhiSampler* remap_sampler) {
+    QRhiTexture* tex_v, QRhiSampler* sampler, QRhiTexture* tex_remap, QRhiSampler* remap_sampler,
+    QRhiSampler* y_sampler) {
   srb->setBindings({
       QRhiShaderResourceBinding::uniformBuffer(
           0, QRhiShaderResourceBinding::VertexStage | QRhiShaderResourceBinding::FragmentStage, uniform_buf),
-      QRhiShaderResourceBinding::sampledTexture(1, QRhiShaderResourceBinding::FragmentStage, tex_y, sampler),
+      QRhiShaderResourceBinding::sampledTexture(1, QRhiShaderResourceBinding::FragmentStage, tex_y, y_sampler),
       QRhiShaderResourceBinding::sampledTexture(2, QRhiShaderResourceBinding::FragmentStage, tex_u, sampler),
       QRhiShaderResourceBinding::sampledTexture(3, QRhiShaderResourceBinding::FragmentStage, tex_v, sampler),
       QRhiShaderResourceBinding::sampledTexture(4, QRhiShaderResourceBinding::FragmentStage, tex_remap, remap_sampler),
@@ -310,7 +317,7 @@ bool MediaViewerWidget::ensureTextureLayer(TextureLayerResources& layer) {
     layer.srb = r->newShaderResourceBindings();
     setTextureLayerBindings(
         layer.srb, layer.uniform_buf, layer.tex_y, layer.tex_u, layer.tex_v, sampler_,
-        layer.tex_remap != nullptr ? layer.tex_remap : remap_placeholder_tex_, remap_sampler_);
+        layer.tex_remap != nullptr ? layer.tex_remap : remap_placeholder_tex_, remap_sampler_, sampler_);
     if (!layer.srb->create()) {
       destroyTextureLayer(layer);
       return false;
@@ -329,6 +336,8 @@ MediaViewerWidget::TexturePathFormat MediaViewerWidget::texturePathFor(PixelForm
       return TexturePathFormat::kMono8;  // R8 texture, expanded to gray in-shader
     case PixelFormat::kBGRA8888:
       return TexturePathFormat::kBGRA;  // RGBA8 texture, swizzled in-shader
+    case PixelFormat::kDepthR32F:
+      return TexturePathFormat::kDepth;  // R32F texture, colormapped via LUT in-shader
     case PixelFormat::kRGB888:
     case PixelFormat::kRGBA8888:
     case PixelFormat::kBGR888:
@@ -346,6 +355,7 @@ bool MediaViewerWidget::isUploadablePixelFormat(PixelFormat format) noexcept {
     case PixelFormat::kBGRA8888:
     case PixelFormat::kMono8:
     case PixelFormat::kYUV420P:
+    case PixelFormat::kDepthR32F:
       return true;
     case PixelFormat::kMono16:
     case PixelFormat::kNV12:
@@ -399,7 +409,7 @@ bool MediaViewerWidget::uploadDecodedFrameToTexture(
       layer.srb->destroy();
       setTextureLayerBindings(
           layer.srb, layer.uniform_buf, layer.tex_y, layer.tex_u, layer.tex_v, sampler_,
-          layer.tex_remap != nullptr ? layer.tex_remap : remap_placeholder_tex_, remap_sampler_);
+          layer.tex_remap != nullptr ? layer.tex_remap : remap_placeholder_tex_, remap_sampler_, sampler_);
       layer.srb->create();
 
       layer.width = w;
@@ -429,7 +439,15 @@ bool MediaViewerWidget::uploadDecodedFrameToTexture(
   const uint8_t* upload_data = nullptr;
   size_t upload_size = 0;
 
-  if (path == TexturePathFormat::kMono8) {
+  if (path == TexturePathFormat::kDepth) {
+    tex_format = QRhiTexture::R32F;
+    upload_data = src;  // float32 metric depth; the shader colormaps via the LUT in u_tex
+    upload_size = static_cast<size_t>(w) * static_cast<size_t>(h) * sizeof(float);
+    layer.invert = frame.depth.invert ? 1 : 0;
+    layer.near_m = frame.depth.near_m;
+    layer.far_m = frame.depth.far_m;
+    layer.colormap = static_cast<int32_t>(frame.depth.colormap);
+  } else if (path == TexturePathFormat::kMono8) {
     tex_format = QRhiTexture::R8;
     upload_data = src;
     upload_size = static_cast<size_t>(w) * static_cast<size_t>(h);
@@ -463,10 +481,27 @@ bool MediaViewerWidget::uploadDecodedFrameToTexture(
     layer.tex_y->setPixelSize(QSize(w, h));
     layer.tex_y->create();
 
+    if (path == TexturePathFormat::kDepth) {
+      // u_tex carries the colormap LUT: kColormapLutWidth (t) x kColormapCount (rows) RGBA8.
+      static const std::vector<uint8_t> kColormapLut = buildColormapLut();
+      const QSize lut_size(kColormapLutWidth, kColormapCount);
+      layer.tex_u->destroy();
+      layer.tex_u->setFormat(QRhiTexture::RGBA8);
+      layer.tex_u->setPixelSize(lut_size);
+      layer.tex_u->create();
+      QRhiTextureSubresourceUploadDescription lut_desc(kColormapLut.data(), static_cast<quint32>(kColormapLut.size()));
+      lut_desc.setSourceSize(lut_size);
+      updates->uploadTexture(layer.tex_u, QRhiTextureUploadDescription({0, 0, lut_desc}));
+    }
+
     layer.srb->destroy();
+    // Depth (R32F) must sample NEAREST so no pixel blends real depth with the 0
+    // no-data sentinel; remap_sampler_ is Nearest/Clamp. All other formats keep
+    // the Linear sampler_ for the y-plane.
+    QRhiSampler* const y_sampler = (path == TexturePathFormat::kDepth) ? remap_sampler_ : sampler_;
     setTextureLayerBindings(
         layer.srb, layer.uniform_buf, layer.tex_y, layer.tex_u, layer.tex_v, sampler_,
-        layer.tex_remap != nullptr ? layer.tex_remap : remap_placeholder_tex_, remap_sampler_);
+        layer.tex_remap != nullptr ? layer.tex_remap : remap_placeholder_tex_, remap_sampler_, y_sampler);
     layer.srb->create();
 
     layer.width = w;
@@ -491,6 +526,11 @@ void MediaViewerWidget::updateTextureLayerUniform(
   updates->updateDynamicBuffer(layer.uniform_buf, 128, 4, &fmt);
   updates->updateDynamicBuffer(layer.uniform_buf, 132, 4, &layer.opacity);
   updates->updateDynamicBuffer(layer.uniform_buf, 136, 4, &layer.rectify);
+  // Depth-colormap uniforms (kDepth path); ignored by the shader for other formats.
+  updates->updateDynamicBuffer(layer.uniform_buf, 140, 4, &layer.invert);
+  updates->updateDynamicBuffer(layer.uniform_buf, 144, 4, &layer.near_m);
+  updates->updateDynamicBuffer(layer.uniform_buf, 148, 4, &layer.far_m);
+  updates->updateDynamicBuffer(layer.uniform_buf, 152, 4, &layer.colormap);
 }
 
 bool MediaViewerWidget::ensureRemapTexture(
@@ -520,7 +560,8 @@ bool MediaViewerWidget::ensureRemapTexture(
     // Rebind slot 4 to the real LUT (was the placeholder).
     layer.srb->destroy();
     setTextureLayerBindings(
-        layer.srb, layer.uniform_buf, layer.tex_y, layer.tex_u, layer.tex_v, sampler_, layer.tex_remap, remap_sampler_);
+        layer.srb, layer.uniform_buf, layer.tex_y, layer.tex_u, layer.tex_v, sampler_, layer.tex_remap, remap_sampler_,
+        sampler_);
     if (!layer.srb->create()) {
       return false;
     }
