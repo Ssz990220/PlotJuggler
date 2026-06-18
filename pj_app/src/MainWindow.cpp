@@ -22,7 +22,6 @@
 #include <QLabel>
 #include <QLoggingCategory>
 #include <QMenu>
-#include <QMessageBox>
 #include <QMouseEvent>
 #include <QPalette>
 #include <QPointer>
@@ -2060,28 +2059,29 @@ void MainWindow::loadLayoutFromPath(const QString& path) {
 
     if (!pending.empty()) {
       // One consolidated prompt for the whole pending set (never one box per
-      // file). "Use current data" is the fall-through: neither cancel nor reload.
+      // file). "Load Layout only" is the fall-through: neither cancel nor reload.
       QStringList file_lines;
       file_lines.reserve(pending.size());
       for (const auto& replay : pending) {
         file_lines.push_back(QStringLiteral("  %1").arg(replay.resolved_path));
       }
-      QMessageBox box(this);
-      box.setIcon(QMessageBox::Question);
-      box.setWindowTitle(tr("Load Layout"));
-      box.setText(tr("This layout was saved with %n data source(s):\n%1\n\nReload them, or apply the layout to the "
-                     "currently loaded data?",
-                     nullptr, static_cast<int>(pending.size()))
-                      .arg(file_lines.join(QLatin1Char('\n'))));
-      QPushButton* reload_btn = box.addButton(tr("Reload original"), QMessageBox::AcceptRole);
-      box.addButton(tr("Use current data"), QMessageBox::AcceptRole);
-      QPushButton* cancel_btn = box.addButton(tr("Cancel"), QMessageBox::RejectRole);
-      box.setDefaultButton(reload_btn);
-      box.exec();
-      if (box.clickedButton() == cancel_btn) {
-        return;
+      // Themed prompt (frameless, vertical button column in the app chrome).
+      // The button order below defines the index question() returns:
+      // 0 = reload, 1 = layout-only (fall-through), 2 = cancel. "Reload source
+      // file" is the primary/default action; Esc maps to the kCancelRole button.
+      constexpr int kReloadOriginal = 0;
+      constexpr int kCancel = 2;
+      const int choice = MessageBox::question(
+          this, tr("Load Layout"),
+          tr("This layout was saved with %n data source(s):\n\n%1", nullptr, static_cast<int>(pending.size()))
+              .arg(file_lines.join(QLatin1Char('\n'))),
+          {{tr("Reload source file"), MessageBox::kPrimaryRole},
+           {tr("Load Layout only"), MessageBox::kNeutralRole},
+           {tr("Cancel"), MessageBox::kCancelRole}});
+      if (choice == kCancel || choice < 0) {
+        return;  // Cancel or dialog dismissed → abort the layout load.
       }
-      if (box.clickedButton() == reload_btn) {
+      if (choice == kReloadOriginal) {
         // Load each pending file. Distinct files append as separate datasets
         // (FileLoader replaces in place only on a basename match), so the full
         // multi-file session is restored. FileLoader shows its own error dialog
@@ -2097,6 +2097,8 @@ void MainWindow::loadLayoutFromPath(const QString& path) {
           file_loader_->loadFile(replay.resolved_path, this, hints);
         }
       }
+      // choice == 1 (Use current data) → fall through and apply the layout to
+      // the currently loaded data.
     }
   }
 
@@ -2781,22 +2783,15 @@ MainWindow::MissingCurveChoice MainWindow::promptMissingCurves(const QStringList
   body += QStringLiteral("\n");
   body += tr("Choose how to handle them:");
 
-  QMessageBox box(this);
-  box.setIcon(QMessageBox::Question);
-  box.setWindowTitle(tr("Missing curves"));
-  box.setText(body);
-  QPushButton* remove_btn = box.addButton(tr("Remove from plots"), QMessageBox::AcceptRole);
-  QPushButton* cancel_btn = box.addButton(tr("Cancel"), QMessageBox::RejectRole);
-  // Default to Cancel — Remove is destructive (drops all missing curves
-  // from every plot in the layout). Don't let an accidental Enter wipe
-  // state on a layout the user just opened.
-  box.setDefaultButton(cancel_btn);
-  box.exec();
-
-  if (box.clickedButton() == remove_btn) {
-    return MissingCurveChoice::kRemove;
-  }
-  return MissingCurveChoice::kCancel;
+  // Themed prompt. "Remove from plots" takes the destructive role (purple ink);
+  // there is deliberately no default button, because Remove drops all missing
+  // curves from every plot in the layout and an accidental Enter should not
+  // trigger it on a layout the user just opened. Esc / dismiss → Cancel.
+  constexpr int kRemove = 0;
+  const int choice = MessageBox::question(
+      this, tr("Missing curves"), body,
+      {{tr("Remove from plots"), MessageBox::kDestructiveRole}, {tr("Cancel"), MessageBox::kCancelRole}});
+  return choice == kRemove ? MissingCurveChoice::kRemove : MissingCurveChoice::kCancel;
 }
 
 QDomDocument MainWindow::xmlSaveState() const {

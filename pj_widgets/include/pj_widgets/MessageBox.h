@@ -5,12 +5,15 @@
 #include <QDialog>
 #include <QList>
 #include <QString>
+#include <QStringList>
 #include <initializer_list>
 
 class QCheckBox;
+class QEvent;
 class QKeyEvent;
 class QLabel;
 class QPushButton;
+class QShowEvent;
 class QVBoxLayout;
 
 namespace PJ {
@@ -25,6 +28,9 @@ namespace PJ {
 // (information / warning / critical) plus the multi-button question.
 // The instance API is for callers that need full control over labels and
 // roles (matches QMessageBox::addButton).
+//
+// A button label too wide for the dialog's bounded width is word-wrapped
+// onto multiple lines (the button grows taller) rather than clipped.
 class MessageBox : public QDialog {
   Q_OBJECT
  public:
@@ -79,14 +85,30 @@ class MessageBox : public QDialog {
 
  protected:
   void keyPressEvent(QKeyEvent* event) override;
+  // Wraps over-long button labels at QEvent::Polish — after the QSS font is
+  // applied but before the dialog auto-sizes — so a long label breaks across
+  // lines instead of being clipped against the dialog's bounded width.
+  bool event(QEvent* event) override;
+  // Pins the dialog to the exact height its content needs at the shown width,
+  // so the QVBoxLayout never compresses the (otherwise inconsistent) gaps
+  // between stacked buttons. See the .cpp for the heightForWidth rationale.
+  void showEvent(QShowEvent* event) override;
 
  private:
+  // Re-wrap every button's label to fit the dialog's max content width, given
+  // the now-polished button font. Short labels that already fit are left
+  // untouched (rendered exactly as before).
+  void rewrapButtonLabels();
+
   QLabel* title_label_;
   QLabel* body_label_;
   QCheckBox* dont_show_again_;
   QVBoxLayout* button_column_;
   QList<QPushButton*> buttons_;
   QList<ButtonRole> button_roles_;
+  // Original (un-wrapped) button labels, parallel to buttons_. The source of
+  // truth for re-wrapping; the QPushButton's own text may carry soft '\n'.
+  QStringList button_labels_;
   int clicked_index_ = -1;
 };
 

@@ -219,3 +219,22 @@ set_target_properties(colormap_test PROPERTIES
 )
 
 add_test(NAME Colormap COMMAND colormap_test)
+
+add_executable(messagebox_test messagebox_test.cpp)
+
+target_link_libraries(messagebox_test PRIVATE
+    pj_widgets
+    GTest::gtest
+    Qt6::Test
+    Qt6::Widgets
+)
+
+if(DEFINED PJ_WARNING_FLAGS)
+    target_compile_options(messagebox_test PRIVATE ${PJ_WARNING_FLAGS})
+endif()
+
+set_target_properties(messagebox_test PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
+)
+
+add_test(NAME MessageBox COMMAND messagebox_test)

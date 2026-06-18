@@ -4,10 +4,14 @@
 #include "pj_widgets/MessageBox.h"
 
 #include <QCheckBox>
+#include <QEvent>
+#include <QFontMetrics>
 #include <QFrame>
 #include <QKeyEvent>
 #include <QLabel>
+#include <QLayout>
 #include <QPushButton>
+#include <QShowEvent>
 #include <QSizePolicy>
 #include <QVBoxLayout>
 
@@ -28,6 +32,48 @@ const char* roleToToken(MessageBox::ButtonRole role) {
       return "cancel";
   }
   return "neutral";
+}
+
+// Layout insets used to derive the per-line wrap budget for button labels.
+// They mirror values set elsewhere — the card content margin in the ctor
+// (root->setContentsMargins(24, …)), the 1px card border and the button's
+// horizontal padding from the QSS rule for #pjMessageBoxButton (padding:
+// 6px 12px). They only need to be *conservative*: under-estimating the budget
+// wraps a hair early but never lets a line get clipped, so small drift in the
+// QSS values is harmless.
+constexpr int kCardContentMargin = 24;
+constexpr int kCardBorder = 1;
+constexpr int kButtonHPadding = 12;
+constexpr int kWrapSlack = 4;  // extra safety against font-metric rounding
+
+// Greedy word-wrap: insert '\n' so no single rendered line exceeds max_width.
+// Returns text unchanged when it already fits on one line (the common case for
+// short labels, which then render exactly as before). A single word wider than
+// max_width is kept on its own line rather than dropped or split mid-word.
+QString wrapLabelToWidth(const QString& text, const QFontMetrics& fm, int max_width) {
+  if (max_width <= 0 || fm.horizontalAdvance(text) <= max_width) {
+    return text;
+  }
+  const QStringList words = text.split(QLatin1Char(' '), Qt::SkipEmptyParts);
+  if (words.isEmpty()) {
+    return text;
+  }
+  // Greedily pack words onto the current line; start a new line when the next
+  // word would overflow. A single word wider than max_width still gets its own
+  // line (it just can't be packed with anything).
+  QStringList lines;
+  QString line = words.first();
+  for (int i = 1; i < words.size(); ++i) {
+    const QString candidate = line + QLatin1Char(' ') + words[i];
+    if (fm.horizontalAdvance(candidate) <= max_width) {
+      line = candidate;
+    } else {
+      lines.append(line);
+      line = words[i];
+    }
+  }
+  lines.append(line);
+  return lines.join(QLatin1Char('\n'));
 }
 
 }  // namespace
@@ -96,10 +142,12 @@ MessageBox::MessageBox(QWidget* parent) : QDialog(parent) {
 
   auto* btn_holder = new QVBoxLayout;
   btn_holder->setContentsMargins(0, 0, 0, 0);
-  // Visible gap between stacked buttons so each reads as its own affordance.
-  // 8 px reads as buttons touching against the ~38 px button height; 14 px
-  // matches the root spacing so the rhythm is uniform top to bottom.
-  btn_holder->setSpacing(14);
+  // Fixed 6 px gap between stacked buttons — tighter than the 14 px body→button
+  // gap so the buttons read as one grouped affordance. This value must render
+  // identically in every dialog; showEvent() resizes the dialog to the exact
+  // height its content needs so the layout can never compress this spacing
+  // (see the comment there).
+  btn_holder->setSpacing(6);
   button_column_ = btn_holder;
   root->addLayout(btn_holder);
 }
@@ -139,6 +187,7 @@ QPushButton* MessageBox::addButton(const QString& label, ButtonRole role) {
   const int index = static_cast<int>(buttons_.size());
   buttons_.append(btn);
   button_roles_.append(role);
+  button_labels_.append(label);  // un-wrapped original; see rewrapButtonLabels()
   button_column_->addWidget(btn);
 
   QObject::connect(btn, &QPushButton::clicked, this, [this, index]() {
@@ -168,6 +217,51 @@ void MessageBox::keyPressEvent(QKeyEvent* event) {
     return;
   }
   QDialog::keyPressEvent(event);
+}
+
+bool MessageBox::event(QEvent* event) {
+  // Wrap long button labels on Polish: by then QStyleSheetStyle has applied the
+  // QSS font (so QFontMetrics are accurate), and Polish runs before the dialog
+  // auto-sizes. Wrapping in showEvent() would be too late — the dialog would
+  // already be sized for single-line buttons and clip the wrapped text.
+  if (event->type() == QEvent::Polish) {
+    const bool handled = QDialog::event(event);  // let the style apply the font first
+    rewrapButtonLabels();
+    return handled;
+  }
+  return QDialog::event(event);
+}
+
+void MessageBox::showEvent(QShowEvent* event) {
+  QDialog::showEvent(event);
+  // The QVBoxLayout's preferred height is computed using the body label's
+  // heightForWidth at the dialog's *sizeHint* width, but a word-wrapped body
+  // needs more height at the (narrower) width the dialog is actually shown at.
+  // Left uncorrected, the layout is over-constrained and steals the deficit
+  // from the most compressible items — the inter-button spacings — so the gaps
+  // shrink by a different amount in every dialog. Resize to the exact height
+  // the content needs at the real width so every spacing renders at its set
+  // value (6 px between buttons, 14 px elsewhere).
+  if (layout() != nullptr && layout()->hasHeightForWidth()) {
+    const int needed = layout()->heightForWidth(width());
+    if (needed > 0 && needed != height()) {
+      resize(width(), needed);
+    }
+  }
+}
+
+void MessageBox::rewrapButtonLabels() {
+  // Widest a single button line may be before the dialog would exceed its
+  // maximumWidth(): the cap minus the card margins, border and button padding.
+  const int max_line = maximumWidth() - 2 * kCardContentMargin - 2 * kCardBorder - 2 * kButtonHPadding - kWrapSlack;
+  for (int i = 0; i < buttons_.size(); ++i) {
+    // Force the button's own polish so its font reflects the QSS font-size
+    // before we measure: the dialog's Polish fires before its children's, so
+    // without this we'd wrap against the default font and overflow at the
+    // larger rendered size.
+    buttons_[i]->ensurePolished();
+    buttons_[i]->setText(wrapLabelToWidth(button_labels_[i], QFontMetrics(buttons_[i]->font()), max_line));
+  }
 }
 
 // --- Static helpers ----------------------------------------------------------
