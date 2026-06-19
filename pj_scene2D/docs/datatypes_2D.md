@@ -585,17 +585,17 @@ on top of it. They are not part of the 3D scene graph.
 > by `cdr_to_image_annotation_test`.
 
 `MediaViewerWidget` renders **every** `ImageAnnotation` primitive end-to-end through
-five QRhi pipelines:
+its QRhi pipelines (one image pipeline plus three overlay pipelines — Fills,
+Outlines, Text):
 
 | Pipeline | Topology | Used for |
 |---|---|---|
 | Image | textured quad | YUV420P or RGB base frame |
-| Marker (1 px) | `Lines` | `PointsAnnotation` and circle outlines with `thickness ≤ 1.5` (QRhi `Lines` is fixed-width 1 px on most backends — that's the threshold) |
-| Points | `Triangles` | `kPoints` quads, `kLineLoop` fills, circle fills |
-| Thick lines | `Triangles` | `PointsAnnotation` and circle outlines with `thickness > 1.5`, expanded CPU-side to perpendicular rectangles |
+| Fills (`points_overlay_`) | `Triangles` | `kPoints` quads, `kLineLoop` fills, circle fills |
+| Outlines (`thick_overlay_`) | `Triangles` | **All** line/circle strokes, expanded CPU-side to perpendicular rectangles whose width scales with zoom but is floored at 1 px on screen (the native `Lines`/`GL_LINES` "Marker" pipeline and its `thickness ≤ 1.5` threshold were retired — GL line clipping is guard-band-limited) |
 | Text | `Triangles` (textured) | `TextAnnotation` — one quad per label, glyph mask painted by `QPainter` to a `QImage::Format_Alpha8` and uploaded as a `QRhiTexture::R8`. Per-vertex colour acts as a tint over the alpha mask, so two labels with the same text+size but different colours share the same texture (cache key is `(text, font_size_q)`). |
 
-Draw order is `image → fills → 1 px lines → thick lines → text`, so strokes always
+Draw order is `image → fills → outlines → text`, so strokes always
 render on top of fills and text on top of everything. Per-vertex colour
 (`PointsAnnotation.colors[]`) is honoured when its size matches `points.size()`,
 otherwise `color` is splatted across all vertices. `LineLoop` fill (`fill_color.a > 0`)
@@ -674,7 +674,7 @@ encoding level (no separate `CompressedImage`) but split at the semantic level.
 | `BarChart` / `SeriesLines` | Belongs in the time-series/plotting layer, not scene types. |
 | `JointState` | Plottable as time-series (scalars). Robot model visualization uses SceneEntity. |
 | `VoxelGrid` | Deferred. Can be added later as a Grid variant or new type. |
-| `Asset3D` (standalone) | Originally covered by ModelPrimitive inside SceneEntity; the SDK has since added a standalone `sdk::Mesh3D` binary mesh asset (`pj_base/builtin/mesh3d.hpp`, `kMesh3D = 9`). Host-side consumption is landing with pj_scene3D's URDF/mesh work (PR #164); not yet on main. |
+| `Asset3D` (standalone) | Originally covered by ModelPrimitive inside SceneEntity; the SDK has since added a standalone `sdk::Mesh3D` binary mesh asset (`pj_base/builtin/mesh3d.hpp`, `kMesh3D = 9`). pj_scene3D's URDF/mesh rendering work landed on main (PR #164), but it loads URDF mesh files by `package://` path — host-side consumption of the standalone `kMesh3D` *object* is not yet wired. |
 | `AssetVideo` (whole file) | Deferred for the host. The SDK ships the `sdk::AssetVideo` struct + codec (`pj_base/builtin/asset_video.hpp`, `kAssetVideo = 12`), but the host has no decode path for it; per-frame `VideoFrame` (§8) is the canonical video model. |
 | `LaserScan` | Converted to PointCloud at ingest time (polar → cartesian). |
 | `GraphNodes` / `GraphEdges` | Rerun-specific. Deferred. |

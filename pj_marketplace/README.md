@@ -26,12 +26,14 @@ Build output:
 - `build/pj_marketplace_app` — standalone executable
 - `build/tests/` — test executables
 
-To configure the module standalone (the CMakeLists guards this on being the CMake
-root):
-
-```bash
-cmake -S pj_marketplace -B build && cmake --build build
-```
+Only the in-tree build (`./build.sh` from the repo root) is supported. The
+CMakeLists has a standalone-root guard, but it does not build the full module on
+its own: `pj_marketplace_ui` PUBLIC-links the `pj_widgets` target and
+`marketplace_window.ui` uses the custom widget `PJ::ComboBox` from
+`pj_widgets/ComboBox.h`, neither of which the standalone CMake root provides
+(only the root `add_subdirectory(pj_widgets)` does). A bare
+`cmake -S pj_marketplace -B build` configures the core library and tests but
+cannot link `pj_marketplace_ui` / `pj_marketplace_app`.
 
 ## Run Tests
 

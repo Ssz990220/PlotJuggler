@@ -48,8 +48,9 @@ Depends on `pj_base` + `pj_datastore` (public) + Luau (private). Licensed MPL-2.
   this wrong and every `dt`-based filter quantizes.
 - **`LuaSisoTransform` failure mode.** A script runtime error **fails the node**
   (sticky), never corrupting a stateful accumulator. `reset()` =
-  construct-new-and-swap. Luau filters are numeric-scalar only (string-valued input
-  is rejected up front).
+  construct-new-and-swap. Luau filters are numeric-scalar only: a string-valued
+  input is silently coerced to `0.0` (`proc::detail::toDouble`), not rejected —
+  in practice series fed to a filter are numeric, so this case does not arise.
 - **Filters are DATA.** `resources/filters/builtin_filters.luau` is ONE `.luau`
   resource returning a list of 12 classes (none, absolute, scale, derivative,
   integral, moving_average, moving_rms, moving_variance, outlier_removal,

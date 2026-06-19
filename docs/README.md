@@ -29,7 +29,6 @@ Examples of what belongs here:
 | `QT_NOTES.md` | Reference | **Qt 6.11.1 baseline.** Features new since 6.8 (likely past most models' training cutoff), deprecations, and build/platform floors. Read before using an unfamiliar Qt API or reaching for a 6.8-era workaround. |
 | `research/dataset_format_comparison.md` | Reference | Cross-cutting comparison of MCAP, RLDS, LeRobot, Zarr. Informs pj_scene2D and any future dataset-format work. |
 | `research/rerun_notes.md` | Reference | Analysis of Rerun's 2D architecture; comparison input for pj_scene2D and (potentially) pj_scene3D. |
-| `superpowers/specs/2026-05-15-pj-scene3d-design.md` | WIP design spec (untracked) | `pj_scene3D/docs/` already exists and is tracked (`REQUIREMENTS.md`); fold the still-relevant parts of this spec into `pj_scene3D/docs/`, then delete this row. |
 
 ## Where to find module docs
 

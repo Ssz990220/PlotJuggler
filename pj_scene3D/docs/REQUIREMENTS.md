@@ -251,7 +251,7 @@ The demo passes Phase 1 when, on the user-provided MCAP, all of the following ho
 
 ### Explicitly out of Phase 1
 
-assimp, URDF, tinyply, PCD reader, RGB-direct color mode, additional colormaps beyond Turbo, display-frame, follow-mode, TF Frames panel, picking, measurement, click-to-publish, gridmaps, paths, laserscans, integration into `pj_app` (the Phase 1 demo is a standalone binary, mirroring `pj_scene2D/demos/`).
+assimp, URDF, tinyply, PCD reader, RGB-direct color mode, additional colormaps beyond Turbo, display-frame, follow-mode, TF Frames panel, picking, measurement, click-to-publish, gridmaps, paths, laserscans, integration into `pj_app` (the Phase 1 demo is a standalone binary, mirroring `pj_scene2D/tools/`).
 
 > **Note (post–Phase 1):** several of the above have since shipped — URDF/mesh
 > models (assimp), occupancy grids, the additional colormaps, depth-image

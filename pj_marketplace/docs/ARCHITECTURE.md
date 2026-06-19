@@ -472,7 +472,7 @@ Binary compatibility (ABI) is the biggest technical challenge:
 - The registry declares `min_plotjuggler_version` for each extension
 - If SDK changes incompatibly, PlotJuggler provides internal adapter
 - **Existing plugins are never broken by PlotJuggler updates**
-- Stability target: Qt LTS 6.8 (support until 2028)
+- Stability target: current Qt baseline 6.11 (6.12 LTS target); see REQUIREMENTS.md NF-02.
 
 ---
 
@@ -494,7 +494,7 @@ The actual CMakeLists.txt is the source of truth — see `pj_marketplace/CMakeLi
 - The marketplace splits into two static libs: `pj_marketplace` (core: ExtensionManager, RegistryManager, DownloadManager, PlatformUtils) and `pj_marketplace_ui` (MarketplaceWindow, ExtensionDetailDialog).
 - `pj_marketplace` depends on `pj_plugin_catalog` (from `pj_plugins/`) for embedded-DSO-manifest discovery; the standalone build inlines the same `plugin_catalog.cpp` source.
 - C++20, `-Wall -Wextra -Werror -Wshadow -Wnon-virtual-dtor -Wold-style-cast -Wcast-qual -Wconversion -Woverloaded-virtual -Wpedantic`.
-- Tests built only when fixture plugin targets exist (`mock_data_source_plugin`, `mock_file_source_plugin`, `mock_data_source_v2_plugin`, `missing_id_data_source_plugin`).
+- Tests are gated on `PJ_BUILD_TESTS`. `download_manager_test` and `registry_manager_test` always build; `extension_manager_test` builds only when the mock fixture plugin targets (`mock_data_source_plugin`, `mock_file_source_plugin`, `mock_data_source_v2_plugin`, `missing_id_data_source_plugin`) exist.
 
 ### 7.2 Dummy Plugin CMakeLists.txt (POC)
 
@@ -968,12 +968,12 @@ MarketplaceWindow (QMainWindow or QDialog)
 ```cpp
 // In PlotJuggler main menu
 void MainWindow::openMarketplace() {
-    MarketplaceDialog dialog(this);
-    dialog.exec();
+    MarketplaceWindow dlg(&catalog.extensionManager(), registryUrlFromSettings(), this);
+    dlg.exec();
 
-    // After dialog closes, reload plugins if needed
-    if (dialog.installationsChanged()) {
-        reloadPlugins();
+    // After the window closes, reload plugins if needed
+    if (dlg.installationsChanged()) {
+        catalog.reload();
     }
 }
 ```

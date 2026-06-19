@@ -653,7 +653,8 @@ direction:
 - **`pj_scene2d_widgets`** — Qt widget library built on top of `pj_scene2d_core`.
   Contains `QRhiWidget`-based viewers, GLSL shaders, widget-level
   configuration, and any Qt-specific integration. Depends on
-  `pj_scene2d_core` plus Qt 6.8+.
+  `pj_scene2d_core`, `pj_scene_common`, `pj_runtime`, `pj_widgets`, plus
+  Qt 6.11.1 (the build's `find_package(Qt6 6.11.1 …)` floor).
 
 **Consumer contract:**
 

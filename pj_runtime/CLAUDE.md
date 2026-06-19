@@ -18,6 +18,7 @@ The authoritative source is `include/pj_runtime/`. Today:
 |---|---|
 | `AppSession.h` | Central runtime object. Owns and exposes the services below. `pj_app` instantiates one at startup. |
 | `SessionManager.h` | Session lifecycle (load/clear/active dataset). Also owns and exposes the session's `CurveColorRegistry` so plot widgets can reach it through their existing `SessionManager` pointer. |
+| `DataProcessorService.h` | Host service that applies "Data Processors" (filters/transforms) to datastore topics by running them as EAGER `pj_datastore::DerivedEngine` nodes (a `PJ::proc::ProcessorSisoAdapter` wraps each native processor). Owned by `SessionManager` (surfaced via `SessionManager::dataProcessorService()`); `applyFilter` materializes a new output topic. |
 | `CatalogModel.h` | Catalog of curves, objects, and data sources available to the UI. |
 | `Time.h` | Display-relative time vocabulary: `DisplayOffset`, `DisplaySeconds`/`DisplayRange` (the Qwt/playback display-axis coordinate), the display adapters (`offsetOf`, `rawToDisplaySeconds`, `toAxisDouble`, …), and `kNanosecondsPerSecond`. Layered on the absolute spine (`Timepoint`/`Duration`/`fromRaw`/`toRaw`), which now lives in the SDK at `pj_base/time.hpp` so every layer can name absolute time; the display coordinate stays here because the per-dataset offset is an app-presentation policy, not an SDK concern. |
 | `PlaybackEngine.h` | Time cursor + playback (play/pause/seek/loop). Public API speaks `DisplaySeconds`/`DisplayRange`; the `currentTimeChanged(double)` signal + `IDataWidget::onTrackerTime(double)` stay `double` (a fleet-wide moc/vtable contract). |
@@ -33,7 +34,7 @@ The authoritative source is `include/pj_runtime/`. Today:
 
 ## Linked dependencies
 
-Public link surface (per `CMakeLists.txt`): `Qt6::Core`, `Qt6::Network`, `Qt6::Xml`, `pj_datastore`, `pj_marketplace`, `pj_plugin_runtime_catalog`, `nlohmann_json`. Private: `tsl::robin_map`, `pj_internal_fmt`.
+Public link surface (per `CMakeLists.txt`): `Qt6::Core`, `Qt6::Network`, `Qt6::Xml`, `pj_datastore`, `pj_marketplace`, `pj_plugin_runtime_catalog`, `nlohmann_json`. Private: `tsl::robin_map`, `pj_internal_fmt`, `pj_scripting` (DataProcessorService routes by-id applyFilter through the Luau FilterCatalogue).
 
 ## When porting from PJ3
 

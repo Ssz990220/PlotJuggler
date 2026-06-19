@@ -62,15 +62,19 @@ struct TopicMetadata {
 class DataEngine;
 
 /// Per-topic container of committed chunks (commit-ordered deque).
-/// appendSealedChunk() enforces chunk t_min >= previous t_max; evictBefore()
-/// drops chunks fully older than a threshold. Also holds the column layout for
-/// schemaless (schema_id==0) topics and per-field array-expansion counts.
+/// appendSealedChunk() appends in commit order without rejecting any chunk —
+/// out-of-order ingest means chunk time ranges may overlap, so queries merge
+/// across them. evictBefore() drops the contiguous older prefix and raises a
+/// per-topic retention floor. Also holds the column layout for schemaless
+/// (schema_id==0) topics and per-field array-expansion counts.
 class TopicStorage {
  public:
   /// Create storage for one topic descriptor.
   TopicStorage(TopicId topic_id, TopicDescriptor descriptor);
 
-  /// Append a sealed chunk; rejects out-of-order chunk timestamps.
+  /// Append a sealed chunk. Never rejects: chunks are kept in commit order and
+  /// may overlap in time (queries merge across them); rejecting would silently
+  /// drop late data.
   [[nodiscard]] PJ::Status appendSealedChunk(TopicChunk chunk);
 
   /// Remove chunks whose max time is strictly before `t_keep_min`.

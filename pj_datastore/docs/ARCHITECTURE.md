@@ -59,7 +59,7 @@ Hierarchy: **Dataset -> Topic -> Chunk -> Column**
 
 Tracks per-column `ColumnStats` incrementally (min, max, null_count, is_constant, run_count). `seal()` encodes columns, assigns a monotonic `ChunkId` via `std::atomic<ChunkId>`, and produces an immutable `TopicChunk`.
 
-**`TopicStorage`** — Per-topic container of committed chunks in a `std::deque<TopicChunk>`. `appendSealedChunk()` validates ordering: each chunk's `t_min >= previous chunk's t_max`. `evictBefore()` removes chunks whose `t_max < threshold`. Also stores column descriptors for schemaless (schema_id == 0) topics and per-field array expansion counts.
+**`TopicStorage`** — Per-topic container of committed chunks in a `std::deque<TopicChunk>`. `appendSealedChunk()` appends in commit order without rejecting any chunk — out-of-order ingest means chunk time ranges may overlap, so queries merge across them (see §5). `evictBefore()` removes the contiguous prefix of chunks whose `t_max < threshold` and raises a per-topic retention floor. Also stores column descriptors for schemaless (schema_id == 0) topics and per-field array expansion counts.
 
 **`TypedColumnBuffer`** — In-memory typed column buffer used internally by the builder. One buffer per column. Supports per-type single-row append (`appendFloat64`, `appendInt64`, etc.) and bulk append (`appendFloat64Bulk`, etc.). String storage uses a separate offsets buffer (`RawBuffer`) with Arrow-compatible uint32 offset layout. Validity bitmap (`BitVector`) is lazily initialized -- only allocated when the first null is appended.
 
@@ -142,7 +142,7 @@ Encoding selection in `TopicChunkBuilder::seal()`:
 - `onSourceCommitted(changed_topics)` — marks directly dependent nodes dirty.
 - `scheduleAll()` — processes all dirty nodes in topological order (incremental path).
 - `scheduleActive(active_nodes)` — processes only specified nodes and their transitive upstream dependencies.
-- `recompute_batch(node_id)` — clears output topic, calls `transform.reset()`, replays full input history.
+- `recomputeBatch(node_id)` — clears output topic, calls `transform.reset()`, replays full input history.
 
 **`ISISOTransform`** — Point-at-a-time interface. `calculate(time, input, &out_time, &out_value) -> bool`. Called in strictly ascending timestamp order. State persists across chunk boundaries. `reset()` clears state for batch recompute. `outputKind()` declares output `StorageKind` (default kFloat64).
 
@@ -152,7 +152,7 @@ Encoding selection in `TopicChunkBuilder::seal()`:
 
 Incremental scheduling: each node tracks a `last_processed_chunk_id` watermark. `scheduleAll()` iterates only chunks with id > watermark, reads each row, calls `calculate()`, writes output via `beginRow`/`set`/`finishRow`, then flushes and commits.
 
-Out-of-order input: transforms have a strict ascending-timestamp contract, so before running a node the scheduler checks whether any not-yet-processed input chunk lands at or before the node's timestamp watermarks (`siso_last_ts` for SISO; `mimo_last_chunk_id` + `mimo_last_ts` for MIMO). Such late input triggers `recompute_batch` — reset transform state, clear outputs, fully replay over the time-merged input (the SISO replay feeds rows through the `RangeCursor` heap merge) — instead of incremental work.
+Out-of-order input: transforms have a strict ascending-timestamp contract, so before running a node the scheduler checks whether any not-yet-processed input chunk lands at or before the node's timestamp watermarks (`siso_last_ts` for SISO; `mimo_last_chunk_id` + `mimo_last_ts` for MIMO). Such late input triggers `recomputeBatch` — reset transform state, clear outputs, fully replay over the time-merged input (the SISO replay feeds rows through the `RangeCursor` heap merge) — instead of incremental work.
 
 ### Color Map Layer
 
@@ -237,7 +237,7 @@ Effectively single-threaded. `DataWriter` accumulates in-memory. `DataEngine::co
 
 ## 7. Testing
 
-18 core test executables covering all layers (the authoritative live set is the
+24 core test executables covering all layers (the authoritative live set is the
 `PJ_DATASTORE_TESTS` list plus the explicitly-added targets in `CMakeLists.txt`):
 
 | Test | Coverage |
@@ -248,16 +248,22 @@ Effectively single-threaded. `DataWriter` accumulates in-memory. `DataEngine::co
 | `encoding_test` | All 5 encoding types: constant, FOR, dictionary, packed bool, raw |
 | `chunk_test` | `TopicChunkBuilder` row/bulk paths, seal, read-back |
 | `topic_storage_test` | Commit ordering, eviction, metadata |
+| `out_of_order_ingest_test` | out-of-order ingest (overlapping chunks, retention floor) |
 | `query_test` | `RangeCursor`, `latestAt`, edge cases |
 | `series_reader_test` | `SeriesReader`, `SeriesCursor`, series sample bounds/lookups |
 | `engine_integration_test` | Full `DataEngine` + `DataWriter` + `DataReader` round-trip |
 | `derived_engine_test` | SISO/MIMO transforms, topological order, incremental + batch recompute |
 | `array_expansion_test` | `expandArray`, clamping, cross-builder expansion |
 | `regression_test` | Bug-specific regression cases |
+| `sequential_uid_test` | `SequentialUID` allocation |
 | `object_store_test` | `ObjectStore` owned/lazy push, latest-at, retention, `flushTo` |
 | `plugin_data_host_object_test` | Object-write host bridges (`pj.source_object_write` / `pj.parser_object_write`) onto `ObjectStore` |
 | `plugin_data_host_object_read_test` | Toolbox object-read host (`pj.toolbox_object_read`) queries |
 | `plugin_parser_object_write_test` | Parser plugin writing canonical builtin objects through the object-write host |
+| `streaming_mirror_test` | streaming two-engine `flushTo`/`setTarget` mirror |
+| `sample_test` | `Sample` value type |
+| `data_processor_test` | `PJ::proc::DataProcessor` base |
+| `processor_siso_adapter_test` | `ProcessorSisoAdapter` (processor as DerivedEngine node) |
 | `arrow_import_test` | Arrow IPC schema parsing and batch import |
 | `arrow_stream_round_trip_test` | v4 Arrow C Data Interface round-trip (Phase 1b) |
 

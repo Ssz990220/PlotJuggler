@@ -11,7 +11,7 @@
 ### For End Users
 
 1. Open PlotJuggler
-2. Click the **Extensions** button (puzzle-piece icon) in the title bar, then choose **PlotJuggler Marketplace** at the bottom of the dropdown
+2. Open the **File** menu and choose **Extensions Marketplace…** (keyboard shortcut Ctrl+Shift+M)
 3. Search for the extension you need (e.g., "ROS 2")
 4. Click **Install**
 5. Restart PlotJuggler if prompted
@@ -33,8 +33,8 @@
 ### 2.1 Opening the Marketplace
 
 **From PlotJuggler:**
-- Click the **Extensions** button (puzzle-piece icon) in the window title bar, then choose **PlotJuggler Marketplace** at the bottom of the dropdown (below the list of installed extensions). There is no top-level Plugins menu.
-- Keyboard shortcut: (TBD)
+- Open the **File** menu and choose **Extensions Marketplace…**. The **Help ▸ Installed Extensions** submenu lists already-installed plugins (informational only — managing extensions happens in the Marketplace).
+- Keyboard shortcut: Ctrl+Shift+M
 
 **Standalone (development only):**
 ```bash
@@ -304,7 +304,7 @@ Inside that root:
 
 ### 5.2 Registry URL
 
-**Default:** `https://raw.githubusercontent.com/plotjuggler/marketplace-registry/main/registry.json`
+**Default:** `https://raw.githubusercontent.com/PlotJuggler/pj-plugin-registry/refs/heads/development/registry.json`
 
 **Custom registry:** Open the marketplace, click ⚙ Settings, paste the new URL, click OK. The URL is persisted under `QSettings("PlotJuggler", "Marketplace")/registry_url` and restored on next launch.
 

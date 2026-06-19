@@ -16,8 +16,8 @@ pj_plotting  ──►  pj_plotting_core  ──►  pj_datastore + pj_base
 
 | Subdir | Contents | Role |
 |---|---|---|
-| `core/` | `DatastoreCurveAdapter`, `PointSeriesXY` | Bridges PJ3-style `QwtSeriesData<QPointF>` consumers to `pj_datastore::DataReader`. No Qt Widgets. |
-| `widget/` | `PlotWidgetBase`, `PlotWidget`, `PlotDocker`, `TabbedPlotWidget`, `PlotZoomer`, `PlotPanner`, `PlotMagnifier`, `CurveTracker`, `PlotLegend`, `PlotFocusOverlay`, `DockWidget`, `DockToolbar`, `CurveEditor` | The Qt/Qwt widgets, ported from PJ3's `plotjuggler_app/`. |
+| `core/` | `DatastoreCurveAdapter`, `FilteredCurveAdapter`, `PointSeriesXY` | Bridges PJ3-style `QwtSeriesData<QPointF>` consumers to `pj_datastore::DataReader`. `FilteredCurveAdapter` is a lazy `DatastoreCurveAdapter` subclass that serves the output of a `proc::DataProcessor` (the Filter Editor before/after preview, refreshed on the streaming commit path). No Qt Widgets. |
+| `widget/` | `PlotWidgetBase`, `PlotWidget`, `PlotDocker`, `TabbedPlotWidget`, `PlotZoomer`, `PlotPanner`, `PlotMagnifier`, `CurveTracker`, `PlotLegend`, `PlotFocusOverlay`, `DockWidget`, `DockToolbar`, `CurveEditor`, `FilterEditorPanel`, `ParameterForm` | The Qt/Qwt widgets, ported from PJ3's `plotjuggler_app/`. |
 | `tests/` | gtest binaries | Adapter and dock-placeholder tests. |
 
 ## Port strategy (per root CLAUDE.md "Porting policy")

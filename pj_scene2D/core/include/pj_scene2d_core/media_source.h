@@ -16,7 +16,7 @@ namespace PJ {
 /// Concrete implementations:
 ///   ImagePipelineSource  — worker-backed CodecPipeline + ObjectStore
 ///   StreamingVideoSource — wraps StreamingVideoDecoder + worker thread
-///   DepthPipelineSource  — synchronous DepthImage colormap decode
+///   DepthPipelineSource  — worker-backed depth decode (raw R32F + GPU colormap)
 ///   ScenePipelineSource  — synchronous vector overlays decoded from ObjectStore
 ///   CompositeMediaSource — fans out across N layers, returns one MediaFrame
 class MediaSource {
@@ -30,8 +30,8 @@ class MediaSource {
   MediaSource& operator=(MediaSource&&) = delete;
 
   /// Called by main thread when the global time changes.
-  /// May decode synchronously (depth/scene) or post to an internal worker
-  /// (image/video), depending on the implementation.
+  /// May decode synchronously (scene) or post to an internal worker
+  /// (image/video/depth), depending on the implementation.
   virtual void setTimestamp(int64_t ts_ns) = 0;
 
   /// Called by main thread at render rate.

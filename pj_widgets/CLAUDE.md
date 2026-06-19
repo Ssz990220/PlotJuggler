@@ -22,12 +22,19 @@ Widgets:
 | `ProgressBar.h` | App-styled `QProgressBar` variant — rounded thick-outlined trough, light-blue rounded fill, single-colour centred caption (`setFormat("Loading MCAP")`). Logic-free; the look comes entirely from the `PJ--ProgressBar` QSS class rule (so a plain `QProgressBar` keeps the default look). `Q_OBJECT` is mandatory — it's what makes the class selector match. |
 | `ProgressDialog.h` | `QProgressDialog` replacement on the `Dialog` chrome: message + bar + up to two stop buttons. Domain-neutral — reports `Action::Primary` / `Action::Secondary` (sticky, polled via `action()` or the `stopRequested` signal) and leaves their meaning to the caller. No close affordance (base ✕ hidden, Esc swallowed). |
 | `RecentFilesMenu.h` | `QMenu` populated from a persistent recent-files list. |
+| `ComboBox.h` | `QComboBox` subclass that auto-installs `ComboBoxGradientDelegate` so the popup paints the app gradient. **Use this instead of plain `QComboBox` everywhere in PJ4** (promote `QComboBox` → `PJ::ComboBox` in `.ui` files). |
+| `ComboBoxGradientDelegate.h` | Item delegate painting the light_purple → light_blue gradient on selected/hovered rows; works around the QSS limitation that combobox popups ignore gradient `::item:selected` rules. |
 | `ColorPickerPopup.h` | Compact popup color picker. |
 | `ColorPickerWidget.h` | Standard fixed-size colour swatch button that opens a `ColorPickerPopup`; the one reusable replacement for the per-layer swatch buttons each module used to hand-roll. `colorChanged()` fires only on user picks; `setColor()` is silent. |
 | `CheckButton.h` | Checkable "pill" toggle button — the label sits inside an accent-filled (checked) / accent-outlined (unchecked) capsule. A labelled, click-the-whole-control alternative to `QCheckBox`; distinct from `ToggleSwitch` (a sliding switch with no inline text). |
 | `ToggleSwitch.h` | iOS-style sliding-switch toggle replacement for `QCheckBox`. |
 | `IntScrubber.h` / `DoubleScrubber.h` / `ScrubberBase.h` | Drag-to-scrub numeric inputs. |
 | `SectionHeaderBand.h` | 24-px titlebar-tone section header strip (leading indent baked in); background themed once via the `PJ--SectionHeaderBand` QSS class rule, so instances need no per-objectName stylesheet registration. |
+| `LayerListView.h` | Reorderable list of `LayerRow` items (id / name / visibility / warning state) with drag-reorder; the reusable scene-layer list control. |
+| `RangeSlider.h` | Two-handle (min/max) slider for selecting a sub-range. |
+| `ConfigPanelHost.h` | Single-slot container that hosts one config panel at a time, taking ownership and `deleteLater()`-ing the previous one. |
+| `CredentialsEditor.h` | Composite credentials editor (cert path / api key / allow-insecure) used as the host-side widget for plugin `.ui` `<widget class="CredentialsEditor">`; domain-neutral, with optional plugin-supplied `apiKeyPattern`. |
+| `DateRangePicker.h` | Date/time range picker bundle (`CalendarWidget` / `TimePickerWidget` / `DualCalendarWidget` / `DateRangePicker`); registered by class name for plugin `.ui` files. Emits `filterChanged(RangeFilter)`. |
 | `RealSlider.h` | Floating-point `QSlider`. |
 | `FlowLayout.h` | Standard Qt example flow layout. |
 | `ElidingLabel.h` | `QLabel` that elides instead of clipping. |
@@ -44,6 +51,7 @@ Helpers (header-only or small):
 | `Colormap.h` | Shared scientific colormaps (turbo/viridis/plasma/grayscale): the `Colormap` enum, `colorFor()`, `buildColormapLut()` (a CPU RGBA8 LUT for LUT-sampling GPU backends — the 2D depth shader) and `colormapGlsl()` (the *same* polynomials as GLSL, injected into in-shader backends — the 3D pointcloud pass). One source of truth so a scalar maps to the same colour in the 2D and 3D views. Qt-free / no `pj_base` (returns a plain `ColormapRgb`, not `sdk::ColorRGBA`). |
 | `Style.h` | Common style accessors. |
 | `SvgUtil.h` | Helpers to load and recolor SVG resources. |
+| `ThemeColors.h` | C++ mirror (`PJ::theme` namespace) of the brand-colour tokens defined in `resources/stylesheet_{dark,light}.qss`, for code that needs the same colours the QSS uses. |
 | `VisualizationKind.h` | Neutral `enum class VisualizationKind { Plot, Scene2D, Scene3D }` — the UI vocabulary `VisualizationPlaceholderWidget` emits; the app shell maps the scene families to concrete `"scene2d"`/`"scene3d"` object-widget kinds. |
 
 ## UI convention
@@ -52,6 +60,6 @@ Per root CLAUDE.md: **prefer `.ui` files**. `AUTOUIC` is on. Search path is `src
 
 ## Tests
 
-`tests/curve_tree_view_test.cpp`. Add a focused gtest binary per widget when behavior is non-trivial.
+`tests/` holds a focused gtest binary per widget whose behavior is non-trivial (e.g. `curve_tree_view_test.cpp`, `messagebox_test.cpp`, `progress_bar_test.cpp`, `credentials_editor_test.cpp`, `layer_list_view_test.cpp`, `colormap_test.cpp`, `scrubber_base_test.cpp`, `file_dialog_test.cpp`, the raster IPC pair). Keep adding one per non-trivial widget.
 
 `pj_widgets` has no `docs/` folder — each widget's intent fits in its header doc-comment.

@@ -26,7 +26,7 @@ PJ4/
 ├── plotjuggler_sdk/         # git submodule — Level 0 plugin SDK (pj_base / pj_plugins)
 ├── pj_datastore/            # Level 0 columnar store + ObjectStore + DerivedEngine (moved out of the submodule)
 ├── pj_scene_common/         # backend-agnostic layered scene dock framework, shared by the scene widget families
-├── pj_scene2D/              # 2D scene widget family: core logic, Qt widgets, demos, tests
+├── pj_scene2D/              # 2D scene widget family: core logic, Qt widgets, tools, tests
 ├── pj_scene3D/              # 3D scene widget family: TF, pointclouds, occupancy grids, URDF/mesh, markers; HDR/SSAO/EDL pipeline + OpenGL widgets, demos
 ├── pj_marketplace/          # extension install/manage
 ├── pj_dialog_host/          # Qt host for plugin-provided dialogs
@@ -56,7 +56,7 @@ When adding files, use the owning module rather than creating new top-level fold
 - `pj_marketplace/`: extension registry, download, install/manage services, and marketplace UI.
 - `pj_dialog_host/`: Qt host/binding for plugin-provided dialogs. General app dialogs stay in `pj_app`; reusable dialog controls stay in `pj_widgets`.
 - `pj_scripting/`: Luau filter engine for Data Processors — self-describing `.luau` filter classes behind a language-agnostic `ScriptEngine` seam (Python out-of-process is a future drop-in). It layers Luau onto the `PJ::proc::DataProcessor` base owned by `pj_datastore`. Do not place scripting code under `pj_app` or widget modules unless it is strictly UI/editor code.
-- `pj_scene3D/`: 3D scene widget family (robotics viz): TF, pointclouds, occupancy grids, URDF/mesh, markers. Independent 3D logic in `core/`, OpenGL widgets in `widgets/`, tests in `tests/`, opt-in dev demos in `demos/` (gated by `PJ_BUILD_TOOLS`, off by default). Do not add 3D rendering code elsewhere.
+- `pj_scene3D/`: 3D scene widget family (robotics viz): TF, pointclouds, occupancy grids, URDF/mesh, markers. Independent 3D logic in `core/`, OpenGL widgets in `widgets/`, tests in `tests/`, standalone dev demos in `demos/` (built whenever the `pj_scene3d_widgets` target exists, i.e. on a default build). Do not add 3D rendering code elsewhere.
 - `resources/`: shared app resources registered in `resources.qrc`; module-local test/demo assets should live with that module.
 - `3rdparty/`: vendored source dependencies added via CMake `add_subdirectory`. Conan/system dependencies do not belong here.
 - `thirdparty/`: GPLv2/shareware license + source-offer compliance artifacts (`thirdparty/retro/`) shipped alongside the separately-licensed `pj-raster-helper`; distinct from `3rdparty/` (CMake-vendored sources). The root `CMakeLists.txt` installs these next to the helper binary.

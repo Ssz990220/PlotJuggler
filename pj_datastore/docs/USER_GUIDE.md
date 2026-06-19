@@ -22,11 +22,12 @@ All are defined in `pj_base/sdk/plugin_data_api.hpp` (the `pj_base` headers come
 ### ValueRef — Preserve Native Types
 
 ```cpp
-using ValueRef = std::variant<NullValue,
+using ValueRef = std::variant<NullValue, TypedNull,
     float, double,
     int8_t, int16_t, int32_t, int64_t,
     uint8_t, uint16_t, uint32_t, uint64_t,
     bool, std::string_view>;
+// TypedNull is a null carrying an explicit column type — see §6.
 ```
 
 **Never cast int64 or uint64 to double.** Values larger than 2^53 lose precision. Push native types directly:

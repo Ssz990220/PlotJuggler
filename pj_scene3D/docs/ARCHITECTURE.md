@@ -145,8 +145,11 @@ testable (`camera_near_far_test`, `camera_zoom_to_cursor_test`,
   center-of-view zoom. On `FlyCamera` zoom-to-cursor degenerates to a forward
   dolly by design.
 - **Scene bounds.** `Scene3DLayer::worldBounds()` returns an optional source-frame
-  `AABB`; `PointCloudLayer`, `OccupancyGridLayer`, and `RobotModelLayer` override
-  it. `Scene3DDockWidget` unions the visible layers' boxes (`unionAABB`) and pushes
+  `AABB`; `PointCloudLayer`, `OccupancyGridLayer`, and `DepthCloudLayer` override
+  it. `RobotModelLayer` deliberately does **not** (it is bounds-less by design — a
+  robot is posed by the live TF tree the camera already frames through the other
+  store-backed layers, so adding its links would pull the camera around as joints
+  move). `Scene3DDockWidget` unions the visible layers' boxes (`unionAABB`) and pushes
   the result to `SceneViewWidget::setSceneBounds` → the active camera, feeding the
   adaptive near/far above. No reporting layer → invalid AABB → working-distance
   fallback.
@@ -234,8 +237,9 @@ colored by depth. Sibling of the 2D depth view — same data, different geometry
   than pair the wrong camera. The result is memoized by `(frame_id, CameraInfo
   SampleId)` and revalidated parse-free via `latestAt`.
 - **Back-projection.** The math is the Qt-free core `depth_backproject.{h,cpp}`
-  (`depthToPoints` / `depthToColoredPoints`); a single pass yields positions, the
-  per-point depth scalar, the world AABB, and the colormap range together.
+  (`depthToPoints`); a single pass yields positions, the per-point depth scalar,
+  the world AABB, and the colormap range together (via the optional
+  `scalar_out` / `bounds_out` / `scalar_range_out` out-params).
 - **Render + color.** The POC feeds the points through the existing
   `PointcloudRenderPass` (a dedicated GPU attributeless / `texelFetch` pass is a
   planned follow-up). Depth is colored through the **shared** `PJ::Colormap`

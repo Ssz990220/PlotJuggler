@@ -23,9 +23,10 @@ pj_scene2d_widgets  ──►  pj_scene2d_core  ──►  pj_base
      │                  ├──►  turbojpeg
      │                  └──►  libpng
      │
-     ├──►  Qt 6.8+ (Widgets, Gui — QRhi via Gui's private headers)
+     ├──►  Qt 6.11.1 (Widgets, Gui, GuiPrivate — QRhi via Gui's private headers)
      ├──►  pj_runtime           (IDataWidget contract, PlaybackEngine driver)
      ├──►  pj_scene_common      (SceneDockWidget/ISceneLayer base; backend-agnostic layered scene dock framework)
+     ├──►  pj_widgets           (shared Colormap.h LUT/enum for the GPU depth colormap)
      └──►  pj_scene2d_core
 ```
 
@@ -805,9 +806,9 @@ and 4.
 
 ## 7. Rendering Pipeline
 
-### 7.1 QRhiWidget — six pipelines
+### 7.1 QRhiWidget — five pipelines
 
-`MediaViewerWidget` subclasses `QRhiWidget` (Qt 6.8+), which abstracts
+`MediaViewerWidget` subclasses `QRhiWidget` (Qt 6.11.1), which abstracts
 over Vulkan, Metal, D3D11, and OpenGL at runtime. The widget owns five
 QRhi graphics pipelines that share the same `viewTransform` UBO so
 zoom/pan apply uniformly:
@@ -944,7 +945,7 @@ that pj_scene2D renders today (image-pixel space only — see REQUIREMENTS §4.1
 |---|---|---|
 | Base image/video | `ImagePipelineSource`, `StreamingVideoSource` | `.pixel_layers` (RGB/YUV pixel buffer; `.base` kept as the legacy single-layer fallback) |
 | Vector annotations (`ImageAnnotation`) | `ScenePipelineSource` | `.overlays` (typed primitives — points, line loops/strips/lists, circles, texts) |
-| Depth colormap | `DepthPipelineSource` / `DepthImageLayer` (registered for `sdk::BuiltinObjectType::kDepthImage`) | `.pixel_layers` (RGBA via turbo/jet colormap) |
+| Depth colormap | `DepthPipelineSource` / `DepthImageLayer` (routed from a depth-encoded `kImage` topic by peeking the first sample's `encoding`; a dormant `kDepthImage` registration also exists, but no producer emits that type) | `.pixel_layers` (a raw `PixelFormat::kDepthR32F` float frame + `DepthColorParams`; the per-layer turbo/viridis/plasma/grayscale colormap, near/far range, and invert are applied on the GPU in the media shader — no CPU colormap) |
 | Segmentation mask (planned) | `ImagePipelineSource` with `SegmentationPalette` codec | `.pixel_layers` (not yet registered as a layer type) |
 
 ### 8.2 Compositing pipeline
@@ -1093,11 +1094,13 @@ acquired and released independently — never held simultaneously:
    frame → releases.
 
 The main thread acquires the worker `result_mutex_` only through
-`takeFrame()`, and never while holding ObjectStore locks. Synchronous
-`DepthPipelineSource` and `ScenePipelineSource` acquire ObjectStore shared
-locks inside `setTimestamp()`, copy the entry bytes/handle, release the store
-lock, then decode and retain a pending frame without `request_mutex_` or
-`result_mutex_`.
+`takeFrame()`, and never while holding ObjectStore locks. The synchronous
+`ScenePipelineSource` acquires the ObjectStore shared lock inside
+`setTimestamp()`, copies the entry bytes/handle, releases the store lock, then
+decodes and retains a pending frame without `request_mutex_` or `result_mutex_`.
+(`DepthPipelineSource` is worker-backed — its compressedDepth PNG inflate is too
+heavy for the UI thread — and uses the same `AsyncFrameWorker` locking as
+`ImagePipelineSource`; see §10.1.)
 
 ### 10.4 Contention analysis
 
