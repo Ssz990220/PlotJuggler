@@ -249,6 +249,14 @@ void SceneViewWidget::setAxesVisible(bool visible) {
   update();
 }
 
+void SceneViewWidget::setTfConnectionsVisible(bool visible) {
+  if (tf_connections_visible_ == visible) {
+    return;
+  }
+  tf_connections_visible_ = visible;
+  update();
+}
+
 void SceneViewWidget::setLayers(const std::vector<Scene3DLayer*>& ordered) {
   if (layers_ == ordered) {
     return;
@@ -305,6 +313,7 @@ void SceneViewWidget::initializeGL() {
 
   axes_.initializeGL();
   grid_.initializeGL();
+  tf_connections_.initializeGL();
   overlay_.initializeGL();
   // Layer GL is initialised lazily in paintGL — layers may be added
   // dynamically after the widget is already realised, so initializing
@@ -346,6 +355,7 @@ void SceneViewWidget::releaseGlResources() {
   makeCurrent();
   axes_.releaseGL();
   grid_.releaseGL();
+  tf_connections_.releaseGL();
   overlay_.releaseGL();
   for (Scene3DLayer* layer : layers_) {
     if (layer != nullptr) {
@@ -662,9 +672,18 @@ void SceneViewWidget::renderScene(
   if (grid_visible_) {
     grid_.render(view_params, frame_ctx);
   }
-  if (tf_ && axes_visible_) {
+  // TF overlays (parent-connection lines + axis triads) share the annotation
+  // blend so they bypass the tonemap and keep their true colors (the magenta
+  // lines would otherwise desaturate through AgX). Lines first, under the
+  // triads, so the arrows sit on top of the line ends at each frame origin.
+  if (tf_ && (tf_connections_visible_ || axes_visible_)) {
     annotation_blend();
-    axes_.render(view_params, frame_ctx);
+    if (tf_connections_visible_) {
+      tf_connections_.render(view_params, frame_ctx);
+    }
+    if (axes_visible_) {
+      axes_.render(view_params, frame_ctx);
+    }
     data_blend();
   }
   // Iterate layers in the order supplied by SceneDockWidget. Each layer is responsible

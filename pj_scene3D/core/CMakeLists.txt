@@ -21,6 +21,7 @@ add_library(pj_scene3d_core STATIC
   src/robot_model_bridges.cpp
   src/scene_entities_decode.cpp
   src/tf/tf_buffer.cpp
+  src/tf/tf_connections.cpp
   src/version.cpp
 )
 target_include_directories(pj_scene3d_core PUBLIC include)
@@ -48,6 +49,7 @@ if(PJ_BUILD_TESTS)
     ../tests/scene_entities_decode_test.cpp
     ../tests/tf_buffer_test.cpp
     ../tests/tf_buffer_hierarchy_test.cpp
+    ../tests/tf_connections_test.cpp
     ../tests/robot_model_bridges_test.cpp
   )
   foreach(test_src ${PJ_SCENE3D_CORE_TESTS})

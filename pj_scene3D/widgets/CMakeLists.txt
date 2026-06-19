@@ -19,6 +19,7 @@ set(PJ_SCENE3D_WIDGETS_SOURCES
   src/passes/axis_render_pass.cpp
   src/passes/grid_geometry.cpp
   src/passes/grid_render_pass.cpp
+  src/passes/tf_connections_render_pass.cpp
   src/passes/pointcloud_render_pass.cpp
   src/passes/occupancy_grid_render_pass.cpp
   src/passes/marker_render_pass.cpp
@@ -317,6 +318,20 @@ if(PJ_BUILD_TESTS)
   )
   target_compile_options(hud_overlay_gl_test PRIVATE ${PJ_WARNING_FLAGS} ${PJ_SANITIZER_FLAGS})
   add_test(NAME hud_overlay_gl_test COMMAND hud_overlay_gl_test)
+
+  # Real-GL integration test for the TF parent-connection lines: renders the
+  # scene and asserts magenta line pixels appear only when enabled (and survive
+  # the dock-reparent context recreation). Same skip rules / xvfb requirement as
+  # hud_overlay_gl_test; custom main, so it links GTest::gtest.
+  add_executable(tf_connections_gl_test
+    tests/tf_connections_gl_test.cpp
+  )
+  target_link_libraries(tf_connections_gl_test PRIVATE
+    pj_scene3d_widgets
+    GTest::gtest
+  )
+  target_compile_options(tf_connections_gl_test PRIVATE ${PJ_WARNING_FLAGS} ${PJ_SANITIZER_FLAGS})
+  add_test(NAME tf_connections_gl_test COMMAND tf_connections_gl_test)
 
   # Pure (non-GL) URDF parser + package-resolver unit tests. They reach the
   # private src/ headers (urdf_parser.h / urdf_package_resolver.h) and use small

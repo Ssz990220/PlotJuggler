@@ -110,6 +110,8 @@ ICON_MAPPING: dict[str, tuple[str, dict[str, str]]] = {
     "format_paint.svg":                    ("Format Paint",               {}),
     "fullscreen.svg":                      ("Fullscreen",                 {}),
     "Fx.svg":                              ("Function",                   {}),
+    "graph_1.svg":                         ("Graph 1",                    {}),
+    "graph_4.svg":                         ("Graph 4",                    {}),
     "green_circle.svg":                    ("Circle",                     {}),
     "grid.svg":                            ("Background Grid Small",      {}),
     "grid_4x4.svg":                        ("Grid 4x4",                   {}),

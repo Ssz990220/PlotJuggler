@@ -1114,6 +1114,7 @@ QDomElement Scene3DDockWidget::xmlSaveState(QDomDocument& doc) const {
     sc.setAttribute(QStringLiteral("axes_visible"), bool_attr(view_->axesVisible()));
     sc.setAttribute(QStringLiteral("gizmo_size_m"), view_->gizmoSize());
     sc.setAttribute(QStringLiteral("gizmo_opacity"), view_->gizmoOpacity());
+    sc.setAttribute(QStringLiteral("tf_parent_lines"), bool_attr(view_->tfConnectionsVisible()));
     const auto& shading = view_->meshShadingParams();
     sc.setAttribute(QStringLiteral("meshes_visible"), bool_attr(shading.meshes_visible));
     sc.setAttribute(QStringLiteral("mesh_opacity"), shading.mesh_opacity);
@@ -1288,6 +1289,7 @@ bool Scene3DDockWidget::xmlLoadState(const QDomElement& element) {
       view_->setGizmoSize(sc.attribute(QStringLiteral("gizmo_size_m"), QString::number(view_->gizmoSize())).toFloat());
       view_->setGizmoOpacity(
           sc.attribute(QStringLiteral("gizmo_opacity"), QString::number(view_->gizmoOpacity())).toFloat());
+      view_->setTfConnectionsVisible(bool_attr(QStringLiteral("tf_parent_lines"), view_->tfConnectionsVisible()));
       auto& shading = view_->meshShadingParams();
       shading.meshes_visible = bool_attr(QStringLiteral("meshes_visible"), shading.meshes_visible);
       shading.mesh_opacity =

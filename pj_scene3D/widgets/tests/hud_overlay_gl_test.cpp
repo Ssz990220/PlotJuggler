@@ -46,6 +46,7 @@
 #include <memory>
 #include <utility>
 
+#include "gl_scene_test_support.h"  // haveGl, liveGlVersion
 #include "pj_base/sdk/platform.hpp"
 #include "pj_base/time.hpp"
 #include "pj_scene3d_core/tf/tf_buffer.h"
@@ -55,6 +56,8 @@
 namespace {
 
 using pj::scene3d::SceneViewWidget;
+using pj::scene3d::test::haveGl;
+using pj::scene3d::test::liveGlVersion;
 
 int luma(const QColor& c) {
   return (c.red() * 2126 + c.green() * 7152 + c.blue() * 722) / 10000;
@@ -103,37 +106,6 @@ int brightPixels(const QImage& img, const QRect& box) {
     }
   }
   return n;
-}
-
-bool haveGl(const SceneViewWidget& view) {
-  return view.context() != nullptr && view.context()->isValid();
-}
-
-// (major, minor) of the live GL context as the DRIVER reports it via
-// glGetString(GL_VERSION) — NOT the requested QSurfaceFormat. main() asks for a
-// 4.5 core context, and that request can survive into context()->format() even
-// when the driver only granted an older context, so the format would lie. The
-// version string is authoritative. Returns (0, 0) when the context is unusable
-// or the string is unparsable (e.g. "OpenGL ES …"), which the caller treats as
-// "too old". Reading it needs the context current, so this makes it current on
-// its own surface and releases it again; the per-test grabFramebuffer() calls
-// re-make it current as usual, so this is side-effect-free for the widget.
-std::pair<int, int> liveGlVersion(const SceneViewWidget& view) {
-  QOpenGLContext* ctx = view.context();
-  if (ctx == nullptr || !ctx->isValid()) {
-    return {0, 0};
-  }
-  QSurface* surface = ctx->surface();
-  if (surface == nullptr || !ctx->makeCurrent(surface)) {
-    const QSurfaceFormat fmt = ctx->format();  // fallback: can't make current
-    return {fmt.majorVersion(), fmt.minorVersion()};
-  }
-  const auto* version = reinterpret_cast<const char*>(ctx->functions()->glGetString(GL_VERSION));
-  ctx->doneCurrent();
-  // Desktop GL_VERSION begins "MAJOR.MINOR…" (e.g. "4.5 (Core Profile) Mesa…",
-  // "4.6.0 NVIDIA…"). Take the leading token and split on '.'.
-  const QStringList parts = QString::fromLatin1(version).section(QLatin1Char(' '), 0, 0).split(QLatin1Char('.'));
-  return {parts.value(0).toInt(), parts.value(1).toInt()};
 }
 
 // Stands up a shown SceneViewWidget on a real GL context and owns the reparent

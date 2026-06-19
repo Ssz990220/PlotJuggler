@@ -52,6 +52,7 @@ constexpr auto kVisibilityOnPath = ":/resources/svg/visibility.svg";
 constexpr auto kVisibilityOffPath = ":/resources/svg/visibility_off.svg";
 constexpr auto kTrashIconPath = ":/resources/svg/trash.svg";
 constexpr auto kAddIconPath = ":/resources/svg/add.svg";
+constexpr auto kTfConnectionsIconPath = ":/resources/svg/graph_4.svg";
 
 // Trailing eye/add/trash button column: the scene-control grids reserve this
 // width in their 3rd column so every field's right edge lines up whether or not
@@ -378,11 +379,31 @@ void Scene3DConfigPanel::buildSceneControls(QVBoxLayout* root) {
 
   // "Frames" in the UI = the TF frame axis triads (gizmo_* internally and in
   // the persisted settings keys, kept for compatibility).
+  // Trailing toggle on this row: show/hide the magenta lines connecting each TF
+  // frame to its parent (rviz2/Foxglove "show parent connections"). Sized like
+  // the eye toggles (sizeTrailingButton → 20x20, column 2) but WITHOUT the
+  // curveVisibilityToggle objectName, so the default :checked QSS wash gives the
+  // on/off feedback its static graph glyph can't. Default on. Persisted under
+  // tf_parent_lines (one of the mirrored scene-control sites — see
+  // applySceneControlsTo).
+  tf_lines_button_ = new QToolButton(this);
+  tf_lines_button_->setCheckable(true);
+  tf_lines_button_->setAutoRaise(true);
+  tf_lines_button_->setFocusPolicy(Qt::NoFocus);
+  tf_lines_button_->setToolTip(tr("Show/hide lines connecting each TF frame to its parent"));
+  sizeTrailingButton(tf_lines_button_);
+  tf_lines_button_->setProperty("settings_key", QStringLiteral("tf_parent_lines"));
+  tf_lines_button_->setChecked(settings.value(QStringLiteral("tf_parent_lines"), true).toBool());
+  connect(tf_lines_button_, &QToolButton::toggled, this, [this](bool checked) {
+    persistControl(QStringLiteral("tf_parent_lines"), checked);
+    applySceneControls();
+  });
+
   gizmo_size_ = makeScrubber(0.01, 5.0, 0.05, 0.15);
   wire(
       gizmo_size_, "gizmo_size", [this](const QVariant& v) { gizmo_size_->setValue(v.toDouble()); },
       qOverload<double>(&DoubleScrubber::valueChanged));
-  addGridRow(tm_grid, tm_row, tr("Frames size (m)"), gizmo_size_);
+  addGridRow(tm_grid, tm_row, tr("Frames size (m)"), gizmo_size_, tf_lines_button_);
 
   gizmo_opacity_ = makeScrubber(0.0, 1.0, 0.1, 1.0);
   gizmo_eye_ = make_eye("gizmos_visible", tr("Show/hide the TF frames"));
@@ -481,6 +502,7 @@ void Scene3DConfigPanel::applySceneControlsTo(Scene3DDockWidget* dock) {
   view->setAxesVisible(gizmo_eye_->isChecked());
   view->setGizmoSize(static_cast<float>(gizmo_size_->value()));
   view->setGizmoOpacity(static_cast<float>(gizmo_opacity_->value()));
+  view->setTfConnectionsVisible(tf_lines_button_->isChecked());
 
   // Per-view look knobs: drives only the bound dock's view. Sibling docks keep
   // their own MeshShadingParams and converge when the panel rebinds and applies.
@@ -537,6 +559,12 @@ void Scene3DConfigPanel::loadControlsFromDock(Scene3DDockWidget* dock) {
       ->setChecked(true);
   set_eye(grid_eye_, view->gridVisible());
   set_eye(gizmo_eye_, view->axesVisible());
+  // Not an eye toggle (static glyph): just reflect the checked state without
+  // echoing back through the toggled handler (which would re-persist/re-apply).
+  {
+    const QSignalBlocker block(tf_lines_button_);
+    tf_lines_button_->setChecked(view->tfConnectionsVisible());
+  }
 }
 
 void Scene3DConfigPanel::setEyeIcon(QToolButton* eye, bool on) {
@@ -557,6 +585,9 @@ void Scene3DConfigPanel::applyIcons() {
   }
   if (add_model_button_ != nullptr) {
     add_model_button_->setIcon(loadSvg(QLatin1String(kAddIconPath), theme_));
+  }
+  if (tf_lines_button_ != nullptr) {
+    tf_lines_button_->setIcon(loadSvg(QLatin1String(kTfConnectionsIconPath), theme_));
   }
   if (params_copy_ != nullptr) {
     params_copy_->setIcon(loadSvg(QStringLiteral(":/resources/svg/copy.svg"), theme_));

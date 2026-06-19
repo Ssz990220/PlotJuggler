@@ -142,6 +142,9 @@ class Scene3DConfigPanel : public QWidget {
   DoubleScrubber* grid_size_ = nullptr;
   IntScrubber* grid_divisions_ = nullptr;
   DoubleScrubber* gizmo_size_ = nullptr;
+  // Trailing toggle on the "Frames size" row: show/hide the TF parent-connection
+  // lines. Checkable (checked = visible); not an eye toggle (static graph glyph).
+  QToolButton* tf_lines_button_ = nullptr;
   DoubleScrubber* gizmo_opacity_ = nullptr;
   QToolButton* gizmo_eye_ = nullptr;
   DoubleScrubber* mesh_opacity_ = nullptr;

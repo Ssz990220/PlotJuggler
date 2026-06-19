@@ -143,7 +143,8 @@ still holds for everything else.
 # Validation
 
 Before any commit, run the tests and check that they all pass
-(`tf_buffer_test`, `tf_buffer_hierarchy_test`, `occupancy_grid_reconstructor_test`,
+(`tf_buffer_test`, `tf_buffer_hierarchy_test`, `tf_connections_test`,
+`occupancy_grid_reconstructor_test`,
 `occupancy_grid_bounds_test`, `occupancy_grid_layer_rebind_test`,
 `occupancy_grid_layer_updates_test`,
 `scene_entities_decode_test`, `pointcloud_codecs_test`,

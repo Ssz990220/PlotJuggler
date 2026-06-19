@@ -26,6 +26,7 @@
 #include "pj_scene3d_widgets/passes/edl_pass.h"
 #include "pj_scene3d_widgets/passes/grid_render_pass.h"
 #include "pj_scene3d_widgets/passes/ssao_pass.h"
+#include "pj_scene3d_widgets/passes/tf_connections_render_pass.h"
 #include "pj_scene3d_widgets/scene_hdr_fbo.h"
 #include "pj_scene3d_widgets/scene_look_defaults.h"
 
@@ -169,6 +170,14 @@ class SceneViewWidget : public QOpenGLWidget {
     return axes_visible_;
   }
 
+  // Show/hide the magenta lines connecting each TF frame to its parent (rviz2 /
+  // Foxglove "show parent connections"). Independent of axesVisible — the lines
+  // can show with the triads hidden and vice versa. Default visible.
+  void setTfConnectionsVisible(bool visible);
+  [[nodiscard]] bool tfConnectionsVisible() const {
+    return tf_connections_visible_;
+  }
+
   // ---- Performance instrumentation & anti-aliasing benchmark hooks ----------
   // These exist to MEASURE rendering cost (GPU/CPU ms per frame) and to sweep
   // anti-aliasing settings; none change the default app look. The HUD is an
@@ -270,6 +279,7 @@ class SceneViewWidget : public QOpenGLWidget {
   // Owned passes that don't depend on the layer count.
   AxisRenderPass axes_;
   GridRenderPass grid_;
+  TfConnectionsRenderPass tf_connections_;
   AxisOverlayPass overlay_;
   // Off-screen HDR render chain (Phase 0A): geometry renders into an RGBA16F +
   // DEPTH32F FBO at the backing FBO's achieved MSAA count, is resolved to
@@ -313,6 +323,8 @@ class SceneViewWidget : public QOpenGLWidget {
   // Whether the TF axis triads are drawn (see setAxesVisible). Does not affect
   // layer frame resolution, only the axes pass.
   bool axes_visible_ = true;
+  // Whether the TF parent-connection lines draw (see setTfConnectionsVisible).
+  bool tf_connections_visible_ = true;
   // Whether the ground grid draws (Part C "Grid" eye toggle).
   bool grid_visible_ = true;
   // One warning per context when the HDR chain is unavailable and paintGL falls
