@@ -311,8 +311,10 @@ internally and process in `onPoll()`.
 rebuild the host's `WriteCore` on the GUI thread while the ingest worker may still
 be inside the old one — a data race + use-after-free on the `WriteCore` object /
 `state_->core`, not on engine state, so `lockEngine()` cannot cover it (both racers
-touch the same `WriteCore`). It is made safe by holding `state_->core` as a
-`std::atomic<std::shared_ptr<WriteCore>>`: each worker callback `load()`s a strong
+touch the same `WriteCore`). It is made safe by holding `state_->core` as an atomic
+shared_ptr — `AtomicSharedPtr<WriteCore>`, a small mutex-backed stand-in for
+`std::atomic<std::shared_ptr<WriteCore>>` (libstdc++ ships that specialization only
+from GCC 12, and the build/CI baseline is GCC 11): each worker callback `load()`s a strong
 reference that pins the core for the call's duration, and `setTarget` builds the
 replacement fully, then publishes it with a release `store()`. An in-flight append
 finishes on the old core (kept alive by the worker's reference) — the same accepted

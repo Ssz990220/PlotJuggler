@@ -467,9 +467,10 @@ TEST(EngineThreadSafety, NestedReadsUnderHeldCursorRecursiveOk) {
 // use-after-free on the WriteCore: the swap reassigned a plain unique_ptr and
 // destroyed the core the worker was still inside, and the engine lock did NOT cover
 // it (both racers touch the WriteCore object, not engine state). After the fix
-// state_->core is a std::atomic<std::shared_ptr<WriteCore>>, so the worker pins the
-// core for the whole call and the swap can never free it underneath (matching the
-// object-store host's std::atomic<ObjectStore*>).
+// state_->core is an atomic shared_ptr (AtomicSharedPtr<WriteCore> — a portable
+// stand-in for std::atomic<std::shared_ptr<WriteCore>>, which libstdc++ provides
+// only since GCC 12), so the worker pins the core for the whole call and the swap
+// can never free it underneath (matching the object-store host's std::atomic<ObjectStore*>).
 //
 // This is a TSan-only regression guard: its real pass criterion is "ThreadSanitizer
 // reports nothing", so it skips itself when not built with -fsanitize=thread (a

@@ -85,7 +85,43 @@ bool fieldFitsInPoint(const PointField& field, uint32_t point_step) {
 
 }  // namespace
 
-ConvertedPointCloud convertCanonical(const PointCloud& src, std::string_view scalar_field) {
+ColorLayout detectColorLayout(const PointCloud& src) {
+  ColorLayout layout;
+  // 1. Canonical packed color: a single uint32 field named "rgba" (with alpha) or
+  //    "rgb" (alpha forced opaque). Its 4 bytes are R,G,B,A in increasing address.
+  for (const std::string_view name : {std::string_view("rgba"), std::string_view("rgb")}) {
+    const PointField* packed = findField(src.fields, name);
+    if (packed != nullptr && packed->datatype == PointField::Datatype::kUint32) {
+      layout.valid = true;
+      layout.r_offset = packed->offset;
+      layout.g_offset = packed->offset + 1;
+      layout.b_offset = packed->offset + 2;
+      layout.has_alpha = (name == "rgba");
+      layout.a_offset = packed->offset + 3;
+      return layout;
+    }
+  }
+  // 2. Separate uint8 channels (the raw, un-normalized foxglove layout).
+  const PointField* red = findField(src.fields, "red");
+  const PointField* green = findField(src.fields, "green");
+  const PointField* blue = findField(src.fields, "blue");
+  const PointField* alpha = findField(src.fields, "alpha");
+  const auto is_u8 = [](const PointField* field) {
+    return field != nullptr && field->datatype == PointField::Datatype::kUint8;
+  };
+  if (is_u8(red) && is_u8(green) && is_u8(blue)) {
+    layout.valid = true;
+    layout.r_offset = red->offset;
+    layout.g_offset = green->offset;
+    layout.b_offset = blue->offset;
+    layout.has_alpha = is_u8(alpha);
+    layout.a_offset = layout.has_alpha ? alpha->offset : 0;
+    return layout;
+  }
+  return layout;  // no recognizable color field
+}
+
+ConvertedPointCloud convertCanonical(const PointCloud& src, std::string_view scalar_field, bool extract_rgba) {
   ConvertedPointCloud out;
   out.cloud.frame_id = src.frame_id;
 
@@ -115,8 +151,25 @@ ConvertedPointCloud convertCanonical(const PointCloud& src, std::string_view sca
       !fieldFitsInPoint(*zf, src.point_step)) {
     return out;
   }
+  // RGB-direct mode (extract_rgba) takes precedence over scalar extraction: it reads
+  // the cloud's color field instead of a colormap scalar. Validate every color byte we
+  // will read against point_step, the same OOB guard applied to x/y/z above.
+  ColorLayout color{};
+  if (extract_rgba) {
+    color = detectColorLayout(src);
+    if (color.valid) {
+      const auto byte_fits = [&](uint32_t offset) {
+        return static_cast<uint64_t>(offset) + 1u <= static_cast<uint64_t>(src.point_step);
+      };
+      if (!byte_fits(color.r_offset) || !byte_fits(color.g_offset) || !byte_fits(color.b_offset) ||
+          (color.has_alpha && !byte_fits(color.a_offset))) {
+        return out;  // a malformed color offset is the same OOB hazard as x/y/z
+      }
+    }
+  }
+
   const PointField* sf = nullptr;
-  if (!scalar_field.empty()) {
+  if (!extract_rgba && !scalar_field.empty()) {
     sf = findField(src.fields, scalar_field);
     if (sf != nullptr && !fieldFitsInPoint(*sf, src.point_step)) {
       return out;  // a malformed scalar offset is the same OOB hazard as x/y/z
@@ -134,10 +187,14 @@ ConvertedPointCloud convertCanonical(const PointCloud& src, std::string_view sca
   };
 
   const bool want_scalar = sf != nullptr;
+  const bool want_rgba = extract_rgba && color.valid;
   out.cloud.positions.reserve(point_count);
   if (want_scalar) {
     out.cloud.scalar.reserve(point_count);
     out.cloud.scalar_field_name = std::string(scalar_field);
+  }
+  if (want_rgba) {
+    out.cloud.rgba.reserve(point_count);
   }
 
   // Single pass over the point buffer: positions, optional scalar, and the finite-point
@@ -151,6 +208,13 @@ ConvertedPointCloud convertCanonical(const PointCloud& src, std::string_view sca
     }
     if (want_scalar) {
       out.cloud.scalar.push_back(readScalarAt(base + sf->offset, sf->datatype));
+    }
+    if (want_rgba) {
+      const uint32_t r = base[color.r_offset];
+      const uint32_t g = base[color.g_offset];
+      const uint32_t b = base[color.b_offset];
+      const uint32_t a = color.has_alpha ? base[color.a_offset] : 255u;
+      out.cloud.rgba.push_back(r | (g << 8) | (b << 16) | (a << 24));
     }
   }
   return out;

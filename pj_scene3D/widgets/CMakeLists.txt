@@ -275,6 +275,20 @@ if(PJ_BUILD_TESTS)
   target_compile_options(pointcloud_layer_rebind_test PRIVATE ${PJ_WARNING_FLAGS} ${PJ_SANITIZER_FLAGS})
   add_test(NAME pointcloud_layer_rebind_test COMMAND pointcloud_layer_rebind_test)
 
+  # RGB-direct colour mode: a cloud carrying per-point colour (foxglove
+  # red/green/blue/alpha or a packed rgba field) collapses the channels to a single
+  # RGB mode, defaults to it, and round-trips through layout XML.
+  add_executable(pointcloud_layer_rgb_test
+    ../tests/pointcloud_layer_rgb_test.cpp
+  )
+  target_link_libraries(pointcloud_layer_rgb_test PRIVATE
+    pj_scene3d_widgets
+    GTest::gtest
+  )
+  target_compile_definitions(pointcloud_layer_rgb_test PRIVATE PJ_SCENE3D_TEST_HOOKS)
+  target_compile_options(pointcloud_layer_rgb_test PRIVATE ${PJ_WARNING_FLAGS} ${PJ_SANITIZER_FLAGS})
+  add_test(NAME pointcloud_layer_rgb_test COMMAND pointcloud_layer_rgb_test)
+
   # M.66: drive the latest-wins compressed-decode coalescing state machine
   # (pending_ collapse, wanted_ staleness, failed_id_ memo) over the real
   # QtConcurrent + QFutureWatcher path. Encodes valid fixtures with the Cloudini

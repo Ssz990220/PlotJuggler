@@ -97,6 +97,12 @@ class PointCloudLayer : public Scene3DLayer {
   [[nodiscard]] PointcloudRenderPass::ColorType colorType() const {
     return color_type_;
   }
+  // True when the active cloud carries a per-point colour field (a packed 'rgba'/'rgb'
+  // field, or separate red/green/blue[/alpha] channels). Gates the config widget's
+  // single "RGB" colour-type entry.
+  [[nodiscard]] bool hasColorField() const {
+    return has_color_;
+  }
   [[nodiscard]] QColor solidColor() const {
     return solid_color_;
   }
@@ -276,6 +282,13 @@ class PointCloudLayer : public Scene3DLayer {
   float size_meters_ = 0.01f;
   float size_pixels_ = 2.0f;
   PointcloudRenderPass::ColorType color_type_ = PointcloudRenderPass::ColorType::kField;
+  // True once the active cloud is known to carry a per-point colour field. Drives the
+  // "RGB" combo entry and the fresh-attach default to kRgb.
+  bool has_color_ = false;
+  // Set when the colour mode was chosen explicitly (layout restore or a user combo
+  // pick), so populateColorFields() does NOT override it with the colour-present RGB
+  // default on the next decoded sample. Cleared state = "pick a smart default".
+  bool color_choice_explicit_ = false;
   QColor solid_color_{255, 255, 255};
   PointcloudRenderPass::Colormap colormap_ = PointcloudRenderPass::Colormap::kTurbo;
   bool invert_lut_ = false;
@@ -290,6 +303,10 @@ class PointCloudLayer : public Scene3DLayer {
   // the per-tick parse/convert/upload when nothing changed.
   SampleId last_pushed_id_;
   std::string last_pushed_color_field_;
+  // Whether the last GPU push extracted per-point RGBA (kRgb mode). Part of the
+  // renderAt() skip key so toggling RGB on/off forces a re-decode even on the same
+  // sample (color_field_ alone doesn't change between field/solid and rgb).
+  bool last_pushed_rgb_ = false;
 
   // Async compressed-cloud decode state. Inert for raw PointCloud topics.
   QFutureWatcher<DecodeResult>* decode_watcher_ = nullptr;  // child of this; created on first compressed sample

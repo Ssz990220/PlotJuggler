@@ -22,14 +22,22 @@
 namespace {
 
 using PJ::Span;
+using pj::scene3d::ColorLayout;
 using pj::scene3d::convertCanonical;
 using pj::scene3d::ConvertedPointCloud;
+using pj::scene3d::detectColorLayout;
 using pj::scene3d::readFloat32At;
 using pj::scene3d::readFloat64At;
 using pj::scene3d::readScalarAt;
 using PJ::sdk::PointCloud;
 using PJ::sdk::PointField;
 using DT = PointField::Datatype;
+
+// Canonical packed color: byte0=R, byte1=G, byte2=B, byte3=A (little-endian uint32).
+constexpr uint32_t packRgba(uint8_t r, uint8_t g, uint8_t b, uint8_t a) {
+  return static_cast<uint32_t>(r) | (static_cast<uint32_t>(g) << 8) | (static_cast<uint32_t>(b) << 16) |
+         (static_cast<uint32_t>(a) << 24);
+}
 
 // --- Little-endian byte writers -------------------------------------------------
 
@@ -187,6 +195,135 @@ TEST(PointCloudConvert, NonFinitePointsExcludedFromBounds) {
   ASSERT_TRUE(out.bounds.valid);
   EXPECT_FLOAT_EQ(out.bounds.min.x, 7.0f);
   EXPECT_FLOAT_EQ(out.bounds.max.x, 7.0f);
+}
+
+// --- Color detection + extraction (RGB-direct mode) -----------------------------
+
+TEST(PointCloudColor, DetectsPackedRgbaField) {
+  // Canonical normalized layout: a single uint32 'rgba' field.
+  std::vector<PointField> fields = {
+      {"x", 0, DT::kFloat32, 1}, {"y", 4, DT::kFloat32, 1}, {"z", 8, DT::kFloat32, 1}, {"rgba", 12, DT::kUint32, 1}};
+  const PointCloud cloud = makeCloud(/*width=*/1, /*point_step=*/16, std::move(fields), std::vector<uint8_t>(16, 0));
+
+  const ColorLayout layout = detectColorLayout(cloud);
+  ASSERT_TRUE(layout.valid);
+  EXPECT_EQ(layout.r_offset, 12u);
+  EXPECT_EQ(layout.g_offset, 13u);
+  EXPECT_EQ(layout.b_offset, 14u);
+  EXPECT_TRUE(layout.has_alpha);
+  EXPECT_EQ(layout.a_offset, 15u);
+}
+
+TEST(PointCloudColor, DetectsSeparateRgbaChannels) {
+  // The raw foxglove layout the parser has not yet normalized: red/green/blue/alpha uint8.
+  std::vector<PointField> fields = {{"x", 0, DT::kFloat32, 1},   {"y", 4, DT::kFloat32, 1},
+                                    {"z", 8, DT::kFloat32, 1},   {"intensity", 12, DT::kFloat32, 1},
+                                    {"red", 16, DT::kUint8, 1},  {"green", 17, DT::kUint8, 1},
+                                    {"blue", 18, DT::kUint8, 1}, {"alpha", 19, DT::kUint8, 1}};
+  const PointCloud cloud = makeCloud(/*width=*/1, /*point_step=*/20, std::move(fields), std::vector<uint8_t>(20, 0));
+
+  const ColorLayout layout = detectColorLayout(cloud);
+  ASSERT_TRUE(layout.valid);
+  EXPECT_EQ(layout.r_offset, 16u);
+  EXPECT_EQ(layout.g_offset, 17u);
+  EXPECT_EQ(layout.b_offset, 18u);
+  EXPECT_TRUE(layout.has_alpha);
+  EXPECT_EQ(layout.a_offset, 19u);
+}
+
+TEST(PointCloudColor, SeparateRgbWithoutAlpha) {
+  std::vector<PointField> fields = {{"x", 0, DT::kFloat32, 1},    {"y", 4, DT::kFloat32, 1},
+                                    {"z", 8, DT::kFloat32, 1},    {"red", 12, DT::kUint8, 1},
+                                    {"green", 13, DT::kUint8, 1}, {"blue", 14, DT::kUint8, 1}};
+  const PointCloud cloud = makeCloud(/*width=*/1, /*point_step=*/16, std::move(fields), std::vector<uint8_t>(16, 0));
+
+  const ColorLayout layout = detectColorLayout(cloud);
+  ASSERT_TRUE(layout.valid);
+  EXPECT_FALSE(layout.has_alpha);
+}
+
+TEST(PointCloudColor, NoColorFieldsReturnsInvalid) {
+  std::vector<PointField> fields = {
+      {"x", 0, DT::kFloat32, 1},
+      {"y", 4, DT::kFloat32, 1},
+      {"z", 8, DT::kFloat32, 1},
+      {"intensity", 12, DT::kFloat32, 1}};
+  const PointCloud cloud = makeCloud(/*width=*/1, /*point_step=*/16, std::move(fields), std::vector<uint8_t>(16, 0));
+
+  EXPECT_FALSE(detectColorLayout(cloud).valid);
+}
+
+TEST(PointCloudConvert, ExtractsPackedRgbaPerPoint) {
+  std::vector<PointField> fields = {
+      {"x", 0, DT::kFloat32, 1}, {"y", 4, DT::kFloat32, 1}, {"z", 8, DT::kFloat32, 1}, {"rgba", 12, DT::kUint32, 1}};
+  std::vector<uint8_t> bytes;
+  auto push_point = [&](float x, float y, float z, uint8_t r, uint8_t g, uint8_t b, uint8_t a) {
+    putBytes(bytes, leBytes(x).data(), 4);
+    putBytes(bytes, leBytes(y).data(), 4);
+    putBytes(bytes, leBytes(z).data(), 4);
+    bytes.insert(bytes.end(), {r, g, b, a});  // canonical R,G,B,A increasing-address order
+  };
+  push_point(1.0f, 2.0f, 3.0f, 107, 142, 35, 255);  // olivedrab (the av-ds semantic color)
+  push_point(4.0f, 5.0f, 6.0f, 10, 20, 30, 200);
+
+  const PointCloud cloud = makeCloud(/*width=*/2, /*point_step=*/16, std::move(fields), std::move(bytes));
+  const ConvertedPointCloud out = convertCanonical(cloud, /*scalar_field=*/"", /*extract_rgba=*/true);
+
+  ASSERT_EQ(out.cloud.positions.size(), 2u);
+  ASSERT_EQ(out.cloud.rgba.size(), 2u);
+  EXPECT_EQ(out.cloud.rgba[0], packRgba(107, 142, 35, 255));
+  EXPECT_EQ(out.cloud.rgba[1], packRgba(10, 20, 30, 200));
+  EXPECT_TRUE(out.cloud.scalar.empty());  // RGB mode bypasses the colormap scalar
+}
+
+TEST(PointCloudConvert, ExtractsSeparateChannelsAsPackedRgba) {
+  // Exactly the user's foxglove cloud layout (red/green/blue/alpha uint8 at 16..19).
+  std::vector<PointField> fields = {{"x", 0, DT::kFloat32, 1},   {"y", 4, DT::kFloat32, 1},
+                                    {"z", 8, DT::kFloat32, 1},   {"intensity", 12, DT::kFloat32, 1},
+                                    {"red", 16, DT::kUint8, 1},  {"green", 17, DT::kUint8, 1},
+                                    {"blue", 18, DT::kUint8, 1}, {"alpha", 19, DT::kUint8, 1}};
+  std::vector<uint8_t> bytes;
+  putBytes(bytes, leBytes(1.0f).data(), 4);
+  putBytes(bytes, leBytes(2.0f).data(), 4);
+  putBytes(bytes, leBytes(3.0f).data(), 4);
+  putBytes(bytes, leBytes(0.0f).data(), 4);  // intensity
+  bytes.insert(bytes.end(), {107, 142, 35, 255});
+
+  const PointCloud cloud = makeCloud(/*width=*/1, /*point_step=*/20, std::move(fields), std::move(bytes));
+  const ConvertedPointCloud out = convertCanonical(cloud, /*scalar_field=*/"", /*extract_rgba=*/true);
+
+  ASSERT_EQ(out.cloud.rgba.size(), 1u);
+  EXPECT_EQ(out.cloud.rgba[0], packRgba(107, 142, 35, 255));
+}
+
+TEST(PointCloudConvert, RgbWithoutAlphaDefaultsOpaque) {
+  std::vector<PointField> fields = {{"x", 0, DT::kFloat32, 1},    {"y", 4, DT::kFloat32, 1},
+                                    {"z", 8, DT::kFloat32, 1},    {"red", 12, DT::kUint8, 1},
+                                    {"green", 13, DT::kUint8, 1}, {"blue", 14, DT::kUint8, 1}};
+  std::vector<uint8_t> bytes;
+  putBytes(bytes, leBytes(1.0f).data(), 4);
+  putBytes(bytes, leBytes(2.0f).data(), 4);
+  putBytes(bytes, leBytes(3.0f).data(), 4);
+  bytes.insert(bytes.end(), {10, 20, 30, 0});  // 4th byte is padding, NOT alpha
+
+  const PointCloud cloud = makeCloud(/*width=*/1, /*point_step=*/16, std::move(fields), std::move(bytes));
+  const ConvertedPointCloud out = convertCanonical(cloud, /*scalar_field=*/"", /*extract_rgba=*/true);
+
+  ASSERT_EQ(out.cloud.rgba.size(), 1u);
+  EXPECT_EQ(out.cloud.rgba[0], packRgba(10, 20, 30, 255));  // alpha forced opaque
+}
+
+TEST(PointCloudConvert, RejectsColorChannelOffsetPastPointStep) {
+  // alpha at offset 19 but point_step=19 -> read of byte 19 is past the point. Reject (empty).
+  std::vector<PointField> fields = {{"x", 0, DT::kFloat32, 1},    {"y", 4, DT::kFloat32, 1},
+                                    {"z", 8, DT::kFloat32, 1},    {"red", 16, DT::kUint8, 1},
+                                    {"green", 17, DT::kUint8, 1}, {"blue", 18, DT::kUint8, 1},
+                                    {"alpha", 19, DT::kUint8, 1}};
+  const PointCloud cloud = makeCloud(/*width=*/1, /*point_step=*/19, std::move(fields), std::vector<uint8_t>(19, 0));
+
+  const ConvertedPointCloud out = convertCanonical(cloud, /*scalar_field=*/"", /*extract_rgba=*/true);
+  EXPECT_TRUE(out.cloud.positions.empty());
+  EXPECT_TRUE(out.cloud.rgba.empty());
 }
 
 // --- convertCanonical: rejection (returns empty) --------------------------------

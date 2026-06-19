@@ -225,6 +225,7 @@ A ROS2 MCAP file (provided by the user) containing at minimum:
 - **Origin grid**: a 10×10 grid of 1-metre squares on the ground plane (Z = 0) at the world origin, drawn in a subdued color. Always visible in Phase 1 (no per-widget toggle yet). Renders in the fixed-frame (i.e., translates/rotates with whichever frame the user selects as fixed).
 - **Pointcloud**: rendered as `GL_POINTS` (single VBO, no LOD), in its source frame, re-transformed to the widget's fixed-frame each frame via the TF buffer.
 - **Pointcloud coloring**: a per-display dropdown selects the source scalar field from `{ X, Y, Z, intensity, ring }`. The dropdown is populated by inspecting the first decoded cloud's `fields` schema (the `timestamp` field is explicitly ignored). The selected field drives a **colormap** — Phase 1 shipped Turbo only; the current build offers the shared `PJ::Colormap` set (turbo / viridis / plasma / grayscale, from `pj_widgets/Colormap.h`, the same colors as the 2D depth view). For a **spatial axis (X/Y/Z)** the colormap input is the coordinate in the **fixed frame**, computed on the GPU from the same source→fixed transform that places the geometry — so sensors at different mounts agree on world height (the raw x/y/z field is sensor-local). Its auto-range is derived per frame from the cloud's source-AABB transformed by that live model, so colour and range track TF motion without a re-decode. Non-spatial fields (intensity, ring, …) colour by the raw per-point value and auto-fit to the cloud's min/max; both spatial and non-spatial ranges are held across tracker scrub so colors stay stable.
+  - **RGB-direct mode**: when a cloud carries a per-point colour, the dropdown does **not** list the colour channels as individual scalar fields. Instead a single **"RGB"** entry paints each point its literal colour (no colormap), and it is the **default** colour mode for such clouds (matching Foxglove Studio / rviz). The canonical representation is a single `rgba` field of datatype `kUint32` whose 4 bytes are R, G, B, A in increasing-address order; the DataSource parsers normalize to it (`parser_protobuf` collapses foxglove's separate `red`/`green`/`blue`/`alpha` uint8 channels; `parser_ros` repacks a PCL-packed `rgb`/`rgba` `0x00RRGGBB` field), so the host renders one canonical colour and never sees per-source byte order. The host (`detectColorLayout` in `pointcloud_convert`) also defensively recognizes raw channels, so an un-normalized source still renders true colour. `alpha` is treated as opaque padding (ignored for blending); see `pointcloud_layer.cpp` (mode selection / persistence) and `passes/pointcloud_render_pass.cpp` (`ColorType::kRgb`).
 
 ### Phase 1 UI
 
@@ -255,7 +256,8 @@ assimp, URDF, tinyply, PCD reader, RGB-direct color mode, additional colormaps b
 
 > **Note (post–Phase 1):** several of the above have since shipped — URDF/mesh
 > models (assimp), occupancy grids, the additional colormaps, depth-image
-> back-projection (`DepthCloudLayer`), and full `pj_app` integration. This list
+> back-projection (`DepthCloudLayer`), the **RGB-direct color mode** (see
+> *Pointcloud coloring* above), and full `pj_app` integration. This list
 > is the historical Phase-1 boundary; for the current as-built feature set see
 > `CLAUDE.md` and `ARCHITECTURE.md`.
 

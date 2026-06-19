@@ -2,6 +2,7 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 
+#include <cstdint>
 #include <glm/glm.hpp>
 #include <string>
 #include <vector>
@@ -16,6 +17,10 @@ struct DecodedPointCloud {
   std::vector<glm::vec3> positions;  // one entry per point
   std::vector<float> scalar;         // colorize-by-field values; empty when no field is selected
   std::string scalar_field_name;     // canonical field `scalar` was extracted from
+  // Packed per-point color for RGB-direct mode: byte0=R, byte1=G, byte2=B, byte3=A
+  // (matches the canonical 'rgba' field's little-endian layout). Empty unless the
+  // cloud was decoded with RGB extraction requested AND it carries a color field.
+  std::vector<uint32_t> rgba;
 };
 
 }  // namespace pj::scene3d

@@ -93,6 +93,11 @@ QString defaultColorField(const QStringList& available) {
   return available.contains(QStringLiteral("intensity")) ? QStringLiteral("intensity") : available.first();
 }
 
+// Reserved sentinel stored as the "RGB" combo item's data, distinguishing it from a
+// "Field: X" item (whose data is the field name) and "Solid" (empty data). Safe because
+// the colour channel names are excluded from the field list, so this never collides.
+const QString kRgbComboToken = QStringLiteral("__rgb__");
+
 }  // namespace
 
 PointCloudLayer::PointCloudLayer(
@@ -167,9 +172,10 @@ QDomElement PointCloudLayer::xmlSaveState(QDomDocument& doc) const {
   el.setAttribute(QStringLiteral("shape"), shape_str);
   el.setAttribute(QStringLiteral("size_meters"), QString::number(static_cast<double>(size_meters_), 'g', 6));
   el.setAttribute(QStringLiteral("size_pixels"), QString::number(static_cast<double>(size_pixels_), 'g', 6));
-  el.setAttribute(
-      QStringLiteral("color_type"),
-      color_type_ == PointcloudRenderPass::ColorType::kSolid ? QStringLiteral("solid") : QStringLiteral("field"));
+  const QString color_type_str = color_type_ == PointcloudRenderPass::ColorType::kSolid ? QStringLiteral("solid")
+                                 : color_type_ == PointcloudRenderPass::ColorType::kRgb ? QStringLiteral("rgb")
+                                                                                        : QStringLiteral("field");
+  el.setAttribute(QStringLiteral("color_type"), color_type_str);
   el.setAttribute(QStringLiteral("color_field"), QString::fromStdString(color_field_));
   el.setAttribute(QStringLiteral("solid_color"), solid_color_.name(QColor::HexRgb));
   el.setAttribute(QStringLiteral("colormap"), colormap_str);
@@ -206,7 +212,13 @@ bool PointCloudLayer::xmlLoadState(const QDomElement& element) {
   const QString color_type_str = element.attribute(QStringLiteral("color_type"), QStringLiteral("field"));
   setColorType(
       color_type_str == QStringLiteral("solid") ? PointcloudRenderPass::ColorType::kSolid
+      : color_type_str == QStringLiteral("rgb") ? PointcloudRenderPass::ColorType::kRgb
                                                 : PointcloudRenderPass::ColorType::kField);
+  // An explicitly restored colour mode must survive the colour-present RGB default that
+  // populateColorFields() would otherwise apply on the first decoded sample. (setColorType
+  // above may early-return when the restored value equals the construction default, so set
+  // the flag here unconditionally.)
+  color_choice_explicit_ = true;
   if (element.hasAttribute(QStringLiteral("color_field"))) {
     setColorField(element.attribute(QStringLiteral("color_field")));
   }
@@ -412,11 +424,20 @@ QWidget* PointCloudLayer::createConfigWidget(QWidget* parent) {
     QSignalBlocker block(color_type_combo);
     color_type_combo->clear();
     color_type_combo->addItem(tr("Solid"), QString{});
+    // One "RGB" entry stands in for the cloud's colour channels (which are excluded from
+    // available_color_fields_), so the user picks the literal per-point colour, not a
+    // colormap over a single channel. Reserved sentinel in the item data (kRgbComboToken).
+    if (has_color_) {
+      color_type_combo->addItem(tr("RGB"), kRgbComboToken);
+    }
     for (const QString& f : available_color_fields_) {
       color_type_combo->addItem(tr("Field: %1").arg(f), f);
     }
     if (color_type_ == PointcloudRenderPass::ColorType::kSolid) {
       color_type_combo->setCurrentIndex(0);
+    } else if (color_type_ == PointcloudRenderPass::ColorType::kRgb) {
+      const int idx = color_type_combo->findData(kRgbComboToken);
+      color_type_combo->setCurrentIndex(idx >= 0 ? idx : 0);
     } else {
       const int idx = color_type_combo->findData(QString::fromStdString(color_field_));
       color_type_combo->setCurrentIndex(idx >= 0 ? idx : 0);
@@ -485,8 +506,22 @@ QWidget* PointCloudLayer::createConfigWidget(QWidget* parent) {
 
   color_stack->addWidget(gradient_page);
 
-  // Initial stack page.
-  color_stack->setCurrentIndex(color_type_ == PointcloudRenderPass::ColorType::kSolid ? 0 : 1);
+  // Page 2: RGB-direct — the per-point colour is used as-is, so there is nothing to
+  // configure; a disabled hint stands in for the empty page.
+  auto* rgb_page = new QWidget(color_stack);
+  auto* rgb_layout = new QHBoxLayout(rgb_page);
+  rgb_layout->setContentsMargins(0, 0, 0, 0);
+  auto* rgb_hint = new QLabel(tr("Per-point color"), rgb_page);
+  rgb_hint->setEnabled(false);
+  rgb_layout->addWidget(rgb_hint);
+  rgb_layout->addStretch();
+  color_stack->addWidget(rgb_page);
+
+  // Initial stack page: Solid=0, gradient=1, RGB=2.
+  color_stack->setCurrentIndex(
+      color_type_ == PointcloudRenderPass::ColorType::kSolid ? 0
+      : color_type_ == PointcloudRenderPass::ColorType::kRgb ? 2
+                                                             : 1);
 
   // --- Range: row on the OUTER form (auto button as the field) ---
   auto* auto_btn = new PJ::CheckButton(tr("auto"), container);
@@ -567,10 +602,16 @@ QWidget* PointCloudLayer::createConfigWidget(QWidget* parent) {
   QObject::connect(
       color_type_combo, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
       [this, color_type_combo, color_stack, apply_range_step, apply_range_visibility](int) {
+        // A user pick is an explicit choice: it must survive the colour-present RGB
+        // default that populateColorFields() would otherwise reapply on the next sample.
+        color_choice_explicit_ = true;
         const QString data = color_type_combo->currentData().toString();
         if (data.isEmpty()) {
           setColorType(PointcloudRenderPass::ColorType::kSolid);
           color_stack->setCurrentIndex(0);
+        } else if (data == kRgbComboToken) {
+          setColorType(PointcloudRenderPass::ColorType::kRgb);
+          color_stack->setCurrentIndex(2);
         } else {
           setColorType(PointcloudRenderPass::ColorType::kField);
           setColorField(data);
@@ -676,9 +717,19 @@ void PointCloudLayer::setColorType(PointcloudRenderPass::ColorType type) {
   if (color_type_ == type) {
     return;
   }
+  // Toggling RGB-direct on/off changes what convertCanonical extracts (per-point colour
+  // vs. a colormap scalar), so the GPU buffer must be rebuilt — force a re-decode. A
+  // kField<->kSolid switch only flips a shader uniform, so a repaint suffices.
+  const bool rgb_changed =
+      (color_type_ == PointcloudRenderPass::ColorType::kRgb) != (type == PointcloudRenderPass::ColorType::kRgb);
   color_type_ = type;
   cloud_pass_.setColorType(color_type_);
-  emit repaintRequested();
+  if (rgb_changed) {
+    range_dirty_ = true;  // re-fit the scalar auto-range when leaving RGB
+    refreshNow();
+  } else {
+    emit repaintRequested();
+  }
 }
 
 void PointCloudLayer::setSolidColor(QColor color) {
@@ -794,13 +845,36 @@ bool PointCloudLayer::bootstrap() {
 }
 
 void PointCloudLayer::populateColorFields(const PointCloud& cloud) {
+  has_color_ = detectColorLayout(cloud).valid;
+
+  // A cloud's colour channels describe one per-point colour, so they are offered as a
+  // single "RGB" mode — never as individually colourable scalar fields. Exclude the
+  // channel names (and the never-useful "timestamp") from the scalar field list.
+  const auto is_color_channel = [](const std::string& name) {
+    return name == "red" || name == "green" || name == "blue" || name == "alpha" || name == "rgb" || name == "rgba";
+  };
   available_color_fields_.clear();
   for (const auto& f : cloud.fields) {
-    if (f.name == "timestamp") {
+    if (f.name == "timestamp" || (has_color_ && is_color_channel(f.name))) {
       continue;
     }
     available_color_fields_.append(QString::fromStdString(f.name));
   }
+
+  // Default colour mode on a FRESH attach (no explicit restore/user pick): a cloud
+  // carrying colour defaults to RGB-direct (matches Foxglove Studio / rviz). Set the
+  // field directly rather than via setColorType() — populate runs inside the decode
+  // path and the pushCloud that follows reads color_type_, so no re-decode is needed
+  // (and we avoid the refreshNow() reentrancy setColorType would trigger).
+  if (!color_choice_explicit_ && has_color_) {
+    color_type_ = PointcloudRenderPass::ColorType::kRgb;
+    cloud_pass_.setColorType(color_type_);
+  } else if (color_type_ == PointcloudRenderPass::ColorType::kRgb && !has_color_) {
+    // A restored/explicit RGB mode but this cloud has no colour: degrade to a scalar.
+    color_type_ = PointcloudRenderPass::ColorType::kField;
+    cloud_pass_.setColorType(color_type_);
+  }
+
   // Preserve an already-chosen field (e.g. one restored by xmlLoadState before the
   // async first decode landed) when it's still present; only fall back to the default
   // when the current selection is empty or no longer valid.
@@ -843,11 +917,14 @@ void PointCloudLayer::pushCloud(const PointCloud& cloud, SampleId id) {
     // the first cloud that reaches the GPU also reveals the field set.
     populateColorFields(cloud);
   }
-  // Fixed-frame (x/y/z) colouring derives the colour from the GPU-transformed position
-  // (see PointcloudRenderPass::setScalarAxis), so there is no raw scalar to decode for it.
-  const int axis = spatialAxisIndex(color_field_);
-  ConvertedPointCloud converted =
-      convertCanonical(cloud, axis >= 0 ? std::string_view{} : std::string_view{color_field_});
+  // RGB-direct mode reads per-point colour from the cloud's colour field instead of a
+  // colormap scalar. Fixed-frame (x/y/z) colouring derives the colour from the
+  // GPU-transformed position (see PointcloudRenderPass::setScalarAxis), so there is no raw
+  // scalar to decode for it.
+  const bool rgb_mode = color_type_ == PointcloudRenderPass::ColorType::kRgb && has_color_;
+  const int axis = rgb_mode ? -1 : spatialAxisIndex(color_field_);
+  const std::string_view scalar_field = (rgb_mode || axis >= 0) ? std::string_view{} : std::string_view{color_field_};
+  ConvertedPointCloud converted = convertCanonical(cloud, scalar_field, /*extract_rgba=*/rgb_mode);
   DecodedPointCloud& decoded = converted.cloud;
 
   // convertCanonical accumulates the finite-point AABB in its single decode pass, so the
@@ -881,6 +958,7 @@ void PointCloudLayer::pushCloud(const PointCloud& cloud, SampleId id) {
   cloud_pass_.setActiveCloud(std::make_shared<DecodedPointCloud>(std::move(decoded)));
   last_pushed_id_ = id;
   last_pushed_color_field_ = color_field_;
+  last_pushed_rgb_ = rgb_mode;
   emit repaintRequested();
 }
 
@@ -902,7 +980,8 @@ void PointCloudLayer::renderAt(int64_t time_ns) {
   // The tracker ticks at ~60 Hz but a topic publishes far slower, so the common case
   // is "same sample, same color field" — skip the whole parse/convert/upload then.
   // range_dirty_ only matters when auto-range will actually recompute in pushCloud.
-  if (id == last_pushed_id_ && color_field_ == last_pushed_color_field_ && !(auto_range_ && range_dirty_)) {
+  if (id == last_pushed_id_ && color_field_ == last_pushed_color_field_ &&
+      (color_type_ == PointcloudRenderPass::ColorType::kRgb) == last_pushed_rgb_ && !(auto_range_ && range_dirty_)) {
     return;
   }
   // Compressed sample already decoded? Re-convert from cache so repaints /

@@ -1031,10 +1031,39 @@ struct ToolboxCore {
   }
 };
 
+// Minimal atomic shared_ptr cell exposing only the load()/store() surface the
+// write hosts need. std::atomic<std::shared_ptr<T>> (C++20) is provided by
+// libstdc++ only since GCC 12; the build baseline (CI) is GCC 11, where the
+// primary std::atomic<T> template is selected instead and fails its
+// "trivially copyable" static_assert. A mutex gives a happens-before guarantee
+// at least as strong as the acquire/release ordering the callers request, so
+// this is a faithful drop-in. Non-copyable / non-movable like std::atomic — the
+// enclosing *State structs only ever move via the owning unique_ptr, never the
+// State itself, so this matches their requirements exactly.
+template <typename T>
+class AtomicSharedPtr {
+ public:
+  AtomicSharedPtr() = default;
+  explicit AtomicSharedPtr(std::shared_ptr<T> ptr) : ptr_(std::move(ptr)) {}
+
+  std::shared_ptr<T> load(std::memory_order = std::memory_order_seq_cst) const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return ptr_;
+  }
+  void store(std::shared_ptr<T> ptr, std::memory_order = std::memory_order_seq_cst) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    ptr_ = std::move(ptr);
+  }
+
+ private:
+  mutable std::mutex mutex_;
+  std::shared_ptr<T> ptr_;
+};
+
 struct DatastoreSourceWriteHostState {
   DatastoreSourceWriteHostState(DataEngine& engine, DataSourceHandle source_handle)
       : core(std::make_shared<WriteCore>(engine)), source(source_handle), primary_engine(&engine) {}
-  // Atomic shared_ptr, not a plain unique_ptr, because the streaming pause/resume
+  // AtomicSharedPtr, not a plain unique_ptr, because the streaming pause/resume
   // setTarget() swap reconstructs the WriteCore on the GUI thread while the ingest
   // worker may still be dereferencing the previous one on its own thread. The
   // worker loads a strong reference for the duration of each call (so the old core
@@ -1042,7 +1071,7 @@ struct DatastoreSourceWriteHostState {
   // publishes it with release ordering. Mirrors the object-store host's
   // std::atomic<ObjectStore*>; WriteCore holds DataEngine by reference and is not
   // reseatable, hence the swap rather than an in-place rebind.
-  std::atomic<std::shared_ptr<WriteCore>> core;
+  AtomicSharedPtr<WriteCore> core;
   DataSourceHandle source;
   // Streaming two-engine lockstep: remember the primary + secondary engines
   // so setTarget can re-wire the new WriteCore's secondary_engine_ pointer to
@@ -1055,11 +1084,11 @@ struct DatastoreSourceWriteHostState {
 struct DatastoreParserWriteHostState {
   DatastoreParserWriteHostState(DataEngine& engine, TopicHandle topic_handle)
       : core(std::make_shared<WriteCore>(engine)), topic(topic_handle), primary_engine(&engine) {}
-  // Atomic shared_ptr — see DatastoreSourceWriteHostState::core. The setTarget()
+  // AtomicSharedPtr — see DatastoreSourceWriteHostState::core. The setTarget()
   // swap publishes a fresh WriteCore while the parser worker may still be inside
   // the previous one; the worker pins it with a strong reference per call, so the
   // swap can never free a core out from under an in-flight append.
-  std::atomic<std::shared_ptr<WriteCore>> core;
+  AtomicSharedPtr<WriteCore> core;
   TopicHandle topic;
   // Streaming two-engine lockstep — see DatastoreSourceWriteHostState. Closes
   // the latent FieldHandle-stale bug for parser plugins that cache handles

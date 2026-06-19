@@ -25,6 +25,8 @@ namespace {
 constexpr std::string_view kPointcloudVertSrc = R"(#version 450 core
 layout(location = 0) in vec3 in_pos;
 layout(location = 1) in float in_scalar;
+layout(location = 2) in vec4 in_color;  // per-point RGBA in [0,1] (kRgb mode)
+out vec4 v_color;
 uniform mat4 u_view_model;
 uniform mat4 u_proj;
 uniform mat4 u_model;          // source-frame -> fixed-frame; only for fixed-frame axis colour
@@ -60,6 +62,7 @@ void main() {
   } else {
     gl_PointSize = clamp(u_pixel_size, u_min_size_px, u_max_size_px);
   }
+  v_color = in_color;
   // Fixed-frame axis colouring: derive the colormap input from the GPU-transformed
   // position (u_model * in_pos) so sensors at different mounts agree on world height.
   float scalar = u_scalar_axis < 0 ? in_scalar : (u_model * vec4(in_pos, 1.0))[u_scalar_axis];
@@ -78,9 +81,10 @@ void main() {
 // inputs/uniforms, the LUTs slot in, then this tail's main() consumes them.
 constexpr std::string_view kPointcloudFragHead = R"(#version 450 core
 in float v_normalized;
+in vec4 v_color;               // per-point RGBA (kRgb mode)
 out vec4 frag_color;
 
-uniform int  u_color_mode;     // 0 = field-from-LUT, 1 = solid
+uniform int  u_color_mode;     // 0 = field-from-LUT, 1 = solid, 2 = per-point rgb
 uniform vec3 u_solid_color;
 uniform int  u_colormap_id;    // 0=turbo, 1=viridis, 2=plasma, 3=grayscale
 uniform bool u_invert;
@@ -113,6 +117,8 @@ void main() {
   vec3 base;
   if (u_color_mode == 1) {
     base = u_solid_color;
+  } else if (u_color_mode == 2) {
+    base = v_color.rgb;  // per-point colour used directly (no colormap)
   } else {
     float t = v_normalized;
     if (u_invert) {
@@ -120,8 +126,8 @@ void main() {
     }
     base = sampleColormap(u_colormap_id, t);
   }
-  // Colormaps/solid colors are display-referred sRGB; the scene FBO is linear
-  // (Phase 0B: the composite present re-encodes to sRGB). Linearize on write.
+  // Colormaps/solid/per-point colors are display-referred sRGB; the scene FBO is
+  // linear (Phase 0B: the composite present re-encodes to sRGB). Linearize on write.
   base = pow(max(base, vec3(0.0)), vec3(2.2));
   frag_color = vec4(base * shading, 1.0);
 }
@@ -132,6 +138,7 @@ layout(location = 0) in vec3 in_corner_pos;       // per-vertex (24)
 layout(location = 1) in vec3 in_corner_normal;    // per-vertex (24)
 layout(location = 2) in vec3 in_instance_pos;     // per-instance, divisor=1
 layout(location = 3) in float in_instance_scalar; // per-instance, divisor=1
+layout(location = 4) in vec4 in_instance_color;   // per-instance RGBA, divisor=1 (kRgb mode)
 
 uniform mat4 u_model;          // source-frame -> fixed-frame
 uniform mat4 u_view;           // fixed-frame -> view space
@@ -143,6 +150,7 @@ uniform int u_scalar_axis;     // -1 = colour by in_instance_scalar; 0/1/2 = fix
 
 out vec3 v_view_normal;
 out float v_normalized;
+out vec4 v_color;
 
 void main() {
   // Cubes are axis-aligned in the fixed frame: transform the instance
@@ -158,6 +166,7 @@ void main() {
   float scalar = u_scalar_axis < 0 ? in_instance_scalar : instance_in_fixed[u_scalar_axis];
   float span = max(u_range_max - u_range_min, 1e-9);
   v_normalized = clamp((scalar - u_range_min) / span, 0.0, 1.0);
+  v_color = in_instance_color;
 }
 )";
 
@@ -166,9 +175,10 @@ void main() {
 constexpr std::string_view kCubeFragHead = R"(#version 450 core
 in vec3 v_view_normal;
 in float v_normalized;
+in vec4 v_color;               // per-instance RGBA (kRgb mode)
 out vec4 frag_color;
 
-uniform int  u_color_mode;     // 0 = field-from-LUT, 1 = solid
+uniform int  u_color_mode;     // 0 = field-from-LUT, 1 = solid, 2 = per-point rgb
 uniform vec3 u_solid_color;
 uniform int  u_colormap_id;    // 0=turbo, 1=viridis, 2=plasma, 3=grayscale
 uniform bool u_invert;
@@ -185,6 +195,8 @@ void main() {
   vec3 base;
   if (u_color_mode == 1) {
     base = u_solid_color;
+  } else if (u_color_mode == 2) {
+    base = v_color.rgb;  // per-point colour used directly (no colormap)
   } else {
     float t = v_normalized;
     if (u_invert) {
@@ -192,8 +204,8 @@ void main() {
     }
     base = sampleColormap(u_colormap_id, t);
   }
-  // Colormaps/solid colors are display-referred sRGB; the scene FBO is linear
-  // (Phase 0B: the composite present re-encodes to sRGB). Linearize on write.
+  // Colormaps/solid/per-point colors are display-referred sRGB; the scene FBO is
+  // linear (Phase 0B: the composite present re-encodes to sRGB). Linearize on write.
   base = pow(max(base, vec3(0.0)), vec3(2.2));
   frag_color = vec4(base * shading, 1.0);
 }
@@ -265,7 +277,21 @@ struct CloudVertex {
   float y;
   float z;
   float scalar;
+  uint32_t rgba;  // packed per-point color (byte0=R..byte3=A); uploaded as 4 normalized bytes
 };
+
+// Shader u_color_mode selector: 0 = colormap-from-scalar, 1 = solid, 2 = per-point rgb.
+int colorModeUniform(PointcloudRenderPass::ColorType type) {
+  switch (type) {
+    case PointcloudRenderPass::ColorType::kSolid:
+      return 1;
+    case PointcloudRenderPass::ColorType::kRgb:
+      return 2;
+    case PointcloudRenderPass::ColorType::kField:
+      break;
+  }
+  return 0;
+}
 
 }  // namespace
 
@@ -356,10 +382,12 @@ void PointcloudRenderPass::render(const ViewParams& view_params, const FrameCont
     std::vector<CloudVertex> vertices;
     vertices.reserve(cloud_->positions.size());
     const bool has_scalars = cloud_->scalar.size() == cloud_->positions.size();
+    const bool has_colors = cloud_->rgba.size() == cloud_->positions.size();
     for (std::size_t i = 0U; i < cloud_->positions.size(); ++i) {
       const glm::vec3& p = cloud_->positions[i];
       const float scalar = has_scalars ? cloud_->scalar[i] : 0.0f;
-      vertices.push_back(CloudVertex{p.x, p.y, p.z, scalar});
+      const uint32_t color = has_colors ? cloud_->rgba[i] : 0xFFFFFFFFu;  // opaque white when no color
+      vertices.push_back(CloudVertex{p.x, p.y, p.z, scalar, color});
     }
 
     vbo_.uploadStatic(GL_ARRAY_BUFFER, vertices.data(), static_cast<GLsizeiptr>(vertices.size() * sizeof(CloudVertex)));
@@ -370,6 +398,12 @@ void PointcloudRenderPass::render(const ViewParams& view_params, const FrameCont
       functions.glEnableVertexAttribArray(1U);
       functions.glVertexAttribPointer(
           1U, 1, GL_FLOAT, GL_FALSE, static_cast<GLsizei>(sizeof(CloudVertex)), reinterpret_cast<const void*>(12));
+      // Packed RGBA at byte offset 16, fed as 4 normalized unsigned bytes -> vec4 in [0,1],
+      // with .r = byte0 = Red (matches the canonical 'rgba' little-endian layout).
+      functions.glEnableVertexAttribArray(2U);
+      functions.glVertexAttribPointer(
+          2U, 4, GL_UNSIGNED_BYTE, GL_TRUE, static_cast<GLsizei>(sizeof(CloudVertex)),
+          reinterpret_cast<const void*>(16));
     });
     vao_.unbind();
 
@@ -428,6 +462,12 @@ void PointcloudRenderPass::render(const ViewParams& view_params, const FrameCont
         functions.glVertexAttribPointer(
             3U, 1, GL_FLOAT, GL_FALSE, static_cast<GLsizei>(sizeof(CloudVertex)), reinterpret_cast<const void*>(12));
         functions.glVertexAttribDivisor(3U, 1U);
+        // Per-instance packed RGBA (4 normalized bytes -> vec4), same layout as the point path.
+        functions.glEnableVertexAttribArray(4U);
+        functions.glVertexAttribPointer(
+            4U, 4, GL_UNSIGNED_BYTE, GL_TRUE, static_cast<GLsizei>(sizeof(CloudVertex)),
+            reinterpret_cast<const void*>(16));
+        functions.glVertexAttribDivisor(4U, 1U);
       });
       cube_ebo_.bind(GL_ELEMENT_ARRAY_BUFFER);
       cube_vao_.unbind();
@@ -442,7 +482,7 @@ void PointcloudRenderPass::render(const ViewParams& view_params, const FrameCont
     cube_program_->setFloat("u_range_min", effective_range_min);
     cube_program_->setFloat("u_range_max", effective_range_max);
     cube_program_->setInt("u_scalar_axis", scalar_axis_);
-    cube_program_->setInt("u_color_mode", color_type_ == ColorType::kSolid ? 1 : 0);
+    cube_program_->setInt("u_color_mode", colorModeUniform(color_type_));
     cube_program_->setVec3("u_solid_color", solid_color_);
     cube_program_->setInt("u_colormap_id", static_cast<int>(colormap_));
     cube_program_->setInt("u_invert", invert_lut_ ? 1 : 0);
@@ -490,7 +530,7 @@ void PointcloudRenderPass::render(const ViewParams& view_params, const FrameCont
   program_->setFloat("u_depth_threshold", 5.0f);
   program_->setInt("u_use_perspective_size", use_perspective_size ? 1 : 0);
   program_->setInt("u_scalar_axis", scalar_axis_);
-  program_->setInt("u_color_mode", color_type_ == ColorType::kSolid ? 1 : 0);
+  program_->setInt("u_color_mode", colorModeUniform(color_type_));
   program_->setVec3("u_solid_color", solid_color_);
   program_->setInt("u_colormap_id", static_cast<int>(colormap_));
   program_->setInt("u_invert", invert_lut_ ? 1 : 0);

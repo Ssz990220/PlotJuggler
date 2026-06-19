@@ -30,7 +30,10 @@ class PointcloudRenderPass : public IRenderPass {
   // Color sourcing mode.
   //   kField — per-point scalar → colormap → fragment color (today).
   //   kSolid — single uniform color, scalar ignored.
-  enum class ColorType { kField, kSolid };
+  //   kRgb   — per-point packed RGBA color used directly (no colormap). Requires
+  //            the active cloud to carry `DecodedPointCloud::rgba`; falls back to
+  //            white when absent.
+  enum class ColorType { kField, kSolid, kRgb };
 
   // Colormap selector (used only in ColorType::kField mode). The colormap set +
   // its math (CPU LUT and the in-shader GLSL) is shared with the 2D depth view
