@@ -27,6 +27,11 @@ TitleBar::TitleBar(QWidget* parent) : QWidget(parent), ui_(new Ui::TitleBar) {
   setAttribute(Qt::WA_StyledBackground, true);
 
   ui_->setupUi(this);
+  // The center region replaces the old horizontalSpacer; its empty area is a
+  // window-drag handle (see isOnMoveHandle). The container stays OPAQUE so an
+  // interactive center widget (setCenterWidget — e.g. the ingest stop buttons)
+  // receives its own clicks: WA_TransparentForMouseEvents here would make
+  // childAt() skip the whole subtree, routing button clicks to the drag handler.
   // Hard-pin so QMainWindow::setMenuWidget can't size us via sizeHint
   // and leave a ghost strip of titlebar-background gray below the
   // buttons.
@@ -114,6 +119,24 @@ void TitleBar::addRightClusterWidget(QWidget* widget) {
   ui_->rightClusterLayout->addWidget(widget);
 }
 
+void TitleBar::setCenterWidget(QWidget* widget) {
+  if (widget == center_widget_) {
+    return;
+  }
+  // Drop the prior widget without deleting it — the caller owns its lifetime.
+  if (center_widget_ != nullptr) {
+    ui_->centerLayout->removeWidget(center_widget_);
+    center_widget_->setParent(nullptr);
+  }
+  center_widget_ = widget;
+  if (widget != nullptr) {
+    // Insert between centerLeftSpacer (index 0) and centerRightSpacer with
+    // stretch 0, so the widget keeps its compact size and the spacers center it.
+    ui_->centerLayout->insertWidget(1, widget, /*stretch=*/0);
+    applyIconMetrics();  // size the widget's tool buttons to match the chrome icons
+  }
+}
+
 void TitleBar::setDiagnosticHistory(DiagnosticHistory* history) {
   if (diagnostic_history_ != nullptr) {
     disconnect(diagnostic_history_, nullptr, this, nullptr);
@@ -174,6 +197,19 @@ void TitleBar::applyIconMetrics() {
   // The menubar tracks the chrome-button height so its highlight rect
   // matches the buttons around it.
   ui_->menuBar->setFixedHeight(button_extent);
+
+  // Tool buttons hosted in the center widget (the ingest stop button) hug their
+  // icon exactly — no surrounding chrome padding — so they sit flush against the
+  // neighbouring progress bar instead of floating inside an oversized box. They
+  // are intentionally tighter than the square chrome buttons on the right, whose
+  // extra padding gives the window controls a larger hit target.
+  if (center_widget_ != nullptr) {
+    for (QToolButton* btn : center_widget_->findChildren<QToolButton*>()) {
+      btn->setMinimumSize(icon_sz);
+      btn->setMaximumSize(icon_sz);
+      btn->setIconSize(icon_sz);
+    }
+  }
 }
 
 void TitleBar::changeEvent(QEvent* event) {
@@ -218,11 +254,12 @@ void TitleBar::onMaximizeClicked() {
 }
 
 bool TitleBar::isOnMoveHandle(const QPoint& pos) const {
-  // Drag is allowed on raw bar background and on the non-interactive app
-  // icon. Any click that lands on a tool button or its popup arrow goes
-  // to the button.
+  // Drag on raw bar background, the non-interactive app icon, and the empty
+  // center region (the opaque centerContainer or the center widget's own area).
+  // A click landing on an interactive child — a tool button, the menubar, the
+  // ingest progress bar — goes to that child instead.
   QWidget* hit = childAt(pos);
-  return hit == nullptr || hit == ui_->appIcon;
+  return hit == nullptr || hit == ui_->appIcon || hit == ui_->centerContainer || hit == center_widget_;
 }
 
 void TitleBar::applyIcons(const QString& theme) {

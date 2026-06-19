@@ -443,8 +443,10 @@ QDomElement PlotWidget::xmlSaveState(QDomDocument& doc) const {
     // live, so a display-relative range only frames the right instant for the
     // offset present at save time — storing absolute makes the restored range
     // correct regardless of the offset state at load (the "Use time offset"
-    // toggle, reloaded data, a layout shared between machines). XY plots' X is a
-    // value, not time, so they keep their raw axis coordinates.
+    // toggle, reloaded data, a layout shared between machines). The time axis is
+    // ALWAYS stored absolute — no marker is written; on load the plot MODE
+    // (time-series vs XY) is what decides whether to undo the offset. XY plots' X is
+    // a value, not time, so they keep their raw axis coordinates.
     if (isXYPlot()) {
       range_element.setAttribute(QStringLiteral("left"), QString::number(rect.left(), 'f', 6));
       range_element.setAttribute(QStringLiteral("right"), QString::number(rect.right(), 'f', 6));
@@ -452,7 +454,6 @@ QDomElement PlotWidget::xmlSaveState(QDomDocument& doc) const {
       const double offset_sec = displayOffsetSeconds();
       range_element.setAttribute(QStringLiteral("left"), QString::number(rect.left() + offset_sec, 'f', 6));
       range_element.setAttribute(QStringLiteral("right"), QString::number(rect.right() + offset_sec, 'f', 6));
-      range_element.setAttribute(QStringLiteral("x_absolute"), QStringLiteral("true"));
     }
     plot_element.appendChild(range_element);
   }
@@ -539,88 +540,117 @@ bool PlotWidget::xmlLoadState(const QDomElement& plot_element, bool autozoom) {
 
   for (QDomElement curve_element = plot_element.firstChildElement(QStringLiteral("curve")); !curve_element.isNull();
        curve_element = curve_element.nextSiblingElement(QStringLiteral("curve"))) {
-    const QColor color(curve_element.attribute(QStringLiteral("color")));
-    CurveInfo* loaded_curve = nullptr;
-    if (isXYPlot() && curve_element.hasAttribute(QStringLiteral("curve_x")) &&
-        curve_element.hasAttribute(QStringLiteral("curve_y"))) {
-      const QString x_name = curve_element.attribute(QStringLiteral("curve_x"));
-      const QString y_name = curve_element.attribute(QStringLiteral("curve_y"));
-      const QString source_name = curve_element.attribute(QStringLiteral("name"));
-      for (CurveInfo& info : curveList()) {
-        if (auto* xy_series = info.curve != nullptr ? dynamic_cast<PointSeriesXY*>(info.curve->data()) : nullptr) {
-          if (curveKey(info.source_name, xy_series->xSource().name, xy_series->ySource().name) ==
-              curveKey(source_name, x_name, y_name)) {
-            loaded_curve = &info;
-            break;
-          }
-        }
-      }
-      if (loaded_curve == nullptr) {
-        loaded_curve = addCurveXY(x_name, y_name, color.isValid() ? color : Qt::transparent);
-      }
-    } else {
-      const QString curve_name = curve_element.attribute(QStringLiteral("name"));
-      loaded_curve = curveFromTitle(curve_name);
-      if (loaded_curve == nullptr) {
-        loaded_curve = addCurve(curve_name, color.isValid() ? color : Qt::transparent);
-      }
-    }
-    if (loaded_curve != nullptr && loaded_curve->curve != nullptr && color.isValid()) {
-      loaded_curve->curve->setPen(color, loaded_curve->curve->pen().widthF());
-      // Seed the session color memory so this curve keeps its saved color when
-      // later dragged into another plot (issue #68). Time-series only — see the
-      // matching note in onChangeCurveColor; XY curves are out of scope here.
-      if (CurveColorRegistry* registry = colorRegistryOf(session_); registry != nullptr && !isXYPlot()) {
-        registry->setColor(loaded_curve->source_name, color.name());
-      }
-    }
-    if (loaded_curve != nullptr && curve_element.hasAttribute(QStringLiteral("line_width"))) {
-      bool ok = false;
-      const double width = curve_element.attribute(QStringLiteral("line_width")).toDouble(&ok);
-      if (ok) {
-        loaded_curve->curve->setPen(loaded_curve->curve->pen().color(), width);
-      }
-    }
-    if (loaded_curve != nullptr && curve_element.hasAttribute(QStringLiteral("style"))) {
-      // Apply per-curve style after the per-curve width above so the style
-      // toggle path (which leaves the pen alone) does not undo the width.
-      setCurveStyle(loaded_curve->source_name, curveStyleFromString(curve_element.attribute(QStringLiteral("style"))));
-    }
-    if (loaded_curve != nullptr) {
-      const QString visible_attr = curve_element.attribute(QStringLiteral("visible"), QStringLiteral("true"));
-      loaded_curve->curve->setVisible(visible_attr == QStringLiteral("true"));
-    }
+    applyCurveElement(curve_element);
   }
 
+  // Stash the layout-saved viewport (raw, pre-offset-conversion) and frame to it via
+  // the shared helper. During a progressive restore the catalog is still empty here,
+  // so the absolute->display conversion is wrong until the dataset binds — the
+  // progressive path re-applies the stash per curve-bind and at drain (see
+  // applySavedViewportOrZoom / PendingCurveBinder). A blocking load resolves correctly
+  // on this first call because the offset is already known.
   const QDomElement range_element = plot_element.firstChildElement(QStringLiteral("range"));
-  QRectF rect;
   if (!range_element.isNull() && autozoom) {
-    rect.setBottom(range_element.attribute(QStringLiteral("bottom")).toDouble());
-    rect.setTop(range_element.attribute(QStringLiteral("top")).toDouble());
-    double left = range_element.attribute(QStringLiteral("left")).toDouble();
-    double right = range_element.attribute(QStringLiteral("right")).toDouble();
-    // X stored as absolute time (see xmlSaveState): convert back to the display
-    // coordinate using the offset in effect NOW (display = absolute - offset).
-    // Legacy layouts (no x_absolute marker) already hold display-relative
-    // seconds, so they load verbatim — never reinterpreted as absolute.
-    if (range_element.attribute(QStringLiteral("x_absolute")) == QStringLiteral("true")) {
+    saved_viewport_ = SavedViewport{
+        range_element.attribute(QStringLiteral("bottom")).toDouble(),
+        range_element.attribute(QStringLiteral("top")).toDouble(),
+        range_element.attribute(QStringLiteral("left")).toDouble(),
+        range_element.attribute(QStringLiteral("right")).toDouble()};
+  } else {
+    saved_viewport_.reset();
+  }
+  applySavedViewportOrZoom(/*clear_after=*/false);
+  replot();
+  return true;
+}
+
+void PlotWidget::applySavedViewportOrZoom(bool clear_after) {
+  QRectF rect;
+  // The layout always stores a time axis in ABSOLUTE seconds; the per-dataset display
+  // offset is a visualization concern applied HERE, never persisted. Convert the saved X
+  // back to the CURRENT display coordinate (display = absolute - offset). An XY plot's X
+  // is a data value, not time, so it is offset-independent and used verbatim. Re-running
+  // this as the offset settles is what lets a progressive restore pin the saved window
+  // up front and keep it framed while data streams in.
+  if (saved_viewport_.has_value()) {
+    const SavedViewport& view = *saved_viewport_;
+    double left = view.left;
+    double right = view.right;
+    if (!isXYPlot()) {
       const double offset_sec = displayOffsetSeconds();
       left -= offset_sec;
       right -= offset_sec;
     }
+    rect.setBottom(view.bottom);
+    rect.setTop(view.top);
     rect.setLeft(left);
     rect.setRight(right);
   }
-  // Fall back to zoomOut when no <range> was saved or the saved rect is
-  // degenerate (zero-width or zero-height). Without this, an old layout
-  // saved before the canvas auto-fitted would restore as a blank plot.
+  // Degenerate or no saved range -> auto-fit (fresh load, or a layout saved before the
+  // canvas computed a viewport).
   if (rect.left() == rect.right() || rect.top() == rect.bottom()) {
-    zoomOut(false);
+    zoomOut(/*emit_signal=*/false);
   } else {
-    setZoomRectangle(rect, false);
+    setZoomRectangle(rect, /*emit_signal=*/false);
   }
-  replot();
-  return true;
+  if (clear_after) {
+    saved_viewport_.reset();
+  }
+}
+
+PlotWidget::CurveInfo* PlotWidget::applyCurveElement(const QDomElement& curve_element) {
+  const QColor color(curve_element.attribute(QStringLiteral("color")));
+  CurveInfo* loaded_curve = nullptr;
+  if (isXYPlot() && curve_element.hasAttribute(QStringLiteral("curve_x")) &&
+      curve_element.hasAttribute(QStringLiteral("curve_y"))) {
+    const QString x_name = curve_element.attribute(QStringLiteral("curve_x"));
+    const QString y_name = curve_element.attribute(QStringLiteral("curve_y"));
+    const QString source_name = curve_element.attribute(QStringLiteral("name"));
+    for (CurveInfo& info : curveList()) {
+      if (auto* xy_series = info.curve != nullptr ? dynamic_cast<PointSeriesXY*>(info.curve->data()) : nullptr) {
+        if (curveKey(info.source_name, xy_series->xSource().name, xy_series->ySource().name) ==
+            curveKey(source_name, x_name, y_name)) {
+          loaded_curve = &info;
+          break;
+        }
+      }
+    }
+    if (loaded_curve == nullptr) {
+      loaded_curve = addCurveXY(x_name, y_name, color.isValid() ? color : Qt::transparent);
+    }
+  } else {
+    const QString curve_name = curve_element.attribute(QStringLiteral("name"));
+    loaded_curve = curveFromTitle(curve_name);
+    if (loaded_curve == nullptr) {
+      loaded_curve = addCurve(curve_name, color.isValid() ? color : Qt::transparent);
+    }
+  }
+  if (loaded_curve != nullptr && loaded_curve->curve != nullptr && color.isValid()) {
+    loaded_curve->curve->setPen(color, loaded_curve->curve->pen().widthF());
+    // Seed the session color memory so this curve keeps its saved color when
+    // later dragged into another plot (issue #68). Time-series only — see the
+    // matching note in onChangeCurveColor; XY curves are out of scope here.
+    if (CurveColorRegistry* registry = colorRegistryOf(session_); registry != nullptr && !isXYPlot()) {
+      registry->setColor(loaded_curve->source_name, color.name());
+    }
+  }
+  if (loaded_curve != nullptr && curve_element.hasAttribute(QStringLiteral("line_width"))) {
+    bool ok = false;
+    const double width = curve_element.attribute(QStringLiteral("line_width")).toDouble(&ok);
+    if (ok) {
+      loaded_curve->curve->setPen(loaded_curve->curve->pen().color(), width);
+    }
+  }
+  if (loaded_curve != nullptr && curve_element.hasAttribute(QStringLiteral("style"))) {
+    // Apply per-curve style after the per-curve width above so the style
+    // toggle path (which leaves the pen alone) does not undo the width.
+    setCurveStyle(loaded_curve->source_name, curveStyleFromString(curve_element.attribute(QStringLiteral("style"))));
+  }
+  if (loaded_curve != nullptr) {
+    const QString visible_attr = curve_element.attribute(QStringLiteral("visible"), QStringLiteral("true"));
+    loaded_curve->curve->setVisible(visible_attr == QStringLiteral("true"));
+  }
+  return loaded_curve;
 }
 
 void PlotWidget::zoomOut(bool emit_signal) {

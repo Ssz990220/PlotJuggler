@@ -90,8 +90,7 @@ TEST(EngineIntegrationTest, EndToEndScalarWriteRead) {
   auto& latest = *latest_or;
   ASSERT_TRUE(latest.has_value());
   EXPECT_EQ(latest->timestamp, midpoint_ts);
-  ASSERT_NE(latest->chunk, nullptr);
-  double midpoint_value = latest->chunk->readNumericAsDouble(0, latest->row_index);
+  double midpoint_value = latest->values[0];
   EXPECT_DOUBLE_EQ(midpoint_value, 1250.0);
 
   // Also verify metadata
@@ -824,7 +823,7 @@ TEST(EngineIntegrationTest, RetentionFloorHidesStraddlingRowsFromAllReads) {
   // (2) series bounds + samples: only ts >= 290.
   auto series_or = reader.series(handle.topic_id, 0);
   ASSERT_TRUE(series_or.has_value()) << series_or.error();
-  const SeriesReader series = *series_or;
+  const SeriesReader& series = *series_or;
   EXPECT_EQ(series.size(), 21U);  // ts 290,300,...,490
   const auto bounds = series.bounds();
   ASSERT_TRUE(bounds.has_value());
@@ -1035,10 +1034,8 @@ TEST(EngineIntegrationTest, BulkAppendColumnsMultiChunk) {
   ASSERT_TRUE(latest_or.has_value()) << latest_or.error();
   ASSERT_TRUE(latest_or->has_value());
   EXPECT_EQ((*latest_or)->timestamp, 500 * 1000);
-  EXPECT_FLOAT_EQ(
-      static_cast<float>((*latest_or)->chunk->readNumericAsDouble(0, (*latest_or)->row_index)), 500.0F * 0.1F);
-  EXPECT_FLOAT_EQ(
-      static_cast<float>((*latest_or)->chunk->readNumericAsDouble(1, (*latest_or)->row_index)), 500.0F * 0.2F);
+  EXPECT_FLOAT_EQ(static_cast<float>((*latest_or)->values[0]), 500.0F * 0.1F);
+  EXPECT_FLOAT_EQ(static_cast<float>((*latest_or)->values[1]), 500.0F * 0.2F);
 }
 
 // ===========================================================================
@@ -1301,7 +1298,7 @@ double firstValue(DataEngine& engine, TopicId topic) {
   EXPECT_TRUE(latest_or.has_value());
   auto& latest = *latest_or;
   EXPECT_TRUE(latest.has_value());
-  return latest->chunk->readNumericAsDouble(0, latest->row_index);
+  return latest->values[0];
 }
 
 std::size_t rowCount(DataEngine& engine, TopicId topic) {

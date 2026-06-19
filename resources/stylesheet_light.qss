@@ -1835,3 +1835,17 @@ PJ--ProgressBar::chunk {
     border-radius: 8px;
     margin: 2px;
 }
+
+/* The ingest bar lives in the title bar, so it is shorter + thinner than the
+   standalone "Loading" bar to fit the chrome row (more specific selector wins). */
+PJ--IngestProgressWidget PJ--ProgressBar {
+    min-height: 0px;
+    max-height: 20px;
+    border-width: 1px;
+    border-radius: 10px;
+    font-size: 9pt;
+}
+PJ--IngestProgressWidget PJ--ProgressBar::chunk {
+    border-radius: 8px;
+    margin: 1px;
+}

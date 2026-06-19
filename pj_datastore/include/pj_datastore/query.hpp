@@ -9,6 +9,7 @@
 #include <cstddef>
 #include <deque>
 #include <functional>
+#include <mutex>
 #include <optional>
 #include <vector>
 
@@ -67,6 +68,18 @@ struct SampleRow {
   std::size_t row_index = 0;
 };
 
+/// A latest-at result with the row's column values already read out (under the
+/// engine lock), so no raw TopicChunk* escapes to the caller. Returned by
+/// DataReader::latestAt; column N's value is `values[N]` (a scalar topic's value
+/// is `values[0]`). `values.size()` is the column count of the row's chunk.
+struct MaterializedSample {
+  /// Sample timestamp.
+  PJ::Timestamp timestamp = 0;
+  /// Numeric value of each column at that row, read as double (NaN-free: nulls
+  /// read as 0.0, matching readNumericAsDouble).
+  std::vector<double> values;
+};
+
 /// Contiguous row interval inside one chunk.
 struct ChunkRowRange {
   /// Source chunk.
@@ -93,6 +106,19 @@ class RangeCursor {
   /// Construct cursor over [t_min, t_max] from committed chunks.
   RangeCursor(const std::deque<TopicChunk>& chunks, PJ::Timestamp t_min, PJ::Timestamp t_max);
 
+  /// Same, but ADOPTS the engine lock for the cursor's lifetime so the backing
+  /// chunks stay stable through the lazy iteration (which happens after rangeQuery
+  /// returns). DataReader uses this; single-threaded callers use the overload above.
+  RangeCursor(
+      const std::deque<TopicChunk>& chunks, PJ::Timestamp t_min, PJ::Timestamp t_max,
+      std::unique_lock<std::recursive_mutex> lock);
+
+  // Move-only: the adopted engine lock is not copyable.
+  RangeCursor(RangeCursor&&) = default;
+  RangeCursor& operator=(RangeCursor&&) = default;
+  RangeCursor(const RangeCursor&) = delete;
+  RangeCursor& operator=(const RangeCursor&) = delete;
+
   [[nodiscard]] bool valid() const noexcept;
 
   /// Advance to next matching row.
@@ -117,13 +143,18 @@ class RangeCursor {
   PJ::Timestamp t_max_;
   // Min-heap; empty == exhausted. See CursorFrontier.
   std::vector<CursorFrontier> frontiers_;
+  // Engine lock held for this cursor's lifetime when built via DataReader (empty
+  // for the lock-free constructor), keeping the chunk deque stable during iteration.
+  std::unique_lock<std::recursive_mutex> lock_;
 
   void initFrontiers();
 };
 
 /// Cursor for iterating a topic column as a time series. It skips null rows by
 /// definition; every current() value is a value-bearing sample for the bound
-/// column.
+/// column. Created only via SeriesReader::samples(): it BORROWS that reader's chunk
+/// deque and holds no lock of its own, so it MUST NOT outlive the SeriesReader
+/// (whose adopted lock, if any, is what keeps the chunks stable while it iterates).
 class SeriesCursor {
  public:
   /// Construct cursor over [time_range.min, time_range.max] from committed chunks.
@@ -172,6 +203,19 @@ class SeriesReader {
       const std::deque<TopicChunk>& chunks, std::size_t column_index,
       PJ::Timestamp retention_floor = kNoRetentionFloor);
 
+  /// Same, but ADOPTS the engine lock for this reader's lifetime — and so for any
+  /// SeriesCursor it spawns via samples() (which borrows this reader's chunks).
+  /// DataReader::series uses this; the overload above is for single-threaded callers.
+  SeriesReader(
+      const std::deque<TopicChunk>& chunks, std::size_t column_index, PJ::Timestamp retention_floor,
+      std::unique_lock<std::recursive_mutex> lock);
+
+  // Move-only: the adopted engine lock is not copyable.
+  SeriesReader(SeriesReader&&) = default;
+  SeriesReader& operator=(SeriesReader&&) = default;
+  SeriesReader(const SeriesReader&) = delete;
+  SeriesReader& operator=(const SeriesReader&) = delete;
+
   /// Number of samples in the virtual series.
   [[nodiscard]] std::size_t size() const;
 
@@ -209,6 +253,10 @@ class SeriesReader {
   // floor). kNoRetentionFloor = no floor. Set by DataReader::series() from the
   // topic's floor.
   PJ::Timestamp retention_floor_ = kNoRetentionFloor;
+  // Engine lock held for this reader's lifetime when built via DataReader (empty
+  // for the lock-free constructor). A SeriesCursor from samples() borrows chunks_
+  // and relies on this reader (and this lock) outliving it.
+  std::unique_lock<std::recursive_mutex> lock_;
 };
 
 // Find the most recent sample at or before time t; nullopt if none exists, or

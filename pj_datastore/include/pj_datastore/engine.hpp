@@ -2,9 +2,12 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 
+#include <deque>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include "pj_base/dataset.hpp"
@@ -98,11 +101,14 @@ class DataEngine {
   /// Const topic storage lookup (nullptr if missing).
   [[nodiscard]] const TopicStorage* getTopicStorage(PJ::TopicId id) const;
 
-  // Schema registry access
-  /// Mutable schema registry access.
+  // Schema registry access. The returned reference is UNSYNCHRONIZED — the
+  // TypeRegistry has no internal lock, so the caller must hold lockEngine() for
+  // the lifetime of any access (lookup/registerOrGet/registerSchema), and must
+  // not cache a raw TypeTreeNode* from lookup() past the lock.
+  /// Mutable schema registry access (see threading note above).
   [[nodiscard]] TypeRegistry& typeRegistry();
 
-  /// Const schema registry access.
+  /// Const schema registry access (see threading note above).
   [[nodiscard]] const TypeRegistry& typeRegistry() const;
 
   // Time domains
@@ -143,6 +149,57 @@ class DataEngine {
   /// filter), since there is no scalar topic-teardown API. Idempotent; no-op for an
   /// unknown id.
   void retireTopic(PJ::TopicId topic_id);
+
+  /// Clear every committed chunk for all topics under `dataset_id`, keeping the
+  /// topics, schemas, inline-column layout, and TopicIds registered — so cached
+  /// reader pointers see an empty deque (NOT freed memory) and the catalog keeps
+  /// the topics visible. Unlike `retireTopic`, the ids STAY in `listTopics` so a
+  /// subsequent refill writes back into them. Other datasets are untouched.
+  /// Idempotent; a no-op for an unknown `dataset_id` (no throw).
+  ///
+  /// PRECONDITION: no reader/adapter may hold a raw `TopicChunk*` into this
+  /// dataset — the caller drains those (via `datasetAboutToBeReplaced`) before
+  /// calling, the same precondition `replaceDatasetFrom` relies on.
+  void clearDatasetChunks(PJ::DatasetId dataset_id);
+
+  /// Side snapshot of one dataset's scalar storage, produced by
+  /// `detachDatasetChunks()`. Holds the MOVED-OUT chunk deques (O(1), no deep
+  /// copy) plus the per-topic metadata a refill can mutate — eviction floor,
+  /// inline column layout, and the array-expansion ratchet stats — so `reattach`
+  /// can restore the EXACT prior values (the public ratchet setters only ever
+  /// increase, so restoring a smaller value needs the stored copy). `prior_topic_ids`
+  /// is the topic set live at detach time, letting reattach retire any topic a
+  /// failed refill added. `valid == false` means nothing was detached.
+  struct DatasetChunkSnapshot {
+    struct TopicSnapshot {
+      std::deque<TopicChunk> chunks;
+      std::vector<ColumnDescriptor> column_descriptors;
+      PJ::Timestamp retention_floor = kNoRetentionFloor;  // NOT 0 — see chunk.hpp
+      uint32_t max_observed_array_length = 0;
+      uint32_t truncated_sample_count = 0;
+      std::unordered_map<std::string, uint32_t> array_expansion_counts;
+    };
+    PJ::DatasetId dataset_id = 0;
+    std::vector<PJ::TopicId> prior_topic_ids;
+    std::unordered_map<PJ::TopicId, TopicSnapshot> topics;
+    bool valid = false;
+  };
+
+  /// Transactional variant of `clearDatasetChunks()`: instead of FREEING each
+  /// live topic's chunks, MOVE them (and the refill-mutable metadata above) into
+  /// the returned snapshot. Externally-visible state afterward is identical to
+  /// `clearDatasetChunks` (topics stay listed + empty, floor reset). Same
+  /// PRECONDITION + thread rules (drop cached `TopicChunk*` first; GUI-thread only).
+  /// Takes `lockEngine()` internally. Unknown / empty dataset -> `valid == false`.
+  [[nodiscard]] DatasetChunkSnapshot detachDatasetChunks(PJ::DatasetId dataset_id);
+
+  /// Inverse of `detachDatasetChunks()`. For each topic currently listed under
+  /// `dataset_id`: one NOT in `snapshot.prior_topic_ids` was added by a failed
+  /// refill and is `retireTopic`'d; a prior topic has its partial-refill chunks
+  /// cleared. Then each snapshot topic's chunks + metadata are moved back. Same
+  /// PRECONDITION + thread rules; takes `lockEngine()` internally. Consumes the
+  /// snapshot (leaves `valid == false`). No-op when `!snapshot.valid`.
+  void reattachDatasetChunks(PJ::DatasetId dataset_id, DatasetChunkSnapshot&& snapshot);
 
   /// Move every committed chunk into `dst`, leaving this engine's storages
   /// empty (datasets, topics, schemas, time domains stay registered). Topics
@@ -187,12 +244,47 @@ class DataEngine {
   /// List topic ids for a dataset.
   [[nodiscard]] std::vector<PJ::TopicId> listTopics(PJ::DatasetId dataset_id) const;
 
+  // ---- Threading ----
+  /// Acquire the engine's mutex; the ingest worker thread and the GUI thread
+  /// serialize through it. The guard MUST outlive any cursor built from the data it
+  /// protects — `DataReader` moves it into the returned `RangeCursor`/`SeriesReader`,
+  /// which iterate the chunk deques lazily after the call returns; `getTopicStorage()`
+  /// does NOT lock, so the caller holds this for the returned pointer's lifetime.
+  ///
+  /// Recursive (a shared_mutex would buy nothing — the GUI is the sole reader thread),
+  /// so the same thread may re-acquire it: a held cursor doing another read, or a
+  /// compound mutator calling another. It does NOT make calling a mutator from inside
+  /// a `forEach` callback safe (mutating mid-iteration) — don't. mutable so a const
+  /// reader can lock.
+  [[nodiscard]] std::unique_lock<std::recursive_mutex> lockEngine() const;
+
+  /// Like lockEngine() but returns the guard UNLOCKED (std::defer_lock), to lock TWO
+  /// engines together deadlock-free: a deferred guard on each, then std::lock(). The
+  /// write host holds the live engine while replaying to the staging engine this way,
+  /// so it can't invert lock order against flushTo() (which also std::lock()s both).
+  /// For a SINGLE engine use lockEngine().
+  [[nodiscard]] std::unique_lock<std::recursive_mutex> lockEngineDeferred() const;
+
+  /// Like commitChunks(), but assumes the caller ALREADY holds lockEngine().
+  /// For compound writers that batch reads + commits under one lock; calling
+  /// commitChunks() while holding lockEngine() would self-deadlock.
+  std::vector<PJ::TopicId> commitChunksLocked(std::vector<std::pair<PJ::TopicId, TopicChunk>> chunks);
+
  private:
   // Move src's sealed chunks into dst, re-stamping each chunk's topic_id to
   // dst's id. Shared by flushTo (append between mirrored topics) and
   // replaceDatasetFrom (after dst is cleared). Needs friend access to
   // TopicStorage::sealed_chunks_.
   static void adoptChunksFrom(TopicStorage& dst, TopicStorage& src);
+
+  // Lock-assuming variants: the caller already holds impl_->mutex_ (unique for
+  // createTopicLocked, shared-or-unique for listTopicsLocked). The public
+  // same-named methods take the lock and delegate. The split exists so a compound
+  // mutator (e.g. replaceDatasetFrom, which already holds unique) can call them
+  // WITHOUT re-acquiring the non-recursive mutex — which would self-deadlock.
+  [[nodiscard]] PJ::Expected<PJ::TopicId> createTopicLocked(
+      PJ::DatasetId dataset_id, TopicDescriptor descriptor, PJ::TopicId requested_id = 0);
+  [[nodiscard]] std::vector<PJ::TopicId> listTopicsLocked(PJ::DatasetId dataset_id) const;
 
   struct Impl;
   std::unique_ptr<Impl> impl_;

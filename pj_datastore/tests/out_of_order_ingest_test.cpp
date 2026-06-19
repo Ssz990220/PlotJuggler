@@ -75,7 +75,7 @@ TEST(OutOfOrderIngestTest, AppendScalarToleratesOutOfOrder) {
   ASSERT_TRUE(latest.has_value());
   ASSERT_TRUE(latest->has_value());
   EXPECT_EQ((*latest)->timestamp, 50);
-  EXPECT_DOUBLE_EQ((*latest)->chunk->readNumericAsDouble(0, (*latest)->row_index), 2.0);
+  EXPECT_DOUBLE_EQ((*latest)->values[0], 2.0);
 
   auto meta = reader.getMetadata(handle->topic_id);
   ASSERT_TRUE(meta.has_value());

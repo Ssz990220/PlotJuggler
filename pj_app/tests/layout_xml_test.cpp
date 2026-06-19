@@ -444,6 +444,8 @@ TEST(RebindCurveKeys, ClearsNameAndReportsUnresolvedTimeSeries) {
   ASSERT_EQ(unresolved.size(), 1);
   EXPECT_EQ(unresolved[0], (SeriesPath{QStringLiteral("/missing"), QStringLiteral("f")}));
   EXPECT_FALSE(c.hasAttribute(QStringLiteral("name")));  // stale key cleared, won't mis-resolve
+  EXPECT_EQ(c.attribute(QStringLiteral("topic")), QStringLiteral("/missing"));
+  EXPECT_EQ(c.attribute(QStringLiteral("field")), QStringLiteral("f"));
 }
 
 TEST(RebindCurveKeys, ResolvesXyOnlyWhenBothAxesMatch) {
@@ -466,8 +468,36 @@ TEST(RebindCurveKeys, ResolvesXyOnlyWhenBothAxesMatch) {
   EXPECT_EQ(both.attribute(QStringLiteral("curve_y")), QStringLiteral("ky"));
   EXPECT_FALSE(half.hasAttribute(QStringLiteral("curve_x")));  // partial → both cleared
   EXPECT_FALSE(half.hasAttribute(QStringLiteral("curve_y")));
+  EXPECT_EQ(half.attribute(QStringLiteral("x_topic")), x.topic);
+  EXPECT_EQ(half.attribute(QStringLiteral("x_field")), x.field);
+  EXPECT_EQ(half.attribute(QStringLiteral("y_topic")), QStringLiteral("/t"));
+  EXPECT_EQ(half.attribute(QStringLiteral("y_field")), QStringLiteral("absent"));
+  // Only the genuinely-missing half is reported — x resolved, so listing it as
+  // "missing" would mislead the prompt.
   ASSERT_EQ(unresolved.size(), 1);
   EXPECT_EQ(unresolved[0], (SeriesPath{QStringLiteral("/t"), QStringLiteral("absent")}));
+}
+
+TEST(RebindCurveKeys, ClearsKeysAndPreservesStableAttrsForUnresolvedXy) {
+  PlotDoc pd = makePlotDoc();
+  const SeriesPath x{QStringLiteral("/pose"), QStringLiteral("x")};
+  const SeriesPath y{QStringLiteral("/pose"), QStringLiteral("y")};
+  QDomElement c = addXyCurve(pd, x, y);
+  c.setAttribute(QStringLiteral("curve_x"), QStringLiteral("stale_x"));
+  c.setAttribute(QStringLiteral("curve_y"), QStringLiteral("stale_y"));
+
+  const auto resolve = [](const SeriesPath&) -> std::optional<QString> { return std::nullopt; };
+  const QList<SeriesPath> unresolved = PJ::layout_xml::rebindCurveKeys(pd.doc, resolve);
+
+  EXPECT_FALSE(c.hasAttribute(QStringLiteral("curve_x")));
+  EXPECT_FALSE(c.hasAttribute(QStringLiteral("curve_y")));
+  EXPECT_EQ(c.attribute(QStringLiteral("x_topic")), x.topic);
+  EXPECT_EQ(c.attribute(QStringLiteral("x_field")), x.field);
+  EXPECT_EQ(c.attribute(QStringLiteral("y_topic")), y.topic);
+  EXPECT_EQ(c.attribute(QStringLiteral("y_field")), y.field);
+  ASSERT_EQ(unresolved.size(), 2);
+  EXPECT_EQ(unresolved[0], x);
+  EXPECT_EQ(unresolved[1], y);
 }
 
 TEST(StripUnresolvedCurves, RemovesOnlyKeylessCurves) {

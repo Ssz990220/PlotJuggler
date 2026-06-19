@@ -554,6 +554,109 @@ void ObjectStore::drainSeriesReaders(ObjectSeries& series) {
   std::unique_lock<std::shared_mutex> drain(series.mutex);
 }
 
+void ObjectStore::clearDataset(DatasetId dataset_id) {
+  // Exclusive store lock blocks new readers/writers; for each series in the
+  // dataset, drain any reader holding only the series lock (an EntryTimestampsView)
+  // before emptying its timestamp vector, then clear it in place — keeping the
+  // ObjectTopicId registered (never removeTopic+re-register). Unknown dataset_id
+  // matches no series -> no-op; clearing an empty series is a no-op (idempotent).
+  std::unique_lock lock(store_mutex_);
+  for (auto& [tid, series] : topics_) {
+    if (series->descriptor.dataset_id != dataset_id) {
+      continue;
+    }
+    drainSeriesReaders(*series);
+    clearEntriesLocked(*series);
+  }
+}
+
+ObjectStore::ObjectDatasetSnapshot ObjectStore::detachDataset(DatasetId dataset_id) {
+  // Same discipline as clearDataset, but MOVE each series' entries aside instead of
+  // dropping them. drainSeriesReaders before touching a series so no EntryTimestampsView
+  // dangles into the timestamp vector we move out.
+  std::unique_lock lock(store_mutex_);
+  ObjectDatasetSnapshot snapshot;
+  snapshot.dataset_id = dataset_id;
+  for (auto& [tid, series] : topics_) {
+    if (series->descriptor.dataset_id != dataset_id) {
+      continue;
+    }
+    snapshot.prior_object_topic_ids.push_back(tid);
+    drainSeriesReaders(*series);
+    ObjectDatasetSnapshot::SeriesSnapshot series_snapshot;
+    series_snapshot.entries = std::move(series->entries);
+    series_snapshot.entry_timestamps = std::move(series->entry_timestamps);
+    series_snapshot.budget = series->budget;
+    series_snapshot.memory_bytes = series->memory_bytes;
+    // Normalize the now-empty series in place (memory accounting + warm cache),
+    // keeping the ObjectTopicId registered — exactly like clearDataset.
+    clearEntriesLocked(*series);
+    snapshot.series.emplace(tid.id, std::move(series_snapshot));
+  }
+  if (snapshot.prior_object_topic_ids.empty()) {
+    return snapshot;  // unknown / empty dataset: `valid` stays false
+  }
+  snapshot.valid = true;
+  return snapshot;
+}
+
+void ObjectStore::reattachDataset(DatasetId dataset_id, ObjectDatasetSnapshot&& snapshot) {
+  std::unique_lock lock(store_mutex_);
+  if (!snapshot.valid) {
+    return;
+  }
+  const std::unordered_set<uint32_t> prior([&snapshot] {
+    std::unordered_set<uint32_t> set;
+    set.reserve(snapshot.prior_object_topic_ids.size());
+    for (const ObjectTopicId id : snapshot.prior_object_topic_ids) {
+      set.insert(id.id);
+    }
+    return set;
+  }());
+  // Reconcile the current series set against the prior one. Snapshot the current
+  // ids first since eraseTopicLocked mutates topics_. A series the failed refill
+  // added (not in `prior`) is erased; a prior series is cleared before its entries
+  // are moved back. (When the caller already evicted the added topics, `current`
+  // simply has none to erase — tolerated.)
+  std::vector<ObjectTopicId> current;
+  for (auto& [tid, series] : topics_) {
+    if (series->descriptor.dataset_id == dataset_id) {
+      current.push_back(tid);
+    }
+  }
+  for (const ObjectTopicId tid : current) {
+    if (prior.find(tid.id) == prior.end()) {
+      eraseTopicLocked(tid);  // drains + erases internally
+    } else if (ObjectSeries* series = findSeries(tid)) {
+      drainSeriesReaders(*series);
+      clearEntriesLocked(*series);
+    }
+  }
+  // Move the prior entries + budget + memory back into the (still-registered)
+  // series. clearEntriesLocked above already reset each prior series' warm cache.
+  for (auto& [raw_id, series_snapshot] : snapshot.series) {
+    ObjectSeries* series = findSeries(ObjectTopicId{raw_id});
+    if (series == nullptr) {
+      continue;  // defensive: a prior series vanished (should not happen)
+    }
+    series->entries = std::move(series_snapshot.entries);
+    series->entry_timestamps = std::move(series_snapshot.entry_timestamps);
+    series->budget = series_snapshot.budget;
+    series->memory_bytes = series_snapshot.memory_bytes;
+  }
+  snapshot.valid = false;
+}
+
+void ObjectStore::clearEntriesLocked(ObjectSeries& series) {
+  series.entries.clear();
+  series.entry_timestamps.clear();
+  series.memory_bytes = 0;
+  // The warm cache now refers to dropped entries; reset it under its own lock
+  // (mirrors the matched-series clear in flushTo / replaceDatasetFrom).
+  std::lock_guard cache_guard(series.cache_mutex);
+  series.cached_latest.reset();
+}
+
 void ObjectStore::clear() {
   std::unique_lock lock(store_mutex_);
   for (auto& [tid, series] : topics_) {

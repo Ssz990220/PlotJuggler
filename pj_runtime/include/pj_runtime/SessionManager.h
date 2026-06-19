@@ -5,6 +5,7 @@
 #include <QObject>
 #include <QString>
 #include <QVector>
+#include <cstddef>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -26,6 +27,7 @@ namespace PJ {
 
 class MessageParserPluginBase;
 class DataProcessorService;
+class RefillGuard;
 
 // Owns the datastore for the current app session. v1 scalar commit calls are
 // expected on the GUI thread so plot adapters never observe mutation during
@@ -126,6 +128,23 @@ class SessionManager : public QObject {
   void replaceDataset(
       DataEngine& staged_engine, ObjectStore& staged_store, DatasetId staged_id, DatasetId primary_id,
       std::vector<std::pair<ObjectTopicId, std::unique_ptr<MessageParserHandle>>> staged_object_parsers);
+
+  // Begin a TRANSACTIONAL in-place refill of `dataset_id` — the progressive-load
+  // reload prep that keeps its DatasetId / TopicIds / ObjectTopicIds registered, so
+  // bound plot adapters stay valid and the refill writes back into the same ids. The
+  // returned RAII guard has already, on the GUI thread with NO event loop:
+  //   1) emit datasetAboutToBeReplaced(dataset_id)  // adapters drop cached TopicChunk*
+  //   2) DETACHED (moved aside, NOT freed) the scalar chunks + object entries
+  //   3) notifyIngest(<dataset's topic ids>, live=false)  // UI shows it empty
+  // Step 1 BEFORE 2 is the invariant that prevents a use-after-free on cached chunk
+  // pointers (same ordering as replaceDataset); a dataset with no topics skips the
+  // notify (notifyIngest no-ops on an empty id list). The caller commit()s the guard
+  // once the refill succeeds (or to keep a partial load); otherwise the guard's
+  // destructor ROLLS BACK, restoring the exact prior data, retiring/removing topics
+  // the failed refill added, and re-notifying the UI. Detaching rather than freeing is
+  // what makes the rollback possible — the prior data lives in the snapshot until
+  // commit(). Runs NO event loop until commit/rollback.
+  [[nodiscard]] RefillGuard beginRefill(PJ::DatasetId dataset_id);
 
   // Registers (or replaces) the parser for one object topic. Called from the
   // streaming worker thread via the registrar callback when a plugin discovers a
@@ -234,6 +253,14 @@ class SessionManager : public QObject {
   void displayOffsetChanged();
 
  private:
+  // RefillGuard drives the transactional reload through this class's public
+  // detach/reattach + notify surface; it needs the private signal-emit helper
+  // below so the datasetAboutToBeReplaced emission stays inside SessionManager.
+  friend class RefillGuard;
+  // Emit datasetAboutToBeReplaced from inside the class (a foreign object's
+  // signal must not be emitted from outside its own members under moc).
+  void notifyDatasetAboutToBeReplaced(PJ::DatasetId dataset_id);
+
   // [min, max] raw-ns bounds across one dataset's scalar + object topics, or
   // nullopt when it holds no data. The one time-bounds union loop.
   [[nodiscard]] std::optional<std::pair<Timestamp, Timestamp>> datasetRawBounds(DatasetId dataset_id) const;
@@ -283,6 +310,55 @@ class SessionManager : public QObject {
   mutable std::shared_mutex object_parsers_mutex_;
   std::unordered_map<uint32_t, ObjectParserSlot> object_topic_parsers_;
   std::vector<LoadedSource> loaded_sources_;
+};
+
+/// RAII transaction wrapping a "replacing reload" (see SessionManager::beginRefill).
+/// Construction emits datasetAboutToBeReplaced, then DETACHES the dataset's prior data
+/// into a side snapshot instead of freeing it, leaving every TopicId/ObjectTopicId
+/// registered + empty so a progressive refill writes back into the same ids. Default
+/// outcome is ROLLBACK: a guard destroyed without commit()
+/// restores the exact prior scalar + object data, retires/removes topics the failed
+/// refill added, evicts parsers for ADDED object topics, and re-notifies the UI.
+/// commit() keeps the refilled data (frees the snapshot; the dtor then no-ops).
+///
+/// GUI-thread only; runs NO event loop between construction and commit/rollback.
+/// Move-only (held in std::optional<RefillGuard> by FileLoader's LoadContext). Does
+/// NOT touch the per-dataset TF buffer — FileLoader owns transform_service_ and
+/// rebuilds TF after rollback from the restored ObjectStore.
+class RefillGuard {
+ public:
+  RefillGuard(SessionManager& session, DatasetId dataset_id);
+  ~RefillGuard();
+  RefillGuard(RefillGuard&&) noexcept;
+  RefillGuard& operator=(RefillGuard&&) noexcept;
+  RefillGuard(const RefillGuard&) = delete;
+  RefillGuard& operator=(const RefillGuard&) = delete;
+
+  /// Keep the refilled data: drop the snapshot so the destructor no longer rolls back.
+  void commit();
+  /// Retire prior topics that VANISHED from the reloaded file (codex #2): a prior
+  /// scalar/object topic still empty after the refill is one the new file no longer
+  /// has (beginRefill emptied every prior topic; the refill writes back only the
+  /// ones still present), so retire the empty scalar topics and remove the empty
+  /// object topics to avoid a ghost entry lingering in the catalog. Call ONLY after
+  /// a COMPLETE refill (an unreached topic on a partial/cancelled load is not
+  /// "vanished") and BEFORE commit() (which frees the prior-topic snapshots this
+  /// reads). No-op when nothing was detached. A prior topic that the new file still
+  /// declares but with zero rows is also retired — a dataless topic has no curve.
+  void pruneVanishedTopics();
+  /// Held-aside scalar (approximate) + object (exact) bytes — observability for the
+  /// transient ~1x memory overshoot. 0 when nothing was detached or after commit().
+  [[nodiscard]] std::size_t snapshotBytes() const noexcept;
+
+ private:
+  void rollback();
+
+  SessionManager* session_ = nullptr;  // nulled after a move so the moved-from dtor no-ops
+  DatasetId dataset_id_ = 0;
+  DataEngine::DatasetChunkSnapshot scalar_snapshot_;
+  ObjectStore::ObjectDatasetSnapshot object_snapshot_;
+  std::vector<ObjectTopicId> prior_object_topic_ids_;
+  bool committed_ = false;
 };
 
 }  // namespace PJ

@@ -9,9 +9,11 @@
 #include <QElapsedTimer>
 #include <QList>
 #include <QMainWindow>
+#include <QMetaObject>
 #include <QPointF>
 #include <QRectF>
 #include <QString>
+#include <QStringList>
 #include <deque>
 #include <functional>
 #include <memory>
@@ -35,6 +37,7 @@ class QMenu;
 class QPushButton;
 class QSettings;
 class QStackedWidget;
+class QTimer;
 class QToolButton;
 
 namespace Ui {
@@ -48,6 +51,7 @@ class TransformService;
 namespace PJ {
 
 class AppSession;
+struct CatalogItem;
 class CurveEditor;
 class DiagnosticHistory;
 class DockWidget;
@@ -55,8 +59,11 @@ class FileLoader;
 class IDataWidget;
 class PlotDocker;
 class PlotWidget;
+class PendingCurveBinder;
 class QtDiagnosticBridge;
+class SceneDockWidget;
 class StreamingSourceManager;
+class IngestProgressWidget;
 class RecentFilesMenu;
 class Theme;
 class TitleBar;
@@ -86,6 +93,10 @@ class MainWindow : public QMainWindow {
 
   // Populates the session with generated data for smoke testing.
   [[nodiscard]] bool populateTestData();
+
+  // Loads `path` on startup and auto-reloads its data source(s) without prompting
+  // (the --layout CLI option). Safe no-op if the layout binds to no source.
+  void loadLayoutAtStartup(const QString& path);
 
   [[nodiscard]] TitleBar* titleBar() const {
     return title_bar_;
@@ -309,6 +320,9 @@ class MainWindow : public QMainWindow {
   // Applies operation to each dock widget.
   void forEachDock(const std::function<void(DockWidget*)>& operation);
 
+  // Applies operation to each 2D/3D scene dock hosted in a DockWidget.
+  void forEachSceneDock(const std::function<void(SceneDockWidget*)>& operation);
+
   // Applies operation to each plot widget.
   void forEachPlot(const std::function<void(PlotWidget*)>& operation);
 
@@ -339,6 +353,18 @@ class MainWindow : public QMainWindow {
 
   // Layout helpers.
   void loadLayoutFromPath(const QString& path);
+  // Applies a parsed layout to already-loaded data: curve rebind, plot/panel
+  // restore, recent-files. The progressive reload path uses beginProgressiveLayoutRestore
+  // instead so the structure can appear before the load queue drains.
+  void applyRestoredLayout(QDomDocument doc, const QString& path);
+  void beginProgressiveLayoutRestore(QDomDocument doc, const QString& path);
+  void cancelProgressiveLayoutRestore();
+  void flushPendingCurveBindings(const std::vector<CatalogItem>& items);
+  int retryPendingSceneRestores(const std::vector<CatalogItem>& items);
+  [[nodiscard]] QStringList unresolvedPendingSceneRestores();
+  void clearPendingSceneRestores();
+  void onProgressiveLayoutDrained();
+  void restoreChromeAndPanels(const QDomDocument& doc, const QString& path);
   void saveLayoutToPath(const QString& path, bool include_data_source);
   void recordRecentLayout(const QString& path);
   [[nodiscard]] QStringList recentLayouts() const;
@@ -487,6 +513,7 @@ class MainWindow : public QMainWindow {
   // instance whose lifetime outlasts them all.
   std::unique_ptr<QSettings> app_settings_;
   std::unique_ptr<AppSession> session_;
+  std::unique_ptr<PendingCurveBinder> pending_binder_;
   // Owns the per-dataset 3D TF buffers + load-time ingest. Lives here in the
   // shell (not pj_runtime) so the runtime stays domain-neutral. Declared after
   // session_ so it is destroyed first (it holds a reference into session_).
@@ -506,6 +533,11 @@ class MainWindow : public QMainWindow {
   bool streaming_playback_seeded_ = false;
   std::unique_ptr<Theme> theme_;
   TitleBar* title_bar_ = nullptr;
+  // Non-modal load progress strip parked in the title bar's center region (owned
+  // by title_bar_ once injected). Shown after a short delay so quick loads don't
+  // flash it; hidden a moment after the load queue drains.
+  IngestProgressWidget* ingest_progress_ = nullptr;
+  QTimer* ingest_show_timer_ = nullptr;
   QMenu* recent_layouts_menu_ = nullptr;
   // Help ▸ Installed Extensions — informational, rebuilt on aboutToShow.
   QMenu* installed_extensions_menu_ = nullptr;
@@ -529,6 +561,12 @@ class MainWindow : public QMainWindow {
   std::deque<QByteArray> redo_states_;
   QElapsedTimer undo_timer_;
   bool applying_state_ = false;
+  bool progressive_layout_in_flight_ = false;
+  QMetaObject::Connection pending_items_added_conn_;
+  QMetaObject::Connection pending_queue_drained_conn_;
+  // Set only while a --layout CLI load runs, so loadLayoutFromPath auto-reloads the
+  // layout's source(s) instead of prompting.
+  bool startup_auto_reload_ = false;
   // Lives inside localToolbarWidget; visibility piggybacks on the
   // right-panel toggle in the tab strip.
   CurveEditor* curve_editor_ = nullptr;

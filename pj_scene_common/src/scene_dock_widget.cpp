@@ -161,6 +161,69 @@ void SceneDockWidget::seedLayerTrackerTime(ISceneLayer* layer) {
   }
 }
 
+bool SceneDockWidget::restoreLayerElement(const QDomElement& layer_el) {
+  if (session_ == nullptr) {
+    return false;
+  }
+
+  bool dataset_ok = false;
+  const auto dataset_value = layer_el.attribute(QStringLiteral("dataset_id")).toULongLong(&dataset_ok);
+  if (!dataset_ok || dataset_value > std::numeric_limits<uint32_t>::max()) {
+    return true;
+  }
+  const auto saved_id = static_cast<DatasetId>(dataset_value);
+  const QString saved_source = layer_el.attribute(QStringLiteral("dataset_source"));
+  const QString topic_name = layer_el.attribute(QStringLiteral("topic_name"));
+  const QString object_type_str = layer_el.attribute(QStringLiteral("object_type"));
+  const QString display_name = layer_el.attribute(QStringLiteral("display_name"));
+  const bool visible = layer_el.attribute(QStringLiteral("visible"), QStringLiteral("true")) == QStringLiteral("true");
+
+  const auto object_type_opt = sdk::parseBuiltinObjectType(object_type_str.toStdString());
+  if (!object_type_opt.has_value()) {
+    return true;
+  }
+  // Re-resolve the dataset by stable source name (load order is not stable
+  // across sessions), then look up the topic under the resolved id.
+  const auto dataset_id_opt = resolveDatasetId(session_, saved_id, saved_source);
+  if (!dataset_id_opt.has_value()) {
+    return false;
+  }
+  const auto topic_id_opt = session_->objectStore().findTopic(*dataset_id_opt, topic_name.toStdString());
+  if (!topic_id_opt.has_value()) {
+    return false;
+  }
+  if (addLayer(*topic_id_opt, *object_type_opt, display_name) != AddOutcome::kLayerAdded) {
+    return true;  // rejected, or consumed as a scene-config topic: no layer to restore
+  }
+  if (ISceneLayer* layer = layerFor(*topic_id_opt); layer != nullptr) {
+    const QDomElement payload = layer_el.firstChildElement();
+    if (!payload.isNull()) {
+      layer->xmlLoadState(payload);
+    }
+  }
+  if (!visible) {
+    setLayerVisible(*topic_id_opt, false);
+  }
+  return true;
+}
+
+void SceneDockWidget::rememberPendingRestore(const QDomElement& layer_el) {
+  QDomDocument doc;
+  const QDomNode clone = doc.importNode(layer_el, /*deep=*/true);
+  doc.appendChild(clone);
+  pending_restore_elements_.push_back(
+      PendingRestoreElement{
+          .document = doc,
+          .topic_name = layer_el.attribute(QStringLiteral("topic_name")),
+      });
+}
+
+bool SceneDockWidget::restoreOnePending(const QDomElement& element) {
+  // Base default: every deferred element is a render <layer>. A family with other
+  // deferred element kinds (e.g. 3D's <config_topic>) overrides this hook to dispatch.
+  return restoreLayerElement(element);
+}
+
 void SceneDockWidget::removeTopic(ObjectTopicId topic_id) {
   const int64_t key = topicKey(topic_id);
   auto it = layers_.find(key);
@@ -364,6 +427,7 @@ bool SceneDockWidget::xmlLoadState(const QDomElement& element) {
   if (element.isNull() || element.tagName() != xmlTag()) {
     return false;
   }
+  clearPendingRestores();
   clearLayers();
   if (session_ == nullptr) {
     syncViewLayers();
@@ -374,46 +438,9 @@ bool SceneDockWidget::xmlLoadState(const QDomElement& element) {
   int unresolved_layers = 0;
   for (QDomElement layer_el = element.firstChildElement(QStringLiteral("layer")); !layer_el.isNull();
        layer_el = layer_el.nextSiblingElement(QStringLiteral("layer"))) {
-    bool dataset_ok = false;
-    const auto dataset_value = layer_el.attribute(QStringLiteral("dataset_id")).toULongLong(&dataset_ok);
-    if (!dataset_ok || dataset_value > std::numeric_limits<uint32_t>::max()) {
-      continue;
-    }
-    const auto saved_id = static_cast<DatasetId>(dataset_value);
-    const QString saved_source = layer_el.attribute(QStringLiteral("dataset_source"));
-    const QString topic_name = layer_el.attribute(QStringLiteral("topic_name"));
-    const QString object_type_str = layer_el.attribute(QStringLiteral("object_type"));
-    const QString display_name = layer_el.attribute(QStringLiteral("display_name"));
-    const bool visible =
-        layer_el.attribute(QStringLiteral("visible"), QStringLiteral("true")) == QStringLiteral("true");
-
-    const auto object_type_opt = sdk::parseBuiltinObjectType(object_type_str.toStdString());
-    if (!object_type_opt.has_value()) {
-      continue;
-    }
-    // Re-resolve the dataset by stable source name (load order is not stable
-    // across sessions), then look up the topic under the resolved id.
-    const auto dataset_id_opt = resolveDatasetId(session_, saved_id, saved_source);
-    if (!dataset_id_opt.has_value()) {
+    if (!restoreLayerElement(layer_el)) {
       ++unresolved_layers;
-      continue;
-    }
-    const auto topic_id_opt = session_->objectStore().findTopic(*dataset_id_opt, topic_name.toStdString());
-    if (!topic_id_opt.has_value()) {
-      ++unresolved_layers;
-      continue;
-    }
-    if (addLayer(*topic_id_opt, *object_type_opt, display_name) != AddOutcome::kLayerAdded) {
-      continue;  // rejected, or consumed as a scene-config topic: no layer to restore
-    }
-    if (ISceneLayer* layer = layerFor(*topic_id_opt); layer != nullptr) {
-      const QDomElement payload = layer_el.firstChildElement();
-      if (!payload.isNull()) {
-        layer->xmlLoadState(payload);
-      }
-    }
-    if (!visible) {
-      setLayerVisible(*topic_id_opt, false);
+      rememberPendingRestore(layer_el);
     }
   }
   if (unresolved_layers > 0) {
@@ -422,6 +449,44 @@ bool SceneDockWidget::xmlLoadState(const QDomElement& element) {
   syncViewLayers();
   refreshView();
   return true;
+}
+
+int SceneDockWidget::retryPendingRestores(const QSet<QString>& topic_names) {
+  if (pending_restore_elements_.empty()) {
+    return 0;
+  }
+
+  int restored = 0;
+  std::vector<PendingRestoreElement> still_pending;
+  still_pending.reserve(pending_restore_elements_.size());
+  for (PendingRestoreElement& pending : pending_restore_elements_) {
+    if (!topic_names.isEmpty() && !topic_names.contains(pending.topic_name)) {
+      still_pending.push_back(std::move(pending));
+      continue;
+    }
+    if (restoreOnePending(pending.document.documentElement())) {
+      ++restored;
+    } else {
+      still_pending.push_back(std::move(pending));
+    }
+  }
+  pending_restore_elements_ = std::move(still_pending);
+  return restored;
+}
+
+QStringList SceneDockWidget::unresolvedPendingRestores() const {
+  QStringList unresolved;
+  unresolved.reserve(static_cast<qsizetype>(pending_restore_elements_.size()));
+  for (const PendingRestoreElement& pending : pending_restore_elements_) {
+    if (!pending.topic_name.isEmpty()) {
+      unresolved.push_back(pending.topic_name);
+    }
+  }
+  return unresolved;
+}
+
+void SceneDockWidget::clearPendingRestores() {
+  pending_restore_elements_.clear();
 }
 
 LayerFactory& SceneDockWidget::layerFactory() {

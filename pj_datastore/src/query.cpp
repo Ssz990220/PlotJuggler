@@ -87,6 +87,12 @@ RangeCursor::RangeCursor(const std::deque<TopicChunk>& chunks, Timestamp t_min, 
   initFrontiers();
 }
 
+RangeCursor::RangeCursor(
+    const std::deque<TopicChunk>& chunks, Timestamp t_min, Timestamp t_max, std::unique_lock<std::recursive_mutex> lock)
+    : chunks_(&chunks), t_min_(t_min), t_max_(t_max), lock_(std::move(lock)) {  // adopts the read-lock for its lifetime
+  initFrontiers();
+}
+
 bool RangeCursor::valid() const noexcept {
   return !frontiers_.empty();
 }
@@ -284,6 +290,11 @@ void SeriesCursor::initFrontiers() {
 
 SeriesReader::SeriesReader(const std::deque<TopicChunk>& chunks, std::size_t column_index, Timestamp retention_floor)
     : chunks_(&chunks), column_index_(column_index), retention_floor_(retention_floor) {}
+
+SeriesReader::SeriesReader(
+    const std::deque<TopicChunk>& chunks, std::size_t column_index, Timestamp retention_floor,
+    std::unique_lock<std::recursive_mutex> lock)
+    : chunks_(&chunks), column_index_(column_index), retention_floor_(retention_floor), lock_(std::move(lock)) {}
 
 std::size_t SeriesReader::size() const {
   std::size_t count = 0;

@@ -13,10 +13,12 @@
 #include <QSettings>
 #include <QString>
 #include <QStringList>
+#include <QThread>
 #include <algorithm>
 #include <cstdint>
 #include <functional>
 #include <nlohmann/json.hpp>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -104,11 +106,45 @@ void applyDefaultIngestPolicies(DataSourceRuntimeHost& session) {
 
 }  // namespace
 
+// Per-load state for a single-instance worker load. Holds the bound plugin
+// handle + ingest host so they outlive the GUI prologue across the worker run.
+struct FileLoader::LoadContext {
+  // DataSourceHandle has no default ctor (it wraps a created plugin instance),
+  // so the context is built by moving the bound handle + host in.
+  LoadContext(DataSourceHandle bound_handle, std::unique_ptr<DataSourceRuntimeHost> bound_ingest)
+      : handle(std::move(bound_handle)), ingest(std::move(bound_ingest)) {}
+
+  QString path;
+  QPointer<QWidget> dialog_parent;
+  QString source_name;
+  std::string config;
+  DatasetId dataset_id = 0;
+  bool replacing = false;
+  // Engaged only on a REPLACING reload: the RAII transaction that detached the
+  // prior data up front. Committed on success/keep (onWorkerFinished); otherwise
+  // its destructor — fired by ctx_.reset()/destruction — rolls the dataset back.
+  std::optional<RefillGuard> refill_guard;
+  int file_index = 1;
+  int file_total = 1;
+  DataSourceHandle handle;
+  std::unique_ptr<DataSourceRuntimeHost> ingest;
+  // Worker-owned: started on the GUI before the thread runs, then only the
+  // worker touches it (elapsed/restart) to pace flush+notify.
+  QElapsedTimer flush_clock;
+  // Set once by on_progress_start (worker); read by the queued progress lambda.
+  uint64_t progress_total = 0;
+  // Worker -> GUI handoff (read in onWorkerFinished after the worker joins).
+  bool start_ok = false;
+  QString start_error;
+};
+
 FileLoader::FileLoader(
     SessionManager& session, ExtensionCatalogService& extensions, CatalogModel& catalog, QObject* parent)
     : QObject(parent), session_(session), extensions_(extensions), catalog_(catalog) {}
 
-FileLoader::~FileLoader() = default;
+FileLoader::~FileLoader() {
+  joinForShutdown();
+}
 
 void FileLoader::openFromDialog(QWidget* dialog_parent) {
   QSettings settings;
@@ -132,7 +168,11 @@ void FileLoader::openFromDialog(QWidget* dialog_parent) {
   loadFile(path, dialog_parent);
 }
 
-bool FileLoader::loadFile(const QString& path, QWidget* dialog_parent, const LoadHints& hints) {
+bool FileLoader::beginLoad(const LoadRequest& request) {
+  const QString& path = request.path;
+  QWidget* const dialog_parent = request.dialog_parent.data();
+  const LoadHints& hints = request.hints;
+
   // Restore same-source datasets if a replacement load is cancelled or fails.
   std::vector<DatasetId> tombstoned_for_replace;
   DatasetId created_live_dataset_id = 0;
@@ -232,7 +272,7 @@ bool FileLoader::loadFile(const QString& path, QWidget* dialog_parent, const Loa
       catalog_.restoreDataset(existing_id);
       dataset_source_path_[existing_id] = path;
       emit fileLoaded(path, QString(), source_name, emit_config);
-      return true;
+      return false;  // layout-replay reuse: done synchronously, no worker
     }
     // Tombstone is deferred to the post-ingest swap (single-instance) or the fanout fallback below: don't disturb
     // the live dataset until the staged ingest has succeeded.
@@ -240,54 +280,48 @@ bool FileLoader::loadFile(const QString& path, QWidget* dialog_parent, const Loa
     break;
   }
 
-  // Ingest target. A first load writes straight into the live engine/store. A same-source reload stages into a
-  // throwaway secondary engine/store, so the primary stays live and readable until one synchronous swap after a
-  // successful ingest. Only the single-instance case swaps; a fanout reload falls back to the legacy path.
+  // Ingest target — always the LIVE engine/store (no staging engine). A first
+  // load creates a fresh dataset. A same-source single-instance reload binds to
+  // the EXISTING dataset and refills it in place under the transactional
+  // RefillGuard from beginRefill() (below), so its DatasetId/TopicIds — and every
+  // curve key — stay stable: the write host's ensureTopic reuses each topic by
+  // name, writing back into the original ids. (A fanout reload can't refill one
+  // dataset into N, so it falls back to remove-then-fresh-load; see the fanout branch.)
   const bool replacing = (existing_primary_id != 0);
-  DataEngine staged_engine;
-  ObjectStore staged_store;
-  DataEngine& target_engine = replacing ? staged_engine : engine;
-  ObjectStore& target_store = replacing ? staged_store : session_.objectStore();
-  TimeDomainId target_td_id = td_id;
-  if (replacing) {
-    auto staged_td = staged_engine.createTimeDomain("default");
-    if (!staged_td.has_value()) {
-      return fail(tr("Could not create the staging time domain."));
+  DatasetId dataset_id = existing_primary_id;
+  if (!replacing) {
+    auto dataset_or =
+        engine.createDataset(DatasetDescriptor{.source_name = display_name_utf8, .time_domain_id = td_id});
+    if (!dataset_or.has_value()) {
+      return fail(tr("createDataset failed: %1").arg(QString::fromStdString(dataset_or.error())));
     }
-    target_td_id = *staged_td;
+    dataset_id = static_cast<DatasetId>(*dataset_or);
   }
+  const PJ_data_source_handle_t source_handle{static_cast<uint32_t>(dataset_id)};
 
-  auto dataset_or =
-      target_engine.createDataset(DatasetDescriptor{.source_name = display_name_utf8, .time_domain_id = target_td_id});
-  if (!dataset_or.has_value()) {
-    return fail(tr("createDataset failed: %1").arg(QString::fromStdString(dataset_or.error())));
-  }
-
-  const auto dataset_id = static_cast<DatasetId>(*dataset_or);
-  const PJ_data_source_handle_t source_handle{static_cast<uint32_t>(*dataset_or)};
+  // A non-replacing first load just created its dataset in the LIVE engine
+  // (above). Track it so a SYNCHRONOUS prologue failure (bind / loadConfig below,
+  // before the worker starts) erases the abandoned shell via fail()'s
+  // erase_created_live_dataset, instead of leaving an empty dataset a prefer_reuse
+  // layout replay could reattach to. Worker-thread failure / discard is handled
+  // symmetrically in onWorkerFinished (which knows the same dataset via !replacing).
   if (!replacing) {
     created_live_dataset_id = dataset_id;
   }
 
-  // On the replace path the staged ObjectTopicIds are throwaway; collect the
-  // parsers and re-register them under the stable primary ids after the swap.
-  std::vector<std::pair<ObjectTopicId, std::unique_ptr<MessageParserHandle>>> staged_object_parsers;
-  DataSourceRuntimeHost::ObjectTopicParserRegistrar object_parser_registrar;
-  if (replacing) {
-    object_parser_registrar = [&staged_object_parsers](ObjectTopicId id, std::unique_ptr<MessageParserHandle> parser) {
-      staged_object_parsers.emplace_back(id, std::move(parser));
-    };
-  } else {
-    object_parser_registrar = [this](ObjectTopicId id, std::unique_ptr<MessageParserHandle> parser) {
-      session_.registerObjectTopicParser(id, std::move(parser));
-    };
-  }
-  // Must write into target_engine/target_store — the staged pair the swap
-  // consumes on the replace path (see the staging block above; pinned by
-  // file_loader_test).
-  DataSourceRuntimeHost ingest_session(
-      target_engine, extensions_, dataset_id, source_handle, target_store, source->id,
+  // Parsers register directly under the live ids (no staged remap needed).
+  DataSourceRuntimeHost::ObjectTopicParserRegistrar object_parser_registrar =
+      [this](ObjectTopicId id, std::unique_ptr<MessageParserHandle> parser) {
+        session_.registerObjectTopicParser(id, std::move(parser));
+      };
+  // Heap-owned so a single-instance load can MOVE it into ctx_ and let the
+  // worker thread run handle.start() against it after this prologue returns.
+  // The reference stays valid across that move (unique_ptr move transfers
+  // ownership; the object's address does not change).
+  auto ingest_session_ptr = std::make_unique<DataSourceRuntimeHost>(
+      engine, extensions_, dataset_id, source_handle, session_.objectStore(), source->id,
       std::move(object_parser_registrar), nullptr, nullptr, handle.libraryOwner());
+  DataSourceRuntimeHost& ingest_session = *ingest_session_ptr;
   if (dialog_parent != nullptr) {
     ingest_session.setMessageBoxHandler(
         [dialog_parent](int type, std::string_view title, std::string_view message, int buttons) -> int {
@@ -522,63 +556,110 @@ bool FileLoader::loadFile(const QString& path, QWidget* dialog_parent, const Loa
   std::vector<DatasetId> fanout_loaded_ids;
 
   if (fanouts.size() == 1) {
-    // Single-instance: reuse the already-bound scratch handle + dataset.
-    // issue #98: apply the plugin's dataset name BEFORE start() so the
-    // commit-driven catalog rebuild surfaces curves already under the right
-    // tree-root label. rebuildFromDatastore signals add/remove keyed by curve
-    // identity, never relabels, so overriding after the curves are shown would
-    // not reach the tree view on the initial load — mirror how fanout sets its
-    // labels at createDataset time, before any topic is committed.
-    // On the replace path `dataset_id` is the throwaway staged id; the swap
-    // block applies the plugin name to the stable primary id instead.
-    if (const QString plugin_name = detail::parseDisplayName(config); !replacing && !plugin_name.isEmpty()) {
+    // --- Single-instance load: run the read loop on a worker thread, filling
+    // the datastore progressively while the GUI stays interactive. The modal
+    // ProgressDialog above is unused here (destroyed when this prologue returns);
+    // progress + cancellation flow through ingestStarted/ingestProgress +
+    // cancelCurrent (the title-bar IngestProgressWidget), wired by MainWindow. ---
+    // issue #98: apply the plugin's dataset name before start() so the
+    // commit-driven catalog rebuild surfaces curves under the right tree-root.
+    if (const QString plugin_name = detail::parseDisplayName(config); !plugin_name.isEmpty()) {
       catalog_.setDatasetDisplayName(dataset_id, plugin_name);
     }
-    wire_progress(ingest_session);
-    if (auto status = handle.start(); !status) {
-      progress_dlg.hide();
-      return fail(tr("Plugin '%1': start failed: %2").arg(source_name, QString::fromStdString(status.error())));
+
+    // Move the bound handle + host into the per-load context so they outlive
+    // this prologue into the worker. The `ingest_session` reference stays valid
+    // (the move transfers ownership without relocating the heap object).
+    ctx_ = std::make_unique<LoadContext>(std::move(handle), std::move(ingest_session_ptr));
+    ctx_->path = path;
+    ctx_->dialog_parent = request.dialog_parent;
+    ctx_->source_name = source_name;
+    ctx_->config = config;
+    ctx_->dataset_id = dataset_id;
+    ctx_->replacing = replacing;
+    ctx_->file_index = request.file_index;
+    ctx_->file_total = request.file_total;
+
+    if (replacing) {
+      // Transactional in-place refill: DETACH (move aside, not free) the existing
+      // dataset's prior data, keeping its topics registered so the refill's
+      // ensureTopic rebinds each by name into the same ids. Constructed as the LAST
+      // prologue step — after every synchronous fail()-return above and after ctx_
+      // exists — so a synchronous prologue failure never touches the live data, and
+      // a worker failure / discard / shutdown rolls back via the guard (the prior
+      // data lives in the snapshot until commit()). Replaces the old up-front
+      // in-place clear, which destroyed the prior data with no rollback.
+      ctx_->refill_guard = session_.beginRefill(existing_primary_id);
     }
-    // Two-way stop: Discard throws the partial parse away, Cancel keeps it.
-    //
-    // Discard path: a file load never flushes until the terminal flushAll()
-    // below, and ~DataSourceRuntimeHost never flushes (flushAll() is the only
-    // path that makes rows visible), so skipping it leaves every buffered
-    // scalar row invisible. ObjectStore payloads are written immediately, so
-    // evict them explicitly; removeDataset() drops the never-committed dataset
-    // from the catalog. Return early — no flush, no rebuild, no fileLoaded.
-    // The replace path needs none of this: its swap below is gated on
-    // user_action == None and the staged engine/store are discarded on
-    // return, so the original data stays intact.
-    //
-    // Cancel(keep) path: fall through to flushAll() so the rows parsed before
-    // the user clicked Cancel surface in the tree. Replace-on-cancel is still
-    // refused below (the swap requires a complete read).
-    if (user_action == CancelAction::kDiscard) {
-      qCWarning(lcFileLoader) << "[FileLoader] import discarded by user; partial data dropped";
-      if (!replacing) {
-        session_.evictDatasetObjects(dataset_id);
-        catalog_.removeDataset(dataset_id, /*tombstone=*/false);
-        engine.removeDataset(dataset_id);
-        created_live_dataset_id = 0;
+
+    // Worker-driven progress. on_progress_* run on the WORKER; they touch only
+    // ctx_ (set before the thread starts, not mutated by the GUI until join) and
+    // the atomic cancel flag, and marshal every GUI access via invokeMethod.
+    DataSourceRuntimeHost& host = *ctx_->ingest;
+    host.on_progress_start = [this](std::string_view label, uint64_t total, bool /*cancellable*/) {
+      ctx_->progress_total = total;
+      const QString title = QString::fromUtf8(label.data(), static_cast<int>(label.size()));
+      const bool determinate = total > 0;
+      const int file_index = ctx_->file_index;
+      const int file_total = ctx_->file_total;
+      QMetaObject::invokeMethod(
+          this,
+          [this, title, determinate, file_index, file_total]() {
+            emit ingestStarted(title, file_index, file_total, determinate);
+          },
+          Qt::QueuedConnection);
+    };
+    host.on_progress_update = [this](uint64_t current) -> bool {
+      if (cancel_mode_.load() != 0) {
+        return false;  // user asked to stop; the read loop exits cooperatively
       }
-      return false;
-    }
-    if (user_action == CancelAction::kKeep) {
-      qCInfo(lcFileLoader) << "[FileLoader] import cancelled by user; keeping the partial load";
-    }
-    ingest_session.flushAll();
+      if (ctx_->flush_clock.elapsed() < flush_throttle_ms_) {
+        return true;
+      }
+      ctx_->ingest->flushPending();  // worker-side: seal+commit -> rows visible
+      ctx_->flush_clock.restart();
+      const DatasetId notify_dataset = ctx_->dataset_id;
+      const int cur = static_cast<int>(current);
+      const int max = static_cast<int>(ctx_->progress_total);
+      QMetaObject::invokeMethod(
+          this,
+          [this, notify_dataset, cur, max]() {
+            // GUI: recompute the topic-id set here (never capture it from the
+            // worker — the parser registrar may add topics concurrently).
+            const auto ids = session_.dataEngine().listTopics(notify_dataset);
+            session_.notifyIngest(QVector<TopicId>(ids.begin(), ids.end()), /*live=*/false);
+            // Fold the FrameTransforms loaded so far into the TF buffer incrementally
+            // (cursor-based — each call ingests only what is new). Otherwise TF is
+            // ingested in a single pass at completion (finishLoadOnGui) and 3D scenes
+            // stay empty until the load finishes. This emits datasetTransformsReady,
+            // which 3D docks observe to re-render at the playhead as the file loads.
+            if (transform_service_ != nullptr) {
+              transform_service_->ingestFrameTransformsForDataset(notify_dataset);
+            }
+            emit ingestProgress(cur, max);
+          },
+          Qt::QueuedConnection);
+      return true;
+    };
+    host.on_progress_finish = [] {};  // terminal flush is done in onWorkerFinished
+
+    cancel_mode_.store(0);
+    ctx_->flush_clock.start();
+    worker_ = std::unique_ptr<QThread>(QThread::create([this]() { runIngestOnWorker(); }));
+    worker_->start();
+    return true;  // worker running; onWorkerFinished resumes the queue
   } else {
-    // A same-source reload that fans out cannot replace in place (one source becomes N datasets). Fall back to legacy
-    // replace: tombstone the existing dataset now (objects evicted past the rollback point below) and let the fanout
-    // create fresh datasets on the primary engine. The staged scratch is discarded with staged_engine.
+    // A same-source reload that fans out cannot refill in place (one source becomes N datasets). Fall back to
+    // remove-then-fresh: tombstone the existing dataset now (objects evicted past the rollback point below) and let
+    // the fanout create fresh datasets on the live engine. The handle bound to existing_primary_id above is never
+    // start()ed here (fanout mints its own per-entry handles), so the dataset takes no data before its removal.
     if (replacing && catalog_.removeDataset(existing_primary_id)) {
       tombstoned_for_replace.push_back(existing_primary_id);
     }
-    // Multi-instance fanout. The first-load scratch dataset is now an empty orphan; pj_datastore has no removeDataset,
-    // but an empty dataset has no committed topics so CatalogModel::rebuildFromDatastore skips it (no phantom entry).
-    // Each fanout entry mints its own handle + dataset + ingest_session. Continue-on-error per the user-confirmed
-    // policy: a bad entry does not lose the others.
+    // Multi-instance fanout. On a FRESH load the dataset created above for the bind is now an empty orphan;
+    // pj_datastore has no removeDataset, but an empty dataset has no committed topics so
+    // CatalogModel::rebuildFromDatastore skips it (no phantom entry). Each fanout entry mints its own handle +
+    // dataset + ingest_session. Continue-on-error per the user-confirmed policy: a bad entry does not lose the others.
     // Outcomes per fanout entry. Kept keeps the entry's partial flush
     // ("Cancel" — stop here but keep what was already parsed); Discarded
     // throws it away. Both stop the outer loop.
@@ -703,61 +784,36 @@ bool FileLoader::loadFile(const QString& path, QWidget* dialog_parent, const Loa
     }
   }
 
-  // Past the last rollback point: the load committed. Reconcile the staged data (replace path) or the tombstones
-  // (legacy path) into the live session. A cancelled reload skips the swap, keeping the original data intact.
-  // Allow the swap on Cancel(Keep) too: the partial flush has already landed
-  // on the staged engine/store, and "keep what was already parsed" means the
-  // user wants those rows to replace the previous live data. Only Discard
-  // suppresses the swap (the staged side is intentionally thrown away).
-  const bool swapped_in_place = replacing && fanouts.size() == 1 && user_action != CancelAction::kDiscard;
-  if (swapped_in_place) {
-    // Single-instance reload: in-place replace swap. SessionManager owns the ordered, no-event-loop swap (invalidate
-    // adapters -> engine + object replace -> parser remap -> re-index). It keeps the primary
-    // DatasetId/TopicIds/ObjectTopicIds — and so curve keys + 2D dock bindings — stable, so widgets keep their
-    // curves. Do not pump events before the catalog rebuild below.
-    session_.replaceDataset(
-        staged_engine, staged_store, dataset_id, existing_primary_id, std::move(staged_object_parsers));
-
-    // Un-tombstone the reused id: removeDataset hides it assuming a reload mints a new DatasetId, but the in-place
-    // replace keeps it stable — without this the rebuild below skips the reloaded dataset (empty curve tree).
-    catalog_.restoreDataset(existing_primary_id);
-
-    // Re-apply the plugin's dataset-root name on the stable primary id (#98). An empty name clears a stale override.
-    catalog_.setDatasetDisplayName(existing_primary_id, detail::parseDisplayName(config));
-  } else {
-    // Legacy path (first load, or fanout-reload fallback). Tombstoned same-source datasets are now permanently gone;
-    // free their TF state, ObjectStore payloads, and scalar engine storage. Eviction is deferred to here, not the
-    // tombstone site, because a mid-load failure rolls the tombstones back.
-    for (const DatasetId tombstoned_id : tombstoned_for_replace) {
-      // Invalidate BEFORE eviction: invalidateDataset's cursor cleanup walks
-      // listTopics(tombstoned_id), so the topics must still resolve. Evicting
-      // first would empty that list and leak every per-topic cursor key.
-      if (transform_service_ != nullptr) {
-        transform_service_->invalidateDataset(tombstoned_id);
-      }
-      session_.evictDatasetObjects(tombstoned_id);
-      engine.removeDataset(tombstoned_id);
+  // Past the last rollback point: the load committed in place (no staging swap).
+  // Free the ObjectStore topics, derived TF state, AND scalar engine storage of any
+  // datasets the fanout-reload fallback tombstoned. A fanout reload can't refill one
+  // dataset into N, so the old dataset is replaced by fresh ones and must be ERASED
+  // from the engine — not left as a shell a prefer_reuse layout replay could reattach
+  // to (#249's real-delete, fanout face). Deferred to here (not the tombstone site)
+  // because a mid-load failure rolls the tombstones back.
+  for (const DatasetId tombstoned_id : tombstoned_for_replace) {
+    // Invalidate BEFORE eviction: invalidateDataset's cursor cleanup walks
+    // listTopics(tombstoned_id), so the topics must still resolve. Evicting
+    // first would empty that list and leak every per-topic cursor key.
+    if (transform_service_ != nullptr) {
+      transform_service_->invalidateDataset(tombstoned_id);
     }
+    session_.evictDatasetObjects(tombstoned_id);
+    engine.removeDataset(tombstoned_id);
   }
   tombstoned_for_replace.clear();
 
-  catalog_.rebuildFromDatastore();  // T6 (replace path): same keys ⇒ no spurious itemsRemoved
+  catalog_.rebuildFromDatastore();  // reload: same keys ⇒ no spurious itemsRemoved
 
-  // Per pj_scene3D REQUIREMENTS §9: TF buffer is per-dataset, populated
-  // eagerly at dataset-load time. Synchronous so drag-dropping a 3D topic
-  // is instant — the cost lives in the (expected-to-be-slow) load path,
-  // not in interaction. Scene3DDockWidget borrows the shared buffer from
-  // the same TransformService. When no service is wired (non-3D builds)
-  // TF ingest is simply skipped.
+  // Per pj_scene3D REQUIREMENTS §9: TF buffer is per-dataset, populated eagerly
+  // at load time. A single-instance reload changed its data in place, so
+  // invalidate before re-ingesting (ingest is idempotent per dataset and would
+  // otherwise skip). No service wired (non-3D builds) -> skipped.
   if (transform_service_ != nullptr) {
-    if (swapped_in_place) {
-      // The primary id survived the swap but its object topics now hold the
-      // reloaded data. Ingest is idempotent per dataset, so without the
-      // invalidation it would skip and 3D views would keep the previous
-      // load's transforms.
-      transform_service_->invalidateDataset(existing_primary_id);
-      transform_service_->ingestFrameTransformsForDataset(existing_primary_id);
-    } else if (fanouts.size() == 1) {
+    if (fanouts.size() == 1) {
+      if (replacing) {
+        transform_service_->invalidateDataset(dataset_id);
+      }
       transform_service_->ingestFrameTransformsForDataset(dataset_id);
     } else {
       for (const DatasetId loaded_id : fanout_loaded_ids) {
@@ -766,11 +822,9 @@ bool FileLoader::loadFile(const QString& path, QWidget* dialog_parent, const Loa
     }
   }
 
-  // Capture the plugin's canonical post-load state AFTER start() + ingest
-  // so any state computed during the actual load (discovered fields,
-  // applied defaults, ingest-time policy overrides) is included in what
-  // a layout file persists. saveConfig failures here are non-fatal —
-  // the layout save just won't carry plugin config.
+  // Capture the plugin's canonical post-load state AFTER start() + ingest so a
+  // layout persists discovered fields / applied defaults / ingest-time policy
+  // overrides. saveConfig failures here are non-fatal.
   std::string captured_config;
   if (auto status = handle.saveConfig(captured_config); !status) {
     qCWarning(lcFileLoader).noquote() << tr("Plugin '%1': saveConfig failed: %2 — layout save will skip plugin config")
@@ -780,11 +834,11 @@ bool FileLoader::loadFile(const QString& path, QWidget* dialog_parent, const Loa
 
   // Remember which file each dataset came from so a later load of a DIFFERENT
   // file sharing this basename is not mistaken for a reload of it (the match
-  // loop above gates reuse on this). Single-instance: the stable id is the
-  // primary on the replace path, else the freshly created one. Fanout: each
-  // dataset that actually took data.
+  // loop above gates reuse on this). Single-instance: `dataset_id` is the stable
+  // id (existing on reload, else the fresh one). Fanout: each dataset that took
+  // data.
   if (fanouts.size() == 1) {
-    dataset_source_path_[swapped_in_place ? existing_primary_id : dataset_id] = path;
+    dataset_source_path_[dataset_id] = path;
   } else {
     for (const DatasetId loaded_id : fanout_loaded_ids) {
       dataset_source_path_[loaded_id] = path;
@@ -792,7 +846,215 @@ bool FileLoader::loadFile(const QString& path, QWidget* dialog_parent, const Loa
   }
 
   emit fileLoaded(path, QString(), source_name, QString::fromStdString(captured_config));
-  return true;
+  return false;  // fanout ran synchronously to completion; no worker — process the next request
+}
+
+bool FileLoader::loadFile(const QString& path, QWidget* dialog_parent, const LoadHints& hints) {
+  queue_.push_back(LoadRequest{.path = path, .dialog_parent = dialog_parent, .hints = hints});
+  startNext();
+  return true;  // accepted/enqueued — completion is async (fileLoaded/fileLoadFailed)
+}
+
+void FileLoader::startNext() {
+  if (active_load_) {
+    return;  // a prologue or worker load is in progress; it resumes the queue when done
+  }
+  while (!queue_.empty()) {
+    const LoadRequest request = queue_.front();
+    queue_.pop_front();
+    active_load_ = true;  // guards re-entrancy, incl. while the modal dialog pumps events
+    if (beginLoad(request)) {
+      return;  // single-instance worker running; onWorkerFinished resumes the queue
+    }
+    active_load_ = false;  // fanout / reuse / fail / reject completed synchronously
+  }
+  emit queueDrained();
+}
+
+void FileLoader::runIngestOnWorker() {
+  // WORKER thread. ctx_ is set on the GUI thread before this thread starts and
+  // is not mutated by the GUI until after we post onWorkerFinished, so reading
+  // it here races nothing. start() blocks until the plugin finishes (or stops
+  // cooperatively when on_progress_update returns false).
+  auto status = ctx_->handle.start();
+  ctx_->start_ok = static_cast<bool>(status);
+  if (!status) {
+    ctx_->start_error = QString::fromStdString(status.error());
+  }
+  QMetaObject::invokeMethod(this, [this]() { onWorkerFinished(); }, Qt::QueuedConnection);
+}
+
+void FileLoader::onWorkerFinished() {
+  if (!ctx_) {
+    return;  // joinForShutdown already tore the load down
+  }
+  if (worker_) {
+    worker_->wait();  // the worker posted us as its last act, so this returns promptly
+    worker_.reset();
+  }
+
+  const int cancel = cancel_mode_.load();
+  const DatasetId dataset_id = ctx_->dataset_id;
+  const bool replacing = ctx_->replacing;
+  const QString path = ctx_->path;
+  const QString source_name = ctx_->source_name;
+
+  if (cancel == 2) {  // Discard
+    qCWarning(lcFileLoader) << "[FileLoader] import discarded by user; partial data dropped";
+    if (!replacing) {
+      // Real-delete the abandoned first-load shell: evict its objects, drop catalog
+      // items WITHOUT a tombstone, and erase the engine's scalar storage, so a later
+      // prefer_reuse layout replay mints a fresh dataset instead of reattaching to an
+      // empty one. The eviction MUST stay on this !replacing arm — on the replacing
+      // path it would wipe the objects the guard is about to restore.
+      session_.evictDatasetObjects(dataset_id);
+      catalog_.removeDataset(dataset_id, /*tombstone=*/false);
+      session_.dataEngine().removeDataset(dataset_id);
+    } else {
+      // Roll back to the pre-reload data (guard dtor reattaches scalar + object data,
+      // retires/removes topics the failed refill added, evicts their parsers).
+      ctx_->refill_guard.reset();
+      refreshAfterReplacingRollback(dataset_id);
+    }
+    ctx_.reset();
+    emit fileLoadFailed(path, tr("Import discarded"));
+  } else if (!ctx_->start_ok && cancel == 0) {  // start() failed (and not a user stop)
+    const QString reason = tr("Plugin '%1': start failed: %2").arg(source_name, ctx_->start_error);
+    qCWarning(lcFileLoader).noquote() << reason;
+    if (!replacing) {
+      // Real-delete the abandoned first-load shell (no tombstone) + erase its engine
+      // storage, so a later prefer_reuse layout replay re-ingests instead of
+      // reattaching to the empty dataset a failed start() left behind.
+      session_.evictDatasetObjects(dataset_id);
+      catalog_.removeDataset(dataset_id, /*tombstone=*/false);
+      session_.dataEngine().removeDataset(dataset_id);
+    } else {
+      // Same rollback as Discard: a failed start() on a reload must restore the prior
+      // data rather than leave the dataset empty.
+      ctx_->refill_guard.reset();
+      refreshAfterReplacingRollback(dataset_id);
+    }
+    ctx_.reset();
+    emit fileLoadFailed(path, reason);
+  } else {  // Completed, or Cancel(keep): make the parsed rows visible and finalize
+    if (cancel == 1) {
+      qCInfo(lcFileLoader) << "[FileLoader] import cancelled by user; keeping the partial load";
+    }
+    ctx_->ingest->flushAll();
+    if (ctx_->refill_guard) {
+      // On a COMPLETE reload (cancel == 0), retire prior topics the new file no
+      // longer has — they stayed empty through the refill (codex #2). Skipped on
+      // Cancel-Keep: a topic the partial load never reached is not "vanished". Must
+      // run BEFORE commit(), which frees the prior-topic snapshots it reads.
+      if (cancel == 0) {
+        ctx_->refill_guard->pruneVanishedTopics();
+      }
+      // COMMIT the refill: both Completed and Cancel-Keep keep the refilled data, so
+      // free the prior-data snapshot. Must run BEFORE finishLoadOnGui() — it resets ctx_
+      // (destroying the guard), and an uncommitted guard would then silently roll back
+      // over the new data.
+      ctx_->refill_guard->commit();
+    }
+    finishLoadOnGui();  // emits fileLoaded; resets ctx_
+  }
+
+  cancel_mode_.store(0);
+  active_load_ = false;
+  startNext();
+}
+
+void FileLoader::refreshAfterReplacingRollback(DatasetId dataset_id) {
+  // The RefillGuard already restored the scalar + object data and re-notified plot
+  // adapters; reflect the restored topic set in the catalog tree and rebuild the
+  // per-dataset TF buffer from the restored objects (mirrors finishLoadOnGui's
+  // replacing-path TF handling, but on the rolled-back data).
+  catalog_.rebuildFromDatastore();
+  if (transform_service_ != nullptr) {
+    transform_service_->invalidateDataset(dataset_id);
+    transform_service_->ingestFrameTransformsForDataset(dataset_id);
+  }
+}
+
+void FileLoader::finishLoadOnGui() {
+  const DatasetId dataset_id = ctx_->dataset_id;
+
+  catalog_.rebuildFromDatastore();
+
+  // Per pj_scene3D REQUIREMENTS §9: TF buffer is per-dataset, populated at load
+  // time. A reload changed its data in place, so invalidate before re-ingesting
+  // (ingest is idempotent per dataset and would otherwise skip).
+  if (transform_service_ != nullptr) {
+    if (ctx_->replacing) {
+      transform_service_->invalidateDataset(dataset_id);
+    }
+    transform_service_->ingestFrameTransformsForDataset(dataset_id);
+  }
+
+  // Capture the plugin's canonical post-load state for layout persistence.
+  std::string captured_config;
+  if (auto status = ctx_->handle.saveConfig(captured_config); !status) {
+    qCWarning(lcFileLoader).noquote() << tr("Plugin '%1': saveConfig failed: %2 — layout save will skip plugin config")
+                                             .arg(ctx_->source_name, QString::fromStdString(status.error()));
+    captured_config.clear();
+  }
+
+  dataset_source_path_[dataset_id] = ctx_->path;
+  const QString path = ctx_->path;
+  const QString source_name = ctx_->source_name;
+  ctx_.reset();  // drop the handle/host before notifying — the load is complete
+  emit fileLoaded(path, QString(), source_name, QString::fromStdString(captured_config));
+}
+
+void FileLoader::cancelCurrent(bool keep_partial) {
+  if (ctx_ == nullptr) {
+    return;  // no worker load in progress (fanout cancellation flows through its modal dialog)
+  }
+  cancel_mode_.store(keep_partial ? 1 : 2);
+  if (ctx_->ingest) {
+    // Flag-only stop: cancelCurrent runs on the GUI thread while the worker may be in a
+    // host callback, so writing a reason here would race the worker's last_error_. The
+    // cooperative stop only needs the atomic flag; the reason is unused on this path.
+    ctx_->ingest->requestStop();
+  }
+}
+
+bool FileLoader::isBusy() const {
+  return active_load_ || !queue_.empty();
+}
+
+DatasetId FileLoader::activeLoadDatasetId() const {
+  return ctx_ != nullptr ? ctx_->dataset_id : 0;
+}
+
+void FileLoader::joinForShutdown() {
+  cancel_mode_.store(2);  // discard whatever is mid-flight
+  if (ctx_ != nullptr && ctx_->ingest) {
+    ctx_->ingest->requestStop();  // flag-only: worker may be mid-ingest, avoid racing last_error_
+  }
+  if (worker_) {
+    worker_->wait();
+    worker_.reset();
+  }
+  // The worker has joined; the queued onWorkerFinished will no-op once ctx_ is reset, so
+  // run the abandoned-load cleanup here. Capture the reload identity BEFORE ctx_.reset()
+  // destroys the guard. A discarded mid-flight NON-replacing first load created a dataset
+  // in the live engine — erase it (objects + catalog without a tombstone + engine storage)
+  // so a later prefer_reuse layout replay re-ingests instead of reattaching to the empty
+  // shell (matches onWorkerFinished's discard path). A REPLACING reload instead rolls back
+  // via the guard's destructor when ctx_ is reset, restoring the pre-reload data.
+  const bool was_replacing = (ctx_ != nullptr && ctx_->replacing);
+  const DatasetId reload_id = (ctx_ != nullptr) ? ctx_->dataset_id : 0;
+  if (ctx_ != nullptr && !was_replacing) {
+    session_.evictDatasetObjects(reload_id);
+    catalog_.removeDataset(reload_id, /*tombstone=*/false);
+    session_.dataEngine().removeDataset(reload_id);
+  }
+  ctx_.reset();  // guard dtor rolls back a replacing reload; any queued onWorkerFinished no-ops
+  if (was_replacing) {
+    refreshAfterReplacingRollback(reload_id);  // reflect the restored data in catalog + TF
+  }
+  queue_.clear();
+  active_load_ = false;
 }
 
 QString FileLoader::sourcePathForDataset(DatasetId dataset_id) const {

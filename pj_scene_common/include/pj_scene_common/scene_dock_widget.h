@@ -4,7 +4,9 @@
 
 #include <QDomDocument>
 #include <QDomElement>
+#include <QSet>
 #include <QString>
+#include <QStringList>
 #include <QWidget>
 #include <cstdint>
 #include <memory>
@@ -41,6 +43,12 @@ class SceneDockWidget : public QWidget, public IDataWidget, public IObjectViewer
   bool tryAcceptObjectTopic(ObjectTopicId topic_id, sdk::BuiltinObjectType object_type, const QString& title) override;
   QDomElement xmlSaveState(QDomDocument& doc) const override;
   bool xmlLoadState(const QDomElement& element) override;
+
+  /// Retries scene-layer restores that were deferred because their dataset/topic
+  /// was not available yet. An empty filter drains all pending entries.
+  virtual int retryPendingRestores(const QSet<QString>& topic_names);
+  [[nodiscard]] virtual QStringList unresolvedPendingRestores() const;
+  virtual void clearPendingRestores();
 
   /// IObjectViewer: non-virtual template method. Runs pruneEvictedObjects() (the
   /// family-specific eviction sweep) and then applies the keep-if-never-populated
@@ -187,10 +195,27 @@ class SceneDockWidget : public QWidget, public IDataWidget, public IObjectViewer
     return ever_had_content_;
   }
 
+ protected:
+  /// Per-element restore hook the pending-retry loop (retryPendingRestores) calls for
+  /// each deferred element. The base restores a <layer>; a widget family overrides this
+  /// to dispatch other element kinds (e.g. 3D's <config_topic>). Returns false to keep
+  /// the element pending for a later retry.
+  virtual bool restoreOnePending(const QDomElement& element);
+
+  /// Stashes an XML element whose dataset/topic is not available yet, so a later
+  /// retryPendingRestores re-attempts it. Protected so a derived family can defer its
+  /// own elements into the one shared pending queue.
+  void rememberPendingRestore(const QDomElement& element);
+
  private:
   /// Result of an add attempt, separating the two outcomes addTopic's bool used
   /// to conflate ("layer created" vs "consumed as a scene-config topic").
   enum class AddOutcome { kLayerAdded, kConsumedAsConfig, kRejected };
+
+  struct PendingRestoreElement {
+    QDomDocument document;
+    QString topic_name;
+  };
 
   [[nodiscard]] PJ::Timepoint clampToLayerRange(PJ::Timepoint time) const;
   [[nodiscard]] std::vector<ISceneLayer*> orderedLayerPtrs() const;
@@ -216,9 +241,13 @@ class SceneDockWidget : public QWidget, public IDataWidget, public IObjectViewer
   /// repaint the geometry they held at the moment of hiding. No-op when no
   /// tracker tick has arrived yet and the layer has no usable range.
   void seedLayerTrackerTime(ISceneLayer* layer);
+  /// Returns false only when the saved dataset/topic is not available yet and
+  /// the caller should keep this XML element pending for a later retry.
+  [[nodiscard]] bool restoreLayerElement(const QDomElement& layer_el);
 
   std::unordered_map<int64_t, std::unique_ptr<ISceneLayer>> layers_;
   std::vector<int64_t> draw_order_;
+  std::vector<PendingRestoreElement> pending_restore_elements_;
   LayerFactory factory_;
   SessionManager* session_ = nullptr;
   std::optional<PJ::Timepoint> last_tracker_;

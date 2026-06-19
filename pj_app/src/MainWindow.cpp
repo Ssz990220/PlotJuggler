@@ -17,6 +17,7 @@
 #include <QDomDocument>
 #include <QFile>
 #include <QFileInfo>
+#include <QHash>
 #include <QIcon>
 #include <QKeySequence>
 #include <QLabel>
@@ -60,6 +61,7 @@
 #include "DebugUi.h"
 #include "FileLoader.h"
 #include "LayoutXml.h"
+#include "PendingCurveBinder.h"
 #include "PreferencesDialog.h"
 #include "RasterKeyMap.h"
 #include "StreamingSourceManager.h"
@@ -100,8 +102,10 @@
 #include "pj_scene2d_widgets/media_viewer_widget.h"
 #include "pj_scene3d_widgets/Scene3DDockWidget.h"
 #include "pj_scene3d_widgets/transform_service.h"
+#include "pj_scene_common/scene_dock_widget.h"
 #include "pj_widgets/FileDialog.h"
 #include "pj_widgets/FlowLayout.h"
+#include "pj_widgets/IngestProgressWidget.h"
 #include "pj_widgets/MessageBox.h"
 #include "pj_widgets/RasterStreamView.h"
 #include "pj_widgets/SectionHeaderBand.h"
@@ -140,10 +144,12 @@ constexpr auto kLastLayoutDirKey = "MainWindow.lastLayoutDirectory";
 // v2: curves identified by stable topic+field path (rebound per-dataset on
 // load) instead of the opaque per-load catalog key; <root binding=...> marks
 // generic vs source-bound layouts.
-// v3: per-plot <range> stores the X (time) axis in ABSOLUTE seconds, flagged
-// x_absolute="true" (an older binary would misread it as display-relative); the
-// global toolbar toggles + panel visibility are no longer serialized (they are
-// QSettings-only app preferences, not document state).
+// v3: per-plot <range> stores the X (time) axis in ABSOLUTE seconds — the per-dataset
+// display offset is a visualization concern applied at load, never persisted. No marker
+// is written; the plot mode (time-series vs XY) decides on load whether to undo the
+// offset, and an unmarked legacy range is also read as absolute. The global toolbar
+// toggles + panel visibility are no longer serialized (they are QSettings-only app
+// preferences, not document state).
 constexpr int kLayoutSchemaVersion = 3;
 constexpr double kTwoPi = 6.28318530717958647692;
 constexpr int kTestSampleCount = 1000;
@@ -259,6 +265,7 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
       diagnostic_bridge_(new QtDiagnosticBridge(this)),
       app_settings_(std::make_unique<QSettings>()),
       session_(std::make_unique<AppSession>(std::move(extensions_dir), diagnostic_bridge_->sink())),
+      pending_binder_(std::make_unique<PendingCurveBinder>(session_->catalogModel())),
       theme_(std::make_unique<Theme>()) {
   // The 3D transform service owns the per-dataset TF buffers + load-time
   // ingest. It lives in the shell (not pj_runtime) so the runtime stays
@@ -814,14 +821,31 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
   }
   connect(
       &session_->sessionManager(), &SessionManager::samplesIngested, this, [this](const QVector<TopicId>&, bool live) {
-        if (!streaming_playback_seeded_ || !live) {
+        auto& engine = session_->playbackEngine();
+        if (live) {
+          // Streaming: follow the live edge (range grows, cursor tracks newest).
+          if (!streaming_playback_seeded_) {
+            return;
+          }
+          if (const auto range = session_->sessionManager().datasetDisplayRange(active_streaming_dataset_id_);
+              range.has_value()) {
+            engine.setRange(*range);
+            engine.setCurrentTime(range->max);
+          }
           return;
         }
-        if (const auto range = session_->sessionManager().datasetDisplayRange(active_streaming_dataset_id_);
-            range.has_value()) {
-          auto& engine = session_->playbackEngine();
-          engine.setRange(*range);
-          engine.setCurrentTime(range->max);
+        // Non-live (file) ingest: while a single-instance load fills progressively,
+        // grow the playback range from its dataset so the timeline + auto-fitting
+        // plots reveal data as it arrives. The cursor stays put (no follow-edge);
+        // the authoritative range + cursor are set once on completion by
+        // AppSession::seedPlaybackFromSession (onFileLoaded).
+        if (file_loader_ == nullptr) {
+          return;
+        }
+        if (const DatasetId id = file_loader_->activeLoadDatasetId(); id != 0) {
+          if (const auto range = session_->sessionManager().datasetDisplayRange(id); range.has_value()) {
+            engine.setRange(*range);
+          }
         }
       });
 
@@ -875,6 +899,70 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
   });
   // Enable the popup immediately when prior sessions recorded recent files.
   ui_->leftPanel->setRecentEnabled(!settings.value(QStringLiteral("File/recent")).toStringList().isEmpty());
+
+  // Title-bar load progress strip — the non-modal replacement for the import
+  // dialog on single-instance loads. Shown after a 500 ms delay so quick loads
+  // never flash it; hidden 1 s after the load queue drains. The single stop
+  // button opens a confirmation dialog that routes to FileLoader::cancelCurrent.
+  ingest_progress_ = new IngestProgressWidget(this);
+  ingest_progress_->setActive(false);
+  // One icon-only stop button on the left. The three real choices (keep /
+  // discard / resume) live in the confirmation dialog below, so the button
+  // itself is meaning-light — its tooltip just invites a stop.
+  ingest_progress_->setPrimaryButton({}, QStringLiteral(":/resources/svg/cancel.svg"), tr("Stop loading…"));
+  title_bar_->setCenterWidget(ingest_progress_);
+  ingest_show_timer_ = new QTimer(this);
+  ingest_show_timer_->setSingleShot(true);
+  connect(ingest_show_timer_, &QTimer::timeout, this, [this]() { ingest_progress_->setActive(true); });
+  connect(ingest_progress_, &IngestProgressWidget::actionRequested, this, [this](IngestProgressWidget::Action) {
+    // Stop pressed → ask what to do with the in-progress load. The worker keeps
+    // loading (and the bar keeps updating) while this modal dialog is up.
+    if (!file_loader_->isBusy()) {
+      // The load already finished (e.g. clicked during the post-completion
+      // linger): there is nothing to stop, so just dismiss the strip.
+      ingest_progress_->setActive(false);
+      return;
+    }
+    // Instance (not the static question()) so it can be closed programmatically.
+    MessageBox dialog(this);
+    dialog.setTitle(tr("Stop loading?"));
+    dialog.setText(tr("This data is still loading. Keep what has loaded so far, remove all of it, or keep loading?"));
+    dialog.addButton(tr("Remove All"), MessageBox::kDestructiveRole);  // index 0 — stop and discard
+    dialog.addButton(tr("Stop and Keep"), MessageBox::kPrimaryRole);   // index 1 — stop, keep partial
+    dialog.addButton(tr("Cancel"), MessageBox::kCancelRole);           // index 2 — resume loading
+    // If the load completes while the dialog is open, its premise is gone and
+    // its actions would be misleading no-ops, so auto-dismiss it as a no-op.
+    const QMetaObject::Connection drained =
+        connect(file_loader_.get(), &FileLoader::queueDrained, &dialog, [&dialog]() { dialog.reject(); });
+    dialog.exec();
+    QObject::disconnect(drained);
+    switch (dialog.clickedIndex()) {
+      case 0:
+        file_loader_->cancelCurrent(/*keep_partial=*/false);  // Remove All — stop and discard
+        break;
+      case 1:
+        file_loader_->cancelCurrent(/*keep_partial=*/true);  // Stop and Keep
+        break;
+      default:
+        break;  // Cancel, or auto-dismissed on completion — leave the load alone
+    }
+  });
+  connect(
+      file_loader_.get(), &FileLoader::ingestStarted, this,
+      [this](const QString& title, int index, int total, bool /*determinate*/) {
+        ingest_progress_->setTitle(title);
+        ingest_progress_->setCounterText(total > 1 ? QStringLiteral("%1/%2").arg(index).arg(total) : QString());
+        ingest_progress_->setRange(0, 0);  // busy until the first determinate progress tick
+        ingest_show_timer_->start(500);
+      });
+  connect(file_loader_.get(), &FileLoader::ingestProgress, this, [this](int current, int maximum) {
+    ingest_progress_->setRange(0, maximum);  // maximum 0 keeps the bar in busy/indeterminate mode
+    ingest_progress_->setValue(current);
+  });
+  connect(file_loader_.get(), &FileLoader::queueDrained, this, [this]() {
+    ingest_show_timer_->stop();
+    QTimer::singleShot(1000, this, [this]() { ingest_progress_->setActive(false); });
+  });
 
   connect(ui_->actionMarketplace, &QAction::triggered, this, &MainWindow::onOpenMarketplace);
   connect(ui_->actionExit, &QAction::triggered, this, &QWidget::close);
@@ -1796,6 +1884,18 @@ void MainWindow::forEachDock(const std::function<void(DockWidget*)>& operation) 
   });
 }
 
+void MainWindow::forEachSceneDock(const std::function<void(SceneDockWidget*)>& operation) {
+  forEachDock([&operation](DockWidget* dock) {
+    if (dock->objectWidget() == nullptr) {
+      return;
+    }
+    QWidget* object_widget = dock->objectWidget()->widget();
+    if (auto* scene_dock = qobject_cast<SceneDockWidget*>(object_widget); scene_dock != nullptr) {
+      operation(scene_dock);
+    }
+  });
+}
+
 void MainWindow::forEachPlot(const std::function<void(PlotWidget*)>& operation) {
   forEachDock([&operation](DockWidget* dock) {
     if (PlotWidget* plot = dock->plotWidget()) {
@@ -1870,6 +1970,12 @@ void MainWindow::linkedZoomOut() {
 }
 
 void MainWindow::closeEvent(QCloseEvent* event) {
+  // Stop and join any in-flight worker load (discard) and drain the queue BEFORE
+  // the session/datastore tear down, so a worker can't write into a freed engine
+  // or fire a queued completion at a half-destroyed window.
+  if (file_loader_ != nullptr) {
+    file_loader_->joinForShutdown();
+  }
   QSettings settings;
   settings.setValue(QStringLiteral("MainWindow.buttonLink"), button_link_->isChecked());
   QMainWindow::closeEvent(event);
@@ -2073,6 +2179,9 @@ void MainWindow::loadLayoutFromPath(const QString& path) {
   const QString binding = root.attribute(QStringLiteral("binding"), QStringLiteral("source"));
   const QDir layout_dir(QFileInfo(path).absoluteDir());
   const QList<layout_xml::DataSourceRef> replays = layout_xml::extractDataSource(doc, layout_dir);
+  // Set when the user chose "Reload original": the data loads (possibly async on
+  // a worker), so the layout apply below must wait for the load queue to drain.
+  bool reload_requested = false;
   if (binding != QStringLiteral("generic") && !replays.empty()) {
     // Classify each referenced file: already loaded (skip), missing on disk
     // (warn + skip), or reloadable. A file counts as already loaded only while
@@ -2102,30 +2211,36 @@ void MainWindow::loadLayoutFromPath(const QString& path) {
     }
 
     if (!pending.empty()) {
-      // One consolidated prompt for the whole pending set (never one box per
-      // file). "Load Layout only" is the fall-through: neither cancel nor reload.
-      QStringList file_lines;
-      file_lines.reserve(pending.size());
-      for (const auto& replay : pending) {
-        file_lines.push_back(QStringLiteral("  %1").arg(replay.resolved_path));
+      // The --layout CLI option auto-reloads the layout's source(s) without
+      // prompting; interactively, one consolidated prompt covers the whole pending
+      // set (never one box per file; "Load Layout only" is the fall-through).
+      bool do_reload = startup_auto_reload_;
+      if (!startup_auto_reload_) {
+        QStringList file_lines;
+        file_lines.reserve(pending.size());
+        for (const auto& replay : pending) {
+          file_lines.push_back(QStringLiteral("  %1").arg(replay.resolved_path));
+        }
+        // Themed prompt (frameless, vertical button column in the app chrome).
+        // The button order below defines the index question() returns:
+        // 0 = reload, 1 = layout-only (fall-through), 2 = cancel. "Reload source
+        // file" is the primary/default action; Esc maps to the kCancelRole button.
+        constexpr int kReloadOriginal = 0;
+        constexpr int kCancel = 2;
+        const int choice = MessageBox::question(
+            this, tr("Load Layout"),
+            tr("This layout was saved with %n data source(s):\n\n%1", nullptr, static_cast<int>(pending.size()))
+                .arg(file_lines.join(QLatin1Char('\n'))),
+            {{tr("Reload source file"), MessageBox::kPrimaryRole},
+             {tr("Load Layout only"), MessageBox::kNeutralRole},
+             {tr("Cancel"), MessageBox::kCancelRole}});
+        if (choice == kCancel || choice < 0) {
+          return;  // Cancel or dialog dismissed → abort the layout load.
+        }
+        do_reload = (choice == kReloadOriginal);
       }
-      // Themed prompt (frameless, vertical button column in the app chrome).
-      // The button order below defines the index question() returns:
-      // 0 = reload, 1 = layout-only (fall-through), 2 = cancel. "Reload source
-      // file" is the primary/default action; Esc maps to the kCancelRole button.
-      constexpr int kReloadOriginal = 0;
-      constexpr int kCancel = 2;
-      const int choice = MessageBox::question(
-          this, tr("Load Layout"),
-          tr("This layout was saved with %n data source(s):\n\n%1", nullptr, static_cast<int>(pending.size()))
-              .arg(file_lines.join(QLatin1Char('\n'))),
-          {{tr("Reload source file"), MessageBox::kPrimaryRole},
-           {tr("Load Layout only"), MessageBox::kNeutralRole},
-           {tr("Cancel"), MessageBox::kCancelRole}});
-      if (choice == kCancel || choice < 0) {
-        return;  // Cancel or dialog dismissed → abort the layout load.
-      }
-      if (choice == kReloadOriginal) {
+      if (do_reload) {
+        reload_requested = true;
         // Load each pending file. Distinct files append as separate datasets
         // (FileLoader replaces in place only on a basename match), so the full
         // multi-file session is restored. FileLoader shows its own error dialog
@@ -2146,6 +2261,26 @@ void MainWindow::loadLayoutFromPath(const QString& path) {
     }
   }
 
+  // The reloaded data may still be arriving on the worker thread. In that case,
+  // build the layout structure now and bind remaining curves live as topics arrive.
+  // If nothing is loading (generic / use-current / a reload that finished
+  // synchronously) apply immediately through the complete restore path.
+  if (reload_requested && file_loader_->isBusy()) {
+    beginProgressiveLayoutRestore(doc, path);
+    return;
+  }
+  applyRestoredLayout(doc, path);
+}
+
+void MainWindow::loadLayoutAtStartup(const QString& path) {
+  // --layout CLI entry: load the layout and auto-reload its data source(s) with no
+  // prompt (the flag is read in loadLayoutFromPath's source-classification block).
+  startup_auto_reload_ = true;
+  loadLayoutFromPath(path);
+  startup_auto_reload_ = false;
+}
+
+void MainWindow::applyRestoredLayout(QDomDocument doc, const QString& path) {
   // 3. Filters + curve rebinding + plot apply happen together in restoreWorkspaceState
   // below. Each curve resolves against whichever loaded dataset actually holds its
   // topic+field (first match in load order), so a multi-file layout restores
@@ -2180,6 +2315,10 @@ void MainWindow::loadLayoutFromPath(const QString& path) {
       break;
   }
 
+  restoreChromeAndPanels(doc, path);
+}
+
+void MainWindow::restoreChromeAndPanels(const QDomDocument& doc, const QString& path) {
   // 4a. Restore curve-list content state (filters + show_topics/show_values toggles).
   ui_->curveListPanel->restoreListState(doc.documentElement().firstChildElement(QStringLiteral("curve_list_state")));
 
@@ -2195,6 +2334,167 @@ void MainWindow::loadLayoutFromPath(const QString& path) {
   // 5. Recent files + diagnostic
   recordRecentLayout(path);
   emitDiagnostic(DiagnosticLevel::kInfo, "Layout", "loaded", tr("Loaded layout: %1").arg(QFileInfo(path).fileName()));
+}
+
+void MainWindow::beginProgressiveLayoutRestore(QDomDocument doc, const QString& path) {
+  cancelProgressiveLayoutRestore();
+  progressive_layout_in_flight_ = true;
+
+  bool applied = false;
+  {
+    QScopedValueRollback guard(applying_state_, true);
+    const QDomElement root = doc.documentElement();
+    restoreDataProcessors(root);
+    // rebindCurvesToLoadedDatasets rewrites doc in place; its unresolved-paths return is
+    // not needed here — the progressive binder reports unresolved curves at drain.
+    static_cast<void>(rebindCurvesToLoadedDatasets(doc));
+    if (xmlLoadState(doc)) {
+      QHash<QString, PlotWidget*> plots_by_state_id;
+      forEachPlot([&plots_by_state_id](PlotWidget* plot) {
+        if (!plot->stateId().isEmpty()) {
+          plots_by_state_id.insert(plot->stateId(), plot);
+        }
+      });
+      pending_binder_->collect(doc, plots_by_state_id);
+      restoreChromeAndPanels(doc, path);
+      const double now = toAxisDouble(session_->playbackEngine().currentTime());
+      forEachDock([now](DockWidget* dock) { dock->onTrackerTime(now); });
+      applied = true;
+    }
+  }
+
+  if (!applied) {
+    cancelProgressiveLayoutRestore();
+    MessageBox::warning(this, tr("Load Layout"), tr("Layout was parsed but could not be applied."));
+    return;
+  }
+
+  pending_items_added_conn_ = connect(
+      &session_->catalogModel(), &CatalogModel::itemsAdded, this, [this](const std::vector<CatalogItem>& items) {
+        flushPendingCurveBindings(items);
+        retryPendingSceneRestores(items);
+      });
+  pending_queue_drained_conn_ = connect(
+      file_loader_.get(), &FileLoader::queueDrained, this, &MainWindow::onProgressiveLayoutDrained,
+      Qt::SingleShotConnection);
+  flushPendingCurveBindings({});
+  retryPendingSceneRestores({});
+}
+
+void MainWindow::cancelProgressiveLayoutRestore() {
+  QObject::disconnect(pending_items_added_conn_);
+  QObject::disconnect(pending_queue_drained_conn_);
+  pending_items_added_conn_ = {};
+  pending_queue_drained_conn_ = {};
+  if (pending_binder_ != nullptr) {
+    pending_binder_->clear();
+  }
+  clearPendingSceneRestores();
+  progressive_layout_in_flight_ = false;
+}
+
+void MainWindow::flushPendingCurveBindings(const std::vector<CatalogItem>& items) {
+  if (pending_binder_ == nullptr || pending_binder_->empty()) {
+    return;
+  }
+  QSet<QString> topics;
+  for (const CatalogItem& item : items) {
+    if (!item.topic_name.isEmpty()) {
+      topics.insert(item.topic_name);
+    }
+  }
+  static_cast<void>(pending_binder_->flush(topics));
+}
+
+int MainWindow::retryPendingSceneRestores(const std::vector<CatalogItem>& items) {
+  QSet<QString> topics;
+  for (const CatalogItem& item : items) {
+    if (isObjectTopic(item) && !item.topic_name.isEmpty()) {
+      topics.insert(item.topic_name);
+    }
+  }
+  if (!items.empty() && topics.isEmpty()) {
+    return 0;
+  }
+
+  int restored = 0;
+  forEachSceneDock([&](SceneDockWidget* scene_dock) { restored += scene_dock->retryPendingRestores(topics); });
+  return restored;
+}
+
+QStringList MainWindow::unresolvedPendingSceneRestores() {
+  QStringList unresolved;
+  QSet<QString> seen;
+  forEachSceneDock([&](SceneDockWidget* scene_dock) {
+    for (const QString& topic : scene_dock->unresolvedPendingRestores()) {
+      if (!topic.isEmpty() && !seen.contains(topic)) {
+        seen.insert(topic);
+        unresolved.push_back(topic);
+      }
+    }
+  });
+  return unresolved;
+}
+
+void MainWindow::clearPendingSceneRestores() {
+  forEachSceneDock([](SceneDockWidget* scene_dock) { scene_dock->clearPendingRestores(); });
+}
+
+void MainWindow::onProgressiveLayoutDrained() {
+  QObject::disconnect(pending_items_added_conn_);
+  pending_items_added_conn_ = {};
+
+  if (pending_binder_ != nullptr) {
+    static_cast<void>(pending_binder_->flush({}));
+    // Frame each restored plot to its layout-saved window with the now-settled display
+    // offset (the file has finished loading). This previously called zoomOut because the
+    // saved range was display-relative and the save vs reload offsets could differ; PR
+    // #248 made the saved X ABSOLUTE and applySavedViewportOrZoom converts it with the
+    // live offset, so re-applying it is correct — and it pins the plot to its final
+    // window so data fills in like streaming rather than the axis auto-fitting/growing.
+    // Plots with no/degenerate saved range fall back to zoomOut; clear_after drops the
+    // one-shot stash. Still under the in-flight gate, so onUndoableChange stays
+    // suppressed until the single snapshot below.
+    forEachPlot([](PlotWidget* plot) { plot->applySavedViewportOrZoom(/*clear_after=*/true); });
+
+    QStringList shown;
+    QSet<QString> seen;
+    for (const layout_xml::SeriesPath& path : pending_binder_->unresolved()) {
+      const QString display = path.display();
+      if (!display.isEmpty() && !seen.contains(display)) {
+        seen.insert(display);
+        shown.push_back(display);
+      }
+    }
+    if (!shown.isEmpty()) {
+      switch (promptMissingCurves(shown)) {
+        case MissingCurveChoice::kRemove:
+          break;  // Remaining curves were never bound, so there is nothing to strip from live widgets.
+        case MissingCurveChoice::kCancel:
+          // The reload has already mutated the live session, so progressive restore is non-transactional:
+          // leave the partial layout in place instead of rolling back to a stale pre-load snapshot.
+          break;
+      }
+    }
+    pending_binder_->clear();
+  }
+
+  retryPendingSceneRestores({});
+  const double now = toAxisDouble(session_->playbackEngine().currentTime());
+  forEachDock([now](DockWidget* dock) { dock->onTrackerTime(now); });
+  const QStringList unresolved_scenes = unresolvedPendingSceneRestores();
+  if (!unresolved_scenes.isEmpty()) {
+    emitDiagnostic(
+        DiagnosticLevel::kWarning, "Layout", "scene_restore_pending",
+        tr("%n scene layer(s) could not be rebound after progressive load.", nullptr,
+           static_cast<int>(unresolved_scenes.size())));
+  }
+  clearPendingSceneRestores();
+
+  QObject::disconnect(pending_queue_drained_conn_);
+  pending_queue_drained_conn_ = {};
+  progressive_layout_in_flight_ = false;
+  pushUndoState(/*force_new_state=*/true);
 }
 
 void MainWindow::saveLayoutToPath(const QString& path, bool include_data_source) {
@@ -2411,7 +2711,7 @@ bool MainWindow::eventFilter(QObject* watched, QEvent* event) {
 }
 
 void MainWindow::onUndoableChange(bool force_new_state) {
-  if (applying_state_) {
+  if (applying_state_ || progressive_layout_in_flight_) {
     return;
   }
   pushUndoState(force_new_state);
@@ -2422,16 +2722,8 @@ QList<layout_xml::SeriesPath> MainWindow::rebindCurvesToLoadedDatasets(QDomDocum
   // actually holds it (first match in load order). Shared by layout load and
   // undo/redo restore so both bind curves identically; returns the paths no
   // loaded dataset could provide (the caller decides whether to prompt).
-  const auto datasets = session_->catalogModel().datasets();
-  return layout_xml::rebindCurveKeys(doc, [this, &datasets](const layout_xml::SeriesPath& p) -> std::optional<QString> {
-    for (const auto& [id, name] : datasets) {
-      (void)name;
-      if (const auto descriptor = session_->catalogModel().descriptorForPath(id, p.topic, p.field)) {
-        return descriptor->name;
-      }
-    }
-    return std::nullopt;
-  });
+  return layout_xml::rebindCurveKeys(
+      doc, [this](const layout_xml::SeriesPath& p) { return resolveSeriesPath(session_->catalogModel(), p); });
 }
 
 MainWindow::RestoreResult MainWindow::restoreWorkspaceState(QDomDocument& doc, MissingCurvePolicy policy) {

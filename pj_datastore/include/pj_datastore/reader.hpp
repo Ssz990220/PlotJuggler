@@ -39,8 +39,11 @@ class DataReader {
   /// Create range cursor over [t_min, t_max].
   [[nodiscard]] PJ::Expected<RangeCursor> rangeQuery(const QueryRange& range) const;
 
-  /// Return latest sample at or before query time; nullopt payload if no row exists.
-  [[nodiscard]] PJ::Expected<std::optional<SampleRow>> latestAt(const QueryPoint& point) const;
+  /// Return the latest scalar sample at or before query time; nullopt payload if
+  /// no row exists. The value is materialized (read out under the engine lock)
+  /// into a MaterializedSample, so no raw TopicChunk* escapes — `value` is the
+  /// topic's scalar column (index 0).
+  [[nodiscard]] PJ::Expected<std::optional<MaterializedSample>> latestAt(const QueryPoint& point) const;
 
   /// Create a series view over one numeric/bool topic column. The returned
   /// reader exposes only value-bearing samples; null rows are skipped.

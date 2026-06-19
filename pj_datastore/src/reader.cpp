@@ -7,9 +7,11 @@
 
 #include <algorithm>
 #include <deque>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 #include "pj_base/expected.hpp"
@@ -131,6 +133,7 @@ std::vector<TopicId> DataReader::listTopics(DatasetId dataset_id) const {
 }
 
 const TypeTreeNode* DataReader::getTypeTree(TopicId topic_id) const {
+  auto lock = engine_.lockEngine();
   const TopicStorage* storage = engine_.getTopicStorage(topic_id);
   if (storage == nullptr) {
     return nullptr;
@@ -140,14 +143,19 @@ const TypeTreeNode* DataReader::getTypeTree(TopicId topic_id) const {
 }
 
 std::optional<TopicMetadata> DataReader::getMetadata(TopicId topic_id) const {
+  auto lock = engine_.lockEngine();
   const TopicStorage* storage = engine_.getTopicStorage(topic_id);
   if (storage == nullptr) {
     return std::nullopt;
   }
-  return storage->metadata();
+  return storage->metadata();  // copied out under the lock
 }
 
 Expected<RangeCursor> DataReader::rangeQuery(const QueryRange& range) const {
+  // Take the read-lock BEFORE the lookup (a concurrent createTopic rehash could
+  // otherwise move storages mid-lookup) and MOVE it into the cursor, which holds
+  // it for its lazy-iteration lifetime.
+  auto lock = engine_.lockEngine();
   const TopicStorage* storage = engine_.getTopicStorage(range.topic_id);
   if (storage == nullptr) {
     return PJ::unexpected(fmt::format("Topic {} not found", range.topic_id));
@@ -156,18 +164,32 @@ Expected<RangeCursor> DataReader::rangeQuery(const QueryRange& range) const {
   // logically-evicted rows are never returned (RangeCursor skips rows < t_min,
   // and yields nothing when t_min > t_max — i.e. a window entirely below floor).
   const Timestamp t_min = std::max(range.t_min, storage->retentionFloor());
-  return PJ::rangeQuery(storage->sealedChunks(), t_min, range.t_max);
+  return RangeCursor(storage->sealedChunks(), t_min, range.t_max, std::move(lock));
 }
 
-PJ::Expected<std::optional<SampleRow>> DataReader::latestAt(const QueryPoint& point) const {
+PJ::Expected<std::optional<MaterializedSample>> DataReader::latestAt(const QueryPoint& point) const {
+  auto lock = engine_.lockEngine();
   const TopicStorage* storage = engine_.getTopicStorage(point.topic_id);
   if (storage == nullptr) {
     return PJ::unexpected(fmt::format("Topic {} not found", point.topic_id));
   }
-  return PJ::latestAt(storage->sealedChunks(), point.t, storage->retentionFloor());
+  const std::optional<SampleRow> row = PJ::latestAt(storage->sealedChunks(), point.t, storage->retentionFloor());
+  if (!row.has_value()) {
+    return std::optional<MaterializedSample>{};
+  }
+  // Read the row's column values WHILE the lock is held so the raw TopicChunk*
+  // never escapes. QueryPoint carries no column index; we materialize every
+  // column of the row (column N -> values[N]; a scalar topic uses values[0]).
+  std::vector<double> values;
+  values.reserve(row->chunk->columns.size());
+  for (std::size_t col = 0; col < row->chunk->columns.size(); ++col) {
+    values.push_back(row->chunk->readNumericAsDouble(col, row->row_index));
+  }
+  return std::optional<MaterializedSample>{MaterializedSample{row->timestamp, std::move(values)}};
 }
 
 Expected<SeriesReader> DataReader::series(TopicId topic_id, std::size_t column_index) const {
+  auto lock = engine_.lockEngine();
   const TopicStorage* storage = engine_.getTopicStorage(topic_id);
   if (storage == nullptr) {
     return PJ::unexpected(fmt::format("Topic {} not found", topic_id));
@@ -182,7 +204,7 @@ Expected<SeriesReader> DataReader::series(TopicId topic_id, std::size_t column_i
     return PJ::unexpected(fmt::format("Column {} in topic {} is not a numeric series", column_index, topic_id));
   }
 
-  return SeriesReader(storage->sealedChunks(), column_index, storage->retentionFloor());
+  return SeriesReader(storage->sealedChunks(), column_index, storage->retentionFloor(), std::move(lock));
 }
 
 }  // namespace PJ

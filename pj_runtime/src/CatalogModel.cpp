@@ -407,12 +407,23 @@ void CatalogModel::rebuildFromDatastore() {
         continue;
       }
 
-      const TopicStorage* storage = engine.getTopicStorage(topic_id);
-      if (storage == nullptr) {
-        continue;
-      }
+      // Fetch the type tree (itself a locking read) BEFORE the short lock below, so
+      // the lock spans only the raw getTopicStorage + column copy. (The recursive
+      // mutex would tolerate nesting; this just keeps the hold short.)
+      const TypeTreeNode* type_tree = reader.getTypeTree(topic_id);
 
-      const auto columns = topicColumns(*storage, reader.getTypeTree(topic_id));
+      // getTopicStorage() is raw + non-locking: its result is valid only while the
+      // engine lock is held, so copy the columns under a short lock — a concurrent
+      // worker commit / createTopicField cannot then race the descriptor read.
+      std::vector<ColumnDescriptor> columns;
+      {
+        const auto lock = engine.lockEngine();
+        const TopicStorage* storage = engine.getTopicStorage(topic_id);
+        if (storage == nullptr) {
+          continue;
+        }
+        columns = topicColumns(*storage, type_tree);
+      }
       for (std::size_t column_index = 0; column_index < columns.size(); ++column_index) {
         const ColumnDescriptor& column = columns[column_index];
         if (!isCatalogNumeric(column.logical_type)) {

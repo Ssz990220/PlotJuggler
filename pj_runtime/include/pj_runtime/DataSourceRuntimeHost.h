@@ -103,8 +103,15 @@ class DataSourceRuntimeHost {
   void flushPending();
 
   // Stop signalling for the plugin's cooperative-cancellation callbacks. The
-  // reason is also recorded as the last error.
+  // reason is also recorded as the last error. Call this only from the SAME thread
+  // that runs ingest — the last_error_ write is unsynchronized against fail().
   void requestStop(std::string_view reason);
+
+  // Flag-only cooperative stop: sets the stop flag WITHOUT recording a reason, so it
+  // touches only the atomic and cannot race the worker's fail()/last_error_ write.
+  // Use this when signalling stop from a different thread than the ingest worker
+  // (e.g. the GUI cancelling/joining a worker-thread file load).
+  void requestStop();
 
   // Whether progress/stop callbacks should report a pending cancellation.
   bool stopRequested() const noexcept {

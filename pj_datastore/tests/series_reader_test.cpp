@@ -77,7 +77,7 @@ TEST_F(SeriesReaderTest, SparseSeriesExposesOnlyValueBearingSamples) {
   DataReader reader = engine_.createReader();
   auto series_or = reader.series(topic_id_, 1);
   ASSERT_TRUE(series_or.has_value()) << series_or.error();
-  const SeriesReader series = *series_or;
+  const SeriesReader& series = *series_or;
 
   EXPECT_EQ(series.size(), 3U);
   EXPECT_FALSE(series.empty());
@@ -107,7 +107,7 @@ TEST_F(SeriesReaderTest, TimeLookupsUseSeriesIndicesAndSkipNullRows) {
   DataReader reader = engine_.createReader();
   auto series_or = reader.series(topic_id_, 1);
   ASSERT_TRUE(series_or.has_value()) << series_or.error();
-  const SeriesReader series = *series_or;
+  const SeriesReader& series = *series_or;
 
   EXPECT_FALSE(series.indexAtOrBeforeTime(-1).has_value());
   EXPECT_EQ(series.indexAtOrBeforeTime(0), 0U);
@@ -135,7 +135,7 @@ TEST_F(SeriesReaderTest, SeriesCursorFiltersByTimeRange) {
   DataReader reader = engine_.createReader();
   auto series_or = reader.series(topic_id_, 1);
   ASSERT_TRUE(series_or.has_value()) << series_or.error();
-  const SeriesReader series = *series_or;
+  const SeriesReader& series = *series_or;
 
   std::vector<Timestamp> timestamps;
   std::vector<double> values;
@@ -156,7 +156,7 @@ TEST_F(SeriesReaderTest, BoundsUseOnlySeriesSamples) {
   DataReader reader = engine_.createReader();
   auto series_or = reader.series(topic_id_, 1);
   ASSERT_TRUE(series_or.has_value()) << series_or.error();
-  const SeriesReader series = *series_or;
+  const SeriesReader& series = *series_or;
 
   const auto bounds = series.bounds();
   ASSERT_TRUE(bounds.has_value());
@@ -179,7 +179,7 @@ TEST_F(SeriesReaderTest, AllNullColumnIsAnEmptySeries) {
   DataReader reader = engine_.createReader();
   auto series_or = reader.series(topic_id_, 4);
   ASSERT_TRUE(series_or.has_value()) << series_or.error();
-  const SeriesReader series = *series_or;
+  const SeriesReader& series = *series_or;
 
   EXPECT_EQ(series.size(), 0U);
   EXPECT_TRUE(series.empty());
@@ -195,7 +195,7 @@ TEST_F(SeriesReaderTest, BoolColumnsAreNumericSeries) {
   DataReader reader = engine_.createReader();
   auto series_or = reader.series(topic_id_, 3);
   ASSERT_TRUE(series_or.has_value()) << series_or.error();
-  const SeriesReader series = *series_or;
+  const SeriesReader& series = *series_or;
 
   ASSERT_EQ(series.size(), 2U);
   ASSERT_TRUE(series.sampleAt(0).has_value());

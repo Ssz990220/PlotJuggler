@@ -38,6 +38,16 @@ class PlotWidget : public PlotWidgetBase {
   CurveInfo* addCurve(const QString& name, QColor color = Qt::transparent);
   CurveInfo* addCurveXY(const QString& x_name, const QString& y_name, QColor color = Qt::transparent);
 
+  // Add (or look up, if already present) the curve described by a layout `<curve>`
+  // element and apply its saved style (color, line_width, style, visible). Picks
+  // time-series vs XY from the plot's mode + the element's curve_x/curve_y attrs,
+  // and is idempotent — re-applying the same element rebinds in place rather than
+  // duplicating. This is the per-curve half of xmlLoadState, exposed so progressive
+  // layout restore can bind a curve later (once its topic finishes loading) WITHOUT
+  // re-running xmlLoadState, whose remove-pass would drop the already-live curves.
+  // Returns the curve, or null if the element's key attribute is empty/unresolvable.
+  CurveInfo* applyCurveElement(const QDomElement& curve_element);
+
   // Replace the curve plotting `source_key` with one plotting `output_key`, the
   // new curve inheriting the source's color and taking its place (PJ3 in-place
   // transform semantics — the Filter Editor's "filtered series replaces the
@@ -76,6 +86,17 @@ class PlotWidget : public PlotWidgetBase {
   void setStateId(QString id);
   [[nodiscard]] QDomElement xmlSaveState(QDomDocument& doc) const;
   bool xmlLoadState(const QDomElement& plot_element, bool autozoom = true);
+
+  // Re-frame to the viewport stashed by the last xmlLoadState, converting any
+  // absolute-time X with the display offset in effect NOW. xmlLoadState applies it
+  // once, but during a PROGRESSIVE restore the catalog is still empty then (offset
+  // 0), so the conversion is wrong until the dataset binds — progressive restore
+  // calls this again per curve-bind and at drain to frame the plot to its final
+  // (layout-saved) window up front and keep it pinned while data streams in, instead
+  // of auto-fitting to the partial data. Falls back to zoomOut() when there is no
+  // usable saved viewport (fresh load, or a degenerate/missing <range>). clear_after
+  // drops the stash (pass true on the final drain pass).
+  void applySavedViewportOrZoom(bool clear_after = false);
 
   // Reads back the style currently applied to a Qwt curve (combining its
   // QwtPlotCurve::CurveStyle and the Inverted attribute) as a CurveStyle.
@@ -162,6 +183,18 @@ class PlotWidget : public PlotWidgetBase {
   QPointF show_point_last_pos_;
   QString show_point_last_text_;
   QString state_id_;
+
+  // Viewport stashed by xmlLoadState so progressive restore can re-apply it once the
+  // per-dataset display offset is known (see applySavedViewportOrZoom). X bounds are
+  // ABSOLUTE seconds for a time axis (converted to display on apply) or raw values for
+  // an XY plot; Y (bottom/top) is raw. Unset means "no saved range" -> auto-fit.
+  struct SavedViewport {
+    double bottom = 0.0;
+    double top = 0.0;
+    double left = 0.0;
+    double right = 0.0;
+  };
+  std::optional<SavedViewport> saved_viewport_;
 
   QAction* action_split_horizontal_ = nullptr;
   QAction* action_split_vertical_ = nullptr;

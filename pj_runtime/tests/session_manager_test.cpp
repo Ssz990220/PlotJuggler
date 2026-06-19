@@ -4,6 +4,7 @@
 #include <gtest/gtest.h>
 
 #include <QString>
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstdint>
@@ -408,6 +409,255 @@ TEST(SessionManagerTimeOffsetTest, EmptyDatasetHasZeroOffsetWhenEnabled) {
   ASSERT_TRUE(empty.has_value()) << empty.error();
   session.setUseTimeOffset(true);
   EXPECT_EQ(session.displayOffset(*empty).value.count(), 0);
+}
+
+// --- beginRefill / RefillGuard: in-place transactional reload prep ---
+// (Migrated from the former SessionManagerClearRefillTest, which covered the deleted
+// clearDatasetForRefill. The "writes back into the same topic id" case it also had is
+// now covered by CommitKeepsRefilledDataAndFreesSnapshot below.)
+
+TEST(SessionManagerRefillGuardTest, DetachEmitsAboutToBeReplacedBeforeEmptyIngest) {
+  PJ::SessionManager session;
+  auto ds = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "reload.mcap"});
+  ASSERT_TRUE(ds.has_value()) << ds.error();
+  writeScalarSamples(session, *ds, "/a", {100, 200, 300});
+  writeScalarSamples(session, *ds, "/b", {150, 250});
+  const auto topics_before = session.dataEngine().listTopics(*ds);
+  ASSERT_EQ(topics_before.size(), 2u);
+  ASSERT_TRUE(session.datasetDisplayRange(*ds).has_value());
+
+  // Record the emission order of the two signals (direct, same-thread connections).
+  std::vector<QString> order;
+  QObject::connect(&session, &PJ::SessionManager::datasetAboutToBeReplaced, &session, [&order](PJ::DatasetId) {
+    order.emplace_back(QStringLiteral("about"));
+  });
+  QObject::connect(
+      &session, &PJ::SessionManager::samplesIngested, &session, [&order](const QVector<PJ::TopicId>&, bool live) {
+        order.emplace_back(live ? QStringLiteral("ingest_live") : QStringLiteral("ingest"));
+      });
+
+  {
+    PJ::RefillGuard guard = session.beginRefill(*ds);
+    // beginRefill's detach MUST emit datasetAboutToBeReplaced before the empty-state
+    // (non-live) ingest notify — adapters drop cached TopicChunk* before the data moves.
+    ASSERT_EQ(order.size(), 2u);
+    EXPECT_EQ(order[0], QStringLiteral("about"));
+    EXPECT_EQ(order[1], QStringLiteral("ingest"));
+
+    // Dataset is now empty, but its topic ids stay registered (a refill reuses them).
+    EXPECT_FALSE(session.datasetDisplayRange(*ds).has_value());
+    EXPECT_EQ(session.dataEngine().listTopics(*ds), topics_before);
+    guard.commit();  // keep the empty state (no refill here); avoid a rollback that would restore data
+  }
+}
+
+// --- RefillGuard: the transactional in-place reload. Default outcome is ROLLBACK
+//     (restore prior data); commit() keeps the refilled data. ---
+
+TEST(SessionManagerRefillGuardTest, RollbackRestoresPriorScalarAndObjectData) {
+  PJ::SessionManager session;
+  auto ds = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "reload.mcap"});
+  ASSERT_TRUE(ds.has_value()) << ds.error();
+  writeScalarSamples(session, *ds, "/a", {100, 200, 300});
+  auto object_topic = session.objectStore().registerTopic(
+      PJ::ObjectTopicDescriptor{.dataset_id = *ds, .topic_name = "/cam", .metadata_json = "{}"});
+  ASSERT_TRUE(object_topic.has_value()) << object_topic.error();
+  ASSERT_TRUE(session.objectStore().pushOwned(*object_topic, 250, std::vector<uint8_t>{1, 2, 3}).has_value());
+  const auto scalar_topics_before = session.dataEngine().listTopics(*ds);
+  const auto object_topics_before = session.objectStore().listTopics(*ds);
+
+  {
+    PJ::RefillGuard guard = session.beginRefill(*ds);
+    // In scope the dataset is detached (empty) but every id stays registered.
+    EXPECT_FALSE(session.datasetDisplayRange(*ds).has_value());
+    EXPECT_EQ(session.objectStore().entryCount(*object_topic), 0u);
+    EXPECT_EQ(session.dataEngine().listTopics(*ds), scalar_topics_before);
+    // guard dtor (no commit) rolls back here.
+  }
+
+  EXPECT_TRUE(session.datasetDisplayRange(*ds).has_value()) << "scalar data restored";
+  EXPECT_EQ(session.objectStore().entryCount(*object_topic), 1u) << "object data restored";
+  EXPECT_EQ(session.dataEngine().listTopics(*ds), scalar_topics_before) << "scalar ids stable";
+  EXPECT_EQ(session.objectStore().listTopics(*ds), object_topics_before) << "object ids stable";
+}
+
+TEST(SessionManagerRefillGuardTest, CommitKeepsRefilledDataAndFreesSnapshot) {
+  PJ::SessionManager session;
+  auto ds = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "reload.mcap"});
+  ASSERT_TRUE(ds.has_value()) << ds.error();
+  writeScalarSamples(session, *ds, "/a", {100, 200, 300});
+  const auto topics_before = session.dataEngine().listTopics(*ds);
+  ASSERT_EQ(topics_before.size(), 1u);
+  const PJ::TopicId topic = topics_before.front();
+
+  {
+    PJ::RefillGuard guard = session.beginRefill(*ds);
+    EXPECT_GT(guard.snapshotBytes(), 0u) << "prior data held aside";
+    // Refill writes NEW samples into the SAME topic id.
+    PJ::DataWriter writer = session.dataEngine().createWriter();
+    const PJ::ScalarSeriesHandle handle{topic, 0};
+    writer.appendScalar(handle, 1000, 1.0);
+    writer.appendScalar(handle, 2000, 1.0);
+    ASSERT_FALSE(session.commitChunks(writer.flushAll()).empty());
+    guard.commit();  // keep the refilled data
+    EXPECT_EQ(guard.snapshotBytes(), 0u) << "commit frees the held-aside prior data";
+  }
+
+  EXPECT_EQ(session.dataEngine().listTopics(*ds), topics_before) << "id stable across commit";
+  {
+    // Only the refilled data remains (1000..2000) — commit froze the prior snapshot
+    // rather than restoring it, and the refill did not double-count.
+    auto lock = session.dataEngine().lockEngine();
+    const PJ::TopicStorage* storage = session.dataEngine().getTopicStorage(topic);
+    ASSERT_NE(storage, nullptr);
+    EXPECT_EQ(storage->timeMin(), 1000);
+    EXPECT_EQ(storage->timeMax(), 2000);
+  }
+}
+
+TEST(SessionManagerRefillGuardTest, RollbackRetiresTopicsAddedByRefill) {
+  PJ::SessionManager session;
+  auto ds = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "reload.mcap"});
+  ASSERT_TRUE(ds.has_value()) << ds.error();
+  writeScalarSamples(session, *ds, "/a", {100, 200});
+  auto object_before = session.objectStore().registerTopic(
+      PJ::ObjectTopicDescriptor{.dataset_id = *ds, .topic_name = "/cam", .metadata_json = "{}"});
+  ASSERT_TRUE(object_before.has_value()) << object_before.error();
+  ASSERT_TRUE(session.objectStore().pushOwned(*object_before, 150, std::vector<uint8_t>{1}).has_value());
+  const auto scalar_before = session.dataEngine().listTopics(*ds);
+  const auto object_before_ids = session.objectStore().listTopics(*ds);
+
+  {
+    PJ::RefillGuard guard = session.beginRefill(*ds);
+    // The failed refill adds a NEW scalar topic AND a NEW object topic.
+    writeScalarSamples(session, *ds, "/b", {500});
+    auto added = session.objectStore().registerTopic(
+        PJ::ObjectTopicDescriptor{.dataset_id = *ds, .topic_name = "/cam2", .metadata_json = "{}"});
+    ASSERT_TRUE(added.has_value()) << added.error();
+    ASSERT_TRUE(session.objectStore().pushOwned(*added, 600, std::vector<uint8_t>{9}).has_value());
+    // no commit -> rollback
+  }
+
+  EXPECT_EQ(session.dataEngine().listTopics(*ds), scalar_before) << "added scalar topic retired";
+  EXPECT_EQ(session.objectStore().listTopics(*ds), object_before_ids) << "added object topic removed";
+  EXPECT_EQ(session.objectStore().entryCount(*object_before), 1u) << "original object restored";
+  EXPECT_TRUE(session.datasetDisplayRange(*ds).has_value()) << "original scalar restored";
+}
+
+TEST(SessionManagerRefillGuardTest, AboutToBeReplacedFiresOnConstructionAndRollback) {
+  PJ::SessionManager session;
+  auto ds = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "reload.mcap"});
+  ASSERT_TRUE(ds.has_value()) << ds.error();
+  writeScalarSamples(session, *ds, "/a", {100, 200});
+  int about_count = 0;
+  QObject::connect(&session, &PJ::SessionManager::datasetAboutToBeReplaced, &session, [&about_count](PJ::DatasetId) {
+    ++about_count;
+  });
+  {
+    PJ::RefillGuard guard = session.beginRefill(*ds);  // fires once (detach)
+    // no commit -> rollback fires once more (drop partial chunk pointers)
+  }
+  EXPECT_EQ(about_count, 2) << "fires on construction (detach) and on rollback";
+}
+
+TEST(SessionManagerRefillGuardTest, BeginRefillOnEmptyDatasetIsSafeNoop) {
+  PJ::SessionManager session;
+  auto ds = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "empty.mcap"});
+  ASSERT_TRUE(ds.has_value()) << ds.error();
+  EXPECT_NO_THROW({
+    PJ::RefillGuard guard = session.beginRefill(*ds);
+    EXPECT_EQ(guard.snapshotBytes(), 0u);
+  });  // dtor rolls back an empty snapshot -> no-op
+  EXPECT_NO_THROW({
+    PJ::RefillGuard guard = session.beginRefill(*ds);
+    guard.commit();
+  });
+}
+
+TEST(SessionManagerRefillGuardTest, PruneVanishedTopicsRetiresEmptyPriorScalarTopics) {
+  PJ::SessionManager session;
+  auto ds = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "reload.mcap"});
+  ASSERT_TRUE(ds.has_value()) << ds.error();
+  writeScalarSamples(session, *ds, "/a", {100, 200});
+  writeScalarSamples(session, *ds, "/b", {150});
+  writeScalarSamples(session, *ds, "/c", {300});
+  const auto before = session.dataEngine().listTopics(*ds);
+  ASSERT_EQ(before.size(), 3u);
+  const PJ::TopicId topic_a = before[0];
+  const PJ::TopicId topic_b = before[1];
+  const PJ::TopicId topic_c = before[2];
+
+  {
+    PJ::RefillGuard guard = session.beginRefill(*ds);
+    // The reloaded file has only /a and /b; the refill writes back into those two,
+    // never /c, so /c stays empty (vanished).
+    PJ::DataWriter writer = session.dataEngine().createWriter();
+    writer.appendScalar(PJ::ScalarSeriesHandle{topic_a, 0}, 1000, 1.0);
+    writer.appendScalar(PJ::ScalarSeriesHandle{topic_b, 0}, 1500, 1.0);
+    ASSERT_FALSE(session.commitChunks(writer.flushAll()).empty());
+
+    guard.pruneVanishedTopics();
+    guard.commit();
+  }
+
+  const auto after = session.dataEngine().listTopics(*ds);
+  EXPECT_EQ(after.size(), 2u) << "the vanished topic /c is retired";
+  EXPECT_NE(std::find(after.begin(), after.end(), topic_a), after.end()) << "/a kept (refilled)";
+  EXPECT_NE(std::find(after.begin(), after.end(), topic_b), after.end()) << "/b kept (refilled)";
+  EXPECT_EQ(std::find(after.begin(), after.end(), topic_c), after.end()) << "/c retired (vanished)";
+  EXPECT_TRUE(session.datasetDisplayRange(*ds).has_value());
+}
+
+TEST(SessionManagerRefillGuardTest, PruneVanishedTopicsRemovesEmptyPriorObjectTopics) {
+  PJ::SessionManager session;
+  auto ds = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "reload.mcap"});
+  ASSERT_TRUE(ds.has_value()) << ds.error();
+  auto cam_a = session.objectStore().registerTopic(
+      PJ::ObjectTopicDescriptor{.dataset_id = *ds, .topic_name = "/cam/a", .metadata_json = "{}"});
+  auto cam_b = session.objectStore().registerTopic(
+      PJ::ObjectTopicDescriptor{.dataset_id = *ds, .topic_name = "/cam/b", .metadata_json = "{}"});
+  ASSERT_TRUE(cam_a.has_value()) << cam_a.error();
+  ASSERT_TRUE(cam_b.has_value()) << cam_b.error();
+  ASSERT_TRUE(session.objectStore().pushOwned(*cam_a, 100, std::vector<uint8_t>{1}).has_value());
+  ASSERT_TRUE(session.objectStore().pushOwned(*cam_b, 100, std::vector<uint8_t>{2}).has_value());
+  ASSERT_EQ(session.objectStore().listTopics(*ds).size(), 2u);
+
+  {
+    PJ::RefillGuard guard = session.beginRefill(*ds);
+    // The reloaded file has only /cam/a; the refill pushes to it, never /cam/b.
+    ASSERT_TRUE(session.objectStore().pushOwned(*cam_a, 1000, std::vector<uint8_t>{3}).has_value());
+    guard.pruneVanishedTopics();
+    guard.commit();
+  }
+
+  const auto after = session.objectStore().listTopics(*ds);
+  ASSERT_EQ(after.size(), 1u) << "the vanished object topic /cam/b is removed";
+  EXPECT_EQ(after.front(), *cam_a) << "/cam/a kept (refilled)";
+}
+
+TEST(SessionManagerRefillGuardTest, MovedGuardRollsBackExactlyOnce) {
+  // The guard is move-only and lives in std::optional<RefillGuard> in FileLoader;
+  // the move must neutralize the source (null session_ + mark committed) so the
+  // moved-from dtor no-ops. A bug there would roll back TWICE.
+  PJ::SessionManager session;
+  auto ds = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "reload.mcap"});
+  ASSERT_TRUE(ds.has_value()) << ds.error();
+  writeScalarSamples(session, *ds, "/a", {100, 200, 300});
+  const auto topics_before = session.dataEngine().listTopics(*ds);
+
+  int about_count = 0;
+  QObject::connect(&session, &PJ::SessionManager::datasetAboutToBeReplaced, &session, [&about_count](PJ::DatasetId) {
+    ++about_count;
+  });
+  {
+    PJ::RefillGuard original = session.beginRefill(*ds);  // detach fires datasetAboutToBeReplaced (1)
+    PJ::RefillGuard moved = std::move(original);          // moved-from `original` must become inert
+    // Scope exit destroys `moved` first (rollback -> fires (2)), then the moved-from
+    // `original` (must no-op). A double rollback would push about_count to 3.
+  }
+  EXPECT_EQ(about_count, 2) << "exactly one rollback despite the move (moved-from guard is inert)";
+  EXPECT_TRUE(session.datasetDisplayRange(*ds).has_value()) << "data restored once";
+  EXPECT_EQ(session.dataEngine().listTopics(*ds), topics_before) << "ids stable";
 }
 
 }  // namespace

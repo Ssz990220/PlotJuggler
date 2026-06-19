@@ -4,6 +4,7 @@
 #include <QApplication>
 #include <QCommandLineOption>
 #include <QCommandLineParser>
+#include <QTimer>
 #include <Qt>
 #include <backward.hpp>
 #include <cstdlib>
@@ -69,6 +70,10 @@ int main(int argc, char* argv[]) {
       QStringLiteral("plugin-dir"),
       QStringLiteral("Override the directory where extensions are discovered and managed."), QStringLiteral("path"));
   parser.addOption(plugin_dir_option);
+  const QCommandLineOption layout_option(
+      QStringLiteral("layout"), QStringLiteral("Load a layout file on startup, reloading its data source(s)."),
+      QStringLiteral("path"));
+  parser.addOption(layout_option);
   parser.process(app);
 
   PJ::MainWindow window(parser.value(plugin_dir_option));
@@ -85,6 +90,13 @@ int main(int argc, char* argv[]) {
     }
   }
   window.show();
+
+  // Deferred so the load runs after the event loop starts (the file loads on a
+  // worker; the progressive layout restore needs a running loop).
+  if (parser.isSet(layout_option)) {
+    const QString layout_path = parser.value(layout_option);
+    QTimer::singleShot(0, &window, [&window, layout_path]() { window.loadLayoutAtStartup(layout_path); });
+  }
 
   return app.exec();
 }

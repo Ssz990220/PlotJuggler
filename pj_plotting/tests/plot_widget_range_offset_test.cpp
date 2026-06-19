@@ -85,8 +85,10 @@ struct PlotFixture {
 
 }  // namespace
 
-// With "Use time offset" ON, the axis frames display window [0, 1] s. Saving
-// must record the ABSOLUTE window [1.6e9, 1.6e9 + 1] s and mark it absolute.
+// With "Use time offset" ON, the axis frames display window [0, 1] s. Saving must
+// record the ABSOLUTE window [1.6e9, 1.6e9 + 1] s. The layout always stores a time
+// axis absolute (the offset is a visualization concern), so NO x_absolute marker is
+// written — the plot mode distinguishes time-series from XY on load.
 TEST(PlotWidgetRangeOffset, SavesAbsoluteTimeRange) {
   PlotFixture fixture;
   fixture.session.setUseTimeOffset(true);  // display offset = dataset min = kT0Ns
@@ -97,7 +99,7 @@ TEST(PlotWidgetRangeOffset, SavesAbsoluteTimeRange) {
   const QDomElement range = plot_element.firstChildElement(QStringLiteral("range"));
   ASSERT_FALSE(range.isNull());
 
-  EXPECT_EQ(range.attribute(QStringLiteral("x_absolute")), QStringLiteral("true"));
+  EXPECT_FALSE(range.hasAttribute(QStringLiteral("x_absolute"))) << "the obsolete marker must not be written";
   EXPECT_NEAR(range.attribute(QStringLiteral("left")).toDouble(), kT0Sec, 1e-3);
   EXPECT_NEAR(range.attribute(QStringLiteral("right")).toDouble(), kT0Sec + 1.0, 1e-3);
 }
@@ -141,19 +143,20 @@ TEST(PlotWidgetRangeOffset, RestoresDisplayWindowWhenOffsetUnchanged) {
   EXPECT_NEAR(rect.right(), 1.0, 1e-3);
 }
 
-// Backward compatibility: a legacy <range> with no x_absolute marker holds
-// display-relative seconds (the old behavior). It must load verbatim, NOT be
-// reinterpreted as absolute (which would shift it by the offset).
-TEST(PlotWidgetRangeOffset, LegacyRangeWithoutMarkerLoadsAsDisplayRelative) {
+// A layout's time-axis <range> is ALWAYS absolute seconds — including legacy layouts
+// that predate the (now-removed) x_absolute marker. An unmarked time-series range is
+// treated as absolute and converted with the current offset, NOT loaded verbatim. Here
+// an absolute window [kT0Sec, kT0Sec + 1] with no marker restores to display [0, 1].
+TEST(PlotWidgetRangeOffset, UnmarkedTimeRangeLoadsAsAbsolute) {
   PlotFixture fixture;
-  fixture.session.setUseTimeOffset(true);
+  fixture.session.setUseTimeOffset(true);  // offset = kT0Ns
 
   QDomDocument doc;
   QDomElement plot_element = doc.createElement(QStringLiteral("plot"));
   plot_element.setAttribute(QStringLiteral("mode"), QStringLiteral("TimeSeries"));
   QDomElement range = doc.createElement(QStringLiteral("range"));
-  range.setAttribute(QStringLiteral("left"), QStringLiteral("0.000000"));
-  range.setAttribute(QStringLiteral("right"), QStringLiteral("1.000000"));
+  range.setAttribute(QStringLiteral("left"), QString::number(kT0Sec, 'f', 6));
+  range.setAttribute(QStringLiteral("right"), QString::number(kT0Sec + 1.0, 'f', 6));
   range.setAttribute(QStringLiteral("top"), QStringLiteral("5.000000"));
   range.setAttribute(QStringLiteral("bottom"), QStringLiteral("-5.000000"));
   plot_element.appendChild(range);

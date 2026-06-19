@@ -308,7 +308,7 @@ TEST(ArrowImportTest, ImportWithTimestampColumn) {
   ASSERT_TRUE(latest_or.has_value()) << latest_or.error();
   ASSERT_TRUE(latest_or->has_value());
   EXPECT_EQ((*latest_or)->timestamp, 25000);
-  EXPECT_DOUBLE_EQ((*latest_or)->chunk->readNumericAsDouble(0, (*latest_or)->row_index), 25.0 * 0.5);
+  EXPECT_DOUBLE_EQ((*latest_or)->values[0], 25.0 * 0.5);
 }
 
 struct TimestampImportCase {
@@ -376,7 +376,7 @@ void expectTimestampColumnRescalesToNanos(const TimestampImportCase& test_case) 
   ASSERT_TRUE(latest_or.has_value()) << latest_or.error();
   ASSERT_TRUE(latest_or->has_value());
   EXPECT_EQ((*latest_or)->timestamp, 5'000'000'000LL);
-  EXPECT_DOUBLE_EQ((*latest_or)->chunk->readNumericAsDouble(0, (*latest_or)->row_index), 4.0);
+  EXPECT_DOUBLE_EQ((*latest_or)->values[0], 4.0);
 }
 
 // ===========================================================================

@@ -12,3 +12,6 @@ CMakeUserPresets.json
 
 # superpowers brainstorming / planning process artifacts (local, not tracked)
 docs/superpowers/
+
+# ThreadSanitizer build dir (Task 7 verification)
+build-tsan/

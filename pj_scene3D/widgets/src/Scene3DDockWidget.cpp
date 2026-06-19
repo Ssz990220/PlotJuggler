@@ -22,6 +22,7 @@
 #include <algorithm>
 #include <cctype>
 #include <chrono>
+#include <cmath>
 #include <limits>
 #include <memory>
 #include <unordered_set>
@@ -274,9 +275,28 @@ Scene3DDockWidget::~Scene3DDockWidget() {
 }
 
 void Scene3DDockWidget::setTransformService(pj::scene3d::TransformService* service) {
+  if (tf_ready_conn_) {
+    QObject::disconnect(tf_ready_conn_);
+    tf_ready_conn_ = {};
+  }
   transform_service_ = service;
   if (view_ != nullptr && tf_buffer_ != nullptr) {
     view_->setTransformBuffer(tf_buffer_);
+  }
+  if (transform_service_ != nullptr) {
+    // A progressive file load folds FrameTransforms into the buffer incrementally
+    // and emits this per flush. Re-resolve our layers against the new transforms at
+    // the instant we are showing so the scene fills in as the file loads instead of
+    // only at the end. Filter to our dataset; before any layer binds
+    // representativeDatasetId() is 0 (no match, nothing to draw yet) and the dock
+    // self-heals on the next signal once a layer resolves.
+    tf_ready_conn_ = connect(
+        transform_service_, &pj::scene3d::TransformService::datasetTransformsReady, this,
+        [this](PJ::DatasetId dataset_id) {
+          if (dataset_id == representativeDatasetId()) {
+            onTrackerTime(last_tracker_display_);
+          }
+        });
   }
 }
 
@@ -294,11 +314,12 @@ void Scene3DDockWidget::reconnectLiveSamples(SessionManager* session) {
     return;
   }
   // Streamed FrameTransform messages must be folded into the TF buffer as they
-  // arrive: file load does this in one bulk pass (FileLoader), but streaming has
-  // no such pass, so without this the buffer stays empty and every sensor frame
-  // is orphan (red). samplesIngested fires on the UI thread after the retention
-  // trim, with live=true only while following a live stream — file load emits
-  // live=false and keeps using the bulk ingest, so file behavior is unchanged.
+  // arrive: a file load is driven by FileLoader (ingestFrameTransformsForDataset
+  // per flush -> datasetTransformsReady, handled in setTransformService), but a
+  // live stream has no such driver, so without this slot the buffer stays empty
+  // and every sensor frame is orphan (red). samplesIngested fires on the UI thread
+  // after the retention trim, with live=true only while following a live stream —
+  // file load emits live=false and is served by the FileLoader path instead.
   live_samples_conn_ =
       connect(session, &SessionManager::samplesIngested, this, [this](const QVector<TopicId>&, bool live) {
         if (!live || transform_service_ == nullptr || tf_buffer_ == nullptr) {
@@ -546,6 +567,12 @@ bool Scene3DDockWidget::tryAcceptObjectTopic(
 }
 
 void Scene3DDockWidget::onTrackerTime(double time) {
+  // Remember the instant we are showing so a mid-load TF update (datasetTransformsReady)
+  // can re-render here without a new playback push. Guard finiteness so a NaN tick
+  // never poisons the replayed value.
+  if (std::isfinite(time)) {
+    last_tracker_display_ = time;
+  }
   // The base converts (NaN/inf-safe), clamps with the latched-layer rule, and
   // drives the layers; reuse its result for the view's render time instead of
   // re-deriving and re-clamping it here.
@@ -1026,6 +1053,110 @@ ObjectTopicId Scene3DDockWidget::allocateLocalRobotLayerId() {
   return {};
 }
 
+bool Scene3DDockWidget::restoreLayerElement(const QDomElement& layer_el) {
+  if (sessionManager() == nullptr) {
+    return false;
+  }
+
+  const QString object_type_str = layer_el.attribute(QStringLiteral("object_type"));
+  const auto object_type_opt = sdk::parseBuiltinObjectType(object_type_str.toStdString());
+  if (!object_type_opt.has_value()) {
+    return true;
+  }
+  const QString display_name = layer_el.attribute(QStringLiteral("display_name"));
+  const bool visible = layer_el.attribute(QStringLiteral("visible"), QStringLiteral("true")) == QStringLiteral("true");
+
+  ObjectTopicId topic_id;
+  const bool local_layer = layer_el.attribute(QStringLiteral("local")) == QStringLiteral("true");
+  if (local_layer) {
+    if (*object_type_opt != sdk::BuiltinObjectType::kRobotDescription) {
+      return true;
+    }
+    topic_id = allocateLocalRobotLayerId();
+    if (topic_id.id == 0) {
+      return true;
+    }
+  } else {
+    bool dataset_ok = false;
+    const auto dataset_value = layer_el.attribute(QStringLiteral("dataset_id")).toULongLong(&dataset_ok);
+    if (!dataset_ok || dataset_value > std::numeric_limits<uint32_t>::max()) {
+      return true;
+    }
+    const auto saved_id = static_cast<DatasetId>(dataset_value);
+    const QString saved_source = layer_el.attribute(QStringLiteral("dataset_source"));
+    const QString topic_name = layer_el.attribute(QStringLiteral("topic_name"));
+    // Re-resolve by stable source name first; the raw id is load-order (M.55).
+    const auto dataset_id_opt = resolveDatasetId(sessionManager(), saved_id, saved_source);
+    if (!dataset_id_opt.has_value()) {
+      return false;
+    }
+    const auto topic_id_opt = sessionManager()->objectStore().findTopic(*dataset_id_opt, topic_name.toStdString());
+    if (!topic_id_opt.has_value()) {
+      return false;
+    }
+    topic_id = *topic_id_opt;
+  }
+
+  // Restore trusts the saved layer type: a persisted kImage layer was a
+  // DepthCloud when saved, and its first sample may not be loaded yet here, so
+  // the interactive depth-encoding gate must not run (it would silently drop the
+  // layer — C1). enforce_image_gate=false.
+  if (!addTopicImpl(topic_id, *object_type_opt, display_name, /*enforce_image_gate=*/false)) {
+    if (local_layer) {
+      local_robot_layer_ids_.erase(topic_id.id);
+    }
+    return true;
+  }
+  if (ISceneLayer* layer = layerFor(topic_id); layer != nullptr) {
+    const QDomElement payload = layer_el.firstChildElement();
+    if (!payload.isNull()) {
+      layer->xmlLoadState(payload);
+    }
+  }
+  if (!visible) {
+    setLayerVisible(topic_id, false);
+  }
+  return true;
+}
+
+bool Scene3DDockWidget::restoreConfigTopicElement(const QDomElement& config_el) {
+  if (sessionManager() == nullptr) {
+    return false;
+  }
+
+  bool dataset_ok = false;
+  const auto dataset_value = config_el.attribute(QStringLiteral("dataset_id")).toULongLong(&dataset_ok);
+  if (!dataset_ok || dataset_value > std::numeric_limits<uint32_t>::max()) {
+    return true;
+  }
+  const auto saved_id = static_cast<DatasetId>(dataset_value);
+  const QString saved_source = config_el.attribute(QStringLiteral("dataset_source"));
+  const QString topic_name = config_el.attribute(QStringLiteral("topic_name"));
+  const QString object_type_str = config_el.attribute(QStringLiteral("object_type"));
+  const auto object_type_opt = sdk::parseBuiltinObjectType(object_type_str.toStdString());
+  if (!object_type_opt.has_value()) {
+    return true;
+  }
+  const auto dataset_id_opt = resolveDatasetId(sessionManager(), saved_id, saved_source);
+  if (!dataset_id_opt.has_value()) {
+    return false;
+  }
+  const auto topic_id_opt = sessionManager()->objectStore().findTopic(*dataset_id_opt, topic_name.toStdString());
+  if (!topic_id_opt.has_value()) {
+    return false;
+  }
+  addTopic(*topic_id_opt, *object_type_opt, topic_name);
+  return true;
+}
+
+bool Scene3DDockWidget::restoreOnePending(const QDomElement& element) {
+  // 3D defers two element kinds into the base's shared pending queue: scene-config
+  // topics (e.g. TF) and render layers. Dispatch on the tag; the base SceneDockWidget
+  // owns the queue + the retry/unresolved/clear bookkeeping.
+  return element.tagName() == QStringLiteral("config_topic") ? restoreConfigTopicElement(element)
+                                                             : restoreLayerElement(element);
+}
+
 QDomElement Scene3DDockWidget::xmlSaveState(QDomDocument& doc) const {
   QDomElement root = doc.createElement(xmlTag());
   root.setAttribute(QStringLiteral("version"), QStringLiteral("1"));
@@ -1141,6 +1272,7 @@ bool Scene3DDockWidget::xmlLoadState(const QDomElement& element) {
   local_robot_layer_ids_.clear();
   config_topics_.clear();
   scene_topic_datasets_.clear();
+  clearPendingRestores();
 
   const QString saved_mode = element.attribute(QStringLiteral("fixed_frame_mode"), QStringLiteral("auto_root"));
   const QString saved_frame = element.attribute(QStringLiteral("fixed_frame"));
@@ -1150,66 +1282,9 @@ bool Scene3DDockWidget::xmlLoadState(const QDomElement& element) {
   if (sessionManager() != nullptr) {
     for (QDomElement layer_el = element.firstChildElement(QStringLiteral("layer")); !layer_el.isNull();
          layer_el = layer_el.nextSiblingElement(QStringLiteral("layer"))) {
-      const QString object_type_str = layer_el.attribute(QStringLiteral("object_type"));
-      const auto object_type_opt = sdk::parseBuiltinObjectType(object_type_str.toStdString());
-      if (!object_type_opt.has_value()) {
-        continue;
-      }
-      const QString display_name = layer_el.attribute(QStringLiteral("display_name"));
-      const bool visible =
-          layer_el.attribute(QStringLiteral("visible"), QStringLiteral("true")) == QStringLiteral("true");
-
-      ObjectTopicId topic_id;
-      const bool local_layer = layer_el.attribute(QStringLiteral("local")) == QStringLiteral("true");
-      if (local_layer) {
-        if (*object_type_opt != sdk::BuiltinObjectType::kRobotDescription) {
-          continue;
-        }
-        topic_id = allocateLocalRobotLayerId();
-        if (topic_id.id == 0) {
-          continue;
-        }
-      } else {
-        bool dataset_ok = false;
-        const auto dataset_value = layer_el.attribute(QStringLiteral("dataset_id")).toULongLong(&dataset_ok);
-        if (!dataset_ok || dataset_value > std::numeric_limits<uint32_t>::max()) {
-          continue;
-        }
-        const auto saved_id = static_cast<DatasetId>(dataset_value);
-        const QString saved_source = layer_el.attribute(QStringLiteral("dataset_source"));
-        const QString topic_name = layer_el.attribute(QStringLiteral("topic_name"));
-        // Re-resolve by stable source name first; the raw id is load-order (M.55).
-        const auto dataset_id_opt = resolveDatasetId(sessionManager(), saved_id, saved_source);
-        if (!dataset_id_opt.has_value()) {
-          ++unresolved_topics;
-          continue;
-        }
-        const auto topic_id_opt = sessionManager()->objectStore().findTopic(*dataset_id_opt, topic_name.toStdString());
-        if (!topic_id_opt.has_value()) {
-          ++unresolved_topics;
-          continue;
-        }
-        topic_id = *topic_id_opt;
-      }
-
-      // Restore trusts the saved layer type: a persisted kImage layer was a
-      // DepthCloud when saved, and its first sample may not be loaded yet here, so
-      // the interactive depth-encoding gate must not run (it would silently drop the
-      // layer — C1). enforce_image_gate=false.
-      if (!addTopicImpl(topic_id, *object_type_opt, display_name, /*enforce_image_gate=*/false)) {
-        if (local_layer) {
-          local_robot_layer_ids_.erase(topic_id.id);
-        }
-        continue;
-      }
-      if (ISceneLayer* layer = layerFor(topic_id); layer != nullptr) {
-        const QDomElement payload = layer_el.firstChildElement();
-        if (!payload.isNull()) {
-          layer->xmlLoadState(payload);
-        }
-      }
-      if (!visible) {
-        setLayerVisible(topic_id, false);
+      if (!restoreLayerElement(layer_el)) {
+        ++unresolved_topics;
+        rememberPendingRestore(layer_el);
       }
     }
 
@@ -1218,30 +1293,10 @@ bool Scene3DDockWidget::xmlLoadState(const QDomElement& element) {
     // dock has nothing in the layer loop above and depends entirely on this.
     for (QDomElement config_el = element.firstChildElement(QStringLiteral("config_topic")); !config_el.isNull();
          config_el = config_el.nextSiblingElement(QStringLiteral("config_topic"))) {
-      bool dataset_ok = false;
-      const auto dataset_value = config_el.attribute(QStringLiteral("dataset_id")).toULongLong(&dataset_ok);
-      if (!dataset_ok || dataset_value > std::numeric_limits<uint32_t>::max()) {
-        continue;
-      }
-      const auto saved_id = static_cast<DatasetId>(dataset_value);
-      const QString saved_source = config_el.attribute(QStringLiteral("dataset_source"));
-      const QString topic_name = config_el.attribute(QStringLiteral("topic_name"));
-      const QString object_type_str = config_el.attribute(QStringLiteral("object_type"));
-      const auto object_type_opt = sdk::parseBuiltinObjectType(object_type_str.toStdString());
-      if (!object_type_opt.has_value()) {
-        continue;
-      }
-      const auto dataset_id_opt = resolveDatasetId(sessionManager(), saved_id, saved_source);
-      if (!dataset_id_opt.has_value()) {
+      if (!restoreConfigTopicElement(config_el)) {
         ++unresolved_topics;
-        continue;
+        rememberPendingRestore(config_el);
       }
-      const auto topic_id_opt = sessionManager()->objectStore().findTopic(*dataset_id_opt, topic_name.toStdString());
-      if (!topic_id_opt.has_value()) {
-        ++unresolved_topics;
-        continue;
-      }
-      addTopic(*topic_id_opt, *object_type_opt, topic_name);
     }
   }
   if (unresolved_topics > 0) {

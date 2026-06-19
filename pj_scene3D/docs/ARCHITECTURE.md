@@ -311,17 +311,24 @@ colored by depth. Sibling of the 2D depth view — same data, different geometry
 
 ## Streaming / live-data path
 
-TF, pointclouds, and markers ingest live as well as from a file. File load uses
-a single bulk pass — `TransformService::ingestFrameTransformsForDataset` reads
-every `FrameTransforms` message in the dataset into the core `TransformBuffer`
-and emits `datasetTransformsReady`, then `onTrackerTime` drives the layers.
-Streaming has no such pass, so the dock wires the incremental path:
+TF, pointclouds, and markers ingest live as well as from a file.
+`TransformService::ingestFrameTransformsForDataset` reads every *new*
+`FrameTransforms` message in the dataset into the core `TransformBuffer`
+(cursor-based, so repeated calls only fold in what arrived since the last one)
+and emits `datasetTransformsReady`. During a **progressive file load** the loader
+calls it on every flush, so the buffer fills as the file streams in; the dock
+connects `datasetTransformsReady` (in `setTransformService`) and re-renders at the
+current playhead via `onTrackerTime`, so a restored 3D scene populates *as the file
+loads* instead of only at completion. A non-progressive or already-finished load
+runs the same call once at the end. Streaming has no loader to drive that call, so
+the dock wires its own incremental path off `samplesIngested`:
 
 - `Scene3DDockWidget::setSessionManager` shadows the base to also call
   `reconnectLiveSamples`, which connects `SessionManager::samplesIngested`
   (fired on the UI thread after each retention trim, `live == true` only while
-  following a live stream; file load emits `live == false` and stays on the
-  bulk path).
+  following a live stream; file load emits `live == false` and is served by the
+  loader-driven `ingestFrameTransformsForDataset` + `datasetTransformsReady` path
+  above instead).
 - On each live tick, `TransformService::ingestNewTransforms` advances a
   per-topic store cursor and folds only the new `FrameTransforms` into the
   buffer — cheap, and a no-op when nothing new arrived. Without it the TF buffer
@@ -338,8 +345,9 @@ Streaming has no such pass, so the dock wires the incremental path:
 binding through `SessionManager::parserBindingForObjectTopic` and decodes under
 `parseLocked` (parse-locked per use — never a cached binding). Streaming uses a
 finite `TransformBuffer` cache window (default 10 s) so a growing live stream
-trims old samples and stays memory-bounded; the bulk file path constructs the
-buffer with eviction disabled, since the whole recording is fed in up front.
+trims old samples and stays memory-bounded; the file path constructs the
+buffer with eviction disabled, since the whole recording is retained (fed in
+incrementally during a progressive load, or in one pass for a finished load).
 
 ### SceneEntities lifetime expiry & the decoded-batch cache
 

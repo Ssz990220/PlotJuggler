@@ -15,6 +15,7 @@
 #include <deque>
 #include <exception>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -187,6 +188,27 @@ void flattenColumnsImpl(
 
 }  // namespace
 
+// Engine lock(s) for a write-host operation (driven by the worker while the GUI
+// reads). With a staging engine (the pause/resume copy) armed, lock BOTH via
+// std::lock so the worker's write-then-replay can't invert order against flushTo
+// (which also std::lock()s both); otherwise a single recursive lock. Recursive so
+// the locked methods underneath — and ensureField() nested in appendRecord() —
+// re-acquire.
+struct WriteEngineLocks {
+  std::unique_lock<std::recursive_mutex> live;
+  std::unique_lock<std::recursive_mutex> staging;  // empty unless a staging engine is armed
+};
+
+[[nodiscard]] inline WriteEngineLocks lockWriteEngines(DataEngine& live, DataEngine* staging) {
+  if (staging == nullptr) {
+    return {live.lockEngine(), {}};
+  }
+  auto live_lock = live.lockEngineDeferred();
+  auto staging_lock = staging->lockEngineDeferred();
+  std::lock(live_lock, staging_lock);
+  return {std::move(live_lock), std::move(staging_lock)};
+}
+
 struct WriteCore {
   explicit WriteCore(DataEngine& data_engine) : engine(data_engine), writer(data_engine.createWriter()) {}
 
@@ -267,6 +289,7 @@ struct WriteCore {
   }
 
   [[nodiscard]] bool createDataSource(std::string_view name, DataSourceHandle* out_source) {
+    auto engine_locks = lockWriteEngines(engine, secondary_engine);
     auto id_or = engine.createDataset(DatasetDescriptor{.source_name = std::string(name), .time_domain_id = 0});
     if (!id_or.has_value()) {
       setError(id_or.error());
@@ -300,6 +323,7 @@ struct WriteCore {
   }
 
   [[nodiscard]] bool ensureTopic(DataSourceHandle source, std::string_view topic_name, TopicHandle* out_topic) {
+    auto engine_locks = lockWriteEngines(engine, secondary_engine);
     const auto* dataset = engine.getDataset(source.id);
     if (dataset == nullptr) {
       setError(fmt::format("data source {} not found", source.id));
@@ -384,6 +408,7 @@ struct WriteCore {
 
   [[nodiscard]] bool ensureField(
       TopicHandle topic, std::string_view field_name, PJ_primitive_type_t abi_type, FieldHandle* out_field) {
+    auto engine_locks = lockWriteEngines(engine, secondary_engine);
     const auto* storage = engine.getTopicStorage(topic.id);
     if (storage == nullptr) {
       setError(fmt::format("topic {} not found", topic.id));
@@ -516,6 +541,7 @@ struct WriteCore {
 
   [[nodiscard]] bool appendRecord(
       TopicHandle topic, Timestamp timestamp, const PJ_named_field_value_t* fields, std::size_t field_count) {
+    auto engine_locks = lockWriteEngines(engine, secondary_engine);
     if (engine.getTopicStorage(topic.id) == nullptr) {
       setError(fmt::format("topic {} not found", topic.id));
       return false;
@@ -600,6 +626,7 @@ struct WriteCore {
 
   [[nodiscard]] bool appendBoundRecord(
       TopicHandle topic, Timestamp timestamp, const PJ_bound_field_value_t* fields, std::size_t field_count) {
+    auto engine_locks = lockWriteEngines(engine, secondary_engine);
     if (engine.getTopicStorage(topic.id) == nullptr) {
       setError(fmt::format("topic {} not found", topic.id));
       return false;
@@ -661,6 +688,7 @@ struct WriteCore {
   /// the "success releases, failure retains" rule uniformly.
   [[nodiscard]] bool appendArrowStream(
       TopicHandle topic, struct ArrowArrayStream* stream, PJ_string_view_t timestamp_column) {
+    auto engine_locks = lockWriteEngines(engine, secondary_engine);
     if (stream == nullptr) {
       setError("append_arrow_stream: null stream");
       return false;
@@ -709,6 +737,7 @@ struct WriteCore {
   }
 
   void flushPending() {
+    auto lock = engine.lockEngine();
     auto flushed = writer.flushAll();
     if (!flushed.empty()) {
       engine.commitChunks(std::move(flushed));
@@ -740,6 +769,7 @@ struct ToolboxCore {
   DataEngine& engine;
 
   [[nodiscard]] bool acquireCatalogSnapshot(PJ_catalog_snapshot_t* out_snapshot) {
+    auto lock = engine.lockEngine();  // held through the deep-copy below
     auto* state = new CatalogSnapshotState{};
     auto dataset_ids = engine.listDatasets();
     std::sort(dataset_ids.begin(), dataset_ids.end());
@@ -812,6 +842,7 @@ struct ToolboxCore {
       write.setError("readSeriesArrow: out_schema and out_array must be non-null");
       return false;
     }
+    auto lock = engine.lockEngine();  // held through the row-decode loop below
 
     const auto* storage = engine.getTopicStorage(field.topic.id);
     if (storage == nullptr) {
@@ -1002,11 +1033,16 @@ struct ToolboxCore {
 
 struct DatastoreSourceWriteHostState {
   DatastoreSourceWriteHostState(DataEngine& engine, DataSourceHandle source_handle)
-      : core(std::make_unique<WriteCore>(engine)), source(source_handle), primary_engine(&engine) {}
-  // Held by pointer so setTarget() can rebind to a different engine (streaming
-  // two-engine pause/resume) by reconstructing the WriteCore — WriteCore holds
-  // DataEngine by reference and is not reseatable.
-  std::unique_ptr<WriteCore> core;
+      : core(std::make_shared<WriteCore>(engine)), source(source_handle), primary_engine(&engine) {}
+  // Atomic shared_ptr, not a plain unique_ptr, because the streaming pause/resume
+  // setTarget() swap reconstructs the WriteCore on the GUI thread while the ingest
+  // worker may still be dereferencing the previous one on its own thread. The
+  // worker loads a strong reference for the duration of each call (so the old core
+  // cannot be destroyed under it), and setTarget builds the replacement fully then
+  // publishes it with release ordering. Mirrors the object-store host's
+  // std::atomic<ObjectStore*>; WriteCore holds DataEngine by reference and is not
+  // reseatable, hence the swap rather than an in-place rebind.
+  std::atomic<std::shared_ptr<WriteCore>> core;
   DataSourceHandle source;
   // Streaming two-engine lockstep: remember the primary + secondary engines
   // so setTarget can re-wire the new WriteCore's secondary_engine_ pointer to
@@ -1018,12 +1054,12 @@ struct DatastoreSourceWriteHostState {
 
 struct DatastoreParserWriteHostState {
   DatastoreParserWriteHostState(DataEngine& engine, TopicHandle topic_handle)
-      : core(std::make_unique<WriteCore>(engine)), topic(topic_handle), primary_engine(&engine) {}
-  // Held by pointer so setTarget() can rebind to a different engine (streaming
-  // two-store pause/resume) by reconstructing the WriteCore — its writer and
-  // caches are engine-specific. WriteCore itself is not reassignable (holds a
-  // DataEngine reference).
-  std::unique_ptr<WriteCore> core;
+      : core(std::make_shared<WriteCore>(engine)), topic(topic_handle), primary_engine(&engine) {}
+  // Atomic shared_ptr — see DatastoreSourceWriteHostState::core. The setTarget()
+  // swap publishes a fresh WriteCore while the parser worker may still be inside
+  // the previous one; the worker pins it with a strong reference per call, so the
+  // swap can never free a core out from under an in-flight append.
+  std::atomic<std::shared_ptr<WriteCore>> core;
   TopicHandle topic;
   // Streaming two-engine lockstep — see DatastoreSourceWriteHostState. Closes
   // the latent FieldHandle-stale bug for parser plugins that cache handles
@@ -1107,8 +1143,11 @@ bool guardHostCallback(PJ_error_t* out_error, Fn&& fn) noexcept {
 bool sourceEnsureTopic(void* ctx, PJ_string_view_t topic_name, TopicHandle* out_topic, PJ_error_t* out_error) noexcept {
   return guardHostCallback(out_error, [&] {
     auto* impl = static_cast<DatastoreSourceWriteHostState*>(ctx);
-    if (!impl->core->ensureTopic(impl->source, toStringView(topic_name), out_topic)) {
-      propagateError(out_error, impl->core->lastError());
+    // Pin the current WriteCore for the whole call so a concurrent setTarget()
+    // swap can't destroy it under us (and so the op + its error read the SAME core).
+    auto core = impl->core.load(std::memory_order_acquire);
+    if (!core->ensureTopic(impl->source, toStringView(topic_name), out_topic)) {
+      propagateError(out_error, core->lastError());
       return false;
     }
     return true;
@@ -1120,8 +1159,9 @@ bool sourceEnsureField(
     PJ_error_t* out_error) noexcept {
   return guardHostCallback(out_error, [&] {
     auto* impl = static_cast<DatastoreSourceWriteHostState*>(ctx);
-    if (!impl->core->ensureField(topic, toStringView(field_name), type, out_field)) {
-      propagateError(out_error, impl->core->lastError());
+    auto core = impl->core.load(std::memory_order_acquire);
+    if (!core->ensureField(topic, toStringView(field_name), type, out_field)) {
+      propagateError(out_error, core->lastError());
       return false;
     }
     return true;
@@ -1133,8 +1173,9 @@ bool sourceAppendRecord(
     PJ_error_t* out_error) noexcept {
   return guardHostCallback(out_error, [&] {
     auto* impl = static_cast<DatastoreSourceWriteHostState*>(ctx);
-    if (!impl->core->appendRecord(topic, timestamp, fields, field_count)) {
-      propagateError(out_error, impl->core->lastError());
+    auto core = impl->core.load(std::memory_order_acquire);
+    if (!core->appendRecord(topic, timestamp, fields, field_count)) {
+      propagateError(out_error, core->lastError());
       return false;
     }
     return true;
@@ -1146,8 +1187,9 @@ bool sourceAppendBoundRecord(
     PJ_error_t* out_error) noexcept {
   return guardHostCallback(out_error, [&] {
     auto* impl = static_cast<DatastoreSourceWriteHostState*>(ctx);
-    if (!impl->core->appendBoundRecord(topic, timestamp, fields, field_count)) {
-      propagateError(out_error, impl->core->lastError());
+    auto core = impl->core.load(std::memory_order_acquire);
+    if (!core->appendBoundRecord(topic, timestamp, fields, field_count)) {
+      propagateError(out_error, core->lastError());
       return false;
     }
     return true;
@@ -1159,9 +1201,10 @@ bool sourceAppendArrowStream(
     PJ_error_t* out_error) noexcept {
   return guardHostCallback(out_error, [&] {
     auto* impl = static_cast<DatastoreSourceWriteHostState*>(ctx);
-    if (!impl->core->appendArrowStream(topic, stream, timestamp_column)) {
+    auto core = impl->core.load(std::memory_order_acquire);
+    if (!core->appendArrowStream(topic, stream, timestamp_column)) {
       // Failure: plugin retains ownership of the stream; we do NOT release.
-      propagateError(out_error, impl->core->lastError());
+      propagateError(out_error, core->lastError());
       return false;
     }
     // Success: host now owns the stream — release it.
@@ -1177,8 +1220,9 @@ bool parserEnsureField(
     PJ_error_t* out_error) noexcept {
   return guardHostCallback(out_error, [&] {
     auto* impl = static_cast<DatastoreParserWriteHostState*>(ctx);
-    if (!impl->core->ensureField(impl->topic, toStringView(field_name), type, out_field)) {
-      propagateError(out_error, impl->core->lastError());
+    auto core = impl->core.load(std::memory_order_acquire);
+    if (!core->ensureField(impl->topic, toStringView(field_name), type, out_field)) {
+      propagateError(out_error, core->lastError());
       return false;
     }
     return true;
@@ -1190,8 +1234,9 @@ bool parserAppendRecord(
     PJ_error_t* out_error) noexcept {
   return guardHostCallback(out_error, [&] {
     auto* impl = static_cast<DatastoreParserWriteHostState*>(ctx);
-    if (!impl->core->appendRecord(impl->topic, timestamp, fields, field_count)) {
-      propagateError(out_error, impl->core->lastError());
+    auto core = impl->core.load(std::memory_order_acquire);
+    if (!core->appendRecord(impl->topic, timestamp, fields, field_count)) {
+      propagateError(out_error, core->lastError());
       return false;
     }
     return true;
@@ -1203,8 +1248,9 @@ bool parserAppendBoundRecord(
     PJ_error_t* out_error) noexcept {
   return guardHostCallback(out_error, [&] {
     auto* impl = static_cast<DatastoreParserWriteHostState*>(ctx);
-    if (!impl->core->appendBoundRecord(impl->topic, timestamp, fields, field_count)) {
-      propagateError(out_error, impl->core->lastError());
+    auto core = impl->core.load(std::memory_order_acquire);
+    if (!core->appendBoundRecord(impl->topic, timestamp, fields, field_count)) {
+      propagateError(out_error, core->lastError());
       return false;
     }
     return true;
@@ -1215,8 +1261,9 @@ bool parserAppendArrowStream(
     void* ctx, struct ArrowArrayStream* stream, PJ_string_view_t timestamp_column, PJ_error_t* out_error) noexcept {
   return guardHostCallback(out_error, [&] {
     auto* impl = static_cast<DatastoreParserWriteHostState*>(ctx);
-    if (!impl->core->appendArrowStream(impl->topic, stream, timestamp_column)) {
-      propagateError(out_error, impl->core->lastError());
+    auto core = impl->core.load(std::memory_order_acquire);
+    if (!core->appendArrowStream(impl->topic, stream, timestamp_column)) {
+      propagateError(out_error, core->lastError());
       return false;
     }
     if (stream != nullptr && stream->release != nullptr) {
@@ -1338,13 +1385,18 @@ bool toolboxRegisterObjectTopic(
     propagateError(out_error, "out_handle must not be null");
     return false;
   }
-  // Validate the source handle against the engine — same check used by
-  // scalar ensureTopic so the toolbox can't register a topic against a
-  // dataset that doesn't exist.
-  if (impl->core.engine.getDataset(source.id) == nullptr) {
-    impl->setObjectError(fmt::format("data source {} not found", source.id));
-    propagateError(out_error, impl->object_last_error.c_str());
-    return false;
+  // Validate the source handle against the engine — same check used by scalar
+  // ensureTopic so the toolbox can't register a topic against a dataset that
+  // doesn't exist. Scope the engine lock to JUST this read — do NOT hold it
+  // across object_store.registerTopic below: the engine and ObjectStore locks
+  // must never nest (see pj_datastore/CLAUDE.md).
+  {
+    auto lock = impl->core.engine.lockEngine();
+    if (impl->core.engine.getDataset(source.id) == nullptr) {
+      impl->setObjectError(fmt::format("data source {} not found", source.id));
+      propagateError(out_error, impl->object_last_error.c_str());
+      return false;
+    }
   }
   try {
     ObjectTopicDescriptor desc{};
@@ -1842,7 +1894,7 @@ PJ_source_write_host_t DatastoreSourceWriteHost::raw() noexcept {
 }
 
 void DatastoreSourceWriteHost::flushPending() {
-  state_->core->flushPending();
+  state_->core.load(std::memory_order_acquire)->flushPending();
 }
 
 void DatastoreSourceWriteHost::setTarget(DataEngine* target) {
@@ -1853,17 +1905,23 @@ void DatastoreSourceWriteHost::setTarget(DataEngine* target) {
   // new topic/field created while pointed at `target` mirrors back to the
   // other side — both engines keep their TopicId/FieldId assignments in
   // lockstep regardless of which one is currently active.
-  state_->core->flushPending();
-  state_->core = std::make_unique<WriteCore>(*target);
+  state_->core.load(std::memory_order_acquire)->flushPending();
+  // Build + fully wire the replacement BEFORE publishing it, so the ingest worker
+  // only ever observes a complete WriteCore. The atomic store (release) hands it
+  // off; a worker still inside the old core keeps it alive via its own strong
+  // reference until that call returns (in-flight appends finish on the old target,
+  // matching the object-store path's accepted semantics).
+  auto next = std::make_shared<WriteCore>(*target);
   if (target == state_->primary_engine) {
-    state_->core->secondary_engine = state_->secondary_engine;
+    next->secondary_engine = state_->secondary_engine;
   } else if (target == state_->secondary_engine) {
-    state_->core->secondary_engine = state_->primary_engine;
+    next->secondary_engine = state_->primary_engine;
   } else {
     // Unknown target (e.g. an in-place dataset replace) — no mirror.
-    state_->core->secondary_engine = nullptr;
+    next->secondary_engine = nullptr;
     state_->primary_engine = target;
   }
+  state_->core.store(std::move(next), std::memory_order_release);
 }
 
 void DatastoreSourceWriteHost::setSecondaryEngine(DataEngine* secondary) {
@@ -1872,10 +1930,12 @@ void DatastoreSourceWriteHost::setSecondaryEngine(DataEngine* secondary) {
   // the other one. Called once by the streaming runtime host right after
   // construction; passing nullptr disables mirroring.
   state_->secondary_engine = secondary;
-  if (state_->core != nullptr) {
+  // Called once right after construction, before any ingest worker runs, so
+  // mutating the live core's mirror target in place is safe (no concurrent reader
+  // yet); load() merely unwraps the atomic.
+  if (auto core = state_->core.load(std::memory_order_acquire)) {
     // Whichever direction we're currently pointed at, mirror to the other.
-    state_->core->secondary_engine =
-        (&state_->core->engine == state_->primary_engine) ? secondary : state_->primary_engine;
+    core->secondary_engine = (&core->engine == state_->primary_engine) ? secondary : state_->primary_engine;
   }
 }
 
@@ -1890,7 +1950,7 @@ PJ_parser_write_host_t DatastoreParserWriteHost::raw() noexcept {
 }
 
 void DatastoreParserWriteHost::flushPending() {
-  state_->core->flushPending();
+  state_->core.load(std::memory_order_acquire)->flushPending();
 }
 
 void DatastoreParserWriteHost::setTarget(DataEngine* target) {
@@ -1900,24 +1960,27 @@ void DatastoreParserWriteHost::setTarget(DataEngine* target) {
   // the new WriteCore's secondary_engine_ pointer to the OTHER engine for
   // bidirectional lockstep mirroring (parsers that cache FieldHandle — e.g.
   // parser_protobuf — would otherwise see stale ids after pause/resume).
-  state_->core->flushPending();
-  state_->core = std::make_unique<WriteCore>(*target);
+  state_->core.load(std::memory_order_acquire)->flushPending();
+  // Build + fully wire the replacement before publishing it atomically — see
+  // DatastoreSourceWriteHost::setTarget for the swap-safety rationale.
+  auto next = std::make_shared<WriteCore>(*target);
   if (target == state_->primary_engine) {
-    state_->core->secondary_engine = state_->secondary_engine;
+    next->secondary_engine = state_->secondary_engine;
   } else if (target == state_->secondary_engine) {
-    state_->core->secondary_engine = state_->primary_engine;
+    next->secondary_engine = state_->primary_engine;
   } else {
-    state_->core->secondary_engine = nullptr;
+    next->secondary_engine = nullptr;
     state_->primary_engine = target;
   }
+  state_->core.store(std::move(next), std::memory_order_release);
 }
 
 void DatastoreParserWriteHost::setSecondaryEngine(DataEngine* secondary) {
   // See DatastoreSourceWriteHost::setSecondaryEngine — same semantics.
   state_->secondary_engine = secondary;
-  if (state_->core != nullptr) {
-    state_->core->secondary_engine =
-        (&state_->core->engine == state_->primary_engine) ? secondary : state_->primary_engine;
+  // Construction-time only (no concurrent reader yet) — see the source host.
+  if (auto core = state_->core.load(std::memory_order_acquire)) {
+    core->secondary_engine = (&core->engine == state_->primary_engine) ? secondary : state_->primary_engine;
   }
 }
 

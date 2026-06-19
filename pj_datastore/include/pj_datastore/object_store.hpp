@@ -224,6 +224,49 @@ class ObjectStore {
   // --- Lifecycle ---
 
   void removeTopic(ObjectTopicId id);
+
+  /// Remove all entries from every series under `dataset_id`, keeping each
+  /// topic registered with the SAME ObjectTopicId (clear-in-place — never
+  /// removeTopic+re-register, which would risk ObjectTopicId drift). Other
+  /// datasets are untouched. Idempotent; a no-op for an unknown `dataset_id`.
+  void clearDataset(DatasetId dataset_id);
+
+  /// Side snapshot of one dataset's object series, produced by `detachDataset()`.
+  /// Holds the MOVED-OUT entries + timestamps + retention budget + memory
+  /// accounting (keyed by ObjectTopicId.id); series stay registered + empty.
+  /// `prior_object_topic_ids` is the registered set at detach time so reattach
+  /// can remove any topic a failed refill added. The warm latestAt cache is NOT
+  /// snapshotted (reset on detach, re-seeded lazily after reattach). `valid ==
+  /// false` means nothing was detached.
+  struct ObjectDatasetSnapshot {
+    struct SeriesSnapshot {
+      std::deque<ObjectEntry> entries;
+      std::vector<Timestamp> entry_timestamps;
+      RetentionBudget budget;
+      size_t memory_bytes = 0;
+    };
+    DatasetId dataset_id = 0;
+    std::vector<ObjectTopicId> prior_object_topic_ids;
+    std::unordered_map<uint32_t, SeriesSnapshot> series;  // keyed by ObjectTopicId.id
+    bool valid = false;
+  };
+
+  /// Transactional variant of `clearDataset()`: instead of dropping each series'
+  /// entries, MOVE them (plus timestamps/budget/memory) into the returned snapshot;
+  /// series stay registered + empty. Same drain-then-mutate discipline as
+  /// `clearDataset` (store_mutex_ exclusive, `drainSeriesReaders` before touching a
+  /// series). GUI-thread only. Unknown dataset -> `valid == false`.
+  [[nodiscard]] ObjectDatasetSnapshot detachDataset(DatasetId dataset_id);
+
+  /// Inverse of `detachDataset()`. For each series currently registered under
+  /// `dataset_id`: one NOT in `snapshot.prior_object_topic_ids` was registered by a
+  /// failed refill and is removed; a prior series is cleared. Then each snapshot
+  /// series' entries/budget/memory are moved back into its (still-registered) series
+  /// and the warm cache reset. store_mutex_ exclusive; consumes the snapshot. No-op
+  /// when `!snapshot.valid`. Tolerates an already-clean state (added topics already
+  /// removed by the caller).
+  void reattachDataset(DatasetId dataset_id, ObjectDatasetSnapshot&& snapshot);
+
   void clear();
 
  private:
@@ -261,6 +304,12 @@ class ObjectStore {
   // exclusively then blocks until the outstanding readers release. Without this,
   // destroying a still-locked series mutex is UB and the view's pointer dangles.
   static void drainSeriesReaders(ObjectSeries& series);
+
+  // Empty one series' entries/timestamps and reset its warm cache. Caller MUST
+  // hold store_mutex_ exclusively AND must have already drained the series'
+  // readers (drainSeriesReaders) so no EntryTimestampsView dangles into the
+  // timestamp vector being cleared.
+  static void clearEntriesLocked(ObjectSeries& series);
 
   static std::optional<size_t> upperBoundIndex(const std::vector<Timestamp>& timestamps, Timestamp ts);
   static ResolvedObjectEntry resolveEntry(const ObjectEntry& entry);

@@ -306,6 +306,10 @@ void DataSourceRuntimeHost::requestStop(std::string_view reason) {
   stop_requested_.store(true);
 }
 
+void DataSourceRuntimeHost::requestStop() {
+  stop_requested_.store(true);
+}
+
 void DataSourceRuntimeHost::setObjectRetentionBudget(int64_t time_window_ns, size_t max_memory_bytes) {
   // Budget the active store (B while paused) so the paused tail stays bounded;
   // the frozen store is untouched (eviction is push-triggered anyway).

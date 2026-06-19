@@ -1,10 +1,12 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 
-// End-to-end regression tests for FileLoader's same-file reload path: loading
-// an already-loaded file must REPLACE the dataset's data in place (stable
-// DatasetId/TopicIds, no re-append into the live engine, no wipe from a stale
-// staged swap). Drives the real plugin pipeline headlessly: the SDK's
+// End-to-end tests for FileLoader. Single-instance loads run progressively on a
+// worker thread (loadFile enqueues and returns; completion is async via
+// fileLoaded/fileLoadFailed), and a same-file reload REPLACES the dataset's data
+// in place (stable DatasetId/TopicIds, no duplicate topics, no re-append) via
+// beginRefill's detach + the write-host's by-name topic reuse — NOT a staging
+// swap. Drives the real plugin pipeline headlessly: the SDK's
 // mock_file_source_plugin (claims ".mock", writes topic "mock/file_data" with
 // 3 rows at t=100/200/300) loaded through ExtensionCatalogService, with
 // skip-dialog LoadHints standing in for the data-source dialog.
@@ -13,11 +15,13 @@
 
 #include <QApplication>
 #include <QDir>
+#include <QEventLoop>
 #include <QFile>
 #include <QFileInfo>
 #include <QSet>
 #include <QSettings>
 #include <QTemporaryDir>
+#include <QTimer>
 #include <algorithm>
 #include <memory>
 
@@ -77,20 +81,61 @@ class FileLoaderTest : public ::testing::Test {
     return path;
   }
 
-  [[nodiscard]] bool load(const QString& path) {
-    return loadWithConfig(path, QStringLiteral("{}"));
-  }
-
-  [[nodiscard]] bool loadWithConfig(const QString& path, const QString& config) {
-    return loader_->loadFile(path, nullptr, loadHints(config));
-  }
-
-  [[nodiscard]] PJ::LoadHints loadHints(const QString& config) {
+  // Unified hints builder: skip the dialog, target the mock source, with an
+  // optional preset config (e.g. {"fail_start":true} or a __pj_fanout list) and
+  // the prefer_reuse flag a layout replay sets.
+  [[nodiscard]] PJ::LoadHints loadHints(const QString& config = QStringLiteral("{}"), bool prefer_reuse = false) {
     PJ::LoadHints hints;
     hints.expected_plugin_id = QStringLiteral("Mock File Source");
     hints.preset_config_json = config;
     hints.skip_dialog = true;
+    hints.prefer_reuse = prefer_reuse;
     return hints;
+  }
+
+  // Back-compat alias used by the progressive-load tests.
+  PJ::LoadHints skipDialogHints(bool prefer_reuse = false) {
+    return loadHints(QStringLiteral("{}"), prefer_reuse);
+  }
+
+  // Enqueue a load and pump the event loop until it completes. Single-instance
+  // loads run progressively on a worker thread, so completion is asynchronous
+  // (fileLoaded/fileLoadFailed); fanout / layout-reuse / failure complete
+  // synchronously inside loadFile (the signal fires before exec(), so done is
+  // already set and we skip the loop).
+  [[nodiscard]] bool loadAndWait(const QString& path, const PJ::LoadHints& hints) {
+    QEventLoop loop;
+    bool ok = false;
+    bool done = false;
+    const auto on_loaded = QObject::connect(
+        loader_.get(), &PJ::FileLoader::fileLoaded, &loop,
+        [&](const QString&, const QString&, const QString&, const QString&) {
+          ok = true;
+          done = true;
+          loop.quit();
+        });
+    const auto on_failed =
+        QObject::connect(loader_.get(), &PJ::FileLoader::fileLoadFailed, &loop, [&](const QString&, const QString&) {
+          ok = false;
+          done = true;
+          loop.quit();
+        });
+    loader_->loadFile(path, nullptr, hints);
+    if (!done) {
+      QTimer::singleShot(10000, &loop, [&loop]() { loop.quit(); });  // safety: fail, don't hang CI
+      loop.exec();
+    }
+    QObject::disconnect(on_loaded);
+    QObject::disconnect(on_failed);
+    return ok;
+  }
+
+  [[nodiscard]] bool load(const QString& path) {
+    return loadAndWait(path, loadHints());
+  }
+
+  [[nodiscard]] bool loadWithConfig(const QString& path, const QString& config) {
+    return loadAndWait(path, loadHints(config));
   }
 
   [[nodiscard]] bool load() {
@@ -204,13 +249,8 @@ TEST_F(FileLoaderTest, LayoutReloadOfSameBasenameDifferentDirsRestoresBoth) {
   ASSERT_TRUE(QDir(data_dir_.path()).mkpath(QStringLiteral("runB")));
   const QString path_a = makeMockFile(QStringLiteral("runA/log.mock"));
   const QString path_b = makeMockFile(QStringLiteral("runB/log.mock"));
-  PJ::LoadHints hints;
-  hints.expected_plugin_id = QStringLiteral("Mock File Source");
-  hints.preset_config_json = QStringLiteral("{}");
-  hints.skip_dialog = true;
-  hints.prefer_reuse = true;  // mimic a layout replay
-  ASSERT_TRUE(loader_->loadFile(path_a, nullptr, hints));
-  ASSERT_TRUE(loader_->loadFile(path_b, nullptr, hints));
+  ASSERT_TRUE(loadAndWait(path_a, skipDialogHints(/*prefer_reuse=*/true)));  // mimic a layout replay
+  ASSERT_TRUE(loadAndWait(path_b, skipDialogHints(/*prefer_reuse=*/true)));
 
   EXPECT_EQ(session().createReader().listDatasets().size(), 2u)
       << "layout reload of two same-basename files must restore two datasets";
@@ -299,7 +339,9 @@ TEST_F(FileLoaderTest, RealDeleteThenPreferReuseReloadReIngestsFreshDataset) {
   hints.preset_config_json = QStringLiteral("{}");
   hints.skip_dialog = true;
   hints.prefer_reuse = true;
-  ASSERT_TRUE(loader_->loadFile(mock_path_, nullptr, hints));
+  // The dataset was erased, so prefer_reuse finds nothing to reuse and falls through
+  // to a FRESH single-instance load — which is async (worker). Wait for it.
+  ASSERT_TRUE(loadAndWait(mock_path_, hints));
 
   const PJ::DatasetId reloaded = datasetNamed("sensors.mock");
   EXPECT_NE(reloaded, 0u) << "reload must re-create the dataset";
@@ -325,7 +367,8 @@ TEST_F(FileLoaderTest, FanoutReloadErasesOldDatasetBeforePreferReuseReload) {
 
   PJ::LoadHints reuse_hints = loadHints(QStringLiteral("{}"));
   reuse_hints.prefer_reuse = true;
-  ASSERT_TRUE(loader_->loadFile(path, nullptr, reuse_hints));
+  // Old dataset erased → prefer_reuse falls through to a fresh async load; wait for it.
+  ASSERT_TRUE(loadAndWait(path, reuse_hints));
 
   const PJ::DatasetId reloaded = datasetNamed("fanout.mock");
   EXPECT_NE(reloaded, 0u) << "prefer_reuse after fanout reload must ingest a fresh dataset";
@@ -344,12 +387,97 @@ TEST_F(FileLoaderTest, FailedFirstLoadErasesAbandonedLiveDatasetBeforePreferReus
 
   PJ::LoadHints reuse_hints = loadHints(QStringLiteral("{}"));
   reuse_hints.prefer_reuse = true;
-  ASSERT_TRUE(loader_->loadFile(path, nullptr, reuse_hints));
+  // Old dataset erased → prefer_reuse falls through to a fresh async load; wait for it.
+  ASSERT_TRUE(loadAndWait(path, reuse_hints));
 
   const PJ::DatasetId reloaded = datasetNamed("failed.mock");
   EXPECT_NE(reloaded, 0u) << "prefer_reuse after a failed first load must create a new dataset";
   EXPECT_EQ(singleTopicRowCount(reloaded), 3) << "prefer_reuse must ingest data, not reattach to a shell";
   EXPECT_EQ(catalog().items().size(), 1u) << "curves come back after the successful reload";
+}
+
+// Several files enqueued without waiting between them run sequentially on the
+// worker; queueDrained fires once when the last completes, and all datasets land.
+TEST_F(FileLoaderTest, QueueProcessesEnqueuedLoadsSequentially) {
+  const QString a = makeMockFile(QStringLiteral("qa.mock"));
+  const QString b = makeMockFile(QStringLiteral("qb.mock"));
+  const QString c = makeMockFile(QStringLiteral("qc.mock"));
+
+  int drained = 0;
+  QObject::connect(loader_.get(), &PJ::FileLoader::queueDrained, loader_.get(), [&drained]() { ++drained; });
+
+  EXPECT_TRUE(loader_->loadFile(a, nullptr, skipDialogHints()));
+  EXPECT_TRUE(loader_->loadFile(b, nullptr, skipDialogHints()));
+  EXPECT_TRUE(loader_->loadFile(c, nullptr, skipDialogHints()));
+
+  QEventLoop loop;
+  QObject::connect(loader_.get(), &PJ::FileLoader::queueDrained, &loop, &QEventLoop::quit);
+  if (loader_->isBusy()) {
+    QTimer::singleShot(15000, &loop, [&loop]() { loop.quit(); });
+    loop.exec();
+  }
+
+  EXPECT_FALSE(loader_->isBusy());
+  EXPECT_EQ(session().createReader().listDatasets().size(), 3u) << "all three queued files must load";
+  EXPECT_EQ(drained, 1) << "queueDrained fires once when the queue empties";
+}
+
+// Tearing the loader down mid-load (the closeEvent path) must join the worker
+// and drain the queue without crashing or hanging; the loader stays usable after.
+TEST_F(FileLoaderTest, JoinForShutdownDuringLoadDoesNotCrash) {
+  EXPECT_TRUE(loader_->loadFile(mock_path_, nullptr, skipDialogHints()));
+  loader_->joinForShutdown();  // worker may still be running
+  EXPECT_FALSE(loader_->isBusy());
+
+  // The loader recovers: a fresh load after shutdown still completes.
+  EXPECT_TRUE(load());
+  EXPECT_NE(datasetNamed("sensors.mock"), 0u);
+}
+
+// A REPLACING reload is transactional: if the reload fails after the prior data was
+// detached, the RefillGuard rolls back to that prior data instead of leaving the
+// dataset empty. Before this guard, the up-front in-place clear destroyed the prior
+// data with no recovery — the regression this fixes (codex #1 on PR #246).
+// The success/commit path is covered by ReloadingSameFileReplacesDatasetInPlace
+// above (it now routes through beginRefill + commit); commit-vs-rollback SEMANTICS
+// are pinned deterministically at the SessionManager layer (the mock writes the same
+// 3 rows every load, so the two are indistinguishable by row count here).
+TEST_F(FileLoaderTest, ReplacingReloadStartFailureRestoresPriorData) {
+  ASSERT_TRUE(load());  // loads sensors.mock (3 rows)
+  const PJ::DatasetId id = datasetNamed("sensors.mock");
+  ASSERT_NE(id, 0u);
+  ASSERT_EQ(singleTopicRowCount(id), 3);
+
+  // Reload the SAME file with a configured start() failure. beginRefill detaches the
+  // prior data up front; start() then fails on the worker, so onWorkerFinished's
+  // replacing start-fail arm must ROLL BACK to the prior data, not leave it empty.
+  EXPECT_FALSE(loadWithConfig(mock_path_, QStringLiteral(R"({"fail_start":true})")));
+
+  EXPECT_EQ(datasetNamed("sensors.mock"), id) << "DatasetId stays stable across a failed reload";
+  EXPECT_EQ(singleTopicRowCount(id), 3) << "prior data restored, NOT left empty";
+  EXPECT_EQ(catalog().items().size(), 1u) << "curve tree restored after the failed reload";
+}
+
+// Tearing the loader down mid REPLACING-reload discards the in-flight reload and
+// rolls back to the prior data (joinForShutdown captures was_replacing before
+// ctx_.reset(), whose guard dtor performs the rollback). Robust to timing: holds
+// whether the worker had not started, was mid-flight, or had just completed.
+TEST_F(FileLoaderTest, JoinForShutdownDuringReplacingReloadRestoresPriorData) {
+  ASSERT_TRUE(load());  // sensors.mock, 3 rows
+  const PJ::DatasetId id = datasetNamed("sensors.mock");
+  ASSERT_NE(id, 0u);
+  ASSERT_EQ(singleTopicRowCount(id), 3);
+
+  EXPECT_TRUE(loader_->loadFile(mock_path_, nullptr, skipDialogHints()));  // start the replacing reload
+  loader_->joinForShutdown();                                              // shut down before it finalizes
+
+  EXPECT_FALSE(loader_->isBusy());
+  EXPECT_EQ(datasetNamed("sensors.mock"), id) << "DatasetId stable across shutdown-mid-reload";
+  EXPECT_EQ(singleTopicRowCount(id), 3) << "prior data restored after the shutdown rollback (not empty)";
+
+  // The loader recovers: a fresh load after shutdown still completes.
+  EXPECT_TRUE(load());
+  EXPECT_NE(datasetNamed("sensors.mock"), 0u);
 }
 
 }  // namespace

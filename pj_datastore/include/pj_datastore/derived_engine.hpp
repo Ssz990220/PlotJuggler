@@ -198,6 +198,15 @@ class DerivedEngine {
   [[nodiscard]] PJ::Status replaceSisoTransform(PJ::NodeId node_id, std::unique_ptr<ISISOTransform> op);
 
  private:
+  // *Locked workers: assume the caller ALREADY holds engine_.lockEngine(). The
+  // public scheduleActive/recomputeBatch take that exclusive lock then delegate
+  // here, so the whole recompute (read inputs -> transform -> commit derived
+  // outputs, all via non-locking engine ops) is atomic against concurrent ingest.
+  // Split so scheduleActive's internal recomputeBatch call doesn't re-acquire the
+  // non-recursive engine mutex (which would self-deadlock).
+  PJ::Status scheduleActiveLocked(const std::unordered_set<PJ::NodeId>& active_nodes);
+  PJ::Status recomputeBatchLocked(PJ::NodeId node_id);
+
   DataEngine& engine_;
   PJ::NodeId next_node_id_ = 1;
   std::unique_ptr<DerivedEngineImpl> impl_;

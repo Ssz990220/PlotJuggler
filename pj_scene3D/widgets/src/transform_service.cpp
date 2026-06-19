@@ -124,7 +124,6 @@ void TransformService::invalidateDataset(PJ::DatasetId dataset_id) {
     // Clear in place: 3D docks hold this buffer by shared_ptr, so swapping the
     // map entry would leave them rendering the stale orphan forever.
     it->second->clear();
-    qCInfo(lcTransformService) << "invalidateDataset" << dataset_id << ": TF buffer cleared";
   }
 }
 
@@ -140,9 +139,6 @@ void TransformService::invalidateAll() {
     (void)dataset_id;
     buffer->clear();
   }
-  if (!transform_buffers_.empty()) {
-    qCInfo(lcTransformService) << "invalidateAll:" << transform_buffers_.size() << "TF buffer(s) cleared";
-  }
 }
 
 void TransformService::ingestFrameTransformsForDataset(PJ::DatasetId dataset_id) {
@@ -150,8 +146,7 @@ void TransformService::ingestFrameTransformsForDataset(PJ::DatasetId dataset_id)
   // Bulk path: every cursor starts at the invalid (begin-of-history) UID, so
   // this ingests the whole history in one pass (file load); ingestNewerThanCursor
   // creates the buffer. datasetTransformsReady tells 3D docks the tree is ready.
-  const bool changed = ingestNewerThanCursor(dataset_id);
-  qCInfo(lcTransformService) << "ingestFrameTransformsForDataset" << dataset_id << ": bulk ingest, changed=" << changed;
+  ingestNewerThanCursor(dataset_id);
   emit datasetTransformsReady(dataset_id);
 }
 
@@ -194,8 +189,6 @@ bool TransformService::ingestNewerThanCursor(PJ::DatasetId dataset_id) {
         // Parse FAILED (transient corruption / a parser that failed this tick) —
         // do NOT blacklist the topic. A single bad newest message must not
         // permanently suppress TF ingest; retry classification next tick.
-        qCDebug(lcTransformService) << "ingestNewerThanCursor: classification probe parse failed on topic" << key
-                                    << "- retrying next tick";
         continue;
       }
       if (PJ::sdk::typeOf(probe_obj->object) != PJ::sdk::BuiltinObjectType::kFrameTransforms) {
@@ -224,9 +217,6 @@ bool TransformService::ingestNewerThanCursor(PJ::DatasetId dataset_id) {
     }
   }
 
-  if (stats.ingested != 0) {
-    qCDebug(lcTransformService) << "ingestNewerThanCursor" << dataset_id << ": +" << stats.ingested << "transform(s)";
-  }
   if (stats.dropped_reparent != 0 || stats.dropped_self_loop != 0 || stats.dropped_invalid != 0) {
     qCWarning(lcTransformService) << "ingestNewerThanCursor" << dataset_id << ": dropped" << stats.dropped_reparent
                                   << "reparent-conflict," << stats.dropped_self_loop << "self-loop, and"

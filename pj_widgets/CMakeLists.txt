@@ -16,6 +16,7 @@ add_library(pj_widgets STATIC
     src/DoubleScrubber.cpp
     src/FileDialog.cpp
     src/FlowLayout.cpp
+    src/IngestProgressWidget.cpp
     src/IntScrubber.cpp
     src/LayerListView.cpp
     src/MessageBox.cpp
@@ -45,6 +46,7 @@ add_library(pj_widgets STATIC
     include/pj_widgets/ElidingLabel.h
     include/pj_widgets/FileDialog.h
     include/pj_widgets/FlowLayout.h
+    include/pj_widgets/IngestProgressWidget.h
     include/pj_widgets/IntScrubber.h
     include/pj_widgets/LayerListView.h
     include/pj_widgets/MessageBox.h

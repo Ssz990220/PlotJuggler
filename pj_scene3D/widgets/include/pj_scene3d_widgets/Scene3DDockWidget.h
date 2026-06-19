@@ -3,9 +3,11 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include <QByteArray>
+#include <QDomDocument>
 #include <QList>
 #include <QMap>
 #include <QObject>
+#include <QSet>
 #include <QString>
 #include <QStringList>
 #include <cstdint>
@@ -185,6 +187,12 @@ class Scene3DDockWidget : public SceneDockWidget {
   bool addTopicImpl(
       ObjectTopicId topic_id, sdk::BuiltinObjectType object_type, const QString& title, bool enforce_image_gate);
 
+  [[nodiscard]] bool restoreLayerElement(const QDomElement& layer_el);
+  [[nodiscard]] bool restoreConfigTopicElement(const QDomElement& config_el);
+  // Per-element restore hook the base SceneDockWidget's shared pending-retry loop calls:
+  // dispatches on the tag (<config_topic> -> restoreConfigTopicElement, else a render
+  // <layer> -> restoreLayerElement).
+  bool restoreOnePending(const QDomElement& element) override;
   void prepareTransformBufferForTopic(ObjectTopicId topic_id);
   // After a tracked topic is dropped, reset the TF binding (tf_buffer_/dataset_id_
   // → null/0, push the empty buffer to the view) when no remaining tracked topic
@@ -244,6 +252,15 @@ class Scene3DDockWidget : public SceneDockWidget {
   std::unordered_set<uint32_t> config_topics_;
   // Live streamed-TF ingest hookup (SessionManager::samplesIngested).
   QMetaObject::Connection live_samples_conn_;
+  // TransformService::datasetTransformsReady hookup. A progressive file load folds
+  // TF into the buffer incrementally (FileLoader drives the bulk ingest on each
+  // flush, emitting that signal); we re-render at last_tracker_display_ so the scene
+  // fills as the file loads. Streaming uses ingestNewTransforms (no signal) + the
+  // live-samples slot, so this fires on the file path only.
+  QMetaObject::Connection tf_ready_conn_;
+  // Last finite display-axis time pushed via onTrackerTime, replayed when the TF
+  // buffer changes mid-load to re-resolve layers against the new transforms.
+  double last_tracker_display_ = 0.0;
   std::unique_ptr<pj::scene3d::UrdfPackageResolver> package_resolver_;
   QSettings* settings_ = nullptr;
   QMap<QString, QByteArray> embedded_assets_;

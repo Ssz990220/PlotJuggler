@@ -325,6 +325,10 @@ static std::string checkCycle(
 PJ::Expected<PJ::NodeId> DerivedEngine::addSisoTransform(
     PJ::TopicId input_topic_id, std::string output_topic_name, PJ::DatasetId output_dataset_id,
     std::unique_ptr<ISISOTransform> op, std::size_t input_column_index) {
+  // Atomic against worker ingest: the input getTopicStorage() read, the
+  // typeRegistry().registerOrGet() write, and createTopic() (rehash) run as one
+  // unit. Recursive mutex, so the nested createTopic re-acquires harmlessly.
+  auto lock = engine_.lockEngine();
   // 1. Check input topic exists
   const TopicStorage* in_storage = engine_.getTopicStorage(input_topic_id);
   if (!in_storage) {
@@ -463,6 +467,9 @@ PJ::Expected<PJ::NodeId> DerivedEngine::addSisoTransform(
 PJ::Expected<PJ::NodeId> DerivedEngine::addMimoTransform(
     std::vector<PJ::TopicId> input_topic_ids, std::vector<std::string> output_topic_names,
     PJ::DatasetId output_dataset_id, std::unique_ptr<IMIMOTransform> op) {
+  // Atomic against concurrent worker ingest (input reads + typeRegistry write +
+  // createTopic rehash); recursive mutex, so nested createTopic re-acquires.
+  auto lock = engine_.lockEngine();
   if (input_topic_ids.empty()) {
     return PJ::unexpected("add_mimo_transform: requires at least one input topic");
   }
@@ -839,7 +846,8 @@ static PJ::Status runSisoIncremental(DerivedEngineImpl& /*impl*/, DataEngine& en
   }
   if (wrote_any) {
     auto chunks = writer.flushAll();
-    engine.commitChunks(std::move(chunks));
+    engine.commitChunksLocked(
+        std::move(chunks));  // caller (scheduleActiveLocked/recomputeBatchLocked) holds lockEngine()
   }
   node.last_processed_chunk_id = max_seen;
   return PJ::okStatus();
@@ -977,7 +985,7 @@ static PJ::Status runMimoIncremental(DerivedEngineImpl& /*impl*/, DataEngine& en
   }
 
   if (wrote_any) {
-    engine.commitChunks(writer.flushAll());
+    engine.commitChunksLocked(writer.flushAll());  // caller holds lockEngine()
   }
 
   // Advance watermark to the last joined input timestamp. Later input at or
@@ -1042,6 +1050,16 @@ PJ::Status DerivedEngine::scheduleAll() {
 }
 
 PJ::Status DerivedEngine::scheduleActive(const std::unordered_set<PJ::NodeId>& active_nodes) {
+  // Hold the engine exclusively for the whole pass: the leaf run/regress/batch
+  // helpers read source chunks and commit derived outputs via NON-locking engine
+  // ops, so one unique lock makes the recompute atomic against the streaming
+  // worker (DerivedEngine runs only on the GUI thread, so this blocks only the
+  // worker, briefly). See engine.hpp lockEngine() / commitChunksLocked().
+  auto lock = engine_.lockEngine();
+  return scheduleActiveLocked(active_nodes);
+}
+
+PJ::Status DerivedEngine::scheduleActiveLocked(const std::unordered_set<PJ::NodeId>& active_nodes) {
   auto order = topologicalOrder();
 
   // Compute the set of nodes to consider (active_nodes ∪ their transitive upstream deps).
@@ -1091,7 +1109,7 @@ PJ::Status DerivedEngine::scheduleActive(const std::unordered_set<PJ::NodeId>& a
     if (nodeInputRegressed(engine_, node)) {
       // Late (out-of-order) input behind the node's watermark: reset + full
       // replay over the now time-merged input instead of incremental work.
-      s = recomputeBatch(node_id);
+      s = recomputeBatchLocked(node_id);  // already holding engine_.lockEngine()
     } else if (!node.is_mimo) {
       s = runSisoIncremental(*impl_, engine_, node);
     } else {
@@ -1176,6 +1194,11 @@ static PJ::Status recomputeNodeSelfOnly(DerivedEngineImpl& impl, DataEngine& eng
 }
 
 PJ::Status DerivedEngine::recomputeBatch(PJ::NodeId node_id) {
+  auto lock = engine_.lockEngine();  // exclusive for the whole clear+replay cascade
+  return recomputeBatchLocked(node_id);
+}
+
+PJ::Status DerivedEngine::recomputeBatchLocked(PJ::NodeId node_id) {
   auto it = impl_->nodes.find(node_id);
   if (it == impl_->nodes.end()) {
     return PJ::unexpected(fmt::format("recompute_batch: node {} not found", node_id));

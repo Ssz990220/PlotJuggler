@@ -121,6 +121,12 @@ void PointSeriesXY::ensureAlignmentIndex() const {
     return;
   }
 
+  // Hold the engine lock across the whole build: buildSameTopicIndex / *Different /
+  // rowsFor read chunk deques via the raw getTopicStorage accessor, so the deques
+  // must stay stable. The raw TopicChunk* cached into pairs_ OUTLIVES this lock; it
+  // stays valid via the drop-cache-before-mutate drain that clear/reload/evict honor.
+  const auto lock = session_->dataEngine().lockEngine();
+
   if (x_source_.topic_id == y_source_.topic_id) {
     buildSameTopicIndex();
   } else {

@@ -6,11 +6,14 @@
 #include <QFile>
 #include <QLoggingCategory>
 #include <QString>
+#include <QThread>
 #include <algorithm>
 #include <cstdint>
 #include <limits>
 #include <memory>
 #include <unordered_map>
+#include <unordered_set>
+#include <utility>
 
 #include "pj_plugins/sdk/message_parser_plugin_base.hpp"
 #include "pj_runtime/DataProcessorService.h"
@@ -172,6 +175,158 @@ void SessionManager::notifyIngest(QVector<TopicId> ids, bool live) {
   }
   dataset_min_cache_.clear();  // direct-write ingest (incl. objects, reload) may move the earliest stamp
   emit samplesIngested(std::move(ids), live);
+}
+
+void SessionManager::notifyDatasetAboutToBeReplaced(DatasetId dataset_id) {
+  emit datasetAboutToBeReplaced(dataset_id);
+}
+
+RefillGuard SessionManager::beginRefill(DatasetId dataset_id) {
+  return RefillGuard(*this, dataset_id);  // guaranteed copy elision (move-only)
+}
+
+// --- RefillGuard: the transactional in-place reload (see SessionManager::beginRefill). ---
+
+RefillGuard::RefillGuard(SessionManager& session, DatasetId dataset_id) : session_(&session), dataset_id_(dataset_id) {
+  // GUI thread, no event loop — same contract as replaceDataset.
+  Q_ASSERT(session.thread() == QThread::currentThread());
+
+  // Capture the prior topic id sets BEFORE detaching: scalars for the empty-state
+  // notify, object ids so rollback can tell which object topics a failed refill added.
+  const std::vector<TopicId> scalar_topics = session.dataEngine().listTopics(dataset_id);
+  prior_object_topic_ids_ = session.objectStore().listTopics(dataset_id);
+
+  // (1) Adapters drop cached TopicChunk* before any deque is moved (same ordering
+  //     as replaceDataset).
+  session.notifyDatasetAboutToBeReplaced(dataset_id);
+  // (2) scalar + (3) object: DETACH (move aside, not free), keeping ids registered
+  //     so the progressive refill writes back into the same ids.
+  scalar_snapshot_ = session.dataEngine().detachDatasetChunks(dataset_id);
+  object_snapshot_ = session.objectStore().detachDataset(dataset_id);
+  // (4) UI sees the dataset empty (non-live). no-ops on an empty id list.
+  session.notifyIngest(QVector<TopicId>(scalar_topics.begin(), scalar_topics.end()), /*live=*/false);
+}
+
+RefillGuard::RefillGuard(RefillGuard&& other) noexcept
+    : session_(other.session_),
+      dataset_id_(other.dataset_id_),
+      scalar_snapshot_(std::move(other.scalar_snapshot_)),
+      object_snapshot_(std::move(other.object_snapshot_)),
+      prior_object_topic_ids_(std::move(other.prior_object_topic_ids_)),
+      committed_(other.committed_) {
+  other.session_ = nullptr;  // the moved-from guard must not roll back
+  other.committed_ = true;
+}
+
+RefillGuard& RefillGuard::operator=(RefillGuard&& other) noexcept {
+  if (this != &other) {
+    if (session_ != nullptr && !committed_) {
+      rollback();  // discard the transaction this guard still owns before taking over
+    }
+    session_ = other.session_;
+    dataset_id_ = other.dataset_id_;
+    scalar_snapshot_ = std::move(other.scalar_snapshot_);
+    object_snapshot_ = std::move(other.object_snapshot_);
+    prior_object_topic_ids_ = std::move(other.prior_object_topic_ids_);
+    committed_ = other.committed_;
+    other.session_ = nullptr;
+    other.committed_ = true;
+  }
+  return *this;
+}
+
+RefillGuard::~RefillGuard() {
+  if (session_ != nullptr && !committed_) {
+    rollback();
+  }
+}
+
+void RefillGuard::commit() {
+  committed_ = true;
+  scalar_snapshot_ = {};  // free the held-aside prior data; the refilled data is kept
+  object_snapshot_ = {};
+  prior_object_topic_ids_.clear();
+}
+
+void RefillGuard::pruneVanishedTopics() {
+  if (session_ == nullptr) {
+    return;
+  }
+  // Scalar: a prior topic still empty after the refill vanished from the new file.
+  // Collect under one engine lock (getTopicStorage needs it held), then retire —
+  // retireTopic re-locks (recursive mutex) and clears its already-empty deque.
+  std::vector<TopicId> vanished_scalar;
+  {
+    auto lock = session_->dataEngine().lockEngine();
+    for (const TopicId topic_id : scalar_snapshot_.prior_topic_ids) {
+      const TopicStorage* storage = session_->dataEngine().getTopicStorage(topic_id);
+      if (storage != nullptr && storage->empty()) {
+        vanished_scalar.push_back(topic_id);
+      }
+    }
+  }
+  for (const TopicId topic_id : vanished_scalar) {
+    session_->dataEngine().retireTopic(topic_id);
+  }
+  // Object: a prior object topic with no entries after the refill vanished too.
+  std::vector<ObjectTopicId> vanished_object;
+  for (const ObjectTopicId object_topic_id : prior_object_topic_ids_) {
+    if (session_->objectStore().entryCount(object_topic_id) == 0) {
+      vanished_object.push_back(object_topic_id);
+    }
+  }
+  if (!vanished_object.empty()) {
+    session_->evictObjectTopics(vanished_object);  // drops the empty store series + its parser slot
+  }
+}
+
+void RefillGuard::rollback() {
+  // (a) Adapters drop any partial-refill chunk pointers cached via progress notifies.
+  session_->notifyDatasetAboutToBeReplaced(dataset_id_);
+  // (b) Scalar: drop partial refill chunks + retire topics it added, then move the
+  //     prior chunks back into the stable ids.
+  session_->dataEngine().reattachDatasetChunks(dataset_id_, std::move(scalar_snapshot_));
+  // (c) Object: evict topics the refill ADDED (drops their store series + parser
+  //     slots) BEFORE reattach, so reattach's own "current - prior" removal is a
+  //     no-op. evictObjectTopics re-takes store_mutex_, so it must run OUTSIDE it —
+  //     it does here (no ObjectStore lock held on this thread).
+  std::unordered_set<uint32_t> prior;
+  prior.reserve(prior_object_topic_ids_.size());
+  for (const ObjectTopicId id : prior_object_topic_ids_) {
+    prior.insert(id.id);
+  }
+  std::vector<ObjectTopicId> added;
+  for (const ObjectTopicId id : session_->objectStore().listTopics(dataset_id_)) {
+    if (prior.find(id.id) == prior.end()) {
+      added.push_back(id);
+    }
+  }
+  if (!added.empty()) {
+    session_->evictObjectTopics(added);
+  }
+  // (d) Object: move the prior entries back into the stable ids.
+  session_->objectStore().reattachDataset(dataset_id_, std::move(object_snapshot_));
+  // (e) UI: reflect the restored topic set (non-live).
+  const std::vector<TopicId> current = session_->dataEngine().listTopics(dataset_id_);
+  session_->notifyIngest(QVector<TopicId>(current.begin(), current.end()), /*live=*/false);
+}
+
+std::size_t RefillGuard::snapshotBytes() const noexcept {
+  std::size_t bytes = 0;
+  // Scalar: approximate — rows * (1 timestamp column + N value columns) * 8 bytes/cell.
+  for (const auto& [topic_id, topic] : scalar_snapshot_.topics) {
+    (void)topic_id;
+    for (const TopicChunk& chunk : topic.chunks) {
+      const std::size_t cells = static_cast<std::size_t>(chunk.stats.row_count) * (1 + chunk.columns.size());
+      bytes += cells * sizeof(double);
+    }
+  }
+  // Object: exact — the store tracks per-series resident bytes.
+  for (const auto& [raw_id, series] : object_snapshot_.series) {
+    (void)raw_id;
+    bytes += series.memory_bytes;
+  }
+  return bytes;
 }
 
 void SessionManager::replaceDataset(

@@ -11,8 +11,8 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 # ---------------------------------------------------------------------------
 
 option(PJ4_BUILD_APP "Build the pj_app desktop shell" ON)
-option(PJ_ENABLE_SANITIZERS "Enable ASAN for Debug builds" OFF)
-option(PJ_ENABLE_TSAN "Enable ThreadSanitizer for Debug builds" OFF)
+option(PJ_ENABLE_SANITIZERS "Enable AddressSanitizer instrumentation (opt-in, any build type)" OFF)
+option(PJ_ENABLE_TSAN "Enable ThreadSanitizer instrumentation (opt-in, any build type)" OFF)
 # Standalone dev tools (pj_scene2D/tools, e.g. extract_frame). Off by default so
 # they don't cost a default/CI build; configure with -DPJ_BUILD_TOOLS=ON to build.
 option(PJ_BUILD_TOOLS "Build pj_scene2D dev tools" OFF)
@@ -99,16 +99,21 @@ add_library(qt_advanced_docking ALIAS qtadvanceddocking-qt6)
 # Sanitizers (root-owned modules only)
 # ---------------------------------------------------------------------------
 
-if(CMAKE_BUILD_TYPE STREQUAL "Debug")
-    if(PJ_ENABLE_SANITIZERS)
-        add_compile_options(-fsanitize=address -fno-omit-frame-pointer)
-        add_link_options(-fsanitize=address)
-        add_compile_definitions(PJ_ASAN_ACTIVE)
-    endif()
-    if(PJ_ENABLE_TSAN)
-        add_compile_options(-fsanitize=thread -fno-omit-frame-pointer)
-        add_link_options(-fsanitize=thread)
-    endif()
+# Opt-in and independent of build type: a fast RelWithDebInfo build can carry the
+# sanitizer without a Debug rebuild of the whole Conan dependency graph (the TSan
+# foundation job + `./build.sh --tsan` rely on this). ASan and TSan are mutually
+# exclusive instrumentations.
+if(PJ_ENABLE_SANITIZERS AND PJ_ENABLE_TSAN)
+    message(FATAL_ERROR "PJ_ENABLE_SANITIZERS (ASan) and PJ_ENABLE_TSAN are mutually exclusive")
+endif()
+if(PJ_ENABLE_SANITIZERS)
+    add_compile_options(-fsanitize=address -fno-omit-frame-pointer)
+    add_link_options(-fsanitize=address)
+    add_compile_definitions(PJ_ASAN_ACTIVE)
+endif()
+if(PJ_ENABLE_TSAN)
+    add_compile_options(-fsanitize=thread -fno-omit-frame-pointer)
+    add_link_options(-fsanitize=thread)
 endif()
 
 # ---------------------------------------------------------------------------

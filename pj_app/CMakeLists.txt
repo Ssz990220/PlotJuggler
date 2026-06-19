@@ -14,6 +14,8 @@ add_executable(pj_app
     src/FanoutConfig.h
     src/FileLoader.cpp
     src/FileLoader.h
+    src/PendingCurveBinder.cpp
+    src/PendingCurveBinder.h
     src/StreamingSourceManager.cpp
     src/StreamingSourceManager.h
     src/LayoutXml.cpp
@@ -155,6 +157,28 @@ if(PJ_BUILD_TESTS)
         target_compile_options(layout_xml_test PRIVATE ${PJ_WARNING_FLAGS})
     endif()
     add_test(NAME LayoutXmlTest COMMAND layout_xml_test)
+
+    add_executable(pending_curve_binder_test
+        tests/pending_curve_binder_test.cpp
+        src/PendingCurveBinder.cpp
+        src/PendingCurveBinder.h
+        src/LayoutXml.cpp
+        src/LayoutXml.h
+    )
+    target_include_directories(pending_curve_binder_test PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src
+    )
+    target_link_libraries(pending_curve_binder_test PRIVATE
+        pj_runtime
+        pj_plotting
+        Qt6::Widgets
+        Qt6::Xml
+        GTest::gtest
+    )
+    if(DEFINED PJ_WARNING_FLAGS)
+        target_compile_options(pending_curve_binder_test PRIVATE ${PJ_WARNING_FLAGS})
+    endif()
+    add_test(NAME PendingCurveBinderTest COMMAND pending_curve_binder_test)
 
     add_executable(key_sequence_matcher_test
         tests/key_sequence_matcher_test.cpp

@@ -32,6 +32,7 @@
     <file alias="branch_more_dark.svg">svg/branch_more_dark.svg</file>
     <file alias="branch_more_light.svg">svg/branch_more_light.svg</file>
     <file alias="calendar_month.svg">svg/calendar_month.svg</file>
+    <file alias="cancel.svg">svg/cancel.svg</file>
     <file alias="cancel_discard.svg">svg/cancel_discard.svg</file>
     <file alias="cancel_keep.svg">svg/cancel_keep.svg</file>
     <file alias="cast.svg">svg/cast.svg</file>

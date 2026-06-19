@@ -46,6 +46,14 @@ class TitleBar : public QWidget {
   // panel-toggle buttons created by TabbedPlotWidget.
   void addRightClusterWidget(QWidget* widget);
 
+  // Place a widget in the center region (where the old horizontalSpacer lived),
+  // horizontally centered between two stretches. Passing nullptr clears it and
+  // leaves the stretches, so the bar looks identical to having no center widget.
+  // The caller owns the widget's lifetime (on replacement/clear it is reparented
+  // out, not deleted). The empty center area stays a window-drag handle, because
+  // centerContainer is transparent for mouse events.
+  void setCenterWidget(QWidget* widget);
+
   // Wire the title-bar bell + diagnostics popup to a DiagnosticHistory.
   // The history is the single source of truth for diagnostics; the bell
   // label tracks the latest record and the popup observes the buffer.
@@ -85,6 +93,9 @@ class TitleBar : public QWidget {
   [[nodiscard]] bool isOnMoveHandle(const QPoint& pos) const;
 
   Ui::TitleBar* ui_;
+  // Widget currently placed in centerContainer via setCenterWidget (not owned;
+  // reparented out on replacement). nullptr when the center region is empty.
+  QWidget* center_widget_ = nullptr;
   QMenu* file_menu_ = nullptr;
   QMenu* toolbox_menu_ = nullptr;
   QMenu* help_menu_ = nullptr;

@@ -233,7 +233,92 @@ For the swap to be transparent to plugins that **cache** `TopicHandle`/`FieldHan
 
 ## 6. Threading Model
 
-Effectively single-threaded. `DataWriter` accumulates in-memory. `DataEngine::commitChunks()` is synchronous. No internal locks or queues. The only concurrency point is `TopicChunkBuilder::next_chunk_id_` (a `std::atomic`), which allows multiple builders to generate unique chunk IDs without coordination. Plugin sources that receive data on network threads must queue messages internally and process them in `onPoll()`.
+`DataEngine` is guarded by one `std::recursive_mutex` (`Impl::mutex_`). The store
+has exactly one reader thread (the Qt GUI: plot/catalog reads + `DerivedEngine`
+recompute) and one-or-more ingest worker threads, so an exclusive lock is
+equivalent to a reader-writer lock here and simpler. EVERY engine access — read or
+write, on any thread — holds the lock via `lockEngine()`. `DataWriter` accumulates
+in-memory and is not itself shared; `TopicChunkBuilder::next_chunk_id_` remains a
+`std::atomic`.
+
+The mutex is **recursive** so the same thread may re-acquire it without
+deadlocking: a held `RangeCursor`/`SeriesReader` whose consumer makes another read,
+a compound mutator that calls another, or the write host's `appendRecord` →
+`ensureField`. The one thing recursion does NOT make safe: calling a *mutator* from
+inside a cursor `forEach` callback — that mutates the deque mid-iteration; don't.
+
+Coordinated mechanisms:
+
+1. **Stable addresses.** `topics` is `robin_map<TopicId, unique_ptr<TopicStorage>>`,
+   so a `createTopic` rehash moves only pointers — a `TopicStorage` (and its
+   `sealed_chunks_` deque) keeps its address for the engine's lifetime (topics are
+   never erased, only retired). A cached `TopicChunk*` survives a concurrent
+   `createTopic`.
+2. **Cursors adopt the lock.** `DataReader::rangeQuery`/`series` take the lock
+   *before* the `getTopicStorage` lookup (rehash protection) and **move it into**
+   the returned `RangeCursor`/`SeriesReader`, which hold it for their whole (lazy
+   `forEach`) lifetime. `SeriesCursor` borrows its parent's lock. `latestAt`
+   materializes the row's values under the lock (no escaping `TopicChunk*`). The raw
+   `getTopicStorage()` accessor does **not** lock — a caller must hold `lockEngine()`
+   for the returned pointer's lifetime.
+3. **The worker write path holds the lock.** The C-ABI write host (`WriteCore` /
+   `DataWriter`, driven on the ingest worker) is a full engine client: each
+   write-host method (`ensureTopic`/`ensureField`/`appendRecord`/`appendBoundRecord`/
+   `appendArrowStream`/`createDataSource`, and `flushPending`) takes `lockEngine()`
+   at entry, so its `getTopicStorage` reads and its `setColumnDescriptors` /
+   builder mutations serialize against GUI reads. (`TopicStorage` has no internal
+   lock; the engine lock is its mutual exclusion.) `TypeRegistry` likewise has no
+   internal lock and is covered by the engine lock — every `lookup`/`registerOrGet`
+   site (`DerivedEngine::addSisoTransform`/`addMimoTransform`, the write host, the
+   reader) holds `lockEngine()`. The GUI bypass readers
+   `CatalogModel::rebuildFromDatastore` / `PointSeriesXY` take it too.
+4. **Append vs. free/move asymmetry.** `commitChunks` only `push_back`s, so a
+   worker append never invalidates a live cursor or cached pointer.
+   `clearDatasetChunks`/`retireTopic`/`flushTo`/`replaceDatasetFrom`/
+   `enforceRetention` (eviction `erase`s chunks) free or move chunk memory — these
+   stay GUI-thread-only and a consumer must drop cached `TopicChunk*` (the
+   drop-before-mutate drain) before they run.
+5. **Two-engine (staging) lock order.** During pause/resume the write host mirrors
+   topic/field structure to a **staging** `DataEngine`, and `flushTo`/
+   `replaceDatasetFrom` move chunks between the two. Code touching both mutexes
+   acquires them in ONE `std::lock` (the write host via `lockEngineDeferred()` ×2;
+   `flushTo`/`replaceDatasetFrom` already do). Never hold one engine's lock while
+   plain-locking the other — that ABBA-deadlocks against `flushTo`.
+
+Public compound mutators keep a locking wrapper + a private `*Locked` worker (e.g.
+`createTopic`/`createTopicLocked`, `commitChunks`/`commitChunksLocked`) so an
+internal call reuses the primitive without a redundant re-lock; with the recursive
+mutex this is an efficiency detail, not a deadlock guard.
+
+| Operation | Thread | Lock |
+|---|---|---|
+| `commitChunks` (append) | worker | `lockEngine()`; never frees/moves chunks → no drain |
+| write host `ensureTopic`/`ensureField`/`append*`/`flushPending` | worker | `lockEngine()` per call (dual `std::lock` with staging when mirroring) |
+| `createTopic`/`createTopicField` | worker + GUI | `lockEngine()` (rehash; addresses stay stable) |
+| read cursors (`rangeQuery`/`series`/`forEach`) | GUI | `lockEngine()`, held for the view's lifetime |
+| `latestAt` | GUI | `lockEngine()`; value materialized before release |
+| `getTopicStorage` (raw ptr) | any | none — caller must hold `lockEngine()` for the pointer's lifetime |
+| `clearDatasetChunks`/`retireTopic`/`flushTo`/`replaceDatasetFrom`/`enforceRetention` | GUI only | `lockEngine()` + drop-cached-pointers drain first |
+| `DerivedEngine` recompute / `addSisoTransform`/`addMimoTransform` | GUI | `lockEngine()` across the read-modify-write |
+
+The `ObjectStore` half has its own independent `std::shared_mutex` (see
+`docs/OBJECT_STORE_DESIGN.md`); the two stores' locks are independent and must
+never nest. Plugin sources that receive data on network threads still queue
+internally and process in `onPoll()`.
+
+**Pause/resume `WriteCore` swap (host-side, outside the engine lock).** On pause,
+`DatastoreSourceWriteHost::setTarget` / `DatastoreParserWriteHost::setTarget`
+rebuild the host's `WriteCore` on the GUI thread while the ingest worker may still
+be inside the old one — a data race + use-after-free on the `WriteCore` object /
+`state_->core`, not on engine state, so `lockEngine()` cannot cover it (both racers
+touch the same `WriteCore`). It is made safe by holding `state_->core` as a
+`std::atomic<std::shared_ptr<WriteCore>>`: each worker callback `load()`s a strong
+reference that pins the core for the call's duration, and `setTarget` builds the
+replacement fully, then publishes it with a release `store()`. An in-flight append
+finishes on the old core (kept alive by the worker's reference) — the same accepted
+semantics as the object-store host's `std::atomic<ObjectStore*>`. Regression-guarded
+by `engine_thread_safety_test`'s `SetTargetSwapVsWorkerEnsureTopicRace` under
+ThreadSanitizer (`./build.sh --tsan`, and the Linux CI `tsan` job).
 
 ## 7. Testing
 

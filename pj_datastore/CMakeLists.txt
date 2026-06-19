@@ -168,12 +168,15 @@ if(PJ_BUILD_TESTS)
     tests/regression_test.cpp
     tests/sequential_uid_test.cpp
     tests/object_store_test.cpp
+    tests/clear_dataset_test.cpp
     tests/plugin_data_host_object_test.cpp
     tests/plugin_data_host_object_read_test.cpp
     tests/streaming_mirror_test.cpp
     tests/sample_test.cpp
     tests/data_processor_test.cpp
     tests/processor_siso_adapter_test.cpp
+    tests/engine_concurrency_test.cpp
+    tests/engine_thread_safety_test.cpp
     # tests/plugin_host_read_test.cpp  # disabled until Phase 1b lands
     #   (exercises v3 toolbox read path; rewrite for read_series_arrow)
   )
@@ -184,6 +187,13 @@ if(PJ_BUILD_TESTS)
     target_link_libraries(${test_name} PRIVATE pj_datastore GTest::gtest_main)
     add_test(NAME ${test_name} COMMAND ${test_name})
   endforeach()
+
+  # The concurrency / thread-safety tests must fail LOUDLY on a deadlock rather
+  # than hang the whole ctest run — a lock-ordering regression (e.g. an ABBA in
+  # the write-host secondary mirror) is exactly the bug class they guard. This is
+  # the per-test floor; CI also passes a global --timeout.
+  set_tests_properties(engine_concurrency_test engine_thread_safety_test
+    PROPERTIES TIMEOUT 90)
 
   # plugin_parser_object_write_test uses MessageParserPluginBase, so it needs
   # the plugin SDK for message_parser_plugin_base.hpp and builtin object types.
@@ -230,6 +240,13 @@ if(PJ_BUILD_TESTS)
 
   add_executable(ingest_benchmark benchmarks/ingest_benchmark.cpp)
   target_link_libraries(ingest_benchmark PRIVATE pj_datastore benchmark::benchmark)
+
+  # Threaded contention probe for the reader-writer lock (plain main(), not the
+  # google-benchmark micro-loop model — contention is duration-based). Threads
+  # for the writer/reader; no benchmark::benchmark dependency.
+  find_package(Threads REQUIRED)
+  add_executable(concurrency_benchmark benchmarks/concurrency_benchmark.cpp)
+  target_link_libraries(concurrency_benchmark PRIVATE pj_datastore Threads::Threads)
 endif() # PJ_BUILD_TESTS
 
 # ---------------------------------------------------------------------------
