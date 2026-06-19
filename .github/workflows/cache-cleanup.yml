@@ -1,0 +1,81 @@
+name: Cache cleanup
+
+# Keeps the repo's shared ~10 GB Actions cache budget healthy. That budget is
+# pooled across ALL workflows and branches and is LRU-evicted (by last-accessed)
+# once full. PJ4 was sitting at ~10.7 GB — over budget — so every run silently
+# evicted something, and the victim was usually the *infrequently-accessed*
+# Windows sccache (Linux caches get touched on every Linux run, so they stay
+# "warm" in LRU terms). An evicted sccache means a cold ~50-95 min MSVC build
+# instead of a warm ~2-5 min one.
+#
+# Two reclaim paths, neither of which touches the build pipelines:
+#   * pr-cache-cleanup  — when a PR closes, delete the caches scoped to its ref
+#     (a merged PR's ~1.68 GB Linux ccache + ~0.66 GB Windows sccache are dead
+#     weight the moment it merges).
+#   * prune-stale-caches — keep only the newest cache per (ref, key-family) and
+#     drop the per-SHA rolling churn. e.g. ccache-linux-main had 3 entries / 5 GB
+#     where 1 suffices, because restore-keys always restores the most recent.
+
+on:
+  pull_request:
+    types: [closed]
+  schedule:
+    # Every 6 h: bounds how much per-push churn accumulates between prunes.
+    # The job is seconds of ubuntu time (just API calls), so cost is negligible.
+    - cron: "0 */6 * * *"
+  workflow_dispatch:
+
+permissions:
+  actions: write     # delete cache entries via the REST API
+  contents: read
+
+concurrency:
+  # Serialize prunes so two runs don't race on the same cache IDs.
+  group: cache-cleanup
+  cancel-in-progress: false
+
+jobs:
+  pr-cache-cleanup:
+    # Same-repo PRs only: fork PRs run with a read-only GITHUB_TOKEN that cannot
+    # delete caches, and their caches are isolated to the fork's ref anyway.
+    if: >
+      github.event_name == 'pull_request' &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    steps:
+      - name: Delete caches for the closed PR's ref
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          PR_REF: refs/pull/${{ github.event.pull_request.number }}/merge
+        run: |
+          set -euo pipefail
+          echo "Deleting caches scoped to ${PR_REF}"
+          ids=$(gh api "/repos/${REPO}/actions/caches?ref=${PR_REF}&per_page=100" \
+                  --jq '.actions_caches[].id')
+          if [ -z "${ids}" ]; then
+            echo "No caches found for ${PR_REF}"
+            exit 0
+          fi
+          for id in ${ids}; do
+            echo "  deleting cache id=${id}"
+            # Don't fail the whole job if a single cache vanished between list
+            # and delete (another cleanup run, or GitHub's own TTL eviction).
+            gh api --method DELETE "/repos/${REPO}/actions/caches/${id}" \
+              || echo "  (delete failed for ${id}, continuing)"
+          done
+
+  prune-stale-caches:
+    # Schedule + manual only (not on PR close — that's the job above).
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          submodules: false
+      - name: Prune to newest-per-family
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        # --apply actually deletes; the script is a safe dry-run without it.
+        run: python3 .github/scripts/prune_caches.py --apply
