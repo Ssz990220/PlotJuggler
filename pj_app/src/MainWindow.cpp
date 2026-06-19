@@ -527,6 +527,11 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
   connect(ui_->curveListPanel, &CurveListPanel::trashRequested, this, &MainWindow::onCatalogTrashRequested);
   connect(ui_->curveListPanel, &CurveListPanel::removeDatasetRequested, this, &MainWindow::onRemoveDatasetRequested);
   connect(ui_->curveListPanel, &CurveListPanel::clearAllCurvesRequested, this, [this]() {
+    if (streaming_manager_ != nullptr && streaming_manager_->hasActiveSession()) {
+      streaming_manager_->stopAllAndWait(tr("dataset removed"));
+      active_streaming_dataset_id_ = 0;
+      streaming_playback_seeded_ = false;
+    }
     // Confirmed full wipe: free all objects before mutating the catalog, so the
     // cleared() subscription sees the topics gone and resets the object viewers.
     // Eviction lives at the confirmed-removal site, not in clearAll(), so the
@@ -537,7 +542,15 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
     if (transform_service_ != nullptr) {
       transform_service_->invalidateAll();
     }
-    session_->catalogModel().clearAll();
+    // REAL delete: drop the catalog (no tombstone — nothing is kept) so widgets tear down
+    // their curve adapters via cleared(), THEN erase every dataset's scalar storage from
+    // the engine (adapters gone, so DataEngine::removeDataset's invalidate-first contract
+    // holds). Without the engine erase a later reload would reattach to the emptied shells.
+    session_->catalogModel().clearAll(/*tombstone=*/false);
+    DataEngine& engine = session_->sessionManager().dataEngine();
+    for (const DatasetId id : engine.listDatasets()) {
+      engine.removeDataset(id);
+    }
     resetUndoHistory();
   });
 
@@ -778,6 +791,12 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
   // (live=false) range + playhead freeze, so the user can rewind.
   connect(streaming_manager_.get(), &StreamingSourceManager::streamStarted, this, [this](DatasetId id) {
     active_streaming_dataset_id_ = id;
+  });
+  connect(streaming_manager_.get(), &StreamingSourceManager::streamStopped, this, [this](DatasetId id, const QString&) {
+    if (active_streaming_dataset_id_ == id) {
+      active_streaming_dataset_id_ = 0;
+      streaming_playback_seeded_ = false;
+    }
   });
   // Bound the 3D TF buffer's history for live-streaming datasets in step with
   // the ObjectStore retention window, so a long streaming session doesn't retain
@@ -1169,6 +1188,11 @@ void MainWindow::onFileLoaded(
 void MainWindow::onCatalogTrashRequested(QStringList keys, bool covers_all) {
   CatalogModel& catalog = session_->catalogModel();
   if (covers_all) {
+    if (streaming_manager_ != nullptr && streaming_manager_->hasActiveSession()) {
+      streaming_manager_->stopAllAndWait(tr("dataset removed"));
+      active_streaming_dataset_id_ = 0;
+      streaming_playback_seeded_ = false;
+    }
     // Free ObjectStore topics before the catalog wipe so the cleared()
     // subscription sees them gone and resets 2D viewers (symmetric with the
     // "Remove all Datasets" path). Keep lastLoadedSource for reload.
@@ -1177,7 +1201,14 @@ void MainWindow::onCatalogTrashRequested(QStringList keys, bool covers_all) {
     if (transform_service_ != nullptr) {
       transform_service_->invalidateAll();
     }
-    catalog.clearAll();
+    // REAL delete: drop the catalog (no tombstone), then erase every dataset's scalar
+    // storage from the engine. clearAll()'s cleared() tears down curve adapters first, so
+    // the engine erase satisfies DataEngine::removeDataset's invalidate-first contract.
+    catalog.clearAll(/*tombstone=*/false);
+    DataEngine& engine = session_->sessionManager().dataEngine();
+    for (const DatasetId id : engine.listDatasets()) {
+      engine.removeDataset(id);
+    }
     resetUndoHistory();
     return;
   }
@@ -1206,22 +1237,31 @@ void MainWindow::onCatalogTrashRequested(QStringList keys, bool covers_all) {
 }
 
 void MainWindow::onRemoveDatasetRequested(DatasetId dataset_id) {
-  // Confirmed removal: evict the dataset's objects, then tombstone its scalars
-  // (kept in the engine). The catalog's cleared()/itemsRemoved subscriptions
-  // then see the topics already gone and each widget prunes its own pieces
-  // (curves / object layers).
+  if (dataset_id == active_streaming_dataset_id_) {
+    if (streaming_manager_ != nullptr) {
+      streaming_manager_->stopDatasetAndWait(dataset_id, tr("dataset removed"));
+    }
+    active_streaming_dataset_id_ = 0;
+    streaming_playback_seeded_ = false;
+  }
+  // Confirmed removal is a REAL delete: erase the dataset's data from the object store AND
+  // the engine — no tombstone, nothing kept — so a later load of the same source is a clean
+  // fresh load (mints a new DatasetId), not a reattach to an emptied/tombstoned shell (the
+  // bug where the 2nd load showed no progress bar and no data).
   //
-  // The TF buffer was built from these object topics; drop it so a later reload
-  // re-ingests instead of skipping on the populated guard. Invalidate BEFORE
-  // eviction (L.1/L.28): invalidateDataset's primary cleanup walks
-  // listTopics(dataset_id), which is empty once eviction runs — so evicting
-  // first would leave the per-topic cursor cleanup to the descriptor-empty
-  // fallback sweep only.
+  // Order matters. Invalidate the TF buffer first (it was built from these object topics;
+  // invalidateDataset walks listTopics(dataset_id), which is empty once eviction runs —
+  // L.1/L.28). Then evict the object payloads (so the catalog's itemsRemoved revalidation
+  // sees them gone and prunes 2D/3D layers). Then drop the catalog items (tearing down
+  // every curve adapter bound to this dataset via cleared()/itemsRemoved). ONLY THEN erase
+  // the engine's scalar storage: DataEngine::removeDataset requires all readers/adapters
+  // invalidated first, which the synchronous catalog teardown above guarantees.
   if (transform_service_ != nullptr) {
     transform_service_->invalidateDataset(dataset_id);
   }
   session_->sessionManager().evictDatasetObjects(dataset_id);
-  session_->catalogModel().removeDataset(dataset_id);
+  session_->catalogModel().removeDataset(dataset_id, /*tombstone=*/false);
+  session_->sessionManager().dataEngine().removeDataset(dataset_id);
   // Drop this dataset's file association (hygiene). Resurrection is prevented by
   // the layout-save liveness filter (appendDataSourceElement), not by mutating
   // loaded_sources_ — that list is kept whole so the quick-reload button still

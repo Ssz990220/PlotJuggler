@@ -111,17 +111,22 @@ class CatalogModel : public QObject {
   [[nodiscard]] std::optional<CurveDescriptor> descriptorForPath(
       DatasetId dataset_id, const QString& topic, const QString& field) const;
 
-  void clearAll();
+  // Clears the whole catalog. With tombstone=true (default) every dataset id is recorded
+  // so a later rebuildFromDatastore stays empty while data still lingers in the engine;
+  // pass tombstone=false when the caller ALSO erases the engine/object data (a real
+  // "delete all"), since nothing is left to hide.
+  void clearAll(bool tombstone = true);
   void removeItems(const std::vector<QString>& keys);
   void removeCurves(const std::vector<QString>& keys);
 
-  // Tombstones one dataset's items (hidden from future rebuildFromDatastore;
-  // scalar data stays in the DataEngine). Emits cleared() if it empties the
-  // catalog, else one batched itemsRemoved; returns false (no-op) if the dataset
-  // has no items. Pure catalog op — media eviction is the caller's job (shell
-  // evicts at confirmed-removal sites), so it stays safe for speculative/rollback
-  // use. Undo via restoreDataset(); a reload mints a fresh DatasetId.
-  bool removeDataset(DatasetId dataset_id);
+  // Removes one dataset's items from the catalog. With tombstone=true (default) the id is
+  // hidden from future rebuildFromDatastore (scalar data stays in the DataEngine — used by
+  // the reload swap + speculative/rollback callers; undo via restoreDataset). Pass
+  // tombstone=false when the caller is ALSO erasing the underlying engine/object data (a
+  // real "Remove Dataset"): nothing is kept to hide, so no tombstone is recorded. Emits
+  // cleared() if it empties the catalog, else one batched itemsRemoved; returns false
+  // (no-op) if the dataset has no items. Pure catalog op — media eviction is the caller's job.
+  bool removeDataset(DatasetId dataset_id, bool tombstone = true);
 
   // Discards soft-delete tombstones and rebuilds from the datastore so a
   // resurrection path (e.g. layout load) can re-expose previously removed curves.

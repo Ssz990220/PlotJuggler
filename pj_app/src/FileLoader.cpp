@@ -135,15 +135,29 @@ void FileLoader::openFromDialog(QWidget* dialog_parent) {
 bool FileLoader::loadFile(const QString& path, QWidget* dialog_parent, const LoadHints& hints) {
   // Restore same-source datasets if a replacement load is cancelled or fails.
   std::vector<DatasetId> tombstoned_for_replace;
+  DatasetId created_live_dataset_id = 0;
   const auto rollback_tombstones = [&]() {
     for (const DatasetId id : tombstoned_for_replace) {
       catalog_.restoreDataset(id);
     }
     tombstoned_for_replace.clear();
   };
+  const auto erase_created_live_dataset = [&]() {
+    if (created_live_dataset_id == 0) {
+      return;
+    }
+    // Non-replacing loads create directly in the live engine. If they fail
+    // before commit, drop any emitted catalog items before erasing the engine
+    // dataset so no reader/adapter can keep a dangling TopicStorage pointer.
+    session_.evictDatasetObjects(created_live_dataset_id);
+    catalog_.removeDataset(created_live_dataset_id, /*tombstone=*/false);
+    session_.dataEngine().removeDataset(created_live_dataset_id);
+    created_live_dataset_id = 0;
+  };
 
   // One unified failure path — log, optionally pop a dialog, emit signal.
   const auto fail = [&](const QString& reason) -> bool {
+    erase_created_live_dataset();
     rollback_tombstones();
     qCWarning(lcFileLoader).noquote() << reason;
     if (dialog_parent != nullptr) {
@@ -251,6 +265,9 @@ bool FileLoader::loadFile(const QString& path, QWidget* dialog_parent, const Loa
 
   const auto dataset_id = static_cast<DatasetId>(*dataset_or);
   const PJ_data_source_handle_t source_handle{static_cast<uint32_t>(*dataset_or)};
+  if (!replacing) {
+    created_live_dataset_id = dataset_id;
+  }
 
   // On the replace path the staged ObjectTopicIds are throwaway; collect the
   // parsers and re-register them under the stable primary ids after the swap.
@@ -541,7 +558,9 @@ bool FileLoader::loadFile(const QString& path, QWidget* dialog_parent, const Loa
       qCWarning(lcFileLoader) << "[FileLoader] import discarded by user; partial data dropped";
       if (!replacing) {
         session_.evictDatasetObjects(dataset_id);
-        catalog_.removeDataset(dataset_id);
+        catalog_.removeDataset(dataset_id, /*tombstone=*/false);
+        engine.removeDataset(dataset_id);
+        created_live_dataset_id = 0;
       }
       return false;
     }
@@ -707,9 +726,8 @@ bool FileLoader::loadFile(const QString& path, QWidget* dialog_parent, const Loa
     catalog_.setDatasetDisplayName(existing_primary_id, detail::parseDisplayName(config));
   } else {
     // Legacy path (first load, or fanout-reload fallback). Tombstoned same-source datasets are now permanently gone;
-    // free their heavy ObjectStore topics (removeDataset only hid scalar data, which the engine keeps append-only)
-    // and the TF state derived from them. Eviction is deferred to here, not the tombstone site, because a mid-load
-    // failure rolls the tombstones back.
+    // free their TF state, ObjectStore payloads, and scalar engine storage. Eviction is deferred to here, not the
+    // tombstone site, because a mid-load failure rolls the tombstones back.
     for (const DatasetId tombstoned_id : tombstoned_for_replace) {
       // Invalidate BEFORE eviction: invalidateDataset's cursor cleanup walks
       // listTopics(tombstoned_id), so the topics must still resolve. Evicting
@@ -718,6 +736,7 @@ bool FileLoader::loadFile(const QString& path, QWidget* dialog_parent, const Loa
         transform_service_->invalidateDataset(tombstoned_id);
       }
       session_.evictDatasetObjects(tombstoned_id);
+      engine.removeDataset(tombstoned_id);
     }
   }
   tombstoned_for_replace.clear();

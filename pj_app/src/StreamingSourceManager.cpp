@@ -12,6 +12,7 @@
 #include <nlohmann/json.hpp>
 #include <string>
 #include <utility>
+#include <vector>
 
 #include "DialogPresenter.h"
 #include "pj_base/data_source_protocol.h"
@@ -111,6 +112,45 @@ StreamingSourceManager::~StreamingSourceManager() {
 
 bool StreamingSourceManager::hasActiveSession() const {
   return !sessions_.empty();
+}
+
+bool StreamingSourceManager::stopDatasetAndWait(DatasetId dataset_id, const QString& reason) {
+  auto it = sessions_.find(dataset_id);
+  if (it == sessions_.end()) {
+    return false;
+  }
+
+  StreamingSession* sess = it->second.get();
+  if (sess->runtime_host != nullptr) {
+    sess->runtime_host->requestStop(reason.toStdString());
+  }
+  if (sess->worker != nullptr) {
+    sess->worker->wait();
+  }
+
+  QString stopped_reason = reason;
+  if (sess->runtime_host != nullptr && !sess->runtime_host->lastError().empty()) {
+    stopped_reason = QString::fromStdString(sess->runtime_host->lastError());
+  }
+
+  sessions_.erase(it);
+  for (const ObjectTopicId topic_id : secondary_object_store_->listTopics(dataset_id)) {
+    secondary_object_store_->removeTopic(topic_id);
+  }
+  secondary_data_engine_->removeDataset(dataset_id);
+  emit streamStopped(dataset_id, stopped_reason);
+  return true;
+}
+
+void StreamingSourceManager::stopAllAndWait(const QString& reason) {
+  std::vector<DatasetId> dataset_ids;
+  dataset_ids.reserve(sessions_.size());
+  for (const auto& [dataset_id, _sess] : sessions_) {
+    dataset_ids.push_back(dataset_id);
+  }
+  for (const DatasetId dataset_id : dataset_ids) {
+    stopDatasetAndWait(dataset_id, reason);
+  }
 }
 
 void StreamingSourceManager::onSourceChanged(const QString& plugin_id) {

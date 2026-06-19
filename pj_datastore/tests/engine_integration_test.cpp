@@ -1539,6 +1539,49 @@ TEST(EngineIntegrationTest, RetireTopicHidesFromListButKeepsStorage) {
   EXPECT_TRUE(engine.getTopicStorage(tid)->sealedChunks().empty());  // chunks reclaimed — no per-cycle leak
 }
 
+// removeDataset is a REAL delete (unlike retireTopic's hide-but-keep): it erases the
+// dataset and every one of its topics from the engine, so listDatasets/getDataset/
+// getTopicStorage all drop them. Precondition (same as replaceDatasetFrom): callers
+// invalidate readers/adapters first — the storage is freed, not kept. A later
+// createDataset mints a FRESH id (ids strictly increment; the erased id is never
+// reused), so a reload after removal is a clean fresh load, not a reattach to a shell.
+TEST(EngineIntegrationTest, RemoveDatasetErasesDatasetAndTopics) {
+  DataEngine engine;
+  auto ds = engine.createDataset(DatasetDescriptor{.source_name = "s", .time_domain_id = 0});
+  ASSERT_TRUE(ds.has_value()) << ds.error();
+  DataWriter w = engine.createWriter();
+  auto h = w.registerScalarSeries(*ds, "x", NumericType::kFloat64);
+  ASSERT_TRUE(h.has_value()) << h.error();
+  const TopicId tid = h->topic_id;
+  w.appendScalar(*h, 1000, 1.0);
+  engine.commitChunks(w.flushAll());
+
+  const auto contains_ds = [](const std::vector<DatasetId>& v, DatasetId id) {
+    for (const DatasetId d : v) {
+      if (d == id) {
+        return true;
+      }
+    }
+    return false;
+  };
+
+  ASSERT_TRUE(contains_ds(engine.listDatasets(), *ds));
+  ASSERT_NE(engine.getDataset(*ds), nullptr);
+  ASSERT_NE(engine.getTopicStorage(tid), nullptr);
+
+  engine.removeDataset(*ds);
+
+  EXPECT_FALSE(contains_ds(engine.listDatasets(), *ds));  // dataset truly gone
+  EXPECT_EQ(engine.getDataset(*ds), nullptr);             // no DatasetInfo
+  EXPECT_EQ(engine.getTopicStorage(tid), nullptr);        // topic storage ERASED (not retired/kept)
+  EXPECT_TRUE(engine.listTopics(*ds).empty());
+
+  // Re-create after removal: a fresh id, never the erased one.
+  auto ds2 = engine.createDataset(DatasetDescriptor{.source_name = "s", .time_domain_id = 0});
+  ASSERT_TRUE(ds2.has_value()) << ds2.error();
+  EXPECT_NE(*ds2, *ds);
+}
+
 // commitChunks un-retires a topic that receives fresh data. A reload retires every
 // primary-only topic (replaceDatasetFrom), which includes a filter's materialized output;
 // when the filter recomputes and commits chunks back to that same topic id, the topic must

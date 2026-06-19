@@ -44,6 +44,15 @@ class StreamingSourceManager : public QObject {
   // True iff any session is currently live.
   bool hasActiveSession() const;
 
+  // Requests cooperative stop for one session and joins its worker before
+  // returning. Used before real-deleting a dataset so no writer can race the
+  // engine/object-store erase. Returns false when the dataset is not streaming.
+  bool stopDatasetAndWait(DatasetId dataset_id, const QString& reason);
+
+  // Stop-and-join every live session, preserving streamStopped emissions per
+  // dataset. Used by remove-all paths before erasing the whole datastore.
+  void stopAllAndWait(const QString& reason);
+
  public slots:
   // Wired from LeftPanel::streamingStartRequested. Starts a session for the
   // plugin currently held in selected_plugin_. There is no UI-driven stop —

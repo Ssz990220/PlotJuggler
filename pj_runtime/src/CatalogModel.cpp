@@ -498,12 +498,17 @@ void CatalogModel::rebuildFromDatastore() {
   }
 }
 
-void CatalogModel::clearAll() {
+void CatalogModel::clearAll(bool tombstone) {
   if (impl_->items.empty()) {
     return;
   }
-  for (const auto& kv : impl_->items) {
-    impl_->removed_datasets.insert(kv.second.dataset_id);
+  // Tombstone only when the underlying engine data is NOT being erased: the tombstone
+  // hides data that lingers in the engine. A real "delete all" erases the engine too,
+  // so there is nothing to hide (tombstone=false) and no soft-delete state accumulates.
+  if (tombstone) {
+    for (const auto& kv : impl_->items) {
+      impl_->removed_datasets.insert(kv.second.dataset_id);
+    }
   }
   impl_->items.clear();
   impl_->removed_names_per_dataset.clear();
@@ -567,7 +572,7 @@ void CatalogModel::removeCurves(const std::vector<QString>& keys) {
   removeItems(keys);
 }
 
-bool CatalogModel::removeDataset(DatasetId dataset_id) {
+bool CatalogModel::removeDataset(DatasetId dataset_id, bool tombstone) {
   std::vector<QString> keys;
   for (const auto& [key, item] : impl_->items) {
     if (item.dataset_id == dataset_id) {
@@ -579,7 +584,11 @@ bool CatalogModel::removeDataset(DatasetId dataset_id) {
   }
   // Whole-dataset tombstone (vs removeItems' per-name blacklist): rebuildFromDatastore
   // hides this id until a reload mints a new DatasetId or restoreDataset un-hides it.
-  impl_->removed_datasets.insert(dataset_id);
+  // Skipped for a real "Remove Dataset": the caller erases the engine/object data too, so
+  // there is nothing left to hide and no soft-delete state should accumulate.
+  if (tombstone) {
+    impl_->removed_datasets.insert(dataset_id);
+  }
   impl_->removed_names_per_dataset.erase(dataset_id);
   for (const QString& key : keys) {
     impl_->items.erase(key);

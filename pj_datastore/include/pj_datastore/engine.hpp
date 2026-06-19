@@ -49,6 +49,19 @@ class DataEngine {
   /// Lookup dataset by id (nullptr if missing).
   [[nodiscard]] const PJ::DatasetInfo* getDataset(PJ::DatasetId id) const;
 
+  /// REAL delete of a dataset: erase its `DatasetInfo` and every one of its topics
+  /// (freeing all chunks/columns) so `listDatasets`/`getDataset`/`getTopicStorage`/
+  /// `listTopics` all drop them — distinct from `retireTopic`'s hide-but-keep. Ids
+  /// strictly increment, so the erased id is never reused; a later `createDataset`
+  /// mints a fresh one (a reload after removal is a clean fresh load, not a reattach
+  /// to an emptied shell). Time domains are left intact (a domain may be shared).
+  ///
+  /// PRECONDITION (same as `replaceDatasetFrom`): the caller MUST have invalidated
+  /// every reader/adapter bound to this dataset BEFORE calling — erasing the
+  /// `TopicStorage` frees the memory a cached reader/`TopicChunk*` would dereference.
+  /// Idempotent; a no-op for an unknown id.
+  void removeDataset(PJ::DatasetId id);
+
   // Topic management (called by DataWriter)
   /// Create a topic under a dataset. Set `requested_id` non-zero to create it
   /// with that exact TopicId; otherwise the next id is auto-assigned.

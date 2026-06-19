@@ -18,6 +18,7 @@
 #include <QSet>
 #include <QSettings>
 #include <QTemporaryDir>
+#include <algorithm>
 #include <memory>
 
 #include "FileLoader.h"
@@ -77,11 +78,19 @@ class FileLoaderTest : public ::testing::Test {
   }
 
   [[nodiscard]] bool load(const QString& path) {
+    return loadWithConfig(path, QStringLiteral("{}"));
+  }
+
+  [[nodiscard]] bool loadWithConfig(const QString& path, const QString& config) {
+    return loader_->loadFile(path, nullptr, loadHints(config));
+  }
+
+  [[nodiscard]] PJ::LoadHints loadHints(const QString& config) {
     PJ::LoadHints hints;
     hints.expected_plugin_id = QStringLiteral("Mock File Source");
-    hints.preset_config_json = QStringLiteral("{}");
+    hints.preset_config_json = config;
     hints.skip_dialog = true;
-    return loader_->loadFile(path, nullptr, hints);
+    return hints;
   }
 
   [[nodiscard]] bool load() {
@@ -109,6 +118,11 @@ class FileLoaderTest : public ::testing::Test {
     }
     const auto metadata = reader.getMetadata(topics.front());
     return metadata.has_value() ? static_cast<int64_t>(metadata->total_row_count) : -1;
+  }
+
+  [[nodiscard]] bool engineHasDataset(PJ::DatasetId dataset_id) {
+    const auto ids = session().createReader().listDatasets();
+    return std::find(ids.begin(), ids.end(), dataset_id) != ids.end();
   }
 
   QTemporaryDir extensions_dir_;
@@ -254,6 +268,88 @@ TEST_F(FileLoaderTest, RemovedDatasetDropsFromLiveSourcePaths) {
   const QSet<QString> live = live_paths();
   EXPECT_FALSE(live.contains(path_a)) << "removed dataset's file must not be a live source (no resurrection)";
   EXPECT_TRUE(live.contains(path_b)) << "surviving dataset's file stays a live source";
+}
+
+// A real "Remove Dataset" (no tombstone) truly erases the dataset from the engine, so a
+// later load of the SAME source — even via the layout-replay prefer_reuse path — mints a
+// FRESH dataset and re-ingests the data, instead of reattaching to an emptied/tombstoned
+// shell (the bug: the 2nd load showed no progress bar and no data).
+TEST_F(FileLoaderTest, RealDeleteThenPreferReuseReloadReIngestsFreshDataset) {
+  ASSERT_TRUE(load());
+  const PJ::DatasetId id = datasetNamed("sensors.mock");
+  ASSERT_NE(id, 0u);
+  ASSERT_EQ(singleTopicRowCount(id), 3);
+  ASSERT_EQ(catalog().items().size(), 1u);
+
+  // Real delete the way MainWindow::onRemoveDatasetRequested now does it: erase objects,
+  // drop catalog items WITHOUT a tombstone, then erase the engine's scalar storage.
+  session().evictDatasetObjects(id);
+  catalog().removeDataset(id, /*tombstone=*/false);
+  session().dataEngine().removeDataset(id);
+
+  EXPECT_TRUE(session().createReader().listDatasets().empty()) << "dataset truly erased from the engine";
+  EXPECT_TRUE(catalog().items().empty()) << "no catalog items survive a real delete";
+  EXPECT_EQ(datasetNamed("sensors.mock"), 0u) << "no tombstoned shell left behind";
+
+  // Reload the same source as a layout replay would (prefer_reuse). Pre-fix this reused
+  // the emptied dataset (restoreDataset + return-false: no worker, no re-ingest); now the
+  // erased dataset is gone from listDatasets, so the loader mints a fresh one and ingests.
+  PJ::LoadHints hints;
+  hints.expected_plugin_id = QStringLiteral("Mock File Source");
+  hints.preset_config_json = QStringLiteral("{}");
+  hints.skip_dialog = true;
+  hints.prefer_reuse = true;
+  ASSERT_TRUE(loader_->loadFile(mock_path_, nullptr, hints));
+
+  const PJ::DatasetId reloaded = datasetNamed("sensors.mock");
+  EXPECT_NE(reloaded, 0u) << "reload must re-create the dataset";
+  EXPECT_NE(reloaded, id) << "a real delete + reload mints a FRESH id, not the erased one";
+  EXPECT_EQ(singleTopicRowCount(reloaded), 3) << "the file must be re-ingested, not reattached empty";
+  EXPECT_EQ(catalog().items().size(), 1u) << "curves come back after reload";
+}
+
+TEST_F(FileLoaderTest, FanoutReloadErasesOldDatasetBeforePreferReuseReload) {
+  const QString path = makeMockFile(QStringLiteral("fanout.mock"));
+  ASSERT_TRUE(load(path));
+
+  const PJ::DatasetId old_id = datasetNamed("fanout.mock");
+  ASSERT_NE(old_id, 0u);
+  ASSERT_EQ(singleTopicRowCount(old_id), 3);
+
+  PJ::LoadHints fanout_hints = loadHints(
+      QStringLiteral(R"({"__pj_fanout":["{\"display_suffix\":\"left\"}","{\"display_suffix\":\"right\"}"]})"));
+  ASSERT_TRUE(loader_->loadFile(path, nullptr, fanout_hints));
+
+  EXPECT_FALSE(engineHasDataset(old_id)) << "fanout reload must erase the tombstoned old dataset from the engine";
+  EXPECT_EQ(datasetNamed("fanout.mock"), 0u) << "prefer_reuse must not find the old basename after fanout reload";
+
+  PJ::LoadHints reuse_hints = loadHints(QStringLiteral("{}"));
+  reuse_hints.prefer_reuse = true;
+  ASSERT_TRUE(loader_->loadFile(path, nullptr, reuse_hints));
+
+  const PJ::DatasetId reloaded = datasetNamed("fanout.mock");
+  EXPECT_NE(reloaded, 0u) << "prefer_reuse after fanout reload must ingest a fresh dataset";
+  EXPECT_NE(reloaded, old_id) << "the old fanout-replaced DatasetId must not be reused";
+  EXPECT_EQ(singleTopicRowCount(reloaded), 3) << "fresh prefer_reuse load must ingest rows";
+}
+
+TEST_F(FileLoaderTest, FailedFirstLoadErasesAbandonedLiveDatasetBeforePreferReuseReload) {
+  const QString path = makeMockFile(QStringLiteral("failed.mock"));
+
+  ASSERT_FALSE(loadWithConfig(path, QStringLiteral(R"({"fail_start":true})")));
+
+  EXPECT_TRUE(session().createReader().listDatasets().empty())
+      << "failed first load must erase the live-engine dataset shell";
+  EXPECT_EQ(datasetNamed("failed.mock"), 0u) << "no failed-load shell may remain matchable by basename";
+
+  PJ::LoadHints reuse_hints = loadHints(QStringLiteral("{}"));
+  reuse_hints.prefer_reuse = true;
+  ASSERT_TRUE(loader_->loadFile(path, nullptr, reuse_hints));
+
+  const PJ::DatasetId reloaded = datasetNamed("failed.mock");
+  EXPECT_NE(reloaded, 0u) << "prefer_reuse after a failed first load must create a new dataset";
+  EXPECT_EQ(singleTopicRowCount(reloaded), 3) << "prefer_reuse must ingest data, not reattach to a shell";
+  EXPECT_EQ(catalog().items().size(), 1u) << "curves come back after the successful reload";
 }
 
 }  // namespace

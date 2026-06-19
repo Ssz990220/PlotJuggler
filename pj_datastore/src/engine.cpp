@@ -304,6 +304,24 @@ void DataEngine::retireTopic(TopicId topic_id) {
   impl_->retired_topic_ids.insert(topic_id);
 }
 
+void DataEngine::removeDataset(DatasetId dataset_id) {
+  auto ds_it = impl_->datasets.find(dataset_id);
+  if (ds_it == impl_->datasets.end()) {
+    return;  // unknown id — nothing to remove
+  }
+  // REAL delete (vs retireTopic's hide-but-keep): free every topic's TopicStorage.
+  // PRECONDITION: the caller invalidated all readers/adapters bound to this dataset
+  // first (same contract as replaceDatasetFrom) — erasing frees the memory a cached
+  // reader / TopicChunk* would otherwise dereference.
+  for (const TopicId tid : ds_it->second.topic_ids) {
+    impl_->topics.erase(tid);
+    impl_->retired_topic_ids.erase(tid);  // drop retire bookkeeping for the now-gone topic
+  }
+  impl_->datasets.erase(ds_it);
+  // next_*_id are NOT rewound: strictly-incrementing ids guarantee a later dataset /
+  // topic never aliases an erased one. time_domains are left intact (shared + cheap).
+}
+
 Status DataEngine::flushTo(DataEngine& dst) {
   if (&dst == this) {
     return PJ::unexpected("flushTo: source and destination are the same engine");
