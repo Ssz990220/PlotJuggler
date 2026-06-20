@@ -13,6 +13,7 @@
 #include <cstdint>
 #include <limits>
 #include <memory>
+#include <optional>
 #include <string>
 #include <unordered_map>
 #include <utility>
@@ -96,6 +97,18 @@ class FakeLayer : public PJ::ISceneLayer {
     emit visibilityChanged(visible);
   }
 
+  // For the repaint-gate test: when set, renderKey() returns this fixed value
+  // (simulating "rendered content unchanged across ticks"); when nullopt it falls
+  // back to the base default (time-derived, "always changed") so every other test
+  // keeps its existing repaint-on-each-tick behavior.
+  void setFixedRenderKey(std::optional<uint64_t> key) {
+    fixed_render_key_ = key;
+  }
+
+  [[nodiscard]] uint64_t renderKey(PJ::Timepoint time) const override {
+    return fixed_render_key_.has_value() ? *fixed_render_key_ : PJ::ISceneLayer::renderKey(time);
+  }
+
   QWidget* createConfigWidget(QWidget* parent) override {
     return new QWidget(parent);
   }
@@ -147,6 +160,7 @@ class FakeLayer : public PJ::ISceneLayer {
   bool attached_ = false;
   bool detached_ = false;
   PJ::SessionManager* attached_session_ = nullptr;
+  std::optional<uint64_t> fixed_render_key_;
 };
 
 class FakeSceneDock : public PJ::SceneDockWidget {
@@ -171,6 +185,12 @@ class FakeSceneDock : public PJ::SceneDockWidget {
   /// (no layer created), exercising the ConsumedAsConfig path.
   void setConfigConsumeType(PJ::sdk::BuiltinObjectType type) {
     config_consume_type_ = type;
+  }
+
+  /// Drives the viewRenderKey() hook for the repaint-gate test (stands in for a 3D
+  /// dock's TF-overlay fingerprint, which no layer owns).
+  void setViewRenderKey(uint64_t key) {
+    view_render_key_ = key;
   }
 
  protected:
@@ -206,10 +226,15 @@ class FakeSceneDock : public PJ::SceneDockWidget {
     ++refresh_count_;
   }
 
+  [[nodiscard]] uint64_t viewRenderKey(PJ::Timepoint /*time*/) const override {
+    return view_render_key_;
+  }
+
  private:
   std::vector<int64_t> last_synced_ids_;
   int refresh_count_ = 0;
   PJ::sdk::BuiltinObjectType config_consume_type_ = PJ::sdk::BuiltinObjectType::kNone;
+  uint64_t view_render_key_ = 0;
 };
 
 }  // namespace
@@ -597,6 +622,65 @@ TEST(SceneDockWidgetTest, StaticLayerWithInvertedRangeIsSkippedByClamp) {
   static_layer->clearTrackerTimes();
   dock.onTrackerTime(2'500.0 / 1'000'000'000.0);
   EXPECT_EQ(static_layer->trackerTimesNs(), (std::vector<int64_t>{2'500}));
+}
+
+// Repaint coalescing: when every visible layer's renderKey() is unchanged across
+// consecutive tracker ticks (same active sample, same transform), the dock advances
+// the layers and repaints ONCE, then skips — so a 60 Hz playhead over <10 Hz data
+// does not drive a 60 Hz repaint. A render-key change reopens the gate immediately.
+TEST(SceneDockWidgetTest, TrackerRepaintCoalescesWhenRenderKeyUnchanged) {
+  g_fake_layer_configs.clear();
+  g_fake_layer_configs[1] = FakeLayerConfig{std::pair<int64_t, int64_t>{0, 1'000'000}};  // wide: no clamp distortion
+  FakeSceneDock dock;
+  ASSERT_TRUE(dock.addTopic(topic(1), PJ::sdk::BuiltinObjectType::kPointCloud, QStringLiteral("cloud")));
+  auto* layer = dynamic_cast<FakeLayer*>(dock.layerFor(topic(1)));
+  ASSERT_NE(layer, nullptr);
+
+  // Pin a constant key => "rendered content identical across ticks".
+  layer->setFixedRenderKey(uint64_t{42});
+  layer->clearTrackerTimes();
+  const int base_refresh = dock.refreshCount();
+
+  // Three DISTINCT tracker times, all carrying the SAME render key.
+  dock.onTrackerTime(100.0 / 1'000'000'000.0);
+  dock.onTrackerTime(200.0 / 1'000'000'000.0);
+  dock.onTrackerTime(300.0 / 1'000'000'000.0);
+
+  // Painted once; the next two coalesced away (and the layer advanced exactly once).
+  EXPECT_EQ(dock.refreshCount() - base_refresh, 1);
+  EXPECT_EQ(layer->trackerTimesNs().size(), 1U);
+
+  // Content changes -> the gate reopens and painting resumes on the next tick.
+  layer->setFixedRenderKey(uint64_t{43});
+  dock.onTrackerTime(400.0 / 1'000'000'000.0);
+  EXPECT_EQ(dock.refreshCount() - base_refresh, 2);
+  EXPECT_EQ(layer->trackerTimesNs().size(), 2U);
+}
+
+// View-owned content (a 3D dock's TF axis triads / connection lines pose the whole
+// frame forest at the tracker time and belong to NO layer) is folded into the gate
+// via viewRenderKey(). A change there must repaint even when every visible layer's
+// key is unchanged — otherwise a moving TF tree freezes behind a static cloud.
+TEST(SceneDockWidgetTest, ViewRenderKeyChangeRepaintsDespiteStableLayers) {
+  g_fake_layer_configs.clear();
+  g_fake_layer_configs[1] = FakeLayerConfig{std::pair<int64_t, int64_t>{0, 1'000'000}};
+  FakeSceneDock dock;
+  ASSERT_TRUE(dock.addTopic(topic(1), PJ::sdk::BuiltinObjectType::kPointCloud, QStringLiteral("cloud")));
+  auto* layer = dynamic_cast<FakeLayer*>(dock.layerFor(topic(1)));
+  ASSERT_NE(layer, nullptr);
+
+  layer->setFixedRenderKey(uint64_t{7});  // the only layer's content is pinned (static cloud)
+  dock.setViewRenderKey(uint64_t{100});   // TF overlay at its initial pose
+  layer->clearTrackerTimes();
+  const int base_refresh = dock.refreshCount();
+
+  dock.onTrackerTime(100.0 / 1'000'000'000.0);  // first paint
+  dock.onTrackerTime(200.0 / 1'000'000'000.0);  // layer + view keys both unchanged -> coalesce
+  EXPECT_EQ(dock.refreshCount() - base_refresh, 1);
+
+  dock.setViewRenderKey(uint64_t{101});  // the TF tree moved (no layer changed)
+  dock.onTrackerTime(300.0 / 1'000'000'000.0);
+  EXPECT_EQ(dock.refreshCount() - base_refresh, 2) << "a view-key change must repaint despite a stable layer";
 }
 
 // Clearing all layers (the xmlLoadState restore path) must re-point the

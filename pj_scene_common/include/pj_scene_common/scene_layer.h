@@ -54,6 +54,13 @@ struct SceneLayerContext {
 /// clamp to an evicted time during streaming and freezes the scene.
 [[nodiscard]] PJ::Range<PJ::Timepoint> liveTopicTimeRange(const ObjectStore* store, ObjectTopicId topic_id);
 
+/// Sentinel `renderKey()` contribution for "this layer has no active sample at the
+/// queried time" — a stable value distinct from a stamp-derived key. Shared so every
+/// family's stamp-based `renderKey` override returns the SAME no-sample key (the dock
+/// XORs each layer's key with its topic id, so a real stamp that happened to equal
+/// this value still cannot be confused with another layer's no-sample state).
+inline constexpr uint64_t kNoSampleRenderKey = 0x0D15EA5EDEADBEEFULL;
+
 /// Backend-neutral contract for one object topic in a layered scene.
 ///
 /// Implementations own the per-topic adapter state and expose changes through
@@ -88,6 +95,22 @@ class ISceneLayer : public QObject {
 
   /// Moves the layer to the current tracker Timepoint after dock-level clamping.
   virtual void setTrackerTime(PJ::Timepoint time) = 0;
+
+  /// Cheap fingerprint of what this layer would render at `time` — its active
+  /// data sample plus any transform that positions it. The dock combines the keys
+  /// of all visible layers across consecutive tracker ticks and SKIPS the repaint
+  /// when the combined key is unchanged, so a 60 Hz playhead over <10 Hz data (or
+  /// a paused-but-still-ticking clock) does not drive a 60 Hz repaint.
+  ///
+  /// MUST be cheap (no decode) and MUST change whenever the rendered output would
+  /// differ at `time`. The default returns the tracker time itself — i.e. "always
+  /// changed", which is safe (it never skips a real change, only forgoes the
+  /// optimization); layers override it to opt into repaint coalescing. This gate
+  /// covers only the per-tick tracker path; async/settings repaints flow through
+  /// repaintRequested → refreshView independently of it.
+  [[nodiscard]] virtual uint64_t renderKey(PJ::Timepoint time) const {
+    return static_cast<uint64_t>(PJ::toRaw(time));
+  }
 
   /// Updates visibility; implementations should emit visibilityChanged on change.
   virtual void setVisible(bool visible) = 0;

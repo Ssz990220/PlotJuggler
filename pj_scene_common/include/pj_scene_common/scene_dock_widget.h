@@ -117,6 +117,25 @@ class SceneDockWidget : public QWidget, public IDataWidget, public IObjectViewer
   /// Requests a view repaint after layer state changes.
   virtual void refreshView();
 
+  /// Per-tick render fingerprint of scene content drawn by the VIEW itself rather
+  /// than by a layer (e.g. a 3D family's TF axis triads + parent-connection lines,
+  /// which pose the whole frame forest at the tracker time). Folded into
+  /// trackerRenderKey() alongside the per-layer keys so the repaint gate also
+  /// coalesces — and, crucially, does NOT freeze — that view-owned content. Default
+  /// 0 (no view-level content); override to contribute. MUST be cheap and decode-free.
+  [[nodiscard]] virtual uint64_t viewRenderKey(PJ::Timepoint /*time*/) const {
+    return 0;
+  }
+
+  /// Forces the next onTrackerTime() to repaint regardless of the fingerprint. The
+  /// base calls it on every structural change to the layer set (add/remove/visibility/
+  /// clear). A subclass that repaints OUTSIDE the tracker gate (e.g. a live-edge
+  /// streaming push that drives the layers directly) should also call it after that
+  /// paint, so the gate's last-painted key never lags the pixels on screen.
+  void invalidateTrackerRenderKey() {
+    have_render_key_ = false;
+  }
+
   /// Lets subclasses trigger a full view reconcile (re-push the ordered layer
   /// list through syncViewLayers) after a scene-wide state change — e.g. a
   /// fixed-frame change that the subclass's syncViewLayers override fans out to
@@ -245,6 +264,12 @@ class SceneDockWidget : public QWidget, public IDataWidget, public IObjectViewer
   /// the caller should keep this XML element pending for a later retry.
   [[nodiscard]] bool restoreLayerElement(const QDomElement& layer_el);
 
+  /// Order-independent combined renderKey() of all visible layers at `time` — the
+  /// per-tick repaint-coalescing fingerprint (see onTrackerTime). Order-independent
+  /// (XOR of per-layer mixes) so an unordered_map rehash can't spuriously flip it.
+  /// Folds in viewRenderKey() for non-layer view content.
+  [[nodiscard]] uint64_t trackerRenderKey(PJ::Timepoint time) const;
+
   std::unordered_map<int64_t, std::unique_ptr<ISceneLayer>> layers_;
   std::vector<int64_t> draw_order_;
   std::vector<PendingRestoreElement> pending_restore_elements_;
@@ -257,6 +282,12 @@ class SceneDockWidget : public QWidget, public IDataWidget, public IObjectViewer
   // everHadContent()); never cleared, so an evicted-to-empty dock stays
   // distinguishable from a never-populated one.
   bool ever_had_content_ = false;
+
+  // Per-tick repaint coalescing (see onTrackerTime). last_render_key_ is the
+  // trackerRenderKey() of the most recently painted tracker frame; have_render_key_
+  // is false until the first paint and after any structural change, forcing a paint.
+  uint64_t last_render_key_ = 0;
+  bool have_render_key_ = false;
 };
 
 }  // namespace PJ

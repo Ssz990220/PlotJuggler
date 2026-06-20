@@ -405,6 +405,11 @@ void Scene3DDockWidget::pushTrackerTimeToView(int64_t time_ns) {
     view_->setTrackerTime(PJ::fromRaw(time_ns));
   }
   refreshView();  // refreshView() already unions scene bounds before repainting
+  // This live-edge push painted OUTSIDE the per-tick gate, so the gate's
+  // last-painted key now lags the pixels on screen. Force the next onTrackerTime()
+  // to re-evaluate rather than trust a stale match (e.g. a tracker lagging the live
+  // edge could otherwise coalesce away a needed correction).
+  invalidateTrackerRenderKey();
 }
 
 void Scene3DDockWidget::setSettings(QSettings* settings) {
@@ -584,14 +589,14 @@ void Scene3DDockWidget::onTrackerTime(double time) {
   if (std::isfinite(time)) {
     last_tracker_display_ = time;
   }
-  // The base converts (NaN/inf-safe), clamps with the latched-layer rule, and
-  // drives the layers; reuse its result for the view's render time instead of
-  // re-deriving and re-clamping it here.
+  // The base converts (NaN/inf-safe), clamps with the latched-layer rule, drives
+  // the layers, and — only when the visible scene would actually differ at this
+  // time — calls refreshView() (below), which pushes the render time into the view.
+  // When nothing moved the base returns without painting, so a 60 Hz playhead over
+  // <10 Hz data (or a static pose) no longer repaints the GL view every tick. The
+  // view's setTrackerTime/bounds therefore live in refreshView(), not here, so they
+  // are gated together with the repaint.
   SceneDockWidget::onTrackerTime(time);
-  if (const auto ns = lastTrackerNs(); view_ != nullptr && ns.has_value()) {
-    view_->setTrackerTime(PJ::fromRaw(*ns));
-    updateSceneBounds();  // cloud / grid geometry changes with tracker time
-  }
 }
 
 DatasetId Scene3DDockWidget::representativeDatasetId() const {
@@ -690,13 +695,31 @@ void Scene3DDockWidget::updateSceneBounds() {
 }
 
 void Scene3DDockWidget::refreshView() {
-  if (view_ != nullptr) {
-    // Async layer pushes (compressed-cloud decodes) arrive here via
-    // repaintRequested, possibly with no tracker tick in sight (paused), so the
-    // camera's scene bounds must refresh too. O(layers), cheap.
-    updateSceneBounds();
-    view_->update();
+  if (view_ == nullptr) {
+    return;
   }
+  // Push the current render time into the view HERE (not in onTrackerTime) so the
+  // base's per-tick repaint gate also gates this work: refreshView() runs only on a
+  // tracker tick that actually changed the scene, or on an async layer push
+  // (compressed-cloud decode / settings) arriving via repaintRequested — both must
+  // re-render at the current playhead. setTrackerTime() self-guards on render_time_
+  // equality, so a settings-only refresh skips the frame-list rebuild.
+  if (const auto ns = lastTrackerNs(); ns.has_value()) {
+    view_->setTrackerTime(PJ::fromRaw(*ns));
+  }
+  // Async pushes can arrive with no tracker tick (paused), so the camera's scene
+  // bounds must refresh too. O(layers), cheap.
+  updateSceneBounds();
+  view_->update();
+}
+
+uint64_t Scene3DDockWidget::viewRenderKey(PJ::Timepoint time) const {
+  // The TF axis triads + parent-connection lines are drawn by the view from the
+  // whole frame forest, owned by no layer; without folding them into the gate a
+  // moving TF tree freezes whenever every visible layer's renderKey is unchanged
+  // (a static/fixed-frame cloud, or a TF-only dock). Returns 0 when no TF overlay
+  // is drawn (the view decides), so coalescing is full when it should be.
+  return view_ != nullptr ? view_->tfRenderKey(time) : 0;
 }
 
 QString Scene3DDockWidget::xmlTag() const {

@@ -997,7 +997,17 @@ on each tick; the widget forwards that time into its internal
 // Inside the widget, on the Qt main thread:
 void SceneDockWidget::onTrackerTime(double time) {
   const auto clamped = clampToLayerRange(/* seconds → ns via chrono, dropping NaN/inf */);
-  for (auto& [key, layer] : layers_) {
+  // Per-tick repaint coalescing: if the combined renderKey() of all visible layers
+  // is unchanged from the last painted frame (same active sample at this time),
+  // nothing visible moved — skip the layer advance AND the repaint. A 60 Hz tracker
+  // over a <10 Hz image stream therefore does NOT re-composite the dock every tick.
+  const uint64_t key = trackerRenderKey(clamped);
+  if (have_render_key_ && key == last_render_key_) {
+    return;
+  }
+  have_render_key_ = true;
+  last_render_key_ = key;
+  for (auto& [k, layer] : layers_) {
     if (layer != nullptr && layer->info().visible) {
       layer->setTrackerTime(clamped);  // each layer forwards into its MediaSource
     }
@@ -1005,6 +1015,12 @@ void SceneDockWidget::onTrackerTime(double time) {
   refreshView();  // triggers repaint; render() pulls latest frame via takeFrame()
 }
 ```
+
+`Scene2DLayer::renderKey(time)` fingerprints the active media sample's stamp (a
+stamp-only `indexAt`/`entryTimestamps` lookup, no decode), so a static image
+coalesces while a new frame reopens the gate. A new sample's async decode also
+repaints via the frame-ready callback (`repaintRequested → refreshView`),
+independent of this gate — so the gate can never strand a freshly-decoded frame.
 
 The contract property of the original `TimelineCursor` design — *widgets
 never own or drive the clock* — is preserved: widgets only **receive**

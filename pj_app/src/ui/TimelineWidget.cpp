@@ -39,6 +39,20 @@ TimelineWidget::TimelineWidget(QWidget* parent) : QWidget(parent), ui_(new Ui::T
   seek_throttle_timer_.setInterval(33);
   connect(&seek_throttle_timer_, &QTimer::timeout, this, &TimelineWidget::flushPendingSeek);
 
+  // Coalesce the engine-driven playhead display to ~30 Hz (see header). The
+  // trailing-edge flush applies the latest buffered time and re-arms the window
+  // while updates keep arriving; once they stop, the next fire finds nothing
+  // pending and lets the timer go idle.
+  display_throttle_timer_.setSingleShot(true);
+  display_throttle_timer_.setInterval(33);
+  connect(&display_throttle_timer_, &QTimer::timeout, this, [this]() {
+    if (has_pending_display_) {
+      has_pending_display_ = false;
+      applyEngineTime(pending_display_time_);
+      display_throttle_timer_.start();
+    }
+  });
+
   connect(ui_->timeSlider, &RealSlider::realValueChanged, this, &TimelineWidget::onSliderValueChanged);
   connect(ui_->timeSlider, &QSlider::sliderReleased, this, &TimelineWidget::onSliderReleased);
   connect(ui_->buttonPlay, &QPushButton::toggled, this, &TimelineWidget::onPlayToggled);
@@ -76,6 +90,20 @@ void TimelineWidget::setPlaybackEngine(PlaybackEngine* engine) {
 }
 
 void TimelineWidget::onEngineTimeChanged(double t) {
+  // Coalesce to ~30 Hz: the first tick applies immediately (so a seek/pause stays
+  // exact), then ticks inside the throttle window are buffered and the latest one
+  // is flushed when the window closes. Halves the per-tick slider repaint + glyph
+  // re-shaping during continuous 60 Hz playback.
+  if (display_throttle_timer_.isActive()) {
+    pending_display_time_ = t;
+    has_pending_display_ = true;
+    return;
+  }
+  applyEngineTime(t);
+  display_throttle_timer_.start();
+}
+
+void TimelineWidget::applyEngineTime(double t) {
   updating_from_engine_ = true;
   ui_->timeSlider->setRealValue(t);
   const QString formatted = QString::number(t, 'f', 3);
@@ -105,6 +133,14 @@ void TimelineWidget::onEnginePlayingChanged(bool playing) {
   updating_from_engine_ = true;
   ui_->buttonPlay->setChecked(playing);
   updating_from_engine_ = false;
+  // On pause/stop, flush any time buffered by the 30 Hz display throttle so the
+  // slider + readout land exactly on the stopped position instead of up to one
+  // throttle window (~33 ms) behind it.
+  if (!playing && has_pending_display_) {
+    has_pending_display_ = false;
+    display_throttle_timer_.stop();
+    applyEngineTime(pending_display_time_);
+  }
 }
 
 void TimelineWidget::onEngineRateChanged(double rate) {

@@ -18,6 +18,7 @@
 #include <QtConcurrent>
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 #include <glm/glm.hpp>
 #include <limits>
 #include <memory>
@@ -367,6 +368,46 @@ void PointCloudLayer::setTrackerTime(PJ::Timepoint time) {
   if (visible_) {
     emit repaintRequested();
   }
+}
+
+uint64_t PointCloudLayer::renderKey(PJ::Timepoint time) const {
+  // Active cloud sample at `time` keyed by its STAMP, not its bytes: indexAt() +
+  // entryTimestamps() is a pure binary search that never resolves a PayloadView, so
+  // the per-tick gate never touches the cold-chunk decompression path (the decode
+  // happens once, later, in renderAt() when we actually repaint). The stamp (not the
+  // index) is the key because retention eviction renumbers indices. Sequential
+  // locks (index first, then the timestamps view) — never nested — match the
+  // ImagePipelineSource read pattern.
+  uint64_t key = 0x9e3779b97f4a7c15ULL;
+  if (ctx_.session != nullptr) {
+    PJ::ObjectStore& store = ctx_.session->objectStore();
+    bool keyed = false;
+    if (const auto index = store.indexAt(topic_id_, PJ::toRaw(time)); index.has_value()) {
+      if (const auto stamps = store.entryTimestamps(topic_id_); *index < stamps.size()) {
+        key ^= static_cast<uint64_t>(stamps[*index]);
+        keyed = true;
+      }
+    }
+    if (!keyed) {
+      key ^= PJ::kNoSampleRenderKey;  // no active sample at this time
+    }
+  }
+  // Fixed←source transform (zero-order hold, so it is constant between TF samples —
+  // that is what lets a 60 Hz playhead coalesce down to the TF update rate). Folding
+  // the matrix also captures colour-by-axis recolouring, a pure function of it.
+  if (ctx_.tf_buffer != nullptr && !source_frame_.empty()) {
+    if (const auto tf = ctx_.tf_buffer->tryLookupTransform(fixed_frame_.toStdString(), source_frame_, time); tf) {
+      const glm::mat4 m = glm::mat4(tf->matrix());
+      for (int col = 0; col < 4; ++col) {
+        for (int row = 0; row < 4; ++row) {
+          uint32_t bits = 0;
+          std::memcpy(&bits, &m[col][row], sizeof(bits));
+          key = (key ^ bits) * 0x100000001b3ULL;
+        }
+      }
+    }
+  }
+  return key;
 }
 
 void PointCloudLayer::setVisible(bool visible) {

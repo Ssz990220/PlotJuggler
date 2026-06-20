@@ -172,6 +172,10 @@ class Scene3DDockWidget : public SceneDockWidget {
   [[nodiscard]] DatasetId representativeDatasetId() const override;
   void syncViewLayers(const std::vector<ISceneLayer*>& ordered_layers) override;
   void refreshView() override;
+  // Folds the view's TF-overlay fingerprint into the repaint gate so a moving TF
+  // tree (axis triads / parent-connection lines), which no layer owns, is not
+  // frozen when every visible layer's own renderKey is unchanged.
+  [[nodiscard]] uint64_t viewRenderKey(PJ::Timepoint time) const override;
   [[nodiscard]] QString xmlTag() const override;
   void resizeEvent(QResizeEvent* event) override;
 

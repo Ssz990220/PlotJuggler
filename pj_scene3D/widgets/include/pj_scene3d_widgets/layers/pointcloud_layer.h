@@ -63,6 +63,10 @@ class PointCloudLayer : public Scene3DLayer {
 
   void setFixedFrame(const QString& frame) override;
   void setTrackerTime(PJ::Timepoint time) override;
+  // Fingerprints the active cloud sample at `time` plus the fixed←source transform
+  // (so the dock skips repaints when the same cloud sits at the same pose, but
+  // repaints the instant a new sample lands or the sensor frame moves). No decode.
+  [[nodiscard]] uint64_t renderKey(PJ::Timepoint time) const override;
   void setVisible(bool visible) override;
 
   void initializeGL() override;

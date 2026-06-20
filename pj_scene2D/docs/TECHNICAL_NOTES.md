@@ -270,12 +270,22 @@ widget / ADS dock hierarchy), so every repaint pays a GPU→CPU framebuffer
 readback (`QRhi::endOffscreenFrame`) plus a raster composite into the window
 backing store. The host advances the clock at ~60 Hz, but the picture only
 changes at the video frame rate (~25–30 fps) — so repainting on every tick, half
-of them on an unchanged frame, makes that compositing dominate playback CPU.
-The streaming video path (`StreamingVideoSource`) surfaces a new frame only
-when its worker delivers one, so the widget composites at frame rate rather
-than on every clock tick. The image / kVideoFrame branches keep an explicit
-`onTrackerTime` repaint because time-only overlay (annotation) updates surface
-via `render()`, not via a new base frame.
+of them on an unchanged frame, would make that compositing dominate playback CPU
+(measured: this `rgb888→rgb32` composite was ~17% of the GUI thread during
+large-cloud + camera playback before the gate below).
+
+The fix lives in `pj_scene_common`: `SceneDockWidget::onTrackerTime` skips the
+per-tick layer advance + `refreshView()` when the combined
+`ISceneLayer::renderKey(time)` of the visible layers is unchanged.
+`Scene2DLayer::renderKey` fingerprints the active sample's STAMP (a decode-free
+`indexAt`/`entryTimestamps` lookup), so a static image/depth frame coalesces away
+its redundant 60 Hz re-composites. Time-only overlays do not need a special case:
+`ImageAnnotations` is its own `SceneDecoderLayer` with its own topic, so its stamp
+enters the dock's combined key and an annotation-only change still reopens the
+gate. A new base frame's async decode additionally repaints via the frame-ready
+callback (`repaintRequested → refreshView`), independent of the gate. The
+streaming video path (`StreamingVideoSource`) likewise surfaces a new frame only
+when its worker delivers one.
 
 ### EntryThumbnailCache (streaming thumbnails)
 

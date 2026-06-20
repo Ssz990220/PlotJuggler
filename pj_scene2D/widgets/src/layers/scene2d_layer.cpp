@@ -73,6 +73,24 @@ void Scene2DLayer::setTrackerTime(PJ::Timepoint time) {
   }
 }
 
+uint64_t Scene2DLayer::renderKey(PJ::Timepoint time) const {
+  // Key the displayed frame by the STAMP of the store's active sample at/before
+  // `time`, via indexAt() + entryTimestamps() — a pure binary search that never
+  // resolves the bytes (no decode/decompression in the per-tick gate). Consecutive
+  // 60 Hz ticks that land on the same image/video/depth frame coalesce into one
+  // repaint; a new sample changes the key (and its async decode also repaints via
+  // the frame-ready callback). Stamp, not index: eviction renumbers indices.
+  if (store_ != nullptr) {
+    if (const auto index = store_->indexAt(topicId(), PJ::toRaw(time)); index.has_value()) {
+      if (const auto stamps = store_->entryTimestamps(topicId()); *index < stamps.size()) {
+        return static_cast<uint64_t>(stamps[*index]);
+      }
+    }
+    return PJ::kNoSampleRenderKey;  // no active sample at this time
+  }
+  return static_cast<uint64_t>(PJ::toRaw(time));  // unattached: never skip
+}
+
 void Scene2DLayer::setVisible(bool visible) {
   if (info_.visible == visible) {
     return;

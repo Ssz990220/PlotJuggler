@@ -41,6 +41,11 @@ class Scene2DLayer : public ISceneLayer {
   bool attach(const SceneLayerContext& ctx) override;
   void detach() override;
   void setTrackerTime(PJ::Timepoint time) override;
+  // Fingerprints the active media sample at `time` so the dock skips the per-tick
+  // repaint when the displayed frame is unchanged (no re-composite of a static
+  // image). A NEW sample's async decode repaints via the frame-ready callback,
+  // independent of this gate.
+  [[nodiscard]] uint64_t renderKey(PJ::Timepoint time) const override;
   void setVisible(bool visible) override;
   QWidget* createConfigWidget(QWidget* parent) override;
   QDomElement xmlSaveState(QDomDocument& doc) const override;

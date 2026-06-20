@@ -141,6 +141,7 @@ void SceneDockWidget::registerLayer(int64_t key, std::unique_ptr<ISceneLayer> la
   layer_visibility_cache_[key] = layer_raw->info().visible;
   layers_.emplace(key, std::move(layer));
   draw_order_.push_back(key);
+  invalidateTrackerRenderKey();  // new layer → next tick must repaint
 
   if (layer_raw->info().visible) {
     seedLayerTrackerTime(layer_raw);
@@ -230,6 +231,7 @@ void SceneDockWidget::removeTopic(ObjectTopicId topic_id) {
   if (it == layers_.end()) {
     return;
   }
+  invalidateTrackerRenderKey();  // layer set shrank → next tick must repaint
   // Mutate -> reconcile view -> detach -> notify. syncViewLayers() drives
   // SceneViewWidget::setLayers, which runs releaseGL() on the dropped layer under
   // makeCurrent. detach() MUST follow that, because for GL-owning layers detach
@@ -295,6 +297,7 @@ void SceneDockWidget::setLayerVisible(ObjectTopicId topic_id, bool visible) {
   const auto old_it = layer_visibility_cache_.find(key);
   const bool old_visible = old_it != layer_visibility_cache_.end() ? old_it->second : layer->info().visible;
   layer->setVisible(visible);
+  invalidateTrackerRenderKey();  // visible set changed → next tick must repaint
   // Hidden layers receive no tracker ticks (onTrackerTime skips them), so on
   // un-hide re-deliver the current playhead clamped to this layer's range (same
   // seeding as registerLayer): the layer catches up instead of repainting the
@@ -364,12 +367,54 @@ void SceneDockWidget::onTrackerTime(double time) {
   }
   const PJ::Timepoint clamped = clampToLayerRange(PJ::toAbsolute(PJ::displaySeconds(time), offset));
   last_tracker_ = clamped;
-  for (auto& [key, layer] : layers_) {
+
+  // Per-tick repaint coalescing: if every visible layer would render exactly what
+  // it rendered at the last painted frame (same active sample, same transform),
+  // nothing moved — skip the layer advance AND the repaint. This is what keeps a
+  // 60 Hz playhead from repainting the scene/image docks 60×/s over <10 Hz data.
+  // Settings/async changes bypass this gate via repaintRequested → refreshView.
+  const uint64_t key = trackerRenderKey(clamped);
+  if (have_render_key_ && key == last_render_key_) {
+    return;
+  }
+  have_render_key_ = true;
+  last_render_key_ = key;
+
+  for (auto& [k, layer] : layers_) {
     if (layer != nullptr && layer->info().visible) {
       layer->setTrackerTime(clamped);
     }
   }
   refreshView();
+}
+
+namespace {
+// splitmix64 finalizer — strong 64-bit avalanche so per-layer keys XOR-combine
+// without the cancellation/clustering a plain XOR of raw ids would suffer.
+[[nodiscard]] uint64_t mix64(uint64_t x) {
+  x += 0x9e3779b97f4a7c15ULL;
+  x = (x ^ (x >> 30)) * 0xbf58476d1ce4e5b9ULL;
+  x = (x ^ (x >> 27)) * 0x94d049bb133111ebULL;
+  return x ^ (x >> 31);
+}
+}  // namespace
+
+uint64_t SceneDockWidget::trackerRenderKey(PJ::Timepoint time) const {
+  // XOR of per-layer (topic ⊕ renderKey) mixes: order-independent (an
+  // unordered_map rehash can't flip it) and collision-resistant via mix64.
+  uint64_t key = 0;
+  for (const auto& [k, layer] : layers_) {
+    if (layer != nullptr && layer->info().visible) {
+      key ^= mix64(static_cast<uint64_t>(k) * 0x9e3779b97f4a7c15ULL ^ layer->renderKey(time));
+    }
+  }
+  // Fold in view-owned, non-layer content (e.g. the 3D TF overlay), so the gate
+  // coalesces it without freezing it. Run it through mix64 like the per-layer terms
+  // so a future viewRenderKey() override returning a sparse value (a small enum /
+  // bitmask) still avalanches and can't cancel a layer's bits. mix64(0) is a
+  // harmless constant offset for the default (no view content) case.
+  key ^= mix64(viewRenderKey(time));
+  return key;
 }
 
 DatasetId SceneDockWidget::representativeDatasetId() const {
@@ -631,6 +676,7 @@ void SceneDockWidget::clearLayers() {
   if (layers_.empty()) {
     return;
   }
+  invalidateTrackerRenderKey();
   // Contract (same ordering removeTopic now uses): re-point the view off every
   // layer (a sync with an empty draw order) while the layers are still alive, so
   // the view runs each layer's releaseGL() under its current context BEFORE any

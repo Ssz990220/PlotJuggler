@@ -115,6 +115,18 @@ class SceneViewWidget : public QOpenGLWidget {
   // framesChanged if the set differs from the previous poll.
   void refreshAvailableFrames();
 
+  // Repaint-gate fingerprint of the TF overlay (axis triads + parent-connection
+  // lines) at `time`. These render the WHOLE frame forest posed at the tracker
+  // time independently of any layer, so without this the dock's per-tick gate
+  // would freeze a moving TF tree whenever every visible layer's own renderKey is
+  // unchanged (a static/fixed-frame cloud, or a TF-only dock). Returns 0 when the
+  // overlay is not drawn (no buffer, or both axes and connections hidden) so it
+  // adds no cost and forgoes no coalescing then. Hashes exactly the transforms the
+  // next render() would draw, so the key changes iff the rendered TF would — for a
+  // moving tree during playback AND for new frames/edges arriving mid-load. Cheap
+  // (O(frames), no decode); GUI-thread only (reads the shared TransformBuffer).
+  [[nodiscard]] uint64_t tfRenderKey(PJ::Timepoint time) const;
+
   const std::string& fixedFrame() const {
     return fixed_frame_;
   }
@@ -317,6 +329,9 @@ class SceneViewWidget : public QOpenGLWidget {
   // this is render state, not the clock. Fed to the per-frame FrameContext.
   PJ::Timepoint render_time_{};
   std::string fixed_frame_;
+  // Scratch frame list reused by tfRenderKey() each gate check to avoid a per-tick
+  // heap allocation (mirrors how the render passes reuse getAllFrames(out)).
+  mutable std::vector<std::string> tf_render_key_frames_;
 
   QList<FrameRow> last_frame_list_;
 

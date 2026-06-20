@@ -63,12 +63,28 @@ class TimelineWidget : public QWidget {
   // backlog. See PlaybackEngine docs for context.
   void flushPendingSeek();
 
+  // Applies one engine time to the slider + numeric readout. Split out of
+  // onEngineTimeChanged so the playback-time throttle can drive it from both the
+  // leading edge and the trailing-edge timer.
+  void applyEngineTime(double t);
+
   Ui::TimelineWidget* ui_;
   PlaybackEngine* engine_ = nullptr;
   bool updating_from_engine_ = false;
   QTimer seek_throttle_timer_;
   double pending_seek_value_ = 0.0;
   bool has_pending_seek_ = false;
+
+  // Playback-time display throttle. PlaybackEngine ticks at 60 Hz, but the slider
+  // handle + millisecond readout do not need to repaint (and re-shape glyphs) that
+  // often — a 60 Hz `displayTime->setText()` was a measurable share of the GUI
+  // thread during playback. Leading-edge + trailing-edge throttle to ~30 Hz: the
+  // first tick applies immediately, ticks inside the window coalesce, and the
+  // latest value lands when the window closes. A seek/pause (single tick) still
+  // applies on the leading edge, so scrubbing stays exact.
+  QTimer display_throttle_timer_;
+  double pending_display_time_ = 0.0;
+  bool has_pending_display_ = false;
 
   // Chrome metrics from MainWindow::chromeMetricsChanged.
   ChromeMetrics chrome_metrics_;

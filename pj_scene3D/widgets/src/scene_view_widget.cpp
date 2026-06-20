@@ -22,9 +22,15 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstdint>
+#include <cstring>
+#include <functional>
+#include <glm/glm.hpp>
+#include <string>
 #include <string_view>
 #include <utility>
 #include <variant>
+#include <vector>
 
 #include "pj_scene3d_core/tf/tf_buffer.h"
 #include "pj_scene3d_widgets/gl/debug.h"
@@ -292,6 +298,35 @@ void SceneViewWidget::refreshAvailableFrames() {
     last_frame_list_ = list;
     emit framesChanged(list);
   }
+}
+
+uint64_t SceneViewWidget::tfRenderKey(PJ::Timepoint time) const {
+  // No TF overlay drawn → contribute nothing (and forgo no coalescing). render()
+  // poses the axis triads + parent-connection lines from this exact frame set and
+  // these exact fixed←frame transforms (see the FrameContext it builds), so hashing
+  // them here makes the dock's gate repaint exactly when that overlay would move.
+  if (!tf_ || (!axes_visible_ && !tf_connections_visible_)) {
+    return 0;
+  }
+  tf_->getAllFrames(tf_render_key_frames_);
+  uint64_t key = 0;
+  for (const std::string& frame : tf_render_key_frames_) {
+    uint64_t h = std::hash<std::string>{}(frame);
+    if (const auto xf = tf_->tryLookupTransform(fixed_frame_, frame, time); xf.has_value()) {
+      const glm::mat4 m = glm::mat4(xf->matrix());
+      for (int col = 0; col < 4; ++col) {
+        for (int row = 0; row < 4; ++row) {
+          uint32_t bits = 0;
+          std::memcpy(&bits, &m[col][row], sizeof(bits));
+          h = (h ^ bits) * 0x100000001b3ULL;
+        }
+      }
+    } else {
+      h ^= 0xD15C0FFEEULL;  // frame present in the forest but unresolved at this time
+    }
+    key ^= h ^ (h >> 29);  // order-independent fold (getAllFrames order must not matter)
+  }
+  return key;
 }
 
 void SceneViewWidget::initializeGL() {

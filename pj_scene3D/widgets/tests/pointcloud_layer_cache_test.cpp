@@ -16,6 +16,8 @@
 #include <QCoreApplication>
 #include <atomic>
 #include <chrono>
+#include <glm/glm.hpp>
+#include <glm/gtc/quaternion.hpp>
 #include <memory>
 #include <optional>
 #include <string_view>
@@ -32,6 +34,8 @@
 #include "pj_plugins/sdk/message_parser_plugin_base.hpp"
 #include "pj_runtime/SessionManager.h"
 #include "pj_runtime/Time.h"
+#include "pj_scene3d_core/tf/tf_buffer.h"
+#include "pj_scene3d_core/tf/transform.h"
 #include "pj_scene3d_widgets/layers/pointcloud_layer.h"
 #include "pj_scene3d_widgets/scene3d_layer.h"
 
@@ -133,6 +137,85 @@ TEST(PointCloudLayerReload, DatasetReplaceClearsSampleIdentityCaches) {
   // "already pushed" skip and the new bytes are never decoded.
   layer.renderAtForTest(100);
   EXPECT_GE(g_staged_parser_calls.load(), 1) << "layer served stale cached content after the dataset replace";
+}
+
+// The dock's per-tick repaint gate keys on PointCloudLayer::renderKey(): it must be
+// STABLE while the same sample is active (so a 60 Hz playhead over a <10 Hz cloud
+// coalesces) and CHANGE when a new sample becomes active (so the repaint resumes).
+// With no TF buffer the key reduces to the active sample stamp, which is what this
+// pins; the transform term is covered by the live scene path.
+TEST(PointCloudLayerRenderKey, TracksActiveSampleStamp) {
+  g_primary_parser_calls.store(0);
+  PJ::SessionManager session;
+  PJ::ObjectStore& store = session.objectStore();
+  const PJ::ObjectTopicId topic_id = registerCloudTopic(store, /*dataset_id=*/1);
+  ASSERT_TRUE(store.pushOwned(topic_id, 100, std::vector<uint8_t>{0x01}).has_value());
+  ASSERT_TRUE(store.pushOwned(topic_id, 200, std::vector<uint8_t>{0x02}).has_value());
+  session.registerObjectTopicParser(topic_id, makeBoundHandle(kSchema, []() noexcept -> void* {
+                                      return new CountingObjectParser(
+                                          kSchema, PJ::sdk::BuiltinObjectType::kPointCloud, &g_primary_parser_calls,
+                                          &emitMixedCloud);
+                                    }));
+
+  pj::scene3d::Scene3DLayerContext ctx;  // no tf_buffer: renderKey reduces to the sample stamp
+  ctx.session = &session;
+  pj::scene3d::PointCloudLayer layer(topic_id, QStringLiteral("cloud"), PJ::sdk::BuiltinObjectType::kPointCloud);
+  ASSERT_TRUE(layer.attach(ctx));
+
+  const uint64_t k_150 = layer.renderKey(PJ::fromRaw(150));  // sample @100 active
+  const uint64_t k_180 = layer.renderKey(PJ::fromRaw(180));  // still @100 → coalesce
+  const uint64_t k_250 = layer.renderKey(PJ::fromRaw(250));  // sample @200 active → repaint
+  EXPECT_EQ(k_150, k_180) << "same active sample must give a stable key";
+  EXPECT_NE(k_150, k_250) << "a new active sample must change the key";
+}
+
+// The renderKey transform-fold branch — untested by TracksActiveSampleStamp, which
+// uses no tf_buffer. With the SAME active cloud sample, the key must CHANGE when the
+// fixed←source transform changes (sensor moved) and stay STABLE when it does not, so
+// a moving cloud reopens the repaint gate while a static pose coalesces.
+TEST(PointCloudLayerRenderKey, FoldsFixedFromSourceTransform) {
+  g_primary_parser_calls.store(0);
+  PJ::SessionManager session;
+  PJ::ObjectStore& store = session.objectStore();
+  const PJ::ObjectTopicId topic_id = registerCloudTopic(store, /*dataset_id=*/1);
+  // One sample at stamp 0 → it is the active sample for every t ≥ 0, so the key's
+  // ONLY moving part across the times below is the transform term.
+  ASSERT_TRUE(store.pushOwned(topic_id, 0, std::vector<uint8_t>{0x01}).has_value());
+  session.registerObjectTopicParser(topic_id, makeBoundHandle(kSchema, []() noexcept -> void* {
+                                      return new CountingObjectParser(
+                                          kSchema, PJ::sdk::BuiltinObjectType::kPointCloud, &g_primary_parser_calls,
+                                          &emitMixedCloud);
+                                    }));
+
+  // world←lidar at two stamps with DIFFERENT translations (same orientation).
+  auto tf = std::make_shared<pj::scene3d::TransformBuffer>(pj::scene3d::TransformBuffer::kKeepAll);
+  ASSERT_TRUE(tf->setTransform(
+                    pj::scene3d::StampedTransform{
+                        .stamp = PJ::fromRaw(100),
+                        .parent_frame = "world",
+                        .child_frame = "lidar",
+                        .transform = pj::scene3d::Transform(glm::dvec3{1.0, 0.0, 0.0}, glm::dquat{1, 0, 0, 0})})
+                  .has_value());
+  ASSERT_TRUE(tf->setTransform(
+                    pj::scene3d::StampedTransform{
+                        .stamp = PJ::fromRaw(200),
+                        .parent_frame = "world",
+                        .child_frame = "lidar",
+                        .transform = pj::scene3d::Transform(glm::dvec3{9.0, 0.0, 0.0}, glm::dquat{1, 0, 0, 0})})
+                  .has_value());
+
+  pj::scene3d::Scene3DLayerContext ctx;
+  ctx.session = &session;
+  ctx.tf_buffer = tf;
+  pj::scene3d::PointCloudLayer layer(topic_id, QStringLiteral("cloud"), PJ::sdk::BuiltinObjectType::kPointCloud);
+  ASSERT_TRUE(layer.attach(ctx));  // source_frame_ = "lidar" (the cloud's frame_id)
+  layer.setFixedFrame(QStringLiteral("world"));
+
+  const uint64_t k_t150 = layer.renderKey(PJ::fromRaw(150));  // TF@100 (x=1)
+  const uint64_t k_t180 = layer.renderKey(PJ::fromRaw(180));  // still TF@100 → stable
+  const uint64_t k_t250 = layer.renderKey(PJ::fromRaw(250));  // TF@200 (x=9) → changed
+  EXPECT_EQ(k_t150, k_t180) << "same sample + same transform must coalesce";
+  EXPECT_NE(k_t150, k_t250) << "a transform change at the same sample must reopen the gate";
 }
 
 // L.20: stamp 0 is data, not a sentinel — attach renders it and refreshNow()
