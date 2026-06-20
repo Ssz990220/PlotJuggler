@@ -251,11 +251,42 @@ struct WriteCore {
     }
   };
 
+  // Borrowed lookup key: lets the per-record hot path probe field_cache without
+  // heap-allocating a std::string for the field name on every (cache-hit) field
+  // — the dominant temporary-allocation source during ingest. Heterogeneous
+  // lookup is enabled by the is_transparent hash/equal below.
+  struct TopicFieldKeyView {
+    TopicId topic_id;
+    std::string_view field_name;
+  };
+
   struct TopicFieldKeyHash {
+    using is_transparent = void;
     std::size_t operator()(const TopicFieldKey& key) const noexcept {
-      std::size_t h1 = std::hash<TopicId>{}(key.topic_id);
-      std::size_t h2 = std::hash<std::string>{}(key.field_name);
+      return hash(key.topic_id, key.field_name);
+    }
+    std::size_t operator()(const TopicFieldKeyView& key) const noexcept {
+      return hash(key.topic_id, key.field_name);
+    }
+
+   private:
+    // Hash the name as a string_view in BOTH overloads so an owning key and a
+    // borrowed view with equal content always hash identically.
+    static std::size_t hash(TopicId topic_id, std::string_view field_name) noexcept {
+      std::size_t h1 = std::hash<TopicId>{}(topic_id);
+      std::size_t h2 = std::hash<std::string_view>{}(field_name);
       return h1 ^ (h2 << 1);
+    }
+  };
+
+  // Transparent equality covering owning/view in either position, so
+  // robin_map::find can accept a borrowed TopicFieldKeyView. (std::string ==
+  // std::string_view compares by content.)
+  struct TopicFieldKeyEq {
+    using is_transparent = void;
+    template <typename A, typename B>
+    bool operator()(const A& a, const B& b) const noexcept {
+      return a.topic_id == b.topic_id && a.field_name == b.field_name;
     }
   };
 
@@ -277,7 +308,7 @@ struct WriteCore {
   };
 
   tsl::robin_map<DatasetTopicKey, TopicHandle, DatasetTopicKeyHash> topic_cache;
-  tsl::robin_map<TopicFieldKey, FieldHandle, TopicFieldKeyHash> field_cache;
+  tsl::robin_map<TopicFieldKey, FieldHandle, TopicFieldKeyHash, TopicFieldKeyEq> field_cache;
   tsl::robin_map<TopicFieldIdKey, PrimitiveType, TopicFieldIdKeyHash> field_types;
 
   void setError(std::string message) {
@@ -422,8 +453,11 @@ struct WriteCore {
     }
     const PrimitiveType type = *type_or;
 
-    TopicFieldKey key{.topic_id = topic.id, .field_name = std::string(field_name)};
-    if (auto it = field_cache.find(key); it != field_cache.end()) {
+    // Borrowed probe: no std::string is allocated on the common cache-hit path
+    // (every field after a topic's first record). The owning key is built only
+    // when a new field is inserted below.
+    if (auto it = field_cache.find(TopicFieldKeyView{.topic_id = topic.id, .field_name = field_name});
+        it != field_cache.end()) {
       PrimitiveType existing{};
       if (!lookupFieldType(topic, it->second.id, &existing)) {
         return false;
@@ -476,7 +510,7 @@ struct WriteCore {
     }
 
     *out_field = FieldHandle{.topic = topic, .id = *field_id_or};
-    field_cache.emplace(std::move(key), *out_field);
+    field_cache.emplace(TopicFieldKey{.topic_id = topic.id, .field_name = std::string(field_name)}, *out_field);
     field_types[{.topic_id = topic.id, .field_id = *field_id_or}] = type;
     last_error.clear();
     return true;
@@ -563,9 +597,8 @@ struct WriteCore {
         return false;
       }
       if (field.is_null) {
-        // Null values: look up existing field by name.
-        TopicFieldKey key{.topic_id = topic.id, .field_name = std::string(name)};
-        auto it = field_cache.find(key);
+        // Null values: look up existing field by name (borrowed probe, no alloc).
+        auto it = field_cache.find(TopicFieldKeyView{.topic_id = topic.id, .field_name = name});
         if (it == field_cache.end()) {
           // Field has never been seen. Check if this is a typed null (the ABI
           // carries value.type even when is_null is true). A valid type lets

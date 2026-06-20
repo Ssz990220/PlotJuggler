@@ -6,6 +6,7 @@
 #include <QString>
 #include <QStringList>
 #include <cstddef>
+#include <cstdint>
 #include <memory>
 #include <optional>
 #include <utility>
@@ -160,6 +161,25 @@ class CatalogModel : public QObject {
   void cleared();
 
  private:
+  // Connected to SessionManager::samplesIngested in place of a direct
+  // rebuildFromDatastore: runs a full rebuild ONLY when the catalog's content
+  // fingerprint changed since the last rebuild. During a load most ingest
+  // batches add rows, not new datasets/topics/columns, so this skips the
+  // (allocation-heavy) full rebuild on the common path while staying fully
+  // synchronous — explicit rebuildFromDatastore() callers are unaffected.
+  void rebuildIfChanged();
+
+  // The actual full rebuild body. rebuildFromDatastore() wraps this and refreshes
+  // the cached fingerprint, so every rebuild (gated or explicit) leaves the gate
+  // in sync.
+  void rebuildNow();
+
+  // Allocation-light, order-independent fingerprint of everything that affects
+  // catalog output: engine structure (datasets, topics, per-topic column count,
+  // object topics) plus the catalog's own tombstone/override state. Equal
+  // fingerprints ⇒ a rebuild would produce identical output.
+  [[nodiscard]] std::uint64_t catalogFingerprint() const;
+
   struct Impl;
   std::unique_ptr<Impl> impl_;
 };

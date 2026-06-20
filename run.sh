@@ -35,12 +35,25 @@ BIN="${SCRIPT_DIR}/build/pj_app/pj_app"
 #   Healthy → compiles a small constant (≈ #programs) regardless of frames.
 #   Env overrides: PJ_TRACE_API (gl|egl; try egl if the trace is empty),
 #                  PJ_TRACE_OUT (output path; default ./pj_app.trace).
+#
+# --heaptrack: launch under heaptrack to profile heap allocations (peak RSS,
+# leaks, top allocators). The flag is consumed here; all other arguments are
+# forwarded to pj_app. If heaptrack isn't installed we log and launch normally.
+#
+#   ./run.sh --heaptrack
+#     → load data, exercise the suspect path, quit cleanly (heaptrack finalizes
+#       and compresses its trace on a normal exit — don't kill -9 it).
+#   Output: $PWD/heaptrack.pj_app.<pid>.zst (override the path with
+#           PJ_HEAPTRACK_OUT=/some/prefix).
+#   Analyse: heaptrack_gui <file>   (or headless: heaptrack --analyze <file>)
 use_apitrace=0
+use_heaptrack=0
 user_set_plugin_dir=0
 app_args=()
 for arg in "$@"; do
   case "$arg" in
     --apitrace) use_apitrace=1 ;;
+    --heaptrack) use_heaptrack=1 ;;
     --plugin-dir|--plugin-dir=*) user_set_plugin_dir=1; app_args+=("$arg") ;;
     *) app_args+=("$arg") ;;
   esac
@@ -70,6 +83,22 @@ if [ "$use_apitrace" -eq 1 ]; then
          "${BIN}" ${app_args[@]+"${app_args[@]}"}
   fi
   echo "run.sh: --apitrace requested but 'apitrace' is not installed; launching normally." >&2
+fi
+
+if [ "$use_heaptrack" -eq 1 ]; then
+  if command -v heaptrack >/dev/null 2>&1; then
+    ht_opts=()
+    if [ -n "${PJ_HEAPTRACK_OUT:-}" ]; then
+      ht_opts+=("-o" "${PJ_HEAPTRACK_OUT}")
+      echo "run.sh: profiling heap with heaptrack -> ${PJ_HEAPTRACK_OUT}.zst" >&2
+    else
+      echo "run.sh: profiling heap with heaptrack -> \$PWD/heaptrack.pj_app.<pid>.zst" >&2
+    fi
+    echo "run.sh: analyse the result with 'heaptrack_gui <file>' (or 'heaptrack --analyze <file>')." >&2
+    exec heaptrack ${ht_opts[@]+"${ht_opts[@]}"} \
+         "${BIN}" ${app_args[@]+"${app_args[@]}"}
+  fi
+  echo "run.sh: --heaptrack requested but 'heaptrack' is not installed; launching normally." >&2
 fi
 
 exec "${BIN}" ${app_args[@]+"${app_args[@]}"}

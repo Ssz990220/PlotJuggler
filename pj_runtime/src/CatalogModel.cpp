@@ -11,7 +11,9 @@
 #include <QLoggingCategory>
 #include <algorithm>
 #include <cstddef>
+#include <cstdint>
 #include <nlohmann/json.hpp>
+#include <optional>
 #include <string>
 #include <utility>
 
@@ -243,12 +245,17 @@ struct CatalogModel::Impl {
   // Plugin-provided tree-root labels (issue #98), keyed by stable DatasetId so
   // they survive rebuilds and clearAll/restoreDataset. Never holds empty values.
   tsl::robin_map<DatasetId, QString> dataset_display_overrides;
+
+  // Content fingerprint as of the last completed rebuildFromDatastore(), used by
+  // the samplesIngested gate (rebuildIfChanged) to skip redundant full rebuilds.
+  // Unset until the first rebuild, so the first ingest always rebuilds.
+  std::optional<std::uint64_t> last_fingerprint;
 };
 
 CatalogModel::CatalogModel(SessionManager* session, QObject* parent)
     : QObject(parent), impl_(std::make_unique<Impl>(session)) {
   if (impl_->session != nullptr) {
-    connect(impl_->session, &SessionManager::samplesIngested, this, &CatalogModel::rebuildFromDatastore);
+    connect(impl_->session, &SessionManager::samplesIngested, this, &CatalogModel::rebuildIfChanged);
   }
 }
 
@@ -334,6 +341,83 @@ std::optional<CurveDescriptor> CatalogModel::descriptorForPath(
 }
 
 void CatalogModel::rebuildFromDatastore() {
+  rebuildNow();
+  // Keep the samplesIngested gate's cache in sync after EVERY rebuild — whether
+  // triggered by the gate or by an explicit caller (load completion, dataset
+  // removal, display-name change) — so the next ingest can correctly skip.
+  impl_->last_fingerprint = catalogFingerprint();
+}
+
+void CatalogModel::rebuildIfChanged() {
+  // Gate for the high-frequency samplesIngested path: a full rebuild re-scans and
+  // re-allocates every curve key/label, but most ingest batches only append rows.
+  // Skip when nothing that affects catalog contents changed since the last
+  // rebuild. Stays synchronous (no timer), so callers that read the catalog right
+  // after a structural commit still see it updated.
+  const std::uint64_t fp = catalogFingerprint();
+  if (impl_->last_fingerprint == fp) {
+    return;
+  }
+  rebuildFromDatastore();
+}
+
+std::uint64_t CatalogModel::catalogFingerprint() const {
+  // Order-independent accumulation (sum of well-mixed per-element hashes) so it
+  // does not depend on list*() enumeration order. Allocation-light: only the
+  // small vectors returned by list*(); no per-column QString building.
+  const auto mix = [](std::uint64_t tag, std::uint64_t value) -> std::uint64_t {
+    std::uint64_t x = (tag * 1099511628211ULL) ^ (value + 0x9E3779B97F4A7C15ULL);
+    x ^= x >> 30;
+    x *= 0xBF58476D1CE4E5B9ULL;
+    x ^= x >> 27;
+    return x;
+  };
+  std::uint64_t fp = 0;
+
+  if (impl_->session != nullptr) {
+    const DataReader reader = impl_->session->createReader();
+    DataEngine& engine = impl_->session->dataEngine();
+    ObjectStore& object_store = impl_->session->objectStore();
+    for (const DatasetId dataset_id : reader.listDatasets()) {
+      fp += mix(1, dataset_id);
+      {
+        // getTopicStorage() is raw + non-locking; hold the engine lock for the
+        // scan. The object store has an INDEPENDENT lock that must never nest
+        // with the engine lock, so it is queried after this scope closes.
+        const auto lock = engine.lockEngine();
+        for (const TopicId topic_id : reader.listTopics(dataset_id)) {
+          std::uint64_t columns = 0;
+          if (const TopicStorage* storage = engine.getTopicStorage(topic_id); storage != nullptr) {
+            columns = storage->columnDescriptors().size();
+          }
+          fp += mix(2, (static_cast<std::uint64_t>(topic_id) << 20) ^ columns);
+        }
+      }
+      for (const ObjectTopicId object_topic_id : object_store.listTopics(dataset_id)) {
+        fp += mix(3, object_topic_id.id);
+      }
+    }
+  }
+
+  // Tombstones + display overrides also change catalog output, and some mutators
+  // (clearAll, removeDataset) change them WITHOUT calling rebuildFromDatastore —
+  // folding them in keeps the gate self-correcting regardless of the trigger.
+  for (const DatasetId dataset_id : impl_->removed_datasets) {
+    fp += mix(4, dataset_id);
+  }
+  for (const auto& [dataset_id, names] : impl_->removed_names_per_dataset) {
+    fp += mix(5, dataset_id);
+    for (const QString& name : names) {
+      fp += mix(6, (static_cast<std::uint64_t>(dataset_id) << 32) ^ qHash(name));
+    }
+  }
+  for (const auto& [dataset_id, label] : impl_->dataset_display_overrides) {
+    fp += mix(7, (static_cast<std::uint64_t>(dataset_id) << 32) ^ qHash(label));
+  }
+  return fp;
+}
+
+void CatalogModel::rebuildNow() {
   if (impl_->session == nullptr) {
     if (!impl_->items.empty()) {
       impl_->items.clear();

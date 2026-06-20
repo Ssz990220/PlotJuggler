@@ -82,29 +82,43 @@ QString pluginConfigKey(const std::string& plugin_id) {
   return QString::fromLatin1(kPluginConfigKeyPrefix) + QString::fromStdString(plugin_id);
 }
 
-// Default ingest policies the app applies to every DataSourceRuntimeHost it
-// builds: scalars eager, objects lazy (decoded on pull), point clouds and
-// video frames always pure-lazy. Both carry the heaviest payloads; for a
-// CompressedPointCloud this defers the Draco/Cloudini transcode to the render
-// path, and for file-backed video it keeps each entry's bitstream NON-resident
-// by re-invoking the producer's fetcher on every read instead of pinning the
-// bytes at ingest. Hoisted here so the pre-dialog scratch session and the
-// per-fanout loop iterations stay in lockstep.
-void applyDefaultIngestPolicies(DataSourceRuntimeHost& session) {
-  session.policyResolver().setDefault(PJ::sdk::ObjectIngestPolicy::kLazyObjectsEagerScalars);
-  session.policyResolver().setForType(PJ::sdk::BuiltinObjectType::kPointCloud, PJ::sdk::ObjectIngestPolicy::kPureLazy);
-  session.policyResolver().setForType(
-      PJ::sdk::BuiltinObjectType::kCompressedPointCloud, PJ::sdk::ObjectIngestPolicy::kPureLazy);
-  // SceneEntities (markers) and ImageAnnotations carry no scalar fields — an
-  // eager-scalar parse would fail, so keep them pure-lazy like point clouds.
-  session.policyResolver().setForType(
-      PJ::sdk::BuiltinObjectType::kSceneEntities, PJ::sdk::ObjectIngestPolicy::kPureLazy);
-  session.policyResolver().setForType(
-      PJ::sdk::BuiltinObjectType::kImageAnnotations, PJ::sdk::ObjectIngestPolicy::kPureLazy);
-  session.policyResolver().setForType(PJ::sdk::BuiltinObjectType::kVideoFrame, PJ::sdk::ObjectIngestPolicy::kPureLazy);
-}
-
 }  // namespace
+
+// Default ingest policies the app applies to every DataSourceRuntimeHost it
+// builds: scalars eager, objects lazy (decoded on pull). The heaviest and/or
+// scalar-less payloads are PURE-LAZY — their bytes are re-fetched from the
+// source on every read instead of pinned in RAM at ingest:
+//   * Point clouds / compressed point clouds: huge per-frame; pure-lazy also
+//     defers the Draco/Cloudini transcode to the render path.
+//   * Video frames: keeps each file-backed bitstream NON-resident.
+//   * Images / depth images: a raw (uncompressed) Image frame is hundreds of KB
+//     and a recording holds thousands; retaining them all dominated peak RSS
+//     (~4 GB on the quadruped dataset). The 2D image/depth docks pull via
+//     ObjectStore::latestAt, which resolves the deferred fetch transparently —
+//     exactly how point clouds already render lazily.
+//   * Occupancy grids / voxel grids: a metric map or dense 3D grid is large per
+//     frame; the scene docks pull them via ObjectStore::latestAt, so pure-lazy
+//     keeps them non-resident like point clouds.
+//   * SceneEntities (markers) / ImageAnnotations: carry no scalar fields, so an
+//     eager-scalar parse would fail; pure-lazy is the only correct mode.
+// TF (kFrameTransforms) intentionally stays eager: its payload is tiny and its
+// scalar fields are useful. Static so the pre-dialog scratch session and the
+// per-fanout loop iterations stay in lockstep, and so it is unit-testable
+// against a bare resolver.
+void FileLoader::applyDefaultIngestPolicies(PJ::sdk::ObjectIngestPolicyResolver& resolver) {
+  using PJ::sdk::BuiltinObjectType;
+  using PJ::sdk::ObjectIngestPolicy;
+  resolver.setDefault(ObjectIngestPolicy::kLazyObjectsEagerScalars);
+  resolver.setForType(BuiltinObjectType::kPointCloud, ObjectIngestPolicy::kPureLazy);
+  resolver.setForType(BuiltinObjectType::kCompressedPointCloud, ObjectIngestPolicy::kPureLazy);
+  resolver.setForType(BuiltinObjectType::kImage, ObjectIngestPolicy::kPureLazy);
+  resolver.setForType(BuiltinObjectType::kDepthImage, ObjectIngestPolicy::kPureLazy);
+  resolver.setForType(BuiltinObjectType::kOccupancyGrid, ObjectIngestPolicy::kPureLazy);
+  resolver.setForType(BuiltinObjectType::kVoxelGrid, ObjectIngestPolicy::kPureLazy);
+  resolver.setForType(BuiltinObjectType::kSceneEntities, ObjectIngestPolicy::kPureLazy);
+  resolver.setForType(BuiltinObjectType::kImageAnnotations, ObjectIngestPolicy::kPureLazy);
+  resolver.setForType(BuiltinObjectType::kVideoFrame, ObjectIngestPolicy::kPureLazy);
+}
 
 // Per-load state for a single-instance worker load. Holds the bound plugin
 // handle + ingest host so they outlive the GUI prologue across the worker run.
@@ -378,7 +392,7 @@ bool FileLoader::beginLoad(const LoadRequest& request) {
           return -1;
         });
   }
-  applyDefaultIngestPolicies(ingest_session);
+  applyDefaultIngestPolicies(ingest_session.policyResolver());
 
   ServiceRegistryBuilder registry;
   ingest_session.registerServices(registry);
@@ -705,7 +719,7 @@ bool FileLoader::beginLoad(const LoadRequest& request) {
             session_.registerObjectTopicParser(id, std::move(parser));
           },
           nullptr, nullptr, iter_handle.libraryOwner());
-      applyDefaultIngestPolicies(iter_ingest);
+      applyDefaultIngestPolicies(iter_ingest.policyResolver());
 
       ServiceRegistryBuilder iter_registry;
       iter_ingest.registerServices(iter_registry);

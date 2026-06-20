@@ -23,6 +23,10 @@ namespace pj::scene3d {
 class TransformService;
 }  // namespace pj::scene3d
 
+namespace PJ::sdk {
+class ObjectIngestPolicyResolver;
+}  // namespace PJ::sdk
+
 namespace PJ {
 
 class CatalogModel;
@@ -114,6 +118,15 @@ class FileLoader : public QObject {
   // Drop the dataset->path association after the dataset is removed, so the map
   // does not retain ids the engine no longer has. Safe to call for unknown ids.
   void untrackDataset(DatasetId dataset_id);
+
+  // Configure the object-ingest policy every load uses: scalars eager, objects
+  // lazy-on-pull by default, and the heavy / scalar-less payloads (point clouds,
+  // compressed point clouds, video frames, images, depth images, scene entities,
+  // image annotations) PURE-LAZY so their bytes are re-fetched on read instead of
+  // pinned in RAM at ingest. Static + resolver-typed so it is unit-testable
+  // without standing up a full DataSourceRuntimeHost. TF stays eager on purpose:
+  // its payload is tiny and its scalar fields are useful.
+  static void applyDefaultIngestPolicies(PJ::sdk::ObjectIngestPolicyResolver& resolver);
 
  signals:
   void fileLoaded(

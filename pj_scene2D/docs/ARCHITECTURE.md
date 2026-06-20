@@ -372,8 +372,7 @@ Adding a new codec requires a code change — same rule as before.
 
 The host has a single video decode path: per-frame `VideoFrame` topics
 decoded out of `ObjectStore`. There is no file-backed video decoder in
-the host (the SDK ships the `sdk::AssetVideo` type, but no host decode
-path consumes it).
+the host.
 
 **`StreamingVideoDecoder`** (streaming / ObjectStore-based): decodes
 VideoFrame entries from ObjectStore, codec-generically (H.264/HEVC/AV1).
@@ -542,10 +541,8 @@ Which component to use depends on the data source:
 
 The host's canonical video model is **per-frame `VideoFrame`**: each
 ObjectStore entry holds one encoded frame, decoded GOP-aware by
-`StreamingVideoDecoder`. There is no file-backed (`kAssetVideo`) decode
-path in the host — the SDK ships the `sdk::AssetVideo` type and codec,
-but the host does not consume them.
-A producer that wants to surface an MP4 transcodes it to per-frame
+`StreamingVideoDecoder`. There is no file-backed video decode path in the
+host. A producer that wants to surface an MP4 transcodes it to per-frame
 `VideoFrame` entries at ingest time.
 
 **Multi-modal datasets** (video + scalars from the same recording): the

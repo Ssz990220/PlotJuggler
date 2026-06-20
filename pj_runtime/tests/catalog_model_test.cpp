@@ -604,4 +604,27 @@ TEST(CatalogModelReloadTest, ObjectReplaceKeepsObjectTopicKey) {
   EXPECT_EQ(removed_emissions, 0);
 }
 
+// samplesIngested is now gated on a content fingerprint (rebuildIfChanged) so
+// row-only ingest batches skip the full rebuild. The gate must NEVER skip a real
+// structural change — a false skip would drop a newly-ingested topic from the
+// catalog. Each new topic arrives via the gated commit path (addScalarTopic
+// commits, which emits samplesIngested), so this pins the anti-false-skip
+// property end-to-end.
+TEST(CatalogModelTest, IngestGateSurfacesEveryNewTopic) {
+  PJ::SessionManager session;
+  PJ::CatalogModel catalog(&session);
+
+  auto dataset = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "gate.mcap"});
+  ASSERT_TRUE(dataset.has_value());
+
+  ASSERT_NE(addScalarTopic(session, *dataset, "/imu/accel/x"), 0U);
+  EXPECT_EQ(catalog.items().size(), 1U) << "first topic must surface through the gate";
+
+  ASSERT_NE(addScalarTopic(session, *dataset, "/imu/accel/y"), 0U);
+  EXPECT_EQ(catalog.items().size(), 2U) << "gate must not skip a structural change (new topic)";
+
+  ASSERT_NE(addScalarTopic(session, *dataset, "/imu/accel/z"), 0U);
+  EXPECT_EQ(catalog.items().size(), 3U) << "every new topic must keep surfacing";
+}
+
 }  // namespace

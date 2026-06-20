@@ -28,6 +28,7 @@
 #include "FileLoader.h"
 #include "pj_datastore/engine.hpp"
 #include "pj_datastore/reader.hpp"
+#include "pj_plugins/sdk/object_ingest_policy.hpp"
 #include "pj_runtime/AppSession.h"
 #include "pj_runtime/CatalogModel.h"
 #include "pj_runtime/ExtensionCatalogService.h"
@@ -478,6 +479,28 @@ TEST_F(FileLoaderTest, JoinForShutdownDuringReplacingReloadRestoresPriorData) {
   // The loader recovers: a fresh load after shutdown still completes.
   EXPECT_TRUE(load());
   EXPECT_NE(datasetNamed("sensors.mock"), 0u);
+}
+
+// Images and depth images must ingest PURE-LAZY (like point clouds) so their raw
+// bytes are re-fetched on read instead of pinned in RAM at ingest — retaining
+// every frame of every image topic was the dominant peak-RSS cost on large
+// robotics MCAPs. TF intentionally stays eager (tiny payload, useful scalars).
+TEST(FileLoaderIngestPolicy, ImagesAndDepthImagesArePureLazyLikePointClouds) {
+  using PJ::sdk::BuiltinObjectType;
+  using PJ::sdk::ObjectIngestPolicy;
+
+  PJ::sdk::ObjectIngestPolicyResolver resolver;
+  PJ::FileLoader::applyDefaultIngestPolicies(resolver);
+
+  EXPECT_EQ(resolver.resolve("src", "/cam/color", BuiltinObjectType::kImage), ObjectIngestPolicy::kPureLazy);
+  EXPECT_EQ(resolver.resolve("src", "/cam/depth", BuiltinObjectType::kDepthImage), ObjectIngestPolicy::kPureLazy);
+  // Parity with the point-cloud policy that already rendered lazily.
+  EXPECT_EQ(resolver.resolve("src", "/lidar", BuiltinObjectType::kPointCloud), ObjectIngestPolicy::kPureLazy);
+  // Occupancy grids and voxel grids can be large; pure-lazy like point clouds.
+  EXPECT_EQ(resolver.resolve("src", "/map", BuiltinObjectType::kOccupancyGrid), ObjectIngestPolicy::kPureLazy);
+  EXPECT_EQ(resolver.resolve("src", "/voxels", BuiltinObjectType::kVoxelGrid), ObjectIngestPolicy::kPureLazy);
+  // TF is deliberately NOT pure-lazy.
+  EXPECT_NE(resolver.resolve("src", "/tf", BuiltinObjectType::kFrameTransforms), ObjectIngestPolicy::kPureLazy);
 }
 
 }  // namespace

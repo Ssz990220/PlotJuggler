@@ -675,7 +675,6 @@ encoding level (no separate `CompressedImage`) but split at the semantic level.
 | `JointState` | Plottable as time-series (scalars). Robot model visualization uses SceneEntity. |
 | `VoxelGrid` | Deferred. Can be added later as a Grid variant or new type. |
 | `Asset3D` (standalone) | Originally covered by ModelPrimitive inside SceneEntity; the SDK has since added a standalone `sdk::Mesh3D` binary mesh asset (`pj_base/builtin/mesh3d.hpp`, `kMesh3D = 9`). pj_scene3D's URDF/mesh rendering work landed on main (PR #164), but it loads URDF mesh files by `package://` path — host-side consumption of the standalone `kMesh3D` *object* is not yet wired. |
-| `AssetVideo` (whole file) | Deferred for the host. The SDK ships the `sdk::AssetVideo` struct + codec (`pj_base/builtin/asset_video.hpp`, `kAssetVideo = 12`), but the host has no decode path for it; per-frame `VideoFrame` (§8) is the canonical video model. |
 | `LaserScan` | Converted to PointCloud at ingest time (polar → cartesian). |
 | `GraphNodes` / `GraphEdges` | Rerun-specific. Deferred. |
 | `Log` | Realised since: `sdk::Log` (`pj_base/builtin/log.hpp`, `kLog = 16`) — textual log messages; not a pj_scene2D rendering concern. |
