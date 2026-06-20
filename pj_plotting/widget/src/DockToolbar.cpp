@@ -7,11 +7,12 @@
 #include <DockAreaWidget.h>
 
 #include <QCoreApplication>
-#include <QInputDialog>
+#include <QKeyEvent>
 #include <QLabel>
 #include <QLineEdit>
 #include <QMouseEvent>
 #include <QPushButton>
+#include <algorithm>
 
 #include "pj_widgets/SvgUtil.h"
 #include "ui_DockToolbar.h"
@@ -38,6 +39,24 @@ DockToolbar::DockToolbar(ads::CDockWidget* parent) : QWidget(parent), parent_doc
   ui_->widgetButtons->setMouseTracking(true);
 
   ui_->label->installEventFilter(this);
+
+  // Inline rename editor: hidden until the label is double-clicked. Enter
+  // commits via returnPressed; Escape / focus-out revert (handled in
+  // eventFilter, since the line edit is the watched object). The editor grows
+  // with its text, so keep its width in sync as the user types.
+  ui_->lineEditRename->installEventFilter(this);
+  connect(ui_->lineEditRename, &QLineEdit::returnPressed, this, &DockToolbar::commitRename);
+  connect(ui_->lineEditRename, &QLineEdit::textChanged, this, &DockToolbar::updateRenameEditWidth);
+
+  // Hint that the title bar is draggable: an open-hand "grab" cursor over the
+  // bar. Children inherit it, so override the clickable buttons (pointing hand)
+  // and the rename editor (text I-beam) to keep their own affordances.
+  setCursor(Qt::OpenHandCursor);
+  ui_->lineEditRename->setCursor(Qt::IBeamCursor);
+  for (QPushButton* button :
+       {ui_->buttonSplitHorizontal, ui_->buttonSplitVertical, ui_->buttonFullscreen, ui_->buttonClose}) {
+    button->setCursor(Qt::PointingHandCursor);
+  }
 }
 
 DockToolbar::~DockToolbar() {
@@ -116,17 +135,72 @@ void DockToolbar::leaveEvent(QEvent* ev) {
 }
 
 bool DockToolbar::eventFilter(QObject* object, QEvent* event) {
-  if (event->type() == QEvent::MouseButtonDblClick) {
-    bool ok = true;
-    QString new_name = QInputDialog::getText(
-        this, tr("Change name of the Area"), tr("New name:"), QLineEdit::Normal, ui_->label->text(), &ok);
-    if (ok) {
-      ui_->label->setText(new_name);
-      emit titleChanged(new_name);
-    }
+  if (object == ui_->label && event->type() == QEvent::MouseButtonDblClick) {
+    enterRenameMode();
     return true;
   }
+  if (object == ui_->lineEditRename) {
+    // Match the tab-rename UX: focus loss reverts; only Enter (returnPressed)
+    // commits. Escape reverts explicitly.
+    if (event->type() == QEvent::FocusOut) {
+      cancelRename();
+    } else if (event->type() == QEvent::KeyPress && static_cast<QKeyEvent*>(event)->key() == Qt::Key_Escape) {
+      cancelRename();
+      return true;
+    }
+  }
   return QObject::eventFilter(object, event);
+}
+
+void DockToolbar::enterRenameMode() {
+  if (rename_active_) {
+    return;
+  }
+  rename_active_ = true;
+  ui_->lineEditRename->setText(ui_->label->text());
+  updateRenameEditWidth();  // size to the seeded text (>= the 300 px default)
+  ui_->label->hide();
+  ui_->lineEditRename->show();
+  ui_->lineEditRename->setFocus(Qt::OtherFocusReason);
+  ui_->lineEditRename->setCursorPosition(ui_->lineEditRename->text().length());
+}
+
+void DockToolbar::commitRename() {
+  if (!rename_active_) {
+    return;
+  }
+  // Clear the flag first: hiding the focused line edit fires FocusOut, which
+  // would otherwise re-enter cancelRename() and double-process the swap.
+  rename_active_ = false;
+  const QString new_name = ui_->lineEditRename->text();
+  ui_->lineEditRename->hide();
+  ui_->label->setText(new_name);
+  ui_->label->show();
+  emit titleChanged(new_name);
+}
+
+void DockToolbar::cancelRename() {
+  if (!rename_active_) {
+    return;
+  }
+  rename_active_ = false;
+  ui_->lineEditRename->hide();
+  ui_->label->show();
+}
+
+void DockToolbar::updateRenameEditWidth() {
+  // Start at a compact 300 px and grow only when the text would not fit, so the
+  // editor doesn't span the whole (often very wide) title bar. Cap the growth at
+  // the space left after the fixed chrome — left spacer (40) + buttons (~90) +
+  // close (24) + margins ≈ 160 px — so a long name can't push under the buttons.
+  constexpr int kDefaultWidth = 300;
+  constexpr int kChromeReserve = 160;
+  constexpr int kTextPadding = 24;  // frame borders, text margins, cursor room
+
+  auto* edit = ui_->lineEditRename;
+  const int text_width = edit->fontMetrics().horizontalAdvance(edit->text()) + kTextPadding;
+  const int max_width = std::max(kDefaultWidth, width() - kChromeReserve);
+  edit->setFixedWidth(std::clamp(text_width, kDefaultWidth, max_width));
 }
 
 void DockToolbar::onStylesheetChanged(QString theme) {

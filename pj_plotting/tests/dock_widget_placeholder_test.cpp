@@ -7,10 +7,14 @@
 
 #include <QAction>
 #include <QApplication>
+#include <QCursor>
 #include <QDomDocument>
 #include <QDragEnterEvent>
 #include <QDragMoveEvent>
 #include <QDropEvent>
+#include <QKeyEvent>
+#include <QLabel>
+#include <QLineEdit>
 #include <QMetaObject>
 #include <QMimeData>
 #include <QMouseEvent>
@@ -24,6 +28,7 @@
 #include <vector>
 
 #include "pj_datastore/writer.hpp"
+#include "pj_plotting/DockToolbar.h"
 #include "pj_plotting/DockWidget.h"
 #include "pj_plotting/PlotDocker.h"
 #include "pj_plotting/PlotWidget.h"
@@ -425,6 +430,119 @@ TEST(DockWidgetPlaceholderTest, ScalarDropConvertsPlaceholderToPlot) {
   ASSERT_NE(dock->plotWidget(), nullptr);
   EXPECT_EQ(dock->objectWidget(), nullptr);
   EXPECT_EQ(dock->plotWidget()->curveList().size(), 1U);
+}
+
+// Shared setup for the DockToolbar inline-rename behaviour: a PlotDocker with one
+// dock, exposing that dock's toolbar, title label, and (hidden) rename editor.
+class DockToolbarRenameTest : public ::testing::Test {
+ protected:
+  void SetUp() override {
+    dock_ = docker_.plotAt(0);
+    ASSERT_NE(dock_, nullptr);
+    toolbar_ = dock_->toolBar();
+    ASSERT_NE(toolbar_, nullptr);
+    label_ = toolbar_->label();
+    edit_ = toolbar_->findChild<QLineEdit*>(QStringLiteral("lineEditRename"));
+    ASSERT_NE(label_, nullptr);
+    ASSERT_NE(edit_, nullptr);
+  }
+
+  // Double-click the label through its public seam (eventFilter), entering edit
+  // mode. Asserts the event is consumed.
+  void doubleClickLabel() {
+    QMouseEvent dbl(
+        QEvent::MouseButtonDblClick, QPointF(1, 1), QPointF(1, 1), Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+    EXPECT_TRUE(toolbar_->eventFilter(label_, &dbl));
+  }
+
+  PJ::SessionManager session_;
+  PJ::CatalogModel catalog_{&session_};
+  PJ::PlotDocker docker_{QStringLiteral("test"), &session_, &catalog_};
+  PJ::DockWidget* dock_ = nullptr;
+  PJ::DockToolbar* toolbar_ = nullptr;
+  QLabel* label_ = nullptr;
+  QLineEdit* edit_ = nullptr;
+};
+
+TEST_F(DockToolbarRenameTest, DoubleClickEntersInlineEditAndEnterCommits) {
+  // Double-clicking the title label swaps it for an in-place QLineEdit (no modal
+  // dialog); pressing Enter writes the edited text back and emits titleChanged.
+  label_->setText(QStringLiteral("original"));
+
+  QString emitted_title;
+  int emit_count = 0;
+  QObject::connect(toolbar_, &PJ::DockToolbar::titleChanged, toolbar_, [&](const QString& title) {
+    emitted_title = title;
+    ++emit_count;
+  });
+
+  // Enter inline edit mode: label hidden, edit shown and seeded with the text.
+  doubleClickLabel();
+  EXPECT_TRUE(label_->isHidden());
+  EXPECT_FALSE(edit_->isHidden());
+  EXPECT_EQ(edit_->text(), QStringLiteral("original"));
+
+  // Edit the text and press Enter -> commit.
+  edit_->setText(QStringLiteral("renamed"));
+  QKeyEvent enter(QEvent::KeyPress, Qt::Key_Return, Qt::NoModifier);
+  QApplication::sendEvent(edit_, &enter);
+
+  EXPECT_FALSE(label_->isHidden());
+  EXPECT_TRUE(edit_->isHidden());
+  EXPECT_EQ(label_->text(), QStringLiteral("renamed"));
+  EXPECT_EQ(dock_->name(), QStringLiteral("renamed"));
+  EXPECT_EQ(emit_count, 1);
+  EXPECT_EQ(emitted_title, QStringLiteral("renamed"));
+}
+
+TEST_F(DockToolbarRenameTest, InlineEditEscapeRevertsWithoutRenaming) {
+  // Escape (and focus loss) cancels the inline edit, leaving the original name —
+  // matching the tab-rename behaviour.
+  label_->setText(QStringLiteral("original"));
+
+  int emit_count = 0;
+  QObject::connect(toolbar_, &PJ::DockToolbar::titleChanged, toolbar_, [&](const QString&) { ++emit_count; });
+
+  doubleClickLabel();
+  edit_->setText(QStringLiteral("discarded"));
+
+  QKeyEvent escape(QEvent::KeyPress, Qt::Key_Escape, Qt::NoModifier);
+  EXPECT_TRUE(toolbar_->eventFilter(edit_, &escape));
+
+  EXPECT_FALSE(label_->isHidden());
+  EXPECT_TRUE(edit_->isHidden());
+  EXPECT_EQ(label_->text(), QStringLiteral("original"));
+  EXPECT_EQ(dock_->name(), QStringLiteral("original"));
+  EXPECT_EQ(emit_count, 0);
+}
+
+TEST_F(DockToolbarRenameTest, InlineEditDefaultsToCompactWidthAndGrowsWithText) {
+  // The editor is a compact 300 px by default (not the full bar width) and only
+  // grows when the text would not fit.
+  toolbar_->resize(1200, 30);  // wide geometry so the growth cap is large
+  label_->setText(QStringLiteral("short"));
+
+  doubleClickLabel();
+  // A short name fits in the default width, so the editor stays at exactly 300 px
+  // (well under the wide toolbar).
+  EXPECT_EQ(edit_->width(), 300);
+
+  // Typing a long name grows the editor past the default, but not unbounded.
+  edit_->setText(QString(200, QLatin1Char('W')));
+  EXPECT_GT(edit_->width(), 300);
+  EXPECT_LE(edit_->width(), toolbar_->width());
+}
+
+TEST_F(DockToolbarRenameTest, TitleBarUsesGrabCursorWithButtonAndEditorOverrides) {
+  // The bar hints it is draggable with an open-hand cursor; clickable buttons
+  // and the rename editor keep their own (pointing-hand / text) cursors so the
+  // inherited grab hand doesn't bleed onto them.
+  EXPECT_EQ(toolbar_->cursor().shape(), Qt::OpenHandCursor);
+  EXPECT_EQ(toolbar_->buttonClose()->cursor().shape(), Qt::PointingHandCursor);
+  EXPECT_EQ(toolbar_->buttonFullscreen()->cursor().shape(), Qt::PointingHandCursor);
+  EXPECT_EQ(toolbar_->buttonSplitHorizontal()->cursor().shape(), Qt::PointingHandCursor);
+  EXPECT_EQ(toolbar_->buttonSplitVertical()->cursor().shape(), Qt::PointingHandCursor);
+  EXPECT_EQ(edit_->cursor().shape(), Qt::IBeamCursor);
 }
 
 TEST(DockWidgetPlaceholderTest, CurveListChangedSeesDisplayTitleAfterCatalogKeyAdd) {

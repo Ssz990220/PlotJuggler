@@ -53,9 +53,20 @@ class DockToolbar : public QWidget {
   void enterEvent(QEnterEvent* ev) override;
   void leaveEvent(QEvent* ev) override;
 
+  // Inline rename: double-clicking the label swaps it for an in-place
+  // QLineEdit (matching the tab-rename UX). Enter commits, Escape or focus
+  // loss reverts to the previous name.
+  void enterRenameMode();
+  void commitRename();
+  void cancelRename();
+  // Sizes the rename editor to its text: a 300 px default that grows to fit a
+  // longer name (capped to the toolbar's available width).
+  void updateRenameEditWidth();
+
   ads::CDockWidget* parent_dock_;
   Ui::DockToolbar* ui_;
   bool fullscreen_mode_ = false;
+  bool rename_active_ = false;
 
   QIcon expand_icon_;
   QIcon collapse_icon_;
