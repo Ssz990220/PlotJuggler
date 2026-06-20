@@ -2280,6 +2280,25 @@ void MainWindow::loadLayoutAtStartup(const QString& path) {
   startup_auto_reload_ = false;
 }
 
+void MainWindow::enableAutoplay() {
+  autoplay_pending_ = true;
+  // Start looped playback the first time the engine reports a non-empty range — set
+  // synchronously by --test-data, or asynchronously once --layout's worker load
+  // finishes and seeds the range. Guarded by autoplay_pending_ so it fires exactly
+  // once (the rangeChanged connection stays but no-ops afterward), leaving a later
+  // manual pause/seek untouched.
+  PlaybackEngine& playback = session_->playbackEngine();
+  connect(&playback, &PlaybackEngine::rangeChanged, this, [this](double min, double max) {
+    if (!autoplay_pending_ || !(max > min)) {
+      return;
+    }
+    autoplay_pending_ = false;
+    PlaybackEngine& pb = session_->playbackEngine();
+    pb.setLooping(true);
+    pb.play();
+  });
+}
+
 void MainWindow::applyRestoredLayout(QDomDocument doc, const QString& path) {
   // 3. Filters + curve rebinding + plot apply happen together in restoreWorkspaceState
   // below. Each curve resolves against whichever loaded dataset actually holds its

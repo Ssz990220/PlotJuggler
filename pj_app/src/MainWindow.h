@@ -98,6 +98,12 @@ class MainWindow : public QMainWindow {
   // (the --layout CLI option). Safe no-op if the layout binds to no source.
   void loadLayoutAtStartup(const QString& path);
 
+  // Arms the --autoplay CLI option: begins looping playback the first time a data
+  // source provides a non-empty time range (so it works for both the synchronous
+  // --test-data path and the async --layout load). Starts once — the user's later
+  // pause/seek is respected. No-op if no data ever loads. Call before loading data.
+  void enableAutoplay();
+
   [[nodiscard]] TitleBar* titleBar() const {
     return title_bar_;
   }
@@ -567,6 +573,9 @@ class MainWindow : public QMainWindow {
   // Set only while a --layout CLI load runs, so loadLayoutFromPath auto-reloads the
   // layout's source(s) instead of prompting.
   bool startup_auto_reload_ = false;
+  // True between enableAutoplay() and the first range-driven playback start (the
+  // --autoplay one-shot); cleared once playback begins so user control is respected.
+  bool autoplay_pending_ = false;
   // Lives inside localToolbarWidget; visibility piggybacks on the
   // right-panel toggle in the tab strip.
   CurveEditor* curve_editor_ = nullptr;

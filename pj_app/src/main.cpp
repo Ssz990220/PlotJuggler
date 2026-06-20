@@ -74,6 +74,11 @@ int main(int argc, char* argv[]) {
       QStringLiteral("layout"), QStringLiteral("Load a layout file on startup, reloading its data source(s)."),
       QStringLiteral("path"));
   parser.addOption(layout_option);
+  const QCommandLineOption autoplay_option(
+      QStringLiteral("autoplay"), QStringLiteral(
+                                      "Start looping playback automatically once a data source provides a time range "
+                                      "(useful with --layout / --test-data for demos and profiling)."));
+  parser.addOption(autoplay_option);
   parser.process(app);
 
   PJ::MainWindow window(parser.value(plugin_dir_option));
@@ -83,6 +88,13 @@ int main(int argc, char* argv[]) {
   auto* gesture_watcher =
       new PJ::KeySequenceWatcher(PJ::unlockSteps(), [&window]() { window.openEmbeddedConsole(); }, &app);
   qApp->installEventFilter(gesture_watcher);
+
+  // Arm autoplay BEFORE any data loads, so its one-shot listener catches the first
+  // range — whether --test-data sets it synchronously below or --layout's async
+  // load sets it once the worker finishes.
+  if (parser.isSet(autoplay_option)) {
+    window.enableAutoplay();
+  }
 
   if (parser.isSet(test_data_option)) {
     if (!window.populateTestData()) {
