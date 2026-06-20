@@ -46,6 +46,7 @@ PJ4's 3D visualization module — the sibling family to `pj_scene2D`, focused on
 - Compressed pointclouds (`foxglove_msgs/CompressedPointCloud` + `point_cloud_interfaces/CompressedPointCloud2`), formats **Draco** and **Cloudini** — decoded into a `PointCloud` and rendered identically (see §3a). *(implemented)*
 - 3D markers / visualization primitives (arrows, boxes, spheres, cylinders, line strips, text). *(implemented — `SceneEntitiesLayer`)*
 - Pose arrays (`geometry_msgs/PoseArray`, `foxglove.PosesInFrame` → canonical `PosesInFrame`), drawn as per-pose coordinate-triad gizmos with customizable arrow length + opacity, an X-arrow-only geometry mode, and an orthogonal color override (one shared color across all arms, in either mode). *(implemented — `PosesInFrameLayer`)*
+- Dense voxel grids (`foxglove.VoxelGrid` → canonical `VoxelGrid`), drawn as GPU-instanced cubes; the per-voxel value is generic (occupancy/cost/ESDF/semantic via `fields`, or a direct RGBA channel) and a viewer-side draw predicate + colormap decide which voxels are shown. The dense→cubes expansion is entirely GPU-side (one `glDrawElementsInstanced`, `gl_InstanceID`→texel), so display cost is independent of voxel count. *(implemented — `VoxelGridLayer`)*
 - Paths (`nav_msgs/Path`).
 - Laserscans (`sensor_msgs/LaserScan`).
 
@@ -202,7 +203,7 @@ Third-party drawable type registration by plugins. Out of v1 scope. Built-in dra
 - **Per-layer Foxglove-style `frame_locked` opt-in** — chose always-locked (§4).
 - **Decay / fade-out animation** — an expired marker disappears, it does not fade. (Marker `lifetime_ns` expiry itself **is** implemented — see §4.)
 - **Out-of-core / surveying-scale pointclouds** (>500M points).
-- **Costmap-3D, ESDF, octomap, voxel grids** beyond OccupancyGrid.
+- **octomap** (adaptive octree with variable-size leaves) — belongs in SceneEntities/cube primitives, not the uniform-lattice `VoxelGrid`. (Dense voxel grids — costmap-3D / ESDF / semantic — *are* supported via `VoxelGridLayer`; see §3.)
 
 ## 13. Phase 1 acceptance — explicit
 

@@ -251,4 +251,12 @@ void Program::setInt(const char* name, int v) {
   withGlFunctions([location, v](auto& functions) { functions.glUniform1i(location, v); });
 }
 
+void Program::setIVec3(const char* name, const glm::ivec3& v) {
+  const GLint location = uniformLocation(name);
+  if (location < 0) {
+    return;
+  }
+  withGlFunctions([location, &v](auto& functions) { functions.glUniform3iv(location, 1, glm::value_ptr(v)); });
+}
+
 }  // namespace pj::scene3d::gl

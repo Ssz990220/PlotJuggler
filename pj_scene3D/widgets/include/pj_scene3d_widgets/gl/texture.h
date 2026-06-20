@@ -75,4 +75,36 @@ class Texture2D {
   QPointer<QOpenGLContext> owning_context_;
 };
 
+// RAII 3D texture (GL_TEXTURE_3D). Same move-only, lazy-gen, owning-context-guard
+// ownership model as the other gl:: wrappers. VoxelGridRenderPass uses one to hold
+// a voxel field as a dense volume the vertex shader point-samples per instance via
+// integer texelFetch (so filtering/wrapping must never blend across cells).
+class Texture3D {
+ public:
+  Texture3D();
+  ~Texture3D();
+
+  Texture3D(Texture3D&& other) noexcept;
+  Texture3D& operator=(Texture3D&& other) noexcept;
+
+  Texture3D(const Texture3D&) = delete;
+  Texture3D& operator=(const Texture3D&) = delete;
+
+  [[nodiscard]] GLuint id() const noexcept;
+
+  // (Re)allocate as width x height x depth with `internal_format` and upload the
+  // full volume from `data` (laid out x-fastest, then y, then z — the SDK's dense
+  // Z-Y-X voxel order). `data` may be null to allocate uninitialized. Sets
+  // GL_NEAREST min/mag and CLAMP_TO_EDGE on S/T/R, and GL_UNPACK_ALIGNMENT = 1.
+  void upload(
+      GLenum internal_format, GLenum format, GLenum type, uint32_t width, uint32_t height, uint32_t depth,
+      const void* data);
+
+  void bind(int unit);
+
+ private:
+  GLuint id_{0};
+  QPointer<QOpenGLContext> owning_context_;
+};
+
 }  // namespace pj::scene3d::gl

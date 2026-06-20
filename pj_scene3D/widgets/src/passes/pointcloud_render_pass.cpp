@@ -17,6 +17,7 @@
 
 #include "pj_scene3d_core/pointcloud.h"
 #include "pj_scene3d_core/tf/tf_buffer.h"
+#include "pj_scene3d_widgets/cube_mesh.h"  // shared CubeVertex / kCubeVertices / kCubeIndices / kCubeEdgeGlsl
 #include "pj_scene3d_widgets/gl/gl_functions.h"
 
 namespace pj::scene3d {
@@ -150,9 +151,11 @@ uniform int u_scalar_axis;     // -1 = colour by in_instance_scalar; 0/1/2 = fix
 
 out vec3 v_view_normal;
 out float v_normalized;
+out vec3 v_local;  // unit-cube corner, for the fragment-shader edge outline
 out vec4 v_color;
 
 void main() {
+  v_local = in_corner_pos;
   // Cubes are axis-aligned in the fixed frame: transform the instance
   // position into fixed-frame coordinates, then add the corner offset
   // unchanged. No per-instance rotation matrix is needed.
@@ -175,6 +178,7 @@ void main() {
 constexpr std::string_view kCubeFragHead = R"(#version 450 core
 in vec3 v_view_normal;
 in float v_normalized;
+in vec3 v_local;
 in vec4 v_color;               // per-instance RGBA (kRgb mode)
 out vec4 frag_color;
 
@@ -204,6 +208,8 @@ void main() {
     }
     base = sampleColormap(u_colormap_id, t);
   }
+  // Darker outline on each cube's faces (same hue), so adjacent cubes stay legible.
+  base = mix(base, base * 0.4, cubeEdgeFactor(v_local));
   // Colormaps/solid/per-point colors are display-referred sRGB; the scene FBO is
   // linear (Phase 0B: the composite present re-encodes to sRGB). Linearize on write.
   base = pow(max(base, vec3(0.0)), vec3(2.2));
@@ -219,58 +225,9 @@ std::string makePointcloudFragSrc() {
 }
 
 std::string makeCubeFragSrc() {
-  return std::string(kCubeFragHead) + std::string(PJ::colormapGlsl()) + std::string(kCubeFragTail);
+  return std::string(kCubeFragHead) + std::string(PJ::colormapGlsl()) + std::string(kCubeEdgeGlsl) +
+         std::string(kCubeFragTail);
 }
-
-struct CubeVertex {
-  float px, py, pz;
-  float nx, ny, nz;
-};
-
-// 24-vertex unit cube (±0.5 along each axis), 4 verts per face × 6 faces,
-// each carrying its outward face normal. Winding is CCW when viewed from
-// outside the face — matches OpenGL's default front-face convention.
-constexpr std::array<CubeVertex, 24> kCubeVertices = {{
-    // +X face, normal (1, 0, 0)
-    {0.5f, -0.5f, -0.5f, 1.0f, 0.0f, 0.0f},
-    {0.5f, -0.5f, 0.5f, 1.0f, 0.0f, 0.0f},
-    {0.5f, 0.5f, 0.5f, 1.0f, 0.0f, 0.0f},
-    {0.5f, 0.5f, -0.5f, 1.0f, 0.0f, 0.0f},
-    // -X face, normal (-1, 0, 0)
-    {-0.5f, -0.5f, 0.5f, -1.0f, 0.0f, 0.0f},
-    {-0.5f, -0.5f, -0.5f, -1.0f, 0.0f, 0.0f},
-    {-0.5f, 0.5f, -0.5f, -1.0f, 0.0f, 0.0f},
-    {-0.5f, 0.5f, 0.5f, -1.0f, 0.0f, 0.0f},
-    // +Y face, normal (0, 1, 0)
-    {-0.5f, 0.5f, -0.5f, 0.0f, 1.0f, 0.0f},
-    {0.5f, 0.5f, -0.5f, 0.0f, 1.0f, 0.0f},
-    {0.5f, 0.5f, 0.5f, 0.0f, 1.0f, 0.0f},
-    {-0.5f, 0.5f, 0.5f, 0.0f, 1.0f, 0.0f},
-    // -Y face, normal (0, -1, 0)
-    {-0.5f, -0.5f, 0.5f, 0.0f, -1.0f, 0.0f},
-    {0.5f, -0.5f, 0.5f, 0.0f, -1.0f, 0.0f},
-    {0.5f, -0.5f, -0.5f, 0.0f, -1.0f, 0.0f},
-    {-0.5f, -0.5f, -0.5f, 0.0f, -1.0f, 0.0f},
-    // +Z face, normal (0, 0, 1)
-    {-0.5f, -0.5f, 0.5f, 0.0f, 0.0f, 1.0f},
-    {-0.5f, 0.5f, 0.5f, 0.0f, 0.0f, 1.0f},
-    {0.5f, 0.5f, 0.5f, 0.0f, 0.0f, 1.0f},
-    {0.5f, -0.5f, 0.5f, 0.0f, 0.0f, 1.0f},
-    // -Z face, normal (0, 0, -1)
-    {0.5f, -0.5f, -0.5f, 0.0f, 0.0f, -1.0f},
-    {0.5f, 0.5f, -0.5f, 0.0f, 0.0f, -1.0f},
-    {-0.5f, 0.5f, -0.5f, 0.0f, 0.0f, -1.0f},
-    {-0.5f, -0.5f, -0.5f, 0.0f, 0.0f, -1.0f},
-}};
-
-constexpr std::array<uint8_t, 36> kCubeIndices = {{
-    0,  1,  2,  0,  2,  3,   // +X
-    4,  5,  6,  4,  6,  7,   // -X
-    8,  9,  10, 8,  10, 11,  // +Y
-    12, 13, 14, 12, 14, 15,  // -Y
-    16, 17, 18, 16, 18, 19,  // +Z
-    20, 21, 22, 20, 22, 23,  // -Z
-}};
 
 struct CloudVertex {
   float x;

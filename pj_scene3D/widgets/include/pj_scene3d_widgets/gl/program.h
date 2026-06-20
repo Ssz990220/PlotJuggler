@@ -50,6 +50,7 @@ class Program {
   void setVec4(const char* name, const glm::vec4& v);
   void setFloat(const char* name, float v);
   void setInt(const char* name, int v);
+  void setIVec3(const char* name, const glm::ivec3& v);
 
  private:
   explicit Program(GLuint id);

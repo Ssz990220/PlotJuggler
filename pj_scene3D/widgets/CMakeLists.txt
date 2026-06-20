@@ -22,6 +22,7 @@ set(PJ_SCENE3D_WIDGETS_SOURCES
   src/passes/tf_connections_render_pass.cpp
   src/passes/pointcloud_render_pass.cpp
   src/passes/occupancy_grid_render_pass.cpp
+  src/passes/voxel_grid_render_pass.cpp
   src/passes/marker_render_pass.cpp
   src/passes/poses_render_pass.cpp
   src/passes/mesh_render_pass.cpp
@@ -36,6 +37,7 @@ set(PJ_SCENE3D_WIDGETS_SOURCES
   src/layers/poses_in_frame_layer.cpp
   src/layers/scene_entities_layer.cpp
   src/layers/robot_model_layer.cpp
+  src/layers/voxel_grid_layer.cpp
   src/urdf_parser.cpp
   src/urdf_package_resolver.cpp
   src/mesh_loader.cpp
@@ -54,7 +56,10 @@ set(PJ_SCENE3D_WIDGETS_SOURCES
   include/pj_scene3d_widgets/layers/poses_in_frame_layer.h
   include/pj_scene3d_widgets/layers/scene_entities_layer.h
   include/pj_scene3d_widgets/layers/robot_model_layer.h
+  include/pj_scene3d_widgets/layers/voxel_grid_layer.h
+  include/pj_scene3d_widgets/cube_mesh.h
   include/pj_scene3d_widgets/passes/occupancy_grid_render_pass.h
+  include/pj_scene3d_widgets/passes/voxel_grid_render_pass.h
   include/pj_scene3d_widgets/passes/marker_render_pass.h
   include/pj_scene3d_widgets/passes/poses_render_pass.h
   include/pj_scene3d_widgets/passes/mesh_render_pass.h
@@ -188,6 +193,33 @@ if(PJ_BUILD_TESTS)
   target_compile_definitions(occupancy_grid_layer_updates_test PRIVATE PJ_SCENE3D_TEST_HOOKS)
   target_compile_options(occupancy_grid_layer_updates_test PRIVATE ${PJ_WARNING_FLAGS} ${PJ_SANITIZER_FLAGS})
   add_test(NAME occupancy_grid_layer_updates_test COMMAND occupancy_grid_layer_updates_test)
+
+  # VoxelGridLayer behaviour: sample-UID memo (re-scrub does no re-parse — the
+  # zero-per-voxel-CPU contract), new-sample re-decode, streaming attach + self-heal,
+  # per-use parser rebind, XML round-trip, worldBounds. Mock VoxelGrid parser.
+  add_executable(voxel_grid_layer_test
+    tests/voxel_grid_layer_test.cpp
+  )
+  target_link_libraries(voxel_grid_layer_test PRIVATE
+    pj_scene3d_widgets
+    GTest::gtest
+  )
+  target_compile_definitions(voxel_grid_layer_test PRIVATE PJ_SCENE3D_TEST_HOOKS)
+  target_compile_options(voxel_grid_layer_test PRIVATE ${PJ_WARNING_FLAGS} ${PJ_SANITIZER_FLAGS})
+  add_test(NAME voxel_grid_layer_test COMMAND voxel_grid_layer_test)
+
+  # Real-GL evidence for the instanced-cube path: a drawn voxel rasterizes
+  # fragments on an offscreen FBO; a predicate-culled voxel rasterizes nothing.
+  # Skips below GL 4.5 (like hud_overlay_gl_test); CI runs it under xvfb + llvmpipe.
+  add_executable(voxel_grid_render_pass_gl_test
+    tests/voxel_grid_render_pass_gl_test.cpp
+  )
+  target_link_libraries(voxel_grid_render_pass_gl_test PRIVATE
+    pj_scene3d_widgets
+    GTest::gtest
+  )
+  target_compile_options(voxel_grid_render_pass_gl_test PRIVATE ${PJ_WARNING_FLAGS} ${PJ_SANITIZER_FLAGS})
+  add_test(NAME voxel_grid_render_pass_gl_test COMMAND voxel_grid_render_pass_gl_test)
 
   # PointCloudLayer sample-identity caches: reset on dataset replace (stale
   # decoded/failed/pushed ids under a stable topic id), stamp-0 is data not a

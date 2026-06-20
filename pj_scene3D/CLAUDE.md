@@ -3,9 +3,23 @@
 The purpose of this module is to implement 3D visualization of robotics data
 (TF, pointclouds, occupancy grids / costmaps, meshes / URDF robot models,
 scene entities (markers), pose arrays (`PosesInFrame`, drawn as per-pose
-coordinate-triad gizmos), and depth images back-projected into point clouds
+coordinate-triad gizmos), dense voxel grids (`VoxelGridLayer`, drawn as
+GPU-instanced cubes), and depth images back-projected into point clouds
 (`DepthCloudLayer`)); paths and laserscans remain future work. Sibling
 widget family to `pj_scene2D`.
+
+`VoxelGridLayer` consumes `sdk::VoxelGrid` (SDK ≥ 0.10.0): a dense 3D lattice
+whose per-voxel value is generic via `fields` (occupancy/cost/ESDF/semantic, or a
+direct RGBA channel). The dense→cubes expansion happens entirely on the GPU —
+`VoxelGridRenderPass` uploads the selected field as a 3D texture and issues ONE
+`glDrawElementsInstanced` over a unit cube (`column*row*slice` instances); the
+vertex shader derives each voxel from `gl_InstanceID`, `texelFetch`es its value,
+evaluates the viewer-side draw predicate (which the schema does NOT encode), and
+degenerate-clips culled voxels. So display cost is independent of voxel count and a
+re-scrub to a cached grid re-uploads nothing. The Qt-free coordinate/value math
+(`core/voxel_grid_view.{h,cpp}`, `core/voxel_grid_value.{h,cpp}`) is unit-tested.
+A GPU compute-shader compaction path (`glDrawElementsIndirect` over only the
+accepted voxels, GL ≥ 4.3) is a documented follow-up for very large dense grids.
 
 Depth images arrive as `sdk::Image` with a depth `encoding` (there is no
 `kDepthImage` producer — the parser can't distinguish depth from color at
@@ -156,7 +170,9 @@ Before any commit, run the tests and check that they all pass
 `camera_zoom_to_cursor_test`, `camera_state_transfer_test`,
 `urdf_parser_test`, `urdf_package_resolver_test`, `mesh_loader_test`,
 `robot_model_bridges_test`, `robot_model_layer_test`,
-`scene_entities_layer_model_test`).
+`scene_entities_layer_model_test`, `voxel_grid_view_test`,
+`voxel_grid_value_test`, `voxel_grid_layer_test`,
+`voxel_grid_render_pass_gl_test`).
 
 Make sure that all the markdown files in this folder are updated, if necessary.
 

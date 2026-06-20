@@ -37,6 +37,7 @@
 #include "pj_scene3d_widgets/layers/poses_in_frame_layer.h"
 #include "pj_scene3d_widgets/layers/robot_model_layer.h"
 #include "pj_scene3d_widgets/layers/scene_entities_layer.h"
+#include "pj_scene3d_widgets/layers/voxel_grid_layer.h"
 #include "pj_scene3d_widgets/object_topic_metadata.h"
 #include "pj_scene3d_widgets/parse_locked.h"
 #include "pj_scene3d_widgets/scene_view_widget.h"
@@ -60,6 +61,7 @@ using pj::scene3d::Scene3DLayer;
 using pj::scene3d::Scene3DLayerContext;
 using pj::scene3d::SceneEntitiesLayer;
 using pj::scene3d::SceneViewWidget;
+using pj::scene3d::VoxelGridLayer;
 
 // Stable enum <-> on-disk-name table for the camera model, persisted in the
 // layout. The enum value == combo index, so the on-disk name stays independent of
@@ -204,6 +206,15 @@ Scene3DDockWidget::Scene3DDockWidget(QWidget* parent) : SceneDockWidget(parent) 
           -> std::unique_ptr<ISceneLayer> {
         prepareTransformBufferForTopic(topic_id);
         auto layer = std::make_unique<PosesInFrameLayer>(topic_id, display_name, this);
+        wireScene3DLayer(layer.get());
+        return layer;
+      });
+  layerFactory().registerType(
+      sdk::BuiltinObjectType::kVoxelGrid,
+      [this](ObjectTopicId topic_id, sdk::BuiltinObjectType /*object_type*/, const QString& display_name)
+          -> std::unique_ptr<ISceneLayer> {
+        prepareTransformBufferForTopic(topic_id);
+        auto layer = std::make_unique<VoxelGridLayer>(topic_id, display_name, this);
         wireScene3DLayer(layer.get());
         return layer;
       });
@@ -424,7 +435,7 @@ bool Scene3DDockWidget::handlesObjectType(sdk::BuiltinObjectType object_type) {
          object_type == sdk::BuiltinObjectType::kOccupancyGrid ||
          object_type == sdk::BuiltinObjectType::kRobotDescription ||
          object_type == sdk::BuiltinObjectType::kSceneEntities ||
-         object_type == sdk::BuiltinObjectType::kPosesInFrame ||
+         object_type == sdk::BuiltinObjectType::kPosesInFrame || object_type == sdk::BuiltinObjectType::kVoxelGrid ||
          // kImage is accepted only for DEPTH-encoded images; addTopic() peeks the
          // first sample's encoding and rejects color images (which share kImage).
          object_type == sdk::BuiltinObjectType::kImage;
