@@ -210,6 +210,43 @@ desaturated X/Y/Z colors match the TF "Frames" gizmos.
   text and layout (picking a color auto-ticks the box) for cross-layer consistency.
   No host edits.
 
+## Pointcloud layer (`PointCloudLayer`)
+
+`PointCloudLayer` keeps the existing `convertCanonical()` -> `DecodedPointCloud` ->
+`CloudVertex` fallback for layouts that need CPU decoding, and adds a narrow zero-copy
+fast path for little-endian clouds whose xyz fields are contiguous float32 values. The
+fast path uploads the canonical `sdk::PointCloud::data` buffer verbatim and binds the
+shader attributes with the point's native stride/offset/type; `FastCloudData` retains the
+wire cloud by value so its `BufferAnchor` keeps the bytes alive across GL-context
+recreation, letting `releaseGL()`/`initializeGL()` re-upload from the same source just as
+the fallback re-uploads from retained decoded vectors.
+
+RGB-direct (`kRgb`) clouds also take the fast path when the cloud carries a packed,
+contiguous `rgba`/`rgb` uint32 field (`checkFastPath(..., want_rgba=true)`): the four colour
+bytes upload verbatim and bind as a normalized `vec4` straight at the field offset —
+pixel-identical to the CPU `convertCanonical(extract_rgba)` path, with no extraction.
+Scattered separate `red`/`green`/`blue` channels fall back to the CPU packer.
+
+The geometry AABB (`world_bounds_`) feeds the camera scene-fit every frame, so it must refresh
+on every sample. On the bounds-only cases (RGB-direct, solid, spatial-axis, auto-off, non-dirty —
+i.e. when no colormap scalar pass is needed) with a 4-byte-aligned fast-path layout, that
+reduction runs on the **GPU** rather than the CPU: `PointcloudAabbReducer` dispatches a compute
+shader over the already-resident fast-path VBO (no extra upload), reducing min/max via an
+order-preserving float→uint key (`aabb_gpu_key.h`) and `atomicMin`/`atomicMax`, and reads the
+6-value result back **asynchronously** (fence + non-blocking `poll()` in the next frame's
+`render()`). The completed AABB flows to the layer through a bounds callback (`onGpuAabb`) which
+updates `world_bounds_` and requests a repaint, so the existing `repaintRequested →
+updateSceneBounds` path re-fits the camera. The result lags a frame or two — invisible to the
+auto-fit — so the per-sample bounds cost leaves the GUI thread entirely (≈80–170× less GUI-thread
+work than the CPU scan at 1–5 M points; see `demos/pointcloud_aabb_benchmark`).
+
+Fallbacks keep the CPU scan: the **first** sample after attach/reset (to seed `world_bounds_`
+synchronously and probe compute support), the kField auto-range-dirty case (it needs the scalar
+min/max anyway, getting bounds for free in the same pass), a misaligned layout, the decoded
+`convertCanonical` path (bounds come free there), and any context without compute (GL < 4.3,
+e.g. Windows software GL). The layer only drops the CPU scan once the pass confirms
+`gpuAabbAvailable()`, so unsupported drivers degrade safely.
+
 ## Depth-cloud layer (`DepthCloudLayer`)
 
 Back-projects a depth image into a 3D point cloud (one point per valid pixel),

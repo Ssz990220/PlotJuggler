@@ -33,6 +33,12 @@ class Program {
 
   [[nodiscard]] static Result fromSources(std::string_view vert_src, std::string_view frag_src);
 
+  // Build a compute program from a single GL_COMPUTE_SHADER source. Requires a
+  // GL >= 4.3 context (the caller gates on this — fromComputeSource only reports
+  // the compile/link error otherwise). The caller drives glDispatchCompute /
+  // glMemoryBarrier itself after use().
+  [[nodiscard]] static Result fromComputeSource(std::string_view comp_src);
+
   void use();
   [[nodiscard]] GLuint id() const noexcept;
   // Uniform location for `name`, cached per program after the first lookup
@@ -50,6 +56,7 @@ class Program {
   void setVec4(const char* name, const glm::vec4& v);
   void setFloat(const char* name, float v);
   void setInt(const char* name, int v);
+  void setUInt(const char* name, unsigned int v);
   void setIVec3(const char* name, const glm::ivec3& v);
 
  private:

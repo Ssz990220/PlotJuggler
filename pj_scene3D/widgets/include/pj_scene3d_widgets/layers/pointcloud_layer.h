@@ -153,6 +153,11 @@ class PointCloudLayer : public Scene3DLayer {
   [[nodiscard]] int startDecodeCountForTest() const {
     return start_decode_count_;
   }
+  // True when the render pass holds a zero-copy fast cloud (vs the CloudVertex fallback) — lets a
+  // test assert an eligible cloud (incl. packed-rgba RGB-direct) actually took the fast path.
+  [[nodiscard]] bool activeCloudIsFastForTest() const {
+    return cloud_pass_.activeCloudIsFastForTest();
+  }
 #endif
 
  signals:
@@ -207,6 +212,11 @@ class PointCloudLayer : public Scene3DLayer {
   // shared by the raw and compressed paths. `id` identifies the pushed sample for
   // the redundant-push skip in renderAt().
   void pushCloud(const PJ::sdk::PointCloud& cloud, SampleId id);
+
+  // Receives an async GPU AABB reduction from the render pass (GL thread). Updates
+  // world_bounds_ (+ the spatial-axis colormap range) and requests a repaint so the
+  // camera scene-fit picks up the new extent. Wired as the pass bounds callback.
+  void onGpuAabb(std::optional<AABB> box);
 
   // Track a (possibly changing) source frame_id; notify the dock/panel on change.
   void updateSourceFrame(const std::string& frame_id);
@@ -307,6 +317,10 @@ class PointCloudLayer : public Scene3DLayer {
   // renderAt() skip key so toggling RGB on/off forces a re-decode even on the same
   // sample (color_field_ alone doesn't change between field/solid and rgb).
   bool last_pushed_rgb_ = false;
+  // Scalar axis of the last push (-1 non-spatial, 0/1/2 = x/y/z). onGpuAabb() reads
+  // it to decide whether an async GPU bounds result must also refresh the
+  // spatial-axis colormap range.
+  int last_pushed_axis_ = -1;
 
   // Async compressed-cloud decode state. Inert for raw PointCloud topics.
   QFutureWatcher<DecodeResult>* decode_watcher_ = nullptr;  // child of this; created on first compressed sample

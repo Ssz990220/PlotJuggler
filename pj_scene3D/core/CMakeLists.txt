@@ -42,6 +42,9 @@ if(PJ_BUILD_TESTS)
     ../tests/occupancy_grid_bounds_test.cpp
     ../tests/depth_backproject_test.cpp
     ../tests/pointcloud_convert_test.cpp
+    ../tests/pointcloud_fast_path_predicate_test.cpp
+    ../tests/pointcloud_bounds_scan_equivalence_test.cpp
+    ../tests/aabb_gpu_key_test.cpp
     ../tests/aabb_axis_range_test.cpp
     ../tests/frame_picking_test.cpp
     ../tests/camera_near_far_test.cpp

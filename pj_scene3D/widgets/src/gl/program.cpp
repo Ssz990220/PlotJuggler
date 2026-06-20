@@ -163,6 +163,42 @@ Program::Result Program::fromSources(std::string_view vert_src, std::string_view
   });
 }
 
+Program::Result Program::fromComputeSource(std::string_view comp_src) {
+  return withGlFunctions([comp_src](auto& functions) -> Program::Result {
+    std::string error;
+    const GLuint comp_shader = compileShader(functions, GL_COMPUTE_SHADER, comp_src, "Compute", error);
+    if (comp_shader == 0U) {
+      return error;
+    }
+
+    const GLuint program = functions.glCreateProgram();
+    if (program == 0U) {
+      functions.glDeleteShader(comp_shader);
+      return std::string{"Failed to create compute program"};
+    }
+
+    functions.glAttachShader(program, comp_shader);
+    functions.glLinkProgram(program);
+
+    GLint link_status = GL_FALSE;
+    functions.glGetProgramiv(program, GL_LINK_STATUS, &link_status);
+
+    functions.glDetachShader(program, comp_shader);
+    functions.glDeleteShader(comp_shader);
+
+    if (link_status == GL_TRUE) {
+      return Program{program};
+    }
+
+    const std::string log = programInfoLog(functions, program);
+    functions.glDeleteProgram(program);
+    if (log.empty()) {
+      return std::string{"Compute program link failed"};
+    }
+    return fmt::format("Compute program link failed:\n{}", log);
+  });
+}
+
 void Program::use() {
   withGlFunctions([this](auto& functions) { functions.glUseProgram(id_); });
 }
@@ -249,6 +285,14 @@ void Program::setInt(const char* name, int v) {
     return;
   }
   withGlFunctions([location, v](auto& functions) { functions.glUniform1i(location, v); });
+}
+
+void Program::setUInt(const char* name, unsigned int v) {
+  const GLint location = uniformLocation(name);
+  if (location < 0) {
+    return;
+  }
+  withGlFunctions([location, v](auto& functions) { functions.glUniform1ui(location, v); });
 }
 
 void Program::setIVec3(const char* name, const glm::ivec3& v) {

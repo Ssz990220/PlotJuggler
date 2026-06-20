@@ -52,6 +52,16 @@ using PJ::sdk::CompressedPointCloud;
 using PJ::sdk::PayloadView;
 using PJ::sdk::PointCloud;
 
+std::pair<float, float> clampScalarRange(float lo, float hi) {
+  if (lo > hi) {
+    return {0.0f, 1.0f};
+  }
+  if (hi - lo < 1e-6f) {
+    hi = lo + 1.0f;
+  }
+  return {lo, hi};
+}
+
 std::pair<float, float> computeScalarRange(const std::vector<float>& scalar) {
   float lo = std::numeric_limits<float>::max();
   float hi = std::numeric_limits<float>::lowest();
@@ -62,13 +72,7 @@ std::pair<float, float> computeScalarRange(const std::vector<float>& scalar) {
     lo = std::min(lo, v);
     hi = std::max(hi, v);
   }
-  if (lo > hi) {
-    return {0.0f, 1.0f};
-  }
-  if (hi - lo < 1e-6f) {
-    hi = lo + 1.0f;
-  }
-  return {lo, hi};
+  return clampScalarRange(lo, hi);
 }
 
 // Fixed-frame spatial colour axis for a colour-field name: x->0, y->1, z->2, else
@@ -84,6 +88,23 @@ int spatialAxisIndex(const std::string& field) {
     return 2;
   }
   return -1;
+}
+
+// The GPU AABB reducer indexes the cloud buffer as uint words, so the fast-path
+// byte stride and the x offset (y/z follow contiguously at +4/+8) must both be
+// 4-byte aligned for the GPU path; otherwise the layer keeps the CPU scan.
+bool gpuAabbAligned(const AttribLayout& layout) {
+  constexpr uint32_t kAlign = PointcloudAabbReducer::kRequiredAlignmentBytes;
+  return layout.stride % kAlign == 0 && layout.xyz_offset % kAlign == 0;
+}
+
+// Exact equality of optional AABBs — suppresses repaints when an async GPU
+// reduction returns the extent the layer already holds (a stable streaming cloud).
+bool aabbEqual(const std::optional<AABB>& a, const std::optional<AABB>& b) {
+  if (a.has_value() != b.has_value()) {
+    return false;
+  }
+  return !a.has_value() || (a->min == b->min && a->max == b->max);
 }
 
 QString defaultColorField(const QStringList& available) {
@@ -113,6 +134,10 @@ PointCloudLayer::PointCloudLayer(
   cloud_pass_.setSolidColor(glm::vec3(solid_color_.redF(), solid_color_.greenF(), solid_color_.blueF()));
   cloud_pass_.setColormap(colormap_);
   cloud_pass_.setInvertLut(invert_lut_);
+  // The pass owns the GPU AABB reducer and polls it inside render() (GL thread);
+  // a completed reduction flows back here to refresh world_bounds_ + the camera.
+  // cloud_pass_ is a member, so `this` outlives every callback invocation.
+  cloud_pass_.setBoundsCallback([this](std::optional<AABB> box) { onGpuAabb(box); });
 }
 
 PointCloudLayer::~PointCloudLayer() = default;
@@ -917,49 +942,141 @@ void PointCloudLayer::pushCloud(const PointCloud& cloud, SampleId id) {
     // the first cloud that reaches the GPU also reveals the field set.
     populateColorFields(cloud);
   }
-  // RGB-direct mode reads per-point colour from the cloud's colour field instead of a
-  // colormap scalar. Fixed-frame (x/y/z) colouring derives the colour from the
-  // GPU-transformed position (see PointcloudRenderPass::setScalarAxis), so there is no raw
-  // scalar to decode for it.
+  // RGB-direct mode reads per-point colour from the cloud's colour field instead of a colormap
+  // scalar. Fixed-frame (x/y/z) colouring derives colour from the GPU-transformed position
+  // (see PointcloudRenderPass::setScalarAxis), so there is no raw scalar to decode for it.
   const bool rgb_mode = color_type_ == PointcloudRenderPass::ColorType::kRgb && has_color_;
+  const bool colormap = color_type_ == PointcloudRenderPass::ColorType::kField;
   const int axis = rgb_mode ? -1 : spatialAxisIndex(color_field_);
-  const std::string_view scalar_field = (rgb_mode || axis >= 0) ? std::string_view{} : std::string_view{color_field_};
-  ConvertedPointCloud converted = convertCanonical(cloud, scalar_field, /*extract_rgba=*/rgb_mode);
-  DecodedPointCloud& decoded = converted.cloud;
+  const std::string_view scalar_sv = (rgb_mode || axis >= 0) ? std::string_view{} : std::string_view{color_field_};
+  const std::size_t point_count = static_cast<std::size_t>(cloud.width) * static_cast<std::size_t>(cloud.height);
+  // RGB-direct takes the zero-copy fast path too when the cloud has a packed (contiguous) rgba
+  // field: the wire colour bytes upload verbatim (want_rgba), no CPU extraction. Separate
+  // red/green/blue channels (non-contiguous) fall back to convertCanonical's CPU rgba packer.
+  std::optional<AttribLayout> layout =
+      rgb_mode ? checkFastPath(cloud, std::string_view{}, /*want_rgba=*/true) : checkFastPath(cloud, scalar_sv);
 
-  // convertCanonical accumulates the finite-point AABB in its single decode pass, so the
-  // source-frame bounds come back for free (TF is applied per-render in the shader, so the
-  // decoded positions stay in the cloud's own frame).
-  world_bounds_ = converted.bounds.valid ? std::optional<AABB>{converted.bounds} : std::nullopt;
+  if (layout.has_value()) {
+    cloud_pass_.setScalarAxis(axis);
+    // The per-point SCALAR min/max (a kField auto-range colormap's range) is needed only for a
+    // non-spatial field whose auto-range is dirty; solid colour, RGB-direct, a disabled auto-range,
+    // a spatial axis, and a non-dirty field all need no scalar reduction (sf == nullptr).
+    const bool want_scalar_range = colormap && auto_range_ && axis < 0 && range_dirty_;
+    const PJ::sdk::PointField* sf =
+        (want_scalar_range && !color_field_.empty()) ? findField(cloud.fields, color_field_) : nullptr;
 
-  cloud_pass_.setScalarAxis(axis);
-  if (axis >= 0) {
-    // The pass derives both the per-point colour AND (when auto) the colormap range
-    // from these source bounds transformed by the live source->fixed model, so a
-    // fixed-frame or TF change needs no re-decode. Manual range pins explicit
-    // world-axis bounds; the shader still colours by the fixed-frame coordinate.
-    cloud_pass_.setSpatialAutoBounds(auto_range_ ? world_bounds_ : std::optional<AABB>{});
-    if (!auto_range_) {
-      cloud_pass_.setColormapRange(manual_range_min_, manual_range_max_);
+    // world_bounds_ feeds the camera scene-fit / adaptive near-far EVERY frame
+    // (Scene3DDockWidget::updateSceneBounds), so the geometry AABB must refresh on every new
+    // sample. On the bounds-only case (sf == nullptr) with a GPU-aligned layout, that reduction
+    // moves onto the GPU: the FIRST eligible sample still CPU-scans (to seed world_bounds_ AND
+    // probe compute support), then the async GPU reduction maintains it via onGpuAabb() and the CPU
+    // scan leaves the hot path. A CPU scalar pass (sf != nullptr), a misaligned layout, an unseeded
+    // world_bounds_, or a compute-less context all keep the CPU scan.
+    const bool gpu_unavailable = cloud_pass_.gpuAabbProbed() && !cloud_pass_.gpuAabbAvailable();
+    const bool gpu_candidate =
+        sf == nullptr && gpuAabbAligned(*layout) && world_bounds_.has_value() && !gpu_unavailable;
+    cloud_pass_.setGpuAabbEnabled(gpu_candidate);
+    const bool gpu_authoritative = gpu_candidate && cloud_pass_.gpuAabbAvailable();
+
+    if (!gpu_authoritative) {
+      const BoundsScanResult scan = scanBoundsAndScalarRange(cloud, *layout, sf);
+      world_bounds_ = scan.bounds.valid ? std::optional<AABB>{scan.bounds} : std::nullopt;
+      if (axis >= 0) {
+        cloud_pass_.setSpatialAutoBounds(auto_range_ ? world_bounds_ : std::optional<AABB>{});
+        if (!auto_range_) {
+          cloud_pass_.setColormapRange(manual_range_min_, manual_range_max_);
+        }
+        range_dirty_ = false;
+      } else {
+        cloud_pass_.setSpatialAutoBounds(std::nullopt);
+        if (sf != nullptr) {
+          // Match the fallback's computeScalarRange exactly, including its all-NaN behaviour:
+          // a field with no finite value yields {0,1} (computeScalarRange's lo>hi clamp branch)
+          // and still sets the range + emits + clears dirty.
+          const auto [lo, hi] = scan.scalar_range
+                                    ? clampScalarRange(scan.scalar_range->first, scan.scalar_range->second)
+                                    : std::pair<float, float>{0.0f, 1.0f};
+          cloud_pass_.setColormapRange(lo, hi);
+          range_dirty_ = false;
+          emit autoRangeComputed(lo, hi);
+        }
+      }
+    } else {
+      // GPU authoritative: skip the CPU scan (world_bounds_ is maintained async by onGpuAabb()),
+      // but still mirror the colormap-range wiring the CPU branch would do. It reads the last-known
+      // world_bounds_; for a spatial AUTO axis onGpuAabb() refreshes spatial_auto_bounds_ when the
+      // extent changes, so the range follows the GPU result a frame later.
+      if (axis >= 0) {
+        cloud_pass_.setSpatialAutoBounds(auto_range_ ? world_bounds_ : std::optional<AABB>{});
+        if (!auto_range_) {
+          cloud_pass_.setColormapRange(manual_range_min_, manual_range_max_);
+        }
+        range_dirty_ = false;
+      } else {
+        cloud_pass_.setSpatialAutoBounds(std::nullopt);
+      }
     }
-    range_dirty_ = false;
+
+    FastCloudData fc;
+    fc.wire = cloud;
+    fc.point_count = point_count;
+    fc.layout = *layout;
+    cloud_pass_.setActiveFastCloud(std::move(fc));
   } else {
-    // Non-spatial field: colour by the raw per-point scalar in the cloud's own frame.
-    // Recompute the auto-range only when actually dirty (new field / re-enabled auto).
-    cloud_pass_.setSpatialAutoBounds(std::nullopt);
-    if (!decoded.scalar.empty() && auto_range_ && range_dirty_) {
-      const auto [lo, hi] = computeScalarRange(decoded.scalar);
-      cloud_pass_.setColormapRange(lo, hi);
-      range_dirty_ = false;
-      emit autoRangeComputed(lo, hi);
-    }
-  }
+    ConvertedPointCloud converted = convertCanonical(cloud, scalar_sv, /*extract_rgba=*/rgb_mode);
+    DecodedPointCloud& decoded = converted.cloud;
 
-  cloud_pass_.setActiveCloud(std::make_shared<DecodedPointCloud>(std::move(decoded)));
+    // convertCanonical accumulates the finite-point AABB in its single decode pass, so the
+    // source-frame bounds come back for free (TF is applied per-render in the shader, so the
+    // decoded positions stay in the cloud's own frame).
+    world_bounds_ = converted.bounds.valid ? std::optional<AABB>{converted.bounds} : std::nullopt;
+
+    cloud_pass_.setScalarAxis(axis);
+    if (axis >= 0) {
+      // The pass derives both the per-point colour AND (when auto) the colormap range
+      // from these source bounds transformed by the live source->fixed model, so a
+      // fixed-frame or TF change needs no re-decode. Manual range pins explicit
+      // world-axis bounds; the shader still colours by the fixed-frame coordinate.
+      cloud_pass_.setSpatialAutoBounds(auto_range_ ? world_bounds_ : std::optional<AABB>{});
+      if (!auto_range_) {
+        cloud_pass_.setColormapRange(manual_range_min_, manual_range_max_);
+      }
+      range_dirty_ = false;
+    } else {
+      // Non-spatial field: colour by the raw per-point scalar in the cloud's own frame.
+      // Recompute the auto-range only when actually dirty (new field / re-enabled auto).
+      cloud_pass_.setSpatialAutoBounds(std::nullopt);
+      if (colormap && !decoded.scalar.empty() && auto_range_ && range_dirty_) {
+        const auto [lo, hi] = computeScalarRange(decoded.scalar);
+        cloud_pass_.setColormapRange(lo, hi);
+        range_dirty_ = false;
+        emit autoRangeComputed(lo, hi);
+      }
+    }
+
+    cloud_pass_.setActiveCloud(std::make_shared<DecodedPointCloud>(std::move(decoded)));
+  }
   last_pushed_id_ = id;
   last_pushed_color_field_ = color_field_;
   last_pushed_rgb_ = rgb_mode;
+  last_pushed_axis_ = axis;
   emit repaintRequested();
+}
+
+void PointCloudLayer::onGpuAabb(std::optional<AABB> box) {
+  // The async GPU reduction completed (called from the pass's render(), GL thread). An invalid
+  // box means the cloud had no finite points -> no bounds, same as the CPU scan.
+  const std::optional<AABB> new_bounds = (box && box->valid) ? box : std::nullopt;
+  if (aabbEqual(new_bounds, world_bounds_)) {
+    return;  // unchanged extent (stable streaming cloud) — no spurious repaint
+  }
+  world_bounds_ = new_bounds;
+  if (last_pushed_axis_ >= 0 && auto_range_) {
+    // For spatial-axis auto colouring the pass derives the colormap range from these source
+    // bounds each frame, so the GPU result must refresh them too (the CPU path did this inline).
+    cloud_pass_.setSpatialAutoBounds(world_bounds_);
+  }
+  emit repaintRequested();  // re-fits the camera via Scene3DDockWidget::updateSceneBounds
 }
 
 void PointCloudLayer::renderAt(int64_t time_ns) {

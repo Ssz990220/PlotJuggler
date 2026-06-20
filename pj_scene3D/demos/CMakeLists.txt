@@ -30,4 +30,12 @@ if(TARGET pj_scene3d_widgets)
   target_compile_options(scene3d_mesh_viewer PRIVATE ${PJ_WARNING_FLAGS} ${PJ_SANITIZER_FLAGS})
   target_include_directories(scene3d_mesh_viewer PRIVATE ../widgets/src)
   target_link_libraries(scene3d_mesh_viewer PRIVATE pj_scene3d_widgets Qt6::Xml)
+
+  # Self-verifying GPU-vs-CPU AABB-reduction benchmark (offscreen GL, no window).
+  # Prints GL_RENDERER + timings and exits non-zero if the GPU result disagrees
+  # with the CPU scan. Run with QT_QPA_PLATFORM=offscreen for headless CI.
+  add_executable(pointcloud_aabb_benchmark pointcloud_aabb_benchmark.cpp)
+  target_compile_features(pointcloud_aabb_benchmark PRIVATE cxx_std_20)
+  target_compile_options(pointcloud_aabb_benchmark PRIVATE ${PJ_WARNING_FLAGS} ${PJ_SANITIZER_FLAGS})
+  target_link_libraries(pointcloud_aabb_benchmark PRIVATE pj_scene3d_widgets pj_scene3d_core Qt6::Gui)
 endif()

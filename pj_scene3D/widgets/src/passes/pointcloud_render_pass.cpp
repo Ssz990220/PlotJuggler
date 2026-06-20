@@ -21,10 +21,19 @@
 #include "pj_scene3d_widgets/gl/gl_functions.h"
 
 namespace pj::scene3d {
+
+static_assert(
+    kGlFloat == GL_FLOAT && kGlUnsignedInt == GL_UNSIGNED_INT && kGlShort == GL_SHORT &&
+        kGlUnsignedShort == GL_UNSIGNED_SHORT && kGlByte == GL_BYTE && kGlUnsignedByte == GL_UNSIGNED_BYTE &&
+        kGlInt == GL_INT,
+    "core GL enum mirror drift");
+
 namespace {
 
 constexpr std::string_view kPointcloudVertSrc = R"(#version 450 core
 layout(location = 0) in vec3 in_pos;
+// Integer attribs bound with normalized=GL_FALSE are widened to float by GL,
+// matching readScalarAt (signed types sign-extend).
 layout(location = 1) in float in_scalar;
 layout(location = 2) in vec4 in_color;  // per-point RGBA in [0,1] (kRgb mode)
 out vec4 v_color;
@@ -138,6 +147,8 @@ constexpr std::string_view kCubeVertSrc = R"(#version 450 core
 layout(location = 0) in vec3 in_corner_pos;       // per-vertex (24)
 layout(location = 1) in vec3 in_corner_normal;    // per-vertex (24)
 layout(location = 2) in vec3 in_instance_pos;     // per-instance, divisor=1
+// Integer attribs bound with normalized=GL_FALSE are widened to float by GL,
+// matching readScalarAt (signed types sign-extend).
 layout(location = 3) in float in_instance_scalar; // per-instance, divisor=1
 layout(location = 4) in vec4 in_instance_color;   // per-instance RGBA, divisor=1 (kRgb mode)
 
@@ -256,11 +267,35 @@ PointcloudRenderPass::PointcloudRenderPass() = default;
 
 PointcloudRenderPass::~PointcloudRenderPass() = default;
 
+const std::string& PointcloudRenderPass::activeFrameId() const {
+  if (const auto* fast = std::get_if<FastCloudData>(&cloud_); fast != nullptr) {
+    return fast->wire.frame_id;
+  }
+  if (const auto* fallback = std::get_if<std::shared_ptr<const DecodedPointCloud>>(&cloud_);
+      fallback != nullptr && *fallback) {
+    return (*fallback)->frame_id;
+  }
+  static const std::string kEmpty;
+  return kEmpty;
+}
+
+bool PointcloudRenderPass::hasRetainedCloud() const {
+  if (const auto* fast = std::get_if<FastCloudData>(&cloud_); fast != nullptr) {
+    return fast->point_count > 0U;
+  }
+  if (const auto* fallback = std::get_if<std::shared_ptr<const DecodedPointCloud>>(&cloud_);
+      fallback != nullptr && *fallback) {
+    return !(*fallback)->positions.empty();
+  }
+  return false;
+}
+
 void PointcloudRenderPass::releaseGL() {
   // Drop both programs and every buffer from the dying context. The CPU-side
-  // cloud_ (a shared_ptr) is retained; initializeGL() re-sets cloud_dirty_ so
-  // render() re-uploads the point VBO and re-wires the attribs in the new
-  // context. cube_instance_bindings_dirty_ forces the cube path to rebind too.
+  // retained cloud variant (fast wire anchor or fallback shared_ptr) survives;
+  // initializeGL() re-sets cloud_dirty_ so render() re-uploads the point VBO
+  // and re-wires the attribs in the new context. cube_instance_bindings_dirty_
+  // forces the cube path to rebind too.
   program_.reset();
   cube_program_.reset();
   vao_ = gl::VertexArray{};
@@ -268,9 +303,10 @@ void PointcloudRenderPass::releaseGL() {
   cube_vao_ = gl::VertexArray{};
   cube_vbo_ = gl::Buffer{};
   cube_ebo_ = gl::Buffer{};
+  aabb_reducer_.releaseGL();  // re-probes lazily on the next dispatch in the new context
   vbo_point_count_ = 0U;
   cube_instance_bindings_dirty_ = true;
-  cloud_dirty_ = (cloud_ != nullptr);
+  cloud_dirty_ = hasRetainedCloud();
   initialized_ = false;
 }
 
@@ -329,42 +365,102 @@ void PointcloudRenderPass::render(const ViewParams& view_params, const FrameCont
     return;
   }
 
+  // Drain a completed GPU AABB from a PRIOR frame's dispatch before this frame's
+  // draw, so spatial_auto_bounds_ (set by the callback in spatial-axis modes) and
+  // the camera see the fresh extent this frame. Non-blocking — nullopt until the
+  // fence signals. Always polled (even if disabled now) so a late result drains.
+  if (auto box = aabb_reducer_.poll(); box.has_value() && bounds_callback_) {
+    bounds_callback_(*box);
+  }
+
   if (cloud_dirty_) {
-    if (!cloud_ || cloud_->positions.empty()) {
+    if (std::holds_alternative<std::monostate>(cloud_)) {
+      vbo_point_count_ = 0U;
+      cloud_dirty_ = false;
+      return;
+    }
+    if (const auto* fallback = std::get_if<std::shared_ptr<const DecodedPointCloud>>(&cloud_);
+        fallback != nullptr && (!*fallback || (*fallback)->positions.empty())) {
       vbo_point_count_ = 0U;
       cloud_dirty_ = false;
       return;
     }
 
-    std::vector<CloudVertex> vertices;
-    vertices.reserve(cloud_->positions.size());
-    const bool has_scalars = cloud_->scalar.size() == cloud_->positions.size();
-    const bool has_colors = cloud_->rgba.size() == cloud_->positions.size();
-    for (std::size_t i = 0U; i < cloud_->positions.size(); ++i) {
-      const glm::vec3& p = cloud_->positions[i];
-      const float scalar = has_scalars ? cloud_->scalar[i] : 0.0f;
-      const uint32_t color = has_colors ? cloud_->rgba[i] : 0xFFFFFFFFu;  // opaque white when no color
-      vertices.push_back(CloudVertex{p.x, p.y, p.z, scalar, color});
+    if (const auto* fast = std::get_if<FastCloudData>(&cloud_); fast != nullptr) {
+      const GLsizeiptr bytes = static_cast<GLsizeiptr>(fast->point_count) * fast->layout.stride;
+      vbo_.uploadStatic(GL_ARRAY_BUFFER, fast->wire.data.data(), bytes);
+      vao_.bind();
+      withGlFunctions([&](auto& functions) {
+        functions.glEnableVertexAttribArray(0U);
+        functions.glVertexAttribPointer(
+            0U, 3, GL_FLOAT, GL_FALSE, static_cast<GLsizei>(fast->layout.stride),
+            reinterpret_cast<const void*>(static_cast<std::uintptr_t>(fast->layout.xyz_offset)));
+        if (fast->layout.has_scalar) {
+          functions.glEnableVertexAttribArray(1U);
+          functions.glVertexAttribPointer(
+              1U, 1, static_cast<GLenum>(fast->layout.scalar_gl_type), GL_FALSE,
+              static_cast<GLsizei>(fast->layout.stride),
+              reinterpret_cast<const void*>(static_cast<std::uintptr_t>(fast->layout.scalar_offset)));
+        } else {
+          functions.glDisableVertexAttribArray(1U);
+          functions.glVertexAttrib1f(1U, 0.0f);
+        }
+        if (fast->layout.has_color) {
+          // Packed RGBA straight from the wire buffer: 4 normalized bytes -> vec4 in [0,1]
+          // (the shader paints .rgb), pixel-identical to the CPU rgba extraction.
+          functions.glEnableVertexAttribArray(2U);
+          functions.glVertexAttribPointer(
+              2U, 4, GL_UNSIGNED_BYTE, GL_TRUE, static_cast<GLsizei>(fast->layout.stride),
+              reinterpret_cast<const void*>(static_cast<std::uintptr_t>(fast->layout.color_offset)));
+        } else {
+          functions.glDisableVertexAttribArray(2U);
+        }
+      });
+      vao_.unbind();
+
+      vbo_point_count_ = fast->point_count;
+
+      // Reduce the just-uploaded geometry on the GPU (async). The result lands in
+      // a later frame's poll() above. Eligibility (4-byte-aligned float32 xyz) is
+      // guaranteed by the layer before it enables this.
+      if (gpu_aabb_enabled_ && fast->point_count > 0U) {
+        aabb_reducer_.dispatch(vbo_.id(), fast->point_count, fast->layout.stride, fast->layout.xyz_offset);
+      }
+    } else if (
+        const auto* fallback = std::get_if<std::shared_ptr<const DecodedPointCloud>>(&cloud_);
+        fallback != nullptr && *fallback) {
+      const auto& decoded = **fallback;
+      std::vector<CloudVertex> vertices;
+      vertices.reserve(decoded.positions.size());
+      const bool has_scalars = decoded.scalar.size() == decoded.positions.size();
+      const bool has_colors = decoded.rgba.size() == decoded.positions.size();
+      for (std::size_t i = 0U; i < decoded.positions.size(); ++i) {
+        const glm::vec3& p = decoded.positions[i];
+        const float scalar = has_scalars ? decoded.scalar[i] : 0.0f;
+        const uint32_t color = has_colors ? decoded.rgba[i] : 0xFFFFFFFFu;  // opaque white when no color
+        vertices.push_back(CloudVertex{p.x, p.y, p.z, scalar, color});
+      }
+
+      vbo_.uploadStatic(
+          GL_ARRAY_BUFFER, vertices.data(), static_cast<GLsizeiptr>(vertices.size() * sizeof(CloudVertex)));
+      vao_.bind();
+      withGlFunctions([](auto& functions) {
+        functions.glEnableVertexAttribArray(0U);
+        functions.glVertexAttribPointer(0U, 3, GL_FLOAT, GL_FALSE, static_cast<GLsizei>(sizeof(CloudVertex)), nullptr);
+        functions.glEnableVertexAttribArray(1U);
+        functions.glVertexAttribPointer(
+            1U, 1, GL_FLOAT, GL_FALSE, static_cast<GLsizei>(sizeof(CloudVertex)), reinterpret_cast<const void*>(12));
+        // Packed RGBA at byte offset 16, fed as 4 normalized unsigned bytes -> vec4 in [0,1],
+        // with .r = byte0 = Red (matches the canonical 'rgba' little-endian layout).
+        functions.glEnableVertexAttribArray(2U);
+        functions.glVertexAttribPointer(
+            2U, 4, GL_UNSIGNED_BYTE, GL_TRUE, static_cast<GLsizei>(sizeof(CloudVertex)),
+            reinterpret_cast<const void*>(16));
+      });
+      vao_.unbind();
+
+      vbo_point_count_ = decoded.positions.size();
     }
-
-    vbo_.uploadStatic(GL_ARRAY_BUFFER, vertices.data(), static_cast<GLsizeiptr>(vertices.size() * sizeof(CloudVertex)));
-    vao_.bind();
-    withGlFunctions([](auto& functions) {
-      functions.glEnableVertexAttribArray(0U);
-      functions.glVertexAttribPointer(0U, 3, GL_FLOAT, GL_FALSE, static_cast<GLsizei>(sizeof(CloudVertex)), nullptr);
-      functions.glEnableVertexAttribArray(1U);
-      functions.glVertexAttribPointer(
-          1U, 1, GL_FLOAT, GL_FALSE, static_cast<GLsizei>(sizeof(CloudVertex)), reinterpret_cast<const void*>(12));
-      // Packed RGBA at byte offset 16, fed as 4 normalized unsigned bytes -> vec4 in [0,1],
-      // with .r = byte0 = Red (matches the canonical 'rgba' little-endian layout).
-      functions.glEnableVertexAttribArray(2U);
-      functions.glVertexAttribPointer(
-          2U, 4, GL_UNSIGNED_BYTE, GL_TRUE, static_cast<GLsizei>(sizeof(CloudVertex)),
-          reinterpret_cast<const void*>(16));
-    });
-    vao_.unbind();
-
-    vbo_point_count_ = cloud_->positions.size();
     cloud_dirty_ = false;
   }
 
@@ -372,7 +468,7 @@ void PointcloudRenderPass::render(const ViewParams& view_params, const FrameCont
     return;
   }
 
-  const auto transform = frame_ctx.lookup(cloud_->frame_id);
+  const auto transform = frame_ctx.lookup(activeFrameId());
   if (!transform.has_value()) {
     return;
   }
@@ -397,9 +493,8 @@ void PointcloudRenderPass::render(const ViewParams& view_params, const FrameCont
   }
 
   if (shape_ == Shape::kCube && cube_program_ != nullptr) {
-    // Lazy one-time wiring of the cube VAO's per-instance attribs to vbo_.
-    // The buffer ID is stable across cloud swaps, so once set this stays
-    // valid for the lifetime of the pass.
+    // Lazy re-wiring of the cube VAO's per-instance attribs to vbo_. The
+    // buffer ID is stable across cloud swaps, but stride/offset/type can vary.
     if (cube_instance_bindings_dirty_) {
       cube_vao_.bind();
       cube_vbo_.bind(GL_ARRAY_BUFFER);
@@ -411,21 +506,52 @@ void PointcloudRenderPass::render(const ViewParams& view_params, const FrameCont
             1U, 3, GL_FLOAT, GL_FALSE, static_cast<GLsizei>(sizeof(CubeVertex)), reinterpret_cast<const void*>(12));
       });
       vbo_.bind(GL_ARRAY_BUFFER);
-      withGlFunctions([](auto& functions) {
-        functions.glEnableVertexAttribArray(2U);
-        functions.glVertexAttribPointer(2U, 3, GL_FLOAT, GL_FALSE, static_cast<GLsizei>(sizeof(CloudVertex)), nullptr);
-        functions.glVertexAttribDivisor(2U, 1U);
-        functions.glEnableVertexAttribArray(3U);
-        functions.glVertexAttribPointer(
-            3U, 1, GL_FLOAT, GL_FALSE, static_cast<GLsizei>(sizeof(CloudVertex)), reinterpret_cast<const void*>(12));
-        functions.glVertexAttribDivisor(3U, 1U);
-        // Per-instance packed RGBA (4 normalized bytes -> vec4), same layout as the point path.
-        functions.glEnableVertexAttribArray(4U);
-        functions.glVertexAttribPointer(
-            4U, 4, GL_UNSIGNED_BYTE, GL_TRUE, static_cast<GLsizei>(sizeof(CloudVertex)),
-            reinterpret_cast<const void*>(16));
-        functions.glVertexAttribDivisor(4U, 1U);
-      });
+      if (const auto* fast = std::get_if<FastCloudData>(&cloud_); fast != nullptr) {
+        withGlFunctions([&](auto& functions) {
+          functions.glEnableVertexAttribArray(2U);
+          functions.glVertexAttribPointer(
+              2U, 3, GL_FLOAT, GL_FALSE, static_cast<GLsizei>(fast->layout.stride),
+              reinterpret_cast<const void*>(static_cast<std::uintptr_t>(fast->layout.xyz_offset)));
+          functions.glVertexAttribDivisor(2U, 1U);
+          if (fast->layout.has_scalar) {
+            functions.glEnableVertexAttribArray(3U);
+            functions.glVertexAttribPointer(
+                3U, 1, static_cast<GLenum>(fast->layout.scalar_gl_type), GL_FALSE,
+                static_cast<GLsizei>(fast->layout.stride),
+                reinterpret_cast<const void*>(static_cast<std::uintptr_t>(fast->layout.scalar_offset)));
+            functions.glVertexAttribDivisor(3U, 1U);
+          } else {
+            functions.glDisableVertexAttribArray(3U);
+            functions.glVertexAttrib1f(3U, 0.0f);
+          }
+          if (fast->layout.has_color) {
+            functions.glEnableVertexAttribArray(4U);
+            functions.glVertexAttribPointer(
+                4U, 4, GL_UNSIGNED_BYTE, GL_TRUE, static_cast<GLsizei>(fast->layout.stride),
+                reinterpret_cast<const void*>(static_cast<std::uintptr_t>(fast->layout.color_offset)));
+            functions.glVertexAttribDivisor(4U, 1U);
+          } else {
+            functions.glDisableVertexAttribArray(4U);
+          }
+        });
+      } else {
+        withGlFunctions([](auto& functions) {
+          functions.glEnableVertexAttribArray(2U);
+          functions.glVertexAttribPointer(
+              2U, 3, GL_FLOAT, GL_FALSE, static_cast<GLsizei>(sizeof(CloudVertex)), nullptr);
+          functions.glVertexAttribDivisor(2U, 1U);
+          functions.glEnableVertexAttribArray(3U);
+          functions.glVertexAttribPointer(
+              3U, 1, GL_FLOAT, GL_FALSE, static_cast<GLsizei>(sizeof(CloudVertex)), reinterpret_cast<const void*>(12));
+          functions.glVertexAttribDivisor(3U, 1U);
+          // Per-instance packed RGBA (4 normalized bytes -> vec4), same layout as the point path.
+          functions.glEnableVertexAttribArray(4U);
+          functions.glVertexAttribPointer(
+              4U, 4, GL_UNSIGNED_BYTE, GL_TRUE, static_cast<GLsizei>(sizeof(CloudVertex)),
+              reinterpret_cast<const void*>(16));
+          functions.glVertexAttribDivisor(4U, 1U);
+        });
+      }
       cube_ebo_.bind(GL_ELEMENT_ARRAY_BUFFER);
       cube_vao_.unbind();
       cube_instance_bindings_dirty_ = false;
@@ -501,8 +627,19 @@ void PointcloudRenderPass::render(const ViewParams& view_params, const FrameCont
 }
 
 void PointcloudRenderPass::setActiveCloud(std::shared_ptr<const DecodedPointCloud> cloud) {
+  if (cloud) {
+    cloud_ = std::move(cloud);
+  } else {
+    cloud_ = std::monostate{};
+  }
+  cloud_dirty_ = true;
+  cube_instance_bindings_dirty_ = true;
+}
+
+void PointcloudRenderPass::setActiveFastCloud(FastCloudData cloud) {
   cloud_ = std::move(cloud);
   cloud_dirty_ = true;
+  cube_instance_bindings_dirty_ = true;
 }
 
 void PointcloudRenderPass::setColormapRange(float min_value, float max_value) {

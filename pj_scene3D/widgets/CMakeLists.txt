@@ -21,6 +21,7 @@ set(PJ_SCENE3D_WIDGETS_SOURCES
   src/passes/grid_render_pass.cpp
   src/passes/tf_connections_render_pass.cpp
   src/passes/pointcloud_render_pass.cpp
+  src/passes/pointcloud_aabb_reducer.cpp
   src/passes/occupancy_grid_render_pass.cpp
   src/passes/voxel_grid_render_pass.cpp
   src/passes/marker_render_pass.cpp
@@ -234,6 +235,49 @@ if(PJ_BUILD_TESTS)
   target_compile_definitions(pointcloud_layer_cache_test PRIVATE PJ_SCENE3D_TEST_HOOKS)
   target_compile_options(pointcloud_layer_cache_test PRIVATE ${PJ_WARNING_FLAGS} ${PJ_SANITIZER_FLAGS})
   add_test(NAME pointcloud_layer_cache_test COMMAND pointcloud_layer_cache_test)
+
+  add_executable(pointcloud_layer_fast_path_test
+    tests/pointcloud_layer_fast_path_test.cpp
+  )
+  target_link_libraries(pointcloud_layer_fast_path_test PRIVATE
+    pj_scene3d_widgets
+    GTest::gtest
+  )
+  target_compile_definitions(pointcloud_layer_fast_path_test PRIVATE PJ_SCENE3D_TEST_HOOKS)
+  target_compile_options(pointcloud_layer_fast_path_test PRIVATE ${PJ_WARNING_FLAGS} ${PJ_SANITIZER_FLAGS})
+  add_test(NAME pointcloud_layer_fast_path_test COMMAND pointcloud_layer_fast_path_test)
+
+  add_executable(pointcloud_cube_instance_attribs_test
+    tests/pointcloud_cube_instance_attribs_test.cpp
+  )
+  target_link_libraries(pointcloud_cube_instance_attribs_test PRIVATE
+    pj_scene3d_widgets
+    GTest::gtest
+  )
+  target_compile_definitions(pointcloud_cube_instance_attribs_test PRIVATE PJ_SCENE3D_TEST_HOOKS)
+  target_compile_options(pointcloud_cube_instance_attribs_test PRIVATE ${PJ_WARNING_FLAGS} ${PJ_SANITIZER_FLAGS})
+  add_test(NAME pointcloud_cube_instance_attribs_test COMMAND pointcloud_cube_instance_attribs_test)
+
+  add_executable(pointcloud_context_recreation_test
+    tests/pointcloud_context_recreation_test.cpp
+  )
+  target_link_libraries(pointcloud_context_recreation_test PRIVATE
+    pj_scene3d_widgets
+    GTest::gtest
+  )
+  target_compile_definitions(pointcloud_context_recreation_test PRIVATE PJ_SCENE3D_TEST_HOOKS)
+  target_compile_options(pointcloud_context_recreation_test PRIVATE ${PJ_WARNING_FLAGS} ${PJ_SANITIZER_FLAGS})
+  add_test(NAME pointcloud_context_recreation_test COMMAND pointcloud_context_recreation_test)
+
+  add_executable(pointcloud_aabb_reducer_test
+    tests/pointcloud_aabb_reducer_test.cpp
+  )
+  target_link_libraries(pointcloud_aabb_reducer_test PRIVATE
+    pj_scene3d_widgets
+    GTest::gtest
+  )
+  target_compile_options(pointcloud_aabb_reducer_test PRIVATE ${PJ_WARNING_FLAGS} ${PJ_SANITIZER_FLAGS})
+  add_test(NAME pointcloud_aabb_reducer_test COMMAND pointcloud_aabb_reducer_test)
 
   # Copy/paste/apply-to-family: serializeLayerParams/applyLayerParams must
   # round-trip every PointCloudLayer parameter (the data path the Scene3D config

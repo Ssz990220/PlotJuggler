@@ -2,20 +2,38 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 
+#include <cstddef>
+#include <cstdint>
+#include <functional>
 #include <glm/glm.hpp>
 #include <memory>
 #include <optional>
+#include <string>
+#include <variant>
 
+#include "pj_base/builtin/point_cloud.hpp"
 #include "pj_scene3d_core/camera/camera.h"  // AABB
+#include "pj_scene3d_core/pointcloud_convert.h"
 #include "pj_scene3d_widgets/gl/buffer.h"
 #include "pj_scene3d_widgets/gl/program.h"
 #include "pj_scene3d_widgets/gl/vertex_array.h"
+#include "pj_scene3d_widgets/passes/pointcloud_aabb_reducer.h"
 #include "pj_scene3d_widgets/render_pass.h"
 #include "pj_widgets/Colormap.h"  // shared Colormap enum + colormapGlsl()
 
 namespace pj::scene3d {
 
 struct DecodedPointCloud;  // forward-declare — defined in pj_scene3d_core/pointcloud.h
+
+// Fast-path retained state: the verbatim wire cloud (its anchor keeps bytes alive
+// across GL-context recreation) + the precomputed bind layout. Hold wire BY VALUE
+// (copies the BufferAnchor) — never reduce to a Span, or recreation re-uploads a
+// dangling view.
+struct FastCloudData {
+  PJ::sdk::PointCloud wire;    // frame_id / data / anchor all live here — read wire.frame_id
+  std::size_t point_count{0};  // == wire.width * wire.height (size_t: no uint32 overflow)
+  AttribLayout layout;
+};
 
 class PointcloudRenderPass : public IRenderPass {
  public:
@@ -51,6 +69,33 @@ class PointcloudRenderPass : public IRenderPass {
   // If cloud is non-null and cloud->scalar.size() == cloud->positions.size(),
   // the scalar attribute is uploaded; otherwise scalars default to 0.
   void setActiveCloud(std::shared_ptr<const DecodedPointCloud> cloud);
+  void setActiveFastCloud(FastCloudData cloud);
+
+  // GPU AABB reduction (fast path only). When enabled, render() dispatches a
+  // compute reduction of the fast-path VBO's geometric bounds after each upload
+  // and, every frame, polls the prior dispatch; a completed result is delivered
+  // through setBoundsCallback(). The caller (PointCloudLayer) only enables this
+  // once the layout is GPU-eligible (4-byte-aligned float32 xyz) and keeps a CPU
+  // scan running until gpuAabbAvailable() confirms the compute path works.
+  void setGpuAabbEnabled(bool enabled) {
+    gpu_aabb_enabled_ = enabled;
+  }
+  // Invoked from render() (GL thread) with the freshly read-back source-frame
+  // AABB whenever an async reduction completes. An invalid AABB means the cloud
+  // had no finite points.
+  void setBoundsCallback(std::function<void(std::optional<AABB>)> callback) {
+    bounds_callback_ = std::move(callback);
+  }
+  // True once the compute reduction has compiled+linked on this context (known
+  // only after the first dispatch). Lets the layer drop its CPU scan.
+  [[nodiscard]] bool gpuAabbAvailable() const {
+    return aabb_reducer_.available();
+  }
+  // True once a dispatch has been attempted, so gpuAabbAvailable() is
+  // authoritative (distinguishes "not yet probed" from "probed, unsupported").
+  [[nodiscard]] bool gpuAabbProbed() const {
+    return aabb_reducer_.probed();
+  }
 
   // Range used to normalize the scalar field to [0,1] for the colormap.
   void setColormapRange(float min_value, float max_value);
@@ -106,8 +151,27 @@ class PointcloudRenderPass : public IRenderPass {
     return visible_;
   }
 
+#ifdef PJ_SCENE3D_TEST_HOOKS
+ public:
+  [[nodiscard]] bool cloudDirtyForTest() const {
+    return cloud_dirty_;
+  }
+  [[nodiscard]] std::size_t vboPointCountForTest() const {
+    return vbo_point_count_;
+  }
+  [[nodiscard]] bool cubeInstanceBindingsDirtyForTest() const {
+    return cube_instance_bindings_dirty_;
+  }
+  [[nodiscard]] bool activeCloudIsFastForTest() const {
+    return std::holds_alternative<FastCloudData>(cloud_);
+  }
+#endif
+
  private:
-  std::shared_ptr<const DecodedPointCloud> cloud_;
+  [[nodiscard]] const std::string& activeFrameId() const;
+  [[nodiscard]] bool hasRetainedCloud() const;
+
+  std::variant<std::monostate, FastCloudData, std::shared_ptr<const DecodedPointCloud>> cloud_;
   bool cloud_dirty_{false};
   float range_min_{0.0f};
   float range_max_{1.0f};
@@ -132,6 +196,11 @@ class PointcloudRenderPass : public IRenderPass {
   gl::Buffer vbo_;
   std::size_t vbo_point_count_{0};
 
+  // GPU AABB reduction over vbo_ (fast path only) — see setGpuAabbEnabled().
+  PointcloudAabbReducer aabb_reducer_;
+  bool gpu_aabb_enabled_{false};
+  std::function<void(std::optional<AABB>)> bounds_callback_;
+
   // Cube path — separate program + static cube mesh. The same cloud VBO
   // (vbo_) is bound as a per-instance attribute buffer; no per-frame
   // upload changes versus the points/sphere path.
@@ -139,9 +208,9 @@ class PointcloudRenderPass : public IRenderPass {
   gl::VertexArray cube_vao_;
   gl::Buffer cube_vbo_;
   gl::Buffer cube_ebo_;
-  // The per-instance attribs in cube_vao_ reference vbo_'s buffer ID,
-  // which is stable across cloud swaps once allocated. Set the binding
-  // up exactly once after vbo_ first has data.
+  // The per-instance attribs in cube_vao_ reference vbo_'s stable buffer ID,
+  // but the active cloud can change stride/offset/type, so re-specify the VAO
+  // format whenever the retained cloud variant is swapped.
   bool cube_instance_bindings_dirty_{true};
 };
 

@@ -73,6 +73,11 @@ attribute type; plain `zstd_point_cloud_transport` is out of scope (its blob isn
 self-describing). This is the *only* codec in the module — the no-`nanocdr`/CDR rule
 still holds for everything else.
 
+`PointCloudLayer` has a zero-copy fast path (verbatim wire upload for contiguous-float32
+xyz) beside the `convertCanonical`/`CloudVertex` fallback, still consuming
+`sdk::PointCloud` (canonical-in / render-structs-out boundary intact — no wire decode
+added).
+
 ## Layout
 
 - `core/` — pure geometry/scene logic, **no Qt or GL**. The TF buffer + frame
@@ -162,6 +167,9 @@ Before any commit, run the tests and check that they all pass
 `occupancy_grid_bounds_test`, `occupancy_grid_layer_rebind_test`,
 `occupancy_grid_layer_updates_test`,
 `scene_entities_decode_test`, `pointcloud_codecs_test`,
+`pointcloud_fast_path_predicate_test`, `pointcloud_bounds_scan_equivalence_test`,
+`aabb_gpu_key_test`, `pointcloud_aabb_reducer_test`,
+`pointcloud_cube_instance_attribs_test`, `pointcloud_context_recreation_test`,
 `aabb_axis_range_test`, `frame_picking_test`, `hud_overlay_test`,
 `poses_in_frame_render_test`, `poses_in_frame_layer_test`,
 `pointcloud_layer_cache_test`, `pointcloud_layer_rebind_test`,
@@ -189,7 +197,6 @@ sections where we struggle to find the correct solution.
 
 # Collaboration model
 
-Claude implements directly (design, code, review, verification) and surfaces
-diffs for user-approved commits. **Codex delegation was discontinued by the
-User on 2026-06-09** — do not dispatch implementation work to Codex for this
-module.
+Work is surfaced as diffs for user-approved commits (see the root CLAUDE.md
+commit policy). There is no standing rule either mandating or forbidding
+delegation of implementation to Codex for this module — decide per task.
