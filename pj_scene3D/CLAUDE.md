@@ -15,7 +15,8 @@ direct RGBA channel). The dense→cubes expansion happens entirely on the GPU �
 `glDrawElementsInstanced` over a unit cube (`column*row*slice` instances); the
 vertex shader derives each voxel from `gl_InstanceID`, `texelFetch`es its value,
 evaluates the viewer-side draw predicate (which the schema does NOT encode), and
-degenerate-clips culled voxels. So display cost is independent of voxel count and a
+degenerate-clips culled voxels. So the CPU / draw-call cost is independent of voxel
+count (one instanced draw; the GPU vertex shader still runs once per voxel) and a
 re-scrub to a cached grid re-uploads nothing. The Qt-free coordinate/value math
 (`core/voxel_grid_view.{h,cpp}`, `core/voxel_grid_value.{h,cpp}`) is unit-tested.
 A GPU compute-shader compaction path (`glDrawElementsIndirect` over only the
@@ -74,9 +75,13 @@ self-describing). This is the *only* codec in the module — the no-`nanocdr`/CD
 still holds for everything else.
 
 `PointCloudLayer` has a zero-copy fast path (verbatim wire upload for contiguous-float32
-xyz) beside the `convertCanonical`/`CloudVertex` fallback, still consuming
-`sdk::PointCloud` (canonical-in / render-structs-out boundary intact — no wire decode
-added).
+xyz, plus a packed-`rgba` RGB-direct variant) beside the `convertCanonical`/`CloudVertex`
+fallback, still consuming `sdk::PointCloud` (canonical-in / render-structs-out boundary
+intact — no wire decode added). On the bounds-only paths the geometry AABB that fits the
+camera is computed by an **async GPU compute reduction** (`PointcloudAabbReducer`: the CPU
+seeds the first sample, then drops the scan once the pass reports `gpuAabbAvailable()`),
+so the per-sample bounds cost leaves the GUI thread — see `docs/ARCHITECTURE.md` for the
+full mechanism.
 
 ## Layout
 
@@ -161,26 +166,21 @@ added).
 
 # Validation
 
-Before any commit, run the tests and check that they all pass
-(`tf_buffer_test`, `tf_buffer_hierarchy_test`, `tf_connections_test`,
-`occupancy_grid_reconstructor_test`,
-`occupancy_grid_bounds_test`, `occupancy_grid_layer_rebind_test`,
-`occupancy_grid_layer_updates_test`,
-`scene_entities_decode_test`, `pointcloud_codecs_test`,
-`pointcloud_fast_path_predicate_test`, `pointcloud_bounds_scan_equivalence_test`,
-`aabb_gpu_key_test`, `pointcloud_aabb_reducer_test`,
-`pointcloud_cube_instance_attribs_test`, `pointcloud_context_recreation_test`,
-`aabb_axis_range_test`, `frame_picking_test`, `hud_overlay_test`,
-`poses_in_frame_render_test`, `poses_in_frame_layer_test`,
-`pointcloud_layer_cache_test`, `pointcloud_layer_rebind_test`,
-`pointcloud_layer_coalescing_test`, `depth_backproject_test`,
-`depth_cloud_layer_test`, `scene3d_dock_depth_gate_test`, `camera_near_far_test`,
-`camera_zoom_to_cursor_test`, `camera_state_transfer_test`,
-`urdf_parser_test`, `urdf_package_resolver_test`, `mesh_loader_test`,
-`robot_model_bridges_test`, `robot_model_layer_test`,
-`scene_entities_layer_model_test`, `voxel_grid_view_test`,
-`voxel_grid_value_test`, `voxel_grid_layer_test`,
-`voxel_grid_render_pass_gl_test`).
+Before any commit, build and run the module's tests and check that they all pass.
+The **authoritative set of test targets is the CMake registry, not this file**:
+`pj_scene3D/core/CMakeLists.txt` and `pj_scene3D/widgets/CMakeLists.txt` each
+register their `*_test` targets (~44 in total, GL-backed ones included). Run them
+from the build directory with `ctest` (e.g. `ctest --test-dir build
+--output-on-failure`) rather than from a hand-maintained list here — the previous
+inline enumeration silently drifted as tests were added (it had fallen to 39 of the
+~44, missing e.g. `mesh_render_pass_test`, `transform_service_test`,
+`pointcloud_layer_rgb_test`, `scene3d_dock_streaming_test`/`_persistence_test`, and
+the GL-context tests).
+
+GL-backed tests (names ending `_gl_test`, plus the context-recreation tests)
+require a real GL ≥ 4.5 context (llvmpipe under `xvfb` on CI) and **self-skip below
+GL 4.5** — Windows software GL is only GL 3.0 / GLSL 1.30, so a `#version 450`
+shader test cannot run there.
 
 Make sure that all the markdown files in this folder are updated, if necessary.
 

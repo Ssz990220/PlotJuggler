@@ -2,8 +2,8 @@
 
 | | |
 |---|---|
-| Status | Shipped (v1 feature-complete: TF, pointclouds, occupancy grids, markers, pose arrays, URDF/mesh, HDR/SSAO/EDL, live streaming) |
-| Date | 2026-05-17 (rev. 2026-05-30) |
+| Status | Shipped (v1 feature-complete: TF, pointclouds, occupancy grids, dense voxel grids, depth-image back-projection, markers, pose arrays, URDF/mesh, HDR/SSAO/EDL, live streaming) |
+| Date | 2026-05-17 (rev. 2026-06-20) |
 | Scope | What, not how |
 | Supersedes | `PJ4_PLAN.md` §5.5 (refinement) |
 
@@ -39,14 +39,16 @@ PJ4's 3D visualization module — the sibling family to `pj_scene2D`, focused on
 
 ## 3. Supported data types
 
-**Full v1 target** (six types):
+**Full v1 target:**
 - Rigid bodies (TF + URDF meshes). *(implemented)*
-- Gridmaps (textured planes in a source frame).
+- Occupancy grids / costmaps (`nav_msgs/OccupancyGrid` + incremental `OccupancyGridUpdate`, with stateful time-travel reconstruction). *(implemented — `OccupancyGridLayer`)*
+- Gridmaps in the `grid_map_msgs/GridMap` elevation-map sense (textured/height planes in a source frame) remain **future work** — distinct from the occupancy grids above.
 - Pointclouds (`sensor_msgs/PointCloud2` and equivalents). *(implemented)*
 - Compressed pointclouds (`foxglove_msgs/CompressedPointCloud` + `point_cloud_interfaces/CompressedPointCloud2`), formats **Draco** and **Cloudini** — decoded into a `PointCloud` and rendered identically (see §3a). *(implemented)*
 - 3D markers / visualization primitives (arrows, boxes, spheres, cylinders, line strips, text). *(implemented — `SceneEntitiesLayer`)*
 - Pose arrays (`geometry_msgs/PoseArray`, `foxglove.PosesInFrame` → canonical `PosesInFrame`), drawn as per-pose coordinate-triad gizmos with customizable arrow length + opacity, an X-arrow-only geometry mode, and an orthogonal color override (one shared color across all arms, in either mode). *(implemented — `PosesInFrameLayer`)*
-- Dense voxel grids (`foxglove.VoxelGrid` → canonical `VoxelGrid`), drawn as GPU-instanced cubes; the per-voxel value is generic (occupancy/cost/ESDF/semantic via `fields`, or a direct RGBA channel) and a viewer-side draw predicate + colormap decide which voxels are shown. The dense→cubes expansion is entirely GPU-side (one `glDrawElementsInstanced`, `gl_InstanceID`→texel), so display cost is independent of voxel count. *(implemented — `VoxelGridLayer`)*
+- Dense voxel grids (`foxglove.VoxelGrid` → canonical `VoxelGrid`), drawn as GPU-instanced cubes; the per-voxel value is generic (occupancy/cost/ESDF/semantic via `fields`, or a direct RGBA channel) and a viewer-side draw predicate + colormap decide which voxels are shown. The dense→cubes expansion is entirely GPU-side (one `glDrawElementsInstanced`, `gl_InstanceID`→texel), so the **CPU / draw-call** cost is independent of voxel count (the GPU vertex shader still evaluates the draw predicate per voxel). *(implemented — `VoxelGridLayer`)*
+- Depth images back-projected into point clouds: an `sdk::Image` with a depth `encoding` joined to a `CameraInfo` by `frame_id`, back-projected one point per valid pixel and colored by depth. *(implemented — `DepthCloudLayer`)*
 - Paths (`nav_msgs/Path`).
 - Laserscans (`sensor_msgs/LaserScan`).
 
@@ -184,9 +186,9 @@ Behavioral contract of `TransformBuffer` (`core/include/pj_scene3d_core/tf/tf_bu
 - **Introspection**: callers must be able to enumerate all known frames, query the parent of any frame, and query the latest sample stamp for any edge. This is what the future Frames panel and the per-widget fixed-frame dropdown consume.
 - **Non-throwing query variant** for the hot render path. A throwing variant remains available for explicit user code where a missing transform is a programmer error.
 
-## 10. Persistence (deferred from v1)
+## 10. Persistence (implemented)
 
-Saving and restoring per-widget fixed-frame selection, per-display configuration, visibility toggles, and camera position into PJ4 layout files. The schema is deferred to the design phase that follows Phase 1.
+Per-widget fixed-frame, per-layer configuration + visibility, and the active camera model + pose are serialized into the PJ4 layout XML and restored on load. `Scene3DDockWidget::xmlSaveState`/`xmlLoadState` writes a versioned `<Scene3DDock>` (fixed-frame; camera model as a stable string id + `CameraState` JSON; dataset re-resolution by source), and every layer implements its own `xmlSaveState`/`xmlLoadState`. The as-built schema (camera persistence + the per-layer round-trips) lives in `ARCHITECTURE.md`.
 
 ## 11. Plugin / extension surface (deferred from v1)
 

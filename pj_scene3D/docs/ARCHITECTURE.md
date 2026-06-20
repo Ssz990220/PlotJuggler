@@ -73,14 +73,24 @@ layers + passes → SceneHdrFbo (multisample RGBA16F + DEPTH32F + R8 is-mesh mas
   darkening is floored (`CompositeParams::edl_floor`) so it bottoms out at a
   hue-preserving dark grey, `floor·color`, rather than pure black (floor 0 = the
   original multiply-to-black).
-- **Defaults** (look-dev, 2026-06-10): ACES, exposure 1.1, saturation 1.2,
-  SSAO on (strength 1, radius 0.5 m), EDL on (strength 1, radius 0.6 px, floor 0.3,
-  max gap 0.02).
+- **Defaults** (look-dev, 2026-06-13). The authoritative numbers live in
+  [`scene_look_defaults.h`](../widgets/include/pj_scene3d_widgets/scene_look_defaults.h)
+  — treat that header as the source of truth and this paragraph as a summary
+  (it has drifted before). As of this writing: ACES, exposure 1.3, saturation
+  1.3, SSAO on (strength 1, radius 0.4 m), EDL on (strength 1, radius 0.6 px,
+  floor 0.3, max gap 0.02).
   Runtime knobs: `SceneViewWidget::compositeParams()`, `ssaoPass()`,
   `edlPass()`, and the per-view `meshShadingParams()` (roughness 0.6, f0 0.06,
-  ambient 1.0, key/"sun" 1.15, fill 0.35, env-reflection 1.0, key-light dir
-  high/+X+Y — a stopgap for a future per-scene lighting object). Shader
-  provenance/licenses: [`../THIRDPARTY.md`](../THIRDPARTY.md).
+  ambient 0.5, key/"sun" 1.6, fill 0.5, env-reflection 1.0, key-light dir
+  azimuth 40° / elevation 55° ≈ high +X+Y — a stopgap for a future per-scene
+  lighting object). Shader provenance/licenses: [`../THIRDPARTY.md`](../THIRDPARTY.md).
+- **No shadows (yet).** Mesh shading has no shadow term: the fixed key light, the
+  camera-locked fill, and the IBL ambient are all unoccluded. Adding mesh shadows
+  would be a geometry **depth pre-pass** rendered from the light *before*
+  `renderScene` — structurally unlike the screen-space SSAO/EDL **post-passes** —
+  with the shadow factor multiplied into the key-light term only (the first summand
+  of `direct` in `mesh_render_pass.cpp`). Don't mistake the SSAO/EDL passes as the
+  template for shadows.
 
 **GL context lifecycle (don't regress).** `QOpenGLWidget` recreates its context
 on every ADS reparent. Every pass, layer, the HDR chain, and the present
@@ -145,14 +155,17 @@ testable (`camera_near_far_test`, `camera_zoom_to_cursor_test`,
   center-of-view zoom. On `FlyCamera` zoom-to-cursor degenerates to a forward
   dolly by design.
 - **Scene bounds.** `Scene3DLayer::worldBounds()` returns an optional source-frame
-  `AABB`; `PointCloudLayer`, `OccupancyGridLayer`, and `DepthCloudLayer` override
-  it. `RobotModelLayer` deliberately does **not** (it is bounds-less by design — a
-  robot is posed by the live TF tree the camera already frames through the other
-  store-backed layers, so adding its links would pull the camera around as joints
-  move). `Scene3DDockWidget` unions the visible layers' boxes (`unionAABB`) and pushes
-  the result to `SceneViewWidget::setSceneBounds` → the active camera, feeding the
-  adaptive near/far above. No reporting layer → invalid AABB → working-distance
-  fallback.
+  `AABB`; `PointCloudLayer`, `OccupancyGridLayer`, `DepthCloudLayer`, and
+  `VoxelGridLayer` override it. `RobotModelLayer` deliberately does **not** (it is
+  bounds-less by design — a robot is posed by the live TF tree the camera already
+  frames through the other store-backed layers, so adding its links would pull the
+  camera around as joints move). `Scene3DDockWidget::updateSceneBounds` unions
+  **every** layer's box (`unionAABB` over all layers that report one — there is no
+  per-layer visibility filter) and pushes the result to
+  `SceneViewWidget::setSceneBounds` → the active camera, feeding the adaptive
+  near/far above. No reporting layer → invalid AABB → working-distance fallback.
+  (Note: because `RobotModelLayer` reports no bounds, the scene AABB excludes the
+  robot mesh — relevant to any future light-frustum fit for shadows.)
 - **Overlay UI.** `Scene3DDockWidget` overlays a `camera_model_combo_`
   (`{Orbit, XYOrbit, Fly, Top-down ortho}`) and a `home_button_` (Home icon,
   resets the active model to its default view — not fit-to-scene), anchored flush
@@ -285,6 +298,40 @@ colored by depth. Sibling of the 2D depth view — same data, different geometry
   (turbo / viridis / plasma / grayscale, `pj_widgets/Colormap.h`) — the same
   source of truth as the 2D depth view and the pointcloud field coloring.
 - **Config.** Per-layer colormap, point size, and a min/max depth range.
+
+## Voxel-grid layer (`VoxelGridLayer`)
+
+Renders a dense `sdk::VoxelGrid` (SDK ≥ 0.10.0) — a dense 3D lattice whose
+per-voxel value is generic via `fields` (occupancy / cost / ESDF / semantic, or a
+direct RGBA channel) — as GPU-instanced cubes. Sibling of the pointcloud layer for
+volumetric data.
+
+- **Dense→cubes expansion is entirely GPU-side.** `VoxelGridRenderPass` uploads
+  the selected field as a **3D texture** and issues **one** `glDrawElementsInstanced`
+  over a unit cube (`column*row*slice` instances). The vertex shader derives each
+  voxel from `gl_InstanceID`, `texelFetch`es its value, evaluates the viewer-side
+  draw predicate (which the schema does **not** encode), and degenerate-clips culled
+  voxels. So the **CPU / draw-call** cost is independent of voxel count (one draw),
+  and a re-scrub to a cached grid re-uploads nothing — though the GPU vertex shader
+  still runs once per voxel.
+- **Qt-free core.** The coordinate/value math (`core/voxel_grid_view.{h,cpp}`,
+  `core/voxel_grid_value.{h,cpp}`) is headless unit-tested.
+- **Follow-up.** A GPU compute-shader compaction path (`glDrawElementsIndirect` over
+  only the accepted voxels, GL ≥ 4.3) is a documented follow-up for very large dense
+  grids; not built.
+
+## Repaint coalescing & autoplay
+
+- **Per-tick repaint coalescing.** During playback the scene must not free-run at
+  60 Hz redrawing identical frames. `ISceneLayer::renderKey` produces a decode-free
+  per-layer fingerprint (sample stamp ⊕ transform), and `SceneDockWidget::onTrackerTime`
+  skips the repaint when nothing a layer would draw has changed — holding the
+  ≤ 60 Hz / idle→~0 CPU budget the performance goals require (PR #259). `renderKey`
+  must derive from index/entry timestamps, **never** from a `latestAt` that would
+  decompress cold chunks inside the gate.
+- **`--autoplay`.** The app's `--autoplay` CLI flag starts hands-free looped
+  playback (PR #260); it doubles as the `PJ_AUTOPLAY` profiling hook used to measure
+  the repaint/render cost above.
 
 ## URDF / robot-model subsystem
 
