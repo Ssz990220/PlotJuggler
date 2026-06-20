@@ -834,7 +834,11 @@ QComboBox {
     padding-top: 0px;
     padding-bottom: 0px;
     padding-left: ${chrome_spacing}px;
-    padding-right: 22px;
+    /* Right gutter reserves the chevron region. Keep it == the ::drop-down
+       width so the text ends exactly at the drop-down edge (no overlap, no dead
+       space). This width also feeds sizeFromContents, so a tighter value makes
+       every combo hug its widest item instead of carrying a fat right margin. */
+    padding-right: 12px;
     min-height: ${input_min_height}px;
     max-height: ${input_min_height}px;
 }
@@ -847,15 +851,21 @@ QComboBox:focus {
 QComboBox::drop-down {
     subcontrol-origin: padding;
     subcontrol-position: center right;
-    width: 18px;
+    width: 12px;
     border: none;
     background: transparent;
 }
 
+/* Disclosure affordance: the chevron points RIGHT while the popup is closed
+   and flips DOWN (:on) while it's open. */
 QComboBox::down-arrow {
-    image: url(:/resources/svg/keyboard_arrow_down_light.svg);
+    image: url(:/resources/svg/keyboard_arrow_right_light.svg);
     width: 14px;
     height: 14px;
+}
+
+QComboBox::down-arrow:on {
+    image: url(:/resources/svg/keyboard_arrow_down_light.svg);
 }
 
 /* Popup — rounded surface + 1 px border. The light_purple→light_blue

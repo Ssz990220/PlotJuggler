@@ -205,6 +205,11 @@ SceneViewWidget::SceneViewWidget(QWidget* parent) : QOpenGLWidget(parent) {
   // Accept keyboard focus so the 'P' perf-HUD toggle reaches keyPressEvent
   // (click/tab focus; harmless to the dock's existing mouse interaction).
   setFocusPolicy(Qt::StrongFocus);
+  // Orientation gizmo sits in the bottom-right corner; this frees the top-right
+  // for the dock's camera-model combo + Home button (which then align flush to
+  // the right edge — see Scene3DDockWidget::layoutFrameOverlayCombo). The perf
+  // HUD is bottom-LEFT, so the gizmo's corner stays clear.
+  overlay_.setCorner(AxisOverlayPass::Corner::kBottomRight);
 }
 
 SceneViewWidget::~SceneViewWidget() {
@@ -710,8 +715,9 @@ void SceneViewWidget::renderScene(
     }
   }
 
-  // Camera-orientation HUD (top-right by default). Drawn last so the solid
-  // arrows sit on top of every scene-space pass. Annotation, opacity 1.
+  // Camera-orientation HUD (bottom-right; corner set in the constructor). Drawn
+  // last so the solid arrows sit on top of every scene-space pass. Annotation,
+  // opacity 1.
   annotation_blend();
   overlay_.render(view_params, frame_ctx);
   data_blend();

@@ -155,9 +155,11 @@ testable (`camera_near_far_test`, `camera_zoom_to_cursor_test`,
   fallback.
 - **Overlay UI.** `Scene3DDockWidget` overlays a `camera_model_combo_`
   (`{Orbit, XYOrbit, Fly, Top-down ortho}`) and a `home_button_` (Home icon,
-  resets the active model to its default view — not fit-to-scene), positioned
-  top-right just left of the corner gizmo. They are children of the dock, not the
-  `QOpenGLWidget`, and `raise()`'d above it (ADS native-window z-order).
+  resets the active model to its default view — not fit-to-scene), anchored flush
+  to the top-right edge. The orientation gizmo (`AxisOverlayPass`) sits in the
+  bottom-right corner (set in the `SceneViewWidget` ctor) so it no longer crowds
+  these controls. They are children of the dock, not the `QOpenGLWidget`, and
+  `raise()`'d above it (ADS native-window z-order).
 - **Persistence.** `xmlSaveState` writes the active model as a stable string id
   (`orbit` / `xy_orbit` / `fly` / `top_down_ortho` — independent of the enum
   integer / combo order) plus the `CameraState` as JSON (`cameraStateToJson`);

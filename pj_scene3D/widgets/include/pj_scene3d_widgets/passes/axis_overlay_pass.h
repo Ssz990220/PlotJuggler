@@ -18,9 +18,9 @@ class AxisOverlayPass : public IRenderPass {
  public:
   enum class Corner { kTopLeft, kTopRight, kBottomLeft, kBottomRight };
 
-  // Default HUD footprint in widget pixels, exposed so layout code that reserves
-  // space beside the HUD (e.g. the Scene3D overlay controls) doesn't hardcode
-  // these literals. Mirrored by the member initializers below.
+  // Default HUD footprint in widget pixels, mirrored by the member initializers
+  // below and reusable by any layout code that needs to reason about the gizmo's
+  // size without hardcoding these literals.
   static constexpr int kDefaultSizePx = 80;
   static constexpr int kDefaultMarginPx = 0;
 

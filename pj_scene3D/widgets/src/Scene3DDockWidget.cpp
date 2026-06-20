@@ -253,7 +253,7 @@ Scene3DDockWidget::Scene3DDockWidget(QWidget* parent) : SceneDockWidget(parent) 
   home_button_->setIcon(PJ::loadSvg(QStringLiteral(":/resources/svg/home.svg")));
   home_button_->setStyleSheet(QStringLiteral(
       "QToolButton { background-color: rgba(255, 255, 255, 200); border: 1px solid rgba(60, 60, 60, 180); "
-      "padding: 2px; border-radius: 3px; }"));  // symmetric padding: this is a square icon-only button
+      "padding: 0px; border-radius: 3px; }"));  // no padding: let the glyph fill the button (icon sized below)
   home_button_->raise();
   connect(home_button_, &QToolButton::clicked, this, [this]() {
     if (view_ != nullptr) {
@@ -938,14 +938,11 @@ void Scene3DDockWidget::layoutFrameOverlayCombo() {
   }
   frame_overlay_combo_->raise();
 
-  // Camera-model combo + Home button, anchored top-right but to the LEFT of the
-  // orientation gizmo (which occupies the very corner). The fixed-frame combo
+  // Camera-model combo + Home button, anchored flush to the top-right edge. The
+  // orientation gizmo now lives in the bottom-right corner (set in the
+  // SceneViewWidget ctor), so nothing is reserved up here. The fixed-frame combo
   // stays top-left.
   constexpr int kGap = 6;
-  // Reserve the gizmo's default footprint — read from AxisOverlayPass so the two
-  // can't silently desync — plus a gap before the controls.
-  constexpr int kGizmoReserveW =
-      pj::scene3d::AxisOverlayPass::kDefaultSizePx + pj::scene3d::AxisOverlayPass::kDefaultMarginPx + kGap;
   if (camera_model_combo_ != nullptr) {
     // Size via the combo's own style chrome (chevron + padding), matching the
     // fixed-frame combo's style-driven sizing above — a hardcoded slack would
@@ -965,17 +962,19 @@ void Scene3DDockWidget::layoutFrameOverlayCombo() {
     const int home_w = (home_button_ != nullptr) ? cam_h : 0;  // square button matching combo height
     const int total_w = cam_w + (home_button_ != nullptr ? kGap + home_w : 0);
     const int top_y = view_origin.y() + kMargin;
-    // Right edge of the controls sits just left of the gizmo's reserved region;
-    // Home button is the rightmost (nearest the gizmo), combo to its left.
-    const int controls_right = view_origin.x() + view_->width() - kGizmoReserveW;
+    // Right edge of the controls sits a margin in from the view's right edge,
+    // mirroring the fixed-frame combo's left margin. Home button is the rightmost,
+    // combo to its left.
+    const int controls_right = view_origin.x() + view_->width() - kMargin;
     const int left_x = controls_right - total_w;
     camera_model_combo_->setGeometry(left_x, top_y, cam_w, cam_h);
     camera_model_combo_->raise();
     if (home_button_ != nullptr) {
       home_button_->setGeometry(left_x + cam_w + kGap, top_y, home_w, cam_h);
-      // Icon-only square button: size the glyph to nearly fill it (minus border +
-      // padding) so it doesn't render at the tiny default QToolButton icon size.
-      const int home_icon_dim = std::max(home_w - 8, 1);
+      // Icon-only square button: fill it minus the 1px border (top+bottom) so the
+      // home glyph reads at the same size as the 20px config-panel icon buttons,
+      // not the tiny default QToolButton icon metric.
+      const int home_icon_dim = std::max(home_w - 2, 1);
       home_button_->setIconSize(QSize(home_icon_dim, home_icon_dim));
       home_button_->raise();
     }
