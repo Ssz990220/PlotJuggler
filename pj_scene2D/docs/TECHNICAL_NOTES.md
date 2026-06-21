@@ -155,7 +155,7 @@ Qt handles conversion in the renderer.
 | VP9 | Medium | ~35% better | Moderate | Not on the streaming path |
 
 The streaming `VideoFrame` decode path supports **h264 / h265 / av1** only.
-`vp9` stays an accepted `VideoFrame.format` wire value (datatypes_2D §8) but has
+`vp9` stays an accepted `VideoFrame.format` wire value (see `VideoFrame` in [`plotjuggler_sdk/docs/builtin_type.md`](../../plotjuggler_sdk/docs/builtin_type.md) and `pj_base/builtin/video_frame.hpp`) but has
 no renderer: it has an FFmpeg decoder yet no keyframe oracle (it cannot be
 sought), so `videoCodecIdFromFormat()` returns `AV_CODEC_ID_NONE` and the
 decoder rejects it with an explicit "unsupported video codec" error rather than
@@ -563,9 +563,9 @@ modes.
 
 ## 8. Reference Documents
 
-- [datatypes_2D.md](datatypes_2D.md) — complete type catalog: Image,
-  VideoFrame, CameraCalibration, ImageAnnotation, PointCloud, ScenePrimitive,
-  Grid, FrameTransform
+- [`plotjuggler_sdk/docs/builtin_type.md`](../../plotjuggler_sdk/docs/builtin_type.md) — canonical builtin-type catalog: Image,
+  VideoFrame, CameraCalibration, ImageAnnotations, PointCloud, SceneEntities,
+  OccupancyGrid, FrameTransforms (the SDK owns all canonical schemas)
 - [`docs/research/dataset_format_comparison.md`](../../docs/research/dataset_format_comparison.md)
   (top-level) — cross-cutting comparison of MCAP, RLDS, LeRobot, and Zarr
   formats covering data models, timestamps, image/video storage, I/O, and

@@ -295,7 +295,7 @@ design rationale only.
 ## 4. Codec Pipeline
 
 > For the wire-format type catalog that the codec pipeline decodes, see
-> [`datatypes_2D.md`](./datatypes_2D.md).
+> [`plotjuggler_sdk/docs/builtin_type.md`](../../plotjuggler_sdk/docs/builtin_type.md) — the canonical SDK builtin-type catalog.
 
 Each ObjectStore topic produces raw bytes in a wire format. To reach
 display-ready pixels, those bytes pass through a **codec pipeline** —

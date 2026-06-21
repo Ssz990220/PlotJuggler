@@ -94,7 +94,7 @@ Cross-cutting docs (porting strategy, glossary, ADRs) live in top-level `docs/`.
 | `pj_plotting` | [pj_plotting/CLAUDE.md](./pj_plotting/CLAUDE.md) | — |
 | `pj_dialog_host` | [pj_dialog_host/CLAUDE.md](./pj_dialog_host/CLAUDE.md) | — |
 | `pj_scene_common` | [pj_scene_common/CLAUDE.md](./pj_scene_common/CLAUDE.md) | — |
-| `pj_scene2D` | [pj_scene2D/CLAUDE.md](./pj_scene2D/CLAUDE.md) | [docs/](./pj_scene2D/docs/) — REQUIREMENTS, ARCHITECTURE, TECHNICAL_NOTES, datatypes_2D, … |
+| `pj_scene2D` | [pj_scene2D/CLAUDE.md](./pj_scene2D/CLAUDE.md) | [docs/](./pj_scene2D/docs/) — REQUIREMENTS, ARCHITECTURE, TECHNICAL_NOTES |
 | `pj_marketplace` | [pj_marketplace/README.md](./pj_marketplace/README.md) | [docs/](./pj_marketplace/docs/) — REQUIREMENTS, ARCHITECTURE, USER_MANUAL, marketplace-spec |
 | `pj_scene3D` | [pj_scene3D/CLAUDE.md](./pj_scene3D/CLAUDE.md) | [docs/](./pj_scene3D/docs/) — REQUIREMENTS, [ARCHITECTURE](./pj_scene3D/docs/ARCHITECTURE.md) (rendering pipeline, cameras, URDF/mesh) |
 | `pj_datastore` | [pj_datastore/CLAUDE.md](./pj_datastore/CLAUDE.md) | [docs/](./pj_datastore/docs/) — REQUIREMENTS, ARCHITECTURE, USER_GUIDE, OBJECT_STORE_DESIGN |
