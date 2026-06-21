@@ -89,7 +89,7 @@ DockWidget::DockWidget(
     emit undoableChange();
   });
 
-  layout()->setContentsMargins(10, 10, 10, 10);
+  layout()->setContentsMargins(0, 0, 0, 0);
   if (plot != nullptr || create_plot_when_null) {
     setPlotWidget(plot != nullptr ? plot : new PlotWidget(session_, catalog_, this));
   } else {
@@ -143,6 +143,7 @@ void DockWidget::setPlotWidget(PlotWidget* plot) {
   }
   plot_widget_->setDataServices(session_, catalog_);
   setWidget(plot_widget_);
+  layout()->setContentsMargins(6, 6, 6, 6);  // plots keep a margin; reset to flush in clearCurrentContent
   connect(plot_widget_, &PlotWidget::splitHorizontal, this, [this]() { splitHorizontal(); });
   connect(plot_widget_, &PlotWidget::splitVertical, this, [this]() { splitVertical(); });
   connect(plot_widget_, &PlotWidget::undoableChange, this, &DockWidget::undoableChange);
@@ -512,6 +513,7 @@ void DockWidget::clearCurrentContent(bool delete_content) {
   plot_widget_ = nullptr;
   object_widget_ = nullptr;
   object_widget_awaiting_first_topic_ = false;
+  layout()->setContentsMargins(0, 0, 0, 0);  // flush by default; setPlotWidget re-adds the plot margin
 }
 
 void DockWidget::installObjectContextMenuFilter(QWidget* root) {

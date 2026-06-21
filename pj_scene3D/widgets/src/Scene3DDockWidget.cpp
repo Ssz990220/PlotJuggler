@@ -246,11 +246,11 @@ Scene3DDockWidget::Scene3DDockWidget(QWidget* parent) : SceneDockWidget(parent) 
   home_button_ = new QToolButton(this);
   home_button_->setObjectName(QStringLiteral("cameraHomeButton"));
   home_button_->setFocusPolicy(Qt::ClickFocus);
-  home_button_->setToolTip(tr("Reset view to default (Home)"));
-  // Bundled Material "home" glyph (resources.qrc). Pinned to the light-theme
+  home_button_->setToolTip(tr("Reset view to default"));
+  // Bundled "recenter" glyph (resources.qrc). Pinned to the light-theme
   // ink so it stays dark on this always-light overlay button, even when the
   // app is in dark mode (theme-following ink would render near-invisible here).
-  home_button_->setIcon(PJ::loadSvg(QStringLiteral(":/resources/svg/home.svg")));
+  home_button_->setIcon(PJ::loadSvg(QStringLiteral(":/resources/svg/recenter.svg")));
   home_button_->setStyleSheet(QStringLiteral(
       "QToolButton { background-color: rgba(255, 255, 255, 200); border: 1px solid rgba(60, 60, 60, 180); "
       "padding: 0px; border-radius: 3px; }"));  // no padding: let the glyph fill the button (icon sized below)
@@ -1017,11 +1017,19 @@ void Scene3DDockWidget::layoutFrameOverlayCombo() {
   }
   frame_overlay_combo_->raise();
 
-  // Camera-model combo + Home button, anchored flush to the top-right edge. The
-  // orientation gizmo now lives in the bottom-right corner (set in the
-  // SceneViewWidget ctor), so nothing is reserved up here. The fixed-frame combo
-  // stays top-left.
+  // Recenter button sits immediately to the right of the fixed-frame combo.
   constexpr int kGap = 6;
+  if (home_button_ != nullptr) {
+    const int hb = h;  // square, matching the fixed-frame combo height
+    home_button_->setGeometry(view_origin.x() + kMargin + w + kGap, view_origin.y() + kMargin, hb, hb);
+    const int home_icon_dim = std::max(hb - 2, 1);  // fill minus the 1px border, matching config-panel icons
+    home_button_->setIconSize(QSize(home_icon_dim, home_icon_dim));
+    home_button_->raise();
+  }
+
+  // Camera-model combo, anchored flush to the top-right edge. The orientation
+  // gizmo now lives in the bottom-right corner (set in the SceneViewWidget ctor),
+  // so nothing is reserved up here.
   if (camera_model_combo_ != nullptr) {
     // Size via the combo's own style chrome (chevron + padding), matching the
     // fixed-frame combo's style-driven sizing above — a hardcoded slack would
@@ -1038,25 +1046,12 @@ void Scene3DDockWidget::layoutFrameOverlayCombo() {
                      .width());
     }
     const int cam_h = camera_model_combo_->sizeHint().height();
-    const int home_w = (home_button_ != nullptr) ? cam_h : 0;  // square button matching combo height
-    const int total_w = cam_w + (home_button_ != nullptr ? kGap + home_w : 0);
     const int top_y = view_origin.y() + kMargin;
-    // Right edge of the controls sits a margin in from the view's right edge,
-    // mirroring the fixed-frame combo's left margin. Home button is the rightmost,
-    // combo to its left.
-    const int controls_right = view_origin.x() + view_->width() - kMargin;
-    const int left_x = controls_right - total_w;
+    // Right edge sits a margin in from the view's right edge, mirroring the
+    // fixed-frame combo's left margin.
+    const int left_x = view_origin.x() + view_->width() - kMargin - cam_w;
     camera_model_combo_->setGeometry(left_x, top_y, cam_w, cam_h);
     camera_model_combo_->raise();
-    if (home_button_ != nullptr) {
-      home_button_->setGeometry(left_x + cam_w + kGap, top_y, home_w, cam_h);
-      // Icon-only square button: fill it minus the 1px border (top+bottom) so the
-      // home glyph reads at the same size as the 20px config-panel icon buttons,
-      // not the tiny default QToolButton icon metric.
-      const int home_icon_dim = std::max(home_w - 2, 1);
-      home_button_->setIconSize(QSize(home_icon_dim, home_icon_dim));
-      home_button_->raise();
-    }
   }
 }
 
