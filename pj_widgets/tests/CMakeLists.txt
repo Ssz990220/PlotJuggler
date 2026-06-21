@@ -127,6 +127,23 @@ set_target_properties(scrubber_base_test PROPERTIES
 
 add_test(NAME ScrubberBase COMMAND scrubber_base_test)
 
+add_executable(coalescing_trigger_test coalescing_trigger_test.cpp)
+
+target_link_libraries(coalescing_trigger_test PRIVATE
+    pj_widgets
+    GTest::gtest
+)
+
+if(DEFINED PJ_WARNING_FLAGS)
+    target_compile_options(coalescing_trigger_test PRIVATE ${PJ_WARNING_FLAGS})
+endif()
+
+set_target_properties(coalescing_trigger_test PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
+)
+
+add_test(NAME CoalescingTrigger COMMAND coalescing_trigger_test)
+
 add_executable(check_button_test check_button_test.cpp)
 
 target_link_libraries(check_button_test PRIVATE

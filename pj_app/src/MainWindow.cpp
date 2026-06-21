@@ -104,6 +104,7 @@
 #include "pj_scene3d_widgets/Scene3DDockWidget.h"
 #include "pj_scene3d_widgets/transform_service.h"
 #include "pj_scene_common/scene_dock_widget.h"
+#include "pj_widgets/CoalescingTrigger.h"
 #include "pj_widgets/FileDialog.h"
 #include "pj_widgets/FlowLayout.h"
 #include "pj_widgets/IngestProgressWidget.h"
@@ -156,6 +157,11 @@ constexpr double kTwoPi = 6.28318530717958647692;
 constexpr int kTestSampleCount = 1000;
 constexpr double kTestDurationSeconds = 10.0;
 constexpr int kResizeMargin = 6;
+// ~30 Hz cap for the tracker-time fan-out (plots/scenes/value column). Kept equal
+// to PlaybackEngine's kTickIntervalMs (30 Hz) so playback passes through ~1:1; the
+// coalescer's job is to additionally cap faster drivers (scrubbing at mouse-move
+// rate, programmatic seeks) that bypass the playback tick.
+constexpr int kTrackerBroadcastIntervalMs = 33;
 // Per-section cap for the recent popup — at most this many Layouts AND this
 // many Files are retained (the two lists are independent).
 constexpr int kMaxRecentEntries = 8;
@@ -757,7 +763,16 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
   auto& playback = session_->playbackEngine();
   playback.setRange(displayRange(0.0, 10.0));
   ui_->timelineWidget->setPlaybackEngine(&playback);
-  connect(&playback, &PlaybackEngine::currentTimeChanged, this, [this](double time) { broadcastTrackerTime(time); });
+  // Cap the cursor-move fan-out at ~30 Hz (kTrackerBroadcastIntervalMs). currentTimeChanged
+  // fires on playback ticks, scrubbing, and seeks — all of which can exceed 30 Hz (a fast
+  // scrub emits at mouse-move rate). The coalescer runs broadcastTrackerTime(latest) on the
+  // leading edge and once more on the trailing edge, dropping the intermediate cursor times.
+  tracker_broadcast_trigger_ = std::make_unique<CoalescingTrigger>(
+      kTrackerBroadcastIntervalMs, [this]() { broadcastTrackerTimeToVisible(pending_tracker_time_); });
+  connect(&playback, &PlaybackEngine::currentTimeChanged, this, [this](double time) {
+    pending_tracker_time_ = time;
+    tracker_broadcast_trigger_->request();
+  });
   // Frame change (the "Use time offset" toggle today, any future re-base): the
   // blue reference line stores a frame-invariant instant, so re-project it
   // through the new offset and re-push — keeping it pinned to its instant rather
@@ -1085,6 +1100,13 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
     // Switching tabs doesn't emit ADS focus, so drive the right panel (and the
     // editor binding it subsumes) from the new tab's focused dock.
     onDockFocused(activeFocusedDock());
+    // Catch-up for the visibility gate: the per-tick fan-out skips inactive tabs,
+    // so the tab being switched TO missed every cursor move while hidden — and
+    // currentTimeChanged only fires on a time CHANGE, not on a tab switch. Re-seed
+    // the now-visible tab with the current cursor so its plots/scenes aren't stale.
+    if (session_ != nullptr) {
+      broadcastTrackerTimeToVisible(toAxisDouble(session_->playbackEngine().currentTime()));
+    }
   });
   bindEditorToPlot(firstPlotOfActiveTab());
 
@@ -1895,8 +1917,43 @@ void MainWindow::forEachDock(const std::function<void(DockWidget*)>& operation) 
   });
 }
 
+void MainWindow::forEachVisibleDock(const std::function<void(DockWidget*)>& operation) {
+  // Only the active top-level tab's docks are on screen (the other tabs live in a
+  // hidden QStackedWidget page). A dock hidden by a maximized sibling still lives
+  // in the active docker, so it IS visited — the conservative gate is per-tab.
+  //
+  // Limitation (pre-existing, NOT introduced here): plotAt() returns each area's
+  // currentDockWidget(), so a dock tabbed BEHIND another inside the same area is
+  // not visited per-tick — and its sub-tab switch emits no currentTabChanged, so
+  // the catch-up does not re-seed it. origin/main's forEachDock had the same blind
+  // spot. Normal PJ4 docking never creates inner tabs (splits insert into
+  // OuterDockAreas, which exclude the center/tabify area), so this is unreachable
+  // via the UI; if inner tabbing is ever enabled, re-seed from CDockAreaWidget::currentChanged.
+  PlotDocker* active = ui_->tabbedPlotWidget->currentTab();
+  if (active == nullptr) {
+    return;
+  }
+  for (int index = 0; index < active->plotCount(); ++index) {
+    if (DockWidget* dock = active->plotAt(index); dock != nullptr) {
+      operation(dock);
+    }
+  }
+}
+
 void MainWindow::broadcastTrackerTime(double display_seconds) {
   forEachDock([display_seconds](DockWidget* dock) { dock->onTrackerTime(display_seconds); });
+  ui_->curveListPanel->refreshValues(display_seconds);
+}
+
+void MainWindow::broadcastTrackerTimeToVisible(double display_seconds) {
+  // Per-tick playback/scrub fan-out: only the active top-level tab is on screen, so
+  // forEachVisibleDock skips every other tab's docks — a hidden-tab plot's replot
+  // still does the full canvas work (and, on an RHI window, the per-frame composite)
+  // for nothing. This is the temporal cap's spatial sibling: cap-the-rate (broadcast
+  // throttle) x skip-the-invisible (here). Structural seeds keep using
+  // broadcastTrackerTime() (ALL tabs) so a hidden tab is correct the instant it is
+  // revealed, and the currentTabChanged handler re-seeds the newly active tab.
+  forEachVisibleDock([display_seconds](DockWidget* dock) { dock->onTrackerTime(display_seconds); });
   ui_->curveListPanel->refreshValues(display_seconds);
 }
 

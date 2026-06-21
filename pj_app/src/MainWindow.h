@@ -67,6 +67,7 @@ class IngestProgressWidget;
 class RecentFilesMenu;
 class Theme;
 class TitleBar;
+class CoalescingTrigger;
 
 // Legend corner placement. Four corner buttons in the right toolbar act
 // as an exclusive group: click sets the position, click the active one
@@ -326,10 +327,21 @@ class MainWindow : public QMainWindow {
   // Applies operation to each dock widget.
   void forEachDock(const std::function<void(DockWidget*)>& operation);
 
+  // Applies operation to each dock widget on the active top-level tab only (the
+  // on-screen docks). forEachDock's spatial sibling, used by the per-tick fan-out.
+  void forEachVisibleDock(const std::function<void(DockWidget*)>& operation);
+
   // Pushes the current tracker time (display-axis seconds) to every data dock and
   // refreshes the curve-list Value column. The single seam for "the time cursor
   // moved": playback ticks, seeks, and layout/undo restores all route through here.
   void broadcastTrackerTime(double display_seconds);
+
+  // Like broadcastTrackerTime, but only the active top-level tab's docks (plus the
+  // always-visible curve-list Value column). The per-tick playback/scrub fan-out
+  // uses this so off-screen tabs do no replot/decode/composite work; structural
+  // seeds use broadcastTrackerTime (all tabs) and the tab-switch handler re-seeds
+  // the newly active tab so a revealed tab is never stale.
+  void broadcastTrackerTimeToVisible(double display_seconds);
 
   // Applies operation to each 2D/3D scene dock hosted in a DockWidget.
   void forEachSceneDock(const std::function<void(SceneDockWidget*)>& operation);
@@ -536,6 +548,15 @@ class MainWindow : public QMainWindow {
   std::unique_ptr<pj::scene3d::TransformService> transform_service_;
   std::unique_ptr<FileLoader> file_loader_;
   std::unique_ptr<StreamingSourceManager> streaming_manager_;
+  // ~30 Hz rate cap for the tracker-time fan-out. Every per-cursor-move driver
+  // (playback ticks, scrubbing, seeks) routes through one coalescer so the
+  // expensive per-widget work (plot replot, scene decode/composite, value column)
+  // runs at most ~30 Hz regardless of how fast the cursor changes. Structural
+  // seeds (load/restore/undo) call broadcastTrackerTime() directly, unthrottled,
+  // so a freshly shown dock is never blank waiting for the trailing edge.
+  // pending_tracker_time_ holds the newest cursor time the trailing edge will use.
+  std::unique_ptr<CoalescingTrigger> tracker_broadcast_trigger_;
+  double pending_tracker_time_ = 0.0;
   // Active streaming dataset id while a session is live (0 = none).
   // Scopes the playback slider range to this dataset's data only so unrelated
   // file/scalar timestamps in the global store don't stretch the slider into

@@ -9,8 +9,14 @@
 namespace PJ {
 
 namespace {
-constexpr int kTickIntervalMs = 16;  // ~60 Hz
-}
+// ~30 Hz. Nothing the cursor drives needs 60 Hz: video tops out ~30 Hz, ROS
+// messages 10-20 Hz, the curve-list Value column is capped at 10 Hz, and a 30 Hz
+// tracker line is already smooth (film is 24). Halving the tick halves the
+// downstream replot/decode/composite work for every consumer at once — capping
+// once at the origin instead of throttling each widget separately. Playback speed
+// is unaffected: onTick derives the cursor from elapsed wall-clock, not tick count.
+constexpr int kTickIntervalMs = 33;  // ~30 Hz
+}  // namespace
 
 PlaybackEngine::PlaybackEngine(QObject* parent) : QObject(parent) {
   timer_.setInterval(kTickIntervalMs);
