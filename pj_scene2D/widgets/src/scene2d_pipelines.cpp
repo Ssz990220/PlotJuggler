@@ -21,9 +21,6 @@ std::unique_ptr<CodecPipeline> makeScene2DPipelineFor(sdk::BuiltinObjectType obj
     case sdk::BuiltinObjectType::kMesh3D:
     case sdk::BuiltinObjectType::kVideoFrame:
     case sdk::BuiltinObjectType::kSceneEntities:
-    // kAssetVideo is a reserved SDK enum slot with no host decode path; listed
-    // to keep this exhaustive switch -Werror=switch clean.
-    case sdk::BuiltinObjectType::kAssetVideo:
     case sdk::BuiltinObjectType::kRobotDescription:
     case sdk::BuiltinObjectType::kCameraInfo:
     case sdk::BuiltinObjectType::kOccupancyGridUpdate:

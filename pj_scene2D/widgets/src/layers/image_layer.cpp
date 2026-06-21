@@ -15,8 +15,6 @@
 #include <unordered_map>
 #include <utility>
 
-#include "pj_base/builtin/asset_video.hpp"
-#include "pj_base/builtin/asset_video_codec.hpp"
 #include "pj_base/builtin/builtin_object.hpp"
 #include "pj_base/builtin/camera_info.hpp"
 #include "pj_plugins/sdk/message_parser_plugin_base.hpp"
