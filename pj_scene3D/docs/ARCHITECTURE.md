@@ -124,7 +124,7 @@ planned refinement.
 The camera is an interchangeable controller over a shared, serializable pose,
 deliberately in `pj_scene3d_core` (Qt/GL-free) so the math is headless unit-
 testable (`camera_near_far_test`, `camera_zoom_to_cursor_test`,
-`camera_state_transfer_test`).
+`camera_state_transfer_test`, `camera_follow_test`).
 
 - **`ICamera` + `CameraState`** (`core/include/pj_scene3d_core/camera/camera.h`):
   `CameraState` (focal, radius, azimuth, elevation, fov_y, ortho_scale,
@@ -154,6 +154,31 @@ testable (`camera_near_far_test`, `camera_zoom_to_cursor_test`,
   ground/focal-plane hit) falls back to center-of-view `zoom()`. Right-drag stays
   center-of-view zoom. On `FlyCamera` zoom-to-cursor degenerates to a forward
   dolly by design.
+- **Frame follow (Position-only).** `ICamera::followShift(world_delta)` shifts the
+  camera's anchor by a world delta without touching orbit angle / zoom — Orbit and
+  TopDownOrtho move the focal, Fly the eye, and `XYOrbitCamera` overrides it to drop
+  the z component (ground-locked). `SceneViewWidget` holds the follow target
+  (`setFollowFrame`, "" = off) and applies it each tracker tick in `applyFollow`:
+  look up the target's origin in the fixed frame at `render_time_`, and shift the
+  camera by the delta against the previous tick's origin (`follow_prev_origin_`).
+  The first tick after enabling / a fixed-frame change / a lookup gap only *seeds*
+  the baseline (no shift), so enabling never jumps and the user's orbit/zoom/pan is
+  preserved (follow only *adds* the target's motion). `followRenderKey(time)` hashes
+  the followed origin into the dock's `viewRenderKey` so a moving target isn't
+  coalesced away by the repaint gate even when the TF overlay is hidden. The UI is
+  the "Camera" section's **Follow frame** picker in `Scene3DConfigPanel`, with a
+  trailing **recenter** button (`SceneViewWidget::recenterOnFollowFrame` →
+  `followShift(target − current focal)`) that snaps the camera onto the target on
+  demand. Heading / Pose (rotation-following) modes are future work; the
+  `FollowMode` enum already reserves the slot.
+- **Frame-list freshness.** The frame pickers (fixed-frame + follow) are fed by
+  `SceneViewWidget::refreshAvailableFrames` → `getFrameHierarchy()`, which is
+  time-independent (whole buffer). That refresh used to fire only from
+  `setTransformBuffer` / `setTrackerTime`, so TF folded into the buffer while the
+  playhead was paused (a file load) left the combos stale until the user pressed
+  play. `Scene3DDockWidget` now also re-enumerates on `datasetTransformsReady`
+  (file ingest), decoupled from the time-gated repaint path, so the full tree is
+  listed as soon as it loads.
 - **Scene bounds.** `Scene3DLayer::worldBounds()` returns an optional source-frame
   `AABB`; `PointCloudLayer`, `OccupancyGridLayer`, `DepthCloudLayer`, and
   `VoxelGridLayer` override it. `RobotModelLayer` deliberately does **not** (it is
@@ -175,9 +200,11 @@ testable (`camera_near_far_test`, `camera_zoom_to_cursor_test`,
   `raise()`'d above it (ADS native-window z-order).
 - **Persistence.** `xmlSaveState` writes the active model as a stable string id
   (`orbit` / `xy_orbit` / `fly` / `top_down_ortho` — independent of the enum
-  integer / combo order) plus the `CameraState` as JSON (`cameraStateToJson`);
-  `xmlLoadState` restores both, sanitizing the state so a corrupt layout can never
-  drive a degenerate view.
+  integer / combo order) plus the `CameraState` as JSON (`cameraStateToJson`) and
+  the `follow_frame` attribute (empty = off); `xmlLoadState` restores all three,
+  sanitizing the state so a corrupt layout can never drive a degenerate view. A
+  restored follow target absent from the current TF tree stays inert until it
+  appears (`applyFollow` holds on lookup failure).
 
 ## Pose-array layer (`PosesInFrame`)
 

@@ -113,6 +113,12 @@ void OrbitCamera::setSceneBounds(const AABB& bounds) {
   scene_bounds_ = bounds;
 }
 
+void OrbitCamera::followShift(const glm::vec3& world_delta) {
+  // Shift the orbit pivot; the eye is derived from focal + spherical(azimuth,
+  // elevation, radius), so it rides the pivot rigidly with the angle/zoom intact.
+  state_.focal += world_delta;
+}
+
 void OrbitCamera::rotate(float dx_pixels, float dy_pixels) {
   state_.azimuth -= dx_pixels / kPixelsPerRadian;
   state_.elevation = std::clamp(state_.elevation + dy_pixels / kPixelsPerRadian, -kPolarLimit, kPolarLimit);
@@ -241,6 +247,13 @@ void OrbitCamera::fitToBoundingBox(const AABB& bounds) {
 // XYOrbitCamera — orbit with the pivot locked to the ground plane (z = 0).
 // ---------------------------------------------------------------------------
 
+void XYOrbitCamera::followShift(const glm::vec3& world_delta) {
+  // Ground-locked: track the followed frame's horizontal motion only, keeping the
+  // pivot on the floor (focal.z stays 0) so the inherited orbit never goes airborne.
+  state_.focal.x += world_delta.x;
+  state_.focal.y += world_delta.y;
+}
+
 void XYOrbitCamera::pan(float dx_pixels, float dy_pixels) {
   OrbitCamera::pan(dx_pixels, dy_pixels);
   state_.focal.z = 0.0f;  // keep the pivot on the floor
@@ -329,6 +342,12 @@ glm::vec3 TopDownOrthoCamera::position() const {
 
 void TopDownOrthoCamera::setSceneBounds(const AABB& bounds) {
   scene_bounds_ = bounds;
+}
+
+void TopDownOrthoCamera::followShift(const glm::vec3& world_delta) {
+  // Pan the bird's-eye view with the followed frame; eyeHeight()/near-far derive
+  // from focal so the framing stays consistent as the focal plane tracks z.
+  state_.focal += world_delta;
 }
 
 void TopDownOrthoCamera::rotate(float dx_pixels, float /*dy_pixels*/) {
@@ -457,6 +476,12 @@ glm::vec3 FlyCamera::position() const {
 
 void FlyCamera::setSceneBounds(const AABB& bounds) {
   scene_bounds_ = bounds;
+}
+
+void FlyCamera::followShift(const glm::vec3& world_delta) {
+  // No orbit pivot: translate the eye; yaw/pitch (view direction) are untouched, so
+  // the flier rides along with the followed frame keeping its heading.
+  eye_ += world_delta;
 }
 
 void FlyCamera::rotate(float dx_pixels, float dy_pixels) {

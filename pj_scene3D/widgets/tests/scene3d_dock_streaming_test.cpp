@@ -20,11 +20,21 @@
 #include <gtest/gtest.h>
 
 #include <QApplication>
+#include <QList>
 #include <QString>
+#include <algorithm>
+#include <chrono>
+#include <cstdint>
+#include <glm/glm.hpp>
+#include <glm/gtc/quaternion.hpp>
+#include <vector>
 
+#include "mock_parser_support.h"  // pumpUntil
 #include "pj_base/builtin/builtin_object.hpp"
 #include "pj_datastore/object_store.hpp"
 #include "pj_runtime/SessionManager.h"
+#include "pj_scene3d_core/tf/tf_buffer.h"
+#include "pj_scene3d_core/tf/transform.h"
 #include "pj_scene3d_widgets/Scene3DDockWidget.h"
 #include "pj_scene3d_widgets/transform_service.h"
 
@@ -200,6 +210,56 @@ TEST(Scene3DDockStreaming, TfOnlyDockTrackerTimeToggleOffIsRawSeconds) {
   const auto ns = dock.lastTrackerNsForTest();
   ASSERT_TRUE(ns.has_value());
   EXPECT_EQ(*ns, static_cast<int64_t>(5LL * 1'000'000'000LL));
+}
+
+// Regression: the frame combos (fixed-frame + camera follow) are fed from the
+// WHOLE TF buffer, not the frames resolvable at the current playhead. TF folded
+// into the buffer while the tracker is PAUSED — a file load drives ingest via
+// datasetTransformsReady at a fixed time — must refresh the available-frame list
+// immediately. Previously the list was only re-polled inside setTrackerTime (which
+// early-returns on an unchanged time), so the full tree appeared only after the
+// user pressed play.
+TEST(Scene3DDockStreaming, FrameListReflectsBufferGrowthWhilePaused) {
+  PJ::SessionManager session;
+  pj::scene3d::TransformService transform_service(session);
+  const auto tf_topic = registerTfTopic(session.objectStore(), /*dataset_id=*/1, "/tf");
+
+  PJ::Scene3DDockWidget dock;
+  dock.setSessionManager(&session);
+  dock.setTransformService(&transform_service);
+  ASSERT_TRUE(dock.addTopic(tf_topic, PJ::sdk::BuiltinObjectType::kFrameTransforms, QStringLiteral("/tf")));
+  ASSERT_TRUE(pj::scene3d::test::pumpUntil([&] { return dock.sceneView() != nullptr; }));
+
+  // Pin a fixed playhead and enumerate while the buffer is still empty.
+  dock.onTrackerTime(2.0);
+  EXPECT_TRUE(dock.availableFrames().isEmpty());
+
+  // TF arrives into the shared buffer at the SAME playhead (no play / scrub).
+  auto buf = transform_service.transformBuffer(/*dataset_id=*/1);
+  ASSERT_NE(buf, nullptr);
+  const auto add_edge = [&](const char* parent, const char* child) {
+    pj::scene3d::StampedTransform st;
+    st.stamp = pj::scene3d::TimePoint{std::chrono::nanoseconds(100)};
+    st.parent_frame = parent;
+    st.child_frame = child;
+    st.transform.t = glm::dvec3{0.0};
+    st.transform.q = glm::dquat{1.0, 0.0, 0.0, 0.0};
+    EXPECT_TRUE(buf->setTransform(st).has_value());
+  };
+  add_edge("map", "odom");
+  add_edge("odom", "base_link");
+
+  // The file-load driver re-emits datasetTransformsReady after folding TF in; the
+  // playhead does NOT move.
+  transform_service.ingestFrameTransformsForDataset(/*dataset_id=*/1);
+
+  const QList<pj::scene3d::FrameRow> frames = dock.availableFrames();
+  const auto has = [&](const char* name) {
+    return std::any_of(frames.begin(), frames.end(), [&](const pj::scene3d::FrameRow& r) { return r.name == name; });
+  };
+  EXPECT_TRUE(has("map")) << "the whole TF tree must list without pressing play";
+  EXPECT_TRUE(has("odom"));
+  EXPECT_TRUE(has("base_link"));
 }
 
 }  // namespace

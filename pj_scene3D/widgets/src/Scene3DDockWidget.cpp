@@ -305,6 +305,15 @@ void Scene3DDockWidget::setTransformService(pj::scene3d::TransformService* servi
         transform_service_, &pj::scene3d::TransformService::datasetTransformsReady, this,
         [this](PJ::DatasetId dataset_id) {
           if (dataset_id == representativeDatasetId()) {
+            // Re-enumerate the frame tree from the (now-larger) buffer. The frame
+            // combos must reflect the WHOLE buffer, not the frames resolvable at the
+            // current playhead — and a file load folds TF in while the tracker is
+            // paused, so the time-gated refresh inside setTrackerTime (below, via
+            // onTrackerTime) won't fire. Cheap: refreshAvailableFrames re-emits only
+            // when the frame set actually changed.
+            if (view_ != nullptr) {
+              view_->refreshAvailableFrames();
+            }
             onTrackerTime(last_tracker_display_);
           }
         });
@@ -719,7 +728,14 @@ uint64_t Scene3DDockWidget::viewRenderKey(PJ::Timepoint time) const {
   // moving TF tree freezes whenever every visible layer's renderKey is unchanged
   // (a static/fixed-frame cloud, or a TF-only dock). Returns 0 when no TF overlay
   // is drawn (the view decides), so coalescing is full when it should be.
-  return view_ != nullptr ? view_->tfRenderKey(time) : 0;
+  if (view_ == nullptr) {
+    return 0;
+  }
+  // Fold the followed frame's pose in too: Position-follow moves the camera with the
+  // target, which no layer's renderKey reflects, so without this a moving follow
+  // target would freeze whenever the TF overlay is hidden. followRenderKey is 0 when
+  // not following, so it doesn't reduce coalescing then.
+  return view_->tfRenderKey(time) ^ view_->followRenderKey(time);
 }
 
 QString Scene3DDockWidget::xmlTag() const {
@@ -859,6 +875,27 @@ QString Scene3DDockWidget::currentFixedFrame() const {
     return {};
   }
   return QString::fromStdString(view_->fixedFrame());
+}
+
+QString Scene3DDockWidget::currentFollowFrame() const {
+  if (view_ == nullptr) {
+    return {};
+  }
+  return QString::fromStdString(view_->followFrame());
+}
+
+void Scene3DDockWidget::setFollowFrame(const QString& frame) {
+  if (view_ == nullptr || currentFollowFrame() == frame) {
+    return;
+  }
+  view_->setFollowFrame(frame.toStdString());
+  emit followFrameChanged(frame);
+}
+
+void Scene3DDockWidget::recenterOnFollowFrame() {
+  if (view_ != nullptr) {
+    view_->recenterOnFollowFrame();
+  }
 }
 
 bool Scene3DDockWidget::layerVisible(ObjectTopicId topic_id) const {
@@ -1276,6 +1313,7 @@ QDomElement Scene3DDockWidget::xmlSaveState(QDomDocument& doc) const {
       QStringLiteral("fixed_frame_mode"),
       fixed_frame_mode_ == FixedFrameMode::kAutoRoot ? QStringLiteral("auto_root") : QStringLiteral("explicit"));
   root.setAttribute(QStringLiteral("fixed_frame"), currentFixedFrame());
+  root.setAttribute(QStringLiteral("follow_frame"), currentFollowFrame());
   if (view_ != nullptr && camera_model_combo_ != nullptr) {
     root.setAttribute(QStringLiteral("camera_model"), cameraModelToString(camera_model_combo_->currentIndex()));
     root.setAttribute(
@@ -1374,6 +1412,10 @@ bool Scene3DDockWidget::xmlLoadState(const QDomElement& element) {
     if (!camera_state.isEmpty()) {
       view_->camera().adoptState(pj::scene3d::cameraStateFromJson(camera_state.toStdString(), view_->camera().state()));
     }
+    // Restore the camera follow target (empty = off). Tolerant of older layouts
+    // (missing attribute → empty → follow off). A target absent from the current
+    // TF tree stays inert until it appears (applyFollow holds on lookup failure).
+    setFollowFrame(element.attribute(QStringLiteral("follow_frame")));
     // Per-dock scene controls: override the global seed applied at view creation
     // (sceneViewReady -> applySceneControlsTo) with this dock's saved look. Older
     // layouts have no <scene_controls> child -> keep the seed. Each attribute

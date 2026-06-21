@@ -55,6 +55,30 @@ class SceneViewWidget : public QOpenGLWidget {
   void setTrackerTime(PJ::Timepoint t);
   void setFixedFrame(const std::string& frame);
 
+  // Camera "follow a frame" (RViz / Foxglove style). Position-only for now: each
+  // tracker tick the active camera's anchor tracks `frame`'s origin in the fixed
+  // frame, so the view pans to keep the frame in place while orbit/zoom stay
+  // world-referenced. Empty `frame` = off. The followed pose is resolved against
+  // the fixed frame, so changing EITHER the fixed frame or the follow frame
+  // re-seeds (the next tick applies no shift → no jump). The FollowMode enum is
+  // kept for future Heading/Pose modes; today a non-empty frame implies kPosition.
+  enum class FollowMode { kOff, kPosition };
+  void setFollowFrame(const std::string& frame);
+  [[nodiscard]] const std::string& followFrame() const {
+    return follow_frame_;
+  }
+  // Repaint-gate fingerprint of the followed frame's pose at `time` — 0 when not
+  // following or unresolvable. Folded into the dock's viewRenderKey so a moving
+  // follow target forces a repaint even when the TF overlay is hidden (the camera
+  // moves but no layer's renderKey changed). GUI-thread only; no allocation.
+  [[nodiscard]] uint64_t followRenderKey(PJ::Timepoint time) const;
+  // Recenter the camera on the followed frame: move the camera's anchor to that
+  // frame's current origin (resolved in the fixed frame at render_time_), keeping
+  // orbit angle / zoom. The on-demand counterpart to the no-jump-on-enable follow
+  // policy — the "Follow frame" recenter button drives it. No-op when not following
+  // or the frame can't be resolved.
+  void recenterOnFollowFrame();
+
   // Replace the render order: index 0 renders first (behind), the last on top.
   // For coplanar overlays (costmaps) this is what decides the overlap winner.
   void setLayers(const std::vector<Scene3DLayer*>& ordered);
@@ -255,6 +279,14 @@ class SceneViewWidget : public QOpenGLWidget {
   void keyPressEvent(QKeyEvent* event) override;
 
  private:
+  // Per-tick "follow a frame" application (called from setTrackerTime). Resolves
+  // the follow target's origin in the fixed frame at render_time_ and shifts the
+  // active camera by the delta vs the previous tick's origin (camera_->followShift),
+  // so the user's orbit/zoom/pan is preserved and only the frame's motion is added.
+  // Seeds (applies no shift) on the first tick after enabling / a fixed-frame change
+  // / a lookup gap. No-op when follow is off or the lookup fails (camera holds).
+  void applyFollow();
+
   // Draw the GPU/CPU timing overlay with QPainter on top of the rendered scene.
   // Called at the end of paintGL when show_perf_hud_; uses the latest harvested
   // profiler result (a few frames stale, which is imperceptible for a HUD).
@@ -329,6 +361,17 @@ class SceneViewWidget : public QOpenGLWidget {
   // this is render state, not the clock. Fed to the per-frame FrameContext.
   PJ::Timepoint render_time_{};
   std::string fixed_frame_;
+  // "Follow a frame" state. follow_frame_ empty = not following (today a non-empty
+  // frame implies FollowMode::kPosition; the enum reserves the slot for future
+  // Heading/Pose modes). The camera tracks this frame's origin (resolved in
+  // fixed_frame_) each tick. follow_prev_origin_ is that origin at the previous
+  // APPLIED tick; the delta to it is what gets fed to camera_->followShift.
+  // follow_seeded_ is false until the first lookup seeds follow_prev_origin_, so
+  // enabling follow or changing the fixed frame applies no shift on its seeding
+  // tick (no jump).
+  std::string follow_frame_;
+  glm::dvec3 follow_prev_origin_{0.0};
+  bool follow_seeded_ = false;
   // Scratch frame list reused by tfRenderKey() each gate check to avoid a per-tick
   // heap allocation (mirrors how the render passes reuse getAllFrames(out)).
   mutable std::vector<std::string> tf_render_key_frames_;

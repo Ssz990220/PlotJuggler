@@ -106,6 +106,10 @@ class Scene3DConfigPanel : public QWidget {
   // Bind the Settings host to the config widget of the kRobotDescription layer
   // for topic_id_value, when one exists on the bound dock. Called from a row click.
   void showRobotLayerConfig(uint32_t topic_id_value);
+  // (Re)fill the Camera section's "Follow frame" combo from the bound dock's TF
+  // frame set ("None" + each frame), reselecting the dock's current follow target.
+  // Signal-blocked so a programmatic refill doesn't echo back as a user pick.
+  void populateFollowCombo();
   void disconnectFromDock();
   void rebuildLayerList();
   void updateSelectedLayerPane();
@@ -136,6 +140,14 @@ class Scene3DConfigPanel : public QWidget {
   // Scene controls (values mirrored in QSettings). The eye buttons are
   // checkable show/hide toggles, independent of the opacity values so hiding
   // and re-showing a feature keeps its tuned opacity.
+  // Camera section: the "Follow frame" picker ("None" = off, else a TF frame).
+  // Per-dock (drives the bound dock directly, persisted in its layout XML), not a
+  // shared-look QSettings control like the grid/gizmo widgets below.
+  ComboBox* follow_frame_combo_ = nullptr;
+  // Trailing button on the Follow-frame row: recenter the camera on the followed
+  // frame. Enabled only while a frame is being followed.
+  QToolButton* recenter_button_ = nullptr;
+
   QToolButton* grid_lines_button_ = nullptr;
   QToolButton* grid_cells_button_ = nullptr;
   QToolButton* grid_eye_ = nullptr;

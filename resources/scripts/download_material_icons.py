@@ -179,6 +179,7 @@ ICON_MAPPING: dict[str, tuple[str, dict[str, str]]] = {
     "radio_unchecked_disabled_dark.svg":   ("Radio Button Unchecked",     {"fill_color": "#E0E0E0"}),
     "ratio.svg":                           ("View Real Size",             {}),
     "red_circle.svg":                      ("Circle",                     {}),
+    "recenter.svg":                        ("Recenter",                   {}),
     "reference_line.svg":                  ("Line Axis",                  {}),
     "refresh.svg":                         ("Refresh",                    {}),
     "reload_light.svg":                    ("Refresh",                    {}),

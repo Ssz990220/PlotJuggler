@@ -98,7 +98,7 @@ layer, no separate widget.
 
 **Full v1**: per-widget **fixed-frame + display-frame + follow-mode**, with Foxglove-parity follow modes (Pose / Heading / Position / Off). Each widget independent — two widgets side-by-side can render the same scene against different frames with different cameras.
 
-**Phase 1 subset**: per-widget **fixed-frame dropdown only**, populated from the TF buffer's enumerable frame set. Display-frame, follow-modes, and the RViz-style Frames panel are Phase 2+.
+**Phase 1 subset**: per-widget **fixed-frame dropdown** + a **camera "Follow frame" picker** (the "Camera" section atop the scene-controls panel). Follow is **Position-only** so far: the active camera's anchor tracks the chosen frame's origin (in the fixed frame) each tracker tick, so the view pans to keep the frame in place while orbit/zoom stay world-referenced ("None" = off). A **recenter button** beside the picker snaps the camera onto the followed frame on demand (the on-demand counterpart to the no-jump-on-enable policy). The remaining follow modes (**Heading** = + yaw, **Pose** = + full orientation) and the separate display-frame + RViz-style Frames panel are Phase 2+. Both dropdowns list the **whole TF buffer** (every frame ever ingested, time-independent — `getFrameHierarchy()` takes no time argument) and are refreshed as transforms are folded in (on `datasetTransformsReady` / live ingest), so the tree fills in during a file load **without needing to press play**.
 
 A **newly-created** widget does not blindly default to the `map`/`world`/`odom`/… heuristic root: if the user has already picked a fixed frame by hand for the same dataset's `TransformBuffer`, the new widget defaults to that remembered frame (when it is still present in the tree), falling back to the heuristic otherwise. The choice is shared in-session across sibling widgets on the dataset and persisted across restarts (see §10). It stays an *auto-mode* preference — picking it does not flip the widget to explicit, so it still self-heals if the frame later disappears. `TransformService::rememberFixedFrame`/`rememberedFixedFrame` own the memory; `Scene3DDockWidget::resolveAutoFixedFrame` consumes it.
 
@@ -116,9 +116,9 @@ A **newly-created** widget does not blindly default to the `map`/`world`/`odom`/
 
 **Coordinate convention**: ROS Z-up (per `PJ4_PLAN.md` §5.5).
 
-**Implemented**: Orbit, XYOrbit, TopDownOrtho, and Fly (WASD / FPS) — all four selectable via the scene-controls combo. Zoom-to-cursor and Home control are also implemented.
+**Implemented**: Orbit, XYOrbit, TopDownOrtho, and Fly (WASD / FPS) — all four selectable via the scene-controls combo. Zoom-to-cursor and Home control are also implemented. **Position-only "follow a frame"** composes with every model via the `ICamera::followShift(world_delta)` seam (Orbit/TopDown shift the focal, Fly the eye, XYOrbit XY-only to stay ground-locked); `SceneViewWidget::applyFollow` drives it per tracker tick using the delta of the followed origin so user orbit/zoom is preserved and enabling causes no jump.
 
-**Still deferred**: bookmark / saved views, animated transitions, `F`-recenter-on-selected-drawable.
+**Still deferred**: Heading/Pose follow modes, bookmark / saved views, animated transitions, `F`-recenter-on-selected-drawable.
 
 ## 7. Multi-widget behavior
 
@@ -190,7 +190,7 @@ Behavioral contract of `TransformBuffer` (`core/include/pj_scene3d_core/tf/tf_bu
 
 ## 10. Persistence (implemented)
 
-Per-widget fixed-frame, per-layer configuration + visibility, and the active camera model + pose are serialized into the PJ4 layout XML and restored on load. `Scene3DDockWidget::xmlSaveState`/`xmlLoadState` writes a versioned `<Scene3DDock>` (fixed-frame; camera model as a stable string id + `CameraState` JSON; dataset re-resolution by source), and every layer implements its own `xmlSaveState`/`xmlLoadState`. The as-built schema (camera persistence + the per-layer round-trips) lives in `ARCHITECTURE.md`.
+Per-widget fixed-frame, **camera follow target**, per-layer configuration + visibility, and the active camera model + pose are serialized into the PJ4 layout XML and restored on load. `Scene3DDockWidget::xmlSaveState`/`xmlLoadState` writes a versioned `<Scene3DDock>` (fixed-frame; `follow_frame` — empty = off; camera model as a stable string id + `CameraState` JSON; dataset re-resolution by source), and every layer implements its own `xmlSaveState`/`xmlLoadState`. A restored follow target absent from the current TF tree stays inert until it appears. The as-built schema (camera persistence + the per-layer round-trips) lives in `ARCHITECTURE.md`.
 
 Separately from the layout XML, the **last fixed frame a user picked by hand for a dataset** is remembered across app restarts in `QSettings` under `pj_scene3d/fixed_frame_by_source`, keyed by the dataset's stable source name (`DatasetInfo::source_name`, the same identity layout restore matches datasets by — *not* the per-session `DatasetId`). This is the cross-restart half of the §5 "new widget defaults to the remembered frame" behavior; a layout's explicitly-saved fixed frame still wins for the specific widget it was saved on, and a dataset with no source name (e.g. an unnamed live stream) is remembered for the session only.
 

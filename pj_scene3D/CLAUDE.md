@@ -45,8 +45,9 @@ The detailed set of requirements and goals lives in `pj_scene3D/docs/REQUIREMENT
 You MUST read this file at the beginning of every section and after compacting.
 The as-built design — rendering pipeline (HDR/tonemap/SSAO/EDL), URDF/mesh
 subsystem, `package://` asset resolution, scene-controls bindings, camera
-system (four pluggable models, adaptive near/far, zoom-to-cursor, XML
-persistence), and live-streaming data path — lives in
+system (four pluggable models, adaptive near/far, zoom-to-cursor, Position-only
+frame-follow via the `ICamera::followShift` seam + `SceneViewWidget::applyFollow`,
+XML persistence), and live-streaming data path — lives in
 `pj_scene3D/docs/ARCHITECTURE.md`.
 
 ## Decoding boundary (important)

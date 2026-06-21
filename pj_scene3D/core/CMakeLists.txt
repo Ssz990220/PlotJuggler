@@ -50,6 +50,7 @@ if(PJ_BUILD_TESTS)
     ../tests/camera_near_far_test.cpp
     ../tests/camera_zoom_to_cursor_test.cpp
     ../tests/camera_state_transfer_test.cpp
+    ../tests/camera_follow_test.cpp
     ../tests/poses_in_frame_render_test.cpp
     ../tests/scene_entities_decode_test.cpp
     ../tests/tf_buffer_test.cpp

@@ -14,6 +14,7 @@
 #include <QLineEdit>
 #include <QMouseEvent>
 #include <QSettings>
+#include <QSignalBlocker>
 #include <QSize>
 #include <QToolButton>
 #include <QUrl>
@@ -317,6 +318,39 @@ void Scene3DConfigPanel::buildSceneControls(QVBoxLayout* root) {
     return grid;
   };
 
+  // --- Camera --------------------------------------------------------------
+  // "Follow frame": make the camera track a TF frame's position (Position-only
+  // follow). "None" = off. Per-dock (drives the bound dock, persisted in its
+  // layout XML) — NOT a shared-look QSettings control, so it is wired in bindDock
+  // (populateFollowCombo + availableFramesChanged/followFrameChanged), not here.
+  add_band(tr("Camera"));
+  QGridLayout* camera_grid = add_grid();
+  int camera_row = 0;
+  follow_frame_combo_ = new ComboBox(this);
+  follow_frame_combo_->setFocusPolicy(Qt::ClickFocus);
+  follow_frame_combo_->setToolTip(tr("Make the camera follow a TF frame's position"));
+  follow_frame_combo_->addItem(tr("None"), QString());
+  connect(follow_frame_combo_, &QComboBox::currentIndexChanged, this, [this](int /*index*/) {
+    if (bound_dock_ != nullptr && follow_frame_combo_ != nullptr) {
+      bound_dock_->setFollowFrame(follow_frame_combo_->currentData().toString());
+    }
+  });
+  // Trailing recenter button: snap the camera onto the followed frame on demand.
+  // Glyph set theme-aware in applyIcons(); enabled state tracks the follow target
+  // (populateFollowCombo). Sized like every other trailing icon button.
+  recenter_button_ = new QToolButton(this);
+  recenter_button_->setAutoRaise(true);
+  recenter_button_->setFocusPolicy(Qt::NoFocus);
+  recenter_button_->setToolTip(tr("Recenter the camera on the followed frame"));
+  recenter_button_->setEnabled(false);  // no follow target yet; populateFollowCombo updates this
+  sizeTrailingButton(recenter_button_);
+  connect(recenter_button_, &QToolButton::clicked, this, [this]() {
+    if (bound_dock_ != nullptr) {
+      bound_dock_->recenterOnFollowFrame();
+    }
+  });
+  addGridRow(camera_grid, camera_row, tr("Follow frame"), follow_frame_combo_, recenter_button_);
+
   // --- Grid ---------------------------------------------------------------
   add_band(tr("Grid"));
   QGridLayout* grid_grid = add_grid();
@@ -466,7 +500,8 @@ void Scene3DConfigPanel::buildSceneControls(QVBoxLayout* root) {
     }
     return width;
   };
-  const int label_col_w = std::max(widest_label(grid_grid), widest_label(tm_grid));
+  const int label_col_w = std::max({widest_label(camera_grid), widest_label(grid_grid), widest_label(tm_grid)});
+  camera_grid->setColumnMinimumWidth(0, label_col_w);
   grid_grid->setColumnMinimumWidth(0, label_col_w);
   tm_grid->setColumnMinimumWidth(0, label_col_w);
 }
@@ -588,6 +623,9 @@ void Scene3DConfigPanel::applyIcons() {
   }
   if (tf_lines_button_ != nullptr) {
     tf_lines_button_->setIcon(loadSvg(QLatin1String(kTfConnectionsIconPath), theme_));
+  }
+  if (recenter_button_ != nullptr) {
+    recenter_button_->setIcon(loadSvg(QStringLiteral(":/resources/svg/recenter.svg"), theme_));
   }
   if (params_copy_ != nullptr) {
     params_copy_->setIcon(loadSvg(QStringLiteral(":/resources/svg/copy.svg"), theme_));
@@ -791,17 +829,24 @@ void Scene3DConfigPanel::bindDock(Scene3DDockWidget* dock) {
   robot_rows_host_->hide();  // back to collapsed until this dock's rows are rebuilt
 
   if (dock == nullptr) {
+    populateFollowCombo();  // reset to "None"
     updateSelectedLayerPane();
     return;
   }
 
   rebuildLayerList();
   loadControlsFromDock(dock);  // reflect THIS dock's look; controls are per-dock
+  populateFollowCombo();       // reflect THIS dock's follow target + frame set
 
   connect(dock, &SceneDockWidget::layerAdded, this, &Scene3DConfigPanel::onLayerAdded);
   connect(dock, &SceneDockWidget::layerRemoved, this, &Scene3DConfigPanel::onLayerRemoved);
   connect(dock, &SceneDockWidget::layerVisibilityChanged, this, &Scene3DConfigPanel::onLayerVisibilityChanged);
   connect(dock, &SceneDockWidget::layerWarningChanged, this, &Scene3DConfigPanel::onLayerWarningChanged);
+  // Keep the follow combo in step with the dock's frame set and follow target.
+  connect(dock, &Scene3DDockWidget::availableFramesChanged, this, [this](const QList<pj::scene3d::FrameRow>&) {
+    populateFollowCombo();
+  });
+  connect(dock, &Scene3DDockWidget::followFrameChanged, this, [this](const QString&) { populateFollowCombo(); });
 }
 
 void Scene3DConfigPanel::disconnectFromDock() {
@@ -809,6 +854,33 @@ void Scene3DConfigPanel::disconnectFromDock() {
     disconnect(bound_dock_.data(), nullptr, this, nullptr);
   }
   bound_dock_ = nullptr;
+}
+
+void Scene3DConfigPanel::populateFollowCombo() {
+  if (follow_frame_combo_ == nullptr) {
+    return;
+  }
+  QSignalBlocker block(follow_frame_combo_);
+  follow_frame_combo_->clear();
+  follow_frame_combo_->addItem(tr("None"), QString());
+  QString current;
+  if (bound_dock_ != nullptr) {
+    current = bound_dock_->currentFollowFrame();
+    for (const auto& row : bound_dock_->availableFrames()) {
+      const QString name = QString::fromStdString(row.name);
+      const QString display = QString(row.depth * 2, QLatin1Char(' ')) + name;
+      follow_frame_combo_->addItem(display, name);
+    }
+  }
+  const int idx = follow_frame_combo_->findData(current);
+  follow_frame_combo_->setCurrentIndex(idx >= 0 ? idx : 0);
+  // Recenter is enabled only when the SELECTED item is a real frame — track the
+  // combo's resolved selection, not the dock's raw follow string, so a follow
+  // target that isn't (yet) in the tree shows "None" AND a disabled button rather
+  // than an enabled button over a "None" label.
+  if (recenter_button_ != nullptr) {
+    recenter_button_->setEnabled(!follow_frame_combo_->currentData().toString().isEmpty());
+  }
 }
 
 void Scene3DConfigPanel::rebuildLayerList() {

@@ -241,6 +241,7 @@ void SceneViewWidget::setTrackerTime(PJ::Timepoint t) {
   }
   render_time_ = t;
   refreshAvailableFrames();
+  applyFollow();
   update();
 }
 
@@ -249,7 +250,85 @@ void SceneViewWidget::setFixedFrame(const std::string& frame) {
     return;
   }
   fixed_frame_ = frame;
+  // The followed origin was cached in the OLD fixed frame; re-seed so the basis
+  // change doesn't produce a spurious shift on the next tick.
+  follow_seeded_ = false;
   update();
+}
+
+void SceneViewWidget::setFollowFrame(const std::string& frame) {
+  if (follow_frame_ == frame) {
+    return;
+  }
+  follow_frame_ = frame;
+  follow_seeded_ = false;  // next applyFollow seeds the baseline (no shift)
+  applyFollow();           // seed now at the current time so a later tick has a baseline
+  update();
+}
+
+void SceneViewWidget::applyFollow() {
+  if (follow_frame_.empty() || tf_ == nullptr || fixed_frame_.empty()) {
+    return;
+  }
+  const auto x = tf_->tryLookupTransform(fixed_frame_, follow_frame_, render_time_);
+  if (!x) {
+    // Followed frame not resolvable now: hold the camera and re-seed when it
+    // reappears, so a lookup gap can't teleport the view on resume.
+    follow_seeded_ = false;
+    return;
+  }
+  const glm::dvec3 origin = x->t;
+  if (!follow_seeded_) {
+    follow_prev_origin_ = origin;
+    follow_seeded_ = true;
+    return;  // seeding tick applies no shift (no jump on enable / fixed-frame change)
+  }
+  const glm::dvec3 delta = origin - follow_prev_origin_;
+  follow_prev_origin_ = origin;
+  if (delta != glm::dvec3{0.0}) {
+    camera_->followShift(glm::vec3(delta));
+  }
+}
+
+void SceneViewWidget::recenterOnFollowFrame() {
+  if (follow_frame_.empty() || tf_ == nullptr || fixed_frame_.empty()) {
+    return;
+  }
+  const auto x = tf_->tryLookupTransform(fixed_frame_, follow_frame_, render_time_);
+  if (!x) {
+    return;
+  }
+  const glm::dvec3 target = x->t;
+  // Snap whatever anchor the active camera owns onto the target, keeping orbit
+  // angle/zoom: followShift(target - current look-at). state().focal is the look-at
+  // point for every model (Fly synthesizes it from eye + forward), so this recenters
+  // generically. Keep the follow baseline consistent so the next tick adds only the
+  // frame's subsequent motion, not the jump we just applied.
+  camera_->followShift(glm::vec3(target) - camera_->state().focal);
+  follow_prev_origin_ = target;
+  follow_seeded_ = true;
+  update();
+}
+
+uint64_t SceneViewWidget::followRenderKey(PJ::Timepoint time) const {
+  if (follow_frame_.empty() || tf_ == nullptr || fixed_frame_.empty()) {
+    return 0;
+  }
+  const auto x = tf_->tryLookupTransform(fixed_frame_, follow_frame_, time);
+  if (!x) {
+    return 0;  // unresolvable → camera holds → no follow-driven repaint
+  }
+  // FNV-1a over the followed origin's bits (Position-only follow shifts the camera
+  // by this translation). Never 0 while following+resolvable, so the dock's gate
+  // can tell "following" from "no TF overlay" (which also returns 0).
+  uint64_t h = 1469598103934665603ULL;
+  const double comps[3] = {x->t.x, x->t.y, x->t.z};
+  for (const double c : comps) {
+    uint64_t bits = 0;
+    std::memcpy(&bits, &c, sizeof(bits));
+    h = (h ^ bits) * 1099511628211ULL;
+  }
+  return h == 0 ? 1U : h;
 }
 
 void SceneViewWidget::setAxesVisible(bool visible) {

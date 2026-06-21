@@ -147,6 +147,15 @@ class ICamera {
   // fallback.
   virtual void setSceneBounds(const AABB& bounds) = 0;
 
+  // Shift the camera's anchor (look-at target / eye) by a world-space delta,
+  // WITHOUT changing orbit angle / zoom / orientation — the primitive the "follow
+  // a frame" feature applies each tick so the camera rides a moving frame while the
+  // user's framing is preserved (it only ADDS the frame's motion). Position-only
+  // follow: translation, no rotation. Each model shifts whatever anchor it owns
+  // (Orbit/TopDown: focal; Fly: eye); XYOrbit drops the z component to stay
+  // ground-locked. See SceneViewWidget::applyFollow.
+  virtual void followShift(const glm::vec3& world_delta) = 0;
+
   virtual void rotate(float dx_pixels, float dy_pixels) = 0;
   virtual void pan(float dx_pixels, float dy_pixels) = 0;
   virtual void zoom(float scroll_ticks) = 0;
@@ -173,6 +182,7 @@ class OrbitCamera : public ICamera {
 
   void setSceneBounds(const AABB& bounds) override;
 
+  void followShift(const glm::vec3& world_delta) override;  // focal += delta
   void rotate(float dx_pixels, float dy_pixels) override;
   void pan(float dx_pixels, float dy_pixels) override;
   void zoom(float scroll_ticks) override;
@@ -201,6 +211,9 @@ class OrbitCamera : public ICamera {
 // floats off the floor. Perspective. Derives from OrbitCamera.
 class XYOrbitCamera final : public OrbitCamera {
  public:
+  // Ground-locked override: shift focal in XY only (drop world_delta.z) so the
+  // pivot never floats off the floor while following a frame with vertical motion.
+  void followShift(const glm::vec3& world_delta) override;
   void pan(float dx_pixels, float dy_pixels) override;
   void zoomToCursor(float scroll_ticks, glm::vec2 cursor_px, int viewport_w, int viewport_h) override;
   // Re-lock the pivot to the floor (z=0) after adopting an arbitrary pose, keeping
@@ -225,7 +238,8 @@ class TopDownOrthoCamera final : public ICamera {
 
   void setSceneBounds(const AABB& bounds) override;
 
-  void rotate(float dx_pixels, float dy_pixels) override;  // azimuth (map heading) only
+  void followShift(const glm::vec3& world_delta) override;  // focal += delta (pans the top-down view)
+  void rotate(float dx_pixels, float dy_pixels) override;   // azimuth (map heading) only
   void pan(float dx_pixels, float dy_pixels) override;
   void zoom(float scroll_ticks) override;
   void zoomToCursor(float scroll_ticks, glm::vec2 cursor_px, int viewport_w, int viewport_h) override;
@@ -262,6 +276,7 @@ class FlyCamera final : public ICamera {
 
   void setSceneBounds(const AABB& bounds) override;
 
+  void followShift(const glm::vec3& world_delta) override;  // eye += delta
   void rotate(float dx_pixels, float dy_pixels) override;
   void pan(float dx_pixels, float dy_pixels) override;
   void zoom(float scroll_ticks) override;

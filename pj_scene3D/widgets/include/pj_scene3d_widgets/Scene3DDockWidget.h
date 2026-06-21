@@ -96,6 +96,9 @@ class Scene3DDockWidget : public SceneDockWidget {
   [[nodiscard]] bool isAutoRootMode() const {
     return fixed_frame_mode_ == FixedFrameMode::kAutoRoot;
   }
+  // The frame the camera currently follows ("" = not following). Reads the view;
+  // empty until the view exists. See setFollowFrame / SceneViewWidget::setFollowFrame.
+  [[nodiscard]] QString currentFollowFrame() const;
 
   /// True when the topic has a live layer that is currently visible.
   [[nodiscard]] bool layerVisible(ObjectTopicId topic_id) const;
@@ -144,11 +147,18 @@ class Scene3DDockWidget : public SceneDockWidget {
   ObjectTopicId addRobotModelLayerFromUrl(const QString& url);
   void setFixedFrame(const QString& frame);
   void setFixedFrameAutoRoot();
+  // Set the camera follow target ("" = off). Forwards to the view and emits
+  // followFrameChanged; persisted per-dock in the layout XML (next to fixed_frame).
+  void setFollowFrame(const QString& frame);
+  // Recenter the camera on the current follow target (the "Follow frame" recenter
+  // button). No-op when not following or the view does not exist.
+  void recenterOnFollowFrame();
 
  signals:
   void availableFramesChanged(const QList<pj::scene3d::FrameRow>& frames);
   void currentFixedFrameChanged(const QString& frame);
   void fixedFrameModeChanged(bool is_auto_root);
+  void followFrameChanged(const QString& frame);
   /// Emitted once per view creation, at the end of createSceneView(); sceneView()
   /// is non-null from here. Lets the host apply view-only state (scene controls)
   /// to a dock whose lazily-created view did not yet exist when it was wired.

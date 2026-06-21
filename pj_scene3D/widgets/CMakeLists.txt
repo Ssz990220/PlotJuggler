@@ -195,6 +195,20 @@ if(PJ_BUILD_TESTS)
   )
   target_compile_options(scene3d_dock_fixed_frame_test PRIVATE ${PJ_WARNING_FLAGS} ${PJ_SANITIZER_FLAGS})
   add_test(NAME scene3d_dock_fixed_frame_test COMMAND scene3d_dock_fixed_frame_test)
+
+  # Camera "follow a frame": the active camera's pivot tracks a followed frame's
+  # origin each tracker tick (Position-only), no-jump on enable, gate-safe render
+  # key, and per-dock layout persistence. Drives a bare SceneViewWidget against a
+  # hand-built TransformBuffer + the dock's public surface; needs a QApplication.
+  add_executable(scene3d_follow_test
+    tests/scene3d_follow_test.cpp
+  )
+  target_link_libraries(scene3d_follow_test PRIVATE
+    pj_scene3d_widgets
+    GTest::gtest
+  )
+  target_compile_options(scene3d_follow_test PRIVATE ${PJ_WARNING_FLAGS} ${PJ_SANITIZER_FLAGS})
+  add_test(NAME scene3d_follow_test COMMAND scene3d_follow_test)
   # Layer-level coverage for the '<base>_updates' patch window: UID-based store
   # traversal vs an independent cell-by-cell replay, the retroactive-ingest
   # (behind-live-edge) invalidate path, and the base-keyframe parse memo.
