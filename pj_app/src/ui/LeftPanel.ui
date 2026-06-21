@@ -72,7 +72,7 @@
       </item>
       <item>
        <widget class="QToolButton" name="buttonRecentFiles">
-        <property name="toolTip"><string>Recently loaded files</string></property>
+        <property name="toolTip"><string>Recent layouts &amp; files</string></property>
         <property name="minimumSize"><size><width>24</width><height>24</height></size></property>
         <property name="maximumSize"><size><width>24</width><height>24</height></size></property>
         <property name="iconSize"><size><width>20</width><height>20</height></size></property>

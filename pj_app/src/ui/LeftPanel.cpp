@@ -8,6 +8,7 @@
 #include <QDomDocument>
 #include <QDomElement>
 #include <QFileInfo>
+#include <QFont>
 #include <QLabel>
 #include <QLayout>
 #include <QLayoutItem>
@@ -33,6 +34,14 @@ namespace PJ {
 
 namespace {
 constexpr const char* kRecentFilesKey = "File/recent";
+// Recent-layouts list, written by MainWindow::recordRecentLayout. Mirrored here
+// so the single recent popup can render the Layouts section without coupling to
+// MainWindow — kept in sync with MainWindow's kRecentLayoutsKey.
+constexpr const char* kRecentLayoutsKey = "Layout/recent";
+// Recent-button chevron: points right when the popup is closed, down while it
+// is open. Both are the _light asset, recolored per theme by loadSvg.
+constexpr const char* kRecentIconCollapsed = ":/resources/svg/keyboard_arrow_right_light.svg";
+constexpr const char* kRecentIconExpanded = ":/resources/svg/keyboard_arrow_down_light.svg";
 // Streaming-buffer setting key — preserved verbatim from when the
 // scrubber lived on the timeline so user-saved values survive the move.
 constexpr const char* kStreamingBufferKey = "MainWindow.streamingBufferValue";
@@ -43,23 +52,57 @@ LeftPanel::LeftPanel(QWidget* parent) : QWidget(parent), ui_(new Ui::LeftPanel) 
 
   applyIcons(currentTheme());
 
-  // Recent-files popup. Lazy-rebuilt on aboutToShow so it tracks
-  // whatever MainWindow has pushed into QSettings("File/recent").
+  // Recent popup: two sections — Layouts first, Files second. Each list is
+  // deduped/capped/ordered (most-recent-first) by MainWindow when it writes
+  // QSettings; here we only render what is stored. Lazy-rebuilt on aboutToShow
+  // so it always reflects the latest Load/Save.
+  //
+  // Section headers are disabled (bold) menu items rather than addSection()
+  // titles: the PJMenu stylesheet styles QMenu::separator, which switches Qt to
+  // the stylesheet separator path and suppresses addSection() text. A disabled
+  // QAction flows through the themed ::item:disabled rule and renders reliably.
   auto* recent_menu = new QMenu(this);
   recent_menu->setObjectName(QStringLiteral("PJMenu"));
   connect(recent_menu, &QMenu::aboutToShow, this, [this, recent_menu]() {
     recent_menu->clear();
-    const QStringList recent = QSettings().value(kRecentFilesKey).toStringList();
-    if (recent.isEmpty()) {
-      QAction* placeholder = recent_menu->addAction(tr("(no recent files)"));
+    const QStringList layouts = QSettings().value(kRecentLayoutsKey).toStringList();
+    const QStringList files = QSettings().value(kRecentFilesKey).toStringList();
+    if (layouts.isEmpty() && files.isEmpty()) {
+      QAction* placeholder = recent_menu->addAction(tr("(no recent files or layouts)"));
       placeholder->setEnabled(false);
       return;
     }
-    for (const QString& path : recent) {
-      QAction* action = recent_menu->addAction(QFileInfo(path).fileName());
-      action->setToolTip(path);
-      connect(action, &QAction::triggered, this, [this, path]() { emit recentFileSelected(path); });
+    auto add_header = [recent_menu](const QString& title) {
+      QAction* header = recent_menu->addAction(title);
+      header->setEnabled(false);
+      QFont font = header->font();
+      font.setBold(true);
+      header->setFont(font);
+    };
+    if (!layouts.isEmpty()) {
+      add_header(tr("Layouts"));
+      for (const QString& path : layouts) {
+        QAction* action = recent_menu->addAction(QFileInfo(path).fileName());
+        action->setToolTip(path);
+        connect(action, &QAction::triggered, this, [this, path]() { emit recentLayoutSelected(path); });
+      }
     }
+    if (!files.isEmpty()) {
+      add_header(tr("Files"));
+      for (const QString& path : files) {
+        QAction* action = recent_menu->addAction(QFileInfo(path).fileName());
+        action->setToolTip(path);
+        connect(action, &QAction::triggered, this, [this, path]() { emit recentFileSelected(path); });
+      }
+    }
+  });
+  // Flip the chevron to point down while the popup is open, back to right when
+  // it closes (loadSvg recolors the _light asset for the current theme).
+  connect(recent_menu, &QMenu::aboutToShow, this, [this]() {
+    ui_->buttonRecentFiles->setIcon(loadSvg(kRecentIconExpanded, currentTheme()));
+  });
+  connect(recent_menu, &QMenu::aboutToHide, this, [this]() {
+    ui_->buttonRecentFiles->setIcon(loadSvg(kRecentIconCollapsed, currentTheme()));
   });
   connect(ui_->buttonRecentFiles, &QToolButton::clicked, this, [this, recent_menu]() {
     const QPoint anchor = ui_->buttonRecentFiles->mapToGlobal(QPoint(0, ui_->buttonRecentFiles->height()));
@@ -252,7 +295,7 @@ void LeftPanel::applyIcons(QString theme) {
   ui_->tabCloud->setIcon(loadSvg(":/resources/svg/cloud.svg", theme));
   ui_->buttonLoadDatafile->setIcon(loadSvg(":/resources/svg/upload_file.svg", theme));
   ui_->buttonReloadData->setIcon(loadSvg(":/resources/svg/restore_page.svg", theme));
-  ui_->buttonRecentFiles->setIcon(loadSvg(":/resources/svg/play_arrow.svg", theme));
+  ui_->buttonRecentFiles->setIcon(loadSvg(kRecentIconCollapsed, theme));
   ui_->buttonStreamingOptions->setIcon(loadSvg(":/resources/svg/add.svg", theme));
   applyPauseButtonState(theme);
 

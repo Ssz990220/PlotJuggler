@@ -155,7 +155,9 @@ constexpr double kTwoPi = 6.28318530717958647692;
 constexpr int kTestSampleCount = 1000;
 constexpr double kTestDurationSeconds = 10.0;
 constexpr int kResizeMargin = 6;
-constexpr int kMaxRecentLayouts = 5;
+// Per-section cap for the recent popup — at most this many Layouts AND this
+// many Files are retained (the two lists are independent).
+constexpr int kMaxRecentEntries = 8;
 constexpr auto kRecentLayoutsKey = "Layout/recent";
 constexpr auto kLayoutFilter = "PlotJuggler 4 Layout (*.pj4.xml)";
 // Extension itself is the single source of truth in LayoutXml::kLayoutExtension.
@@ -376,14 +378,12 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
   });
 
   // File menu: layout persistence + marketplace + preferences + quit.
-  // Recent Layouts is rebuilt lazily from QSettings on every
-  // aboutToShow so it stays in sync with the most recent Load/Save.
+  // Recent layouts are no longer a File-menu submenu — they live in the
+  // LeftPanel "recent" popup (Layouts section) alongside recent data files,
+  // wired below via LeftPanel::recentLayoutSelected.
   QMenu* file_menu = title_bar_->fileMenu();
   action_load_layout_ = file_menu->addAction(tr("Load Layout..."), this, &MainWindow::onLoadLayout);
   action_save_layout_ = file_menu->addAction(tr("Save Layout..."), this, &MainWindow::onSaveLayout);
-  recent_layouts_menu_ = file_menu->addMenu(tr("Recent Layouts"));
-  recent_layouts_menu_->setObjectName(QStringLiteral("PJMenu"));
-  connect(recent_layouts_menu_, &QMenu::aboutToShow, this, &MainWindow::onRebuildRecentLayoutsMenu);
   file_menu->addSeparator();
   file_menu->addAction(ui_->actionMarketplace);
   action_preferences_ = file_menu->addAction(tr("Preferences..."), this, &MainWindow::onShowPreferencesDialog);
@@ -887,7 +887,7 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
         QStringList recent = recent_settings.value(QStringLiteral("File/recent")).toStringList();
         recent.removeAll(path);
         recent.prepend(path);
-        while (recent.size() > 5) {
+        while (recent.size() > kMaxRecentEntries) {
           recent.removeLast();
         }
         recent_settings.setValue(QStringLiteral("File/recent"), recent);
@@ -897,8 +897,14 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
   connect(ui_->leftPanel, &LeftPanel::recentFileSelected, this, [this](const QString& path) {
     file_loader_->loadFile(path, this);
   });
-  // Enable the popup immediately when prior sessions recorded recent files.
-  ui_->leftPanel->setRecentEnabled(!settings.value(QStringLiteral("File/recent")).toStringList().isEmpty());
+  // Recent layouts load through the same validated path as the (removed) File
+  // menu submenu — onLoadRecentLayout checks existence and prunes dead entries.
+  connect(ui_->leftPanel, &LeftPanel::recentLayoutSelected, this, &MainWindow::onLoadRecentLayout);
+  // Enable the popup immediately when prior sessions recorded recent files or
+  // layouts (either section is enough to make the popup worth showing).
+  const bool had_recent = !settings.value(QStringLiteral("File/recent")).toStringList().isEmpty() ||
+                          !settings.value(QStringLiteral("Layout/recent")).toStringList().isEmpty();
+  ui_->leftPanel->setRecentEnabled(had_recent);
 
   // Title-bar load progress strip — the non-modal replacement for the import
   // dialog on single-instance loads. Shown after a 500 ms delay so quick loads
@@ -2038,25 +2044,6 @@ void MainWindow::onLoadRecentLayout(const QString& path) {
   loadLayoutFromPath(path);
 }
 
-void MainWindow::onRebuildRecentLayoutsMenu() {
-  if (recent_layouts_menu_ == nullptr) {
-    return;
-  }
-  recent_layouts_menu_->clear();
-  const QStringList recent = recentLayouts();
-  if (recent.isEmpty()) {
-    QAction* placeholder = recent_layouts_menu_->addAction(tr("(no recent layouts)"));
-    placeholder->setEnabled(false);
-    return;
-  }
-  for (const QString& path : recent) {
-    const QString shown = QFileInfo(path).fileName();
-    QAction* action = recent_layouts_menu_->addAction(shown);
-    action->setToolTip(path);
-    connect(action, &QAction::triggered, this, [this, path]() { onLoadRecentLayout(path); });
-  }
-}
-
 void MainWindow::onRebuildExtensionsMenu() {
   QMenu* menu = installed_extensions_menu_;
   menu->clear();
@@ -2669,10 +2656,13 @@ void MainWindow::recordRecentLayout(const QString& path) {
   QStringList recent = recentLayouts();
   recent.removeAll(path);  // dedupe — most-recent-first
   recent.prepend(path);
-  while (recent.size() > kMaxRecentLayouts) {
+  while (recent.size() > kMaxRecentEntries) {
     recent.removeLast();
   }
   QSettings().setValue(kRecentLayoutsKey, recent);
+  // A recorded layout populates the popup's Layouts section, so light up the
+  // recent button even when no data file has been loaded yet.
+  ui_->leftPanel->setRecentEnabled(true);
 }
 
 QStringList MainWindow::recentLayouts() const {

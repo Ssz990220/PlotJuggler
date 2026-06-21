@@ -157,13 +157,13 @@ class MainWindow : public QMainWindow {
   void chromeMetricsChanged(const ChromeMetrics& metrics);
 
  private slots:
-  // Layout file flow: open / save / replay-recent. Persists the chosen
-  // file path into the recent-layouts list (cap 5) regardless of whether
-  // the on-disk format is meaningful yet.
+  // Layout file flow: open / save / replay-recent. Persists the chosen file
+  // path into the recent-layouts list (cap kMaxRecentEntries) regardless of
+  // whether the on-disk format is meaningful yet. onLoadRecentLayout is invoked
+  // from the LeftPanel recent popup's Layouts section.
   void onLoadLayout();
   void onSaveLayout();
   void onLoadRecentLayout(const QString& path);
-  void onRebuildRecentLayoutsMenu();
 
   // Opens the extension marketplace dialog.
   void onOpenMarketplace();
@@ -544,7 +544,6 @@ class MainWindow : public QMainWindow {
   // flash it; hidden a moment after the load queue drains.
   IngestProgressWidget* ingest_progress_ = nullptr;
   QTimer* ingest_show_timer_ = nullptr;
-  QMenu* recent_layouts_menu_ = nullptr;
   // Help ▸ Installed Extensions — informational, rebuilt on aboutToShow.
   QMenu* installed_extensions_menu_ = nullptr;
   // Local-panel header bands (grey "Curve Width" / "Curve Style" labels).

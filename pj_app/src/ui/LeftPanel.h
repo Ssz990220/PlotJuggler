@@ -27,9 +27,13 @@ class LeftPanel : public QWidget {
  signals:
   void loadDataRequested();
   void reloadDataRequested();
-  // Emitted when the user picks a path from the recent-files menu in
-  // the Input header. MainWindow connects this to FileLoader::loadFile.
+  // Emitted when the user picks a path from the recent popup in the Input
+  // header. The popup has two sections — Layouts and Files — so picking an
+  // entry emits one of two signals depending on its section. MainWindow wires
+  // recentFileSelected to FileLoader::loadFile and recentLayoutSelected to
+  // onLoadRecentLayout (which validates existence + prunes dead entries).
   void recentFileSelected(QString path);
+  void recentLayoutSelected(QString path);
   // The cog button is a one-shot Start action — there is no "stop" affordance
   // in the UI (Davide: streaming should always be open). Emitted on click.
   void streamingStartRequested();
