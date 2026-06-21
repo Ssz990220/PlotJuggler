@@ -181,6 +181,20 @@ if(PJ_BUILD_TESTS)
   target_compile_definitions(scene3d_dock_persistence_test PRIVATE PJ_SCENE3D_TEST_HOOKS)
   target_compile_options(scene3d_dock_persistence_test PRIVATE ${PJ_WARNING_FLAGS} ${PJ_SANITIZER_FLAGS})
   add_test(NAME scene3d_dock_persistence_test COMMAND scene3d_dock_persistence_test)
+
+  # feat: a newly-created 3D dock defaults its fixed frame to the last one the user
+  # picked by hand for the same dataset's TransformBuffer (in-session + cross-restart
+  # via TransformService). Drives the dock headless through a mock FrameTransforms
+  # parser; needs a QApplication (the dock is a QWidget).
+  add_executable(scene3d_dock_fixed_frame_test
+    tests/scene3d_dock_fixed_frame_test.cpp
+  )
+  target_link_libraries(scene3d_dock_fixed_frame_test PRIVATE
+    pj_scene3d_widgets
+    GTest::gtest
+  )
+  target_compile_options(scene3d_dock_fixed_frame_test PRIVATE ${PJ_WARNING_FLAGS} ${PJ_SANITIZER_FLAGS})
+  add_test(NAME scene3d_dock_fixed_frame_test COMMAND scene3d_dock_fixed_frame_test)
   # Layer-level coverage for the '<base>_updates' patch window: UID-based store
   # traversal vs an independent cell-by-cell replay, the retroactive-ingest
   # (behind-live-edge) invalidate path, and the base-keyframe parse memo.

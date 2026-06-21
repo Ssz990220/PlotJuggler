@@ -836,9 +836,22 @@ void Scene3DDockWidget::onAvailableFrames(const QList<FrameRow>& frames) {
   refreshFrameOverlayCombo();
 
   if (fixed_frame_mode_ == FixedFrameMode::kAutoRoot || currentFixedFrame().isEmpty()) {
-    applyResolvedFixedFrame(pickFixedFrame(effective));
+    applyResolvedFixedFrame(resolveAutoFixedFrame(effective));
   }
   recomputeOrphanStates();
+}
+
+QString Scene3DDockWidget::resolveAutoFixedFrame(const QList<FrameRow>& frames) const {
+  // Prefer the frame the user last picked by hand for this dataset's TransformBuffer
+  // (shared across docks, persisted across restarts), but only when it still exists
+  // in this dock's tree — a different recording of the same source may lack it.
+  if (transform_service_ != nullptr && dataset_id_ != 0) {
+    const QString remembered = transform_service_->rememberedFixedFrame(dataset_id_);
+    if (!remembered.isEmpty() && framesContain(frames, remembered)) {
+      return remembered;
+    }
+  }
+  return pickFixedFrame(frames);
 }
 
 QString Scene3DDockWidget::currentFixedFrame() const {
@@ -864,6 +877,12 @@ void Scene3DDockWidget::setFixedFrame(const QString& frame) {
     refreshFrameOverlayCombo();
   }
   applyResolvedFixedFrame(frame);
+  // Remember this explicit pick so a NEWLY-created dock on the same dataset's
+  // TransformBuffer defaults to it (resolveAutoFixedFrame). dataset_id_ is 0 for a
+  // not-yet-bound or local-only dock — nothing to key the memory by, so skip.
+  if (transform_service_ != nullptr && dataset_id_ != 0) {
+    transform_service_->rememberFixedFrame(dataset_id_, frame);
+  }
 }
 
 void Scene3DDockWidget::setFixedFrameAutoRoot() {
@@ -876,7 +895,7 @@ void Scene3DDockWidget::setFixedFrameAutoRoot() {
     emit fixedFrameModeChanged(true);
     refreshFrameOverlayCombo();
   }
-  applyResolvedFixedFrame(pickFixedFrame(available_frames_));
+  applyResolvedFixedFrame(resolveAutoFixedFrame(available_frames_));
 }
 
 void Scene3DDockWidget::applyResolvedFixedFrame(const QString& frame) {

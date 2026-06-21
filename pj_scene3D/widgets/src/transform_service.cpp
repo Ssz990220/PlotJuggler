@@ -4,7 +4,9 @@
 #include "pj_scene3d_widgets/transform_service.h"
 
 #include <QLoggingCategory>
+#include <QSettings>
 #include <QThread>
+#include <QUrl>
 #include <algorithm>
 #include <chrono>
 #include <cstddef>
@@ -15,6 +17,8 @@
 
 #include "pj_base/builtin/builtin_object.hpp"
 #include "pj_base/builtin/frame_transforms.hpp"
+#include "pj_base/dataset.hpp"
+#include "pj_datastore/engine.hpp"
 #include "pj_datastore/object_store.hpp"
 #include "pj_runtime/SessionManager.h"
 #include "pj_scene3d_core/tf/tf_buffer.h"
@@ -25,6 +29,10 @@ namespace pj::scene3d {
 
 namespace {
 Q_LOGGING_CATEGORY(lcTransformService, "pj.scene3d.transform_service")
+
+// QSettings group for the cross-restart "last manual fixed frame" store, keyed by
+// dataset source name. Mirrors the "pj_scene3d/scene_controls" convention.
+constexpr char kFixedFrameBySourceGroup[] = "pj_scene3d/fixed_frame_by_source";
 
 struct IngestStats {
   std::size_t ingested = 0;
@@ -99,6 +107,9 @@ std::shared_ptr<TransformBuffer> TransformService::transformBuffer(PJ::DatasetId
 
 void TransformService::invalidateDataset(PJ::DatasetId dataset_id) {
   Q_ASSERT(QThread::currentThread() == thread());
+  // Drop the in-session remembered fixed frame for this dataset; the persisted
+  // QSettings copy (if any) is the cross-restart memory and stays put.
+  remembered_fixed_frames_.erase(dataset_id);
   PJ::ObjectStore& object_store = session_.objectStore();
   // Cursor-model equivalent of forgetting the old transforms_populated_ flag:
   // drop the per-topic ingest cursors (and not-a-TF classifications) for this
@@ -135,10 +146,55 @@ void TransformService::setLiveCacheWindow(PJ::DatasetId dataset_id, std::chrono:
 void TransformService::invalidateAll() {
   tf_cursors_.clear();
   non_tf_topics_.clear();
+  remembered_fixed_frames_.clear();
   for (auto& [dataset_id, buffer] : transform_buffers_) {
     (void)dataset_id;
     buffer->clear();
   }
+}
+
+QString TransformService::datasetSourceKey(PJ::DatasetId dataset_id) const {
+  const PJ::DatasetInfo* info = session_.dataEngine().getDataset(dataset_id);
+  if (info == nullptr || info->source_name.empty()) {
+    return {};
+  }
+  // source_name is a free-form label (often a file path); percent-encode it so a
+  // '/' (or other special char) can't be misread as a QSettings group separator.
+  return QString::fromUtf8(QUrl::toPercentEncoding(QString::fromStdString(info->source_name)));
+}
+
+void TransformService::rememberFixedFrame(PJ::DatasetId dataset_id, const QString& frame) {
+  Q_ASSERT(QThread::currentThread() == thread());
+  if (frame.isEmpty()) {
+    return;
+  }
+  remembered_fixed_frames_[dataset_id] = frame;
+  const QString key = datasetSourceKey(dataset_id);
+  if (key.isEmpty()) {
+    return;  // no stable cross-session identity (e.g. an unnamed live stream)
+  }
+  QSettings settings;
+  settings.beginGroup(QLatin1String(kFixedFrameBySourceGroup));
+  settings.setValue(key, frame);
+}
+
+QString TransformService::rememberedFixedFrame(PJ::DatasetId dataset_id) {
+  Q_ASSERT(QThread::currentThread() == thread());
+  if (auto it = remembered_fixed_frames_.find(dataset_id); it != remembered_fixed_frames_.end()) {
+    return it->second;
+  }
+  // First lookup this session: fall back to the cross-restart store, keyed by the
+  // dataset's source name. Memoize the result (hit OR miss) so the hot seeding path
+  // does not re-read QSettings on every frame-tree change.
+  QString frame;
+  const QString key = datasetSourceKey(dataset_id);
+  if (!key.isEmpty()) {
+    QSettings settings;
+    settings.beginGroup(QLatin1String(kFixedFrameBySourceGroup));
+    frame = settings.value(key).toString();
+  }
+  remembered_fixed_frames_[dataset_id] = frame;
+  return frame;
 }
 
 void TransformService::ingestFrameTransformsForDataset(PJ::DatasetId dataset_id) {

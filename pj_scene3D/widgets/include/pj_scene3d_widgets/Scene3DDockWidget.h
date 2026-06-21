@@ -221,6 +221,13 @@ class Scene3DDockWidget : public SceneDockWidget {
   void wireScene3DLayer(pj::scene3d::Scene3DLayer* layer);
   void absorbFallbackFrames(pj::scene3d::Scene3DLayer* layer);
   void applyResolvedFixedFrame(const QString& frame);
+  // The fixed frame to adopt in auto mode: the dataset's remembered manual choice
+  // (TransformService::rememberedFixedFrame) when it is still present in `frames`,
+  // else the map/world/odom heuristic (pickFixedFrame). This is what makes a
+  // freshly-created dock default to the last frame the user picked by hand for the
+  // same TransformBuffer. Read-only w.r.t. the memory — seeding never records, so
+  // there is no feedback loop with the setFixedFrame() recording path.
+  [[nodiscard]] QString resolveAutoFixedFrame(const QList<pj::scene3d::FrameRow>& frames) const;
   void refreshFrameOverlayCombo();
   void onOverlayFramePicked(int index);
   void layoutFrameOverlayCombo();

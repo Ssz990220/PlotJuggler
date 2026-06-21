@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include <QObject>
+#include <QString>
 #include <chrono>
 #include <cstdint>
 #include <memory>
@@ -85,6 +86,27 @@ class TransformService : public QObject {
   // paired with SessionManager::clearAllObjects() at the shell's wipe sites.
   void invalidateAll();
 
+  // Remember `frame` as the fixed frame the user manually chose for `dataset_id`,
+  // so a NEWLY-created 3D dock bound to the same TransformBuffer defaults to it
+  // instead of the map/world/odom heuristic (see Scene3DDockWidget). Writes two
+  // tiers: an in-session cache keyed by DatasetId (shared instantly by sibling
+  // docks on the same dataset) and a cross-restart record in QSettings keyed by
+  // the dataset's stable source name (DataEngine source_name — the same identity
+  // layout restore matches datasets by). A dataset with no source name (e.g. an
+  // unnamed live stream) is remembered for this session only. An empty `frame`
+  // is ignored. GUI-thread only.
+  void rememberFixedFrame(PJ::DatasetId dataset_id, const QString& frame);
+
+  // The remembered manual fixed frame for `dataset_id`, or empty if none. Checks
+  // the in-session cache first, then falls back to the persisted QSettings record
+  // (looked up by the dataset's source name), memoizing the result — hit OR miss —
+  // so the hot onAvailableFrames seeding path does not re-read QSettings on every
+  // frame-tree change. Callers MUST still confirm the frame exists in the live TF
+  // tree before using it: a remembered frame can be absent from a different
+  // recording of the same source. Mutates the memo cache, hence non-const.
+  // GUI-thread only.
+  [[nodiscard]] QString rememberedFixedFrame(PJ::DatasetId dataset_id);
+
   // Incremental, UID-keyed ingest of TF entries that arrived since the last call
   // for this dataset. Cheap no-op when nothing is new (the common streaming
   // tick). Safe to call repeatedly; never double-ingests an entry (a per-topic
@@ -110,6 +132,12 @@ class TransformService : public QObject {
   // here. GUI-thread only. Returns true if any transform was applied.
   bool ingestNewerThanCursor(PJ::DatasetId dataset_id);
 
+  // The cross-restart QSettings key for `dataset_id`: its DataEngine source_name,
+  // percent-encoded so a path-like name can't be misread as a settings group
+  // separator. Empty when the dataset is unknown or has no source name (then the
+  // remembered frame is session-only). GUI-thread only.
+  [[nodiscard]] QString datasetSourceKey(PJ::DatasetId dataset_id) const;
+
   // Per-topic ingest cursor: the SequentialUID of the last entry pushed into the
   // buffer. A UID is stable across front-eviction and per-topic SPARSE (UID
   // allocation is process-global), so the next tick steps strictly forward with
@@ -132,6 +160,13 @@ class TransformService : public QObject {
   // streaming tick.
   std::unordered_map<uint32_t, TfCursor> tf_cursors_;
   std::unordered_set<uint32_t> non_tf_topics_;
+  // Last manual fixed-frame choice per dataset, for the current session. Also the
+  // memo for rememberedFixedFrame's QSettings fallback: a present key (value may be
+  // empty) means "already looked up". Keyed by the session-local DatasetId so
+  // sibling docks share without a settings round-trip; invalidateDataset drops the
+  // entry while the persisted QSettings copy survives (that is the cross-restart
+  // memory). See rememberFixedFrame / rememberedFixedFrame.
+  std::unordered_map<PJ::DatasetId, QString> remembered_fixed_frames_;
 };
 
 }  // namespace pj::scene3d

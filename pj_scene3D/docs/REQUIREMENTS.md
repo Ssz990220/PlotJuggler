@@ -100,6 +100,8 @@ layer, no separate widget.
 
 **Phase 1 subset**: per-widget **fixed-frame dropdown only**, populated from the TF buffer's enumerable frame set. Display-frame, follow-modes, and the RViz-style Frames panel are Phase 2+.
 
+A **newly-created** widget does not blindly default to the `map`/`world`/`odom`/… heuristic root: if the user has already picked a fixed frame by hand for the same dataset's `TransformBuffer`, the new widget defaults to that remembered frame (when it is still present in the tree), falling back to the heuristic otherwise. The choice is shared in-session across sibling widgets on the dataset and persisted across restarts (see §10). It stays an *auto-mode* preference — picking it does not flip the widget to explicit, so it still self-heals if the frame later disappears. `TransformService::rememberFixedFrame`/`rememberedFixedFrame` own the memory; `Scene3DDockWidget::resolveAutoFixedFrame` consumes it.
+
 ## 6. Camera & interaction
 
 **Phase 1 — RViz Orbit subset**:
@@ -189,6 +191,8 @@ Behavioral contract of `TransformBuffer` (`core/include/pj_scene3d_core/tf/tf_bu
 ## 10. Persistence (implemented)
 
 Per-widget fixed-frame, per-layer configuration + visibility, and the active camera model + pose are serialized into the PJ4 layout XML and restored on load. `Scene3DDockWidget::xmlSaveState`/`xmlLoadState` writes a versioned `<Scene3DDock>` (fixed-frame; camera model as a stable string id + `CameraState` JSON; dataset re-resolution by source), and every layer implements its own `xmlSaveState`/`xmlLoadState`. The as-built schema (camera persistence + the per-layer round-trips) lives in `ARCHITECTURE.md`.
+
+Separately from the layout XML, the **last fixed frame a user picked by hand for a dataset** is remembered across app restarts in `QSettings` under `pj_scene3d/fixed_frame_by_source`, keyed by the dataset's stable source name (`DatasetInfo::source_name`, the same identity layout restore matches datasets by — *not* the per-session `DatasetId`). This is the cross-restart half of the §5 "new widget defaults to the remembered frame" behavior; a layout's explicitly-saved fixed frame still wins for the specific widget it was saved on, and a dataset with no source name (e.g. an unnamed live stream) is remembered for the session only.
 
 ## 11. Plugin / extension surface (deferred from v1)
 
