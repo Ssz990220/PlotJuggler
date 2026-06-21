@@ -555,9 +555,14 @@ decoder seek and entry eviction.
   historical matrix exactly). Hardware-decoded NV12 uploads natively as a two-plane
   R8+RG8 texture (no `sws_scale` repack); a CPU deinterleave fallback covers
   backends without RG8. No CPU-side color conversion.
-- **Magnification filter**: per-image-layer choice of linear (smooth, default) or
-  nearest ("pixelated", for pixel inspection); a display hint on the frame, not a
-  decode property. Depth always samples nearest (never blend the no-data sentinel).
+- **Magnification**: image layers always magnify with nearest sampling (crisp,
+  pixelated — for pixel inspection); a display hint on the frame, not a decode
+  property. Depth always samples nearest (never blend the no-data sentinel).
+- **Rectification toggle**: per-image-layer control to lens-undistort the image
+  with its `CameraInfo` (on by default — matches the always-on auto-rectification).
+  Turning it off forces raw passthrough, the operator's override when a stream is
+  already rectified (avoids double-undistortion) or its detections live in raw
+  space. Persisted in the layout XML; see TECHNICAL_NOTES §12.
 - **Zoom and pan**: the viewer supports zoom (mouse wheel, cursor-anchored)
   and pan (mouse drag) via a view transform matrix in the vertex shader.
   No pixel reprocessing; transformation is free on the GPU. This

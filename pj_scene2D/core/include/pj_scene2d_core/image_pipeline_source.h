@@ -103,18 +103,20 @@ class ImagePipelineSource : public MediaSource {
   /// takeFrame() has new data to return. Pass nullptr to clear.
   void setFrameReadyCallback(std::function<void()> cb);
 
-  /// Select the magnification filter applied when the image is displayed past 1:1
-  /// (kNearest = crisp/pixelated, kLinear = smooth). Thread-safe; a change forces a
-  /// re-decode (invalidate) so the next frame carries the new MagFilter tag and the
-  /// widget rebuilds its sampler. Default linear.
-  void setMagnifyNearest(bool nearest);
-
   /// Provide the camera calibration used to rectify decoded frames, keyed by
   /// CameraInfo.frame_id. The owner (which has the session's parser registry)
   /// parses each "<ns>/camera_info" topic and passes the result here. Must be
   /// called on the main thread before the first setTimestamp(); empty disables
   /// rectification (frames pass through unmodified).
   void setCameraInfoMap(std::unordered_map<std::string, sdk::CameraInfo> by_frame_id);
+
+  /// Enable or disable lens rectification for this source. Default enabled: a frame
+  /// whose frame_id matches an injected CameraInfo is undistorted automatically.
+  /// Disabling forces raw passthrough even when calibration exists — the operator's
+  /// override for the always-on auto-decision (e.g. an already-rectified stream that
+  /// would otherwise be undistorted twice; see docs/TECHNICAL_NOTES.md §12).
+  /// Thread-safe; a change re-decodes the current frame so even a paused view updates.
+  void setRectifyEnabled(bool enabled);
 
  private:
   std::optional<DecodedFrame> decodeAt(int64_t ts_ns);
@@ -134,7 +136,8 @@ class ImagePipelineSource : public MediaSource {
   // CameraInfo describes the lens, NOT whether THIS stream was already rectified,
   // so a producer that logs a pre-rectified image alongside its CameraInfo would
   // be rectified twice. See docs/TECHNICAL_NOTES.md §12 for the rationale and the
-  // known blind spot.
+  // known blind spot. The operator can override this auto-decision per layer via
+  // setRectifyEnabled(false), which short-circuits this method to raw passthrough.
   void rectifyIfCalibrated(DecodedFrame& df);
 
   // Return the injected CameraInfo whose frame_id matches, or nullptr when none.
@@ -174,9 +177,12 @@ class ImagePipelineSource : public MediaSource {
   // frames raw and attaches the map. Atomic: written from the widget thread, read
   // on the worker thread (the setter's invalidate() also re-decodes in the new mode).
   std::atomic<bool> gpu_rectify_available_{false};
-  // Display magnification filter, stamped onto each emitted frame in takeFrame().
-  // Written from the widget/UI thread, read on the same thread in takeFrame().
-  std::atomic<bool> mag_nearest_{false};
+  // Whether lens rectification is applied when a CameraInfo matches the frame.
+  // Default true (the historical always-on behaviour); setRectifyEnabled(false) is
+  // the per-layer operator override that forces raw passthrough. Atomic: written from
+  // the widget/UI thread, read on the worker thread in rectifyIfCalibrated();
+  // cross-thread publication mirrors gpu_rectify_available_.
+  std::atomic<bool> rectify_enabled_{true};
   // Set true by the first setTimestamp() (main thread). Guards setCameraInfoMap:
   // once a decode has been requested the worker may read camera_info_by_frame_
   // unlocked, so a later injection would be a data race — it is refused instead.

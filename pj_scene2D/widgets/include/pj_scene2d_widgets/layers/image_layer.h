@@ -14,8 +14,10 @@ class MediaSource;
 class ImagePipelineSource;
 
 // Scene2DLayer for a single Image topic: contributes an image MediaSource to the
-// composite. Exposes one display control — the magnification filter (smooth vs
-// pixelated) — used when the image is zoomed past 1:1 (e.g. for pixel inspection).
+// composite. Images always magnify with nearest sampling (crisp pixels). Exposes one
+// display control — a rectification toggle (undistort the image with its CameraInfo,
+// on by default; turn off to override the always-on auto-decision for an
+// already-rectified stream).
 class ImageLayer final : public Scene2DLayer {
   Q_OBJECT
  public:
@@ -32,10 +34,10 @@ class ImageLayer final : public Scene2DLayer {
   bool loadOptions(const QDomElement& element) override;
 
  private:
-  void setMagnifyNearest(bool nearest);
+  void setRectifyEnabled(bool enabled);
   void applyOptions();
 
-  bool magnify_nearest_ = false;                 ///< false = linear (default), true = nearest/pixelated
+  bool rectify_enabled_ = true;  ///< true = undistort with CameraInfo (default), false = raw passthrough
   ImagePipelineSource* image_source_ = nullptr;  ///< borrowed; valid between attach and detach
 };
 

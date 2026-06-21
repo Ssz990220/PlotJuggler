@@ -15,7 +15,10 @@ compressedDepth) — there is no `kDepthImage` producer. `Scene2DDockWidget` pee
 `DepthImageLayer` (per-layer colormap turbo/viridis/plasma/grayscale, invert, a
 manual near-far range with an on-demand **Auto-fit** button that snaps to the current
 frame's depth percentiles) and everything else to the plain `ImageLayer` (which
-exposes a nearest/linear **magnification filter** toggle for pixel inspection). Both
+renders images with **nearest** (pixelated) magnification and exposes a **rectify**
+toggle that undistorts the image with its `CameraInfo` — on by default, turn off to
+override the always-on auto-decision for an already-rectified stream).
+Both
 `ImagePipelineSource` and `DepthPipelineSource` obtain the `sdk::Image` from a store
 entry through one shared seam — `image_resolve.h::resolveImage` (the topic's
 MessageParser when present, else the canonical `pj_image_v1` codec). The depth decode

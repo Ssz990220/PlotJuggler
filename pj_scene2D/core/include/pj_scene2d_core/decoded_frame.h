@@ -43,9 +43,10 @@ enum class YuvColorRange : uint8_t {
 };
 
 /// Magnification (texture-min/mag) filter for displaying a frame zoomed past 1:1.
-/// Per-frame so the user can pick crisp pixels (kNearest) for pixel inspection or
-/// smooth interpolation (kLinear, the default). Depth always samples nearest
-/// regardless (see media_viewer_widget): blending the no-data sentinel is wrong.
+/// Set by the producing source, not user-selectable: image frames stamp kNearest
+/// (crisp pixels for inspection), video uses the kLinear default (smooth), and depth
+/// always samples nearest regardless (see media_viewer_widget): blending the no-data
+/// sentinel is wrong.
 enum class MagFilter : uint8_t {
   kLinear,   ///< bilinear interpolation (default)
   kNearest,  ///< nearest-neighbour ("pixelated")

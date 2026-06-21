@@ -3,7 +3,6 @@
 #include "pj_scene2d_widgets/layers/image_layer.h"
 
 #include <QByteArray>
-#include <QCheckBox>
 #include <QFormLayout>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -24,6 +23,7 @@
 #include "pj_scene2d_core/image_pipeline_source.h"
 #include "pj_scene2d_core/media_source.h"
 #include "pj_scene2d_widgets/scene2d_pipelines.h"
+#include "pj_widgets/ToggleSwitch.h"
 
 namespace PJ {
 
@@ -133,7 +133,7 @@ std::unique_ptr<MediaSource> ImageLayer::createMediaSource(const SceneLayerConte
   image_src->setCameraInfoMap(collectCameraInfoByFrameId(session, store));
 
   image_source_ = image_src.get();
-  image_src->setMagnifyNearest(magnify_nearest_);
+  image_src->setRectifyEnabled(rectify_enabled_);
   image_src->setFrameReadyCallback(makeQueuedRepaintCallback());
   return image_src;
 }
@@ -143,11 +143,14 @@ QWidget* ImageLayer::createConfigWidget(QWidget* parent) {
   auto* layout = new QFormLayout(widget);
   layout->setContentsMargins(0, 0, 0, 0);
 
-  auto* nearest = new QCheckBox(tr("Pixelated (nearest)"), widget);
-  nearest->setChecked(magnify_nearest_);
-  nearest->setToolTip(tr("Use nearest-neighbour magnification (crisp pixels) instead of smoothing when zoomed in"));
-  layout->addRow(tr("Magnify"), nearest);
-  connect(nearest, &QCheckBox::toggled, this, [this](bool on) { setMagnifyNearest(on); });
+  auto* rectify = new ToggleSwitch(widget);
+  rectify->setChecked(rectify_enabled_, /*animate=*/false);  // snap to state without emitting toggled
+  rectify->setToolTip(
+      tr("Rectify (lens-undistort) the image using its camera calibration when a matching\n"
+         "CameraInfo is available. Turn off to show the raw image — e.g. when the stream is\n"
+         "already rectified and would otherwise be undistorted twice."));
+  layout->addRow(tr("Rectify"), rectify);
+  connect(rectify, &ToggleSwitch::toggled, this, [this](bool on) { setRectifyEnabled(on); });
 
   return widget;
 }
@@ -156,11 +159,11 @@ void ImageLayer::onBeforeDetach() {
   image_source_ = nullptr;
 }
 
-void ImageLayer::setMagnifyNearest(bool nearest) {
-  if (magnify_nearest_ == nearest) {
+void ImageLayer::setRectifyEnabled(bool enabled) {
+  if (rectify_enabled_ == enabled) {
     return;
   }
-  magnify_nearest_ = nearest;
+  rectify_enabled_ = enabled;
   applyOptions();
 }
 
@@ -168,9 +171,10 @@ void ImageLayer::applyOptions() {
   if (image_source_ == nullptr) {
     return;
   }
-  // setMagnifyNearest invalidates the worker so it re-emits with the new MagFilter
-  // tag; re-apply the current tracker time so the re-emit happens now (not next tick).
-  image_source_->setMagnifyNearest(magnify_nearest_);
+  // setRectifyEnabled invalidates the worker when the value changes so it re-emits the
+  // current frame in the new mode; re-apply the current tracker time so the re-emit
+  // happens now (not on the next tick) while paused.
+  image_source_->setRectifyEnabled(rectify_enabled_);
   if (const auto ts = lastTrackerTimeNs(); ts.has_value()) {
     image_source_->setTimestamp(*ts);
   }
@@ -179,13 +183,15 @@ void ImageLayer::applyOptions() {
 
 void ImageLayer::saveOptions(QDomElement& element) const {
   element.setAttribute(
-      QStringLiteral("magnify_nearest"), magnify_nearest_ ? QStringLiteral("true") : QStringLiteral("false"));
+      QStringLiteral("rectify_enabled"), rectify_enabled_ ? QStringLiteral("true") : QStringLiteral("false"));
 }
 
 bool ImageLayer::loadOptions(const QDomElement& element) {
-  magnify_nearest_ = element.attribute(
-                         QStringLiteral("magnify_nearest"),
-                         magnify_nearest_ ? QStringLiteral("true") : QStringLiteral("false")) == QStringLiteral("true");
+  // Absent attribute (layout saved before this toggle existed) keeps the current
+  // default (true) -> rectification stays on, preserving the historical behaviour.
+  rectify_enabled_ = element.attribute(
+                         QStringLiteral("rectify_enabled"),
+                         rectify_enabled_ ? QStringLiteral("true") : QStringLiteral("false")) == QStringLiteral("true");
   applyOptions();
   return true;
 }

@@ -607,8 +607,11 @@ Internals: `setTimestamp` forwards to the composed `AsyncFrameWorker` (§3.1),
 which coalesces targets latest-wins. The decode body runs on the worker
 thread: `store->latestAt(topic, ts)` → decodes → optionally rectifies
 (`rectifyIfCalibrated`: when `setCameraInfoMap()` provided a `CameraInfo` for
-the frame's `frame_id`; see TECHNICAL_NOTES "rectify the image, not warp the
-annotations") → `deposit()`s into the worker's mailbox. `takeFrame` drains the
+the frame's `frame_id` *and* the per-layer rectify toggle is on —
+`setRectifyEnabled`, default on, the operator's override for the always-on
+auto-decision; see TECHNICAL_NOTES "rectify the image, not warp the
+annotations" and "ASSUMPTION and its known blind spot") → `deposit()`s into the
+worker's mailbox. `takeFrame` drains the
 mailbox into a `MediaFrame` (nullopt on second call); after each deposit the
 worker fires the optional `setFrameReadyCallback` (from the worker thread) so
 consumers re-poll.

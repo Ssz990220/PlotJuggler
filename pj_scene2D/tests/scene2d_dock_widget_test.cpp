@@ -16,6 +16,7 @@
 #include "pj_runtime/SessionManager.h"
 #include "pj_scene2d_widgets/Scene2DDockWidget.h"
 #include "pj_scene2d_widgets/layers/depth_image_layer.h"
+#include "pj_scene2d_widgets/layers/image_layer.h"
 
 namespace {
 
@@ -90,6 +91,34 @@ TEST(DepthImageLayer, XmlRoundTripPreservesColormapInvertAndRange) {
   EXPECT_EQ(out.attribute(QStringLiteral("invert")), QStringLiteral("true"));
   EXPECT_FLOAT_EQ(out.attribute(QStringLiteral("near_m")).toFloat(), 1.5f);
   EXPECT_FLOAT_EQ(out.attribute(QStringLiteral("far_m")).toFloat(), 7.0f);
+}
+
+TEST(ImageLayer, XmlRoundTripPreservesRectifyEnabled) {
+  // The rectify override is the user-facing half of the feature: turn it off, save the
+  // layout, reopen -> the override must survive. Pin the save/load symmetry so a
+  // future mis-typed key or flipped comparison can't silently drop it.
+  PJ::ImageLayer layer(PJ::ObjectTopicId{1}, PJ::sdk::BuiltinObjectType::kImage, QStringLiteral("image"));
+
+  QDomDocument doc;
+  QDomElement in = doc.createElement(QStringLiteral("scene2d_layer"));
+  in.setAttribute(QStringLiteral("rectify_enabled"), QStringLiteral("false"));
+  ASSERT_TRUE(layer.xmlLoadState(in));
+
+  const QDomElement out = layer.xmlSaveState(doc);
+  EXPECT_EQ(out.attribute(QStringLiteral("rectify_enabled")), QStringLiteral("false"));
+}
+
+TEST(ImageLayer, XmlLoadDefaultsRectifyOnWhenAttributeAbsent) {
+  // A layout saved before this toggle existed has no rectify_enabled attribute; it
+  // must default to ON, preserving the historical always-on rectification behaviour.
+  PJ::ImageLayer layer(PJ::ObjectTopicId{1}, PJ::sdk::BuiltinObjectType::kImage, QStringLiteral("image"));
+
+  QDomDocument doc;
+  QDomElement in = doc.createElement(QStringLiteral("scene2d_layer"));  // no rectify_enabled attribute
+  ASSERT_TRUE(layer.xmlLoadState(in));
+
+  const QDomElement out = layer.xmlSaveState(doc);
+  EXPECT_EQ(out.attribute(QStringLiteral("rectify_enabled")), QStringLiteral("true"));
 }
 
 TEST(Scene2DDockWidget, RoutesDepthEncodedImageToDepthLayer) {

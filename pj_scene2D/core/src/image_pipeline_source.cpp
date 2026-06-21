@@ -420,22 +420,13 @@ std::optional<MediaFrame> ImagePipelineSource::takeFrame() {
   }
   MediaFrame mf;
   mf.base = std::move(*frame);
-  // Stamp the current magnification filter (display hint) onto the emitted frame.
-  mf.base->mag_filter = mag_nearest_.load(std::memory_order_relaxed) ? MagFilter::kNearest : MagFilter::kLinear;
+  // Images always magnify with nearest sampling (crisp pixels); linear is not offered.
+  mf.base->mag_filter = MagFilter::kNearest;
   return mf;
 }
 
 void ImagePipelineSource::setFrameReadyCallback(std::function<void()> cb) {
   worker_.setFrameReadyCallback(std::move(cb));
-}
-
-void ImagePipelineSource::setMagnifyNearest(bool nearest) {
-  if (mag_nearest_.exchange(nearest, std::memory_order_relaxed) == nearest) {
-    return;  // unchanged
-  }
-  // Re-emit the current frame so the new MagFilter tag reaches the widget (which
-  // rebuilds its sampler on the change) even when the playhead is paused.
-  invalidate();
 }
 
 std::optional<DecodedFrame> ImagePipelineSource::decodeAt(int64_t ts_ns) {
@@ -539,6 +530,9 @@ const sdk::CameraInfo* ImagePipelineSource::cameraInfoFor(const std::string& fra
 }
 
 void ImagePipelineSource::rectifyIfCalibrated(DecodedFrame& df) {
+  if (!rectify_enabled_.load(std::memory_order_relaxed)) {
+    return;  // operator override: show the raw image even when calibration exists.
+  }
   if (df.frame_id.empty() || df.width <= 0 || df.height <= 0) {
     return;
   }
@@ -598,6 +592,17 @@ void ImagePipelineSource::setGpuRectificationAvailable(bool available) {
     // worker would otherwise dedup the unchanged timestamp and keep the old frame).
     invalidate();
   }
+}
+
+void ImagePipelineSource::setRectifyEnabled(bool enabled) {
+  if (rectify_enabled_.exchange(enabled, std::memory_order_relaxed) == enabled) {
+    return;  // unchanged
+  }
+  // Arm a re-decode so the current frame is re-delivered with/without rectification
+  // even when the playhead is paused (the worker would otherwise dedup the unchanged
+  // timestamp and keep the stale frame). invalidate() only arms it; the owning layer
+  // (ImageLayer::applyOptions) re-applies the timestamp to actually post the decode.
+  invalidate();
 }
 
 std::optional<DecodedFrame> ImagePipelineSource::decodeCanonicalImage(const sdk::Image& img, int64_t pts) {

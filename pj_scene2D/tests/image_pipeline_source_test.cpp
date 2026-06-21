@@ -703,3 +703,113 @@ TEST(ImagePipelineSourceTest, GpuModeKeepsRawFrameAndAttachesRectifyMap) {
   EXPECT_EQ(frame->base->rectify_map->out_width, 8);
   EXPECT_EQ(frame->base->rectify_map->out_height, 6);
 }
+
+TEST(ImagePipelineSourceTest, RectifyDisabledPassesFrameThroughRawInCpuMode) {
+  // setRectifyEnabled(false) is the user override for the always-on auto-decision
+  // (TECHNICAL_NOTES §12): a matching CameraInfo exists, but the operator wants the
+  // raw image (e.g. the stream is already rectified). The frame must pass through at
+  // its SOURCE resolution with no rescale and no map — the safe passthrough contract.
+  const std::vector<uint8_t> rgb(static_cast<size_t>(4) * 3 * 3, 128);  // solid 4x3 rgb8
+  const std::vector<uint8_t> blob = makeRawRgbBlob(4, 3, "cam", rgb);
+  PJ::ObjectStore store;
+  auto topic = store.registerTopic(
+      {PJ::DatasetId{1}, "/camera/image", R"({"builtin_object_type":"kImage","image_codec":"pj_image_v1"})"});
+  ASSERT_TRUE(topic.has_value());
+  ASSERT_TRUE(store.pushOwned(*topic, 1'000, blob));
+
+  PJ::ImagePipelineSource source(&store, *topic, PJ::ImagePipelineSource::CanonicalImageCodec{});
+  source.setCameraInfoMap({{"cam", makeRescaleCalibration("cam", 8, 6)}});
+  source.setRectifyEnabled(false);
+  FrameSync sync;
+  sync.install(source);
+
+  source.setTimestamp(1'000);
+  ASSERT_TRUE(sync.waitReady());
+  auto frame = source.takeFrame();
+  ASSERT_TRUE(frame.has_value());
+  ASSERT_TRUE(frame->base.has_value());
+  EXPECT_EQ(frame->base->width, 4);
+  EXPECT_EQ(frame->base->height, 3);
+  EXPECT_EQ(frame->base->rectify_map, nullptr);
+}
+
+TEST(ImagePipelineSourceTest, RectifyDisabledInGpuModeAttachesNoMap) {
+  // The gate sits ahead of the GPU branch too: with rectification off, the worker
+  // must not hand the widget a rectify_map, so the widget draws the raw frame
+  // without the shader remap (no double-handling of the disable).
+  const std::vector<uint8_t> rgb(static_cast<size_t>(4) * 3 * 3, 128);
+  const std::vector<uint8_t> blob = makeRawRgbBlob(4, 3, "cam", rgb);
+  PJ::ObjectStore store;
+  auto topic = store.registerTopic(
+      {PJ::DatasetId{1}, "/camera/image", R"({"builtin_object_type":"kImage","image_codec":"pj_image_v1"})"});
+  ASSERT_TRUE(topic.has_value());
+  ASSERT_TRUE(store.pushOwned(*topic, 1'000, blob));
+
+  PJ::ImagePipelineSource source(&store, *topic, PJ::ImagePipelineSource::CanonicalImageCodec{});
+  source.setCameraInfoMap({{"cam", makeRescaleCalibration("cam", 8, 6)}});
+  source.setGpuRectificationAvailable(true);
+  source.setRectifyEnabled(false);
+  FrameSync sync;
+  sync.install(source);
+
+  source.setTimestamp(1'000);
+  ASSERT_TRUE(sync.waitReady());
+  auto frame = source.takeFrame();
+  ASSERT_TRUE(frame.has_value());
+  ASSERT_TRUE(frame->base.has_value());
+  EXPECT_EQ(frame->base->width, 4);
+  EXPECT_EQ(frame->base->height, 3);
+  EXPECT_EQ(frame->base->rectify_map, nullptr);
+}
+
+TEST(ImagePipelineSourceTest, RectifyReEnabledRedecodesAndRectifies) {
+  // End-to-end of the toggle. setRectifyEnabled() flips the gate and ARMS a
+  // re-decode (invalidate()); re-applying the SAME timestamp is what actually
+  // posts it — exactly the sequence ImageLayer::applyOptions() runs after the
+  // setter (invalidate() alone does not wake the worker by design). Off → raw
+  // 4x3; back on → rectified to native 8x6 again.
+  const std::vector<uint8_t> rgb(static_cast<size_t>(4) * 3 * 3, 128);
+  const std::vector<uint8_t> blob = makeRawRgbBlob(4, 3, "cam", rgb);
+  PJ::ObjectStore store;
+  auto topic = store.registerTopic(
+      {PJ::DatasetId{1}, "/camera/image", R"({"builtin_object_type":"kImage","image_codec":"pj_image_v1"})"});
+  ASSERT_TRUE(topic.has_value());
+  ASSERT_TRUE(store.pushOwned(*topic, 1'000, blob));
+
+  PJ::ImagePipelineSource source(&store, *topic, PJ::ImagePipelineSource::CanonicalImageCodec{});
+  source.setCameraInfoMap({{"cam", makeRescaleCalibration("cam", 8, 6)}});
+  FrameSync sync;
+  sync.install(source);
+
+  source.setTimestamp(1'000);
+  ASSERT_TRUE(sync.waitReady());
+  {
+    auto frame = source.takeFrame();  // default ON -> rectified to native resolution.
+    ASSERT_TRUE(frame.has_value());
+    ASSERT_TRUE(frame->base.has_value());
+    EXPECT_EQ(frame->base->width, 8);
+    EXPECT_EQ(frame->base->height, 6);
+  }
+
+  source.setRectifyEnabled(false);  // arm the re-decode...
+  source.setTimestamp(1'000);       // ...and post it (mirrors applyOptions).
+  ASSERT_TRUE(sync.waitReady());
+  {
+    auto frame = source.takeFrame();
+    ASSERT_TRUE(frame.has_value());
+    ASSERT_TRUE(frame->base.has_value());
+    EXPECT_EQ(frame->base->width, 4);
+    EXPECT_EQ(frame->base->height, 3);
+  }
+
+  source.setRectifyEnabled(true);  // re-enable -> rectifies again.
+  source.setTimestamp(1'000);
+  ASSERT_TRUE(sync.waitReady());
+  {
+    auto frame = source.takeFrame();
+    ASSERT_TRUE(frame.has_value());
+    ASSERT_TRUE(frame->base.has_value());
+    EXPECT_EQ(frame->base->width, 8);
+    EXPECT_EQ(frame->base->height, 6);
+  }
+}

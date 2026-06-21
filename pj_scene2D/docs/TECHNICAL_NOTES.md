@@ -775,10 +775,20 @@ planar / 16-bit pixel formats pass through unrectified (`rectifyFrameFast` /
 `rectifyFrame` return false / `nullopt`) — the GPU path does rectify YUV420P; a
 `CameraInfo` published *after* the layer attaches is not retro-applied.
 
-### If we ever need to close the blind spot
+The first escape hatch for the blind spot now ships: a per-layer **"Rectify"**
+toggle on `ImageLayer` (a `PJ::ToggleSwitch`, default on). It gates the
+auto-decision via `ImagePipelineSource::setRectifyEnabled(false)`, which short-
+circuits `rectifyIfCalibrated` to raw passthrough — the operator's manual override
+for a stream that's already rectified (failure mode 1) or whose detections live in
+raw space (failure mode 2). The flag is persisted in the layout XML
+(`rectify_enabled`); an absent attribute (older layout) keeps the default-on
+behaviour. It is an explicit user choice, not a smarter automatic rule.
 
-Key the decision on something more explicit than "calibration exists": compare the
-annotation's reference `frameSize` against the displayed image, gate on the topic
-name (`*_raw*` vs `*_rect*`), skip when `D` is effectively zero, or expose a
-per-layer "rectify" toggle instead of deciding automatically. Out of scope for the
-first version; documented here so the assumption is a deliberate, visible choice.
+### If we ever need an automatic decision
+
+The toggle puts the choice in the operator's hands; a future version could *also*
+decide automatically when no human is in the loop. Key the decision on something
+more explicit than "calibration exists": compare the annotation's reference
+`frameSize` against the displayed image, gate on the topic name (`*_raw*` vs
+`*_rect*`), or skip when `D` is effectively zero. Out of scope today; documented
+here so the assumption stays a deliberate, visible choice.
