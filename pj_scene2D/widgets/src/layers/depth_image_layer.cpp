@@ -108,6 +108,14 @@ QWidget* DepthImageLayer::createConfigWidget(QWidget* parent) {
   far_spin->setValue(far_m_);
   layout->addRow(tr("Far"), far_spin);
 
+  // On-demand range fit: snap near/far to the current frame's 2nd/98th depth
+  // percentiles. Manual remains the default (continuous auto flickered per frame);
+  // this is a one-shot the user triggers when the default range is unhelpful.
+  auto* autofit_btn = new QPushButton(tr("Auto-fit range"), widget);
+  autofit_btn->setFocusPolicy(Qt::NoFocus);
+  autofit_btn->setToolTip(tr("Set Near/Far from the current frame's depth distribution (2–98%)"));
+  layout->addRow(autofit_btn);
+
   connect(colormap, &QComboBox::currentIndexChanged, this, [this, colormap](int) {
     setColormap(static_cast<Colormap>(colormap->currentData().toInt()));
   });
@@ -117,6 +125,22 @@ QWidget* DepthImageLayer::createConfigWidget(QWidget* parent) {
   });
   connect(far_spin, &PJ::DoubleScrubber::valueChanged, this, [this, near_spin](double value) {
     setRange(static_cast<float>(near_spin->value()), static_cast<float>(value));
+  });
+  connect(autofit_btn, &QPushButton::clicked, this, [this, near_spin, far_spin]() {
+    if (depth_source_ == nullptr) {
+      return;  // not attached / no decode yet
+    }
+    const auto range = depth_source_->autoRange();
+    if (!range.has_value()) {
+      return;  // no depth frame decoded yet, or no valid samples
+    }
+    {
+      const QSignalBlocker block_near(near_spin);
+      const QSignalBlocker block_far(far_spin);
+      near_spin->setValue(range->min);
+      far_spin->setValue(range->max);
+    }
+    setRange(range->min, range->max);  // applies to the source + repaints
   });
 
   return widget;
@@ -153,7 +177,7 @@ void DepthImageLayer::onBeforeDetach() {
 void DepthImageLayer::applyTo(DepthPipelineSource& source) const {
   source.setColormap(static_cast<uint8_t>(colormap_));  // core takes an opaque colormap id
   source.setInvert(invert_);
-  source.setRange(near_m_, far_m_);  // always manual (the per-frame auto-range was dropped)
+  source.setRange(near_m_, far_m_);  // manual default; Auto-fit updates near_m_/far_m_, then re-applies here
   source.setOpacity(opacity_);
 }
 

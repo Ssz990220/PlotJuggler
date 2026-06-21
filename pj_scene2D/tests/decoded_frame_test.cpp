@@ -94,10 +94,10 @@ TEST(ExpectedBufferSize, NV12OddHeight) {
 }
 
 TEST(ExpectedBufferSize, NV12OddWidth) {
-  // NV12 UV plane is full width (interleaved U,V), so odd width
-  // means the UV plane has an odd number of bytes per row.
+  // NV12 chroma row = ceil(w/2) interleaved U,V pairs = 2*ceil(w/2) bytes
+  // (642 for w=641), matching FFmpeg's chroma linesize — NOT w bytes.
   size_t y = size_t{641} * 480;
-  size_t uv = size_t{641} * 240;
+  size_t uv = size_t{2} * 321 * 240;  // 2 * ceil(641/2) * ceil(480/2)
   EXPECT_EQ(expectedBufferSize(641, 480, PixelFormat::kNV12), y + uv);
 }
 

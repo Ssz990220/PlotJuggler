@@ -21,6 +21,31 @@ namespace PJ {
 
 namespace {
 
+// Map the codec-signalled colour matrix to our two-way space tag. Unknown /
+// unspecified falls back to the universal heuristic (SD height -> BT.601, else
+// BT.709) that players use when a stream omits the matrix. BT.2020 is mapped to
+// BT.709 for now (HDR is out of scope — see REQUIREMENTS §7).
+YuvColorSpace mapColorSpace(AVColorSpace cs, int height) noexcept {
+  switch (cs) {
+    case AVCOL_SPC_BT709:
+      return YuvColorSpace::kBt709;
+    case AVCOL_SPC_BT470BG:
+    case AVCOL_SPC_SMPTE170M:
+    case AVCOL_SPC_SMPTE240M:
+    case AVCOL_SPC_FCC:
+      return YuvColorSpace::kBt601;
+    default:
+      // UNSPECIFIED, RGB, BT2020, and anything else: guess by resolution.
+      return (height > 0 && height <= 576) ? YuvColorSpace::kBt601 : YuvColorSpace::kBt709;
+  }
+}
+
+// MPEG (studio/limited) is the default for video; only an explicit JPEG/PC tag
+// means full range.
+YuvColorRange mapColorRange(AVColorRange r) noexcept {
+  return (r == AVCOL_RANGE_JPEG) ? YuvColorRange::kFull : YuvColorRange::kLimited;
+}
+
 // Open an FFmpeg hardware-device context for `type`, or nullptr if none works.
 //
 // VAAPI is special: its device IS a specific DRM render node. Passing nullptr
@@ -359,8 +384,16 @@ Expected<DecodedFrame> FfmpegDecoder::avFrameToDecodedFrame(AVFrame* frame) {
   int h = sw_frame->height;
   auto src_fmt = static_cast<AVPixelFormat>(sw_frame->format);
 
-  // Output YUV420P — no color conversion on CPU.
-  // The GPU shader handles YUV→RGB with the correct BT.709 matrix.
+  // Carry the codec-signalled colorimetry so the GPU builds the right YUV→RGB
+  // matrix (BT.601 vs BT.709) and range scale (limited vs full). Previously this
+  // was dropped and the shader hardcoded full-range BT.709, washing out / hue-
+  // shifting limited-range and SD content. sws_scale below only repacks the pixel
+  // layout, so these tags stay valid for the converted output too.
+  const YuvColorSpace color_space = mapColorSpace(sw_frame->colorspace, h);
+  const YuvColorRange color_range = mapColorRange(sw_frame->color_range);
+
+  // Output YUV420P — no color conversion on CPU. The GPU shader applies the
+  // YUV→RGB matrix selected from color_space/color_range above.
   if (src_fmt == AV_PIX_FMT_YUV420P) {
     // Already YUV420P — just copy planes to contiguous buffer
     int uv_w = (w + 1) / 2;
@@ -396,10 +429,48 @@ Expected<DecodedFrame> FfmpegDecoder::avFrameToDecodedFrame(AVFrame* frame) {
     result.width = w;
     result.height = h;
     result.format = PixelFormat::kYUV420P;
+    result.color_space = color_space;
+    result.color_range = color_range;
     return result;
   }
 
-  // Non-YUV420P (NV12, etc.) — convert to YUV420P via sws_scale
+  // NV12 (the usual hardware-decode download format): emit it natively as a Y
+  // plane + interleaved UV plane and let the GPU sample the two-plane texture —
+  // skipping the full-frame sws_scale repack to YUV420P. The widget falls back to
+  // a CPU repack only if the backend can't sample a two-channel (RG8) texture.
+  if (src_fmt == AV_PIX_FMT_NV12) {
+    const int uv_w = (w + 1) / 2;
+    const int uv_h = (h + 1) / 2;
+    const int y_size = w * h;
+    auto pixels = std::make_shared<std::vector<uint8_t>>(expectedBufferSize(w, h, PixelFormat::kNV12));
+    uint8_t* dst = pixels->data();
+
+    for (int row = 0; row < h; ++row) {
+      std::memcpy(dst + row * w, sw_frame->data[0] + row * sw_frame->linesize[0], static_cast<size_t>(w));
+    }
+    // Interleaved UV: uv_w pairs (2 bytes each) per row, uv_h rows.
+    const int uv_row_bytes = 2 * uv_w;
+    for (int row = 0; row < uv_h; ++row) {
+      std::memcpy(
+          dst + y_size + row * uv_row_bytes, sw_frame->data[1] + row * sw_frame->linesize[1],
+          static_cast<size_t>(uv_row_bytes));
+    }
+
+    if (tmp_frame != nullptr) {
+      av_frame_free(&tmp_frame);
+    }
+
+    DecodedFrame result;
+    result.pixels = std::move(pixels);
+    result.width = w;
+    result.height = h;
+    result.format = PixelFormat::kNV12;
+    result.color_space = color_space;
+    result.color_range = color_range;
+    return result;
+  }
+
+  // Any other format (P010, YUV422, etc.) — convert to YUV420P via sws_scale
   if (sws_ctx_ == nullptr || w != sws_src_w_ || h != sws_src_h_ || static_cast<int>(src_fmt) != sws_src_fmt_) {
     if (sws_ctx_ != nullptr) {
       sws_freeContext(sws_ctx_);
@@ -435,6 +506,8 @@ Expected<DecodedFrame> FfmpegDecoder::avFrameToDecodedFrame(AVFrame* frame) {
   result.width = w;
   result.height = h;
   result.format = PixelFormat::kYUV420P;
+  result.color_space = color_space;
+  result.color_range = color_range;
   return result;
 }
 

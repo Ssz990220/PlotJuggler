@@ -351,7 +351,9 @@ void StreamingVideoDecoder::decodeSampledKeyframes(
         frame = std::move(drained.back());
       }
     }
-    if (frame.isNull() || frame.format != PixelFormat::kYUV420P) {
+    // Accept planar YUV420P (software) or native NV12 (hardware decode); the
+    // thumbnail encoder deinterleaves NV12. Reject anything else.
+    if (frame.isNull() || (frame.format != PixelFormat::kYUV420P && frame.format != PixelFormat::kNV12)) {
       continue;
     }
     if (!sink(frame)) {
@@ -391,8 +393,8 @@ void StreamingVideoDecoder::decodeSampledForward(
     if (!frame.has_value()) {
       continue;  // EAGAIN / transient error — keep feeding packets
     }
-    if (frame->isNull() || frame->format != PixelFormat::kYUV420P) {
-      continue;  // decoded but not a sampled frame
+    if (frame->isNull() || (frame->format != PixelFormat::kYUV420P && frame->format != PixelFormat::kNV12)) {
+      continue;  // decoded but not a usable/sampled frame (NV12 ok — encoder deinterleaves)
     }
     if (!sink(*frame)) {
       return;  // budget reached
@@ -403,7 +405,9 @@ void StreamingVideoDecoder::decodeSampledForward(
   // Tail: drain materializes the reorder/threading buffer (a handful of frames),
   // so apply the same sampling gate here before sinking.
   for (auto& frame : decoder_->drain()) {
-    if (frame.isNull() || frame.format != PixelFormat::kYUV420P) {
+    // Accept planar YUV420P (software) or native NV12 (hardware decode); the
+    // thumbnail encoder deinterleaves NV12. Reject anything else.
+    if (frame.isNull() || (frame.format != PixelFormat::kYUV420P && frame.format != PixelFormat::kNV12)) {
       continue;
     }
     if (!want(frame.pts)) {

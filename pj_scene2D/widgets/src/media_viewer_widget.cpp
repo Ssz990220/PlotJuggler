@@ -11,11 +11,13 @@
 #include <QPainter>
 #include <QVector4D>
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstring>
 
 #include "pj_scene2d_core/media_source.h"
 #include "pj_scene2d_core/overlay_geometry.h"
+#include "pj_scene2d_core/video_color.h"  // buildYuvMatrix (BT.601/709 + limited/full range)
 #include "pj_scene2d_widgets/pixel_inspector.h"
 #include "pj_widgets/Colormap.h"  // shared Colormap enum + buildColormapLut + colormapGlsl
 
@@ -24,16 +26,6 @@ void pjMediaQtInitResources() {
 }
 
 namespace PJ {
-
-// BT.709 color matrix (HD video standard)
-// clang-format off
-static constexpr float kBT709[] = {
-    1.0f,    1.0f,      1.0f,    0.0f,
-    0.0f,   -0.18732f,  1.8556f, 0.0f,
-    1.5748f, -0.46812f,  0.0f,   0.0f,
-    0.0f,    0.0f,      0.0f,    1.0f
-};
-// clang-format on
 
 static constexpr int kPointInspectorCropSize = 10;
 
@@ -244,6 +236,8 @@ void MediaViewerWidget::releaseResources() {
   destroyTextureLayer(base_texture_);
   delete sampler_;
   sampler_ = nullptr;
+  delete mag_nearest_sampler_;
+  mag_nearest_sampler_ = nullptr;
   delete remap_sampler_;
   remap_sampler_ = nullptr;
   delete remap_placeholder_tex_;
@@ -331,7 +325,7 @@ MediaViewerWidget::TexturePathFormat MediaViewerWidget::texturePathFor(PixelForm
     case PixelFormat::kYUV420P:
       return TexturePathFormat::kYUV420P;
     case PixelFormat::kNV12:
-      return TexturePathFormat::kNV12;  // reserved: see header — not produced yet
+      return TexturePathFormat::kNV12;  // native two-plane (R8 Y + RG8 UV) hardware-decode path
     case PixelFormat::kMono8:
       return TexturePathFormat::kMono8;  // R8 texture, expanded to gray in-shader
     case PixelFormat::kBGRA8888:
@@ -355,26 +349,79 @@ bool MediaViewerWidget::isUploadablePixelFormat(PixelFormat format) noexcept {
     case PixelFormat::kBGRA8888:
     case PixelFormat::kMono8:
     case PixelFormat::kYUV420P:
+    case PixelFormat::kNV12:
     case PixelFormat::kDepthR32F:
       return true;
     case PixelFormat::kMono16:
-    case PixelFormat::kNV12:
       return false;
   }
   return false;
 }
 
+void MediaViewerWidget::layerSamplers(
+    const TextureLayerResources& layer, QRhiSampler*& y_sampler, QRhiSampler*& uv_sampler) const {
+  if (layer.format == TexturePathFormat::kDepth) {
+    // Depth R32F: y NEAREST so no pixel blends real depth with the 0 no-data
+    // sentinel; the colormap LUT in u_tex stays LINEAR.
+    y_sampler = remap_sampler_;
+    uv_sampler = sampler_;
+    return;
+  }
+  QRhiSampler* mag =
+      (layer.mag_filter == MagFilter::kNearest && mag_nearest_sampler_ != nullptr) ? mag_nearest_sampler_ : sampler_;
+  y_sampler = mag;
+  uv_sampler = mag;
+}
+
+void MediaViewerWidget::rebuildLayerSrb(TextureLayerResources& layer) {
+  QRhiSampler* y_sampler = nullptr;
+  QRhiSampler* uv_sampler = nullptr;
+  layerSamplers(layer, y_sampler, uv_sampler);
+  layer.srb->destroy();
+  setTextureLayerBindings(
+      layer.srb, layer.uniform_buf, layer.tex_y, layer.tex_u, layer.tex_v, uv_sampler,
+      layer.tex_remap != nullptr ? layer.tex_remap : remap_placeholder_tex_, remap_sampler_, y_sampler);
+  layer.srb->create();
+}
+
 bool MediaViewerWidget::uploadDecodedFrameToTexture(
-    const DecodedFrame& frame, TextureLayerResources& layer, QRhiResourceUpdateBatch* updates) {
-  if (frame.isNull() || frame.width <= 0 || frame.height <= 0 || frame.pixels == nullptr || updates == nullptr) {
+    const DecodedFrame& frame_in, TextureLayerResources& layer, QRhiResourceUpdateBatch* updates) {
+  if (frame_in.isNull() || frame_in.width <= 0 || frame_in.height <= 0 || frame_in.pixels == nullptr ||
+      updates == nullptr) {
     return false;
   }
-  if (!isUploadablePixelFormat(frame.format)) {
+  if (!isUploadablePixelFormat(frame_in.format)) {
     return false;
   }
   if (!ensureTextureLayer(layer)) {
     return false;
   }
+
+  // NV12's interleaved UV plane needs an RG8 (two-channel) texture. On the rare
+  // backend without RG8 (GL < 3.0), deinterleave to planar YUV420P on the CPU so
+  // NV12 still displays — the native two-plane GPU path below is the fast default.
+  auto* r = rhi();
+  DecodedFrame nv12_fallback;
+  const DecodedFrame* frame_ptr = &frame_in;
+  if (frame_in.format == PixelFormat::kNV12 && (r == nullptr || !r->isTextureFormatSupported(QRhiTexture::RG8))) {
+    nv12_fallback = nv12ToYuv420p(frame_in);
+    if (nv12_fallback.isNull()) {
+      return false;
+    }
+    frame_ptr = &nv12_fallback;
+  }
+  const DecodedFrame& frame = *frame_ptr;
+
+  // Carry per-frame colour/display state onto the layer: the YUV→RGB matrix
+  // (updateTextureLayerUniform) and the SRB sampler choice read it. A change of
+  // magnification filter forces an SRB rebuild (the sampler is baked into bindings).
+  layer.color_space = frame.color_space;
+  layer.color_range = frame.color_range;
+  // Rebuild the YUV→RGB matrix here (only on a new frame) so the per-tick uniform
+  // upload in updateTextureLayerUniform() just copies the cached bytes.
+  layer.color_matrix = buildYuvMatrix(frame.color_space, frame.color_range);
+  const bool mag_changed = (layer.mag_filter != frame.mag_filter);
+  layer.mag_filter = frame.mag_filter;
 
   const int w = frame.width;
   const int h = frame.height;
@@ -390,7 +437,7 @@ bool MediaViewerWidget::uploadDecodedFrameToTexture(
       return false;
     }
 
-    if (w != layer.width || h != layer.height || layer.format != TexturePathFormat::kYUV420P) {
+    if (w != layer.width || h != layer.height || layer.format != TexturePathFormat::kYUV420P || mag_changed) {
       layer.tex_y->destroy();
       layer.tex_y->setFormat(QRhiTexture::R8);
       layer.tex_y->setPixelSize(QSize(w, h));
@@ -406,15 +453,10 @@ bool MediaViewerWidget::uploadDecodedFrameToTexture(
       layer.tex_v->setPixelSize(QSize(uv_w, uv_h));
       layer.tex_v->create();
 
-      layer.srb->destroy();
-      setTextureLayerBindings(
-          layer.srb, layer.uniform_buf, layer.tex_y, layer.tex_u, layer.tex_v, sampler_,
-          layer.tex_remap != nullptr ? layer.tex_remap : remap_placeholder_tex_, remap_sampler_, sampler_);
-      layer.srb->create();
-
       layer.width = w;
       layer.height = h;
       layer.format = TexturePathFormat::kYUV420P;
+      rebuildLayerSrb(layer);
     }
 
     QRhiTextureSubresourceUploadDescription y_desc(src, y_size);
@@ -428,6 +470,44 @@ bool MediaViewerWidget::uploadDecodedFrameToTexture(
     QRhiTextureSubresourceUploadDescription v_desc(src + y_size + uv_size, uv_size);
     v_desc.setSourceSize(QSize(uv_w, uv_h));
     updates->uploadTexture(layer.tex_v, QRhiTextureUploadDescription({0, 0, v_desc}));
+    return true;
+  }
+
+  if (texturePathFor(frame.format) == TexturePathFormat::kNV12) {
+    const int uv_w = (w + 1) / 2;
+    const int uv_h = (h + 1) / 2;
+    const int y_size = w * h;
+    const int uv_row_bytes = 2 * uv_w;  // RG8: uv_w UV-pairs per row
+    if (src_size < expectedBufferSize(w, h, PixelFormat::kNV12)) {
+      return false;
+    }
+
+    if (w != layer.width || h != layer.height || layer.format != TexturePathFormat::kNV12 || mag_changed) {
+      layer.tex_y->destroy();
+      layer.tex_y->setFormat(QRhiTexture::R8);
+      layer.tex_y->setPixelSize(QSize(w, h));
+      layer.tex_y->create();
+
+      // u_tex holds the interleaved UV plane as RG8; v_tex is unused by the NV12
+      // shader branch but stays bound (and valid) to keep one SRB layout.
+      layer.tex_u->destroy();
+      layer.tex_u->setFormat(QRhiTexture::RG8);
+      layer.tex_u->setPixelSize(QSize(uv_w, uv_h));
+      layer.tex_u->create();
+
+      layer.width = w;
+      layer.height = h;
+      layer.format = TexturePathFormat::kNV12;
+      rebuildLayerSrb(layer);
+    }
+
+    QRhiTextureSubresourceUploadDescription y_desc(src, y_size);
+    y_desc.setSourceSize(QSize(w, h));
+    updates->uploadTexture(layer.tex_y, QRhiTextureUploadDescription({0, 0, y_desc}));
+
+    QRhiTextureSubresourceUploadDescription uv_desc(src + y_size, uv_h * uv_row_bytes);
+    uv_desc.setSourceSize(QSize(uv_w, uv_h));
+    updates->uploadTexture(layer.tex_u, QRhiTextureUploadDescription({0, 0, uv_desc}));
     return true;
   }
 
@@ -475,7 +555,7 @@ bool MediaViewerWidget::uploadDecodedFrameToTexture(
     return false;
   }
 
-  if (w != layer.width || h != layer.height || layer.format != path) {
+  if (w != layer.width || h != layer.height || layer.format != path || mag_changed) {
     layer.tex_y->destroy();
     layer.tex_y->setFormat(tex_format);
     layer.tex_y->setPixelSize(QSize(w, h));
@@ -494,19 +574,12 @@ bool MediaViewerWidget::uploadDecodedFrameToTexture(
       updates->uploadTexture(layer.tex_u, QRhiTextureUploadDescription({0, 0, lut_desc}));
     }
 
-    layer.srb->destroy();
-    // Depth (R32F) must sample NEAREST so no pixel blends real depth with the 0
-    // no-data sentinel; remap_sampler_ is Nearest/Clamp. All other formats keep
-    // the Linear sampler_ for the y-plane.
-    QRhiSampler* const y_sampler = (path == TexturePathFormat::kDepth) ? remap_sampler_ : sampler_;
-    setTextureLayerBindings(
-        layer.srb, layer.uniform_buf, layer.tex_y, layer.tex_u, layer.tex_v, sampler_,
-        layer.tex_remap != nullptr ? layer.tex_remap : remap_placeholder_tex_, remap_sampler_, y_sampler);
-    layer.srb->create();
-
     layer.width = w;
     layer.height = h;
     layer.format = path;
+    // rebuildLayerSrb() reads layer.format (set above): depth keeps its NEAREST
+    // y-plane + LINEAR LUT; other formats honour the layer's magnification filter.
+    rebuildLayerSrb(layer);
   }
 
   QRhiTextureSubresourceUploadDescription sub_desc(upload_data, static_cast<quint32>(upload_size));
@@ -521,7 +594,11 @@ void MediaViewerWidget::updateTextureLayerUniform(
     return;
   }
   updates->updateDynamicBuffer(layer.uniform_buf, 0, 64, view.constData());
-  updates->updateDynamicBuffer(layer.uniform_buf, 64, 64, kBT709);
+  // Color matrix: cached per-layer (rebuilt in uploadDecodedFrameToTexture only when
+  // a new frame's colorimetry changes) so SD / limited-range video converts correctly
+  // — BT.709 + full reproduces the old hardcoded matrix exactly. Ignored by the
+  // shader for RGB/mono/depth paths.
+  updates->updateDynamicBuffer(layer.uniform_buf, 64, 64, layer.color_matrix.data());
   const int32_t fmt = static_cast<int32_t>(layer.format);
   updates->updateDynamicBuffer(layer.uniform_buf, 128, 4, &fmt);
   updates->updateDynamicBuffer(layer.uniform_buf, 132, 4, &layer.opacity);
@@ -557,11 +634,15 @@ bool MediaViewerWidget::ensureRemapTexture(
     layer.remap_w = out_w;
     layer.remap_h = out_h;
     layer.remap_map_key = nullptr;  // force a re-upload into the new texture.
-    // Rebind slot 4 to the real LUT (was the placeholder).
+    // Rebind slot 4 to the real LUT (was the placeholder). Preserve the layer's
+    // sampler choice (magnification filter / depth nearest) via layerSamplers().
+    QRhiSampler* y_s = nullptr;
+    QRhiSampler* uv_s = nullptr;
+    layerSamplers(layer, y_s, uv_s);
     layer.srb->destroy();
     setTextureLayerBindings(
-        layer.srb, layer.uniform_buf, layer.tex_y, layer.tex_u, layer.tex_v, sampler_, layer.tex_remap, remap_sampler_,
-        sampler_);
+        layer.srb, layer.uniform_buf, layer.tex_y, layer.tex_u, layer.tex_v, uv_s, layer.tex_remap, remap_sampler_,
+        y_s);
     if (!layer.srb->create()) {
       return false;
     }
@@ -717,6 +798,12 @@ void MediaViewerWidget::initialize(QRhiCommandBuffer* /*cb*/) {
   sampler_ = r->newSampler(
       QRhiSampler::Linear, QRhiSampler::Linear, QRhiSampler::None, QRhiSampler::ClampToEdge, QRhiSampler::ClampToEdge);
   sampler_->create();
+
+  // NEAREST sampler for layers requesting MagFilter::kNearest (crisp magnification).
+  mag_nearest_sampler_ = r->newSampler(
+      QRhiSampler::Nearest, QRhiSampler::Nearest, QRhiSampler::None, QRhiSampler::ClampToEdge,
+      QRhiSampler::ClampToEdge);
+  mag_nearest_sampler_->create();
 
   // NEAREST sampler for the rectification LUT (exact per-output-pixel source coord).
   remap_sampler_ = r->newSampler(

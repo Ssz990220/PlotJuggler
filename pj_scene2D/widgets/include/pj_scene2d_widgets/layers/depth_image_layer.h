@@ -40,7 +40,8 @@ class DepthImageLayer final : public Scene2DLayer {
 
   Colormap colormap_ = Colormap::kTurbo;
   bool invert_ = false;
-  // Manual near/far range in metres (no auto-fit — auto flickered per frame).
+  // Near/far range in metres. Manual by default; the config's "Auto-fit" button sets
+  // it once from the current frame's depth percentiles (continuous auto flickered).
   float near_m_ = 0.0f;
   float far_m_ = 4.0f;
   // Opacity is plumbed through to the source (kept at 1.0); no UI control yet.

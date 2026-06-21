@@ -3,6 +3,8 @@
 #include "pj_scene2d_widgets/layers/image_layer.h"
 
 #include <QByteArray>
+#include <QCheckBox>
+#include <QFormLayout>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QLoggingCategory>
@@ -130,8 +132,62 @@ std::unique_ptr<MediaSource> ImageLayer::createMediaSource(const SceneLayerConte
   // attaches); a camera_info published after attach is not retro-applied.
   image_src->setCameraInfoMap(collectCameraInfoByFrameId(session, store));
 
+  image_source_ = image_src.get();
+  image_src->setMagnifyNearest(magnify_nearest_);
   image_src->setFrameReadyCallback(makeQueuedRepaintCallback());
   return image_src;
+}
+
+QWidget* ImageLayer::createConfigWidget(QWidget* parent) {
+  auto* widget = new QWidget(parent);
+  auto* layout = new QFormLayout(widget);
+  layout->setContentsMargins(0, 0, 0, 0);
+
+  auto* nearest = new QCheckBox(tr("Pixelated (nearest)"), widget);
+  nearest->setChecked(magnify_nearest_);
+  nearest->setToolTip(tr("Use nearest-neighbour magnification (crisp pixels) instead of smoothing when zoomed in"));
+  layout->addRow(tr("Magnify"), nearest);
+  connect(nearest, &QCheckBox::toggled, this, [this](bool on) { setMagnifyNearest(on); });
+
+  return widget;
+}
+
+void ImageLayer::onBeforeDetach() {
+  image_source_ = nullptr;
+}
+
+void ImageLayer::setMagnifyNearest(bool nearest) {
+  if (magnify_nearest_ == nearest) {
+    return;
+  }
+  magnify_nearest_ = nearest;
+  applyOptions();
+}
+
+void ImageLayer::applyOptions() {
+  if (image_source_ == nullptr) {
+    return;
+  }
+  // setMagnifyNearest invalidates the worker so it re-emits with the new MagFilter
+  // tag; re-apply the current tracker time so the re-emit happens now (not next tick).
+  image_source_->setMagnifyNearest(magnify_nearest_);
+  if (const auto ts = lastTrackerTimeNs(); ts.has_value()) {
+    image_source_->setTimestamp(*ts);
+  }
+  emit repaintRequested();
+}
+
+void ImageLayer::saveOptions(QDomElement& element) const {
+  element.setAttribute(
+      QStringLiteral("magnify_nearest"), magnify_nearest_ ? QStringLiteral("true") : QStringLiteral("false"));
+}
+
+bool ImageLayer::loadOptions(const QDomElement& element) {
+  magnify_nearest_ = element.attribute(
+                         QStringLiteral("magnify_nearest"),
+                         magnify_nearest_ ? QStringLiteral("true") : QStringLiteral("false")) == QStringLiteral("true");
+  applyOptions();
+  return true;
 }
 
 }  // namespace PJ

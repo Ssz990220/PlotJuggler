@@ -462,7 +462,9 @@ Managed at multiple levels:
 | **Video storage** | Whole MP4 as blob; per-frame `VideoSample` for streaming | Per-frame in ObjectStore (streaming); direct file access (MP4) |
 | **Decoder linkage** | FFmpeg as **child process** (stdin/stdout IPC) | FFmpeg **linked** (libavcodec API) |
 | **GPU API** | wgpu (Vulkan/Metal/D3D12/WebGPU) | QRhi (Qt 6.8: Vulkan/Metal/D3D11/OpenGL) |
-| **YUV conversion** | GPU compute/fragment shader (BT.601/BT.709 aware) | GPU fragment shader (BT.709) |
+| **YUV conversion** | GPU compute/fragment shader (BT.601/BT.709 aware) | GPU fragment shader, **colorspace-aware** as of 2026-06-21 (BT.601/709 + limited/full range, selected per-stream from the codec's signalled colorimetry; see §8) |
+| **Pixel upload** | Per-format (RGB pad, RGBA direct, YUV planes, NV12 two-plane) | RGB/RGBA/Mono8/BGRA/YUV420P + **native NV12 two-plane** (RG8 UV; CPU deinterleave fallback) as of 2026-06-21 |
+| **Magnification filter** | Per-image nearest/linear (`MagnificationFilter`) | Per-image-layer nearest/linear toggle as of 2026-06-21 |
 | **Frame delivery** | Immediate-mode re-query every render frame | Pull-based `MediaSource::takeFrame()` |
 | **Layer compositing** | `DrawOrder` float → depth buffer offsets | `CompositeMediaSource` (shipped): fans `setTimestamp()` to N owned layers and fuses their `MediaFrame`s (opacity-folded pixel layers stacked bottom-to-top in add order, plus concatenated overlays); wired into `Scene2DDockWidget` |
 | **Keyframe index** | Built from MP4 demux or NAL parsing | Inline in decoder today — `StreamingVideoDecoder` keyframe vector (streaming) / `FfmpegBackend` FFmpeg seek index (file); a `MediaIndexRegistry` sidechannel is designed for a future file-backed ObjectStore path but not yet implemented (no header exists) |
@@ -512,6 +514,100 @@ conceptually simpler but doesn't scale to large files (GBs). pj_scene2D's
 approach of accessing the file directly via `FfmpegBackend` avoids this
 — the file is its own random-access store. For streaming,
 per-frame entries in ObjectStore with retention are the right model.
+
+---
+
+## 8. Adoption decisions (2026-06-21)
+
+This document was re-audited against the as-built `pj_scene2D` on 2026-06-21. The
+big architectural calls in §7 still hold (linked libavcodec over subprocess IPC;
+pull-based `MediaSource` over immediate-mode re-query; file-as-its-own-store over
+whole-MP4-blob). What the comparison table had treated as parity but wasn't is the
+fine-grained **rendering correctness** — that's where the remaining good Rerun ideas
+were. The following were decided and (where adopted) shipped on
+`feat/scene2d-render-correctness`.
+
+### Adopted
+
+- **Colorspace-aware YUV→RGB (BT.601/709 + limited/full range).** This was a latent
+  *bug*, not a missing feature: `FfmpegDecoder` decoded through libavcodec (whose
+  `AVFrame` carries `colorspace` + `color_range`) but dropped that metadata and the
+  shader hardcoded full-range BT.709 — so SD content shifted hue and the common
+  limited-range H.264/HEVC rendered with washed-out blacks/whites. Fix: carry
+  `YuvColorSpace`/`YuvColorRange` on `DecodedFrame` (mapped from the `AVFrame`, with
+  the standard SD-height→601 / unspecified-range→limited heuristics), and build the
+  GPU color matrix per-frame via `pj_scene2d_core/video_color.h::buildYuvMatrix`. The
+  matrix is a single affine 4×4 that bakes range scale+offset into the constant
+  column, so the **shader is unchanged** (`rgb = M·vec4(y, u-0.5, v-0.5, 1)`); BT.709
+  + full reduces to the exact historical matrix, so full-range content is byte-for-
+  byte unaffected. Mirrors Rerun's `yuv_converter.rs`. Unit-tested in `video_color_test`.
+
+- **Depth Auto-fit (on demand).** The depth layer kept a hardcoded 0–4 m default
+  because the team's earlier attempt at continuous auto-range flickered (it used a
+  naive per-frame min/max). Adopted Rerun's robust-percentile idea, but as a one-shot
+  the user triggers: an **"Auto-fit range"** button snaps Near/Far to the current
+  frame's 2nd/98th depth percentiles (`pj_scene2d_core/depth_range.h`, unit-tested;
+  `DepthPipelineSource::autoRange` over the cached last frame). Manual remains the
+  default — zero behaviour change until the button is pressed — which is why this is
+  safe where continuous auto was not.
+
+- **Per-image magnification filter (nearest/linear).** Mirrors Rerun's
+  `MagnificationFilter`. A per-image-layer "Pixelated (nearest)" toggle (persisted in
+  layout XML) carried on `DecodedFrame::mag_filter`; the widget keeps both samplers
+  and rebinds on change. Useful for pixel inspection. Depth always samples its
+  R32F y-plane nearest regardless (never blend the no-data sentinel), so the toggle
+  is image-only.
+
+- **Native NV12 two-plane upload (perf).** Mirrors Rerun's per-format upload. VAAPI
+  hardware decode downloads NV12; previously that was repacked to YUV420P with a
+  full-frame `sws_scale` every frame. Now `FfmpegDecoder` emits `kNV12` natively and
+  the widget uploads Y (R8) + interleaved UV (RG8), skipping the repack. A CPU
+  deinterleave fallback (`nv12ToYuv420p`) covers the rare no-RG8 backend and the
+  thumbnail encoder (which stays planar). **Caveat:** the native two-plane GPU path
+  is exercised only on hardware decode, which CI's software decoders don't hit — so
+  it is unit-tested at the buffer-layout level (`decoded_frame_test`) and verified
+  live on VAAPI, but not pixel-verified in CI.
+
+### Deferred (good ideas, larger or lower-value — not in this pass)
+
+- **SegmentationImage + AnnotationContext (ClassId→color/label).** High value for the
+  ML/robotics audience and the existing depth GPU-LUT path is a near-perfect template
+  for the render side (class-id → palette-LUT lookup). Deferred because the *valuable*
+  part — a shared `AnnotationContext` giving consistent colors/labels across frames —
+  is a cross-repo change: a new canonical type/concept in the `plotjuggler_sdk`
+  submodule, a parser change in `pj-official-plugins`, and the viewer render path.
+  That is several coordinated PRs and an SDK ABI consideration, not a single in-repo
+  change. Worth doing next as its own effort.
+
+- **Decoder-delay / error-debounce during fast scrub** (Rerun's 400 ms grace +
+  UpToDate/Behind state machine). Low value here: pj_scene2D already shows the
+  last-good frame via the latest-wins mailbox and instant backward feedback via the
+  `ThumbnailCache`, and live/scrub mutual-exclusion means a scrub-time keyframe can't
+  be evicted mid-seek (the main source of decode errors Rerun's grace delay hides).
+  Not worth the added state machine.
+
+### Skipped (deliberate — do not re-open without a new reason)
+
+- **DrawOrder → GPU depth-buffer compositing.** pj_scene2D composites a small,
+  explicitly-ordered, user-reorderable layer stack CPU-side with alpha-over. Rerun's
+  float-DrawOrder→depth-offset shines with many archetypes at arbitrary orders; with
+  PJ's handful of layers it adds a depth-buffer pass and an ordering convention for no
+  real gain. (This was §7's one "worth considering" — considered, declined.)
+- **VP8 / VP9 decode.** Deliberately unsupported: no usable keyframe oracle for
+  seeking (the codec whitelist rejects them). Correct call.
+- **ImageSequence-as-video.** Redundant — image topics already seek frame-by-frame
+  through ObjectStore `latestAt`; there is no separate "video" wrapper to gain.
+- **Multiple `VideoPlayer`s per topic** (same video at two timestamps at once). Niche;
+  one decoder per topic is the right default.
+- **Decoded-frame BTreeMap cache for backward scrub.** PJ's `ThumbnailCache` +
+  re-decode-from-keyframe is leaner and already gives instant backward feedback;
+  Rerun's full decoded-frame cache trades a lot of memory for marginal benefit here.
+- **Proximity-from-cursor eviction / protect-latest-N in ObjectStore.** Eviction is
+  front-drop FIFO; live/scrub mutual-exclusion means eviction never runs during a
+  scrub, so cursor-aware eviction would optimise a case that can't occur.
+- **Immediate-mode re-query, whole-MP4-as-blob, 512 MB backpressure quota.** Already
+  rejected in §7 and still correct; PJ's decoded-frame memory is naturally bounded by
+  the latest-wins mailbox + bounded reorder buffer.
 
 ---
 

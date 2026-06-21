@@ -18,6 +18,7 @@
 #include "pj_base/builtin/image.hpp"
 #include "pj_scene2d_core/codecs.h"  // PngCodec (compressedDepth -> Mono16)
 #include "pj_scene2d_core/decoded_frame.h"
+#include "pj_scene2d_core/depth_range.h"    // depthPercentileRange (Auto-fit)
 #include "pj_scene2d_core/image_resolve.h"  // resolveImage (parser or canonical blob)
 
 namespace PJ {
@@ -143,6 +144,14 @@ void DepthPipelineSource::startWorker() {
         }
         auto result = decodeAt(req.target_ns);
         if (result.has_value() && !result->isNull()) {
+          // Snapshot the raw float depth for the main-thread Auto-fit before the
+          // frame is moved into the mailbox (shared_ptr aliasing — no copy).
+          {
+            std::lock_guard<std::mutex> lock(last_frame_mutex_);
+            last_depth_pixels_ = result->pixels;
+            last_depth_width_ = result->width;
+            last_depth_height_ = result->height;
+          }
           worker.deposit(std::move(*result));
         }
       },
@@ -252,6 +261,27 @@ void DepthPipelineSource::setOpacity(float opacity) {
     opacity_ = std::clamp(opacity, 0.0f, 1.0f);
   }
   invalidate();
+}
+
+std::optional<Range<float>> DepthPipelineSource::autoRange(float lo_frac, float hi_frac) const {
+  std::shared_ptr<const std::vector<uint8_t>> pixels;
+  int width = 0;
+  int height = 0;
+  {
+    std::lock_guard<std::mutex> lock(last_frame_mutex_);
+    pixels = last_depth_pixels_;
+    width = last_depth_width_;
+    height = last_depth_height_;
+  }
+  if (!pixels || width <= 0 || height <= 0) {
+    return std::nullopt;
+  }
+  const size_t count = pixels->size() / sizeof(float);
+  if (count < static_cast<size_t>(width) * static_cast<size_t>(height)) {
+    return std::nullopt;  // buffer smaller than declared dims — refuse rather than misread
+  }
+  const auto* data = reinterpret_cast<const float*>(pixels->data());
+  return depthPercentileRange(data, count, lo_frac, hi_frac);
 }
 
 std::optional<DecodedFrame> DepthPipelineSource::decodeDepthImage(const sdk::DepthImage& depth, int64_t pts) const {

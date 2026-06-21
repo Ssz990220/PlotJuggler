@@ -545,9 +545,17 @@ decoder seek and entry eviction.
 - **GPU-first**: the default rendering path is `QRhiWidget` with custom
   GLSL shaders. QRhi abstracts over Vulkan, Metal, D3D11, and OpenGL at
   runtime.
-- **Color conversion**: YUV→RGB is performed in a fragment shader using
-  BT.601 or BT.709 matrices. Input frames stay in YUV420P / NV12 /
-  P010 — no CPU-side conversion.
+- **Color conversion**: YUV→RGB is performed in a fragment shader. The matrix
+  (BT.601 vs BT.709) and range (limited vs full) are **selected per stream** from
+  the codec's signalled colorimetry — not hardcoded — so SD / limited-range video
+  converts correctly (the matrix is built once per frame by
+  `pj_scene2d_core/video_color.h::buildYuvMatrix`; full-range BT.709 reproduces the
+  historical matrix exactly). Hardware-decoded NV12 uploads natively as a two-plane
+  R8+RG8 texture (no `sws_scale` repack); a CPU deinterleave fallback covers
+  backends without RG8. No CPU-side color conversion.
+- **Magnification filter**: per-image-layer choice of linear (smooth, default) or
+  nearest ("pixelated", for pixel inspection); a display hint on the frame, not a
+  decode property. Depth always samples nearest (never blend the no-data sentinel).
 - **Zoom and pan**: the viewer supports zoom (mouse wheel, cursor-anchored)
   and pan (mouse drag) via a view transform matrix in the vertex shader.
   No pixel reprocessing; transformation is free on the GPU. This

@@ -90,7 +90,9 @@ TEST_F(StreamingVideoDecoderTest, BasicDecode) {
   EXPECT_FALSE(result->isNull());
   EXPECT_EQ(result->width, 640);
   EXPECT_EQ(result->height, 480);
-  EXPECT_EQ(result->format, PixelFormat::kYUV420P);
+  // SW decode -> planar YUV420P; HW decode (VAAPI) -> native NV12. Accept both.
+  EXPECT_TRUE(result->format == PixelFormat::kYUV420P || result->format == PixelFormat::kNV12)
+      << "format=" << static_cast<int>(result->format);
 }
 
 TEST_F(StreamingVideoDecoderTest, SequentialLive) {
@@ -931,7 +933,9 @@ TEST(StreamingVideoDecoderHevcTest, DecodeAndKeyframeOracle) {
   EXPECT_FALSE(result->isNull());
   EXPECT_EQ(result->width, 320);
   EXPECT_EQ(result->height, 240);
-  EXPECT_EQ(result->format, PixelFormat::kYUV420P);
+  // SW decode -> planar YUV420P; HW decode (VAAPI) -> native NV12. Accept both.
+  EXPECT_TRUE(result->format == PixelFormat::kYUV420P || result->format == PixelFormat::kNV12)
+      << "format=" << static_cast<int>(result->format);
 }
 
 TEST(StreamingVideoDecoderHevcTest, ScrubBackwardSeeksToIrap) {
@@ -1077,7 +1081,9 @@ TEST(StreamingVideoDecoderAv1Test, DecodeAndKeyframeOracle) {
   EXPECT_FALSE(result->isNull());
   EXPECT_EQ(result->width, 320);
   EXPECT_EQ(result->height, 240);
-  EXPECT_EQ(result->format, PixelFormat::kYUV420P);
+  // SW decode -> planar YUV420P; HW decode (VAAPI) -> native NV12. Accept both.
+  EXPECT_TRUE(result->format == PixelFormat::kYUV420P || result->format == PixelFormat::kNV12)
+      << "format=" << static_cast<int>(result->format);
 }
 
 TEST(StreamingVideoDecoderAv1Test, ScrubBackwardSeeksToKeyframe) {
@@ -1269,7 +1275,9 @@ TEST(StreamingVideoSampledTest, KeyframeDenseSourceUsesKeyframeOnly) {
   std::vector<int64_t> surfaced;
   decoder.decodeSampled(1'000'000'000, [&](const DecodedFrame& frame) -> bool {
     EXPECT_FALSE(frame.isNull());
-    EXPECT_EQ(frame.format, PixelFormat::kYUV420P);
+    // SW decode -> YUV420P; HW decode (VAAPI) -> NV12. Both reach the thumbnail
+    // encoder, which deinterleaves NV12; accept either here.
+    EXPECT_TRUE(frame.format == PixelFormat::kYUV420P || frame.format == PixelFormat::kNV12);
     surfaced.push_back(frame.pts);
     return true;
   });

@@ -103,6 +103,12 @@ class ImagePipelineSource : public MediaSource {
   /// takeFrame() has new data to return. Pass nullptr to clear.
   void setFrameReadyCallback(std::function<void()> cb);
 
+  /// Select the magnification filter applied when the image is displayed past 1:1
+  /// (kNearest = crisp/pixelated, kLinear = smooth). Thread-safe; a change forces a
+  /// re-decode (invalidate) so the next frame carries the new MagFilter tag and the
+  /// widget rebuilds its sampler. Default linear.
+  void setMagnifyNearest(bool nearest);
+
   /// Provide the camera calibration used to rectify decoded frames, keyed by
   /// CameraInfo.frame_id. The owner (which has the session's parser registry)
   /// parses each "<ns>/camera_info" topic and passes the result here. Must be
@@ -168,6 +174,9 @@ class ImagePipelineSource : public MediaSource {
   // frames raw and attaches the map. Atomic: written from the widget thread, read
   // on the worker thread (the setter's invalidate() also re-decodes in the new mode).
   std::atomic<bool> gpu_rectify_available_{false};
+  // Display magnification filter, stamped onto each emitted frame in takeFrame().
+  // Written from the widget/UI thread, read on the same thread in takeFrame().
+  std::atomic<bool> mag_nearest_{false};
   // Set true by the first setTimestamp() (main thread). Guards setCameraInfoMap:
   // once a decode has been requested the worker may read camera_info_by_frame_
   // unlocked, so a later injection would be a data race — it is refused instead.

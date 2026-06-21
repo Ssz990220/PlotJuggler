@@ -12,8 +12,10 @@ top of `pj_scene_common`). pj_scene2D is a read-only consumer of
 **Depth images** arrive as `sdk::Image` with a depth `encoding` (16UC1 / 32FC1 /
 compressedDepth) — there is no `kDepthImage` producer. `Scene2DDockWidget` peeks a
 `kImage` topic's first sample and routes depth-encoded images to the colormap
-`DepthImageLayer` (per-layer colormap turbo/viridis/plasma/grayscale, invert, and a
-manual near-far range) and everything else to the plain `ImageLayer`. Both
+`DepthImageLayer` (per-layer colormap turbo/viridis/plasma/grayscale, invert, a
+manual near-far range with an on-demand **Auto-fit** button that snaps to the current
+frame's depth percentiles) and everything else to the plain `ImageLayer` (which
+exposes a nearest/linear **magnification filter** toggle for pixel inspection). Both
 `ImagePipelineSource` and `DepthPipelineSource` obtain the `sdk::Image` from a store
 entry through one shared seam — `image_resolve.h::resolveImage` (the topic's
 MessageParser when present, else the canonical `pj_image_v1` codec). The depth decode
@@ -47,7 +49,8 @@ Read in this order:
 - `core/include/pj_scene2d_core/media_source.h` — the uniform `setTimestamp`/`takeFrame` frame-delivery contract everything plugs into.
 - `core/include/pj_scene2d_core/image_pipeline_source.h`, `streaming_video_source.h`, `depth_pipeline_source.h`, `scene_pipeline_source.h`, `composite_media_source.h` — the concrete `MediaSource` implementations.
 - `core/include/pj_scene2d_core/image_resolve.h` — `resolveImage`, the single seam that turns a store entry into an `sdk::Image` (parser or canonical codec); shared by the image and depth pipeline sources.
-- `core/include/pj_scene2d_core/streaming_video_decoder.h`, `ffmpeg_decoder.h` — GOP-aware streaming video decode on top of FFmpeg.
+- `core/include/pj_scene2d_core/streaming_video_decoder.h`, `ffmpeg_decoder.h` — GOP-aware streaming video decode on top of FFmpeg. `FfmpegDecoder` carries the codec's colorimetry onto each frame and emits native NV12 on the hardware-decode path.
+- `core/include/pj_scene2d_core/video_color.h` — `buildYuvMatrix(space, range)`: the per-frame YUV→RGB matrix (BT.601/709 + limited/full range) the media shader uploads, replacing the old hardcoded BT.709. `depth_range.h` — `depthPercentileRange` backing the depth Auto-fit.
 - `core/include/pj_scene2d_core/overlay_geometry.h` — backend-agnostic tessellation of annotation overlays (lines/points/fills/circles) into GPU vertex data; stroke width scales with zoom but is **floored at 1px on screen** so edges never go sub-pixel and vanish.
 - `widgets/include/pj_scene2d_widgets/media_viewer_widget.h` — the `QRhiWidget` renderer (YUV/RGB pipelines + annotation overlays).
 - `widgets/include/pj_scene2d_widgets/Scene2DDockWidget.h` — the dock widget wiring layers into `pj_scene_common`'s `SceneDockWidget`.

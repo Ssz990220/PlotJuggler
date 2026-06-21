@@ -8,7 +8,9 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <vector>
 
+#include "pj_base/types.hpp"  // PJ::Range
 #include "pj_datastore/object_store.hpp"
 #include "pj_scene2d_core/async_frame_worker.h"
 #include "pj_scene2d_core/media_source.h"
@@ -69,6 +71,14 @@ class DepthPipelineSource : public MediaSource {
   void setRange(float near_m, float far_m);
   void setOpacity(float opacity);
 
+  /// Compute a robust [near, far] range from the most recently decoded depth frame
+  /// by taking the lo/hi percentiles of its valid samples (see depthPercentileRange).
+  /// This backs the depth layer's on-demand "Auto-fit" action. Returns nullopt if no
+  /// depth frame has been decoded yet (or it had no valid samples). Main-thread safe:
+  /// reads the worker's last frame under a lock; does not change the current range.
+  /// The returned Range has `min` = near, `max` = far (in metres).
+  [[nodiscard]] std::optional<Range<float>> autoRange(float lo_frac = 0.02f, float hi_frac = 0.98f) const;
+
  private:
   /// Starts the decode worker (shared by both ctors). The worker thread calls
   /// decodeAt() per request; a forced (invalidate()) request re-decodes the
@@ -98,6 +108,15 @@ class DepthPipelineSource : public MediaSource {
   float opacity_ = 1.0f;
 
   int64_t last_entry_ts_ = INT64_MIN;  ///< dedup of the last decoded entry — worker-thread only
+
+  // Snapshot of the last decoded RAW depth frame (float32 metres), kept so the
+  // main-thread autoRange() can compute percentiles without re-decoding. Written
+  // by the worker after each successful decode, read by autoRange(); guarded by
+  // last_frame_mutex_. The pixels are shared (cheap copy), never mutated in place.
+  mutable std::mutex last_frame_mutex_;
+  std::shared_ptr<const std::vector<uint8_t>> last_depth_pixels_;
+  int last_depth_width_ = 0;
+  int last_depth_height_ = 0;
 
   // Decodes off the UI thread. Declared last and stop()ed first in the destructor
   // so the worker's closure never touches an already-destroyed member.

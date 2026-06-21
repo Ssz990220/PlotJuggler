@@ -7,8 +7,11 @@
 #include <QPainter>
 #include <QScreen>
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstring>
+
+#include "pj_scene2d_core/video_color.h"  // buildYuvMatrix — single source of the YUV->RGB coefficients
 
 namespace PJ {
 
@@ -28,14 +31,19 @@ constexpr int kRgbaBytesPerPixel = 4;
   return static_cast<uint8_t>(std::clamp(std::lround(value), 0L, 255L));
 }
 
-[[nodiscard]] InspectorRgb yuvToRgb(uint8_t y, uint8_t u, uint8_t v) {
+// Read-out YUV->RGB for the inspector. Uses the SAME matrix the GPU display path
+// applies (buildYuvMatrix, selected from the frame's signalled colorimetry), so the
+// inspected value matches the pixel on screen for BT.601 / limited-range content too
+// — not a hardcoded full-range BT.709 (which would disagree with the display).
+[[nodiscard]] InspectorRgb yuvToRgb(uint8_t y, uint8_t u, uint8_t v, YuvColorSpace space, YuvColorRange range) {
+  const std::array<float, 16> m = buildYuvMatrix(space, range);  // column-major; applied to (y, u-0.5, v-0.5, 1)
   const float yf = static_cast<float>(y) / 255.0f;
   const float uf = static_cast<float>(u) / 255.0f - 0.5f;
   const float vf = static_cast<float>(v) / 255.0f - 0.5f;
   return {
-      clampToByte((yf + 1.5748f * vf) * 255.0f),
-      clampToByte((yf - 0.18732f * uf - 0.46812f * vf) * 255.0f),
-      clampToByte((yf + 1.8556f * uf) * 255.0f),
+      clampToByte((m[0] * yf + m[4] * uf + m[8] * vf + m[12]) * 255.0f),
+      clampToByte((m[1] * yf + m[5] * uf + m[9] * vf + m[13]) * 255.0f),
+      clampToByte((m[2] * yf + m[6] * uf + m[10] * vf + m[14]) * 255.0f),
   };
 }
 
@@ -115,17 +123,22 @@ std::optional<InspectorRgb> pixelRgbAt(const DecodedFrame& frame, int x, int y) 
       if (uv_index >= static_cast<size_t>(uv_w) * static_cast<size_t>(uv_h)) {
         return std::nullopt;
       }
-      return yuvToRgb(data[index], data[y_size + uv_index], data[y_size + static_cast<size_t>(uv_w) * uv_h + uv_index]);
+      return yuvToRgb(
+          data[index], data[y_size + uv_index], data[y_size + static_cast<size_t>(uv_w) * uv_h + uv_index],
+          frame.color_space, frame.color_range);
     }
     case PixelFormat::kNV12: {
+      const int uv_w = (frame.width + 1) / 2;
       const int uv_h = (frame.height + 1) / 2;
+      const int uv_row_bytes = 2 * uv_w;  // interleaved U,V pairs; = frame.width only for even widths
       const size_t y_size = static_cast<size_t>(frame.width) * static_cast<size_t>(frame.height);
       const size_t uv_index =
-          (static_cast<size_t>(y / 2) * static_cast<size_t>(frame.width) + static_cast<size_t>(x / 2) * 2U);
-      if (uv_index + 1 >= static_cast<size_t>(frame.width) * static_cast<size_t>(uv_h)) {
+          (static_cast<size_t>(y / 2) * static_cast<size_t>(uv_row_bytes) + static_cast<size_t>(x / 2) * 2U);
+      if (uv_index + 1 >= static_cast<size_t>(uv_row_bytes) * static_cast<size_t>(uv_h)) {
         return std::nullopt;
       }
-      return yuvToRgb(data[index], data[y_size + uv_index], data[y_size + uv_index + 1]);
+      return yuvToRgb(
+          data[index], data[y_size + uv_index], data[y_size + uv_index + 1], frame.color_space, frame.color_range);
     }
     case PixelFormat::kMono8: {
       const uint8_t value = data[index];

@@ -48,8 +48,20 @@ the bridge between a custom decode pipeline and Qt's rendering:
 
 - QRhi abstracts over Vulkan, Metal, D3D11, OpenGL
 - **YUV420P texture support**: 3 R8 textures (Y full-res, U half-res, V half-res)
-  uploaded per frame. BT.709 YUV->RGB conversion in fragment shader. 75% less
-  GPU memory than a single RGBA8 texture (1.5 bytes/pixel vs 4 bytes/pixel).
+  uploaded per frame. 75% less GPU memory than a single RGBA8 texture
+  (1.5 bytes/pixel vs 4 bytes/pixel). YUV->RGB conversion in the fragment shader.
+- **NV12 texture support** (hardware-decode download format): Y as an R8 texture +
+  interleaved UV as an **RG8** texture (two-plane), avoiding the per-frame
+  `sws_scale` repack to YUV420P. `isUploadablePixelFormat(kNV12)` is gated on the
+  backend; `nv12ToYuv420p` (decoded_frame.h) is the CPU fallback for backends
+  without RG8 and for CPU consumers (thumbnail encoder).
+- **Colorspace-aware conversion**: the YUV->RGB matrix is selected per frame from
+  the codec's `AVFrame` colorimetry (BT.601 vs BT.709, limited vs full range) and
+  built by `pj_scene2d_core/video_color.h::buildYuvMatrix`. It is a single affine
+  4x4 (range scale/offset folded into the constant column), so the shader is
+  unchanged across all combinations; BT.709 + full range reproduces the historical
+  hardcoded matrix bit-for-bit. See §5 "Colorimetry was dropped" for the bug this
+  fixed.
 - Backward-compatible QImage (RGB) path kept for image viewers
 - Zoom (mouse wheel) and pan (mouse drag) via view transform matrix in
   vertex shader — zero CPU-side pixel processing
@@ -301,8 +313,10 @@ when its worker delivers one.
   scrub preview.
 
 - **JPEG / YUV420P throughout**: thumbnails are stored as JPEG at quality 80.
-  Decompression outputs YUV420P directly, so the same BT.709 shader renders
-  both cached and live frames with no color mismatch.
+  Decompression outputs YUV420P directly, so the same media shader renders both
+  cached and live frames with no path mismatch. (A live frame from hardware decode
+  arrives as NV12; the thumbnail encoder deinterleaves it to YUV420P first via
+  `nv12ToYuv420p`, so the cached preview stays planar.)
 
 - **Usage pattern**: during backward scrub, `StreamingVideoSource` serves the
   nearest-at-or-before thumbnail for instant feedback while the full-resolution
@@ -336,6 +350,38 @@ consumption.
 
 Lessons from the standalone pj_scene2D experiment and the mcap_player prototype
 (both since removed; retained here as architectural rationale).
+
+### Colorimetry was dropped (the BT.709 full-range hardcode)
+
+For a long time `avFrameToDecodedFrame` discarded `AVFrame::colorspace` and
+`AVFrame::color_range`, and the media shader applied a hardcoded **full-range
+BT.709** matrix to every YUV frame. Two latent correctness bugs followed:
+
+- **Wrong matrix for SD content.** BT.601 (SMPTE 170M / BT.470BG) luma coefficients
+  differ from BT.709; applying 709 to 601 content shifts saturated hues.
+- **Wrong range for limited-range video.** Most camera/file H.264/HEVC is *limited*
+  range (luma 16..235); a full-range matrix renders it with raised blacks and
+  clipped/greyed whites (washed out).
+
+The metadata was always there in the `AVFrame` we already decode — it was just
+thrown away. Fix: carry `YuvColorSpace` / `YuvColorRange` on `DecodedFrame` (mapped
+from the `AVFrame`, with the standard SD-height→601 and unspecified-range→limited
+fallbacks) and build the matrix per frame with `video_color.h::buildYuvMatrix`.
+
+Key implementation choice: encode the whole thing as **one affine 4x4** applied to
+`vec4(y, u-0.5, v-0.5, 1)`, with the limited-range luma scale (255/219), chroma
+scale (255/224) and all offsets folded into the constant 4th column. That keeps the
+GLSL untouched (no `.qsb` recompile — which matters, since the aqt Qt install here
+ships no `qsb` tool), and makes BT.709+full reduce to the exact historical matrix so
+existing full-range content is byte-identical. Unit-tested in `video_color_test`
+(black/white/gray reconstruction + 601≠709).
+
+Corollary — **HW decode now emits NV12, not YUV420P.** Once `FfmpegDecoder` stopped
+forcing `sws_scale` to YUV420P, VAAPI frames come back as `kNV12`. Any consumer of
+decoder output must handle NV12: the GPU upload (native two-plane), the pixel
+inspector (`pixelRgbAt` already had an NV12 case), and the thumbnail encoder (which
+deinterleaves via `nv12ToYuv420p`). Tests that decode real video must accept either
+`kYUV420P` (software) or `kNV12` (hardware).
 
 ### Timestamp Unit Conversion
 

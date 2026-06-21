@@ -89,8 +89,8 @@ handles per-frame `kVideoFrame` streaming topics (parser-mode
 
 | Component | Header(s) | Role |
 |-----------|-----------|------|
-| `MediaViewerWidget` | `media_viewer_widget.h` | `QRhiWidget` subclass: GPU rendering via BT.709 YUV->RGB fragment shader (3 R8 textures for YUV420P), zoom/pan, RGB DecodedFrame path, GPU lens-rectification (§7.2), and `MediaSource` polling via `setMediaSource()` + `setTimestamp()` (§7) |
-| YUV shaders | `shaders/yuv_to_rgb.{vert,frag}` | BT.709 YUV420P->RGB conversion via 3 R8 textures; RGBA passthrough; native Mono8 (R8 expand) / BGRA (RGBA8 swizzle) paths; depth colormap (`pixelFormat == 5`: R32F depth in `y_tex`, normalized by near/far and looked up in the colormap LUT in `u_tex`); optional remap-LUT rectification (binding 4) — see §7.2 |
+| `MediaViewerWidget` | `media_viewer_widget.h` | `QRhiWidget` subclass: GPU rendering via colorspace-aware YUV->RGB fragment shader (3 R8 textures for YUV420P, R8+RG8 for NV12; matrix from `buildYuvMatrix`), per-layer magnification filter, zoom/pan, RGB DecodedFrame path, GPU lens-rectification (§7.2), and `MediaSource` polling via `setMediaSource()` + `setTimestamp()` (§7) |
+| YUV shaders | `shaders/yuv_to_rgb.{vert,frag}` | colorspace-aware YUV420P/NV12->RGB conversion (BT.601/709 + limited/full range via the per-frame `colorMatrix`); RGBA passthrough; native Mono8 (R8 expand) / BGRA (RGBA8 swizzle) paths; depth colormap (`pixelFormat == 5`: R32F depth in `y_tex`, normalized by near/far and looked up in the colormap LUT in `u_tex`); optional remap-LUT rectification (binding 4) — see §7.2 |
 | Overlay shaders | `shaders/scene_lines.{vert,frag}`, `shaders/scene_quads.{vert,frag}`, `shaders/scene_text.{vert,frag}` | Annotation overlay pipelines (§7.1): triangle strokes (scale-with-1px-floor), solid fills, textured text quads |
 
 The Qt layer is thin — it owns the GPU surface and polls the
@@ -149,7 +149,7 @@ Main thread                            MediaSource (internal)
      │                        │
      │                  upload to GPU textures
      │                        │
-     │                   draw quad (BT.709 shader)
+     │                   draw quad (colorspace-aware shader)
      │                        │
      └──────────────────► GPU display
 ```
@@ -395,10 +395,10 @@ partial publication).
   while the GOP decode settles.
   Wired only for bounded topics today; streaming-on-pause thumbnailing
   is not yet wired.
-- **YUV420P output** (§R4.7 compliant): FfmpegDecoder outputs
-  YUV420P planes directly. No CPU-side RGB conversion. The
-  MediaViewerWidget renders via BT.709 fragment shader with 3 R8
-  textures. 75% GPU memory reduction vs RGBA8.
+- **YUV420P / NV12 output** (§R4.7 compliant): FfmpegDecoder outputs
+  planar YUV420P (software) or native NV12 (hardware) directly. No CPU-side
+  RGB conversion. MediaViewerWidget renders via a colorspace-aware fragment
+  shader (matrix per frame) with R8 planes. 75% GPU memory reduction vs RGBA8.
 
 ### 4.2 Image codecs
 
@@ -812,7 +812,7 @@ zoom/pan apply uniformly:
 
 | # | Pipeline | Topology | Responsibility |
 |---|---|---|---|
-| 1 | Image | implicit (procedural fullscreen quad) | YUV420P → RGB (BT.709, 3 R8 textures), RGBA passthrough, native Mono8 (R8) / BGRA (RGBA8 swizzle), depth colormap (R32F depth + colormap LUT, `pixelFormat == 5`), and optional GPU lens-rectification via a remap LUT (§7.2) |
+| 1 | Image | implicit (procedural fullscreen quad) | YUV420P/NV12 → RGB (colorspace-aware matrix per frame; 3 R8 or R8+RG8 textures), RGBA passthrough, native Mono8 (R8) / BGRA (RGBA8 swizzle), depth colormap (R32F depth + colormap LUT, `pixelFormat == 5`), and optional GPU lens-rectification via a remap LUT (§7.2) |
 | 1b | Composite (pixel layers) | implicit (procedural fullscreen quad) | Alpha-blends N additional `MediaFrame::pixel_layers` over the base, each with its own SRB and per-layer `opacity`; used when `pixel_layers_active_` (member `composite_pipeline_`) |
 | 2 | Fills (`points_overlay_`) | `Triangles` | Solid fills: `kPoints` quads, `LineLoop` fill, `CircleAnnotation` fill |
 | 3 | Outlines (`thick_overlay_`) | `Triangles` | **All** line/circle strokes, expanded CPU-side to perpendicular rectangles whose width scales with zoom but is floored at 1px on screen |
@@ -844,7 +844,8 @@ Per-frame flow:
 ### 7.2 Image shader: color conversion, native formats, GPU rectification
 
 The image fragment shader (`yuv_to_rgb.frag`) branches on a `pixelFormat`
-uniform. BT.709 YUV420P uses 3 R8 samplers:
+uniform. YUV420P uses 3 R8 samplers (NV12 uses 2: an R8 Y plane + an RG8
+interleaved UV plane):
 
 ```glsl
 vec3 yuv = vec3(
@@ -852,11 +853,17 @@ vec3 yuv = vec3(
     texture(u_plane, uv).r - 0.5,
     texture(v_plane, uv).r - 0.5
 );
-fragColor = vec4(bt709_matrix * yuv, 1.0);
+fragColor = vec4((colorMatrix * vec4(yuv, 1.0)).rgb, 1.0);
 ```
 
-BT.709 is used for all content. Both live-decoded frames and cached thumbnails
-pass through the same shader, eliminating color mismatches between the two paths.
+The `colorMatrix` is **selected per frame** from the codec's signalled colorimetry
+(BT.601 vs BT.709, limited vs full range) and built by
+`pj_scene2d_core/video_color.h::buildYuvMatrix` — a single affine 4×4 that folds the
+range scale/offset into the constant column, so the shader is identical across all
+combinations. BT.709 + full range reproduces the legacy hardcoded matrix exactly.
+Live-decoded frames and cached thumbnails pass through the same shader. (Earlier the
+matrix was a hardcoded full-range BT.709, which mis-rendered SD and limited-range
+content — see TECHNICAL_NOTES §5 "Colorimetry was dropped".)
 
 **Native packed formats (no CPU repack).** Besides RGBA passthrough, the shader
 handles **Mono8** (uploaded as a single R8 texture, expanded to gray) and

@@ -21,6 +21,7 @@ set(PJ_SCENE2D_CORE_SOURCES
   src/composite_media_source.cpp
   src/async_frame_worker.cpp
   src/overlay_geometry.cpp
+  src/video_color.cpp
 )
 
 if(PJ_SCENE2D_HAS_FFMPEG)
@@ -93,6 +94,8 @@ if(PJ_BUILD_TESTS)
 
   set(PJ_SCENE2D_CORE_TESTS
     ../tests/decoded_frame_test.cpp
+    ../tests/video_color_test.cpp
+    ../tests/depth_range_test.cpp
     ../tests/cancel_token_test.cpp
     ../tests/image_codecs_test.cpp
     ../tests/async_frame_worker_test.cpp

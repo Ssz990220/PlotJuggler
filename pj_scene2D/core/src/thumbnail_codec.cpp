@@ -20,8 +20,17 @@ constexpr int evenDown(int v) {
 }
 }  // namespace
 
-JpegThumbnail encodeThumbnailJpeg(const DecodedFrame& src, int max_width, int quality) {
+JpegThumbnail encodeThumbnailJpeg(const DecodedFrame& src_in, int max_width, int quality) {
   JpegThumbnail out;
+  // Hardware decode emits NV12; the JPEG path below works in planar YUV420P, so
+  // deinterleave first. Cheap: only the ~1/N sampled frames reach the thumbnail cache.
+  DecodedFrame nv12_planar;
+  const DecodedFrame* src_ptr = &src_in;
+  if (src_in.format == PixelFormat::kNV12) {
+    nv12_planar = nv12ToYuv420p(src_in);
+    src_ptr = &nv12_planar;
+  }
+  const DecodedFrame& src = *src_ptr;
   if (src.format != PixelFormat::kYUV420P || src.isNull() || src.width <= 0 || src.height <= 0) {
     return out;
   }

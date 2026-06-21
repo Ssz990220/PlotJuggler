@@ -420,11 +420,22 @@ std::optional<MediaFrame> ImagePipelineSource::takeFrame() {
   }
   MediaFrame mf;
   mf.base = std::move(*frame);
+  // Stamp the current magnification filter (display hint) onto the emitted frame.
+  mf.base->mag_filter = mag_nearest_.load(std::memory_order_relaxed) ? MagFilter::kNearest : MagFilter::kLinear;
   return mf;
 }
 
 void ImagePipelineSource::setFrameReadyCallback(std::function<void()> cb) {
   worker_.setFrameReadyCallback(std::move(cb));
+}
+
+void ImagePipelineSource::setMagnifyNearest(bool nearest) {
+  if (mag_nearest_.exchange(nearest, std::memory_order_relaxed) == nearest) {
+    return;  // unchanged
+  }
+  // Re-emit the current frame so the new MagFilter tag reaches the widget (which
+  // rebuilds its sampler on the change) even when the playhead is paused.
+  invalidate();
 }
 
 std::optional<DecodedFrame> ImagePipelineSource::decodeAt(int64_t ts_ns) {

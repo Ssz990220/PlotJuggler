@@ -77,8 +77,11 @@ TEST_F(FfmpegDecoderTest, DecodeFirstFrame) {
   ASSERT_FALSE(frame.isNull()) << "no frame decoded after " << packets_sent << " packets";
   EXPECT_EQ(frame.width, 640);
   EXPECT_EQ(frame.height, 480);
-  EXPECT_EQ(frame.format, PixelFormat::kYUV420P);
-  EXPECT_EQ(frame.pixels->size(), expectedBufferSize(640, 480, PixelFormat::kYUV420P));
+  // Software decode yields planar YUV420P; hardware decode (VAAPI) yields native
+  // NV12. Both are valid — accept either and size-check against the actual format.
+  EXPECT_TRUE(frame.format == PixelFormat::kYUV420P || frame.format == PixelFormat::kNV12)
+      << "format=" << static_cast<int>(frame.format);
+  EXPECT_EQ(frame.pixels->size(), expectedBufferSize(640, 480, frame.format));
   EXPECT_TRUE(frame.isValid());
 }
 

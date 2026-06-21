@@ -10,6 +10,7 @@
 #include <QRhiWidget>
 #include <QSize>
 #include <QWheelEvent>
+#include <array>
 #include <atomic>
 #include <cstdint>
 #include <memory>
@@ -21,6 +22,7 @@
 #include "pj_scene2d_core/media_frame.h"
 #include "pj_scene2d_core/scene_frame.h"
 #include "pj_scene2d_core/undistort_remap.h"
+#include "pj_scene2d_core/video_color.h"  // buildYuvMatrix (per-layer YUV->RGB matrix cache)
 
 namespace PJ {
 
@@ -32,8 +34,9 @@ class PixelInspector;
 /// Attach a MediaSource with setMediaSource(), then call setTimestamp() on each
 /// application tick. The widget polls the source in render() via takeFrame().
 ///
-/// Supports YUV420P (3-plane BT.709 shader), packed RGB/RGBA DecodedFrame
-/// payloads, and MediaFrame.pixel_layers alpha-composited in order.
+/// Supports YUV420P + NV12 (colorspace-aware YUV→RGB: BT.601/709 + limited/full
+/// range, selected per-frame), packed RGB/RGBA DecodedFrame payloads, and
+/// MediaFrame.pixel_layers alpha-composited in order.
 /// SceneFrame overlays (points/lines/circles/text) are tessellated CPU-side and
 /// drawn above the image; see ARCHITECTURE.md §7.1.
 ///
@@ -99,11 +102,11 @@ class MediaViewerWidget : public QRhiWidget {
   void clearTextCache();
 
   // Selects the YUV→RGB shader path. Values must match the `pixelFormat`
-  // uniform contract in shaders/yuv_to_rgb.frag. kNV12 is RESERVED: the shader
-  // branch exists, but no decoder emits NV12 and the upload support gate
-  // rejects it — wire the two-plane upload before producing it. kMono8 (single
-  // R8 texture, expanded in-shader) and kBGRA (RGBA8 texture, swizzled
-  // in-shader) upload natively, skipping the CPU repack RGB/Mono used to need.
+  // uniform contract in shaders/yuv_to_rgb.frag. kNV12 uploads natively as a
+  // two-plane texture (R8 Y + RG8 interleaved UV) on the hardware-decode path,
+  // with a CPU deinterleave-to-YUV420P fallback when the backend lacks RG8.
+  // kMono8 (single R8 texture, expanded in-shader) and kBGRA (RGBA8 texture,
+  // swizzled in-shader) upload natively, skipping the CPU repack RGB/Mono need.
   enum class TexturePathFormat : int32_t {
     kYUV420P = 0,
     kNV12 = 1,
@@ -139,6 +142,16 @@ class MediaViewerWidget : public QRhiWidget {
     float near_m = 0.0f;
     float far_m = 1.0f;
     int32_t colormap = 0;
+    // YUV→RGB colorimetry (kYUV420P / kNV12 paths) -> selects the shader color
+    // matrix via buildYuvMatrix(); ignored by RGB/mono/depth.
+    YuvColorSpace color_space = YuvColorSpace::kBt709;
+    YuvColorRange color_range = YuvColorRange::kFull;
+    // Cached YUV→RGB matrix for the above (rebuilt only when a frame's colorimetry
+    // changes, in uploadDecodedFrameToTexture) so the per-frame uniform upload does
+    // not recompute it on the ~60 Hz render path. Default = legacy full-range BT.709.
+    std::array<float, 16> color_matrix = buildYuvMatrix(YuvColorSpace::kBt709, YuvColorRange::kFull);
+    // Display magnification filter. A change rebuilds the SRB to swap the sampler.
+    MagFilter mag_filter = MagFilter::kLinear;
   };
 
   struct OverlayPipeline {
@@ -170,6 +183,14 @@ class MediaViewerWidget : public QRhiWidget {
   void applyGpuRectifyCapability();
   void updateTextureLayerUniform(
       TextureLayerResources& layer, const QMatrix4x4& view, QRhiResourceUpdateBatch* updates) const;
+  // Pick the y-plane and chroma/LUT samplers for a layer's SRB: depth always
+  // samples its R32F y-plane NEAREST (never blend the no-data sentinel) with a
+  // LINEAR LUT; every other format uses the layer's MagFilter for both planes.
+  void layerSamplers(const TextureLayerResources& layer, QRhiSampler*& y_sampler, QRhiSampler*& uv_sampler) const;
+  // Destroy + recreate a layer's SRB against its current textures and samplers
+  // (binds the real remap LUT when present, else the placeholder). Used by every
+  // upload branch after a (re)create; keeps the bind list in exactly one place.
+  void rebuildLayerSrb(TextureLayerResources& layer);
   void destroyOverlayPipeline(OverlayPipeline& overlay);
   bool createOverlayVbo(OverlayPipeline& overlay, size_t initial_capacity);
   bool createUniformOverlaySrb(OverlayPipeline& overlay);
@@ -183,6 +204,10 @@ class MediaViewerWidget : public QRhiWidget {
   QRhiGraphicsPipeline* pipeline_ = nullptr;
   QRhiGraphicsPipeline* composite_pipeline_ = nullptr;
   QRhiSampler* sampler_ = nullptr;
+  // NEAREST/ClampToEdge sampler used when a layer requests MagFilter::kNearest
+  // (crisp "pixelated" magnification, e.g. for pixel inspection). Distinct from
+  // remap_sampler_, which is nearest for a different reason (exact LUT lookup).
+  QRhiSampler* mag_nearest_sampler_ = nullptr;
   // NEAREST sampler for the rectification LUT: every output pixel must read its
   // exact precomputed source coord (LINEAR would interpolate across the
   // out-of-bounds sentinel and smear the border).
