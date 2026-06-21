@@ -19,11 +19,13 @@
 #include <QScopedValueRollback>
 #include <QSettings>
 #include <QSplitter>
+#include <QTimer>
 #include <QToolButton>
 #include <QTreeWidgetItem>
 #include <QWidgetAction>
 #include <algorithm>
 #include <array>
+#include <optional>
 
 #include "pj_runtime/CatalogModel.h"
 #include "pj_widgets/CurveTreeView.h"
@@ -37,6 +39,12 @@ namespace PJ {
 namespace {
 
 constexpr auto kPreserveTopicNameKey = "CurveListPanel/show_topics";
+constexpr auto kShowValuesKey = "CurveListPanel/show_values";
+
+// Value-column refresh cap. Playback drives tracker updates up to ~60 Hz; 10 Hz
+// (100 ms) is plenty for reading numbers and keeps the per-tick scalar reads off
+// the hot path.
+constexpr int kValueRefreshIntervalMs = 100;
 
 CurveTreeView::CurvePath treePathFromCatalogItem(const CatalogItem& item) {
   const auto* scalar = asScalarField(item);
@@ -48,6 +56,9 @@ CurveTreeView::CurvePath treePathFromCatalogItem(const CatalogItem& item) {
       .topic = item.topic_name,
       .field = scalar != nullptr ? scalar->field_name : QString{},
       .selectable = scalar != nullptr,
+      // String fields show their value but can't be plotted, so they aren't
+      // draggable for now (shown read-only in the list).
+      .draggable = !(scalar != nullptr && scalar->is_string),
       .is_image_topic = isImageFamilyObjectType(object_type),
       .is_3d_object_topic = is3dSceneObjectType(object_type),
   };
@@ -109,6 +120,12 @@ CurveListPanel::CurveListPanel(QWidget* parent) : QWidget(parent), ui_(new Ui::C
   auto* show_values_action = new QWidgetAction(datasets_menu);
   show_values_action->setDefaultWidget(show_values_check_);
   datasets_menu->addAction(show_values_action);
+  // Seed from QSettings before wiring the signal so the initial state doesn't
+  // write the key back (parity with Preserve Topic Name below).
+  {
+    QSettings show_values_settings;
+    show_values_check_->setChecked(show_values_settings.value(QLatin1String(kShowValuesKey), false).toBool());
+  }
   connect(show_values_check_, &QCheckBox::toggled, this, &CurveListPanel::onShowValuesToggled);
 
   preserve_topic_name_check_ = new QCheckBox(tr("Preserve Topic Name"), datasets_menu);
@@ -201,8 +218,9 @@ CurveListPanel::CurveListPanel(QWidget* parent) : QWidget(parent), ui_(new Ui::C
     custom_menu->popup(anchor);
   });
 
-  tree_view_->setValuesColumnHidden(true);
-  custom_view_->setValuesColumnHidden(true);
+  const bool show_values = show_values_check_->isChecked();
+  tree_view_->setValuesColumnHidden(!show_values);
+  custom_view_->setValuesColumnHidden(!show_values);
 
   auto drag_selection_provider = [this]() { return selectedCurveNamesForDrag(); };
   tree_view_->setDragSelectionProvider(drag_selection_provider);
@@ -210,6 +228,23 @@ CurveListPanel::CurveListPanel(QWidget* parent) : QWidget(parent), ui_(new Ui::C
 
   tree_view_->setContextMenuPolicy(Qt::CustomContextMenu);
   connect(tree_view_, &QWidget::customContextMenuRequested, this, &CurveListPanel::onTreeContextMenu);
+
+  // 10 Hz throttle for the value column (see refreshValues). The timeout is the
+  // trailing edge: if a tracker update arrived during the window, fill once more
+  // and re-arm so a continuous playback stream settles into a steady 10 Hz.
+  value_throttle_timer_ = new QTimer(this);
+  value_throttle_timer_->setSingleShot(true);
+  value_throttle_timer_->setInterval(kValueRefreshIntervalMs);
+  connect(value_throttle_timer_, &QTimer::timeout, this, [this]() {
+    if (!value_refresh_pending_) {
+      return;  // no update during the window — let the timer rest
+    }
+    value_refresh_pending_ = false;
+    if (valuesColumnActive()) {
+      fillValuesNow();
+    }
+    value_throttle_timer_->start();  // keep the cadence while updates keep arriving
+  });
 }
 
 CurveListPanel::~CurveListPanel() {
@@ -233,8 +268,45 @@ void CurveListPanel::setCatalog(CatalogModel* catalog) {
   connect(catalog_, &CatalogModel::cleared, this, &CurveListPanel::onCatalogCleared);
 }
 
-void CurveListPanel::refreshValues(double /*tracker_time*/) {
-  // TODO: populate the second column from CatalogModel once it serves values.
+void CurveListPanel::refreshValues(double tracker_time) {
+  last_tracker_time_ = tracker_time;  // remembered for non-tracker refreshes (Show Values toggle)
+  if (!valuesColumnActive()) {
+    return;  // nothing shown — skip even the throttle bookkeeping
+  }
+  if (value_throttle_timer_->isActive()) {
+    value_refresh_pending_ = true;  // coalesce; the trailing fill will use last_tracker_time_
+    return;
+  }
+  fillValuesNow();                 // leading edge: first update lands immediately
+  value_throttle_timer_->start();  // then at most one fill per window
+}
+
+bool CurveListPanel::valuesColumnActive() const {
+  return catalog_ != nullptr && !(tree_view_->valuesColumnHidden() && custom_view_->valuesColumnHidden());
+}
+
+void CurveListPanel::fillValuesNow() {
+  QSettings settings;
+  const int precision = settings.value(QStringLiteral("Preferences::precision"), 3).toInt();
+  const double tracker_time = last_tracker_time_;
+  auto provider = [this, tracker_time, precision](const QString& key) -> QString {
+    // String fields show their text value at the cursor (zero-order hold), "-"
+    // when no sample exists yet — read on their own seam since they aren't numeric.
+    // MUST be checked before the numeric path: isScalarKey is true for strings
+    // too, so reversing this order would render every string field as "-".
+    if (catalog_->isStringKey(key)) {
+      return catalog_->stringValueAt(key, tracker_time).value_or(QStringLiteral("-"));
+    }
+    const std::optional<double> value = catalog_->scalarValueAt(key, tracker_time);
+    if (value.has_value()) {
+      return formatScalarForColumn(*value, precision);
+    }
+    // No sample at or before the cursor: show "-" for a numeric scalar (PJ3
+    // parity) and leave non-scalar rows (object topics) blank.
+    return catalog_->isScalarKey(key) ? QStringLiteral("-") : QString();
+  };
+  tree_view_->refreshVisibleValues(provider);
+  custom_view_->refreshVisibleValues(provider);
 }
 
 QDomElement CurveListPanel::saveListState(QDomDocument& doc) const {
@@ -308,8 +380,17 @@ void CurveListPanel::onCustomFilterChanged(const QString& text) {
 }
 
 void CurveListPanel::onShowValuesToggled(bool show) {
+  if (!applying_state_) {
+    QSettings settings;
+    settings.setValue(QLatin1String(kShowValuesKey), show);
+  }
   tree_view_->setValuesColumnHidden(!show);
   custom_view_->setValuesColumnHidden(!show);
+  if (show) {
+    // Fill the freshly-shown column at the current cursor instead of waiting for
+    // the next playback tick.
+    refreshValues(last_tracker_time_);
+  }
 }
 
 void CurveListPanel::onPreserveTopicNameToggled(bool checked) {
@@ -367,6 +448,10 @@ void CurveListPanel::onTreeContextMenu(const QPoint& pos) {
 
 void CurveListPanel::onCatalogItemsAdded(const std::vector<CatalogItem>& items) {
   addCatalogItems(tree_view_, items);
+  // Fill the Value cells of the just-added rows at the current cursor — otherwise
+  // a topic/field that surfaces after the initial load (live streaming, a derived
+  // series materializing) would show a blank Value until the next tracker tick.
+  refreshValues(last_tracker_time_);
 }
 
 void CurveListPanel::onCatalogItemsRemoved(const QStringList& /*keys*/) {

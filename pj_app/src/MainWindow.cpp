@@ -32,6 +32,7 @@
 #include <QSet>
 #include <QSettings>
 #include <QShortcut>
+#include <QShowEvent>
 #include <QSignalBlocker>
 #include <QSizePolicy>
 #include <QSplitter>
@@ -756,9 +757,7 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
   auto& playback = session_->playbackEngine();
   playback.setRange(displayRange(0.0, 10.0));
   ui_->timelineWidget->setPlaybackEngine(&playback);
-  connect(&playback, &PlaybackEngine::currentTimeChanged, this, [this](double time) {
-    forEachDock([time](DockWidget* dock) { dock->onTrackerTime(time); });
-  });
+  connect(&playback, &PlaybackEngine::currentTimeChanged, this, [this](double time) { broadcastTrackerTime(time); });
   // Frame change (the "Use time offset" toggle today, any future re-base): the
   // blue reference line stores a frame-invariant instant, so re-project it
   // through the new offset and re-push — keeping it pinned to its instant rather
@@ -1276,6 +1275,12 @@ void MainWindow::onFileLoaded(
   // signal fired, so re-run the coherence pass here to reset any 2D viewer still
   // bound to an evicted topic. Idempotent for a first/additive load.
   syncWidgetsToCatalog();
+  // Seed every data widget AND the curve-list Value column with the just-set
+  // playhead. seedPlaybackFromSession positions the cursor, but currentTimeChanged
+  // only fires on an actual change — so a fresh load that lands the cursor where it
+  // already was (e.g. 0) would otherwise leave the value column blank until the
+  // first scrub. Mirrors PJ3's update2ndColumnValues-after-load.
+  broadcastTrackerTime(toAxisDouble(session_->playbackEngine().currentTime()));
   ui_->leftPanel->setReloadEnabled(true);
 }
 
@@ -1890,6 +1895,11 @@ void MainWindow::forEachDock(const std::function<void(DockWidget*)>& operation) 
   });
 }
 
+void MainWindow::broadcastTrackerTime(double display_seconds) {
+  forEachDock([display_seconds](DockWidget* dock) { dock->onTrackerTime(display_seconds); });
+  ui_->curveListPanel->refreshValues(display_seconds);
+}
+
 void MainWindow::forEachSceneDock(const std::function<void(SceneDockWidget*)>& operation) {
   forEachDock([&operation](DockWidget* dock) {
     if (dock->objectWidget() == nullptr) {
@@ -1984,7 +1994,35 @@ void MainWindow::closeEvent(QCloseEvent* event) {
   }
   QSettings settings;
   settings.setValue(QStringLiteral("MainWindow.buttonLink"), button_link_->isChecked());
+  // Remember the left-panel width (the whole splitter layout) so the next launch
+  // restores it instead of falling back to the narrow .ui default.
+  settings.setValue(QStringLiteral("MainWindow.mainSplitterState"), ui_->mainSplitter->saveState());
   QMainWindow::closeEvent(event);
+}
+
+void MainWindow::showEvent(QShowEvent* event) {
+  QMainWindow::showEvent(event);
+  // Restore the remembered left-panel width once, after the splitter has real
+  // geometry. Done here rather than in the constructor so the saved sizes aren't
+  // overwritten by the first layout pass; an explicit --layout load runs later
+  // and still wins (it re-applies splitter sizes through restoreChromeState).
+  if (left_splitter_restored_) {
+    return;
+  }
+  left_splitter_restored_ = true;
+  const QByteArray state = QSettings().value(QStringLiteral("MainWindow.mainSplitterState")).toByteArray();
+  if (!state.isEmpty() && ui_->mainSplitter->restoreState(state)) {
+    return;  // remembered width restored
+  }
+  // First-ever launch (nothing remembered) — or a stale/mismatched saved blob
+  // that restoreState rejected: open the left panel at a comfortable default
+  // rather than letting the splitter collapse it toward its 280 px minimum.
+  // Clamped by the leftColumn's 280..600 px size constraints.
+  constexpr int kDefaultLeftPanelWidth = 400;
+  const int total = ui_->mainSplitter->width();
+  if (total > kDefaultLeftPanelWidth) {
+    ui_->mainSplitter->setSizes({kDefaultLeftPanelWidth, total - kDefaultLeftPanelWidth});
+  }
 }
 
 void MainWindow::onLoadLayout() {
@@ -2363,8 +2401,7 @@ void MainWindow::beginProgressiveLayoutRestore(QDomDocument doc, const QString& 
       });
       pending_binder_->collect(doc, plots_by_state_id);
       restoreChromeAndPanels(doc, path);
-      const double now = toAxisDouble(session_->playbackEngine().currentTime());
-      forEachDock([now](DockWidget* dock) { dock->onTrackerTime(now); });
+      broadcastTrackerTime(toAxisDouble(session_->playbackEngine().currentTime()));
       applied = true;
     }
   }
@@ -2486,8 +2523,7 @@ void MainWindow::onProgressiveLayoutDrained() {
   }
 
   retryPendingSceneRestores({});
-  const double now = toAxisDouble(session_->playbackEngine().currentTime());
-  forEachDock([now](DockWidget* dock) { dock->onTrackerTime(now); });
+  broadcastTrackerTime(toAxisDouble(session_->playbackEngine().currentTime()));
   const QStringList unresolved_scenes = unresolvedPendingSceneRestores();
   if (!unresolved_scenes.isEmpty()) {
     emitDiagnostic(
@@ -2768,8 +2804,7 @@ MainWindow::RestoreResult MainWindow::restoreWorkspaceState(QDomDocument& doc, M
   // until the next scrub — scene docks then render blank (TF lookups / image decode
   // key off the tracker instant). Same seeding the drag-drop / click-create paths do
   // (MainWindow.cpp:480, makeSeededEmptyObjectDock); here it covers layout load + undo/redo.
-  const double now = toAxisDouble(session_->playbackEngine().currentTime());
-  forEachDock([now](DockWidget* dock) { dock->onTrackerTime(now); });
+  broadcastTrackerTime(toAxisDouble(session_->playbackEngine().currentTime()));
   return RestoreResult::kApplied;
 }
 

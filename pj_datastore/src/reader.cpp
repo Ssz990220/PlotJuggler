@@ -188,6 +188,53 @@ PJ::Expected<std::optional<MaterializedSample>> DataReader::latestAt(const Query
   return std::optional<MaterializedSample>{MaterializedSample{row->timestamp, std::move(values)}};
 }
 
+PJ::Expected<std::optional<double>> DataReader::latestNumericAt(
+    const QueryPoint& point, std::size_t column_index) const {
+  auto lock = engine_.lockEngine();
+  const TopicStorage* storage = engine_.getTopicStorage(point.topic_id);
+  if (storage == nullptr) {
+    return PJ::unexpected(fmt::format("Topic {} not found", point.topic_id));
+  }
+  const std::optional<SampleRow> row = PJ::latestAt(storage->sealedChunks(), point.t, storage->retentionFloor());
+  if (!row.has_value()) {
+    return std::optional<double>{};
+  }
+  // Guard the column index (a chunk committed before a mid-stream column add has
+  // fewer columns) and null cells — readNumericAsDouble reads a null as 0.0, so
+  // an explicit isNull check is what lets the Value column show "-" rather than a
+  // fabricated "0.000" for a sparsely-populated field.
+  if (column_index >= row->chunk->columns.size() || row->chunk->isNull(column_index, row->row_index)) {
+    return std::optional<double>{};
+  }
+  return std::optional<double>{row->chunk->readNumericAsDouble(column_index, row->row_index)};
+}
+
+PJ::Expected<std::optional<std::string>> DataReader::latestStringAt(
+    const QueryPoint& point, std::size_t column_index) const {
+  auto lock = engine_.lockEngine();
+  const TopicStorage* storage = engine_.getTopicStorage(point.topic_id);
+  if (storage == nullptr) {
+    return PJ::unexpected(fmt::format("Topic {} not found", point.topic_id));
+  }
+  const std::optional<SampleRow> row = PJ::latestAt(storage->sealedChunks(), point.t, storage->retentionFloor());
+  if (!row.has_value()) {
+    return std::optional<std::string>{};
+  }
+  // Guard the column index (chunks before a mid-stream column add have fewer
+  // columns), the string-ness of the column (readString is UB on a numeric
+  // column), and nulls — then copy the value out WHILE the lock is held, since
+  // readString views chunk-internal dictionary memory that must not escape.
+  if (column_index >= row->chunk->columns.size()) {
+    return std::optional<std::string>{};
+  }
+  const auto& descriptor = row->chunk->columns[column_index].descriptor;
+  if (descriptor == nullptr || descriptor->logical_type != PrimitiveType::kString ||
+      row->chunk->isNull(column_index, row->row_index)) {
+    return std::optional<std::string>{};
+  }
+  return std::optional<std::string>{std::string(row->chunk->readString(column_index, row->row_index))};
+}
+
 Expected<SeriesReader> DataReader::series(TopicId topic_id, std::size_t column_index) const {
   auto lock = engine_.lockEngine();
   const TopicStorage* storage = engine_.getTopicStorage(topic_id);

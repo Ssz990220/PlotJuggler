@@ -25,6 +25,10 @@ class CurveTreeView : public QTreeWidget {
     QString topic;
     QString field;
     bool selectable = true;
+    // A value-only leaf: shown with its Value cell but NOT draggable and excluded
+    // from the drag payload (string fields today — they can't be plotted). Only
+    // consulted for selectable curve leaves; object topics ignore it.
+    bool draggable = true;
     bool is_image_topic = false;
     bool is_3d_object_topic = false;
   };
@@ -77,6 +81,21 @@ class CurveTreeView : public QTreeWidget {
   bool valuesColumnHidden() const {
     return isColumnHidden(1);
   }
+
+  // Install/refresh the value provider and repaint column 1 ("Value") for the
+  // on-screen scalar leaves. Rows whose row rect falls outside the viewport are
+  // skipped, so a huge catalog formats only the visible handful. No-op when the
+  // value column is hidden. `value_provider` receives each visible leaf's catalog
+  // key (see catalogKeyForItem) and returns the preformatted cell text (empty
+  // string for rows with no value / non-scalar rows). Non-leaf group rows are
+  // never touched. The provider is retained, so the view re-applies it on its own
+  // whenever the visible set changes (expand/collapse/scroll/resize) — the caller
+  // only re-invokes this when the underlying values change (e.g. tracker moved).
+  // Lifetime: re-application is deferred (QTimer::singleShot), so anything the
+  // provider captures must stay valid until a new provider is installed, the
+  // value column is hidden, or the view is destroyed.
+  void refreshVisibleValues(const std::function<QString(const QString& key)>& value_provider);
+
   void setDragSelectionProvider(DragSelectionProvider provider);
 
  protected:
@@ -97,6 +116,16 @@ class CurveTreeView : public QTreeWidget {
   // left over after the Value column. Used by the resize event handler
   // and the value-column show/hide toggle.
   void syncNameColumnWidth();
+  // Repaint visible value cells now, using the retained provider (no-op if none
+  // / column hidden). scheduleValueRefresh() coalesces this onto the next event
+  // loop turn — used after expand/collapse/scroll/resize so the freshly-laid-out
+  // rows have valid rects before we read them.
+  void applyVisibleValues();
+  // Recursive worker for applyVisibleValues: writes the value cell for `item` if
+  // it's an on-screen scalar leaf, else recurses into its children. A member
+  // (not a per-call std::function) so the ≤10 Hz refresh allocates nothing.
+  void applyVisibleValuesToSubtree(QTreeWidgetItem* item, int viewport_height);
+  void scheduleValueRefresh();
   void sortTree();
   void setDescendantsExpanded(QTreeWidgetItem* item, bool expanded);
   std::vector<QString> selectedCurveNamesForDrag() const;
@@ -113,6 +142,19 @@ class CurveTreeView : public QTreeWidget {
   // cause an infinite ping-pong between Name and Value.
   bool adjusting_columns_ = false;
   ViewMode view_mode_ = ViewMode::kHierarchical;
+  // Retained value-column provider (see refreshVisibleValues). Re-applied on
+  // visibility changes so expanding/scrolling fills the newly-revealed rows.
+  std::function<QString(const QString&)> value_provider_;
+  // Coalesces the deferred re-apply so a burst of expand/scroll events schedules
+  // a single refresh on the next event loop turn.
+  bool value_refresh_scheduled_ = false;
 };
+
+// Format a scalar for the curve-list "Value" column, PlotJuggler-3 style: fixed
+// `precision` decimals, then trailing zeros (and a bare trailing '.') overwritten
+// with spaces with one space appended — so a right-aligned monospace column keeps
+// every decimal point in the same place (e.g. 1.2 -> "1.2   ", 5 -> "5     ",
+// -0.001 -> "-0.001 "). Non-finite values (NaN/inf) render as "-".
+[[nodiscard]] QString formatScalarForColumn(double value, int precision);
 
 }  // namespace PJ

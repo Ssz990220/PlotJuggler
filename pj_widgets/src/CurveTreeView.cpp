@@ -6,14 +6,18 @@
 #include <QApplication>
 #include <QDataStream>
 #include <QDrag>
+#include <QFontDatabase>
 #include <QHeaderView>
 #include <QIcon>
 #include <QMimeData>
 #include <QMouseEvent>
 #include <QPainter>
+#include <QScrollBar>
 #include <QStyle>
 #include <QStyledItemDelegate>
+#include <QTimer>
 #include <algorithm>
+#include <cmath>
 #include <functional>
 #include <utility>
 
@@ -30,6 +34,9 @@ constexpr int kCatalogItemRole = Qt::UserRole + 3;
 constexpr int kImageTopicRole = Qt::UserRole + 4;
 constexpr int k3dObjectTopicRole = Qt::UserRole + 5;
 constexpr int kSortKeyRole = Qt::UserRole + 6;
+// Marks a leaf that shows a Value cell but must not be dragged or enter the drag
+// payload (string fields — not plottable). See CurvePath::draggable.
+constexpr int kValueOnlyRole = Qt::UserRole + 7;
 
 QStringList splitPath(const QString& name) {
   return name.split('/', Qt::SkipEmptyParts);
@@ -46,6 +53,20 @@ QString normalizedPathSegment(QString path) {
 void setItemName(QTreeWidgetItem* item, const QString& name) {
   item->setText(kNameColumn, name);
   item->setData(kNameColumn, kSortKeyRole, name.toCaseFolded());
+}
+
+// The Value column renders monospace + right-aligned so the space-padded,
+// fixed-precision numbers (see formatScalarForColumn) keep their decimal points
+// in the same place from row to row. Applied to every curve leaf at creation.
+// Keeps `base_font`'s size/weight (the tree's font) and only swaps to a
+// monospace family — a raw FixedFont renders noticeably larger than the Name
+// column.
+void styleValueCell(QTreeWidgetItem* item, const QFont& base_font) {
+  QFont mono = base_font;
+  mono.setFamily(QFontDatabase::systemFont(QFontDatabase::FixedFont).family());
+  mono.setStyleHint(QFont::Monospace);
+  item->setFont(kValueColumn, mono);
+  item->setTextAlignment(kValueColumn, Qt::AlignRight | Qt::AlignVCenter);
 }
 
 QString sortKeyForItem(const QTreeWidgetItem& item) {
@@ -136,6 +157,23 @@ bool isObjectTopicItem(const QTreeWidgetItem* item) {
   return item != nullptr && !item->data(kNameColumn, kObjectTopicRole).toString().isEmpty();
 }
 
+// A value-only leaf (string field): has a Value cell but is excluded from drags.
+bool isValueOnlyItem(const QTreeWidgetItem* item) {
+  return item != nullptr && item->data(kNameColumn, kValueOnlyRole).toBool();
+}
+
+// Flags for a curve leaf. A draggable leaf is a normal drag source; a value-only
+// leaf (string field) stays selectable/highlightable but is never dragged and is
+// tagged so the selection collectors leave it out of the drag payload.
+void applyLeafSelectability(QTreeWidgetItem* item, bool draggable) {
+  if (draggable) {
+    item->setFlags(item->flags() | Qt::ItemIsDragEnabled | Qt::ItemIsSelectable);
+    return;
+  }
+  item->setData(kNameColumn, kValueOnlyRole, true);
+  item->setFlags((item->flags() | Qt::ItemIsSelectable) & ~Qt::ItemIsDragEnabled);
+}
+
 QString catalogKeyForItem(const QTreeWidgetItem* item) {
   if (item == nullptr) {
     return {};
@@ -185,6 +223,11 @@ CurveTreeView::CurveTreeView(QWidget* parent) : QTreeWidget(parent) {
   setColumnCount(2);
   setHeaderLabels({tr("Name"), tr("Value")});
   setItemDelegate(new CurveTreeItemDelegate(this));
+  // Curve names share long common prefixes (e.g. /robot/state_estimator/...),
+  // so eliding the tail would hide exactly the part that tells two rows apart.
+  // Elide the prefix instead: "…state_estimator/contact_lf". Propagates into the
+  // delegate, which elides icon rows via opt.textElideMode.
+  setTextElideMode(Qt::ElideLeft);
   // Splitter-style divider: both sections Interactive (Stretch sections
   // refuse to yield space, so the divider next to a Stretch section is
   // not draggable). When the user drags the divider Qt resizes Name
@@ -245,6 +288,13 @@ CurveTreeView::CurveTreeView(QWidget* parent) : QTreeWidget(parent) {
     }
     setDescendantsExpanded(item, expanded);
   });
+
+  // The value column is filled per-tracker-tick over the *visible* rows only;
+  // expanding, collapsing, or scrolling changes which rows are visible, so
+  // re-apply the retained provider (deferred) to fill the newly-exposed cells.
+  connect(this, &QTreeWidget::itemExpanded, this, [this](QTreeWidgetItem*) { scheduleValueRefresh(); });
+  connect(this, &QTreeWidget::itemCollapsed, this, [this](QTreeWidgetItem*) { scheduleValueRefresh(); });
+  connect(verticalScrollBar(), &QScrollBar::valueChanged, this, [this](int) { scheduleValueRefresh(); });
 }
 
 QString CurveTreeView::catalogItemsMimeType() {
@@ -336,6 +386,7 @@ void CurveTreeView::addCurve(const QString& name, SortMode sort_mode) {
   }
   auto* item = new CurveTreeItem(parent);
   setItemName(item, leaf_name);
+  styleValueCell(item, font());
   item->setData(kNameColumn, Qt::UserRole, name);
   item->setData(kNameColumn, kSearchRole, name);
   item->setFlags(item->flags() | Qt::ItemIsDragEnabled | Qt::ItemIsSelectable);
@@ -408,9 +459,10 @@ void CurveTreeView::addCatalogItem(const CurvePath& path, SortMode sort_mode) {
       QTreeWidgetItem* parent = ensureGroupSegments(segments);
       item = new CurveTreeItem(parent);
       setItemName(item, leaf_name);
+      styleValueCell(item, font());
       item->setData(kNameColumn, Qt::UserRole, path.key);
       item->setData(kNameColumn, kCatalogItemRole, path.key);
-      item->setFlags(item->flags() | Qt::ItemIsDragEnabled | Qt::ItemIsSelectable);
+      applyLeafSelectability(item, path.draggable);
     } else {
       // Object topic: terminal at dataset ▸ topic.
       item = ensureGroupSegments(segments);
@@ -429,9 +481,10 @@ void CurveTreeView::addCatalogItem(const CurvePath& path, SortMode sort_mode) {
     }
     item = new CurveTreeItem(parent);
     setItemName(item, leaf_name);
+    styleValueCell(item, font());
     item->setData(kNameColumn, Qt::UserRole, path.key);
     item->setData(kNameColumn, kCatalogItemRole, path.key);
-    item->setFlags(item->flags() | Qt::ItemIsDragEnabled | Qt::ItemIsSelectable);
+    applyLeafSelectability(item, path.draggable);
   } else {
     item = ensureGroup(tree_path);
     item->setData(kNameColumn, kObjectTopicRole, path.key);
@@ -499,6 +552,9 @@ void CurveTreeView::applyFilter(const QString& filter) {
 std::vector<QString> CurveTreeView::selectedCurveNames() const {
   std::vector<QString> names;
   for (auto* item : selectedItems()) {
+    if (isValueOnlyItem(item)) {
+      continue;  // string fields are not draggable curves
+    }
     const QString full = item->data(kNameColumn, Qt::UserRole).toString();
     if (!full.isEmpty()) {
       names.push_back(full);
@@ -512,7 +568,7 @@ std::vector<QString> CurveTreeView::selectedCurveNamesRecursive() const {
   std::vector<QString> names;
   std::function<void(QTreeWidgetItem*)> collect = [&](QTreeWidgetItem* item) {
     const QString full = curveNameForItem(item);
-    if (!full.isEmpty()) {
+    if (!full.isEmpty() && !isValueOnlyItem(item)) {
       names.push_back(full);
     }
     if (isObjectTopicItem(item)) {
@@ -533,7 +589,7 @@ std::vector<QString> CurveTreeView::selectedCatalogKeysRecursive() const {
   std::vector<QString> keys;
   std::function<void(QTreeWidgetItem*)> collect = [&](QTreeWidgetItem* item) {
     const QString key = catalogKeyForItem(item);
-    if (!key.isEmpty()) {
+    if (!key.isEmpty() && !isValueOnlyItem(item)) {
       keys.push_back(key);
     }
     if (isObjectTopicItem(item)) {
@@ -553,11 +609,79 @@ std::vector<QString> CurveTreeView::selectedCatalogKeysRecursive() const {
 void CurveTreeView::setValuesColumnHidden(bool hidden) {
   setColumnHidden(kValueColumn, hidden);
   syncNameColumnWidth();
+  if (!hidden) {
+    scheduleValueRefresh();  // re-show stale cells when the column reappears
+  }
+}
+
+void CurveTreeView::refreshVisibleValues(const std::function<QString(const QString&)>& value_provider) {
+  value_provider_ = value_provider;
+  applyVisibleValues();
+}
+
+void CurveTreeView::applyVisibleValues() {
+  if (isColumnHidden(kValueColumn) || !value_provider_) {
+    return;
+  }
+  // Visit every item but cull each row independently by its rect — only the
+  // on-screen leaves are written, so the expensive part (the per-leaf lookup
+  // inside value_provider_) stays O(visible). The walk itself is O(N) cheap
+  // geometry checks. Matches PlotJuggler 3's curve-list refresh: culling each
+  // row (rather than breaking at the first off-screen row) is what keeps
+  // scrolled-in rows correct in a deeply-nested tree.
+  const int viewport_height = viewport()->height();
+  for (int i = 0; i < topLevelItemCount(); ++i) {
+    applyVisibleValuesToSubtree(topLevelItem(i), viewport_height);
+  }
+}
+
+void CurveTreeView::applyVisibleValuesToSubtree(QTreeWidgetItem* item, int viewport_height) {
+  if (item->childCount() != 0) {
+    for (int i = 0; i < item->childCount(); ++i) {
+      applyVisibleValuesToSubtree(item->child(i), viewport_height);
+    }
+    return;
+  }
+  const QString key = catalogKeyForItem(item);
+  if (key.isEmpty()) {
+    return;  // group placeholder / unkeyed row
+  }
+  const QRect rect = visualItemRect(item);
+  if (rect.isNull() || rect.bottom() < 0 || rect.top() > viewport_height) {
+    return;  // off-screen or collapsed — skip the value lookup entirely
+  }
+  const QString text = value_provider_(key);
+  if (text == item->text(kValueColumn)) {
+    return;  // value unchanged — skip setText so a stable cell emits no
+             // dataChanged / repaint (the bulk of the value column's CPU at 10 Hz)
+  }
+  item->setText(kValueColumn, text);
+  // Full value as a tooltip so a string left-elided in the narrow Value column
+  // (or a long number) stays readable on hover; trimmed of the alignment padding.
+  item->setToolTip(kValueColumn, text.trimmed());
+}
+
+void CurveTreeView::scheduleValueRefresh() {
+  // This coalesces VISIBILITY-driven re-applies (expand/collapse/scroll/resize)
+  // onto the next event-loop turn; the TRACKER-driven refresh rate is capped
+  // separately by the owner (CurveListPanel's 10 Hz throttle). Deferring matters
+  // because when this fires from an itemExpanded / scroll handler the freshly-
+  // revealed rows have not been laid out yet, so reading visualItemRect now would
+  // wrongly cull them.
+  if (value_refresh_scheduled_ || !value_provider_ || isColumnHidden(kValueColumn)) {
+    return;
+  }
+  value_refresh_scheduled_ = true;
+  QTimer::singleShot(0, this, [this]() {
+    value_refresh_scheduled_ = false;
+    applyVisibleValues();
+  });
 }
 
 void CurveTreeView::resizeEvent(QResizeEvent* event) {
   QTreeWidget::resizeEvent(event);
   syncNameColumnWidth();
+  scheduleValueRefresh();  // a taller viewport exposes more rows to fill
 }
 
 void CurveTreeView::syncNameColumnWidth() {
@@ -738,6 +862,29 @@ void CurveTreeView::mouseReleaseEvent(QMouseEvent* event) {
     drag_catalog_keys_.clear();
   }
   QTreeWidget::mouseReleaseEvent(event);
+}
+
+QString formatScalarForColumn(double value, int precision) {
+  if (!std::isfinite(value)) {
+    return QStringLiteral("-");
+  }
+  // Fixed precision keeps a constant fractional width; then overwrite trailing
+  // zeros — and a bare trailing '.' once all decimals are blanked — with spaces.
+  // The single appended space + a right-aligned monospace cell line up every
+  // decimal point across rows (e.g. 1.2 -> "1.2   ", 5 -> "5     ").
+  QString text = QString::number(value, 'f', precision);
+  const int dot = text.indexOf(QLatin1Char('.'));
+  if (dot >= 0) {
+    int idx = text.size() - 1;
+    while (idx > dot && text[idx] == QLatin1Char('0')) {
+      text[idx] = QLatin1Char(' ');
+      --idx;
+    }
+    if (idx == dot) {
+      text[idx] = QLatin1Char(' ');
+    }
+  }
+  return text + QLatin1Char(' ');
 }
 
 }  // namespace PJ

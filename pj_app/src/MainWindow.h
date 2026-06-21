@@ -326,6 +326,11 @@ class MainWindow : public QMainWindow {
   // Applies operation to each dock widget.
   void forEachDock(const std::function<void(DockWidget*)>& operation);
 
+  // Pushes the current tracker time (display-axis seconds) to every data dock and
+  // refreshes the curve-list Value column. The single seam for "the time cursor
+  // moved": playback ticks, seeks, and layout/undo restores all route through here.
+  void broadcastTrackerTime(double display_seconds);
+
   // Applies operation to each 2D/3D scene dock hosted in a DockWidget.
   void forEachSceneDock(const std::function<void(SceneDockWidget*)>& operation);
 
@@ -484,6 +489,11 @@ class MainWindow : public QMainWindow {
   // Persists main-window settings before close.
   void closeEvent(QCloseEvent* event) override;
 
+  // Restores the remembered left-panel splitter width on first show (when the
+  // splitter finally has real geometry). One-shot, guarded by
+  // left_splitter_restored_; a later --layout load still overrides it.
+  void showEvent(QShowEvent* event) override;
+
   // Frameless-window edge resize: catches mouse events on ourselves or
   // any descendant widget, updates the cursor near edges, and starts a
   // system-resize on press.
@@ -575,6 +585,9 @@ class MainWindow : public QMainWindow {
   // True between enableAutoplay() and the first range-driven playback start (the
   // --autoplay one-shot); cleared once playback begins so user control is respected.
   bool autoplay_pending_ = false;
+  // One-shot guard so the remembered left-panel splitter width is restored only on
+  // the first showEvent (later shows must not clobber a user/layout adjustment).
+  bool left_splitter_restored_ = false;
   // Lives inside localToolbarWidget; visibility piggybacks on the
   // right-panel toggle in the tab strip.
   CurveEditor* curve_editor_ = nullptr;

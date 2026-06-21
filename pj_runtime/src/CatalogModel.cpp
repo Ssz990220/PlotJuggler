@@ -25,6 +25,7 @@
 #include "pj_datastore/reader.hpp"
 #include "pj_datastore/topic_storage.hpp"
 #include "pj_runtime/SessionManager.h"
+#include "pj_runtime/Time.h"
 
 namespace PJ {
 namespace {
@@ -284,12 +285,77 @@ std::optional<CatalogItem> CatalogModel::itemDescriptor(const QString& key) cons
   return it->second;
 }
 
+std::optional<double> CatalogModel::scalarValueAt(const QString& key, double display_seconds) const {
+  if (impl_->session == nullptr) {
+    return std::nullopt;
+  }
+  const auto it = impl_->items.find(key);
+  if (it == impl_->items.end()) {
+    return std::nullopt;
+  }
+  const ScalarFieldPayload* scalar = asScalarField(it->second);
+  if (scalar == nullptr || scalar->is_string) {
+    return std::nullopt;  // object topics carry no scalar value; strings → stringValueAt
+  }
+  // Display-axis seconds -> raw ns through this dataset's display offset, then a
+  // null-aware latest-at-or-before point query (zero-order hold) read under the
+  // engine lock. latestNumericAt distinguishes a null cell from a real 0, so a
+  // sparsely-populated field shows "-" rather than a fabricated "0.000".
+  const DisplayOffset offset = impl_->session->displayOffset(it->second.dataset_id);
+  const Timestamp raw_ns = displaySecondsToRaw(DisplaySeconds{display_seconds}, offset);
+  const DataReader reader(impl_->session->dataEngine());
+  const auto value_or =
+      reader.latestNumericAt(QueryPoint{.topic_id = scalar->topic_id, .t = raw_ns}, scalar->column_index);
+  if (!value_or.has_value() || !value_or->has_value()) {
+    return std::nullopt;  // read error, no row at/before the query time, or null cell
+  }
+  return **value_or;
+}
+
+bool CatalogModel::isScalarKey(const QString& key) const {
+  const auto it = impl_->items.find(key);
+  return it != impl_->items.end() && isScalarField(it->second);
+}
+
+bool CatalogModel::isStringKey(const QString& key) const {
+  const auto it = impl_->items.find(key);
+  if (it == impl_->items.end()) {
+    return false;
+  }
+  const ScalarFieldPayload* scalar = asScalarField(it->second);
+  return scalar != nullptr && scalar->is_string;
+}
+
+std::optional<QString> CatalogModel::stringValueAt(const QString& key, double display_seconds) const {
+  if (impl_->session == nullptr) {
+    return std::nullopt;
+  }
+  const auto it = impl_->items.find(key);
+  if (it == impl_->items.end()) {
+    return std::nullopt;
+  }
+  const ScalarFieldPayload* scalar = asScalarField(it->second);
+  if (scalar == nullptr || !scalar->is_string) {
+    return std::nullopt;  // only string fields carry a string value
+  }
+  const DisplayOffset offset = impl_->session->displayOffset(it->second.dataset_id);
+  const Timestamp raw_ns = displaySecondsToRaw(DisplaySeconds{display_seconds}, offset);
+  const DataReader reader(impl_->session->dataEngine());
+  const auto value_or =
+      reader.latestStringAt(QueryPoint{.topic_id = scalar->topic_id, .t = raw_ns}, scalar->column_index);
+  if (!value_or.has_value() || !value_or->has_value()) {
+    return std::nullopt;  // read error, or no row at/before the query time
+  }
+  return QString::fromStdString(**value_or);
+}
+
 std::vector<CurveDescriptor> CatalogModel::curves() const {
   std::vector<CurveDescriptor> curves;
   curves.reserve(impl_->items.size());
   for (const auto& [key, item] : impl_->items) {
     (void)key;
-    if (isScalarField(item)) {
+    // String fields are catalog items but not plottable curves.
+    if (const ScalarFieldPayload* scalar = asScalarField(item); scalar != nullptr && !scalar->is_string) {
       curves.push_back(curveFromItem(item));
     }
   }
@@ -307,7 +373,12 @@ std::vector<CurveDescriptor> CatalogModel::curves() const {
 
 std::optional<CurveDescriptor> CatalogModel::curveDescriptor(const QString& key) const {
   const auto it = impl_->items.find(key);
-  if (it == impl_->items.end() || !isScalarField(it->second)) {
+  if (it == impl_->items.end()) {
+    return std::nullopt;
+  }
+  // String fields are not plottable curves, so they have no CurveDescriptor.
+  const ScalarFieldPayload* scalar = asScalarField(it->second);
+  if (scalar == nullptr || scalar->is_string) {
     return std::nullopt;
   }
   return curveFromItem(it->second);
@@ -510,7 +581,10 @@ void CatalogModel::rebuildNow() {
       }
       for (std::size_t column_index = 0; column_index < columns.size(); ++column_index) {
         const ColumnDescriptor& column = columns[column_index];
-        if (!isCatalogNumeric(column.logical_type)) {
+        // Surface numeric columns (plottable curves) and string columns (shown in
+        // the value column as read-only text). Other non-numeric types stay out.
+        const bool is_string = column.logical_type == PrimitiveType::kString;
+        if (!isCatalogNumeric(column.logical_type) && !is_string) {
           continue;
         }
 
@@ -530,6 +604,7 @@ void CatalogModel::rebuildNow() {
                              .field_path = QString::fromStdString(column.field_path),
                              .topic_id = topic_id,
                              .column_index = column_index,
+                             .is_string = is_string,
                          },
                  });
       }

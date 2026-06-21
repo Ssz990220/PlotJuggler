@@ -371,12 +371,23 @@ void DockWidget::onCatalogItemsDropped(const QStringList& keys) {
     if (object_widget_ != nullptr) {
       return;
     }
-    PlotWidget* plot = ensurePlotWidget();
+    // Materialize the plot lazily — only once a dropped key is actually a
+    // plottable curve. String fields are catalog scalars (isScalarField) but have
+    // no curveDescriptor, so a drop of only string fields must NOT convert a
+    // placeholder into a blank, curveless plot.
+    PlotWidget* plot = nullptr;
     bool changed = false;
     for (const QString& key : keys) {
-      if (catalog_->curveDescriptor(key).has_value()) {
-        changed = plot->addCurve(key) != nullptr || changed;
+      if (!catalog_->curveDescriptor(key).has_value()) {
+        continue;
       }
+      if (plot == nullptr) {
+        plot = ensurePlotWidget();
+      }
+      changed = plot->addCurve(key) != nullptr || changed;
+    }
+    if (plot == nullptr) {
+      return;  // nothing plottable in the drop — leave the placeholder untouched
     }
     if (changed) {
       plot->zoomOut(true);

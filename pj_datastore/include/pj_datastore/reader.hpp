@@ -4,6 +4,7 @@
 
 #include <cstddef>
 #include <optional>
+#include <string>
 #include <vector>
 
 #include "pj_base/expected.hpp"
@@ -44,6 +45,23 @@ class DataReader {
   /// into a MaterializedSample, so no raw TopicChunk* escapes — `value` is the
   /// topic's scalar column (index 0).
   [[nodiscard]] PJ::Expected<std::optional<MaterializedSample>> latestAt(const QueryPoint& point) const;
+
+  /// Latest numeric value at or before query time for column `column_index`
+  /// (zero-order hold), as a double. Unlike latestAt (which materializes the
+  /// whole row via readNumericAsDouble and reads a null cell as 0.0), this
+  /// null-checks: nullopt payload when no row exists at or before `point.t`, the
+  /// column index is out of range, or the latest cell is null — so a missing
+  /// value is distinguishable from a real 0.
+  [[nodiscard]] PJ::Expected<std::optional<double>> latestNumericAt(
+      const QueryPoint& point, std::size_t column_index) const;
+
+  /// Latest string value at or before query time for column `column_index`
+  /// (zero-order hold), copied into a std::string under the engine lock so no
+  /// chunk-internal dictionary memory escapes. nullopt payload when no row exists
+  /// at or before `point.t`, the column index is out of range, the value is null,
+  /// or the column is not a string column.
+  [[nodiscard]] PJ::Expected<std::optional<std::string>> latestStringAt(
+      const QueryPoint& point, std::size_t column_index) const;
 
   /// Create a series view over one numeric/bool topic column. The returned
   /// reader exposes only value-bearing samples; null rows are skipped.

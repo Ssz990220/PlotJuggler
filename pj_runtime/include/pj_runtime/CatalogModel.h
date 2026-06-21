@@ -21,12 +21,15 @@ namespace PJ {
 
 class SessionManager;
 
-// Scalar-field payload: numeric series read from the data engine.
+// Scalar-field payload: a single value-per-timestamp series read from the data
+// engine. Numeric by default; `is_string` marks a string-typed column, which the
+// curve list shows (with its text value) but excludes from plottable curves().
 struct ScalarFieldPayload {
   QString field_name;
   QString field_path;
   TopicId topic_id = 0;
   std::size_t column_index = 0;
+  bool is_string = false;
 };
 
 // Object-topic payload: time-indexed canonical-object stream from the object
@@ -99,6 +102,30 @@ class CatalogModel : public QObject {
   // Fast alternative to items().empty(), which copies and sorts entries.
   [[nodiscard]] bool isEmpty() const noexcept;
   [[nodiscard]] std::optional<CatalogItem> itemDescriptor(const QString& key) const;
+
+  // Latest scalar value at or before display-axis time `display_seconds` for the
+  // curve identified by catalog `key` (zero-order hold). Returns nullopt when the
+  // key is unknown / not a scalar field, or no sample exists at or before that
+  // time. Backs the curve-list "Value" column; reads committed DataEngine storage
+  // under its lock via DataReader::latestAt, converting the display time to raw ns
+  // through the curve's per-dataset display offset.
+  [[nodiscard]] std::optional<double> scalarValueAt(const QString& key, double display_seconds) const;
+
+  // True iff `key` names a scalar-field curve (not an object topic / unknown key).
+  // Cheap lookup with no CatalogItem copy — lets the value column choose "-" (a
+  // scalar with no sample yet) vs blank (non-scalar row) without itemDescriptor().
+  [[nodiscard]] bool isScalarKey(const QString& key) const;
+
+  // True iff `key` names a string-typed scalar field (a subset of isScalarKey).
+  // The value column reads it via stringValueAt instead of scalarValueAt.
+  [[nodiscard]] bool isStringKey(const QString& key) const;
+
+  // Latest string value at or before display-axis time `display_seconds` for the
+  // string curve `key` (zero-order hold). nullopt when the key is unknown / not a
+  // string field, or no sample exists at or before that time. The string sibling
+  // of scalarValueAt; backs the "Value" column for string fields.
+  [[nodiscard]] std::optional<QString> stringValueAt(const QString& key, double display_seconds) const;
+
   std::vector<CurveDescriptor> curves() const;
   [[nodiscard]] std::optional<CurveDescriptor> curveDescriptor(const QString& key) const;
 

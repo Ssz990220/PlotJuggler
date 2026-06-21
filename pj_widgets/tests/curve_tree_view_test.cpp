@@ -6,6 +6,7 @@
 #include <QApplication>
 #include <QMimeData>
 #include <QMouseEvent>
+#include <QScrollBar>
 #include <QTreeWidgetItem>
 #include <QtGlobal>
 #include <memory>
@@ -399,6 +400,161 @@ TEST(CurveTreeViewTest, DragPayloadCarriesEverySelectedObjectTopic) {
   EXPECT_EQ(catalog_keys.size(), 2);
   EXPECT_TRUE(catalog_keys.contains(QStringLiteral("object:a")));
   EXPECT_TRUE(catalog_keys.contains(QStringLiteral("object:b")));
+}
+
+// The "Value" column keeps decimal points vertically aligned in a monospace
+// right-aligned cell by formatting at a fixed precision then blanking trailing
+// zeros (and a bare trailing dot) with spaces. Ported from PJ3.
+TEST(CurveTreeViewTest, FormatScalarForColumnTrimsTrailingZerosToAlignDecimals) {
+  EXPECT_EQ(PJ::formatScalarForColumn(1.2, 3), QStringLiteral("1.2") + QString(3, QChar(' ')));
+  EXPECT_EQ(PJ::formatScalarForColumn(5.0, 3), QStringLiteral("5") + QString(5, QChar(' ')));
+  EXPECT_EQ(PJ::formatScalarForColumn(-0.001, 3), QStringLiteral("-0.001 "));
+  EXPECT_EQ(PJ::formatScalarForColumn(123.456, 3), QStringLiteral("123.456 "));
+}
+
+// refreshVisibleValues fills column 1 only for leaf rows, via the supplied
+// provider keyed on each leaf's catalog key; group (non-leaf) rows stay empty.
+TEST(CurveTreeViewTest, RefreshVisibleValuesFillsScalarLeavesAndSkipsGroups) {
+  PJ::CurveTreeView view;
+  view.addCurve(QStringLiteral("vehicle/speed"));
+  view.addCurve(QStringLiteral("vehicle/rpm"));
+  view.setValuesColumnHidden(false);
+  view.expandAll();
+  view.resize(400, 300);
+  view.show();
+  QApplication::processEvents();
+
+  view.refreshVisibleValues([](const QString& key) { return key.isEmpty() ? QString() : QStringLiteral("42 "); });
+
+  QTreeWidgetItem* group = view.topLevelItem(0);
+  ASSERT_NE(group, nullptr);
+  EXPECT_EQ(group->text(1), QString()) << "group node carries no value";
+  ASSERT_EQ(group->childCount(), 2);
+  EXPECT_EQ(group->child(0)->text(1), QStringLiteral("42 "));
+  EXPECT_EQ(group->child(1)->text(1), QStringLiteral("42 "));
+}
+
+// When the value column is hidden the refresh is a no-op, so cells are not
+// recomputed (and the per-row data reads are skipped entirely).
+TEST(CurveTreeViewTest, RefreshVisibleValuesIsNoOpWhenValueColumnHidden) {
+  PJ::CurveTreeView view;
+  view.addCurve(QStringLiteral("vehicle/speed"));
+  view.setValuesColumnHidden(false);
+  view.expandAll();
+  view.resize(400, 300);
+  view.show();
+  QApplication::processEvents();
+
+  view.refreshVisibleValues([](const QString&) { return QStringLiteral("42 "); });
+  QTreeWidgetItem* leaf = view.topLevelItem(0)->child(0);
+  ASSERT_NE(leaf, nullptr);
+  ASSERT_EQ(leaf->text(1), QStringLiteral("42 "));
+
+  view.setValuesColumnHidden(true);
+  view.refreshVisibleValues([](const QString&) { return QStringLiteral("99 "); });
+  EXPECT_EQ(leaf->text(1), QStringLiteral("42 ")) << "hidden value column must not refresh";
+}
+
+// Regression: expanding a collapsed group must fill the newly-revealed leaves
+// from the retained provider, without the caller re-driving the refresh
+// (previously a freshly-expanded row stayed blank until the tracker moved).
+TEST(CurveTreeViewTest, RefreshVisibleValuesRefillsRowsRevealedByExpansion) {
+  PJ::CurveTreeView view;
+  view.addCurve(QStringLiteral("vehicle/speed"));
+  view.setValuesColumnHidden(false);
+  view.resize(400, 300);
+  view.show();
+  view.collapseAll();
+  QApplication::processEvents();
+
+  view.refreshVisibleValues([](const QString& key) { return key.isEmpty() ? QString() : QStringLiteral("42 "); });
+
+  QTreeWidgetItem* group = view.topLevelItem(0);
+  ASSERT_NE(group, nullptr);
+  ASSERT_EQ(group->childCount(), 1);
+  QTreeWidgetItem* leaf = group->child(0);
+  EXPECT_EQ(leaf->text(1), QString()) << "collapsed leaf is not filled yet";
+
+  view.expandAll();
+  QApplication::processEvents();  // flush the deferred re-apply scheduled by itemExpanded
+  EXPECT_EQ(leaf->text(1), QStringLiteral("42 ")) << "expanding must fill the revealed leaf";
+}
+
+// Regression: scrolling down must fill the rows that scroll into view at the
+// bottom of the viewport. A walk that stops at the first off-screen row (rather
+// than culling each row independently) leaves the freshly-revealed rows blank.
+TEST(CurveTreeViewTest, RefreshVisibleValuesFillsRowsRevealedByScrolling) {
+  PJ::CurveTreeView view;
+  for (int i = 0; i < 60; ++i) {
+    view.addCurve(QStringLiteral("grp/c%1").arg(i, 2, 10, QChar('0')));
+  }
+  view.setValuesColumnHidden(false);
+  view.expandAll();
+  view.resize(300, 120);  // small viewport so the 60 rows overflow and can scroll
+  view.show();
+  QApplication::processEvents();
+
+  view.refreshVisibleValues([](const QString& key) { return key.isEmpty() ? QString() : QStringLiteral("v "); });
+
+  QScrollBar* scroll = view.verticalScrollBar();
+  ASSERT_GT(scroll->maximum(), 0) << "content must overflow for the scroll case to be meaningful";
+  scroll->setValue(scroll->maximum());  // scroll to the bottom
+  QApplication::processEvents();        // flush the deferred refresh from valueChanged
+
+  QTreeWidgetItem* group = view.topLevelItem(0);
+  ASSERT_NE(group, nullptr);
+  QTreeWidgetItem* last_leaf = group->child(group->childCount() - 1);
+  ASSERT_NE(last_leaf, nullptr);
+  EXPECT_EQ(last_leaf->text(1), QStringLiteral("v ")) << "row scrolled into view must be filled";
+}
+
+// A value-only leaf (draggable=false, e.g. a string field) is shown and
+// selectable but is NOT a drag source and never enters the drag payload.
+TEST(CurveTreeViewTest, ValueOnlyLeafIsNotDraggableAndExcludedFromDragPayload) {
+  PJ::CurveTreeView view;
+  view.addCatalogItem(
+      PJ::CurveTreeView::CurvePath{
+          .key = QStringLiteral("curve:num"),
+          .dataset = QStringLiteral("drive.mcap"),
+          .topic = QStringLiteral("/diag"),
+          .field = QStringLiteral("value"),
+          .selectable = true,
+          .draggable = true,
+      });
+  view.addCatalogItem(
+      PJ::CurveTreeView::CurvePath{
+          .key = QStringLiteral("curve:str"),
+          .dataset = QStringLiteral("drive.mcap"),
+          .topic = QStringLiteral("/diag"),
+          .field = QStringLiteral("frame_id"),
+          .selectable = true,
+          .draggable = false,
+      });
+
+  QTreeWidgetItem* dataset = view.topLevelItem(0);
+  ASSERT_NE(dataset, nullptr);
+  QTreeWidgetItem* diag = findChild(dataset, QStringLiteral("diag"));
+  ASSERT_NE(diag, nullptr);
+  QTreeWidgetItem* num = findChild(diag, QStringLiteral("value"));
+  QTreeWidgetItem* str = findChild(diag, QStringLiteral("frame_id"));
+  ASSERT_NE(num, nullptr);
+  ASSERT_NE(str, nullptr);
+
+  // The string field is selectable (highlightable) but not a drag source.
+  EXPECT_TRUE(str->flags().testFlag(Qt::ItemIsSelectable));
+  EXPECT_FALSE(str->flags().testFlag(Qt::ItemIsDragEnabled));
+  EXPECT_TRUE(num->flags().testFlag(Qt::ItemIsDragEnabled));
+
+  // Selecting both yields a drag payload with only the numeric curve.
+  num->setSelected(true);
+  str->setSelected(true);
+  EXPECT_EQ(toStdStrings(view.selectedCurveNamesRecursive()), (std::vector<std::string>{"curve:num"}));
+  EXPECT_EQ(toStdStrings(view.selectedCatalogKeysRecursive()), (std::vector<std::string>{"curve:num"}));
+
+  // A string-only selection produces no draggable payload at all.
+  num->setSelected(false);
+  std::unique_ptr<QMimeData> mime(view.createDragMimeData(Qt::LeftButton));
+  EXPECT_EQ(mime, nullptr) << "a string-only selection must not start a drag";
 }
 
 int main(int argc, char** argv) {

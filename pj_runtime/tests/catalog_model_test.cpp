@@ -9,11 +9,13 @@
 #include <string>
 #include <vector>
 
+#include "pj_base/type_tree.hpp"
 #include "pj_datastore/engine.hpp"
 #include "pj_datastore/object_store.hpp"
 #include "pj_datastore/writer.hpp"
 #include "pj_runtime/CatalogModel.h"
 #include "pj_runtime/SessionManager.h"
+#include "pj_runtime/Time.h"
 
 namespace {
 
@@ -625,6 +627,134 @@ TEST(CatalogModelTest, IngestGateSurfacesEveryNewTopic) {
 
   ASSERT_NE(addScalarTopic(session, *dataset, "/imu/accel/z"), 0U);
   EXPECT_EQ(catalog.items().size(), 3U) << "every new topic must keep surfacing";
+}
+
+// scalarValueAt is the read seam behind the curve-list "Value" column: given a
+// catalog key and a display-axis time, it returns the latest scalar sample at
+// or before that time (zero-order hold) — or nullopt when the curve has no
+// sample at/before that time, or the key is not a scalar curve.
+TEST(CatalogModelTest, ScalarValueAtReturnsLatestSampleAtOrBeforeTime) {
+  PJ::SessionManager session;
+  PJ::CatalogModel catalog(&session);
+
+  auto dataset = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "values.mcap"});
+  ASSERT_TRUE(dataset.has_value()) << dataset.error();
+
+  PJ::DataWriter writer = session.dataEngine().createWriter();
+  auto handle = writer.registerScalarSeries(*dataset, "/imu/accel/x", PJ::NumericType::kFloat64);
+  ASSERT_TRUE(handle.has_value()) << handle.error();
+  writer.appendScalar(*handle, 1'000'000'000, 10.0);
+  writer.appendScalar(*handle, 2'000'000'000, 20.0);
+  writer.appendScalar(*handle, 3'000'000'000, 30.0);
+  const auto committed = session.commitChunks(writer.flushAll());
+  ASSERT_FALSE(committed.empty());
+
+  const auto items = catalog.items();
+  ASSERT_EQ(items.size(), 1U);
+  ASSERT_TRUE(PJ::isScalarField(items[0]));
+  const QString key = items[0].key;
+
+  // Convert raw stamps to the display-axis double the panel passes in, so the
+  // assertions hold regardless of the dataset's display offset.
+  const PJ::DisplayOffset offset = session.displayOffset(*dataset);
+  auto displayOf = [&](PJ::Timestamp raw_ns) { return PJ::toAxisDouble(PJ::rawToDisplaySeconds(raw_ns, offset)); };
+
+  // Between the 2nd and 3rd sample → holds the 2nd sample's value.
+  auto mid = catalog.scalarValueAt(key, displayOf(2'500'000'000));
+  ASSERT_TRUE(mid.has_value());
+  EXPECT_DOUBLE_EQ(*mid, 20.0);
+
+  // Exactly on the last sample → that sample.
+  auto on_sample = catalog.scalarValueAt(key, displayOf(3'000'000'000));
+  ASSERT_TRUE(on_sample.has_value());
+  EXPECT_DOUBLE_EQ(*on_sample, 30.0);
+
+  // After the last sample → still the last sample (zero-order hold forward).
+  auto after = catalog.scalarValueAt(key, displayOf(9'000'000'000));
+  ASSERT_TRUE(after.has_value());
+  EXPECT_DOUBLE_EQ(*after, 30.0);
+
+  // Before the first sample → no value.
+  EXPECT_FALSE(catalog.scalarValueAt(key, displayOf(500'000'000)).has_value());
+
+  // Unknown / non-scalar key → no value.
+  EXPECT_FALSE(catalog.scalarValueAt(QStringLiteral("not-a-key"), displayOf(2'500'000'000)).has_value());
+}
+
+// String-typed fields surface in the catalog as scalar items (so the curve list
+// shows them with their text value) but are excluded from plottable curves();
+// stringValueAt reads the latest string at/before the cursor (zero-order hold).
+TEST(CatalogModelTest, StringFieldIsCatalogedAsScalarReadableButNotPlottable) {
+  PJ::SessionManager session;
+  PJ::CatalogModel catalog(&session);
+
+  auto dataset = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "strings.mcap"});
+  ASSERT_TRUE(dataset.has_value()) << dataset.error();
+
+  // struct diag { float64 value; string frame_id } → col 0 numeric, col 1 string.
+  PJ::DataWriter writer = session.dataEngine().createWriter();
+  auto value = PJ::makePrimitive("value", PJ::PrimitiveType::kFloat64);
+  auto frame_id = PJ::makePrimitive("frame_id", PJ::PrimitiveType::kString);
+  auto schema = PJ::makeStruct("diag", {value, frame_id});
+  auto schema_or = writer.registerSchema("diag", schema);
+  ASSERT_TRUE(schema_or.has_value()) << schema_or.error();
+  PJ::TopicDescriptor td;
+  td.name = "/diagnostics";
+  td.schema_id = *schema_or;
+  auto topic_or = writer.registerTopic(*dataset, td);
+  ASSERT_TRUE(topic_or.has_value()) << topic_or.error();
+  const PJ::TopicId topic = *topic_or;
+
+  const std::vector<std::string_view> frames = {"init", "running", "done"};
+  for (std::size_t i = 0; i < frames.size(); ++i) {
+    ASSERT_TRUE(writer.beginRow(topic, static_cast<PJ::Timestamp>((i + 1) * 1'000'000'000)).has_value());
+    writer.set(topic, 0, static_cast<double>(i) * 10.0);
+    writer.set(topic, 1, frames[i]);
+    ASSERT_TRUE(writer.finishRow(topic).has_value());
+  }
+  const auto committed = session.commitChunks(writer.flushAll());
+  ASSERT_FALSE(committed.empty());
+
+  const auto items = catalog.items();
+  ASSERT_EQ(items.size(), 2U) << "both the numeric and the string field surface as catalog items";
+
+  QString numeric_key;
+  QString string_key;
+  for (const auto& item : items) {
+    const auto* scalar = PJ::asScalarField(item);
+    ASSERT_NE(scalar, nullptr);
+    (scalar->is_string ? string_key : numeric_key) = item.key;
+  }
+  ASSERT_FALSE(numeric_key.isEmpty());
+  ASSERT_FALSE(string_key.isEmpty());
+
+  // Only the numeric field is a plottable curve.
+  EXPECT_EQ(catalog.curves().size(), 1U);
+  EXPECT_TRUE(catalog.curveDescriptor(numeric_key).has_value());
+  EXPECT_FALSE(catalog.curveDescriptor(string_key).has_value());
+
+  // Key classification.
+  EXPECT_TRUE(catalog.isScalarKey(numeric_key));
+  EXPECT_TRUE(catalog.isScalarKey(string_key));
+  EXPECT_FALSE(catalog.isStringKey(numeric_key));
+  EXPECT_TRUE(catalog.isStringKey(string_key));
+
+  const PJ::DisplayOffset offset = session.displayOffset(*dataset);
+  auto displayOf = [&](PJ::Timestamp raw_ns) { return PJ::toAxisDouble(PJ::rawToDisplaySeconds(raw_ns, offset)); };
+
+  // String zero-order hold: between the 2nd and 3rd sample → "running".
+  auto mid = catalog.stringValueAt(string_key, displayOf(2'500'000'000));
+  ASSERT_TRUE(mid.has_value());
+  EXPECT_EQ(*mid, QStringLiteral("running"));
+  // Before the first sample → no string.
+  EXPECT_FALSE(catalog.stringValueAt(string_key, displayOf(500'000'000)).has_value());
+
+  // Numeric and string reads stay on their own seams.
+  auto numeric_value = catalog.scalarValueAt(numeric_key, displayOf(2'500'000'000));
+  ASSERT_TRUE(numeric_value.has_value());
+  EXPECT_DOUBLE_EQ(*numeric_value, 10.0);
+  EXPECT_FALSE(catalog.scalarValueAt(string_key, displayOf(2'500'000'000)).has_value());
+  EXPECT_FALSE(catalog.stringValueAt(numeric_key, displayOf(2'500'000'000)).has_value());
 }
 
 }  // namespace

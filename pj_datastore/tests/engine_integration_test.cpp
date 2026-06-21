@@ -1616,5 +1616,118 @@ TEST(EngineIntegrationTest, CommitChunksUnretiresPreviouslyRetiredTopic) {
   EXPECT_FALSE(engine.getTopicStorage(tid)->sealedChunks().empty());  // has the new data
 }
 
+// latestStringAt is the read primitive behind the curve-list Value column for
+// string-typed fields: latest string at or before the cursor (zero-order hold).
+TEST(EngineIntegrationTest, LatestStringAtReturnsZeroOrderHoldString) {
+  DataEngine engine;
+  // struct header { string frame_id } → frame_id flattens to column 0.
+  auto frame_id = makePrimitive("frame_id", PrimitiveType::kString);
+  auto header = makeStruct("header", {frame_id});
+
+  auto dataset_or = engine.createDataset(DatasetDescriptor{.source_name = "strings", .time_domain_id = 0});
+  ASSERT_TRUE(dataset_or.has_value()) << dataset_or.error();
+
+  DataWriter writer = engine.createWriter();
+  auto schema_or = writer.registerSchema("header", header);
+  ASSERT_TRUE(schema_or.has_value()) << schema_or.error();
+  TopicDescriptor td;
+  td.name = "/diagnostics";
+  td.schema_id = *schema_or;
+  auto topic_or = writer.registerTopic(*dataset_or, td);
+  ASSERT_TRUE(topic_or.has_value()) << topic_or.error();
+  const TopicId topic = *topic_or;
+
+  const std::vector<std::string_view> frames = {"init", "running", "done"};
+  for (std::size_t i = 0; i < frames.size(); ++i) {
+    ASSERT_TRUE(writer.beginRow(topic, static_cast<Timestamp>((i + 1) * 1000)).has_value());
+    writer.set(topic, 0, frames[i]);
+    ASSERT_TRUE(writer.finishRow(topic).has_value());
+  }
+  engine.commitChunks(writer.flushAll());
+
+  DataReader reader = engine.createReader();
+
+  // Between the 2nd and 3rd sample → holds the 2nd value.
+  auto mid = reader.latestStringAt(QueryPoint{.topic_id = topic, .t = 2500}, 0);
+  ASSERT_TRUE(mid.has_value()) << mid.error();
+  ASSERT_TRUE(mid->has_value());
+  EXPECT_EQ(**mid, "running");
+
+  // Exactly on the last sample.
+  auto on_last = reader.latestStringAt(QueryPoint{.topic_id = topic, .t = 3000}, 0);
+  ASSERT_TRUE(on_last.has_value()) << on_last.error();
+  ASSERT_TRUE(on_last->has_value());
+  EXPECT_EQ(**on_last, "done");
+
+  // Before the first sample → no value.
+  auto before = reader.latestStringAt(QueryPoint{.topic_id = topic, .t = 500}, 0);
+  ASSERT_TRUE(before.has_value()) << before.error();
+  EXPECT_FALSE(before->has_value());
+
+  // Out-of-range column index → no value (not a crash).
+  auto oob = reader.latestStringAt(QueryPoint{.topic_id = topic, .t = 2500}, 99);
+  ASSERT_TRUE(oob.has_value()) << oob.error();
+  EXPECT_FALSE(oob->has_value());
+}
+
+// Both null-aware reads must distinguish a NULL latest cell from a real value
+// (so the Value column shows "-" not a fabricated "0.000"), and latestStringAt
+// must refuse a non-string column (readString is UB on numeric storage).
+TEST(EngineIntegrationTest, LatestNumericAndStringAtAreNullAware) {
+  DataEngine engine;
+  // struct rec { float64 value; string label } → col 0 numeric, col 1 string.
+  auto value = makePrimitive("value", PrimitiveType::kFloat64);
+  auto label = makePrimitive("label", PrimitiveType::kString);
+  auto rec = makeStruct("rec", {value, label});
+
+  auto dataset_or = engine.createDataset(DatasetDescriptor{.source_name = "nullable", .time_domain_id = 0});
+  ASSERT_TRUE(dataset_or.has_value()) << dataset_or.error();
+  DataWriter writer = engine.createWriter();
+  auto schema_or = writer.registerSchema("rec", rec);
+  ASSERT_TRUE(schema_or.has_value()) << schema_or.error();
+  TopicDescriptor td;
+  td.name = "/rec";
+  td.schema_id = *schema_or;
+  auto topic_or = writer.registerTopic(*dataset_or, td);
+  ASSERT_TRUE(topic_or.has_value()) << topic_or.error();
+  const TopicId topic = *topic_or;
+
+  // row0 @1000: populated; row1 @2000: both columns null.
+  ASSERT_TRUE(writer.beginRow(topic, 1000).has_value());
+  writer.set(topic, 0, 10.0);
+  writer.set(topic, 1, std::string_view{"a"});
+  ASSERT_TRUE(writer.finishRow(topic).has_value());
+  ASSERT_TRUE(writer.beginRow(topic, 2000).has_value());
+  writer.setNull(topic, 0);
+  writer.setNull(topic, 1);
+  ASSERT_TRUE(writer.finishRow(topic).has_value());
+  engine.commitChunks(writer.flushAll());
+
+  DataReader reader = engine.createReader();
+
+  // Latest row at t=1500 is the populated row0.
+  auto n_mid = reader.latestNumericAt(QueryPoint{.topic_id = topic, .t = 1500}, 0);
+  ASSERT_TRUE(n_mid.has_value()) << n_mid.error();
+  ASSERT_TRUE(n_mid->has_value());
+  EXPECT_DOUBLE_EQ(**n_mid, 10.0);
+  auto s_mid = reader.latestStringAt(QueryPoint{.topic_id = topic, .t = 1500}, 1);
+  ASSERT_TRUE(s_mid.has_value()) << s_mid.error();
+  ASSERT_TRUE(s_mid->has_value());
+  EXPECT_EQ(**s_mid, "a");
+
+  // Latest row at t=2500 is the null row1 → no value (NOT a fabricated 0).
+  auto n_null = reader.latestNumericAt(QueryPoint{.topic_id = topic, .t = 2500}, 0);
+  ASSERT_TRUE(n_null.has_value()) << n_null.error();
+  EXPECT_FALSE(n_null->has_value()) << "null numeric cell must read as no-value, not 0.0";
+  auto s_null = reader.latestStringAt(QueryPoint{.topic_id = topic, .t = 2500}, 1);
+  ASSERT_TRUE(s_null.has_value()) << s_null.error();
+  EXPECT_FALSE(s_null->has_value());
+
+  // latestStringAt on the NUMERIC column → nullopt (kString guard; no readString UB).
+  auto s_on_numeric = reader.latestStringAt(QueryPoint{.topic_id = topic, .t = 1500}, 0);
+  ASSERT_TRUE(s_on_numeric.has_value()) << s_on_numeric.error();
+  EXPECT_FALSE(s_on_numeric->has_value());
+}
+
 }  // namespace
 }  // namespace PJ

@@ -15,6 +15,7 @@
 
 class QAction;
 class QPushButton;
+class QTimer;
 
 namespace Ui {
 class CurveListPanel;
@@ -94,6 +95,13 @@ class CurveListPanel : public QWidget {
   void applyIcons(QString theme);
   std::vector<QString> selectedCurveNamesForDrag() const;
 
+  // True when there is a catalog and at least one tree's Value column is shown —
+  // i.e. there is anything to fill.
+  [[nodiscard]] bool valuesColumnActive() const;
+  // Reads each visible scalar leaf at last_tracker_time_ and writes the formatted
+  // value. The unthrottled body behind refreshValues().
+  void fillValuesNow();
+
   Ui::CurveListPanel* ui_;
   CatalogModel* catalog_ = nullptr;
   CurveTreeView* tree_view_ = nullptr;
@@ -109,10 +117,21 @@ class CurveListPanel : public QWidget {
   QCheckBox* show_values_check_ = nullptr;
   QCheckBox* preserve_topic_name_check_ = nullptr;
 
-  // Set to true around restoreListState so the Preserve-Topic-Name slot
-  // suppresses its QSettings write. Layout-driven changes mutate the UI
-  // but must not mutate the global per-user default.
+  // Set to true around restoreListState so the toggle slots suppress their
+  // QSettings writes. Layout-driven changes mutate the UI but must not mutate
+  // the global per-user defaults.
   bool applying_state_ = false;
+  // Last tracker time pushed via refreshValues(), in display-axis seconds. Reused
+  // when a non-tracker event (Show Values toggle) needs to re-fill the column at
+  // the current cursor instead of waiting for the next playback tick.
+  double last_tracker_time_ = 0.0;
+  // Caps the value-column refresh to ~10 Hz: playback emits tracker updates up to
+  // ~60 Hz, but the column only needs to track the eye. Leading + trailing edge
+  // (immediate first fill, then at most one per window, plus a final catch-up so
+  // the value where playback stops is shown). value_refresh_pending_ marks that a
+  // tracker update arrived mid-window and a trailing fill is owed.
+  QTimer* value_throttle_timer_ = nullptr;
+  bool value_refresh_pending_ = false;
   // Chrome metrics from MainWindow::chromeMetricsChanged.
   ChromeMetrics chrome_metrics_;
 };
