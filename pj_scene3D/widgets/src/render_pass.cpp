@@ -12,7 +12,12 @@ std::optional<Transform> FrameContext::lookup(const std::string& child) const {
   if (!result) {
     return std::nullopt;
   }
-  return *result;
+  // World → render space: shift the translation by the camera-relative origin in
+  // double precision (rotation is unaffected). With render_origin == {0,0,0} this is
+  // a no-op and the transform stays in absolute fixed-frame coordinates.
+  Transform render_space = *result;
+  render_space.t -= render_origin;
+  return render_space;
 }
 
 }  // namespace pj::scene3d

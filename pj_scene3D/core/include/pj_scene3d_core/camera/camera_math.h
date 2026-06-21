@@ -14,6 +14,16 @@ struct Ray {
   glm::vec3 dir{0.0f, 0.0f, -1.0f};
 };
 
+// Express a world position relative to the camera-relative RENDER ORIGIN. The
+// subtraction happens in DOUBLE before the float downcast — that ordering is the
+// whole point: it keeps the small (eye→geometry) delta when `world_pos` and
+// `origin` are both at large world coordinates (~1e6, where float32 has ~0.1 m of
+// resolution), which a `vec3 - vec3` would lose to cancellation. With origin
+// {0,0,0} it is just the float of `world_pos`.
+[[nodiscard]] inline glm::vec3 toRenderSpace(const glm::vec3& world_pos, const glm::dvec3& origin) {
+  return glm::vec3(glm::dvec3(world_pos) - origin);
+}
+
 // How far the visible scene extends from the eye, used to size the far plane and
 // the zoom-out limit: the scene's own diagonal plus the focal's offset from the
 // scene center (so framing stays correct even when the pivot is off to one side).

@@ -411,8 +411,18 @@ class SceneViewWidget : public QOpenGLWidget {
   // ---- TF frame hover-label state ------------------------------------------
   // proj*view from the most recent paintGL, so the hover hit-test (a mouse-move
   // event, async from paint) projects frame origins with the exact matrices the
-  // scene was last drawn with. Identity until the first paint.
+  // scene was last drawn with. Identity until the first paint. NOTE: this is the
+  // CAMERA-RELATIVE matrix (built against render_origin_), so the hover hit-test
+  // must project origins that have had render_origin_ subtracted — which it gets
+  // for free because it resolves them through a FrameContext seeded with the same
+  // render_origin_ (see updateHoverFrame / camera-relative rendering below).
   glm::mat4 last_view_proj_{1.0f};
+  // World point subtracted from every transform when rendering this frame, so a
+  // camera at large world coordinates (following a far frame, e.g. a UTM/GPS map)
+  // doesn't lose geometry/view deltas to float32 cancellation. Set each paintGL to
+  // the camera focal; the async hover hit-test reuses it to stay consistent with
+  // last_view_proj_. {0,0,0} until the first paint = absolute world.
+  glm::dvec3 render_origin_{0.0};
   // The TF frame currently under the cursor, or empty when none. Holds only the
   // name; the label re-projects the live origin each paint so it stays glued.
   std::optional<std::string> hovered_frame_;

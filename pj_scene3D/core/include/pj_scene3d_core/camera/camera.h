@@ -139,6 +139,17 @@ class ICamera {
   virtual ~ICamera() = default;
 
   [[nodiscard]] virtual glm::mat4 viewMatrix() const = 0;
+
+  // View matrix for CAMERA-RELATIVE rendering: same orientation as viewMatrix(),
+  // but eye and focal are expressed relative to `render_origin` (subtracted in
+  // DOUBLE precision before the float cast). Pair it with geometry whose model
+  // matrices are offset by the SAME origin (see FrameContext::render_origin) and a
+  // camera sitting at large world coordinates — e.g. "Follow a frame" parking the
+  // pivot on a far frame in a UTM/GPS map — no longer loses the eye→geometry delta
+  // to float32 cancellation (which made the whole scene swim on zoom). With
+  // `render_origin == {0,0,0}` it is exactly viewMatrix().
+  [[nodiscard]] virtual glm::mat4 viewMatrixRelativeTo(const glm::dvec3& render_origin) const = 0;
+
   [[nodiscard]] virtual glm::mat4 projMatrix(float aspect) const = 0;
   [[nodiscard]] virtual glm::vec3 position() const = 0;
 
@@ -177,6 +188,9 @@ class ICamera {
 class OrbitCamera : public ICamera {
  public:
   [[nodiscard]] glm::mat4 viewMatrix() const override;
+  // Inherited unchanged by XYOrbitCamera (it shares state_): focal+radius·dir is
+  // the eye for both, so the ground-lock never affects the relative view build.
+  [[nodiscard]] glm::mat4 viewMatrixRelativeTo(const glm::dvec3& render_origin) const override;
   [[nodiscard]] glm::mat4 projMatrix(float aspect) const override;
   [[nodiscard]] glm::vec3 position() const override;
 
@@ -233,6 +247,9 @@ class TopDownOrthoCamera final : public ICamera {
   TopDownOrthoCamera();
 
   [[nodiscard]] glm::mat4 viewMatrix() const override;
+  // Overridden: the eye floats straight up by eyeHeight() above the focal, not
+  // focal+radius·dir, so the generic orbit reconstruction does not apply here.
+  [[nodiscard]] glm::mat4 viewMatrixRelativeTo(const glm::dvec3& render_origin) const override;
   [[nodiscard]] glm::mat4 projMatrix(float aspect) const override;
   [[nodiscard]] glm::vec3 position() const override;
 
@@ -271,6 +288,9 @@ class FlyCamera final : public ICamera {
   FlyCamera();
 
   [[nodiscard]] glm::mat4 viewMatrix() const override;
+  // Overridden: Fly owns a free eye (no orbit pivot), so the relative build offsets
+  // eye_ directly and keeps the yaw/pitch forward direction.
+  [[nodiscard]] glm::mat4 viewMatrixRelativeTo(const glm::dvec3& render_origin) const override;
   [[nodiscard]] glm::mat4 projMatrix(float aspect) const override;
   [[nodiscard]] glm::vec3 position() const override;
 

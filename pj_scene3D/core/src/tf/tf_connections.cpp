@@ -11,7 +11,8 @@
 namespace pj::scene3d {
 
 void buildTfConnectionSegments(
-    const TransformBuffer& tf, const std::string& fixed_frame, TimePoint time, std::vector<TfConnectionSegment>& out) {
+    const TransformBuffer& tf, const std::string& fixed_frame, TimePoint time, std::vector<TfConnectionSegment>& out,
+    const glm::dvec3& render_origin) {
   out.clear();
   for (const std::string& frame : tf.getAllFrames()) {
     const std::optional<std::string> parent = tf.getParent(frame);
@@ -29,14 +30,16 @@ void buildTfConnectionSegments(
     if (!parent_w.has_value()) {
       continue;
     }
-    out.push_back({glm::vec3(child_w->t), glm::vec3(parent_w->t)});
+    // Subtract the render origin in double, THEN downcast — so an edge between two
+    // far frames keeps its low bits instead of losing them to float32 at ~1e6.
+    out.push_back({glm::vec3(child_w->t - render_origin), glm::vec3(parent_w->t - render_origin)});
   }
 }
 
 std::vector<TfConnectionSegment> buildTfConnectionSegments(
-    const TransformBuffer& tf, const std::string& fixed_frame, TimePoint time) {
+    const TransformBuffer& tf, const std::string& fixed_frame, TimePoint time, const glm::dvec3& render_origin) {
   std::vector<TfConnectionSegment> out;
-  buildTfConnectionSegments(tf, fixed_frame, time, out);
+  buildTfConnectionSegments(tf, fixed_frame, time, out, render_origin);
   return out;
 }
 

@@ -65,10 +65,19 @@ struct FrameContext {
   const TransformBuffer& tf;
   const std::string& fixed_frame;
   TimePoint time;  // pj::scene3d::TimePoint (== PJ::Timepoint), from transform.h
+  // Camera-relative RENDER ORIGIN: a world point lookup() subtracts (in double)
+  // from every transform's translation, so geometry is uploaded relative to it and
+  // — paired with ICamera::viewMatrixRelativeTo(render_origin) on the SAME origin —
+  // a scene at large world coordinates (following a far frame in a UTM/GPS map)
+  // renders without float32 cancellation. {0,0,0} = absolute world: every transform
+  // comes back in true fixed-frame coordinates, so hand-built contexts (tests, and
+  // any caller that omits it via aggregate init) keep the old behavior verbatim.
+  glm::dvec3 render_origin{0.0};
 
-  // SE(3) fixed_frame<-child at `time`, or nullopt if it can't resolve. Collapses
-  // the buffer's Expected<Transform, LookupError> to optional: a pass only needs
-  // to know whether the transform exists, never why it doesn't.
+  // SE(3) fixed_frame<-child at `time`, in RENDER space (render_origin already
+  // subtracted from the translation), or nullopt if it can't resolve. Collapses the
+  // buffer's Expected<Transform, LookupError> to optional: a pass only needs to know
+  // whether the transform exists, never why it doesn't.
   [[nodiscard]] std::optional<Transform> lookup(const std::string& child) const;
 };
 

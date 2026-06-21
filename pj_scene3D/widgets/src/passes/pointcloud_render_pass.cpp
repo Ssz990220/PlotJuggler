@@ -39,8 +39,12 @@ layout(location = 2) in vec4 in_color;  // per-point RGBA in [0,1] (kRgb mode)
 out vec4 v_color;
 uniform mat4 u_view_model;
 uniform mat4 u_proj;
-uniform mat4 u_model;          // source-frame -> fixed-frame; only for fixed-frame axis colour
+uniform mat4 u_model;          // source-frame -> fixed-frame (RENDER space); only for fixed-frame axis colour
 uniform int u_scalar_axis;     // -1 = colour by in_scalar; 0/1/2 = fixed-frame x/y/z
+// Camera-relative render origin: u_model places points in render space (origin
+// subtracted for float precision), so add it back along the coloured axis to recover
+// the ABSOLUTE world coordinate the colormap range is expressed in.
+uniform vec3 u_color_axis_offset;
 uniform float u_range_min;
 uniform float u_range_max;
 uniform float u_world_radius;     // metres — used when u_use_perspective_size
@@ -75,7 +79,10 @@ void main() {
   v_color = in_color;
   // Fixed-frame axis colouring: derive the colormap input from the GPU-transformed
   // position (u_model * in_pos) so sensors at different mounts agree on world height.
-  float scalar = u_scalar_axis < 0 ? in_scalar : (u_model * vec4(in_pos, 1.0))[u_scalar_axis];
+  // u_model is render-relative, so add the origin back along the axis to colour by the
+  // absolute world coordinate (stable as the camera moves; matches the colormap range).
+  float scalar = u_scalar_axis < 0 ? in_scalar
+                                   : (u_model * vec4(in_pos, 1.0))[u_scalar_axis] + u_color_axis_offset[u_scalar_axis];
   float span = max(u_range_max - u_range_min, 1e-9);
   v_normalized = clamp((scalar - u_range_min) / span, 0.0, 1.0);
 }
@@ -152,13 +159,16 @@ layout(location = 2) in vec3 in_instance_pos;     // per-instance, divisor=1
 layout(location = 3) in float in_instance_scalar; // per-instance, divisor=1
 layout(location = 4) in vec4 in_instance_color;   // per-instance RGBA, divisor=1 (kRgb mode)
 
-uniform mat4 u_model;          // source-frame -> fixed-frame
-uniform mat4 u_view;           // fixed-frame -> view space
+uniform mat4 u_model;          // source-frame -> fixed-frame (RENDER space)
+uniform mat4 u_view;           // fixed-frame (RENDER space) -> view space
 uniform mat4 u_proj;
 uniform float u_size_meters;
 uniform float u_range_min;
 uniform float u_range_max;
 uniform int u_scalar_axis;     // -1 = colour by in_instance_scalar; 0/1/2 = fixed-frame x/y/z
+// Render origin added back along the coloured axis to recover the ABSOLUTE world
+// coordinate (u_model/u_view are render-relative for float precision); see point shader.
+uniform vec3 u_color_axis_offset;
 
 out vec3 v_view_normal;
 out float v_normalized;
@@ -177,7 +187,10 @@ void main() {
   // the camera-relative key light in the fragment shader.
   v_view_normal = mat3(u_view) * in_corner_normal;
   // Fixed-frame axis colouring reuses instance_in_fixed (already computed above).
-  float scalar = u_scalar_axis < 0 ? in_instance_scalar : instance_in_fixed[u_scalar_axis];
+  // instance_in_fixed is render-relative, so add the origin back to colour by the
+  // absolute world coordinate (stable as the camera moves; matches the range).
+  float scalar = u_scalar_axis < 0 ? in_instance_scalar
+                                   : instance_in_fixed[u_scalar_axis] + u_color_axis_offset[u_scalar_axis];
   float span = max(u_range_max - u_range_min, 1e-9);
   v_normalized = clamp((scalar - u_range_min) / span, 0.0, 1.0);
   v_color = in_instance_color;
@@ -478,18 +491,26 @@ void PointcloudRenderPass::render(const ViewParams& view_params, const FrameCont
   // alpha=0 from TF/HUD annotations rendered earlier in the frame.
   withGlFunctions([](auto& functions) { functions.glDisable(GL_BLEND); });
 
+  // Camera-relative model (frame_ctx.lookup already subtracted render_origin in
+  // double): geometry is placed in render space, so the eye→point delta survives
+  // float32 even when following a frame at large world coordinates. The colour axis
+  // is lifted back to absolute world below; positions stay relative.
   const glm::mat4 model = glm::mat4(transform->matrix());
+  const glm::vec3 color_axis_offset(frame_ctx.render_origin);
 
   // Fixed-frame axis auto-range: derive the colormap [min,max] from the source
   // bounds transformed by THIS frame's model, so colour (computed per-point in the
-  // shader from the same model) and range stay consistent as the TF moves. Falls
-  // back to the explicit range (manual, or a non-spatial field's scalar range).
+  // shader from the same model) and range stay consistent as the TF moves. The model
+  // is render-relative but the shader colours by the ABSOLUTE coordinate (it adds the
+  // axis offset back), so lift the range by the same offset. Falls back to the
+  // explicit range (manual, or a non-spatial field's scalar range).
   float effective_range_min = range_min_;
   float effective_range_max = range_max_;
   if (scalar_axis_ >= 0 && spatial_auto_bounds_.has_value()) {
     const auto [axis_min, axis_max] = transformedAabbAxisRange(*spatial_auto_bounds_, model, scalar_axis_);
-    effective_range_min = axis_min;
-    effective_range_max = axis_max;
+    const float axis_offset = color_axis_offset[scalar_axis_];
+    effective_range_min = axis_min + axis_offset;
+    effective_range_max = axis_max + axis_offset;
   }
 
   if (shape_ == Shape::kCube && cube_program_ != nullptr) {
@@ -565,6 +586,7 @@ void PointcloudRenderPass::render(const ViewParams& view_params, const FrameCont
     cube_program_->setFloat("u_range_min", effective_range_min);
     cube_program_->setFloat("u_range_max", effective_range_max);
     cube_program_->setInt("u_scalar_axis", scalar_axis_);
+    cube_program_->setVec3("u_color_axis_offset", color_axis_offset);
     cube_program_->setInt("u_color_mode", colorModeUniform(color_type_));
     cube_program_->setVec3("u_solid_color", solid_color_);
     cube_program_->setInt("u_colormap_id", static_cast<int>(colormap_));
@@ -588,7 +610,8 @@ void PointcloudRenderPass::render(const ViewParams& view_params, const FrameCont
   const bool use_perspective_size = shape_ != Shape::kPoint;
   program_->use();
   program_->setMat4("u_view_model", view_model);
-  program_->setMat4("u_model", model);  // for fixed-frame axis colour (u_scalar_axis >= 0)
+  program_->setMat4("u_model", model);                          // for fixed-frame axis colour (u_scalar_axis >= 0)
+  program_->setVec3("u_color_axis_offset", color_axis_offset);  // lifts axis colour back to absolute world
   program_->setMat4("u_proj", view_params.proj);
   program_->setFloat("u_range_min", effective_range_min);
   program_->setFloat("u_range_max", effective_range_max);

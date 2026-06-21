@@ -93,6 +93,15 @@ glm::mat4 OrbitCamera::viewMatrix() const {
   return glm::lookAt(position(), state_.focal, glm::vec3{0.0f, 0.0f, 1.0f});
 }
 
+glm::mat4 OrbitCamera::viewMatrixRelativeTo(const glm::dvec3& render_origin) const {
+  // Subtract the origin from the focal in DOUBLE, then add the (small) orbit offset
+  // radius·dir — so eye_rel/focal_rel stay near the radius scale even when the focal
+  // is at 1e6. With render_origin == focal, focal_rel is exactly 0.
+  const glm::vec3 focal_rel = toRenderSpace(state_.focal, render_origin);
+  const glm::vec3 eye_rel = focal_rel + state_.radius * sphericalDir(state_.azimuth, state_.elevation);
+  return glm::lookAt(eye_rel, focal_rel, glm::vec3{0.0f, 0.0f, 1.0f});
+}
+
 glm::mat4 OrbitCamera::projMatrix(float aspect) const {
   // Decoupled adaptive near/far: near tracks the working distance (so close
   // inspection never clips), far reaches the whole scene, ratio-capped for depth
@@ -182,18 +191,30 @@ void OrbitCamera::zoomToCursor(float scroll_ticks, glm::vec2 cursor_px, int view
     return;
   }
 
-  // Homothety about the cursor point: scale eye AND focal toward `target` by the
-  // same factor. Orientation is preserved and (target - eye) keeps its direction,
-  // so the hovered point stays pixel-locked by construction; radius scales like a
-  // zoom and the pivot drifts toward what you're zooming into.
+  // Homothety about the cursor point: scaling eye AND focal toward `target` by the
+  // same factor is a uniform scaling, so it CANNOT rotate the eye→focal direction —
+  // azimuth/elevation are mathematically invariant and the hovered point stays
+  // pixel-locked. The old path recovered the new angles from new_eye − new_focal via
+  // setEyeFocal; when "Follow a frame" parks the pivot at large world coordinates
+  // (UTM/GPS, ~1e6 m) that difference of two ~1e6 vectors loses its low bits to
+  // float32 cancellation, spuriously spinning the view a fraction of a degree on
+  // every scroll tick (~1.9°/tick at 5e6). So keep the angles untouched, scale the
+  // radius, and slide the pivot along the cursor "lever" (target − focal) — never
+  // differencing two large absolute positions. (eye = focal + radius·dir, so this
+  // reproduces the homothety exactly: new_eye = new_focal + s·(eye − focal).)
   const float s = std::pow(0.9f, scroll_ticks);
-  const glm::vec3 new_eye = glm::mix(target, eye, s);
-  const glm::vec3 new_focal = glm::mix(target, state_.focal, s);
-  if (glm::length(new_eye - new_focal) < 1e-6f) {  // eye collapsed onto focal — bail rather than NaN
-    zoom(scroll_ticks);
-    return;
-  }
-  setEyeFocal(new_eye, new_focal);
+  float lo = 0.0f;
+  float hi = 0.0f;
+  radiusLimits(scene_bounds_, state_.focal, state_.radius, lo, hi);
+  const float new_radius = std::clamp(s * state_.radius, lo, hi);
+  // Slide by the EFFECTIVE post-clamp factor (new_radius/radius), so the cursor point
+  // stays pixel-locked even when the radius hits [lo,hi] — the homothety must use the
+  // factor the radius actually moved by. Without a clamp this is exactly s; setEyeFocal
+  // used to keep this lock by re-anchoring the focal (the cancellation source above).
+  const float s_eff = new_radius / state_.radius;
+  state_.focal += (1.0f - s_eff) * (target - state_.focal);
+  state_.radius = new_radius;
+  // azimuth / elevation deliberately unchanged — see above.
 }
 
 void OrbitCamera::setEyeFocal(const glm::vec3& eye, const glm::vec3& focal) {
@@ -261,14 +282,28 @@ void XYOrbitCamera::pan(float dx_pixels, float dy_pixels) {
 
 void XYOrbitCamera::zoomToCursor(float scroll_ticks, glm::vec2 cursor_px, int viewport_w, int viewport_h) {
   OrbitCamera::zoomToCursor(scroll_ticks, cursor_px, viewport_w, viewport_h);
-  if (std::abs(state_.focal.z) > 1e-6f) {
-    // Flatten any residual pivot height without moving the eye (the floor target
-    // is already on z=0, so this is usually a no-op; it guards against clamping
-    // having nudged the focal off the ground).
-    glm::vec3 focal = state_.focal;
-    focal.z = 0.0f;
-    setEyeFocal(position(), focal);
+  if (std::abs(state_.focal.z) <= 1e-6f) {
+    return;  // pivot already on the floor — the common case (ground-hit cursor target)
   }
+  // Re-lock the pivot to z=0 WITHOUT re-deriving the orbit angles. The base call kept
+  // azimuth/elevation untouched; hold the eye and the view direction fixed and slide
+  // the pivot down the view ray until focal.z == 0. setEyeFocal() would instead recover
+  // the angles from (eye − focal) — a difference of two ~1e6 vectors that resurrects the
+  // large-coordinate angle noise the base-class fix removes (the bug this whole change is
+  // about), for the one camera that subclasses the fixed one. Subtracting a SMALL
+  // radius·dir from the ~1e6 eye keeps full precision; no two large absolutes are differenced.
+  const glm::vec3 dir = sphericalDir(state_.azimuth, state_.elevation);  // focal → eye, unit
+  if (dir.z <= 1e-3f) {
+    return;  // looking along/under the horizon: no finite ground pivot ahead, leave as-is
+  }
+  const glm::vec3 eye = position();
+  const float ground_radius = eye.z / dir.z;  // eye.z − ground_radius·dir.z == 0
+  float lo = 0.0f;
+  float hi = 0.0f;
+  radiusLimits(scene_bounds_, state_.focal, ground_radius, lo, hi);
+  state_.radius = std::clamp(ground_radius, lo, hi);
+  state_.focal = eye - state_.radius * dir;
+  state_.focal.z = 0.0f;  // exact floor (the expression above is already ~0 when unclamped)
 }
 
 void XYOrbitCamera::adoptState(const CameraState& state) {
@@ -309,6 +344,12 @@ TopDownOrthoCamera::TopDownOrthoCamera() {
 
 glm::mat4 TopDownOrthoCamera::viewMatrix() const {
   return glm::lookAt(position(), state_.focal, mapUp(state_.azimuth));
+}
+
+glm::mat4 TopDownOrthoCamera::viewMatrixRelativeTo(const glm::dvec3& render_origin) const {
+  const glm::vec3 focal_rel = toRenderSpace(state_.focal, render_origin);
+  const glm::vec3 eye_rel = focal_rel + glm::vec3{0.0f, 0.0f, eyeHeight()};
+  return glm::lookAt(eye_rel, focal_rel, mapUp(state_.azimuth));
 }
 
 float TopDownOrthoCamera::eyeHeight() const {
@@ -456,6 +497,11 @@ float FlyCamera::motionDistance() const {
 
 glm::mat4 FlyCamera::viewMatrix() const {
   return glm::lookAt(eye_, eye_ + forward(), glm::vec3{0.0f, 0.0f, 1.0f});
+}
+
+glm::mat4 FlyCamera::viewMatrixRelativeTo(const glm::dvec3& render_origin) const {
+  const glm::vec3 eye_rel = toRenderSpace(eye_, render_origin);
+  return glm::lookAt(eye_rel, eye_rel + forward(), glm::vec3{0.0f, 0.0f, 1.0f});
 }
 
 glm::mat4 FlyCamera::projMatrix(float aspect) const {

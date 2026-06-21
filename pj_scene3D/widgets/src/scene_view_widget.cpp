@@ -32,6 +32,7 @@
 #include <variant>
 #include <vector>
 
+#include "pj_scene3d_core/camera/camera_math.h"  // toRenderSpace()
 #include "pj_scene3d_core/tf/tf_buffer.h"
 #include "pj_scene3d_widgets/gl/debug.h"
 #include "pj_scene3d_widgets/gl/framebuffer.h"
@@ -572,12 +573,19 @@ void SceneViewWidget::paintGL() {
   // device_*_px carry the (possibly supersampled) FRAMEBUFFER size so passes that
   // size primitives in device pixels (gl_PointSize in PointcloudRenderPass) and
   // the screen-space post passes match the buffer they draw into.
+  // Camera-relative rendering origin for THIS frame: the camera focal. Geometry
+  // (via FrameContext::lookup) and the view matrix are both expressed relative to
+  // it, in double, so a camera following a far frame at large world coordinates
+  // doesn't lose the eye→geometry delta to float32 cancellation (the scene-swims-
+  // on-zoom bug). Stored so the async hover hit-test stays consistent with the
+  // camera-relative last_view_proj_ below.
+  render_origin_ = glm::dvec3(camera_->state().focal);
   const ViewParams view_params{
-      camera_->viewMatrix(),
+      camera_->viewMatrixRelativeTo(render_origin_),
       camera_->projMatrix(aspect),
       height(),
       width(),
-      camera_->position(),
+      toRenderSpace(camera_->position(), render_origin_),  // eye in render space (mesh lighting)
       render_width_px,
       render_height_px,
       shading_params_,  // this view's mesh/collision look knobs (per-view, see header)
@@ -598,9 +606,11 @@ void SceneViewWidget::paintGL() {
   // Grid never consults the TF buffer; safe to render even when tf_ is null.
   static const TransformBuffer k_empty_buffer;
   const TransformBuffer& tf_ref = tf_ ? *tf_ : k_empty_buffer;
-  // The TF-resolution triple, bundled for the passes/layers that need it.
-  // fixed_frame_ is the long-lived member (no per-frame string copy).
-  const FrameContext frame_ctx{tf_ref, fixed_frame_, render_time_};
+  // The TF-resolution triple (plus the camera-relative render origin), bundled for
+  // the passes/layers that need it. fixed_frame_ is the long-lived member (no
+  // per-frame string copy). render_origin_ makes lookup() return render-space
+  // transforms consistent with the camera-relative view above.
+  const FrameContext frame_ctx{tf_ref, fixed_frame_, render_time_, render_origin_};
 
   // Push the current hover highlight to the TF axis pass before it draws, so the
   // hovered frame's triad renders brighter than its neighbours.
@@ -926,7 +936,9 @@ void SceneViewWidget::updateHoverFrame(const QPointF& pos_logical) {
   // label is an affordance for the visible gizmos, not the raw transform tree.
   if (axes_visible_ && tf_) {
     const TransformBuffer& tf_ref = *tf_;
-    const FrameContext frame_ctx{tf_ref, fixed_frame_, render_time_};
+    // Seed with render_origin_ from the last paint so the projected origins are in
+    // the same render space as last_view_proj_ (the camera-relative proj*view).
+    const FrameContext frame_ctx{tf_ref, fixed_frame_, render_time_, render_origin_};
     tf_ref.getAllFrames(hover_all_frames_);
 
     // Project each origin, keeping hover_points_ index-aligned with

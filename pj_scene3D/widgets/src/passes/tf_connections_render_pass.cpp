@@ -56,7 +56,8 @@ void TfConnectionsRenderPass::render(const ViewParams& view_params, const FrameC
 
   // Recompute the parent-connection segments for the current TF/time every paint
   // (cheap: a handful of lookups per frame).
-  buildTfConnectionSegments(frame_ctx.tf, frame_ctx.fixed_frame, frame_ctx.time, segments_scratch_);
+  buildTfConnectionSegments(
+      frame_ctx.tf, frame_ctx.fixed_frame, frame_ctx.time, segments_scratch_, frame_ctx.render_origin);
   if (segments_scratch_.empty()) {
     return;  // no TF, or every frame is a root / unresolved
   }

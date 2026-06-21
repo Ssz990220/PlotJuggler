@@ -27,12 +27,19 @@ struct TfConnectionSegment {
 // resolve at `time` (no sample yet, disconnected, …) — a half-resolved edge is
 // never emitted. `out` is cleared first, then reused, so a per-paint caller
 // avoids reallocating. Frame order follows TransformBuffer::getAllFrames.
+//
+// `render_origin` is the camera-relative render origin: it is subtracted from each
+// endpoint in DOUBLE before the float downcast, so edges between frames at large
+// world coordinates (UTM/GPS) stay precise and line up with the rest of the
+// camera-relative scene. {0,0,0} (the default) yields true fixed-frame coordinates.
 void buildTfConnectionSegments(
-    const TransformBuffer& tf, const std::string& fixed_frame, TimePoint time, std::vector<TfConnectionSegment>& out);
+    const TransformBuffer& tf, const std::string& fixed_frame, TimePoint time, std::vector<TfConnectionSegment>& out,
+    const glm::dvec3& render_origin = glm::dvec3(0.0));
 
 // Allocating convenience overload. Prefer the out-parameter version on the
 // render hot path.
 [[nodiscard]] std::vector<TfConnectionSegment> buildTfConnectionSegments(
-    const TransformBuffer& tf, const std::string& fixed_frame, TimePoint time);
+    const TransformBuffer& tf, const std::string& fixed_frame, TimePoint time,
+    const glm::dvec3& render_origin = glm::dvec3(0.0));
 
 }  // namespace pj::scene3d

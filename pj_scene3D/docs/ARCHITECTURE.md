@@ -149,11 +149,19 @@ testable (`camera_near_far_test`, `camera_zoom_to_cursor_test`,
   against the eye height above the focal plus the scene's vertical extent), so a
   zoomed-in costmap never clips the ground.
 - **Zoom-to-cursor** (wheel): a homothety about the world point under the cursor —
-  the eye **and** focal are scaled toward the cursor target by `pow(0.9, ticks)`,
-  so the hovered point stays pixel-locked by construction; a degenerate ray (no
-  ground/focal-plane hit) falls back to center-of-view `zoom()`. Right-drag stays
-  center-of-view zoom. On `FlyCamera` zoom-to-cursor degenerates to a forward
-  dolly by design.
+  the eye and focal scale toward the cursor target by `pow(0.9, ticks)`, so the
+  hovered point stays pixel-locked. A homothety is a uniform scaling, so it cannot
+  rotate the orbit: `OrbitCamera::zoomToCursor` keeps azimuth/elevation **untouched**,
+  scales the radius (clamped to `[lo, hi]`), and slides the pivot along the cursor
+  lever by the *effective post-clamp* factor `new_radius / radius` (so the lock holds
+  even when the radius clamps). It deliberately does **not** re-derive the angles from
+  `eye − focal` — at large world coordinates that subtraction of two ~1e6 vectors
+  loses its low bits to float32 cancellation and spuriously spins the view a fraction
+  of a degree on every tick (~1.9°/tick at 5e6). `XYOrbitCamera` re-locks its pivot to
+  z=0 the same cancellation-free way (re-pivot along the fixed view ray, never
+  `setEyeFocal`). A degenerate ray (no ground/focal-plane hit) falls back to
+  center-of-view `zoom()`; right-drag stays center-of-view zoom; on `FlyCamera`
+  zoom-to-cursor degenerates to a forward dolly by design.
 - **Frame follow (Position-only).** `ICamera::followShift(world_delta)` shifts the
   camera's anchor by a world delta without touching orbit angle / zoom — Orbit and
   TopDownOrtho move the focal, Fly the eye, and `XYOrbitCamera` overrides it to drop
@@ -171,6 +179,28 @@ testable (`camera_near_far_test`, `camera_zoom_to_cursor_test`,
   `followShift(target − current focal)`) that snaps the camera onto the target on
   demand. Heading / Pose (rotation-following) modes are future work; the
   `FollowMode` enum already reserves the slot.
+- **Large-coordinate precision (camera-relative rendering).** Following a frame in a
+  UTM/GPS-scale map parks the camera at ~1e5–1e7 m, where float32 keeps only ~0.1–0.6 m
+  of resolution and `view × world-geometry` (subtracting the ~1e6 eye from a ~1e6
+  vertex) collapses to cancellation noise — the whole scene visibly *swims* on zoom.
+  The scene therefore renders **camera-relative**: each `paintGL` picks a `render_origin`
+  (the camera focal, in double), builds the view via
+  `ICamera::viewMatrixRelativeTo(render_origin)` (eye/focal offset by the origin in
+  double; bit-exact `viewMatrix()` at origin 0, pinned by a test), and threads the origin
+  through `FrameContext::render_origin`. `FrameContext::lookup()` subtracts it from every
+  resolved transform **in double, before the float downcast** (`toRenderSpace`, in
+  `camera_math.h`) — so all TF-placed geometry (every pass/layer), the async hover
+  hit-test, and the eye fed to mesh lighting land near the origin and stay precise. The
+  camera *state* and *scene bounds* stay in absolute world (follow and near/far need them
+  there); only the per-frame render path goes relative. Three passes that don't resolve a
+  TF frame take the origin explicitly: the grid (model `= translate(−origin)`; it lives at
+  the world origin), TF-connection lines (`buildTfConnectionSegments` takes it), and
+  point-cloud **colour-by-axis** — position renders relative for precision, but the colour
+  scalar adds the origin back (`u_color_axis_offset`) so a point's colour stays in the
+  fixed frame, independent of the camera (the colormap range is lifted by the same offset,
+  and algebraically cancels in the shader's normalize). `render_origin == {0,0,0}` (the
+  default for hand-built `FrameContext`s in tests/demos) reproduces absolute-world
+  rendering verbatim.
 - **Frame-list freshness.** The frame pickers (fixed-frame + follow) are fed by
   `SceneViewWidget::refreshAvailableFrames` → `getFrameHierarchy()`, which is
   time-independent (whole buffer). That refresh used to fire only from

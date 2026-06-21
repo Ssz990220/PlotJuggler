@@ -118,13 +118,19 @@ void GridRenderPass::rebuildGeometry() {
   geometry_dirty_ = false;
 }
 
-void GridRenderPass::render(const ViewParams& view_params, [[maybe_unused]] const FrameContext& frame_ctx) {
+void GridRenderPass::render(const ViewParams& view_params, const FrameContext& frame_ctx) {
   if (!initialized_ || program_ == nullptr) {
     return;
   }
   rebuildGeometry();  // lazy: extent/divisions/style changed since last frame
 
-  const glm::mat4 mvp = view_params.proj * view_params.view * glm::mat4{1.0f};
+  // The grid lives at the WORLD origin (its vertices are world XY at z=0). Under
+  // camera-relative rendering the view is built against frame_ctx.render_origin, so
+  // place the grid with a model matrix that subtracts that origin — keeping it at
+  // the true world origin (render_origin == {0,0,0} ⇒ identity, unchanged).
+  glm::mat4 model{1.0f};
+  model[3] = glm::vec4(glm::vec3(-frame_ctx.render_origin), 1.0f);
+  const glm::mat4 mvp = view_params.proj * view_params.view * model;
   program_->use();
   program_->setMat4("u_mvp", mvp);
   program_->setVec3("u_color", color_);
