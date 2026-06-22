@@ -22,6 +22,7 @@
 #include <QPlainTextEdit>
 #include <QPushButton>
 #include <QRadioButton>
+#include <QScrollBar>
 #include <QShortcut>
 #include <QSignalBlocker>
 #include <QSpinBox>
@@ -441,10 +442,28 @@ static void applyToWidget(QWidget* w, std::string_view name, const PJ::WidgetDat
       }
     }
     if (auto v = view.selectedRows(name)) {
-      tw->clearSelection();
-      for (int r : *v) {
-        if (r >= 0 && r < tw->rowCount()) {
-          tw->selectRow(r);
+      // Re-applying the selection via selectRow() scrolls the view to the last
+      // selected row, so the table "jumps" on every re-render that follows a user
+      // selection change (the common case, where the selection is ALREADY what we
+      // want). Skip when it already matches; otherwise preserve the scroll position
+      // across the change so a programmatic update (deselect-all, filter) does not
+      // yank the viewport either.
+      std::set<int> want(v->begin(), v->end());
+      std::set<int> have;
+      for (const QModelIndex& idx : tw->selectionModel()->selectedRows()) {
+        have.insert(idx.row());
+      }
+      if (want != have) {
+        QScrollBar* vbar = tw->verticalScrollBar();
+        const int scroll = vbar != nullptr ? vbar->value() : 0;
+        tw->clearSelection();
+        for (int r : *v) {
+          if (r >= 0 && r < tw->rowCount()) {
+            tw->selectRow(r);
+          }
+        }
+        if (vbar != nullptr) {
+          vbar->setValue(scroll);
         }
       }
     }
