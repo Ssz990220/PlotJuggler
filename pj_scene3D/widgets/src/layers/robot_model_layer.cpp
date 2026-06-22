@@ -315,6 +315,7 @@ void RobotModelLayer::detach() {
   cached_visual_draws_.clear();
   cached_collision_draws_.clear();
   draws_dirty_ = true;
+  cached_render_origin_.reset();
   if (mesh_pass_) {
     mesh_pass_->clearMeshes();
   }
@@ -471,6 +472,15 @@ void RobotModelLayer::rebuildDrawCache(const FrameContext& frame_ctx) {
       }
     }
   }
+  cached_render_origin_ = frame_ctx.render_origin;
+}
+
+bool RobotModelLayer::drawCacheNeedsRebuild(const FrameContext& frame_ctx) const {
+  if (draws_dirty_ || !cached_render_origin_.has_value()) {
+    return true;
+  }
+  const glm::dvec3 delta = *cached_render_origin_ - frame_ctx.render_origin;
+  return delta.x != 0.0 || delta.y != 0.0 || delta.z != 0.0;
 }
 
 void RobotModelLayer::render(const ViewParams& view_params, const FrameContext& frame_ctx) {
@@ -479,10 +489,10 @@ void RobotModelLayer::render(const ViewParams& view_params, const FrameContext& 
   }
   pollMeshLoads();
 
-  // The DrawCall lists are camera-independent, so we rebuild them only when an
-  // invalidating setter / TF tick / mesh-load drain flagged draws_dirty_; a
-  // camera-only repaint (orbit/zoom) reuses the cache (review M.48).
-  if (draws_dirty_) {
+  // DrawCall matrices are already in camera-relative render space. Reuse the
+  // cache across pure view/projection changes, but rebuild when a camera move
+  // changes the render origin (pan / zoom-to-cursor / follow).
+  if (drawCacheNeedsRebuild(frame_ctx)) {
     rebuildDrawCache(frame_ctx);
     draws_dirty_ = false;
   }

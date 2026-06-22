@@ -479,10 +479,11 @@ TEST(RobotModelLayerTest, UnresolvedPackageMeshIsCountedForPlaceholderRendering)
 }
 
 // M.48: render() memoizes the per-link DrawCall lists and rebuilds them only
-// when draws_dirty_ is set, so a camera-only repaint reuses the cache. This
-// asserts the invalidation set: every geometry-affecting call must re-flag the
-// cache. render() itself (which clears the flag) needs a GL context the harness
-// lacks, so we clear the flag manually via the test hook before each call.
+// when their inputs change. This asserts the geometry invalidation set: every
+// geometry-affecting call must re-flag the cache. The render-origin dependency
+// introduced by camera-relative rendering is covered separately below.
+// render() itself (which clears the flag) needs a GL context the harness lacks,
+// so we clear the flag manually via the test hook before each call.
 TEST(RobotModelLayerTest, DrawCacheInvalidationSetIsExhaustive) {
   PJ::SessionManager session;
   const PJ::ObjectTopicId topic_id = registerTopic(session);
@@ -792,6 +793,44 @@ TEST(RobotModelLayerTest, FixedJointBridgeAppliesFramePrefix) {
   const auto tf = live.tryLookupTransform("scene", "robot1/gripper_base", PJ::fromRaw(2000));
   ASSERT_TRUE(tf.has_value()) << "prefixed bridge frame should resolve in the render buffer";
   EXPECT_NEAR(tf->t.z, 0.1, 1e-9);
+}
+
+// Camera-relative rendering made RobotModelLayer's cached DrawCall matrices
+// render-origin dependent: FrameContext::lookup subtracts the camera focal before
+// the float downcast. A stopped-playback camera pan/zoom changes that origin
+// without changing tracker time, so the cache must rebuild or URDF meshes stay in
+// the old render space while pointclouds/TF gizmos use the new one.
+TEST(RobotModelLayerTest, DrawCacheInvalidatesWhenRenderOriginChanges) {
+  PJ::SessionManager session;
+  const PJ::ObjectTopicId topic_id = registerTopic(session);
+  registerParser(session, topic_id, urdfParserVtable());
+  pushWireBytes(session, topic_id);
+
+  pj::scene3d::RobotModelLayer layer(topic_id, QStringLiteral("/robot_description"));
+  const auto ctx = makeContext(session);
+  ASSERT_TRUE(layer.attach(ctx));
+  ASSERT_NE(layer.robotModel(), nullptr);
+
+  pj::scene3d::TransformBuffer live;
+  seedSceneChild(live, "base_link");
+
+  const std::string fixed_frame = "scene";
+  const pj::scene3d::FrameContext origin_zero{live, fixed_frame, PJ::fromRaw(2000), glm::dvec3{0.0, 0.0, 0.0}};
+  layer.rebuildDrawCacheForTest(origin_zero);
+  layer.clearDrawsDirtyForTest();
+  ASSERT_EQ(layer.visualDrawCountForTest(), 1);
+  EXPECT_FALSE(layer.drawCacheNeedsRebuildForTest(origin_zero));
+  EXPECT_NEAR(layer.firstVisualDrawTranslationForTest().x, 0.0f, 1e-5f);
+
+  const pj::scene3d::FrameContext origin_shifted{live, fixed_frame, PJ::fromRaw(2000), glm::dvec3{3.0, 0.0, 0.0}};
+  EXPECT_TRUE(layer.drawCacheNeedsRebuildForTest(origin_shifted))
+      << "render-origin changes must invalidate render-space mesh matrices";
+
+  layer.rebuildDrawCacheForTest(origin_shifted);
+  layer.clearDrawsDirtyForTest();
+  EXPECT_FALSE(layer.drawCacheNeedsRebuildForTest(origin_shifted));
+  EXPECT_NEAR(layer.firstVisualDrawTranslationForTest().x, -3.0f, 1e-5f)
+      << "draw cache should be rebuilt in the new camera-relative space";
 }
 
 // kAuto in a MIXED model: a collision-only sublink (the self-collision capsules)

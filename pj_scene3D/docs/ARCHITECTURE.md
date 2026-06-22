@@ -445,7 +445,11 @@ volumetric data.
   meshes; it renders as a **translucent overlay** (blend on, depth-writes off, so
   the real robot shows through) below full opacity, and as a **solid, occluding**
   hull at opacity ≈ 1.0 (the opaque path: blend off, depth-writes on). Scene-wide
-  opacity/visibility comes from `meshShadingParams()`.
+  opacity/visibility comes from `meshShadingParams()`. URDF draw calls are cached
+  in camera-relative render space (after `FrameContext::lookup` subtracts the
+  current render origin), so `RobotModelLayer` reuses them across pure
+  view/projection changes but rebuilds when pan / zoom-to-cursor / follow changes
+  the render origin.
 - **Time contract**: `RobotModelLayer::timeRange()` returns the inverted
   sentinel `{Timepoint::max(), Timepoint::min()}` — a static decoration must
   neither widen the playback timeline (`{0, INT64_MAX}` would balloon it to

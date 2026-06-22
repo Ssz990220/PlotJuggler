@@ -156,6 +156,9 @@ class RobotModelLayer : public Scene3DLayer {
   void clearDrawsDirtyForTest() {
     draws_dirty_ = false;
   }
+  [[nodiscard]] bool drawCacheNeedsRebuildForTest(const FrameContext& frame_ctx) const {
+    return drawCacheNeedsRebuild(frame_ctx);
+  }
   // Runs the (GL-free) draw-cache rebuild — which injects the fixed-joint TF
   // bridges into frame_ctx.tf — so a test can assert the buffer the layer renders
   // against gets bridged, without standing up a GL context.
@@ -166,6 +169,9 @@ class RobotModelLayer : public Scene3DLayer {
   // group (visuals vs collision) a link's geometry landed in.
   [[nodiscard]] int visualDrawCountForTest() const {
     return static_cast<int>(cached_visual_draws_.size());
+  }
+  [[nodiscard]] glm::vec3 firstVisualDrawTranslationForTest() const {
+    return cached_visual_draws_.empty() ? glm::vec3{0.0f} : glm::vec3(cached_visual_draws_.front().model[3]);
   }
   [[nodiscard]] int collisionDrawCountForTest() const {
     return static_cast<int>(cached_collision_draws_.size());
@@ -189,6 +195,10 @@ class RobotModelLayer : public Scene3DLayer {
   // Rebuild cached_visual_draws_ / cached_collision_draws_ from the model posed
   // by frame_ctx's TF lookups. Called by render() only when draws_dirty_.
   void rebuildDrawCache(const FrameContext& frame_ctx);
+  // True when the memoized draw calls cannot be reused for this frame. The
+  // matrices stored in the cache are in camera-relative render space, so the
+  // cache is tied to the render origin as well as to TF/model state.
+  [[nodiscard]] bool drawCacheNeedsRebuild(const FrameContext& frame_ctx) const;
   // Recompute static_bridges_ from the current model_, with frame_prefix_ applied
   // to each parent/child frame. Called when the model loads or the prefix changes.
   void rebuildStaticBridges();
@@ -256,10 +266,11 @@ class RobotModelLayer : public Scene3DLayer {
   int unresolved_mesh_count_{0};
   int loaded_mesh_count_{0};
 
-  // Memoized per-link DrawCall lists, rebuilt by render() only when
-  // draws_dirty_. The lists are camera-independent (model matrices, colors,
-  // mesh keys — no view/projection), so a camera-only repaint (orbit/zoom)
-  // reuses them; the opacity/visibility gates and view_params stay per-frame.
+  // Memoized per-link DrawCall lists, rebuilt by render() only when their inputs
+  // changed. The lists are view/projection-independent, but their model matrices
+  // are in camera-relative render space (`FrameContext::lookup` subtracts
+  // render_origin), so panning/zoom-to-cursor must rebuild them when the render
+  // origin changes. The opacity/visibility gates and view_params stay per-frame.
   // INVALIDATION SET — must be kept exhaustive by construction. draws_dirty_ is
   // set in every place that can change the geometry: setTrackerTime (TF reaches
   // the layer ONLY via tracker ticks, which the dock drives on every live
@@ -274,6 +285,7 @@ class RobotModelLayer : public Scene3DLayer {
   std::vector<MeshRenderPass::DrawCall> cached_visual_draws_;
   std::vector<MeshRenderPass::DrawCall> cached_collision_draws_;
   bool draws_dirty_{true};
+  std::optional<glm::dvec3> cached_render_origin_;
 
   std::unique_ptr<UrdfPackageResolver> owned_resolver_;
   UrdfPackageResolver* resolver_{nullptr};
