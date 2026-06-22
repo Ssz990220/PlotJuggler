@@ -7,17 +7,20 @@
 
 #include <QAction>
 #include <QApplication>
+#include <QClipboard>
 #include <QCursor>
 #include <QDomDocument>
 #include <QDragEnterEvent>
 #include <QDragMoveEvent>
 #include <QDropEvent>
+#include <QGuiApplication>
 #include <QKeyEvent>
 #include <QLabel>
 #include <QLineEdit>
 #include <QMetaObject>
 #include <QMimeData>
 #include <QMouseEvent>
+#include <QRectF>
 #include <QSplitter>
 #include <QStringList>
 #include <QToolButton>
@@ -53,6 +56,15 @@ PJ::TopicId addScalarTopic(PJ::SessionManager& session, PJ::DatasetId dataset_id
   const auto committed_topics = session.commitChunks(writer.flushAll());
   EXPECT_FALSE(committed_topics.empty());
   return handle_or->topic_id;
+}
+
+QString keyForTopic(PJ::CatalogModel& catalog, PJ::TopicId topic_id) {
+  for (const PJ::CurveDescriptor& descriptor : catalog.curves()) {
+    if (descriptor.topic_id == topic_id) {
+      return descriptor.name;
+    }
+  }
+  return {};
 }
 
 class TestPlaceholderWidget : public PJ::VisualizationPlaceholderWidget {
@@ -109,6 +121,43 @@ class FakeStatefulObjectWidget : public QWidget, public PJ::IDataWidget {
 
  private:
   QString tag_;
+};
+
+class FakeClipboardObjectWidget : public QWidget, public PJ::IDataWidget {
+ public:
+  FakeClipboardObjectWidget(QString tag, QString value, QWidget* parent = nullptr)
+      : QWidget(parent), tag_(std::move(tag)), value_(std::move(value)) {}
+
+  QWidget* widget() override {
+    return this;
+  }
+  void onTrackerTime(double /*time*/) override {}
+  QDomElement xmlSaveState(QDomDocument& doc) const override {
+    QDomElement element = doc.createElement(tag_);
+    element.setAttribute(QStringLiteral("value"), value_);
+    return element;
+  }
+  bool xmlLoadState(const QDomElement& element) override {
+    if (element.tagName() != tag_) {
+      return false;
+    }
+    ++load_count_;
+    loaded_value_ = element.attribute(QStringLiteral("value"));
+    return true;
+  }
+
+  int loadCount() const {
+    return load_count_;
+  }
+  QString loadedValue() const {
+    return loaded_value_;
+  }
+
+ private:
+  QString tag_;
+  QString value_;
+  int load_count_ = 0;
+  QString loaded_value_;
 };
 
 // Accepts every offered object topic in place (like the multi-topic 3D dock), so
@@ -225,12 +274,164 @@ TEST(DockWidgetPlaceholderTest, PlaceholderSplitActionsEmitRequests) {
   auto* vertical_action = findActionByText(&placeholder, QStringLiteral("Split Vertically"));
   ASSERT_NE(horizontal_action, nullptr);
   ASSERT_NE(vertical_action, nullptr);
+  EXPECT_EQ(findActionByText(&placeholder, QStringLiteral("Copy")), nullptr);
+  auto* paste_action = findActionByText(&placeholder, QStringLiteral("Paste"));
+  ASSERT_NE(paste_action, nullptr);
+  EXPECT_FALSE(paste_action->isEnabled());
 
   horizontal_action->trigger();
   vertical_action->trigger();
 
   EXPECT_EQ(horizontal_count, 1);
   EXPECT_EQ(vertical_count, 1);
+}
+
+TEST(DockWidgetPlaceholderTest, PlotWidgetCopyPasteUsesClipboardXmlAndKeepsTargetIdentity) {
+  QGuiApplication::clipboard()->clear();
+
+  PJ::SessionManager session;
+  PJ::CatalogModel catalog(&session);
+  auto dataset = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "drive.mcap"});
+  ASSERT_TRUE(dataset.has_value()) << dataset.error();
+  const PJ::TopicId topic_id = addScalarTopic(session, *dataset, "/imu/accel");
+  ASSERT_NE(topic_id, 0U);
+  const QString key = keyForTopic(catalog, topic_id);
+  ASSERT_FALSE(key.isEmpty());
+
+  PJ::PlotWidget source(&session, &catalog);
+  source.setStateId(QStringLiteral("source-plot"));
+  ASSERT_NE(source.addCurve(key), nullptr);
+
+  PJ::PlotWidget target(&session, &catalog);
+  target.setStateId(QStringLiteral("target-plot"));
+  int undo_count = 0;
+  QObject::connect(&target, &PJ::PlotWidget::undoableChange, &target, [&]() { ++undo_count; });
+
+  ASSERT_TRUE(QMetaObject::invokeMethod(&source, "copyWidgetToClipboard", Qt::DirectConnection));
+  EXPECT_TRUE(QGuiApplication::clipboard()->text().contains(QStringLiteral("<plot")));
+
+  ASSERT_TRUE(QMetaObject::invokeMethod(&target, "pasteWidgetFromClipboard", Qt::DirectConnection));
+
+  ASSERT_EQ(target.curveList().size(), 1U);
+  EXPECT_EQ(target.curveList().front().source_name, key);
+  EXPECT_EQ(target.stateId(), QStringLiteral("target-plot"));
+  EXPECT_EQ(undo_count, 1);
+}
+
+TEST(DockWidgetPlaceholderTest, PlaceholderPasteCreatesPlotFromClipboardXml) {
+  QGuiApplication::clipboard()->clear();
+
+  PJ::SessionManager session;
+  PJ::CatalogModel catalog(&session);
+  auto dataset = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "drive.mcap"});
+  ASSERT_TRUE(dataset.has_value()) << dataset.error();
+  const PJ::TopicId topic_id = addScalarTopic(session, *dataset, "/imu/accel");
+  ASSERT_NE(topic_id, 0U);
+  const QString key = keyForTopic(catalog, topic_id);
+  ASSERT_FALSE(key.isEmpty());
+
+  PJ::PlotWidget source(&session, &catalog);
+  ASSERT_NE(source.addCurve(key), nullptr);
+  ASSERT_TRUE(QMetaObject::invokeMethod(&source, "copyWidgetToClipboard", Qt::DirectConnection));
+
+  PJ::DockWidget target(&session, &catalog);
+  int undo_count = 0;
+  QObject::connect(&target, &PJ::DockWidget::undoableChange, &target, [&]() { ++undo_count; });
+
+  ASSERT_TRUE(QMetaObject::invokeMethod(&target, "updatePlaceholderPasteAction", Qt::DirectConnection));
+  auto* placeholder = target.findChild<PJ::VisualizationPlaceholderWidget*>();
+  ASSERT_NE(placeholder, nullptr);
+  auto* paste_action = findActionByText(placeholder, QStringLiteral("Paste"));
+  ASSERT_NE(paste_action, nullptr);
+  EXPECT_TRUE(paste_action->isEnabled());
+
+  ASSERT_TRUE(QMetaObject::invokeMethod(&target, "pastePlaceholderWidgetFromClipboard", Qt::DirectConnection));
+
+  ASSERT_NE(target.plotWidget(), nullptr);
+  EXPECT_EQ(target.objectWidget(), nullptr);
+  ASSERT_EQ(target.plotWidget()->curveList().size(), 1U);
+  EXPECT_EQ(target.plotWidget()->curveList().front().source_name, key);
+  EXPECT_EQ(undo_count, 1);
+}
+
+TEST(DockWidgetPlaceholderTest, ObjectWidgetClipboardPasteRequiresSameFamilyTag) {
+  QGuiApplication::clipboard()->clear();
+
+  PJ::DockWidget source;
+  auto* source_widget = new FakeClipboardObjectWidget(QStringLiteral("scene2d"), QStringLiteral("camera"));
+  source.setObjectWidget(source_widget);
+
+  PJ::DockWidget same_family_target;
+  auto* same_family_widget = new FakeClipboardObjectWidget(QStringLiteral("scene2d"), QStringLiteral("old"));
+  same_family_target.setObjectWidget(same_family_widget);
+  int same_family_undo = 0;
+  QObject::connect(
+      &same_family_target, &PJ::DockWidget::undoableChange, &same_family_target, [&]() { ++same_family_undo; });
+
+  PJ::DockWidget other_family_target;
+  auto* other_family_widget = new FakeClipboardObjectWidget(QStringLiteral("scene3d"), QStringLiteral("old"));
+  other_family_target.setObjectWidget(other_family_widget);
+
+  ASSERT_TRUE(QMetaObject::invokeMethod(&source, "copyObjectWidgetToClipboard", Qt::DirectConnection));
+  ASSERT_TRUE(QGuiApplication::clipboard()->text().contains(QStringLiteral("<scene2d")));
+
+  ASSERT_TRUE(QMetaObject::invokeMethod(&same_family_target, "pasteObjectWidgetFromClipboard", Qt::DirectConnection));
+  EXPECT_EQ(same_family_widget->loadCount(), 1);
+  EXPECT_EQ(same_family_widget->loadedValue(), QStringLiteral("camera"));
+  EXPECT_EQ(same_family_undo, 1);
+
+  ASSERT_TRUE(QMetaObject::invokeMethod(&other_family_target, "pasteObjectWidgetFromClipboard", Qt::DirectConnection));
+  EXPECT_EQ(other_family_widget->loadCount(), 0);
+}
+
+TEST(DockWidgetPlaceholderTest, PlaceholderPasteCreatesObjectWidgetFromClipboardXml) {
+  QGuiApplication::clipboard()->clear();
+
+  PJ::DockWidget source;
+  auto* source_widget = new FakeClipboardObjectWidget(QStringLiteral("scene2d"), QStringLiteral("camera"));
+  source.setObjectWidget(source_widget);
+  ASSERT_TRUE(QMetaObject::invokeMethod(&source, "copyObjectWidgetToClipboard", Qt::DirectConnection));
+
+  PJ::DockWidget target;
+  FakeClipboardObjectWidget* pasted_widget = nullptr;
+  target.setObjectWidgetFactory(
+      [&](const QString& kind, const PJ::ObjectDropSeed* seed, QWidget* parent) -> PJ::IDataWidget* {
+        if (kind != QStringLiteral("scene2d") || seed != nullptr) {
+          return nullptr;
+        }
+        pasted_widget = new FakeClipboardObjectWidget(kind, QStringLiteral("fresh"), parent);
+        return pasted_widget;
+      });
+  int undo_count = 0;
+  QObject::connect(&target, &PJ::DockWidget::undoableChange, &target, [&]() { ++undo_count; });
+
+  ASSERT_TRUE(QMetaObject::invokeMethod(&target, "updatePlaceholderPasteAction", Qt::DirectConnection));
+  auto* placeholder = target.findChild<PJ::VisualizationPlaceholderWidget*>();
+  ASSERT_NE(placeholder, nullptr);
+  auto* paste_action = findActionByText(placeholder, QStringLiteral("Paste"));
+  ASSERT_NE(paste_action, nullptr);
+  EXPECT_TRUE(paste_action->isEnabled());
+
+  ASSERT_TRUE(QMetaObject::invokeMethod(&target, "pastePlaceholderWidgetFromClipboard", Qt::DirectConnection));
+
+  ASSERT_NE(pasted_widget, nullptr);
+  EXPECT_EQ(target.objectWidget(), pasted_widget);
+  EXPECT_EQ(target.plotWidget(), nullptr);
+  EXPECT_EQ(pasted_widget->loadCount(), 1);
+  EXPECT_EQ(pasted_widget->loadedValue(), QStringLiteral("camera"));
+  EXPECT_EQ(undo_count, 1);
+}
+
+TEST(DockWidgetPlaceholderTest, EmptyPlotDoesNotBroadcastLinkedZoom) {
+  PJ::PlotWidget plot;
+  int rect_changed_count = 0;
+  QObject::connect(&plot, &PJ::PlotWidget::rectChanged, &plot, [&]() { ++rect_changed_count; });
+
+  ASSERT_TRUE(
+      QMetaObject::invokeMethod(
+          &plot, "onExternallyResized", Qt::DirectConnection, Q_ARG(QRectF, QRectF(0.0, 1.0, 1.0, -1.0))));
+
+  EXPECT_EQ(rect_changed_count, 0);
 }
 
 TEST(DockWidgetPlaceholderTest, PlaceholderSplitActionCreatesSiblingDock) {

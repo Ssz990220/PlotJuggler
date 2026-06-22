@@ -132,6 +132,10 @@ class PlotWidget : public PlotWidgetBase {
   bool eventFilter(QObject* obj, QEvent* event) override;
 
  private slots:
+  // Copies this plot's XML state to the widget clipboard.
+  void copyWidgetToClipboard();
+  // Replaces this plot's state from compatible clipboard XML.
+  void pasteWidgetFromClipboard();
   void onExternallyResized(const QRectF& rect);
   void onDragEnterEvent(QDragEnterEvent* event);
   void onDragLeaveEvent(QDragLeaveEvent* event);
@@ -149,6 +153,12 @@ class PlotWidget : public PlotWidgetBase {
 
   void buildActions();
   void canvasContextMenuTriggered(const QPoint& pos);
+  // True when the clipboard contains a plot XML payload.
+  [[nodiscard]] bool canPasteWidgetFromClipboard() const;
+  // Adds current opaque curve keys to copied XML for same-session paste.
+  void stampClipboardCurveKeys(QDomElement& plot_element) const;
+  // Resolves copied stable topic/field paths to this session's curve keys.
+  void rebindClipboardCurveKeys(QDomElement& plot_element) const;
   // Open the Filter Editor scoped to this plot's curves; on Save, add the
   // resulting filtered curve(s) to this plot.
   void launchFilterEditor();
@@ -177,6 +187,7 @@ class PlotWidget : public PlotWidgetBase {
   CurveTracker* reference_tracker_ = nullptr;
   bool tracker_enabled_ = true;
   bool show_points_ = true;
+  bool loading_state_ = false;
   QwtPlotMarker* show_point_marker_ = nullptr;
   QwtPlotMarker* show_point_text_ = nullptr;
   // Used to skip replot when the mouse drifts but the snapped sample is unchanged.

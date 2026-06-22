@@ -448,6 +448,12 @@ QMenu#PJMenu::separator {
     margin: 0;
 }
 
+QMenu#PJMenu[categorySeparators="true"]::separator {
+    height: 1px;
+    background-color: ${border_default};
+    margin: 3px 8px;
+}
+
 QMenu#PJMenu::right-arrow {
     image: url(":/resources/svg/keyboard_arrow_right_light.svg");
     width: 12px;

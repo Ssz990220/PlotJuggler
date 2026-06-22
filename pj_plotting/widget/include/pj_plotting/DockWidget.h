@@ -101,6 +101,14 @@ class DockWidget : public ads::CDockWidget, public IDataWidget {
 
  private slots:
   void onCatalogItemsDropped(const QStringList& keys);
+  // Copies the current object widget XML state to the widget clipboard.
+  void copyObjectWidgetToClipboard();
+  // Replaces the current object widget state from same-family clipboard XML.
+  void pasteObjectWidgetFromClipboard();
+  // Initializes the placeholder from compatible widget XML in the clipboard.
+  void pastePlaceholderWidgetFromClipboard();
+  // Refreshes the placeholder Paste action enabled state from the clipboard.
+  void updatePlaceholderPasteAction();
   // Routes a placeholder icon click: Plot is handled here (this dock owns plots);
   // scene families are forwarded via objectFamilyRequested for the shell to build.
   void onVisualizationRequested(VisualizationKind kind);
@@ -113,6 +121,12 @@ class DockWidget : public ads::CDockWidget, public IDataWidget {
   void installObjectContextMenuFilter(QWidget* root);
   void removeObjectContextMenuFilter(QWidget* root);
   void showObjectContextMenu(const QPoint& global_pos);
+  // Returns the current object widget's XML root tag.
+  [[nodiscard]] QString objectWidgetClipboardTag() const;
+  // True when clipboard XML matches the current object widget family.
+  [[nodiscard]] bool canPasteObjectWidgetFromClipboard() const;
+  // True when clipboard XML can initialize this placeholder as a supported widget.
+  [[nodiscard]] bool canPastePlaceholderWidgetFromClipboard() const;
   // Make this dock the focused one after it receives a drop, so its settings
   // become visible immediately (no-op if the manager has no focus controller).
   void focusSelf();

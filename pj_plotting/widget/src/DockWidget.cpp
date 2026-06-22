@@ -9,18 +9,22 @@
 #include <QAction>
 #include <QBoxLayout>
 #include <QContextMenuEvent>
+#include <QDomDocument>
+#include <QDomElement>
 #include <QDragEnterEvent>
 #include <QDragMoveEvent>
 #include <QDropEvent>
 #include <QIcon>
 #include <QLabel>
 #include <QMenu>
+#include <QMetaObject>
 #include <QMimeData>
 #include <QPushButton>
 #include <QUuid>
 #include <QWidget>
 #include <utility>
 
+#include "WidgetClipboard.h"
 #include "pj_plotting/DockToolbar.h"
 #include "pj_plotting/PlotDocker.h"
 #include "pj_plotting/PlotWidget.h"
@@ -40,6 +44,26 @@ bool isContentWidgetOrChild(QObject* watched, QWidget* content_widget) {
   auto* widget = qobject_cast<QWidget*>(watched);
   return widget != nullptr && content_widget != nullptr &&
          (widget == content_widget || content_widget->isAncestorOf(widget));
+}
+
+void addActionCategorySeparator(QMenu& menu) {
+  const QList<QAction*> actions = menu.actions();
+  if (!actions.isEmpty() && !actions.constLast()->isSeparator()) {
+    menu.addSeparator();
+  }
+}
+
+QDomElement clipboardWidgetElement(QDomDocument& doc) {
+  const QString payload = widget_clipboard::xml();
+  if (payload.isEmpty() || !doc.setContent(payload)) {
+    return {};
+  }
+  return doc.documentElement();
+}
+
+bool objectElementSeedsWidget(const QDomElement& element) {
+  return !element.firstChildElement(QStringLiteral("layer")).isNull() ||
+         !element.firstChildElement(QStringLiteral("config_topic")).isNull();
 }
 
 }  // namespace
@@ -109,6 +133,7 @@ void DockWidget::setDataServices(SessionManager* session, CatalogModel* catalog)
 
 void DockWidget::setObjectWidgetFactory(ObjectWidgetFactory factory) {
   object_widget_factory_ = std::move(factory);
+  updatePlaceholderPasteAction();
 }
 
 PlotWidget* DockWidget::plotWidget() {
@@ -198,6 +223,13 @@ void DockWidget::setPlaceholderWidget() {
   connect(
       placeholder_widget_, &VisualizationPlaceholderWidget::visualizationRequested, this,
       &DockWidget::onVisualizationRequested);
+  connect(
+      placeholder_widget_, &VisualizationPlaceholderWidget::pasteRequested, this,
+      &DockWidget::pastePlaceholderWidgetFromClipboard);
+  connect(
+      placeholder_widget_, &VisualizationPlaceholderWidget::contextMenuAboutToShow, this,
+      &DockWidget::updatePlaceholderPasteAction);
+  updatePlaceholderPasteAction();
 }
 
 void DockWidget::onVisualizationRequested(VisualizationKind kind) {
@@ -505,6 +537,115 @@ void DockWidget::focusSelf() {
   }
 }
 
+QString DockWidget::objectWidgetClipboardTag() const {
+  if (object_widget_ == nullptr) {
+    return {};
+  }
+  QDomDocument doc(QStringLiteral("plotjuggler_widget"));
+  const QDomElement element = object_widget_->xmlSaveState(doc);
+  return element.isNull() ? QString() : element.tagName();
+}
+
+void DockWidget::copyObjectWidgetToClipboard() {
+  if (object_widget_ == nullptr) {
+    return;
+  }
+  QDomDocument doc(QStringLiteral("plotjuggler_widget"));
+  QDomElement element = object_widget_->xmlSaveState(doc);
+  if (element.isNull()) {
+    return;
+  }
+  doc.appendChild(element);
+  widget_clipboard::setXml(doc.toString(2));
+}
+
+void DockWidget::pasteObjectWidgetFromClipboard() {
+  if (object_widget_ == nullptr) {
+    return;
+  }
+  QDomDocument doc;
+  if (!widget_clipboard::parse(doc, objectWidgetClipboardTag())) {
+    return;
+  }
+  const QDomElement element = doc.documentElement();
+  const bool seeds_empty_click_created_widget =
+      object_widget_awaiting_first_topic_ && (!element.firstChildElement(QStringLiteral("layer")).isNull() ||
+                                              !element.firstChildElement(QStringLiteral("config_topic")).isNull());
+  if (object_widget_->xmlLoadState(element)) {
+    if (seeds_empty_click_created_widget) {
+      object_widget_awaiting_first_topic_ = false;
+      emit firstObjectTopicAdded();
+    }
+    emit undoableChange();
+    focusSelf();
+  }
+}
+
+bool DockWidget::canPasteObjectWidgetFromClipboard() const {
+  QDomDocument doc;
+  return widget_clipboard::parse(doc, objectWidgetClipboardTag());
+}
+
+void DockWidget::pastePlaceholderWidgetFromClipboard() {
+  if (placeholder_widget_ == nullptr) {
+    return;
+  }
+  QDomDocument doc;
+  const QDomElement element = clipboardWidgetElement(doc);
+  if (element.isNull()) {
+    return;
+  }
+
+  if (element.tagName() == QStringLiteral("plot")) {
+    PlotWidget* plot = ensurePlotWidget();
+    if (plot == nullptr) {
+      return;
+    }
+    QMetaObject::invokeMethod(plot, "pasteWidgetFromClipboard", Qt::DirectConnection);
+    focusSelf();
+    return;
+  }
+
+  if (!object_widget_factory_) {
+    return;
+  }
+  IDataWidget* widget = object_widget_factory_(element.tagName(), nullptr, this);
+  if (widget == nullptr) {
+    return;
+  }
+  setObjectWidget(widget);
+  setName(QStringLiteral("..."));
+  const bool seeded = objectElementSeedsWidget(element);
+  if (!object_widget_->xmlLoadState(element)) {
+    setPlaceholderWidget();
+    return;
+  }
+  object_widget_awaiting_first_topic_ = !seeded;
+  if (seeded) {
+    emit firstObjectTopicAdded();
+  }
+  emit undoableChange();
+  focusSelf();
+}
+
+void DockWidget::updatePlaceholderPasteAction() {
+  if (placeholder_widget_ != nullptr) {
+    placeholder_widget_->setPasteActionEnabled(canPastePlaceholderWidgetFromClipboard());
+  }
+}
+
+bool DockWidget::canPastePlaceholderWidgetFromClipboard() const {
+  QDomDocument doc;
+  const QDomElement element = clipboardWidgetElement(doc);
+  if (element.isNull()) {
+    return false;
+  }
+  if (element.tagName() == QStringLiteral("plot")) {
+    return true;
+  }
+  return widget_clipboard::hasWidgetXml() && object_widget_factory_;
+}
+
 void DockWidget::clearCurrentContent(bool delete_content) {
   if (plot_widget_ != nullptr) {
     disconnect(plot_widget_, nullptr, this, nullptr);
@@ -559,13 +700,23 @@ void DockWidget::showObjectContextMenu(const QPoint& global_pos) {
   const QString theme = currentTheme();
   QMenu menu(this);
   menu.setObjectName(QStringLiteral("PJMenu"));
+  menu.setProperty("categorySeparators", true);
+  QAction* copy_action = menu.addAction(
+      QIcon(loadSvg(":/resources/svg/copy.svg", theme)), tr("Copy"), this, [this]() { copyObjectWidgetToClipboard(); });
+  copy_action->setEnabled(!objectWidgetClipboardTag().isEmpty());
+  QAction* paste_action = menu.addAction(
+      QIcon(loadSvg(":/resources/svg/paste.svg", theme)), tr("Paste"), this,
+      [this]() { pasteObjectWidgetFromClipboard(); });
+  paste_action->setEnabled(canPasteObjectWidgetFromClipboard());
+  addActionCategorySeparator(menu);
+
   menu.addAction(QIcon(loadSvg(":/resources/svg/add_column.svg", theme)), tr("Split Horizontally"), this, [this]() {
     splitHorizontal();
   });
   menu.addAction(QIcon(loadSvg(":/resources/svg/add_row.svg", theme)), tr("Split Vertically"), this, [this]() {
     splitVertical();
   });
-  menu.addSeparator();
+  addActionCategorySeparator(menu);
   menu.addAction(
       QIcon(loadSvg(":/resources/svg/clear.svg", theme)), tr("Clear"), this, [this]() { clearToPlaceholder(); });
   menu.exec(global_pos);

@@ -29,6 +29,8 @@ class VisualizationPlaceholderWidget : public QWidget {
   Q_OBJECT
  public:
   explicit VisualizationPlaceholderWidget(QWidget* parent = nullptr);
+  // Enables Paste when the host sees compatible widget XML in the clipboard.
+  void setPasteActionEnabled(bool enabled);
 
  public slots:
   // Re-tints the Plot / 2D / 3D icons through LoadSvg so they pick up
@@ -41,6 +43,10 @@ class VisualizationPlaceholderWidget : public QWidget {
   void catalogItemsDropped(QStringList keys);
   void splitHorizontalRequested();
   void splitVerticalRequested();
+  // Emitted when the placeholder Paste menu action is triggered.
+  void pasteRequested();
+  // Emitted just before the context menu is built so Paste state can refresh.
+  void contextMenuAboutToShow();
   // Emitted when the user clicks one of the family icons. The host converts the
   // placeholder into an empty widget of that family (no data bound yet).
   void visualizationRequested(VisualizationKind kind);
@@ -62,6 +68,7 @@ class VisualizationPlaceholderWidget : public QWidget {
   };
   QAction* action_split_horizontal_ = nullptr;
   QAction* action_split_vertical_ = nullptr;
+  QAction* action_paste_ = nullptr;
   std::vector<IconButton> icon_buttons_;
 };
 

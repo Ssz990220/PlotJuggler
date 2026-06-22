@@ -19,6 +19,7 @@ add_library(pj_plotting STATIC
     src/PlotWidgetBase.cpp
     src/PlotZoomer.cpp
     src/TabbedPlotWidget.cpp
+    src/WidgetClipboard.cpp
     include/pj_plotting/CurveEditor.h
     include/pj_plotting/FilterEditorPanel.h
     include/pj_plotting/ParameterForm.h

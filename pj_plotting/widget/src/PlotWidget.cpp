@@ -32,6 +32,7 @@
 #include <limits>
 #include <set>
 
+#include "WidgetClipboard.h"
 #include "pj_plotting/CurveTracker.h"
 #include "pj_plotting/DatastoreCurveAdapter.h"
 #include "pj_plotting/PlotLegend.h"
@@ -46,6 +47,13 @@ namespace PJ {
 namespace {
 
 constexpr int kHoverHitRadiusPx = 40;
+
+void addActionCategorySeparator(QMenu& menu) {
+  const QList<QAction*> actions = menu.actions();
+  if (!actions.isEmpty() && !actions.constLast()->isSeparator()) {
+    menu.addSeparator();
+  }
+}
 
 QString newStateId() {
   return QUuid::createUuid().toString(QUuid::WithoutBraces);
@@ -508,6 +516,9 @@ bool PlotWidget::xmlLoadState(const QDomElement& plot_element, bool autozoom) {
       plot_element.attribute(QStringLiteral("tracker_enabled"), QStringLiteral("true")) == QStringLiteral("true"));
   qwtPlot()->setTitle(plot_element.attribute(QStringLiteral("title")));
 
+  const bool was_loading_state = loading_state_;
+  loading_state_ = true;
+
   std::set<QString> desired_keys;
   for (QDomElement curve_element = plot_element.firstChildElement(QStringLiteral("curve")); !curve_element.isNull();
        curve_element = curve_element.nextSiblingElement(QStringLiteral("curve"))) {
@@ -561,6 +572,7 @@ bool PlotWidget::xmlLoadState(const QDomElement& plot_element, bool autozoom) {
   }
   applySavedViewportOrZoom(/*clear_after=*/false);
   replot();
+  loading_state_ = was_loading_state;
   return true;
 }
 
@@ -754,7 +766,9 @@ void PlotWidget::setCurveStyle(const QString& curve_name, CurveStyle style) {
       break;
   }
   replot();
-  emit undoableChange();
+  if (!loading_state_) {
+    emit undoableChange();
+  }
 }
 
 void PlotWidget::setCurveVisible(const QString& curve_name, bool visible) {
@@ -869,6 +883,9 @@ bool PlotWidget::eventFilter(QObject* obj, QEvent* event) {
 }
 
 void PlotWidget::onExternallyResized(const QRectF& rect) {
+  if (curveList().empty()) {
+    return;
+  }
   if (isXYPlot()) {
     if (keepRatioXY()) {
       // Wheel-zoom (magnifier) and pan bypass the drag-zoom keep-ratio path,
@@ -990,6 +1007,86 @@ void PlotWidget::buildActions() {
   });
 }
 
+void PlotWidget::copyWidgetToClipboard() {
+  QDomDocument doc(QStringLiteral("plotjuggler_widget"));
+  QDomElement plot_element = xmlSaveState(doc);
+  if (plot_element.isNull()) {
+    return;
+  }
+  stampClipboardCurveKeys(plot_element);
+  doc.appendChild(plot_element);
+  widget_clipboard::setXml(doc.toString(2));
+}
+
+void PlotWidget::pasteWidgetFromClipboard() {
+  QDomDocument doc;
+  if (!widget_clipboard::parse(doc, QStringLiteral("plot"))) {
+    return;
+  }
+  QDomElement plot_element = doc.documentElement();
+  plot_element.setAttribute(QStringLiteral("id"), state_id_);
+  rebindClipboardCurveKeys(plot_element);
+  if (xmlLoadState(plot_element)) {
+    emit undoableChange();
+  }
+}
+
+bool PlotWidget::canPasteWidgetFromClipboard() const {
+  QDomDocument doc;
+  return widget_clipboard::parse(doc, QStringLiteral("plot"));
+}
+
+void PlotWidget::stampClipboardCurveKeys(QDomElement& plot_element) const {
+  QDomElement curve_element = plot_element.firstChildElement(QStringLiteral("curve"));
+  for (const CurveInfo& info : curveList()) {
+    if (info.curve == nullptr || curve_element.isNull()) {
+      continue;
+    }
+    curve_element.setAttribute(QStringLiteral("name"), info.source_name);
+    if (auto* xy_series = dynamic_cast<PointSeriesXY*>(info.curve->data())) {
+      curve_element.setAttribute(QStringLiteral("curve_x"), xy_series->xSource().name);
+      curve_element.setAttribute(QStringLiteral("curve_y"), xy_series->ySource().name);
+    }
+    curve_element = curve_element.nextSiblingElement(QStringLiteral("curve"));
+  }
+}
+
+void PlotWidget::rebindClipboardCurveKeys(QDomElement& plot_element) const {
+  if (catalog_ == nullptr) {
+    return;
+  }
+  const auto resolve = [this](const QString& topic, const QString& field) -> QString {
+    if (topic.isEmpty() || field.isEmpty()) {
+      return {};
+    }
+    for (const CurveDescriptor& descriptor : catalog_->curves()) {
+      if (descriptor.topic_name == topic && descriptor.field_path == field) {
+        return descriptor.name;
+      }
+    }
+    return {};
+  };
+
+  for (QDomElement curve = plot_element.firstChildElement(QStringLiteral("curve")); !curve.isNull();
+       curve = curve.nextSiblingElement(QStringLiteral("curve"))) {
+    if (curve.hasAttribute(QStringLiteral("x_topic"))) {
+      const QString x_key =
+          resolve(curve.attribute(QStringLiteral("x_topic")), curve.attribute(QStringLiteral("x_field")));
+      const QString y_key =
+          resolve(curve.attribute(QStringLiteral("y_topic")), curve.attribute(QStringLiteral("y_field")));
+      if (!x_key.isEmpty() && !y_key.isEmpty()) {
+        curve.setAttribute(QStringLiteral("curve_x"), x_key);
+        curve.setAttribute(QStringLiteral("curve_y"), y_key);
+      }
+      continue;
+    }
+    const QString key = resolve(curve.attribute(QStringLiteral("topic")), curve.attribute(QStringLiteral("field")));
+    if (!key.isEmpty()) {
+      curve.setAttribute(QStringLiteral("name"), key);
+    }
+  }
+}
+
 void PlotWidget::canvasContextMenuTriggered(const QPoint& pos) {
   if (!context_menu_enabled_) {
     return;
@@ -997,6 +1094,7 @@ void PlotWidget::canvasContextMenuTriggered(const QPoint& pos) {
 
   QMenu menu(qwtPlot());
   menu.setObjectName(QStringLiteral("PJMenu"));
+  menu.setProperty("categorySeparators", true);
   // Refresh icons with the active theme on every popup so the
   // glyphs stay correctly tinted after a theme switch.
   const QString theme = currentTheme();
@@ -1013,16 +1111,23 @@ void PlotWidget::canvasContextMenuTriggered(const QPoint& pos) {
     menu.addAction(QIcon(loadSvg(":/resources/svg/function.svg", theme)), tr("Apply Filter..."), this, [this]() {
       launchFilterEditor();
     });
-    menu.addSeparator();
+    addActionCategorySeparator(menu);
   }
+
+  menu.addAction(
+      QIcon(loadSvg(":/resources/svg/copy.svg", theme)), tr("Copy"), this, [this]() { copyWidgetToClipboard(); });
+  QAction* paste_action = menu.addAction(
+      QIcon(loadSvg(":/resources/svg/paste.svg", theme)), tr("Paste"), this, [this]() { pasteWidgetFromClipboard(); });
+  paste_action->setEnabled(canPasteWidgetFromClipboard());
+  addActionCategorySeparator(menu);
 
   menu.addAction(action_split_horizontal_);
   menu.addAction(action_split_vertical_);
-  menu.addSeparator();
+  addActionCategorySeparator(menu);
   menu.addAction(action_zoom_out_);
   menu.addAction(action_zoom_out_horizontal_);
   menu.addAction(action_zoom_out_vertical_);
-  menu.addSeparator();
+  addActionCategorySeparator(menu);
   menu.addAction(action_remove_all_curves_);
   action_remove_all_curves_->setEnabled(!curveList().empty());
   menu.exec(qwtPlot()->canvas()->mapToGlobal(pos));

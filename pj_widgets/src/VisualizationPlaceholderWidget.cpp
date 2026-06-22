@@ -72,6 +72,10 @@ VisualizationPlaceholderWidget::VisualizationPlaceholderWidget(QWidget* parent) 
   action_split_vertical_ = new QAction(tr("&Split Vertically"), this);
   connect(action_split_vertical_, &QAction::triggered, this, [this]() { emit splitVerticalRequested(); });
 
+  action_paste_ = new QAction(tr("&Paste"), this);
+  action_paste_->setEnabled(false);
+  connect(action_paste_, &QAction::triggered, this, [this]() { emit pasteRequested(); });
+
   auto* layout = new QHBoxLayout(this);
   layout->setContentsMargins(0, 0, 0, 0);
   layout->setSpacing(10);
@@ -101,6 +105,12 @@ VisualizationPlaceholderWidget::VisualizationPlaceholderWidget(QWidget* parent) 
   // Initial paint at whatever theme is currently active. Subsequent
   // changes flow in through onStylesheetChanged.
   onStylesheetChanged(currentTheme());
+}
+
+void VisualizationPlaceholderWidget::setPasteActionEnabled(bool enabled) {
+  if (action_paste_ != nullptr) {
+    action_paste_->setEnabled(enabled);
+  }
 }
 
 void VisualizationPlaceholderWidget::onStylesheetChanged(const QString& theme) {
@@ -169,16 +179,21 @@ void VisualizationPlaceholderWidget::dropEvent(QDropEvent* event) {
 }
 
 void VisualizationPlaceholderWidget::showSplitContextMenu(const QPoint& global_pos) {
+  emit contextMenuAboutToShow();
   updateSplitActionIcons(currentTheme());
 
   QMenu menu(this);
   menu.setObjectName(QStringLiteral("PJMenu"));
+  menu.setProperty("categorySeparators", true);
+  menu.addAction(action_paste_);
+  menu.addSeparator();
   menu.addAction(action_split_horizontal_);
   menu.addAction(action_split_vertical_);
   menu.exec(global_pos);
 }
 
 void VisualizationPlaceholderWidget::updateSplitActionIcons(const QString& theme) {
+  action_paste_->setIcon(QIcon(loadSvg(":/resources/svg/paste.svg", theme)));
   action_split_horizontal_->setIcon(QIcon(loadSvg(":/resources/svg/add_column.svg", theme)));
   action_split_vertical_->setIcon(QIcon(loadSvg(":/resources/svg/add_row.svg", theme)));
 }

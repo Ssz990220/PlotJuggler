@@ -1792,6 +1792,9 @@ void MainWindow::onPlotZoomChanged(PlotWidget* modified, QRectF rect) {
   if (!button_link_->isChecked()) {
     return;
   }
+  if (modified == nullptr || modified->isEmpty() || modified->isXYPlot() || !modified->isZoomLinkEnabled()) {
+    return;
+  }
 
   forEachPlot([modified, rect](PlotWidget* plot) {
     if (plot == modified || plot->isEmpty() || plot->isXYPlot() || !plot->isZoomLinkEnabled()) {
