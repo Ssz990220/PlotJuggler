@@ -63,15 +63,15 @@ done
 # `./run.sh` can open MCAP/CSV/etc. without a Marketplace install. The app's
 # built-in default (QStandardPaths AppDataLocation/extensions) is empty on a
 # dev box, so without this you get "No DataSource plugin handles .mcap files".
-# Build them with: (cd pj-official-plugins && ./build.sh). Overridable: pass
+# Build them with: (cd ../pj-official-plugins && ./build.sh). Overridable: pass
 # your own --plugin-dir, or set PJ_PLUGIN_DIR, to take precedence.
-DEFAULT_PLUGIN_DIR="${PJ_PLUGIN_DIR:-${SCRIPT_DIR}/pj-official-plugins/build/all/Release/bin}"
+DEFAULT_PLUGIN_DIR="${PJ_PLUGIN_DIR:-${SCRIPT_DIR}/../pj-official-plugins/build/all/Release/bin}"
 if [ "$user_set_plugin_dir" -eq 0 ]; then
   if [ -d "$DEFAULT_PLUGIN_DIR" ]; then
     app_args+=("--plugin-dir" "$DEFAULT_PLUGIN_DIR")
   else
     echo "run.sh: no plugin dir at ${DEFAULT_PLUGIN_DIR} — data-source plugins (MCAP, CSV, …) won't load." >&2
-    echo "run.sh: build them with: (cd pj-official-plugins && ./build.sh)" >&2
+    echo "run.sh: build them with: (cd ../pj-official-plugins && ./build.sh)" >&2
   fi
 fi
 

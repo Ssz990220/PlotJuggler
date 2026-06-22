@@ -91,6 +91,13 @@ class DataSourceRuntimeHost {
   // builder used to bind the DataSource plugin.
   void registerServices(ServiceRegistryBuilder& registry);
 
+  // Fat pointer to this runtime host for handing across the C ABI outside of
+  // registerServices() — ToolboxRuntimeHost's parser-ingest slots return it.
+  // Valid only while this object lives.
+  [[nodiscard]] PJ_data_source_runtime_host_t hostHandle() noexcept {
+    return PJ_data_source_runtime_host_t{.ctx = this, .vtable = &kVtable};
+  }
+
   // Flushes the source write host and every parser binding's write host.
   // Must be called once after handle.start() returns successfully so pending
   // rows reach the DataReader — open chunks are invisible until sealed, and

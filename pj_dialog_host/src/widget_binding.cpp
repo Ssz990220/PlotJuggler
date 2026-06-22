@@ -4,6 +4,7 @@
 #include <pj_widgets/DateRangePicker.h>
 #include <pj_widgets/RangeSlider.h>
 #include <pj_widgets/SvgUtil.h>
+#include <pj_widgets/ToggleSwitch.h>
 
 #include <QCheckBox>
 #include <QComboBox>
@@ -29,6 +30,7 @@
 #include <QSplitter>
 #include <QStyle>
 #include <QSvgRenderer>
+#include <QTabBar>
 #include <QTabWidget>
 #include <QTableWidget>
 #include <QTextCursor>
@@ -344,6 +346,14 @@ static void applyToWidget(QWidget* w, std::string_view name, const PJ::WidgetDat
     return;
   }
 
+  // --- ToggleSwitch (iOS-style toggle; QWidget, not QCheckBox) ---
+  if (auto* ts = qobject_cast<ToggleSwitch*>(w)) {
+    if (auto v = view.checked(name)) {
+      ts->setChecked(*v, /*animate=*/false);  // no animation on programmatic sync
+    }
+    return;
+  }
+
   // --- QRadioButton ---
   if (auto* rb = qobject_cast<QRadioButton*>(w)) {
     if (auto v = view.checked(name)) {
@@ -513,6 +523,19 @@ static void applyToWidget(QWidget* w, std::string_view name, const PJ::WidgetDat
 
   // --- QTabWidget ---
   if (auto* tw = qobject_cast<QTabWidget*>(w)) {
+    // Stretch the tabs across the full bar width. Load-bearing for panels that
+    // set documentMode in their .ui — the only mode in which the tab bar gets
+    // the full pane width — because QTabWidget::setDocumentMode() resets
+    // QTabBar::expanding to false during the .ui load. Harmless for
+    // non-document tab widgets (their bar stays at sizeHint, where expanding
+    // has nothing to distribute).
+    tw->tabBar()->setExpanding(true);
+    if (tw->documentMode()) {
+      // Document-mode bars paint a base line across the non-selected tabs
+      // (PE_FrameTabBarBase); the app's flat tab styling has no pane frame
+      // for it to connect to, so it reads as a stray line. Drop it.
+      tw->tabBar()->setDrawBase(false);
+    }
     if (auto v = view.tabIndex(name)) {
       tw->setCurrentIndex(*v);
     }
@@ -571,6 +594,16 @@ static void applyToWidget(QWidget* w, std::string_view name, const PJ::WidgetDat
         });
         rs->update();
       }
+    }
+    // Boundary markers (chunk lines + labels + in-range shading). nullopt = no
+    // change; an explicit empty list clears them.
+    if (auto markers = view.rangeSliderMarkers(name)) {
+      std::vector<RangeSlider::Marker> out;
+      out.reserve(markers->size());
+      for (const auto& m : *markers) {
+        out.push_back({m.start, m.end, QString::fromStdString(m.label)});
+      }
+      rs->setMarkers(std::move(out));
     }
     return;
   }
@@ -723,6 +756,12 @@ void connectWidgetSignals(QWidget* root, WidgetEventCallback callback) {
     }
     if (auto* ck = qobject_cast<QCheckBox*>(w)) {
       QObject::connect(ck, &QCheckBox::toggled, ck, [callback, name](bool checked) {
+        callback(name, WidgetEventBuilder::toggled(checked));
+      });
+      continue;
+    }
+    if (auto* ts = qobject_cast<ToggleSwitch*>(w)) {
+      QObject::connect(ts, &ToggleSwitch::toggled, ts, [callback, name](bool checked) {
         callback(name, WidgetEventBuilder::toggled(checked));
       });
       continue;

@@ -144,6 +144,18 @@ if(PJ_BUILD_TESTS)
     )
     add_test(NAME ToolboxRuntimeHostTest COMMAND toolbox_runtime_host_test)
 
+    # Env-gated integration test against the REAL parser_ros plugin (SKIPs
+    # unless PJ_REAL_ROS_PARSER_DIR points at the built parser_ros .so dir).
+    add_executable(toolbox_parser_ingest_real_ros_test
+        tests/toolbox_parser_ingest_real_ros_test.cpp
+    )
+    target_compile_options(toolbox_parser_ingest_real_ros_test PRIVATE ${PJ_WARNING_FLAGS})
+    target_link_libraries(toolbox_parser_ingest_real_ros_test PRIVATE
+        pj_runtime
+        GTest::gtest
+    )
+    add_test(NAME ToolboxParserIngestRealRosTest COMMAND toolbox_parser_ingest_real_ros_test)
+
     add_library(runtime_host_object_parser_plugin SHARED
         tests/runtime_host_object_parser_plugin.cpp
     )
@@ -152,6 +164,14 @@ if(PJ_BUILD_TESTS)
     target_link_libraries(runtime_host_object_parser_plugin PRIVATE
         pj_plugin_sdk
     )
+
+    # The parser-ingest tests in toolbox_runtime_host_test load the same stub
+    # parser plugin the DataSource ingest test uses (defined just above, hence
+    # the wiring lives here rather than next to the test target).
+    target_compile_definitions(toolbox_runtime_host_test PRIVATE
+        PJ_RUNTIME_HOST_OBJECT_PARSER_PATH="$<TARGET_FILE:runtime_host_object_parser_plugin>"
+    )
+    add_dependencies(toolbox_runtime_host_test runtime_host_object_parser_plugin)
 
     add_executable(data_source_runtime_host_object_ingest_test
         tests/data_source_runtime_host_object_ingest_test.cpp

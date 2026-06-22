@@ -269,10 +269,7 @@ DataSourceRuntimeHost::~DataSourceRuntimeHost() = default;
 void DataSourceRuntimeHost::registerServices(ServiceRegistryBuilder& registry) {
   registry.registerService<sdk::SourceWriteHostService>(source_write_host_.raw());
   registry.registerService<sdk::SourceObjectWriteHostService>(source_object_write_host_.raw());
-  registry.registerService<sdk::DataSourceRuntimeHostService>(PJ_data_source_runtime_host_t{
-      .ctx = this,
-      .vtable = &kVtable,
-  });
+  registry.registerService<sdk::DataSourceRuntimeHostService>(hostHandle());
 }
 
 void DataSourceRuntimeHost::flushAll() {

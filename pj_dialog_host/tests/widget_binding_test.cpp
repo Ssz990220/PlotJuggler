@@ -6,6 +6,7 @@
 // RangeSlider data binding (bounds/values + duration labels), and the generic
 // field-validity indicator (setFieldValid).
 
+#include <pj_widgets/ComboBox.h>
 #include <pj_widgets/CredentialsEditor.h>
 #include <pj_widgets/DateRangePicker.h>
 #include <pj_widgets/RangeSlider.h>
@@ -14,6 +15,8 @@
 #include <QBuffer>
 #include <QComboBox>
 #include <QLineEdit>
+#include <QTabBar>
+#include <QTabWidget>
 #include <QWidget>
 #include <nlohmann/json.hpp>
 #include <pj_plugins/host/widget_data_view.hpp>
@@ -57,6 +60,7 @@ TEST(PjUiLoader, RegistersBuildingBlocks) {
    <item><widget class="RangeSlider" name="rangeSlider"/></item>
    <item><widget class="DateRangePicker" name="datePicker"/></item>
    <item><widget class="CredentialsEditor" name="certContents"/></item>
+   <item><widget class="PJ::ComboBox" name="pjCombo"/></item>
    <item><widget class="QLineEdit" name="plainEdit"/></item>
   </layout>
  </widget>
@@ -70,6 +74,9 @@ TEST(PjUiLoader, RegistersBuildingBlocks) {
   EXPECT_NE(root->findChild<PJ::RangeSlider*>("rangeSlider"), nullptr);
   EXPECT_NE(root->findChild<PJ::DateRangePicker*>("datePicker"), nullptr);
   EXPECT_NE(root->findChild<PJ::CredentialsEditor*>("certContents"), nullptr);
+  // The canonical dropdown must come back as the real PJ::ComboBox (gradient
+  // popup), not the plain QComboBox the base loader would create.
+  EXPECT_NE(root->findChild<PJ::ComboBox*>("pjCombo"), nullptr);
   // The cert dialog addresses CredentialsEditor's inner inputs by name; they
   // must be reachable for the plugin's setText("certPath"/...) to land.
   EXPECT_NE(root->findChild<QLineEdit*>("certPath"), nullptr);
@@ -222,6 +229,57 @@ TEST(WidgetBindingCombo, ChangedItemsRebuild) {
   PJ::applyWidgetData(&root, PJ::WidgetDataView(wd.toJson()));
 
   EXPECT_EQ(combo->count(), 3);
+}
+
+// Full-width tabs contract (dexory_cloud_panel.ui "filterTabs"): a tab bar only
+// gets the whole pane width in documentMode, and Qt's setDocumentMode(true)
+// resets QTabBar::expanding to false during the .ui load — so the QTabWidget
+// binding must re-assert expanding on apply or document-mode tabs silently
+// stop stretching. Pins both halves of that sequence.
+TEST(WidgetBindingTabWidget, DocumentModeSurvivesLoadAndApplyRestoresExpanding) {
+  qapp();
+  const QByteArray ui = R"(<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>Root</class>
+ <widget class="QWidget" name="Root">
+  <layout class="QVBoxLayout">
+   <item>
+    <widget class="QTabWidget" name="filterTabs">
+     <property name="documentMode"><bool>true</bool></property>
+     <widget class="QWidget" name="basicTab">
+      <attribute name="title"><string>Basic</string></attribute>
+      <layout class="QVBoxLayout"/>
+     </widget>
+     <widget class="QWidget" name="advancedTab">
+      <attribute name="title"><string>Advanced</string></attribute>
+      <layout class="QVBoxLayout"/>
+     </widget>
+    </widget>
+   </item>
+  </layout>
+ </widget>
+</ui>)";
+  QByteArray data(ui);
+  QBuffer buffer(&data);
+  buffer.open(QIODevice::ReadOnly);
+  PJ::PjUiLoader loader;
+  QWidget* root = loader.load(&buffer);
+  ASSERT_NE(root, nullptr);
+  auto* tabs = root->findChild<QTabWidget*>("filterTabs");
+  ASSERT_NE(tabs, nullptr);
+  EXPECT_TRUE(tabs->documentMode()) << "QUiLoader must honor the .ui documentMode property";
+  EXPECT_FALSE(tabs->tabBar()->expanding()) << "precondition: setDocumentMode(true) resets expanding";
+  EXPECT_TRUE(tabs->tabBar()->drawBase()) << "precondition: Qt defaults to drawing the tab-bar base";
+
+  PJ::WidgetData wd;
+  wd.setTabIndex("filterTabs", 1);
+  PJ::applyWidgetData(root, PJ::WidgetDataView(wd.toJson()));
+
+  EXPECT_TRUE(tabs->tabBar()->expanding()) << "apply must re-assert expanding after the documentMode reset";
+  EXPECT_FALSE(tabs->tabBar()->drawBase())
+      << "apply must drop the document-mode base line (stray line over the unselected tab)";
+  EXPECT_EQ(tabs->currentIndex(), 1);
+  delete root;
 }
 
 }  // namespace

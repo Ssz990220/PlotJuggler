@@ -3,16 +3,25 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include <QObject>
+#include <cstdint>
 #include <functional>
+#include <memory>
+#include <mutex>
 #include <string>
+#include <unordered_map>
+#include <vector>
 
 #include "pj_base/sdk/settings_store_host.hpp"
 #include "pj_base/toolbox_protocol.h"
+#include "pj_datastore/object_store.hpp"
 #include "pj_datastore/plugin_data_host.hpp"
 
 namespace PJ {
 
 class DataEngine;
+class DataSourceRuntimeHost;
+class ExtensionCatalogService;
+class MessageParserHandle;
 class ObjectStore;
 class ServiceRegistryBuilder;
 
@@ -34,14 +43,42 @@ class ToolboxRuntimeHost {
   // GUI thread) — see marshaller_. Safe to touch Qt models / session state.
   struct Callbacks {
     // Fired after notify_data_changed flushes buffered writes — the host
-    // rebuilds its catalog / reseeds playback here.
-    std::function<void()> on_data_changed;
+    // rebuilds its catalog / reseeds playback here. `ingested_datasets` lists
+    // the toolbox-created datasets that received a parser-ingest context
+    // (create_parser_ingest) since the PREVIOUS notify — i.e. a bulk import
+    // shaped like a file load (the cloud connector's fetch). Empty for plain
+    // write-API toolboxes. Hosts use it to FOCUS playback on the imported
+    // data: a 10s cloud snippet must present a 10s timeline, not be unioned
+    // into whatever range the session already had.
+    std::function<void(std::vector<DatasetId> ingested_datasets)> on_data_changed;
     // Fired for each plugin diagnostic — routed to the app's notification UI.
     std::function<void(PJ_toolbox_message_level_t, std::string)> on_message;
   };
 
+  // Optional dependencies enabling the parser-ingest tail slots. With a null
+  // catalog the slots fail "not configured" — headless tests and embedders
+  // that load no parser plugins keep working unchanged.
+  struct ParserIngestDeps {
+    ExtensionCatalogService* catalog = nullptr;
+    // Receives the render-time parser instance for every object topic a
+    // parser binding registers — same contract as FileLoader's registrar
+    // (forward to SessionManager::registerObjectTopicParser). May be invoked
+    // from a toolbox worker thread.
+    std::function<void(ObjectTopicId, std::unique_ptr<MessageParserHandle>)> register_object_parser;
+  };
+
+  // The 4-arg overload (no parser-ingest deps) delegates to the 5-arg one —
+  // GCC rejects `ParserIngestDeps{}` as a default argument here because the
+  // nested struct's member initializers aren't usable until the enclosing
+  // class is complete.
   ToolboxRuntimeHost(
       DataEngine& engine, ObjectStore& object_store, sdk::SettingsBackend& settings, Callbacks callbacks);
+  ToolboxRuntimeHost(
+      DataEngine& engine, ObjectStore& object_store, sdk::SettingsBackend& settings, Callbacks callbacks,
+      ParserIngestDeps parser_ingest);
+  // Out-of-line: parser_ingests_ holds unique_ptr<DataSourceRuntimeHost>
+  // (incomplete here); also flushes any context the toolbox never released.
+  ~ToolboxRuntimeHost();
 
   ToolboxRuntimeHost(const ToolboxRuntimeHost&) = delete;
   ToolboxRuntimeHost& operator=(const ToolboxRuntimeHost&) = delete;
@@ -53,10 +90,34 @@ class ToolboxRuntimeHost {
  private:
   static void onReportMessage(void* ctx, PJ_toolbox_message_level_t level, PJ_string_view_t message) noexcept;
   static void onNotifyDataChanged(void* ctx) noexcept;
+  static bool onCreateParserIngest(
+      void* ctx, uint32_t data_source_id, PJ_data_source_runtime_host_t* out_host, PJ_error_t* out_error) noexcept;
+  static bool onReleaseParserIngest(void* ctx, uint32_t data_source_id, PJ_error_t* out_error) noexcept;
 
   DatastoreToolboxHost write_host_;
   sdk::SettingsStoreHost settings_host_;
   Callbacks callbacks_;
+  DataEngine& engine_;
+  ObjectStore& object_store_;
+  ParserIngestDeps parser_ingest_deps_;
+  // Guards map consistency among concurrent create/release calls and keeps the
+  // teardown flush from interleaving with an in-flight create/release. It does
+  // NOT make destruction safe against a still-running plugin worker: as with
+  // report_message/notify_data_changed, the plugin must be unbound and its
+  // worker quiesced before this host is destroyed ("valid until ... host
+  // teardown" in toolbox_protocol.h). Concurrent create+release of the SAME id
+  // is protocol-violating plugin behavior and out of contract.
+  std::mutex parser_ingest_mu_;
+  // One delegated-ingest session per toolbox-created dataset, keyed by the
+  // data-source handle id (== DatasetId). Reuses the exact machinery file
+  // loads use — catalog lookup, classifySchema, ObjectStore registration,
+  // render-parser registrar — on a toolbox-created dataset.
+  std::unordered_map<uint32_t, std::unique_ptr<DataSourceRuntimeHost>> parser_ingests_;
+  // Datasets that received a parser-ingest context since the last
+  // notify_data_changed — drained (on the GUI thread) into the
+  // on_data_changed callback so the host can focus playback on them.
+  // Guarded by parser_ingest_mu_.
+  std::vector<DatasetId> pending_ingest_datasets_;
   PJ_toolbox_runtime_host_vtable_t runtime_vtable_;
   PJ_toolbox_runtime_host_t runtime_;
   // The toolbox runtime-host vtable advertises report_message/notify_data_changed

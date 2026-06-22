@@ -129,4 +129,60 @@ bool AppSession::seedPlaybackFromSession() {
   return true;
 }
 
+bool AppSession::focusPlaybackOnDatasets(const std::vector<DatasetId>& datasets) {
+  if (datasets.empty()) {
+    return false;
+  }
+  const DataReader reader = session_manager_->createReader();
+  const ObjectStore& object_store = session_manager_->objectStore();
+
+  // Scalar series first: receive-time stamped, they ARE the user-visible
+  // window of an import. Object topics (tf, markers, pointclouds) often carry
+  // payload-embedded stamps that legitimately predate the import window
+  // (tf_static = node start, latched markers = creation time), so they only
+  // define the range when the import contains no scalar data at all. Bounds
+  // are tracked in DISPLAY-relative seconds, converting each item with its
+  // dataset's own offset (display_time = raw_time - offset) so the focused
+  // range matches the rendered axis — same boundary contract as
+  // seedPlaybackFromSession.
+  std::optional<DisplaySeconds> scalar_min;
+  std::optional<DisplaySeconds> scalar_max;
+  std::optional<DisplaySeconds> object_min;
+  std::optional<DisplaySeconds> object_max;
+
+  for (const DatasetId dataset_id : datasets) {
+    const DisplayOffset offset = session_manager_->displayOffset(dataset_id);
+    for (const TopicId topic_id : reader.listTopics(dataset_id)) {
+      const auto metadata = reader.getMetadata(topic_id);
+      if (!metadata.has_value() || metadata->total_row_count == 0) {
+        continue;
+      }
+      const DisplaySeconds ds_min = rawToDisplaySeconds(metadata->time_range_min, offset);
+      const DisplaySeconds ds_max = rawToDisplaySeconds(metadata->time_range_max, offset);
+      scalar_min = scalar_min ? std::min(*scalar_min, ds_min) : ds_min;
+      scalar_max = scalar_max ? std::max(*scalar_max, ds_max) : ds_max;
+    }
+    for (const ObjectTopicId object_topic_id : object_store.listTopics(dataset_id)) {
+      if (object_store.entryCount(object_topic_id) == 0) {
+        continue;
+      }
+      const auto [o_min, o_max] = object_store.timeRange(object_topic_id);
+      const DisplaySeconds ds_min = rawToDisplaySeconds(o_min, offset);
+      const DisplaySeconds ds_max = rawToDisplaySeconds(o_max, offset);
+      object_min = object_min ? std::min(*object_min, ds_min) : ds_min;
+      object_max = object_max ? std::max(*object_max, ds_max) : ds_max;
+    }
+  }
+
+  const std::optional<DisplaySeconds> t_min = scalar_min ? scalar_min : object_min;
+  const std::optional<DisplaySeconds> t_max = scalar_min ? scalar_max : object_max;
+  if (!t_min) {
+    return false;
+  }
+  playback_engine_->setRange(DisplayRange{*t_min, *t_max});
+  playback_engine_->setCurrentTime(*t_min);
+  playback_seeded_ = true;
+  return true;
+}
+
 }  // namespace PJ

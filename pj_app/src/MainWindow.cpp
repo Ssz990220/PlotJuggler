@@ -3940,9 +3940,30 @@ void MainWindow::launchToolbox(const QString& plugin_id) {
 
   const QString source = it->name.empty() ? plugin_id : QString::fromStdString(it->name);
   ToolboxRuntimeHost::Callbacks callbacks;
-  callbacks.on_data_changed = [this]() {
+  callbacks.on_data_changed = [this](std::vector<DatasetId> ingested_datasets) {
     session_->catalogModel().rebuildFromDatastore();
-    session_->seedPlaybackFromSession();
+    // Bridge ingested kFrameTransforms object topics into the 3D scene's TF
+    // buffers — the SAME step the file loader does (FileLoader.cpp ~713-727).
+    // Without it a toolbox/cloud dataset registers its /tf object topic in the
+    // ObjectStore but the per-dataset TransformBuffer stays empty, so the 3D
+    // frame dropdown is blank and pointclouds (which resolve through TF) never
+    // render. Runs AFTER the catalog rebuild so the object topics + their
+    // render parsers are registered; ingest is idempotent (invalidate first so
+    // a re-fetch of the same dataset re-ingests the new transforms).
+    if (transform_service_ != nullptr) {
+      for (const DatasetId id : ingested_datasets) {
+        transform_service_->invalidateDataset(id);
+        transform_service_->ingestFrameTransformsForDataset(id);
+      }
+    }
+    // A parser-ingest import (the cloud connector's fetch) gets FOCUS
+    // semantics: the timeline snaps to the imported data so a 10s snippet
+    // plays back as 10s — the monotonic union would bury it inside whatever
+    // range earlier fetches/loads established. Plain write-API toolboxes
+    // (empty list) keep the union seeding.
+    if (ingested_datasets.empty() || !session_->focusPlaybackOnDatasets(ingested_datasets)) {
+      session_->seedPlaybackFromSession();
+    }
   };
   callbacks.on_message = [this, source](PJ_toolbox_message_level_t level, std::string message) {
     if (diagnostic_history_ == nullptr) {
@@ -3957,9 +3978,24 @@ void MainWindow::launchToolbox(const QString& plugin_id) {
     diagnostic_history_->record(diag, source, QStringLiteral("toolbox"), QString::fromStdString(message));
   };
 
+  // Parser-ingest deps: the plugin catalog for ensureParserBinding lookups and
+  // the SessionManager registrar for render-time object parsers. The registrar
+  // may fire on the toolbox worker thread mid-download — marshal to the GUI
+  // thread (same discipline as the host's own callbacks); the queued
+  // registration always lands before the later-queued notify_data_changed
+  // catalog rebuild. shared_ptr wrapper: std::function requires copyable.
+  ToolboxRuntimeHost::ParserIngestDeps ingest_deps;
+  ingest_deps.catalog = &session_->extensionCatalog();
+  ingest_deps.register_object_parser = [this](ObjectTopicId id, std::unique_ptr<MessageParserHandle> parser) {
+    auto shared = std::make_shared<std::unique_ptr<MessageParserHandle>>(std::move(parser));
+    QMetaObject::invokeMethod(
+        this, [this, id, shared]() { session_->sessionManager().registerObjectTopicParser(id, std::move(*shared)); },
+        Qt::AutoConnection);
+  };
+
   session->host = std::make_unique<ToolboxRuntimeHost>(
       session_->sessionManager().dataEngine(), session_->sessionManager().objectStore(), *session->settings,
-      std::move(callbacks));
+      std::move(callbacks), std::move(ingest_deps));
   session->host->registerServices(*session->builder);
 
   // 3. Create the toolbox instance and bind it to the assembled services.

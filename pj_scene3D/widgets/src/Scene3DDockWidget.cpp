@@ -294,30 +294,57 @@ void Scene3DDockWidget::setTransformService(pj::scene3d::TransformService* servi
   if (view_ != nullptr && tf_buffer_ != nullptr) {
     view_->setTransformBuffer(tf_buffer_);
   }
+  // A dataset's TF buffer can be filled AFTER this dock already bound (and read)
+  // it empty. Two paths drive this: (1) a progressive file load folds
+  // FrameTransforms in incrementally and emits datasetTransformsReady per flush;
+  // (2) the cloud toolbox ingests /tf in on_data_changed, post-download (the
+  // file-open path instead ingests eagerly at load time, FileLoader.cpp, so the
+  // buffer is already full when a view first binds it). The fill is in place (the
+  // dock keeps the same shared_ptr), but the view caches its frame list + the
+  // orphan/fixed-frame state at bind time and re-reads only on
+  // setTransformBuffer/setTrackerTime — and setTransformBuffer no-ops on an
+  // unchanged pointer. So subscribe (one lifecycle-managed connection, reset at
+  // the top of this function) and re-read on a late fill. Ingest runs on the GUI
+  // thread (the parser-ingest registrar is GUI-marshalled), so this is a direct,
+  // thread-safe call.
   if (transform_service_ != nullptr) {
-    // A progressive file load folds FrameTransforms into the buffer incrementally
-    // and emits this per flush. Re-resolve our layers against the new transforms at
-    // the instant we are showing so the scene fills in as the file loads instead of
-    // only at the end. Filter to our dataset; before any layer binds
-    // representativeDatasetId() is 0 (no match, nothing to draw yet) and the dock
-    // self-heals on the next signal once a layer resolves.
     tf_ready_conn_ = connect(
         transform_service_, &pj::scene3d::TransformService::datasetTransformsReady, this,
-        [this](PJ::DatasetId dataset_id) {
-          if (dataset_id == representativeDatasetId()) {
-            // Re-enumerate the frame tree from the (now-larger) buffer. The frame
-            // combos must reflect the WHOLE buffer, not the frames resolvable at the
-            // current playhead — and a file load folds TF in while the tracker is
-            // paused, so the time-gated refresh inside setTrackerTime (below, via
-            // onTrackerTime) won't fire. Cheap: refreshAvailableFrames re-emits only
-            // when the frame set actually changed.
-            if (view_ != nullptr) {
-              view_->refreshAvailableFrames();
-            }
-            onTrackerTime(last_tracker_display_);
-          }
-        });
+        &Scene3DDockWidget::onDatasetTransformsReady, Qt::UniqueConnection);
   }
+}
+
+void Scene3DDockWidget::onDatasetTransformsReady(DatasetId dataset_id) {
+  // Only react when this dock is showing that dataset's TF. The dock binds a
+  // single per-dataset buffer (prepareTransformBufferForTopic); compare object
+  // identity against the service's buffer for the ready dataset. It exists by
+  // now — ingest just populated it — so transformBuffer() does not spuriously
+  // create one, and a non-matching dataset is correctly ignored. Before any
+  // layer binds tf_buffer_ is null and we early-return (nothing to draw yet); the
+  // dock self-heals on the next signal once a layer resolves.
+  if (view_ == nullptr || transform_service_ == nullptr || tf_buffer_ == nullptr) {
+    return;
+  }
+  if (tf_buffer_ != transform_service_->transformBuffer(dataset_id)) {
+    return;
+  }
+  // Re-read the now-full buffer. setTransformBuffer would early-return on the
+  // unchanged shared_ptr, so refresh the view's frame hierarchy directly: that
+  // re-enumerates the WHOLE buffer (not just frames resolvable at the playhead)
+  // and emits framesChanged -> onAvailableFrames, which (on a non-empty set)
+  // re-picks the fixed frame and recomputes orphan states, clearing the red layer
+  // name. Recompute orphans here too in case the frame SET is unchanged (e.g. a
+  // re-ingest of identical TF) but layer membership changed since the last poll.
+  view_->refreshAvailableFrames();
+  recomputeOrphanStates();
+  // A progressive file load folds TF in while the tracker is paused, so the
+  // time-gated refresh inside setTrackerTime won't fire; re-resolve the layers at
+  // the current playhead so the scene fills in as the file loads, not only at the
+  // end.
+  onTrackerTime(last_tracker_display_);
+  view_->update();
+  qCInfo(lcScene3DDock) << "onDatasetTransformsReady" << dataset_id << ": re-read late-filled TF buffer,"
+                        << available_frames_.size() << "frame(s) now available";
 }
 
 void Scene3DDockWidget::setSessionManager(SessionManager* session) {

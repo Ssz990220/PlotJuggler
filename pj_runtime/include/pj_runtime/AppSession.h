@@ -5,8 +5,10 @@
 #include <QObject>
 #include <QString>
 #include <memory>
+#include <vector>
 
 #include "pj_base/diagnostic_sink.hpp"
+#include "pj_base/types.hpp"
 
 namespace PJ {
 
@@ -82,6 +84,18 @@ class AppSession : public QObject {
   // Returns true if any visible topic with data was found and the engine was
   // updated; false when there is none.
   bool seedPlaybackFromSession();
+
+  // FOCUS playback on specific datasets (a toolbox bulk import, e.g. a cloud
+  // fetch): set the range to THEIR time bounds and snap currentTime to their
+  // start — unlike seedPlaybackFromSession this intentionally REPLACES the
+  // range, so a 10s snippet presents a 10s timeline even when older datasets
+  // span hours. Scalar series bound the range; object topics are consulted
+  // only when the datasets carry no scalar data at all (a 3D-only import) —
+  // latched/static objects (tf_static, stale markers) must not stretch it.
+  //
+  // Returns true if any data was found and the engine was updated (callers
+  // fall back to seedPlaybackFromSession otherwise).
+  bool focusPlaybackOnDatasets(const std::vector<DatasetId>& datasets);
 
  private:
   std::unique_ptr<SessionManager> session_manager_;

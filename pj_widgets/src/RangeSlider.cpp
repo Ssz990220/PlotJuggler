@@ -7,6 +7,7 @@
 #include <pj_widgets/RangeSlider.h>
 
 #include <QDebug>
+#include <algorithm>
 #include <limits>
 
 namespace PJ {
@@ -23,12 +24,15 @@ const int kScHandleWidth = 8;   // timeSlider handle: 6px content + 1px border e
 const int kScTrackHeight = 24;  // timeSlider groove + handle height (px)
 const int kScLeftRightMargin = 1;
 
-const QColor kGrooveBorder(0xB0, 0xB0, 0xBF);  // border_default
-const QColor kSelection(0xC2, 0xDC, 0xFF);     // PJLightBlue (selected-range fill)
-const QColor kHandle(0xFF, 0xAE, 0xFF);        // PJLightPurple (resting handle)
-const QColor kHandleActive(0xCC, 0x00, 0xCC);  // PJPurple (hovered / pressed handle)
-const QColor kHandleBorder(0xCC, 0x00, 0xCC);  // PJPurple (handle border)
-const QColor kDisabledInk(0x80, 0x80, 0x80);   // muted grey when the slider is disabled
+const QColor kGrooveBorder(0xB0, 0xB0, 0xBF);         // border_default
+const QColor kSelection(0xC2, 0xDC, 0xFF);            // PJLightBlue (selected-range fill)
+const QColor kHandle(0xFF, 0xAE, 0xFF);               // PJLightPurple (resting handle)
+const QColor kHandleActive(0xCC, 0x00, 0xCC);         // PJPurple (hovered / pressed handle)
+const QColor kHandleBorder(0xCC, 0x00, 0xCC);         // PJPurple (handle border)
+const QColor kDisabledInk(0x80, 0x80, 0x80);          // muted grey when the slider is disabled
+const QColor kMarkerLine(0x90, 0x90, 0x9A);           // chunk boundary line (muted)
+const QColor kMarkerText(0x40, 0x40, 0x40);           // chunk label ink
+const QColor kMarkerInRange(0xCC, 0x00, 0xCC, 0x4D);  // PJPurple @ ~30% — boxes overlapping the selection
 
 }  // namespace
 
@@ -83,6 +87,10 @@ void RangeSlider::paintEvent(QPaintEvent* a_event) {
 
   if (show_ticks_) {
     drawTicks(painter, background_rect);
+  }
+
+  if (!markers_.empty()) {
+    drawMarkers(painter, background_rect);
   }
 
   // 3. Handles — thin full-height grips (timeSlider handle shape): PJLightPurple
@@ -414,6 +422,62 @@ int RangeSlider::firstTick(int min, int step) const {
   }
   int r = min % step;
   return (r == 0) ? min : (min + (step - r));
+}
+
+void RangeSlider::setMarkers(std::vector<Marker> markers) {
+  std::sort(markers.begin(), markers.end(), [](const Marker& a, const Marker& b) { return a.start < b.start; });
+  markers_ = std::move(markers);
+  update();
+}
+
+void RangeSlider::drawMarkers(QPainter& painter, const QRectF& background_rect) {
+  if (interval_ <= 0) {
+    return;
+  }
+  const int px_len = validLength();
+  if (px_len <= 0) {
+    return;
+  }
+  // Same value->x mapping the handles + ticks use.
+  const int offset = kScLeftRightMargin + (type_.testFlag(kDoubleHandles) ? kScHandleWidth : 0);
+  auto value_to_x = [&](int value) -> int {
+    const double pct = static_cast<double>(value - minimum_) / static_cast<double>(interval_);
+    return static_cast<int>(pct * static_cast<double>(px_len)) + offset;
+  };
+  const QFontMetrics fm(painter.font());
+  const int top = static_cast<int>(background_rect.top());
+  const int height = static_cast<int>(background_rect.bottom()) - top;
+
+  for (const auto& m : markers_) {
+    int x0 = value_to_x(m.start);
+    int x1 = value_to_x(m.end);
+    if (x1 <= x0) {
+      x1 = x0 + 1;  // keep a degenerate box visible
+    }
+    const int box_w = x1 - x0;
+    const QRect box(x0, top, box_w, height);
+
+    // Shade the box when its [start, end] overlaps the current [lower, upper]
+    // selection — the "which chunk falls in the range" cue. Translucent over the
+    // groove so the blue selection fill still reads underneath.
+    if (m.start < upper_value_ && m.end > lower_value_) {
+      painter.setPen(Qt::NoPen);
+      painter.setBrush(kMarkerInRange);
+      painter.drawRect(box);
+    }
+
+    // Box outline at the chunk's TRUE extent. Disjoint chunks therefore read as
+    // separate boxes with blank slider space between them (the gaps).
+    painter.setPen(QPen(kMarkerLine, 1));
+    painter.setBrush(Qt::NoBrush);
+    painter.drawRect(box.adjusted(0, 0, -1, -1));
+
+    // Chunk label, centered in the box, only when it fits.
+    if (!m.label.isEmpty() && box_w >= fm.horizontalAdvance(m.label) + 4) {
+      painter.setPen(kMarkerText);
+      painter.drawText(box, Qt::AlignCenter, m.label);
+    }
+  }
 }
 
 void RangeSlider::drawTicks(QPainter& painter, const QRectF& background_rect) {

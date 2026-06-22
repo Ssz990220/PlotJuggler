@@ -191,6 +191,14 @@ class Scene3DDockWidget : public SceneDockWidget {
 
  private slots:
   void onAvailableFrames(const QList<pj::scene3d::FrameRow>& frames);
+  // TransformService::datasetTransformsReady handler. A dataset's TF buffer can
+  // be filled AFTER this dock already bound (and read) it empty — the cloud
+  // toolbox ingests /tf post-download, unlike the file-open path which ingests
+  // before any view binds. The fill is in-place (shared_ptr identity kept) but
+  // the view caches its frame list + orphan states, so a late fill is invisible
+  // until re-read. Re-poll the frame hierarchy + orphan states when the ready
+  // dataset is the one this dock is showing.
+  void onDatasetTransformsReady(DatasetId dataset_id);
 
  private:
   // Shared body of addTopic(). enforce_image_gate runs the kImage depth-encoding

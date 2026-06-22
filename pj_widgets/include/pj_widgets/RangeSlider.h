@@ -9,9 +9,11 @@
 
 #include <QMouseEvent>
 #include <QPainter>
+#include <QString>
 #include <QToolTip>
 #include <QWidget>
 #include <functional>
+#include <vector>
 
 namespace PJ {
 
@@ -38,6 +40,18 @@ class RangeSlider : public QWidget {
   void setMinTickPixelSpacing(int px);
   void setShowTickLabels(bool on);
   void setShowTicks(bool on);
+
+  // Boundary segments: one box per marker covering [start, end] (in slider
+  // units) drawn at its TRUE extent — so disjoint selections leave blank slider
+  // space between boxes — with an optional label centered inside and a tint over
+  // the boxes overlapping the current [lower, upper] selection. Lets the slider
+  // double as a segment ("which chunk falls in the range") indicator. Empty clears.
+  struct Marker {
+    int start = 0;
+    int end = 0;
+    QString label;
+  };
+  void setMarkers(std::vector<Marker> markers);
   void setShowHandleValueTooltip(bool on);
   bool showHandleValueTooltip() const;
 
@@ -108,6 +122,8 @@ class RangeSlider : public QWidget {
   bool show_tick_labels_ = true;
 
   void drawTicks(QPainter& painter, const QRectF& background_rect);
+  void drawMarkers(QPainter& painter, const QRectF& background_rect);
+  std::vector<Marker> markers_;
   int niceStep(int raw) const;
   int firstTick(int min, int step) const;
 

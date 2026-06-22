@@ -266,4 +266,75 @@ TEST(AppSessionTest, CurveColorRegistryIsOwnedBySessionManager) {
   EXPECT_EQ(&session.curveColorRegistry(), &session.sessionManager().curveColorRegistry());
 }
 
+// A bulk import (cloud fetch) FOCUSES playback: the range snaps to the new
+// dataset's bounds even when an older dataset spans a much wider window — a
+// 10s snippet must present a 10s timeline, not drown in the union.
+TEST(AppSessionTest, FocusPlaybackSnapsRangeToTheGivenDatasets) {
+  QTemporaryDir dir;
+  ASSERT_TRUE(dir.isValid());
+  PJ::AppSession session(dir.path());
+
+  auto old_dataset =
+      session.sessionManager().dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "old-wide.mcap"});
+  ASSERT_TRUE(old_dataset.has_value()) << old_dataset.error();
+  addScalarSamples(session, *old_dataset, "/imu/x", {1'000, 1'000'000'000});
+  ASSERT_TRUE(session.seedPlaybackFromSession());
+
+  auto snippet =
+      session.sessionManager().dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "snippet.mcap"});
+  ASSERT_TRUE(snippet.has_value()) << snippet.error();
+  addScalarSamples(session, *snippet, "/odom/x", {500'000, 600'000});
+
+  EXPECT_TRUE(session.focusPlaybackOnDatasets({*snippet}));
+  EXPECT_DOUBLE_EQ(session.playbackEngine().rangeMin().value, 500'000.0e-9);
+  EXPECT_DOUBLE_EQ(session.playbackEngine().rangeMax().value, 600'000.0e-9);
+  EXPECT_DOUBLE_EQ(session.playbackEngine().currentTime().value, 500'000.0e-9);
+}
+
+// Latched/static objects (tf_static, stale markers) carry payload-embedded
+// stamps far OUTSIDE an import's window: scalar series alone bound the focused
+// range; objects define it only when the import has no scalar data at all.
+TEST(AppSessionTest, FocusPlaybackPrefersScalarBoundsOverObjectStamps) {
+  QTemporaryDir dir;
+  ASSERT_TRUE(dir.isValid());
+  PJ::AppSession session(dir.path());
+
+  auto dataset =
+      session.sessionManager().dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "fetch.mcap"});
+  ASSERT_TRUE(dataset.has_value()) << dataset.error();
+  addScalarSamples(session, *dataset, "/odom/x", {500'000, 600'000});
+
+  // A tf_static-shaped object entry stamped LONG before the window.
+  auto object_topic = session.sessionManager().objectStore().registerTopic(
+      PJ::ObjectTopicDescriptor{
+          .dataset_id = *dataset,
+          .topic_name = "/tf_static",
+          .metadata_json = R"({"builtin_object_type":"kFrameTransforms"})",
+      });
+  ASSERT_TRUE(object_topic.has_value()) << object_topic.error();
+  ASSERT_TRUE(session.sessionManager().objectStore().pushOwned(*object_topic, 7, std::vector<uint8_t>{1}).has_value());
+
+  EXPECT_TRUE(session.focusPlaybackOnDatasets({*dataset}));
+  EXPECT_DOUBLE_EQ(session.playbackEngine().rangeMin().value, 500'000.0e-9);
+  EXPECT_DOUBLE_EQ(session.playbackEngine().rangeMax().value, 600'000.0e-9);
+
+  // Objects still seed when the import carries ONLY objects (a 3D-only fetch).
+  auto objects_only =
+      session.sessionManager().dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "cloud-3d.mcap"});
+  ASSERT_TRUE(objects_only.has_value()) << objects_only.error();
+  auto cloud_topic = session.sessionManager().objectStore().registerTopic(
+      PJ::ObjectTopicDescriptor{
+          .dataset_id = *objects_only,
+          .topic_name = "/points",
+          .metadata_json = R"({"builtin_object_type":"kPointCloud"})",
+      });
+  ASSERT_TRUE(cloud_topic.has_value()) << cloud_topic.error();
+  ASSERT_TRUE(
+      session.sessionManager().objectStore().pushOwned(*cloud_topic, 42'000, std::vector<uint8_t>{1}).has_value());
+
+  EXPECT_TRUE(session.focusPlaybackOnDatasets({*objects_only}));
+  EXPECT_DOUBLE_EQ(session.playbackEngine().rangeMin().value, 42'000.0e-9);
+  EXPECT_DOUBLE_EQ(session.playbackEngine().rangeMax().value, 42'000.0e-9);
+}
+
 }  // namespace
