@@ -676,7 +676,7 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
     QToolTip::setPalette(tp);
   };
 
-  connect(theme_.get(), &Theme::themeChanged, this, &MainWindow::onThemeChanged);
+  connect(theme_.get(), &Theme::themeChanged, this, &MainWindow::onThemeChanged, Qt::QueuedConnection);
   connect(theme_.get(), &Theme::qssChanged, this, apply_theme_chrome);
   connect(this, &MainWindow::stylesheetChanged, ui_->leftPanel, &LeftPanel::onStylesheetChanged);
   connect(this, &MainWindow::stylesheetChanged, ui_->curveListPanel, &CurveListPanel::onStylesheetChanged);
