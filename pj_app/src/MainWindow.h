@@ -562,11 +562,14 @@ class MainWindow : public QMainWindow {
   // file/scalar timestamps in the global store don't stretch the slider into
   // ranges where no streamable data exists.
   DatasetId active_streaming_dataset_id_ = 0;
-  // Flips to true the first time a streaming topic is dropped into a view,
-  // which seeds the playback range + playhead. Until then the slider is left
-  // untouched so merely subscribing to topics in the source dialog does not
-  // move it. While true, live ingest tracks the live edge until the user
-  // pauses.
+  // Flips to true the first time a streaming topic is dropped into a view —
+  // a scalar curve into a plot (PlotWidget::curvesDropped) or an object topic
+  // into a 2D/3D dock (PlotDocker::firstObjectTopicAdded) — which seeds the
+  // playback range + playhead. Until then the slider is left untouched so merely
+  // subscribing to topics in the source dialog does not move it. Seeding is
+  // one-shot per session (seedStreamingPlaybackFromDrop early-returns once set),
+  // so a later drop can't re-snap a paused, scrubbed-back cursor. While true,
+  // live ingest tracks the live edge until the user pauses.
   bool streaming_playback_seeded_ = false;
   std::unique_ptr<Theme> theme_;
   TitleBar* title_bar_ = nullptr;

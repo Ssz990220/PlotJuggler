@@ -1530,6 +1530,13 @@ void MainWindow::onPlotAdded(PlotWidget* plot) {
   }
   connect(plot, &PlotWidget::rectChanged, this, &MainWindow::onPlotZoomChanged, Qt::UniqueConnection);
   connect(plot, &PlotWidget::trackerMoved, this, &MainWindow::onTrackerMovedFromWidget, Qt::UniqueConnection);
+  // Dropping a scalar curve into a plot during streaming seeds playback, exactly
+  // like dropping an object topic into a 2D/3D dock (PlotDocker::firstObjectTopicAdded).
+  // Without this, a scalar-only stream never sets streaming_playback_seeded_, so the
+  // live-ingest handler early-returns forever and the slider stays at the placeholder
+  // range. seedStreamingPlaybackFromDrop is a no-op unless a stream is active and is
+  // one-shot per session, so file-curve drops and later stream drops are harmless.
+  connect(plot, &PlotWidget::curvesDropped, this, &MainWindow::seedStreamingPlaybackFromDrop, Qt::UniqueConnection);
   connect(plot, &PlotWidget::filterEditorRequested, this, &MainWindow::openFilterEditor, Qt::UniqueConnection);
   connect(plot, &PlotWidget::statusMessageRequested, this, [this](const QString& message) {
     emitDiagnostic(DiagnosticLevel::kInfo, "Plot", "status", message);
@@ -1865,6 +1872,13 @@ void MainWindow::onUseTimeOffsetToggled(bool checked) {
 
 void MainWindow::seedStreamingPlaybackFromDrop() {
   if (active_streaming_dataset_id_ == 0) {
+    return;
+  }
+  // One-shot per streaming session: seed the range/playhead only on the FIRST
+  // drop. Later drops (e.g. a second curve added after the user paused and
+  // scrubbed back) must not re-snap the cursor to the live edge. The flag is
+  // reset to false whenever a stream stops/starts, so a fresh session re-seeds.
+  if (streaming_playback_seeded_) {
     return;
   }
   streaming_playback_seeded_ = true;
