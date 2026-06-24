@@ -47,6 +47,10 @@ class DatastoreCurveAdapter : public QwtSeriesData<QPointF> {
   virtual void onTopicCommitted();
   virtual void onDataCleared();
 
+  /// Drop the cached display offset only (the X mapping moved; the samples did
+  /// not). Unlike onTopicCommitted/onDataCleared, does NOT re-index samples.
+  void onDisplayOffsetChanged();
+
   [[nodiscard]] const CurveDescriptor& source() const noexcept {
     return source_;
   }
@@ -77,10 +81,11 @@ class DatastoreCurveAdapter : public QwtSeriesData<QPointF> {
   mutable bool full_bounding_rect_valid_ = false;
 
   // Cached display-time offset. Resolved live on first use after an
-  // invalidation; invalidated in onTopicCommitted/onDataCleared so it tracks
-  // time-domain reconfiguration through the same signals that drive sample
-  // re-indexing. Removing this cache makes readPoint_() pay 2 DataEngine
-  // lookups per sample, which dominates per-curve paint cost.
+  // invalidation; invalidated in onTopicCommitted/onDataCleared/onDisplayOffsetChanged
+  // so it tracks time-domain reconfiguration through the same signals that drive
+  // sample re-indexing (or, for a pure offset change, without re-indexing).
+  // Removing this cache makes readPoint_() pay 2 DataEngine lookups per sample,
+  // which dominates per-curve paint cost.
   mutable DisplayOffset cached_display_offset_;
   mutable bool cached_display_offset_valid_ = false;
 };

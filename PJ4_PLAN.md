@@ -4,7 +4,7 @@
 
 This section captures the architectural decisions that supersede portions of this document. The body below remains as planning context; where it conflicts with this section, this section wins.
 
-- **Three independent widget families by design.** The GUI is split into widget families that never depend on each other: `pj_plotting` (Qwt, lifted wholesale from PJ3), `pj_scene2D/widgets` via the `pj_scene2d_widgets` target (QRhi, wraps `pj_scene2D/core`), and `pj_scene3D/widgets` via the `pj_scene3d_widgets` target (hand-rolled OpenGL 4.5 Core, wraps `pj_scene3d_core`). Heterogeneity is a feature, not a problem. Shared reusable Qt controls/helpers live in `pj_widgets`; shared runtime state flows through the small `IDataWidget` contract exposed by `pj_runtime`.
+- **Three independent widget families by design.** The GUI is split into widget families that never depend on each other: `pj_plotting` (Qwt, lifted wholesale from PJ3), `pj_scene2D/widgets` via the `pj_scene2d_widgets` target (QRhi, wraps `pj_scene2D/core`), and `pj_scene3D/widgets` via the `pj_scene3d_widgets` target (hand-rolled OpenGL 4.5 Core, wraps `pj_scene3d_core`). Heterogeneity is a feature, not a problem. Shared reusable Qt controls/helpers live in `pj_widgets` — including the reusable **Source Timeline** control (see §5.6); shared runtime state flows through the small `IDataWidget` contract exposed by `pj_runtime`.
 - **`pj_scripting` is its own module.** Language-agnostic engine (Luau today — a hand-written Luau binding behind a `ScriptEngine` seam; NOT sol2, whose API is incompatible with Luau's C++ linkage. Python pluggable later) decoupled from both the GUI and `pj_runtime`'s services layer. (The plan body below still uses the older `IScriptingEngine`/`LuaScriptingEngine`/sol2 planning names; the as-built names are `ScriptEngine` / `LuauEngine` / `makeLuauEngine`.) Depends only on `pj_base` + `pj_datastore`. Custom Lua transforms reach `DerivedEngine` through a thin `transform_adapter`. Reactive scripts live in a Toolbox plugin that links `pj_scripting` directly.
 - **`pj_runtime` Qt boundary is relaxed.** Previously "no Qt"; now **Qt is allowed (QObject, QTimer, QSettings, signals), but no concrete QWidget/QDialog implementation and no `Qt6::Widgets` link**. `IDataWidget` may forward-declare `QWidget` as the shell contract. Services remain headlessly testable via `QCoreApplication`. This trades a small amount of purity for much cheaper timer/settings/reactive plumbing.
 - **Plot widgets are lifted wholesale from PJ3**, not rebuilt on Qt Charts. `PlotWidgetBase`, `PlotWidget`, `PlotDocker`, `TabbedPlotWidget`, zoomers, axis-time, drag-drop, per-curve display transform UI all move into `pj_plotting/`; their data reads are rebound to `pj_datastore` via a `DatastoreCurveAdapter`. No `IPlotBackend` abstraction.
@@ -164,7 +164,7 @@ Constraints (revised):
 
 #### Shared Qt helpers: `pj_widgets`
 
-Reusable Qt building blocks that are not tied to PlotJuggler's app shell live in `pj_widgets`. This is for controls and UI utilities such as color pickers, SVG icon loading, and numeric sliders. It is not a fourth widget family and it must not own application state.
+Reusable Qt building blocks that are not tied to PlotJuggler's app shell live in `pj_widgets`. This is for controls and UI utilities such as color pickers, SVG icon loading, numeric sliders, and the reusable Source Timeline control (§5.6). It is not itself a widget family and it must not own application state.
 
 #### Level 2: widget families (three independent sibling modules)
 
@@ -378,7 +378,60 @@ Implemented and wired into `pj_app` (built via `add_subdirectory(pj_scene3D/core
 
 **Rule**: implements `IDataWidget` from `pj_runtime`; register directly in `pj_app` for v1. Introduce a `WidgetRegistry` service only when 2D / 3D widget families need symmetric registration.
 
-### 5.6 `pj_app` — desktop shell
+### 5.6 Source Timeline — a reusable `pj_widgets` control (ADR)
+
+**Status:** implemented. Lives in `pj_widgets` as `Timeline.{h,cpp}`; see
+`pj_widgets/CLAUDE.md`. (Originally prototyped as a standalone `pj_timeline`
+module with a `core/` + `widget/` split; dissolved into a single reusable
+`pj_widgets` control once it had exactly one consumer and Qt-only deps — the
+math/render separation is preserved as a Qt-free class inside the same file,
+not as a separate library.)
+
+**Purpose:** Reusable multi-track Source Timeline that drives PJ4's dormant
+per-source `TimeDomain.display_offset`. Each loaded dataset gets one
+horizontal bar on a shared display-time ruler; dragging a bar shifts only
+that source's display offset live (`display_time = raw_time − display_offset`).
+One Align button snaps all displayed starts to the global earliest displayed
+start.
+
+**One file pair, two classes** (`pj_widgets/include/pj_widgets/Timeline.h` +
+`pj_widgets/src/Timeline.cpp`, `namespace PJ`):
+
+- `TimelineScene` — a genuinely **Qt-free** timing/geometry/alignment math class (no `Q*` in any method signature). Plain value types (`TimelineSpanInput`, `PxSpan`, `TimeSpan`, `TimelineViewport`, `TimelineRuler`), plain `quint64` ids / `qint64` ns / `double` pixels. Holds `displayWindow`/`sceneExtent`/`ns↔px`/`barSpan`/`zoom`/`ruler`/`alignStartsToCommonOrigin`.
+- `Timeline : QWidget` — the `QGraphicsView`-backed view. Public input struct `TimelineTrack` (Qt-OK: carries `QString name` + `QColor color`). Runtime-agnostic: plain-typed slots (`setTracks`/`setPlayhead`/`setDisplayRange`) and intent signals (`offsetChangeRequested(quint64,qint64)`/`alignRequested`/`playheadSeeked(double)`); never includes a `pj_runtime` header. The bar/ruler/playhead `QGraphicsItem`s are folded into the `.cpp` (a private `timeline_detail` namespace).
+
+**The `SourceTimelineController`** lives in `pj_app` — the only place that
+may know both the widget and `pj_runtime`. It populates `TimelineTrack`s from
+`CatalogModel` + `AppSession::datasetRawTimeRange` + `SessionManager::displayOffset`
+(converting `DatasetId`→`quint64`, `Timestamp`→`qint64`), maps widget intent
+signals to `SessionManager::setDisplayOffset` / `PlaybackEngine::setCurrentTime`,
+runs `TimelineScene::alignStartsToCommonOrigin` for the Align intent, and
+coalesces `AppSession::recomputeRange` calls during live drags (~16 ms QTimer).
+
+**Dependency rules:**
+
+- `pj_widgets` stays **Qt-only** — the Timeline added no `pj_base`/PJ-module dependency (hence the plain-typed surface).
+- All cross-family effects (a bar drag reshifting plot curves) flow through `pj_runtime` signals (`SessionManager::displayOffsetChanged`), to which each widget family subscribes independently.
+
+**Key architectural decision — single global cursor, per-source offsets:**
+Multi-source alignment is implemented by folding per-source `display_offset`
+into the read path (the curve adapter, and future scene-layer query sites),
+not by creating per-source clocks. The `PlaybackEngine` / `IDataWidget::onTrackerTime(double)`
+fleet contract is unchanged. This is simpler and keeps the existing `DatastoreCurveAdapter`
+display-offset mechanism (which was already designed but had no production driver) as the
+sole locus of offset application.
+
+**Per-source `TimeDomain`:** Before this feature every dataset shared one
+"default" `TimeDomain` so an offset would shift all sources. The loaders
+(`FileLoader`, `StreamingSourceManager`) now mint one `TimeDomain` per
+dataset so per-source isolation is guaranteed.
+
+**v1 scope:** plots only. 2D/3D scene widgets are offset-blind (known
+limitation; no crash). Deferred: 2D/3D per-layer offset, offset persistence,
+undo/redo, richer alignment (leading source, per-bar pins), snapping,
+derived-series following their parent offset.
+
+### 5.7 `pj_app` — desktop shell
 
 Purpose:
 

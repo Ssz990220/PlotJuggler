@@ -1300,6 +1300,9 @@ void PlotWidget::reconnectDataSignals() {
   if (display_offset_connection_) {
     disconnect(display_offset_connection_);
   }
+  if (display_offset_dataset_connection_) {
+    disconnect(display_offset_dataset_connection_);
+  }
   if (session_ == nullptr) {
     return;
   }
@@ -1367,15 +1370,16 @@ void PlotWidget::reconnectDataSignals() {
       },
       Qt::DirectConnection);
 
-  // "Use time offset" toggled (or otherwise re-based): every curve's x shifts by
-  // a constant and NO topic changed, so a per-topic samplesIngested would skip
-  // them all. Drop each time-series adapter's cached offset and re-fit, since the
-  // prior zoom rect (in display seconds) no longer frames the shifted data.
-  display_offset_connection_ = connect(session_, &SessionManager::displayOffsetChanged, this, [this]() {
+  // Global "Use time offset" toggled (or otherwise re-based): every curve's x
+  // shifts by a constant and NO topic changed, so a per-topic samplesIngested
+  // would skip them all. Drop each time-series adapter's cached offset and
+  // re-fit, since the prior zoom rect (in display seconds) no longer frames the
+  // shifted data.
+  display_offset_connection_ = connect(session_, qOverload<>(&SessionManager::displayOffsetChanged), this, [this]() {
     bool changed = false;
     for (auto& info : curveList()) {
       if (auto* adapter = dynamic_cast<DatastoreCurveAdapter*>(info.curve->data())) {
-        adapter->onTopicCommitted();
+        adapter->onDisplayOffsetChanged();
         changed = true;
       }
     }
@@ -1396,6 +1400,28 @@ void PlotWidget::reconnectDataSignals() {
     }
     replot();
   });
+
+  // ONE source's display offset changed (e.g. a Timeline drag). The samples did
+  // not move — only their X mapping. Drop the bound adapters' offset caches and
+  // replot at the CURRENT zoom so the curve slides into its new position without
+  // re-fitting axes. Unlike datasetAboutToBeReplaced there is no UAF window
+  // (chunks stay alive), so a normal (auto/queued) connection is fine.
+  // PointSeriesXY ignores display_offset (plan §12) — skip it.
+  display_offset_dataset_connection_ = connect(
+      session_, qOverload<PJ::DatasetId>(&SessionManager::displayOffsetChanged), this, [this](DatasetId dataset_id) {
+        bool changed = false;
+        for (auto& info : curveList()) {
+          if (auto* adapter = dynamic_cast<DatastoreCurveAdapter*>(info.curve->data())) {
+            if (adapter->source().dataset_id == dataset_id) {
+              adapter->onDisplayOffsetChanged();
+              changed = true;
+            }
+          }
+        }
+        if (changed) {
+          replot();  // current zoom; the source's curve slides into its new position
+        }
+      });
 }
 
 }  // namespace PJ

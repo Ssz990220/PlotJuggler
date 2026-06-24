@@ -89,9 +89,11 @@ class MessageBox : public QDialog {
   // applied but before the dialog auto-sizes — so a long label breaks across
   // lines instead of being clipped against the dialog's bounded width.
   bool event(QEvent* event) override;
-  // Pins the dialog to the exact height its content needs at the shown width,
-  // so the QVBoxLayout never compresses the (otherwise inconsistent) gaps
-  // between stacked buttons. See the .cpp for the heightForWidth rationale.
+  // Two first-show corrections (see the .cpp): (1) grow to fit the word-wrapped
+  // body, whose wrapped height is not reflected in sizeHint and is hidden by the
+  // styled card's broken heightForWidth propagation, then re-center; (2) pin the
+  // dialog to the exact height its content needs at the shown width so the
+  // QVBoxLayout never compresses the gaps between stacked buttons.
   void showEvent(QShowEvent* event) override;
 
  private:
@@ -100,6 +102,7 @@ class MessageBox : public QDialog {
   // untouched (rendered exactly as before).
   void rewrapButtonLabels();
 
+  bool size_finalized_ = false;  // showEvent body-grow + re-center runs once
   QLabel* title_label_;
   QLabel* body_label_;
   QCheckBox* dont_show_again_;

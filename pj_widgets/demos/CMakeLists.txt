@@ -49,6 +49,21 @@ target_link_libraries(pj_widgets_combobox_demo PRIVATE
     Qt6::Svg
 )
 
+# Source Timeline (reusable per-source display-offset editor). Fabricated
+# tracks, no runtime — links only pj_widgets + Qt6::Widgets.
+# Links resources.qrc so the name-column header icons (e.g. the reset button) render.
+add_executable(pj_widgets_timeline_demo
+    timeline_demo.cpp
+    ${CMAKE_SOURCE_DIR}/resources/resources.qrc
+)
+set_target_properties(pj_widgets_timeline_demo PROPERTIES AUTORCC ON)
+target_compile_features(pj_widgets_timeline_demo PRIVATE cxx_std_20)
+target_compile_options(pj_widgets_timeline_demo PRIVATE ${PJ_WARNING_FLAGS})
+target_link_libraries(pj_widgets_timeline_demo PRIVATE
+    pj_widgets
+    Qt6::Widgets
+)
+
 # Dialog building blocks (SDK 0.4.0): RangeSlider + DateRangePicker. No QSS or
 # resources — links only pj_widgets + Qt6::Widgets.
 add_executable(pj_widgets_dialog_blocks_demo dialog_blocks_demo.cpp)

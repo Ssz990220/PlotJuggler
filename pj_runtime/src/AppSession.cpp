@@ -4,6 +4,7 @@
 #include "pj_runtime/AppSession.h"
 
 #include <algorithm>
+#include <functional>
 #include <optional>
 #include <tuple>
 #include <unordered_set>
@@ -57,20 +58,16 @@ AppSession::~AppSession() {
   extension_catalog_.reset();
 }
 
-bool AppSession::seedPlaybackFromSession() {
+void AppSession::forEachVisibleRawRange(
+    const std::function<void(DatasetId dataset_id, Timestamp raw_min, Timestamp raw_max)>& visit) const {
   const DataReader reader = session_manager_->createReader();
   const ObjectStore& object_store = session_manager_->objectStore();
 
-  // Union the bounds in DISPLAY-relative seconds, converting each item with
-  // its dataset's OWN offset, so the playback axis matches what the plots
-  // render (display_time = raw_time - offset) rather than the absolute epoch.
   // Bounds come from the CATALOG-VISIBLE items at per-topic granularity: the
   // engine retains removed/trashed topics' data (append-only tombstones), and
   // a hidden topic must not stretch the timeline even while sibling topics
   // keep its dataset visible.
-  std::optional<DisplaySeconds> new_min;
-  std::optional<DisplaySeconds> new_max;
-
+  //
   // Multi-field topics surface one catalog item per field; bound each
   // underlying topic once.
   std::unordered_set<TopicId> seen_topics;
@@ -99,14 +96,144 @@ bool AppSession::seedPlaybackFromSession() {
     } else {
       continue;
     }
+    visit(item.dataset_id, raw_min, raw_max);
+  }
+}
 
-    const DisplayOffset offset = session_manager_->displayOffset(item.dataset_id);
+std::optional<PJ::Range<PJ::Timestamp>> AppSession::datasetRawTimeRange(DatasetId dataset_id) const {
+  // RAW (pre-offset) union over THIS dataset's catalog-visible topics. The
+  // caller applies the display offset; the Timeline bars want raw bounds.
+  std::optional<Timestamp> raw_min;
+  std::optional<Timestamp> raw_max;
+  forEachVisibleRawRange([&](DatasetId item_dataset, Timestamp topic_min, Timestamp topic_max) {
+    if (item_dataset != dataset_id) {
+      return;
+    }
+    raw_min = raw_min ? std::min(*raw_min, topic_min) : topic_min;
+    raw_max = raw_max ? std::max(*raw_max, topic_max) : topic_max;
+  });
+  if (!raw_min) {
+    return std::nullopt;  // no time-bearing data for this dataset
+  }
+  return PJ::Range<Timestamp>{*raw_min, *raw_max};
+}
+
+std::optional<DisplaySeconds> AppSession::recomputeRange() {
+  // While actively following a live stream (streaming + playing), scope the range to
+  // that dataset's tip ONLY — exactly as the live-ingest path does. Unioning in
+  // far-away file datasets would push range_max past the live edge; the cursor is
+  // pinned to range_max (onTick), so that would jolt the handle/needle off the tip and
+  // back (the jitter). When paused, fall through to the full union so the user can
+  // scrub/align against ALL loaded data.
+  if (active_streaming_dataset_id_ != 0 && playback_engine_->isPlaying()) {
+    if (const auto range = session_manager_->datasetDisplayRange(active_streaming_dataset_id_); range.has_value()) {
+      playback_engine_->setRange(*range);
+      return range->min;
+    }
+  }
+  // Union the bounds in DISPLAY-relative seconds, converting each item with
+  // its dataset's OWN offset, so the playback axis matches what the plots
+  // render (display_time = raw_time - offset) rather than the absolute epoch.
+  // Range only — never currentTime, never playback_seeded_ — for the live
+  // Timeline drag path. setRange re-clamps the playhead; an in-range scrub
+  // position is preserved.
+  std::optional<DisplaySeconds> new_min;
+  std::optional<DisplaySeconds> new_max;
+  forEachVisibleRawRange([&](DatasetId dataset_id, Timestamp raw_min, Timestamp raw_max) {
+    const DisplayOffset offset = session_manager_->displayOffset(dataset_id);
     const DisplaySeconds ds_min = rawToDisplaySeconds(raw_min, offset);
     const DisplaySeconds ds_max = rawToDisplaySeconds(raw_max, offset);
     new_min = new_min ? std::min(*new_min, ds_min) : ds_min;
     new_max = new_max ? std::max(*new_max, ds_max) : ds_max;
+  });
+  if (!new_min) {
+    // No visible data: keep the current range (nothing better to show).
+    return std::nullopt;
+  }
+  playback_engine_->setRange(DisplayRange{*new_min, *new_max});
+  return new_min;
+}
+
+DatasetId AppSession::mergeDatasets(const std::vector<DatasetId>& selected) {
+  if (selected.size() < 2) {
+    return 0;
   }
 
+  // Anchor = the dataset whose DISPLAYED start is earliest (leftmost on the
+  // timeline): min(raw_min - displayOffset). Datasets with no time-bearing data
+  // can't be positioned, so they're ignored for the anchor choice.
+  std::optional<DatasetId> anchor;
+  std::optional<DisplaySeconds> anchor_display_min;
+  for (const DatasetId id : selected) {
+    const auto raw = datasetRawTimeRange(id);
+    if (!raw.has_value()) {
+      continue;
+    }
+    // Compare displayed starts through the canonical display seam (raw - offset),
+    // matching recomputeRange rather than hand-subtracting bare ns.
+    const DisplaySeconds display_min = rawToDisplaySeconds(raw->min, session_manager_->displayOffset(id));
+    if (!anchor.has_value() || display_min < *anchor_display_min) {
+      anchor = id;
+      anchor_display_min = display_min;
+    }
+  }
+  if (!anchor.has_value()) {
+    return 0;  // none of the selected datasets carry data
+  }
+
+  // Every other selected dataset shifts into the anchor's raw frame by the
+  // relative display offset, so it lands where the user arranged it while the
+  // merged dataset keeps the anchor's absolute clock. The shift is a Duration
+  // difference of the two offsets; lower it to int64 ns only at the engine seam.
+  const Duration anchor_offset = session_manager_->displayOffset(*anchor).value;
+  std::vector<DatasetMergeSource> sources;
+  for (const DatasetId id : selected) {
+    if (id == *anchor) {
+      continue;
+    }
+    const Duration relative_shift = anchor_offset - session_manager_->displayOffset(id).value;
+    sources.push_back(
+        DatasetMergeSource{.dataset_id = id, .raw_shift_ns = static_cast<Timestamp>(relative_shift.count())});
+  }
+  if (sources.empty()) {
+    return 0;
+  }
+
+  // Engine mutation + adapter invalidation + re-index live in SessionManager.
+  // nullopt means the engine rejected the merge and left the store untouched —
+  // bail BEFORE mutating the catalog, or the sources would vanish from the UI
+  // while their data still lives in the store (catalog/store desync).
+  if (!session_manager_->mergeDatasets(*anchor, sources).has_value()) {
+    return 0;
+  }
+
+  // Catalog: relabel the anchor "<name>_merged" and drop the consumed pieces.
+  QString anchor_label;
+  for (const auto& [id, label] : catalog_model_->datasets()) {
+    if (id == *anchor) {
+      anchor_label = label;
+      break;
+    }
+  }
+  if (!anchor_label.isEmpty()) {
+    catalog_model_->setDatasetDisplayName(*anchor, anchor_label + QStringLiteral("_merged"));
+  }
+  for (const auto& source : sources) {
+    catalog_model_->removeDataset(source.dataset_id);
+  }
+
+  // The merged extent changed; refresh the playback range (range only).
+  recomputeRange();
+  return *anchor;
+}
+
+bool AppSession::seedPlaybackFromSession() {
+  // The range update AND the display-min for the first-seed snap come from the
+  // single shared scan in recomputeRange (it can grow on an additional file or
+  // shrink on a removed/trashed/shorter reload) — no second forEachVisibleRawRange
+  // pass to keep in lockstep. recomputeRange never touches currentTime; the
+  // first-seed snap below is the only place that does.
+  const std::optional<DisplaySeconds> new_min = recomputeRange();
   if (!new_min) {
     // No visible data: keep the current range (nothing better to show). The
     // first-seed snap re-arms through the CatalogModel::cleared() hook.
@@ -114,18 +241,11 @@ bool AppSession::seedPlaybackFromSession() {
   }
 
   if (!playback_seeded_) {
-    // First load (or first after the catalog emptied): snap range and
-    // currentTime to data bounds.
-    playback_engine_->setRange(DisplayRange{*new_min, *new_max});
+    // First load (or first after the catalog emptied): also snap currentTime to
+    // the data minimum so the user lands at the start of the data.
     playback_engine_->setCurrentTime(*new_min);
     playback_seeded_ = true;
-    return true;
   }
-
-  // Subsequent loads recompute the range from the visible data — it can grow
-  // (additional file) or shrink (dataset removed, shorter reload). setRange
-  // re-clamps the playhead; an in-range scrub position is preserved.
-  playback_engine_->setRange(DisplayRange{*new_min, *new_max});
   return true;
 }
 

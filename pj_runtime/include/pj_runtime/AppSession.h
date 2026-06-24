@@ -4,11 +4,14 @@
 
 #include <QObject>
 #include <QString>
+#include <functional>
 #include <memory>
+#include <optional>
 #include <vector>
 
 #include "pj_base/diagnostic_sink.hpp"
-#include "pj_base/types.hpp"
+#include "pj_base/types.hpp"  // PJ::DatasetId, PJ::Range, PJ::Timestamp
+#include "pj_runtime/Time.h"  // PJ::DisplaySeconds (recomputeRange return)
 
 namespace PJ {
 
@@ -97,7 +100,53 @@ class AppSession : public QObject {
   // fall back to seedPlaybackFromSession otherwise).
   bool focusPlaybackOnDatasets(const std::vector<DatasetId>& datasets);
 
+  // RAW [min,max] absolute-ns time bounds across a dataset's catalog-visible
+  // topics (scalar + object), or nullopt if the dataset has no time-bearing
+  // data. Pre-offset (the caller applies displayOffset). Shared by the Timeline
+  // bars and the playback-range computation.
+  [[nodiscard]] std::optional<PJ::Range<PJ::Timestamp>> datasetRawTimeRange(PJ::DatasetId dataset_id) const;
+
+  // Recompute the playback RANGE only (never currentTime, never the first-seed
+  // snap) from the offset-adjusted union of visible topics. For the live
+  // Timeline drag path; call throttled. Returns the union's display-min (the
+  // value seedPlaybackFromSession snaps the first-load playhead to), or nullopt
+  // when there is no visible data (range left unchanged).
+  std::optional<PJ::DisplaySeconds> recomputeRange();
+
+  // Tell the session which dataset is the active live stream (0 = none). While set
+  // AND playback is playing, recomputeRange() scopes the playback range to this
+  // dataset's tip only (not the union of all visible data), so a far-away file
+  // dataset can't widen range_max past the live edge and jolt the tip-pinned cursor.
+  void setActiveStreamingDataset(PJ::DatasetId id) {
+    active_streaming_dataset_id_ = id;
+  }
+
+  // DESTRUCTIVELY merge the selected datasets into one (the OR/union), honoring
+  // their Source-Timeline arrangement. The anchor is the dataset whose displayed
+  // start is earliest (leftmost = min(raw_min - displayOffset)); its raw clock is
+  // kept and the others are shifted into it by their relative display offset, so
+  // the merged dataset starts at the anchor's absolute time and the data lands
+  // where the user arranged it. The anchor's topics keep their ids (curve keys
+  // survive); the other selected datasets are consumed and removed from the
+  // catalog, and the anchor is relabelled "<name>_merged". Scalar topics only
+  // (v1): object topics on consumed datasets are dropped. Not undoable.
+  // Returns the surviving anchor's DatasetId (the merged dataset), or 0 on a
+  // no-op (fewer than two of the selected datasets carry time-bearing data).
+  PJ::DatasetId mergeDatasets(const std::vector<PJ::DatasetId>& selected);
+
  private:
+  // Per-visible-time-bearing-topic raw bounds, surfaced to a callback. Walks the
+  // catalog-visible items once, deduping multi-field scalar topics by topic_id
+  // and object topics by ObjectTopicId, skipping items with no time-bearing
+  // data. The single scan shared by seedPlaybackFromSession / recomputeRange /
+  // datasetRawTimeRange so the visibility + dedup rules live in one place. The
+  // callback receives the item's DatasetId and the topic's RAW [min,max] ns.
+  void forEachVisibleRawRange(
+      const std::function<void(PJ::DatasetId dataset_id, PJ::Timestamp raw_min, PJ::Timestamp raw_max)>& visit) const;
+
+  // The active live-streaming dataset (0 = none); see setActiveStreamingDataset.
+  PJ::DatasetId active_streaming_dataset_id_ = 0;
+
   std::unique_ptr<SessionManager> session_manager_;
   std::unique_ptr<PlaybackEngine> playback_engine_;
   std::unique_ptr<CatalogModel> catalog_model_;

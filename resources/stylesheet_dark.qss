@@ -1353,7 +1353,8 @@ QWidget#widgetLabelTimeseries,
 QWidget#widgetLabelCustom,
 QWidget#widgetLabelCurves,
 QWidget#widgetLabelChart,
-QWidget#widgetLabelLegend {
+QWidget#widgetLabelLegend,
+QWidget#timelineDatasetsHeader {
     background-color: ${titlebar_background};
 }
 
@@ -1412,7 +1413,8 @@ PJ--Scene3DConfigPanel QToolButton {
 QLabel#labelInput,
 QLabel#labelTimeseries,
 QLabel#labelCustom,
-QLabel#labelCurves {
+QLabel#labelCurves,
+QLabel#timelineDatasetsLabel {
     padding-left: 2px;
 }
 
@@ -1420,7 +1422,9 @@ QLabel#labelCurves {
    the plot area from the global icon strip. Not a splitter handle —
    purely visual; the only draggable boundary is between the global
    column and the local panel. */
-QFrame#globalToolbarLeftBorder {
+QFrame#globalToolbarLeftBorder,
+QFrame#timelineAlignBorder,
+QFrame#timelinePlaybackBorder {
     background-color: ${border_default};
     border: none;
 }
@@ -1433,9 +1437,11 @@ QFrame#globalToolbarLeftBorder {
 QLineEdit#lineEditFilter,
 QLineEdit#lineEditCustomFilter,
 QLineEdit#lineEditCurvesFilter,
+QLineEdit#timelineDatasetFilter,
 QLineEdit#lineEditFilter:focus,
 QLineEdit#lineEditCustomFilter:focus,
-QLineEdit#lineEditCurvesFilter:focus {
+QLineEdit#lineEditCurvesFilter:focus,
+QLineEdit#timelineDatasetFilter:focus {
     background: transparent;
     border: none;
     padding: 0;

@@ -52,7 +52,6 @@ namespace {
 Q_LOGGING_CATEGORY(lcFileLoader, "pj.app.fileloader")
 
 constexpr const char* kLastDirKey = "FileLoader/lastDir";
-constexpr const char* kDefaultTimeDomainName = "default";
 constexpr const char* kPluginConfigKeyPrefix = "PluginConfig/";
 
 QString normalizeExtension(const QString& path) {
@@ -172,14 +171,20 @@ void FileLoader::openFromDialog(QWidget* dialog_parent) {
   // for stability. The shell-injected picker threads MainWindow's chrome
   // metrics into the dialog (toolbar icon size, kept in step via
   // chromeMetricsChanged) — see setFilePicker().
-  const QString path = file_picker_ != nullptr
-                           ? file_picker_(dialog_parent, tr("Load Data"), last_dir, filter)
-                           : FileDialog::getOpenFileName(dialog_parent, tr("Load Data"), last_dir, filter);
-  if (path.isEmpty()) {
+  const QStringList paths = file_picker_ != nullptr
+                                ? file_picker_(dialog_parent, tr("Load Data"), last_dir, filter)
+                                : FileDialog::getOpenFileNames(dialog_parent, tr("Load Data"), last_dir, filter);
+  if (paths.isEmpty()) {
     return;
   }
-  settings.setValue(kLastDirKey, QFileInfo(path).absolutePath());
-  loadFile(path, dialog_parent);
+  // Remember the directory of the last pick for next time.
+  settings.setValue(kLastDirKey, QFileInfo(paths.last()).absolutePath());
+  // Load each selected file in order so several datasets populate in one go.
+  // Each loadFile may pop its own data-source config dialog and reports its own
+  // failures, so a single bad file doesn't abort the rest.
+  for (const QString& path : paths) {
+    loadFile(path, dialog_parent);
+  }
 }
 
 bool FileLoader::beginLoad(const LoadRequest& request) {
@@ -244,13 +249,18 @@ bool FileLoader::beginLoad(const LoadRequest& request) {
   // The v4 DataSource protocol resolves host services during bind(), so the
   // target dataset must exist before loadConfig() and start().
   DataEngine& engine = session_.dataEngine();
-  const TimeDomainId td_id = ensureDefaultTimeDomainId();
-  if (td_id == 0) {
-    return fail(tr("Could not create the default time domain."));
-  }
 
   const QString display_name = QFileInfo(path).fileName();
   const std::string display_name_utf8 = display_name.toStdString();
+
+  // One TimeDomain per loaded source so each is independently time-shiftable
+  // (the Source Timeline drives the per-domain display_offset). The staged
+  // replace path below mints its own; the live first-load uses this one.
+  auto td_or = engine.createTimeDomain(display_name_utf8);
+  if (!td_or.has_value()) {
+    return fail(tr("Could not create the time domain for %1.").arg(display_name));
+  }
+  const TimeDomainId td_id = *td_or;
 
   // Same-source handling: layout replay reuses the existing DatasetId; an interactive load/reload replaces the
   // dataset's data in place, keeping its DatasetId/TopicIds (and so all curve keys) stable. The engine names
@@ -697,8 +707,16 @@ bool FileLoader::beginLoad(const LoadRequest& request) {
     // Cancelled if the user cancelled during it, else Completed.
     auto run_fanout_entry = [&](std::size_t idx, const std::string& cfg_i,
                                 const QString& iter_display) -> EntryOutcome {
-      auto iter_dataset_or =
-          engine.createDataset(DatasetDescriptor{.source_name = iter_display.toStdString(), .time_domain_id = td_id});
+      // Each fanned dataset gets its own TimeDomain so it is independently
+      // draggable on the Source Timeline (rather than sharing the primary's).
+      auto iter_td = engine.createTimeDomain(iter_display.toStdString());
+      if (!iter_td.has_value()) {
+        qCWarning(lcFileLoader) << "[FileLoader] fanout[" << idx
+                                << "]: createTimeDomain failed:" << QString::fromStdString(iter_td.error());
+        return EntryOutcome::kFailed;
+      }
+      auto iter_dataset_or = engine.createDataset(
+          DatasetDescriptor{.source_name = iter_display.toStdString(), .time_domain_id = *iter_td});
       if (!iter_dataset_or.has_value()) {
         qCWarning(lcFileLoader) << "[FileLoader] fanout[" << idx
                                 << "]: createDataset failed:" << QString::fromStdString(iter_dataset_or.error());
@@ -796,6 +814,9 @@ bool FileLoader::beginLoad(const LoadRequest& request) {
         break;
       }
     }
+    // Summary so a partial fanout import is diagnosable from the log alone.
+    qCInfo(lcFileLoader) << "[FileLoader] fanout complete:" << completed << "ok," << failed << "failed"
+                         << (failed > 0 ? failed_labels : QStringList{});
   }
 
   // Past the last rollback point: the load committed in place (no staging swap).
@@ -1082,19 +1103,6 @@ void FileLoader::untrackDataset(DatasetId dataset_id) {
 
 bool FileLoader::loadFile(const QString& path, QWidget* dialog_parent) {
   return loadFile(path, dialog_parent, LoadHints{});
-}
-
-TimeDomainId FileLoader::ensureDefaultTimeDomainId() {
-  if (default_time_domain_id_ != 0) {
-    return default_time_domain_id_;
-  }
-  auto domain_or = session_.dataEngine().createTimeDomain(kDefaultTimeDomainName);
-  if (!domain_or.has_value()) {
-    qCWarning(lcFileLoader) << "createTimeDomain failed:" << QString::fromStdString(domain_or.error());
-    return 0;
-  }
-  default_time_domain_id_ = *domain_or;
-  return default_time_domain_id_;
 }
 
 }  // namespace PJ

@@ -54,11 +54,10 @@ DataReader SessionManager::createReader() const {
   return data_engine_.createReader();
 }
 
-DisplayOffset SessionManager::displayOffset(DatasetId dataset_id) const {
+Timestamp SessionManager::datasetDomainDisplayOffset(DatasetId dataset_id) const {
   // Base shift from the dataset's TimeDomain. Live lookup via the time-domain
   // map: the dataset's own time_domain is a snapshot from createDataset, so
   // reading its display_offset directly would go stale after setDisplayOffset.
-  // (Latent today — no production caller of setDisplayOffset.)
   Timestamp offset_ns = 0;
   if (const DatasetInfo* dataset = data_engine_.getDataset(dataset_id);
       dataset != nullptr && dataset->time_domain.id != 0) {
@@ -66,13 +65,46 @@ DisplayOffset SessionManager::displayOffset(DatasetId dataset_id) const {
       offset_ns = domain->display_offset;
     }
   }
-  // "Use time offset" layers a per-dataset shift on top: the dataset's OWN
-  // earliest sample, so its axis starts near zero. Computed live so it tracks
-  // loads; this is the single seam for future fine-tuned alignment.
-  if (use_time_offset_) {
-    offset_ns += datasetMinTimestamp(dataset_id);
+  return offset_ns;
+}
+
+DisplayOffset SessionManager::sourceDisplayOffset(DatasetId dataset_id) const {
+  // The per-source ALIGNMENT shift only (display_time = raw_time - offset): the
+  // dataset's TimeDomain offset, which is exactly what the Source Timeline edits.
+  // The global "Use time offset" reference is NOT folded in here (see
+  // displayOffset), so a Timeline drag round-trips without double-counting and
+  // the bars stay put when the global frame is toggled.
+  return DisplayOffset{Duration{datasetDomainDisplayOffset(dataset_id)}};
+}
+
+DisplayOffset SessionManager::displayOffset(DatasetId dataset_id) const {
+  // Total display shift for the display axis = per-source alignment + the global
+  // "Use time offset" origin. Summed here (not stored together) so toggling the
+  // global frame never disturbs the per-source alignment. Duration's rep is ns.
+  const Timestamp source = sourceDisplayOffset(dataset_id).value.count();
+  return DisplayOffset{Duration{source + globalTimeReference()}};
+}
+
+Timestamp SessionManager::globalTimeReference() const {
+  // Zero (absolute display) when the toggle is off. When on, the earliest raw
+  // sample ever observed across ALL datasets, applied uniformly. Per-dataset
+  // mins are pinned so live retention cannot slide the display origin forward.
+  if (!use_time_offset_) {
+    return 0;
   }
-  return DisplayOffset{Duration{offset_ns}};
+  if (!global_min_cache_.has_value()) {
+    Timestamp global_min = std::numeric_limits<Timestamp>::max();
+    bool found = false;
+    for (const DatasetId dataset_id : data_engine_.listDatasets()) {
+      if (!datasetRawBounds(dataset_id).has_value()) {
+        continue;
+      }
+      global_min = std::min(global_min, datasetMinTimestamp(dataset_id));
+      found = true;
+    }
+    global_min_cache_ = found ? global_min : 0;
+  }
+  return *global_min_cache_;
 }
 
 std::optional<std::pair<Timestamp, Timestamp>> SessionManager::datasetRawBounds(DatasetId dataset_id) const {
@@ -105,12 +137,11 @@ std::optional<std::pair<Timestamp, Timestamp>> SessionManager::datasetRawBounds(
 }
 
 Timestamp SessionManager::datasetMinTimestamp(DatasetId dataset_id) const {
-  // Memoized: the earliest sample is near-static (only an earlier-stamped ingest
-  // moves it), yet displayOffset() reads it on hot paths — per playback tick from
-  // scene docks and once per catalog item from seedPlaybackFromSession. The cache
-  // is cleared on every commit/ingest, so a stale min can't outlive a data change
-  // that could lower it. Empty datasets aren't cached, so the first real sample
-  // recomputes.
+  // Pinned earliest sample for the dataset's relative-time frame. It is cached
+  // because displayOffset() is a hot path, but unlike a normal bounds cache it
+  // intentionally does not move forward when streaming retention raises the
+  // current readable minimum. That keeps the live edge advancing instead of
+  // projecting every retained window back to 0..buffer_seconds.
   if (const auto it = dataset_min_cache_.find(dataset_id); it != dataset_min_cache_.end()) {
     return it->second;
   }
@@ -118,8 +149,45 @@ Timestamp SessionManager::datasetMinTimestamp(DatasetId dataset_id) const {
   if (!bounds) {
     return 0;
   }
-  dataset_min_cache_.emplace(dataset_id, bounds->first);
-  return bounds->first;
+  return rememberDatasetMinTimestamp(dataset_id, bounds->first);
+}
+
+Timestamp SessionManager::rememberDatasetMinTimestamp(DatasetId dataset_id, Timestamp observed_min) const {
+  const auto [it, inserted] = dataset_min_cache_.emplace(dataset_id, observed_min);
+  if (!inserted && observed_min < it->second) {
+    it->second = observed_min;
+  }
+  return it->second;
+}
+
+void SessionManager::refreshDatasetMinTimestampsForTopics(const QVector<TopicId>& ids) const {
+  if (ids.isEmpty()) {
+    return;
+  }
+
+  std::unordered_set<DatasetId> dataset_ids;
+  {
+    auto lock = data_engine_.lockEngine();
+    dataset_ids.reserve(static_cast<std::size_t>(ids.size()));
+    for (const TopicId id : ids) {
+      if (const TopicStorage* storage = data_engine_.getTopicStorage(id)) {
+        dataset_ids.insert(storage->descriptor().dataset_id);
+      }
+    }
+  }
+
+  for (const DatasetId dataset_id : dataset_ids) {
+    if (const auto bounds = datasetRawBounds(dataset_id); bounds.has_value()) {
+      (void)rememberDatasetMinTimestamp(dataset_id, bounds->first);
+    } else {
+      invalidateDatasetMinTimestamp(dataset_id);
+    }
+  }
+}
+
+void SessionManager::invalidateDatasetMinTimestamp(DatasetId dataset_id) const {
+  dataset_min_cache_.erase(dataset_id);
+  global_min_cache_.reset();
 }
 
 void SessionManager::setUseTimeOffset(bool use) {
@@ -127,8 +195,14 @@ void SessionManager::setUseTimeOffset(bool use) {
     return;
   }
   use_time_offset_ = use;
-  // The per-dataset shifts follow automatically in displayOffset(); tell every
-  // offset reader (curve adapters, scenes, the playback seed) to re-resolve.
+  // Flip ONLY the global frame: displayOffset() now adds globalTimeReference()
+  // (earliest raw sample across all datasets when on, 0 when off) on top of each
+  // dataset's per-source alignment. No per-source TimeDomain offset is written, so
+  // the Source Timeline's bar positions are untouched — only the numbers reframe.
+  // No topic changed, only the display->raw mapping; tell every offset reader
+  // (curve adapters, scenes, the playback seed, the Timeline) to re-resolve. This
+  // global frame change uses the no-arg overload; the per-dataset overload is
+  // reserved for single-source Timeline edits.
   emit displayOffsetChanged();
 }
 
@@ -145,12 +219,31 @@ std::optional<DisplayRange> SessionManager::datasetDisplayRange(DatasetId datase
       .min = rawToDisplaySeconds(bounds->first, offset), .max = rawToDisplaySeconds(bounds->second, offset)};
 }
 
+void SessionManager::setDisplayOffset(DatasetId dataset_id, DisplayOffset offset) {
+  // Mirror displayOffset()'s resolution: dataset -> its TimeDomain id. Writing
+  // the domain (not the dataset snapshot) is what makes displayOffset() read it
+  // back live; emit so consumers re-snap/re-map without re-indexing samples.
+  const DatasetInfo* dataset = data_engine_.getDataset(dataset_id);
+  if (dataset == nullptr || dataset->time_domain.id == 0) {
+    qCWarning(lcSession) << "setDisplayOffset: unknown dataset or default domain" << dataset_id;
+    return;
+  }
+  // Idempotent: an unchanged offset emits nothing, so a no-op write (resetAll over
+  // already-zero datasets, a settled live drag re-sending the same value) doesn't
+  // churn consumers — every displayOffsetChanged triggers a PlotWidget adapter
+  // drop + replot and a timeline offset refresh.
+  if (sourceDisplayOffset(dataset_id).value == offset.value) {
+    return;
+  }
+  data_engine_.setDisplayOffset(dataset->time_domain.id, static_cast<Timestamp>(offset.value.count()));
+  emit displayOffsetChanged(dataset_id);
+}
+
 std::vector<TopicId> SessionManager::commitChunks(std::vector<std::pair<TopicId, TopicChunk>> chunks) {
   auto changed = data_engine_.commitChunks(std::move(chunks));
   if (changed.empty()) {
     return changed;
   }
-  dataset_min_cache_.clear();  // new samples may lower a dataset's earliest stamp
   // Run eager filters over the freshly committed input, then notify both the raw
   // and the derived output topics so filtered curves refresh. (Loaded files keep
   // full history, so there is no retention race on this path.)
@@ -165,19 +258,23 @@ std::vector<TopicId> SessionManager::commitChunks(std::vector<std::pair<TopicId,
   for (const TopicId id : derived_outputs) {
     ids.push_back(id);
   }
+  refreshDatasetMinTimestampsForTopics(ids);
+  global_min_cache_.reset();
   emit samplesIngested(std::move(ids), /*live=*/false);
   return changed;
 }
 
 void SessionManager::notifyIngest(QVector<TopicId> ids, bool live) {
-  if (ids.isEmpty()) {
+  if (ids.isEmpty() && !live) {
     return;
   }
-  dataset_min_cache_.clear();  // direct-write ingest (incl. objects, reload) may move the earliest stamp
+  refreshDatasetMinTimestampsForTopics(ids);
+  global_min_cache_.reset();
   emit samplesIngested(std::move(ids), live);
 }
 
 void SessionManager::notifyDatasetAboutToBeReplaced(DatasetId dataset_id) {
+  invalidateDatasetMinTimestamp(dataset_id);
   emit datasetAboutToBeReplaced(dataset_id);
 }
 
@@ -335,7 +432,7 @@ void SessionManager::replaceDataset(
   // (1) Adapters drop cached TopicChunk* before any deque is touched. Same-thread
   // direct connection: every slot returns before the emit does, and this method
   // runs no event loop (the caller must not either) — so the pointers stay dead.
-  emit datasetAboutToBeReplaced(primary_id);
+  notifyDatasetAboutToBeReplaced(primary_id);
 
   // (2a) Scalar swap. replaceDatasetFrom only errors on a programming mistake (same
   // engine, unknown dataset id), never on user data, and validates before mutating —
@@ -383,6 +480,47 @@ void SessionManager::replaceDataset(
 
   // (5) Re-index the (already-cleared) adapters against the swapped-in data.
   notifyIngest(std::move(changed), /*live=*/false);
+}
+
+std::optional<DatasetMergeReport> SessionManager::mergeDatasets(
+    DatasetId anchor, const std::vector<DatasetMergeSource>& sources) {
+  // (1) Adapters bound to the anchor or any source drop cached TopicChunk* before
+  // the engine clears/rebuilds chunks. Same-thread direct connections; this method
+  // runs no event loop (the caller must not either), so the pointers stay dead.
+  emit datasetAboutToBeReplaced(anchor);
+  for (const auto& source : sources) {
+    emit datasetAboutToBeReplaced(source.dataset_id);
+  }
+
+  // (2) Fold the scalar data. The engine validates all caller/data-driven inputs
+  // up front (unknown/duplicate/self source), so a reachable failure leaves the
+  // engine untouched — log and return an empty report. (Its in-loop guards cover
+  // only unreachable internal invariants.)
+  DatasetMergeReport report;
+  if (auto result = data_engine_.mergeDatasets(anchor, sources); result.has_value()) {
+    report = std::move(*result);
+  } else {
+    qCWarning(lcSession).noquote() << "mergeDatasets:" << QString::fromStdString(result.error());
+    return std::nullopt;  // engine rejected: nothing mutated — let the caller skip the catalog update
+  }
+
+  // (3) v1 is scalar-only: drop the consumed sources' object topics (the popup
+  // warned the user). The engine left the source scalar topics empty.
+  for (const auto& source : sources) {
+    evictDatasetObjects(source.dataset_id);
+  }
+
+  // (4) Re-index adapters against the rebuilt anchor topics.
+  QVector<TopicId> changed;
+  changed.reserve(static_cast<int>(report.modified_topics.size() + report.added_topics.size()));
+  for (const TopicId t : report.modified_topics) {
+    changed.push_back(t);
+  }
+  for (const TopicId t : report.added_topics) {
+    changed.push_back(t);
+  }
+  notifyIngest(std::move(changed), /*live=*/false);
+  return report;
 }
 
 void SessionManager::registerObjectTopicParser(ObjectTopicId id, std::unique_ptr<MessageParserHandle> parser) {

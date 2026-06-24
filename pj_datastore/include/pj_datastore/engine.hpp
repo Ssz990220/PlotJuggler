@@ -13,6 +13,7 @@
 #include "pj_base/dataset.hpp"
 #include "pj_base/expected.hpp"
 #include "pj_base/types.hpp"
+#include "pj_datastore/merge_result.hpp"
 #include "pj_datastore/replace_result.hpp"
 #include "pj_datastore/topic_storage.hpp"
 #include "pj_datastore/type_registry.hpp"
@@ -229,6 +230,30 @@ class DataEngine {
   /// loop between that invalidation and this call. The staged engine is drained.
   [[nodiscard]] PJ::Expected<DatasetReplaceResult> replaceDatasetFrom(
       DataEngine& staged, PJ::DatasetId staged_id, PJ::DatasetId primary_id);
+
+  /// Destructively fold `sources` into dataset `anchor_id` — the union ("OR") of
+  /// their scalar topics. Each source's samples are shifted by its `raw_shift_ns`
+  /// (the caller bakes display alignment into this; the engine stays
+  /// offset-agnostic), then merged with the anchor's by ascending shifted
+  /// timestamp — ALL samples survive, duplicate timestamps coexist. Topics are
+  /// matched by name: a shared name unions columns by `field_path` (additive —
+  /// older rows read null for a newly-introduced column) and the anchor's column
+  /// order/indices are preserved (so its curve keys stay valid); a name only the
+  /// sources have becomes a NEW topic under the anchor. The anchor keeps its
+  /// `DatasetId`/`TopicId`s. Each source dataset is emptied (its topics' chunks
+  /// cleared); the datasets stay registered. A shared topic whose contributors
+  /// disagree on a field's storage type leaves the anchor's version intact and
+  /// skips the conflicting source's contribution (reported in `skipped_topics`).
+  /// Scalar (DataEngine) topics only — ObjectStore is untouched.
+  ///
+  /// Result chunks are written in ascending time order (non-overlapping), so the
+  /// random-access SeriesReader path (plots) stays correct. Caller MUST invalidate
+  /// every reader/adapter bound to the anchor and the sources BEFORE this call (no
+  /// live `TopicChunk*` may survive the rebuild) and run no event loop until it
+  /// returns. Errors (mutating nothing) if the anchor or any source is unknown, or
+  /// a source equals the anchor.
+  [[nodiscard]] PJ::Expected<DatasetMergeReport> mergeDatasets(
+      PJ::DatasetId anchor_id, const std::vector<DatasetMergeSource>& sources);
 
   // Writer/Reader factories
   /// Create a writer bound to this engine.

@@ -18,3 +18,11 @@ build-tsan/
 
 # heaptrack memory-profiler traces (run.sh --heaptrack)
 heaptrack.*.zst
+
+# Local scratch / review artifacts and developer-local datasets — never part of an MR.
+# (Scoped narrowly so legitimate layout fixtures, e.g. for LayoutXml tests, can still
+# be checked in; do not broaden to *.pj4.xml.)
+/review.md
+/multi_dataset.pj4.xml
+# A separately-cloned plugins repo some devs keep in-tree; not a submodule of PJ4.
+/pj-official-plugins/

@@ -65,6 +65,7 @@
 #include "PendingCurveBinder.h"
 #include "PreferencesDialog.h"
 #include "RasterKeyMap.h"
+#include "SourceTimelineController.h"
 #include "StreamingSourceManager.h"
 #include "Theme.h"
 #include "TitleBar.h"
@@ -112,6 +113,7 @@
 #include "pj_widgets/RasterStreamView.h"
 #include "pj_widgets/SectionHeaderBand.h"
 #include "pj_widgets/SvgUtil.h"
+#include "pj_widgets/Timeline.h"
 #include "scene_object_classification.h"
 #include "ui/AboutDialog.h"
 #include "ui/CurveListPanel.h"
@@ -132,6 +134,12 @@ constexpr auto kDefaultRegistryUrl =
     "refs/heads/development/registry.json";
 constexpr auto kRegistryUrlSettingsKey = "Marketplace/registryUrl";
 constexpr auto kPanelBottomExpandedKey = "MainWindow.panelBottomExpandedHeight";
+// Source Timeline auto-zoom: when true, loading a file (and each alignment) zooms
+// the timeline to its largest extent. User-toggleable in Preferences. Default on.
+constexpr auto kTimelineAutoZoomKey = "MainWindow.timelineAutoZoom";
+// Minimum height (px) of the Source Timeline strip when the bottom panel is open
+// — enough for the ruler + a few source bars so it never opens clipped.
+constexpr int kMinTimelineStripHeight = 150;
 
 // Directory of the most recently saved or loaded layout. Re-using PJ3's
 // QSettings key keeps cross-version migration trivial (a user who
@@ -152,6 +160,12 @@ constexpr auto kLastLayoutDirKey = "MainWindow.lastLayoutDirectory";
 // offset, and an unmarked legacy range is also read as absolute. The global toolbar
 // toggles + panel visibility are no longer serialized (they are QSettings-only app
 // preferences, not document state).
+// v3 also round-trips the Source Timeline. Per-source: each <fileInfo> carries
+// display_offset_ns + timeline_order, re-bound by source path so a dataset's bar
+// offset and vertical slot restore exactly. Global view chrome: a <source_timeline>
+// element carries zoom + scroll_left_ns + name_column_width + snap. Additive — older
+// readers ignore the new attributes/element; this build tolerates their absence in
+// pre-v3 layouts.
 constexpr int kLayoutSchemaVersion = 3;
 constexpr double kTwoPi = 6.28318530717958647692;
 constexpr int kTestSampleCount = 1000;
@@ -608,12 +622,9 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
     toggle.target->setVisible(visible);
     toggle.button->setCheckable(false);
     toggle.button->setProperty("iconPath", QString::fromLatin1(visible ? toggle.icon_path_on : toggle.icon_path_off));
-    // Bottom-strip toggle restore: if the strip is hidden, clamp the
-    // bottom panel to the playback bar's height so the splitter can't
-    // open empty space below the playback when the user drags it.
-    if (toggle.target == ui_->timelineStrip && !visible) {
-      ui_->bottomPanel->setMaximumHeight(ui_->timelineWidget->minimumHeight());
-    }
+    // The bottom panel's open/closed height constraints are applied centrally by
+    // applyBottomPanelConstraints() — driven here by the chrome-metrics pass
+    // emitted later in the constructor (which also resolves the playback height).
     const QByteArray key{toggle.settings_key};
     QPushButton* button = toggle.button;
     QWidget* target = toggle.target;
@@ -626,25 +637,21 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
       button->setProperty("iconPath", icon);
       button->setIcon(loadSvg(icon, theme_->currentTheme()));
       QSettings().setValue(QString::fromLatin1(key), now_visible);
-      // Bottom-panel toggle: also collapse/restore the splitter so the
-      // playback stays glued to the top with no empty gap below when
-      // folded, and the strip's previous expanded height is preserved
-      // across fold cycles. We additionally hard-clamp bottomPanel's
-      // maximum height to the playback bar's height when the strip is
-      // hidden, so the user can't drag the splitter handle further
-      // down and re-introduce an empty gap below the playback.
+      // Bottom-panel toggle: collapse/restore the splitter so the playback stays
+      // glued to the top with no empty gap when folded, and the strip's previous
+      // expanded height is preserved across fold cycles. applyBottomPanelConstraints
+      // owns the open-min / closed-lock invariants.
       if (target == ui_->timelineStrip) {
         const QList<int> sizes = ui_->timelineSplitter->sizes();
         const int total = sizes[0] + sizes[1];
-        const int playback_height = ui_->timelineWidget->minimumHeight();
         if (now_visible) {
-          ui_->bottomPanel->setMaximumHeight(QWIDGETSIZE_MAX);
-          const int expanded = QSettings().value(kPanelBottomExpandedKey, sizes[1]).toInt();
+          applyBottomPanelConstraints();  // lifts the cap, pins the open minimum
+          const int floor = ui_->bottomPanel->minimumHeight();
+          const int expanded = std::max(QSettings().value(kPanelBottomExpandedKey, sizes[1]).toInt(), floor);
           ui_->timelineSplitter->setSizes({total - expanded, expanded});
         } else {
           QSettings().setValue(kPanelBottomExpandedKey, sizes[1]);
-          ui_->bottomPanel->setMaximumHeight(playback_height);
-          ui_->timelineSplitter->setSizes({total - playback_height, playback_height});
+          applyBottomPanelConstraints();  // pins the panel to the playback bar (drag can't reopen)
         }
       }
     });
@@ -724,35 +731,13 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
     // 250-px side-panel floor.
     ui_->localToolbarWidget->setMinimumWidth(qMax((6 * band_extent) + 6, 250));
 
-    if (!ui_->timelineStrip->isVisible()) {
-      // Strip is hidden — keep the bottomPanel's max-height in sync
-      // with the new playback height so the playback bar doesn't get
-      // clipped against the stale cap from the toggle handler.
-      ui_->bottomPanel->setMaximumHeight(playback_height);
-    }
-    // Pin the bottomPanel's minimum height to the new playback height
-    // so the QSplitter is forced to honor it. Without this the inner
-    // QVBoxLayout will shrink the playback bar if the splitter slot is
-    // smaller than the new band_extent (Qt's QSplitter doesn't always
-    // re-layout when a grandchild's min size changes — it caches the
-    // bottomPanel's old minimumSizeHint until something invalidates it).
-    ui_->bottomPanel->setMinimumHeight(playback_height);
-    // Grow the bottom pane up to at least the playback's new height.
-    // Preserve the user's current bottom-pane size if it's already
-    // larger (e.g. the strip is open and dragged taller).
-    const QList<int> sizes = ui_->timelineSplitter->sizes();
-    if (sizes.size() == 2 && sizes[1] < playback_height) {
-      const int total = sizes[0] + sizes[1];
-      ui_->timelineSplitter->setSizes({total - playback_height, playback_height});
-    }
-    // Force a re-layout of the bottomPanel now that its child's height
-    // pin and its own min height have changed. setMinimumHeight only
-    // invalidates lazily; activate() runs the layout immediately so
-    // the playback bar is sized correctly before the next paint.
-    if (auto* bottom_layout = ui_->bottomPanel->layout()) {
-      bottom_layout->invalidate();
-      bottom_layout->activate();
-    }
+    // Re-apply the bottom panel's open/closed height constraints against the
+    // freshly-resolved playback height (the QSplitter caches stale minimums, so
+    // this also re-floors the strip and re-pins the closed lock).
+    applyBottomPanelConstraints();
+    // The playback controls' size feeds the slider's start x; re-align the name
+    // column separator to it (no-op until the playback bar is laid out, post-show).
+    alignNameColumnToPlayback();
   });
 
   // Dev-only widget inspector: Ctrl+Shift+D = pesticide outline overlay,
@@ -777,8 +762,47 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
   // blue reference line stores a frame-invariant instant, so re-project it
   // through the new offset and re-push — keeping it pinned to its instant rather
   // than stranded off the re-fitted axis.
-  connect(&session_->sessionManager(), &SessionManager::displayOffsetChanged, this, [this]() {
+  connect(&session_->sessionManager(), qOverload<>(&SessionManager::displayOffsetChanged), this, [this]() {
     forEachPlot([this](PlotWidget* plot) { plot->setReferenceLine(referenceDisplaySeconds()); });
+    // The global frame moved too: re-bridge the reference into the Timeline frame.
+    if (source_timeline_controller_ != nullptr) {
+      source_timeline_controller_->setReferenceLine(referenceDisplaySeconds());
+    }
+  });
+
+  // Mount the multi-track Source Timeline into the reserved bottom strip and
+  // bind it to the runtime. timelineStrip is an empty native widget in the .ui;
+  // give it a layout and host the widget. The existing bottom-panel toggle +
+  // splitter target timelineStrip, so show/hide/resize come for free.
+  auto* source_timeline = new PJ::Timeline(ui_->timelineStrip);
+  source_timeline_ = source_timeline;
+  auto* strip_layout = new QVBoxLayout(ui_->timelineStrip);
+  strip_layout->setContentsMargins(0, 0, 0, 0);
+  strip_layout->addWidget(source_timeline);
+  source_timeline_controller_ = new PJ::SourceTimelineController(source_timeline, session_.get(), this);
+  // Remember the user's name-column width so it sticks across rebuilds / panel
+  // toggles (alignNameColumnToPlayback re-applies it over the playback-aligned
+  // floor) and is persisted into layouts.
+  connect(source_timeline, &PJ::Timeline::nameColumnWidthChanged, this, [this](int width_px) {
+    timeline_name_column_width_ = width_px;
+  });
+  // Auto-zoom: on by default; seed the widget from the persisted preference so a
+  // newly-loaded file zooms to its full extent unless the user turned it off.
+  source_timeline->setAutoZoomEnabled(QSettings().value(kTimelineAutoZoomKey, true).toBool());
+  // Align rail on the right edge of the timeline panel; binds its buttons to the
+  // controller above, so it must be built after the controller exists.
+  buildTimelineAlignRail();
+  // Dragging the timeline's blue reference needle repositions the reference and
+  // re-renders every plot's delta-from-reference (mirrors the toolbar toggle).
+  connect(source_timeline, &PJ::Timeline::referenceLineMoved, this, [this](double display_seconds) {
+    // The needle reports a playback-frame display-seconds position (the widget undoes
+    // its time-frame offset before emitting); store it frame-invariantly as an
+    // absolute instant through the representative's full displayOffset (source +
+    // global), so it survives offset changes, then re-push the position to plots.
+    reference_instant_ = toAbsolute(
+        fromAxisDouble(display_seconds), session_->sessionManager().displayOffset(representativeDatasetId()));
+    const std::optional<double> ref_sec = referenceDisplaySeconds();
+    forEachPlot([ref_sec](PlotWidget* plot) { plot->setReferenceLine(ref_sec); });
   });
 
   streaming_manager_ = std::make_unique<StreamingSourceManager>(
@@ -796,6 +820,34 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
       ui_->leftPanel, &LeftPanel::streamingPauseToggled, streaming_manager_.get(),
       &StreamingSourceManager::onPauseToggled);
 
+  const auto refresh_streaming_seek_lock = [this]() {
+    if (session_ == nullptr) {
+      return;
+    }
+    // While a stream is live AND playback is playing, the cursor stays glued to the
+    // tip (held there by PlaybackEngine::onTick + each live ingest) and the user must
+    // not be able to drag it off: grey the playback slider and put the Source Timeline
+    // read-only (scene edits + needle seek). Pausing (stream still on) clears the lock
+    // so the retained window can be scrubbed/realigned.
+    const bool lock = active_streaming_dataset_id_ != 0 && session_->playbackEngine().isPlaying();
+    ui_->timelineWidget->setSeekLocked(lock);
+    setSourceTimelineStreamingLock(lock);
+  };
+  const auto snap_streaming_playback_to_live_edge = [this]() -> bool {
+    if (active_streaming_dataset_id_ == 0 || session_ == nullptr) {
+      return false;
+    }
+    if (const auto range = session_->sessionManager().datasetDisplayRange(active_streaming_dataset_id_);
+        range.has_value()) {
+      streaming_playback_seeded_ = true;
+      session_->playbackEngine().setRangeAndCurrentTime(*range, range->max);
+      pending_tracker_time_ = toAxisDouble(range->max);
+      broadcastTrackerTimeToVisible(pending_tracker_time_);
+      return true;
+    }
+    return false;
+  };
+
   // Streaming → playback range wiring. The slider range is scoped to the
   // active streaming dataset only — unioning with every catalog-visible
   // dataset (as AppSession::seedPlaybackFromSession does for file loads) can
@@ -803,22 +855,47 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
   // streamed window as a sliver where intermediate scrub positions resolve to
   // "before first entry" or "at the live edge" with nothing in between.
   //
-  // The slider stays untouched until a streaming topic is dropped into a view
-  // (the object-widget factory above seeds range + playhead and sets
-  // streaming_playback_seeded_). Merely subscribing to topics in the source
-  // dialog must not move it. Once seeded, the playhead follows the live edge
-  // while live — re-pinned to rangeMax on every ingest so the slider tracks
-  // "now" instead of drifting backward as the window grows. On LeftPanel pause
-  // (live=false) range + playhead freeze, so the user can rewind.
-  connect(streaming_manager_.get(), &StreamingSourceManager::streamStarted, this, [this](DatasetId id) {
-    active_streaming_dataset_id_ = id;
-  });
-  connect(streaming_manager_.get(), &StreamingSourceManager::streamStopped, this, [this](DatasetId id, const QString&) {
-    if (active_streaming_dataset_id_ == id) {
-      active_streaming_dataset_id_ = 0;
-      streaming_playback_seeded_ = false;
-    }
-  });
+  // The slider starts at the placeholder range, then the first live ingest with a
+  // real range seeds it from the active streaming dataset. A curve/object drop can
+  // still force the same seed immediately, but it is not required: streaming data
+  // itself must be enough to advance playback.
+  //
+  // Timeline playback state is the follow-live switch. While playing, the slider
+  // is locked to the live edge and the engine is held at rangeMax between ingest
+  // ticks instead of auto-pausing at the end. Pausing playback unlocks scrubbing
+  // within the retained window; pressing play snaps back to the newest sample.
+  connect(
+      streaming_manager_.get(), &StreamingSourceManager::streamStarted, this,
+      [this, refresh_streaming_seek_lock](DatasetId id) {
+        active_streaming_dataset_id_ = id;
+        session_->setActiveStreamingDataset(id);  // scope recomputeRange to the live tip while playing
+        streaming_playback_seeded_ = false;
+        auto& engine = session_->playbackEngine();
+        engine.setHoldAtRangeMax(true);
+        engine.setCurrentTime(engine.rangeMax());
+        engine.play();
+        refresh_streaming_seek_lock();
+      });
+  connect(
+      streaming_manager_.get(), &StreamingSourceManager::streamStopped, this,
+      [this, refresh_streaming_seek_lock](DatasetId id, const QString&) {
+        if (active_streaming_dataset_id_ == id) {
+          active_streaming_dataset_id_ = 0;
+          session_->setActiveStreamingDataset(0);
+          streaming_playback_seeded_ = false;
+          session_->playbackEngine().setHoldAtRangeMax(false);
+          refresh_streaming_seek_lock();
+        }
+      });
+  connect(
+      &playback, &PlaybackEngine::playingChanged, this,
+      [this, snap_streaming_playback_to_live_edge, refresh_streaming_seek_lock](bool playing) {
+        if (active_streaming_dataset_id_ != 0 && playing) {
+          session_->playbackEngine().setHoldAtRangeMax(true);
+          (void)snap_streaming_playback_to_live_edge();
+        }
+        refresh_streaming_seek_lock();
+      });
   // Bound the 3D TF buffer's history for live-streaming datasets in step with
   // the ObjectStore retention window, so a long streaming session doesn't retain
   // every TF sample forever (H.11). File loads keep the buffer's kKeepAll
@@ -834,33 +911,36 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
         });
   }
   connect(
-      &session_->sessionManager(), &SessionManager::samplesIngested, this, [this](const QVector<TopicId>&, bool live) {
+      &session_->sessionManager(), &SessionManager::samplesIngested, this,
+      [this, refresh_streaming_seek_lock](const QVector<TopicId>&, bool live) {
         auto& engine = session_->playbackEngine();
         if (live) {
           // Streaming: follow the live edge (range grows, cursor tracks newest).
-          if (!streaming_playback_seeded_) {
+          if (active_streaming_dataset_id_ == 0) {
             return;
           }
           if (const auto range = session_->sessionManager().datasetDisplayRange(active_streaming_dataset_id_);
               range.has_value()) {
-            engine.setRange(*range);
-            engine.setCurrentTime(range->max);
+            streaming_playback_seeded_ = true;
+            if (engine.isPlaying()) {
+              engine.setRangeAndCurrentTime(*range, range->max);
+              pending_tracker_time_ = toAxisDouble(range->max);
+              broadcastTrackerTimeToVisible(pending_tracker_time_);
+            } else {
+              engine.setRange(*range);
+            }
+            refresh_streaming_seek_lock();
           }
           return;
         }
-        // Non-live (file) ingest: while a single-instance load fills progressively,
-        // grow the playback range from its dataset so the timeline + auto-fitting
-        // plots reveal data as it arrives. The cursor stays put (no follow-edge);
-        // the authoritative range + cursor are set once on completion by
-        // AppSession::seedPlaybackFromSession (onFileLoaded).
-        if (file_loader_ == nullptr) {
-          return;
-        }
-        if (const DatasetId id = file_loader_->activeLoadDatasetId(); id != 0) {
-          if (const auto range = session_->sessionManager().datasetDisplayRange(id); range.has_value()) {
-            engine.setRange(*range);
-          }
-        }
+        // Non-live (file) ingest: grow the playback range from the UNION of every
+        // loaded dataset (recomputeRange) so the timeline + auto-fitting plots reveal
+        // data as it arrives. Using a SINGLE dataset's range here was a bug: with a
+        // multi-file (multi-select) load, each file's range excludes the earlier ones,
+        // so setRange clamps the cursor FORWARD to each new file's start. The union
+        // keeps the seeded cursor in range. The authoritative cursor is still set once
+        // on completion by AppSession::seedPlaybackFromSession (onFileLoaded).
+        session_->recomputeRange();
       });
 
   // Populate the combo only after the manager is wired so the initial
@@ -885,7 +965,7 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
   file_loader_->setFilePicker(
       [](QWidget* dialog_parent, const QString& caption, const QString& dir, const QString& filter) {
         auto* metrics_source = dialog_parent != nullptr ? qobject_cast<MainWindow*>(dialog_parent->window()) : nullptr;
-        return FileDialog::getOpenFileName(dialog_parent, caption, dir, filter, metrics_source);
+        return FileDialog::getOpenFileNames(dialog_parent, caption, dir, filter, metrics_source);
       });
   connect(ui_->leftPanel, &LeftPanel::loadDataRequested, this, &MainWindow::onLoadDataRequested);
   connect(ui_->leftPanel, &LeftPanel::reloadDataRequested, this, &MainWindow::onReloadDataRequested);
@@ -1012,12 +1092,13 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
   // function-pointer connect rejects a slot whose arity exceeds the signal's.
   connect(ui_->tabbedPlotWidget, &TabbedPlotWidget::undoableChange, this, [this] { onUndoableChange(); });
 
-  // Apply the persisted "Use time offset" frame before the toolbar is built so
-  // its button seeds from the live SessionManager state. Default on (PJ3 parity):
-  // axes read relative seconds out of the box. No data yet, so this just sets the
-  // flag; the per-dataset shift applies live once data loads.
+  // Apply the persisted "align starts" frame before the toolbar is built so its
+  // button seeds from the live SessionManager state. Default OFF: datasets show at
+  // their natural relative times so the Source Timeline reveals their offsets and
+  // the user aligns them (manually, or via this toggle). No data yet, so this is a
+  // no-op at startup; toggling it later bulk-writes each dataset's offset.
   session_->sessionManager().setUseTimeOffset(
-      QSettings().value(QStringLiteral("MainWindow.useTimeOffset"), true).toBool());
+      QSettings().value(QStringLiteral("MainWindow.useTimeOffset"), false).toBool());
 
   // Global column on the right of the plot area — Chart + Legend icons,
   // pinned at 24 px wide, never collapses. Always visible regardless of
@@ -1468,6 +1549,17 @@ void MainWindow::persistChromeMetrics() const {
   settings.setValue(kLayoutSpacingKey, chrome_metrics_.layout_spacing);
 }
 
+bool MainWindow::timelineAutoZoom() const {
+  return QSettings().value(kTimelineAutoZoomKey, true).toBool();
+}
+
+void MainWindow::setTimelineAutoZoom(bool enabled) {
+  QSettings().setValue(kTimelineAutoZoomKey, enabled);
+  if (source_timeline_ != nullptr) {
+    source_timeline_->setAutoZoomEnabled(enabled);
+  }
+}
+
 void MainWindow::applyIcons(QString theme) {
   // Right-side buttons (Chart + Legend in the global column, Width and
   // Line-style in the local panel) are created programmatically by
@@ -1527,6 +1619,13 @@ void MainWindow::onPlotAdded(PlotWidget* plot) {
   }
   connect(plot, &PlotWidget::rectChanged, this, &MainWindow::onPlotZoomChanged, Qt::UniqueConnection);
   connect(plot, &PlotWidget::trackerMoved, this, &MainWindow::onTrackerMovedFromWidget, Qt::UniqueConnection);
+  // Dropping a scalar curve into a plot during streaming seeds playback, exactly
+  // like dropping an object topic into a 2D/3D dock (PlotDocker::firstObjectTopicAdded).
+  // Without this, a scalar-only stream never sets streaming_playback_seeded_, so the
+  // live-ingest handler early-returns forever and the slider stays at the placeholder
+  // range. seedStreamingPlaybackFromDrop is a no-op unless a stream is active and is
+  // one-shot per session, so file-curve drops and later stream drops are harmless.
+  connect(plot, &PlotWidget::curvesDropped, this, &MainWindow::seedStreamingPlaybackFromDrop, Qt::UniqueConnection);
   connect(plot, &PlotWidget::filterEditorRequested, this, &MainWindow::openFilterEditor, Qt::UniqueConnection);
   connect(plot, &PlotWidget::statusMessageRequested, this, [this](const QString& message) {
     emitDiagnostic(DiagnosticLevel::kInfo, "Plot", "status", message);
@@ -1864,12 +1963,33 @@ void MainWindow::seedStreamingPlaybackFromDrop() {
   if (active_streaming_dataset_id_ == 0) {
     return;
   }
+  // One-shot per streaming session: a drop may seed the range before the next
+  // ingest tick, but later drops must not re-snap a paused scrub. Playback state
+  // decides whether this also moves the cursor to the live edge.
+  if (streaming_playback_seeded_) {
+    return;
+  }
   streaming_playback_seeded_ = true;
   if (const auto range = session_->sessionManager().datasetDisplayRange(active_streaming_dataset_id_);
       range.has_value()) {
     auto& engine = session_->playbackEngine();
-    engine.setRange(*range);
-    engine.setCurrentTime(range->max);
+    if (engine.isPlaying()) {
+      engine.setRangeAndCurrentTime(*range, range->max);
+    } else {
+      engine.setRange(*range);
+    }
+  }
+}
+
+void MainWindow::setSourceTimelineStreamingLock(bool locked) {
+  if (source_timeline_ != nullptr) {
+    source_timeline_->setInteractionLocked(locked);
+  }
+  // The align/snap/reset rail drives the controller's align slots directly (not
+  // through the widget), so the widget lock alone wouldn't stop a rail click —
+  // grey the whole rail too. timelineAlignRail is a .ui container member.
+  if (ui_->timelineAlignRail != nullptr) {
+    ui_->timelineAlignRail->setEnabled(!locked);
   }
 }
 
@@ -2059,26 +2179,51 @@ void MainWindow::closeEvent(QCloseEvent* event) {
 
 void MainWindow::showEvent(QShowEvent* event) {
   QMainWindow::showEvent(event);
-  // Restore the remembered left-panel width once, after the splitter has real
+
+  // (1) Restore the remembered left-panel width once, after the splitter has real
   // geometry. Done here rather than in the constructor so the saved sizes aren't
   // overwritten by the first layout pass; an explicit --layout load runs later
   // and still wins (it re-applies splitter sizes through restoreChromeState).
-  if (left_splitter_restored_) {
-    return;
+  if (!left_splitter_restored_) {
+    left_splitter_restored_ = true;
+    const QByteArray state = QSettings().value(QStringLiteral("MainWindow.mainSplitterState")).toByteArray();
+    if (state.isEmpty() || !ui_->mainSplitter->restoreState(state)) {
+      // First-ever launch (nothing remembered) — or a stale/mismatched saved blob
+      // that restoreState rejected: open the left panel at a comfortable default
+      // rather than letting the splitter collapse it toward its 280 px minimum.
+      // Clamped by the leftColumn's 280..600 px size constraints.
+      constexpr int kDefaultLeftPanelWidth = 400;
+      const int total = ui_->mainSplitter->width();
+      if (total > kDefaultLeftPanelWidth) {
+        ui_->mainSplitter->setSizes({kDefaultLeftPanelWidth, total - kDefaultLeftPanelWidth});
+      }
+    }
   }
-  left_splitter_restored_ = true;
-  const QByteArray state = QSettings().value(QStringLiteral("MainWindow.mainSplitterState")).toByteArray();
-  if (!state.isEmpty() && ui_->mainSplitter->restoreState(state)) {
-    return;  // remembered width restored
-  }
-  // First-ever launch (nothing remembered) — or a stale/mismatched saved blob
-  // that restoreState rejected: open the left panel at a comfortable default
-  // rather than letting the splitter collapse it toward its 280 px minimum.
-  // Clamped by the leftColumn's 280..600 px size constraints.
-  constexpr int kDefaultLeftPanelWidth = 400;
-  const int total = ui_->mainSplitter->width();
-  if (total > kDefaultLeftPanelWidth) {
-    ui_->mainSplitter->setSizes({kDefaultLeftPanelWidth, total - kDefaultLeftPanelWidth});
+
+  // (2) Size the bottom (timeline) panel definitively on first show. Deferred to
+  // after the first layout pass: only once the splitter has real pixel geometry
+  // does an absolute setSizes() stick — doing it in the constructor leaves a ratio
+  // that resolves to a squashed sliver. Closed → playback bar only; open → a
+  // definite strip height (last expanded height, floored at the open minimum).
+  if (!bottom_panel_sized_) {
+    bottom_panel_sized_ = true;
+    QTimer::singleShot(0, this, [this]() {
+      applyBottomPanelConstraints();
+      if (ui_->timelineStrip == nullptr || ui_->timelineStrip->isHidden()) {
+        return;  // closed: applyBottomPanelConstraints already pinned it to the playback bar
+      }
+      const QList<int> sizes = ui_->timelineSplitter->sizes();
+      if (sizes.size() != 2) {
+        return;
+      }
+      const int total = sizes[0] + sizes[1];
+      const int floor = ui_->bottomPanel->minimumHeight();  // playback + kMinTimelineStripHeight
+      const int expanded = std::max(QSettings().value(kPanelBottomExpandedKey, floor).toInt(), floor);
+      ui_->timelineSplitter->setSizes({total - expanded, expanded});
+      // The playback bar is laid out now, so the slider's start x is real — line the
+      // name column separator up under it.
+      alignNameColumnToPlayback();
+    });
   }
 }
 
@@ -2432,6 +2577,18 @@ void MainWindow::restoreChromeAndPanels(const QDomDocument& doc, const QString& 
   // 4d. Restore chrome state (panel visibilities + splitter sizes).
   restoreChromeState(doc.documentElement().firstChildElement(QStringLiteral("chrome_state")));
 
+  // 4e. Restore Source Timeline state (per-source display offsets + track order).
+  // Runs after the datasets are (re)loaded so it re-binds them by path. The data
+  // source refs were consumed during the reload classification in
+  // loadLayoutFromPath; re-extract them here (a pure parse of doc) so this restore
+  // step has them in scope.
+  const QDir timeline_layout_dir(QFileInfo(path).absoluteDir());
+  applyTimelineStateFromLayout(layout_xml::extractDataSource(doc, timeline_layout_dir));
+
+  // 4f. Restore the timeline's global view chrome (zoom/scroll/name-column/snap),
+  // AFTER 4e so zoom/scroll map onto the offset-adjusted, rebuilt scene.
+  restoreSourceTimelineViewState(doc.documentElement().firstChildElement(QStringLiteral("source_timeline")));
+
   // 5. Recent files + diagnostic
   recordRecentLayout(path);
   emitDiagnostic(DiagnosticLevel::kInfo, "Layout", "loaded", tr("Loaded layout: %1").arg(QFileInfo(path).fileName()));
@@ -2621,6 +2778,9 @@ void MainWindow::saveLayoutToPath(const QString& path, bool include_data_source)
   // NOTE: <data_processors> is already emitted by xmlSaveState() (it is part of THE
   // snapshot now, shared with undo/redo); do not append it again here or the layout
   // would carry two copies.
+  // Timeline view chrome (zoom/scroll/name-column/snap). Pure UI, not gated by
+  // Save Data Source; the per-source offsets/order ride <fileInfo> separately.
+  doc.documentElement().appendChild(saveSourceTimelineViewState(doc));
   // QSaveFile gives us write-temp + rename atomicity: a partial write
   // (disk full, signal, broken NFS) leaves the user's prior layout
   // untouched. commit() does the rename; cancelWriting() abandons the
@@ -2927,10 +3087,23 @@ QDomElement MainWindow::appendDataSourceElement(QDomDocument& doc, const QDir& l
   // button (which keys off lastLoadedSource, not this list). FileLoader owns the
   // DatasetId->path link the engine's basename-only DatasetInfo can't provide.
   QSet<QString> live_paths;
+  QHash<QString, DatasetId> dataset_for_path;  // reverse of sourcePathForDataset, for offset lookup
   for (const auto& [id, name] : session_->catalogModel().datasets()) {
     (void)name;
     if (const QString src_path = file_loader_->sourcePathForDataset(id); !src_path.isEmpty()) {
       live_paths.insert(src_path);
+      dataset_for_path.insert(src_path, id);
+    }
+  }
+
+  // Source Timeline arrangement: the bar's top-to-bottom slot, persisted per
+  // file so the vertical order round-trips (re-bound by path on reload). Build
+  // dataset -> slot once; absent => fall back to load order on restore.
+  QHash<DatasetId, int> timeline_order;
+  if (source_timeline_controller_ != nullptr) {
+    const std::vector<DatasetId> order = source_timeline_controller_->currentTrackOrder();
+    for (int i = 0; i < static_cast<int>(order.size()); ++i) {
+      timeline_order.insert(order[static_cast<std::size_t>(i)], i);
     }
   }
 
@@ -2960,6 +3133,20 @@ QDomElement MainWindow::appendDataSourceElement(QDomDocument& doc, const QDir& l
     file_info.setAttribute(QStringLiteral("filename"), is_subpath ? rel : abs);
     file_info.setAttribute(QStringLiteral("prefix"), src.prefix);
 
+    // Source Timeline state for this file, re-bound by path on reload. The
+    // display offset is read live from the SessionManager (the per-source
+    // display shift the user dragged); timeline_order is its bar's vertical
+    // slot. Both keyed by the dataset this path currently backs.
+    if (const auto it = dataset_for_path.constFind(src.path); it != dataset_for_path.constEnd()) {
+      const DatasetId id = it.value();
+      file_info.setAttribute(
+          QStringLiteral("display_offset_ns"),
+          QString::number(session_->sessionManager().displayOffset(id).value.count()));
+      if (const auto order_it = timeline_order.constFind(id); order_it != timeline_order.constEnd()) {
+        file_info.setAttribute(QStringLiteral("timeline_order"), QString::number(order_it.value()));
+      }
+    }
+
     // Emit the plugin sub-element whenever the plugin id is known. An
     // empty saveConfig payload is legitimate (some plugins have no
     // user-tunable state) and must NOT cause us to skip — otherwise
@@ -2985,6 +3172,101 @@ QDomElement MainWindow::appendDataSourceElement(QDomDocument& doc, const QDir& l
     return QDomElement();
   }
   return wrapper;
+}
+
+void MainWindow::applyTimelineStateFromLayout(const QList<layout_xml::DataSourceRef>& sources) {
+  if (sources.isEmpty()) {
+    return;
+  }
+  SessionManager& mgr = session_->sessionManager();
+
+  // Re-bind each saved <fileInfo> to whichever loaded dataset came from that
+  // file (DatasetIds are re-minted per session; the path is the stable key),
+  // apply its display offset, and collect (id, slot) for the order rebuild.
+  std::vector<std::pair<int, DatasetId>> ordered;  // (timeline_order, id)
+  for (const layout_xml::DataSourceRef& ref : sources) {
+    DatasetId matched = 0;
+    for (const auto& [id, name] : session_->catalogModel().datasets()) {
+      (void)name;
+      const QString src_path = file_loader_->sourcePathForDataset(id);
+      if (!src_path.isEmpty() && layout_xml::isSamePath(src_path, ref.resolved_path)) {
+        matched = id;
+        break;
+      }
+    }
+    if (matched == 0) {
+      continue;  // file referenced by the layout isn't loaded — nothing to restore
+    }
+    if (ref.has_display_offset) {
+      mgr.setDisplayOffset(matched, DisplayOffset{Duration{ref.display_offset_ns}});
+    }
+    if (ref.timeline_order >= 0) {
+      ordered.emplace_back(ref.timeline_order, matched);
+    }
+  }
+
+  // Rebuild the vertical track order from the saved slots. Sorting by the saved
+  // index (not document order) keeps the arrangement exact even if <fileInfo>
+  // elements were written in load order rather than display order.
+  if (source_timeline_controller_ != nullptr && !ordered.empty()) {
+    std::sort(ordered.begin(), ordered.end(), [](const auto& a, const auto& b) { return a.first < b.first; });
+    std::vector<DatasetId> order;
+    order.reserve(ordered.size());
+    for (const auto& [slot, id] : ordered) {
+      (void)slot;
+      order.push_back(id);
+    }
+    source_timeline_controller_->setDisplayOrder(std::move(order));
+  }
+}
+
+QDomElement MainWindow::saveSourceTimelineViewState(QDomDocument& doc) const {
+  // Read the view chrome off the widgets; layout_xml owns the XML schema.
+  layout_xml::SourceTimelineViewState state;
+  if (source_timeline_ != nullptr) {
+    state.zoom = source_timeline_->zoom();
+    state.scroll_left_ns = source_timeline_->viewportLeftDisplayNs();
+    state.name_column_width = source_timeline_->nameColumnWidth();
+  }
+  if (ui_->timelineAlignRail != nullptr) {
+    if (auto* snap = ui_->timelineAlignRail->findChild<QToolButton*>(QStringLiteral("buttonTimelineSnap"))) {
+      state.snap = snap->isChecked();
+    }
+  }
+  return layout_xml::writeSourceTimelineViewState(doc, state);
+}
+
+void MainWindow::restoreSourceTimelineViewState(const QDomElement& element) {
+  if (source_timeline_ == nullptr) {
+    return;
+  }
+  const layout_xml::SourceTimelineViewState state = layout_xml::readSourceTimelineViewState(element);
+  // Zoom first: it rebuilds the scene (width + scrollbar range), so the scroll
+  // restore below maps onto the intended zoom.
+  if (state.zoom) {
+    source_timeline_->setZoom(*state.zoom);
+  }
+  if (state.scroll_left_ns) {
+    source_timeline_->setViewportLeftDisplayNs(*state.scroll_left_ns);
+  }
+  if (state.name_column_width) {
+    // Remember it so the deferred alignNameColumnToPlayback keeps the column at
+    // this width (over the playback-aligned floor), then apply it now.
+    timeline_name_column_width_ = *state.name_column_width;
+    source_timeline_->resizeNameColumn(*state.name_column_width);
+  }
+  if (state.snap) {
+    // Drive the rail toggle so its checked state and the widget stay in sync
+    // (toggled -> Timeline::setSnapEnabled). Fall back to the widget directly.
+    auto* btn = ui_->timelineAlignRail != nullptr
+                    ? ui_->timelineAlignRail->findChild<QToolButton*>(QStringLiteral("buttonTimelineSnap"))
+                    : nullptr;
+    if (btn != nullptr) {
+      btn->setChecked(*state.snap);
+    } else {
+      source_timeline_->setSnapEnabled(*state.snap);
+    }
+  }
 }
 
 QDomElement MainWindow::saveRightPanelState(QDomDocument& doc) const {
@@ -3026,6 +3308,88 @@ QDomElement MainWindow::saveRightPanelState(QDomDocument& doc) const {
   }
 
   return element;
+}
+
+void MainWindow::applyBottomPanelConstraints() {
+  if (ui_->bottomPanel == nullptr || ui_->timelineWidget == nullptr || ui_->timelineStrip == nullptr) {
+    return;
+  }
+  // The playback bar is fixed-height (sizePolicy Fixed in the .ui; min==max is
+  // pinned to its sizeHint by the chrome-metrics pass), so its current minimum
+  // height is the playback band's extent.
+  const int playback_height = ui_->timelineWidget->minimumHeight();
+  // Use the strip's *intended* state (!isHidden), NOT isVisible(): this runs during
+  // the constructor's chrome-metrics pass, before the window is shown, where
+  // isVisible() is still false for an open strip and would wrongly pick the CLOSED
+  // branch (pinning the panel to the playback bar) — which left the strip squashed
+  // into a sliver on boot.
+  const bool strip_visible = !ui_->timelineStrip->isHidden();
+  // The align rail (and its 1-px divider) only make sense beside an open strip;
+  // hide them with the panel so a closed timeline shows no orphaned right-edge column.
+  if (ui_->timelineAlignRail != nullptr) {
+    ui_->timelineAlignRail->setVisible(strip_visible);
+  }
+  if (ui_->timelineAlignBorder != nullptr) {
+    ui_->timelineAlignBorder->setVisible(strip_visible);
+  }
+  // The playback/timeline divider only makes sense with the strip open; hide it
+  // with the panel so a closed timeline shows no stray 1-px line under playback.
+  if (ui_->timelinePlaybackBorder != nullptr) {
+    ui_->timelinePlaybackBorder->setVisible(strip_visible);
+  }
+  if (strip_visible) {
+    // OPEN: floor the panel at playback + a usable strip height so the Source
+    // Timeline never opens (or is dragged) into a clipped sliver; no upper cap.
+    const int min_panel = playback_height + kMinTimelineStripHeight;
+    ui_->bottomPanel->setMaximumHeight(QWIDGETSIZE_MAX);
+    ui_->bottomPanel->setMinimumHeight(min_panel);
+    // QSplitter caches old slot sizes and won't re-honor a child's new minimum
+    // on its own — push it up to the floor when the strip slot is too short.
+    const QList<int> sizes = ui_->timelineSplitter->sizes();
+    if (sizes.size() == 2 && sizes[1] < min_panel) {
+      ui_->timelineSplitter->setSizes({(sizes[0] + sizes[1]) - min_panel, min_panel});
+    }
+  } else {
+    // CLOSED: pin the panel to exactly the playback bar. With min == max the
+    // splitter handle can't drag the (hidden) strip open — only the toggle re-opens it.
+    ui_->bottomPanel->setMinimumHeight(playback_height);
+    ui_->bottomPanel->setMaximumHeight(playback_height);
+    // Collapse the splitter slot too, so no empty gap is left below the playback
+    // (QSplitter caches sizes and won't shrink the slot from the max change alone).
+    const QList<int> sizes = ui_->timelineSplitter->sizes();
+    if (sizes.size() == 2 && sizes[1] != playback_height) {
+      ui_->timelineSplitter->setSizes({(sizes[0] + sizes[1]) - playback_height, playback_height});
+    }
+  }
+  if (auto* bottom_layout = ui_->bottomPanel->layout()) {
+    bottom_layout->invalidate();
+    bottom_layout->activate();
+  }
+}
+
+void MainWindow::alignNameColumnToPlayback() {
+  if (source_timeline_ == nullptr || ui_->timelineWidget == nullptr) {
+    return;
+  }
+  // The playback slider's groove has margin 0 (QSS), so the slider widget's left
+  // edge is where the blue track starts. Its x within the playback bar — which
+  // shares the bottom panel's left origin with the name column — is the column
+  // width that lines the separator up exactly under that track start.
+  auto* slider = ui_->timelineWidget->findChild<QWidget*>(QStringLiteral("timeSlider"));
+  if (slider == nullptr) {
+    return;
+  }
+  const int slider_x = slider->mapTo(ui_->timelineWidget, QPoint(0, 0)).x();
+  if (slider_x <= 0) {
+    return;  // playback bar not laid out yet (pre first show)
+  }
+  // slider_x is the floor (separator under the playback track start). If the user
+  // widened the column (or a layout restored a wider width), re-apply it on top
+  // so the column keeps its chosen width rather than snapping back to the floor.
+  source_timeline_->setNameColumnWidth(slider_x);
+  if (timeline_name_column_width_ > slider_x) {
+    source_timeline_->resizeNameColumn(timeline_name_column_width_);
+  }
 }
 
 void MainWindow::restoreRightPanelState(const QDomElement& element) {
@@ -3156,6 +3520,8 @@ void MainWindow::restoreChromeState(const QDomElement& element) {
   }
   if (element.hasAttribute(QStringLiteral("timeline_splitter_sizes"))) {
     apply_splitter(ui_->timelineSplitter, element.attribute(QStringLiteral("timeline_splitter_sizes")));
+    // Saved sizes must not undercut the open-min floor or the closed lock.
+    applyBottomPanelConstraints();
   }
 }
 
@@ -3533,7 +3899,13 @@ void MainWindow::buildGlobalToolbar() {
                                        session_->playbackEngine().currentTime(),
                                        session_->sessionManager().displayOffset(representativeDatasetId()))}
                                  : std::nullopt;
-    forEachPlot([this](PlotWidget* plot) { plot->setReferenceLine(referenceDisplaySeconds()); });
+    const std::optional<double> ref_sec = referenceDisplaySeconds();
+    forEachPlot([ref_sec](PlotWidget* plot) { plot->setReferenceLine(ref_sec); });
+    // Mirror the toggle on the Source Timeline's blue reference needle (the
+    // controller bridges it from the playback frame into the Timeline frame).
+    if (source_timeline_controller_ != nullptr) {
+      source_timeline_controller_->setReferenceLine(ref_sec);
+    }
   });
   connect(button_t0_, &QToolButton::toggled, this, [this](bool checked) {
     if (applying_state_) {
@@ -3572,6 +3944,97 @@ void MainWindow::buildGlobalToolbar() {
       layout->setSpacing(metrics.layout_spacing);
     }
     for (auto* btn : ui_->globalToolbarWidget->findChildren<QToolButton*>()) {
+      btn->setIconSize(QSize(metrics.icon_size, metrics.icon_size));
+      btn->setFixedSize(button_extent, button_extent);
+    }
+  });
+}
+
+void MainWindow::buildTimelineAlignRail() {
+  // A 24-px icon column on the right edge of the timeline panel that visually
+  // continues the global toolbar above it (they line up when the right panel is
+  // closed). Holds the Source Timeline alignment actions. The buttons mirror the
+  // global toolbar's style (theme-tinted SVG, chrome-metrics sizing); the rail's
+  // show/hide tracks the strip in applyBottomPanelConstraints.
+  auto* outer = qobject_cast<QVBoxLayout*>(ui_->timelineAlignRail->layout());
+  if (outer == nullptr) {
+    return;
+  }
+  outer->setSpacing(0);
+  outer->setContentsMargins(0, 0, 0, 0);
+
+  auto add_button = [this, outer](const char* object_name, const char* icon_path, const char* tooltip) -> QToolButton* {
+    auto* btn = new QToolButton(ui_->timelineAlignRail);
+    btn->setObjectName(QString::fromLatin1(object_name));
+    btn->setProperty("iconPath", QString::fromLatin1(icon_path));
+    btn->setFocusPolicy(Qt::NoFocus);
+    btn->setAutoRaise(true);
+    const int button_extent = chrome_metrics_.icon_size + chrome_metrics_.icon_padding;
+    btn->setFixedSize(button_extent, button_extent);
+    btn->setIconSize(QSize(chrome_metrics_.icon_size, chrome_metrics_.icon_size));
+    btn->setIcon(loadSvg(QString::fromLatin1(icon_path), theme_->currentTheme()));
+    btn->setToolTip(tr(tooltip));
+    outer->addWidget(btn);
+    return btn;
+  };
+
+  QToolButton* align_left = add_button(
+      "buttonAlignStarts", ":/resources/svg/align_horizontal_left.svg",
+      "Align sources: line every source's start up at the earliest start");
+  QToolButton* align_center = add_button(
+      "buttonAlignCenters", ":/resources/svg/align_horizontal_center.svg",
+      "Align sources: line every source's center up at the earliest center");
+  QToolButton* align_right = add_button(
+      "buttonAlignEnds", ":/resources/svg/align_horizontal_right.svg",
+      "Align sources: line every source's end up at the latest end");
+  // "Snap to" toggle — when on, a dragged bar's start/end snaps to a neighbour's
+  // edge (with a guide line). Checkable; on by default.
+  QToolButton* snap_toggle = add_button(
+      "buttonTimelineSnap", ":/resources/svg/transition_push.svg", "Snap to neighbouring dataset edges while dragging");
+  snap_toggle->setCheckable(true);
+  snap_toggle->setChecked(true);
+  // Stretch pins the align/snap icons to the top of the content area; the reset
+  // button below it sits at the BOTTOM of the rail.
+  outer->addStretch(1);
+  QToolButton* reset_all = add_button(
+      "buttonTimelineReset", ":/resources/svg/restart_alt.svg",
+      "Reset all timeline changes (offsets + order) for every source");
+
+  if (source_timeline_controller_ != nullptr) {
+    connect(align_left, &QToolButton::clicked, source_timeline_controller_, &SourceTimelineController::alignStarts);
+    connect(align_center, &QToolButton::clicked, source_timeline_controller_, &SourceTimelineController::alignCenters);
+    connect(align_right, &QToolButton::clicked, source_timeline_controller_, &SourceTimelineController::alignEnds);
+    connect(reset_all, &QToolButton::clicked, source_timeline_controller_, &SourceTimelineController::resetAll);
+  }
+  if (source_timeline_ != nullptr) {
+    connect(snap_toggle, &QToolButton::toggled, source_timeline_, &Timeline::setSnapEnabled);
+    source_timeline_->setSnapEnabled(snap_toggle->isChecked());  // seed the initial state
+  }
+
+  // Re-tint on theme roll — same iconPath-property convention as the global toolbar.
+  connect(this, &MainWindow::stylesheetChanged, ui_->timelineAlignRail, [this](const QString& theme) {
+    for (auto* btn : ui_->timelineAlignRail->findChildren<QToolButton*>()) {
+      const QString path = btn->property("iconPath").toString();
+      if (!path.isEmpty()) {
+        btn->setIcon(loadSvg(path, theme));
+      }
+    }
+  });
+  // Match the global rail's column width + button sizing on chrome-metrics change,
+  // so the two rails stay the same width and line up.
+  connect(this, &MainWindow::chromeMetricsChanged, ui_->timelineAlignRail, [this](const ChromeMetrics& metrics) {
+    const int button_extent = metrics.icon_size + metrics.icon_padding;
+    const int column_width = button_extent + (2 * metrics.layout_padding);
+    ui_->timelineAlignRail->setMinimumWidth(column_width);
+    ui_->timelineAlignRail->setMaximumWidth(column_width);
+    if (auto* layout = ui_->timelineAlignRail->layout()) {
+      // The rail now sits beside the timeline strip only (the full-width playback
+      // bar is above it), so the icons begin at the rail's own top — no inset.
+      layout->setContentsMargins(
+          metrics.layout_padding, metrics.layout_padding, metrics.layout_padding, metrics.layout_padding);
+      layout->setSpacing(metrics.layout_spacing);
+    }
+    for (auto* btn : ui_->timelineAlignRail->findChildren<QToolButton*>()) {
       btn->setIconSize(QSize(metrics.icon_size, metrics.icon_size));
       btn->setFixedSize(button_extent, button_extent);
     }

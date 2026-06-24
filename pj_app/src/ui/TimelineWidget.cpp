@@ -39,20 +39,6 @@ TimelineWidget::TimelineWidget(QWidget* parent) : QWidget(parent), ui_(new Ui::T
   seek_throttle_timer_.setInterval(33);
   connect(&seek_throttle_timer_, &QTimer::timeout, this, &TimelineWidget::flushPendingSeek);
 
-  // Coalesce the engine-driven playhead display to ~30 Hz (see header). The
-  // trailing-edge flush applies the latest buffered time and re-arms the window
-  // while updates keep arriving; once they stop, the next fire finds nothing
-  // pending and lets the timer go idle.
-  display_throttle_timer_.setSingleShot(true);
-  display_throttle_timer_.setInterval(33);
-  connect(&display_throttle_timer_, &QTimer::timeout, this, [this]() {
-    if (has_pending_display_) {
-      has_pending_display_ = false;
-      applyEngineTime(pending_display_time_);
-      display_throttle_timer_.start();
-    }
-  });
-
   connect(ui_->timeSlider, &RealSlider::realValueChanged, this, &TimelineWidget::onSliderValueChanged);
   connect(ui_->timeSlider, &QSlider::sliderReleased, this, &TimelineWidget::onSliderReleased);
   connect(ui_->buttonPlay, &QPushButton::toggled, this, &TimelineWidget::onPlayToggled);
@@ -89,18 +75,29 @@ void TimelineWidget::setPlaybackEngine(PlaybackEngine* engine) {
   onEngineRateChanged(engine_->playbackRate());
 }
 
-void TimelineWidget::onEngineTimeChanged(double t) {
-  // Coalesce to ~30 Hz: the first tick applies immediately (so a seek/pause stays
-  // exact), then ticks inside the throttle window are buffered and the latest one
-  // is flushed when the window closes. Halves the per-tick slider repaint + glyph
-  // re-shaping during continuous 60 Hz playback.
-  if (display_throttle_timer_.isActive()) {
-    pending_display_time_ = t;
-    has_pending_display_ = true;
+void TimelineWidget::setSeekLocked(bool locked) {
+  if (seek_locked_ == locked) {
     return;
   }
+  seek_locked_ = locked;
+  ui_->timeSlider->setEnabled(!locked);
+  if (locked) {
+    has_pending_seek_ = false;
+    seek_throttle_timer_.stop();
+    if (engine_ != nullptr) {
+      applyEngineTime(toAxisDouble(engine_->currentTime()));
+    }
+  }
+}
+
+void TimelineWidget::onEngineTimeChanged(double t) {
+  // Apply every engine tick immediately — NO display throttle. The Source Timeline
+  // needle is also driven directly off currentTimeChanged, so throttling only this
+  // widget made the handle lag the needle (and vice versa) by up to one window. The
+  // slider/label repaint is cheap; the expensive per-cursor work (plot replot, scene
+  // decode) is coalesced separately on MainWindow's tracker-broadcast path, so the
+  // handle and needle now move in lockstep off the same source.
   applyEngineTime(t);
-  display_throttle_timer_.start();
 }
 
 void TimelineWidget::applyEngineTime(double t) {
@@ -127,20 +124,20 @@ void TimelineWidget::onEngineRangeChanged(double min, double max) {
   updating_from_engine_ = true;
   ui_->timeSlider->setLimits(min, max, steps);
   updating_from_engine_ = false;
+  // setLimits keeps the slider's integer position, which now maps to a DIFFERENT
+  // value under the new range — so a range-only change (no currentTimeChanged, e.g.
+  // the union growing as files load, or an offset edit) would otherwise leave the
+  // handle on a stale value. Re-apply the current time so it reflects currentTime in
+  // the new range (and stays in lockstep with the needle).
+  if (engine_ != nullptr) {
+    applyEngineTime(toAxisDouble(engine_->currentTime()));
+  }
 }
 
 void TimelineWidget::onEnginePlayingChanged(bool playing) {
   updating_from_engine_ = true;
   ui_->buttonPlay->setChecked(playing);
   updating_from_engine_ = false;
-  // On pause/stop, flush any time buffered by the 30 Hz display throttle so the
-  // slider + readout land exactly on the stopped position instead of up to one
-  // throttle window (~33 ms) behind it.
-  if (!playing && has_pending_display_) {
-    has_pending_display_ = false;
-    display_throttle_timer_.stop();
-    applyEngineTime(pending_display_time_);
-  }
 }
 
 void TimelineWidget::onEngineRateChanged(double rate) {
@@ -151,6 +148,10 @@ void TimelineWidget::onEngineRateChanged(double rate) {
 
 void TimelineWidget::onSliderValueChanged(double value) {
   if (updating_from_engine_ || !engine_) {
+    return;
+  }
+  if (seek_locked_) {
+    applyEngineTime(toAxisDouble(engine_->currentTime()));
     return;
   }
   if (seek_throttle_timer_.isActive()) {
@@ -172,6 +173,12 @@ void TimelineWidget::onSliderReleased() {
   if (updating_from_engine_ || !engine_) {
     return;
   }
+  if (seek_locked_) {
+    has_pending_seek_ = false;
+    seek_throttle_timer_.stop();
+    applyEngineTime(toAxisDouble(engine_->currentTime()));
+    return;
+  }
   // Deliver the final drag position immediately rather than waiting out the
   // throttle window — the frame the user released on should appear at once, and
   // forward playback resumes from there with no extra latency.
@@ -188,6 +195,11 @@ void TimelineWidget::flushPendingSeek() {
   }
   if (!engine_) {
     has_pending_seek_ = false;
+    return;
+  }
+  if (seek_locked_) {
+    has_pending_seek_ = false;
+    applyEngineTime(toAxisDouble(engine_->currentTime()));
     return;
   }
   const double v = pending_seek_value_;

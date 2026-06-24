@@ -126,9 +126,6 @@ class StreamingSourceManager : public QObject {
   // its own entry exists).
   void workerLoop(DatasetId dataset_id);
 
-  // Lazy-creates the default time domain on first use (mirrors FileLoader).
-  TimeDomainId ensureDefaultTimeDomainId();
-
   // Drain every entry of every object topic in the secondary store back into
   // the primary (SessionManager::objectStore), then evict the secondary so
   // the next pause starts from an empty tail buffer. Called from
@@ -150,7 +147,6 @@ class StreamingSourceManager : public QObject {
 
   QString selected_plugin_;
   int retention_seconds_ = 5;
-  TimeDomainId default_time_domain_id_ = 0;
   // Follow-live gate. Only mutated and read on the UI thread (the worker
   // reads it inside a QueuedConnection lambda that runs on the UI thread).
   // No atomic needed.

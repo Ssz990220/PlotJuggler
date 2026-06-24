@@ -21,6 +21,9 @@
     <file alias="add_column.svg">svg/add_column.svg</file>
     <file alias="add_row.svg">svg/add_row.svg</file>
     <file alias="add.svg">svg/add.svg</file>
+    <file alias="align_horizontal_center.svg">svg/align_horizontal_center.svg</file>
+    <file alias="align_horizontal_left.svg">svg/align_horizontal_left.svg</file>
+    <file alias="align_horizontal_right.svg">svg/align_horizontal_right.svg</file>
     <file alias="alarm-bell-active.svg">svg/alarm-bell-active.svg</file>
     <file alias="alarm-bell.svg">svg/alarm-bell.svg</file>
     <file alias="apps_box.svg">svg/apps_box.svg</file>
@@ -158,6 +161,7 @@
     <file alias="reload_light.svg">svg/reload_light.svg</file>
     <file alias="remove_list.svg">svg/remove_list.svg</file>
     <file alias="remove_red.svg">svg/remove_red.svg</file>
+    <file alias="restart_alt.svg">svg/restart_alt.svg</file>
     <file alias="restore_page.svg">svg/restore_page.svg</file>
     <file alias="right-arrow.svg">svg/right-arrow.svg</file>
     <file alias="save.svg">svg/save.svg</file>
@@ -179,6 +183,7 @@
     <file alias="style_steps_inverted.svg">svg/style_steps_inverted.svg</file>
     <file alias="style_sticks.svg">svg/style_sticks.svg</file>
     <file alias="t0.svg">svg/t0.svg</file>
+    <file alias="transition_push.svg">svg/transition_push.svg</file>
     <file alias="trash.svg">svg/trash.svg</file>
     <file alias="tree.svg">svg/tree.svg</file>
     <file alias="tune.svg">svg/tune.svg</file>

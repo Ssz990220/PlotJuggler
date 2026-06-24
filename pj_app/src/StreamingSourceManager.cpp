@@ -49,7 +49,6 @@ constexpr int kPollPeriodMs = 50;
 // raise this; image-compression (Fase 3) will revisit.
 constexpr size_t kStreamingObjectMemoryBudget = 64U * 1024U * 1024U;
 
-constexpr const char* kDefaultTimeDomainName = "default";
 constexpr const char* kPluginConfigKeyPrefix = "PluginConfig/";
 constexpr const char* kStreamingBufferKey = "MainWindow.streamingBufferValue";
 
@@ -275,13 +274,25 @@ void StreamingSourceManager::startSession(const QString& plugin_id) {
   }
 
   DataEngine& engine = session_manager_.dataEngine();
-  const TimeDomainId td_id = ensureDefaultTimeDomainId();
-  if (td_id == 0) {
-    emit setupError(tr("Could not create the default time domain."));
+  const QString display_name = QStringLiteral("[stream] %1").arg(source_name);
+
+  // One TimeDomain per stream so each is independently time-shiftable on the
+  // Source Timeline. DUAL-ENGINE: the secondary (pause/tail buffer) must hold
+  // the SAME id, so force it explicitly — the two engines' counters drift
+  // whenever the primary gets a domain the secondary doesn't (e.g. a file load
+  // between streams). Relying on counter order would desync them.
+  auto td_or = engine.createTimeDomain(display_name.toStdString());
+  if (!td_or.has_value()) {
+    emit setupError(tr("Could not create the time domain."));
+    return;
+  }
+  const TimeDomainId td_id = *td_or;
+  auto mirrored_td = secondary_data_engine_->createTimeDomain(display_name.toStdString(), td_id);
+  if (!mirrored_td.has_value() || *mirrored_td != td_id) {
+    emit setupError(tr("secondary time domain lockstep failed."));
     return;
   }
 
-  const QString display_name = QStringLiteral("[stream] %1").arg(source_name);
   auto dataset_or =
       engine.createDataset(DatasetDescriptor{.source_name = display_name.toStdString(), .time_domain_id = td_id});
   if (!dataset_or.has_value()) {
@@ -513,32 +524,6 @@ void StreamingSourceManager::requestStopAll(const QString& reason) {
   for (auto& [dataset_id, sess] : sessions_) {
     sess->runtime_host->requestStop(reason.toStdString());
   }
-}
-
-TimeDomainId StreamingSourceManager::ensureDefaultTimeDomainId() {
-  if (default_time_domain_id_ != 0) {
-    return default_time_domain_id_;
-  }
-  auto domain_or = session_manager_.dataEngine().createTimeDomain(kDefaultTimeDomainName);
-  if (!domain_or.has_value()) {
-    qCWarning(lcStream) << "createTimeDomain failed:" << QString::fromStdString(domain_or.error());
-    return 0;
-  }
-  // Mirror the same TimeDomainId onto the secondary engine. Primary-only file
-  // loads can advance the primary counter before streaming starts, so the
-  // secondary must request this exact id instead of relying on counter order.
-  auto mirrored = secondary_data_engine_->createTimeDomain(kDefaultTimeDomainName, *domain_or);
-  if (!mirrored.has_value()) {
-    qCWarning(lcStream) << "secondary createTimeDomain failed:" << QString::fromStdString(mirrored.error());
-    return 0;
-  }
-  if (*mirrored != *domain_or) {
-    qCWarning(lcStream).nospace() << "lockstep desync on time domain: primary=" << *domain_or
-                                  << " secondary=" << *mirrored;
-    return 0;
-  }
-  default_time_domain_id_ = *domain_or;
-  return default_time_domain_id_;
 }
 
 }  // namespace PJ

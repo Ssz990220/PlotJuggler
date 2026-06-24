@@ -34,6 +34,15 @@ struct DataSourceRef {
   QString prefix;
   QString plugin_id;           // Empty when the layout had no <plugin> child.
   QString plugin_config_json;  // Empty when the layout had no <plugin> child.
+  // Source Timeline state, re-bound by source path on reload (DatasetIds are
+  // re-minted each session, so the file path is the only stable identity).
+  // display_offset_ns is the per-source display shift (display = raw - offset);
+  // has_display_offset is false when the layout predates this attribute, so the
+  // reloaded dataset keeps its natural zero offset. timeline_order is the bar's
+  // top-to-bottom slot in the timeline (-1 when absent → fall back to load order).
+  qint64 display_offset_ns = 0;
+  bool has_display_offset = false;
+  int timeline_order = -1;
 };
 
 // CDATA sections cannot contain "]]>"; QDomDocument::createCDATASection
@@ -57,6 +66,26 @@ void appendJsonAsCdata(QDomDocument& doc, QDomElement& parent, const QString& js
 // the wrapper element is absent or holds no usable fileInfo. Multiple entries
 // support multi-file sessions; single-file layouts yield a one-element list.
 [[nodiscard]] QList<DataSourceRef> extractDataSource(const QDomDocument& doc, const QDir& layout_dir);
+
+// Source Timeline view chrome persisted as the <source_timeline> element: pure
+// view state, independent of the per-source offsets/order (those round-trip via
+// DataSourceRef). Each field is optional so a layout that omits an attribute — or
+// predates it — leaves that aspect of the widget untouched on restore.
+struct SourceTimelineViewState {
+  std::optional<double> zoom;            // pixels-per-ns (Ctrl+wheel zoom); only > 0 is valid
+  std::optional<qint64> scroll_left_ns;  // display-ns at the viewport's left edge
+  std::optional<int> name_column_width;  // left name-column width (px); only > 0 is valid
+  std::optional<bool> snap;              // edge-snap-while-dragging toggle
+};
+
+// Serialize / parse the <source_timeline> element. write builds a fresh element
+// on `doc`, emitting only the set fields (zoom at 17 sig-figs so the ~1e-7
+// pixels-per-ns round-trips exactly). read pulls the attributes back, leaving a
+// field nullopt when its attribute is absent or malformed (zoom/width also
+// require a positive value). Pure Qt-DOM, no widget — the host applies the parsed
+// state to the widget, keeping the encode/decode unit-testable.
+[[nodiscard]] QDomElement writeSourceTimelineViewState(QDomDocument& doc, const SourceTimelineViewState& state);
+[[nodiscard]] SourceTimelineViewState readSourceTimelineViewState(const QDomElement& element);
 
 // True iff both paths resolve to the same on-disk file. Used by the
 // layout-load data-source replay to decide whether the currently

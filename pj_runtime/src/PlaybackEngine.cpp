@@ -26,6 +26,37 @@ PlaybackEngine::PlaybackEngine(QObject* parent) : QObject(parent) {
 PlaybackEngine::~PlaybackEngine() = default;
 
 void PlaybackEngine::setRange(DisplayRange range) {
+  applyRange(range);
+
+  const double clamped = clampedTime(current_time_);
+  if (clamped != current_time_) {
+    current_time_ = clamped;
+    emit currentTimeChanged(current_time_);
+  }
+}
+
+void PlaybackEngine::setRangeAndCurrentTime(DisplayRange range, DisplaySeconds t) {
+  double min = range.min.value;
+  double max = range.max.value;
+  if (max < min) {
+    std::swap(min, max);
+  }
+  const bool range_changed = range_min_ != min || range_max_ != max;
+  range_min_ = min;
+  range_max_ = max;
+  const double clamped = clampedTime(t.value);
+  const bool time_changed = clamped != current_time_;
+  current_time_ = clamped;
+
+  if (range_changed) {
+    emit rangeChanged(range_min_, range_max_);
+  }
+  if (time_changed) {
+    emit currentTimeChanged(current_time_);
+  }
+}
+
+void PlaybackEngine::applyRange(DisplayRange range) {
   double min = range.min.value;
   double max = range.max.value;
   if (max < min) {
@@ -37,12 +68,6 @@ void PlaybackEngine::setRange(DisplayRange range) {
   range_min_ = min;
   range_max_ = max;
   emit rangeChanged(range_min_, range_max_);
-
-  const double clamped = clampedTime(current_time_);
-  if (clamped != current_time_) {
-    current_time_ = clamped;
-    emit currentTimeChanged(current_time_);
-  }
 }
 
 void PlaybackEngine::setCurrentTime(DisplaySeconds t) {
@@ -72,6 +97,38 @@ void PlaybackEngine::setLooping(bool looping) {
   }
   looping_ = looping;
   emit loopingChanged(looping_);
+}
+
+void PlaybackEngine::setHoldAtRangeMax(bool hold) {
+  hold_at_range_max_ = hold;
+}
+
+double PlaybackEngine::clampTickTime(
+    double next, double range_min, double range_max, bool hold_at_max, bool looping, bool* reached_end) {
+  if (reached_end != nullptr) {
+    *reached_end = false;
+  }
+  // Live streaming: the cursor is pinned to the live tip (range_max), period — it does
+  // NOT free-run forward by wall-clock between ingests. Advancing only to clamp back is
+  // exactly what let the handle/needle overshoot the data and snap back (the jitter);
+  // and it IGNORES the loop toggle so a stream never wraps to the start.
+  if (hold_at_max) {
+    return range_max;
+  }
+  if (next > range_max) {
+    if (looping) {
+      const double span = range_max - range_min;
+      return span > 0.0 ? range_min + std::fmod(next - range_min, span) : range_min;
+    }
+    if (reached_end != nullptr) {
+      *reached_end = true;  // hit the end with no repeat: the caller pauses
+    }
+    return range_max;
+  }
+  if (next < range_min) {
+    return range_min;
+  }
+  return next;
 }
 
 void PlaybackEngine::play() {
@@ -104,22 +161,12 @@ void PlaybackEngine::togglePlay() {
 void PlaybackEngine::onTick() {
   const qint64 dt_ms = elapsed_.restart();
   const double dt = static_cast<double>(dt_ms) * 0.001;
-  double next = current_time_ + dt * rate_;
+  const double raw_next = current_time_ + dt * rate_;
 
-  if (next > range_max_) {
-    if (looping_) {
-      const double span = range_max_ - range_min_;
-      if (span > 0.0) {
-        next = range_min_ + std::fmod(next - range_min_, span);
-      } else {
-        next = range_min_;
-      }
-    } else {
-      next = range_max_;
-      pause();
-    }
-  } else if (next < range_min_) {
-    next = range_min_;
+  bool reached_end = false;
+  const double next = clampTickTime(raw_next, range_min_, range_max_, hold_at_range_max_, looping_, &reached_end);
+  if (reached_end) {
+    pause();  // ran past the end with neither hold-at-tip nor loop
   }
 
   if (next != current_time_) {

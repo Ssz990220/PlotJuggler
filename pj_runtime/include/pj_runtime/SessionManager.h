@@ -73,11 +73,38 @@ class SessionManager : public QObject {
 
   [[nodiscard]] DataReader createReader() const;
 
-  /// Per-dataset display shift (display_time = raw_time - offset). Combines the
-  /// dataset's TimeDomain offset (latent; configured only in tests today) with
-  /// the "Use time offset" shift: when enabled, the dataset's OWN earliest
-  /// timestamp, so its axis starts near zero. Read LIVE (no stale snapshot).
+  /// TOTAL display shift used by everything that renders on the display axis
+  /// (plot curves, scenes, the playback range/cursor): the dataset's per-source
+  /// alignment offset PLUS the global "Use time offset" reference. So
+  /// display_time = raw_time - sourceDisplayOffset - globalTimeReference().
+  /// The two are summed here, not stored together, so a toggle of the global
+  /// frame never disturbs the per-source alignment the Source Timeline owns.
   [[nodiscard]] DisplayOffset displayOffset(DatasetId dataset_id) const;
+
+  /// Per-source ALIGNMENT shift ONLY (the dataset's TimeDomain offset, read
+  /// LIVE): exactly what the Source Timeline edits via setDisplayOffset (drag /
+  /// align / reset) and what positions its bars. Excludes the global "Use time
+  /// offset" reference, so the Timeline's bar positions stay invariant when that
+  /// global frame is toggled — only their number FORMATTING changes. Use this
+  /// (not displayOffset) anywhere bar/track positions must not follow the toggle.
+  [[nodiscard]] DisplayOffset sourceDisplayOffset(DatasetId dataset_id) const;
+
+  /// The single global origin (raw ns) subtracted from ALL displayed times when
+  /// "Use time offset" is on: the earliest raw sample across every loaded
+  /// dataset, applied UNIFORMLY so cross-dataset time gaps are preserved (unlike
+  /// a per-source rebase, which collapses every dataset to zero). Zero when the
+  /// toggle is off. Memoized; invalidated on every commit/ingest. The host (the
+  /// Source Timeline controller) reads it to bridge the playback frame
+  /// (raw - source - global) and the Timeline frame (raw - source).
+  [[nodiscard]] Timestamp globalTimeReference() const;
+
+  /// Write a source's display shift (display_time = raw_time - offset) and
+  /// notify consumers via displayOffsetChanged(DatasetId). Resolves dataset ->
+  /// its TimeDomain -> DataEngine; no-op + warning if the dataset is unknown or
+  /// bound to the default (id 0) domain. This is the per-source Timeline-drag
+  /// seam; it composes with the global "Use time offset" frame below (the offset
+  /// it writes is the latent TimeDomain shift displayOffset() reads).
+  void setDisplayOffset(DatasetId dataset_id, DisplayOffset offset);
 
   /// Time bounds of ONE dataset's data — scalar topics (DataEngine) and object
   /// topics (ObjectStore) unioned — in DISPLAY-relative seconds (display_time =
@@ -88,12 +115,12 @@ class SessionManager : public QObject {
   /// the playback axis offset-blind.
   [[nodiscard]] std::optional<DisplayRange> datasetDisplayRange(DatasetId dataset_id) const;
 
-  // --- "Use time offset": re-base each dataset's axis between absolute Unix-epoch
-  // seconds and seconds-relative-to-its-own-start. The shift is PER-DATASET (each
-  // dataset re-bases to its own earliest sample), so with several datasets each
-  // starts at zero and their starts align — a deliberate UI choice. Only the
-  // boolean is state; per-dataset shifts are computed live from data bounds in
-  // displayOffset(), which is also the seam for future fine-tuned alignment. ---
+  // --- "Use time offset": switch the displayed time frame between absolute
+  // Unix-epoch seconds (off) and seconds relative to a single GLOBAL origin (on).
+  // The shift is one uniform global reference (globalTimeReference) applied to
+  // every dataset, so multi-dataset time gaps are preserved. It is layered on top
+  // of (never overwrites) the per-source alignment offset, so toggling it leaves
+  // the Source Timeline's bar positions untouched. Only the boolean is state. ---
 
   /// Whether the relative-time frame is enabled. Default off (neutral); the app
   /// shell sets the user-facing policy (PJ3 parity = on) via setUseTimeOffset.
@@ -101,10 +128,12 @@ class SessionManager : public QObject {
     return use_time_offset_;
   }
 
-  /// Flip the frame and emit displayOffsetChanged() on an actual change. The
-  /// numeric shifts follow automatically (displayOffset recomputes per dataset),
-  /// so callers only re-render: drop curve-adapter offset caches + replot,
-  /// re-seed the playback range, and shift the playhead by the per-dataset delta.
+  /// Toggle the global relative-time frame and emit the no-arg
+  /// displayOffsetChanged() on an actual change. It flips only globalTimeReference
+  /// (ON → earliest raw sample across all datasets; OFF → 0); it does NOT touch
+  /// any per-source alignment offset, so a Timeline drag/align is independent and
+  /// survives a toggle. Callers re-render on the signal: drop curve-adapter offset
+  /// caches + replot, re-seed the playback range, reformat the Timeline numbers.
   void setUseTimeOffset(bool use);
 
   [[nodiscard]] std::vector<TopicId> commitChunks(std::vector<std::pair<TopicId, TopicChunk>> chunks);
@@ -145,6 +174,21 @@ class SessionManager : public QObject {
   // what makes the rollback possible — the prior data lives in the snapshot until
   // commit(). Runs NO event loop until commit/rollback.
   [[nodiscard]] RefillGuard beginRefill(PJ::DatasetId dataset_id);
+
+  // Destructively fold `sources` (each with a raw timestamp shift) into the
+  // `anchor` dataset via DataEngine::mergeDatasets. Mirrors replaceDataset's
+  // ordered transaction: emit datasetAboutToBeReplaced for the anchor + every
+  // source (adapters drop cached chunk pointers) -> engine merge -> drop the
+  // consumed sources' object topics (v1 scalar-only merge) -> notifyIngest the
+  // anchor's changed topics. Returns the engine's report on success, or
+  // std::nullopt when the engine REJECTED the merge (the store is untouched), so
+  // the caller can leave the catalog consistent rather than removing sources
+  // whose data still lives in the store — distinct from a successful merge that
+  // happens to fold no topics (a non-null but empty report). The caller computes
+  // the anchor/shifts (display-offset policy) and, only on success, updates the
+  // catalog (remove the consumed datasets, relabel the anchor). Runs no event
+  // loop; the caller must rebuild the catalog after it returns.
+  std::optional<DatasetMergeReport> mergeDatasets(DatasetId anchor, const std::vector<DatasetMergeSource>& sources);
 
   // Registers (or replaces) the parser for one object topic. Called from the
   // streaming worker thread via the registrar callback when a plugin discovers a
@@ -249,8 +293,15 @@ class SessionManager : public QObject {
   // Emitted when the shared display offset changes (the "Use time offset" frame
   // toggled, or a load moved the earliest sample). No topic changed, so plot
   // widgets must drop EVERY curve adapter's cached offset and replot — a
-  // per-topic samplesIngested would skip them all.
+  // per-topic samplesIngested would skip them all. Connect with qOverload<>(...)
+  // (overloaded against the per-dataset signal below).
   void displayOffsetChanged();
+
+  // Emitted when ONE dataset's display offset changes (a Timeline drag/align via
+  // setDisplayOffset). No data moved — only its display->raw mapping; consumers
+  // drop that dataset's offset caches and replot/re-snap without re-indexing
+  // samples. Connect with qOverload<PJ::DatasetId>(...).
+  void displayOffsetChanged(PJ::DatasetId dataset_id);
 
  private:
   // RefillGuard drives the transactional reload through this class's public
@@ -265,9 +316,15 @@ class SessionManager : public QObject {
   // nullopt when it holds no data. The one time-bounds union loop.
   [[nodiscard]] std::optional<std::pair<Timestamp, Timestamp>> datasetRawBounds(DatasetId dataset_id) const;
 
-  // Earliest raw-ns timestamp of one dataset (0 when empty), memoized in
-  // dataset_min_cache_. The per-dataset shift "Use time offset" subtracts.
+  // Earliest raw-ns timestamp of one dataset (0 when empty), pinned in
+  // dataset_min_cache_. The per-dataset shift "Use time offset" subtracts it.
+  // The value may move earlier when older/out-of-order data arrives, but does
+  // not move later just because streaming retention evicted old rows.
   [[nodiscard]] Timestamp datasetMinTimestamp(DatasetId dataset_id) const;
+  [[nodiscard]] Timestamp datasetDomainDisplayOffset(DatasetId dataset_id) const;
+  [[nodiscard]] Timestamp rememberDatasetMinTimestamp(DatasetId dataset_id, Timestamp observed_min) const;
+  void refreshDatasetMinTimestampsForTopics(const QVector<TopicId>& ids) const;
+  void invalidateDatasetMinTimestamp(DatasetId dataset_id) const;
 
   struct ObjectParserSlot {
     // shared_ptr (not unique_ptr) so a display source can hold the handle alive
@@ -292,9 +349,15 @@ class SessionManager : public QObject {
   // "Use time offset" frame state. Neutral default (off); the app shell drives
   // the user-facing default (on, PJ3 parity) through setUseTimeOffset.
   bool use_time_offset_ = false;
-  // Per-dataset earliest-stamp memo for displayOffset() (read per playback tick +
-  // per catalog item). Cleared on every commit/ingest so it can't go stale.
+  // Per-dataset earliest-stamp pin for displayOffset() (read per playback tick +
+  // per catalog item). Normal ingest can only lower it; dataset replacement
+  // invalidates it so reloads rebase to the new contents.
   mutable std::unordered_map<DatasetId, Timestamp> dataset_min_cache_;
+  // Earliest raw stamp across ALL datasets, memoized for globalTimeReference().
+  // Independent of the toggle (it's a raw-data fact), so it survives a
+  // setUseTimeOffset but is cleared on every commit/ingest like the per-dataset
+  // memo. nullopt = not yet computed / no data.
+  mutable std::optional<Timestamp> global_min_cache_;
   // Owns the session's filter/transform engine; constructed in the ctor body
   // after data_engine_ is alive (it binds a DerivedEngine to data_engine_).
   std::unique_ptr<DataProcessorService> processor_service_;

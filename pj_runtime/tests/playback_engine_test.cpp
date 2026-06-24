@@ -1,0 +1,71 @@
+// Copyright 2026 Davide Faconti
+// SPDX-License-Identifier: MPL-2.0
+
+#include <gtest/gtest.h>
+
+#include <vector>
+
+#include "pj_runtime/PlaybackEngine.h"
+
+namespace {
+
+TEST(PlaybackEngineTest, SetRangeAndCurrentTimeSkipsIntermediateClamp) {
+  PJ::PlaybackEngine engine;
+  engine.setRange(PJ::displayRange(0.0, 10.0));
+  engine.setCurrentTime(PJ::displaySeconds(5.0));
+
+  std::vector<double> current_times;
+  std::vector<double> current_times_seen_by_range;
+  QObject::connect(
+      &engine, &PJ::PlaybackEngine::rangeChanged, &engine, [&engine, &current_times_seen_by_range](double, double) {
+        current_times_seen_by_range.push_back(engine.currentTime().value);
+      });
+  QObject::connect(&engine, &PJ::PlaybackEngine::currentTimeChanged, &engine, [&current_times](double time) {
+    current_times.push_back(time);
+  });
+
+  engine.setRangeAndCurrentTime(PJ::displayRange(20.0, 30.0), PJ::displaySeconds(30.0));
+
+  ASSERT_EQ(current_times.size(), 1u);
+  EXPECT_DOUBLE_EQ(current_times.front(), 30.0);
+  ASSERT_EQ(current_times_seen_by_range.size(), 1u);
+  EXPECT_DOUBLE_EQ(current_times_seen_by_range.front(), 30.0);
+  EXPECT_DOUBLE_EQ(engine.rangeMin().value, 20.0);
+  EXPECT_DOUBLE_EQ(engine.rangeMax().value, 30.0);
+  EXPECT_DOUBLE_EQ(engine.currentTime().value, 30.0);
+}
+
+// Per-tick clamp precedence: while a stream is live (hold-at-tip), the cursor parks
+// at the live edge and IGNORES the loop toggle, so a live stream never wraps to the
+// start. Loop only wraps when not holding; with neither, it flags end-of-range so
+// the engine pauses.
+TEST(PlaybackEngineTest, ClampTickTimeHoldAtTipBeatsLoop) {
+  bool reached_end = true;
+
+  // Past the end, hold + loop both set: parks at the tip (hold wins), not end.
+  EXPECT_DOUBLE_EQ(
+      PJ::PlaybackEngine::clampTickTime(15.0, 0.0, 10.0, /*hold_at_max=*/true, /*looping=*/true, &reached_end), 10.0);
+  EXPECT_FALSE(reached_end);
+
+  // hold off, loop on: wraps back into the range.
+  EXPECT_DOUBLE_EQ(
+      PJ::PlaybackEngine::clampTickTime(12.0, 0.0, 10.0, /*hold_at_max=*/false, /*looping=*/true, &reached_end), 2.0);
+  EXPECT_FALSE(reached_end);
+
+  // hold off, loop off: parks at the tip and flags end (caller pauses).
+  reached_end = false;
+  EXPECT_DOUBLE_EQ(
+      PJ::PlaybackEngine::clampTickTime(12.0, 0.0, 10.0, /*hold_at_max=*/false, /*looping=*/false, &reached_end), 10.0);
+  EXPECT_TRUE(reached_end);
+
+  // hold-at-tip PINS to range_max even when the tick would land BELOW it — the cursor
+  // must not free-run forward between ingests (that overshoot/snap-back was the jitter).
+  EXPECT_DOUBLE_EQ(
+      PJ::PlaybackEngine::clampTickTime(5.0, 0.0, 10.0, /*hold_at_max=*/true, /*looping=*/false, nullptr), 10.0);
+
+  // Not holding: within range passes through unchanged; below range clamps up to min.
+  EXPECT_DOUBLE_EQ(PJ::PlaybackEngine::clampTickTime(5.0, 0.0, 10.0, false, true, nullptr), 5.0);
+  EXPECT_DOUBLE_EQ(PJ::PlaybackEngine::clampTickTime(-3.0, 0.0, 10.0, false, false, nullptr), 0.0);
+}
+
+}  // namespace

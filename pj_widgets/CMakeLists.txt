@@ -29,6 +29,7 @@ add_library(pj_widgets STATIC
     src/RecentFilesMenu.cpp
     src/ScrubberBase.cpp
     src/SectionHeaderBand.cpp
+    src/Timeline.cpp
     src/ToggleSwitch.cpp
     src/VisualizationPlaceholderWidget.cpp
     include/pj_widgets/CheckButton.h
@@ -64,6 +65,7 @@ add_library(pj_widgets STATIC
     include/pj_widgets/Style.h
     include/pj_widgets/SvgUtil.h
     include/pj_widgets/ThemeColors.h
+    include/pj_widgets/Timeline.h
     include/pj_widgets/ToggleSwitch.h
     include/pj_widgets/VisualizationPlaceholderWidget.h
 )

@@ -181,7 +181,8 @@ class PlotWidget : public PlotWidgetBase {
   CatalogModel* catalog_ = nullptr;
   QMetaObject::Connection samples_ingested_connection_;
   QMetaObject::Connection dataset_replace_connection_;
-  QMetaObject::Connection display_offset_connection_;
+  QMetaObject::Connection display_offset_connection_;          // global "Use time offset" frame
+  QMetaObject::Connection display_offset_dataset_connection_;  // per-source Timeline drag
   DragInfo dragging_;
   CurveTracker* tracker_ = nullptr;
   CurveTracker* reference_tracker_ = nullptr;

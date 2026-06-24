@@ -64,6 +64,8 @@ class QtDiagnosticBridge;
 class SceneDockWidget;
 class StreamingSourceManager;
 class IngestProgressWidget;
+class SourceTimelineController;
+class Timeline;
 class RecentFilesMenu;
 class Theme;
 class TitleBar;
@@ -131,6 +133,13 @@ class MainWindow : public QMainWindow {
   // below only apply live (so a Preferences sizing-scrubber drag previews
   // without thrashing the .ini); PreferencesDialog calls this on OK to commit.
   void persistChromeMetrics() const;
+
+  // Source Timeline auto-zoom preference (persisted in QSettings; default true).
+  // The getter reads QSettings so PreferencesDialog can seed its toggle; the
+  // setter writes QSettings AND pushes the flag to the timeline widget. Unlike the
+  // chrome setters this commits immediately (the dialog calls it on OK only).
+  [[nodiscard]] bool timelineAutoZoom() const;
+  void setTimelineAutoZoom(bool enabled);
 
  public slots:
   // Apply-only: clamp, update chrome_metrics_, broadcast chromeMetricsChanged.
@@ -262,12 +271,18 @@ class MainWindow : public QMainWindow {
   // (displayOffsetChanged), so the line tracks the offset instead of going stale.
   [[nodiscard]] std::optional<double> referenceDisplaySeconds() const;
 
-  // Seeds the streaming playback slider over the active streamed window, playhead
-  // at the live edge, and marks the session seeded so live ingests keep the range
-  // fresh. No-op when no streaming dataset is active. Called from BOTH the 2D and
-  // 3D drop-to-view branches: either family alone must establish the timeline, or
-  // a 3D-only stream never seeds and the slider stays stuck at the startup default.
+  // Drop-time fast path for the live-ingest seed below: if data is already present
+  // when the user drops a scalar curve or object topic, set the playback range and
+  // playhead immediately. Live ingest can also seed without any drop.
   void seedStreamingPlaybackFromDrop();
+
+  // Put the Source Timeline into read-only mode (called with streaming && playing,
+  // from the streaming seek-lock refresh). While the cursor is glued to the live
+  // tip, editing source offsets / order / merges or seeking the needle is unsafe;
+  // pausing the stream clears it so the retained window can be scrubbed/realigned.
+  // Locks the Timeline widget's manipulation gestures (setInteractionLocked) AND
+  // greys the external align rail (whose buttons drive the controller directly).
+  void setSourceTimelineStreamingLock(bool locked);
 
   // Records a user-visible plot layout change. `force_new_state` pushes a fresh,
   // non-coalescing undo entry — set it for discrete operations that must never merge
@@ -364,6 +379,12 @@ class MainWindow : public QMainWindow {
   // panel's toggle state.
   void buildGlobalToolbar();
 
+  // Builds the timeline panel's align rail — a 24-px icon column on the right
+  // edge of the bottom panel that visually continues the global toolbar above
+  // it. Holds the Source Timeline alignment actions (align starts / centers);
+  // shown only while the strip is open (applyBottomPanelConstraints drives that).
+  void buildTimelineAlignRail();
+
   // Builds the local panel — Curve Width + Curve Style header bands and
   // their flow-layout icon strips above the CurveEditor. Snap/compact
   // behaviour still applies (hidden by the "Toggle Right Panel" button,
@@ -434,6 +455,25 @@ class MainWindow : public QMainWindow {
   // absolute otherwise. Returns a null element when no source is recorded.
   [[nodiscard]] QDomElement appendDataSourceElement(QDomDocument& doc, const QDir& layout_dir) const;
 
+  // Re-applies the per-source Source Timeline state saved in `sources` (one
+  // DataSourceRef per <fileInfo>) after the layout's datasets are (re)loaded.
+  // DatasetIds are re-minted each session, so each saved entry is matched back
+  // to a live dataset by source path; matched datasets get their display offset
+  // restored and the timeline's vertical track order rebuilt. No-op for
+  // generic (data-less) layouts and pre-v3 layouts that carry no timeline attrs.
+  void applyTimelineStateFromLayout(const QList<layout_xml::DataSourceRef>& sources);
+
+  // Builds <source_timeline zoom="…" scroll_left_ns="…" name_column_width="…"
+  // snap="…"/> — the timeline's global VIEW chrome (independent of per-source
+  // offsets/order, which ride <fileInfo>). Always emitted (pure UI chrome).
+  [[nodiscard]] QDomElement saveSourceTimelineViewState(QDomDocument& doc) const;
+
+  // Applies <source_timeline> view attributes: zoom first, then scroll, then the
+  // name-column width, then the snap toggle. Missing attributes are left at their
+  // current value. Must run AFTER the datasets reload so zoom/scroll map onto the
+  // rebuilt scene.
+  void restoreSourceTimelineViewState(const QDomElement& element);
+
   // Builds <right_panel_state visible="…" width="…" style="…"
   // splitter_sizes="…"/> from the four right-panel state sources. Always
   // emits an element (none of the attributes are gated). Caller appends.
@@ -465,6 +505,20 @@ class MainWindow : public QMainWindow {
   // (first match in load order, mirroring rebindCurvesToLoadedDatasets), so a
   // multi-file layout restores each filter against its own source.
   void restoreDataProcessors(const QDomElement& root);
+
+  // Size the bottom panel from the Source Timeline strip's open/closed state:
+  // when OPEN, pin a minimum height so the strip can't be dragged to a clipped
+  // sliver; when CLOSED, fix the panel to the playback bar so the splitter
+  // handle can't drag the (hidden) strip open. The single source of truth for
+  // bottom-panel height constraints, called from every site that changes the
+  // strip's visibility (restore, toggle, layout load) + the chrome-metrics pass.
+  void applyBottomPanelConstraints();
+
+  // Align the Source Timeline's left name column so its right separator sits
+  // exactly under the start of the playback bar's slider track. Measures the
+  // slider's left x within the playback bar and pins the column to it. No-op
+  // until the playback bar is laid out (post first show).
+  void alignNameColumnToPlayback();
 
   // Serializes the current app layout state.
   [[nodiscard]] QDomDocument xmlSaveState() const;
@@ -501,9 +555,12 @@ class MainWindow : public QMainWindow {
   // Persists main-window settings before close.
   void closeEvent(QCloseEvent* event) override;
 
-  // Restores the remembered left-panel splitter width on first show (when the
-  // splitter finally has real geometry). One-shot, guarded by
-  // left_splitter_restored_; a later --layout load still overrides it.
+  // First-show hook (runs once the splitters finally have real geometry):
+  // (1) restores the remembered left-panel splitter width — one-shot, guarded by
+  // left_splitter_restored_; a later --layout load still overrides it; and
+  // (2) pins the bottom timeline panel to a clean open/closed height
+  // (constructor-time sizing doesn't stick and left the strip squashed), sized
+  // deferred after the first layout pass.
   void showEvent(QShowEvent* event) override;
 
   // Frameless-window edge resize: catches mouse events on ourselves or
@@ -557,16 +614,29 @@ class MainWindow : public QMainWindow {
   // pending_tracker_time_ holds the newest cursor time the trailing edge will use.
   std::unique_ptr<CoalescingTrigger> tracker_broadcast_trigger_;
   double pending_tracker_time_ = 0.0;
+  // Binds the Source Timeline widget (mounted in timelineStrip) to the runtime.
+  // Parented to this MainWindow (QObject-owned), so it is a raw pointer.
+  SourceTimelineController* source_timeline_controller_ = nullptr;
+  // The Source Timeline widget itself (QObject-owned by timelineStrip). Held so
+  // the reference-line toggle can drive its blue reference needle.
+  Timeline* source_timeline_ = nullptr;
+  // User's chosen name-column width (px); 0 = none, use the playback-aligned
+  // floor. Tracked from Timeline::nameColumnWidthChanged and restored from a
+  // layout so alignNameColumnToPlayback keeps the column at this width.
+  int timeline_name_column_width_ = 0;
   // Active streaming dataset id while a session is live (0 = none).
   // Scopes the playback slider range to this dataset's data only so unrelated
   // file/scalar timestamps in the global store don't stretch the slider into
   // ranges where no streamable data exists.
   DatasetId active_streaming_dataset_id_ = 0;
-  // Flips to true the first time a streaming topic is dropped into a view,
-  // which seeds the playback range + playhead. Until then the slider is left
-  // untouched so merely subscribing to topics in the source dialog does not
-  // move it. While true, live ingest tracks the live edge until the user
-  // pauses.
+  // Flips to true the first time a streaming topic is dropped into a view —
+  // a scalar curve into a plot (PlotWidget::curvesDropped) or an object topic
+  // into a 2D/3D dock (PlotDocker::firstObjectTopicAdded) — which seeds the
+  // playback range + playhead. Until then the slider is left untouched so merely
+  // subscribing to topics in the source dialog does not move it. Seeding is
+  // one-shot per session (seedStreamingPlaybackFromDrop early-returns once set),
+  // so a later drop can't re-snap a paused, scrubbed-back cursor. While true,
+  // live ingest tracks the live edge until the user pauses.
   bool streaming_playback_seeded_ = false;
   std::unique_ptr<Theme> theme_;
   TitleBar* title_bar_ = nullptr;
@@ -609,6 +679,7 @@ class MainWindow : public QMainWindow {
   // One-shot guard so the remembered left-panel splitter width is restored only on
   // the first showEvent (later shows must not clobber a user/layout adjustment).
   bool left_splitter_restored_ = false;
+  bool bottom_panel_sized_ = false;  // first-show guard for the bottom-panel sizing
   // Lives inside localToolbarWidget; visibility piggybacks on the
   // right-panel toggle in the tab strip.
   CurveEditor* curve_editor_ = nullptr;

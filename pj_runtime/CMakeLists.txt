@@ -85,11 +85,23 @@ if(PJ_BUILD_TESTS)
     )
     add_test(NAME AppSessionTest COMMAND app_session_test)
 
+    add_executable(playback_engine_test
+        tests/playback_engine_test.cpp
+    )
+    target_link_libraries(playback_engine_test PRIVATE
+        pj_runtime
+        GTest::gtest_main
+    )
+    add_test(NAME PlaybackEngineTest COMMAND playback_engine_test)
+
     add_executable(session_manager_test
         tests/session_manager_test.cpp
     )
+    # Qt6::Test supplies QSignalSpy for the displayOffsetChanged emission test.
+    find_package(Qt6 REQUIRED COMPONENTS Test)
     target_link_libraries(session_manager_test PRIVATE
         pj_runtime
+        Qt6::Test
         GTest::gtest_main
     )
     add_test(NAME SessionManagerTest COMMAND session_manager_test)

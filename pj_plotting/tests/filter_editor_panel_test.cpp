@@ -400,7 +400,12 @@ TEST(FilterEditorPanelTest, PreviewShowsEverySelectedSource) {
 TEST(FilterEditorPanelTest, PreviewFilteredCurveSharesGhostOffsetAcrossT0Toggle) {
   PJ::SessionManager session;  // use_time_offset_ defaults to false
   PJ::CatalogModel catalog(&session);
-  auto dataset = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "drive.mcap"});
+  // Own TimeDomain (mirrors FileLoader): "Use time offset" writes the align-starts
+  // shift to the domain, so the dataset must not be on the default (id 0) domain.
+  auto domain = session.dataEngine().createTimeDomain("drive");
+  ASSERT_TRUE(domain.has_value()) << domain.error();
+  auto dataset =
+      session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "drive.mcap", .time_domain_id = *domain});
   ASSERT_TRUE(dataset.has_value()) << dataset.error();
   const auto source = addSource(session, catalog, *dataset, "/x");  // first sample at t=1e6 ns
 

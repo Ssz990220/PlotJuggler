@@ -157,6 +157,16 @@ void DatastoreCurveAdapter::onDataCleared() {
   cached_display_offset_valid_ = false;
 }
 
+void DatastoreCurveAdapter::onDisplayOffsetChanged() {
+  // Samples didn't move — only their display->raw mapping. Clear the offset
+  // cache and the bounding rect (its X extent shifts); leave sample_index_dirty_
+  // untouched so we don't pay a re-index. The visible raw window is re-derived
+  // by Qwt on the replot that follows (updateScaleDiv -> setRectOfInterest
+  // reconverts the display-seconds rect through the new offset).
+  cached_display_offset_valid_ = false;
+  full_bounding_rect_valid_ = false;
+}
+
 std::optional<QPointF> DatastoreCurveAdapter::sampleFromTime(double display_time_sec) const {
   if (session_ == nullptr) {
     return std::nullopt;
@@ -245,9 +255,9 @@ DisplayOffset DatastoreCurveAdapter::displayOffsetNow() const {
   // Live lookup via SessionManager::displayOffset — the single offset seam
   // (TimeDomain shift + the per-dataset "Use time offset" shift), never a
   // catalog-build-time snapshot. The cache below is invalidated by
-  // onTopicCommitted / onDataCleared (and the offset-toggle reuses that same
-  // invalidation) so it tracks offset reconfiguration through the signals that
-  // already drive sample re-indexing.
+  // onTopicCommitted / onDataCleared / onDisplayOffsetChanged so it tracks
+  // offset reconfiguration through the same signals that drive sample
+  // re-indexing (or, for a pure offset change, without re-indexing).
   DisplayOffset offset;
   if (session_ != nullptr) {
     offset = session_->displayOffset(source_.dataset_id);

@@ -153,6 +153,17 @@ TEST(Scene3DDockStreaming, TfOnlyDockTrackerTimeRecoversAbsoluteOffset) {
   pj::scene3d::TransformService transform_service(session);
   PJ::ObjectStore& store = session.objectStore();
 
+  // Object-only source, but with its own DataEngine dataset + TimeDomain (mirrors
+  // StreamingSourceManager): "Use time offset" writes the align-starts shift to the
+  // domain, so the dataset must exist there with a non-default domain. First
+  // createDataset mints id 1, matching the ObjectStore topic's dataset_id below.
+  const auto domain = session.dataEngine().createTimeDomain("tf_stream");
+  ASSERT_TRUE(domain.has_value()) << domain.error();
+  const auto ds =
+      session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "tf_stream", .time_domain_id = *domain});
+  ASSERT_TRUE(ds.has_value()) << ds.error();
+  ASSERT_EQ(*ds, 1u);
+
   // Register /tf and push one entry at kBaseNs so datasetMinTimestamp(1) == kBaseNs
   // (datasetRawBounds unions the ObjectStore).
   PJ::ObjectTopicDescriptor desc;

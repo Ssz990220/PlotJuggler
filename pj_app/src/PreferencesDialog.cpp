@@ -205,6 +205,14 @@ PreferencesDialog::PreferencesDialog(Theme& theme, QWidget* parent)
   connect(ui_->themeToggle, &ToggleSwitch::toggled, this, [this](bool checked) {
     theme_.setTheme(checked ? QStringLiteral("light") : QStringLiteral("dark"));
   });
+
+  // Plotting page: timeline auto-zoom. Seed from the persisted preference (no
+  // animation — open at the settled position). Unlike the live-preview chrome
+  // controls this commits only on OK (see the accepted handler below); Cancel
+  // leaves QSettings and the timeline untouched.
+  if (main_window != nullptr) {
+    ui_->autoZoomToggle->setChecked(main_window->timelineAutoZoom(), /*animate=*/false);
+  }
   connect(this, &QDialog::rejected, this, [this, main_window]() {
     theme_.setTheme(original_theme_);
     if (main_window != nullptr) {
@@ -216,9 +224,10 @@ PreferencesDialog::PreferencesDialog(Theme& theme, QWidget* parent)
   });
   // The chrome setters above only apply live — commit to QSettings on OK. Cancel
   // restores the snapshot and never persisted, so the .ini keeps the originals.
-  connect(this, &QDialog::accepted, this, [main_window]() {
+  connect(this, &QDialog::accepted, this, [this, main_window]() {
     if (main_window != nullptr) {
       main_window->persistChromeMetrics();
+      main_window->setTimelineAutoZoom(ui_->autoZoomToggle->isChecked());
     }
   });
 

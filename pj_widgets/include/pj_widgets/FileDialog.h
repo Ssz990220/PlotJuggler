@@ -39,6 +39,10 @@ class FileDialog : public Dialog {
 
   // Drop-in replacements for QFileDialog::getOpenFileName / getSaveFileName.
   static QString getOpenFileName(QWidget* parent, const QString& caption, const QString& dir, const QString& filter);
+  // Multi-select open (QFileDialog::ExistingFiles). Returns every chosen path,
+  // empty on cancel.
+  static QStringList getOpenFileNames(
+      QWidget* parent, const QString& caption, const QString& dir, const QString& filter);
   static QString getSaveFileName(
       QWidget* parent, const QString& caption, const QString& dir, const QString& filter,
       const QString& default_suffix = QString());
@@ -67,6 +71,10 @@ class FileDialog : public Dialog {
   // pj_widgets stay decoupled from pj_app types.
   template <typename SignalSourceT>
   static QString getOpenFileName(
+      QWidget* parent, const QString& caption, const QString& dir, const QString& filter,
+      SignalSourceT* metrics_source);
+  template <typename SignalSourceT>
+  static QStringList getOpenFileNames(
       QWidget* parent, const QString& caption, const QString& dir, const QString& filter,
       SignalSourceT* metrics_source);
   template <typename SignalSourceT>
@@ -120,6 +128,31 @@ QString FileDialog::getOpenFileName(
     return {};
   }
   return dlg.selectedFile();
+}
+
+template <typename SignalSourceT>
+QStringList FileDialog::getOpenFileNames(
+    QWidget* parent, const QString& caption, const QString& dir, const QString& filter, SignalSourceT* metrics_source) {
+  FileDialog dlg(parent);
+  if (!caption.isEmpty()) {
+    dlg.setDialogTitle(caption);
+  }
+  dlg.setAcceptMode(QFileDialog::AcceptOpen);
+  dlg.setFileMode(QFileDialog::ExistingFiles);
+  if (!dir.isEmpty()) {
+    dlg.setDirectory(dir);
+  }
+  if (!filter.isEmpty()) {
+    dlg.setNameFilter(filter);
+  }
+  if (metrics_source != nullptr) {
+    dlg.onChromeMetricsChanged(metrics_source->chromeMetrics());
+    QObject::connect(metrics_source, &SignalSourceT::chromeMetricsChanged, &dlg, &FileDialog::onChromeMetricsChanged);
+  }
+  if (dlg.exec() != QDialog::Accepted) {
+    return {};
+  }
+  return dlg.selectedFiles();
 }
 
 template <typename SignalSourceT>

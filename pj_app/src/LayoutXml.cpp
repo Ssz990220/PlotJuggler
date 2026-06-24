@@ -63,6 +63,15 @@ QList<DataSourceRef> extractDataSource(const QDomDocument& doc, const QDir& layo
     info.resolved_path = qfi.isAbsolute() ? qfi.absoluteFilePath() : layout_dir.absoluteFilePath(filename);
     info.prefix = file_info.attribute(QStringLiteral("prefix"));
 
+    // Source Timeline state (optional; absent in pre-v3 layouts). A missing
+    // display_offset_ns leaves has_display_offset false so the reloaded dataset
+    // keeps its natural zero offset rather than being explicitly rewritten.
+    if (file_info.hasAttribute(QStringLiteral("display_offset_ns"))) {
+      info.display_offset_ns = file_info.attribute(QStringLiteral("display_offset_ns")).toLongLong();
+      info.has_display_offset = true;
+    }
+    info.timeline_order = file_info.attribute(QStringLiteral("timeline_order"), QStringLiteral("-1")).toInt();
+
     const QDomElement plugin = file_info.firstChildElement(QStringLiteral("plugin"));
     if (!plugin.isNull()) {
       info.plugin_id = plugin.attribute(QStringLiteral("ID"));
@@ -195,6 +204,54 @@ void stripUnresolvedCurves(QDomDocument& doc) {
   for (QDomNode& v : victims) {
     v.parentNode().removeChild(v);
   }
+}
+
+QDomElement writeSourceTimelineViewState(QDomDocument& doc, const SourceTimelineViewState& state) {
+  QDomElement element = doc.createElement(QStringLiteral("source_timeline"));
+  if (state.zoom) {
+    // High-precision 'g' so the tiny pixels-per-ns zoom (~1e-7) round-trips exactly.
+    element.setAttribute(QStringLiteral("zoom"), QString::number(*state.zoom, 'g', 17));
+  }
+  if (state.scroll_left_ns) {
+    element.setAttribute(QStringLiteral("scroll_left_ns"), QString::number(*state.scroll_left_ns));
+  }
+  if (state.name_column_width) {
+    element.setAttribute(QStringLiteral("name_column_width"), QString::number(*state.name_column_width));
+  }
+  if (state.snap) {
+    element.setAttribute(QStringLiteral("snap"), *state.snap ? QStringLiteral("true") : QStringLiteral("false"));
+  }
+  return element;
+}
+
+SourceTimelineViewState readSourceTimelineViewState(const QDomElement& element) {
+  SourceTimelineViewState state;
+  if (element.isNull()) {
+    return state;
+  }
+  bool ok = false;
+  if (element.hasAttribute(QStringLiteral("zoom"))) {
+    const double zoom = element.attribute(QStringLiteral("zoom")).toDouble(&ok);
+    if (ok && zoom > 0.0) {
+      state.zoom = zoom;
+    }
+  }
+  if (element.hasAttribute(QStringLiteral("scroll_left_ns"))) {
+    const qint64 left_ns = element.attribute(QStringLiteral("scroll_left_ns")).toLongLong(&ok);
+    if (ok) {
+      state.scroll_left_ns = left_ns;
+    }
+  }
+  if (element.hasAttribute(QStringLiteral("name_column_width"))) {
+    const int width = element.attribute(QStringLiteral("name_column_width")).toInt(&ok);
+    if (ok && width > 0) {
+      state.name_column_width = width;
+    }
+  }
+  if (element.hasAttribute(QStringLiteral("snap"))) {
+    state.snap = element.attribute(QStringLiteral("snap")) == QStringLiteral("true");
+  }
+  return state;
 }
 
 bool isSamePath(const QString& a, const QString& b) {

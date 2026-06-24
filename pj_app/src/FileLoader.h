@@ -6,6 +6,7 @@
 #include <QObject>
 #include <QPointer>
 #include <QString>
+#include <QStringList>
 #include <atomic>
 #include <deque>
 #include <functional>
@@ -61,17 +62,19 @@ class FileLoader : public QObject {
   FileLoader(const FileLoader&) = delete;
   FileLoader& operator=(const FileLoader&) = delete;
 
-  // Opens a file dialog filtered by every installed file-import plugin's
-  // extensions. On accept, runs loadFile() with the chosen path. The chosen
-  // directory is persisted in QSettings under "FileLoader/lastDir".
+  // Opens a multi-select file dialog filtered by every installed file-import
+  // plugin's extensions. On accept, runs loadFile() for EACH chosen path in
+  // order (so you can populate several datasets in one go). The chosen directory
+  // is persisted in QSettings under "FileLoader/lastDir".
   void openFromDialog(QWidget* dialog_parent);
 
-  // Resolves the "pick a file" interaction inside openFromDialog(). The shell
-  // injects one that threads MainWindow's chrome metrics into PJ::FileDialog,
-  // keeping FileLoader free of a MainWindow link (which also makes it testable
-  // headlessly). Unset -> plain PJ::FileDialog::getOpenFileName, no metrics.
+  // Resolves the "pick file(s)" interaction inside openFromDialog(). Returns the
+  // selected paths (empty on cancel). The shell injects one that threads
+  // MainWindow's chrome metrics into PJ::FileDialog, keeping FileLoader free of a
+  // MainWindow link (which also makes it testable headlessly). Unset -> plain
+  // PJ::FileDialog::getOpenFileNames, no metrics.
   using FilePicker =
-      std::function<QString(QWidget* parent, const QString& caption, const QString& dir, const QString& filter)>;
+      std::function<QStringList(QWidget* parent, const QString& caption, const QString& dir, const QString& filter)>;
   void setFilePicker(FilePicker picker) {
     file_picker_ = std::move(picker);
   }
@@ -144,11 +147,6 @@ class FileLoader : public QObject {
   void queueDrained();
 
  private:
-  // Lazy-creates a single shared "default" time domain on first import and
-  // returns its id; subsequent calls return the cached id. Returns 0 if the
-  // engine refuses creation (caller surfaces the error).
-  TimeDomainId ensureDefaultTimeDomainId();
-
   // One queued load request (a single loadFile call).
   struct LoadRequest {
     QString path;
@@ -188,7 +186,6 @@ class FileLoader : public QObject {
   ExtensionCatalogService& extensions_;
   CatalogModel& catalog_;
   FilePicker file_picker_;
-  TimeDomainId default_time_domain_id_ = 0;
   pj::scene3d::TransformService* transform_service_ = nullptr;
   // Full path each loaded dataset came from. The engine identifies datasets by
   // basename (DatasetInfo::source_name) only, so the same-source match below

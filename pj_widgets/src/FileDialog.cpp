@@ -167,6 +167,26 @@ QString FileDialog::getOpenFileName(
   return dlg.selectedFile();
 }
 
+QStringList FileDialog::getOpenFileNames(
+    QWidget* parent, const QString& caption, const QString& dir, const QString& filter) {
+  FileDialog dlg(parent);
+  if (!caption.isEmpty()) {
+    dlg.setDialogTitle(caption);
+  }
+  dlg.setAcceptMode(QFileDialog::AcceptOpen);
+  dlg.setFileMode(QFileDialog::ExistingFiles);
+  if (!dir.isEmpty()) {
+    dlg.setDirectory(dir);
+  }
+  if (!filter.isEmpty()) {
+    dlg.setNameFilter(filter);
+  }
+  if (dlg.exec() != QDialog::Accepted) {
+    return {};
+  }
+  return dlg.selectedFiles();
+}
+
 QString FileDialog::getSaveFileName(
     QWidget* parent, const QString& caption, const QString& dir, const QString& filter, const QString& default_suffix) {
   FileDialog dlg(parent);

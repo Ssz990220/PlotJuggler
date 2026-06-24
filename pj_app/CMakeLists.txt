@@ -18,6 +18,8 @@ add_executable(pj_app
     src/PendingCurveBinder.h
     src/StreamingSourceManager.cpp
     src/StreamingSourceManager.h
+    src/SourceTimelineController.cpp
+    src/SourceTimelineController.h
     src/LayoutXml.cpp
     src/LayoutXml.h
     src/MainWindow.cpp
@@ -268,4 +270,24 @@ if(PJ_BUILD_TESTS)
         target_compile_options(file_loader_test PRIVATE ${PJ_WARNING_FLAGS})
     endif()
     add_test(NAME FileLoaderTest COMMAND file_loader_test)
+
+    # Binds the Source Timeline widget to the runtime; the regression test pins that
+    # the bars track data growth (samplesIngested), not just new catalog topics.
+    add_executable(source_timeline_controller_test
+        tests/source_timeline_controller_test.cpp
+        src/SourceTimelineController.cpp
+        src/SourceTimelineController.h
+    )
+    set_target_properties(source_timeline_controller_test PROPERTIES AUTOMOC ON)
+    target_include_directories(source_timeline_controller_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    target_link_libraries(source_timeline_controller_test PRIVATE
+        pj_runtime
+        pj_widgets
+        Qt6::Widgets
+        GTest::gtest_main
+    )
+    if(DEFINED PJ_WARNING_FLAGS)
+        target_compile_options(source_timeline_controller_test PRIVATE ${PJ_WARNING_FLAGS})
+    endif()
+    add_test(NAME SourceTimelineControllerTest COMMAND source_timeline_controller_test)
 endif()

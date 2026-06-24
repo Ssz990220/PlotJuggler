@@ -74,7 +74,13 @@ struct PlotFixture {
   QString key;
 
   PlotFixture() {
-    auto dataset = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "drive.mcap"});
+    // Own TimeDomain (mirrors FileLoader's one-domain-per-source): "Use time
+    // offset" writes the align-starts shift to the domain, so a default (id 0)
+    // domain would carry no offset and the offset-on assertions could not hold.
+    auto domain = session.dataEngine().createTimeDomain("drive");
+    EXPECT_TRUE(domain.has_value()) << domain.error();
+    auto dataset = session.dataEngine().createDataset(
+        PJ::DatasetDescriptor{.source_name = "drive.mcap", .time_domain_id = *domain});
     EXPECT_TRUE(dataset.has_value()) << dataset.error();
     const PJ::TopicId topic = addScalarTopicAtEpoch(session, *dataset, "/imu/accel");
     key = keyForTopic(catalog, topic);

@@ -7,14 +7,20 @@
 #include <tsl/robin_map.h>
 
 #include <algorithm>
+#include <cstdint>
+#include <deque>
 #include <memory>
 #include <mutex>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
+#include <vector>
 
 #include "pj_base/expected.hpp"
+#include "pj_datastore/chunk.hpp"
+#include "pj_datastore/column_buffer.hpp"
 #include "pj_datastore/reader.hpp"
 #include "pj_datastore/writer.hpp"
 
@@ -649,6 +655,290 @@ std::vector<TopicId> DataEngine::listTopicsLocked(DatasetId dataset_id) const {
     }
   }
   return result;
+}
+
+// ---------------------------------------------------------------------------
+// Dataset merge (destructive union)
+// ---------------------------------------------------------------------------
+
+Expected<DatasetMergeReport> DataEngine::mergeDatasets(
+    DatasetId anchor_id, const std::vector<DatasetMergeSource>& sources) {
+  // Atomicity: this up-front validation block holds ALL caller/data-driven
+  // failure modes (unknown anchor/source, source==anchor, duplicate source), so
+  // every reachable error returns here with nothing mutated. The error returns
+  // inside the per-name build below guard only unreachable internal invariants;
+  // were one to fire it could leave a partial merge — they are not expected to.
+  if (getDataset(anchor_id) == nullptr) {
+    return PJ::unexpected(fmt::format("mergeDatasets: anchor dataset {} not found", anchor_id));
+  }
+  std::unordered_set<DatasetId> seen_sources;
+  for (const auto& src : sources) {
+    if (src.dataset_id == anchor_id) {
+      return PJ::unexpected(fmt::format("mergeDatasets: source dataset {} is the anchor", src.dataset_id));
+    }
+    if (getDataset(src.dataset_id) == nullptr) {
+      return PJ::unexpected(fmt::format("mergeDatasets: source dataset {} not found", src.dataset_id));
+    }
+    // A repeated source id would fold its samples twice (once per shift). Reject
+    // it at the boundary rather than trusting callers to de-dup the selection.
+    if (!seen_sources.insert(src.dataset_id).second) {
+      return PJ::unexpected(fmt::format("mergeDatasets: source dataset {} listed more than once", src.dataset_id));
+    }
+  }
+
+  DatasetMergeReport report;
+
+  // Anchor topic name -> id for EVERY anchor topic (even empty), so a shared name
+  // folds into the anchor's existing topic and keeps its id (curve keys survive).
+  std::unordered_map<std::string, TopicId> anchor_topic_by_name;
+  for (const TopicId tid : listTopics(anchor_id)) {
+    if (const TopicStorage* st = getTopicStorage(tid)) {
+      anchor_topic_by_name.emplace(st->descriptor().name, tid);
+    }
+  }
+
+  // Topic names that have data to fold, in anchor-first then source order. The
+  // anchor's contributor (if any) sorts first so it seeds the union column order.
+  struct Contributor {
+    DatasetId dataset_id;
+    TopicId topic_id;
+    Timestamp shift;
+  };
+  std::vector<std::string> ordered_names;
+  std::unordered_map<std::string, std::vector<Contributor>> contributors_by_name;
+  auto add_data_topic = [&](DatasetId ds, TopicId tid, Timestamp shift) {
+    const TopicStorage* st = getTopicStorage(tid);
+    if (st == nullptr || st->empty()) {
+      return;  // an empty topic contributes no rows
+    }
+    auto [it, inserted] = contributors_by_name.try_emplace(st->descriptor().name);
+    if (inserted) {
+      ordered_names.push_back(st->descriptor().name);
+    }
+    it->second.push_back({ds, tid, shift});
+  };
+  for (const TopicId tid : listTopics(anchor_id)) {
+    add_data_topic(anchor_id, tid, 0);
+  }
+  for (const auto& src : sources) {
+    for (const TopicId tid : listTopics(src.dataset_id)) {
+      add_data_topic(src.dataset_id, tid, src.raw_shift_ns);
+    }
+  }
+
+  std::unordered_set<std::string> skipped_seen;
+  for (const std::string& name : ordered_names) {
+    const std::vector<Contributor> all = contributors_by_name[name];
+
+    // Build the union column layout (by field_path) and keep only type-compatible
+    // contributors. The anchor is processed first so its columns keep indices
+    // 0..N (curve stability); a later contributor that disagrees on a shared
+    // field's storage kind is skipped wholesale (its rows are not folded).
+    std::vector<ColumnDescriptor> union_cols;
+    std::unordered_map<std::string, std::size_t> union_index;
+    std::vector<Contributor> kept;
+    bool has_source = false;
+    // Seed the union from the anchor topic's ADVERTISED column layout (even when
+    // it has no data) so the anchor's column order/indices win: curve keys are
+    // (topic_id, column_index) and reads index by descriptor position, so an
+    // existing anchor topic's indices must survive the merge. add_data_topic
+    // skips empty topics, so without this an empty-but-schema'd anchor topic that
+    // a source fills would silently adopt the source's column order.
+    if (const auto anchor_it = anchor_topic_by_name.find(name); anchor_it != anchor_topic_by_name.end()) {
+      if (const TopicStorage* anchor_st = getTopicStorage(anchor_it->second)) {
+        for (const ColumnDescriptor& col : anchor_st->columnDescriptors()) {
+          if (union_index.emplace(col.field_path, union_cols.size()).second) {
+            union_cols.push_back(
+                ColumnDescriptor{static_cast<FieldId>(union_cols.size()), col.logical_type, col.field_path});
+          }
+        }
+      }
+    }
+    for (const Contributor& c : all) {
+      const TopicStorage* st = getTopicStorage(c.topic_id);
+      if (st == nullptr) {
+        continue;
+      }
+      // This contributor's (field_path, logical_type), first occurrence wins.
+      std::vector<std::pair<std::string, PrimitiveType>> local;
+      std::unordered_set<std::string> seen_local;
+      for (const TopicChunk& chunk : st->sealedChunks()) {
+        for (const auto& col : chunk.columns) {
+          if (col.descriptor && seen_local.insert(col.descriptor->field_path).second) {
+            local.emplace_back(col.descriptor->field_path, col.descriptor->logical_type);
+          }
+        }
+      }
+      bool conflict = false;
+      for (const auto& [field_path, type] : local) {
+        const auto it = union_index.find(field_path);
+        if (it != union_index.end() && storageKindOf(union_cols[it->second].logical_type) != storageKindOf(type)) {
+          conflict = true;
+          break;
+        }
+      }
+      if (conflict) {
+        if (skipped_seen.insert(name).second) {
+          report.skipped_topics.push_back(name);
+        }
+        continue;
+      }
+      for (const auto& [field_path, type] : local) {
+        if (union_index.find(field_path) == union_index.end()) {
+          union_index.emplace(field_path, union_cols.size());
+          union_cols.push_back(ColumnDescriptor{static_cast<FieldId>(union_cols.size()), type, field_path});
+        }
+      }
+      kept.push_back(c);
+      has_source = has_source || c.dataset_id != anchor_id;
+    }
+
+    // Nothing new folds into the anchor for this name (anchor-only, or every
+    // source was skipped) → leave the anchor's topic untouched.
+    if (!has_source || union_cols.empty()) {
+      continue;
+    }
+
+    // Destination topic: the anchor's existing topic for this name, else a fresh
+    // one. createTopic may rehash impl_->topics, so it must happen BEFORE any
+    // TopicStorage pointer below is fetched.
+    TopicId dest_tid = 0;
+    bool dest_is_new = false;
+    if (const auto anchor_it = anchor_topic_by_name.find(name); anchor_it != anchor_topic_by_name.end()) {
+      dest_tid = anchor_it->second;
+    } else {
+      TopicDescriptor desc;
+      desc.name = name;
+      desc.schema_id = 0;
+      desc.dataset_id = anchor_id;
+      auto created = createTopic(anchor_id, std::move(desc));
+      if (!created.has_value()) {
+        // Unreachable in practice: createTopic only fails on a missing dataset
+        // (anchor validated above), a non-zero schema lookup (schema_id is 0), or
+        // a requested-id collision (requested_id is 0). Guarded defensively; if it
+        // ever fired mid-loop the merge would be left partial (see the validation
+        // note above — only the up-front checks are truly atomic).
+        return PJ::unexpected("mergeDatasets: createTopic failed for '" + name + "': " + created.error());
+      }
+      dest_tid = *created;
+      dest_is_new = true;
+    }
+
+    // Gather every kept contributor's rows as (shifted_ts, chunk, row, colmap),
+    // then stable-sort by shifted timestamp (ties keep contributor order, so
+    // duplicate-timestamp samples from both datasets all survive).
+    struct RowRef {
+      Timestamp ts;
+      const TopicChunk* chunk;
+      std::size_t row;
+      const std::vector<int>* colmap;  // local column index -> union column index (-1 = drop)
+    };
+    std::deque<std::vector<int>> colmap_pool;  // stable addresses for RowRef::colmap
+    std::vector<RowRef> rows;
+    for (const Contributor& c : kept) {
+      const TopicStorage* st = getTopicStorage(c.topic_id);
+      if (st == nullptr) {
+        continue;
+      }
+      for (const TopicChunk& chunk : st->sealedChunks()) {
+        std::vector<int> colmap(chunk.columns.size(), -1);
+        for (std::size_t i = 0; i < chunk.columns.size(); ++i) {
+          if (!chunk.columns[i].descriptor) {
+            continue;
+          }
+          if (const auto it = union_index.find(chunk.columns[i].descriptor->field_path); it != union_index.end()) {
+            colmap[i] = static_cast<int>(it->second);
+          }
+        }
+        colmap_pool.push_back(std::move(colmap));
+        const std::vector<int>* colmap_ptr = &colmap_pool.back();
+        for (std::size_t r = 0; r < chunk.stats.row_count; ++r) {
+          rows.push_back(RowRef{chunk.readTimestamp(r) + c.shift, &chunk, r, colmap_ptr});
+        }
+      }
+    }
+    std::stable_sort(rows.begin(), rows.end(), [](const RowRef& a, const RowRef& b) { return a.ts < b.ts; });
+
+    // Rebuild the destination topic's chunks from the sorted rows. Built into a
+    // local vector first so the (still-intact) source chunks the rows point at
+    // stay valid; the destination is cleared only after the build completes.
+    uint32_t max_chunk_rows = 1024;
+    if (const TopicStorage* dest_st = getTopicStorage(dest_tid)) {
+      max_chunk_rows = dest_st->descriptor().max_chunk_rows;
+    }
+    std::vector<TopicChunk> built;
+    TopicChunkBuilder builder(dest_tid, /*schema_id=*/0, union_cols, max_chunk_rows);
+    for (const RowRef& rr : rows) {
+      builder.beginRow(rr.ts);
+      const TopicChunk& chunk = *rr.chunk;
+      const std::vector<int>& colmap = *rr.colmap;
+      for (std::size_t lc = 0; lc < colmap.size(); ++lc) {
+        if (colmap[lc] < 0 || chunk.isNull(lc, rr.row)) {
+          continue;  // finishRow() auto-nulls columns this contributor lacks
+        }
+        const auto uc = static_cast<std::size_t>(colmap[lc]);
+        switch (storageKindOf(union_cols[uc].logical_type)) {
+          case StorageKind::kFloat32:
+            builder.set<float>(uc, static_cast<float>(chunk.readNumericAsDouble(lc, rr.row)));
+            break;
+          case StorageKind::kFloat64:
+            builder.set<double>(uc, chunk.readNumericAsDouble(lc, rr.row));
+            break;
+          case StorageKind::kInt32:
+            builder.set<int32_t>(uc, static_cast<int32_t>(chunk.readNumericAsInt64(lc, rr.row)));
+            break;
+          case StorageKind::kInt64:
+            builder.set<int64_t>(uc, chunk.readNumericAsInt64(lc, rr.row));
+            break;
+          case StorageKind::kUint64:
+            builder.set<uint64_t>(uc, chunk.readNumericAsUint64(lc, rr.row));
+            break;
+          case StorageKind::kBool:
+            builder.set<bool>(uc, chunk.readBool(lc, rr.row));
+            break;
+          case StorageKind::kString:
+            builder.set<std::string_view>(uc, chunk.readString(lc, rr.row));
+            break;
+        }
+      }
+      builder.finishRow();
+      if (builder.isFull()) {
+        built.push_back(builder.seal());
+        builder = TopicChunkBuilder(dest_tid, /*schema_id=*/0, union_cols, max_chunk_rows);
+      }
+    }
+    if (builder.rowCount() > 0) {
+      built.push_back(builder.seal());
+    }
+
+    TopicStorage* dest = getTopicStorage(dest_tid);
+    if (dest == nullptr) {
+      // Unreachable: dest_tid was just resolved or created above and the build
+      // phase only reads sources / writes locals — nothing retires a topic.
+      // Defensive guard (see the atomicity note on the up-front validation).
+      return PJ::unexpected(fmt::format("mergeDatasets: destination topic {} vanished", dest_tid));
+    }
+    dest->clearChunks();
+    dest->setColumnDescriptors(union_cols);
+    for (TopicChunk& chunk : built) {
+      chunk.topic_id = dest_tid;
+      (void)dest->appendSealedChunk(std::move(chunk));
+    }
+    (dest_is_new ? report.added_topics : report.modified_topics).push_back(dest_tid);
+  }
+
+  // Empty the consumed source datasets (destructive). They stay registered; the
+  // host removes them from its catalog.
+  for (const auto& src : sources) {
+    for (const TopicId tid : listTopics(src.dataset_id)) {
+      if (TopicStorage* st = getTopicStorage(tid)) {
+        st->clearChunks();
+      }
+    }
+    report.consumed_datasets.push_back(src.dataset_id);
+  }
+
+  return report;
 }
 
 // ---------------------------------------------------------------------------

@@ -3,6 +3,7 @@
 
 #include <gtest/gtest.h>
 
+#include <QSignalSpy>
 #include <QString>
 #include <algorithm>
 #include <atomic>
@@ -209,6 +210,56 @@ TEST(SessionManagerTimeTest, DisplayOffsetIsZeroForDefaultDomainAndUnknownDatase
   EXPECT_EQ(session.displayOffset(9999).value, std::chrono::nanoseconds{0});      // unknown dataset
 }
 
+TEST(SessionManagerTimeTest, SetDisplayOffsetWritesDomainAndEmits) {
+  PJ::SessionManager session;
+  auto& engine = session.dataEngine();
+  const auto domain = engine.createTimeDomain("src");
+  ASSERT_TRUE(domain.has_value());
+  const auto dataset = engine.createDataset(PJ::DatasetDescriptor{.source_name = "s.mcap", .time_domain_id = *domain});
+  ASSERT_TRUE(dataset.has_value());
+
+  QSignalSpy spy(&session, qOverload<PJ::DatasetId>(&PJ::SessionManager::displayOffsetChanged));
+  session.setDisplayOffset(*dataset, PJ::DisplayOffset{std::chrono::nanoseconds{500}});
+
+  EXPECT_EQ(session.displayOffset(*dataset).value.count(), 500);
+  ASSERT_EQ(spy.count(), 1);
+  EXPECT_EQ(spy.front().front().value<PJ::DatasetId>(), *dataset);
+}
+
+TEST(SessionManagerTimeTest, SetDisplayOffsetIgnoresUnknownDatasetAndDefaultDomain) {
+  PJ::SessionManager session;
+  auto& engine = session.dataEngine();
+  // Dataset bound to the default (id 0) domain: no-op + warning, no emit.
+  const auto default_domain_dataset = engine.createDataset(PJ::DatasetDescriptor{.source_name = "plain.mcap"});
+  ASSERT_TRUE(default_domain_dataset.has_value());
+
+  QSignalSpy spy(&session, qOverload<PJ::DatasetId>(&PJ::SessionManager::displayOffsetChanged));
+  session.setDisplayOffset(*default_domain_dataset, PJ::DisplayOffset{std::chrono::nanoseconds{500}});
+  session.setDisplayOffset(9999, PJ::DisplayOffset{std::chrono::nanoseconds{500}});  // unknown dataset
+
+  EXPECT_EQ(session.displayOffset(*default_domain_dataset).value.count(), 0);
+  EXPECT_EQ(spy.count(), 0);
+}
+
+// Proves the mechanism the per-source TimeDomain loader change enables: each
+// source gets its own domain, so an offset on one source cannot leak into
+// another's displayOffset.
+TEST(SessionManagerTimeTest, PerSourceDomainsIsolateOffsets) {
+  PJ::SessionManager session;
+  auto& engine = session.dataEngine();
+  const auto td_a = engine.createTimeDomain("a");
+  const auto td_b = engine.createTimeDomain("b");
+  ASSERT_TRUE(td_a.has_value() && td_b.has_value());
+  EXPECT_NE(*td_a, *td_b);  // distinct domains
+  const auto ds_a = engine.createDataset(PJ::DatasetDescriptor{.source_name = "a", .time_domain_id = *td_a});
+  const auto ds_b = engine.createDataset(PJ::DatasetDescriptor{.source_name = "b", .time_domain_id = *td_b});
+  ASSERT_TRUE(ds_a.has_value() && ds_b.has_value());
+
+  session.setDisplayOffset(static_cast<PJ::DatasetId>(*ds_a), PJ::DisplayOffset{std::chrono::nanoseconds{777}});
+  EXPECT_EQ(session.displayOffset(static_cast<PJ::DatasetId>(*ds_a)).value.count(), 777);
+  EXPECT_EQ(session.displayOffset(static_cast<PJ::DatasetId>(*ds_b)).value.count(), 0);  // unaffected
+}
+
 // Trivial parser whose only job is to exist (vt_/ctx_ non-null) so the slot is
 // reported valid by SessionManager. The concurrency canary never calls parse;
 // it only races (re-)registration against per-tick binding reads.
@@ -343,12 +394,17 @@ TEST(SessionManagerRangeTest, DatasetDisplayRangeIsNulloptForEmptyDataset) {
 
 // --- "Use time offset": the per-dataset relative-time frame ---
 
-// Creates a dataset (on the implicit default domain — no domain offset needed,
-// the time-offset shift is computed from data) and writes scalar samples.
+// Creates a dataset on its OWN TimeDomain (mirroring FileLoader's one-domain-per-
+// source) and writes scalar samples. The per-source domain is required because
+// "align starts" / Timeline offsets are written to the domain — a default (id 0)
+// domain carries no shiftable offset.
 PJ::DatasetId addDataset(
     PJ::SessionManager& session, std::string_view source, std::string_view topic,
     std::vector<PJ::Timestamp> timestamps) {
-  auto dataset = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = std::string(source)});
+  auto domain = session.dataEngine().createTimeDomain(std::string(source));
+  EXPECT_TRUE(domain.has_value()) << domain.error();
+  auto dataset = session.dataEngine().createDataset(
+      PJ::DatasetDescriptor{.source_name = std::string(source), .time_domain_id = *domain});
   EXPECT_TRUE(dataset.has_value()) << dataset.error();
   writeScalarSamples(session, *dataset, topic, std::move(timestamps));
   return *dataset;
@@ -358,42 +414,144 @@ TEST(SessionManagerTimeOffsetTest, DefaultsOffWithZeroOffset) {
   PJ::SessionManager session;
   const PJ::DatasetId a = addDataset(session, "a.mcap", "/a", {5'000'000'000LL, 9'000'000'000LL});
   EXPECT_FALSE(session.useTimeOffset());
+  // Default: no auto-align. A data-bearing dataset shows at its natural absolute
+  // time (offset 0) — NOT rebased to its own start. Regression guard for the bug
+  // where "Use time offset" defaulted on and collapsed every dataset to zero.
   EXPECT_EQ(session.displayOffset(a).value.count(), 0);
 }
 
-TEST(SessionManagerTimeOffsetTest, RebasesEachDatasetToItsOwnStart) {
+// The Source Timeline edits the PER-SOURCE alignment offset (sourceDisplayOffset),
+// which round-trips EXACTLY. The global "Use time offset" reference is layered on
+// ONLY in displayOffset(): the two compose (alignment + global) instead of the old
+// conflated model where a drag overwrote the global frame. So a drag while the
+// frame is on no longer collapses onto the global term.
+TEST(SessionManagerTimeOffsetTest, AlignmentOffsetIsSeparateFromGlobalFrame) {
   PJ::SessionManager session;
-  // Two datasets recorded at different epochs.
+  const PJ::DatasetId a = addDataset(session, "a.mcap", "/a", {5'000'000'000LL, 9'000'000'000LL});
+
+  // Frame on: displayOffset subtracts the global earliest (5 s here); the per-source
+  // alignment is untouched (still 0) so the Source Timeline bar stays put.
+  session.setUseTimeOffset(true);
+  EXPECT_EQ(session.sourceDisplayOffset(a).value.count(), 0);
+  EXPECT_EQ(session.globalTimeReference(), 5'000'000'000LL);
+  EXPECT_EQ(session.displayOffset(a).value.count(), 5'000'000'000LL);
+
+  // A Timeline drag writes the per-source alignment; it round-trips verbatim, and
+  // displayOffset COMPOSES it with the global term (7e9 + 5e9), never overwrites.
+  session.setDisplayOffset(a, PJ::DisplayOffset{std::chrono::nanoseconds{7'000'000'000LL}});
+  EXPECT_EQ(session.sourceDisplayOffset(a).value.count(), 7'000'000'000LL);
+  EXPECT_EQ(session.displayOffset(a).value.count(), 12'000'000'000LL);
+}
+
+// "Use time offset" subtracts ONE uniform global origin (the earliest sample across
+// all datasets), so cross-dataset time gaps are PRESERVED — not a per-source rebase
+// that collapses every dataset to zero. The per-source alignment offsets stay zero,
+// so the Source Timeline's bars never move when the global frame is toggled.
+TEST(SessionManagerTimeOffsetTest, UsesUniformGlobalOriginPreservingGaps) {
+  PJ::SessionManager session;
+  // Two datasets recorded 2 s apart.
   const PJ::DatasetId a = addDataset(session, "a.mcap", "/a", {5'000'000'000LL, 9'000'000'000LL});
   const PJ::DatasetId b = addDataset(session, "b.mcap", "/b", {3'000'000'000LL, 4'000'000'000LL});
 
   session.setUseTimeOffset(true);
   EXPECT_TRUE(session.useTimeOffset());
-  // EACH dataset re-bases to ITS OWN earliest sample (not a shared global min),
-  // so both start at display second 0 — their starts align.
-  EXPECT_EQ(session.displayOffset(a).value.count(), 5'000'000'000LL);
+  // Both datasets share the SAME global origin (b's 3 s, the global earliest); the
+  // per-source alignment offsets are untouched (bars invariant to the toggle).
+  EXPECT_EQ(session.globalTimeReference(), 3'000'000'000LL);
+  EXPECT_EQ(session.displayOffset(a).value.count(), 3'000'000'000LL);
   EXPECT_EQ(session.displayOffset(b).value.count(), 3'000'000'000LL);
+  EXPECT_EQ(session.sourceDisplayOffset(a).value.count(), 0);
+  EXPECT_EQ(session.sourceDisplayOffset(b).value.count(), 0);
   const auto range_a = session.datasetDisplayRange(a);
   const auto range_b = session.datasetDisplayRange(b);
   ASSERT_TRUE(range_a.has_value());
   ASSERT_TRUE(range_b.has_value());
-  EXPECT_DOUBLE_EQ(range_a->min.value, 0.0);
+  // b starts the axis at 0; a starts 2 s later — the real gap is PRESERVED (the old
+  // per-source rebase would have put both at 0).
   EXPECT_DOUBLE_EQ(range_b->min.value, 0.0);
-  EXPECT_DOUBLE_EQ(range_a->max.value, 4.0);  // (9e9 - 5e9)/1e9
+  EXPECT_DOUBLE_EQ(range_a->min.value, 2.0);  // (5e9 - 3e9)/1e9
+  EXPECT_DOUBLE_EQ(range_a->max.value, 6.0);  // (9e9 - 3e9)/1e9
   EXPECT_DOUBLE_EQ(range_b->max.value, 1.0);  // (4e9 - 3e9)/1e9
 
   session.setUseTimeOffset(false);
   EXPECT_FALSE(session.useTimeOffset());
   EXPECT_EQ(session.displayOffset(a).value.count(), 0);
+  EXPECT_EQ(session.globalTimeReference(), 0);
   const auto range_a_off = session.datasetDisplayRange(a);
   ASSERT_TRUE(range_a_off.has_value());
   EXPECT_DOUBLE_EQ(range_a_off->min.value, 5.0);  // back to absolute epoch seconds
 }
 
+TEST(SessionManagerTimeOffsetTest, RetentionDoesNotMoveRelativeOffsetForward) {
+  PJ::SessionManager session;
+  auto dataset_or = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "stream"});
+  ASSERT_TRUE(dataset_or.has_value()) << dataset_or.error();
+  const PJ::DatasetId dataset = *dataset_or;
+
+  PJ::DataWriter writer = session.dataEngine().createWriter();
+  auto handle = writer.registerScalarSeries(dataset, "/stream/x", PJ::NumericType::kFloat64);
+  ASSERT_TRUE(handle.has_value()) << handle.error();
+  const PJ::ScalarSeriesHandle stream_series = *handle;
+
+  const auto append_stream_samples = [&](std::vector<PJ::Timestamp> timestamps) {
+    for (const PJ::Timestamp timestamp : timestamps) {
+      writer.appendScalar(stream_series, timestamp, 1.0);
+    }
+    ASSERT_FALSE(session.commitChunks(writer.flushAll()).empty());
+  };
+
+  append_stream_samples({0, 5'000'000'000LL, 10'000'000'000LL});
+
+  session.setUseTimeOffset(true);
+  EXPECT_EQ(session.displayOffset(dataset).value.count(), 0);
+
+  const auto topics = session.dataEngine().listTopics(dataset);
+  session.dataEngine().enforceRetention(5'000'000'000LL, dataset);
+  session.notifyIngest(QVector<PJ::TopicId>(topics.begin(), topics.end()), /*live=*/true);
+
+  EXPECT_EQ(session.displayOffset(dataset).value.count(), 0)
+      << "streaming retention must not slide the relative-time origin forward";
+  const auto retained_range = session.datasetDisplayRange(dataset);
+  ASSERT_TRUE(retained_range.has_value());
+  EXPECT_DOUBLE_EQ(retained_range->min.value, 5.0);
+  EXPECT_DOUBLE_EQ(retained_range->max.value, 10.0);
+
+  append_stream_samples({20'000'000'000LL});
+  session.dataEngine().enforceRetention(5'000'000'000LL, dataset);
+  session.notifyIngest(QVector<PJ::TopicId>(topics.begin(), topics.end()), /*live=*/true);
+
+  EXPECT_EQ(session.displayOffset(dataset).value.count(), 0);
+  const auto advanced_range = session.datasetDisplayRange(dataset);
+  ASSERT_TRUE(advanced_range.has_value());
+  EXPECT_DOUBLE_EQ(advanced_range->min.value, 20.0);
+  EXPECT_DOUBLE_EQ(advanced_range->max.value, 20.0);
+}
+
+TEST(SessionManagerTimeOffsetTest, RefillInvalidatesPinnedRelativeOffset) {
+  PJ::SessionManager session;
+  const PJ::DatasetId dataset = addDataset(session, "reload", "/a", {5'000'000'000LL, 9'000'000'000LL});
+
+  session.setUseTimeOffset(true);
+  EXPECT_EQ(session.displayOffset(dataset).value.count(), 5'000'000'000LL);
+
+  {
+    PJ::RefillGuard guard = session.beginRefill(dataset);
+    writeScalarSamples(session, dataset, "/a", {20'000'000'000LL, 25'000'000'000LL});
+    guard.commit();
+  }
+
+  EXPECT_EQ(session.displayOffset(dataset).value.count(), 20'000'000'000LL);
+  const auto range = session.datasetDisplayRange(dataset);
+  ASSERT_TRUE(range.has_value());
+  EXPECT_DOUBLE_EQ(range->min.value, 0.0);
+  EXPECT_DOUBLE_EQ(range->max.value, 5.0);
+}
+
 TEST(SessionManagerTimeOffsetTest, DisplayOffsetChangedEmittedOnFrameFlip) {
   PJ::SessionManager session;
   int changes = 0;
-  QObject::connect(&session, &PJ::SessionManager::displayOffsetChanged, &session, [&changes]() { ++changes; });
+  QObject::connect(
+      &session, qOverload<>(&PJ::SessionManager::displayOffsetChanged), &session, [&changes]() { ++changes; });
 
   session.setUseTimeOffset(true);  // off -> on : one change
   EXPECT_EQ(changes, 1);
@@ -409,6 +567,25 @@ TEST(SessionManagerTimeOffsetTest, EmptyDatasetHasZeroOffsetWhenEnabled) {
   ASSERT_TRUE(empty.has_value()) << empty.error();
   session.setUseTimeOffset(true);
   EXPECT_EQ(session.displayOffset(*empty).value.count(), 0);
+}
+
+TEST(SessionManagerSignalTest, LiveNotifyEmitsEvenWithoutScalarTopicIds) {
+  PJ::SessionManager session;
+  int emissions = 0;
+  bool saw_live = false;
+  QObject::connect(
+      &session, &PJ::SessionManager::samplesIngested, &session, [&](const QVector<PJ::TopicId>& ids, bool live) {
+        ++emissions;
+        EXPECT_TRUE(ids.isEmpty());
+        saw_live = live;
+      });
+
+  session.notifyIngest({}, /*live=*/false);
+  EXPECT_EQ(emissions, 0);
+
+  session.notifyIngest({}, /*live=*/true);
+  EXPECT_EQ(emissions, 1);
+  EXPECT_TRUE(saw_live);
 }
 
 // --- beginRefill / RefillGuard: in-place transactional reload prep ---

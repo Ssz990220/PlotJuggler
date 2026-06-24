@@ -6,9 +6,14 @@
 #include <QFile>
 #include <QTemporaryDir>
 #include <algorithm>
+#include <optional>
 #include <string_view>
 #include <vector>
 
+#include "pj_datastore/engine.hpp"
+#include "pj_datastore/query.hpp"
+#include "pj_datastore/reader.hpp"
+#include "pj_datastore/topic_storage.hpp"
 #include "pj_datastore/writer.hpp"
 #include "pj_marketplace/extension_manager.hpp"
 #include "pj_runtime/AppSession.h"
@@ -255,6 +260,49 @@ TEST(AppSessionTest, ClearingCatalogForgetsRememberedCurveColors) {
   EXPECT_FALSE(session.curveColorRegistry().color(QStringLiteral("/imu/x")).has_value());
 }
 
+TEST(AppSessionTest, DatasetRawTimeRangeReturnsRawBounds) {
+  QTemporaryDir dir;
+  ASSERT_TRUE(dir.isValid());
+  PJ::AppSession session(dir.path());
+
+  // One dataset spanning raw [1000, 9000] ns across two scalar topics.
+  auto dataset =
+      session.sessionManager().dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "drive.mcap"});
+  ASSERT_TRUE(dataset.has_value()) << dataset.error();
+  addScalarSamples(session, *dataset, "/imu/x", {1'000, 5'000});
+  addScalarSamples(session, *dataset, "/gps/fix", {3'000, 9'000});
+  session.catalogModel().rebuildFromDatastore();
+
+  const auto range = session.datasetRawTimeRange(*dataset);
+  ASSERT_TRUE(range.has_value());
+  EXPECT_EQ(range->min, 1'000);  // RAW (pre-offset) union min
+  EXPECT_EQ(range->max, 9'000);  // RAW (pre-offset) union max
+
+  EXPECT_FALSE(session.datasetRawTimeRange(99999).has_value());  // unknown dataset
+}
+
+// datasetRawTimeRange is RAW (pre-offset): a display offset on the dataset's
+// domain must not shift the reported bounds (the caller applies the offset).
+TEST(AppSessionTest, DatasetRawTimeRangeIgnoresDisplayOffset) {
+  QTemporaryDir dir;
+  ASSERT_TRUE(dir.isValid());
+  PJ::AppSession session(dir.path());
+
+  auto domain = session.sessionManager().dataEngine().createTimeDomain("shifted");
+  ASSERT_TRUE(domain.has_value()) << domain.error();
+  session.sessionManager().dataEngine().setDisplayOffset(*domain, 2'000'000'000LL);
+  auto dataset = session.sessionManager().dataEngine().createDataset(
+      PJ::DatasetDescriptor{.source_name = "shifted.mcap", .time_domain_id = *domain});
+  ASSERT_TRUE(dataset.has_value()) << dataset.error();
+  addScalarSamples(session, *dataset, "/imu/x", {5'000'000'000LL, 9'000'000'000LL});
+  session.catalogModel().rebuildFromDatastore();
+
+  const auto range = session.datasetRawTimeRange(*dataset);
+  ASSERT_TRUE(range.has_value());
+  EXPECT_EQ(range->min, 5'000'000'000LL);  // raw, NOT display (raw - 2e9)
+  EXPECT_EQ(range->max, 9'000'000'000LL);
+}
+
 TEST(AppSessionTest, CurveColorRegistryIsOwnedBySessionManager) {
   QTemporaryDir dir;
   ASSERT_TRUE(dir.isValid());
@@ -265,6 +313,36 @@ TEST(AppSessionTest, CurveColorRegistryIsOwnedBySessionManager) {
   // pointer, so it never has to be threaded through their constructors.
   EXPECT_EQ(&session.curveColorRegistry(), &session.sessionManager().curveColorRegistry());
 }
+
+namespace {
+
+// Create a dataset on its own time domain shifted by `display_offset_ns`
+// (display_time = raw - offset) and write one scalar topic into it.
+PJ::DatasetId makeShiftedDataset(
+    PJ::AppSession& session, const std::string& name, PJ::Timestamp display_offset_ns, const std::string& topic,
+    std::vector<PJ::Timestamp> timestamps) {
+  auto domain = session.sessionManager().dataEngine().createTimeDomain(name + "_domain");
+  EXPECT_TRUE(domain.has_value());
+  session.sessionManager().dataEngine().setDisplayOffset(*domain, display_offset_ns);
+  auto dataset = session.sessionManager().dataEngine().createDataset(
+      PJ::DatasetDescriptor{.source_name = name, .time_domain_id = *domain});
+  EXPECT_TRUE(dataset.has_value());
+  addScalarSamples(session, *dataset, topic, std::move(timestamps));
+  return *dataset;
+}
+
+std::size_t mergedSampleCount(PJ::AppSession& session, PJ::DatasetId dataset, const std::string& topic) {
+  for (const PJ::TopicId tid : session.sessionManager().dataEngine().listTopics(dataset)) {
+    const auto* st = session.sessionManager().dataEngine().getTopicStorage(tid);
+    if (st != nullptr && st->descriptor().name == topic) {
+      auto series = session.sessionManager().createReader().series(tid, 0);
+      return series.has_value() ? series->size() : 0;
+    }
+  }
+  return 0;
+}
+
+}  // namespace
 
 // A bulk import (cloud fetch) FOCUSES playback: the range snaps to the new
 // dataset's bounds even when an older dataset spans a much wider window — a
@@ -335,6 +413,141 @@ TEST(AppSessionTest, FocusPlaybackPrefersScalarBoundsOverObjectStamps) {
   EXPECT_TRUE(session.focusPlaybackOnDatasets({*objects_only}));
   EXPECT_DOUBLE_EQ(session.playbackEngine().rangeMin().value, 42'000.0e-9);
   EXPECT_DOUBLE_EQ(session.playbackEngine().rangeMax().value, 42'000.0e-9);
+}
+
+TEST(AppSessionMergeTest, CollapsesSelectionIntoMergedAnchor) {
+  QTemporaryDir dir;
+  ASSERT_TRUE(dir.isValid());
+  PJ::AppSession session(dir.path());
+
+  // A at display [0, 1e9]; B dragged to display [2e9, 3e9] (raw 5e9..6e9, offset 3e9).
+  const PJ::DatasetId a = makeShiftedDataset(session, "A", 0, "/s", {0, 1'000'000'000LL});
+  const PJ::DatasetId b = makeShiftedDataset(session, "B", 3'000'000'000LL, "/s", {5'000'000'000LL, 6'000'000'000LL});
+  session.catalogModel().rebuildFromDatastore();
+
+  session.mergeDatasets({a, b});
+  session.catalogModel().rebuildFromDatastore();
+
+  // Only the merged anchor remains, relabelled, spanning the arranged union.
+  const auto datasets = session.catalogModel().datasets();
+  ASSERT_EQ(datasets.size(), 1U);
+  EXPECT_EQ(datasets.front().first, a);
+  EXPECT_TRUE(datasets.front().second.endsWith("_merged")) << datasets.front().second.toStdString();
+  const auto range = session.datasetRawTimeRange(a);
+  ASSERT_TRUE(range.has_value());
+  EXPECT_EQ(range->min, 0);                // anchor's absolute start
+  EXPECT_EQ(range->max, 3'000'000'000LL);  // B folded in at display [2e9,3e9] -> raw 2e9..3e9
+  EXPECT_EQ(mergedSampleCount(session, a, "/s"), 4U);
+}
+
+TEST(AppSessionMergeTest, AnchorIsLeftmostInDisplayNotRaw) {
+  QTemporaryDir dir;
+  ASSERT_TRUE(dir.isValid());
+  PJ::AppSession session(dir.path());
+
+  // Same raw [0,1e9], but B is dragged 5 s LEFT (offset 5e9 -> display [-5e9,-4e9]),
+  // so B is the leftmost-in-display anchor even though A shares its raw start.
+  const PJ::DatasetId a = makeShiftedDataset(session, "A", 0, "/s", {0, 1'000'000'000LL});
+  const PJ::DatasetId b = makeShiftedDataset(session, "B", 5'000'000'000LL, "/s", {0, 1'000'000'000LL});
+  session.catalogModel().rebuildFromDatastore();
+
+  session.mergeDatasets({a, b});
+  session.catalogModel().rebuildFromDatastore();
+
+  const auto datasets = session.catalogModel().datasets();
+  ASSERT_EQ(datasets.size(), 1U);
+  EXPECT_EQ(datasets.front().first, b);  // B is the anchor (leftmost in display)
+  const auto range = session.datasetRawTimeRange(b);
+  ASSERT_TRUE(range.has_value());
+  EXPECT_EQ(range->min, 0);  // B's absolute start (A folded in after, shifted +5e9)
+  EXPECT_EQ(mergedSampleCount(session, b, "/s"), 4U);
+}
+
+TEST(AppSessionMergeTest, SingleSelectionIsNoOp) {
+  QTemporaryDir dir;
+  ASSERT_TRUE(dir.isValid());
+  PJ::AppSession session(dir.path());
+
+  const PJ::DatasetId a = makeShiftedDataset(session, "A", 0, "/s", {0, 1'000'000'000LL});
+  session.catalogModel().rebuildFromDatastore();
+
+  session.mergeDatasets({a});  // < 2 datasets -> nothing happens
+  session.catalogModel().rebuildFromDatastore();
+
+  const auto datasets = session.catalogModel().datasets();
+  ASSERT_EQ(datasets.size(), 1U);
+  EXPECT_FALSE(datasets.front().second.endsWith("_merged"));
+}
+
+TEST(AppSessionMergeTest, DataLessDatasetInSelectionIsIgnoredForAnchor) {
+  QTemporaryDir dir;
+  ASSERT_TRUE(dir.isValid());
+  PJ::AppSession session(dir.path());
+
+  const PJ::DatasetId a = makeShiftedDataset(session, "A", 0, "/s", {0, 1'000'000'000LL});  // display [0,1]
+  const PJ::DatasetId b = makeShiftedDataset(session, "B", 0, "/s", {2'000'000'000LL, 3'000'000'000LL});  // [2,3]
+  // C is registered but carries NO samples -> no time-bearing data (exercises the
+  // datasetRawTimeRange-returns-nullopt continue branch in the anchor pick).
+  auto c_domain = session.sessionManager().dataEngine().createTimeDomain("C_domain");
+  ASSERT_TRUE(c_domain.has_value());
+  auto c = session.sessionManager().dataEngine().createDataset(
+      PJ::DatasetDescriptor{.source_name = "C", .time_domain_id = *c_domain});
+  ASSERT_TRUE(c.has_value());
+  session.catalogModel().rebuildFromDatastore();
+
+  const PJ::DatasetId anchor = session.mergeDatasets({a, *c, b});
+  session.catalogModel().rebuildFromDatastore();
+
+  EXPECT_EQ(anchor, a);                                // A is leftmost-in-display; data-less C can never anchor
+  EXPECT_EQ(mergedSampleCount(session, a, "/s"), 4U);  // A's 2 + B's 2; C adds nothing
+}
+
+TEST(AppSessionMergeTest, RejectedMergeLeavesCatalogConsistentWithStore) {
+  QTemporaryDir dir;
+  ASSERT_TRUE(dir.isValid());
+  PJ::AppSession session(dir.path());
+
+  const PJ::DatasetId a = makeShiftedDataset(session, "A", 0, "/s", {0, 1'000'000'000LL});
+  const PJ::DatasetId b = makeShiftedDataset(session, "B", 0, "/s", {2'000'000'000LL, 3'000'000'000LL});
+  session.catalogModel().rebuildFromDatastore();
+
+  // A duplicated source makes the engine REJECT the merge (nothing mutated in the
+  // store). The catalog must be left intact rather than removing B — otherwise B
+  // would vanish from the UI while its data still lives in the store.
+  const PJ::DatasetId anchor = session.mergeDatasets({a, b, b});
+  session.catalogModel().rebuildFromDatastore();
+
+  EXPECT_EQ(anchor, 0U);  // no-op
+  const auto datasets = session.catalogModel().datasets();
+  EXPECT_EQ(datasets.size(), 2U);  // both datasets still present
+  for (const auto& [id, label] : datasets) {
+    EXPECT_FALSE(label.endsWith("_merged")) << label.toStdString();
+  }
+  EXPECT_TRUE(session.datasetRawTimeRange(b).has_value());  // B's data still live
+}
+
+TEST(AppSessionTest, RecomputeRangeMovesRangeButNeverCurrentTime) {
+  QTemporaryDir dir;
+  ASSERT_TRUE(dir.isValid());
+  PJ::AppSession session(dir.path());
+
+  // Seed a dataset (display [0,10]) and park the playhead at an interior 4.0 s.
+  const PJ::DatasetId ds = makeShiftedDataset(session, "A", 0, "/s", {0, 10'000'000'000LL});
+  session.catalogModel().rebuildFromDatastore();
+  ASSERT_TRUE(session.seedPlaybackFromSession());
+  session.playbackEngine().setCurrentTime(PJ::DisplaySeconds{4.0});
+  ASSERT_DOUBLE_EQ(session.playbackEngine().currentTime().value, 4.0);
+
+  // Shift the offset so the union range moves to display [-2,8] (still around 4.0).
+  // recomputeRange is the live-drag path: it must move the RANGE and return the
+  // new min, but NEVER re-snap currentTime (the property the whole design guards).
+  session.sessionManager().setDisplayOffset(ds, PJ::DisplayOffset{PJ::Duration{2'000'000'000LL}});
+  const auto new_min = session.recomputeRange();
+  ASSERT_TRUE(new_min.has_value());
+  EXPECT_DOUBLE_EQ(new_min->value, -2.0);
+  EXPECT_DOUBLE_EQ(session.playbackEngine().rangeMin().value, -2.0);
+  EXPECT_DOUBLE_EQ(session.playbackEngine().rangeMax().value, 8.0);
+  EXPECT_DOUBLE_EQ(session.playbackEngine().currentTime().value, 4.0);  // unchanged: no snap
 }
 
 }  // namespace

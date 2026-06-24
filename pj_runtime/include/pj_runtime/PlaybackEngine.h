@@ -49,12 +49,23 @@ class PlaybackEngine : public QObject {
     return looping_;
   }
 
+  // Compute the clamped cursor time for one playback tick. Pure + static so the
+  // branch precedence is unit-testable. While `hold_at_max` is set (live streaming),
+  // parking at `range_max` takes precedence over `looping`, so a live stream stays
+  // glued to the tip even if the loop toggle is on. Returns the clamped time; sets
+  // *reached_end true only when neither hold nor loop applies and the cursor ran past
+  // range_max (the caller then pauses). `reached_end` may be null.
+  [[nodiscard]] static double clampTickTime(
+      double next, double range_min, double range_max, bool hold_at_max, bool looping, bool* reached_end);
+
  public slots:
   void setRange(DisplayRange range);
+  void setRangeAndCurrentTime(DisplayRange range, DisplaySeconds t);
   void setCurrentTime(DisplaySeconds t);
   void setPlaybackRate(double rate);
   void setStep(double step);
   void setLooping(bool looping);
+  void setHoldAtRangeMax(bool hold);
   void play();
   void pause();
   void togglePlay();
@@ -71,6 +82,7 @@ class PlaybackEngine : public QObject {
 
  private:
   double clampedTime(double t) const;
+  void applyRange(DisplayRange range);
 
   double current_time_ = 0.0;
   double range_min_ = 0.0;
@@ -79,6 +91,7 @@ class PlaybackEngine : public QObject {
   double step_ = 0.0;
   bool playing_ = false;
   bool looping_ = false;
+  bool hold_at_range_max_ = false;
 
   QTimer timer_;
   QElapsedTimer elapsed_;

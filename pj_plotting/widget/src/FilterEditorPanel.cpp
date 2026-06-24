@@ -185,7 +185,7 @@ FilterEditorPanel::FilterEditorPanel(
   // moves but the filtered curve is stranded in the old frame. Recompute it here, then
   // re-fit so both curves frame correctly regardless of slot order.
   if (session_ != nullptr) {
-    connect(session_, &SessionManager::displayOffsetChanged, this, [this]() {
+    connect(session_, qOverload<>(&SessionManager::displayOffsetChanged), this, [this]() {
       refreshPreview();
       if (preview_plot_ != nullptr) {
         preview_plot_->zoomOut(false);

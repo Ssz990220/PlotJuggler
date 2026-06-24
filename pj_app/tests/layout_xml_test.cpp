@@ -268,6 +268,66 @@ TEST(ExtractDataSource, MultiFileSurvivesSerializeReparse) {
   EXPECT_EQ(refs[1].resolved_path, QFileInfo(abs_b).absoluteFilePath());
 }
 
+// ---------- Source Timeline state (v3) --------------------------------------
+
+// Stamps the per-source timeline attributes onto a doc's only <fileInfo>, as
+// MainWindow::appendDataSourceElement does at save time.
+void setTimelineState(QDomDocument& doc, qint64 offset_ns, int order) {
+  QDomElement file_info = doc.documentElement()
+                              .firstChildElement(QStringLiteral("previouslyLoaded_Datafiles"))
+                              .firstChildElement(QStringLiteral("fileInfo"));
+  file_info.setAttribute(QStringLiteral("display_offset_ns"), QString::number(offset_ns));
+  file_info.setAttribute(QStringLiteral("timeline_order"), QString::number(order));
+}
+
+TEST(ExtractDataSource, TimelineStateAttributesParsed) {
+  QDomDocument doc = buildDataSourceDoc(QStringLiteral("/tmp/run.mcap"));
+  setTimelineState(doc, /*offset_ns=*/-1'500'000'000LL, /*order=*/2);
+  const QList<DataSourceRef> refs = PJ::layout_xml::extractDataSource(doc, QDir::current());
+  ASSERT_EQ(refs.size(), 1);
+  EXPECT_TRUE(refs.front().has_display_offset);
+  EXPECT_EQ(refs.front().display_offset_ns, -1'500'000'000LL);
+  EXPECT_EQ(refs.front().timeline_order, 2);
+}
+
+TEST(ExtractDataSource, TimelineStateAbsentLeavesDefaults) {
+  // A pre-v3 layout (no timeline attributes): the reloaded dataset must keep its
+  // natural zero offset (has_display_offset=false → caller skips the write) and
+  // fall back to load order (timeline_order=-1).
+  const QDomDocument doc = buildDataSourceDoc(QStringLiteral("/tmp/run.mcap"));
+  const QList<DataSourceRef> refs = PJ::layout_xml::extractDataSource(doc, QDir::current());
+  ASSERT_EQ(refs.size(), 1);
+  EXPECT_FALSE(refs.front().has_display_offset);
+  EXPECT_EQ(refs.front().display_offset_ns, 0);
+  EXPECT_EQ(refs.front().timeline_order, -1);
+}
+
+TEST(ExtractDataSource, TimelineStateSurvivesSerializeReparse) {
+  // The realistic path: stamp attrs, serialize to bytes, reparse — the exact
+  // round-trip a saved/loaded layout file takes.
+  QDomDocument doc = buildDataSourceDoc(QStringLiteral("/tmp/run.mcap"));
+  setTimelineState(doc, /*offset_ns=*/42'000LL, /*order=*/0);
+  QDomDocument reparsed;
+  ASSERT_TRUE(reparsed.setContent(doc.toByteArray(2)));
+  const QList<DataSourceRef> refs = PJ::layout_xml::extractDataSource(reparsed, QDir::current());
+  ASSERT_EQ(refs.size(), 1);
+  EXPECT_TRUE(refs.front().has_display_offset);
+  EXPECT_EQ(refs.front().display_offset_ns, 42'000LL);
+  EXPECT_EQ(refs.front().timeline_order, 0);
+}
+
+// A zero offset is meaningful (a dataset deliberately at its natural position),
+// so it must be written-and-parsed as present, not conflated with "absent".
+TEST(ExtractDataSource, TimelineStateZeroOffsetIsStillPresent) {
+  QDomDocument doc = buildDataSourceDoc(QStringLiteral("/tmp/run.mcap"));
+  setTimelineState(doc, /*offset_ns=*/0, /*order=*/1);
+  const QList<DataSourceRef> refs = PJ::layout_xml::extractDataSource(doc, QDir::current());
+  ASSERT_EQ(refs.size(), 1);
+  EXPECT_TRUE(refs.front().has_display_offset);
+  EXPECT_EQ(refs.front().display_offset_ns, 0);
+  EXPECT_EQ(refs.front().timeline_order, 1);
+}
+
 // ---------- isSamePath ------------------------------------------------------
 //
 // Codifies the data-source-replay bug: loadLayoutFromPath used to skip the
@@ -509,6 +569,76 @@ TEST(StripUnresolvedCurves, RemovesOnlyKeylessCurves) {
   const QDomNodeList curves = pd.doc.elementsByTagName(QStringLiteral("curve"));
   ASSERT_EQ(curves.size(), 1);
   EXPECT_EQ(curves.at(0).toElement().attribute(QStringLiteral("name")), QStringLiteral("resolved_key"));
+}
+
+// ---------- SourceTimelineViewState ----------------------------------------
+
+using PJ::layout_xml::readSourceTimelineViewState;
+using PJ::layout_xml::SourceTimelineViewState;
+using PJ::layout_xml::writeSourceTimelineViewState;
+
+// write -> serialize -> reparse -> read, so the full XML pipeline (not just the
+// in-memory DOM) is exercised.
+SourceTimelineViewState roundTripViewState(const SourceTimelineViewState& in) {
+  QDomDocument doc;
+  doc.appendChild(writeSourceTimelineViewState(doc, in));
+  QDomDocument reparsed;
+  EXPECT_TRUE(reparsed.setContent(doc.toByteArray(2)));
+  return readSourceTimelineViewState(reparsed.documentElement());
+}
+
+TEST(SourceTimelineViewState, AllFieldsRoundTrip) {
+  SourceTimelineViewState in;
+  in.zoom = 1.234567890123456e-7;  // tiny pixels-per-ns: 17 sig-figs must survive
+  in.scroll_left_ns = -5'000'000'000LL;
+  in.name_column_width = 173;
+  in.snap = false;
+
+  const SourceTimelineViewState out = roundTripViewState(in);
+  ASSERT_TRUE(out.zoom.has_value());
+  EXPECT_DOUBLE_EQ(*out.zoom, *in.zoom);  // exact: 'g',17 preserves the double
+  ASSERT_TRUE(out.scroll_left_ns.has_value());
+  EXPECT_EQ(*out.scroll_left_ns, *in.scroll_left_ns);
+  ASSERT_TRUE(out.name_column_width.has_value());
+  EXPECT_EQ(*out.name_column_width, 173);
+  ASSERT_TRUE(out.snap.has_value());
+  EXPECT_FALSE(*out.snap);
+}
+
+TEST(SourceTimelineViewState, AbsentElementYieldsAllNullopt) {
+  // A pre-Source-Timeline layout has no <source_timeline> element.
+  const SourceTimelineViewState out = readSourceTimelineViewState(QDomElement{});
+  EXPECT_FALSE(out.zoom.has_value());
+  EXPECT_FALSE(out.scroll_left_ns.has_value());
+  EXPECT_FALSE(out.name_column_width.has_value());
+  EXPECT_FALSE(out.snap.has_value());
+}
+
+TEST(SourceTimelineViewState, MissingAndMalformedAttributesStayNullopt) {
+  QDomDocument doc;
+  QDomElement el = doc.createElement(QStringLiteral("source_timeline"));
+  el.setAttribute(QStringLiteral("zoom"), QStringLiteral("0"));                // non-positive → rejected
+  el.setAttribute(QStringLiteral("name_column_width"), QStringLiteral("-4"));  // non-positive → rejected
+  el.setAttribute(QStringLiteral("scroll_left_ns"), QStringLiteral("not-a-number"));
+  // snap omitted entirely.
+  const SourceTimelineViewState out = readSourceTimelineViewState(el);
+  EXPECT_FALSE(out.zoom.has_value());
+  EXPECT_FALSE(out.name_column_width.has_value());
+  EXPECT_FALSE(out.scroll_left_ns.has_value());
+  EXPECT_FALSE(out.snap.has_value());
+}
+
+TEST(SourceTimelineViewState, UnsetFieldsAreNotWritten) {
+  // Only the snap field is set; the element must carry no other attributes, so a
+  // partially-populated state never injects bogus zeros on reload.
+  SourceTimelineViewState in;
+  in.snap = true;
+  QDomDocument doc;
+  const QDomElement el = writeSourceTimelineViewState(doc, in);
+  EXPECT_TRUE(el.hasAttribute(QStringLiteral("snap")));
+  EXPECT_FALSE(el.hasAttribute(QStringLiteral("zoom")));
+  EXPECT_FALSE(el.hasAttribute(QStringLiteral("scroll_left_ns")));
+  EXPECT_FALSE(el.hasAttribute(QStringLiteral("name_column_width")));
 }
 
 }  // namespace

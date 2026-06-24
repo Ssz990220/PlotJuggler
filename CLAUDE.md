@@ -39,7 +39,7 @@ PJ4/
 └── PJ4_PLAN.md
 ```
 
-The widget families (`pj_plotting`, `pj_scene2D/widgets` via the `pj_scene2d_widgets` target, and `pj_scene3D/widgets` via the `pj_scene3d_widgets` target) never depend on each other. Shared reusable Qt controls/helpers live in `pj_widgets`; shared runtime state flows through the `IDataWidget` contract exposed by `pj_runtime`.
+The widget families (`pj_plotting`, `pj_scene2D/widgets` via the `pj_scene2d_widgets` target, and `pj_scene3D/widgets` via the `pj_scene3d_widgets` target) never depend on each other. Shared reusable Qt controls/helpers live in `pj_widgets` (including the reusable `Timeline` control — the per-source `display_offset` editor); shared runtime state flows through the `IDataWidget` contract exposed by `pj_runtime`.
 
 ### Placement rules
 
@@ -49,7 +49,7 @@ When adding files, use the owning module rather than creating new top-level fold
 - `pj_datastore/`: Level 0 columnar storage engine — `DataEngine` + `ObjectStore` + `DerivedEngine` + the host-side C-ABI write bridges. Also owns the **data-processor execution substrate** (`PJ::proc::DataProcessor` base + `ProcessorSisoAdapter`, which runs a processor as a `DerivedEngine` node — formerly the standalone `pj_proc` module, co-located here with the `ISISOTransform` interface it adapts to; the base stays Qt-free and Luau-free, so `pj_scripting` layers Luau on top). App-internal (plugins never link it; they reach storage through the `pj_base` C ABI). Was previously inside the `plotjuggler_sdk` submodule. Pure C++20, no Qt; depends only on `pj_base`. Logic in `src/`, public headers in `include/pj_datastore/`, tests in `tests/`, docs in `docs/`. Licensed MPL-2.0.
 - `pj_runtime/`: app runtime services and contracts: session/data lifecycle, catalog, playback, extension catalog, future workspace/transform/toolbox services. No concrete widgets and no `Qt6::Widgets` link.
 - `pj_app/`: executable shell only: `MainWindow`, menus/toolbars/status bar, app dialogs, and wiring between runtime services and concrete widgets. Do not put reusable controls or business logic here.
-- `pj_widgets/`: reusable Qt widgets and UI helpers that could be used by another Qt app. Depends only on Qt and the C++ standard library; no dependencies on `pj_runtime`, `pj_app`, or other PJ modules.
+- `pj_widgets/`: reusable Qt widgets and UI helpers that could be used by another Qt app. Depends only on Qt and the C++ standard library; no dependencies on `pj_runtime`, `pj_app`, or other PJ modules. Includes the reusable `Timeline` control (`Timeline.{h,cpp}`) — the multi-track Source Timeline that edits per-source `display_offset`: a Qt-free `TimelineScene` math class plus a runtime-agnostic `Timeline` QWidget, both plain-typed; the `SourceTimelineController` that binds it to `pj_runtime` lives in `pj_app`.
 - `pj_scene_common/`: backend-agnostic layered scene dock framework (`scene_layer.h`, `layer_factory.h`, `scene_dock_widget.h`) shared by the 2D/3D scene widget families. Rendering-specific view state stays in those families, not here.
 - `pj_plotting/`: Qwt plotting feature family. Put datastore adapters and plotting logic in `core/`, Qt/Qwt widgets in `widget/`, and focused tests in `tests/`.
 - `pj_scene2D/`: 2D media/scene feature family. Put independent media logic in `core/`, Qt viewer widgets in `widgets/`, tests in `tests/`, and opt-in standalone dev utilities in `tools/` (gated by `PJ_BUILD_TOOLS`, off by default).

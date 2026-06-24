@@ -11,6 +11,7 @@
 #include <QLabel>
 #include <QLayout>
 #include <QPushButton>
+#include <QRect>
 #include <QShowEvent>
 #include <QSizePolicy>
 #include <QVBoxLayout>
@@ -131,7 +132,13 @@ MessageBox::MessageBox(QWidget* parent) : QDialog(parent) {
   body_label_ = new QLabel(card);
   body_label_->setObjectName(QStringLiteral("pjMessageBoxBody"));
   body_label_->setWordWrap(true);
-  body_label_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
+  // Expanding width + heightForWidth so a wrapped body is laid out at the full
+  // card width and allotted its full wrapped height. The explicit policy must
+  // re-enable heightForWidth (the (horiz, vert) QSizePolicy ctor clears it),
+  // otherwise the layout gives the label a single line and the text clips.
+  QSizePolicy body_policy(QSizePolicy::Expanding, QSizePolicy::Preferred);
+  body_policy.setHeightForWidth(true);
+  body_label_->setSizePolicy(body_policy);
   root->addWidget(body_label_);
 
   dont_show_again_ = new QCheckBox(card);
@@ -234,18 +241,49 @@ bool MessageBox::event(QEvent* event) {
 
 void MessageBox::showEvent(QShowEvent* event) {
   QDialog::showEvent(event);
-  // The QVBoxLayout's preferred height is computed using the body label's
-  // heightForWidth at the dialog's *sizeHint* width, but a word-wrapped body
-  // needs more height at the (narrower) width the dialog is actually shown at.
-  // Left uncorrected, the layout is over-constrained and steals the deficit
-  // from the most compressible items — the inter-button spacings — so the gaps
-  // shrink by a different amount in every dialog. Resize to the exact height
-  // the content needs at the real width so every spacing renders at its set
-  // value (6 px between buttons, 14 px elsewhere).
+
+  const bool first_show = !size_finalized_;
+  size_finalized_ = true;
+
+  // (1) Grow to fit the word-wrapped BODY on first show. Widths are resolved by
+  // now (the dialog was sized to its hint and laid out before this event), so the
+  // body's real wrap width is known. heightForWidth does not feed sizeHint and
+  // the styled card breaks its propagation, so the dialog can open a single line
+  // tall and clip a multi-line body — re-measure at the resolved width and grow.
+  if (first_show) {
+    const int label_w = body_label_->width();
+    if (label_w > 0) {
+      const int needed = body_label_->heightForWidth(label_w);
+      const int extra = needed - body_label_->height();
+      if (extra > 0) {
+        body_label_->setMinimumHeight(needed);  // hard floor: the wrapped text never clips
+        resize(width(), height() + extra);
+      }
+    }
+  }
+
+  // (2) Pin the dialog to the exact height its content needs at the shown width
+  // so the QVBoxLayout never compresses the inter-button spacings. Otherwise the
+  // layout steals the wrapped-body height deficit from the most compressible
+  // items — the gaps between stacked buttons — and they shrink by a different
+  // amount per dialog. Runs after (1) so the grown body minimum height is
+  // already reflected in the layout's heightForWidth (6 px between buttons,
+  // 14 px elsewhere).
   if (layout() != nullptr && layout()->hasHeightForWidth()) {
     const int needed = layout()->heightForWidth(width());
     if (needed > 0 && needed != height()) {
       resize(width(), needed);
+    }
+  }
+
+  // exec() centered us at the pre-grow size; re-center on first show after any
+  // growth so the dialog stays balanced relative to its parent window. Guarded by
+  // first_show so a later re-show (which still runs the spacing fix) does not
+  // move a dialog the user may have positioned.
+  if (first_show) {
+    if (const QWidget* anchor = parentWidget() != nullptr ? parentWidget()->window() : nullptr) {
+      const QRect parent_geom = anchor->geometry();
+      move(parent_geom.center().x() - (width() / 2), parent_geom.center().y() - (height() / 2));
     }
   }
 }

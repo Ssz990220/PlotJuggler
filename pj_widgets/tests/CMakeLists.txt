@@ -312,3 +312,43 @@ set_target_properties(ingest_progress_widget_test PROPERTIES
 )
 
 add_test(NAME IngestProgressWidget COMMAND ingest_progress_widget_test)
+
+# Headless: TimelineScene is Qt-free math (no QApplication). Links pj_widgets
+# only for the Timeline.h include path / TimelineScene symbols.
+add_executable(timeline_scene_test timeline_scene_test.cpp)
+
+target_link_libraries(timeline_scene_test PRIVATE
+    pj_widgets
+    GTest::gtest_main
+)
+
+if(DEFINED PJ_WARNING_FLAGS)
+    target_compile_options(timeline_scene_test PRIVATE ${PJ_WARNING_FLAGS})
+endif()
+
+set_target_properties(timeline_scene_test PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
+)
+
+add_test(NAME TimelineSceneTest COMMAND timeline_scene_test)
+
+# Widget test: needs QApplication (xvfb under CI).
+add_executable(timeline_widget_test timeline_widget_test.cpp)
+set_target_properties(timeline_widget_test PROPERTIES AUTOMOC ON)
+
+target_link_libraries(timeline_widget_test PRIVATE
+    pj_widgets
+    GTest::gtest_main
+    Qt6::Test
+    Qt6::Widgets
+)
+
+if(DEFINED PJ_WARNING_FLAGS)
+    target_compile_options(timeline_widget_test PRIVATE ${PJ_WARNING_FLAGS})
+endif()
+
+set_target_properties(timeline_widget_test PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
+)
+
+add_test(NAME TimelineWidgetTest COMMAND timeline_widget_test)

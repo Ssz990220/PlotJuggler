@@ -138,6 +138,26 @@ TEST_F(DatastoreCurveAdapterTest, DisplayOffsetShiftsSamplesAndFullBounds) {
   EXPECT_DOUBLE_EQ(bounds.bottom(), 19.0);
 }
 
+TEST_F(DatastoreCurveAdapterTest, OnDisplayOffsetChangedReshiftsWithoutReingest) {
+  // Reset the fixture's offset so the raw->display mapping is identity, then the
+  // sample at raw t=2 s (index 2, value 12) sits at display X = 2.0 s.
+  session_.dataEngine().setDisplayOffset(time_domain_id_, 0);
+  adapter_->onDisplayOffsetChanged();
+
+  const QPointF before = adapter_->sample(2);
+  EXPECT_DOUBLE_EQ(before.x(), 2.0);
+  EXPECT_DOUBLE_EQ(before.y(), 12.0);
+
+  // Apply a +1 s offset on the dataset's domain, then invalidate the adapter.
+  // display = (raw - offset) / 1e9, so the curve slides 1 s earlier on the axis.
+  session_.dataEngine().setDisplayOffset(time_domain_id_, kNs);  // +1 s
+  adapter_->onDisplayOffsetChanged();
+
+  const QPointF after = adapter_->sample(2);
+  EXPECT_DOUBLE_EQ(after.x(), 1.0);         // 2 s - 1 s, no re-ingest
+  EXPECT_DOUBLE_EQ(after.y(), before.y());  // value unchanged
+}
+
 TEST_F(DatastoreCurveAdapterTest, BoundsCacheInvalidatesOnTopicCommittedAndDataCleared) {
   const QRectF before = adapter_->boundingRect();
   EXPECT_DOUBLE_EQ(before.right(), 7.0);
