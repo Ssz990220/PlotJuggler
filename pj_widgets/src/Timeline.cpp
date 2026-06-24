@@ -4,7 +4,6 @@
 #include "pj_widgets/Timeline.h"
 
 #include <QColor>
-#include <QContextMenuEvent>
 #include <QEvent>
 #include <QFontMetricsF>
 #include <QFrame>
@@ -15,8 +14,6 @@
 #include <QGuiApplication>
 #include <QHBoxLayout>
 #include <QLabel>
-#include <QLineEdit>
-#include <QMenu>
 #include <QMouseEvent>
 #include <QPaintEvent>
 #include <QPainter>
@@ -26,7 +23,6 @@
 #include <QPropertyAnimation>
 #include <QPushButton>
 #include <QResizeEvent>
-#include <QRubberBand>
 #include <QScrollBar>
 #include <QSplitter>
 #include <QStyleOptionGraphicsItem>
@@ -41,7 +37,7 @@
 #include <optional>
 #include <utility>
 
-#include "pj_widgets/SvgUtil.h"
+#include "pj_widgets/SvgButton.h"
 #include "pj_widgets/ThemeColors.h"
 
 namespace PJ {
@@ -719,29 +715,6 @@ class TimelineBackgroundItem : public QGraphicsItem {
   qint64 data_max_ns_ = 0;
 };
 
-/// Rubber-band selection rectangle painted in PlotJuggler's light_blue instead
-/// of the platform style's default. clearMask() defeats the style's border-only
-/// mask so the translucent fill is visible, not just the outline.
-class TimelineRubberBand : public QRubberBand {
- public:
-  explicit TimelineRubberBand(QWidget* parent) : QRubberBand(QRubberBand::Rectangle, parent) {}
-
- protected:
-  void resizeEvent(QResizeEvent* event) override {
-    QRubberBand::resizeEvent(event);
-    clearMask();
-  }
-
-  void paintEvent(QPaintEvent* /*event*/) override {
-    QPainter painter(this);
-    QColor fill = theme::kLightBlue;
-    fill.setAlpha(64);  // translucent so the bars underneath stay visible
-    painter.fillRect(rect(), fill);
-    painter.setPen(QPen(theme::kLightBlue, 1));
-    painter.drawRect(rect().adjusted(0, 0, -1, -1));
-  }
-};
-
 /// Custom horizontal scroll indicator: a small blue "pill" overlaid on the
 /// bottom strip of the timeline view, replacing the native scrollbar. Purely
 /// visual — transparent for mouse events, so the Timeline keeps a single source
@@ -803,6 +776,8 @@ struct TimelineNameRow {
   double height = 0.0;
   QString name;
   QColor color;
+  quint64 id = 0;         // source id for this row (matches a TimelineTrack::id)
+  bool selected = false;  // painted with a selection background when set
 };
 
 /// Left track-name column. One row per timeline track, pinned on the left so a
@@ -819,12 +794,11 @@ class TimelineNamePanel : public QWidget {
     setMinimumWidth(kMinWidth);
     setMouseTracking(true);  // hover (no button) drives the grab cursor
 
-    // Header band aligned with the ruler on the right — a faithful copy of the
-    // curve tree's "Datasets" band: [title][🔍][filter line edit][⋮ kebab]. The
-    // band tone, the 2-px title indent, and the transparent inline line edit all
-    // come from the shared QSS rules keyed on these object names (see the dark/
-    // light stylesheets). WA_StyledBackground so the band's QSS fill paints; it is
-    // opaque so rows scrolled up never bleed into the header.
+    // Header band aligned with the ruler on the right: the "Datasets" title on the
+    // left and a label-less merge button on the right (where the kebab used to be).
+    // The band tone + 2-px title indent come from shared QSS keyed on these object
+    // names. WA_StyledBackground so the band's QSS fill paints; opaque so rows
+    // scrolled up never bleed into the header.
     header_ = new QWidget(this);
     header_->setObjectName(QStringLiteral("timelineDatasetsHeader"));
     header_->setAttribute(Qt::WA_StyledBackground, true);
@@ -835,36 +809,23 @@ class TimelineNamePanel : public QWidget {
     header_label_ = new QLabel(tr("Datasets"), header_);
     header_label_->setObjectName(QStringLiteral("timelineDatasetsLabel"));
 
-    search_button_ = new QToolButton(header_);
-    search_button_->setObjectName(QStringLiteral("timelineDatasetsSearch"));
-    search_button_->setAutoRaise(true);
-    search_button_->setFocusPolicy(Qt::NoFocus);
-    search_button_->setFixedSize(20, 20);
-    search_button_->setIconSize(QSize(20, 20));
-
-    filter_edit_ = new QLineEdit(header_);
-    filter_edit_->setObjectName(QStringLiteral("timelineDatasetFilter"));
-    filter_edit_->setPlaceholderText(tr("Filter..."));
-    filter_edit_->setMinimumHeight(24);
-    filter_edit_->setMaximumHeight(24);
+    // Merge button (merge icon, no label; 24-px to match the app chrome).
+    // An SvgButton, so it re-tints itself on theme change — no applyHeaderTheme hook.
+    // The Timeline enables it only when ≥2 sources are selected and wires its click.
+    merge_button_ = new SvgButton(QStringLiteral(":/resources/svg/merge.svg"), SvgButton::Size::kDefault, header_);
+    merge_button_->setObjectName(QStringLiteral("timelineMergeButton"));
+    merge_button_->setToolTip(tr("Merge the selected datasets"));
+    merge_button_->setEnabled(false);
 
     row->addWidget(header_label_);
-    row->addSpacing(2);
-    row->addWidget(search_button_);
-    row->addWidget(filter_edit_);
-    // Clicking the glass drops focus into the filter, like the curve tree.
-    connect(search_button_, &QToolButton::clicked, filter_edit_, [this]() { filter_edit_->setFocus(); });
-    // Expand-on-focus, matching the curve tree's filter band: while the filter is
-    // focused, hide the "Datasets" title so the inline line edit reclaims its width
-    // (restored on blur). Handled in eventFilter().
-    filter_edit_->installEventFilter(this);
-    applyHeaderTheme();
+    row->addStretch(1);
+    row->addWidget(merge_button_);
   }
 
-  /// The filter line edit, so the Timeline can wire its textChanged to the
-  /// dataset filter. Never null after construction.
-  [[nodiscard]] QLineEdit* filterEdit() const {
-    return filter_edit_;
+  /// The header merge button, so the Timeline can wire its click and toggle its
+  /// enabled state from the selection. Never null after construction.
+  [[nodiscard]] QToolButton* mergeButton() const {
+    return merge_button_;
   }
 
   void setRows(std::vector<TimelineNameRow> rows) {
@@ -894,15 +855,6 @@ class TimelineNamePanel : public QWidget {
   }
 
  protected:
-  // Expand-on-focus for the filter (mirrors CurveListPanel): hide the "Datasets"
-  // title while the line edit is focused so it grows to the full band, restore on blur.
-  bool eventFilter(QObject* watched, QEvent* event) override {
-    if (watched == filter_edit_ && (event->type() == QEvent::FocusIn || event->type() == QEvent::FocusOut)) {
-      header_label_->setVisible(event->type() == QEvent::FocusOut);
-    }
-    return QWidget::eventFilter(watched, event);
-  }
-
   void paintEvent(QPaintEvent* /*event*/) override {
     QPainter painter(this);
     painter.setRenderHint(QPainter::Antialiasing, true);
@@ -939,27 +891,19 @@ class TimelineNamePanel : public QWidget {
 
   void resizeEvent(QResizeEvent* event) override {
     QWidget::resizeEvent(event);
-    header_->setGeometry(0, 0, width(), kHeaderHeight);  // pin the filter band to the top
-  }
-
-  // Re-tint the search glyph when the application theme/palette rolls.
-  void changeEvent(QEvent* event) override {
-    QWidget::changeEvent(event);
-    if (event->type() == QEvent::PaletteChange || event->type() == QEvent::StyleChange) {
-      applyHeaderTheme();
-    }
+    header_->setGeometry(0, 0, width(), kHeaderHeight);  // pin the header band to the top
   }
 
  private:
-  void applyHeaderTheme() {
-    const QString theme = currentTheme();
-    search_button_->setIcon(loadSvg(QStringLiteral(":/resources/svg/search_light.svg"), theme));
-  }
-
   void paintRow(QPainter& painter, const TimelineNameRow& row, double y_top, const QFontMetricsF& fm, double opacity) {
     constexpr double kAccentWidth = 4.0;  // color strip tying a name to its bar
     constexpr double kTextPad = 8.0;
     painter.setOpacity(opacity);
+    if (row.selected) {
+      QColor sel = QGuiApplication::palette().color(QPalette::Highlight);
+      sel.setAlpha(80);  // translucent so the accent strip + theme tone stay legible
+      painter.fillRect(QRectF(0.0, y_top, width(), row.height), sel);
+    }
     painter.fillRect(QRectF(0.0, y_top, kAccentWidth, row.height), row.color);
     const double text_x = kAccentWidth + kTextPad;
     const double text_w = width() - text_x - kTextPad;
@@ -989,12 +933,11 @@ class TimelineNamePanel : public QWidget {
   int drag_grabbed_ = -1;  // lifted row index, -1 = no drag
   double drag_y_ = 0.0;    // cursor y the floating copy tracks
   int drop_index_ = -1;    // insertion index (0..N)
-  // Header band widgets (see ctor): the "Datasets" title, search glyph, and the
-  // inline filter line edit (which expands over the title while focused).
+  // Header band widgets (see ctor): the "Datasets" title and the label-less merge
+  // button on the right (enabled by the Timeline when ≥2 sources are selected).
   QWidget* header_ = nullptr;
   QLabel* header_label_ = nullptr;
-  QToolButton* search_button_ = nullptr;
-  QLineEdit* filter_edit_ = nullptr;
+  SvgButton* merge_button_ = nullptr;
 };
 
 }  // namespace timeline_detail
@@ -1099,8 +1042,16 @@ Timeline::Timeline(QWidget* parent) : QWidget(parent) {
   // names stay pinned.
   name_panel_ = new timeline_detail::TimelineNamePanel(this);
   name_panel_->installEventFilter(this);  // central handling of row drag-to-reorder
-  // The name column's "Datasets" filter shows only the matching tracks.
-  connect(name_panel_->filterEdit(), &QLineEdit::textChanged, this, &Timeline::setDatasetFilter);
+  // The header's merge button (merge icon, no label) lives in the name
+  // column's "Datasets" band. The Timeline enables it only when ≥2 sources are
+  // selected (see updateMergeButton); a click merges the visible selection.
+  connect(name_panel_->mergeButton(), &QToolButton::clicked, this, [this]() {
+    const QList<quint64> ids = visibleSelectedIdsList();
+    if (!interaction_locked_ && ids.size() >= 2) {
+      emit mergeRequested(ids);
+    }
+  });
+
   // Plain QSplitter so its handle is the app's standard separator: the global
   // QSS styles QSplitter::handle as a 1-px border line that turns purple on
   // hover/drag, identical to every other splitter divider.
@@ -1246,6 +1197,7 @@ void Timeline::setTracks(const std::vector<TimelineTrack>& tracks) {
     raw_data_sig_ = sig;
     extent_needs_reset_ = true;  // re-pad the scene from the new data bounds
     selected_ids_.clear();       // a real data change invalidates the old selection
+    selection_anchor_id_ = 0;    // ...and its Shift-range anchor
   }
   applyDatasetFilter();
 }
@@ -1545,8 +1497,10 @@ void Timeline::rebuild() {
         static_cast<int>(std::llround(TimelineScene::nsToPx(content_min, viewport_))));
   }
 
-  updateNamePanel();   // names follow the same row layout the bars just got
-  syncStickyHeader();  // pin the ruler + needle pills to the current viewport top
+  updateNamePanel();          // names follow the same row layout the bars just got
+  syncStickyHeader();         // pin the ruler + needle pills to the current viewport top
+  applySelectionHighlight();  // freshly-built bars start unhighlighted; restore selection
+  updateMergeButton();        // selection may have been pruned by a data change
 }
 
 void Timeline::syncStickyHeader() {
@@ -1721,6 +1675,8 @@ void Timeline::updateNamePanel() {
     row.height = kRowHeight;
     row.name = (i < bar_labels_.size()) ? bar_labels_[i] : QString();
     row.color = (i < bar_colors_.size()) ? bar_colors_[i] : QColor(Qt::white);
+    row.id = tracks[i].id;
+    row.selected = selected_ids_.count(tracks[i].id) != 0;
     rows.push_back(std::move(row));
     y += kRowHeight + kRowGap;
   }
@@ -1751,12 +1707,17 @@ int Timeline::nameDropIndex(double panel_y) const {
   return n;  // after the last row
 }
 
-void Timeline::namePanelPress(const QPoint& panel_pos) {
+void Timeline::namePanelPress(const QPoint& panel_pos, Qt::KeyboardModifiers mods) {
   if (interaction_locked_) {
-    name_drag_index_ = -1;  // Locked: no row reorder.
+    name_drag_index_ = -1;  // Locked: no row reorder / selection.
     return;
   }
-  name_drag_index_ = (scene_.tracks().size() >= 2) ? nameRowAt(panel_pos.y()) : -1;
+  const int row = nameRowAt(panel_pos.y());
+  selectNameRow(row, mods);
+  // A plain press on a real row primes a potential drag-to-reorder (needs ≥2
+  // tracks). A modifier press only edits the selection — never starts a reorder.
+  const bool plain = (mods & (Qt::ControlModifier | Qt::ShiftModifier | Qt::MetaModifier)) == 0;
+  name_drag_index_ = (plain && row >= 0 && scene_.tracks().size() >= 2) ? row : -1;
   name_dragging_ = false;
   name_drag_press_y_ = panel_pos.y();
 }
@@ -1954,14 +1915,11 @@ void Timeline::setInteractionLocked(bool locked) {
     // Cancel any in-flight gesture so a drag started just before the lock can't
     // dangle (the press gates below stop NEW gestures; this clears live ones).
     drag_group_.clear();
-    rubber_banding_ = false;
-    if (rubber_band_ != nullptr) {
-      rubber_band_->hide();
-    }
     dragging_playhead_ = false;
     dragging_reference_ = false;
     dragging_pill_ = false;
     dragging_vpill_ = false;
+    panning_ = false;
     name_drag_index_ = -1;
     name_dragging_ = false;
     hideSnapLine();
@@ -1969,6 +1927,8 @@ void Timeline::setInteractionLocked(bool locked) {
       view_->viewport()->unsetCursor();
     }
   }
+  // The merge prompt is suppressed while locked, restored (if ≥2 still selected) on unlock.
+  updateMergeButton();
 }
 
 Timeline::DragSnap Timeline::computeDragSnap(qint64 raw_delta_ns) {
@@ -2173,6 +2133,18 @@ void Timeline::reorderForTest(int from, int drop_index) {
   applyTrackReorder(from, drop_index);
 }
 
+void Timeline::selectNameRowForTest(int row, Qt::KeyboardModifiers mods) {
+  selectNameRow(row, mods);
+}
+
+bool Timeline::mergeButtonEnabledForTest() const {
+  return name_panel_ != nullptr && name_panel_->mergeButton()->isEnabled();
+}
+
+QList<quint64> Timeline::visibleSelectedIdsForTest() const {
+  return visibleSelectedIdsList();
+}
+
 bool Timeline::beginSyntheticDrag(TimelineSourceId id) {
   drag_group_.clear();
   snap_active_ = false;  // start the synthetic drag with no sticky snap held
@@ -2222,18 +2194,65 @@ std::vector<bool> Timeline::dragSnapSequenceForTest(TimelineSourceId id, const s
   return states;
 }
 
-void Timeline::setSelectionFromViewportRect(const QRect& viewport_rect) {
-  selected_ids_.clear();
-  // A near-zero rect is a plain click on empty space → clear the selection.
-  if (viewport_rect.width() >= 3 || viewport_rect.height() >= 3) {
-    const QList<QGraphicsItem*> hit = view_->items(viewport_rect);
-    for (QGraphicsItem* it : hit) {
-      if (auto* bar = dynamic_cast<TimelineBarItem*>(it)) {
-        selected_ids_.insert(bar->sourceId());
+void Timeline::selectNameRow(int row, Qt::KeyboardModifiers mods) {
+  const std::vector<TimelineSpanInput>& tracks = scene_.tracks();
+  const bool toggle = (mods & (Qt::ControlModifier | Qt::MetaModifier)) != 0;
+  const bool range = (mods & Qt::ShiftModifier) != 0;
+
+  if (row < 0 || row >= static_cast<int>(tracks.size())) {
+    // Clicked below the rows: a plain click clears; a modifier click keeps the
+    // current selection (matches a standard list view).
+    if (!toggle && !range) {
+      clearSelection();
+    }
+    return;
+  }
+
+  const TimelineSourceId id = tracks[static_cast<std::size_t>(row)].id;
+  if (toggle) {
+    if (selected_ids_.count(id) != 0) {
+      selected_ids_.erase(id);
+    } else {
+      selected_ids_.insert(id);
+    }
+    selection_anchor_id_ = id;
+  } else if (range && selection_anchor_id_ != 0) {
+    // Select the contiguous run between the anchor and this row (display order).
+    int anchor_row = -1;
+    for (int i = 0; i < static_cast<int>(tracks.size()); ++i) {
+      if (tracks[static_cast<std::size_t>(i)].id == selection_anchor_id_) {
+        anchor_row = i;
+        break;
       }
     }
+    if (anchor_row < 0) {  // anchor scrolled away / merged: treat as a fresh single pick
+      selected_ids_ = {id};
+      selection_anchor_id_ = id;
+    } else {
+      selected_ids_.clear();
+      for (int i = std::min(anchor_row, row); i <= std::max(anchor_row, row); ++i) {
+        selected_ids_.insert(tracks[static_cast<std::size_t>(i)].id);
+      }
+    }
+  } else {
+    selected_ids_ = {id};
+    selection_anchor_id_ = id;
   }
+
   applySelectionHighlight();
+  updateNamePanel();
+  updateMergeButton();
+}
+
+void Timeline::clearSelection() {
+  if (selected_ids_.empty() && selection_anchor_id_ == 0) {
+    return;
+  }
+  selected_ids_.clear();
+  selection_anchor_id_ = 0;
+  applySelectionHighlight();
+  updateNamePanel();
+  updateMergeButton();
 }
 
 void Timeline::applySelectionHighlight() {
@@ -2251,23 +2270,30 @@ QList<quint64> Timeline::selectedIdsList() const {
   return ids;
 }
 
-void Timeline::showContextMenu(const QPoint& global_pos) {
-  if (interaction_locked_) {
-    return;  // Locked: no Merge (the only manipulation the menu offers).
+QList<quint64> Timeline::visibleSelectedIdsList() const {
+  // Selected ids that survive the current dataset filter (i.e. are in scene_),
+  // in display order. The merge prompt + action operate on this, so the filter
+  // can hide a selected source without the prompt offering to merge it.
+  QList<quint64> ids;
+  for (const TimelineSpanInput& t : scene_.tracks()) {
+    if (selected_ids_.count(t.id) != 0) {
+      ids.push_back(t.id);
+    }
   }
-  QMenu menu(this);
-  QAction* merge = menu.addAction(tr("Merge"));
-  // Enabled only with a selection; emits the merge intent the host wires up.
-  merge->setEnabled(!selected_ids_.empty());
+  return ids;
+}
 
-  if (menu.exec(global_pos) == merge) {
-    emit mergeRequested(selectedIdsList());
+void Timeline::updateMergeButton() {
+  if (name_panel_ != nullptr) {
+    // The header merge button is enabled only with ≥2 filter-visible selected
+    // sources (and not while interaction-locked). Disabled otherwise.
+    name_panel_->mergeButton()->setEnabled(!interaction_locked_ && visibleSelectedIdsList().size() >= 2);
   }
 }
 
 void Timeline::wheelEvent(QWheelEvent* event) {
   // Locked (e.g. live streaming + playing): the view is frozen at the live edge —
-  // no wheel scroll and no Ctrl+wheel zoom. Swallow the event so it can't navigate.
+  // no zoom. Swallow the event so it can't navigate.
   if (interaction_locked_) {
     event->accept();
     return;
@@ -2278,26 +2304,20 @@ void Timeline::wheelEvent(QWheelEvent* event) {
     return;
   }
 
-  if (event->modifiers().testFlag(Qt::ControlModifier)) {
-    // Ctrl+wheel: cursor-anchored zoom. The origin stays pinned to the scene's
-    // left edge (rebuild owns it); we keep the time under the cursor fixed by
-    // adjusting the horizontal scrollbar after the rebuild.
-    const double factor = angle > 0 ? kZoomInFactor : kZoomOutFactor;
-    const double anchor_vp_x = event->position().x();
-    const double anchor_scene_x = view_->mapToScene(event->position().toPoint()).x();
-    const qint64 anchor_ns = TimelineScene::pxToNs(anchor_scene_x, viewport_);
-    // zoom() only scales + clamps px_per_ns here; its origin output is ignored.
-    viewport_.px_per_ns = TimelineScene::zoom(viewport_, factor, anchor_scene_x).px_per_ns;
-    rebuild();
-    const double new_anchor_scene_x = TimelineScene::nsToPx(anchor_ns, viewport_);
-    view_->horizontalScrollBar()->setValue(static_cast<int>(std::llround(new_anchor_scene_x - anchor_vp_x)));
-    event->accept();
-    return;
-  }
-
-  // Plain wheel: scroll the horizontal timeline (wheel-up scrolls left/earlier).
-  QScrollBar* hbar = view_->horizontalScrollBar();
-  hbar->setValue(hbar->value() - angle);
+  // The wheel zooms horizontally, anchored at the cursor: the instant under the
+  // pointer stays fixed on screen (like the plot's X-axis wheel-zoom). The origin
+  // stays pinned to the scene's left edge (rebuild owns it); we keep the anchored
+  // ns under the cursor by adjusting the horizontal scrollbar after the rebuild.
+  // Pan is the left-drag gesture (see mousePressEvent); the scroll pill remains.
+  const double factor = angle > 0 ? kZoomInFactor : kZoomOutFactor;
+  const double anchor_vp_x = event->position().x();
+  const double anchor_scene_x = view_->mapToScene(event->position().toPoint()).x();
+  const qint64 anchor_ns = TimelineScene::pxToNs(anchor_scene_x, viewport_);
+  // zoom() only scales + clamps px_per_ns here; its origin output is ignored.
+  viewport_.px_per_ns = TimelineScene::zoom(viewport_, factor, anchor_scene_x).px_per_ns;
+  rebuild();
+  const double new_anchor_scene_x = TimelineScene::nsToPx(anchor_ns, viewport_);
+  view_->horizontalScrollBar()->setValue(static_cast<int>(std::llround(new_anchor_scene_x - anchor_vp_x)));
   event->accept();
 }
 
@@ -2309,8 +2329,8 @@ void Timeline::mousePressEvent(QMouseEvent* event) {
   const QPoint view_pos = view_->viewport()->mapFromGlobal(event->globalPosition().toPoint());
 
   // Locked (e.g. live streaming + playing): the whole view is frozen — no scroll-pill
-  // grab, needle seek, bar-offset drag, or rubber-band selection. Scrolling/zooming is
-  // also blocked (see wheelEvent). The needles still track playback via setPlayhead.
+  // grab, needle seek, or bar-offset drag. Scrolling/zooming is also blocked (see
+  // wheelEvent). The needles still track playback via setPlayhead.
   if (interaction_locked_) {
     event->accept();
     return;
@@ -2395,16 +2415,13 @@ void Timeline::mousePressEvent(QMouseEvent* event) {
     return;
   }
 
-  // Empty space: begin a rubber-band multi-selection (clears any prior one).
-  rubber_banding_ = true;
-  rubber_origin_vp_ = view_pos;
-  if (rubber_band_ == nullptr) {
-    rubber_band_ = new timeline_detail::TimelineRubberBand(view_->viewport());
-  }
-  rubber_band_->setGeometry(QRect(rubber_origin_vp_, QSize()));
-  rubber_band_->show();
-  selected_ids_.clear();
-  applySelectionHighlight();
+  // Empty space (not a bar/needle): a left-drag pans the view; a plain click
+  // (no movement past the threshold) clears the name-column selection. mouseMove
+  // promotes this to a pan once the cursor moves; mouseRelease decides which it was.
+  panning_ = true;
+  pan_moved_ = false;
+  pan_start_global_x_ = event->globalPosition().x();
+  pan_start_scroll_value_ = hbar->value();
   event->accept();
 }
 
@@ -2437,13 +2454,23 @@ void Timeline::mouseMoveEvent(QMouseEvent* event) {
     return;
   }
 
-  if (rubber_banding_) {
-    rubber_band_->setGeometry(QRect(rubber_origin_vp_, view_pos).normalized());
-    // Live: highlight/unhighlight bars as the band sweeps over them.
-    setSelectionFromViewportRect(rubber_band_->geometry());
+  // Background pan: drag the view horizontally (content follows the cursor, so the
+  // scrollbar moves opposite the delta). A move past the threshold commits it to a
+  // pan, so the release no longer reads as a deselecting click.
+  if (panning_) {
+    constexpr double kPanThresholdPx = 3.0;
+    const double dx = event->globalPosition().x() - pan_start_global_x_;
+    if (!pan_moved_ && std::abs(dx) >= kPanThresholdPx) {
+      pan_moved_ = true;
+      view_->viewport()->setCursor(Qt::ClosedHandCursor);
+    }
+    if (pan_moved_) {
+      view_->horizontalScrollBar()->setValue(pan_start_scroll_value_ - static_cast<int>(std::llround(dx)));
+    }
     event->accept();
     return;
   }
+
   if (dragging_reference_) {
     moveReferenceToSceneX(scene_pos.x());
     event->accept();
@@ -2509,11 +2536,13 @@ void Timeline::mouseReleaseEvent(QMouseEvent* event) {
     event->accept();
     return;
   }
-  if (rubber_banding_) {
-    rubber_banding_ = false;
-    const QRect rb = rubber_band_->geometry();
-    rubber_band_->hide();
-    setSelectionFromViewportRect(rb);
+  if (panning_) {
+    panning_ = false;
+    if (pan_moved_) {
+      view_->viewport()->unsetCursor();
+    } else {
+      clearSelection();  // a plain background click (no pan) deselects
+    }
     event->accept();
     return;
   }
@@ -2562,6 +2591,7 @@ void Timeline::changeEvent(QEvent* event) {
     view_->viewport()->update();
     if (name_panel_ != nullptr) {
       name_panel_->update();  // re-reads QGuiApplication::palette() on repaint
+      // The name panel re-tints its own header merge button via its changeEvent.
     }
   }
 }
@@ -2572,7 +2602,7 @@ bool Timeline::eventFilter(QObject* watched, QEvent* event) {
       case QEvent::MouseButtonPress: {
         auto* me = static_cast<QMouseEvent*>(event);
         if (me->button() == Qt::LeftButton) {
-          namePanelPress(me->position().toPoint());
+          namePanelPress(me->position().toPoint(), me->modifiers());
           return true;
         }
         break;
@@ -2607,9 +2637,6 @@ bool Timeline::eventFilter(QObject* watched, QEvent* event) {
       case QEvent::Wheel:
         wheelEvent(static_cast<QWheelEvent*>(event));
         return event->isAccepted();
-      case QEvent::ContextMenu:
-        showContextMenu(static_cast<QContextMenuEvent*>(event)->globalPos());
-        return true;
       case QEvent::Leave:
         // Cursor left the view: fade the scroll pills out (unless a drag holds one).
         if (!dragging_pill_) {

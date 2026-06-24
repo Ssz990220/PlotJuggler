@@ -9,6 +9,7 @@
 #include <QDomElement>
 #include <QEvent>
 #include <QHBoxLayout>
+#include <QHash>
 #include <QIcon>
 #include <QLabel>
 #include <QLineEdit>
@@ -29,7 +30,6 @@
 
 #include "pj_runtime/CatalogModel.h"
 #include "pj_widgets/CurveTreeView.h"
-#include "pj_widgets/MessageBox.h"
 #include "pj_widgets/SvgUtil.h"
 #include "scene_object_classification.h"
 #include "ui_CurveListPanel.h"
@@ -411,38 +411,92 @@ void CurveListPanel::onTrashClicked() {
 }
 
 void CurveListPanel::onTreeContextMenu(const QPoint& pos) {
-  // Dataset is the only top-level group (label has no '/', has >=1 topic child).
-  // Topic/curve nodes get no menu.
-  QTreeWidgetItem* item = tree_view_->itemAt(pos);
-  if (item == nullptr || item->parent() != nullptr || item->childCount() == 0 || catalog_ == nullptr) {
+  if (catalog_ == nullptr) {
     return;
   }
-  const QString dataset_name = item->text(0);
-  DatasetId dataset_id = 0;
-  bool found = false;
+  // The menu is offered only on a dataset node (top-level group with topic children).
+  const auto is_dataset_node = [](QTreeWidgetItem* node) {
+    return node != nullptr && node->parent() == nullptr && node->childCount() > 0;
+  };
+  QTreeWidgetItem* clicked = tree_view_->itemAt(pos);
+  if (!is_dataset_node(clicked)) {
+    return;  // topic/curve nodes get no menu
+  }
+
+  QHash<QString, DatasetId> id_by_name;
   for (const auto& [id, name] : catalog_->datasets()) {
-    if (name == dataset_name) {
-      dataset_id = id;
-      found = true;
-      break;
+    id_by_name.insert(name, id);
+  }
+  QList<DatasetId> dataset_ids;
+  const auto add_dataset = [&](QTreeWidgetItem* node) {
+    if (!is_dataset_node(node)) {
+      return;
+    }
+    const auto found = id_by_name.constFind(node->text(0));
+    if (found != id_by_name.constEnd() && !dataset_ids.contains(found.value())) {
+      dataset_ids.push_back(found.value());
+    }
+  };
+  // Always include the right-clicked dataset; if it is part of a multi-selection,
+  // include every other selected dataset too. Right-clicking a dataset outside the
+  // selection targets just that one (standard list behavior). Does not rely on the
+  // clicked row being selected, so the menu works even on a fresh right-click.
+  add_dataset(clicked);
+  if (clicked->isSelected()) {
+    for (QTreeWidgetItem* item : tree_view_->selectedItems()) {
+      add_dataset(item);
     }
   }
-  if (!found) {
-    return;
+  if (dataset_ids.isEmpty()) {
+    return;  // clicked name no longer resolves to a catalog dataset
   }
 
+  // Build the menu from flat QPushButtons wrapped in QWidgetActions — the same
+  // pattern as the "Remove all Datasets" item in the datasets popup — so each item
+  // carries a themed leading icon and the destructive ones paint in the shared
+  // ${purple} via the central `QMenu#PJMenu QPushButton[destructive="true"]` rule.
   QMenu menu(this);
   menu.setObjectName(QStringLiteral("PJMenu"));
-  QAction* remove_action = menu.addAction(tr("Remove dataset"));
-  if (menu.exec(tree_view_->viewport()->mapToGlobal(pos)) != remove_action) {
-    return;
-  }
+  const QString theme = currentTheme();
+  const auto add_item = [&](const QString& icon, const QString& text, bool destructive, bool enabled) {
+    auto* button = new QPushButton(loadSvg(icon, theme), text, &menu);
+    button->setFlat(true);
+    button->setEnabled(enabled);
+    if (destructive) {
+      button->setProperty("destructive", true);
+    }
+    auto* action = new QWidgetAction(&menu);
+    action->setDefaultWidget(button);
+    menu.addAction(action);
+    return button;
+  };
 
-  const int choice = MessageBox::question(
-      this, tr("Remove dataset"), tr("Are you sure you want to remove '%1' and its data?").arg(dataset_name),
-      {{tr("Remove"), MessageBox::kDestructiveRole}, {tr("Cancel"), MessageBox::kCancelRole}});
-  if (choice == 0) {
-    emit removeDatasetRequested(dataset_id);
+  // Merge first (needs ≥2 datasets), then Remove (destructive → purple).
+  QPushButton* merge_button =
+      add_item(QStringLiteral(":/resources/svg/merge.svg"), tr("Merge"), false, dataset_ids.size() >= 2);
+  QPushButton* remove_button = add_item(
+      QStringLiteral(":/resources/svg/trash.svg"),
+      dataset_ids.size() > 1 ? tr("Remove datasets") : tr("Remove dataset"),
+      /*destructive=*/true, /*enabled=*/true);
+
+  // QWidgetAction buttons don't dismiss the menu on click — close it ourselves and
+  // record the choice (exec blocks, so capturing by reference is safe).
+  bool do_merge = false;
+  bool do_remove = false;
+  connect(merge_button, &QPushButton::clicked, &menu, [&]() {
+    do_merge = true;
+    menu.close();
+  });
+  connect(remove_button, &QPushButton::clicked, &menu, [&]() {
+    do_remove = true;
+    menu.close();
+  });
+
+  menu.exec(tree_view_->viewport()->mapToGlobal(pos));
+  if (do_merge) {
+    emit mergeDatasetsRequested(dataset_ids);
+  } else if (do_remove) {
+    emit removeDatasetsRequested(dataset_ids);
   }
 }
 

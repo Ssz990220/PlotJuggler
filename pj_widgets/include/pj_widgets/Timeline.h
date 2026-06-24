@@ -16,7 +16,6 @@
 
 class QLabel;
 class QPushButton;
-class QRubberBand;
 class QToolButton;
 class QGraphicsLineItem;
 class QGraphicsOpacityEffect;
@@ -194,15 +193,19 @@ class TimelineNamePanel;
 /// stays visible when its bar scrolls off horizontally or squashes thin; each name
 /// row aligns exactly in height with its bar). Its right edge is a draggable
 /// splitter that resizes the column. Dragging a name row reorders the tracks
-/// (emits tracksReordered; reordered optimistically). The scrollable view sits to
-/// its right. The native horizontal scrollbar is replaced by a blue "pill" that
-/// fades in when the cursor enters the view's bottom strip, mirrors the scrollbar
-/// handle, and scrolls the view when dragged.
+/// (emits tracksReordered; reordered optimistically). Name rows are also
+/// multi-selectable (plain click selects one, Ctrl/Meta+click toggles, Shift+click
+/// extends a range), highlighting both the row and its bar; when ≥2 are selected a
+/// "Merge selected datasets:" prompt with a merge button appears below the column and
+/// emits mergeRequested. The scrollable view sits to its right. The native horizontal scrollbar is replaced by a blue
+/// "pill" that fades in when the cursor enters the view's bottom strip, mirrors the scrollbar handle, and scrolls the
+/// view when dragged.
 ///
-/// Navigation: a plain mouse wheel scrolls horizontally; Ctrl+wheel zooms
-/// (cursor-anchored). The scene keeps a ±1 min buffer around the data so small
-/// drags near the edges don't resize it (it grows only when a bar is pushed past
-/// the buffer).
+/// Navigation: the mouse wheel zooms horizontally, anchored at the cursor (the
+/// instant under the pointer stays put); a left-drag on empty background pans the
+/// view (a plain background click with no drag deselects). The scene keeps a ±1 min
+/// buffer around the data so small drags near the edges don't resize it (it grows
+/// only when a bar is pushed past the buffer).
 ///
 /// Two draggable marker needles share one item type: the pink playback playhead
 /// (setPlayhead/playheadSeeked) and the blue reference line (setReferenceLine/
@@ -288,6 +291,13 @@ class Timeline : public QWidget {
   /// into the drag-reorder path (move `from` to insertion `drop_index`).
   [[nodiscard]] QList<quint64> trackOrderForTest() const;
   void reorderForTest(int from, int drop_index);
+  /// Selection seams: drive the exact name-row click path (row index into the
+  /// current displayed order, with modifiers) and inspect the resulting state —
+  /// whether the merge prompt is logically shown and which selected ids are
+  /// filter-visible — without synthesizing mouse events or showing the widget.
+  void selectNameRowForTest(int row, Qt::KeyboardModifiers mods);
+  [[nodiscard]] bool mergeButtonEnabledForTest() const;
+  [[nodiscard]] QList<quint64> visibleSelectedIdsForTest() const;
   /// Snap seams: run the bar-drag snap path for `id` by `dx_px` (leaving the guide
   /// line in its resulting state) and inspect whether the guide line is showing.
   void dragBarForSnapTest(TimelineSourceId id, double dx_px);
@@ -344,7 +354,7 @@ class Timeline : public QWidget {
   void setSnapEnabled(bool enabled);
   /// Put the timeline into a read-only "frozen" state. When locked, the view is fully
   /// inert: every user manipulation gesture is suppressed — bar-offset drags, name-row
-  /// reorder, the Align button, the Merge context menu — as is needle SEEKING (dragging
+  /// reorder + selection, the Align button, the merge prompt — as is needle SEEKING (dragging
   /// the playhead / reference line) AND view navigation (wheel scroll, Ctrl+wheel zoom,
   /// the scroll pills). Only host-driven slave updates stay live: the needles keep
   /// tracking playback via setPlayhead, and new data still rebuilds/auto-fits the view.
@@ -381,10 +391,10 @@ class Timeline : public QWidget {
   void playheadSeeked(double display_seconds);
   /// The user dragged the reference line to a new display-seconds position.
   void referenceLineMoved(double display_seconds);
-  /// Right-click "Merge" on the current rubber-band selection. `ids` are the
-  /// selected source ids; the widget stays agnostic — the host (pj_app's
-  /// SourceTimelineController) confirms and performs the destructive dataset
-  /// merge (the union of the selected datasets) via the runtime.
+  /// The merge-prompt button (shown below the name column when ≥2 sources are
+  /// selected) was clicked. `ids` are the selected source ids; the widget stays
+  /// agnostic — the host (pj_app's SourceTimelineController) confirms and performs
+  /// the destructive dataset merge (the union of the selected datasets) via the runtime.
   void mergeRequested(const QList<quint64>& ids);
   /// The user drag-reordered the track rows in the name column. `ordered_ids` is
   /// the new top-to-bottom track order; the host should adopt it (e.g. so it
@@ -470,19 +480,28 @@ class Timeline : public QWidget {
   /// Show/hide the vertical alignment guide line at a display-ns position.
   void showSnapLine(qint64 display_ns);
   void hideSnapLine();
-  /// Replace the selection from a viewport-space rubber-band rect, then refresh
-  /// the highlight. A near-zero rect (a plain click) clears the selection.
-  void setSelectionFromViewportRect(const QRect& viewport_rect);
+  /// Apply a name-row click to the selection per the held modifiers (Ctrl/Meta
+  /// toggles, Shift extends from the anchor, plain click selects one), then refresh
+  /// the row + bar highlight and the merge prompt. `row` is the index into the
+  /// current displayed track order; a negative row clears the selection.
+  void selectNameRow(int row, Qt::KeyboardModifiers mods);
+  /// Clear the selection and refresh the highlight + merge button.
+  void clearSelection();
   /// Re-apply the selected/grouped border to the current bar items.
   void applySelectionHighlight();
-  /// Pop the right-click menu (Merge / Auto align) at a global position.
-  void showContextMenu(const QPoint& global_pos);
+  /// Enable the header merge button iff ≥2 filter-visible sources are selected (and
+  /// the view isn't interaction-locked); disable it otherwise.
+  void updateMergeButton();
   /// Recompute the data span from the bars' current visual positions (incl. an
   /// in-flight drag's ghost) and push it to the ruler tint + the empty-area
   /// hatch, so both track drags live without a full rebuild (suppressed mid-drag).
   void updateDataSpanFromItems();
   /// The current selection as a list, for the intent signals.
   [[nodiscard]] QList<quint64> selectedIdsList() const;
+  /// The selected ids that pass the current dataset filter (are in scene_), in
+  /// display order. The merge prompt + merge action use this so a filter-hidden
+  /// source is neither counted toward the prompt nor merged.
+  [[nodiscard]] QList<quint64> visibleSelectedIdsList() const;
   /// The padded, sticky scene extent: content ±1 min, grown (never shrunk on a
   /// small drag) only when a bar is pushed past the buffer. Recomputed in
   /// rebuild() from `scene_.sceneExtent()`; reset when the raw data changes.
@@ -519,8 +538,10 @@ class Timeline : public QWidget {
   /// scroll.
   void syncStickyHeader();
 
-  /// Name-column drag-to-reorder, driven from eventFilter() on name_panel_.
-  void namePanelPress(const QPoint& panel_pos);
+  /// Name-column press: edits the selection per `mods` (see selectNameRow) and, on
+  /// a plain press of a row, primes a potential drag-to-reorder. Driven from
+  /// eventFilter() on name_panel_.
+  void namePanelPress(const QPoint& panel_pos, Qt::KeyboardModifiers mods);
   void namePanelMove(const QPoint& panel_pos, bool button_down);
   void namePanelRelease(const QPoint& panel_pos);
   /// Track-row index whose band contains the panel-local y, or -1.
@@ -612,11 +633,22 @@ class Timeline : public QWidget {
   bool dragging_playhead_ = false;
   bool dragging_reference_ = false;
 
-  // --- multi-selection (left-drag rubber band) ---
+  // --- background left-drag pan ---
+  // Armed on a press over empty space; pan_moved_ flips once the cursor passes the
+  // threshold (so a no-move release reads as a deselecting click, not a pan). The
+  // horizontal scrollbar pans opposite the cursor delta so content follows the cursor.
+  bool panning_ = false;
+  bool pan_moved_ = false;
+  double pan_start_global_x_ = 0.0;
+  int pan_start_scroll_value_ = 0;
+
+  // --- multi-selection (name-column click) ---
   std::set<TimelineSourceId> selected_ids_;  // sources highlighted/grouped
-  QRubberBand* rubber_band_ = nullptr;       // lazily created on the view's viewport
-  bool rubber_banding_ = false;
-  QPoint rubber_origin_vp_;  // rubber-band press origin, in viewport coords
+  // Anchor for Shift+click range selection, by source id so it survives a rebuild;
+  // 0 = none. Set on every plain/Ctrl click. The merge button itself lives in the
+  // name panel's header (TimelineNamePanel::mergeButton()); the Timeline only
+  // enables/disables it from the selection (updateMergeButton).
+  TimelineSourceId selection_anchor_id_ = 0;
 
   // Centered "pause playback to interact" pill shown over the scene while
   // interaction_locked_ (live streaming + playing). Mouse-transparent / purely

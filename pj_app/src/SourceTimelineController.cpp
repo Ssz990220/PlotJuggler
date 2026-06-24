@@ -7,19 +7,14 @@
 #include <QTimer>
 #include <algorithm>
 #include <array>
-#include <set>
-#include <string>
-#include <unordered_map>
 #include <utility>
 
-#include "pj_datastore/object_store.hpp"
-#include "pj_datastore/topic_storage.hpp"
+#include "DatasetMergeActions.h"
 #include "pj_runtime/AppSession.h"
 #include "pj_runtime/CatalogModel.h"
 #include "pj_runtime/PlaybackEngine.h"
 #include "pj_runtime/SessionManager.h"
 #include "pj_runtime/Time.h"
-#include "pj_widgets/MessageBox.h"
 #include "pj_widgets/Timeline.h"
 
 namespace PJ {
@@ -300,108 +295,20 @@ void SourceTimelineController::setReferenceLine(std::optional<double> playback_s
 }
 
 void SourceTimelineController::onMergeRequested(const QList<quint64>& ids) {
-  // Keep only ids that are real, data-bearing tracks; need at least two to merge.
   std::vector<DatasetId> datasets;
+  datasets.reserve(static_cast<std::size_t>(ids.size()));
   for (const quint64 id : ids) {
-    const auto ds = static_cast<DatasetId>(id);
-    const bool is_track = std::any_of(
-        tracks_.begin(), tracks_.end(), [ds](const TimelineTrack& t) { return static_cast<DatasetId>(t.id) == ds; });
-    if (is_track) {
-      datasets.push_back(ds);
-    }
+    datasets.push_back(static_cast<DatasetId>(id));
   }
-  if (datasets.size() < 2) {
-    return;
-  }
-
-  const int choice = MessageBox::question(
-      widget_, tr("Merge datasets"), composeMergeWarning(datasets),
-      {{tr("Merge"), MessageBox::kDestructiveRole}, {tr("Cancel"), MessageBox::kCancelRole}});
-  if (choice != 0) {
-    return;  // Cancel / Esc
-  }
-
-  if (const DatasetId anchor = session_->mergeDatasets(datasets); anchor != 0) {
-    merged_ids_.insert(anchor);
-    rebuildTracks();  // re-color the merged bar (catalog signals rebuild it too)
+  // confirmAndMergeDatasets filters to data-bearing datasets and gates on ≥2.
+  if (const auto anchor = confirmAndMergeDatasets(widget_, *session_, datasets)) {
+    markDatasetMerged(*anchor);
   }
 }
 
-QString SourceTimelineController::composeMergeWarning(const std::vector<DatasetId>& datasets) const {
-  struct Info {
-    QString name;
-    qint64 lo;  // displayed start (raw_min - offset)
-    qint64 hi;  // displayed end
-  };
-  std::unordered_map<DatasetId, Info> info;
-  for (const TimelineTrack& t : tracks_) {
-    const auto ds = static_cast<DatasetId>(t.id);
-    if (std::find(datasets.begin(), datasets.end(), ds) != datasets.end()) {
-      info[ds] = Info{t.name, t.t_min_ns - t.offset_ns, t.t_max_ns - t.offset_ns};
-    }
-  }
-
-  // Precompute each selected dataset's topic-name set once; the pairwise loop
-  // below would otherwise recompute a dataset's set for every pair it appears in.
-  DataEngine& engine = session_->sessionManager().dataEngine();
-  std::unordered_map<DatasetId, std::set<std::string>> topic_names_by_dataset;
-  for (const DatasetId ds : datasets) {
-    std::set<std::string>& names = topic_names_by_dataset[ds];
-    for (const TopicId tid : engine.listTopics(ds)) {
-      if (const TopicStorage* st = engine.getTopicStorage(tid)) {
-        names.insert(st->descriptor().name);
-      }
-    }
-  }
-
-  // Pairwise: displayed-range overlap, and overlap that also shares a topic name.
-  std::set<DatasetId> overlapping;
-  std::set<DatasetId> colliding;
-  for (std::size_t i = 0; i < datasets.size(); ++i) {
-    for (std::size_t j = i + 1; j < datasets.size(); ++j) {
-      const Info& a = info.at(datasets[i]);
-      const Info& b = info.at(datasets[j]);
-      if (a.lo <= b.hi && b.lo <= a.hi) {
-        overlapping.insert(datasets[i]);
-        overlapping.insert(datasets[j]);
-        const std::set<std::string>& names_a = topic_names_by_dataset.at(datasets[i]);
-        const std::set<std::string>& names_b = topic_names_by_dataset.at(datasets[j]);
-        if (std::any_of(
-                names_a.begin(), names_a.end(), [&names_b](const std::string& n) { return names_b.count(n) != 0; })) {
-          colliding.insert(datasets[i]);
-          colliding.insert(datasets[j]);
-        }
-      }
-    }
-  }
-
-  std::set<DatasetId> with_objects;
-  for (const DatasetId ds : datasets) {
-    if (!session_->sessionManager().objectStore().listTopics(ds).empty()) {
-      with_objects.insert(ds);
-    }
-  }
-
-  const auto names_of = [&info](const std::set<DatasetId>& set) {
-    QStringList list;
-    for (const DatasetId ds : set) {
-      list << info.at(ds).name;
-    }
-    return list.join(QStringLiteral(", "));
-  };
-
-  QString text = tr("Merging datasets is a destructive operation. Do you wish to proceed?");
-  if (!overlapping.empty()) {
-    text += QStringLiteral("\n\n") + tr("Datasets %1 overlap in time.").arg(names_of(overlapping));
-  }
-  if (!colliding.empty()) {
-    text += QStringLiteral("\n") + tr("Datasets %1 have colliding data.").arg(names_of(colliding));
-  }
-  if (!with_objects.empty()) {
-    text += QStringLiteral("\n") +
-            tr("Datasets %1 contain object topics that will be dropped.").arg(names_of(with_objects));
-  }
-  return text;
+void SourceTimelineController::markDatasetMerged(DatasetId anchor) {
+  merged_ids_.insert(anchor);
+  rebuildTracks();  // re-color the merged bar (catalog signals rebuild it too)
 }
 
 }  // namespace PJ

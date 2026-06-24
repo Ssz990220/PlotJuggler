@@ -61,6 +61,7 @@
 #include <utility>
 #include <vector>
 
+#include "DatasetMergeActions.h"
 #include "DebugUi.h"
 #include "FileLoader.h"
 #include "LayoutXml.h"
@@ -555,7 +556,8 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
   });
 
   connect(ui_->curveListPanel, &CurveListPanel::trashRequested, this, &MainWindow::onCatalogTrashRequested);
-  connect(ui_->curveListPanel, &CurveListPanel::removeDatasetRequested, this, &MainWindow::onRemoveDatasetRequested);
+  connect(ui_->curveListPanel, &CurveListPanel::removeDatasetsRequested, this, &MainWindow::onRemoveDatasetsRequested);
+  connect(ui_->curveListPanel, &CurveListPanel::mergeDatasetsRequested, this, &MainWindow::onMergeDatasetsRequested);
   connect(ui_->curveListPanel, &CurveListPanel::clearAllCurvesRequested, this, [this]() {
     if (streaming_manager_ != nullptr && streaming_manager_->hasActiveSession()) {
       streaming_manager_->stopAllAndWait(tr("dataset removed"));
@@ -639,6 +641,11 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
           const int floor = ui_->bottomPanel->minimumHeight();
           const int expanded = std::max(QSettings().value(kPanelBottomExpandedKey, sizes[1]).toInt(), floor);
           ui_->timelineSplitter->setSizes({total - expanded, expanded});
+          // Fit all source bars horizontally each time the strip is opened, once the
+          // strip's new geometry has settled (deferred a tick so the view is sized).
+          if (source_timeline_ != nullptr) {
+            QTimer::singleShot(0, source_timeline_, [tl = source_timeline_]() { tl->zoomToFit(); });
+          }
         } else {
           QSettings().setValue(kPanelBottomExpandedKey, sizes[1]);
           applyBottomPanelConstraints();  // pins the panel to the playback bar (drag can't reopen)
@@ -1426,7 +1433,7 @@ void MainWindow::onCatalogTrashRequested(QStringList keys, bool covers_all) {
   resetUndoHistory();
 }
 
-void MainWindow::onRemoveDatasetRequested(DatasetId dataset_id) {
+void MainWindow::removeDatasetData(DatasetId dataset_id) {
   if (dataset_id == active_streaming_dataset_id_) {
     if (streaming_manager_ != nullptr) {
       streaming_manager_->stopDatasetAndWait(dataset_id, tr("dataset removed"));
@@ -1434,18 +1441,16 @@ void MainWindow::onRemoveDatasetRequested(DatasetId dataset_id) {
     active_streaming_dataset_id_ = 0;
     streaming_playback_seeded_ = false;
   }
-  // Confirmed removal is a REAL delete: erase the dataset's data from the object store AND
-  // the engine — no tombstone, nothing kept — so a later load of the same source is a clean
-  // fresh load (mints a new DatasetId), not a reattach to an emptied/tombstoned shell (the
-  // bug where the 2nd load showed no progress bar and no data).
+  // A REAL delete: erase the dataset's data from the object store AND the engine —
+  // no tombstone — so a later load of the same source is a clean fresh load (mints
+  // a new DatasetId), not a reattach to an emptied shell.
   //
-  // Order matters. Invalidate the TF buffer first (it was built from these object topics;
-  // invalidateDataset walks listTopics(dataset_id), which is empty once eviction runs —
-  // L.1/L.28). Then evict the object payloads (so the catalog's itemsRemoved revalidation
-  // sees them gone and prunes 2D/3D layers). Then drop the catalog items (tearing down
-  // every curve adapter bound to this dataset via cleared()/itemsRemoved). ONLY THEN erase
-  // the engine's scalar storage: DataEngine::removeDataset requires all readers/adapters
-  // invalidated first, which the synchronous catalog teardown above guarantees.
+  // Order matters. Invalidate the TF buffer first (it was built from these object
+  // topics; invalidateDataset walks listTopics(dataset_id), empty once eviction
+  // runs). Then evict the object payloads (so the catalog's itemsRemoved prunes
+  // 2D/3D layers). Then drop the catalog items (tearing down every curve adapter).
+  // ONLY THEN erase the engine's scalar storage: DataEngine::removeDataset requires
+  // all readers/adapters invalidated first, which the synchronous teardown above guarantees.
   if (transform_service_ != nullptr) {
     transform_service_->invalidateDataset(dataset_id);
   }
@@ -1454,15 +1459,60 @@ void MainWindow::onRemoveDatasetRequested(DatasetId dataset_id) {
   session_->sessionManager().dataEngine().removeDataset(dataset_id);
   // Drop this dataset's file association (hygiene). Resurrection is prevented by
   // the layout-save liveness filter (appendDataSourceElement), not by mutating
-  // loaded_sources_ — that list is kept whole so the quick-reload button still
-  // works after a removal.
+  // loaded_sources_ — that list is kept whole so the quick-reload button still works.
   file_loader_->untrackDataset(dataset_id);
-  // Shrink the playback range to the remaining data right away — unless a
-  // streaming dataset exists (the slider is scoped to the active stream).
+}
+
+void MainWindow::onRemoveDatasetsRequested(const QList<DatasetId>& dataset_ids) {
+  if (dataset_ids.isEmpty()) {
+    return;
+  }
+  // One combined confirmation. Single removal keeps the named wording; a batch
+  // shows the count.
+  QString message;
+  if (dataset_ids.size() == 1) {
+    QString name = QString::number(dataset_ids.front());
+    for (const auto& [id, dataset_name] : session_->catalogModel().datasets()) {
+      if (id == dataset_ids.front()) {
+        name = dataset_name;
+        break;
+      }
+    }
+    message = tr("Are you sure you want to remove '%1' and its data?").arg(name);
+  } else {
+    message = tr("Are you sure you want to remove these %1 datasets and their data?").arg(dataset_ids.size());
+  }
+  const int choice = MessageBox::question(
+      this, dataset_ids.size() == 1 ? tr("Remove dataset") : tr("Remove datasets"), message,
+      {{tr("Remove"), MessageBox::kDestructiveRole}, {tr("Cancel"), MessageBox::kCancelRole}});
+  if (choice != 0) {
+    return;  // Cancel / Esc
+  }
+
+  for (const DatasetId id : dataset_ids) {
+    removeDatasetData(id);
+  }
+  // Shrink the playback range to the remaining data right away — unless a streaming
+  // dataset exists (the slider is scoped to the active stream). Reset undo once.
   if (active_streaming_dataset_id_ == 0) {
     session_->seedPlaybackFromSession();
   }
   resetUndoHistory();
+}
+
+void MainWindow::onMergeDatasetsRequested(const QList<DatasetId>& dataset_ids) {
+  std::vector<DatasetId> ids;
+  ids.reserve(static_cast<std::size_t>(dataset_ids.size()));
+  for (const DatasetId id : dataset_ids) {
+    ids.push_back(id);
+  }
+  // confirmAndMergeDatasets shows the shared destructive-merge warning and gates on
+  // ≥2 data-bearing datasets; mark the surviving anchor on the Source Timeline.
+  if (const auto anchor = confirmAndMergeDatasets(this, *session_, ids)) {
+    if (source_timeline_controller_ != nullptr) {
+      source_timeline_controller_->markDatasetMerged(*anchor);
+    }
+  }
 }
 
 void MainWindow::onShowPreferencesDialog() {

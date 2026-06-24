@@ -5,6 +5,7 @@
 #include <QCheckBox>
 #include <QDomDocument>
 #include <QDomElement>
+#include <QList>
 #include <QPoint>
 #include <QStringList>
 #include <QWidget>
@@ -58,9 +59,13 @@ class CurveListPanel : public QWidget {
   void trashRequested(QStringList names, bool covers_all);
   // Emitted when the user picks "Clear All" from the datasets menu.
   void clearAllCurvesRequested();
-  // Emitted after the user confirms "Remove dataset"; the panel has already
-  // resolved the dataset node to a DatasetId.
-  void removeDatasetRequested(DatasetId dataset_id);
+  // The user chose "Remove dataset(s)" on a dataset selection. The panel resolved
+  // the selected dataset nodes to ids; MainWindow confirms (one combined dialog)
+  // and performs the removal.
+  void removeDatasetsRequested(const QList<DatasetId>& dataset_ids);
+  // The user chose "Merge" on a multi-dataset selection (≥2). MainWindow shows the
+  // shared destructive-merge confirmation and performs the merge.
+  void mergeDatasetsRequested(const QList<DatasetId>& dataset_ids);
 
  public slots:
   void onStylesheetChanged(QString theme);
@@ -85,7 +90,9 @@ class CurveListPanel : public QWidget {
   void onShowValuesToggled(bool show);
   void onPreserveTopicNameToggled(bool checked);
   void onTrashClicked();
-  // Right-click on a dataset node → "Remove dataset" + confirmation dialog.
+  // Right-click on a dataset node → Merge (≥2 selected) + Remove dataset(s) menu,
+  // operating on the selected top-level dataset nodes. Emits intents; MainWindow
+  // confirms + performs.
   void onTreeContextMenu(const QPoint& pos);
 
  private:

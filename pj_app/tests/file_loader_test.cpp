@@ -301,7 +301,7 @@ TEST_F(FileLoaderTest, RemovedDatasetDropsFromLiveSourcePaths) {
   EXPECT_TRUE(live_paths().contains(path_a));
   EXPECT_TRUE(live_paths().contains(path_b));
 
-  // Remove dataset a the way MainWindow::onRemoveDatasetRequested does.
+  // Remove dataset a the way MainWindow::removeDatasetData does.
   session().evictDatasetObjects(id_a);
   catalog().removeDataset(id_a);
   loader_->untrackDataset(id_a);
@@ -322,7 +322,7 @@ TEST_F(FileLoaderTest, RealDeleteThenPreferReuseReloadReIngestsFreshDataset) {
   ASSERT_EQ(singleTopicRowCount(id), 3);
   ASSERT_EQ(catalog().items().size(), 1u);
 
-  // Real delete the way MainWindow::onRemoveDatasetRequested now does it: erase objects,
+  // Real delete the way MainWindow::removeDatasetData now does it: erase objects,
   // drop catalog items WITHOUT a tombstone, then erase the engine's scalar storage.
   session().evictDatasetObjects(id);
   catalog().removeDataset(id, /*tombstone=*/false);

@@ -213,11 +213,12 @@ TEST(Timeline, ScrollPillDragScrollsTheView) {
   w->releaseViewportForTest(QPoint(260, vh - 3));
 }
 
-// Locked (live streaming + playing): mouse-wheel scroll is swallowed so the view
-// stays pinned to the live edge; unlocking restores scrolling.
-TEST(Timeline, InteractionLockBlocksWheelScroll) {
+// The mouse wheel zooms the timeline horizontally (cursor-anchored). Locked (live
+// streaming + playing) swallows it so the view stays pinned to the live edge;
+// unlocking restores zooming.
+TEST(Timeline, InteractionLockBlocksWheelZoom) {
   auto w = makeScrollableTimeline();
-  const int before = w->scrollValueForTest();
+  const double before = w->zoom();
   const auto send_wheel = [&w] {
     QWheelEvent we(
         QPointF(50, 50), w->mapToGlobal(QPoint(50, 50)), QPoint(), QPoint(0, -120), Qt::NoButton, Qt::NoModifier,
@@ -227,11 +228,11 @@ TEST(Timeline, InteractionLockBlocksWheelScroll) {
 
   w->setInteractionLocked(true);
   send_wheel();
-  EXPECT_EQ(w->scrollValueForTest(), before);  // frozen
+  EXPECT_EQ(w->zoom(), before);  // frozen
 
   w->setInteractionLocked(false);
   send_wheel();
-  EXPECT_NE(w->scrollValueForTest(), before);  // scrolls again
+  EXPECT_NE(w->zoom(), before);  // zooms again
 }
 
 // The "pause playback to interact" overlay appears over the scene only while locked.
@@ -528,6 +529,50 @@ TEST(Timeline, DatasetFilterShowsOnlyMatchingTracks) {
 
   w.setDatasetFilter("");  // cleared → all shown again
   EXPECT_EQ(w.barCount(), 3);
+}
+
+// Name-column multi-selection drives the merge prompt, and the dataset filter
+// gates the prompt + merge payload on the VISIBLE selected subset (selection
+// itself persists across filtering — a destructive merge never silently includes
+// a source the filter is hiding).
+TEST(Timeline, NameColumnSelectionGatesMergeButtonOnVisibleSelection) {
+  Timeline w;
+  w.setTracks({
+      TimelineTrack{.id = 1, .name = "alpha", .t_min_ns = 0, .t_max_ns = 1000, .offset_ns = 0},
+      TimelineTrack{.id = 2, .name = "beta", .t_min_ns = 0, .t_max_ns = 1000, .offset_ns = 0},
+      TimelineTrack{.id = 3, .name = "alphabet", .t_min_ns = 0, .t_max_ns = 1000, .offset_ns = 0},
+  });
+  EXPECT_FALSE(w.mergeButtonEnabledForTest());
+
+  // Plain click selects one → no prompt (merge needs ≥2).
+  w.selectNameRowForTest(0, Qt::NoModifier);
+  EXPECT_FALSE(w.mergeButtonEnabledForTest());
+  EXPECT_EQ(w.visibleSelectedIdsForTest(), (QList<quint64>{1}));
+
+  // Ctrl+click a second → prompt shows; ids returned in display order.
+  w.selectNameRowForTest(1, Qt::ControlModifier);
+  EXPECT_TRUE(w.mergeButtonEnabledForTest());
+  EXPECT_EQ(w.visibleSelectedIdsForTest(), (QList<quint64>{1, 2}));
+
+  // A filter that hides one of the two selected leaves only one visible-selected →
+  // the prompt hides, but the selection persists (restored when the filter clears).
+  w.setDatasetFilter("beta");  // shows only id 2
+  EXPECT_FALSE(w.mergeButtonEnabledForTest());
+  EXPECT_EQ(w.visibleSelectedIdsForTest(), (QList<quint64>{2}));
+
+  w.setDatasetFilter("");  // both visible again → prompt returns
+  EXPECT_TRUE(w.mergeButtonEnabledForTest());
+  EXPECT_EQ(w.visibleSelectedIdsForTest(), (QList<quint64>{1, 2}));
+
+  // Shift+click extends the range from the anchor (id 2, the last pick) to row 2.
+  w.selectNameRowForTest(2, Qt::ShiftModifier);
+  EXPECT_TRUE(w.mergeButtonEnabledForTest());
+  EXPECT_EQ(w.visibleSelectedIdsForTest(), (QList<quint64>{2, 3}));
+
+  // Plain click collapses back to a single selection → prompt hides.
+  w.selectNameRowForTest(0, Qt::NoModifier);
+  EXPECT_FALSE(w.mergeButtonEnabledForTest());
+  EXPECT_EQ(w.visibleSelectedIdsForTest(), (QList<quint64>{1}));
 }
 
 // --- time-frame offset precision --------------------------------------------

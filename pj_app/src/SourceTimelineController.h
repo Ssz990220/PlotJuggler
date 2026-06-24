@@ -45,6 +45,11 @@ class SourceTimelineController : public QObject {
   /// of the just-reloaded datasets, mapped from the layout's saved order.
   void setDisplayOrder(std::vector<DatasetId> order);
 
+  /// Record `anchor` as a merge result so its bar paints in the distinct "merged"
+  /// color, then rebuild. Called after a merge confirmed from EITHER entry point
+  /// (the timeline footer or the curve tree's context menu via MainWindow).
+  void markDatasetMerged(DatasetId anchor);
+
  public slots:
   /// Align every source's displayed START to the earliest start (the in-strip
   /// "Align" behaviour, now driven from the timeline panel's align rail).
@@ -71,8 +76,8 @@ class SourceTimelineController : public QObject {
   /// Cheap and idempotent; driven by catalog changes (add/remove/clear/reorder).
   void rebuildTracks();
 
-  /// Confirm (destructive) then merge the selected datasets via AppSession,
-  /// then mark the surviving anchor so its bar paints in the "merged" color.
+  /// Confirm (destructive) then merge the selected datasets via the shared
+  /// confirmAndMergeDatasets helper, marking the surviving anchor on success.
   void onMergeRequested(const QList<quint64>& ids);
 
  private:
@@ -81,11 +86,6 @@ class SourceTimelineController : public QObject {
   /// the raw ranges/names/colors/order are unchanged, so it skips the per-dataset
   /// datasetRawTimeRange catalog scan on the hot live-drag path.
   void updateTrackOffsets();
-
-  /// Build the destructive-merge confirmation text, appending a line for the
-  /// datasets that overlap in time, those that additionally collide on a shared
-  /// topic, and those whose object topics will be dropped (v1 is scalar-only).
-  [[nodiscard]] QString composeMergeWarning(const std::vector<DatasetId>& datasets) const;
 
   /// Shared body of alignStarts()/alignCenters(): run the named alignment over
   /// the controller's current track list via the core engine, then write each

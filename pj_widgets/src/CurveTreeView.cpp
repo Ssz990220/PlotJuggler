@@ -348,7 +348,15 @@ QTreeWidgetItem* CurveTreeView::ensureGroupSegments(const QStringList& segments)
     if (!found) {
       found = new CurveTreeItem(parent);
       setItemName(found, part);
-      found->setFlags(found->flags() & ~(Qt::ItemIsDragEnabled | Qt::ItemIsSelectable));
+      // Top-level groups are the datasets: keep them selectable so they can be
+      // multi-selected for the dataset context menu (merge / remove). Intermediate
+      // topic-path folders stay non-selectable. Neither is a drag source.
+      const bool is_dataset = (parent == invisibleRootItem());
+      Qt::ItemFlags flags = found->flags() & ~Qt::ItemIsDragEnabled;
+      if (!is_dataset) {
+        flags &= ~Qt::ItemIsSelectable;
+      }
+      found->setFlags(flags);
     }
     parent = found;
   }
@@ -741,28 +749,36 @@ void CurveTreeView::mousePressEvent(QMouseEvent* event) {
   drag_curve_names_.clear();
   drag_catalog_keys_.clear();
   suppress_next_release_ = false;
+  drag_button_ = Qt::NoButton;
   if (event->button() == Qt::LeftButton || event->button() == Qt::RightButton) {
-    drag_start_pos_ = event->pos();
-    drag_button_ = event->button();
-
-    const Qt::KeyboardModifiers selection_modifiers = Qt::ControlModifier | Qt::ShiftModifier | Qt::MetaModifier;
     QTreeWidgetItem* item = itemAt(event->pos());
-    const QString item_catalog_key = catalogKeyForItem(item);
-    if (!item_catalog_key.isEmpty()) {
-      drag_catalog_keys_.push_back(item_catalog_key);
-    }
-    if (item != nullptr && item->isSelected() && !(event->modifiers() & selection_modifiers)) {
-      drag_curve_names_ = selectedCurveNamesForDrag();
-      // A plain press on an already-selected row drags the WHOLE selection.
-      // Preserve it (suppress the release that would otherwise collapse it to
-      // the clicked row) whenever more than one row is selected — counting
-      // object/image topics too, which contribute catalog keys but no scalar
-      // curve names. The payload itself is read back from the live selection in
-      // createDragMimeData(), so it stays correct as long as we keep it intact.
-      if (drag_curve_names_.size() > 1 || selectedCatalogKeysRecursive().size() > 1) {
-        suppress_next_release_ = true;
-        event->accept();
-        return;
+    // Only draggable rows (curve leaves / object topics) initiate a drag or the
+    // drag-the-whole-selection gesture. Non-draggable rows — notably the selectable
+    // dataset groups — fall straight through to the base handler, so plain/Ctrl/Shift
+    // selection and expand/collapse behave normally and a dataset never starts a drag.
+    const bool draggable = item != nullptr && (item->flags() & Qt::ItemIsDragEnabled);
+    if (draggable) {
+      drag_start_pos_ = event->pos();
+      drag_button_ = event->button();
+
+      const Qt::KeyboardModifiers selection_modifiers = Qt::ControlModifier | Qt::ShiftModifier | Qt::MetaModifier;
+      const QString item_catalog_key = catalogKeyForItem(item);
+      if (!item_catalog_key.isEmpty()) {
+        drag_catalog_keys_.push_back(item_catalog_key);
+      }
+      if (item->isSelected() && !(event->modifiers() & selection_modifiers)) {
+        drag_curve_names_ = selectedCurveNamesForDrag();
+        // A plain press on an already-selected row drags the WHOLE selection.
+        // Preserve it (suppress the release that would otherwise collapse it to
+        // the clicked row) whenever more than one row is selected — counting
+        // object/image topics too, which contribute catalog keys but no scalar
+        // curve names. The payload itself is read back from the live selection in
+        // createDragMimeData(), so it stays correct as long as we keep it intact.
+        if (drag_curve_names_.size() > 1 || selectedCatalogKeysRecursive().size() > 1) {
+          suppress_next_release_ = true;
+          event->accept();
+          return;
+        }
       }
     }
   }

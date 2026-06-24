@@ -20,6 +20,8 @@ add_executable(pj_app
     src/StreamingSourceManager.h
     src/SourceTimelineController.cpp
     src/SourceTimelineController.h
+    src/DatasetMergeActions.cpp
+    src/DatasetMergeActions.h
     src/LayoutXml.cpp
     src/LayoutXml.h
     src/MainWindow.cpp
@@ -277,6 +279,8 @@ if(PJ_BUILD_TESTS)
         tests/source_timeline_controller_test.cpp
         src/SourceTimelineController.cpp
         src/SourceTimelineController.h
+        src/DatasetMergeActions.cpp
+        src/DatasetMergeActions.h
     )
     set_target_properties(source_timeline_controller_test PROPERTIES AUTOMOC ON)
     target_include_directories(source_timeline_controller_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)

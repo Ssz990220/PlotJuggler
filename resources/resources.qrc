@@ -39,6 +39,7 @@
     <file alias="cancel_discard.svg">svg/cancel_discard.svg</file>
     <file alias="cancel_keep.svg">svg/cancel_keep.svg</file>
     <file alias="cast.svg">svg/cast.svg</file>
+    <file alias="cell_merge.svg">svg/cell_merge.svg</file>
     <file alias="check.svg">svg/check.svg</file>
     <file alias="checkbox_checked_dark.svg">svg/checkbox_checked_dark.svg</file>
     <file alias="checkbox_checked_disabled_dark.svg">svg/checkbox_checked_disabled_dark.svg</file>
@@ -56,6 +57,7 @@
     <file alias="collapse.svg">svg/collapse.svg</file>
     <file alias="color_background.svg">svg/color_background.svg</file>
     <file alias="colored_charts.svg">svg/colored_charts.svg</file>
+    <file alias="combine_columns.svg">svg/combine_columns.svg</file>
     <file alias="contract.svg">svg/contract.svg</file>
     <file alias="copy.svg">svg/copy.svg</file>
     <file alias="copy_all.svg">svg/copy_all.svg</file>
@@ -121,6 +123,7 @@
     <file alias="logout.svg">svg/logout.svg</file>
     <file alias="loop.svg">svg/loop.svg</file>
     <file alias="maximize.svg">svg/maximize.svg</file>
+    <file alias="merge.svg">svg/merge.svg</file>
     <file alias="minimize.svg">svg/minimize.svg</file>
     <file alias="mobile_layout.svg">svg/mobile_layout.svg</file>
     <file alias="more_vert.svg">svg/more_vert.svg</file>

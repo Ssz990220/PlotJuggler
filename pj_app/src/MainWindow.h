@@ -193,9 +193,20 @@ class MainWindow : public QMainWindow {
   // Removes selected catalog entries from the curve/object tree.
   void onCatalogTrashRequested(QStringList keys, bool covers_all);
 
-  // Removes one whole dataset (right-click "Remove dataset", post-confirmation):
-  // tombstones its scalars and evicts its media. Widget sync is signal-driven.
-  void onRemoveDatasetRequested(DatasetId dataset_id);
+  // Removes the selected datasets (curve tree "Remove dataset(s)"): shows one
+  // combined confirmation, then erases each. Widget sync is signal-driven.
+  void onRemoveDatasetsRequested(const QList<DatasetId>& dataset_ids);
+
+  // Merges the selected datasets (curve tree "Merge"): shows the shared
+  // destructive-merge confirmation, performs the merge, and marks the result on
+  // the Source Timeline so its bar reads as merged.
+  void onMergeDatasetsRequested(const QList<DatasetId>& dataset_ids);
+
+  // Erase one dataset's data (TF buffer, object payloads, catalog items, then the
+  // engine's scalar storage — in that order) and drop its file association. Shared
+  // body of the multi-remove; does NOT confirm, re-seed playback, or reset undo —
+  // the caller does those once for the whole batch.
+  void removeDatasetData(DatasetId dataset_id);
 
   void onShowPreferencesDialog();
 

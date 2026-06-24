@@ -125,21 +125,33 @@ TEST(CurveTreeViewTest, BatchedCatalogInsertSortsTopLevelGroupsAndChildren) {
   EXPECT_EQ(childNames(alpha), (std::vector<std::string>{"bravo", "charlie", "delta"}));
 }
 
-TEST(CurveTreeViewTest, UsesPj3StyleRowSelectionAndLeafOnlyGroups) {
+TEST(CurveTreeViewTest, TopLevelGroupsSelectableIntermediateGroupsLeafOnly) {
   PJ::CurveTreeView view;
 
-  view.addCurve(QStringLiteral("root/b"));
-  view.addCurve(QStringLiteral("root/a"));
+  // Two-level path: "dataset" (top-level group) / "folder" (intermediate) / leaf.
+  view.addCurve(QStringLiteral("dataset/folder/b"));
+  view.addCurve(QStringLiteral("dataset/folder/a"));
 
   ASSERT_EQ(view.selectionMode(), QAbstractItemView::ExtendedSelection);
   ASSERT_EQ(view.selectionBehavior(), QAbstractItemView::SelectRows);
 
-  QTreeWidgetItem* root = view.topLevelItem(0);
-  ASSERT_NE(root, nullptr);
-  EXPECT_FALSE(root->flags().testFlag(Qt::ItemIsSelectable));
-  ASSERT_EQ(root->childCount(), 2);
-  EXPECT_TRUE(root->child(0)->flags().testFlag(Qt::ItemIsSelectable));
-  EXPECT_TRUE(root->child(1)->flags().testFlag(Qt::ItemIsSelectable));
+  // Top-level groups are datasets: selectable (so they can be multi-selected for
+  // the merge / remove context menu) but never drag sources.
+  QTreeWidgetItem* dataset = view.topLevelItem(0);
+  ASSERT_NE(dataset, nullptr);
+  EXPECT_TRUE(dataset->flags().testFlag(Qt::ItemIsSelectable));
+  EXPECT_FALSE(dataset->flags().testFlag(Qt::ItemIsDragEnabled));
+
+  // Intermediate (topic-path) folders stay non-selectable + non-draggable.
+  ASSERT_EQ(dataset->childCount(), 1);
+  QTreeWidgetItem* folder = dataset->child(0);
+  EXPECT_FALSE(folder->flags().testFlag(Qt::ItemIsSelectable));
+  EXPECT_FALSE(folder->flags().testFlag(Qt::ItemIsDragEnabled));
+
+  // Leaves remain selectable + draggable.
+  ASSERT_EQ(folder->childCount(), 2);
+  EXPECT_TRUE(folder->child(0)->flags().testFlag(Qt::ItemIsSelectable));
+  EXPECT_TRUE(folder->child(1)->flags().testFlag(Qt::ItemIsSelectable));
 }
 
 TEST(CurveTreeViewTest, ReturnsSortedSelectedLeafCurveNames) {
