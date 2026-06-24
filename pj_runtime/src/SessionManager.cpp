@@ -80,9 +80,8 @@ DisplayOffset SessionManager::sourceDisplayOffset(DatasetId dataset_id) const {
 DisplayOffset SessionManager::displayOffset(DatasetId dataset_id) const {
   // Total display shift for the display axis = per-source alignment + the global
   // "Use time offset" origin. Summed here (not stored together) so toggling the
-  // global frame never disturbs the per-source alignment. Duration's rep is ns.
-  const Timestamp source = sourceDisplayOffset(dataset_id).value.count();
-  return DisplayOffset{Duration{source + globalTimeReference()}};
+  // global frame never disturbs the per-source alignment.
+  return DisplayOffset{sourceDisplayOffset(dataset_id).value + Duration{globalTimeReference()}};
 }
 
 Timestamp SessionManager::globalTimeReference() const {
@@ -96,10 +95,13 @@ Timestamp SessionManager::globalTimeReference() const {
     Timestamp global_min = std::numeric_limits<Timestamp>::max();
     bool found = false;
     for (const DatasetId dataset_id : data_engine_.listDatasets()) {
-      if (!datasetRawBounds(dataset_id).has_value()) {
+      // rememberDatasetMinTimestamp pins the earliest-ever min in a single scan
+      // (the current raw min only moves forward under retention, never below it).
+      const auto bounds = datasetRawBounds(dataset_id);
+      if (!bounds.has_value()) {
         continue;
       }
-      global_min = std::min(global_min, datasetMinTimestamp(dataset_id));
+      global_min = std::min(global_min, rememberDatasetMinTimestamp(dataset_id, bounds->first));
       found = true;
     }
     global_min_cache_ = found ? global_min : 0;
@@ -161,6 +163,9 @@ Timestamp SessionManager::rememberDatasetMinTimestamp(DatasetId dataset_id, Time
 }
 
 void SessionManager::refreshDatasetMinTimestampsForTopics(const QVector<TopicId>& ids) const {
+  // Refreshing per-dataset mins invalidates the across-datasets memo. Reset up
+  // front so it still fires on the empty-but-live notify path (early-return below).
+  global_min_cache_.reset();
   if (ids.isEmpty()) {
     return;
   }
@@ -258,8 +263,7 @@ std::vector<TopicId> SessionManager::commitChunks(std::vector<std::pair<TopicId,
   for (const TopicId id : derived_outputs) {
     ids.push_back(id);
   }
-  refreshDatasetMinTimestampsForTopics(ids);
-  global_min_cache_.reset();
+  refreshDatasetMinTimestampsForTopics(ids);  // also resets global_min_cache_
   emit samplesIngested(std::move(ids), /*live=*/false);
   return changed;
 }
@@ -268,8 +272,7 @@ void SessionManager::notifyIngest(QVector<TopicId> ids, bool live) {
   if (ids.isEmpty() && !live) {
     return;
   }
-  refreshDatasetMinTimestampsForTopics(ids);
-  global_min_cache_.reset();
+  refreshDatasetMinTimestampsForTopics(ids);  // also resets global_min_cache_
   emit samplesIngested(std::move(ids), live);
 }
 

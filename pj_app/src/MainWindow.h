@@ -271,6 +271,10 @@ class MainWindow : public QMainWindow {
   // (displayOffsetChanged), so the line tracks the offset instead of going stale.
   [[nodiscard]] std::optional<double> referenceDisplaySeconds() const;
 
+  // Push the current reference-line position (referenceDisplaySeconds(), computed
+  // once) to every plot and the Source Timeline.
+  void broadcastReferenceLine();
+
   // Drop-time fast path for the live-ingest seed below: if data is already present
   // when the user drops a scalar curve or object topic, set the playback range and
   // playhead immediately. Live ingest can also seed without any drop.

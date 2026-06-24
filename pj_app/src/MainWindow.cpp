@@ -17,6 +17,7 @@
 #include <QDomDocument>
 #include <QFile>
 #include <QFileInfo>
+#include <QFontMetrics>
 #include <QHash>
 #include <QIcon>
 #include <QKeySequence>
@@ -29,6 +30,7 @@
 #include <QPushButton>
 #include <QSaveFile>
 #include <QScopedValueRollback>
+#include <QScreen>
 #include <QSet>
 #include <QSettings>
 #include <QShortcut>
@@ -234,7 +236,6 @@ Qt::CursorShape cursorForEdges(Qt::Edges edges) {
 struct PanelToggle {
   QPushButton* button;
   QWidget* target;
-  const char* settings_key;
   const char* icon_path_on;   // filled glyph — panel visible.
   const char* icon_path_off;  // unfilled glyph — panel hidden.
 };
@@ -245,17 +246,17 @@ std::array<PanelToggle, 3> panelToggles(Ui::MainWindow* ui) {
   // the left-panel toggle reads correctly with the panel_right.svg
   // asset and vice versa.
   return {{
-      {ui->tabbedPlotWidget->leftPanelButton(), ui->leftColumn, "MainWindow.panelLeftVisible",
-       ":/resources/svg/panel_right.svg", ":/resources/svg/panel_right_off.svg"},
+      {ui->tabbedPlotWidget->leftPanelButton(), ui->leftColumn, ":/resources/svg/panel_right.svg",
+       ":/resources/svg/panel_right_off.svg"},
       // Toggle target is timelineStrip, NOT the whole bottomPanel — the
       // playback strip (timelineWidget) sits above the strip in the same
       // panel and must remain visible at all times. Resize of the
       // bottomPanel via the splitter handle grows the strip; the playback
       // keeps its fixed height (sizePolicy Fixed-vertical in MainWindow.ui).
-      {ui->tabbedPlotWidget->bottomPanelButton(), ui->timelineStrip, "MainWindow.panelBottomVisible",
-       ":/resources/svg/panel_bottom.svg", ":/resources/svg/panel_bottom_off.svg"},
-      {ui->tabbedPlotWidget->rightPanelButton(), ui->localToolbarWidget, "MainWindow.panelRightVisible",
-       ":/resources/svg/panel_left.svg", ":/resources/svg/panel_left_off.svg"},
+      {ui->tabbedPlotWidget->bottomPanelButton(), ui->timelineStrip, ":/resources/svg/panel_bottom.svg",
+       ":/resources/svg/panel_bottom_off.svg"},
+      {ui->tabbedPlotWidget->rightPanelButton(), ui->localToolbarWidget, ":/resources/svg/panel_left.svg",
+       ":/resources/svg/panel_left_off.svg"},
   }};
 }
 
@@ -605,38 +606,26 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
   // The buttons are NOT checkable — visibility is communicated through
   // the icon glyph itself (filled = panel visible, outlined = hidden),
   // swapped via the "iconPath" dynamic property + applyIcons() so
-  // theme-tinting flows through one codepath. At launch the left panel
-  // is forced visible and the right panel forced hidden regardless of
-  // the persisted value; the bottom strip restores its QSettings value
-  // as before. In-session toggles persist normally — the override
-  // applies only on startup.
+  // theme-tinting flows through one codepath. Fixed launch layout, not persisted:
+  // left panel visible, right panel and bottom timeline strip collapsed.
   for (const PanelToggle& toggle : panelToggles(ui_)) {
-    bool visible;
-    if (toggle.target == ui_->leftColumn) {
-      visible = true;
-    } else if (toggle.target == ui_->localToolbarWidget) {
-      visible = false;
-    } else {
-      visible = settings.value(QString::fromLatin1(toggle.settings_key), true).toBool();
-    }
+    const bool visible = (toggle.target == ui_->leftColumn);
     toggle.target->setVisible(visible);
     toggle.button->setCheckable(false);
     toggle.button->setProperty("iconPath", QString::fromLatin1(visible ? toggle.icon_path_on : toggle.icon_path_off));
     // The bottom panel's open/closed height constraints are applied centrally by
     // applyBottomPanelConstraints() — driven here by the chrome-metrics pass
     // emitted later in the constructor (which also resolves the playback height).
-    const QByteArray key{toggle.settings_key};
     QPushButton* button = toggle.button;
     QWidget* target = toggle.target;
     const QString icon_on = QString::fromLatin1(toggle.icon_path_on);
     const QString icon_off = QString::fromLatin1(toggle.icon_path_off);
-    connect(button, &QPushButton::clicked, this, [this, key, button, target, icon_on, icon_off]() {
+    connect(button, &QPushButton::clicked, this, [this, button, target, icon_on, icon_off]() {
       const bool now_visible = !target->isVisible();
       target->setVisible(now_visible);
       const QString icon = now_visible ? icon_on : icon_off;
       button->setProperty("iconPath", icon);
       button->setIcon(loadSvg(icon, theme_->currentTheme()));
-      QSettings().setValue(QString::fromLatin1(key), now_visible);
       // Bottom-panel toggle: collapse/restore the splitter so the playback stays
       // glued to the top with no empty gap when folded, and the strip's previous
       // expanded height is preserved across fold cycles. applyBottomPanelConstraints
@@ -763,11 +752,9 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
   // through the new offset and re-push — keeping it pinned to its instant rather
   // than stranded off the re-fitted axis.
   connect(&session_->sessionManager(), qOverload<>(&SessionManager::displayOffsetChanged), this, [this]() {
-    forEachPlot([this](PlotWidget* plot) { plot->setReferenceLine(referenceDisplaySeconds()); });
-    // The global frame moved too: re-bridge the reference into the Timeline frame.
-    if (source_timeline_controller_ != nullptr) {
-      source_timeline_controller_->setReferenceLine(referenceDisplaySeconds());
-    }
+    // The global frame moved: re-project the reference and re-push it to the plots
+    // and (re-bridged into the Timeline frame) the Source Timeline.
+    broadcastReferenceLine();
   });
 
   // Mount the multi-track Source Timeline into the reserved bottom strip and
@@ -1930,6 +1917,14 @@ std::optional<double> MainWindow::referenceDisplaySeconds() const {
   return toAxisDouble(toDisplaySeconds(*reference_instant_, offset));
 }
 
+void MainWindow::broadcastReferenceLine() {
+  const std::optional<double> ref_sec = referenceDisplaySeconds();
+  forEachPlot([ref_sec](PlotWidget* plot) { plot->setReferenceLine(ref_sec); });
+  if (source_timeline_controller_ != nullptr) {
+    source_timeline_controller_->setReferenceLine(ref_sec);
+  }
+}
+
 void MainWindow::onUseTimeOffsetToggled(bool checked) {
   auto& sm = session_->sessionManager();
   auto& engine = session_->playbackEngine();
@@ -2936,6 +2931,29 @@ bool MainWindow::eventFilter(QObject* watched, QEvent* event) {
     }
     return false;
   }
+  // The align rail sits in the window's bottom-right corner, where the default
+  // tooltip placement needs an upward flip that fails under Wayland. Show the
+  // rail's tooltips ourselves, to the left of the rail and clamped on-screen.
+  if (type == QEvent::ToolTip) {
+    auto* btn = qobject_cast<QToolButton*>(watched);
+    if (btn != nullptr && ui_->timelineAlignRail != nullptr && btn->parentWidget() == ui_->timelineAlignRail &&
+        !btn->toolTip().isEmpty()) {
+      const QFontMetrics fm(QToolTip::font());
+      const QSize tip_size = fm.size(Qt::TextSingleLine, btn->toolTip()) + QSize(12, 8);  // ~QTipLabel chrome
+      const QPoint btn_top_left = btn->mapToGlobal(QPoint(0, 0));
+      QPoint pos(
+          btn_top_left.x() - tip_size.width() - 4,                      // just left of the rail
+          btn_top_left.y() + (btn->height() - tip_size.height()) / 2);  // vertically centered on the button
+      if (const QScreen* screen = btn->screen()) {
+        const QRect avail = screen->availableGeometry();
+        pos.setX(std::clamp(pos.x(), avail.left() + 4, avail.right() - tip_size.width() - 4));
+        pos.setY(std::clamp(pos.y(), avail.top() + 4, avail.bottom() - tip_size.height() - 4));
+      }
+      QToolTip::showText(pos, btn->toolTip(), btn);
+      return true;
+    }
+    return false;
+  }
   if (type != QEvent::MouseMove && type != QEvent::MouseButtonPress) {
     return false;
   }
@@ -3460,9 +3478,8 @@ void MainWindow::restoreRightPanelState(const QDomElement& element) {
 QDomElement MainWindow::saveChromeState(QDomDocument& doc) const {
   QDomElement element = doc.createElement(QStringLiteral("chrome_state"));
 
-  // The left/bottom panel-visibility toggle buttons are app-wide QSettings
-  // preferences, NOT document state, so their open/closed state is deliberately
-  // not serialized here. Only the splitter geometry below is persisted.
+  // Persist only the main splitter's left-panel width. Panel visibility and the
+  // timeline-strip height are fixed launch state (see the constructor), not saved.
 
   const auto join_sizes = [](QSplitter* splitter) {
     QStringList parts;
@@ -3477,9 +3494,6 @@ QDomElement MainWindow::saveChromeState(QDomDocument& doc) const {
   if (ui_->mainSplitter != nullptr) {
     element.setAttribute(QStringLiteral("main_splitter_sizes"), join_sizes(ui_->mainSplitter));
   }
-  if (ui_->timelineSplitter != nullptr) {
-    element.setAttribute(QStringLiteral("timeline_splitter_sizes"), join_sizes(ui_->timelineSplitter));
-  }
 
   return element;
 }
@@ -3489,9 +3503,7 @@ void MainWindow::restoreChromeState(const QDomElement& element) {
     return;
   }
 
-  // Panel visibility is intentionally not restored (see saveChromeState).
-  // Only the splitter geometry below is applied.
-
+  // Apply only the main splitter's left-panel width (see saveChromeState).
   // Splitter sizes: only apply when parsed length matches the splitter's
   // widget count. Mismatch -> silent no-op.
   const auto apply_splitter = [](QSplitter* splitter, const QString& raw) {
@@ -3517,11 +3529,6 @@ void MainWindow::restoreChromeState(const QDomElement& element) {
 
   if (element.hasAttribute(QStringLiteral("main_splitter_sizes"))) {
     apply_splitter(ui_->mainSplitter, element.attribute(QStringLiteral("main_splitter_sizes")));
-  }
-  if (element.hasAttribute(QStringLiteral("timeline_splitter_sizes"))) {
-    apply_splitter(ui_->timelineSplitter, element.attribute(QStringLiteral("timeline_splitter_sizes")));
-    // Saved sizes must not undercut the open-min floor or the closed lock.
-    applyBottomPanelConstraints();
   }
 }
 
@@ -3899,13 +3906,9 @@ void MainWindow::buildGlobalToolbar() {
                                        session_->playbackEngine().currentTime(),
                                        session_->sessionManager().displayOffset(representativeDatasetId()))}
                                  : std::nullopt;
-    const std::optional<double> ref_sec = referenceDisplaySeconds();
-    forEachPlot([ref_sec](PlotWidget* plot) { plot->setReferenceLine(ref_sec); });
-    // Mirror the toggle on the Source Timeline's blue reference needle (the
-    // controller bridges it from the playback frame into the Timeline frame).
-    if (source_timeline_controller_ != nullptr) {
-      source_timeline_controller_->setReferenceLine(ref_sec);
-    }
+    // Push to the plots and mirror it onto the Source Timeline's blue reference
+    // needle (the controller bridges the playback frame into the Timeline frame).
+    broadcastReferenceLine();
   });
   connect(button_t0_, &QToolButton::toggled, this, [this](bool checked) {
     if (applying_state_) {
@@ -3981,32 +3984,37 @@ void MainWindow::buildTimelineAlignRail() {
   QToolButton* align_left = add_button(
       "buttonAlignStarts", ":/resources/svg/align_horizontal_left.svg",
       "Align sources: line every source's start up at the earliest start");
-  QToolButton* align_center = add_button(
-      "buttonAlignCenters", ":/resources/svg/align_horizontal_center.svg",
-      "Align sources: line every source's center up at the earliest center");
+
   QToolButton* align_right = add_button(
       "buttonAlignEnds", ":/resources/svg/align_horizontal_right.svg",
       "Align sources: line every source's end up at the latest end");
+
+  // Zoom-out-horizontally: fit all source bars into the view (the timeline's
+  // equivalent of the plot's "Zoom Out Horizontally", same icon). Replaces the
+  // former align-centers action on the rail.
+  QToolButton* zoom_fit =
+      add_button("buttonTimelineFit", ":/resources/svg/zoom_horizontal.svg", "Zoom out to fit all sources");
+
   // "Snap to" toggle — when on, a dragged bar's start/end snaps to a neighbour's
   // edge (with a guide line). Checkable; on by default.
   QToolButton* snap_toggle = add_button(
       "buttonTimelineSnap", ":/resources/svg/transition_push.svg", "Snap to neighbouring dataset edges while dragging");
   snap_toggle->setCheckable(true);
   snap_toggle->setChecked(true);
+
   // Stretch pins the align/snap icons to the top of the content area; the reset
   // button below it sits at the BOTTOM of the rail.
   outer->addStretch(1);
-  QToolButton* reset_all = add_button(
-      "buttonTimelineReset", ":/resources/svg/restart_alt.svg",
-      "Reset all timeline changes (offsets + order) for every source");
+  QToolButton* reset_all =
+      add_button("buttonTimelineReset", ":/resources/svg/restart_alt.svg", "Reset all timeline changes");
 
   if (source_timeline_controller_ != nullptr) {
     connect(align_left, &QToolButton::clicked, source_timeline_controller_, &SourceTimelineController::alignStarts);
-    connect(align_center, &QToolButton::clicked, source_timeline_controller_, &SourceTimelineController::alignCenters);
     connect(align_right, &QToolButton::clicked, source_timeline_controller_, &SourceTimelineController::alignEnds);
     connect(reset_all, &QToolButton::clicked, source_timeline_controller_, &SourceTimelineController::resetAll);
   }
   if (source_timeline_ != nullptr) {
+    connect(zoom_fit, &QToolButton::clicked, source_timeline_, &Timeline::zoomToFit);
     connect(snap_toggle, &QToolButton::toggled, source_timeline_, &Timeline::setSnapEnabled);
     source_timeline_->setSnapEnabled(snap_toggle->isChecked());  // seed the initial state
   }

@@ -170,6 +170,12 @@ class PlotWidget : public PlotWidgetBase {
   // there is no session or no datastore-backed curve — then display == absolute.
   [[nodiscard]] double displayOffsetSeconds() const;
   void reconnectDataSignals();
+  // Drop the cached display offset on every bound DatastoreCurveAdapter whose
+  // dataset matches `only` (or on all bound adapters when nullopt), so the next
+  // paint re-maps the curve's X into the new frame. Returns whether any adapter
+  // matched. PointSeriesXY ignores display offset (plan §12) and is skipped. The
+  // caller owns the post-action (re-fit vs replot-at-current-zoom).
+  bool invalidateAdapterOffsets(std::optional<DatasetId> only = std::nullopt);
   [[nodiscard]] QStringList decodeCurveDrop(const QMimeData* mime_data, const QString& format) const;
   [[nodiscard]] bool allCurvesKnown(const QStringList& curves) const;
   [[nodiscard]] static QString lineWidthToString(LineWidth width);

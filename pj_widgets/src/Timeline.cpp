@@ -1132,10 +1132,11 @@ Timeline::Timeline(QWidget* parent) : QWidget(parent) {
   ruler_item_ = new TimelineRulerItem();
   gscene_->addItem(ruler_item_);
 
-  // Playback needle: pink idle (matches the playback slider handle), dark purple
-  // when grabbed. Reference needle: light blue idle, dark blue when grabbed,
-  // hidden until a reference line is toggled on by the host.
-  playhead_item_ = new TimelineNeedleItem(theme::kLightPurple, theme::kPurple);
+  // Playback needle: magenta idle (theme::kPurple — the SAME magenta as the plot
+  // widget's playback tracker line, for cross-widget visual consistency), darker
+  // magenta when grabbed. Reference needle: light blue idle, dark blue when
+  // grabbed, hidden until a reference line is toggled on by the host.
+  playhead_item_ = new TimelineNeedleItem(theme::kPurple, theme::kPurpleDark);
   playhead_item_->setZValue(200);
   gscene_->addItem(playhead_item_);
 
@@ -1366,6 +1367,13 @@ void Timeline::fitToContents() {
   rebuild();
 }
 
+void Timeline::zoomToFit() {
+  // Explicit, one-shot "zoom out horizontally" — fits the largest extent into the
+  // view regardless of the auto-zoom preference.
+  force_fit_pending_ = true;
+  rebuild();
+}
+
 double Timeline::zoom() const noexcept {
   return viewport_.px_per_ns;
 }
@@ -1446,6 +1454,9 @@ void Timeline::rebuild() {
   }
   bar_items_.clear();
 
+  // Stable across this rebuild; compute the union extent once and reuse it below.
+  const TimeSpan scene_extent = scene_.sceneExtent();
+
   const bool did_reset = extent_needs_reset_;
   buffered_extent_ = computeBufferedExtent();
   extent_needs_reset_ = false;
@@ -1456,7 +1467,7 @@ void Timeline::rebuild() {
   // drag. This keeps the timing headers stationary while a dataset is moved (the
   // axis is an absolute frame; only the dragged bar moves).
   if (did_reset) {
-    ruler_epoch_ns_ = scene_.sceneExtent().min;
+    ruler_epoch_ns_ = scene_extent.min;
   }
 
   const double vp_w =
@@ -1472,9 +1483,12 @@ void Timeline::rebuild() {
   //     zoom.
   // Re-runs on resize (resizeEvent -> rebuild) so the empty fit stays snug.
   const bool empty = scene_.tracks().empty();
-  const bool do_fit = view_->isVisible() && (empty || (auto_zoom_ && (did_reset || fit_pending_)));
+  // force_fit_pending_ is an explicit user "zoom to fit" (the align rail's
+  // zoom-out-horizontally button); it fits regardless of the auto-zoom preference.
+  const bool do_fit =
+      view_->isVisible() && (empty || force_fit_pending_ || (auto_zoom_ && (did_reset || fit_pending_)));
   if (do_fit && vp_w > 0.0) {
-    const TimeSpan fit_span = empty ? buffered_extent_ : scene_.sceneExtent();
+    const TimeSpan fit_span = empty ? buffered_extent_ : scene_extent;
     const qint64 span_ns = fit_span.max - fit_span.min;
     if (span_ns > 0) {
       // Clamp to the same floor/ceiling every other zoom path enforces (zoom(),
@@ -1483,6 +1497,7 @@ void Timeline::rebuild() {
     }
   }
   fit_pending_ = false;
+  force_fit_pending_ = false;
   const double extent_px = static_cast<double>(buffered_extent_.max - buffered_extent_.min) * viewport_.px_per_ns;
   const double scene_w = std::max(vp_w, extent_px);
   const double scene_h = sceneHeight();
@@ -1493,7 +1508,7 @@ void Timeline::rebuild() {
   // list (no per-paint recompute, no comment-only "same positions" contract).
   const TimelineRuler ruler = TimelineScene::ruler(viewport_, scene_w);
   // The data union span both tints the ruler and bounds the empty-area hatch.
-  const TimeSpan data_span = scene_.tracks().empty() ? TimeSpan{0, 0} : scene_.sceneExtent();
+  const TimeSpan data_span = scene_.tracks().empty() ? TimeSpan{0, 0} : scene_extent;
   background_item_->setLayout(scene_w, scene_h, viewport_, ruler, data_span.min, data_span.max);
 
   double y = kRowsTopOffset;
@@ -1513,7 +1528,7 @@ void Timeline::rebuild() {
     y += kRowHeight + kRowGap;
   }
 
-  rebuildRuler(ruler);
+  rebuildRuler(ruler, data_span);
   playhead_item_->setHeight(scene_h);
   reference_item_->setHeight(scene_h);
   repositionPlayhead();
@@ -1525,7 +1540,7 @@ void Timeline::rebuild() {
   // left), and the empty timeline opens with 0:00 flush at the left edge (under
   // the playback track start). Only on a fit, so it never fights user scrolling.
   if (did_reset || do_fit) {
-    const qint64 content_min = scene_.sceneExtent().min;
+    const qint64 content_min = scene_extent.min;
     view_->horizontalScrollBar()->setValue(
         static_cast<int>(std::llround(TimelineScene::nsToPx(content_min, viewport_))));
   }
@@ -1822,11 +1837,11 @@ void Timeline::applyTrackReorder(int from, int drop_index) {
   emit tracksReordered(ids);
 }
 
-void Timeline::rebuildRuler(const TimelineRuler& ruler) {
+void Timeline::rebuildRuler(const TimelineRuler& ruler, const TimeSpan& data) {
   const double width_px = gscene_->sceneRect().width();
-  // The data-covered span (union of all datasets) tints the ruler distinctly
-  // from the empty ±buffer; an empty TimeSpan when there are no tracks.
-  const TimeSpan data = scene_.tracks().empty() ? TimeSpan{0, 0} : scene_.sceneExtent();
+  // `data` is the data-covered span (union of all datasets, or an empty span when
+  // there are no tracks) rebuild() already computed — it tints the ruler distinctly
+  // from the empty ±buffer.
   // Labels are relative to the FIXED epoch (set on data load), so the timing
   // headers stay put while a dataset is dragged.
   ruler_item_->setLayout(viewport_, width_px, ruler, ruler_epoch_ns_, data.min, data.max);

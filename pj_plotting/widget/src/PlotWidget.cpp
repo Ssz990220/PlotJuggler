@@ -42,6 +42,7 @@
 #include "pj_runtime/CurveDescriptor.h"
 #include "pj_runtime/SessionManager.h"
 #include "pj_widgets/SvgUtil.h"
+#include "pj_widgets/ThemeColors.h"
 
 namespace PJ {
 namespace {
@@ -101,7 +102,10 @@ PlotWidget::PlotWidget(SessionManager* session, CatalogModel* catalog, QWidget* 
     : PlotWidgetBase(parent), session_(session), catalog_(catalog) {
   state_id_ = newStateId();
   setAcceptDrops(true);
-  tracker_ = new CurveTracker(qwtPlot(), QColor(Qt::red));
+  // Magenta playback tracker, matching the Source Timeline's playhead needle
+  // (theme::kPurple) for cross-widget visual consistency. The reference tracker
+  // is blue, matching the timeline's blue reference line.
+  tracker_ = new CurveTracker(qwtPlot(), PJ::theme::kPurple);
   reference_tracker_ = new CurveTracker(qwtPlot(), QColor(Qt::blue));
   reference_tracker_->setParameter(CurveTracker::kLineOnly);
   reference_tracker_->setEnabled(false);
@@ -1376,14 +1380,7 @@ void PlotWidget::reconnectDataSignals() {
   // re-fit, since the prior zoom rect (in display seconds) no longer frames the
   // shifted data.
   display_offset_connection_ = connect(session_, qOverload<>(&SessionManager::displayOffsetChanged), this, [this]() {
-    bool changed = false;
-    for (auto& info : curveList()) {
-      if (auto* adapter = dynamic_cast<DatastoreCurveAdapter*>(info.curve->data())) {
-        adapter->onDisplayOffsetChanged();
-        changed = true;
-      }
-    }
-    if (changed) {
+    if (invalidateAdapterOffsets()) {
       resetZoom();
     }
     // The curves just moved to the new frame, so each tracker's cached
@@ -1409,19 +1406,26 @@ void PlotWidget::reconnectDataSignals() {
   // PointSeriesXY ignores display_offset (plan §12) — skip it.
   display_offset_dataset_connection_ = connect(
       session_, qOverload<PJ::DatasetId>(&SessionManager::displayOffsetChanged), this, [this](DatasetId dataset_id) {
-        bool changed = false;
-        for (auto& info : curveList()) {
-          if (auto* adapter = dynamic_cast<DatastoreCurveAdapter*>(info.curve->data())) {
-            if (adapter->source().dataset_id == dataset_id) {
-              adapter->onDisplayOffsetChanged();
-              changed = true;
-            }
-          }
-        }
-        if (changed) {
+        if (invalidateAdapterOffsets(dataset_id)) {
           replot();  // current zoom; the source's curve slides into its new position
         }
       });
+}
+
+bool PlotWidget::invalidateAdapterOffsets(std::optional<DatasetId> only) {
+  bool changed = false;
+  for (auto& info : curveList()) {
+    auto* adapter = dynamic_cast<DatastoreCurveAdapter*>(info.curve->data());
+    if (adapter == nullptr) {
+      continue;  // PointSeriesXY ignores display offset (plan §12)
+    }
+    if (only.has_value() && adapter->source().dataset_id != *only) {
+      continue;
+    }
+    adapter->onDisplayOffsetChanged();
+    changed = true;
+  }
+  return changed;
 }
 
 }  // namespace PJ

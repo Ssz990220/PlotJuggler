@@ -368,6 +368,9 @@ class Timeline : public QWidget {
   /// or there is no data. The host calls this after an alignment so the realigned
   /// extent is re-framed.
   void fitToContents();
+  /// Explicit, one-shot "zoom out horizontally": fit the largest extent into the
+  /// view regardless of the auto-zoom preference. Wired to the align rail button.
+  void zoomToFit();
 
  signals:
   /// Live during a bar drag: the new absolute display offset (ns) for a source.
@@ -414,8 +417,10 @@ class Timeline : public QWidget {
   void rebuild();  // re-lay-out bars + ruler from scene_ + viewport_
   /// Refresh ruler ticks/labels for the current viewport. `ruler` is the tick
   /// layout rebuild() computed once and also handed to the background gridlines,
-  /// so the numbers and the gridlines always share one tick list.
-  void rebuildRuler(const TimelineRuler& ruler);
+  /// so the numbers and the gridlines always share one tick list. `data` is the
+  /// data-covered span (union of all bars, or empty when there are no tracks),
+  /// passed in from rebuild() so it is not re-derived here.
+  void rebuildRuler(const TimelineRuler& ruler, const TimeSpan& data);
   void repositionPlayhead();                 // move the playhead line to playhead_ns_
   [[nodiscard]] double sceneHeight() const;  // total scene height for the current track count
 
@@ -589,9 +594,10 @@ class Timeline : public QWidget {
   };
   std::vector<DragMember> drag_group_;
   double drag_start_scene_x_ = 0.0;
-  bool auto_zoom_ = true;     // re-fit the largest extent on new data / fitToContents()
-  bool fit_pending_ = false;  // a fitToContents()/enable requested a fit on the next rebuild
-  bool snap_enabled_ = true;  // edge-snap while dragging (host-toggled)
+  bool auto_zoom_ = true;           // re-fit the largest extent on new data / fitToContents()
+  bool fit_pending_ = false;        // a fitToContents()/enable requested a fit on the next rebuild
+  bool force_fit_pending_ = false;  // zoomToFit() requested a fit ignoring the auto-zoom preference
+  bool snap_enabled_ = true;        // edge-snap while dragging (host-toggled)
   // Read-only mode (host-driven, e.g. while live-streaming): suppresses all user
   // manipulation + needle seeking; navigation and slave needle updates stay live.
   // See setInteractionLocked.

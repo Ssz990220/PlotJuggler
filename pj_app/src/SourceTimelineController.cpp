@@ -78,8 +78,9 @@ SourceTimelineController::SourceTimelineController(Timeline* widget, AppSession*
   });
   connect(widget_, &Timeline::playheadSeeked, this, [&playback](double display_seconds) {
     // The widget already emits in the playback frame (it undoes its time-frame
-    // offset in integer ns), so this is a direct, precise hand-off.
-    playback.setCurrentTime(DisplaySeconds{display_seconds});
+    // offset in integer ns), so this is a direct, precise hand-off — wrapped
+    // through the canonical axis-double door rather than constructed raw.
+    playback.setCurrentTime(fromAxisDouble(display_seconds));
   });
 
   // --- runtime state -> widget ---
@@ -340,16 +341,18 @@ QString SourceTimelineController::composeMergeWarning(const std::vector<DatasetI
     }
   }
 
+  // Precompute each selected dataset's topic-name set once; the pairwise loop
+  // below would otherwise recompute a dataset's set for every pair it appears in.
   DataEngine& engine = session_->sessionManager().dataEngine();
-  const auto topic_names = [&engine](DatasetId ds) {
-    std::set<std::string> names;
+  std::unordered_map<DatasetId, std::set<std::string>> topic_names_by_dataset;
+  for (const DatasetId ds : datasets) {
+    std::set<std::string>& names = topic_names_by_dataset[ds];
     for (const TopicId tid : engine.listTopics(ds)) {
       if (const TopicStorage* st = engine.getTopicStorage(tid)) {
         names.insert(st->descriptor().name);
       }
     }
-    return names;
-  };
+  }
 
   // Pairwise: displayed-range overlap, and overlap that also shares a topic name.
   std::set<DatasetId> overlapping;
@@ -361,8 +364,8 @@ QString SourceTimelineController::composeMergeWarning(const std::vector<DatasetI
       if (a.lo <= b.hi && b.lo <= a.hi) {
         overlapping.insert(datasets[i]);
         overlapping.insert(datasets[j]);
-        const auto names_a = topic_names(datasets[i]);
-        const auto names_b = topic_names(datasets[j]);
+        const std::set<std::string>& names_a = topic_names_by_dataset.at(datasets[i]);
+        const std::set<std::string>& names_b = topic_names_by_dataset.at(datasets[j]);
         if (std::any_of(
                 names_a.begin(), names_a.end(), [&names_b](const std::string& n) { return names_b.count(n) != 0; })) {
           colliding.insert(datasets[i]);
