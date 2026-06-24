@@ -114,6 +114,7 @@
 #include "pj_widgets/MessageBox.h"
 #include "pj_widgets/RasterStreamView.h"
 #include "pj_widgets/SectionHeaderBand.h"
+#include "pj_widgets/SvgButton.h"
 #include "pj_widgets/SvgUtil.h"
 #include "pj_widgets/Timeline.h"
 #include "scene_object_classification.h"
@@ -1736,9 +1737,7 @@ void MainWindow::setLegendStatus(LegendStatus position) {
   if (button_legend_ != nullptr) {
     const bool visible = (position != LegendStatus::kHidden);
     button_legend_->setChecked(visible);
-    const QString icon = legendCornerIcon(visible ? position : previous_legend_corner_);
-    button_legend_->setProperty("iconPath", icon);
-    button_legend_->setIcon(loadSvg(icon, theme_->currentTheme()));
+    button_legend_->setIconPath(legendCornerIcon(visible ? position : previous_legend_corner_));
   }
   forEachPlot([this](PlotWidget* plot) { applyLegendStatus(plot); });
 }
@@ -3757,16 +3756,11 @@ void MainWindow::buildGlobalToolbar() {
   outer->setSpacing(0);
   outer->setContentsMargins(0, 0, 0, 0);
 
-  auto add_button = [this, outer](const char* object_name, const char* icon_path, const char* tooltip) -> QToolButton* {
-    auto* btn = new QToolButton(ui_->globalToolbarWidget);
+  auto add_button = [this, outer](const char* object_name, const char* icon_path, const char* tooltip) -> SvgButton* {
+    auto* btn = new SvgButton(ui_->globalToolbarWidget);
     btn->setObjectName(QString::fromLatin1(object_name));
-    btn->setProperty("iconPath", QString::fromLatin1(icon_path));
-    btn->setFocusPolicy(Qt::NoFocus);
-    btn->setAutoRaise(true);
-    const int button_extent = chrome_metrics_.icon_size + chrome_metrics_.icon_padding;
-    btn->setFixedSize(button_extent, button_extent);
-    btn->setIconSize(QSize(chrome_metrics_.icon_size, chrome_metrics_.icon_size));
-    btn->setIcon(loadSvg(QString::fromLatin1(icon_path), theme_->currentTheme()));
+    btn->setIconPath(QString::fromLatin1(icon_path));
+    btn->setExtent(chrome_metrics_.icon_size + chrome_metrics_.icon_padding, chrome_metrics_.icon_size);
     btn->setToolTip(tr(tooltip));
     outer->addWidget(btn);
     return btn;
@@ -3921,17 +3915,6 @@ void MainWindow::buildGlobalToolbar() {
   // Trailing stretch pins the icon stack at the top of the column.
   outer->addStretch(1);
 
-  // Re-tint all global tool buttons when the theme rolls. Each button
-  // tagged with an "iconPath" property is re-rendered against the new theme.
-  connect(this, &MainWindow::stylesheetChanged, ui_->globalToolbarWidget, [this](const QString& theme) {
-    for (auto* btn : ui_->globalToolbarWidget->findChildren<QToolButton*>()) {
-      const QString path = btn->property("iconPath").toString();
-      if (!path.isEmpty()) {
-        btn->setIcon(loadSvg(path, theme));
-      }
-    }
-  });
-
   // Resize the global toolbar column. Column width = button_extent +
   // 2 * layout_padding, with the same value pushed as contentsMargins
   // on the inner QVBoxLayout so the buttons grow inward to absorb the
@@ -3967,15 +3950,10 @@ void MainWindow::buildTimelineAlignRail() {
   outer->setContentsMargins(0, 0, 0, 0);
 
   auto add_button = [this, outer](const char* object_name, const char* icon_path, const char* tooltip) -> QToolButton* {
-    auto* btn = new QToolButton(ui_->timelineAlignRail);
+    auto* btn = new SvgButton(ui_->timelineAlignRail);
     btn->setObjectName(QString::fromLatin1(object_name));
-    btn->setProperty("iconPath", QString::fromLatin1(icon_path));
-    btn->setFocusPolicy(Qt::NoFocus);
-    btn->setAutoRaise(true);
-    const int button_extent = chrome_metrics_.icon_size + chrome_metrics_.icon_padding;
-    btn->setFixedSize(button_extent, button_extent);
-    btn->setIconSize(QSize(chrome_metrics_.icon_size, chrome_metrics_.icon_size));
-    btn->setIcon(loadSvg(QString::fromLatin1(icon_path), theme_->currentTheme()));
+    btn->setIconPath(QString::fromLatin1(icon_path));
+    btn->setExtent(chrome_metrics_.icon_size + chrome_metrics_.icon_padding, chrome_metrics_.icon_size);
     btn->setToolTip(tr(tooltip));
     outer->addWidget(btn);
     return btn;
@@ -4019,15 +3997,6 @@ void MainWindow::buildTimelineAlignRail() {
     source_timeline_->setSnapEnabled(snap_toggle->isChecked());  // seed the initial state
   }
 
-  // Re-tint on theme roll — same iconPath-property convention as the global toolbar.
-  connect(this, &MainWindow::stylesheetChanged, ui_->timelineAlignRail, [this](const QString& theme) {
-    for (auto* btn : ui_->timelineAlignRail->findChildren<QToolButton*>()) {
-      const QString path = btn->property("iconPath").toString();
-      if (!path.isEmpty()) {
-        btn->setIcon(loadSvg(path, theme));
-      }
-    }
-  });
   // Match the global rail's column width + button sizing on chrome-metrics change,
   // so the two rails stay the same width and line up.
   connect(this, &MainWindow::chromeMetricsChanged, ui_->timelineAlignRail, [this](const ChromeMetrics& metrics) {
@@ -4096,15 +4065,10 @@ void MainWindow::buildLocalToolbar() {
     strip->setSizePolicy(strip_policy);
     auto* flow = new FlowLayout(strip, /*margin=*/0, /*h_spacing=*/0, /*v_spacing=*/0);
     for (const auto& spec : specs) {
-      auto* btn = new QToolButton(strip);
+      auto* btn = new SvgButton(strip);
       btn->setObjectName(QString::fromLatin1(spec.object_name));
-      btn->setProperty("iconPath", QString::fromLatin1(spec.icon_path));
-      btn->setFocusPolicy(Qt::NoFocus);
-      btn->setAutoRaise(true);
-      const int button_extent = chrome_metrics_.icon_size + chrome_metrics_.icon_padding;
-      btn->setFixedSize(button_extent, button_extent);
-      btn->setIconSize(QSize(chrome_metrics_.icon_size, chrome_metrics_.icon_size));
-      btn->setIcon(loadSvg(QString::fromLatin1(spec.icon_path), theme_->currentTheme()));
+      btn->setIconPath(QString::fromLatin1(spec.icon_path));
+      btn->setExtent(chrome_metrics_.icon_size + chrome_metrics_.icon_padding, chrome_metrics_.icon_size);
       btn->setToolTip(tr(spec.tooltip));
       connect(btn, &QToolButton::clicked, this, spec.on_click);
       flow->addWidget(btn);
@@ -4192,18 +4156,6 @@ void MainWindow::buildLocalToolbar() {
   connect(style_button_group_, &QButtonGroup::idClicked, this, [this](int style_value) {
     QSettings().setValue(QStringLiteral("MainWindow.curveStyle"), style_value);
     syncFilterEditorPreviewDisplay();
-  });
-
-  // Re-tint all local-panel tool buttons when the theme rolls. Each
-  // button tagged with an "iconPath" property is re-rendered against
-  // the new theme.
-  connect(this, &MainWindow::stylesheetChanged, ui_->localToolbarWidget, [this](const QString& theme) {
-    for (auto* btn : ui_->localToolbarWidget->findChildren<QToolButton*>()) {
-      const QString path = btn->property("iconPath").toString();
-      if (!path.isEmpty()) {
-        btn->setIcon(loadSvg(path, theme));
-      }
-    }
   });
 
   // Local-panel toolbar: each button stays button_extent square, the

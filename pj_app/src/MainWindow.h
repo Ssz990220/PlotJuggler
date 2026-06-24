@@ -65,6 +65,7 @@ class SceneDockWidget;
 class StreamingSourceManager;
 class IngestProgressWidget;
 class SourceTimelineController;
+class SvgButton;
 class Timeline;
 class RecentFilesMenu;
 class Theme;
@@ -733,7 +734,7 @@ class MainWindow : public QMainWindow {
   // when hidden. The icon always reflects the "current position": the
   // active corner while checked, or the saved corner that will be
   // restored on the next show while unchecked.
-  QToolButton* button_legend_ = nullptr;
+  SvgButton* button_legend_ = nullptr;  // SvgButton so setLegendStatus can setIconPath() the corner glyph
   // Saved corner used while the legend is hidden. Updated on every
   // visit to a corner so right-click → show restores the user's last
   // position rather than always jumping back to a fixed default.
