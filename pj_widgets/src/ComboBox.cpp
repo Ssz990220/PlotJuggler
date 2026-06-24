@@ -12,18 +12,21 @@
 
 namespace PJ {
 
-ComboBox::ComboBox(QWidget* parent) : QComboBox(parent) {
-  setItemDelegate(new ComboBoxGradientDelegate(this));
+void applyComboBoxStyling(QComboBox* combo) {
+  if (combo == nullptr) {
+    return;
+  }
+  combo->setItemDelegate(new ComboBoxGradientDelegate(combo));
   // QAbstractItemView inherits QFrame; without this, Qt's style paints
   // its own 1-px frame around the view ON TOP of the QSS border, giving
   // a double-line at the popup's edges. Killing the QFrame frame leaves
   // only the QSS border + border-radius visible.
-  view()->setFrameShape(QFrame::NoFrame);
+  combo->view()->setFrameShape(QFrame::NoFrame);
 
   // Popup container (QComboBoxPrivateContainer): make it ARGB so QSS
   // border-radius clips corners to alpha=0; kill its frame; zero
   // margins so the inner view fills it exactly; suppress WM shadow.
-  if (auto* popup_window = view()->window()) {
+  if (auto* popup_window = combo->view()->window()) {
     popup_window->setAttribute(Qt::WA_TranslucentBackground, true);
     popup_window->setWindowFlag(Qt::NoDropShadowWindowHint, true);
     if (auto* frame = qobject_cast<QFrame*>(popup_window)) {
@@ -35,6 +38,10 @@ ComboBox::ComboBox(QWidget* parent) : QComboBox(parent) {
       lay->setSpacing(0);
     }
   }
+}
+
+ComboBox::ComboBox(QWidget* parent) : QComboBox(parent) {
+  applyComboBoxStyling(this);
 }
 
 void ComboBox::showPopup() {

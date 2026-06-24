@@ -22,6 +22,9 @@ QString resolveNamedIconPath(std::string_view icon_name);
 
 /// Apply widget data from a WidgetDataView to all matching child widgets of root.
 /// Uses QSignalBlocker to prevent re-entrant signal firing during updates.
+/// Styled-widget adaptation (QRadioButton/QCheckBox/QComboBox → PJ controls)
+/// lives in widget_adapters.hpp; the engines call adaptStyledWidgets() once
+/// after loading the .ui, and applyWidgetData keeps the replacements in sync.
 void applyWidgetData(QWidget* root, const PJ::WidgetDataView& view);
 
 /// Connect primary change signals of all editable widgets under root

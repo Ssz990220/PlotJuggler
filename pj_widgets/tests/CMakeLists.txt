@@ -163,6 +163,44 @@ set_target_properties(check_button_test PROPERTIES
 
 add_test(NAME CheckButton COMMAND check_button_test)
 
+add_executable(dual_options_widget_test dual_options_widget_test.cpp)
+
+target_link_libraries(dual_options_widget_test PRIVATE
+    pj_widgets
+    GTest::gtest
+    Qt6::Test
+    Qt6::Widgets
+)
+
+if(DEFINED PJ_WARNING_FLAGS)
+    target_compile_options(dual_options_widget_test PRIVATE ${PJ_WARNING_FLAGS})
+endif()
+
+set_target_properties(dual_options_widget_test PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
+)
+
+add_test(NAME DualOptionsWidget COMMAND dual_options_widget_test)
+
+add_executable(toggle_switch_test toggle_switch_test.cpp)
+
+target_link_libraries(toggle_switch_test PRIVATE
+    pj_widgets
+    GTest::gtest
+    Qt6::Test
+    Qt6::Widgets
+)
+
+if(DEFINED PJ_WARNING_FLAGS)
+    target_compile_options(toggle_switch_test PRIVATE ${PJ_WARNING_FLAGS})
+endif()
+
+set_target_properties(toggle_switch_test PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
+)
+
+add_test(NAME ToggleSwitch COMMAND toggle_switch_test)
+
 add_executable(color_picker_widget_test color_picker_widget_test.cpp)
 
 target_link_libraries(color_picker_widget_test PRIVATE

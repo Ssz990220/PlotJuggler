@@ -1375,10 +1375,20 @@ PJ--CheckButton {
     qproperty-textColor: ${default_text};
 }
 
+/* Two-option segmented control: self-painted, with a shared base and selected
+   segment rendered as the active chip. */
+PJ--DualOptionsWidget {
+    qproperty-accentColor: ${border_checked};
+    qproperty-borderColor: ${border_default};
+    qproperty-baseFillColor: ${input_background};
+    qproperty-selectedFillColor: ${item_selection_background};
+    qproperty-textColor: ${default_text};
+}
+
 /* Self-painted input widgets (scrubbers, pill toggle, colour swatch) have no
    QSS border/padding of their own, so min/max-height IS their outer height.
    Pin them to input_outer_height so they match the native inputs + each other. */
-PJ--ScrubberBase, PJ--CheckButton, PJ--ColorPickerWidget {
+PJ--ScrubberBase, PJ--CheckButton, PJ--DualOptionsWidget, PJ--ColorPickerWidget {
     min-height: ${input_outer_height}px;
     max-height: ${input_outer_height}px;
 }

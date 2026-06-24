@@ -26,18 +26,43 @@ namespace PJ {
 // size policy so a form/grid field column can't stretch it —
 // override with setFixedSize for a larger switch (e.g. an
 // icon-bearing toggle).
+//
+// Optional inline label: setText() turns the widget into a
+// QCheckBox-like control — the switch shrinks to a fixed pill on one
+// side and the text fills the rest, with labelSide() choosing which
+// side the label sits on (default Right, i.e. switch-then-text like a
+// checkbox; Left puts the label first and the switch on the right
+// edge, the common settings-row look). With no text the widget paints
+// and sizes EXACTLY as before — the label feature is purely additive.
+// The whole widget stays clickable, so clicking the label toggles too.
 class ToggleSwitch : public QWidget {
   Q_OBJECT
   Q_PROPERTY(bool checked READ isChecked WRITE setChecked NOTIFY toggled)
   Q_PROPERTY(qreal thumbPosition READ thumbPosition WRITE setThumbPosition)
+  Q_PROPERTY(QString text READ text WRITE setText)
+  Q_PROPERTY(LabelSide labelSide READ labelSide WRITE setLabelSide)
 
  public:
+  enum class LabelSide { Left, Right };
+  Q_ENUM(LabelSide)
+
   explicit ToggleSwitch(QWidget* parent = nullptr);
   ~ToggleSwitch() override;
 
   bool isChecked() const {
     return checked_;
   }
+
+  // Optional inline label. Empty (the default) keeps the bare switch.
+  QString text() const {
+    return text_;
+  }
+  void setText(const QString& text);
+
+  LabelSide labelSide() const {
+    return label_side_;
+  }
+  void setLabelSide(LabelSide side);
 
   QIcon leftIcon() const {
     return left_icon_;
@@ -94,12 +119,21 @@ class ToggleSwitch : public QWidget {
   }
   void setThumbPosition(qreal pos);
 
+  // The switch's pill region. With no label this is the whole widget
+  // (rect()), so every geometry helper reduces to the historical
+  // formulas. With a label it's a fixed-width pill flush to the side
+  // opposite the label.
+  QRect trackRect() const;
+  // The area left for the label (empty when text_ is empty).
+  QRect labelRect() const;
   QRect thumbRect() const;
   QRect leftSlotRect() const;
   QRect rightSlotRect() const;
 
   bool checked_ = false;
   qreal thumb_position_ = 0.0;  // 0.0 = thumb on left, 1.0 = thumb on right
+  QString text_;
+  LabelSide label_side_ = LabelSide::Right;
   QIcon left_icon_;
   QIcon right_icon_;
   QPointer<QPropertyAnimation> anim_;

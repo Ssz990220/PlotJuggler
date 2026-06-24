@@ -1407,20 +1407,17 @@ void MainWindow::onShowAboutDialog() {
 }
 
 void MainWindow::onThemeChanged(const QString& theme) {
-  qApp->setStyleSheet(theme_->expandedQss());
-  const bool light = theme.contains("light");
-  const QColor tip_bg = light ? QColor(0xF5, 0xF5, 0xF5) : QColor(0x44, 0x44, 0x44);
-  const QColor tip_fg = light ? QColor(0x11, 0x11, 0x11) : QColor(0xF0, 0xF0, 0xF0);
-  QPalette p = qApp->palette();
-  p.setColor(QPalette::ToolTipBase, tip_bg);
-  p.setColor(QPalette::ToolTipText, tip_fg);
-  qApp->setPalette(p);
-  QPalette tp = QToolTip::palette();
-  tp.setColor(QPalette::ToolTipBase, tip_bg);
-  tp.setColor(QPalette::ToolTipText, tip_fg);
-  tp.setColor(QPalette::Window, tip_bg);
-  tp.setColor(QPalette::WindowText, tip_fg);
-  QToolTip::setPalette(tp);
+  // Connected with Qt::QueuedConnection (see ctor): this slot's heavy work —
+  // applyIcons, the stylesheetChanged fan-out, and replotting every plot — must
+  // NOT run synchronously inside Theme::setTheme, which is emitted from a
+  // PreferencesDialog widget event. Running it reentrantly there segfaulted, so
+  // it is deferred to the next event-loop turn.
+  //
+  // The QSS itself and the tooltip palette are applied by apply_theme_chrome
+  // (the qssChanged handler), which fires synchronously inside setTheme — i.e.
+  // BEFORE this queued slot. We deliberately do NOT re-apply them here: it would
+  // duplicate that work and, worse, run last and overwrite any QSS that a later
+  // qssChanged listener (e.g. DebugUi) layered on top of expandedQss().
   applyIcons(theme);
   emit stylesheetChanged(theme);
   forEachPlot([](PlotWidget* plot) { plot->replot(); });

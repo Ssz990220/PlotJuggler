@@ -20,6 +20,7 @@ endforeach()
 
 add_library(pj_dialog_engine_qt STATIC
     src/widget_binding.cpp
+    src/widget_adapters.cpp
     src/dialog_engine.cpp
     src/panel_engine.cpp
     src/pj_ui_loader.cpp
@@ -29,6 +30,7 @@ add_library(pj_dialog_engine_qt STATIC
     include/pj_plugins/host_qt/drop_event_filter.hpp
     include/pj_plugins/host_qt/panel_engine.hpp
     include/pj_plugins/host_qt/pj_ui_loader.hpp
+    include/pj_plugins/host_qt/widget_adapters.hpp
     include/pj_plugins/host_qt/widget_binding.hpp
 )
 
@@ -54,6 +56,7 @@ target_link_libraries(pj_dialog_engine_qt
 )
 
 if(PJ_BUILD_TESTS)
+    find_package(Qt6 REQUIRED COMPONENTS Test)
     add_executable(dialog_engine_test
         tests/dialog_engine_test.cpp
         ${CMAKE_SOURCE_DIR}/plotjuggler_sdk/pj_plugins/dialog_protocol/examples/mock_dialog.cpp
@@ -99,6 +102,7 @@ if(PJ_BUILD_TESTS)
             pj_dialog_sdk
             GTest::gtest
             GTest::gtest_main
+            Qt6::Test
     )
     add_test(NAME widget_binding_test COMMAND widget_binding_test)
     set_tests_properties(widget_binding_test PROPERTIES

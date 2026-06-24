@@ -16,7 +16,13 @@ constexpr int kDefaultWidth = 34;
 constexpr int kDefaultHeight = 18;
 constexpr int kThumbMargin = 3;  // gap between thumb and track edge
 constexpr int kAnimationMs = 180;
-constexpr int kIconInset = 4;  // padding between slot rect and icon
+constexpr int kIconInset = 4;     // padding between slot rect and icon
+constexpr int kLabelSpacing = 6;  // gap between the switch pill and its label
+// Breathing room reserved for the label beyond its exact text advance. Without
+// it the size hint fits the text to the pixel, so any sub-pixel/DPI/font-render
+// difference between the size-hint metrics and the actual paint — or a layout
+// that shaves a pixel — elides the label. A few px of slack absorbs that.
+constexpr int kLabelMargin = 8;
 }  // namespace
 
 ToggleSwitch::ToggleSwitch(QWidget* parent)
@@ -75,6 +81,23 @@ void ToggleSwitch::toggle() {
   setChecked(!checked_);
 }
 
+void ToggleSwitch::setText(const QString& text) {
+  if (text_ == text) {
+    return;
+  }
+  text_ = text;
+  updateGeometry();
+  update();
+}
+
+void ToggleSwitch::setLabelSide(LabelSide side) {
+  if (label_side_ == side) {
+    return;
+  }
+  label_side_ = side;
+  update();
+}
+
 void ToggleSwitch::setLeftIcon(const QIcon& icon) {
   left_icon_ = icon;
   update();
@@ -86,11 +109,18 @@ void ToggleSwitch::setRightIcon(const QIcon& icon) {
 }
 
 QSize ToggleSwitch::sizeHint() const {
-  return {kDefaultWidth, kDefaultHeight};
+  if (text_.isEmpty()) {
+    return {kDefaultWidth, kDefaultHeight};
+  }
+  // Switch pill keeps the default 34x18 proportions; the label adds its
+  // advance width plus a gap. Height grows only if the font needs more.
+  const int height = std::max(kDefaultHeight, fontMetrics().height());
+  const int width = kDefaultWidth + kLabelSpacing + fontMetrics().horizontalAdvance(text_) + kLabelMargin;
+  return {width, height};
 }
 
 QSize ToggleSwitch::minimumSizeHint() const {
-  return {kDefaultWidth, kDefaultHeight};
+  return sizeHint();
 }
 
 void ToggleSwitch::setThumbPosition(qreal pos) {
@@ -98,12 +128,34 @@ void ToggleSwitch::setThumbPosition(qreal pos) {
   update();
 }
 
+QRect ToggleSwitch::trackRect() const {
+  if (text_.isEmpty()) {
+    return rect();
+  }
+  // Fixed-width pill flush to the edge opposite the label; full height.
+  const int track_w = kDefaultWidth;
+  const int x = (label_side_ == LabelSide::Left) ? width() - track_w : 0;
+  return {x, 0, track_w, height()};
+}
+
+QRect ToggleSwitch::labelRect() const {
+  if (text_.isEmpty()) {
+    return {};
+  }
+  const QRect track = trackRect();
+  if (label_side_ == LabelSide::Left) {
+    return {0, 0, track.left() - kLabelSpacing, height()};
+  }
+  return {track.right() + 1 + kLabelSpacing, 0, width() - (track.right() + 1 + kLabelSpacing), height()};
+}
+
 QRect ToggleSwitch::thumbRect() const {
-  const int diameter = height() - (2 * kThumbMargin);
-  const int x_left = kThumbMargin;
-  const int x_right = width() - kThumbMargin - diameter;
+  const QRect track = trackRect();
+  const int diameter = track.height() - (2 * kThumbMargin);
+  const int x_left = track.left() + kThumbMargin;
+  const int x_right = track.left() + track.width() - kThumbMargin - diameter;
   const int x = x_left + static_cast<int>(thumb_position_ * (x_right - x_left));
-  return {x, kThumbMargin, diameter, diameter};
+  return {x, track.top() + kThumbMargin, diameter, diameter};
 }
 
 QRect ToggleSwitch::leftSlotRect() const {
@@ -112,14 +164,16 @@ QRect ToggleSwitch::leftSlotRect() const {
   // is painted here lines up pixel-perfectly with the thumb's center —
   // which is what makes the icons appear "to land where the thumb sits"
   // at any widget width or height.
-  const int diameter = height() - (2 * kThumbMargin);
-  return {kThumbMargin, kThumbMargin, diameter, diameter};
+  const QRect track = trackRect();
+  const int diameter = track.height() - (2 * kThumbMargin);
+  return {track.left() + kThumbMargin, track.top() + kThumbMargin, diameter, diameter};
 }
 
 QRect ToggleSwitch::rightSlotRect() const {
   // Square at the thumb's RIGHT end position; mirror of leftSlotRect.
-  const int diameter = height() - (2 * kThumbMargin);
-  return {width() - kThumbMargin - diameter, kThumbMargin, diameter, diameter};
+  const QRect track = trackRect();
+  const int diameter = track.height() - (2 * kThumbMargin);
+  return {track.left() + track.width() - kThumbMargin - diameter, track.top() + kThumbMargin, diameter, diameter};
 }
 
 void ToggleSwitch::paintEvent(QPaintEvent* /*event*/) {
@@ -137,10 +191,22 @@ void ToggleSwitch::paintEvent(QPaintEvent* /*event*/) {
       lerp(off_track.green(), on_track.green(), thumb_position_),
       lerp(off_track.blue(), on_track.blue(), thumb_position_));
 
-  const qreal radius = height() / 2.0;
+  const QRect track = trackRect();
+  const qreal radius = track.height() / 2.0;
   painter.setPen(Qt::NoPen);
   painter.setBrush(track_color);
-  painter.drawRoundedRect(rect(), radius, radius);
+  painter.drawRoundedRect(track, radius, radius);
+
+  // Optional inline label, in the palette text colour (faded when disabled),
+  // aligned toward the switch and vertically centred.
+  if (!text_.isEmpty()) {
+    const QPalette::ColorGroup group = isEnabled() ? QPalette::Active : QPalette::Disabled;
+    painter.setPen(palette().color(group, QPalette::WindowText));
+    const QRect lr = labelRect();
+    const int align = (label_side_ == LabelSide::Left ? Qt::AlignRight : Qt::AlignLeft) | Qt::AlignVCenter;
+    const QString elided = fontMetrics().elidedText(text_, Qt::ElideRight, lr.width());
+    painter.drawText(lr, align, elided);
+  }
 
   // Both slot backgrounds are always painted; the thumb composites on top.
   // Default impls fade each based on thumb_position_ so only the icon

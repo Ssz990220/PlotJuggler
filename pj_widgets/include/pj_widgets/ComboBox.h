@@ -6,6 +6,15 @@
 
 namespace PJ {
 
+// Apply PJ's dropdown styling to an EXISTING QComboBox in place: install the
+// gradient item delegate and strip the popup's native frame/shadow so only the
+// QSS border shows. This is the shared core of PJ::ComboBox's constructor, also
+// used to upgrade plain QComboBoxes loaded from plugin .ui files without
+// swapping the widget (so their model, current index, and signal connections
+// survive). Idempotent. NOTE: the 2px popup-overlap nudge in
+// ComboBox::showPopup() is NOT applied here — it needs the subclass.
+void applyComboBoxStyling(QComboBox* combo);
+
 // QComboBox subclass that auto-installs PJ::ComboBoxGradientDelegate so
 // the popup paints the app's light_purple → light_blue gradient on the
 // selected / hovered item. Use this instead of QComboBox everywhere in

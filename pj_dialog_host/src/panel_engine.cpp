@@ -15,6 +15,7 @@
 #include <pj_plugins/host_qt/drop_event_filter.hpp>
 #include <pj_plugins/host_qt/panel_engine.hpp>
 #include <pj_plugins/host_qt/pj_ui_loader.hpp>
+#include <pj_plugins/host_qt/widget_adapters.hpp>
 #include <pj_plugins/host_qt/widget_binding.hpp>
 #include <utility>
 
@@ -87,6 +88,7 @@ struct PanelEngine::Impl {
       PjUiLoader sub_loader;
       QWidget* sub_loaded = sub_loader.load(&sub_buffer, root);
       if (sub_loaded != nullptr) {
+        adaptStyledWidgets(sub_loaded);
         QDialog* sub_dialog = qobject_cast<QDialog*>(sub_loaded);
         if (sub_dialog == nullptr) {
           sub_dialog = new QDialog(root);
@@ -201,6 +203,7 @@ QWidget* PanelEngine::openPanel() {
   if (loaded == nullptr) {
     return nullptr;
   }
+  adaptStyledWidgets(loaded);
   impl_->root = loaded;
 
   // 2. Apply initial widget data.

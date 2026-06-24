@@ -2,6 +2,7 @@ find_package(Qt6 REQUIRED COMPONENTS Core Gui Network Svg Widgets)
 
 add_library(pj_widgets STATIC
     src/CheckButton.cpp
+    src/DualOptionsWidget.cpp
     src/ColorPickerPopup.cpp
     src/ColorPickerWidget.cpp
     src/Colormap.cpp
@@ -32,6 +33,7 @@ add_library(pj_widgets STATIC
     src/VisualizationPlaceholderWidget.cpp
     include/pj_widgets/CheckButton.h
     include/pj_widgets/ChromeMetrics.h
+    include/pj_widgets/DualOptionsWidget.h
     include/pj_widgets/ColorPickerPopup.h
     include/pj_widgets/ColorPickerWidget.h
     include/pj_widgets/Colormap.h

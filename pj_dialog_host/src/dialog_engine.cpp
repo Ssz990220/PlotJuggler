@@ -21,6 +21,7 @@
 #include <pj_plugins/host_qt/dialog_engine.hpp>
 #include <pj_plugins/host_qt/drop_event_filter.hpp>
 #include <pj_plugins/host_qt/pj_ui_loader.hpp>
+#include <pj_plugins/host_qt/widget_adapters.hpp>
 #include <pj_plugins/host_qt/widget_binding.hpp>
 
 namespace PJ {
@@ -102,6 +103,7 @@ DialogResult DialogEngine::showDialog(QWidget* parent) {
   if (!loaded) {
     return DialogResult::kRejected;
   }
+  adaptStyledWidgets(loaded);
 
   // 2. Wrap in QDialog if needed
   auto* dialog = qobject_cast<QDialog*>(loaded);
@@ -317,6 +319,7 @@ DialogResult DialogEngine::showDialog(QWidget* parent) {
       }
       return;
     }
+    adaptStyledWidgets(parser_dialog_widget);
 
     // 5. Insert into slot and show container
     parser_slot_layout->addWidget(parser_dialog_widget);
@@ -426,6 +429,7 @@ DialogResult DialogEngine::showDialog(QWidget* parent) {
     if (!sub_loaded) {
       return;
     }
+    adaptStyledWidgets(sub_loaded);
 
     auto* sub_dialog = qobject_cast<QDialog*>(sub_loaded);
     if (!sub_dialog) {

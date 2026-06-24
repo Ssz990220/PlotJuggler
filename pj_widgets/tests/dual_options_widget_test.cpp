@@ -1,0 +1,93 @@
+// Copyright 2026 Davide Faconti
+// SPDX-License-Identifier: MPL-2.0
+
+#include <gtest/gtest.h>
+
+#include <QApplication>
+#include <QSignalSpy>
+#include <QTest>
+
+#include "pj_widgets/DualOptionsWidget.h"
+
+namespace {
+
+TEST(DualOptionsWidgetTest, DefaultsToFirstOption) {
+  PJ::DualOptionsWidget widget(QStringLiteral("Frame"), QStringLiteral("Arrow"));
+
+  EXPECT_EQ(widget.selectedIndex(), 0);
+  EXPECT_TRUE(widget.isFirstSelected());
+  EXPECT_FALSE(widget.isSecondSelected());
+}
+
+TEST(DualOptionsWidgetTest, SetterChangesSelectionAndEmitsOnce) {
+  PJ::DualOptionsWidget widget(QStringLiteral("Frame"), QStringLiteral("Arrow"));
+  QSignalSpy spy(&widget, &PJ::DualOptionsWidget::selectionChanged);
+
+  widget.setSelectedIndex(1);
+
+  EXPECT_EQ(widget.selectedIndex(), 1);
+  EXPECT_TRUE(widget.isSecondSelected());
+  ASSERT_EQ(spy.count(), 1);
+  EXPECT_EQ(spy.takeFirst().at(0).toInt(), 1);
+
+  widget.setSelectedIndex(1);
+  EXPECT_EQ(spy.count(), 0);
+}
+
+TEST(DualOptionsWidgetTest, IgnoresInvalidSelection) {
+  PJ::DualOptionsWidget widget(QStringLiteral("Frame"), QStringLiteral("Arrow"));
+  QSignalSpy spy(&widget, &PJ::DualOptionsWidget::selectionChanged);
+
+  widget.setSelectedIndex(-1);
+  widget.setSelectedIndex(2);
+
+  EXPECT_EQ(widget.selectedIndex(), 0);
+  EXPECT_EQ(spy.count(), 0);
+}
+
+TEST(DualOptionsWidgetTest, MouseClickSelectsHalf) {
+  PJ::DualOptionsWidget widget(QStringLiteral("Frame"), QStringLiteral("Arrow"));
+  widget.resize(widget.sizeHint());
+  widget.show();
+  ASSERT_TRUE(QTest::qWaitForWindowExposed(&widget));
+
+  QSignalSpy spy(&widget, &PJ::DualOptionsWidget::selectionChanged);
+  QTest::mouseClick(&widget, Qt::LeftButton, Qt::NoModifier, QPoint(widget.width() - 2, widget.height() / 2));
+
+  EXPECT_EQ(widget.selectedIndex(), 1);
+  ASSERT_EQ(spy.count(), 1);
+  EXPECT_EQ(spy.takeFirst().at(0).toInt(), 1);
+}
+
+TEST(DualOptionsWidgetTest, KeyboardChangesSelection) {
+  PJ::DualOptionsWidget widget(QStringLiteral("Frame"), QStringLiteral("Arrow"));
+  widget.resize(widget.sizeHint());
+  widget.show();
+  ASSERT_TRUE(QTest::qWaitForWindowExposed(&widget));
+  widget.setFocus();
+
+  QTest::keyClick(&widget, Qt::Key_Right);
+  EXPECT_EQ(widget.selectedIndex(), 1);
+
+  QTest::keyClick(&widget, Qt::Key_Left);
+  EXPECT_EQ(widget.selectedIndex(), 0);
+
+  QTest::keyClick(&widget, Qt::Key_Space);
+  EXPECT_EQ(widget.selectedIndex(), 1);
+}
+
+TEST(DualOptionsWidgetTest, SizeHintGrowsWithText) {
+  PJ::DualOptionsWidget short_widget(QStringLiteral("F"), QStringLiteral("A"));
+  PJ::DualOptionsWidget long_widget(QStringLiteral("Frame"), QStringLiteral("Longer arrow label"));
+
+  EXPECT_GT(long_widget.sizeHint().width(), short_widget.sizeHint().width());
+  EXPECT_GT(short_widget.sizeHint().height(), 0);
+}
+
+}  // namespace
+
+int main(int argc, char** argv) {
+  QApplication app(argc, argv);
+  ::testing::InitGoogleTest(&argc, argv);
+  return RUN_ALL_TESTS();
+}

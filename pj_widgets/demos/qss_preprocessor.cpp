@@ -5,9 +5,12 @@
 
 #include <QApplication>
 #include <QChar>
+#include <QColor>
 #include <QDebug>
 #include <QFile>
+#include <QGuiApplication>
 #include <QIODevice>
+#include <QPalette>
 #include <QSettings>
 #include <QStringList>
 #include <QStringView>
@@ -46,9 +49,7 @@ QString expandPlaceholders(const QString& body, const std::map<QString, QString>
   return out;
 }
 
-}  // namespace
-
-QString loadAndExpandQss(const QString& theme) {
+QString loadAndExpandQss(const QString& theme, std::map<QString, QString>* tokens_out) {
   const QString path = QStringLiteral("%1/stylesheet_%2.qss").arg(QStringLiteral(PJ_QSS_DIR), theme);
   QFile file(path);
   if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
@@ -87,12 +88,60 @@ QString loadAndExpandQss(const QString& theme) {
     body.append(lines[i]);
     body.append(QLatin1Char('\n'));
   }
+  if (tokens_out != nullptr) {
+    *tokens_out = palette;
+  }
   return expandPlaceholders(body, palette);
 }
 
+void syncApplicationPalette(const std::map<QString, QString>& tokens) {
+  if (qGuiApp == nullptr) {
+    return;
+  }
+
+  const auto color_for = [&](const QString& key) -> QColor {
+    const auto it = tokens.find(key);
+    return it == tokens.end() ? QColor() : QColor(it->second);
+  };
+
+  const QColor window = color_for(QStringLiteral("main_background"));
+  const QColor text = color_for(QStringLiteral("default_text"));
+  const QColor base = color_for(QStringLiteral("input_background"));
+  const QColor button = color_for(QStringLiteral("widget_background_disabled"));
+  const QColor highlight = color_for(QStringLiteral("item_selection_background"));
+  const QColor highlighted_text = color_for(QStringLiteral("selection_text"));
+  if (!window.isValid() || !text.isValid() || !base.isValid() || !button.isValid() || !highlight.isValid() ||
+      !highlighted_text.isValid()) {
+    qWarning() << "Cannot sync demo palette from theme tokens";
+    return;
+  }
+
+  QPalette pal = QGuiApplication::palette();
+  pal.setColor(QPalette::Window, window);
+  pal.setColor(QPalette::WindowText, text);
+  pal.setColor(QPalette::Base, base);
+  pal.setColor(QPalette::Text, text);
+  pal.setColor(QPalette::Button, button);
+  pal.setColor(QPalette::ButtonText, text);
+  pal.setColor(QPalette::Highlight, highlight);
+  pal.setColor(QPalette::HighlightedText, highlighted_text);
+  QGuiApplication::setPalette(pal);
+}
+
+}  // namespace
+
+QString loadAndExpandQss(const QString& theme) {
+  return loadAndExpandQss(theme, nullptr);
+}
+
 void applyTheme(const QString& theme) {
-  qApp->setStyleSheet(loadAndExpandQss(theme));
-  QSettings().setValue(QStringLiteral("StyleSheet::theme"), theme);
+  QSettings settings;
+  settings.setValue(QStringLiteral("StyleSheet::theme"), theme);
+  settings.sync();
+
+  std::map<QString, QString> tokens;
+  qApp->setStyleSheet(loadAndExpandQss(theme, &tokens));
+  syncApplicationPalette(tokens);
 }
 
 }  // namespace pj_widgets_demos

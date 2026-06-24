@@ -6,6 +6,8 @@
 #include <pj_widgets/SvgUtil.h>
 #include <pj_widgets/ToggleSwitch.h>
 
+#include <QBoxLayout>
+#include <QButtonGroup>
 #include <QCheckBox>
 #include <QComboBox>
 #include <QDate>
@@ -13,6 +15,7 @@
 #include <QDialogButtonBox>
 #include <QDoubleSpinBox>
 #include <QFont>
+#include <QGridLayout>
 #include <QGroupBox>
 #include <QHeaderView>
 #include <QLabel>
@@ -21,6 +24,7 @@
 #include <QPainter>
 #include <QPixmap>
 #include <QPlainTextEdit>
+#include <QPointer>
 #include <QPushButton>
 #include <QRadioButton>
 #include <QScrollBar>
@@ -36,11 +40,13 @@
 #include <QTextCursor>
 #include <QTimeZone>
 #include <QVBoxLayout>
+#include <QVariant>
 #include <algorithm>
 #include <cstdint>
 #include <memory>
 #include <pj_plugins/host/widget_event_builder.hpp>
 #include <pj_plugins/host_qt/chart_preview_widget.hpp>
+#include <pj_plugins/host_qt/widget_adapters.hpp>
 #include <pj_plugins/host_qt/widget_binding.hpp>
 #include <set>
 
@@ -194,11 +200,20 @@ static void applyToWidget(QWidget* w, std::string_view name, const PJ::WidgetDat
   const QSignalBlocker blocker(w);
 
   // --- Generic properties (any widget) ---
+  // For a widget whose plain control was swapped for a styled replacement (see
+  // widget_adapters), `enabled` is written straight to the hidden original and
+  // reaches the replacement via syncStyledWidget below. `visible` is redirected
+  // onto the original as a desired-visible the replacement derives from (e.g. a
+  // DualOptionsWidget's visibility is the OR of its two hidden radios), so it
+  // goes through redirectAdaptedVisibility; an un-adapted widget just sets its
+  // own visibility.
   if (auto v = view.enabled(name)) {
     w->setEnabled(*v);
   }
   if (auto v = view.visible(name)) {
-    w->setVisible(*v);
+    if (!redirectAdaptedVisibility(w, *v)) {
+      w->setVisible(*v);
+    }
   }
 
   // --- Generic field-validity indicator (any widget) ---
@@ -343,6 +358,10 @@ static void applyToWidget(QWidget* w, std::string_view name, const PJ::WidgetDat
     if (auto v = view.text(name)) {
       ck->setText(QString::fromStdString(*v));
     }
+    // Keep any styled replacement in sync, and adapt now if this checkbox just
+    // became adaptable (e.g. its text arrived via data). Both no-op otherwise.
+    syncStyledWidget(ck);
+    tryAdaptStyledWidget(ck);
     return;
   }
 
@@ -359,6 +378,11 @@ static void applyToWidget(QWidget* w, std::string_view name, const PJ::WidgetDat
     if (auto v = view.checked(name)) {
       rb->setChecked(*v);
     }
+    // Keep any styled replacement in sync, and adapt the group now if it has
+    // just become adaptable (e.g. data selected one option of a previously
+    // unselected pair). Both no-op for un-adapted/non-adaptable widgets.
+    syncStyledWidget(rb);
+    tryAdaptStyledWidget(rb);
     return;
   }
 
@@ -670,6 +694,11 @@ void applyWidgetData(QWidget* root, const PJ::WidgetDataView& view) {
     }
     applyToWidget(w, name, view);
   }
+  // NOTE: styled-widget adaptation is NOT re-run here on every data tick. It is
+  // structural (depends on the widget tree, built once at load), so the engines
+  // call adaptStyledWidgets once after loading the .ui (see widget_adapters),
+  // and applyToWidget adapts reactively per widget via tryAdaptStyledWidget for
+  // controls that only become adaptable after their first data arrives.
 }
 
 // ---------------------------------------------------------------------------

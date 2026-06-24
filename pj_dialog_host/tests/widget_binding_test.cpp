@@ -7,20 +7,34 @@
 // field-validity indicator (setFieldValid).
 
 #include <pj_widgets/ComboBox.h>
+#include <pj_widgets/ComboBoxGradientDelegate.h>
 #include <pj_widgets/CredentialsEditor.h>
 #include <pj_widgets/DateRangePicker.h>
+#include <pj_widgets/DualOptionsWidget.h>
 #include <pj_widgets/RangeSlider.h>
+#include <pj_widgets/ToggleSwitch.h>
 
 #include <QApplication>
 #include <QBuffer>
+#include <QButtonGroup>
+#include <QCheckBox>
 #include <QComboBox>
+#include <QGridLayout>
+#include <QHBoxLayout>
+#include <QLabel>
 #include <QLineEdit>
+#include <QRadioButton>
+#include <QSpacerItem>
+#include <QSpinBox>
 #include <QTabBar>
 #include <QTabWidget>
+#include <QTest>
+#include <QVBoxLayout>
 #include <QWidget>
 #include <nlohmann/json.hpp>
 #include <pj_plugins/host/widget_data_view.hpp>
 #include <pj_plugins/host_qt/pj_ui_loader.hpp>
+#include <pj_plugins/host_qt/widget_adapters.hpp>
 #include <pj_plugins/host_qt/widget_binding.hpp>
 #include <pj_plugins/sdk/widget_data.hpp>
 #include <string>
@@ -229,6 +243,441 @@ TEST(WidgetBindingCombo, ChangedItemsRebuild) {
   PJ::applyWidgetData(&root, PJ::WidgetDataView(wd.toJson()));
 
   EXPECT_EQ(combo->count(), 3);
+}
+
+TEST(WidgetBindingRadioPairAdapter, ConvertsSafePairAndPreservesRadioEvents) {
+  qapp();
+  recorder()->clear();
+
+  QWidget root;
+  auto* root_layout = new QVBoxLayout(&root);
+  auto* row = new QWidget(&root);
+  auto* row_layout = new QHBoxLayout(row);
+  auto* frame = new QRadioButton(QStringLiteral("Frame"), row);
+  frame->setObjectName("frameMode");
+  frame->setChecked(true);
+  auto* arrow = new QRadioButton(QStringLiteral("Arrow"), row);
+  arrow->setObjectName("arrowMode");
+  auto* group = new QButtonGroup(row);
+  group->addButton(frame);
+  group->addButton(arrow);
+  row_layout->addWidget(frame);
+  row_layout->addWidget(arrow);
+  root_layout->addWidget(row);
+
+  PJ::adaptRadioButtonPairs(&root);
+
+  auto* dual = row->findChild<PJ::DualOptionsWidget*>();
+  ASSERT_NE(dual, nullptr);
+  EXPECT_TRUE(frame->isHidden());
+  EXPECT_TRUE(arrow->isHidden());
+  EXPECT_EQ(dual->selectedIndex(), 0);
+
+  PJ::connectWidgetSignals(
+      &root, [](const std::string& name, const std::string& json) { recorder()->push_back({name, json}); });
+
+  dual->setSelectedIndex(1);
+
+  EXPECT_TRUE(arrow->isChecked());
+  EXPECT_FALSE(frame->isChecked());
+  bool saw_arrow_checked = false;
+  for (const auto& ev : *recorder()) {
+    if (ev.name != "arrowMode") {
+      continue;
+    }
+    const auto j = nlohmann::json::parse(ev.json, nullptr, false);
+    saw_arrow_checked = !j.is_discarded() && j.value("checked", false);
+  }
+  EXPECT_TRUE(saw_arrow_checked) << "the hidden original radio button must still drive plugin onToggled callbacks";
+}
+
+TEST(WidgetBindingRadioPairAdapter, WidgetDataSyncsVisibleDualOptionsWidget) {
+  qapp();
+
+  QWidget root;
+  auto* row_layout = new QHBoxLayout(&root);
+  auto* frame = new QRadioButton(QStringLiteral("Frame"), &root);
+  frame->setObjectName("frameMode");
+  frame->setChecked(true);
+  auto* arrow = new QRadioButton(QStringLiteral("Arrow"), &root);
+  arrow->setObjectName("arrowMode");
+  auto* group = new QButtonGroup(&root);
+  group->addButton(frame);
+  group->addButton(arrow);
+  row_layout->addWidget(frame);
+  row_layout->addWidget(arrow);
+
+  PJ::adaptRadioButtonPairs(&root);
+  auto* dual = root.findChild<PJ::DualOptionsWidget*>();
+  ASSERT_NE(dual, nullptr);
+  ASSERT_EQ(dual->selectedIndex(), 0);
+
+  PJ::WidgetData wd;
+  wd.setChecked("arrowMode", true);
+  PJ::applyWidgetData(&root, PJ::WidgetDataView(wd.toJson()));
+
+  EXPECT_TRUE(frame->isHidden());
+  EXPECT_TRUE(arrow->isHidden());
+  EXPECT_TRUE(arrow->isChecked());
+  EXPECT_EQ(dual->selectedIndex(), 1);
+}
+
+TEST(WidgetBindingRadioPairAdapter, ConvertsAfterInitialWidgetDataSelectsRadio) {
+  qapp();
+
+  QWidget root;
+  auto* row_layout = new QHBoxLayout(&root);
+  auto* frame = new QRadioButton(QStringLiteral("Frame"), &root);
+  frame->setObjectName("frameMode");
+  auto* arrow = new QRadioButton(QStringLiteral("Arrow"), &root);
+  arrow->setObjectName("arrowMode");
+  auto* group = new QButtonGroup(&root);
+  group->addButton(frame);
+  group->addButton(arrow);
+  row_layout->addWidget(frame);
+  row_layout->addWidget(arrow);
+
+  PJ::adaptRadioButtonPairs(&root);
+  EXPECT_EQ(root.findChild<PJ::DualOptionsWidget*>(), nullptr)
+      << "no-selection pairs stay untouched until plugin data chooses an option";
+
+  PJ::WidgetData wd;
+  wd.setChecked("arrowMode", true);
+  PJ::applyWidgetData(&root, PJ::WidgetDataView(wd.toJson()));
+
+  auto* dual = root.findChild<PJ::DualOptionsWidget*>();
+  ASSERT_NE(dual, nullptr);
+  EXPECT_TRUE(frame->isHidden());
+  EXPECT_TRUE(arrow->isHidden());
+  EXPECT_EQ(dual->selectedIndex(), 1);
+}
+
+TEST(WidgetBindingRadioPairAdapter, ConvertsPairEmbeddedInMixedBoxRow) {
+  qapp();
+
+  QWidget root;
+  auto* row_layout = new QHBoxLayout(&root);
+  auto* label = new QLabel(QStringLiteral("Timestamp:"), &root);
+  auto* publish = new QRadioButton(QStringLiteral("publish"), &root);
+  publish->setObjectName("publishTimestamp");
+  publish->setChecked(true);
+  auto* log = new QRadioButton(QStringLiteral("log"), &root);
+  log->setObjectName("logTimestamp");
+  auto* group = new QButtonGroup(&root);
+  group->addButton(publish);
+  group->addButton(log);
+  auto* header = new QCheckBox(QStringLiteral("Use timestamp inside message (header)"), &root);
+  row_layout->addWidget(label);
+  row_layout->addWidget(publish);
+  row_layout->addWidget(log);
+  row_layout->addStretch();
+  row_layout->addWidget(header);
+
+  PJ::adaptRadioButtonPairs(&root);
+
+  auto* dual = root.findChild<PJ::DualOptionsWidget*>();
+  ASSERT_NE(dual, nullptr);
+  EXPECT_TRUE(publish->isHidden());
+  EXPECT_TRUE(log->isHidden());
+  EXPECT_FALSE(label->isHidden());
+  EXPECT_FALSE(header->isHidden());
+  EXPECT_EQ(dual->selectedIndex(), 0);
+}
+
+TEST(WidgetBindingRadioPairAdapter, LeavesUngroupedTwoRadioRowUntouched) {
+  qapp();
+
+  QWidget root;
+  auto* row_layout = new QHBoxLayout(&root);
+  auto* first = new QRadioButton(QStringLiteral("First"), &root);
+  first->setChecked(true);
+  auto* second = new QRadioButton(QStringLiteral("Second"), &root);
+  row_layout->addWidget(first);
+  row_layout->addWidget(second);
+
+  PJ::adaptRadioButtonPairs(&root);
+
+  EXPECT_EQ(root.findChild<PJ::DualOptionsWidget*>(), nullptr);
+  EXPECT_FALSE(first->isHidden());
+  EXPECT_FALSE(second->isHidden());
+}
+
+TEST(WidgetBindingRadioPairAdapter, ConvertsButtonGroupsInsideNestedLayouts) {
+  qapp();
+
+  QWidget root;
+  auto* outer_layout = new QVBoxLayout(&root);
+
+  auto* array_row = new QHBoxLayout();
+  auto* spin = new QSpinBox(&root);
+  auto* clamp = new QRadioButton(QStringLiteral("Clamp"), &root);
+  auto* skip = new QRadioButton(QStringLiteral("Skip"), &root);
+  auto* array_group = new QButtonGroup(&root);
+  array_group->addButton(clamp);
+  array_group->addButton(skip);
+  skip->setChecked(true);
+  array_row->addWidget(new QLabel(QStringLiteral("When an array size exceeds:"), &root));
+  array_row->addWidget(spin);
+  array_row->addStretch();
+  array_row->addWidget(clamp);
+  array_row->addWidget(skip);
+  outer_layout->addLayout(array_row);
+
+  auto* timestamp_row = new QHBoxLayout();
+  auto* publish = new QRadioButton(QStringLiteral("publish"), &root);
+  auto* log = new QRadioButton(QStringLiteral("log"), &root);
+  auto* timestamp_group = new QButtonGroup(&root);
+  timestamp_group->addButton(publish);
+  timestamp_group->addButton(log);
+  publish->setChecked(true);
+  timestamp_row->addWidget(new QLabel(QStringLiteral("Timestamp:"), &root));
+  timestamp_row->addWidget(publish);
+  timestamp_row->addWidget(log);
+  timestamp_row->addStretch();
+  timestamp_row->addWidget(new QCheckBox(QStringLiteral("Use timestamp inside message (header)"), &root));
+  outer_layout->addLayout(timestamp_row);
+
+  PJ::adaptRadioButtonPairs(&root);
+
+  const auto duals = root.findChildren<PJ::DualOptionsWidget*>();
+  ASSERT_EQ(duals.size(), 2);
+  EXPECT_TRUE(clamp->isHidden());
+  EXPECT_TRUE(skip->isHidden());
+  EXPECT_TRUE(publish->isHidden());
+  EXPECT_TRUE(log->isHidden());
+}
+
+TEST(WidgetBindingRadioPairAdapter, ConvertsIndependentButtonGroupsSharingParent) {
+  qapp();
+
+  QWidget root;
+  auto* row_layout = new QHBoxLayout(&root);
+  auto* publish = new QRadioButton(QStringLiteral("publish"), &root);
+  auto* log = new QRadioButton(QStringLiteral("log"), &root);
+  auto* clamp = new QRadioButton(QStringLiteral("Clamp"), &root);
+  auto* skip = new QRadioButton(QStringLiteral("Skip"), &root);
+  auto* timestamp_group = new QButtonGroup(&root);
+  timestamp_group->addButton(publish);
+  timestamp_group->addButton(log);
+  auto* overflow_group = new QButtonGroup(&root);
+  overflow_group->addButton(clamp);
+  overflow_group->addButton(skip);
+  publish->setChecked(true);
+  skip->setChecked(true);
+  row_layout->addWidget(new QLabel(QStringLiteral("Timestamp:"), &root));
+  row_layout->addWidget(publish);
+  row_layout->addWidget(log);
+  row_layout->addStretch();
+  row_layout->addWidget(new QLabel(QStringLiteral("When an array size exceeds:"), &root));
+  row_layout->addWidget(clamp);
+  row_layout->addWidget(skip);
+
+  PJ::adaptRadioButtonPairs(&root);
+
+  const auto duals = root.findChildren<PJ::DualOptionsWidget*>();
+  ASSERT_EQ(duals.size(), 2);
+  EXPECT_TRUE(publish->isHidden());
+  EXPECT_TRUE(log->isHidden());
+  EXPECT_TRUE(clamp->isHidden());
+  EXPECT_TRUE(skip->isHidden());
+}
+
+TEST(WidgetBindingRadioPairAdapter, ConvertsGroupedPairInsideGridRow) {
+  qapp();
+
+  QWidget root;
+  auto* grid = new QGridLayout(&root);
+  auto* spin = new QSpinBox(&root);
+  auto* clamp = new QRadioButton(QStringLiteral("Clamp"), &root);
+  auto* skip = new QRadioButton(QStringLiteral("Skip"), &root);
+  skip->setChecked(true);
+  auto* overflow_group = new QButtonGroup(&root);
+  overflow_group->addButton(clamp);
+  overflow_group->addButton(skip);
+  grid->addWidget(new QLabel(QStringLiteral("When an array size exceeds:"), &root), 0, 0);
+  grid->addWidget(spin, 0, 1);
+  grid->addItem(new QSpacerItem(20, 1, QSizePolicy::Expanding, QSizePolicy::Minimum), 0, 2);
+  grid->addWidget(clamp, 0, 3);
+  grid->addWidget(skip, 0, 4);
+  grid->addWidget(new QCheckBox(QStringLiteral("Use timestamp inside message (header)"), &root), 1, 0, 1, 5);
+
+  PJ::adaptRadioButtonPairs(&root);
+
+  auto* dual = root.findChild<PJ::DualOptionsWidget*>();
+  ASSERT_NE(dual, nullptr);
+  EXPECT_TRUE(clamp->isHidden());
+  EXPECT_TRUE(skip->isHidden());
+  EXPECT_EQ(dual->selectedIndex(), 1);
+}
+
+TEST(WidgetBindingRadioPairAdapter, LeavesUngroupedLargerRadioSetUntouched) {
+  qapp();
+
+  QWidget root;
+  auto* row_layout = new QHBoxLayout(&root);
+  auto* a = new QRadioButton(QStringLiteral("A"), &root);
+  a->setChecked(true);
+  auto* b = new QRadioButton(QStringLiteral("B"), &root);
+  auto* c = new QRadioButton(QStringLiteral("C"), &root);
+  auto* d = new QRadioButton(QStringLiteral("D"), &root);
+  row_layout->addWidget(a);
+  row_layout->addWidget(b);
+  row_layout->addWidget(c);
+  row_layout->addWidget(d);
+
+  PJ::adaptRadioButtonPairs(&root);
+
+  EXPECT_EQ(root.findChild<PJ::DualOptionsWidget*>(), nullptr);
+  EXPECT_FALSE(a->isHidden());
+  EXPECT_FALSE(b->isHidden());
+  EXPECT_FALSE(c->isHidden());
+  EXPECT_FALSE(d->isHidden());
+}
+
+TEST(WidgetCheckBoxAdapter, ConvertsCheckBoxToLabeledToggleAndPreservesEvents) {
+  qapp();
+  recorder()->clear();
+
+  QWidget root;
+  auto* layout = new QVBoxLayout(&root);
+  auto* check = new QCheckBox(QStringLiteral("Enable streaming"), &root);
+  check->setObjectName("enableStreaming");
+  layout->addWidget(check);
+
+  PJ::adaptCheckBoxes(&root);
+
+  auto* toggle = root.findChild<PJ::ToggleSwitch*>();
+  ASSERT_NE(toggle, nullptr);
+  EXPECT_TRUE(check->isHidden());
+  EXPECT_EQ(toggle->text(), QStringLiteral("Enable streaming"));
+  EXPECT_EQ(toggle->labelSide(), PJ::ToggleSwitch::LabelSide::Left);
+  EXPECT_FALSE(toggle->isChecked());
+
+  PJ::connectWidgetSignals(
+      &root, [](const std::string& name, const std::string& json) { recorder()->push_back({name, json}); });
+
+  // Flip the toggle; it emits `toggled` only once its slide animation settles
+  // (iOS-switch semantics), so wait for it, then assert the hidden checkbox
+  // followed AND drove the plugin callback.
+  toggle->setChecked(true);
+  QTest::qWait(300);
+
+  EXPECT_TRUE(check->isChecked());
+  bool saw_checked = false;
+  for (const auto& ev : *recorder()) {
+    if (ev.name != "enableStreaming") {
+      continue;
+    }
+    const auto j = nlohmann::json::parse(ev.json, nullptr, false);
+    saw_checked = !j.is_discarded() && j.value("checked", false);
+  }
+  EXPECT_TRUE(saw_checked) << "the hidden original checkbox must still drive plugin onToggled callbacks";
+}
+
+TEST(WidgetCheckBoxAdapter, WidgetDataSyncsToggle) {
+  qapp();
+
+  QWidget root;
+  auto* layout = new QVBoxLayout(&root);
+  auto* check = new QCheckBox(QStringLiteral("Loop"), &root);
+  check->setObjectName("loop");
+  layout->addWidget(check);
+
+  PJ::adaptCheckBoxes(&root);
+  auto* toggle = root.findChild<PJ::ToggleSwitch*>();
+  ASSERT_NE(toggle, nullptr);
+  ASSERT_FALSE(toggle->isChecked());
+
+  PJ::WidgetData wd;
+  wd.setChecked("loop", true);
+  PJ::applyWidgetData(&root, PJ::WidgetDataView(wd.toJson()));
+
+  EXPECT_TRUE(check->isHidden());
+  EXPECT_TRUE(check->isChecked());
+  EXPECT_TRUE(toggle->isChecked());
+}
+
+TEST(WidgetCheckBoxAdapter, LeavesTristateCheckBoxUntouched) {
+  qapp();
+
+  QWidget root;
+  auto* layout = new QVBoxLayout(&root);
+  auto* check = new QCheckBox(QStringLiteral("Partial"), &root);
+  check->setTristate(true);
+  layout->addWidget(check);
+
+  PJ::adaptCheckBoxes(&root);
+
+  EXPECT_EQ(root.findChild<PJ::ToggleSwitch*>(), nullptr);
+  EXPECT_FALSE(check->isHidden());
+}
+
+TEST(WidgetCheckBoxAdapter, LeavesTextlessCheckBoxUntouched) {
+  qapp();
+
+  QWidget root;
+  auto* layout = new QVBoxLayout(&root);
+  auto* check = new QCheckBox(&root);  // no label
+  layout->addWidget(check);
+
+  PJ::adaptCheckBoxes(&root);
+
+  EXPECT_EQ(root.findChild<PJ::ToggleSwitch*>(), nullptr);
+  EXPECT_FALSE(check->isHidden());
+}
+
+TEST(WidgetCheckBoxAdapter, LeavesHostCompositeInternalCheckBoxUntouched) {
+  qapp();
+
+  QWidget root;
+  auto* layout = new QVBoxLayout(&root);
+  // CredentialsEditor owns an internal "allow insecure" checkbox; the adapter
+  // must treat composites as opaque and leave their internals alone.
+  auto* creds = new PJ::CredentialsEditor(&root);
+  layout->addWidget(creds);
+
+  PJ::adaptCheckBoxes(&root);
+
+  for (auto* cb : creds->findChildren<QCheckBox*>()) {
+    EXPECT_EQ(cb->property("_pj_toggle_switch").value<QObject*>(), nullptr);
+    EXPECT_FALSE(cb->isHidden());
+  }
+}
+
+TEST(WidgetComboBoxAdapter, UpgradesPlainComboBoxInPlacePreservingState) {
+  qapp();
+
+  QWidget root;
+  auto* layout = new QVBoxLayout(&root);
+  auto* combo = new QComboBox(&root);
+  combo->setObjectName("mode");
+  combo->addItems({QStringLiteral("a"), QStringLiteral("b"), QStringLiteral("c")});
+  combo->setCurrentIndex(2);
+  layout->addWidget(combo);
+
+  PJ::adaptComboBoxes(&root);
+
+  // Same widget object — model + current index survive (no swap).
+  EXPECT_EQ(root.findChild<QComboBox*>("mode"), combo);
+  EXPECT_EQ(combo->count(), 3);
+  EXPECT_EQ(combo->currentIndex(), 2);
+  // Gradient delegate now installed.
+  EXPECT_NE(qobject_cast<PJ::ComboBoxGradientDelegate*>(combo->itemDelegate()), nullptr);
+}
+
+TEST(WidgetComboBoxAdapter, LeavesPromotedComboBoxStyled) {
+  qapp();
+
+  QWidget root;
+  auto* layout = new QVBoxLayout(&root);
+  auto* combo = new PJ::ComboBox(&root);  // already promoted in the .ui
+  layout->addWidget(combo);
+
+  PJ::adaptComboBoxes(&root);
+
+  // Still its own class, still gradient-styled (from its constructor).
+  EXPECT_NE(qobject_cast<PJ::ComboBox*>(root.findChild<QComboBox*>()), nullptr);
+  EXPECT_NE(qobject_cast<PJ::ComboBoxGradientDelegate*>(combo->itemDelegate()), nullptr);
 }
 
 // Full-width tabs contract (dexory_cloud_panel.ui "filterTabs"): a tab bar only

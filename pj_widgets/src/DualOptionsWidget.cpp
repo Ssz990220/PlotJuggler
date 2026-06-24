@@ -1,0 +1,220 @@
+// Copyright 2026 Davide Faconti
+// SPDX-License-Identifier: MPL-2.0
+
+#include "pj_widgets/DualOptionsWidget.h"
+
+#include <QEasingCurve>
+#include <QFontMetrics>
+#include <QKeyEvent>
+#include <QMouseEvent>
+#include <QPaintEvent>
+#include <QPainter>
+#include <QVariantAnimation>
+#include <algorithm>
+
+#include "pj_widgets/ThemeColors.h"
+
+namespace PJ {
+
+namespace {
+constexpr int kHPadding = 10;
+constexpr int kHeight = 20;
+constexpr qreal kCornerRadius = 4.0;
+constexpr qreal kBorderWidth = 1.0;
+constexpr int kAnimationDurationMs = 140;
+
+}  // namespace
+
+DualOptionsWidget::DualOptionsWidget(QWidget* parent)
+    : DualOptionsWidget(QStringLiteral("Option A"), QStringLiteral("Option B"), parent) {}
+
+DualOptionsWidget::DualOptionsWidget(const QString& opt0, const QString& opt1, QWidget* parent)
+    : QWidget(parent),
+      options_{opt0, opt1},
+      // Defaults mirror the QSS tokens so the widget looks correct before a
+      // stylesheet injects the qproperties.
+      accent_color_(theme::kBlue),
+      border_color_(palette().color(QPalette::Mid)),
+      base_fill_color_(palette().color(QPalette::Base)),
+      selected_fill_color_(palette().color(QPalette::Highlight)),
+      text_color_(palette().color(QPalette::Text)) {
+  selection_animation_ = new QVariantAnimation(this);
+  selection_animation_->setDuration(kAnimationDurationMs);
+  selection_animation_->setEasingCurve(QEasingCurve::OutCubic);
+  connect(selection_animation_, &QVariantAnimation::valueChanged, this, [this](const QVariant& value) {
+    visual_selection_ = value.toReal();
+    update();
+  });
+
+  setCursor(Qt::PointingHandCursor);
+  setFocusPolicy(Qt::TabFocus);
+  setAttribute(Qt::WA_Hover, true);
+  setSizePolicy(QSizePolicy::Maximum, QSizePolicy::Fixed);
+}
+
+void DualOptionsWidget::setOptions(const QString& opt0, const QString& opt1) {
+  options_ = {opt0, opt1};
+  updateGeometry();
+  update();
+}
+
+void DualOptionsWidget::setSelectedIndex(int index) {
+  if (index == selected_ || (index != 0 && index != 1)) {
+    return;
+  }
+  selected_ = index;
+  animateSelectedIndex(index);
+  emit selectionChanged(selected_);
+}
+
+void DualOptionsWidget::setAccentColor(const QColor& color) {
+  if (accent_color_ == color) {
+    return;
+  }
+  accent_color_ = color;
+  update();
+}
+
+void DualOptionsWidget::setBorderColor(const QColor& color) {
+  if (border_color_ == color) {
+    return;
+  }
+  border_color_ = color;
+  update();
+}
+
+void DualOptionsWidget::setBaseFillColor(const QColor& color) {
+  if (base_fill_color_ == color) {
+    return;
+  }
+  base_fill_color_ = color;
+  update();
+}
+
+void DualOptionsWidget::setSelectedFillColor(const QColor& color) {
+  if (selected_fill_color_ == color) {
+    return;
+  }
+  selected_fill_color_ = color;
+  update();
+}
+
+void DualOptionsWidget::setTextColor(const QColor& color) {
+  if (text_color_ == color) {
+    return;
+  }
+  text_color_ = color;
+  update();
+}
+
+QSize DualOptionsWidget::sizeHint() const {
+  const int w0 = fontMetrics().horizontalAdvance(options_[0]);
+  const int w1 = fontMetrics().horizontalAdvance(options_[1]);
+  const int half_w = std::max(w0, w1) + 2 * kHPadding;
+  return {2 * half_w, kHeight};
+}
+
+QSize DualOptionsWidget::minimumSizeHint() const {
+  return sizeHint();
+}
+
+bool DualOptionsWidget::event(QEvent* event) {
+  switch (event->type()) {
+    case QEvent::Enter:
+    case QEvent::Leave:
+    case QEvent::HoverEnter:
+    case QEvent::HoverLeave:
+    case QEvent::FocusIn:
+    case QEvent::FocusOut:
+      update();
+      break;
+    default:
+      break;
+  }
+  return QWidget::event(event);
+}
+
+void DualOptionsWidget::paintEvent(QPaintEvent* /*event*/) {
+  QPainter painter(this);
+  painter.setRenderHint(QPainter::Antialiasing);
+
+  const QRectF box =
+      QRectF(rect()).adjusted(kBorderWidth / 2.0, kBorderWidth / 2.0, -kBorderWidth / 2.0, -kBorderWidth / 2.0);
+  const qreal midX = box.left() + box.width() / 2.0;
+  const QRectF left_box(box.left(), box.top(), box.width() / 2.0, box.height());
+  const QRectF right_box(midX, box.top(), box.width() / 2.0, box.height());
+
+  const QColor bg = isEnabled() ? base_fill_color_ : palette().color(QPalette::Disabled, QPalette::Button);
+  const QColor sel_fill = isEnabled() ? selected_fill_color_ : selected_fill_color_.darker(110);
+  const QColor base_border = !isEnabled()                   ? palette().color(QPalette::Disabled, QPalette::Mid)
+                             : (underMouse() || hasFocus()) ? accent_color_
+                                                            : border_color_;
+  const QColor selected_border = isEnabled() ? accent_color_ : palette().color(QPalette::Disabled, QPalette::Mid);
+
+  painter.setBrush(bg);
+  painter.setPen(QPen(base_border, kBorderWidth));
+  painter.drawRoundedRect(box, kCornerRadius, kCornerRadius);
+
+  const qreal selected_left = left_box.left() + (right_box.left() - left_box.left()) * visual_selection_;
+  const QRectF selected_box(selected_left, box.top(), box.width() / 2.0, box.height());
+  painter.setBrush(sel_fill);
+  painter.setPen(QPen(selected_border, kBorderWidth));
+  painter.drawRoundedRect(selected_box, kCornerRadius, kCornerRadius);
+
+  const QColor label_color = isEnabled() ? text_color_ : palette().color(QPalette::Disabled, QPalette::Text);
+  painter.setPen(label_color);
+  painter.drawText(QRectF(box.left(), box.top(), box.width() / 2.0, box.height()), Qt::AlignCenter, options_[0]);
+  painter.drawText(QRectF(midX, box.top(), box.width() / 2.0, box.height()), Qt::AlignCenter, options_[1]);
+}
+
+void DualOptionsWidget::mousePressEvent(QMouseEvent* event) {
+  if (event->button() == Qt::LeftButton) {
+    setSelectedIndex((event->pos().x() < width() / 2) ? 0 : 1);
+    event->accept();
+    return;
+  }
+  QWidget::mousePressEvent(event);
+}
+
+void DualOptionsWidget::keyPressEvent(QKeyEvent* event) {
+  switch (event->key()) {
+    case Qt::Key_Left:
+      setSelectedIndex(0);
+      event->accept();
+      break;
+    case Qt::Key_Right:
+      setSelectedIndex(1);
+      event->accept();
+      break;
+    case Qt::Key_Space:
+    case Qt::Key_Return:
+      setSelectedIndex(1 - selected_);
+      event->accept();
+      break;
+    default:
+      QWidget::keyPressEvent(event);
+  }
+}
+
+void DualOptionsWidget::changeEvent(QEvent* event) {
+  QWidget::changeEvent(event);
+  if (event->type() == QEvent::EnabledChange) {
+    update();
+  }
+}
+
+void DualOptionsWidget::animateSelectedIndex(int index) {
+  const qreal target = static_cast<qreal>(index);
+  if (selection_animation_ == nullptr || !isVisible()) {
+    visual_selection_ = target;
+    update();
+    return;
+  }
+
+  selection_animation_->stop();
+  selection_animation_->setStartValue(visual_selection_);
+  selection_animation_->setEndValue(target);
+  selection_animation_->start();
+}
+
+}  // namespace PJ
