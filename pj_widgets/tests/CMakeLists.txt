@@ -373,3 +373,19 @@ set_target_properties(timeline_widget_test PROPERTIES
 )
 
 add_test(NAME TimelineWidgetTest COMMAND timeline_widget_test)
+
+add_executable(scrollbar_test scrollbar_test.cpp)
+set_target_properties(scrollbar_test PROPERTIES
+    AUTOMOC ON
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
+)
+target_link_libraries(scrollbar_test PRIVATE
+    pj_widgets
+    GTest::gtest_main
+    Qt6::Test
+    Qt6::Widgets
+)
+if(DEFINED PJ_WARNING_FLAGS)
+    target_compile_options(scrollbar_test PRIVATE ${PJ_WARNING_FLAGS})
+endif()
+add_test(NAME ScrollbarTest COMMAND scrollbar_test)

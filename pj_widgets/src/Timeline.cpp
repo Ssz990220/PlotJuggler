@@ -4,12 +4,12 @@
 #include "pj_widgets/Timeline.h"
 
 #include <QColor>
+#include <QCoreApplication>
 #include <QEvent>
 #include <QFontMetricsF>
 #include <QFrame>
 #include <QGraphicsItem>
 #include <QGraphicsLineItem>
-#include <QGraphicsOpacityEffect>
 #include <QGraphicsRectItem>
 #include <QGuiApplication>
 #include <QHBoxLayout>
@@ -20,7 +20,6 @@
 #include <QPainterPath>
 #include <QPalette>
 #include <QPen>
-#include <QPropertyAnimation>
 #include <QPushButton>
 #include <QResizeEvent>
 #include <QScrollBar>
@@ -37,6 +36,7 @@
 #include <optional>
 #include <utility>
 
+#include "pj_widgets/Scrollbar.h"
 #include "pj_widgets/SvgButton.h"
 #include "pj_widgets/ThemeColors.h"
 
@@ -715,60 +715,6 @@ class TimelineBackgroundItem : public QGraphicsItem {
   qint64 data_max_ns_ = 0;
 };
 
-/// Custom horizontal scroll indicator: a small blue "pill" overlaid on the
-/// bottom strip of the timeline view, replacing the native scrollbar. Purely
-/// visual — transparent for mouse events, so the Timeline keeps a single source
-/// of truth for hover/drag (it owns the interaction and feeds the handle rect via
-/// setHandle()). Fades in/out via a QGraphicsOpacityEffect the Timeline animates.
-class TimelineScrollPill : public QWidget {
- public:
-  static constexpr int kAreaThickness = 14;  // strip the pill hovers in (px)
-  static constexpr double kThickness = 6.0;  // visual pill thickness (px), centered across the strip
-
-  explicit TimelineScrollPill(QWidget* parent, Qt::Orientation orientation = Qt::Horizontal)
-      : QWidget(parent), orientation_(orientation) {
-    // The Timeline drives all interaction through the view's event filter, so the
-    // overlay must never intercept events itself.
-    setAttribute(Qt::WA_TransparentForMouseEvents, true);
-    setAttribute(Qt::WA_NoSystemBackground, true);
-    setAttribute(Qt::WA_TranslucentBackground, true);
-  }
-
-  /// Handle geometry along the scroll axis, in overlay-local pixels: pos is x (top
-  /// for vertical) and length is the handle's extent. length <= 0 paints nothing.
-  void setHandle(double pos, double length) {
-    handle_pos_ = pos;
-    handle_len_ = length;
-    update();
-  }
-
- protected:
-  void paintEvent(QPaintEvent* /*event*/) override {
-    if (handle_len_ <= 0.0) {
-      return;
-    }
-    QPainter painter(this);
-    painter.setRenderHint(QPainter::Antialiasing, true);
-    // Center the pill across the strip's cross-axis; lay it along the scroll axis.
-    QRectF r;
-    if (orientation_ == Qt::Horizontal) {
-      const double y = (static_cast<double>(height()) - kThickness) / 2.0;
-      r = QRectF(handle_pos_, y, handle_len_, kThickness);
-    } else {
-      const double x = (static_cast<double>(width()) - kThickness) / 2.0;
-      r = QRectF(x, handle_pos_, kThickness, handle_len_);
-    }
-    painter.setPen(Qt::NoPen);
-    painter.setBrush(theme::kBlue);
-    painter.drawRoundedRect(r, kThickness / 2.0, kThickness / 2.0);
-  }
-
- private:
-  Qt::Orientation orientation_;
-  double handle_pos_ = 0.0;
-  double handle_len_ = 0.0;
-};
-
 /// One name-column row: where to paint it (viewport-local y/height, supplied by
 /// the Timeline so it matches the bar row exactly) plus the label and bar color.
 struct TimelineNameRow {
@@ -954,7 +900,6 @@ constexpr double kRowGap = 2.0;
 // of breathing room).
 constexpr double kRowsTopOffset = 28.0;  // first-dataset vertical offset (px)
 constexpr double kMinBarWidthPx = 2.0;
-constexpr double kMinScrollPillWidthPx = 28.0;  // floor so a tiny handle stays grabbable
 constexpr double kSnapThresholdPx = 8.0;        // catch distance for edge-snap during a drag
 constexpr double kSnapReleaseExtraPx = 6.0;     // extra hysteresis band before an active snap releases
 const QColor kSnapLineColor(0xFF, 0x6D, 0x00);  // orange alignment guide, distinct from playhead/reference
@@ -1005,9 +950,11 @@ Timeline::Timeline(QWidget* parent) : QWidget(parent) {
   // shows in any viewport area beyond the scene rect. Kept in step via changeEvent.
   view_->setBackgroundBrush(QGuiApplication::palette().color(QPalette::Window));
   view_->setAlignment(Qt::AlignLeft | Qt::AlignTop);
-  // Both native scrollbars are hidden in favour of the custom hover pills
-  // (scroll_pill_ / vscroll_pill_); AlwaysOff hides the widget but KEEPS each
-  // scrollbar's range + value, so panning still flows through scrollBar()->setValue().
+  // The native bars are hidden in favour of PJ::Scrollbar overlay pills
+  // (h_scrollbar_ / v_scrollbar_). AlwaysOff hides the widget but KEEPS each
+  // scrollbar's range + value live, so panning still flows through setValue().
+  // Scrollbar::attach() re-applies AlwaysOff, so the lines below are belt-and-
+  // suspenders and harmless if called before attach().
   view_->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
   view_->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
   view_->setTransformationAnchor(QGraphicsView::NoAnchor);
@@ -1020,6 +967,18 @@ Timeline::Timeline(QWidget* parent) : QWidget(parent) {
   // Forward the view's mouse/wheel events to this widget's overrides so a single
   // set of handlers drives bar drag, playhead seek, scroll, and zoom.
   view_->viewport()->installEventFilter(this);
+  // Attach PJ::Scrollbar overlays AFTER Timeline's own viewport event filter so
+  // each Scrollbar's filter is installed last (LIFO → called first), letting it
+  // consume strip-drag/hover events before Timeline's pan/zoom handler sees them.
+  // The Timeline owns its whole viewport (no foreign clickable content under the
+  // strips), so opt into click-to-scroll: a press anywhere in the strip grabs and
+  // jumps the handle, matching the pre-extraction TimelineScrollPill behavior.
+  h_scrollbar_ = new Scrollbar(Qt::Horizontal);
+  h_scrollbar_->setClickToScroll(true);
+  h_scrollbar_->attach(view_);
+  v_scrollbar_ = new Scrollbar(Qt::Vertical);
+  v_scrollbar_->setClickToScroll(true);
+  v_scrollbar_->attach(view_);
 
   align_button_ = new QPushButton(tr("Align"), this);
   align_button_->setToolTip(tr("Shift every source so their starts line up at the earliest start"));
@@ -1064,10 +1023,10 @@ Timeline::Timeline(QWidget* parent) : QWidget(parent) {
   name_splitter_->setStretchFactor(0, 0);  // the column keeps its width
   name_splitter_->setStretchFactor(1, 1);  // the view absorbs extra space
   name_splitter_->setSizes({timeline_detail::TimelineNamePanel::kDefaultWidth, 1 << 16});
-  // Resizing the column shifts the view, so re-place the scroll pill overlay; and
+  // Resizing the column shifts the view, so re-place the lock overlay; and
   // tell the host the user's chosen width so it sticks across rebuilds + persists.
   connect(name_splitter_, &QSplitter::splitterMoved, this, [this](int, int) {
-    updateScrollPillGeometry();
+    updateLockOverlayGeometry();
     emit nameColumnWidthChanged(nameColumnWidth());
   });
 
@@ -1104,29 +1063,6 @@ Timeline::Timeline(QWidget* parent) : QWidget(parent) {
   snap_line_item_->setVisible(false);
   gscene_->addItem(snap_line_item_);
 
-  // Custom scroll pill overlay. Lives on top of the view (a sibling child of this
-  // widget, positioned manually over the viewport's bottom strip — never in the
-  // layout). Starts fully faded out; the hover logic fades it in.
-  scroll_pill_ = new timeline_detail::TimelineScrollPill(this);
-  pill_opacity_ = new QGraphicsOpacityEffect(scroll_pill_);
-  pill_opacity_->setOpacity(0.0);
-  scroll_pill_->setGraphicsEffect(pill_opacity_);
-  scroll_pill_->show();
-  scroll_pill_->raise();
-  pill_fade_ = new QPropertyAnimation(pill_opacity_, "opacity", this);
-  pill_fade_->setDuration(150);  // gentle fade in/out
-
-  // Vertical twin of the scroll pill, on the viewport's right strip (mirrors the
-  // hidden vertical scrollbar). Same overlay treatment + fade.
-  vscroll_pill_ = new timeline_detail::TimelineScrollPill(this, Qt::Vertical);
-  vpill_opacity_ = new QGraphicsOpacityEffect(vscroll_pill_);
-  vpill_opacity_->setOpacity(0.0);
-  vscroll_pill_->setGraphicsEffect(vpill_opacity_);
-  vscroll_pill_->show();
-  vscroll_pill_->raise();
-  vpill_fade_ = new QPropertyAnimation(vpill_opacity_, "opacity", this);
-  vpill_fade_->setDuration(150);
-
   // "Frozen" overlay: a centered pill shown over the scene while the timeline is
   // interaction-locked (live streaming + playing), telling the user how to interact.
   // Purely informational — WA_TransparentForMouseEvents so it never changes event
@@ -1145,17 +1081,18 @@ Timeline::Timeline(QWidget* parent) : QWidget(parent) {
       "font-size: 18px; font-weight: 600; }"));
   lock_overlay_->hide();
 
-  // Keep both pills glued to their scrollbar handles when panning/zoom/resize change them.
-  connect(view_->horizontalScrollBar(), &QScrollBar::valueChanged, this, [this](int) { updateScrollPillGeometry(); });
+  // Recenter the lock overlay on scroll / range changes; the PJ::Scrollbar overlays
+  // maintain their own geometry via internal connections inside attach().
+  connect(view_->horizontalScrollBar(), &QScrollBar::valueChanged, this, [this](int) { updateLockOverlayGeometry(); });
   connect(
-      view_->horizontalScrollBar(), &QScrollBar::rangeChanged, this, [this](int, int) { updateScrollPillGeometry(); });
+      view_->horizontalScrollBar(), &QScrollBar::rangeChanged, this, [this](int, int) { updateLockOverlayGeometry(); });
   connect(view_->verticalScrollBar(), &QScrollBar::valueChanged, this, [this](int) {
     updateNamePanel();
     syncStickyHeader();  // keep the number line pinned to the top as the rows scroll
-    updateScrollPillGeometry();
+    updateLockOverlayGeometry();
   });
   connect(
-      view_->verticalScrollBar(), &QScrollBar::rangeChanged, this, [this](int, int) { updateScrollPillGeometry(); });
+      view_->verticalScrollBar(), &QScrollBar::rangeChanged, this, [this](int, int) { updateLockOverlayGeometry(); });
 
   rebuild();
 }
@@ -1547,49 +1484,6 @@ TimeSpan Timeline::computeBufferedExtent() const {
   return out;
 }
 
-void Timeline::updateScrollPillGeometry() {
-  const QWidget* vp = view_->viewport();
-  const int strip = timeline_detail::TimelineScrollPill::kAreaThickness;
-
-  // Maps a scrollbar onto a pill handle: the total slider span is range + page ==
-  // the content extent in px; the handle covers [value, value+page]. Returns the
-  // handle's start + length in track pixels, or {0,0} when there's nothing to scroll.
-  const auto handle_for = [](const QScrollBar* bar, double track_len) -> std::pair<double, double> {
-    const double range = static_cast<double>(bar->maximum() - bar->minimum());
-    const double page = static_cast<double>(bar->pageStep());
-    if (range <= 0.0 || page <= 0.0) {
-      return {0.0, 0.0};
-    }
-    const double total = range + page;
-    const double len = std::max(kMinScrollPillWidthPx, (page / total) * track_len);
-    const double frac = static_cast<double>(bar->value() - bar->minimum()) / total;
-    const double pos = std::clamp(frac * track_len, 0.0, std::max(0.0, track_len - len));
-    return {pos, len};
-  };
-
-  // Horizontal pill: bottom strip across the full viewport width.
-  if (scroll_pill_ != nullptr) {
-    const QPoint tl = vp->mapTo(this, QPoint(0, vp->height() - strip));
-    scroll_pill_->setGeometry(tl.x(), tl.y(), vp->width(), strip);
-    const auto handle = handle_for(view_->horizontalScrollBar(), static_cast<double>(vp->width()));
-    pill_x_ = handle.first;
-    pill_w_ = handle.second;
-    scroll_pill_->setHandle(pill_x_, pill_w_);
-  }
-  // Vertical pill: right strip down the full viewport height.
-  if (vscroll_pill_ != nullptr) {
-    const QPoint tl = vp->mapTo(this, QPoint(vp->width() - strip, 0));
-    vscroll_pill_->setGeometry(tl.x(), tl.y(), strip, vp->height());
-    const auto handle = handle_for(view_->verticalScrollBar(), static_cast<double>(vp->height()));
-    vpill_y_ = handle.first;
-    vpill_h_ = handle.second;
-    vscroll_pill_->setHandle(vpill_y_, vpill_h_);
-  }
-  // The lock overlay rides over the same viewport, so recenter it on the same triggers
-  // (resize, zoom/pan range changes, splitter drag) that move the pills.
-  updateLockOverlayGeometry();
-}
-
 void Timeline::updateLockOverlayGeometry() {
   if (lock_overlay_ == nullptr) {
     return;
@@ -1609,53 +1503,6 @@ void Timeline::updateLockOverlayGeometry() {
   const int x = (vp->width() - lock_overlay_->width()) / 2;
   const int y = (vp->height() - lock_overlay_->height()) / 2;
   lock_overlay_->move(vp->mapTo(this, QPoint(std::max(0, x), std::max(0, y))));
-}
-
-void Timeline::setScrollPillShown(bool shown) {
-  const QScrollBar* hbar = view_->horizontalScrollBar();
-  // Ignore a show request when there's nothing to scroll (matches ScrollBarAsNeeded).
-  const bool want = shown && (hbar->maximum() > hbar->minimum());
-  if (want == pill_shown_) {
-    return;
-  }
-  pill_shown_ = want;
-  if (want) {
-    updateScrollPillGeometry();
-    scroll_pill_->raise();
-  }
-  pill_fade_->stop();
-  pill_fade_->setStartValue(pill_opacity_->opacity());
-  pill_fade_->setEndValue(want ? 1.0 : 0.0);
-  pill_fade_->start();
-}
-
-void Timeline::setVScrollPillShown(bool shown) {
-  const QScrollBar* vbar = view_->verticalScrollBar();
-  const bool want = shown && (vbar->maximum() > vbar->minimum());
-  if (want == vpill_shown_) {
-    return;
-  }
-  vpill_shown_ = want;
-  if (want) {
-    updateScrollPillGeometry();
-    vscroll_pill_->raise();
-  }
-  vpill_fade_->stop();
-  vpill_fade_->setStartValue(vpill_opacity_->opacity());
-  vpill_fade_->setEndValue(want ? 1.0 : 0.0);
-  vpill_fade_->start();
-}
-
-bool Timeline::pointInPillArea(const QPoint& viewport_pos) const {
-  const QWidget* vp = view_->viewport();
-  const int strip_top = vp->height() - timeline_detail::TimelineScrollPill::kAreaThickness;
-  return viewport_pos.y() >= strip_top && viewport_pos.x() >= 0 && viewport_pos.x() <= vp->width();
-}
-
-bool Timeline::pointInVPillArea(const QPoint& viewport_pos) const {
-  const QWidget* vp = view_->viewport();
-  const int strip_left = vp->width() - timeline_detail::TimelineScrollPill::kAreaThickness;
-  return viewport_pos.x() >= strip_left && viewport_pos.y() >= 0 && viewport_pos.y() <= vp->height();
 }
 
 void Timeline::updateNamePanel() {
@@ -1917,8 +1764,6 @@ void Timeline::setInteractionLocked(bool locked) {
     drag_group_.clear();
     dragging_playhead_ = false;
     dragging_reference_ = false;
-    dragging_pill_ = false;
-    dragging_vpill_ = false;
     panning_ = false;
     name_drag_index_ = -1;
     name_dragging_ = false;
@@ -1929,6 +1774,16 @@ void Timeline::setInteractionLocked(bool locked) {
   }
   // The merge prompt is suppressed while locked, restored (if ≥2 still selected) on unlock.
   updateMergeButton();
+  // Disable/enable scroll-pill drag on the overlay scrollbars. The Scrollbar
+  // filter runs first (LIFO; installed after Timeline's own viewport filter), so
+  // setInteractive(false) is required to stop it consuming strip-drag events while
+  // the timeline is locked — returning early in our handlers is not sufficient.
+  if (h_scrollbar_ != nullptr) {
+    h_scrollbar_->setInteractive(!locked);
+  }
+  if (v_scrollbar_ != nullptr) {
+    v_scrollbar_->setInteractive(!locked);
+  }
 }
 
 Timeline::DragSnap Timeline::computeDragSnap(qint64 raw_delta_ns) {
@@ -2049,28 +1904,30 @@ QString Timeline::markerLabelForTest(qint64 ns) const {
 }
 
 void Timeline::pressViewportForTest(QPoint viewport_pos) {
+  // Route through the full event-filter chain so the PJ::Scrollbar overlay (installed
+  // last = called first in LIFO order) can consume strip events before Timeline sees them.
   const QPointF global = view_->viewport()->mapToGlobal(viewport_pos);
   QMouseEvent ev(
       QEvent::MouseButtonPress, QPointF(viewport_pos), global, Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
-  mousePressEvent(&ev);
+  QCoreApplication::sendEvent(view_->viewport(), &ev);
 }
 
 void Timeline::moveViewportForTest(QPoint viewport_pos, bool button_down) {
   const QPointF global = view_->viewport()->mapToGlobal(viewport_pos);
   const Qt::MouseButtons buttons = button_down ? Qt::LeftButton : Qt::NoButton;
   QMouseEvent ev(QEvent::MouseMove, QPointF(viewport_pos), global, Qt::NoButton, buttons, Qt::NoModifier);
-  mouseMoveEvent(&ev);
+  QCoreApplication::sendEvent(view_->viewport(), &ev);
 }
 
 void Timeline::releaseViewportForTest(QPoint viewport_pos) {
   const QPointF global = view_->viewport()->mapToGlobal(viewport_pos);
   QMouseEvent ev(
       QEvent::MouseButtonRelease, QPointF(viewport_pos), global, Qt::LeftButton, Qt::NoButton, Qt::NoModifier);
-  mouseReleaseEvent(&ev);
+  QCoreApplication::sendEvent(view_->viewport(), &ev);
 }
 
 bool Timeline::isScrollPillShownForTest() const {
-  return pill_shown_;
+  return h_scrollbar_ != nullptr && h_scrollbar_->isShown();
 }
 
 int Timeline::scrollValueForTest() const {
@@ -2090,7 +1947,7 @@ int Timeline::viewportWidthForTest() const {
 }
 
 bool Timeline::isVScrollPillShownForTest() const {
-  return vpill_shown_;
+  return v_scrollbar_ != nullptr && v_scrollbar_->isShown();
 }
 
 bool Timeline::verticalScrollBarVisibleForTest() const {
@@ -2328,47 +2185,14 @@ void Timeline::mousePressEvent(QMouseEvent* event) {
   }
   const QPoint view_pos = view_->viewport()->mapFromGlobal(event->globalPosition().toPoint());
 
-  // Locked (e.g. live streaming + playing): the whole view is frozen — no scroll-pill
-  // grab, needle seek, or bar-offset drag. Scrolling/zooming is also blocked (see
-  // wheelEvent). The needles still track playback via setPlayhead.
+  // Locked (e.g. live streaming + playing): the whole view is frozen — no needle
+  // seek, or bar-offset drag. Scrolling/zooming is also blocked (see wheelEvent).
+  // The needles still track playback via setPlayhead. The PJ::Scrollbar overlays
+  // are also suppressed: their event filter runs FIRST (installed last, LIFO order),
+  // and setInteractionLocked calls h_scrollbar_->setInteractive(false) /
+  // v_scrollbar_->setInteractive(false) so their filter passes all events through
+  // without starting or consuming a drag — this filter then runs and returns early.
   if (interaction_locked_) {
-    event->accept();
-    return;
-  }
-
-  // Scroll pill: a press in the bottom strip grabs the pill. Off the handle, jump
-  // it to center under the cursor first, then drag from there.
-  QScrollBar* hbar = view_->horizontalScrollBar();
-  if (pointInPillArea(view_pos) && hbar->maximum() > hbar->minimum()) {
-    const double track_w = static_cast<double>(scroll_pill_->width());
-    const double total = static_cast<double>(hbar->maximum() - hbar->minimum() + hbar->pageStep());
-    const bool on_handle = view_pos.x() >= pill_x_ && view_pos.x() <= pill_x_ + pill_w_;
-    if (!on_handle && track_w > 0.0) {
-      const double want_left = std::clamp(view_pos.x() - (pill_w_ / 2.0), 0.0, std::max(0.0, track_w - pill_w_));
-      hbar->setValue(hbar->minimum() + static_cast<int>(std::llround((want_left / track_w) * total)));
-    }
-    dragging_pill_ = true;
-    pill_drag_start_x_ = event->globalPosition().x();
-    pill_drag_start_value_ = hbar->value();
-    setScrollPillShown(true);
-    event->accept();
-    return;
-  }
-
-  // Vertical scroll pill: same logic on the right strip / vertical scrollbar.
-  QScrollBar* vbar = view_->verticalScrollBar();
-  if (pointInVPillArea(view_pos) && vbar->maximum() > vbar->minimum()) {
-    const double track_h = static_cast<double>(vscroll_pill_->height());
-    const double total = static_cast<double>(vbar->maximum() - vbar->minimum() + vbar->pageStep());
-    const bool on_handle = view_pos.y() >= vpill_y_ && view_pos.y() <= vpill_y_ + vpill_h_;
-    if (!on_handle && track_h > 0.0) {
-      const double want_top = std::clamp(view_pos.y() - (vpill_h_ / 2.0), 0.0, std::max(0.0, track_h - vpill_h_));
-      vbar->setValue(vbar->minimum() + static_cast<int>(std::llround((want_top / track_h) * total)));
-    }
-    dragging_vpill_ = true;
-    vpill_drag_start_y_ = event->globalPosition().y();
-    vpill_drag_start_value_ = vbar->value();
-    setVScrollPillShown(true);
     event->accept();
     return;
   }
@@ -2421,38 +2245,13 @@ void Timeline::mousePressEvent(QMouseEvent* event) {
   panning_ = true;
   pan_moved_ = false;
   pan_start_global_x_ = event->globalPosition().x();
-  pan_start_scroll_value_ = hbar->value();
+  pan_start_scroll_value_ = view_->horizontalScrollBar()->value();
   event->accept();
 }
 
 void Timeline::mouseMoveEvent(QMouseEvent* event) {
   const QPoint view_pos = view_->viewport()->mapFromGlobal(event->globalPosition().toPoint());
   const QPointF scene_pos = view_->mapToScene(view_pos);
-
-  // Scroll pill drag: map the global-x delta since grab to a scrollbar value delta.
-  if (dragging_pill_) {
-    QScrollBar* hbar = view_->horizontalScrollBar();
-    const double track_w = static_cast<double>(scroll_pill_->width());
-    const double total = static_cast<double>(hbar->maximum() - hbar->minimum() + hbar->pageStep());
-    if (track_w > 0.0) {
-      const double dx = event->globalPosition().x() - pill_drag_start_x_;
-      hbar->setValue(pill_drag_start_value_ + static_cast<int>(std::llround((dx / track_w) * total)));
-    }
-    event->accept();
-    return;
-  }
-  // Vertical scroll pill drag: same, mapping the global-y delta to the vbar.
-  if (dragging_vpill_) {
-    QScrollBar* vbar = view_->verticalScrollBar();
-    const double track_h = static_cast<double>(vscroll_pill_->height());
-    const double total = static_cast<double>(vbar->maximum() - vbar->minimum() + vbar->pageStep());
-    if (track_h > 0.0) {
-      const double dy = event->globalPosition().y() - vpill_drag_start_y_;
-      vbar->setValue(vpill_drag_start_value_ + static_cast<int>(std::llround((dy / track_h) * total)));
-    }
-    event->accept();
-    return;
-  }
 
   // Background pan: drag the view horizontally (content follows the cursor, so the
   // scrollbar moves opposite the delta). A move past the threshold commits it to a
@@ -2509,31 +2308,14 @@ void Timeline::mouseMoveEvent(QMouseEvent* event) {
     event->accept();
     return;
   }
-  // No drag in progress: reveal each pill while the cursor is in its strip (bottom
-  // for horizontal, right for vertical), hide otherwise. (Skipped during a drag.)
-  setScrollPillShown(pointInPillArea(view_pos));
-  setVScrollPillShown(pointInVPillArea(view_pos));
+  // No drag in progress: the PJ::Scrollbar overlays handle hover-reveal and
+  // leave-hide via their own event filter on the viewport.
   QWidget::mouseMoveEvent(event);
 }
 
 void Timeline::mouseReleaseEvent(QMouseEvent* event) {
   if (event->button() != Qt::LeftButton) {
     QWidget::mouseReleaseEvent(event);
-    return;
-  }
-  if (dragging_pill_) {
-    dragging_pill_ = false;
-    // Fade out if the cursor ended outside the strip; otherwise stay shown until it leaves.
-    const QPoint view_pos = view_->viewport()->mapFromGlobal(event->globalPosition().toPoint());
-    setScrollPillShown(pointInPillArea(view_pos));
-    event->accept();
-    return;
-  }
-  if (dragging_vpill_) {
-    dragging_vpill_ = false;
-    const QPoint view_pos = view_->viewport()->mapFromGlobal(event->globalPosition().toPoint());
-    setVScrollPillShown(pointInVPillArea(view_pos));
-    event->accept();
     return;
   }
   if (panning_) {
@@ -2577,7 +2359,7 @@ void Timeline::mouseReleaseEvent(QMouseEvent* event) {
 void Timeline::resizeEvent(QResizeEvent* event) {
   QWidget::resizeEvent(event);
   rebuild();
-  updateScrollPillGeometry();  // re-overlay the bottom strip at the new size
+  updateLockOverlayGeometry();  // re-overlay the lock overlay at the new size
 }
 
 void Timeline::changeEvent(QEvent* event) {
@@ -2637,15 +2419,6 @@ bool Timeline::eventFilter(QObject* watched, QEvent* event) {
       case QEvent::Wheel:
         wheelEvent(static_cast<QWheelEvent*>(event));
         return event->isAccepted();
-      case QEvent::Leave:
-        // Cursor left the view: fade the scroll pills out (unless a drag holds one).
-        if (!dragging_pill_) {
-          setScrollPillShown(false);
-        }
-        if (!dragging_vpill_) {
-          setVScrollPillShown(false);
-        }
-        break;
       default:
         break;
     }

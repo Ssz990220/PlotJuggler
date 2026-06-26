@@ -18,8 +18,6 @@ class QLabel;
 class QPushButton;
 class QToolButton;
 class QGraphicsLineItem;
-class QGraphicsOpacityEffect;
-class QPropertyAnimation;
 class QSplitter;
 
 namespace PJ {
@@ -162,12 +160,13 @@ class TimelineScene {
   TimeSpan default_extent_{0, 60'000'000'000};  // sceneExtent() when empty; see setDefaultExtent
 };
 
+class Scrollbar;
+
 namespace timeline_detail {
 class TimelineBarItem;
 class TimelineRulerItem;
 class TimelineNeedleItem;
 class TimelineBackgroundItem;
-class TimelineScrollPill;
 class TimelineNamePanel;
 }  // namespace timeline_detail
 
@@ -197,9 +196,10 @@ class TimelineNamePanel;
 /// multi-selectable (plain click selects one, Ctrl/Meta+click toggles, Shift+click
 /// extends a range), highlighting both the row and its bar; when ≥2 are selected a
 /// "Merge selected datasets:" prompt with a merge button appears below the column and
-/// emits mergeRequested. The scrollable view sits to its right. The native horizontal scrollbar is replaced by a blue
-/// "pill" that fades in when the cursor enters the view's bottom strip, mirrors the scrollbar handle, and scrolls the
-/// view when dragged.
+/// emits mergeRequested. The scrollable view sits to its right. The native horizontal
+/// and vertical scroll bars are replaced by PJ::Scrollbar overlay pills (h_scrollbar_
+/// / v_scrollbar_) that fade in on hover over their respective edge strip and scroll
+/// the view when dragged.
 ///
 /// Navigation: the mouse wheel zooms horizontally, anchored at the cursor (the
 /// instant under the pointer stays put); a left-drag on empty background pans the
@@ -262,13 +262,14 @@ class Timeline : public QWidget {
   /// Lets a test pin the absolute formatter's millisecond rounding (vs playback).
   [[nodiscard]] QString markerLabelForTest(qint64 ns) const;
 
-  /// Test seams driving the exact viewport mouse path the event filter feeds
-  /// (press/move/release at a viewport-local point), so the scroll-pill logic can
-  /// be exercised without flaky synthetic OS events. `button_down` marks a drag move.
+  /// Test seams: synthesise viewport mouse events and route them through the full
+  /// event-filter chain (Scrollbar overlay first, then Timeline handler), so the
+  /// scroll-pill and interaction logic can be exercised without flaky synthetic OS
+  /// events. `button_down` marks a drag move.
   void pressViewportForTest(QPoint viewport_pos);
   void moveViewportForTest(QPoint viewport_pos, bool button_down);
   void releaseViewportForTest(QPoint viewport_pos);
-  /// Scroll-pill inspection seams.
+  /// Scroll-pill inspection seams: query the attached PJ::Scrollbar overlay.
   [[nodiscard]] bool isScrollPillShownForTest() const;
   [[nodiscard]] int scrollValueForTest() const;
   [[nodiscard]] bool horizontalScrollBarVisibleForTest() const;
@@ -507,24 +508,11 @@ class Timeline : public QWidget {
   /// rebuild() from `scene_.sceneExtent()`; reset when the raw data changes.
   [[nodiscard]] TimeSpan computeBufferedExtent() const;
 
-  /// Reposition the scroll-pill overlay over the viewport's bottom strip and
-  /// recompute its handle rect from the (now-hidden) horizontal scrollbar's
-  /// value/range/pageStep, so the pill tracks the scrollbar handle exactly.
-  /// Reposition + re-map BOTH scroll pills (horizontal on the bottom strip,
-  /// vertical on the right strip) from their hidden scrollbars' value/range/
-  /// pageStep, so each pill tracks its scrollbar handle exactly.
-  void updateScrollPillGeometry();
   /// Recenter the interaction-lock overlay (see setInteractionLocked) over the scene
-  /// viewport, capping its width so it wraps on a narrow timeline. Called on the same
-  /// triggers as the scroll pills (resize/zoom/pan/splitter) plus when the lock turns on.
+  /// viewport, capping its width so it wraps on a narrow timeline. Called on
+  /// resize / zoom / splitter drag plus when the lock turns on. (The PJ::Scrollbar
+  /// overlays recalculate their own geometry internally via scrollbar connections.)
   void updateLockOverlayGeometry();
-  /// Fade the horizontal / vertical scroll pill in (shown) or out. A show request
-  /// is ignored when there is nothing to scroll (that scrollbar has no range).
-  void setScrollPillShown(bool shown);
-  void setVScrollPillShown(bool shown);
-  /// True when a viewport-space point falls in the bottom / right scroll-pill strip.
-  [[nodiscard]] bool pointInPillArea(const QPoint& viewport_pos) const;
-  [[nodiscard]] bool pointInVPillArea(const QPoint& viewport_pos) const;
 
   /// Refresh the left name column: one row per track, positioned in viewport-local
   /// y (scene row y minus the vertical scroll offset) so each name lines up with
@@ -655,28 +643,12 @@ class Timeline : public QWidget {
   // informational. See setInteractionLocked + updateLockOverlayGeometry.
   QLabel* lock_overlay_ = nullptr;
 
-  // --- custom horizontal scroll pill (replaces the native scrollbar) ---
-  // A blue overlay handle on the viewport's bottom strip that mirrors the hidden
-  // scrollbar handle, fades in on hover, and scrolls the view when dragged.
-  timeline_detail::TimelineScrollPill* scroll_pill_ = nullptr;
-  QGraphicsOpacityEffect* pill_opacity_ = nullptr;  // 0..1; animated by pill_fade_
-  QPropertyAnimation* pill_fade_ = nullptr;         // fade in/out of scroll_pill_
-  bool pill_shown_ = false;                         // logical hover/visible state
-  bool dragging_pill_ = false;                      // pill grab in progress
-  double pill_drag_start_x_ = 0.0;                  // global cursor x at pill grab
-  int pill_drag_start_value_ = 0;                   // scrollbar value at pill grab
-  double pill_x_ = 0.0;                             // current handle left (overlay-local px)
-  double pill_w_ = 0.0;                             // current handle width (px); 0 => no handle
-  // Vertical twin of the scroll pill (right strip; mirrors the vertical scrollbar).
-  timeline_detail::TimelineScrollPill* vscroll_pill_ = nullptr;
-  QGraphicsOpacityEffect* vpill_opacity_ = nullptr;
-  QPropertyAnimation* vpill_fade_ = nullptr;
-  bool vpill_shown_ = false;
-  bool dragging_vpill_ = false;
-  double vpill_drag_start_y_ = 0.0;  // global cursor y at vertical-pill grab
-  int vpill_drag_start_value_ = 0;   // vertical scrollbar value at grab
-  double vpill_y_ = 0.0;             // current handle top (overlay-local px)
-  double vpill_h_ = 0.0;             // current handle height (px); 0 => no handle
+  // Overlay scroll pills replacing the native horizontal and vertical scroll bars.
+  // Attached to view_ in the constructor (after Timeline's own viewport event
+  // filter) so the Scrollbar's filter is called first in the LIFO chain and can
+  // consume strip-drag events before Timeline's pan/zoom logic sees them.
+  Scrollbar* h_scrollbar_ = nullptr;  // bottom-strip overlay (horizontal)
+  Scrollbar* v_scrollbar_ = nullptr;  // right-strip overlay (vertical)
 };
 
 }  // namespace PJ

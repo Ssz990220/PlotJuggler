@@ -30,6 +30,15 @@ void adaptStyledWidgets(QWidget* root);
 void adaptRadioButtonPairs(QWidget* root);
 void adaptCheckBoxes(QWidget* root);
 void adaptComboBoxes(QWidget* root);
+/// Attach a PJ::Scrollbar overlay (one horizontal + one vertical) to every
+/// QAbstractScrollArea found under `root` that has not yet been adapted. The
+/// native bars are hidden (policy forced to AlwaysOff); the pill overlays own
+/// hover/fade/drag. Idempotent: a marker property prevents double-attachment.
+///
+/// Per-area config (set as dynamic properties BEFORE calling this function):
+///   pjScrollbarAutoHide (bool, default true)  — fade-on-hover vs always-on
+///   pjScrollbarFadeMs   (int,  default 150)   — fade animation duration
+void adaptScrollAreas(QWidget* root);
 
 /// Reactively adapt the single widget `w` if it just became adaptable (e.g.
 /// plugin data selected one option of a previously-unselected radio pair, or

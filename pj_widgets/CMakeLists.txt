@@ -30,6 +30,7 @@ add_library(pj_widgets STATIC
     src/ScrubberBase.cpp
     src/SectionHeaderBand.cpp
     src/SvgButton.cpp
+    src/Scrollbar.cpp
     src/Timeline.cpp
     src/ToggleSwitch.cpp
     src/VisualizationPlaceholderWidget.cpp
@@ -67,6 +68,7 @@ add_library(pj_widgets STATIC
     include/pj_widgets/SvgButton.h
     include/pj_widgets/SvgUtil.h
     include/pj_widgets/ThemeColors.h
+    include/pj_widgets/Scrollbar.h
     include/pj_widgets/Timeline.h
     include/pj_widgets/ToggleSwitch.h
     include/pj_widgets/VisualizationPlaceholderWidget.h

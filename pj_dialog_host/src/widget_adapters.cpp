@@ -7,8 +7,11 @@
 #include <pj_widgets/CredentialsEditor.h>
 #include <pj_widgets/DateRangePicker.h>
 #include <pj_widgets/DualOptionsWidget.h>
+#include <pj_widgets/Scrollbar.h>
 #include <pj_widgets/ToggleSwitch.h>
 
+#include <QAbstractItemView>
+#include <QAbstractScrollArea>
 #include <QBoxLayout>
 #include <QButtonGroup>
 #include <QCheckBox>
@@ -493,10 +496,69 @@ void adaptComboBoxes(QWidget* root) {
   }
 }
 
+void adaptScrollAreas(QWidget* root) {
+  if (root == nullptr) {
+    return;
+  }
+  static constexpr bool kDefaultAutoHide = true;
+  static constexpr int kDefaultFadeMs = 150;
+
+  const QList<QAbstractScrollArea*> areas = root->findChildren<QAbstractScrollArea*>();
+  for (QAbstractScrollArea* area : areas) {
+    if (area->property("pjScrollbarAttached").toBool() || isInsideHostComposite(area)) {
+      continue;
+    }
+    // FIX 7: skip the internal scroll area of a combo-box container — adapting
+    // it would add pill overlays to the combo's own view and/or its popup list.
+    if (qobject_cast<QComboBox*>(area->parentWidget()) != nullptr) {
+      continue;
+    }
+    // FIX 7: skip a QAbstractItemView whose top-level window is a popup (e.g.
+    // the QListView Qt opens for a combo-box drop-down in a transient popup
+    // window — it is closed on selection and should never receive overlays).
+    if (qobject_cast<QAbstractItemView*>(area) != nullptr && (area->window()->windowFlags() & Qt::Popup) == Qt::Popup) {
+      continue;
+    }
+
+    // Respect a deliberately-pinned scrollbar: a plugin that set an axis to
+    // AlwaysOn wants a persistent, draggable native bar (e.g. a log/console
+    // view), which a hover-only pill would silently replace. Skip that axis and
+    // leave its native bar untouched. AsNeeded (the default) and AlwaysOff are
+    // both compatible with the pill (the pill paints over a hidden gutter).
+    const bool adapt_h = area->horizontalScrollBarPolicy() != Qt::ScrollBarAlwaysOn;
+    const bool adapt_v = area->verticalScrollBarPolicy() != Qt::ScrollBarAlwaysOn;
+    if (!adapt_h && !adapt_v) {
+      continue;  // both axes pinned by the plugin; nothing to adapt
+    }
+
+    const bool auto_hide = area->property("pjScrollbarAutoHide").isValid()
+                               ? area->property("pjScrollbarAutoHide").toBool()
+                               : kDefaultAutoHide;
+    const int fade_ms =
+        area->property("pjScrollbarFadeMs").isValid() ? area->property("pjScrollbarFadeMs").toInt() : kDefaultFadeMs;
+
+    const auto attach_pill = [&](Qt::Orientation orientation) {
+      auto* pill = new PJ::Scrollbar(orientation, area);
+      pill->attach(area);
+      pill->setAutoHide(auto_hide);
+      pill->setFadeDurationMs(fade_ms);
+    };
+    if (adapt_h) {
+      attach_pill(Qt::Horizontal);
+    }
+    if (adapt_v) {
+      attach_pill(Qt::Vertical);
+    }
+
+    area->setProperty("pjScrollbarAttached", true);
+  }
+}
+
 void adaptStyledWidgets(QWidget* root) {
   adaptRadioButtonPairs(root);
   adaptCheckBoxes(root);
   adaptComboBoxes(root);
+  adaptScrollAreas(root);
 }
 
 void tryAdaptStyledWidget(QWidget* w) {

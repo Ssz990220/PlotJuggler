@@ -12,8 +12,10 @@
 #include <pj_widgets/DateRangePicker.h>
 #include <pj_widgets/DualOptionsWidget.h>
 #include <pj_widgets/RangeSlider.h>
+#include <pj_widgets/Scrollbar.h>
 #include <pj_widgets/ToggleSwitch.h>
 
+#include <QAbstractScrollArea>
 #include <QApplication>
 #include <QBuffer>
 #include <QButtonGroup>
@@ -24,6 +26,7 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QRadioButton>
+#include <QScrollArea>
 #include <QSpacerItem>
 #include <QSpinBox>
 #include <QTabBar>
@@ -729,6 +732,81 @@ TEST(WidgetBindingTabWidget, DocumentModeSurvivesLoadAndApplyRestoresExpanding) 
       << "apply must drop the document-mode base line (stray line over the unselected tab)";
   EXPECT_EQ(tabs->currentIndex(), 1);
   delete root;
+}
+
+// --- adaptScrollAreas --------------------------------------------------------
+
+// A QScrollArea under root gets one H + one V PJ::Scrollbar attached, the
+// native bars are forced to AlwaysOff, and a second call produces no duplicates.
+TEST(WidgetScrollAreaAdapter, AttachesHAndVScrollbarsAndHidesNativeBars) {
+  qapp();
+
+  QWidget root;
+  auto* layout = new QVBoxLayout(&root);
+  auto* area = new QScrollArea(&root);
+  auto* inner = new QWidget();
+  inner->setMinimumSize(2000, 2000);
+  area->setWidget(inner);
+  layout->addWidget(area);
+
+  PJ::adaptScrollAreas(&root);
+
+  const auto scrollbars = root.findChildren<PJ::Scrollbar*>();
+  ASSERT_EQ(scrollbars.size(), 2) << "expect one H + one V Scrollbar per area";
+
+  EXPECT_EQ(area->horizontalScrollBarPolicy(), Qt::ScrollBarAlwaysOff)
+      << "attach() must hide the native horizontal bar";
+  EXPECT_EQ(area->verticalScrollBarPolicy(), Qt::ScrollBarAlwaysOff) << "attach() must hide the native vertical bar";
+
+  // Idempotent: a second call must not add more scrollbars.
+  PJ::adaptScrollAreas(&root);
+  EXPECT_EQ(root.findChildren<PJ::Scrollbar*>().size(), 2)
+      << "pjScrollbarAttached marker must prevent duplicate overlays";
+}
+
+// A pjScrollbarAutoHide=false property on the area propagates to both pills,
+// which must transition immediately to the shown state (full opacity).
+TEST(WidgetScrollAreaAdapter, PropagatesAutoHideFalseConfig) {
+  qapp();
+
+  QWidget root;
+  auto* layout = new QVBoxLayout(&root);
+  auto* area = new QScrollArea(&root);
+  auto* inner = new QWidget();
+  inner->setMinimumSize(2000, 2000);
+  area->setWidget(inner);
+  area->setProperty("pjScrollbarAutoHide", false);
+  layout->addWidget(area);
+
+  PJ::adaptScrollAreas(&root);
+
+  const auto scrollbars = root.findChildren<PJ::Scrollbar*>();
+  ASSERT_EQ(scrollbars.size(), 2);
+  for (auto* sb : scrollbars) {
+    EXPECT_TRUE(sb->isShown()) << "auto-hide=false must force the pill to the shown state immediately";
+  }
+}
+
+// A plugin that pinned an axis to ScrollBarAlwaysOn wants a persistent native
+// bar there; adaptScrollAreas must skip that axis (no pill) and leave its policy
+// untouched, while still adapting the other (default) axis.
+TEST(WidgetScrollAreaAdapter, RespectsAlwaysOnPolicyPerAxis) {
+  qapp();
+
+  QWidget root;
+  auto* layout = new QVBoxLayout(&root);
+  auto* area = new QScrollArea(&root);
+  auto* inner = new QWidget();
+  inner->setMinimumSize(2000, 2000);
+  area->setWidget(inner);
+  area->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOn);  // plugin wants the native V bar
+  layout->addWidget(area);
+
+  PJ::adaptScrollAreas(&root);
+
+  EXPECT_EQ(root.findChildren<PJ::Scrollbar*>().size(), 1) << "only the horizontal (default) axis is adapted";
+  EXPECT_EQ(area->verticalScrollBarPolicy(), Qt::ScrollBarAlwaysOn) << "pinned AlwaysOn vertical bar is left untouched";
+  EXPECT_EQ(area->horizontalScrollBarPolicy(), Qt::ScrollBarAlwaysOff) << "default horizontal axis still gets a pill";
 }
 
 }  // namespace
