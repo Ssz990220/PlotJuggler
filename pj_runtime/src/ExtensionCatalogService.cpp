@@ -5,10 +5,10 @@
 
 #include <QDir>
 #include <QLoggingCategory>
-#include <QStandardPaths>
 #include <utility>
 
 #include "pj_marketplace/extension_manager.hpp"
+#include "pj_marketplace/platform_utils.hpp"
 
 namespace PJ {
 
@@ -16,11 +16,11 @@ namespace {
 Q_LOGGING_CATEGORY(lcCatalog, "pj.app_core.extensions")
 
 QString defaultExtensionsDir() {
-  return QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) + "/extensions";
+  return PlatformUtils::extensionsDir();
 }
 
 QString defaultPendingDir() {
-  return QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) + "/.extension_staging";
+  return PlatformUtils::pendingDir();
 }
 }  // namespace
 

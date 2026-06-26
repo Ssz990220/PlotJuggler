@@ -394,7 +394,7 @@ stop
 
 ### 5.1 Installation Directories
 
-The root is `QStandardPaths::GenericDataLocation` + `/plotjuggler` (Linux: `~/.local/share/plotjuggler/`, macOS: `~/Library/Application Support/plotjuggler/`, Windows: `%LOCALAPPDATA%/plotjuggler/`).
+The root is `QStandardPaths::AppDataLocation` (the `PlotJuggler/PlotJuggler4` org/app pair, shared by the embedded host and the standalone app): Linux `~/.local/share/PlotJuggler/PlotJuggler4/`, macOS `~/Library/Application Support/PlotJuggler/PlotJuggler4/`, Windows `%LOCALAPPDATA%/PlotJuggler/PlotJuggler4/`.
 
 ```
 <config-root>/

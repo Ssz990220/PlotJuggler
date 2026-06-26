@@ -26,19 +26,20 @@ class PlatformUtils {
   //   macOS:   ".dylib"
   static std::string pluginExtension();
 
-  // Root of all PlotJuggler user data, using the OS-standard writable location:
-  //   Linux:   ~/.local/share/plotjuggler/
-  //   Windows: AppData/Local/plotjuggler/
-  //   macOS:   ~/Library/Application Support/plotjuggler/
+  // Root of all PlotJuggler user data (QStandardPaths::AppDataLocation, i.e. the
+  // PlotJuggler/PlotJuggler4 org/app pair):
+  //   Linux:   ~/.local/share/PlotJuggler/PlotJuggler4/
+  //   Windows: %LOCALAPPDATA%/PlotJuggler/PlotJuggler4/
+  //   macOS:   ~/Library/Application Support/PlotJuggler/PlotJuggler4/
   static QString configDir();
 
-  // ~/.plotjuggler/extensions/ — active, loaded extensions.
+  // <config-root>/extensions/ — active, loaded extensions.
   static QString extensionsDir();
 
   // <config-root>/.extension_staging/ — restart staging for Windows updates.
   static QString pendingDir();
 
-  // ~/.plotjuggler/.backup/ — pre-update backups (F-12, deferred to April+).
+  // <config-root>/.backup/ — pre-update backups (F-12, deferred to April+).
   static QString backupDir();
 };
 

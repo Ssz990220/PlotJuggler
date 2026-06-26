@@ -8,6 +8,9 @@
 
 int main(int argc, char* argv[]) {
   QApplication app(argc, argv);
+  // Match pj_app so AppDataLocation resolves to the same install tree.
+  QCoreApplication::setOrganizationName(QStringLiteral("PlotJuggler"));
+  QCoreApplication::setApplicationName(QStringLiteral("PlotJuggler4"));
   const QUrl registry_url =
       QUrl("https://raw.githubusercontent.com/PlotJuggler/pj-plugin-registry/refs/heads/development/registry.json");
   PJ::MarketplaceWindow w(registry_url);

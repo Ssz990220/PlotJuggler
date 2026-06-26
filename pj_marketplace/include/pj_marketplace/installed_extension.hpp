@@ -12,7 +12,7 @@ struct InstalledExtension {
   QString id;  ///< Matches Extension::id from the registry
   QString version;
   QDateTime install_date;
-  QString path;  ///< Absolute path to ~/.plotjuggler/extensions/<id>/
+  QString path;  ///< Absolute path to <config-root>/extensions/<id>/
   bool enabled = true;
 };
 

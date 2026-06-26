@@ -48,7 +48,7 @@ bool PlatformUtils::isWindows() {
 }
 
 QString PlatformUtils::configDir() {
-  return QStandardPaths::writableLocation(QStandardPaths::GenericDataLocation) + "/plotjuggler";
+  return QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
 }
 
 QString PlatformUtils::extensionsDir() {

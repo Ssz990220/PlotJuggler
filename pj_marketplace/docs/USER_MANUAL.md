@@ -155,7 +155,7 @@ If PlotJuggler already has the plugin loaded at startup, the marketplace is seed
    ```
 
 4. **Test locally:**
-   - Copy built files to your platform's extensions directory (Linux: `~/.local/share/plotjuggler/extensions/my-extension/` — see §5.1 for other OSes)
+   - Copy built files to your platform's extensions directory (Linux: `~/.local/share/PlotJuggler/PlotJuggler4/extensions/my-extension/` — see §5.1 for other OSes)
    - Open PlotJuggler and verify plugin loads
 
 5. **Release:**
@@ -252,15 +252,15 @@ If the marketplace is broken, remove the extensions and staging directories unde
 
 ```bash
 # Linux
-rm -rf ~/.local/share/plotjuggler/extensions/
-rm -rf ~/.local/share/plotjuggler/.extension_staging/
+rm -rf ~/.local/share/PlotJuggler/PlotJuggler4/extensions/
+rm -rf ~/.local/share/PlotJuggler/PlotJuggler4/.extension_staging/
 
 # macOS
-rm -rf ~/Library/Application\ Support/plotjuggler/extensions/
+rm -rf ~/Library/Application\ Support/PlotJuggler/PlotJuggler4/extensions/
 
 # Windows
-rmdir /s %LOCALAPPDATA%\plotjuggler\extensions
-rmdir /s %LOCALAPPDATA%\plotjuggler\.extension_staging
+rmdir /s %LOCALAPPDATA%\PlotJuggler\PlotJuggler4\extensions
+rmdir /s %LOCALAPPDATA%\PlotJuggler\PlotJuggler4\.extension_staging
 ```
 
 ### 4.4 Reporting Bugs
@@ -279,13 +279,13 @@ rmdir /s %LOCALAPPDATA%\plotjuggler\.extension_staging
 
 ### 5.1 Directory Structure
 
-The marketplace uses the OS-standard writable data location (resolved by `QStandardPaths::GenericDataLocation`):
+The marketplace uses the application's writable data location (resolved by `QStandardPaths::AppDataLocation`, i.e. the `PlotJuggler/PlotJuggler4` org/app pair):
 
 | OS | Root |
 |----|------|
-| Linux | `~/.local/share/plotjuggler/` |
-| macOS | `~/Library/Application Support/plotjuggler/` |
-| Windows | `%LOCALAPPDATA%/plotjuggler/` |
+| Linux | `~/.local/share/PlotJuggler/PlotJuggler4/` |
+| macOS | `~/Library/Application Support/PlotJuggler/PlotJuggler4/` |
+| Windows | `%LOCALAPPDATA%/PlotJuggler/PlotJuggler4/` |
 
 Inside that root:
 

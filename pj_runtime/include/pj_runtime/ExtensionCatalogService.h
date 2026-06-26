@@ -24,7 +24,7 @@ using LoadedToolbox = RuntimeToolboxPlugin;
 // pj_marketplace or pj_plugins directly — it asks this service.
 //
 // The service owns an ExtensionManager rooted on `extensions_dir_` (by default
-// QStandardPaths::AppDataLocation + "/extensions"). At construction it applies
+// PlatformUtils::extensionsDir(), shared with pj_marketplace). At construction it applies
 // any pending Windows staging actions and then scans the directory. Call
 // reload() after a marketplace install/uninstall to hot-load new plugins.
 class ExtensionCatalogService : public QObject {

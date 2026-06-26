@@ -578,7 +578,7 @@ TEST_F(ExtensionManagerTest, UpdateReinstallsWithNewVersion) {
 
 // After a successful update the old version directory must exist in backupDir().
 //
-// ext_dir is placed under the same filesystem root as backupDir() (~/.plotjuggler/)
+// ext_dir is placed under the same filesystem root as backupDir() (AppDataLocation)
 // so that QDir::rename() can do an atomic move without a cross-device copy.
 //
 // Linux-only: the Windows update path stages the new version instead of replacing the old
@@ -626,7 +626,7 @@ TEST_F(ExtensionManagerTest, UpdateBacksUpOldVersionOnSuccess) {
 // When the install step fails after the backup, the old version files must still
 // be recoverable from backupDir() — no data is permanently lost.
 //
-// ext_dir is placed under the same filesystem root as backupDir() (~/.plotjuggler/)
+// ext_dir is placed under the same filesystem root as backupDir() (AppDataLocation)
 // so that QDir::rename() can do an atomic move without a cross-device copy.
 //
 // Linux-only: on Windows update() stages the new version without touching the live install,
