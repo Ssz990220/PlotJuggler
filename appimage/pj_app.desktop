@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=PlotJuggler 4
+GenericName=Timeseries Visualization
+Exec=pj_app
+Icon=pj_app
+Comment=Visualize timeseries like a pro
+Terminal=false
+Categories=Development;Science;Utility;
+Keywords=plot;timeseries;ros;mcap;telemetry;
