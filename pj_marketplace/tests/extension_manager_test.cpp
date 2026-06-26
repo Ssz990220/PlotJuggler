@@ -155,6 +155,19 @@ QString pluginFileName() {
   return "plugin" + QString::fromStdString(PlatformUtils::pluginExtension());
 }
 
+// Backups are named "<id>-<uuid>" (the old version is no longer dlopened to read
+// its version for the name), so look them up by prefix rather than exact name.
+QStringList backupDirsFor(const QString& id) {
+  return QDir(PlatformUtils::backupDir()).entryList(QStringList{id + "-*"}, QDir::Dirs);
+}
+
+void cleanBackups(const QString& id) {
+  const QDir dir(PlatformUtils::backupDir());
+  for (const QString& name : backupDirsFor(id)) {
+    QDir(dir.absoluteFilePath(name)).removeRecursively();
+  }
+}
+
 bool writePendingIntentForTest(const QString& staged_dir, const QString& id, const QString& version = "1.0.0") {
   QFile intent(QDir(staged_dir).absoluteFilePath(".pj_pending_install"));
   if (!intent.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
@@ -536,66 +549,72 @@ TEST_F(ExtensionManagerTest, UninstallUnknownExtensionEmitsError) {
 // [4] Update
 // ---------------------------------------------------------------------------
 
-// update() backs up the current version and re-installs from the registry.
-// The new version is registered with the correct version string after completion.
-//
-// Windows uses a deferred staging path (see ExtensionManager::update() -> doInstall(staging=true)
-// because loaded DLLs cannot be replaced atomically. The staged variant is exercised by the
-// applyPendingInstalls tests in section [6], so skip the direct-path assertions here.
-TEST_F(ExtensionManagerTest, UpdateReinstallsWithNewVersion) {
-  if (PlatformUtils::isWindows()) {
-    GTEST_SKIP() << "update() on Windows stages to pending dir; covered by applyPendingInstalls tests";
-  }
+// update() stages the new version instead of hot-swapping the live install:
+// it emits installPendingRestart, leaves the running version in place, and only
+// a restart (applyPendingInstalls) promotes the staged copy. ext/pending/backup
+// share one filesystem so the promotion renames (staged -> extensions, old ->
+// backup) are atomic moves, not cross-device copies.
+TEST_F(ExtensionManagerTest, UpdateStagesNewVersionUntilRestart) {
   // Ensure clean backup state before test (in case previous run failed mid-test).
-  QDir(PlatformUtils::backupDir() + "/mock-data-source-1.0.0").removeRecursively();
+  cleanBackups("mock-data-source");
 
   QTemporaryDir local_ext_dir(QDir(PlatformUtils::backupDir()).absoluteFilePath("../test_ext_XXXXXX"));
   ASSERT_TRUE(local_ext_dir.isValid());
+  QTemporaryDir local_pending_dir(QDir(PlatformUtils::backupDir()).absoluteFilePath("../test_pending_XXXXXX"));
+  ASSERT_TRUE(local_pending_dir.isValid());
 
   DownloadManager local_dl;
-  ExtensionManager local_mgr(&local_dl, local_ext_dir.path(), pending_dir_.path());
+  ExtensionManager local_mgr(&local_dl, local_ext_dir.path(), local_pending_dir.path());
 
   server_.setBody(dummyPluginZip("mock-data-source"));
   const Extension ext_v1 = makeExtension("mock-data-source", "1.0.0", server_.url());
 
-  QSignalSpy spy_install(&local_mgr, &ExtensionManager::installFinished);
+  QSignalSpy spy_finished(&local_mgr, &ExtensionManager::installFinished);
   local_mgr.install(ext_v1);
-  ASSERT_TRUE(waitForSignal(spy_install));
-  ASSERT_TRUE(spy_install.first().at(1).toBool());
+  ASSERT_TRUE(waitForSignal(spy_finished));
+  ASSERT_TRUE(spy_finished.first().at(1).toBool());
 
-  // Prepare a "new version" and trigger the update.
-  spy_install.clear();
+  // Update to v2: must STAGE (installPendingRestart), not swap the live install.
   server_.setBody(dummyPluginZip("mock-data-source", "2.0.0"));
   const Extension ext_v2 = makeExtension("mock-data-source", "2.0.0", server_.url());
+
+  QSignalSpy spy_pending(&local_mgr, &ExtensionManager::installPendingRestart);
+  spy_finished.clear();
   local_mgr.update(ext_v2);
 
-  ASSERT_TRUE(waitForSignal(spy_install));
-  EXPECT_TRUE(spy_install.first().at(1).toBool());
-  EXPECT_EQ(local_mgr.installedExtensions()["mock-data-source"].version, "2.0.0");
+  ASSERT_TRUE(waitForSignal(spy_pending)) << "update must stage and emit installPendingRestart";
+  EXPECT_EQ(spy_pending.first().at(0).toString(), "mock-data-source");
+  EXPECT_TRUE(spy_finished.isEmpty()) << "update must NOT promote immediately";
+  // The live install is untouched and the new version waits in the pending dir.
+  EXPECT_EQ(local_mgr.installedExtensions()["mock-data-source"].version, "1.0.0");
+  EXPECT_TRUE(local_mgr.hasPendingInstall("mock-data-source"));
+  EXPECT_TRUE(QDir(local_pending_dir.path() + "/mock-data-source").exists());
 
-  QDir(PlatformUtils::backupDir() + "/mock-data-source-1.0.0").removeRecursively();
+  // Restart: applyPendingInstalls() promotes the staged v2 (emits synchronously).
+  QSignalSpy spy_promoted(&local_mgr, &ExtensionManager::installFinished);
+  local_mgr.applyPendingInstalls();
+  ASSERT_EQ(spy_promoted.count(), 1);
+  EXPECT_TRUE(spy_promoted.first().at(1).toBool());
+  EXPECT_EQ(local_mgr.installedExtensions()["mock-data-source"].version, "2.0.0");
+  EXPECT_FALSE(QDir(local_pending_dir.path() + "/mock-data-source").exists());
+
+  cleanBackups("mock-data-source");
 }
 
-// After a successful update the old version directory must exist in backupDir().
-//
-// ext_dir is placed under the same filesystem root as backupDir() (AppDataLocation)
-// so that QDir::rename() can do an atomic move without a cross-device copy.
-//
-// Linux-only: the Windows update path stages the new version instead of replacing the old
-// one, so no backup directory is created. See ExtensionManager::update().
-TEST_F(ExtensionManagerTest, UpdateBacksUpOldVersionOnSuccess) {
-  if (PlatformUtils::isWindows()) {
-    GTEST_SKIP() << "update() on Windows stages instead of swapping; no backup is created";
-  }
+// Promoting a staged update backs up the previous version into backupDir().
+// The backup now happens at promotion time (applyPendingInstalls), not in
+// update(). ext/pending/backup share one filesystem so the renames are atomic.
+TEST_F(ExtensionManagerTest, UpdatePromotionBacksUpOldVersion) {
   // Ensure clean backup state before test (in case previous run failed mid-test).
-  QDir(PlatformUtils::backupDir() + "/mock-data-source-1.0.0").removeRecursively();
+  cleanBackups("mock-data-source");
 
-  // Place the extension directory on the same filesystem as backupDir().
   QTemporaryDir local_ext_dir(QDir(PlatformUtils::backupDir()).absoluteFilePath("../test_ext_XXXXXX"));
   ASSERT_TRUE(local_ext_dir.isValid());
+  QTemporaryDir local_pending_dir(QDir(PlatformUtils::backupDir()).absoluteFilePath("../test_pending_XXXXXX"));
+  ASSERT_TRUE(local_pending_dir.isValid());
 
   DownloadManager local_dl;
-  ExtensionManager local_mgr(&local_dl, local_ext_dir.path(), pending_dir_.path());
+  ExtensionManager local_mgr(&local_dl, local_ext_dir.path(), local_pending_dir.path());
 
   server_.setBody(dummyPluginZip("mock-data-source"));
   const Extension ext_v1 = makeExtension("mock-data-source", "1.0.0", server_.url());
@@ -607,39 +626,40 @@ TEST_F(ExtensionManagerTest, UpdateBacksUpOldVersionOnSuccess) {
 
   ASSERT_TRUE(QFile::exists(local_ext_dir.path() + "/mock-data-source/" + pluginFileName()));
 
-  spy_install.clear();
+  // Stage the update, then promote it as a restart would.
   server_.setBody(dummyPluginZip("mock-data-source", "2.0.0"));
   const Extension ext_v2 = makeExtension("mock-data-source", "2.0.0", server_.url());
+  QSignalSpy spy_pending(&local_mgr, &ExtensionManager::installPendingRestart);
   local_mgr.update(ext_v2);
+  ASSERT_TRUE(waitForSignal(spy_pending));
 
-  ASSERT_TRUE(waitForSignal(spy_install));
-  EXPECT_TRUE(spy_install.first().at(1).toBool()) << "update must succeed";
+  QSignalSpy spy_promoted(&local_mgr, &ExtensionManager::installFinished);
+  local_mgr.applyPendingInstalls();
+  ASSERT_EQ(spy_promoted.count(), 1);
+  EXPECT_TRUE(spy_promoted.first().at(1).toBool()) << "promotion must succeed";
   EXPECT_EQ(local_mgr.installedExtensions()["mock-data-source"].version, "2.0.0");
 
-  const QString backup_dir = PlatformUtils::backupDir() + "/mock-data-source-1.0.0";
-  EXPECT_TRUE(QDir(backup_dir).exists()) << "backup directory must exist after update";
+  const QStringList backups = backupDirsFor("mock-data-source");
+  ASSERT_EQ(backups.size(), 1) << "exactly one backup must exist after promotion";
+  const QString backup_dir = PlatformUtils::backupDir() + "/" + backups.first();
   EXPECT_TRUE(QFile::exists(backup_dir + "/" + pluginFileName())) << "original plugin file must be preserved in backup";
 
-  QDir(backup_dir).removeRecursively();
+  cleanBackups("mock-data-source");
 }
 
-// When the install step fails after the backup, the old version files must still
-// be recoverable from backupDir() — no data is permanently lost.
-//
-// ext_dir is placed under the same filesystem root as backupDir() (AppDataLocation)
-// so that QDir::rename() can do an atomic move without a cross-device copy.
-//
-// Linux-only: on Windows update() stages the new version without touching the live install,
-// so there is no backup to preserve and v1 remains installed on failure.
-TEST_F(ExtensionManagerTest, UpdateKeepsBackupWhenInstallFails) {
-  if (PlatformUtils::isWindows()) {
-    GTEST_SKIP() << "update() on Windows stages without removing v1; backup semantics do not apply";
-  }
+// A failed update fails during staging, before the live install is touched: the
+// installed version stays fully intact, nothing is staged, and no backup is made
+// (there is nothing to recover — the running copy was never moved).
+TEST_F(ExtensionManagerTest, FailedUpdateStagingLeavesLiveInstallUntouched) {
+  cleanBackups("mock-data-source");
+
   QTemporaryDir local_ext_dir(QDir(PlatformUtils::backupDir()).absoluteFilePath("../test_ext_XXXXXX"));
   ASSERT_TRUE(local_ext_dir.isValid());
+  QTemporaryDir local_pending_dir(QDir(PlatformUtils::backupDir()).absoluteFilePath("../test_pending_XXXXXX"));
+  ASSERT_TRUE(local_pending_dir.isValid());
 
   DownloadManager local_dl;
-  ExtensionManager local_mgr(&local_dl, local_ext_dir.path(), pending_dir_.path());
+  ExtensionManager local_mgr(&local_dl, local_ext_dir.path(), local_pending_dir.path());
 
   server_.setBody(dummyPluginZip("mock-data-source"));
   const Extension ext_v1 = makeExtension("mock-data-source", "1.0.0", server_.url());
@@ -659,20 +679,17 @@ TEST_F(ExtensionManagerTest, UpdateKeepsBackupWhenInstallFails) {
   local_mgr.update(ext_v2);
 
   ASSERT_TRUE(waitForSignal(spy_install)) << "installFinished must fire even on failure";
-  EXPECT_FALSE(spy_install.first().at(1).toBool()) << "install must have failed";
+  EXPECT_FALSE(spy_install.first().at(1).toBool()) << "update must have failed";
   EXPECT_FALSE(spy_error.isEmpty()) << "installError must be emitted on failure";
 
-  EXPECT_FALSE(local_mgr.isInstalled("mock-data-source"));
-
-  const QString backup_dir = PlatformUtils::backupDir() + "/mock-data-source-1.0.0";
-  EXPECT_TRUE(QDir(backup_dir).exists()) << "backup must survive a failed install — files are recoverable";
-  EXPECT_TRUE(QFile::exists(backup_dir + "/" + pluginFileName()))
-      << "original plugin binary must be preserved in backup";
-  EXPECT_TRUE(spy_error.first().at(1).toString().contains(backup_dir));
-  ASSERT_FALSE(local_mgr.diagnostics().isEmpty());
-  EXPECT_TRUE(local_mgr.diagnostics().back().message.contains(backup_dir));
-
-  QDir(backup_dir).removeRecursively();
+  // v1 is still the live, installed version — staging never touched it.
+  EXPECT_TRUE(local_mgr.isInstalled("mock-data-source"));
+  EXPECT_EQ(local_mgr.installedExtensions()["mock-data-source"].version, "1.0.0");
+  EXPECT_TRUE(QFile::exists(local_ext_dir.path() + "/mock-data-source/" + pluginFileName()));
+  // Nothing left staged, and no backup was created.
+  EXPECT_FALSE(local_mgr.hasPendingInstall("mock-data-source"));
+  EXPECT_FALSE(QDir(local_pending_dir.path() + "/mock-data-source").exists());
+  EXPECT_TRUE(backupDirsFor("mock-data-source").isEmpty()) << "a failed staging must not create a backup";
 }
 
 // ---------------------------------------------------------------------------
@@ -785,13 +802,12 @@ TEST_F(ExtensionManagerTest, UpdateRejectsDowngradeWhenInstalledVersionIsNewer) 
 }
 
 // ---------------------------------------------------------------------------
-// [6] applyPendingInstalls — Windows post-restart staging simulation
+// [6] applyPendingInstalls — post-restart staging promotion
 //
-// On Windows, DLLs in use cannot be overwritten, so update() stages into
-// the configured pending directory. On the next startup, applyPendingInstalls() moves
-// the directory into extensions/ and registers it from the DSO's embedded manifest.
-// These tests create that directory structure
-// manually and verify the promotion logic on any platform (the function is
+// update() stages the new version into the configured pending directory. On the
+// next startup, applyPendingInstalls() moves the directory into extensions/ and
+// registers it from the DSO's embedded manifest. These tests create that
+// directory structure manually and verify the promotion logic (the function is
 // always safe to call).
 // ---------------------------------------------------------------------------
 
@@ -815,6 +831,41 @@ TEST_F(ExtensionManagerTest, ApplyPendingInstallsPromotesStagedExtension) {
   // The active directory lives under extensions_dir, not pending_dir.
   EXPECT_TRUE(QDir(ext_dir_.path() + "/mock-data-source").exists());
   EXPECT_FALSE(QDir(staged_dir).exists());
+}
+
+// Constructing the manager (the "one restart") must reflect a staged update over
+// an existing install as installed in a SINGLE pass: initComponents() snapshots
+// disk first, then promotes, so it never re-scans the just-replaced extension
+// path. Re-scanning after promotion re-opened that path and could read stale
+// metadata, making the update look un-applied until a second restart.
+TEST_F(ExtensionManagerTest, ConstructionReflectsStagedUpdateInOnePass) {
+  QTemporaryDir ext_dir;
+  ASSERT_TRUE(ext_dir.isValid());
+  QTemporaryDir pend_dir;
+  ASSERT_TRUE(pend_dir.isValid());
+
+  // Pre-existing v1 install.
+  ASSERT_TRUE(copyFixturePlugin(ext_dir.path() + "/mock-data-source", "mock-data-source", "1.0.0"));
+  // Staged v2 update + intent, as update() would leave it.
+  const QString staged = pend_dir.path() + "/mock-data-source";
+  ASSERT_TRUE(copyFixturePlugin(staged, "mock-data-source", "2.0.0"));
+  ASSERT_TRUE(writePendingIntentForTest(staged, "mock-data-source", "2.0.0"));
+
+  DownloadManager dl;
+  ExtensionManager mgr(&dl, ext_dir.path(), pend_dir.path());
+
+  EXPECT_EQ(mgr.installedExtensions()["mock-data-source"].version, "2.0.0");
+  EXPECT_FALSE(QDir(staged).exists()) << "staged dir must be consumed by promotion";
+
+  // The marketplace window re-scans disk on showEvent. That second pass, in the
+  // same process that just promoted the update, must NOT read the stale
+  // pre-promotion image: dlopen caches a plugin DSO by path name and never
+  // unloads it (STB_GNU_UNIQUE), so opening the old version before promotion
+  // would poison every later read of that path. Promotion avoids opening the old
+  // directory, so the re-scan still reports the promoted version.
+  mgr.refreshInstalledFromDisk();
+  EXPECT_EQ(mgr.installedExtensions()["mock-data-source"].version, "2.0.0")
+      << "a re-scan after promotion must not revert to the stale old version";
 }
 
 TEST_F(ExtensionManagerTest, StageInstallRejectsEmbeddedIdMismatchBeforeRestart) {
@@ -922,7 +973,7 @@ TEST_F(ExtensionManagerTest, ApplyPendingInstallsBacksUpExistingExtensionBeforeP
   ASSERT_TRUE(local_ext_dir.isValid());
   ASSERT_TRUE(local_pending_dir.isValid());
   // Clean any stale backup from a previous failed run.
-  QDir(PlatformUtils::backupDir() + "/mock-data-source-1.0.0").removeRecursively();
+  cleanBackups("mock-data-source");
 
   DownloadManager local_dl;
   ExtensionManager local_mgr(&local_dl, local_ext_dir.path(), local_pending_dir.path());
@@ -949,9 +1000,9 @@ TEST_F(ExtensionManagerTest, ApplyPendingInstallsBacksUpExistingExtensionBeforeP
   EXPECT_EQ(local_mgr.installedExtensions()["mock-data-source"].version, "2.0.0");
 
   // 4. The previous version must be preserved in backup, recoverable manually.
-  const QString backup_dir = PlatformUtils::backupDir() + "/mock-data-source-1.0.0";
-  EXPECT_TRUE(QDir(backup_dir).exists())
-      << "applyPendingInstalls must back up the previous version before overwriting it";
+  const QStringList backups = backupDirsFor("mock-data-source");
+  ASSERT_EQ(backups.size(), 1) << "applyPendingInstalls must back up the previous version before overwriting it";
+  const QString backup_dir = PlatformUtils::backupDir() + "/" + backups.first();
   EXPECT_TRUE(QFile::exists(backup_dir + "/" + pluginFileName()))
       << "previous plugin file must survive in backup for manual rollback";
 

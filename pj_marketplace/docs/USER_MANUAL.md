@@ -88,10 +88,11 @@ If PlotJuggler already has the plugin loaded at startup, the marketplace is seed
 1. Extensions with updates show an **Update available** badge
 2. Click on the extension
 3. Click **Update**
-4. The old version is automatically backed up
-5. If something goes wrong, the old version remains in `.backup/` and can be recovered manually
+4. The new version is staged and the extension shows **Needs Restart** — the update is applied on the next launch, so the currently loaded plugin keeps working for the rest of the session
+5. On restart, the old version is automatically backed up before the new one is promoted
+6. If promotion fails, the old version remains in `.backup/` and can be recovered manually
 
-**Update All:** Click "Update All" in the toolbar to update all extensions at once
+**Update All:** Click "Update All" in the toolbar to stage updates for all extensions at once
 
 ### 2.6 Uninstalling an Extension
 
@@ -294,11 +295,12 @@ Inside that root:
 ├── extensions/                      # Active installed extensions
 │   └── my-extension/
 │       └── libmy_plugin.so
-├── .extension_staging/      # Staging area (all platforms — Windows uses it
-│   │                                # for restart-time installs; Linux/macOS
-│   │                                # use it as the post-promotion validation gate)
+├── .extension_staging/      # Staging area: updates land here and are promoted
+│   │                                # on the next startup; a fresh install uses it
+│   │                                # only as the post-promotion validation gate
+│   │                                # (it activates immediately)
 │   └── my-extension/
-│       └── .pj_pending_install      # Intent file (Windows-only restart-time apply)
+│       └── .pj_pending_install      # Intent file for restart-time update apply
 └── .backup/                         # Pre-update backups (all platforms); automatic rollback deferred — restore manually
 ```
 

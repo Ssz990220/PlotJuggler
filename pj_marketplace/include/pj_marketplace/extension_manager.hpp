@@ -48,7 +48,9 @@ class ExtensionManager : public QObject {
   // Removes an installed extension or schedules Windows cleanup after restart.
   void uninstall(const QString& extension_id);
 
-  // Replaces an installed extension, staging on Windows and backing up elsewhere.
+  // Replaces an installed extension. Stages the new version in pending_dir_;
+  // applyPendingInstalls() promotes it (backing up the old one) at the next
+  // startup, so an update never hot-swaps a loaded DSO.
   void update(const Extension& ext);
 
   // Promotes validated staged installs from PlatformUtils::pendingDir().
@@ -113,7 +115,8 @@ class ExtensionManager : public QObject {
   // Human-readable failure detail; followed by installFinished(id, false).
   void installError(const QString& id, const QString& error_message);
 
-  // Emitted on Windows when the extension is staged and will be active after a restart.
+  // Emitted when an update is staged and will be active after a restart. A fresh
+  // install promotes immediately and emits installFinished instead.
   void installPendingRestart(const QString& id);
 
   // Emitted when uninstall completes.
@@ -174,7 +177,8 @@ class ExtensionManager : public QObject {
   QString cancel_reason_;
   // Transaction directory used by the currently running fetch/extract operation.
   QString pending_extract_dir_;
-  // Non-Windows update backup location, used for failure diagnostics.
+  // Backup location of the previous install, set when applyPendingInstalls()
+  // promotes a staged update; used for failure diagnostics.
   QString pending_backup_path_;
   QList<ExtensionDiagnostic> diagnostics_;
 

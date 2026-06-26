@@ -134,7 +134,7 @@ elsewhere in the host application:
 | F-11 | Local registry cache with TTL *(deferred)* | Not implemented today — `RegistryManager` always fetches fresh. Would be reintroduced only if a clear caching need emerges (see [TODO.md](TODO.md)). |
 | F-12 | Backup previous version on updates | Old version saved before overwriting |
 | F-13 | Automatic rollback if plugin fails | Deferred; backups may exist, but automatic restore is not implemented |
-| F-14 | Windows staging: apply on restart | Updates downloaded but applied only after restart (Windows) |
+| F-14 | Deferred update: apply on restart | Updates are downloaded and staged, then applied only after restart; a fresh install activates immediately |
 | F-16 | Cancel download in progress | User can abort a download |
 | F-17 | Update All | Single action to update all extensions with available updates |
 | F-18 | Confirmation dialogs | User confirms before install/uninstall/update actions |
@@ -288,13 +288,14 @@ elsewhere in the host application:
 | Downgrade requested | Reject with a diagnostic; keep the local install unchanged |
 | Same version reinstall | Ask confirmation, then reinstall |
 
-### 8.4 Windows-Specific
+### 8.4 Update Staging & Restart
 
 | Scenario | Expected Behavior |
 |----------|-------------------|
-| Plugin DLL in use (can't overwrite) | Stage update, apply on restart |
-| Invalid staged update | Remove staged files and leave active install untouched |
+| Update requested | Stage the new version and apply on restart — never hot-swap a plugin the running session has loaded |
+| Invalid staged update | Remove staged files and leave the active install untouched |
 | PlotJuggler crashes before applying update | Pending update remains for next start |
+| Plugin DLL in use on uninstall (Windows) | Mark the directory for restart cleanup; removed on next start |
 
 ### 8.5 Plugin Loading
 
@@ -405,7 +406,7 @@ The minimum viable product is successful if:
 There is no separate local state file. Installed extensions are discovered at runtime by
 scanning `extensions_dir`, loading candidate plugin DSOs, and reading each DSO's embedded
 plugin manifest. The marketplace never writes installed-state or plugin-manifest sidecars.
-Windows staged updates use a transient `.pj_pending_install` intent file so restart-time
+Staged updates use a transient `.pj_pending_install` intent file so restart-time
 promotion can revalidate the staged DSO against the registry id/version that created it.
 
 Fields read from the embedded plugin manifest:

@@ -231,7 +231,7 @@ A companion no-arg `ExtensionManager()` overload also exists; it creates an owne
 - No `detectPlatform()` private method — delegated to `PlatformUtils::currentPlatform()`
 - Local installation state (`QMap<QString, InstalledExtension>`) is a private cache in `ExtensionManager` — populated at construction by scanning `extensions_dir`, loading plugin DSOs, and reading their embedded manifests; testability is preserved via the `extensions_dir` parameter pointing to a temp directory
 - No local installed-state sidecars — disk is scanned, but `id` and `version` come from the embedded DSO manifest
-- Windows staged updates write a transient `.pj_pending_install` intent containing the registry id/version. It is deleted after promotion and exists only so restart-time validation can compare the staged DSO against the registry request that created it. Both the id and the version inside the intent file are validated against the same safe-path/regex rules used elsewhere, so a tampered intent cannot escape `extensions_dir`.
+- Staged updates write a transient `.pj_pending_install` intent containing the registry id/version. It is deleted after promotion and exists only so restart-time validation can compare the staged DSO against the registry request that created it. Both the id and the version inside the intent file are validated against the same safe-path/regex rules used elsewhere, so a tampered intent cannot escape `extensions_dir`.
 - Embedding apps may seed the marketplace with a loaded-plugin snapshot before first render. That snapshot is initialization data, not a second source of truth; the embedded manifest remains the authority for installed state.
 - **Pending queues drained at construction.** `ExtensionManager::initComponents()` runs `applyPendingUninstalls()` then `applyPendingInstalls()` before computing the installed snapshot, so restart-deferred work is processed regardless of which `MarketplaceWindow` constructor (or host wiring) ends up using the manager.
 - **Restart-cleanup marker honors write failures.** `schedulePendingUninstall` returns `bool`; if the marker file cannot be written the in-memory entry is left intact and `uninstallError` is emitted, so a Windows uninstall that cannot mark the directory does not silently revert on the next start.
@@ -404,11 +404,11 @@ The root is `QStandardPaths::AppDataLocation` (the `PlotJuggler/PlotJuggler4` or
 │   │   └── ros2_streaming.ui
 │   └── csv-loader/
 │       └── libcsv_loader.so
-├── .extension_staging/      # Staging area (all platforms — Windows uses it
-│   │                                # for restart-time install; Linux/macOS
-│   │                                # use it as the post-promotion validation gate)
-│   └── ros2-streaming/              # Ready to install on restart (Windows)
-│       └── .pj_pending_install      # Intent file (Windows-only)
+├── .extension_staging/      # Staging area: updates land here and are promoted
+│   │                                # on the next startup; a fresh install uses it
+│   │                                # only as the post-promotion validation gate
+│   └── ros2-streaming/              # Staged update, applied on restart
+│       └── .pj_pending_install      # Intent file for restart-time update apply
 └── .backup/                         # Pre-update backups (all platforms); automatic rollback deferred — restore manually
     ├── ros2-streaming-1.2.2/
     └── csv-loader-0.9.0/

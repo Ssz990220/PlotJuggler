@@ -237,9 +237,16 @@ void ExtensionManager::initComponents() {
   if (!QDir().mkpath(extensions_dir_)) {
     reportDiagnostic({}, QString("Could not create extensions directory \"%1\"").arg(extensions_dir_), true);
   }
-  // Drain any restart-deferred work before computing the installed snapshot, so the
-  // result reflects post-promotion / post-cleanup reality regardless of which
-  // MarketplaceWindow ctor (or host wiring) ends up using this manager.
+  // Drain restart-deferred work, THEN snapshot installed state. The order is
+  // load-bearing because of a glibc dlopen quirk: once an extension's .so has
+  // been opened in this process, dlopen keeps returning that first-loaded image
+  // for the same path name (plugin DSOs carry STB_GNU_UNIQUE symbols, so dlclose
+  // never unloads them). So an extension path must NOT be opened before a pending
+  // update replaces it — otherwise every later scan (including the marketplace
+  // window's showEvent refresh) reads the stale old version until the next
+  // restart. applyPendingInstalls promotes WITHOUT opening the old directory (it
+  // names the backup without inspecting it), and refreshInstalledFromDisk runs
+  // AFTER promotion, so the path's first in-process open is the new version.
   applyPendingUninstalls();
   applyPendingInstalls();
   refreshInstalledFromDisk();
@@ -278,9 +285,10 @@ void ExtensionManager::doInstall(const Extension& ext, bool staging, bool allow_
   const Platform& artifact = ext.platforms[platform];
 
   // Extraction goes into a hidden transaction directory on the same filesystem
-  // as the final destination, so the eventual rename is atomic. For deferred
-  // (Windows) staging that's pending_dir_; for immediate promotion we extract
-  // beside extensions_dir_ and rename in-place after validation.
+  // as the final destination, so the eventual rename is atomic. For a deferred
+  // update that's pending_dir_ (promoted at next startup); for an immediate
+  // fresh install we extract beside extensions_dir_ and rename in-place after
+  // validation.
   // The DSO is dlopened and its embedded manifest verified inside the
   // transaction directory BEFORE the rename, then re-verified at the final
   // location AFTER the rename — see the post-promotion check below.
@@ -468,49 +476,20 @@ void ExtensionManager::uninstall(const QString& extension_id) {
 void ExtensionManager::update(const Extension& ext) {
   refreshInstalledFromDisk();
 
-  if (PlatformUtils::isWindows()) {
-    if (hasNewerInstalledVersion(ext)) {
-      emitInstallFailure(
-          ext.id, QString("Installed version \"%1\" is newer than registry version \"%2\"; downgrade is not allowed")
-                      .arg(installed_[ext.id].version, ext.version));
-      return;
-    }
-    doInstall(ext, /*staging=*/true, /*allow_existing=*/true);
+  // Updates defer to restart: the new version is staged in pending_dir_ and
+  // promoted — backing up the old version first — by applyPendingInstalls() at
+  // the next startup. This avoids hot-swapping a DSO the running session may
+  // still have loaded; the installed version stays live until the user restarts.
+  // (Fresh install() still promotes immediately, since there is no loaded
+  // version to clash with.)
+  if (hasNewerInstalledVersion(ext)) {
+    emitInstallFailure(
+        ext.id, QString("Installed version \"%1\" is newer than registry version \"%2\"; downgrade is not allowed")
+                    .arg(installed_[ext.id].version, ext.version));
     return;
   }
 
-  const QString platform = PlatformUtils::currentPlatform();
-  if (!ext.platforms.contains(platform)) {
-    emitInstallFailure(ext.id, QString("No artifact available for platform \"%1\"").arg(platform));
-    return;
-  }
-
-  if (installed_.contains(ext.id)) {
-    const QString current_version = installed_[ext.id].version;
-    const QString current_path = installed_[ext.id].path;
-
-    if (QVersionNumber::compare(QVersionNumber::fromString(current_version), QVersionNumber::fromString(ext.version)) >
-        0) {
-      emitInstallFailure(
-          ext.id, QString("Installed version \"%1\" is newer than registry version \"%2\"; downgrade is not allowed")
-                      .arg(current_version, ext.version));
-      return;
-    }
-
-    const QString candidate = PlatformUtils::backupDir() + "/" + ext.id + "-" + current_version;
-    QDir().mkpath(PlatformUtils::backupDir());
-
-    if (!QDir().rename(current_path, candidate)) {
-      emitInstallFailure(
-          ext.id, QString("Could not back up \"%1\" — update aborted to prevent data loss").arg(current_path));
-      return;
-    }
-    pending_backup_path_ = candidate;
-    installed_.remove(ext.id);
-  }
-
-  // The Windows branch returned earlier; here we always promote immediately.
-  doInstall(ext, /*staging=*/false, /*allow_existing=*/true);
+  doInstall(ext, /*staging=*/true, /*allow_existing=*/true);
 }
 
 void ExtensionManager::applyPendingInstalls() {
@@ -579,24 +558,20 @@ void ExtensionManager::applyPendingInstalls() {
 
     const QString dst = extRoot(extensions_dir_, intent.id);
 
-    // Mirror the Linux/macOS backup that `update()` performs synchronously:
-    // move the existing dir aside before the staged version takes its place,
-    // so a Windows update never silently destroys the previous install.
+    // Back up the existing install before the staged version takes its place:
+    // move the current dir aside first, so promoting an update never silently
+    // destroys the previous install (this is the single backup point for updates).
     pending_backup_path_.clear();
-    DirectoryDiscovery existing;
     if (QDir(dst).exists()) {
-      existing = discoverExtensionDirectory(dst);
-      const QString version_tag = (existing.found_plugin && !existing.record.version.isEmpty())
-                                      ? existing.record.version
-                                      : QString("unknown-") + QUuid::createUuid().toString(QUuid::Id128);
-
+      // Name the backup WITHOUT opening the old directory. dlopening dst here to
+      // read its version would pin its old image in the process (dlopen caches by
+      // path name and plugin DSOs are effectively NODELETE via unique symbols),
+      // so the post-promotion re-scan of dst would keep reading the old version.
+      // A UUID keeps the backup unique; the embedded manifest inside still records
+      // the version for anyone inspecting the backup.
       QDir().mkpath(PlatformUtils::backupDir());
-      QString candidate = QDir(PlatformUtils::backupDir()).absoluteFilePath(intent.id + "-" + version_tag);
-      if (QDir(candidate).exists()) {
-        // Leftover backup from an earlier failed update with the same
-        // id/version. Don't clobber it — keep both.
-        candidate += "_" + QUuid::createUuid().toString(QUuid::Id128);
-      }
+      const QString candidate = QDir(PlatformUtils::backupDir())
+                                    .absoluteFilePath(intent.id + "-" + QUuid::createUuid().toString(QUuid::Id128));
 
       if (!QDir().rename(dst, candidate)) {
         qWarning("ExtensionManager: failed to back up '%s' before promoting staged install", qPrintable(dst));
@@ -616,13 +591,13 @@ void ExtensionManager::applyPendingInstalls() {
 
       // Best-effort rollback so the user is never left with no extension. If
       // the rollback rename also fails, leave pending_backup_path_ set so
-      // emitInstallFailure appends "Previous version remains in backup".
+      // emitInstallFailure appends "Previous version remains in backup". The
+      // restored directory is re-registered by the refreshInstalledFromDisk()
+      // that runs after this drain (the path was never opened before, so that
+      // scan reads it fresh).
       if (!pending_backup_path_.isEmpty() && QDir().rename(pending_backup_path_, dst)) {
         message += " Previous version restored.";
         pending_backup_path_.clear();
-        if (existing.found_plugin) {
-          registerInstalledExtension(intent.id, dst, existing.record);
-        }
       }
       emitInstallFailure(intent.id, message);
       continue;
