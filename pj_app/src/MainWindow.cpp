@@ -138,9 +138,6 @@ constexpr auto kDefaultRegistryUrl =
     "refs/heads/development/registry.json";
 constexpr auto kRegistryUrlSettingsKey = "Marketplace/registryUrl";
 constexpr auto kPanelBottomExpandedKey = "MainWindow.panelBottomExpandedHeight";
-// Source Timeline auto-zoom: when true, loading a file (and each alignment) zooms
-// the timeline to its largest extent. User-toggleable in Preferences. Default on.
-constexpr auto kTimelineAutoZoomKey = "MainWindow.timelineAutoZoom";
 // Minimum height (px) of the Source Timeline strip when the bottom panel is open
 // — enough for the ruler + a few source bars so it never opens clipped.
 constexpr int kMinTimelineStripHeight = 150;
@@ -781,9 +778,9 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
   connect(source_timeline, &PJ::Timeline::nameColumnWidthChanged, this, [this](int width_px) {
     timeline_name_column_width_ = width_px;
   });
-  // Auto-zoom: on by default; seed the widget from the persisted preference so a
-  // newly-loaded file zooms to its full extent unless the user turned it off.
-  source_timeline->setAutoZoomEnabled(QSettings().value(kTimelineAutoZoomKey, true).toBool());
+  // Timeline auto-zoom is always on (no longer a user preference): a newly-loaded
+  // file (and each alignment) zooms the timeline to its full extent.
+  source_timeline->setAutoZoomEnabled(true);
   // Align rail on the right edge of the timeline panel; binds its buttons to the
   // controller above, so it must be built after the controller exists.
   buildTimelineAlignRail();
@@ -1587,15 +1584,16 @@ void MainWindow::persistChromeMetrics() const {
   settings.setValue(kLayoutSpacingKey, chrome_metrics_.layout_spacing);
 }
 
-bool MainWindow::timelineAutoZoom() const {
-  return QSettings().value(kTimelineAutoZoomKey, true).toBool();
+QStringList MainWindow::customPluginFolders() const {
+  return session_->extensionCatalog().customPluginFolders();
 }
 
-void MainWindow::setTimelineAutoZoom(bool enabled) {
-  QSettings().setValue(kTimelineAutoZoomKey, enabled);
-  if (source_timeline_ != nullptr) {
-    source_timeline_->setAutoZoomEnabled(enabled);
-  }
+void MainWindow::setCustomPluginFolders(const QStringList& folders) {
+  session_->extensionCatalog().setCustomPluginFolders(folders);
+}
+
+QStringList MainWindow::builtinPluginFolders() const {
+  return session_->extensionCatalog().builtinPluginFolders();
 }
 
 void MainWindow::applyIcons(QString theme) {

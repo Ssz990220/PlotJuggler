@@ -1500,17 +1500,19 @@ QDialog QLabel#dialogTitleLabel {
     padding-left: ${chrome_spacing}px;
 }
 
-/* PreferencesDialog left-hand nav column ----------------------------
-   No outer border; the column reads as a soft inset against the dialog
-   body via its dark_background fill (the nominal app surface tone).
-   Rows are PreferencesNavRow (QFrame#navRow); selected row paints a
-   tinted fill, no accent edge. */
+/* PreferencesDialog two-pane body --------------------------------------
+   The section list (left) is the recessed titlebar tone; the settings
+   pane (right) is the lighter `dark_background` surface, so the active
+   page reads as a brighter "paper" against the darker index. 1-px
+   `navSeparator` / `buttonBarSeparator` hairlines split the three
+   regions. Rows are PreferencesNavRow (QFrame#navRow); the selected row
+   paints a tinted fill, no accent edge. */
 QScrollArea#navScrollArea {
-    background: ${dark_background};
+    background: ${titlebar_background};
     border: none;
 }
 QScrollArea#navScrollArea > QWidget > QWidget#navContainer {
-    background: ${dark_background};
+    background: ${titlebar_background};
 }
 QFrame#navRow {
     background: transparent;
@@ -1525,6 +1527,36 @@ QFrame#navRow[selected="true"] {
 QLabel#navRowLabel {
     background: transparent;
     color: ${default_text};
+}
+/* Right-hand settings pane: the lighter surface the section list sits
+   against. Both the stack and its page children are transparent by
+   default (they would show the darker dialog body), so fill both. */
+QStackedWidget#pagesStack {
+    background: ${dark_background};
+}
+QStackedWidget#pagesStack > QWidget {
+    background: ${dark_background};
+}
+/* Hairline dividers between the three regions (1-px QFrames sized in
+   the .ui). */
+QFrame#navSeparator,
+QFrame#buttonBarSeparator {
+    background: ${border_default};
+    border: none;
+}
+/* Folder/table lists in the Preferences pages read as input surfaces — the
+   lighter input_background with a hairline border — so they separate from the
+   page behind them. */
+QStackedWidget#pagesStack QListWidget,
+QStackedWidget#pagesStack QListView {
+    background: ${input_background};
+    border: 1px solid ${border_default};
+}
+/* Roomier rows so list entries aren't cramped. */
+QStackedWidget#pagesStack QListWidget::item,
+QStackedWidget#pagesStack QListView::item {
+    padding-top: 3px;
+    padding-bottom: 3px;
 }
 
 /* "Close Plot Area" button (DockToolbar uses QPushButton, not the

@@ -47,6 +47,22 @@ TEST(AppSessionTest, CustomExtensionDirectoryReachesMarketplaceManager) {
   EXPECT_EQ(session.extensionCatalog().extensionManager().extensionsDir(), dir.path());
 }
 
+TEST(AppSessionTest, BuiltinPluginFoldersOrderedWithPluginDirOverride) {
+  QTemporaryDir dir;
+  ASSERT_TRUE(dir.isValid());
+
+  // dir.path() is the --plugin-dir override (the install dir), distinct from the
+  // marketplace default location.
+  PJ::AppSession session(dir.path());
+
+  const QStringList builtins = session.extensionCatalog().builtinPluginFolders();
+  // Built-in scan order: install dir (= override) > marketplace dir > <exe>/plugins.
+  ASSERT_EQ(builtins.size(), 3);
+  EXPECT_EQ(builtins.at(0), dir.path());
+  EXPECT_NE(builtins.at(1), dir.path());  // marketplace location, distinct from the override
+  EXPECT_TRUE(builtins.at(2).endsWith(QStringLiteral("/plugins")));
+}
+
 TEST(AppSessionTest, InvalidExtensionDirectoryReportsDiagnostic) {
   QTemporaryDir dir;
   ASSERT_TRUE(dir.isValid());

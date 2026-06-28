@@ -124,7 +124,10 @@ PlotWidget::PlotWidget(SessionManager* session, CatalogModel* catalog, QWidget* 
   show_point_text_->attach(qwtPlot());
 
   connect(this, &PlotWidgetBase::viewResized, this, &PlotWidget::onExternallyResized);
-  connect(this, &PlotWidgetBase::curveListChanged, this, [this]() { updateMaximumZoomArea(); });
+  connect(this, &PlotWidgetBase::curveListChanged, this, [this]() {
+    updateMaximumZoomArea();
+    autoZoomPlotVertically();
+  });
   connect(this, &PlotWidgetBase::dragEnterSignal, this, &PlotWidget::onDragEnterEvent);
   connect(this, &PlotWidgetBase::dragLeaveSignal, this, &PlotWidget::onDragLeaveEvent);
   connect(this, &PlotWidgetBase::dropSignal, this, &PlotWidget::onDropEvent);
@@ -180,7 +183,16 @@ PlotWidget::CurveInfo* PlotWidget::addCurve(const QString& name, QColor color) {
     if (const auto remembered = registry.color(name); remembered.has_value()) {
       color = QColor(*remembered);
     } else {
-      color = PlotWidgetBase::paletteColor(registry.nextPaletteIndex());
+      // New curve: choose the colour index from the configured sequence.
+      // "global" advances the session-wide registry counter (one continuous
+      // sequence across every plot); "per plot" uses this curve's positional
+      // index within the plot, so each plot restarts at colour 0. Either way the
+      // colour is then remembered by name (always-on), so the curve keeps it on
+      // re-add and across plots.
+      QSettings settings;
+      const bool global = settings.value(QStringLiteral("Preferences::curve_color_global"), true).toBool();
+      const int index = global ? registry.nextPaletteIndex() : static_cast<int>(curveList().size());
+      color = PlotWidgetBase::paletteColor(index);
       registry.setColor(name, color.name());
     }
   }
@@ -196,6 +208,28 @@ PlotWidget::CurveInfo* PlotWidget::addCurve(const QString& name, QColor color) {
   updateMaximumZoomArea();
   replot();
   return info;
+}
+
+void PlotWidget::autoZoomPlotVertically() {
+  // Skip during layout restore (the saved range wins), when there is nothing to
+  // fit, and for XY plots (their X axis is data, not the shared time axis).
+  if (loading_state_ || curveList().empty() || isXYPlot()) {
+    return;
+  }
+  if (!QSettings().value(QStringLiteral("Preferences::auto_zoom_plots"), true).toBool()) {
+    return;
+  }
+  // Rescale only Y, over the current X window, so the shared time axis — and
+  // therefore the other plots — stay put.
+  const Range<double> range_x = getVisualizationRangeX();
+  const Range<double> range_y = getVisualizationRangeY(range_x);
+  // Guard against a non-finite or degenerate range (e.g. a curve that is all
+  // NaN/inf over the window) — feeding it to setAxisScale yields a blank axis.
+  if (!std::isfinite(range_y.min) || !std::isfinite(range_y.max) || range_y.min >= range_y.max) {
+    return;
+  }
+  setAxisScale(QwtPlot::yLeft, range_y.min, range_y.max);
+  replot();
 }
 
 void PlotWidget::replaceCurve(const QString& source_key, const QString& output_key) {

@@ -3,8 +3,10 @@
 
 #include "pj_runtime/ExtensionCatalogService.h"
 
+#include <QCoreApplication>
 #include <QDir>
 #include <QLoggingCategory>
+#include <QSettings>
 #include <utility>
 
 #include "pj_marketplace/extension_manager.hpp"
@@ -21,6 +23,13 @@ QString defaultExtensionsDir() {
 
 QString defaultPendingDir() {
   return PlatformUtils::pendingDir();
+}
+
+// User-managed extra plugin folders (Preferences page). QStringList.
+constexpr auto kCustomPluginFoldersKey = "Preferences::plugin_folders";
+
+QString executablePluginsDir() {
+  return QCoreApplication::applicationDirPath() + QStringLiteral("/plugins");
 }
 }  // namespace
 
@@ -44,11 +53,57 @@ ExtensionCatalogService::ExtensionCatalogService(QString extensions_dir, Diagnos
   }
 
   extension_manager_ = std::make_unique<ExtensionManager>(nullptr, extensions_dir_, pending_dir, sink_, this);
-  plugin_catalog_ =
-      std::make_unique<PluginRuntimeCatalog>(extensions_dir_.toStdString(), sink_, "ExtensionCatalogService");
+  plugin_catalog_ = std::make_unique<PluginRuntimeCatalog>(std::filesystem::path{}, sink_, "ExtensionCatalogService");
 
-  qCInfo(lcCatalog) << "Scanning" << extensions_dir_;
+  // Scan the full ordered folder hierarchy (custom folders win over the
+  // built-ins; the catalog de-duplicates by plugin id, first folder wins).
+  const std::vector<std::filesystem::path> scan_dirs = buildScanHierarchy();
+  plugin_catalog_->setPluginDirs(scan_dirs);
+  qCInfo(lcCatalog) << "Scanning" << static_cast<int>(scan_dirs.size()) << "plugin folder(s); install dir"
+                    << extensions_dir_;
   plugin_catalog_->scanDirectory();
+}
+
+QStringList ExtensionCatalogService::customPluginFolders() const {
+  QSettings settings;
+  return settings.value(QLatin1String(kCustomPluginFoldersKey)).toStringList();
+}
+
+void ExtensionCatalogService::setCustomPluginFolders(const QStringList& folders) {
+  QSettings settings;
+  settings.setValue(QLatin1String(kCustomPluginFoldersKey), folders);
+}
+
+QStringList ExtensionCatalogService::builtinPluginFolders() const {
+  QStringList folders;
+  folders << extensions_dir_;
+  const QString marketplace = defaultExtensionsDir();
+  if (marketplace != extensions_dir_) {
+    folders << marketplace;
+  }
+  folders << executablePluginsDir();
+  return folders;
+}
+
+std::vector<std::filesystem::path> ExtensionCatalogService::buildScanHierarchy() const {
+  std::vector<std::filesystem::path> dirs;
+  // A folder that doesn't exist on disk contributes no plugins, so skip it
+  // rather than hand it to the catalog — scanning a missing directory reports a
+  // kError per launch, which for an absent *optional* folder (e.g. <exe>/plugins
+  // in a dev layout, or a user-typed custom folder already shown in red in the
+  // Preferences page) is noise that masks real plugin-load errors.
+  const auto add_if_exists = [&dirs](const QString& folder) {
+    if (!folder.isEmpty() && QDir(folder).exists()) {
+      dirs.emplace_back(folder.toStdString());
+    }
+  };
+  for (const QString& folder : customPluginFolders()) {
+    add_if_exists(folder);
+  }
+  for (const QString& folder : builtinPluginFolders()) {
+    add_if_exists(folder);
+  }
+  return dirs;
 }
 
 ExtensionCatalogService::~ExtensionCatalogService() = default;

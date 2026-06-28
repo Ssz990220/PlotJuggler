@@ -5,6 +5,7 @@
 #include <QObject>
 #include <QString>
 #include <QStringList>
+#include <filesystem>
 #include <memory>
 #include <vector>
 
@@ -84,6 +85,18 @@ class ExtensionCatalogService : public QObject {
   // Builds a QFileDialog-compatible filter string from all file-import sources.
   QString buildFileFilter() const;
 
+  // User-managed extra plugin folders, highest scan priority, persisted in
+  // QSettings (Preferences::plugin_folders). Changes apply on next launch (no
+  // hot reload), so the setter only writes the key — it does not re-scan.
+  [[nodiscard]] QStringList customPluginFolders() const;
+  void setCustomPluginFolders(const QStringList& folders);
+
+  // Built-in plugin folders in scan-priority order: the install dir
+  // (the --plugin-dir override or the marketplace location), the marketplace
+  // location (only when the override made it distinct), then <exe>/plugins.
+  // Read-only — shown to the user for reference.
+  [[nodiscard]] QStringList builtinPluginFolders() const;
+
  signals:
   // Emitted after reload() changes the loaded plugin set.
   void catalogChanged();
@@ -91,6 +104,11 @@ class ExtensionCatalogService : public QObject {
  private:
   // Emits one diagnostic through the optional app-level sink.
   void reportDiagnostic(DiagnosticLevel level, const QString& message, const QString& id = {}) const;
+
+  // Assembles the ordered scan list: custom folders first, then the built-in
+  // folders. De-duplication by plugin id (first folder wins) is done in the
+  // PluginRuntimeCatalog.
+  [[nodiscard]] std::vector<std::filesystem::path> buildScanHierarchy() const;
 
   QString extensions_dir_;
   DiagnosticSink sink_;

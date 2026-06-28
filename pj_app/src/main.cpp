@@ -9,9 +9,11 @@
 #include <backward.hpp>
 #include <cstdlib>
 
+#include "DebugMode.h"
 #include "KeySequence.h"
 #include "MainWindow.h"
 #include "WidgetTuner.h"
+#include "pj_plotting/PlotWidgetBase.h"
 #include "pj_widgets/Style.h"
 
 namespace {
@@ -79,7 +81,25 @@ int main(int argc, char* argv[]) {
                                       "Start looping playback automatically once a data source provides a time range "
                                       "(useful with --layout / --test-data for demos and profiling)."));
   parser.addOption(autoplay_option);
+  const QCommandLineOption debug_mode_option(
+      QStringLiteral("debug-mode"),
+      QStringLiteral("Reveal developer-only preferences and tooling that are hidden in normal runs."));
+  parser.addOption(debug_mode_option);
+  const QCommandLineOption disable_opengl_option(
+      QStringLiteral("disable-opengl"),
+      QStringLiteral(
+          "Force plots onto the software raster canvas for this session, overriding the saved OpenGL "
+          "preference (does not change it)."));
+  parser.addOption(disable_opengl_option);
   parser.process(app);
+
+  // Latch the launch-time debug gate before any UI is built (PreferencesDialog
+  // reads it to decide whether to show the chrome-metric scrubbers).
+  PJ::setDebugMode(parser.isSet(debug_mode_option));
+
+  // Session-only OpenGL override: applied before any plot is constructed so the
+  // first plot already honours it. Leaves Preferences::use_opengl untouched.
+  PJ::PlotWidgetBase::setOpenGlDisabledOverride(parser.isSet(disable_opengl_option));
 
   PJ::MainWindow window(parser.value(plugin_dir_option));
 

@@ -135,12 +135,11 @@ class MainWindow : public QMainWindow {
   // without thrashing the .ini); PreferencesDialog calls this on OK to commit.
   void persistChromeMetrics() const;
 
-  // Source Timeline auto-zoom preference (persisted in QSettings; default true).
-  // The getter reads QSettings so PreferencesDialog can seed its toggle; the
-  // setter writes QSettings AND pushes the flag to the timeline widget. Unlike the
-  // chrome setters this commits immediately (the dialog calls it on OK only).
-  [[nodiscard]] bool timelineAutoZoom() const;
-  void setTimelineAutoZoom(bool enabled);
+  // Plugin search-folder configuration for the Preferences "Plugins" page;
+  // delegates to the extension catalog. Custom-folder edits apply on next launch.
+  [[nodiscard]] QStringList customPluginFolders() const;
+  void setCustomPluginFolders(const QStringList& folders);
+  [[nodiscard]] QStringList builtinPluginFolders() const;
 
  public slots:
   // Apply-only: clamp, update chrome_metrics_, broadcast chromeMetricsChanged.

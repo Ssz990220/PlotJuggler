@@ -53,6 +53,11 @@ namespace {
   return k_colors[static_cast<std::size_t>(index) % k_colors.size()];
 }
 
+// Session-wide override for the OpenGL canvas choice, set by
+// PlotWidgetBase::setOpenGlDisabledOverride (the --disable-opengl CLI flag).
+// Read once per plot at construction; only written at startup.
+bool g_opengl_disabled_override = false;
+
 }  // namespace
 
 double lineWidthValue(LineWidth line_width) noexcept {
@@ -172,7 +177,7 @@ PlotWidgetBase::PlotWidgetBase(QWidget* parent) : QWidget(parent) {
     }
   };
 
-  const bool use_opengl = QSettings().value("Preferences::use_opengl", true).toBool();
+  const bool use_opengl = !g_opengl_disabled_override && QSettings().value("Preferences::use_opengl", true).toBool();
 
   // TODO(theme): QwtPlotCanvas uses a backing-store paint path that ignores
   //   QSS background rules, so the canvas needs a solid palette colour here.
@@ -580,6 +585,10 @@ QColor PlotWidgetBase::nextColor() {
 
 QColor PlotWidgetBase::paletteColor(int index) {
   return colorFromIndex(index);
+}
+
+void PlotWidgetBase::setOpenGlDisabledOverride(bool disabled) {
+  g_opengl_disabled_override = disabled;
 }
 
 QwtPlot* PlotWidgetBase::qwtPlot() {

@@ -3,22 +3,32 @@
 
 #include "PreferencesDialog.h"
 
+#include <QAbstractItemModel>
+#include <QBrush>
+#include <QDir>
 #include <QFile>
+#include <QFileDialog>
+#include <QFormLayout>
 #include <QIcon>
 #include <QImage>
+#include <QListWidget>
 #include <QPainter>
 #include <QPixmap>
 #include <QPushButton>
+#include <QSettings>
 #include <QStackedWidget>
 #include <QSvgRenderer>
 #include <QToolButton>
 #include <QVBoxLayout>
 
+#include "DebugMode.h"
 #include "MainWindow.h"
 #include "PreferencesNavRow.h"
 #include "Theme.h"
+#include "pj_widgets/DualOptionsWidget.h"
 #include "pj_widgets/IntScrubber.h"
-#include "pj_widgets/SvgUtil.h"
+#include "pj_widgets/SvgButton.h"
+#include "pj_widgets/ThemeColors.h"
 #include "pj_widgets/ToggleSwitch.h"
 #include "ui_PreferencesDialog.h"
 
@@ -59,7 +69,7 @@ QIcon loadWhiteFillIcon(const QString& resource_path) {
 
 PreferencesDialog::PreferencesDialog(Theme& theme, QWidget* parent)
     : Dialog(parent),
-      ui_(new Ui::PreferencesDialog),
+      ui_(new Ui::PreferencesContent),
       theme_(theme),
       original_theme_(theme.currentTheme()),
       original_metrics_(
@@ -71,20 +81,42 @@ PreferencesDialog::PreferencesDialog(Theme& theme, QWidget* parent)
   auto* body = new QWidget;
   ui_->setupUi(body);
   contentLayout()->addWidget(body);
-  // Sensible default: room for the 160 px nav column, a comfortable page
-  // body, and a few rows of category placeholders. Dialog is resizable
-  // (edge-drag handled by the base class) so the user can grow / shrink.
-  resize(560, 400);
+  // Free the dialog to resize down. The base Dialog's top-level layout uses Qt's
+  // default SetDefaultConstraint, which on every activation forces the window's
+  // minimum size up to the layout's computed minimum — and with the Appearance
+  // page's Fixed-height scrubber rows that minimum is tall enough to block
+  // shrinking (and to override a smaller restored/explicit size). SetNoConstraint
+  // stops the layout from imposing that minimum (children still fill via their
+  // own layouts); the explicit minimum below is then the only floor.
+  if (auto* root = layout()) {
+    root->setSizeConstraint(QLayout::SetNoConstraint);
+  }
+  setMinimumSize(420, 300);
+  // Restore the user's last dialog size if they resized it before; otherwise a
+  // sensible default (room for the 160 px nav column + a comfortable page body).
+  // The dialog is resizable (edge-drag handled by the base class); geometry is
+  // saved on close (see the destructor).
+  {
+    QSettings settings;
+    const QByteArray geometry = settings.value(QStringLiteral("Preferences::dialog_geometry")).toByteArray();
+    // A stale/corrupt blob (Qt upgrade, truncated .ini) makes restoreGeometry
+    // return false and apply nothing — fall back to the default size rather than
+    // opening off-screen or at 0x0.
+    if (geometry.isEmpty() || !restoreGeometry(geometry)) {
+      resize(560, 400);
+    }
+  }
 
   // Populate the left-hand nav column. Each row is a click-target that
   // switches pagesStack to the matching index. The trailing stretch in
   // navLayout (added in .ui) pushes the rows to the top.
   auto* nav_layout = qobject_cast<QVBoxLayout*>(ui_->navContainer->layout());
-  const std::array<std::pair<QString, int>, 4> nav_entries{{
+  const std::array<std::pair<QString, int>, 5> nav_entries{{
       {tr("Appearance"), 0},
       {tr("Plotting"), 1},
-      {tr("Streaming"), 2},
-      {tr("Scripting"), 3},
+      {tr("Scene 2D"), 2},
+      {tr("Scene 3D"), 3},
+      {tr("Plugins"), 4},
   }};
   nav_rows_.reserve(nav_entries.size());
   for (const auto& [label, index] : nav_entries) {
@@ -102,6 +134,23 @@ PreferencesDialog::PreferencesDialog(Theme& theme, QWidget* parent)
     nav_rows_.front()->setSelected(true);
     ui_->pagesStack->setCurrentIndex(0);
   }
+
+  // Developer-only chrome-metric scrubbers (icon/layout sizing) ship hidden;
+  // --debug-mode reveals them. They sit in a spanning row of the Appearance
+  // form, so toggle the whole row (setRowVisible) to reclaim its vertical space
+  // when hidden — hiding only the widget would leave the row's gap.
+  if (auto* appearance_form = qobject_cast<QFormLayout*>(ui_->pageAppearance->layout())) {
+    int row = -1;
+    QFormLayout::ItemRole role{};
+    appearance_form->getWidgetPosition(ui_->debugChromeWidget, &row, &role);
+    if (row >= 0) {
+      appearance_form->setRowVisible(row, isDebugMode());
+    }
+  }
+
+  // Scene 3D page is a placeholder for now — the asset-folder controls are
+  // shown but disabled until the feature lands.
+  ui_->pageScene3D->setEnabled(false);
 
   // Icon-size + icon-padding scrubbers. Ranges match the spec and the
   // clamps inside MainWindow::setIconSize / setIconPadding. Initial
@@ -131,6 +180,30 @@ PreferencesDialog::PreferencesDialog(Theme& theme, QWidget* parent)
   ui_->layoutSpacingScrubber->setSuffix(QStringLiteral(" px"));
   ui_->layoutSpacingScrubber->setValue(original_metrics_.layout_spacing);
 
+  // Value preferences seeded together (one QSettings read pass) and committed on
+  // OK below. The scoped block keeps `settings` from shadowing the same-named
+  // local in the accept/reject handlers (which run later as slots):
+  //  - Float precision (Appearance): 1-6 decimals; its readers (plot tooltips,
+  //    the curve tracker, the curve-list value column) re-read the key on their
+  //    next redraw.
+  //  - Curve-colour sequence (Plotting): global = one continuous colour sequence
+  //    across all plots; per plot = the sequence restarts within each plot.
+  //  - OpenGL (Appearance): default on; PlotWidgetBase reads the key when a plot
+  //    is constructed (applies to newly created plots). --disable-opengl can
+  //    force it off for a session without touching this saved value.
+  ui_->scrubberFloatPrecision->setRange(1, 6);
+  ui_->scrubberFloatPrecision->setSingleStep(1);
+  ui_->curveColorMode->setOptions(tr("global"), tr("per plot"));
+  {
+    QSettings settings;
+    ui_->scrubberFloatPrecision->setValue(settings.value(QStringLiteral("Preferences::precision"), 3).toInt());
+    ui_->curveColorMode->setSelectedIndex(
+        settings.value(QStringLiteral("Preferences::curve_color_global"), true).toBool() ? 0 : 1);
+    ui_->openglToggle->setChecked(
+        settings.value(QStringLiteral("Preferences::use_opengl"), true).toBool(),
+        /*animate=*/false);
+  }
+
   if (main_window != nullptr) {
     connect(ui_->iconSizeScrubber, &IntScrubber::valueChanged, main_window, &MainWindow::setIconSize);
     connect(ui_->iconPaddingScrubber, &IntScrubber::valueChanged, main_window, &MainWindow::setIconPadding);
@@ -138,12 +211,63 @@ PreferencesDialog::PreferencesDialog(Theme& theme, QWidget* parent)
     connect(ui_->layoutSpacingScrubber, &IntScrubber::valueChanged, main_window, &MainWindow::setLayoutSpacing);
   }
 
+  // Plugins page: the user-managed custom folder list (drag-reorderable, with
+  // add/remove) plus the read-only built-in folders. Folders that do not exist
+  // on disk render in red. The custom list persists on OK and applies on next
+  // launch (no hot reload of extensions).
+  if (main_window != nullptr) {
+    auto paint_missing = [](QListWidget* list) {
+      for (int row = 0; row < list->count(); ++row) {
+        QListWidgetItem* item = list->item(row);
+        const bool missing = !QDir(item->text()).exists();
+        item->setForeground(missing ? QBrush(theme::kAccentError) : QBrush());
+        item->setToolTip(missing ? tr("This folder does not exist.") : QString());
+      }
+    };
+
+    ui_->listCustomPluginFolders->setDragDropMode(QAbstractItemView::InternalMove);
+    ui_->listCustomPluginFolders->addItems(main_window->customPluginFolders());
+    paint_missing(ui_->listCustomPluginFolders);
+    // A drag-reorder re-serializes the items and drops their foreground brush, so
+    // repaint the missing-folder tint after a move.
+    connect(ui_->listCustomPluginFolders->model(), &QAbstractItemModel::rowsMoved, this, [this, paint_missing]() {
+      paint_missing(ui_->listCustomPluginFolders);
+    });
+
+    ui_->listDefaultPluginFolders->addItems(main_window->builtinPluginFolders());
+    ui_->listDefaultPluginFolders->setSelectionMode(QAbstractItemView::NoSelection);
+    ui_->listDefaultPluginFolders->setFocusPolicy(Qt::NoFocus);
+    paint_missing(ui_->listDefaultPluginFolders);
+
+    // SvgButton re-tints itself on a theme change — no manual retint wiring.
+    ui_->buttonAddPluginFolder->setIconPath(QStringLiteral(":/resources/svg/add.svg"));
+    ui_->buttonAddPluginFolder->setExtent(26, 24);
+    ui_->buttonRemovePluginFolder->setIconPath(QStringLiteral(":/resources/svg/trash.svg"));
+    ui_->buttonRemovePluginFolder->setExtent(26, 24);
+    ui_->buttonAddPluginFolder->setToolTip(tr("Add a plugin folder…"));
+    ui_->buttonRemovePluginFolder->setToolTip(tr("Remove the selected folder"));
+    connect(ui_->buttonAddPluginFolder, &QToolButton::clicked, this, [this, paint_missing]() {
+      const QString dir = QFileDialog::getExistingDirectory(this, tr("Add plugin folder"));
+      if (!dir.isEmpty()) {
+        ui_->listCustomPluginFolders->addItem(dir);
+        paint_missing(ui_->listCustomPluginFolders);
+      }
+    });
+    connect(ui_->buttonRemovePluginFolder, &QToolButton::clicked, this, [this, paint_missing]() {
+      qDeleteAll(ui_->listCustomPluginFolders->selectedItems());
+      paint_missing(ui_->listCustomPluginFolders);
+    });
+  }
+
   // Reset-to-defaults button. Snaps each scrubber back to the
   // first-launch defaults; the scrubbers' valueChanged signals
   // already feed MainWindow's setters, so the running app live-
   // previews the reset and Cancel still reverts to the dialog's
   // open-time snapshot.
-  ui_->buttonResetDefaults->setIcon(loadSvg(":/resources/svg/restore_page.svg", theme_.currentTheme()));
+  // Same glyph as the timeline align-rail "reset all" button (restart_alt).
+  // SvgButton re-tints itself on a theme change.
+  ui_->buttonResetDefaults->setIconPath(QStringLiteral(":/resources/svg/restart_alt.svg"));
+  ui_->buttonResetDefaults->setSize(SvgButton::Size::kDefault);
   connect(ui_->buttonResetDefaults, &QToolButton::clicked, this, [this]() {
     ui_->iconSizeScrubber->setValue(kDefaultIconSize);
     ui_->iconPaddingScrubber->setValue(kDefaultIconPadding);
@@ -206,12 +330,15 @@ PreferencesDialog::PreferencesDialog(Theme& theme, QWidget* parent)
     theme_.setTheme(checked ? QStringLiteral("light") : QStringLiteral("dark"));
   });
 
-  // Plotting page: timeline auto-zoom. Seed from the persisted preference (no
-  // animation — open at the settled position). Unlike the live-preview chrome
-  // controls this commits only on OK (see the accepted handler below); Cancel
-  // leaves QSettings and the timeline untouched.
-  if (main_window != nullptr) {
-    ui_->autoZoomToggle->setChecked(main_window->timelineAutoZoom(), /*animate=*/false);
+  // Plotting page: auto-zoom plots. When on, adding/removing a curve rescales
+  // that plot's Y axis to fit (see PlotWidget::autoZoomPlotVertically). Seed
+  // from the persisted preference (no animation — open at the settled
+  // position); like the other plotting prefs this commits only on OK.
+  {
+    QSettings settings;
+    ui_->autoZoomToggle->setChecked(
+        settings.value(QStringLiteral("Preferences::auto_zoom_plots"), true).toBool(),
+        /*animate=*/false);
   }
   connect(this, &QDialog::rejected, this, [this, main_window]() {
     theme_.setTheme(original_theme_);
@@ -227,8 +354,17 @@ PreferencesDialog::PreferencesDialog(Theme& theme, QWidget* parent)
   connect(this, &QDialog::accepted, this, [this, main_window]() {
     if (main_window != nullptr) {
       main_window->persistChromeMetrics();
-      main_window->setTimelineAutoZoom(ui_->autoZoomToggle->isChecked());
+      QStringList plugin_folders;
+      for (int row = 0; row < ui_->listCustomPluginFolders->count(); ++row) {
+        plugin_folders << ui_->listCustomPluginFolders->item(row)->text();
+      }
+      main_window->setCustomPluginFolders(plugin_folders);
     }
+    QSettings settings;
+    settings.setValue(QStringLiteral("Preferences::precision"), ui_->scrubberFloatPrecision->value());
+    settings.setValue(QStringLiteral("Preferences::use_opengl"), ui_->openglToggle->isChecked());
+    settings.setValue(QStringLiteral("Preferences::curve_color_global"), ui_->curveColorMode->selectedIndex() == 0);
+    settings.setValue(QStringLiteral("Preferences::auto_zoom_plots"), ui_->autoZoomToggle->isChecked());
   });
 
   connect(ui_->buttonOk, &QPushButton::clicked, this, &QDialog::accept);
@@ -236,6 +372,10 @@ PreferencesDialog::PreferencesDialog(Theme& theme, QWidget* parent)
 }
 
 PreferencesDialog::~PreferencesDialog() {
+  // Remember the dialog size across launches regardless of OK/Cancel — window
+  // size is a UI preference, not a settings change.
+  QSettings settings;
+  settings.setValue(QStringLiteral("Preferences::dialog_geometry"), saveGeometry());
   delete ui_;
 }
 

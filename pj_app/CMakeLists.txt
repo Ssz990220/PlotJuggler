@@ -31,6 +31,8 @@ add_executable(pj_app
     src/WidgetTuner.h
     src/KeySequence.cpp
     src/KeySequence.h
+    src/DebugMode.cpp
+    src/DebugMode.h
     src/PreferencesDialog.cpp
     src/PreferencesDialog.h
     src/PreferencesDialog.ui

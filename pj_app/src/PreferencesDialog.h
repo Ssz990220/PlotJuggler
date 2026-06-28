@@ -9,8 +9,10 @@
 #include "pj_widgets/Dialog.h"
 
 namespace Ui {
-class PreferencesDialog;
-}
+// Generated from PreferencesDialog.ui, whose root <class> is PreferencesContent
+// (Qt Designer syncs the generated class to the root widget's objectName).
+class PreferencesContent;
+}  // namespace Ui
 
 namespace PJ {
 
@@ -24,7 +26,7 @@ class PreferencesDialog : public Dialog {
   ~PreferencesDialog() override;
 
  private:
-  Ui::PreferencesDialog* ui_;
+  Ui::PreferencesContent* ui_;
   Theme& theme_;
   // Owns nothing — Qt parentage owns the row widgets. This is just the
   // iteration target for selection updates.

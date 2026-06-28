@@ -142,6 +142,13 @@ class PlotWidget : public PlotWidgetBase {
   void onDropEvent(QDropEvent* event);
 
  private:
+  // Vertical-only auto-fit triggered when a curve is added or removed, gated by
+  // the Preferences::auto_zoom_plots setting. Rescales the Y axis to the data
+  // over the current X window only — the shared time axis (and thus sibling
+  // plots) is never touched. No-op during layout restore (the saved range wins),
+  // when empty, and for XY plots (no shared time axis).
+  void autoZoomPlotVertically();
+
   // No-op when show_points_ is false.
   void showPointValues(QPoint paint_point);
   enum class DragMode { kNone, kCurves, kNewXY };
