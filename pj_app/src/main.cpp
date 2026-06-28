@@ -4,16 +4,24 @@
 #include <QApplication>
 #include <QCommandLineOption>
 #include <QCommandLineParser>
+#include <QDateTime>
+#include <QGuiApplication>
 #include <QImage>
+#include <QPixmap>
+#include <QScreen>
+#include <QSplashScreen>
+#include <QThread>
 #include <QTimer>
 #include <Qt>
 #include <backward.hpp>
 #include <cstdio>
 #include <cstdlib>
+#include <memory>
 
 #include "DebugMode.h"
 #include "KeySequence.h"
 #include "MainWindow.h"
+#include "Splashscreen.h"
 #include "WidgetTuner.h"
 #include "pj_plotting/PlotWidgetBase.h"
 #include "pj_scene3d_widgets/scene_view_widget.h"  // --screenshot grabs the 3D view
@@ -84,6 +92,17 @@ int main(int argc, char* argv[]) {
                                       "Start looping playback automatically once a data source provides a time range "
                                       "(useful with --layout / --test-data for demos and profiling)."));
   parser.addOption(autoplay_option);
+  const QCommandLineOption nosplash_option(
+      QStringList() << QStringLiteral("n") << QStringLiteral("nosplash"),
+      QStringLiteral("Don't display the splashscreen on startup."));
+  parser.addOption(nosplash_option);
+  // Dev-only splash preview, disabled but kept for future tweaks: renders the
+  // configured splash to a PNG and exits (see the matching handler below).
+  // const QCommandLineOption dump_splash_option(
+  //     QStringLiteral("dump-splash"),
+  //     QStringLiteral("Render the configured startup splashscreen to a PNG and exit (dev preview)."),
+  //     QStringLiteral("path"));
+  // parser.addOption(dump_splash_option);
   const QCommandLineOption debug_mode_option(
       QStringLiteral("debug-mode"),
       QStringLiteral("Reveal developer-only preferences and tooling that are hidden in normal runs."));
@@ -116,6 +135,34 @@ int main(int argc, char* argv[]) {
   // first plot already honours it. Leaves Preferences::use_opengl untouched.
   PJ::PlotWidgetBase::setOpenGlDisabledOverride(parser.isSet(disable_opengl_option));
 
+  // Dev preview (disabled, kept for future tweaks): render the configured splash
+  // to a PNG and exit — lets us inspect the "serious" splash without launching
+  // (and without screen-capture, which GNOME Wayland blocks). Re-enable together
+  // with the dump_splash_option declaration above.
+  // if (parser.isSet(dump_splash_option)) {
+  //   const QString path = parser.value(dump_splash_option);
+  //   const bool ok = PJ::makeStartupSplash().save(path);
+  //   std::fprintf(ok ? stdout : stderr, "[dump-splash] %s: %s\n", ok ? "saved" : "FAILED", qPrintable(path));
+  //   return ok ? EXIT_SUCCESS : EXIT_FAILURE;
+  // }
+
+  // The funny splashscreen: a random meme that covers the (slow) MainWindow
+  // construction below. Skipped with --nosplash and when launching straight
+  // into a layout (--layout), where the user wants data, not a meme. Shown
+  // before the MainWindow ctor so it's already on screen while the ctor runs.
+  std::unique_ptr<QSplashScreen> splash;
+  if (!parser.isSet(nosplash_option) && !parser.isSet(layout_option)) {
+    const QPixmap pixmap = PJ::makeStartupSplash();
+    if (!pixmap.isNull()) {
+      splash = std::make_unique<QSplashScreen>(pixmap, Qt::WindowStaysOnTopHint);
+      if (const QScreen* screen = QGuiApplication::primaryScreen()) {
+        splash->move(screen->availableGeometry().center() - splash->rect().center());
+      }
+      splash->show();
+      app.processEvents();
+    }
+  }
+
   PJ::MainWindow window(parser.value(plugin_dir_option));
 
   // App-wide gesture watcher. Observes key presses without consuming them and
@@ -136,7 +183,29 @@ int main(int argc, char* argv[]) {
       return EXIT_FAILURE;
     }
   }
+  if (splash) {
+    // Keep the meme up briefly so it's actually seen, but let a click dismiss
+    // it early: QSplashScreen hides itself on mousePressEvent, so once the user
+    // clicks it isHidden() flips and we stop waiting. msleep keeps the spin off
+    // the CPU while still pumping events so the click is delivered.
+    //
+    // The main window is shown only AFTER this loop: a still-hidden main window
+    // can't be stacked above the splash, so the meme stays on top. (Wayland
+    // ignores WindowStaysOnTopHint / raise() once the main window is up, which
+    // is exactly how the splash ended up behind it.)
+    const QDateTime deadline = QDateTime::currentDateTime().addMSecs(4000);
+    while (QDateTime::currentDateTime() < deadline && !splash->isHidden()) {
+      app.processEvents();
+      QThread::msleep(20);
+    }
+  }
+
   window.show();
+
+  if (splash) {
+    // Close the splash once the main window is up.
+    splash->finish(&window);
+  }
 
   // Deferred so the load runs after the event loop starts (the file loads on a
   // worker; the progressive layout restore needs a running loop).

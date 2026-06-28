@@ -3,6 +3,21 @@
   <qresource prefix="/resources">
     <file alias="stylesheet_light.qss">stylesheet_light.qss</file>
     <file alias="stylesheet_dark.qss">stylesheet_dark.qss</file>
+    <!-- Square PlotJuggler logo, composed into the "serious" splashscreen. -->
+    <file alias="plotjuggler.svg">plotjuggler.svg</file>
+  </qresource>
+  <qresource prefix="/resources">
+    <!-- Funny splashscreen pool. The startup splash enumerates this directory
+         at runtime (QDir(":/resources/memes")), so adding a meme is a pure
+         resource change: drop meme_NN.jpg here and list it below. -->
+    <file alias="memes/meme_01.jpg">memes/meme_01.jpg</file>
+    <file alias="memes/meme_02.jpg">memes/meme_02.jpg</file>
+    <file alias="memes/meme_03.jpg">memes/meme_03.jpg</file>
+    <file alias="memes/meme_04.jpg">memes/meme_04.jpg</file>
+    <file alias="memes/meme_05.jpg">memes/meme_05.jpg</file>
+    <file alias="memes/meme_06.jpg">memes/meme_06.jpg</file>
+    <file alias="memes/meme_07.jpg">memes/meme_07.jpg</file>
+    <file alias="memes/meme_08.jpg">memes/meme_08.jpg</file>
   </qresource>
   <qresource prefix="/filters">
     <!-- The 12 built-in data filters as one self-describing Luau resource (M3).

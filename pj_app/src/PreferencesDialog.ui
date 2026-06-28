@@ -366,7 +366,27 @@
            </property>
           </widget>
          </item>
-         <item row="4" column="0" colspan="2">
+         <item row="4" column="0">
+          <widget class="QLabel" name="labelSplashscreen">
+           <property name="toolTip">
+            <string>What to show on startup: a random meme, or a clean branded banner.</string>
+           </property>
+           <property name="text">
+            <string>Splashscreen:</string>
+           </property>
+          </widget>
+         </item>
+         <item row="4" column="1">
+          <widget class="PJ::DualOptionsWidget" name="splashMode" native="true">
+           <property name="sizePolicy">
+            <sizepolicy hsizetype="Fixed" vsizetype="Fixed">
+             <horstretch>0</horstretch>
+             <verstretch>0</verstretch>
+            </sizepolicy>
+           </property>
+          </widget>
+         </item>
+         <item row="5" column="0" colspan="2">
           <spacer name="appearanceVerticalSpacer">
            <property name="orientation">
             <enum>Qt::Orientation::Vertical</enum>

@@ -1,4 +1,4 @@
-find_package(Qt6 REQUIRED COMPONENTS Core Gui Widgets Network Test)
+find_package(Qt6 REQUIRED COMPONENTS Core Gui Widgets Network Svg Test)
 
 # backward-cpp (Conan): symbolized crash backtraces. The package exports the
 # `Backward` config and the `Backward::Backward` target, which propagates the
@@ -8,6 +8,8 @@ find_package(Backward REQUIRED)
 
 add_executable(pj_app
     src/main.cpp
+    src/Splashscreen.cpp
+    src/Splashscreen.h
     src/DialogPresenter.cpp
     src/DialogPresenter.h
     src/FanoutConfig.cpp
@@ -103,6 +105,7 @@ target_link_libraries(pj_app PRIVATE
     Qt6::Widgets
     Qt6::Network
     Qt6::Xml
+    Qt6::Svg
 )
 
 # -Werror guards against the bug class that bit the reload path: a merge that

@@ -24,6 +24,7 @@
 #include "DebugMode.h"
 #include "MainWindow.h"
 #include "PreferencesNavRow.h"
+#include "Splashscreen.h"
 #include "Theme.h"
 #include "pj_widgets/DualOptionsWidget.h"
 #include "pj_widgets/IntScrubber.h"
@@ -194,6 +195,7 @@ PreferencesDialog::PreferencesDialog(Theme& theme, QWidget* parent)
   ui_->scrubberFloatPrecision->setRange(1, 6);
   ui_->scrubberFloatPrecision->setSingleStep(1);
   ui_->curveColorMode->setOptions(tr("global"), tr("per plot"));
+  ui_->splashMode->setOptions(tr("memes"), tr("serious"));
   {
     QSettings settings;
     ui_->scrubberFloatPrecision->setValue(settings.value(QStringLiteral("Preferences::precision"), 3).toInt());
@@ -202,6 +204,8 @@ PreferencesDialog::PreferencesDialog(Theme& theme, QWidget* parent)
     ui_->openglToggle->setChecked(
         settings.value(QStringLiteral("Preferences::use_opengl"), true).toBool(),
         /*animate=*/false);
+    ui_->splashMode->setSelectedIndex(
+        settings.value(kSplashModeKey, kSplashModeMemes).toString() == kSplashModeSerious ? 1 : 0);
   }
 
   if (main_window != nullptr) {
@@ -364,6 +368,7 @@ PreferencesDialog::PreferencesDialog(Theme& theme, QWidget* parent)
     settings.setValue(QStringLiteral("Preferences::precision"), ui_->scrubberFloatPrecision->value());
     settings.setValue(QStringLiteral("Preferences::use_opengl"), ui_->openglToggle->isChecked());
     settings.setValue(QStringLiteral("Preferences::curve_color_global"), ui_->curveColorMode->selectedIndex() == 0);
+    settings.setValue(kSplashModeKey, ui_->splashMode->selectedIndex() == 1 ? kSplashModeSerious : kSplashModeMemes);
     settings.setValue(QStringLiteral("Preferences::auto_zoom_plots"), ui_->autoZoomToggle->isChecked());
   });
 
