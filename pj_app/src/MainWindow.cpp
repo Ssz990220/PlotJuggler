@@ -551,6 +551,16 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
   connect(&session_->catalogModel(), &CatalogModel::itemsRemoved, this, [this](const QStringList&) {
     syncWidgetsToCatalog();
   });
+  connect(session_.get(), &AppSession::datasetsMerged, this, [this](DatasetId anchor, QList<DatasetId> consumed) {
+    if (transform_service_ == nullptr) {
+      return;
+    }
+    for (const DatasetId id : consumed) {
+      transform_service_->invalidateDataset(id);
+    }
+    transform_service_->invalidateDataset(anchor);
+    transform_service_->ingestFrameTransformsForDataset(anchor);
+  });
 
   connect(ui_->curveListPanel, &CurveListPanel::trashRequested, this, &MainWindow::onCatalogTrashRequested);
   connect(ui_->curveListPanel, &CurveListPanel::removeDatasetsRequested, this, &MainWindow::onRemoveDatasetsRequested);

@@ -48,12 +48,13 @@ struct IngestStats {
 // self-loop / invalid frame data) is a recoverable data error in a real bag:
 // count it and keep going rather than aborting.
 void ingestEntry(
-    PJ::Timestamp ts, const PJ::sdk::PayloadView& payload, const PJ::SessionManager::ParserBinding& parser_binding,
+    const PJ::ResolvedObjectEntry& entry, const PJ::SessionManager::ParserBinding& parser_binding,
     TransformBuffer& tf_buffer, IngestStats& stats) {
   // The topic is already classified as FrameTransforms. resolveObject() decodes
   // it via the MessageParser when one is bound, or via the canonical codec when
   // not (a data-source/toolbox that pushed serialized canonical transforms).
-  auto obj = resolveObject(parser_binding, PJ::sdk::BuiltinObjectType::kFrameTransforms, ts, payload);
+  auto obj =
+      resolveObject(parser_binding, PJ::sdk::BuiltinObjectType::kFrameTransforms, entry.timestamp, entry.payload);
   if (!obj.has_value()) {
     return;
   }
@@ -63,7 +64,11 @@ void ingestEntry(
   }
   for (const auto& t : ft->transforms) {
     StampedTransform st;
-    st.stamp = TimePoint{std::chrono::nanoseconds(t.timestamp)};
+    // Each transform carries its OWN inner stamp from the payload, which the store
+    // never rewrites. A time-shifted dataset merge records the slide in
+    // payload_stamp_shift; add it so a merged source's frames land on the anchor's
+    // clock (it is 0 for unmerged data, so the common path is unchanged).
+    st.stamp = TimePoint{std::chrono::nanoseconds(t.timestamp + entry.payload_stamp_shift)};
     st.parent_frame = t.parent_frame_id;
     st.child_frame = t.child_frame_id;
     st.transform.t = glm::dvec3{t.translation.x, t.translation.y, t.translation.z};
@@ -289,7 +294,7 @@ bool TransformService::ingestNewerThanCursor(PJ::DatasetId dataset_id) {
       if (!entry.has_value() || entry->payload.bytes.empty()) {
         continue;  // evicted between the UID step and the resolve, or empty payload
       }
-      ingestEntry(entry->timestamp, entry->payload, parser_binding, *tf_buffer, stats);
+      ingestEntry(*entry, parser_binding, *tf_buffer, stats);
     }
   }
 

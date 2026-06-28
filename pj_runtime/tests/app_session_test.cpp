@@ -7,6 +7,7 @@
 #include <QTemporaryDir>
 #include <algorithm>
 #include <optional>
+#include <string>
 #include <string_view>
 #include <vector>
 
@@ -347,6 +348,33 @@ PJ::DatasetId makeShiftedDataset(
   return *dataset;
 }
 
+PJ::DatasetId makeEmptyShiftedDataset(
+    PJ::AppSession& session, const std::string& name, PJ::Timestamp display_offset_ns) {
+  auto domain = session.sessionManager().dataEngine().createTimeDomain(name + "_domain");
+  EXPECT_TRUE(domain.has_value());
+  session.sessionManager().dataEngine().setDisplayOffset(*domain, display_offset_ns);
+  auto dataset = session.sessionManager().dataEngine().createDataset(
+      PJ::DatasetDescriptor{.source_name = name, .time_domain_id = *domain});
+  EXPECT_TRUE(dataset.has_value());
+  return *dataset;
+}
+
+PJ::ObjectTopicId addObjectTopic(
+    PJ::AppSession& session, PJ::DatasetId dataset_id, const std::string& topic_name,
+    PJ::sdk::BuiltinObjectType object_type, PJ::Timestamp timestamp = 0) {
+  const std::string metadata =
+      std::string{R"({"builtin_object_type":")"} + std::string(PJ::sdk::name(object_type)) + R"("})";
+  auto& object_store = session.sessionManager().objectStore();
+  auto topic = object_store.registerTopic(
+      PJ::ObjectTopicDescriptor{.dataset_id = dataset_id, .topic_name = topic_name, .metadata_json = metadata});
+  EXPECT_TRUE(topic.has_value()) << topic.error();
+  if (!topic.has_value()) {
+    return {};
+  }
+  EXPECT_TRUE(object_store.pushOwned(*topic, timestamp, std::vector<uint8_t>{1}).has_value());
+  return *topic;
+}
+
 std::size_t mergedSampleCount(PJ::AppSession& session, PJ::DatasetId dataset, const std::string& topic) {
   for (const PJ::TopicId tid : session.sessionManager().dataEngine().listTopics(dataset)) {
     const auto* st = session.sessionManager().dataEngine().getTopicStorage(tid);
@@ -477,6 +505,264 @@ TEST(AppSessionMergeTest, AnchorIsLeftmostInDisplayNotRaw) {
   ASSERT_TRUE(range.has_value());
   EXPECT_EQ(range->min, 0);  // B's absolute start (A folded in after, shifted +5e9)
   EXPECT_EQ(mergedSampleCount(session, b, "/s"), 4U);
+}
+
+TEST(AppSessionMergeTest, NoConflictWhenSharedObjectTopicsSameType) {
+  QTemporaryDir dir;
+  ASSERT_TRUE(dir.isValid());
+  PJ::AppSession session(dir.path());
+
+  const PJ::DatasetId a = makeShiftedDataset(session, "A", 0, "/s", {0, 1'000'000'000LL});
+  const PJ::DatasetId b = makeShiftedDataset(session, "B", 0, "/s", {2'000'000'000LL, 3'000'000'000LL});
+  addObjectTopic(session, a, "/img", PJ::sdk::BuiltinObjectType::kImage);
+  addObjectTopic(session, b, "/img", PJ::sdk::BuiltinObjectType::kImage, 2'000'000'000LL);
+  session.catalogModel().rebuildFromDatastore();
+
+  EXPECT_TRUE(session.objectMergeConflicts({a, b}).empty());
+}
+
+TEST(AppSessionMergeTest, DetectsConflictBetweenTwoSourceOnlyTopics) {
+  QTemporaryDir dir;
+  ASSERT_TRUE(dir.isValid());
+  PJ::AppSession session(dir.path());
+
+  // Anchor Z is leftmost-in-display and has NO "/objects"; sources A and B both have "/objects" but
+  // disagree on canonical type. The gate must catch this source-vs-source clash even though the anchor
+  // lacks the name (else ObjectStore::mergeDatasets would silently fuse incompatible types).
+  const PJ::DatasetId z = makeShiftedDataset(session, "Z", 0, "/s", {0, 1'000'000'000LL});
+  const PJ::DatasetId a = makeShiftedDataset(session, "A", 0, "/s", {5'000'000'000LL, 6'000'000'000LL});
+  const PJ::DatasetId b = makeShiftedDataset(session, "B", 0, "/s", {7'000'000'000LL, 8'000'000'000LL});
+  addObjectTopic(session, a, "/objects", PJ::sdk::BuiltinObjectType::kImage, 5'000'000'000LL);
+  addObjectTopic(session, b, "/objects", PJ::sdk::BuiltinObjectType::kPointCloud, 7'000'000'000LL);
+  session.catalogModel().rebuildFromDatastore();
+
+  const auto conflicts = session.objectMergeConflicts({z, a, b});
+  ASSERT_EQ(conflicts.size(), 1U);
+  EXPECT_EQ(conflicts[0].topic_name, "/objects");
+  EXPECT_EQ(conflicts[0].source_dataset_id, b);
+  EXPECT_EQ(conflicts[0].anchor_type, PJ::sdk::BuiltinObjectType::kImage);  // A (first source) set the type
+  EXPECT_EQ(conflicts[0].source_type, PJ::sdk::BuiltinObjectType::kPointCloud);
+}
+
+TEST(AppSessionMergeTest, DirectMergeWithObjectTypeConflictIsRefused) {
+  QTemporaryDir dir;
+  ASSERT_TRUE(dir.isValid());
+  PJ::AppSession session(dir.path());
+
+  const PJ::DatasetId a = makeShiftedDataset(session, "A", 0, "/s", {0, 1'000'000'000LL});
+  const PJ::DatasetId b = makeShiftedDataset(session, "B", 0, "/s", {2'000'000'000LL, 3'000'000'000LL});
+  const PJ::ObjectTopicId a_topic = addObjectTopic(session, a, "/x", PJ::sdk::BuiltinObjectType::kImage, 100);
+  const PJ::ObjectTopicId b_topic =
+      addObjectTopic(session, b, "/x", PJ::sdk::BuiltinObjectType::kPointCloud, 2'000'000'100LL);
+  session.catalogModel().rebuildFromDatastore();
+
+  EXPECT_EQ(session.mergeDatasets({a, b}), 0U);
+
+  const auto datasets = session.catalogModel().datasets();
+  ASSERT_EQ(datasets.size(), 2U);
+  EXPECT_TRUE(std::any_of(datasets.begin(), datasets.end(), [a](const auto& dataset) { return dataset.first == a; }));
+  EXPECT_TRUE(std::any_of(datasets.begin(), datasets.end(), [b](const auto& dataset) { return dataset.first == b; }));
+  for (const auto& [id, label] : datasets) {
+    (void)id;
+    EXPECT_FALSE(label.endsWith("_merged")) << label.toStdString();
+  }
+  EXPECT_EQ(mergedSampleCount(session, a, "/s"), 2U);
+  EXPECT_EQ(mergedSampleCount(session, b, "/s"), 2U);
+
+  auto& store = session.sessionManager().objectStore();
+  const auto a_after = store.findTopic(a, "/x");
+  const auto b_after = store.findTopic(b, "/x");
+  ASSERT_TRUE(a_after.has_value());
+  ASSERT_TRUE(b_after.has_value());
+  EXPECT_EQ(a_after->id, a_topic.id);
+  EXPECT_EQ(b_after->id, b_topic.id);
+  EXPECT_EQ(store.entryCount(*a_after), 1U);
+  EXPECT_EQ(store.entryCount(*b_after), 1U);
+  const auto a_entry = store.at(*a_after, std::size_t{0});
+  const auto b_entry = store.at(*b_after, std::size_t{0});
+  ASSERT_TRUE(a_entry.has_value());
+  ASSERT_TRUE(b_entry.has_value());
+  EXPECT_EQ(a_entry->timestamp, 100);
+  EXPECT_EQ(b_entry->timestamp, 2'000'000'100LL);
+}
+
+TEST(AppSessionMergeTest, MergeFoldsObjectTopicsIntoAnchor) {
+  QTemporaryDir dir;
+  ASSERT_TRUE(dir.isValid());
+  PJ::AppSession session(dir.path());
+
+  const PJ::DatasetId a = makeShiftedDataset(session, "A", 0, "/s", {0, 1'000'000'000LL});
+  const PJ::DatasetId b = makeShiftedDataset(session, "B", 0, "/s", {2'000'000'000LL, 3'000'000'000LL});
+  addObjectTopic(session, a, "/img", PJ::sdk::BuiltinObjectType::kImage, 100);
+  addObjectTopic(session, b, "/img", PJ::sdk::BuiltinObjectType::kImage, 2'000'000'100LL);
+  addObjectTopic(session, b, "/cloud", PJ::sdk::BuiltinObjectType::kPointCloud, 4'000'000'000LL);
+  session.catalogModel().rebuildFromDatastore();
+
+  PJ::DatasetId emitted_anchor = 0;
+  std::vector<PJ::DatasetId> emitted_consumed;
+  QObject::connect(
+      &session, &PJ::AppSession::datasetsMerged, &session,
+      [&](PJ::DatasetId anchor, const QList<PJ::DatasetId>& consumed) {
+        emitted_anchor = anchor;
+        emitted_consumed.assign(consumed.begin(), consumed.end());
+      });
+
+  const PJ::DatasetId anchor = session.mergeDatasets({a, b});
+  ASSERT_EQ(anchor, a);
+
+  auto& object_store = session.sessionManager().objectStore();
+  const auto img = object_store.findTopic(anchor, "/img");
+  ASSERT_TRUE(img.has_value());
+  EXPECT_EQ(object_store.entryCount(*img), 2u);
+  EXPECT_TRUE(object_store.findTopic(anchor, "/cloud").has_value());
+  EXPECT_TRUE(object_store.listTopics(b).empty());
+
+  const auto datasets = session.catalogModel().datasets();
+  ASSERT_EQ(datasets.size(), 1U);
+  EXPECT_EQ(datasets.front().first, a);
+  EXPECT_TRUE(datasets.front().second.endsWith("_merged")) << datasets.front().second.toStdString();
+  EXPECT_DOUBLE_EQ(session.playbackEngine().rangeMax().value, 4.0);
+  EXPECT_EQ(emitted_anchor, a);
+  EXPECT_EQ(emitted_consumed, (std::vector<PJ::DatasetId>{b}));
+}
+
+TEST(AppSessionMergeTest, MergeRefusedWhileSelectedDatasetStreaming) {
+  QTemporaryDir dir;
+  ASSERT_TRUE(dir.isValid());
+  PJ::AppSession session(dir.path());
+
+  const PJ::DatasetId a = makeShiftedDataset(session, "A", 0, "/s", {0, 1'000'000'000LL});
+  const PJ::DatasetId b = makeShiftedDataset(session, "B", 0, "/s", {2'000'000'000LL, 3'000'000'000LL});
+  session.catalogModel().rebuildFromDatastore();
+  session.setActiveStreamingDataset(b);
+
+  EXPECT_EQ(session.activeStreamingDataset(), b);
+  EXPECT_EQ(session.mergeDatasets({a, b}), 0U);
+
+  const auto datasets = session.catalogModel().datasets();
+  ASSERT_EQ(datasets.size(), 2U);
+  EXPECT_TRUE(std::any_of(datasets.begin(), datasets.end(), [a](const auto& dataset) { return dataset.first == a; }));
+  EXPECT_TRUE(std::any_of(datasets.begin(), datasets.end(), [b](const auto& dataset) { return dataset.first == b; }));
+  for (const auto& [id, label] : datasets) {
+    (void)id;
+    EXPECT_FALSE(label.endsWith("_merged")) << label.toStdString();
+  }
+  EXPECT_EQ(mergedSampleCount(session, a, "/s"), 2U);
+  EXPECT_EQ(mergedSampleCount(session, b, "/s"), 2U);
+}
+
+TEST(AppSessionMergeTest, ObjectOnlyMergeRefreshesRangeWithTimeOffset) {
+  QTemporaryDir dir;
+  ASSERT_TRUE(dir.isValid());
+  PJ::AppSession session(dir.path());
+
+  constexpr PJ::Timestamp kSecond = 1'000'000'000LL;
+  const PJ::DatasetId a = makeEmptyShiftedDataset(session, "A", 100 * kSecond);
+  const PJ::DatasetId b = makeEmptyShiftedDataset(session, "B", -100 * kSecond);
+
+  auto& store = session.sessionManager().objectStore();
+  const PJ::ObjectTopicId a_topic =
+      addObjectTopic(session, a, "/obj", PJ::sdk::BuiltinObjectType::kImage, 100 * kSecond);
+  ASSERT_TRUE(store.pushOwned(a_topic, 200 * kSecond, std::vector<uint8_t>{2}).has_value());
+  const PJ::ObjectTopicId b_topic = addObjectTopic(session, b, "/obj", PJ::sdk::BuiltinObjectType::kImage, 0);
+  ASSERT_TRUE(store.pushOwned(b_topic, 10 * kSecond, std::vector<uint8_t>{3}).has_value());
+
+  session.catalogModel().rebuildFromDatastore();
+  session.sessionManager().setUseTimeOffset(true);
+  ASSERT_TRUE(session.seedPlaybackFromSession());
+  EXPECT_DOUBLE_EQ(session.playbackEngine().rangeMin().value, 0.0);
+  EXPECT_DOUBLE_EQ(session.playbackEngine().rangeMax().value, 110.0);
+
+  const PJ::DatasetId anchor = session.mergeDatasets({a, b});
+  ASSERT_EQ(anchor, a);
+
+  const auto raw_range = session.datasetRawTimeRange(anchor);
+  ASSERT_TRUE(raw_range.has_value());
+  EXPECT_EQ(raw_range->min, 100 * kSecond);
+  EXPECT_EQ(raw_range->max, 210 * kSecond);
+  EXPECT_DOUBLE_EQ(session.playbackEngine().rangeMin().value, -100.0);
+  EXPECT_DOUBLE_EQ(session.playbackEngine().rangeMax().value, 10.0);
+}
+
+// Byte-exact numerical check of the merged object data through the full runtime
+// merge path: distinct payloads at known timestamps, with B display-shifted +2s
+// so the merge rebases B's raw object timestamps by -2s. The merged topic must be
+// the union of both sources' entries, ordered by (shifted) timestamp, with every
+// payload value preserved.
+TEST(AppSessionMergeTest, MergedObjectDataIsNumericallyCorrect) {
+  QTemporaryDir dir;
+  ASSERT_TRUE(dir.isValid());
+  PJ::AppSession session(dir.path());
+
+  // A is the anchor (display start 0); B is shifted +2s in display, so the merge
+  // applies raw_shift = anchor_offset - B_offset = -2s to B's object timestamps.
+  const PJ::DatasetId a = makeShiftedDataset(session, "A", 0, "/s", {0, 10'000'000'000LL});
+  const PJ::DatasetId b = makeShiftedDataset(session, "B", 2'000'000'000LL, "/s", {5'000'000'000LL, 6'000'000'000LL});
+
+  auto& store = session.sessionManager().objectStore();
+  const auto reg = [&store](PJ::DatasetId ds) {
+    auto id = store.registerTopic(
+        PJ::ObjectTopicDescriptor{
+            .dataset_id = ds, .topic_name = "/obj", .metadata_json = R"({"builtin_object_type":"kImage"})"});
+    EXPECT_TRUE(id.has_value()) << (id.has_value() ? "" : id.error());
+    return *id;
+  };
+  const auto push = [&store](PJ::ObjectTopicId id, PJ::Timestamp ts, uint8_t byte) {
+    EXPECT_TRUE(store.pushOwned(id, ts, std::vector<uint8_t>{byte}).has_value());
+  };
+  const auto a_obj = reg(a);
+  push(a_obj, 4'000'000'000LL, 0xA1);
+  push(a_obj, 8'000'000'000LL, 0xA2);
+  const auto b_obj = reg(b);
+  push(b_obj, 7'000'000'000LL, 0xB1);  // -2s shift -> 5s
+  push(b_obj, 9'000'000'000LL, 0xB2);  // -2s shift -> 7s
+
+  session.catalogModel().rebuildFromDatastore();
+  const PJ::DatasetId anchor = session.mergeDatasets({a, b});
+  ASSERT_EQ(anchor, a);
+
+  const auto merged = store.findTopic(anchor, "/obj");
+  ASSERT_TRUE(merged.has_value());
+  ASSERT_EQ(store.entryCount(*merged), 4u);
+
+  struct Expected {
+    PJ::Timestamp ts;
+    uint8_t byte;
+  };
+  const std::vector<Expected> expected = {
+      {4'000'000'000LL, 0xA1},  // A @ 4s
+      {5'000'000'000LL, 0xB1},  // B raw 7s, rebased -2s
+      {7'000'000'000LL, 0xB2},  // B raw 9s, rebased -2s
+      {8'000'000'000LL, 0xA2},  // A @ 8s
+  };
+  for (std::size_t i = 0; i < expected.size(); ++i) {
+    const auto entry = store.at(*merged, i);
+    ASSERT_TRUE(entry.has_value()) << "missing merged entry " << i;
+    EXPECT_EQ(entry->timestamp, expected[i].ts) << "timestamp mismatch at index " << i;
+    ASSERT_EQ(entry->payload.bytes.size(), 1u);
+    EXPECT_EQ(entry->payload.bytes[0], expected[i].byte) << "payload mismatch at index " << i;
+  }
+  // The non-anchor source's /obj is folded away after the fuse.
+  EXPECT_FALSE(store.findTopic(b, "/obj").has_value());
+}
+
+TEST(AppSessionMergeTest, DetectsConflictOnSharedNameDifferentType) {
+  QTemporaryDir dir;
+  ASSERT_TRUE(dir.isValid());
+  PJ::AppSession session(dir.path());
+
+  const PJ::DatasetId a = makeShiftedDataset(session, "A", 0, "/s", {0, 1'000'000'000LL});
+  const PJ::DatasetId b = makeShiftedDataset(session, "B", 0, "/s", {2'000'000'000LL, 3'000'000'000LL});
+  addObjectTopic(session, a, "/x", PJ::sdk::BuiltinObjectType::kImage);
+  addObjectTopic(session, b, "/x", PJ::sdk::BuiltinObjectType::kPointCloud, 2'000'000'000LL);
+  session.catalogModel().rebuildFromDatastore();
+
+  const auto conflicts = session.objectMergeConflicts({b, a});
+  ASSERT_EQ(conflicts.size(), 1U);
+  EXPECT_EQ(conflicts[0].topic_name, "/x");
+  EXPECT_EQ(conflicts[0].source_dataset_id, b);
+  EXPECT_EQ(conflicts[0].anchor_type, PJ::sdk::BuiltinObjectType::kImage);
+  EXPECT_EQ(conflicts[0].source_type, PJ::sdk::BuiltinObjectType::kPointCloud);
 }
 
 TEST(AppSessionMergeTest, SingleSelectionIsNoOp) {

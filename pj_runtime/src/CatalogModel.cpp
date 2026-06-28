@@ -76,38 +76,6 @@ struct QStringHash {
   return QStringLiteral("dataset:%1/object_topic:%2").arg(dataset_id).arg(object_topic_id.id);
 }
 
-[[nodiscard]] sdk::BuiltinObjectType objectTypeFromMetadata(std::string_view metadata_json) {
-  if (metadata_json.empty()) {
-    return sdk::BuiltinObjectType::kNone;
-  }
-  try {
-    const auto metadata = nlohmann::json::parse(metadata_json);
-    const auto it = metadata.find("builtin_object_type");
-    if (it == metadata.end()) {
-      qCWarning(lcCatalog) << "objectTypeFromMetadata: missing 'builtin_object_type' key — metadata="
-                           << QString::fromUtf8(metadata_json.data(), static_cast<int>(metadata_json.size()));
-      return sdk::BuiltinObjectType::kNone;
-    }
-    if (!it->is_string()) {
-      qCWarning(lcCatalog) << "objectTypeFromMetadata: 'builtin_object_type' is not a string — metadata="
-                           << QString::fromUtf8(metadata_json.data(), static_cast<int>(metadata_json.size()));
-      return sdk::BuiltinObjectType::kNone;
-    }
-    const auto raw = it->get<std::string>();
-    const auto parsed = sdk::parseBuiltinObjectType(raw);
-    if (!parsed.has_value()) {
-      qCWarning(lcCatalog) << "objectTypeFromMetadata: unknown builtin_object_type='" << QString::fromStdString(raw)
-                           << "' — topic will be hidden from object-aware views";
-      return sdk::BuiltinObjectType::kNone;
-    }
-    return *parsed;
-  } catch (const nlohmann::json::exception& e) {
-    qCWarning(lcCatalog) << "objectTypeFromMetadata: JSON parse failed:" << e.what() << "metadata="
-                         << QString::fromUtf8(metadata_json.data(), static_cast<int>(metadata_json.size()));
-    return sdk::BuiltinObjectType::kNone;
-  }
-}
-
 [[nodiscard]] CurveDescriptor curveFromItem(const CatalogItem& item) {
   const auto* scalar = asScalarField(item);
   Q_ASSERT(scalar != nullptr);  // Precondition: caller verified isScalarField(item).
@@ -226,6 +194,38 @@ void collectTypeTreeLeaves(
 }
 
 }  // namespace
+
+sdk::BuiltinObjectType objectTypeFromMetadata(std::string_view metadata_json) {
+  if (metadata_json.empty()) {
+    return sdk::BuiltinObjectType::kNone;
+  }
+  try {
+    const auto metadata = nlohmann::json::parse(metadata_json);
+    const auto it = metadata.find("builtin_object_type");
+    if (it == metadata.end()) {
+      qCWarning(lcCatalog) << "objectTypeFromMetadata: missing 'builtin_object_type' key — metadata="
+                           << QString::fromUtf8(metadata_json.data(), static_cast<int>(metadata_json.size()));
+      return sdk::BuiltinObjectType::kNone;
+    }
+    if (!it->is_string()) {
+      qCWarning(lcCatalog) << "objectTypeFromMetadata: 'builtin_object_type' is not a string — metadata="
+                           << QString::fromUtf8(metadata_json.data(), static_cast<int>(metadata_json.size()));
+      return sdk::BuiltinObjectType::kNone;
+    }
+    const auto raw = it->get<std::string>();
+    const auto parsed = sdk::parseBuiltinObjectType(raw);
+    if (!parsed.has_value()) {
+      qCWarning(lcCatalog) << "objectTypeFromMetadata: unknown builtin_object_type='" << QString::fromStdString(raw)
+                           << "' — topic will be hidden from object-aware views";
+      return sdk::BuiltinObjectType::kNone;
+    }
+    return *parsed;
+  } catch (const nlohmann::json::exception& e) {
+    qCWarning(lcCatalog) << "objectTypeFromMetadata: JSON parse failed:" << e.what() << "metadata="
+                         << QString::fromUtf8(metadata_json.data(), static_cast<int>(metadata_json.size()));
+    return sdk::BuiltinObjectType::kNone;
+  }
+}
 
 struct CatalogModel::Impl {
   explicit Impl(SessionManager* session_in) : session(session_in) {}

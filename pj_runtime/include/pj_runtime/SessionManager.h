@@ -178,9 +178,9 @@ class SessionManager : public QObject {
   // Destructively fold `sources` (each with a raw timestamp shift) into the
   // `anchor` dataset via DataEngine::mergeDatasets. Mirrors replaceDataset's
   // ordered transaction: emit datasetAboutToBeReplaced for the anchor + every
-  // source (adapters drop cached chunk pointers) -> engine merge -> drop the
-  // consumed sources' object topics (v1 scalar-only merge) -> notifyIngest the
-  // anchor's changed topics. Returns the engine's report on success, or
+  // source (adapters drop cached chunk pointers) -> engine merge -> object-store
+  // merge (fold shared names, reparent source-only object topics) -> notifyIngest
+  // the anchor's changed topics. Returns the engine's report on success, or
   // std::nullopt when the engine REJECTED the merge (the store is untouched), so
   // the caller can leave the catalog consistent rather than removing sources
   // whose data still lives in the store — distinct from a successful merge that

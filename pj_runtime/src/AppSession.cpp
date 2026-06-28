@@ -3,10 +3,12 @@
 
 #include "pj_runtime/AppSession.h"
 
+#include <QLoggingCategory>
 #include <algorithm>
 #include <functional>
 #include <optional>
 #include <tuple>
+#include <unordered_map>
 #include <unordered_set>
 #include <utility>
 
@@ -22,7 +24,9 @@
 
 namespace PJ {
 
-namespace {}  // namespace
+namespace {
+Q_LOGGING_CATEGORY(lcAppSession, "pj.runtime.app_session")
+}  // namespace
 
 CurveColorRegistry& AppSession::curveColorRegistry() const {
   return session_manager_->curveColorRegistry();
@@ -154,9 +158,9 @@ std::optional<DisplaySeconds> AppSession::recomputeRange() {
   return new_min;
 }
 
-DatasetId AppSession::mergeDatasets(const std::vector<DatasetId>& selected) {
+std::optional<AppSession::MergePlan> AppSession::planMerge(const std::vector<DatasetId>& selected) const {
   if (selected.size() < 2) {
-    return 0;
+    return std::nullopt;
   }
 
   // Anchor = the dataset whose DISPLAYED start is earliest (leftmost on the
@@ -178,7 +182,7 @@ DatasetId AppSession::mergeDatasets(const std::vector<DatasetId>& selected) {
     }
   }
   if (!anchor.has_value()) {
-    return 0;  // none of the selected datasets carry data
+    return std::nullopt;  // none of the selected datasets carry data
   }
 
   // Every other selected dataset shifts into the anchor's raw frame by the
@@ -196,6 +200,65 @@ DatasetId AppSession::mergeDatasets(const std::vector<DatasetId>& selected) {
         DatasetMergeSource{.dataset_id = id, .raw_shift_ns = static_cast<Timestamp>(relative_shift.count())});
   }
   if (sources.empty()) {
+    return std::nullopt;
+  }
+
+  return MergePlan{.anchor = *anchor, .sources = std::move(sources)};
+}
+
+std::vector<ObjectMergeConflict> AppSession::objectMergeConflicts(const std::vector<DatasetId>& selected) const {
+  const std::optional<MergePlan> plan = planMerge(selected);
+  if (!plan.has_value()) {
+    return {};
+  }
+
+  const ObjectStore& object_store = session_manager_->objectStore();
+  // Mirror ObjectStore::mergeDatasets' grouping so the gate catches EVERY type clash, not just
+  // source-vs-anchor: the established type for a name is the anchor's, or — when the anchor lacks it —
+  // the FIRST source (in plan order) to contribute that name, which becomes the fuse destination. A
+  // later contributor with the same name but a different canonical type is the conflict, whether it
+  // disagrees with the anchor or with an earlier source-only contributor.
+  std::unordered_map<std::string, sdk::BuiltinObjectType> type_by_name;
+  for (const ObjectTopicId object_topic_id : object_store.listTopics(plan->anchor)) {
+    const ObjectTopicDescriptor descriptor = object_store.descriptor(object_topic_id);
+    type_by_name.emplace(descriptor.topic_name, objectTypeFromMetadata(descriptor.metadata_json));
+  }
+
+  std::vector<ObjectMergeConflict> conflicts;
+  for (const DatasetMergeSource& source : plan->sources) {
+    for (const ObjectTopicId object_topic_id : object_store.listTopics(source.dataset_id)) {
+      const ObjectTopicDescriptor descriptor = object_store.descriptor(object_topic_id);
+      const sdk::BuiltinObjectType source_type = objectTypeFromMetadata(descriptor.metadata_json);
+      const auto [it, inserted] = type_by_name.emplace(descriptor.topic_name, source_type);
+      if (inserted || source_type == it->second) {
+        continue;  // first contributor for this name (sets the destination type), or a match.
+      }
+      conflicts.push_back(
+          ObjectMergeConflict{
+              .topic_name = descriptor.topic_name,
+              .source_dataset_id = source.dataset_id,
+              .anchor_type = it->second,
+              .source_type = source_type,
+          });
+    }
+  }
+  return conflicts;
+}
+
+DatasetId AppSession::mergeDatasets(const std::vector<DatasetId>& selected) {
+  std::optional<MergePlan> plan = planMerge(selected);
+  if (!plan.has_value()) {
+    return 0;
+  }
+
+  if (active_streaming_dataset_id_ != 0 &&
+      std::find(selected.begin(), selected.end(), active_streaming_dataset_id_) != selected.end()) {
+    qCWarning(lcAppSession) << "mergeDatasets: refused: selected dataset is actively streaming"
+                            << active_streaming_dataset_id_;
+    return 0;
+  }
+  if (!objectMergeConflicts(selected).empty()) {
+    qCWarning(lcAppSession) << "mergeDatasets: refused: object-topic canonical-type conflict";
     return 0;
   }
 
@@ -203,28 +266,35 @@ DatasetId AppSession::mergeDatasets(const std::vector<DatasetId>& selected) {
   // nullopt means the engine rejected the merge and left the store untouched —
   // bail BEFORE mutating the catalog, or the sources would vanish from the UI
   // while their data still lives in the store (catalog/store desync).
-  if (!session_manager_->mergeDatasets(*anchor, sources).has_value()) {
+  if (!session_manager_->mergeDatasets(plan->anchor, plan->sources).has_value()) {
     return 0;
   }
 
   // Catalog: relabel the anchor "<name>_merged" and drop the consumed pieces.
   QString anchor_label;
   for (const auto& [id, label] : catalog_model_->datasets()) {
-    if (id == *anchor) {
+    if (id == plan->anchor) {
       anchor_label = label;
       break;
     }
   }
   if (!anchor_label.isEmpty()) {
-    catalog_model_->setDatasetDisplayName(*anchor, anchor_label + QStringLiteral("_merged"));
+    catalog_model_->setDatasetDisplayName(plan->anchor, anchor_label + QStringLiteral("_merged"));
   }
-  for (const auto& source : sources) {
+  for (const auto& source : plan->sources) {
     catalog_model_->removeDataset(source.dataset_id);
   }
+  catalog_model_->rebuildFromDatastore();
 
   // The merged extent changed; refresh the playback range (range only).
   recomputeRange();
-  return *anchor;
+
+  QList<DatasetId> consumed;
+  for (const DatasetMergeSource& source : plan->sources) {
+    consumed.push_back(source.dataset_id);
+  }
+  emit datasetsMerged(plan->anchor, consumed);
+  return plan->anchor;
 }
 
 bool AppSession::seedPlaybackFromSession() {

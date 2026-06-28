@@ -42,9 +42,12 @@
 
 #include "pj_base/builtin/builtin_object.hpp"
 #include "pj_base/builtin/frame_transforms.hpp"
+#include "pj_base/builtin/frame_transforms_codec.hpp"
 #include "pj_base/builtin/occupancy_grid.hpp"
 #include "pj_base/dataset.hpp"
 #include "pj_datastore/engine.hpp"
+#include "pj_datastore/merge_result.hpp"
+#include "pj_datastore/object_store.hpp"
 #include "pj_plugins/host/message_parser_handle.hpp"
 #include "pj_plugins/sdk/message_parser_plugin_base.hpp"
 #include "pj_runtime/SessionManager.h"
@@ -201,6 +204,93 @@ PJ::ObjectTopicId registerTopic(PJ::ObjectStore& store, PJ::DatasetId dataset_id
 // whole composed chain must be resolvable.
 bool resolves(const TransformBuffer& buffer, const std::string& target, const std::string& source, int64_t stamp_ns) {
   return buffer.tryLookupTransform(target, source, TimePoint{std::chrono::nanoseconds(stamp_ns)}).has_value();
+}
+
+// -----------------------------------------------------------------------------
+// Canonical (parser-less) TF helpers. Unlike the mock CountingTfParser above —
+// which derives each edge's inner stamp from the entry's STORE timestamp and so
+// would silently absorb a merge time-shift — the canonical path carries the
+// per-transform stamp INSIDE the serialized payload. That is the field a dataset
+// merge with a non-zero shift must move; the bytes are otherwise untouched. A
+// topic with builtin_object_type=kFrameTransforms metadata and no bound parser
+// classifies and decodes through resolveObject()'s canonical codec branch.
+// -----------------------------------------------------------------------------
+
+constexpr std::string_view kCanonicalTfMetadata = R"({"builtin_object_type":"kFrameTransforms"})";
+
+PJ::ObjectTopicId registerCanonicalTfTopic(PJ::ObjectStore& store, PJ::DatasetId dataset_id, const std::string& name) {
+  PJ::ObjectTopicDescriptor desc;
+  desc.dataset_id = dataset_id;
+  desc.topic_name = name;
+  desc.metadata_json = std::string(kCanonicalTfMetadata);
+  const auto topic_id = store.registerTopic(desc);
+  EXPECT_TRUE(topic_id.has_value());
+  return *topic_id;
+}
+
+// One edge parent->child carrying its own absolute inner stamp in the payload.
+std::vector<uint8_t> canonicalEdgePayload(
+    const std::string& parent, const std::string& child, PJ::Timestamp inner_stamp_ns) {
+  PJ::sdk::FrameTransforms ft;
+  PJ::sdk::FrameTransform edge;
+  edge.timestamp = inner_stamp_ns;
+  edge.parent_frame_id = parent;
+  edge.child_frame_id = child;
+  edge.translation = {1.0, 2.0, 3.0};
+  edge.rotation = {0.0, 0.0, 0.0, 1.0};  // identity (w=1)
+  ft.transforms.push_back(std::move(edge));
+  return PJ::serializeFrameTransforms(ft);
+}
+
+// -----------------------------------------------------------------------------
+// Dataset merge time-shift: a source folded into the anchor with a non-zero raw
+// shift (the Source-Timeline arrangement case) must have its TF moved in time,
+// just like its scalar samples and object-entry timestamps. The merge shifts the
+// object-ENTRY timestamp but leaves the serialized payload (and its inner
+// per-transform stamp) untouched; canonical TF is keyed by that inner stamp, so
+// today the source's frames land at their ORIGINAL time on the anchor's clock.
+//
+// This drives the exact post-merge rebuild the MainWindow datasetsMerged handler
+// runs: invalidate the consumed source, invalidate the anchor, bulk re-ingest the
+// anchor. The discriminator is the EXPECT_FALSE — a TF lookup strictly before an
+// edge's first sample returns nothing, so a correctly-shifted source edge no
+// longer resolves at its pre-shift time. It FAILS today (the edge is still at the
+// original stamp) and must pass once the shift reaches the inner stamps.
+// -----------------------------------------------------------------------------
+TEST(TransformService, MergeShiftMovesCanonicalTfInTime) {
+  PJ::SessionManager session;
+  PJ::ObjectStore& store = session.objectStore();
+
+  const auto anchor_tf = registerCanonicalTfTopic(store, /*dataset_id=*/1, "/tf");
+  const auto source_tf = registerCanonicalTfTopic(store, /*dataset_id=*/2, "/tf");
+
+  constexpr PJ::Timestamp kT0 = 1'000'000'000;     // 1 s, the shared absolute base
+  constexpr PJ::Timestamp kShift = 5'000'000'000;  // +5 s applied to the source on merge
+
+  // Anchor edge f0->f1 at T0 (the anchor is never shifted).
+  ASSERT_TRUE(store.pushOwned(anchor_tf, kT0, canonicalEdgePayload("f0", "f1", kT0)).has_value());
+  // Source edge f0->f2 at the SAME absolute T0; the merge shifts it by +kShift.
+  ASSERT_TRUE(store.pushOwned(source_tf, kT0, canonicalEdgePayload("f0", "f2", kT0)).has_value());
+
+  ASSERT_TRUE(store.mergeDatasets(/*anchor_id=*/1, {PJ::DatasetMergeSource{.dataset_id = 2, .raw_shift_ns = kShift}})
+                  .has_value());
+
+  // Rebuild TF exactly as MainWindow's datasetsMerged handler does.
+  TransformService service(session);
+  service.invalidateDataset(/*consumed=*/2);
+  service.invalidateDataset(/*anchor=*/1);
+  service.ingestFrameTransformsForDataset(/*anchor=*/1);
+
+  auto buffer = service.transformBuffer(/*dataset_id=*/1);
+  ASSERT_NE(buffer, nullptr);
+
+  // The anchor's own edge is untouched.
+  EXPECT_TRUE(resolves(*buffer, "f0", "f1", kT0)) << "anchor edge must stay at its original time";
+
+  // The merged source edge must move WITH the shift.
+  EXPECT_TRUE(resolves(*buffer, "f0", "f2", kT0 + kShift)) << "shifted source edge must resolve at the shifted time";
+  EXPECT_FALSE(resolves(*buffer, "f0", "f2", kT0))
+      << "shifted source edge must NOT resolve at its pre-shift time (the merge shift must reach the inner stamp)";
 }
 
 // -----------------------------------------------------------------------------

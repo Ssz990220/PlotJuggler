@@ -24,6 +24,7 @@
 #include "pj_base/expected.hpp"
 #include "pj_base/span.hpp"
 #include "pj_base/types.hpp"
+#include "pj_datastore/merge_result.hpp"
 #include "pj_datastore/sequential_uid.hpp"
 
 namespace PJ {
@@ -60,6 +61,17 @@ struct ObjectDatasetReplaceResult {
   std::vector<ObjectTopicId> removed_topics;
 };
 
+/// Outcome of ObjectStore::mergeDatasets() — the object-side parallel of
+/// DatasetMergeReport. Object merge is mechanical: no canonical-type validation.
+struct ObjectDatasetMergeReport {
+  /// (source ObjectTopicId, anchor ObjectTopicId) for every shared-name fold.
+  std::vector<std::pair<ObjectTopicId, ObjectTopicId>> remapped;
+  /// Source-only topics reparented under the anchor dataset (kept their ObjectTopicId).
+  std::vector<ObjectTopicId> added_topics;
+  /// Source datasets whose object topics were emptied. Datasets stay registered.
+  std::vector<DatasetId> consumed_datasets;
+};
+
 /// Eager payload: store-owned bytes, counted against the retention budget.
 using SharedBuffer = std::shared_ptr<const std::vector<uint8_t>>;
 
@@ -70,6 +82,14 @@ using LazyCallback = std::function<sdk::PayloadView()>;
 struct ObjectEntry {
   Timestamp timestamp = 0;
   SequentialUID sequential_uid;
+  // Nanoseconds this entry's STORE timestamp has been slid relative to the
+  // timestamps embedded in its payload bytes. Nonzero only after a time-shifted
+  // dataset merge: the merge moves `timestamp` by the per-source delta but cannot
+  // rewrite the payload, so a consumer that keys off timestamps embedded INSIDE
+  // the payload (e.g. the TF buffer, indexed by each transform's own stamp) must
+  // add this delta to land them on the shifted clock. Consumers that key off the
+  // store `timestamp` ignore it. Accumulates across chained merges.
+  Timestamp payload_stamp_shift = 0;
   // Eager owned bytes or a lazy resolver; resolveEntry discriminates via std::get_if.
   std::variant<SharedBuffer, LazyCallback> payload;
 };
@@ -77,6 +97,9 @@ struct ObjectEntry {
 struct ResolvedObjectEntry {
   Timestamp timestamp = 0;
   SequentialUID sequential_uid;
+  // Carried through from ObjectEntry — see its doc-comment. A consumer that reads
+  // timestamps embedded in `payload` adds this to reconcile a time-shifted merge.
+  Timestamp payload_stamp_shift = 0;
   // Non-owning Span over the bytes plus an opaque anchor (any shared_ptr<T>).
   // Consumers read `payload.bytes`; retain `payload.anchor` to keep the bytes
   // alive past the resolve call. resolveEntry never casts the anchor.
@@ -221,6 +244,16 @@ class ObjectStore {
   [[nodiscard]] Expected<ObjectDatasetReplaceResult> replaceDatasetFrom(
       ObjectStore& staged, DatasetId staged_id, DatasetId primary_id);
 
+  /// Destructively fold each source dataset's object topics into `anchor_id`.
+  /// Topics match by name: shared names are time-shifted by `raw_shift_ns`,
+  /// interleaved in ascending timestamp order, and re-UID'd under the anchor's
+  /// ObjectTopicId; source-only topics are reparented to the anchor while keeping
+  /// their ObjectTopicId. Purely mechanical: canonical-type conflict detection is
+  /// handled by pj_runtime. Validates self/duplicate sources up front; a source
+  /// with no object topics is a no-op. GUI-thread only.
+  [[nodiscard]] Expected<ObjectDatasetMergeReport> mergeDatasets(
+      DatasetId anchor_id, const std::vector<DatasetMergeSource>& sources);
+
   // --- Lifecycle ---
 
   void removeTopic(ObjectTopicId id);
@@ -310,6 +343,14 @@ class ObjectStore {
   // readers (drainSeriesReaders) so no EntryTimestampsView dangles into the
   // timestamp vector being cleared.
   static void clearEntriesLocked(ObjectSeries& series);
+
+  // Shift every retained entry timestamp in-place. Caller MUST hold
+  // store_mutex_ exclusively and must have already drained the series readers.
+  static void shiftSeriesLocked(ObjectSeries& series, Timestamp shift);
+
+  // Reassign UIDs in current entry order. Caller MUST hold store_mutex_
+  // exclusively and must have already drained the series readers.
+  static void reuidSeriesLocked(ObjectSeries& series);
 
   static std::optional<size_t> upperBoundIndex(const std::vector<Timestamp>& timestamps, Timestamp ts);
   static ResolvedObjectEntry resolveEntry(const ObjectEntry& entry);

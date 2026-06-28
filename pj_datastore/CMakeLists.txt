@@ -169,6 +169,7 @@ if(PJ_BUILD_TESTS)
     tests/sequential_uid_test.cpp
     tests/merge_test.cpp
     tests/object_store_test.cpp
+    tests/object_merge_test.cpp
     tests/clear_dataset_test.cpp
     tests/plugin_data_host_object_test.cpp
     tests/plugin_data_host_object_read_test.cpp

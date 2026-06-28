@@ -9,6 +9,7 @@
 #include <string>
 #include <unordered_map>
 
+#include "pj_base/builtin/builtin_object.hpp"  // sdk::name(BuiltinObjectType) for the conflict dialog
 #include "pj_datastore/engine.hpp"
 #include "pj_datastore/object_store.hpp"
 #include "pj_datastore/topic_storage.hpp"
@@ -122,7 +123,8 @@ QString composeDatasetMergeWarning(const AppSession& session, const std::vector<
     text += section(tr("The following datasets have colliding data:"), colliding);
   }
   if (!with_objects.empty()) {
-    text += section(tr("The following datasets contain object topics that will be dropped:"), with_objects);
+    text +=
+        section(tr("The following datasets contain object topics that will be merged into the result:"), with_objects);
   }
   return text;
 }
@@ -138,6 +140,46 @@ std::optional<DatasetId> confirmAndMergeDatasets(
     }
   }
   if (datasets.size() < 2) {
+    return std::nullopt;
+  }
+
+  const DatasetId active_streaming_dataset = session.activeStreamingDataset();
+  if (active_streaming_dataset != 0 &&
+      std::find(datasets.begin(), datasets.end(), active_streaming_dataset) != datasets.end()) {
+    MessageBox::warning(
+        parent, tr("Cannot merge datasets"),
+        QStringLiteral("<p>") + tr("Stop streaming the live source before merging it with other datasets.") +
+            QStringLiteral("</p>"));
+    return std::nullopt;
+  }
+
+  // Canonical-type conflict gate (shared by BOTH merge entry points — timeline and
+  // curve tree). If two contributors share an object-topic NAME but disagree on the
+  // builtin object type, fuse-by-name would silently merge incompatible payloads, so
+  // hard-stop: name the offenders and abort before any state is touched.
+  if (const auto conflicts = session.objectMergeConflicts(datasets); !conflicts.empty()) {
+    constexpr qsizetype kMaxConflictItems = 10;
+    QString list = QStringLiteral("<ul>");
+    const auto shown = std::min<qsizetype>(static_cast<qsizetype>(conflicts.size()), kMaxConflictItems);
+    for (qsizetype i = 0; i < shown; ++i) {
+      const ObjectMergeConflict& c = conflicts[static_cast<std::size_t>(i)];
+      list += QStringLiteral("<li>") +
+              tr("\"%1\": %2 vs %3")
+                  .arg(
+                      QString::fromStdString(c.topic_name).toHtmlEscaped(), QString::fromUtf8(sdk::name(c.anchor_type)),
+                      QString::fromUtf8(sdk::name(c.source_type))) +
+              QStringLiteral("</li>");
+    }
+    if (const qsizetype remaining = static_cast<qsizetype>(conflicts.size()) - shown; remaining > 0) {
+      list += QStringLiteral("<li>") + tr("...and %1 more").arg(remaining) + QStringLiteral("</li>");
+    }
+    list += QStringLiteral("</ul>");
+    MessageBox::warning(
+        parent, tr("Cannot merge datasets"),
+        QStringLiteral("<p>") +
+            tr("These object topics share a name but have incompatible types, so the datasets cannot be merged:") +
+            QStringLiteral("</p>") + list + QStringLiteral("<p>") +
+            tr("Remove or rename the conflicting topic and try again.") + QStringLiteral("</p>"));
     return std::nullopt;
   }
 

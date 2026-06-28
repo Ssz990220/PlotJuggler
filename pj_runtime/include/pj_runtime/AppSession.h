@@ -2,15 +2,19 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 
+#include <QList>
 #include <QObject>
 #include <QString>
 #include <functional>
 #include <memory>
 #include <optional>
+#include <string>
 #include <vector>
 
+#include "pj_base/builtin/builtin_object.hpp"
 #include "pj_base/diagnostic_sink.hpp"
 #include "pj_base/types.hpp"  // PJ::DatasetId, PJ::Range, PJ::Timestamp
+#include "pj_datastore/merge_result.hpp"
 #include "pj_runtime/Time.h"  // PJ::DisplaySeconds (recomputeRange return)
 
 namespace PJ {
@@ -20,6 +24,13 @@ class CurveColorRegistry;
 class ExtensionCatalogService;
 class PlaybackEngine;
 class SessionManager;
+
+struct ObjectMergeConflict {
+  std::string topic_name;
+  DatasetId source_dataset_id = 0;
+  sdk::BuiltinObjectType anchor_type{};
+  sdk::BuiltinObjectType source_type{};
+};
 
 // Central runtime object for PlotJuggler 4. Owns long-lived application
 // services; pj_app instantiates one of these at startup and wires the
@@ -120,6 +131,9 @@ class AppSession : public QObject {
   void setActiveStreamingDataset(PJ::DatasetId id) {
     active_streaming_dataset_id_ = id;
   }
+  [[nodiscard]] PJ::DatasetId activeStreamingDataset() const {
+    return active_streaming_dataset_id_;
+  }
 
   // DESTRUCTIVELY merge the selected datasets into one (the OR/union), honoring
   // their Source-Timeline arrangement. The anchor is the dataset whose displayed
@@ -128,13 +142,25 @@ class AppSession : public QObject {
   // the merged dataset starts at the anchor's absolute time and the data lands
   // where the user arranged it. The anchor's topics keep their ids (curve keys
   // survive); the other selected datasets are consumed and removed from the
-  // catalog, and the anchor is relabelled "<name>_merged". Scalar topics only
-  // (v1): object topics on consumed datasets are dropped. Not undoable.
+  // catalog, and the anchor is relabelled "<name>_merged". Object topics are
+  // folded by shared name or reparented when source-only. Not undoable.
   // Returns the surviving anchor's DatasetId (the merged dataset), or 0 on a
   // no-op (fewer than two of the selected datasets carry time-bearing data).
   PJ::DatasetId mergeDatasets(const std::vector<PJ::DatasetId>& selected);
 
+  // Returns shared-name canonical object type conflicts for the merge plan that
+  // mergeDatasets() would use. Pure preflight; does not mutate stores/catalog.
+  [[nodiscard]] std::vector<ObjectMergeConflict> objectMergeConflicts(const std::vector<PJ::DatasetId>& selected) const;
+
+ signals:
+  void datasetsMerged(PJ::DatasetId anchor, QList<PJ::DatasetId> consumed);
+
  private:
+  struct MergePlan {
+    DatasetId anchor = 0;
+    std::vector<DatasetMergeSource> sources;
+  };
+
   // Per-visible-time-bearing-topic raw bounds, surfaced to a callback. Walks the
   // catalog-visible items once, deduping multi-field scalar topics by topic_id
   // and object topics by ObjectTopicId, skipping items with no time-bearing
@@ -143,6 +169,8 @@ class AppSession : public QObject {
   // callback receives the item's DatasetId and the topic's RAW [min,max] ns.
   void forEachVisibleRawRange(
       const std::function<void(PJ::DatasetId dataset_id, PJ::Timestamp raw_min, PJ::Timestamp raw_max)>& visit) const;
+
+  [[nodiscard]] std::optional<MergePlan> planMerge(const std::vector<DatasetId>& selected) const;
 
   // The active live-streaming dataset (0 = none); see setActiveStreamingDataset.
   PJ::DatasetId active_streaming_dataset_id_ = 0;

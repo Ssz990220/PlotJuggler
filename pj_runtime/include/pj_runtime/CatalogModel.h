@@ -9,6 +9,7 @@
 #include <cstdint>
 #include <memory>
 #include <optional>
+#include <string_view>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -20,6 +21,10 @@
 namespace PJ {
 
 class SessionManager;
+
+// Parses the canonical object type from an ObjectTopicDescriptor::metadata_json
+// blob. Invalid or missing metadata maps to sdk::BuiltinObjectType::kNone.
+[[nodiscard]] sdk::BuiltinObjectType objectTypeFromMetadata(std::string_view metadata_json);
 
 // Scalar-field payload: a single value-per-timestamp series read from the data
 // engine. Numeric by default; `is_string` marks a string-typed column, which the

@@ -92,6 +92,35 @@ same sample are served from a warm cache without re-invoking it (see Read Paths)
 Both write paths apply the topic retention budget after the new entry is
 inserted.
 
+## Dataset Merge
+
+`ObjectStore::mergeDatasets(anchor, sources)` is the object-side companion to the
+scalar dataset merge. It destructively folds source datasets into an anchor using
+caller-supplied raw timestamp shifts.
+
+- Shared object topic names are fused into the anchor topic: entries are
+  interleaved by shifted timestamp, equal timestamps keep anchor entries before
+  source entries, and the fused series receives fresh ascending
+  `SequentialUID`s so `at(uid)` remains a valid binary-search path.
+- Source-only object topics are reparented to the anchor dataset and keep their
+  `ObjectTopicId`; source datasets are emptied.
+- Duplicate or self sources are rejected before mutation, so that validation is
+  atomic. A source with no object topics is accepted as a no-op.
+- The fold is purely mechanical. It does not detect canonical object type
+  conflicts; pj_runtime owns that preflight policy.
+- Topic retention is re-applied after each fold. Lazy entries move by value, and
+  their closures keep their original backing data alive.
+- **Payload-embedded stamps follow the shift.** The merge moves each shifted
+  entry's STORE `timestamp` but never rewrites the payload bytes, so timestamps
+  encoded INSIDE a payload (a serialized canonical object, or a wire message a
+  parser later decodes) would otherwise stay on the source's original clock. To
+  reconcile them without touching the bytes, each shifted entry records the same
+  delta in `ObjectEntry::payload_stamp_shift` (carried through `resolveEntry` to
+  `ResolvedObjectEntry`). A consumer that keys off payload-embedded stamps adds
+  it; one that keys off the store `timestamp` ignores it. It is 0 for unmerged
+  data and accumulates across chained merges. The one consumer today is the 3D TF
+  buffer, which indexes history by each transform's own inner stamp.
+
 ## Read Paths
 
 `latestAt(id, timestamp)` returns the newest entry whose timestamp is less than

@@ -490,9 +490,11 @@ std::optional<DatasetMergeReport> SessionManager::mergeDatasets(
   // (1) Adapters bound to the anchor or any source drop cached TopicChunk* before
   // the engine clears/rebuilds chunks. Same-thread direct connections; this method
   // runs no event loop (the caller must not either), so the pointers stay dead.
-  emit datasetAboutToBeReplaced(anchor);
+  // The helper also invalidates the per-dataset/global min caches; object-only
+  // merges may not notify any scalar topics later.
+  notifyDatasetAboutToBeReplaced(anchor);
   for (const auto& source : sources) {
-    emit datasetAboutToBeReplaced(source.dataset_id);
+    notifyDatasetAboutToBeReplaced(source.dataset_id);
   }
 
   // (2) Fold the scalar data. The engine validates all caller/data-driven inputs
@@ -507,10 +509,24 @@ std::optional<DatasetMergeReport> SessionManager::mergeDatasets(
     return std::nullopt;  // engine rejected: nothing mutated — let the caller skip the catalog update
   }
 
-  // (3) v1 is scalar-only: drop the consumed sources' object topics (the popup
-  // warned the user). The engine left the source scalar topics empty.
-  for (const auto& source : sources) {
-    evictDatasetObjects(source.dataset_id);
+  // (3) Fold the object topics the same way. This shares the scalar merge's
+  // structural validation, so it cannot fail once the scalar merge above
+  // succeeded on the same inputs.
+  if (auto objects = object_store_.mergeDatasets(anchor, sources); objects.has_value()) {
+    // Shared-name source topics are now empty — their entries folded into the
+    // anchor topic, which the anchor's own parser decodes. Evict those redundant
+    // source-side topics AND their (now-orphaned) parser slots via evictObjectTopics
+    // (which defers slot teardown past the lock, matching the reload path). Source-
+    // only topics were reparented under the anchor and KEEP their ids + parsers, so
+    // they are deliberately not evicted here.
+    std::vector<ObjectTopicId> folded_sources;
+    folded_sources.reserve(objects->remapped.size());
+    for (const auto& [source_id, dest_id] : objects->remapped) {
+      folded_sources.push_back(source_id);
+    }
+    evictObjectTopics(folded_sources);
+  } else {
+    qCWarning(lcSession).noquote() << "mergeDatasets(objects):" << QString::fromStdString(objects.error());
   }
 
   // (4) Re-index adapters against the rebuilt anchor topics.

@@ -531,6 +531,173 @@ Expected<ObjectDatasetReplaceResult> ObjectStore::replaceDatasetFrom(
   return result;
 }
 
+// Lazy callbacks own their backing through captured anchors; dataset removal only drops entries, so move them by value.
+Expected<ObjectDatasetMergeReport> ObjectStore::mergeDatasets(
+    DatasetId anchor_id, const std::vector<DatasetMergeSource>& sources) {
+  std::unique_lock lock(store_mutex_);
+
+  std::unordered_set<DatasetId> seen_sources;
+  for (const DatasetMergeSource& src : sources) {
+    if (src.dataset_id == anchor_id) {
+      return unexpected("mergeDatasets: source dataset " + std::to_string(src.dataset_id) + " is the anchor");
+    }
+    if (!seen_sources.insert(src.dataset_id).second) {
+      return unexpected("mergeDatasets: source dataset " + std::to_string(src.dataset_id) + " listed more than once");
+    }
+  }
+
+  struct Contributor {
+    ObjectTopicId topic_id;
+    ObjectSeries* series;
+    Timestamp shift;
+  };
+  struct Group {
+    ObjectTopicId destination_id;
+    ObjectSeries* destination;
+    Timestamp destination_shift = 0;
+    bool destination_needs_reparent = false;
+    std::vector<Contributor> sources;
+  };
+
+  ObjectDatasetMergeReport report;
+  std::vector<Group> groups;
+  groups.reserve(topics_.size());
+  std::unordered_map<std::string, size_t> group_by_name;
+
+  for (auto& [tid, series] : topics_) {
+    if (series->descriptor.dataset_id != anchor_id) {
+      continue;
+    }
+    const auto index = groups.size();
+    groups.push_back(
+        Group{
+            .destination_id = tid,
+            .destination = series.get(),
+            .destination_shift = 0,
+            .destination_needs_reparent = false,
+            .sources = {},
+        });
+    group_by_name.emplace(series->descriptor.topic_name, index);
+  }
+
+  for (const DatasetMergeSource& src : sources) {
+    std::vector<std::pair<ObjectTopicId, ObjectSeries*>> source_topics;
+    for (auto& [tid, series] : topics_) {
+      if (series->descriptor.dataset_id == src.dataset_id) {
+        source_topics.emplace_back(tid, series.get());
+      }
+    }
+    if (source_topics.empty()) {
+      continue;
+    }
+    report.consumed_datasets.push_back(src.dataset_id);
+
+    for (const auto& [source_id, source_series] : source_topics) {
+      const std::string& name = source_series->descriptor.topic_name;
+      const auto group_it = group_by_name.find(name);
+      if (group_it == group_by_name.end()) {
+        const auto index = groups.size();
+        groups.push_back(
+            Group{
+                .destination_id = source_id,
+                .destination = source_series,
+                .destination_shift = src.raw_shift_ns,
+                .destination_needs_reparent = true,
+                .sources = {},
+            });
+        group_by_name.emplace(name, index);
+        report.added_topics.push_back(source_id);
+      } else {
+        Group& group = groups[group_it->second];
+        group.sources.push_back(Contributor{.topic_id = source_id, .series = source_series, .shift = src.raw_shift_ns});
+        report.remapped.emplace_back(source_id, group.destination_id);
+      }
+    }
+  }
+
+  for (Group& group : groups) {
+    bool has_source_entries = false;
+    for (const Contributor& contributor : group.sources) {
+      if (!contributor.series->entries.empty()) {
+        has_source_entries = true;
+        break;
+      }
+    }
+
+    if (!group.destination_needs_reparent && group.sources.empty()) {
+      continue;
+    }
+    if (!group.destination_needs_reparent && !has_source_entries) {
+      continue;  // shared-name source topics were already empty; only the report changes.
+    }
+
+    drainSeriesReaders(*group.destination);
+    if (group.destination_needs_reparent) {
+      shiftSeriesLocked(*group.destination, group.destination_shift);
+      group.destination->descriptor.dataset_id = anchor_id;
+    }
+
+    std::vector<Contributor> non_empty_sources;
+    non_empty_sources.reserve(group.sources.size());
+    for (const Contributor& contributor : group.sources) {
+      if (contributor.series->entries.empty()) {
+        continue;
+      }
+      drainSeriesReaders(*contributor.series);
+      shiftSeriesLocked(*contributor.series, contributor.shift);
+      non_empty_sources.push_back(contributor);
+    }
+
+    if (non_empty_sources.empty()) {
+      reuidSeriesLocked(*group.destination);
+      const Timestamp newest =
+          group.destination->entry_timestamps.empty() ? 0 : group.destination->entry_timestamps.back();
+      applyRetention(*group.destination, newest);
+      continue;
+    }
+
+    std::vector<ObjectEntry> merged;
+    merged.reserve(group.destination->entries.size());
+    for (const Contributor& contributor : non_empty_sources) {
+      merged.reserve(merged.capacity() + contributor.series->entries.size());
+    }
+
+    size_t merged_memory = group.destination->memory_bytes;
+    for (ObjectEntry& entry : group.destination->entries) {
+      merged.push_back(std::move(entry));
+    }
+    for (const Contributor& contributor : non_empty_sources) {
+      merged_memory += contributor.series->memory_bytes;
+      for (ObjectEntry& entry : contributor.series->entries) {
+        merged.push_back(std::move(entry));
+      }
+    }
+    std::stable_sort(merged.begin(), merged.end(), [](const ObjectEntry& lhs, const ObjectEntry& rhs) {
+      return lhs.timestamp < rhs.timestamp;
+    });
+
+    group.destination->entries.clear();
+    group.destination->entry_timestamps.clear();
+    group.destination->entry_timestamps.reserve(merged.size());
+    for (ObjectEntry& entry : merged) {
+      group.destination->entry_timestamps.push_back(entry.timestamp);
+      group.destination->entries.push_back(std::move(entry));
+    }
+    group.destination->memory_bytes = merged_memory;
+    reuidSeriesLocked(*group.destination);
+
+    for (const Contributor& contributor : non_empty_sources) {
+      clearEntriesLocked(*contributor.series);
+    }
+
+    const Timestamp newest =
+        group.destination->entry_timestamps.empty() ? 0 : group.destination->entry_timestamps.back();
+    applyRetention(*group.destination, newest);
+  }
+
+  return report;
+}
+
 // --- Lifecycle ---
 
 void ObjectStore::removeTopic(ObjectTopicId id) {
@@ -657,6 +824,30 @@ void ObjectStore::clearEntriesLocked(ObjectSeries& series) {
   series.cached_latest.reset();
 }
 
+void ObjectStore::shiftSeriesLocked(ObjectSeries& series, Timestamp shift) {
+  if (shift == 0 || series.entries.empty()) {
+    return;
+  }
+  for (size_t i = 0; i < series.entries.size(); ++i) {
+    series.entries[i].timestamp += shift;
+    series.entry_timestamps[i] = series.entries[i].timestamp;
+    // Slide the store clock AND remember the slide for payload-embedded stamps:
+    // the payload bytes (a serialized canonical object or a wire message) are not
+    // rewritten, so a consumer reading their inner timestamps must add this delta.
+    series.entries[i].payload_stamp_shift += shift;
+  }
+  std::lock_guard cache_guard(series.cache_mutex);
+  series.cached_latest.reset();
+}
+
+void ObjectStore::reuidSeriesLocked(ObjectSeries& series) {
+  for (ObjectEntry& entry : series.entries) {
+    entry.sequential_uid = SequentialUID::getNext();
+  }
+  std::lock_guard cache_guard(series.cache_mutex);
+  series.cached_latest.reset();
+}
+
 void ObjectStore::clear() {
   std::unique_lock lock(store_mutex_);
   for (auto& [tid, series] : topics_) {
@@ -683,6 +874,7 @@ ResolvedObjectEntry ObjectStore::resolveEntry(const ObjectEntry& entry) {
   ResolvedObjectEntry resolved;
   resolved.timestamp = entry.timestamp;
   resolved.sequential_uid = entry.sequential_uid;
+  resolved.payload_stamp_shift = entry.payload_stamp_shift;
 
   if (const auto* owned = std::get_if<SharedBuffer>(&entry.payload)) {
     // Span the vector, anchor on the same shared_ptr — refcount bump, no copy.

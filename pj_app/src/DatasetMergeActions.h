@@ -17,7 +17,7 @@ class AppSession;
 /// Human-readable destructive-merge warning for `datasets`: a base "this is
 /// destructive" line plus, when applicable, which datasets overlap in displayed
 /// time, which of those also collide on a shared topic name, and which carry
-/// object topics that the scalar-only v1 merge will drop. Reconstructed from the
+/// object topics that the merge will fold into the result. Reconstructed from the
 /// runtime (catalog names, raw bounds, per-source display offset, engine topics),
 /// so it is independent of any widget's local track list.
 [[nodiscard]] QString composeDatasetMergeWarning(const AppSession& session, const std::vector<DatasetId>& datasets);
