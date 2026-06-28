@@ -22,6 +22,7 @@
 #include "mock_parser_support.h"
 #include "pj_base/builtin/builtin_object.hpp"
 #include "pj_base/builtin/poses_in_frame.hpp"
+#include "pj_base/builtin/poses_in_frame_codec.hpp"  // serializePosesInFrame (canonical-blob, no-parser test)
 #include "pj_plugins/host/message_parser_handle.hpp"
 #include "pj_plugins/sdk/message_parser_plugin_base.hpp"
 #include "pj_runtime/SessionManager.h"
@@ -87,6 +88,34 @@ TEST_F(PosesInFrameLayerTest, DecodesPosesIntoThreeArmsEachAtTrackerTime) {
   layer.renderAtForTest(100);
   EXPECT_EQ(layer.instancesForTest().size(), 9U);  // 3 poses * 3 arms
   EXPECT_EQ(layer.sourceFrame(), QStringLiteral("map"));
+}
+
+// A data-source/toolbox canonical topic carries serialized pj_base blobs and has
+// NO MessageParser bound (the Mosaico toolbox path). The layer must still attach
+// and decode the blob host-side via the canonical codec (resolveObject's
+// fallback) — previously attach() rejected any parser-less object topic.
+TEST_F(PosesInFrameLayerTest, RendersCanonicalBlobWithoutParser) {
+  const PJ::ObjectTopicId canon_topic = registerObjectTopic(session_, "/poses_canonical");
+  // Deliberately NO registerObjectTopicParser for this topic.
+  PJ::sdk::PosesInFrame msg;
+  msg.frame_id = "map";
+  msg.timestamp_ns = 200;
+  PJ::sdk::Pose pose;
+  pose.position = {1.0, 2.0, 3.0};
+  pose.orientation.w = 1.0;
+  msg.poses.push_back(pose);
+  std::vector<uint8_t> blob = PJ::serializePosesInFrame(msg);
+  ASSERT_TRUE(session_.objectStore().pushOwned(canon_topic, 200, std::move(blob)).has_value());
+
+  pj::scene3d::Scene3DLayerContext ctx;
+  ctx.session = &session_;
+  pj::scene3d::PosesInFrameLayer layer(canon_topic, QStringLiteral("poses_canon"));
+  ASSERT_TRUE(layer.attach(ctx));  // would FAIL before the canonical fallback: "no parser"
+
+  layer.renderAtForTest(200);
+  EXPECT_EQ(layer.instancesForTest().size(), 3U);  // 1 pose * 3 arms
+  EXPECT_EQ(layer.sourceFrame(), QStringLiteral("map"));
+  EXPECT_EQ(g_parser_calls.load(), 0);  // canonical path, parser never invoked
 }
 
 TEST_F(PosesInFrameLayerTest, UnchangedSampleIsNotRedecoded) {

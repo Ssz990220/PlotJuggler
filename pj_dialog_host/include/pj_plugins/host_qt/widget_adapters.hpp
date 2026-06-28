@@ -30,6 +30,14 @@ void adaptStyledWidgets(QWidget* root);
 void adaptRadioButtonPairs(QWidget* root);
 void adaptCheckBoxes(QWidget* root);
 void adaptComboBoxes(QWidget* root);
+/// Give every QTableView under `root` that opts in (dynamic bool property
+/// "pjInteriorGrid", set in the plugin .ui) an interior-only cell grid: native
+/// showGrid is turned off and an item delegate draws only the dividers BETWEEN
+/// cells, never the table's outer right/bottom edge. Keeps internal H+V gridlines
+/// while leaving the table's edges to the surrounding chrome (header, splitter
+/// handle), so a stretched-column table no longer doubles the native grid's
+/// trailing line against the chrome. Idempotent (marker property).
+void adaptGridTables(QWidget* root);
 /// Attach a PJ::Scrollbar overlay (one horizontal + one vertical) to every
 /// QAbstractScrollArea found under `root` that has not yet been adapted. The
 /// native bars are hidden (policy forced to AlwaysOff); the pill overlays own

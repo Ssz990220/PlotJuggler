@@ -5,6 +5,8 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <optional>
+#include <vector>
 
 #include "pj_scene2d_core/codec_pipeline.h"
 
@@ -141,5 +143,20 @@ class SegmentationPalette : public CodecStage {
 // --- Pipeline builders ---
 
 std::unique_ptr<CodecPipeline> makeJpegPipeline();  ///< JpegCodec only (raw JPEG input)
+
+/// Decode a PNG/JPEG-wrapped raw frame back to its flat sample bytes — the inverse
+/// of a transport that losslessly wraps a raw buffer in an image container (e.g.
+/// Mosaico's `serialization_format=image` wraps a 16UC1 depth frame as an 8-bit
+/// grayscale PNG of width=stride). Returns the decoded samples as ONE byte per
+/// sample (gray-expanded RGB is collapsed back to its luma byte; Mono16 keeps its
+/// two bytes per sample), so reinterpreting the result at the frame's logical
+/// encoding/geometry recovers the original buffer. Returns nullopt when `data` is
+/// not a decodable PNG/JPEG container — callers then treat the bytes as already
+/// raw. Use this before reading a raw-encoded image's bytes as raw, so a
+/// container-wrapped raw frame isn't mis-read as raw (the depth all-black bug).
+/// NOTE: pj_scene3D's DepthCloudLayer::toDepthView has a twin of this (QImage-based,
+/// since pj_scene3D cannot depend on pj_scene2d_core); keep the two in sync.
+[[nodiscard]] std::optional<std::shared_ptr<std::vector<uint8_t>>> recoverContainerRawSamples(
+    const uint8_t* data, size_t size);
 
 }  // namespace PJ

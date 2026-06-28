@@ -473,4 +473,54 @@ std::unique_ptr<CodecPipeline> makeJpegPipeline() {
   return p;
 }
 
+std::optional<std::shared_ptr<std::vector<uint8_t>>> recoverContainerRawSamples(const uint8_t* data, size_t size) {
+  const ImageContainer container = sniffImageContainer(data, size);
+  if (container == ImageContainer::kUnknown) {
+    return std::nullopt;  // not a container — caller treats the bytes as already raw
+  }
+  DecodedFrame staged;
+  staged.pixels = std::make_shared<std::vector<uint8_t>>(data, data + size);
+  const Expected<DecodedFrame> decoded =
+      (container == ImageContainer::kJpeg) ? JpegCodec{}.decode(staged) : PngCodec{}.decode(staged);
+  if (!decoded.has_value() || decoded->isNull() || decoded->width <= 0 || decoded->height <= 0) {
+    return std::nullopt;
+  }
+  const DecodedFrame& frame = *decoded;
+  const size_t samples = static_cast<size_t>(frame.width) * static_cast<size_t>(frame.height);
+  auto out = std::make_shared<std::vector<uint8_t>>();
+  switch (frame.format) {
+    case PixelFormat::kMono16:
+      // 16-bit grayscale already IS the flat 2-byte-per-sample buffer.
+    case PixelFormat::kMono8:
+      *out = *frame.pixels;
+      break;
+    case PixelFormat::kRGB888:
+    case PixelFormat::kBGR888: {
+      // PngCodec expands 8-bit grayscale to RGB (R==G==B); collapse to the luma byte.
+      if (frame.pixels->size() < samples * 3) {
+        return std::nullopt;
+      }
+      out->resize(samples);
+      for (size_t i = 0; i < samples; ++i) {
+        (*out)[i] = (*frame.pixels)[i * 3];
+      }
+      break;
+    }
+    case PixelFormat::kRGBA8888:
+    case PixelFormat::kBGRA8888: {
+      if (frame.pixels->size() < samples * 4) {
+        return std::nullopt;
+      }
+      out->resize(samples);
+      for (size_t i = 0; i < samples; ++i) {
+        (*out)[i] = (*frame.pixels)[i * 4];
+      }
+      break;
+    }
+    default:
+      return std::nullopt;  // YUV/NV12/DepthR32F aren't container-wrapped raw frames
+  }
+  return out;
+}
+
 }  // namespace PJ

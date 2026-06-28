@@ -125,6 +125,11 @@ class DualCalendarWidget : public QWidget {
 
   void setExternalRange(const QDate& from, const QDate& to);
 
+  // Re-render the nav chevrons + repaint the calendars for the active theme.
+  // Called by DateRangePicker on a live theme toggle (the icons are baked, so a
+  // plain repaint wouldn't re-ink them).
+  void retheme();
+
  signals:
   void rangeCommitted(const QDate& from, const QDate& to);
   void rangePreview(const QDate& from, const QDate& to);
@@ -219,6 +224,7 @@ class DateRangePicker : public QWidget {
   QPushButton* all_button_ = nullptr;
   QLineEdit* from_edit_ = nullptr;
   QLineEdit* to_edit_ = nullptr;
+  QLabel* arrow_label_ = nullptr;  // Material arrow between from/to; re-inked on theme switch.
   QPushButton* calendar_button_ = nullptr;
 
   QWidget* overlay_ = nullptr;

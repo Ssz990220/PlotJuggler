@@ -43,6 +43,7 @@ set(PJ_SCENE3D_WIDGETS_SOURCES
   src/urdf_package_resolver.cpp
   src/mesh_loader.cpp
   src/object_topic_metadata.cpp
+  src/resolve_object.cpp
   src/url_fetcher.cpp
   src/Scene3DDockWidget.cpp
   src/transform_service.cpp
@@ -150,6 +151,19 @@ if(PJ_BUILD_TESTS)
   )
   target_compile_options(transform_service_test PRIVATE ${PJ_WARNING_FLAGS} ${PJ_SANITIZER_FLAGS})
   add_test(NAME transform_service_test COMMAND transform_service_test)
+
+  # resolveObject() canonical fallback: with no MessageParser bound, decode a
+  # serialized pj_base blob via the canonical codec (the parser-less / toolbox
+  # path). Pure unit test — no session, no GL.
+  add_executable(resolve_object_test
+    tests/resolve_object_test.cpp
+  )
+  target_link_libraries(resolve_object_test PRIVATE
+    pj_scene3d_widgets
+    GTest::gtest_main
+  )
+  target_compile_options(resolve_object_test PRIVATE ${PJ_WARNING_FLAGS} ${PJ_SANITIZER_FLAGS})
+  add_test(NAME resolve_object_test COMMAND resolve_object_test)
 
   # Regression: a TF-only 3D dock (FrameTransforms consumed as config, zero
   # layers) must survive revalidateObjects (H.4), and the TF/dataset binding must

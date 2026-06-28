@@ -36,7 +36,7 @@
 #include "pj_scene3d_core/pointcloud_codecs.h"
 #include "pj_scene3d_core/pointcloud_convert.h"  // convertCanonical, ConvertedPointCloud
 #include "pj_scene3d_core/tf/tf_buffer.h"        // source->fixed lookup for world-axis range
-#include "pj_scene3d_widgets/parse_locked.h"
+#include "pj_scene3d_widgets/resolve_object.h"   // resolveObject, hasCanonical3DCodec
 #include "pj_widgets/CheckButton.h"
 #include "pj_widgets/ColorPickerWidget.h"
 #include "pj_widgets/ComboBox.h"
@@ -294,8 +294,12 @@ bool PointCloudLayer::attach(const PJ::SceneLayerContext& ctx) {
     return false;
   }
   ctx_ = scene3d_ctx;
-  if (!ctx_.session->parserBindingForObjectTopic(topic_id_)) {
-    qCWarning(lcPointCloudLayer) << "attach: no parser for topic_id=" << topic_id_.id;
+  // Accept the topic if it has EITHER a MessageParser (file/streaming sources)
+  // OR a canonical codec for its object type (a data-source/toolbox that pushed
+  // serialized canonical clouds, e.g. the Mosaico toolbox — resolveObject()
+  // decodes those host-side). Reject only when neither path can decode it.
+  if (!ctx_.session->parserBindingForObjectTopic(topic_id_) && !hasCanonical3DCodec(object_type_)) {
+    qCWarning(lcPointCloudLayer) << "attach: no parser and no canonical codec for topic_id=" << topic_id_.id;
     return false;
   }
   PJ::ObjectStore& store = ctx_.session->objectStore();
@@ -885,10 +889,7 @@ bool PointCloudLayer::bootstrap() {
     return false;
   }
   const auto binding = ctx_.session->parserBindingForObjectTopic(topic_id_);
-  if (!binding) {
-    return false;
-  }
-  auto obj = parseLocked(binding, first->timestamp, first->payload);
+  auto obj = resolveObject(binding, object_type_, first->timestamp, first->payload);
   if (!obj.has_value()) {
     qCWarning(lcPointCloudLayer) << "bootstrap parseObject failed:" << QString::fromStdString(obj.error());
     return false;
@@ -1152,10 +1153,7 @@ void PointCloudLayer::renderAt(int64_t time_ns) {
     return;  // known-undecodable sample; the memo holds until a reload swaps the bytes
   }
   const auto binding = ctx_.session->parserBindingForObjectTopic(topic_id_);
-  if (!binding) {
-    return;
-  }
-  auto obj = parseLocked(binding, resolved->timestamp, resolved->payload);
+  auto obj = resolveObject(binding, object_type_, resolved->timestamp, resolved->payload);
   if (!obj.has_value()) {
     qCWarning(lcPointCloudLayer) << "renderAt parseObject failed:" << QString::fromStdString(obj.error());
     return;

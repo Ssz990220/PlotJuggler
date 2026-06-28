@@ -265,3 +265,31 @@ TEST(BayerDecodeTest, RejectsBufferTooSmallForDimensions) {
   auto out = PJ::BayerDecode(PJ::BayerPattern::kRGGB).decode(mono8MosaicFrame(4, 4, std::vector<uint8_t>(8, 0)));
   EXPECT_FALSE(out.has_value());
 }
+
+// A transport that losslessly PNG-wraps a raw buffer (Mosaico stores a 16UC1
+// depth frame as an 8-bit grayscale PNG of width=stride) must round-trip back to
+// the exact flat bytes, so the depth path reads them as raw 16UC1 instead of
+// mis-reading the compressed PNG as depth (the camera/kinect/depth all-black bug).
+TEST(RecoverContainerRawSamplesTest, EightBitGrayPngWrappedDepthRoundTrips) {
+  // A 2x2 16UC1 frame (4 px) = 8 little-endian bytes, stored as an 8-bit
+  // grayscale PNG of width=stride(4) x height(2) = 8 samples.
+  const std::vector<uint16_t> depth_mm = {1000, 2000, 3000, 40000};
+  std::vector<uint8_t> raw;
+  for (uint16_t v : depth_mm) {
+    raw.push_back(static_cast<uint8_t>(v & 0xFF));
+    raw.push_back(static_cast<uint8_t>((v >> 8) & 0xFF));
+  }
+  const std::vector<uint8_t> png = PJ::test::makeGrayPng(/*width=*/4, /*height=*/2, /*bit_depth=*/8, raw);
+  ASSERT_FALSE(png.empty());
+
+  auto recovered = PJ::recoverContainerRawSamples(png.data(), png.size());
+  ASSERT_TRUE(recovered.has_value());
+  ASSERT_NE(*recovered, nullptr);
+  EXPECT_EQ(**recovered, raw);  // exact flat bytes, ready to reinterpret as 16UC1
+}
+
+// Genuinely raw bytes (no container signature) are left to the caller's raw path.
+TEST(RecoverContainerRawSamplesTest, RawBytesAreNotAContainer) {
+  const std::vector<uint8_t> raw = {0xE8, 0x03, 0xD0, 0x07, 0xB8, 0x0B};
+  EXPECT_FALSE(PJ::recoverContainerRawSamples(raw.data(), raw.size()).has_value());
+}

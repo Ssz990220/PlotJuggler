@@ -23,7 +23,9 @@
 #include "pj_runtime/SessionManager.h"
 #include "pj_scene3d_core/tf/tf_buffer.h"
 #include "pj_scene3d_core/tf/transform.h"
+#include "pj_scene3d_widgets/object_topic_metadata.h"  // builtinObjectTypeFor
 #include "pj_scene3d_widgets/parse_locked.h"
+#include "pj_scene3d_widgets/resolve_object.h"  // resolveObject, hasCanonical3DCodec
 
 namespace pj::scene3d {
 
@@ -48,7 +50,10 @@ struct IngestStats {
 void ingestEntry(
     PJ::Timestamp ts, const PJ::sdk::PayloadView& payload, const PJ::SessionManager::ParserBinding& parser_binding,
     TransformBuffer& tf_buffer, IngestStats& stats) {
-  auto obj = parseLocked(parser_binding, ts, payload);
+  // The topic is already classified as FrameTransforms. resolveObject() decodes
+  // it via the MessageParser when one is bound, or via the canonical codec when
+  // not (a data-source/toolbox that pushed serialized canonical transforms).
+  auto obj = resolveObject(parser_binding, PJ::sdk::BuiltinObjectType::kFrameTransforms, ts, payload);
   if (!obj.has_value()) {
     return;
   }
@@ -226,31 +231,46 @@ bool TransformService::ingestNewerThanCursor(PJ::DatasetId dataset_id) {
       continue;  // nothing to classify/ingest yet; retry on a later tick
     }
     const auto parser_binding = session_.parserBindingForObjectTopic(topic_id);
-    if (!parser_binding) {
-      continue;
-    }
 
     auto cursor_it = tf_cursors_.find(key);
     if (cursor_it == tf_cursors_.end()) {
-      // Unclassified topic: probe its newest entry's type exactly once. Probing
-      // the newest (not index 0) stays valid after streaming evicts the front,
-      // and classifying once keeps a big non-TF topic (e.g. a point cloud) from
-      // being decoded on every tick.
-      auto probe = object_store.at(topic_id, count - 1);
-      if (!probe.has_value() || probe->payload.bytes.empty()) {
-        continue;  // can't classify yet; retry next tick
+      // Classify the topic's object type exactly once, then cache the verdict (a
+      // TF cursor, or non_tf_topics_) so a big non-TF topic isn't re-classified
+      // on every tick.
+      if (!parser_binding) {
+        // Parser-less topic: its bytes are a serialized canonical object, so the
+        // topic's builtin_object_type metadata is authoritative — classify by
+        // metadata, no decode needed (a data-source/toolbox canonical producer,
+        // e.g. the Mosaico cloud toolbox).
+        const PJ::sdk::BuiltinObjectType type = builtinObjectTypeFor(object_store.descriptor(topic_id));
+        if (type == PJ::sdk::BuiltinObjectType::kNone) {
+          continue;  // not classifiable yet (e.g. a parser topic mid-bind) — retry next tick
+        }
+        if (type != PJ::sdk::BuiltinObjectType::kFrameTransforms) {
+          non_tf_topics_.insert(key);  // a canonical non-TF object: settled, never re-probe
+          continue;
+        }
+      } else {
+        // Parser-backed topic: the parser (not the metadata) determines the type,
+        // so probe its newest entry's decoded type exactly once. Probing the
+        // newest (not index 0) stays valid after streaming evicts the front.
+        auto probe = object_store.at(topic_id, count - 1);
+        if (!probe.has_value() || probe->payload.bytes.empty()) {
+          continue;  // can't classify yet; retry next tick
+        }
+        auto probe_obj = parseLocked(parser_binding, probe->timestamp, probe->payload);
+        if (!probe_obj.has_value()) {
+          // Parse FAILED (transient corruption / a parser that failed this tick) —
+          // do NOT blacklist the topic. A single bad newest message must not
+          // permanently suppress TF ingest; retry classification next tick.
+          continue;
+        }
+        if (PJ::sdk::typeOf(probe_obj->object) != PJ::sdk::BuiltinObjectType::kFrameTransforms) {
+          non_tf_topics_.insert(key);  // parsed cleanly as a different type: settled, never re-probe
+          continue;
+        }
       }
-      auto probe_obj = parseLocked(parser_binding, probe->timestamp, probe->payload);
-      if (!probe_obj.has_value()) {
-        // Parse FAILED (transient corruption / a parser that failed this tick) —
-        // do NOT blacklist the topic. A single bad newest message must not
-        // permanently suppress TF ingest; retry classification next tick.
-        continue;
-      }
-      if (PJ::sdk::typeOf(probe_obj->object) != PJ::sdk::BuiltinObjectType::kFrameTransforms) {
-        non_tf_topics_.insert(key);  // parsed cleanly as a different type: settled, never re-probe
-        continue;
-      }
+      // Classified as TF by either path: open a cursor and start ingesting.
       cursor_it = tf_cursors_.try_emplace(key).first;
     }
 

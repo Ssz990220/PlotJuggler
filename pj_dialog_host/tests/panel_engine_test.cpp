@@ -3,11 +3,14 @@
 #include <gtest/gtest.h>
 
 #include <QApplication>
+#include <QCoreApplication>
 #include <QDialogButtonBox>
+#include <QEvent>
 #include <QEventLoop>
 #include <QLabel>
 #include <QLineEdit>
 #include <QPushButton>
+#include <QSettings>
 #include <QTimer>
 #include <QWidget>
 #include <memory>
@@ -26,6 +29,18 @@ namespace {
 QApplication* qapp() {
   static int argc = 0;
   static QApplication app(argc, nullptr);
+  // QSettings needs a non-empty organization/application identity to read and
+  // write reliably across platforms: with an empty identity Windows returns
+  // QSettings::AccessError, so writes are dropped and reads fall back to the
+  // default. ThemeChangeReappliesWidgetData toggles the theme through QSettings,
+  // so without this its toggle is a silent no-op on Windows (passes on Linux,
+  // which is file-backed and lenient). Give the test process a stable identity.
+  static const bool kIdentitySet = [] {
+    QCoreApplication::setOrganizationName(QStringLiteral("PlotJugglerTest"));
+    QCoreApplication::setApplicationName(QStringLiteral("panel_engine_test"));
+    return true;
+  }();
+  (void)kIdentitySet;
   return &app;
 }
 
@@ -79,6 +94,49 @@ TEST_F(PanelEngineTest, InitialWidgetDataIsApplied) {
   EXPECT_EQ(label->text().toStdString(), "Hello from PanelEngine");
   EXPECT_EQ(text->text().toStdString(), "preset");
 
+  delete panel;
+}
+
+TEST_F(PanelEngineTest, ThemeChangeReappliesWidgetData) {
+  // Host-themed icons (setButtonIconNamed → loadSvg) are applied once and then
+  // diffed away, so a live theme switch must re-apply the panel's last
+  // widget-data to re-tint them. The icon color can't be observed here (no
+  // resources linked), so we prove the re-apply fires by watching a plain widget
+  // value get restored from the plugin's last data on a StyleChange.
+  const QString saved_theme = QSettings().value(QStringLiteral("StyleSheet::theme")).toString();
+  QSettings().setValue(QStringLiteral("StyleSheet::theme"), QStringLiteral("light"));
+
+  mockPanelState().label = "FromPlugin";
+  PJ::PanelEngine engine(makeMockHandle());
+  QWidget* panel = engine.openPanel();
+  ASSERT_NE(panel, nullptr);
+  auto* label = panel->findChild<QLabel*>("labelHello");
+  ASSERT_NE(label, nullptr);
+  ASSERT_EQ(label->text(), QStringLiteral("FromPlugin"));
+
+  // Externally clobber the label. A normal tick won't restore it — the plugin's
+  // data is unchanged, so the diff is empty — only the theme-change re-apply will.
+  label->setText(QStringLiteral("CLOBBERED"));
+
+  // Theme changes, then the app re-polishes the panel (StyleChange): the engine
+  // re-applies the plugin's last data, restoring the label.
+  QSettings().setValue(QStringLiteral("StyleSheet::theme"), QStringLiteral("dark"));
+  QEvent style_change(QEvent::StyleChange);
+  QApplication::sendEvent(panel, &style_change);
+  EXPECT_EQ(label->text(), QStringLiteral("FromPlugin"));
+
+  // A second StyleChange with no further theme change must NOT re-apply (the
+  // applied-theme gate prevents redundant re-applies on unrelated polish events).
+  label->setText(QStringLiteral("CLOBBERED2"));
+  QEvent style_change2(QEvent::StyleChange);
+  QApplication::sendEvent(panel, &style_change2);
+  EXPECT_EQ(label->text(), QStringLiteral("CLOBBERED2"));
+
+  if (saved_theme.isEmpty()) {
+    QSettings().remove(QStringLiteral("StyleSheet::theme"));
+  } else {
+    QSettings().setValue(QStringLiteral("StyleSheet::theme"), saved_theme);
+  }
   delete panel;
 }
 

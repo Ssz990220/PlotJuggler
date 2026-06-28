@@ -1021,6 +1021,10 @@ QHeaderView {
 QHeaderView::section {
     background-color: transparent;
     color: ${default_text};
+    /* Non-bold: QTableWidget defaults its header font to bold, and a widget-side
+       setFont(non-bold) is ignored while the app stylesheet is active, so force it
+       here. */
+    font-weight: normal;
     padding-left: ${chrome_spacing}px;
     border: none;
     border-top: 1px solid ${border_default};
@@ -1438,10 +1442,14 @@ QLineEdit#lineEditFilter,
 QLineEdit#lineEditCustomFilter,
 QLineEdit#lineEditCurvesFilter,
 QLineEdit#timelineDatasetFilter,
+QLineEdit#seqFilter,
+QLineEdit#topicFilter,
 QLineEdit#lineEditFilter:focus,
 QLineEdit#lineEditCustomFilter:focus,
 QLineEdit#lineEditCurvesFilter:focus,
-QLineEdit#timelineDatasetFilter:focus {
+QLineEdit#timelineDatasetFilter:focus,
+QLineEdit#seqFilter:focus,
+QLineEdit#topicFilter:focus {
     background: transparent;
     border: none;
     padding: 0;
@@ -1830,30 +1838,131 @@ QFileDialog QToolButton {
     padding: 2px;
 }
 
-/* ---- Mosaico panel: bordered column band + slider frame ------------------
-   The seq / topic / dataView columns are QFrames inside mainSplitter. Each gets
-   a 1px border that omits its splitter-facing side(s): the QSplitter::handle
-   already paints a 1px divider, so the borders meet the handle instead of
-   stacking a 2px line — one continuous bordered band whose edges run flush. The
-   padding is top/bottom only, so content sits flush against the vertical edges.
-   (Ported from #90.) */
-QFrame#seqPanelContainer {
-    border: 1px solid ${border_default};
-    border-right: none;
-    padding: 4px 0px;
-}
-
-QFrame#topicPanelContainer {
-    border: 1px solid ${border_default};
-    border-left: none;
-    border-right: none;
-    padding: 4px 0px;
-}
-
+/* ---- Mosaico panel: 3-column splitter -----------------------------------
+   The seq / topic / dataView columns are QFrames inside mainSplitter. No box
+   border: the only separators are the two QSplitter handles between the columns
+   (1px border-grey lines; see QSplitter::handle), so the columns run full-width
+   edge-to-edge with no outer frame, and no padding so the content fills the
+   column (header bar flush under the Server band, tables to the edges). */
+QFrame#seqPanelContainer,
+QFrame#topicPanelContainer,
 QFrame#dataViewContainer {
-    border: 1px solid ${border_default};
-    border-left: none;
-    padding: 4px 0px;
+    border: none;
+    padding: 0px;
+    background-color: ${dark_background};
+}
+
+/* Panel surfaces — the Mosaico panel content sits on the themed surface
+   (${dark_background}) EXCEPT the four title-bar-tone header bands (server / seq /
+   topic / info), which keep ${titlebar_background}. Covers the panel root, the body
+   wrapper, the Lua query pane + its editor, both tables, and the Info text area.
+   (The light theme uses pure #ffffff here; dark must use the dark surface or the
+   panel renders white-on-dark with unreadable light text.) */
+QWidget#MosaicoPanel,
+QWidget#mosaicoBody,
+QWidget#queryPane,
+QTableWidget#seqTable,
+QTableWidget#topicTable,
+QPlainTextEdit#dataView,
+QPlainTextEdit#lua_queryBar {
+    background-color: ${dark_background};
+}
+
+/* Cell grid for the Sequences / Topics tables: INTERIOR dividers only, no outer
+   border. These tables opt in (pjInteriorGrid, set in mosaico_panel.ui) to the
+   host's InteriorGridDelegate, which turns native showGrid OFF and paints interior
+   column dividers plus a bottom rule under every row (incl. the last), but no
+   outer-left/right line. So the side edges are owned solely by the surrounding
+   chrome (column header, splitter handle): one clean line, never a double. The
+   per-row bottom rule closes the data (a short table has empty space, not chrome,
+   below it). gridline-color still feeds the
+   delegate — it reads the grid color via SH_Table_GridLineColor exactly as the
+   native grid would, so this token themes the interior dividers. border:none drops
+   the frame. Do NOT re-add ::item border masks here: Qt silently drops per-::item
+   left/right borders and instead tints every column edge in the selection color
+   (the old blue double line). The delegate, not QSS, makes this grid correct. */
+QTableWidget#seqTable,
+QTableWidget#topicTable {
+    gridline-color: ${border_default};
+    border: none;
+}
+
+/* Server header band — a full-width chrome row matching the host
+   "Sources"/"Datasets" headers: title-bar tone behind the Server URL combo
+   and its flat icon buttons (Connect / Refresh / Cert). */
+QFrame#serverHeaderBand {
+    background-color: ${titlebar_background};
+}
+
+/* Sequence / Topic / Info column header bands wear the title-bar tone, just like
+   the LHS "Datasets" header band (same darker background, same 28px band height
+   set in the .ui). */
+QFrame#seqHeaderBand,
+QFrame#topicHeaderBand,
+QFrame#infoHeaderBand,
+QFrame#metadataFilterHeaderBand {
+    background-color: ${titlebar_background};
+}
+
+/* The Server URL dropdown + the Lua query-assist dropdowns (Key/Op/Value) are
+   pinned to 26px content (28px outer) instead of the global input_min_height
+   cap, so the URL combo fills its header band and the Lua combos match it. */
+QComboBox#comboUri,
+QComboBox#keyCombo,
+QComboBox#opCombo,
+QComboBox#valCombo {
+    min-height: 26px;
+    max-height: 26px;
+}
+
+/* DateRangePicker date fields (the calendar line edits) match the dropdown height. */
+QWidget#datePicker QLineEdit {
+    min-height: 26px;
+    max-height: 26px;
+}
+
+/* The calendar overlay's time-picker spin boxes + AM/PM combos match that same
+   dropdown height, so the time row doesn't read shorter than the date fields and
+   metadata-filter dropdowns. Scoped to the overlay (PickerOverlay) so it overrides
+   the global 18px input cap only here. */
+QWidget#PickerOverlay QSpinBox,
+QWidget#PickerOverlay QComboBox {
+    min-height: 26px;
+    max-height: 26px;
+}
+
+/* 1px divider under the Server header container, separating it from the body. */
+QFrame#serverSeparator,
+QFrame#rangeSeparator {
+    background-color: ${border_default};
+}
+
+/* The Sequence / Topic filter fields fill their chrome row like the URL dropdown:
+   the global QLineEdit rule caps inputs at input_min_height (a short box), so
+   pin these to the 28px chrome-row height. They are borderless (see the
+   lineEditFilter rule), so 28px content == 28px outer == the row. */
+QLineEdit#seqFilter,
+QLineEdit#topicFilter {
+    min-height: 28px;
+    max-height: 28px;
+}
+
+/* The band's icon buttons are flat QPushButtons (the dialog host only wires
+   QPushButton clicks). Drop the default 6px QPushButton padding so the icon
+   fills the button like the Sources QToolButtons do (the .ui sizes them to the
+   chrome icon metrics: 28px button / 24px icon at icon_size=24); flat=true in
+   the .ui already removes the surface + border, leaving the shared QPushButton
+   hover/pressed overlays. */
+QPushButton#buttonConnect,
+QPushButton#buttonCert,
+QPushButton#buttonSearchSeq,
+QPushButton#buttonSearchTopic,
+QPushButton#buttonReloadSeq,
+QPushButton#buttonReloadTopic,
+QPushButton#buttonAddClause,
+QPushButton#seqRegexToggle,
+QPushButton#topicRegexToggle {
+    padding: 0px;
 }
 
 /* PJ::ProgressBar — the rounded "Loading …" bar. Scoped to the subclass so

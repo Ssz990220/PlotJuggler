@@ -36,6 +36,7 @@
 #include <optional>
 #include <utility>
 
+#include "pj_widgets/Hatch.h"
 #include "pj_widgets/Scrollbar.h"
 #include "pj_widgets/SvgButton.h"
 #include "pj_widgets/ThemeColors.h"
@@ -282,10 +283,10 @@ QColor blendColor(const QColor& a, const QColor& b, double t) {
 // QSS-clobbered palette. Everything else is a blend of bg<->text so it adapts:
 // white bg + dark-grey hatch + dark numbers in light, the inverse in dark.
 struct TimelineColors {
-  QColor bg;            // rows + ruler background (QPalette::Window)
-  QColor ruler_data;    // subtle tint over the data (OR) span
-  QColor grid_line;     // faint full-height tick gridlines
-  QColor hatch_line;    // diagonal hatch over the empty (non-data) span
+  QColor bg;          // rows + ruler background (QPalette::Window)
+  QColor ruler_data;  // subtle tint over the data (OR) span
+  QColor grid_line;   // faint full-height tick gridlines
+  // (the empty-area diagonal hatch ink comes from the shared PJ::appHatchColor())
   QColor text;          // frame numbers + bar labels — "like any other text"
   QColor ruler_border;  // ruler bottom separator
   QColor bar_border;    // bar outline
@@ -299,7 +300,6 @@ TimelineColors timelineColors() {
       .bg = bg,
       .ruler_data = blendColor(bg, text, 0.06),
       .grid_line = blendColor(bg, text, 0.16),
-      .hatch_line = blendColor(bg, text, 0.30),
       .text = text,
       .ruler_border = blendColor(bg, text, 0.32),
       .bar_border = blendColor(bg, text, 0.55),
@@ -653,23 +653,29 @@ class TimelineBackgroundItem : public QGraphicsItem {
     return {};  // decorative; never hit-tested
   }
 
-  void paint(QPainter* painter, const QStyleOptionGraphicsItem* /*option*/, QWidget* /*widget*/) override {
+  void paint(QPainter* painter, const QStyleOptionGraphicsItem* /*option*/, QWidget* widget) override {
     const TimelineColors col = timelineColors();
     // 1) Solid theme background under everything (white in light theme).
     painter->fillRect(boundingRect(), col.bg);
 
-    // 2) Hatch the empty area (outside the data span) with diagonal lines; the
-    // whole timeline when there is no data.
+    // 2) Hatch the empty area (outside the data span) with the shared app hatch
+    // (PJ::drawHatch). Phased to this item's GLOBAL origin so its diagonal lines line
+    // up with every other widget that paints the hatch (the Mosaico RangeSlider, ...)
+    // — all are windows into one continuous hatch layer. Mapping item(0,0) through the
+    // painter's world transform and the viewport widget gives that global origin.
+    const QPointF hatch_origin =
+        widget != nullptr ? widget->mapToGlobal(painter->worldTransform().map(QPointF(0, 0))) : QPointF(0, 0);
+    const QColor hatch_ink = appHatchColor();
     if (data_max_ns_ <= data_min_ns_) {
-      drawHatch(painter, QRectF(0, 0, width_, height_), col.hatch_line);
+      PJ::drawHatch(*painter, QRectF(0, 0, width_, height_), hatch_origin, hatch_ink);
     } else {
       const double x_lo = TimelineScene::nsToPx(data_min_ns_, viewport_);
       const double x_hi = TimelineScene::nsToPx(data_max_ns_, viewport_);
       if (x_lo > 0.0) {
-        drawHatch(painter, QRectF(0, 0, x_lo, height_), col.hatch_line);
+        PJ::drawHatch(*painter, QRectF(0, 0, x_lo, height_), hatch_origin, hatch_ink);
       }
       if (x_hi < width_) {
-        drawHatch(painter, QRectF(x_hi, 0, width_ - x_hi, height_), col.hatch_line);
+        PJ::drawHatch(*painter, QRectF(x_hi, 0, width_ - x_hi, height_), hatch_origin, hatch_ink);
       }
     }
 
@@ -686,27 +692,6 @@ class TimelineBackgroundItem : public QGraphicsItem {
   }
 
  private:
-  // Evenly-spaced 1px diagonal "/" lines clipped to `rect` — the empty-area
-  // texture. Drawn directly (not a tiled brush) so the colour follows the theme.
-  static void drawHatch(QPainter* painter, const QRectF& rect, const QColor& color) {
-    if (rect.width() <= 0.0 || rect.height() <= 0.0) {
-      return;
-    }
-    painter->save();
-    painter->setClipRect(rect);
-    painter->setRenderHint(QPainter::Antialiasing, true);
-    painter->setPen(QPen(color, 1.0));
-    constexpr double kSpacing = 14.0;
-    const double h = rect.height();
-    const double start_x = rect.left() - h;
-    const int count = static_cast<int>((rect.width() + h) / kSpacing) + 1;
-    for (int i = 0; i < count; ++i) {
-      const double xs = start_x + (i * kSpacing);
-      painter->drawLine(QLineF(xs, rect.bottom(), xs + h, rect.top()));
-    }
-    painter->restore();
-  }
-
   double width_ = 0.0;
   double height_ = 0.0;
   TimelineViewport viewport_;

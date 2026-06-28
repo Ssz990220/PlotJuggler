@@ -79,6 +79,14 @@ class PanelEngine : public QObject {
   };
   [[nodiscard]] Stats stats() const;
 
+ protected:
+  /// Installed on the panel root. On an app theme change (StyleChange /
+  /// ApplicationPaletteChange) it re-applies the panel's last full widget-data,
+  /// which re-themes host-themed icons (setButtonIconNamed → loadSvg) for the new
+  /// theme. Those icons are applied once and then diffed away, so they would not
+  /// re-tint on their own.
+  bool eventFilter(QObject* watched, QEvent* event) override;
+
  private:
   struct Impl;
   std::unique_ptr<Impl> impl_;

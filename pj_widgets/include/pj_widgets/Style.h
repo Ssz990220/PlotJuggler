@@ -2,15 +2,18 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 
+#include <QIcon>
 #include <QProxyStyle>
 #include <QSize>
 #include <QStyleOption>
 #include <algorithm>
 
+#include "pj_widgets/SvgUtil.h"  // loadSvg, currentTheme
+
 namespace PJ {
 
-// QProxyStyle layered over Fusion to suppress two Qt-default Linux
-// behaviours that clash with the app's chrome:
+// QProxyStyle layered over Fusion to adjust a few Qt-default behaviours
+// that clash with the app's chrome:
 //   - SH_DialogButtonBox_ButtonsHaveIcons: stops the platform from
 //     stamping its own theme glyphs onto Ok / Cancel / Save / Yes / No
 //     inside any QDialogButtonBox still used by plugin-provided dialogs
@@ -18,6 +21,10 @@ namespace PJ {
 //   - SH_UnderlineShortcut: turns off the underline-the-mnemonic
 //     letter ("&Save" → "S" with an underline) that bleeds through on
 //     menus and dialog buttons.
+//   - SP_LineEditClearButton: swaps Qt's default clear-field glyph (a
+//     filled dark disc with a white X on Fusion) for the app's own
+//     close X, so a QLineEdit's "clear" affordance matches the close X
+//     used everywhere else (tabs, dialogs).
 class Style : public QProxyStyle {
   Q_OBJECT
  public:
@@ -30,6 +37,23 @@ class Style : public QProxyStyle {
       return 0;
     }
     return QProxyStyle::styleHint(hint, option, widget, return_data);
+  }
+
+  // Replace Qt's default QLineEdit clear button (a filled dark disc with a white
+  // glyph on Fusion) with the app's own close X (resources/svg/close-button.svg,
+  // the same glyph used for tab / dialog close), so a filter field's "clear" X
+  // matches the rest of the chrome. Honoured even while the app stylesheet is
+  // active: QStyleSheetStyle forwards standardIcon() to this base style when no QSS
+  // rule supplies the icon (verified). loadSvg tints the glyph to the active theme
+  // ink and caches it; QLineEdit caches the returned icon, so a live theme switch
+  // keeps the prior tint until the field next rebuilds the button.
+  QIcon standardIcon(
+      StandardPixmap standard_icon, const QStyleOption* option = nullptr,
+      const QWidget* widget = nullptr) const override {
+    if (standard_icon == SP_LineEditClearButton) {
+      return QIcon(loadSvg(QStringLiteral(":/resources/svg/close-button.svg"), currentTheme()));
+    }
+    return QProxyStyle::standardIcon(standard_icon, option, widget);
   }
 
   // FALLBACK ONLY. Compact input height for when NO stylesheet is active (e.g.

@@ -4,9 +4,11 @@
 // Two-handle range slider implementation, wrapped in namespace PJ.
 // See RangeSlider.h.
 
+#include <pj_widgets/Hatch.h>
 #include <pj_widgets/RangeSlider.h>
 
 #include <QDebug>
+#include <QRegion>
 #include <algorithm>
 #include <limits>
 
@@ -52,8 +54,7 @@ void RangeSlider::paintEvent(QPaintEvent* a_event) {
   // Groove geometry: a full-height rectangular track (timeSlider shape).
   QRectF background_rect;
   if (orientation_ == Qt::Horizontal) {
-    background_rect =
-        QRectF(kScLeftRightMargin, (height() - kScTrackHeight) / 2.0, width() - kScLeftRightMargin * 2, kScTrackHeight);
+    background_rect = QRectF(kScLeftRightMargin, trackTop(), width() - kScLeftRightMargin * 2, kScTrackHeight);
   } else {
     background_rect =
         QRectF((width() - kScTrackHeight) / 2.0, kScLeftRightMargin, kScTrackHeight, height() - kScLeftRightMargin * 2);
@@ -79,15 +80,31 @@ void RangeSlider::paintEvent(QPaintEvent* a_event) {
   painter.setBrush(enabled ? kSelection : kDisabledInk);
   painter.drawRect(selected_rect);
 
+  // 1b. "No data" texture: the shared app hatch (PJ::drawNoDataHatch), over the UNSELECTED
+  //     part of the TRACK (background_rect minus the [lower, upper] fill), in both enabled +
+  //     disabled states. Phased to this widget's GLOBAL origin, so the diagonal lines line up
+  //     with every other widget that paints the hatch (the Timeline, ...). CONTAINED to the
+  //     track height: the hatch reads as one horizontal strip flanking the selection and never
+  //     bleeds into the floating-label rows above/below the track. Clipped to the unselected
+  //     region, so the lines stay STATIC as a handle drags (only the clip moves).
+  {
+    QRegion unselected(background_rect.toAlignedRect());
+    unselected -= selected_rect.toAlignedRect();  // handles, drawn later, cover their own width on top
+    painter.save();
+    painter.setClipRegion(unselected);
+    // Backdrop + hatch in ONE shared call (drawNoDataHatch), so the unselected track
+    // composites the same ink over the same QPalette::Window backdrop the Timeline uses.
+    // Without the backdrop fill the bare groove let the white dialog show through, giving
+    // the identical ink ~26% more contrast (255 vs 238 backdrop) and a "busier" read.
+    drawNoDataHatch(painter, background_rect, mapToGlobal(QPointF(0, 0)), enabled);
+    painter.restore();
+  }
+
   // 2. Groove outline — transparent body + 1px border (timeSlider groove:
   //    widget_background is transparent, border = border_default, square corners).
   painter.setPen(QPen(kGrooveBorder, 1));
   painter.setBrush(Qt::NoBrush);
   painter.drawRect(background_rect.adjusted(0.5, 0.5, -0.5, -0.5));
-
-  if (show_ticks_) {
-    drawTicks(painter, background_rect);
-  }
 
   if (!markers_.empty()) {
     drawMarkers(painter, background_rect);
@@ -127,7 +144,7 @@ QRectF RangeSlider::handleRect(int a_value) const {
   // Thin grip spanning the full track height (timeSlider handle: 6px wide,
   // groove-tall), centered across the short axis.
   if (orientation_ == Qt::Horizontal) {
-    return QRect(a_value, (height() - kScTrackHeight) / 2, kScHandleWidth, kScTrackHeight);
+    return QRect(a_value, trackTop(), kScHandleWidth, kScTrackHeight);
   } else {
     return QRect((width() - kScTrackHeight) / 2, a_value, kScTrackHeight, kScHandleWidth);
   }
@@ -283,11 +300,12 @@ void RangeSlider::leaveEvent(QEvent* e) {
 }
 
 QSize RangeSlider::minimumSizeHint() const {
+  // Track height (== the playback scrubber) + ONE label row above it for the
+  // floating handle labels. No reserve below the track — that was wasted padding.
   int h = kScTrackHeight;
   if (floating_labels_) {
     QFontMetrics fm(font());
-    int label_row = fm.height() + 6 + 4;  // label_height + gap
-    h += label_row * 2;
+    h += fm.height() + 6 + 4;  // label_height + gap (one row, matches trackTop)
   }
   return QSize(kScHandleWidth * 2 + kScLeftRightMargin * 2, h);
 }
@@ -368,6 +386,15 @@ int RangeSlider::validLength() const {
   return len - kScLeftRightMargin * 2 - kScHandleWidth * (type_.testFlag(kDoubleHandles) ? 2 : 1);
 }
 
+int RangeSlider::trackTop() const {
+  if (orientation_ != Qt::Horizontal || !floating_labels_) {
+    return static_cast<int>((height() - kScTrackHeight) / 2);  // centered (no label row)
+  }
+  // One label row above the track (matches minimumSizeHint). No reserve below.
+  const QFontMetrics fm(font());
+  return fm.height() + 6 + 4;
+}
+
 void RangeSlider::setRange(int a_minimum, int a_maximum) {
   setMinimum(a_minimum);
   setMaximum(a_maximum);
@@ -376,52 +403,6 @@ void RangeSlider::setRange(int a_minimum, int a_maximum) {
 void RangeSlider::setOptions(Options t) {
   type_ = t;
   update();
-}
-
-void RangeSlider::setMinTickPixelSpacing(int px) {
-  min_tick_px_ = px;
-  update();
-}
-void RangeSlider::setShowTickLabels(bool on) {
-  show_tick_labels_ = on;
-  update();
-}
-void RangeSlider::setShowTicks(bool on) {
-  show_ticks_ = on;
-  update();
-}
-bool RangeSlider::showTicks() const {
-  return show_ticks_;
-}
-
-int RangeSlider::niceStep(int raw) const {
-  if (raw <= 1) {
-    return 1;
-  }
-  int p = 1;
-  while (p * 10 <= raw) {
-    p *= 10;
-  }
-  int d = raw / p;
-  int step = 1;
-  if (d <= 1) {
-    step = 1;
-  } else if (d <= 2) {
-    step = 2;
-  } else if (d <= 5) {
-    step = 5;
-  } else {
-    step = 10;
-  }
-  return step * p;
-}
-
-int RangeSlider::firstTick(int min, int step) const {
-  if (step <= 0) {
-    return min;
-  }
-  int r = min % step;
-  return (r == 0) ? min : (min + (step - r));
 }
 
 void RangeSlider::setMarkers(std::vector<Marker> markers) {
@@ -476,59 +457,6 @@ void RangeSlider::drawMarkers(QPainter& painter, const QRectF& background_rect) 
     if (!m.label.isEmpty() && box_w >= fm.horizontalAdvance(m.label) + 4) {
       painter.setPen(kMarkerText);
       painter.drawText(box, Qt::AlignCenter, m.label);
-    }
-  }
-}
-
-void RangeSlider::drawTicks(QPainter& painter, const QRectF& background_rect) {
-  if (interval_ <= 0) {
-    return;
-  }
-  int px_len = validLength();
-  if (px_len <= 0) {
-    return;
-  }
-  int approx_count = std::max(2, px_len / std::max(10, min_tick_px_));
-  int ideal_step = std::max(1, (maximum_ - minimum_) / approx_count);
-  int step = niceStep(ideal_step);
-  int start = firstTick(minimum_, step);
-
-  QFontMetrics fm(painter.font());
-  int major_len = 10;
-  int minor_len = 6;
-  int minor_step = step / 2;
-  if (minor_step < 1) {
-    minor_step = 1;
-  }
-
-  auto value_to_pos = [&](int value) {
-    const float percentage = (value - minimum_) * 1.0f / interval_;
-    const int offset = kScLeftRightMargin + (type_.testFlag(kDoubleHandles) ? kScHandleWidth : 0);
-    const int base = static_cast<int>(percentage * px_len) + offset;
-    return base;
-  };
-
-  painter.setPen(Qt::gray);
-
-  for (int v = start; v <= maximum_; v += minor_step) {
-    bool major = ((v - start) % step) == 0;
-    int pos = value_to_pos(v);
-
-    if (orientation_ == Qt::Horizontal) {
-      int y = background_rect.bottom();
-      painter.drawLine(pos, y, pos, y + (major ? major_len : minor_len));
-      if (major && show_tick_labels_) {
-        QString txt = QString::number(v);
-        int w = fm.horizontalAdvance(txt);
-        painter.drawText(pos - w / 2, y + major_len + fm.ascent() + 2, txt);
-      }
-    } else {
-      int x = background_rect.right();
-      painter.drawLine(x, pos, x + (major ? major_len : minor_len), pos);
-      if (major && show_tick_labels_) {
-        QString txt = QString::number(v);
-        painter.drawText(x + major_len + 4, pos + fm.ascent() / 2, txt);
-      }
     }
   }
 }
@@ -639,7 +567,7 @@ void RangeSlider::drawFloatingLabels(QPainter& painter) {
   QFontMetrics fm(label_font);
 
   const int label_height = fm.height() + 6;
-  const int handle_top = (height() - kScTrackHeight) / 2;
+  const int handle_top = trackTop();
   const int label_y = handle_top - label_height - 2;
 
   auto draw_label = [&](const QRectF& handle_rect, const QString& text) -> QRect {
@@ -665,25 +593,32 @@ void RangeSlider::drawFloatingLabels(QPainter& painter) {
     upper_label_rect_ = draw_label(secondHandleRect(), formatHandleValue(static_cast<double>(upper_value_)));
   }
 
+  // Selected-duration chip sits ON the track, centered between the handles (the
+  // start/end labels above float; the duration reads inside the selected fill).
+  // Hidden when the handles are too close to fit it.
   if (center_label_formatter_) {
     QString center_text = center_label_formatter_(static_cast<double>(lower_value_), static_cast<double>(upper_value_));
     if (!center_text.isEmpty()) {
-      QRectF left_rect = firstHandleRect();
-      QRectF right_rect = secondHandleRect();
-      double center_x = (left_rect.center().x() + right_rect.center().x()) / 2.0;
-      int text_width = fm.horizontalAdvance(center_text) + 8;
-      int cx = static_cast<int>(center_x) - text_width / 2;
-      cx = std::max(0, std::min(cx, width() - text_width));
-      const int handle_bottom = (height() + kScTrackHeight) / 2;
-      int center_label_y = handle_bottom + 2;
-      QRect rect(cx, center_label_y, text_width, label_height);
-      // Bordered duration chip: 1px PJLightBlue outline around the blue fill.
-      painter.setPen(QPen(QColor(0xC2, 0xDC, 0xFF), 1));
-      painter.setBrush(QColor(30, 80, 160, 220));
-      painter.drawRoundedRect(rect, 4, 4);
-      painter.setPen(Qt::white);
-      painter.drawText(rect, Qt::AlignCenter, center_text);
-      center_label_rect_ = rect;
+      const QRectF left_rect = firstHandleRect();
+      const QRectF right_rect = secondHandleRect();
+      const double gap_left = left_rect.right();
+      const double gap_right = right_rect.left();
+      const int text_width = fm.horizontalAdvance(center_text) + 16;
+      if (gap_right - gap_left >= text_width + 6) {
+        const double cx = (gap_left + gap_right) / 2.0;
+        const int chip_h = fm.height() + 4;
+        const double track_top = trackTop();
+        QRect rect(
+            static_cast<int>(cx - text_width / 2.0), static_cast<int>(track_top + (kScTrackHeight - chip_h) / 2.0),
+            text_width, chip_h);
+        // Bordered duration chip: 1px PJLightBlue outline around the blue fill.
+        painter.setPen(QPen(QColor(0xC2, 0xDC, 0xFF), 1));
+        painter.setBrush(QColor(30, 80, 160, 230));
+        painter.drawRoundedRect(rect, 4, 4);
+        painter.setPen(Qt::white);
+        painter.drawText(rect, Qt::AlignCenter, center_text);
+        center_label_rect_ = rect;
+      }
     }
   }
 }

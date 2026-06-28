@@ -69,6 +69,7 @@ ICON_MAPPING: dict[str, tuple[str, dict[str, str]]] = {
     "alarm-bell-active.svg":               ("Notifications Active",       {}),
     "apps_box.svg":                        ("Apps",                       {}),
     "archive.svg":                         ("Archive",                    {}),
+    "arrow_right_alt.svg":                 ("Arrow Right Alt",            {}),
     "calendar_month.svg":                  ("Calendar Month",             {}),
     "cancel.svg":                          ("Cancel",                     {}),
     "cast.svg":                            ("Cast",                       {}),

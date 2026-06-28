@@ -37,9 +37,6 @@ class RangeSlider : public QWidget {
   void setRange(int a_minimum, int a_maximum);
 
   void setOptions(Options t);
-  void setMinTickPixelSpacing(int px);
-  void setShowTickLabels(bool on);
-  void setShowTicks(bool on);
 
   // Boundary segments: one box per marker covering [start, end] (in slider
   // units) drawn at its TRUE extent — so disjoint selections leave blank slider
@@ -62,8 +59,6 @@ class RangeSlider : public QWidget {
   // Custom formatters for floating labels (default: decimal number).
   void setLabelFormatter(std::function<QString(double)> formatter);
   void setCenterLabelFormatter(std::function<QString(double, double)> formatter);
-
-  bool showTicks() const;
 
   void setRangeReal(double min_v, double max_v, int decimals);
   void setLowerValueReal(double v);
@@ -101,6 +96,12 @@ class RangeSlider : public QWidget {
   Q_DISABLE_COPY(RangeSlider)
   int validLength() const;
 
+  // Y of the track's top (horizontal orientation). With floating labels the
+  // per-handle labels occupy a row ABOVE the track, so the (fixed-height) track
+  // sits just below that row; without them the track is vertically centered. The
+  // track height itself stays kScTrackHeight — same as the playback scrubber.
+  int trackTop() const;
+
   int minimum_ = 0;
   int maximum_ = 100;
   int lower_value_ = 0;
@@ -117,15 +118,8 @@ class RangeSlider : public QWidget {
   Qt::Orientation orientation_ = Qt::Horizontal;
   Options type_ = kDoubleHandles;
 
-  int min_tick_px_ = 45;
-  bool show_ticks_ = true;
-  bool show_tick_labels_ = true;
-
-  void drawTicks(QPainter& painter, const QRectF& background_rect);
   void drawMarkers(QPainter& painter, const QRectF& background_rect);
   std::vector<Marker> markers_;
-  int niceStep(int raw) const;
-  int firstTick(int min, int step) const;
 
   bool show_handle_value_tooltip_ = true;
   bool tooltip_visible_ = false;

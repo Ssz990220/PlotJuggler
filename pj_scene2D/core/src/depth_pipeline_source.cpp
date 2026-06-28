@@ -78,7 +78,17 @@ struct DepthFormat {
     depth.width = img.width;
     depth.height = img.height;
     depth.encoding = img.encoding;
-    depth.data = img.data;
+    // Some transports (Mosaico, serialization_format=image) losslessly PNG/JPEG-wrap
+    // the raw depth buffer — e.g. an 8-bit grayscale PNG of width=stride. Recover the
+    // flat bytes before aliasing; otherwise the compressed container is read as raw
+    // depth and the frame is all-black. A non-container payload returns nullopt and we
+    // alias the original bytes (the prior raw behaviour).
+    if (auto flat = recoverContainerRawSamples(img.data.data(), img.data.size())) {
+      scratch = std::move(*flat);
+      depth.data = Span<const uint8_t>(scratch->data(), scratch->size());
+    } else {
+      depth.data = img.data;
+    }
     return depth;
   }
   if (img.encoding == "compressedDepth") {

@@ -16,11 +16,18 @@
 #include <QButtonGroup>
 #include <QCheckBox>
 #include <QComboBox>
+#include <QFrame>
 #include <QGridLayout>
 #include <QLayout>
+#include <QPainter>
+#include <QPen>
 #include <QPointer>
 #include <QRadioButton>
 #include <QSignalBlocker>
+#include <QStyle>
+#include <QStyleOptionViewItem>
+#include <QStyledItemDelegate>
+#include <QTableView>
 #include <QVariant>
 #include <algorithm>
 
@@ -451,6 +458,80 @@ static bool tryAdaptCheckBox(QCheckBox* checkbox) {
   return true;
 }
 
+// --- QTableView interior-only cell grid --------------------------------------
+
+constexpr const char* kInteriorGridProperty = "pjInteriorGrid";                // opt-in, set in the .ui
+constexpr const char* kInteriorGridAppliedProperty = "pjInteriorGridApplied";  // idempotency marker
+
+// Item delegate for an interior-grid table. Draws:
+//  - vertical dividers: the right edge of every cell EXCEPT the last visible
+//    column, so the table has no outer-right line that would double the column
+//    splitter / scrollbar chrome on its right;
+//  - horizontal dividers: the bottom edge of EVERY row INCLUDING the last, so the
+//    bottom of the data is closed and the final row reads like the rest (a short
+//    table has empty space, not chrome, below it, so it needs its own bottom line).
+// Paired with setShowGrid(false): yields the internal grid plus a clean bottom rule,
+// without the native grid's outer-right edge line.
+//
+// Why this exists: QTableView::paintEvent always draws the trailing
+// column/row edge (no last-line special-case), so with a stretched first column
+// the native grid's right edge lands flush on the surrounding splitter/scrollbar
+// chrome and reads as a doubled border. The grid is painted AFTER all items, so
+// a delegate cannot erase it — the only robust route is to turn the native grid
+// off and paint the interior lines ourselves. QSS can't do this either (Qt drops
+// per-::item left/right borders and tints every column edge in the selection
+// color — the spurious blue line this replaces).
+//
+// The divider color is fetched the exact way QTableView picks the native grid
+// color (styleHint SH_Table_GridLineColor), so it tracks the QSS `gridline-color`
+// token and the active theme with no hardcoded color and no theme-switch wiring.
+class InteriorGridDelegate : public QStyledItemDelegate {
+ public:
+  using QStyledItemDelegate::QStyledItemDelegate;
+
+  void paint(QPainter* painter, const QStyleOptionViewItem& option, const QModelIndex& index) const override {
+    QStyledItemDelegate::paint(painter, option, index);  // content + selection first
+
+    const auto* view = qobject_cast<const QTableView*>(option.widget);
+    if (view == nullptr) {
+      return;
+    }
+    const int rgb = view->style()->styleHint(QStyle::SH_Table_GridLineColor, &option, view);
+    QPen pen(QColor::fromRgb(static_cast<QRgb>(rgb)));
+    pen.setCosmetic(true);  // exactly one device pixel, DPI-independent
+    pen.setWidth(0);
+
+    painter->save();
+    painter->setPen(pen);
+    const QRect r = option.rect;
+    // Vertical divider on the cell's right edge — only between columns, never on the
+    // last visible column (that outer-right line would double the column splitter /
+    // scrollbar chrome on the table's right).
+    if (hasVisibleColumnAfter(view, index)) {
+      painter->drawLine(r.topRight(), r.bottomRight());
+    }
+    // Horizontal divider on the cell's bottom edge — under EVERY row, including the
+    // last, so the bottom of the data is closed and the final row reads like the rest.
+    painter->drawLine(r.bottomLeft(), r.bottomRight());
+    painter->restore();
+  }
+
+ private:
+  // True when a visible column exists after `index`'s column, so a divider on that
+  // cell's right edge is interior (not the table's outer-right edge). Skips hidden
+  // columns so a hidden trailing column can't leave a stray outer-right line.
+  static bool hasVisibleColumnAfter(const QTableView* view, const QModelIndex& index) {
+    const QAbstractItemModel* model = view->model();
+    const int count = model->columnCount(index.parent());
+    for (int c = index.column() + 1; c < count; ++c) {
+      if (!view->isColumnHidden(c)) {
+        return true;
+      }
+    }
+    return false;
+  }
+};
+
 }  // namespace
 
 void adaptRadioButtonPairs(QWidget* root) {
@@ -554,11 +635,31 @@ void adaptScrollAreas(QWidget* root) {
   }
 }
 
+void adaptGridTables(QWidget* root) {
+  if (root == nullptr) {
+    return;
+  }
+  // Opt-in via a dynamic bool property set in the plugin .ui — the host hardcodes
+  // no table name, so this stays domain-neutral. QTableWidget is a QTableView, so
+  // findChildren<QTableView*> covers both. Idempotent via the marker property.
+  const QList<QTableView*> tables = root->findChildren<QTableView*>();
+  for (QTableView* table : tables) {
+    if (!table->property(kInteriorGridProperty).toBool() || table->property(kInteriorGridAppliedProperty).toBool()) {
+      continue;
+    }
+    table->setShowGrid(false);                                // native grid off (kills its outer edges)
+    table->setFrameShape(QFrame::NoFrame);                    // no outer frame either
+    table->setItemDelegate(new InteriorGridDelegate(table));  // draw interior dividers only
+    table->setProperty(kInteriorGridAppliedProperty, true);
+  }
+}
+
 void adaptStyledWidgets(QWidget* root) {
   adaptRadioButtonPairs(root);
   adaptCheckBoxes(root);
   adaptComboBoxes(root);
   adaptScrollAreas(root);
+  adaptGridTables(root);
 }
 
 void tryAdaptStyledWidget(QWidget* w) {

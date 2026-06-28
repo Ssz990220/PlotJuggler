@@ -312,6 +312,37 @@ std::optional<PJ::sdk::DepthImage> DepthCloudLayer::toDepthView(const Image& ima
     view.width = image.width;
     view.height = image.height;
     view.encoding = image.encoding;
+    // Some transports (Mosaico, serialization_format=image) losslessly PNG/JPEG-wrap
+    // the raw depth buffer as an 8-bit grayscale image of width=stride. Recover the
+    // flat bytes via QImage before aliasing — otherwise the compressed container is
+    // read as raw depth and the cloud is empty/garbage (mirrors the 2D depth path's
+    // recoverContainerRawSamples). A non-container payload aliases the raw bytes.
+    const uchar* d = image.data.data();
+    const size_t n = image.data.size();
+    const bool is_png = n >= 8 && d[0] == 0x89 && d[1] == 'P' && d[2] == 'N' && d[3] == 'G' && d[4] == 0x0D &&
+                        d[5] == 0x0A && d[6] == 0x1A && d[7] == 0x0A;
+    const bool is_jpeg = n >= 3 && d[0] == 0xFF && d[1] == 0xD8 && d[2] == 0xFF;
+    QImage wrapped;
+    if ((is_png || is_jpeg) && wrapped.loadFromData(d, static_cast<int>(n)) && wrapped.width() > 0 &&
+        wrapped.height() > 0) {
+      const int h = wrapped.height();
+      const size_t wz = static_cast<size_t>(wrapped.width());
+      // Mono16 already IS the flat 2-byte-per-sample buffer; anything else is
+      // collapsed to one luma byte per sample (input is gray-expanded, so luma
+      // == the original byte). Pack scanline-by-scanline (QImage rows are padded).
+      size_t bytes_per_sample = 2U;
+      if (wrapped.format() != QImage::Format_Grayscale16) {
+        wrapped = wrapped.convertToFormat(QImage::Format_Grayscale8);
+        bytes_per_sample = 1U;
+      }
+      const size_t row_bytes = wz * bytes_per_sample;
+      scratch.resize(row_bytes * static_cast<size_t>(h));
+      for (int y = 0; y < h; ++y) {
+        std::memcpy(scratch.data() + static_cast<size_t>(y) * row_bytes, wrapped.constScanLine(y), row_bytes);
+      }
+      view.data = PJ::Span<const uint8_t>(scratch.data(), scratch.size());
+      return view;
+    }
     view.data = image.data;  // zero-copy view; the image's anchor keeps it alive
     return view;
   }

@@ -1,12 +1,16 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MIT
+#include <pj_widgets/SvgUtil.h>  // currentTheme()
+
 #include <QBuffer>
 #include <QCheckBox>
 #include <QComboBox>
 #include <QDialog>
 #include <QDialogButtonBox>
+#include <QEvent>
 #include <QLineEdit>
 #include <QPointer>
+#include <QString>
 #include <QTimer>
 #include <QUiLoader>
 #include <QVBoxLayout>
@@ -34,6 +38,9 @@ struct PanelEngine::Impl {
   std::function<void(std::string)> close_cb;
   Stats stats;
   bool closed = false;
+  // Theme the panel's icons were last applied for; a change triggers a full
+  // re-apply (see PanelEngine::eventFilter).
+  QString applied_theme;
 
   // Same diff-and-apply cycle as DialogEngine, minus the QDialog::accept hook.
   // Returns the close-reason if the plugin requested close on this tick.
@@ -222,6 +229,12 @@ QWidget* PanelEngine::openPanel() {
     }
   }
 
+  // Watch the root for app theme changes: host-themed icons are applied once and
+  // then diffed away, so a live theme switch needs a re-apply to re-tint them
+  // (see eventFilter). Seed the baseline with the theme just used above.
+  impl_->applied_theme = currentTheme();
+  loaded->installEventFilter(this);
+
   // 3. Wire widget signals to forward events into the plugin.
   connectWidgetSignals(loaded, [this](const std::string& name, const std::string& event_json) {
     if (impl_->closed) {
@@ -337,6 +350,31 @@ void PanelEngine::onCloseRequested(std::function<void(std::string)> cb) {
 
 PanelEngine::Stats PanelEngine::stats() const {
   return impl_->stats;
+}
+
+bool PanelEngine::eventFilter(QObject* watched, QEvent* event) {
+  // A global stylesheet (theme) change re-polishes every widget with a
+  // StyleChange. Host-themed icons (setButtonIconNamed → loadSvg) are applied
+  // once and then diffed away, so they won't re-tint on their own. Re-apply the
+  // panel's last full widget-data to re-theme them through the normal bind path.
+  // Gated on the theme actually changing so unrelated StyleChange/polish events
+  // (and the initial show) don't trigger a redundant full re-apply.
+  //
+  // This re-applies the FULL last widget-data (not a diff), so an in-flight user
+  // edit the plugin hasn't echoed back into widget_data yet is reset to the
+  // plugin's last-known value. That's a non-issue under the controlled-component
+  // model (the plugin echoes user input back, so prev_raw matches the widget and
+  // the re-apply is a no-op) and a theme toggle is rare and deliberate — cheap
+  // enough that re-theming via the normal path beats tracking per-icon state.
+  if (event->type() == QEvent::StyleChange || event->type() == QEvent::ApplicationPaletteChange) {
+    const QString theme = currentTheme();
+    if (theme != impl_->applied_theme && impl_->root != nullptr && !impl_->prev_raw.empty()) {
+      impl_->applied_theme = theme;
+      WidgetDataView view(impl_->prev_raw);
+      applyWidgetData(impl_->root, view);
+    }
+  }
+  return QObject::eventFilter(watched, event);
 }
 
 }  // namespace PJ

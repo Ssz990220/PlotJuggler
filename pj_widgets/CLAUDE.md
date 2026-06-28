@@ -51,6 +51,7 @@ Helpers (header-only or small):
 | Header | Role |
 |---|---|
 | `ChromeMetrics.h` | Shared icon/layout spacing constants for dialog chrome, broadcast from MainWindow. Defaults `{icon_size=20, icon_padding=4, layout_padding=0, layout_spacing=0}`. |
+| `Hatch.h` | The single app-wide "no data" diagonal hatch: `kHatchSpacing`, `appHatchColor()` (theme ink from `QGuiApplication::palette()`), and `drawHatch(painter, rect, global_origin, color)`. Phasing every caller to the same global grid (`X+Y ≡ 0 mod spacing`, via `global_origin = widget->mapToGlobal({0,0})`) makes all hatches **continuous** — windows into one shared layer, not just same-spacing. Used by `Timeline` (empty span) and `RangeSlider` (unselected track). |
 | `Colormap.h` | Shared scientific colormaps (turbo/viridis/plasma/grayscale): the `Colormap` enum, `colorFor()`, `buildColormapLut()` (a CPU RGBA8 LUT for LUT-sampling GPU backends — the 2D depth shader) and `colormapGlsl()` (the *same* polynomials as GLSL, injected into in-shader backends — the 3D pointcloud pass). One source of truth so a scalar maps to the same colour in the 2D and 3D views. Qt-free / no `pj_base` (returns a plain `ColormapRgb`, not `sdk::ColorRGBA`). |
 | `Style.h` | Common style accessors. |
 | `SvgUtil.h` | Helpers to load and recolor SVG resources. |

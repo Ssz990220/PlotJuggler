@@ -19,8 +19,8 @@
 #include "pj_plugins/sdk/message_parser_plugin_base.hpp"
 #include "pj_runtime/SessionManager.h"
 #include "pj_scene3d_core/tf/transform.h"
-#include "pj_scene3d_widgets/parse_locked.h"
-#include "pj_scene3d_widgets/render_pass.h"  // ViewParams, FrameContext
+#include "pj_scene3d_widgets/render_pass.h"     // ViewParams, FrameContext
+#include "pj_scene3d_widgets/resolve_object.h"  // resolveObject, hasCanonical3DCodec
 #include "pj_widgets/ColorPickerWidget.h"
 #include "pj_widgets/DoubleScrubber.h"
 #include "pj_widgets/ToggleSwitch.h"
@@ -102,8 +102,12 @@ bool PosesInFrameLayer::attach(const PJ::SceneLayerContext& ctx) {
     return false;
   }
   ctx_ = scene3d_ctx;
-  if (!scene3d_ctx.session->parserBindingForObjectTopic(topic_id_)) {
-    qCWarning(lcPoses) << "attach: no parser for poses topic" << topic_id_.id;
+  // Accept a parser-backed topic OR a parser-less canonical PosesInFrame topic
+  // (a data-source/toolbox that pushed serialized canonical poses, decoded
+  // host-side by resolveObject()).
+  if (!scene3d_ctx.session->parserBindingForObjectTopic(topic_id_) &&
+      !hasCanonical3DCodec(PJ::sdk::BuiltinObjectType::kPosesInFrame)) {
+    qCWarning(lcPoses) << "attach: no parser and no canonical codec for poses topic" << topic_id_.id;
     return false;
   }
   resetReplayState();
@@ -146,10 +150,7 @@ bool PosesInFrameLayer::bootstrap() {
     return false;
   }
   const auto binding = ctx_.session->parserBindingForObjectTopic(topic_id_);
-  if (!binding) {
-    return false;
-  }
-  auto obj = parseLocked(binding, first->timestamp, first->payload);
+  auto obj = resolveObject(binding, PJ::sdk::BuiltinObjectType::kPosesInFrame, first->timestamp, first->payload);
   if (!obj.has_value()) {
     qCWarning(lcPoses) << "bootstrap: parseObject failed:" << QString::fromStdString(obj.error());
     return false;
@@ -183,10 +184,7 @@ void PosesInFrameLayer::renderAt(int64_t time_ns) {
   }
   // Per-use binding fetch (never cached) — a reload re-registers the parser slot.
   const auto binding = ctx_.session->parserBindingForObjectTopic(topic_id_);
-  if (!binding) {
-    return;
-  }
-  auto obj = parseLocked(binding, entry->timestamp, entry->payload);
+  auto obj = resolveObject(binding, PJ::sdk::BuiltinObjectType::kPosesInFrame, entry->timestamp, entry->payload);
   if (!obj.has_value()) {
     return;
   }

@@ -14,7 +14,6 @@
 #include <QDateTime>
 #include <QDialogButtonBox>
 #include <QDoubleSpinBox>
-#include <QFont>
 #include <QGridLayout>
 #include <QGroupBox>
 #include <QHeaderView>
@@ -67,6 +66,12 @@ QString resolveNamedIconPath(std::string_view icon_name) {
   }
   if (icon_name == "refresh") {
     return QStringLiteral(":/resources/svg/refresh.svg");
+  }
+  if (icon_name == "search") {
+    return QStringLiteral(":/resources/svg/search_light.svg");
+  }
+  if (icon_name == "add") {
+    return QStringLiteral(":/resources/svg/add.svg");
   }
   return {};
 }
@@ -162,19 +167,21 @@ static bool tableMatchesHeaders(const QTableWidget* tw, const QStringList& heade
 }
 
 // Size a topic/curve table the way it reads best: the first column stretches to
-// fill the viewport (no dead grey space to the right) while every other column
-// hugs its content. WA_Hover lets the QSS `QHeaderView::section:hover` divider
-// tint fire; the header font is forced non-bold (QTableWidget defaults it bold,
-// unlike QTreeWidget) so it reads consistently with CurveTreeView.
+// fill the viewport (no dead grey space to the right) while every other column is
+// a fixed, user-draggable width. WA_Hover lets the QSS `QHeaderView::section:hover`
+// divider tint fire; header weight is left to the app stylesheet (the global
+// `QHeaderView::section { font-weight: normal }` rule), which reads consistently
+// with CurveTreeView — a widget-side setFont would be ignored while a stylesheet
+// is active anyway.
 //
-// Stretch + ResizeToContents are persistent live modes (Qt re-measures as rows
-// arrive), so they only need to be set once. Guarded by a dynamic property and a
-// column-count check so it's safe to call on every widget_data delivery — it
-// configures the first time the table actually has columns and no-ops after.
-// This is deliberately NOT gated on the header *labels* changing: dialogs whose
-// .ui predefines column headers (e.g. MCAP's tableWidget) match the plugin's
-// setTableHeaders() verbatim, so a label-change gate would skip them entirely
-// and leave the .ui's default Interactive sizing — the very bug this fixes.
+// The resize modes are persistent (set once and kept), so this is guarded by a
+// dynamic property and a column-count check: it's safe to call on every
+// widget_data delivery — it configures the first time the table actually has
+// columns and no-ops after. This is deliberately NOT gated on the header *labels*
+// changing: dialogs whose .ui predefines column headers (e.g. MCAP's tableWidget)
+// match the plugin's setTableHeaders() verbatim, so a label-change gate would skip
+// them entirely and leave the .ui's default un-stretched sizing — the very bug
+// this fixes.
 static void installTreeLikeHeader(QTableWidget* tw) {
   auto* header = tw->horizontalHeader();
   if (header->count() == 0 || tw->property("pjTreeLikeHeader").toBool()) {
@@ -186,13 +193,17 @@ static void installTreeLikeHeader(QTableWidget* tw) {
   header->setMinimumSectionSize(20);
   header->setAttribute(Qt::WA_Hover, true);
   header->viewport()->setAttribute(Qt::WA_Hover, true);
-  QFont header_font = header->font();
-  header_font.setBold(false);
-  header->setFont(header_font);
 
+  // The first (name) column stretches to fill the viewport: long names aren't
+  // clipped and no dead space trails the last column, with no dependence on the
+  // viewport already being laid out. The data columns are Interactive so their
+  // dividers DRAG to resize (Stretch / ResizeToContents are auto-sized and can't be
+  // dragged — the reason the separators looked dead); resizing a data column gives
+  // and takes from the stretched name column.
   header->setSectionResizeMode(0, QHeaderView::Stretch);
   for (int i = 1; i < header->count(); ++i) {
-    header->setSectionResizeMode(i, QHeaderView::ResizeToContents);
+    header->setSectionResizeMode(i, QHeaderView::Interactive);
+    header->resizeSection(i, 96);
   }
 }
 
@@ -592,20 +603,17 @@ static void applyToWidget(QWidget* w, std::string_view name, const PJ::WidgetDat
     if (auto v = view.rangeSliderUpper(name)) {
       rs->setUpperValue(*v);
     }
-    // Duration floating labels: when a time span is provided, install the
-    // formatters (handle = offset from start, center = selected duration).
+    // Time labels: when a time span is provided, float each handle's offset-from-start
+    // ABOVE it (always shown) and show the selected duration as a chip ON the track.
+    // The track keeps the playback scrubber's 24px height; the labels add ONE row above
+    // (minimumSizeHint), with no wasted reserve below — grow the widget to fit it.
     if (auto span = view.rangeSliderTimeSpan(name)) {
       const std::int64_t min_ns = span->first;
       const std::int64_t max_ns = span->second;
       if (max_ns > min_ns) {
         const int slider_max = rs->getMaximun();
-        rs->setShowTicks(false);
-        rs->setShowTickLabels(false);
         rs->setShowHandleValueTooltip(false);
         rs->setFloatingLabelsVisible(true);
-        // Floating labels are painted inside the widget rect, so re-derive the
-        // height from minimumSizeHint() once the labels are enabled (it accounts
-        // for the font-dependent label rows above/below the handle row).
         rs->setMinimumHeight(rs->minimumSizeHint().height());
         rs->setLabelFormatter([min_ns, max_ns, slider_max](double pos) -> QString {
           std::int64_t ns = sliderToNs(static_cast<int>(pos), slider_max, min_ns, max_ns);

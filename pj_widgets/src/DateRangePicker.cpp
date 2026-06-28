@@ -1,9 +1,10 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MIT
 //
-// Date/time range picker bundle, wrapped in namespace PJ. Theming is driven
-// entirely from the widget palette(); the nav/chevron arrows use text glyphs
-// instead of SVG resources so the widget is self-contained in the host.
+// Date/time range picker bundle, wrapped in namespace PJ. Theming is driven from
+// the persisted-theme tokens (pickerTokens); the month-nav arrows use the app's
+// Material "keyboard_arrow_left/right" chevron SVGs (recolored to the theme ink,
+// or the from/to hint colors) so they read big and match the rest of the chrome.
 // See DateRangePicker.h.
 
 #include <pj_widgets/DateRangePicker.h>
@@ -17,6 +18,7 @@
 #include <QFile>
 #include <QGuiApplication>
 #include <QHBoxLayout>
+#include <QHash>
 #include <QIcon>
 #include <QImage>
 #include <QLabel>
@@ -42,15 +44,12 @@ constexpr int kRows = 6;
 constexpr int kCols = 7;
 constexpr int kHeaderPad = 8;
 
+// Month-nav chevron icon size — deliberately large so the arrows read as the same
+// chevrons used elsewhere in the chrome, not thin punctuation glyphs.
+constexpr int kNavChevronPx = 24;
+
 const QColor kFromHintColor(0x2e, 0xcc, 0x71);  // green
 const QColor kToHintColor(0xe7, 0x4c, 0x3c);    // red
-
-QString leftArrowGlyph() {
-  return QString(QChar(0x2039));  // ‹
-}
-QString rightArrowGlyph() {
-  return QString(QChar(0x203a));  // ›
-}
 
 // The app persists its active theme to QSettings("StyleSheet::theme")
 // (Theme.cpp) — the same key the rest of pj_dialog_host (widget_binding.cpp)
@@ -79,7 +78,7 @@ struct PickerTokens {
 PickerTokens pickerTokens() {
   PickerTokens t;
   if (pickerThemeIsLight()) {
-    t.surface = QColor(0xF5, 0xF5, 0xF5);          // #F5F5F5  dark_background
+    t.surface = QColor(0xFF, 0xFF, 0xFF);          // pure white calendar/overlay surface
     t.text = QColor(0x11, 0x11, 0x11);             // #111111  default_text
     t.muted = QColor(0x66, 0x66, 0x66);            // #666666  disabled_text
     t.border = QColor(0xc0, 0xc0, 0xc0);           // #c0c0c0  border_default
@@ -123,16 +122,11 @@ void recolorSvgInk(QByteArray& svg_data, bool light_theme) {
   svg_data.insert(tag_end, " fill=\"" + ink + "\"");
 }
 
-// Render a qrc SVG into a theme-inked QIcon, rasterized at size*DPR so it stays
-// crisp on HiDPI. Mirrors widget_binding.cpp's QSvgRenderer + DPR render path.
-QIcon renderThemedIcon(const QString& resource_path, int px = 16) {
-  QFile file(resource_path);
-  if (!file.open(QIODevice::ReadOnly)) {
-    return QIcon();
-  }
-  QByteArray svg_data = file.readAll();
-  file.close();
-  recolorSvgInk(svg_data, pickerThemeIsLight());
+// Rasterize already-prepared SVG bytes into a px-logical QIcon at size*DPR so it
+// stays crisp on HiDPI. Callers own the theming/recoloring of `svg_data`; this is
+// the shared QSvgRenderer + DPR-scaling tail behind both icon paths below (and
+// mirrors widget_binding.cpp's render path).
+QIcon rasterizeSvgIcon(const QByteArray& svg_data, int px) {
   QSvgRenderer renderer(svg_data);
   if (!renderer.isValid()) {
     return QIcon();
@@ -146,6 +140,49 @@ QIcon renderThemedIcon(const QString& resource_path, int px = 16) {
   QPixmap pix = QPixmap::fromImage(image);
   pix.setDevicePixelRatio(dpr);
   return QIcon(pix);
+}
+
+// Render a qrc SVG into a theme-inked QIcon.
+QIcon renderThemedIcon(const QString& resource_path, int px = 16) {
+  QFile file(resource_path);
+  if (!file.open(QIODevice::ReadOnly)) {
+    return QIcon();
+  }
+  QByteArray svg_data = file.readAll();
+  file.close();
+  recolorSvgInk(svg_data, pickerThemeIsLight());
+  return rasterizeSvgIcon(svg_data, px);
+}
+
+// Render one of the app's Material chevron SVGs (keyboard_arrow_left/right),
+// recolored to `color`, into a px*DPR QIcon. The source path's own fill is
+// irrelevant — we always load the "_light" variant and swap its #3D3D3D fill for
+// `color` (theme ink for the resting state, the from/to hint colors when active).
+// Cached by (direction, color, px): updateNavButtons() re-applies icons on every
+// hovered-date change, so without the cache each mouse move would re-parse + raster
+// four SVGs.
+QIcon renderChevronIcon(bool left, const QColor& color, int px) {
+  static QHash<QString, QIcon> cache;
+  // Key on HexRgb to match the recolor below (color.name() drops alpha), so the
+  // key can never disagree with the rasterized output.
+  const QString key = QStringLiteral("%1:%2:%3").arg(left ? 1 : 0).arg(color.name()).arg(px);
+  const auto cached = cache.constFind(key);
+  if (cached != cache.constEnd()) {
+    return cached.value();
+  }
+
+  const QString path = left ? QStringLiteral(":/resources/svg/keyboard_arrow_left_light.svg")
+                            : QStringLiteral(":/resources/svg/keyboard_arrow_right_light.svg");
+  QFile file(path);
+  if (!file.open(QIODevice::ReadOnly)) {
+    return QIcon();
+  }
+  QByteArray svg_data = file.readAll();
+  file.close();
+  svg_data.replace("#3D3D3D", color.name().toUtf8());
+  QIcon icon = rasterizeSvgIcon(svg_data, px);
+  cache.insert(key, icon);
+  return icon;
 }
 
 }  // namespace
@@ -444,7 +481,9 @@ TimePickerWidget::TimePickerWidget(QWidget* parent) : QWidget(parent) {
     hour->setWrapping(true);
     // The app QSS adds ~28px of horizontal padding to spin boxes and combos,
     // which would squeeze the value behind the arrows at narrower sizes.
-    // These widths keep the controls tidy and aligned.
+    // These widths keep the controls tidy and aligned. The HEIGHT is driven from
+    // the app QSS (#PickerOverlay QSpinBox/QComboBox → 26px), which overrides the
+    // global 18px input cap so the time row matches the dialog's other dropdowns.
     hour->setFixedWidth(56);
     hour->setAlignment(Qt::AlignCenter);
     auto* colon = new QLabel(":");
@@ -561,15 +600,22 @@ DualCalendarWidget::DualCalendarWidget(QWidget* parent)
   right_min_year_ = right_year_;
   right_min_month_ = right_month_;
 
-  const QSize btn_size(32, 24);
-  for (auto* b : {left_prev_, right_prev_}) {
-    b->setText(leftArrowGlyph());
+  // Flat icon buttons carrying the big themed chevrons (28x28 to match the rest of
+  // the chrome's icon buttons); updateNavButtons() re-inks them per hint state.
+  const QSize btn_size(28, 28);
+  const QColor ink = pickerTokens().text;
+  auto setup_nav = [&](QPushButton* b, bool left) {
+    b->setIcon(renderChevronIcon(left, ink, kNavChevronPx));
+    b->setIconSize(QSize(kNavChevronPx, kNavChevronPx));
     b->setFixedSize(btn_size);
-  }
-  for (auto* b : {left_next_, right_next_}) {
-    b->setText(rightArrowGlyph());
-    b->setFixedSize(btn_size);
-  }
+    b->setFlat(true);
+    b->setCursor(Qt::PointingHandCursor);
+    b->setStyleSheet(QStringLiteral("QPushButton { border: none; background: transparent; padding: 0; }"));
+  };
+  setup_nav(left_prev_, /*left=*/true);
+  setup_nav(right_prev_, /*left=*/true);
+  setup_nav(left_next_, /*left=*/false);
+  setup_nav(right_next_, /*left=*/false);
 
   auto* left_nav = new QHBoxLayout;
   left_nav->addWidget(left_prev_);
@@ -674,6 +720,13 @@ void DualCalendarWidget::setExternalRange(const QDate& from, const QDate& to) {
   updateCalendars();
 }
 
+void DualCalendarWidget::retheme() {
+  updateNavButtons();  // re-inks the chevrons via renderChevronIcon(pickerTokens().text)
+  for (auto* cal : calendars_) {
+    cal->update();
+  }
+}
+
 void DualCalendarWidget::leftPrev() {
   advanceMonth(left_year_, left_month_, -1);
   updateCalendars();
@@ -755,20 +808,19 @@ void DualCalendarWidget::updateNavButtons() {
   const bool to_in_gap = to_l > 0 && to_r < 0;
   const bool to_after_r = to_r > 0;
 
-  auto apply_hint = [](QPushButton* btn, bool hint_from, bool hint_to) {
-    QString color;
-    if (hint_from) {
-      color = kFromHintColor.name();
-    } else if (hint_to) {
-      color = kToHintColor.name();
-    }
-    btn->setStyleSheet(color.isEmpty() ? QString() : QStringLiteral("color: %1; font-weight: bold;").arg(color));
+  // Direction hint: recolor the chevron green/red when clicking it would reveal the
+  // start/end date (currently outside both calendars' views); resting state is the
+  // theme ink. The flat-button stylesheet set in the ctor is left untouched.
+  const QColor ink = pickerTokens().text;
+  auto apply_hint = [ink](QPushButton* btn, bool left, bool hint_from, bool hint_to) {
+    const QColor c = hint_from ? kFromHintColor : (hint_to ? kToHintColor : ink);
+    btn->setIcon(renderChevronIcon(left, c, kNavChevronPx));
   };
 
-  apply_hint(left_prev_, from_before_l, to_before_l);
-  apply_hint(left_next_, from_in_gap, to_in_gap);
-  apply_hint(right_prev_, from_in_gap, to_in_gap);
-  apply_hint(right_next_, from_after_r, to_after_r);
+  apply_hint(left_prev_, /*left=*/true, from_before_l, to_before_l);
+  apply_hint(left_next_, /*left=*/false, from_in_gap, to_in_gap);
+  apply_hint(right_prev_, /*left=*/true, from_in_gap, to_in_gap);
+  apply_hint(right_next_, /*left=*/false, from_after_r, to_after_r);
 }
 
 void DualCalendarWidget::onDateClicked(const QDate& date) {
@@ -826,6 +878,10 @@ void DualCalendarWidget::broadcastState() {
 DateRangePicker::DateRangePicker(QWidget* parent) : QWidget(parent) {
   auto* main_layout = new QVBoxLayout(this);
   main_layout->setContentsMargins(0, 0, 0, 0);
+  // Match the host column's 2px row spacing: without this the preset-row -> date-row
+  // gap uses Qt's larger default, so the spacing between the preset buttons and the
+  // from/to fields reads bigger than the gaps to the header above / table below.
+  main_layout->setSpacing(2);
 
   auto* preset_row = new QHBoxLayout;
   preset_group_ = new QButtonGroup(this);
@@ -851,18 +907,23 @@ DateRangePicker::DateRangePicker(QWidget* parent) : QWidget(parent) {
   auto* date_row = new QHBoxLayout;
   from_edit_ = new QLineEdit;
   from_edit_->setPlaceholderText("DD/MM/YYYY");
-  auto* arrow_label = new QLabel(QString::fromUtf8("→"));
+  // Material "Arrow Right Alt" between from/to, themed to the active ink (re-inked
+  // on a live theme switch in changeEvent). A QLabel pixmap, not a text glyph.
+  arrow_label_ = new QLabel;
+  arrow_label_->setPixmap(renderThemedIcon(QStringLiteral(":/resources/svg/arrow_right_alt.svg"), 18).pixmap(18, 18));
   to_edit_ = new QLineEdit;
   to_edit_->setPlaceholderText(QDate::currentDate().toString("dd/MM/yyyy"));
   calendar_button_ = new QPushButton;
   calendar_button_->setCursor(Qt::PointingHandCursor);
-  calendar_button_->setFixedSize(32, 24);
+  // 28x28 button with a 24px icon to match the panel's other icon buttons
+  // (refresh / search / regex toggles).
+  calendar_button_->setFixedSize(28, 28);
   // Themed "Calendar Month" icon (recolored to the active theme's ink); the
   // icon stays static — toggleCalendar() no longer swaps a glyph.
-  calendar_button_->setIcon(renderThemedIcon(QStringLiteral(":/resources/svg/calendar_month.svg")));
-  calendar_button_->setIconSize(QSize(16, 16));
+  calendar_button_->setIcon(renderThemedIcon(QStringLiteral(":/resources/svg/calendar_month.svg"), 24));
+  calendar_button_->setIconSize(QSize(24, 24));
   date_row->addWidget(from_edit_, 1);
-  date_row->addWidget(arrow_label);
+  date_row->addWidget(arrow_label_);
   date_row->addWidget(to_edit_, 1);
   date_row->addWidget(calendar_button_);
   connect(from_edit_, &QLineEdit::textChanged, this, &DateRangePicker::checkCustomState);
@@ -918,7 +979,14 @@ void DateRangePicker::changeEvent(QEvent* event) {
   if (event->type() == QEvent::StyleChange || event->type() == QEvent::PaletteChange) {
     updateOverlayStyle();
     if (calendar_button_) {
-      calendar_button_->setIcon(renderThemedIcon(QStringLiteral(":/resources/svg/calendar_month.svg")));
+      calendar_button_->setIcon(renderThemedIcon(QStringLiteral(":/resources/svg/calendar_month.svg"), 24));
+    }
+    if (arrow_label_) {
+      arrow_label_->setPixmap(
+          renderThemedIcon(QStringLiteral(":/resources/svg/arrow_right_alt.svg"), 18).pixmap(18, 18));
+    }
+    if (dual_calendar_) {
+      dual_calendar_->retheme();  // re-ink the nav chevrons to the new theme
     }
     if (overlay_) {
       const auto children = overlay_->findChildren<QWidget*>();

@@ -52,12 +52,23 @@ XML persistence), and live-streaming data path — lives in
 
 ## Decoding boundary (important)
 
-This module **never decodes wire formats**. DataSource plugins (e.g. `parser_ros`,
-see pj-official-plugins#122) decode ROS / CDR messages into canonical
-`pj_base/builtin` objects — `PointCloud`, `FrameTransforms`, `OccupancyGrid`,
-`OccupancyGridUpdate`, … — and publish them to the `ObjectStore`. `pj_scene3D`
-*consumes* those canonical objects and renders them. The core therefore stays
-"canonical-objects-in, render-structs-out", with **no `nanocdr` / CDR dependency**.
+This module **never decodes wire formats**. DataSource / MessageParser plugins
+(e.g. `parser_ros`, see pj-official-plugins#122) decode ROS / CDR messages into
+canonical `pj_base/builtin` objects — `PointCloud`, `FrameTransforms`,
+`OccupancyGrid`, `OccupancyGridUpdate`, … — and publish them to the `ObjectStore`.
+`pj_scene3D` *consumes* those canonical objects and renders them. The core
+therefore stays "canonical-objects-in, render-structs-out", with **no `nanocdr` /
+CDR dependency**.
+
+A canonical object may reach the `ObjectStore` two ways, and `pj_scene3D` handles
+both at the `widgets/` decode seam (`resolve_object.h`, see ARCHITECTURE.md →
+"Object decode"): **(a)** parser-decoded (a `MessageParser` is bound to the topic;
+decode via `parseLocked`), or **(b)** as an already *serialized canonical* blob
+when the producer is a data-source / toolbox that pushed `serialize*` bytes with
+no parser (e.g. the Mosaico cloud toolbox) — the host deserializes it with the
+matching `pj_base` canonical codec. (b) is **not** a wire-format decode: it is the
+canonical object's own serialization (exactly what pj_scene2D's image path does),
+so the no-`nanocdr`/CDR rule still holds.
 
 **One carve-out — compressed point clouds.** A `CompressedPointCloud` is *already* a
 canonical object, but its payload is a self-describing codec blob (Draco / Cloudini).

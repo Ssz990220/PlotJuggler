@@ -539,6 +539,7 @@ TEST(NamedIconResolver, MapsKnownIdsToThemedResourcePaths) {
   EXPECT_EQ(PJ::resolveNamedIconPath("contract"), QStringLiteral(":/resources/svg/contract.svg"));
   EXPECT_EQ(PJ::resolveNamedIconPath("plug_connect"), QStringLiteral(":/resources/svg/plug_connect.svg"));
   EXPECT_EQ(PJ::resolveNamedIconPath("refresh"), QStringLiteral(":/resources/svg/refresh.svg"));
+  EXPECT_EQ(PJ::resolveNamedIconPath("add"), QStringLiteral(":/resources/svg/add.svg"));
 }
 
 TEST(NamedIconResolver, ReturnsEmptyForUnknownOrEmptyId) {

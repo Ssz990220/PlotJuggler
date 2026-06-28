@@ -496,6 +496,31 @@ trims old samples and stays memory-bounded; the file path constructs the
 buffer with eviction disabled, since the whole recording is retained (fed in
 incrementally during a progressive load, or in one pass for a finished load).
 
+### Object decode: parser-decoded vs canonical blob
+
+Every object consumer (the layers above + `TransformService`) decodes a store
+entry through one seam, `pj_scene3d_widgets/resolve_object.h::resolveObject`,
+which picks the path by whether the topic has a bound `MessageParser`:
+
+- **Parser bound** — file / streaming data sources whose objects arrive as
+  parser-decoded messages (e.g. `parser_ros`, `parser_protobuf`): decode via the
+  topic's parser under `parseLocked` (per-use binding, never cached — the
+  reload-UAF rule).
+- **No parser bound** — a data-source / toolbox that pushed an *already
+  serialized canonical* object (e.g. the Mosaico cloud toolbox, which packages
+  the server's `point_cloud2` / `pose` / `motion_state` ontologies into
+  `sdk::PointCloud` / `PosesInFrame`): the bytes are a pj_base
+  wire blob, so `resolveObject` deserializes them with the canonical codec
+  selected by the topic's `builtin_object_type`. This mirrors pj_scene2D's
+  `canonical = (binding.parser == nullptr)` discipline.
+
+Either way the **host** performs the decode — the producing plugin never does
+(the "canonical-objects-in" boundary; the canonical codec is the canonical
+object's own serialization, not a transport/CDR wire format). A layer's
+`attach()` therefore accepts a topic that has *either* a parser *or* a canonical
+codec for its `builtin_object_type` (`hasCanonical3DCodec`); it rejects only a
+topic that has neither.
+
 ### SceneEntities lifetime expiry & the decoded-batch cache
 
 `SceneEntitiesLayer` replays every batch up to the tracker time into an id-keyed
