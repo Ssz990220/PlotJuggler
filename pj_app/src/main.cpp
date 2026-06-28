@@ -4,9 +4,11 @@
 #include <QApplication>
 #include <QCommandLineOption>
 #include <QCommandLineParser>
+#include <QImage>
 #include <QTimer>
 #include <Qt>
 #include <backward.hpp>
+#include <cstdio>
 #include <cstdlib>
 
 #include "DebugMode.h"
@@ -14,6 +16,7 @@
 #include "MainWindow.h"
 #include "WidgetTuner.h"
 #include "pj_plotting/PlotWidgetBase.h"
+#include "pj_scene3d_widgets/scene_view_widget.h"  // --screenshot grabs the 3D view
 #include "pj_widgets/Style.h"
 
 namespace {
@@ -91,6 +94,18 @@ int main(int argc, char* argv[]) {
           "Force plots onto the software raster canvas for this session, overriding the saved OpenGL "
           "preference (does not change it)."));
   parser.addOption(disable_opengl_option);
+  // Headless 3D capture for verification: after --screenshot-delay ms (enough for an
+  // async --layout load + a couple seconds of --autoplay to pose the robot), grab the
+  // first SceneViewWidget's framebuffer to a PNG and quit. GNOME Wayland blocks
+  // external screen-capture tools, so the app must grab itself.
+  const QCommandLineOption screenshot_option(
+      QStringLiteral("screenshot"),
+      QStringLiteral("Grab the first 3D view to a PNG after --screenshot-delay, then exit."), QStringLiteral("path"));
+  parser.addOption(screenshot_option);
+  const QCommandLineOption screenshot_delay_option(
+      QStringLiteral("screenshot-delay"), QStringLiteral("ms to wait before the screenshot grab (default 7000)."),
+      QStringLiteral("ms"), QStringLiteral("7000"));
+  parser.addOption(screenshot_delay_option);
   parser.process(app);
 
   // Latch the launch-time debug gate before any UI is built (PreferencesDialog
@@ -128,6 +143,27 @@ int main(int argc, char* argv[]) {
   if (parser.isSet(layout_option)) {
     const QString layout_path = parser.value(layout_option);
     QTimer::singleShot(0, &window, [&window, layout_path]() { window.loadLayoutAtStartup(layout_path); });
+  }
+
+  if (parser.isSet(screenshot_option)) {
+    const QString path = parser.value(screenshot_option);
+    const int delay_ms = parser.value(screenshot_delay_option).toInt();
+    QTimer::singleShot(delay_ms, &window, [&window, path]() {
+      const QList<pj::scene3d::SceneViewWidget*> views = window.findChildren<pj::scene3d::SceneViewWidget*>();
+      if (views.isEmpty()) {
+        std::fprintf(stderr, "[screenshot] no 3D SceneViewWidget found\n");
+      } else {
+        // grabFramebuffer() renders paintGL() on demand, so it returns a fresh frame
+        // with no separate update()/second timer needed.
+        const QImage img = views.first()->grabFramebuffer();
+        if (img.save(path)) {
+          std::printf("[screenshot] saved: %s (%dx%d)\n", qPrintable(path), img.width(), img.height());
+        } else {
+          std::fprintf(stderr, "[screenshot] save FAILED: %s\n", qPrintable(path));
+        }
+      }
+      QCoreApplication::quit();
+    });
   }
 
   return app.exec();

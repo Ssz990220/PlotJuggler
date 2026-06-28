@@ -361,7 +361,15 @@ struct CliOptions {
   int bench_frames = 150;                                  // timed frames collected per config
   QString bench_csv;                                       // optional CSV dump of the per-config medians
   int msaa = -1;                                           // <0: keep default; else off-screen MSAA samples (1/2/4/8)
-  float ssaa = -1.0f;  // <0: keep default; else supersampling render scale (e.g. 1.5)
+  float ssaa = -1.0f;      // <0: keep default; else supersampling render scale (e.g. 1.5)
+  bool shadows = false;    // mesh-only directional shadows (off by default, opt-in)
+  bool collisions = true;  // show collision hulls (set off to inspect visual meshes alone)
+  float cam_radius = std::numeric_limits<float>::quiet_NaN();  // orbit distance override (m)
+  float cam_az = std::numeric_limits<float>::quiet_NaN();      // orbit azimuth override (deg)
+  float cam_el = std::numeric_limits<float>::quiet_NaN();      // orbit elevation override (deg)
+  float cam_focal_z = 0.4f;                                    // look-at height (m)
+  int win_w = -1;                                              // <0: keep default 1500x840 window
+  int win_h = -1;  // else force the main window size (view ~= this minus panel)
 };
 
 CliOptions parseCli(const QStringList& args) {
@@ -378,6 +386,12 @@ CliOptions parseCli(const QStringList& args) {
       opts.bench_frames = next().toInt();
     } else if (arg == QStringLiteral("--bench-csv")) {
       opts.bench_csv = next();
+    } else if (arg == QStringLiteral("--win-size")) {
+      const QStringList wh = next().split('x', Qt::SkipEmptyParts);
+      if (wh.size() == 2) {
+        opts.win_w = wh[0].toInt();
+        opts.win_h = wh[1].toInt();
+      }
     } else if (arg == QStringLiteral("--msaa")) {
       opts.msaa = next().toInt();
     } else if (arg == QStringLiteral("--ssaa")) {
@@ -392,6 +406,18 @@ CliOptions parseCli(const QStringList& args) {
       opts.key_az = next().toFloat();
     } else if (arg == QStringLiteral("--key-el")) {
       opts.key_el = next().toFloat();
+    } else if (arg == QStringLiteral("--shadows")) {
+      opts.shadows = next() != QStringLiteral("off");  // "--shadows on" / "--shadows off"
+    } else if (arg == QStringLiteral("--collisions")) {
+      opts.collisions = next() != QStringLiteral("off");
+    } else if (arg == QStringLiteral("--cam-radius")) {
+      opts.cam_radius = next().toFloat();
+    } else if (arg == QStringLiteral("--cam-az")) {
+      opts.cam_az = next().toFloat();
+    } else if (arg == QStringLiteral("--cam-el")) {
+      opts.cam_el = next().toFloat();
+    } else if (arg == QStringLiteral("--cam-focal-z")) {
+      opts.cam_focal_z = next().toFloat();
     } else if (opts.urdf.isEmpty()) {
       opts.urdf = arg;
     } else if (opts.search_root.isEmpty()) {
@@ -642,6 +668,21 @@ int main(int argc, char** argv) {
   if (!saved_camera.isEmpty()) {
     view->camera().adoptState(pj::scene3d::cameraStateFromJson(saved_camera.toStdString(), view->camera().state()));
   }
+  if (!std::isnan(opts.cam_radius) || !std::isnan(opts.cam_az) || !std::isnan(opts.cam_el)) {
+    pj::scene3d::CameraState cs = view->camera().state();
+    cs.perspective = true;
+    cs.focal = glm::vec3(0.0f, 0.0f, opts.cam_focal_z);
+    if (!std::isnan(opts.cam_radius)) {
+      cs.radius = opts.cam_radius;
+    }
+    if (!std::isnan(opts.cam_az)) {
+      cs.azimuth = glm::radians(opts.cam_az);
+    }
+    if (!std::isnan(opts.cam_el)) {
+      cs.elevation = glm::radians(opts.cam_el);
+    }
+    view->camera().adoptState(cs);
+  }
   if (opts.screenshot_path.isEmpty() && !opts.benchmark) {
     QObject::connect(&app, &QApplication::aboutToQuit, view, [view] {
       QSettings save;
@@ -657,6 +698,14 @@ int main(int argc, char** argv) {
     view->compositeParams().tonemap_mode = opts.tonemap;
   }
   auto& shading = view->meshShadingParams();
+  shading.shadows_enabled = opts.shadows;
+  shading.collisions_visible = opts.collisions;
+  if (opts.shadows) {
+    // Mesh shadows only land legibly on a solid surface — switch the floor to the
+    // filled-cell (checkerboard) grid, which is a shadow receiver, so the demo shows
+    // the cast shadow on the ground.
+    view->setGridStyle(pj::scene3d::GridRenderPass::Style::kFilledCells);
+  }
   if (opts.env >= 0.0f) {
     shading.env_intensity = opts.env;
   }
@@ -680,7 +729,7 @@ int main(int argc, char** argv) {
   if (opts.ssaa > 0.0f) {
     view->setRenderScale(opts.ssaa);
   }
-  window.resize(1500, 840);
+  window.resize(opts.win_w > 0 ? opts.win_w : 1500, opts.win_h > 0 ? opts.win_h : 840);
 
   if (opts.benchmark) {
     // Free-run (no vsync) so the sweep measures true GPU cost rather than the

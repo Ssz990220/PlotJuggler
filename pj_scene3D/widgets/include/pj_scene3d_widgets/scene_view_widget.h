@@ -25,6 +25,7 @@
 #include "pj_scene3d_widgets/passes/axis_render_pass.h"
 #include "pj_scene3d_widgets/passes/edl_pass.h"
 #include "pj_scene3d_widgets/passes/grid_render_pass.h"
+#include "pj_scene3d_widgets/passes/shadow_map_pass.h"
 #include "pj_scene3d_widgets/passes/ssao_pass.h"
 #include "pj_scene3d_widgets/passes/tf_connections_render_pass.h"
 #include "pj_scene3d_widgets/scene_hdr_fbo.h"
@@ -340,6 +341,10 @@ class SceneViewWidget : public QOpenGLWidget {
   // Eye-dome lighting over the resolved depth (Phase B); composite multiplies
   // its shade factor into the HDR color. Same degrade rule as SSAO.
   EdlPass edl_;
+  // Mesh-shadow depth-map target (geometry PRE-pass, before renderScene — unlike the
+  // post-pass ssao_/edl_). Per-context; released in releaseGlResources(). Active only
+  // when shading_params_.shadows_enabled and the light-frustum fit is valid.
+  ShadowMapPass shadow_pass_;
   CompositeParams composite_params_;
   // Per-view mesh/collision look knobs, copied into ViewParams::shading each paintGL.
   MeshShadingParams shading_params_;

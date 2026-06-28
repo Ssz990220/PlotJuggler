@@ -10,6 +10,7 @@
 
 #include <gtest/gtest.h>
 
+#include <glm/gtc/matrix_transform.hpp>
 #include <memory>
 #include <vector>
 
@@ -26,6 +27,57 @@ TEST(MeshRenderPassTest, SlotColorSpaceMapping) {
   EXPECT_EQ(textureColorSpaceForSlot(MaterialTextureSlot::kMetallicRoughness), TextureColorSpace::kLinear);
   EXPECT_EQ(textureColorSpaceForSlot(MaterialTextureSlot::kNormal), TextureColorSpace::kLinear);
   EXPECT_EQ(textureColorSpaceForSlot(MaterialTextureSlot::kOcclusion), TextureColorSpace::kLinear);
+}
+
+// Caster bounds for shadows: the model-space AABB must enclose every vertex, so
+// the light frustum (fit to transformedAABB(model, localBounds)) covers the mesh.
+TEST(MeshRenderPassTest, LocalBoundsEnclosesAllVertices) {
+  MeshData data;
+  data.ok = true;
+  Vertex a;
+  a.position = {0, 0, 0};
+  Vertex b;
+  b.position = {2, -3, 5};
+  Vertex c;
+  c.position = {-1, 4, -2};
+  data.vertices = {a, b, c};
+  const AABB box = MeshRenderPass::localBounds(data);
+  ASSERT_TRUE(box.valid);
+  EXPECT_EQ(box.min, glm::vec3(-1, -3, -2));
+  EXPECT_EQ(box.max, glm::vec3(2, 4, 5));
+}
+
+TEST(MeshRenderPassTest, LocalBoundsOfEmptyMeshIsInvalid) {
+  EXPECT_FALSE(MeshRenderPass::localBounds(MeshData{}).valid);
+}
+
+// The shadow pre-pass fits the light frustum to worldBoundsOfDraws: each draw's
+// cached local AABB lifted by its model matrix, unioned. GL-free (the CPU mesh data
+// + cached bounds are set at setMeshData, before any upload).
+TEST(MeshRenderPassTest, WorldBoundsOfDrawsUnionsTransformedCasters) {
+  MeshRenderPass pass;
+  MeshData data;
+  data.ok = true;
+  Vertex lo;
+  lo.position = {-1, -1, -1};
+  Vertex hi;
+  hi.position = {1, 1, 1};
+  data.vertices = {lo, hi};
+  pass.setMeshData("box", data);
+
+  MeshRenderPass::DrawCall d;
+  d.kind = MeshRenderPass::GeometryKind::kMesh;
+  d.mesh_key = "box";
+  d.model = glm::translate(glm::mat4(1.0f), {10, 0, 0});
+  const AABB bounds = pass.worldBoundsOfDraws({d});
+  ASSERT_TRUE(bounds.valid);
+  EXPECT_EQ(bounds.min, glm::vec3(9, -1, -1));
+  EXPECT_EQ(bounds.max, glm::vec3(11, 1, 1));
+}
+
+TEST(MeshRenderPassTest, WorldBoundsOfNoDrawsIsInvalid) {
+  MeshRenderPass pass;
+  EXPECT_FALSE(pass.worldBoundsOfDraws({}).valid);
 }
 
 // One image legally serving a color slot in one material and a data slot in

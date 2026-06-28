@@ -94,6 +94,12 @@ class RobotModelLayer : public Scene3DLayer {
   void releaseGL() override;
   // worldBounds(): inherits Scene3DLayer's std::nullopt default (this layer is
   // bounds-less by design — see the class doc-comment).
+  // Shadow casting: the robot meshes DO cast. meshShadowBounds reports the visual
+  // links' world AABB (so the light frustum encloses the robot the camera doesn't
+  // frame); renderShadowCasters depth-draws those visual links. Collision hulls are
+  // excluded from both (not casters).
+  [[nodiscard]] std::optional<AABB> meshShadowBounds(const FrameContext& frame_ctx) override;
+  void renderShadowCasters(const glm::mat4& light_view_proj, const FrameContext& frame_ctx) override;
 
   QWidget* createConfigWidget(QWidget* parent) override;
 
@@ -199,6 +205,10 @@ class RobotModelLayer : public Scene3DLayer {
   // matrices stored in the cache are in camera-relative render space, so the
   // cache is tied to the render origin as well as to TF/model state.
   [[nodiscard]] bool drawCacheNeedsRebuild(const FrameContext& frame_ctx) const;
+  // Rebuild the draw cache iff drawCacheNeedsRebuild(), then clear draws_dirty_.
+  // Shared by render() and the shadow hooks so a frame's shadow pre-pass and
+  // color pass use one list built against the same render origin.
+  void ensureDrawCache(const FrameContext& frame_ctx);
   // Recompute static_bridges_ from the current model_, with frame_prefix_ applied
   // to each parent/child frame. Called when the model loads or the prefix changes.
   void rebuildStaticBridges();

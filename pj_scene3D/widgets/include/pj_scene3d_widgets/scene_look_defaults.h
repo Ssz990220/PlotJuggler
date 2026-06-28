@@ -62,4 +62,11 @@ inline constexpr float kEdlRadiusPx = 0.6f;  // EDL neighbour radius (pixels; pl
 // black band into a graded outline. Raising it darkens/widens that outline.
 inline constexpr float kEdlMaxGap = 0.02f;
 
+// ---- Mesh shadows ----
+// PCF penumbra radius in shadow-map texels (16-tap Poisson disk). Larger = softer
+// edge; the world-space penumbra is this times world_units_per_texel, so it tracks
+// the fitted frustum. ~4 texels reads as a soft contact shadow without the banding a
+// sparse box kernel gives.
+inline constexpr float kShadowSoftnessTexels = 4.0f;
+
 }  // namespace pj::scene3d::look

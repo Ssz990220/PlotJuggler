@@ -33,6 +33,7 @@
 #include <vector>
 
 #include "pj_scene3d_core/camera/camera_math.h"  // toRenderSpace()
+#include "pj_scene3d_core/shadow_camera.h"       // fitDirectionalShadowCamera, kShadowMapSize
 #include "pj_scene3d_core/tf/tf_buffer.h"
 #include "pj_scene3d_widgets/gl/debug.h"
 #include "pj_scene3d_widgets/gl/framebuffer.h"
@@ -488,6 +489,7 @@ void SceneViewWidget::releaseGlResources() {
   scene_fbo_.releaseGL();
   ssao_.releaseGL();
   edl_.releaseGL();
+  shadow_pass_.releaseGL();
   scene_profiler_.releaseGL();
   present_program_.reset();
   present_vao_ = gl::VertexArray{};
@@ -580,6 +582,77 @@ void SceneViewWidget::paintGL() {
   // on-zoom bug). Stored so the async hover hit-test stays consistent with the
   // camera-relative last_view_proj_ below.
   render_origin_ = glm::dvec3(camera_->state().focal);
+
+  // The TF-resolution triple (plus the camera-relative render origin), bundled for
+  // the passes/layers that need it. Built BEFORE view_params (it used to follow it)
+  // because the shadow pre-pass needs it to gather caster bounds + depth-draw casters,
+  // and its resulting shadow-map id is baked into the const view_params the receivers
+  // read. Grid never consults the TF buffer; safe even when tf_ is null. fixed_frame_
+  // is the long-lived member (no per-frame string copy). render_origin_ makes lookup()
+  // return render-space transforms consistent with the camera-relative view, so the
+  // render-space draw cache built by the shadow pre-pass is reused by the color pass.
+  static const TransformBuffer k_empty_buffer;
+  const TransformBuffer& tf_ref = tf_ ? *tf_ : k_empty_buffer;
+  const FrameContext frame_ctx{tf_ref, fixed_frame_, render_time_, render_origin_};
+
+  // --- Shadow pre-pass: depth-render mesh casters BEFORE the scene render ----------
+  // Fit the directional light frustum to the MESH caster bounds (meshShadowBounds —
+  // NOT scene_bounds_, which deliberately omits the robot), depth-draw every caster
+  // from the light's POV into shadow_pass_, then rebind the scene target. The result
+  // is baked into view_params below; degrades to no shadows (shadow_map_id == 0) on an
+  // invalid frustum fit or an unavailable map, and is skipped when shadows are off.
+  unsigned shadow_map_id = 0U;
+  glm::mat4 shadow_light_vp{1.0f};
+  float shadow_texel = 0.0f;
+  if (shading_params_.shadows_enabled) {
+    AABB caster_bounds;
+    for (Scene3DLayer* layer : layers_) {
+      if (layer == nullptr) {
+        continue;
+      }
+      if (const auto bounds = layer->meshShadowBounds(frame_ctx); bounds.has_value()) {
+        caster_bounds = unionAABB(caster_bounds, *bounds);
+      }
+    }
+    // Extend the caster bounds to include where their shadows land on the ground
+    // along the light direction, so the light frustum also covers the receiving
+    // floor — without this the frustum hugs the casters and the cast shadow falls
+    // outside it (guarded as lit). The floor is a receiver but never a caster, so it
+    // is otherwise absent from caster_bounds. caster_bounds is in render space, so the
+    // world floor at z=0 sits at render-space z = -render_origin.z (NOT 0); pass that
+    // so the fit matches the render-space floor the grid receiver projects.
+    const float ground_z_render = static_cast<float>(-render_origin_.z);
+    caster_bounds = extendAabbToGroundShadow(caster_bounds, shading_params_.key_light_dir, ground_z_render);
+    const ShadowCameraFit fit =
+        fitDirectionalShadowCamera(caster_bounds, shading_params_.key_light_dir, kShadowMapSize);
+    // Only allocate the shadow FBO when there is actually a mesh to cast — a
+    // point-cloud-only scene with shadows enabled stays a cheap no-op (no 16 MB
+    // depth map, receivers render lit via shadow_map_id == 0).
+    if (fit.valid) {
+      shadow_pass_.ensure();
+    }
+    if (fit.valid && shadow_pass_.ready()) {
+      shadow_pass_.begin();
+      for (Scene3DLayer* layer : layers_) {
+        if (layer != nullptr) {
+          layer->renderShadowCasters(fit.light_view_proj, frame_ctx);
+        }
+      }
+      shadow_pass_.end();
+      // The shadow pass left its own FBO + viewport bound; restore the scene target.
+      if (offscreen) {
+        scene_fbo_.bind();
+        funcs->glViewport(0, 0, scene_width_px, scene_height_px);
+      } else {
+        gl::Framebuffer::bindDefault(defaultFramebufferObject());
+        funcs->glViewport(0, 0, device_width_px, device_height_px);
+      }
+      shadow_map_id = shadow_pass_.depthTextureId();
+      shadow_light_vp = fit.light_view_proj;
+      shadow_texel = fit.world_units_per_texel;
+    }
+  }
+
   const ViewParams view_params{
       camera_->viewMatrixRelativeTo(render_origin_),
       camera_->projMatrix(aspect),
@@ -597,20 +670,15 @@ void SceneViewWidget::paintGL() {
       // fallback FBO has no mask attachment) and only when EDL is on (else the
       // extra draw-buffer toggling is wasted).
       offscreen && composite_params_.edl_enabled,
+      // Shadow receive inputs from the pre-pass above (0 id => receivers stay lit).
+      shadow_map_id,
+      shadow_light_vp,
+      shadow_texel,
   };
 
   // Cache proj*view for the hover hit-test (a mouse-move event, async from
   // paint) and the label draw, so both use the exact matrices this frame used.
   last_view_proj_ = view_params.proj * view_params.view;
-
-  // Grid never consults the TF buffer; safe to render even when tf_ is null.
-  static const TransformBuffer k_empty_buffer;
-  const TransformBuffer& tf_ref = tf_ ? *tf_ : k_empty_buffer;
-  // The TF-resolution triple (plus the camera-relative render origin), bundled for
-  // the passes/layers that need it. fixed_frame_ is the long-lived member (no
-  // per-frame string copy). render_origin_ makes lookup() return render-space
-  // transforms consistent with the camera-relative view above.
-  const FrameContext frame_ctx{tf_ref, fixed_frame_, render_time_, render_origin_};
 
   // Push the current hover highlight to the TF axis pass before it draws, so the
   // hovered frame's triad renders brighter than its neighbours.

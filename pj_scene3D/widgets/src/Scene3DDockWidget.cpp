@@ -1363,6 +1363,7 @@ QDomElement Scene3DDockWidget::xmlSaveState(QDomDocument& doc) const {
     sc.setAttribute(QStringLiteral("mesh_opacity"), shading.mesh_opacity);
     sc.setAttribute(QStringLiteral("collisions_visible"), bool_attr(shading.collisions_visible));
     sc.setAttribute(QStringLiteral("collision_opacity"), shading.collision_opacity);
+    sc.setAttribute(QStringLiteral("shadows_enabled"), bool_attr(shading.shadows_enabled));
     root.appendChild(sc);
   }
   return root;
@@ -1468,6 +1469,7 @@ bool Scene3DDockWidget::xmlLoadState(const QDomElement& element) {
       shading.collisions_visible = bool_attr(QStringLiteral("collisions_visible"), shading.collisions_visible);
       shading.collision_opacity =
           sc.attribute(QStringLiteral("collision_opacity"), QString::number(shading.collision_opacity)).toFloat();
+      shading.shadows_enabled = bool_attr(QStringLiteral("shadows_enabled"), shading.shadows_enabled);
     }
     view_->update();
   }

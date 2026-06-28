@@ -95,6 +95,11 @@ class SceneEntitiesLayer : public Scene3DLayer {
   // Draw markers, then drain finished mesh loads and draw model primitives.
   void render(const ViewParams& view_params, const FrameContext& frame_ctx) override;
   void releaseGL() override;
+  // Scene-entity MODEL meshes (ModelPrimitive) cast shadows; marker primitives
+  // (arrows/cubes/lines via MarkerRenderPass) do not. Both hooks operate on
+  // modelDrawCallsForFrame only, so markers are excluded by construction.
+  [[nodiscard]] std::optional<AABB> meshShadowBounds(const FrameContext& frame_ctx) override;
+  void renderShadowCasters(const glm::mat4& light_view_proj, const FrameContext& frame_ctx) override;
 
   // Opacity / color-override / wireframe controls bound to this instance.
   QWidget* createConfigWidget(QWidget* parent) override;

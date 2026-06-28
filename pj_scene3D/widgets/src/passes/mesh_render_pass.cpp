@@ -107,6 +107,16 @@ uniform vec3 u_key_dir;           // world-space direction TO the key light (Z-u
 uniform float u_fill_scale;       // camera-locked headlight fill weight
 uniform float u_env_intensity;    // analytic specular IBL (env reflection) weight
 
+// Shadow receive (key light only). u_has_shadow gates the whole feature off (renders
+// fully lit) when no map is bound this frame. u_shadow_map is a plain depth sampler2D
+// on unit 5; u_shadow_normal_offset is the world-space normal push (peter-panning /
+// acne control), sized in shadow texels by the host.
+uniform bool u_has_shadow;
+uniform mat4 u_light_vp;
+uniform sampler2D u_shadow_map;
+uniform float u_shadow_normal_offset;
+uniform float u_shadow_softness;  // PCF penumbra radius in shadow-map texels
+
 out vec4 frag;
 // "Is-mesh" mask for EDL (scene FBO COLOR_ATTACHMENT1). Written unconditionally;
 // it only lands in the mask texture when the mesh pass enables that draw buffer
@@ -168,6 +178,43 @@ vec3 envRadiance(vec3 dir) {
   return mix(kEnvGround, kEnvSky, clamp(dir.z * 0.5 + 0.5, 0.0, 1.0));
 }
 
+// Fraction of the key light reaching `world_pos` (1 = lit, 0 = fully shadowed), via
+// manual 3x3 PCF over a plain depth sampler2D. Returns 1.0 when shadows are off or
+// the point projects outside the light frustum (the depth map is CLAMP_TO_EDGE, so an
+// out-of-range UV would otherwise smear a border depth across the scene). A world
+// normal offset (larger at grazing N.L) lifts the comparison point off the surface to
+// kill acne / peter-panning, paired with the caster-side polygon offset.
+float shadowFactor(vec3 world_pos, vec3 N, vec3 L) {
+  if (!u_has_shadow) {
+    return 1.0;
+  }
+  float ndl = max(dot(N, L), 0.0);
+  // Normal offset scales with the PCF radius (u_shadow_softness): a wider kernel
+  // samples further onto the surface's own depth, so the bias must clear that whole
+  // footprint or curved meshes self-shadow into acne. Extra at grazing angles (2-ndl).
+  vec3 biased = world_pos + N * (u_shadow_normal_offset * (2.0 - ndl) * max(u_shadow_softness, 1.0));
+  vec4 lc = u_light_vp * vec4(biased, 1.0);
+  vec3 proj = (lc.xyz / lc.w) * 0.5 + 0.5;  // clip [-1,1] -> shadow UV/depth [0,1]
+  if (proj.x < 0.0 || proj.x > 1.0 || proj.y < 0.0 || proj.y > 1.0 || proj.z > 1.0) {
+    return 1.0;
+  }
+  // 16-tap Poisson-disk PCF: smooth soft edge without the banding a sparse box kernel
+  // gives. u_shadow_softness is the penumbra radius in shadow-map texels (bigger =
+  // softer). A rotation-free disk is enough here; per-pixel rotation is a follow-up if
+  // the fixed pattern ever shows.
+  const vec2 kPoisson[16] = vec2[](
+      vec2(-0.942, -0.399), vec2(0.946, -0.769), vec2(-0.094, -0.929), vec2(0.345, 0.294),
+      vec2(-0.916, 0.458), vec2(-0.815, -0.879), vec2(-0.383, 0.277), vec2(0.975, 0.756),
+      vec2(0.443, -0.975), vec2(0.537, -0.474), vec2(-0.265, -0.419), vec2(0.792, 0.191),
+      vec2(-0.242, 0.997), vec2(-0.814, 0.914), vec2(0.200, 0.786), vec2(0.144, -0.141));
+  vec2 texel = (1.0 / vec2(textureSize(u_shadow_map, 0))) * max(u_shadow_softness, 1.0);
+  float lit = 0.0;
+  for (int i = 0; i < 16; ++i) {
+    lit += proj.z <= texture(u_shadow_map, proj.xy + kPoisson[i] * texel).r ? 1.0 : 0.0;
+  }
+  return lit / 16.0;  // farther-than-stored taps => occluded
+}
+
 void main() {
   // Base color, two modes matching the draw-call contract:
   //  - material-driven (u_use_vertex_color): glTF baseColorFactor is LINEAR, times
@@ -223,7 +270,10 @@ void main() {
   // the viewer-facing side never goes black.
   vec3 Lkey = u_key_dir;  // already unit-length (normalized once on upload in drawBatch)
   vec3 Lfill = normalize(V + vec3(0.0, 0.0, 0.25));
-  vec3 direct = shadeLight(N, V, NoV, Lkey, diffuse_color, f0, a) * u_direct_scale +
+  // Shadows modulate ONLY the key/"sun" term — the camera-locked fill and the IBL
+  // ambient stay unshadowed so shadowed surfaces read as shaded, not black.
+  float key_shadow = shadowFactor(v_world_pos, N, Lkey);
+  vec3 direct = shadeLight(N, V, NoV, Lkey, diffuse_color, f0, a) * (u_direct_scale * key_shadow) +
                 shadeLight(N, V, NoV, Lfill, diffuse_color, f0, a) * u_fill_scale;
 
   // Image-based ambient (analytic IBL): diffuse irradiance from the hemisphere
@@ -252,6 +302,23 @@ void main() {
   frag = vec4(color, alpha);
   frag_mesh_mask = vec4(1.0);
 }
+)";
+
+// Depth-only caster program for the shadow pre-pass: transform position into light
+// clip space; the fragment stage is empty (GL writes gl_FragDepth automatically).
+// Position is attribute 0 — the same VAO slot the lit program uses — so casters
+// reuse their existing mesh VAO with no extra upload.
+constexpr std::string_view kDepthVertSrc = R"(#version 450 core
+layout(location = 0) in vec3 in_pos;
+uniform mat4 u_light_vp;
+uniform mat4 u_model;
+void main() {
+  gl_Position = u_light_vp * u_model * vec4(in_pos, 1.0);
+}
+)";
+
+constexpr std::string_view kDepthFragSrc = R"(#version 450 core
+void main() {}
 )";
 
 // Alpha at or above this renders in the opaque bucket; below it, the draw needs
@@ -368,12 +435,15 @@ const MeshRenderPass::CachedTexture* MeshRenderPass::findCachedTexture(
 MeshRenderPass::MeshRenderPass() {
   cube_.data = makeCube({0.7f, 0.7f, 0.7f, 1.0f});
   cube_.has_blended_material = meshHasBlendedMaterial(cube_.data);
+  cube_.local_bounds = localBounds(cube_.data);
   cube_.dirty = true;
   cylinder_.data = makeCylinder();
   cylinder_.has_blended_material = meshHasBlendedMaterial(cylinder_.data);
+  cylinder_.local_bounds = localBounds(cylinder_.data);
   cylinder_.dirty = true;
   sphere_.data = makeSphere();
   sphere_.has_blended_material = meshHasBlendedMaterial(sphere_.data);
+  sphere_.local_bounds = localBounds(sphere_.data);
   sphere_.dirty = true;
 }
 
@@ -404,6 +474,14 @@ void MeshRenderPass::initializeGL() {
   } else {
     fmt::print(stderr, "MeshRenderPass shader error: {}\n", std::get<std::string>(result));
   }
+  // Depth-only caster program for the shadow pre-pass (optional: a failure here just
+  // disables shadow casting for this layer, the lit pass is unaffected).
+  auto depth_result = gl::Program::fromSources(kDepthVertSrc, kDepthFragSrc);
+  if (auto* depth = std::get_if<gl::Program>(&depth_result); depth != nullptr) {
+    depth_program_ = std::make_unique<gl::Program>(std::move(*depth));
+  } else {
+    fmt::print(stderr, "MeshRenderPass depth shader error: {}\n", std::get<std::string>(depth_result));
+  }
 }
 
 void MeshRenderPass::render(const ViewParams& /*view_params*/, const FrameContext& /*frame_ctx*/) {}
@@ -414,6 +492,7 @@ void MeshRenderPass::releaseGL() {
   drainRetired();
   textures_.clear();
   program_.reset();
+  depth_program_.reset();
   initialized_ = false;
   auto release = [](MeshResource& resource) {
     resource.vao = gl::VertexArray{};
@@ -457,6 +536,7 @@ void MeshRenderPass::setMeshData(const std::string& key, MeshData data) {
   if (existing != nullptr) {
     existing->data = std::move(data);
     existing->has_blended_material = meshHasBlendedMaterial(existing->data);
+    existing->local_bounds = localBounds(existing->data);
     existing->dirty = true;
     existing->uploaded = false;
     return;
@@ -464,8 +544,48 @@ void MeshRenderPass::setMeshData(const std::string& key, MeshData data) {
   MeshResource resource;
   resource.data = std::move(data);
   resource.has_blended_material = meshHasBlendedMaterial(resource.data);
+  resource.local_bounds = localBounds(resource.data);
   resource.dirty = true;
   meshes_.emplace_back(key, std::move(resource));
+}
+
+AABB MeshRenderPass::worldBoundsOfDraws(const std::vector<DrawCall>& draws) {
+  AABB world;  // invalid until the first caster
+  for (const DrawCall& draw : draws) {
+    const MeshResource* resource = resourceForDraw(draw);
+    world = unionAABB(world, transformedAABB(draw.model, resource->local_bounds));
+  }
+  return world;
+}
+
+void MeshRenderPass::renderDepthOnly(const glm::mat4& light_view_proj, const std::vector<DrawCall>& draws) {
+  if (depth_program_ == nullptr || draws.empty()) {
+    return;
+  }
+  depth_program_->use();
+  depth_program_->setMat4("u_light_vp", light_view_proj);
+  MeshResource* bound = nullptr;
+  for (const DrawCall& draw : draws) {
+    MeshResource* resource = resourceForDraw(draw);
+    uploadIfNeeded(*resource);
+    if (!resource->uploaded || resource->index_count == 0U) {
+      continue;
+    }
+    depth_program_->setMat4("u_model", draw.model);
+    resource->vao.bind();
+    bound = resource;
+    withGlFunctions([resource](auto& functions) {
+      // Whole index range in one call: submeshes are contiguous in the element
+      // buffer and depth needs no per-material state. Position is attribute 0.
+      functions.glDrawElements(GL_TRIANGLES, static_cast<GLsizei>(resource->index_count), GL_UNSIGNED_INT, nullptr);
+    });
+  }
+  // Leave no VAO bound on exit, matching drawOne and every sibling pass. This runs
+  // before the visual pass and other layers' casters; a stray bound VAO would let a
+  // later element-buffer bind land in it (the corruption this whole change fixes).
+  if (bound != nullptr) {
+    bound->vao.unbind();
+  }
 }
 
 void MeshRenderPass::renderVisuals(const ViewParams& view_params, const std::vector<DrawCall>& draws, float opacity) {
@@ -497,6 +617,14 @@ MeshRenderPass::MeshResource* MeshRenderPass::meshResource(const std::string& ke
   return it == meshes_.end() ? nullptr : &it->second;
 }
 
+std::optional<MeshRenderPass::GlNamesForTest> MeshRenderPass::resourceGlNamesForTest(const std::string& key) const {
+  const MeshResource* resource = meshResource(key);
+  if (resource == nullptr || !resource->uploaded) {
+    return std::nullopt;
+  }
+  return GlNamesForTest{resource->vao.id(), resource->ebo.id()};
+}
+
 MeshRenderPass::MeshResource* MeshRenderPass::resourceForDraw(const DrawCall& draw) {
   MeshResource* resource = draw.kind == GeometryKind::kMesh ? meshResource(draw.mesh_key) : &resourceFor(draw.kind);
   if (resource == nullptr || !resource->data.ok) {
@@ -515,6 +643,14 @@ bool MeshRenderPass::meshHasBlendedMaterial(const MeshData& data) {
   return false;
 }
 
+AABB MeshRenderPass::localBounds(const MeshData& data) {
+  AABB box;  // invalid until the first vertex
+  for (const Vertex& vertex : data.vertices) {
+    expandAABB(box, vertex.position);
+  }
+  return box;
+}
+
 void MeshRenderPass::uploadIfNeeded(MeshResource& resource) {
   if (!resource.dirty && resource.uploaded) {
     return;
@@ -531,13 +667,25 @@ void MeshRenderPass::uploadIfNeeded(MeshResource& resource) {
   for (const Vertex& v : resource.data.vertices) {
     vertices.push_back(GpuVertex{v.position, v.normal, v.color, v.uv, v.tangent});
   }
+  // Bind THIS resource's VAO before touching the element buffer. The
+  // GL_ELEMENT_ARRAY_BUFFER binding is VAO state: ebo.uploadStatic() does a
+  // glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ...) that is captured by whatever VAO is
+  // currently bound. The shadow depth pre-pass (renderDepthOnly) leaves the PREVIOUS
+  // caster's VAO bound when it calls uploadIfNeeded() on the next, freshly-dirtied mesh
+  // (it binds-draws but never unbinds, unlike the visual pass). Uploading the EBO before
+  // binding our own VAO would therefore overwrite that other mesh's index buffer, and the
+  // later visual pass would draw it with the wrong indices — garbage micro-triangles that
+  // read as fine "shadow acne" speckle, but only in the app (streaming TF dirties meshes
+  // mid-frame; the demo uploads once up front so this never fires). Binding first scopes
+  // the EBO upload to this resource. (GL_ARRAY_BUFFER is NOT VAO state, so the vbo upload
+  // order is immaterial; only the per-attrib source captured by glVertexAttribPointer is.)
+  resource.vao.bind();
   resource.vbo.uploadStatic(
       GL_ARRAY_BUFFER, vertices.data(), static_cast<GLsizeiptr>(vertices.size() * sizeof(GpuVertex)));
   resource.ebo.uploadStatic(
       GL_ELEMENT_ARRAY_BUFFER, resource.data.indices.data(),
       static_cast<GLsizeiptr>(resource.data.indices.size() * sizeof(std::uint32_t)));
 
-  resource.vao.bind();
   resource.vbo.bind(GL_ARRAY_BUFFER);
   withGlFunctions([](auto& functions) {
     functions.glEnableVertexAttribArray(0U);
@@ -555,7 +703,8 @@ void MeshRenderPass::uploadIfNeeded(MeshResource& resource) {
     functions.glVertexAttribPointer(
         4U, 4, GL_FLOAT, GL_FALSE, static_cast<GLsizei>(sizeof(GpuVertex)), reinterpret_cast<const void*>(48));
   });
-  resource.ebo.bind(GL_ELEMENT_ARRAY_BUFFER);
+  // No explicit element-buffer bind needed: ebo.uploadStatic() above already recorded
+  // it into this (now-bound) VAO, and the attrib setup only touches GL_ARRAY_BUFFER.
   resource.vao.unbind();
 
   resource.index_count = resource.data.indices.size();
@@ -799,6 +948,11 @@ void MeshRenderPass::drawBatch(
       const GLenum color_only = GL_COLOR_ATTACHMENT0;
       functions.glDrawBuffers(1, &color_only);  // restore color-only for non-mesh passes
     }
+    // Release the shadow map from unit 5 (bound once per batch below); harmless when
+    // shadows were off this frame. Unconditional so every exit path leaves unit 5 clean.
+    functions.glActiveTexture(static_cast<GLenum>(GL_TEXTURE0 + 5));
+    functions.glBindTexture(GL_TEXTURE_2D, 0U);
+    functions.glActiveTexture(GL_TEXTURE0);
   };
 
   program_->use();
@@ -817,6 +971,26 @@ void MeshRenderPass::drawBatch(
   program_->setVec3("u_key_dir", key_dir);
   program_->setFloat("u_fill_scale", batch_shading.fill_light_scale);
   program_->setFloat("u_env_intensity", batch_shading.env_intensity);
+
+  // Shadow receive (mesh surfaces, key light only). The map + light matrix arrive via
+  // ViewParams from the shadow pre-pass; shadow_map_id == 0 (feature off, or an invalid
+  // frustum fit) leaves u_has_shadow 0 so the shader renders fully lit. Bind the depth
+  // map to unit 5 ONCE per batch — material maps use units 0-4 and drawOne's per-draw
+  // unbind loop only touches 0-4, so unit 5 survives every draw; restore_pass_state
+  // releases it on exit.
+  const bool shadows_on = view_params.shadow_map_id != 0U && batch_shading.shadows_enabled;
+  program_->setInt("u_has_shadow", shadows_on ? 1 : 0);
+  if (shadows_on) {
+    program_->setMat4("u_light_vp", view_params.light_view_proj);
+    program_->setInt("u_shadow_map", 5);
+    program_->setFloat("u_shadow_normal_offset", view_params.shadow_world_units_per_texel * 1.5f);
+    program_->setFloat("u_shadow_softness", look::kShadowSoftnessTexels);
+    withGlFunctions([&view_params](auto& functions) {
+      functions.glActiveTexture(static_cast<GLenum>(GL_TEXTURE0 + 5));
+      functions.glBindTexture(GL_TEXTURE_2D, view_params.shadow_map_id);
+      functions.glActiveTexture(GL_TEXTURE0);
+    });
+  }
 
   // EDL mesh mask: enable COLOR_ATTACHMENT1 only for the duration of the mesh
   // draws, so mesh pixels mark the scene FBO's R8 is-mesh mask (the frag shader

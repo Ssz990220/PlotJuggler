@@ -53,6 +53,17 @@ struct ViewParams {
   // path (the direct-to-backing fallback has no mask attachment). Kept LAST so
   // existing positional aggregate initializers default-init it (to false).
   bool write_mesh_mask = false;
+  // Shadow-receive inputs, produced by the shadow pre-pass each frame and consumed
+  // by mesh + solid-grid-floor receivers. `shadow_map_id == 0` means "no shadows this
+  // frame" (feature off, or the light frustum fit was invalid) — receivers then skip
+  // sampling and render fully lit. `light_view_proj` is the world->light-clip matrix
+  // (fitDirectionalShadowCamera); `shadow_world_units_per_texel` scales the receiver's
+  // world-space normal offset so the depth bias tracks shadow-map resolution. Kept
+  // LAST (after write_mesh_mask) so positional aggregate initializers keep defaulting
+  // them — every existing ViewParams construction stays shadow-free.
+  unsigned shadow_map_id = 0;
+  glm::mat4 light_view_proj{1.0f};
+  float shadow_world_units_per_texel = 0.0f;
 };
 
 // The TF-resolution triple a pass needs to place frame-relative data into the

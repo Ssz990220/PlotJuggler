@@ -96,6 +96,26 @@ class Scene3DLayer : public PJ::ISceneLayer {
     return std::nullopt;
   }
 
+  // World-space AABB of this layer's shadow-CASTER geometry at the current frame, or
+  // nullopt for layers that cast nothing. DISTINCT from worldBounds() on purpose:
+  // worldBounds() drives camera framing (and RobotModelLayer deliberately reports
+  // none so a moving robot can't yank the camera), whereas the shadow frustum MUST
+  // enclose the robot mesh. Only mesh-bearing layers (RobotModelLayer,
+  // SceneEntitiesLayer model primitives) override this; everything else casts no
+  // shadow. Non-const and FrameContext-taking because the bounds depend on the
+  // current TF poses (the layer rebuilds its draw list to compute them).
+  [[nodiscard]] virtual std::optional<AABB> meshShadowBounds(const FrameContext& /*frame_ctx*/) {
+    return std::nullopt;
+  }
+
+  // Depth-only render of this layer's shadow casters from the light's point of view,
+  // into the shadow map currently bound by the SceneViewWidget pre-pass.
+  // `light_view_proj` is the world->light-clip matrix from fitDirectionalShadowCamera.
+  // Default no-op: only mesh layers cast (they forward their visual draws to their
+  // MeshRenderPass, which owns the per-context depth-only program). REQUIRES a current
+  // GL context (called from the pre-pass, before renderScene).
+  virtual void renderShadowCasters(const glm::mat4& /*light_view_proj*/, const FrameContext& /*frame_ctx*/) {}
+
  signals:
   // Layer noticed new source-frame candidates — the dock unions these
   // into the fixed-frame combo's fallback list.

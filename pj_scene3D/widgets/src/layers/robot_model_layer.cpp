@@ -487,15 +487,13 @@ void RobotModelLayer::render(const ViewParams& view_params, const FrameContext& 
   if (!visible_ || !mesh_pass_ || !model_.has_value()) {
     return;
   }
-  pollMeshLoads();
 
-  // DrawCall matrices are already in camera-relative render space. Reuse the
-  // cache across pure view/projection changes, but rebuild when a camera move
-  // changes the render origin (pan / zoom-to-cursor / follow).
-  if (drawCacheNeedsRebuild(frame_ctx)) {
-    rebuildDrawCache(frame_ctx);
-    draws_dirty_ = false;
-  }
+  // DrawCall matrices are in camera-relative render space, so the cache is
+  // rebuilt when draws_dirty_ OR the render origin moved (pan / zoom-to-cursor /
+  // follow); a pure view/projection repaint reuses it. Shared with the shadow
+  // hooks via ensureDrawCache (which also drains finished mesh loads) so a frame's
+  // pre-pass and color pass use one list built from the same geometry.
+  ensureDrawCache(frame_ctx);
 
   // Per-view opacities (Part C "Meshes"/"Collision" sliders); 0 hides the group
   // entirely. These gates stay per-frame — only the draw list is cached. The
@@ -507,6 +505,40 @@ void RobotModelLayer::render(const ViewParams& view_params, const FrameContext& 
   if (shading.collisions_visible && shading.collision_opacity > 0.0f) {
     mesh_pass_->renderCollisions(view_params, cached_collision_draws_, shading.collision_opacity);
   }
+}
+
+void RobotModelLayer::ensureDrawCache(const FrameContext& frame_ctx) {
+  // Drain any finished async mesh loads FIRST, so the shadow pre-pass and the color
+  // pass in the same frame agree on the geometry: without this a future completing
+  // between the shadow hooks and render() would cast placeholder cubes but draw the
+  // real mesh. drain() is idempotent (changed == false on a second call this frame),
+  // so the redundant poll across the three callers is cheap.
+  pollMeshLoads();
+  if (drawCacheNeedsRebuild(frame_ctx)) {
+    rebuildDrawCache(frame_ctx);
+    draws_dirty_ = false;
+  }
+}
+
+std::optional<AABB> RobotModelLayer::meshShadowBounds(const FrameContext& frame_ctx) {
+  if (!visible_ || !mesh_pass_ || !model_.has_value()) {
+    return std::nullopt;
+  }
+  ensureDrawCache(frame_ctx);
+  const AABB bounds = mesh_pass_->worldBoundsOfDraws(cached_visual_draws_);
+  return bounds.valid ? std::optional<AABB>(bounds) : std::nullopt;
+}
+
+void RobotModelLayer::renderShadowCasters(const glm::mat4& light_view_proj, const FrameContext& frame_ctx) {
+  if (!visible_ || !mesh_pass_ || !model_.has_value()) {
+    return;
+  }
+  // Visual links only: collision hulls coincide with the visuals and would
+  // double-darken the silhouette. The "meshes hidden" per-view toggle is not
+  // consulted here (the hook has no ViewParams); a hidden mesh still casting is an
+  // accepted v1 edge case.
+  ensureDrawCache(frame_ctx);
+  mesh_pass_->renderDepthOnly(light_view_proj, cached_visual_draws_);
 }
 
 void RobotModelLayer::releaseGL() {

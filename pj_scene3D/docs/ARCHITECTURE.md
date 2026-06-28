@@ -119,6 +119,66 @@ visible; cleared on a camera gesture and on leave. Occlusion is ignored for now
 (a frame hidden behind geometry still labels); a one-texel depth-reject is the
 planned refinement.
 
+## Mesh shadows
+
+Real-time directional shadows for **meshes only**, from the existing fixed key/"sun"
+light (`MeshShadingParams::key_light_dir`). **Casters: meshes only** — URDF/robot
+meshes (`RobotModelLayer` visual links) and scene-entity `ModelPrimitive` meshes
+(`SceneEntitiesLayer`); point clouds, voxel/occupancy grids, axes, TF triads,
+markers, and collision hulls never cast. **Receivers: meshes and the solid grid
+floor** (`GridRenderPass` filled-cell mode). Off by default, per-dock
+(`MeshShadingParams::shadows_enabled`).
+
+Unlike the screen-space SSAO/EDL post-passes, a shadow map is a **geometry depth
+pre-pass** that runs in `paintGL` *before* `renderScene` (between the `FrameContext`
+build and the scene render):
+
+```
+fit light frustum to mesh-caster bounds  ──►  ShadowMapPass.begin() (depth FBO)
+  ──►  each mesh layer renderShadowCasters() (depth-only, from the light)
+  ──►  end + rebind scene FBO  ──►  renderScene (receivers PCF-sample the map)
+```
+
+- **GL-free core** (`core/shadow_camera.h`, headless-tested). `fitDirectionalShadowCamera`
+  builds the orthographic world→light-clip matrix: bounding-**sphere** extents
+  (rotation-invariant, no resolution pulsing), padded, and **texel-snapped** along a
+  light-only basis so the shadow edge does not crawl as the scene jitters sub-texel.
+  `extendAabbToGroundShadow` grows the caster AABB to enclose where the shadow lands
+  on `z=0`, so the frustum also covers the **receiving floor** (the floor never casts,
+  so it is otherwise absent from caster bounds — and the shadow would fall outside a
+  caster-only frustum). `kShadowMapSize` (2048) sizes the map independently of
+  `render_scale`.
+- **Caster bounds, distinct from `worldBounds()`.** `Scene3DLayer::meshShadowBounds`
+  is a separate hook from `worldBounds()` on purpose: `RobotModelLayer` stays
+  bounds-less for the **camera** (a moving robot must not yank the view), but the
+  shadow frustum *must* enclose the robot mesh. `meshShadowBounds` reports the visual
+  caster AABB via `MeshRenderPass::worldBoundsOfDraws` (each resource caches its local
+  AABB; lifted by the draw model matrix).
+- **Casting.** `Scene3DLayer::renderShadowCasters` (default no-op; overridden by the
+  two mesh layers) forwards the visual draws to `MeshRenderPass::renderDepthOnly` — a
+  depth-only program (position → light clip, empty fragment) reusing each mesh's
+  existing VAO. Collision hulls are not casters (they would double-darken the
+  silhouette).
+- **Receiving.** The mesh fragment shader and the grid filled-cell shader each project
+  the world position into light space and do manual **3×3 PCF** over a plain
+  `sampler2D` (the `gl::Texture` wrapper has no compare-mode; the shader guards
+  out-of-frustum/beyond-far UVs as *lit*, so the CLAMP_TO_EDGE border can't smear). The
+  shadow factor multiplies **only the key-light term** — the camera-locked fill and the
+  IBL ambient stay lit, so shadowed surfaces read as shaded, not black. The floor
+  darkens toward a floor value (not pure black) so the grid stays legible. A caster-side
+  `glPolygonOffset` plus a receiver-side world **normal offset** (sized in shadow
+  texels) control acne / peter-panning.
+- **Lifecycle / per-dock.** `ShadowMapPass` (depth `GL_DEPTH_COMPONENT32F` FBO) is a
+  per-`SceneViewWidget` member released in `releaseGlResources()` and rebuilt lazily —
+  the same per-context contract as every pass. Each dock reads its own
+  `key_light_dir`, so two docks shadow independently. `shadow_map_id == 0` (feature off,
+  or an invalid frustum fit) makes every receiver render fully lit — a safe no-op
+  degrade.
+- **Demo / verification.** `scene3d_mesh_viewer --shadows on|off` (switches the floor
+  to filled cells) renders A/B screenshots; `fixtures/shadow_demo.urdf` is an elevated
+  box over the ground. Cost on Iris Xe ≈ 4 ms/frame for a single-caster scene
+  (well under the 16.7 ms / 60 Hz budget).
+
 ## Camera system
 
 The camera is an interchangeable controller over a shared, serializable pose,

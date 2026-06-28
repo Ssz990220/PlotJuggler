@@ -4,10 +4,12 @@
 
 #include <glm/glm.hpp>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
 
+#include "pj_scene3d_core/camera/camera.h"  // AABB (shadow caster bounds)
 #include "pj_scene3d_widgets/gl/buffer.h"
 #include "pj_scene3d_widgets/gl/program.h"
 #include "pj_scene3d_widgets/gl/texture.h"
@@ -83,6 +85,12 @@ class MeshRenderPass : public IRenderPass {
   // Cached per mesh at setMeshData() so drawBatch never re-walks submeshes.
   [[nodiscard]] static bool meshHasBlendedMaterial(const MeshData& data);
 
+  // Model-space AABB enclosing every vertex of `data` (GL-free, static). Empty or
+  // failed mesh data yields an invalid box. The shadow pre-pass lifts it into world
+  // space — transformedAABB(draw.model, localBounds(data)) — to fit the light
+  // frustum to the mesh casters (which scene_bounds_ deliberately excludes).
+  [[nodiscard]] static AABB localBounds(const MeshData& data);
+
   // True when a visual draw belongs in the translucent bucket: layer opacity < 1,
   // an override tint with alpha < 1, or a mesh with any glTF kBlend material
   // (pass the cached meshHasBlendedMaterial result). Static and GL-free so the
@@ -122,6 +130,34 @@ class MeshRenderPass : public IRenderPass {
   // material/vertex alpha; callers pass MeshShadingParams::collision_opacity.
   void renderCollisions(const ViewParams& view_params, const std::vector<DrawCall>& draws, float opacity);
 
+  // World-space AABB enclosing `draws` as shadow casters: the union of each draw's
+  // model-transformed local bounds (transformedAABB(draw.model, resource bounds)).
+  // GL-free at runtime (resources cache their local AABB at build/setMeshData), so
+  // the shadow pre-pass can fit the light frustum to the meshes the camera AABB
+  // omits. Unknown mesh keys fall back to the placeholder cube's bounds, matching
+  // what actually draws. Returns an invalid box when `draws` is empty.
+  [[nodiscard]] AABB worldBoundsOfDraws(const std::vector<DrawCall>& draws);
+
+  // Depth-only render of `draws` from the light's point of view into the currently-
+  // bound shadow FBO (ShadowMapPass::begin() must have run). Uses the pass's own
+  // depth-only program: u_light_vp once, u_model per draw, reusing each mesh's
+  // existing VAO (position is attribute 0; no materials, no lighting). REQUIRES a
+  // current GL context. The collision bucket is intentionally NOT a caster (a hull
+  // coincident with the visual mesh would double-darken its own silhouette).
+  void renderDepthOnly(const glm::mat4& light_view_proj, const std::vector<DrawCall>& draws);
+
+  // GL names of a keyed mesh's vertex-array object and element buffer after upload,
+  // or nullopt if the key is unknown / not yet uploaded. Test seam only: the real-GL
+  // regression test binds the VAO and asserts its recorded GL_ELEMENT_ARRAY_BUFFER is
+  // this same EBO. uploadIfNeeded() once uploaded the EBO before binding its own VAO,
+  // so a prior caster's VAO (left bound by renderDepthOnly) had its index buffer
+  // hijacked — the root cause of mesh "shadow acne" speckle under streaming.
+  struct GlNamesForTest {
+    unsigned int vao;
+    unsigned int ebo;
+  };
+  [[nodiscard]] std::optional<GlNamesForTest> resourceGlNamesForTest(const std::string& key) const;
+
  private:
   struct MeshResource {
     MeshData data;
@@ -134,6 +170,10 @@ class MeshRenderPass : public IRenderPass {
     // Any submesh material with AlphaMode::kBlend, cached at setMeshData() so
     // drawBatch can bucket draws without re-walking submeshes every frame.
     bool has_blended_material{false};
+    // Model-space AABB of `data`, cached alongside it (at the ctor for primitives,
+    // at setMeshData for keyed meshes) so worldBoundsOfDraws never rescans vertices
+    // and works without a GL context (the CPU data is set before upload).
+    AABB local_bounds;
   };
 
   // One bucketed visual draw: the resolved mesh resource plus whether it goes
@@ -181,6 +221,9 @@ class MeshRenderPass : public IRenderPass {
 
   bool initialized_{false};
   std::unique_ptr<gl::Program> program_;
+  // Depth-only caster program for the shadow pre-pass (position -> light clip). Built
+  // beside program_ in initializeGL, reset in releaseGL — per-context like everything.
+  std::unique_ptr<gl::Program> depth_program_;
   MaterialUniforms uniforms_;
   std::vector<std::pair<std::string, MeshResource>> meshes_;
   // Scratch buffer reused by drawBatch's opaque/translucent bucketing so steady

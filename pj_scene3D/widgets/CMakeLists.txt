@@ -29,6 +29,7 @@ set(PJ_SCENE3D_WIDGETS_SOURCES
   src/passes/mesh_render_pass.cpp
   src/passes/ssao_pass.cpp
   src/passes/edl_pass.cpp
+  src/passes/shadow_map_pass.cpp
   src/render_pass.cpp
   src/scene_view_widget.cpp
   src/scene3d_layer.cpp
@@ -263,6 +264,19 @@ if(PJ_BUILD_TESTS)
   )
   target_compile_options(voxel_grid_render_pass_gl_test PRIVATE ${PJ_WARNING_FLAGS} ${PJ_SANITIZER_FLAGS})
   add_test(NAME voxel_grid_render_pass_gl_test COMMAND voxel_grid_render_pass_gl_test)
+
+  # Real-GL regression: the shadow depth pre-pass must not corrupt a prior caster's
+  # VAO element-buffer binding when the next caster uploads mid-loop (the streaming
+  # mesh-shadow "acne" bug). Skips below GL 4.5; CI runs it under xvfb + llvmpipe.
+  add_executable(mesh_render_pass_shadow_upload_gl_test
+    tests/mesh_render_pass_shadow_upload_gl_test.cpp
+  )
+  target_link_libraries(mesh_render_pass_shadow_upload_gl_test PRIVATE
+    pj_scene3d_widgets
+    GTest::gtest
+  )
+  target_compile_options(mesh_render_pass_shadow_upload_gl_test PRIVATE ${PJ_WARNING_FLAGS} ${PJ_SANITIZER_FLAGS})
+  add_test(NAME mesh_render_pass_shadow_upload_gl_test COMMAND mesh_render_pass_shadow_upload_gl_test)
 
   # PointCloudLayer sample-identity caches: reset on dataset replace (stale
   # decoded/failed/pushed ids under a stable topic id), stamp-0 is data not a

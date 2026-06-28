@@ -90,6 +90,25 @@ inline AABB unionAABB(const AABB& a, const AABB& b) {
   return {lo, hi};
 }
 
+// Smallest axis-aligned box that encloses `local` after transforming it by
+// `transform` (all 8 corners are mapped). The result is a conservative outer bound
+// of the transformed box — tight under translation/yaw, slightly loose under large
+// pitch/roll. Used to lift a mesh's model-space AABB into the world for the shadow
+// caster-bounds union. Returns an invalid box when `local` is invalid.
+[[nodiscard]] inline AABB transformedAABB(const glm::mat4& transform, const AABB& local) {
+  if (!local.valid) {
+    return {};
+  }
+  AABB out;
+  for (int corner = 0; corner < 8; ++corner) {
+    const glm::vec3 c{
+        (corner & 1) != 0 ? local.max.x : local.min.x, (corner & 2) != 0 ? local.max.y : local.min.y,
+        (corner & 4) != 0 ? local.max.z : local.min.z};
+    expandAABB(out, glm::vec3(transform * glm::vec4(c, 1.0f)));
+  }
+  return out;
+}
+
 // AABB of an occupancy grid given its origin (the grid's min corner, in the
 // grid's own source frame), cell resolution (metres/cell), and dimensions in
 // cells. The grid is planar — the z extent is zero at origin.z (origin rotation

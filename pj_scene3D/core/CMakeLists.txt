@@ -20,6 +20,7 @@ add_library(pj_scene3d_core STATIC
   src/poses_in_frame_render.cpp
   src/robot_model_bridges.cpp
   src/scene_entities_decode.cpp
+  src/shadow_camera.cpp
   src/tf/tf_buffer.cpp
   src/tf/tf_connections.cpp
   src/version.cpp
@@ -53,6 +54,7 @@ if(PJ_BUILD_TESTS)
     ../tests/camera_follow_test.cpp
     ../tests/poses_in_frame_render_test.cpp
     ../tests/scene_entities_decode_test.cpp
+    ../tests/shadow_camera_test.cpp
     ../tests/tf_buffer_test.cpp
     ../tests/tf_buffer_hierarchy_test.cpp
     ../tests/tf_connections_test.cpp

@@ -348,6 +348,24 @@ void SceneEntitiesLayer::releaseGL() {
   mesh_pass_->releaseGL();
 }
 
+std::optional<AABB> SceneEntitiesLayer::meshShadowBounds(const FrameContext& frame_ctx) {
+  if (!visible_) {
+    return std::nullopt;
+  }
+  ensureModelStateAt(frame_ctx.time);
+  pollMeshLoads();
+  const AABB bounds = mesh_pass_->worldBoundsOfDraws(modelDrawCallsForFrame(frame_ctx));
+  return bounds.valid ? std::optional<AABB>(bounds) : std::nullopt;
+}
+
+void SceneEntitiesLayer::renderShadowCasters(const glm::mat4& light_view_proj, const FrameContext& frame_ctx) {
+  if (!visible_) {
+    return;
+  }
+  ensureModelStateAt(frame_ctx.time);
+  mesh_pass_->renderDepthOnly(light_view_proj, modelDrawCallsForFrame(frame_ctx));
+}
+
 bool SceneEntitiesLayer::bootstrap() {
   PJ::ObjectStore& store = ctx_.session->objectStore();
   auto first = store.at(topic_id_, 0);
