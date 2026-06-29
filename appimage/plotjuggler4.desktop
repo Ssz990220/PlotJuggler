@@ -2,8 +2,8 @@
 Type=Application
 Name=PlotJuggler 4
 GenericName=Timeseries Visualization
-Exec=pj_app
-Icon=pj_app
+Exec=plotjuggler4
+Icon=plotjuggler4
 Comment=Visualize timeseries like a pro
 Terminal=false
 Categories=Development;Science;Utility;

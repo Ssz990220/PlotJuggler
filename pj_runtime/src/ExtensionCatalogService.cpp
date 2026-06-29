@@ -28,8 +28,15 @@ QString defaultPendingDir() {
 // User-managed extra plugin folders (Preferences page). QStringList.
 constexpr auto kCustomPluginFoldersKey = "Preferences::plugin_folders";
 
-QString executablePluginsDir() {
-  return QCoreApplication::applicationDirPath() + QStringLiteral("/plugins");
+// Plugins bundled with an installed build. Per the FHS bin/lib split (the binary
+// installs to <prefix>/bin, arch-dependent code to <prefix>/lib), the bundled
+// plugins live at <prefix>/lib/plotjuggler/plugins, resolved relative to the
+// executable so the install stays relocatable — the same path works under /usr,
+// /usr/local, or a mounted AppImage. A dev build tree has no such directory, so
+// it is simply skipped (buildScanHierarchy drops folders that don't exist);
+// developers point at their freshly built plugins with --plugin-dir instead.
+QString bundledPluginsDir() {
+  return QDir::cleanPath(QCoreApplication::applicationDirPath() + QStringLiteral("/../lib/plotjuggler/plugins"));
 }
 }  // namespace
 
@@ -81,7 +88,7 @@ QStringList ExtensionCatalogService::builtinPluginFolders() const {
   if (marketplace != extensions_dir_) {
     folders << marketplace;
   }
-  folders << executablePluginsDir();
+  folders << bundledPluginsDir();
   return folders;
 }
 

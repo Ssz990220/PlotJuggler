@@ -2,9 +2,11 @@
 #
 # Custom AppRun for the PlotJuggler 4 AppImage.
 #
-# Replaces linuxdeploy's generated launcher so we can inject --plugin-dir,
-# pointing pj_app at the plugins baked into the image. The library/Qt
-# environment that the stock AppRun would set is reproduced here.
+# Replaces linuxdeploy's generated launcher purely to reproduce the library/Qt
+# environment the stock AppRun would set. It does NOT inject --plugin-dir: the
+# app auto-discovers the bundled plugins at <prefix>/lib/plotjuggler/plugins
+# (usr/bin/plotjuggler4 -> ../lib/plotjuggler/plugins), so --plugin-dir stays a
+# user-facing option — anything the user passes is forwarded verbatim via "$@".
 set -e
 
 # $APPDIR is set by the AppImage runtime when mounted; fall back to this
@@ -20,15 +22,4 @@ export XDG_DATA_DIRS="${APPDIR}/usr/share:${XDG_DATA_DIRS:-/usr/local/share:/usr
 # bundled Qt 6.11 runtime (same reason run.sh unsets it for dev runs).
 unset QT_IM_MODULE
 
-# Bundled plugins. The dir is read-only inside the mounted image, so the
-# marketplace cannot install here — see KNOWN LIMITATION in build_appimage.sh.
-PJ_PLUGINS="${APPDIR}/usr/share/pj_app/plugins"
-
-# Don't double up if the user passes their own --plugin-dir.
-for arg in "$@"; do
-  case "${arg}" in
-    --plugin-dir|--plugin-dir=*) exec "${APPDIR}/usr/bin/pj_app" "$@" ;;
-  esac
-done
-
-exec "${APPDIR}/usr/bin/pj_app" --plugin-dir "${PJ_PLUGINS}" "$@"
+exec "${APPDIR}/usr/bin/plotjuggler4" "$@"
