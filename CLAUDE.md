@@ -72,6 +72,12 @@ Every class, struct, function, and method — and any member that is not self-ex
 
 "Concise" is not "minimal": convey everything the reader needs and nothing they don't. Above all, document what the **name cannot convey** — pitfalls, side-effects, ownership/lifetime, threading or call-order constraints, units, and non-obvious invariants or rationale. Skip the genuinely self-evident (a trivial getter/setter, an obvious field): restating the signature in prose is just noise. **Comment the surprise, not the obvious.**
 
+Further comment hygiene:
+
+- **Keep comments focused on *why*, not *how*** — aim for self-explanatory code. If a comment is explaining mechanics the code already states, fix the code (rename, extract) instead of narrating it.
+- **When refactoring, remove old comments** — never add comments about what changed. Comments describe the code as it is now, not its history.
+- **Never document old behavior or behavior changes in code.** No "previously did X", "changed from Y", or migration notes in source — that belongs in commits/PRs, not comments.
+
 ### Per-module documentation contract
 
 Every PJ4 module (anything matching `pj_*/`) owns:

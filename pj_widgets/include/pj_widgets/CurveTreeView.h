@@ -127,6 +127,14 @@ class CurveTreeView : public QTreeWidget {
   void applyVisibleValuesToSubtree(QTreeWidgetItem* item, int viewport_height);
   void scheduleValueRefresh();
   void sortTree();
+  // Re-run the active filter (last_filter_) over the whole tree, hiding or showing
+  // each row. Unlike applyFilter() it has no text-equality short-circuit, so it
+  // also re-evaluates rows inserted since the filter was last set.
+  void refilterTree();
+  // Re-assert the active filter after rows are inserted, so a filter typed before
+  // the data arrived still applies to it. No-op when no filter is active (freshly
+  // inserted rows are visible by default).
+  void reapplyFilter();
   void setDescendantsExpanded(QTreeWidgetItem* item, bool expanded);
   std::vector<QString> selectedCurveNamesForDrag() const;
 

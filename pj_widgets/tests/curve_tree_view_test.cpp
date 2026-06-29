@@ -125,6 +125,43 @@ TEST(CurveTreeViewTest, BatchedCatalogInsertSortsTopLevelGroupsAndChildren) {
   EXPECT_EQ(childNames(alpha), (std::vector<std::string>{"bravo", "charlie", "delta"}));
 }
 
+// A filter typed BEFORE data is loaded must apply to the rows that arrive later
+// (the catalog-insert path), not just to rows already in the tree.
+TEST(CurveTreeViewTest, FilterAppliesToRowsInsertedAfterItWasSet) {
+  PJ::CurveTreeView view;
+
+  view.applyFilter(QStringLiteral("imu"));
+
+  view.addCatalogItems({
+      PJ::CurveTreeView::CurvePath{
+          .key = QStringLiteral("veh/imu/x"),
+          .dataset = QStringLiteral("veh"),
+          .topic = QStringLiteral("imu"),
+          .field = QStringLiteral("x"),
+      },
+      PJ::CurveTreeView::CurvePath{
+          .key = QStringLiteral("veh/gps/lat"),
+          .dataset = QStringLiteral("veh"),
+          .topic = QStringLiteral("gps"),
+          .field = QStringLiteral("lat"),
+      },
+  });
+
+  ASSERT_EQ(view.topLevelItemCount(), 1);
+  QTreeWidgetItem* veh = view.topLevelItem(0);
+  EXPECT_FALSE(veh->isHidden());
+
+  QTreeWidgetItem* imu = findChild(veh, QStringLiteral("imu"));
+  ASSERT_NE(imu, nullptr);
+  EXPECT_FALSE(imu->isHidden());
+  EXPECT_FALSE(findChild(imu, QStringLiteral("x"))->isHidden());
+
+  QTreeWidgetItem* gps = findChild(veh, QStringLiteral("gps"));
+  ASSERT_NE(gps, nullptr);
+  EXPECT_TRUE(gps->isHidden());
+  EXPECT_TRUE(findChild(gps, QStringLiteral("lat"))->isHidden());
+}
+
 TEST(CurveTreeViewTest, TopLevelGroupsSelectableIntermediateGroupsLeafOnly) {
   PJ::CurveTreeView view;
 

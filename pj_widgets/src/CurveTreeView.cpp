@@ -369,6 +369,7 @@ QTreeWidgetItem* CurveTreeView::ensureGroup(const QString& path) {
 
 void CurveTreeView::addCurve(const QString& name) {
   addCurve(name, SortMode::kImmediate);
+  reapplyFilter();
 }
 
 void CurveTreeView::addCurves(const std::vector<QString>& names) {
@@ -382,6 +383,7 @@ void CurveTreeView::addCurves(const std::vector<QString>& names) {
   }
   sortTree();
   setUpdatesEnabled(updates_were_enabled);
+  reapplyFilter();
 }
 
 void CurveTreeView::addCurve(const QString& name, SortMode sort_mode) {
@@ -428,10 +430,12 @@ void CurveTreeView::addCurve(const CurvePath& path) {
           .is_3d_object_topic = false,
       },
       SortMode::kImmediate);
+  reapplyFilter();
 }
 
 void CurveTreeView::addCatalogItem(const CurvePath& path) {
   addCatalogItem(path, SortMode::kImmediate);
+  reapplyFilter();
 }
 
 void CurveTreeView::addCatalogItems(const std::vector<CurvePath>& paths) {
@@ -445,6 +449,7 @@ void CurveTreeView::addCatalogItems(const std::vector<CurvePath>& paths) {
   }
   sortTree();
   setUpdatesEnabled(updates_were_enabled);
+  reapplyFilter();
 }
 
 void CurveTreeView::addCatalogItem(const CurvePath& path, SortMode sort_mode) {
@@ -532,7 +537,11 @@ void CurveTreeView::applyFilter(const QString& filter) {
     return;
   }
   last_filter_ = filter;
-  const QStringList tokens = filter.split(' ', Qt::SkipEmptyParts);
+  refilterTree();
+}
+
+void CurveTreeView::refilterTree() {
+  const QStringList tokens = last_filter_.split(' ', Qt::SkipEmptyParts);
 
   std::function<bool(QTreeWidgetItem*)> apply = [&](QTreeWidgetItem* item) {
     bool any_child_visible = false;
@@ -555,6 +564,13 @@ void CurveTreeView::applyFilter(const QString& filter) {
   for (int i = 0; i < topLevelItemCount(); ++i) {
     apply(topLevelItem(i));
   }
+}
+
+void CurveTreeView::reapplyFilter() {
+  if (last_filter_.isEmpty()) {
+    return;
+  }
+  refilterTree();
 }
 
 std::vector<QString> CurveTreeView::selectedCurveNames() const {
