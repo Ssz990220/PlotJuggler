@@ -57,6 +57,7 @@ class DiagnosticHistory;
 class DockWidget;
 class FileLoader;
 class IDataWidget;
+class PanelEngine;
 class PlotDocker;
 class PlotWidget;
 class PendingCurveBinder;
@@ -720,7 +721,12 @@ class MainWindow : public QMainWindow {
   // Active toolbox panel presented in place of the chart area by
   // presentPanel()/restoreCentralArea(). At most one at a time;
   // panel_parent_/panel_layout_index_ remember where the chart was.
+  // current_panel_engine_ is the owning PanelEngine when the panel is a
+  // toolbox dialog (null for non-toolbox panels like the console / filter
+  // editor); presentPanel() uses it to tear the previous toolbox down before
+  // showing a new one, so launching a toolbox replaces the open panel.
   QWidget* current_panel_ = nullptr;
+  PanelEngine* current_panel_engine_ = nullptr;
   int panel_layout_index_ = -1;
   QWidget* panel_parent_ = nullptr;
 

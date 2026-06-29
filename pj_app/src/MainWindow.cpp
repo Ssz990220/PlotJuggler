@@ -4281,9 +4281,21 @@ bool MainWindow::presentPanel(QWidget* panel) {
   if (panel == nullptr) {
     return false;
   }
+  // A panel is already presented: dismiss it so launching a new toolbox/panel
+  // replaces the open one instead of refusing. For a toolbox panel, close its
+  // PanelEngine first (same teardown as the reject path) so its host/handle are
+  // released; restoreCentralArea() then swaps the chart back and clears the
+  // panel state, after which we present the new panel below. Non-toolbox panels
+  // (null engine) just restore.
   if (current_panel_ != nullptr) {
-    qWarning("MainWindow::presentPanel: another panel is already presented");
-    return false;
+    PanelEngine* previous_engine = current_panel_engine_;
+    if (previous_engine != nullptr) {
+      previous_engine->close();
+    }
+    restoreCentralArea();
+    if (previous_engine != nullptr) {
+      previous_engine->deleteLater();
+    }
   }
 
   // The chart area (ui_->tabbedPlotWidget) lives as a direct child of a
@@ -4345,6 +4357,10 @@ void MainWindow::restoreCentralArea() {
   current_panel_->setParent(nullptr);
   current_panel_->deleteLater();
   current_panel_ = nullptr;
+  // The engine (when this was a toolbox panel) is deleted by the caller that
+  // tore it down (the onCloseRequested handler or presentPanel's replace path);
+  // here we only drop our non-owning reference.
+  current_panel_engine_ = nullptr;
   panel_layout_index_ = -1;
   panel_parent_ = nullptr;
 }
@@ -4535,7 +4551,11 @@ void MainWindow::launchToolbox(const QString& plugin_id) {
     engine->close();
     panel->deleteLater();
     engine->deleteLater();
+    return;
   }
+  // presentPanel() succeeded; remember the engine so launching another toolbox
+  // (or any panel) tears this one down first instead of being refused.
+  current_panel_engine_ = engine;
 }
 
 }  // namespace PJ
