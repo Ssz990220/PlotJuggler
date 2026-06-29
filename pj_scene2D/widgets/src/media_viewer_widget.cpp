@@ -1343,15 +1343,27 @@ void MediaViewerWidget::refreshPointInspector() {
     sample_y = static_cast<int>(std::lround(map.src_y[idx]));
   }
 
+  if (point_inspector_ == nullptr) {
+    point_inspector_ = std::make_unique<PixelInspector>();
+  }
+
+  // Depth frames carry metric depth (metres), not RGB — the colour is the GPU's
+  // colormap output. Show the depth value + a swatch of that colour instead of a
+  // meaningless RGB readout, and skip the zoom grid. Unlike the RGB path, a no-data
+  // pixel still shows the tooltip ("— (no data)") rather than hiding it.
+  if (frame.format == PixelFormat::kDepthR32F) {
+    const auto depth_m = depthMetersAt(frame, sample_x, sample_y);
+    point_inspector_->updateDepth(image_point->x(), image_point->y(), depth_m, frame.depth);
+    point_inspector_->showNear(mapToGlobal(last_point_inspector_pos_.toPoint()));
+    return;
+  }
+
   auto crop = extractRgbCrop(frame, sample_x, sample_y, kPointInspectorCropSize);
   if (crop.empty()) {
     hidePointInspector();
     return;
   }
 
-  if (point_inspector_ == nullptr) {
-    point_inspector_ = std::make_unique<PixelInspector>();
-  }
   point_inspector_->updatePixel(std::move(crop), kPointInspectorCropSize, image_point->x(), image_point->y());
   point_inspector_->showNear(mapToGlobal(last_point_inspector_pos_.toPoint()));
 }

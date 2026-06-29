@@ -25,9 +25,7 @@ namespace PJ {
 
 namespace {
 
-[[nodiscard]] bool isValidDepth(float value) noexcept {
-  return std::isfinite(value) && value > 0.0f;
-}
+// isValidDepth (finite && > 0) is shared from pj_scene2d_core/depth_range.h.
 
 // Per-sample depth readers. Selected once per frame (see resolveDepthFormat),
 // never per pixel.

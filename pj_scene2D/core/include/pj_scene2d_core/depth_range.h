@@ -12,6 +12,15 @@
 
 namespace PJ {
 
+/// A depth sample is "valid" (a real measurement) iff it is finite and > 0; the 0
+/// no-data sentinel and NaN/inf mean "no return". Single source of truth for this
+/// rule, shared by the depth Auto-fit (depthPercentileRange), the depth decode
+/// (DepthPipelineSource), and the depth Point Inspector readout (depthMetersAt) —
+/// and it matches the media shader's `!(d > 0)` no-data test.
+[[nodiscard]] inline bool isValidDepth(float value) noexcept {
+  return std::isfinite(value) && value > 0.0f;
+}
+
 /// Compute a robust [near, far] metric-depth range from a raw float32 depth buffer
 /// by taking the `lo_frac`/`hi_frac` percentiles of the *valid* samples (finite and
 /// > 0; the 0 no-data sentinel and NaN/inf are ignored). This is what the depth
@@ -33,7 +42,7 @@ namespace PJ {
   valid.reserve(count);
   for (std::size_t i = 0; i < count; ++i) {
     const float v = data[i];
-    if (std::isfinite(v) && v > 0.0f) {
+    if (isValidDepth(v)) {
       valid.push_back(v);
     }
   }

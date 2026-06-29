@@ -38,6 +38,14 @@ changing colormap/range/invert is a uniform write with no re-decode. The colorma
 core stays decoupled: `DepthPipelineSource::setColormap` takes an opaque `uint8_t`
 colormap id (== `Colormap` value == LUT row), not the enum.
 
+The hover **Point Inspector** (`pixel_inspector.{h,cpp}`) is **format-aware**: ordinary
+images get the zoom grid + RGB readout, but a `kDepthR32F` frame shows the **metric
+depth** (`depthMetersAt`, "— (no data)" for non-finite/≤0 pixels) plus a swatch of the
+on-screen colormapped colour (`depthColormapColor`, which reuses the same
+`Colormap.h::colorFor()` the GPU LUT is built from) — no zoom grid, since a
+colormapped pixel has no per-pixel RGB worth magnifying. See
+[`docs/TECHNICAL_NOTES.md`](./docs/TECHNICAL_NOTES.md) §13.
+
 ## Docs
 
 Read in this order:

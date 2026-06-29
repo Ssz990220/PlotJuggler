@@ -5,8 +5,13 @@
 
 #include <gtest/gtest.h>
 
+#include <cmath>
+#include <cstring>
+#include <limits>
 #include <memory>
 #include <vector>
+
+#include "pj_widgets/Colormap.h"  // colorFor — reference oracle for the depth swatch colour
 
 namespace {
 
@@ -16,6 +21,19 @@ PJ::DecodedFrame makeFrame(PJ::PixelFormat format, int width, int height, std::v
   frame.width = width;
   frame.height = height;
   frame.pixels = std::make_shared<std::vector<uint8_t>>(std::move(pixels));
+  return frame;
+}
+
+// Builds a kDepthR32F frame from metric-depth floats (row-major), as DepthPipelineSource emits.
+PJ::DecodedFrame makeDepthFrame(int width, int height, std::vector<float> depths_m) {
+  PJ::DecodedFrame frame;
+  frame.format = PJ::PixelFormat::kDepthR32F;
+  frame.width = width;
+  frame.height = height;
+  auto bytes = std::make_shared<std::vector<uint8_t>>(depths_m.size() * sizeof(float));
+  std::memcpy(bytes->data(), depths_m.data(), depths_m.size() * sizeof(float));
+  frame.pixels = std::move(bytes);
+  frame.depth.active = true;
   return frame;
 }
 
@@ -102,6 +120,81 @@ TEST(PixelInspectorPixels, CropPadsOutsideImageWithBlack) {
   EXPECT_EQ(crop[center], 10);
   EXPECT_EQ(crop[center + 1], 20);
   EXPECT_EQ(crop[center + 2], 30);
+}
+
+TEST(PixelInspectorDepth, ReadsMetricDepthAtPixel) {
+  auto frame = makeDepthFrame(2, 2, {1.0f, 2.0f, 3.0f, 4.5f});
+
+  const auto d = PJ::depthMetersAt(frame, 1, 1);
+  ASSERT_TRUE(d.has_value());
+  EXPECT_FLOAT_EQ(*d, 4.5f);
+
+  const auto d00 = PJ::depthMetersAt(frame, 0, 0);
+  ASSERT_TRUE(d00.has_value());
+  EXPECT_FLOAT_EQ(*d00, 1.0f);
+}
+
+TEST(PixelInspectorDepth, TreatsNonPositiveAndNonFiniteAsNoData) {
+  const float nan = std::numeric_limits<float>::quiet_NaN();
+  const float inf = std::numeric_limits<float>::infinity();
+  auto frame = makeDepthFrame(2, 2, {0.0f, -1.0f, nan, inf});
+
+  EXPECT_FALSE(PJ::depthMetersAt(frame, 0, 0).has_value());  // zero == no measurement
+  EXPECT_FALSE(PJ::depthMetersAt(frame, 1, 0).has_value());  // negative
+  EXPECT_FALSE(PJ::depthMetersAt(frame, 0, 1).has_value());  // NaN
+  EXPECT_FALSE(PJ::depthMetersAt(frame, 1, 1).has_value());  // +Inf
+}
+
+TEST(PixelInspectorDepth, RejectsOutOfBoundsAndNonDepthFrames) {
+  auto frame = makeDepthFrame(2, 2, {1.0f, 2.0f, 3.0f, 4.0f});
+  EXPECT_FALSE(PJ::depthMetersAt(frame, -1, 0).has_value());
+  EXPECT_FALSE(PJ::depthMetersAt(frame, 2, 0).has_value());
+  EXPECT_FALSE(PJ::depthMetersAt(frame, 0, 2).has_value());
+
+  // A non-depth frame has no metric depth to sample, even at a valid pixel.
+  auto rgb = makeFrame(PJ::PixelFormat::kRGB888, 1, 1, {10, 20, 30});
+  EXPECT_FALSE(PJ::depthMetersAt(rgb, 0, 0).has_value());
+}
+
+TEST(PixelInspectorDepth, ColormapColorMatchesShaderLutSource) {
+  PJ::DepthColorParams p;
+  p.near_m = 0.0f;
+  p.far_m = 10.0f;
+  p.invert = false;
+  p.colormap = static_cast<uint8_t>(PJ::Colormap::kTurbo);
+
+  const auto c = PJ::depthColormapColor(5.0f, p);  // midpoint -> t = 0.5
+  const auto ref = PJ::colorFor(PJ::Colormap::kTurbo, 0.5f);
+  EXPECT_NEAR(c.r, ref.r * 255.0f, 1.0f);
+  EXPECT_NEAR(c.g, ref.g * 255.0f, 1.0f);
+  EXPECT_NEAR(c.b, ref.b * 255.0f, 1.0f);
+}
+
+TEST(PixelInspectorDepth, ColormapColorClampsBelowNearAndHonoursInvert) {
+  PJ::DepthColorParams p;
+  p.near_m = 2.0f;
+  p.far_m = 4.0f;
+  p.colormap = static_cast<uint8_t>(PJ::Colormap::kViridis);
+
+  // 1.0 m is below near -> t clamps to 0.
+  p.invert = false;
+  EXPECT_NEAR(PJ::depthColormapColor(1.0f, p).r, PJ::colorFor(PJ::Colormap::kViridis, 0.0f).r * 255.0f, 1.0f);
+  // Inverting mirrors the same clamped sample to t = 1.
+  p.invert = true;
+  EXPECT_NEAR(PJ::depthColormapColor(1.0f, p).r, PJ::colorFor(PJ::Colormap::kViridis, 1.0f).r * 255.0f, 1.0f);
+}
+
+TEST(PixelInspectorDepth, ColormapColorGuardsDegenerateRange) {
+  PJ::DepthColorParams p;
+  p.near_m = 3.0f;
+  p.far_m = 3.0f;  // near == far must not divide by zero (GPU guards with 1e-6)
+  p.colormap = static_cast<uint8_t>(PJ::Colormap::kPlasma);
+
+  const auto c = PJ::depthColormapColor(3.0f, p);  // t collapses to 0
+  const auto ref = PJ::colorFor(PJ::Colormap::kPlasma, 0.0f);
+  EXPECT_NEAR(c.r, ref.r * 255.0f, 1.0f);
+  EXPECT_NEAR(c.g, ref.g * 255.0f, 1.0f);
+  EXPECT_NEAR(c.b, ref.b * 255.0f, 1.0f);
 }
 
 }  // namespace

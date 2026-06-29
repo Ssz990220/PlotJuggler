@@ -4,6 +4,7 @@
 #include "pj_scene2d_widgets/pixel_inspector.h"
 
 #include <QApplication>
+#include <QFontMetrics>
 #include <QPainter>
 #include <QScreen>
 #include <algorithm>
@@ -11,7 +12,9 @@
 #include <cmath>
 #include <cstring>
 
+#include "pj_scene2d_core/depth_range.h"  // isValidDepth — shared depth no-data rule
 #include "pj_scene2d_core/video_color.h"  // buildYuvMatrix — single source of the YUV->RGB coefficients
+#include "pj_widgets/Colormap.h"          // colorFor — same colormap source the GPU depth LUT is built from
 
 namespace PJ {
 
@@ -26,6 +29,8 @@ constexpr int kFontSize = 11;
 constexpr int kMinInfoHeight = 140;
 constexpr int kRgbBytesPerPixel = 3;
 constexpr int kRgbaBytesPerPixel = 4;
+constexpr int kLineHeight = 20;         ///< vertical step between info-panel text lines
+constexpr int kDepthBytesPerPixel = 4;  ///< kDepthR32F: one float32 per pixel
 
 [[nodiscard]] uint8_t clampToByte(float value) {
   return static_cast<uint8_t>(std::clamp(std::lround(value), 0L, 255L));
@@ -184,6 +189,31 @@ std::vector<uint8_t> extractRgbCrop(const DecodedFrame& frame, int center_x, int
   return crop;
 }
 
+std::optional<float> depthMetersAt(const DecodedFrame& frame, int x, int y) {
+  if (frame.format != PixelFormat::kDepthR32F || !hasExpectedStorage(frame) || x < 0 || y < 0 || x >= frame.width ||
+      y >= frame.height) {
+    return std::nullopt;
+  }
+  const size_t byte_index =
+      (static_cast<size_t>(y) * static_cast<size_t>(frame.width) + static_cast<size_t>(x)) * kDepthBytesPerPixel;
+  float value = 0.0f;
+  std::memcpy(&value, frame.pixels->data() + byte_index, sizeof(value));
+  if (!isValidDepth(value)) {  // shared rule: matches DepthPipelineSource / shader `!(d > 0)`
+    return std::nullopt;
+  }
+  return value;
+}
+
+InspectorRgb depthColormapColor(float depth_m, const DepthColorParams& params) {
+  const float span = std::max(params.far_m - params.near_m, 1e-6f);  // GPU guards far-near the same way
+  float t = std::clamp((depth_m - params.near_m) / span, 0.0f, 1.0f);
+  if (params.invert) {
+    t = 1.0f - t;
+  }
+  const ColormapRgb c = colorFor(static_cast<Colormap>(params.colormap), t);  // == GPU LUT source colour
+  return InspectorRgb{clampToByte(c.r * 255.0f), clampToByte(c.g * 255.0f), clampToByte(c.b * 255.0f)};
+}
+
 PixelInspector::PixelInspector(QWidget* parent) : QWidget(parent, Qt::ToolTip | Qt::FramelessWindowHint) {
   setAttribute(Qt::WA_TranslucentBackground);
   setAttribute(Qt::WA_ShowWithoutActivating);
@@ -199,6 +229,7 @@ void PixelInspector::updatePixel(std::vector<uint8_t> crop_rgb, int crop_size, i
     return;
   }
 
+  mode_ = Mode::Rgb;
   crop_data_ = std::move(crop_rgb);
   crop_size_ = crop_size;
   image_x_ = image_x;
@@ -206,6 +237,26 @@ void PixelInspector::updatePixel(std::vector<uint8_t> crop_rgb, int crop_size, i
 
   const int zoom_area = crop_size_ * kZoomCellSize;
   setFixedSize(zoom_area + kInfoPanelWidth + kPadding * 3, std::max(zoom_area, kMinInfoHeight) + kPadding * 2);
+  update();
+}
+
+void PixelInspector::updateDepth(
+    int image_x, int image_y, std::optional<float> depth_m, const DepthColorParams& params) {
+  mode_ = Mode::Depth;
+  depth_m_ = depth_m;
+  depth_params_ = params;
+  image_x_ = image_x;
+  image_y_ = image_y;
+
+  // Two text lines (Position, Depth) + a colormap swatch — no zoom grid. Size to
+  // fit the wider line: the "— (no data)" string is longer than a metric value, so
+  // a fixed width would clip it.
+  const QFontMetrics fm{QFont(QStringLiteral("monospace"), kFontSize)};
+  const QString position_line = QStringLiteral("Position: %1, %2").arg(image_x_).arg(image_y_);
+  const int text_w = std::max(fm.horizontalAdvance(position_line), fm.horizontalAdvance(depthValueText()));
+  const int content_w = std::max(text_w, kSwatchSize) + kPadding * 2;
+  const int content_h = kPadding + kLineHeight + 8 + kLineHeight + 12 + kSwatchSize + kPadding;
+  setFixedSize(content_w, content_h);
   update();
 }
 
@@ -244,6 +295,14 @@ void PixelInspector::paintEvent(QPaintEvent* /*event*/) {
   QPainter painter(this);
   painter.setRenderHint(QPainter::Antialiasing, false);
   painter.fillRect(rect(), QColor(30, 30, 30, 240));
+  if (mode_ == Mode::Depth) {
+    paintDepth(painter);
+  } else {
+    paintRgb(painter);
+  }
+}
+
+void PixelInspector::paintRgb(QPainter& painter) {
   if (crop_data_.empty() || crop_size_ <= 0) {
     return;
   }
@@ -277,28 +336,57 @@ void PixelInspector::paintEvent(QPaintEvent* /*event*/) {
   painter.setFont(mono);
   painter.setPen(Qt::white);
 
-  constexpr int kLineH = 20;
-  painter.drawText(info_x, info_y + kLineH, QStringLiteral("Position: %1, %2").arg(image_x_).arg(image_y_));
-  info_y += kLineH + 8;
+  painter.drawText(info_x, info_y + kLineHeight, QStringLiteral("Position: %1, %2").arg(image_x_).arg(image_y_));
+  info_y += kLineHeight + 8;
   painter.drawText(
-      info_x, info_y + kLineH,
+      info_x, info_y + kLineHeight,
       QStringLiteral("RGB: %1, %2, %3")
           .arg(static_cast<int>(center.r), 3)
           .arg(static_cast<int>(center.g), 3)
           .arg(static_cast<int>(center.b), 3));
-  info_y += kLineH + 4;
+  info_y += kLineHeight + 4;
 
   const QString hex = QStringLiteral("#%1%2%3")
                           .arg(static_cast<int>(center.r), 2, 16, QChar('0'))
                           .arg(static_cast<int>(center.g), 2, 16, QChar('0'))
                           .arg(static_cast<int>(center.b), 2, 16, QChar('0'))
                           .toUpper();
-  painter.drawText(info_x, info_y + kLineH, hex);
-  info_y += kLineH + 12;
+  painter.drawText(info_x, info_y + kLineHeight, hex);
+  info_y += kLineHeight + 12;
 
   painter.fillRect(info_x, info_y, kSwatchSize, kSwatchSize, QColor(center.r, center.g, center.b));
   painter.setPen(QPen(QColor(100, 100, 100), 1));
   painter.drawRect(info_x, info_y, kSwatchSize, kSwatchSize);
+}
+
+void PixelInspector::paintDepth(QPainter& painter) {
+  int x = kPadding;
+  int y = kPadding;
+  QFont mono(QStringLiteral("monospace"), kFontSize);
+  painter.setFont(mono);
+  painter.setPen(Qt::white);
+
+  // Labels padded so the values line up under each other in the monospace font.
+  painter.drawText(x, y + kLineHeight, QStringLiteral("Position: %1, %2").arg(image_x_).arg(image_y_));
+  y += kLineHeight + 8;
+  painter.drawText(x, y + kLineHeight, depthValueText());
+  y += kLineHeight + 12;
+
+  // Swatch: the colour the GPU shows for this pixel, or muted grey for no-data
+  // (the shader renders no-data transparent, so there is no real colour to show).
+  const InspectorRgb swatch =
+      depth_m_.has_value() ? depthColormapColor(*depth_m_, depth_params_) : InspectorRgb{70, 70, 70};
+  painter.fillRect(x, y, kSwatchSize, kSwatchSize, QColor(swatch.r, swatch.g, swatch.b));
+  painter.setPen(QPen(QColor(100, 100, 100), 1));
+  painter.drawRect(x, y, kSwatchSize, kSwatchSize);
+}
+
+QString PixelInspector::depthValueText() const {
+  // "Depth:" padded to the width of "Position: " so values align in the monospace font.
+  if (depth_m_.has_value()) {
+    return QStringLiteral("Depth:    %1 m").arg(*depth_m_, 0, 'f', 3);
+  }
+  return QStringLiteral("Depth:    — (no data)");
 }
 
 InspectorRgb PixelInspector::cropPixel(int x, int y) const {

@@ -792,3 +792,33 @@ more explicit than "calibration exists": compare the annotation's reference
 `frameSize` against the displayed image, gate on the topic name (`*_raw*` vs
 `*_rect*`), or skip when `D` is effectively zero. Out of scope today; documented
 here so the assumption stays a deliberate, visible choice.
+
+## 13. Depth-aware Point Inspector
+
+The hover Point Inspector (`pixel_inspector.{h,cpp}`, driven by
+`MediaViewerWidget::refreshPointInspector`) is **format-aware**. For ordinary
+images it shows the zoom grid + RGB readout. For a depth frame
+(`PixelFormat::kDepthR32F`) the "RGB" is meaningless: depth pixels store **metric
+depth in metres**, and the colour you see is produced on the GPU by the colormap
+shader (the LUT), not stored per-pixel. So the inspector specializes:
+
+- **Sample the right quantity.** `depthMetersAt(frame, x, y)` reads the float32
+  depth. No-data is `!isfinite(v) || v <= 0` — the *same* rule
+  `DepthPipelineSource` uses and the shader's `!(d > 0)` test applies, so the
+  readout's "— (no data)" agrees pixel-for-pixel with the transparent pixels on
+  screen. (Invalid depths are already collapsed to `0.0f` in the frame buffer.)
+- **Reproduce the on-screen colour for the swatch.** `depthColormapColor(depth,
+  params)` mirrors the shader exactly: `t = clamp((d - near) / max(far - near,
+  1e-6), 0, 1)`, optional invert, then `pj_widgets::colorFor(colormap, t)` — the
+  same function the GPU LUT is *built* from, so the swatch matches the display up
+  to the LUT's 256-entry quantization. A regression test (`pixel_inspector_test`,
+  `PixelInspectorDepth.*`) pins the swatch to `colorFor` so it can't silently
+  drift if the colormap math changes.
+- **Drop the zoom grid.** Magnifying a colormapped pixel adds nothing; depth mode
+  shows only `Position`, the metric `Depth`, and the swatch. The tooltip sizes its
+  width with `QFontMetrics` so the longer "— (no data)" line isn't clipped.
+
+Unlike the RGB path (which hides on an off-image / empty crop), depth mode still
+shows the tooltip on a no-data pixel — position + "no data" is useful information.
+Mono8/Mono16 keep their grayscale RGB readout: there the channel value *is* the
+meaningful quantity.
