@@ -408,7 +408,11 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
   action_load_layout_ = file_menu->addAction(tr("Load Layout..."), this, &MainWindow::onLoadLayout);
   action_save_layout_ = file_menu->addAction(tr("Save Layout..."), this, &MainWindow::onSaveLayout);
   file_menu->addSeparator();
-  file_menu->addAction(ui_->actionMarketplace);
+  // Extensions Marketplace temporarily hidden — uncomment to restore the
+  // File-menu entry. The actionMarketplace QAction, its triggered() wiring,
+  // and onOpenMarketplace() are all left intact below; this only removes the
+  // visible menu item.
+  // file_menu->addAction(ui_->actionMarketplace);
   action_preferences_ = file_menu->addAction(tr("Preferences..."), this, &MainWindow::onShowPreferencesDialog);
   file_menu->addSeparator();
   file_menu->addAction(ui_->actionExit);
