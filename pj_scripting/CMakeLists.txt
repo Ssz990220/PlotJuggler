@@ -15,6 +15,7 @@ find_package(nlohmann_json REQUIRED)
 add_library(pj_scripting STATIC
   src/luau_engine.cpp
   src/lua_siso_transform.cpp
+  src/lua_mimo_transform.cpp
   src/filter_catalogue.cpp
 )
 target_include_directories(pj_scripting PUBLIC

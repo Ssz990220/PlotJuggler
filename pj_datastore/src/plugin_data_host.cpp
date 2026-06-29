@@ -1923,6 +1923,12 @@ const PJ_toolbox_host_vtable_t kToolboxVTable = {
     toolboxReadSeriesArrow,
     toolboxRegisterObjectTopic,
     toolboxPushOwnedObject,
+    // Dataset-scoped object-topic registration and count-based object-topic
+    // retention are not provided by this host. The SDK guards every tail-slot
+    // call with PJ_HAS_TAIL_SLOT (struct_size AND non-null pointer), so a null
+    // slot reads as unavailable to plugins rather than being invoked.
+    nullptr,  // register_object_topic_on_dataset
+    nullptr,  // set_object_topic_retention
 };
 
 const PJ_object_write_host_vtable_t kSourceObjectWriteVTable = {
@@ -1931,11 +1937,20 @@ const PJ_object_write_host_vtable_t kSourceObjectWriteVTable = {
 };
 
 const PJ_object_read_host_vtable_t kToolboxObjectReadVTable = {
-    PJ_PLUGIN_DATA_API_VERSION, sizeof(PJ_object_read_host_vtable_t),
-    toolboxObjectLookupTopic,   toolboxObjectListTopics,
-    toolboxObjectTopicMetadata, toolboxObjectReadLatestAt,
-    toolboxObjectGetBytes,      toolboxObjectReleaseBytes,
-    toolboxObjectEntryCount,    toolboxObjectTimeRange,
+    PJ_PLUGIN_DATA_API_VERSION,
+    sizeof(PJ_object_read_host_vtable_t),
+    toolboxObjectLookupTopic,
+    toolboxObjectListTopics,
+    toolboxObjectTopicMetadata,
+    toolboxObjectReadLatestAt,
+    toolboxObjectGetBytes,
+    toolboxObjectReleaseBytes,
+    toolboxObjectEntryCount,
+    toolboxObjectTimeRange,
+    // Dataset-scoped topic lookup is not provided by this host; the SDK's
+    // PJ_HAS_TAIL_SLOT guard (struct_size AND non-null pointer) reads a null
+    // slot as unavailable.
+    nullptr,  // lookup_topic_on_dataset
 };
 
 const PJ_parser_object_write_host_vtable_t kParserObjectWriteVTable = {

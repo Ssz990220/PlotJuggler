@@ -221,6 +221,32 @@ form: `return { Derivative, Integral, ... }`).
 
 ---
 
+## 7. MIMO (N inputs → M outputs)
+
+The SISO contract above (§3, one input value → one output value) is the 1→1 case.
+A class may instead be **MIMO**: it reads **N** inputs and emits **M** outputs.
+
+- **`calculate`** receives the primary value plus the secondary inputs as extra
+  positional args: `calculate(self, t, v, v1, v2, …, vN-1)`. `t` is still seconds
+  since session start; `v` is input 0 (the primary), `v1..vN-1` the secondary
+  inputs. The inputs arrive **already aligned to one timestamp** — the *join* (how
+  the secondary inputs are matched to the primary's sample) is the engine node's
+  concern, **not** the script's. (Exact-timestamp join and nearest-sample-to-primary
+  are two different engine nodes; the script is agnostic to which one drives it.)
+- **Returns M numbers** (a Luau multi-return): `return out0, out1, …, outM-1`. They
+  map **positionally** to the M output topics declared at install time. Returning
+  `nil` (or nothing) as the first result **suppresses** the row (nothing emitted).
+- The SISO two-number `(t_out, value)` explicit-timestamp form is **SISO-only**. In
+  MIMO every return is an output value; the M outputs share the joined input timestamp.
+- The class's single `output` kind applies to **all** M outputs (`"mirror"`/`"same"`
+  mirrors the primary input's kind).
+
+Host side: a MIMO class is installed as a `LuaMimoTransform` (a `PJ::IMIMOTransform`),
+the multi-input sibling of `LuaSisoTransform`. Time contract, sandbox/watchdog and
+sticky-failure behaviour are identical to SISO.
+
+---
+
 ## Implementation pointers
 - Schema/types: `pj_scripting/include/pj_scripting/filter_class.h` (`ParamSpec`, `FilterClass`).
 - Engine seam: `pj_scripting/include/pj_scripting/script_engine.h` (`ScriptEngine`, `FilterInstance`, `makeLuauEngine`).

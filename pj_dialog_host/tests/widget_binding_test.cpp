@@ -125,7 +125,7 @@ TEST(WidgetBindingRangeSlider, AppliesBoundsValuesAndTimeSpan) {
 
 // The plugin owns the rule and pushes {valid, tooltip}; the host renders the
 // tooltip plus a red border when invalid, and clears it when valid.
-TEST(WidgetBindingFieldValidity, RendersTooltipAndBorder) {
+TEST(WidgetBindingFieldValidity, RendersTooltipAndBackground) {
   qapp();
   QWidget root;
   auto* edit = new QLineEdit(&root);
@@ -135,12 +135,13 @@ TEST(WidgetBindingFieldValidity, RendersTooltipAndBorder) {
   bad.setFieldValid("apiKey", false, "invalid key");
   PJ::applyWidgetData(&root, PJ::WidgetDataView(bad.toJson()));
   EXPECT_EQ(edit->toolTip().toStdString(), "invalid key");
-  EXPECT_TRUE(edit->styleSheet().contains("border")) << "invalid field should show a border cue";
+  // PJ3 parity: invalid fields get a light-red background, not a border.
+  EXPECT_TRUE(edit->styleSheet().contains("background-color")) << "invalid field should show a background cue";
 
   PJ::WidgetData good;
   good.setFieldValid("apiKey", true);
   PJ::applyWidgetData(&root, PJ::WidgetDataView(good.toJson()));
-  EXPECT_TRUE(edit->styleSheet().isEmpty()) << "valid field should clear the border cue";
+  EXPECT_TRUE(edit->styleSheet().isEmpty()) << "valid field should clear the cue";
 }
 
 // --- Editable QComboBox handling (generic; ported from gor/mosaico) ----------

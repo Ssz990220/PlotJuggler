@@ -15,6 +15,7 @@
 #include <nlohmann/json.hpp>
 #include <optional>
 #include <string>
+#include <unordered_set>
 #include <utility>
 
 #include "pj_base/dataset.hpp"
@@ -24,6 +25,7 @@
 #include "pj_datastore/object_store.hpp"
 #include "pj_datastore/reader.hpp"
 #include "pj_datastore/topic_storage.hpp"
+#include "pj_runtime/DataProcessorService.h"
 #include "pj_runtime/SessionManager.h"
 #include "pj_runtime/Time.h"
 
@@ -449,6 +451,11 @@ std::uint64_t CatalogModel::catalogFingerprint() const {
     const DataReader reader = impl_->session->createReader();
     DataEngine& engine = impl_->session->dataEngine();
     ObjectStore& object_store = impl_->session->objectStore();
+    // Ephemeral (preview) transform outputs are excluded from the catalog, so they
+    // must not move the fingerprint either — otherwise each preview keystroke (which
+    // mints a fresh output topic id) would trip a full catalog rebuild.
+    const std::unordered_set<TopicId> ephemeral_outputs =
+        impl_->session->dataProcessorService().ephemeralOutputTopics();
     for (const DatasetId dataset_id : reader.listDatasets()) {
       fp += mix(1, dataset_id);
       {
@@ -457,6 +464,9 @@ std::uint64_t CatalogModel::catalogFingerprint() const {
         // with the engine lock, so it is queried after this scope closes.
         const auto lock = engine.lockEngine();
         for (const TopicId topic_id : reader.listTopics(dataset_id)) {
+          if (ephemeral_outputs.count(topic_id) > 0) {
+            continue;
+          }
           std::uint64_t columns = 0;
           if (const TopicStorage* storage = engine.getTopicStorage(topic_id); storage != nullptr) {
             columns = storage->columnDescriptors().size();
@@ -502,6 +512,10 @@ void CatalogModel::rebuildNow() {
   DataEngine& engine = impl_->session->dataEngine();
   ObjectStore& object_store = impl_->session->objectStore();
   const std::vector<DatasetId> dataset_ids = reader.listDatasets();
+  // Ephemeral (preview) transform outputs are intentionally NOT catalogued — the
+  // Transform Editor's live preview materializes a real output topic, and it must
+  // never surface in the Sources tree regardless of when a rebuild fires.
+  const std::unordered_set<TopicId> ephemeral_outputs = impl_->session->dataProcessorService().ephemeralOutputTopics();
 
   // issue #98: a plugin-provided display name (set via setDatasetDisplayName)
   // overrides the file-derived source_name label, with the same '/'→'_'
@@ -557,6 +571,9 @@ void CatalogModel::rebuildNow() {
         dataset_label_it != dataset_labels.end() ? dataset_label_it->second : effective_base_label(dataset_id);
 
     for (const TopicId topic_id : reader.listTopics(dataset_id)) {
+      if (ephemeral_outputs.count(topic_id) > 0) {
+        continue;  // preview node output — never shown in the catalog
+      }
       const auto metadata = reader.getMetadata(topic_id);
       if (!metadata.has_value()) {
         continue;

@@ -35,12 +35,17 @@ Depends on `pj_base` + `pj_datastore` (public) + Luau (private). Licensed MPL-2.
 ## Contract / gotchas
 
 - **Sandbox + watchdog (`sandbox.h` `BudgetLimits`).** Each filter VM runs
-  IN-PROCESS on the commit thread, so it is hardened: `luaL_sandbox` +
-  `lua_setsafeenv` + read-only globals, a custom `lua_Alloc` memory cap, and an
-  interrupt-based instruction-budget watchdog armed per protected region. `os` /
-  `io` / `require` / `debug` / `setfenv` are blocked. A "tripped" flag is checked by
-  the host **even if the script `pcall`-swallows the error**, so a runaway can never
-  silently survive.
+  IN-PROCESS on the commit thread, so it is hardened: `luaL_sandbox` freezes the
+  shared stdlib read-only, then `luaL_sandboxthread` gives the VM its own writable
+  global table layered on the frozen stdlib (read-only `__index`). Net effect: a
+  filter can assign top-level globals for persistent state, but cannot mutate the
+  stdlib or leak globals into a sibling filter's VM. Plus a custom `lua_Alloc`
+  memory cap and an interrupt-based instruction-budget watchdog armed per protected
+  region. `os` / `io` / `require` / `debug` / `setfenv` / `getfenv` are blocked
+  (`setfenv` would let a script swap its environment back onto the frozen stdlib).
+  Each VM loads exactly ONE module, so `safeenv` stays on and stdlib imports keep
+  the fast path. A "tripped" flag is checked by the host **even if the script
+  `pcall`-swallows the error**, so a runaway can never silently survive.
 - **Time contract (precision-critical).** The script sees `t` = **seconds since
   session start**. The int64-ns session-start is subtracted on the absolute spine
   **before** the double cast (avoiding epoch-double quantization, ~256 ns at epoch

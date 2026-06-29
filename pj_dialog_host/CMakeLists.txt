@@ -53,6 +53,9 @@ target_link_libraries(pj_dialog_engine_qt
         Qt6::Widgets
         Qt6::UiTools
         Qt6::SvgWidgets
+    PRIVATE
+        pj_plotting       # PlotWidget for embedded chart containers
+        pj_runtime        # AppSession + CatalogModel
 )
 
 if(PJ_BUILD_TESTS)

@@ -193,6 +193,13 @@ class MainWindow : public QMainWindow {
   // Removes selected catalog entries from the curve/object tree.
   void onCatalogTrashRequested(QStringList keys, bool covers_all);
 
+  // Before deleting `removed_names` (topic/"topic/field" names), find every derived
+  // series (transform) that depends on them transitively, warn the user, and — if
+  // confirmed — remove those transforms and their Custom Series entries. Returns
+  // true to proceed with the deletion, false if the user cancelled. No-op + true
+  // when nothing depends on the removed series.
+  bool confirmAndRemoveDependentTransforms(const std::vector<std::string>& removed_names);
+
   // Removes the selected datasets (curve tree "Remove dataset(s)"): shows one
   // combined confirmation, then erases each. Widget sync is signal-driven.
   void onRemoveDatasetsRequested(const QList<DatasetId>& dataset_ids);
@@ -230,7 +237,10 @@ class MainWindow : public QMainWindow {
   // toolbox, hosts its dialog in a PanelEngine, and presents it in the
   // chart area. Close tears it all down. Shared by the Toolbox menu and
   // LeftPanel::cloudToolboxRequested ("cloud" is just a manifest tag).
-  void launchToolbox(const QString& plugin_id);
+  // `initial_config` (optional) is handed to the toolbox via loadConfig() before
+  // its dialog is built — used to open the Transform Editor pre-populated for an
+  // in-place edit of an existing derived series.
+  void launchToolbox(const QString& plugin_id, const QString& initial_config = QString());
 
   void onThemeChanged(const QString& theme);
 
@@ -255,6 +265,10 @@ class MainWindow : public QMainWindow {
   // `origin` (PlotWidget::replaceCurve — same colour, in place); Close/Apply
   // restore the chart area.
   void openFilterEditor(std::vector<CurveDescriptor> sources, PlotWidget* origin);
+  // Push the current global grid / curve-style / curve-width onto a PlotWidget
+  // embedded in a plugin toolbox panel (e.g. the Transform Editor plugin), so the
+  // app's right-side display buttons drive the plugin preview too.
+  void syncPanelPreviewDisplay();
   // Push the current global grid / curve-style / curve-width onto an open Filter
   // Editor's preview plot so it matches the real plots. No-op unless the presented
   // panel is a FilterEditorPanel. Called on open and from the viz-toolbar handlers.
@@ -511,11 +525,13 @@ class MainWindow : public QMainWindow {
   // (see saveChromeState).
   void restoreChromeState(const QDomElement& element);
 
-  // Serializes every live filter (DataProcessorService recipe) into a
-  // <data_processors> block, storing the INPUT as a stable (topic, field) path
-  // so it rebinds on reload. Restore re-applies each filter onto the target
-  // dataset BEFORE curve-key rebinding, so the materialized output topics are in
-  // the catalog and the filtered curves resolve like any other curve.
+  // Serializes the DataProcessorService snapshot into a <data_processors> block:
+  // per-curve filters as <processor> entries (INPUT stored as a stable
+  // (topic, field) path so it rebinds on reload) and plugin-created transforms as
+  // <transform> entries (script + bindings carried by value, inputs/outputs by
+  // name). Restore re-applies each filter onto the target dataset BEFORE curve-key
+  // rebinding, so the materialized output topics are in the catalog and the
+  // filtered curves resolve like any other curve, then replays the transforms.
   [[nodiscard]] QDomElement saveDataProcessors(QDomDocument& doc) const;
   // Resolves each saved filter's input against whichever loaded dataset holds it
   // (first match in load order, mirroring rebindCurvesToLoadedDatasets), so a

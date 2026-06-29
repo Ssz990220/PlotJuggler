@@ -58,7 +58,7 @@ endif()
 # Qt
 # ---------------------------------------------------------------------------
 
-find_package(Qt6 6.11.1 REQUIRED COMPONENTS Core Gui Widgets Network OpenGLWidgets Xml)
+find_package(Qt6 6.11.1 REQUIRED COMPONENTS Core Gui Widgets Network OpenGLWidgets Xml Svg SvgWidgets)
 find_package(fmt REQUIRED)
 
 # ---------------------------------------------------------------------------

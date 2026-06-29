@@ -41,14 +41,21 @@ TEST(LuauSandbox, StdlibMutationIsRejected) {
   EXPECT_FALSE(inst.has_value());  // create() writes a read-only stdlib table → error
 }
 
-// The global table is frozen: a module cannot leak a new global.
-TEST(LuauSandbox, GlobalWriteInModuleIsRejected) {
+// Each sandboxed VM owns a writable global table whose __index is the frozen
+// stdlib, so a module may define a new global. The write lands in that VM's
+// table only — it cannot leak across filter VMs or into the host — while the
+// stdlib stays read-only (see StdlibMutationIsRejected).
+TEST(LuauSandbox, GlobalWriteInModuleIsAllowedAndIsolated) {
   constexpr const char* kGlobalWrite = R"LUAU(
     sneaky = 42
     return { id="x", name="X", create = function(p) return { calculate = function(t, v) return v end } end }
   )LUAU";
   auto engine = makeLuauEngine();
-  EXPECT_FALSE(engine->inspectModule(kGlobalWrite, "test").has_value());
+  auto classes = engine->inspectModule(kGlobalWrite, "test");
+  ASSERT_TRUE(classes.has_value()) << (classes.has_value() ? "" : classes.error());
+  auto inst = engine->createInstance(classes->front(), "{}");
+  ASSERT_TRUE(inst.has_value()) << (inst.has_value() ? "" : inst.error());
+  EXPECT_DOUBLE_EQ((*inst)->calculate(0.0, 7.0).value, 7.0);
 }
 
 // A malicious __index metamethod must NOT run during host-side inspection (raw

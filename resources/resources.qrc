@@ -144,6 +144,7 @@
     <file alias="mobile_layout.svg">svg/mobile_layout.svg</file>
     <file alias="more_vert.svg">svg/more_vert.svg</file>
     <file alias="move_selection_right.svg">svg/move_selection_right.svg</file>
+    <file alias="pencil-edit.svg">svg/pencil-edit.svg</file>
     <file alias="move_view.svg">svg/move_view.svg</file>
     <file alias="numbers.svg">svg/numbers.svg</file>
     <file alias="panel_bottom.svg">svg/panel_bottom.svg</file>

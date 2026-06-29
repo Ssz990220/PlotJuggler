@@ -217,9 +217,14 @@ struct DerivedNode {
 
   // MIMO fields (flat list; no primary/secondary distinction)
   std::vector<PJ::TopicId> mimo_input_topic_ids;
+  std::vector<std::size_t> mimo_input_columns;  // leaf column per input (parallel to mimo_input_topic_ids)
   std::vector<StorageKind> mimo_input_kinds;
   std::vector<StorageKind> mimo_output_kinds;
   std::unique_ptr<IMIMOTransform> mimo_op;
+  // When true, the M calculate() results are written as M named columns of a SINGLE
+  // output topic (output_topic_ids[0]); when false, each result is its own scalar
+  // topic. See DerivedEngine::addMimoTransform's output_topic_group.
+  bool mimo_grouped = false;
 
   // Common
   std::vector<PJ::TopicId> all_input_topic_ids;  // unified input list for all types
@@ -466,7 +471,9 @@ PJ::Expected<PJ::NodeId> DerivedEngine::addSisoTransform(
 
 PJ::Expected<PJ::NodeId> DerivedEngine::addMimoTransform(
     std::vector<PJ::TopicId> input_topic_ids, std::vector<std::string> output_topic_names,
-    PJ::DatasetId output_dataset_id, std::unique_ptr<IMIMOTransform> op) {
+    PJ::DatasetId output_dataset_id, std::unique_ptr<IMIMOTransform> op, std::vector<std::size_t> input_columns,
+    std::string output_topic_group) {
+  const bool grouped = !output_topic_group.empty();
   // Atomic against concurrent worker ingest (input reads + typeRegistry write +
   // createTopic rehash); recursive mutex, so nested createTopic re-acquires.
   auto lock = engine_.lockEngine();
@@ -479,6 +486,15 @@ PJ::Expected<PJ::NodeId> DerivedEngine::addMimoTransform(
   if (!op) {
     return PJ::unexpected("add_mimo_transform: null transform op");
   }
+  // Default each input to its first leaf column; otherwise one column per input.
+  if (input_columns.empty()) {
+    input_columns.assign(input_topic_ids.size(), 0);
+  } else if (input_columns.size() != input_topic_ids.size()) {
+    return PJ::unexpected(
+        fmt::format(
+            "add_mimo_transform: input_columns has {} entries but {} input topics", input_columns.size(),
+            input_topic_ids.size()));
+  }
 
   // 1. Validate all inputs and determine their StorageKinds.
   //    Same 3-tier fallback as add_siso_transform: type_registry → stored
@@ -486,7 +502,9 @@ PJ::Expected<PJ::NodeId> DerivedEngine::addMimoTransform(
   std::vector<StorageKind> input_kinds;
   input_kinds.reserve(input_topic_ids.size());
 
-  for (PJ::TopicId tid : input_topic_ids) {
+  for (std::size_t i = 0; i < input_topic_ids.size(); ++i) {
+    const PJ::TopicId tid = input_topic_ids[i];
+    const std::size_t col = input_columns[i];  // leaf column feeding this input
     const TopicStorage* storage = engine_.getTopicStorage(tid);
     if (!storage) {
       return PJ::unexpected(fmt::format("add_mimo_transform: input topic {} not found", tid));
@@ -500,31 +518,38 @@ PJ::Expected<PJ::NodeId> DerivedEngine::addMimoTransform(
       const PJ::TypeTreeNode* root = engine_.typeRegistry().lookup(schema_id);
       if (root) {
         num_cols = PJ::countLeafFields(*root);
-        leaf_primitive = findFirstLeaf(*root);
+        if (col < num_cols) {
+          std::size_t seen = 0;
+          leaf_primitive = nthLeafPrimitive(*root, col, seen);
+        }
       }
     }
     if (num_cols == 0) {
       const auto& stored = storage->columnDescriptors();
       if (!stored.empty()) {
         num_cols = stored.size();
-        leaf_primitive = stored[0].logical_type;
+        if (col < num_cols) {
+          leaf_primitive = stored[col].logical_type;
+        }
       }
     }
     if (num_cols == 0) {
       const auto& chunks = storage->sealedChunks();
       if (!chunks.empty() && !chunks[0].columns.empty()) {
         num_cols = chunks[0].columns.size();
-        leaf_primitive = chunks[0].columns[0].descriptor->logical_type;
+        if (col < num_cols) {
+          leaf_primitive = chunks[0].columns[col].descriptor->logical_type;
+        }
       }
     }
 
     if (num_cols == 0) {
       return PJ::unexpected(fmt::format("add_mimo_transform: cannot determine column layout for input topic {}", tid));
     }
-    if (num_cols != 1) {
+    if (col >= num_cols) {
       return PJ::unexpected(
           fmt::format(
-              "add_mimo_transform: MIMO requires single-column inputs; topic {} has {} columns", tid, num_cols));
+              "add_mimo_transform: column index {} out of range for input topic {} ({} columns)", col, tid, num_cols));
     }
     if (!leaf_primitive) {
       return PJ::unexpected(fmt::format("add_mimo_transform: cannot determine primitive type for input topic {}", tid));
@@ -532,13 +557,17 @@ PJ::Expected<PJ::NodeId> DerivedEngine::addMimoTransform(
     input_kinds.push_back(storageKindOf(*leaf_primitive));
   }
 
-  // 2. Check output name uniqueness within dataset.
-  for (const auto& name : output_topic_names) {
-    auto key = std::make_pair(output_dataset_id, name);
-    if (impl_->registered_output_names.contains(key)) {
-      return PJ::unexpected(
-          fmt::format(
-              "add_mimo_transform: output topic '{}' already registered in dataset {}", name, output_dataset_id));
+  // 2. Check output name uniqueness within dataset. Grouped mode owns a single
+  //    topic (output_topic_group); ungrouped owns one per output name.
+  {
+    std::vector<std::string> owned_topics = grouped ? std::vector<std::string>{output_topic_group} : output_topic_names;
+    for (const auto& name : owned_topics) {
+      auto key = std::make_pair(output_dataset_id, name);
+      if (impl_->registered_output_names.contains(key)) {
+        return PJ::unexpected(
+            fmt::format(
+                "add_mimo_transform: output topic '{}' already registered in dataset {}", name, output_dataset_id));
+      }
     }
   }
 
@@ -559,26 +588,50 @@ PJ::Expected<PJ::NodeId> DerivedEngine::addMimoTransform(
             output_topic_names.size()));
   }
 
-  // 5. Create output schema (single "value" column) and topic for each output.
+  // 5. Create the output topic(s).
   PJ::NodeId node_id = next_node_id_++;
   std::vector<PJ::TopicId> out_topic_ids;
-  out_topic_ids.reserve(output_topic_names.size());
 
-  for (std::size_t k = 0; k < output_topic_names.size(); ++k) {
-    PJ::PrimitiveType out_primitive = storageKindToPrimitive(output_kinds[k]);
-    std::string schema_name = fmt::format("derived_mimo_{}_{}", node_id, k);
-    auto out_type_tree = PJ::makePrimitive("value", out_primitive);
-    auto out_schema_or = engine_.typeRegistry().registerOrGet(schema_name, out_type_tree);
+  if (grouped) {
+    // ONE topic whose schema is a struct with M named columns (output_topic_names[k]
+    // is the field name of column k). The M calculate() results fill columns 0..M-1.
+    std::vector<std::shared_ptr<PJ::TypeTreeNode>> fields;
+    fields.reserve(output_topic_names.size());
+    for (std::size_t k = 0; k < output_topic_names.size(); ++k) {
+      fields.push_back(PJ::makePrimitive(output_topic_names[k], storageKindToPrimitive(output_kinds[k])));
+    }
+    std::string schema_name = fmt::format("derived_mimo_{}_grouped", node_id);
+    auto out_schema_or =
+        engine_.typeRegistry().registerOrGet(schema_name, PJ::makeStruct(schema_name, std::move(fields)));
     if (!out_schema_or.has_value()) {
       return PJ::unexpected(out_schema_or.error());
     }
     auto out_topic_or = engine_.createTopic(
         output_dataset_id,
-        TopicDescriptor{.name = output_topic_names[k], .schema_id = *out_schema_or, .dataset_id = output_dataset_id});
+        TopicDescriptor{.name = output_topic_group, .schema_id = *out_schema_or, .dataset_id = output_dataset_id});
     if (!out_topic_or.has_value()) {
       return PJ::unexpected(out_topic_or.error());
     }
     out_topic_ids.push_back(*out_topic_or);
+  } else {
+    // One scalar topic (single "value" column) per output name.
+    out_topic_ids.reserve(output_topic_names.size());
+    for (std::size_t k = 0; k < output_topic_names.size(); ++k) {
+      PJ::PrimitiveType out_primitive = storageKindToPrimitive(output_kinds[k]);
+      std::string schema_name = fmt::format("derived_mimo_{}_{}", node_id, k);
+      auto out_type_tree = PJ::makePrimitive("value", out_primitive);
+      auto out_schema_or = engine_.typeRegistry().registerOrGet(schema_name, out_type_tree);
+      if (!out_schema_or.has_value()) {
+        return PJ::unexpected(out_schema_or.error());
+      }
+      auto out_topic_or = engine_.createTopic(
+          output_dataset_id,
+          TopicDescriptor{.name = output_topic_names[k], .schema_id = *out_schema_or, .dataset_id = output_dataset_id});
+      if (!out_topic_or.has_value()) {
+        return PJ::unexpected(out_topic_or.error());
+      }
+      out_topic_ids.push_back(*out_topic_or);
+    }
   }
 
   // 6. Build and register the node.
@@ -586,17 +639,25 @@ PJ::Expected<PJ::NodeId> DerivedEngine::addMimoTransform(
   node.id = node_id;
   node.is_mimo = true;
   node.mimo_input_topic_ids = input_topic_ids;
+  node.mimo_input_columns = std::move(input_columns);
   node.mimo_input_kinds = std::move(input_kinds);
   node.mimo_output_kinds = std::move(output_kinds);
   node.mimo_op = std::move(op);
+  node.mimo_grouped = grouped;
   node.mimo_last_ts = std::numeric_limits<PJ::Timestamp>::min();
   node.all_input_topic_ids = std::move(input_topic_ids);
   node.output_topic_ids = std::move(out_topic_ids);
   node.dirty = true;
 
-  // Register output names for uniqueness enforcement.
-  for (std::size_t k = 0; k < output_topic_names.size(); ++k) {
-    impl_->registered_output_names[std::make_pair(output_dataset_id, output_topic_names[k])] = node.output_topic_ids[k];
+  // Register the owned topic name(s) for uniqueness enforcement: the single grouped
+  // topic, or one per scalar output.
+  if (grouped) {
+    impl_->registered_output_names[std::make_pair(output_dataset_id, output_topic_group)] = node.output_topic_ids[0];
+  } else {
+    for (std::size_t k = 0; k < output_topic_names.size(); ++k) {
+      impl_->registered_output_names[std::make_pair(output_dataset_id, output_topic_names[k])] =
+          node.output_topic_ids[k];
+    }
   }
 
   // Map input topics to this node (for dirty propagation via on_source_committed).
@@ -954,7 +1015,9 @@ static PJ::Status runMimoIncremental(DerivedEngineImpl& /*impl*/, DataEngine& en
   }
 
   // 4. Process each joined timestamp: decode, call transform, emit output.
-  const std::size_t num_outputs = node.output_topic_ids.size();
+  //    num_outputs is the count of calculate() results (one per output kind). In
+  //    grouped mode they are M columns of one topic; otherwise M scalar topics.
+  const std::size_t num_outputs = node.mimo_output_kinds.size();
   node.mimo_in_buf.resize(num_inputs);
   node.mimo_out_buf.resize(num_outputs);
 
@@ -964,11 +1027,29 @@ static PJ::Status runMimoIncremental(DerivedEngineImpl& /*impl*/, DataEngine& en
   for (PJ::Timestamp ts : joined_ts) {
     for (std::size_t i = 0; i < num_inputs; ++i) {
       const auto& [chp, row] = lookups[i].at(ts);
-      node.mimo_in_buf[i] = decodeAsVarvalue(*chp, 0, row, node.mimo_input_kinds[i]);
+      node.mimo_in_buf[i] = decodeAsVarvalue(*chp, node.mimo_input_columns[i], row, node.mimo_input_kinds[i]);
     }
 
     PJ::Timestamp out_ts = ts;
-    if (node.mimo_op->calculate(ts, node.mimo_in_buf, out_ts, node.mimo_out_buf)) {
+    if (!node.mimo_op->calculate(ts, node.mimo_in_buf, out_ts, node.mimo_out_buf)) {
+      continue;
+    }
+    if (node.mimo_grouped) {
+      // One row, M columns, into the single grouped topic.
+      const PJ::TopicId out_tid = node.output_topic_ids[0];
+      auto s = writer.beginRow(out_tid, out_ts);
+      if (!s.has_value()) {
+        return s;
+      }
+      for (std::size_t k = 0; k < num_outputs; ++k) {
+        writeVarvalue(writer, out_tid, k, node.mimo_out_buf[k], node.mimo_output_kinds[k]);
+      }
+      s = writer.finishRow(out_tid);
+      if (!s.has_value()) {
+        return s;
+      }
+      wrote_any = true;
+    } else {
       for (std::size_t k = 0; k < num_outputs; ++k) {
         auto s = writer.beginRow(node.output_topic_ids[k], out_ts);
         if (!s.has_value()) {

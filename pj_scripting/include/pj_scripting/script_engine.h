@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "pj_base/expected.hpp"
+#include "pj_base/span.hpp"
 #include "pj_scripting/filter_class.h"
 #include "pj_scripting/sandbox.h"
 
@@ -35,6 +36,22 @@ class FilterInstance {
   /// (both doubles — host rebases time off the int64 spine before the cast).
   /// Throws nothing: a script error is reported via `failed()`/`error()`.
   [[nodiscard]] virtual Result calculate(double t, double v) = 0;
+
+  /// One MIMO step result: `suppress` (emit nothing) or `values`, one per declared
+  /// output topic (positional). Distinct from the SISO `Result` (no explicit
+  /// out_time form in MIMO v1 — outputs share the joined input timestamp).
+  struct MimoResult {
+    bool suppress = false;
+    std::vector<double> values;
+  };
+
+  /// MIMO step (N inputs -> M outputs). `inputs[0]` is the primary value; the
+  /// rest are the secondary inputs the engine joined to this sample, all in
+  /// seconds since session start. A class implements EITHER this or the SISO
+  /// `calculate` above; the default suppresses so a SISO-only backend is unaffected.
+  [[nodiscard]] virtual MimoResult calculateMimo(double /*t*/, PJ::Span<const double> /*inputs*/) {
+    return MimoResult{true, {}};
+  }
 
   /// Clear per-instance state (optional in the script). The host generally
   /// prefers re-creating the instance (construct-new-and-swap) over reset.

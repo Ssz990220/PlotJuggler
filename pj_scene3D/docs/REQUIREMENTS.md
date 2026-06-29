@@ -268,6 +268,19 @@ assimp, URDF, tinyply, PCD reader, RGB-direct color mode, additional colormaps b
 > is the historical Phase-1 boundary; for the current as-built feature set see
 > `CLAUDE.md` and `ARCHITECTURE.md`.
 
+> **Note (post–Phase 1):** several of the above have since shipped — URDF/mesh
+> models (assimp), occupancy grids, the additional colormaps, depth-image
+> back-projection (`DepthCloudLayer`), and full `pj_app` integration. This list
+> is the historical Phase-1 boundary; for the current as-built feature set see
+> `CLAUDE.md` and `ARCHITECTURE.md`.
+
+> **Note (post–Phase 1):** several of the above have since shipped — URDF/mesh
+> models (assimp), occupancy grids, the additional colormaps, depth-image
+> back-projection (`DepthCloudLayer`), the **RGB-direct color mode** (see
+> *Pointcloud coloring* above), and full `pj_app` integration. This list
+> is the historical Phase-1 boundary; for the current as-built feature set see
+> `CLAUDE.md` and `ARCHITECTURE.md`.
+
 ## 14. Stack (locked)
 
 - **GPU API**: OpenGL 4.5 core via `QOpenGLWidget`.

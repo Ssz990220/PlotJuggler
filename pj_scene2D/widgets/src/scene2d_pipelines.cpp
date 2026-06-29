@@ -30,6 +30,8 @@ std::unique_ptr<CodecPipeline> makeScene2DPipelineFor(sdk::BuiltinObjectType obj
     case sdk::BuiltinObjectType::kPosesInFrame:
     // kVoxelGrid is a dense 3D volume rendered only by pj_scene3D; no 2D path.
     case sdk::BuiltinObjectType::kVoxelGrid:
+    // kPlotMarkers are time-series plot annotations with no 2D codec path.
+    case sdk::BuiltinObjectType::kPlotMarkers:
       return nullptr;
   }
   return nullptr;

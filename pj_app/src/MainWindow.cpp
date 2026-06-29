@@ -24,6 +24,7 @@
 #include <QLabel>
 #include <QLoggingCategory>
 #include <QMenu>
+#include <QMessageBox>
 #include <QMouseEvent>
 #include <QPalette>
 #include <QPointer>
@@ -95,6 +96,7 @@
 #include "pj_runtime/AppSession.h"
 #include "pj_runtime/CatalogModel.h"
 #include "pj_runtime/DataProcessorService.h"
+#include "pj_runtime/DataProcessorsRuntimeHost.h"
 #include "pj_runtime/DiagnosticHistory.h"
 #include "pj_runtime/ExtensionCatalogService.h"
 #include "pj_runtime/IObjectViewer.h"
@@ -565,6 +567,64 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
   connect(ui_->curveListPanel, &CurveListPanel::trashRequested, this, &MainWindow::onCatalogTrashRequested);
   connect(ui_->curveListPanel, &CurveListPanel::removeDatasetsRequested, this, &MainWindow::onRemoveDatasetsRequested);
   connect(ui_->curveListPanel, &CurveListPanel::mergeDatasetsRequested, this, &MainWindow::onMergeDatasetsRequested);
+  // The "+" in Custom Series opens the Transform Editor — now provided by the
+  // toolbox plugin (the native panel was retired). Launch it like any toolbox.
+  connect(ui_->curveListPanel, &CurveListPanel::createCustomSeriesRequested, this, [this]() {
+    launchToolbox(QStringLiteral("toolbox-transform-editor"));
+  });
+  // Edit (pencil): open the Transform Editor pre-populated with the selected custom
+  // series' saved editor state (stored in the recipe's params_json at create time),
+  // so the user can Modify it in place.
+  connect(ui_->curveListPanel, &CurveListPanel::editCustomSeriesRequested, this, [this](const QString& catalog_key) {
+    // The custom view yields a catalog KEY (same as the delete path); resolve it to
+    // the output topic name, then find that transform's saved editor state.
+    QString output_name;
+    for (const auto& item : session_->catalogModel().items()) {
+      if (item.key == catalog_key) {
+        output_name = item.topic_name;
+        break;
+      }
+    }
+    auto& dp = session_->sessionManager().dataProcessorService();
+    QString initial_config;
+    for (const auto& recipe : dp.transformRecipes()) {
+      const bool owns = std::any_of(recipe.outputs.begin(), recipe.outputs.end(), [&](const std::string& o) {
+        return QString::fromStdString(o) == output_name;
+      });
+      if (owns) {
+        initial_config = QString::fromStdString(recipe.params_json);
+        break;
+      }
+    }
+    launchToolbox(QStringLiteral("toolbox-transform-editor"), initial_config);
+  });
+  connect(ui_->curveListPanel, &CurveListPanel::deleteCustomSeriesRequested, this, [this](const QString& catalog_key) {
+    QString output_name;
+    for (const auto& item : session_->catalogModel().items()) {
+      if (item.key == catalog_key) {
+        output_name = item.topic_name;
+        break;
+      }
+    }
+    // Cascade FIRST to any derivative built on top of this one (and its chain):
+    // its output name is the input of those, so the transitive resolver finds them.
+    // Warns + removes them; cancel aborts (this series is left intact too).
+    if (!confirmAndRemoveDependentTransforms({output_name.toStdString()})) {
+      return;
+    }
+    auto& dp = session_->sessionManager().dataProcessorService();
+    for (const auto& recipe : dp.transformRecipes()) {
+      const bool owns = std::any_of(recipe.outputs.begin(), recipe.outputs.end(), [&](const std::string& o) {
+        return QString::fromStdString(o) == output_name;
+      });
+      if (owns) {
+        (void)dp.removeTransform(recipe.key);
+        break;
+      }
+    }
+    session_->catalogModel().rebuildFromDatastore();
+    ui_->curveListPanel->removeCustomCurve(catalog_key);
+  });
   connect(ui_->curveListPanel, &CurveListPanel::clearAllCurvesRequested, this, [this]() {
     if (streaming_manager_ != nullptr && streaming_manager_->hasActiveSession()) {
       streaming_manager_->stopAllAndWait(tr("dataset removed"));
@@ -971,7 +1031,7 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
       });
   connect(ui_->leftPanel, &LeftPanel::loadDataRequested, this, &MainWindow::onLoadDataRequested);
   connect(ui_->leftPanel, &LeftPanel::reloadDataRequested, this, &MainWindow::onReloadDataRequested);
-  connect(ui_->leftPanel, &LeftPanel::cloudToolboxRequested, this, &MainWindow::launchToolbox);
+  connect(ui_->leftPanel, &LeftPanel::cloudToolboxRequested, this, [this](const QString& id) { launchToolbox(id); });
   connect(file_loader_.get(), &FileLoader::fileLoaded, this, &MainWindow::onFileLoaded);
   // Track successful loads for the recent-files popup.
   connect(
@@ -1389,6 +1449,37 @@ void MainWindow::onFileLoaded(
   ui_->leftPanel->setReloadEnabled(true);
 }
 
+bool MainWindow::confirmAndRemoveDependentTransforms(const std::vector<std::string>& removed_names) {
+  auto& dp = session_->sessionManager().dataProcessorService();
+  const auto affected = dp.transformsDependingOn(removed_names);
+  if (affected.empty()) {
+    return true;  // nothing depends on it — proceed
+  }
+  QStringList names;
+  for (const auto& recipe : affected) {
+    for (const auto& out : recipe.outputs) {
+      names << QString::fromStdString(out);
+    }
+  }
+  const auto answer = QMessageBox::warning(
+      this, tr("Delete derived series?"),
+      tr("These derived series depend on what you are deleting and will also be removed:\n\n• %1")
+          .arg(names.join(QStringLiteral("\n• "))),
+      QMessageBox::Ok | QMessageBox::Cancel, QMessageBox::Cancel);
+  if (answer != QMessageBox::Ok) {
+    return false;  // user cancelled — leave everything intact
+  }
+  // Remove each derivative: drop its Custom Series entry BY NAME (robust against
+  // catalog-key churn — same as PJ3's removeCurve(name)), then the transform node.
+  for (const auto& recipe : affected) {
+    for (const auto& out : recipe.outputs) {
+      ui_->curveListPanel->removeCustomCurveByName(QString::fromStdString(out));
+    }
+    (void)dp.removeTransform(recipe.key);
+  }
+  return true;
+}
+
 void MainWindow::onCatalogTrashRequested(QStringList keys, bool covers_all) {
   CatalogModel& catalog = session_->catalogModel();
   if (covers_all) {
@@ -1416,6 +1507,22 @@ void MainWindow::onCatalogTrashRequested(QStringList keys, bool covers_all) {
     resetUndoHistory();
     return;
   }
+  // Cascade to derived series that depend on the trashed ones (warn + remove).
+  {
+    std::vector<std::string> removed_names;
+    for (const QString& key : keys) {
+      if (const auto d = catalog.curveDescriptor(key)) {
+        removed_names.push_back(d->topic_name.toStdString());
+        if (!d->field_name.isEmpty()) {
+          removed_names.push_back((d->topic_name + "/" + d->field_name).toStdString());
+        }
+      }
+    }
+    if (!confirmAndRemoveDependentTransforms(removed_names)) {
+      return;  // user cancelled
+    }
+  }
+
   // Evict the trashed object topics before mutating the catalog, so the
   // itemsRemoved subscription's revalidateObjects() (which checks the
   // ObjectStore, not the catalog) drops their 2D layers. Scalar keys are ignored
@@ -1494,6 +1601,22 @@ void MainWindow::onRemoveDatasetsRequested(const QList<DatasetId>& dataset_ids) 
       {{tr("Remove"), MessageBox::kDestructiveRole}, {tr("Cancel"), MessageBox::kCancelRole}});
   if (choice != 0) {
     return;  // Cancel / Esc
+  }
+
+  // Cascade to derived series whose input lives in any of these datasets (their
+  // output is typically in another dataset, so removeDataset alone would orphan
+  // them). Warn + remove those transforms and their Custom Series entries; abort
+  // the whole removal on cancel. No-op when nothing depends on the removed data.
+  {
+    std::vector<std::string> removed_names;
+    for (const auto& item : session_->catalogModel().items()) {
+      if (std::find(dataset_ids.begin(), dataset_ids.end(), item.dataset_id) != dataset_ids.end()) {
+        removed_names.push_back(item.topic_name.toStdString());
+      }
+    }
+    if (!confirmAndRemoveDependentTransforms(removed_names)) {
+      return;  // user cancelled
+    }
   }
 
   for (const DatasetId id : dataset_ids) {
@@ -1741,6 +1864,43 @@ void MainWindow::syncFilterEditorPreviewDisplay() {
   const int style =
       QSettings().value(QStringLiteral("MainWindow.curveStyle"), static_cast<int>(PlotWidgetBase::kLines)).toInt();
   panel->setPreviewDisplay(activate_grid_, style, width);
+}
+
+void MainWindow::syncPanelPreviewDisplay() {
+  // A plugin toolbox panel (e.g. the Transform Editor plugin) embeds a real
+  // PlotWidget inside its chart QFrame. It is not one of our native panel types,
+  // so reach it generically as a child of the presented panel and push the same
+  // grid / curve-style / line-width the app's right-side display buttons control.
+  if (current_panel_ == nullptr) {
+    return;
+  }
+  const int width_id = QSettings().value(QStringLiteral("MainWindow.curveWidth"), 0).toInt();
+  const double width = (width_id >= 0 && width_id < static_cast<int>(kWidthButtonSpecs.size()))
+                           ? kWidthButtonSpecs[width_id].second
+                           : 1.0;
+  const auto style = static_cast<PlotWidgetBase::CurveStyle>(
+      QSettings().value(QStringLiteral("MainWindow.curveStyle"), static_cast<int>(PlotWidgetBase::kLines)).toInt());
+  for (auto* plot : current_panel_->findChildren<PlotWidget*>()) {
+    // Stash the view config on the chart frame so the dialog-host binding can
+    // re-apply it on every preview update (it rebuilds curves on source/function
+    // changes, which would otherwise reset style/width to defaults).
+    if (QWidget* frame = plot->parentWidget()) {
+      frame->setProperty("_pj_view_set", true);
+      frame->setProperty("_pj_view_grid", activate_grid_);
+      frame->setProperty("_pj_view_style", static_cast<int>(style));
+      frame->setProperty("_pj_view_width", width);
+    }
+    // Apply immediately too, so a toolbar click updates the preview without waiting
+    // for the next chart tick.
+    plot->setGridVisible(activate_grid_);
+    for (const auto& info : plot->curveList()) {
+      if (info.curve != nullptr) {
+        plot->setCurveStyle(info.source_name, style);
+        plot->setCurveLineWidth(info.source_name, width);
+      }
+    }
+    plot->replot();
+  }
 }
 
 namespace {
@@ -2379,18 +2539,21 @@ void MainWindow::onRebuildToolboxMenu() {
       continue;
     }
     const auto manifest = nlohmann::json::parse(vtable->manifest_json, nullptr, /*allow_exceptions=*/false);
-    bool is_cloud = false;
+    // Skip toolboxes that opt out of this menu: "cloud" ones are reached from the
+    // Sources panel; "hidden" ones are launched elsewhere (e.g. the Transform
+    // Editor, opened from the "+" in Custom Series).
+    bool skip = false;
     if (manifest.is_object()) {
       if (auto it = manifest.find("tags"); it != manifest.end() && it->is_array()) {
         for (const auto& tag : *it) {
-          if (tag.is_string() && tag.get<std::string>() == "cloud") {
-            is_cloud = true;
+          if (tag.is_string() && (tag.get<std::string>() == "cloud" || tag.get<std::string>() == "hidden")) {
+            skip = true;
             break;
           }
         }
       }
     }
-    if (is_cloud) {
+    if (skip) {
       continue;
     }
 
@@ -2891,6 +3054,43 @@ QDomElement MainWindow::saveDataProcessors(QDomDocument& doc) const {
     }
     element.appendChild(processor);
   }
+  // Plugin-created transforms (pj.data_processors.v1): named, owner-tagged nodes
+  // that carry their script + bindings BY VALUE, so they replay on load WITHOUT the
+  // originating plugin (needed only for re-editing). Persisted in the same snapshot
+  // block as the per-curve filters above; restore re-installs them via
+  // DataProcessorService::restoreTransform. Inputs/outputs are topic NAMES (the
+  // engine resolves them on restore), so no (topic, field) rebinding is needed here.
+  for (const auto& recipe : session_->sessionManager().dataProcessorService().transformRecipes()) {
+    QDomElement transform = doc.createElement(QStringLiteral("transform"));
+    transform.setAttribute(QStringLiteral("owner_plugin"), QString::fromStdString(recipe.owner_plugin));
+    transform.setAttribute(QStringLiteral("id"), QString::fromStdString(recipe.user_id));
+    transform.setAttribute(QStringLiteral("backend"), QString::fromStdString(recipe.backend));
+    transform.setAttribute(QStringLiteral("api_version"), QString::fromStdString(recipe.api_version));
+    if (!recipe.backend_version.empty()) {
+      transform.setAttribute(QStringLiteral("backend_version"), QString::fromStdString(recipe.backend_version));
+    }
+    for (const auto& input_name : recipe.inputs) {
+      QDomElement in = doc.createElement(QStringLiteral("input"));
+      in.setAttribute(QStringLiteral("name"), QString::fromStdString(input_name));
+      transform.appendChild(in);
+    }
+    for (const auto& output_name : recipe.outputs) {
+      QDomElement out = doc.createElement(QStringLiteral("output"));
+      out.setAttribute(QStringLiteral("name"), QString::fromStdString(output_name));
+      transform.appendChild(out);
+    }
+    // params (create(params), JSON) and script (the full backend payload, Luau today)
+    // each get their own CDATA child so restore reads them back independently.
+    if (!recipe.params_json.empty()) {
+      QDomElement params = doc.createElement(QStringLiteral("params"));
+      layout_xml::appendJsonAsCdata(doc, params, QString::fromStdString(recipe.params_json));
+      transform.appendChild(params);
+    }
+    QDomElement script = doc.createElement(QStringLiteral("script"));
+    layout_xml::appendJsonAsCdata(doc, script, QString::fromStdString(recipe.script));
+    transform.appendChild(script);
+    element.appendChild(transform);
+  }
   return element;
 }
 
@@ -2952,6 +3152,43 @@ void MainWindow::restoreDataProcessors(const QDomElement& root) {
       emitDiagnostic(
           DiagnosticLevel::kWarning, "Layout", "processor-apply-failed",
           tr("Could not restore filter: %1").arg(QString::fromStdString(applied.error())));
+    }
+  }
+
+  // Reconcile plugin transforms the same way (clear-all, then replay the snapshot's
+  // set) so restore is idempotent for undo/redo and a layout load can't duplicate a
+  // transform. Done AFTER filters so a transform whose input is a filter output can
+  // resolve it by name. The clear runs unconditionally: a snapshot with no
+  // <transform> children then simply leaves every transform torn down.
+  service.clearAllTransforms();
+  for (QDomElement transform = element.firstChildElement(QStringLiteral("transform")); !transform.isNull();
+       transform = transform.nextSiblingElement(QStringLiteral("transform"))) {
+    DataProcessorService::TransformRecipe recipe;
+    recipe.owner_plugin = transform.attribute(QStringLiteral("owner_plugin")).toStdString();
+    recipe.user_id = transform.attribute(QStringLiteral("id")).toStdString();
+    recipe.key = DataProcessorService::makeTransformKey(recipe.owner_plugin, recipe.user_id);
+    recipe.backend = transform.attribute(QStringLiteral("backend"), QStringLiteral("luau")).toStdString();
+    recipe.api_version = transform.attribute(QStringLiteral("api_version"), QStringLiteral("1")).toStdString();
+    recipe.backend_version = transform.attribute(QStringLiteral("backend_version")).toStdString();
+    for (QDomElement in = transform.firstChildElement(QStringLiteral("input")); !in.isNull();
+         in = in.nextSiblingElement(QStringLiteral("input"))) {
+      recipe.inputs.push_back(in.attribute(QStringLiteral("name")).toStdString());
+    }
+    for (QDomElement out = transform.firstChildElement(QStringLiteral("output")); !out.isNull();
+         out = out.nextSiblingElement(QStringLiteral("output"))) {
+      recipe.outputs.push_back(out.attribute(QStringLiteral("name")).toStdString());
+    }
+    recipe.params_json =
+        layout_xml::directCdataText(transform.firstChildElement(QStringLiteral("params"))).toStdString();
+    if (recipe.params_json.empty()) {
+      recipe.params_json = "{}";
+    }
+    recipe.script = layout_xml::directCdataText(transform.firstChildElement(QStringLiteral("script"))).toStdString();
+    if (const auto restored = service.restoreTransform(recipe); !restored.has_value()) {
+      emitDiagnostic(
+          DiagnosticLevel::kWarning, "Layout", "transform-restore-failed",
+          tr("Could not restore transform '%1': %2")
+              .arg(QString::fromStdString(recipe.key), QString::fromStdString(restored.error())));
     }
   }
   session_->catalogModel().rebuildFromDatastore();
@@ -3926,6 +4163,7 @@ void MainWindow::buildGlobalToolbar() {
     QSettings().setValue(QStringLiteral("MainWindow.buttonActivateGrid"), checked);
     forEachPlot([checked](PlotWidget* plot) { plot->setGridVisible(checked); });
     syncFilterEditorPreviewDisplay();
+    syncPanelPreviewDisplay();
   });
   connect(button_dots_, &QToolButton::toggled, this, [this](bool checked) {
     if (applying_state_) {
@@ -4164,6 +4402,7 @@ void MainWindow::buildLocalToolbar() {
   connect(width_button_group_, &QButtonGroup::idClicked, this, [this](int width_id) {
     QSettings().setValue(QStringLiteral("MainWindow.curveWidth"), width_id);
     syncFilterEditorPreviewDisplay();
+    syncPanelPreviewDisplay();
   });
 
   curve_style_header_ = build_section(
@@ -4214,6 +4453,7 @@ void MainWindow::buildLocalToolbar() {
   connect(style_button_group_, &QButtonGroup::idClicked, this, [this](int style_value) {
     QSettings().setValue(QStringLiteral("MainWindow.curveStyle"), style_value);
     syncFilterEditorPreviewDisplay();
+    syncPanelPreviewDisplay();
   });
 
   // Local-panel toolbar: each button stays button_extent square, the
@@ -4381,7 +4621,7 @@ void MainWindow::openEmbeddedConsole() {
   view->start(helper, dir + QStringLiteral("base.wad"));
 }
 
-void MainWindow::launchToolbox(const QString& plugin_id) {
+void MainWindow::launchToolbox(const QString& plugin_id, const QString& initial_config) {
   // Surface every failure on the diagnostic channel (the same sink the toolbox's
   // own on_message uses below), not just stderr, so a user-initiated launch that
   // fails is visible in the UI instead of silently doing nothing.
@@ -4412,18 +4652,22 @@ void MainWindow::launchToolbox(const QString& plugin_id) {
     std::unique_ptr<QSettingsBackend> settings;
     std::unique_ptr<ServiceRegistryBuilder> builder;
     std::unique_ptr<ToolboxRuntimeHost> host;
+    std::unique_ptr<DataProcessorsRuntimeHost> dp_host;
     std::shared_ptr<ToolboxHandle> handle;
 
     // Teardown order is load-bearing, so make it explicit here rather than relying
     // on member-declaration order alone: the plugin (handle) persists its state
     // through the settings backend in its destructor, so it must be torn down
-    // first, then the service views (builder) into host/settings, then the host
-    // (which holds a SettingsBackend&), then settings last. This survives a future
+    // first, then the service views (builder) into host/dp_host/settings, then the
+    // bridge + host. dp_host holds only an external DataProcessorService& (session-
+    // owned, outlives this), so it just has to outlive the builder views into it;
+    // host holds a SettingsBackend&, so settings goes last. This survives a future
     // member reorder; the implicit reverse-declaration destruction that follows
     // only resets already-null pointers.
     ~PanelSession() {
       handle.reset();
       builder.reset();
+      dp_host.reset();
       host.reset();
       settings.reset();
     }
@@ -4434,7 +4678,8 @@ void MainWindow::launchToolbox(const QString& plugin_id) {
 
   const QString source = it->name.empty() ? plugin_id : QString::fromStdString(it->name);
   ToolboxRuntimeHost::Callbacks callbacks;
-  callbacks.on_data_changed = [this](std::vector<DatasetId> ingested_datasets) {
+  const std::string plugin_id_std = plugin_id.toStdString();
+  callbacks.on_data_changed = [this, plugin_id_std](std::vector<DatasetId> ingested_datasets) {
     session_->catalogModel().rebuildFromDatastore();
     // Bridge ingested kFrameTransforms object topics into the 3D scene's TF
     // buffers — the SAME step the file loader does (FileLoader.cpp ~713-727).
@@ -4457,6 +4702,23 @@ void MainWindow::launchToolbox(const QString& plugin_id) {
     // (empty list) keep the union seeding.
     if (ingested_datasets.empty() || !session_->focusPlaybackOnDatasets(ingested_datasets)) {
       session_->seedPlaybackFromSession();
+    }
+    // Surface this plugin's transform outputs in the Custom Series panel (flat,
+    // not in the main data tree).
+    auto& dps = session_->sessionManager().dataProcessorService();
+    for (const auto& recipe : dps.transformRecipes()) {
+      if (recipe.owner_plugin != plugin_id_std) {
+        continue;
+      }
+      for (const auto& output_name : recipe.outputs) {
+        const QString out = QString::fromStdString(output_name);
+        for (const auto& item : session_->catalogModel().items()) {
+          if (item.topic_name == out) {
+            ui_->curveListPanel->addCustomCurve(item.key, out);
+            break;
+          }
+        }
+      }
     }
   };
   callbacks.on_message = [this, source](PJ_toolbox_message_level_t level, std::string message) {
@@ -4492,11 +4754,20 @@ void MainWindow::launchToolbox(const QString& plugin_id) {
       std::move(callbacks), std::move(ingest_deps));
   session->host->registerServices(*session->builder);
 
+  session->dp_host = std::make_unique<DataProcessorsRuntimeHost>(
+      session_->sessionManager().dataProcessorService(), plugin_id.toStdString());
+  session->dp_host->registerServices(*session->builder);
+
   // 3. Create the toolbox instance and bind it to the assembled services.
   session->handle = std::make_shared<ToolboxHandle>(it->library.createHandle());
   if (auto status = session->handle->bind(session->builder->view()); !status) {
     report_error(source, tr("Failed to bind toolbox '%1': %2").arg(source, QString::fromStdString(status.error())));
     return;
+  }
+  // Pre-populate for an in-place edit (Transform Editor pencil button): hand the
+  // saved editor state to the toolbox before its dialog is built.
+  if (!initial_config.isEmpty()) {
+    (void)session->handle->loadConfig(initial_config.toStdString());
   }
 
   // 4. Host the toolbox's dialog in a PanelEngine.
@@ -4509,6 +4780,11 @@ void MainWindow::launchToolbox(const QString& plugin_id) {
   // toolbox expects human field names ("topic/field"). CatalogModel owns that
   // mapping, so resolve dropped keys to names before they reach onItemsDropped.
   PanelEngineConfig panel_config;
+  // Hand the panel a session + catalog so its chart_series previews render with the
+  // full PlotWidget (grid/zoom/tracker/legend) — matching the native editor — instead
+  // of falling back to the bare ChartPreviewWidget.
+  panel_config.session = session_.get();
+  panel_config.catalog = &session_->catalogModel();
   panel_config.catalog_key_resolver = [this](const std::string& key) -> std::string {
     auto descriptor = session_->catalogModel().curveDescriptor(QString::fromStdString(key));
     if (!descriptor) {
@@ -4516,6 +4792,10 @@ void MainWindow::launchToolbox(const QString& plugin_id) {
     }
     return (descriptor->topic_name + "/" + descriptor->field_name).toStdString();
   };
+  // Give chart containers the session + catalog so they render with the real
+  // PJ4 PlotWidget (zoom / tracker / legend / grid), not the bare ChartPreviewWidget.
+  panel_config.session = session_.get();
+  panel_config.catalog = &session_->catalogModel();
   auto* engine = new PanelEngine(DialogHandle::fromBorrowed(borrowed), panel_config, this);
   QWidget* panel = engine->openPanel();
   if (panel == nullptr) {
@@ -4556,6 +4836,9 @@ void MainWindow::launchToolbox(const QString& plugin_id) {
   // presentPanel() succeeded; remember the engine so launching another toolbox
   // (or any panel) tears this one down first instead of being refused.
   current_panel_engine_ = engine;
+  // Apply the app's grid/curve-style/width to the panel's embedded PlotWidget once
+  // the panel engine has built it (deferred: the plot is created on the first tick).
+  QTimer::singleShot(250, this, [this]() { syncPanelPreviewDisplay(); });
 }
 
 }  // namespace PJ

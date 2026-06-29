@@ -5,8 +5,10 @@
 #include <QCheckBox>
 #include <QDomDocument>
 #include <QDomElement>
+#include <QHash>
 #include <QList>
 #include <QPoint>
+#include <QSet>
 #include <QStringList>
 #include <QWidget>
 #include <vector>
@@ -40,6 +42,16 @@ class CurveListPanel : public QWidget {
 
   void refreshValues(double tracker_time);
 
+  /// Add a curve to the Custom Series panel. `catalog_key` is the drag key;
+  /// `display_name` is what the user sees (the topic/alias name).
+  void addCustomCurve(const QString& catalog_key, const QString& display_name);
+  /// Remove a curve from the Custom Series panel by its catalog key.
+  void removeCustomCurve(const QString& name);
+  /// Remove a custom series by its DISPLAY name (the transform output name).
+  /// Robust against catalog-key churn — mirrors PJ3's removeCurve(name) used when
+  /// a source delete cascades to its derived series.
+  void removeCustomCurveByName(const QString& display_name);
+
   // Builds <curve_list_state show_topics="..." show_values="..."
   // datasets_filter="..." custom_filter="..."/> — filter text plus
   // display-mode toggles.
@@ -53,6 +65,8 @@ class CurveListPanel : public QWidget {
  signals:
   void createCustomSeriesRequested();
   void deleteCustomSeriesRequested(QString name);
+  // Edit the selected custom series (pencil button): `name` is its display name.
+  void editCustomSeriesRequested(QString name);
   // covers_all is true when the panel determined the selection (or its
   // empty-implies-all interpretation) targets every known curve. MainWindow
   // decides whether to prompt the user.
@@ -113,6 +127,12 @@ class CurveListPanel : public QWidget {
   CatalogModel* catalog_ = nullptr;
   CurveTreeView* tree_view_ = nullptr;
   CurveTreeView* custom_view_ = nullptr;
+  // Catalog keys routed to the Custom Series panel (plugin-created transforms).
+  // Excluded from the main tree so a custom series never appears in both.
+  QSet<QString> custom_keys_;
+  // Display name -> catalog key, so a custom series can be removed by name even if
+  // its catalog key has churned (used by the source-delete cascade).
+  QHash<QString, QString> custom_name_to_key_;
   // QPushButtons hosted inside QWidgetAction items in the section
   // dropdown menus. Kept as members so applyIcons() can retint their
   // leading icons on theme switch.

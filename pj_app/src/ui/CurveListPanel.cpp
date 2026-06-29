@@ -76,12 +76,21 @@ void addCatalogItems(CurveTreeView* tree_view, const std::vector<CatalogItem>& i
   tree_view->addCatalogItems(paths);
 }
 
-void rebuildTree(CurveTreeView* tree_view, CatalogModel* catalog) {
+void rebuildTree(CurveTreeView* tree_view, CatalogModel* catalog, const QSet<QString>& custom_keys) {
   tree_view->clearCurves();
+  // Note: custom_view is NOT cleared here — custom series are managed separately
+  // via addCustomCurve/removeCustomCurve in MainWindow.
   if (catalog == nullptr) {
     return;
   }
-  addCatalogItems(tree_view, catalog->items());
+  // Exclude keys routed to the Custom Series panel so they never appear in both.
+  std::vector<CatalogItem> tree_items;
+  for (const auto& item : catalog->items()) {
+    if (!custom_keys.contains(item.key)) {
+      tree_items.push_back(item);
+    }
+  }
+  addCatalogItems(tree_view, tree_items);
 }
 
 }  // namespace
@@ -208,14 +217,26 @@ CurveListPanel::CurveListPanel(QWidget* parent) : QWidget(parent), ui_(new Ui::C
   custom_menu->addAction(delete_custom_action);
   connect(delete_custom_button_, &QPushButton::clicked, this, [this, custom_menu]() {
     custom_menu->hide();
-    auto names = custom_view_->selectedCurveNames();
-    if (!names.empty()) {
-      emit deleteCustomSeriesRequested(names.front());
+    const auto names = custom_view_->selectedCurveNames();
+    for (const auto& name : names) {
+      emit deleteCustomSeriesRequested(name);
     }
   });
   connect(ui_->buttonCustomMenu, &QToolButton::clicked, this, [this, custom_menu]() {
     const QPoint anchor = ui_->buttonCustomMenu->mapToGlobal(QPoint(0, ui_->buttonCustomMenu->height()));
     custom_menu->popup(anchor);
+  });
+
+  // Edit (pencil): enabled only when exactly one custom series is selected; opens
+  // the Transform Editor pre-populated for an in-place Modify (PJ3 parity).
+  connect(ui_->buttonEditCustom, &QToolButton::clicked, this, [this]() {
+    const auto names = custom_view_->selectedCurveNames();
+    if (names.size() == 1) {
+      emit editCustomSeriesRequested(names.front());
+    }
+  });
+  connect(custom_view_, &QTreeWidget::itemSelectionChanged, this, [this]() {
+    ui_->buttonEditCustom->setEnabled(custom_view_->selectedCurveNames().size() == 1);
   });
 
   const bool show_values = show_values_check_->isChecked();
@@ -224,7 +245,9 @@ CurveListPanel::CurveListPanel(QWidget* parent) : QWidget(parent), ui_(new Ui::C
 
   auto drag_selection_provider = [this]() { return selectedCurveNamesForDrag(); };
   tree_view_->setDragSelectionProvider(drag_selection_provider);
-  custom_view_->setDragSelectionProvider(drag_selection_provider);
+  // custom_view_ uses its own selection only — avoids including tree_view_ selection in drag
+  auto custom_drag_provider = [this]() { return custom_view_->selectedCurveNamesRecursive(); };
+  custom_view_->setDragSelectionProvider(custom_drag_provider);
 
   tree_view_->setContextMenuPolicy(Qt::CustomContextMenu);
   connect(tree_view_, &QWidget::customContextMenuRequested, this, &CurveListPanel::onTreeContextMenu);
@@ -259,7 +282,7 @@ void CurveListPanel::setCatalog(CatalogModel* catalog) {
     disconnect(catalog_, nullptr, this, nullptr);
   }
   catalog_ = catalog;
-  rebuildTree(tree_view_, catalog_);
+  rebuildTree(tree_view_, catalog_, custom_keys_);
   if (!catalog_) {
     return;
   }
@@ -399,7 +422,7 @@ void CurveListPanel::onPreserveTopicNameToggled(bool checked) {
     settings.setValue(QLatin1String(kPreserveTopicNameKey), checked);
   }
   tree_view_->setViewMode(checked ? CurveTreeView::ViewMode::kShowTopics : CurveTreeView::ViewMode::kHierarchical);
-  rebuildTree(tree_view_, catalog_);
+  rebuildTree(tree_view_, catalog_, custom_keys_);
   tree_view_->applyFilter(ui_->lineEditFilter->text());
 }
 
@@ -501,18 +524,80 @@ void CurveListPanel::onTreeContextMenu(const QPoint& pos) {
 }
 
 void CurveListPanel::onCatalogItemsAdded(const std::vector<CatalogItem>& items) {
-  addCatalogItems(tree_view_, items);
-  // Fill the Value cells of the just-added rows at the current cursor — otherwise
-  // a topic/field that surfaces after the initial load (live streaming, a derived
-  // series materializing) would show a blank Value until the next tracker tick.
+  // Custom-series keys are added flat via addCustomCurve from MainWindow; keep
+  // them out of the main tree.
+  std::vector<CatalogItem> tree_items;
+  for (const auto& item : items) {
+    if (!custom_keys_.contains(item.key)) {
+      tree_items.push_back(item);
+    }
+  }
+  addCatalogItems(tree_view_, tree_items);
+  // Fill the Value cells of the just-added rows at the current cursor.
   refreshValues(last_tracker_time_);
+}
+
+void CurveListPanel::addCustomCurve(const QString& catalog_key, const QString& display_name) {
+  if (custom_view_ == nullptr) {
+    return;
+  }
+  // Idempotent BY NAME: a plugin toolbox re-announces ALL its transforms on every
+  // data change. A plain Create re-announces the same key (skip it). A Modify mints
+  // a NEW output topic id → new key for the SAME name; drop the stale entry first so
+  // we replace it in place instead of appending a duplicate row.
+  const auto existing = custom_name_to_key_.constFind(display_name);
+  if (existing != custom_name_to_key_.constEnd()) {
+    if (existing.value() == catalog_key) {
+      return;  // same series, same key — nothing to do
+    }
+    removeCustomCurve(existing.value());  // stale key from a prior version — remove it
+  }
+  if (custom_keys_.contains(catalog_key)) {
+    return;
+  }
+  custom_keys_.insert(catalog_key);
+  custom_name_to_key_.insert(display_name, catalog_key);
+  CurveTreeView::CurvePath path;
+  path.key = catalog_key;
+  path.dataset = display_name;
+  path.topic = QString{};
+  path.field = QString{};
+  custom_view_->addCatalogItem(path);
+  rebuildTree(tree_view_, catalog_, custom_keys_);
+}
+
+void CurveListPanel::removeCustomCurve(const QString& catalog_key) {
+  if (custom_view_ == nullptr) {
+    return;
+  }
+  custom_keys_.remove(catalog_key);
+  custom_name_to_key_.removeIf([&](const auto& it) { return it.value() == catalog_key; });
+  custom_view_->clearCurves();
+  if (catalog_ != nullptr) {
+    for (const auto& item : catalog_->items()) {
+      if (custom_keys_.contains(item.key)) {
+        CurveTreeView::CurvePath path;
+        path.key = item.key;
+        path.dataset = item.topic_name;
+        custom_view_->addCatalogItem(path);
+      }
+    }
+  }
+}
+
+void CurveListPanel::removeCustomCurveByName(const QString& display_name) {
+  const auto it = custom_name_to_key_.constFind(display_name);
+  if (it == custom_name_to_key_.constEnd()) {
+    return;
+  }
+  removeCustomCurve(it.value());  // also erases the name->key entry
 }
 
 void CurveListPanel::onCatalogItemsRemoved(const QStringList& /*keys*/) {
   // One rebuild per batch (a dataset / multi-key trash is a single itemsRemoved).
   // TODO: incremental CurveTreeView::removeCurve(name); linear rebuild wipes
   // scroll/expansion/selection.
-  rebuildTree(tree_view_, catalog_);
+  rebuildTree(tree_view_, catalog_, custom_keys_);
 }
 
 void CurveListPanel::onCatalogCleared() {
@@ -551,6 +636,7 @@ void CurveListPanel::applyIcons(QString theme) {
   ui_->buttonDatasetsMenu->setIcon(loadSvg(":/resources/svg/more_vert.svg", theme));
   ui_->buttonCustomMenu->setIcon(loadSvg(":/resources/svg/more_vert.svg", theme));
   ui_->buttonAddCustom->setIcon(loadSvg(":/resources/svg/add.svg", theme));
+  ui_->buttonEditCustom->setIcon(loadSvg(":/resources/svg/pencil-edit.svg", theme));
   if (clear_all_button_ != nullptr) {
     clear_all_button_->setIcon(loadSvg(":/resources/svg/trash.svg", theme));
   }

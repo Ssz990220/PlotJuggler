@@ -5,6 +5,7 @@
 
 #include <utility>
 
+#include "pj_scripting/lua_mimo_transform.h"
 #include "pj_scripting/lua_siso_transform.h"
 
 namespace PJ::scripting {
@@ -55,6 +56,20 @@ Expected<std::unique_ptr<proc::DataProcessor>> FilterCatalogue::makeProcessorFro
     if (cls.id == id) {
       return std::unique_ptr<proc::DataProcessor>(
           std::make_unique<LuaSisoTransform>(engine_, std::move(cls), params_json));
+    }
+  }
+  return PJ::unexpected(std::string("embedded source has no filter id '") + std::string(id) + "'");
+}
+
+Expected<std::unique_ptr<LuaMimoTransform>> FilterCatalogue::makeMimoFromSource(
+    const std::string& source, std::string_view id, const std::string& params_json, std::size_t num_outputs) const {
+  auto classes = engine_->inspectModule(source, "embedded");
+  if (!classes.has_value()) {
+    return PJ::unexpected(classes.error());
+  }
+  for (FilterClass& cls : classes.value()) {
+    if (cls.id == id) {
+      return std::make_unique<LuaMimoTransform>(engine_, std::move(cls), params_json, num_outputs);
     }
   }
   return PJ::unexpected(std::string("embedded source has no filter id '") + std::string(id) + "'");

@@ -87,10 +87,13 @@ void armFuel(BudgetState* b, std::uint64_t fuel) {
 }
 
 // Create a sandboxed VM: curated stdlib, os/coroutine/debug/setfenv/getfenv
-// dropped, globals frozen read-only (luaL_sandbox), memory cap + watchdog
-// installed. `budget` must outlive the returned state. The byte cap is left OPEN
-// during trusted setup (openlibs/sandbox) and clamped to limits.mem_bytes only
-// once setup is done, so a small cap can never make setup fail/abort.
+// dropped, the shared stdlib frozen read-only (luaL_sandbox), then a fresh
+// per-VM writable global table layered on top (luaL_sandboxthread). Net effect: a
+// filter can assign its own top-level globals for persistent state, but cannot
+// mutate the stdlib or leak globals into a sibling filter's VM. Also installs a
+// memory cap + watchdog. `budget` must outlive the returned state. The byte cap is
+// left OPEN during trusted setup (openlibs/sandbox) and clamped to limits.mem_bytes
+// only once setup is done, so a small cap can never make setup fail/abort.
 lua_State* newSandboxedState(BudgetState* budget, const BudgetLimits& limits) {
   budget->used = 0;
   budget->max_bytes = std::numeric_limits<std::size_t>::max();  // no cap during setup
@@ -101,12 +104,17 @@ lua_State* newSandboxedState(BudgetState* budget, const BudgetLimits& limits) {
   }
   luaL_openlibs(L);
   // Drop capabilities filters never need; setfenv/getfenv would let a script swap
-  // its environment and defeat the read-only-globals policy.
+  // its environment and escape the per-VM globals table back onto the frozen
+  // stdlib (or another scope), defeating the sandbox isolation set up below.
   for (const char* lib : {"os", "coroutine", "debug", "setfenv", "getfenv"}) {
     lua_pushnil(L);
     lua_setglobal(L, lib);
   }
-  luaL_sandbox(L);  // read-only globals + stdlib, safeenv
+  luaL_sandbox(L);  // freeze the shared stdlib read-only
+  // Own writable global table for this VM (frozen stdlib as read-only __index):
+  // top-level globals the script assigns land here, stdlib reads fall through.
+  // One module loads per VM, so safeenv stays on and imports keep the fast path.
+  luaL_sandboxthread(L);
   lua_callbacks(L)->userdata = budget;
   lua_callbacks(L)->interrupt = budgetInterrupt;
   budget->max_bytes = limits.mem_bytes;  // cap now applies to all untrusted execution
@@ -484,6 +492,63 @@ class LuauInstance final : public FilterInstance {
       fail("calculate must return a number, (time, value), or nil");
       r.suppress = true;
       return r;
+    }
+    lua_settop(L_, base);
+    return r;
+  }
+
+  MimoResult calculateMimo(double t, PJ::Span<const double> inputs) override {
+    MimoResult r;
+    if (failed_ || calc_ref_ == LUA_NOREF) {
+      r.suppress = true;
+      return r;
+    }
+    const int base = lua_gettop(L_);
+    lua_getref(L_, calc_ref_);  // push the calculate function
+    if (!lua_isfunction(L_, -1)) {
+      lua_settop(L_, base);
+      fail("filter `calculate` is not a function");
+      r.suppress = true;
+      return r;
+    }
+    int nargs = 1 + static_cast<int>(inputs.size());  // t + N inputs
+    if (calc_self_) {
+      lua_getref(L_, self_ref_);  // self — `:calculate(self, t, v, v1..)`; pushed before the args
+      ++nargs;
+    }
+    lua_pushnumber(L_, t);
+    for (const double in_value : inputs) {
+      lua_pushnumber(L_, in_value);
+    }
+    armFuel(budget_.get(), call_fuel_);
+    if (lua_pcall(L_, nargs, LUA_MULTRET, 0) != 0) {
+      fail(lua_isstring(L_, -1) ? lua_tostring(L_, -1) : "calculate error");
+      lua_settop(L_, base);
+      r.suppress = true;
+      return r;
+    }
+    if (budget_->tripped) {  // pcall may have swallowed the watchdog — fail anyway
+      lua_settop(L_, base);
+      fail("calculate exceeded its instruction budget");
+      r.suppress = true;
+      return r;
+    }
+    const int nres = lua_gettop(L_) - base;
+    if (nres <= 0 || lua_isnil(L_, base + 1)) {  // nil/no first result suppresses the row
+      lua_settop(L_, base);
+      r.suppress = true;
+      return r;
+    }
+    r.values.reserve(static_cast<std::size_t>(nres));
+    for (int i = 0; i < nres; ++i) {  // every returned result must be a number (one per output)
+      if (!lua_isnumber(L_, base + 1 + i)) {
+        lua_settop(L_, base);
+        fail("calculate must return a number per output");
+        r.suppress = true;
+        r.values.clear();
+        return r;
+      }
+      r.values.push_back(lua_tonumber(L_, base + 1 + i));
     }
     lua_settop(L_, base);
     return r;

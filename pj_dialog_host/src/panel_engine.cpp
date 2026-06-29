@@ -1,5 +1,6 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MIT
+#include <pj_widgets/FileDialog.h>
 #include <pj_widgets/SvgUtil.h>  // currentTheme()
 
 #include <QBuffer>
@@ -8,6 +9,7 @@
 #include <QDialog>
 #include <QDialogButtonBox>
 #include <QEvent>
+#include <QFileDialog>
 #include <QLineEdit>
 #include <QPointer>
 #include <QString>
@@ -16,6 +18,7 @@
 #include <QVBoxLayout>
 #include <nlohmann/json.hpp>
 #include <pj_plugins/host/widget_data_view.hpp>
+#include <pj_plugins/host/widget_event_builder.hpp>
 #include <pj_plugins/host_qt/drop_event_filter.hpp>
 #include <pj_plugins/host_qt/panel_engine.hpp>
 #include <pj_plugins/host_qt/pj_ui_loader.hpp>
@@ -32,15 +35,95 @@ struct PanelEngine::Impl {
   DialogHandle handle;
   PanelEngineConfig config;
   QPointer<QWidget> root;
+  QPointer<QDialog> sub_panel;  // interactive sub-panel (requestSubPanel); null when closed
   QTimer* tick_timer = nullptr;
   nlohmann::json prev_data = nlohmann::json::object();
   std::string prev_raw;
   std::function<void(std::string)> close_cb;
+  std::function<void()> request_owner_close;  // bound to PanelEngine::close in openPanel
   Stats stats;
   bool closed = false;
   // Theme the panel's icons were last applied for; a change triggers a full
   // re-apply (see PanelEngine::eventFilter).
   QString applied_theme;
+
+  // Route one widget event to the plugin, then apply any resulting widget-data
+  // update. Shared by the main panel, its drop filter, and the interactive
+  // sub-panel so all three reach the plugin through the same path.
+  void forwardEvent(const std::string& name, const std::string& event_json) {
+    if (closed) {
+      return;
+    }
+    ++stats.event_count;
+    if (handle.sendEvent(name, event_json)) {
+      if (auto reason = applyAndDiff(); reason.has_value()) {
+        if (close_cb) {
+          close_cb(*reason);
+        }
+        if (request_owner_close) {
+          request_owner_close();
+        }
+      }
+    }
+  }
+
+  // Open the interactive sub-panel from its .ui XML. Unlike the requestSubDialog
+  // modal, this is a live, non-blocking child wired into the normal event path:
+  // its widgets forward events to the plugin and receive widget-data updates on
+  // every tick. `full_view` populates it once at open time.
+  void openSubPanel(const std::string& ui_xml, const WidgetDataView& full_view) {
+    if (sub_panel != nullptr || root == nullptr) {
+      return;
+    }
+    QByteArray sub_data(ui_xml.data(), static_cast<int>(ui_xml.size()));
+    QBuffer sub_buffer(&sub_data);
+    sub_buffer.open(QIODevice::ReadOnly);
+    PjUiLoader loader;
+    QWidget* loaded = loader.load(&sub_buffer, root);
+    if (loaded == nullptr) {
+      return;
+    }
+    adaptStyledWidgets(loaded);
+    QDialog* dlg = qobject_cast<QDialog*>(loaded);
+    if (dlg == nullptr) {
+      dlg = new QDialog(root);
+      auto* lay = new QVBoxLayout(dlg);
+      lay->setContentsMargins(0, 0, 0, 0);
+      lay->addWidget(loaded);
+    }
+    // Keep the native title bar (unlike the frameless modal sub-dialog) so the
+    // .ui's windowTitle shows as the dialog title, matching PJ3. "[*]" renders
+    // empty yet stops Qt appending the " - PlotJuggler 4" suffix.
+    dlg->setWindowTitle(loaded->windowTitle() + "[*]");
+    dlg->setAttribute(Qt::WA_StyledBackground, true);
+    dlg->setWindowModality(Qt::ApplicationModal);
+    applyWidgetData(dlg, full_view, config.session, config.catalog);
+    connectWidgetSignals(dlg, [this](const std::string& n, const std::string& j) { forwardEvent(n, j); });
+    if (auto* button_box = dlg->findChild<QDialogButtonBox*>(QStringLiteral("buttonBox"))) {
+      QObject::connect(button_box, &QDialogButtonBox::rejected, dlg, &QDialog::reject);
+      QObject::connect(button_box, &QDialogButtonBox::accepted, dlg, &QDialog::accept);
+    }
+    // When dismissed (Close button, programmatic close, or otherwise), notify the
+    // plugin exactly once. Null the pointer FIRST so closeSubPanel()/close() are
+    // no-ops and we never re-enter this teardown.
+    QObject::connect(dlg, &QDialog::finished, dlg, [this](int) {
+      if (sub_panel != nullptr) {
+        sub_panel = nullptr;
+        forwardEvent("subPanelClosed", R"({"clicked":true})");
+      }
+    });
+    sub_panel = dlg;
+    dlg->show();
+  }
+
+  void closeSubPanelNow() {
+    if (sub_panel != nullptr) {
+      QDialog* dlg = sub_panel;
+      sub_panel = nullptr;  // disarm the finished handler's re-entry guard
+      dlg->close();
+      dlg->deleteLater();
+    }
+  }
 
   // Same diff-and-apply cycle as DialogEngine, minus the QDialog::accept hook.
   // Returns the close-reason if the plugin requested close on this tick.
@@ -63,10 +146,14 @@ struct PanelEngine::Impl {
     WidgetDataView view(raw);
     auto close_reason = view.requestClose();
     auto sub_dialog_ui = view.subDialogUi();
+    auto sub_panel_ui = view.subPanelUi();
+    const bool sub_panel_close = view.subPanelClose();
 
     // Strip one-shot commands before diffing.
     new_data.erase("__request_close");
     new_data.erase("__request_sub_dialog");
+    new_data.erase("__request_sub_panel");
+    new_data.erase("__request_sub_panel_close");
     new_data.erase("__request_accept");
 
     if (config.enable_diff) {
@@ -76,16 +163,37 @@ struct PanelEngine::Impl {
           diff[key] = val;
         }
       }
-      if (!diff.empty() && root != nullptr) {
+      if (!diff.empty()) {
         WidgetDataView diff_view(diff.dump());
-        applyWidgetData(root, diff_view);
+        if (root != nullptr) {
+          applyWidgetData(root, diff_view, config.session, config.catalog);
+          ++stats.diff_apply_count;
+        }
+        // Mirror the same update into the live sub-panel so its preview/list/etc.
+        // track the plugin's state; names it doesn't own are simply skipped.
+        if (sub_panel != nullptr) {
+          applyWidgetData(sub_panel, diff_view, config.session, config.catalog);
+        }
+      }
+    } else {
+      if (root != nullptr) {
+        applyWidgetData(root, view, config.session, config.catalog);
         ++stats.diff_apply_count;
       }
-    } else if (root != nullptr) {
-      applyWidgetData(root, view);
-      ++stats.diff_apply_count;
+      if (sub_panel != nullptr) {
+        applyWidgetData(sub_panel, view, config.session, config.catalog);
+      }
     }
     prev_data = std::move(new_data);
+
+    // Interactive sub-panel lifecycle (requestSubPanel / closeSubPanel). Close
+    // before open so a same-tick close+reopen works; open is ignored if one is up.
+    if (sub_panel_close) {
+      closeSubPanelNow();
+    }
+    if (sub_panel_ui.has_value()) {
+      openSubPanel(*sub_panel_ui, view);
+    }
 
     // Open sub-dialog if requested (read-only modal popup, no event plumbing).
     if (sub_dialog_ui.has_value() && root != nullptr) {
@@ -127,7 +235,7 @@ struct PanelEngine::Impl {
         // Pre-fill the sub-dialog from the current widget data so it opens
         // populated. Names that don't exist in the sub-dialog are simply
         // skipped, so the panel's own widget values don't leak in.
-        applyWidgetData(sub_dialog, view);
+        applyWidgetData(sub_dialog, view, config.session, config.catalog);
         // exec() spins a nested modal event loop. Pause our tick timer for its
         // duration so a timer-driven applyAndDiff() can't re-enter on the same
         // Impl while the sub-dialog is open — a re-entrant tick could observe a
@@ -195,6 +303,7 @@ PanelEngine::~PanelEngine() {
 
 QWidget* PanelEngine::openPanel() {
   impl_->stats = {};
+  impl_->request_owner_close = [this]() { this->close(); };
 
   // 1. Load the .ui blob into a QWidget.
   std::string ui = impl_->handle.ui_content();
@@ -223,7 +332,7 @@ QWidget* PanelEngine::openPanel() {
       initial_data.erase("__request_sub_dialog");
       initial_data.erase("__request_accept");
       WidgetDataView view(initial_raw);
-      applyWidgetData(loaded, view);
+      applyWidgetData(loaded, view, impl_->config.session, impl_->config.catalog);
       impl_->prev_data = std::move(initial_data);
       impl_->prev_raw = initial_raw;
     }
@@ -241,12 +350,48 @@ QWidget* PanelEngine::openPanel() {
       return;
     }
     ++impl_->stats.event_count;
-    if (impl_->handle.sendEvent(name, event_json)) {
-      if (auto reason = impl_->applyAndDiff(); reason.has_value()) {
-        if (impl_->close_cb) {
-          impl_->close_cb(*reason);
+    // Forward an event to the plugin, apply the resulting widget data, and honour
+    // a plugin-requested close.
+    auto forward = [this](const std::string& widget, const std::string& ev) {
+      if (impl_->handle.sendEvent(widget, ev)) {
+        if (auto reason = impl_->applyAndDiff(); reason.has_value()) {
+          if (impl_->close_cb) {
+            impl_->close_cb(*reason);
+          }
+          this->close();
         }
-        this->close();
+      }
+    };
+    forward(name, event_json);
+    if (impl_->closed) {
+      return;
+    }
+    // Service file / save-file / folder pickers: a click on a widget the plugin
+    // marked with the matching action opens the native chooser and feeds the
+    // chosen path back as a fileSelected / folderSelected event. DialogEngine
+    // does this too; toolbox dialogs are hosted here in PanelEngine, so without
+    // this their Import/Export buttons would be inert.
+    PJ::WidgetDataView picker_view(impl_->handle.widget_data());
+    if (picker_view.isFilePicker(name)) {
+      const QString path = PJ::FileDialog::getOpenFileName(
+          impl_->root, QString::fromStdString(picker_view.filePickerTitle(name).value_or("Select File")), QString(),
+          QString::fromStdString(picker_view.filePickerFilter(name).value_or("")));
+      if (!path.isEmpty()) {
+        forward(name, PJ::WidgetEventBuilder::fileSelected(path.toStdString()));
+      }
+    } else if (picker_view.isSaveFilePicker(name)) {
+      const QString path = PJ::FileDialog::getSaveFileName(
+          impl_->root, QString::fromStdString(picker_view.filePickerTitle(name).value_or("Save File")), QString(),
+          QString::fromStdString(picker_view.filePickerFilter(name).value_or("")),
+          QString::fromStdString(picker_view.saveFilePickerDefaultSuffix(name).value_or("")));
+      if (!path.isEmpty()) {
+        forward(name, PJ::WidgetEventBuilder::fileSelected(path.toStdString()));
+      }
+    } else if (picker_view.isFolderPicker(name)) {
+      const QString path = QFileDialog::getExistingDirectory(
+          impl_->root, QString::fromStdString(picker_view.folderPickerTitle(name).value_or("Select Folder")));
+      if (!path.isEmpty()) {
+        forward(name, PJ::WidgetEventBuilder::folderSelected(path.toStdString()));
       }
     }
   });
@@ -341,6 +486,7 @@ void PanelEngine::close() {
   if (impl_->tick_timer != nullptr) {
     impl_->tick_timer->stop();
   }
+  impl_->closeSubPanelNow();
   impl_->handle.reject();
 }
 

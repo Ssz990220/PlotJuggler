@@ -32,6 +32,17 @@ jobs:
       packages: write   # push/pull the Conan cache OCI artifact on ghcr.io
 
     steps:
+      - name: Free up runner disk space
+        # ubuntu runners ship ~14 GB free; the RelWithDebInfo link of pj_app
+        # (FFmpeg/assimp/Qt + debug info) over the Conan closure can exceed it
+        # ("ld: No space left on device" during the final link). Reclaim the
+        # preinstalled toolchains this build never uses (~20-30 GB).
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc \
+            /usr/local/.ghcup /opt/hostedtoolcache/CodeQL /usr/local/lib/node_modules
+          sudo docker image prune --all --force >/dev/null 2>&1 || true
+          df -h /
+
       - name: Use HTTPS for github.com submodules
         run: git config --global url."https://github.com/".insteadOf "git@github.com:"
 

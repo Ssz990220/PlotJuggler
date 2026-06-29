@@ -1,10 +1,15 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 
+#include <pj_plotting/PlotWidget.h>
+#include <pj_runtime/AppSession.h>
+#include <pj_runtime/CatalogModel.h>
 #include <pj_widgets/DateRangePicker.h>
 #include <pj_widgets/RangeSlider.h>
 #include <pj_widgets/SvgUtil.h>
 #include <pj_widgets/ToggleSwitch.h>
+#include <qwt_plot_curve.h>
+#include <qwt_point_data.h>
 
 #include <QBoxLayout>
 #include <QButtonGroup>
@@ -152,6 +157,74 @@ static void applyTableRows(QTableWidget* tw, const std::vector<std::vector<std::
   tw->setUpdatesEnabled(updates);
 }
 
+namespace {
+// Bridges radio-cell clicks back to the dialog event stream. connectWidgetSignals
+// owns the event callback but the radio cells don't exist yet then (rows arrive
+// later via applyWidgetData), so it stashes this holder on the table and
+// applyTableRadioColumn wires each radio to it as rows materialise. Found by a
+// fixed objectName + static_cast (no Q_OBJECT / moc needed in this TU).
+class RadioEmitHolder : public QObject {
+ public:
+  RadioEmitHolder(QObject* parent, std::function<void(int)> fn) : QObject(parent), emit_row(std::move(fn)) {
+    setObjectName(QStringLiteral("pj_radio_emit_holder"));
+  }
+  std::function<void(int)> emit_row;
+};
+}  // namespace
+
+// Render `col` of `tw` as an exclusive radio group (one QRadioButton per row),
+// check `checked_row`, and wire each radio's click to emit_row(its current row).
+// Idempotent: reuses existing radios and only syncs the checked state, so it can
+// run on every data apply without flicker. Rows that shrink away have their cell
+// widgets destroyed by QTableWidget::setRowCount, which auto-removes them from the
+// QButtonGroup. `clicked` fires on user interaction only (NOT on setChecked), so
+// the checked-state sync below never feeds back as a spurious event.
+static void applyTableRadioColumn(
+    QTableWidget* tw, int col, int checked_row, const std::function<void(int)>& emit_row) {
+  if (col < 0 || col >= tw->columnCount()) {
+    return;
+  }
+  auto* group = tw->findChild<QButtonGroup*>(QStringLiteral("pj_radio_group"), Qt::FindDirectChildrenOnly);
+  if (group == nullptr) {
+    group = new QButtonGroup(tw);
+    group->setObjectName(QStringLiteral("pj_radio_group"));
+    group->setExclusive(true);
+  }
+  for (int r = 0; r < tw->rowCount(); ++r) {
+    auto* radio = qobject_cast<QRadioButton*>(tw->cellWidget(r, col));
+    if (radio == nullptr) {
+      radio = new QRadioButton(tw);
+      radio->setStyleSheet(QStringLiteral("QRadioButton { margin-left: 8px; }"));
+      tw->setCellWidget(r, col, radio);
+      group->addButton(radio);
+      // Resolve the row at click time: rows renumber as the user adds/removes
+      // series, so a row index captured at creation would go stale.
+      QObject::connect(radio, &QRadioButton::clicked, radio, [emit_row, tw, col, radio]() {
+        for (int rr = 0; rr < tw->rowCount(); ++rr) {
+          if (tw->cellWidget(rr, col) == radio) {
+            emit_row(rr);
+            return;
+          }
+        }
+      });
+    }
+    radio->setChecked(r == checked_row);
+  }
+
+  // Keep the radio column just wide enough for the button, and stretch the first
+  // non-radio column instead. installTreeLikeHeader stretches column 0 by default,
+  // which would over-widen the radio when it is the first column.
+  auto* header = tw->horizontalHeader();
+  header->setSectionResizeMode(col, QHeaderView::Fixed);
+  tw->setColumnWidth(col, 36);
+  for (int c = 0; c < tw->columnCount(); ++c) {
+    if (c != col) {
+      header->setSectionResizeMode(c, QHeaderView::Stretch);
+      break;
+    }
+  }
+}
+
 // True when `tw`'s header labels already equal `headers`.
 static bool tableMatchesHeaders(const QTableWidget* tw, const QStringList& headers) {
   if (tw->columnCount() != headers.size()) {
@@ -207,7 +280,9 @@ static void installTreeLikeHeader(QTableWidget* tw) {
   }
 }
 
-static void applyToWidget(QWidget* w, std::string_view name, const PJ::WidgetDataView& view) {
+static void applyToWidget(
+    QWidget* w, std::string_view name, const PJ::WidgetDataView& view, PJ::AppSession* session = nullptr,
+    PJ::CatalogModel* catalog = nullptr) {
   const QSignalBlocker blocker(w);
 
   // --- Generic properties (any widget) ---
@@ -229,15 +304,16 @@ static void applyToWidget(QWidget* w, std::string_view name, const PJ::WidgetDat
 
   // --- Generic field-validity indicator (any widget) ---
   // The plugin owns the validation rule and pushes {valid, tooltip}; the host
-  // renders a soft cue (the tooltip plus a red border on the field itself when
-  // invalid) without needing a per-field indicator widget. The border is scoped
-  // by objectName so child widgets are unaffected; cleared when valid.
+  // renders a soft cue (the tooltip plus a light-red background on the field
+  // itself when invalid) without needing a per-field indicator widget. The cue
+  // is scoped by objectName so child widgets are unaffected; cleared when valid.
+  // PJ3 parity: invalid input fields use a #ffcccc background, not a border.
   if (auto ok = view.fieldValid(name)) {
     if (auto tip = view.fieldValidTooltip(name)) {
       w->setToolTip(QString::fromStdString(*tip));
     }
     const QString sel = w->objectName().isEmpty() ? QString() : QStringLiteral("#%1").arg(w->objectName());
-    w->setStyleSheet(*ok || sel.isEmpty() ? QString() : sel + QStringLiteral(" { border: 1px solid #D32F2F; }"));
+    w->setStyleSheet(*ok || sel.isEmpty() ? QString() : sel + QStringLiteral(" { background-color: #ffcccc; }"));
   }
 
   // --- QLineEdit ---
@@ -459,6 +535,16 @@ static void applyToWidget(QWidget* w, std::string_view name, const PJ::WidgetDat
     if (auto v = view.tableRows(name)) {
       applyTableRows(tw, *v);
     }
+    // Radio column: render the designated column as an exclusive radio group and
+    // sync the checked row. The holder (stashed by connectWidgetSignals) carries
+    // the event callback the radios need; absent on the very first apply, which is
+    // harmless because a table only gains rows after the user interacts.
+    if (auto col = view.tableRadioColumn(name)) {
+      if (auto* holder = static_cast<RadioEmitHolder*>(
+              tw->findChild<QObject*>(QStringLiteral("pj_radio_emit_holder"), Qt::FindDirectChildrenOnly))) {
+        applyTableRadioColumn(tw, *col, view.tableRadioCheckedRow(name).value_or(-1), holder->emit_row);
+      }
+    }
     // Row visibility (live filtering): hide rows not in the visible set. Absent
     // (clearVisibleRows ⇒ nullopt) means "no change"; an empty set hides all.
     if (auto v = view.visibleRows(name)) {
@@ -651,33 +737,162 @@ static void applyToWidget(QWidget* w, std::string_view name, const PJ::WidgetDat
     return;
   }
 
-  // --- QFrame with chart_series or chart_zoom_enabled → ChartPreviewWidget ---
+  // --- QFrame with chart_series or chart_zoom_enabled → PlotWidget or ChartPreviewWidget ---
   if (auto* frame = qobject_cast<QFrame*>(w)) {
     auto series_data = view.chartSeries(name);
     auto zoom_enabled = view.chartZoomEnabled(name);
+    auto auto_zoom = view.chartAutoZoom(name);
     if (series_data || zoom_enabled) {
-      // Find or create the ChartPreviewWidget inside this frame.
-      auto* chart = frame->findChild<PJ::ChartPreviewWidget*>();
-      if (!chart) {
-        auto* layout = frame->layout();
-        if (!layout) {
-          layout = new QVBoxLayout(frame);
-          layout->setContentsMargins(0, 0, 0, 0);
+      if (session != nullptr && catalog != nullptr) {
+        // Full PlotWidget — zoom/tracker/legend, matching FilterEditorPanel preview quality.
+        // Right-click context menu disabled per Davide's comment ("embedded PlotWidget
+        // should have the right click menu disabled").
+        auto* plot = frame->findChild<PJ::PlotWidget*>();
+        if (!plot) {
+          auto* layout = frame->layout();
+          if (!layout) {
+            layout = new QVBoxLayout(frame);
+            layout->setContentsMargins(0, 0, 0, 4);
+          }
+          plot = new PJ::PlotWidget(&session->sessionManager(), catalog, frame);
+          plot->setContextMenuEnabled(false);
+          // PlotWidgetBase starts with the grid disabled; show it so embedded chart
+          // previews match the native editor's gridded look.
+          plot->setGridVisible(true);
+          layout->addWidget(plot);
         }
-        chart = new PJ::ChartPreviewWidget(frame);
-        layout->addWidget(chart);
-      }
-      if (series_data) {
-        // Convert WidgetDataView series to ChartPreviewWidget series.
-        std::vector<PJ::ChartPreviewWidget::Series> chart_series;
-        chart_series.reserve(series_data->size());
-        for (const auto& s : *series_data) {
-          chart_series.push_back({s.label, s.points, s.color});
+        if (series_data) {
+          // Mirror FilterEditorPanel's update strategy:
+          // - Rebuild curves only when the SET of labels changes (like preview_set_key_).
+          // - Otherwise just update samples and replot — preserves the user's zoom.
+          // - zoomOut only on rebuild (first paint or new series set).
+          // The current label set is stored as a frame property so we can detect changes.
+          QStringList new_labels;
+          for (const auto& s : *series_data) {
+            new_labels << QString::fromStdString(s.label);
+          }
+          const QString new_set_key = new_labels.join(QLatin1Char('|'));
+          const QString old_set_key = frame->property("_chart_set_key").toString();
+          const bool rebuilt = (new_set_key != old_set_key);
+
+          if (rebuilt) {
+            // Set changed: remove all curves and re-create them with empty samples.
+            plot->removeAllCurves();
+            for (const auto& s : *series_data) {
+              QColor color;
+              if (!s.color.empty()) {
+                color = QColor(QString::fromStdString(s.color));
+              }
+              const QString label = QString::fromStdString(s.label);
+              plot->PlotWidgetBase::addCurve(
+                  label, new QwtPointSeriesData(), color.isValid() ? color : Qt::transparent, label);
+            }
+            frame->setProperty("_chart_set_key", new_set_key);
+            // Reset user-zoom flag so autozoom kicks in for the new series set.
+            frame->setProperty("_user_zoomed", false);
+          }
+
+          // Update samples on existing curves (no rebuild overhead).
+          {
+            const auto& curve_list = plot->curveList();
+            auto curve_it = curve_list.begin();
+            std::size_t i = 0;
+            while (curve_it != curve_list.end() && i < series_data->size()) {
+              const auto& s = (*series_data)[i];
+              QVector<QPointF> pts;
+              pts.reserve(static_cast<int>(s.points.size()));
+              for (const auto& p : s.points) {
+                pts.append(QPointF(p.first, p.second));
+              }
+              auto* pts_data = new QwtPointSeriesData();
+              pts_data->setSamples(pts);
+              curve_it->curve->setData(pts_data);
+              ++curve_it;
+              ++i;
+            }
+          }
+
+          // Re-apply the app's view configuration (grid / curve-style / line-width)
+          // that the host pushed as frame properties. Done on EVERY update so it
+          // survives a curve rebuild — otherwise the right-side display buttons'
+          // effect would be lost whenever the preview's series set changes.
+          if (frame->property("_pj_view_set").toBool()) {
+            plot->setGridVisible(frame->property("_pj_view_grid").toBool());
+            const auto vstyle = static_cast<PJ::PlotWidgetBase::CurveStyle>(frame->property("_pj_view_style").toInt());
+            const double vwidth = frame->property("_pj_view_width").toDouble();
+            for (const auto& info : plot->curveList()) {
+              if (info.curve != nullptr) {
+                plot->setCurveStyle(info.source_name, vstyle);
+                plot->setCurveLineWidth(info.source_name, vwidth);
+              }
+            }
+          }
+
+          // Per-series dashed pattern LAST: a dashed series is the faded "before"
+          // ghost (matches FilterEditorPanel/native TransformEditorPanel). Applied
+          // after the view-config above, since setCurveLineWidth rebuilds the pen as
+          // SolidLine and would otherwise wipe the dash.
+          {
+            const auto& curve_list = plot->curveList();
+            auto curve_it = curve_list.begin();
+            std::size_t i = 0;
+            while (curve_it != curve_list.end() && i < series_data->size()) {
+              if (curve_it->curve != nullptr && (*series_data)[i].dashed) {
+                QPen pen = curve_it->curve->pen();
+                pen.setStyle(Qt::DashLine);
+                curve_it->curve->setPen(pen);
+              }
+              ++curve_it;
+              ++i;
+            }
+          }
+
+          // Connect viewResized once to detect manual user zoom.
+          if (!frame->property("_zoom_connected").toBool()) {
+            QObject::connect(plot, &PJ::PlotWidgetBase::viewResized, frame, [frame](const QRectF& /*r*/) {
+              frame->setProperty("_user_zoomed", true);
+            });
+            frame->setProperty("_zoom_connected", true);
+          }
+
+          // Replot, then auto-fit. If the plugin sent an explicit AutoZoom flag,
+          // honor it (true => fit every update, like the editor's AutoZoom box;
+          // false => keep the user's zoom, but still fit once on a new series set).
+          // Otherwise fall back to "fit until the user manually zooms".
+          plot->replot();
+          bool do_zoom;
+          if (auto_zoom.has_value()) {
+            do_zoom = rebuilt || *auto_zoom;
+          } else {
+            do_zoom = !frame->property("_user_zoomed").toBool();
+          }
+          if (do_zoom) {
+            plot->zoomOut(false);
+          }
         }
-        chart->setSeries(chart_series);
-      }
-      if (zoom_enabled) {
-        chart->setZoomEnabled(*zoom_enabled);
+      } else {
+        // Fallback: ChartPreviewWidget (no session/catalog available).
+        auto* chart = frame->findChild<PJ::ChartPreviewWidget*>();
+        if (!chart) {
+          auto* layout = frame->layout();
+          if (!layout) {
+            layout = new QVBoxLayout(frame);
+            layout->setContentsMargins(0, 0, 0, 0);
+          }
+          chart = new PJ::ChartPreviewWidget(frame);
+          layout->addWidget(chart);
+        }
+        if (series_data) {
+          std::vector<PJ::ChartPreviewWidget::Series> chart_series;
+          chart_series.reserve(series_data->size());
+          for (const auto& s : *series_data) {
+            chart_series.push_back({s.label, s.points, s.color});
+          }
+          chart->setSeries(chart_series);
+        }
+        if (zoom_enabled) {
+          chart->setZoomEnabled(*zoom_enabled);
+        }
       }
     }
     return;
@@ -694,13 +909,14 @@ static void applyToWidget(QWidget* w, std::string_view name, const PJ::WidgetDat
   }
 }
 
-void applyWidgetData(QWidget* root, const PJ::WidgetDataView& view) {
+void applyWidgetData(
+    QWidget* root, const PJ::WidgetDataView& view, PJ::AppSession* session, PJ::CatalogModel* catalog) {
   for (const auto& name : view.widgetNames()) {
     auto* w = root->findChild<QWidget*>(QString::fromStdString(name));
     if (!w) {
       continue;
     }
-    applyToWidget(w, name, view);
+    applyToWidget(w, name, view, session, catalog);
   }
   // NOTE: styled-widget adaptation is NOT re-run here on every data tick. It is
   // structural (depends on the widget tree, built once at load), so the engines
@@ -836,14 +1052,49 @@ void connectWidgetSignals(QWidget* root, WidgetEventCallback callback) {
     }
     if (auto* tw = qobject_cast<QTableWidget*>(w)) {
       QObject::connect(tw, &QTableWidget::itemSelectionChanged, tw, [callback, name, tw]() {
+        // Emit one entry per selected row: the text of its first column with no
+        // cell widget. Columns hosting a cell widget — e.g. an exclusive radio
+        // column — carry no selectable item text, so keying off a fixed column 0
+        // would yield empty strings when the radio sits first. Falling through to
+        // the first text column keeps selection-driven actions (delete, …) working
+        // regardless of where the radio sits; for widget-free tables this is just
+        // column 0 as before.
         std::vector<std::string> sel;
+        std::vector<int> seen_rows;
         for (auto* item : tw->selectedItems()) {
-          if (item->column() == 0) {
-            sel.push_back(item->text().toStdString());
+          const int row = item->row();
+          bool dup = false;
+          for (int r : seen_rows) {
+            if (r == row) {
+              dup = true;
+              break;
+            }
+          }
+          if (dup) {
+            continue;
+          }
+          seen_rows.push_back(row);
+          for (int c = 0; c < tw->columnCount(); ++c) {
+            if (tw->cellWidget(row, c) == nullptr) {
+              if (auto* label = tw->item(row, c)) {
+                sel.push_back(label->text().toStdString());
+              }
+              break;
+            }
           }
         }
         callback(name, WidgetEventBuilder::selectionChanged(sel));
       });
+      // Double-click a row -> itemDoubleClicked(row), mirroring QListWidget so a
+      // plugin can implement double-click-to-use on a table (e.g. the function
+      // library box). Emits the row index of the double-clicked cell.
+      QObject::connect(tw, &QTableWidget::cellDoubleClicked, tw, [callback, name](int row, int /*col*/) {
+        callback(name, WidgetEventBuilder::itemDoubleClicked(row));
+      });
+      // Stash the event callback so applyTableRadioColumn can wire radio cells
+      // (created lazily as rows arrive) back to the dialog event stream.
+      new RadioEmitHolder(
+          tw, [callback, name](int row) { callback(name, WidgetEventBuilder::tableRadioSelected(row)); });
       continue;
     }
     if (auto* btn = qobject_cast<QPushButton*>(w)) {

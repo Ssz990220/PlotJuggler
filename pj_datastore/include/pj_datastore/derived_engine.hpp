@@ -153,12 +153,27 @@ class DerivedEngine {
       std::unique_ptr<ISISOTransform> op, std::size_t input_column_index = 0);
 
   // ---- MIMO -----------------------------------------------------------------
-  // All input topics must be single-column (scalar).
   // A row is emitted only when ALL input topics share the exact same timestamp.
   // Creates output_topic_names.size() new topics (kinds from op->outputKinds()).
+  //
+  // input_columns selects which leaf column of each (possibly multi-column) input
+  // topic feeds the transform — same flattened-leaf DFS order as the SISO
+  // input_column_index. Empty (the default) means column 0 for every input; when
+  // non-empty it MUST have exactly one entry per input topic. This is what lets a
+  // single multi-column topic (e.g. a quaternion's x/y/z/w) feed several inputs.
+  //
+  // output_topic_group selects the output SHAPE:
+  //   - empty (default): each output_topic_names[k] is its own scalar topic with a
+  //     single "value" column — M topics.
+  //   - non-empty: ONE topic named output_topic_group with M named columns, where
+  //     output_topic_names[k] is the FIELD name of column k (so a quaternion->RPY
+  //     transform materializes one "rpy" topic with roll/pitch/yaw fields instead of
+  //     three separate topics). The calculate() contract is unchanged — its k-th
+  //     result fills column k. outputTopics() then returns the single topic id.
   [[nodiscard]] PJ::Expected<PJ::NodeId> addMimoTransform(
       std::vector<PJ::TopicId> input_topic_ids, std::vector<std::string> output_topic_names,
-      PJ::DatasetId output_dataset_id, std::unique_ptr<IMIMOTransform> op);
+      PJ::DatasetId output_dataset_id, std::unique_ptr<IMIMOTransform> op, std::vector<std::size_t> input_columns = {},
+      std::string output_topic_group = {});
 
   // ---- Node management -----------------------------------------------------
   PJ::Status removeNode(PJ::NodeId id);

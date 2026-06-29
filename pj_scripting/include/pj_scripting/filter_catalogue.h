@@ -15,6 +15,8 @@
 
 namespace PJ::scripting {
 
+class LuaMimoTransform;
+
 /// One catalogued filter class plus its provenance.
 struct CatalogueEntry {
   FilterClass cls;
@@ -53,6 +55,14 @@ class FilterCatalogue {
   /// with `id`. Used by the restore path when `id` is absent from the catalogue.
   [[nodiscard]] Expected<std::unique_ptr<proc::DataProcessor>> makeProcessorFromSource(
       const std::string& source, std::string_view id, const std::string& params_json) const;
+
+  /// Build a MIMO filter from an embedded module `source`, locating the class by
+  /// `id`, as a `LuaMimoTransform` declaring `num_outputs` output topics. The N→M
+  /// sibling of `makeProcessorFromSource` — returns the `IMIMOTransform`
+  /// implementation (not a `proc::DataProcessor`, which is SISO-only). Error if the
+  /// source fails to compile or declares no class with `id`.
+  [[nodiscard]] Expected<std::unique_ptr<LuaMimoTransform>> makeMimoFromSource(
+      const std::string& source, std::string_view id, const std::string& params_json, std::size_t num_outputs) const;
 
   // DEFERRED (post-v1): rescanUserDir(path) would merge a user-override file +
   // marketplace dir over the bundled set (user ids shadow bundled, except the

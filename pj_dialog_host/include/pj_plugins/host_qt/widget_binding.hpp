@@ -20,12 +20,18 @@ using WidgetEventCallback = std::function<void(const std::string& widget_name, c
 /// source of truth so it can be unit-tested without constructing a dialog.
 QString resolveNamedIconPath(std::string_view icon_name);
 
+class AppSession;
+class CatalogModel;
+
 /// Apply widget data from a WidgetDataView to all matching child widgets of root.
 /// Uses QSignalBlocker to prevent re-entrant signal firing during updates.
+/// When session and catalog are provided, QFrame chart containers use a full
+/// PlotWidget (zoom/tracker/legend) instead of ChartPreviewWidget.
 /// Styled-widget adaptation (QRadioButton/QCheckBox/QComboBox → PJ controls)
 /// lives in widget_adapters.hpp; the engines call adaptStyledWidgets() once
 /// after loading the .ui, and applyWidgetData keeps the replacements in sync.
-void applyWidgetData(QWidget* root, const PJ::WidgetDataView& view);
+void applyWidgetData(
+    QWidget* root, const PJ::WidgetDataView& view, AppSession* session = nullptr, CatalogModel* catalog = nullptr);
 
 /// Connect primary change signals of all editable widgets under root
 /// to the given callback. The callback receives the widget objectName and

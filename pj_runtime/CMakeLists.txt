@@ -10,6 +10,7 @@ add_library(pj_runtime STATIC
     src/CatalogModel.cpp
     src/CurveColorRegistry.cpp
     src/DataProcessorService.cpp
+    src/DataProcessorsRuntimeHost.cpp
     src/DataSourceRuntimeHost.cpp
     src/DiagnosticHistory.cpp
     src/ExtensionCatalogService.cpp
@@ -75,6 +76,28 @@ if(PJ_BUILD_TESTS)
         GTest::gtest_main
     )
     add_test(NAME DataProcessorServiceTest COMMAND data_processor_service_test)
+
+    add_executable(data_processor_service_transform_test
+        tests/data_processor_service_transform_test.cpp
+    )
+    target_compile_options(data_processor_service_transform_test PRIVATE ${PJ_WARNING_FLAGS})
+    target_link_libraries(data_processor_service_transform_test PRIVATE
+        pj_runtime
+        pj_scripting  # M4.2: plugin-created transforms compile a Luau script via the catalogue
+        GTest::gtest_main
+    )
+    add_test(NAME DataProcessorTransformTest COMMAND data_processor_service_transform_test)
+
+    add_executable(data_processors_runtime_host_test
+        tests/data_processors_runtime_host_test.cpp
+    )
+    target_compile_options(data_processors_runtime_host_test PRIVATE ${PJ_WARNING_FLAGS})
+    target_link_libraries(data_processors_runtime_host_test PRIVATE
+        pj_runtime
+        pj_scripting  # M4.2: the bridge compiles a Luau transform script through the service
+        GTest::gtest_main
+    )
+    add_test(NAME DataProcessorsRuntimeHostTest COMMAND data_processors_runtime_host_test)
 
     add_executable(app_session_test
         tests/app_session_test.cpp

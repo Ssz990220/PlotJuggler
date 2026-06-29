@@ -9,6 +9,12 @@
 #include <pj_plugins/host/dialog_handle.hpp>
 #include <string>
 
+// Forward declarations so callers can pass session/catalog without a hard link.
+namespace PJ {
+class AppSession;
+class CatalogModel;
+}  // namespace PJ
+
 namespace PJ {
 
 /// Configuration for PanelEngine.
@@ -22,6 +28,12 @@ struct PanelEngineConfig {
   /// tree drags opaque catalog keys; plugins (Quaternion, FFT, …) expect names.
   /// If unset, or if it returns empty for a key, that key is delivered verbatim.
   std::function<std::string(const std::string& catalog_key)> catalog_key_resolver;
+
+  /// Optional session + catalog. When both are non-null, QFrame chart containers
+  /// use a full PlotWidget (zoom/tracker/legend) instead of ChartPreviewWidget,
+  /// matching the FilterEditorPanel preview quality. Right-click menu is disabled.
+  AppSession* session = nullptr;
+  CatalogModel* catalog = nullptr;
 };
 
 /// Hosts a long-lived interactive panel built from a plugin's typed-dialog UI.

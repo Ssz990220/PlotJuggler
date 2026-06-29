@@ -1,6 +1,8 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 
+#include <pj_widgets/FileDialog.h>
+
 #include <QAbstractItemView>
 #include <QBuffer>
 #include <QComboBox>
@@ -225,8 +227,8 @@ DialogResult DialogEngine::showDialog(QWidget* parent) {
     }
     auto filter = view.filePickerFilter(widget_name).value_or("");
     auto title = view.filePickerTitle(widget_name).value_or("Select File");
-    QString path =
-        QFileDialog::getOpenFileName(dialog, QString::fromStdString(title), QString(), QString::fromStdString(filter));
+    QString path = PJ::FileDialog::getOpenFileName(
+        dialog, QString::fromStdString(title), QString(), QString::fromStdString(filter));
     if (!path.isEmpty()) {
       if (handle->sendEvent(widget_name, PJ::WidgetEventBuilder::fileSelected(path.toStdString()))) {
         std::string raw = handle->widget_data();
@@ -255,6 +257,36 @@ DialogResult DialogEngine::showDialog(QWidget* parent) {
     QString path = QFileDialog::getExistingDirectory(dialog, QString::fromStdString(title));
     if (!path.isEmpty()) {
       if (handle->sendEvent(widget_name, PJ::WidgetEventBuilder::folderSelected(path.toStdString()))) {
+        std::string raw = handle->widget_data();
+        nlohmann::json new_data = nlohmann::json::parse(raw, nullptr, false);
+        if (!new_data.is_discarded()) {
+          new_data.erase("__request_accept");
+          new_data.erase("__request_sub_dialog");
+          PJ::WidgetDataView v(raw);
+          applyWidgetData(target_widget, v);
+          target_prev_data = std::move(new_data);
+        }
+      }
+    }
+  };
+
+  auto show_save_file_picker_for = [&](const std::string& widget_name, PJ::DialogHandle* handle, QWidget* target_widget,
+                                       nlohmann::json& target_prev_data) {
+    if (!config_.enable_file_picker || !handle) {
+      return;
+    }
+    PJ::WidgetDataView view(handle->widget_data());
+    if (!view.isSaveFilePicker(widget_name)) {
+      return;
+    }
+    auto filter = view.filePickerFilter(widget_name).value_or("");
+    auto title = view.filePickerTitle(widget_name).value_or("Save File");
+    auto suffix = view.saveFilePickerDefaultSuffix(widget_name).value_or("");
+    QString path = PJ::FileDialog::getSaveFileName(
+        dialog, QString::fromStdString(title), QString(), QString::fromStdString(filter),
+        QString::fromStdString(suffix));
+    if (!path.isEmpty()) {
+      if (handle->sendEvent(widget_name, PJ::WidgetEventBuilder::fileSelected(path.toStdString()))) {
         std::string raw = handle->widget_data();
         nlohmann::json new_data = nlohmann::json::parse(raw, nullptr, false);
         if (!new_data.is_discarded()) {
@@ -366,6 +398,7 @@ DialogResult DialogEngine::showDialog(QWidget* parent) {
       // Handle file/folder pickers in parser dialog
       show_file_picker_for(name, parser_dialog_handle.get(), parser_dialog_widget, parser_prev_data);
       show_folder_picker_for(name, parser_dialog_handle.get(), parser_dialog_widget, parser_prev_data);
+      show_save_file_picker_for(name, parser_dialog_handle.get(), parser_dialog_widget, parser_prev_data);
     });
   };
 
@@ -464,6 +497,7 @@ DialogResult DialogEngine::showDialog(QWidget* parent) {
     }
     show_file_picker_for(name, &handle_, binding_root, prev_data);
     show_folder_picker_for(name, &handle_, binding_root, prev_data);
+    show_save_file_picker_for(name, &handle_, binding_root, prev_data);
   });
 
   // 5b. Install button keyboard shortcuts declared in widget data
