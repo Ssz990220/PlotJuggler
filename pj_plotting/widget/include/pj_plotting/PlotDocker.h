@@ -6,6 +6,7 @@
 
 #include <QDomDocument>
 #include <QDomElement>
+#include <QList>
 #include <QPointer>
 #include <QString>
 #include <functional>
@@ -64,6 +65,19 @@ class PlotDocker : public ads::CDockManager {
   // which is what a drop populating an already-focused placeholder needs.
   void focusDock(DockWidget* dock);
 
+  // Maximize `dock` so it fills the whole tab, or restore the layout if a dock
+  // is already maximized (the `dock` argument is then ignored — any maximized
+  // dock exits). Entering hides every other *currently open* dock via ADS'
+  // native CDockWidget::toggleView(false), which collapses the emptied splitter
+  // branches so the survivor reflows to fill; a raw CDockAreaWidget::setVisible
+  // (false) does not, stranding the survivor in nested layouts. Exiting restores
+  // exactly the docks this hid, leaving any independently-closed docks untouched.
+  void toggleFullscreen(DockWidget* dock);
+  // The dock currently maximized via toggleFullscreen, or nullptr if none.
+  // Out-of-line so the header need not see a complete DockWidget for the
+  // QPointer-to-pointer conversion (matches focusedDock()).
+  [[nodiscard]] DockWidget* fullscreenDock() const;
+
  public slots:
   void onStylesheetChanged(QString theme);
 
@@ -108,6 +122,13 @@ class PlotDocker : public ads::CDockManager {
   // restore focus to the previously active dock when the current one closes.
   QPointer<DockWidget> focused_dock_;
   QPointer<DockWidget> previous_dock_;
+
+  // Fullscreen (maximize-one-dock) state. `fullscreen_dock_` is the maximized
+  // dock (nullptr when not fullscreen); `hidden_by_fullscreen_` is the exact set
+  // of docks the maximize hid, so exiting restores only those — not docks the
+  // user closed independently. QPointers guard against a dock dying mid-state.
+  QPointer<DockWidget> fullscreen_dock_;
+  QList<QPointer<ads::CDockWidget>> hidden_by_fullscreen_;
 };
 
 }  // namespace PJ

@@ -79,8 +79,8 @@ QPushButton* DockToolbar::buttonSplitVertical() {
   return ui_->buttonSplitVertical;
 }
 
-void DockToolbar::toggleFullscreen() {
-  fullscreen_mode_ = !fullscreen_mode_;
+void DockToolbar::setFullscreen(bool on) {
+  fullscreen_mode_ = on;
   setButtonIcon(ui_->buttonFullscreen, fullscreen_mode_ ? collapse_icon_ : expand_icon_);
   ui_->buttonClose->setHidden(fullscreen_mode_);
   if (fullscreen_mode_) {

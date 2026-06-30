@@ -35,6 +35,19 @@ target_link_libraries(dock_widget_placeholder_test PRIVATE
 
 add_test(NAME DockWidgetPlaceholderTest COMMAND dock_widget_placeholder_test)
 
+add_executable(dock_fullscreen_test
+    dock_fullscreen_test.cpp
+)
+
+target_compile_options(dock_fullscreen_test PRIVATE ${PJ_WARNING_FLAGS})
+target_link_libraries(dock_fullscreen_test PRIVATE
+    pj_plotting
+    pj_widgets
+    GTest::gtest
+)
+
+add_test(NAME DockFullscreenTest COMMAND dock_fullscreen_test)
+
 add_executable(plot_widget_replace_curve_test
     plot_widget_replace_curve_test.cpp
 )

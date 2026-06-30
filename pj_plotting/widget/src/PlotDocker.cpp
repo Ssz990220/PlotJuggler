@@ -637,6 +637,46 @@ void PlotDocker::focusDock(DockWidget* dock) {
   }
 }
 
+DockWidget* PlotDocker::fullscreenDock() const {
+  return fullscreen_dock_;
+}
+
+void PlotDocker::toggleFullscreen(DockWidget* dock) {
+  if (fullscreen_dock_) {
+    // Exit: re-show exactly the docks the maximize hid (those still alive).
+    // toggleView(true) re-shows each dock and its collapsed parent splitters,
+    // restoring the layout the maximize folded away.
+    for (const QPointer<ads::CDockWidget>& hidden : hidden_by_fullscreen_) {
+      if (hidden) {
+        hidden->toggleView(true);
+      }
+    }
+    hidden_by_fullscreen_.clear();
+    fullscreen_dock_ = nullptr;
+    return;
+  }
+  if (dock == nullptr) {
+    return;
+  }
+  // Enter: hide every currently shown dock except the target. toggleView(false)
+  // routes through ADS' hideDockWidget -> hideEmptyParentSplitters, collapsing
+  // the emptied branches so the survivor reflows to fill the tab. (It only
+  // deletes content under DeleteContentOnClose, not the DeleteOnClose flag the
+  // docks carry, so the hidden docks survive to be restored.)
+  // openedDockWidgets() (not dockWidgetsMap(), which is keyed by objectName —
+  // every PJ4 dock is named "Plot", so the map collapses to a single entry and
+  // only one sibling would hide).
+  hidden_by_fullscreen_.clear();
+  for (ads::CDockWidget* other : openedDockWidgets()) {
+    if (other == dock) {
+      continue;
+    }
+    other->toggleView(false);
+    hidden_by_fullscreen_.append(other);
+  }
+  fullscreen_dock_ = dock;
+}
+
 void PlotDocker::onStylesheetChanged(QString theme) {
   for (int index = 0; index < plotCount(); ++index) {
     if (auto* dock = plotAt(index)) {

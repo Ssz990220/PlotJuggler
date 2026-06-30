@@ -33,7 +33,10 @@ class DockToolbar : public QWidget {
   QPushButton* buttonSplitHorizontal();
   QPushButton* buttonSplitVertical();
 
-  void toggleFullscreen();
+  // Reflect the maximized state on this dock's toolbar: swap the expand/collapse
+  // glyph and hide the close/split buttons while maximized. The actual hiding of
+  // sibling docks is owned by PlotDocker::toggleFullscreen, not here.
+  void setFullscreen(bool on);
   bool isFullscreen() const {
     return fullscreen_mode_;
   }

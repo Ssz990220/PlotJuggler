@@ -95,15 +95,8 @@ DockWidget::DockWidget(
     if (!parent_docker) {
       return;
     }
-    toolbar_->toggleFullscreen();
-    const bool fullscreen = toolbar_->isFullscreen();
-    for (int i = 0; i < parent_docker->dockAreaCount(); ++i) {
-      auto* area = parent_docker->dockArea(i);
-      if (area != dockAreaWidget()) {
-        area->setVisible(!fullscreen);
-      }
-      toolbar_->buttonClose()->setHidden(fullscreen);
-    }
+    parent_docker->toggleFullscreen(this);
+    toolbar_->setFullscreen(parent_docker->fullscreenDock() == this);
   };
   connect(toolbar_->buttonFullscreen(), &QPushButton::clicked, this, fullscreen_action);
 
