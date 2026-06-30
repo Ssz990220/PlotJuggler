@@ -232,6 +232,32 @@ QTabBar::tab:!selected {
     border-bottom: none;
 }
 
+/* Opt-in "framed" tab look: a QTabWidget that sets the dynamic property
+   framed="true" gets a bordered pane + bordered tabs (plugin dialogs:
+   Transform Editor, MQTT, ULog). Single source of truth so the style isn't
+   duplicated per .ui; the app's own tab strips stay flat (they don't set it).
+   The [framed] attribute selector outranks the base rules above. */
+QTabWidget[framed="true"]::pane {
+    border: 1px solid ${border_default};
+    border-radius: 2px;
+    border-top-left-radius: 0px;
+    top: -1px;
+}
+QTabWidget[framed="true"] QTabBar::tab {
+    border: 1px solid ${border_default};
+    border-bottom: none;
+    border-top-left-radius: 2px;
+    border-top-right-radius: 2px;
+    padding: 4px 12px;
+}
+QTabWidget[framed="true"] QTabBar::tab:selected {
+    background: ${dark_background};
+}
+QTabWidget[framed="true"] QTabBar::tab:!selected {
+    background: transparent;
+    border-bottom: 1px solid ${border_default};
+}
+
 
 QTextBrowser {
    background: ${widget_background};
@@ -692,7 +718,7 @@ QGroupBox::indicator:unchecked:disabled {
 QPushButton
 {
     color: ${default_text};
-    border-radius: 0px;
+    border-radius: 4px;
     padding: 6px;
     outline: none;
 }
@@ -706,7 +732,11 @@ QPushButton[flat="true"]
 QPushButton[flat="false"]
 {
     background: ${widget_background};
-    border: none;
+    border: 1px solid ${border_default};
+}
+
+QPushButton[flat="false"]:hover {
+    border: 1px solid ${border_hover};
 }
 
 QPushButton:disabled {
@@ -1001,7 +1031,21 @@ QSlider#timeSlider::handle:horizontal:pressed {
 
 /* --------------------------------------------------------------------------- */
 
-QTableView,
+/* Tables read as an input surface (white in light, lighter grey in dark) with a
+   hairline border, like the Preferences lists — so a table separates from the
+   dialog/page behind it instead of blending in. Applies to every QTableView /
+   QTableWidget in the app and in plugin dialogs. */
+QTableView {
+   background: ${input_background};
+   color: ${default_text};
+   border-radius: 0px;
+   border: 1px solid ${border_default};
+
+   selection-color: ${default_text};
+   selection-background-color: transparent;
+   show-decoration-selected: 1;
+}
+
 QTreeView,
 QListView {
    background: ${widget_background};
