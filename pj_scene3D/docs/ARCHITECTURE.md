@@ -174,6 +174,13 @@ fit light frustum to mesh-caster bounds  ──►  ShadowMapPass.begin() (depth
   `key_light_dir`, so two docks shadow independently. `shadow_map_id == 0` (feature off,
   or an invalid frustum fit) makes every receiver render fully lit — a safe no-op
   degrade.
+- **Gated on live data.** The whole pre-pass is skipped unless a `TransformBuffer` is
+  bound (`tf_ != nullptr`), mirroring the layer color pass (`if (tf_)`): layers only
+  pose geometry through TF, and a layer keeps its last draw cache after its dataset is
+  deleted (the dock clears the binding via `setTransformBuffer(nullptr)` but does not
+  dirty surviving layers), so an ungated pre-pass would keep depth-drawing that stale
+  geometry and the floor would keep sampling a shadow whose mesh has vanished. Deleting
+  the data therefore clears the floor shadow. Regression: `shadow_persistence_gl_test`.
 - **Demo / verification.** `scene3d_mesh_viewer --shadows on|off` (switches the floor
   to filled cells) renders A/B screenshots; `fixtures/shadow_demo.urdf` is an elevated
   box over the ground. Cost on Iris Xe ≈ 4 ms/frame for a single-caster scene

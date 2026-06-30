@@ -254,6 +254,16 @@ class SceneViewWidget : public QOpenGLWidget {
   [[nodiscard]] bool hasGpuResult() const {
     return scene_profiler_.hasResult();
   }
+
+  // Test seam: the shadow-map texture id the LAST paintGL handed to shadow
+  // receivers. Non-zero only when the shadow pre-pass actually ran AND fit a valid
+  // light frustum to a caster; 0 when shadows are off, nothing cast, or — the
+  // regression this guards — the scene has no TransformBuffer (so no layer may pose
+  // a caster). Lets the persistence test assert "deleting the data clears the floor
+  // shadow" without fragile shadow-pixel thresholds under software GL.
+  [[nodiscard]] unsigned lastShadowMapIdForTest() const {
+    return last_shadow_map_id_;
+  }
   // CPU wall-time submitting the scene in paintGL (ms), smoothed with the same
   // moving average as the GPU readout. Should stay ~flat across MSAA settings —
   // the AA cost is the GPU's, not the CPU's. Excludes the HUD draw.
@@ -428,6 +438,8 @@ class SceneViewWidget : public QOpenGLWidget {
   // the camera focal; the async hover hit-test reuses it to stay consistent with
   // last_view_proj_. {0,0,0} until the first paint = absolute world.
   glm::dvec3 render_origin_{0.0};
+  // Shadow-map id the last paintGL passed to receivers (see lastShadowMapIdForTest).
+  unsigned last_shadow_map_id_ = 0U;
   // The TF frame currently under the cursor, or empty when none. Holds only the
   // name; the label re-projects the live origin each paint so it stays glued.
   std::optional<std::string> hovered_frame_;

@@ -604,7 +604,13 @@ void SceneViewWidget::paintGL() {
   unsigned shadow_map_id = 0U;
   glm::mat4 shadow_light_vp{1.0f};
   float shadow_texel = 0.0f;
-  if (shading_params_.shadows_enabled) {
+  // Gate on tf_ exactly like the color pass below (`if (tf_)`): a caster can only be
+  // posed through a TransformBuffer, so without one there is nothing legitimate to
+  // cast. The gate matters because a layer keeps its last draw cache after the data
+  // is deleted — the dock clears the binding via setTransformBuffer(nullptr) but does
+  // not dirty surviving layers — so an ungated pre-pass would depth-draw that STALE
+  // geometry and the floor would keep sampling a shadow whose mesh has vanished.
+  if (shading_params_.shadows_enabled && tf_ != nullptr) {
     AABB caster_bounds;
     for (Scene3DLayer* layer : layers_) {
       if (layer == nullptr) {
@@ -652,6 +658,7 @@ void SceneViewWidget::paintGL() {
       shadow_texel = fit.world_units_per_texel;
     }
   }
+  last_shadow_map_id_ = shadow_map_id;  // test seam (see lastShadowMapIdForTest)
 
   const ViewParams view_params{
       camera_->viewMatrixRelativeTo(render_origin_),
