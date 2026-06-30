@@ -16,6 +16,10 @@ nlohmann_json/3.12.0
 # PUC-Lua/sol2 LuaProcessor's lua/5.4.7 dep was dropped in M9; the standalone
 # engine_shootout benchmarks pin their own lua/luajit via their own conanfiles.)
 luau/0.700
+# Embedded CPython for the Python Data Processors backend (pj_scripting's
+# PythonEngine). pybind11 provides the embed target; cpython is pinned explicitly.
+cpython/3.12.7
+pybind11/2.13.6
 mcap/2.1.1
 zstd/1.5.5
 fast_float/8.1.0
@@ -40,6 +44,10 @@ assimp/5.4.3
 
 [options]
 fmt/*:header_only=True
+# Embedded CPython needs only the language + stdlib (no GUI). Drop tkinter (pulls
+# the big xorg/system -dev set) and curses.
+cpython/*:with_tkinter=False
+cpython/*:with_curses=False
 nanoarrow/*:with_ipc=True
 libarchive/*:shared=False
 # pj_scene2D needs FFmpeg for file video playback and packet-stream decode.

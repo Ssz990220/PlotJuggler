@@ -22,6 +22,7 @@
 #include "pj_scripting/filter_catalogue.h"
 #include "pj_scripting/lua_mimo_transform.h"
 #include "pj_scripting/lua_siso_transform.h"
+#include "pj_scripting/python_engine.h"
 #include "pj_scripting/script_engine.h"
 
 namespace PJ {
@@ -287,7 +288,7 @@ Expected<std::string> inferTransformBackend(const std::string& script) {
     return std::string("luau");
   }
   if (first.find("pj-script: python") != std::string::npos) {
-    return PJ::unexpected("pj.data_processors: Python backend is recognized but not available in this host build");
+    return std::string("python");
   }
   return PJ::unexpected(
       "pj.data_processors: unrecognized script backend directive (expected '-- pj-script: <lang>' on line 1)");
@@ -416,17 +417,21 @@ bool DataProcessorService::outputNameInUse(const std::string& name, const std::s
 
 Status DataProcessorService::validateScript(
     std::string_view script, std::string_view language, std::string_view params_json) {
-  // Only the Luau backend exists today; reserve other names ("python", …) for a
-  // future backend so the plugin-facing API never changes when one is added.
-  if (!language.empty() && language != "luau") {
-    return PJ::unexpected("unsupported script language '" + std::string(language) + "' (only 'luau' is available)");
+  // Luau and Python backends are available; anything else is rejected.
+  const std::string lang = language.empty() ? "luau" : std::string(language);
+  if (lang != "luau" && lang != "python") {
+    return PJ::unexpected("unsupported script language '" + lang + "' (only 'luau' or 'python' are available)");
   }
   const std::string src(script);
   const std::string params(params_json.empty() ? "{}" : std::string(params_json));
-  // Compile with the catalogue's engine when installed, else a transient one.
-  auto compiled = filter_catalogue_ ? filter_catalogue_->makeProcessorFromSource(src, "__validate__", params)
-                                    : scripting::FilterCatalogue(scripting::makeLuauEngine())
-                                          .makeProcessorFromSource(src, "__validate__", params);
+  // Compile through the matching backend. Python uses a transient catalogue (the
+  // embedded interpreter is process-global); Luau reuses the installed catalogue.
+  Expected<std::unique_ptr<proc::DataProcessor>> compiled =
+      (lang == "python")  ? scripting::FilterCatalogue(scripting::makePythonEngine())
+                                .makeProcessorFromSource(src, "__validate__", params)
+      : filter_catalogue_ ? filter_catalogue_->makeProcessorFromSource(src, "__validate__", params)
+                          : scripting::FilterCatalogue(scripting::makeLuauEngine())
+                                .makeProcessorFromSource(src, "__validate__", params);
   if (!compiled.has_value()) {
     return PJ::unexpected(compiled.error());  // syntax / module-load error
   }
@@ -534,8 +539,13 @@ Expected<DataProcessorService::TransformRecipe> DataProcessorService::installTra
   //    one (the built transform shares ownership of the engine, so it outlives it).
   std::shared_ptr<proc::DataProcessor> siso_op;          // set iff is_siso
   std::unique_ptr<scripting::LuaMimoTransform> mimo_op;  // set iff !is_siso
+  // Python transforms compile through a transient Python catalogue (the embedded
+  // interpreter is process-global). Luau reuses the installed catalogue.
+  const bool is_python = recipe.backend == "python";
   if (is_siso) {
-    auto compiled = filter_catalogue_
+    auto compiled = is_python ? scripting::FilterCatalogue(scripting::makePythonEngine())
+                                    .makeProcessorFromSource(recipe.script, recipe.user_id, recipe.params_json)
+                    : filter_catalogue_
                         ? filter_catalogue_->makeProcessorFromSource(recipe.script, recipe.user_id, recipe.params_json)
                         : scripting::FilterCatalogue(scripting::makeLuauEngine())
                               .makeProcessorFromSource(recipe.script, recipe.user_id, recipe.params_json);
@@ -545,7 +555,9 @@ Expected<DataProcessorService::TransformRecipe> DataProcessorService::installTra
     siso_op = std::move(compiled).value();
   } else {
     auto compiled =
-        filter_catalogue_
+        is_python ? scripting::FilterCatalogue(scripting::makePythonEngine())
+                        .makeMimoFromSource(recipe.script, recipe.user_id, recipe.params_json, mimo_num_outputs)
+        : filter_catalogue_
             ? filter_catalogue_->makeMimoFromSource(recipe.script, recipe.user_id, recipe.params_json, mimo_num_outputs)
             : scripting::FilterCatalogue(scripting::makeLuauEngine())
                   .makeMimoFromSource(recipe.script, recipe.user_id, recipe.params_json, mimo_num_outputs);

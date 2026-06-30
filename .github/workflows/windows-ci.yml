@@ -273,8 +273,16 @@ jobs:
           # Then our `cmake -G "Ninja Multi-Config"` below errors with:
           #   Generator Ninja Multi-Config does not support platform specification,
           #   but platform x64 was specified.
+          # CPython's Conan recipe disables the STATIC MSVC build (>=3.10), so the
+          # embedded Python backend (pj_scripting) must link it shared here. CPython's
+          # MSVC build (PCbuild.sln) also has no "RelWithDebInfo" configuration — only
+          # Debug/Release — so build just that dependency as Release. Release is
+          # CRT-compatible with the rest of the RelWithDebInfo graph (both use the
+          # release /MD runtime). Both overrides are scoped to cpython only and
+          # Windows-CI-only; Linux links CPython statically.
           conan install . --output-folder=build --build=missing \
             -s build_type=RelWithDebInfo -s compiler.cppstd=20 \
+            -o "cpython/*:shared=True" -s "cpython/*:build_type=Release" \
             -c tools.cmake.cmaketoolchain:generator="Ninja Multi-Config"
 
           # Use Ninja Multi-Config so sccache is actually invoked: CMake's
@@ -416,6 +424,14 @@ jobs:
             while IFS= read -r _d; do
               [[ -n "$_d" ]] && export PATH="$(cygpath -u "$_d"):$PATH"
             done < build/pj_ffmpeg_bin_dirs.txt
+          fi
+          # CPython runtime dir (pythonXY.dll) for python_engine_test — emitted by
+          # pj_scripting/CMakeLists.txt when cpython is built shared (Windows only).
+          # Same rationale as the FFmpeg dirs above.
+          if [[ -f build/pj_python_bin_dirs.txt ]]; then
+            while IFS= read -r _d; do
+              [[ -n "$_d" ]] && export PATH="$(cygpath -u "$_d"):$PATH"
+            done < build/pj_python_bin_dirs.txt
           fi
           # --timeout kills any single test after 2 min so a deadlocked test
           # fails loudly with its name in the log instead of stalling the job.

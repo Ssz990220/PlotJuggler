@@ -11,12 +11,58 @@
 
 find_package(Luau REQUIRED)
 find_package(nlohmann_json REQUIRED)
+find_package(Python REQUIRED)    # conan-provided embedded CPython (cpython::embed)
+find_package(pybind11 REQUIRED)  # embedded CPython backend (python_engine.cpp)
+
+# Bake the CPython prefix so the embedded interpreter finds its stdlib at runtime
+# (PYTHONHOME = <prefix>, with the stdlib at <prefix>/lib/pythonX.Y). Prefer Conan's
+# cpython_PACKAGE_FOLDER_<CONFIG> (always emitted); fall back to deriving it from the
+# Python include dir or executable if needed.
+set(_pj_python_home "")
+foreach(_cfg RELWITHDEBINFO RELEASE DEBUG MINSIZEREL NONE)
+  if(DEFINED cpython_PACKAGE_FOLDER_${_cfg})
+    set(_pj_python_home "${cpython_PACKAGE_FOLDER_${_cfg}}")
+    break()
+  endif()
+endforeach()
+if(NOT _pj_python_home AND Python_INCLUDE_DIRS)
+  list(GET Python_INCLUDE_DIRS 0 _pj_py_inc)
+  get_filename_component(_pj_python_home "${_pj_py_inc}" DIRECTORY)
+endif()
+if(NOT _pj_python_home AND DEFINED _Python_EXECUTABLE)
+  get_filename_component(_pj_python_home "${_Python_EXECUTABLE}" DIRECTORY)
+  get_filename_component(_pj_python_home "${_pj_python_home}" DIRECTORY)
+endif()
+if(NOT _pj_python_home)
+  message(WARNING "pj_scripting: could not determine the embedded Python home; the Python backend may fail to init at runtime")
+endif()
+message(STATUS "pj_scripting: embedded Python home = ${_pj_python_home}")
+
+# PYTHONHOME the embedded interpreter is pointed at. On Windows the Conan CPython
+# package nests its runtime — python3XX.dll, Lib/ (stdlib), DLLs/ — under
+# <prefix>/bin, so PYTHONHOME must point there; on Linux the stdlib lives at
+# <prefix>/lib/pythonX.Y directly under the package root.
+set(_pj_python_home_define "${_pj_python_home}")
+if(WIN32 AND _pj_python_home)
+  set(_pj_python_home_define "${_pj_python_home}/bin")
+endif()
+
+# Windows is a non-blocking portability tracker (PJ4 v1 is Linux-only). CPython's
+# Conan recipe disables the static MSVC build (>=3.10), so on Windows CPython is
+# linked shared and python_engine_test needs pythonXY.dll resolvable at launch,
+# else STATUS_DLL_NOT_FOUND (0xc0000135). Export the CPython runtime dir(s) so the
+# CI Test step can prepend them to PATH — mirrors pj_scene2D/core's FFmpeg bin-dir
+# export. Linux links CPython statically and needs none of this.
+if(WIN32 AND _pj_python_home)
+  file(WRITE "${CMAKE_BINARY_DIR}/pj_python_bin_dirs.txt" "${_pj_python_home}/bin\n${_pj_python_home}\n")
+endif()
 
 add_library(pj_scripting STATIC
   src/luau_engine.cpp
   src/lua_siso_transform.cpp
   src/lua_mimo_transform.cpp
   src/filter_catalogue.cpp
+  src/python_engine.cpp
 )
 target_include_directories(pj_scripting PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
@@ -37,7 +83,11 @@ target_link_libraries(pj_scripting
   PRIVATE
     Luau::VM                      # Luau backend (hand-bound) — luau_engine.cpp only
     Luau::Compiler
+    pybind11::embed               # Python backend (embedded CPython) — python_engine.cpp only
+    cpython::embed                # static libpython for the embedded interpreter
 )
+
+target_compile_definitions(pj_scripting PRIVATE PJ_PYTHON_HOME="${_pj_python_home_define}")
 
 # ---------------------------------------------------------------------------
 # Tests
@@ -48,6 +98,10 @@ if(PJ_BUILD_TESTS)
   add_executable(luau_engine_test tests/luau_engine_test.cpp)
   target_link_libraries(luau_engine_test PRIVATE pj_scripting GTest::gtest_main)
   add_test(NAME luau_engine_test COMMAND luau_engine_test)
+
+  add_executable(python_engine_test tests/python_engine_test.cpp)
+  target_link_libraries(python_engine_test PRIVATE pj_scripting GTest::gtest_main)
+  add_test(NAME python_engine_test COMMAND python_engine_test)
 
   add_executable(lua_siso_transform_test tests/lua_siso_transform_test.cpp)
   target_link_libraries(lua_siso_transform_test PRIVATE pj_scripting GTest::gtest_main)
