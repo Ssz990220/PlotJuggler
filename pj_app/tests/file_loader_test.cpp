@@ -13,17 +13,23 @@
 
 #include <gtest/gtest.h>
 
+#include <QAbstractButton>
 #include <QApplication>
 #include <QDir>
 #include <QEventLoop>
 #include <QFile>
 #include <QFileInfo>
+#include <QMessageBox>
+#include <QMutex>
 #include <QSet>
 #include <QSettings>
 #include <QTemporaryDir>
 #include <QTimer>
+#include <QWidget>
+#include <QtGlobal>
 #include <algorithm>
 #include <memory>
+#include <vector>
 
 #include "FileLoader.h"
 #include "pj_datastore/engine.hpp"
@@ -36,6 +42,10 @@
 
 #ifndef PJ_MOCK_FILE_SOURCE_PLUGIN_PATH
 #error "PJ_MOCK_FILE_SOURCE_PLUGIN_PATH must be defined"
+#endif
+
+#ifndef PJ_MSGBOX_MOCK_SOURCE_PLUGIN_PATH
+#error "PJ_MSGBOX_MOCK_SOURCE_PLUGIN_PATH must be defined"
 #endif
 
 namespace {
@@ -501,6 +511,159 @@ TEST(FileLoaderIngestPolicy, ImagesAndDepthImagesArePureLazyLikePointClouds) {
   EXPECT_EQ(resolver.resolve("src", "/voxels", BuiltinObjectType::kVoxelGrid), ObjectIngestPolicy::kPureLazy);
   // TF is deliberately NOT pure-lazy.
   EXPECT_NE(resolver.resolve("src", "/tf", BuiltinObjectType::kFrameTransforms), ObjectIngestPolicy::kPureLazy);
+}
+
+// Captures Qt log messages for the lifetime of the instance. The cross-thread
+// QObject::setParent warning fires on the import worker thread, so the sink is
+// mutex-guarded. One instance at a time (tests run sequentially).
+class QtMessageCapture {
+ public:
+  QtMessageCapture() {
+    QMutexLocker lock(&mutex());
+    sink() = &messages_;
+    previous_ = qInstallMessageHandler(&QtMessageCapture::handle);
+  }
+  ~QtMessageCapture() {
+    qInstallMessageHandler(previous_);
+    QMutexLocker lock(&mutex());
+    sink() = nullptr;
+  }
+  QtMessageCapture(const QtMessageCapture&) = delete;
+  QtMessageCapture& operator=(const QtMessageCapture&) = delete;
+
+  [[nodiscard]] bool sawText(const QString& needle) {
+    QMutexLocker lock(&mutex());
+    return std::any_of(messages_.begin(), messages_.end(), [&](const QString& m) { return m.contains(needle); });
+  }
+
+ private:
+  static QMutex& mutex() {
+    static QMutex m;
+    return m;
+  }
+  static std::vector<QString>*& sink() {
+    static std::vector<QString>* s = nullptr;
+    return s;
+  }
+  static void handle(QtMsgType /*type*/, const QMessageLogContext& /*ctx*/, const QString& msg) {
+    QMutexLocker lock(&mutex());
+    if (sink() != nullptr) {
+      sink()->push_back(msg);
+    }
+  }
+
+  std::vector<QString> messages_;
+  QtMessageHandler previous_ = nullptr;
+};
+
+// Fixture for the cross-thread message-box regression. Stages the test-only
+// msgbox_mock_source plugin (calls runtimeHost().askContinue() from the import
+// worker thread when configured) and drives a real FileLoader against it.
+class MessageBoxMarshalTest : public ::testing::Test {
+ protected:
+  void SetUp() override {
+    ASSERT_TRUE(extensions_dir_.isValid());
+    ASSERT_TRUE(data_dir_.isValid());
+    const QString src = QString::fromUtf8(PJ_MSGBOX_MOCK_SOURCE_PLUGIN_PATH);
+    const QString dst = extensions_dir_.filePath(QFileInfo(src).fileName());
+    ASSERT_TRUE(QFile::copy(src, dst)) << "could not stage " << src.toStdString();
+
+    app_session_ = std::make_unique<PJ::AppSession>(extensions_dir_.path());
+    ASSERT_FALSE(app_session_->extensionCatalog().findSourcesForExtension(QStringLiteral(".msgboxmock")).empty())
+        << "msgbox_mock_source_plugin did not load from the staged extensions dir";
+
+    loader_ = std::make_unique<PJ::FileLoader>(
+        app_session_->sessionManager(), app_session_->extensionCatalog(), app_session_->catalogModel());
+  }
+
+  QTemporaryDir extensions_dir_;
+  QTemporaryDir data_dir_;
+  std::unique_ptr<PJ::AppSession> app_session_;
+  std::unique_ptr<PJ::FileLoader> loader_;
+};
+
+// REGRESSION (CSV-load segfault, cross-thread QMessageBox): a DataSource plugin
+// may call the runtime host's message box from the import worker thread (the
+// SDK contract tags show_message_box [main-thread] and promises the host
+// marshals it). Pre-fix, FileLoader's setMessageBoxHandler built the QMessageBox
+// directly on the worker → "QObject::setParent: ... different thread" + a
+// paint-engine segfault. Here we pass a real GUI-thread dialog_parent (the
+// handler is only installed when non-null), trigger a worker-thread askContinue,
+// auto-click Continue from the GUI thread, and assert no cross-thread warning
+// was emitted and the load completed.
+TEST_F(MessageBoxMarshalTest, WorkerThreadMessageBoxIsMarshaledToGuiThread) {
+  QtMessageCapture capture;
+  QWidget parent;  // a real GUI-thread-owned parent for the marshaled message box
+
+  const QString path = data_dir_.filePath(QStringLiteral("trigger.msgboxmock"));
+  {
+    QFile file(path);
+    ASSERT_TRUE(file.open(QIODevice::WriteOnly));
+    file.close();
+  }
+
+  PJ::LoadHints hints;
+  hints.expected_plugin_id = QStringLiteral("Msgbox Mock Source");
+  hints.preset_config_json = QStringLiteral(R"({"ask_msgbox":true})");
+  hints.skip_dialog = true;
+
+  // The marshaled QMessageBox::exec() spins a nested event loop on the GUI
+  // thread; this timer fires inside it, finds the modal, and clicks its Continue
+  // (AcceptRole) button so askContinue returns true and the load proceeds.
+  QTimer dismiss;
+  dismiss.setInterval(20);
+  QObject::connect(&dismiss, &QTimer::timeout, [&]() {
+    auto* box = qobject_cast<QMessageBox*>(QApplication::activeModalWidget());
+    if (box == nullptr) {
+      for (QWidget* w : QApplication::topLevelWidgets()) {
+        if (auto* candidate = qobject_cast<QMessageBox*>(w); candidate != nullptr && candidate->isVisible()) {
+          box = candidate;
+          break;
+        }
+      }
+    }
+    if (box == nullptr) {
+      return;
+    }
+    for (QAbstractButton* button : box->buttons()) {
+      if (box->buttonRole(button) == QMessageBox::AcceptRole) {
+        button->click();
+        return;
+      }
+    }
+  });
+  dismiss.start();
+
+  QEventLoop loop;
+  bool ok = false;
+  bool done = false;
+  const auto on_loaded = QObject::connect(
+      loader_.get(), &PJ::FileLoader::fileLoaded, &loop,
+      [&](const QString&, const QString&, const QString&, const QString&) {
+        ok = true;
+        done = true;
+        loop.quit();
+      });
+  const auto on_failed =
+      QObject::connect(loader_.get(), &PJ::FileLoader::fileLoadFailed, &loop, [&](const QString&, const QString&) {
+        ok = false;
+        done = true;
+        loop.quit();
+      });
+  loader_->loadFile(path, &parent, hints);
+  if (!done) {
+    QTimer::singleShot(10000, &loop, [&loop]() { loop.quit(); });  // safety: fail, don't hang CI
+    loop.exec();
+  }
+  QObject::disconnect(on_loaded);
+  QObject::disconnect(on_failed);
+  dismiss.stop();
+
+  EXPECT_FALSE(capture.sawText(QStringLiteral("Cannot set parent")))
+      << "host built the QMessageBox off the GUI thread (QObject::setParent cross-thread warning)";
+  EXPECT_FALSE(capture.sawText(QStringLiteral("different thread")))
+      << "a cross-thread Qt warning was emitted during the worker-thread message box";
+  EXPECT_TRUE(ok) << "the marshaled askContinue must return Continue and complete the load";
 }
 
 }  // namespace

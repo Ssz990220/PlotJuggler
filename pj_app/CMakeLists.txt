@@ -240,10 +240,22 @@ if(PJ_BUILD_TESTS)
     endif()
     add_test(NAME RasterKeyMap COMMAND raster_key_map_test)
 
-    # End-to-end FileLoader pipeline test (same-file reload semantics). Compiles
-    # FileLoader + its two helper TUs directly (FileLoader has no MainWindow
-    # dependency by design — see setFilePicker) and ingests through the SDK's
-    # mock_file_source_plugin, staged into a temp extensions dir at runtime.
+    # Test-only DataSource plugin that calls the runtime host's message box from
+    # the import worker thread (guards the cross-thread-QMessageBox regression).
+    # Built like the SDK's mock plugins: a SHARED lib linking only pj_base.
+    add_library(msgbox_mock_source_plugin SHARED tests/msgbox_mock_source.cpp)
+    target_compile_features(msgbox_mock_source_plugin PRIVATE cxx_std_20)
+    target_link_libraries(msgbox_mock_source_plugin PRIVATE pj_base)
+    if(DEFINED PJ_WARNING_FLAGS)
+        target_compile_options(msgbox_mock_source_plugin PRIVATE ${PJ_WARNING_FLAGS})
+    endif()
+
+    # End-to-end FileLoader pipeline test (same-file reload semantics + the
+    # worker-thread message-box marshal regression). Compiles FileLoader + its
+    # two helper TUs directly (FileLoader has no MainWindow dependency by design —
+    # see setFilePicker) and ingests through the SDK's mock_file_source_plugin
+    # (and the local msgbox_mock_source_plugin), staged into a temp extensions
+    # dir at runtime.
     add_executable(file_loader_test
         tests/file_loader_test.cpp
         src/FileLoader.cpp
@@ -261,10 +273,11 @@ if(PJ_BUILD_TESTS)
     target_include_directories(file_loader_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
     target_compile_definitions(file_loader_test PRIVATE
         PJ_MOCK_FILE_SOURCE_PLUGIN_PATH="$<TARGET_FILE:mock_file_source_plugin>"
+        PJ_MSGBOX_MOCK_SOURCE_PLUGIN_PATH="$<TARGET_FILE:msgbox_mock_source_plugin>"
     )
     # $<TARGET_FILE:...> in a compile definition does not create a build-order
-    # dependency; the plugin must exist when the test runs.
-    add_dependencies(file_loader_test mock_file_source_plugin)
+    # dependency; the plugins must exist when the test runs.
+    add_dependencies(file_loader_test mock_file_source_plugin msgbox_mock_source_plugin)
     target_link_libraries(file_loader_test PRIVATE
         pj_runtime
         pj_widgets

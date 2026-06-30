@@ -82,6 +82,14 @@ class DataSourceRuntimeHost {
   // Signature: (type, title, message, buttons) → clicked button.
   // type and buttons use the PJ_message_box_type_t / PJ_MSG_BTN_* constants.
   // If not set, the host picks the positive button (headless mode).
+  // THREADING: the handler is invoked synchronously on the thread that calls
+  // show_message_box, which (per data_source_protocol.h) may be a worker/stream
+  // thread — importData() runs on a background QThread on the single-instance
+  // load path. The handler MUST therefore marshal any QWidget construction/use
+  // to the GUI thread (e.g. QMetaObject::invokeMethod(qApp, ...,
+  // Qt::BlockingQueuedConnection)); building a QMessageBox directly here would
+  // be a Qt thread-affinity violation that segfaults in the paint engine. Same
+  // requirement as the on_progress_* hooks below.
   using MessageBoxHandler = std::function<int(int type, std::string_view title, std::string_view message, int buttons)>;
   void setMessageBoxHandler(MessageBoxHandler handler) {
     message_box_handler_ = std::move(handler);

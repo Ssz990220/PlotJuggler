@@ -352,54 +352,72 @@ bool FileLoader::beginLoad(const LoadRequest& request) {
           const QString q_title = QString::fromUtf8(title.data(), static_cast<int>(title.size()));
           const QString q_text = QString::fromUtf8(message.data(), static_cast<int>(message.size()));
 
-          QMessageBox msg_box(dialog_parent);
-          msg_box.setWindowTitle(q_title);
-          msg_box.setText(q_text);
-          switch (type) {
-            case PJ_MESSAGE_BOX_WARNING:
-              msg_box.setIcon(QMessageBox::Warning);
-              break;
-            case PJ_MESSAGE_BOX_ERROR:
-              msg_box.setIcon(QMessageBox::Critical);
-              break;
-            case PJ_MESSAGE_BOX_QUESTION:
-              msg_box.setIcon(QMessageBox::Question);
-              break;
-            default:
-              msg_box.setIcon(QMessageBox::Information);
-              break;
-          }
-          QPushButton* btn_ok = (buttons & PJ_MSG_BTN_OK) ? msg_box.addButton(QMessageBox::Ok) : nullptr;
-          QPushButton* btn_cancel = (buttons & PJ_MSG_BTN_CANCEL) ? msg_box.addButton(QMessageBox::Cancel) : nullptr;
-          QPushButton* btn_yes = (buttons & PJ_MSG_BTN_YES) ? msg_box.addButton(QMessageBox::Yes) : nullptr;
-          QPushButton* btn_no = (buttons & PJ_MSG_BTN_NO) ? msg_box.addButton(QMessageBox::No) : nullptr;
-          QPushButton* btn_continue = (buttons & PJ_MSG_BTN_CONTINUE)
-                                          ? msg_box.addButton(QObject::tr("Continue"), QMessageBox::AcceptRole)
-                                          : nullptr;
-          QPushButton* btn_abort =
-              (buttons & PJ_MSG_BTN_ABORT) ? msg_box.addButton(QObject::tr("Abort"), QMessageBox::RejectRole) : nullptr;
+          // The C-ABI contract (data_source_protocol.h: show_message_box is tagged
+          // [main-thread]) promises the host marshals this to the GUI thread. On the
+          // single-instance load path importData() runs on a worker QThread, so building or
+          // exec'ing the QMessageBox directly here would touch a GUI-thread-owned parent
+          // off-thread -- a Qt thread-affinity violation that segfaults in the font engine
+          // while painting. Build/run the dialog on the GUI thread and block the worker until
+          // the user closes the modal (the documented blocking semantics). On the fanout path
+          // we are already on the GUI thread, so call directly to avoid a self-deadlock.
+          auto show = [&]() -> int {
+            QMessageBox msg_box(dialog_parent);
+            msg_box.setWindowTitle(q_title);
+            msg_box.setText(q_text);
+            switch (type) {
+              case PJ_MESSAGE_BOX_WARNING:
+                msg_box.setIcon(QMessageBox::Warning);
+                break;
+              case PJ_MESSAGE_BOX_ERROR:
+                msg_box.setIcon(QMessageBox::Critical);
+                break;
+              case PJ_MESSAGE_BOX_QUESTION:
+                msg_box.setIcon(QMessageBox::Question);
+                break;
+              default:
+                msg_box.setIcon(QMessageBox::Information);
+                break;
+            }
+            QPushButton* btn_ok = (buttons & PJ_MSG_BTN_OK) ? msg_box.addButton(QMessageBox::Ok) : nullptr;
+            QPushButton* btn_cancel = (buttons & PJ_MSG_BTN_CANCEL) ? msg_box.addButton(QMessageBox::Cancel) : nullptr;
+            QPushButton* btn_yes = (buttons & PJ_MSG_BTN_YES) ? msg_box.addButton(QMessageBox::Yes) : nullptr;
+            QPushButton* btn_no = (buttons & PJ_MSG_BTN_NO) ? msg_box.addButton(QMessageBox::No) : nullptr;
+            QPushButton* btn_continue = (buttons & PJ_MSG_BTN_CONTINUE)
+                                            ? msg_box.addButton(QObject::tr("Continue"), QMessageBox::AcceptRole)
+                                            : nullptr;
+            QPushButton* btn_abort = (buttons & PJ_MSG_BTN_ABORT)
+                                         ? msg_box.addButton(QObject::tr("Abort"), QMessageBox::RejectRole)
+                                         : nullptr;
 
-          msg_box.exec();
-          const auto* clicked = msg_box.clickedButton();
-          if (clicked == btn_continue) {
-            return PJ_MSG_BTN_CONTINUE;
+            msg_box.exec();
+            const auto* clicked = msg_box.clickedButton();
+            if (clicked == btn_continue) {
+              return PJ_MSG_BTN_CONTINUE;
+            }
+            if (clicked == btn_abort) {
+              return PJ_MSG_BTN_ABORT;
+            }
+            if (clicked == btn_yes) {
+              return PJ_MSG_BTN_YES;
+            }
+            if (clicked == btn_no) {
+              return PJ_MSG_BTN_NO;
+            }
+            if (clicked == btn_ok) {
+              return PJ_MSG_BTN_OK;
+            }
+            if (clicked == btn_cancel) {
+              return PJ_MSG_BTN_CANCEL;
+            }
+            return -1;
+          };
+
+          if (QThread::currentThread() == qApp->thread()) {
+            return show();  // already on the GUI thread (fanout path)
           }
-          if (clicked == btn_abort) {
-            return PJ_MSG_BTN_ABORT;
-          }
-          if (clicked == btn_yes) {
-            return PJ_MSG_BTN_YES;
-          }
-          if (clicked == btn_no) {
-            return PJ_MSG_BTN_NO;
-          }
-          if (clicked == btn_ok) {
-            return PJ_MSG_BTN_OK;
-          }
-          if (clicked == btn_cancel) {
-            return PJ_MSG_BTN_CANCEL;
-          }
-          return -1;
+          int result = -1;
+          QMetaObject::invokeMethod(qApp, [&]() { result = show(); }, Qt::BlockingQueuedConnection);
+          return result;
         });
   }
   applyDefaultIngestPolicies(ingest_session.policyResolver());
