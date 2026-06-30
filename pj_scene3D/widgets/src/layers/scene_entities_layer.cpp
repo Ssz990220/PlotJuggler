@@ -100,13 +100,14 @@ std::string sourceSignature(const PJ::sdk::ModelPrimitive& primitive) {
   return {};
 }
 
-// Consent gate for DATA-SUPPLIED model URLs: a crafted dataset must not drive
-// network egress (SSRF / open-confirmation beacon) just by being opened, so
-// remote fetch defaults OFF and the user opts in via this QSettings key. Read
-// per newly-seen model source — a URL blocked under the old value stays
-// recorded (no per-tick re-check) until the layer re-attaches.
+// Policy gate for DATA-SUPPLIED model URLs. Remote model fetch defaults ON
+// (datasets routinely reference their mesh by URL, and a fetch is bounded by
+// UrlFetcher's redirect/size/timeout limits and cached on disk); a user who
+// wants no dataset-driven network egress opts OUT via this QSettings key. Read
+// per newly-seen model source — a URL blocked under the old value stays recorded
+// (no per-tick re-check) until the layer re-attaches.
 bool remoteModelFetchAllowed() {
-  return QSettings().value(QStringLiteral("pj_scene3d/allow_remote_model_fetch"), false).toBool();
+  return QSettings().value(QStringLiteral("pj_scene3d/allow_remote_model_fetch"), true).toBool();
 }
 
 // Lifetime expiry with overflow-safe boundary handling (lifetime_ns == 0 means
@@ -671,6 +672,10 @@ void SceneEntitiesLayer::applySnapshot(const PJ::sdk::SceneEntities& snapshot, i
       eraseEntity(it);
     }
   }
+  if (!snapshot.deletions.empty()) {
+    // A deletion may have pruned a failed model's record — drop it from the notice.
+    updateRemoteFetchNotice();
+  }
   for (const PJ::sdk::SceneEntity& entity : snapshot.entities) {
     entities_[entity.id] = entity;
     // Anchor lifetime expiry on the ingest (tracker-clock) timestamp, not the
@@ -682,6 +687,12 @@ void SceneEntitiesLayer::applySnapshot(const PJ::sdk::SceneEntities& snapshot, i
 
 std::map<std::string, PJ::sdk::SceneEntity>::iterator SceneEntitiesLayer::eraseEntity(
     std::map<std::string, PJ::sdk::SceneEntity>::iterator it) {
+  // Drop the entity's model mesh-load records too, so a failed model stops
+  // feeding the status notice once its entity is gone. The caller refreshes the
+  // notice after the erase batch (updateRemoteFetchNotice is no-op if unchanged).
+  for (std::size_t i = 0; i < it->second.models.size(); ++i) {
+    mesh_loads_->erase(meshKey(topic_id_, it->first, i));
+  }
   entity_expiry_anchor_ns_.erase(it->first);
   return entities_.erase(it);
 }
@@ -698,6 +709,10 @@ bool SceneEntitiesLayer::dropExpiredEntities(PJ::Timepoint time) {
     } else {
       ++it;
     }
+  }
+  if (dropped) {
+    // An expired entity's failed-model record was pruned — refresh the notice.
+    updateRemoteFetchNotice();
   }
   return dropped;
 }
@@ -745,6 +760,7 @@ void SceneEntitiesLayer::startMeshLoadIfNeeded(const std::string& key, const PJ:
 
   if (!primitive.data.empty()) {
     MeshLoadEntry& entry = mesh_loads_->insertOrReplace(key, signature);
+    entry.source_label = tr("(embedded model)");
     const QByteArray bytes(
         reinterpret_cast<const char*>(primitive.data.data()), static_cast<qsizetype>(primitive.data.size()));
     startRecordImport(entry, bytes, hint);
@@ -764,6 +780,7 @@ void SceneEntitiesLayer::startMeshLoadIfNeeded(const std::string& key, const PJ:
     entry.consumed = true;
     entry.failed = true;
     entry.blocked_by_policy = true;
+    entry.source_label = url_text;
     qCWarning(lcSceneEntitiesLayer) << "blocked remote model fetch for" << url_text
                                     << "- enable pj_scene3d/allow_remote_model_fetch to allow";
     updateRemoteFetchNotice();
@@ -772,8 +789,8 @@ void SceneEntitiesLayer::startMeshLoadIfNeeded(const std::string& key, const PJ:
 
   // Insert the entry BEFORE kicking the fetch (future stays default-invalid =
   // pending) so per-tick re-entry dedupes on (key, signature) while the bytes
-  // are still in flight.
-  mesh_loads_->insertOrReplace(key, signature);
+  // are still in flight. source_label feeds the failure notice if it fails.
+  mesh_loads_->insertOrReplace(key, signature).source_label = url_text;
   updateRemoteFetchNotice();
   if (!url_fetcher_) {
     url_fetcher_ = std::make_unique<UrlFetcher>();
@@ -792,6 +809,7 @@ void SceneEntitiesLayer::startMeshLoadIfNeeded(const std::string& key, const PJ:
       target->consumed = true;
       target->failed = true;
       target->fetch_failed = true;
+      target->error = fetched.error;
       updateRemoteFetchNotice();
       return;
     }
@@ -809,10 +827,17 @@ void SceneEntitiesLayer::startRecordImport(MeshLoadEntry& entry, const QByteArra
 
 void SceneEntitiesLayer::updateRemoteFetchNotice() {
   int blocked = 0;
-  int failed = 0;
+  QStringList lines;
   for (const auto& [key, entry] : *mesh_loads_) {
-    blocked += entry.blocked_by_policy ? 1 : 0;
-    failed += entry.fetch_failed ? 1 : 0;
+    if (entry.blocked_by_policy) {
+      ++blocked;  // aggregated into one summary line (count, not per-URL)
+    } else if (entry.fetch_failed) {
+      lines << tr("Failed to fetch %1: %2").arg(entry.source_label, entry.error);
+    } else if (entry.consumed && entry.failed) {
+      // Bytes arrived but the import rejected them (malformed mesh / unsupported
+      // format / embedded stub) — distinct from a fetch failure.
+      lines << tr("Failed to load model %1: %2").arg(entry.source_label, entry.error);
+    }
   }
   QString notice;
   if (blocked > 0) {
@@ -820,20 +845,35 @@ void SceneEntitiesLayer::updateRemoteFetchNotice() {
         tr("Remote model fetch is disabled — %n model URL(s) blocked. "
            "Enable pj_scene3d/allow_remote_model_fetch to allow.",
            nullptr, blocked);
-  } else if (failed > 0) {
-    notice = tr("%n model URL fetch(es) failed — see the application log.", nullptr, failed);
+  }
+  if (!lines.isEmpty()) {
+    if (!notice.isEmpty()) {
+      notice += QLatin1Char('\n');
+    }
+    notice += lines.join(QLatin1Char('\n'));
   }
   if (notice != remote_fetch_notice_) {
     remote_fetch_notice_ = notice;
     emit remoteFetchNoticeChanged(remote_fetch_notice_);
+    // Drives the dock's layer-row warning combine (icon + tooltip) — see
+    // Scene3DLayer::statusWarning / Scene3DDockWidget::recomputeOrphanStates.
+    emit statusWarningChanged();
   }
 }
 
 void SceneEntitiesLayer::pollMeshLoads() {
   // No per-failure eviction here: SceneEntities loads are in-memory (no
   // path-keyed loader cache to evict) and a failed entry stays recorded so the
-  // (key, signature) dedup keeps it from re-importing each tick.
-  if (mesh_loads_->drain(*mesh_pass_).changed) {
+  // (key, signature) dedup keeps it from re-importing each tick. Log import
+  // failures so the three model-load failure modes (blocked / fetch / import)
+  // are all visible in the application log, not only in the config-widget notice.
+  const auto log_import_failure = [](const std::string& /*key*/, const MeshLoadEntry& entry) {
+    qCWarning(lcSceneEntitiesLayer) << "model import failed for" << entry.source_label << ":" << entry.error;
+  };
+  if (mesh_loads_->drain(*mesh_pass_, log_import_failure).changed) {
+    // A drain can flip an entry to failed (import rejected the bytes), so refresh
+    // the notice before repainting — otherwise a parse failure stays silent.
+    updateRemoteFetchNotice();
     emit repaintRequested();
   }
 }

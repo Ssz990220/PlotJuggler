@@ -35,12 +35,20 @@ struct FetchResult {
 //    other scheme fails with "unsupported URL scheme".
 //  - Network requests use QNetworkRequest::setTransferTimeout (15 s) and
 //    NoLessSafeRedirectPolicy capped at 4 redirects — bounded, with no
-//    https->http downgrade. That policy (rather than per-hop re-validation) is
-//    deliberate: callers gate remote fetch by all-or-nothing consent, not by a
-//    host allowlist, so there is no list a redirect could bypass.
+//    https->http downgrade. There is no host allowlist; the egress bound is the
+//    scheme/redirect/size/timeout envelope itself, which a redirect cannot
+//    escalate beyond. (WHETHER a data-supplied URL is fetched at all is the
+//    caller's policy decision — see SceneEntitiesLayer's remote-fetch gate.)
+//  - http(s) GETs are disk-cached (QNetworkDiskCache, set up in the constructor):
+//    a fresh entry is served without the network, and a previously-fetched entry
+//    is served from cache when the origin is unreachable, so a model fetched in a
+//    prior session still renders offline. Local-file reads bypass the cache. The
+//    cache directory is <AppData>/models, overridable via the PJ_MODEL_CACHE_DIR
+//    environment variable.
 //  - The response is aborted once it exceeds kMaxFetchBytes — checked against
 //    the declared Content-Length as soon as the headers arrive, and against
-//    the buffered byte count as the body streams in.
+//    the buffered byte count as the body streams in. An aborted (capped) response
+//    is not committed to the cache (a later fetch re-hits the network).
 //  - Destroying the fetcher aborts every in-flight request and drops its
 //    callback: a callback can never fire after the fetcher is gone. Layers
 //    rely on this — each owns its fetcher, so layer destruction cancels the

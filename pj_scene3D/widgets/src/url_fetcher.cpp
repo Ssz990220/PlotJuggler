@@ -3,8 +3,11 @@
 #include "url_fetcher.h"
 
 #include <QFile>
+#include <QNetworkDiskCache>
 #include <QNetworkReply>
 #include <QNetworkRequest>
+#include <QStandardPaths>
+#include <QString>
 #include <QTimer>
 #include <QVariant>
 #include <memory>
@@ -49,7 +52,26 @@ std::optional<QString> localFilePath(const QUrl& url) {
 
 }  // namespace
 
-UrlFetcher::UrlFetcher(QObject* parent) : QObject(parent) {}
+UrlFetcher::UrlFetcher(QObject* parent) : QObject(parent) {
+  // Persist fetched remote models so re-opening the dataset (or the next session)
+  // serves them from disk instead of re-downloading. QNetworkDiskCache honors HTTP
+  // Cache-Control/ETag: a fresh entry is served without touching the network; a
+  // stale one is revalidated when online (304 → reuse) and served from cache when
+  // the origin is unreachable (so the model still renders offline, possibly from
+  // an older copy). Local file reads bypass the cache.
+  //
+  // The directory defaults to <AppData>/models, overridable via the
+  // PJ_MODEL_CACHE_DIR environment variable — both to relocate the cache and to
+  // let tests redirect it to a throwaway dir without touching the real home.
+  QString cache_dir = qEnvironmentVariable("PJ_MODEL_CACHE_DIR");
+  if (cache_dir.isEmpty()) {
+    cache_dir = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) + QStringLiteral("/models");
+  }
+  auto* cache = new QNetworkDiskCache(this);
+  cache->setCacheDirectory(cache_dir);
+  cache->setMaximumCacheSize(256LL * 1024 * 1024);
+  manager_.setCache(cache);
+}
 
 void UrlFetcher::deliverLater(std::function<void(FetchResult)> on_done, FetchResult result) {
   QTimer::singleShot(0, this, [on_done = std::move(on_done), result = std::move(result)]() { on_done(result); });

@@ -116,6 +116,16 @@ class Scene3DLayer : public PJ::ISceneLayer {
   // GL context (called from the pre-pass, before renderScene).
   virtual void renderShadowCasters(const glm::mat4& /*light_view_proj*/, const FrameContext& /*frame_ctx*/) {}
 
+  // A layer-specific warning to surface on the layer's row (icon + tooltip),
+  // distinct from the dock's frame-orphan check — e.g. a model that failed to
+  // fetch or import. Empty means "nothing to warn about". The dock OR-combines
+  // this with the orphan state so neither clobbers the other (see
+  // Scene3DDockWidget::recomputeOrphanStates). Default: no layer warning.
+  // Emit statusWarningChanged() whenever the returned value changes.
+  [[nodiscard]] virtual QString statusWarning() const {
+    return {};
+  }
+
  signals:
   // Layer noticed new source-frame candidates — the dock unions these
   // into the fixed-frame combo's fallback list.
@@ -125,6 +135,12 @@ class Scene3DLayer : public PJ::ISceneLayer {
   // and re-runs its orphan check (event-driven so it doesn't have to poll
   // per tracker tick).
   void sourceFrameChanged(const QString& new_frame);
+
+  // The value statusWarning() would return has changed — the dock re-runs its
+  // per-layer warning combine so the row icon/tooltip stays in sync without
+  // polling. (Routed through recomputeOrphanStates, NOT the base relay, so it
+  // merges with the orphan state instead of overwriting it.)
+  void statusWarningChanged();
 };
 
 }  // namespace pj::scene3d

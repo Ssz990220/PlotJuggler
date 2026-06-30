@@ -103,6 +103,10 @@ class Scene3DDockWidget : public SceneDockWidget {
   /// True when the topic has a live layer that is currently visible.
   [[nodiscard]] bool layerVisible(ObjectTopicId topic_id) const;
 
+  // Cached per-row warning state. `is_orphan` is true when the row should show a
+  // warning — either an unresolved/disconnected source frame OR a layer-reported
+  // statusWarning() (e.g. a model that failed to fetch/import); `reason` is the
+  // tooltip text. recomputeOrphanStates() OR-combines the two sources.
   struct OrphanSnapshot {
     bool is_orphan = false;
     QString reason;

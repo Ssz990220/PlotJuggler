@@ -828,6 +828,10 @@ void Scene3DDockWidget::wireScene3DLayer(Scene3DLayer* layer) {
     absorbFallbackFrames(layer);
   });
   connect(layer, &Scene3DLayer::sourceFrameChanged, this, [this](const QString&) { recomputeOrphanStates(); });
+  // A layer-self warning (e.g. a model that failed to fetch/import) shares the
+  // per-row warning slot with the orphan state; force a recompute so the combine
+  // runs even when TF/fixed-frame are unchanged (the fast-path guard would skip).
+  connect(layer, &Scene3DLayer::statusWarningChanged, this, [this]() { recomputeOrphanStates(/*force=*/true); });
 }
 
 void Scene3DDockWidget::absorbFallbackFrames(Scene3DLayer* layer) {
@@ -1118,7 +1122,7 @@ void Scene3DDockWidget::recomputeOrphanStates(bool force) {
       continue;
     }
     const QString src = layer->sourceFrame();
-    bool is_orphan = false;
+    bool warn = false;
     QString reason;
     if (src.isEmpty() || fixed.isEmpty()) {
       // Pending data.
@@ -1127,19 +1131,27 @@ void Scene3DDockWidget::recomputeOrphanStates(bool force) {
     } else {
       const std::string src_std = src.toStdString();
       if (known_frames.count(src_std) == 0) {
-        is_orphan = true;
+        warn = true;
         reason = tr("Frame '%1' can't be resolved").arg(src);
       } else if (!tf_buffer_->areConnected(fixed_std, src_std)) {
-        is_orphan = true;
+        warn = true;
         reason = tr("Frame '%1' is not connected to fixed frame '%2'").arg(src, fixed);
       }
     }
+    // A frame issue blocks rendering entirely, so it wins the row's message when
+    // both apply; otherwise surface the layer's own warning (e.g. a model that
+    // failed to fetch/import). Combining here keeps a 169 Hz TF stream from
+    // clobbering a model-load warning that shares this per-row slot.
+    if (const QString self_warn = layer->statusWarning(); !warn && !self_warn.isEmpty()) {
+      warn = true;
+      reason = self_warn;
+    }
 
     auto& state = orphan_states_[topicKey(info.topic_id)];
-    if (state.is_orphan != is_orphan || state.reason != reason) {
-      state.is_orphan = is_orphan;
+    if (state.is_orphan != warn || state.reason != reason) {
+      state.is_orphan = warn;
       state.reason = reason;
-      emit layerWarningChanged(info.topic_id, is_orphan, reason);
+      emit layerWarningChanged(info.topic_id, warn, reason);
     }
   }
 

@@ -882,6 +882,159 @@ TEST(SceneEntitiesLayerModelTest, PendingUrlFetchRecordIsSkippedByPoll) {
   settings.sync();
 }
 
+// Default policy is ON: a data-supplied http(s) model URL is fetched without any
+// opt-in (the consent gate is now opt-OUT). Proven by a local listener that sees
+// the connection attempt, and by the notice NOT reporting a policy block.
+TEST(SceneEntitiesLayerModelTest, RemoteModelUrlIsFetchedByDefault) {
+  isolateSettings();
+  QSettings settings;
+  settings.remove(QStringLiteral("pj_scene3d/allow_remote_model_fetch"));  // exercise the built-in default
+  settings.sync();
+
+  QTcpServer server;  // accepts the connection (response irrelevant — we assert the attempt)
+  ASSERT_TRUE(server.listen(QHostAddress::LocalHost, 0));
+  int connections = 0;
+  QObject::connect(&server, &QTcpServer::newConnection, &server, [&connections]() { ++connections; });
+
+  PJ::SessionManager session;
+  const PJ::ObjectTopicId topic_id = registerTopic(session);
+  registerParser(session, topic_id);
+  const std::string url = "http://127.0.0.1:" + std::to_string(server.serverPort()) + "/model.glb";
+  pushSceneEntities(session, topic_id, 10, batchWithEntities({makeUrlEntity("remote", 10, url, "model/gltf-binary")}));
+
+  pj::scene3d::SceneEntitiesLayer layer(topic_id, QStringLiteral("/scene_entities"));
+  const auto ctx = makeContext(session);
+  ASSERT_TRUE(layer.attach(ctx));
+  layer.setTrackerTime(PJ::fromRaw(15));
+
+  EXPECT_FALSE(layer.remoteFetchNotice().contains(QStringLiteral("disabled")))
+      << "default must not block the fetch: " << layer.remoteFetchNotice().toStdString();
+
+  QElapsedTimer timer;
+  timer.start();
+  while (connections == 0 && timer.elapsed() < 3000) {
+    QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
+  }
+  EXPECT_GT(connections, 0) << "default policy should attempt the remote model fetch";
+}
+
+// A failed remote fetch reports the offending URL and the underlying error in
+// the notice (the config-widget status surface) — not a bare "see the log" count.
+TEST(SceneEntitiesLayerModelTest, FailedRemoteFetchSurfacesUrlAndErrorInNotice) {
+  isolateSettings();
+  QSettings settings;
+  settings.setValue(QStringLiteral("pj_scene3d/allow_remote_model_fetch"), true);
+  settings.sync();
+
+  // Bind then release a port so the connection is refused immediately (fast,
+  // deterministic — no 15 s transfer-timeout wait).
+  quint16 port = 0;
+  {
+    QTcpServer probe;
+    ASSERT_TRUE(probe.listen(QHostAddress::LocalHost, 0));
+    port = probe.serverPort();
+  }
+
+  PJ::SessionManager session;
+  const PJ::ObjectTopicId topic_id = registerTopic(session);
+  registerParser(session, topic_id);
+  const std::string url = "http://127.0.0.1:" + std::to_string(port) + "/missing.glb";
+  pushSceneEntities(session, topic_id, 10, batchWithEntities({makeUrlEntity("remote", 10, url, "model/gltf-binary")}));
+
+  pj::scene3d::SceneEntitiesLayer layer(topic_id, QStringLiteral("/scene_entities"));
+  QString notice_from_signal;
+  QObject::connect(
+      &layer, &pj::scene3d::SceneEntitiesLayer::remoteFetchNoticeChanged,
+      [&notice_from_signal](const QString& notice) { notice_from_signal = notice; });
+  const auto ctx = makeContext(session);
+  ASSERT_TRUE(layer.attach(ctx));
+  layer.setTrackerTime(PJ::fromRaw(15));
+
+  QElapsedTimer timer;
+  timer.start();
+  while (layer.remoteFetchNotice().isEmpty() && timer.elapsed() < 5000) {
+    QCoreApplication::processEvents(QEventLoop::AllEvents, 50);
+  }
+  const QString notice = layer.remoteFetchNotice();
+  EXPECT_TRUE(notice.contains(QStringLiteral("Failed to fetch"))) << notice.toStdString();
+  EXPECT_TRUE(notice.contains(QString::fromStdString(url)))
+      << "the offending URL must appear: " << notice.toStdString();
+  EXPECT_EQ(notice_from_signal, notice) << "notice signal did not track the accessor";
+
+  settings.setValue(QStringLiteral("pj_scene3d/allow_remote_model_fetch"), false);  // quiet default for siblings
+  settings.sync();
+}
+
+// A model whose bytes load but fail to PARSE (assimp rejects them) must also
+// surface — today the notice ignores parse failures, leaving a silent grey cube.
+// makeEntity embeds a 4-byte "glTF" stub that is not a valid GLB.
+TEST(SceneEntitiesLayerModelTest, EmbeddedModelParseFailureSurfacesInNotice) {
+  isolateSettings();
+  PJ::SessionManager session;
+  const PJ::ObjectTopicId topic_id = registerTopic(session);
+  registerParser(session, topic_id);
+  pushSceneEntities(session, topic_id, 10, batchWithEntities({makeEntity("bad", 10)}));
+
+  pj::scene3d::SceneEntitiesLayer layer(topic_id, QStringLiteral("/scene_entities"));
+  const auto ctx = makeContext(session);
+  ASSERT_TRUE(layer.attach(ctx));
+
+  QElapsedTimer timer;
+  timer.start();
+  while (layer.remoteFetchNotice().isEmpty() && timer.elapsed() < 5000) {
+    QCoreApplication::processEvents(QEventLoop::AllEvents, 50);
+  }
+  EXPECT_TRUE(layer.remoteFetchNotice().contains(QStringLiteral("Failed to load model")))
+      << layer.remoteFetchNotice().toStdString();
+}
+
+// Deleting the entity that owns a failed model clears its load notice: the
+// mesh-load record is pruned with the entity, so a stale "Failed to fetch" line
+// (and the row warning it drives) does not linger after the marker is gone.
+TEST(SceneEntitiesLayerModelTest, DeletingEntityClearsItsModelLoadNotice) {
+  isolateSettings();
+  QSettings settings;
+  settings.setValue(QStringLiteral("pj_scene3d/allow_remote_model_fetch"), true);
+  settings.sync();
+
+  quint16 port = 0;
+  {
+    QTcpServer probe;
+    ASSERT_TRUE(probe.listen(QHostAddress::LocalHost, 0));
+    port = probe.serverPort();  // released → connection refused → fast fetch failure
+  }
+
+  PJ::SessionManager session;
+  const PJ::ObjectTopicId topic_id = registerTopic(session);
+  registerParser(session, topic_id);
+  const std::string url = "http://127.0.0.1:" + std::to_string(port) + "/car.glb";
+  pushSceneEntities(session, topic_id, 10, batchWithEntities({makeUrlEntity("car", 10, url, "model/gltf-binary")}));
+  PJ::sdk::SceneEntityDeletion del;
+  del.type = PJ::sdk::SceneEntityDeletion::Type::kAll;
+  del.timestamp = 20;
+  pushSceneEntities(session, topic_id, 20, batchWithDeletions({del}));
+
+  pj::scene3d::SceneEntitiesLayer layer(topic_id, QStringLiteral("/scene_entities"));
+  const auto ctx = makeContext(session);
+  ASSERT_TRUE(layer.attach(ctx));
+  layer.setTrackerTime(PJ::fromRaw(10));  // kicks the fetch (which fails)
+
+  QElapsedTimer timer;
+  timer.start();
+  while (layer.remoteFetchNotice().isEmpty() && timer.elapsed() < 5000) {
+    QCoreApplication::processEvents(QEventLoop::AllEvents, 50);
+  }
+  ASSERT_TRUE(layer.remoteFetchNotice().contains(QStringLiteral("Failed to fetch")))
+      << layer.remoteFetchNotice().toStdString();
+
+  layer.setTrackerTime(PJ::fromRaw(20));  // DELETEALL folds → entity (and its failed model) gone
+  EXPECT_TRUE(layer.remoteFetchNotice().isEmpty())
+      << "deleting the entity must clear its model-load notice: " << layer.remoteFetchNotice().toStdString();
+
+  settings.setValue(QStringLiteral("pj_scene3d/allow_remote_model_fetch"), false);
+  settings.sync();
+}
+
 // Contract pin (sibling of RobotModelLayerTest.ReloadSwapsParserWithoutTouchingStaleOne):
 // SceneEntitiesLayer already resolves the parser binding per use (renderAt /
 // rebuildModelStateAt fetch parserBindingForObjectTopic), so a same-file reload
@@ -1003,6 +1156,10 @@ TEST(SceneEntitiesLayerModelTest, CrossBatchDeleteAllErasesOlderBatchEntities) {
 // would outlive, crashing at exit (pj_marketplace's download_manager_test pattern).
 int main(int argc, char** argv) {
   QCoreApplication app(argc, argv);
+  // The layer's UrlFetcher builds a QNetworkDiskCache; point it at a throwaway dir
+  // (auto-removed at exit) so these tests never write into the real ~/.local/share.
+  static QTemporaryDir model_cache_dir;
+  qputenv("PJ_MODEL_CACHE_DIR", (model_cache_dir.path() + QStringLiteral("/models")).toUtf8());
   testing::InitGoogleTest(&argc, argv);
   return RUN_ALL_TESTS();
 }

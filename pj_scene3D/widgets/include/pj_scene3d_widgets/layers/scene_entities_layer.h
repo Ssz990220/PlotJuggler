@@ -43,11 +43,12 @@ class UrlFetcher;
 //   batches up to the tracker time are replayed into an id-keyed entity map
 //   (replace-by-id, deletions, lifetime expiry, per SceneUpdate semantics) and
 //   mesh bytes load asynchronously with signature-based caching. URL sources
-//   are fetched asynchronously (UrlFetcher); DATA-SUPPLIED http(s) URLs are
-//   consent-gated behind the QSettings bool "pj_scene3d/allow_remote_model_fetch"
-//   (default OFF — a crafted dataset must not drive network egress), while
-//   local file URLs / bare paths always work. Blocked or failed URLs surface
-//   through remoteFetchNotice().
+//   are fetched asynchronously (UrlFetcher, which caches fetched bytes on disk);
+//   DATA-SUPPLIED http(s) URLs are policy-gated behind the QSettings bool
+//   "pj_scene3d/allow_remote_model_fetch" (default ON; set false to opt OUT of
+//   dataset-driven network egress), while local file URLs / bare paths always
+//   work. Blocked, failed-to-fetch, or failed-to-load models surface through
+//   remoteFetchNotice() (the per-topic status shown by the config widget).
 //
 // Known divergence (follow-up): the marker path shows only the latest batch,
 // so markers from earlier batches with different entity ids disappear, while
@@ -134,10 +135,19 @@ class SceneEntitiesLayer : public Scene3DLayer {
   }
   [[nodiscard]] std::vector<MeshRenderPass::DrawCall> modelDrawCallsForFrame(const FrameContext& frame_ctx) const;
 
-  // Human-readable status of the model-URL fetch path (URLs blocked by the
-  // remote-fetch consent gate, or failed fetches); empty when there is nothing
-  // to surface. Shown by the config widget; remoteFetchNoticeChanged tracks it.
+  // Human-readable status of the model load path: URLs blocked by the
+  // remote-fetch policy gate, failed fetches (with the URL + network error), and
+  // models whose bytes failed to import (with the importer's message). One line
+  // per failure; empty when there is nothing to surface. Shown by the config
+  // widget; remoteFetchNoticeChanged tracks it.
   [[nodiscard]] QString remoteFetchNotice() const {
+    return remote_fetch_notice_;
+  }
+
+  // Scene3DLayer warning surface: the model-load notice doubles as the layer-row
+  // warning (icon + tooltip in the config panel's layer list), so a failed model
+  // is visible without selecting the layer's config widget.
+  [[nodiscard]] QString statusWarning() const override {
     return remote_fetch_notice_;
   }
 

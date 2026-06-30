@@ -13,6 +13,7 @@
 #include <QFuture>
 #include <QFutureWatcher>
 #include <QObject>
+#include <QString>
 #include <exception>
 #include <functional>
 #include <memory>
@@ -39,11 +40,18 @@ struct MeshLoadEntry {
   bool failed{false};
   // URL-fetch bookkeeping, set only by SceneEntitiesLayer's model-URL path (the
   // robot layer's URL source is single and surfaces through its own status):
-  //   blocked_by_policy — a data-supplied remote URL refused by the consent gate.
+  //   blocked_by_policy — a data-supplied remote URL refused by the policy gate.
   //   fetch_failed       — the URL fetch itself failed (vs. a failed assimp import).
   // Both feed remoteFetchNotice(); they stay false for embedded/local loads.
   bool blocked_by_policy{false};
   bool fetch_failed{false};
+  // Human-readable status detail (SceneEntitiesLayer model path only):
+  //   source_label — the model URL, or "(embedded model)" for inline bytes.
+  //   error        — the failure detail (network error for fetch_failed; the
+  //                  importer's message for an import failure). Empty when ok.
+  // drain() fills `error` from MeshData::error on an import failure.
+  QString source_label;
+  QString error;
 };
 
 // Map of mesh-load entries keyed by the layer's lookup key (resolved path for
@@ -123,8 +131,11 @@ class MeshLoadSet {
       entry.failed = !data.ok;
       if (data.ok) {
         pass.setMeshData(key, std::move(data));
-      } else if (on_failure) {
-        on_failure(key, entry);
+      } else {
+        entry.error = data.error;  // surfaced by SceneEntitiesLayer's load-failure notice
+        if (on_failure) {
+          on_failure(key, entry);
+        }
       }
       entry.consumed = true;
       result.changed = true;
@@ -137,6 +148,13 @@ class MeshLoadSet {
   [[nodiscard]] bool ready(const std::string& key) const {
     const MeshLoadEntry* entry = find(key);
     return entry != nullptr && entry->consumed && !entry->failed;
+  }
+
+  // Drop one entry by key (destroys its watcher, severing any pending
+  // completion). Used when the owning entity is deleted/expires so a stale
+  // failure record stops feeding the status notice. No-op if absent.
+  void erase(const std::string& key) {
+    entries_.erase(key);
   }
 
   void clear() {

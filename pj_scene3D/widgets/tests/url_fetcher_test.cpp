@@ -12,6 +12,7 @@
 
 #include <QByteArray>
 #include <QCoreApplication>
+#include <QDir>
 #include <QElapsedTimer>
 #include <QEventLoop>
 #include <QFile>
@@ -189,11 +190,140 @@ TEST(UrlFetcherTest, ResponseBeyondSizeCapIsAborted) {
   EXPECT_TRUE(result.error.contains(QStringLiteral("limit"))) << result.error.toStdString();
 }
 
+namespace {
+
+// Wipe the on-disk model cache (PJ_MODEL_CACHE_DIR, pointed at a throwaway dir in
+// main) so each cache test starts cold. QNetworkDiskCache recreates it on demand.
+void clearModelCache() {
+  QDir(qEnvironmentVariable("PJ_MODEL_CACHE_DIR")).removeRecursively();
+}
+
+// A one-shot HTTP responder: serves `body` with the given Cache-Control on each
+// accepted connection and counts connections. Lives as long as the test wants it.
+struct CountingHttpServer {
+  QTcpServer server;
+  int connections = 0;
+  explicit CountingHttpServer(const QByteArray& body, const QByteArray& cache_control) {
+    EXPECT_TRUE(server.listen(QHostAddress::LocalHost, 0));
+    QObject::connect(&server, &QTcpServer::newConnection, &server, [this, body, cache_control]() {
+      ++connections;
+      QTcpSocket* socket = server.nextPendingConnection();
+      QObject::connect(socket, &QTcpSocket::readyRead, socket, [socket, body, cache_control]() {
+        socket->readAll();
+        QByteArray response = "HTTP/1.1 200 OK\r\nContent-Type: model/gltf-binary\r\nETag: \"v1\"\r\n";
+        response += "Cache-Control: " + cache_control + "\r\nContent-Length: ";
+        response += QByteArray::number(body.size());
+        response += "\r\n\r\n";
+        response += body;
+        socket->write(response);
+        socket->flush();
+        socket->disconnectFromHost();
+      });
+    });
+  }
+  quint16 port() const {
+    return server.serverPort();
+  }
+};
+
+pj::scene3d::FetchResult fetchSync(pj::scene3d::UrlFetcher& fetcher, const QUrl& url) {
+  pj::scene3d::FetchResult result;
+  bool done = false;
+  fetcher.fetch(url, [&result, &done](pj::scene3d::FetchResult r) {
+    result = std::move(r);
+    done = true;
+  });
+  EXPECT_TRUE(pumpUntil([&done]() { return done; }, 5000));
+  return result;
+}
+
+}  // namespace
+
+// A FRESH cached entry is reused across UrlFetcher instances (i.e. across
+// sessions) WITHOUT any network: a new fetcher serves the model from disk even
+// after the origin server is gone. This is the "don't re-download the car" win.
+TEST(UrlFetcherTest, FreshEntryServedCrossSessionWithoutNetwork) {
+  clearModelCache();
+  const QByteArray body("MESHBYTES");
+  auto server = std::make_unique<CountingHttpServer>(body, "max-age=3600");
+  const QUrl url(QStringLiteral("http://127.0.0.1:%1/lexus.glb").arg(server->port()));
+
+  {
+    pj::scene3d::UrlFetcher first_session;
+    const pj::scene3d::FetchResult r = fetchSync(first_session, url);
+    ASSERT_TRUE(r.ok) << r.error.toStdString();
+    EXPECT_EQ(r.bytes, body);
+    ASSERT_EQ(server->connections, 1);
+  }
+
+  server.reset();  // origin is gone — a fresh, still-valid cache entry must not need it
+
+  pj::scene3d::UrlFetcher second_session;
+  const pj::scene3d::FetchResult r = fetchSync(second_session, url);
+  EXPECT_TRUE(r.ok) << "fresh cached model not reused cross-session: " << r.error.toStdString();
+  EXPECT_EQ(r.bytes, body);
+}
+
+// A STALE cached entry is served when the network is unreachable: the model
+// rendered last session still shows up offline instead of regressing to the grey
+// cube. Without the on-error AlwaysCache fallback, the stale revalidation fails.
+TEST(UrlFetcherTest, StaleEntryServedFromCacheWhenOffline) {
+  clearModelCache();
+  const QByteArray body("MESHBYTES");
+  auto server = std::make_unique<CountingHttpServer>(body, "max-age=0");  // cacheable but immediately stale
+  const QUrl url(QStringLiteral("http://127.0.0.1:%1/lexus.glb").arg(server->port()));
+
+  pj::scene3d::UrlFetcher fetcher;
+  const pj::scene3d::FetchResult first = fetchSync(fetcher, url);
+  ASSERT_TRUE(first.ok) << first.error.toStdString();
+  EXPECT_EQ(first.bytes, body);
+
+  server.reset();  // go "offline": the stale entry now needs a revalidation that can't happen
+
+  const pj::scene3d::FetchResult second = fetchSync(fetcher, url);
+  EXPECT_TRUE(second.ok) << "stale cached model not served offline: " << second.error.toStdString();
+  EXPECT_EQ(second.bytes, body);
+}
+
+// A size-capped (aborted) response must not leave a usable cache entry: a later
+// fetch re-hits the network rather than being served truncated bytes as success.
+TEST(UrlFetcherTest, SizeCappedResponseDoesNotPoisonCache) {
+  clearModelCache();
+  QTcpServer server;
+  ASSERT_TRUE(server.listen(QHostAddress::LocalHost, 0));
+  int connections = 0;
+  QObject::connect(&server, &QTcpServer::newConnection, &server, [&server, &connections]() {
+    ++connections;
+    QTcpSocket* socket = server.nextPendingConnection();
+    QObject::connect(socket, &QTcpSocket::readyRead, socket, [socket]() {
+      socket->readAll();
+      // 100 MiB declared (> 64 MiB cap) but cacheable headers: the fetcher aborts.
+      socket->write("HTTP/1.1 200 OK\r\nCache-Control: max-age=3600\r\nContent-Length: 104857600\r\n\r\n");
+      socket->write(QByteArray(4096, 'x'));
+      socket->flush();
+    });
+  });
+  const QUrl url(QStringLiteral("http://127.0.0.1:%1/huge.glb").arg(server.serverPort()));
+
+  pj::scene3d::UrlFetcher fetcher;
+  const pj::scene3d::FetchResult first = fetchSync(fetcher, url);
+  EXPECT_FALSE(first.ok);
+  ASSERT_EQ(connections, 1);
+
+  const pj::scene3d::FetchResult second = fetchSync(fetcher, url);
+  EXPECT_FALSE(second.ok) << "a capped response must not be served from cache as success";
+  EXPECT_EQ(connections, 2) << "second fetch must re-hit the network, not a poisoned partial cache entry";
+}
+
 // Custom main: the QCoreApplication must die BEFORE exit handlers run — QtNetwork
 // registers global cleanup that a function-local-static app would outlive,
 // crashing at exit (same pattern as pj_marketplace's download_manager_test).
+// Point the model cache at a throwaway dir (auto-removed at exit) so UrlFetcher's
+// QNetworkDiskCache never touches the developer's real ~/.local/share.
 int main(int argc, char** argv) {
   QCoreApplication app(argc, argv);
+  static QTemporaryDir model_cache_dir;
+  qputenv("PJ_MODEL_CACHE_DIR", (model_cache_dir.path() + QStringLiteral("/models")).toUtf8());
   testing::InitGoogleTest(&argc, argv);
   return RUN_ALL_TESTS();
 }
