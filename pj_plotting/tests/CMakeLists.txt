@@ -47,6 +47,18 @@ target_link_libraries(plot_widget_replace_curve_test PRIVATE
 
 add_test(NAME PlotWidgetReplaceCurveTest COMMAND plot_widget_replace_curve_test)
 
+add_executable(plot_widget_default_style_test
+    plot_widget_default_style_test.cpp
+)
+
+target_compile_options(plot_widget_default_style_test PRIVATE ${PJ_WARNING_FLAGS})
+target_link_libraries(plot_widget_default_style_test PRIVATE
+    pj_plotting
+    GTest::gtest
+)
+
+add_test(NAME PlotWidgetDefaultStyleTest COMMAND plot_widget_default_style_test)
+
 add_executable(plot_widget_range_offset_test
     plot_widget_range_offset_test.cpp
 )

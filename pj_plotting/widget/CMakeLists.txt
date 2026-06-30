@@ -20,7 +20,10 @@ add_library(pj_plotting STATIC
     src/PlotZoomer.cpp
     src/TabbedPlotWidget.cpp
     src/WidgetClipboard.cpp
+    src/XYCurveDialog.cpp
+    src/XYCurveDialog.ui
     include/pj_plotting/CurveEditor.h
+    include/pj_plotting/XYCurveDialog.h
     include/pj_plotting/FilterEditorPanel.h
     include/pj_plotting/ParameterForm.h
     include/pj_plotting/CurveTracker.h
@@ -58,7 +61,7 @@ target_link_libraries(pj_plotting PUBLIC
     Qt6::OpenGLWidgets
     Qt6::Xml
     pj_scripting  # PUBLIC: public headers (FilterEditorPanel.h, ParameterForm.h) expose pj_scripting types
+    pj_widgets    # PUBLIC: XYCurveDialog.h (a public header) derives from PJ::Dialog
   PRIVATE
     pj_datastore  # DataProcessor (applyBatch preview) — formerly pj_proc
-    pj_widgets
 )

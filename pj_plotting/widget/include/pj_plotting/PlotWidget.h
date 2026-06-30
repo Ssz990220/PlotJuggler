@@ -36,7 +36,18 @@ class PlotWidget : public PlotWidgetBase {
   void setDataServices(SessionManager* session, CatalogModel* catalog);
   using PlotWidgetBase::addCurve;
   CurveInfo* addCurve(const QString& name, QColor color = Qt::transparent);
-  CurveInfo* addCurveXY(const QString& x_name, const QString& y_name, QColor color = Qt::transparent);
+  // Adds an XY (scatter) curve pairing the x_name/y_name series. `alias` is the
+  // curve's display title (legend + identity key); an empty alias falls back to an
+  // auto "Y vs X" title. Style/width are inherited from the plot (Dots, because
+  // entering XY mode defaults the plot style) — not forced per-curve.
+  CurveInfo* addCurveXY(
+      const QString& x_name, const QString& y_name, const QString& alias, QColor color = Qt::transparent);
+
+  // Interactive XY creation: pops the XYCurveDialog (Swap + alias) for the two
+  // series, then adds the curve with the chosen orientation/alias. Returns nullptr
+  // if the user cancels. Used by the on-canvas drop and the placeholder-dock drop;
+  // never on layout/undo load (that path passes the saved alias to addCurveXY).
+  CurveInfo* createCurveXYInteractive(const QString& x_key, const QString& y_key);
 
   // Add (or look up, if already present) the curve described by a layout `<curve>`
   // element and apply its saved style (color, line_width, style, visible). Picks
@@ -97,10 +108,6 @@ class PlotWidget : public PlotWidgetBase {
   // usable saved viewport (fresh load, or a degenerate/missing <range>). clear_after
   // drops the stash (pass true on the final drain pass).
   void applySavedViewportOrZoom(bool clear_after = false);
-
-  // Reads back the style currently applied to a Qwt curve (combining its
-  // QwtPlotCurve::CurveStyle and the Inverted attribute) as a CurveStyle.
-  [[nodiscard]] static CurveStyle qwtStyleToCurveStyle(const QwtPlotCurve* curve);
 
  public slots:
   void zoomOut(bool emit_signal = true);
@@ -187,6 +194,10 @@ class PlotWidget : public PlotWidgetBase {
   [[nodiscard]] bool allCurvesKnown(const QStringList& curves) const;
   [[nodiscard]] static QString lineWidthToString(LineWidth width);
   [[nodiscard]] static LineWidth lineWidthFromString(QString value);
+  // Maps a raw pen-width pixel value (older layouts' per-curve width) to the
+  // closest LineWidth, tolerating both the raw {1.0,1.5,2.0,3.0} and the
+  // lineWidthValue()-scaled forms.
+  [[nodiscard]] static LineWidth lineWidthFromPixels(double pixels);
   [[nodiscard]] static QString curveStyleToString(CurveStyle style);
   [[nodiscard]] static CurveStyle curveStyleFromString(QString value);
 

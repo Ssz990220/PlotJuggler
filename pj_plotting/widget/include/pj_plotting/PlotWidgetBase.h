@@ -103,11 +103,17 @@ class PlotWidgetBase : public QWidget {
   void setAcceptDrops(bool accept);
   void overrideCurvesStyle(std::optional<CurveStyle> style);
   [[nodiscard]] std::optional<CurveStyle> overriddenCurvesStyle() const noexcept;
+  // Sets the plot-level curve style: restyles every existing curve and is the
+  // style new curves inherit (addCurve() applies curveStyle()). Style is a
+  // property of the plot, not of an individual curve.
   void setDefaultStyle(CurveStyle default_style);
   [[nodiscard]] CurveStyle defaultCurveStyle() const noexcept;
   [[nodiscard]] CurveStyle curveStyle() const noexcept;
   void updateCurvesStyle();
 
+  // Sets the plot-level line width: re-pens every existing curve and is the
+  // width new curves inherit. Width is a property of the plot, not of an
+  // individual curve.
   void setLineWidth(LineWidth width);
   [[nodiscard]] LineWidth lineWidth() const noexcept {
     return line_width_;

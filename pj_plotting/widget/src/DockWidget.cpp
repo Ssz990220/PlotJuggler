@@ -214,6 +214,9 @@ void DockWidget::setPlaceholderWidget() {
   connect(
       placeholder_widget_, &VisualizationPlaceholderWidget::catalogItemsDropped, this,
       &DockWidget::onCatalogItemsDropped);
+  connect(
+      placeholder_widget_, &VisualizationPlaceholderWidget::catalogItemsXyRequested, this,
+      &DockWidget::onCatalogItemsXyRequested);
   connect(placeholder_widget_, &VisualizationPlaceholderWidget::splitHorizontalRequested, this, [this]() {
     splitHorizontal();
   });
@@ -524,6 +527,31 @@ void DockWidget::onCatalogItemsDropped(const QStringList& keys) {
   }
   emit undoableChange();
   focusSelf();
+}
+
+void DockWidget::onCatalogItemsXyRequested(const QStringList& keys) {
+  // A right-drag of two curves onto an empty placeholder: build a plot and create
+  // an XY (scatter) curve from the pair — the same gesture the live plot canvas
+  // handles, here routed through the placeholder.
+  if (catalog_ == nullptr || keys.size() != 2 || object_widget_ != nullptr) {
+    return;
+  }
+  if (!catalog_->curveDescriptor(keys.front()).has_value() || !catalog_->curveDescriptor(keys.back()).has_value()) {
+    return;
+  }
+  PlotWidget* plot = ensurePlotWidget();
+  if (plot == nullptr) {
+    return;
+  }
+  plot->setModeXY(true);
+  if (plot->createCurveXYInteractive(keys.front(), keys.back()) != nullptr) {
+    plot->zoomOut(true);
+    emit undoableChange();
+    focusSelf();
+  } else {
+    // Cancelled in the dialog: drop the just-created empty plot back to a placeholder.
+    setPlaceholderWidget();
+  }
 }
 
 void DockWidget::clearToPlaceholder() {

@@ -51,11 +51,19 @@ bool acceptCatalogDrag(QDropEvent* event) {
 }
 
 bool dropCatalogItems(QDropEvent* event, VisualizationPlaceholderWidget* target) {
-  const QStringList keys = CurveTreeView::decodeCatalogKeys(event != nullptr ? event->mimeData() : nullptr);
+  const QMimeData* mime_data = event != nullptr ? event->mimeData() : nullptr;
+  const QStringList keys = CurveTreeView::decodeCatalogKeys(mime_data);
   if (keys.empty()) {
     return false;
   }
-  emit target->catalogItemsDropped(keys);
+  // A right-drag of exactly two curves carries the new_XY_axis mime — the
+  // "create XY plot" gesture. Route it so the host builds an XY plot instead of
+  // two ordinary curves; everything else is a normal catalog drop.
+  if (keys.size() == 2 && mime_data != nullptr && mime_data->hasFormat(CurveTreeView::newXyAxisMimeType())) {
+    emit target->catalogItemsXyRequested(keys);
+  } else {
+    emit target->catalogItemsDropped(keys);
+  }
   event->acceptProposedAction();
   return true;
 }

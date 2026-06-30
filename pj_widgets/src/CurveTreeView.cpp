@@ -301,6 +301,10 @@ QString CurveTreeView::catalogItemsMimeType() {
   return QStringLiteral("plotjuggler/catalog-items");
 }
 
+QString CurveTreeView::newXyAxisMimeType() {
+  return QStringLiteral("curveslist/new_XY_axis");
+}
+
 QByteArray CurveTreeView::encodeCatalogKeys(const QStringList& keys) {
   QByteArray encoded;
   QDataStream stream(&encoded, QIODevice::WriteOnly);
@@ -874,7 +878,7 @@ QMimeData* CurveTreeView::createDragMimeData(Qt::MouseButton button) const {
   if (left_add && !names.empty()) {
     mime_data->setData(QStringLiteral("curveslist/add_curve"), encoded);
   } else if (right_xy) {
-    mime_data->setData(QStringLiteral("curveslist/new_XY_axis"), encoded);
+    mime_data->setData(newXyAxisMimeType(), encoded);
   }
   return mime_data;
 }

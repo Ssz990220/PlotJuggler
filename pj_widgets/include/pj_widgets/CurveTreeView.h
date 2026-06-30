@@ -47,6 +47,9 @@ class CurveTreeView : public QTreeWidget {
   }
 
   [[nodiscard]] static QString catalogItemsMimeType();
+  // Mime format set on a right-drag of exactly two curves — the "create XY plot"
+  // gesture. Present alongside catalogItemsMimeType() so drop sites can detect it.
+  [[nodiscard]] static QString newXyAxisMimeType();
   [[nodiscard]] static QByteArray encodeCatalogKeys(const QStringList& keys);
   [[nodiscard]] static QStringList decodeCatalogKeys(const QMimeData* mime_data);
 

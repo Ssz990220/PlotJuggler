@@ -110,11 +110,13 @@ TEST(PendingCurveBinderTest, CollectsUnresolvedCurvesAndBindsThemWhenTopicArrive
 
   QDomDocument doc;
   QDomElement plot_element = addPlot(doc, QStringLiteral("plot_ts"), QStringLiteral("TimeSeries"));
+  // Style and line width are plot-level (every curve inherits them); colour and
+  // visibility are per-curve.
+  plot_element.setAttribute(QStringLiteral("style"), QStringLiteral("Dots"));
+  plot_element.setAttribute(QStringLiteral("line_width"), QStringLiteral("3.0"));
   addTimeSeriesCurve(doc, plot_element, ready);
   QDomElement late_curve = addTimeSeriesCurve(doc, plot_element, late);
   late_curve.setAttribute(QStringLiteral("color"), QStringLiteral("#123456"));
-  late_curve.setAttribute(QStringLiteral("line_width"), QStringLiteral("3.50"));
-  late_curve.setAttribute(QStringLiteral("style"), QStringLiteral("Dots"));
   late_curve.setAttribute(QStringLiteral("visible"), QStringLiteral("false"));
   rebindAgainstCatalog(doc, app_session.catalogModel());
 
@@ -141,8 +143,9 @@ TEST(PendingCurveBinderTest, CollectsUnresolvedCurvesAndBindsThemWhenTopicArrive
   ASSERT_NE(info, nullptr);
   ASSERT_NE(info->curve, nullptr);
   EXPECT_EQ(info->curve->pen().color(), QColor(QStringLiteral("#123456")));
-  EXPECT_DOUBLE_EQ(info->curve->pen().widthF(), 3.5);
+  // Style and width are inherited from the plot (Dots at the plot's line width).
   EXPECT_EQ(info->curve->style(), QwtPlotCurve::Dots);
+  EXPECT_DOUBLE_EQ(info->curve->pen().widthF(), PJ::dotWidthValue(PJ::LineWidth::kPoints30));
   EXPECT_FALSE(info->curve->isVisible());
 
   EXPECT_EQ(binder.flush(QSet<QString>{late.topic}), 0);

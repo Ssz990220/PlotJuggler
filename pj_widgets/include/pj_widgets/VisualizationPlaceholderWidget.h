@@ -41,6 +41,10 @@ class VisualizationPlaceholderWidget : public QWidget {
 
  signals:
   void catalogItemsDropped(QStringList keys);
+  // Emitted instead of catalogItemsDropped when the drop is the "create XY plot"
+  // gesture (a right-drag of exactly two curves — the new_XY_axis mime). The host
+  // turns this into an XY plot rather than two time-series curves.
+  void catalogItemsXyRequested(QStringList keys);
   void splitHorizontalRequested();
   void splitVerticalRequested();
   // Emitted when the placeholder Paste menu action is triggered.

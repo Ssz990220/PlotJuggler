@@ -37,10 +37,13 @@
 #include "pj_plotting/DatastoreCurveAdapter.h"
 #include "pj_plotting/PlotLegend.h"
 #include "pj_plotting/PointSeriesXY.h"
+#include "pj_plotting/XYCurveDialog.h"
 #include "pj_runtime/CatalogModel.h"
 #include "pj_runtime/CurveColorRegistry.h"
 #include "pj_runtime/CurveDescriptor.h"
 #include "pj_runtime/SessionManager.h"
+#include "pj_widgets/CurveTreeView.h"
+#include "pj_widgets/MessageBox.h"
 #include "pj_widgets/SvgUtil.h"
 #include "pj_widgets/ThemeColors.h"
 
@@ -252,7 +255,8 @@ void PlotWidget::replaceCurve(const QString& source_key, const QString& output_k
   replot();
 }
 
-PlotWidget::CurveInfo* PlotWidget::addCurveXY(const QString& x_name, const QString& y_name, QColor color) {
+PlotWidget::CurveInfo* PlotWidget::addCurveXY(
+    const QString& x_name, const QString& y_name, const QString& alias, QColor color) {
   if (session_ == nullptr || catalog_ == nullptr) {
     return nullptr;
   }
@@ -263,7 +267,10 @@ PlotWidget::CurveInfo* PlotWidget::addCurveXY(const QString& x_name, const QStri
     return nullptr;
   }
 
-  const QString title = tr("%1 vs %2").arg(curveDisplayName(*y_descriptor), curveDisplayName(*x_descriptor));
+  // The alias is the curve's display title (legend + the title curveFromTitle()
+  // keys on). Empty alias → auto "Y vs X" title (legacy / non-interactive callers).
+  const QString title =
+      alias.isEmpty() ? tr("%1 vs %2").arg(curveDisplayName(*y_descriptor), curveDisplayName(*x_descriptor)) : alias;
   auto* series = new PointSeriesXY(session_, *x_descriptor, *y_descriptor);
   auto* info = PlotWidgetBase::addCurve(title, series, color);
   if (info == nullptr) {
@@ -275,11 +282,38 @@ PlotWidget::CurveInfo* PlotWidget::addCurveXY(const QString& x_name, const QStri
   // Clears blue tracker + red tracker's reference_pos_. Otherwise, returning
   // to time-series mode later would resurrect stale Δ values without a blue line.
   setReferenceLine(std::nullopt);
-  info->curve->setStyle(QwtPlotCurve::Dots);
-  info->curve->setPen(info->curve->pen().color(), dotWidthValue(lineWidth()));
+  // Style/width are plot-level: addCurve() above already applied the plot's
+  // current style and width. XY plots are not forced to Dots — they inherit the
+  // plot-level style like any plot (PJ3 parity); the Curve Style toolbar controls it.
   updateMaximumZoomArea();
   replot();
   return info;
+}
+
+PlotWidget::CurveInfo* PlotWidget::createCurveXYInteractive(const QString& x_key, const QString& y_key) {
+  if (catalog_ == nullptr) {
+    return nullptr;
+  }
+  const auto x_descriptor = catalog_->curveDescriptor(x_key);
+  const auto y_descriptor = catalog_->curveDescriptor(y_key);
+  if (!x_descriptor.has_value() || !y_descriptor.has_value()) {
+    return nullptr;
+  }
+
+  XYCurveDialog dialog(curveDisplayName(*x_descriptor), curveDisplayName(*y_descriptor), this);
+  while (dialog.exec() == QDialog::Accepted) {
+    const QString alias = dialog.alias();
+    if (curveFromTitle(alias) != nullptr) {
+      MessageBox::warning(
+          this, tr("Duplicate name"), tr("A curve named \"%1\" already exists in this plot.").arg(alias));
+      continue;
+    }
+    // The dialog reports whether the user swapped X and Y relative to the arguments.
+    const QString final_x = dialog.swapped() ? y_key : x_key;
+    const QString final_y = dialog.swapped() ? x_key : y_key;
+    return addCurveXY(final_x, final_y, alias);
+  }
+  return nullptr;  // cancelled
 }
 
 void PlotWidget::setZoomRectangle(QRectF rect, bool emit_signal) {
@@ -470,6 +504,9 @@ QDomElement PlotWidget::xmlSaveState(QDomDocument& doc) const {
   plot_element.setAttribute(
       QStringLiteral("mode"), isXYPlot() ? QStringLiteral("XYPlot") : QStringLiteral("TimeSeries"));
   plot_element.setAttribute(QStringLiteral("line_width"), lineWidthToString(lineWidth()));
+  // Style and width are plot-level properties (every curve shares them; only
+  // colour is per-curve), so they are saved once on the <plot>, not per <curve>.
+  plot_element.setAttribute(QStringLiteral("style"), curveStyleToString(curveStyle()));
   plot_element.setAttribute(QStringLiteral("title"), qwtPlot()->title().text());
   plot_element.setAttribute(
       QStringLiteral("tracker_enabled"), tracker_enabled_ ? QStringLiteral("true") : QStringLiteral("false"));
@@ -526,11 +563,11 @@ QDomElement PlotWidget::xmlSaveState(QDomDocument& doc) const {
     }
     QDomElement curve_element = doc.createElement(QStringLiteral("curve"));
     curve_element.setAttribute(QStringLiteral("color"), info.curve->pen().color().name());
-    curve_element.setAttribute(QStringLiteral("line_width"), QString::number(info.curve->pen().widthF(), 'f', 2));
-    curve_element.setAttribute(QStringLiteral("style"), curveStyleToString(qwtStyleToCurveStyle(info.curve)));
     curve_element.setAttribute(
         QStringLiteral("visible"), info.curve->isVisible() ? QStringLiteral("true") : QStringLiteral("false"));
     if (auto* xy_series = dynamic_cast<PointSeriesXY*>(info.curve->data())) {
+      // An XY curve's title is the user alias (not derivable from x/y), so persist it.
+      curve_element.setAttribute(QStringLiteral("name"), info.source_name);
       write_stable_path(curve_element, QStringLiteral("x_topic"), QStringLiteral("x_field"), xy_series->xSource().name);
       write_stable_path(curve_element, QStringLiteral("y_topic"), QStringLiteral("y_field"), xy_series->ySource().name);
     } else {
@@ -549,7 +586,27 @@ bool PlotWidget::xmlLoadState(const QDomElement& plot_element, bool autozoom) {
 
   setStateId(plot_element.attribute(QStringLiteral("id")));
   setModeXY(plot_element.attribute(QStringLiteral("mode")) == QStringLiteral("XYPlot"));
-  setLineWidth(lineWidthFromString(plot_element.attribute(QStringLiteral("line_width"), QStringLiteral("1.0"))));
+  // Line width is plot-level. New layouts store the chosen width on the <plot>.
+  // Older layouts kept the plot-level value at the stale default ("1.0") and the
+  // real width per-curve, so when the plot value is absent/default fall back to
+  // the first saved curve's pixel width. New layouts no longer write a per-curve
+  // line_width, so the fallback only fires for genuinely old files.
+  const QString plot_line_width = plot_element.attribute(QStringLiteral("line_width"));
+  const QDomElement first_curve = plot_element.firstChildElement(QStringLiteral("curve"));
+  if ((plot_line_width.isEmpty() || plot_line_width == QStringLiteral("1.0")) &&
+      first_curve.hasAttribute(QStringLiteral("line_width"))) {
+    setLineWidth(lineWidthFromPixels(first_curve.attribute(QStringLiteral("line_width")).toDouble()));
+  } else {
+    setLineWidth(lineWidthFromString(plot_line_width.isEmpty() ? QStringLiteral("1.0") : plot_line_width));
+  }
+  // Style is plot-level. New layouts store it on the <plot>; for older layouts
+  // that stored it per <curve>, fall back to the first saved curve. setDefaultStyle
+  // restyles the plot and is inherited by curves added after the load.
+  QString style_attr = plot_element.attribute(QStringLiteral("style"));
+  if (style_attr.isEmpty()) {
+    style_attr = first_curve.attribute(QStringLiteral("style"), QStringLiteral("Lines"));
+  }
+  setDefaultStyle(curveStyleFromString(style_attr));
   setTrackerEnabled(
       plot_element.attribute(QStringLiteral("tracker_enabled"), QStringLiteral("true")) == QStringLiteral("true"));
   qwtPlot()->setTitle(plot_element.attribute(QStringLiteral("title")));
@@ -666,7 +723,8 @@ PlotWidget::CurveInfo* PlotWidget::applyCurveElement(const QDomElement& curve_el
       }
     }
     if (loaded_curve == nullptr) {
-      loaded_curve = addCurveXY(x_name, y_name, color.isValid() ? color : Qt::transparent);
+      // Restore the saved alias as the title; no dialog on load.
+      loaded_curve = addCurveXY(x_name, y_name, source_name, color.isValid() ? color : Qt::transparent);
     }
   } else {
     const QString curve_name = curve_element.attribute(QStringLiteral("name"));
@@ -684,18 +742,8 @@ PlotWidget::CurveInfo* PlotWidget::applyCurveElement(const QDomElement& curve_el
       registry->setColor(loaded_curve->source_name, color.name());
     }
   }
-  if (loaded_curve != nullptr && curve_element.hasAttribute(QStringLiteral("line_width"))) {
-    bool ok = false;
-    const double width = curve_element.attribute(QStringLiteral("line_width")).toDouble(&ok);
-    if (ok) {
-      loaded_curve->curve->setPen(loaded_curve->curve->pen().color(), width);
-    }
-  }
-  if (loaded_curve != nullptr && curve_element.hasAttribute(QStringLiteral("style"))) {
-    // Apply per-curve style after the per-curve width above so the style
-    // toggle path (which leaves the pen alone) does not undo the width.
-    setCurveStyle(loaded_curve->source_name, curveStyleFromString(curve_element.attribute(QStringLiteral("style"))));
-  }
+  // Style and width are plot-level (restored once in xmlLoadState); only colour
+  // and visibility are per-curve.
   if (loaded_curve != nullptr) {
     const QString visible_attr = curve_element.attribute(QStringLiteral("visible"), QStringLiteral("true"));
     loaded_curve->curve->setVisible(visible_attr == QStringLiteral("true"));
@@ -960,9 +1008,11 @@ void PlotWidget::onDragEnterEvent(QDragEnterEvent* event) {
     return;
   }
 
-  if (mime_data->hasFormat(QStringLiteral("curveslist/new_XY_axis"))) {
-    const QStringList curves = decodeCurveDrop(mime_data, QStringLiteral("curveslist/new_XY_axis"));
-    if (curves.size() == 2 && allCurvesKnown(curves) && curveList().empty()) {
+  if (mime_data->hasFormat(CurveTreeView::newXyAxisMimeType())) {
+    const QStringList curves = decodeCurveDrop(mime_data, CurveTreeView::newXyAxisMimeType());
+    // Accept a new XY pair on an empty plot OR on a plot that is already XY (a plot
+    // can hold several XY curves) — but never mixed with time-series curves.
+    if (curves.size() == 2 && allCurvesKnown(curves) && (curveList().empty() || isXYPlot())) {
       dragging_.mode = DragMode::kNewXY;
       dragging_.curves = curves;
       event->acceptProposedAction();
@@ -991,11 +1041,17 @@ void PlotWidget::onDropEvent(QDropEvent* event) {
       }
     }
   } else if (dragging_.mode == DragMode::kNewXY && dragging_.curves.size() == 2) {
-    if (!curveList().empty()) {
+    if (!isXYPlot() && !curveList().empty()) {
       emit statusMessageRequested(tr("Create XY plots by dropping two curves on an empty plot."));
     } else {
+      const bool was_xy = isXYPlot();
       setModeXY(true);
-      curves_changed = addCurveXY(dragging_.curves[0], dragging_.curves[1]) != nullptr;
+      curves_changed = createCurveXYInteractive(dragging_.curves[0], dragging_.curves[1]) != nullptr;
+      if (!curves_changed && !was_xy) {
+        // Cancelled the dialog on a plot that was not already XY: don't strand the
+        // (still empty) plot in XY mode, or it would silently refuse normal drops.
+        setModeXY(false);
+      }
     }
   }
 
@@ -1144,8 +1200,9 @@ void PlotWidget::canvasContextMenuTriggered(const QPoint& pos) {
   action_zoom_out_vertical_->setIcon(QIcon(loadSvg(":/resources/svg/zoom_vertical.svg", theme)));
   // Apply Filter...: open the Filter Editor scoped to this plot's curves. On
   // Save it applies the chosen filter (via DataProcessorService) and adds the
-  // resulting filtered curve(s) to this plot.
-  if (session_ != nullptr && catalog_ != nullptr && !curveList().empty()) {
+  // resulting filtered curve(s) to this plot. Filters are time-series transforms,
+  // so the action is hidden on XY (scatter) plots.
+  if (session_ != nullptr && catalog_ != nullptr && !curveList().empty() && !isXYPlot()) {
     menu.addAction(QIcon(loadSvg(":/resources/svg/function.svg", theme)), tr("Apply Filter..."), this, [this]() {
       launchFilterEditor();
     });
@@ -1271,6 +1328,25 @@ LineWidth PlotWidget::lineWidthFromString(QString value) {
   return LineWidth::kPoints10;
 }
 
+LineWidth PlotWidget::lineWidthFromPixels(double pixels) {
+  // Older layouts stored the line width per-curve as a raw pen width, which could be
+  // either the rendered lineWidthValue() or the raw toolbar value (lineWidthValue is
+  // `scale` times the raw value). Pick the LineWidth closest across both scales,
+  // deriving every candidate from lineWidthValue() so the width ladder lives in one place.
+  const double scale = lineWidthValue(LineWidth::kPoints10);  // raw == lineWidthValue / scale
+  int best = 0;
+  double best_dist = std::numeric_limits<double>::max();
+  for (int i = static_cast<int>(LineWidth::kPoints10); i <= static_cast<int>(LineWidth::kPoints30); ++i) {
+    const double scaled = lineWidthValue(static_cast<LineWidth>(i));
+    const double dist = std::min(std::abs(pixels - scaled), std::abs(pixels - scaled / scale));
+    if (dist < best_dist) {
+      best_dist = dist;
+      best = i;
+    }
+  }
+  return static_cast<LineWidth>(best);
+}
+
 QString PlotWidget::curveStyleToString(CurveStyle style) {
   switch (style) {
     case kLines:
@@ -1306,26 +1382,6 @@ PlotWidgetBase::CurveStyle PlotWidget::curveStyleFromString(QString value) {
     return kStepsInverted;
   }
   return kLines;
-}
-
-PlotWidgetBase::CurveStyle PlotWidget::qwtStyleToCurveStyle(const QwtPlotCurve* curve) {
-  if (curve == nullptr) {
-    return kLines;
-  }
-  switch (curve->style()) {
-    case QwtPlotCurve::Lines:
-      return kLines;
-    case QwtPlotCurve::Dots:
-      return kDots;
-    case QwtPlotCurve::LinesAndDots:
-      return kLinesAndDots;
-    case QwtPlotCurve::Sticks:
-      return kSticks;
-    case QwtPlotCurve::Steps:
-      return curve->testCurveAttribute(QwtPlotCurve::Inverted) ? kStepsInverted : kSteps;
-    default:
-      return kLines;
-  }
 }
 
 void PlotWidget::reconnectDataSignals() {

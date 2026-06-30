@@ -135,6 +135,20 @@ namespace PJ {
 namespace {
 Q_LOGGING_CATEGORY(lcMain, "pj.app.main")
 
+// Check the button with id `id` in an exclusive QButtonGroup as a passive UI
+// resync, with the group's signals blocked. The block is load-bearing: the
+// Curve Width/Style groups' idClicked handlers rewrite the global QSettings
+// default and push an undo entry, neither of which a passive resync should do.
+void checkGroupButton(QButtonGroup* group, int id) {
+  if (group == nullptr) {
+    return;
+  }
+  if (auto* btn = group->button(id)) {
+    const QSignalBlocker blocker(group);
+    btn->setChecked(true);
+  }
+}
+
 constexpr auto kDefaultRegistryUrl =
     "https://raw.githubusercontent.com/PlotJuggler/pj-plugin-registry/"
     "refs/heads/development/registry.json";
@@ -2083,12 +2097,13 @@ void MainWindow::applyDots(PlotWidget* plot) {
   if (plot == nullptr) {
     return;
   }
+  // The Dots toggle flips the plot-level style between Lines and Lines+Dots,
+  // leaving other styles (Dots, Sticks, Steps) chosen in the Curve Style panel
+  // alone. setDefaultStyle restyles every curve and is inherited by new ones.
   const auto from = dots_ ? PlotWidgetBase::kLines : PlotWidgetBase::kLinesAndDots;
   const auto to = dots_ ? PlotWidgetBase::kLinesAndDots : PlotWidgetBase::kLines;
-  for (const auto& info : plot->curveList()) {
-    if (info.curve != nullptr && PlotWidget::qwtStyleToCurveStyle(info.curve) == from) {
-      plot->setCurveStyle(info.source_name, to);
-    }
+  if (plot->defaultCurveStyle() == from) {
+    plot->setDefaultStyle(to);
   }
 }
 
@@ -3724,10 +3739,7 @@ void MainWindow::restoreRightPanelState(const QDomElement& element) {
     if (ok) {
       for (int i = 0; i < static_cast<int>(kWidthButtonSpecs.size()); ++i) {
         if (qFuzzyCompare(kWidthButtonSpecs[i].second, wanted)) {
-          if (auto* btn = width_button_group_->button(i)) {
-            const QSignalBlocker blocker(width_button_group_);
-            btn->setChecked(true);
-          }
+          checkGroupButton(width_button_group_, i);
           break;
         }
       }
@@ -3740,10 +3752,7 @@ void MainWindow::restoreRightPanelState(const QDomElement& element) {
     bool ok = false;
     const int wanted = element.attribute(QStringLiteral("style")).toInt(&ok);
     if (ok) {
-      if (auto* btn = style_button_group_->button(wanted)) {
-        const QSignalBlocker blocker(style_button_group_);
-        btn->setChecked(true);
-      }
+      checkGroupButton(style_button_group_, wanted);
     }
   }
 
@@ -3977,14 +3986,25 @@ void MainWindow::bindEditorToPlot(PlotWidget* plot) {
   // The width/style buttons act on the editor's plot, so keep them
   // visibly disabled when there is none to act on.
   const bool enable = plot != nullptr;
+  // Style/width are plot-level, so the toolbar must reflect the plot we just
+  // bound to (not the last button clicked). The group ids are the LineWidth
+  // index / CurveStyle enum value. Resync happens on every active-plot change;
+  // an in-place state swap on the focused plot (xmlLoadState / paste) is not
+  // covered, since the bound plot does not change there.
   if (width_button_group_ != nullptr) {
     for (auto* btn : width_button_group_->buttons()) {
       btn->setEnabled(enable);
+    }
+    if (plot != nullptr) {
+      checkGroupButton(width_button_group_, static_cast<int>(plot->lineWidth()));
     }
   }
   if (style_button_group_ != nullptr) {
     for (auto* btn : style_button_group_->buttons()) {
       btn->setEnabled(enable);
+    }
+    if (plot != nullptr) {
+      checkGroupButton(style_button_group_, static_cast<int>(plot->defaultCurveStyle()));
     }
   }
 }
@@ -4179,6 +4199,7 @@ void MainWindow::buildGlobalToolbar() {
       applyDots(plot);
       plot->replot();
     });
+    onUndoableChange();
   });
   connect(button_ratio_, &QToolButton::toggled, this, [this](bool checked) {
     if (applying_state_) {
@@ -4499,12 +4520,16 @@ void MainWindow::applyActivePlotWidth(double width) {
   if (plot == nullptr) {
     return;
   }
-  for (const auto& info : plot->curveList()) {
-    if (info.curve != nullptr) {
-      plot->setCurveLineWidth(info.source_name, width);
+  // Curve width is a plot-level property: setLineWidth re-pens every curve and
+  // becomes the width any curve added later inherits. Map the toolbar's pixel
+  // value to the LineWidth enum it mirrors (kWidthButtonSpecs index == enum).
+  for (int i = 0; i < static_cast<int>(kWidthButtonSpecs.size()); ++i) {
+    if (qFuzzyCompare(kWidthButtonSpecs[i].second, width)) {
+      plot->setLineWidth(static_cast<LineWidth>(i));
+      onUndoableChange();
+      break;
     }
   }
-  plot->replot();
 }
 
 void MainWindow::applyActivePlotStyle(int style) {
@@ -4512,13 +4537,11 @@ void MainWindow::applyActivePlotStyle(int style) {
   if (plot == nullptr) {
     return;
   }
-  const auto curve_style = static_cast<PlotWidgetBase::CurveStyle>(style);
-  for (const auto& info : plot->curveList()) {
-    if (info.curve != nullptr) {
-      plot->setCurveStyle(info.source_name, curve_style);
-    }
-  }
-  plot->replot();
+  // Curve style is a plot-level property: setDefaultStyle restyles every curve
+  // and becomes the style any curve added later inherits (addCurve applies
+  // curveStyle()).
+  plot->setDefaultStyle(static_cast<PlotWidgetBase::CurveStyle>(style));
+  onUndoableChange();
 }
 
 bool MainWindow::presentPanel(QWidget* panel) {

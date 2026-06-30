@@ -101,6 +101,8 @@ class DockWidget : public ads::CDockWidget, public IDataWidget {
 
  private slots:
   void onCatalogItemsDropped(const QStringList& keys);
+  // Builds a plot and creates an XY (scatter) curve from a right-dragged pair.
+  void onCatalogItemsXyRequested(const QStringList& keys);
   // Copies the current object widget XML state to the widget clipboard.
   void copyObjectWidgetToClipboard();
   // Replaces the current object widget state from same-family clipboard XML.

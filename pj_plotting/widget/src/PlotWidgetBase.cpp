@@ -66,7 +66,7 @@ double lineWidthValue(LineWidth line_width) noexcept {
 }
 
 double dotWidthValue(LineWidth line_width) noexcept {
-  return (lineWidthValue(line_width) * 1.5) + 2.0;
+  return (lineWidthValue(line_width) * 1.5) + 1.0;
 }
 
 class PlotWidgetBase::QwtPlotPimpl : public QwtPlot {
@@ -377,6 +377,8 @@ Range<double> PlotWidgetBase::getVisualizationRangeY(Range<double> range_x) cons
 }
 
 void PlotWidgetBase::setModeXY(bool enable) {
+  // XY (scatter) plots use the plot-level curve style like any other plot — the
+  // Curve Style toolbar controls them; the mode is not tied to a forced style.
   xy_mode_ = enable;
 }
 
@@ -514,10 +516,11 @@ void PlotWidgetBase::updateCurvesStyle() {
 
 void PlotWidgetBase::setLineWidth(LineWidth width) {
   line_width_ = width;
-  for (auto& info : plot_->curve_list) {
-    info.curve->setPen(info.curve->pen().color(), lineWidthValue(width));
-  }
-  replot();
+  // Re-apply the current style at the new width so every curve gets the
+  // style-correct pen (Lines use lineWidthValue, Dots use the larger
+  // dotWidthValue, Lines+Dots symbols are resized) — the same treatment a new
+  // curve gets from addCurve(). A plain pen-width loop would miss that.
+  updateCurvesStyle();
 }
 
 void PlotWidgetBase::replot() {
