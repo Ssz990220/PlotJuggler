@@ -38,7 +38,8 @@ struct FastCloudData {
 class PointcloudRenderPass : public IRenderPass {
  public:
   // Shape mode for each point.
-  //   kSphere  — perspective-scaled sphere imposter (today's behaviour).
+  //   kSphere  — world-radius sphere imposter; foreshortens with depth under a
+  //              perspective camera, fixed on-screen size under an orthographic one.
   //   kPoint   — flat 1-pixel-fixed sprite (no perspective).
   //   kCube    — instanced 3D cube, fixed-frame-axis-aligned. Wired in
   //              Stage 6; the setter is accepted today but the draw call

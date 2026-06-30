@@ -53,26 +53,34 @@ uniform float u_viewport_height;  // pixels
 uniform float u_min_size_px;
 uniform float u_max_size_px;
 uniform bool u_use_perspective_size;
-// Piecewise perceptual decay: depths <= u_depth_threshold use the
-// physically-correct 1/depth scaling so near-field perspective cues
-// remain intact; beyond the threshold, scaling falls off as
-// 1/sqrt(depth * u_depth_threshold) so distant spheres stay
-// perceptible instead of vanishing into a 1-pixel dot. The two
-// branches meet continuously at depth = u_depth_threshold.
+// Piecewise perceptual decay applied ONLY under a perspective projection: depths
+// <= u_depth_threshold use the physically-correct 1/depth scaling so near-field
+// perspective cues remain intact; beyond the threshold, scaling falls off as
+// 1/sqrt(depth * u_depth_threshold) so distant spheres stay perceptible instead of
+// vanishing into a 1-pixel dot. The two branches meet continuously at
+// depth = u_depth_threshold. An orthographic projection has no perspective divide.
 uniform float u_depth_threshold;  // metres
 out float v_normalized;
 void main() {
   vec4 view_pos = u_view_model * vec4(in_pos, 1.0);
   gl_Position = u_proj * view_pos;
   if (u_use_perspective_size) {
-    // OpenGL view-space looks down -Z, so depth is -view_pos.z (positive forward).
-    float depth = max(-view_pos.z, 0.01);
-    float depth_eff = depth <= u_depth_threshold ? depth : sqrt(depth * u_depth_threshold);
     // Project the world-space radius to a pixel diameter:
-    //   gl_PointSize == 2 * R * focal_pixels / depth,
-    // with focal_pixels = viewport_height * proj[1][1] / 2.
-    // Simplifies to: R * proj[1][1] * viewport_height / depth.
-    gl_PointSize = clamp(u_world_radius * u_proj[1][1] * u_viewport_height / depth_eff, u_min_size_px, u_max_size_px);
+    //   gl_PointSize == 2 * R * focal_pixels / d,
+    // with focal_pixels = viewport_height * proj[1][1] / 2,
+    // which simplifies to R * proj[1][1] * viewport_height / d.
+    float size_px = u_world_radius * u_proj[1][1] * u_viewport_height;
+    // The 1/d perspective foreshortening is correct ONLY for a perspective camera;
+    // an orthographic camera has a constant world->pixel scale (d == 1). proj[3][3]
+    // is 0 for perspective and 1 for orthographic — a cheap, uniform-free
+    // discriminator (the same matrix-derived idiom the SSAO pass uses).
+    if (u_proj[3][3] == 0.0) {
+      // OpenGL view-space looks down -Z, so depth is -view_pos.z (positive forward).
+      float depth = max(-view_pos.z, 0.01);
+      float depth_eff = depth <= u_depth_threshold ? depth : sqrt(depth * u_depth_threshold);
+      size_px /= depth_eff;
+    }
+    gl_PointSize = clamp(size_px, u_min_size_px, u_max_size_px);
   } else {
     gl_PointSize = clamp(u_pixel_size, u_min_size_px, u_max_size_px);
   }
