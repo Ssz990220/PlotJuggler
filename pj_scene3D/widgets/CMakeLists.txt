@@ -349,6 +349,20 @@ if(PJ_BUILD_TESTS)
   target_compile_options(pointcloud_layer_param_transfer_test PRIVATE ${PJ_WARNING_FLAGS} ${PJ_SANITIZER_FLAGS})
   add_test(NAME pointcloud_layer_param_transfer_test COMMAND pointcloud_layer_param_transfer_test)
 
+  # Config-panel range coupling: the manual "Range Min" / "Range Max" scrubbers
+  # must stay ordered (min <= max) — pushing one past the other drags the other
+  # along. Drives the real DoubleScrubber widgets, so it needs a QApplication.
+  add_executable(pointcloud_layer_range_coupling_test
+    tests/pointcloud_layer_range_coupling_test.cpp
+  )
+  target_link_libraries(pointcloud_layer_range_coupling_test PRIVATE
+    pj_scene3d_widgets
+    pj_widgets
+    GTest::gtest
+  )
+  target_compile_options(pointcloud_layer_range_coupling_test PRIVATE ${PJ_WARNING_FLAGS} ${PJ_SANITIZER_FLAGS})
+  add_test(NAME pointcloud_layer_range_coupling_test COMMAND pointcloud_layer_range_coupling_test)
+
   # DepthCloudLayer: a depth-encoded sdk::Image + CameraInfo (matched by frame_id)
   # back-project into points via the kImage path; color images opt out; the
   # encoding gate (isDepthEncoding) is pinned.

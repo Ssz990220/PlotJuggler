@@ -608,12 +608,14 @@ QWidget* PointCloudLayer::createConfigWidget(QWidget* parent) {
   // Shape / Point size / Color type. Only visible in gradient mode with
   // auto-range OFF.
   auto* range_min_spin = new PJ::DoubleScrubber(container);
+  range_min_spin->setObjectName(QStringLiteral("pointcloud_range_min"));
   range_min_spin->setDecimals(4);
   range_min_spin->setRange(-1e9, 1e9);
   range_min_spin->setValue(static_cast<double>(manual_range_min_));
   form->addRow(tr("Range Min:"), range_min_spin);
 
   auto* range_max_spin = new PJ::DoubleScrubber(container);
+  range_max_spin->setObjectName(QStringLiteral("pointcloud_range_max"));
   range_max_spin->setDecimals(4);
   range_max_spin->setRange(-1e9, 1e9);
   range_max_spin->setValue(static_cast<double>(manual_range_max_));
@@ -708,8 +710,28 @@ QWidget* PointCloudLayer::createConfigWidget(QWidget* parent) {
   const auto push_manual_range = [this, range_min_spin, range_max_spin]() {
     setManualRange(static_cast<float>(range_min_spin->value()), static_cast<float>(range_max_spin->value()));
   };
-  QObject::connect(range_min_spin, &PJ::DoubleScrubber::valueChanged, this, push_manual_range);
-  QObject::connect(range_max_spin, &PJ::DoubleScrubber::valueChanged, this, push_manual_range);
+  // Keep min <= max: nudging one scrubber past the other drags the other along
+  // (raise min above max -> max follows up; drop max below min -> min follows
+  // down). Block the sibling's signal so its programmatic update doesn't re-enter
+  // the other handler, then push the now-consistent pair once.
+  QObject::connect(
+      range_min_spin, &PJ::DoubleScrubber::valueChanged, this,
+      [range_min_spin, range_max_spin, push_manual_range](double v) {
+        if (v > range_max_spin->value()) {
+          QSignalBlocker block(range_max_spin);
+          range_max_spin->setValue(v);
+        }
+        push_manual_range();
+      });
+  QObject::connect(
+      range_max_spin, &PJ::DoubleScrubber::valueChanged, this,
+      [range_min_spin, range_max_spin, push_manual_range](double v) {
+        if (v < range_min_spin->value()) {
+          QSignalBlocker block(range_min_spin);
+          range_min_spin->setValue(v);
+        }
+        push_manual_range();
+      });
 
   // ---- Layer → widget wires (out-of-band changes / auto-range refresh) ----
 
