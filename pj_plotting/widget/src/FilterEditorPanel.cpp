@@ -37,6 +37,7 @@
 #include "pj_plotting/PlotWidget.h"
 #include "pj_plotting/PlotWidgetBase.h"
 #include "pj_runtime/CatalogModel.h"
+#include "pj_runtime/CurveDisplayName.h"
 #include "pj_runtime/DataProcessorService.h"
 #include "pj_runtime/SessionManager.h"
 #include "pj_runtime/Time.h"
@@ -59,7 +60,7 @@ namespace {
 // skipped in favour of the topic name rather than shown verbatim.
 QString readableName(const CurveDescriptor& descriptor) {
   if (!descriptor.field_name.isEmpty() && descriptor.field_name != QLatin1String("value")) {
-    return descriptor.field_name;
+    return curveDisplayName(descriptor);  // full "topic/field" path, as the legend shows it
   }
   if (!descriptor.topic_name.isEmpty()) {
     return descriptor.topic_name;

@@ -80,6 +80,19 @@ QString currentTransformId(QListWidget* transform_list) {
   return item ? item->data(Qt::UserRole).toString() : QString();
 }
 
+// Builds a panel over a single source descriptor and returns the label its "Source
+// curve" list shows for that source (item 0) — the tests that pin label formatting.
+QString firstSourceLabel(PJ::SessionManager& session, PJ::CatalogModel& catalog, const PJ::CurveDescriptor& source) {
+  PJ::FilterEditorPanel panel(&session, &catalog, {source}, {});
+  auto* series_list = panel.findChild<QListWidget*>("series_list");
+  EXPECT_NE(series_list, nullptr);
+  if (series_list == nullptr || series_list->count() != 1) {
+    EXPECT_EQ(series_list ? series_list->count() : 0, 1);
+    return {};
+  }
+  return series_list->item(0)->text();
+}
+
 }  // namespace
 
 // Apply path: choosing a filter and clicking Apply materializes a real output
@@ -212,15 +225,22 @@ TEST(FilterEditorPanelTest, SourceListLabelsValueColumnByTopicName) {
   output.topic_name = QStringLiteral("/angular_velocity/y[Absolute]");
   output.field_name = QStringLiteral("value");
   output.field_path = QStringLiteral("value");
-  output.topic_id = 0;
-  output.dataset_id = 0;
-  output.column_index = 0;
 
-  PJ::FilterEditorPanel panel(&session, &catalog, {output}, {});
-  auto* series_list = panel.findChild<QListWidget*>("series_list");
-  ASSERT_NE(series_list, nullptr);
-  ASSERT_EQ(series_list->count(), 1);
-  EXPECT_EQ(series_list->item(0)->text(), QStringLiteral("/angular_velocity/y[Absolute]"));
+  EXPECT_EQ(firstSourceLabel(session, catalog, output), QStringLiteral("/angular_velocity/y[Absolute]"));
+}
+
+// A real message field is labelled by its FULL "topic/field" path, not just the
+// field: "/twist/twist/linear/x" alone is ambiguous across topics (odom vs cmd_vel).
+TEST(FilterEditorPanelTest, SourceListPrependsTopicToFieldName) {
+  PJ::SessionManager session;
+  PJ::CatalogModel catalog(&session);
+  PJ::CurveDescriptor source{};
+  source.name = QStringLiteral("dataset:1/topic:3/column:5");
+  source.topic_name = QStringLiteral("odom");
+  source.field_name = QStringLiteral("/twist/twist/linear/x");
+  source.field_path = QStringLiteral("/twist/twist/linear/x");
+
+  EXPECT_EQ(firstSourceLabel(session, catalog, source), QStringLiteral("odom/twist/twist/linear/x"));
 }
 
 // Reopening the editor on an already-filtered curve: (A) the source list labels it

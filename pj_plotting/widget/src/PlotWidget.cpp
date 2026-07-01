@@ -41,6 +41,7 @@
 #include "pj_runtime/CatalogModel.h"
 #include "pj_runtime/CurveColorRegistry.h"
 #include "pj_runtime/CurveDescriptor.h"
+#include "pj_runtime/CurveDisplayName.h"
 #include "pj_runtime/SessionManager.h"
 #include "pj_widgets/CurveTreeView.h"
 #include "pj_widgets/MessageBox.h"
@@ -68,27 +69,6 @@ QString curveKey(const QString& source_name, const QString& x_name = {}, const Q
     return QStringLiteral("xy:") + x_name + QStringLiteral("\n") + y_name;
   }
   return QStringLiteral("ts:") + source_name;
-}
-
-void appendDisplayPath(QString& base, QString path) {
-  path.replace('.', '/');
-  while (path.startsWith('/')) {
-    path.remove(0, 1);
-  }
-  if (path.isEmpty()) {
-    return;
-  }
-  if (!base.isEmpty() && !base.endsWith('/')) {
-    base += '/';
-  }
-  base += path;
-}
-
-QString curveDisplayName(const CurveDescriptor& descriptor) {
-  QString name;
-  appendDisplayPath(name, descriptor.topic_name);
-  appendDisplayPath(name, descriptor.field_name);
-  return name.isEmpty() ? descriptor.name : name;
 }
 
 // The session-scoped curve-color registry (issue #68), reached through the
