@@ -536,14 +536,18 @@ static void applyToWidget(
       applyTableRows(tw, *v);
     }
     // Radio column: render the designated column as an exclusive radio group and
-    // sync the checked row. The holder (stashed by connectWidgetSignals) carries
-    // the event callback the radios need; absent on the very first apply, which is
-    // harmless because a table only gains rows after the user interacts.
+    // sync the checked row. Build the radios UNCONDITIONALLY — a Modify flow delivers
+    // pre-populated rows on the very first apply, which runs BEFORE connectWidgetSignals
+    // stashes the holder; gating on the holder there left the radio column empty and
+    // its width mis-stretched (unlike Create, whose rows arrive by drop after wiring).
+    // The click callback resolves the holder lazily, so clicks still emit once it lands.
     if (auto col = view.tableRadioColumn(name)) {
-      if (auto* holder = static_cast<RadioEmitHolder*>(
-              tw->findChild<QObject*>(QStringLiteral("pj_radio_emit_holder"), Qt::FindDirectChildrenOnly))) {
-        applyTableRadioColumn(tw, *col, view.tableRadioCheckedRow(name).value_or(-1), holder->emit_row);
-      }
+      applyTableRadioColumn(tw, *col, view.tableRadioCheckedRow(name).value_or(-1), [tw](int row) {
+        if (auto* holder = static_cast<RadioEmitHolder*>(
+                tw->findChild<QObject*>(QStringLiteral("pj_radio_emit_holder"), Qt::FindDirectChildrenOnly))) {
+          holder->emit_row(row);
+        }
+      });
     }
     // Row visibility (live filtering): hide rows not in the visible set. Absent
     // (clearVisibleRows ⇒ nullopt) means "no change"; an empty set hides all.
