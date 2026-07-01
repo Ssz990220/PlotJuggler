@@ -45,9 +45,13 @@ assimp/5.4.3
 [options]
 fmt/*:header_only=True
 # Embedded CPython needs only the language + stdlib (no GUI). Drop tkinter (pulls
-# the big xorg/system -dev set) and curses.
+# the big xorg/system -dev set) and curses. Also drop gdbm: it only backs Python's
+# rarely-used `dbm.gnu` stdlib module (irrelevant to running filter scripts), and
+# gdbm/1.23's source names a struct member `bool`, which fails to compile on GCC
+# toolchains defaulting to C23 (where `bool` is a reserved keyword).
 cpython/*:with_tkinter=False
 cpython/*:with_curses=False
+cpython/*:with_gdbm=False
 nanoarrow/*:with_ipc=True
 libarchive/*:shared=False
 # pj_scene2D needs FFmpeg for file video playback and packet-stream decode.

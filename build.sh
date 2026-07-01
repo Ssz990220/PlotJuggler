@@ -37,7 +37,7 @@ if [[ "$TSAN" == "1" ]]; then
   BUILD_DIR="${SCRIPT_DIR}/build-tsan"
 
   conan install "$SCRIPT_DIR" --output-folder="$BUILD_DIR" --build=missing \
-    -s build_type=RelWithDebInfo -s compiler.cppstd=20
+    -s build_type=RelWithDebInfo -s compiler.cppstd=20 -r conancenter
 
   # PJ4_BUILD_APP=OFF + building only the foundation test targets keeps Qt out of
   # the picture entirely (no Qt code is compiled), even though configure still
@@ -63,8 +63,12 @@ fi
 
 BUILD_DIR="${SCRIPT_DIR}/build"
 
+# Pin resolution to conancenter. A developer machine may have private org remotes
+# (e.g. an Artifactory) listed ahead of conancenter that host forked recipes under
+# a user channel — those would shadow the stock recipes and drag a whole `@<org>`
+# dependency subtree into the graph. conancenter carries every PJ4 dependency.
 conan install "$SCRIPT_DIR" --output-folder="$BUILD_DIR" --build=missing \
-  -s build_type=RelWithDebInfo -s compiler.cppstd=20
+  -s build_type=RelWithDebInfo -s compiler.cppstd=20 -r conancenter
 
 cmake -S "$SCRIPT_DIR" -B "$BUILD_DIR" \
   -DCMAKE_TOOLCHAIN_FILE="$BUILD_DIR/conan_toolchain.cmake" \
