@@ -2119,11 +2119,14 @@ void MainWindow::onPlotZoomChanged(PlotWidget* modified, QRectF rect) {
     if (plot == modified || plot->isEmpty() || plot->isXYPlot() || !plot->isZoomLinkEnabled()) {
       return;
     }
+    // Linked zoom only ever aligns the horizontal (time) range: copy the source's
+    // X extent onto each peer while leaving its vertical range exactly as the user
+    // left it. A purely-vertical gesture (wheel on the left axis, "Zoom Out
+    // Vertically") therefore carries an unchanged X and resolves to a no-op here.
     QRectF peer_rect = plot->currentBoundingRect();
     peer_rect.setLeft(rect.left());
     peer_rect.setRight(rect.right());
     plot->setZoomRectangle(peer_rect, false);
-    plot->onZoomOutVerticalTriggered(false);
     plot->replot();
   });
 }
