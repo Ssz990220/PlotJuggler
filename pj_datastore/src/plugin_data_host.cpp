@@ -48,6 +48,36 @@ using FieldHandle = PJ_field_handle_t;
   return std::string_view(view.data == nullptr ? "" : view.data, view.size);
 }
 
+// Collapse runs of '/' into a single '/' in a topic/field name. Plugin-supplied names
+// are opaque, but an empty '/'-segment ("//") carries no meaning in the curve
+// hierarchy, so we normalize it here — the one boundary every DataSource/Parser name
+// crosses to become a datastore key — so the stored key, the UI catalog (which reads
+// the descriptor name) and the by-name transform resolver all agree on a single slash.
+// Common case (no "//") allocates nothing: callers guard on `needsSlashNormalization`.
+[[nodiscard]] bool needsSlashNormalization(std::string_view name) {
+  return name.find("//") != std::string_view::npos;
+}
+
+// A field also needs work if it starts with '/' (a leading slash would double up at
+// the "topic/field" junction), not just when it has internal "//".
+[[nodiscard]] bool needsFieldNormalization(std::string_view name) {
+  return needsSlashNormalization(name) || (!name.empty() && name.front() == '/');
+}
+
+[[nodiscard]] std::string normalizeSlashes(std::string_view name) {
+  std::string out;
+  out.reserve(name.size());
+  bool prev_slash = false;
+  for (const char c : name) {
+    if (c == '/' && prev_slash) {
+      continue;
+    }
+    prev_slash = (c == '/');
+    out.push_back(c);
+  }
+  return out;
+}
+
 [[nodiscard]] Expected<PrimitiveType> fromAbiType(PJ_primitive_type_t type) {
   const auto raw = static_cast<uint32_t>(type);
   if (raw > static_cast<uint32_t>(PrimitiveType::kString)) {
@@ -354,6 +384,13 @@ struct WriteCore {
   }
 
   [[nodiscard]] bool ensureTopic(DataSourceHandle source, std::string_view topic_name, TopicHandle* out_topic) {
+    // Normalize "//" → "/" once, at the ingest boundary, so the stored topic name,
+    // the catalog and the by-name transform resolver all key off the same string.
+    std::string topic_name_normalized;
+    if (needsSlashNormalization(topic_name)) {
+      topic_name_normalized = normalizeSlashes(topic_name);
+      topic_name = topic_name_normalized;
+    }
     auto engine_locks = lockWriteEngines(engine, secondary_engine);
     const auto* dataset = engine.getDataset(source.id);
     if (dataset == nullptr) {
@@ -439,6 +476,19 @@ struct WriteCore {
 
   [[nodiscard]] bool ensureField(
       TopicHandle topic, std::string_view field_name, PJ_primitive_type_t abi_type, FieldHandle* out_field) {
+    // Normalize the field name on every entry point (direct ensureField and the lazy
+    // auto-create inside appendRecord). A field path is relative to its topic, so two
+    // things get fixed: internal runs "//" collapse to "/", and a leading '/' (e.g. a
+    // CSV column header "/robot/pose/x") is dropped — otherwise the UI, which joins
+    // topic + '/' + field, would render "topic//robot/pose/x".
+    std::string field_name_normalized;
+    if (needsFieldNormalization(field_name)) {
+      field_name_normalized = normalizeSlashes(field_name);
+      if (!field_name_normalized.empty() && field_name_normalized.front() == '/') {
+        field_name_normalized.erase(0, 1);
+      }
+      field_name = field_name_normalized;
+    }
     auto engine_locks = lockWriteEngines(engine, secondary_engine);
     const auto* storage = engine.getTopicStorage(topic.id);
     if (storage == nullptr) {
@@ -589,9 +639,21 @@ struct WriteCore {
     };
     std::vector<ResolvedField> resolved;
     resolved.reserve(field_count);
+    // Backing store for names that needed "//" → "/" normalization; a deque keeps
+    // element addresses stable so the string_views below (and in seen_names) stay
+    // valid for the whole record. Untouched on the common (no-"//") path.
+    std::deque<std::string> normalized_names;
     for (std::size_t i = 0; i < field_count; ++i) {
       const auto& field = fields[i];
-      const auto name = toStringView(field.name);
+      auto name = toStringView(field.name);
+      if (needsFieldNormalization(name)) {
+        std::string norm = normalizeSlashes(name);
+        if (!norm.empty() && norm.front() == '/') {
+          norm.erase(0, 1);
+        }
+        normalized_names.push_back(std::move(norm));
+        name = normalized_names.back();
+      }
       if (!seen_names.insert(name).second) {
         setError(fmt::format("duplicate field name '{}'", name));
         return false;

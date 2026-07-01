@@ -26,11 +26,13 @@
 #include "nanoarrow/nanoarrow.hpp"
 #include "pj_base/dataset.hpp"
 #include "pj_base/plugin_data_api.h"
+#include "pj_base/sdk/plugin_data_api.hpp"
 #include "pj_base/type_tree.hpp"
 #include "pj_base/types.hpp"
 #include "pj_datastore/engine.hpp"
 #include "pj_datastore/object_store.hpp"
 #include "pj_datastore/plugin_data_host.hpp"
+#include "pj_datastore/topic_storage.hpp"
 
 namespace PJ {
 namespace {
@@ -286,6 +288,42 @@ TEST(ArrowStreamRoundTripTest, ParserWriteHostAppendArrowStreamWritesBoundTopic)
   out_array.release(&out_array);
   EXPECT_EQ(out_schema.release, nullptr);
   EXPECT_EQ(out_array.release, nullptr);
+}
+
+// Names containing "//" (empty path segments, e.g. a CSV column header) must be
+// collapsed to a single '/' at the ingest boundary, so the stored topic/field name
+// (which the UI catalog and the by-name transform resolver both read) has no "//".
+TEST(ArrowStreamRoundTripTest, CollapsesDoubleSlashesInNames) {
+  DataEngine engine;
+  auto td_id = engine.createTimeDomain("td");
+  ASSERT_TRUE(td_id.has_value()) << td_id.error();
+  auto ds_id = engine.createDataset(DatasetDescriptor{.source_name = "csv", .time_domain_id = *td_id});
+  ASSERT_TRUE(ds_id.has_value()) << ds_id.error();
+
+  DatastoreSourceWriteHost write_host(engine, PJ_data_source_handle_t{static_cast<uint32_t>(*ds_id)});
+  sdk::SourceWriteHostView writer(write_host.raw());
+
+  // Mirror the CSV plugin: topic = file basename, column header carries "//".
+  const auto topic = writer.ensureTopic("myfile");
+  ASSERT_TRUE(topic.has_value()) << topic.error();
+  ASSERT_TRUE(writer.ensureField(*topic, "/robot//pose/x", PrimitiveType::kFloat64).has_value());
+  const std::vector<sdk::NamedFieldValue> fields = {{.name = "/robot//pose/x", .value = 1.0}};
+  ASSERT_TRUE(writer.appendRecord(*topic, 10, fields).has_value());
+  write_host.flushPending();
+
+  const auto lock = engine.lockEngine();
+  const TopicStorage* storage = engine.getTopicStorage(topic->id);
+  ASSERT_NE(storage, nullptr);
+  bool found_normalized = false;
+  bool found_raw = false;
+  for (const auto& col : storage->columnDescriptors()) {
+    // Internal "//" collapses to "/" and the leading '/' is dropped (fields are
+    // relative to their topic), so "/robot//pose/x" is stored as "robot/pose/x".
+    found_normalized = found_normalized || col.field_path == "robot/pose/x";
+    found_raw = found_raw || col.field_path == "/robot//pose/x" || col.field_path == "/robot/pose/x";
+  }
+  EXPECT_TRUE(found_normalized) << "field name was not normalized (collapse + strip leading '/')";
+  EXPECT_FALSE(found_raw) << "raw or leading-slash field name survived ingest";
 }
 
 }  // namespace
