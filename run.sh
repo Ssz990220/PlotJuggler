@@ -17,7 +17,7 @@ export QT_IM_MODULE=""
 # HTTPS traffic breaks — including the marketplace registry fetch.
 export QT_PLUGIN_PATH="${SCRIPT_DIR}/.qt/6.11.1/gcc_64/plugins"
 
-BIN="${SCRIPT_DIR}/build/pj_app/pj_app"
+BIN="${SCRIPT_DIR}/build/pj_app/plotjuggler4"
 
 # --apitrace: launch under apitrace to capture a GL call trace (a smoke-test for
 # redundant per-frame GL work — shader recompiles, full-cloud re-uploads, etc.).

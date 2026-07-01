@@ -1,0 +1,111 @@
+name: Release AppImage
+
+# Builds the portable Linux AppImage and, on a version tag, attaches it to the
+# GitHub Release. Modeled on PlotJuggler 3's ubuntu.yaml release job, adapted to
+# PJ4's heavier setup (Qt from aqt into ./.qt, deps from Conan) — so it reuses
+# the same Qt/Conan/ccache caching that linux-ci.yml relies on.
+#
+# Triggers:
+#   - push of a `v*` tag  -> build + publish the AppImage to that tag's Release
+#   - workflow_dispatch   -> build an AppImage from any branch (artifact only, no
+#                            Release upload) for smoke-testing the packaging
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write   # softprops/action-gh-release needs write to create/update the Release
+
+jobs:
+  appimage:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Use HTTPS for github.com submodules
+        run: git config --global url."https://github.com/".insteadOf "git@github.com:"
+
+      - uses: actions/checkout@v6
+        with:
+          submodules: recursive
+          fetch-depth: 0   # tags/describe need full history
+
+      - uses: conan-io/setup-conan@v1
+        with:
+          cache_packages: false
+
+      - name: Cache Conan packages
+        uses: actions/cache@v5
+        with:
+          path: ~/.conan2
+          # Keyed on the dependency manifests; partial reuse via the prefix.
+          key: conan-appimage-${{ hashFiles('**/conanfile.txt') }}
+          restore-keys: conan-appimage-
+
+      - name: Cache Qt 6.11.1
+        id: qt-cache
+        uses: actions/cache@v5
+        with:
+          path: .qt
+          key: qt-6.11.1-linux
+
+      - name: Install Qt 6.11.1 via aqt
+        if: steps.qt-cache.outputs.cache-hit != 'true'
+        run: ./install_qt6.sh   # installs into ./.qt; no-ops if already present
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          # libva-dev / libdrm-dev: required by the FFmpeg Conan build (VAAPI).
+          # imagemagick: `convert` rasterizes the app icon in build_appimage.sh.
+          # wget/file: linuxdeploy fetch + ELF inspection.
+          # unzip: --plugins-registry unpacks the downloaded plugin zips (python3
+          #        + sha256sum for registry parse/verify are already on the runner).
+          sudo apt-get install -y --no-install-recommends \
+            libva-dev libdrm-dev \
+            imagemagick wget file unzip ccache zstd
+
+      - name: Configure ccache
+        uses: actions/cache@v5
+        with:
+          path: ~/.cache/ccache
+          key: ccache-appimage-${{ github.sha }}
+          restore-keys: ccache-appimage-
+
+      - name: Build plotjuggler4
+        run: ./build.sh
+
+      - name: Build AppImage
+        env:
+          # The linuxdeploy tools are themselves AppImages; ubuntu-22.04 runners no
+          # longer ship libfuse2, so run them extracted instead of FUSE-mounted.
+          APPIMAGE_EXTRACT_AND_RUN: '1'
+        run: |
+          set -euo pipefail
+          # --plugins-registry: download the curated official plugin set (BUNDLE_IDS)
+          # from pj-plugin-registry (main), verify checksums, unpack into the bundle.
+          # Fails the release if any curated plugin can't be resolved/downloaded.
+          bash appimage/build_appimage.sh --plugins-registry
+          # Stamp the artifact with the tag (or short sha for manual runs). The
+          # script emits PlotJuggler-<version>-x86_64.AppImage into appimage/.
+          ref="${GITHUB_REF_NAME:-$(git rev-parse --short HEAD)}"
+          safe="${ref//\//-}"
+          src="$(ls appimage/PlotJuggler-*-x86_64.AppImage)"
+          dest="appimage/PlotJuggler-${safe}-x86_64.AppImage"
+          [ "${src}" = "${dest}" ] || mv "${src}" "${dest}"
+          echo "APPIMAGE=${dest}" >> "${GITHUB_ENV}"
+
+      - name: Upload AppImage artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ format('PlotJuggler-{0}-x86_64.AppImage', github.ref_name) }}
+          path: ${{ env.APPIMAGE }}
+          if-no-files-found: error
+
+      - name: Attach AppImage to the GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v3
+        with:
+          files: ${{ env.APPIMAGE }}
+          generate_release_notes: true
+          fail_on_unmatched_files: true
