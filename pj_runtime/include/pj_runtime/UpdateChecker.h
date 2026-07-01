@@ -46,8 +46,12 @@ class UpdateChecker : public QObject {
   // to QCoreApplication::applicationVersion() at call time.
   void setCurrentVersion(const QString& version);
 
-  // Override the releases API endpoint. Defaults to the PlotJuggler/PJ4 repo.
+  // Override the releases API endpoint. Defaults to the PlotJuggler/PlotJuggler repo.
   void setReleaseApiUrl(const QUrl& url);
+
+  // The releases API endpoint this check will GET (the built-in default, or the
+  // last value passed to setReleaseApiUrl).
+  QUrl releaseApiUrl() const;
 
  signals:
   // A strictly-newer release exists.

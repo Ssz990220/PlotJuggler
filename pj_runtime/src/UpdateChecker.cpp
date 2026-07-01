@@ -17,7 +17,7 @@ namespace PJ {
 namespace {
 // GitHub's REST endpoint returns the latest published, non-draft,
 // non-prerelease release — so betas never trigger the nag on their own.
-constexpr auto kDefaultReleaseApiUrl = "https://api.github.com/repos/PlotJuggler/PJ4/releases/latest";
+constexpr auto kDefaultReleaseApiUrl = "https://api.github.com/repos/PlotJuggler/PlotJuggler/releases/latest";
 constexpr int kTransferTimeoutMs = 15000;
 }  // namespace
 
@@ -32,6 +32,10 @@ void UpdateChecker::setCurrentVersion(const QString& version) {
 
 void UpdateChecker::setReleaseApiUrl(const QUrl& url) {
   release_api_url_ = url;
+}
+
+QUrl UpdateChecker::releaseApiUrl() const {
+  return release_api_url_;
 }
 
 void UpdateChecker::checkLatestRelease() {

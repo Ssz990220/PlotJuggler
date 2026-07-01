@@ -230,6 +230,17 @@ TEST(UpdateCheckerTest, SupersededCheckEmitsNothing) {
   EXPECT_TRUE(failed_spy.isEmpty());
 }
 
+TEST(UpdateCheckerTest, DefaultUrlTargetsPublicRepo) {
+  // The check must hit the PUBLIC PlotJuggler/PlotJuggler repo: the private
+  // PlotJuggler/PJ4 dev repo is invisible to anonymous clients, so aiming the
+  // default there makes every check fail (403 rate-limit / 404 not-found).
+  PJ::UpdateChecker checker;
+  const std::string url = checker.releaseApiUrl().toString().toStdString();
+  EXPECT_NE(url.find("api.github.com"), std::string::npos) << url;
+  EXPECT_NE(url.find("/repos/PlotJuggler/PlotJuggler/releases/latest"), std::string::npos) << url;
+  EXPECT_EQ(url.find("/PlotJuggler/PJ4/"), std::string::npos) << url;
+}
+
 int main(int argc, char** argv) {
   QCoreApplication app(argc, argv);
   qRegisterMetaType<PJ::ReleaseInfo>();  // so QSignalSpy can capture updateAvailable's arg
