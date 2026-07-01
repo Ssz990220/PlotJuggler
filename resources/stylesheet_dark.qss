@@ -17,6 +17,10 @@ widget_background_disabled:  #404040
 // surface against the dialog body; ScrubberBase::paintEvent uses the
 // same value in C++ to stay in lockstep with the QComboBox QSS.
 input_background:            #4D4D5A
+// Floating "toast" notification card. Needs its own solid fill because
+// widget_background is transparent; sits a shade above main_background so
+// the card reads as raised over the window body.
+toast_background:            #42424E
 
 // ---- Text ----------------------------------------------------------
 default_text:    #F0F0F0
@@ -2055,4 +2059,37 @@ PJ--IngestProgressWidget PJ--ProgressBar {
 PJ--IngestProgressWidget PJ--ProgressBar::chunk {
     border-radius: 8px;
     margin: 1px;
+}
+
+/* Toast Notification ----------------------------------------------------- */
+
+PJ--ToastNotification {
+    background-color: ${toast_background};
+    border: 1px solid ${border_default};
+    border-radius: 6px;
+    min-width: 250px;
+    max-width: 400px;
+}
+
+PJ--ToastNotification QLabel#toastMessage {
+    color: ${default_text};
+    font-size: 10pt;
+}
+
+PJ--ToastNotification QLabel#toastIcon {
+    background: transparent;
+}
+
+PJ--ToastNotification QPushButton#toastCloseButton {
+    background: transparent;
+    border: none;
+    color: ${disabled_text};
+    font-size: 14pt;
+    font-weight: bold;
+    padding: 0px;
+    margin: 0px;
+}
+
+PJ--ToastNotification QPushButton#toastCloseButton:hover {
+    color: ${default_text};
 }

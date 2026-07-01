@@ -32,6 +32,8 @@ The authoritative source is `include/pj_runtime/`. Today:
 | `IObjectViewer.h` | The contract an object-store-backed viewer (e.g. a 2D image dock) implements so the shell can ask it to drop layers whose object topic was removed; returns whether any live layer remains. Pairs with `CatalogModel`'s `cleared()` / `itemsRemoved()` removal signals. |
 | `CurveDescriptor.h` | Stable identifier for a curve in the datastore. |
 | `CurveColorRegistry.h` | Session-scoped memory of each curve's color (hex string), so a curve keeps its color across plots (issue #68). Owned by `SessionManager` (and surfaced via `AppSession::curveColorRegistry()`); cleared when the catalog empties. |
+| `UpdateChecker.h` | One-shot GitHub "new release available?" check (`QNetworkAccessManager` GET of `releases/latest`, `User-Agent` set, default SSL verification). Compares the returned tag against `applicationVersion()` and emits **at most one** of `updateAvailable(ReleaseInfo)` / `upToDate()` / `checkFailed(reason)` (a check superseded by a newer `checkLatestRelease()` is aborted and emits nothing); every failure (network, HTTP 404 = no release yet, bad JSON, unparseable tag) routes to `checkFailed`, so the shell can stay silent on the startup path. Widget-free — the shell wires `updateAvailable` to a toast. |
+| `UpdateVersion.h` | Header-only version math behind `UpdateChecker`: `versionToComparable()` (tolerates a `v` prefix, `-rc`/`+build` suffixes, missing components; `-1` on garbage) and `isNewerVersion(candidate, current)` (strict, false unless both parse). Radix leaves room for a 3-digit minor (our beta is `3.999.0`). Unit-tested in `tests/update_version_test.cpp`. |
 
 ## Linked dependencies
 

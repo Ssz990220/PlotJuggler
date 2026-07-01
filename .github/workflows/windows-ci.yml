@@ -114,7 +114,7 @@ jobs:
           # not Conan 2.0 ready" from the same truncated blob. A re-run restores the
           # same bad blob, so the only fix is a new cache identity that forces a clean
           # cold rebuild (and a fresh save on the next push-to-main).
-          $cacheVersion = "v3"
+          $cacheVersion = "v4"
           $fileHash = (Get-FileHash conanfile.txt -Algorithm SHA256).Hash.Substring(0, 16).ToLower()
           $hash = "$cacheVersion-$fileHash"
           $owner = "${{ github.repository_owner }}".ToLower()
@@ -171,7 +171,7 @@ jobs:
           path: ~/.conan2
           key: conan-windows-msvc-relwithdebinfo-${{ steps.conan_cache.outputs.hash }}
           restore-keys: |
-            conan-windows-msvc-relwithdebinfo-v2-
+            conan-windows-msvc-relwithdebinfo-v4-
 
       - name: Cache Qt
         id: qt-cache

@@ -16,6 +16,9 @@ widget_background_disabled:  #eeeeee
 // the input rectangle reads as a chart-surface inset; ScrubberBase
 // uses the same value in C++ to stay in lockstep with the QComboBox QSS.
 input_background:            #FFFFFF
+// Floating "toast" notification card. Needs its own solid fill because
+// widget_background is transparent; a clean white card over the grey body.
+toast_background:            #FFFFFF
 // Theme-agnostic — the plotting canvas, the Qwt internal canvas, and
 // the per-tab strip frames in TabbedPlotWidget all paint this colour
 // so the plot area reads as a flat white surface in both themes.
@@ -2077,4 +2080,37 @@ PJ--IngestProgressWidget PJ--ProgressBar {
 PJ--IngestProgressWidget PJ--ProgressBar::chunk {
     border-radius: 8px;
     margin: 1px;
+}
+
+/* Toast Notification ----------------------------------------------------- */
+
+PJ--ToastNotification {
+    background-color: ${toast_background};
+    border: 1px solid ${border_default};
+    border-radius: 6px;
+    min-width: 250px;
+    max-width: 400px;
+}
+
+PJ--ToastNotification QLabel#toastMessage {
+    color: ${default_text};
+    font-size: 10pt;
+}
+
+PJ--ToastNotification QLabel#toastIcon {
+    background: transparent;
+}
+
+PJ--ToastNotification QPushButton#toastCloseButton {
+    background: transparent;
+    border: none;
+    color: ${disabled_text};
+    font-size: 14pt;
+    font-weight: bold;
+    padding: 0px;
+    margin: 0px;
+}
+
+PJ--ToastNotification QPushButton#toastCloseButton:hover {
+    color: ${default_text};
 }

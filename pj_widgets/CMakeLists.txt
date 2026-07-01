@@ -32,6 +32,8 @@ add_library(pj_widgets STATIC
     src/SvgButton.cpp
     src/Scrollbar.cpp
     src/Timeline.cpp
+    src/ToastManager.cpp
+    src/ToastNotification.cpp
     src/ToggleSwitch.cpp
     src/VisualizationPlaceholderWidget.cpp
     include/pj_widgets/CheckButton.h
@@ -70,6 +72,8 @@ add_library(pj_widgets STATIC
     include/pj_widgets/ThemeColors.h
     include/pj_widgets/Scrollbar.h
     include/pj_widgets/Timeline.h
+    include/pj_widgets/ToastManager.h
+    include/pj_widgets/ToastNotification.h
     include/pj_widgets/ToggleSwitch.h
     include/pj_widgets/VisualizationPlaceholderWidget.h
 )

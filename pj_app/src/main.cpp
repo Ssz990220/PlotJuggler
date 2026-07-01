@@ -9,6 +9,7 @@
 #include <QImage>
 #include <QPixmap>
 #include <QScreen>
+#include <QSettings>
 #include <QSplashScreen>
 #include <QThread>
 #include <QTimer>
@@ -62,9 +63,10 @@ int main(int argc, char* argv[]) {
   QApplication app(argc, argv);
   QCoreApplication::setOrganizationName(QStringLiteral("PlotJuggler"));
   QCoreApplication::setApplicationName(QStringLiteral("PlotJuggler4"));
-  // Until a real release-versioning scheme lands, the About box and any
-  // diagnostics that embed applicationVersion() report a dev build.
-  QCoreApplication::setApplicationVersion(QStringLiteral("4.0.0-dev"));
+  // PJ_VERSION_STRING comes from the root project(VERSION) via pj_app's
+  // target_compile_definitions — the single source of truth read by the About
+  // box and compared against the latest GitHub release.
+  QCoreApplication::setApplicationVersion(QStringLiteral(PJ_VERSION_STRING));
   QApplication::setApplicationDisplayName(QStringLiteral("PlotJuggler 4"));
 
   // WidgetTuner: app-wide Polish-event filter that side-steps QSS
@@ -212,6 +214,14 @@ int main(int argc, char* argv[]) {
   if (parser.isSet(layout_option)) {
     const QString layout_path = parser.value(layout_option);
     QTimer::singleShot(0, &window, [&window, layout_path]() { window.loadLayoutAtStartup(layout_path); });
+  }
+
+  // One-shot GitHub release check, opt-out via Preferences (default on) and
+  // skipped for headless --screenshot runs. Deferred to the running event loop
+  // (QNetworkAccessManager needs it); failures/no-release are silent.
+  if (!parser.isSet(screenshot_option) &&
+      QSettings().value(QStringLiteral("Preferences::check_updates_on_startup"), true).toBool()) {
+    QTimer::singleShot(0, &window, [&window]() { window.checkForUpdates(/*interactive=*/false); });
   }
 
   if (parser.isSet(screenshot_option)) {

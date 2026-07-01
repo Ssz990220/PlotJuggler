@@ -5,6 +5,8 @@
     <file alias="stylesheet_dark.qss">stylesheet_dark.qss</file>
     <!-- Square PlotJuggler logo, composed into the "serious" splashscreen. -->
     <file alias="plotjuggler.svg">plotjuggler.svg</file>
+    <!-- "Success kid" meme icon shown in the "new release available" toast. -->
+    <file alias="success_kid.png">success_kid.png</file>
   </qresource>
   <qresource prefix="/resources">
     <!-- Funny splashscreen pool. The startup splash enumerates this directory

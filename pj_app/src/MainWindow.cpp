@@ -27,8 +27,10 @@
 #include <QMessageBox>
 #include <QMouseEvent>
 #include <QPalette>
+#include <QPixmap>
 #include <QPointer>
 #include <QPushButton>
+#include <QResizeEvent>
 #include <QSaveFile>
 #include <QScopedValueRollback>
 #include <QScreen>
@@ -105,6 +107,7 @@
 #include "pj_runtime/SessionManager.h"
 #include "pj_runtime/Time.h"
 #include "pj_runtime/ToolboxRuntimeHost.h"
+#include "pj_runtime/UpdateChecker.h"
 #include "pj_scene2d_widgets/Scene2DDockWidget.h"
 #include "pj_scene2d_widgets/media_viewer_widget.h"
 #include "pj_scene3d_widgets/Scene3DDockWidget.h"
@@ -120,6 +123,7 @@
 #include "pj_widgets/SvgButton.h"
 #include "pj_widgets/SvgUtil.h"
 #include "pj_widgets/Timeline.h"
+#include "pj_widgets/ToastManager.h"
 #include "scene_object_classification.h"
 #include "ui/AboutDialog.h"
 #include "ui/CurveListPanel.h"
@@ -440,6 +444,7 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
   // Marketplace, reached from the File menu).
   QMenu* help_menu = title_bar_->helpMenu();
   help_menu->addAction(tr("About PlotJuggler..."), this, &MainWindow::onShowAboutDialog);
+  help_menu->addAction(tr("Check for Updates..."), this, &MainWindow::onCheckForUpdates);
   help_menu->addAction(
       tr("Documentation"), this, []() { QDesktopServices::openUrl(QUrl(QStringLiteral("https://plotjuggler.io"))); });
   help_menu->addAction(tr("Report an Issue"), this, []() {
@@ -1671,6 +1676,63 @@ void MainWindow::onShowPreferencesDialog() {
 void MainWindow::onShowAboutDialog() {
   AboutDialog dialog(this);
   dialog.exec();
+}
+
+void MainWindow::showToast(const QString& message, const QPixmap& icon) {
+  if (!toast_manager_) {
+    toast_manager_ = new ToastManager(this);
+  }
+  toast_manager_->showToast(message, icon);
+}
+
+void MainWindow::checkForUpdates(bool interactive) {
+  if (!update_checker_) {
+    update_checker_ = new UpdateChecker(this);
+  }
+
+  // Rebind the outcome handlers so this call's `interactive` is captured
+  // per-request: checkLatestRelease() aborts any prior in-flight check (whose
+  // handlers are disconnected here regardless), so the "up to date" / "couldn't
+  // check" toasts can never be attributed to the wrong request.
+  disconnect(update_available_conn_);
+  disconnect(up_to_date_conn_);
+  disconnect(check_failed_conn_);
+
+  update_available_conn_ =
+      connect(update_checker_, &UpdateChecker::updateAvailable, this, [this](const ReleaseInfo& release) {
+        QString message = tr("New release available: <b>%1</b>").arg(release.name.toHtmlEscaped());
+        if (!release.html_url.isEmpty()) {
+          message += QStringLiteral("<br>") + tr("<a href=\"%1\">View on GitHub</a>").arg(release.html_url);
+        }
+        showToast(message, QPixmap(QStringLiteral(":/resources/success_kid.png")));
+      });
+
+  up_to_date_conn_ = connect(update_checker_, &UpdateChecker::upToDate, this, [this, interactive]() {
+    if (interactive) {
+      showToast(tr("PlotJuggler is up to date."));
+    }
+  });
+
+  check_failed_conn_ =
+      connect(update_checker_, &UpdateChecker::checkFailed, this, [this, interactive](const QString& reason) {
+        qWarning("Update check failed: %s", qUtf8Printable(reason));
+        if (interactive) {
+          showToast(tr("Could not check for updates. Please try again later."));
+        }
+      });
+
+  update_checker_->checkLatestRelease();
+}
+
+void MainWindow::onCheckForUpdates() {
+  checkForUpdates(/*interactive=*/true);
+}
+
+void MainWindow::resizeEvent(QResizeEvent* event) {
+  QMainWindow::resizeEvent(event);
+  if (toast_manager_) {
+    toast_manager_->updatePosition();
+  }
 }
 
 void MainWindow::onThemeChanged(const QString& theme) {

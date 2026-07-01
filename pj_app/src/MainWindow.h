@@ -72,6 +72,8 @@ class Timeline;
 class RecentFilesMenu;
 class Theme;
 class TitleBar;
+class ToastManager;
+class UpdateChecker;
 class CoalescingTrigger;
 
 // Legend corner placement. Four corner buttons in the right toolbar act
@@ -118,6 +120,19 @@ class MainWindow : public QMainWindow {
   // DiagnosticHistory service. Use this from tools / CLI / dev feeds to
   // emit through the same pipeline plugins use.
   [[nodiscard]] DiagnosticSink diagnosticSink() const;
+
+  // Shows a transient bottom-right toast. The message may contain rich text
+  // (an `<a href>` opens in the system browser). Lazily creates the toast
+  // manager on first use.
+  void showToast(const QString& message, const QPixmap& icon = QPixmap());
+
+  // Kicks off a one-shot GitHub release check (lazily creating the
+  // UpdateChecker). A newer release always pops a toast. `interactive`
+  // distinguishes the two entry points: false = automatic startup check, which
+  // stays silent unless there's an update (no "up to date" / no error noise);
+  // true = the manual Help ▸ Check for Updates action, which also toasts the
+  // "you're up to date" and "couldn't check" outcomes.
+  void checkForUpdates(bool interactive);
 
   // Presents the embedded external-process view in the central area (via
   // presentPanel) and restores the chart when the session ends. Idempotent:
@@ -220,6 +235,10 @@ class MainWindow : public QMainWindow {
 
   // Opens the modal About box (Help ▸ About PlotJuggler…).
   void onShowAboutDialog();
+
+  // Help ▸ Check for Updates… — a manual, always-runs release check that also
+  // reports when the app is already current (unlike the silent startup check).
+  void onCheckForUpdates();
 
   // Rebuilds the Help ▸ Installed Extensions submenu from the current
   // ExtensionCatalogService snapshot. Informational only (disabled
@@ -596,6 +615,10 @@ class MainWindow : public QMainWindow {
   // deferred after the first layout pass.
   void showEvent(QShowEvent* event) override;
 
+  // Keeps the toast stack pinned to the bottom-right corner as the window
+  // resizes.
+  void resizeEvent(QResizeEvent* event) override;
+
   // Frameless-window edge resize: catches mouse events on ourselves or
   // any descendant widget, updates the cursor near edges, and starts a
   // system-resize on press.
@@ -623,6 +646,14 @@ class MainWindow : public QMainWindow {
   Ui::MainWindow* ui_;
   QtDiagnosticBridge* diagnostic_bridge_ = nullptr;
   DiagnosticHistory* diagnostic_history_ = nullptr;
+  ToastManager* toast_manager_ = nullptr;
+  UpdateChecker* update_checker_ = nullptr;
+  // Outcome handlers are rebound on each checkForUpdates() call so the check's
+  // interactivity (silent startup vs. noisy Help ▸ Check for Updates) is captured
+  // per-request rather than living in shared mutable state.
+  QMetaObject::Connection update_available_conn_;
+  QMetaObject::Connection up_to_date_conn_;
+  QMetaObject::Connection check_failed_conn_;
   QAction* undo_action_ = nullptr;
   QAction* redo_action_ = nullptr;
   // App-wide QSettings instance injected into each Scene3DDockWidget

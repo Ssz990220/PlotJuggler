@@ -1,5 +1,8 @@
 cmake_minimum_required(VERSION 3.22)
-project(plotjuggler4 LANGUAGES CXX)
+# Version is deliberately 3.999.0: an ironic pre-4.0.0 beta number that flows
+# through the same GitHub release-check/version-compare mechanism as any real
+# release (see pj_runtime/UpdateChecker + UpdateVersion).
+project(plotjuggler4 VERSION 3.999.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)

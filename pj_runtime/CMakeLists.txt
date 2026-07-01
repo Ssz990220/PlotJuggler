@@ -18,6 +18,7 @@ add_library(pj_runtime STATIC
     src/QSettingsBackend.cpp
     src/SessionManager.cpp
     src/ToolboxRuntimeHost.cpp
+    src/UpdateChecker.cpp
     include/pj_runtime/AppSession.h
     include/pj_runtime/CatalogModel.h
     include/pj_runtime/CurveColorRegistry.h
@@ -31,6 +32,8 @@ add_library(pj_runtime STATIC
     include/pj_runtime/QSettingsBackend.h
     include/pj_runtime/SessionManager.h
     include/pj_runtime/ToolboxRuntimeHost.h
+    include/pj_runtime/UpdateChecker.h
+    include/pj_runtime/UpdateVersion.h
 )
 
 set_target_properties(pj_runtime PROPERTIES
@@ -98,6 +101,32 @@ if(PJ_BUILD_TESTS)
         GTest::gtest_main
     )
     add_test(NAME DataProcessorsRuntimeHostTest COMMAND data_processors_runtime_host_test)
+
+    # Pure header-only version math (UpdateVersion.h) — no networking, no lib.
+    add_executable(update_version_test
+        tests/update_version_test.cpp
+    )
+    target_compile_options(update_version_test PRIVATE ${PJ_WARNING_FLAGS})
+    target_link_libraries(update_version_test PRIVATE
+        pj_runtime
+        GTest::gtest_main
+    )
+    add_test(NAME UpdateVersionTest COMMAND update_version_test)
+
+    # Drives UpdateChecker's reply state machine against a local QTcpServer.
+    # Qt6::Test supplies QSignalSpy; Qt6::Network comes transitively via pj_runtime.
+    find_package(Qt6 REQUIRED COMPONENTS Test)
+    add_executable(update_checker_test
+        tests/update_checker_test.cpp
+    )
+    set_target_properties(update_checker_test PROPERTIES AUTOMOC ON)
+    target_compile_options(update_checker_test PRIVATE ${PJ_WARNING_FLAGS})
+    target_link_libraries(update_checker_test PRIVATE
+        pj_runtime
+        Qt6::Test
+        GTest::gtest
+    )
+    add_test(NAME UpdateCheckerTest COMMAND update_checker_test)
 
     add_executable(app_session_test
         tests/app_session_test.cpp

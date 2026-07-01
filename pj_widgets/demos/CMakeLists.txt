@@ -89,3 +89,21 @@ target_link_libraries(pj_widgets_check_button_demo PRIVATE
     Qt6::Widgets
     Qt6::Svg
 )
+
+# Toast notifications (the "new release available" surface). Links resources.qrc
+# for the success_kid.png icon. Supports --screenshot <path> for headless capture.
+add_executable(pj_widgets_toast_demo
+    toast_demo.cpp
+    ${CMAKE_SOURCE_DIR}/resources/resources.qrc
+)
+set_target_properties(pj_widgets_toast_demo PROPERTIES AUTORCC ON)
+target_compile_features(pj_widgets_toast_demo PRIVATE cxx_std_20)
+target_compile_options(pj_widgets_toast_demo PRIVATE ${PJ_WARNING_FLAGS})
+target_link_libraries(pj_widgets_toast_demo PRIVATE
+    pj_widgets
+    pj_widgets_demos_qss
+    Qt6::Core
+    Qt6::Gui
+    Qt6::Widgets
+    Qt6::Svg
+)

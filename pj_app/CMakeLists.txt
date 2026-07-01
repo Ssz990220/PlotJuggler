@@ -108,6 +108,11 @@ target_link_libraries(pj_app PRIVATE
     Qt6::Svg
 )
 
+# Single source of truth for the app version: the root project(VERSION). Both
+# the About box (applicationVersion()) and the GitHub release check compare
+# against this string.
+target_compile_definitions(pj_app PRIVATE PJ_VERSION_STRING="${PROJECT_VERSION}")
+
 # -Werror guards against the bug class that bit the reload path: a merge that
 # drops wiring leaves an unused variable behind, which these flags turn into a
 # build failure instead of a silent regression.

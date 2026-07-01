@@ -374,6 +374,22 @@ set_target_properties(timeline_widget_test PROPERTIES
 
 add_test(NAME TimelineWidgetTest COMMAND timeline_widget_test)
 
+add_executable(toast_test toast_test.cpp)
+set_target_properties(toast_test PROPERTIES
+    AUTOMOC ON
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
+)
+target_link_libraries(toast_test PRIVATE
+    pj_widgets
+    GTest::gtest
+    Qt6::Test
+    Qt6::Widgets
+)
+if(DEFINED PJ_WARNING_FLAGS)
+    target_compile_options(toast_test PRIVATE ${PJ_WARNING_FLAGS})
+endif()
+add_test(NAME ToastTest COMMAND toast_test)
+
 add_executable(scrollbar_test scrollbar_test.cpp)
 set_target_properties(scrollbar_test PROPERTIES
     AUTOMOC ON
