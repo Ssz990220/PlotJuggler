@@ -109,11 +109,12 @@ jobs:
           # Cache identity = CACHE_VERSION salt + conanfile.txt hash. Bump the salt
           # to evict a poisoned cache: the ghcr.io tag for a given conanfile can be
           # saved incomplete (e.g. a recipe export folder missing), after which every
-          # restoring build dies at `conan install` with "fmt/<ver>: Cannot load
-          # recipe ... conanfile.py not found". A re-run restores the same bad blob,
-          # so the only fix is a new cache identity that forces a clean cold rebuild
-          # (and a fresh save on the next push-to-main).
-          $cacheVersion = "v2"
+          # restoring build dies during graph resolution — "fmt/<ver>: Cannot load
+          # recipe ... conanfile.py not found", or "Recipe 'fmt/<ver>' seems broken ...
+          # not Conan 2.0 ready" from the same truncated blob. A re-run restores the
+          # same bad blob, so the only fix is a new cache identity that forces a clean
+          # cold rebuild (and a fresh save on the next push-to-main).
+          $cacheVersion = "v3"
           $fileHash = (Get-FileHash conanfile.txt -Algorithm SHA256).Hash.Substring(0, 16).ToLower()
           $hash = "$cacheVersion-$fileHash"
           $owner = "${{ github.repository_owner }}".ToLower()
