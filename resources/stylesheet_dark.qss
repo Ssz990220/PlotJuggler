@@ -1024,6 +1024,7 @@ QSlider#timeSlider::handle:horizontal:pressed {
    QTableWidget in the app and in plugin dialogs. */
 QTableView {
    background: ${input_background};
+   alternate-background-color: ${input_background};
    color: ${default_text};
    border-radius: 0px;
    border: 1px solid ${border_default};
@@ -1045,6 +1046,17 @@ QListView {
    show-decoration-selected: 1;
 }
 
+/* Cells must be painted with the same input surface as the viewport: Qt
+   initializes QPalette::Base on QTableWidget to white regardless of the
+   theme, and QStyledItemDelegate paints each item's background from that
+   palette role, ignoring a `background: transparent` on ::item. Pin the
+   colour explicitly so cells match the viewport ${input_background}. */
+QTableView::item,
+QTableWidget::item {
+   background-color: ${input_background};
+   color: ${default_text};
+}
+
 QTableView::item:selected,
 QTreeView::item:selected,
 QListView::item:selected {
@@ -1057,13 +1069,13 @@ QListView::item:selected {
    columns don't fill the available width. The per-section border-bottom
    below paints on top of this and stays in sync visually. */
 QHeaderView {
-    background-color: transparent;
+    background-color: ${main_background};
     border: none;
     border-bottom: 1px solid ${border_default};
 }
 
 QHeaderView::section {
-    background-color: transparent;
+    background-color: ${main_background};
     color: ${default_text};
     /* Non-bold: QTableWidget defaults its header font to bold, and a widget-side
        setFont(non-bold) is ignored while the app stylesheet is active, so force it
@@ -1087,7 +1099,7 @@ QHeaderView::section:only-one {
    the inherited bottom + right borders when only the color is changed
    in a :hover variant. */
 QHeaderView::section:hover {
-    background-color: transparent;
+    background-color: ${main_background};
     color: ${default_text};
     padding-left: ${chrome_spacing}px;
     border: none;
