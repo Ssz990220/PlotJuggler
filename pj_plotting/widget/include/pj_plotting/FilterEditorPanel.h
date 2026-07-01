@@ -15,6 +15,7 @@
 #include <string>
 #include <vector>
 
+#include "pj_plotting/PlotWidgetBase.h"  // PlotWidgetBase::CurveStyle / LineWidth for the preview API
 #include "pj_runtime/CurveDescriptor.h"
 #include "pj_runtime/DataProcessorService.h"
 #include "pj_scripting/filter_class.h"
@@ -64,11 +65,13 @@ class FilterEditorPanel : public QWidget {
       QHash<QString, QColor> source_colors = {}, QWidget* parent = nullptr);
   ~FilterEditorPanel() override;
 
-  /// Adopt the app's global plot-display settings so the before/after preview
-  /// matches the real plots (the host calls this on open and whenever the grid /
-  /// curve-style / curve-width toolbar changes while the panel is up). `style` is a
-  /// `PlotWidgetBase::CurveStyle` value. Re-applied to rebuilt preview curves.
-  void setPreviewDisplay(bool grid_visible, int curve_style, double line_width);
+  /// Adopt the display settings of the plot the editor was opened on, so the
+  /// before/after preview mirrors that plot (the host calls this on open and
+  /// whenever the grid / curve-style / curve-width toolbar changes while the panel
+  /// is up). `style` and `width` are the origin plot's own `defaultCurveStyle()` /
+  /// `lineWidth()`; the preview applies them plot-level (so dot vs line pen widths
+  /// match) and re-dashes the ghost afterwards. Re-applied to rebuilt preview curves.
+  void setPreviewDisplay(bool grid_visible, PlotWidgetBase::CurveStyle style, LineWidth width);
 
  signals:
   /// Emitted on Apply. `replacements` is a list of (source key → output key)
@@ -97,9 +100,13 @@ class FilterEditorPanel : public QWidget {
   // curve (dashed); the filtered curve is an in-memory series from applyBatch —
   // NOTHING is materialized into the catalog until Apply.
   void setupPreview();
-  // Push the stored grid/style/width onto the preview plot + its current curves
+  // Push the stored grid/style/width onto the preview plot plot-level
   // (idempotent; called from setPreviewDisplay and after each preview rebuild).
   void applyPreviewDisplay();
+  // Re-apply each ghost's faded/dashed (active) or solid (inactive) pen. MUST run
+  // after applyPreviewDisplay() — the plot-level restyle re-pens every curve, so
+  // the ghost's dash would otherwise be clobbered on a reactive display change.
+  void applyGhostPens();
   void scheduleRefresh();  // debounced trigger; coalesces rapid parameter edits
   void refreshPreview();
   // When the single selected source is itself a filter output, switch to EDIT
@@ -184,11 +191,11 @@ class FilterEditorPanel : public QWidget {
   QToolButton* paste_button_ = nullptr;
   QToolButton* apply_all_button_ = nullptr;
 
-  // App global plot-display settings mirrored onto the preview (set by the host via
-  // setPreviewDisplay; defaults = no grid, Lines, 1px until the host pushes them).
+  // Origin plot's display settings mirrored onto the preview (set by the host via
+  // setPreviewDisplay; defaults = no grid, Lines, 1.0px until the host pushes them).
   bool preview_grid_ = false;
-  int preview_curve_style_ = 0;  // PlotWidgetBase::kLines
-  double preview_line_width_ = 1.0;
+  PlotWidgetBase::CurveStyle preview_curve_style_ = PlotWidgetBase::kLines;
+  LineWidth preview_line_width_ = LineWidth::kPoints10;
 
   // Live preview embedded in the `chart_preview` frame.
   PlotWidget* preview_plot_ = nullptr;
@@ -204,6 +211,10 @@ class FilterEditorPanel : public QWidget {
     QColor color;                      // the selected curve's plot colour
     QwtPlotCurve* ghost = nullptr;     // datastore-backed source curve
     QwtPlotCurve* filtered = nullptr;  // in-memory filtered result curve
+    // Whether this source has an active transform (dashed ghost + visible filtered).
+    // Resolved once per refreshPreview() — processorForSource() builds a Luau VM, so it
+    // must not be re-derived per redraw — and reused by applyGhostPens().
+    bool active = false;
   };
   std::vector<PreviewSeries> preview_series_;
   QString preview_set_key_;  // identity of the current ghost set; rebuild when it changes

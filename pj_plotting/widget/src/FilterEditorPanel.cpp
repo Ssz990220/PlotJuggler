@@ -318,11 +318,12 @@ void FilterEditorPanel::updateAlias() {
   ui_->alias_edit->setText(primary + "[" + label + "]");
 }
 
-void FilterEditorPanel::setPreviewDisplay(bool grid_visible, int curve_style, double line_width) {
+void FilterEditorPanel::setPreviewDisplay(bool grid_visible, PlotWidgetBase::CurveStyle style, LineWidth width) {
   preview_grid_ = grid_visible;
-  preview_curve_style_ = curve_style;
-  preview_line_width_ = line_width;
+  preview_curve_style_ = style;
+  preview_line_width_ = width;
   applyPreviewDisplay();
+  applyGhostPens();  // the plot-level restyle re-penned every curve; restore the ghost dash
   if (preview_plot_ != nullptr) {
     preview_plot_->replot();
   }
@@ -332,16 +333,33 @@ void FilterEditorPanel::applyPreviewDisplay() {
   if (preview_plot_ == nullptr) {
     return;
   }
+  // Plot-level setters mirror how a real plot pens its curves — correct dot vs line
+  // pen widths, inherited by curves added later — so the preview matches the origin
+  // plot faithfully. They re-pen every curve, so ghost dashes must be re-applied after.
   preview_plot_->setGridVisible(preview_grid_);
-  const auto style = static_cast<PlotWidgetBase::CurveStyle>(preview_curve_style_);
-  for (const auto& info : preview_plot_->curveList()) {
-    if (info.curve != nullptr) {
-      preview_plot_->setCurveStyle(info.source_name, style);
-      preview_plot_->setCurveLineWidth(info.source_name, preview_line_width_);
+  preview_plot_->setDefaultStyle(preview_curve_style_);
+  preview_plot_->setLineWidth(preview_line_width_);
+}
+
+void FilterEditorPanel::applyGhostPens() {
+  for (const PreviewSeries& entry : preview_series_) {
+    if (entry.ghost == nullptr) {
+      continue;
     }
+    // Active source -> faded dashed "before"; inactive ("No Transform") -> plain solid.
+    // entry.active is resolved once per refreshPreview() (see there); reused here so a
+    // reactive display change doesn't rebuild a Luau VM per ghost.
+    QColor ghost_color = entry.color;
+    QPen pen = entry.ghost->pen();
+    if (entry.active) {
+      ghost_color.setAlpha(90);
+      pen.setStyle(Qt::DashLine);
+    } else {
+      pen.setStyle(Qt::SolidLine);
+    }
+    pen.setColor(ghost_color);
+    entry.ghost->setPen(pen);
   }
-  // No replot here — refreshPreview() applies this BEFORE its ghost-pen styling and
-  // owns the final replot; setPreviewDisplay() replots itself.
 }
 
 void FilterEditorPanel::setupPreview() {
@@ -625,32 +643,25 @@ void FilterEditorPanel::refreshPreview() {
     }
   }
 
-  // Adopt the app's grid/style/width on the (possibly just-rebuilt) curves BEFORE
-  // the ghost-pen styling below, so the ghost's dash/fade is applied last and wins.
+  // Resolve each source's active state ONCE — processorForSource() builds a Luau VM,
+  // so it must not be re-derived per redraw. Each source previews through its OWN
+  // filter (matching Apply): a source on "No Transform" stays plain even while another
+  // in the multi-selection is filtered. Reused by applyGhostPens() and the loop below.
+  for (PreviewSeries& entry : preview_series_) {
+    entry.active = (processorForSource(entry.source_key) != nullptr);
+  }
+
+  // Adopt the origin plot's grid/style/width on the (possibly just-rebuilt) curves
+  // BEFORE the ghost-pen styling, so the ghost's dash/fade is applied last and wins.
   applyPreviewDisplay();
+  applyGhostPens();
 
   const QListWidgetItem* transform_item = ui_->transform_list->currentItem();
   const QString transform_label = transform_item ? transform_item->text() : QString();
   const QString alias = ui_->alias_edit->text();
 
   for (PreviewSeries& entry : preview_series_) {
-    // Each source previews through its OWN filter (matching Apply), so "active" is per-entry: a
-    // source on "No Transform" stays plain even while another in the multi-selection is filtered.
-    const bool entry_active = (processorForSource(entry.source_key) != nullptr);
-    // No transform -> show the source as its plain self (solid, full colour). With a
-    // transform it becomes the faded dashed "before" against the filtered "after".
-    if (entry.ghost != nullptr) {
-      QColor ghost_color = entry.color;
-      QPen pen = entry.ghost->pen();
-      if (entry_active) {
-        ghost_color.setAlpha(90);
-        pen.setStyle(Qt::DashLine);
-      } else {
-        pen.setStyle(Qt::SolidLine);
-      }
-      pen.setColor(ghost_color);
-      entry.ghost->setPen(pen);
-    }
+    const bool entry_active = entry.active;
 
     if (entry.filtered != nullptr) {
       // Legend label: the single-source case keeps the user-editable alias; a

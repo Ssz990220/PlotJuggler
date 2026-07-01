@@ -816,26 +816,17 @@ static void applyToWidget(
             }
           }
 
-          // Re-apply the app's view configuration (grid / curve-style / line-width)
-          // that the host pushed as frame properties. Done on EVERY update so it
-          // survives a curve rebuild — otherwise the right-side display buttons'
-          // effect would be lost whenever the preview's series set changes.
+          // Re-apply the app's grid state that the host pushed as a frame property.
+          // Done on EVERY update so it survives a curve rebuild. Curve style/width are
+          // deliberately NOT pushed: a plugin preview has no originating plot to mirror,
+          // so it keeps the PlotWidget default style/width.
           if (frame->property("_pj_view_set").toBool()) {
             plot->setGridVisible(frame->property("_pj_view_grid").toBool());
-            const auto vstyle = static_cast<PJ::PlotWidgetBase::CurveStyle>(frame->property("_pj_view_style").toInt());
-            const double vwidth = frame->property("_pj_view_width").toDouble();
-            for (const auto& info : plot->curveList()) {
-              if (info.curve != nullptr) {
-                plot->setCurveStyle(info.source_name, vstyle);
-                plot->setCurveLineWidth(info.source_name, vwidth);
-              }
-            }
           }
 
           // Per-series dashed pattern LAST: a dashed series is the faded "before"
           // ghost (matches FilterEditorPanel/native TransformEditorPanel). Applied
-          // after the view-config above, since setCurveLineWidth rebuilds the pen as
-          // SolidLine and would otherwise wipe the dash.
+          // after the grid config so it wins over the base pen the curve was built with.
           {
             const auto& curve_list = plot->curveList();
             auto curve_it = curve_list.begin();

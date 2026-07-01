@@ -1114,43 +1114,42 @@ TEST(GoldenBinaryFilter, NeverSuppresses) {
 }
 
 // -------------------------------- time_since_previous --------------------------------
-TEST(GoldenTimeSincePrevious, OutputKindIsInt64RegardlessOfInput) {
+TEST(GoldenTimeSincePrevious, OutputKindIsDoubleRegardlessOfInput) {
   auto t = makeLuau("time_since_previous", "{}");
   ASSERT_FALSE(t->failed()) << t->error();
 
   const PJ::StorageKind in_float = PJ::StorageKind::kFloat64;
   const auto kinds = t->outputKinds(PJ::Span<const PJ::StorageKind>(&in_float, 1));
   ASSERT_EQ(kinds.size(), 1u);
-  EXPECT_EQ(kinds[0], PJ::StorageKind::kInt64);
+  EXPECT_EQ(kinds[0], PJ::StorageKind::kFloat64);
 
-  // Empty input kind still maps to int64 (not the float64 fallback).
+  // Empty input kind still maps to double (the class declares output = "double").
   const PJ::StorageKind* no_kinds = nullptr;
   const auto empty = t->outputKinds(PJ::Span<const PJ::StorageKind>(no_kinds, std::size_t{0}));
   ASSERT_EQ(empty.size(), 1u);
-  EXPECT_EQ(empty[0], PJ::StorageKind::kInt64);
+  EXPECT_EQ(empty[0], PJ::StorageKind::kFloat64);
 }
 
-TEST(GoldenTimeSincePrevious, FirstSampleSuppressedThenDeltasInNanoseconds) {
+TEST(GoldenTimeSincePrevious, FirstSampleSuppressedThenDeltasInSeconds) {
   auto t = makeLuau("time_since_previous", "{}");
   ASSERT_FALSE(t->failed()) << t->error();
 
-  // Timestamps 0, 1e9, 3e9 ns (value ignored by the filter).
+  // Timestamps 0, 1e9, 3e9 ns (value ignored by the filter). `t` is seconds since
+  // session start, so the filter returns the gap in SECONDS as a double.
   const auto first = t->calculateNextPoint(Si(0, 0));
   EXPECT_FALSE(first.has_value());  // no predecessor -> suppressed
 
   const auto second = t->calculateNextPoint(Si(1'000'000'000, 0));
   ASSERT_TRUE(second.has_value());
   EXPECT_EQ(second->raw_ts_ns, 1'000'000'000);
-  ASSERT_TRUE(std::holds_alternative<std::int64_t>(second->value()));
-  // Round-trip ns->seconds->ns is exact at this magnitude; allow 1 ns of slack
-  // (the documented parity tolerance for the (t-pt)*1e9 seam).
-  EXPECT_NEAR(static_cast<double>(std::get<std::int64_t>(second->value())), 1'000'000'000.0, 1.0);
+  ASSERT_TRUE(std::holds_alternative<double>(second->value()));
+  EXPECT_DOUBLE_EQ(std::get<double>(second->value()), 1.0);  // 1e9 ns gap == 1 second
 
   const auto third = t->calculateNextPoint(Si(3'000'000'000, 0));
   ASSERT_TRUE(third.has_value());
   EXPECT_EQ(third->raw_ts_ns, 3'000'000'000);
-  ASSERT_TRUE(std::holds_alternative<std::int64_t>(third->value()));
-  EXPECT_NEAR(static_cast<double>(std::get<std::int64_t>(third->value())), 2'000'000'000.0, 1.0);
+  ASSERT_TRUE(std::holds_alternative<double>(third->value()));
+  EXPECT_DOUBLE_EQ(std::get<double>(third->value()), 2.0);  // 2e9 ns gap == 2 seconds
 }
 
 TEST(GoldenTimeSincePrevious, ResetReSuppressesFirstSample) {
@@ -1169,8 +1168,8 @@ TEST(GoldenTimeSincePrevious, ResetReSuppressesFirstSample) {
   // And the one after that resumes producing a delta off the post-reset anchor.
   const auto delta = t->calculateNextPoint(Si(7'000'000'000, 0));
   ASSERT_TRUE(delta.has_value());
-  ASSERT_TRUE(std::holds_alternative<std::int64_t>(delta->value()));
-  EXPECT_NEAR(static_cast<double>(std::get<std::int64_t>(delta->value())), 2'000'000'000.0, 1.0);
+  ASSERT_TRUE(std::holds_alternative<double>(delta->value()));
+  EXPECT_DOUBLE_EQ(std::get<double>(delta->value()), 2.0);  // 2e9 ns gap == 2 seconds
 }
 
 // -------------------------------- params_json (malformed-defaults behavior) --------------------------------

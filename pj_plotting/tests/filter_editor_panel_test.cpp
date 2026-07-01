@@ -356,9 +356,10 @@ TEST(FilterEditorPanelTest, EditModeUpdateNotifiesOutputTopicForRepaint) {
   EXPECT_TRUE(notified_ids.contains(handle->output_topic_id));
 }
 
-// The preview adopts the app's global plot-display settings the host pushes
-// (so it matches the real plots instead of ignoring the viz toolbar).
-TEST(FilterEditorPanelTest, PreviewHonorsPushedGridSetting) {
+// The preview adopts the display settings the host pushes — mirroring the plot the
+// editor was opened on (grid + curve style + line width), applied plot-level so it
+// matches the real plot faithfully.
+TEST(FilterEditorPanelTest, PreviewHonorsPushedDisplaySettings) {
   PJ::SessionManager session;
   PJ::CatalogModel catalog(&session);
   auto dataset = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "drive.mcap"});
@@ -370,11 +371,62 @@ TEST(FilterEditorPanelTest, PreviewHonorsPushedGridSetting) {
   ASSERT_NE(preview, nullptr);
   EXPECT_FALSE(preview->gridVisible());  // default: no grid until the host pushes settings
 
-  panel.setPreviewDisplay(/*grid=*/true, static_cast<int>(PJ::PlotWidgetBase::kDots), /*width=*/2.0);
+  panel.setPreviewDisplay(/*grid=*/true, PJ::PlotWidgetBase::kDots, PJ::LineWidth::kPoints20);
   EXPECT_TRUE(preview->gridVisible());
+  EXPECT_EQ(preview->defaultCurveStyle(), PJ::PlotWidgetBase::kDots);
+  EXPECT_EQ(preview->lineWidth(), PJ::LineWidth::kPoints20);
 
-  panel.setPreviewDisplay(/*grid=*/false, static_cast<int>(PJ::PlotWidgetBase::kLines), /*width=*/1.0);
+  panel.setPreviewDisplay(/*grid=*/false, PJ::PlotWidgetBase::kLines, PJ::LineWidth::kPoints10);
   EXPECT_FALSE(preview->gridVisible());
+  EXPECT_EQ(preview->defaultCurveStyle(), PJ::PlotWidgetBase::kLines);
+  EXPECT_EQ(preview->lineWidth(), PJ::LineWidth::kPoints10);
+}
+
+// Regression (Codex I3): a reactive setPreviewDisplay() — the host pushing a new
+// style/width while the panel is open — must NOT wipe the ghost's dashed "before"
+// pen. applyPreviewDisplay() re-pens every curve plot-level, so applyGhostPens() must
+// re-dash the ghost afterwards.
+TEST(FilterEditorPanelTest, ReactiveDisplayChangeKeepsGhostDashed) {
+  PJ::SessionManager session;
+  PJ::CatalogModel catalog(&session);
+  auto dataset = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "drive.mcap"});
+  ASSERT_TRUE(dataset.has_value()) << dataset.error();
+  const auto source = addSource(session, catalog, *dataset, "/imu/accel");
+
+  PJ::FilterEditorPanel panel(&session, &catalog, {source}, {});
+  auto* series_list = panel.findChild<QListWidget*>("series_list");
+  auto* transform_list = panel.findChild<QListWidget*>("transform_list");
+  auto* preview = panel.findChild<PJ::PlotWidget*>();
+  ASSERT_NE(series_list, nullptr);
+  ASSERT_NE(transform_list, nullptr);
+  ASSERT_NE(preview, nullptr);
+
+  selectTransform(transform_list, QStringLiteral("scale"));  // active transform -> dashed ghost
+  ASSERT_GT(series_list->count(), 0);
+  series_list->item(0)->setSelected(true);
+
+  // Drive the debounced (150 ms single-shot) preview timer so the ghost is built + dashed.
+  QElapsedTimer elapsed;
+  elapsed.start();
+  while (elapsed.elapsed() < 350) {
+    QApplication::processEvents(QEventLoop::AllEvents, 50);
+  }
+  ASSERT_EQ(preview->curveList().size(), 2U);  // ghost + filtered
+
+  const QString kFilteredPrefix = QStringLiteral("__filter_preview__");
+  const auto ghostPenStyle = [&]() -> Qt::PenStyle {
+    for (const auto& info : preview->curveList()) {
+      if (info.curve != nullptr && !info.source_name.startsWith(kFilteredPrefix)) {
+        return info.curve->pen().style();
+      }
+    }
+    return Qt::NoPen;
+  };
+  ASSERT_EQ(ghostPenStyle(), Qt::DashLine);  // active transform -> dashed ghost
+
+  // Reactive host push (e.g. a global curve-width click while the panel is open).
+  panel.setPreviewDisplay(/*grid=*/false, PJ::PlotWidgetBase::kLines, PJ::LineWidth::kPoints30);
+  EXPECT_EQ(ghostPenStyle(), Qt::DashLine);  // dash survived the plot-level restyle
 }
 
 // Bug: a multi-select edit must PREVIEW every selected series, not just the first

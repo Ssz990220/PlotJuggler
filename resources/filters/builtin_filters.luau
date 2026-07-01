@@ -102,7 +102,7 @@ end
 local MovingAverage = {
   id = "moving_average", name = "Moving Average", description = "Boxcar moving average.",
   parameters = {
-    { name = "window", type = "integer", default = 10, min = 1, label = "Window" },
+    { name = "window", type = "integer", default = 100, min = 1, label = "Window" },
     { name = "compensate_time_offset", type = "boolean", default = false, label = "Center timestamp" },
   },
 }
@@ -128,7 +128,7 @@ end
 -- moving_rms: sqrt(mean of squares) over `window`, pad-with-current.
 local MovingRms = {
   id = "moving_rms", name = "Moving Root Mean Squared", description = "Moving RMS over a window.",
-  parameters = { { name = "window", type = "integer", default = 10, min = 1, label = "Window" } },
+  parameters = { { name = "window", type = "integer", default = 100, min = 1, label = "Window" } },
 }
 MovingRms.__index = MovingRms
 function MovingRms.create(p) return setmetatable({ window = p.window, buf = {} }, MovingRms) end
@@ -147,7 +147,7 @@ end
 local MovingVariance = {
   id = "moving_variance", name = "Moving Variance / Stdev", description = "Moving variance or standard deviation.",
   parameters = {
-    { name = "window", type = "integer", default = 10, min = 1, label = "Window" },
+    { name = "window", type = "integer", default = 100, min = 1, label = "Window" },
     { name = "std_dev", type = "boolean", default = false, label = "Standard deviation" },
   },
 }
@@ -266,20 +266,21 @@ function BinaryFilter:calculate(_, v)
   return pass and 1 or 0
 end
 
--- time_since_previous: gap to the previous sample, in NANOSECONDS (int64). first
--- sample suppressed. (t is seconds-since-start, so the gap *1e9 is exact below 2^53.)
+-- time_since_previous: gap to the previous sample, in SECONDS (double). first
+-- sample suppressed. (t is seconds-since-start, so the gap is a plain difference —
+-- double preserves sub-second deltas that an int64 output would truncate to 0.)
 local TimeSincePrevious = {
-  id = "time_since_previous", name = "Time Since Previous", description = "Δt between consecutive samples (ns).",
-  output = "int64",
+  id = "time_since_previous", name = "Time Since Previous", description = "Δt between consecutive samples (seconds).",
+  output = "double",
 }
 TimeSincePrevious.__index = TimeSincePrevious
 function TimeSincePrevious.create(_) return setmetatable({ has_prev = false, pt = 0.0 }, TimeSincePrevious) end
 function TimeSincePrevious:reset() self.has_prev = false end
 function TimeSincePrevious:calculate(t, _)
   if not self.has_prev then self.has_prev, self.pt = true, t; return nil end
-  local delta_ns = (t - self.pt) * 1e9
+  local delta_sec = (t - self.pt)
   self.pt = t
-  return delta_ns
+  return delta_sec
 end
 
 return {

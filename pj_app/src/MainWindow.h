@@ -11,6 +11,7 @@
 #include <QMainWindow>
 #include <QMetaObject>
 #include <QPointF>
+#include <QPointer>
 #include <QRectF>
 #include <QString>
 #include <QStringList>
@@ -745,6 +746,11 @@ class MainWindow : public QMainWindow {
   PanelEngine* current_panel_engine_ = nullptr;
   int panel_layout_index_ = -1;
   QWidget* panel_parent_ = nullptr;
+  // The plot a Filter Editor panel was opened on. Its style/width drive the
+  // before/after preview (the preview mirrors THAT plot, not a global default).
+  // Set after presentPanel() succeeds; cleared in restoreCentralArea(). QPointer so
+  // a torn-down origin reads back null. Only non-null while a FilterEditorPanel is up.
+  QPointer<PlotWidget> filter_editor_origin_;
 
   // Global-column "Chart" icons — built in buildGlobalToolbar(), so
   // stored as member pointers (no ui_-> accessor).

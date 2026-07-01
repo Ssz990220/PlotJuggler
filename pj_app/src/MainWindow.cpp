@@ -136,9 +136,9 @@ namespace {
 Q_LOGGING_CATEGORY(lcMain, "pj.app.main")
 
 // Check the button with id `id` in an exclusive QButtonGroup as a passive UI
-// resync, with the group's signals blocked. The block is load-bearing: the
-// Curve Width/Style groups' idClicked handlers rewrite the global QSettings
-// default and push an undo entry, neither of which a passive resync should do.
+// resync, with the group's signals blocked. The block is load-bearing: a passive
+// resync (e.g. binding the toolbar to a newly-focused plot) must not run the Curve
+// Width/Style groups' click side effects — refreshing the open preview panels.
 void checkGroupButton(QButtonGroup* group, int id) {
   if (group == nullptr) {
     return;
@@ -1867,56 +1867,39 @@ void MainWindow::openFilterEditor(std::vector<CurveDescriptor> sources, PlotWidg
     panel->deleteLater();
     return;
   }
-  syncFilterEditorPreviewDisplay();  // the preview adopts the app's grid/style/width
+  filter_editor_origin_ = origin;  // the preview mirrors this plot's grid/style/width
+  syncFilterEditorPreviewDisplay();
 }
 
 void MainWindow::syncFilterEditorPreviewDisplay() {
   auto* panel = qobject_cast<FilterEditorPanel*>(current_panel_);
-  if (panel == nullptr) {
+  if (panel == nullptr || filter_editor_origin_ == nullptr) {
     return;
   }
-  const int width_id = QSettings().value(QStringLiteral("MainWindow.curveWidth"), 0).toInt();
-  const double width = (width_id >= 0 && width_id < static_cast<int>(kWidthButtonSpecs.size()))
-                           ? kWidthButtonSpecs[width_id].second
-                           : 1.0;
-  const int style =
-      QSettings().value(QStringLiteral("MainWindow.curveStyle"), static_cast<int>(PlotWidgetBase::kLines)).toInt();
-  panel->setPreviewDisplay(activate_grid_, style, width);
+  // Mirror the plot the editor was opened on. Grid is global (applied to every plot),
+  // so activate_grid_ already equals the origin's grid state.
+  panel->setPreviewDisplay(
+      activate_grid_, filter_editor_origin_->defaultCurveStyle(), filter_editor_origin_->lineWidth());
 }
 
 void MainWindow::syncPanelPreviewDisplay() {
   // A plugin toolbox panel (e.g. the Transform Editor plugin) embeds a real
-  // PlotWidget inside its chart QFrame. It is not one of our native panel types,
-  // so reach it generically as a child of the presented panel and push the same
-  // grid / curve-style / line-width the app's right-side display buttons control.
+  // PlotWidget inside its chart QFrame. It has no originating plot to mirror, so its
+  // preview keeps the PlotWidget default curve style/width; only the global grid
+  // toggle is pushed. Reach the plot generically as a child of the presented panel.
   if (current_panel_ == nullptr) {
     return;
   }
-  const int width_id = QSettings().value(QStringLiteral("MainWindow.curveWidth"), 0).toInt();
-  const double width = (width_id >= 0 && width_id < static_cast<int>(kWidthButtonSpecs.size()))
-                           ? kWidthButtonSpecs[width_id].second
-                           : 1.0;
-  const auto style = static_cast<PlotWidgetBase::CurveStyle>(
-      QSettings().value(QStringLiteral("MainWindow.curveStyle"), static_cast<int>(PlotWidgetBase::kLines)).toInt());
   for (auto* plot : current_panel_->findChildren<PlotWidget*>()) {
-    // Stash the view config on the chart frame so the dialog-host binding can
-    // re-apply it on every preview update (it rebuilds curves on source/function
-    // changes, which would otherwise reset style/width to defaults).
+    // Stash the grid state on the chart frame so the dialog-host binding can re-apply
+    // it on every preview rebuild (source/function changes recreate the curves).
     if (QWidget* frame = plot->parentWidget()) {
       frame->setProperty("_pj_view_set", true);
       frame->setProperty("_pj_view_grid", activate_grid_);
-      frame->setProperty("_pj_view_style", static_cast<int>(style));
-      frame->setProperty("_pj_view_width", width);
     }
-    // Apply immediately too, so a toolbar click updates the preview without waiting
-    // for the next chart tick.
+    // Apply immediately too, so a grid toggle updates the preview without waiting for
+    // the next chart tick.
     plot->setGridVisible(activate_grid_);
-    for (const auto& info : plot->curveList()) {
-      if (info.curve != nullptr) {
-        plot->setCurveStyle(info.source_name, style);
-        plot->setCurveLineWidth(info.source_name, width);
-      }
-    }
     plot->replot();
   }
 }
@@ -3735,7 +3718,7 @@ void MainWindow::restoreRightPanelState(const QDomElement& element) {
 
   // Curve Width: look up the button whose canonical value fuzzy-matches
   // the layout's stored value. Block group signals so the idClicked
-  // lambda doesn't rewrite QSettings.
+  // lambda doesn't refresh the previews on this passive resync.
   if (element.hasAttribute(QStringLiteral("width")) && width_button_group_ != nullptr) {
     bool ok = false;
     const double wanted = element.attribute(QStringLiteral("width")).toDouble(&ok);
@@ -3750,7 +3733,7 @@ void MainWindow::restoreRightPanelState(const QDomElement& element) {
   }
 
   // Curve Style: checkedId is the CurveStyle enum value; pass through.
-  // Same QSettings-suppression via QSignalBlocker.
+  // Same preview-refresh suppression via QSignalBlocker.
   if (element.hasAttribute(QStringLiteral("style")) && style_button_group_ != nullptr) {
     bool ok = false;
     const int wanted = element.attribute(QStringLiteral("style")).toInt(&ok);
@@ -4411,12 +4394,13 @@ void MainWindow::buildLocalToolbar() {
       });
 
   // Curve Width: same exclusive radio-group pattern as Curve Style.
-  // Default is 1.0 (kPoints1_0). The group's id is the LineWidth enum
-  // index (0..3); the matching double is looked up from a parallel
-  // array so the click slot below can call applyActivePlotWidth.
+  // Default is 1.0 (index 0); bindEditorToPlot resyncs the checked button to the
+  // active plot's lineWidth(). The group's id is the LineWidth enum index (0..3);
+  // the matching double is looked up from a parallel array so the click slot below
+  // can call applyActivePlotWidth.
   width_button_group_ = new QButtonGroup(this);
   width_button_group_->setExclusive(true);
-  const int initial_width_id = QSettings().value(QStringLiteral("MainWindow.curveWidth"), 0).toInt();
+  const int initial_width_id = 0;
   for (int i = 0; i < static_cast<int>(kWidthButtonSpecs.size()); ++i) {
     auto* btn =
         curve_width_header_->parentWidget()->findChild<QToolButton*>(QString::fromLatin1(kWidthButtonSpecs[i].first));
@@ -4427,8 +4411,9 @@ void MainWindow::buildLocalToolbar() {
     btn->setChecked(i == initial_width_id);
     width_button_group_->addButton(btn, i);
   }
-  connect(width_button_group_, &QButtonGroup::idClicked, this, [this](int width_id) {
-    QSettings().setValue(QStringLiteral("MainWindow.curveWidth"), width_id);
+  // Refresh any open preview panel when the width changes (the per-button slot
+  // already applied it to the active plot via applyActivePlotWidth).
+  connect(width_button_group_, &QButtonGroup::idClicked, this, [this](int /*width_id*/) {
     syncFilterEditorPreviewDisplay();
     syncPanelPreviewDisplay();
   });
@@ -4451,14 +4436,14 @@ void MainWindow::buildLocalToolbar() {
       });
 
   // Curve Style buttons form an exclusive radio-style group: exactly one
-  // is checked at any time. Default is "Lines" (kLines is 0, the QSettings
-  // fallback). QButtonGroup with exclusive=true uses Qt's button-group
-  // semantics — clicking the checked button is a no-op, clicking another
-  // checks it and unchecks the previous.
+  // is checked at any time. Default is "Lines" (kLines); bindEditorToPlot
+  // resyncs the checked button to the active plot's defaultCurveStyle().
+  // QButtonGroup with exclusive=true uses Qt's button-group semantics —
+  // clicking the checked button is a no-op, clicking another checks it and
+  // unchecks the previous.
   style_button_group_ = new QButtonGroup(this);
   style_button_group_->setExclusive(true);
-  const int initial_style =
-      QSettings().value(QStringLiteral("MainWindow.curveStyle"), static_cast<int>(PlotWidgetBase::kLines)).toInt();
+  const int initial_style = static_cast<int>(PlotWidgetBase::kLines);
   const std::array<std::pair<const char*, int>, 6> style_button_specs{{
       {"globalStyleLines", static_cast<int>(PlotWidgetBase::kLines)},
       {"globalStyleDots", static_cast<int>(PlotWidgetBase::kDots)},
@@ -4476,10 +4461,9 @@ void MainWindow::buildLocalToolbar() {
     btn->setChecked(style_value == initial_style);
     style_button_group_->addButton(btn, style_value);
   }
-  // Persist the selection so the same style sticks across sessions, and
-  // apply it once to existing plots so curves match the checked button.
-  connect(style_button_group_, &QButtonGroup::idClicked, this, [this](int style_value) {
-    QSettings().setValue(QStringLiteral("MainWindow.curveStyle"), style_value);
+  // Refresh any open preview panel when the style changes (the per-button slot
+  // already applied it to the active plot via applyActivePlotStyle).
+  connect(style_button_group_, &QButtonGroup::idClicked, this, [this](int /*style_value*/) {
     syncFilterEditorPreviewDisplay();
     syncPanelPreviewDisplay();
   });
@@ -4627,6 +4611,7 @@ void MainWindow::restoreCentralArea() {
   current_panel_->setParent(nullptr);
   current_panel_->deleteLater();
   current_panel_ = nullptr;
+  filter_editor_origin_ = nullptr;  // no Filter Editor preview to drive once the panel is gone
   // The engine (when this was a toolbox panel) is deleted by the caller that
   // tore it down (the onCloseRequested handler or presentPanel's replace path);
   // here we only drop our non-owning reference.
