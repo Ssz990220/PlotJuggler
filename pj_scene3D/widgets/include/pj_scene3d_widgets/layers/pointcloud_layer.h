@@ -293,7 +293,7 @@ class PointCloudLayer : public Scene3DLayer {
   // values; the panel reads them on rebuild so a re-opened config widget
   // always reflects what the user picked.
   PointcloudRenderPass::Shape shape_ = PointcloudRenderPass::Shape::kSphere;
-  float size_meters_ = 0.01f;
+  float size_meters_ = 0.02f;
   float size_pixels_ = 2.0f;
   PointcloudRenderPass::ColorType color_type_ = PointcloudRenderPass::ColorType::kField;
   // True once the active cloud is known to carry a per-point colour field. Drives the
@@ -303,7 +303,7 @@ class PointCloudLayer : public Scene3DLayer {
   // pick), so populateColorFields() does NOT override it with the colour-present RGB
   // default on the next decoded sample. Cleared state = "pick a smart default".
   bool color_choice_explicit_ = false;
-  QColor solid_color_{255, 255, 255};
+  QColor solid_color_{255, 0, 0};
   PointcloudRenderPass::Colormap colormap_ = PointcloudRenderPass::Colormap::kTurbo;
   bool invert_lut_ = false;
   bool auto_range_ = true;

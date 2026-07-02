@@ -39,7 +39,7 @@ TEST(PointCloudLayerParamTransfer, SerializeApplyRoundTripsEveryParamBetweenReal
 
   // Push src away from EVERY default, so a no-op apply can't masquerade as a pass.
   src.setShape(PointcloudRenderPass::Shape::kPoint);          // default kSphere
-  src.setSizeMeters(0.25f);                                   // default 0.01
+  src.setSizeMeters(0.25f);                                   // default 0.02
   src.setSizePixels(7.5f);                                    // default 2; fractional must NOT truncate
   src.setColorType(PointcloudRenderPass::ColorType::kSolid);  // default kField
   src.setSolidColor(QColor(10, 20, 30));

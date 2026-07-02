@@ -252,8 +252,10 @@ class SceneEntitiesLayer : public Scene3DLayer {
 
   // Viewer-side display overrides pushed wholesale to the pass. The override
   // color lives here as a normalized vec4; the config widget derives a QColor
-  // from it on demand (overrideColor()) — single source of truth.
-  MarkerRenderPass::DisplayOverrides overrides_;
+  // from it on demand (overrideColor()) — single source of truth. 0.6 opacity +
+  // red are the design-spec defaults (the pass struct's opaque white is its
+  // minimum-change fallback).
+  MarkerRenderPass::DisplayOverrides overrides_{.opacity = 0.6F, .override_color = glm::vec4(1.0F, 0.0F, 0.0F, 1.0F)};
 
   MarkerRenderPass pass_;
 
