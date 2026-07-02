@@ -188,6 +188,12 @@ PlotWidgetBase::PlotWidgetBase(QWidget* parent) : QWidget(parent) {
   QWidget* abs_canvas = nullptr;
   if (use_opengl) {
     auto* canvas = new QwtPlotOpenGLCanvas();
+    // Drop Qwt's own backing-store FBO: it is a persistent-content GL resource
+    // that outlives context recreation (ADS float/re-dock) and GPU resets, and
+    // QOpenGLWidget's internal FBO already restores content on re-expose. Its
+    // only saving was skipping a redraw on rare non-replot repaints (focus
+    // activation); without it every canvas paint re-renders from live state.
+    canvas->setPaintAttribute(QwtPlotOpenGLCanvas::BackingStore, false);
     canvas->setFrameStyle(QFrame::Box | QFrame::Plain);
     canvas->setLineWidth(1);
     canvas->setPalette(canvas_bg);

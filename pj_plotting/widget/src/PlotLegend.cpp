@@ -8,11 +8,69 @@
 #include <qwt_plot_curve.h>
 #include <qwt_text.h>
 
+#include <QByteArray>
 #include <QMarginsF>
 #include <QMouseEvent>
+#include <QOpenGLContext>
 #include <QPainter>
+#include <QString>
+#include <cmath>
+#include <unordered_map>
 
 namespace PJ {
+
+namespace {
+
+// Opt-in diagnostics for the intermittent "legend/canvas text disappears"
+// bug: set PJ_PLOT_TEXT_DEBUG=1 to have every legend entry report, on any
+// state change, which of the four failure modes (if any) is active. When the
+// text vanishes while this logs "EMPTY=0 CLIPPED=0 LOWCONTRAST=0" with a valid
+// title/colour, the cause is a pure GL text-rendering failure, not legend
+// logic. Change-detected (not per-frame) so it does not spam the 60 Hz replot.
+bool plotTextDebugEnabled() {
+  static const bool enabled = qEnvironmentVariableIsSet("PJ_PLOT_TEXT_DEBUG");
+  return enabled;
+}
+
+double relativeLuminance(const QColor& c) {
+  return 0.2126 * c.redF() + 0.7152 * c.greenF() + 0.0722 * c.blueF();
+}
+
+void logLegendEntry(
+    const void* plot, const QString& title, bool empty, const QRectF& item_rect, int title_offset,
+    const QColor& text_color, const QColor& canvas_bg) {
+  if (!plotTextDebugEnabled()) {
+    return;
+  }
+  const double text_avail = item_rect.width() - title_offset;
+  const bool clipped = text_avail <= 2.0;
+  const bool low_contrast =
+      text_color.isValid() && std::abs(relativeLuminance(text_color) - relativeLuminance(canvas_bg)) < 0.12;
+  const auto* gl_ctx = QOpenGLContext::currentContext();
+  const char* gl_state = (gl_ctx == nullptr) ? "none" : (gl_ctx->isValid() ? "valid" : "INVALID");
+
+  const QString sig = QStringLiteral("EMPTY=%1 CLIPPED=%2(avail=%3) LOWCONTRAST=%4 text=%5 bg=%6 gl=%7")
+                          .arg(empty)
+                          .arg(clipped)
+                          .arg(text_avail, 0, 'f', 1)
+                          .arg(low_contrast)
+                          .arg(
+                              text_color.isValid() ? text_color.name() : QStringLiteral("(none)"), canvas_bg.name(),
+                              QString::fromLatin1(gl_state));
+
+  static std::unordered_map<QString, QString> last_sig;
+  const QString key = QStringLiteral("%1|%2").arg(reinterpret_cast<quintptr>(plot)).arg(title);
+  auto it = last_sig.find(key);
+  if (it != last_sig.end() && it->second == sig) {
+    return;  // unchanged since last paint — stay quiet
+  }
+  last_sig[key] = sig;
+  qWarning(
+      "[PJ_PLOT_TEXT_DEBUG] legend '%s' rect=%.0fx%.0f off=%d :: %s", qUtf8Printable(title), item_rect.width(),
+      item_rect.height(), title_offset, qUtf8Printable(sig));
+}
+
+}  // namespace
 
 PlotLegend::PlotLegend(QwtPlot* parent) : parent_plot_(parent) {
   setRenderHint(QwtPlotItem::RenderAntialiased);
@@ -96,12 +154,17 @@ void PlotLegend::drawLegendData(
   }
 
   const QwtText text = data.title();
+  const QColor canvas_bg = parent_plot_->canvas()->palette().window().color();
   if (text.isEmpty()) {
+    logLegendEntry(parent_plot_, QString(), /*empty=*/true, item_rect, title_offset, QColor(), canvas_bg);
     return;
   }
 
   QPen pen = textPen();
-  pen.setColor(plot_item->isVisible() ? parent_plot_->canvas()->palette().windowText().color() : QColor(122, 122, 122));
+  const QColor text_color =
+      plot_item->isVisible() ? parent_plot_->canvas()->palette().windowText().color() : QColor(122, 122, 122);
+  pen.setColor(text_color);
+  logLegendEntry(parent_plot_, text.text(), /*empty=*/false, item_rect, title_offset, text_color, canvas_bg);
   painter->setPen(pen);
   painter->setFont(font());
   text.draw(painter, item_rect.adjusted(title_offset, 0, 0, 0));

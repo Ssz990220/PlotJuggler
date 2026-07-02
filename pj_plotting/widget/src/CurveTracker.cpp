@@ -10,10 +10,12 @@
 #include <qwt_text.h>
 
 #include <QFontDatabase>
+#include <QOpenGLContext>
 #include <QPalette>
 #include <QPen>
 #include <QSettings>
 #include <QSize>
+#include <QString>
 #include <algorithm>
 #include <limits>
 #include <map>
@@ -24,6 +26,30 @@ namespace {
 
 [[nodiscard]] std::optional<QPointF> referencePointAt(const QwtPlotCurve* curve, std::optional<QPointF> reference) {
   return reference.has_value() ? curvePointAt(curve, reference->x()) : std::nullopt;
+}
+
+// Opt-in companion to the legend diagnostics (PJ_PLOT_TEXT_DEBUG=1): report the
+// tracker readout's content/visibility/colour whenever it changes, so we can
+// tell whether a vanished "time: ..." box is empty/hidden (logic) or fully
+// populated yet unpainted (a GL text-rendering failure shared with the legend).
+void logTrackerText(const void* plot, bool visible, const QString& html, const QColor& text_color) {
+  if (!qEnvironmentVariableIsSet("PJ_PLOT_TEXT_DEBUG")) {
+    return;
+  }
+  const auto* gl_ctx = QOpenGLContext::currentContext();
+  const char* gl_state = (gl_ctx == nullptr) ? "none" : (gl_ctx->isValid() ? "valid" : "INVALID");
+  const QString sig = QStringLiteral("visible=%1 empty=%2 len=%3 text=%4 gl=%5")
+                          .arg(visible)
+                          .arg(html.isEmpty())
+                          .arg(html.size())
+                          .arg(text_color.name(), QString::fromLatin1(gl_state));
+  static std::map<const void*, QString> last_sig;
+  auto it = last_sig.find(plot);
+  if (it != last_sig.end() && it->second == sig) {
+    return;
+  }
+  last_sig[plot] = sig;
+  qWarning("[PJ_PLOT_TEXT_DEBUG] tracker :: %s", qUtf8Printable(sig));
 }
 
 }  // namespace
@@ -221,7 +247,9 @@ void CurveTracker::setPosition(const QPointF& tracker_position) {
     text_marker_->setXValue(tracker_position.x() - view_rect.width() * 0.02 - text_width);
   }
 
-  text_marker_->setVisible(visible_points > 0 && visible_ && valueBoxAllowed());
+  const bool marker_visible = visible_points > 0 && visible_ && valueBoxAllowed();
+  text_marker_->setVisible(marker_visible);
+  logTrackerText(plot_, marker_visible, marker_html, text_color);
   previous_tracker_point_ = tracker_position;
 }
 

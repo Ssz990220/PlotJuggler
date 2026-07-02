@@ -72,6 +72,54 @@ target_link_libraries(plot_widget_default_style_test PRIVATE
 
 add_test(NAME PlotWidgetDefaultStyleTest COMMAND plot_widget_default_style_test)
 
+add_executable(legend_text_diagnostics_test
+    legend_text_diagnostics_test.cpp
+)
+
+target_compile_options(legend_text_diagnostics_test PRIVATE ${PJ_WARNING_FLAGS})
+target_link_libraries(legend_text_diagnostics_test PRIVATE
+    pj_plotting
+    GTest::gtest
+)
+
+add_test(NAME LegendTextDiagnosticsTest COMMAND legend_text_diagnostics_test)
+
+add_executable(plot_canvas_context_recreation_gl_test
+    plot_canvas_context_recreation_gl_test.cpp
+)
+
+target_compile_options(plot_canvas_context_recreation_gl_test PRIVATE ${PJ_WARNING_FLAGS})
+target_link_libraries(plot_canvas_context_recreation_gl_test PRIVATE
+    pj_plotting
+    GTest::gtest
+)
+
+add_test(NAME PlotCanvasContextRecreationGlTest COMMAND plot_canvas_context_recreation_gl_test)
+
+add_executable(raster_text_engine_test
+    raster_text_engine_test.cpp
+)
+
+target_compile_options(raster_text_engine_test PRIVATE ${PJ_WARNING_FLAGS})
+target_link_libraries(raster_text_engine_test PRIVATE
+    pj_plotting
+    GTest::gtest
+)
+
+add_test(NAME RasterTextEngineTest COMMAND raster_text_engine_test)
+
+add_executable(raster_text_gl_test
+    raster_text_gl_test.cpp
+)
+
+target_compile_options(raster_text_gl_test PRIVATE ${PJ_WARNING_FLAGS})
+target_link_libraries(raster_text_gl_test PRIVATE
+    pj_plotting
+    GTest::gtest
+)
+
+add_test(NAME RasterTextGlTest COMMAND raster_text_gl_test)
+
 add_executable(plot_widget_range_offset_test
     plot_widget_range_offset_test.cpp
 )

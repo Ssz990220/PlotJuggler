@@ -18,6 +18,7 @@ add_library(pj_plotting STATIC
     src/PlotWidget.cpp
     src/PlotWidgetBase.cpp
     src/PlotZoomer.cpp
+    src/RasterTextEngine.cpp
     src/TabbedPlotWidget.cpp
     src/WidgetClipboard.cpp
     src/XYCurveDialog.cpp
@@ -37,6 +38,7 @@ add_library(pj_plotting STATIC
     include/pj_plotting/PlotWidget.h
     include/pj_plotting/PlotWidgetBase.h
     include/pj_plotting/PlotZoomer.h
+    include/pj_plotting/RasterTextEngine.h
     include/pj_plotting/TabbedPlotWidget.h
 )
 

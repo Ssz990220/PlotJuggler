@@ -25,6 +25,7 @@
 #include "Splashscreen.h"
 #include "WidgetTuner.h"
 #include "pj_plotting/PlotWidgetBase.h"
+#include "pj_plotting/RasterTextEngine.h"
 #include "pj_scene3d_widgets/scene_view_widget.h"  // --screenshot grabs the 3D view
 #include "pj_widgets/Style.h"
 
@@ -59,6 +60,11 @@ int main(int argc, char* argv[]) {
   // and layer implements releaseGL(), and SceneViewWidget rebuilds its GL state
   // in initializeGL() — so a recreated context self-heals rather than relying on
   // a process-wide share group.
+
+  // GL-safe on-canvas text (legend/tracker): must run before ANY QwtText is
+  // constructed — Qwt deletes the engines this replaces while existing
+  // QwtText objects still hold raw pointers to them. See RasterTextEngine.h.
+  PJ::installRasterTextEngines();
 
   QApplication app(argc, argv);
   QCoreApplication::setOrganizationName(QStringLiteral("PlotJuggler"));
