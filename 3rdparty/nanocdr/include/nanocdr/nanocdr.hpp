@@ -16,6 +16,7 @@
 #pragma once
 
 #include <array>
+#include <bit>
 #include <cstddef>
 #include <cstring>
 #include <stdexcept>
@@ -274,12 +275,12 @@ constexpr bool is_type_defined_v() {
 }
 
 constexpr Endianness getCurrentEndianness() {
-  union {
-    uint8_t u8;
-    uint16_t u16 = 0x0100;
-  } endian_test = {};
-  endian_test.u16 = 0x0100;
-  return endian_test.u8 == 0x01 ? Endianness::CDR_BIG_ENDIAN : Endianness::CDR_LITTLE_ENDIAN;
+  // Use std::endian (C++20) rather than a union type-pun: reading an inactive
+  // union member is UB in a constant expression, which Clang rejects outright
+  // as -Winvalid-constexpr (a default error), whereas std::endian::native is
+  // constexpr-correct on every compiler.
+  return (std::endian::native == std::endian::big) ? Endianness::CDR_BIG_ENDIAN
+                                                   : Endianness::CDR_LITTLE_ENDIAN;
 }
 
 template <typename T>

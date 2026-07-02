@@ -179,7 +179,9 @@ if(PJ_BUILD_TESTS)
     # system FFmpeg (CI) the Conan libavutil.so resolves for direct-dep tests but
     # not for libswscale -> libavutil here. Emit the (transitive) DT_RPATH instead
     # so the Conan FFmpeg dir on the rpath resolves libavutil for libswscale too.
-    if(NOT MSVC)
+    # ELF-only: macOS ld64 uses LC_RPATH (no DT_RPATH/DT_RUNPATH split) and rejects
+    # --disable-new-dtags outright, so restrict the flag to non-Apple linkers.
+    if(NOT MSVC AND NOT APPLE)
       target_link_options(thumbnail_codec_test PRIVATE "LINKER:--disable-new-dtags")
     endif()
 
