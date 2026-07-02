@@ -316,8 +316,15 @@ void FoxgloveBridgeClient::resetState()
 
 bool FoxgloveBridgeClient::canUseChannel(const FoxgloveChannelInfo& channel) const
 {
-  return channel.encoding == "cdr" && channel.schema_encoding == "ros2msg" &&
-         !channel.schema.isEmpty() && !channel.schema_name.isEmpty() && !channel.topic.isEmpty();
+  if (channel.schema.isEmpty() || channel.schema_name.isEmpty() || channel.topic.isEmpty())
+  {
+    return false;
+  }
+  // Both ROS 2 CDR and Protobuf streams are supported. The concrete parser factory is
+  // resolved from schema_encoding in subscribeSelectedChannels().
+  const bool is_ros2 = channel.encoding == "cdr" && channel.schema_encoding == "ros2msg";
+  const bool is_protobuf = channel.encoding == "protobuf" && channel.schema_encoding == "protobuf";
+  return is_ros2 || is_protobuf;
 }
 
 bool FoxgloveBridgeClient::subscribeSelectedChannels(
@@ -327,14 +334,6 @@ bool FoxgloveBridgeClient::subscribeSelectedChannels(
   if (!factories)
   {
     QMessageBox::warning(nullptr, "Foxglove Bridge", "No parser factories are available",
-                         QMessageBox::Ok);
-    return false;
-  }
-
-  auto parser_it = factories->find("ros2msg");
-  if (parser_it == factories->end())
-  {
-    QMessageBox::warning(nullptr, "Foxglove Bridge", "No parser available for encoding [ros2msg]",
                          QMessageBox::Ok);
     return false;
   }
@@ -352,9 +351,32 @@ bool FoxgloveBridgeClient::subscribeSelectedChannels(
   for (const auto& channel : channels)
   {
     const quint32 subscription_id = _next_subscription_id++;
-    const std::string schema_data = channel.schema.toStdString();
 
 #ifdef PJ_BUILD
+    // Pick the parser factory from the channel's schema_encoding (e.g. "ros2msg" or
+    // "protobuf"). Missing factories fail this channel only, not the whole subscription.
+    const auto parser_it = factories->find(channel.schema_encoding);
+    if (parser_it == factories->end())
+    {
+      failures.push_back(QString("%1: no parser available for schema encoding [%2]")
+                             .arg(channel.topic, channel.schema_encoding));
+      continue;
+    }
+
+    // ROS 2 schemas are advertised as plain text, but binary schemas such as a Protobuf
+    // FileDescriptorSet arrive base64-encoded. Decode those so the factory receives the
+    // exact raw bytes it will feed to FileDescriptorSet::ParseFromArray().
+    std::string schema_data;
+    if (channel.schema_encoding == "protobuf")
+    {
+      const QByteArray decoded = QByteArray::fromBase64(channel.schema.toUtf8());
+      schema_data.assign(decoded.constData(), size_t(decoded.size()));
+    }
+    else
+    {
+      schema_data = channel.schema.toStdString();
+    }
+
     try
     {
       auto parser = parser_it->second->createParser(
@@ -388,7 +410,7 @@ bool FoxgloveBridgeClient::subscribeSelectedChannels(
   if (subscriptions_json.isEmpty())
   {
     const QString msg =
-        failures.isEmpty() ? "No compatible ROS 2 channels were selected" : failures.join('\n');
+        failures.isEmpty() ? "No compatible channels were selected" : failures.join('\n');
     QMessageBox::warning(nullptr, "Foxglove Bridge", msg, QMessageBox::Ok);
     return false;
   }
