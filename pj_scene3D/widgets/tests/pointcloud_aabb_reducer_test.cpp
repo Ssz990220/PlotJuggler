@@ -41,7 +41,11 @@ struct OffscreenGlContext {
 
   OffscreenGlContext() {
     QSurfaceFormat format;
+#if defined(__APPLE__)
+    format.setVersion(4, 1);  // Apple caps desktop GL at 4.1 Core — no compute; exercises the fallback
+#else
     format.setVersion(4, 5);
+#endif
     format.setProfile(QSurfaceFormat::CoreProfile);
     surface.setFormat(format);
     context.setFormat(format);
@@ -123,8 +127,9 @@ class AabbReducerTest : public ::testing::Test {
     if (!gl_.createAndMakeCurrent()) {
       GTEST_SKIP() << "No usable offscreen OpenGL context";
     }
-    if (currentGlVersion(gl_.context) < std::pair<int, int>(4, 5)) {
-      GTEST_SKIP() << "GL < 4.5 cannot compile the #version 430 compute shader";
+    if (currentGlVersion(gl_.context) < std::pair<int, int>(4, 3)) {
+      GTEST_SKIP() << "GL < 4.3 has no compute shaders (the #version 430 reduction); see "
+                      "GracefullyUnavailableWithoutCompute for the fallback contract";
     }
     f_ = gl_.context.functions();
   }
@@ -216,6 +221,36 @@ TEST_F(AabbReducerTest, MatchesCpuOnLargeRandomCloud) {
   EXPECT_FLOAT_EQ(box->max.z, expected.max.z);
 
   f_->glDeleteBuffers(1, &buffer);
+}
+
+// Fallback contract on a context WITHOUT GL 4.3 compute (e.g. Apple's frozen 4.1):
+// the reducer must probe, report itself unavailable, and turn dispatch()/poll()
+// into safe no-ops (no throw, no result) so the point-cloud layer keeps the CPU
+// bounds scan. This is the branch that actually runs on macOS; on GL >= 4.3 it is
+// covered by the AabbReducerTest fixture instead, so skip there.
+TEST(AabbReducerFallbackTest, GracefullyUnavailableWithoutCompute) {
+  OffscreenGlContext gl;
+  if (!gl.createAndMakeCurrent()) {
+    GTEST_SKIP() << "No usable offscreen OpenGL context";
+  }
+  if (currentGlVersion(gl.context) >= std::pair<int, int>(4, 3)) {
+    GTEST_SKIP() << "context has compute — covered by AabbReducerTest";
+  }
+
+  QOpenGLFunctions* f = gl.context.functions();
+  const std::vector<glm::vec3> points = {{1.0f, -2.0f, 3.0f}, {-4.0f, 5.0f, -6.0f}};
+  const std::vector<uint8_t> bytes = packCloud(points);
+  const GLuint buffer = uploadBuffer(f, bytes);
+
+  PointcloudAabbReducer reducer;
+  reducer.dispatch(buffer, points.size(), kStride, /*x_offset_bytes=*/0);
+  f->glFinish();
+  EXPECT_FALSE(reducer.poll().has_value());  // no GPU reduction produced
+  EXPECT_TRUE(reducer.probed());             // it DID attempt to initialise
+  EXPECT_FALSE(reducer.available());         // ...and correctly found no compute
+  reducer.releaseGL();                       // must not throw without GL resources
+
+  f->glDeleteBuffers(1, &buffer);
 }
 
 }  // namespace

@@ -197,9 +197,23 @@ inline enumeration silently drifted as tests were added (it had fallen to 39 of 
 the GL-context tests).
 
 GL-backed tests (names ending `_gl_test`, plus the context-recreation tests)
-require a real GL ≥ 4.5 context (llvmpipe under `xvfb` on CI) and **self-skip below
-GL 4.5** — Windows software GL is only GL 3.0 / GLSL 1.30, so a `#version 450`
-shader test cannot run there.
+require a real GL context (llvmpipe under `xvfb` on CI). The scene shaders are
+`#version 410 core` (the module targets a **GL 4.1 Core baseline** — the highest
+desktop profile Apple exposes), so the shader-compile / render tests **self-skip
+below GL 4.1** (Windows software GL is only GL 3.0 / GLSL 1.30 and cannot run
+them). The GPU point-cloud AABB reduction is the one feature above the baseline: a
+`#version 430` compute shader gated at runtime by `hasComputeSupport()`. Its tests
+self-skip below **GL 4.3**, and where compute is absent (macOS's frozen 4.1, older
+drivers) the point-cloud layer transparently falls back to the CPU bounds scan
+(`scanBoundsAndScalarRange`). Net effect on macOS: the 3D scene renders fully; only
+the point-cloud bounds are computed on the CPU instead of async on the GPU.
+
+GL enum compatibility: Apple's OpenGL headers stop at `GL_VERSION_4_1`, so the >4.1
+tokens the optional compute + KHR_debug paths reference are defined for `__APPLE__`
+in `gl/gl_compat.h` (Khronos registry values; inert unless the capability is
+present). Function sets are acquired through `gl/gl_functions.h`:
+`withCoreGlFunctions` (4.1 baseline), `withComputeGlFunctions` + `hasComputeSupport`
+(optional 4.3 compute).
 
 Make sure that all the markdown files in this folder are updated, if necessary.
 

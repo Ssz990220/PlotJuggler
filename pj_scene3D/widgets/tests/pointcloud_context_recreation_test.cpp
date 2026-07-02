@@ -125,7 +125,11 @@ struct OffscreenGlContext {
 
   OffscreenGlContext() {
     QSurfaceFormat format;
+#if defined(__APPLE__)
+    format.setVersion(4, 1);  // Apple caps desktop GL at 4.1 Core (no compute; CPU bounds fallback)
+#else
     format.setVersion(4, 5);
+#endif
     format.setProfile(QSurfaceFormat::CoreProfile);
     format.setDepthBufferSize(24);
     surface.setFormat(format);
@@ -185,9 +189,9 @@ TEST(PointcloudContextRecreationTest, FastCloudReuploadsAfterContextRecreationWh
     GTEST_SKIP() << "No usable offscreen OpenGL context";
   }
   const auto gl_version = currentGlVersion(gl.context);
-  if (gl_version < std::pair<int, int>(4, 5)) {
+  if (gl_version < std::pair<int, int>(4, 1)) {
     GTEST_SKIP() << "GL " << gl_version.first << "." << gl_version.second
-                 << " context cannot compile the scene's #version 450 shaders (need GL 4.5)";
+                 << " context cannot compile the scene's #version 410 shaders (need GL 4.1)";
   }
 
   CloudFixture fixture(/*point_count=*/2U, /*point_step=*/16U);
@@ -241,8 +245,8 @@ TEST(PointcloudContextRecreationTest, GpuAabbReductionFiresBoundsCallbackWhenGl4
   if (!gl.createAndMakeCurrent()) {
     GTEST_SKIP() << "No usable offscreen OpenGL context";
   }
-  if (currentGlVersion(gl.context) < std::pair<int, int>(4, 5)) {
-    GTEST_SKIP() << "GL < 4.5 cannot compile the compute reduction";
+  if (currentGlVersion(gl.context) < std::pair<int, int>(4, 3)) {
+    GTEST_SKIP() << "GL < 4.3 has no compute; the reducer is disabled and the layer uses the CPU scan";
   }
 
   CloudFixture fixture(/*point_count=*/3U, /*point_step=*/16U);

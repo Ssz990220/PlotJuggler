@@ -140,12 +140,12 @@ class HudOverlayGlTest : public ::testing::Test {
     // 4.5 and renders; Windows CI's software GL is a GL 3.0 / GLSL 1.30 context,
     // so GridRenderPass/ArrowGizmo fail to compile, nothing renders, and there
     // is no HUD/scene footprint to detect — the assertions would fail on a scene
-    // that physically cannot draw. Skip when the live context is below 4.5,
+    // that physically cannot draw. Skip when the live context is below 4.1,
     // exactly as we skip when there is no GL at all.
     const auto gl_version = liveGlVersion(*view_);
-    if (gl_version < std::pair<int, int>(4, 5)) {
+    if (gl_version < std::pair<int, int>(4, 1)) {
       GTEST_SKIP() << "GL " << gl_version.first << "." << gl_version.second
-                   << " context cannot compile the scene's #version 450 shaders (need GL 4.5)";
+                   << " context cannot compile the scene's #version 410 shaders (need GL 4.1)";
     }
   }
 
@@ -317,10 +317,15 @@ TEST_F(HudOverlayGlTest, HoverLabelRendersAndSurvivesContextRecreation) {
 }
 
 int main(int argc, char** argv) {
-  // Match the demos: request a 4.5 core context so QOpenGLWidget negotiates the
-  // format SceneViewWidget expects. Harmless under software GL.
+  // Request the core context SceneViewWidget expects so QOpenGLWidget negotiates a
+  // matching format. Apple caps desktop GL at 4.1; elsewhere request 4.5. Harmless
+  // under software GL.
   QSurfaceFormat fmt;
+#if defined(__APPLE__)
+  fmt.setVersion(4, 1);
+#else
   fmt.setVersion(4, 5);
+#endif
   fmt.setProfile(QSurfaceFormat::CoreProfile);
   fmt.setDepthBufferSize(24);
   QSurfaceFormat::setDefaultFormat(fmt);

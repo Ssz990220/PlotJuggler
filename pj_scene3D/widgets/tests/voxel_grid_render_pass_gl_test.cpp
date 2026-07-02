@@ -59,7 +59,11 @@ class VoxelGridRenderPassGlTest : public ::testing::Test {
  protected:
   void SetUp() override {
     QSurfaceFormat fmt;
+#if defined(__APPLE__)
+    fmt.setVersion(4, 1);  // Apple caps desktop GL at 4.1 Core; scene shaders are #version 410
+#else
     fmt.setVersion(4, 5);
+#endif
     fmt.setProfile(QSurfaceFormat::CoreProfile);
     fmt.setDepthBufferSize(24);
 
@@ -74,12 +78,12 @@ class VoxelGridRenderPassGlTest : public ::testing::Test {
     if (!ctx_->create() || !ctx_->makeCurrent(surface_.get())) {
       GTEST_SKIP() << "could not create/make-current an OpenGL context";
     }
-    // The DRIVER version (not the requested format, which can lie) must be >= 4.5
-    // for the #version 450 shaders to compile.
+    // The DRIVER version (not the requested format, which can lie) must be >= 4.1
+    // for the #version 410 scene shaders to compile.
     const auto* version = reinterpret_cast<const char*>(ctx_->functions()->glGetString(GL_VERSION));
     const QStringList parts = QString::fromLatin1(version).section(QLatin1Char(' '), 0, 0).split(QLatin1Char('.'));
-    if (std::pair<int, int>(parts.value(0).toInt(), parts.value(1).toInt()) < std::pair<int, int>(4, 5)) {
-      GTEST_SKIP() << "GL " << (version != nullptr ? version : "?") << " below 4.5 — can't compile scene shaders";
+    if (std::pair<int, int>(parts.value(0).toInt(), parts.value(1).toInt()) < std::pair<int, int>(4, 1)) {
+      GTEST_SKIP() << "GL " << (version != nullptr ? version : "?") << " below 4.1 — can't compile scene shaders";
     }
 
     QOpenGLFramebufferObjectFormat fbo_fmt;

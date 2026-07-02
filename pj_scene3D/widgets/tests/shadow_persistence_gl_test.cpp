@@ -141,8 +141,8 @@ class ShadowPersistenceGlTest : public ::testing::Test {
     if (!haveGl(*view_)) {
       GTEST_SKIP() << "No usable OpenGL context (headless without xvfb/GL).";
     }
-    if (liveGlVersion(*view_) < std::pair<int, int>(4, 5)) {
-      GTEST_SKIP() << "GL context below 4.5 cannot compile the scene's #version 450 shaders";
+    if (liveGlVersion(*view_) < std::pair<int, int>(4, 1)) {
+      GTEST_SKIP() << "GL context below 4.1 cannot compile the scene's #version 410 shaders";
     }
 
     // A TransformBuffer with one frame so the view holds a non-null tf_ and a
@@ -199,10 +199,15 @@ TEST_F(ShadowPersistenceGlTest, FloorShadowClearsWhenDataRemoved) {
 }  // namespace
 
 int main(int argc, char** argv) {
-  // Request a 4.5 core context so QOpenGLWidget negotiates the format
-  // SceneViewWidget expects (harmless under software GL).
+  // Request the core context SceneViewWidget expects so QOpenGLWidget negotiates a
+  // matching format. Apple caps desktop GL at 4.1; elsewhere request 4.5 (harmless
+  // under software GL).
   QSurfaceFormat fmt;
+#if defined(__APPLE__)
+  fmt.setVersion(4, 1);
+#else
   fmt.setVersion(4, 5);
+#endif
   fmt.setProfile(QSurfaceFormat::CoreProfile);
   fmt.setDepthBufferSize(24);
   QSurfaceFormat::setDefaultFormat(fmt);
