@@ -87,7 +87,8 @@ private:
   void updateOkButton();
   void resetState();
 
-  /// Validate whether an advertised Foxglove channel is a ROS 2 CDR stream this plugin can parse.
+  /// Validate whether an advertised Foxglove channel uses an encoding this plugin can parse
+  /// (ROS 2 CDR or Protobuf).
   bool canUseChannel(const FoxgloveChannelInfo& channel) const;
   /// Create parsers and send the Foxglove subscribe request for the chosen channels.
   bool subscribeSelectedChannels(const std::vector<FoxgloveChannelInfo>& channels);
