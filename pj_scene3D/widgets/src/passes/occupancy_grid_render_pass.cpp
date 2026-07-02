@@ -23,7 +23,7 @@ Q_LOGGING_CATEGORY(lcOccGridPass, "pj.scene3d.occupancy_grid_pass")
 // texture coordinate (row-major cell (r,c) ↔ uv (c/width, r/height)).
 constexpr float kQuad[] = {0.0f, 0.0f, 1.0f, 0.0f, 1.0f, 1.0f, 0.0f, 0.0f, 1.0f, 1.0f, 0.0f, 1.0f};
 
-constexpr const char* kVertSrc = R"(#version 450 core
+constexpr const char* kVertSrc = R"(#version 410 core
 layout(location = 0) in vec2 in_uv;
 uniform mat4 u_mvp;
 out vec2 v_uv;
@@ -33,7 +33,7 @@ void main() {
 }
 )";
 
-constexpr const char* kFragSrc = R"(#version 450 core
+constexpr const char* kFragSrc = R"(#version 410 core
 in vec2 v_uv;
 uniform sampler2D u_grid;
 uniform float u_opacity;

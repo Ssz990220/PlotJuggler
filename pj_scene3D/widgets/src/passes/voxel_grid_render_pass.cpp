@@ -27,7 +27,7 @@ Q_LOGGING_CATEGORY(lcVoxelPass, "pj.scene3d.voxel_grid_pass")
 // samples the value from a 3D texture, applies the draw predicate (culled voxels
 // collapse to an out-of-clip degenerate so they rasterize nothing), and places a
 // unit cube scaled by cell_size at the voxel centre in the grid's local frame.
-constexpr std::string_view kVertSrc = R"(#version 450 core
+constexpr std::string_view kVertSrc = R"(#version 410 core
 layout(location = 0) in vec3 in_corner_pos;     // unit cube corner (+/-0.5)
 layout(location = 1) in vec3 in_corner_normal;   // outward face normal (grid-local axes)
 
@@ -97,7 +97,7 @@ void main() {
 // Fragment shader head + shared colormap GLSL (PJ::colormapGlsl) + tail, same
 // split the pointcloud cube pass uses so the hand-tuned LUT polynomials live in
 // exactly one place.
-constexpr std::string_view kFragHead = R"(#version 450 core
+constexpr std::string_view kFragHead = R"(#version 410 core
 in vec3 v_view_normal;
 in float v_normalized;
 in vec3 v_color;

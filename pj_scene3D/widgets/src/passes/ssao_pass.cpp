@@ -20,7 +20,7 @@ namespace {
 constexpr int kKernelSize = 32;  // perf default per plan §A.5 (64 = quality)
 
 constexpr std::string_view kFullscreenVertSrc = R"GLSL(
-#version 450 core
+#version 410 core
 out vec2 v_uv;
 void main() {
   float x = float(gl_VertexID == 1) * 4.0 - 1.0;
@@ -39,7 +39,7 @@ void main() {
 // projection kinds. (2) The 4x4 noise texture is a 4x4-tiled in-shader hash —
 // identical tiling semantics for the 4x4 blur with no texture-upload API.
 constexpr std::string_view kSsaoFragSrc = R"GLSL(
-#version 450 core
+#version 410 core
 in vec2 v_uv;
 out float ssao_out;
 uniform sampler2D u_depth;
@@ -101,7 +101,7 @@ void main() {
 
 // 4x4 box blur over the AO tile (LearnOpenGL §SSAO blur).
 constexpr std::string_view kBlurFragSrc = R"GLSL(
-#version 450 core
+#version 410 core
 in vec2 v_uv;
 out float blur_out;
 uniform sampler2D u_ao;

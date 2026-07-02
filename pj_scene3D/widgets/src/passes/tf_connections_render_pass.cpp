@@ -18,7 +18,7 @@ namespace {
 // Position-only line shader: world-space endpoints transformed by the MVP, a
 // single flat fragment color. (The grid pass synthesizes its lines in the
 // fragment stage; these are honest GL_LINES primitives.)
-constexpr std::string_view kVertSrc = R"(#version 450 core
+constexpr std::string_view kVertSrc = R"(#version 410 core
 layout(location = 0) in vec3 in_pos;
 uniform mat4 u_mvp;
 void main() {
@@ -26,7 +26,7 @@ void main() {
 }
 )";
 
-constexpr std::string_view kFragSrc = R"(#version 450 core
+constexpr std::string_view kFragSrc = R"(#version 410 core
 uniform vec3 u_color;
 out vec4 frag_color;
 void main() {

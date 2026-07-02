@@ -30,7 +30,7 @@ static_assert(
 
 namespace {
 
-constexpr std::string_view kPointcloudVertSrc = R"(#version 450 core
+constexpr std::string_view kPointcloudVertSrc = R"(#version 410 core
 layout(location = 0) in vec3 in_pos;
 // Integer attribs bound with normalized=GL_FALSE are widened to float by GL,
 // matching readScalarAt (signed types sign-extend).
@@ -104,7 +104,7 @@ void main() {
 
 // The point/sphere fragment shader split around the colormap GLSL: head declares the
 // inputs/uniforms, the LUTs slot in, then this tail's main() consumes them.
-constexpr std::string_view kPointcloudFragHead = R"(#version 450 core
+constexpr std::string_view kPointcloudFragHead = R"(#version 410 core
 in float v_normalized;
 in vec4 v_color;               // per-point RGBA (kRgb mode)
 out vec4 frag_color;
@@ -158,7 +158,7 @@ void main() {
 }
 )";
 
-constexpr std::string_view kCubeVertSrc = R"(#version 450 core
+constexpr std::string_view kCubeVertSrc = R"(#version 410 core
 layout(location = 0) in vec3 in_corner_pos;       // per-vertex (24)
 layout(location = 1) in vec3 in_corner_normal;    // per-vertex (24)
 layout(location = 2) in vec3 in_instance_pos;     // per-instance, divisor=1
@@ -207,7 +207,7 @@ void main() {
 
 // The cube fragment shader split around the colormap GLSL (same shared source as
 // the point shader). Head declares inputs/uniforms; tail's main() shades.
-constexpr std::string_view kCubeFragHead = R"(#version 450 core
+constexpr std::string_view kCubeFragHead = R"(#version 410 core
 in vec3 v_view_normal;
 in float v_normalized;
 in vec3 v_local;

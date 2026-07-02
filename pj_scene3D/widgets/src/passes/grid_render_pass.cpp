@@ -21,7 +21,7 @@ namespace {
 // One program serves both styles. The vertex stage forwards the checkerboard
 // parity flag and the world-space XY (model is identity, so in_pos IS the world
 // position) so the fragment stage can draw the grid lines *procedurally*.
-constexpr std::string_view kGridVertSrc = R"(#version 450 core
+constexpr std::string_view kGridVertSrc = R"(#version 410 core
 layout(location = 0) in vec3 in_pos;
 layout(location = 1) in float in_parity;
 uniform mat4 u_mvp;
@@ -49,7 +49,7 @@ void main() {
 // to win/lose the depth test in patches), and the fwidth term keeps them ~1px
 // wide in screen space so they fade smoothly into the distance instead of
 // breaking into dashes.
-constexpr std::string_view kGridFragSrc = R"(#version 450 core
+constexpr std::string_view kGridFragSrc = R"(#version 410 core
 flat in float v_parity;
 in vec2 v_world_xy;
 in vec3 v_render_pos;

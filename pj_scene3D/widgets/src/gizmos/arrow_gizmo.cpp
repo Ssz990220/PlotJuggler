@@ -19,7 +19,7 @@ namespace {
 // View-space Lambertian by default. Light direction is constant in view space so
 // the highlight stays in the same screen-relative position regardless of how the
 // arrow rotates; marker annotations can request flat color with u_flat_color.
-constexpr std::string_view kVertSrc = R"(#version 450 core
+constexpr std::string_view kVertSrc = R"(#version 410 core
 layout(location = 0) in vec3 in_pos;
 layout(location = 1) in vec3 in_normal;
 uniform mat4 u_mvp;
@@ -31,7 +31,7 @@ void main() {
 }
 )";
 
-constexpr std::string_view kFragSrc = R"(#version 450 core
+constexpr std::string_view kFragSrc = R"(#version 410 core
 in vec3 v_normal_view;
 uniform vec4 u_color;
 uniform int u_flat_color;

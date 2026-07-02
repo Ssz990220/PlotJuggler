@@ -18,7 +18,7 @@ namespace pj::scene3d {
 namespace {
 
 constexpr std::string_view kFullscreenVertSrc = R"GLSL(
-#version 450 core
+#version 410 core
 out vec2 v_uv;
 void main() {
   float x = float(gl_VertexID == 1) * 4.0 - 1.0;
@@ -48,7 +48,7 @@ void main() {
 // so a mask is always bound there; the fallback exists only for callers that
 // drive EdlPass without a mask.
 constexpr std::string_view kEdlFragSrc = R"GLSL(
-#version 450 core
+#version 410 core
 in vec2 v_uv;
 out float shade_out;
 uniform sampler2D u_depth;

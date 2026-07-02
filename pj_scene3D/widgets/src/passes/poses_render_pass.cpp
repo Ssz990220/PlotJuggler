@@ -20,7 +20,7 @@ namespace {
 // (loc 2-5) + rgba color (loc 6). The pose's frame->world TF is a uniform, so
 // camera/TF motion never re-touches the instance buffer. View-space Lambertian
 // matches ArrowGizmo so pose triads read identically to the TF "Frames" gizmos.
-constexpr std::string_view kVertSrc = R"(#version 450 core
+constexpr std::string_view kVertSrc = R"(#version 410 core
 layout(location = 0) in vec3 in_pos;
 layout(location = 1) in vec3 in_normal;
 layout(location = 2) in mat4 in_model;   // consumes locations 2,3,4,5
@@ -41,7 +41,7 @@ void main() {
 // Identical look to ArrowGizmo's lit path: ambient + Lambert, linearized so the
 // HDR composite's sRGB-encode restores it, and the alpha carries the gizmo
 // opacity through SceneViewWidget's annotation blend (tonemap-bypass coverage).
-constexpr std::string_view kFragSrc = R"(#version 450 core
+constexpr std::string_view kFragSrc = R"(#version 410 core
 in vec3 v_normal_view;
 in vec4 v_color;
 out vec4 frag_color;

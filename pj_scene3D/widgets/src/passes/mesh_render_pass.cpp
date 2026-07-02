@@ -35,7 +35,7 @@ static_assert(sizeof(GpuVertex) == 64);
 static_assert(offsetof(GpuVertex, uv) == 40);
 static_assert(offsetof(GpuVertex, tangent) == 48);
 
-constexpr std::string_view kVertSrc = R"(#version 450 core
+constexpr std::string_view kVertSrc = R"(#version 410 core
 layout(location = 0) in vec3 in_pos;
 layout(location = 1) in vec3 in_normal;
 layout(location = 2) in vec4 in_color;
@@ -70,7 +70,7 @@ void main() {
 }
 )";
 
-constexpr std::string_view kFragSrc = R"(#version 450 core
+constexpr std::string_view kFragSrc = R"(#version 410 core
 in vec3 v_world_pos;
 in vec3 v_world_normal;
 in vec4 v_vertex_color;
@@ -308,7 +308,7 @@ void main() {
 // clip space; the fragment stage is empty (GL writes gl_FragDepth automatically).
 // Position is attribute 0 — the same VAO slot the lit program uses — so casters
 // reuse their existing mesh VAO with no extra upload.
-constexpr std::string_view kDepthVertSrc = R"(#version 450 core
+constexpr std::string_view kDepthVertSrc = R"(#version 410 core
 layout(location = 0) in vec3 in_pos;
 uniform mat4 u_light_vp;
 uniform mat4 u_model;
@@ -317,7 +317,7 @@ void main() {
 }
 )";
 
-constexpr std::string_view kDepthFragSrc = R"(#version 450 core
+constexpr std::string_view kDepthFragSrc = R"(#version 410 core
 void main() {}
 )";
 
