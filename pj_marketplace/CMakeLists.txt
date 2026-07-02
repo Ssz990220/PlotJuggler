@@ -20,6 +20,10 @@ if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
       -Wold-style-cast -Wcast-qual -Wconversion -Woverloaded-virtual -Wpedantic
     )
   endif()
+  # AppleClang (unofficial macOS build): keep warnings non-fatal (see root CMake).
+  if(CMAKE_CXX_COMPILER_ID STREQUAL "AppleClang")
+    list(APPEND PJ_WARNING_FLAGS -Wno-error)
+  endif()
 
   find_package(GTest REQUIRED)
   enable_testing()

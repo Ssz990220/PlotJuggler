@@ -2,7 +2,17 @@
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-QT_DIR="${SCRIPT_DIR}/.qt/6.11.1/gcc_64"
+# aqtinstall lays Qt out under a host-specific subdir: linux uses gcc_64, macOS
+# uses macos (arch-neutral universal), windows uses msvc2022_64. Pick by uname so
+# build.sh works on the unofficial macOS build as well as Linux CI.
+case "$(uname -s)" in
+  Darwin) QT_HOST_DIR="macos" ;;
+  *)      QT_HOST_DIR="gcc_64" ;;
+esac
+QT_DIR="${SCRIPT_DIR}/.qt/6.11.1/${QT_HOST_DIR}"
+
+# nproc is coreutils-only; macOS provides the count via sysctl.
+nproc() { command nproc 2>/dev/null || sysctl -n hw.ncpu; }
 
 # `./build.sh --tsan` builds + runs the Qt-free foundation concurrency tests under
 # ThreadSanitizer in a separate build-tsan/ tree (the default build/ is untouched).

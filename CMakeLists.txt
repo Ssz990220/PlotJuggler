@@ -51,6 +51,15 @@ else()
     )
 endif()
 
+# AppleClang (unofficial macOS build): this tree has never been compiled with
+# Clang, and its strict -Wconversion/-Wold-style-cast/-Wshadow set produces
+# warning fallout that is not worth fixing one-by-one for a non-CI platform.
+# Keep the warnings visible but non-fatal (mirrors the EMSCRIPTEN carve-out in
+# plotjuggler_sdk). Remove this once AppleClang is a supported target.
+if(CMAKE_CXX_COMPILER_ID STREQUAL "AppleClang")
+    list(APPEND PJ_WARNING_FLAGS -Wno-error)
+endif()
+
 # Keep frame pointers in all PJ4-owned targets so `perf record --call-graph fp`
 # can unwind without DWARF.
 if(NOT MSVC)
