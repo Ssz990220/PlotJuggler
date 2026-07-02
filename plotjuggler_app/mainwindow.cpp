@@ -2446,7 +2446,7 @@ void MainWindow::linkedZoomOut()
           for (int index = 0; index < matrix->plotCount(); index++)
           {
             PlotWidget* plot = matrix->plotAt(index);
-            if (plot->isEmpty())
+            if (plot->isEmpty() || plot->isXYPlot())
             {
               continue;
             }
@@ -2468,7 +2468,7 @@ void MainWindow::linkedZoomOut()
           for (int index = 0; index < matrix->plotCount() && !first; index++)
           {
             PlotWidget* plot = matrix->plotAt(index);
-            if (plot->isEmpty())
+            if (plot->isEmpty() || plot->isXYPlot())
             {
               continue;
             }
