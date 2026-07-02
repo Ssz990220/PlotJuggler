@@ -10,7 +10,7 @@
 #include <QLoggingCategory>
 #include <QMouseEvent>
 #include <QOpenGLContext>
-#include <QOpenGLFunctions_4_5_Core>
+#include <QOpenGLFunctions_4_1_Core>
 #include <QOpenGLVersionFunctionsFactory>
 #include <QPainter>
 #include <QPalette>
@@ -58,7 +58,17 @@ inline constexpr int kDefaultMsaaSamples = 4;
 
 QSurfaceFormat makeDefaultFormat() {
   QSurfaceFormat fmt;
+  // Apple caps desktop OpenGL at 4.1 Core, so request exactly that on macOS;
+  // asking for a higher version there can be refused outright by CGL rather than
+  // silently downgraded. Everywhere else keep 4.5 (the module's historical
+  // request). The render path is written to the 4.1 baseline, so a 4.1 context is
+  // fully functional — only the optional GPU point-cloud AABB reduction (compute,
+  // 4.3) is unavailable at 4.1 and transparently falls back to the CPU scan.
+#if defined(__APPLE__)
+  fmt.setVersion(4, 1);
+#else
   fmt.setVersion(4, 5);
+#endif
   fmt.setProfile(QSurfaceFormat::CoreProfile);
   fmt.setDepthBufferSize(24);
   // MSAA on the backing FBO. Composited in an ADS dock the app context negotiates
@@ -77,7 +87,7 @@ QSurfaceFormat makeDefaultFormat() {
 }
 
 constexpr std::string_view kPresentVertSrc = R"GLSL(
-#version 450 core
+#version 410 core
 out vec2 v_uv;
 
 void main() {
@@ -97,7 +107,7 @@ void main() {
 // pj_scene3D/THIRDPARTY.md. Will become CompositePass : IPostPass when EDL/SSAO
 // inputs land (plan §A.6).
 constexpr std::string_view kPresentFragSrc = R"GLSL(
-#version 450 core
+#version 410 core
 in vec2 v_uv;
 out vec4 frag;
 uniform sampler2D u_scene;
@@ -455,7 +465,7 @@ void SceneViewWidget::initializePresentProgram() {
     present_program_->setInt("u_ao", 2);
     present_program_->setInt("u_edl", 3);
     if (auto* ctx = QOpenGLContext::currentContext(); ctx != nullptr) {
-      if (auto* funcs = QOpenGLVersionFunctionsFactory::get<QOpenGLFunctions_4_5_Core>(ctx); funcs != nullptr) {
+      if (auto* funcs = QOpenGLVersionFunctionsFactory::get<QOpenGLFunctions_4_1_Core>(ctx); funcs != nullptr) {
         funcs->glUseProgram(0);
       }
     }
@@ -504,7 +514,7 @@ void SceneViewWidget::resizeGL(int /*w*/, int /*h*/) {
 
 void SceneViewWidget::paintGL() {
   auto* ctx = QOpenGLContext::currentContext();
-  auto* funcs = QOpenGLVersionFunctionsFactory::get<QOpenGLFunctions_4_5_Core>(ctx);
+  auto* funcs = QOpenGLVersionFunctionsFactory::get<QOpenGLFunctions_4_1_Core>(ctx);
   if (funcs == nullptr) {
     return;
   }
@@ -787,7 +797,7 @@ void SceneViewWidget::paintGL() {
 void SceneViewWidget::renderScene(
     const ViewParams& view_params, const FrameContext& frame_ctx, bool mask_alpha_writes) {
   auto* ctx = QOpenGLContext::currentContext();
-  auto* funcs = QOpenGLVersionFunctionsFactory::get<QOpenGLFunctions_4_5_Core>(ctx);
+  auto* funcs = QOpenGLVersionFunctionsFactory::get<QOpenGLFunctions_4_1_Core>(ctx);
   if (funcs == nullptr) {
     return;
   }

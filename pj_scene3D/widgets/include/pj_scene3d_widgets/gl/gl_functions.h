@@ -4,110 +4,22 @@
 
 #include <QOpenGLContext>
 #include <QOpenGLExtraFunctions>
+#include <QOpenGLFunctions_4_1_Core>
+#include <QOpenGLFunctions_4_3_Core>
 #include <QOpenGLFunctions_4_5_Core>
 #include <QOpenGLVersionFunctionsFactory>
 #include <QPointer>
 #include <stdexcept>
 
-// -----------------------------------------------------------------------------
-// EXPERIMENTAL macOS launch-test shim — NOT a real port.
-//
-// Apple's OpenGL is frozen at 4.1 Core; its <OpenGL/gl3.h> headers omit every
-// enum added in GL 4.3 (compute shaders, SSBOs, KHR_debug). On Linux Qt pulls
-// the Khronos glext.h, which defines these regardless of driver, so the code
-// compiles there. On macOS the enums are simply undeclared and the 3D widget
-// module fails to compile.
-//
-// This block defines only the missing enum *values* so the module compiles and
-// pj_app can be linked/launched for triage. It provides NO runtime capability:
-// the compute / SSBO passes and KHR_debug will not function on Apple's 4.1
-// context (withCoreGlFunctions already throws when the 4.5 core set does not
-// resolve, which is always the case here). Do not treat this as macOS 3D
-// support — the point-cloud compute-reduction path must be ported to a
-// compute-free fallback (or Metal/Vulkan) before 3D works on macOS.
-#if defined(__APPLE__)
-#ifndef GL_DEBUG_OUTPUT
-#define GL_DEBUG_OUTPUT 0x92E0
-#endif
-#ifndef GL_DEBUG_OUTPUT_SYNCHRONOUS
-#define GL_DEBUG_OUTPUT_SYNCHRONOUS 0x8242
-#endif
-#ifndef GL_COMPUTE_SHADER
-#define GL_COMPUTE_SHADER 0x91B9
-#endif
-#ifndef GL_SHADER_STORAGE_BUFFER
-#define GL_SHADER_STORAGE_BUFFER 0x90D2
-#endif
-#ifndef GL_SHADER_STORAGE_BARRIER_BIT
-#define GL_SHADER_STORAGE_BARRIER_BIT 0x00002000
-#endif
-#ifndef GL_BUFFER_UPDATE_BARRIER_BIT
-#define GL_BUFFER_UPDATE_BARRIER_BIT 0x00000200
-#endif
-#ifndef GL_DEBUG_SEVERITY_HIGH
-#define GL_DEBUG_SEVERITY_HIGH 0x9146
-#endif
-#ifndef GL_DEBUG_SEVERITY_MEDIUM
-#define GL_DEBUG_SEVERITY_MEDIUM 0x9147
-#endif
-#ifndef GL_DEBUG_SEVERITY_LOW
-#define GL_DEBUG_SEVERITY_LOW 0x9148
-#endif
-#ifndef GL_DEBUG_SEVERITY_NOTIFICATION
-#define GL_DEBUG_SEVERITY_NOTIFICATION 0x826B
-#endif
-#ifndef GL_DEBUG_SOURCE_API
-#define GL_DEBUG_SOURCE_API 0x8246
-#endif
-#ifndef GL_DEBUG_SOURCE_WINDOW_SYSTEM
-#define GL_DEBUG_SOURCE_WINDOW_SYSTEM 0x8247
-#endif
-#ifndef GL_DEBUG_SOURCE_SHADER_COMPILER
-#define GL_DEBUG_SOURCE_SHADER_COMPILER 0x8248
-#endif
-#ifndef GL_DEBUG_SOURCE_THIRD_PARTY
-#define GL_DEBUG_SOURCE_THIRD_PARTY 0x8249
-#endif
-#ifndef GL_DEBUG_SOURCE_APPLICATION
-#define GL_DEBUG_SOURCE_APPLICATION 0x824A
-#endif
-#ifndef GL_DEBUG_SOURCE_OTHER
-#define GL_DEBUG_SOURCE_OTHER 0x824B
-#endif
-#ifndef GL_DEBUG_TYPE_ERROR
-#define GL_DEBUG_TYPE_ERROR 0x824C
-#endif
-#ifndef GL_DEBUG_TYPE_DEPRECATED_BEHAVIOR
-#define GL_DEBUG_TYPE_DEPRECATED_BEHAVIOR 0x824D
-#endif
-#ifndef GL_DEBUG_TYPE_UNDEFINED_BEHAVIOR
-#define GL_DEBUG_TYPE_UNDEFINED_BEHAVIOR 0x824E
-#endif
-#ifndef GL_DEBUG_TYPE_PORTABILITY
-#define GL_DEBUG_TYPE_PORTABILITY 0x824F
-#endif
-#ifndef GL_DEBUG_TYPE_PERFORMANCE
-#define GL_DEBUG_TYPE_PERFORMANCE 0x8250
-#endif
-#ifndef GL_DEBUG_TYPE_OTHER
-#define GL_DEBUG_TYPE_OTHER 0x8251
-#endif
-#ifndef GL_DEBUG_TYPE_MARKER
-#define GL_DEBUG_TYPE_MARKER 0x8268
-#endif
-#ifndef GL_DEBUG_TYPE_PUSH_GROUP
-#define GL_DEBUG_TYPE_PUSH_GROUP 0x8269
-#endif
-#ifndef GL_DEBUG_TYPE_POP_GROUP
-#define GL_DEBUG_TYPE_POP_GROUP 0x826A
-#endif
-#endif  // __APPLE__
+#include "pj_scene3d_widgets/gl/gl_compat.h"  // GL >4.1 tokens on Apple's frozen headers
 
 namespace pj::scene3d {
 
 // OpenGL function-set acquisition shared by every render pass, gizmo, and gl::
-// RAII wrapper so the boilerplate lives in exactly one place. Three flavors,
-// each for a distinct call-site contract:
+// RAII wrapper so the boilerplate lives in exactly one place. The module targets
+// a GL 4.1 Core BASELINE — the highest desktop profile Apple exposes — so the
+// whole render path resolves through function sets available at 4.1. Compute is
+// the one optional capability above the baseline; see withComputeGlFunctions.
 //
 //   withGlFunctions       — THROWS if there is no current context / no usable
 //                           function set. Use on render / initializeGL paths,
@@ -118,14 +30,26 @@ namespace pj::scene3d {
 //                           move-assignments, releaseGL), where a context may
 //                           legitimately have already been destroyed and an
 //                           exception out of a destructor is forbidden.
-//   withCoreGlFunctions   — THROWS unless the 4.5 core profile resolves. Use
-//                           only for 4.5-only entry points (e.g.
-//                           glTexImage2DMultisample) that have no
-//                           QOpenGLExtraFunctions fallback.
+//   withCoreGlFunctions   — THROWS unless the 4.1 core profile resolves. Use for
+//                           desktop-core entry points (e.g.
+//                           glTexImage2DMultisample [3.2], timer queries [3.3])
+//                           that have no QOpenGLExtraFunctions (GLES) fallback but
+//                           ARE part of the 4.1 baseline.
+//   withComputeGlFunctions — resolves the GL 4.3 core set (compute shaders,
+//                           SSBOs, glMemoryBarrier). Returns false WITHOUT calling
+//                           the callback when the context is below 4.3 (Apple's
+//                           4.1), so the caller can fall back — it never throws.
 //
-// All three call initializeOpenGLFunctions() on the resolved set before
-// invoking the callback. The wrappers in gl/ are namespace pj::scene3d::gl, so
-// they qualify these as pj::scene3d::withGlFunctions (or add a using).
+// The versioned wrappers call initializeOpenGLFunctions() on the resolved set
+// before invoking the callback. The gl/ RAII types are namespace
+// pj::scene3d::gl, so they qualify these as pj::scene3d::withGlFunctions.
+//
+// withGlFunctions/withGlFunctionsNoThrow prefer the richest desktop set
+// (QOpenGLFunctions_4_5_Core) so Linux keeps its exact resolution; on Apple that
+// query returns null and they fall through to QOpenGLExtraFunctions, which
+// dispatches the same 4.1 entry points. Every callback here is already valid for
+// QOpenGLExtraFunctions (it compiles on all platforms), so the Apple path is a
+// pure resolution change, not a behavioural one.
 
 template <typename Callback>
 decltype(auto) withGlFunctions(Callback&& callback) {
@@ -166,20 +90,54 @@ void withGlFunctionsNoThrow(Callback&& callback) noexcept {
   callback(*functions);
 }
 
-// 4.5-core-only acquisition: throws unless QOpenGLFunctions_4_5_Core resolves
-// (no QOpenGLExtraFunctions fallback). For desktop-GL-only entry points.
+// 4.1-core acquisition: throws unless QOpenGLFunctions_4_1_Core resolves (no
+// QOpenGLExtraFunctions fallback). For desktop-core entry points that are part of
+// the 4.1 baseline yet absent from the GLES-shaped QOpenGLExtraFunctions
+// (glTexImage2DMultisample, GL_TIME_ELAPSED timer queries, glPolygonMode). Any
+// GL >= 4.1 core context — including Apple's frozen 4.1 and Linux's 4.5 — resolves
+// this, so it is not a capability gate; a null here is a genuine bug.
 template <typename Callback>
 decltype(auto) withCoreGlFunctions(Callback&& callback) {
   QOpenGLContext* context = QOpenGLContext::currentContext();
   if (context == nullptr) {
     throw std::runtime_error("No current OpenGL context");
   }
-  auto* functions = QOpenGLVersionFunctionsFactory::get<QOpenGLFunctions_4_5_Core>(context);
+  auto* functions = QOpenGLVersionFunctionsFactory::get<QOpenGLFunctions_4_1_Core>(context);
   if (functions == nullptr) {
-    throw std::runtime_error("No OpenGL 4.5 Core functions available");
+    throw std::runtime_error("No OpenGL 4.1 Core functions available");
   }
   functions->initializeOpenGLFunctions();
   return callback(*functions);
+}
+
+// True when the current context can run GL 4.3 compute shaders + SSBOs. False on
+// Apple's 4.1 (and any pre-4.3 context), where the point-cloud AABB reduction
+// falls back to the CPU bounds scan. Uses the function-set factory rather than the
+// reported version string so it reflects what Qt can actually resolve.
+inline bool hasComputeSupport() {
+  QOpenGLContext* context = QOpenGLContext::currentContext();
+  return context != nullptr &&
+         QOpenGLVersionFunctionsFactory::get<QOpenGLFunctions_4_3_Core>(context) != nullptr;
+}
+
+// Optional GL 4.3 compute acquisition. Resolves QOpenGLFunctions_4_3_Core and
+// invokes `callback` with it, returning true; returns false WITHOUT calling the
+// callback when there is no current context or the context is below 4.3. Never
+// throws — the compute point-cloud AABB reducer is the sole caller and treats
+// false as "no compute, use the CPU scan".
+template <typename Callback>
+bool withComputeGlFunctions(Callback&& callback) {
+  QOpenGLContext* context = QOpenGLContext::currentContext();
+  if (context == nullptr) {
+    return false;
+  }
+  auto* functions = QOpenGLVersionFunctionsFactory::get<QOpenGLFunctions_4_3_Core>(context);
+  if (functions == nullptr) {
+    return false;
+  }
+  functions->initializeOpenGLFunctions();
+  callback(*functions);
+  return true;
 }
 
 namespace gl {

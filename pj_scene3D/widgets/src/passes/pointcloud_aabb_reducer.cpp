@@ -110,11 +110,19 @@ bool PointcloudAabbReducer::ensureInitialized() {
     return available_;  // probe is deterministic — never retry after the first attempt
   }
   probed_ = true;
+  // No GL 4.3 compute on this context (e.g. Apple's frozen 4.1): stay unavailable
+  // quietly. The point-cloud layer detects this via available()/probed() and keeps
+  // the geometry bounds on the CPU scan (scanBoundsAndScalarRange), so nothing
+  // downstream regresses — only the async GPU offload is skipped.
+  if (!hasComputeSupport()) {
+    available_ = false;
+    return false;
+  }
   try {
     auto result = gl::Program::fromComputeSource(kComputeSrc);
     if (auto* program = std::get_if<gl::Program>(&result)) {
       program_ = std::make_unique<gl::Program>(std::move(*program));
-      withCoreGlFunctions([this](auto& functions) {
+      withComputeGlFunctions([this](auto& functions) {
         functions.glGenBuffers(1, &result_buffer_);
         functions.glBindBuffer(GL_SHADER_STORAGE_BUFFER, result_buffer_);
         functions.glBufferData(
@@ -150,7 +158,7 @@ void PointcloudAabbReducer::dispatch(
   // max slots + count seed to 0 so atomicMax reduces up.
   const std::array<GLuint, kResultSlots> init = {0xFFFFFFFFu, 0xFFFFFFFFu, 0xFFFFFFFFu, 0u, 0u, 0u, 0u, 0u};
 
-  withCoreGlFunctions([&](auto& functions) {
+  withComputeGlFunctions([&](auto& functions) {
     functions.glBindBuffer(GL_SHADER_STORAGE_BUFFER, result_buffer_);
     functions.glBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, sizeof(init), init.data());
     functions.glBindBufferBase(GL_SHADER_STORAGE_BUFFER, kSourceBinding, source_buffer);
@@ -178,10 +186,11 @@ std::optional<AABB> PointcloudAabbReducer::poll() {
   if (!pending_ || fence_ == nullptr) {
     return std::nullopt;
   }
-  return withCoreGlFunctions([this](auto& functions) -> std::optional<AABB> {
+  std::optional<AABB> result;
+  withComputeGlFunctions([this, &result](auto& functions) {
     const GLenum wait = functions.glClientWaitSync(fence_, 0, 0);  // non-blocking poll
     if (wait != GL_ALREADY_SIGNALED && wait != GL_CONDITION_SATISFIED) {
-      return std::nullopt;  // GPU still working — try again next frame
+      return;  // GPU still working — try again next frame
     }
     std::array<GLuint, kResultSlots> out{};
     functions.glBindBuffer(GL_SHADER_STORAGE_BUFFER, result_buffer_);
@@ -193,13 +202,15 @@ std::optional<AABB> PointcloudAabbReducer::poll() {
     AABB box;
     if (out[6] == 0U) {
       box.valid = false;  // no finite points
-      return box;
+      result = box;
+      return;
     }
     box.min = glm::vec3(orderedKeyToFloat(out[0]), orderedKeyToFloat(out[1]), orderedKeyToFloat(out[2]));
     box.max = glm::vec3(orderedKeyToFloat(out[3]), orderedKeyToFloat(out[4]), orderedKeyToFloat(out[5]));
     box.valid = true;
-    return box;
+    result = box;
   });
+  return result;
 }
 
 void PointcloudAabbReducer::destroyFence() {

@@ -6,7 +6,7 @@
 #include <fmt/format.h>
 
 #include <QOpenGLContext>
-#include <QOpenGLFunctions_4_5_Core>
+#include <QOpenGLFunctions_4_1_Core>
 #include <QOpenGLVersionFunctionsFactory>
 #include <algorithm>
 #include <array>
@@ -24,15 +24,16 @@ namespace pj::scene3d {
 namespace {
 
 // glPolygonMode is desktop-GL only (absent from QOpenGLExtraFunctions, the GLES
-// fallback), so it can't go through the polymorphic withGlFunctions. Apply it
-// only when the 4.5-core functions are available; on a GLES fallback wireframe
-// is silently unsupported.
+// fallback), so it can't go through the polymorphic withGlFunctions. Resolve the
+// 4.1-core set directly (glPolygonMode is core since 1.0, so any desktop context
+// including Apple's 4.1 provides it); on a GLES fallback wireframe is silently
+// unsupported.
 void setPolygonMode(GLenum mode) {
   QOpenGLContext* context = QOpenGLContext::currentContext();
   if (context == nullptr) {
     return;
   }
-  if (auto* functions = QOpenGLVersionFunctionsFactory::get<QOpenGLFunctions_4_5_Core>(context); functions != nullptr) {
+  if (auto* functions = QOpenGLVersionFunctionsFactory::get<QOpenGLFunctions_4_1_Core>(context); functions != nullptr) {
     functions->glPolygonMode(GL_FRONT_AND_BACK, mode);
   }
 }
@@ -40,7 +41,7 @@ void setPolygonMode(GLenum mode) {
 // Instanced solid shader. Per-vertex: pos (loc 0). Per-instance: the world
 // matrix (loc 2-5, four vec4 columns) + rgba color (loc 6). One shared unit mesh
 // per shape, one draw call per shape.
-constexpr std::string_view kSolidVert = R"(#version 450 core
+constexpr std::string_view kSolidVert = R"(#version 410 core
 layout(location = 0) in vec3 in_pos;
 layout(location = 2) in mat4 in_world;   // consumes locations 2,3,4,5
 layout(location = 6) in vec4 in_color;
@@ -55,7 +56,7 @@ void main() {
 
 // Flat marker color: annotation geometry should show the exact marker color on
 // every face, independent of normal direction or camera orientation.
-constexpr std::string_view kFlatColorFrag = R"(#version 450 core
+constexpr std::string_view kFlatColorFrag = R"(#version 410 core
 in vec4 v_color;
 out vec4 frag_color;
 void main() {
@@ -98,7 +99,7 @@ constexpr GLsizei kCubeEdgeVertexCount = 24;
 // outward face normals and the edge center; if neither adjacent face faces the
 // camera, the line is colored as a softer self-occluded edge. Fragment stage:
 // kLineFrag.
-constexpr std::string_view kEdgeVert = R"(#version 450 core
+constexpr std::string_view kEdgeVert = R"(#version 410 core
 layout(location = 0) in vec3 in_pos;
 layout(location = 1) in vec3 in_normal_a;
 layout(location = 2) in mat4 in_world;   // consumes locations 2,3,4,5
@@ -280,7 +281,7 @@ void setupEdgeVao(gl::VertexArray& vao, gl::Buffer& edge_vbo, gl::Buffer& instan
 // Own program: the per-instance taper (bottom/top radius scale) deforms the unit
 // mesh in the vertex shader. Per-vertex: pos(0), taper_w(2). Per-instance:
 // world(3-6), color(7), taper(8).
-constexpr std::string_view kCylVert = R"(#version 450 core
+constexpr std::string_view kCylVert = R"(#version 410 core
 layout(location = 0) in vec3 in_pos;
 layout(location = 2) in float in_taper_w;   // 0 at bottom (-z face), 1 at top (+z face)
 layout(location = 3) in mat4 in_world;      // consumes 3,4,5,6
@@ -402,7 +403,7 @@ void setupCylinderVao(gl::VertexArray& vao, gl::Buffer& vbo, gl::Buffer& ebo, co
 // --- Lines + triangles (flat color) ---------------------------------------
 // One draw per batch; the VBO is re-streamed each frame. Vertices carry baked
 // (override-applied) colors so no color uniforms are needed.
-constexpr std::string_view kLineVert = R"(#version 450 core
+constexpr std::string_view kLineVert = R"(#version 410 core
 layout(location = 0) in vec3 in_pos;
 layout(location = 1) in vec4 in_color;
 uniform mat4 u_mvp;
@@ -410,13 +411,13 @@ out vec4 v_color;
 void main() { gl_Position = u_mvp * vec4(in_pos, 1.0); v_color = in_color; }
 )";
 
-constexpr std::string_view kLineFrag = R"(#version 450 core
+constexpr std::string_view kLineFrag = R"(#version 410 core
 in vec4 v_color;
 out vec4 frag_color;
 void main() { frag_color = v_color; }
 )";
 
-constexpr std::string_view kTriVert = R"(#version 450 core
+constexpr std::string_view kTriVert = R"(#version 410 core
 layout(location = 0) in vec3 in_pos;
 layout(location = 2) in vec4 in_color;
 uniform mat4 u_mvp;
