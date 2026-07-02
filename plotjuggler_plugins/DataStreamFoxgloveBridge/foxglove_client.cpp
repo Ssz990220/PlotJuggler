@@ -305,6 +305,26 @@ void FoxgloveBridgeClient::resetState()
   _data_received_pending = false;
 }
 
+// The ws-protocol spec marks schemaEncoding as optional: when a server omits it,
+// the schema encoding is implied by the message encoding (protobuf channels carry a
+// base64 FileDescriptorSet, cdr channels a ros2msg definition).
+static QString effectiveSchemaEncoding(const FoxgloveChannelInfo& channel)
+{
+  if (!channel.schema_encoding.isEmpty())
+  {
+    return channel.schema_encoding;
+  }
+  if (channel.encoding == "protobuf")
+  {
+    return "protobuf";
+  }
+  if (channel.encoding == "cdr")
+  {
+    return "ros2msg";
+  }
+  return {};
+}
+
 bool FoxgloveBridgeClient::canUseChannel(const FoxgloveChannelInfo& channel) const
 {
   if (channel.schema.isEmpty() || channel.schema_name.isEmpty() || channel.topic.isEmpty())
@@ -312,9 +332,10 @@ bool FoxgloveBridgeClient::canUseChannel(const FoxgloveChannelInfo& channel) con
     return false;
   }
   // Both ROS 2 CDR and Protobuf streams are supported. The concrete parser factory is
-  // resolved from schema_encoding in subscribeSelectedChannels().
-  const bool is_ros2 = channel.encoding == "cdr" && channel.schema_encoding == "ros2msg";
-  const bool is_protobuf = channel.encoding == "protobuf" && channel.schema_encoding == "protobuf";
+  // resolved from the (possibly implied) schema encoding in subscribeSelectedChannels().
+  const QString schema_encoding = effectiveSchemaEncoding(channel);
+  const bool is_ros2 = channel.encoding == "cdr" && schema_encoding == "ros2msg";
+  const bool is_protobuf = channel.encoding == "protobuf" && schema_encoding == "protobuf";
   return is_ros2 || is_protobuf;
 }
 
@@ -344,13 +365,15 @@ bool FoxgloveBridgeClient::subscribeSelectedChannels(
     const quint32 subscription_id = _next_subscription_id++;
 
 #ifdef PJ_BUILD
-    // Pick the parser factory from the channel's schema_encoding (e.g. "ros2msg" or
-    // "protobuf"). Missing factories fail this channel only, not the whole subscription.
-    const auto parser_it = factories->find(channel.schema_encoding);
+    // Pick the parser factory from the channel's schema encoding (e.g. "ros2msg" or
+    // "protobuf"), implied from the message encoding when the server omits it.
+    // Missing factories fail this channel only, not the whole subscription.
+    const QString schema_encoding = effectiveSchemaEncoding(channel);
+    const auto parser_it = factories->find(schema_encoding);
     if (parser_it == factories->end())
     {
       failures.push_back(QString("%1: no parser available for schema encoding [%2]")
-                             .arg(channel.topic, channel.schema_encoding));
+                             .arg(channel.topic, schema_encoding));
       continue;
     }
 
@@ -358,7 +381,7 @@ bool FoxgloveBridgeClient::subscribeSelectedChannels(
     // FileDescriptorSet arrive base64-encoded. Decode those so the factory receives the
     // exact raw bytes it will feed to FileDescriptorSet::ParseFromArray().
     std::string schema_data;
-    if (channel.schema_encoding == "protobuf")
+    if (schema_encoding == "protobuf")
     {
       const QByteArray decoded = QByteArray::fromBase64(channel.schema.toUtf8());
       schema_data.assign(decoded.constData(), size_t(decoded.size()));
