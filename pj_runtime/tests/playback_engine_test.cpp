@@ -68,4 +68,44 @@ TEST(PlaybackEngineTest, ClampTickTimeHoldAtTipBeatsLoop) {
   EXPECT_DOUBLE_EQ(PJ::PlaybackEngine::clampTickTime(-3.0, 0.0, 10.0, false, false, nullptr), 0.0);
 }
 
+// Bug #13: pressing Play with the cursor already at the end of a finite range must
+// rewind to the start and replay — not no-op (the button used to just flicker because
+// the first tick pauses again before moving).
+TEST(PlaybackEngineTest, PlayAtEndRewindsToStart) {
+  PJ::PlaybackEngine engine;
+  engine.setRange(PJ::displayRange(0.0, 10.0));
+  engine.setCurrentTime(PJ::displaySeconds(10.0));  // cursor parked at the end
+
+  engine.play();
+
+  EXPECT_TRUE(engine.isPlaying()) << "play() must actually start playback";
+  EXPECT_DOUBLE_EQ(engine.currentTime().value, 0.0) << "play() at the end must rewind to range_min";
+}
+
+// Looping wraps on its own, so play() must NOT force a rewind (leave the cursor where
+// it is; clampTickTime handles the wrap). Guards against the rewind over-firing.
+TEST(PlaybackEngineTest, PlayAtEndDoesNotRewindWhenLooping) {
+  PJ::PlaybackEngine engine;
+  engine.setRange(PJ::displayRange(0.0, 10.0));
+  engine.setLooping(true);
+  engine.setCurrentTime(PJ::displaySeconds(10.0));
+
+  engine.play();
+
+  EXPECT_TRUE(engine.isPlaying());
+  EXPECT_DOUBLE_EQ(engine.currentTime().value, 10.0) << "looping play() must not force a rewind";
+}
+
+// Play from the middle of the range leaves the cursor untouched (only the at-end
+// case rewinds).
+TEST(PlaybackEngineTest, PlayFromMiddleDoesNotRewind) {
+  PJ::PlaybackEngine engine;
+  engine.setRange(PJ::displayRange(0.0, 10.0));
+  engine.setCurrentTime(PJ::displaySeconds(4.0));
+
+  engine.play();
+
+  EXPECT_DOUBLE_EQ(engine.currentTime().value, 4.0) << "play() mid-range must not move the cursor";
+}
+
 }  // namespace
