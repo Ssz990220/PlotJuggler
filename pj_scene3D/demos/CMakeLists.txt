@@ -38,4 +38,17 @@ if(TARGET pj_scene3d_widgets)
   target_compile_features(pointcloud_aabb_benchmark PRIVATE cxx_std_20)
   target_compile_options(pointcloud_aabb_benchmark PRIVATE ${PJ_WARNING_FLAGS} ${PJ_SANITIZER_FLAGS})
   target_link_libraries(pointcloud_aabb_benchmark PRIVATE pj_scene3d_widgets pj_scene3d_core Qt6::Gui)
+
+  # macOS docked-composite repro harness: a SceneViewWidget hosted inside the SAME
+  # Qt-Advanced-Docking system the app uses, beside a raster widget, so the window
+  # takes Qt's full-window RHI composite path. Diagnoses the "3D dock renders
+  # blank/stale on macOS" bug via the SceneViewWidget lifecycle trace. Needs the
+  # vendored ADS target; skipped where it is unavailable.
+  if(TARGET qt_advanced_docking)
+    add_executable(scene3d_docked_harness scene3d_docked_harness.cpp)
+    target_compile_features(scene3d_docked_harness PRIVATE cxx_std_20)
+    target_link_libraries(scene3d_docked_harness PRIVATE
+      pj_scene3d_widgets qt_advanced_docking Qt6::Widgets
+    )
+  endif()
 endif()

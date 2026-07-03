@@ -433,6 +433,11 @@ void SceneViewWidget::initializeGL() {
   context_cleanup_connection_ = connect(
       context(), &QOpenGLContext::aboutToBeDestroyed, this, &SceneViewWidget::releaseGlResources, Qt::DirectConnection);
 
+  paints_this_context_ = 0;  // re-arm the per-context paint trace
+  qCInfo(lcSceneViewWidget).nospace() << "initializeGL ctx=" << static_cast<const void*>(context())
+                                      << " defaultFBO=" << defaultFramebufferObject() << " size=" << width() << "x"
+                                      << height() << " visible=" << isVisible();
+
   gl::installDebugCallback();
   // Seed the scene HDR FBO's MSAA from the fixed default, NOT the context's
   // negotiated samples (0 when composited in an ADS dock) — SceneHdrFbo is an
@@ -482,6 +487,8 @@ void SceneViewWidget::releaseGlResources() {
   // glDelete* actually run (the wrappers self-skip without a current context).
   // Called from the context's aboutToBeDestroyed (reparent or teardown) and the
   // destructor. context() is null before the first show / after full teardown.
+  qCInfo(lcSceneViewWidget).nospace() << "releaseGlResources ctx=" << static_cast<const void*>(context())
+                                      << " paintsThisContext=" << paints_this_context_;
   if (context() == nullptr) {
     return;
   }
@@ -510,6 +517,8 @@ void SceneViewWidget::releaseGlResources() {
 
 void SceneViewWidget::showEvent(QShowEvent* event) {
   QOpenGLWidget::showEvent(event);
+  qCInfo(lcSceneViewWidget).nospace() << "showEvent visible=" << isVisible()
+                                      << " ctx=" << static_cast<const void*>(context());
   // Qt's RHI widget compositor can latch a stale/empty backing texture for a GL
   // QOpenGLWidget on the very first composite, so the 3D view comes up blank until
   // a manual window resize forces a recomposite (observed on macOS once the widget
@@ -529,7 +538,13 @@ void SceneViewWidget::paintGL() {
   auto* ctx = QOpenGLContext::currentContext();
   auto* funcs = QOpenGLVersionFunctionsFactory::get<QOpenGLFunctions_4_1_Core>(ctx);
   if (funcs == nullptr) {
+    qCWarning(lcSceneViewWidget) << "paintGL: no 4.1 core functions (ctx=" << static_cast<const void*>(ctx)
+                                 << ") — skipping frame";
     return;
+  }
+  if (++paints_this_context_ <= 5) {
+    qCInfo(lcSceneViewWidget).nospace() << "paintGL#" << paints_this_context_ << " ctx=" << static_cast<const void*>(ctx)
+                                        << " defaultFBO=" << defaultFramebufferObject() << " visible=" << isVisible();
   }
 
   // Perf instrumentation is gated on the HUD: when it's off (the production

@@ -404,6 +404,11 @@ class SceneViewWidget : public QOpenGLWidget {
   // One warning per context when the HDR chain is unavailable and paintGL falls
   // back to direct-to-backing rendering; re-armed by initializeGL.
   bool scene_fbo_fallback_logged_ = false;
+  // Diagnostics: per-context paintGL counter (reset in initializeGL). The first
+  // few paints per context are logged with ctx/defaultFBO/visible so a lifecycle
+  // trace shows whether — and while visible — a paint ran on each (possibly
+  // recreated) context. qCInfo(lcSceneViewWidget), visible without log rules.
+  int paints_this_context_ = 0;
 
   // ---- Performance instrumentation state (see the benchmark-hooks block) -----
   // Non-stalling GPU timer over the scene passes; per-context, released in
