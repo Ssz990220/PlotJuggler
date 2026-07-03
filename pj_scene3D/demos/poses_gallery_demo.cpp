@@ -145,8 +145,20 @@ int main(int argc, char** argv) {
     }
   }
 
+#if defined(Q_OS_MACOS)
+  // Match the app: force the OpenGL widget compositor so a GL QOpenGLWidget is not
+  // composited upside down by the Metal RHI backend. Must precede QApplication.
+  if (!qEnvironmentVariableIsSet("QT_WIDGETS_RHI_BACKEND")) {
+    qputenv("QT_WIDGETS_RHI_BACKEND", "opengl");
+  }
+#endif
+
   QSurfaceFormat fmt;
+#if defined(Q_OS_MACOS)
+  fmt.setVersion(4, 1);  // Apple caps desktop GL at 4.1 Core
+#else
   fmt.setVersion(4, 5);
+#endif
   fmt.setProfile(QSurfaceFormat::CoreProfile);
   fmt.setDepthBufferSize(24);
   QSurfaceFormat::setDefaultFormat(fmt);

@@ -39,6 +39,21 @@ backward::SignalHandling g_crash_handler;
 }  // namespace
 
 int main(int argc, char* argv[]) {
+#if defined(Q_OS_MACOS)
+  // Force Qt's widget compositor to its OpenGL backend on macOS. As soon as a
+  // QOpenGLWidget (the 3D SceneViewWidget) exists, Qt 6 composites the WHOLE
+  // top-level window through QRhi. The default backend on macOS is Metal, whose
+  // texture origin is top-left while the widget's GL content is bottom-left, so
+  // the Metal compositor blits the composited window upside down (the entire app
+  // renders as a vertical mirror the moment a 3D dock is added). The OpenGL RHI
+  // backend shares the GL orientation, so the window composites right-side-up.
+  // Must be set BEFORE QApplication constructs the platform/RHI integration.
+  // Respect an explicit user override.
+  if (!qEnvironmentVariableIsSet("QT_WIDGETS_RHI_BACKEND")) {
+    qputenv("QT_WIDGETS_RHI_BACKEND", "opengl");
+  }
+#endif
+
   // Pin to Fusion (under our Style proxy) before constructing
   // QApplication so widgets that read the style at construction time
   // don't end up with the platform's native style (KDE Breeze, GNOME
