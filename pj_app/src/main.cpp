@@ -62,18 +62,35 @@ int main(int argc, char* argv[]) {
   // and the underline-mnemonic decoration.
   QApplication::setStyle(new PJ::Style(QStringLiteral("Fusion")));
 
-  // NOTE: we deliberately do NOT set Qt::AA_ShareOpenGLContexts. It was once set
-  // so a 3D scene's GL resources would survive a QOpenGLWidget context
-  // recreation on ADS reparent — but it put every SceneViewWidget's context into
-  // a single share group, and destroying one view's context (closing/splitting a
-  // 3D dock) corrupted the VAO/FBO state of the sibling views still on screen
-  // (a glBindVertexArray(non-gen name) flood + the map texture vanishing in the
-  // surviving view). With each view's GL context fully independent, tearing one
-  // down can no longer touch the others. The original "survive a context
-  // recreation" concern is handled instead inside pj_scene3D: every render pass
-  // and layer implements releaseGL(), and SceneViewWidget rebuilds its GL state
-  // in initializeGL() — so a recreated context self-heals rather than relying on
-  // a process-wide share group.
+  // Qt::AA_ShareOpenGLContexts — historically DISABLED, now an experimental opt-in
+  // (PJ_SHARE_CONTEXTS=1), default OFF.
+  //
+  // Why it was disabled: it put every SceneViewWidget's context into one share
+  // group, and destroying one view's context (closing/splitting a 3D dock)
+  // corrupted the VAO/FBO state of sibling views still on screen — a
+  // glBindVertexArray(non-gen name) flood + the map texture vanishing in the
+  // surviving view. The workaround was to keep every view's context fully
+  // independent so tearing one down could not touch the others.
+  //
+  // Why we want it back on macOS: with independent contexts, an ADS dock reparent
+  // DESTROYS+RECREATES the QOpenGLWidget's context, and Qt's macOS RHI compositor
+  // does not re-acquire the recreated context's texture — the docked 3D (and the
+  // Api::OpenGL MediaViewer) composite a stale/black frame even though paintGL
+  // renders correctly into the widget FBO (verified by scene3d_docked_harness +
+  // the SceneViewWidget paint trace). AA_ShareOpenGLContexts keeps the context
+  // ALIVE across the reparent (the harness shows a single initializeGL, no
+  // releaseGL/re-init), which fixes the handoff.
+  //
+  // Why the old corruption should no longer bite: the gl/ layer now scopes every
+  // glDelete* to the OWNING context — gl::Program/Buffer/Texture/etc. capture
+  // owning_context_ and only delete when deleteAllowedInCurrentContext() holds, so
+  // one view's teardown deletes only ITS names, never a sibling's. VAOs are never
+  // shared even with this attribute (container objects), and each view creates +
+  // uses its VAOs only in its own context. This must still be revalidated with 2+
+  // 3D docks + an image dock (open, then close/split one) before the default flips.
+  if (qEnvironmentVariableIntValue("PJ_SHARE_CONTEXTS") != 0) {
+    QCoreApplication::setAttribute(Qt::AA_ShareOpenGLContexts);
+  }
 
   QApplication app(argc, argv);
   QCoreApplication::setOrganizationName(QStringLiteral("PlotJuggler"));
