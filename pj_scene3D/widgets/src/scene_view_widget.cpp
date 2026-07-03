@@ -4,6 +4,8 @@
 #include "pj_scene3d_widgets/scene_view_widget.h"
 
 #include <QEvent>
+#include <QShowEvent>
+#include <QTimer>
 #include <QFont>
 #include <QGuiApplication>
 #include <QKeyEvent>
@@ -504,6 +506,17 @@ void SceneViewWidget::releaseGlResources() {
   present_program_.reset();
   present_vao_ = gl::VertexArray{};
   doneCurrent();
+}
+
+void SceneViewWidget::showEvent(QShowEvent* event) {
+  QOpenGLWidget::showEvent(event);
+  // Qt's RHI widget compositor can latch a stale/empty backing texture for a GL
+  // QOpenGLWidget on the very first composite, so the 3D view comes up blank until
+  // a manual window resize forces a recomposite (observed on macOS once the widget
+  // compositor is in use). Post a repaint AFTER the event loop finishes bringing
+  // the window up so a fresh paintGL result is composited without user
+  // interaction. Cheap (one extra paint per show) and harmless where unneeded.
+  QTimer::singleShot(0, this, [this] { update(); });
 }
 
 void SceneViewWidget::resizeGL(int /*w*/, int /*h*/) {

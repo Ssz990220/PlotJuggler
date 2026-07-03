@@ -44,12 +44,20 @@ namespace pj::scene3d {
 // before invoking the callback. The gl/ RAII types are namespace
 // pj::scene3d::gl, so they qualify these as pj::scene3d::withGlFunctions.
 //
-// withGlFunctions/withGlFunctionsNoThrow prefer the richest desktop set
-// (QOpenGLFunctions_4_5_Core) so Linux keeps its exact resolution; on Apple that
-// query returns null and they fall through to QOpenGLExtraFunctions, which
-// dispatches the same 4.1 entry points. Every callback here is already valid for
-// QOpenGLExtraFunctions (it compiles on all platforms), so the Apple path is a
-// pure resolution change, not a behavioural one.
+// withGlFunctions/withGlFunctionsNoThrow prefer QOpenGLFunctions_4_5_Core and
+// fall back to QOpenGLExtraFunctions. On Linux this lands on 4_5_Core; on Apple
+// GL (no 4_5) it lands on extraFunctions, which correctly dispatches the 4.1
+// desktop entry points these callbacks use. The extraFunctions fallback is NOT a
+// mere backstop: Qt's versioned QOpenGLFunctions_4_1_Core / 4_3_Core classes omit
+// some functions the render/teardown callbacks call — glVertexAttrib1f (constant
+// vertex attribute) and the KHR_debug entry points (gl::installDebugCallback) —
+// which exist only in 4_5_Core and QOpenGLExtraFunctions. So a "walk down to
+// 4_1_Core" chain does NOT compile; extraFunctions is the required Apple path and
+// is proven correct on the mac by the on-widget grab tests (tf_connections_gl_test
+// et al. read back real rendered pixels at 4.1). Render sites that DO need a
+// versioned-only entry point (glTexImage2DMultisample, timer queries,
+// glPolygonMode, and the paintGL/renderScene direct calls) use the explicit 4.1
+// resolution via withCoreGlFunctions / get<QOpenGLFunctions_4_1_Core> instead.
 
 template <typename Callback>
 decltype(auto) withGlFunctions(Callback&& callback) {
