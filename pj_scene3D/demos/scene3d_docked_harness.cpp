@@ -51,6 +51,14 @@ int main(int argc, char** argv) {
   fmt.setDepthBufferSize(24);
   QSurfaceFormat::setDefaultFormat(fmt);
 
+  // Experiment toggle: PJ_SHARE_CONTEXTS=1 sets AA_ShareOpenGLContexts (must be
+  // before QApplication) to test whether a shared global context lets the widget's
+  // GL resources/texture survive the ADS reparent instead of being recreated.
+  if (qEnvironmentVariableIntValue("PJ_SHARE_CONTEXTS") != 0) {
+    QApplication::setAttribute(Qt::AA_ShareOpenGLContexts);
+    qInfo("PJ_SHARE_CONTEXTS=1 -> AA_ShareOpenGLContexts set");
+  }
+
   QApplication app(argc, argv);
   const QString mode = argc > 1 ? QString::fromLocal8Bit(argv[1]) : QStringLiteral("drop");
   qInfo("=== scene3d_docked_harness mode=%s ===", qPrintable(mode));
