@@ -7,6 +7,7 @@
 #include <QDateTime>
 #include <QGuiApplication>
 #include <QImage>
+#include <QLoggingCategory>
 #include <QPixmap>
 #include <QScreen>
 #include <QSettings>
@@ -39,6 +40,15 @@ backward::SignalHandling g_crash_handler;
 }  // namespace
 
 int main(int argc, char* argv[]) {
+  // PJ_SCENE3D_TRACE=1: verbose lifecycle trace for the macOS docked-3D composite
+  // investigation. Timestamp + category on every line; the categories themselves
+  // are enabled below (after QApplication). Must set the message pattern before Qt
+  // installs its default handler. No-op (and near-zero cost) when unset.
+  const bool scene3d_trace = qEnvironmentVariableIntValue("PJ_SCENE3D_TRACE") != 0;
+  if (scene3d_trace) {
+    qputenv("QT_MESSAGE_PATTERN", "%{time process}s [%{category}] %{message}");
+  }
+
 #if defined(Q_OS_MACOS)
   // Force Qt's widget compositor to its OpenGL backend on macOS. As soon as a
   // QOpenGLWidget (the 3D SceneViewWidget) exists, Qt 6 composites the WHOLE
@@ -93,6 +103,27 @@ int main(int argc, char* argv[]) {
   }
 
   QApplication app(argc, argv);
+
+  if (scene3d_trace) {
+    // Turn on the module trace categories (qCDebug, off by default) plus Qt's own
+    // RHI / OpenGL / backingstore composition logging, so the whole chain is
+    // visible in one stream. Programmatic so the user only needs PJ_SCENE3D_TRACE=1.
+    QLoggingCategory::setFilterRules(QStringLiteral(
+        "pj.scene3d.scene_view.debug=true\n"
+        "pj.scene3d.dock.debug=true\n"
+        "pj.app.main.debug=true\n"
+        "pj.plotting.dock.debug=true\n"
+        "pj.scene2d.media_viewer.debug=true\n"
+        "qt.rhi.general=true\n"
+        "qt.rhi.backend=true\n"
+        "qt.opengl.*=true\n"
+        "qt.widgets.painting=true"));
+    qInfo().noquote() << "[pjtrace] startup: PJ_SHARE_CONTEXTS gate ->"
+                      << "AA_ShareOpenGLContexts=" << QCoreApplication::testAttribute(Qt::AA_ShareOpenGLContexts)
+                      << "| QT_WIDGETS_RHI_BACKEND=" << qEnvironmentVariable("QT_WIDGETS_RHI_BACKEND", QStringLiteral("<unset>"))
+                      << "| Qt=" << qVersion() << "| platform=" << QGuiApplication::platformName();
+  }
+
   QCoreApplication::setOrganizationName(QStringLiteral("PlotJuggler"));
   QCoreApplication::setApplicationName(QStringLiteral("PlotJuggler4"));
   // PJ_VERSION_STRING comes from the root project(VERSION) via pj_app's

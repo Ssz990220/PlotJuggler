@@ -7,6 +7,7 @@
 #include <QFont>
 #include <QFontMetricsF>
 #include <QImage>
+#include <QLoggingCategory>
 #include <QMetaObject>
 #include <QPainter>
 #include <QVector4D>
@@ -110,6 +111,8 @@ void MediaViewerWidget::setMediaSource(MediaSource* source) {
 }
 
 namespace {
+
+Q_LOGGING_CATEGORY(lcMediaViewer, "pj.scene2d.media_viewer")
 
 // Overlay tessellation (lines/points/fills/circles) lives in the backend-agnostic
 // pj_scene2d_core/overlay_geometry.h so it can be unit-tested; only the
@@ -774,6 +777,10 @@ void MediaViewerWidget::uploadOverlayVertexData(OverlayPipeline& overlay, QRhiRe
 
 void MediaViewerWidget::initialize(QRhiCommandBuffer* /*cb*/) {
   auto* r = rhi();
+  qCDebug(lcMediaViewer).nospace() << "initialize this=" << static_cast<const void*>(this)
+                                   << " rhi=" << static_cast<const void*>(r)
+                                   << " backend=" << (r != nullptr ? r->backendName() : "<null>")
+                                   << " size=" << width() << "x" << height() << " visible=" << isVisible();
   if (r == nullptr) {
     return;
   }
@@ -937,6 +944,12 @@ void MediaViewerWidget::initialize(QRhiCommandBuffer* /*cb*/) {
 }
 
 void MediaViewerWidget::render(QRhiCommandBuffer* cb) {
+  static int s_render_count = 0;  // process-wide diagnostic counter (trace only)
+  if (++s_render_count <= 8) {
+    qCDebug(lcMediaViewer).nospace() << "render#" << s_render_count << " this=" << static_cast<const void*>(this)
+                                     << " size=" << width() << "x" << height() << " visible=" << isVisible()
+                                     << " pipeline=" << static_cast<const void*>(pipeline_);
+  }
   if (pipeline_ == nullptr) {
     return;
   }

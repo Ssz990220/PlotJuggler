@@ -279,6 +279,7 @@ class SceneViewWidget : public QOpenGLWidget {
   void resizeGL(int w, int h) override;
   void paintGL() override;
   void showEvent(QShowEvent* event) override;
+  void hideEvent(QHideEvent* event) override;
 
   void mousePressEvent(QMouseEvent* event) override;
   void mouseReleaseEvent(QMouseEvent* event) override;

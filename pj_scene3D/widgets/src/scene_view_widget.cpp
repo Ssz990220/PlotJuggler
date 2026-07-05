@@ -4,6 +4,7 @@
 #include "pj_scene3d_widgets/scene_view_widget.h"
 
 #include <QEvent>
+#include <QHideEvent>
 #include <QShowEvent>
 #include <QTimer>
 #include <QFont>
@@ -434,9 +435,11 @@ void SceneViewWidget::initializeGL() {
       context(), &QOpenGLContext::aboutToBeDestroyed, this, &SceneViewWidget::releaseGlResources, Qt::DirectConnection);
 
   paints_this_context_ = 0;  // re-arm the per-context paint trace
-  qCInfo(lcSceneViewWidget).nospace() << "initializeGL ctx=" << static_cast<const void*>(context())
-                                      << " defaultFBO=" << defaultFramebufferObject() << " size=" << width() << "x"
-                                      << height() << " visible=" << isVisible();
+  qCDebug(lcSceneViewWidget).nospace()
+      << "initializeGL ctx=" << static_cast<const void*>(context()) << " shareCtx="
+      << static_cast<const void*>(context() != nullptr ? context()->shareContext() : nullptr)
+      << " defaultFBO=" << defaultFramebufferObject() << " size=" << width() << "x" << height()
+      << " visible=" << isVisible() << " win=" << static_cast<const void*>(window());
 
   gl::installDebugCallback();
   // Seed the scene HDR FBO's MSAA from the fixed default, NOT the context's
@@ -487,8 +490,9 @@ void SceneViewWidget::releaseGlResources() {
   // glDelete* actually run (the wrappers self-skip without a current context).
   // Called from the context's aboutToBeDestroyed (reparent or teardown) and the
   // destructor. context() is null before the first show / after full teardown.
-  qCInfo(lcSceneViewWidget).nospace() << "releaseGlResources ctx=" << static_cast<const void*>(context())
-                                      << " paintsThisContext=" << paints_this_context_;
+  qCDebug(lcSceneViewWidget).nospace() << "releaseGlResources (ctx aboutToBeDestroyed) ctx="
+                                       << static_cast<const void*>(context())
+                                       << " paintsThisContext=" << paints_this_context_;
   if (context() == nullptr) {
     return;
   }
@@ -517,8 +521,9 @@ void SceneViewWidget::releaseGlResources() {
 
 void SceneViewWidget::showEvent(QShowEvent* event) {
   QOpenGLWidget::showEvent(event);
-  qCInfo(lcSceneViewWidget).nospace() << "showEvent visible=" << isVisible()
-                                      << " ctx=" << static_cast<const void*>(context());
+  qCDebug(lcSceneViewWidget).nospace() << "showEvent visible=" << isVisible()
+                                       << " ctx=" << static_cast<const void*>(context()) << " size=" << width() << "x"
+                                       << height();
   // Qt's RHI widget compositor can latch a stale/empty backing texture for a GL
   // QOpenGLWidget on the very first composite, so the 3D view comes up blank until
   // a manual window resize forces a recomposite (observed on macOS once the widget
@@ -528,7 +533,16 @@ void SceneViewWidget::showEvent(QShowEvent* event) {
   QTimer::singleShot(0, this, [this] { update(); });
 }
 
-void SceneViewWidget::resizeGL(int /*w*/, int /*h*/) {
+void SceneViewWidget::hideEvent(QHideEvent* event) {
+  qCDebug(lcSceneViewWidget).nospace() << "hideEvent visible=" << isVisible()
+                                       << " ctx=" << static_cast<const void*>(context());
+  QOpenGLWidget::hideEvent(event);
+}
+
+void SceneViewWidget::resizeGL(int w, int h) {
+  qCDebug(lcSceneViewWidget).nospace() << "resizeGL " << w << "x" << h << " ctx="
+                                       << static_cast<const void*>(context())
+                                       << " defaultFBO=" << defaultFramebufferObject() << " visible=" << isVisible();
   // Nothing to do: Qt sets the backing-FBO viewport itself, and the HDR scene
   // FBO is (re)sized lazily in paintGL from that viewport's device-pixel size.
   // (Qt 6 passes LOGICAL units here, so the viewport read is the exact source.)
@@ -542,9 +556,14 @@ void SceneViewWidget::paintGL() {
                                  << ") — skipping frame";
     return;
   }
-  if (++paints_this_context_ <= 5) {
-    qCInfo(lcSceneViewWidget).nospace() << "paintGL#" << paints_this_context_ << " ctx=" << static_cast<const void*>(ctx)
-                                        << " defaultFBO=" << defaultFramebufferObject() << " visible=" << isVisible();
+  const bool trace_this_paint = ++paints_this_context_ <= 8;
+  if (trace_this_paint) {
+    GLint vp[4] = {0, 0, 0, 0};
+    funcs->glGetIntegerv(GL_VIEWPORT, vp);
+    qCDebug(lcSceneViewWidget).nospace()
+        << "paintGL#" << paints_this_context_ << " ENTER ctx=" << static_cast<const void*>(ctx)
+        << " defaultFBO=" << defaultFramebufferObject() << " viewport=" << vp[2] << "x" << vp[3]
+        << " widget=" << width() << "x" << height() << " visible=" << isVisible();
   }
 
   // Perf instrumentation is gated on the HUD: when it's off (the production
@@ -739,6 +758,10 @@ void SceneViewWidget::paintGL() {
     funcs->glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
     finishFrameInstrumentation();
     drawHoverLabel(frame_ctx);  // QPainter overlay, after all GL submission
+    if (trace_this_paint) {
+      qCDebug(lcSceneViewWidget).nospace() << "paintGL#" << paints_this_context_
+                                           << " EXIT direct-to-backing defaultFBO=" << defaultFramebufferObject();
+    }
     return;
   }
 
@@ -820,6 +843,10 @@ void SceneViewWidget::paintGL() {
 
   finishFrameInstrumentation();
   drawHoverLabel(frame_ctx);  // QPainter overlay, after all GL submission
+  if (trace_this_paint) {
+    qCDebug(lcSceneViewWidget).nospace() << "paintGL#" << paints_this_context_
+                                         << " EXIT offscreen-present defaultFBO=" << defaultFramebufferObject();
+  }
 }
 
 void SceneViewWidget::renderScene(

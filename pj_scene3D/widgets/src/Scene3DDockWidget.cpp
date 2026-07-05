@@ -643,6 +643,9 @@ DatasetId Scene3DDockWidget::representativeDatasetId() const {
 }
 
 QWidget* Scene3DDockWidget::createSceneView() {
+  qCDebug(lcScene3DDock).nospace() << "createSceneView: new SceneViewWidget (dock=" << static_cast<const void*>(this)
+                                   << " dockParent=" << static_cast<const void*>(parentWidget())
+                                   << " win=" << static_cast<const void*>(window()) << ")";
   auto* view = new pj::scene3d::SceneViewWidget();
   view_ = view;
   view_->setContentsMargins(0, 0, 0, 0);

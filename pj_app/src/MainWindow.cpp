@@ -515,6 +515,8 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
 
         // Drop path: build, then populate the first topic and apply view
         // side-effects. An unknown kind here is a real failure — tell the user.
+        qCDebug(lcMain).nospace() << "objectWidgetFactory DROP: kind=" << resolved_kind
+                                  << " dockParent=" << static_cast<const void*>(dock_parent);
         IDataWidget* widget = makeSceneDock(resolved_kind, dock_parent);
         if (widget == nullptr) {
           MessageBox::warning(
@@ -524,6 +526,8 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
         }
         QWidget* qwidget = widget->widget();
         if (auto* scene3d = qobject_cast<Scene3DDockWidget*>(qwidget)) {
+          qCDebug(lcMain).nospace() << "objectWidgetFactory: scene3d dock=" << static_cast<const void*>(scene3d)
+                                    << " -> addTopic()";
           if (!scene3d->addTopic(seed->topic_id, seed->object_type, seed->title)) {
             scene3d->deleteLater();
             MessageBox::warning(

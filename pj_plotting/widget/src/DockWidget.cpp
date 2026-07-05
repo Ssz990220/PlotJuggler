@@ -16,6 +16,7 @@
 #include <QDropEvent>
 #include <QIcon>
 #include <QLabel>
+#include <QLoggingCategory>
 #include <QMenu>
 #include <QMetaObject>
 #include <QMimeData>
@@ -35,6 +36,8 @@
 
 namespace PJ {
 namespace {
+
+Q_LOGGING_CATEGORY(lcDockWidget, "pj.plotting.dock")
 
 QString newStateId() {
   return QUuid::createUuid().toString(QUuid::WithoutBraces);
@@ -181,7 +184,13 @@ void DockWidget::setObjectWidget(IDataWidget* widget) {
   installObjectContextMenuFilter(content_widget_);
   // ForceNoScrollArea: object widgets manage their own viewport — wrapping
   // them in ADS' QScrollArea adds a visible frame. Mirrors the drop path.
+  qCDebug(lcDockWidget).nospace() << "setObjectWidget: setWidget(content=" << static_cast<const void*>(content_widget_)
+                                  << ", ForceNoScrollArea) on dock=" << static_cast<const void*>(this)
+                                  << " dockArea=" << static_cast<const void*>(dockAreaWidget())
+                                  << " win=" << static_cast<const void*>(window());
   setWidget(content_widget_, ads::CDockWidget::ForceNoScrollArea);
+  qCDebug(lcDockWidget).nospace() << "setObjectWidget: setWidget DONE; content win now="
+                                  << static_cast<const void*>(content_widget_->window());
 }
 
 IDataWidget* DockWidget::releaseObjectWidget() {
