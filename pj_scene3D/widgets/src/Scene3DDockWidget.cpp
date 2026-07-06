@@ -802,6 +802,19 @@ void Scene3DDockWidget::prepareTransformBufferForTopic(ObjectTopicId topic_id) {
   if (view_ != nullptr) {
     view_->setTransformBuffer(tf_buffer_);
   }
+  // Catch up any FrameTransforms ALREADY stored for this dataset. transformBuffer()
+  // above only *binds* a (possibly freshly-created, empty) buffer; it never ingests.
+  // The streaming samplesIngested slot folds only transforms arriving AFTER a layer
+  // binds (cursor-based), so a dock that binds after the TF has already streamed in
+  // — or a SceneEntities topic dropped onto a dataset whose FrameTransforms were not
+  // eagerly ingested — would resolve every per-entity frame against an EMPTY tree.
+  // With a flat "display -> per-entity-frame" tree that collapses the whole batch to
+  // the single entity in the auto-picked fixed frame (the "renders one box" bug):
+  // every other entity frame is an orphan and its primitives are skipped. Ingesting
+  // here populates the tree at bind time; it is cursor-idempotent, so a file load
+  // (which already eagerly ingested) pays nothing. onDatasetTransformsReady then
+  // re-reads the now-full buffer and re-picks the fixed frame off the real root.
+  transform_service_->ingestFrameTransformsForDataset(dataset_id);
 }
 
 void Scene3DDockWidget::resetTransformBindingIfDatasetGone() {
