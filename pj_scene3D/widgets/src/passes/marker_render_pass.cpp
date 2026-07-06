@@ -5,6 +5,7 @@
 
 #include <fmt/format.h>
 
+#include <QLoggingCategory>
 #include <QOpenGLContext>
 #include <QOpenGLFunctions_4_1_Core>
 #include <QOpenGLVersionFunctionsFactory>
@@ -22,6 +23,8 @@
 
 namespace pj::scene3d {
 namespace {
+
+Q_LOGGING_CATEGORY(lcMarkerPass, "pj.scene3d.markers")
 
 // glPolygonMode is desktop-GL only (absent from QOpenGLExtraFunctions, the GLES
 // fallback), so it can't go through the polymorphic withGlFunctions. Resolve the
@@ -556,9 +559,20 @@ void MarkerRenderPass::render(const ViewParams& view_params, const FrameContext&
 
   // Resolve each interned frame ONCE (O(frames)). nullopt => orphan, skip its primitives.
   std::vector<std::optional<glm::mat4>> frame_world(batch.frames.size());
+  int resolved_frames = 0;
   for (std::size_t i = 0; i < batch.frames.size(); ++i) {
     if (auto t = frame_ctx.lookup(batch.frames[i]); t.has_value()) {
       frame_world[i] = glm::mat4(t->matrix());  // narrow dmat4 -> mat4 explicitly
+      ++resolved_frames;
+    }
+  }
+  if (lcMarkerPass().isDebugEnabled()) {
+    qCDebug(lcMarkerPass).nospace() << "render: fixed_frame='" << QString::fromStdString(frame_ctx.fixed_frame)
+                                    << "' cubes=" << batch.cubes.size() << " spheres=" << batch.spheres.size()
+                                    << " frames=" << batch.frames.size() << " resolved=" << resolved_frames;
+    for (std::size_t i = 0; i < batch.frames.size(); ++i) {
+      qCDebug(lcMarkerPass).nospace() << "  frame[" << i << "]='" << QString::fromStdString(batch.frames[i])
+                                      << "' -> " << (frame_world[i].has_value() ? "RESOLVED" : "ORPHAN (skipped)");
     }
   }
 
@@ -633,6 +647,11 @@ void MarkerRenderPass::render(const ViewParams& view_params, const FrameContext&
   // --- Solids: cube + sphere (shared instanced program) ---
   const std::vector<InstanceData> cubes = build_solids(batch.cubes);
   const std::vector<InstanceData> spheres = build_solids(batch.spheres);
+  if (lcMarkerPass().isDebugEnabled() && (!batch.cubes.empty() || !batch.spheres.empty())) {
+    qCDebug(lcMarkerPass).nospace() << "render: DRAWN cubes=" << cubes.size() << "/" << batch.cubes.size()
+                                    << " spheres=" << spheres.size() << "/" << batch.spheres.size()
+                                    << " (skipped = unresolved frame)";
+  }
 
   // Foxglove CubePrimitives carry translucency as per-instance alpha (already
   // override-baked into the instance colors above), NOT via viewer overrides —

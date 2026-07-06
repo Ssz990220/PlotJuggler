@@ -135,6 +135,14 @@ class SceneEntitiesLayer : public Scene3DLayer {
   }
   [[nodiscard]] std::vector<MeshRenderPass::DrawCall> modelDrawCallsForFrame(const FrameContext& frame_ctx) const;
 
+  // Test seam: the decoded marker batch (cubes/spheres/lines/…) the MarkerRenderPass
+  // would draw, so a headless test can assert the full batch survived decode and
+  // count how many primitives resolve their frame against a FrameContext (the exact
+  // MarkerRenderPass::build_solids gate) without a GL context.
+  [[nodiscard]] const DecodedSceneEntities* activeMarkersForTest() const {
+    return pass_.activeForTest();
+  }
+
   // Human-readable status of the model load path: URLs blocked by the
   // remote-fetch policy gate, failed fetches (with the URL + network error), and
   // models whose bytes failed to import (with the importer's message). One line

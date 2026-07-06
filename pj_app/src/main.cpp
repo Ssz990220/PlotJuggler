@@ -113,11 +113,10 @@ int main(int argc, char* argv[]) {
     // RHI / OpenGL / backingstore composition logging, so the whole chain is
     // visible in one stream. Programmatic so the user only needs PJ_SCENE3D_TRACE=1.
     QLoggingCategory::setFilterRules(QStringLiteral(
-        "pj.scene3d.scene_view.debug=true\n"
-        "pj.scene3d.dock.debug=true\n"
+        "pj.scene3d.*=true\n"
+        "pj.scene2d.*=true\n"
         "pj.app.main.debug=true\n"
         "pj.plotting.dock.debug=true\n"
-        "pj.scene2d.media_viewer.debug=true\n"
         "qt.rhi.general=true\n"
         "qt.rhi.backend=true\n"
         "qt.opengl.*=true\n"

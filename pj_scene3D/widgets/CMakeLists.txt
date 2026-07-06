@@ -530,6 +530,7 @@ if(PJ_BUILD_TESTS)
     mesh_render_pass_test
     robot_model_layer_test
     scene_entities_layer_model_test
+    scene_entities_frame_resolution_test
     url_fetcher_test
     gl_owning_context_test
   )

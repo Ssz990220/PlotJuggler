@@ -66,6 +66,13 @@ class MarkerRenderPass : public IRenderPass {
   void render(const ViewParams& view_params, const FrameContext& frame_ctx) override;
   void releaseGL() override;
 
+  // Test seam: the last DecodedSceneEntities handed to setActive() (the batch
+  // render() would draw), so a headless test can inspect the decoded primitive /
+  // frame set without a GL context. Null before the first setActive().
+  [[nodiscard]] const DecodedSceneEntities* activeForTest() const {
+    return markers_.get();
+  }
+
  private:
   std::shared_ptr<const DecodedSceneEntities> markers_;
 

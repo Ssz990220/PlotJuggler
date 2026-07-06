@@ -432,6 +432,20 @@ void SceneEntitiesLayer::renderAt(int64_t time_ns) {
     emit sourceFrameChanged(QString::fromStdString(source_frame_));
     emit fallbackFramesChanged(fallbackFrames());
   }
+  if (lcSceneEntitiesLayer().isDebugEnabled()) {
+    std::size_t cube_total = 0;
+    for (const auto& e : batch->entities) {
+      cube_total += e.cubes.size();
+    }
+    qCDebug(lcSceneEntitiesLayer).nospace()
+        << "renderAt: batch entities=" << batch->entities.size() << " cubes=" << cube_total
+        << " deletions=" << batch->deletions.size() << " source_frame='" << QString::fromStdString(frame) << "'";
+    for (const auto& e : batch->entities) {
+      qCDebug(lcSceneEntitiesLayer).nospace()
+          << "  entity id='" << QString::fromStdString(e.id) << "' frame_id='" << QString::fromStdString(e.frame_id)
+          << "' cubes=" << e.cubes.size() << " spheres=" << e.spheres.size() << " models=" << e.models.size();
+    }
+  }
   pass_.setActive(std::make_shared<const DecodedSceneEntities>(decodeSceneEntities(*batch)));
   last_marker_uid_ = resolved->sequential_uid;
   // Seed the model path's cache with this just-decoded batch so the subsequent
