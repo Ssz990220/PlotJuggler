@@ -51,20 +51,23 @@ int main(int argc, char* argv[]) {
   }
 
 #if defined(Q_OS_MACOS)
-  // Force Qt's widget compositor to its OpenGL backend on macOS. As soon as a
+  // --- macOS 3D-dock compositing: two load-bearing settings, both required. ---
+  //
+  // [1] Force Qt's widget compositor to its OpenGL RHI backend. As soon as a
   // QOpenGLWidget (the 3D SceneViewWidget) exists, Qt 6 composites the WHOLE
   // top-level window through QRhi. The default backend on macOS is Metal, whose
-  // texture origin is top-left while the widget's GL content is bottom-left, so
-  // the Metal compositor blits the composited window upside down (the entire app
-  // renders as a vertical mirror the moment a 3D dock is added). The OpenGL RHI
-  // backend shares the GL orientation, so the window composites right-side-up.
-  // Must be set BEFORE QApplication constructs the platform/RHI integration.
+  // texture origin is top-left while the widget's GL content is bottom-left, so the
+  // Metal compositor blits the composited window upside down (the entire app renders
+  // as a vertical mirror the moment a 3D dock is added). The OpenGL RHI backend
+  // shares the GL orientation, so the window composites right-side-up — AND it is a
+  // GL context, which is what lets it share resources with the view's GL context
+  // (see [2]). Must be set BEFORE QApplication builds the platform/RHI integration.
   // Respect an explicit user override.
   if (!qEnvironmentVariableIsSet("QT_WIDGETS_RHI_BACKEND")) {
     qputenv("QT_WIDGETS_RHI_BACKEND", "opengl");
   }
 
-  // Match the widget-compositor's GL context profile to the 3D view's.
+  // [2] Match the widget-compositor's GL context profile to the 3D view's.
   //
   // The QRhi OpenGL widget compositor (and Qt's global GL share context) are
   // created from the DEFAULT QSurfaceFormat. On Apple a non-core request yields a
@@ -93,35 +96,15 @@ int main(int argc, char* argv[]) {
   // and the underline-mnemonic decoration.
   QApplication::setStyle(new PJ::Style(QStringLiteral("Fusion")));
 
-  // Qt::AA_ShareOpenGLContexts — historically DISABLED, now an experimental opt-in
-  // (PJ_SHARE_CONTEXTS=1), default OFF.
-  //
-  // Why it was disabled: it put every SceneViewWidget's context into one share
-  // group, and destroying one view's context (closing/splitting a 3D dock)
-  // corrupted the VAO/FBO state of sibling views still on screen — a
-  // glBindVertexArray(non-gen name) flood + the map texture vanishing in the
-  // surviving view. The workaround was to keep every view's context fully
-  // independent so tearing one down could not touch the others.
-  //
-  // Why we want it back on macOS: with independent contexts, an ADS dock reparent
-  // DESTROYS+RECREATES the QOpenGLWidget's context, and Qt's macOS RHI compositor
-  // does not re-acquire the recreated context's texture — the docked 3D (and the
-  // Api::OpenGL MediaViewer) composite a stale/black frame even though paintGL
-  // renders correctly into the widget FBO (verified by scene3d_docked_harness +
-  // the SceneViewWidget paint trace). AA_ShareOpenGLContexts keeps the context
-  // ALIVE across the reparent (the harness shows a single initializeGL, no
-  // releaseGL/re-init), which fixes the handoff.
-  //
-  // Why the old corruption should no longer bite: the gl/ layer now scopes every
-  // glDelete* to the OWNING context — gl::Program/Buffer/Texture/etc. capture
-  // owning_context_ and only delete when deleteAllowedInCurrentContext() holds, so
-  // one view's teardown deletes only ITS names, never a sibling's. VAOs are never
-  // shared even with this attribute (container objects), and each view creates +
-  // uses its VAOs only in its own context. This must still be revalidated with 2+
-  // 3D docks + an image dock (open, then close/split one) before the default flips.
-  if (qEnvironmentVariableIntValue("PJ_SHARE_CONTEXTS") != 0) {
-    QCoreApplication::setAttribute(Qt::AA_ShareOpenGLContexts);
-  }
+  // NOTE: we deliberately do NOT set Qt::AA_ShareOpenGLContexts. It once put every
+  // SceneViewWidget's context into a single share group, and destroying one view's
+  // context (closing/splitting a 3D dock) corrupted the VAO/FBO state of sibling
+  // views. It is also NOT what makes the macOS docked 3D composite: the QOpenGLWidget
+  // already auto-shares with the window's backingstore compositor context — the only
+  // thing that was breaking that share was the context-profile mismatch fixed above
+  // (2.1 default vs 4.1 Core). With the global default published as 4.1 Core, the
+  // auto-share succeeds without the process-wide attribute, so we keep contexts
+  // independent (self-healing releaseGL/initializeGL across reparents).
 
   QApplication app(argc, argv);
 

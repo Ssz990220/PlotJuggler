@@ -215,6 +215,38 @@ present). Function sets are acquired through `gl/gl_functions.h`:
 `withCoreGlFunctions` (4.1 baseline), `withComputeGlFunctions` + `hasComputeSupport`
 (optional 4.3 compute).
 
+## macOS widget compositing (SceneViewWidget = QOpenGLWidget)
+
+On macOS the whole top-level window is composited through Qt's QRhi backingstore as
+soon as a QOpenGLWidget exists. `SceneViewWidget` renders its scene into its own
+HDR FBO and presents into its `defaultFramebufferObject()`; the window's RHI
+compositor then samples that FBO's texture. Two settings in `pj_app/src/main.cpp`,
+set before `QApplication`, are load-bearing on macOS — remove either and the 3D
+dock (and the `Api::OpenGL` MediaViewer image dock) come up blank/stale:
+
+1. `qputenv("QT_WIDGETS_RHI_BACKEND", "opengl")` — the default macOS compositor is
+   Metal, which (a) composites GL widget content vertically flipped and (b) is not a
+   GL context, so it cannot share resources with the view's GL context. The OpenGL
+   RHI backend fixes both.
+2. `QSurfaceFormat::setDefaultFormat(<4.1 Core>)` — the compositor / global share
+   context are built from the *default* format; a non-core request gets a legacy GL
+   2.1 context on Apple, which cannot share with the view's GL **4.1 Core** context.
+   Qt then falls back to an UNSHARED view context (`shareCtx == nullptr`), the
+   compositor can't sample the FBO, and the region shows a stale/black frame while
+   `paintGL` keeps rendering correctly into the FBO. Publishing 4.1 Core as the
+   default matches the profiles so the auto-share succeeds. `AA_ShareOpenGLContexts`
+   is deliberately NOT used — the QOpenGLWidget already auto-shares with the
+   backingstore; the mismatch, not a missing share group, was the bug.
+
+Debugging aid: `PJ_SCENE3D_TRACE=1 plotjuggler4 2>trace.log` enables an env-gated,
+zero-cost-by-default lifecycle trace (`qCDebug`; enabled programmatically along with
+`qt.rhi.*`/`qt.opengl.*`). It logs the dock-creation/reparent sequence and
+`SceneViewWidget` initializeGL/paintGL/resize/show/hide with context ptr, `shareCtx`,
+`defaultFBO`, and viewport — the signals that localized this bug (`shareCtx=0x0`
+with paints running == a share/compositing failure, not a paint failure).
+`pj_scene3D/demos/scene3d_docked_harness` reproduces a docked SceneViewWidget in the
+real ADS docking system for offline triage.
+
 Make sure that all the markdown files in this folder are updated, if necessary.
 
 Lessons learned should be saved too, in particular after long debugging
