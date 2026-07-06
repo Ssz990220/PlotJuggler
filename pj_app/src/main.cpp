@@ -12,6 +12,7 @@
 #include <QScreen>
 #include <QSettings>
 #include <QSplashScreen>
+#include <QSurfaceFormat>
 #include <QThread>
 #include <QTimer>
 #include <Qt>
@@ -62,6 +63,26 @@ int main(int argc, char* argv[]) {
   if (!qEnvironmentVariableIsSet("QT_WIDGETS_RHI_BACKEND")) {
     qputenv("QT_WIDGETS_RHI_BACKEND", "opengl");
   }
+
+  // Match the widget-compositor's GL context profile to the 3D view's.
+  //
+  // The QRhi OpenGL widget compositor (and Qt's global GL share context) are
+  // created from the DEFAULT QSurfaceFormat. On Apple a non-core request yields a
+  // legacy GL 2.1 context, which CANNOT share resources with SceneViewWidget's GL
+  // 4.1 CORE context. Qt then fails to create the view's context as shared ("Could
+  // not create NSOpenGLContext with shared context, falling back to unshared
+  // context"), so the compositor cannot sample the view's FBO texture and the
+  // docked 3D region shows a stale/black frame even though paintGL renders into the
+  // widget FBO correctly (confirmed by PJ_SCENE3D_TRACE: shareCtx=0x0, 63 painted
+  // frames never composited). Publishing the same 4.1 Core profile as the global
+  // default makes the compositor context match, so sharing succeeds. The scene3D
+  // gallery demos already set this — which is why they composite correctly while
+  // the app did not.
+  QSurfaceFormat mac_default = QSurfaceFormat::defaultFormat();
+  mac_default.setVersion(4, 1);
+  mac_default.setProfile(QSurfaceFormat::CoreProfile);
+  mac_default.setDepthBufferSize(24);
+  QSurfaceFormat::setDefaultFormat(mac_default);
 #endif
 
   // Pin to Fusion (under our Style proxy) before constructing
