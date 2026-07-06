@@ -76,6 +76,12 @@ class MarkerRenderPass : public IRenderPass {
  private:
   std::shared_ptr<const DecodedSceneEntities> markers_;
 
+  // PJ_SCENE3D_TRACE playback diagnostics: last-logged (resolved cube count, world
+  // spread) so the per-paint trace prints only on a meaningful CHANGE — the moment
+  // cubes vanish (resolved drops) or converge (spread -> 0) during playback.
+  int traced_resolved_cubes_ = -1;
+  float traced_world_spread_ = -1.0F;
+
   // Instanced solid path, shared by cube and sphere: one Lambert program, one
   // per-instance VBO (mat4 world + vec4 color) rebuilt every render from the live
   // TF, and one static unit mesh per shape. Non-uniform scale in `world` turns the

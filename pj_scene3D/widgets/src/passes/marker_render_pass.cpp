@@ -15,10 +15,12 @@
 #include <cstddef>
 #include <cstdint>
 #include <glm/gtc/matrix_transform.hpp>
+#include <limits>
 #include <numbers>
 #include <optional>
 #include <vector>
 
+#include "pj_base/time.hpp"
 #include "pj_scene3d_widgets/gl/gl_functions.h"
 
 namespace pj::scene3d {
@@ -567,12 +569,41 @@ void MarkerRenderPass::render(const ViewParams& view_params, const FrameContext&
     }
   }
   if (lcMarkerPass().isDebugEnabled()) {
-    qCDebug(lcMarkerPass).nospace() << "render: fixed_frame='" << QString::fromStdString(frame_ctx.fixed_frame)
-                                    << "' cubes=" << batch.cubes.size() << " spheres=" << batch.spheres.size()
-                                    << " frames=" << batch.frames.size() << " resolved=" << resolved_frames;
-    for (std::size_t i = 0; i < batch.frames.size(); ++i) {
-      qCDebug(lcMarkerPass).nospace() << "  frame[" << i << "]='" << QString::fromStdString(batch.frames[i])
-                                      << "' -> " << (frame_world[i].has_value() ? "RESOLVED" : "ORPHAN (skipped)");
+    // Count resolved cubes and their world-position spread — the collapse detector.
+    // A collapse shows as spread -> ~0 with resolved unchanged (cubes converge to a
+    // point); a vanish shows as resolved dropping (frames go orphan). Rate-limited:
+    // print only when the resolved count or the spread changes meaningfully, so a
+    // single playback run pinpoints the moment and mechanism without per-frame spam.
+    int resolved_cubes = 0;
+    glm::vec3 lo(std::numeric_limits<float>::max());
+    glm::vec3 hi(std::numeric_limits<float>::lowest());
+    for (const auto& cube : batch.cubes) {
+      if (cube.frame_index >= frame_world.size() || !frame_world[cube.frame_index].has_value()) {
+        continue;
+      }
+      ++resolved_cubes;
+      const glm::vec3 p = glm::vec3((*frame_world[cube.frame_index] * cube.model)[3]);
+      lo = glm::min(lo, p);
+      hi = glm::max(hi, p);
+    }
+    const float spread = resolved_cubes > 0 ? glm::length(hi - lo) : 0.0F;
+    const bool changed = resolved_cubes != traced_resolved_cubes_ ||
+                         (traced_world_spread_ < 0.0F) ||
+                         std::abs(spread - traced_world_spread_) > 0.1F * std::max(traced_world_spread_, 1e-3F);
+    if (changed) {
+      traced_resolved_cubes_ = resolved_cubes;
+      traced_world_spread_ = spread;
+      qCDebug(lcMarkerPass).nospace()
+          << "playback t=" << PJ::toRaw(frame_ctx.time) << "ns fixed_frame='"
+          << QString::fromStdString(frame_ctx.fixed_frame) << "' cubes=" << resolved_cubes << "/" << batch.cubes.size()
+          << " frames_resolved=" << resolved_frames << "/" << batch.frames.size()
+          << " world_spread=" << spread << "m";
+      for (std::size_t i = 0; i < batch.frames.size(); ++i) {
+        if (!frame_world[i].has_value()) {
+          qCDebug(lcMarkerPass).nospace() << "  ORPHAN frame[" << i << "]='" << QString::fromStdString(batch.frames[i])
+                                          << "' (its primitives are skipped)";
+        }
+      }
     }
   }
 
