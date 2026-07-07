@@ -11,6 +11,7 @@
 #include <list>
 #include <map>
 #include <optional>
+#include <utility>
 
 #include "pj_base/types.hpp"
 
@@ -100,6 +101,24 @@ class PlotWidgetBase : public QWidget {
   [[nodiscard]] bool keepRatioXY() const noexcept;
   void setKeepRatioXY(bool active);
 
+  // Optional MANUAL y-axis limits. Each bound is independent (half-open pins are
+  // supported: e.g. a fixed max with an auto-fit min). While pinned, every FIT/RESET
+  // path (resetZoom, zoom-out, the vertical auto-fit, snapshot per-message refit,
+  // layout restore) forces that bound instead of fitting it to the data — so a
+  // snapshot plot fits X to the current message while Y stays put, and a restored
+  // plot has a valid Y before any data. Manual wheel/drag zoom is NOT pinned (it
+  // temporarily overrides); the next zoom-out/reset returns to the pinned range.
+  void setFixedYRange(std::optional<double> y_min, std::optional<double> y_max);
+  [[nodiscard]] std::optional<double> fixedYMin() const noexcept {
+    return fixed_y_min_;
+  }
+  [[nodiscard]] std::optional<double> fixedYMax() const noexcept {
+    return fixed_y_max_;
+  }
+  [[nodiscard]] bool hasFixedYRange() const noexcept {
+    return fixed_y_min_.has_value() || fixed_y_max_.has_value();
+  }
+
   void setAcceptDrops(bool accept);
   void overrideCurvesStyle(std::optional<CurveStyle> style);
   [[nodiscard]] std::optional<CurveStyle> overriddenCurvesStyle() const noexcept;
@@ -163,6 +182,11 @@ class PlotWidgetBase : public QWidget {
   // rect that applyKeepAspectRatio produces). Caller decides whether to replot.
   void applyRectToAxes(const QRectF& rect);
 
+  // Overlay the manual y-limits (if any) onto a proposed [min, max]: each bound the
+  // caller proposed is kept unless that bound is pinned. The single seam the fit/reset
+  // paths route their Y extent through so a pinned bound is honored everywhere.
+  [[nodiscard]] std::pair<double, double> pinYRange(double proposed_min, double proposed_max) const;
+
  private:
   QwtPlotPimpl* plot_ = nullptr;
   bool xy_mode_ = false;
@@ -170,6 +194,9 @@ class PlotWidgetBase : public QWidget {
   bool keep_aspect_ratio_ = false;
   LineWidth line_width_ = LineWidth::kPoints10;
   int next_color_index_ = 0;
+  // Manual y-axis limits; each bound independent (nullopt = auto-fit that bound).
+  std::optional<double> fixed_y_min_;
+  std::optional<double> fixed_y_max_;
 };
 
 }  // namespace PJ

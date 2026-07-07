@@ -307,9 +307,27 @@ void PlotWidgetBase::resetZoom() {
 }
 
 void PlotWidgetBase::applyRectToAxes(const QRectF& rect) {
-  plot_->setAxisScale(QwtPlot::yLeft, std::min(rect.bottom(), rect.top()), std::max(rect.bottom(), rect.top()));
+  const auto [y_lo, y_hi] = pinYRange(std::min(rect.bottom(), rect.top()), std::max(rect.bottom(), rect.top()));
+  plot_->setAxisScale(QwtPlot::yLeft, y_lo, y_hi);
   plot_->setAxisScale(QwtPlot::xBottom, std::min(rect.left(), rect.right()), std::max(rect.left(), rect.right()));
   plot_->updateAxes();
+}
+
+std::pair<double, double> PlotWidgetBase::pinYRange(double proposed_min, double proposed_max) const {
+  // A pinned bound (typically XY plots keep aspect ratio instead) overrides the
+  // proposed fit; an auto (nullopt) bound is left as the caller fit it.
+  if (keep_aspect_ratio_) {
+    return {proposed_min, proposed_max};  // aspect-locked XY plots own their Y extent
+  }
+  return {fixed_y_min_.value_or(proposed_min), fixed_y_max_.value_or(proposed_max)};
+}
+
+void PlotWidgetBase::setFixedYRange(std::optional<double> y_min, std::optional<double> y_max) {
+  // Pure setter: the fit/reset paths read these pins. Callers that want the change to
+  // show immediately re-fit (resetZoom); the layout-restore path lets its own viewport
+  // pass apply the pin, so it must not trigger a fit mid-load.
+  fixed_y_min_ = y_min;
+  fixed_y_max_ = y_max;
 }
 
 Range<double> PlotWidgetBase::getVisualizationRangeX() const {
@@ -645,8 +663,11 @@ void PlotWidgetBase::updateMaximumZoomArea() {
   max_rect.setRight(range_x.max);
 
   const Range<double> range_y = getVisualizationRangeY(range_x);
-  max_rect.setBottom(range_y.min);
-  max_rect.setTop(range_y.max);
+  // Manual y-limits override the fitted Y so the zoom-out extent, the magnifier
+  // limits, and every reset-to-max path (below) honor the pin.
+  const auto [y_lo, y_hi] = pinYRange(range_y.min, range_y.max);
+  max_rect.setBottom(y_lo);
+  max_rect.setTop(y_hi);
 
   if (isXYPlot() && keep_aspect_ratio_) {
     const QRectF canvas_rect = plot_->canvas()->contentsRect();

@@ -366,6 +366,119 @@ TEST(PlotWidgetSnapshot, RestoredBeforeFirstMessageThenScrubsUpdatesAndFits) {
   }
 }
 
+// Y-axis extent of the plot's current viewport as [min, max].
+std::pair<double, double> viewY(const PlotWidget& plot) {
+  const QRectF v = plot.currentBoundingRect();
+  return {std::min(v.top(), v.bottom()), std::max(v.top(), v.bottom())};
+}
+
+// A manual full y-range must survive save/reload, be valid on an EMPTY restore
+// (before the topic's first message), and stay pinned across playback while X still
+// fits each message — i.e. playback never stomps Y.
+TEST(PlotWidgetSnapshot, FixedYRangePinnedAcrossRestoreEmptyAndPlayback) {
+  AbsFixture fx;
+  PlotWidget src(&fx.session, &fx.catalog);
+  src.addSnapshotCurveGroup(
+      fx.dataset_id, fx.topic_id, QStringLiteral("predicted_trajectory[:].time_from_start_s"),
+      {QStringLiteral("predicted_trajectory[:].positions[0]")});
+  src.setFixedYRange(-5.0, 5.0);
+
+  QDomDocument doc;
+  QDomElement elem = src.xmlSaveState(doc);
+  doc.appendChild(elem);
+  EXPECT_DOUBLE_EQ(elem.attribute(QStringLiteral("fixed_y_min")).toDouble(), -5.0);
+  EXPECT_DOUBLE_EQ(elem.attribute(QStringLiteral("fixed_y_max")).toDouble(), 5.0);
+
+  // Reload into a fresh plot; the tracker seed is time 0 (before the first message).
+  PlotWidget dst(&fx.session, &fx.catalog);
+  ASSERT_TRUE(dst.xmlLoadState(elem));
+  ASSERT_TRUE(dst.fixedYMin().has_value() && dst.fixedYMax().has_value());
+  EXPECT_DOUBLE_EQ(*dst.fixedYMin(), -5.0);
+  EXPECT_DOUBLE_EQ(*dst.fixedYMax(), 5.0);
+
+  // Empty restore: the Y axis is already the pinned range (no fit-to-empty on Y).
+  auto [y0lo, y0hi] = viewY(dst);
+  EXPECT_NEAR(y0lo, -5.0, 1e-6);
+  EXPECT_NEAR(y0hi, 5.0, 1e-6);
+
+  const SnapshotSeriesData* series = snapshotOf(dst.curveList().front());
+  ASSERT_NE(series, nullptr);
+
+  for (int k = 0; k < kAbsMessages; ++k) {
+    dst.setTrackerPosition(fx.displayTimeForMessage(k));
+    // Points update (the message under the tracker), even though its values (posValue
+    // grows into the thousands) are far outside the pinned [-5, 5] view.
+    ASSERT_EQ(series->size(), static_cast<std::size_t>(kElements)) << "k=" << k;
+    EXPECT_DOUBLE_EQ(series->sample(0).y(), posValue(k, 0, 0)) << "k=" << k;
+
+    // Y stays pinned to [-5, 5]; playback never stomps it.
+    auto [ylo, yhi] = viewY(dst);
+    EXPECT_NEAR(ylo, -5.0, 1e-6) << "k=" << k;
+    EXPECT_NEAR(yhi, 5.0, 1e-6) << "k=" << k;
+
+    // X still fits the current message (stamps span [0, 0.5*(kElements-1)]).
+    const QRectF v = dst.currentBoundingRect();
+    EXPECT_NEAR(std::min(v.left(), v.right()), 0.0, 1e-6) << "k=" << k;
+    EXPECT_NEAR(std::max(v.left(), v.right()), stampValue(kElements - 1), 1e-6) << "k=" << k;
+  }
+}
+
+// A half-open pin (fixed max, auto min) pins only the pinned bound and auto-fits the
+// other. Uses a datastore curve as a regular time-series plot to keep the data range
+// stable and on the auto side of the pin.
+TEST(PlotWidgetSnapshot, HalfOpenFixedMaxPinsMaxAutoFitsMin) {
+  AbsFixture fx;  // predicted_trajectory[0]/positions[0] over time = posValue(k,0,0) = 1000*k in [0, 5000]
+  PlotWidget plot(&fx.session, &fx.catalog);
+  QString key;
+  for (const auto& curve : fx.catalog.curves()) {
+    if (const auto d = fx.catalog.curveDescriptor(curve.name);
+        d && d->topic_id == fx.topic_id && d->field_path == QString::fromStdString(posPath(0, 0))) {
+      key = curve.name;
+      break;
+    }
+  }
+  ASSERT_FALSE(key.isEmpty());
+  ASSERT_NE(plot.addCurve(key), nullptr);
+
+  plot.setFixedYRange(std::nullopt, 9000.0);  // max pinned above the data, min auto
+  plot.zoomOut(false);
+  auto [ylo, yhi] = viewY(plot);
+  EXPECT_NEAR(yhi, 9000.0, 1e-6) << "max must be pinned";
+  EXPECT_LT(ylo, 9000.0) << "min must auto-fit (not pinned)";
+  EXPECT_LE(ylo, 0.0 + 1e-6) << "min auto-fits the data floor (~0)";
+}
+
+// A regular TimeSeries plot honors a persisted fixed y-range too (the user asked for
+// "each plot"), and clearing the pins returns it to auto-fit.
+TEST(PlotWidgetSnapshot, TimeSeriesPlotHonorsFixedYAndClears) {
+  AbsFixture fx;
+  PlotWidget plot(&fx.session, &fx.catalog);
+  QString key;
+  for (const auto& curve : fx.catalog.curves()) {
+    if (const auto d = fx.catalog.curveDescriptor(curve.name);
+        d && d->topic_id == fx.topic_id && d->field_path == QString::fromStdString(posPath(0, 0))) {
+      key = curve.name;
+      break;
+    }
+  }
+  ASSERT_FALSE(key.isEmpty());
+  ASSERT_NE(plot.addCurve(key), nullptr);
+  EXPECT_FALSE(plot.isSnapshotPlot());
+
+  plot.setFixedYRange(-1.0, 1.0);
+  plot.zoomOut(false);
+  auto [ylo, yhi] = viewY(plot);
+  EXPECT_NEAR(ylo, -1.0, 1e-6);
+  EXPECT_NEAR(yhi, 1.0, 1e-6);
+
+  // Clearing the pins restores auto-fit (data floor ~0, so min <= 0 < 1).
+  plot.setFixedYRange(std::nullopt, std::nullopt);
+  plot.zoomOut(false);
+  auto [c_lo, c_hi] = viewY(plot);
+  EXPECT_GT(c_hi, 1.0) << "auto-fit should exceed the old pinned max";
+  EXPECT_FALSE(plot.hasFixedYRange());
+}
+
 }  // namespace
 }  // namespace PJ
 

@@ -239,15 +239,17 @@ void PlotWidget::autoZoomPlotVertically() {
     return;
   }
   // Rescale only Y, over the current X window, so the shared time axis — and
-  // therefore the other plots — stay put.
+  // therefore the other plots — stay put. Manual y-limits pin the corresponding
+  // bound instead of auto-fitting it.
   const Range<double> range_x = getVisualizationRangeX();
   const Range<double> range_y = getVisualizationRangeY(range_x);
+  const auto [y_lo, y_hi] = pinYRange(range_y.min, range_y.max);
   // Guard against a non-finite or degenerate range (e.g. a curve that is all
   // NaN/inf over the window) — feeding it to setAxisScale yields a blank axis.
-  if (!std::isfinite(range_y.min) || !std::isfinite(range_y.max) || range_y.min >= range_y.max) {
+  if (!std::isfinite(y_lo) || !std::isfinite(y_hi) || y_lo >= y_hi) {
     return;
   }
-  setAxisScale(QwtPlot::yLeft, range_y.min, range_y.max);
+  setAxisScale(QwtPlot::yLeft, y_lo, y_hi);
   replot();
 }
 
@@ -466,7 +468,8 @@ void PlotWidget::setZoomRectangle(QRectF rect, bool emit_signal) {
     // ratio so the XY shape stays 1:1.
     applyRectKeepingRatio(rect);
   } else {
-    setAxisScale(QwtPlot::yLeft, rect.bottom(), rect.top());
+    const auto [y_lo, y_hi] = pinYRange(std::min(rect.bottom(), rect.top()), std::max(rect.bottom(), rect.top()));
+    setAxisScale(QwtPlot::yLeft, y_lo, y_hi);
     setAxisScale(QwtPlot::xBottom, rect.left(), rect.right());
     qwtPlot()->updateAxes();
   }
@@ -655,6 +658,16 @@ QDomElement PlotWidget::xmlSaveState(QDomDocument& doc) const {
   plot_element.setAttribute(
       QStringLiteral("tracker_enabled"), tracker_enabled_ ? QStringLiteral("true") : QStringLiteral("false"));
 
+  // Manual y-axis limits (a persistent setting, distinct from the transient <range>
+  // viewport below). Each bound is written only when pinned, so a half-open pin
+  // (e.g. a fixed max, auto min) round-trips.
+  if (fixedYMin().has_value()) {
+    plot_element.setAttribute(QStringLiteral("fixed_y_min"), QString::number(*fixedYMin(), 'g', 12));
+  }
+  if (fixedYMax().has_value()) {
+    plot_element.setAttribute(QStringLiteral("fixed_y_max"), QString::number(*fixedYMax(), 'g', 12));
+  }
+
   // Skip the <range> element when the canvas has not yet computed a real
   // viewport (e.g. drop happened immediately before save) -- a degenerate
   // rect would restore as a zero-width window and hide everything. Without
@@ -756,6 +769,20 @@ bool PlotWidget::xmlLoadState(const QDomElement& plot_element, bool autozoom) {
   // routes them to the snapshot branch; the flag is otherwise set per snapshot curve
   // too. The first data-bearing tracker move fits the axes to the current message.
   snapshot_mode_ = (mode == QStringLiteral("Snapshot"));
+
+  // Manual y-limits: set the pins before curves/viewport are applied so the restore's
+  // own fit passes (applySavedViewportOrZoom / snapshot refit) honor them — the axis
+  // is then valid even before the first message arrives. Pure setter (no fit here).
+  const auto parse_optional_double = [&plot_element](const QString& attr) -> std::optional<double> {
+    if (!plot_element.hasAttribute(attr)) {
+      return std::nullopt;
+    }
+    bool ok = false;
+    const double value = plot_element.attribute(attr).toDouble(&ok);
+    return ok ? std::optional<double>{value} : std::nullopt;
+  };
+  setFixedYRange(
+      parse_optional_double(QStringLiteral("fixed_y_min")), parse_optional_double(QStringLiteral("fixed_y_max")));
   // Line width is plot-level. New layouts store the chosen width on the <plot>.
   // Older layouts kept the plot-level value at the stale default ("1.0") and the
   // real width per-curve, so when the plot value is absent/default fall back to
