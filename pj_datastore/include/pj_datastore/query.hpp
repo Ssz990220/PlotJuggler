@@ -80,6 +80,21 @@ struct MaterializedSample {
   std::vector<double> values;
 };
 
+/// A single-row snapshot: the row's timestamp plus, parallel to a caller-supplied
+/// list of column indices, each column's value read from THAT SAME row (or nullopt
+/// when the cell is null or the column is absent from the row's chunk). Because
+/// every value comes from one row, a set of columns can never mix values from
+/// different messages — the vintage-consistency guarantee snapshot plots rely on.
+/// A null cell reads as nullopt and never falls back to an earlier row. Returned
+/// by DataReader::latestRowAt.
+struct RowSnapshot {
+  /// Timestamp of the resolved row.
+  PJ::Timestamp timestamp = 0;
+  /// Value per requested column: nullopt = the cell is null, or the column index
+  /// is past this row's chunk column count (a ragged/absent array element).
+  std::vector<std::optional<double>> values;
+};
+
 /// Contiguous row interval inside one chunk.
 struct ChunkRowRange {
   /// Source chunk.

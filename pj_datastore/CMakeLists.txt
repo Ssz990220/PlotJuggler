@@ -161,6 +161,7 @@ if(PJ_BUILD_TESTS)
     tests/topic_storage_test.cpp
     tests/query_test.cpp
     tests/series_reader_test.cpp
+    tests/latest_row_at_test.cpp
     tests/engine_integration_test.cpp
     tests/out_of_order_ingest_test.cpp
     tests/derived_engine_test.cpp

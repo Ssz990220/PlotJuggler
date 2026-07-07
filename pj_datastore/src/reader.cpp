@@ -235,6 +235,36 @@ PJ::Expected<std::optional<std::string>> DataReader::latestStringAt(
   return std::optional<std::string>{std::string(row->chunk->readString(column_index, row->row_index))};
 }
 
+PJ::Expected<std::optional<RowSnapshot>> DataReader::latestRowAt(
+    const QueryPoint& point, const std::vector<std::size_t>& column_indices) const {
+  auto lock = engine_.lockEngine();
+  const TopicStorage* storage = engine_.getTopicStorage(point.topic_id);
+  if (storage == nullptr) {
+    return PJ::unexpected(fmt::format("Topic {} not found", point.topic_id));
+  }
+  const std::optional<SampleRow> row = PJ::latestAt(storage->sealedChunks(), point.t, storage->retentionFloor());
+  if (!row.has_value()) {
+    return std::optional<RowSnapshot>{};
+  }
+  // Read every requested column from THIS ONE row while the lock is held. Because
+  // all values come from the same SampleRow, no column can carry a value from a
+  // different message than its siblings — the vintage-consistency guarantee. Mirror
+  // latestNumericAt's per-cell handling: a column past this chunk's column count (a
+  // chunk sealed before a mid-stream column add, i.e. a ragged/absent element) or a
+  // null cell reads as nullopt, never falling back to an earlier row.
+  RowSnapshot snapshot;
+  snapshot.timestamp = row->timestamp;
+  snapshot.values.reserve(column_indices.size());
+  for (const std::size_t column_index : column_indices) {
+    if (column_index >= row->chunk->columns.size() || row->chunk->isNull(column_index, row->row_index)) {
+      snapshot.values.emplace_back(std::nullopt);
+    } else {
+      snapshot.values.emplace_back(row->chunk->readNumericAsDouble(column_index, row->row_index));
+    }
+  }
+  return std::optional<RowSnapshot>{std::move(snapshot)};
+}
+
 Expected<SeriesReader> DataReader::series(TopicId topic_id, std::size_t column_index) const {
   auto lock = engine_.lockEngine();
   const TopicStorage* storage = engine_.getTopicStorage(topic_id);

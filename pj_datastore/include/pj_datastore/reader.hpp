@@ -63,6 +63,19 @@ class DataReader {
   [[nodiscard]] PJ::Expected<std::optional<std::string>> latestStringAt(
       const QueryPoint& point, std::size_t column_index) const;
 
+  /// Latest row at or before `point.t` (zero-order hold), reading every column in
+  /// `column_indices` from THAT ONE row under a single engine-lock hold. This is
+  /// the vintage-consistency primitive for snapshot plots: every value comes from
+  /// the same datastore row, so a group of columns can never mix values from
+  /// different messages — which repeated per-column latestNumericAt() calls could,
+  /// each re-resolving the row and possibly straddling a concurrent ingest.
+  /// Returns unexpected if the topic is unknown, a nullopt payload if no row exists
+  /// at or before `point.t`, else a RowSnapshot whose `values` are parallel to
+  /// `column_indices` (nullopt where the cell is null or the column is absent from
+  /// the row's chunk — a null cell never falls back to an earlier row).
+  [[nodiscard]] PJ::Expected<std::optional<RowSnapshot>> latestRowAt(
+      const QueryPoint& point, const std::vector<std::size_t>& column_indices) const;
+
   /// Create a series view over one numeric/bool topic column. The returned
   /// reader exposes only value-bearing samples; null rows are skipped.
   [[nodiscard]] PJ::Expected<SeriesReader> series(PJ::TopicId topic_id, std::size_t column_index) const;
