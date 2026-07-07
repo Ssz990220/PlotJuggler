@@ -4,9 +4,13 @@ add_library(pj_plotting_core STATIC
     src/DatastoreCurveAdapter.cpp
     src/FilteredCurveAdapter.cpp
     src/PointSeriesXY.cpp
+    src/SnapshotGroupResolver.cpp
+    src/SnapshotSeriesData.cpp
     include/pj_plotting/DatastoreCurveAdapter.h
     include/pj_plotting/FilteredCurveAdapter.h
     include/pj_plotting/PointSeriesXY.h
+    include/pj_plotting/SnapshotGroupResolver.h
+    include/pj_plotting/SnapshotSeriesData.h
 )
 
 target_include_directories(pj_plotting_core PUBLIC

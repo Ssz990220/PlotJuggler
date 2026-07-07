@@ -11,6 +11,28 @@ target_link_libraries(datastore_curve_adapter_test PRIVATE
 
 add_test(NAME DatastoreCurveAdapterTest COMMAND datastore_curve_adapter_test)
 
+add_executable(snapshot_group_resolver_test
+    snapshot_group_resolver_test.cpp
+)
+
+target_link_libraries(snapshot_group_resolver_test PRIVATE
+    pj_plotting_core
+    GTest::gtest_main
+)
+
+add_test(NAME SnapshotGroupResolverTest COMMAND snapshot_group_resolver_test)
+
+add_executable(snapshot_series_data_test
+    snapshot_series_data_test.cpp
+)
+
+target_link_libraries(snapshot_series_data_test PRIVATE
+    pj_plotting_core
+    GTest::gtest_main
+)
+
+add_test(NAME SnapshotSeriesDataTest COMMAND snapshot_series_data_test)
+
 add_executable(filtered_curve_adapter_test
     filtered_curve_adapter_test.cpp
 )
