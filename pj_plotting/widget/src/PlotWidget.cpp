@@ -24,6 +24,7 @@
 #include <QPalette>
 #include <QPen>
 #include <QSettings>
+#include <QTimer>
 #include <QUuid>
 #include <QVector>
 #include <algorithm>
@@ -151,6 +152,15 @@ PlotWidget::PlotWidget(SessionManager* session, CatalogModel* catalog, QWidget* 
   connect(this, &PlotWidgetBase::dragEnterSignal, this, &PlotWidget::onDragEnterEvent);
   connect(this, &PlotWidgetBase::dragLeaveSignal, this, &PlotWidget::onDragLeaveEvent);
   connect(this, &PlotWidgetBase::dropSignal, this, &PlotWidget::onDropEvent);
+
+  // Coalesces streaming-ingest snapshot refreshes to ~30 Hz (a single-shot armed by
+  // samplesIngested), so a high-rate live stream cannot flood the GUI thread with a
+  // per-signal engine-locked refresh + replot. Matches the tracker broadcast cadence.
+  snapshot_ingest_timer_ = new QTimer(this);
+  snapshot_ingest_timer_->setSingleShot(true);
+  snapshot_ingest_timer_->setInterval(33);
+  connect(snapshot_ingest_timer_, &QTimer::timeout, this, [this]() { flushSnapshotIngest(); });
+
   buildActions();
   reconnectDataSignals();
 }
@@ -336,22 +346,32 @@ PlotWidget::CurveInfo* PlotWidget::createCurveXYInteractive(const QString& x_key
   return nullptr;  // cancelled
 }
 
+std::vector<SnapshotColumn> PlotWidget::snapshotColumnsForTopic(TopicId topic_id, QString* topic_name_out) const {
+  std::vector<SnapshotColumn> columns;
+  if (catalog_ == nullptr) {
+    return columns;
+  }
+  // One catalog pass: the whole topic's columns (+ optionally its display name), so a
+  // group add / a layout restore of many curves does not re-copy the (large) catalog
+  // per curve — the connect-time cost that compounded across the layout's snapshot set.
+  for (const CurveDescriptor& curve : catalog_->curves()) {
+    if (curve.topic_id != topic_id) {
+      continue;
+    }
+    if (topic_name_out != nullptr && topic_name_out->isEmpty()) {
+      *topic_name_out = curve.topic_name;
+    }
+    columns.push_back(
+        SnapshotColumn{.column_index = curve.column_index, .field_path = curve.field_path.toStdString()});
+  }
+  return columns;
+}
+
 PlotWidget::CurveInfo* PlotWidget::addSnapshotCurve(
     DatasetId dataset_id, TopicId topic_id, const QString& topic_name, const QString& x_pattern,
-    const QString& y_pattern, const QString& display_label, QColor color) {
-  if (session_ == nullptr || catalog_ == nullptr) {
-    return nullptr;
-  }
-
-  // The topic's flattened columns, as (column index, field path), for the resolver.
-  std::vector<SnapshotColumn> columns;
-  for (const CurveDescriptor& curve : catalog_->curves()) {
-    if (curve.topic_id == topic_id) {
-      columns.push_back(
-          SnapshotColumn{.column_index = curve.column_index, .field_path = curve.field_path.toStdString()});
-    }
-  }
-  if (columns.empty()) {
+    const QString& y_pattern, const QString& display_label, QColor color,
+    const std::vector<SnapshotColumn>& columns) {
+  if (session_ == nullptr || catalog_ == nullptr || columns.empty()) {
     return nullptr;
   }
 
@@ -391,6 +411,11 @@ PlotWidget::CurveInfo* PlotWidget::addSnapshotCurve(
     tracker_->setEnabled(false);  // X is data, not time — no vertical time cursor
   }
   qwtPlot()->setAxisTitle(QwtPlot::xBottom, index_mode ? tr("index") : snapshotLeafLabel(x_pattern));
+  if (std::getenv("PJ_STREAM_TRACE") != nullptr) {
+    std::fprintf(
+        stderr, "[stream] bind snapshot curve topic=%llu cols=%zu y='%s'\n",
+        static_cast<unsigned long long>(topic_id), columns.size(), y_pattern.toStdString().c_str());
+  }
   return info;
 }
 
@@ -402,15 +427,10 @@ std::vector<PlotWidget::CurveInfo*> PlotWidget::addSnapshotCurveGroup(
     return added;
   }
 
-  // Resolve the stable topic name once from any of the topic's catalog columns.
+  // One catalog pass for the whole group: the topic's columns + display name.
   QString topic_name;
-  for (const CurveDescriptor& curve : catalog_->curves()) {
-    if (curve.topic_id == topic_id) {
-      topic_name = curve.topic_name;
-      break;
-    }
-  }
-  if (topic_name.isEmpty()) {
+  const std::vector<SnapshotColumn> columns = snapshotColumnsForTopic(topic_id, &topic_name);
+  if (topic_name.isEmpty() || columns.empty()) {
     return added;
   }
 
@@ -418,7 +438,7 @@ std::vector<PlotWidget::CurveInfo*> PlotWidget::addSnapshotCurveGroup(
     const QString leaf = snapshotLeafLabel(y_pattern);
     const QString display = alias_prefix.isEmpty() ? leaf : QStringLiteral("%1 %2").arg(alias_prefix, leaf);
     if (CurveInfo* info = addSnapshotCurve(
-            dataset_id, topic_id, topic_name, x_pattern, y_pattern, display, Qt::transparent);
+            dataset_id, topic_id, topic_name, x_pattern, y_pattern, display, Qt::transparent, columns);
         info != nullptr) {
       added.push_back(info);
     }
@@ -447,6 +467,29 @@ bool PlotWidget::refreshSnapshotCurves(double display_time_sec) {
     }
   }
   return changed;
+}
+
+void PlotWidget::flushSnapshotIngest() {
+  if (!snapshot_ingest_pending_) {
+    return;
+  }
+  snapshot_ingest_pending_ = false;
+  // One coalesced refresh for the whole burst, at the last tracker time. Fit to the
+  // current message when it has points (same as the tracker path), else replot.
+  const bool changed = refreshSnapshotCurves(last_tracker_time_sec_);
+  ++snapshot_ingest_refresh_count_;
+  if (std::getenv("PJ_STREAM_TRACE") != nullptr) {
+    std::fprintf(
+        stderr, "[stream] flushSnapshotIngest #%llu changed=%d hasPoints=%d curves=%zu\n",
+        snapshot_ingest_refresh_count_, changed ? 1 : 0, snapshotHasPoints() ? 1 : 0, curveList().size());
+  }
+  if (changed) {
+    if (snapshotHasPoints()) {
+      resetZoom();
+    } else {
+      replot();
+    }
+  }
 }
 
 bool PlotWidget::snapshotHasPoints() const {
@@ -934,20 +977,25 @@ PlotWidget::CurveInfo* PlotWidget::applyCurveElement(const QDomElement& curve_el
     const QString label = curve_element.attribute(QStringLiteral("label"));
     loaded_curve = curveFromTitle(stableSnapshotKey(topic_name, x_pattern, y_pattern));
     if (loaded_curve == nullptr && catalog_ != nullptr) {
+      // Resolve the topic id/dataset AND collect its columns in ONE catalog pass, so a
+      // layout with many snapshot curves does not copy the (large) catalog twice per
+      // curve as topics bind in during a live-bridge connect.
       DatasetId dataset_id = 0;
       TopicId topic_id = 0;
-      bool found = false;
+      std::vector<SnapshotColumn> columns;
       for (const CurveDescriptor& curve : catalog_->curves()) {
-        if (curve.topic_name == topic_name) {
-          dataset_id = curve.dataset_id;
-          topic_id = curve.topic_id;
-          found = true;
-          break;
+        if (curve.topic_name != topic_name) {
+          continue;
         }
+        dataset_id = curve.dataset_id;
+        topic_id = curve.topic_id;
+        columns.push_back(
+            SnapshotColumn{.column_index = curve.column_index, .field_path = curve.field_path.toStdString()});
       }
-      if (found) {
+      if (!columns.empty()) {
         loaded_curve = addSnapshotCurve(
-            dataset_id, topic_id, topic_name, x_pattern, y_pattern, label, color.isValid() ? color : Qt::transparent);
+            dataset_id, topic_id, topic_name, x_pattern, y_pattern, label, color.isValid() ? color : Qt::transparent,
+            columns);
         // Outside the xmlLoadState batch (e.g. a progressive PendingCurveBinder
         // rebind), the caller frames via applySavedViewportOrZoom; refresh the new
         // curve to the current tracker time so it renders, and let the next tracker
@@ -1733,27 +1781,26 @@ void PlotWidget::reconnectDataSignals() {
 
   samples_ingested_connection_ =
       connect(session_, &SessionManager::samplesIngested, this, [this](const QVector<TopicId>& ids, bool live) {
-        // Snapshot plots hold only snapshot curves. Rebuild each one whose topic got
-        // new samples to the message at the last tracker time, then fit the axes to
-        // the current message (same as the tracker path) so a live-streamed message
-        // is always framed and visible. Snapshot plots are excluded from zoom linking,
-        // so this never disturbs sibling time plots.
+        // Snapshot plots hold only snapshot curves. Live streaming fires
+        // samplesIngested at the raw ingest rate (hundreds of Hz across many topics),
+        // so do NOT refresh+replot per signal — that runs an engine-locked row read
+        // (contending with the streaming writer) plus a full replot on the GUI thread
+        // per signal and freezes the app. Instead just note that a relevant topic
+        // ingested and arm the coalescing timer; flushSnapshotIngest() does the actual
+        // refresh + fit at most once per tick. The per-signal cost here is only a
+        // cheap topic-membership check (early-out on the first match).
         if (isSnapshotPlot()) {
-          bool snapshot_changed = false;
           for (auto& info : curveList()) {
             if (info.curve == nullptr) {
               continue;
             }
             auto* snapshot = dynamic_cast<SnapshotSeriesData*>(info.curve->data());
             if (snapshot != nullptr && std::find(ids.begin(), ids.end(), snapshot->topicId()) != ids.end()) {
-              snapshot_changed = snapshot->refresh(last_tracker_time_sec_) || snapshot_changed;
-            }
-          }
-          if (snapshot_changed) {
-            if (snapshotHasPoints()) {
-              resetZoom();
-            } else {
-              replot();
+              snapshot_ingest_pending_ = true;
+              if (snapshot_ingest_timer_ != nullptr && !snapshot_ingest_timer_->isActive()) {
+                snapshot_ingest_timer_->start();
+              }
+              break;
             }
           }
           return;

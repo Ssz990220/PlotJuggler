@@ -13,8 +13,10 @@
 #include <QApplication>
 #include <QDomDocument>
 #include <QDomElement>
+#include <QEventLoop>
 #include <QPen>
 #include <QRectF>
+#include <QTimer>
 #include <QtGlobal>
 #include <cmath>
 #include <limits>
@@ -479,6 +481,50 @@ TEST(PlotWidgetSnapshot, TimeSeriesPlotHonorsFixedYAndClears) {
   auto [c_lo, c_hi] = viewY(plot);
   EXPECT_GT(c_hi, 1.0) << "auto-fit should exceed the old pinned max";
   EXPECT_FALSE(plot.hasFixedYRange());
+}
+
+// Streaming freeze guard: a high-rate samplesIngested burst (live streaming fires
+// hundreds of Hz) must NOT trigger a per-signal engine-locked refresh + replot. The
+// snapshot ingest path coalesces to a single-shot timer, so a whole burst collapses
+// to bounded GUI work — the fix for the app freezing on live-bridge connect.
+TEST(PlotWidgetSnapshot, StreamingIngestBurstCoalescesToBoundedRefreshes) {
+  AbsFixture fx;
+  PlotWidget plot(&fx.session, &fx.catalog);
+  plot.addSnapshotCurveGroup(
+      fx.dataset_id, fx.topic_id, QStringLiteral("predicted_trajectory[:].time_from_start_s"),
+      {QStringLiteral("predicted_trajectory[:].positions[0]")});
+  ASSERT_TRUE(plot.isSnapshotPlot());
+
+  const unsigned long long before = plot.snapshotIngestRefreshCount();
+
+  // Simulate a fast stream: many commits to the snapshot topic in tight succession,
+  // each emitting samplesIngested. None of these spins the event loop, so the
+  // coalescing timer cannot fire mid-burst.
+  constexpr int kBurst = 60;
+  for (int b = 0; b < kBurst; ++b) {
+    DataWriter writer = fx.session.dataEngine().createWriter();
+    ASSERT_TRUE(writer.bindTopicWriter(fx.topic_id).has_value());
+    const Timestamp t = kAbsBaseNs + (kAbsMessages + b) * kStepNs;
+    ASSERT_TRUE(writer.beginRow(fx.topic_id, t).has_value());
+    for (int i = 0; i < kElements; ++i) {
+      for (int j = 0; j < kPositions; ++j) {
+        writer.set(fx.topic_id, fx.colOf(posPath(i, j)), posValue(b, i, j));
+      }
+      writer.set(fx.topic_id, fx.colOf(stampPath(i)), stampValue(i));
+    }
+    ASSERT_TRUE(writer.finishRow(fx.topic_id).has_value());
+    fx.session.commitChunks(writer.flushAll());
+  }
+
+  // Let the coalescing timer fire (its interval is ~33 ms).
+  QEventLoop loop;
+  QTimer::singleShot(120, &loop, &QEventLoop::quit);
+  loop.exec();
+
+  const unsigned long long refreshes = plot.snapshotIngestRefreshCount() - before;
+  EXPECT_GT(refreshes, 0ULL) << "the burst should still produce one coalesced refresh";
+  EXPECT_LE(refreshes, 3ULL) << refreshes << " refreshes for " << kBurst
+                             << " ingest signals — burst was NOT coalesced (freeze risk)";
 }
 
 // The Y Axis Range dialog seeds from the current pins and reports each bound

@@ -15,12 +15,14 @@
 
 #include "pj_plotting/CurveTracker.h"
 #include "pj_plotting/PlotWidgetBase.h"
+#include "pj_plotting/SnapshotGroupResolver.h"
 #include "pj_runtime/CurveDescriptor.h"
 
 class QDragEnterEvent;
 class QDragLeaveEvent;
 class QDropEvent;
 class QMimeData;
+class QTimer;
 
 namespace PJ {
 
@@ -93,6 +95,11 @@ class PlotWidget : public PlotWidgetBase {
   // snapshot instead of drawing a time cursor).
   [[nodiscard]] bool isSnapshotPlot() const noexcept {
     return snapshot_mode_;
+  }
+  // Number of coalesced streaming refreshes performed (test/telemetry): proves a
+  // high-rate samplesIngested burst collapses to bounded GUI work.
+  [[nodiscard]] unsigned long long snapshotIngestRefreshCount() const noexcept {
+    return snapshot_ingest_refresh_count_;
   }
   void setTrackerEnabled(bool enabled);
   [[nodiscard]] bool trackerEnabled() const noexcept;
@@ -212,6 +219,12 @@ class PlotWidget : public PlotWidgetBase {
   // there is no session or no datastore-backed curve — then display == absolute.
   [[nodiscard]] double displayOffsetSeconds() const;
   void reconnectDataSignals();
+  // Coalesced streaming refresh: a samplesIngested burst (live streaming can fire
+  // hundreds of Hz) only marks the plot dirty + arms snapshot_ingest_timer_; this
+  // does the actual (engine-locked) refresh + fit at most once per timer tick, so
+  // the GUI thread cannot be saturated by the ingest rate. Bumps
+  // snapshot_ingest_refresh_count_ each time it does real work.
+  void flushSnapshotIngest();
   // Rebuild every SnapshotSeriesData curve to the message at-or-before
   // `display_time_sec`. Returns whether any curve's point set changed, so callers
   // can gate a replot. No-op on plots with no snapshot curves.
@@ -223,15 +236,22 @@ class PlotWidget : public PlotWidgetBase {
   [[nodiscard]] bool snapshotHasPoints() const;
   // Add ONE snapshot curve (the shared core of addSnapshotCurveGroup and the
   // applyCurveElement snapshot restore). Resolves `y_pattern` (and, for column
-  // x-mode, `x_pattern`) against `topic_id`'s catalog columns, builds a
-  // SnapshotSeriesData carrying the stable {topic_name, x_pattern, y_pattern}
-  // binding, and adds it with a stable source key. Enters snapshot mode and sets
-  // the X-axis title. Does NOT refresh/fit (the caller batches that). An empty
+  // x-mode, `x_pattern`) against `columns` (the topic's flattened columns, which the
+  // caller fetches ONCE so adding a whole group does not re-copy the catalog per
+  // curve), builds a SnapshotSeriesData carrying the stable {topic_name, x_pattern,
+  // y_pattern} binding, and adds it with a stable source key. Enters snapshot mode and
+  // sets the X-axis title. Does NOT refresh/fit (the caller batches that). An empty
   // `display_label` falls back to the Y leaf name; a transparent color auto-assigns
   // from the palette. Returns nullptr if the patterns resolve to nothing.
   CurveInfo* addSnapshotCurve(
       DatasetId dataset_id, TopicId topic_id, const QString& topic_name, const QString& x_pattern,
-      const QString& y_pattern, const QString& display_label, QColor color);
+      const QString& y_pattern, const QString& display_label, QColor color,
+      const std::vector<SnapshotColumn>& columns);
+  // The topic's flattened plottable columns (column index + field path) for the
+  // resolver, fetched from the catalog in a single pass. If `topic_name_out` is set,
+  // it also captures the topic's display name from the same pass.
+  [[nodiscard]] std::vector<SnapshotColumn> snapshotColumnsForTopic(
+      TopicId topic_id, QString* topic_name_out = nullptr) const;
   // Drop the cached display offset on every bound DatastoreCurveAdapter whose
   // dataset matches `only` (or on all bound adapters when nullopt), so the next
   // paint re-maps the curve's X into the new frame. Returns whether any adapter
@@ -267,6 +287,10 @@ class PlotWidget : public PlotWidgetBase {
   // Last tracker position (display seconds). Snapshot curves refresh to this on a
   // streaming ingest, since samplesIngested carries no time of its own.
   double last_tracker_time_sec_ = 0.0;
+  // Coalescing state for the streaming-ingest snapshot refresh (see flushSnapshotIngest).
+  QTimer* snapshot_ingest_timer_ = nullptr;
+  bool snapshot_ingest_pending_ = false;
+  unsigned long long snapshot_ingest_refresh_count_ = 0;
   QwtPlotMarker* show_point_marker_ = nullptr;
   QwtPlotMarker* show_point_text_ = nullptr;
   // Used to skip replot when the mouse drifts but the snapped sample is unchanged.
