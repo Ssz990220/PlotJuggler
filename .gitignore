@@ -16,6 +16,9 @@ docs/superpowers/
 # ThreadSanitizer build dir (Task 7 verification)
 build-tsan/
 
+# AddressSanitizer build dir (sanitizer verification)
+build-asan/
+
 # heaptrack memory-profiler traces (run.sh --heaptrack)
 heaptrack.*.zst
 

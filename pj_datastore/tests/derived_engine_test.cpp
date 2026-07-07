@@ -1574,5 +1574,60 @@ TEST(MimoTransformTest, MimoLateInputCommitTriggersFullRecompute) {
   }
 }
 
+// Reproduces bug #3: a MIMO input whose column appears MID-STREAM. An early chunk is
+// sealed with 1 column; a 2nd column is added later (ensureColumn); the MIMO reads
+// column index 1. When the join processes a timestamp that maps to the OLD chunk (only
+// 1 column), the MIMO decode path reads columns[1] OUT OF BOUNDS (the SISO path guards
+// this at derived_engine.cpp; the MIMO path did not). Run under AddressSanitizer:
+// before the fix this trips a heap-buffer-overflow; after the fix the old-chunk rows
+// are skipped and it completes cleanly.
+TEST(MimoTransformTest, MidStreamColumn_OldChunkNotOutOfBounds) {
+  DataEngine engine;
+  DerivedEngine derived(engine);
+  PJ::DatasetId ds = makeDataset(engine);
+
+  // Input A: schemaless topic; column "a" first (chunk with 1 column), then "b" added
+  // mid-stream (chunk with 2 columns).
+  DataWriter w = engine.createWriter();
+  auto ta_or = w.registerTopic(ds, TopicDescriptor{.name = "multi", .schema_id = 0, .dataset_id = ds});
+  ASSERT_TRUE(ta_or.has_value()) << ta_or.error();
+  const PJ::TopicId ta = *ta_or;
+  ASSERT_TRUE(w.ensureColumn(ta, "a", PJ::PrimitiveType::kFloat64).has_value());
+  for (int i = 0; i < 3; ++i) {  // ts 0,1,2 — column 0 only
+    const PJ::Timestamp ts = static_cast<PJ::Timestamp>(i) * 1'000'000'000LL;
+    ASSERT_TRUE(w.beginRow(ta, ts).has_value());
+    w.set<double>(ta, 0, static_cast<double>(i));
+    ASSERT_TRUE(w.finishRow(ta).has_value());
+  }
+  engine.commitChunks(w.flushAll());  // seals chunk A (1 column)
+
+  DataWriter w2 = engine.createWriter();
+  ASSERT_TRUE(w2.ensureColumn(ta, "b", PJ::PrimitiveType::kFloat64).has_value());  // 2nd column, seals layout
+  for (int i = 3; i < 6; ++i) {                                                    // ts 3,4,5 — columns 0 and 1
+    const PJ::Timestamp ts = static_cast<PJ::Timestamp>(i) * 1'000'000'000LL;
+    ASSERT_TRUE(w2.beginRow(ta, ts).has_value());
+    w2.set<double>(ta, 0, static_cast<double>(i));
+    w2.set<double>(ta, 1, 10.0 * static_cast<double>(i));
+    ASSERT_TRUE(w2.finishRow(ta).has_value());
+  }
+  engine.commitChunks(w2.flushAll());  // chunk B (2 columns)
+
+  // Input B: single scalar topic, ts 0..5 (overlaps A on every timestamp).
+  const PJ::TopicId tb = makeLinearTopic(engine, ds, 2.0, 6);
+
+  // MIMO reads column 1 of A (valid in the current 2-column schema) and column 0 of B.
+  auto node_or =
+      derived.addMimoTransform({ta, tb}, {"sum"}, ds, std::make_unique<SumMimoTransform>(), /*input_columns=*/{1, 0});
+  ASSERT_TRUE(node_or.has_value()) << node_or.error();
+
+  notify(derived, {ta, tb});
+  ASSERT_TRUE(derived.scheduleAll().has_value());
+
+  // ts 0,1,2 map to chunk A which lacks column 1 → those rows are skipped; only ts
+  // 3,4,5 produce output (sum of A.b + B.value).
+  const auto rows = collectRowsCol(engine, derived.outputTopics(*node_or)[0]);
+  EXPECT_EQ(rows.size(), 3u);
+}
+
 }  // namespace
 }  // namespace PJ

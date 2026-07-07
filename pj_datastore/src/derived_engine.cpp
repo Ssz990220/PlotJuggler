@@ -1025,6 +1025,21 @@ static PJ::Status runMimoIncremental(DerivedEngineImpl& /*impl*/, DataEngine& en
   bool wrote_any = false;
 
   for (PJ::Timestamp ts : joined_ts) {
+    // Columns can appear mid-stream: a chunk sealed BEFORE an input's column existed
+    // has fewer columns than mimo_input_columns[i]. Such a chunk carries no sample for
+    // that input at this timestamp, so skip the whole joined row (mirrors the SISO
+    // guard above). Without this, decodeAsVarvalue reads columns[col] out of bounds.
+    bool row_has_all_inputs = true;
+    for (std::size_t i = 0; i < num_inputs; ++i) {
+      const auto& [chp, row] = lookups[i].at(ts);
+      if (node.mimo_input_columns[i] >= chp->columns.size()) {
+        row_has_all_inputs = false;
+        break;
+      }
+    }
+    if (!row_has_all_inputs) {
+      continue;
+    }
     for (std::size_t i = 0; i < num_inputs; ++i) {
       const auto& [chp, row] = lookups[i].at(ts);
       node.mimo_in_buf[i] = decodeAsVarvalue(*chp, node.mimo_input_columns[i], row, node.mimo_input_kinds[i]);
