@@ -22,12 +22,23 @@
 #include <cstddef>
 #include <vector>
 
+#include <string>
+
 #include "pj_base/types.hpp"
 #include "pj_plotting/SnapshotGroupResolver.h"
 
 namespace PJ {
 
 class SessionManager;
+
+// The stable, human-facing identity of a snapshot curve, independent of the
+// per-load topic id / column indices. This is what layout persistence stores and
+// re-resolves on load, and what forms the curve's stable source key.
+struct SnapshotBinding {
+  std::string topic_name;  // stable topic name, e.g. "/wholebody/left_arm/debug/spline_info"
+  std::string x_pattern;   // "<array>[:]<leaf>" X wildcard; empty => X is the element index
+  std::string y_pattern;   // "<array>[:]<leaf>" Y wildcard, one per curve
+};
 
 class SnapshotSeriesData final : public QwtSeriesData<QPointF> {
  public:
@@ -41,7 +52,7 @@ class SnapshotSeriesData final : public QwtSeriesData<QPointF> {
   // kIndex x-mode `x_elements` is ignored and X is the element index.
   SnapshotSeriesData(
       SessionManager* session, TopicId topic_id, DatasetId dataset_id, XMode x_mode,
-      std::vector<SnapshotElement> x_elements, std::vector<SnapshotElement> y_elements);
+      std::vector<SnapshotElement> x_elements, std::vector<SnapshotElement> y_elements, SnapshotBinding binding = {});
 
   // QwtSeriesData<QPointF>
   std::size_t size() const override;
@@ -75,6 +86,10 @@ class SnapshotSeriesData final : public QwtSeriesData<QPointF> {
   [[nodiscard]] const std::vector<SnapshotElement>& yElements() const noexcept {
     return y_elements_;
   }
+  // Stable identity (topic name + X/Y patterns) for layout save/re-resolve.
+  [[nodiscard]] const SnapshotBinding& binding() const noexcept {
+    return binding_;
+  }
 
  private:
   // One plotted element: where its Y (and, for kColumn, X) value lands in the
@@ -93,6 +108,7 @@ class SnapshotSeriesData final : public QwtSeriesData<QPointF> {
   XMode x_mode_ = XMode::kIndex;
   std::vector<SnapshotElement> x_elements_;
   std::vector<SnapshotElement> y_elements_;
+  SnapshotBinding binding_;
 
   // Column indices passed to latestRowAt (one read per refresh), and the join plan
   // that maps each plotted element to positions inside that read's result.

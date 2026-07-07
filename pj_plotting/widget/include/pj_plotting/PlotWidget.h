@@ -209,6 +209,17 @@ class PlotWidget : public PlotWidgetBase {
   // `display_time_sec`. Returns whether any curve's point set changed, so callers
   // can gate a replot. No-op on plots with no snapshot curves.
   bool refreshSnapshotCurves(double display_time_sec);
+  // Add ONE snapshot curve (the shared core of addSnapshotCurveGroup and the
+  // applyCurveElement snapshot restore). Resolves `y_pattern` (and, for column
+  // x-mode, `x_pattern`) against `topic_id`'s catalog columns, builds a
+  // SnapshotSeriesData carrying the stable {topic_name, x_pattern, y_pattern}
+  // binding, and adds it with a stable source key. Enters snapshot mode and sets
+  // the X-axis title. Does NOT refresh/fit (the caller batches that). An empty
+  // `display_label` falls back to the Y leaf name; a transparent color auto-assigns
+  // from the palette. Returns nullptr if the patterns resolve to nothing.
+  CurveInfo* addSnapshotCurve(
+      DatasetId dataset_id, TopicId topic_id, const QString& topic_name, const QString& x_pattern,
+      const QString& y_pattern, const QString& display_label, QColor color);
   // Drop the cached display offset on every bound DatastoreCurveAdapter whose
   // dataset matches `only` (or on all bound adapters when nullopt), so the next
   // paint re-maps the curve's X into the new frame. Returns whether any adapter

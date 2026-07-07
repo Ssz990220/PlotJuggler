@@ -11,6 +11,9 @@
 #include <qwt_series_data.h>
 
 #include <QApplication>
+#include <QDomDocument>
+#include <QDomElement>
+#include <QPen>
 #include <QtGlobal>
 #include <string>
 #include <vector>
@@ -76,7 +79,7 @@ struct Fixture {
 
     writeMessage(writer, 0 * kNs, /*m=*/0, /*present=*/kElements);
     writeMessage(writer, 1 * kNs, /*m=*/1, /*present=*/3);  // ragged
-    session.commitChunks(writer.flushAll());
+    EXPECT_FALSE(session.commitChunks(writer.flushAll()).empty());
     catalog.rebuildFromDatastore();
   }
 
@@ -164,6 +167,69 @@ TEST(PlotWidgetSnapshot, IndexModeWhenNoXPattern) {
   for (std::size_t i = 0; i < static_cast<std::size_t>(kElements); ++i) {
     EXPECT_DOUBLE_EQ(series->sample(i).x(), static_cast<double>(i));  // X = element index
   }
+}
+
+TEST(PlotWidgetSnapshot, XmlRoundTripReproducesRender) {
+  Fixture fx;
+  PlotWidget src(&fx.session, &fx.catalog);
+  src.addSnapshotCurveGroup(
+      fx.dataset_id, fx.topic_id, QStringLiteral("predicted_trajectory[:].time_from_start_s"),
+      {QStringLiteral("predicted_trajectory[:].positions[0]"),
+       QStringLiteral("predicted_trajectory[:].positions[1]")});
+  src.setTrackerPosition(0.5);
+
+  QDomDocument doc;
+  QDomElement elem = src.xmlSaveState(doc);
+  doc.appendChild(elem);
+  EXPECT_EQ(elem.attribute(QStringLiteral("mode")), QStringLiteral("Snapshot"));
+
+  // Reload into a FRESH widget sharing the same session/catalog: the snapshot group
+  // re-resolves from the persisted topic + patterns (no app-level rebind needed).
+  PlotWidget dst(&fx.session, &fx.catalog);
+  ASSERT_TRUE(dst.xmlLoadState(elem));
+  EXPECT_TRUE(dst.isSnapshotPlot());
+  ASSERT_EQ(dst.curveList().size(), 2U);
+
+  src.setTrackerPosition(0.5);
+  dst.setTrackerPosition(0.5);
+
+  // Every source curve has an identically-keyed reloaded curve with the same color
+  // and the same points at the cursor time.
+  for (const auto& src_info : src.curveList()) {
+    const SnapshotSeriesData* s = snapshotOf(src_info);
+    ASSERT_NE(s, nullptr);
+    PlotWidgetBase::CurveInfo* dst_info = dst.curveFromTitle(src_info.source_name);
+    ASSERT_NE(dst_info, nullptr) << src_info.source_name.toStdString();
+    const SnapshotSeriesData* d = snapshotOf(*dst_info);
+    ASSERT_NE(d, nullptr);
+    EXPECT_EQ(dst_info->curve->pen().color(), src_info.curve->pen().color());
+    ASSERT_EQ(d->size(), s->size());
+    for (std::size_t k = 0; k < s->size(); ++k) {
+      EXPECT_DOUBLE_EQ(d->sample(k).x(), s->sample(k).x());
+      EXPECT_DOUBLE_EQ(d->sample(k).y(), s->sample(k).y());
+    }
+  }
+}
+
+TEST(PlotWidgetSnapshot, XmlLoadWithMissingTopicDegradesGracefully) {
+  Fixture fx;
+  PlotWidget src(&fx.session, &fx.catalog);
+  src.addSnapshotCurveGroup(
+      fx.dataset_id, fx.topic_id, QStringLiteral("predicted_trajectory[:].time_from_start_s"),
+      {QStringLiteral("predicted_trajectory[:].positions[0]")});
+  QDomDocument doc;
+  QDomElement elem = src.xmlSaveState(doc);
+  doc.appendChild(elem);
+
+  // Load into a widget whose session/catalog do NOT contain the topic. The load
+  // succeeds, snapshot mode is restored, and the unresolvable curve simply never
+  // appears — same graceful degradation as a missing regular curve.
+  PJ::SessionManager empty_session;
+  PJ::CatalogModel empty_catalog(&empty_session);
+  PlotWidget dst(&empty_session, &empty_catalog);
+  EXPECT_TRUE(dst.xmlLoadState(elem));
+  EXPECT_TRUE(dst.isSnapshotPlot());
+  EXPECT_TRUE(dst.curveList().empty());
 }
 
 TEST(PlotWidgetSnapshot, UnresolvableGroupIsNoOp) {

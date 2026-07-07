@@ -30,13 +30,14 @@ namespace {
 
 SnapshotSeriesData::SnapshotSeriesData(
     SessionManager* session, TopicId topic_id, DatasetId dataset_id, XMode x_mode,
-    std::vector<SnapshotElement> x_elements, std::vector<SnapshotElement> y_elements)
+    std::vector<SnapshotElement> x_elements, std::vector<SnapshotElement> y_elements, SnapshotBinding binding)
     : session_(session),
       topic_id_(topic_id),
       dataset_id_(dataset_id),
       x_mode_(x_mode),
       x_elements_(std::move(x_elements)),
       y_elements_(std::move(y_elements)),
+      binding_(std::move(binding)),
       cached_bounding_rect_(invalidRect()) {
   // Build the read plan once: the set of columns to read per refresh (query_columns_)
   // and, per plotted element, where its X/Y values land in that read's result. For

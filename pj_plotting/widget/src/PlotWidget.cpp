@@ -67,6 +67,25 @@ constexpr int kHoverHitRadiusPx = 40;
   return leaf;
 }
 
+// Stable, per-load-invariant identity key for a snapshot curve. Encodes the
+// binding (topic + X source + Y leaf), NOT the per-load topic id / column indices,
+// so it survives save/reload and drives the load remove-pass and idempotent re-add.
+[[nodiscard]] QString stableSnapshotKey(
+    const QString& topic_name, const QString& x_pattern, const QString& y_pattern) {
+  return QStringLiteral("snapshot:%1:%2:%3")
+      .arg(topic_name, x_pattern.isEmpty() ? QStringLiteral("index") : x_pattern, y_pattern);
+}
+
+// A CONCRETE field path for one element of a wildcard pattern: "<array>[:]<leaf>"
+// with "[:]" replaced by "[<element>]". Persisted as the snapshot curve's <curve
+// topic/field> so the app-level rebind / missing-curve / progressive-binding infra
+// (which is field-level) can decide the group's topic is present exactly as it does
+// for a normal curve — without teaching it about wildcards.
+[[nodiscard]] QString concreteField(const QString& pattern, uint32_t element_index) {
+  QString out = pattern;
+  return out.replace(QStringLiteral("[:]"), QStringLiteral("[%1]").arg(element_index));
+}
+
 void addActionCategorySeparator(QMenu& menu) {
   const QList<QAction*> actions = menu.actions();
   if (!actions.isEmpty() && !actions.constLast()->isSeparator()) {
@@ -311,12 +330,11 @@ PlotWidget::CurveInfo* PlotWidget::createCurveXYInteractive(const QString& x_key
   return nullptr;  // cancelled
 }
 
-std::vector<PlotWidget::CurveInfo*> PlotWidget::addSnapshotCurveGroup(
-    DatasetId dataset_id, TopicId topic_id, const QString& x_pattern, const QStringList& y_patterns,
-    const QString& alias_prefix) {
-  std::vector<CurveInfo*> added;
-  if (session_ == nullptr || catalog_ == nullptr || y_patterns.isEmpty()) {
-    return added;
+PlotWidget::CurveInfo* PlotWidget::addSnapshotCurve(
+    DatasetId dataset_id, TopicId topic_id, const QString& topic_name, const QString& x_pattern,
+    const QString& y_pattern, const QString& display_label, QColor color) {
+  if (session_ == nullptr || catalog_ == nullptr) {
+    return nullptr;
   }
 
   // The topic's flattened columns, as (column index, field path), for the resolver.
@@ -328,7 +346,7 @@ std::vector<PlotWidget::CurveInfo*> PlotWidget::addSnapshotCurveGroup(
     }
   }
   if (columns.empty()) {
-    return added;
+    return nullptr;
   }
 
   const bool index_mode = x_pattern.isEmpty();
@@ -337,22 +355,65 @@ std::vector<PlotWidget::CurveInfo*> PlotWidget::addSnapshotCurveGroup(
   if (!index_mode) {
     x_elements = resolveSnapshotPattern(columns, x_pattern.toStdString());
     if (x_elements.empty()) {
-      return added;  // X leaf resolves to nothing — no element to pair against
+      return nullptr;  // X leaf resolves to nothing — no element to pair against
     }
   }
 
-  for (const QString& y_pattern : y_patterns) {
-    std::vector<SnapshotElement> y_elements = resolveSnapshotPattern(columns, y_pattern.toStdString());
-    if (y_elements.empty()) {
-      continue;
+  std::vector<SnapshotElement> y_elements = resolveSnapshotPattern(columns, y_pattern.toStdString());
+  if (y_elements.empty()) {
+    return nullptr;
+  }
+
+  SnapshotBinding binding{
+      .topic_name = topic_name.toStdString(),
+      .x_pattern = x_pattern.toStdString(),
+      .y_pattern = y_pattern.toStdString(),
+  };
+  auto* series =
+      new SnapshotSeriesData(session_, topic_id, dataset_id, x_mode, x_elements, std::move(y_elements), binding);
+  // Identity is the stable (topic, X, Y) key so save/reload and the load remove-pass
+  // line up regardless of the per-load topic id; legend shows the caller's label or
+  // the Y leaf name.
+  const QString name = stableSnapshotKey(topic_name, x_pattern, y_pattern);
+  const QString display = display_label.isEmpty() ? snapshotLeafLabel(y_pattern) : display_label;
+  CurveInfo* info = PlotWidgetBase::addCurve(name, series, color, display);
+  if (info == nullptr) {
+    return nullptr;
+  }
+  snapshot_mode_ = true;
+  if (tracker_ != nullptr) {
+    tracker_->setEnabled(false);  // X is data, not time — no vertical time cursor
+  }
+  qwtPlot()->setAxisTitle(QwtPlot::xBottom, index_mode ? tr("index") : snapshotLeafLabel(x_pattern));
+  return info;
+}
+
+std::vector<PlotWidget::CurveInfo*> PlotWidget::addSnapshotCurveGroup(
+    DatasetId dataset_id, TopicId topic_id, const QString& x_pattern, const QStringList& y_patterns,
+    const QString& alias_prefix) {
+  std::vector<CurveInfo*> added;
+  if (session_ == nullptr || catalog_ == nullptr || y_patterns.isEmpty()) {
+    return added;
+  }
+
+  // Resolve the stable topic name once from any of the topic's catalog columns.
+  QString topic_name;
+  for (const CurveDescriptor& curve : catalog_->curves()) {
+    if (curve.topic_id == topic_id) {
+      topic_name = curve.topic_name;
+      break;
     }
-    auto* series = new SnapshotSeriesData(session_, topic_id, dataset_id, x_mode, x_elements, std::move(y_elements));
-    // Identity key is unique per (topic, Y pattern) so curveFromTitle can't collide;
-    // legend shows the Y leaf, optionally prefixed by the caller's alias.
-    const QString name = QStringLiteral("snapshot:%1:%2").arg(topic_id).arg(y_pattern);
+  }
+  if (topic_name.isEmpty()) {
+    return added;
+  }
+
+  for (const QString& y_pattern : y_patterns) {
     const QString leaf = snapshotLeafLabel(y_pattern);
     const QString display = alias_prefix.isEmpty() ? leaf : QStringLiteral("%1 %2").arg(alias_prefix, leaf);
-    if (CurveInfo* info = PlotWidgetBase::addCurve(name, series, Qt::transparent, display); info != nullptr) {
+    if (CurveInfo* info = addSnapshotCurve(
+            dataset_id, topic_id, topic_name, x_pattern, y_pattern, display, Qt::transparent);
+        info != nullptr) {
       added.push_back(info);
     }
   }
@@ -361,11 +422,6 @@ std::vector<PlotWidget::CurveInfo*> PlotWidget::addSnapshotCurveGroup(
     return added;
   }
 
-  snapshot_mode_ = true;
-  if (tracker_ != nullptr) {
-    tracker_->setEnabled(false);  // X is data, not time — no vertical time cursor
-  }
-  qwtPlot()->setAxisTitle(QwtPlot::xBottom, index_mode ? tr("index") : snapshotLeafLabel(x_pattern));
   // Populate to the current tracker time, then fit both axes to the snapshot data.
   // If there is no message at that time yet, defer the fit to the first tracker move
   // that brings data (snapshot_fitted_ stays false) rather than fitting an empty view.
@@ -574,7 +630,9 @@ QDomElement PlotWidget::xmlSaveState(QDomDocument& doc) const {
   QDomElement plot_element = doc.createElement(QStringLiteral("plot"));
   plot_element.setAttribute(QStringLiteral("id"), state_id_);
   plot_element.setAttribute(
-      QStringLiteral("mode"), isXYPlot() ? QStringLiteral("XYPlot") : QStringLiteral("TimeSeries"));
+      QStringLiteral("mode"), isSnapshotPlot() ? QStringLiteral("Snapshot")
+                              : isXYPlot()     ? QStringLiteral("XYPlot")
+                                               : QStringLiteral("TimeSeries"));
   plot_element.setAttribute(QStringLiteral("line_width"), lineWidthToString(lineWidth()));
   // Style and width are plot-level properties (every curve shares them; only
   // colour is per-curve), so they are saved once on the <plot>, not per <curve>.
@@ -602,7 +660,9 @@ QDomElement PlotWidget::xmlSaveState(QDomDocument& doc) const {
     // ALWAYS stored absolute — no marker is written; on load the plot MODE
     // (time-series vs XY) is what decides whether to undo the offset. XY plots' X is
     // a value, not time, so they keep their raw axis coordinates.
-    if (isXYPlot()) {
+    if (isXYPlot() || isSnapshotPlot()) {
+      // XY and snapshot plots' X is a data value (or element index), not time, so it
+      // is offset-independent — store the raw axis coordinates verbatim.
       range_element.setAttribute(QStringLiteral("left"), QString::number(rect.left(), 'f', 6));
       range_element.setAttribute(QStringLiteral("right"), QString::number(rect.right(), 'f', 6));
     } else {
@@ -642,6 +702,25 @@ QDomElement PlotWidget::xmlSaveState(QDomDocument& doc) const {
       curve_element.setAttribute(QStringLiteral("name"), info.source_name);
       write_stable_path(curve_element, QStringLiteral("x_topic"), QStringLiteral("x_field"), xy_series->xSource().name);
       write_stable_path(curve_element, QStringLiteral("y_topic"), QStringLiteral("y_field"), xy_series->ySource().name);
+    } else if (auto* snapshot = dynamic_cast<SnapshotSeriesData*>(info.curve->data())) {
+      // A snapshot curve is a wildcard group over ONE topic. Persist the stable
+      // binding: topic + the X/Y patterns + the legend label. `topic`/`field` carry
+      // ONE concrete element's path so the app-level rebind / missing-curve /
+      // progressive-binding infra (all field-level) treats the group's topic exactly
+      // like a normal curve's — without needing to understand wildcards. On load,
+      // applyCurveElement re-resolves the whole group from `topic` + the patterns.
+      const SnapshotBinding& binding = snapshot->binding();
+      const QString y_pattern = QString::fromStdString(binding.y_pattern);
+      curve_element.setAttribute(QStringLiteral("snapshot_y"), y_pattern);
+      if (!binding.x_pattern.empty()) {
+        curve_element.setAttribute(QStringLiteral("snapshot_x"), QString::fromStdString(binding.x_pattern));
+      }
+      curve_element.setAttribute(QStringLiteral("label"), info.curve->title().text());
+      const QString topic_name = QString::fromStdString(binding.topic_name);
+      curve_element.setAttribute(QStringLiteral("topic"), topic_name);
+      // Representative concrete field: the first resolved element of the Y pattern.
+      const uint32_t element = snapshot->yElements().empty() ? 0 : snapshot->yElements().front().element_index;
+      curve_element.setAttribute(QStringLiteral("field"), concreteField(y_pattern, element));
     } else {
       write_stable_path(curve_element, QStringLiteral("topic"), QStringLiteral("field"), info.source_name);
     }
@@ -657,7 +736,13 @@ bool PlotWidget::xmlLoadState(const QDomElement& plot_element, bool autozoom) {
   }
 
   setStateId(plot_element.attribute(QStringLiteral("id")));
-  setModeXY(plot_element.attribute(QStringLiteral("mode")) == QStringLiteral("XYPlot"));
+  const QString mode = plot_element.attribute(QStringLiteral("mode"));
+  setModeXY(mode == QStringLiteral("XYPlot"));
+  // Snapshot mode must be known BEFORE curves are applied so applyCurveElement
+  // routes them to the snapshot branch; the flag is otherwise set per snapshot
+  // curve too. A fresh restore re-fits from the saved <range> (or auto-fit).
+  snapshot_mode_ = (mode == QStringLiteral("Snapshot"));
+  snapshot_fitted_ = false;
   // Line width is plot-level. New layouts store the chosen width on the <plot>.
   // Older layouts kept the plot-level value at the stale default ("1.0") and the
   // real width per-curve, so when the plot value is absent/default fall back to
@@ -689,8 +774,13 @@ bool PlotWidget::xmlLoadState(const QDomElement& plot_element, bool autozoom) {
   std::set<QString> desired_keys;
   for (QDomElement curve_element = plot_element.firstChildElement(QStringLiteral("curve")); !curve_element.isNull();
        curve_element = curve_element.nextSiblingElement(QStringLiteral("curve"))) {
-    if (isXYPlot() && curve_element.hasAttribute(QStringLiteral("curve_x")) &&
-        curve_element.hasAttribute(QStringLiteral("curve_y"))) {
+    if (curve_element.hasAttribute(QStringLiteral("snapshot_y"))) {
+      // Snapshot curve: keyed by its stable (topic, X pattern, Y pattern) identity.
+      desired_keys.insert(curveKey(stableSnapshotKey(
+          curve_element.attribute(QStringLiteral("topic")), curve_element.attribute(QStringLiteral("snapshot_x")),
+          curve_element.attribute(QStringLiteral("snapshot_y")))));
+    } else if (isXYPlot() && curve_element.hasAttribute(QStringLiteral("curve_x")) &&
+               curve_element.hasAttribute(QStringLiteral("curve_y"))) {
       desired_keys.insert(curveKey(
           curve_element.attribute(QStringLiteral("name")), curve_element.attribute(QStringLiteral("curve_x")),
           curve_element.attribute(QStringLiteral("curve_y"))));
@@ -704,6 +794,8 @@ bool PlotWidget::xmlLoadState(const QDomElement& plot_element, bool autozoom) {
     if (info.curve == nullptr) {
       continue;
     }
+    // Snapshot curves' source_name IS the stable key, so curveKey(source_name) below
+    // already matches the desired key computed above — no special case needed here.
     QString existing_key = curveKey(info.source_name);
     if (auto* xy_series = dynamic_cast<PointSeriesXY*>(info.curve->data())) {
       existing_key = curveKey(info.source_name, xy_series->xSource().name, xy_series->ySource().name);
@@ -719,6 +811,15 @@ bool PlotWidget::xmlLoadState(const QDomElement& plot_element, bool autozoom) {
   for (QDomElement curve_element = plot_element.firstChildElement(QStringLiteral("curve")); !curve_element.isNull();
        curve_element = curve_element.nextSiblingElement(QStringLiteral("curve"))) {
     applyCurveElement(curve_element);
+  }
+
+  // Populate snapshot curves to the current tracker time so the restored viewport
+  // (below) frames real points. The restored <range> — or, absent it, zoomOut's
+  // auto-fit — determines the view, so mark the plot fitted and don't let the next
+  // tracker move override the user's saved zoom.
+  if (isSnapshotPlot() && !curveList().empty()) {
+    refreshSnapshotCurves(last_tracker_time_sec_);
+    snapshot_fitted_ = true;
   }
 
   // Stash the layout-saved viewport (raw, pre-offset-conversion) and frame to it via
@@ -755,7 +856,9 @@ void PlotWidget::applySavedViewportOrZoom(bool clear_after) {
     const SavedViewport& view = *saved_viewport_;
     double left = view.left;
     double right = view.right;
-    if (!isXYPlot()) {
+    if (!isXYPlot() && !isSnapshotPlot()) {
+      // Time-series X is absolute in the layout; convert to the current display frame.
+      // XY and snapshot X are data values, offset-independent — used verbatim.
       const double offset_sec = displayOffsetSeconds();
       left -= offset_sec;
       right -= offset_sec;
@@ -780,8 +883,42 @@ void PlotWidget::applySavedViewportOrZoom(bool clear_after) {
 PlotWidget::CurveInfo* PlotWidget::applyCurveElement(const QDomElement& curve_element) {
   const QColor color(curve_element.attribute(QStringLiteral("color")));
   CurveInfo* loaded_curve = nullptr;
-  if (isXYPlot() && curve_element.hasAttribute(QStringLiteral("curve_x")) &&
-      curve_element.hasAttribute(QStringLiteral("curve_y"))) {
+  if (curve_element.hasAttribute(QStringLiteral("snapshot_y"))) {
+    // Snapshot curve: re-resolve the whole wildcard group from the stable topic name
+    // + patterns. Idempotent (progressive rebind re-applies the same element), and a
+    // no-op when the topic is absent from the catalog — the graceful-degradation
+    // contract, matching how an unresolved regular curve simply never appears.
+    const QString topic_name = curve_element.attribute(QStringLiteral("topic"));
+    const QString x_pattern = curve_element.attribute(QStringLiteral("snapshot_x"));
+    const QString y_pattern = curve_element.attribute(QStringLiteral("snapshot_y"));
+    const QString label = curve_element.attribute(QStringLiteral("label"));
+    loaded_curve = curveFromTitle(stableSnapshotKey(topic_name, x_pattern, y_pattern));
+    if (loaded_curve == nullptr && catalog_ != nullptr) {
+      DatasetId dataset_id = 0;
+      TopicId topic_id = 0;
+      bool found = false;
+      for (const CurveDescriptor& curve : catalog_->curves()) {
+        if (curve.topic_name == topic_name) {
+          dataset_id = curve.dataset_id;
+          topic_id = curve.topic_id;
+          found = true;
+          break;
+        }
+      }
+      if (found) {
+        loaded_curve = addSnapshotCurve(
+            dataset_id, topic_id, topic_name, x_pattern, y_pattern, label, color.isValid() ? color : Qt::transparent);
+        // Outside the xmlLoadState batch (e.g. a progressive PendingCurveBinder
+        // rebind), the caller frames via applySavedViewportOrZoom, so refresh the new
+        // curve to the current tracker time and treat the view as already determined.
+        if (loaded_curve != nullptr && !loading_state_) {
+          refreshSnapshotCurves(last_tracker_time_sec_);
+          snapshot_fitted_ = true;
+        }
+      }
+    }
+  } else if (isXYPlot() && curve_element.hasAttribute(QStringLiteral("curve_x")) &&
+             curve_element.hasAttribute(QStringLiteral("curve_y"))) {
     const QString x_name = curve_element.attribute(QStringLiteral("curve_x"));
     const QString y_name = curve_element.attribute(QStringLiteral("curve_y"));
     const QString source_name = curve_element.attribute(QStringLiteral("name"));
@@ -810,7 +947,8 @@ PlotWidget::CurveInfo* PlotWidget::applyCurveElement(const QDomElement& curve_el
     // Seed the session color memory so this curve keeps its saved color when
     // later dragged into another plot (issue #68). Time-series only — see the
     // matching note in onChangeCurveColor; XY curves are out of scope here.
-    if (CurveColorRegistry* registry = colorRegistryOf(session_); registry != nullptr && !isXYPlot()) {
+    if (CurveColorRegistry* registry = colorRegistryOf(session_);
+        registry != nullptr && !isXYPlot() && !isSnapshotPlot()) {
       registry->setColor(loaded_curve->source_name, color.name());
     }
   }
