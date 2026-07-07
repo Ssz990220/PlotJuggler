@@ -82,6 +82,18 @@ target_link_libraries(plot_widget_replace_curve_test PRIVATE
 
 add_test(NAME PlotWidgetReplaceCurveTest COMMAND plot_widget_replace_curve_test)
 
+add_executable(plot_widget_snapshot_test
+    plot_widget_snapshot_test.cpp
+)
+
+target_compile_options(plot_widget_snapshot_test PRIVATE ${PJ_WARNING_FLAGS})
+target_link_libraries(plot_widget_snapshot_test PRIVATE
+    pj_plotting
+    GTest::gtest
+)
+
+add_test(NAME PlotWidgetSnapshotTest COMMAND plot_widget_snapshot_test)
+
 add_executable(plot_widget_default_style_test
     plot_widget_default_style_test.cpp
 )

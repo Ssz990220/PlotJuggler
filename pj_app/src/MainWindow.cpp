@@ -2160,12 +2160,14 @@ void MainWindow::onPlotZoomChanged(PlotWidget* modified, QRectF rect) {
   if (!button_link_->isChecked()) {
     return;
   }
-  if (modified == nullptr || modified->isEmpty() || modified->isXYPlot() || !modified->isZoomLinkEnabled()) {
+  if (modified == nullptr || modified->isEmpty() || modified->isXYPlot() || modified->isSnapshotPlot() ||
+      !modified->isZoomLinkEnabled()) {
     return;
   }
 
   forEachPlot([modified, rect](PlotWidget* plot) {
-    if (plot == modified || plot->isEmpty() || plot->isXYPlot() || !plot->isZoomLinkEnabled()) {
+    if (plot == modified || plot->isEmpty() || plot->isXYPlot() || plot->isSnapshotPlot() ||
+        !plot->isZoomLinkEnabled()) {
       return;
     }
     // Linked zoom only ever aligns the horizontal (time) range: copy the source's
@@ -2415,7 +2417,7 @@ void MainWindow::linkedZoomOut() {
     std::optional<Range<double>> x_union;
     for (int index = 0; index < docker->plotCount(); ++index) {
       PlotWidget* plot = plot_at(index);
-      if (plot == nullptr || plot->isXYPlot()) {
+      if (plot == nullptr || plot->isXYPlot() || plot->isSnapshotPlot()) {
         continue;
       }
       const QRectF rect = plot->maxZoomRect();
@@ -2432,7 +2434,7 @@ void MainWindow::linkedZoomOut() {
       if (plot == nullptr) {
         continue;
       }
-      if (plot->isXYPlot() || !x_union) {
+      if (plot->isXYPlot() || plot->isSnapshotPlot() || !x_union) {
         plot->zoomOut(false);
         continue;
       }

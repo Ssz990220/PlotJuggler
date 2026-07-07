@@ -49,6 +49,19 @@ class PlotWidget : public PlotWidgetBase {
   // never on layout/undo load (that path passes the saved alias to addCurveXY).
   CurveInfo* createCurveXYInteractive(const QString& x_key, const QString& y_key);
 
+  // Adds a "snapshot" curve group: for the array under a topic's CURRENT message
+  // (the one at-or-before the tracker), each `y_patterns` entry ("<array>[:]<leaf>",
+  // e.g. "predicted_trajectory[:].positions[3]") becomes one curve plotting that
+  // leaf across every array element. X is the element index when `x_pattern` is
+  // empty, else the resolved `x_pattern` leaf (paired per element). Curves refresh
+  // on tracker move (playback) and on ingest (streaming). Puts the plot into
+  // snapshot mode; its X axis is data, not time, so it is excluded from time-axis
+  // linking like an XY plot. Returns the curves added (empty on failure — unknown
+  // topic, no matching columns, or no resolvable Y leaves).
+  std::vector<CurveInfo*> addSnapshotCurveGroup(
+      DatasetId dataset_id, TopicId topic_id, const QString& x_pattern, const QStringList& y_patterns,
+      const QString& alias_prefix = {});
+
   // Add (or look up, if already present) the curve described by a layout `<curve>`
   // element and apply its saved style (color, line_width, style, visible). Picks
   // time-series vs XY from the plot's mode + the element's curve_x/curve_y attrs,
@@ -73,6 +86,14 @@ class PlotWidget : public PlotWidgetBase {
 
   void setZoomRectangle(QRectF rect, bool emit_signal);
   [[nodiscard]] bool isZoomLinkEnabled() const noexcept;
+  // True once addSnapshotCurveGroup has put this plot into snapshot mode. Its X
+  // axis renders a data field (or element index), not the shared time axis, so
+  // callers exclude it from time-axis zoom linking exactly as they do XY plots —
+  // but, unlike XY, the tracker still drives it (setTrackerPosition refreshes the
+  // snapshot instead of drawing a time cursor).
+  [[nodiscard]] bool isSnapshotPlot() const noexcept {
+    return snapshot_mode_;
+  }
   void setTrackerEnabled(bool enabled);
   [[nodiscard]] bool trackerEnabled() const noexcept;
   void setTrackerParameter(CurveTracker::Parameter parameter);
@@ -184,6 +205,10 @@ class PlotWidget : public PlotWidgetBase {
   // there is no session or no datastore-backed curve — then display == absolute.
   [[nodiscard]] double displayOffsetSeconds() const;
   void reconnectDataSignals();
+  // Rebuild every SnapshotSeriesData curve to the message at-or-before
+  // `display_time_sec`. Returns whether any curve's point set changed, so callers
+  // can gate a replot. No-op on plots with no snapshot curves.
+  bool refreshSnapshotCurves(double display_time_sec);
   // Drop the cached display offset on every bound DatastoreCurveAdapter whose
   // dataset matches `only` (or on all bound adapters when nullopt), so the next
   // paint re-maps the curve's X into the new frame. Returns whether any adapter
@@ -213,6 +238,16 @@ class PlotWidget : public PlotWidgetBase {
   bool tracker_enabled_ = true;
   bool show_points_ = true;
   bool loading_state_ = false;
+  // Snapshot ("current message") mode: X axis is a data field / element index, not
+  // the shared time axis. Set by addSnapshotCurveGroup, cleared by removeAllCurves.
+  bool snapshot_mode_ = false;
+  // Whether a snapshot plot has auto-fit its axes to real data yet. Fit happens
+  // once (when the first message appears); later tracker moves only replot, so the
+  // user's manual zoom is preserved.
+  bool snapshot_fitted_ = false;
+  // Last tracker position (display seconds). Snapshot curves refresh to this on a
+  // streaming ingest, since samplesIngested carries no time of its own.
+  double last_tracker_time_sec_ = 0.0;
   QwtPlotMarker* show_point_marker_ = nullptr;
   QwtPlotMarker* show_point_text_ = nullptr;
   // Used to skip replot when the mouse drifts but the snapped sample is unchanged.

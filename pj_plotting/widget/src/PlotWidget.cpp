@@ -37,6 +37,8 @@
 #include "pj_plotting/DatastoreCurveAdapter.h"
 #include "pj_plotting/PlotLegend.h"
 #include "pj_plotting/PointSeriesXY.h"
+#include "pj_plotting/SnapshotGroupResolver.h"
+#include "pj_plotting/SnapshotSeriesData.h"
 #include "pj_plotting/XYCurveDialog.h"
 #include "pj_runtime/CatalogModel.h"
 #include "pj_runtime/CurveColorRegistry.h"
@@ -52,6 +54,18 @@ namespace PJ {
 namespace {
 
 constexpr int kHoverHitRadiusPx = 40;
+
+// The leaf portion of a "<array>[:]<leaf>" snapshot pattern, with a single leading
+// '.' or '/' separator stripped — e.g. "predicted_trajectory[:].positions[3]" ->
+// "positions[3]". Used for the X-axis title and legend labels.
+[[nodiscard]] QString snapshotLeafLabel(const QString& pattern) {
+  const int at = pattern.indexOf(QStringLiteral("[:]"));
+  QString leaf = at < 0 ? pattern : pattern.mid(at + 3);
+  if (!leaf.isEmpty() && (leaf.front() == QLatin1Char('.') || leaf.front() == QLatin1Char('/'))) {
+    leaf = leaf.mid(1);
+  }
+  return leaf;
+}
 
 void addActionCategorySeparator(QMenu& menu) {
   const QList<QAction*> actions = menu.actions();
@@ -195,8 +209,9 @@ PlotWidget::CurveInfo* PlotWidget::addCurve(const QString& name, QColor color) {
 
 void PlotWidget::autoZoomPlotVertically() {
   // Skip during layout restore (the saved range wins), when there is nothing to
-  // fit, and for XY plots (their X axis is data, not the shared time axis).
-  if (loading_state_ || curveList().empty() || isXYPlot()) {
+  // fit, and for XY / snapshot plots (their X axis is data, not the shared time
+  // axis — snapshot plots fit both axes themselves via resetZoom on refresh).
+  if (loading_state_ || curveList().empty() || isXYPlot() || isSnapshotPlot()) {
     return;
   }
   if (!QSettings().value(QStringLiteral("Preferences::auto_zoom_plots"), true).toBool()) {
@@ -294,6 +309,83 @@ PlotWidget::CurveInfo* PlotWidget::createCurveXYInteractive(const QString& x_key
     return addCurveXY(final_x, final_y, alias);
   }
   return nullptr;  // cancelled
+}
+
+std::vector<PlotWidget::CurveInfo*> PlotWidget::addSnapshotCurveGroup(
+    DatasetId dataset_id, TopicId topic_id, const QString& x_pattern, const QStringList& y_patterns,
+    const QString& alias_prefix) {
+  std::vector<CurveInfo*> added;
+  if (session_ == nullptr || catalog_ == nullptr || y_patterns.isEmpty()) {
+    return added;
+  }
+
+  // The topic's flattened columns, as (column index, field path), for the resolver.
+  std::vector<SnapshotColumn> columns;
+  for (const CurveDescriptor& curve : catalog_->curves()) {
+    if (curve.topic_id == topic_id) {
+      columns.push_back(
+          SnapshotColumn{.column_index = curve.column_index, .field_path = curve.field_path.toStdString()});
+    }
+  }
+  if (columns.empty()) {
+    return added;
+  }
+
+  const bool index_mode = x_pattern.isEmpty();
+  const auto x_mode = index_mode ? SnapshotSeriesData::XMode::kIndex : SnapshotSeriesData::XMode::kColumn;
+  std::vector<SnapshotElement> x_elements;
+  if (!index_mode) {
+    x_elements = resolveSnapshotPattern(columns, x_pattern.toStdString());
+    if (x_elements.empty()) {
+      return added;  // X leaf resolves to nothing — no element to pair against
+    }
+  }
+
+  for (const QString& y_pattern : y_patterns) {
+    std::vector<SnapshotElement> y_elements = resolveSnapshotPattern(columns, y_pattern.toStdString());
+    if (y_elements.empty()) {
+      continue;
+    }
+    auto* series = new SnapshotSeriesData(session_, topic_id, dataset_id, x_mode, x_elements, std::move(y_elements));
+    // Identity key is unique per (topic, Y pattern) so curveFromTitle can't collide;
+    // legend shows the Y leaf, optionally prefixed by the caller's alias.
+    const QString name = QStringLiteral("snapshot:%1:%2").arg(topic_id).arg(y_pattern);
+    const QString leaf = snapshotLeafLabel(y_pattern);
+    const QString display = alias_prefix.isEmpty() ? leaf : QStringLiteral("%1 %2").arg(alias_prefix, leaf);
+    if (CurveInfo* info = PlotWidgetBase::addCurve(name, series, Qt::transparent, display); info != nullptr) {
+      added.push_back(info);
+    }
+  }
+
+  if (added.empty()) {
+    return added;
+  }
+
+  snapshot_mode_ = true;
+  if (tracker_ != nullptr) {
+    tracker_->setEnabled(false);  // X is data, not time — no vertical time cursor
+  }
+  qwtPlot()->setAxisTitle(QwtPlot::xBottom, index_mode ? tr("index") : snapshotLeafLabel(x_pattern));
+  // Populate to the current tracker time, then fit both axes to the snapshot data.
+  // If there is no message at that time yet, defer the fit to the first tracker move
+  // that brings data (snapshot_fitted_ stays false) rather than fitting an empty view.
+  const bool has_data = refreshSnapshotCurves(last_tracker_time_sec_);
+  resetZoom();
+  snapshot_fitted_ = has_data;
+  return added;
+}
+
+bool PlotWidget::refreshSnapshotCurves(double display_time_sec) {
+  bool changed = false;
+  for (auto& info : curveList()) {
+    if (info.curve == nullptr) {
+      continue;
+    }
+    if (auto* snapshot = dynamic_cast<SnapshotSeriesData*>(info.curve->data())) {
+      changed = snapshot->refresh(display_time_sec) || changed;
+    }
+  }
+  return changed;
 }
 
 void PlotWidget::setZoomRectangle(QRectF rect, bool emit_signal) {
@@ -766,6 +858,27 @@ void PlotWidget::setTrackerPosition(double display_time_sec) {
   if (tracker_ == nullptr) {
     return;
   }
+  // Remember the time so a streaming ingest (which carries none) can refresh at it.
+  last_tracker_time_sec_ = display_time_sec;
+
+  // Snapshot mode inverts the XY early-return: XY ignores the tracker entirely, but
+  // a snapshot plot's whole content IS the message under the tracker. There is no
+  // vertical time cursor (the X axis is data, not time) — instead we rebuild each
+  // snapshot curve to the message at-or-before this time and replot when it changed.
+  if (isSnapshotPlot()) {
+    tracker_->setEnabled(false);
+    if (refreshSnapshotCurves(display_time_sec)) {
+      if (!snapshot_fitted_) {
+        // First real data — fit both axes once, then leave the user's zoom alone.
+        resetZoom();
+        snapshot_fitted_ = true;
+      } else {
+        replot();
+      }
+    }
+    return;
+  }
+
   tracker_->setEnabled(tracker_enabled_ && !isXYPlot());
   if (isXYPlot()) {
     return;
@@ -850,6 +963,9 @@ void PlotWidget::setCurveVisible(const QString& curve_name, bool visible) {
 void PlotWidget::removeAllCurves() {
   PlotWidgetBase::removeAllCurves();
   setModeXY(false);
+  snapshot_mode_ = false;
+  snapshot_fitted_ = false;
+  qwtPlot()->setAxisTitle(QwtPlot::xBottom, QString());
   if (tracker_ != nullptr) {
     tracker_->setEnabled(tracker_enabled_);
     tracker_->redraw();
@@ -910,7 +1026,8 @@ bool PlotWidget::eventFilter(QObject* obj, QEvent* event) {
 
   if (event->type() == QEvent::MouseButtonPress) {
     auto* mouse_event = static_cast<QMouseEvent*>(event);
-    if (mouse_event->button() == Qt::LeftButton && mouse_event->modifiers() == Qt::ShiftModifier && !isXYPlot()) {
+    if (mouse_event->button() == Qt::LeftButton && mouse_event->modifiers() == Qt::ShiftModifier && !isXYPlot() &&
+        !isSnapshotPlot()) {
       const QwtScaleMap x_map = qwtPlot()->canvasMap(QwtPlot::xBottom);
       const QwtScaleMap y_map = qwtPlot()->canvasMap(QwtPlot::yLeft);
       emit trackerMoved(
@@ -924,7 +1041,8 @@ bool PlotWidget::eventFilter(QObject* obj, QEvent* event) {
   }
   if (event->type() == QEvent::MouseMove) {
     auto* mouse_event = static_cast<QMouseEvent*>(event);
-    if (mouse_event->buttons() == Qt::LeftButton && mouse_event->modifiers() == Qt::ShiftModifier && !isXYPlot()) {
+    if (mouse_event->buttons() == Qt::LeftButton && mouse_event->modifiers() == Qt::ShiftModifier && !isXYPlot() &&
+        !isSnapshotPlot()) {
       const QwtScaleMap x_map = qwtPlot()->canvasMap(QwtPlot::xBottom);
       const QwtScaleMap y_map = qwtPlot()->canvasMap(QwtPlot::yLeft);
       emit trackerMoved(
@@ -951,6 +1069,9 @@ bool PlotWidget::eventFilter(QObject* obj, QEvent* event) {
 void PlotWidget::onExternallyResized(const QRectF& rect) {
   if (curveList().empty()) {
     return;
+  }
+  if (isSnapshotPlot()) {
+    return;  // X axis is data, not time — never sync this plot's X to time siblings.
   }
   if (isXYPlot()) {
     if (keepRatioXY()) {
@@ -1383,6 +1504,27 @@ void PlotWidget::reconnectDataSignals() {
 
   samples_ingested_connection_ =
       connect(session_, &SessionManager::samplesIngested, this, [this](const QVector<TopicId>& ids, bool live) {
+        // Snapshot plots hold only snapshot curves. Rebuild each one whose topic got
+        // new samples to the message at the last tracker time, then replot at the
+        // current view — never resetZoom: the X axis is data, so re-fitting it to
+        // each incoming message (or a shorter ragged one) would make the plot jump.
+        if (isSnapshotPlot()) {
+          bool snapshot_changed = false;
+          for (auto& info : curveList()) {
+            if (info.curve == nullptr) {
+              continue;
+            }
+            auto* snapshot = dynamic_cast<SnapshotSeriesData*>(info.curve->data());
+            if (snapshot != nullptr && std::find(ids.begin(), ids.end(), snapshot->topicId()) != ids.end()) {
+              snapshot_changed = snapshot->refresh(last_tracker_time_sec_) || snapshot_changed;
+            }
+          }
+          if (snapshot_changed) {
+            replot();
+          }
+          return;
+        }
+
         bool changed = false;
         for (auto& info : curveList()) {
           auto* adapter = dynamic_cast<DatastoreCurveAdapter*>(info.curve->data());
@@ -1438,6 +1580,12 @@ void PlotWidget::reconnectDataSignals() {
           if (auto* xy_series = dynamic_cast<PointSeriesXY*>(info.curve->data())) {
             if (xy_series->xSource().dataset_id == dataset_id || xy_series->ySource().dataset_id == dataset_id) {
               xy_series->onDataCleared();
+            }
+            continue;
+          }
+          if (auto* snapshot = dynamic_cast<SnapshotSeriesData*>(info.curve->data())) {
+            if (snapshot->datasetId() == dataset_id) {
+              snapshot->onDataCleared();
             }
           }
         }
