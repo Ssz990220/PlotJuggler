@@ -45,16 +45,29 @@ struct ObjectTopicPayload {
   QString metadata_json;
 };
 
+// Advertised-topic payload: a topic a streaming source knows it can stream but
+// has NOT subscribed, so there is no data and no storage id yet. Surfaced as a
+// "paused" placeholder in the catalog and superseded by a real
+// ScalarField/ObjectTopic entry the moment data for the topic arrives.
+// `classification` is the a-priori schema classification (kNone = scalar-bearing;
+// else the builtin object type) used to route drop behavior and to mark the
+// always-active infrastructure tier (TF / CameraInfo).
+struct AdvertisedTopicPayload {
+  sdk::BuiltinObjectType classification = sdk::BuiltinObjectType::kNone;
+};
+
 // A single entry in the catalog. The variant payload statically separates
-// scalar-field state from object-topic state so consumers cannot accidentally
-// read object fields off a scalar entry (or vice versa) — the previous flat
-// struct had per-variant dead fields that bit-rotted silently.
+// scalar-field state from object-topic (and advertised-placeholder) state so
+// consumers cannot accidentally read object fields off a scalar entry (or vice
+// versa) — the previous flat struct had per-variant dead fields that bit-rotted
+// silently. An AdvertisedTopicPayload entry has NO storage id (it is a
+// data-less placeholder), so it is neither a scalar field nor an object topic.
 struct CatalogItem {
   QString key;  // Opaque catalog key, not a display path.
   QString dataset_name;
   QString topic_name;
   DatasetId dataset_id;
-  std::variant<ScalarFieldPayload, ObjectTopicPayload> payload;
+  std::variant<ScalarFieldPayload, ObjectTopicPayload, AdvertisedTopicPayload> payload;
 };
 
 // True for canonical object types the 2D scene module (pj_scene2D) can display
@@ -88,6 +101,22 @@ struct CatalogItem {
 [[nodiscard]] inline const ObjectTopicPayload* asObjectTopic(const CatalogItem& item) noexcept {
   return std::get_if<ObjectTopicPayload>(&item.payload);
 }
+[[nodiscard]] inline bool isAdvertisedTopic(const CatalogItem& item) noexcept {
+  return std::holds_alternative<AdvertisedTopicPayload>(item.payload);
+}
+[[nodiscard]] inline const AdvertisedTopicPayload* asAdvertisedTopic(const CatalogItem& item) noexcept {
+  return std::get_if<AdvertisedTopicPayload>(&item.payload);
+}
+
+// One available-but-unsubscribed topic advertised by a streaming source. Carries
+// only what the catalog needs to show a paused placeholder: the topic name and
+// its a-priori classification (kNone = scalar-bearing; else the builtin object
+// type). No storage is allocated; the placeholder is superseded the moment real
+// data for the topic arrives.
+struct AdvertisedTopic {
+  QString topic_name;
+  sdk::BuiltinObjectType classification = sdk::BuiltinObjectType::kNone;
+};
 
 // Qt-side facade over the catalog of topics/curves known to the current
 // session. Populated as data sources load; GUI views (CurveListPanel,
@@ -116,9 +145,11 @@ class CatalogModel : public QObject {
   // through the curve's per-dataset display offset.
   [[nodiscard]] std::optional<double> scalarValueAt(const QString& key, double display_seconds) const;
 
-  // True iff `key` names a scalar-field curve (not an object topic / unknown key).
+  // True iff `key` names a scalar-field curve OR a scalar-shaped (kNone) advertised
+  // placeholder (not an object topic / object-shaped placeholder / unknown key).
   // Cheap lookup with no CatalogItem copy — lets the value column choose "-" (a
-  // scalar with no sample yet) vs blank (non-scalar row) without itemDescriptor().
+  // scalar with no sample yet, real or not-yet-subscribed) vs blank (non-scalar
+  // row) without itemDescriptor().
   [[nodiscard]] bool isScalarKey(const QString& key) const;
 
   // True iff `key` names a string-typed scalar field (a subset of isScalarKey).
@@ -178,6 +209,28 @@ class CatalogModel : public QObject {
   // to source_name). Does not touch the engine's immutable DatasetInfo, so
   // dataset-reuse matching (by source_name) is unaffected.
   void setDatasetDisplayName(DatasetId dataset_id, const QString& display_name);
+
+  // Replace the full set of advertised (available-but-unsubscribed) topics for a
+  // streaming dataset. Each appears in the catalog as a data-less "paused"
+  // placeholder ONLY where no storage-backed entry for the same topic name exists
+  // (real data wins). Declarative: the given list is the complete set for
+  // `dataset_id`; topics dropped from it are removed. Zero storage cost — no
+  // DataEngine/ObjectStore topic is created. Must be called on the model's
+  // (GUI) thread; streaming producers marshal to it. Emits itemsAdded/itemsRemoved.
+  void setAdvertisedTopics(DatasetId dataset_id, const std::vector<AdvertisedTopic>& topics);
+
+  // Drop every advertised placeholder for a dataset (e.g. on source disconnect).
+  void clearAdvertisedTopics(DatasetId dataset_id);
+
+  // Marks whether `dataset_id`'s streaming source supports per-topic pause
+  // (kCapabilityPerTopicPause) — set by StreamingSourceManager right after a
+  // session starts, cleared on session teardown. A non-demand source (or a
+  // file dataset, where this is never set) sends everything regardless of
+  // display state, so there is no wire subscription for the UI to represent
+  // as "unsubscribed"; consumers gate on this before reading a topic's
+  // presence/absence in TopicDemandTracker's active set as a pause signal.
+  void setPerTopicPauseCapable(DatasetId dataset_id, bool capable);
+  [[nodiscard]] bool isPerTopicPauseCapable(DatasetId dataset_id) const;
 
  public slots:
   void rebuildFromDatastore();

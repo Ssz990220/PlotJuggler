@@ -134,6 +134,11 @@ class PlotWidget : public PlotWidgetBase {
   // Editor panel (chart-area takeover) scoped to `sources` and, on Apply, calls
   // `origin->replaceCurve()` so the filtered output replaces each source in place.
   void filterEditorRequested(std::vector<CurveDescriptor> sources, PlotWidget* origin);
+  // A dropped catalog key named an ADVERTISED (not-yet-subscribed) placeholder
+  // topic rather than resolved data — dropping it must not fabricate a curve
+  // (there is no storage id yet). The shell resolves demand + a pending bind
+  // (see pj_app's TopicDemandController) instead of this widget.
+  void placeholderCurveDropped(QString catalog_key);
 
  protected:
   bool eventFilter(QObject* obj, QEvent* event) override;
@@ -192,6 +197,17 @@ class PlotWidget : public PlotWidgetBase {
   bool invalidateAdapterOffsets(std::optional<DatasetId> only = std::nullopt);
   [[nodiscard]] QStringList decodeCurveDrop(const QMimeData* mime_data, const QString& format) const;
   [[nodiscard]] bool allCurvesKnown(const QStringList& curves) const;
+  // Time-series drop gate (curveslist/add_curve): a curve name is droppable when
+  // it resolves to real data OR names a scalar-shaped advertised placeholder
+  // (kNone classification) — both are legitimate drop targets even though only
+  // the former can materialize a curve immediately (onDropEvent routes the
+  // latter to placeholderCurveDropped instead of addCurve). Unlike
+  // allCurvesKnown (real curves only), used by the XY gesture, which has no
+  // placeholder analogue.
+  [[nodiscard]] bool allCurvesDroppable(const QStringList& curves) const;
+  // True iff `name` is a scalar-shaped (kNone) advertised placeholder — i.e. a
+  // droppable name allCurvesKnown would reject.
+  [[nodiscard]] bool isPlaceholderCurveName(const QString& name) const;
   [[nodiscard]] static QString lineWidthToString(LineWidth width);
   [[nodiscard]] static LineWidth lineWidthFromString(QString value);
   // Maps a raw pen-width pixel value (older layouts' per-curve width) to the

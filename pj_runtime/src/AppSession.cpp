@@ -21,6 +21,7 @@
 #include "pj_runtime/PlaybackEngine.h"
 #include "pj_runtime/SessionManager.h"
 #include "pj_runtime/Time.h"
+#include "pj_runtime/TopicDemandTracker.h"
 
 namespace PJ {
 
@@ -42,6 +43,7 @@ AppSession::AppSession(QString extensions_dir, DiagnosticSink sink, QObject* par
       session_manager_(std::make_unique<SessionManager>()),
       playback_engine_(std::make_unique<PlaybackEngine>()),
       catalog_model_(std::make_unique<CatalogModel>(session_manager_.get())),
+      topic_demand_tracker_(std::make_unique<TopicDemandTracker>()),
       extension_catalog_(std::make_unique<ExtensionCatalogService>(std::move(extensions_dir), std::move(sink))) {
   // Forget remembered curve colors whenever the catalog empties (data cleared
   // or replaced), matching PJ3's per-PlotData COLOR_HINT lifetime so reopening
@@ -56,6 +58,7 @@ AppSession::AppSession(QString extensions_dir, DiagnosticSink sink, QObject* par
 }
 
 AppSession::~AppSession() {
+  topic_demand_tracker_.reset();
   catalog_model_.reset();
   session_manager_.reset();
   playback_engine_.reset();

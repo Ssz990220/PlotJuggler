@@ -295,4 +295,69 @@ TEST_F(StreamParserSwapTest, CachedParserFieldHandleResolvesAfterPauseSwap) {
   host_->flushPending();
 }
 
+// Every engine topic under `dataset_id` whose descriptor carries `name`.
+// createTopic mints a fresh TopicId per call with NO name dedup, so a
+// non-idempotent rebind shows up here as a duplicate topic.
+std::size_t countTopicsNamed(const PJ::DataEngine& engine, PJ::DatasetId dataset_id, const std::string& name) {
+  std::size_t count = 0;
+  for (const PJ::TopicId topic_id : engine.listTopics(dataset_id)) {
+    const auto* storage = engine.getTopicStorage(topic_id);
+    if (storage != nullptr && storage->descriptor().name == name) {
+      ++count;
+    }
+  }
+  return count;
+}
+
+// A demand-driven source unsubscribes and later RE-subscribes a topic; the
+// plugin calls ensure_parser_binding again with the identical request (its own
+// binding cache was dropped with the subscription). The host must hand back
+// the EXISTING binding — a second createTopic would register a second engine
+// topic with the same name, doubling every field in the catalog and curve tree.
+TEST_F(StreamParserSwapTest, IdenticalRebindReusesBindingInsteadOfDuplicatingTopic) {
+  const PJ::ParserBindingRequest request{
+      .topic_name = "/imu/value",
+      .parser_encoding = "streaming_caching",
+      .type_name = "streaming/cached_scalar",
+      .schema = PJ::Span<const uint8_t>{},
+      .parser_config_json = "{}",
+  };
+  auto first = runtime().ensureParserBinding(request);
+  ASSERT_TRUE(first.has_value()) << first.error();
+  ASSERT_TRUE(pushFloat(*first, 10, 1.0F).has_value());
+  host_->flushPending();
+
+  auto second = runtime().ensureParserBinding(request);
+  ASSERT_TRUE(second.has_value()) << second.error();
+  EXPECT_EQ(second->id, first->id) << "identical rebind must reuse the existing binding";
+  EXPECT_EQ(countTopicsNamed(primary_engine_, dataset_id_, "/imu/value"), 1U)
+      << "rebind must not register a duplicate engine topic";
+
+  // The reused handle keeps ingesting into the SAME topic.
+  ASSERT_TRUE(pushFloat(*second, 20, 2.0F).has_value());
+  host_->flushPending();
+  EXPECT_EQ(countTopicsNamed(primary_engine_, dataset_id_, "/imu/value"), 1U);
+}
+
+// A topic re-advertised with a different type/schema is a genuine retype — the
+// old binding's parser and columns don't apply, so the host must mint a fresh
+// binding rather than reuse one bound to the stale schema.
+TEST_F(StreamParserSwapTest, RetypedRebindMintsFreshBinding) {
+  const PJ::ParserBindingRequest request{
+      .topic_name = "/imu/value",
+      .parser_encoding = "streaming_caching",
+      .type_name = "streaming/cached_scalar",
+      .schema = PJ::Span<const uint8_t>{},
+      .parser_config_json = "{}",
+  };
+  auto first = runtime().ensureParserBinding(request);
+  ASSERT_TRUE(first.has_value()) << first.error();
+
+  PJ::ParserBindingRequest retyped = request;
+  retyped.type_name = "streaming/other_type";
+  auto second = runtime().ensureParserBinding(retyped);
+  ASSERT_TRUE(second.has_value()) << second.error();
+  EXPECT_NE(second->id, first->id) << "a retyped topic must get a fresh binding";
+}
+
 }  // namespace

@@ -9,7 +9,6 @@
 #include <QString>
 #include <functional>
 #include <mutex>
-#include <set>
 #include <utility>
 #include <vector>
 
@@ -194,12 +193,13 @@ DataSourceRuntimeHost::ParserBinding::ParserBinding() = default;
 DataSourceRuntimeHost::ParserBinding::ParserBinding(
     std::unique_ptr<ServiceRegistryBuilder> b, std::unique_ptr<DatastoreParserWriteHost> w,
     std::unique_ptr<DatastoreParserObjectWriteHost> ow, std::unique_ptr<MessageParserHandle> p, std::string topic,
-    sdk::BuiltinObjectType kind, std::optional<ObjectTopicId> object_topic)
+    Signature sig, sdk::BuiltinObjectType kind, std::optional<ObjectTopicId> object_topic)
     : registry_builder(std::move(b)),
       write_host(std::move(w)),
       object_write_host(std::move(ow)),
       parser(std::move(p)),
       topic_name(std::move(topic)),
+      signature(std::move(sig)),
       object_kind(kind),
       object_topic_id(object_topic) {}
 
@@ -228,6 +228,7 @@ const PJ_data_source_runtime_host_vtable_t DataSourceRuntimeHost::kVtable = {
     .show_message_box = &DataSourceRuntimeHost::cbShowMessageBox,
     .list_available_encodings = &DataSourceRuntimeHost::cbListAvailableEncodings,
     .push_message = &DataSourceRuntimeHost::cbPushMessage,
+    .notify_available_topics = &DataSourceRuntimeHost::cbNotifyAvailableTopics,
 };
 
 // ---------------------------------------------------------------------------
@@ -418,6 +419,16 @@ void DataSourceRuntimeHost::cbRequestStop(
   self->requestStop(std::string_view(reason.data, reason.size));
 }
 
+std::optional<uint32_t> DataSourceRuntimeHost::findReusableBinding(
+    std::string_view topic_name, const ParserBinding::Signature& signature) const {
+  for (const auto& [binding_id, binding] : parser_bindings_) {
+    if (binding.topic_name == topic_name && binding.signature == signature) {
+      return binding_id;
+    }
+  }
+  return std::nullopt;
+}
+
 bool DataSourceRuntimeHost::cbEnsureParserBinding(
     void* ctx, const PJ_parser_binding_request_t* request, PJ_parser_binding_handle_t* out,
     PJ_error_t* out_error) noexcept {
@@ -426,16 +437,39 @@ bool DataSourceRuntimeHost::cbEnsureParserBinding(
     const std::string_view encoding(request->parser_encoding.data, request->parser_encoding.size);
     const std::string_view topic_name(request->topic_name.data, request->topic_name.size);
     const std::string_view type_name(request->type_name.data, request->type_name.size);
+    const QString encoding_str = QString::fromUtf8(encoding.data(), static_cast<int>(encoding.size()));
 
-    const LoadedMessageParser* parser_entry =
-        self->catalog_.findParserByEncoding(QString::fromUtf8(encoding.data(), static_cast<int>(encoding.size())));
-    if (parser_entry == nullptr) {
-      return self->fail(out_error, ("no parser found for encoding '" + std::string(encoding) + "'").c_str());
+    std::string parser_config;
+    if (request->parser_config_json.size > 0) {
+      parser_config.assign(request->parser_config_json.data, request->parser_config_json.size);
+    }
+    ParserBinding::Signature signature{
+        std::string(encoding), std::string(type_name),
+        request->schema.size > 0
+            ? std::string(reinterpret_cast<const char*>(request->schema.data), request->schema.size)
+            : std::string{},
+        parser_config};
+
+    // A demand-driven plugin re-requests the binding on every re-subscribe
+    // (its cache dies with the subscription). Hand back the existing binding
+    // for an identical request instead of re-registering the topic — a second
+    // createTopic mints a duplicate engine topic with the same name, doubling
+    // every field in the catalog.
+    if (auto existing = self->findReusableBinding(topic_name, signature); existing.has_value()) {
+      *out = PJ_parser_binding_handle_t{*existing};
+      qCInfo(lcIngest) << "[parser-bind] reuse topic="
+                       << QString::fromUtf8(topic_name.data(), static_cast<int>(topic_name.size()))
+                       << "binding=" << *existing;
+      return true;
     }
 
-    auto parser = std::make_unique<MessageParserHandle>(parser_entry->library.createHandle());
+    // Resolve + instantiate the parser atomically under the catalog's shared
+    // lock (this runs on the plugin poll thread; the GUI thread may reload the
+    // catalog). The returned handle owns its DSO keepalive, so it stays valid
+    // past the lock and past a later reload().
+    auto parser = std::make_unique<MessageParserHandle>(self->catalog_.createParserHandleForEncoding(encoding_str));
     if (!parser->valid()) {
-      return self->fail(out_error, ("failed to create parser instance for '" + std::string(encoding) + "'").c_str());
+      return self->fail(out_error, ("no parser found for encoding '" + std::string(encoding) + "'").c_str());
     }
 
     auto topic_or = self->engine_.createTopic(self->dataset_id_, TopicDescriptor{.name = std::string(topic_name)});
@@ -484,9 +518,7 @@ bool DataSourceRuntimeHost::cbEnsureParserBinding(
           out_error, ("failed to bind schema for " + std::string(type_name) + ": " + status.error()).c_str());
     }
 
-    std::string parser_config;
-    if (request->parser_config_json.size > 0) {
-      parser_config.assign(request->parser_config_json.data, request->parser_config_json.size);
+    if (!parser_config.empty()) {
       if (auto status = parser->loadConfig(parser_config); !status) {
         return self->fail(out_error, ("failed to load parser config: " + status.error()).c_str());
       }
@@ -508,6 +540,11 @@ bool DataSourceRuntimeHost::cbEnsureParserBinding(
                        << "— scalar-only ingest";
     } else {
       if (auto existing = self->object_store_.findTopic(self->dataset_id_, topic_name); existing.has_value()) {
+        // KNOWN LIMITATION: a topic retyped to a DIFFERENT builtin object type
+        // mid-session reuses this id and its original metadata_json, so the new
+        // payloads keep routing as the old type until the stream restarts.
+        // Acceptable for now — a mid-session builtin-type change is not a flow
+        // any supported source produces.
         object_topic_id = existing;
       } else {
         const std::string metadata_json = fmt::format(R"({{"builtin_object_type":"{}"}})", sdk::name(object_kind));
@@ -542,7 +579,8 @@ bool DataSourceRuntimeHost::cbEnsureParserBinding(
       registry_builder->registerService<sdk::ParserObjectWriteHostService>(object_write_host->raw());
 
       if (self->object_topic_parser_registrar_) {
-        auto object_parser = std::make_unique<MessageParserHandle>(parser_entry->library.createHandle());
+        auto object_parser = std::make_unique<MessageParserHandle>(self->catalog_.createParserHandleForEncoding(
+            QString::fromUtf8(encoding.data(), static_cast<int>(encoding.size()))));
         if (!object_parser->valid()) {
           return self->fail(
               out_error, ("failed to create object parser instance for '" + std::string(encoding) + "'").c_str());
@@ -573,6 +611,7 @@ bool DataSourceRuntimeHost::cbEnsureParserBinding(
                         std::move(object_write_host),
                         std::move(parser),
                         std::string(topic_name),
+                        std::move(signature),
                         object_kind,
                         object_topic_id,
                     });
@@ -708,13 +747,9 @@ const char* DataSourceRuntimeHost::cbListAvailableEncodings(void* ctx) noexcept 
   try {
     // Build a JSON array of unique encodings the catalog knows. Cached on
     // the session so the returned char* is valid until the next call (per
-    // the protocol contract).
-    std::set<std::string> unique_encodings;
-    for (const auto& parser : self->catalog_.messageParsers()) {
-      for (const auto& encoding : parser.encodings) {
-        unique_encodings.insert(encoding);
-      }
-    }
+    // the protocol contract). parserEncodings() snapshots under the catalog's
+    // shared lock (this may run off the GUI thread) — already sorted+unique.
+    const std::vector<std::string> unique_encodings = self->catalog_.parserEncodings();
     std::string json = "[";
     bool first = true;
     for (const auto& enc : unique_encodings) {
@@ -729,6 +764,72 @@ const char* DataSourceRuntimeHost::cbListAvailableEncodings(void* ctx) noexcept 
     return self->available_encodings_cache_.c_str();
   } catch (...) {
     return nullptr;
+  }
+}
+
+// Runs on the plugin's poll/stream thread — deliberately the SAME thread and
+// catalog/parser access pattern cbEnsureParserBinding has always used
+// (findParserByEncoding + createHandle + bindSchema during live ingest), so
+// advertise-time classification introduces no cross-thread access that binding
+// didn't already perform.
+sdk::BuiltinObjectType DataSourceRuntimeHost::classifyAvailableTopic(const PJ_available_topic_t& topic) const noexcept {
+  const std::string_view encoding(topic.parser_encoding.data, topic.parser_encoding.size);
+  const std::string_view type_name(topic.type_name.data, topic.type_name.size);
+  const Span<const uint8_t> schema_span(topic.schema.data, topic.schema.size);
+  try {
+    // Resolve + instantiate under the catalog's shared lock (poll thread vs a
+    // GUI-thread reload()); the handle owns its DSO keepalive, so bindSchema /
+    // classifySchema below run safely after the lock is released.
+    MessageParserHandle parser =
+        catalog_.createParserHandleForEncoding(QString::fromUtf8(encoding.data(), static_cast<int>(encoding.size())));
+    if (parser.valid() && parser.bindSchema(type_name, schema_span)) {
+      const sdk::BuiltinObjectType classification = parser.classifySchema(type_name, schema_span);
+      if (classification != sdk::BuiltinObjectType::kNone) {
+        return classification;
+      }
+    }
+  } catch (...) {
+    // Fall through to the name-matching fallback below.
+  }
+  // Fallback: match the type name against the two infra-tier schemas so TF/CameraInfo
+  // stay classified for advertising even when this host has no parser for the encoding
+  // (or the parser's classify_schema returned kNone). Compare the LEAF segment
+  // (after the last '/' or '.') exactly, not a substring — a substring match would
+  // misclassify e.g. `my_msgs/CameraInfoStatus` as CameraInfo infrastructure and
+  // wrongly pin it always-subscribed.
+  const std::size_t leaf_start = type_name.find_last_of("/.");
+  const std::string_view leaf = leaf_start == std::string_view::npos ? type_name : type_name.substr(leaf_start + 1);
+  if (leaf == "FrameTransforms") {
+    return sdk::BuiltinObjectType::kFrameTransforms;
+  }
+  if (leaf == "CameraInfo") {
+    return sdk::BuiltinObjectType::kCameraInfo;
+  }
+  return sdk::BuiltinObjectType::kNone;
+}
+
+bool DataSourceRuntimeHost::cbNotifyAvailableTopics(
+    void* ctx, const PJ_available_topic_t* topics, uint64_t count, PJ_error_t* /*out_error*/) noexcept {
+  auto* self = static_cast<DataSourceRuntimeHost*>(ctx);
+  try {
+    std::vector<AdvertisedTopicInfo> classified;
+    classified.reserve(count);
+    for (uint64_t i = 0; i < count; ++i) {
+      const PJ_available_topic_t& topic = topics[i];
+      classified.push_back(
+          AdvertisedTopicInfo{
+              std::string(topic.topic_name.data, topic.topic_name.size),
+              self->classifyAvailableTopic(topic),
+          });
+    }
+    if (self->on_available_topics) {
+      self->on_available_topics(std::move(classified));
+    }
+    return true;
+  } catch (...) {
+    // Advertising is best-effort informational traffic — never fail the plugin's
+    // poll loop over it.
+    return true;
   }
 }
 

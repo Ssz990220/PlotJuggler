@@ -259,6 +259,17 @@ class DataProcessorService {
   /// Snapshot of every live transform recipe (unspecified order) — for layout save.
   [[nodiscard]] std::vector<TransformRecipe> transformRecipes() const;
 
+  /// Resolved SOURCE topics of a displayed Data Processor output: `output_topic_id`
+  /// is looked up first as a filter output, then as a transform output, and each
+  /// input topic name is resolved back to its live (dataset, name) via the same
+  /// name scan `resolveInputTopic` uses. Lets a demand-tracking consumer (see
+  /// `PJ::TopicDemandTracker`) keep a displayed derived series' inputs subscribed —
+  /// without this a streaming source would unsubscribe the input the moment only
+  /// the derived output is on screen, silently stalling the filter. Read-only.
+  /// Empty when `output_topic_id` is not a known filter/transform output, or when
+  /// an input topic can no longer be resolved by name (e.g. removed upstream).
+  [[nodiscard]] std::vector<std::pair<DatasetId, std::string>> sourceTopicsForOutput(TopicId output_topic_id) const;
+
   /// The materialized output topic ids of every EPHEMERAL transform (the preview
   /// nodes). The catalog excludes these from `rebuildFromDatastore`, so a live
   /// preview never surfaces its prefixed output topics in the Sources tree.

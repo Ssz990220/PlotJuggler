@@ -18,6 +18,7 @@
 #include <QPoint>
 #include <QPushButton>
 #include <QScopedValueRollback>
+#include <QScrollBar>
 #include <QSettings>
 #include <QSplitter>
 #include <QTimer>
@@ -28,7 +29,9 @@
 #include <array>
 #include <optional>
 
+#include "TopicDemandController.h"
 #include "pj_runtime/CatalogModel.h"
+#include "pj_runtime/TopicDemandTracker.h"
 #include "pj_widgets/CurveTreeView.h"
 #include "pj_widgets/SvgUtil.h"
 #include "scene_object_classification.h"
@@ -46,37 +49,88 @@ constexpr auto kShowValuesKey = "CurveListPanel/show_values";
 // the hot path.
 constexpr int kValueRefreshIntervalMs = 100;
 
-CurveTreeView::CurvePath treePathFromCatalogItem(const CatalogItem& item) {
+// Per-dataset active-topic sets for every per-topic-pause-capable dataset,
+// computed ONCE per pass — the per-item alternative (tracker->activeTopics per
+// catalog item) copies and re-sorts the active vector hundreds of times per
+// rebuild. A dataset absent from the map is not pause-capable, so its topics
+// are never "unsubscribed". Empty whenever `tracker` is null.
+QHash<DatasetId, QSet<QString>> buildActiveSets(const CatalogModel& catalog, const TopicDemandTracker* tracker) {
+  QHash<DatasetId, QSet<QString>> sets;
+  if (tracker == nullptr) {
+    return sets;
+  }
+  for (const auto& [dataset_id, dataset_name] : catalog.datasets()) {
+    if (!catalog.isPerTopicPauseCapable(dataset_id)) {
+      continue;
+    }
+    const std::vector<QString> active = tracker->activeTopics(dataset_id);
+    sets.insert(dataset_id, QSet<QString>(active.begin(), active.end()));
+  }
+  return sets;
+}
+
+// See buildActiveSets: a topic on a pause-capable dataset that nothing
+// currently references.
+bool isTopicUnsubscribed(
+    const QHash<DatasetId, QSet<QString>>& active_sets, DatasetId dataset_id, const QString& topic_name) {
+  const auto it = active_sets.constFind(dataset_id);
+  return it != active_sets.constEnd() && !it->contains(topic_name);
+}
+
+CurveTreeView::CurvePath treePathFromCatalogItem(
+    const CatalogItem& item, const QHash<DatasetId, QSet<QString>>& active_sets) {
   const auto* scalar = asScalarField(item);
   const auto* object_topic = asObjectTopic(item);
-  const auto object_type = object_topic != nullptr ? object_topic->object_type : sdk::BuiltinObjectType::kNone;
+  const auto* advertised = asAdvertisedTopic(item);
+  // An advertised placeholder classified kNone is scalar-shaped (no data yet, so
+  // it's shown as a flat, draggable leaf at the topic itself — placeholders carry
+  // no field breakdown); any other classification is object-shaped, shown as a
+  // non-selectable terminal node exactly like a real ObjectTopicPayload.
+  const bool placeholder_is_object =
+      advertised != nullptr && advertised->classification != sdk::BuiltinObjectType::kNone;
+  const auto object_type = object_topic != nullptr ? object_topic->object_type
+                           : placeholder_is_object ? advertised->classification
+                                                   : sdk::BuiltinObjectType::kNone;
   return CurveTreeView::CurvePath{
       .key = item.key,
       .dataset = item.dataset_name,
       .topic = item.topic_name,
       .field = scalar != nullptr ? scalar->field_name : QString{},
-      .selectable = scalar != nullptr,
+      .selectable = scalar != nullptr || (advertised != nullptr && !placeholder_is_object),
       // String fields show their value but can't be plotted, so they aren't
       // draggable for now (shown read-only in the list).
       .draggable = !(scalar != nullptr && scalar->is_string),
       .is_image_topic = isImageFamilyObjectType(object_type),
       .is_3d_object_topic = is3dSceneObjectType(object_type),
+      .is_placeholder = advertised != nullptr,
+      .is_unsubscribed = isTopicUnsubscribed(active_sets, item.dataset_id, item.topic_name),
   };
 }
 
-void addCatalogItems(CurveTreeView* tree_view, const std::vector<CatalogItem>& items) {
-  if (tree_view == nullptr || items.empty()) {
+void addCatalogItems(
+    CurveTreeView* tree_view, const CatalogModel* catalog, const TopicDemandTracker* tracker,
+    const std::vector<CatalogItem>& items) {
+  if (tree_view == nullptr || catalog == nullptr || items.empty()) {
     return;
   }
+  const QHash<DatasetId, QSet<QString>> active_sets = buildActiveSets(*catalog, tracker);
   std::vector<CurveTreeView::CurvePath> paths;
   paths.reserve(items.size());
   for (const CatalogItem& item : items) {
-    paths.push_back(treePathFromCatalogItem(item));
+    paths.push_back(treePathFromCatalogItem(item, active_sets));
   }
   tree_view->addCatalogItems(paths);
 }
 
-void rebuildTree(CurveTreeView* tree_view, CatalogModel* catalog, const QSet<QString>& custom_keys) {
+void rebuildTree(
+    CurveTreeView* tree_view, CatalogModel* catalog, const TopicDemandTracker* tracker,
+    const QSet<QString>& custom_keys) {
+  // A rebuild fires on every catalog removal — including the routine
+  // placeholder-supersede when a demand-subscribed topic's first sample
+  // arrives — so it must not cost the user their expand/scroll state.
+  const QStringList expanded = tree_view->expandedGroupPaths();
+  QScrollBar* scroll_bar = tree_view->verticalScrollBar();
+  const int scroll = scroll_bar != nullptr ? scroll_bar->value() : 0;
   tree_view->clearCurves();
   // Note: custom_view is NOT cleared here — custom series are managed separately
   // via addCustomCurve/removeCustomCurve in MainWindow.
@@ -90,7 +144,28 @@ void rebuildTree(CurveTreeView* tree_view, CatalogModel* catalog, const QSet<QSt
       tree_items.push_back(item);
     }
   }
-  addCatalogItems(tree_view, tree_items);
+  addCatalogItems(tree_view, catalog, tracker, tree_items);
+  tree_view->restoreExpandedGroupPaths(expanded);
+  // Restore scroll AFTER the tree has relaid out. Re-adding rows and expanding
+  // groups only schedules a geometry update, so the scrollbar's range is still
+  // stale right now — setValue() here would clamp against it (jumping to the
+  // bottom when a rebuild shrinks the tree, e.g. a dataset removal). Defer to
+  // the next event-loop turn, once the range reflects the rebuilt tree.
+  if (scroll_bar != nullptr) {
+    QTimer::singleShot(0, scroll_bar, [scroll_bar, scroll]() { scroll_bar->setValue(scroll); });
+  }
+}
+
+// One themed flat-button row in a PJMenu context menu — the shared
+// QPushButton-inside-QWidgetAction pattern both tree context menus use (a
+// plain QAction cannot carry the themed leading icon + destructive styling).
+QPushButton* addMenuButton(QMenu* menu, const QString& icon, const QString& theme, const QString& text) {
+  auto* button = new QPushButton(loadSvg(icon, theme), text, menu);
+  button->setFlat(true);
+  auto* action = new QWidgetAction(menu);
+  action->setDefaultWidget(button);
+  menu->addAction(action);
+  return button;
 }
 
 }  // namespace
@@ -252,6 +327,10 @@ CurveListPanel::CurveListPanel(QWidget* parent) : QWidget(parent), ui_(new Ui::C
   tree_view_->setContextMenuPolicy(Qt::CustomContextMenu);
   connect(tree_view_, &QWidget::customContextMenuRequested, this, &CurveListPanel::onTreeContextMenu);
 
+  // Double-click on a scalar placeholder leaf → bounded field preview + one-shot
+  // auto-expand. The handler no-ops until setTopicDemandController wires it.
+  connect(tree_view_, &CurveTreeView::placeholderPeekRequested, this, &CurveListPanel::onPlaceholderPeekRequested);
+
   // 10 Hz throttle for the value column (see refreshValues). The timeout is the
   // trailing edge: if a tracker update arrived during the window, fill once more
   // and re-arm so a continuous playback stream settles into a steady 10 Hz.
@@ -282,13 +361,85 @@ void CurveListPanel::setCatalog(CatalogModel* catalog) {
     disconnect(catalog_, nullptr, this, nullptr);
   }
   catalog_ = catalog;
-  rebuildTree(tree_view_, catalog_, custom_keys_);
+  rebuildTree(tree_view_, catalog_, tracker_, custom_keys_);
   if (!catalog_) {
     return;
   }
   connect(catalog_, &CatalogModel::itemsAdded, this, &CurveListPanel::onCatalogItemsAdded);
   connect(catalog_, &CatalogModel::itemsRemoved, this, &CurveListPanel::onCatalogItemsRemoved);
   connect(catalog_, &CatalogModel::cleared, this, &CurveListPanel::onCatalogCleared);
+}
+
+void CurveListPanel::setTopicDemandTracker(TopicDemandTracker* tracker) {
+  if (tracker_ == tracker) {
+    return;
+  }
+  if (tracker_ != nullptr) {
+    disconnect(tracker_, nullptr, this, nullptr);
+  }
+  tracker_ = tracker;
+  if (tracker_ != nullptr) {
+    connect(tracker_, &TopicDemandTracker::activeTopicsChanged, this, &CurveListPanel::onActiveTopicsChanged);
+    connect(tracker_, &TopicDemandTracker::forcedTopicsChanged, this, [this](DatasetId) { refreshForcedMarks(); });
+  }
+  refreshUnsubscribedFlags();
+  refreshForcedMarks();
+}
+
+void CurveListPanel::setTopicDemandController(TopicDemandController* controller) {
+  controller_ = controller;
+}
+
+void CurveListPanel::onPlaceholderPeekRequested(const QString& catalog_key) {
+  if (controller_ == nullptr || catalog_ == nullptr) {
+    return;
+  }
+  const auto item = catalog_->itemDescriptor(catalog_key);
+  if (!item.has_value()) {
+    return;
+  }
+  controller_->requestFieldPreview(item->dataset_id, item->topic_name);
+  // Arm the one-shot auto-expand at the topic's tree location, derived the same
+  // way addCatalogItem files the row (so the promoted fields' group node
+  // matches).
+  // The unsubscribed flag is irrelevant for path derivation — pass empty sets.
+  const CurveTreeView::CurvePath path = treePathFromCatalogItem(*item, {});
+  tree_view_->requestExpansionWhenPromoted(CurveTreeView::treePathFromCurvePath(path));
+}
+
+void CurveListPanel::onActiveTopicsChanged(DatasetId /*dataset_id*/, const std::vector<QString>& /*active_topics*/) {
+  refreshUnsubscribedFlags();
+}
+
+void CurveListPanel::refreshUnsubscribedFlags() {
+  if (catalog_ == nullptr) {
+    return;
+  }
+  // buildActiveSets is empty when tracker_ is null, so a detached tracker
+  // correctly clears every row's flag here instead of leaving stale dimming.
+  const QHash<DatasetId, QSet<QString>> active_sets = buildActiveSets(*catalog_, tracker_);
+  QSet<QString> unsubscribed;
+  for (const CatalogItem& item : catalog_->items()) {
+    if (isTopicUnsubscribed(active_sets, item.dataset_id, item.topic_name)) {
+      unsubscribed.insert(item.key);
+    }
+  }
+  tree_view_->setUnsubscribedKeys(unsubscribed);
+}
+
+void CurveListPanel::refreshForcedMarks() {
+  if (catalog_ == nullptr || tracker_ == nullptr || tree_view_ == nullptr) {
+    return;
+  }
+  QSet<QString> paths;
+  for (const auto& [dataset_id, dataset_name] : catalog_->datasets()) {
+    for (const QString& topic : tracker_->forcedTopics(dataset_id)) {
+      paths.insert(
+          CurveTreeView::treePathFromCurvePath(
+              CurveTreeView::CurvePath{.key = {}, .dataset = dataset_name, .topic = topic, .field = {}}));
+    }
+  }
+  tree_view_->setForcedTopicPaths(paths);
 }
 
 void CurveListPanel::refreshValues(double tracker_time) {
@@ -422,7 +573,7 @@ void CurveListPanel::onPreserveTopicNameToggled(bool checked) {
     settings.setValue(QLatin1String(kPreserveTopicNameKey), checked);
   }
   tree_view_->setViewMode(checked ? CurveTreeView::ViewMode::kShowTopics : CurveTreeView::ViewMode::kHierarchical);
-  rebuildTree(tree_view_, catalog_, custom_keys_);
+  rebuildTree(tree_view_, catalog_, tracker_, custom_keys_);
   tree_view_->applyFilter(ui_->lineEditFilter->text());
 }
 
@@ -437,13 +588,15 @@ void CurveListPanel::onTreeContextMenu(const QPoint& pos) {
   if (catalog_ == nullptr) {
     return;
   }
-  // The menu is offered only on a dataset node (top-level group with topic children).
+  // Dataset nodes (top-level groups) get the Merge/Remove menu; any other row
+  // that resolves to a catalog item gets the force-streaming toggle.
   const auto is_dataset_node = [](QTreeWidgetItem* node) {
     return node != nullptr && node->parent() == nullptr && node->childCount() > 0;
   };
   QTreeWidgetItem* clicked = tree_view_->itemAt(pos);
   if (!is_dataset_node(clicked)) {
-    return;  // topic/curve nodes get no menu
+    showTopicContextMenu(clicked, pos);
+    return;
   }
 
   QHash<QString, DatasetId> id_by_name;
@@ -482,15 +635,11 @@ void CurveListPanel::onTreeContextMenu(const QPoint& pos) {
   menu.setObjectName(QStringLiteral("PJMenu"));
   const QString theme = currentTheme();
   const auto add_item = [&](const QString& icon, const QString& text, bool destructive, bool enabled) {
-    auto* button = new QPushButton(loadSvg(icon, theme), text, &menu);
-    button->setFlat(true);
+    QPushButton* button = addMenuButton(&menu, icon, theme, text);
     button->setEnabled(enabled);
     if (destructive) {
       button->setProperty("destructive", true);
     }
-    auto* action = new QWidgetAction(&menu);
-    action->setDefaultWidget(button);
-    menu.addAction(action);
     return button;
   };
 
@@ -523,6 +672,50 @@ void CurveListPanel::onTreeContextMenu(const QPoint& pos) {
   }
 }
 
+void CurveListPanel::showTopicContextMenu(QTreeWidgetItem* clicked, const QPoint& pos) {
+  if (tracker_ == nullptr || catalog_ == nullptr) {
+    return;
+  }
+  // A promoted scalar topic renders as a GROUP row whose keys live on its field
+  // leaves — resolve through the whole subtree and act only when every keyed
+  // row below the click belongs to ONE topic (a folder spanning several topics
+  // would make "force" ambiguous).
+  std::optional<CatalogItem> item;
+  for (const QString& key : CurveTreeView::catalogKeysUnder(clicked)) {
+    const auto resolved = catalog_->itemDescriptor(key);
+    if (!resolved.has_value()) {
+      continue;
+    }
+    if (item.has_value() && (item->dataset_id != resolved->dataset_id || item->topic_name != resolved->topic_name)) {
+      return;  // subtree spans multiple topics
+    }
+    item = resolved;
+  }
+  if (!item.has_value() || !catalog_->isPerTopicPauseCapable(item->dataset_id)) {
+    return;  // no topic here, or a file dataset / non-demand source
+  }
+
+  // Forcing is a tier on top of display references (see TopicDemandTracker
+  // ::setTopicForced): "Stop forced streaming" only drops the forced hold — it
+  // can never pause a topic something still displays.
+  const bool forced = tracker_->isTopicForced(item->dataset_id, item->topic_name);
+  QMenu menu(this);
+  menu.setObjectName(QStringLiteral("PJMenu"));
+  QPushButton* button = addMenuButton(
+      &menu, QStringLiteral(":/resources/svg/cast.svg"), currentTheme(),
+      forced ? tr("Stop forced streaming") : tr("Force topic streaming"));
+
+  bool toggle = false;
+  connect(button, &QPushButton::clicked, &menu, [&]() {
+    toggle = true;
+    menu.close();
+  });
+  menu.exec(tree_view_->viewport()->mapToGlobal(pos));
+  if (toggle) {
+    tracker_->setTopicForced(item->dataset_id, item->topic_name, !forced);
+  }
+}
+
 void CurveListPanel::onCatalogItemsAdded(const std::vector<CatalogItem>& items) {
   // Custom-series keys are added flat via addCustomCurve from MainWindow; keep
   // them out of the main tree.
@@ -532,7 +725,7 @@ void CurveListPanel::onCatalogItemsAdded(const std::vector<CatalogItem>& items) 
       tree_items.push_back(item);
     }
   }
-  addCatalogItems(tree_view_, tree_items);
+  addCatalogItems(tree_view_, catalog_, tracker_, tree_items);
   // Fill the Value cells of the just-added rows at the current cursor.
   refreshValues(last_tracker_time_);
 }
@@ -563,7 +756,7 @@ void CurveListPanel::addCustomCurve(const QString& catalog_key, const QString& d
   path.topic = QString{};
   path.field = QString{};
   custom_view_->addCatalogItem(path);
-  rebuildTree(tree_view_, catalog_, custom_keys_);
+  rebuildTree(tree_view_, catalog_, tracker_, custom_keys_);
 }
 
 void CurveListPanel::removeCustomCurve(const QString& catalog_key) {
@@ -597,7 +790,7 @@ void CurveListPanel::onCatalogItemsRemoved(const QStringList& /*keys*/) {
   // One rebuild per batch (a dataset / multi-key trash is a single itemsRemoved).
   // TODO: incremental CurveTreeView::removeCurve(name); linear rebuild wipes
   // scroll/expansion/selection.
-  rebuildTree(tree_view_, catalog_, custom_keys_);
+  rebuildTree(tree_view_, catalog_, tracker_, custom_keys_);
 }
 
 void CurveListPanel::onCatalogCleared() {

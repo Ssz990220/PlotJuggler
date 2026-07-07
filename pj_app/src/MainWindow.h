@@ -23,6 +23,7 @@
 #include <vector>
 
 #include "LayoutXml.h"
+#include "pj_base/builtin/builtin_object.hpp"  // sdk::BuiltinObjectType — onPlaceholderTopicDropped's slot parameter
 #include "pj_base/diagnostic_sink.hpp"
 #include "pj_base/time.hpp"  // PJ::Timepoint — the frame-invariant absolute instant the reference line stores
 #include "pj_base/types.hpp"
@@ -61,12 +62,13 @@ class IDataWidget;
 class PanelEngine;
 class PlotDocker;
 class PlotWidget;
-class PendingCurveBinder;
+class PendingDisplayBinder;
 class QtDiagnosticBridge;
 class SceneDockWidget;
 class StreamingSourceManager;
 class IngestProgressWidget;
 class SourceTimelineController;
+class TopicDemandController;
 class SvgButton;
 class Timeline;
 class RecentFilesMenu;
@@ -271,6 +273,13 @@ class MainWindow : public QMainWindow {
   // matching kind (the shell owns the family→kind mapping) and adopts it into
   // `dock`. Plot clicks are handled inside DockWidget itself.
   void onObjectFamilyRequested(DockWidget* dock, VisualizationKind family);
+
+  // A catalog drop named an advertised placeholder (see
+  // DockWidget::placeholderTopicDropped): routes to
+  // TopicDemandController::handlePlaceholderPlotDrop (object_type == kNone) or
+  // handleSceneDockPlaceholderDrop, instead of the normal add-curve/add-layer path.
+  void onPlaceholderTopicDropped(
+      DockWidget* dock, DatasetId dataset_id, QString topic_name, sdk::BuiltinObjectType object_type);
 
   // Routes the focused DockWidget to the right config page and updates
   // the curve-editor binding. Plot-only state changes still go through
@@ -662,7 +671,11 @@ class MainWindow : public QMainWindow {
   // instance whose lifetime outlasts them all.
   std::unique_ptr<QSettings> app_settings_;
   std::unique_ptr<AppSession> session_;
-  std::unique_ptr<PendingCurveBinder> pending_binder_;
+  std::unique_ptr<PendingDisplayBinder> pending_binder_;
+  // Resolves displayed plots/scene docks to (DatasetId, topic_name) demand
+  // references (see TopicDemandTracker). Declared after pending_binder_, which
+  // it forwards placeholder scalar drops to.
+  std::unique_ptr<TopicDemandController> topic_demand_controller_;
   // Owns the per-dataset 3D TF buffers + load-time ingest. Lives here in the
   // shell (not pj_runtime) so the runtime stays domain-neutral. Declared after
   // session_ so it is destroyed first (it holds a reference into session_).

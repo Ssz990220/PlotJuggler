@@ -47,6 +47,7 @@ Hierarchy: **Dataset -> Topic -> Chunk -> Column**
 - `createDataset()`, `createTopic()`, `createTimeDomain()` with monotonic ID allocation or explicit caller-requested IDs
 - `commitChunks()` — appends sealed chunks to `TopicStorage`, returns deduplicated list of changed `TopicId`s
 - `enforceRetention()` — evicts old chunks across all topics
+- `evictTopicHistory()` — raises ONE topic's virtual retention floor past everything currently stored (rows vanish from all read paths; the topic, ids, and column layout stay registered). Data-relative on purpose — stream timestamps are recording time, so a wall-clock cutoff could hide future samples. Used by the app to disown a demand-subscription field-discovery preview's fake-interest samples
 - Factory methods `createWriter()` and `createReader()`
 
 **`TypeRegistry`** — `registerSchema()` assigns a new `SchemaId`. `registerOrGet()` returns an existing ID if the name matches (for late-discovery schemas). `evolveSchema()` validates additive-only changes (no field removal or type change).

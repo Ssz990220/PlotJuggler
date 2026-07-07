@@ -13,14 +13,17 @@
 #include <QSet>
 #include <QTemporaryDir>
 #include <QtGlobal>
+#include <algorithm>
+#include <memory>
 #include <string_view>
 
 #include "LayoutXml.h"
-#include "PendingCurveBinder.h"
+#include "PendingDisplayBinder.h"
 #include "pj_datastore/writer.hpp"
 #include "pj_runtime/AppSession.h"
 #include "pj_runtime/CatalogModel.h"
 #include "pj_runtime/SessionManager.h"
+#include "pj_runtime/TopicDemandTracker.h"
 
 namespace {
 
@@ -97,7 +100,52 @@ QHash<QString, PJ::PlotWidget*> indexByStateId(PJ::PlotWidget& plot) {
 
 }  // namespace
 
-TEST(PendingCurveBinderTest, CollectsUnresolvedCurvesAndBindsThemWhenTopicArrives) {
+TEST(PendingDisplayBinderTest, RestoredEntryReleasesItsReferenceWhenThePlotDies) {
+  PJ::AppSession app_session;
+  const PJ::DatasetId dataset_id = createDataset(app_session);
+  PJ::TopicDemandTracker tracker;
+  PJ::PendingDisplayBinder binder(app_session.catalogModel(), &tracker);
+
+  // The topic is advertised (nameable) but has no data — a layout restore over
+  // a live demand stream stages a pending curve holding a demand reference.
+  app_session.catalogModel().setAdvertisedTopics(
+      dataset_id, {PJ::AdvertisedTopic{QStringLiteral("/speed"), PJ::sdk::BuiltinObjectType::kNone}});
+  QDomDocument doc;
+  auto plot = std::make_unique<PJ::PlotWidget>(&app_session.sessionManager(), &app_session.catalogModel());
+  QDomElement plot_element = addPlot(doc, plot->stateId(), QStringLiteral("time"));
+  addTimeSeriesCurve(doc, plot_element, SeriesPath{QStringLiteral("/speed"), QStringLiteral("value")});
+  binder.collect(doc, indexByStateId(*plot));
+  ASSERT_EQ(binder.size(), 1);
+  const auto held = tracker.activeTopics(dataset_id);
+  ASSERT_NE(std::find(held.begin(), held.end(), QStringLiteral("/speed")), held.end());
+
+  // The plot dies before the topic ever materializes: the reference must
+  // release AT destruction — on a quiet stream no later flush ever runs, and a
+  // lazy release would keep the topic subscribed forever.
+  plot.reset();
+  const auto after = tracker.activeTopics(dataset_id);
+  EXPECT_EQ(std::find(after.begin(), after.end(), QStringLiteral("/speed")), after.end());
+  EXPECT_EQ(binder.size(), 0);
+}
+
+TEST(PendingDisplayBinderTest, DuplicatePlaceholderDropStagesOneEntry) {
+  PJ::AppSession app_session;
+  const PJ::DatasetId dataset_id = createDataset(app_session);
+  PJ::TopicDemandTracker tracker;
+  PJ::PendingDisplayBinder binder(app_session.catalogModel(), &tracker);
+  PJ::PlotWidget plot(&app_session.sessionManager(), &app_session.catalogModel());
+
+  // Double-dropping the same placeholder on the same plot must not stage a
+  // second intent: on promotion the first entry binds every field, the
+  // duplicate's addCurve() calls all return null, and it would sit forever
+  // holding its demand reference (and re-add ghost curves after a manual
+  // curve delete on a later flush).
+  binder.addPendingCurve(&plot, SeriesPath{QStringLiteral("/speed"), QString()}, dataset_id);
+  binder.addPendingCurve(&plot, SeriesPath{QStringLiteral("/speed"), QString()}, dataset_id);
+  EXPECT_EQ(binder.size(), 1);
+}
+
+TEST(PendingDisplayBinderTest, CollectsUnresolvedCurvesAndBindsThemWhenTopicArrives) {
   QTemporaryDir extensions_dir;
   ASSERT_TRUE(extensions_dir.isValid());
   PJ::AppSession app_session(extensions_dir.path());
@@ -124,7 +172,7 @@ TEST(PendingCurveBinderTest, CollectsUnresolvedCurvesAndBindsThemWhenTopicArrive
   ASSERT_TRUE(plot.xmlLoadState(plot_element));
   ASSERT_EQ(plot.curveList().size(), 1U);
 
-  PJ::PendingCurveBinder binder(app_session.catalogModel());
+  PJ::PendingDisplayBinder binder(app_session.catalogModel());
   binder.collect(doc, indexByStateId(plot));
   ASSERT_EQ(binder.size(), 1);
   ASSERT_EQ(binder.unresolved().size(), 1);
@@ -152,7 +200,7 @@ TEST(PendingCurveBinderTest, CollectsUnresolvedCurvesAndBindsThemWhenTopicArrive
   EXPECT_EQ(plot.curveList().size(), 2U);
 }
 
-TEST(PendingCurveBinderTest, XyCurveWaitsForBothHalvesBeforeBinding) {
+TEST(PendingDisplayBinderTest, XyCurveWaitsForBothHalvesBeforeBinding) {
   QTemporaryDir extensions_dir;
   ASSERT_TRUE(extensions_dir.isValid());
   PJ::AppSession app_session(extensions_dir.path());
@@ -172,7 +220,7 @@ TEST(PendingCurveBinderTest, XyCurveWaitsForBothHalvesBeforeBinding) {
   ASSERT_TRUE(plot.xmlLoadState(plot_element));
   ASSERT_TRUE(plot.curveList().empty());
 
-  PJ::PendingCurveBinder binder(app_session.catalogModel());
+  PJ::PendingDisplayBinder binder(app_session.catalogModel());
   binder.collect(doc, indexByStateId(plot));
   ASSERT_EQ(binder.size(), 1);
   // x is already in the catalog, so only the missing half (y) is reported.

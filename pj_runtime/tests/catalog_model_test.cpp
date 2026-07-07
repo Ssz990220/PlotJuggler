@@ -3,6 +3,7 @@
 
 #include <gtest/gtest.h>
 
+#include <QSignalSpy>
 #include <QString>
 #include <QStringList>
 #include <cstdint>
@@ -755,6 +756,164 @@ TEST(CatalogModelTest, StringFieldIsCatalogedAsScalarReadableButNotPlottable) {
   EXPECT_DOUBLE_EQ(*numeric_value, 10.0);
   EXPECT_FALSE(catalog.scalarValueAt(string_key, displayOf(2'500'000'000)).has_value());
   EXPECT_FALSE(catalog.stringValueAt(numeric_key, displayOf(2'500'000'000)).has_value());
+}
+
+// --- Advertised (available-but-unsubscribed) placeholders (per-topic pause) ---
+
+TEST(CatalogModelTest, AdvertisedTopicsAppearAsDataLessPlaceholders) {
+  PJ::SessionManager session;
+  PJ::CatalogModel catalog(&session);
+  auto dataset = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "live"});
+  ASSERT_TRUE(dataset.has_value()) << dataset.error();
+
+  catalog.setAdvertisedTopics(
+      *dataset, {
+                    {.topic_name = "/odom", .classification = PJ::sdk::BuiltinObjectType::kNone},
+                    {.topic_name = "/camera/image", .classification = PJ::sdk::BuiltinObjectType::kImage},
+                });
+
+  const auto items = catalog.items();
+  ASSERT_EQ(items.size(), 2U);
+  bool saw_scalar = false;
+  bool saw_image = false;
+  for (const auto& item : items) {
+    EXPECT_TRUE(PJ::isAdvertisedTopic(item));
+    EXPECT_FALSE(PJ::isScalarField(item));
+    EXPECT_FALSE(PJ::isObjectTopic(item));
+    // A data-less placeholder is not a plottable curve.
+    EXPECT_FALSE(catalog.curveDescriptor(item.key).has_value());
+    const auto* adv = PJ::asAdvertisedTopic(item);
+    ASSERT_NE(adv, nullptr);
+    if (item.topic_name == "/odom") {
+      saw_scalar = true;
+      EXPECT_EQ(adv->classification, PJ::sdk::BuiltinObjectType::kNone);
+    } else if (item.topic_name == "/camera/image") {
+      saw_image = true;
+      EXPECT_EQ(adv->classification, PJ::sdk::BuiltinObjectType::kImage);
+    }
+  }
+  EXPECT_TRUE(saw_scalar);
+  EXPECT_TRUE(saw_image);
+  EXPECT_TRUE(catalog.curves().empty());  // placeholders are never curves
+}
+
+TEST(CatalogModelTest, ScalarShapedPlaceholderIsScalarKeyButImageShapedIsNot) {
+  // M3-UI: the curve-list Value column reads isScalarKey to choose "-" (scalar,
+  // no sample yet) vs blank (non-scalar row) — a kNone-classified advertised
+  // placeholder must count as scalar so it shows "-" like a real empty scalar
+  // field, but an object-shaped placeholder (e.g. kImage) must not.
+  PJ::SessionManager session;
+  PJ::CatalogModel catalog(&session);
+  auto dataset = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "live"});
+  ASSERT_TRUE(dataset.has_value()) << dataset.error();
+
+  catalog.setAdvertisedTopics(
+      *dataset, {
+                    {.topic_name = "/odom", .classification = PJ::sdk::BuiltinObjectType::kNone},
+                    {.topic_name = "/camera/image", .classification = PJ::sdk::BuiltinObjectType::kImage},
+                });
+
+  QString scalar_key;
+  QString image_key;
+  for (const auto& item : catalog.items()) {
+    (item.topic_name == "/odom" ? scalar_key : image_key) = item.key;
+  }
+  ASSERT_FALSE(scalar_key.isEmpty());
+  ASSERT_FALSE(image_key.isEmpty());
+
+  EXPECT_TRUE(catalog.isScalarKey(scalar_key));
+  EXPECT_FALSE(catalog.isScalarKey(image_key));
+  // No sample exists yet — scalarValueAt stays nullopt (the caller renders "-").
+  EXPECT_FALSE(catalog.scalarValueAt(scalar_key, 0.0).has_value());
+}
+
+TEST(CatalogModelTest, RealDataSupersedesAdvertisedPlaceholder) {
+  PJ::SessionManager session;
+  PJ::CatalogModel catalog(&session);
+  auto dataset = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "live"});
+  ASSERT_TRUE(dataset.has_value()) << dataset.error();
+
+  catalog.setAdvertisedTopics(
+      *dataset, {{.topic_name = "/imu/accel/sample", .classification = PJ::sdk::BuiltinObjectType::kNone}});
+  ASSERT_EQ(catalog.items().size(), 1U);
+  ASSERT_TRUE(PJ::isAdvertisedTopic(catalog.items()[0]));
+
+  // Subscribe: real scalar data for the same topic name arrives.
+  const PJ::TopicId topic = addScalarTopic(session, *dataset, "/imu/accel/sample");
+  ASSERT_NE(topic, 0U);
+
+  const auto items = catalog.items();
+  ASSERT_EQ(items.size(), 1U);
+  EXPECT_TRUE(PJ::isScalarField(items[0]));  // placeholder replaced by the real field
+  EXPECT_FALSE(PJ::isAdvertisedTopic(items[0]));
+  EXPECT_EQ(items[0].topic_name, QStringLiteral("/imu/accel/sample"));
+  EXPECT_TRUE(catalog.curveDescriptor(items[0].key).has_value());
+}
+
+TEST(CatalogModelTest, AdvertiseIsDeclarativeAndClearable) {
+  PJ::SessionManager session;
+  PJ::CatalogModel catalog(&session);
+  auto dataset = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "live"});
+  ASSERT_TRUE(dataset.has_value()) << dataset.error();
+
+  catalog.setAdvertisedTopics(
+      *dataset, {
+                    {.topic_name = "/a", .classification = PJ::sdk::BuiltinObjectType::kNone},
+                    {.topic_name = "/b", .classification = PJ::sdk::BuiltinObjectType::kNone},
+                });
+  ASSERT_EQ(catalog.items().size(), 2U);
+
+  // Declarative shrink: the new full set drops "/b".
+  catalog.setAdvertisedTopics(*dataset, {{.topic_name = "/a", .classification = PJ::sdk::BuiltinObjectType::kNone}});
+  ASSERT_EQ(catalog.items().size(), 1U);
+  EXPECT_EQ(catalog.items()[0].topic_name, QStringLiteral("/a"));
+
+  catalog.clearAdvertisedTopics(*dataset);
+  EXPECT_TRUE(catalog.items().empty());
+}
+
+TEST(CatalogModelTest, ReAdvertisingIdenticalSetEmitsNothing) {
+  PJ::SessionManager session;
+  PJ::CatalogModel catalog(&session);
+  auto dataset = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "live"});
+  ASSERT_TRUE(dataset.has_value()) << dataset.error();
+
+  const std::vector<PJ::AdvertisedTopic> topics{
+      {.topic_name = "/a", .classification = PJ::sdk::BuiltinObjectType::kNone}};
+  catalog.setAdvertisedTopics(*dataset, topics);
+  ASSERT_EQ(catalog.items().size(), 1U);
+
+  QSignalSpy added_spy(&catalog, &PJ::CatalogModel::itemsAdded);
+  QSignalSpy removed_spy(&catalog, &PJ::CatalogModel::itemsRemoved);
+  catalog.setAdvertisedTopics(*dataset, topics);  // identical → idempotent, no churn
+  EXPECT_EQ(added_spy.count(), 0);
+  EXPECT_EQ(removed_spy.count(), 0);
+}
+
+TEST(CatalogModelTest, PerTopicPauseCapableDefaultsFalseAndRoundTrips) {
+  PJ::SessionManager session;
+  PJ::CatalogModel catalog(&session);
+  auto dataset = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "live"});
+  ASSERT_TRUE(dataset.has_value()) << dataset.error();
+
+  EXPECT_FALSE(catalog.isPerTopicPauseCapable(*dataset));  // unset → false (a file dataset, e.g.)
+  catalog.setPerTopicPauseCapable(*dataset, true);
+  EXPECT_TRUE(catalog.isPerTopicPauseCapable(*dataset));
+  catalog.setPerTopicPauseCapable(*dataset, false);
+  EXPECT_FALSE(catalog.isPerTopicPauseCapable(*dataset));
+}
+
+TEST(CatalogModelTest, PerTopicPauseCapableClearedOnDatasetRemoval) {
+  PJ::SessionManager session;
+  PJ::CatalogModel catalog(&session);
+  auto dataset = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "live"});
+  ASSERT_TRUE(dataset.has_value()) << dataset.error();
+  catalog.setAdvertisedTopics(*dataset, {{.topic_name = "/a", .classification = PJ::sdk::BuiltinObjectType::kNone}});
+  catalog.setPerTopicPauseCapable(*dataset, true);
+  ASSERT_TRUE(catalog.isPerTopicPauseCapable(*dataset));
+
+  catalog.removeDataset(*dataset, /*tombstone=*/false);
+  EXPECT_FALSE(catalog.isPerTopicPauseCapable(*dataset));
 }
 
 }  // namespace

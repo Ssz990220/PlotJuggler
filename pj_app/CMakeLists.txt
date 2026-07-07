@@ -16,8 +16,10 @@ add_executable(pj_app
     src/FanoutConfig.h
     src/FileLoader.cpp
     src/FileLoader.h
-    src/PendingCurveBinder.cpp
-    src/PendingCurveBinder.h
+    src/PendingDisplayBinder.cpp
+    src/PendingDisplayBinder.h
+    src/TopicDemandController.cpp
+    src/TopicDemandController.h
     src/StreamingSourceManager.cpp
     src/StreamingSourceManager.h
     src/SourceTimelineController.cpp
@@ -172,27 +174,55 @@ if(PJ_BUILD_TESTS)
     endif()
     add_test(NAME LayoutXmlTest COMMAND layout_xml_test)
 
-    add_executable(pending_curve_binder_test
-        tests/pending_curve_binder_test.cpp
-        src/PendingCurveBinder.cpp
-        src/PendingCurveBinder.h
+    add_executable(pending_display_binder_test
+        tests/pending_display_binder_test.cpp
+        src/PendingDisplayBinder.cpp
+        src/PendingDisplayBinder.h
         src/LayoutXml.cpp
         src/LayoutXml.h
     )
-    target_include_directories(pending_curve_binder_test PRIVATE
+    target_include_directories(pending_display_binder_test PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/src
     )
-    target_link_libraries(pending_curve_binder_test PRIVATE
+    target_link_libraries(pending_display_binder_test PRIVATE
         pj_runtime
         pj_plotting
+        pj_scene_common
         Qt6::Widgets
         Qt6::Xml
         GTest::gtest
     )
     if(DEFINED PJ_WARNING_FLAGS)
-        target_compile_options(pending_curve_binder_test PRIVATE ${PJ_WARNING_FLAGS})
+        target_compile_options(pending_display_binder_test PRIVATE ${PJ_WARNING_FLAGS})
     endif()
-    add_test(NAME PendingCurveBinderTest COMMAND pending_curve_binder_test)
+    add_test(NAME PendingDisplayBinderTest COMMAND pending_display_binder_test)
+
+    add_executable(topic_demand_controller_test
+        tests/topic_demand_controller_test.cpp
+        src/PendingDisplayBinder.cpp
+        src/PendingDisplayBinder.h
+        src/TopicDemandController.cpp
+        src/TopicDemandController.h
+        src/LayoutXml.cpp
+        src/LayoutXml.h
+    )
+    set_target_properties(topic_demand_controller_test PROPERTIES AUTOMOC ON)
+    target_include_directories(topic_demand_controller_test PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src
+    )
+    target_link_libraries(topic_demand_controller_test PRIVATE
+        pj_runtime
+        pj_plotting
+        pj_scene_common
+        pj_scripting
+        Qt6::Widgets
+        Qt6::Xml
+        GTest::gtest
+    )
+    if(DEFINED PJ_WARNING_FLAGS)
+        target_compile_options(topic_demand_controller_test PRIVATE ${PJ_WARNING_FLAGS})
+    endif()
+    add_test(NAME TopicDemandControllerTest COMMAND topic_demand_controller_test)
 
     add_executable(key_sequence_matcher_test
         tests/key_sequence_matcher_test.cpp

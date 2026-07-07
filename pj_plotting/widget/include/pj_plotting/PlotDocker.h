@@ -12,6 +12,7 @@
 #include <functional>
 
 #include "pj_base/builtin/builtin_object.hpp"
+#include "pj_base/types.hpp"
 #include "pj_datastore/object_store.hpp"
 #include "pj_widgets/VisualizationKind.h"
 
@@ -100,6 +101,9 @@ class PlotDocker : public ads::CDockManager {
   // Re-emit of DockWidget::firstObjectTopicAdded — an empty click-created object
   // dock received its first topic, so the shell can seed streaming playback.
   void firstObjectTopicAdded();
+  // Re-emit of DockWidget::placeholderTopicDropped — see that signal's doc.
+  void placeholderTopicDropped(
+      DockWidget* dock, DatasetId dataset_id, QString topic_name, sdk::BuiltinObjectType object_type);
 
  private:
   void ensureAtLeastOneWidget();

@@ -721,6 +721,40 @@ std::vector<DataProcessorService::TransformRecipe> DataProcessorService::transfo
   return out;
 }
 
+std::vector<std::pair<DatasetId, std::string>> DataProcessorService::sourceTopicsForOutput(
+    TopicId output_topic_id) const {
+  std::vector<std::pair<DatasetId, std::string>> sources;
+  if (const auto it = recipes_.find(output_topic_id); it != recipes_.end()) {
+    const FilterRecipe& recipe = it->second;
+    if (const TopicStorage* storage = engine_.getTopicStorage(recipe.input_topic_id); storage != nullptr) {
+      sources.emplace_back(recipe.dataset_id, storage->descriptor().name);
+    }
+    return sources;
+  }
+  for (const auto& [key, recipe] : transform_recipes_) {
+    (void)key;
+    const bool is_this_output =
+        std::find(recipe.output_topic_ids.begin(), recipe.output_topic_ids.end(), output_topic_id) !=
+        recipe.output_topic_ids.end();
+    if (!is_this_output) {
+      continue;
+    }
+    for (const std::string& input_name : recipe.inputs) {
+      // resolveInputField, not resolveInputTopic: transform inputs may be
+      // topic-or-field paths ("pose/orientation/x"), and the demand reference
+      // must name the underlying TOPIC (the unit a streaming source subscribes
+      // by), not the full field path.
+      if (const auto resolved = resolveInputField(input_name)) {
+        if (const TopicStorage* storage = engine_.getTopicStorage(resolved->topic_id); storage != nullptr) {
+          sources.emplace_back(resolved->dataset_id, storage->descriptor().name);
+        }
+      }
+    }
+    return sources;
+  }
+  return sources;
+}
+
 std::unordered_set<TopicId> DataProcessorService::ephemeralOutputTopics() const {
   std::unordered_set<TopicId> out;
   for (const auto& [key, recipe] : transform_recipes_) {

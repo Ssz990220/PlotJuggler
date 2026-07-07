@@ -24,6 +24,7 @@ class CurveColorRegistry;
 class ExtensionCatalogService;
 class PlaybackEngine;
 class SessionManager;
+class TopicDemandTracker;
 
 struct ObjectMergeConflict {
   std::string topic_name;
@@ -74,6 +75,14 @@ class AppSession : public QObject {
   // Returns the extension catalog owned by this session.
   ExtensionCatalogService& extensionCatalog() const {
     return *extension_catalog_;
+  }
+
+  // Returns the demand tracker owned by this session: computes, per streaming
+  // dataset, the topics currently displayed (union always-active infrastructure),
+  // so a demand-capable streaming source can subscribe to exactly that set and
+  // leave the rest paused. See TopicDemandTracker for the ref-counting contract.
+  TopicDemandTracker& topicDemandTracker() const {
+    return *topic_demand_tracker_;
   }
 
   // Returns the session's curve-color registry. It is owned by SessionManager
@@ -178,6 +187,7 @@ class AppSession : public QObject {
   std::unique_ptr<SessionManager> session_manager_;
   std::unique_ptr<PlaybackEngine> playback_engine_;
   std::unique_ptr<CatalogModel> catalog_model_;
+  std::unique_ptr<TopicDemandTracker> topic_demand_tracker_;
   // Declared last: its ctor hits disk (scan + load) and must run after the
   // other services are alive. The destructor resets services explicitly so
   // session-owned plugin handles die before loaded plugin libraries unload.

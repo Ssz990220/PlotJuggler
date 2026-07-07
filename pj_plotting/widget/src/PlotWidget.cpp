@@ -980,7 +980,7 @@ void PlotWidget::onDragEnterEvent(QDragEnterEvent* event) {
   const QMimeData* mime_data = event->mimeData();
   if (mime_data->hasFormat(QStringLiteral("curveslist/add_curve"))) {
     const QStringList curves = decodeCurveDrop(mime_data, QStringLiteral("curveslist/add_curve"));
-    if (!curves.empty() && allCurvesKnown(curves) && !isXYPlot()) {
+    if (!curves.empty() && allCurvesDroppable(curves) && !isXYPlot()) {
       dragging_.mode = DragMode::kCurves;
       dragging_.curves = curves;
       event->acceptProposedAction();
@@ -1017,6 +1017,13 @@ void PlotWidget::onDropEvent(QDropEvent* event) {
     } else {
       setModeXY(false);
       for (const QString& curve_name : dragging_.curves) {
+        if (isPlaceholderCurveName(curve_name)) {
+          // No fabricated curve — the shell (TopicDemandController) registers
+          // demand and a pending bind that completes once real data arrives.
+          emit placeholderCurveDropped(curve_name);
+          curves_changed = true;
+          continue;
+        }
         curves_changed = addCurve(curve_name) != nullptr || curves_changed;
       }
     }
@@ -1278,6 +1285,24 @@ bool PlotWidget::allCurvesKnown(const QStringList& curves) const {
   }
   return std::all_of(curves.begin(), curves.end(), [this](const QString& curve_name) {
     return catalog_->curveDescriptor(curve_name).has_value();
+  });
+}
+
+bool PlotWidget::isPlaceholderCurveName(const QString& name) const {
+  if (catalog_ == nullptr) {
+    return false;
+  }
+  const auto item = catalog_->itemDescriptor(name);
+  return item.has_value() && isAdvertisedTopic(*item) &&
+         asAdvertisedTopic(*item)->classification == sdk::BuiltinObjectType::kNone;
+}
+
+bool PlotWidget::allCurvesDroppable(const QStringList& curves) const {
+  if (catalog_ == nullptr) {
+    return false;
+  }
+  return std::all_of(curves.begin(), curves.end(), [this](const QString& curve_name) {
+    return catalog_->curveDescriptor(curve_name).has_value() || isPlaceholderCurveName(curve_name);
   });
 }
 

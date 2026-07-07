@@ -7,9 +7,12 @@
 #include <QStringList>
 #include <filesystem>
 #include <memory>
+#include <shared_mutex>
+#include <string>
 #include <vector>
 
 #include "pj_base/diagnostic_sink.hpp"
+#include "pj_plugins/host/message_parser_library.hpp"
 #include "pj_plugins/host/plugin_runtime_catalog.hpp"
 
 namespace PJ {
@@ -79,8 +82,26 @@ class ExtensionCatalogService : public QObject {
   // Finds file-import DataSources that handle ext.
   std::vector<const LoadedDataSource*> findSourcesForExtension(QStringView ext) const;
 
-  // Finds a MessageParser by encoding name.
+  // Finds a MessageParser by encoding name. Returns a raw pointer INTO the
+  // catalog vector, valid only until the next reload(). GUI-THREAD ONLY — a
+  // concurrent reload() (which reallocates the vector) would dangle it. Off-GUI
+  // callers (a streaming source's poll thread) must use
+  // createParserHandleForEncoding()/parserEncodings() instead, which resolve
+  // under the catalog lock and never leak a raw catalog pointer.
   const LoadedMessageParser* findParserByEncoding(QStringView encoding) const;
+
+  // [thread-safe] Resolve a parser by encoding and create an instance of it,
+  // atomically under a shared catalog lock. The returned MessageParserHandle
+  // carries its own DSO keepalive, so it stays valid even if a later reload()
+  // drops the catalog entry. An invalid handle (`!valid()`) means no parser
+  // handles that encoding. This is the ONLY safe way for a non-GUI thread to
+  // obtain a parser while reload() may run on the GUI thread.
+  [[nodiscard]] MessageParserHandle createParserHandleForEncoding(QStringView encoding) const;
+
+  // [thread-safe] The set of encodings the loaded parsers accept, returned by
+  // value (a snapshot copy) so a caller never holds a reference into the
+  // catalog vector across a reload(). Sorted, de-duplicated.
+  [[nodiscard]] std::vector<std::string> parserEncodings() const;
 
   // Builds a QFileDialog-compatible filter string from all file-import sources.
   QString buildFileFilter() const;
@@ -115,6 +136,14 @@ class ExtensionCatalogService : public QObject {
 
   std::unique_ptr<ExtensionManager> extension_manager_;
   std::unique_ptr<PluginRuntimeCatalog> plugin_catalog_;
+
+  // Guards plugin_catalog_'s vectors against the one genuine cross-thread
+  // hazard: a streaming source's poll thread resolving a parser while the GUI
+  // thread reloads the catalog (Marketplace install/uninstall). reload() takes
+  // the exclusive lock; the thread-safe accessors take a shared lock. GUI-only
+  // readers (findParserByEncoding, dataSources, buildFileFilter, …) do not
+  // lock — they cannot race reload(), which is also GUI-thread-only.
+  mutable std::shared_mutex catalog_mutex_;
 };
 
 }  // namespace PJ

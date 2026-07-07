@@ -367,6 +367,7 @@ DockWidget* DockWidget::splitInto(ads::DockWidgetArea dock_area, PlotWidget* plo
   connect(new_widget, &DockWidget::plotWidgetCreated, parent_docker, &PlotDocker::plotWidgetAdded);
   connect(new_widget, &DockWidget::objectFamilyRequested, parent_docker, &PlotDocker::objectFamilyRequested);
   connect(new_widget, &DockWidget::firstObjectTopicAdded, parent_docker, &PlotDocker::firstObjectTopicAdded);
+  connect(new_widget, &DockWidget::placeholderTopicDropped, parent_docker, &PlotDocker::placeholderTopicDropped);
   emit undoableChange();
   emit parent_docker->dockAdded(new_widget);
   if (new_widget->plotWidget() != nullptr) {
@@ -390,6 +391,78 @@ void DockWidget::onCatalogItemsDropped(const QStringList& keys) {
 
   const auto first_item = catalog_->itemDescriptor(keys.front());
   if (!first_item.has_value()) {
+    return;
+  }
+
+  if (const auto* advertised = asAdvertisedTopic(*first_item); advertised != nullptr) {
+    // Multi-select drop: the FIRST placeholder decides the branch (scalar vs
+    // object); every other advertised key of the same shape rides along, so a
+    // two-cloud drop pends both. Keys of the other shape are dropped silently
+    // (exactly like non-plottables in a mixed real-topic drop).
+    const auto for_each_advertised = [&](sdk::BuiltinObjectType wanted, auto&& emit_drop) {
+      for (const QString& key : keys) {
+        const auto item = catalog_->itemDescriptor(key);
+        if (!item.has_value()) {
+          continue;
+        }
+        const auto* adv = asAdvertisedTopic(*item);
+        if (adv == nullptr) {
+          continue;
+        }
+        const bool is_scalar_shaped = adv->classification == sdk::BuiltinObjectType::kNone;
+        if (is_scalar_shaped == (wanted == sdk::BuiltinObjectType::kNone)) {
+          emit_drop(*item, adv->classification);
+        }
+      }
+    };
+
+    if (advertised->classification == sdk::BuiltinObjectType::kNone) {
+      // Scalar-shaped placeholder: materialize the plot lazily (mirrors the real
+      // scalar branch below) so the pending bind has somewhere to land, but let
+      // the shell register demand instead of fabricating a curve.
+      if (object_widget_ != nullptr) {
+        return;  // an object dock hosts no scalar curves
+      }
+      PlotWidget* plot = ensurePlotWidget();
+      if (plot == nullptr) {
+        return;
+      }
+      for_each_advertised(sdk::BuiltinObjectType::kNone, [&](const auto& item, sdk::BuiltinObjectType type) {
+        emit placeholderTopicDropped(this, item.dataset_id, item.topic_name, type);
+      });
+      focusSelf();
+      return;
+    }
+    // Object-shaped placeholder: a committed plot dock hosts no object topics —
+    // reject rather than replacing the plot (and its curves) with an object view.
+    if (plot_widget_ != nullptr) {
+      return;
+    }
+    if (object_widget_ == nullptr) {
+      // Empty tile: materialize a dock of the family the shell resolves from the
+      // classification. The seed carries a null storage id — the topic has no
+      // data (and thus no ObjectTopicId) until the demand registered by the drop
+      // below starts the subscription; the pending drop then completes against
+      // the real id (TopicDemandController::handleSceneDockPlaceholderDrop).
+      if (!object_widget_factory_) {
+        return;
+      }
+      const ObjectDropSeed seed{ObjectTopicId{}, advertised->classification, first_item->topic_name};
+      IDataWidget* widget = object_widget_factory_(QString(), &seed, this);
+      if (widget == nullptr) {
+        return;  // family not hostable — keep the placeholder affordance
+      }
+      setObjectWidget(widget);
+      // Arm the gate so the first real topic (a later drop into this widget)
+      // seeds streaming playback, mirroring the click-create path.
+      object_widget_awaiting_first_topic_ = true;
+      setName(QStringLiteral("..."));
+      emit undoableChange();
+      focusSelf();
+    }
+    for_each_advertised(advertised->classification, [&](const auto& item, sdk::BuiltinObjectType type) {
+      emit placeholderTopicDropped(this, item.dataset_id, item.topic_name, type);
+    });
     return;
   }
 

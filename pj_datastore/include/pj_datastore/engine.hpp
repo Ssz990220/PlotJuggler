@@ -139,6 +139,17 @@ class DataEngine {
   /// file the user loaded into the same engine.
   void enforceRetention(PJ::Timestamp retention_window_ns, PJ::DatasetId dataset_id);
 
+  /// Disown one topic's entire CURRENT history: raise its virtual retention
+  /// floor past timeMax() so every stored row disappears from all read paths,
+  /// while the topic, its TopicId, and its column layout stay registered (the
+  /// catalog keeps listing the fields). Writes with newer timestamps are
+  /// unaffected. Used to drop fake-interest samples — a demand-subscription
+  /// field-discovery preview — before really-requested data flows; the cutoff
+  /// is data-relative on purpose (stream timestamps are recording time, not
+  /// wall time, so a wall-clock floor could hide future real samples).
+  /// No-op for an unknown or empty topic. [thread-safe]
+  void evictTopicHistory(PJ::TopicId topic_id);
+
   /// Retire a single topic: clear its chunks (reclaiming the materialized series) and
   /// exclude its id from `listTopics` (so the catalog drops it on the next rebuild),
   /// while keeping the `TopicStorage` object alive — so any cached reader pointer sees

@@ -7,6 +7,9 @@
 #include <QDir>
 #include <QLoggingCategory>
 #include <QSettings>
+#include <algorithm>
+#include <mutex>
+#include <shared_mutex>
 #include <utility>
 
 #include "pj_marketplace/extension_manager.hpp"
@@ -109,9 +112,42 @@ std::vector<std::filesystem::path> ExtensionCatalogService::buildScanHierarchy()
 ExtensionCatalogService::~ExtensionCatalogService() = default;
 
 void ExtensionCatalogService::reload() {
-  if (plugin_catalog_->reload()) {
+  bool changed = false;
+  {
+    // Exclusive: reload() clears/reallocates the catalog's parser vector. Any
+    // poll thread resolving a parser through the shared-lock accessors is
+    // fenced out for the duration.
+    const std::unique_lock lock(catalog_mutex_);
+    changed = plugin_catalog_->reload();
+  }
+  if (changed) {
     emit catalogChanged();
   }
+}
+
+MessageParserHandle ExtensionCatalogService::createParserHandleForEncoding(QStringView encoding) const {
+  const std::shared_lock lock(catalog_mutex_);
+  const LoadedMessageParser* parser = plugin_catalog_->findParserByEncoding(encoding.toString().toStdString());
+  if (parser == nullptr) {
+    return MessageParserHandle{static_cast<const PJ_message_parser_vtable_t*>(nullptr)};
+  }
+  // createHandle() copies the library's DSO keepalive into the returned handle,
+  // so the handle stays valid after the lock is released even if a later
+  // reload() drops this catalog entry.
+  return parser->library.createHandle();
+}
+
+std::vector<std::string> ExtensionCatalogService::parserEncodings() const {
+  const std::shared_lock lock(catalog_mutex_);
+  std::vector<std::string> encodings;
+  for (const auto& parser : plugin_catalog_->messageParsers()) {
+    for (const auto& encoding : parser.encodings) {
+      encodings.push_back(encoding);
+    }
+  }
+  std::sort(encodings.begin(), encodings.end());
+  encodings.erase(std::unique(encodings.begin(), encodings.end()), encodings.end());
+  return encodings;
 }
 
 const std::vector<LoadedDataSource>& ExtensionCatalogService::dataSources() const {

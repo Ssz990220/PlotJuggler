@@ -11,12 +11,14 @@
 #include <limits>
 #include <nlohmann/json.hpp>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
 #include "DialogPresenter.h"
 #include "pj_base/data_source_protocol.h"
 #include "pj_base/dataset.hpp"
+#include "pj_base/span.hpp"
 #include "pj_datastore/engine.hpp"
 #include "pj_datastore/object_store.hpp"
 #include "pj_datastore/topic_storage.hpp"
@@ -30,6 +32,7 @@
 #include "pj_runtime/DataSourceRuntimeHost.h"
 #include "pj_runtime/ExtensionCatalogService.h"
 #include "pj_runtime/SessionManager.h"
+#include "pj_runtime/TopicDemandTracker.h"
 
 namespace PJ {
 
@@ -82,16 +85,20 @@ struct StreamingSourceManager::StreamingSession {
 };
 
 StreamingSourceManager::StreamingSourceManager(
-    SessionManager& session, ExtensionCatalogService& extensions, CatalogModel& catalog, QWidget* dialog_parent,
-    QObject* parent)
+    SessionManager& session, ExtensionCatalogService& extensions, CatalogModel& catalog,
+    TopicDemandTracker& topic_demand_tracker, QWidget* dialog_parent, QObject* parent)
     : QObject(parent),
       session_manager_(session),
       extensions_(extensions),
       catalog_(catalog),
+      topic_demand_tracker_(topic_demand_tracker),
       dialog_parent_(dialog_parent),
       secondary_object_store_(std::make_unique<ObjectStore>()),
       secondary_data_engine_(std::make_unique<DataEngine>()) {
   retention_seconds_ = QSettings().value(kStreamingBufferKey, retention_seconds_).toInt();
+  connect(
+      &topic_demand_tracker_, &TopicDemandTracker::activeTopicsChanged, this,
+      &StreamingSourceManager::onActiveTopicsChanged);
 }
 
 StreamingSourceManager::~StreamingSourceManager() {
@@ -137,6 +144,15 @@ bool StreamingSourceManager::stopDatasetAndWait(DatasetId dataset_id, const QStr
     secondary_object_store_->removeTopic(topic_id);
   }
   secondary_data_engine_->removeDataset(dataset_id);
+  // After erase: clearDataset's activeTopicsChanged emission finds no session for
+  // this id in onActiveTopicsChanged and is silently ignored, instead of pushing
+  // one redundant empty set through a handle about to be destroyed.
+  // Capability flag first: clearDataset's empty-set emission triggers the
+  // panel's dimming refresh, which must already see the dataset as
+  // non-pausable — otherwise rows with data stay grey after disconnect.
+  catalog_.setPerTopicPauseCapable(dataset_id, false);
+  topic_demand_tracker_.clearDataset(dataset_id);
+  catalog_.clearAdvertisedTopics(dataset_id);
   emit streamStopped(dataset_id, stopped_reason);
   return true;
 }
@@ -333,6 +349,23 @@ void StreamingSourceManager::startSession(const QString& plugin_id) {
         session_manager_.registerObjectTopicParser(id, std::move(parser));
       },
       secondary_object_store_.get(), secondary_data_engine_.get(), std::move(library_keepalive));
+  // [worker/poll thread, per DataSourceRuntimeHost::on_available_topics] — hop to
+  // the GUI thread before touching CatalogModel/TopicDemandTracker, mirroring the
+  // samplesIngested marshal in workerLoop below. The lambda may run before start()
+  // even returns (some plugins advertise everything up front) or repeatedly during
+  // poll(), so applyAdvertisedTopics re-checks the session still exists.
+  session->runtime_host->on_available_topics = [this, dataset_id](
+                                                   std::vector<DataSourceRuntimeHost::AdvertisedTopicInfo> topics) {
+    std::vector<AdvertisedTopic> owned;
+    owned.reserve(topics.size());
+    for (auto& topic : topics) {
+      owned.push_back(AdvertisedTopic{QString::fromStdString(topic.topic_name), topic.classification});
+    }
+    QMetaObject::invokeMethod(
+        this,
+        [this, dataset_id, owned = std::move(owned)]() mutable { applyAdvertisedTopics(dataset_id, std::move(owned)); },
+        Qt::QueuedConnection);
+  };
 
   ServiceRegistryBuilder registry;
   session->runtime_host->registerServices(registry);
@@ -409,6 +442,18 @@ void StreamingSourceManager::startSession(const QString& plugin_id) {
         dataset_id, tr("Plugin '%1': start failed: %2").arg(source_name, QString::fromStdString(status.error())));
     return;
   }
+
+  // Record the capability for the UI (CurveListPanel dims a topic as
+  // "unsubscribed" only for a dataset that actually supports the pause — a
+  // non-demand source sends everything regardless of display state).
+  catalog_.setPerTopicPauseCapable(dataset_id, (session->handle.capabilities() & kCapabilityPerTopicPause) != 0);
+
+  // Push the current (usually empty — nothing is displayed yet) active-topic set
+  // once, right after start(), so a demand-capable source is explicitly told to
+  // subscribe to nothing rather than relying on its own default (e.g. a stale
+  // discovery-filter selection from a previous session). Later changes arrive via
+  // TopicDemandTracker::activeTopicsChanged -> onActiveTopicsChanged.
+  pushActiveTopics(*session, topic_demand_tracker_.activeTopics(dataset_id));
 
   // QThread::create runs the lambda as the thread's run(); no Qt event loop
   // needed in the worker — we only post back via QueuedConnection.
@@ -517,6 +562,9 @@ void StreamingSourceManager::onWorkerFinished(DatasetId dataset_id) {
   }
 
   sessions_.erase(it);
+  catalog_.setPerTopicPauseCapable(dataset_id, false);  // before clearDataset — see requestStop
+  topic_demand_tracker_.clearDataset(dataset_id);
+  catalog_.clearAdvertisedTopics(dataset_id);
   emit streamStopped(dataset_id, reason);
 }
 
@@ -524,6 +572,44 @@ void StreamingSourceManager::requestStopAll(const QString& reason) {
   for (auto& [dataset_id, sess] : sessions_) {
     sess->runtime_host->requestStop(reason.toStdString());
   }
+}
+
+void StreamingSourceManager::pushActiveTopics(StreamingSession& session, const std::vector<QString>& active_topics) {
+  if ((session.handle.capabilities() & kCapabilityPerTopicPause) == 0) {
+    return;  // source doesn't support per-topic pause — behave exactly as before
+  }
+  std::vector<std::string> owned;
+  owned.reserve(active_topics.size());
+  for (const QString& name : active_topics) {
+    owned.push_back(name.toStdString());
+  }
+  std::vector<std::string_view> views(owned.begin(), owned.end());
+  if (auto status = session.handle.setActiveTopics(Span<const std::string_view>(views.data(), views.size())); !status) {
+    qCWarning(lcStream) << "setActiveTopics failed:" << QString::fromStdString(status.error());
+  }
+}
+
+void StreamingSourceManager::onActiveTopicsChanged(DatasetId dataset_id, const std::vector<QString>& active_topics) {
+  auto it = sessions_.find(dataset_id);
+  if (it == sessions_.end()) {
+    return;
+  }
+  pushActiveTopics(*it->second, active_topics);
+}
+
+void StreamingSourceManager::applyAdvertisedTopics(DatasetId dataset_id, std::vector<AdvertisedTopic> topics) {
+  if (sessions_.find(dataset_id) == sessions_.end()) {
+    return;  // session already torn down before this marshal landed
+  }
+  std::vector<QString> infra_names;
+  for (const AdvertisedTopic& topic : topics) {
+    if (topic.classification == sdk::BuiltinObjectType::kFrameTransforms ||
+        topic.classification == sdk::BuiltinObjectType::kCameraInfo) {
+      infra_names.push_back(topic.topic_name);
+    }
+  }
+  catalog_.setAdvertisedTopics(dataset_id, topics);
+  topic_demand_tracker_.setInfrastructureTopics(dataset_id, infra_names);
 }
 
 }  // namespace PJ

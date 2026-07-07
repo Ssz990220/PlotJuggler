@@ -68,13 +68,14 @@
 #include "DebugUi.h"
 #include "FileLoader.h"
 #include "LayoutXml.h"
-#include "PendingCurveBinder.h"
+#include "PendingDisplayBinder.h"
 #include "PreferencesDialog.h"
 #include "RasterKeyMap.h"
 #include "SourceTimelineController.h"
 #include "StreamingSourceManager.h"
 #include "Theme.h"
 #include "TitleBar.h"
+#include "TopicDemandController.h"
 #include "pj_base/dataset.hpp"
 #include "pj_base/types.hpp"
 #include "pj_datastore/data_processor.hpp"
@@ -308,7 +309,13 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
       diagnostic_bridge_(new QtDiagnosticBridge(this)),
       app_settings_(std::make_unique<QSettings>()),
       session_(std::make_unique<AppSession>(std::move(extensions_dir), diagnostic_bridge_->sink())),
-      pending_binder_(std::make_unique<PendingCurveBinder>(session_->catalogModel())),
+      pending_binder_(
+          std::make_unique<PendingDisplayBinder>(session_->catalogModel(), &session_->topicDemandTracker())),
+      topic_demand_controller_(
+          std::make_unique<TopicDemandController>(
+              session_->catalogModel(), session_->topicDemandTracker(),
+              session_->sessionManager().dataProcessorService(), *pending_binder_,
+              session_->sessionManager().dataEngine())),
       theme_(std::make_unique<Theme>()) {
   // The 3D transform service owns the per-dataset TF buffers + load-time
   // ingest. It lives in the shell (not pj_runtime) so the runtime stays
@@ -513,6 +520,16 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
           return makeSeededEmptyObjectDock(resolved_kind, dock_parent);
         }
 
+        if (seed->topic_id == ObjectTopicId{}) {
+          // Placeholder drop: the topic is advertised (classified) but has no
+          // storage id yet — data only starts flowing once the drop registers
+          // demand. Build the empty dock of the resolved family; the drop site
+          // stages a pending drop that completes with the real ObjectTopicId
+          // when the subscription delivers the first sample
+          // (TopicDemandController::handleSceneDockPlaceholderDrop).
+          return makeSeededEmptyObjectDock(resolved_kind, dock_parent);
+        }
+
         // Drop path: build, then populate the first topic and apply view
         // side-effects. An unknown kind here is a real failure — tell the user.
         IDataWidget* widget = makeSceneDock(resolved_kind, dock_parent);
@@ -568,6 +585,8 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
   connect(ui_->tabbedPlotWidget, &TabbedPlotWidget::tabAdded, this, &MainWindow::onPlotTabAdded);
   wireExistingPlots();
   ui_->curveListPanel->setCatalog(&session_->catalogModel());
+  ui_->curveListPanel->setTopicDemandTracker(&session_->topicDemandTracker());
+  ui_->curveListPanel->setTopicDemandController(topic_demand_controller_.get());
 
   // Keep data widgets coherent with catalog removals, whoever triggers them.
   // Each widget prunes its OWN pieces against the live catalog/store. One pass
@@ -891,7 +910,13 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
   });
 
   streaming_manager_ = std::make_unique<StreamingSourceManager>(
-      session_->sessionManager(), session_->extensionCatalog(), session_->catalogModel(), this, this);
+      session_->sessionManager(), session_->extensionCatalog(), session_->catalogModel(),
+      session_->topicDemandTracker(), this, this);
+  // Interactive placeholder drops stage pending binds OUTSIDE any layout restore
+  // (which has its own restore-scoped duplicate of this connection); flush them
+  // whenever the catalog gains topics. Idempotent — an entry binds once and the
+  // no-entries early-return makes the steady-state cost nil.
+  connect(&session_->catalogModel(), &CatalogModel::itemsAdded, this, &MainWindow::flushPendingCurveBindings);
   connect(
       ui_->leftPanel, &LeftPanel::streamingSourceChanged, streaming_manager_.get(),
       &StreamingSourceManager::onSourceChanged);
@@ -1289,6 +1314,7 @@ IDataWidget* MainWindow::makeSceneDock(const QString& kind, QWidget* parent) {
     widget->setSessionManager(&session_->sessionManager());
     widget->setTransformService(transform_service_.get());
     widget->setSettings(app_settings_.get());
+    topic_demand_controller_->registerSceneDock(widget);
     // Seed the resolver's per-source remembered-roots map + auto search roots
     // from the most recent load. Single-path approximation (the dock's own
     // dataset may differ in a multi-file session); see setSourcePath's doc.
@@ -1315,6 +1341,7 @@ IDataWidget* MainWindow::makeSceneDock(const QString& kind, QWidget* parent) {
   if (kind == QStringLiteral("scene2d")) {
     auto* widget = new Scene2DDockWidget(parent);
     widget->setSessionManager(&session_->sessionManager());
+    topic_demand_controller_->registerSceneDock(widget);
     return widget;
   }
   return nullptr;
@@ -1354,6 +1381,24 @@ void MainWindow::onObjectFamilyRequested(DockWidget* dock, VisualizationKind fam
     qCWarning(lcMain) << "onObjectFamilyRequested: could not build scene dock for kind" << kind;
   }
   dock->adoptObjectWidget(widget);  // null still reverts to a usable placeholder
+}
+
+void MainWindow::onPlaceholderTopicDropped(
+    DockWidget* dock, DatasetId dataset_id, QString topic_name, sdk::BuiltinObjectType object_type) {
+  if (dock == nullptr) {
+    return;
+  }
+  if (object_type == sdk::BuiltinObjectType::kNone) {
+    if (PlotWidget* plot = dock->plotWidget(); plot != nullptr) {
+      topic_demand_controller_->handlePlaceholderPlotDrop(plot, dataset_id, topic_name);
+    }
+    return;
+  }
+  IDataWidget* object_widget = dock->objectWidget();
+  if (auto* scene_dock = qobject_cast<SceneDockWidget*>(object_widget != nullptr ? object_widget->widget() : nullptr);
+      scene_dock != nullptr) {
+    topic_demand_controller_->handleSceneDockPlaceholderDrop(scene_dock, dataset_id, topic_name);
+  }
 }
 
 MainWindow::~MainWindow() {
@@ -1854,6 +1899,8 @@ void MainWindow::onPlotTabAdded(PlotDocker* docker) {
   connect(
       docker, &PlotDocker::firstObjectTopicAdded, this, &MainWindow::seedStreamingPlaybackFromDrop,
       Qt::UniqueConnection);
+  connect(
+      docker, &PlotDocker::placeholderTopicDropped, this, &MainWindow::onPlaceholderTopicDropped, Qt::UniqueConnection);
   for (int index = 0; index < docker->plotCount(); ++index) {
     if (DockWidget* dock = docker->plotAt(index)) {
       onPlotAdded(dock->plotWidget());
@@ -1879,6 +1926,9 @@ void MainWindow::onPlotAdded(PlotWidget* plot) {
   connect(plot, &PlotWidget::statusMessageRequested, this, [this](const QString& message) {
     emitDiagnostic(DiagnosticLevel::kInfo, "Plot", "status", message);
   });
+  // registerPlot is idempotent (layout load/undo re-runs onPlotAdded for live
+  // plots) and owns the placeholderCurveDropped routing.
+  topic_demand_controller_->registerPlot(plot);
   plot->setTrackerPosition(toAxisDouble(session_->playbackEngine().currentTime()));
   applyGlobalToggles(plot);
   if (curve_editor_ != nullptr && curve_editor_->plot() == nullptr) {

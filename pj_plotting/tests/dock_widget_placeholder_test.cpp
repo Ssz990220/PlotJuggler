@@ -1619,6 +1619,185 @@ TEST(NewPlotTrackerConfig, ValueTrackerShowsValueBoxWhenCurveAdded) {
   EXPECT_TRUE(plot.trackerValueBoxVisible());
 }
 
+// --- Object-classified placeholder drops (demand-driven streaming) ---
+//
+// An advertised topic classified as an object (e.g. kPointCloud) has no
+// storage id yet — data only starts flowing once the drop registers demand.
+// Dropping one on an empty tile must materialize a dock of the right family
+// through the factory (null-id seed) and emit placeholderTopicDropped so the
+// shell can stage the pending drop that completes when data arrives.
+
+namespace {
+
+QString advertisedKey(PJ::CatalogModel& catalog, const QString& topic_name) {
+  for (const auto& item : catalog.items()) {
+    if (item.topic_name == topic_name && PJ::asAdvertisedTopic(item) != nullptr) {
+      return item.key;
+    }
+  }
+  return {};
+}
+
+}  // namespace
+
+TEST(DockWidgetPlaceholderTest, ObjectPlaceholderDropOnEmptyTileCreatesDockAndStagesPendingDrop) {
+  PJ::SessionManager session;
+  PJ::CatalogModel catalog(&session);
+  auto dataset = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "robot"});
+  ASSERT_TRUE(dataset.has_value()) << dataset.error();
+  catalog.setAdvertisedTopics(
+      *dataset, {{.topic_name = "/cloud", .classification = PJ::sdk::BuiltinObjectType::kPointCloud}});
+  const QString key = advertisedKey(catalog, QStringLiteral("/cloud"));
+  ASSERT_FALSE(key.isEmpty());
+
+  PJ::PlotDocker docker(QStringLiteral("test"), &session, &catalog);
+  bool factory_called = false;
+  docker.setObjectWidgetFactory(
+      [&](const QString& kind, const PJ::ObjectDropSeed* seed, QWidget* parent) -> PJ::IDataWidget* {
+        factory_called = true;
+        EXPECT_TRUE(kind.isEmpty());
+        EXPECT_NE(seed, nullptr);
+        if (seed != nullptr) {
+          EXPECT_EQ(seed->topic_id, PJ::ObjectTopicId{});  // placeholder: no storage id yet
+          EXPECT_EQ(seed->object_type, PJ::sdk::BuiltinObjectType::kPointCloud);
+        }
+        return new FakeObjectWidget(parent);
+      });
+  auto* dock = docker.plotAt(0);
+  ASSERT_NE(dock, nullptr);
+
+  PJ::DockWidget* signal_dock = nullptr;
+  PJ::DatasetId signal_dataset = 0;
+  QString signal_topic;
+  auto signal_type = PJ::sdk::BuiltinObjectType::kNone;
+  QObject::connect(
+      &docker, &PJ::PlotDocker::placeholderTopicDropped, &docker,
+      [&](PJ::DockWidget* d, PJ::DatasetId ds, QString topic, PJ::sdk::BuiltinObjectType type) {
+        signal_dock = d;
+        signal_dataset = ds;
+        signal_topic = std::move(topic);
+        signal_type = type;
+      });
+
+  ASSERT_TRUE(
+      QMetaObject::invokeMethod(
+          dock, "onCatalogItemsDropped", Qt::DirectConnection, Q_ARG(QStringList, QStringList{key})));
+
+  EXPECT_TRUE(factory_called);
+  EXPECT_NE(dock->objectWidget(), nullptr);
+  EXPECT_EQ(dock->plotWidget(), nullptr);
+  EXPECT_EQ(signal_dock, dock);
+  EXPECT_EQ(signal_dataset, *dataset);
+  EXPECT_EQ(signal_topic, QStringLiteral("/cloud"));
+  EXPECT_EQ(signal_type, PJ::sdk::BuiltinObjectType::kPointCloud);
+}
+
+TEST(DockWidgetPlaceholderTest, MultiObjectPlaceholderDropPendsEveryKey) {
+  PJ::SessionManager session;
+  PJ::CatalogModel catalog(&session);
+  auto dataset = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "robot"});
+  ASSERT_TRUE(dataset.has_value()) << dataset.error();
+  catalog.setAdvertisedTopics(
+      *dataset, {
+                    {.topic_name = "/lidar/front", .classification = PJ::sdk::BuiltinObjectType::kPointCloud},
+                    {.topic_name = "/lidar/back", .classification = PJ::sdk::BuiltinObjectType::kPointCloud},
+                });
+  const QString front_key = advertisedKey(catalog, QStringLiteral("/lidar/front"));
+  const QString back_key = advertisedKey(catalog, QStringLiteral("/lidar/back"));
+  ASSERT_FALSE(front_key.isEmpty());
+  ASSERT_FALSE(back_key.isEmpty());
+
+  PJ::PlotDocker docker(QStringLiteral("test"), &session, &catalog);
+  int factory_calls = 0;
+  docker.setObjectWidgetFactory([&](const QString&, const PJ::ObjectDropSeed*, QWidget* parent) -> PJ::IDataWidget* {
+    ++factory_calls;
+    return new FakeObjectWidget(parent);
+  });
+  auto* dock = docker.plotAt(0);
+  ASSERT_NE(dock, nullptr);
+
+  QStringList dropped_topics;
+  QObject::connect(
+      &docker, &PJ::PlotDocker::placeholderTopicDropped, &docker,
+      [&](PJ::DockWidget*, PJ::DatasetId, QString topic, PJ::sdk::BuiltinObjectType) { dropped_topics << topic; });
+
+  // A two-key drop must build ONE dock and stage a pending drop for EACH topic.
+  const QStringList both_keys{front_key, back_key};
+  ASSERT_TRUE(
+      QMetaObject::invokeMethod(dock, "onCatalogItemsDropped", Qt::DirectConnection, Q_ARG(QStringList, both_keys)));
+
+  EXPECT_EQ(factory_calls, 1);
+  EXPECT_NE(dock->objectWidget(), nullptr);
+  EXPECT_EQ(dropped_topics, (QStringList{QStringLiteral("/lidar/front"), QStringLiteral("/lidar/back")}));
+}
+
+TEST(DockWidgetPlaceholderTest, ObjectPlaceholderDropKeepsPlaceholderWhenFactoryRefuses) {
+  PJ::SessionManager session;
+  PJ::CatalogModel catalog(&session);
+  auto dataset = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "robot"});
+  ASSERT_TRUE(dataset.has_value()) << dataset.error();
+  catalog.setAdvertisedTopics(
+      *dataset, {{.topic_name = "/camera_info", .classification = PJ::sdk::BuiltinObjectType::kCameraInfo}});
+  const QString key = advertisedKey(catalog, QStringLiteral("/camera_info"));
+  ASSERT_FALSE(key.isEmpty());
+
+  PJ::PlotDocker docker(QStringLiteral("test"), &session, &catalog);
+  docker.setObjectWidgetFactory(
+      [](const QString&, const PJ::ObjectDropSeed*, QWidget*) -> PJ::IDataWidget* { return nullptr; });
+  auto* dock = docker.plotAt(0);
+  ASSERT_NE(dock, nullptr);
+  int signal_count = 0;
+  QObject::connect(&docker, &PJ::PlotDocker::placeholderTopicDropped, &docker, [&]() { ++signal_count; });
+
+  ASSERT_TRUE(
+      QMetaObject::invokeMethod(
+          dock, "onCatalogItemsDropped", Qt::DirectConnection, Q_ARG(QStringList, QStringList{key})));
+
+  // Unhostable family: no widget, no pending drop, placeholder still usable.
+  EXPECT_EQ(dock->objectWidget(), nullptr);
+  EXPECT_EQ(dock->plotWidget(), nullptr);
+  EXPECT_EQ(signal_count, 0);
+  EXPECT_NE(dock->findChild<PJ::VisualizationPlaceholderWidget*>(), nullptr);
+}
+
+TEST(DockWidgetPlaceholderTest, ObjectPlaceholderDropOntoCommittedPlotIsRejected) {
+  PJ::SessionManager session;
+  PJ::CatalogModel catalog(&session);
+  auto dataset = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "robot"});
+  ASSERT_TRUE(dataset.has_value()) << dataset.error();
+  ASSERT_NE(addScalarTopic(session, *dataset, "/imu/accel"), 0U);
+  catalog.setAdvertisedTopics(
+      *dataset, {{.topic_name = "/cloud", .classification = PJ::sdk::BuiltinObjectType::kPointCloud}});
+  const auto curves = catalog.curves();
+  ASSERT_EQ(curves.size(), 1U);
+  const QString placeholder_key = advertisedKey(catalog, QStringLiteral("/cloud"));
+  ASSERT_FALSE(placeholder_key.isEmpty());
+
+  PJ::PlotDocker docker(QStringLiteral("test"), &session, &catalog);
+  bool factory_called = false;
+  docker.setObjectWidgetFactory([&](const QString&, const PJ::ObjectDropSeed*, QWidget* parent) -> PJ::IDataWidget* {
+    factory_called = true;
+    return new FakeObjectWidget(parent);
+  });
+  auto* dock = docker.plotAt(0);
+  ASSERT_NE(dock, nullptr);
+
+  // Commit the dock as a plot first.
+  ASSERT_TRUE(
+      QMetaObject::invokeMethod(
+          dock, "onCatalogItemsDropped", Qt::DirectConnection, Q_ARG(QStringList, QStringList{curves[0].name})));
+  ASSERT_NE(dock->plotWidget(), nullptr);
+
+  // An object placeholder dropped on a committed plot must not replace it.
+  ASSERT_TRUE(
+      QMetaObject::invokeMethod(
+          dock, "onCatalogItemsDropped", Qt::DirectConnection, Q_ARG(QStringList, QStringList{placeholder_key})));
+
+  EXPECT_FALSE(factory_called);
+  EXPECT_NE(dock->plotWidget(), nullptr);
+  EXPECT_EQ(dock->objectWidget(), nullptr);
+}
+
 int main(int argc, char** argv) {
   if (!qEnvironmentVariableIsSet("QT_QPA_PLATFORM")) {
     qputenv("QT_QPA_PLATFORM", "offscreen");

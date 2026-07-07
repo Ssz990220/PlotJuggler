@@ -78,6 +78,12 @@ struct QStringHash {
   return QStringLiteral("dataset:%1/object_topic:%2").arg(dataset_id).arg(object_topic_id.id);
 }
 
+// Key for a data-less advertised placeholder. Distinct namespace from the
+// curve/object keys so it never collides with a storage-backed entry.
+[[nodiscard]] QString makeAdvertisedKey(DatasetId dataset_id, const QString& topic_name) {
+  return QStringLiteral("dataset:%1/advertised:%2").arg(dataset_id).arg(topic_name);
+}
+
 [[nodiscard]] CurveDescriptor curveFromItem(const CatalogItem& item) {
   const auto* scalar = asScalarField(item);
   Q_ASSERT(scalar != nullptr);  // Precondition: caller verified isScalarField(item).
@@ -249,6 +255,16 @@ struct CatalogModel::Impl {
   // they survive rebuilds and clearAll/restoreDataset. Never holds empty values.
   tsl::robin_map<DatasetId, QString> dataset_display_overrides;
 
+  // Advertised (available-but-unsubscribed) topics per dataset: topic name →
+  // a-priori classification. Merged into the catalog by rebuildNow as data-less
+  // placeholders only where storage has NOT produced an entry for the same topic
+  // (real data wins). Declarative full-set per dataset (see setAdvertisedTopics).
+  tsl::robin_map<DatasetId, tsl::robin_map<QString, sdk::BuiltinObjectType, QStringHash>> advertised;
+
+  // Datasets whose streaming source supports per-topic pause (see
+  // setPerTopicPauseCapable). Membership only, no payload.
+  tsl::robin_set<DatasetId> per_topic_pause_capable_datasets;
+
   // Content fingerprint as of the last completed rebuildFromDatastore(), used by
   // the samplesIngested gate (rebuildIfChanged) to skip redundant full rebuilds.
   // Unset until the first rebuild, so the first ingest always rebuilds.
@@ -316,7 +332,17 @@ std::optional<double> CatalogModel::scalarValueAt(const QString& key, double dis
 
 bool CatalogModel::isScalarKey(const QString& key) const {
   const auto it = impl_->items.find(key);
-  return it != impl_->items.end() && isScalarField(it->second);
+  if (it == impl_->items.end()) {
+    return false;
+  }
+  if (isScalarField(it->second)) {
+    return true;
+  }
+  // A scalar-shaped (kNone) advertised placeholder is scalar too — no sample has
+  // arrived yet, but the Value column should render "-" for it exactly like a
+  // real scalar field with no data, not blank like a non-scalar row.
+  const auto* advertised = asAdvertisedTopic(it->second);
+  return advertised != nullptr && advertised->classification == sdk::BuiltinObjectType::kNone;
 }
 
 bool CatalogModel::isStringKey(const QString& key) const {
@@ -495,6 +521,17 @@ std::uint64_t CatalogModel::catalogFingerprint() const {
   for (const auto& [dataset_id, label] : impl_->dataset_display_overrides) {
     fp += mix(7, (static_cast<std::uint64_t>(dataset_id) << 32) ^ qHash(label));
   }
+  // Advertised placeholders also change catalog output and are mutated outside
+  // the samplesIngested path (setAdvertisedTopics), so fold them in to keep the
+  // gate self-correcting.
+  for (const auto& [dataset_id, topics] : impl_->advertised) {
+    fp += mix(8, dataset_id);
+    for (const auto& [topic_name, classification] : topics) {
+      fp +=
+          mix(9, (static_cast<std::uint64_t>(dataset_id) << 32) ^ qHash(topic_name) ^
+                     (static_cast<std::uint64_t>(classification) << 8));
+    }
+  }
   return fp;
 }
 
@@ -652,6 +689,48 @@ void CatalogModel::rebuildNow() {
     }
   }
 
+  // Merge advertised (available-but-unsubscribed) placeholders: a data-less node
+  // for every advertised topic that storage has NOT already produced an entry for
+  // (real data wins) and that isn't tombstoned. Superseded automatically once the
+  // topic subscribes and its real scalar/object entries appear.
+  if (!impl_->advertised.empty()) {
+    Impl::NameSet materialized;  // "<dataset_id>\x1f<topic_name>" produced by storage this pass
+    for (const auto& [key, item] : next_items) {
+      (void)key;
+      materialized.insert(QStringLiteral("%1\x1f%2").arg(item.dataset_id).arg(item.topic_name));
+    }
+    for (const auto& [dataset_id, topics] : impl_->advertised) {
+      if (impl_->removed_datasets.count(dataset_id) > 0) {
+        continue;
+      }
+      const auto dataset_label_it = dataset_labels.find(dataset_id);
+      const QString dataset_label =
+          dataset_label_it != dataset_labels.end() ? dataset_label_it->second : effective_base_label(dataset_id);
+      const Impl::NameSet* removed_names_for_dataset = nullptr;
+      if (const auto it = impl_->removed_names_per_dataset.find(dataset_id);
+          it != impl_->removed_names_per_dataset.end()) {
+        removed_names_for_dataset = &it->second;
+      }
+      for (const auto& [topic_name, classification] : topics) {
+        if (materialized.count(QStringLiteral("%1\x1f%2").arg(dataset_id).arg(topic_name)) > 0) {
+          continue;  // real data for this topic already surfaced — it wins
+        }
+        const QString key = makeAdvertisedKey(dataset_id, topic_name);
+        if (removed_names_for_dataset != nullptr && removed_names_for_dataset->count(key) > 0) {
+          continue;
+        }
+        next_items.insert_or_assign(
+            key, CatalogItem{
+                     .key = key,
+                     .dataset_name = dataset_label,
+                     .topic_name = topic_name,
+                     .dataset_id = dataset_id,
+                     .payload = AdvertisedTopicPayload{.classification = classification},
+                 });
+      }
+    }
+  }
+
   const Impl::ItemMap previous_items = std::move(impl_->items);
   impl_->items = std::move(next_items);
 
@@ -699,6 +778,8 @@ void CatalogModel::clearAll(bool tombstone) {
   }
   impl_->items.clear();
   impl_->removed_names_per_dataset.clear();
+  impl_->advertised.clear();
+  impl_->per_topic_pause_capable_datasets.clear();
   emit cleared();
 }
 
@@ -732,6 +813,59 @@ void CatalogModel::setDatasetDisplayName(DatasetId dataset_id, const QString& di
   }
   impl_->dataset_display_overrides.insert_or_assign(dataset_id, display_name);
   rebuildFromDatastore();
+}
+
+void CatalogModel::setAdvertisedTopics(DatasetId dataset_id, const std::vector<AdvertisedTopic>& topics) {
+  tsl::robin_map<QString, sdk::BuiltinObjectType, QStringHash> next;
+  next.reserve(topics.size());
+  for (const AdvertisedTopic& t : topics) {
+    next.insert_or_assign(t.topic_name, t.classification);
+  }
+
+  const auto existing = impl_->advertised.find(dataset_id);
+  const bool had = existing != impl_->advertised.end();
+  if (next.empty()) {
+    if (!had) {
+      return;  // nothing advertised for this dataset — no-op
+    }
+    impl_->advertised.erase(dataset_id);
+  } else {
+    // Idempotence: re-advertising an identical set (e.g. on stream reconnect)
+    // must not churn the catalog.
+    if (had && existing->second.size() == next.size()) {
+      bool same = true;
+      for (const auto& [name, cls] : next) {
+        const auto it = existing->second.find(name);
+        if (it == existing->second.end() || it->second != cls) {
+          same = false;
+          break;
+        }
+      }
+      if (same) {
+        return;
+      }
+    }
+    impl_->advertised.insert_or_assign(dataset_id, std::move(next));
+  }
+  rebuildFromDatastore();
+}
+
+void CatalogModel::clearAdvertisedTopics(DatasetId dataset_id) {
+  if (impl_->advertised.erase(dataset_id) > 0) {
+    rebuildFromDatastore();
+  }
+}
+
+void CatalogModel::setPerTopicPauseCapable(DatasetId dataset_id, bool capable) {
+  if (capable) {
+    impl_->per_topic_pause_capable_datasets.insert(dataset_id);
+  } else {
+    impl_->per_topic_pause_capable_datasets.erase(dataset_id);
+  }
+}
+
+bool CatalogModel::isPerTopicPauseCapable(DatasetId dataset_id) const {
+  return impl_->per_topic_pause_capable_datasets.count(dataset_id) > 0;
 }
 
 void CatalogModel::removeItems(const std::vector<QString>& keys) {
@@ -769,6 +903,10 @@ bool CatalogModel::removeDataset(DatasetId dataset_id, bool tombstone) {
   if (keys.empty()) {
     return false;
   }
+  // A removed dataset shows no advertised placeholders; on restore the live source
+  // re-advertises.
+  impl_->advertised.erase(dataset_id);
+  impl_->per_topic_pause_capable_datasets.erase(dataset_id);
   // Whole-dataset tombstone (vs removeItems' per-name blacklist): rebuildFromDatastore
   // hides this id until a reload mints a new DatasetId or restoreDataset un-hides it.
   // Skipped for a real "Remove Dataset": the caller erases the engine/object data too, so

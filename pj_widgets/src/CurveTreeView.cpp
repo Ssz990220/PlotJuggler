@@ -13,6 +13,7 @@
 #include <QMouseEvent>
 #include <QPainter>
 #include <QScrollBar>
+#include <QSet>
 #include <QStyle>
 #include <QStyledItemDelegate>
 #include <QTimer>
@@ -22,6 +23,7 @@
 #include <utility>
 
 #include "pj_widgets/SvgUtil.h"
+#include "pj_widgets/ThemeColors.h"
 
 namespace PJ {
 
@@ -37,6 +39,18 @@ constexpr int kSortKeyRole = Qt::UserRole + 6;
 // Marks a leaf that shows a Value cell but must not be dragged or enter the drag
 // payload (string fields — not plottable). See CurvePath::draggable.
 constexpr int kValueOnlyRole = Qt::UserRole + 7;
+// Marks an advertised-but-unsubscribed placeholder row, dimmed by the delegate.
+// See CurvePath::is_placeholder.
+constexpr int kPlaceholderRole = Qt::UserRole + 8;
+// Marks a has-data-but-not-currently-referenced row, dimmed the same way as
+// kPlaceholderRole. Set at construction from CurvePath::is_unsubscribed and
+// kept live by setUnsubscribedKeys() without a rebuild.
+constexpr int kUnsubscribedRole = Qt::UserRole + 9;
+// Marks a topic row whose streaming is user-forced (context menu) — the
+// delegate paints its name in the accent blue so a successful "Force topic
+// streaming" is visible even when nothing else about the row changes. Set by
+// setForcedTopicPaths() on the TOPIC node (group or leaf), never on fields.
+constexpr int kForcedRole = Qt::UserRole + 10;
 
 QStringList splitPath(const QString& name) {
   return name.split('/', Qt::SkipEmptyParts);
@@ -100,6 +114,26 @@ class CurveTreeItemDelegate : public QStyledItemDelegate {
     QStyleOptionViewItem opt(option);
     initStyleOption(&opt, index);
 
+    // Placeholder/unsubscribed flags live on the Name column's item data (see
+    // addCatalogItem); fetch via the row's Name-column sibling so every column
+    // of a dimmed row (Name AND Value) dims, not just whichever column is
+    // being painted.
+    const QModelIndex name_index = index.sibling(index.row(), kNameColumn);
+    const bool dimmed = name_index.data(kPlaceholderRole).toBool() || name_index.data(kUnsubscribedRole).toBool();
+    if (dimmed) {
+      painter->save();
+      painter->setOpacity(painter->opacity() * 0.5);
+    }
+    if (index.column() == kNameColumn && name_index.data(kForcedRole).toBool()) {
+      // Forced streaming: accent the topic's name so the state is visible —
+      // brightness alone can't distinguish "subscribed because displayed" from
+      // "subscribed because forced". Name column only: the mark lives on topic
+      // rows, which have no Value text, so the extra lookup is skipped on the
+      // (paint-hot) Value cells.
+      opt.palette.setColor(QPalette::Text, theme::kBlue);
+      opt.palette.setColor(QPalette::HighlightedText, theme::kBlue);
+    }
+
     // A topic row may carry one of two trailing icons: image.svg for
     // image-family topics, cube.svg for 3D-object topics. We
     // suppress the standard left-side decoration and paint the icon at
@@ -131,13 +165,15 @@ class CurveTreeItemDelegate : public QStyledItemDelegate {
 
     style->drawControl(QStyle::CE_ItemViewItem, &opt, painter, widget);
 
-    if (!draw_trailing_icon || trailing_icon.isNull()) {
-      return;
+    if (draw_trailing_icon && !trailing_icon.isNull()) {
+      const QIcon::Mode mode = option.state.testFlag(QStyle::State_Enabled) ? QIcon::Normal : QIcon::Disabled;
+      const QIcon::State state = option.state.testFlag(QStyle::State_Open) ? QIcon::On : QIcon::Off;
+      trailing_icon.paint(painter, trailing_icon_rect, Qt::AlignCenter, mode, state);
     }
 
-    const QIcon::Mode mode = option.state.testFlag(QStyle::State_Enabled) ? QIcon::Normal : QIcon::Disabled;
-    const QIcon::State state = option.state.testFlag(QStyle::State_Open) ? QIcon::On : QIcon::Off;
-    trailing_icon.paint(painter, trailing_icon_rect, Qt::AlignCenter, mode, state);
+    if (dimmed) {
+      painter->restore();
+    }
   }
 };
 
@@ -278,7 +314,22 @@ CurveTreeView::CurveTreeView(QWidget* parent) : QTreeWidget(parent) {
   setDragDropMode(QAbstractItemView::NoDragDrop);
 
   connect(this, &QTreeWidget::itemDoubleClicked, this, [this](QTreeWidgetItem* item, int column) {
-    if (item == nullptr || column != kNameColumn || item->childCount() == 0) {
+    if (item == nullptr || column != kNameColumn) {
+      return;
+    }
+    if (item->childCount() == 0) {
+      // Double-clicking a childless leaf is otherwise inert. A peek-eligible
+      // scalar placeholder (advertised, and neither an image nor a 3D-object
+      // terminal) instead requests a bounded preview so the host can land one
+      // real sample and promote the row to per-field children. The expand
+      // toggle below is for group nodes only, so return either way.
+      const bool peek_eligible = item->data(kNameColumn, kPlaceholderRole).toBool() &&
+                                 !item->data(kNameColumn, kImageTopicRole).toBool() &&
+                                 !item->data(kNameColumn, k3dObjectTopicRole).toBool();
+      const QString catalog_key = catalogKeyForItem(item);
+      if (peek_eligible && !catalog_key.isEmpty()) {
+        emit placeholderPeekRequested(catalog_key);
+      }
       return;
     }
     const bool expanded = !item->isExpanded();
@@ -409,7 +460,7 @@ void CurveTreeView::addCurve(const QString& name, SortMode sort_mode) {
   }
 }
 
-QString CurveTreeView::treePathFromCurvePath(const CurvePath& path) const {
+QString CurveTreeView::treePathFromCurvePath(const CurvePath& path) {
   QString tree_path = path.dataset;
   const QString topic = normalizedPathSegment(path.topic);
   const QString field = normalizedPathSegment(path.field);
@@ -440,6 +491,7 @@ void CurveTreeView::addCurve(const CurvePath& path) {
 void CurveTreeView::addCatalogItem(const CurvePath& path) {
   addCatalogItem(path, SortMode::kImmediate);
   reapplyFilter();
+  expandPendingGroups();
 }
 
 void CurveTreeView::addCatalogItems(const std::vector<CurvePath>& paths) {
@@ -454,6 +506,8 @@ void CurveTreeView::addCatalogItems(const std::vector<CurvePath>& paths) {
   sortTree();
   setUpdatesEnabled(updates_were_enabled);
   reapplyFilter();
+  expandPendingGroups();
+  applyForcedTopicMarks();
 }
 
 void CurveTreeView::addCatalogItem(const CurvePath& path, SortMode sort_mode) {
@@ -510,6 +564,8 @@ void CurveTreeView::addCatalogItem(const CurvePath& path, SortMode sort_mode) {
     setTopicIconDecoration(item, path.is_image_topic, path.is_3d_object_topic, currentTheme());
   }
   item->setData(kNameColumn, kSearchRole, tree_path);
+  item->setData(kNameColumn, kPlaceholderRole, path.is_placeholder);
+  item->setData(kNameColumn, kUnsubscribedRole, path.is_unsubscribed);
   if (sort_mode == SortMode::kImmediate) {
     sortTree();
   }
@@ -528,6 +584,222 @@ void CurveTreeView::setViewMode(ViewMode mode) {
 
 void CurveTreeView::clearCurves() {
   clear();
+}
+
+namespace {
+
+// Separator for joined name chains: names may contain '/', so use a control
+// character that never appears in topic/dataset names.
+constexpr QChar kPathJoin = QChar(0x1F);
+
+void collectExpandedPaths(const QTreeWidgetItem* item, const QString& prefix, QStringList& out) {
+  for (int i = 0; i < item->childCount(); ++i) {
+    const QTreeWidgetItem* child = item->child(i);
+    if (child->childCount() == 0) {
+      continue;
+    }
+    const QString path = prefix.isEmpty() ? child->text(0) : prefix + kPathJoin + child->text(0);
+    if (child->isExpanded()) {
+      out.push_back(path);
+    }
+    collectExpandedPaths(child, path, out);
+  }
+}
+
+void applyExpandedPaths(QTreeWidgetItem* item, const QString& prefix, const QSet<QString>& paths) {
+  for (int i = 0; i < item->childCount(); ++i) {
+    QTreeWidgetItem* child = item->child(i);
+    if (child->childCount() == 0) {
+      continue;
+    }
+    const QString path = prefix.isEmpty() ? child->text(0) : prefix + kPathJoin + child->text(0);
+    if (paths.contains(path)) {
+      child->setExpanded(true);
+    }
+    applyExpandedPaths(child, path, paths);
+  }
+}
+
+// Every row carrying a catalog key (leaf or object-topic terminal — see
+// addCatalogItem, both set kCatalogItemRole) gets its unsubscribed flag set
+// from membership in `unsubscribed_keys`; group/folder rows have no key and
+// are left untouched.
+void applyUnsubscribedFlag(QTreeWidgetItem* item, const QSet<QString>& unsubscribed_keys) {
+  for (int i = 0; i < item->childCount(); ++i) {
+    QTreeWidgetItem* child = item->child(i);
+    const QString key = child->data(kNameColumn, kCatalogItemRole).toString();
+    if (!key.isEmpty()) {
+      child->setData(kNameColumn, kUnsubscribedRole, unsubscribed_keys.contains(key));
+    }
+    applyUnsubscribedFlag(child, unsubscribed_keys);
+  }
+}
+
+const QTreeWidgetItem* findItemByCatalogKey(const QTreeWidgetItem* item, const QString& key) {
+  for (int i = 0; i < item->childCount(); ++i) {
+    const QTreeWidgetItem* child = item->child(i);
+    if (child->data(kNameColumn, kCatalogItemRole).toString() == key) {
+      return child;
+    }
+    if (const QTreeWidgetItem* found = findItemByCatalogKey(child, key); found != nullptr) {
+      return found;
+    }
+  }
+  return nullptr;
+}
+
+}  // namespace
+
+QStringList CurveTreeView::expandedGroupPaths() const {
+  QStringList out;
+  // invisibleRootItem() is non-const in QTreeWidget; the walk only reads.
+  collectExpandedPaths(const_cast<CurveTreeView*>(this)->invisibleRootItem(), QString(), out);
+  return out;
+}
+
+void CurveTreeView::restoreExpandedGroupPaths(const QStringList& paths) {
+  if (paths.isEmpty()) {
+    return;
+  }
+  const QSet<QString> set(paths.begin(), paths.end());
+  applyExpandedPaths(invisibleRootItem(), QString(), set);
+}
+
+void CurveTreeView::setUnsubscribedKeys(const QSet<QString>& unsubscribed_keys) {
+  applyUnsubscribedFlag(invisibleRootItem(), unsubscribed_keys);
+}
+
+QString CurveTreeView::catalogKeyOf(const QTreeWidgetItem* item) {
+  return catalogKeyForItem(item);
+}
+
+QStringList CurveTreeView::catalogKeysUnder(const QTreeWidgetItem* item) {
+  QStringList keys;
+  if (item == nullptr) {
+    return keys;
+  }
+  const QString own = catalogKeyForItem(item);
+  if (!own.isEmpty()) {
+    keys.push_back(own);
+  }
+  for (int i = 0; i < item->childCount(); ++i) {
+    keys += catalogKeysUnder(item->child(i));
+  }
+  return keys;
+}
+
+bool CurveTreeView::isKeyUnsubscribed(const QString& key) const {
+  // invisibleRootItem() is non-const in QTreeWidget; the walk only reads.
+  const QTreeWidgetItem* item = findItemByCatalogKey(const_cast<CurveTreeView*>(this)->invisibleRootItem(), key);
+  return item != nullptr && item->data(kNameColumn, kUnsubscribedRole).toBool();
+}
+
+void CurveTreeView::requestExpansionWhenPromoted(const QString& tree_path) {
+  if (!tree_path.isEmpty()) {
+    pending_expand_paths_.insert(tree_path);
+  }
+}
+
+// The topic node that a field leaf hangs under, `field_depth` tree levels above
+// it, or nullptr if the walk runs off the top.
+QTreeWidgetItem* topicNodeAbove(QTreeWidgetItem* leaf, int field_depth) {
+  QTreeWidgetItem* node = leaf;
+  for (int up = 0; up < field_depth && node != nullptr; ++up) {
+    node = node->parent();
+  }
+  return node;
+}
+
+QTreeWidgetItem* CurveTreeView::findTopicNode(const QString& topic_path) {
+  // A topic's node is either a row that IS the topic (a placeholder leaf or an
+  // object-topic terminal — its search role equals the path exactly), or — for
+  // a promoted scalar topic — the keyless GROUP above its field leaves: locate
+  // any field leaf whose search role lives under the path, then step up the
+  // field sub-path's segment count. Keying on the always-normalized search
+  // role — not node text — works in both view modes.
+  // INVARIANT the step-up relies on: a field leaf nests exactly one tree level
+  // per '/'-segment of its field sub-path (addCatalogItem splits fields on '/'
+  // in both view modes). If the tree ever groups fields differently, store an
+  // explicit topic-node link on the leaves instead of counting segments.
+  // KNOWN AMBIGUITY: the normalized search path cannot distinguish topic "/a"
+  // with field "b/c" from topic "/a/b" with field "c" — colliding names across
+  // topics can badge/expand the wrong node. Distinguishing them needs separate
+  // topic/field roles on the rows; not worth it until a real source hits it.
+  const QString prefix = topic_path + QLatin1Char('/');
+  QTreeWidgetItem* topic_node = nullptr;
+  std::function<bool(QTreeWidgetItem*)> find = [&](QTreeWidgetItem* item) {
+    for (int i = 0; i < item->childCount(); ++i) {
+      QTreeWidgetItem* child = item->child(i);
+      const QString search = child->data(kNameColumn, kSearchRole).toString();
+      if (search == topic_path) {
+        topic_node = child;
+        return true;
+      }
+      if (child->childCount() != 0) {
+        if (find(child)) {
+          return true;
+        }
+        continue;
+      }
+      if (search.startsWith(prefix)) {
+        const int field_depth = static_cast<int>(search.mid(prefix.size()).count(QLatin1Char('/'))) + 1;
+        topic_node = topicNodeAbove(child, field_depth);
+        return topic_node != nullptr;
+      }
+    }
+    return false;
+  };
+  find(invisibleRootItem());
+  return topic_node;
+}
+
+void CurveTreeView::expandPendingGroups() {
+  if (pending_expand_paths_.isEmpty()) {
+    return;
+  }
+  // A pending intent is honored once the placeholder promotes to a topic
+  // bearing field children — a childless node (the placeholder itself) reveals
+  // nothing and keeps the intent armed.
+  for (const QString& topic_path : pending_expand_paths_.values()) {
+    QTreeWidgetItem* topic_node = findTopicNode(topic_path);
+    if (topic_node == nullptr || topic_node->childCount() == 0) {
+      continue;  // not promoted yet (or single unnamed field — nothing to reveal)
+    }
+    for (QTreeWidgetItem* node = topic_node; node != nullptr; node = node->parent()) {
+      node->setExpanded(true);
+    }
+    pending_expand_paths_.remove(topic_path);
+  }
+}
+
+void CurveTreeView::setForcedTopicPaths(const QSet<QString>& topic_paths) {
+  forced_topic_paths_ = topic_paths;
+  applyForcedTopicMarks();
+}
+
+void CurveTreeView::applyForcedTopicMarks() {
+  // Full-set replace: clear every mark, then set the current ones. The stored
+  // set survives rebuilds (clearCurves + re-add), re-applied by addCatalogItems.
+  std::function<void(QTreeWidgetItem*)> clear = [&](QTreeWidgetItem* item) {
+    for (int i = 0; i < item->childCount(); ++i) {
+      QTreeWidgetItem* child = item->child(i);
+      if (child->data(kNameColumn, kForcedRole).toBool()) {
+        child->setData(kNameColumn, kForcedRole, false);
+      }
+      clear(child);
+    }
+  };
+  clear(invisibleRootItem());
+  for (const QString& topic_path : forced_topic_paths_) {
+    if (QTreeWidgetItem* node = findTopicNode(topic_path); node != nullptr) {
+      node->setData(kNameColumn, kForcedRole, true);
+    }
+  }
+}
+
+bool CurveTreeView::isTopicPathForced(const QString& topic_path) {
+  QTreeWidgetItem* node = findTopicNode(topic_path);
+  return node != nullptr && node->data(kNameColumn, kForcedRole).toBool();
 }
 
 void CurveTreeView::refreshIcons(const QString& theme) {

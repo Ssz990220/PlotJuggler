@@ -10,6 +10,7 @@
 #include <functional>
 
 #include "pj_base/builtin/builtin_object.hpp"
+#include "pj_base/types.hpp"
 #include "pj_datastore/object_store.hpp"
 #include "pj_runtime/IDataWidget.h"
 #include "pj_widgets/VisualizationKind.h"
@@ -98,6 +99,18 @@ class DockWidget : public ads::CDockWidget, public IDataWidget {
   // placeholder→drop path otherwise does at creation time. Fires once per
   // click-create cycle (the gate is re-armed if the dock is cleared and re-adopted).
   void firstObjectTopicAdded();
+  // A dropped catalog key named an ADVERTISED (not-yet-subscribed) placeholder
+  // rather than resolved data — a scalar placeholder dropped on this dock's
+  // chrome (materializing a plot lazily, like a real scalar drop) or an object
+  // placeholder dropped onto an ALREADY-mounted object dock. This dock does not
+  // fabricate a curve/layer for these (no storage id exists yet); the shell
+  // (TopicDemandController) resolves demand + a pending bind/retry.
+  // `object_type` is kNone for the scalar case. Not emitted for an object
+  // placeholder with no already-mounted object widget — materializing a fresh
+  // dock straight from a placeholder is out of scope; build the empty dock via
+  // objectFamilyRequested first, then drop.
+  void placeholderTopicDropped(
+      DockWidget* dock, DatasetId dataset_id, QString topic_name, sdk::BuiltinObjectType object_type);
 
  private slots:
   void onCatalogItemsDropped(const QStringList& keys);

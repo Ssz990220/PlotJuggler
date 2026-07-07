@@ -87,6 +87,32 @@ TEST(DataProcessorServiceTest, AppliesAbsoluteFilterAndMaterializesOutput) {
   EXPECT_DOUBLE_EQ(vals[2], 3.0);
 }
 
+TEST(DataProcessorServiceTest, SourceTopicsForOutputResolvesFilterInput) {
+  // Demand-tracking support (M5): a displayed filter OUTPUT must resolve back to
+  // its source topic so TopicDemandTracker keeps the input subscribed.
+  DataEngine engine;
+  DataProcessorService service(engine);
+  service.setFilterCatalogue(catalogueFromSource(kAbsoluteSrc));
+  const DatasetId ds = *engine.createDataset(DatasetDescriptor{.source_name = "t", .time_domain_id = 0});
+
+  DataWriter writer = engine.createWriter();
+  auto handle = writer.registerScalarSeries(ds, "speed", NumericType::kFloat64);
+  const TopicId src = handle->topic_id;
+  writer.appendScalar(*handle, 0, -1.0);
+  engine.commitChunks(writer.flushAll());
+
+  const auto result = service.applyFilter(src, ds, "absolute", "speed[Absolute]");
+  ASSERT_TRUE(result.has_value()) << result.error();
+
+  const auto sources = service.sourceTopicsForOutput(result->output_topic_id);
+  ASSERT_EQ(sources.size(), 1u);
+  EXPECT_EQ(sources.front().first, ds);
+  EXPECT_EQ(sources.front().second, "speed");
+
+  // An id that names no filter/transform output resolves to nothing.
+  EXPECT_TRUE(service.sourceTopicsForOutput(src).empty());
+}
+
 TEST(DataProcessorServiceTest, IntegralFilterAccumulates) {
   DataEngine engine;
   DataProcessorService service(engine);
