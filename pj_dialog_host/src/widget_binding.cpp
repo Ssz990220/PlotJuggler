@@ -48,6 +48,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <pj_plugins/host/widget_event_builder.hpp>
 #include <pj_plugins/host_qt/chart_preview_widget.hpp>
 #include <pj_plugins/host_qt/widget_adapters.hpp>
@@ -223,6 +224,26 @@ static void applyTableRadioColumn(
       break;
     }
   }
+}
+
+// Key text identifying a table row for text-keyed selection (selected_items):
+// the text of its first column that hosts no cell widget. Columns with a cell
+// widget (e.g. an exclusive radio column) carry no selectable item text, so a
+// fixed column 0 would yield empty keys when the radio sits first. Stops at
+// that column even if it has no item (nullopt), rather than falling through to
+// a later column — this is a single definition of the contract shared by the
+// selection-changed emit in connectWidgetSignals and the selected_items apply
+// below, so the two directions cannot drift.
+static std::optional<std::string> tableRowKeyText(const QTableWidget* tw, int row) {
+  for (int c = 0; c < tw->columnCount(); ++c) {
+    if (tw->cellWidget(row, c) == nullptr) {
+      if (auto* item = tw->item(row, c)) {
+        return item->text().toStdString();
+      }
+      return std::nullopt;
+    }
+  }
+  return std::nullopt;
 }
 
 // True when `tw`'s header labels already equal `headers`.
@@ -596,6 +617,37 @@ static void applyToWidget(
           if (r >= 0 && r < tw->rowCount()) {
             tw->selectRow(r);
           }
+        }
+        if (vbar != nullptr) {
+          vbar->setValue(scroll);
+        }
+      }
+    }
+    if (auto v = view.selectedItems(name)) {
+      // Text-keyed selection restore (setSelectedItems): match each row by
+      // tableRowKeyText — the same key the selection-changed emit uses — so the
+      // restore is sort-agnostic (row indices desync under sortingEnabled) and
+      // works for tables with a leading radio/widget column. Applied second so
+      // it wins over selected_rows if a plugin ever sent both. Same
+      // skip-if-unchanged + scroll-preservation rationale as the index path.
+      std::set<std::string> want_texts(v->begin(), v->end());
+      std::vector<int> want_rows;
+      for (int r = 0; r < tw->rowCount(); ++r) {
+        if (auto key = tableRowKeyText(tw, r); key && want_texts.count(*key) > 0) {
+          want_rows.push_back(r);
+        }
+      }
+      std::set<int> want(want_rows.begin(), want_rows.end());
+      std::set<int> have;
+      for (const QModelIndex& idx : tw->selectionModel()->selectedRows()) {
+        have.insert(idx.row());
+      }
+      if (want != have) {
+        QScrollBar* vbar = tw->verticalScrollBar();
+        const int scroll = vbar != nullptr ? vbar->value() : 0;
+        tw->clearSelection();
+        for (int r : want_rows) {
+          tw->selectRow(r);
         }
         if (vbar != nullptr) {
           vbar->setValue(scroll);
@@ -1047,13 +1099,10 @@ void connectWidgetSignals(QWidget* root, WidgetEventCallback callback) {
     }
     if (auto* tw = qobject_cast<QTableWidget*>(w)) {
       QObject::connect(tw, &QTableWidget::itemSelectionChanged, tw, [callback, name, tw]() {
-        // Emit one entry per selected row: the text of its first column with no
-        // cell widget. Columns hosting a cell widget — e.g. an exclusive radio
-        // column — carry no selectable item text, so keying off a fixed column 0
-        // would yield empty strings when the radio sits first. Falling through to
-        // the first text column keeps selection-driven actions (delete, …) working
-        // regardless of where the radio sits; for widget-free tables this is just
-        // column 0 as before.
+        // Emit one entry per selected row, keyed by tableRowKeyText (see its
+        // doc comment for why a fixed column 0 doesn't work). This is the same
+        // key the selected_items apply path matches rows by, so the two
+        // directions stay in sync.
         std::vector<std::string> sel;
         std::vector<int> seen_rows;
         for (auto* item : tw->selectedItems()) {
@@ -1069,13 +1118,8 @@ void connectWidgetSignals(QWidget* root, WidgetEventCallback callback) {
             continue;
           }
           seen_rows.push_back(row);
-          for (int c = 0; c < tw->columnCount(); ++c) {
-            if (tw->cellWidget(row, c) == nullptr) {
-              if (auto* label = tw->item(row, c)) {
-                sel.push_back(label->text().toStdString());
-              }
-              break;
-            }
+          if (auto key = tableRowKeyText(tw, row)) {
+            sel.push_back(*key);
           }
         }
         callback(name, WidgetEventBuilder::selectionChanged(sel));

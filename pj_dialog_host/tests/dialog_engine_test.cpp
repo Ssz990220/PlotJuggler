@@ -426,6 +426,76 @@ TEST(TableBinding, SameShapeCellUpdateIsInPlace) {
   EXPECT_EQ(tw->item(1, 1)->text(), "--");
 }
 
+// selected_items (text-keyed restore, setSelectedItems) must be honored for
+// QTableWidget the same way it already is for QListWidget — plugins with
+// sortable picker tables emit it instead of index-keyed selected_rows.
+TEST(TableBinding, SelectedItemsRestoreByText) {
+  QWidget root;
+  auto* tw = new QTableWidget(&root);
+  tw->setObjectName("tbl");
+
+  const std::vector<std::vector<std::string>> rows = {{"a0", "b0"}, {"a1", "b1"}};
+  nlohmann::json d;
+  d["tbl"]["headers"] = {"A", "B"};
+  d["tbl"]["rows"] = rows;
+  d["tbl"]["selected_items"] = {"a1"};
+  PJ::applyWidgetData(&root, PJ::WidgetDataView(d.dump()));
+
+  ASSERT_EQ(tw->rowCount(), 2);
+  EXPECT_FALSE(tw->item(0, 0)->isSelected());
+  EXPECT_TRUE(tw->item(1, 0)->isSelected());
+}
+
+// The point of text-keyed restore: it must land on the right row even after the
+// view re-orders (sortingEnabled) — index-keyed selected_rows desyncs here.
+TEST(TableBinding, SelectedItemsSurviveSortedView) {
+  QWidget root;
+  auto* tw = new QTableWidget(&root);
+  tw->setObjectName("tbl");
+
+  nlohmann::json d;
+  d["tbl"]["headers"] = {"A", "B"};
+  d["tbl"]["rows"] = std::vector<std::vector<std::string>>{{"a0", "b0"}, {"a1", "b1"}};
+  PJ::applyWidgetData(&root, PJ::WidgetDataView(d.dump()));
+  ASSERT_EQ(tw->rowCount(), 2);
+
+  // Re-order the view the way a user header-click would.
+  tw->sortItems(0, Qt::DescendingOrder);
+  ASSERT_EQ(tw->item(0, 0)->text(), "a1");  // sorted: a1 now on top
+
+  nlohmann::json sel;
+  sel["tbl"]["selected_items"] = {"a0"};
+  PJ::applyWidgetData(&root, PJ::WidgetDataView(sel.dump()));
+
+  // "a0" lives at visual row 1 after the sort — text-keyed restore must find it.
+  EXPECT_TRUE(tw->item(1, 0)->isSelected());
+  EXPECT_FALSE(tw->item(0, 0)->isSelected());
+}
+
+// Same reuse guarantee the index-keyed path has: a selection-only re-delivery
+// must not rebuild the QTableWidgetItems.
+TEST(TableBinding, SelectedItemsChangeReusesItems) {
+  QWidget root;
+  auto* tw = new QTableWidget(&root);
+  tw->setObjectName("tbl");
+
+  const std::vector<std::vector<std::string>> rows = {{"a0", "b0"}, {"a1", "b1"}};
+  nlohmann::json d;
+  d["tbl"]["headers"] = {"A", "B"};
+  d["tbl"]["rows"] = rows;
+  d["tbl"]["selected_items"] = {"a0"};
+  PJ::applyWidgetData(&root, PJ::WidgetDataView(d.dump()));
+  QTableWidgetItem* item00 = tw->item(0, 0);
+  ASSERT_NE(item00, nullptr);
+  EXPECT_TRUE(item00->isSelected());
+
+  d["tbl"]["selected_items"] = {"a1"};
+  PJ::applyWidgetData(&root, PJ::WidgetDataView(d.dump()));
+  EXPECT_EQ(tw->item(0, 0), item00);  // same pointer ⇒ not rebuilt
+  EXPECT_FALSE(tw->item(0, 0)->isSelected());
+  EXPECT_TRUE(tw->item(1, 0)->isSelected());
+}
+
 // ==========================================================================
 // Code editor — caret offset round-trips via code_cursor
 // ==========================================================================
