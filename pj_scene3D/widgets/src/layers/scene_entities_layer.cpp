@@ -39,6 +39,12 @@ namespace pj::scene3d {
 namespace {
 Q_LOGGING_CATEGORY(lcSceneEntitiesLayer, "pj.scene3d.entity.markers")
 
+// PJ_PERF_TRACE=1 gate for the once/second per-layer perf log. Read once.
+bool perfTraceEnabled() {
+  static const bool enabled = qEnvironmentVariableIntValue("PJ_PERF_TRACE") != 0;
+  return enabled;
+}
+
 // The source frame of a batch is the message-level frame: the frame_id of its
 // first entity (per-entity frame overrides are a v2 refinement).
 std::string batchSourceFrame(const PJ::sdk::SceneEntities& batch) {
@@ -401,6 +407,26 @@ void SceneEntitiesLayer::renderAt(int64_t time_ns) {
   if (ctx_.session == nullptr) {
     return;
   }
+  if (perfTraceEnabled()) {
+    ++perf_renderat_calls_;  // counted BEFORE the UID guard: this is the tracker-tick rate
+    if (!perf_window_.isValid()) {
+      perf_window_.start();
+    } else if (perf_window_.elapsed() >= 1000) {
+      const double secs = static_cast<double>(perf_window_.elapsed()) / 1000.0;
+      qInfo().noquote() << QStringLiteral(
+                               "[pjperf] layer '%1': renderAt=%2/s decodes=%3/s mean_decode=%4ms entities=%5 cubes=%6")
+                               .arg(display_name_)
+                               .arg(static_cast<double>(perf_renderat_calls_) / secs, 0, 'f', 1)
+                               .arg(static_cast<double>(perf_decodes_) / secs, 0, 'f', 1)
+                               .arg(perf_decodes_ > 0 ? perf_decode_ms_sum_ / perf_decodes_ : 0.0, 0, 'f', 3)
+                               .arg(perf_last_entities_)
+                               .arg(perf_last_cubes_);
+      perf_renderat_calls_ = 0;
+      perf_decodes_ = 0;
+      perf_decode_ms_sum_ = 0.0;
+      perf_window_.restart();
+    }
+  }
   PJ::ObjectStore& store = ctx_.session->objectStore();
   auto resolved = store.latestAt(topic_id_, time_ns);
   if (!resolved.has_value() || resolved->payload.bytes.empty()) {
@@ -411,7 +437,12 @@ void SceneEntitiesLayer::renderAt(int64_t time_ns) {
   // front eviction, unlike a current deque index. Viewer color overrides apply at
   // render time (setOverrides), not here, so they are unaffected by this guard.
   if (last_marker_uid_ == resolved->sequential_uid) {
-    return;
+    return;  // UID guard: unchanged message -> no re-parse/decode this tick
+  }
+  // Past the guard: this tick genuinely re-parses + re-decodes a NEW message.
+  QElapsedTimer decode_timer;
+  if (perfTraceEnabled()) {
+    decode_timer.start();
   }
   const auto binding = ctx_.session->parserBindingForObjectTopic(topic_id_);
   if (!binding) {
@@ -447,6 +478,15 @@ void SceneEntitiesLayer::renderAt(int64_t time_ns) {
     }
   }
   pass_.setActive(std::make_shared<const DecodedSceneEntities>(decodeSceneEntities(*batch)));
+  if (perfTraceEnabled()) {
+    perf_decode_ms_sum_ += static_cast<double>(decode_timer.nsecsElapsed()) / 1.0e6;
+    ++perf_decodes_;
+    perf_last_entities_ = batch->entities.size();
+    perf_last_cubes_ = 0;
+    for (const auto& e : batch->entities) {
+      perf_last_cubes_ += e.cubes.size();
+    }
+  }
   last_marker_uid_ = resolved->sequential_uid;
   // Seed the model path's cache with this just-decoded batch so the subsequent
   // ensureModelStateAt fold reuses it instead of re-parsing the SAME entry — a

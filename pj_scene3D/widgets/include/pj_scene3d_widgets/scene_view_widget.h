@@ -427,6 +427,14 @@ class SceneViewWidget : public QOpenGLWidget {
   // Whether the on-screen GPU/CPU timing overlay draws (toggle: 'P').
   bool show_perf_hud_ = false;
 
+  // PJ_PERF_TRACE=1 aggregation: paints + CPU submission ms accumulated over a ~1s
+  // window and logged once/second (qInfo "[pjperf] paint …"). Independent of the
+  // HUD; measures when either is on. Zero cost when PJ_PERF_TRACE is unset.
+  QElapsedTimer perf_window_;
+  int perf_paints_ = 0;
+  double perf_cpu_ms_sum_ = 0.0;
+  double perf_cpu_ms_max_ = 0.0;
+
   QPoint last_mouse_pos_;
   Qt::MouseButton active_button_{Qt::NoButton};
 

@@ -118,6 +118,14 @@ int main(int argc, char** argv) {
     QTimer::singleShot(1500, view, reparentView);
   }
 
+  // PJ_HARNESS_REPAINT=1 drives a ~60 Hz continuous repaint so PJ_PERF_TRACE has a
+  // steady paint stream to aggregate (a static scene otherwise paints on demand).
+  if (qEnvironmentVariableIntValue("PJ_HARNESS_REPAINT") != 0) {
+    auto* repaint = new QTimer(view);
+    QObject::connect(repaint, &QTimer::timeout, view, [view]() { view->update(); });
+    repaint->start(16);
+  }
+
   // Auto-quit after PJ_HARNESS_QUIT_MS (default: stay open for visual inspection).
   // Scripted runs set e.g. PJ_HARNESS_QUIT_MS=4000 to capture the stderr trace and
   // exit. The reparent/context-recreation happens ~1.5s in, so leave it running to

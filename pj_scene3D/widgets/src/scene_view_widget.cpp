@@ -51,6 +51,13 @@ namespace {
 
 Q_LOGGING_CATEGORY(lcSceneViewWidget, "pj.scene3d.scene_view")
 
+// PJ_PERF_TRACE=1 enables the once/second aggregated perf log (paints/s, paintGL
+// ms, GPU ms). Read once; zero cost when unset.
+bool perfTraceEnabled() {
+  static const bool enabled = qEnvironmentVariableIntValue("PJ_PERF_TRACE") != 0;
+  return enabled;
+}
+
 // Desired MSAA for the offscreen scene HDR chain. SceneHdrFbo owns its own
 // multisample textures (resolved to single-sample, then composited by a
 // fullscreen draw), so its sample count is INDEPENDENT of the window/context: a
@@ -566,10 +573,10 @@ void SceneViewWidget::paintGL() {
         << " widget=" << width() << "x" << height() << " visible=" << isVisible();
   }
 
-  // Perf instrumentation is gated on the HUD: when it's off (the production
-  // default), the scene pays nothing for timing it doesn't display. The CPU
-  // stopwatch and the GPU timer bracket the whole scene render.
-  if (show_perf_hud_) {
+  // Perf instrumentation is gated on the HUD OR PJ_PERF_TRACE: when both are off
+  // (the production default), the scene pays nothing for timing it doesn't use.
+  // The CPU stopwatch and the GPU timer bracket the whole scene render.
+  if (show_perf_hud_ || perfTraceEnabled()) {
     cpu_timer_.restart();
     scene_profiler_.beginFrame();
   }
@@ -1262,12 +1269,38 @@ void SceneViewWidget::finishFrameInstrumentation() {
   // paintGL, so production frames that don't display the numbers don't measure
   // them. The CPU stopwatch stops BEFORE the HUD draw so the overlay's own cost
   // doesn't pollute the scene's CPU number.
-  if (!show_perf_hud_) {
+  if (!show_perf_hud_ && !perfTraceEnabled()) {
     return;
   }
   scene_profiler_.endFrame();
-  cpu_avg_.add(static_cast<double>(cpu_timer_.nsecsElapsed()) / 1.0e6);
-  drawPerfHud();
+  const double cpu_ms = static_cast<double>(cpu_timer_.nsecsElapsed()) / 1.0e6;
+  cpu_avg_.add(cpu_ms);
+  if (show_perf_hud_) {
+    drawPerfHud();
+  }
+  if (perfTraceEnabled()) {
+    ++perf_paints_;
+    perf_cpu_ms_sum_ += cpu_ms;
+    perf_cpu_ms_max_ = std::max(perf_cpu_ms_max_, cpu_ms);
+    if (!perf_window_.isValid()) {
+      perf_window_.start();
+    } else if (perf_window_.elapsed() >= 1000) {
+      const double secs = static_cast<double>(perf_window_.elapsed()) / 1000.0;
+      qInfo().noquote() << QStringLiteral(
+                               "[pjperf] paint dock=%1: %2 paints/s  cpu mean=%3ms max=%4ms  gpu=%5ms  scene=%6px layers=%7")
+                               .arg(reinterpret_cast<quintptr>(this), 0, 16)
+                               .arg(static_cast<double>(perf_paints_) / secs, 0, 'f', 1)
+                               .arg(perf_cpu_ms_sum_ / std::max(perf_paints_, 1), 0, 'f', 2)
+                               .arg(perf_cpu_ms_max_, 0, 'f', 2)
+                               .arg(scene_profiler_.hasResult() ? scene_profiler_.averageMillis() : -1.0, 0, 'f', 2)
+                               .arg(QString::number(width()) + "x" + QString::number(height()))
+                               .arg(layers_.size());
+      perf_paints_ = 0;
+      perf_cpu_ms_sum_ = 0.0;
+      perf_cpu_ms_max_ = 0.0;
+      perf_window_.restart();
+    }
+  }
 }
 
 }  // namespace pj::scene3d

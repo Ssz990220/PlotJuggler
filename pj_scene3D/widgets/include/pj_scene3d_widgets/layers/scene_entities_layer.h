@@ -4,6 +4,7 @@
 
 #include <QByteArray>
 #include <QColor>
+#include <QElapsedTimer>
 #include <QString>
 #include <QStringList>
 #include <chrono>
@@ -251,6 +252,17 @@ class SceneEntitiesLayer : public Scene3DLayer {
   // Identity of the marker batch last decoded by renderAt; lets it skip
   // re-decoding the same message while scrubbing within one message's time window.
   PJ::SequentialUID last_marker_uid_;
+
+  // PJ_PERF_TRACE=1 per-layer aggregation, logged once/second: renderAt calls (the
+  // tracker-tick rate) vs actual decodes (message changes) — proves the UID guard
+  // keeps decode off the per-frame path — plus mean decode ms and batch size. Zero
+  // cost when unset. QElapsedTimer is in <QElapsedTimer> (already pulled by deps).
+  QElapsedTimer perf_window_;
+  int perf_renderat_calls_ = 0;
+  int perf_decodes_ = 0;
+  double perf_decode_ms_sum_ = 0.0;
+  std::size_t perf_last_entities_ = 0;
+  std::size_t perf_last_cubes_ = 0;
 
   bool visible_ = true;
   // Timestamp of the topic's first entry, set by attach() only when the store
