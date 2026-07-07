@@ -5,8 +5,11 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
+#include <cstdlib>
 #include <limits>
 #include <optional>
+#include <string>
 #include <unordered_map>
 #include <utility>
 
@@ -155,6 +158,20 @@ bool SnapshotSeriesData::refresh(double display_time_sec) {
   }
 
   const bool changed = next != points_;
+
+  if (std::getenv("PJ_SNAP_TRACE") != nullptr) {
+    const DisplayOffset offset = session_ != nullptr ? session_->displayOffset(dataset_id_) : DisplayOffset{};
+    const Timestamp raw_ns = displaySecondsToRaw(fromAxisDouble(display_time_sec), offset);
+    std::fprintf(
+        stderr,
+        "[snap] refresh topic=%llu ds=%llu disp=%.6f offset_ns=%lld raw_ns=%lld plans=%zu pts=%zu->%zu first=%s "
+        "changed=%d y='%s'\n",
+        static_cast<unsigned long long>(topic_id_), static_cast<unsigned long long>(dataset_id_), display_time_sec,
+        static_cast<long long>(offset.value.count()), static_cast<long long>(raw_ns), plans_.size(), points_.size(),
+        next.size(), next.empty() ? "(none)" : std::to_string(next.front().y()).c_str(), changed ? 1 : 0,
+        binding_.y_pattern.c_str());
+  }
+
   points_ = std::move(next);
   bounding_rect_valid_ = false;
   return changed;

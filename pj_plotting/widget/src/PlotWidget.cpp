@@ -29,6 +29,8 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstdio>
+#include <cstdlib>
 #include <limits>
 #include <set>
 
@@ -422,12 +424,11 @@ std::vector<PlotWidget::CurveInfo*> PlotWidget::addSnapshotCurveGroup(
     return added;
   }
 
-  // Populate to the current tracker time, then fit both axes to the snapshot data.
-  // If there is no message at that time yet, defer the fit to the first tracker move
-  // that brings data (snapshot_fitted_ stays false) rather than fitting an empty view.
-  const bool has_data = refreshSnapshotCurves(last_tracker_time_sec_);
+  // Populate to the current tracker time and fit both axes to the snapshot data
+  // (empty when the tracker is before the topic's first message — the next
+  // data-bearing tracker move refits, since the tracker refit is unconditional).
+  refreshSnapshotCurves(last_tracker_time_sec_);
   resetZoom();
-  snapshot_fitted_ = has_data;
   return added;
 }
 
@@ -442,6 +443,19 @@ bool PlotWidget::refreshSnapshotCurves(double display_time_sec) {
     }
   }
   return changed;
+}
+
+bool PlotWidget::snapshotHasPoints() const {
+  for (const auto& info : curveList()) {
+    if (info.curve == nullptr) {
+      continue;
+    }
+    if (const auto* snapshot = dynamic_cast<const SnapshotSeriesData*>(info.curve->data());
+        snapshot != nullptr && snapshot->size() > 0) {
+      return true;
+    }
+  }
+  return false;
 }
 
 void PlotWidget::setZoomRectangle(QRectF rect, bool emit_signal) {
@@ -739,10 +753,9 @@ bool PlotWidget::xmlLoadState(const QDomElement& plot_element, bool autozoom) {
   const QString mode = plot_element.attribute(QStringLiteral("mode"));
   setModeXY(mode == QStringLiteral("XYPlot"));
   // Snapshot mode must be known BEFORE curves are applied so applyCurveElement
-  // routes them to the snapshot branch; the flag is otherwise set per snapshot
-  // curve too. A fresh restore re-fits from the saved <range> (or auto-fit).
+  // routes them to the snapshot branch; the flag is otherwise set per snapshot curve
+  // too. The first data-bearing tracker move fits the axes to the current message.
   snapshot_mode_ = (mode == QStringLiteral("Snapshot"));
-  snapshot_fitted_ = false;
   // Line width is plot-level. New layouts store the chosen width on the <plot>.
   // Older layouts kept the plot-level value at the stale default ("1.0") and the
   // real width per-curve, so when the plot value is absent/default fall back to
@@ -814,12 +827,10 @@ bool PlotWidget::xmlLoadState(const QDomElement& plot_element, bool autozoom) {
   }
 
   // Populate snapshot curves to the current tracker time so the restored viewport
-  // (below) frames real points. The restored <range> — or, absent it, zoomOut's
-  // auto-fit — determines the view, so mark the plot fitted and don't let the next
-  // tracker move override the user's saved zoom.
+  // (below) frames real points. A snapshot plot restored before its topic's first
+  // message has no points yet; the first data-bearing tracker move fits the axes.
   if (isSnapshotPlot() && !curveList().empty()) {
     refreshSnapshotCurves(last_tracker_time_sec_);
-    snapshot_fitted_ = true;
   }
 
   // Stash the layout-saved viewport (raw, pre-offset-conversion) and frame to it via
@@ -909,11 +920,11 @@ PlotWidget::CurveInfo* PlotWidget::applyCurveElement(const QDomElement& curve_el
         loaded_curve = addSnapshotCurve(
             dataset_id, topic_id, topic_name, x_pattern, y_pattern, label, color.isValid() ? color : Qt::transparent);
         // Outside the xmlLoadState batch (e.g. a progressive PendingCurveBinder
-        // rebind), the caller frames via applySavedViewportOrZoom, so refresh the new
-        // curve to the current tracker time and treat the view as already determined.
+        // rebind), the caller frames via applySavedViewportOrZoom; refresh the new
+        // curve to the current tracker time so it renders, and let the next tracker
+        // move fit the axes to the current message.
         if (loaded_curve != nullptr && !loading_state_) {
           refreshSnapshotCurves(last_tracker_time_sec_);
-          snapshot_fitted_ = true;
         }
       }
     }
@@ -999,6 +1010,12 @@ void PlotWidget::setTrackerPosition(double display_time_sec) {
   // Remember the time so a streaming ingest (which carries none) can refresh at it.
   last_tracker_time_sec_ = display_time_sec;
 
+  if (std::getenv("PJ_SNAP_TRACE") != nullptr) {
+    std::fprintf(
+        stderr, "[snap] setTrackerPosition disp=%.6f snapshot=%d xy=%d curves=%zu\n", display_time_sec,
+        isSnapshotPlot() ? 1 : 0, isXYPlot() ? 1 : 0, curveList().size());
+  }
+
   // Snapshot mode inverts the XY early-return: XY ignores the tracker entirely, but
   // a snapshot plot's whole content IS the message under the tracker. There is no
   // vertical time cursor (the X axis is data, not time) — instead we rebuild each
@@ -1006,10 +1023,15 @@ void PlotWidget::setTrackerPosition(double display_time_sec) {
   if (isSnapshotPlot()) {
     tracker_->setEnabled(false);
     if (refreshSnapshotCurves(display_time_sec)) {
-      if (!snapshot_fitted_) {
-        // First real data — fit both axes once, then leave the user's zoom alone.
+      // Fit the axes to the CURRENT message whenever its point set changes, so the
+      // message under the tracker is always framed and visible. The value range of a
+      // "current message" shifts as the tracker moves (and the tracker often starts
+      // before the topic's first message, i.e. empty), so a stale fit would strand
+      // the new points off-screen — the "doesn't update" symptom. Snapshot plots are
+      // excluded from zoom linking, so this never disturbs sibling time plots. An
+      // empty snapshot (no message yet) can't be framed, so just replot to clear it.
+      if (snapshotHasPoints()) {
         resetZoom();
-        snapshot_fitted_ = true;
       } else {
         replot();
       }
@@ -1102,7 +1124,6 @@ void PlotWidget::removeAllCurves() {
   PlotWidgetBase::removeAllCurves();
   setModeXY(false);
   snapshot_mode_ = false;
-  snapshot_fitted_ = false;
   qwtPlot()->setAxisTitle(QwtPlot::xBottom, QString());
   if (tracker_ != nullptr) {
     tracker_->setEnabled(tracker_enabled_);
@@ -1643,9 +1664,10 @@ void PlotWidget::reconnectDataSignals() {
   samples_ingested_connection_ =
       connect(session_, &SessionManager::samplesIngested, this, [this](const QVector<TopicId>& ids, bool live) {
         // Snapshot plots hold only snapshot curves. Rebuild each one whose topic got
-        // new samples to the message at the last tracker time, then replot at the
-        // current view — never resetZoom: the X axis is data, so re-fitting it to
-        // each incoming message (or a shorter ragged one) would make the plot jump.
+        // new samples to the message at the last tracker time, then fit the axes to
+        // the current message (same as the tracker path) so a live-streamed message
+        // is always framed and visible. Snapshot plots are excluded from zoom linking,
+        // so this never disturbs sibling time plots.
         if (isSnapshotPlot()) {
           bool snapshot_changed = false;
           for (auto& info : curveList()) {
@@ -1658,7 +1680,11 @@ void PlotWidget::reconnectDataSignals() {
             }
           }
           if (snapshot_changed) {
-            replot();
+            if (snapshotHasPoints()) {
+              resetZoom();
+            } else {
+              replot();
+            }
           }
           return;
         }

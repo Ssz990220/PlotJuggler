@@ -14,12 +14,18 @@
 #include <QDomDocument>
 #include <QDomElement>
 #include <QPen>
+#include <QRectF>
 #include <QtGlobal>
+#include <cmath>
+#include <limits>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "pj_base/dataset.hpp"
 #include "pj_base/type_tree.hpp"
+#include "pj_datastore/query.hpp"
+#include "pj_datastore/reader.hpp"
 #include "pj_datastore/writer.hpp"
 #include "pj_plotting/PlotWidget.h"
 #include "pj_plotting/SnapshotSeriesData.h"
@@ -240,6 +246,124 @@ TEST(PlotWidgetSnapshot, UnresolvableGroupIsNoOp) {
   EXPECT_TRUE(added.empty());
   EXPECT_FALSE(plot.isSnapshotPlot());
   EXPECT_TRUE(plot.curveList().empty());
+}
+
+// A datastore whose messages sit at ABSOLUTE epoch-ns timestamps (like a real
+// mcap), the first message well AFTER display-time 0. Restoring a snapshot plot at
+// the default seed (time 0) therefore sees no data — the exact in-app condition
+// under which the plot used to pin an empty axis and never update.
+constexpr Timestamp kAbsBaseNs = 1783389169000000000LL;  // ~2026-07-06 in ns
+constexpr Timestamp kStepNs = 100000000LL;               // 100 ms between messages
+constexpr int kAbsMessages = 6;
+
+struct AbsFixture {
+  SessionManager session;
+  CatalogModel catalog{&session};
+  DatasetId dataset_id = 0;
+  TopicId topic_id = 0;
+  std::vector<std::pair<std::string, std::size_t>> columns;
+
+  AbsFixture() {
+    dataset_id = *session.dataEngine().createDataset(DatasetDescriptor{.source_name = "spline"});
+    DataWriter writer = session.dataEngine().createWriter();
+    auto positions = makeArray("positions", makePrimitive("", PrimitiveType::kFloat64), kPositions);
+    auto element = makeStruct("", {positions, makePrimitive("time_from_start_s", PrimitiveType::kFloat64)});
+    auto traj = makeArray("predicted_trajectory", element, kElements);
+    auto root = makeStruct("SplineInfo", {traj});
+    topic_id = *writer.registerTopic(
+        dataset_id, TopicDescriptor{.name = "/spline", .schema_id = *writer.registerSchema("spline", root)});
+    EXPECT_TRUE(writer.bindTopicWriter(topic_id).has_value());
+    for (int i = 0; i < kElements; ++i) {
+      for (int j = 0; j < kPositions; ++j) {
+        columns.emplace_back(posPath(i, j), static_cast<std::size_t>(*writer.resolveField(topic_id, posPath(i, j))));
+      }
+      columns.emplace_back(stampPath(i), static_cast<std::size_t>(*writer.resolveField(topic_id, stampPath(i))));
+    }
+    for (int k = 0; k < kAbsMessages; ++k) {
+      EXPECT_TRUE(writer.beginRow(topic_id, kAbsBaseNs + k * kStepNs).has_value());
+      for (int i = 0; i < kElements; ++i) {
+        for (int j = 0; j < kPositions; ++j) {
+          writer.set(topic_id, colOf(posPath(i, j)), posValue(k, i, j));
+        }
+        writer.set(topic_id, colOf(stampPath(i)), stampValue(i));
+      }
+      EXPECT_TRUE(writer.finishRow(topic_id).has_value());
+    }
+    EXPECT_FALSE(session.commitChunks(writer.flushAll()).empty());
+    catalog.rebuildFromDatastore();
+  }
+  std::size_t colOf(const std::string& path) const {
+    for (const auto& [p, c] : columns) {
+      if (p == path) {
+        return c;
+      }
+    }
+    return 0;
+  }
+  // Display-axis seconds for message k (offset is 0, so display == raw/1e9), nudged
+  // +10 ms so the display->raw round-trip lands at-or-after the message despite
+  // double rounding at ~1.78e9 s.
+  double displayTimeForMessage(int k) const {
+    return static_cast<double>(kAbsBaseNs + k * kStepNs + 10000000LL) / 1e9;
+  }
+};
+
+// The core regression: restore a snapshot plot BEFORE the topic's first message,
+// then step the tracker across real data times. The points must change, match
+// latestRowAt ground truth, AND the axis must frame the data (the old code pinned a
+// degenerate axis fit to the empty restore state, so the live points were invisible).
+TEST(PlotWidgetSnapshot, RestoredBeforeFirstMessageThenScrubsUpdatesAndFits) {
+  AbsFixture fx;
+
+  // Save from a source plot (its own seed is time 0 -> empty snapshot at save)...
+  PlotWidget src(&fx.session, &fx.catalog);
+  src.addSnapshotCurveGroup(
+      fx.dataset_id, fx.topic_id, QStringLiteral("predicted_trajectory[:].time_from_start_s"),
+      {QStringLiteral("predicted_trajectory[:].positions[0]")});
+  QDomDocument doc;
+  QDomElement elem = src.xmlSaveState(doc);
+  doc.appendChild(elem);
+
+  // ...restore into a fresh plot. Seed is time 0, before the first message: empty.
+  PlotWidget dst(&fx.session, &fx.catalog);
+  ASSERT_TRUE(dst.xmlLoadState(elem));
+  ASSERT_EQ(dst.curveList().size(), 1U);
+  const SnapshotSeriesData* series = snapshotOf(dst.curveList().front());
+  ASSERT_NE(series, nullptr);
+  EXPECT_EQ(series->size(), 0U) << "restored snapshot should be empty before the first message";
+
+  DataReader reader = fx.session.createReader();
+  const std::size_t y_col = fx.colOf(posPath(0, 0));
+
+  double prev_first_y = std::numeric_limits<double>::quiet_NaN();
+  for (int k = 0; k < kAbsMessages; ++k) {
+    dst.setTrackerPosition(fx.displayTimeForMessage(k));
+
+    // (1) Points appear and match the message under the tracker.
+    ASSERT_EQ(series->size(), static_cast<std::size_t>(kElements)) << "k=" << k;
+    // Ground truth straight from the datastore at the same raw time.
+    const auto row = reader.latestRowAt(
+        QueryPoint{.topic_id = fx.topic_id, .t = kAbsBaseNs + k * kStepNs + 10000000LL}, {y_col});
+    ASSERT_TRUE(row.has_value() && row->has_value() && (*row)->values[0].has_value()) << "k=" << k;
+    EXPECT_DOUBLE_EQ(series->sample(0).y(), *(*row)->values[0]) << "k=" << k;
+    EXPECT_DOUBLE_EQ(series->sample(0).y(), posValue(k, 0, 0)) << "k=" << k;
+
+    // (2) The point set CHANGES as the cursor advances between messages.
+    if (k > 0) {
+      EXPECT_NE(series->sample(0).y(), prev_first_y) << "snapshot did not update at k=" << k;
+    }
+    prev_first_y = series->sample(0).y();
+
+    // (3) REGRESSION: the axis frames the data — non-degenerate and containing the
+    // points. The pre-fix code left this a degenerate rect (fit to the empty restore
+    // state), so the real points rendered off-screen ("doesn't update").
+    const QRectF view = dst.currentBoundingRect();
+    EXPECT_GT(view.width(), 0.1) << "k=" << k << " degenerate X axis (fit-to-empty regression)";
+    EXPECT_GT(std::abs(view.height()), 1e-9) << "k=" << k << " degenerate Y axis";
+    const QPointF p0 = series->sample(0);
+    EXPECT_GE(p0.x(), std::min(view.left(), view.right()) - 1e-6) << "k=" << k;
+    EXPECT_LE(p0.x(), std::max(view.left(), view.right()) + 1e-6) << "k=" << k;
+  }
 }
 
 }  // namespace

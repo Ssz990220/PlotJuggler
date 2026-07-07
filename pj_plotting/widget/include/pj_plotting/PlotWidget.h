@@ -209,6 +209,11 @@ class PlotWidget : public PlotWidgetBase {
   // `display_time_sec`. Returns whether any curve's point set changed, so callers
   // can gate a replot. No-op on plots with no snapshot curves.
   bool refreshSnapshotCurves(double display_time_sec);
+  // True when at least one snapshot curve currently holds points. Gates the
+  // one-time auto-fit: an empty snapshot (tracker before the topic's first message)
+  // cannot frame anything, so fitting to it would strand the real points off a
+  // degenerate axis.
+  [[nodiscard]] bool snapshotHasPoints() const;
   // Add ONE snapshot curve (the shared core of addSnapshotCurveGroup and the
   // applyCurveElement snapshot restore). Resolves `y_pattern` (and, for column
   // x-mode, `x_pattern`) against `topic_id`'s catalog columns, builds a
@@ -252,10 +257,6 @@ class PlotWidget : public PlotWidgetBase {
   // Snapshot ("current message") mode: X axis is a data field / element index, not
   // the shared time axis. Set by addSnapshotCurveGroup, cleared by removeAllCurves.
   bool snapshot_mode_ = false;
-  // Whether a snapshot plot has auto-fit its axes to real data yet. Fit happens
-  // once (when the first message appears); later tracker moves only replot, so the
-  // user's manual zoom is preserved.
-  bool snapshot_fitted_ = false;
   // Last tracker position (display seconds). Snapshot curves refresh to this on a
   // streaming ingest, since samplesIngested carries no time of its own.
   double last_tracker_time_sec_ = 0.0;
