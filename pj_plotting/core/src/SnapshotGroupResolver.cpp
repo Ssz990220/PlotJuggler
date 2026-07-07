@@ -99,4 +99,27 @@ std::vector<SnapshotElement> resolveSnapshotPattern(
   return resolveSnapshotPattern(columns, split->first, split->second);
 }
 
+std::vector<std::string> enumerateSnapshotPatterns(const std::vector<SnapshotColumn>& columns) {
+  std::vector<std::string> patterns;
+  for (const SnapshotColumn& column : columns) {
+    const std::string& path = column.field_path;
+    for (std::size_t i = 0; i < path.size(); ++i) {
+      if (path[i] != '[') {
+        continue;
+      }
+      std::size_t j = i + 1;
+      while (j < path.size() && path[j] >= '0' && path[j] <= '9') {
+        ++j;
+      }
+      // A real numeric bracket "[<digits>]" — replace just this one with "[:]".
+      if (j > i + 1 && j < path.size() && path[j] == ']') {
+        patterns.push_back(path.substr(0, i) + "[:]" + path.substr(j + 1));
+      }
+    }
+  }
+  std::sort(patterns.begin(), patterns.end());
+  patterns.erase(std::unique(patterns.begin(), patterns.end()), patterns.end());
+  return patterns;
+}
+
 }  // namespace PJ

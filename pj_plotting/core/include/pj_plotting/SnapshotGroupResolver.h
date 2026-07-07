@@ -57,4 +57,13 @@ struct SnapshotElement {
 [[nodiscard]] std::vector<SnapshotElement> resolveSnapshotPattern(
     const std::vector<SnapshotColumn>& columns, std::string_view prefix, std::string_view suffix);
 
+// Enumerate every candidate "<prefix>[:]<suffix>" wildcard pattern implied by
+// `columns`: for each "[<digits>]" bracket in each column's field_path, replace that
+// one bracket with "[:]". Deduplicated and sorted. A column with several array
+// dimensions (e.g. "predicted_trajectory[3]/positions[5]") yields one candidate per
+// dimension, so the snapshot-group dialog can offer both "wildcard the trajectory"
+// and "wildcard the joint" patterns. Used to populate the creation UI; the render
+// path uses resolveSnapshotPattern once a specific pattern is chosen.
+[[nodiscard]] std::vector<std::string> enumerateSnapshotPatterns(const std::vector<SnapshotColumn>& columns);
+
 }  // namespace PJ

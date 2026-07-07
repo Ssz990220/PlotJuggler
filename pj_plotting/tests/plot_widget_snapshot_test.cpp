@@ -28,7 +28,9 @@
 #include "pj_datastore/reader.hpp"
 #include "pj_datastore/writer.hpp"
 #include "pj_plotting/PlotWidget.h"
+#include "pj_plotting/SnapshotGroupDialog.h"
 #include "pj_plotting/SnapshotSeriesData.h"
+#include "pj_plotting/YAxisRangeDialog.h"
 #include "pj_runtime/CatalogModel.h"
 #include "pj_runtime/SessionManager.h"
 
@@ -477,6 +479,33 @@ TEST(PlotWidgetSnapshot, TimeSeriesPlotHonorsFixedYAndClears) {
   auto [c_lo, c_hi] = viewY(plot);
   EXPECT_GT(c_hi, 1.0) << "auto-fit should exceed the old pinned max";
   EXPECT_FALSE(plot.hasFixedYRange());
+}
+
+// The Y Axis Range dialog seeds from the current pins and reports each bound
+// (nullopt for a bound left on Auto).
+TEST(YAxisRangeDialogTest, SeedsAndReportsBounds) {
+  YAxisRangeDialog half(std::nullopt, 5.0);
+  EXPECT_FALSE(half.yMin().has_value());
+  ASSERT_TRUE(half.yMax().has_value());
+  EXPECT_DOUBLE_EQ(*half.yMax(), 5.0);
+
+  YAxisRangeDialog full(-2.0, 2.0);
+  ASSERT_TRUE(full.yMin().has_value() && full.yMax().has_value());
+  EXPECT_DOUBLE_EQ(*full.yMin(), -2.0);
+  EXPECT_DOUBLE_EQ(*full.yMax(), 2.0);
+}
+
+// The snapshot-group dialog populates its topic combo from the catalog and defaults
+// to index x-mode with nothing selected.
+TEST(SnapshotGroupDialogTest, PopulatesTopicAndDefaults) {
+  AbsFixture fx;
+  SnapshotGroupDialog dialog(&fx.catalog);
+  EXPECT_EQ(dialog.topicId(), fx.topic_id);
+  EXPECT_EQ(dialog.datasetId(), fx.dataset_id);
+  EXPECT_TRUE(dialog.xPattern().isEmpty());  // index x-mode by default
+  EXPECT_TRUE(dialog.yPatterns().isEmpty());
+  EXPECT_FALSE(dialog.yMin().has_value());
+  EXPECT_FALSE(dialog.yMax().has_value());
 }
 
 }  // namespace

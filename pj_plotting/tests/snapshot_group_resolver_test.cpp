@@ -7,6 +7,7 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <string>
 #include <vector>
 
@@ -139,6 +140,23 @@ TEST(SnapshotGroupResolver, RejectsNonNumericIndex) {
 TEST(SnapshotGroupResolver, PatternWithoutWildcardResolvesEmpty) {
   const auto columns = makeSplineColumns(4, 2);
   EXPECT_TRUE(resolveSnapshotPattern(columns, "predicted_trajectory[0].positions[1]").empty());
+}
+
+TEST(SnapshotGroupResolver, EnumeratePatternsCoversEveryArrayDimension) {
+  std::vector<SnapshotColumn> columns = {
+      {0, "predicted_trajectory[0]/positions[0]"},
+      {1, "predicted_trajectory[1]/positions[0]"},
+      {2, "agent_info[1]/delta_cp_norms[0]"},
+  };
+  const auto patterns = enumerateSnapshotPatterns(columns);
+  // Each bracket of each column becomes one "[:]" candidate; deduped + sorted.
+  EXPECT_NE(std::find(patterns.begin(), patterns.end(), "predicted_trajectory[:]/positions[0]"), patterns.end());
+  EXPECT_NE(std::find(patterns.begin(), patterns.end(), "predicted_trajectory[0]/positions[:]"), patterns.end());
+  EXPECT_NE(std::find(patterns.begin(), patterns.end(), "predicted_trajectory[1]/positions[:]"), patterns.end());
+  EXPECT_NE(std::find(patterns.begin(), patterns.end(), "agent_info[:]/delta_cp_norms[0]"), patterns.end());
+  EXPECT_NE(std::find(patterns.begin(), patterns.end(), "agent_info[1]/delta_cp_norms[:]"), patterns.end());
+  // trajectory[:]/positions[0] appears once despite two source columns.
+  EXPECT_EQ(std::count(patterns.begin(), patterns.end(), "predicted_trajectory[:]/positions[0]"), 1);
 }
 
 }  // namespace

@@ -197,6 +197,13 @@ class PlotWidget : public PlotWidgetBase {
   // Open the Filter Editor scoped to this plot's curves; on Save, add the
   // resulting filtered curve(s) to this plot.
   void launchFilterEditor();
+  // Pop the Y Axis Range dialog (seeded with the current pins) and, on OK, apply the
+  // chosen manual y-range via setFixedYRange + a re-fit. Marks the layout dirty.
+  void editYAxisRange();
+  // Pop the Add Snapshot Group dialog and, on OK, add the chosen group via
+  // addSnapshotCurveGroup and apply its optional y-range. Offered only when the plot
+  // can hold snapshot curves (empty or already a snapshot plot).
+  void addSnapshotGroupInteractive();
   void setAxisScale(QwtAxisId axis_id, double min, double max);
   // The representative per-dataset display offset (in seconds) for this plot's
   // time axis: the offset of the first datastore-backed curve's dataset. Used to

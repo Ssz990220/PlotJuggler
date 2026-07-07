@@ -40,8 +40,10 @@
 #include "pj_plotting/PlotLegend.h"
 #include "pj_plotting/PointSeriesXY.h"
 #include "pj_plotting/SnapshotGroupResolver.h"
+#include "pj_plotting/SnapshotGroupDialog.h"
 #include "pj_plotting/SnapshotSeriesData.h"
 #include "pj_plotting/XYCurveDialog.h"
+#include "pj_plotting/YAxisRangeDialog.h"
 #include "pj_runtime/CatalogModel.h"
 #include "pj_runtime/CurveColorRegistry.h"
 #include "pj_runtime/CurveDescriptor.h"
@@ -1509,6 +1511,17 @@ void PlotWidget::canvasContextMenuTriggered(const QPoint& pos) {
   menu.addAction(action_zoom_out_);
   menu.addAction(action_zoom_out_horizontal_);
   menu.addAction(action_zoom_out_vertical_);
+  menu.addAction(
+      QIcon(loadSvg(":/resources/svg/zoom_vertical.svg", theme)), tr("Y Axis Range..."), this,
+      [this]() { editYAxisRange(); });
+  // Snapshot ("current message") group creation — only where snapshot curves can
+  // live: an empty plot or an existing snapshot plot (its X axis is data, not time,
+  // so it cannot mix with time-series curves).
+  if (session_ != nullptr && catalog_ != nullptr && (curveList().empty() || isSnapshotPlot())) {
+    menu.addAction(
+        QIcon(loadSvg(":/resources/svg/add.svg", theme)), tr("Add Snapshot Group..."), this,
+        [this]() { addSnapshotGroupInteractive(); });
+  }
   addActionCategorySeparator(menu);
   menu.addAction(action_remove_all_curves_);
   action_remove_all_curves_->setEnabled(!curveList().empty());
@@ -1532,6 +1545,36 @@ void PlotWidget::launchFilterEditor() {
   // MainWindow::presentPanel), so request it rather than constructing it here.
   // On Apply the host calls replaceCurve() on this plot for each result.
   emit filterEditorRequested(std::move(sources), this);
+}
+
+void PlotWidget::editYAxisRange() {
+  YAxisRangeDialog dialog(fixedYMin(), fixedYMax(), this);
+  if (dialog.exec() != QDialog::Accepted) {
+    return;
+  }
+  setFixedYRange(dialog.yMin(), dialog.yMax());
+  resetZoom();  // apply the new pins immediately (setFixedYRange is a pure setter)
+  emit undoableChange();
+}
+
+void PlotWidget::addSnapshotGroupInteractive() {
+  if (session_ == nullptr || catalog_ == nullptr) {
+    return;
+  }
+  SnapshotGroupDialog dialog(catalog_, this);
+  if (dialog.exec() != QDialog::Accepted) {
+    return;
+  }
+  const auto added = addSnapshotCurveGroup(
+      dialog.datasetId(), dialog.topicId(), dialog.xPattern(), dialog.yPatterns(), dialog.aliasPrefix());
+  if (added.empty()) {
+    return;
+  }
+  if (dialog.yMin().has_value() || dialog.yMax().has_value()) {
+    setFixedYRange(dialog.yMin(), dialog.yMax());
+    resetZoom();
+  }
+  emit undoableChange();
 }
 
 void PlotWidget::setAxisScale(QwtAxisId axis_id, double min, double max) {

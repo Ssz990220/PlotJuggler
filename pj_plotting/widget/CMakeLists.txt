@@ -22,8 +22,12 @@ add_library(pj_plotting STATIC
     src/WidgetClipboard.cpp
     src/XYCurveDialog.cpp
     src/XYCurveDialog.ui
+    src/YAxisRangeDialog.cpp
+    src/SnapshotGroupDialog.cpp
     include/pj_plotting/CurveEditor.h
     include/pj_plotting/XYCurveDialog.h
+    include/pj_plotting/YAxisRangeDialog.h
+    include/pj_plotting/SnapshotGroupDialog.h
     include/pj_plotting/FilterEditorPanel.h
     include/pj_plotting/ParameterForm.h
     include/pj_plotting/CurveTracker.h
