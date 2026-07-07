@@ -29,6 +29,18 @@ struct VoxelFieldSelection {
 // Total drawable voxel count (column * row * slice). 0 if any dimension is 0.
 [[nodiscard]] uint64_t voxelCount(const PJ::sdk::VoxelGrid& grid);
 
+// Upper bound on voxelCount() the pack functions will allocate for. The wire
+// dims are untrusted — neither the canonical nor the foxglove VoxelGrid codec
+// cross-checks column*row*slice against data.size() — so a corrupt grid can
+// declare an astronomical count with a tiny payload. packScalarField /
+// packRgbaField refuse a count past this (returning empty) so a hostile grid
+// cannot trigger a multi-GB / throwing allocation on the render thread; the
+// render pass separately refuses grids over GL_MAX_3D_TEXTURE_SIZE / GLsizei.
+// Callers (the layer) also compare against it to surface a user-facing warning.
+// 256 M voxels is 1 GiB as float32 (scalar) or RGBA8 — larger than any grid the
+// single-3D-texture upload path handles (mirrors OccupancyGrid's kMaxGridCells).
+inline constexpr uint64_t kMaxRenderableVoxels = 256ull * 1024 * 1024;
+
 // Byte offset of voxel (cx, ry, sz) within `grid.data`:
 //   sz*slice_stride + ry*row_stride + cx*cell_stride
 // (the SDK's documented dense Z-Y-X layout; x varies fastest). Does NOT add a
@@ -46,14 +58,17 @@ struct VoxelFieldSelection {
 // voxelCount(), in the SAME Z-Y-X order the render pass uploads to a 3D texture
 // (index = (sz*row_count + ry)*column_count + cx). A voxel whose bytes fall
 // outside `data` packs as 0 (defensive against a short/garbage payload). Empty
-// when the grid is degenerate or `field.datatype` has no size. `field.count > 1`
-// reads the first element.
+// when the grid is degenerate, `field.datatype` has no size, or voxelCount()
+// exceeds the render cap — an untrusted wire grid may declare far more voxels
+// than its payload backs, so an over-cap count is refused rather than allocated.
+// `field.count > 1` reads the first element.
 [[nodiscard]] std::vector<float> packScalarField(const PJ::sdk::VoxelGrid& grid, const PJ::sdk::PointField& field);
 
 // Densely pack `field` as RGBA8 (size voxelCount()*4), same Z-Y-X order. Accepts
 // a uint8 field with count 3 (rgb, alpha→255) or 4 (rgba), or a single uint32
 // (its 4 bytes read in memory order as r,g,b,a). Out-of-bounds voxels pack as
-// transparent black. Empty on a degenerate grid or an unsupported field layout.
+// transparent black. Empty on a degenerate grid, an unsupported field layout, or
+// a voxelCount() past the render cap (same untrusted-dims guard as packScalarField).
 [[nodiscard]] std::vector<uint8_t> packRgbaField(const PJ::sdk::VoxelGrid& grid, const PJ::sdk::PointField& field);
 
 // The display kind for one field: kRgba only for a colour-named field with a

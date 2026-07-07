@@ -112,6 +112,39 @@ TEST(VoxelGridView, PackScalarFieldShortDataPacksZero) {
   EXPECT_FLOAT_EQ(packed[1], 0.0f);  // out-of-bounds voxel → 0
 }
 
+// column/row/slice_count are unbounded uint32 read straight off the wire (no codec
+// cross-checks them against data.size()), and pack* size their output from the
+// product. A corrupt grid declaring huge dims — here 2^32-1 x 2^32-1 x 1, whose
+// product (~1.84e19) exceeds std::vector::max_size() — would make out.reserve(count)
+// throw std::length_error (a smaller-but-still-huge count would throw std::bad_alloc);
+// packing runs on the Qt render thread with no try/catch, so that throw would become
+// std::terminate. packScalarField now refuses any count past kMaxVoxels and returns
+// empty instead, so the pack cannot throw and the render pass drops the grid
+// (scalar.size() != voxelCount → has_grid_ = false).
+TEST(VoxelGridView, PackScalarFieldHugeDimsRefused) {
+  std::vector<uint8_t> bytes(16, 0);  // tiny payload; the dims lie about the real size
+  const VoxelGrid grid =
+      makeGrid(4294967295U, 4294967295U, 1U, 1U, {scalarField("v", 0, PointField::Datatype::kUint8)}, bytes);
+  ASSERT_GT(voxelCount(grid), (uint64_t{1} << 62));  // product did not overflow to something small
+  std::vector<float> packed;
+  EXPECT_NO_THROW(packed = packScalarField(grid, grid.fields[0]));
+  EXPECT_TRUE(packed.empty());  // over-cap dims → refused, not a bogus allocation
+}
+
+// Same untrusted-dims guard on the RGBA path (a uint8x4 colour field).
+TEST(VoxelGridView, PackRgbaHugeDimsRefused) {
+  std::vector<uint8_t> bytes(16, 0);
+  PointField rgba;
+  rgba.name = "rgba";
+  rgba.offset = 0;
+  rgba.datatype = PointField::Datatype::kUint8;
+  rgba.count = 4;
+  const VoxelGrid grid = makeGrid(4294967295U, 4294967295U, 1U, 4U, {rgba}, bytes);
+  std::vector<uint8_t> packed;
+  EXPECT_NO_THROW(packed = packRgbaField(grid, grid.fields[0]));
+  EXPECT_TRUE(packed.empty());
+}
+
 TEST(VoxelGridView, PackRgbaUint8Count4) {
   std::vector<uint8_t> bytes = {10, 20, 30, 40};
   PointField f;

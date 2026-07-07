@@ -232,6 +232,22 @@ void VoxelGridLayer::renderAt(int64_t time_ns) {
     emit fallbackFramesChanged(fallbackFrames());
   }
 
+  // Untrusted wire dims: a corrupt grid can declare far more voxels than its
+  // payload backs (see kMaxRenderableVoxels). Packing refuses it and the pass
+  // would drop it silently, so surface a layer-row warning and skip the work
+  // rather than leave the user staring at an empty view with no explanation.
+  const uint64_t voxels = voxelCount(*grid);
+  if (voxels > kMaxRenderableVoxels) {
+    qCWarning(lcVoxel) << "renderAt: voxel count" << voxels << "exceeds render cap" << kMaxRenderableVoxels
+                       << "— grid not displayed (corrupt/unsupported dimensions)";
+    setStatusWarning(tr("Voxel grid too large to display: %1 voxels (corrupt or unsupported dimensions)").arg(voxels));
+    pass_.clearGrid();
+    uploaded_uid_ = entry->sequential_uid;
+    uploaded_field_setting_ = active_field_name_;
+    return;
+  }
+  setStatusWarning(QString());  // a renderable-sized grid arrived → clear any notice
+
   const PJ::sdk::PointField* field = resolveField(*grid);
   if (field == nullptr) {
     pass_.clearGrid();
@@ -263,6 +279,14 @@ void VoxelGridLayer::setFixedFrame(const QString& frame) {
   // The grid is frame-relative; the pass places it per-frame via FrameContext.
   Q_UNUSED(frame);
   emit repaintRequested();
+}
+
+void VoxelGridLayer::setStatusWarning(const QString& reason) {
+  if (status_warning_ == reason) {
+    return;
+  }
+  status_warning_ = reason;
+  emit statusWarningChanged();  // dock re-combines this into the layer-row warning
 }
 
 void VoxelGridLayer::setTrackerTime(PJ::Timepoint time) {
