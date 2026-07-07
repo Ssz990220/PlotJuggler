@@ -481,6 +481,57 @@ TEST(ExtractSeriesPaths, SkipsCurvesWithoutStableIdentity) {
   EXPECT_TRUE(PJ::layout_xml::extractSeriesPaths(pd.doc).isEmpty());
 }
 
+// A snapshot <curve> carries the wildcard binding (snapshot_x/snapshot_y) PLUS a
+// representative concrete topic/field (the group's first element). That lets the
+// existing field-level layout infra rebind, report-missing, and strip the group's
+// topic exactly like a normal curve — no snapshot awareness needed here.
+QDomElement addSnapshotCurve(
+    PlotDoc& pd, const QString& topic, const QString& field, const QString& snap_x, const QString& snap_y) {
+  QDomElement c = pd.doc.createElement(QStringLiteral("curve"));
+  c.setAttribute(QStringLiteral("topic"), topic);
+  c.setAttribute(QStringLiteral("field"), field);
+  if (!snap_x.isEmpty()) {
+    c.setAttribute(QStringLiteral("snapshot_x"), snap_x);
+  }
+  c.setAttribute(QStringLiteral("snapshot_y"), snap_y);
+  pd.plot.appendChild(c);
+  return c;
+}
+
+TEST(RebindCurveKeys, SnapshotCurveRidesFieldLevelRebind) {
+  PlotDoc pd = makePlotDoc();
+  QDomElement c = addSnapshotCurve(
+      pd, QStringLiteral("/spline"), QStringLiteral("predicted_trajectory[0]/positions[0]"),
+      QStringLiteral("predicted_trajectory[:]/time_from_start_s"),
+      QStringLiteral("predicted_trajectory[:]/positions[0]"));
+  const auto resolve = [](const SeriesPath& p) -> std::optional<QString> {
+    if (p.topic == QStringLiteral("/spline") && p.field == QStringLiteral("predicted_trajectory[0]/positions[0]")) {
+      return QStringLiteral("dataset:1/topic:9/column:0");
+    }
+    return std::nullopt;
+  };
+  // The representative path is visible to the missing-curve detector...
+  const QList<SeriesPath> paths = PJ::layout_xml::extractSeriesPaths(pd.doc);
+  ASSERT_EQ(paths.size(), 1);
+  EXPECT_EQ(paths[0], (SeriesPath{QStringLiteral("/spline"), QStringLiteral("predicted_trajectory[0]/positions[0]")}));
+  // ...rebind resolves it (name set, so stripUnresolvedCurves keeps it), and the
+  // snapshot_* patterns the widget re-resolves from are left untouched.
+  EXPECT_TRUE(PJ::layout_xml::rebindCurveKeys(pd.doc, resolve).isEmpty());
+  EXPECT_EQ(c.attribute(QStringLiteral("name")), QStringLiteral("dataset:1/topic:9/column:0"));
+  EXPECT_EQ(c.attribute(QStringLiteral("snapshot_y")), QStringLiteral("predicted_trajectory[:]/positions[0]"));
+  EXPECT_EQ(c.attribute(QStringLiteral("snapshot_x")), QStringLiteral("predicted_trajectory[:]/time_from_start_s"));
+}
+
+TEST(StripUnresolvedCurves, RemovesSnapshotCurveWhenTopicAbsent) {
+  PlotDoc pd = makePlotDoc();
+  addSnapshotCurve(pd, QStringLiteral("/absent"), QStringLiteral("arr[0]/x"), QString(), QStringLiteral("arr[:]/x"));
+  const auto resolve = [](const SeriesPath&) -> std::optional<QString> { return std::nullopt; };
+  const QList<SeriesPath> unresolved = PJ::layout_xml::rebindCurveKeys(pd.doc, resolve);
+  ASSERT_EQ(unresolved.size(), 1);  // reported missing, exactly like an absent normal curve
+  PJ::layout_xml::stripUnresolvedCurves(pd.doc);
+  EXPECT_EQ(pd.plot.elementsByTagName(QStringLiteral("curve")).count(), 0);  // gracefully removed
+}
+
 TEST(RebindCurveKeys, SetsNameForResolvedTimeSeries) {
   PlotDoc pd = makePlotDoc();
   QDomElement c = addTsCurve(pd, QStringLiteral("/imu"), QStringLiteral("accel.x"));
