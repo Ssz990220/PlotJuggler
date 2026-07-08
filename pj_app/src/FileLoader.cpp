@@ -5,17 +5,25 @@
 
 #include <QCoreApplication>
 #include <QFileInfo>
+#include <QFontDatabase>
+#include <QFrame>
+#include <QHBoxLayout>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QLabel>
 #include <QLoggingCategory>
 #include <QMessageBox>
+#include <QPlainTextEdit>
 #include <QPushButton>
 #include <QSettings>
 #include <QString>
 #include <QStringList>
+#include <QStyle>
 #include <QThread>
+#include <QVBoxLayout>
 #include <algorithm>
 #include <cstdint>
+#include <cstring>
 #include <functional>
 #include <nlohmann/json.hpp>
 #include <optional>
@@ -41,9 +49,11 @@
 #include "pj_runtime/ExtensionCatalogService.h"
 #include "pj_runtime/SessionManager.h"
 #include "pj_scene3d_widgets/transform_service.h"
+#include "pj_widgets/Dialog.h"
 #include "pj_widgets/FileDialog.h"
 #include "pj_widgets/MessageBox.h"
 #include "pj_widgets/ProgressDialog.h"
+#include "pj_widgets/SvgUtil.h"
 
 namespace PJ {
 
@@ -361,6 +371,134 @@ bool FileLoader::beginLoad(const LoadRequest& request) {
           // the user closes the modal (the documented blocking semantics). On the fanout path
           // we are already on the GUI thread, so call directly to avoid a self-deadlock.
           auto show = [&]() -> int {
+            // A long message (e.g. a per-row list of thousands of skipped CSV
+            // lines) would stretch a plain QMessageBox label past the screen and
+            // push the action buttons out of reach. Render those in an app-styled
+            // PJ::Dialog (same chrome as DiagnosticsDetailDialog): themed icon +
+            // summary on top, the error text in a read-only monospace scroll view
+            // that manages its own space, and role-styled buttons at the bottom.
+            // The scroll view bounds the dialog, so it never grows past the screen
+            // no matter how many lines the plugin sends.
+            constexpr int kInlineLineLimit = 12;
+            if (q_text.count(QLatin1Char('\n')) >= kInlineLineLimit) {
+              // Keep the first line as the summary (the non-scrolling label) and
+              // route everything else into the bounded scroll view. Producers put
+              // a one-line summary first; anything longer must scroll, never
+              // inflate the label -- otherwise we reproduce the very overflow this
+              // branch exists to prevent. (A leading blank line, when a producer
+              // separates summary from detail with "\n\n", is dropped by trimmed().)
+              const qsizetype nl = q_text.indexOf(QLatin1Char('\n'));
+              const QString head = nl < 0 ? q_text : q_text.left(nl);
+              const QString body = nl < 0 ? QString() : q_text.mid(nl + 1).trimmed();
+
+              QString icon_path = QStringLiteral(":/resources/svg/diag_info.svg");
+              if (type == PJ_MESSAGE_BOX_ERROR) {
+                icon_path = QStringLiteral(":/resources/svg/diag_error.svg");
+              } else if (type == PJ_MESSAGE_BOX_WARNING || type == PJ_MESSAGE_BOX_QUESTION) {
+                icon_path = QStringLiteral(":/resources/svg/diag_warning.svg");
+              }
+
+              Dialog dlg(dialog_parent);
+              dlg.setDialogTitle(q_title);
+              dlg.setMinimumSize(520, 360);
+              dlg.resize(560, 480);
+
+              auto* body_widget = new QWidget;
+              auto* vbox = new QVBoxLayout(body_widget);
+              vbox->setContentsMargins(16, 12, 16, 16);
+              vbox->setSpacing(8);
+
+              auto* header = new QHBoxLayout();
+              header->setSpacing(12);
+              auto* icon_label = new QLabel(body_widget);
+              // Use the (already-shown) parent's DPR; the dialog has no screen yet.
+              const qreal dpr = dialog_parent != nullptr ? dialog_parent->devicePixelRatioF() : dlg.devicePixelRatioF();
+              QPixmap icon_pm = renderSvgPixmap(icon_path, currentTheme(), QSize(32, 32), dpr);
+              if (icon_pm.isNull()) {
+                // A missing bundled resource shouldn't drop the severity cue.
+                QStyle::StandardPixmap sp = QStyle::SP_MessageBoxInformation;
+                if (type == PJ_MESSAGE_BOX_ERROR) {
+                  sp = QStyle::SP_MessageBoxCritical;
+                } else if (type == PJ_MESSAGE_BOX_WARNING || type == PJ_MESSAGE_BOX_QUESTION) {
+                  sp = QStyle::SP_MessageBoxWarning;
+                }
+                icon_pm = dlg.style()->standardIcon(sp).pixmap(32, 32);
+              }
+              icon_label->setPixmap(icon_pm);
+              header->addWidget(icon_label, 0, Qt::AlignTop);
+              auto* head_label = new QLabel(head, body_widget);
+              head_label->setWordWrap(true);
+              header->addWidget(head_label, 1);
+              vbox->addLayout(header);
+
+              // Read-only, monospace scroll view (the CurveTreeView FixedFont
+              // idiom): it scrolls its own content, so the dialog stays bounded.
+              auto* body_view = new QPlainTextEdit(body, body_widget);
+              body_view->setReadOnly(true);
+              body_view->setFrameShape(QFrame::NoFrame);
+              body_view->setLineWrapMode(QPlainTextEdit::NoWrap);
+              QFont mono = body_view->font();
+              mono.setFamily(QFontDatabase::systemFont(QFontDatabase::FixedFont).family());
+              mono.setStyleHint(QFont::Monospace);
+              body_view->setFont(mono);
+              vbox->addWidget(body_view, 1);
+
+              // App button idiom (see PJ::MessageBox): objectName + msgbox_role
+              // dynamic property drive the themed look (primary = brand gradient,
+              // cancel = subtler). No QDialogButtonBox — the app reserves that for
+              // plugin-hosted dialogs.
+              struct BtnSpec {
+                int mask;
+                const char* label;
+                const char* role;
+              };
+              const BtnSpec specs[] = {
+                  {PJ_MSG_BTN_OK, QT_TR_NOOP("OK"), "primary"},
+                  {PJ_MSG_BTN_YES, QT_TR_NOOP("Yes"), "primary"},
+                  {PJ_MSG_BTN_NO, QT_TR_NOOP("No"), "neutral"},
+                  {PJ_MSG_BTN_CONTINUE, QT_TR_NOOP("Continue"), "primary"},
+                  {PJ_MSG_BTN_ABORT, QT_TR_NOOP("Abort"), "cancel"},
+                  {PJ_MSG_BTN_CANCEL, QT_TR_NOOP("Cancel"), "cancel"},
+              };
+              // Fall back to a lone OK when the plugin passed no button we render
+              // (mirrors the QMessageBox path below); specs[0] is that OK entry.
+              int wanted = buttons;
+              int known = 0;
+              for (const auto& s : specs) {
+                known |= s.mask;
+              }
+              if ((wanted & known) == 0) {
+                wanted = PJ_MSG_BTN_OK;
+              }
+
+              auto* footer = new QHBoxLayout();
+              footer->addStretch(1);
+              int chosen = -1;
+              for (const auto& s : specs) {
+                if ((wanted & s.mask) == 0) {
+                  continue;
+                }
+                auto* btn = new QPushButton(QObject::tr(s.label), body_widget);
+                btn->setObjectName(QStringLiteral("pjMessageBoxButton"));
+                btn->setProperty("msgbox_role", QLatin1String(s.role));
+                btn->setAutoDefault(false);
+                btn->setDefault(std::strcmp(s.role, "primary") == 0);
+                const int code = s.mask;
+                QObject::connect(btn, &QPushButton::clicked, &dlg, [&chosen, code, &dlg]() {
+                  chosen = code;
+                  dlg.accept();
+                });
+                footer->addWidget(btn);
+              }
+              vbox->addLayout(footer);
+
+              dlg.contentLayout()->addWidget(body_widget);
+              dlg.exec();
+              // A window-close (✕ / Esc) leaves `chosen` at -1, i.e. neither
+              // Continue nor OK — the caller treats that as "do not proceed".
+              return chosen;
+            }
+
             QMessageBox msg_box(dialog_parent);
             msg_box.setWindowTitle(q_title);
             msg_box.setText(q_text);
