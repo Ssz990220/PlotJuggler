@@ -29,8 +29,10 @@ jobs:
     continue-on-error: true
     # Backstop against hangs (a deadlocked test otherwise holds the runner for
     # GitHub's 6-hour default). Worst observed legitimate run — cold sccache —
-    # is ~59 min.
-    timeout-minutes: 90
+    # is ~59 min; a cold-Conan + cold-sccache combination has landed at ~93
+    # min, so raise the ceiling to 120 to leave a comfortable margin over that
+    # while still catching real hangs.
+    timeout-minutes: 120
     permissions:
       contents: read
       packages: write   # push/pull the Conan cache OCI artifact on ghcr.io
@@ -114,7 +116,7 @@ jobs:
           # not Conan 2.0 ready" from the same truncated blob. A re-run restores the
           # same bad blob, so the only fix is a new cache identity that forces a clean
           # cold rebuild (and a fresh save on the next push-to-main).
-          $cacheVersion = "v4"
+          $cacheVersion = "v5"
           $fileHash = (Get-FileHash conanfile.txt -Algorithm SHA256).Hash.Substring(0, 16).ToLower()
           $hash = "$cacheVersion-$fileHash"
           $owner = "${{ github.repository_owner }}".ToLower()
@@ -171,7 +173,7 @@ jobs:
           path: ~/.conan2
           key: conan-windows-msvc-relwithdebinfo-${{ steps.conan_cache.outputs.hash }}
           restore-keys: |
-            conan-windows-msvc-relwithdebinfo-v4-
+            conan-windows-msvc-relwithdebinfo-v5-
 
       - name: Cache Qt
         id: qt-cache
@@ -180,11 +182,26 @@ jobs:
           path: .qt
           key: qt-6.11.1-windows-msvc2022_64
 
+      - name: Verify Qt cache content
+        # actions/cache can report cache-hit=true while the restored tree is
+        # incomplete (interrupted Save, partial eviction). Without this guard
+        # the next step skips aqtinstall and the Configure step then fails with
+        # "Qt 6.11.1 not found at $QT_DIR". Probe qmake.exe (the artifact the
+        # rest of the pipeline actually needs) and force a reinstall on miss.
+        id: qt-verify
+        shell: bash
+        run: |
+          if [[ -x ".qt/6.11.1/msvc2022_64/bin/qmake.exe" ]]; then
+            echo "valid=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "valid=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Install Qt 6.11.1 via aqt
         # Inline (not install_qt6.sh): that script is Linux-only (gcc_64); this
         # job needs the win64_msvc2022_64 build. Keep the version in sync with
         # install_qt6.sh / the cache key above on upgrade.
-        if: steps.qt-cache.outputs.cache-hit != 'true'
+        if: steps.qt-cache.outputs.cache-hit != 'true' || steps.qt-verify.outputs.valid != 'true'
         shell: bash
         run: |
           # Released aqt (<=3.3.0) can't install Qt >= 6.11 on Windows: Qt moved

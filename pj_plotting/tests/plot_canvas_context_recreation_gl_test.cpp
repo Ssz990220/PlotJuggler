@@ -122,6 +122,8 @@ TEST(PlotCanvasContextRecreation, CanvasStillDrawsAfterContextRecreation) {
   QApplication::processEvents();
 
   if (glVersionOf(canvas->context()) < std::pair<int, int>(4, 5)) {
+    plot->setParent(nullptr);  // detach before the stack windows unwind, else window1
+                               // and the unique_ptr both delete the plot (double free)
     GTEST_SKIP() << "no real GL >= 4.5 context (offscreen/software)";
   }
 
@@ -145,6 +147,7 @@ TEST(PlotCanvasContextRecreation, CanvasStillDrawsAfterContextRecreation) {
   QApplication::processEvents();
 
   if (!context_recreated) {
+    plot->setParent(nullptr);  // same detach-before-unwind guard (window2 owns plot here)
     GTEST_SKIP() << "platform did not recreate the GL context on reparent";
   }
 
