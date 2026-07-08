@@ -296,7 +296,7 @@ void SceneEntitiesLayer::resetReplayState() {
   entity_expiry_anchor_ns_.clear();
   model_frames_.clear();
   state_built_at_.reset();
-  last_applied_uid_ = {};
+  applied_uid_high_ = {};
   snapshot_cache_.clear();
   snapshot_cache_bytes_ = 0;
   // Aborts in-flight model-URL fetches and drops their callbacks; the records
@@ -484,29 +484,28 @@ std::vector<MeshRenderPass::DrawCall> SceneEntitiesLayer::modelDrawCallsForFrame
   return draws;
 }
 
-bool SceneEntitiesLayer::applyEntriesAfter(PJ::SequentialUID after_uid, PJ::SequentialUID target_uid) {
-  if (!target_uid.valid()) {
-    return false;
-  }
+bool SceneEntitiesLayer::applyWindow(int64_t lo_ns, int64_t hi_ns) {
   PJ::ObjectStore& store = ctx_.session->objectStore();
   pruneSnapshotCacheBelow(store.firstSequentialUID(topic_id_));
 
   bool applied = false;
-  // Step the topic's sparse UID sequence directly: UID allocation is process-wide,
-  // so consecutive entries of one topic are NOT consecutive integers — each step
-  // is one binary search instead of probing every interleaved value.
-  for (PJ::SequentialUID uid = store.nextUIDAfter(topic_id_, after_uid); uid.valid() && uid <= target_uid;
-       uid = store.nextUIDAfter(topic_id_, uid)) {
+  // rangeByTime is the out-of-order-safe fold source: a decode-free, ascending,
+  // eviction-safe snapshot of (lo, hi]. An arrival-order UID walk would skip a late
+  // (older-ts, newest-UID) batch that sits at a high UID but an in-window timestamp;
+  // this walks by timestamp and cannot. Each ref is resolved afterwards (an entry
+  // evicted between the snapshot and the resolve simply comes back nullopt).
+  const auto window = store.rangeByTime(topic_id_, lo_ns, hi_ns);
+  for (const auto& ref : window) {
     // Cache hit: re-fold the decoded batch (backward scrub / rebuild) without
     // re-parsing — the protobuf decode of heavy embedded models is what hitched.
-    if (const auto cached = snapshot_cache_.find(uid); cached != snapshot_cache_.end()) {
+    if (const auto cached = snapshot_cache_.find(ref.uid); cached != snapshot_cache_.end()) {
       applySnapshot(*cached->second.batch, cached->second.store_ns);
       applied = true;
       continue;
     }
-    auto entry = store.at(topic_id_, uid);
+    auto entry = store.at(topic_id_, ref.uid);
     if (!entry.has_value() || entry->payload.bytes.empty()) {
-      continue;  // evicted between the UID step and the resolve
+      continue;  // evicted between the snapshot and the resolve
     }
     const auto binding = ctx_.session->parserBindingForObjectTopic(topic_id_);
     if (!binding) {
@@ -514,14 +513,14 @@ bool SceneEntitiesLayer::applyEntriesAfter(PJ::SequentialUID after_uid, PJ::Sequ
     }
     auto obj = parseLocked(binding, entry->timestamp, entry->payload);
     if (!obj.has_value()) {
-      qCWarning(lcSceneEntitiesLayer) << "applyEntriesAfter parseObject failed:" << QString::fromStdString(obj.error());
+      qCWarning(lcSceneEntitiesLayer) << "applyWindow parseObject failed:" << QString::fromStdString(obj.error());
       continue;
     }
     auto* snapshot = std::any_cast<PJ::sdk::SceneEntities>(&obj->object);
     if (snapshot != nullptr) {
       applySnapshot(*snapshot, entry->timestamp);
       // Moved, not copied: the ObjectRecord is discarded at the end of this step.
-      cacheSnapshot(uid, std::make_shared<PJ::sdk::SceneEntities>(std::move(*snapshot)), entry->timestamp);
+      cacheSnapshot(ref.uid, std::make_shared<PJ::sdk::SceneEntities>(std::move(*snapshot)), entry->timestamp);
       applied = true;
     }
   }
@@ -565,19 +564,23 @@ void SceneEntitiesLayer::rebuildModelStateAt(PJ::Timepoint time) {
   entities_.clear();
   entity_expiry_anchor_ns_.clear();
   state_built_at_ = time;
-  last_applied_uid_ = {};
+  applied_uid_high_ = {};
 
   if (ctx_.session == nullptr) {
     updateModelFrames();
     return;
   }
-  const auto target = ctx_.session->objectStore().latestAt(topic_id_, PJ::toRaw(time));
-  if (!target.has_value()) {
-    updateModelFrames();
+  PJ::ObjectStore& store = ctx_.session->objectStore();
+  const int64_t time_ns = PJ::toRaw(time);
+  // High-water arrival UID among ts <= time — NOT latestAt()'s UID, which an
+  // out-of-order insert can leave below a retained entry's (see applied_uid_high_).
+  const PJ::SequentialUID high = store.maxUidAtOrBefore(topic_id_, time_ns);
+  if (!high.valid()) {
+    updateModelFrames();  // no batch at/before time
     return;
   }
-  applyEntriesAfter({}, target->sequential_uid);
-  last_applied_uid_ = target->sequential_uid;
+  applyWindow(std::numeric_limits<int64_t>::min(), time_ns);
+  applied_uid_high_ = high;
   dropExpiredEntities(time);
   updateModelFrames();
   startMeshLoadsForCurrentEntities();
@@ -592,39 +595,29 @@ void SceneEntitiesLayer::ensureModelStateAt(PJ::Timepoint time) {
   }
 
   PJ::ObjectStore& store = ctx_.session->objectStore();
-  const auto target = store.latestAt(topic_id_, PJ::toRaw(time));
-  if (state_built_at_.has_value() && *state_built_at_ == time) {
-    if (target.has_value() && target->sequential_uid == last_applied_uid_) {
-      return;  // Already built at this exact playhead and store entry.
-    }
-    if (!target.has_value() && !last_applied_uid_.valid()) {
-      return;  // Already built empty at this exact playhead.
-    }
+  const int64_t time_ns = PJ::toRaw(time);
+  const PJ::SequentialUID high_now = store.maxUidAtOrBefore(topic_id_, time_ns);
+
+  if (state_built_at_.has_value() && *state_built_at_ == time && high_now == applied_uid_high_) {
+    // Already built at this exact playhead and no batch at/before it arrived since
+    // (equal high-water; the both-empty case is invalid == invalid).
+    return;
   }
-  // Incremental forward fold: when the playhead only advanced, parse just the
-  // batches appended since the last build instead of replaying the whole history
-  // (which would re-parse — and re-hash heavy embedded models in — every frame).
-  // Anything else (first build, backward scrub, jump) falls back to a full rebuild.
-  const bool can_incremental = state_built_at_.has_value() && last_applied_uid_.valid() && time >= *state_built_at_;
+
+  // Incremental forward fold: when the playhead only advanced AND nothing changed at
+  // or below the previous build time, fold just the (state_built_at_, time] window
+  // instead of replaying the whole history (which would re-parse — and re-hash heavy
+  // embedded models in — every frame). A late (out-of-order) batch inserted at
+  // ts <= state_built_at_ raises maxUidAtOrBefore THERE above what we folded, and a
+  // forward window cannot reach it — so fall back to a full rebuild. This is the same
+  // retroactive-ingest guard the occupancy layer uses. Backward scrubs / jumps also
+  // fall through to rebuild.
+  const bool can_incremental = state_built_at_.has_value() && applied_uid_high_.valid() && time >= *state_built_at_;
   if (can_incremental) {
-    if (target.has_value() && target->sequential_uid >= last_applied_uid_) {
-      bool cursor_outside_window = false;
-      if (target->sequential_uid > last_applied_uid_) {
-        // Eviction is front-only, so "an unseen entry in (last_applied, target] was
-        // evicted" is exactly "the first retained UID passed the cursor". This also
-        // catches a dataset replace, which re-UIDs every entry (fresh generation).
-        // UID gaps alone signal nothing: allocation is process-global, so one
-        // topic's UIDs are inherently sparse.
-        const PJ::SequentialUID first_retained_uid = store.firstSequentialUID(topic_id_);
-        cursor_outside_window = !first_retained_uid.valid() || first_retained_uid > last_applied_uid_;
-      }
-      if (cursor_outside_window) {
-        rebuildModelStateAt(time);
-        emit repaintRequested();
-        return;
-      }
-      const bool applied_new = applyEntriesAfter(last_applied_uid_, target->sequential_uid);
-      last_applied_uid_ = target->sequential_uid;
+    const PJ::SequentialUID high_at_built = store.maxUidAtOrBefore(topic_id_, PJ::toRaw(*state_built_at_));
+    if (high_at_built == applied_uid_high_) {
+      const bool applied_new = applyWindow(PJ::toRaw(*state_built_at_), time_ns);
+      applied_uid_high_ = high_now;
       state_built_at_ = time;
       const bool dropped = dropExpiredEntities(time);
       updateModelFrames();

@@ -5,6 +5,7 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <chrono>
@@ -26,6 +27,20 @@ ObjectTopicId registerTestTopic(ObjectStore& store, const std::string& name = "t
 
 std::vector<uint8_t> makePayload(size_t size, uint8_t fill = 0xAB) {
   return std::vector<uint8_t>(size, fill);
+}
+
+// Drains every arrival in order via drainNewSince; returns arrival-order timestamps
+// and asserts the UIDs come back strictly ascending.
+std::vector<Timestamp> walkUids(const ObjectStore& store, ObjectTopicId id) {
+  std::vector<Timestamp> out;
+  SequentialUID cursor{};
+  SequentialUID prev{};
+  for (const auto& e : store.drainNewSince(id, cursor)) {
+    EXPECT_TRUE(prev < e.sequential_uid) << "drainNewSince must yield strictly ascending UIDs";
+    prev = e.sequential_uid;
+    out.push_back(e.timestamp);
+  }
+  return out;
 }
 
 // =========================================================================
@@ -414,7 +429,7 @@ TEST(ObjectStoreTest, SequentialUIDOfOtherTopicResolvesNullopt) {
   EXPECT_FALSE(store.at(first_topic, foreign->sequential_uid).has_value());
 }
 
-TEST(ObjectStoreTest, NextUIDAfterStepsSparseTopicSequence) {
+TEST(ObjectStoreTest, ArrivalCursorStepsSparseTopicSequence) {
   ObjectStore store;
   auto walked = registerTestTopic(store, "walked");
   auto noise = registerTestTopic(store, "noise");
@@ -427,28 +442,268 @@ TEST(ObjectStoreTest, NextUIDAfterStepsSparseTopicSequence) {
   ASSERT_TRUE(store.pushOwned(noise, 210, makePayload(4, 0xEE)).has_value());
   ASSERT_TRUE(store.pushOwned(walked, 300, makePayload(4, 0x03)).has_value());
 
-  // An invalid `after` starts from the first retained entry.
-  const SequentialUID first = store.nextUIDAfter(walked, {});
-  EXPECT_EQ(first, store.firstSequentialUID(walked));
-  ASSERT_TRUE(first.valid());
-  EXPECT_EQ(store.at(walked, first)->timestamp, 100);
+  // An invalid `cursor` starts from the first retained entry; the drain returns this
+  // topic's entries in arrival order, skipping the interleaved foreign UIDs.
+  SequentialUID cursor{};
+  const auto drained = store.drainNewSince(walked, cursor);
+  ASSERT_EQ(drained.size(), 3u);
+  EXPECT_EQ(drained[0].sequential_uid, store.firstSequentialUID(walked));
+  EXPECT_EQ(drained[0].timestamp, 100);
+  EXPECT_EQ(drained[1].timestamp, 200);
+  EXPECT_EQ(drained[2].timestamp, 300);
+  EXPECT_GT(drained[1].sequential_uid.value, drained[0].sequential_uid.value + 1)
+      << "test setup should leave a UID gap";
 
-  // Stepping yields exactly the topic's entries, skipping foreign UIDs.
-  const SequentialUID second = store.nextUIDAfter(walked, first);
-  ASSERT_TRUE(second.valid());
-  EXPECT_GT(second.value, first.value + 1) << "test setup should leave a UID gap";
-  EXPECT_EQ(store.at(walked, second)->timestamp, 200);
-  const SequentialUID third = store.nextUIDAfter(walked, second);
-  ASSERT_TRUE(third.valid());
-  EXPECT_EQ(store.at(walked, third)->timestamp, 300);
+  // The cursor is now advanced past the last entry: a re-drain yields nothing.
+  EXPECT_TRUE(store.drainNewSince(walked, cursor).empty());
 
-  // Past the last entry, and for unknown topics: invalid.
-  EXPECT_FALSE(store.nextUIDAfter(walked, third).valid());
-  EXPECT_FALSE(store.nextUIDAfter(ObjectTopicId{9999}, {}).valid());
+  // Resuming from a mid-stream cursor yields only the entries after it.
+  SequentialUID mid = drained[0].sequential_uid;
+  const auto rest = store.drainNewSince(walked, mid);
+  ASSERT_EQ(rest.size(), 2u);
+  EXPECT_EQ(rest[0].timestamp, 200);
 
-  // Eviction moves the start of the walk to the new front.
+  // Unknown topic: empty.
+  SequentialUID unknown{};
+  EXPECT_TRUE(store.drainNewSince(ObjectTopicId{9999}, unknown).empty());
+
+  // Eviction moves the start of the drain to the new front.
   store.evictBefore(walked, 250);
-  EXPECT_EQ(store.nextUIDAfter(walked, {}), third);
+  SequentialUID after_evict{};
+  const auto post = store.drainNewSince(walked, after_evict);
+  ASSERT_EQ(post.size(), 1u);
+  EXPECT_EQ(post[0].timestamp, 300);
+}
+
+// Regression for the out-of-order-push fix: keeping entries timestamp-sorted must
+// NOT break the SequentialUID cursor. at(uid) / drainNewSince are the streaming
+// ingest path used by TransformService; they require every retained entry to stay
+// reachable by UID and drained exactly once, regardless of arrival order.
+TEST(ObjectStoreTest, OutOfOrderPushRemainsReachableByUidCursor) {
+  ObjectStore store;
+  auto id = registerTestTopic(store);
+
+  ASSERT_TRUE(store.pushOwned(id, 100, makePayload(4, 0x01)).has_value());
+  ASSERT_TRUE(store.pushOwned(id, 200, makePayload(4, 0x02)).has_value());
+  ASSERT_TRUE(store.pushOwned(id, 300, makePayload(4, 0x03)).has_value());
+  // Out-of-order arrival: the store timestamp regresses to 150 but the entry
+  // still gets the newest UID (real case: multi-publisher /tf interleaving).
+  ASSERT_TRUE(store.pushOwned(id, 150, makePayload(4, 0x04)).has_value());
+
+  const auto e150 = store.latestAt(id, 150);
+  ASSERT_TRUE(e150.has_value());
+  EXPECT_EQ(e150->timestamp, 150);
+
+  // (a) The out-of-order entry now holds the largest UID; it must be reachable.
+  const auto by_uid = store.at(id, e150->sequential_uid);
+  ASSERT_TRUE(by_uid.has_value()) << "at(uid) lost the out-of-order entry";
+  EXPECT_EQ(by_uid->timestamp, 150);
+
+  // (b) A drainNewSince walk must visit every retained entry exactly once.
+  std::vector<Timestamp> walked_ts = walkUids(store, id);
+  std::sort(walked_ts.begin(), walked_ts.end());
+  EXPECT_EQ(walked_ts, (std::vector<Timestamp>{100, 150, 200, 300}));
+}
+
+// UID order == arrival order: the out-of-order entry carries the newest UID and
+// is therefore visited LAST by the walk, regardless of its earlier timestamp.
+TEST(ObjectStoreTest, ArrivalCursorVisitsOutOfOrderEntryLast) {
+  ObjectStore store;
+  auto id = registerTestTopic(store);
+  ASSERT_TRUE(store.pushOwned(id, 100, makePayload(4)).has_value());
+  ASSERT_TRUE(store.pushOwned(id, 200, makePayload(4)).has_value());
+  ASSERT_TRUE(store.pushOwned(id, 300, makePayload(4)).has_value());
+  ASSERT_TRUE(store.pushOwned(id, 150, makePayload(4)).has_value());  // OOO: newest UID
+
+  EXPECT_EQ(walkUids(store, id), (std::vector<Timestamp>{100, 200, 300, 150}));
+
+  // The last-drained entry is the out-of-order one (it holds the newest arrival UID).
+  SequentialUID cursor{};
+  const auto drained = store.drainNewSince(id, cursor);
+  ASSERT_FALSE(drained.empty());
+  EXPECT_EQ(drained.back().timestamp, 150);
+}
+
+// =========================================================================
+// rangeByTime — half-open (lo, hi] time-window snapshot
+// =========================================================================
+
+// A time window must include an out-of-order entry regardless of its UID
+// position — the exact case a UID-cursor walk would skip.
+TEST(ObjectStoreTest, RangeByTimeIncludesOutOfOrderEntryInWindow) {
+  ObjectStore store;
+  auto id = registerTestTopic(store);
+  ASSERT_TRUE(store.pushOwned(id, 100, makePayload(4, 0x01)).has_value());
+  ASSERT_TRUE(store.pushOwned(id, 200, makePayload(4, 0x02)).has_value());
+  ASSERT_TRUE(store.pushOwned(id, 300, makePayload(4, 0x03)).has_value());
+  ASSERT_TRUE(store.pushOwned(id, 150, makePayload(4, 0x04)).has_value());  // OOO: newest UID, mid-window
+
+  const auto window = store.rangeByTime(id, 120, 180);
+  ASSERT_EQ(window.size(), 1u) << "the out-of-order ts=150 entry must be in (120,180]";
+  EXPECT_EQ(window[0].timestamp, 150);
+  const auto resolved = store.at(id, window[0].uid);
+  ASSERT_TRUE(resolved.has_value());
+  EXPECT_EQ(resolved->payload.bytes[0], 0x04);
+}
+
+// (lo, hi] is half-open (lo exclusive, hi inclusive), ascending by timestamp;
+// hi <= lo and unknown/empty topics yield an empty window.
+TEST(ObjectStoreTest, RangeByTimeHalfOpenBoundariesAndEmptyCases) {
+  ObjectStore store;
+  auto id = registerTestTopic(store);
+  EXPECT_TRUE(store.rangeByTime(id, 0, 1000).empty()) << "empty topic";
+  EXPECT_TRUE(store.rangeByTime(ObjectTopicId{9999}, 0, 1000).empty()) << "unknown topic";
+
+  ASSERT_TRUE(store.pushOwned(id, 100, makePayload(4)).has_value());
+  ASSERT_TRUE(store.pushOwned(id, 200, makePayload(4)).has_value());
+  ASSERT_TRUE(store.pushOwned(id, 300, makePayload(4)).has_value());
+
+  auto stamps = [&](Timestamp lo, Timestamp hi) {
+    std::vector<Timestamp> ts;
+    for (const auto& ref : store.rangeByTime(id, lo, hi)) {
+      ts.push_back(ref.timestamp);
+    }
+    return ts;
+  };
+  EXPECT_EQ(stamps(99, 300), (std::vector<Timestamp>{100, 200, 300}));
+  EXPECT_EQ(stamps(100, 300), (std::vector<Timestamp>{200, 300})) << "lo is exclusive";
+  EXPECT_EQ(stamps(100, 200), (std::vector<Timestamp>{200})) << "hi is inclusive";
+  EXPECT_TRUE(stamps(300, 400).empty()) << "lo exclusive at the tail";
+  EXPECT_TRUE(stamps(200, 100).empty()) << "reversed window (hi < lo)";
+  EXPECT_TRUE(stamps(200, 200).empty()) << "empty window (hi == lo)";
+}
+
+// The window is a snapshot of stable UIDs; an entry evicted before the caller
+// resolves it comes back nullopt while the rest still resolve.
+TEST(ObjectStoreTest, RangeByTimeSnapshotIsEvictionSafe) {
+  ObjectStore store;
+  auto id = registerTestTopic(store);
+  ASSERT_TRUE(store.pushOwned(id, 100, makePayload(4)).has_value());
+  ASSERT_TRUE(store.pushOwned(id, 200, makePayload(4)).has_value());
+  ASSERT_TRUE(store.pushOwned(id, 300, makePayload(4)).has_value());
+
+  const auto window = store.rangeByTime(id, 50, 350);
+  ASSERT_EQ(window.size(), 3u);
+  store.evictBefore(id, 250);  // drops ts=100 and ts=200 after the snapshot was taken
+  int resolved = 0;
+  for (const auto& ref : window) {
+    if (store.at(id, ref.uid).has_value()) {
+      ++resolved;
+    }
+  }
+  EXPECT_EQ(resolved, 1) << "only the surviving ts=300 entry resolves; evicted uids -> nullopt";
+}
+
+// Equal timestamps keep arrival (UID) order within the window.
+TEST(ObjectStoreTest, RangeByTimeEqualTimestampsKeepArrivalOrder) {
+  ObjectStore store;
+  auto id = registerTestTopic(store);
+  ASSERT_TRUE(store.pushOwned(id, 100, makePayload(4, 0xA1)).has_value());
+  ASSERT_TRUE(store.pushOwned(id, 100, makePayload(4, 0xB2)).has_value());
+
+  const auto window = store.rangeByTime(id, 50, 100);
+  ASSERT_EQ(window.size(), 2u);
+  EXPECT_LT(window[0].uid, window[1].uid) << "ascending by UID for equal timestamps";
+  EXPECT_EQ(store.at(id, window[0].uid)->payload.bytes[0], 0xA1);
+  EXPECT_EQ(store.at(id, window[1].uid)->payload.bytes[0], 0xB2);
+}
+
+// maxUidAtOrBefore is the high-water arrival UID of everything at-or-before t —
+// NOT latestAt(t)'s UID (the newest-TIMESTAMP entry), which an out-of-order insert
+// can leave below a retained entry's UID.
+TEST(ObjectStoreTest, MaxUidAtOrBeforeIsHighWaterNotLatestTimestamp) {
+  ObjectStore store;
+  auto id = registerTestTopic(store);
+  EXPECT_FALSE(store.maxUidAtOrBefore(id, 1000).valid()) << "empty topic";
+  EXPECT_FALSE(store.maxUidAtOrBefore(ObjectTopicId{9999}, 1000).valid()) << "unknown topic";
+
+  ASSERT_TRUE(store.pushOwned(id, 100, makePayload(4)).has_value());
+  ASSERT_TRUE(store.pushOwned(id, 300, makePayload(4)).has_value());
+  ASSERT_TRUE(store.pushOwned(id, 200, makePayload(4)).has_value());  // out-of-order: newest UID, middle ts
+
+  const auto u_100 = store.latestAt(id, 100)->sequential_uid;
+  const auto u_300 = store.latestAt(id, 300)->sequential_uid;  // newest TIMESTAMP
+  const auto u_200 = store.latestAt(id, 200)->sequential_uid;  // newest UID (pushed last)
+  ASSERT_LT(u_100, u_300);
+  ASSERT_LT(u_300, u_200);
+
+  EXPECT_FALSE(store.maxUidAtOrBefore(id, 50).valid()) << "nothing at-or-before 50";
+  EXPECT_EQ(store.maxUidAtOrBefore(id, 100), u_100);
+  EXPECT_EQ(store.maxUidAtOrBefore(id, 250), u_200) << "ts<=250 covers 100 and 200; u_200 is the max UID";
+  // The crux: at-or-before 1000 covers all three; the max UID is u_200 (the OOO
+  // entry), NOT latestAt(1000)'s u_300 (the newest-timestamp entry).
+  EXPECT_EQ(store.maxUidAtOrBefore(id, 1000), u_200);
+  EXPECT_EQ(store.latestAt(id, 1000)->sequential_uid, u_300);
+}
+
+// Multiple out-of-order inserts, the second retargeting an already-shifted index.
+TEST(ObjectStoreTest, ArrivalCursorAfterMultipleOutOfOrderInserts) {
+  ObjectStore store;
+  auto id = registerTestTopic(store);
+  ASSERT_TRUE(store.pushOwned(id, 100, makePayload(4)).has_value());
+  ASSERT_TRUE(store.pushOwned(id, 200, makePayload(4)).has_value());
+  ASSERT_TRUE(store.pushOwned(id, 300, makePayload(4)).has_value());
+  ASSERT_TRUE(store.pushOwned(id, 400, makePayload(4)).has_value());
+  ASSERT_TRUE(store.pushOwned(id, 500, makePayload(4)).has_value());
+  ASSERT_TRUE(store.pushOwned(id, 150, makePayload(4)).has_value());  // OOO
+  ASSERT_TRUE(store.pushOwned(id, 350, makePayload(4)).has_value());  // OOO, retargets shifted index
+
+  auto walked = walkUids(store, id);
+  EXPECT_EQ(walked.size(), store.entryCount(id));
+  std::sort(walked.begin(), walked.end());
+  EXPECT_EQ(walked, (std::vector<Timestamp>{100, 150, 200, 300, 350, 400, 500}));
+}
+
+// Evicting an out-of-order entry (a non-min UID sitting at the array front) must
+// leave the UID cursor consistent for the survivors.
+TEST(ObjectStoreTest, EvictionOfOutOfOrderEntryKeepsUidCursorConsistent) {
+  ObjectStore store;
+  auto id = registerTestTopic(store);
+  ASSERT_TRUE(store.pushOwned(id, 200, makePayload(4)).has_value());
+  ASSERT_TRUE(store.pushOwned(id, 300, makePayload(4)).has_value());
+  ASSERT_TRUE(store.pushOwned(id, 50, makePayload(4)).has_value());  // OOO: oldest ts, newest UID, lands at front
+  const auto oldest = store.latestAt(id, 50);
+  ASSERT_TRUE(oldest.has_value());
+  const SequentialUID evicted = oldest->sequential_uid;
+  store.evictBefore(id, 100);  // evicts the ts=50 entry (entries.front(), a non-min UID)
+  EXPECT_FALSE(store.at(id, evicted).has_value());
+  EXPECT_EQ(walkUids(store, id), (std::vector<Timestamp>{200, 300}));
+}
+
+// firstSequentialUID returns the smallest RETAINED uid, which after a partial
+// eviction need not be entries.front().
+TEST(ObjectStoreTest, FirstUidNotFrontEntryAfterPartialEvict) {
+  ObjectStore store;
+  auto id = registerTestTopic(store);
+  ASSERT_TRUE(store.pushOwned(id, 100, makePayload(4)).has_value());  // u1
+  ASSERT_TRUE(store.pushOwned(id, 200, makePayload(4)).has_value());  // u2
+  ASSERT_TRUE(store.pushOwned(id, 300, makePayload(4)).has_value());  // u3
+  ASSERT_TRUE(store.pushOwned(id, 150, makePayload(4)).has_value());  // u4 (OOO, largest UID, sits at slot 1)
+
+  const SequentialUID u1 = store.latestAt(id, 100)->sequential_uid;
+  const SequentialUID u2 = store.latestAt(id, 200)->sequential_uid;
+  const SequentialUID u4 = store.latestAt(id, 150)->sequential_uid;
+
+  store.evictBefore(id, 125);  // drops only ts=100/u1
+  EXPECT_EQ(store.firstSequentialUID(id), u2) << "smallest retained UID, NOT entries.front() (ts=150)";
+  EXPECT_EQ(store.at(id, u4)->timestamp, 150);
+  EXPECT_FALSE(store.at(id, u1).has_value());
+  EXPECT_EQ(walkUids(store, id), (std::vector<Timestamp>{200, 300, 150}));
+}
+
+// Equal timestamps take the in-order append (100 >= back()), so arrival order ==
+// UID order and the walk never reorders them.
+TEST(ObjectStoreTest, EqualTimestampArrivalOrderPreservedByUidCursor) {
+  ObjectStore store;
+  auto id = registerTestTopic(store);
+  ASSERT_TRUE(store.pushOwned(id, 100, makePayload(4, 0xA1)).has_value());
+  ASSERT_TRUE(store.pushOwned(id, 100, makePayload(4, 0xB2)).has_value());
+
+  SequentialUID cursor{};
+  const auto drained = store.drainNewSince(id, cursor);
+  ASSERT_EQ(drained.size(), 2u);
+  EXPECT_EQ(drained[0].payload.bytes[0], 0xA1);
+  EXPECT_EQ(drained[1].payload.bytes[0], 0xB2);
 }
 
 // =========================================================================
@@ -629,16 +884,50 @@ TEST(ObjectStoreTest, PushLazyHonorsSpanSubview) {
 }
 
 // =========================================================================
-// Timestamp monotonicity
+// Out-of-order ingest is lossless
 // =========================================================================
+// Real object streams legitimately regress in time — notably multi-publisher
+// /tf, whose per-message publish timestamps interleave. Like the scalar engine
+// (whose appends accept timestamp regressions), ObjectStore must keep, not drop,
+// an out-of-order push. It inserts it at the sorted position so entry_timestamps
+// stays ordered for at-or-before lookup.
 
-TEST(ObjectStoreTest, OutOfOrderPushFails) {
+TEST(ObjectStoreTest, OutOfOrderPushAcceptedLossless) {
   ObjectStore store;
   auto id = registerTestTopic(store);
-  store.pushOwned(id, 200, makePayload(4));
-  auto result = store.pushOwned(id, 100, makePayload(4));
-  EXPECT_FALSE(result.has_value());
-  EXPECT_EQ(store.entryCount(id), 1u);
+  EXPECT_TRUE(store.pushOwned(id, 200, makePayload(4, 0xBB)).has_value());
+  auto result = store.pushOwned(id, 100, makePayload(4, 0xAA));  // regression
+  EXPECT_TRUE(result.has_value());                               // accepted, not dropped
+  EXPECT_EQ(store.entryCount(id), 2u);                           // both retained
+}
+
+TEST(ObjectStoreTest, OutOfOrderPushSortsForLookup) {
+  ObjectStore store;
+  auto id = registerTestTopic(store);
+  // Interleaved, out-of-order arrival: 300, 100, 200.
+  store.pushOwned(id, 300, makePayload(1, 0x33));
+  store.pushOwned(id, 100, makePayload(1, 0x11));
+  store.pushOwned(id, 200, makePayload(1, 0x22));
+  ASSERT_EQ(store.entryCount(id), 3u);
+
+  // latestAt resolves to the at-or-before entry regardless of arrival order.
+  auto a = store.latestAt(id, 150);
+  ASSERT_TRUE(a.has_value());
+  EXPECT_EQ(a->payload.bytes[0], 0x11);
+  auto b = store.latestAt(id, 250);
+  ASSERT_TRUE(b.has_value());
+  EXPECT_EQ(b->payload.bytes[0], 0x22);
+  auto c = store.latestAt(id, 999);
+  ASSERT_TRUE(c.has_value());
+  EXPECT_EQ(c->payload.bytes[0], 0x33);
+  EXPECT_FALSE(store.latestAt(id, 50).has_value());
+
+  // entry_timestamps is exposed in sorted order.
+  auto stamps = store.entryTimestamps(id);
+  ASSERT_EQ(stamps.size(), 3u);
+  EXPECT_EQ(stamps[0], 100);
+  EXPECT_EQ(stamps[1], 200);
+  EXPECT_EQ(stamps[2], 300);
 }
 
 TEST(ObjectStoreTest, EqualTimestampAllowed) {
@@ -648,6 +937,27 @@ TEST(ObjectStoreTest, EqualTimestampAllowed) {
   auto result = store.pushOwned(id, 100, makePayload(4));
   EXPECT_TRUE(result.has_value());
   EXPECT_EQ(store.entryCount(id), 2u);
+}
+
+// At a duplicated timestamp, both the newest-timestamp lookup (latestAt) and the
+// high-water arrival cursor (maxUidAtOrBefore) must resolve the LAST arrival, not
+// the first. A regression to first-of-group (lower_bound / min-UID) survives
+// EqualTimestampAllowed above, which only counts entries.
+TEST(ObjectStoreTest, DuplicateTimestampResolvesLastArrival) {
+  ObjectStore store;
+  auto id = registerTestTopic(store);
+  store.pushOwned(id, 100, makePayload(4, 0x11));  // first arrival at ts=100
+  store.pushOwned(id, 100, makePayload(4, 0x22));  // second arrival, same ts
+
+  auto latest = store.latestAt(id, 100);
+  ASSERT_TRUE(latest.has_value());
+  EXPECT_EQ(latest->payload.bytes[0], 0x22) << "latestAt must pick the last arrival at a duplicated timestamp";
+
+  const SequentialUID high = store.maxUidAtOrBefore(id, 100);
+  ASSERT_TRUE(high.valid());
+  auto by_uid = store.at(id, high);
+  ASSERT_TRUE(by_uid.has_value());
+  EXPECT_EQ(by_uid->payload.bytes[0], 0x22) << "maxUidAtOrBefore must resolve the last-arrival (max) UID";
 }
 
 // =========================================================================
@@ -748,6 +1058,29 @@ TEST(ObjectStoreTest, DefaultBudgetNoEviction) {
     store.pushOwned(id, static_cast<Timestamp>(i) * 100, makePayload(100));
   }
   EXPECT_EQ(store.entryCount(id), 100u);
+}
+
+// Retention runs INSIDE pushOwned: an out-of-order push whose timestamp lands below
+// the time-window floor is sorted-inserted and then immediately front-evicted on the
+// same call. That insert-then-evict of the OOO slot must leave uid_order consistent,
+// so the surviving entries stay cursor-reachable in ascending-UID order.
+TEST(ObjectStoreTest, RetentionEvictsOutOfOrderPushBelowFloorKeepsCursorConsistent) {
+  ObjectStore store;
+  auto id = registerTestTopic(store);
+  store.setRetentionBudget(id, {.time_window_ns = 1500, .max_memory_bytes = 0});
+  store.pushOwned(id, 1000, makePayload(4));
+  store.pushOwned(id, 2000, makePayload(4));
+  store.pushOwned(id, 3000, makePayload(4));  // floor is now 1500 → 1000 evicted
+  ASSERT_EQ(store.entryCount(id), 2u);
+
+  // Out-of-order and far below the floor: inserted, then self-evicted on this push.
+  ASSERT_TRUE(store.pushOwned(id, 500, makePayload(4, 0x55)).has_value());
+  EXPECT_EQ(store.entryCount(id), 2u) << "OOO entry below the retention floor should self-evict";
+
+  auto walked = walkUids(store, id);
+  EXPECT_EQ(walked.size(), store.entryCount(id));
+  EXPECT_EQ(walked, (std::vector<Timestamp>{2000, 3000})) << "insert-then-evict corrupted uid_order";
+  EXPECT_FALSE(store.latestAt(id, 500).has_value()) << "self-evicted OOO entry must not resolve";
 }
 
 TEST(ObjectStoreTest, LazyEntriesZeroMemory) {
@@ -1050,6 +1383,62 @@ TEST(ObjectStoreFlushTest, ZeroCopyOwnershipChainSurvives) {
   auto post_handle = dst.at(dst_id, 0);
   ASSERT_TRUE(post_handle.has_value());
   EXPECT_EQ(post_handle->payload.anchor.get(), pre_ptr) << "shared_ptr identity must survive the flush";
+}
+
+// A flush drains src; its uid_order must be cleared too, else the next push into
+// the emptied src appends a stale position and corrupts the cursor.
+TEST(ObjectStoreFlushTest, SrcUidOrderClearedAfterFlushAllowsSubsequentPushes) {
+  ObjectStore src, dst;
+  auto src_id = registerSameDescriptor(src);
+  registerSameDescriptor(dst);
+  src.pushOwned(src_id, 100, makePayload(4));
+  src.pushOwned(src_id, 200, makePayload(4));
+  ASSERT_TRUE(src.flushTo(dst).has_value());
+  // Push MORE THAN ONE entry into the drained src. A single survivor resolves to
+  // entries_[0] even if flushTo left a stale uid_order slot, so a one-entry check
+  // passes vacuously; only a full walk whose length matches entryCount catches an
+  // uncleared uid_order (the debug invariant assert that would otherwise trip is
+  // compiled out under NDEBUG / RelWithDebInfo).
+  ASSERT_TRUE(src.pushOwned(src_id, 400, makePayload(4, 0x77)).has_value());
+  ASSERT_TRUE(src.pushOwned(src_id, 500, makePayload(4, 0x88)).has_value());
+  auto walked = walkUids(src, src_id);
+  EXPECT_EQ(walked.size(), src.entryCount(src_id)) << "stale uid_order from flushTo corrupted src's cursor";
+  EXPECT_EQ(walked, (std::vector<Timestamp>{400, 500}));
+}
+
+// The flush-dst rebuild must cope with a non-identity dst prefix (an earlier
+// out-of-order insert): every entry stays visited once in ascending UID order.
+TEST(ObjectStoreFlushTest, UidWalkAfterAppendingFlushVisitsAllEntriesInOrder) {
+  ObjectStore src, dst;
+  auto src_id = registerSameDescriptor(src);
+  auto dst_id = registerSameDescriptor(dst);
+  // Seed dst with an out-of-order entry so its uid_order prefix is non-identity.
+  dst.pushOwned(dst_id, 10, makePayload(4));
+  dst.pushOwned(dst_id, 30, makePayload(4));
+  dst.pushOwned(dst_id, 20, makePayload(4));  // OOO
+  // Capture the pre-existing dst UIDs BEFORE the flush. flushTo must APPEND the
+  // moved src entries (rebuild uid_order) and leave dst's own UIDs untouched — a
+  // consumer cursor holds them. A destination-wide re-UID (reuidSeriesLocked
+  // instead of rebuildUidOrderLocked) would renumber these and pass the walk
+  // check below, so pin identity here.
+  const SequentialUID uid10 = dst.latestAt(dst_id, 10)->sequential_uid;
+  const SequentialUID uid20 = dst.latestAt(dst_id, 20)->sequential_uid;
+  const SequentialUID uid30 = dst.latestAt(dst_id, 30)->sequential_uid;
+  // src timestamps must respect monotonicity (>= dst.back() == 30).
+  src.pushOwned(src_id, 40, makePayload(4));
+  src.pushOwned(src_id, 50, makePayload(4));
+  ASSERT_TRUE(src.flushTo(dst).has_value());
+
+  // Pre-existing dst UIDs still resolve the same entries (stability).
+  ASSERT_TRUE(dst.at(dst_id, uid10).has_value()) << "dst UID renumbered by flush";
+  EXPECT_EQ(dst.at(dst_id, uid10)->timestamp, 10);
+  EXPECT_EQ(dst.at(dst_id, uid20)->timestamp, 20);
+  EXPECT_EQ(dst.at(dst_id, uid30)->timestamp, 30);
+
+  auto walked = walkUids(dst, dst_id);
+  EXPECT_EQ(walked.size(), dst.entryCount(dst_id));
+  std::sort(walked.begin(), walked.end());
+  EXPECT_EQ(walked, (std::vector<Timestamp>{10, 20, 30, 40, 50}));
 }
 
 // =========================================================================

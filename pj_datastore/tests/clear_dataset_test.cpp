@@ -408,6 +408,39 @@ TEST(ObjectDatasetSnapshotTest, ReattachRestoresEntriesAndLatestAt) {
   EXPECT_FALSE(snap.valid) << "reattach consumes the snapshot";
 }
 
+// A detach/reattach round-trip must reconstruct the uid_order side index from the
+// preserved (out-of-order) entries via rebuildUidOrderLocked, so the post-reattach
+// UID cursor matches the pre-detach one exactly.
+TEST(ObjectDatasetSnapshotTest, ReattachPreservesUidCursorAfterOutOfOrder) {
+  ObjectStore store;
+  const DatasetId ds = 7;
+  const ObjectTopicId a = registerObjectTopic(store, ds, "cam/a");
+  for (const Timestamp ts : {Timestamp{100}, Timestamp{200}, Timestamp{300}, Timestamp{150}}) {  // 150 is OOO
+    ASSERT_TRUE(store.pushOwned(a, ts, std::vector<uint8_t>(4, 0xAB)).has_value());
+  }
+
+  // Capture the pre-detach walk (arrival order, via drainNewSince).
+  auto walk = [&store, a]() {
+    std::vector<Timestamp> out;
+    SequentialUID cursor{};
+    for (const auto& e : store.drainNewSince(a, cursor)) {
+      out.push_back(e.timestamp);
+    }
+    return out;
+  };
+  const std::vector<Timestamp> before = walk();
+  const SequentialUID first_before = store.firstSequentialUID(a);
+  ASSERT_EQ(before, (std::vector<Timestamp>{100, 200, 300, 150}));
+
+  ObjectStore::ObjectDatasetSnapshot snap = store.detachDataset(ds);
+  ASSERT_EQ(store.entryCount(a), 0u);
+  store.reattachDataset(ds, std::move(snap));
+
+  EXPECT_EQ(store.firstSequentialUID(a), first_before);
+  EXPECT_EQ(store.at(a, first_before)->timestamp, 100);
+  EXPECT_EQ(walk(), before) << "rebuildUidOrderLocked must reconstruct the preserved inversion";
+}
+
 TEST(ObjectDatasetSnapshotTest, ReattachRemovesTopicsRegisteredAfterDetach) {
   ObjectStore store;
   const DatasetId ds = 7;

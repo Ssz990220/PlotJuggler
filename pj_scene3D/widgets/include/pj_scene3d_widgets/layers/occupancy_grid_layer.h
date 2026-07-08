@@ -72,6 +72,12 @@ class OccupancyGridLayer : public Scene3DLayer {
   [[nodiscard]] const ReconstructedGrid& reconstructedGridForTest() const {
     return reconstructor_.grid();
   }
+  // Count of retroactive-ingest invalidations issued by renderAt. Lets a test
+  // assert the cursor settles (count stops rising) instead of re-invalidating a
+  // late out-of-order update every frame.
+  [[nodiscard]] size_t retroactiveInvalidateCountForTest() const {
+    return retroactive_invalidate_count_;
+  }
 #endif
 
  private:
@@ -112,6 +118,8 @@ class OccupancyGridLayer : public Scene3DLayer {
   // entry appears past the cursor with a timestamp at-or-before the high-water.
   PJ::SequentialUID updates_cursor_{};
   std::optional<PJ::Timestamp> last_consumed_time_;
+  // Count of retroactive-ingest invalidations; test introspection only.
+  size_t retroactive_invalidate_count_ = 0;
 
   std::string source_frame_;
   // Set by setTrackerTime, consumed by render(): the reconstruction (base parse +

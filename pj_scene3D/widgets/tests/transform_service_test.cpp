@@ -331,6 +331,46 @@ TEST(TransformService, BulkIngestResolvesAcrossStampRange) {
 }
 
 // -----------------------------------------------------------------------------
+// Out-of-order ingest guard (sibling of the scene_entities OOO regression).
+// transform_service's UID-cursor walk is UNBOUNDED by time: it folds every newly
+// arrived entry into the TIME-indexed TransformBuffer, which orders by stamp
+// internally. So a late (out-of-order) edge lands at its own earlier time and
+// stays resolvable — there is no `uid <= latestAt(t)` proxy to break (unlike the
+// scene_entities replay). This pins that safety-by-construction.
+// -----------------------------------------------------------------------------
+TEST(TransformService, OutOfOrderEdgeIsIngestedAtItsOwnTime) {
+  PJ::SessionManager session;
+  PJ::ObjectStore& store = session.objectStore();
+  const auto topic = registerTopic(store, /*dataset_id=*/1, "/tf");
+
+  // Arrival (== UID) order: f0->f1@100, f0->f2@300, then f0->f3@200 OUT OF ORDER
+  // (newest UID, middle stamp). Distinct child frames make each edge's presence a
+  // binary yes/no rather than something TF interpolation could paper over.
+  ASSERT_TRUE(store.pushOwned(topic, 100, edgePayload(/*parent=*/0, /*child=*/1)).has_value());
+  ASSERT_TRUE(store.pushOwned(topic, 300, edgePayload(/*parent=*/0, /*child=*/2)).has_value());
+  ASSERT_TRUE(store.pushOwned(topic, 200, edgePayload(/*parent=*/0, /*child=*/3)).has_value());
+
+  session.registerObjectTopicParser(
+      topic, makeBoundHandle(kTfSchema, []() noexcept -> void* { return new CountingTfParser(nullptr, nullptr); }));
+
+  TransformService service(session);
+  service.ingestFrameTransformsForDataset(/*dataset_id=*/1);
+
+  auto buffer = service.transformBuffer(/*dataset_id=*/1);
+  ASSERT_NE(buffer, nullptr);
+
+  // Every edge — including the out-of-order f0->f3@200 — was ingested and resolves
+  // at its own stamp.
+  EXPECT_TRUE(resolves(*buffer, "f0", "f1", 100));
+  EXPECT_TRUE(resolves(*buffer, "f0", "f3", 200)) << "out-of-order TF edge @200 was dropped or mis-placed";
+  EXPECT_TRUE(resolves(*buffer, "f0", "f2", 300));
+
+  std::vector<std::string> frames = buffer->getAllFrames();
+  std::sort(frames.begin(), frames.end());
+  EXPECT_EQ(frames, (std::vector<std::string>{"f0", "f1", "f2", "f3"}));
+}
+
+// -----------------------------------------------------------------------------
 // (b) Equivalence: N one-at-a-time incremental ingests == one bulk ingest.
 // -----------------------------------------------------------------------------
 TEST(TransformService, IncrementalEqualsBulk) {

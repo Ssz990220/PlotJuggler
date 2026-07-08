@@ -543,10 +543,56 @@ TEST(SceneEntitiesLayerModelTest, SameTimestampAppendStillAdvancesBySequentialUi
       << "same-timestamp append must not be skipped by a time-only replay guard";
 }
 
-// UID allocation is process-global, so another topic's pushes leave large gaps
-// in the scene topic's UID sequence. Replay must step the topic's entries
-// (nextUIDAfter), and the result must be identical to the dense-UID case in
-// both directions.
+// Regression (out-of-order ingest): once the ObjectStore accepts a late snapshot
+// whose timestamp lands BEFORE an already-stored newer one, UID(arrival) order
+// diverges from timestamp order. applyEntriesAfter bounds its replay by
+// `uid <= latestAt(t)->uid`, using the UID as a stand-in for "timestamp <= t" —
+// the exact assumption out-of-order ingest breaks (the same class the occupancy
+// layer fixed via maxUidAtOrBefore/rangeByTime). It has two symptoms, both pinned
+// here: a FUTURE snapshot leaks in, and the out-of-order (older) snapshot is
+// dropped once a newer entry becomes the cursor target.
+TEST(SceneEntitiesLayerModelTest, OutOfOrderSnapshotReplayHonorsTimestampNotArrivalUid) {
+  PJ::SessionManager session;
+  const PJ::ObjectTopicId topic_id = registerTopic(session);
+  registerParser(session, topic_id);
+  // Arrival order (== UID order): a@100, b@300, then c@200 out of order (newest UID,
+  // middle timestamp). The store sorts by timestamp: [a@100, c@200, b@300].
+  pushSceneEntities(session, topic_id, 100, batchWithEntities({makeEntity("a", 100)}));
+  pushSceneEntities(session, topic_id, 300, batchWithEntities({makeEntity("b", 300)}));
+  pushSceneEntities(session, topic_id, 200, batchWithEntities({makeEntity("c", 200)}));
+  ASSERT_EQ(session.objectStore().entryCount(topic_id), 3u);
+
+  // At t=250 the snapshots whose timestamp is <= 250 are {a, c}; b@300 is in the
+  // future and must NOT be shown. Pre-fix: latestAt(250) resolves to c (the OOO
+  // entry, which holds the LARGEST UID), so the walk `uid <= c.uid` also folds b.
+  {
+    pj::scene3d::SceneEntitiesLayer layer(topic_id, QStringLiteral("/scene_entities"));
+    const auto ctx = makeContext(session);
+    ASSERT_TRUE(layer.attach(ctx));
+    layer.setTrackerTime(PJ::fromRaw(250));
+    EXPECT_EQ(layer.currentEntities().count("a"), 1u);
+    EXPECT_EQ(layer.currentEntities().count("c"), 1u);
+    EXPECT_EQ(layer.currentEntities().count("b"), 0u) << "future snapshot @300 leaked into the state at t=250";
+  }
+
+  // At t=400 all three snapshots (timestamp <= 400) must be present. Pre-fix:
+  // latestAt(400) resolves to b, whose UID is SMALLER than c's, so the walk
+  // `uid <= b.uid` stops before c and the out-of-order @200 snapshot is dropped.
+  {
+    pj::scene3d::SceneEntitiesLayer layer(topic_id, QStringLiteral("/scene_entities"));
+    const auto ctx = makeContext(session);
+    ASSERT_TRUE(layer.attach(ctx));
+    layer.setTrackerTime(PJ::fromRaw(400));
+    EXPECT_EQ(layer.currentEntities().count("a"), 1u);
+    EXPECT_EQ(layer.currentEntities().count("b"), 1u);
+    EXPECT_EQ(layer.currentEntities().count("c"), 1u) << "out-of-order snapshot @200 was dropped at t=400";
+  }
+}
+
+// UID allocation is process-global, so another topic's pushes leave large gaps in
+// the scene topic's UID sequence. The timestamp-window fold (rangeByTime) must be
+// unaffected by those gaps, and the result identical to the dense-UID case in both
+// directions.
 TEST(SceneEntitiesLayerModelTest, ReplayStepsSparseUidsFromInterleavedTopics) {
   PJ::SessionManager session;
   const PJ::ObjectTopicId topic_id = registerTopic(session);

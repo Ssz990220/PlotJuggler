@@ -279,22 +279,18 @@ bool TransformService::ingestNewerThanCursor(PJ::DatasetId dataset_id) {
       cursor_it = tf_cursors_.try_emplace(key).first;
     }
 
-    // Step the topic's sparse UID sequence forward from the cursor. UIDs are
-    // stable across front-eviction and per-topic SPARSE (process-global
-    // allocation), so this can never skip an un-ingested entry the way a raw
-    // index window did under concurrent eviction, and equal-timestamp entries
-    // get distinct UIDs so a late same-stamp arrival is still reached. Each step
-    // re-resolves under a fresh series lock (mirrors PR #179's entities path); an
-    // entry evicted between the UID step and the at() resolve is simply gone.
+    // Drain every edge that arrived since the cursor, in arrival order, and file
+    // each into the time-indexed TF buffer. Arrival order (not a time window) is
+    // required: a late out-of-order edge (older stamp, newest UID) must still be
+    // ingested, and the buffer places it at its own time. drainNewSince is
+    // eviction-safe and advances the cursor past every entry (even one evicted
+    // before it resolves), so nothing is ingested twice or skipped.
     TfCursor& cursor = cursor_it->second;
-    for (PJ::SequentialUID uid = object_store.nextUIDAfter(topic_id, cursor.last_ingested); uid.valid();
-         uid = object_store.nextUIDAfter(topic_id, uid)) {
-      cursor.last_ingested = uid;
-      auto entry = object_store.at(topic_id, uid);
-      if (!entry.has_value() || entry->payload.bytes.empty()) {
-        continue;  // evicted between the UID step and the resolve, or empty payload
+    for (const auto& entry : object_store.drainNewSince(topic_id, cursor.last_ingested)) {
+      if (entry.payload.bytes.empty()) {
+        continue;
       }
-      ingestEntry(*entry, parser_binding, *tf_buffer, stats);
+      ingestEntry(entry, parser_binding, *tf_buffer, stats);
     }
   }
 

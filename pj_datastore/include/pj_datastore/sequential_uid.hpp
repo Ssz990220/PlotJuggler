@@ -13,7 +13,8 @@ namespace PJ {
 ///
 /// Allocation is process-global across all topics, so consecutive entries of
 /// one topic are NOT consecutive integers — never iterate a topic by
-/// incrementing values; step with ObjectStore::nextUIDAfter() instead.
+/// incrementing values; a streaming consumer drains them with
+/// ObjectStore::drainNewSince() instead.
 struct SequentialUID {
   static constexpr uint64_t kInvalidValue = 0;
   static constexpr uint64_t kFirstValidValue = 1;

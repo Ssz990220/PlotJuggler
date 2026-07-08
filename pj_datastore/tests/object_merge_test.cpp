@@ -89,6 +89,32 @@ TEST(ObjectMergeTest, ReassignsAscendingUIDs) {
   EXPECT_TRUE(store.at(a, first->sequential_uid).has_value());
 }
 
+// After the merge's reuidSeriesLocked, uid_order is the identity permutation, so a
+// drainNewSince walk visits every merged entry once in ascending UID (and, since the
+// merge time-sorts, ascending timestamp) order.
+TEST(ObjectMergeTest, UidWalkAfterMergeVisitsEveryEntryAscending) {
+  ObjectStore store;
+  const auto a = registerTopic(store, 1, "/img");
+  const auto b = registerTopic(store, 2, "/img");
+  push(store, a, 20, 0xA0);
+  push(store, a, 40, 0xA4);
+  push(store, b, 10, 0xB0);  // interleaves below/between anchor stamps after merge
+  push(store, b, 30, 0xB3);
+
+  ASSERT_TRUE(store.mergeDatasets(1, {DatasetMergeSource{.dataset_id = 2, .raw_shift_ns = 0}}).has_value());
+
+  std::vector<Timestamp> walked;
+  SequentialUID cursor{};
+  SequentialUID prev{};
+  for (const auto& e : store.drainNewSince(a, cursor)) {
+    EXPECT_TRUE(prev < e.sequential_uid) << "drainNewSince must yield strictly ascending UIDs";
+    prev = e.sequential_uid;
+    walked.push_back(e.timestamp);
+  }
+  EXPECT_EQ(walked.size(), store.entryCount(a));
+  EXPECT_EQ(walked, (std::vector<Timestamp>{10, 20, 30, 40}));  // ascending timestamp == ascending UID
+}
+
 TEST(ObjectMergeTest, ReparentsSourceOnlyTopic) {
   ObjectStore store;
   registerTopic(store, 1, "/img");

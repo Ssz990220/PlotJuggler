@@ -183,11 +183,13 @@ class SceneEntitiesLayer : public Scene3DLayer {
   // the first build, backward scrubs, or jumps. This keeps sustained playback from
   // re-parsing (and re-hashing heavy embedded models in) the whole history per frame.
   void ensureModelStateAt(PJ::Timepoint time);
-  // Parse+fold ObjectStore entries with SequentialUID in (after_uid, target_uid]
-  // into entities_ via applySnapshot, stepping the topic's sparse UID sequence
-  // with nextUIDAfter (cache-first, parse on miss). A default/invalid after_uid
-  // starts from the first retained entry. Returns true if a snapshot was applied.
-  bool applyEntriesAfter(PJ::SequentialUID after_uid, PJ::SequentialUID target_uid);
+  // Parse+fold every retained batch with lo_ns < ts <= hi_ns into entities_ via
+  // applySnapshot, in ASCENDING timestamp order (equal stamps keep arrival order).
+  // Backed by ObjectStore::rangeByTime — a decode-free, eviction-safe, out-of-order-
+  // safe window — so a late (older-ts, newest-UID) batch that lands inside the window
+  // is folded at its timestamp position, never skipped or mis-ordered by a UID walk.
+  // Cache-first, parse on miss. Returns true if a snapshot was applied.
+  bool applyWindow(int64_t lo_ns, int64_t hi_ns);
   // Fold one decoded batch into entities_: apply the batch's deletions FIRST
   // (against the pre-batch map), then upsert by entity id. Order matters:
   // the SDK contract says deletions remove PRIOR entities; applying them first
@@ -263,10 +265,14 @@ class SceneEntitiesLayer : public Scene3DLayer {
   // state at state_built_at_; model_frames_ caches the distinct entity frames
   // merged into fallbackFrames().
   std::optional<PJ::Timepoint> state_built_at_;
-  // Highest ObjectStore SequentialUID already folded into entities_. UID 0 is the
-  // invalid sentinel; real entries start at 1. Lets forward playback apply only
-  // the (last_applied_uid_, target_uid] delta instead of replaying from 0.
-  PJ::SequentialUID last_applied_uid_;
+  // High-water ObjectStore arrival UID folded into entities_ at state_built_at_ —
+  // maxUidAtOrBefore(state_built_at_) captured at the last build. UID 0 is the
+  // invalid sentinel (real entries start at 1). Two jobs: the same-playhead
+  // early-return compares it against the current high-water to skip re-folding, and
+  // the forward path re-reads maxUidAtOrBefore(state_built_at_) and rebuilds if it
+  // grew — that signals a retroactive (out-of-order) batch landed at/below the
+  // cursor time, which a forward window fold cannot reach.
+  PJ::SequentialUID applied_uid_high_;
   // One decoded batch shared between the marker pass seed and the model fold.
   // `bytes` is the estimate recorded at insert, so eviction subtracts exactly
   // what was added.

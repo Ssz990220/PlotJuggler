@@ -126,10 +126,10 @@ class TransformService : public QObject {
   void datasetTransformsReady(PJ::DatasetId dataset_id);
 
  private:
-  // Shared core: for every TF topic in the dataset, step the per-topic UID
-  // cursor forward (ObjectStore::nextUIDAfter) and ingest each newly retained
-  // entry. Both the bulk file path and the incremental streaming path go through
-  // here. GUI-thread only. Returns true if any transform was applied.
+  // Shared core: for every TF topic in the dataset, drain the entries that arrived
+  // since the per-topic cursor (ObjectStore::drainNewSince) and ingest each. Both
+  // the bulk file path and the incremental streaming path go through here.
+  // GUI-thread only. Returns true if any transform was applied.
   bool ingestNewerThanCursor(PJ::DatasetId dataset_id);
 
   // The cross-restart QSettings key for `dataset_id`: its DataEngine source_name,
@@ -138,13 +138,13 @@ class TransformService : public QObject {
   // remembered frame is session-only). GUI-thread only.
   [[nodiscard]] QString datasetSourceKey(PJ::DatasetId dataset_id) const;
 
-  // Per-topic ingest cursor: the SequentialUID of the last entry pushed into the
+  // Per-topic ingest cursor: the SequentialUID of the last entry drained into the
   // buffer. A UID is stable across front-eviction and per-topic SPARSE (UID
-  // allocation is process-global), so the next tick steps strictly forward with
-  // ObjectStore::nextUIDAfter — never by incrementing the value. This fixes both
-  // the index-shift TOCTOU (a concurrent front-eviction can never move a
-  // not-yet-ingested entry below the cursor) and the equal-timestamp skip (UIDs
-  // are unique even when timestamps tie) that a timestamp cursor suffered.
+  // allocation is process-global), so the next tick resumes strictly forward via
+  // ObjectStore::drainNewSince(cursor) — never by incrementing the value. This
+  // fixes both the index-shift TOCTOU (a concurrent front-eviction can never move a
+  // not-yet-ingested entry below the cursor) and the equal-timestamp skip (UIDs are
+  // unique even when timestamps tie) that a timestamp cursor suffered.
   // Default-constructed (invalid) UID means "ingest from the first retained
   // entry" — the bulk file-load start. An entry evicted before its UID is
   // reached is unrecoverable by design: the store no longer holds it.

@@ -612,6 +612,17 @@ on the live path:
   oldest-UID eviction) holds decoded batches so a rebuild re-folds without re-parsing.
   Each cache entry records `store_ns` (the ingest timestamp) alongside the batch, so a
   cache-hit re-fold restores the *same* lifetime anchor a fresh parse would have produced.
+- **Timestamp-ordered, out-of-order-safe fold.** The batches to fold are the topic's
+  entries with `ts <= tracker`, taken via `ObjectStore::rangeByTime` (a decode-free,
+  ascending, eviction-safe window) — never an arrival-order UID walk, whose order
+  diverges from timestamp order after an out-of-order push and would both leak a
+  future batch in and drop a late in-window one. Forward playback folds only the
+  `(state_built_at_, tracker]` delta; a retroactive push landing at
+  `ts <= state_built_at_` is detected when `maxUidAtOrBefore(state_built_at_)` grows
+  past the folded high-water (`applied_uid_high_`) and forces a full rebuild. This is
+  the same cursor discipline `OccupancyGridLayer` uses, so all three ObjectStore
+  UID-cursor consumers (`TransformService`, occupancy, scene entities) share one
+  out-of-order contract.
 
 ## Asset resolution (`package://` for a non-ROS app)
 
