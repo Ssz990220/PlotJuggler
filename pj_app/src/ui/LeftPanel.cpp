@@ -45,6 +45,9 @@ constexpr const char* kRecentIconExpanded = ":/resources/svg/keyboard_arrow_down
 // Streaming-buffer setting key — preserved verbatim from when the
 // scrubber lived on the timeline so user-saved values survive the move.
 constexpr const char* kStreamingBufferKey = "MainWindow.streamingBufferValue";
+// Last-selected streaming source, persisted by name so it survives plugin
+// re-discovery reordering across sessions (an index would not).
+constexpr const char* kStreamingSourceKey = "MainWindow.streamingSource";
 }  // namespace
 
 LeftPanel::LeftPanel(QWidget* parent) : QWidget(parent), ui_(new Ui::LeftPanel) {
@@ -163,7 +166,13 @@ LeftPanel::LeftPanel(QWidget* parent) : QWidget(parent), ui_(new Ui::LeftPanel) 
   connect(ui_->buttonStreamingPause, &QPushButton::toggled, this, &LeftPanel::streamingPauseToggled);
   connect(
       ui_->buttonStreamingPause, &QPushButton::toggled, this, [this](bool) { applyPauseButtonState(currentTheme()); });
-  connect(ui_->comboStreaming, &QComboBox::currentTextChanged, this, &LeftPanel::streamingSourceChanged);
+  // Persist the user's choice so it is restored next session. The signal only
+  // fires on genuine user selection — setStreamingSources() blocks it while
+  // repopulating — so this never re-saves a programmatic restore.
+  connect(ui_->comboStreaming, &QComboBox::currentTextChanged, this, [this](const QString& source) {
+    QSettings().setValue(kStreamingSourceKey, source);
+    emit streamingSourceChanged(source);
+  });
 
   // Buffer scrubber: restore from QSettings on construct. The buffer length only
   // matters once the user finishes adjusting it — reconfiguring the live stream
@@ -204,7 +213,10 @@ void LeftPanel::setStreamingSources(const QStringList& names) {
     QSignalBlocker block(ui_->comboStreaming);
     ui_->comboStreaming->clear();
     ui_->comboStreaming->addItems(names);
-    const int idx = ui_->comboStreaming->findText(previous);
+    // Keep the current selection across a mid-session refresh; on the first
+    // (empty) population fall back to the source persisted last session.
+    const QString desired = previous.isEmpty() ? QSettings().value(kStreamingSourceKey).toString() : previous;
+    const int idx = ui_->comboStreaming->findText(desired);
     if (idx >= 0) {
       ui_->comboStreaming->setCurrentIndex(idx);
     }
