@@ -256,8 +256,8 @@ void MarketplaceWindow::setupUi() {
 
   ui_->category_combo_->addItem("All categories", "");
   ui_->category_combo_->addItem("Data Loader", "data_loader");
-  ui_->category_combo_->addItem("Data Streamer", "data_streamer");
-  ui_->category_combo_->addItem("Message Parser", "parser");
+  ui_->category_combo_->addItem("Data Streamer", "data_stream");
+  ui_->category_combo_->addItem("Message Parser", "message_parser");
   ui_->category_combo_->addItem("Toolbox", "toolbox");
 
   connect(ui_->search_edit_, &QLineEdit::textChanged, this, &MarketplaceWindow::onSearchChanged);
