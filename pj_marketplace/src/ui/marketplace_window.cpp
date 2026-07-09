@@ -509,7 +509,10 @@ void MarketplaceWindow::openDetail(const QString& ext_id) {
     }
     const auto installed = ext_mgr_->installedExtensions();
     const QString installed_version = installed.contains(ext_id) ? installed[ext_id].version : QString{};
-    ExtensionDetailDialog dlg(ext, installed_version, this);
+    // Mirror the card's pending state so the dialog can't offer an action on an
+    // install/update or uninstall that is already staged for the next restart.
+    const bool needs_restart = ext_mgr_->hasPendingInstall(ext_id) || ext_mgr_->hasPendingUninstall(ext_id);
+    ExtensionDetailDialog dlg(ext, installed_version, needs_restart, this);
     connect(&dlg, &ExtensionDetailDialog::installRequested, this, [this, ext_id]() { onActionButtonClicked(ext_id); });
     connect(
         &dlg, &ExtensionDetailDialog::uninstallRequested, this, [this, ext_id]() { onUninstallButtonClicked(ext_id); });

@@ -16,7 +16,12 @@ class ExtensionDetailDialog : public QDialog {
   Q_OBJECT
 
  public:
-  explicit ExtensionDetailDialog(const Extension& ext, const QString& installed_version, QWidget* parent = nullptr);
+  // `needs_restart` mirrors the card's pending state (a staged install/update or a
+  // staged uninstall awaiting a restart): when set, the dialog shows a disabled
+  // "Needs Restart" indicator and offers no Install/Update/Uninstall action, so it
+  // cannot re-stage an operation that is already pending.
+  explicit ExtensionDetailDialog(
+      const Extension& ext, const QString& installed_version, bool needs_restart = false, QWidget* parent = nullptr);
   ~ExtensionDetailDialog() override;
 
  signals:

@@ -14,7 +14,8 @@
 
 namespace PJ {
 
-ExtensionDetailDialog::ExtensionDetailDialog(const Extension& ext, const QString& installed_version, QWidget* parent)
+ExtensionDetailDialog::ExtensionDetailDialog(
+    const Extension& ext, const QString& installed_version, bool needs_restart, QWidget* parent)
     : QDialog(parent), ui_(new Ui::ExtensionDetailDialog) {
   ui_->setupUi(this);
   setWindowTitle(ext.name + " — Details");
@@ -40,9 +41,16 @@ ExtensionDetailDialog::ExtensionDetailDialog(const Extension& ext, const QString
   if (!ext.min_plotjuggler_version.isEmpty()) {
     meta << "requires PJ " + ext.min_plotjuggler_version + "+";
   }
-  const bool local_is_newer = !installed_version.isEmpty() && QVersionNumber::compare(
-                                                                  QVersionNumber::fromString(installed_version),
-                                                                  QVersionNumber::fromString(ext.version)) > 0;
+  // Registry vs installed, compared semver-aware to match the card's logic
+  // (ExtensionManager::hasUpdate / hasNewerInstalledVersion). >0: registry is
+  // newer (an update is available); <0: the installed build is newer; 0: same
+  // version or not installed. A raw string compare would wrongly flag "1.0" vs
+  // "1.0.0" and, worse, offer "Update" when the local build is newer.
+  const int registry_vs_installed = installed_version.isEmpty() ? 0
+                                                                : QVersionNumber::compare(
+                                                                      QVersionNumber::fromString(ext.version),
+                                                                      QVersionNumber::fromString(installed_version));
+  const bool local_is_newer = registry_vs_installed < 0;
   if (!installed_version.isEmpty()) {
     meta
         << (local_is_newer ? "installed: v" + installed_version + " (newer than registry)"
@@ -64,7 +72,7 @@ ExtensionDetailDialog::ExtensionDetailDialog(const Extension& ext, const QString
 
   // ── Buttons ── state-dependent visibility and style ────────────────────────
   const bool installed = !installed_version.isEmpty();
-  const bool has_update = installed && installed_version != ext.version;
+  const bool has_update = registry_vs_installed > 0;
 
   ui_->github_btn->setEnabled(!ext.website.isEmpty());
   const QString website = ext.website;
@@ -74,24 +82,36 @@ ExtensionDetailDialog::ExtensionDetailDialog(const Extension& ext, const QString
     }
   });
 
-  if (!installed || has_update) {
-    // Object name selects the matching #extButtonInstall /
-    // #extButtonUpdate rule in resources/stylesheet_*.qss.
-    ui_->action_btn->setText(has_update ? "Update \u2B06" : "Install");
-    ui_->action_btn->setObjectName(has_update ? "extButtonUpdate" : "extButtonInstall");
+  if (needs_restart) {
+    // A staged install/update or uninstall is awaiting a restart. Mirror the card's
+    // disabled "Needs Restart" badge and offer no action, so the dialog cannot
+    // re-stage (or contradict) an operation that is already pending. Both action_btn
+    // and uninstall_btn default to hidden in the .ui, so leaving them untouched keeps
+    // them off.
+    ui_->action_btn->setText("Needs Restart");
+    ui_->action_btn->setObjectName("extBadgeNeedsRestart");
+    ui_->action_btn->setEnabled(false);
     ui_->action_btn->setVisible(true);
-    connect(ui_->action_btn, &QPushButton::clicked, this, [this]() {
-      emit installRequested();
-      accept();
-    });
-  }
+  } else {
+    if (!installed || has_update) {
+      // Object name selects the matching #extButtonInstall /
+      // #extButtonUpdate rule in resources/stylesheet_*.qss.
+      ui_->action_btn->setText(has_update ? "Update \u2B06" : "Install");
+      ui_->action_btn->setObjectName(has_update ? "extButtonUpdate" : "extButtonInstall");
+      ui_->action_btn->setVisible(true);
+      connect(ui_->action_btn, &QPushButton::clicked, this, [this]() {
+        emit installRequested();
+        accept();
+      });
+    }
 
-  if (installed) {
-    ui_->uninstall_btn->setVisible(true);
-    connect(ui_->uninstall_btn, &QPushButton::clicked, this, [this]() {
-      emit uninstallRequested();
-      accept();
-    });
+    if (installed) {
+      ui_->uninstall_btn->setVisible(true);
+      connect(ui_->uninstall_btn, &QPushButton::clicked, this, [this]() {
+        emit uninstallRequested();
+        accept();
+      });
+    }
   }
 
   connect(ui_->close_btn, &QPushButton::clicked, this, &QDialog::accept);
