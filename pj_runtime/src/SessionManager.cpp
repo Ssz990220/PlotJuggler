@@ -645,6 +645,22 @@ void SessionManager::evictDatasetObjects(DatasetId dataset_id) {
   evictObjectTopics(object_store_.listTopics(dataset_id));
 }
 
+void SessionManager::removeDataset(DatasetId dataset_id) {
+  const Timestamp old_reference = globalTimeReference();
+  data_engine_.removeDataset(dataset_id);
+  // The engine no longer holds this dataset; drop its pinned earliest-sample and
+  // the memoized cross-dataset origin so globalTimeReference() re-scans the
+  // survivors (removing the earliest dataset must re-base the display origin).
+  invalidateDatasetMinTimestamp(dataset_id);
+  // If that re-base actually moved the origin, every surviving curve adapter now
+  // holds a stale display offset — no per-topic samplesIngested covers a pure
+  // origin shift, so signal the global reframe. No-op when "Use time offset" is
+  // off (globalTimeReference() is 0 both times).
+  if (globalTimeReference() != old_reference) {
+    emit displayOffsetChanged();
+  }
+}
+
 void SessionManager::evictObjectTopics(const std::vector<ObjectTopicId>& topic_ids) {
   // removeTopic touches the ObjectStore, not the parser map, so keep it out of
   // the parser lock. Erased slots are collected and destroyed after the lock

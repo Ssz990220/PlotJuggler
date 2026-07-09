@@ -278,6 +278,14 @@ class SessionManager : public QObject {
   void evictObjectTopics(const std::vector<ObjectTopicId>& topic_ids);
   void clearAllObjects();
 
+  // REAL removal of a dataset's scalar storage from the engine, paired with
+  // invalidating its time-origin caches so globalTimeReference() re-bases to the
+  // surviving data. Use this instead of reaching into dataEngine().removeDataset
+  // directly — the latter leaves the memoized earliest-sample origin stale.
+  // Callers must first tear down readers/catalog items (removeDataset's
+  // invalidate-first contract) and evict the dataset's objects.
+  void removeDataset(DatasetId dataset_id);
+
  signals:
   // Emitted when topics receive new samples (commit/ingest path). `live` is
   // true only for follow-live writers (streaming today). Cache-invalidation

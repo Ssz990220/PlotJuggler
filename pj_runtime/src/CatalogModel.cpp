@@ -884,7 +884,15 @@ void CatalogModel::removeItems(const std::vector<QString>& keys) {
     impl_->items.erase(it);
     removed.push_back(key);
   }
-  if (!removed.isEmpty()) {
+  if (removed.isEmpty()) {
+    return;
+  }
+  // Emptying the catalog via a trash-selection reaches the same terminal state as
+  // removeDataset()/clearAll(): emit cleared() (O(1) view reset + the playback
+  // empty-reset hook) rather than a full-key itemsRemoved.
+  if (impl_->items.empty()) {
+    emit cleared();
+  } else {
     emit itemsRemoved(removed);
   }
 }

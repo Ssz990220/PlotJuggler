@@ -126,11 +126,15 @@ class AppSession : public QObject {
   // bars and the playback-range computation.
   [[nodiscard]] std::optional<PJ::Range<PJ::Timestamp>> datasetRawTimeRange(PJ::DatasetId dataset_id) const;
 
-  // Recompute the playback RANGE only (never currentTime, never the first-seed
-  // snap) from the offset-adjusted union of visible topics. For the live
-  // Timeline drag path; call throttled. Returns the union's display-min (the
-  // value seedPlaybackFromSession snaps the first-load playhead to), or nullopt
-  // when there is no visible data (range left unchanged).
+  // Recompute the playback RANGE from the offset-adjusted union of visible
+  // topics; when data remains this touches only the range (never currentTime,
+  // never the first-seed snap), for the live Timeline drag path — call
+  // throttled. Returns the union's display-min (the value seedPlaybackFromSession
+  // snaps the first-load playhead to). Returns nullopt when no topic has
+  // time-bearing data; in that case it collapses the transport to the empty
+  // state (resetPlaybackToEmpty: paused, [0,0] range, cursor 0) ONLY if the
+  // catalog is genuinely empty — a transient mid-reload (topics still visible
+  // but their chunks momentarily detached) leaves the current range untouched.
   std::optional<PJ::DisplaySeconds> recomputeRange();
 
   // Tell the session which dataset is the active live stream (0 = none). While set
@@ -180,6 +184,12 @@ class AppSession : public QObject {
       const std::function<void(PJ::DatasetId dataset_id, PJ::Timestamp raw_min, PJ::Timestamp raw_max)>& visit) const;
 
   [[nodiscard]] std::optional<MergePlan> planMerge(const std::vector<DatasetId>& selected) const;
+
+  // Collapse the transport to the no-data state: pause, clear live hold, reset
+  // the range to [0,0] and the cursor to 0, and re-arm the first-seed snap.
+  // Called whenever the last visible data disappears (recomputeRange's empty
+  // branch and the CatalogModel::cleared() hook). Idempotent.
+  void resetPlaybackToEmpty();
 
   // The active live-streaming dataset (0 = none); see setActiveStreamingDataset.
   PJ::DatasetId active_streaming_dataset_id_ = 0;

@@ -69,10 +69,18 @@ class TimelineWidget : public QWidget {
   // both stay in lockstep).
   void applyEngineTime(double t);
 
+  // Enables/disables the transport controls from range_empty_ + seek_locked_:
+  // an empty (no-data) range disables play/loop/slider entirely; otherwise the
+  // slider is additionally gated by the streaming seek-lock.
+  void updateTransportEnabled();
+
   Ui::TimelineWidget* ui_;
   PlaybackEngine* engine_ = nullptr;
   bool updating_from_engine_ = false;
   bool seek_locked_ = false;
+  // No scrubbable data (range collapsed to a point): the transport is disabled.
+  // Starts true so a freshly-constructed strip is disabled until data loads.
+  bool range_empty_ = true;
   QTimer seek_throttle_timer_;
   double pending_seek_value_ = 0.0;
   bool has_pending_seek_ = false;

@@ -688,9 +688,9 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
     // the engine (adapters gone, so DataEngine::removeDataset's invalidate-first contract
     // holds). Without the engine erase a later reload would reattach to the emptied shells.
     session_->catalogModel().clearAll(/*tombstone=*/false);
-    DataEngine& engine = session_->sessionManager().dataEngine();
-    for (const DatasetId id : engine.listDatasets()) {
-      engine.removeDataset(id);
+    SessionManager& session_manager = session_->sessionManager();
+    for (const DatasetId id : session_manager.dataEngine().listDatasets()) {
+      session_manager.removeDataset(id);
     }
     resetUndoHistory();
   });
@@ -852,7 +852,10 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
   DebugUi::installInto(this, theme_.get());
 
   auto& playback = session_->playbackEngine();
-  playback.setRange(displayRange(0.0, 10.0));
+  // Start in the empty state: no data loaded means an empty range, so the
+  // transport renders disabled until the first dataset arrives (same state a
+  // full removal returns to).
+  playback.setRangeAndCurrentTime(displayRange(0.0, 0.0), displaySeconds(0.0));
   ui_->timelineWidget->setPlaybackEngine(&playback);
   // Cap the cursor-move fan-out at ~30 Hz (kTrackerBroadcastIntervalMs). currentTimeChanged
   // fires on playback ticks, scrubbing, and seeks — all of which can exceed 30 Hz (a fast
@@ -1566,11 +1569,12 @@ void MainWindow::onCatalogTrashRequested(QStringList keys, bool covers_all) {
     }
     // REAL delete: drop the catalog (no tombstone), then erase every dataset's scalar
     // storage from the engine. clearAll()'s cleared() tears down curve adapters first, so
-    // the engine erase satisfies DataEngine::removeDataset's invalidate-first contract.
+    // the engine erase satisfies DataEngine::removeDataset's invalidate-first contract
+    // (and resets the transport to empty via the AppSession cleared() hook).
     catalog.clearAll(/*tombstone=*/false);
-    DataEngine& engine = session_->sessionManager().dataEngine();
-    for (const DatasetId id : engine.listDatasets()) {
-      engine.removeDataset(id);
+    SessionManager& session_manager = session_->sessionManager();
+    for (const DatasetId id : session_manager.dataEngine().listDatasets()) {
+      session_manager.removeDataset(id);
     }
     resetUndoHistory();
     return;
@@ -1638,7 +1642,7 @@ void MainWindow::removeDatasetData(DatasetId dataset_id) {
   }
   session_->sessionManager().evictDatasetObjects(dataset_id);
   session_->catalogModel().removeDataset(dataset_id, /*tombstone=*/false);
-  session_->sessionManager().dataEngine().removeDataset(dataset_id);
+  session_->sessionManager().removeDataset(dataset_id);
   // Drop this dataset's file association (hygiene). Resurrection is prevented by
   // the layout-save liveness filter (appendDataSourceElement), not by mutating
   // loaded_sources_ — that list is kept whole so the quick-reload button still works.
@@ -1690,9 +1694,12 @@ void MainWindow::onRemoveDatasetsRequested(const QList<DatasetId>& dataset_ids) 
   for (const DatasetId id : dataset_ids) {
     removeDatasetData(id);
   }
-  // Shrink the playback range to the remaining data right away — unless a streaming
-  // dataset exists (the slider is scoped to the active stream). Reset undo once.
+  // A confirmed removal changes the data universe under the playhead, so halt
+  // playback and shrink the range to the survivors (or reset to empty when none
+  // remain) — unless a live stream is active, where the slider stays scoped to
+  // the tip and follow-live keeps running. Reset undo once.
   if (active_streaming_dataset_id_ == 0) {
+    session_->playbackEngine().pause();
     session_->seedPlaybackFromSession();
   }
   resetUndoHistory();

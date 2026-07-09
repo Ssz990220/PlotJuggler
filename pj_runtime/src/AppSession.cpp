@@ -49,11 +49,12 @@ AppSession::AppSession(QString extensions_dir, DiagnosticSink sink, QObject* par
   // or replaced), matching PJ3's per-PlotData COLOR_HINT lifetime so reopening
   // fresh data restarts palette rotation from the first color. The registry is
   // owned by SessionManager; AppSession just wires its session-scoped clear.
-  // Re-arm the playback first-seed snap too: after a full clear the next load
-  // is a fresh start, so range AND playhead snap to the new data.
+  // Collapse the transport to the empty state on a full clear: stop playback and
+  // reset the range/cursor (resetPlaybackToEmpty also re-arms the first-seed
+  // snap, so the next load starts fresh — range AND playhead snap to new data).
   QObject::connect(catalog_model_.get(), &CatalogModel::cleared, this, [this]() {
     session_manager_->curveColorRegistry().clear();
-    playback_seeded_ = false;
+    resetPlaybackToEmpty();
   });
 }
 
@@ -137,6 +138,9 @@ std::optional<DisplaySeconds> AppSession::recomputeRange() {
       playback_engine_->setRange(*range);
       return range->min;
     }
+    // Live-follow that hasn't produced its first sample yet: leave the transport
+    // alone rather than collapsing a running stream to the empty state below.
+    return std::nullopt;
   }
   // Union the bounds in DISPLAY-relative seconds, converting each item with
   // its dataset's OWN offset, so the playback axis matches what the plots
@@ -154,11 +158,29 @@ std::optional<DisplaySeconds> AppSession::recomputeRange() {
     new_max = new_max ? std::max(*new_max, ds_max) : ds_max;
   });
   if (!new_min) {
-    // No visible data: keep the current range (nothing better to show).
+    // No time-bearing rows. Distinguish a GENUINE empty (the catalog has no
+    // items — last dataset removed / full clear) from a TRANSIENT one (a
+    // replacing reload detaches a dataset's chunks, so its still-visible topics
+    // momentarily hold 0 rows): only collapse the transport when the catalog is
+    // truly empty, so a reload doesn't flicker the range to [0,0] and pause
+    // mid-load.
+    if (catalog_model_->isEmpty()) {
+      resetPlaybackToEmpty();
+    }
     return std::nullopt;
   }
   playback_engine_->setRange(DisplayRange{*new_min, *new_max});
   return new_min;
+}
+
+void AppSession::resetPlaybackToEmpty() {
+  // Order: stop the clock and drop live hold BEFORE zeroing the range, so no
+  // in-flight tick clamps against a half-reset engine. The empty [0,0] range is
+  // the signal the TimelineWidget uses to disable the transport.
+  playback_engine_->pause();
+  playback_engine_->setHoldAtRangeMax(false);
+  playback_engine_->setRangeAndCurrentTime(DisplayRange{DisplaySeconds{0.0}, DisplaySeconds{0.0}}, DisplaySeconds{0.0});
+  playback_seeded_ = false;
 }
 
 std::optional<AppSession::MergePlan> AppSession::planMerge(const std::vector<DatasetId>& selected) const {
@@ -308,8 +330,8 @@ bool AppSession::seedPlaybackFromSession() {
   // first-seed snap below is the only place that does.
   const std::optional<DisplaySeconds> new_min = recomputeRange();
   if (!new_min) {
-    // No visible data: keep the current range (nothing better to show). The
-    // first-seed snap re-arms through the CatalogModel::cleared() hook.
+    // No visible data: recomputeRange already collapsed the transport to the
+    // empty state (paused, [0,0], cursor 0). Nothing left to snap.
     return false;
   }
 
