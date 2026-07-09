@@ -1741,6 +1741,13 @@ QPushButton#extBadgeLocalNewer {
     font-weight: 600;
 }
 
+/* Action buttons (not the status badges) get a minimum width so they read as
+   buttons rather than hugging their label. */
+QPushButton#extButtonInstall,
+QPushButton#extButtonUpdate {
+    min-width: 96px;
+}
+
 QPushButton#extButtonInstall            { background: ${accent_info}; }
 QPushButton#extButtonInstall:hover      { background: ${accent_info_hover}; }
 QPushButton#extButtonUpdate             { background: ${accent_warning}; }
