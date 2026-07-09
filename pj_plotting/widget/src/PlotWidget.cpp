@@ -30,6 +30,7 @@
 #include <chrono>
 #include <cmath>
 #include <limits>
+#include <optional>
 #include <set>
 
 #include "WidgetClipboard.h"
@@ -266,7 +267,9 @@ PlotWidget::CurveInfo* PlotWidget::addCurveXY(
   // current style and width. XY plots are not forced to Dots — they inherit the
   // plot-level style like any plot (PJ3 parity); the Curve Style toolbar controls it.
   updateMaximumZoomArea();
-  replot();
+  // Reveal the ride-along marker at the current cursor immediately rather than on
+  // the next seek/tick (setTrackerPosition replots).
+  setTrackerPosition(last_tracker_time_sec_);
   return info;
 }
 
@@ -766,8 +769,29 @@ void PlotWidget::setTrackerPosition(double display_time_sec) {
   if (tracker_ == nullptr) {
     return;
   }
+  last_tracker_time_sec_ = display_time_sec;
   tracker_->setEnabled(tracker_enabled_ && !isXYPlot());
   if (isXYPlot()) {
+    // An XY plot has no time axis, so the vertical-line tracker is meaningless.
+    // Instead each curve's marker rides along the parametric curve, sitting on
+    // the (x,y) sample at the current time (PJ3 parity).
+    for (CurveInfo& info : curveList()) {
+      if (info.marker == nullptr || info.curve == nullptr) {
+        continue;
+      }
+      const auto* series = dynamic_cast<const PointSeriesXY*>(info.curve->data());
+      std::optional<QPointF> point;
+      if (series != nullptr) {
+        point = series->sampleFromTime(display_time_sec);
+      }
+      if (point.has_value() && info.curve->isVisible()) {
+        info.marker->setValue(*point);
+        info.marker->setVisible(true);
+      } else {
+        info.marker->setVisible(false);
+      }
+    }
+    replot();
     return;
   }
   tracker_->setPosition(QPointF(display_time_sec, 0.0));

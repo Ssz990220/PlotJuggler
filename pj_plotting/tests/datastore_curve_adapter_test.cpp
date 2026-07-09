@@ -356,6 +356,107 @@ TEST(PointSeriesXYTest, DifferentTopicsPairOnlyExactTimestampsAndInvalidateOnCom
   EXPECT_DOUBLE_EQ(series.sample(2).y(), 60.0);
 }
 
+TEST(PointSeriesXYTest, SampleFromTimePicksAtOrBeforeSample) {
+  SessionManager session;
+  auto dataset_or = session.dataEngine().createDataset(DatasetDescriptor{.source_name = "xy"});
+  ASSERT_TRUE(dataset_or.has_value()) << dataset_or.error();
+
+  auto writer = session.dataEngine().createWriter();
+  auto schema_or = writer.registerSchema(
+      "xy",
+      makeStruct("xy", {makePrimitive("x", PrimitiveType::kFloat64), makePrimitive("y", PrimitiveType::kFloat64)}));
+  ASSERT_TRUE(schema_or.has_value()) << schema_or.error();
+
+  TopicDescriptor descriptor;
+  descriptor.name = "/xy";
+  descriptor.schema_id = *schema_or;
+  descriptor.max_chunk_rows = 2;  // rows straddle a chunk boundary
+  auto topic_or = writer.registerTopic(*dataset_or, descriptor);
+  ASSERT_TRUE(topic_or.has_value()) << topic_or.error();
+
+  for (int i = 0; i < 4; ++i) {  // (t=i, x=10+i, y=100+i), no display offset -> display == raw
+    ASSERT_TRUE(writer.beginRow(*topic_or, static_cast<Timestamp>(i) * kNs).has_value());
+    writer.set(*topic_or, 0, 10.0 + static_cast<double>(i));
+    writer.set(*topic_or, 1, 100.0 + static_cast<double>(i));
+    ASSERT_TRUE(writer.finishRow(*topic_or).has_value());
+  }
+  EXPECT_FALSE(session.commitChunks(writer.flushAll()).empty());
+
+  CurveDescriptor x_descriptor{
+      .name = "/xy/x", .topic_id = *topic_or, .dataset_id = *dataset_or, .column_index = 0, .field_path = "x"};
+  CurveDescriptor y_descriptor{
+      .name = "/xy/y", .topic_id = *topic_or, .dataset_id = *dataset_or, .column_index = 1, .field_path = "y"};
+
+  PointSeriesXY series(&session, x_descriptor, y_descriptor);
+
+  const auto exact = series.sampleFromTime(2.0);  // lands exactly on t=2
+  ASSERT_TRUE(exact.has_value());
+  EXPECT_DOUBLE_EQ(exact->x(), 12.0);
+  EXPECT_DOUBLE_EQ(exact->y(), 102.0);
+
+  const auto between = series.sampleFromTime(1.5);  // most recent at-or-before -> t=1
+  ASSERT_TRUE(between.has_value());
+  EXPECT_DOUBLE_EQ(between->x(), 11.0);
+  EXPECT_DOUBLE_EQ(between->y(), 101.0);
+
+  const auto after_end = series.sampleFromTime(99.0);  // clamps to the last pair
+  ASSERT_TRUE(after_end.has_value());
+  EXPECT_DOUBLE_EQ(after_end->x(), 13.0);
+  EXPECT_DOUBLE_EQ(after_end->y(), 103.0);
+
+  EXPECT_FALSE(series.sampleFromTime(-1.0).has_value());  // before the first sample
+}
+
+TEST(PointSeriesXYTest, SampleFromTimeMapsThroughDisplayOffset) {
+  SessionManager session;
+  auto domain_or = session.dataEngine().createTimeDomain("xy");
+  ASSERT_TRUE(domain_or.has_value()) << domain_or.error();
+  session.dataEngine().setDisplayOffset(*domain_or, 2 * kNs);  // display = (raw - 2s)
+
+  auto dataset_or =
+      session.dataEngine().createDataset(DatasetDescriptor{.source_name = "xy", .time_domain_id = *domain_or});
+  ASSERT_TRUE(dataset_or.has_value()) << dataset_or.error();
+
+  auto writer = session.dataEngine().createWriter();
+  auto schema_or = writer.registerSchema(
+      "xy",
+      makeStruct("xy", {makePrimitive("x", PrimitiveType::kFloat64), makePrimitive("y", PrimitiveType::kFloat64)}));
+  ASSERT_TRUE(schema_or.has_value()) << schema_or.error();
+
+  TopicDescriptor descriptor;
+  descriptor.name = "/xy";
+  descriptor.schema_id = *schema_or;
+  descriptor.max_chunk_rows = 4;
+  auto topic_or = writer.registerTopic(*dataset_or, descriptor);
+  ASSERT_TRUE(topic_or.has_value()) << topic_or.error();
+
+  for (int i = 0; i < 4; ++i) {  // raw t=i, x=10+i, y=100+i
+    ASSERT_TRUE(writer.beginRow(*topic_or, static_cast<Timestamp>(i) * kNs).has_value());
+    writer.set(*topic_or, 0, 10.0 + static_cast<double>(i));
+    writer.set(*topic_or, 1, 100.0 + static_cast<double>(i));
+    ASSERT_TRUE(writer.finishRow(*topic_or).has_value());
+  }
+  EXPECT_FALSE(session.commitChunks(writer.flushAll()).empty());
+
+  CurveDescriptor x_descriptor{
+      .name = "/xy/x", .topic_id = *topic_or, .dataset_id = *dataset_or, .column_index = 0, .field_path = "x"};
+  CurveDescriptor y_descriptor{
+      .name = "/xy/y", .topic_id = *topic_or, .dataset_id = *dataset_or, .column_index = 1, .field_path = "y"};
+
+  PointSeriesXY series(&session, x_descriptor, y_descriptor);
+
+  const auto hit = series.sampleFromTime(0.0);  // display 0.0 ↔ raw 2s -> pair at t=2
+  ASSERT_TRUE(hit.has_value());
+  EXPECT_DOUBLE_EQ(hit->x(), 12.0);
+  EXPECT_DOUBLE_EQ(hit->y(), 102.0);
+
+  const auto first = series.sampleFromTime(-2.0);  // display -2.0 ↔ raw 0s -> first pair
+  ASSERT_TRUE(first.has_value());
+  EXPECT_DOUBLE_EQ(first->x(), 10.0);
+
+  EXPECT_FALSE(series.sampleFromTime(-3.0).has_value());  // display -3.0 ↔ raw -1s -> before first
+}
+
 TEST_F(DatastoreCurveAdapterTest, MissingTopicReturnsNanWithoutCrashing) {
   // CurveDescriptor pointing at a topic that doesn't exist in the engine —
   // simulates the "topic deleted mid-paint" path: getTopicStorage() → nullptr.

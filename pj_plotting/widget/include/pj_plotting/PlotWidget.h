@@ -227,6 +227,10 @@ class PlotWidget : public PlotWidgetBase {
   CurveTracker* tracker_ = nullptr;
   CurveTracker* reference_tracker_ = nullptr;
   bool tracker_enabled_ = true;
+  // Last display time pushed through setTrackerPosition, so a newly-created XY
+  // curve can place its ride-along marker at the current cursor immediately
+  // instead of waiting for the next playback tick / seek.
+  double last_tracker_time_sec_ = 0.0;
   bool show_points_ = true;
   bool loading_state_ = false;
   QwtPlotMarker* show_point_marker_ = nullptr;

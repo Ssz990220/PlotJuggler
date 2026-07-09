@@ -249,10 +249,13 @@ PlotWidgetBase::CurveInfo* PlotWidgetBase::addCurve(
   curve->setRenderHint(QwtPlotItem::RenderAntialiased, true);
   curve->attach(qwtPlot());
 
+  // Per-curve tracker marker: the dot that rides an XY curve at the playback
+  // cursor (PlotWidget's XY tracker moves + shows it). Fill matches the curve so
+  // multi-curve XY plots stay legible; hidden until the XY tracker reveals it.
   auto* marker = new QwtPlotMarker;
   marker->attach(qwtPlot());
   marker->setVisible(false);
-  marker->setSymbol(new QwtSymbol(QwtSymbol::Ellipse, Qt::red, QPen(Qt::black), QSize(8, 8)));
+  marker->setSymbol(new QwtSymbol(QwtSymbol::Ellipse, curve->pen().color(), QPen(Qt::black), QSize(8, 8)));
 
   plot_->curve_list.push_back(CurveInfo{.source_name = name, .curve = curve, .marker = marker});
   emit curveListChanged();

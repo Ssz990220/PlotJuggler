@@ -72,6 +72,18 @@ target_link_libraries(plot_widget_default_style_test PRIVATE
 
 add_test(NAME PlotWidgetDefaultStyleTest COMMAND plot_widget_default_style_test)
 
+add_executable(plot_widget_xy_marker_test
+    plot_widget_xy_marker_test.cpp
+)
+
+target_compile_options(plot_widget_xy_marker_test PRIVATE ${PJ_WARNING_FLAGS})
+target_link_libraries(plot_widget_xy_marker_test PRIVATE
+    pj_plotting
+    GTest::gtest
+)
+
+add_test(NAME PlotWidgetXyMarkerTest COMMAND plot_widget_xy_marker_test)
+
 add_executable(legend_text_diagnostics_test
     legend_text_diagnostics_test.cpp
 )
