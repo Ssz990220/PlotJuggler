@@ -28,7 +28,7 @@
      <property name="text"><string/></property>
      <property name="wordWrap"><bool>true</bool></property>
      <property name="styleSheet">
-      <string notr="true">color: palette(mid); font-size: 11px;</string>
+      <string notr="true">font-size: 11px;</string>
      </property>
     </widget>
    </item>
@@ -65,7 +65,7 @@
     <widget class="QLabel" name="desc_header">
      <property name="text"><string>Description</string></property>
      <property name="styleSheet">
-      <string notr="true">font-weight: bold; color: palette(mid);</string>
+      <string notr="true">font-weight: bold;</string>
      </property>
     </widget>
    </item>
