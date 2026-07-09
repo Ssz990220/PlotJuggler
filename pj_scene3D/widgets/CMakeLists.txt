@@ -278,6 +278,18 @@ if(PJ_BUILD_TESTS)
   target_compile_options(pointcloud_sphere_size_gl_test PRIVATE ${PJ_WARNING_FLAGS} ${PJ_SANITIZER_FLAGS})
   add_test(NAME pointcloud_sphere_size_gl_test COMMAND pointcloud_sphere_size_gl_test)
 
+  # Real-GL evidence that the "Outside range" opacity fades out-of-range points,
+  # culls them at opacity 0 / eye-off, and leaves in-range points intact. GL 4.5+.
+  add_executable(pointcloud_outside_range_opacity_gl_test
+    tests/pointcloud_outside_range_opacity_gl_test.cpp
+  )
+  target_link_libraries(pointcloud_outside_range_opacity_gl_test PRIVATE
+    pj_scene3d_widgets
+    GTest::gtest
+  )
+  target_compile_options(pointcloud_outside_range_opacity_gl_test PRIVATE ${PJ_WARNING_FLAGS} ${PJ_SANITIZER_FLAGS})
+  add_test(NAME pointcloud_outside_range_opacity_gl_test COMMAND pointcloud_outside_range_opacity_gl_test)
+
   # Real-GL regression: the shadow depth pre-pass must not corrupt a prior caster's
   # VAO element-buffer binding when the next caster uploads mid-loop (the streaming
   # mesh-shadow "acne" bug). Skips below GL 4.5; CI runs it under xvfb + llvmpipe.

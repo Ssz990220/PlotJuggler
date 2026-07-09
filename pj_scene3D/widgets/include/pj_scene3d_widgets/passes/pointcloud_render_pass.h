@@ -142,6 +142,13 @@ class PointcloudRenderPass : public IRenderPass {
   // mapping, reversed color progression. Default false.
   void setInvertLut(bool invert);
 
+  // Effective opacity (0..1) for points whose colour scalar leaves [range_min,
+  // range_max], instead of clamping them opaque to the colormap ends. 1 = no
+  // change; values in (0,1) blend them; 0 culls them in the vertex shader. Only
+  // bites in ColorType::kField (solid/rgb have no scalar). The layer folds its
+  // opacity scrubber + visibility eye into this single value. Default 1.
+  void setOutsideRangeAlpha(float alpha);
+
   // Per-pass visibility — when false, render() is a no-op. Used by
   // SceneViewWidget to hide individual pointcloud topics without
   // destroying their GL state. Default true.
@@ -191,6 +198,7 @@ class PointcloudRenderPass : public IRenderPass {
   glm::vec3 solid_color_{1.0f, 1.0f, 1.0f};
   Colormap colormap_{Colormap::kTurbo};
   bool invert_lut_{false};
+  float outside_range_alpha_{1.0f};
 
   std::unique_ptr<gl::Program> program_;
   gl::VertexArray vao_;

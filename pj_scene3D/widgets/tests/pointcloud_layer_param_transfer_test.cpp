@@ -45,6 +45,8 @@ TEST(PointCloudLayerParamTransfer, SerializeApplyRoundTripsEveryParamBetweenReal
   src.setSolidColor(QColor(10, 20, 30));
   src.setColormap(PointcloudRenderPass::Colormap::kViridis);  // default kTurbo
   src.setInvertLut(true);                                     // default false
+  src.setOutsideRangeOpacity(0.35f);                          // default 1.0
+  src.setOutsideRangeVisible(false);                          // default true
   src.setAutoRange(false);                                    // default true
   src.setManualRange(-3.0f, 9.0f);
 
@@ -65,6 +67,8 @@ TEST(PointCloudLayerParamTransfer, SerializeApplyRoundTripsEveryParamBetweenReal
   EXPECT_EQ(dst.solidColor(), src.solidColor());
   EXPECT_EQ(dst.colormap(), src.colormap());
   EXPECT_EQ(dst.invertLut(), src.invertLut());
+  EXPECT_FLOAT_EQ(dst.outsideRangeOpacity(), src.outsideRangeOpacity());
+  EXPECT_EQ(dst.outsideRangeVisible(), src.outsideRangeVisible());
   EXPECT_EQ(dst.autoRange(), src.autoRange());
   EXPECT_FLOAT_EQ(dst.manualRangeMin(), src.manualRangeMin());
   EXPECT_FLOAT_EQ(dst.manualRangeMax(), src.manualRangeMax());

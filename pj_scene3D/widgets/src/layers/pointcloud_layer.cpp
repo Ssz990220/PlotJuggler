@@ -42,6 +42,7 @@
 #include "pj_widgets/ComboBox.h"
 #include "pj_widgets/DoubleScrubber.h"
 #include "pj_widgets/Style.h"  // PJ::Style::kInputHeight
+#include "pj_widgets/SvgButton.h"
 
 namespace pj::scene3d {
 
@@ -135,6 +136,7 @@ PointCloudLayer::PointCloudLayer(
   cloud_pass_.setSolidColor(glm::vec3(solid_color_.redF(), solid_color_.greenF(), solid_color_.blueF()));
   cloud_pass_.setColormap(colormap_);
   cloud_pass_.setInvertLut(invert_lut_);
+  pushOutsideRangeAlpha();
   // The pass owns the GPU AABB reducer and polls it inside render() (GL thread);
   // a completed reduction flows back here to refresh world_bounds_ + the camera.
   // cloud_pass_ is a member, so `this` outlives every callback invocation.
@@ -207,6 +209,11 @@ QDomElement PointCloudLayer::xmlSaveState(QDomDocument& doc) const {
   el.setAttribute(QStringLiteral("colormap"), colormap_str);
   el.setAttribute(QStringLiteral("auto_range"), auto_range_ ? QStringLiteral("true") : QStringLiteral("false"));
   el.setAttribute(QStringLiteral("invert_lut"), invert_lut_ ? QStringLiteral("true") : QStringLiteral("false"));
+  el.setAttribute(
+      QStringLiteral("outside_range_opacity"), QString::number(static_cast<double>(outside_range_opacity_), 'g', 6));
+  el.setAttribute(
+      QStringLiteral("outside_range_visible"),
+      outside_range_visible_ ? QStringLiteral("true") : QStringLiteral("false"));
   el.setAttribute(QStringLiteral("range_min"), QString::number(static_cast<double>(manual_range_min_), 'g', 6));
   el.setAttribute(QStringLiteral("range_max"), QString::number(static_cast<double>(manual_range_max_), 'g', 6));
   return el;
@@ -267,6 +274,14 @@ bool PointCloudLayer::xmlLoadState(const QDomElement& element) {
   }
 
   setInvertLut(element.attribute(QStringLiteral("invert_lut")) == QStringLiteral("true"));
+  bool ok_outside_opacity = false;
+  const float outside_opacity =
+      element.attribute(QStringLiteral("outside_range_opacity"), QStringLiteral("1")).toFloat(&ok_outside_opacity);
+  if (ok_outside_opacity) {
+    setOutsideRangeOpacity(outside_opacity);
+  }
+  setOutsideRangeVisible(
+      element.attribute(QStringLiteral("outside_range_visible"), QStringLiteral("true")) == QStringLiteral("true"));
 
   bool ok_min = false;
   bool ok_max = false;
@@ -621,6 +636,35 @@ QWidget* PointCloudLayer::createConfigWidget(QWidget* parent) {
   range_max_spin->setValue(static_cast<double>(manual_range_max_));
   form->addRow(tr("Range Max:"), range_max_spin);
 
+  // "Outside range" — points whose colour value leaves [Range Min, Range Max]
+  // are de-emphasised via an opacity scrubber rather than clamped opaque, with an
+  // eye toggle to hide them entirely (same visibility-eye glyph as elsewhere).
+  // Field = [opacity scrubber | eye], mirroring the colormap row's [combo | icon]
+  // layout. Shares the Range Min/Max visibility group (gradient + manual range).
+  auto* outside_row = new QWidget(container);
+  auto* outside_layout = new QHBoxLayout(outside_row);
+  outside_layout->setContentsMargins(0, 0, 0, 0);
+  outside_layout->setSpacing(6);
+  auto* outside_opacity_spin = new PJ::DoubleScrubber(outside_row);
+  outside_opacity_spin->setObjectName(QStringLiteral("pointcloud_outside_range_opacity"));
+  outside_opacity_spin->setDecimals(2);
+  outside_opacity_spin->setSingleStep(0.05);
+  outside_opacity_spin->setRange(0.0, 1.0);
+  outside_opacity_spin->setValue(static_cast<double>(outside_range_opacity_));
+  const auto eye_icon = [](bool visible) {
+    return visible ? QStringLiteral(":/resources/svg/visibility.svg")
+                   : QStringLiteral(":/resources/svg/visibility_off.svg");
+  };
+  auto* outside_eye = new PJ::SvgButton(eye_icon(outside_range_visible_), PJ::SvgButton::Size::kSmaller, outside_row);
+  outside_eye->setObjectName(QStringLiteral("curveVisibilityToggle"));  // flat eye-toggle QSS
+  outside_eye->setCheckable(true);
+  outside_eye->setChecked(outside_range_visible_);
+  outside_eye->setFocusPolicy(Qt::NoFocus);
+  outside_eye->setToolTip(tr("Show/hide points outside the range"));
+  outside_layout->addWidget(outside_opacity_spin, 1);
+  outside_layout->addWidget(outside_eye, 0);
+  form->addRow(tr("Outside range:"), outside_row);
+
   // Range step is 0.1 for spatial fields (x/y/z, always in metres) and 1.0
   // otherwise (intensity, reflectance, ring index, …). Recomputed whenever
   // the color field changes.
@@ -635,7 +679,8 @@ QWidget* PointCloudLayer::createConfigWidget(QWidget* parent) {
   // Visibility:
   //   Range:/auto row → shown in gradient mode; hidden in solid mode.
   //   Range Min/Max   → shown only in gradient AND auto-range OFF.
-  const auto apply_range_visibility = [form, auto_row, range_min_spin, range_max_spin, this](bool auto_on) {
+  const auto apply_range_visibility = [form, auto_row, range_min_spin, range_max_spin, outside_row,
+                                       this](bool auto_on) {
     const bool gradient = color_type_ == PointcloudRenderPass::ColorType::kField;
     const bool show_spins = !auto_on && gradient;
     auto_row->setVisible(gradient);
@@ -648,6 +693,10 @@ QWidget* PointCloudLayer::createConfigWidget(QWidget* parent) {
       lbl->setVisible(show_spins);
     }
     if (auto* lbl = form->labelForField(range_max_spin)) {
+      lbl->setVisible(show_spins);
+    }
+    outside_row->setVisible(show_spins);
+    if (auto* lbl = form->labelForField(outside_row)) {
       lbl->setVisible(show_spins);
     }
   };
@@ -706,6 +755,14 @@ QWidget* PointCloudLayer::createConfigWidget(QWidget* parent) {
   });
 
   QObject::connect(invert_btn, &QPushButton::toggled, this, &PointCloudLayer::setInvertLut);
+
+  QObject::connect(outside_opacity_spin, &PJ::DoubleScrubber::valueChanged, this, [this](double v) {
+    setOutsideRangeOpacity(static_cast<float>(v));
+  });
+  QObject::connect(outside_eye, &QToolButton::toggled, this, [this, outside_eye, eye_icon](bool visible) {
+    outside_eye->setIconPath(eye_icon(visible));
+    setOutsideRangeVisible(visible);
+  });
 
   const auto push_manual_range = [this, range_min_spin, range_max_spin]() {
     setManualRange(static_cast<float>(range_min_spin->value()), static_cast<float>(range_max_spin->value()));
@@ -849,6 +906,29 @@ void PointCloudLayer::setInvertLut(bool invert) {
   invert_lut_ = invert;
   cloud_pass_.setInvertLut(invert_lut_);
   emit repaintRequested();
+}
+
+void PointCloudLayer::setOutsideRangeOpacity(float opacity) {
+  const float clamped = std::clamp(opacity, 0.0f, 1.0f);
+  if (outside_range_opacity_ == clamped) {
+    return;
+  }
+  outside_range_opacity_ = clamped;
+  pushOutsideRangeAlpha();
+  emit repaintRequested();
+}
+
+void PointCloudLayer::setOutsideRangeVisible(bool visible) {
+  if (outside_range_visible_ == visible) {
+    return;
+  }
+  outside_range_visible_ = visible;
+  pushOutsideRangeAlpha();
+  emit repaintRequested();
+}
+
+void PointCloudLayer::pushOutsideRangeAlpha() {
+  cloud_pass_.setOutsideRangeAlpha(outside_range_visible_ ? outside_range_opacity_ : 0.0f);
 }
 
 void PointCloudLayer::setAutoRange(bool enable) {

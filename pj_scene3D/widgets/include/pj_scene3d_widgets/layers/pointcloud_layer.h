@@ -116,6 +116,12 @@ class PointCloudLayer : public Scene3DLayer {
   [[nodiscard]] bool invertLut() const {
     return invert_lut_;
   }
+  [[nodiscard]] float outsideRangeOpacity() const {
+    return outside_range_opacity_;
+  }
+  [[nodiscard]] bool outsideRangeVisible() const {
+    return outside_range_visible_;
+  }
   [[nodiscard]] bool autoRange() const {
     return auto_range_;
   }
@@ -134,6 +140,8 @@ class PointCloudLayer : public Scene3DLayer {
   void setSolidColor(QColor color);
   void setColormap(PointcloudRenderPass::Colormap cm);
   void setInvertLut(bool invert);
+  void setOutsideRangeOpacity(float opacity);
+  void setOutsideRangeVisible(bool visible);
   void setAutoRange(bool enable);
   void setManualRange(float min_value, float max_value);
 
@@ -240,6 +248,10 @@ class PointCloudLayer : public Scene3DLayer {
   // the just-restored saved range with the recomputed data range.
   void applyAutoRange(bool enable, bool seed_manual_from_world);
 
+  // Fold the opacity scrubber + visibility eye into the pass's single effective
+  // outside-range alpha (eye off -> 0). Called from both setters and construction.
+  void pushOutsideRangeAlpha();
+
   // --- Compressed-cloud async decode (Draco / Cloudini) ---
   // Compressed decode is CPU-heavy (~100ms for large Draco clouds), so it runs on the
   // Qt thread pool and never blocks the UI. requestDecode() records the request as
@@ -306,6 +318,8 @@ class PointCloudLayer : public Scene3DLayer {
   QColor solid_color_{255, 0, 0};
   PointcloudRenderPass::Colormap colormap_ = PointcloudRenderPass::Colormap::kTurbo;
   bool invert_lut_ = false;
+  float outside_range_opacity_ = 1.0f;
+  bool outside_range_visible_ = true;
   bool auto_range_ = true;
   float manual_range_min_ = 0.0f;
   float manual_range_max_ = 1.0f;

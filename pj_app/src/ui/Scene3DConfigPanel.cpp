@@ -485,12 +485,6 @@ void Scene3DConfigPanel::buildSceneControls(QVBoxLayout* root) {
       qOverload<double>(&DoubleScrubber::valueChanged));
   addGridRow(tm_grid, tm_row, tr("Collision opacity"), collision_opacity_, collision_eye_);
 
-  // Mesh shadows: a per-dock on/off toggle. Visual meshes cast (collision hulls
-  // never do); meshes and the solid grid floor receive. make_eye persists under
-  // "shadows_enabled" and defaults ON so the feature is discoverable out of the box.
-  shadows_eye_ = make_eye("shadows_enabled", tr("Mesh shadows (visual meshes cast; meshes + solid floor receive)"));
-  addGridRow(tm_grid, tm_row, tr("Shadows"), shadows_eye_);
-
   // Pin both grids' label column to the widest label across BOTH sections, read
   // back from the labels just added (no separate string list to keep in sync).
   // Equal column 0 + fixed column 2 ⇒ the stretchy field column also lines up,
@@ -552,7 +546,6 @@ void Scene3DConfigPanel::applySceneControlsTo(Scene3DDockWidget* dock) {
   shading.mesh_opacity = static_cast<float>(mesh_opacity_->value());
   shading.collisions_visible = collision_eye_->isChecked();
   shading.collision_opacity = static_cast<float>(collision_opacity_->value());
-  shading.shadows_enabled = shadows_eye_->isChecked();
   view->update();
 }
 
@@ -593,7 +586,6 @@ void Scene3DConfigPanel::loadControlsFromDock(Scene3DDockWidget* dock) {
     collision_opacity_->setValue(shading.collision_opacity);
     set_eye(mesh_eye_, shading.meshes_visible);
     set_eye(collision_eye_, shading.collisions_visible);
-    set_eye(shadows_eye_, shading.shadows_enabled);
   }
 
   // idClicked (the connected signal) fires only on user clicks, not programmatic

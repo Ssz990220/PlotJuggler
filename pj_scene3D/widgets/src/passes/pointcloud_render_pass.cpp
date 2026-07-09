@@ -47,6 +47,8 @@ uniform int u_scalar_axis;     // -1 = colour by in_scalar; 0/1/2 = fixed-frame 
 uniform vec3 u_color_axis_offset;
 uniform float u_range_min;
 uniform float u_range_max;
+uniform float u_outside_range_alpha;  // opacity for points whose scalar leaves [min,max]; 0 = culled
+uniform int u_partition;  // 0=all, 1=in-range only, 2=outside only (opaque/translucent two-pass)
 uniform float u_world_radius;     // metres — used when u_use_perspective_size
 uniform float u_pixel_size;       // px    — used otherwise
 uniform float u_viewport_height;  // pixels
@@ -61,6 +63,7 @@ uniform bool u_use_perspective_size;
 // depth = u_depth_threshold. An orthographic projection has no perspective divide.
 uniform float u_depth_threshold;  // metres
 out float v_normalized;
+out float v_outside;  // 1.0 when the point's scalar is outside [range_min, range_max]
 void main() {
   vec4 view_pos = u_view_model * vec4(in_pos, 1.0);
   gl_Position = u_proj * view_pos;
@@ -93,6 +96,17 @@ void main() {
                                    : (u_model * vec4(in_pos, 1.0))[u_scalar_axis] + u_color_axis_offset[u_scalar_axis];
   float span = max(u_range_max - u_range_min, 1e-9);
   v_normalized = clamp((scalar - u_range_min) / span, 0.0, 1.0);
+  // Outside-range de-emphasis: flag points whose colour scalar leaves [min,max] so
+  // the fragment shader fades them to u_outside_range_alpha. Cull (degenerate the
+  // vertex outside the clip volume, zero its size) when fully hidden (alpha 0) OR
+  // when this pass excludes our partition — faded points draw in a second pass with
+  // depth writes off so they don't occlude in-range data (1 = in-range, 2 = outside).
+  v_outside = (scalar >= u_range_min && scalar <= u_range_max) ? 0.0 : 1.0;  // NaN -> outside
+  bool cull = (v_outside > 0.5 && (u_outside_range_alpha <= 0.0 || u_partition == 1)) || (v_outside < 0.5 && u_partition == 2);
+  if (cull) {
+    gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
+    gl_PointSize = 0.0;
+  }
 }
 )";
 
@@ -106,6 +120,7 @@ void main() {
 // inputs/uniforms, the LUTs slot in, then this tail's main() consumes them.
 constexpr std::string_view kPointcloudFragHead = R"(#version 450 core
 in float v_normalized;
+in float v_outside;            // 1.0 when the point's scalar is outside [min,max]
 in vec4 v_color;               // per-point RGBA (kRgb mode)
 out vec4 frag_color;
 
@@ -114,6 +129,7 @@ uniform vec3 u_solid_color;
 uniform int  u_colormap_id;    // 0=turbo, 1=viridis, 2=plasma, 3=grayscale
 uniform bool u_invert;
 uniform bool u_shape_is_sphere;  // sphere imposter shading vs flat point
+uniform float u_outside_range_alpha;  // opacity applied where v_outside == 1.0
 )";
 
 constexpr std::string_view kPointcloudFragTail = R"(
@@ -154,7 +170,13 @@ void main() {
   // Colormaps/solid/per-point colors are display-referred sRGB; the scene FBO is
   // linear (Phase 0B: the composite present re-encodes to sRGB). Linearize on write.
   base = pow(max(base, vec3(0.0)), vec3(2.2));
-  frag_color = vec4(base * shading, 1.0);
+  // Points outside [min,max] fade to u_outside_range_alpha; drop the fully
+  // transparent ones so they neither shade nor write depth.
+  float alpha = v_outside > 0.5 ? u_outside_range_alpha : 1.0;
+  if (alpha <= 0.003) {
+    discard;
+  }
+  frag_color = vec4(base * shading, alpha);
 }
 )";
 
@@ -173,6 +195,8 @@ uniform mat4 u_proj;
 uniform float u_size_meters;
 uniform float u_range_min;
 uniform float u_range_max;
+uniform float u_outside_range_alpha;  // opacity for cubes whose scalar leaves [min,max]; 0 = culled
+uniform int u_partition;  // 0=all, 1=in-range only, 2=outside only (opaque/translucent two-pass)
 uniform int u_scalar_axis;     // -1 = colour by in_instance_scalar; 0/1/2 = fixed-frame x/y/z
 // Render origin added back along the coloured axis to recover the ABSOLUTE world
 // coordinate (u_model/u_view are render-relative for float precision); see point shader.
@@ -182,6 +206,7 @@ out vec3 v_view_normal;
 out float v_normalized;
 out vec3 v_local;  // unit-cube corner, for the fragment-shader edge outline
 out vec4 v_color;
+out float v_outside;  // 1.0 when the cube's scalar is outside [range_min, range_max]
 
 void main() {
   v_local = in_corner_pos;
@@ -202,6 +227,14 @@ void main() {
   float span = max(u_range_max - u_range_min, 1e-9);
   v_normalized = clamp((scalar - u_range_min) / span, 0.0, 1.0);
   v_color = in_instance_color;
+  // Outside-range de-emphasis: flag out-of-range cubes for the fragment fade;
+  // degenerate-clip when fully hidden (alpha 0) or when this pass excludes our
+  // partition (1 = in-range only, 2 = outside only) — the translucent two-pass.
+  v_outside = (scalar >= u_range_min && scalar <= u_range_max) ? 0.0 : 1.0;  // NaN -> outside
+  bool cull = (v_outside > 0.5 && (u_outside_range_alpha <= 0.0 || u_partition == 1)) || (v_outside < 0.5 && u_partition == 2);
+  if (cull) {
+    gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
+  }
 }
 )";
 
@@ -212,12 +245,14 @@ in vec3 v_view_normal;
 in float v_normalized;
 in vec3 v_local;
 in vec4 v_color;               // per-instance RGBA (kRgb mode)
+in float v_outside;            // 1.0 when the cube's scalar is outside [min,max]
 out vec4 frag_color;
 
 uniform int  u_color_mode;     // 0 = field-from-LUT, 1 = solid, 2 = per-point rgb
 uniform vec3 u_solid_color;
 uniform int  u_colormap_id;    // 0=turbo, 1=viridis, 2=plasma, 3=grayscale
 uniform bool u_invert;
+uniform float u_outside_range_alpha;  // opacity applied where v_outside == 1.0
 )";
 
 constexpr std::string_view kCubeFragTail = R"(
@@ -245,7 +280,12 @@ void main() {
   // Colormaps/solid/per-point colors are display-referred sRGB; the scene FBO is
   // linear (Phase 0B: the composite present re-encodes to sRGB). Linearize on write.
   base = pow(max(base, vec3(0.0)), vec3(2.2));
-  frag_color = vec4(base * shading, 1.0);
+  // Cubes outside [min,max] fade to u_outside_range_alpha; drop fully transparent ones.
+  float alpha = v_outside > 0.5 ? u_outside_range_alpha : 1.0;
+  if (alpha <= 0.003) {
+    discard;
+  }
+  frag_color = vec4(base * shading, alpha);
 }
 )";
 
@@ -494,10 +534,26 @@ void PointcloudRenderPass::render(const ViewParams& view_params, const FrameCont
     return;
   }
 
-  // Point/cube clouds are opaque data. Draw them without blending so covered
-  // samples reset the scene FBO alpha marker to "grade me" instead of inheriting
-  // alpha=0 from TF/HUD annotations rendered earlier in the frame.
+  // Outside-range opacity: points/cubes whose scalar leaves [range_min, range_max]
+  // render at outside_alpha instead of clamped-opaque. Only in kField mode (solid/
+  // rgb have no scalar to test); 0 fully hides them (the vertex shader culls them),
+  // 1.0 (default) leaves everything opaque.
+  const float outside_alpha = color_type_ == ColorType::kField ? outside_range_alpha_ : 1.0f;
+  // When faded (0 < alpha < 1), the outside-range geometry draws in a SECOND pass
+  // with depth writes OFF, so it blends without occluding the crisp in-range data
+  // behind it (the opaque/translucent split the mesh passes use). The opaque
+  // default keeps BLEND off so covered samples reset the scene FBO alpha marker to
+  // "grade me" instead of inheriting alpha=0 from TF/HUD annotations drawn earlier.
+  const bool blend_outside = outside_alpha > 0.0f && outside_alpha < 1.0f;
   withGlFunctions([](auto& functions) { functions.glDisable(GL_BLEND); });
+  const auto begin_faded_pass = []() {
+    withGlFunctions([](auto& functions) {
+      functions.glEnable(GL_BLEND);
+      functions.glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
+      functions.glDepthMask(GL_FALSE);
+    });
+  };
+  const auto end_faded_pass = []() { withGlFunctions([](auto& functions) { functions.glDepthMask(GL_TRUE); }); };
 
   // Camera-relative model (frame_ctx.lookup already subtracted render_origin in
   // double): geometry is placed in render space, so the eye→point delta survives
@@ -599,12 +655,25 @@ void PointcloudRenderPass::render(const ViewParams& view_params, const FrameCont
     cube_program_->setVec3("u_solid_color", solid_color_);
     cube_program_->setInt("u_colormap_id", static_cast<int>(colormap_));
     cube_program_->setInt("u_invert", invert_lut_ ? 1 : 0);
+    cube_program_->setFloat("u_outside_range_alpha", outside_alpha);
     cube_vao_.bind();
-    withGlFunctions([this](auto& functions) {
-      functions.glDrawElementsInstanced(
-          GL_TRIANGLES, static_cast<GLsizei>(kCubeIndices.size()), GL_UNSIGNED_BYTE, nullptr,
-          static_cast<GLsizei>(vbo_point_count_));
-    });
+    const auto draw_cubes = [this]() {
+      withGlFunctions([this](auto& functions) {
+        functions.glDrawElementsInstanced(
+            GL_TRIANGLES, static_cast<GLsizei>(kCubeIndices.size()), GL_UNSIGNED_BYTE, nullptr,
+            static_cast<GLsizei>(vbo_point_count_));
+      });
+    };
+    // Pass 1: opaque (all, or in-range only when a faded second pass follows).
+    cube_program_->setInt("u_partition", blend_outside ? 1 : 0);
+    draw_cubes();
+    if (blend_outside) {
+      // Pass 2: outside-range only, blended, depth writes off.
+      cube_program_->setInt("u_partition", 2);
+      begin_faded_pass();
+      draw_cubes();
+      end_faded_pass();
+    }
     cube_vao_.unbind();
     unuseProgram();
     withGlFunctions([](auto& functions) { functions.glEnable(GL_BLEND); });
@@ -648,10 +717,23 @@ void PointcloudRenderPass::render(const ViewParams& view_params, const FrameCont
   program_->setVec3("u_solid_color", solid_color_);
   program_->setInt("u_colormap_id", static_cast<int>(colormap_));
   program_->setInt("u_invert", invert_lut_ ? 1 : 0);
+  program_->setFloat("u_outside_range_alpha", outside_alpha);
   program_->setInt("u_shape_is_sphere", shape_is_sphere ? 1 : 0);
   vao_.bind();
-  withGlFunctions(
-      [this](auto& functions) { functions.glDrawArrays(GL_POINTS, 0, static_cast<GLsizei>(vbo_point_count_)); });
+  const auto draw_points = [this]() {
+    withGlFunctions(
+        [this](auto& functions) { functions.glDrawArrays(GL_POINTS, 0, static_cast<GLsizei>(vbo_point_count_)); });
+  };
+  // Pass 1: opaque (all, or in-range only when a faded second pass follows).
+  program_->setInt("u_partition", blend_outside ? 1 : 0);
+  draw_points();
+  if (blend_outside) {
+    // Pass 2: outside-range only, blended, depth writes off.
+    program_->setInt("u_partition", 2);
+    begin_faded_pass();
+    draw_points();
+    end_faded_pass();
+  }
   vao_.unbind();
   unuseProgram();
   withGlFunctions([](auto& functions) { functions.glEnable(GL_BLEND); });
@@ -712,6 +794,10 @@ void PointcloudRenderPass::setColormap(Colormap cm) {
 
 void PointcloudRenderPass::setInvertLut(bool invert) {
   invert_lut_ = invert;
+}
+
+void PointcloudRenderPass::setOutsideRangeAlpha(float alpha) {
+  outside_range_alpha_ = std::clamp(alpha, 0.0f, 1.0f);
 }
 
 }  // namespace pj::scene3d

@@ -84,13 +84,13 @@ layers + passes → SceneHdrFbo (multisample RGBA16F + DEPTH32F + R8 is-mesh mas
   ambient 0.5, key/"sun" 1.6, fill 0.5, env-reflection 1.0, key-light dir
   azimuth 40° / elevation 55° ≈ high +X+Y — a stopgap for a future per-scene
   lighting object). Shader provenance/licenses: [`../THIRDPARTY.md`](../THIRDPARTY.md).
-- **No shadows (yet).** Mesh shading has no shadow term: the fixed key light, the
-  camera-locked fill, and the IBL ambient are all unoccluded. Adding mesh shadows
-  would be a geometry **depth pre-pass** rendered from the light *before*
-  `renderScene` — structurally unlike the screen-space SSAO/EDL **post-passes** —
-  with the shadow factor multiplied into the key-light term only (the first summand
-  of `direct` in `mesh_render_pass.cpp`). Don't mistake the SSAO/EDL passes as the
-  template for shadows.
+- **Shadows (always on).** The key-light term is occluded by a real-time shadow
+  map — a geometry **depth pre-pass** rendered from the light *before* `renderScene`
+  (structurally unlike the screen-space SSAO/EDL **post-passes**), with the shadow
+  factor multiplied into the key-light term only (the first summand of `direct` in
+  `mesh_render_pass.cpp`); the camera-locked fill and IBL ambient stay unoccluded.
+  The app renders shadows unconditionally (no user toggle). See
+  [Mesh shadows](#mesh-shadows) for the full pipeline.
 
 **GL context lifecycle (don't regress).** `QOpenGLWidget` recreates its context
 on every ADS reparent. Every pass, layer, the HDR chain, and the present
@@ -126,8 +126,9 @@ light (`MeshShadingParams::key_light_dir`). **Casters: meshes only** — URDF/ro
 meshes (`RobotModelLayer` visual links) and scene-entity `ModelPrimitive` meshes
 (`SceneEntitiesLayer`); point clouds, voxel/occupancy grids, axes, TF triads,
 markers, and collision hulls never cast. **Receivers: meshes and the solid grid
-floor** (`GridRenderPass` filled-cell mode). Off by default, per-dock
-(`MeshShadingParams::shadows_enabled`).
+floor** (`GridRenderPass` filled-cell mode). Always on in the app:
+`MeshShadingParams::shadows_enabled` defaults true and the app renders shadows
+unconditionally (no user toggle; the `mesh_viewer` demo overrides it via `--shadows`).
 
 Unlike the screen-space SSAO/EDL post-passes, a shadow map is a **geometry depth
 pre-pass** that runs in `paintGL` *before* `renderScene` (between the `FrameContext`
