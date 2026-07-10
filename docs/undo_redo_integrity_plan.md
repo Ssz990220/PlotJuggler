@@ -291,6 +291,26 @@ written against guard-checked APIs so PR 5 slots in without touching the
 transaction skeleton. Tests: donor `main_window_history_test` (8 cases),
 `dock_widget_placeholder_test` additions, `plot_state_transaction_test`.
 
+Kickoff notes accumulated while delivering PRs 1–2:
+
+- **Real-MainWindow test binaries are cheap now**: PR 2 landed the
+  `pj_app_shell` OBJECT library, the `add_pj_app_gui_test()` CMake helper, the
+  friend-peer pattern (`MainWindowSourceLayoutTestPeer`), and
+  `pj_app/tests/dataset_test_helpers.h` (own-TimeDomain + explicit-timestamp
+  variants). Port `main_window_history_test` onto these; still one MainWindow
+  instantiation per binary.
+- **Progressive-restore interplay (§9) has concrete seams**:
+  `pending_timeline_sources_` + `applyPendingTimelineState()` run at drain
+  BEFORE the saved-viewport re-apply. The `CapturedWorkspace` carriers must
+  compose with — not double-apply against — that ordering.
+- **Warm-pin origin invariant** (documented on
+  `SessionManager::global_min_cache_`): any new path that can RAISE a
+  dataset's earliest sample must invalidate that dataset's pin AND the global
+  memo. The timeline/undo work touches offsets everywhere — respect it.
+- **`x_basis` attribute strings** are duplicated between `PlotWidget.cpp` and
+  `normalizePlotRangeBasis` (tests pin the contract). Give them a shared home
+  when this PR settles the viewport-basis question — not before.
+
 ### PR 4 — Processor & engine transactionality
 
 `TransformInputBinding` capture; reload-path in-place rebind
@@ -314,6 +334,12 @@ failures join the kExact transaction. Donor map: `pj_scene_common/*`,
 relaxed), `pj_scene2D/widgets/*`. Tests: donor `scene_common_test`,
 `scene3d_dock_persistence_test`, `scene3d_layer_xml_validation_test`
 (attribute cases inverted), `scene2d_dock_widget_test` additions.
+
+Kickoff note from PR 2's review: extract `MainWindow`'s fan-out timeline
+matcher (`applyTimelineStateFromLayout`'s inline policy, pinned today by
+GUI-binary tests) into a testable free function alongside the scene-resolver
+reconciliation — both are "resolve saved reference → live dataset" policies
+and should share a shape and a lightweight test pattern.
 
 ## 6. Migration & compatibility
 
