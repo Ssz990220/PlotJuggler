@@ -364,6 +364,17 @@ or prompts (PR 1); timeline drag → undo → offsets and chrome restore (PR 3).
 
 ## 9. Risks & open questions
 
+- **Viewport save basis (decided at PR 2, revisit in PR 3):** the saved absolute
+  X range still converts through `displayOffsetSeconds()` (first datastore
+  curve's total offset), so a multi-dataset plot's saved range depends on curve
+  order — pre-existing behavior, kept to hold PR 2's scope. PR 3's snapshot
+  rework decides whether to move the basis to `globalTimeReference()` (the
+  donor's design, with its `legacy_source_*` read migration) or keep it.
+- **Timeline offset-migration overflow guards** (`checkedTimelineDifference` et
+  al.) are deferred to PR 3 with the rest of the pre-mutation-guard theme; the
+  v3 `offset − globalTimeReference()` subtraction has int64 headroom at real
+  epoch magnitudes.
+
 - v3 offset-migration math against layouts saved under a *different* global
   reference than the loading session's.
 - Progressive-load interplay with transactional undo
