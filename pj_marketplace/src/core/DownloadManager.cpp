@@ -169,10 +169,13 @@ QString DownloadManager::calculateSha256(const QByteArray& data) const {
 
 bool DownloadManager::verifyChecksum(const QByteArray& data, const QString& expected_checksum) const {
   QString expected = expected_checksum;
-  if (expected.startsWith("sha256:"_L1)) {
+  if (expected.startsWith("sha256:"_L1, Qt::CaseInsensitive)) {
     expected = expected.mid(7);
   }
-  return calculateSha256(data) == expected;
+  // Hex digests are case-insensitive: `toHex()` emits lowercase, but a registry
+  // may list the checksum in uppercase. Compare without regard to case so a
+  // correct artifact is not rejected over digit casing.
+  return calculateSha256(data).compare(expected, Qt::CaseInsensitive) == 0;
 }
 
 }  // namespace PJ

@@ -147,6 +147,80 @@ TEST(DownloadManagerTest, SuccessfulDownloadExtractsFiles) {
   EXPECT_TRUE(QFile::exists(tmp.path() + "/hello.txt"));
 }
 
+TEST(DownloadManagerTest, UppercaseChecksumIsAccepted) {
+  const QByteArray zip_data = buildZip({{"hello.txt", "world"}});
+  // Hex digests are case-insensitive; a registry may list it in uppercase.
+  const QString checksum = QStringLiteral("sha256:") + sha256Hex(zip_data).toUpper();
+
+  LocalHttpServer server;
+  server.setBody(zip_data);
+
+  PJ::DownloadManager dm;
+  QTemporaryDir tmp;
+  ASSERT_TRUE(tmp.isValid());
+
+  QSignalSpy finished_spy(&dm, &PJ::DownloadManager::finished);
+  QSignalSpy failed_spy(&dm, &PJ::DownloadManager::failed);
+
+  dm.fetch(server.url(), checksum, tmp.path());
+
+  EXPECT_TRUE(waitForSignal(finished_spy));
+  EXPECT_TRUE(failed_spy.isEmpty());
+  EXPECT_TRUE(QFile::exists(tmp.path() + "/hello.txt"));
+}
+
+TEST(DownloadManagerTest, UppercaseSha256PrefixIsAccepted) {
+  const QByteArray zip_data = buildZip({{"hello.txt", "world"}});
+  // The "sha256:" prefix itself is also matched case-insensitively; a hand-
+  // authored registry entry may spell it "SHA256:".
+  const QString checksum = QStringLiteral("SHA256:") + sha256Hex(zip_data).toUpper();
+
+  LocalHttpServer server;
+  server.setBody(zip_data);
+
+  PJ::DownloadManager dm;
+  QTemporaryDir tmp;
+  ASSERT_TRUE(tmp.isValid());
+
+  QSignalSpy finished_spy(&dm, &PJ::DownloadManager::finished);
+  QSignalSpy failed_spy(&dm, &PJ::DownloadManager::failed);
+
+  dm.fetch(server.url(), checksum, tmp.path());
+
+  EXPECT_TRUE(waitForSignal(finished_spy));
+  EXPECT_TRUE(failed_spy.isEmpty());
+  EXPECT_TRUE(QFile::exists(tmp.path() + "/hello.txt"));
+}
+
+TEST(DownloadManagerTest, MixedCaseChecksumIsAccepted) {
+  const QByteArray zip_data = buildZip({{"hello.txt", "world"}});
+  // Every second hex digit uppercased so the check exercises a truly mixed
+  // input rather than an all-upper or all-lower one — guards against a
+  // well-meaning "normalise both sides with toLower()" refactor that would
+  // still pass the all-upper test but subtly break other well-formed inputs.
+  QString hex = sha256Hex(zip_data);
+  for (int i = 0; i < hex.size(); i += 2) {
+    hex[i] = hex[i].toUpper();
+  }
+  const QString checksum = QStringLiteral("sha256:") + hex;
+
+  LocalHttpServer server;
+  server.setBody(zip_data);
+
+  PJ::DownloadManager dm;
+  QTemporaryDir tmp;
+  ASSERT_TRUE(tmp.isValid());
+
+  QSignalSpy finished_spy(&dm, &PJ::DownloadManager::finished);
+  QSignalSpy failed_spy(&dm, &PJ::DownloadManager::failed);
+
+  dm.fetch(server.url(), checksum, tmp.path());
+
+  EXPECT_TRUE(waitForSignal(finished_spy));
+  EXPECT_TRUE(failed_spy.isEmpty());
+  EXPECT_TRUE(QFile::exists(tmp.path() + "/hello.txt"));
+}
+
 TEST(DownloadManagerTest, EmptyChecksumSkipsVerification) {
   const QByteArray zip_data = buildZip({{"readme.txt", "content"}});
 
