@@ -790,6 +790,14 @@ QToolButton:checked {
     background: ${item_selection_background};
 }
 
+/* Datasets type-filter toggles convey state through the icon (plain vs. dimmed +
+   slashed), not a checked fill — so the all-shown default stays visually calm. */
+QToolButton#buttonFilterPlot:checked,
+QToolButton#buttonFilterScene2D:checked,
+QToolButton#buttonFilterScene3D:checked {
+    background: transparent;
+}
+
 QToolButton:disabled {
     background: transparent;
     color: ${disabled_text};

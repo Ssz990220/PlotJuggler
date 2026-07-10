@@ -76,4 +76,9 @@ cmake -S "$SCRIPT_DIR" -B "$BUILD_DIR" \
   -DCMAKE_PREFIX_PATH="${QT_DIR}" \
   "${CMAKE_CCACHE_ARGS[@]+"${CMAKE_CCACHE_ARGS[@]}"}"
 
+# Surface the compile DB (CMAKE_EXPORT_COMPILE_COMMANDS writes it under build/) at
+# the repo root so clangd/editors resolve includes without extra config. The root
+# path is gitignored; the relative target survives a worktree move.
+ln -sf "build/compile_commands.json" "$SCRIPT_DIR/compile_commands.json"
+
 cmake --build "$BUILD_DIR" -j "$(nproc)"

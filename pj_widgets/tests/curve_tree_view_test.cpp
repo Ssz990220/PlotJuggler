@@ -921,6 +921,115 @@ TEST(CurveTreeViewTest, ForcedTopicMarksLandOnTheTopicNodeAndSurviveRebuild) {
   EXPECT_FALSE(view.isTopicPathForced(pc_path));
 }
 
+TEST(CurveTreeViewTest, TypeFilterClassifiesByTopicAndGovernsWholeSubtree) {
+  PJ::CurveTreeView view;
+  view.addCatalogItems({
+      // Plain numeric topic (Plot bucket): veh/imu/x
+      PJ::CurveTreeView::CurvePath{
+          .key = QStringLiteral("veh/imu/x"),
+          .dataset = QStringLiteral("veh"),
+          .topic = QStringLiteral("imu"),
+          .field = QStringLiteral("x"),
+      },
+      // 3D object topic veh/odom (non-selectable terminal) ...
+      PJ::CurveTreeView::CurvePath{
+          .key = QStringLiteral("veh/odom"),
+          .dataset = QStringLiteral("veh"),
+          .topic = QStringLiteral("odom"),
+          .field = {},
+          .selectable = false,
+          .is_3d_object_topic = true,
+      },
+      // ... that ALSO exposes a scalar field veh/odom/px
+      PJ::CurveTreeView::CurvePath{
+          .key = QStringLiteral("veh/odom/px"),
+          .dataset = QStringLiteral("veh"),
+          .topic = QStringLiteral("odom"),
+          .field = QStringLiteral("px"),
+      },
+      // 2D image topic veh/cam
+      PJ::CurveTreeView::CurvePath{
+          .key = QStringLiteral("veh/cam"),
+          .dataset = QStringLiteral("veh"),
+          .topic = QStringLiteral("cam"),
+          .field = {},
+          .selectable = false,
+          .is_image_topic = true,
+      },
+  });
+
+  QTreeWidgetItem* veh = view.topLevelItem(0);
+  ASSERT_NE(veh, nullptr);
+  QTreeWidgetItem* imu = findChild(veh, QStringLiteral("imu"));
+  QTreeWidgetItem* odom = findChild(veh, QStringLiteral("odom"));
+  QTreeWidgetItem* cam = findChild(veh, QStringLiteral("cam"));
+  ASSERT_NE(imu, nullptr);
+  ASSERT_NE(odom, nullptr);
+  ASSERT_NE(cam, nullptr);
+  QTreeWidgetItem* imu_x = findChild(imu, QStringLiteral("x"));
+  QTreeWidgetItem* odom_px = findChild(odom, QStringLiteral("px"));
+  ASSERT_NE(imu_x, nullptr);
+  ASSERT_NE(odom_px, nullptr);
+
+  // Hiding 3D collapses the odom topic AND its timeseries child together; the
+  // plain-numeric imu topic and the 2D cam stay.
+  view.setVisibleCurveKinds(/*plot=*/true, /*scene2d=*/true, /*scene3d=*/false);
+  EXPECT_TRUE(odom->isHidden());
+  EXPECT_TRUE(odom_px->isHidden());
+  EXPECT_FALSE(imu->isHidden());
+  EXPECT_FALSE(imu_x->isHidden());
+  EXPECT_FALSE(cam->isHidden());
+  EXPECT_FALSE(veh->isHidden());
+
+  // Hiding Plot collapses the numeric imu topic; the 3D odom topic keeps its
+  // field (it belongs to a 3D topic, not the Plot bucket); the 2D cam stays.
+  view.setVisibleCurveKinds(/*plot=*/false, /*scene2d=*/true, /*scene3d=*/true);
+  EXPECT_TRUE(imu->isHidden());
+  EXPECT_TRUE(imu_x->isHidden());
+  EXPECT_FALSE(odom->isHidden());
+  EXPECT_FALSE(odom_px->isHidden());
+  EXPECT_FALSE(cam->isHidden());
+
+  // Everything back on restores every row.
+  view.setVisibleCurveKinds(true, true, true);
+  EXPECT_FALSE(odom->isHidden());
+  EXPECT_FALSE(odom_px->isHidden());
+  EXPECT_FALSE(imu->isHidden());
+  EXPECT_FALSE(cam->isHidden());
+}
+
+TEST(CurveTreeViewTest, EmptyTypeFilterShowsMessageChildAndKeepsDatasetVisible) {
+  PJ::CurveTreeView view;
+  view.setEmptyFilterMessage(QStringLiteral("No series match"));
+  view.addCatalogItem(
+      PJ::CurveTreeView::CurvePath{
+          .key = QStringLiteral("veh/pc"),
+          .dataset = QStringLiteral("veh"),
+          .topic = QStringLiteral("pc"),
+          .field = {},
+          .selectable = false,
+          .is_3d_object_topic = true,
+      });
+
+  QTreeWidgetItem* veh = view.topLevelItem(0);
+  ASSERT_NE(veh, nullptr);
+
+  // Hide the only (3D) topic: the dataset name stays and a message child appears.
+  view.setVisibleCurveKinds(/*plot=*/true, /*scene2d=*/true, /*scene3d=*/false);
+  EXPECT_FALSE(veh->isHidden());
+  QTreeWidgetItem* message = findChild(veh, QStringLiteral("No series match"));
+  ASSERT_NE(message, nullptr);
+  EXPECT_FALSE(message->isHidden());
+  EXPECT_FALSE(message->flags().testFlag(Qt::ItemIsSelectable));
+
+  // Restore 3D: the message hides and the real topic returns.
+  view.setVisibleCurveKinds(true, true, true);
+  EXPECT_TRUE(message->isHidden());
+  QTreeWidgetItem* pc = findChild(veh, QStringLiteral("pc"));
+  ASSERT_NE(pc, nullptr);
+  EXPECT_FALSE(pc->isHidden());
+}
+
 int main(int argc, char** argv) {
   if (!qEnvironmentVariableIsSet("QT_QPA_PLATFORM")) {
     qputenv("QT_QPA_PLATFORM", "offscreen");

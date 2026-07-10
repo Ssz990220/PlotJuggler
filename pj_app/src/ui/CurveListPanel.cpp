@@ -13,8 +13,13 @@
 #include <QIcon>
 #include <QLabel>
 #include <QLineEdit>
+#include <QLineF>
 #include <QMargins>
 #include <QMenu>
+#include <QPainter>
+#include <QPalette>
+#include <QPen>
+#include <QPixmap>
 #include <QPoint>
 #include <QPushButton>
 #include <QScopedValueRollback>
@@ -44,6 +49,37 @@ namespace {
 
 constexpr auto kPreserveTopicNameKey = "CurveListPanel/show_topics";
 constexpr auto kShowValuesKey = "CurveListPanel/show_values";
+
+// Composite an "omitted" variant of a chrome glyph: the base dimmed to ~40% with
+// a top-left → bottom-right diagonal slash drawn over it — same direction, ink,
+// and weight as the app's visibility_off eye-slash — haloed for a clean cut on
+// any glyph. Used for the UNCHECKED (hidden) state of the type-filter toggles so
+// a disabled kind reads as struck-through, consistent with the visibility eye.
+QPixmap makeOmittedGlyph(const QPixmap& base, const QColor& ink, const QColor& halo) {
+  if (base.isNull()) {
+    return base;
+  }
+  QPixmap out(base.size());
+  out.setDevicePixelRatio(base.devicePixelRatio());
+  out.fill(Qt::transparent);
+  QPainter painter(&out);
+  painter.setRenderHint(QPainter::Antialiasing, true);
+  painter.setOpacity(0.40);
+  painter.drawPixmap(0, 0, base);
+  painter.setOpacity(1.0);
+  const qreal width = base.width();
+  const qreal height = base.height();
+  const qreal inset = qMax<qreal>(2.0, width * 0.12);
+  const QLineF slash(inset, inset, width - inset, height - inset);  // top-left → bottom-right
+  // Thin stroke to match the visibility_off eye-slash weight (~1px at 20px icon).
+  const qreal ink_width = qMax<qreal>(1.0, width * 0.05);
+  const qreal halo_width = ink_width + qMax<qreal>(1.0, width * 0.045);  // background gap around the slash
+  painter.setPen(QPen(halo, halo_width, Qt::SolidLine, Qt::RoundCap));
+  painter.drawLine(slash);
+  painter.setPen(QPen(ink, ink_width, Qt::SolidLine, Qt::RoundCap));
+  painter.drawLine(slash);
+  return out;
+}
 
 // Value-column refresh cap. Playback drives tracker updates up to ~60 Hz; 10 Hz
 // (100 ms) is plenty for reading numbers and keeps the per-tick scalar reads off
@@ -258,26 +294,37 @@ CurveListPanel::CurveListPanel(QWidget* parent) : QWidget(parent), ui_(new Ui::C
   connect(ui_->lineEditFilter, &QLineEdit::textChanged, this, &CurveListPanel::onFilterChanged);
   connect(ui_->lineEditCustomFilter, &QLineEdit::textChanged, this, &CurveListPanel::onCustomFilterChanged);
 
+  // Datasets type-filter toggles (plot / 2D / 3D). All start checked (see the
+  // .ui), so no initial push is needed — the tree defaults to all kinds shown.
+  connect(ui_->buttonFilterPlot, &QToolButton::toggled, this, &CurveListPanel::onTypeFilterToggled);
+  connect(ui_->buttonFilterScene2D, &QToolButton::toggled, this, &CurveListPanel::onTypeFilterToggled);
+  connect(ui_->buttonFilterScene3D, &QToolButton::toggled, this, &CurveListPanel::onTypeFilterToggled);
+  tree_view_->setEmptyFilterMessage(tr("No series match the current search or type filters."));
+
   // Enter while typing drops focus back to the panel — restores the
   // sibling label + action buttons (via the focus-out branch of
   // eventFilter) without forcing the user to click elsewhere.
   connect(ui_->lineEditFilter, &QLineEdit::returnPressed, ui_->lineEditFilter, &QLineEdit::clearFocus);
   connect(ui_->lineEditCustomFilter, &QLineEdit::returnPressed, ui_->lineEditCustomFilter, &QLineEdit::clearFocus);
 
-  // While the filter has focus, hide its sibling label + buttons so the
-  // input takes the full header width. Restored on focus loss.
-  ui_->lineEditFilter->installEventFilter(this);
+  // While the Custom Series filter has focus, hide its sibling label + buttons
+  // so the input takes the full header width. Restored on focus loss. The
+  // Datasets filter lives on its own dedicated row (widgetSearchTimeseries),
+  // so it never competes with the label for width and needs no such expansion.
   ui_->lineEditCustomFilter->installEventFilter(this);
 
-  // Lock each header band to its natural height so hiding the siblings
-  // can't shrink the row and shift the line edit's vertical centre.
+  // Lock each header band to its natural height so hiding the Custom Series
+  // siblings can't shrink the row and shift the line edit's vertical centre.
   // QHBoxLayout vertically centres items, so even a 1-2px drop in the
   // row's preferred height (when the tallest sibling hides) was enough
   // to nudge the line edit upwards on focus.
-  ui_->widgetLabelTimeseries->layout()->activate();
-  ui_->widgetLabelCustom->layout()->activate();
-  ui_->widgetLabelTimeseries->setFixedHeight(ui_->widgetLabelTimeseries->layout()->sizeHint().height());
-  ui_->widgetLabelCustom->setFixedHeight(ui_->widgetLabelCustom->layout()->sizeHint().height());
+  const auto fix_band_height = [](QWidget* band) {
+    band->layout()->activate();
+    band->setFixedHeight(band->layout()->sizeHint().height());
+  };
+  fix_band_height(ui_->widgetLabelTimeseries);
+  fix_band_height(ui_->widgetSearchTimeseries);
+  fix_band_height(ui_->widgetLabelCustom);
 
   connect(ui_->buttonAddCustom, &QToolButton::clicked, this, &CurveListPanel::createCustomSeriesRequested);
 
@@ -550,6 +597,13 @@ void CurveListPanel::onCustomFilterChanged(const QString& text) {
   custom_view_->applyFilter(text);
 }
 
+void CurveListPanel::onTypeFilterToggled() {
+  const bool show_plot = ui_->buttonFilterPlot->isChecked();
+  const bool show_scene2d = ui_->buttonFilterScene2D->isChecked();
+  const bool show_scene3d = ui_->buttonFilterScene3D->isChecked();
+  tree_view_->setVisibleCurveKinds(show_plot, show_scene2d, show_scene3d);
+}
+
 void CurveListPanel::onShowValuesToggled(bool show) {
   if (!applying_state_) {
     QSettings settings;
@@ -805,10 +859,7 @@ bool CurveListPanel::eventFilter(QObject* watched, QEvent* event) {
   const QEvent::Type type = event->type();
   if (type == QEvent::FocusIn || type == QEvent::FocusOut) {
     const bool focused = (type == QEvent::FocusIn);
-    if (watched == ui_->lineEditFilter) {
-      ui_->labelTimeseries->setVisible(!focused);
-      ui_->buttonDatasetsMenu->setVisible(!focused);
-    } else if (watched == ui_->lineEditCustomFilter) {
+    if (watched == ui_->lineEditCustomFilter) {
       ui_->labelCustom->setVisible(!focused);
       ui_->buttonAddCustom->setVisible(!focused);
       ui_->buttonCustomMenu->setVisible(!focused);
@@ -834,6 +885,25 @@ void CurveListPanel::applyIcons(QString theme) {
   const QIcon search_icon(loadSvg(":/resources/svg/search_light.svg", theme));
   ui_->buttonSearchTimeseries->setIcon(search_icon);
   ui_->buttonSearchCustom->setIcon(search_icon);
+  // Type-filter toggles reuse the exact placeholder-widget glyphs (plot / 2D /
+  // 3D). The On (checked = shown) state is the plain themed glyph; the Off
+  // (unchecked = hidden) state is a dimmed, slashed variant so an omitted kind
+  // reads as struck-through. The checked-background fill is suppressed for these
+  // buttons in QSS, so the default all-shown state stays visually calm.
+  // Match the app's visibility_off eye-slash ink exactly (loadSvg keys "light"
+  // → #3D3D3D, else #E0E0E0), so the two "hidden" affordances read the same.
+  const QColor slash_ink = isLightTheme(theme) ? QColor(0x3D, 0x3D, 0x3D) : QColor(0xE0, 0xE0, 0xE0);
+  const QColor slash_halo = palette().color(QPalette::Window);
+  const auto make_toggle_icon = [&](const QString& path) {
+    const QPixmap glyph = loadSvg(path, theme);
+    QIcon icon;
+    icon.addPixmap(glyph, QIcon::Normal, QIcon::On);
+    icon.addPixmap(makeOmittedGlyph(glyph, slash_ink, slash_halo), QIcon::Normal, QIcon::Off);
+    return icon;
+  };
+  ui_->buttonFilterPlot->setIcon(make_toggle_icon(":/resources/svg/line_axis.svg"));
+  ui_->buttonFilterScene2D->setIcon(make_toggle_icon(":/resources/svg/image.svg"));
+  ui_->buttonFilterScene3D->setIcon(make_toggle_icon(":/resources/svg/cube.svg"));
 
   // Resize chrome buttons in lock-step with the global icon metrics.
   // clear_all_button_ and delete_custom_button_ are inline-action menu
@@ -841,9 +911,9 @@ void CurveListPanel::applyIcons(QString theme) {
   const QSize icon_sz(chrome_metrics_.icon_size, chrome_metrics_.icon_size);
   const int button_extent = chrome_metrics_.icon_size + chrome_metrics_.icon_padding;
   const int band_extent = button_extent + (2 * chrome_metrics_.layout_padding);
-  const std::array<QToolButton*, 5> chrome_buttons{
-      ui_->buttonDatasetsMenu, ui_->buttonCustomMenu, ui_->buttonAddCustom, ui_->buttonSearchTimeseries,
-      ui_->buttonSearchCustom};
+  const std::array<QToolButton*, 8> chrome_buttons{
+      ui_->buttonDatasetsMenu, ui_->buttonCustomMenu, ui_->buttonAddCustom,     ui_->buttonSearchTimeseries,
+      ui_->buttonSearchCustom, ui_->buttonFilterPlot, ui_->buttonFilterScene2D, ui_->buttonFilterScene3D};
   for (QToolButton* btn : chrome_buttons) {
     btn->setMinimumSize(button_extent, button_extent);
     btn->setMaximumSize(button_extent, button_extent);
@@ -857,11 +927,16 @@ void CurveListPanel::applyIcons(QString theme) {
   // inner layouts (below) are absorbed by the band instead of squeezing
   // the chrome inside.
   ui_->widgetLabelTimeseries->setFixedHeight(band_extent);
+  ui_->widgetSearchTimeseries->setFixedHeight(band_extent);
   ui_->widgetLabelCustom->setFixedHeight(band_extent);
   const QMargins margins(
       chrome_metrics_.layout_padding, chrome_metrics_.layout_padding, chrome_metrics_.layout_padding,
       chrome_metrics_.layout_padding);
   if (auto* layout = ui_->timeseriesHeaderLayout) {
+    layout->setContentsMargins(margins);
+    layout->setSpacing(chrome_metrics_.layout_spacing);
+  }
+  if (auto* layout = ui_->searchTimeseriesLayout) {
     layout->setContentsMargins(margins);
     layout->setSpacing(chrome_metrics_.layout_spacing);
   }

@@ -64,13 +64,20 @@ inline void recolorSvgInk(QByteArray& svg_data, bool light_theme) {
   svg_data.insert(tag_end, fill_attr);
 }
 
+// True when `style_name` denotes the light theme. The single source of truth for
+// theme polarity, shared by the recolor pipeline and by callers that tint their
+// own composites to match the recolored glyphs.
+inline bool isLightTheme(const QString& style_name) {
+  return style_name.contains(QLatin1String("light"));
+}
+
 // Load an SVG from a resource path, recoloring monochrome content (#000000 /
 // #ffffff) for the requested theme. Results are cached per (path, theme).
 // Caller must use this on the GUI thread only — the cache maps are not locked.
 inline const QPixmap& loadSvg(const QString& filename, const QString& style_name = "light") {
   static std::map<QString, QPixmap> light_images;
   static std::map<QString, QPixmap> dark_images;
-  const bool light_theme = style_name.contains("light");
+  const bool light_theme = isLightTheme(style_name);
 
   auto* stored_images = light_theme ? &light_images : &dark_images;
 

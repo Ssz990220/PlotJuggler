@@ -123,6 +123,21 @@ class CurveTreeView : public QTreeWidget {
   // unnamed field (no sub-path) reveals nothing to expand and is a no-op.
   void requestExpansionWhenPromoted(const QString& tree_path);
   void applyFilter(const QString& filter);
+  // Restrict which topic KINDS the tree shows, ANDed with the text filter.
+  // Classification is per TOPIC and governs the topic's whole subtree: a Scene2D
+  // (image-family, kImageTopicRole) or Scene3D (3D-object, k3dObjectTopicRole)
+  // topic — and every scalar field nested under it — is hidden together when
+  // that kind is off; those fields count as the topic's scene kind, never as
+  // Plot. Plot is the "by exclusion" bucket: a topic carrying no scene marker
+  // anywhere above the row (a plain numeric topic and its fields). All three
+  // default to true (no type restriction).
+  void setVisibleCurveKinds(bool show_plot, bool show_scene2d, bool show_scene3d);
+  // Message shown as a muted, column-spanning child row under each dataset node
+  // whose topics are ALL filtered out (by text and/or setVisibleCurveKinds): the
+  // dataset name stays visible and the row explains the blank instead of the
+  // whole panel going empty. Empty string (default) disables it; a dataset with
+  // no topics at all shows nothing.
+  void setEmptyFilterMessage(const QString& message);
   void refreshIcons(const QString& theme);
   std::vector<QString> selectedCurveNames() const;
   // selectedCurveNames() returns only directly-selected leaves; this variant
@@ -218,6 +233,12 @@ class CurveTreeView : public QTreeWidget {
   // the data arrived still applies to it. No-op when no filter is active (freshly
   // inserted rows are visible by default).
   void reapplyFilter();
+  // Show/hide the managed empty-filter placeholder under `dataset_node`: a single
+  // italic, muted, column-spanning child row, displayed (with the node force-shown
+  // and expanded) when `subtree_hidden` and the dataset actually has topics — so a
+  // fully-filtered dataset keeps its name and explains the blank. See
+  // setEmptyFilterMessage. No-op when the message is empty.
+  void updateEmptyMessageChild(QTreeWidgetItem* dataset_node, bool subtree_hidden);
   void setDescendantsExpanded(QTreeWidgetItem* item, bool expanded);
   std::vector<QString> selectedCurveNamesForDrag() const;
 
@@ -227,6 +248,12 @@ class CurveTreeView : public QTreeWidget {
   QStringList drag_catalog_keys_;
   bool suppress_next_release_ = false;
   QString last_filter_;
+  // setVisibleCurveKinds flags; all true = no type restriction (the default).
+  bool show_plot_ = true;
+  bool show_scene2d_ = true;
+  bool show_scene3d_ = true;
+  // See setEmptyFilterMessage. Empty string disables the overlay.
+  QString empty_filter_message_;
   DragSelectionProvider drag_selection_provider_;
   // Re-entry guard for the header sectionResized handler: programmatic
   // resizes inside the handler re-fire the signal, which would otherwise

@@ -12,6 +12,7 @@
 #include <QMimeData>
 #include <QMouseEvent>
 #include <QPainter>
+#include <QPalette>
 #include <QScrollBar>
 #include <QSet>
 #include <QStyle>
@@ -52,6 +53,10 @@ constexpr int kUnsubscribedRole = Qt::UserRole + 9;
 // streaming" is visible even when nothing else about the row changes. Set by
 // setForcedTopicPaths() on the TOPIC node (group or leaf), never on fields.
 constexpr int kForcedRole = Qt::UserRole + 10;
+// Marks the managed empty-filter placeholder child row (see
+// CurveTreeView::updateEmptyMessageChild) so the filter skips it and it is never
+// mistaken for a real data row.
+constexpr int kEmptyMessageRole = Qt::UserRole + 11;
 
 QStringList splitPath(const QString& name) {
   return name.split('/', Qt::SkipEmptyParts);
@@ -817,37 +822,130 @@ void CurveTreeView::applyFilter(const QString& filter) {
   refilterTree();
 }
 
+void CurveTreeView::setVisibleCurveKinds(bool show_plot, bool show_scene2d, bool show_scene3d) {
+  if (show_plot_ == show_plot && show_scene2d_ == show_scene2d && show_scene3d_ == show_scene3d) {
+    return;
+  }
+  show_plot_ = show_plot;
+  show_scene2d_ = show_scene2d;
+  show_scene3d_ = show_scene3d;
+  refilterTree();
+  viewport()->update();  // repaint rows for the new visibility (placeholder may show/hide)
+}
+
+void CurveTreeView::setEmptyFilterMessage(const QString& message) {
+  if (empty_filter_message_ == message) {
+    return;
+  }
+  empty_filter_message_ = message;
+  refilterTree();  // cheap no-op on an empty tree; refreshes placeholders otherwise
+}
+
 void CurveTreeView::refilterTree() {
   const QStringList tokens = last_filter_.split(' ', Qt::SkipEmptyParts);
 
-  std::function<bool(QTreeWidgetItem*)> apply = [&](QTreeWidgetItem* item) {
+  // A topic's scene classification governs its ENTIRE subtree. `inherited_scene`
+  // is the nearest scene-topic kind at or above `item` (kSceneNone / kScene2D /
+  // kScene3D). Once the walk enters a 2D/3D topic every descendant inherits that
+  // kind, so hiding the kind collapses the whole topic — its scalar fields
+  // included — and those fields never fall into the Plot bucket. A row with no
+  // scene ancestor is Plot ("by exclusion") when it bears a catalog key, or a
+  // kind-less folder (revealed only by a visible descendant) when it doesn't.
+  enum : int { kSceneNone = 0, kScene2D = 2, kScene3D = 3 };
+  std::function<bool(QTreeWidgetItem*, int)> apply = [&](QTreeWidgetItem* item, int inherited_scene) {
+    int scene = inherited_scene;
+    if (scene == kSceneNone) {
+      if (item->data(kNameColumn, kImageTopicRole).toBool()) {
+        scene = kScene2D;
+      } else if (item->data(kNameColumn, k3dObjectTopicRole).toBool()) {
+        scene = kScene3D;
+      }
+    }
     bool any_child_visible = false;
     for (int i = 0; i < item->childCount(); ++i) {
-      any_child_visible = apply(item->child(i)) || any_child_visible;
+      QTreeWidgetItem* child = item->child(i);
+      if (child->data(kNameColumn, kEmptyMessageRole).toBool()) {
+        continue;  // the managed empty-filter placeholder is not real data
+      }
+      any_child_visible = apply(child, scene) || any_child_visible;
+    }
+    bool type_ok = false;
+    if (scene == kScene2D) {
+      type_ok = show_scene2d_;
+    } else if (scene == kScene3D) {
+      type_ok = show_scene3d_;
+    } else {
+      // kCatalogItemRole is only ever set to a (non-empty) key, so its presence
+      // marks a data-bearing row; a keyless folder rides on its children.
+      const bool has_key = item->data(kNameColumn, kCatalogItemRole).isValid();
+      type_ok = has_key && show_plot_;
     }
     QString haystack = item->data(kNameColumn, kSearchRole).toString();
     if (haystack.isEmpty()) {
       const QString full = item->data(kNameColumn, Qt::UserRole).toString();
       haystack = full.isEmpty() ? item->text(kNameColumn) : full;
     }
-    const bool self_match = std::all_of(tokens.begin(), tokens.end(), [&](const QString& token) {
+    const bool text_match = std::all_of(tokens.begin(), tokens.end(), [&](const QString& token) {
       return haystack.contains(token, Qt::CaseInsensitive);
     });
-    const bool visible = any_child_visible || self_match;
+    const bool visible = any_child_visible || (text_match && type_ok);
     item->setHidden(!visible);
     return visible;
   };
 
   for (int i = 0; i < topLevelItemCount(); ++i) {
-    apply(topLevelItem(i));
+    QTreeWidgetItem* dataset_node = topLevelItem(i);
+    const bool visible = apply(dataset_node, kSceneNone);
+    updateEmptyMessageChild(dataset_node, !visible);
   }
 }
 
 void CurveTreeView::reapplyFilter() {
-  if (last_filter_.isEmpty()) {
-    return;
+  const bool type_restricted = !(show_plot_ && show_scene2d_ && show_scene3d_);
+  if (last_filter_.isEmpty() && !type_restricted) {
+    return;  // no active filter: freshly inserted rows are visible by default
   }
   refilterTree();
+}
+
+void CurveTreeView::updateEmptyMessageChild(QTreeWidgetItem* dataset_node, bool subtree_hidden) {
+  // Find any existing placeholder + learn whether the dataset has real topics.
+  QTreeWidgetItem* placeholder = nullptr;
+  bool has_real_child = false;
+  for (int i = 0; i < dataset_node->childCount(); ++i) {
+    QTreeWidgetItem* child = dataset_node->child(i);
+    if (child->data(kNameColumn, kEmptyMessageRole).toBool()) {
+      placeholder = child;
+    } else {
+      has_real_child = true;
+    }
+  }
+
+  // Only speak up when a dataset that HAS topics has them all filtered away.
+  const bool want_message = subtree_hidden && has_real_child && !empty_filter_message_.isEmpty();
+  if (!want_message) {
+    if (placeholder != nullptr) {
+      placeholder->setHidden(true);
+    }
+    return;
+  }
+
+  if (placeholder == nullptr) {
+    placeholder = new QTreeWidgetItem(dataset_node);
+    placeholder->setData(kNameColumn, kEmptyMessageRole, true);
+    placeholder->setFlags(Qt::ItemIsEnabled);  // display-only: not selectable/draggable
+    QFont message_font = font();
+    message_font.setItalic(true);
+    placeholder->setFont(kNameColumn, message_font);
+    placeholder->setForeground(kNameColumn, palette().color(QPalette::Disabled, QPalette::Text));
+  }
+  placeholder->setText(kNameColumn, empty_filter_message_);
+  placeholder->setHidden(false);
+  // Span the message across both columns; re-assert each call since a re-sort can
+  // move the placeholder to a different child row (spanning is keyed by row).
+  setFirstColumnSpanned(dataset_node->indexOfChild(placeholder), indexFromItem(dataset_node), true);
+  dataset_node->setHidden(false);   // keep the dataset name visible
+  dataset_node->setExpanded(true);  // reveal the message row
 }
 
 std::vector<QString> CurveTreeView::selectedCurveNames() const {

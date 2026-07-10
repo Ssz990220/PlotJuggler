@@ -114,6 +114,11 @@ class CurveListPanel : public QWidget {
  private slots:
   void onFilterChanged(const QString& text);
   void onCustomFilterChanged(const QString& text);
+  // Any of the three Datasets type-filter toggles (plot / 2D / 3D) changed.
+  // Pushes the enabled kinds to the Datasets tree; all three off is allowed
+  // and shows the tree's empty-filter message. Reads live button state, so
+  // it is sender-agnostic.
+  void onTypeFilterToggled();
   void onShowValuesToggled(bool show);
   void onPreserveTopicNameToggled(bool checked);
   void onTrashClicked();
