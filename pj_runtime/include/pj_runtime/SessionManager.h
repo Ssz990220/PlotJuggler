@@ -29,6 +29,16 @@ class MessageParserPluginBase;
 class DataProcessorService;
 class RefillGuard;
 
+/// Result of resolving a persisted dataset identity against the live session.
+/// `ambiguous` distinguishes "not loaded yet" from multiple equally valid
+/// candidates, which lets deferred scene/plot restore wait for the former and
+/// reject the latter without ever selecting by load order. `id == nullopt` with
+/// `ambiguous == false` means no live dataset matches (yet).
+struct DatasetIdentityResolution {
+  std::optional<DatasetId> id;
+  bool ambiguous = false;
+};
+
 // Owns the datastore for the current app session. v1 scalar commit calls are
 // expected on the GUI thread so plot adapters never observe mutation during
 // paint. The object-topic parser registry is the exception: it is written from
@@ -72,6 +82,42 @@ class SessionManager : public QObject {
   }
 
   [[nodiscard]] DataReader createReader() const;
+
+  /// Associates a file-backed dataset with the normalized full path from which
+  /// FileLoader created it. DatasetInfo::source_name is intentionally only a
+  /// display/raw-source label (often a basename), so it cannot distinguish two
+  /// files with the same name in different directories. The path is normalized
+  /// on store (canonicalFilePath, falling back to absoluteFilePath) so lookups
+  /// match regardless of symlink/relative aliasing. Empty `path` removes the
+  /// association. GUI-thread only.
+  void setDatasetSourcePath(DatasetId dataset_id, QString path);
+
+  /// Normalized full source path registered for `dataset_id`, or empty for a
+  /// streaming/test dataset and for an id no longer tracked by FileLoader.
+  [[nodiscard]] QString datasetSourcePath(DatasetId dataset_id) const;
+
+  /// Resolves a persisted identity without guessing. Resolution order:
+  ///  1. The exact `saved_id`, trusted only while every supplied qualifier (raw
+  ///     source label and/or full source path) still agrees — this is what lets
+  ///     a same-session undo keep its exact DatasetId even amid duplicates.
+  ///  2. If the id was reminted, a path-qualified identity falls back to exactly
+  ///     one dataset whose registered path (and source label) matches.
+  ///  3. A legacy layout without a path falls back to an exactly-one source-label
+  ///     match.
+  /// More than one candidate at step 2/3 returns `{id=nullopt, ambiguous=true}`
+  /// rather than choosing by load order. An id carrying no portable qualifiers
+  /// (empty source AND empty path) is valid only while that exact id still
+  /// exists; otherwise it resolves to nothing (not ambiguous).
+  [[nodiscard]] DatasetIdentityResolution resolveDatasetIdentity(
+      DatasetId saved_id, const QString& saved_source, const QString& saved_path = {}) const;
+
+  /// Topic-aware fallback for a same-file single<->fan-out remint. When full-path
+  /// identity alone names several datasets (resolveDatasetIdentity returns
+  /// ambiguous), returns a dataset only if exactly one of those siblings owns an
+  /// object topic named `object_topic_name`; still ambiguous if several do.
+  [[nodiscard]] DatasetIdentityResolution resolveObjectDatasetIdentity(
+      DatasetId saved_id, const QString& saved_source, const QString& saved_path,
+      const QString& object_topic_name) const;
 
   /// TOTAL display shift used by everything that renders on the display axis
   /// (plot curves, scenes, the playback range/cursor): the dataset's per-source
@@ -259,11 +305,12 @@ class SessionManager : public QObject {
     }
     return loaded_sources_.back();
   }
-  // Records a loaded file. If a source with the same `path` is already tracked,
-  // its entry is updated in place (preserving list order — a reload keeps the
-  // file's position); otherwise the source is appended. This dedup-by-path keeps
-  // reloads from growing duplicate <fileInfo> entries while additive loads of
-  // distinct files all persist.
+  // Records a loaded file. `path` is normalized on store (same rules as
+  // setDatasetSourcePath), so a symlink/relative alias of an already-tracked
+  // file updates its entry in place (preserving list order — a reload keeps the
+  // file's position); otherwise the source is appended. This dedup-by-physical-
+  // path keeps reloads from growing duplicate <fileInfo> entries while additive
+  // loads of distinct files all persist.
   void recordLoadedSource(QString path, QString prefix, QString plugin_id = {}, QString plugin_config_json = {});
   void clearLoadedSource() noexcept {
     loaded_sources_.clear();
@@ -380,6 +427,10 @@ class SessionManager : public QObject {
   // parser alive for the consumer that captured it.
   mutable std::shared_mutex object_parsers_mutex_;
   std::unordered_map<uint32_t, ObjectParserSlot> object_topic_parsers_;
+  // FileLoader-owned portable identity, centralized here so plots, processors,
+  // and both scene families resolve the same (id, source, full-path) contract.
+  // Paths are stored normalized (see setDatasetSourcePath).
+  std::unordered_map<DatasetId, QString> dataset_source_paths_;
   std::vector<LoadedSource> loaded_sources_;
 };
 

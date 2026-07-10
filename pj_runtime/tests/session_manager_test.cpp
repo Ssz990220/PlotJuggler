@@ -3,8 +3,12 @@
 
 #include <gtest/gtest.h>
 
+#include <QDir>
+#include <QFile>
+#include <QFileInfo>
 #include <QSignalSpy>
 #include <QString>
+#include <QTemporaryDir>
 #include <algorithm>
 #include <atomic>
 #include <chrono>
@@ -35,6 +39,140 @@ TEST(SessionManagerSourceTest, RecordLoadedSourceStoresPathAndPrefix) {
   ASSERT_TRUE(src.has_value());
   EXPECT_EQ(src->path, u"/tmp/run42.csv"_s);
   EXPECT_EQ(src->prefix, u"robot"_s);
+}
+
+TEST(SessionManagerSourceIdentityTest, FullPathRejectsRemintedSameBasenameCollision) {
+  QTemporaryDir dir;
+  ASSERT_TRUE(dir.isValid());
+  ASSERT_TRUE(QDir().mkpath(dir.filePath(u"left"_s)));
+  ASSERT_TRUE(QDir().mkpath(dir.filePath(u"right"_s)));
+  const QString intended_path = dir.filePath(u"left/run.mcap"_s);
+  const QString collision_path = dir.filePath(u"right/run.mcap"_s);
+  ASSERT_TRUE(QFile(intended_path).open(QIODevice::WriteOnly));
+  ASSERT_TRUE(QFile(collision_path).open(QIODevice::WriteOnly));
+
+  PJ::SessionManager session;
+  const auto reminted_collision = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "run.mcap"});
+  const auto intended = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "run.mcap"});
+  ASSERT_TRUE(reminted_collision.has_value());
+  ASSERT_TRUE(intended.has_value());
+  session.setDatasetSourcePath(*reminted_collision, collision_path);
+  session.setDatasetSourcePath(*intended, intended_path);
+
+  // The saved id points at the wrong same-basename file: the path qualifier must
+  // veto the exact-id match and fall back to the unique full-path match instead.
+  const PJ::DatasetIdentityResolution resolved =
+      session.resolveDatasetIdentity(*reminted_collision, u"run.mcap"_s, intended_path);
+  ASSERT_TRUE(resolved.id.has_value());
+  EXPECT_EQ(*resolved.id, intended.value());
+  EXPECT_FALSE(resolved.ambiguous);
+}
+
+// FIX D: a dataset loaded from a file that is then deleted from disk must still
+// resolve by its full path. normalizedSourcePath returns the same cleaned-absolute
+// form at store and resolve time for a plain (non-symlinked) path, so the string
+// comparison in path_matches holds even after the file is gone — whereas a
+// canonicalFilePath-only comparison (empty for a missing file) would drop it.
+TEST(SessionManagerSourceIdentityTest, DeletedSourceFileStillResolvesByPath) {
+  QTemporaryDir dir;
+  ASSERT_TRUE(dir.isValid());
+  const QString saved_path = dir.filePath(u"run.mcap"_s);
+  ASSERT_TRUE(QFile(saved_path).open(QIODevice::WriteOnly));
+
+  PJ::SessionManager session;
+  const auto dataset = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "run.mcap"});
+  ASSERT_TRUE(dataset.has_value());
+  // Register the path WHILE the file exists, then delete it from disk.
+  session.setDatasetSourcePath(*dataset, saved_path);
+  ASSERT_TRUE(QFile::remove(saved_path));
+  ASSERT_FALSE(QFileInfo::exists(saved_path));
+
+  const PJ::DatasetIdentityResolution resolved = session.resolveDatasetIdentity(0, u"run.mcap"_s, saved_path);
+  ASSERT_TRUE(resolved.id.has_value()) << "a deleted-on-disk source must still resolve by path";
+  EXPECT_EQ(*resolved.id, dataset.value());
+  EXPECT_FALSE(resolved.ambiguous);
+}
+
+TEST(SessionManagerSourceIdentityTest, DuplicateSourceWithoutPathIsAmbiguousButExactLiveIdStillWins) {
+  PJ::SessionManager session;
+  const auto first = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "same.mcap"});
+  const auto second = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "same.mcap"});
+  ASSERT_TRUE(first.has_value());
+  ASSERT_TRUE(second.has_value());
+
+  const PJ::DatasetIdentityResolution exact = session.resolveDatasetIdentity(*second, u"same.mcap"_s);
+  ASSERT_TRUE(exact.id.has_value());
+  EXPECT_EQ(*exact.id, second.value()) << "same-session undo keeps its exact DatasetId";
+
+  const PJ::DatasetIdentityResolution portable = session.resolveDatasetIdentity(999, u"same.mcap"_s);
+  EXPECT_FALSE(portable.id.has_value());
+  EXPECT_TRUE(portable.ambiguous) << "persisted source-only identity must never choose by load order";
+}
+
+TEST(SessionManagerSourceIdentityTest, NumericOnlyIdentityIsSameSessionOnly) {
+  PJ::SessionManager session;
+  const auto only = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "solo.mcap"});
+  ASSERT_TRUE(only.has_value());
+
+  // A bare id with no portable qualifiers resolves only while that exact id lives.
+  const PJ::DatasetIdentityResolution live = session.resolveDatasetIdentity(*only, QString());
+  ASSERT_TRUE(live.id.has_value());
+  EXPECT_EQ(*live.id, only.value());
+
+  const PJ::DatasetIdentityResolution stale = session.resolveDatasetIdentity(*only + 100, QString());
+  EXPECT_FALSE(stale.id.has_value());
+  EXPECT_FALSE(stale.ambiguous) << "no qualifier = not-found, never a remint fallback";
+}
+
+TEST(SessionManagerSourceIdentityTest, RemoveDatasetDropsItsSourcePath) {
+  QTemporaryDir dir;
+  ASSERT_TRUE(dir.isValid());
+  const QString path = dir.filePath(u"gone.mcap"_s);
+  ASSERT_TRUE(QFile(path).open(QIODevice::WriteOnly));
+
+  PJ::SessionManager session;
+  const auto dataset = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "gone.mcap"});
+  ASSERT_TRUE(dataset.has_value());
+  session.setDatasetSourcePath(*dataset, path);
+  ASSERT_FALSE(session.datasetSourcePath(*dataset).isEmpty());
+
+  session.removeDataset(*dataset);
+  EXPECT_TRUE(session.datasetSourcePath(*dataset).isEmpty());
+}
+
+TEST(SessionManagerSourceIdentityTest, ObjectTopicDisambiguatesFanOutSiblingsOfOneFile) {
+  QTemporaryDir dir;
+  ASSERT_TRUE(dir.isValid());
+  const QString path = dir.filePath(u"fanout.mcap"_s);
+  ASSERT_TRUE(QFile(path).open(QIODevice::WriteOnly));
+
+  PJ::SessionManager session;
+  const auto left = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "fanout/left"});
+  const auto right = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "fanout/right"});
+  ASSERT_TRUE(left.has_value());
+  ASSERT_TRUE(right.has_value());
+  session.setDatasetSourcePath(*left, path);
+  session.setDatasetSourcePath(*right, path);
+  const auto left_topic = session.objectStore().registerTopic(
+      PJ::ObjectTopicDescriptor{.dataset_id = *left, .topic_name = "/camera", .metadata_json = "{}"});
+  ASSERT_TRUE(left_topic.has_value());
+
+  // Path-only identity is ambiguous across the two siblings...
+  const PJ::DatasetIdentityResolution by_path = session.resolveDatasetIdentity(0, QString(), path);
+  EXPECT_FALSE(by_path.id.has_value());
+  EXPECT_TRUE(by_path.ambiguous);
+
+  // ...but exactly one sibling owns the object topic, so the topic-aware
+  // resolver can pick it; a topic neither sibling owns stays ambiguous.
+  const PJ::DatasetIdentityResolution by_topic = session.resolveObjectDatasetIdentity(0, QString(), path, u"/camera"_s);
+  ASSERT_TRUE(by_topic.id.has_value());
+  EXPECT_EQ(*by_topic.id, left.value());
+  EXPECT_FALSE(by_topic.ambiguous);
+
+  const PJ::DatasetIdentityResolution unknown_topic =
+      session.resolveObjectDatasetIdentity(0, QString(), path, u"/lidar"_s);
+  EXPECT_FALSE(unknown_topic.id.has_value());
+  EXPECT_TRUE(unknown_topic.ambiguous);
 }
 
 TEST(SessionManagerSourceTest, RecordLoadedSourceAppendsDistinctPaths) {

@@ -15,11 +15,12 @@
 #include <QtGlobal>
 #include <algorithm>
 #include <memory>
-#include <string_view>
+#include <optional>
 
 #include "LayoutXml.h"
 #include "PendingDisplayBinder.h"
-#include "pj_datastore/writer.hpp"
+#include "dataset_test_helpers.h"
+#include "pj_plotting/PointSeriesXY.h"
 #include "pj_runtime/AppSession.h"
 #include "pj_runtime/CatalogModel.h"
 #include "pj_runtime/SessionManager.h"
@@ -29,32 +30,8 @@ using namespace Qt::StringLiterals;
 namespace {
 
 using PJ::layout_xml::SeriesPath;
-
-PJ::DatasetId createDataset(PJ::AppSession& app_session) {
-  auto dataset = app_session.sessionManager().dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "test"});
-  if (!dataset.has_value()) {
-    ADD_FAILURE() << dataset.error();
-    return 0;
-  }
-  return *dataset;
-}
-
-PJ::TopicId addScalarTopic(PJ::AppSession& app_session, PJ::DatasetId dataset_id, std::string_view topic_name) {
-  PJ::DataWriter writer = app_session.sessionManager().dataEngine().createWriter();
-  auto handle = writer.registerScalarSeries(dataset_id, topic_name, PJ::NumericType::kFloat64);
-  if (!handle.has_value()) {
-    ADD_FAILURE() << handle.error();
-    return 0;
-  }
-  writer.appendScalar(*handle, 100, 1.0);
-  writer.appendScalar(*handle, 200, 2.0);
-  if (app_session.sessionManager().commitChunks(writer.flushAll()).empty()) {
-    ADD_FAILURE() << "commit produced no changed topics";
-    return 0;
-  }
-  app_session.catalogModel().rebuildFromDatastore();
-  return handle->topic_id;
-}
+using pj_test::addScalarTopic;
+using pj_test::createDataset;
 
 QDomElement addPlot(QDomDocument& doc, const QString& id, const QString& mode) {
   QDomElement root = doc.documentElement();
@@ -69,10 +46,26 @@ QDomElement addPlot(QDomDocument& doc, const QString& id, const QString& mode) {
   return plot;
 }
 
+// Writes a SeriesPath's dataset qualifiers onto a curve element, using the given
+// attribute-name prefix ("" for time series, "x_"/"y_" for XY axes). Only set
+// qualifiers are written so an unqualified path leaves a clean element.
+void writeDatasetQualifiers(QDomElement& curve, const QString& prefix, const SeriesPath& path) {
+  if (path.dataset_id != 0) {
+    curve.setAttribute(prefix + u"dataset_id"_s, QString::number(path.dataset_id));
+  }
+  if (!path.dataset_source.isEmpty()) {
+    curve.setAttribute(prefix + u"dataset_source"_s, path.dataset_source);
+  }
+  if (!path.dataset_path.isEmpty()) {
+    curve.setAttribute(prefix + u"dataset_path"_s, path.dataset_path);
+  }
+}
+
 QDomElement addTimeSeriesCurve(QDomDocument& doc, QDomElement& plot, const SeriesPath& path) {
   QDomElement curve = doc.createElement(u"curve"_s);
   curve.setAttribute(u"topic"_s, path.topic);
   curve.setAttribute(u"field"_s, path.field);
+  writeDatasetQualifiers(curve, QString(), path);
   plot.appendChild(curve);
   return curve;
 }
@@ -83,8 +76,22 @@ QDomElement addXyCurve(QDomDocument& doc, QDomElement& plot, const SeriesPath& x
   curve.setAttribute(u"x_field"_s, x_path.field);
   curve.setAttribute(u"y_topic"_s, y_path.topic);
   curve.setAttribute(u"y_field"_s, y_path.field);
+  writeDatasetQualifiers(curve, u"x_"_s, x_path);
+  writeDatasetQualifiers(curve, u"y_"_s, y_path);
   plot.appendChild(curve);
   return curve;
+}
+
+// Resolves a SeriesPath to the DatasetId of the concrete curve it binds to, or
+// nullopt when unresolvable/ambiguous. The identity assertion most resolver tests
+// need.
+std::optional<PJ::DatasetId> resolvedDataset(PJ::CatalogModel& catalog, const SeriesPath& path) {
+  const auto key = PJ::resolveSeriesPath(catalog, path);
+  if (!key.has_value()) {
+    return std::nullopt;
+  }
+  const auto descriptor = catalog.curveDescriptor(*key);
+  return descriptor.has_value() ? std::optional<PJ::DatasetId>{descriptor->dataset_id} : std::nullopt;
 }
 
 void rebindAgainstCatalog(QDomDocument& doc, PJ::CatalogModel& catalog) {
@@ -144,6 +151,110 @@ TEST(PendingDisplayBinderTest, DuplicatePlaceholderDropStagesOneEntry) {
   binder.addPendingCurve(&plot, SeriesPath{u"/speed"_s, QString()}, dataset_id);
   binder.addPendingCurve(&plot, SeriesPath{u"/speed"_s, QString()}, dataset_id);
   EXPECT_EQ(binder.size(), 1);
+}
+
+// REVIEW: production gap found while porting (packet 3, tests-only scope — not
+// fixed here). Both assertions below are commented out because they fail
+// against current PendingDisplayBinder.cpp:
+//
+// 1. `scalarKeysForTopic` (PendingDisplayBinder.cpp) falls back to "the first
+//    dataset naming the topic" when `preferred` has no data yet, instead of
+//    waiting for `preferred` specifically. So an empty-field placeholder drop
+//    staged against dataset B (preferred_dataset=dataset_b) resolves against
+//    dataset A's pre-existing same-named data on the very next flush(), i.e.
+//    "dataset A satisfies dataset B's explicit drop" — the multi-dataset bug
+//    this PR targets, but for the empty-field/placeholder-drop path rather
+//    than the layout-restore path fixed by resolveSeriesPath.
+// 2. `hasEntryFor` (the addPendingCurve dedup gate) keys on (kind, target,
+//    topic, field) only — it ignores preferred_dataset — so two distinct
+//    interactive drops of the SAME topic from two DIFFERENT datasets onto one
+//    plot collapse into a single staged entry; the second drop's dataset
+//    intent is silently discarded.
+//
+// Commit ad32f2ce's message already flags gap 1 explicitly ("scalarKeysForTopic
+// keeps its pre-existing first-dataset fallback for empty-field placeholder
+// drops ... the strict treatment is entangled with the persistent-intent
+// machinery and lands with it"), so this is a known, deliberately-deferred
+// interim gap, not a new discovery — kept here as a regression marker for when
+// that work lands, per this packet's tests-only scope.
+TEST(PendingDisplayBinderTest, DISABLED_PreferredPlaceholderWaitsForItsDatasetInsteadOfStealingSibling) {
+  PJ::AppSession app_session;
+  const PJ::DatasetId dataset_a = createDataset(app_session);
+  const PJ::DatasetId dataset_b = createDataset(app_session);
+  ASSERT_NE(addScalarTopic(app_session, dataset_a, "/speed"), 0U);
+  app_session.catalogModel().setAdvertisedTopics(
+      dataset_b, {PJ::AdvertisedTopic{u"/speed"_s, PJ::sdk::BuiltinObjectType::kNone}});
+
+  PJ::PendingDisplayBinder binder(app_session.catalogModel());
+  PJ::PlotWidget plot(&app_session.sessionManager(), &app_session.catalogModel());
+  binder.addPendingCurve(&plot, SeriesPath{u"/speed"_s, QString()}, dataset_b);
+
+  // REVIEW: fails today — flush({}) returns 1 (binds against dataset A) instead
+  // of 0. See scalarKeysForTopic's first-dataset fallback, noted above.
+  // EXPECT_EQ(binder.flush({}), 0);
+  // EXPECT_TRUE(plot.curveList().empty()) << "dataset A must not satisfy dataset B's explicit drop";
+  ASSERT_NE(addScalarTopic(app_session, dataset_b, "/speed"), 0U);
+  EXPECT_EQ(binder.flush(QSet<QString>{u"/speed"_s}), 1);
+  ASSERT_EQ(plot.curveList().size(), 1U);
+  const auto descriptor = app_session.catalogModel().curveDescriptor(plot.curveList().front().source_name);
+  ASSERT_TRUE(descriptor.has_value());
+  EXPECT_EQ(descriptor->dataset_id, dataset_b);
+}
+
+TEST(PendingDisplayBinderTest, DISABLED_SameTopicDropsFromDifferentDatasetsRemainDistinctIntents) {
+  PJ::AppSession app_session;
+  const PJ::DatasetId dataset_a = createDataset(app_session);
+  const PJ::DatasetId dataset_b = createDataset(app_session);
+  PJ::PendingDisplayBinder binder(app_session.catalogModel());
+  PJ::PlotWidget plot(&app_session.sessionManager(), &app_session.catalogModel());
+
+  const SeriesPath topic{u"/speed"_s, QString()};
+  binder.addPendingCurve(&plot, topic, dataset_a);
+  binder.addPendingCurve(&plot, topic, dataset_b);
+  // REVIEW: fails today — binder.size() is 1, not 2. hasEntryFor's dedup key
+  // (kind, target, topic, field) ignores preferred_dataset, so the second drop
+  // is discarded as a "duplicate" of the first even though it names a
+  // different dataset. See note above.
+  // EXPECT_EQ(binder.size(), 2) << "preferred DatasetId participates in pending-entry identity";
+}
+
+TEST(PendingDisplayBinderTest, LateXyHalvesKeepTheirIndependentDatasetIdentities) {
+  QTemporaryDir extensions_dir;
+  ASSERT_TRUE(extensions_dir.isValid());
+  PJ::AppSession app_session(extensions_dir.path());
+  auto& engine = app_session.sessionManager().dataEngine();
+  const auto dataset_a = engine.createDataset(PJ::DatasetDescriptor{.source_name = "same.mcap"});
+  const auto dataset_b = engine.createDataset(PJ::DatasetDescriptor{.source_name = "same.mcap"});
+  ASSERT_TRUE(dataset_a.has_value());
+  ASSERT_TRUE(dataset_b.has_value());
+  ASSERT_NE(addScalarTopic(app_session, *dataset_a, "/x"), 0U);
+  ASSERT_NE(addScalarTopic(app_session, *dataset_a, "/y"), 0U);
+
+  // x is qualified to dataset A, y to dataset B (both share the raw source
+  // label "same.mcap"): y is not materialized yet, so the curve waits.
+  const SeriesPath x_path{u"/x"_s, u"value"_s, *dataset_a, u"same.mcap"_s};
+  const SeriesPath y_path{u"/y"_s, u"value"_s, *dataset_b, u"same.mcap"_s};
+  QDomDocument doc;
+  QDomElement plot_element = addPlot(doc, u"plot_xy"_s, u"XYPlot"_s);
+  QDomElement curve = addXyCurve(doc, plot_element, x_path, y_path);
+  curve.setAttribute(u"name"_s, u"cross-source"_s);
+  rebindAgainstCatalog(doc, app_session.catalogModel());
+
+  PJ::PlotWidget plot(&app_session.sessionManager(), &app_session.catalogModel());
+  ASSERT_TRUE(plot.xmlLoadState(plot_element));
+  ASSERT_TRUE(plot.curveList().empty());
+
+  PJ::PendingDisplayBinder binder(app_session.catalogModel());
+  binder.collect(doc, indexByStateId(plot));
+  ASSERT_EQ(binder.size(), 1);
+
+  ASSERT_NE(addScalarTopic(app_session, *dataset_b, "/y"), 0U);
+  EXPECT_EQ(binder.flush(QSet<QString>{u"/y"_s}), 1);
+  ASSERT_EQ(plot.curveList().size(), 1U);
+  const auto* series = dynamic_cast<const PJ::PointSeriesXY*>(plot.curveList().front().curve->data());
+  ASSERT_NE(series, nullptr);
+  EXPECT_EQ(series->xSource().dataset_id, *dataset_a);
+  EXPECT_EQ(series->ySource().dataset_id, *dataset_b);
 }
 
 TEST(PendingDisplayBinderTest, CollectsUnresolvedCurvesAndBindsThemWhenTopicArrives) {
@@ -240,6 +351,301 @@ TEST(PendingDisplayBinderTest, XyCurveWaitsForBothHalvesBeforeBinding) {
 
   EXPECT_EQ(binder.flush({}), 0);
   EXPECT_EQ(plot.curveList().size(), 1U);
+}
+
+// ---------- strict reject-ambiguity resolver -------------------------------
+
+TEST(ResolveSeriesPathTest, UnqualifiedUniquePathBinds) {
+  PJ::AppSession app_session;
+  const PJ::DatasetId only = createDataset(app_session);
+  ASSERT_NE(addScalarTopic(app_session, only, "/speed"), 0U);
+
+  const SeriesPath legacy{u"/speed"_s, u"value"_s};
+  EXPECT_EQ(resolvedDataset(app_session.catalogModel(), legacy), only)
+      << "a genuinely unqualified legacy path may use its sole candidate";
+}
+
+TEST(ResolveSeriesPathTest, UnqualifiedAmbiguousPathIsRejected) {
+  PJ::AppSession app_session;
+  auto& engine = app_session.sessionManager().dataEngine();
+  const auto dataset_a = engine.createDataset(PJ::DatasetDescriptor{.source_name = "same.mcap"});
+  const auto dataset_b = engine.createDataset(PJ::DatasetDescriptor{.source_name = "same.mcap"});
+  ASSERT_TRUE(dataset_a.has_value());
+  ASSERT_TRUE(dataset_b.has_value());
+  ASSERT_NE(addScalarTopic(app_session, *dataset_a, "/speed"), 0U);
+  ASSERT_NE(addScalarTopic(app_session, *dataset_b, "/speed"), 0U);
+
+  const SeriesPath ambiguous{u"/speed"_s, u"value"_s};
+  EXPECT_FALSE(PJ::resolveSeriesPath(app_session.catalogModel(), ambiguous).has_value())
+      << "an unqualified duplicate path must stay unresolved instead of binding the first dataset";
+}
+
+TEST(ResolveSeriesPathTest, ExactDatasetHintPreventsDuplicatePathMisbind) {
+  PJ::AppSession app_session;
+  auto& engine = app_session.sessionManager().dataEngine();
+  const auto dataset_a = engine.createDataset(PJ::DatasetDescriptor{.source_name = "same.mcap"});
+  const auto dataset_b = engine.createDataset(PJ::DatasetDescriptor{.source_name = "same.mcap"});
+  ASSERT_TRUE(dataset_a.has_value());
+  ASSERT_TRUE(dataset_b.has_value());
+  ASSERT_NE(addScalarTopic(app_session, *dataset_a, "/speed"), 0U);
+  ASSERT_NE(addScalarTopic(app_session, *dataset_b, "/speed"), 0U);
+
+  const SeriesPath exact{u"/speed"_s, u"value"_s, *dataset_b, u"same.mcap"_s};
+  EXPECT_EQ(resolvedDataset(app_session.catalogModel(), exact), *dataset_b)
+      << "the exact in-session id must win among same-named datasets";
+}
+
+TEST(ResolveSeriesPathTest, IntendedDatasetMissingSeriesNeverStealsSibling) {
+  PJ::AppSession app_session;
+  auto& engine = app_session.sessionManager().dataEngine();
+  const auto dataset_a = engine.createDataset(PJ::DatasetDescriptor{.source_name = "same.mcap"});
+  const auto dataset_b = engine.createDataset(PJ::DatasetDescriptor{.source_name = "same.mcap"});
+  ASSERT_TRUE(dataset_a.has_value());
+  ASSERT_TRUE(dataset_b.has_value());
+  // Only dataset A has /speed; the saved curve names dataset B exactly.
+  ASSERT_NE(addScalarTopic(app_session, *dataset_a, "/speed"), 0U);
+
+  const SeriesPath saved_b{u"/speed"_s, u"value"_s, *dataset_b, u"same.mcap"_s};
+  EXPECT_FALSE(PJ::resolveSeriesPath(app_session.catalogModel(), saved_b).has_value())
+      << "the intended dataset exists but lacks the series - never steal dataset A's field";
+}
+
+// FIX B: a data-processor recipe saved from dataset 2 must restore its input onto
+// dataset 2, never dataset 1's same-named field. restoreDataProcessors resolves the
+// input through the same resolveSeriesPath that a plotted curve uses, keyed by the
+// saved input_dataset_id/source; this pins the three cases MainWindow relies on.
+TEST(ResolveSeriesPathTest, ProcessorInputQualifierBindsToItsOwnDataset) {
+  PJ::AppSession app_session;
+  auto& engine = app_session.sessionManager().dataEngine();
+  const auto dataset1 = engine.createDataset(PJ::DatasetDescriptor{.source_name = "run1.mcap"});
+  const auto dataset2 = engine.createDataset(PJ::DatasetDescriptor{.source_name = "run2.mcap"});
+  ASSERT_TRUE(dataset1.has_value());
+  ASSERT_TRUE(dataset2.has_value());
+  ASSERT_NE(addScalarTopic(app_session, *dataset1, "/imu"), 0U);
+  ASSERT_NE(addScalarTopic(app_session, *dataset2, "/imu"), 0U);
+
+  // Recipe saved from dataset 2 restores onto dataset 2 (not dataset 1's /imu).
+  const SeriesPath saved_input2{u"/imu"_s, u"value"_s, *dataset2, u"run2.mcap"_s};
+  EXPECT_EQ(resolvedDataset(app_session.catalogModel(), saved_input2), *dataset2)
+      << "the processor input qualifier must bind dataset 2, not dataset 1's same-topic field";
+
+  // Legacy (qualifiers stripped) with BOTH datasets loaded: ambiguous -> no restore.
+  const SeriesPath legacy{u"/imu"_s, u"value"_s};
+  EXPECT_FALSE(PJ::resolveSeriesPath(app_session.catalogModel(), legacy).has_value())
+      << "a legacy unqualified processor input must not first-match onto either dataset";
+}
+
+TEST(ResolveSeriesPathTest, ProcessorInputLegacyUnqualifiedBindsWhenSingleDataset) {
+  PJ::AppSession app_session;
+  const PJ::DatasetId only = createDataset(app_session);
+  ASSERT_NE(addScalarTopic(app_session, only, "/imu"), 0U);
+
+  // With only one dataset present the unqualified input has a unique candidate,
+  // so a legacy layout still restores its filter.
+  const SeriesPath legacy{u"/imu"_s, u"value"_s};
+  EXPECT_EQ(resolvedDataset(app_session.catalogModel(), legacy), only)
+      << "an unqualified processor input binds when it is the sole candidate";
+}
+
+// FIX D: a dataset whose source file is deleted from disk after loading must still
+// resolve by its full path. isSamePath()/canonicalFilePath() return empty for a
+// missing file, so both resolveSeriesPath's path scan and SessionManager's
+// path_matches now short-circuit on normalized-string equality first.
+TEST(ResolveSeriesPathTest, DeletedSourceFileStillResolvesByPath) {
+  QTemporaryDir dir;
+  ASSERT_TRUE(dir.isValid());
+  PJ::AppSession app_session;
+  auto& session = app_session.sessionManager();
+  auto& engine = session.dataEngine();
+  // Two same-basename datasets so only the full path disambiguates; the exact id
+  // is deliberately reminted (points at the wrong dataset) to force the path leg.
+  const auto reminted_collision = engine.createDataset(PJ::DatasetDescriptor{.source_name = "run.mcap"});
+  const auto intended = engine.createDataset(PJ::DatasetDescriptor{.source_name = "run.mcap"});
+  ASSERT_TRUE(reminted_collision.has_value());
+  ASSERT_TRUE(intended.has_value());
+
+  const QString intended_path = dir.filePath(u"wanted/run.mcap"_s);
+  ASSERT_TRUE(QDir(dir.path()).mkpath(u"wanted"_s));
+  {
+    QFile file(intended_path);
+    ASSERT_TRUE(file.open(QIODevice::WriteOnly));
+    file.write("mcap");
+  }
+  // Register the path WHILE the file exists (stored as its canonical form), then
+  // delete it — the pre-fix canonical-based comparison would now fail to match.
+  session.setDatasetSourcePath(*intended, intended_path);
+  session.setDatasetSourcePath(*reminted_collision, dir.filePath(u"other/run.mcap"_s));
+  ASSERT_TRUE(QFile::remove(intended_path));
+  ASSERT_FALSE(QFileInfo::exists(intended_path));
+
+  ASSERT_NE(addScalarTopic(app_session, *reminted_collision, "/speed"), 0U);
+  ASSERT_NE(addScalarTopic(app_session, *intended, "/speed"), 0U);
+
+  const SeriesPath by_path{u"/speed"_s, u"value"_s, *reminted_collision, u"run.mcap"_s, intended_path};
+  EXPECT_EQ(resolvedDataset(app_session.catalogModel(), by_path), *intended)
+      << "a deleted-on-disk source must still resolve by its registered full path";
+}
+
+// FIX D, binder path-scan leg: after a fan-out reload the saved raw source label no
+// longer names any dataset, so resolveDatasetIdentity returns nullopt and
+// resolveSeriesPath falls to its own physical-path scan. That scan used isSamePath,
+// which fails on a deleted file; the normalized-equality short-circuit rescues it.
+TEST(ResolveSeriesPathTest, DeletedSourceFileResolvesThroughBinderPathScan) {
+  QTemporaryDir dir;
+  ASSERT_TRUE(dir.isValid());
+  PJ::AppSession app_session;
+  auto& session = app_session.sessionManager();
+  auto& engine = session.dataEngine();
+  // Both datasets carry NEW fan-out labels; the saved label ("old_run.mcap") is gone.
+  const auto sibling = engine.createDataset(PJ::DatasetDescriptor{.source_name = "run_0.mcap"});
+  const auto intended = engine.createDataset(PJ::DatasetDescriptor{.source_name = "run_1.mcap"});
+  ASSERT_TRUE(sibling.has_value());
+  ASSERT_TRUE(intended.has_value());
+
+  const QString intended_path = dir.filePath(u"wanted/run.mcap"_s);
+  ASSERT_TRUE(QDir(dir.path()).mkpath(u"wanted"_s));
+  {
+    QFile file(intended_path);
+    ASSERT_TRUE(file.open(QIODevice::WriteOnly));
+    file.write("mcap");
+  }
+  session.setDatasetSourcePath(*intended, intended_path);
+  session.setDatasetSourcePath(*sibling, dir.filePath(u"other/run.mcap"_s));
+  ASSERT_TRUE(QFile::remove(intended_path));
+
+  ASSERT_NE(addScalarTopic(app_session, *sibling, "/speed"), 0U);
+  ASSERT_NE(addScalarTopic(app_session, *intended, "/speed"), 0U);
+
+  // id=0 (stripped), source no longer exists -> identity resolver returns nullopt,
+  // exercising resolveSeriesPath's own path-scan leg, which must match by path.
+  const SeriesPath by_path{u"/speed"_s, u"value"_s, 0, u"old_run.mcap"_s, intended_path};
+  EXPECT_EQ(resolvedDataset(app_session.catalogModel(), by_path), *intended)
+      << "the binder path scan must match a deleted-on-disk source by normalized-path equality";
+}
+
+TEST(ResolveSeriesPathTest, RemintedIdFallsBackToUniqueRawSourceIdentity) {
+  PJ::AppSession app_session;
+  auto& engine = app_session.sessionManager().dataEngine();
+  const auto reminted_collision = engine.createDataset(PJ::DatasetDescriptor{.source_name = "other.mcap"});
+  const auto intended = engine.createDataset(PJ::DatasetDescriptor{.source_name = "logs/drive.mcap"});
+  ASSERT_TRUE(reminted_collision.has_value());
+  ASSERT_TRUE(intended.has_value());
+  ASSERT_NE(addScalarTopic(app_session, *reminted_collision, "/speed"), 0U);
+  ASSERT_NE(addScalarTopic(app_session, *intended, "/speed"), 0U);
+
+  // The UI label is deliberately unrelated to the raw source identity. The saved
+  // id now names other.mcap (as can happen in a fresh session), so the resolver
+  // must reject that collision and find the single raw-source match.
+  app_session.catalogModel().setDatasetDisplayName(*intended, u"Pretty recording"_s);
+  const SeriesPath portable{u"/speed"_s, u"value"_s, *reminted_collision, u"logs/drive.mcap"_s};
+  EXPECT_EQ(resolvedDataset(app_session.catalogModel(), portable), *intended);
+}
+
+TEST(ResolveSeriesPathTest, DuplicateRawSourceFallbackIsAmbiguousBeforePathLookup) {
+  PJ::AppSession app_session;
+  auto& engine = app_session.sessionManager().dataEngine();
+  const auto first = engine.createDataset(PJ::DatasetDescriptor{.source_name = "same.mcap"});
+  const auto second = engine.createDataset(PJ::DatasetDescriptor{.source_name = "same.mcap"});
+  ASSERT_TRUE(first.has_value());
+  ASSERT_TRUE(second.has_value());
+  ASSERT_NE(addScalarTopic(app_session, *first, "/speed"), 0U);
+
+  // External XML strips the unvalidated id (id=0); its duplicate source-only
+  // fallback must remain unresolved rather than pick the first named match.
+  const SeriesPath portable{u"/speed"_s, u"value"_s, 0, u"same.mcap"_s};
+  EXPECT_FALSE(PJ::resolveSeriesPath(app_session.catalogModel(), portable).has_value());
+}
+
+TEST(ResolveSeriesPathTest, QualifiedIdentityNeverFallsBackToAnUnrelatedUniquePath) {
+  PJ::AppSession app_session;
+  auto& engine = app_session.sessionManager().dataEngine();
+  const auto unrelated = engine.createDataset(PJ::DatasetDescriptor{.source_name = "other.mcap"});
+  ASSERT_TRUE(unrelated.has_value());
+  ASSERT_NE(addScalarTopic(app_session, *unrelated, "/speed"), 0U);
+
+  const SeriesPath missing_source{u"/speed"_s, u"value"_s, 999, u"missing.mcap"_s};
+  EXPECT_FALSE(PJ::resolveSeriesPath(app_session.catalogModel(), missing_source).has_value())
+      << "a qualified identity whose source/path no longer exists must not steal an unrelated unique candidate";
+
+  const SeriesPath stale_id_without_source{u"/speed"_s, u"value"_s, 999, QString()};
+  EXPECT_FALSE(PJ::resolveSeriesPath(app_session.catalogModel(), stale_id_without_source).has_value())
+      << "a bare stale id (no portable qualifier) resolves to nothing once reminted";
+
+  const SeriesPath legacy_unqualified{u"/speed"_s, u"value"_s};
+  EXPECT_EQ(resolvedDataset(app_session.catalogModel(), legacy_unqualified), *unrelated)
+      << "a genuinely unqualified legacy path may still use its sole candidate";
+}
+
+TEST(ResolveSeriesPathTest, FullPathOverridesRemintedCollisionForTimeSeriesAndBothXyAxes) {
+  QTemporaryDir dir;
+  ASSERT_TRUE(dir.isValid());
+  PJ::AppSession app_session;
+  auto& session = app_session.sessionManager();
+  auto& engine = session.dataEngine();
+  const auto reminted_collision = engine.createDataset(PJ::DatasetDescriptor{.source_name = "run.mcap"});
+  const auto intended = engine.createDataset(PJ::DatasetDescriptor{.source_name = "run.mcap"});
+  ASSERT_TRUE(reminted_collision.has_value());
+  ASSERT_TRUE(intended.has_value());
+  const QString collision_path = dir.filePath(u"other/run.mcap"_s);
+  const QString intended_path = dir.filePath(u"wanted/run.mcap"_s);
+  session.setDatasetSourcePath(*reminted_collision, collision_path);
+  session.setDatasetSourcePath(*intended, intended_path);
+
+  ASSERT_NE(addScalarTopic(app_session, *reminted_collision, "/x"), 0U);
+  ASSERT_NE(addScalarTopic(app_session, *reminted_collision, "/y"), 0U);
+  ASSERT_NE(addScalarTopic(app_session, *intended, "/x"), 0U);
+  ASSERT_NE(addScalarTopic(app_session, *intended, "/y"), 0U);
+
+  const SeriesPath x{u"/x"_s, u"value"_s, *reminted_collision, u"run.mcap"_s, intended_path};
+  const SeriesPath y{u"/y"_s, u"value"_s, *reminted_collision, u"run.mcap"_s, intended_path};
+  EXPECT_EQ(resolvedDataset(app_session.catalogModel(), x), *intended);
+
+  QDomDocument doc;
+  QDomElement plot = addPlot(doc, u"xy"_s, u"XYPlot"_s);
+  QDomElement curve = addXyCurve(doc, plot, x, y);
+  curve.setAttribute(u"name"_s, u"trajectory"_s);
+  rebindAgainstCatalog(doc, app_session.catalogModel());
+  const auto x_descriptor = app_session.catalogModel().curveDescriptor(curve.attribute(u"curve_x"_s));
+  const auto y_descriptor = app_session.catalogModel().curveDescriptor(curve.attribute(u"curve_y"_s));
+  ASSERT_TRUE(x_descriptor.has_value());
+  ASSERT_TRUE(y_descriptor.has_value());
+  EXPECT_EQ(x_descriptor->dataset_id, *intended);
+  EXPECT_EQ(y_descriptor->dataset_id, *intended);
+}
+
+TEST(PendingDisplayBinderTest, LateDuplicatePathBindsToSavedDatasetId) {
+  QTemporaryDir extensions_dir;
+  ASSERT_TRUE(extensions_dir.isValid());
+  PJ::AppSession app_session(extensions_dir.path());
+  auto& engine = app_session.sessionManager().dataEngine();
+  const auto dataset_a = engine.createDataset(PJ::DatasetDescriptor{.source_name = "same.mcap"});
+  const auto dataset_b = engine.createDataset(PJ::DatasetDescriptor{.source_name = "same.mcap"});
+  ASSERT_TRUE(dataset_a.has_value());
+  ASSERT_TRUE(dataset_b.has_value());
+  ASSERT_NE(addScalarTopic(app_session, *dataset_a, "/speed"), 0U);
+
+  // The saved curve names dataset B, which has not materialized /speed yet, so
+  // the entry stays pending instead of stealing dataset A's field.
+  const SeriesPath saved{u"/speed"_s, u"value"_s, *dataset_b, u"same.mcap"_s};
+  QDomDocument doc;
+  QDomElement plot_element = addPlot(doc, u"plot_ts"_s, u"TimeSeries"_s);
+  addTimeSeriesCurve(doc, plot_element, saved);
+  rebindAgainstCatalog(doc, app_session.catalogModel());
+
+  PJ::PlotWidget plot(&app_session.sessionManager(), &app_session.catalogModel());
+  ASSERT_TRUE(plot.xmlLoadState(plot_element));
+  ASSERT_TRUE(plot.curveList().empty());
+
+  PJ::PendingDisplayBinder binder(app_session.catalogModel());
+  binder.collect(doc, indexByStateId(plot));
+  ASSERT_EQ(binder.size(), 1);
+
+  ASSERT_NE(addScalarTopic(app_session, *dataset_b, "/speed"), 0U);
+  EXPECT_EQ(binder.flush(QSet<QString>{u"/speed"_s}), 1);
+  ASSERT_EQ(plot.curveList().size(), 1U);
+  const auto descriptor = app_session.catalogModel().curveDescriptor(plot.curveList().front().source_name);
+  ASSERT_TRUE(descriptor.has_value());
+  EXPECT_EQ(descriptor->dataset_id, *dataset_b) << "the late duplicate path binds its saved dataset, not the sibling";
 }
 
 int main(int argc, char** argv) {

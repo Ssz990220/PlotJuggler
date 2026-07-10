@@ -81,6 +81,63 @@ TEST(CatalogModelTest, KeepsDuplicateDatasetTopicsVisibleUnderDatasetRoot) {
   EXPECT_EQ(second_descriptor->topic_id, second_topic);
 }
 
+TEST(CatalogModelTest, DatasetSourceNameReturnsRawIdentityNotDisplayLabel) {
+  PJ::SessionManager session;
+  PJ::CatalogModel catalog(&session);
+
+  const auto first = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "logs/drive.mcap"});
+  const auto second = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "logs/drive.mcap"});
+  ASSERT_TRUE(first.has_value());
+  ASSERT_TRUE(second.has_value());
+  ASSERT_NE(addScalarTopic(session, *first, "/speed"), 0U);
+  ASSERT_NE(addScalarTopic(session, *second, "/speed"), 0U);
+
+  catalog.setDatasetDisplayName(*second, u"Pretty recording"_s);
+  const auto visible = catalog.datasets();
+  ASSERT_EQ(visible.size(), 2U);
+  EXPECT_EQ(visible[0].second, u"logs_drive.mcap"_s);
+  EXPECT_EQ(visible[1].second, u"Pretty recording"_s);
+
+  EXPECT_EQ(catalog.datasetSourceName(*first), u"logs/drive.mcap"_s);
+  EXPECT_EQ(catalog.datasetSourceName(*second), u"logs/drive.mcap"_s);
+  EXPECT_FALSE(catalog.datasetSourceName(999).has_value());
+
+  PJ::CatalogModel detached;
+  EXPECT_FALSE(detached.datasetSourceName(*first).has_value());
+}
+
+TEST(CatalogModelTest, ResolveDatasetIdentityDelegatesToSessionRegistry) {
+  PJ::SessionManager session;
+  PJ::CatalogModel catalog(&session);
+
+  const auto first = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "run.mcap"});
+  const auto second = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "run.mcap"});
+  ASSERT_TRUE(first.has_value());
+  ASSERT_TRUE(second.has_value());
+
+  // Exact live id wins even amid duplicate source names.
+  const PJ::DatasetIdentityResolution exact = catalog.resolveDatasetIdentity(*second, u"run.mcap"_s);
+  ASSERT_TRUE(exact.id.has_value());
+  EXPECT_EQ(*exact.id, second.value());
+
+  // A reminted id with only a duplicated source label must reject as ambiguous.
+  const PJ::DatasetIdentityResolution portable = catalog.resolveDatasetIdentity(999, u"run.mcap"_s);
+  EXPECT_FALSE(portable.id.has_value());
+  EXPECT_TRUE(portable.ambiguous);
+
+  // The facade mirrors the session's source-path registry.
+  session.setDatasetSourcePath(*first, u"/data/run.mcap"_s);
+  EXPECT_EQ(catalog.datasetSourcePath(*first), u"/data/run.mcap"_s);
+  EXPECT_TRUE(catalog.datasetSourcePath(*second).isEmpty());
+
+  // A detached catalog resolves nothing (and is not ambiguous).
+  PJ::CatalogModel detached;
+  const PJ::DatasetIdentityResolution none = detached.resolveDatasetIdentity(*first, u"run.mcap"_s);
+  EXPECT_FALSE(none.id.has_value());
+  EXPECT_FALSE(none.ambiguous);
+  EXPECT_TRUE(detached.datasetSourcePath(*first).isEmpty());
+}
+
 TEST(CatalogModelTest, KeepsDuplicateDatasetObjectTopicsVisibleUnderDatasetRoot) {
   PJ::SessionManager session;
   PJ::CatalogModel catalog(&session);

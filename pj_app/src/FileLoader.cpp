@@ -29,7 +29,6 @@
 #include <optional>
 #include <string>
 #include <string_view>
-#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -418,8 +417,8 @@ bool FileLoader::beginLoad(const LoadRequest& request) {
     // Basename matches; require the same file on disk too. A dataset with no
     // recorded path (created outside FileLoader, e.g. streaming/test data)
     // keeps the legacy basename-only behavior.
-    if (const auto path_it = dataset_source_path_.find(existing_id);
-        path_it != dataset_source_path_.end() && !layout_xml::isSamePath(path_it->second, path)) {
+    if (const QString tracked_path = session_.datasetSourcePath(existing_id);
+        !tracked_path.isEmpty() && !layout_xml::isSamePath(tracked_path, path)) {
       continue;
     }
     if (hints.prefer_reuse) {
@@ -429,14 +428,17 @@ bool FileLoader::beginLoad(const LoadRequest& request) {
       // right file's config when reloading any of its sources.
       QString emit_config = hints.preset_config_json;
       if (emit_config.isEmpty()) {
+        // loadedSources() paths are stored normalized; compare canonically so a
+        // symlink/relative alias of a tracked file still recovers its config.
         const auto& prior = session_.loadedSources();
-        const auto it = std::find_if(prior.begin(), prior.end(), [&path](const auto& src) { return src.path == path; });
+        const auto it = std::find_if(
+            prior.begin(), prior.end(), [&path](const auto& src) { return layout_xml::isSamePath(src.path, path); });
         if (it != prior.end()) {
           emit_config = it->plugin_config_json;
         }
       }
       catalog_.restoreDataset(existing_id);
-      dataset_source_path_[existing_id] = path;
+      session_.setDatasetSourcePath(existing_id, path);
       emit fileLoaded(path, QString(), source_name, emit_config);
       return false;  // layout-replay reuse: done synchronously, no worker
     }
@@ -1039,10 +1041,10 @@ bool FileLoader::beginLoad(const LoadRequest& request) {
   // id (existing on reload, else the fresh one). Fanout: each dataset that took
   // data.
   if (fanouts.size() == 1) {
-    dataset_source_path_[dataset_id] = path;
+    session_.setDatasetSourcePath(dataset_id, path);
   } else {
     for (const DatasetId loaded_id : fanout_loaded_ids) {
-      dataset_source_path_[loaded_id] = path;
+      session_.setDatasetSourcePath(loaded_id, path);
     }
   }
 
@@ -1199,7 +1201,7 @@ void FileLoader::finishLoadOnGui() {
     captured_config.clear();
   }
 
-  dataset_source_path_[dataset_id] = ctx_->path;
+  session_.setDatasetSourcePath(dataset_id, ctx_->path);
   const QString path = ctx_->path;
   const QString source_name = ctx_->source_name;
   ctx_.reset();  // drop the handle/host before notifying — the load is complete
@@ -1259,12 +1261,11 @@ void FileLoader::joinForShutdown() {
 }
 
 QString FileLoader::sourcePathForDataset(DatasetId dataset_id) const {
-  const auto it = dataset_source_path_.find(dataset_id);
-  return it != dataset_source_path_.end() ? it->second : QString();
+  return session_.datasetSourcePath(dataset_id);
 }
 
 void FileLoader::untrackDataset(DatasetId dataset_id) {
-  dataset_source_path_.erase(dataset_id);
+  session_.setDatasetSourcePath(dataset_id, {});
 }
 
 bool FileLoader::loadFile(const QString& path, QWidget* dialog_parent) {

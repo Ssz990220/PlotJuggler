@@ -17,10 +17,9 @@
 #include "pj_base/builtin/builtin_object.hpp"
 #include "pj_datastore/object_store.hpp"
 #include "pj_runtime/CurveDescriptor.h"
+#include "pj_runtime/SessionManager.h"  // DatasetIdentityResolution (returned by value below)
 
 namespace PJ {
-
-class SessionManager;
 
 // Parses the canonical object type from an ObjectTopicDescriptor::metadata_json
 // blob. Invalid or missing metadata maps to sdk::BuiltinObjectType::kNone.
@@ -168,6 +167,43 @@ class CatalogModel : public QObject {
   // Loaded datasets as (id, display name) pairs, ordered by load (dataset id
   // ascending). Derived from current catalog contents.
   [[nodiscard]] std::vector<std::pair<DatasetId, QString>> datasets() const;
+
+  // The datastore's unmodified DatasetInfo::source_name for `dataset_id`.
+  // Unlike datasets(), this is neither a user-facing display-name override nor a
+  // duplicate-label ordinal ("name (2)"). Layout identity resolution uses the
+  // raw value as its portable fallback when a saved DatasetId was reminted.
+  // nullopt when there is no session or the id is unknown.
+  [[nodiscard]] std::optional<QString> datasetSourceName(DatasetId dataset_id) const;
+
+  // Resolves a saved curve identity — a topic+field path optionally qualified by
+  // an exact DatasetId, a raw source label, and a full file path — to the live
+  // concrete catalog key it should rebind to, never guessing by load order. This
+  // is THE shared three-tier resolver for both layout/undo restore
+  // (PendingDisplayBinder) and clipboard paste (PlotWidget):
+  //   * Qualified (id/source/path present): run resolveDatasetIdentity; if it
+  //     names a dataset, bind topic+field within THAT dataset only (never steal a
+  //     same-named field from a sibling → nullopt if it doesn't have it). If the
+  //     exact id failed but a full path is present, the physical path OUTRANKS the
+  //     raw source label: bind when exactly one path-sibling provides the series,
+  //     staying unresolved under ambiguity.
+  //   * Unqualified (legacy/generic): bind only when topic+field is globally
+  //     unique across datasets.
+  // Returns nullopt when there is no session, when the intended dataset lacks the
+  // series, or when the candidates are ambiguous.
+  [[nodiscard]] std::optional<QString> resolveCurveKey(
+      DatasetId saved_id, const QString& saved_source, const QString& saved_path, const QString& topic,
+      const QString& field) const;
+
+  // Resolves the same persisted (id, raw-source, full-path) identity used by
+  // scene widgets (delegates to SessionManager::resolveDatasetIdentity — see
+  // there for resolution order and ambiguity semantics). Kept on the catalog
+  // facade so plot/layout binding does not need a separate FileLoader
+  // dependency. Returns an empty resolution when there is no session.
+  [[nodiscard]] DatasetIdentityResolution resolveDatasetIdentity(
+      DatasetId saved_id, const QString& saved_source, const QString& saved_path = {}) const;
+  // The normalized full source path registered for `dataset_id`, or empty when
+  // there is no session or the dataset has no file-backed path.
+  [[nodiscard]] QString datasetSourcePath(DatasetId dataset_id) const;
 
   // Resolves a stable topic+field path to the matching scalar curve within a
   // specific dataset. Lets a layout rebind across similar datasets where the

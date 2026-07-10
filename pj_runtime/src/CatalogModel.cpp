@@ -7,6 +7,7 @@
 #include <tsl/robin_map.h>
 #include <tsl/robin_set.h>
 
+#include <QFileInfo>
 #include <QHash>
 #include <QLoggingCategory>
 #include <algorithm>
@@ -83,6 +84,27 @@ struct QStringHash {
 // curve/object keys so it never collides with a storage-backed entry.
 [[nodiscard]] QString makeAdvertisedKey(DatasetId dataset_id, const QString& topic_name) {
   return u"dataset:%1/advertised:%2"_s.arg(dataset_id).arg(topic_name);
+}
+
+// True when `live_path` and `saved_path` name the same on-disk source. Replicates
+// pj_app's layout_xml::isSamePath semantics without depending on it (pj_runtime is
+// below pj_app): the normalized-equality short-circuit first, then a QFileInfo
+// canonical fallback. Both sides are normally already normalized (the source-path
+// registry stores normalized paths and layout load normalizes dataset_path), so the
+// literal-equality leg is the load-bearing one; the canonical fallback only matters
+// for symlink/relative variants, and it fails on a file that no longer exists on disk
+// (canonicalFilePath returns empty), which is why the equality leg keeps a
+// deleted-source dataset resolvable by path. Empty inputs never match.
+[[nodiscard]] bool isSamePathLike(const QString& live_path, const QString& saved_path) {
+  if (live_path.isEmpty() || saved_path.isEmpty()) {
+    return false;
+  }
+  if (live_path == saved_path) {
+    return true;
+  }
+  const QString canon_live = QFileInfo(live_path).canonicalFilePath();
+  const QString canon_saved = QFileInfo(saved_path).canonicalFilePath();
+  return !canon_live.isEmpty() && !canon_saved.isEmpty() && canon_live == canon_saved;
 }
 
 [[nodiscard]] CurveDescriptor curveFromItem(const CatalogItem& item) {
@@ -426,6 +448,88 @@ std::vector<std::pair<DatasetId, QString>> CatalogModel::datasets() const {
   return result;
 }
 
+std::optional<QString> CatalogModel::datasetSourceName(DatasetId dataset_id) const {
+  if (impl_->session == nullptr) {
+    return std::nullopt;
+  }
+  const DatasetInfo* dataset = impl_->session->dataEngine().getDataset(dataset_id);
+  if (dataset == nullptr) {
+    return std::nullopt;
+  }
+  return QString::fromStdString(dataset->source_name);
+}
+
+std::optional<QString> CatalogModel::resolveCurveKey(
+    DatasetId saved_id, const QString& saved_source, const QString& saved_path, const QString& topic,
+    const QString& field) const {
+  if (impl_->session == nullptr) {
+    return std::nullopt;
+  }
+
+  // Qualified identities share SessionManager's one resolver: in-session duplicate
+  // basenames keep their exact id, while a reminted/swapped id must also agree with
+  // the FileLoader-known full path (see resolveDatasetIdentity).
+  if (saved_id != 0 || !saved_source.isEmpty() || !saved_path.isEmpty()) {
+    const DatasetIdentityResolution identity = resolveDatasetIdentity(saved_id, saved_source, saved_path);
+    if (identity.id.has_value()) {
+      if (const auto descriptor = descriptorForPath(*identity.id, topic, field)) {
+        return descriptor->name;
+      }
+      // The intended dataset exists but this series has not materialized (or
+      // disappeared). Never steal a same-named field from a sibling source.
+      return std::nullopt;
+    }
+
+    // Exact id failed: the physical file path now OUTRANKS the raw source label.
+    // A same-file single<->fan-out reload relabels the dataset (the former raw
+    // source label no longer exists) while the file path stays stable, so path is
+    // the more trustworthy identity. Bind only when exactly one physical-source
+    // sibling provides this series; ambiguity stays unresolved, never fan-out order.
+    if (!saved_path.isEmpty()) {
+      std::optional<QString> unique_path_match;
+      for (const auto& [dataset_id, name] : datasets()) {
+        (void)name;
+        if (!isSamePathLike(datasetSourcePath(dataset_id), saved_path)) {
+          continue;
+        }
+        if (const auto descriptor = descriptorForPath(dataset_id, topic, field)) {
+          if (unique_path_match.has_value()) {
+            return std::nullopt;
+          }
+          unique_path_match = descriptor->name;
+        }
+      }
+      return unique_path_match;
+    }
+    return std::nullopt;
+  }
+
+  // Legacy/generic unqualified layouts may target a structurally similar
+  // recording. Accept exactly one candidate; duplicates stay unresolved (the
+  // reported multi-dataset bug was this scan taking the first match).
+  std::optional<QString> unique_match;
+  for (const auto& [id, name] : datasets()) {
+    (void)name;
+    if (const auto descriptor = descriptorForPath(id, topic, field)) {
+      if (unique_match.has_value()) {
+        return std::nullopt;
+      }
+      unique_match = descriptor->name;
+    }
+  }
+  return unique_match;
+}
+
+DatasetIdentityResolution CatalogModel::resolveDatasetIdentity(
+    DatasetId saved_id, const QString& saved_source, const QString& saved_path) const {
+  return impl_->session != nullptr ? impl_->session->resolveDatasetIdentity(saved_id, saved_source, saved_path)
+                                   : DatasetIdentityResolution{};
+}
+
+QString CatalogModel::datasetSourcePath(DatasetId dataset_id) const {
+  return impl_->session != nullptr ? impl_->session->datasetSourcePath(dataset_id) : QString{};
+}
+
 std::optional<CurveDescriptor> CatalogModel::descriptorForPath(
     DatasetId dataset_id, const QString& topic, const QString& field) const {
   for (const auto& [key, item] : impl_->items) {
@@ -433,7 +537,9 @@ std::optional<CurveDescriptor> CatalogModel::descriptorForPath(
     if (item.dataset_id != dataset_id || item.topic_name != topic || !isScalarField(item)) {
       continue;
     }
-    if (asScalarField(item)->field_path == field) {
+    // A saved numeric curve must never rebind onto a same-named string field.
+    const ScalarFieldPayload* scalar = asScalarField(item);
+    if (scalar->field_path == field && !scalar->is_string) {
       return curveFromItem(item);
     }
   }

@@ -3,7 +3,9 @@
 
 #include "pj_runtime/SessionManager.h"
 
+#include <QDir>
 #include <QFile>
+#include <QFileInfo>
 #include <QLoggingCategory>
 #include <QString>
 #include <QThread>
@@ -25,6 +27,19 @@ namespace PJ {
 
 namespace {
 Q_LOGGING_CATEGORY(lcSession, "pj.runtime.session")
+
+// Canonicalizes a source path so two aliases of one file (symlink, relative,
+// redundant separators) compare equal. canonicalFilePath resolves symlinks but
+// returns empty for a path that does not exist on disk, so fall back to the
+// cleaned absolute path in that case.
+QString normalizedSourcePath(const QString& path) {
+  if (path.isEmpty()) {
+    return {};
+  }
+  const QFileInfo info(path);
+  const QString canonical = info.canonicalFilePath();
+  return QDir::cleanPath(canonical.isEmpty() ? info.absoluteFilePath() : canonical);
+}
 }  // namespace
 
 SessionManager::SessionManager(QObject* parent) : QObject(parent) {
@@ -53,6 +68,86 @@ SessionManager::~SessionManager() = default;
 
 DataReader SessionManager::createReader() const {
   return data_engine_.createReader();
+}
+
+void SessionManager::setDatasetSourcePath(DatasetId dataset_id, QString path) {
+  path = normalizedSourcePath(path);
+  if (path.isEmpty()) {
+    dataset_source_paths_.erase(dataset_id);
+  } else {
+    dataset_source_paths_.insert_or_assign(dataset_id, std::move(path));
+  }
+}
+
+QString SessionManager::datasetSourcePath(DatasetId dataset_id) const {
+  const auto it = dataset_source_paths_.find(dataset_id);
+  return it != dataset_source_paths_.end() ? it->second : QString{};
+}
+
+DatasetIdentityResolution SessionManager::resolveDatasetIdentity(
+    DatasetId saved_id, const QString& saved_source, const QString& saved_path) const {
+  // normalizedSourcePath canonicalizes an existing file but falls back to the
+  // cleaned-absolute form once the file is gone. For a plain (non-symlinked) path
+  // both forms coincide, so a deleted-on-disk source still compares equal to its
+  // registered path here. (A source under a symlinked directory that is stored
+  // canonical and later deleted cannot be reconciled by string comparison — see the
+  // note on resolveSeriesPath; that residual corner is out of scope.)
+  const QString normalized_saved_path = normalizedSourcePath(saved_path);
+  const auto source_matches = [&saved_source](const DatasetInfo* info) {
+    return info != nullptr && (saved_source.isEmpty() || QString::fromStdString(info->source_name) == saved_source);
+  };
+  const auto path_matches = [this, &normalized_saved_path](DatasetId id) {
+    return normalized_saved_path.isEmpty() || datasetSourcePath(id) == normalized_saved_path;
+  };
+
+  if (saved_id != 0) {
+    const DatasetInfo* exact = data_engine_.getDataset(saved_id);
+    if (source_matches(exact) && path_matches(saved_id)) {
+      return DatasetIdentityResolution{.id = saved_id};
+    }
+  }
+
+  // No portable qualifier means there is no safe remint fallback. This keeps a
+  // legacy numeric-only identity same-session-only.
+  if (normalized_saved_path.isEmpty() && saved_source.isEmpty()) {
+    return {};
+  }
+
+  std::optional<DatasetId> match;
+  for (const DatasetId candidate : data_engine_.listDatasets()) {
+    const DatasetInfo* info = data_engine_.getDataset(candidate);
+    if (!source_matches(info) || !path_matches(candidate)) {
+      continue;
+    }
+    if (match.has_value()) {
+      return DatasetIdentityResolution{.id = std::nullopt, .ambiguous = true};
+    }
+    match = candidate;
+  }
+  return DatasetIdentityResolution{.id = match};
+}
+
+DatasetIdentityResolution SessionManager::resolveObjectDatasetIdentity(
+    DatasetId saved_id, const QString& saved_source, const QString& saved_path,
+    const QString& object_topic_name) const {
+  const DatasetIdentityResolution ordinary = resolveDatasetIdentity(saved_id, saved_source, saved_path);
+  if (ordinary.id.has_value() || saved_path.isEmpty() || object_topic_name.isEmpty()) {
+    return ordinary;
+  }
+  const QString normalized_path = normalizedSourcePath(saved_path);
+  std::optional<DatasetId> match;
+  for (const ObjectTopicId topic_id : object_store_.listTopics()) {
+    const ObjectTopicDescriptor descriptor = object_store_.descriptor(topic_id);
+    if (QString::fromStdString(descriptor.topic_name) != object_topic_name ||
+        datasetSourcePath(descriptor.dataset_id) != normalized_path) {
+      continue;
+    }
+    if (match.has_value() && *match != descriptor.dataset_id) {
+      return DatasetIdentityResolution{.id = std::nullopt, .ambiguous = true};
+    }
+    match = descriptor.dataset_id;
+  }
+  return DatasetIdentityResolution{.id = match, .ambiguous = ordinary.ambiguous && !match.has_value()};
 }
 
 Timestamp SessionManager::datasetDomainDisplayOffset(DatasetId dataset_id) const {
@@ -629,9 +724,11 @@ std::shared_ptr<std::mutex> SessionManager::parserMutexForObjectTopic(ObjectTopi
 }
 
 void SessionManager::recordLoadedSource(QString path, QString prefix, QString plugin_id, QString plugin_config_json) {
-  LoadedSource source{std::move(path), std::move(prefix), std::move(plugin_id), std::move(plugin_config_json)};
-  // Dedup by path: a reload of an already-tracked file updates its entry in
-  // place (keeping list order) rather than appending a duplicate.
+  LoadedSource source{
+      normalizedSourcePath(path), std::move(prefix), std::move(plugin_id), std::move(plugin_config_json)};
+  // Dedup by physical path (matching datasetSourcePath's normalization): a reload
+  // — including a symlink/relative alias — updates its entry in place (keeping
+  // list order) rather than appending a duplicate.
   const auto it = std::find_if(loaded_sources_.begin(), loaded_sources_.end(), [&source](const LoadedSource& existing) {
     return existing.path == source.path;
   });
@@ -649,6 +746,7 @@ void SessionManager::evictDatasetObjects(DatasetId dataset_id) {
 void SessionManager::removeDataset(DatasetId dataset_id) {
   const Timestamp old_reference = globalTimeReference();
   data_engine_.removeDataset(dataset_id);
+  dataset_source_paths_.erase(dataset_id);
   // The engine no longer holds this dataset; drop its pinned earliest-sample and
   // the memoized cross-dataset origin so globalTimeReference() re-scans the
   // survivors (removing the earliest dataset must re-base the display origin).

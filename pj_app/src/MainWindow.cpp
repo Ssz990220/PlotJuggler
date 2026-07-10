@@ -155,6 +155,20 @@ void checkGroupButton(QButtonGroup* group, int id) {
   }
 }
 
+// Layout-relative form of `absolute_path` for persisting a data-source
+// reference: the relative path when the data lives at or beneath `layout_dir`,
+// else the absolute path. This diverges from PJ3 (which always stores relative)
+// — PJ4 avoids brittle ../.. paths so moving a layout file doesn't silently break
+// the data reference. A relative path counts as a "subpath" only when Qt's
+// relativeFilePath did NOT emit a "../" prefix or the literal ".." path; the
+// simpler `!rel.startsWith("..")` check would misclassify legitimate filenames
+// like "..foo" or "..bar/data.csv" as escaping the dir.
+[[nodiscard]] QString relocatableSubpath(const QString& absolute_path, const QDir& layout_dir) {
+  const QString relative = layout_dir.relativeFilePath(absolute_path);
+  const bool is_subpath = relative != ".."_L1 && !relative.startsWith("../"_L1);
+  return is_subpath ? relative : absolute_path;
+}
+
 constexpr auto kDefaultRegistryUrl =
     "https://raw.githubusercontent.com/PlotJuggler/pj-plugin-registry/"
     "refs/heads/development/registry.json";
@@ -2744,6 +2758,16 @@ void MainWindow::loadLayoutFromPath(const QString& path) {
   // the save-time intent; this is the load-time override.
   const QString binding = root.attribute(u"binding"_s, u"source"_s);
   const QDir layout_dir(QFileInfo(path).absoluteDir());
+  // Dataset-path qualifiers are stored relative whenever the data sits beside or
+  // beneath the layout. Resolve them to normalized absolute paths before any
+  // binder sees the document, so every widget compares full paths while a layout
+  // + data directory remains freely relocatable.
+  layout_xml::resolveDatasetSourcePaths(doc, layout_dir);
+  // A pre-path or source-only layout persisted a numeric id plus a basename-like
+  // source. That integer is unsafe outside the session that minted it: strip it on
+  // read as well as on write, leaving the source-only fallback to bind only when
+  // unique.
+  layout_xml::removeUnvalidatedDatasetIds(doc);
   const QList<layout_xml::DataSourceRef> replays = layout_xml::extractDataSource(doc, layout_dir);
   // Set when the user chose "Reload original": the data loads (possibly async on
   // a worker), so the layout apply below must wait for the load queue to drain.
@@ -3104,6 +3128,27 @@ void MainWindow::saveLayoutToPath(const QString& path, bool include_data_source)
     if (!ds.isNull()) {
       doc.documentElement().appendChild(ds);
     }
+    // Widget serializers know DatasetIds but intentionally know nothing about
+    // FileLoader. Stamp one coherent full-path identity across plots (and any
+    // future processor/scene qualifiers) as a post-pass. Use the same relocatable
+    // subpath rule as <fileInfo>; load resolves it before binding.
+    layout_xml::stampDatasetSourcePaths(doc, [this, &layout_dir](std::uint32_t dataset_id) {
+      const QString source_path = file_loader_->sourcePathForDataset(dataset_id);
+      if (source_path.isEmpty()) {
+        return QString{};
+      }
+      return relocatableSubpath(QFileInfo(source_path).absoluteFilePath(), layout_dir);
+    });
+    // A non-file dataset has no path with which a future session can validate a
+    // numeric id. Keep its source fallback but drop that volatile id so a
+    // duplicate basename cannot silently capture the persisted layout.
+    layout_xml::removeUnvalidatedDatasetIds(doc);
+  } else {
+    // A generic layout is intentionally reusable on another recording. Keep exact
+    // DatasetId/source qualifiers in undo and source-bound documents, but strip
+    // them from this file copy so topic+field paths bind — only when unambiguous —
+    // to whatever data is present when the layout is opened.
+    layout_xml::removeDatasetQualifiersForGenericLayout(doc);
   }
   // Always save right-panel state — pure UI chrome, no privacy cost,
   // not gated by Save Data Source.
@@ -3160,6 +3205,13 @@ QDomElement MainWindow::saveDataProcessors(QDomDocument& doc) const {
     QDomElement processor = doc.createElement(u"processor"_s);
     processor.setAttribute(u"input_topic"_s, input_desc->topic_name);
     processor.setAttribute(u"input_field"_s, input_desc->field_path);
+    // Dataset qualifiers so the input rebinds to its own source dataset on restore,
+    // never a same-topic sibling (first-match was part of the reported undo bug).
+    // input_dataset_path is stamped by stampDatasetSourcePaths at layout-file save.
+    processor.setAttribute(u"input_dataset_id"_s, QString::number(recipe.dataset_id));
+    if (const auto source = session_->catalogModel().datasetSourceName(recipe.dataset_id); source.has_value()) {
+      processor.setAttribute(u"input_dataset_source"_s, *source);
+    }
     processor.setAttribute(u"processor_id"_s, QString::fromStdString(recipe.processor_id));
     processor.setAttribute(u"output_name"_s, QString::fromStdString(recipe.output_name));
     if (recipe.processor) {
@@ -3227,22 +3279,21 @@ void MainWindow::restoreDataProcessors(const QDomElement& root) {
   service.clearAllFilters();
 
   const QDomElement element = root.firstChildElement(u"data_processors"_s);
-  const auto datasets = session_->catalogModel().datasets();
   // A null <data_processors> yields a null firstChildElement, so this loop runs zero
   // times — the clear above is then the whole effect.
   for (QDomElement processor = element.firstChildElement(u"processor"_s); !processor.isNull();
        processor = processor.nextSiblingElement(u"processor"_s)) {
     const QString input_topic = processor.attribute(u"input_topic"_s);
     const QString input_field = processor.attribute(u"input_field"_s);
-    // Resolve the input against whichever loaded dataset holds it (first match in
-    // load order), so a multi-file layout restores each filter against its source.
+    // Resolve the input through the same dataset-qualified path a plotted curve
+    // uses: the exact source dataset when its qualifiers still agree, a unique
+    // fallback otherwise, and never a same-topic sibling by load order.
+    const layout_xml::SeriesPath input_path{
+        input_topic, input_field, static_cast<DatasetId>(processor.attribute(u"input_dataset_id"_s).toUInt()),
+        processor.attribute(u"input_dataset_source"_s), processor.attribute(u"input_dataset_path"_s)};
     std::optional<CurveDescriptor> input_desc;
-    for (const auto& [dataset_id, dataset_name] : datasets) {
-      (void)dataset_name;
-      if (auto descriptor = session_->catalogModel().descriptorForPath(dataset_id, input_topic, input_field)) {
-        input_desc = std::move(descriptor);
-        break;
-      }
+    if (const auto input_key = resolveSeriesPath(session_->catalogModel(), input_path); input_key.has_value()) {
+      input_desc = session_->catalogModel().curveDescriptor(*input_key);
     }
     if (!input_desc.has_value()) {
       // The filter's source signal isn't in any loaded dataset -> the filter is
@@ -3551,19 +3602,8 @@ QDomElement MainWindow::appendDataSourceElement(QDomDocument& doc, const QDir& l
     }
     QDomElement file_info = doc.createElement(u"fileInfo"_s);
 
-    const QFileInfo info(src.path);
-    const QString abs = info.absoluteFilePath();
-    const QString rel = layout_dir.relativeFilePath(abs);
-    // Prefer the relative form when the data lives at or beneath the layout
-    // dir; fall back to absolute when it escapes. This diverges from PJ3,
-    // which always stores relative — PJ4 avoids brittle ../.. paths so that
-    // moving a layout file doesn't silently break the data reference.
-    // A relative path is a "subpath" only when Qt's relativeFilePath did
-    // NOT emit a "../" prefix or the literal ".." path. The earlier check
-    // (`!rel.startsWith("..")`) would misclassify legitimate filenames
-    // like "..foo" or "..bar/data.csv" as escaping the dir.
-    const bool is_subpath = rel != u".."_s && !rel.startsWith(u"../"_s);
-    file_info.setAttribute(u"filename"_s, is_subpath ? rel : abs);
+    const QString abs = QFileInfo(src.path).absoluteFilePath();
+    file_info.setAttribute(u"filename"_s, relocatableSubpath(abs, layout_dir));
     file_info.setAttribute(u"prefix"_s, src.prefix);
 
     // Source Timeline state for this file, re-bound by path on reload. The

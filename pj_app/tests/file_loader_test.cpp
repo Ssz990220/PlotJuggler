@@ -283,6 +283,20 @@ TEST_F(FileLoaderTest, SourcePathForDatasetTracksLoadedFileAndUntracks) {
   EXPECT_TRUE(loader_->sourcePathForDataset(id).isEmpty()) << "untrackDataset must drop the association";
 }
 
+// Source-path identity has ONE owner: SessionManager's registry. FileLoader is
+// a pass-through, so plots/scenes/processors resolving through the session see
+// exactly what the loader recorded — and untrackDataset clears the shared entry.
+TEST_F(FileLoaderTest, SourcePathRegistryLivesInSessionManager) {
+  ASSERT_TRUE(load());
+  const PJ::DatasetId id = datasetNamed("sensors.mock");
+  ASSERT_NE(id, 0u);
+  EXPECT_EQ(session().datasetSourcePath(id), mock_path_);
+  EXPECT_EQ(loader_->sourcePathForDataset(id), session().datasetSourcePath(id));
+
+  loader_->untrackDataset(id);
+  EXPECT_TRUE(session().datasetSourcePath(id).isEmpty());
+}
+
 // Core of the resurrection fix (MainWindow::appendDataSourceElement's liveness
 // filter): once a dataset is removed, the file it came from must drop out of the
 // set of source paths still backing a live dataset — otherwise a saved layout

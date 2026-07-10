@@ -8,8 +8,10 @@
 #include <QList>
 #include <QString>
 #include <QStringList>
+#include <cstdint>
 #include <functional>
 #include <optional>
+#include <utility>
 
 namespace PJ::layout_xml {
 
@@ -96,23 +98,56 @@ struct SourceTimelineViewState {
 // Empty inputs are treated as "not the same".
 [[nodiscard]] bool isSamePath(const QString& a, const QString& b);
 
-// Stable, file-portable identity of a series: the topic plus the field path
-// within that topic (e.g. "/vehicle/imu" + "linear_accel.x"). Dataset-agnostic,
-// so a layout built on one recording rebinds to a similar one with the same
-// topics/fields. This replaces the engine's opaque per-load catalog key
-// (CurveDescriptor::name) as the persisted identity in v2 layouts, mirroring
-// PJ3's human series-name identity (split into two attributes only because PJ4
-// field paths can themselves contain '/').
+// Stable identity of a series: topic + field path, optionally qualified by an
+// exact live DatasetId, a portable raw source label, and a full file path. The
+// qualifiers stop same-shaped datasets from being interchanged during undo,
+// while unqualified legacy layouts still rebind when the structural path is
+// globally unique. This replaces the engine's opaque per-load catalog key
+// (CurveDescriptor::name); topic and field stay separate because PJ4 field
+// paths can themselves contain '/'. The explicit constructor keeps existing
+// two-argument brace-initializations compiling.
 struct SeriesPath {
+  SeriesPath(
+      QString topic_in = {}, QString field_in = {}, std::uint32_t dataset_id_in = 0, QString dataset_source_in = {},
+      QString dataset_path_in = {})
+      : topic(std::move(topic_in)),
+        field(std::move(field_in)),
+        dataset_id(dataset_id_in),
+        dataset_source(std::move(dataset_source_in)),
+        dataset_path(std::move(dataset_path_in)) {}
+
   QString topic;
   QString field;
+  // Exact in-session hint for undo/redo (0 = unqualified). A resolver must
+  // reject ambiguity rather than silently pick the first dataset exposing the
+  // same topic/field.
+  std::uint32_t dataset_id = 0;
+  // Portable raw source label (DatasetInfo::source_name), usable for layout
+  // reload after ids are reminted.
+  QString dataset_source;
+  // Full file identity stamped by FileLoader at layout-file save. Unlike
+  // dataset_source (often a basename/display label), it distinguishes same-named
+  // files in different directories and guards a coincidentally reminted id.
+  QString dataset_path;
 
   [[nodiscard]] bool operator==(const SeriesPath& other) const {
-    return topic == other.topic && field == other.field;
+    return topic == other.topic && field == other.field && dataset_id == other.dataset_id &&
+           dataset_source == other.dataset_source && dataset_path == other.dataset_path;
   }
   // Human-readable form for missing-curve lists: "topic/field".
   [[nodiscard]] QString display() const;
 };
+
+// Read one curve's SeriesPath off a <curve> element, honoring the range-checked
+// dataset-id parse (an out-of-range or non-numeric id decays to 0/unqualified).
+// These are the single reader for curve attributes so hand-built SeriesPath call
+// sites (e.g. PendingDisplayBinder) cannot drift from the range-check.
+//   * readTimeSeriesPath: the plain topic/field + dataset_* qualifiers.
+//   * readXyXPath / readXyYPath: the x_/y_-prefixed XY-axis qualifiers.
+// nullopt when the element lacks the relevant topic attribute (no stable identity).
+[[nodiscard]] std::optional<SeriesPath> readTimeSeriesPath(const QDomElement& curve);
+[[nodiscard]] std::optional<SeriesPath> readXyXPath(const QDomElement& curve);
+[[nodiscard]] std::optional<SeriesPath> readXyYPath(const QDomElement& curve);
 
 // Resolves a stable SeriesPath to a concrete catalog key within the target
 // dataset, or std::nullopt when that dataset has no matching topic+field.
@@ -129,6 +164,42 @@ using SeriesKeyResolver = std::function<std::optional<QString>(const SeriesPath&
 // those key attributes cleared and its path(s) returned in the (de-duplicated)
 // result so the caller can prompt/strip. In place.
 [[nodiscard]] QList<SeriesPath> rebindCurveKeys(QDomDocument& doc, const SeriesKeyResolver& resolve);
+
+// Converts a saved workspace document into a portable generic layout by removing
+// the exact dataset hints (dataset_id / dataset_source / dataset_path and their
+// x_/y_ XY variants) from plotted TS/XY curves, plus input_dataset_* from
+// data-processor <processor> inputs. The topic+field identity remains and may bind
+// at apply time only when unique in the loaded data. Scene docks are deliberately
+// NOT touched — they own their qualifier round-trip and require the numeric id even
+// in a generic layout. Undo snapshots and source-bound layouts keep their qualifiers.
+void removeDatasetQualifiersForGenericLayout(QDomDocument& doc);
+
+// Maps a serialized DatasetId to its FileLoader-known full source path (empty for
+// a non-file/unknown dataset). Supplied to stampDatasetSourcePaths so the XML
+// layer needs no FileLoader dependency of its own.
+using DatasetPathLookup = std::function<QString(std::uint32_t)>;
+
+// Adds the FileLoader-known full-path companion (`*_dataset_path`) next to every
+// persisted `*_dataset_id` on plotted TS/XY curves and data-processor <processor>
+// inputs. Scene docks are NOT visited — they own their qualifier round-trip through
+// their own save/restore (see removeDatasetQualifiersForGenericLayout). A dataset
+// the lookup can't place keeps its id/source qualifier unchanged.
+void stampDatasetSourcePaths(QDomDocument& doc, const DatasetPathLookup& lookup);
+
+// Makes a document safe to persist outside the live session. A non-zero numeric
+// id WITHOUT a full-path qualifier is only a volatile in-session hint; strip it
+// so a later session cannot accept a coincidentally reminted id merely because a
+// basename-like source label also matches. Path-qualified ids and zero-valued
+// local-scene ids are left intact; the retained source label may still rebind
+// when unique. Scoped to plot curves and <processor> inputs (same reason as
+// stampDatasetSourcePaths); scene ids survive so restored scene layers keep binding.
+void removeUnvalidatedDatasetIds(QDomDocument& doc);
+
+// Resolves relative `*_dataset_path` qualifiers against the layout file's
+// directory before any plot/processor/scene restore consumes them, so a
+// source-bound layout moves together with its data. Undo snapshots carry no such
+// portable path attributes and are unchanged.
+void resolveDatasetSourcePaths(QDomDocument& doc, const QDir& layout_dir);
 
 // Removes every <curve> left without any usable key after rebindCurveKeys
 // (empty name and empty curve_x/curve_y). Two-pass so the live node list

@@ -319,6 +319,121 @@ TEST(DockWidgetPlaceholderTest, PlotWidgetCopyPasteUsesClipboardXmlAndKeepsTarge
   EXPECT_EQ(undo_count, 1);
 }
 
+// Two datasets share "/imu/accel". The curve is copied from dataset 2, then
+// pasted into a session where dataset 1 (same topic, loaded first) is also
+// present. xmlSaveState stamps dataset_id + dataset_source on the clipboard
+// XML, so rebindClipboardCurveKeys must resolve the pasted curve back to
+// dataset 2's key via CatalogModel::resolveDatasetIdentity — never dataset 1's,
+// which a naive first-match topic+field scan would pick.
+TEST(DockWidgetPlaceholderTest, PlotWidgetPasteResolvesDatasetQualifiedCurveToItsSourceDataset) {
+  QGuiApplication::clipboard()->clear();
+
+  PJ::SessionManager session;
+  PJ::CatalogModel catalog(&session);
+  auto dataset1 = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "run1.mcap"});
+  auto dataset2 = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "run2.mcap"});
+  ASSERT_TRUE(dataset1.has_value()) << dataset1.error();
+  ASSERT_TRUE(dataset2.has_value()) << dataset2.error();
+  ASSERT_NE(addScalarTopic(session, *dataset1, "/imu/accel"), 0U);
+  const PJ::TopicId topic2_id = addScalarTopic(session, *dataset2, "/imu/accel");
+  ASSERT_NE(topic2_id, 0U);
+  const QString key2 = keyForTopic(catalog, topic2_id);
+  ASSERT_FALSE(key2.isEmpty());
+
+  PJ::PlotWidget source(&session, &catalog);
+  ASSERT_NE(source.addCurve(key2), nullptr);
+  ASSERT_TRUE(QMetaObject::invokeMethod(&source, "copyWidgetToClipboard", Qt::DirectConnection));
+  EXPECT_TRUE(QGuiApplication::clipboard()->text().contains(u"dataset_source=\"run2.mcap\""_s));
+
+  PJ::PlotWidget target(&session, &catalog);
+  ASSERT_TRUE(QMetaObject::invokeMethod(&target, "pasteWidgetFromClipboard", Qt::DirectConnection));
+
+  ASSERT_EQ(target.curveList().size(), 1U);
+  EXPECT_EQ(target.curveList().front().source_name, key2)
+      << "the dataset qualifier must bind the paste to dataset 2, not dataset 1's same-topic key";
+}
+
+// Same two-dataset setup, but the copied curve's dataset qualifiers are
+// stripped before paste (an old/generic copy). Two datasets provide
+// "/imu/accel", so the paste must NOT rebind to either — the copied concrete
+// key is left as-is, which xmlLoadState then fails to resolve into a curve.
+TEST(DockWidgetPlaceholderTest, PlotWidgetPasteOfUnqualifiedAmbiguousCurveDoesNotRebindToFirstDataset) {
+  QGuiApplication::clipboard()->clear();
+
+  PJ::SessionManager session;
+  PJ::CatalogModel catalog(&session);
+  auto dataset1 = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "run1.mcap"});
+  auto dataset2 = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "run2.mcap"});
+  ASSERT_TRUE(dataset1.has_value()) << dataset1.error();
+  ASSERT_TRUE(dataset2.has_value()) << dataset2.error();
+  const PJ::TopicId topic1_id = addScalarTopic(session, *dataset1, "/imu/accel");
+  ASSERT_NE(topic1_id, 0U);
+  const PJ::TopicId topic2_id = addScalarTopic(session, *dataset2, "/imu/accel");
+  ASSERT_NE(topic2_id, 0U);
+  const QString key1 = keyForTopic(catalog, topic1_id);
+  ASSERT_FALSE(key1.isEmpty());
+
+  PJ::PlotWidget source(&session, &catalog);
+  ASSERT_NE(source.addCurve(key1), nullptr);
+  ASSERT_TRUE(QMetaObject::invokeMethod(&source, "copyWidgetToClipboard", Qt::DirectConnection));
+
+  // Strip the dataset qualifiers the source just stamped, simulating a copy
+  // made before this identity contract existed (or a hand-edited clipboard).
+  QDomDocument clipboard_doc;
+  ASSERT_TRUE(clipboard_doc.setContent(QGuiApplication::clipboard()->text()));
+  QDomElement curve = clipboard_doc.documentElement().firstChildElement(u"curve"_s);
+  ASSERT_FALSE(curve.isNull());
+  curve.removeAttribute(u"dataset_id"_s);
+  curve.removeAttribute(u"dataset_source"_s);
+  QGuiApplication::clipboard()->setText(clipboard_doc.toString(2));
+
+  PJ::PlotWidget target(&session, &catalog);
+  ASSERT_TRUE(QMetaObject::invokeMethod(&target, "pasteWidgetFromClipboard", Qt::DirectConnection));
+
+  ASSERT_EQ(target.curveList().size(), 1U);
+  EXPECT_EQ(target.curveList().front().source_name, key1)
+      << "an unqualified ambiguous topic+field must keep the copied concrete key, not rebind to either dataset";
+}
+
+// FIX C: a copied curve is QUALIFIED for a dataset that is gone at paste time, but
+// its stale concrete key (from the copy session) happens to still name a LIVE series
+// in a different dataset. Because the curve is qualified and its identity fails to
+// resolve, rebindClipboardCurveKeys must CLEAR the concrete key so it can never
+// collide with the unrelated live series — the curve then drops in xmlLoadState.
+TEST(DockWidgetPlaceholderTest, PlotWidgetPasteOfQualifiedMissingDatasetDropsInsteadOfBindingStaleKey) {
+  QGuiApplication::clipboard()->clear();
+
+  PJ::SessionManager session;
+  PJ::CatalogModel catalog(&session);
+  auto dataset = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "present.mcap"});
+  ASSERT_TRUE(dataset.has_value()) << dataset.error();
+  const PJ::TopicId topic_id = addScalarTopic(session, *dataset, "/imu/accel");
+  ASSERT_NE(topic_id, 0U);
+  const QString live_key = keyForTopic(catalog, topic_id);
+  ASSERT_FALSE(live_key.isEmpty());
+
+  PJ::PlotWidget source(&session, &catalog);
+  ASSERT_NE(source.addCurve(live_key), nullptr);
+  ASSERT_TRUE(QMetaObject::invokeMethod(&source, "copyWidgetToClipboard", Qt::DirectConnection));
+
+  // Rewrite the clipboard so the curve carries the SAME live concrete key but a
+  // dataset qualifier naming an ABSENT source (a copy from a since-closed dataset).
+  QDomDocument clipboard_doc;
+  ASSERT_TRUE(clipboard_doc.setContent(QGuiApplication::clipboard()->text()));
+  QDomElement curve = clipboard_doc.documentElement().firstChildElement(u"curve"_s);
+  ASSERT_FALSE(curve.isNull());
+  EXPECT_EQ(curve.attribute(u"name"_s), live_key);
+  curve.setAttribute(u"dataset_source"_s, u"gone.mcap"_s);
+  curve.setAttribute(u"dataset_id"_s, u"999"_s);
+  QGuiApplication::clipboard()->setText(clipboard_doc.toString(2));
+
+  PJ::PlotWidget target(&session, &catalog);
+  ASSERT_TRUE(QMetaObject::invokeMethod(&target, "pasteWidgetFromClipboard", Qt::DirectConnection));
+
+  EXPECT_TRUE(target.curveList().empty())
+      << "a qualified curve whose dataset is gone must drop, not bind its stale key to a live different series";
+}
+
 TEST(DockWidgetPlaceholderTest, PlaceholderPasteCreatesPlotFromClipboardXml) {
   QGuiApplication::clipboard()->clear();
 

@@ -176,6 +176,7 @@ if(PJ_BUILD_TESTS)
 
     add_executable(pending_display_binder_test
         tests/pending_display_binder_test.cpp
+        tests/dataset_test_helpers.h
         src/PendingDisplayBinder.cpp
         src/PendingDisplayBinder.h
         src/LayoutXml.cpp
@@ -196,6 +197,30 @@ if(PJ_BUILD_TESTS)
         target_compile_options(pending_display_binder_test PRIVATE ${PJ_WARNING_FLAGS})
     endif()
     add_test(NAME PendingDisplayBinderTest COMMAND pending_display_binder_test)
+
+    add_executable(multi_dataset_rebind_test
+        tests/multi_dataset_rebind_test.cpp
+        tests/dataset_test_helpers.h
+        src/PendingDisplayBinder.cpp
+        src/PendingDisplayBinder.h
+        src/LayoutXml.cpp
+        src/LayoutXml.h
+    )
+    target_include_directories(multi_dataset_rebind_test PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src
+    )
+    target_link_libraries(multi_dataset_rebind_test PRIVATE
+        pj_runtime
+        pj_plotting
+        pj_scene_common
+        Qt6::Widgets
+        Qt6::Xml
+        GTest::gtest
+    )
+    if(DEFINED PJ_WARNING_FLAGS)
+        target_compile_options(multi_dataset_rebind_test PRIVATE ${PJ_WARNING_FLAGS})
+    endif()
+    add_test(NAME MultiDatasetRebindTest COMMAND multi_dataset_rebind_test)
 
     add_executable(topic_demand_controller_test
         tests/topic_demand_controller_test.cpp

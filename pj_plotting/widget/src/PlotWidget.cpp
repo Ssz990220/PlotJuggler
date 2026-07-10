@@ -529,6 +529,7 @@ QDomElement PlotWidget::xmlSaveState(QDomDocument& doc) const {
   // the concrete key (PJ::LayoutXml::rebindCurveKeys), so the saved form stays
   // valid across reloads and similar datasets.
   const auto write_stable_path = [&](QDomElement& element, const QString& topic_attr, const QString& field_attr,
+                                     const QString& dataset_id_attr, const QString& dataset_source_attr,
                                      const QString& key) {
     if (catalog_ == nullptr) {
       return;
@@ -536,6 +537,13 @@ QDomElement PlotWidget::xmlSaveState(QDomDocument& doc) const {
     if (const auto descriptor = catalog_->curveDescriptor(key); descriptor.has_value()) {
       element.setAttribute(topic_attr, descriptor->topic_name);
       element.setAttribute(field_attr, descriptor->field_path);
+      // Exact-id + raw-source qualifiers so a same-topic sibling dataset is never
+      // interchanged on restore. The raw DatasetInfo::source_name is preferred
+      // over the deduped display label (dataset_name) because it is the portable
+      // identity a later-session reload compares against.
+      element.setAttribute(dataset_id_attr, QString::number(descriptor->dataset_id));
+      element.setAttribute(
+          dataset_source_attr, catalog_->datasetSourceName(descriptor->dataset_id).value_or(descriptor->dataset_name));
     }
   };
 
@@ -549,10 +557,14 @@ QDomElement PlotWidget::xmlSaveState(QDomDocument& doc) const {
     if (auto* xy_series = dynamic_cast<PointSeriesXY*>(info.curve->data())) {
       // An XY curve's title is the user alias (not derivable from x/y), so persist it.
       curve_element.setAttribute(u"name"_s, info.source_name);
-      write_stable_path(curve_element, u"x_topic"_s, u"x_field"_s, xy_series->xSource().name);
-      write_stable_path(curve_element, u"y_topic"_s, u"y_field"_s, xy_series->ySource().name);
+      write_stable_path(
+          curve_element, u"x_topic"_s, u"x_field"_s, u"x_dataset_id"_s, u"x_dataset_source"_s,
+          xy_series->xSource().name);
+      write_stable_path(
+          curve_element, u"y_topic"_s, u"y_field"_s, u"y_dataset_id"_s, u"y_dataset_source"_s,
+          xy_series->ySource().name);
     } else {
-      write_stable_path(curve_element, u"topic"_s, u"field"_s, info.source_name);
+      write_stable_path(curve_element, u"topic"_s, u"field"_s, u"dataset_id"_s, u"dataset_source"_s, info.source_name);
     }
     plot_element.appendChild(curve_element);
   }
@@ -1134,6 +1146,19 @@ bool PlotWidget::canPasteWidgetFromClipboard() const {
 }
 
 void PlotWidget::stampClipboardCurveKeys(QDomElement& plot_element) const {
+  // Full-path qualifier so a clipboard paste in a later session can validate a
+  // reminted id (see rebindClipboardCurveKeys). xmlSaveState already stamped
+  // dataset_id + dataset_source; the path is the tiebreak for same-basename files.
+  const auto stamp_path = [this](QDomElement& curve, const QString& path_attr, DatasetId dataset_id) {
+    if (catalog_ == nullptr) {
+      return;
+    }
+    const QString path = catalog_->datasetSourcePath(dataset_id);
+    if (!path.isEmpty()) {
+      curve.setAttribute(path_attr, path);
+    }
+  };
+
   QDomElement curve_element = plot_element.firstChildElement(u"curve"_s);
   for (const CurveInfo& info : curveList()) {
     if (info.curve == nullptr || curve_element.isNull()) {
@@ -1143,6 +1168,12 @@ void PlotWidget::stampClipboardCurveKeys(QDomElement& plot_element) const {
     if (auto* xy_series = dynamic_cast<PointSeriesXY*>(info.curve->data())) {
       curve_element.setAttribute(u"curve_x"_s, xy_series->xSource().name);
       curve_element.setAttribute(u"curve_y"_s, xy_series->ySource().name);
+      stamp_path(curve_element, u"x_dataset_path"_s, xy_series->xSource().dataset_id);
+      stamp_path(curve_element, u"y_dataset_path"_s, xy_series->ySource().dataset_id);
+    } else if (catalog_ != nullptr) {
+      if (const auto descriptor = catalog_->curveDescriptor(info.source_name); descriptor.has_value()) {
+        stamp_path(curve_element, u"dataset_path"_s, descriptor->dataset_id);
+      }
     }
     curve_element = curve_element.nextSiblingElement(u"curve"_s);
   }
@@ -1152,33 +1183,76 @@ void PlotWidget::rebindClipboardCurveKeys(QDomElement& plot_element) const {
   if (catalog_ == nullptr) {
     return;
   }
-  const auto resolve = [this](const QString& topic, const QString& field) -> QString {
+  // Clipboard XML carries the same dataset qualifiers as any snapshot (dataset_id +
+  // dataset_source + full dataset_path, written by xmlSaveState/stampClipboardCurveKeys),
+  // and the clipboard outlives undo-history epochs: a pasted id may be stale or reminted.
+  // Three-way result:
+  //   value  = resolved concrete key -> set it;
+  //   empty  = the curve WAS qualified but resolution failed -> CLEAR the concrete key,
+  //            so a stale opaque key from another session can never collide with a live
+  //            different-dataset series;
+  //   nullopt = unqualified legacy copy that stays ambiguous -> leave the copied key
+  //             intact (today's behavior; xmlLoadState drops it if it no longer resolves).
+  const auto resolve = [this](
+                           const QDomElement& curve, const QString& topic_attr, const QString& field_attr,
+                           const QString& id_attr, const QString& source_attr,
+                           const QString& path_attr) -> std::optional<QString> {
+    const QString topic = curve.attribute(topic_attr);
+    const QString field = curve.attribute(field_attr);
     if (topic.isEmpty() || field.isEmpty()) {
-      return {};
+      return std::nullopt;
     }
-    for (const CurveDescriptor& descriptor : catalog_->curves()) {
-      if (descriptor.topic_name == topic && descriptor.field_path == field) {
-        return descriptor.name;
-      }
+    const DatasetId dataset_id = curve.attribute(id_attr).toUInt();
+    const QString dataset_source = curve.attribute(source_attr);
+    const QString dataset_path = curve.attribute(path_attr);
+    // Shared resolver (same three tiers as layout/undo restore, incl. the
+    // full-path-fallback leg the local scan used to lack) — a resolved key comes
+    // back concrete. A miss is nullopt, so map it to the 3-way apply below by
+    // re-deriving whether the curve WAS qualified: qualified-miss clears the key
+    // (never let a stale opaque key collide with a live different-dataset series),
+    // unqualified-miss leaves it untouched (today's behavior).
+    const auto key = catalog_->resolveCurveKey(dataset_id, dataset_source, dataset_path, topic, field);
+    if (key.has_value()) {
+      return key;
     }
-    return {};
+    const bool was_qualified = dataset_id != 0 || !dataset_source.isEmpty() || !dataset_path.isEmpty();
+    return was_qualified ? std::optional<QString>{QString{}} : std::nullopt;
+  };
+
+  // Applies a resolve() result to one key attribute: overwrite on success, remove
+  // on qualified failure (empty), leave untouched when the result is nullopt.
+  const auto apply_key = [](QDomElement& curve, const QString& key_attr, const std::optional<QString>& result) {
+    if (!result.has_value()) {
+      return;
+    }
+    if (result->isEmpty()) {
+      curve.removeAttribute(key_attr);
+    } else {
+      curve.setAttribute(key_attr, *result);
+    }
   };
 
   for (QDomElement curve = plot_element.firstChildElement(u"curve"_s); !curve.isNull();
        curve = curve.nextSiblingElement(u"curve"_s)) {
     if (curve.hasAttribute(u"x_topic"_s)) {
-      const QString x_key = resolve(curve.attribute(u"x_topic"_s), curve.attribute(u"x_field"_s));
-      const QString y_key = resolve(curve.attribute(u"y_topic"_s), curve.attribute(u"y_field"_s));
-      if (!x_key.isEmpty() && !y_key.isEmpty()) {
-        curve.setAttribute(u"curve_x"_s, x_key);
-        curve.setAttribute(u"curve_y"_s, y_key);
+      const std::optional<QString> x_key =
+          resolve(curve, u"x_topic"_s, u"x_field"_s, u"x_dataset_id"_s, u"x_dataset_source"_s, u"x_dataset_path"_s);
+      const std::optional<QString> y_key =
+          resolve(curve, u"y_topic"_s, u"y_field"_s, u"y_dataset_id"_s, u"y_dataset_source"_s, u"y_dataset_path"_s);
+      // An XY curve is undrawable unless BOTH axes resolve. If either axis was
+      // qualified-but-failed, clear both keys so no stale half survives.
+      if (x_key.has_value() && !x_key->isEmpty() && y_key.has_value() && !y_key->isEmpty()) {
+        curve.setAttribute(u"curve_x"_s, *x_key);
+        curve.setAttribute(u"curve_y"_s, *y_key);
+      } else if ((x_key.has_value() && x_key->isEmpty()) || (y_key.has_value() && y_key->isEmpty())) {
+        curve.removeAttribute(u"curve_x"_s);
+        curve.removeAttribute(u"curve_y"_s);
       }
       continue;
     }
-    const QString key = resolve(curve.attribute(u"topic"_s), curve.attribute(u"field"_s));
-    if (!key.isEmpty()) {
-      curve.setAttribute(u"name"_s, key);
-    }
+    apply_key(
+        curve, u"name"_s,
+        resolve(curve, u"topic"_s, u"field"_s, u"dataset_id"_s, u"dataset_source"_s, u"dataset_path"_s));
   }
 }
 

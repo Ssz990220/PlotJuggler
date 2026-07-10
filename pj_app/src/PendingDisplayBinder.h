@@ -58,7 +58,13 @@ struct PendingDisplayEntry {
   }
 };
 
-// Resolves a stable layout path to the first matching concrete catalog key in dataset load order.
+// Resolves a stable layout SeriesPath to a concrete catalog key, never guessing by
+// load order. Thin adapter that unpacks the SeriesPath's qualifiers into
+// CatalogModel::resolveCurveKey, which owns the shared three-tier algorithm (exact
+// id while qualifiers agree → unique full-path match → unique raw-source match, then
+// confirm topic+field; unqualified path binds only when topic+field is globally
+// unique). Kept as a free function so layout/undo restore call sites read the same
+// as before; see resolveCurveKey for the full resolution + ambiguity semantics.
 [[nodiscard]] std::optional<QString> resolveSeriesPath(const CatalogModel& catalog, const layout_xml::SeriesPath& path);
 
 // GUI-thread-only registry for display intents whose topics were not in the catalog

@@ -32,13 +32,11 @@ std::vector<DatasetId> datasetsNaming(const CatalogModel& catalog, const QString
 }  // namespace
 
 std::optional<QString> resolveSeriesPath(const CatalogModel& catalog, const layout_xml::SeriesPath& path) {
-  for (const auto& [id, name] : catalog.datasets()) {
-    (void)name;
-    if (const auto descriptor = catalog.descriptorForPath(id, path.topic, path.field)) {
-      return descriptor->name;
-    }
-  }
-  return std::nullopt;
+  // Thin adapter over the shared catalog resolver: unpack the SeriesPath's
+  // qualifiers into CatalogModel::resolveCurveKey, which owns the whole three-tier
+  // algorithm (qualified exact-id/path-fallback + unqualified unique-match) so this
+  // and PlotWidget's clipboard rebind never drift.
+  return catalog.resolveCurveKey(path.dataset_id, path.dataset_source, path.dataset_path, path.topic, path.field);
 }
 
 PendingDisplayBinder::PendingDisplayBinder(CatalogModel& catalog, TopicDemandTracker* tracker)
@@ -100,21 +98,21 @@ void PendingDisplayBinder::collect(const QDomDocument& doc, const QHash<QString,
       PendingDisplayEntry entry;
       entry.plot = plot;
 
-      if (curve.hasAttribute(u"x_topic"_s)) {
-        entry.x_path = layout_xml::SeriesPath{
-            curve.attribute(u"x_topic"_s),
-            curve.attribute(u"x_field"_s),
-        };
-        entry.path = layout_xml::SeriesPath{
-            curve.attribute(u"y_topic"_s),
-            curve.attribute(u"y_field"_s),
-        };
+      // Read curve attributes through layout_xml's single reader so the
+      // range-checked dataset-id parse stays consistent with the layout writer.
+      // XY curves carry x_/y_ pairs (Y is the entry's primary path); a
+      // time-series curve carries the plain topic/field pair.
+      if (const auto x_path = layout_xml::readXyXPath(curve)) {
+        entry.x_path = *x_path;
+        if (const auto y_path = layout_xml::readXyYPath(curve)) {
+          entry.path = *y_path;
+        }
         if (resolveSeriesPath(catalog_, entry.x_path).has_value() &&
             resolveSeriesPath(catalog_, entry.path).has_value()) {
           continue;
         }
-      } else if (curve.hasAttribute(u"topic"_s)) {
-        entry.path = layout_xml::SeriesPath{curve.attribute(u"topic"_s), curve.attribute(u"field"_s)};
+      } else if (const auto ts_path = layout_xml::readTimeSeriesPath(curve)) {
+        entry.path = *ts_path;
         if (resolveSeriesPath(catalog_, entry.path).has_value()) {
           continue;
         }
@@ -247,9 +245,18 @@ bool PendingDisplayBinder::tryCompleteSceneEntry(PendingDisplayEntry& entry) {
 
 std::optional<QString> PendingDisplayBinder::resolveEntryPath(
     const layout_xml::SeriesPath& path, std::optional<DatasetId> preferred) const {
+  // A preferred dataset (an interactive drop's own placeholder) binds ONLY its
+  // exact dataset while that dataset lives: if it does not yet name the series,
+  // wait for it — never steal a same-named field from a sibling. Only when the
+  // id is gone entirely (stream reconnects mint fresh DatasetIds) does the entry
+  // fall through to the strict resolution below, which binds a unique successor
+  // and stays pending under ambiguity.
   if (preferred.has_value()) {
     if (const auto descriptor = catalog_.descriptorForPath(*preferred, path.topic, path.field)) {
       return descriptor->name;
+    }
+    if (catalog_.datasetSourceName(*preferred).has_value()) {
+      return std::nullopt;
     }
   }
   return resolveSeriesPath(catalog_, path);

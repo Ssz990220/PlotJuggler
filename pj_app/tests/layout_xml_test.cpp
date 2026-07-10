@@ -11,6 +11,7 @@
 #include <QString>
 #include <QStringList>
 #include <QTemporaryDir>
+#include <cstdint>
 
 #include "LayoutXml.h"
 using namespace Qt::StringLiterals;
@@ -473,6 +474,244 @@ TEST(ExtractSeriesPaths, SkipsCurvesWithoutStableIdentity) {
   legacy.setAttribute(u"name"_s, u"dataset:1/topic:2/column:0"_s);
   pd.plot.appendChild(legacy);
   EXPECT_TRUE(PJ::layout_xml::extractSeriesPaths(pd.doc).isEmpty());
+}
+
+TEST(ExtractSeriesPaths, PreservesDatasetQualifiers) {
+  PlotDoc pd = makePlotDoc();
+  QDomElement curve = addTsCurve(pd, u"/imu"_s, u"x"_s);
+  curve.setAttribute(u"dataset_id"_s, u"4"_s);
+  curve.setAttribute(u"dataset_source"_s, u"run.mcap"_s);
+  curve.setAttribute(u"dataset_path"_s, u"data/run.mcap"_s);
+  const QList<SeriesPath> paths = PJ::layout_xml::extractSeriesPaths(pd.doc);
+  ASSERT_EQ(paths.size(), 1);
+  EXPECT_EQ(paths.front().dataset_id, 4U);
+  EXPECT_EQ(paths.front().dataset_source, u"run.mcap"_s);
+  EXPECT_EQ(paths.front().dataset_path, u"data/run.mcap"_s);
+}
+
+TEST(ExtractSeriesPaths, DedupKeepsSameTopicFieldFromDifferentDatasets) {
+  PlotDoc pd = makePlotDoc();
+  QDomElement a = addTsCurve(pd, u"/speed"_s, u"value"_s);
+  a.setAttribute(u"dataset_id"_s, u"1"_s);
+  QDomElement b = addTsCurve(pd, u"/speed"_s, u"value"_s);
+  b.setAttribute(u"dataset_id"_s, u"2"_s);
+  // Same (topic, field) but distinct dataset qualifiers must remain two entries;
+  // collapsing them was the root of the multi-dataset undo bug.
+  EXPECT_EQ(PJ::layout_xml::extractSeriesPaths(pd.doc).size(), 2);
+}
+
+// ---------- stampDatasetSourcePaths / removeUnvalidatedDatasetIds /
+//            resolveDatasetSourcePaths -----------------------------------------
+
+TEST(DatasetSourcePath, StampResolveAndPortableIdGuardCoverEveryIdentityShape) {
+  QTemporaryDir layout_dir;
+  ASSERT_TRUE(layout_dir.isValid());
+  // Curves live inside a <plot>; the stamp/strip passes are scoped to plot curves
+  // and <processor> inputs, so a scene <layer>/<config_topic>/<robot_model> and a
+  // <transform>/<input> are placed alongside to prove those pass through untouched.
+  PlotDoc pd = makePlotDoc();
+  QDomElement& doc_root = pd.plot;  // curves attach to the plot
+  QDomElement ts = addTsCurve(pd, u"/imu"_s, u"x"_s);
+  ts.setAttribute(u"dataset_id"_s, u"7"_s);
+  QDomElement xy = addXyCurve(pd, SeriesPath{u"/xy"_s, u"x"_s}, SeriesPath{u"/xy"_s, u"y"_s});
+  xy.setAttribute(u"x_dataset_id"_s, u"7"_s);
+  xy.setAttribute(u"y_dataset_id"_s, u"8"_s);
+
+  QDomElement processors = pd.doc.createElement(u"data_processors"_s);
+  pd.doc.documentElement().appendChild(processors);
+  QDomElement processor = pd.doc.createElement(u"processor"_s);
+  processor.setAttribute(u"input_dataset_id"_s, u"7"_s);
+  processors.appendChild(processor);
+
+  // Scene + transform-input elements: must be invisible to all three passes.
+  QDomElement scene = pd.doc.createElement(u"scene3d"_s);
+  pd.doc.documentElement().appendChild(scene);
+  QDomElement layer = pd.doc.createElement(u"layer"_s);
+  layer.setAttribute(u"dataset_id"_s, u"7"_s);
+  layer.setAttribute(u"dataset_source"_s, u"run.mcap"_s);
+  scene.appendChild(layer);
+  QDomElement robot = pd.doc.createElement(u"robot_model"_s);
+  robot.setAttribute(u"source_dataset_id"_s, u"7"_s);
+  scene.appendChild(robot);
+  QDomElement config = pd.doc.createElement(u"config_topic"_s);
+  config.setAttribute(u"dataset_id"_s, u"9"_s);
+  config.setAttribute(u"dataset_source"_s, u"duplicate.mcap"_s);
+  scene.appendChild(config);
+  QDomElement local = pd.doc.createElement(u"layer"_s);
+  local.setAttribute(u"dataset_id"_s, u"0"_s);
+  scene.appendChild(local);
+  (void)doc_root;
+
+  PJ::layout_xml::stampDatasetSourcePaths(
+      pd.doc, [](std::uint32_t id) { return id == 7 ? u"data/run.mcap"_s : QString{}; });
+  EXPECT_EQ(ts.attribute(u"dataset_path"_s), u"data/run.mcap"_s);
+  EXPECT_EQ(xy.attribute(u"x_dataset_path"_s), u"data/run.mcap"_s);
+  EXPECT_FALSE(xy.hasAttribute(u"y_dataset_path"_s));  // id 8 unknown to the lookup
+  EXPECT_EQ(processor.attribute(u"input_dataset_path"_s), u"data/run.mcap"_s);
+  EXPECT_FALSE(layer.hasAttribute(u"dataset_path"_s)) << "scene layers are not stamped";
+  EXPECT_FALSE(robot.hasAttribute(u"source_dataset_path"_s)) << "robot models are not stamped";
+
+  PJ::layout_xml::removeUnvalidatedDatasetIds(pd.doc);
+  EXPECT_TRUE(ts.hasAttribute(u"dataset_id"_s));  // path-qualified -> kept
+  EXPECT_TRUE(xy.hasAttribute(u"x_dataset_id"_s));
+  EXPECT_FALSE(xy.hasAttribute(u"y_dataset_id"_s))  // id-only, no path -> stripped
+      << "an unvalidated volatile id must not survive a file save";
+  EXPECT_TRUE(processor.hasAttribute(u"input_dataset_id"_s));
+  // Scene ids survive untouched — restore requires them and the scene family owns
+  // its own qualifier round-trip.
+  EXPECT_TRUE(layer.hasAttribute(u"dataset_id"_s)) << "scene layer id must not be stripped";
+  EXPECT_TRUE(robot.hasAttribute(u"source_dataset_id"_s));
+  EXPECT_TRUE(config.hasAttribute(u"dataset_id"_s)) << "scene config-topic id must survive the file-save strip";
+  EXPECT_EQ(config.attribute(u"dataset_source"_s), u"duplicate.mcap"_s);
+  EXPECT_EQ(local.attribute(u"dataset_id"_s), u"0"_s)
+      << "zero is a local-scene sentinel, not a remintable dataset identity";
+
+  PJ::layout_xml::resolveDatasetSourcePaths(pd.doc, QDir(layout_dir.path()));
+  const QString expected = QDir::cleanPath(layout_dir.filePath(u"data/run.mcap"_s));
+  EXPECT_EQ(ts.attribute(u"dataset_path"_s), expected);
+  EXPECT_EQ(xy.attribute(u"x_dataset_path"_s), expected);
+  EXPECT_EQ(processor.attribute(u"input_dataset_path"_s), expected);
+}
+
+TEST(GenericLayout, RemovesDatasetQualifiersButKeepsStablePaths) {
+  PlotDoc pd = makePlotDoc();
+  QDomElement ts = addTsCurve(pd, u"/imu"_s, u"x"_s);
+  ts.setAttribute(u"dataset_id"_s, u"7"_s);
+  ts.setAttribute(u"dataset_source"_s, u"old.mcap"_s);
+  ts.setAttribute(u"dataset_path"_s, u"data/old.mcap"_s);
+  QDomElement xy = addXyCurve(pd, SeriesPath{u"/xy"_s, u"x"_s}, SeriesPath{u"/xy"_s, u"y"_s});
+  xy.setAttribute(u"x_dataset_id"_s, u"7"_s);
+  xy.setAttribute(u"x_dataset_source"_s, u"old.mcap"_s);
+  xy.setAttribute(u"x_dataset_path"_s, u"data/old.mcap"_s);
+  xy.setAttribute(u"y_dataset_id"_s, u"8"_s);
+  xy.setAttribute(u"y_dataset_source"_s, u"other.mcap"_s);
+  xy.setAttribute(u"y_dataset_path"_s, u"data/other.mcap"_s);
+
+  QDomElement processors = pd.doc.createElement(u"data_processors"_s);
+  QDomElement processor = pd.doc.createElement(u"processor"_s);
+  processor.setAttribute(u"input_topic"_s, u"/imu"_s);
+  processor.setAttribute(u"input_field"_s, u"x"_s);
+  processor.setAttribute(u"input_dataset_id"_s, u"7"_s);
+  processor.setAttribute(u"input_dataset_source"_s, u"old.mcap"_s);
+  processor.setAttribute(u"input_dataset_path"_s, u"data/old.mcap"_s);
+  processors.appendChild(processor);
+  QDomElement transform = pd.doc.createElement(u"transform"_s);
+  QDomElement input = pd.doc.createElement(u"input"_s);
+  input.setAttribute(u"name"_s, u"/imu/x"_s);
+  input.setAttribute(u"dataset_id"_s, u"7"_s);
+  input.setAttribute(u"dataset_source"_s, u"old.mcap"_s);
+  input.setAttribute(u"dataset_path"_s, u"data/old.mcap"_s);
+  input.setAttribute(u"topic"_s, u"/imu"_s);
+  input.setAttribute(u"field"_s, u"x"_s);
+  input.setAttribute(u"column"_s, u"1"_s);
+  transform.appendChild(input);
+  processors.appendChild(transform);
+  pd.doc.documentElement().appendChild(processors);
+
+  QDomElement scene = pd.doc.createElement(u"scene3d"_s);
+  QDomElement layer = pd.doc.createElement(u"layer"_s);
+  layer.setAttribute(u"dataset_id"_s, u"7"_s);
+  layer.setAttribute(u"dataset_source"_s, u"old.mcap"_s);
+  layer.setAttribute(u"dataset_path"_s, u"data/old.mcap"_s);
+  layer.setAttribute(u"topic_name"_s, u"/cloud"_s);
+  QDomElement robot = pd.doc.createElement(u"robot_model"_s);
+  robot.setAttribute(u"source_dataset_id"_s, u"7"_s);
+  robot.setAttribute(u"source_dataset_source"_s, u"old.mcap"_s);
+  robot.setAttribute(u"source_dataset_path"_s, u"data/old.mcap"_s);
+  robot.setAttribute(u"source_topic"_s, u"/robot_description"_s);
+  layer.appendChild(robot);
+  scene.appendChild(layer);
+  QDomElement config = pd.doc.createElement(u"config_topic"_s);
+  config.setAttribute(u"dataset_id"_s, u"7"_s);
+  config.setAttribute(u"dataset_source"_s, u"old.mcap"_s);
+  config.setAttribute(u"dataset_path"_s, u"data/old.mcap"_s);
+  config.setAttribute(u"topic_name"_s, u"/tf"_s);
+  scene.appendChild(config);
+  pd.doc.documentElement().appendChild(scene);
+
+  PJ::layout_xml::removeDatasetQualifiersForGenericLayout(pd.doc);
+
+  // Plot curves and <processor> inputs: structural identity (topic/field) survives;
+  // the exact dataset qualifiers are gone so binding falls back to unique-only.
+  EXPECT_EQ(ts.attribute(u"topic"_s), u"/imu"_s);
+  EXPECT_EQ(ts.attribute(u"field"_s), u"x"_s);
+  EXPECT_FALSE(ts.hasAttribute(u"dataset_id"_s));
+  EXPECT_FALSE(ts.hasAttribute(u"dataset_source"_s));
+  EXPECT_FALSE(ts.hasAttribute(u"dataset_path"_s));
+  EXPECT_FALSE(xy.hasAttribute(u"x_dataset_id"_s));
+  EXPECT_FALSE(xy.hasAttribute(u"x_dataset_source"_s));
+  EXPECT_FALSE(xy.hasAttribute(u"x_dataset_path"_s));
+  EXPECT_FALSE(xy.hasAttribute(u"y_dataset_id"_s));
+  EXPECT_FALSE(xy.hasAttribute(u"y_dataset_source"_s));
+  EXPECT_FALSE(xy.hasAttribute(u"y_dataset_path"_s));
+  EXPECT_FALSE(processor.hasAttribute(u"input_dataset_id"_s));
+  EXPECT_FALSE(processor.hasAttribute(u"input_dataset_source"_s));
+  EXPECT_FALSE(processor.hasAttribute(u"input_dataset_path"_s));
+
+  // A <transform>/<input> resolves by NAME, not by a dataset qualifier, so this
+  // pass leaves it alone (it was never stamped either).
+  EXPECT_TRUE(input.hasAttribute(u"dataset_id"_s));
+  EXPECT_TRUE(input.hasAttribute(u"dataset_source"_s));
+  EXPECT_TRUE(input.hasAttribute(u"dataset_path"_s));
+  EXPECT_EQ(input.attribute(u"topic"_s), u"/imu"_s);
+  EXPECT_EQ(input.attribute(u"field"_s), u"x"_s);
+  EXPECT_EQ(input.attribute(u"column"_s), u"1"_s);
+
+  // Scene docks own their qualifier round-trip and REQUIRE the numeric id even in a
+  // generic layout, so this pass must not touch <layer>/<config_topic>/<robot_model>.
+  EXPECT_TRUE(layer.hasAttribute(u"dataset_id"_s));
+  EXPECT_TRUE(layer.hasAttribute(u"dataset_source"_s));
+  EXPECT_TRUE(layer.hasAttribute(u"dataset_path"_s));
+  EXPECT_EQ(layer.attribute(u"topic_name"_s), u"/cloud"_s);
+  EXPECT_TRUE(config.hasAttribute(u"dataset_id"_s));
+  EXPECT_TRUE(config.hasAttribute(u"dataset_source"_s));
+  EXPECT_TRUE(config.hasAttribute(u"dataset_path"_s));
+  EXPECT_EQ(config.attribute(u"topic_name"_s), u"/tf"_s);
+  EXPECT_TRUE(robot.hasAttribute(u"source_dataset_id"_s));
+  EXPECT_TRUE(robot.hasAttribute(u"source_dataset_source"_s));
+  EXPECT_TRUE(robot.hasAttribute(u"source_dataset_path"_s));
+  EXPECT_EQ(robot.attribute(u"source_topic"_s), u"/robot_description"_s);
+}
+
+// REGRESSION: loading any old layout with 2D/3D scene layers must not delete them.
+// Scene docks persist dataset_id + dataset_source in their own layer XML, and scene
+// restore treats a MISSING numeric id as "handled, skip" — so a whole-tree strip (as
+// the passes did before this fix) silently dropped every scene layer. All three
+// identity passes must leave a real Scene3D-shaped layer element byte-identical.
+TEST(DatasetIdentityPasses, SceneLayerElementSurvivesAllPassesByteIdentical) {
+  QTemporaryDir layout_dir;
+  ASSERT_TRUE(layout_dir.isValid());
+  QDomDocument doc;
+  QDomElement scene = doc.createElement(u"scene3d"_s);
+  scene.setAttribute(u"version"_s, u"1"_s);
+  doc.appendChild(scene);
+  // Mirrors SceneDockWidget::xmlSaveState's <layer> shape (id + source, NO path).
+  QDomElement layer = doc.createElement(u"layer"_s);
+  layer.setAttribute(u"dataset_id"_s, u"3"_s);
+  layer.setAttribute(u"dataset_source"_s, u"run.mcap"_s);
+  layer.setAttribute(u"topic_name"_s, u"/cloud"_s);
+  layer.setAttribute(u"object_type"_s, u"PointCloud"_s);
+  layer.setAttribute(u"display_name"_s, u"/cloud"_s);
+  layer.setAttribute(u"visible"_s, u"true"_s);
+  QDomElement payload = doc.createElement(u"pointcloud"_s);
+  payload.setAttribute(u"point_size"_s, u"2"_s);
+  layer.appendChild(payload);
+  scene.appendChild(layer);
+  // A config-topic (TF) child, also id-qualified, likewise must survive.
+  QDomElement config = doc.createElement(u"config_topic"_s);
+  config.setAttribute(u"dataset_id"_s, u"3"_s);
+  config.setAttribute(u"dataset_source"_s, u"run.mcap"_s);
+  config.setAttribute(u"topic_name"_s, u"/tf"_s);
+  scene.appendChild(config);
+
+  const QByteArray before = doc.toByteArray(2);
+
+  PJ::layout_xml::stampDatasetSourcePaths(doc, [](std::uint32_t) { return u"data/run.mcap"_s; });
+  PJ::layout_xml::removeUnvalidatedDatasetIds(doc);
+  PJ::layout_xml::removeDatasetQualifiersForGenericLayout(doc);
+
+  EXPECT_EQ(doc.toByteArray(2), before)
+      << "identity passes must not touch scene elements — a stripped id makes restore skip the layer";
 }
 
 TEST(RebindCurveKeys, SetsNameForResolvedTimeSeries) {

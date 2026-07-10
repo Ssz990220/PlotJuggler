@@ -6,6 +6,8 @@
 #include <QDomNodeList>
 #include <QFileInfo>
 #include <QSet>
+#include <array>
+#include <limits>
 #include <utility>
 #include <vector>
 using namespace Qt::StringLiterals;
@@ -87,19 +89,36 @@ QList<DataSourceRef> extractDataSource(const QDomDocument& doc, const QDir& layo
 }
 
 QString SeriesPath::display() const {
-  return topic.isEmpty() ? field : topic + QLatin1Char('/') + field;
+  const QString path = topic.isEmpty() ? field : topic + QLatin1Char('/') + field;
+  return dataset_source.isEmpty() ? path : dataset_source + QLatin1Char(':') + path;
 }
 
 namespace {
 
-// Reads a (topic, field) attribute pair off a curve element into a SeriesPath.
-// Returns nullopt when the topic attribute is absent (e.g. a curve that carries
-// no stable identity), so callers can skip it cleanly.
-std::optional<SeriesPath> readPath(const QDomElement& curve, const QString& topic_attr, const QString& field_attr) {
+// Reads a (topic, field) attribute pair plus its dataset qualifiers off a curve
+// element into a SeriesPath. Returns nullopt when the topic attribute is absent
+// (e.g. a curve that carries no stable identity), so callers can skip it cleanly.
+// An out-of-range or non-numeric dataset id decays to 0 (unqualified).
+std::optional<SeriesPath> readPath(
+    const QDomElement& curve, const QString& topic_attr, const QString& field_attr, const QString& dataset_id_attr,
+    const QString& dataset_source_attr, const QString& dataset_path_attr) {
   if (!curve.hasAttribute(topic_attr)) {
     return std::nullopt;
   }
-  return SeriesPath{curve.attribute(topic_attr), curve.attribute(field_attr)};
+  bool id_ok = false;
+  const auto raw_id = curve.attribute(dataset_id_attr).toULongLong(&id_ok);
+  const std::uint32_t dataset_id =
+      id_ok && raw_id <= std::numeric_limits<std::uint32_t>::max() ? static_cast<std::uint32_t>(raw_id) : 0;
+  return SeriesPath{
+      curve.attribute(topic_attr), curve.attribute(field_attr), dataset_id, curve.attribute(dataset_source_attr),
+      curve.attribute(dataset_path_attr)};
+}
+
+// Dedup key that distinguishes two SeriesPaths differing only by dataset
+// qualifier — two same-topic datasets must not collapse into one entry.
+QString seriesPathDedupKey(const SeriesPath& path) {
+  return QString::number(path.dataset_id) + QLatin1Char('\x1f') + path.dataset_source + QLatin1Char('\x1f') +
+         path.dataset_path + QLatin1Char('\x1f') + path.topic + QLatin1Char('\x1f') + path.field;
 }
 
 // Visits every <curve> that is a direct child of a <plot> element.
@@ -120,6 +139,18 @@ void forEachPlotCurve(const QDomDocument& doc, Fn&& fn) {
 
 }  // namespace
 
+std::optional<SeriesPath> readTimeSeriesPath(const QDomElement& curve) {
+  return readPath(curve, u"topic"_s, u"field"_s, u"dataset_id"_s, u"dataset_source"_s, u"dataset_path"_s);
+}
+
+std::optional<SeriesPath> readXyXPath(const QDomElement& curve) {
+  return readPath(curve, u"x_topic"_s, u"x_field"_s, u"x_dataset_id"_s, u"x_dataset_source"_s, u"x_dataset_path"_s);
+}
+
+std::optional<SeriesPath> readXyYPath(const QDomElement& curve) {
+  return readPath(curve, u"y_topic"_s, u"y_field"_s, u"y_dataset_id"_s, u"y_dataset_source"_s, u"y_dataset_path"_s);
+}
+
 QList<SeriesPath> extractSeriesPaths(const QDomDocument& doc) {
   QList<SeriesPath> paths;
   QSet<QString> seen;
@@ -127,16 +158,16 @@ QList<SeriesPath> extractSeriesPaths(const QDomDocument& doc) {
     if (!p.has_value()) {
       return;
     }
-    const QString dedup_key = p->topic + QLatin1Char('\x1f') + p->field;
+    const QString dedup_key = seriesPathDedupKey(*p);
     if (!seen.contains(dedup_key)) {
       seen.insert(dedup_key);
       paths.push_back(*p);
     }
   };
   forEachPlotCurve(doc, [&](const QDomElement& curve) {
-    push(readPath(curve, u"topic"_s, u"field"_s));
-    push(readPath(curve, u"x_topic"_s, u"x_field"_s));
-    push(readPath(curve, u"y_topic"_s, u"y_field"_s));
+    push(readTimeSeriesPath(curve));
+    push(readXyXPath(curve));
+    push(readXyYPath(curve));
   });
   return paths;
 }
@@ -145,7 +176,7 @@ QList<SeriesPath> rebindCurveKeys(QDomDocument& doc, const SeriesKeyResolver& re
   QList<SeriesPath> unresolved;
   QSet<QString> unresolved_seen;
   const auto record_unresolved = [&](const SeriesPath& p) {
-    const QString dedup_key = p.topic + QLatin1Char('\x1f') + p.field;
+    const QString dedup_key = seriesPathDedupKey(p);
     if (!unresolved_seen.contains(dedup_key)) {
       unresolved_seen.insert(dedup_key);
       unresolved.push_back(p);
@@ -156,10 +187,10 @@ QList<SeriesPath> rebindCurveKeys(QDomDocument& doc, const SeriesKeyResolver& re
   forEachPlotCurve(doc, [&](const QDomElement& curve) { curves.push_back(curve); });
 
   for (QDomElement& curve : curves) {
-    const std::optional<SeriesPath> xy_x = readPath(curve, u"x_topic"_s, u"x_field"_s);
+    const std::optional<SeriesPath> xy_x = readXyXPath(curve);
     if (xy_x.has_value()) {
       // XY curve: both axes must resolve, else the curve is undrawable.
-      const std::optional<SeriesPath> xy_y = readPath(curve, u"y_topic"_s, u"y_field"_s);
+      const std::optional<SeriesPath> xy_y = readXyYPath(curve);
       const std::optional<QString> x_key = resolve(*xy_x);
       const std::optional<QString> y_key = xy_y.has_value() ? resolve(*xy_y) : std::nullopt;
       if (x_key.has_value() && y_key.has_value()) {
@@ -178,7 +209,7 @@ QList<SeriesPath> rebindCurveKeys(QDomDocument& doc, const SeriesKeyResolver& re
       continue;
     }
 
-    const std::optional<SeriesPath> ts = readPath(curve, u"topic"_s, u"field"_s);
+    const std::optional<SeriesPath> ts = readTimeSeriesPath(curve);
     if (!ts.has_value()) {
       continue;  // No stable identity to rebind; leave as-is.
     }
@@ -190,6 +221,159 @@ QList<SeriesPath> rebindCurveKeys(QDomDocument& doc, const SeriesKeyResolver& re
     }
   }
   return unresolved;
+}
+
+namespace {
+
+// A (id, path) attribute-pair prefix that carries a dataset qualifier. The
+// stamp/strip passes below deliberately touch ONLY plot curves and data-processor
+// inputs: scene docks (<layer>/<config_topic>/<robot_model>) persist and REQUIRE
+// their own numeric dataset_id (scene restore treats a missing id as "handled,
+// skip"), so a whole-tree strip would silently delete every restored scene layer.
+struct DatasetIdentityAttributes {
+  const char* id;
+  const char* source;
+  const char* path;
+};
+// The three curve pairs (time-series + both XY axes), applied to <plot><curve>.
+constexpr std::array<DatasetIdentityAttributes, 3> kCurveIdentityAttributes{{
+    {"dataset_id", "dataset_source", "dataset_path"},
+    {"x_dataset_id", "x_dataset_source", "x_dataset_path"},
+    {"y_dataset_id", "y_dataset_source", "y_dataset_path"},
+}};
+// The single processor-input pair, applied to <processor> (its input rebinds on
+// reload exactly like a plotted curve, so it carries the same qualifiers).
+constexpr DatasetIdentityAttributes kProcessorInputIdentityAttributes{
+    "input_dataset_id", "input_dataset_source", "input_dataset_path"};
+
+// Visits every <processor> that is a descendant of <data_processors>.
+template <typename Fn>
+void forEachProcessor(QDomDocument& doc, Fn&& fn) {
+  const QDomNodeList processors = doc.elementsByTagName(u"processor"_s);
+  for (int index = 0; index < processors.size(); ++index) {
+    QDomElement processor = processors.at(index).toElement();
+    if (!processor.isNull()) {
+      fn(processor);
+    }
+  }
+}
+
+// Applies `visit` to the document element and every descendant, iteratively so a
+// deep layout never overflows the stack. Only resolveDatasetSourcePaths uses this:
+// it merely canonicalizes an existing *_dataset_path attribute (never strips or
+// adds an id), so walking the whole tree is safe for any widget family.
+template <typename Fn>
+void forEachElement(QDomDocument& doc, Fn&& visit) {
+  std::vector<QDomElement> pending;
+  pending.push_back(doc.documentElement());
+  while (!pending.empty()) {
+    QDomElement element = pending.back();
+    pending.pop_back();
+    visit(element);
+    for (QDomElement child = element.firstChildElement(); !child.isNull(); child = child.nextSiblingElement()) {
+      pending.push_back(child);
+    }
+  }
+}
+
+}  // namespace
+
+void removeDatasetQualifiersForGenericLayout(QDomDocument& doc) {
+  // Only plot curves and data-processor inputs are stripped here. Scene docks
+  // (<layer>/<config_topic>/<robot_model>) own their qualifier round-trip through
+  // their own save/restore and require the numeric id even in a generic layout, so
+  // they are deliberately left untouched (a whole-tree strip drops restored layers).
+  const auto strip_pair = [](QDomElement& element, const DatasetIdentityAttributes& pair) {
+    element.removeAttribute(QString::fromLatin1(pair.id));
+    element.removeAttribute(QString::fromLatin1(pair.source));
+    element.removeAttribute(QString::fromLatin1(pair.path));
+  };
+  forEachPlotCurve(doc, [&strip_pair](QDomElement curve) {
+    for (const DatasetIdentityAttributes& pair : kCurveIdentityAttributes) {
+      strip_pair(curve, pair);
+    }
+  });
+  forEachProcessor(
+      doc, [&strip_pair](QDomElement& processor) { strip_pair(processor, kProcessorInputIdentityAttributes); });
+}
+
+namespace {
+
+// Stamps the FileLoader-known full path next to `pair`'s numeric id on `element`.
+void stampIdentityPair(QDomElement& element, const DatasetIdentityAttributes& pair, const DatasetPathLookup& lookup) {
+  const QString id_name = QString::fromLatin1(pair.id);
+  if (!element.hasAttribute(id_name)) {
+    return;
+  }
+  bool ok = false;
+  const qulonglong raw_id = element.attribute(id_name).toULongLong(&ok);
+  if (!ok || raw_id == 0 || raw_id > std::numeric_limits<std::uint32_t>::max()) {
+    return;
+  }
+  const QString path = lookup(static_cast<std::uint32_t>(raw_id));
+  if (!path.isEmpty()) {
+    element.setAttribute(QString::fromLatin1(pair.path), path);
+  }
+}
+
+// Strips `pair`'s numeric id from `element` when it carries no full-path
+// qualifier (an unvalidated volatile hint that must not survive a file save).
+void stripUnvalidatedIdentityPair(QDomElement& element, const DatasetIdentityAttributes& pair) {
+  const QString id_name = QString::fromLatin1(pair.id);
+  if (!element.hasAttribute(id_name) || !element.attribute(QString::fromLatin1(pair.path)).isEmpty()) {
+    return;  // absent, or path-qualified (and thus validatable) — keep it.
+  }
+  bool ok = false;
+  const qulonglong id = element.attribute(id_name).toULongLong(&ok);
+  if (ok && id != 0) {  // 0 is a local-scene sentinel, not a remintable id.
+    element.removeAttribute(id_name);
+  }
+}
+
+}  // namespace
+
+void stampDatasetSourcePaths(QDomDocument& doc, const DatasetPathLookup& lookup) {
+  if (!lookup) {
+    return;
+  }
+  forEachPlotCurve(doc, [&lookup](QDomElement curve) {
+    for (const DatasetIdentityAttributes& pair : kCurveIdentityAttributes) {
+      stampIdentityPair(curve, pair, lookup);
+    }
+  });
+  forEachProcessor(doc, [&lookup](QDomElement& processor) {
+    stampIdentityPair(processor, kProcessorInputIdentityAttributes, lookup);
+  });
+}
+
+void removeUnvalidatedDatasetIds(QDomDocument& doc) {
+  forEachPlotCurve(doc, [](QDomElement curve) {
+    for (const DatasetIdentityAttributes& pair : kCurveIdentityAttributes) {
+      stripUnvalidatedIdentityPair(curve, pair);
+    }
+  });
+  forEachProcessor(
+      doc, [](QDomElement& processor) { stripUnvalidatedIdentityPair(processor, kProcessorInputIdentityAttributes); });
+}
+
+void resolveDatasetSourcePaths(QDomDocument& doc, const QDir& layout_dir) {
+  static constexpr std::array<const char*, 5> kPathAttributes{
+      "dataset_path", "x_dataset_path", "y_dataset_path", "input_dataset_path", "source_dataset_path"};
+  forEachElement(doc, [&layout_dir](QDomElement& element) {
+    for (const char* raw_name : kPathAttributes) {
+      const QString name = QString::fromLatin1(raw_name);
+      if (!element.hasAttribute(name)) {
+        continue;
+      }
+      const QString saved_path = element.attribute(name);
+      if (saved_path.isEmpty()) {
+        continue;
+      }
+      const QFileInfo info(saved_path);
+      element.setAttribute(
+          name, QDir::cleanPath(info.isAbsolute() ? info.absoluteFilePath() : layout_dir.absoluteFilePath(saved_path)));
+    }
+  });
 }
 
 void stripUnresolvedCurves(QDomDocument& doc) {
