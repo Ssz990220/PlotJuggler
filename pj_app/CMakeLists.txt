@@ -81,10 +81,6 @@ add_library(pj_app_shell OBJECT
 )
 
 set_target_properties(pj_app_shell PROPERTIES
-    # The CMake target id stays `pj_app` (internal module name), but the installed
-    # binary is `plotjuggler4` — the user-facing command and what packaging ships
-    # (e.g. /usr/bin/plotjuggler4). Keeps the source module rename a separate concern.
-    OUTPUT_NAME plotjuggler4
     AUTOMOC ON
     AUTOUIC ON
     AUTOUIC_SEARCH_PATHS ${CMAKE_CURRENT_SOURCE_DIR}/src
@@ -117,7 +113,13 @@ add_executable(pj_app
     src/main.cpp
     ${CMAKE_SOURCE_DIR}/resources/resources.qrc
 )
-set_target_properties(pj_app PROPERTIES AUTORCC ON)
+set_target_properties(pj_app PROPERTIES
+    # The CMake target id stays `pj_app` (internal module name), but the installed
+    # binary is `plotjuggler4` — the user-facing command and what packaging ships
+    # (e.g. /usr/bin/plotjuggler4). Keeps the source module rename a separate concern.
+    OUTPUT_NAME plotjuggler4
+    AUTORCC ON
+)
 target_include_directories(pj_app PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_link_libraries(pj_app PRIVATE pj_app_shell Backward::Backward)
 
