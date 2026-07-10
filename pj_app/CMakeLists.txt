@@ -80,6 +80,10 @@ add_executable(pj_app
 )
 
 set_target_properties(pj_app PROPERTIES
+    # The CMake target id stays `pj_app` (internal module name), but the installed
+    # binary is `plotjuggler4` — the user-facing command and what packaging ships
+    # (e.g. /usr/bin/plotjuggler4). Keeps the source module rename a separate concern.
+    OUTPUT_NAME plotjuggler4
     AUTOMOC ON
     AUTORCC ON
     AUTOUIC ON

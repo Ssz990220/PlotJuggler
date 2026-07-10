@@ -29,3 +29,6 @@ heaptrack.*.zst
 /multi_dataset.pj4.xml
 # A separately-cloned plugins repo some devs keep in-tree; not a submodule of PJ4.
 /pj-official-plugins/
+/.ccache-appimage-docker/
+/.conan2-appimage-docker/
+/build-appimage-docker/

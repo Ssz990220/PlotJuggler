@@ -32,8 +32,15 @@ QString defaultPendingDir() {
 // User-managed extra plugin folders (Preferences page). QStringList.
 constexpr auto kCustomPluginFoldersKey = "Preferences::plugin_folders";
 
-QString executablePluginsDir() {
-  return QCoreApplication::applicationDirPath() + u"/plugins"_s;
+// Plugins bundled with an installed build. Per the FHS bin/lib split (the binary
+// installs to <prefix>/bin, arch-dependent code to <prefix>/lib), the bundled
+// plugins live at <prefix>/lib/plotjuggler/plugins, resolved relative to the
+// executable so the install stays relocatable — the same path works under /usr,
+// /usr/local, or a mounted AppImage. A dev build tree has no such directory, so
+// it is simply skipped (buildScanHierarchy drops folders that don't exist);
+// developers point at their freshly built plugins with --plugin-dir instead.
+QString bundledPluginsDir() {
+  return QDir::cleanPath(QCoreApplication::applicationDirPath() + u"/../lib/plotjuggler/plugins"_s);
 }
 }  // namespace
 
@@ -92,7 +99,7 @@ QStringList ExtensionCatalogService::builtinPluginFolders() const {
   if (marketplace != extensions_dir_) {
     folders << marketplace;
   }
-  folders << executablePluginsDir();
+  folders << bundledPluginsDir();
   return folders;
 }
 
@@ -100,9 +107,10 @@ std::vector<PluginDirEntry> ExtensionCatalogService::buildScanHierarchy(bool ext
   std::vector<PluginDirEntry> dirs;
   // A folder that doesn't exist on disk contributes no plugins, so skip it
   // rather than hand it to the catalog — scanning a missing directory reports a
-  // kError per launch, which for an absent *optional* folder (e.g. <exe>/plugins
-  // in a dev layout, or a user-typed custom folder already shown in red in the
-  // Preferences page) is noise that masks real plugin-load errors.
+  // kError per launch, which for an absent *optional* folder (e.g. the bundled
+  // <prefix>/lib/plotjuggler/plugins path in a dev build tree, or a user-typed
+  // custom folder already shown in red in the Preferences page) is noise that
+  // masks real plugin-load errors.
   const auto add_if_exists = [&dirs](const QString& folder, bool authoritative) {
     if (!folder.isEmpty() && QDir(folder).exists()) {
       dirs.push_back({std::filesystem::path(folder.toStdString()), authoritative});

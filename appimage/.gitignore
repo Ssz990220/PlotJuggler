@@ -1,0 +1,6 @@
+# linuxdeploy tooling fetched on demand by build_appimage.sh
+linuxdeploy*.AppImage
+# Icon rasterized from resources/svg/plotjuggler.svg at build time
+plotjuggler4.png
+# Build output
+PlotJuggler-*.AppImage

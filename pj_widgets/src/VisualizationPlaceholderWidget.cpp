@@ -97,7 +97,7 @@ VisualizationPlaceholderWidget::VisualizationPlaceholderWidget(QWidget* parent) 
   } specs[] = {
       {":/resources/svg/line_axis.svg", QT_TR_NOOP("Plot"), "buttonVizPlot", VisualizationKind::kPlot},
       {":/resources/svg/image.svg", QT_TR_NOOP("2D"), "buttonVizScene2D", VisualizationKind::kScene2D},
-      {":/resources/svg/cube.svg", QT_TR_NOOP("3D"), "buttonVizScene3D", VisualizationKind::kScene3D},
+      {":/resources/svg/cube_axes.svg", QT_TR_NOOP("3D"), "buttonVizScene3D", VisualizationKind::kScene3D},
   };
   icon_buttons_.reserve(std::size(specs));
   for (const auto& spec : specs) {

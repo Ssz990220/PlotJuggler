@@ -112,10 +112,11 @@ class ExtensionCatalogService : public QObject {
   [[nodiscard]] QStringList customPluginFolders() const;
   void setCustomPluginFolders(const QStringList& folders);
 
-  // Built-in plugin folders in scan-priority order: the install dir
-  // (the --plugin-dir override or the marketplace location), the marketplace
-  // location (only when the override made it distinct), then <exe>/plugins.
-  // Read-only — shown to the user for reference.
+  // Built-in plugin folders in scan-priority order: the install dir (the
+  // --plugin-dir override or the marketplace location), the marketplace
+  // location (only when the override made it distinct), then the relocatable
+  // bundled-plugin path <prefix>/lib/plotjuggler/plugins resolved from the
+  // executable. Read-only — shown to the user for reference.
   [[nodiscard]] QStringList builtinPluginFolders() const;
 
  signals:

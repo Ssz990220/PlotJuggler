@@ -15,6 +15,7 @@
 #include <QPalette>
 #include <QScrollBar>
 #include <QSet>
+#include <QSize>
 #include <QStyle>
 #include <QStyledItemDelegate>
 #include <QTimer>
@@ -140,42 +141,12 @@ class CurveTreeItemDelegate : public QStyledItemDelegate {
       opt.palette.setColor(QPalette::HighlightedText, theme::kBlue);
     }
 
-    // A topic row may carry one of two trailing icons: image.svg for
-    // image-family topics, cube.svg for 3D-object topics. We
-    // suppress the standard left-side decoration and paint the icon at
-    // the right edge of the elided text. The two roles are mutually
-    // exclusive in practice (a topic is one builtin family), so we pick
-    // whichever role is set; image takes precedence if both happen.
-    const bool draw_image_icon = index.column() == kNameColumn && index.data(kImageTopicRole).toBool();
-    const bool draw_3d_object_icon =
-        !draw_image_icon && index.column() == kNameColumn && index.data(k3dObjectTopicRole).toBool();
-    const bool draw_trailing_icon = draw_image_icon || draw_3d_object_icon;
-    const QIcon trailing_icon = opt.icon;
+    // A topic row's builtin-family badge (image.svg / cube_axes.svg, set as the
+    // item's DecorationRole icon) is painted by the default control as a normal
+    // left-side decoration, before the text; its size is the view's iconSize().
     const QWidget* widget = opt.widget;
     const QStyle* style = widget != nullptr ? widget->style() : QApplication::style();
-    QRect trailing_icon_rect;
-    if (draw_trailing_icon) {
-      constexpr int kIconExtent = 16;
-      constexpr int kIconMargin = 4;
-      opt.icon = {};
-      opt.features &= ~QStyleOptionViewItem::HasDecoration;
-
-      const QRect text_rect = style->subElementRect(QStyle::SE_ItemViewItemText, &opt, widget);
-      opt.text = opt.fontMetrics.elidedText(
-          opt.text, opt.textElideMode, std::max(0, text_rect.width() - kIconExtent - kIconMargin));
-      const int icon_left = std::min(
-          text_rect.left() + opt.fontMetrics.horizontalAdvance(opt.text) + kIconMargin,
-          text_rect.right() - kIconExtent + 1);
-      trailing_icon_rect = QRect(icon_left, option.rect.center().y() - (kIconExtent / 2), kIconExtent, kIconExtent);
-    }
-
     style->drawControl(QStyle::CE_ItemViewItem, &opt, painter, widget);
-
-    if (draw_trailing_icon && !trailing_icon.isNull()) {
-      const QIcon::Mode mode = option.state.testFlag(QStyle::State_Enabled) ? QIcon::Normal : QIcon::Disabled;
-      const QIcon::State state = option.state.testFlag(QStyle::State_Open) ? QIcon::On : QIcon::Off;
-      trailing_icon.paint(painter, trailing_icon_rect, Qt::AlignCenter, mode, state);
-    }
 
     if (dimmed) {
       painter->restore();
@@ -241,7 +212,7 @@ void setTopicIconDecoration(QTreeWidgetItem* item, bool is_image_topic, bool is_
   if (is_image_topic) {
     icon = QIcon(loadSvg(u":/resources/svg/image.svg"_s, theme));
   } else if (is_3d_object_topic) {
-    icon = QIcon(loadSvg(u":/resources/svg/cube.svg"_s, theme));
+    icon = QIcon(loadSvg(u":/resources/svg/cube_axes.svg"_s, theme));
   }
   item->setIcon(kNameColumn, icon);
 }
@@ -253,7 +224,7 @@ void refreshTopicIcons(QTreeWidgetItem* item, const QString& theme) {
   if (item->data(kNameColumn, kImageTopicRole).toBool()) {
     item->setIcon(kNameColumn, QIcon(loadSvg(u":/resources/svg/image.svg"_s, theme)));
   } else if (item->data(kNameColumn, k3dObjectTopicRole).toBool()) {
-    item->setIcon(kNameColumn, QIcon(loadSvg(u":/resources/svg/cube.svg"_s, theme)));
+    item->setIcon(kNameColumn, QIcon(loadSvg(u":/resources/svg/cube_axes.svg"_s, theme)));
   }
   for (int i = 0; i < item->childCount(); ++i) {
     refreshTopicIcons(item->child(i), theme);
@@ -265,6 +236,11 @@ CurveTreeView::CurveTreeView(QWidget* parent) : QTreeWidget(parent) {
   setColumnCount(2);
   setHeaderLabels({tr("Name"), tr("Value")});
   setItemDelegate(new CurveTreeItemDelegate(this));
+  // Topic-badge icons (image / 3D-object) render as the default left-side
+  // decoration before the name. Size them above the 16-px small-icon default
+  // so the type badge reads clearly at the left margin.
+  constexpr int kTopicIconExtent = 22;
+  setIconSize(QSize(kTopicIconExtent, kTopicIconExtent));
   // Curve names share long common prefixes (e.g. /robot/state_estimator/...),
   // so eliding the tail would hide exactly the part that tells two rows apart.
   // Elide the prefix instead: "…state_estimator/contact_lf". Propagates into the
