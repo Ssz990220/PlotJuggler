@@ -144,6 +144,18 @@ target_link_libraries(plot_widget_range_offset_test PRIVATE
 
 add_test(NAME PlotWidgetRangeOffsetTest COMMAND plot_widget_range_offset_test)
 
+add_executable(plot_magnifier_clamp_test
+    plot_magnifier_clamp_test.cpp
+)
+
+target_compile_options(plot_magnifier_clamp_test PRIVATE ${PJ_WARNING_FLAGS})
+target_link_libraries(plot_magnifier_clamp_test PRIVATE
+    pj_plotting
+    GTest::gtest
+)
+
+add_test(NAME PlotMagnifierClampTest COMMAND plot_magnifier_clamp_test)
+
 # Compiles resources.qrc into the executable so :/filters/builtin_filters.luau is
 # embedded — SessionManager reads it to install the Luau filter catalogue (AUTORCC
 # auto-registers the resource for an executable target). Without it the panel would

@@ -16,6 +16,7 @@
 #include "pj_plotting/CurveTracker.h"
 #include "pj_plotting/PlotWidgetBase.h"
 #include "pj_runtime/CurveDescriptor.h"
+#include "pj_runtime/Time.h"
 
 class QDragEnterEvent;
 class QDragLeaveEvent;
@@ -182,12 +183,23 @@ class PlotWidget : public PlotWidgetBase {
   // resulting filtered curve(s) to this plot.
   void launchFilterEditor();
   void setAxisScale(QwtAxisId axis_id, double min, double max);
-  // The representative per-dataset display offset (in seconds) for this plot's
-  // time axis: the offset of the first datastore-backed curve's dataset. Used to
-  // convert the saved X-axis range between display-relative and absolute time at
-  // the layout save/load boundary (xmlSaveState/xmlLoadState). Returns 0 when
-  // there is no session or no datastore-backed curve — then display == absolute.
+  // The representative per-dataset display offset for this plot's time axis: the
+  // offset of the FIRST datastore-backed curve's dataset. The axis is shared
+  // across curves; in the common case they share a dataset (one offset), and when
+  // they don't the first datastore-backed curve is the representative — the same
+  // rule must hold at save and load so the absolute<->display round-trip is
+  // stable. nullopt when there is no session or no datastore-backed curve (then
+  // display == absolute). displayOffsetSeconds/Nanoseconds convert at the edge.
+  [[nodiscard]] std::optional<DisplayOffset> representativeDisplayOffset() const;
+  // representativeDisplayOffset() in seconds. Used to convert the saved X-axis
+  // range between display-relative and absolute time at the layout save/load
+  // boundary (xmlSaveState/xmlLoadState). Returns 0 when there is no offset.
   [[nodiscard]] double displayOffsetSeconds() const;
+  // representativeDisplayOffset() in integer nanoseconds — the datastore's native
+  // precision. Used at the viewport save/load boundary so an epoch-scale absolute
+  // range can be built and undone in the ns domain without a double's ~238 ns ULP
+  // rounding away a deeply-zoomed window. Returns 0 when there is no offset.
+  [[nodiscard]] qint64 displayOffsetNanoseconds() const;
   void reconnectDataSignals();
   // Drop the cached display offset on every bound DatastoreCurveAdapter whose
   // dataset matches `only` (or on all bound adapters when nullopt), so the next
@@ -249,6 +261,18 @@ class PlotWidget : public PlotWidgetBase {
     double top = 0.0;
     double left = 0.0;
     double right = 0.0;
+    // Authoritative integer-nanosecond absolute X edges for a time axis. Present
+    // only when the loaded <range> carried left_ns/right_ns (schema v4+); a v3
+    // decimal-only range leaves these unset and applySavedViewportOrZoom falls
+    // back to the double `left`/`right`. Doubles lose precision once an
+    // epoch-scale value (~1.6e9 s) is stored, so the integer edges are preferred
+    // whenever available to make a deep-zoom viewport exactly round-trippable.
+    std::optional<qint64> left_ns;
+    std::optional<qint64> right_ns;
+    // True for a time axis (X is absolute time, converted with the display offset
+    // on apply); false for an XY plot (X is a data value used verbatim). Decided
+    // from the <range>'s explicit x_basis marker, never re-inferred from plot mode.
+    bool x_is_absolute = true;
   };
   std::optional<SavedViewport> saved_viewport_;
 

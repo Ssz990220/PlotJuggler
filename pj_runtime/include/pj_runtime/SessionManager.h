@@ -11,6 +11,7 @@
 #include <optional>
 #include <shared_mutex>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -333,6 +334,16 @@ class SessionManager : public QObject {
   // invalidate-first contract) and evict the dataset's objects.
   void removeDataset(DatasetId dataset_id);
 
+  // Recompute `dataset_id`'s pinned earliest-sample origin from its CURRENT data
+  // and emit the global reframe if the cross-dataset origin moved. FileLoader calls
+  // this at a load-completion seam: plugin ingest commits straight to DataEngine via
+  // the C-ABI write host (bypassing commitChunks/notifyIngest), so a finished short
+  // file whose data is earlier than any prior dataset would otherwise leave curve
+  // adapters on a stale display offset. No-op when "Use time offset" is off (the
+  // global reference is 0 regardless). Invalidates the dataset's min pin first so a
+  // shrunk/earlier range is picked up.
+  void refreshDatasetTimeReference(DatasetId dataset_id);
+
  signals:
   // Emitted when topics receive new samples (commit/ingest path). `live` is
   // true only for follow-live writers (streaming today). Cache-invalidation
@@ -367,6 +378,13 @@ class SessionManager : public QObject {
   // signal must not be emitted from outside its own members under moc).
   void notifyDatasetAboutToBeReplaced(PJ::DatasetId dataset_id);
 
+  // The distinct datasets that own the given object topics (skipping the unset
+  // dataset id 0). Callers snapshot this set BEFORE removing the topics, so the
+  // affected datasets' pinned minima can be invalidated once their descriptors
+  // are gone. Shared by evictObjectTopics and clearAllObjects.
+  [[nodiscard]] std::unordered_set<DatasetId> datasetsOwningObjectTopics(
+      const std::vector<ObjectTopicId>& topic_ids) const;
+
   // [min, max] raw-ns bounds across one dataset's scalar + object topics, or
   // nullopt when it holds no data. The one time-bounds union loop.
   [[nodiscard]] std::optional<std::pair<Timestamp, Timestamp>> datasetRawBounds(DatasetId dataset_id) const;
@@ -380,6 +398,12 @@ class SessionManager : public QObject {
   [[nodiscard]] Timestamp rememberDatasetMinTimestamp(DatasetId dataset_id, Timestamp observed_min) const;
   void refreshDatasetMinTimestampsForTopics(const QVector<TopicId>& ids) const;
   void invalidateDatasetMinTimestamp(DatasetId dataset_id) const;
+  // Emits the no-arg displayOffsetChanged signal exactly when the numerical
+  // global reference moved since consumers were last notified. Transactional
+  // replace/refill/eviction paths invalidate the origin cache before mutating
+  // data, so comparing at this final seam is more reliable than retaining a
+  // local "old" value across the mutation.
+  void notifyGlobalTimeReferenceIfChanged();
 
   struct ObjectParserSlot {
     // shared_ptr (not unique_ptr) so a display source can hold the handle alive
@@ -411,8 +435,22 @@ class SessionManager : public QObject {
   // Earliest raw stamp across ALL datasets, memoized for globalTimeReference().
   // Independent of the toggle (it's a raw-data fact), so it survives a
   // setUseTimeOffset but is cleared on every commit/ingest like the per-dataset
-  // memo. nullopt = not yet computed / no data.
+  // memo. nullopt = not yet computed; 0 = computed, no data.
+  //
+  // INVARIANT: the globalTimeReference() recompute TRUSTS the per-dataset pins
+  // (dataset_min_cache_) instead of rescanning raw bounds, so anything that can
+  // RAISE a dataset's earliest sample (removeDataset / evictObjectTopics /
+  // clearAllObjects / refill / refreshDatasetTimeReference) MUST invalidate that
+  // dataset's pin AND reset this global memo — invalidateDatasetMinTimestamp does
+  // both. Ingest can only LOWER a pin (rememberDatasetMinTimestamp never raises
+  // it), so the ingest path only resets this memo. Skipping either reset on a
+  // raise path would leave the recompute reading a stale-low origin.
   mutable std::optional<Timestamp> global_min_cache_;
+  // The globalTimeReference() value at the most recent displayOffsetChanged
+  // emission (from setUseTimeOffset or notifyGlobalTimeReferenceIfChanged), so
+  // the latter suppresses a redundant frame-change signal when the origin is
+  // unmoved. 0 matches the neutral "no data / offset off" origin.
+  Timestamp last_notified_global_reference_ = 0;
   // Owns the session's filter/transform engine; constructed in the ctor body
   // after data_engine_ is alive (it binds a DerivedEngine to data_engine_).
   std::unique_ptr<DataProcessorService> processor_service_;

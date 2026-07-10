@@ -91,6 +91,12 @@ enum class LegendStatus {
 
 class MainWindow : public QMainWindow {
   Q_OBJECT
+  // Headless layout round-trip test reaches the private data-source save/apply
+  // seam and the Source Timeline controller through this peer.
+  friend class MainWindowSourceLayoutTestPeer;
+  friend class MainWindowFanoutAmbiguousTestPeer;
+  friend class MainWindowViewportReframeTestPeer;
+
  public:
   // Creates the main window using the default extension directory.
   explicit MainWindow(QWidget* parent = nullptr);
@@ -467,6 +473,12 @@ class MainWindow : public QMainWindow {
   [[nodiscard]] QStringList unresolvedPendingSceneRestores();
   void clearPendingSceneRestores();
   void onProgressiveLayoutDrained();
+  // Re-applies the timeline state (offsets + track order) stashed by a progressive
+  // restore, now that the async worker has registered the reloaded datasets' source
+  // paths. Called from onProgressiveLayoutDrained BEFORE the viewport re-frame so the
+  // saved absolute window converts with the settled offset. Returns whether any
+  // offset moved. No-op when nothing was stashed.
+  bool applyPendingTimelineState();
   void restoreChromeAndPanels(const QDomDocument& doc, const QString& path);
   void saveLayoutToPath(const QString& path, bool include_data_source);
   void recordRecentLayout(const QString& path);
@@ -520,7 +532,9 @@ class MainWindow : public QMainWindow {
   // to a live dataset by source path; matched datasets get their display offset
   // restored and the timeline's vertical track order rebuilt. No-op for
   // generic (data-less) layouts and pre-v3 layouts that carry no timeline attrs.
-  void applyTimelineStateFromLayout(const QList<layout_xml::DataSourceRef>& sources);
+  // Returns true iff at least one dataset's display offset actually MOVED, so the
+  // caller can re-frame plots whose viewport was restored under the pre-apply offset.
+  bool applyTimelineStateFromLayout(const QList<layout_xml::DataSourceRef>& sources);
 
   // Builds <source_timeline zoom="…" scroll_left_ns="…" name_column_width="…"
   // snap="…"/> — the timeline's global VIEW chrome (independent of per-source
@@ -747,6 +761,12 @@ class MainWindow : public QMainWindow {
   bool progressive_layout_in_flight_ = false;
   QMetaObject::Connection pending_items_added_conn_;
   QMetaObject::Connection pending_queue_drained_conn_;
+  // Timeline state (per-source offsets + track order) extracted during a progressive
+  // restore but not yet applicable: the async worker had not registered the reloaded
+  // datasets' source paths when restoreChromeAndPanels ran, so the offsets were
+  // skipped. onProgressiveLayoutDrained re-applies these once the paths settle. Empty
+  // outside a progressive restore.
+  QList<layout_xml::DataSourceRef> pending_timeline_sources_;
   // Set only while a --layout CLI load runs, so loadLayoutFromPath auto-reloads the
   // layout's source(s) instead of prompting.
   bool startup_auto_reload_ = false;

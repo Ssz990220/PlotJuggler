@@ -203,7 +203,14 @@ constexpr auto kLastLayoutDirKey = "MainWindow.lastLayoutDirectory";
 // element carries zoom + scroll_left_ns + name_column_width + snap. Additive — older
 // readers ignore the new attributes/element; this build tolerates their absence in
 // pre-v3 layouts.
-constexpr int kLayoutSchemaVersion = 3;
+// v4 adds one <dataset> child per fan-out member under each <fileInfo>
+// (source_name + source_index + per-source display_offset_ns + timeline_order),
+// so a single file that fans out into several datasets round-trips each track
+// independently. The offset basis also changed: v3 wrote SessionManager::
+// displayOffset() (per-source alignment + global reference); v4 writes
+// sourceDisplayOffset() only, and the loader subtracts its current global
+// reference when reading a <=v3 layout (read-only migration, placement preserved).
+constexpr int kLayoutSchemaVersion = 4;
 constexpr double kTwoPi = 6.28318530717958647692;
 constexpr int kTestSampleCount = 1000;
 constexpr double kTestDurationSeconds = 10.0;
@@ -2764,6 +2771,11 @@ void MainWindow::loadLayoutFromPath(const QString& path) {
   // read as well as on write, leaving the source-only fallback to bind only when
   // unique.
   layout_xml::removeUnvalidatedDatasetIds(doc);
+  // Annotate legacy (pre-x_basis) plot ranges with their explicit X coordinate
+  // basis before any widget restore, so PlotWidget::xmlLoadState reads the basis
+  // straight off the <range> instead of re-inferring it from plot mode. No numeric
+  // range values change (see normalizePlotRangeBasis).
+  layout_xml::normalizePlotRangeBasis(doc);
   const QList<layout_xml::DataSourceRef> replays = layout_xml::extractDataSource(doc, layout_dir);
   // Set when the user chose "Reload original": the data loads (possibly async on
   // a worker), so the layout apply below must wait for the load queue to drain.
@@ -2942,7 +2954,23 @@ void MainWindow::restoreChromeAndPanels(const QDomDocument& doc, const QString& 
   // loadLayoutFromPath; re-extract them here (a pure parse of doc) so this restore
   // step has them in scope.
   const QDir timeline_layout_dir(QFileInfo(path).absoluteDir());
-  applyTimelineStateFromLayout(layout_xml::extractDataSource(doc, timeline_layout_dir));
+  const QList<layout_xml::DataSourceRef> timeline_sources = layout_xml::extractDataSource(doc, timeline_layout_dir);
+  const bool offset_changed = applyTimelineStateFromLayout(timeline_sources);
+  if (progressive_layout_in_flight_) {
+    // Async reload: the worker has not yet registered the in-flight dataset's source
+    // path, so applyTimelineStateFromLayout above found no candidates and skipped its
+    // offsets. Stash the refs so onProgressiveLayoutDrained re-applies them (and then
+    // re-frames viewports) once the paths settle. Skip-don't-guess is preserved: a
+    // ref already consumed on this leg re-applies idempotently (setDisplayOffset no-ops).
+    pending_timeline_sources_ = timeline_sources;
+  } else if (offset_changed) {
+    // Sync leg: the plots were framed by restoreWorkspaceState with the PRE-apply
+    // offset, and the per-dataset displayOffsetChanged handler only replots (never
+    // reframes). The saved-viewport stash survives xmlLoadState (clear_after=false),
+    // so re-convert the saved ABSOLUTE window with the now-settled offset and drop the
+    // stash. A plot with no/degenerate saved range falls back to zoomOut.
+    forEachPlot([](PlotWidget* plot) { plot->applySavedViewportOrZoom(/*clear_after=*/true); });
+  }
 
   // 4f. Restore the timeline's global view chrome (zoom/scroll/name-column/snap),
   // AFTER 4e so zoom/scroll map onto the offset-adjusted, rebuilt scene.
@@ -3006,6 +3034,7 @@ void MainWindow::cancelProgressiveLayoutRestore() {
     pending_binder_->clear();
   }
   clearPendingSceneRestores();
+  pending_timeline_sources_.clear();
   progressive_layout_in_flight_ = false;
 }
 
@@ -3062,15 +3091,20 @@ void MainWindow::onProgressiveLayoutDrained() {
 
   if (pending_binder_ != nullptr) {
     static_cast<void>(pending_binder_->flush({}));
+    // Now that the worker has registered the reloaded datasets' source paths, apply the
+    // timeline state (per-source offsets + track order) that restoreChromeAndPanels
+    // could not bind mid-load — it stashed the refs in pending_timeline_sources_. This
+    // MUST run before the viewport re-frame below so applySavedViewportOrZoom converts
+    // the saved ABSOLUTE window with the settled offset (otherwise the async leg would
+    // frame the pre-offset window, the FIX-1 bug on the progressive path).
+    static_cast<void>(applyPendingTimelineState());
     // Frame each restored plot to its layout-saved window with the now-settled display
-    // offset (the file has finished loading). This previously called zoomOut because the
-    // saved range was display-relative and the save vs reload offsets could differ; PR
-    // #248 made the saved X ABSOLUTE and applySavedViewportOrZoom converts it with the
-    // live offset, so re-applying it is correct — and it pins the plot to its final
-    // window so data fills in like streaming rather than the axis auto-fitting/growing.
-    // Plots with no/degenerate saved range fall back to zoomOut; clear_after drops the
-    // one-shot stash. Still under the in-flight gate, so onUndoableChange stays
-    // suppressed until the single snapshot below.
+    // offset (the file has finished loading). PR #248 made the saved X ABSOLUTE and
+    // applySavedViewportOrZoom converts it with the live offset, so re-applying it is
+    // correct — and it pins the plot to its final window so data fills in like streaming
+    // rather than the axis auto-fitting/growing. Plots with no/degenerate saved range
+    // fall back to zoomOut; clear_after drops the one-shot stash. Still under the
+    // in-flight gate, so onUndoableChange stays suppressed until the single snapshot below.
     forEachPlot([](PlotWidget* plot) { plot->applySavedViewportOrZoom(/*clear_after=*/true); });
 
     QStringList shown;
@@ -3566,15 +3600,9 @@ QDomElement MainWindow::appendDataSourceElement(QDomDocument& doc, const QDir& l
   // next reload — while loaded_sources_ itself stays intact for the quick-reload
   // button (which keys off lastLoadedSource, not this list). FileLoader owns the
   // DatasetId->path link the engine's basename-only DatasetInfo can't provide.
-  QSet<QString> live_paths;
-  QHash<QString, DatasetId> dataset_for_path;  // reverse of sourcePathForDataset, for offset lookup
-  for (const auto& [id, name] : session_->catalogModel().datasets()) {
-    (void)name;
-    if (const QString src_path = file_loader_->sourcePathForDataset(id); !src_path.isEmpty()) {
-      live_paths.insert(src_path);
-      dataset_for_path.insert(src_path, id);
-    }
-  }
+  // Keep every DatasetId for each file (in catalog/load order): one file replay
+  // may fan out into N datasets, each with its own TimeDomain and timeline track.
+  const std::vector<std::pair<DatasetId, QString>> live_datasets = session_->catalogModel().datasets();
 
   // Source Timeline arrangement: the bar's top-to-bottom slot, persisted per
   // file so the vertical order round-trips (re-bound by path on reload). Build
@@ -3593,7 +3621,18 @@ QDomElement MainWindow::appendDataSourceElement(QDomDocument& doc, const QDir& l
   // round-trips. Old PJ4 readers that only read the first child degrade to the
   // first file; new readers restore them all.
   for (const auto& src : sources) {
-    if (!live_paths.contains(src.path)) {
+    // Every live dataset this file backs, in catalog/load order. source_index is
+    // that stable position (two fan-out members with identical display names
+    // must not swap offsets on reload).
+    std::vector<DatasetId> datasets_for_file;
+    for (const auto& [id, name] : live_datasets) {
+      (void)name;
+      const QString source_path = file_loader_->sourcePathForDataset(id);
+      if (!source_path.isEmpty() && layout_xml::isSamePath(source_path, src.path)) {
+        datasets_for_file.push_back(id);
+      }
+    }
+    if (datasets_for_file.empty()) {
       continue;  // dataset removed since load; don't resurrect it on reload
     }
     QDomElement file_info = doc.createElement(u"fileInfo"_s);
@@ -3602,16 +3641,28 @@ QDomElement MainWindow::appendDataSourceElement(QDomDocument& doc, const QDir& l
     file_info.setAttribute(u"filename"_s, relocatableSubpath(abs, layout_dir));
     file_info.setAttribute(u"prefix"_s, src.prefix);
 
-    // Source Timeline state for this file, re-bound by path on reload. The
-    // display offset is read live from the SessionManager (the per-source
-    // display shift the user dragged); timeline_order is its bar's vertical
-    // slot. Both keyed by the dataset this path currently backs.
-    if (const auto it = dataset_for_path.constFind(src.path); it != dataset_for_path.constEnd()) {
-      const DatasetId id = it.value();
-      file_info.setAttribute(
-          u"display_offset_ns"_s, QString::number(session_->sessionManager().displayOffset(id).value.count()));
+    // One <dataset> child per fan-out member. The offset is sourceDisplayOffset()
+    // — the per-source alignment WITHOUT the global reference (schema v4 basis).
+    // Mirror the first child's state onto the legacy <fileInfo> attributes so a
+    // <=v3 reader still gets a single-track view of the file.
+    for (std::size_t index = 0; index < datasets_for_file.size(); ++index) {
+      const DatasetId id = datasets_for_file[index];
+      QDomElement dataset_el = doc.createElement(u"dataset"_s);
+      dataset_el.setAttribute(u"source_index"_s, QString::number(index));
+      if (const DatasetInfo* dataset = session_->sessionManager().dataEngine().getDataset(id)) {
+        dataset_el.setAttribute(u"source_name"_s, QString::fromStdString(dataset->source_name));
+      }
+      const QString offset = QString::number(session_->sessionManager().sourceDisplayOffset(id).value.count());
+      dataset_el.setAttribute(u"display_offset_ns"_s, offset);
       if (const auto order_it = timeline_order.constFind(id); order_it != timeline_order.constEnd()) {
-        file_info.setAttribute(u"timeline_order"_s, QString::number(order_it.value()));
+        dataset_el.setAttribute(u"timeline_order"_s, QString::number(order_it.value()));
+      }
+      file_info.appendChild(dataset_el);
+      if (index == 0) {
+        file_info.setAttribute(u"display_offset_ns"_s, offset);
+        if (dataset_el.hasAttribute(u"timeline_order"_s)) {
+          file_info.setAttribute(u"timeline_order"_s, dataset_el.attribute(u"timeline_order"_s));
+        }
       }
     }
 
@@ -3642,34 +3693,157 @@ QDomElement MainWindow::appendDataSourceElement(QDomDocument& doc, const QDir& l
   return wrapper;
 }
 
-void MainWindow::applyTimelineStateFromLayout(const QList<layout_xml::DataSourceRef>& sources) {
+bool MainWindow::applyTimelineStateFromLayout(const QList<layout_xml::DataSourceRef>& sources) {
   if (sources.isEmpty()) {
-    return;
+    return false;
   }
   SessionManager& mgr = session_->sessionManager();
 
-  // Re-bind each saved <fileInfo> to whichever loaded dataset came from that
-  // file (DatasetIds are re-minted per session; the path is the stable key),
-  // apply its display offset, and collect (id, slot) for the order rebuild.
+  // Re-bind each saved <fileInfo> to every loaded dataset produced from that
+  // file. DatasetIds are re-minted per session, so path + fan-out
+  // (source_name, source_index) is the stable identity. Apply each track's
+  // offset and collect (id, slot) for the vertical-order rebuild.
   std::vector<std::pair<int, DatasetId>> ordered;  // (timeline_order, id)
+  QSet<DatasetId> matched_ids;
+  bool offset_changed = false;
+  const auto apply_state = [&mgr, &ordered, &matched_ids, &offset_changed](
+                               DatasetId matched, qint64 offset_ns, bool has_offset, bool includes_global_reference,
+                               int order) {
+    // Multiple <fileInfo>/<dataset> aliases can resolve to one physical dataset.
+    // First match wins; never apply its offset twice or draw it in two slots.
+    if (matched_ids.contains(matched)) {
+      return;
+    }
+    matched_ids.insert(matched);
+    if (has_offset) {
+      // v3 wrote displayOffset() (per-source alignment + the global reference);
+      // v4 writes sourceDisplayOffset() only. Subtract the current global
+      // reference for a v3 read so total placement stays equal without
+      // double-applying it (setDisplayOffset writes the per-source alignment).
+      if (includes_global_reference) {
+        offset_ns -= mgr.globalTimeReference();
+      }
+      // Track whether this write actually MOVES the offset: plots restored earlier
+      // (restoreWorkspaceState) framed their viewport with the pre-apply offset, so
+      // the caller must re-frame only when an offset really changed here.
+      if (mgr.sourceDisplayOffset(matched).value.count() != offset_ns) {
+        offset_changed = true;
+      }
+      mgr.setDisplayOffset(matched, DisplayOffset{Duration{offset_ns}});
+    }
+    if (order >= 0) {
+      ordered.emplace_back(order, matched);
+    }
+  };
+
+  // datasets() copies the whole catalog list per call; the candidate scan below
+  // reads it once per saved source, so hoist the single snapshot out of the loop.
+  const std::vector<std::pair<DatasetId, QString>> live_datasets = session_->catalogModel().datasets();
+
   for (const layout_xml::DataSourceRef& ref : sources) {
-    DatasetId matched = 0;
-    for (const auto& [id, name] : session_->catalogModel().datasets()) {
+    std::vector<DatasetId> candidates;
+    for (const auto& [id, name] : live_datasets) {
       (void)name;
       const QString src_path = file_loader_->sourcePathForDataset(id);
       if (!src_path.isEmpty() && layout_xml::isSamePath(src_path, ref.resolved_path)) {
-        matched = id;
-        break;
+        candidates.push_back(id);
       }
     }
-    if (matched == 0) {
+    if (candidates.empty()) {
       continue;  // file referenced by the layout isn't loaded — nothing to restore
     }
-    if (ref.has_display_offset) {
-      mgr.setDisplayOffset(matched, DisplayOffset{Duration{ref.display_offset_ns}});
+
+    if (ref.datasets.isEmpty()) {
+      // Legacy (<=v3) layout: one state on <fileInfo>, no fan-out description.
+      // Deterministically apply it to the first dataset the file created,
+      // matching the historical one-track behavior.
+      apply_state(
+          candidates.front(), ref.display_offset_ns, ref.has_display_offset,
+          ref.display_offset_includes_global_reference, ref.timeline_order);
+      continue;
     }
-    if (ref.timeline_order >= 0) {
-      ordered.emplace_back(ref.timeline_order, matched);
+
+    // Fan-out apply: bind each saved <dataset> back to a live candidate.
+    //
+    // A source_name shared by MORE THAN ONE saved child cannot disambiguate those
+    // children (they are indistinguishable by name), so they bind by source_index
+    // ONLY. Binding by index is safe only when the fan-out SHAPE is unchanged for
+    // that name: the count of same-named candidates must equal the count of
+    // same-named saved children. If the shape changed (e.g. two saved "camera"
+    // tracks but only one "camera" candidate loaded), none of them bind — a
+    // surviving sibling must never inherit an offset we cannot prove is its own.
+    // A name-UNIQUE saved child keeps the robust name-first-then-index resolution.
+    const auto named_saved_count = [&ref](const QString& name) {
+      return static_cast<int>(std::count_if(
+          ref.datasets.begin(), ref.datasets.end(),
+          [&name](const layout_xml::DataSourceDatasetRef& d) { return d.source_name == name; }));
+    };
+    const auto named_candidate_count = [&](const QString& name) {
+      return static_cast<int>(std::count_if(candidates.begin(), candidates.end(), [&](DatasetId id) {
+        const DatasetInfo* dataset = mgr.dataEngine().getDataset(id);
+        return dataset != nullptr && QString::fromStdString(dataset->source_name) == name;
+      }));
+    };
+
+    QSet<DatasetId> used;
+    // Resolve a saved child by its source_index against the live candidates: the
+    // index must be in range, its candidate not yet consumed, and its live
+    // source_name must agree with the saved name (an empty saved name matches any).
+    // Shared by both matcher arms — the index tiebreak in the unique-name arm and
+    // the shape-guarded index bind in the duplicate-name arm.
+    const auto match_by_index = [&](const layout_xml::DataSourceDatasetRef& saved) -> std::optional<DatasetId> {
+      if (saved.source_index < 0 || saved.source_index >= static_cast<int>(candidates.size())) {
+        return std::nullopt;
+      }
+      const DatasetId indexed = candidates[static_cast<std::size_t>(saved.source_index)];
+      if (used.contains(indexed)) {
+        return std::nullopt;
+      }
+      const DatasetInfo* dataset = mgr.dataEngine().getDataset(indexed);
+      if (saved.source_name.isEmpty() ||
+          (dataset != nullptr && QString::fromStdString(dataset->source_name) == saved.source_name)) {
+        return indexed;
+      }
+      return std::nullopt;
+    };
+
+    for (const layout_xml::DataSourceDatasetRef& saved : ref.datasets) {
+      const bool name_is_duplicated = !saved.source_name.isEmpty() && named_saved_count(saved.source_name) > 1;
+
+      DatasetId matched = 0;
+      if (name_is_duplicated) {
+        // Index-only, shape-guarded: bind to candidates[source_index] iff that
+        // candidate shares the name AND the same-named fan-out shape is preserved.
+        const bool shape_preserved = named_candidate_count(saved.source_name) == named_saved_count(saved.source_name);
+        if (shape_preserved) {
+          matched = match_by_index(saved).value_or(0);
+        }
+      } else {
+        // Name-unique child: match by name first, else by source_index.
+        std::vector<DatasetId> source_matches;
+        for (const DatasetId candidate : candidates) {
+          if (used.contains(candidate)) {
+            continue;
+          }
+          const DatasetInfo* dataset = mgr.dataEngine().getDataset(candidate);
+          if (saved.source_name.isEmpty() ||
+              (dataset != nullptr && QString::fromStdString(dataset->source_name) == saved.source_name)) {
+            source_matches.push_back(candidate);
+          }
+        }
+        if (source_matches.size() == 1) {
+          matched = source_matches.front();
+        } else {
+          matched = match_by_index(saved).value_or(0);
+        }
+      }
+      if (matched == 0) {
+        continue;  // missing/ambiguous fan-out entry: never shift a sibling
+      }
+      used.insert(matched);
+      apply_state(
+          matched, saved.display_offset_ns, saved.has_display_offset, saved.display_offset_includes_global_reference,
+          saved.timeline_order);
     }
   }
 
@@ -3686,6 +3860,16 @@ void MainWindow::applyTimelineStateFromLayout(const QList<layout_xml::DataSource
     }
     source_timeline_controller_->setDisplayOrder(std::move(order));
   }
+  return offset_changed;
+}
+
+bool MainWindow::applyPendingTimelineState() {
+  if (pending_timeline_sources_.isEmpty()) {
+    return false;
+  }
+  const QList<layout_xml::DataSourceRef> sources = std::move(pending_timeline_sources_);
+  pending_timeline_sources_.clear();
+  return applyTimelineStateFromLayout(sources);
 }
 
 QDomElement MainWindow::saveSourceTimelineViewState(QDomDocument& doc) const {

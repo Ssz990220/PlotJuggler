@@ -49,7 +49,13 @@ QString directCdataText(const QDomElement& element) {
 
 QList<DataSourceRef> extractDataSource(const QDomDocument& doc, const QDir& layout_dir) {
   QList<DataSourceRef> sources;
-  const QDomElement wrapper = doc.documentElement().firstChildElement(u"previouslyLoaded_Datafiles"_s);
+  const QDomElement root = doc.documentElement();
+  // Schema <4 baked the global relative-time reference into every persisted
+  // display offset; v4+ persists the per-source alignment only. A missing/
+  // non-numeric version is treated as legacy (0), so an unversioned document
+  // migrates like v3.
+  const int schema_version = root.attribute(u"pj4_version"_s, u"0"_s).toInt();
+  const QDomElement wrapper = root.firstChildElement(u"previouslyLoaded_Datafiles"_s);
   if (wrapper.isNull()) {
     return sources;
   }
@@ -66,14 +72,48 @@ QList<DataSourceRef> extractDataSource(const QDomDocument& doc, const QDir& layo
     info.resolved_path = qfi.isAbsolute() ? qfi.absoluteFilePath() : layout_dir.absoluteFilePath(filename);
     info.prefix = file_info.attribute(u"prefix"_s);
 
-    // Source Timeline state (optional; absent in pre-v3 layouts). A missing
-    // display_offset_ns leaves has_display_offset false so the reloaded dataset
-    // keeps its natural zero offset rather than being explicitly rewritten.
+    // Legacy single-track state on <fileInfo> (optional; absent in pre-v3
+    // layouts). A missing display_offset_ns leaves has_display_offset false so
+    // the reloaded dataset keeps its natural zero offset rather than being
+    // explicitly rewritten. It is consulted only when no <dataset> children are
+    // present (a <=v3 layout that could not describe fan-out tracks).
     if (file_info.hasAttribute(u"display_offset_ns"_s)) {
-      info.display_offset_ns = file_info.attribute(u"display_offset_ns"_s).toLongLong();
-      info.has_display_offset = true;
+      bool ok = false;
+      info.display_offset_ns = file_info.attribute(u"display_offset_ns"_s).toLongLong(&ok);
+      info.has_display_offset = ok;
+      info.display_offset_includes_global_reference = ok && schema_version < 4;
     }
-    info.timeline_order = file_info.attribute(u"timeline_order"_s, u"-1"_s).toInt();
+    bool order_ok = false;
+    info.timeline_order = file_info.attribute(u"timeline_order"_s, u"-1"_s).toInt(&order_ok);
+    if (!order_ok) {
+      info.timeline_order = -1;
+    }
+
+    // Schema-v4 per-dataset children: one <dataset> per fan-out member, each
+    // keyed by (source_name, source_index) so identical display names still map
+    // to distinct tracks. Empty in a <=v3 layout (falls back to the flat state).
+    for (QDomElement dataset = file_info.firstChildElement(u"dataset"_s); !dataset.isNull();
+         dataset = dataset.nextSiblingElement(u"dataset"_s)) {
+      DataSourceDatasetRef dataset_ref;
+      dataset_ref.source_name = dataset.attribute(u"source_name"_s);
+      bool source_index_ok = false;
+      dataset_ref.source_index = dataset.attribute(u"source_index"_s, u"-1"_s).toInt(&source_index_ok);
+      if (!source_index_ok) {
+        dataset_ref.source_index = -1;
+      }
+      if (dataset.hasAttribute(u"display_offset_ns"_s)) {
+        bool ok = false;
+        dataset_ref.display_offset_ns = dataset.attribute(u"display_offset_ns"_s).toLongLong(&ok);
+        dataset_ref.has_display_offset = ok;
+        dataset_ref.display_offset_includes_global_reference = ok && schema_version < 4;
+      }
+      bool dataset_order_ok = false;
+      dataset_ref.timeline_order = dataset.attribute(u"timeline_order"_s, u"-1"_s).toInt(&dataset_order_ok);
+      if (!dataset_order_ok) {
+        dataset_ref.timeline_order = -1;
+      }
+      info.datasets.push_back(std::move(dataset_ref));
+    }
 
     const QDomElement plugin = file_info.firstChildElement(u"plugin"_s);
     if (!plugin.isNull()) {
@@ -387,6 +427,27 @@ void stripUnresolvedCurves(QDomDocument& doc) {
   });
   for (QDomNode& v : victims) {
     v.parentNode().removeChild(v);
+  }
+}
+
+void normalizePlotRangeBasis(QDomDocument& doc) {
+  const QDomNodeList plots = doc.elementsByTagName(u"plot"_s);
+  for (int index = 0; index < plots.size(); ++index) {
+    const QDomElement plot = plots.at(index).toElement();
+    if (plot.isNull()) {
+      continue;
+    }
+    QDomElement range = plot.firstChildElement(u"range"_s);
+    // A range already carrying x_basis was written by a current build; leave it
+    // (keeps this migration idempotent). Only annotate the historical unmarked form.
+    if (range.isNull() || range.hasAttribute(u"x_basis"_s)) {
+      continue;
+    }
+    // No numeric values change. XY plots stored a raw data value; time-series plots
+    // have always stored ABSOLUTE seconds (the v3 writer added the display offset),
+    // so the pre-marker form maps directly onto today's two bases.
+    const bool is_xy = plot.attribute(u"mode"_s) == u"XYPlot"_s;
+    range.setAttribute(u"x_basis"_s, is_xy ? u"value"_s : u"absolute"_s);
   }
 }
 

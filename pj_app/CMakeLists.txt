@@ -6,8 +6,10 @@ find_package(Qt6 REQUIRED COMPONENTS Core Gui Widgets Network Svg Test)
 # transitively. main.cpp installs the signal handler.
 find_package(Backward REQUIRED)
 
-add_executable(pj_app
-    src/main.cpp
+# The whole shell as an OBJECT library so a headless test can link the exact
+# same MainWindow object files (see main_window_source_layout_test) instead of
+# duplicating the widget tree. The executable below is a thin main.cpp wrapper.
+add_library(pj_app_shell OBJECT
     src/Splashscreen.cpp
     src/Splashscreen.h
     src/DialogPresenter.cpp
@@ -76,26 +78,24 @@ add_executable(pj_app
     src/ui/TimelineWidget.ui
     src/RasterKeyMap.cpp
     src/RasterKeyMap.h
-    ${CMAKE_SOURCE_DIR}/resources/resources.qrc
 )
 
-set_target_properties(pj_app PROPERTIES
+set_target_properties(pj_app_shell PROPERTIES
     # The CMake target id stays `pj_app` (internal module name), but the installed
     # binary is `plotjuggler4` — the user-facing command and what packaging ships
     # (e.g. /usr/bin/plotjuggler4). Keeps the source module rename a separate concern.
     OUTPUT_NAME plotjuggler4
     AUTOMOC ON
-    AUTORCC ON
     AUTOUIC ON
     AUTOUIC_SEARCH_PATHS ${CMAKE_CURRENT_SOURCE_DIR}/src
 )
 
-target_include_directories(pj_app PRIVATE
+target_include_directories(pj_app_shell PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/src
     ${CMAKE_SOURCE_DIR}/raster_ipc
 )
 
-target_link_libraries(pj_app PRIVATE
+target_link_libraries(pj_app_shell PUBLIC
     pj_runtime
     pj_widgets
     pj_plotting
@@ -105,7 +105,6 @@ target_link_libraries(pj_app PRIVATE
     pj_marketplace_ui
     pj_dialog_engine_qt
     qt_advanced_docking
-    Backward::Backward
     Qt6::Core
     Qt6::Gui
     Qt6::Widgets
@@ -114,15 +113,25 @@ target_link_libraries(pj_app PRIVATE
     Qt6::Svg
 )
 
-# Single source of truth for the app version: the root project(VERSION). Both
-# the About box (applicationVersion()) and the GitHub release check compare
-# against this string.
+add_executable(pj_app
+    src/main.cpp
+    ${CMAKE_SOURCE_DIR}/resources/resources.qrc
+)
+set_target_properties(pj_app PROPERTIES AUTORCC ON)
+target_include_directories(pj_app PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_link_libraries(pj_app PRIVATE pj_app_shell Backward::Backward)
+
+# Single source of truth for the app version: the root project(VERSION). main.cpp
+# (the only PJ_VERSION_STRING user) is compiled into this executable, not the
+# shell, so the definition rides on the pj_app target. Both the About box
+# (applicationVersion()) and the GitHub release check compare against this string.
 target_compile_definitions(pj_app PRIVATE PJ_VERSION_STRING="${PROJECT_VERSION}")
 
 # -Werror guards against the bug class that bit the reload path: a merge that
 # drops wiring leaves an unused variable behind, which these flags turn into a
 # build failure instead of a silent regression.
 if(DEFINED PJ_WARNING_FLAGS)
+    target_compile_options(pj_app_shell PRIVATE ${PJ_WARNING_FLAGS})
     target_compile_options(pj_app PRIVATE ${PJ_WARNING_FLAGS})
 endif()
 
@@ -143,6 +152,42 @@ endif()
 
 if(PJ_BUILD_TESTS)
     find_package(GTest REQUIRED)
+
+    # A GUI test binary that drives the real MainWindow through a friend peer: it
+    # links the whole shell (pj_app_shell) and compiles resources.qrc (AUTORCC) so
+    # the window's icons resolve. One MainWindow per binary — its dtor leaks
+    # process state — hence one target (and one add_test) per scenario file.
+    #   target   the executable + CTest command name
+    #   test     the human-readable CTest NAME
+    #   source   the test's .cpp under tests/
+    function(add_pj_app_gui_test target test source)
+        add_executable(${target}
+            ${source}
+            ${CMAKE_SOURCE_DIR}/resources/resources.qrc
+        )
+        set_target_properties(${target} PROPERTIES AUTORCC ON)
+        target_include_directories(${target} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+        target_link_libraries(${target} PRIVATE pj_app_shell GTest::gtest)
+        if(DEFINED PJ_WARNING_FLAGS)
+            target_compile_options(${target} PRIVATE ${PJ_WARNING_FLAGS})
+        endif()
+        add_test(NAME ${test} COMMAND ${target})
+    endfunction()
+
+    # Source-bound layout seam: one replayable file that fans out into several
+    # datasets must persist/restore each independent timeline track.
+    add_pj_app_gui_test(main_window_source_layout_test MainWindowSourceLayoutTest
+        tests/main_window_source_layout_test.cpp)
+
+    # Fan-out timeline matcher: when a saved same-named fan-out shape no longer
+    # matches the loaded one, no offset may bind (FIX 4).
+    add_pj_app_gui_test(main_window_fanout_ambiguous_test MainWindowFanoutAmbiguousTest
+        tests/main_window_fanout_ambiguous_test.cpp)
+
+    # Viewport re-frame after a layout's timeline offsets settle: sync leg (FIX 1)
+    # and the progressive-drain pending-timeline seam (FIX 2).
+    add_pj_app_gui_test(main_window_viewport_reframe_test MainWindowViewportReframeTest
+        tests/main_window_viewport_reframe_test.cpp)
 
     # Pure config-parsing logic (no GUI), compiled standalone so it's linkable
     # from a plain gtest binary. FanoutConfig.cpp is also part of pj_app itself.

@@ -351,7 +351,10 @@ bool FileLoader::beginLoad(const LoadRequest& request) {
     // dataset so no reader/adapter can keep a dangling TopicStorage pointer.
     session_.evictDatasetObjects(created_live_dataset_id);
     catalog_.removeDataset(created_live_dataset_id, /*tombstone=*/false);
-    session_.dataEngine().removeDataset(created_live_dataset_id);
+    // Route through SessionManager::removeDataset (not dataEngine directly) so the
+    // dataset's pinned time-origin is invalidated and the global reframe fires if
+    // dropping it moved the earliest sample across the surviving datasets.
+    session_.removeDataset(created_live_dataset_id);
     created_live_dataset_id = 0;
   };
 
@@ -1002,7 +1005,9 @@ bool FileLoader::beginLoad(const LoadRequest& request) {
       transform_service_->invalidateDataset(tombstoned_id);
     }
     session_.evictDatasetObjects(tombstoned_id);
-    engine.removeDataset(tombstoned_id);
+    // Via SessionManager::removeDataset for the origin invalidate + reframe (see the
+    // non-replacing cleanup lambda near the top of loadFile).
+    session_.removeDataset(tombstoned_id);
   }
   tombstoned_for_replace.clear();
 
@@ -1045,6 +1050,19 @@ bool FileLoader::beginLoad(const LoadRequest& request) {
   } else {
     for (const DatasetId loaded_id : fanout_loaded_ids) {
       session_.setDatasetSourcePath(loaded_id, path);
+    }
+  }
+
+  // The synchronous load committed its rows straight to DataEngine via the plugin
+  // write host, bypassing SessionManager::commitChunks — so the cross-dataset time
+  // origin was never re-evaluated. Refresh it per loaded dataset: a file whose data
+  // is EARLIER than any prior dataset must reframe every plot. No-op when "Use time
+  // offset" is off.
+  if (fanouts.size() == 1) {
+    session_.refreshDatasetTimeReference(dataset_id);
+  } else {
+    for (const DatasetId loaded_id : fanout_loaded_ids) {
+      session_.refreshDatasetTimeReference(loaded_id);
     }
   }
 
@@ -1112,7 +1130,10 @@ void FileLoader::onWorkerFinished() {
       // path it would wipe the objects the guard is about to restore.
       session_.evictDatasetObjects(dataset_id);
       catalog_.removeDataset(dataset_id, /*tombstone=*/false);
-      session_.dataEngine().removeDataset(dataset_id);
+      // Via SessionManager::removeDataset for the origin invalidate + reframe (see the
+      // non-replacing cleanup lambda near the top of loadFile) — a discarded partial
+      // load may have progress-flushed EARLIER data than any prior dataset.
+      session_.removeDataset(dataset_id);
     } else {
       // Roll back to the pre-reload data (guard dtor reattaches scalar + object data,
       // retires/removes topics the failed refill added, evicts their parsers).
@@ -1130,7 +1151,9 @@ void FileLoader::onWorkerFinished() {
       // reattaching to the empty dataset a failed start() left behind.
       session_.evictDatasetObjects(dataset_id);
       catalog_.removeDataset(dataset_id, /*tombstone=*/false);
-      session_.dataEngine().removeDataset(dataset_id);
+      // Via SessionManager::removeDataset for the origin invalidate + reframe (see the
+      // non-replacing cleanup lambda near the top of loadFile).
+      session_.removeDataset(dataset_id);
     } else {
       // Same rollback as Discard: a failed start() on a reload must restore the prior
       // data rather than leave the dataset empty.
@@ -1202,6 +1225,12 @@ void FileLoader::finishLoadOnGui() {
   }
 
   session_.setDatasetSourcePath(dataset_id, ctx_->path);
+  // The terminal flush (onWorkerFinished) committed the file's rows straight to
+  // DataEngine via the plugin write host, bypassing SessionManager::commitChunks —
+  // so the cross-dataset time origin was never re-evaluated. Refresh it now: a short
+  // file whose data is EARLIER than any prior dataset must reframe every plot to the
+  // new origin. No-op when "Use time offset" is off.
+  session_.refreshDatasetTimeReference(dataset_id);
   const QString path = ctx_->path;
   const QString source_name = ctx_->source_name;
   ctx_.reset();  // drop the handle/host before notifying — the load is complete
@@ -1250,7 +1279,7 @@ void FileLoader::joinForShutdown() {
   if (ctx_ != nullptr && !was_replacing) {
     session_.evictDatasetObjects(reload_id);
     catalog_.removeDataset(reload_id, /*tombstone=*/false);
-    session_.dataEngine().removeDataset(reload_id);
+    session_.removeDataset(reload_id);
   }
   ctx_.reset();  // guard dtor rolls back a replacing reload; any queued onWorkerFinished no-ops
   if (was_replacing) {

@@ -617,6 +617,136 @@ TEST(SessionManagerTimeOffsetTest, UsesUniformGlobalOriginPreservingGaps) {
   EXPECT_DOUBLE_EQ(range_a_off->min.value, 5.0);  // back to absolute epoch seconds
 }
 
+TEST(SessionManagerTimeOffsetTest, EarlierDatasetIngestNotifiesGlobalReframe) {
+  PJ::SessionManager session;
+  static_cast<void>(addDataset(session, "later.mcap", "/later", {5'000'000'000LL, 6'000'000'000LL}));
+  session.setUseTimeOffset(true);
+  ASSERT_EQ(session.globalTimeReference(), 5'000'000'000LL);
+
+  QSignalSpy global_changes(&session, qOverload<>(&PJ::SessionManager::displayOffsetChanged));
+  static_cast<void>(addDataset(session, "earlier.mcap", "/earlier", {2'000'000'000LL, 3'000'000'000LL}));
+
+  EXPECT_EQ(session.globalTimeReference(), 2'000'000'000LL);
+  EXPECT_EQ(global_changes.count(), 1) << "existing adapters must be told that the shared absolute/display frame moved";
+}
+
+// FileLoader's completion seam (FIX 3): plugin ingest commits straight to DataEngine
+// via the C-ABI write host, BYPASSING SessionManager::commitChunks — so committing an
+// earlier dataset that way leaves the memoized origin stale (no notify fires). The
+// public refreshDatasetTimeReference seam re-scans the dataset and emits the reframe.
+TEST(SessionManagerTimeOffsetTest, RefreshDatasetTimeReferenceReframesAfterDirectEngineCommit) {
+  PJ::SessionManager session;
+  static_cast<void>(addDataset(session, "later.mcap", "/later", {5'000'000'000LL, 6'000'000'000LL}));
+  session.setUseTimeOffset(true);
+  ASSERT_EQ(session.globalTimeReference(), 5'000'000'000LL);
+
+  // Create an EARLIER dataset and commit its rows straight to DataEngine (mirrors the
+  // plugin write host) — SessionManager never sees a commitChunks/notifyIngest, so its
+  // origin memo stays at 5 s despite the earlier data being live.
+  auto domain = session.dataEngine().createTimeDomain("earlier.mcap");
+  ASSERT_TRUE(domain.has_value()) << domain.error();
+  auto dataset = session.dataEngine().createDataset(
+      PJ::DatasetDescriptor{.source_name = "earlier.mcap", .time_domain_id = *domain});
+  ASSERT_TRUE(dataset.has_value()) << dataset.error();
+  PJ::DataWriter writer = session.dataEngine().createWriter();
+  auto handle = writer.registerScalarSeries(*dataset, "/earlier", PJ::NumericType::kFloat64);
+  ASSERT_TRUE(handle.has_value()) << handle.error();
+  writer.appendScalar(*handle, 2'000'000'000LL, 1.0);
+  writer.appendScalar(*handle, 3'000'000'000LL, 1.0);
+  ASSERT_FALSE(session.dataEngine().commitChunks(writer.flushAll()).empty());  // NOT session.commitChunks
+
+  // The origin is still stale (the direct commit bypassed the notify path).
+  QSignalSpy global_changes(&session, qOverload<>(&PJ::SessionManager::displayOffsetChanged));
+
+  // The completion seam re-scans and reframes exactly once.
+  session.refreshDatasetTimeReference(*dataset);
+  EXPECT_EQ(session.globalTimeReference(), 2'000'000'000LL);
+  EXPECT_EQ(global_changes.count(), 1) << "a plugin-direct-committed earlier file must reframe on the completion seam";
+
+  // Idempotent: a second refresh with the origin unchanged emits nothing.
+  session.refreshDatasetTimeReference(*dataset);
+  EXPECT_EQ(global_changes.count(), 1) << "no spurious reframe when the origin did not move";
+}
+
+// FIX 3 removal face: a dataset with committed data removed via SessionManager::
+// removeDataset must reframe when it was the origin owner (FileLoader routes its
+// discard/error cleanups through this instead of dataEngine().removeDataset directly).
+TEST(SessionManagerTimeOffsetTest, RemoveDatasetReframesWhenItOwnedTheOrigin) {
+  PJ::SessionManager session;
+  static_cast<void>(addDataset(session, "later.mcap", "/later", {5'000'000'000LL, 6'000'000'000LL}));
+  const PJ::DatasetId earliest = addDataset(session, "earlier.mcap", "/earlier", {2'000'000'000LL, 3'000'000'000LL});
+  session.setUseTimeOffset(true);
+  ASSERT_EQ(session.globalTimeReference(), 2'000'000'000LL);
+
+  QSignalSpy global_changes(&session, qOverload<>(&PJ::SessionManager::displayOffsetChanged));
+  session.removeDataset(earliest);
+  EXPECT_EQ(session.globalTimeReference(), 5'000'000'000LL) << "origin re-bases to the surviving later dataset";
+  EXPECT_EQ(global_changes.count(), 1) << "dropping the origin owner must reframe surviving plots exactly once";
+}
+
+TEST(SessionManagerTimeOffsetTest, ObjectTopicEvictionRebasesOnlyWhenTheNumericOriginMoves) {
+  PJ::SessionManager session;
+  const auto make_object_dataset = [&session](std::string source, PJ::Timestamp stamp) {
+    const auto dataset = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = std::move(source)});
+    EXPECT_TRUE(dataset.has_value()) << dataset.error();
+    if (!dataset.has_value()) {
+      return PJ::ObjectTopicId{};
+    }
+    const auto topic = session.objectStore().registerTopic(
+        PJ::ObjectTopicDescriptor{.dataset_id = *dataset, .topic_name = "/object", .metadata_json = "{}"});
+    EXPECT_TRUE(topic.has_value()) << topic.error();
+    if (!topic.has_value()) {
+      return PJ::ObjectTopicId{};
+    }
+    EXPECT_TRUE(session.objectStore().pushOwned(*topic, stamp, std::vector<uint8_t>{1}).has_value());
+    return *topic;
+  };
+
+  const PJ::ObjectTopicId earliest = make_object_dataset("early", 2'000'000'000LL);
+  const PJ::ObjectTopicId survivor = make_object_dataset("middle", 5'000'000'000LL);
+  const PJ::ObjectTopicId non_origin = make_object_dataset("late", 8'000'000'000LL);
+  ASSERT_NE(earliest.id, 0U);
+  ASSERT_NE(survivor.id, 0U);
+  ASSERT_NE(non_origin.id, 0U);
+  session.notifyIngest({}, /*live=*/false);
+  session.setUseTimeOffset(true);
+  ASSERT_EQ(session.globalTimeReference(), 2'000'000'000LL);
+
+  QSignalSpy global_changes(&session, qOverload<>(&PJ::SessionManager::displayOffsetChanged));
+  session.evictObjectTopics({non_origin});
+  EXPECT_EQ(session.globalTimeReference(), 2'000'000'000LL);
+  EXPECT_EQ(global_changes.count(), 0) << "removing a later object must not emit a spurious frame change";
+
+  session.evictObjectTopics({earliest});
+  EXPECT_EQ(session.globalTimeReference(), 5'000'000'000LL);
+  EXPECT_EQ(global_changes.count(), 1) << "removing the object-only t0 owner must reframe surviving data exactly once";
+}
+
+TEST(SessionManagerTimeOffsetTest, ClearAllObjectsRebasesToSurvivingScalarData) {
+  PJ::SessionManager session;
+  const PJ::DatasetId scalar_dataset = addDataset(session, "scalar", "/scalar", {8'000'000'000LL, 9'000'000'000LL});
+  const auto object_dataset = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "object"});
+  ASSERT_TRUE(object_dataset.has_value()) << object_dataset.error();
+  const auto object_topic = session.objectStore().registerTopic(
+      PJ::ObjectTopicDescriptor{.dataset_id = *object_dataset, .topic_name = "/object", .metadata_json = "{}"});
+  ASSERT_TRUE(object_topic.has_value()) << object_topic.error();
+  ASSERT_TRUE(session.objectStore().pushOwned(*object_topic, 3'000'000'000LL, std::vector<uint8_t>{1}).has_value());
+  session.notifyIngest({}, /*live=*/false);
+
+  session.setUseTimeOffset(true);
+  ASSERT_EQ(session.globalTimeReference(), 3'000'000'000LL);
+  QSignalSpy global_changes(&session, qOverload<>(&PJ::SessionManager::displayOffsetChanged));
+
+  session.clearAllObjects();
+
+  EXPECT_TRUE(session.objectStore().listTopics().empty());
+  EXPECT_EQ(session.globalTimeReference(), 8'000'000'000LL);
+  const auto scalar_range = session.datasetDisplayRange(scalar_dataset);
+  ASSERT_TRUE(scalar_range.has_value());
+  EXPECT_DOUBLE_EQ(scalar_range->min.value, 0.0);
+  EXPECT_EQ(global_changes.count(), 1) << "the scalar survivor must become t0 after object data is cleared";
+}
+
 TEST(SessionManagerTimeOffsetTest, RetentionDoesNotMoveRelativeOffsetForward) {
   PJ::SessionManager session;
   auto dataset_or = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "stream"});

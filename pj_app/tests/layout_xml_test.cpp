@@ -287,7 +287,22 @@ TEST(ExtractDataSource, TimelineStateAttributesParsed) {
   ASSERT_EQ(refs.size(), 1);
   EXPECT_TRUE(refs.front().has_display_offset);
   EXPECT_EQ(refs.front().display_offset_ns, -1'500'000'000LL);
+  // No pj4_version attribute -> legacy (<4) read: the offset still has the global
+  // reference baked in, so the apply path must subtract it.
+  EXPECT_TRUE(refs.front().display_offset_includes_global_reference);
   EXPECT_EQ(refs.front().timeline_order, 2);
+}
+
+TEST(ExtractDataSource, SchemaV4TimelineOffsetIsSourceOnly) {
+  QDomDocument doc = buildDataSourceDoc(u"/tmp/run.mcap"_s);
+  doc.documentElement().setAttribute(u"pj4_version"_s, u"4"_s);
+  setTimelineState(doc, /*offset_ns=*/42'000LL, /*order=*/0);
+  const QList<DataSourceRef> refs = PJ::layout_xml::extractDataSource(doc, QDir::current());
+  ASSERT_EQ(refs.size(), 1);
+  EXPECT_TRUE(refs.front().has_display_offset);
+  EXPECT_EQ(refs.front().display_offset_ns, 42'000LL);
+  // v4 persists sourceDisplayOffset() only -> no read-side subtraction.
+  EXPECT_FALSE(refs.front().display_offset_includes_global_reference);
 }
 
 TEST(ExtractDataSource, TimelineStateAbsentLeavesDefaults) {
@@ -298,8 +313,10 @@ TEST(ExtractDataSource, TimelineStateAbsentLeavesDefaults) {
   const QList<DataSourceRef> refs = PJ::layout_xml::extractDataSource(doc, QDir::current());
   ASSERT_EQ(refs.size(), 1);
   EXPECT_FALSE(refs.front().has_display_offset);
+  EXPECT_FALSE(refs.front().display_offset_includes_global_reference);
   EXPECT_EQ(refs.front().display_offset_ns, 0);
   EXPECT_EQ(refs.front().timeline_order, -1);
+  EXPECT_TRUE(refs.front().datasets.isEmpty());
 }
 
 TEST(ExtractDataSource, TimelineStateSurvivesSerializeReparse) {
@@ -326,6 +343,41 @@ TEST(ExtractDataSource, TimelineStateZeroOffsetIsStillPresent) {
   EXPECT_TRUE(refs.front().has_display_offset);
   EXPECT_EQ(refs.front().display_offset_ns, 0);
   EXPECT_EQ(refs.front().timeline_order, 1);
+}
+
+// Schema v4: one file that fans out into several datasets writes one <dataset>
+// child per member. Each carries its own (source_name, source_index) key plus
+// per-source offset/order, so identical display names can't swap tracks.
+TEST(ExtractDataSource, FanoutDatasetTimelineStatesRoundTripUnderOneFileReplay) {
+  QDomDocument doc = buildDataSourceDoc(u"/tmp/fanout.mcap"_s, QString(), u"MCAP"_s, uR"({"fanout":true})"_s);
+  doc.documentElement().setAttribute(u"pj4_version"_s, u"4"_s);
+  QDomElement file_info =
+      doc.documentElement().firstChildElement(u"previouslyLoaded_Datafiles"_s).firstChildElement(u"fileInfo"_s);
+  for (int index = 0; index < 2; ++index) {
+    QDomElement dataset = doc.createElement(u"dataset"_s);
+    dataset.setAttribute(u"source_name"_s, index == 0 ? u"run/left"_s : u"run/right"_s);
+    dataset.setAttribute(u"source_index"_s, QString::number(index));
+    dataset.setAttribute(u"display_offset_ns"_s, QString::number((index + 1) * 1'000));
+    dataset.setAttribute(u"timeline_order"_s, QString::number(1 - index));
+    file_info.appendChild(dataset);
+  }
+
+  QDomDocument reparsed;
+  ASSERT_TRUE(reparsed.setContent(doc.toByteArray(2)));
+  const QList<DataSourceRef> refs = PJ::layout_xml::extractDataSource(reparsed, QDir::current());
+  ASSERT_EQ(refs.size(), 1) << "one file is replayed once even when it produces two datasets";
+  ASSERT_EQ(refs.front().datasets.size(), 2);
+  EXPECT_EQ(refs.front().datasets[0].source_name, u"run/left"_s);
+  EXPECT_EQ(refs.front().datasets[0].source_index, 0);
+  EXPECT_EQ(refs.front().datasets[0].display_offset_ns, 1'000);
+  EXPECT_EQ(refs.front().datasets[0].timeline_order, 1);
+  EXPECT_FALSE(refs.front().datasets[0].display_offset_includes_global_reference);
+  EXPECT_EQ(refs.front().datasets[1].source_name, u"run/right"_s);
+  EXPECT_EQ(refs.front().datasets[1].source_index, 1);
+  EXPECT_EQ(refs.front().datasets[1].display_offset_ns, 2'000);
+  EXPECT_EQ(refs.front().datasets[1].timeline_order, 0);
+  EXPECT_EQ(refs.front().plugin_id, u"MCAP"_s);
+  EXPECT_EQ(refs.front().plugin_config_json, uR"({"fanout":true})"_s);
 }
 
 // ---------- isSamePath ------------------------------------------------------
@@ -872,6 +924,57 @@ TEST(SourceTimelineViewState, UnsetFieldsAreNotWritten) {
   EXPECT_FALSE(el.hasAttribute(u"zoom"_s));
   EXPECT_FALSE(el.hasAttribute(u"scroll_left_ns"_s));
   EXPECT_FALSE(el.hasAttribute(u"name_column_width"_s));
+}
+
+namespace {
+// Builds a <plot mode=...> carrying a <range> with the given attributes but no
+// x_basis marker, so normalizePlotRangeBasis has something historical to annotate.
+QDomElement addRange(PlotDoc& pd) {
+  QDomElement range = pd.doc.createElement(u"range"_s);
+  range.setAttribute(u"left"_s, u"1600000000.000000"_s);
+  range.setAttribute(u"right"_s, u"1600000001.000000"_s);
+  range.setAttribute(u"top"_s, u"5.0"_s);
+  range.setAttribute(u"bottom"_s, u"-5.0"_s);
+  pd.plot.appendChild(range);
+  return range;
+}
+}  // namespace
+
+TEST(NormalizePlotRangeBasis, TimeSeriesRangeGetsAbsoluteBasis) {
+  PlotDoc pd = makePlotDoc();
+  pd.plot.setAttribute(u"mode"_s, u"TimeSeries"_s);
+  QDomElement range = addRange(pd);
+  PJ::layout_xml::normalizePlotRangeBasis(pd.doc);
+  EXPECT_EQ(range.attribute(u"x_basis"_s), u"absolute"_s);
+  // Numeric values are untouched.
+  EXPECT_EQ(range.attribute(u"left"_s), u"1600000000.000000"_s);
+  EXPECT_EQ(range.attribute(u"right"_s), u"1600000001.000000"_s);
+}
+
+TEST(NormalizePlotRangeBasis, XyRangeGetsValueBasis) {
+  PlotDoc pd = makePlotDoc();
+  pd.plot.setAttribute(u"mode"_s, u"XYPlot"_s);
+  QDomElement range = addRange(pd);
+  PJ::layout_xml::normalizePlotRangeBasis(pd.doc);
+  EXPECT_EQ(range.attribute(u"x_basis"_s), u"value"_s);
+}
+
+TEST(NormalizePlotRangeBasis, ExistingBasisIsLeftUntouched) {
+  PlotDoc pd = makePlotDoc();
+  pd.plot.setAttribute(u"mode"_s, u"XYPlot"_s);
+  QDomElement range = addRange(pd);
+  range.setAttribute(u"x_basis"_s, u"absolute"_s);  // deliberately mismatched vs mode
+  PJ::layout_xml::normalizePlotRangeBasis(pd.doc);
+  // Idempotent: a range that already carries x_basis is never re-derived.
+  EXPECT_EQ(range.attribute(u"x_basis"_s), u"absolute"_s);
+}
+
+TEST(NormalizePlotRangeBasis, PlotWithoutRangeIsSkipped) {
+  PlotDoc pd = makePlotDoc();
+  pd.plot.setAttribute(u"mode"_s, u"TimeSeries"_s);
+  // No <range> child.
+  PJ::layout_xml::normalizePlotRangeBasis(pd.doc);
+  EXPECT_TRUE(pd.plot.firstChildElement(u"range"_s).isNull());
 }
 
 }  // namespace

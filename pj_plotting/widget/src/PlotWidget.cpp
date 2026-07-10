@@ -33,6 +33,7 @@
 #include <optional>
 #include <set>
 
+#include "TimeAxisWidth.h"
 #include "WidgetClipboard.h"
 #include "pj_plotting/CurveTracker.h"
 #include "pj_plotting/DatastoreCurveAdapter.h"
@@ -44,6 +45,7 @@
 #include "pj_runtime/CurveDescriptor.h"
 #include "pj_runtime/CurveDisplayName.h"
 #include "pj_runtime/SessionManager.h"
+#include "pj_runtime/Time.h"
 #include "pj_widgets/CurveTreeView.h"
 #include "pj_widgets/MessageBox.h"
 #include "pj_widgets/SvgUtil.h"
@@ -502,23 +504,40 @@ QDomElement PlotWidget::xmlSaveState(QDomDocument& doc) const {
     QDomElement range_element = doc.createElement(u"range"_s);
     range_element.setAttribute(u"bottom"_s, QString::number(rect.bottom(), 'f', 6));
     range_element.setAttribute(u"top"_s, QString::number(rect.top(), 'f', 6));
-    // The X axis of a time-series plot is TIME: persist it in ABSOLUTE seconds,
-    // not the display-relative seconds the Qwt axis speaks (display = absolute -
-    // offset; see pj_runtime/Time.h). PJ4's display offset is per-dataset and
-    // live, so a display-relative range only frames the right instant for the
-    // offset present at save time — storing absolute makes the restored range
-    // correct regardless of the offset state at load (the "Use time offset"
-    // toggle, reloaded data, a layout shared between machines). The time axis is
-    // ALWAYS stored absolute — no marker is written; on load the plot MODE
-    // (time-series vs XY) is what decides whether to undo the offset. XY plots' X is
-    // a value, not time, so they keep their raw axis coordinates.
+    // An explicit x_basis marker records what the X coordinates MEAN, so load never
+    // has to infer it from plot mode: "absolute" = time-series wall-clock time,
+    // "value" = an XY plot's raw data value.
     if (isXYPlot()) {
+      // XY X is a data value, not time — offset-independent, stored verbatim.
       range_element.setAttribute(u"left"_s, QString::number(rect.left(), 'f', 6));
       range_element.setAttribute(u"right"_s, QString::number(rect.right(), 'f', 6));
+      range_element.setAttribute(u"x_basis"_s, u"value"_s);
     } else {
-      const double offset_sec = displayOffsetSeconds();
-      range_element.setAttribute(u"left"_s, QString::number(rect.left() + offset_sec, 'f', 6));
-      range_element.setAttribute(u"right"_s, QString::number(rect.right() + offset_sec, 'f', 6));
+      // The X axis of a time-series plot is TIME: persist it in ABSOLUTE seconds,
+      // not the display-relative seconds the Qwt axis speaks (display = absolute -
+      // offset; see pj_runtime/Time.h). PJ4's display offset is per-dataset and
+      // live, so a display-relative range only frames the right instant for the
+      // offset present at save time — storing absolute makes the restored range
+      // correct regardless of the offset state at load (the "Use time offset"
+      // toggle, reloaded data, a layout shared between machines).
+      // The authoritative edges are integer nanoseconds: quantize the SMALL display
+      // value (rect.left()/right(), a few seconds at most) to ns first, then add the
+      // epoch-scale offset in the INTEGER domain. Adding the offset as a double first
+      // would round away a deeply-zoomed window (a double's ULP at ~1.6e9 s is ~238 ns).
+      const qint64 offset_ns = displayOffsetNanoseconds();
+      const qint64 absolute_left_ns =
+          static_cast<qint64>(std::llround(rect.left() * kNanosecondsPerSecond)) + offset_ns;
+      const qint64 absolute_right_ns =
+          static_cast<qint64>(std::llround(rect.right() * kNanosecondsPerSecond)) + offset_ns;
+      // The decimal left/right remain for human readability and as the v3 fallback;
+      // they carry the same (lossy) absolute seconds older loaders would have read.
+      range_element.setAttribute(
+          u"left"_s, QString::number(static_cast<double>(absolute_left_ns) / kNanosecondsPerSecond, 'f', 6));
+      range_element.setAttribute(
+          u"right"_s, QString::number(static_cast<double>(absolute_right_ns) / kNanosecondsPerSecond, 'f', 6));
+      range_element.setAttribute(u"left_ns"_s, QString::number(absolute_left_ns));
+      range_element.setAttribute(u"right_ns"_s, QString::number(absolute_right_ns));
+      range_element.setAttribute(u"x_basis"_s, u"absolute"_s);
     }
     plot_element.appendChild(range_element);
   }
@@ -647,9 +666,28 @@ bool PlotWidget::xmlLoadState(const QDomElement& plot_element, bool autozoom) {
   // on this first call because the offset is already known.
   const QDomElement range_element = plot_element.firstChildElement(u"range"_s);
   if (!range_element.isNull() && autozoom) {
-    saved_viewport_ = SavedViewport{
-        range_element.attribute(u"bottom"_s).toDouble(), range_element.attribute(u"top"_s).toDouble(),
-        range_element.attribute(u"left"_s).toDouble(), range_element.attribute(u"right"_s).toDouble()};
+    SavedViewport view;
+    view.bottom = range_element.attribute(u"bottom"_s).toDouble();
+    view.top = range_element.attribute(u"top"_s).toDouble();
+    view.left = range_element.attribute(u"left"_s).toDouble();
+    view.right = range_element.attribute(u"right"_s).toDouble();
+    // x_basis is authoritative: "value" = XY data value, anything else (incl. a
+    // v3 layout with no marker, annotated to "absolute" by normalizePlotRangeBasis
+    // on load) = absolute time. Never re-infer the basis from plot mode.
+    view.x_is_absolute = range_element.attribute(u"x_basis"_s) != u"value"_s;
+    // Prefer the integer-ns edges (schema v4+) — they survive an epoch-scale round
+    // trip exactly, unlike the decimal left/right which a v3 layout is limited to.
+    if (view.x_is_absolute && range_element.hasAttribute(u"left_ns"_s) && range_element.hasAttribute(u"right_ns"_s)) {
+      bool left_ok = false;
+      bool right_ok = false;
+      const qint64 left_ns = range_element.attribute(u"left_ns"_s).toLongLong(&left_ok);
+      const qint64 right_ns = range_element.attribute(u"right_ns"_s).toLongLong(&right_ok);
+      if (left_ok && right_ok) {
+        view.left_ns = left_ns;
+        view.right_ns = right_ns;
+      }
+    }
+    saved_viewport_ = view;
   } else {
     saved_viewport_.reset();
   }
@@ -669,12 +707,49 @@ void PlotWidget::applySavedViewportOrZoom(bool clear_after) {
   // up front and keep it framed while data streams in.
   if (saved_viewport_.has_value()) {
     const SavedViewport& view = *saved_viewport_;
-    double left = view.left;
-    double right = view.right;
-    if (!isXYPlot()) {
-      const double offset_sec = displayOffsetSeconds();
-      left -= offset_sec;
-      right -= offset_sec;
+    double left = 0.0;
+    double right = 0.0;
+    if (view.x_is_absolute && view.left_ns.has_value() && view.right_ns.has_value()) {
+      // Authoritative path (schema v4+): subtract the display offset in the INTEGER
+      // ns domain, THEN convert the small display value to seconds. Converting the
+      // epoch-scale absolute value to a double first would round away a few-ns window
+      // (a double's ULP at ~1.6e9 s is ~238 ns), so a deep-zoom viewport would drift.
+      const qint64 left_ns = *view.left_ns;
+      const qint64 right_ns = *view.right_ns;
+      const bool degenerate = left_ns == right_ns;
+      const qint64 offset_ns = displayOffsetNanoseconds();
+      left = static_cast<double>(left_ns - offset_ns) / kNanosecondsPerSecond;
+      right = static_cast<double>(right_ns - offset_ns) / kNanosecondsPerSecond;
+      // Degenerate-range tolerance: a window saved while zoomed below 1 ns rounds to
+      // equal ns edges. Falling through to auto-fit would wedge undo/redo after a deep
+      // zoom -- the snapshot could never restore. Nudge the collapsed edges +-0.5 ns so a
+      // real (if sub-pixel) window is restored. Near zero (offset ON) that already yields
+      // two distinct doubles; with "Use time offset" OFF the display value sits at epoch
+      // scale (~1.6e9 s) where 0.5 ns is far below the double ULP (~2.4e-7 s) and both
+      // edges collapse back to one value -- so if the nudged window is STILL degenerate,
+      // widen to the ULP-aware minimum around its center, which is guaranteed distinct.
+      // The magnifier's floor keeps LIVE zooming out of this regime; this only rescues an
+      // already-persisted degenerate range.
+      if (degenerate) {
+        const double center = 0.5 * (left + right);
+        left = center - 0.5e-9;
+        right = center + 0.5e-9;
+        if (left == right) {
+          const double half_width = 0.5 * plotting_detail::ulpAwareMinTimeXWidthSec(center);
+          left = center - half_width;
+          right = center + half_width;
+        }
+      }
+    } else {
+      // Fallback: a v3 decimal-only layout, or an XY value axis. The decimal seconds
+      // are the only representation; an XY axis is offset-independent (used verbatim).
+      left = view.left;
+      right = view.right;
+      if (view.x_is_absolute) {
+        const double offset_sec = displayOffsetSeconds();
+        left -= offset_sec;
+        right -= offset_sec;
+      }
     }
     rect.setBottom(view.bottom);
     rect.setTop(view.top);
@@ -1329,9 +1404,9 @@ void PlotWidget::setAxisScale(QwtAxisId axis_id, double min, double max) {
   qwtPlot()->setAxisScale(axis_id, min, max);
 }
 
-double PlotWidget::displayOffsetSeconds() const {
+std::optional<DisplayOffset> PlotWidget::representativeDisplayOffset() const {
   if (session_ == nullptr) {
-    return 0.0;
+    return std::nullopt;
   }
   // The axis is shared across curves; in the common case they share a dataset
   // (hence one offset). When they don't, the first datastore-backed curve's
@@ -1342,11 +1417,20 @@ double PlotWidget::displayOffsetSeconds() const {
       continue;
     }
     if (const auto* adapter = dynamic_cast<const DatastoreCurveAdapter*>(info.curve->data())) {
-      const DisplayOffset offset = session_->displayOffset(adapter->source().dataset_id);
-      return std::chrono::duration<double>(offset.value).count();
+      return session_->displayOffset(adapter->source().dataset_id);
     }
   }
-  return 0.0;
+  return std::nullopt;
+}
+
+double PlotWidget::displayOffsetSeconds() const {
+  const std::optional<DisplayOffset> offset = representativeDisplayOffset();
+  return offset.has_value() ? std::chrono::duration<double>(offset->value).count() : 0.0;
+}
+
+qint64 PlotWidget::displayOffsetNanoseconds() const {
+  const std::optional<DisplayOffset> offset = representativeDisplayOffset();
+  return offset.has_value() ? static_cast<qint64>(offset->value.count()) : 0;
 }
 
 QStringList PlotWidget::decodeCurveDrop(const QMimeData* mime_data, const QString& format) const {

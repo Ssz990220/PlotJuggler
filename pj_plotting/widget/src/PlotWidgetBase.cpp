@@ -99,6 +99,9 @@ class PlotWidgetBase::QwtPlotPimpl : public QwtPlot {
 
     magnifier->setAxisEnabled(QwtPlot::xTop, false);
     magnifier->setAxisEnabled(QwtPlot::yRight, false);
+    // Plots default to time-series (xy_mode_ == false); enable the ≥2 ns X zoom
+    // floor up front so a plot that never calls setModeXY is still clamped.
+    magnifier->setTimeXAxis(true);
     magnifier->setZoomInKey(Qt::Key_Plus, Qt::ControlModifier);
     magnifier->setZoomOutKey(Qt::Key_Minus, Qt::ControlModifier);
     magnifier->setMouseButton(Qt::NoButton);
@@ -389,6 +392,12 @@ void PlotWidgetBase::setModeXY(bool enable) {
   // XY (scatter) plots use the plot-level curve style like any other plot — the
   // Curve Style toolbar controls them; the mode is not tied to a forced style.
   xy_mode_ = enable;
+  // A time-series plot's X is absolute time; enable the magnifier's ≥2 ns zoom
+  // floor for it. An XY plot's X is a data value with no ns quantization, so no
+  // clamp there.
+  if (plot_ != nullptr && plot_->magnifier != nullptr) {
+    plot_->magnifier->setTimeXAxis(!enable);
+  }
 }
 
 bool PlotWidgetBase::isXYPlot() const noexcept {

@@ -29,6 +29,23 @@ inline constexpr char kLayoutExtension[] = ".pj4.xml";
 // empty out.
 [[nodiscard]] QString ensureLayoutExtension(const QString& path);
 
+// Per-dataset Source Timeline state nested under one replayable file. One file
+// may fan out into several DatasetIds; source_index is the stable position in
+// that file's fan-out order (so two fan-out members with identical display
+// names can't swap offsets) and source_name disambiguates ordinary unique names.
+struct DataSourceDatasetRef {
+  QString source_name;
+  int source_index = -1;
+  qint64 display_offset_ns = 0;
+  bool has_display_offset = false;
+  // Schema v3 wrote SessionManager::displayOffset() (per-source alignment +
+  // global reference); v4 writes sourceDisplayOffset() only. Set true for a v3
+  // read so the apply path subtracts the current global reference — see
+  // DataSourceRef::display_offset_includes_global_reference.
+  bool display_offset_includes_global_reference = false;
+  int timeline_order = -1;
+};
+
 // Resolved data-source reference extracted from <previouslyLoaded_Datafiles>.
 // Empty resolved_path means no replayable source was found in the layout.
 struct DataSourceRef {
@@ -42,9 +59,21 @@ struct DataSourceRef {
   // has_display_offset is false when the layout predates this attribute, so the
   // reloaded dataset keeps its natural zero offset. timeline_order is the bar's
   // top-to-bottom slot in the timeline (-1 when absent → fall back to load order).
+  // These flat fields mirror the first <dataset> child (legacy single-track view
+  // for older readers); the per-dataset fan-out state lives in `datasets`.
   qint64 display_offset_ns = 0;
   bool has_display_offset = false;
+  // Schema v3 wrote SessionManager::displayOffset(), which included the global
+  // relative-time reference. Schema v4 writes sourceDisplayOffset() only. The
+  // apply path subtracts its current global reference for this read-only
+  // migration, keeping total placement equal to the v3 value without
+  // double-applying it. Set true only for a v3 (or older) read.
+  bool display_offset_includes_global_reference = false;
   int timeline_order = -1;
+  // Schema-v4 additive extension: one entry per dataset the file fanned out
+  // into. Empty means an older (≤v3) layout whose single legacy timeline state
+  // lives in the flat fields above.
+  QList<DataSourceDatasetRef> datasets;
 };
 
 // CDATA sections cannot contain "]]>"; QDomDocument::createCDATASection
@@ -205,5 +234,14 @@ void resolveDatasetSourcePaths(QDomDocument& doc, const QDir& layout_dir);
 // (empty name and empty curve_x/curve_y). Two-pass so the live node list
 // isn't invalidated mid-iteration.
 void stripUnresolvedCurves(QDomDocument& doc);
+
+// Annotates every <plot>'s <range> with an explicit x_basis marker when it lacks
+// one, so the widget loader never has to infer the X coordinate meaning from plot
+// mode. A read-side migration: it changes NO numeric range values. An XY plot's
+// range becomes x_basis="value"; a time-series range becomes x_basis="absolute"
+// because PJ4 has always persisted time-axis ranges in absolute seconds (the v3
+// writer already did, per PR #248). Idempotent — a range that already carries
+// x_basis is left untouched. Call BEFORE any widget restore consumes the document.
+void normalizePlotRangeBasis(QDomDocument& doc);
 
 }  // namespace PJ::layout_xml

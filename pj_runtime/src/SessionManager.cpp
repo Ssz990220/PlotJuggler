@@ -191,14 +191,23 @@ Timestamp SessionManager::globalTimeReference() const {
     Timestamp global_min = std::numeric_limits<Timestamp>::max();
     bool found = false;
     for (const DatasetId dataset_id : data_engine_.listDatasets()) {
-      // rememberDatasetMinTimestamp pins the earliest-ever min in a single scan
-      // (the current raw min only moves forward under retention, never below it).
-      const auto bounds = datasetRawBounds(dataset_id);
-      if (!bounds.has_value()) {
-        continue;
+      // Trust the warm per-dataset pin: consult dataset_min_cache_ first so a
+      // dataset just refreshed by refreshDatasetMinTimestampsForTopics resolves to
+      // a hash-map hit, and an untouched dataset is never rescanned. This whole
+      // loop trusts the pins: any path that can RAISE a dataset's min
+      // (removeDataset/evict/clear/refill/refreshDatasetTimeReference) must
+      // invalidate that dataset's pin AND reset this global memo, or the recompute
+      // would read a stale-low origin.
+      if (const auto it = dataset_min_cache_.find(dataset_id); it != dataset_min_cache_.end()) {
+        global_min = std::min(global_min, it->second);
+        found = true;
+      } else if (const auto bounds = datasetRawBounds(dataset_id); bounds.has_value()) {
+        // Genuinely cold (unpinned) dataset: pin it in this one scan (rememberDataset-
+        // MinTimestamp only lowers, matching the pin's monotone-down invariant). An
+        // empty dataset (no bounds) never contributes a spurious 0 origin.
+        global_min = std::min(global_min, rememberDatasetMinTimestamp(dataset_id, bounds->first));
+        found = true;
       }
-      global_min = std::min(global_min, rememberDatasetMinTimestamp(dataset_id, bounds->first));
-      found = true;
     }
     global_min_cache_ = found ? global_min : 0;
   }
@@ -304,6 +313,20 @@ void SessionManager::setUseTimeOffset(bool use) {
   // (curve adapters, scenes, the playback seed, the Timeline) to re-resolve. This
   // global frame change uses the no-arg overload; the per-dataset overload is
   // reserved for single-source Timeline edits.
+  // A boolean frame flip is observable even when the session is empty and the
+  // numerical reference is zero (timeline formatting still changes), so this
+  // always emits — record the current origin so the change-detecting notify
+  // below does not re-emit for the same value on the next ingest.
+  last_notified_global_reference_ = globalTimeReference();
+  emit displayOffsetChanged();
+}
+
+void SessionManager::notifyGlobalTimeReferenceIfChanged() {
+  const Timestamp current = globalTimeReference();
+  if (current == last_notified_global_reference_) {
+    return;
+  }
+  last_notified_global_reference_ = current;
   emit displayOffsetChanged();
 }
 
@@ -360,15 +383,22 @@ std::vector<TopicId> SessionManager::commitChunks(std::vector<std::pair<TopicId,
     ids.push_back(id);
   }
   refreshDatasetMinTimestampsForTopics(ids);  // also resets global_min_cache_
+  // Freshly committed samples can lower the cross-dataset origin (a file loaded
+  // later but starting earlier). Reframe surviving adapters before the per-topic
+  // signal, which never covers a pure origin shift.
+  notifyGlobalTimeReferenceIfChanged();
   emit samplesIngested(std::move(ids), /*live=*/false);
   return changed;
 }
 
 void SessionManager::notifyIngest(QVector<TopicId> ids, bool live) {
+  refreshDatasetMinTimestampsForTopics(ids);  // also resets global_min_cache_
+  // Object-only ingest legitimately carries no scalar TopicIds; recompute the
+  // global origin before the empty/non-live samples signal is suppressed.
+  notifyGlobalTimeReferenceIfChanged();
   if (ids.isEmpty() && !live) {
     return;
   }
-  refreshDatasetMinTimestampsForTopics(ids);  // also resets global_min_cache_
   emit samplesIngested(std::move(ids), live);
 }
 
@@ -744,7 +774,6 @@ void SessionManager::evictDatasetObjects(DatasetId dataset_id) {
 }
 
 void SessionManager::removeDataset(DatasetId dataset_id) {
-  const Timestamp old_reference = globalTimeReference();
   data_engine_.removeDataset(dataset_id);
   dataset_source_paths_.erase(dataset_id);
   // The engine no longer holds this dataset; drop its pinned earliest-sample and
@@ -755,12 +784,36 @@ void SessionManager::removeDataset(DatasetId dataset_id) {
   // holds a stale display offset — no per-topic samplesIngested covers a pure
   // origin shift, so signal the global reframe. No-op when "Use time offset" is
   // off (globalTimeReference() is 0 both times).
-  if (globalTimeReference() != old_reference) {
-    emit displayOffsetChanged();
+  notifyGlobalTimeReferenceIfChanged();
+}
+
+void SessionManager::refreshDatasetTimeReference(DatasetId dataset_id) {
+  // Drop the pinned min so globalTimeReference() re-scans this dataset's current
+  // data (the terminal flush may have committed data earlier than the running pin).
+  invalidateDatasetMinTimestamp(dataset_id);
+  notifyGlobalTimeReferenceIfChanged();
+}
+
+std::unordered_set<DatasetId> SessionManager::datasetsOwningObjectTopics(
+    const std::vector<ObjectTopicId>& topic_ids) const {
+  std::unordered_set<DatasetId> affected_datasets;
+  affected_datasets.reserve(topic_ids.size());
+  for (const ObjectTopicId topic_id : topic_ids) {
+    const DatasetId dataset_id = object_store_.descriptor(topic_id).dataset_id;
+    if (dataset_id != 0) {
+      affected_datasets.insert(dataset_id);
+    }
   }
+  return affected_datasets;
 }
 
 void SessionManager::evictObjectTopics(const std::vector<ObjectTopicId>& topic_ids) {
+  // Object samples participate in the cross-dataset raw origin. Remember every
+  // affected dataset BEFORE its descriptor disappears, then invalidate their
+  // pinned minima after removal (invalidating only these keeps unrelated
+  // retention pins intact).
+  const std::unordered_set<DatasetId> affected_datasets = datasetsOwningObjectTopics(topic_ids);
+
   // removeTopic touches the ObjectStore, not the parser map, so keep it out of
   // the parser lock. Erased slots are collected and destroyed after the lock
   // releases: a slot dtor may run plugin teardown (dlclose), which must not run
@@ -776,10 +829,18 @@ void SessionManager::evictObjectTopics(const std::vector<ObjectTopicId>& topic_i
       object_topic_parsers_.erase(it);
     }
   }
+  for (const DatasetId dataset_id : affected_datasets) {
+    invalidateDatasetMinTimestamp(dataset_id);
+  }
+  notifyGlobalTimeReferenceIfChanged();
   // erased_slots destructs here, after the last unlock.
 }
 
 void SessionManager::clearAllObjects() {
+  // Same origin concern as evictObjectTopics: collect every dataset that owned an
+  // object topic before the store is cleared, so their pinned minima can be
+  // invalidated and the global origin re-scanned over the survivors.
+  const std::unordered_set<DatasetId> affected_datasets = datasetsOwningObjectTopics(object_store_.listTopics());
   object_store_.clear();
   // Swap the map into a local under the lock, then let it destruct after the
   // lock releases — slot dtors may run plugin teardown (dlclose).
@@ -788,6 +849,10 @@ void SessionManager::clearAllObjects() {
     std::unique_lock lock(object_parsers_mutex_);
     drained.swap(object_topic_parsers_);
   }
+  for (const DatasetId dataset_id : affected_datasets) {
+    invalidateDatasetMinTimestamp(dataset_id);
+  }
+  notifyGlobalTimeReferenceIfChanged();
   // drained destructs here, after the lock is released.
 }
 
