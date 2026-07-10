@@ -174,6 +174,14 @@ completion. Branch B's `authoritative_scene_queue` arbitration flag is dropped
 direct `addTopic` fallback path. Layer/camera XML validation follows §2:
 strict on elements and values, tolerant of unknown attributes.
 
+Note for PR 5 scoping: scene docks are NOT greenfield here — a pre-existing
+resolver (`SceneDockWidget::resolveDatasetId`, `pj_scene_common`) already reads
+the same `dataset_id`/`dataset_source` attributes and falls back to the **first
+source-name match in iteration order** (the bug class PR 1 fixed for plots).
+PR 5 replaces/reconciles it with `SessionManager::resolveDatasetIdentity` —
+whose object-topic variant (`resolveObjectDatasetIdentity`) ships in PR 1
+tested but caller-less, awaiting exactly this.
+
 ### Data processors — [scoped]
 
 Recipes capture each input as a `TransformInputBinding`
