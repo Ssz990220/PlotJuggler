@@ -58,12 +58,19 @@ ExtensionCatalogService::ExtensionCatalogService(QString extensions_dir, Diagnos
 
   extension_manager_ = std::make_unique<ExtensionManager>(nullptr, extensions_dir_, pending_dir, sink_, this);
   plugin_catalog_ = std::make_unique<PluginRuntimeCatalog>(std::filesystem::path{}, sink_, "ExtensionCatalogService");
+  // Gauge each plugin's min_plotjuggler_version against the version the app
+  // advertises. Only breaks ties between duplicate plugin ids (see
+  // PluginRuntimeCatalog::setHostVersion).
+  plugin_catalog_->setHostVersion(QCoreApplication::applicationVersion().toStdString());
 
-  // Scan the full ordered folder hierarchy (custom folders win over the
-  // built-ins; the catalog de-duplicates by plugin id, first folder wins).
-  const std::vector<std::filesystem::path> scan_dirs = buildScanHierarchy();
-  plugin_catalog_->setPluginDirs(scan_dirs);
-  qCInfo(lcCatalog) << "Scanning" << static_cast<int>(scan_dirs.size()) << "plugin folder(s); install dir"
+  // Scan the full ordered folder hierarchy (custom folders have highest priority;
+  // the catalog de-duplicates by plugin id — authoritative entries override, then
+  // compatibility, then version, then folder priority).
+  std::vector<PluginDirEntry> scan_dirs = buildScanHierarchy(!use_defaults);
+  const auto scan_dir_count = scan_dirs.size();
+  plugin_catalog_->setPluginDirs(std::move(scan_dirs));
+
+  qCInfo(lcCatalog) << "Scanning" << static_cast<int>(scan_dir_count) << "plugin folder(s); install dir"
                     << extensions_dir_;
   plugin_catalog_->scanDirectory();
 }
@@ -89,23 +96,27 @@ QStringList ExtensionCatalogService::builtinPluginFolders() const {
   return folders;
 }
 
-std::vector<std::filesystem::path> ExtensionCatalogService::buildScanHierarchy() const {
-  std::vector<std::filesystem::path> dirs;
+std::vector<PluginDirEntry> ExtensionCatalogService::buildScanHierarchy(bool extensions_dir_is_explicit) const {
+  std::vector<PluginDirEntry> dirs;
   // A folder that doesn't exist on disk contributes no plugins, so skip it
   // rather than hand it to the catalog — scanning a missing directory reports a
   // kError per launch, which for an absent *optional* folder (e.g. <exe>/plugins
   // in a dev layout, or a user-typed custom folder already shown in red in the
   // Preferences page) is noise that masks real plugin-load errors.
-  const auto add_if_exists = [&dirs](const QString& folder) {
+  const auto add_if_exists = [&dirs](const QString& folder, bool authoritative) {
     if (!folder.isEmpty() && QDir(folder).exists()) {
-      dirs.emplace_back(folder.toStdString());
+      dirs.push_back({std::filesystem::path(folder.toStdString()), authoritative});
     }
   };
+  // The user-explicit tiers are authoritative (a hard override in the dedup):
+  // the custom folders and, when set, the --plugin-dir override (extensions_dir_
+  // is the marketplace default only when no --plugin-dir was given). Marketplace
+  // and bundled folders stay managed, so version/compatibility decide among them.
   for (const QString& folder : customPluginFolders()) {
-    add_if_exists(folder);
+    add_if_exists(folder, true);
   }
   for (const QString& folder : builtinPluginFolders()) {
-    add_if_exists(folder);
+    add_if_exists(folder, extensions_dir_is_explicit && folder == extensions_dir_);
   }
   return dirs;
 }

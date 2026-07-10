@@ -87,7 +87,7 @@ target_compile_options(pj_scene3d_widgets PRIVATE
   ${PJ_WARNING_FLAGS} ${PJ_SANITIZER_FLAGS}
 )
 target_link_libraries(pj_scene3d_widgets
-  PUBLIC pj_scene3d_core pj_scene_common pj_runtime pj_plugin_runtime_catalog pj_widgets Qt6::Widgets Qt6::OpenGLWidgets Qt6::Xml OpenGL::GL
+  PUBLIC pj_scene3d_core pj_scene_common pj_runtime pj_widgets Qt6::Widgets Qt6::OpenGLWidgets Qt6::Xml OpenGL::GL
   PRIVATE pj_internal_fmt Qt6::Concurrent Qt6::Network assimp::assimp
 )
 

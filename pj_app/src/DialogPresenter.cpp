@@ -12,9 +12,9 @@
 #include "pj_plugins/host/data_source_library.hpp"
 #include "pj_plugins/host/dialog_handle.hpp"
 #include "pj_plugins/host/message_parser_library.hpp"
-#include "pj_plugins/host/plugin_runtime_catalog.hpp"
 #include "pj_plugins/host_qt/dialog_engine.hpp"
 #include "pj_runtime/ExtensionCatalogService.h"
+#include "pj_runtime/PluginRuntimeCatalog.h"
 
 namespace PJ::dialog_presenter {
 

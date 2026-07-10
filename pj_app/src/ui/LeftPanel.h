@@ -7,7 +7,7 @@
 #include <QWidget>
 #include <vector>
 
-#include "pj_plugins/host/plugin_runtime_catalog.hpp"
+#include "pj_runtime/PluginRuntimeCatalog.h"
 #include "pj_widgets/ChromeMetrics.h"
 
 namespace Ui {

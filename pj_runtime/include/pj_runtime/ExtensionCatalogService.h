@@ -13,7 +13,7 @@
 
 #include "pj_base/diagnostic_sink.hpp"
 #include "pj_plugins/host/message_parser_library.hpp"
-#include "pj_plugins/host/plugin_runtime_catalog.hpp"
+#include "pj_runtime/PluginRuntimeCatalog.h"
 
 namespace PJ {
 
@@ -127,9 +127,11 @@ class ExtensionCatalogService : public QObject {
   void reportDiagnostic(DiagnosticLevel level, const QString& message, const QString& id = {}) const;
 
   // Assembles the ordered scan list: custom folders first, then the built-in
-  // folders. De-duplication by plugin id (first folder wins) is done in the
-  // PluginRuntimeCatalog.
-  [[nodiscard]] std::vector<std::filesystem::path> buildScanHierarchy() const;
+  // folders, skipping folders missing on disk. The user-explicit tiers — the
+  // custom folders and, when extensions_dir_is_explicit, the --plugin-dir
+  // override — are marked authoritative (a hard override in the catalog's
+  // duplicate-id resolution); marketplace/bundled folders stay managed.
+  [[nodiscard]] std::vector<PluginDirEntry> buildScanHierarchy(bool extensions_dir_is_explicit) const;
 
   QString extensions_dir_;
   DiagnosticSink sink_;

@@ -26,7 +26,8 @@ The authoritative source is `include/pj_runtime/`. Today:
 | `DataProcessorService.h` | Applies "Data Processors" as eager `DerivedEngine` nodes. Two tiers of one substrate: **filters** (per-curve, hidden output, keyed by output topic) via `applyFilter`/`updateFilter`/`clearAllFilters`; **transforms** (named, plugin-owned, session-persisted, keyed `"<plugin>/<id>"`) via `upsertTransform`/`removeTransform`/`restoreTransform`/`transformRecipes`. Transforms resolve inputs by name, infer the backend from the script payload (Luau today; WASM/Python reserved), and roll back transactionally. `validateScript` compiles + test-runs a script without installing anything (for a plugin semaphore). `sourceTopicsForOutput(TopicId)` resolves a displayed filter/transform OUTPUT back to its SOURCE topic(s) — read-only, used by `pj_app`'s `TopicDemandController` so a displayed derived series keeps its input(s) subscribed on a demand-driven streaming source. |
 | `DataProcessorsRuntimeHost.h` | Host-side bridge exposing the `pj.data_processors.v1` SDK service to ONE plugin over `DataProcessorService` (data-only; every id namespaced under the plugin; all slots `[main-thread]`, so no Qt / no marshalling). A created transform OUTLIVES the bridge — destroying it (DSO unload) leaves the node running; only an explicit `remove`/`clearTransformsForPlugin` tears it down. |
 | `QSettingsBackend.h` | `sdk::SettingsBackend` implemented over `QSettings` (→ `PlotJuggler4.conf`); injected into `ToolboxRuntimeHost` so plugin settings persist. `'/'`-separated keys map to `.conf` groups. |
-| `ExtensionCatalogService.h` | Marketplace-backed extension catalog (queries `pj_marketplace`). |
+| `ExtensionCatalogService.h` | Marketplace-backed extension catalog (queries `pj_marketplace`). Composes the loaded plugin set via `PluginRuntimeCatalog`. |
+| `PluginRuntimeCatalog.h` | Host-side plugin catalog: scans the folder hierarchy via the SDK's `scanPluginDsos`, resolves duplicate ids by **authoritative → compatibility → version → folder priority**, and loads the winners through the SDK loaders. This resolution is host policy — it was relocated here from the SDK so the SDK stays a thin discovery/loader layer. |
 | `DiagnosticHistory.h` | Ring buffer of diagnostics surfaced via `pj_base::DiagnosticSink`. |
 | `IDataWidget.h` | The contract every data widget (plot / 2D / 3D) implements so playback can drive tracker updates without coupling to concrete widget types. |
 | `IObjectViewer.h` | The contract an object-store-backed viewer (e.g. a 2D image dock) implements so the shell can ask it to drop layers whose object topic was removed; returns whether any live layer remains. Pairs with `CatalogModel`'s `cleared()` / `itemsRemoved()` removal signals. |
@@ -38,7 +39,7 @@ The authoritative source is `include/pj_runtime/`. Today:
 
 ## Linked dependencies
 
-Public link surface (per `CMakeLists.txt`): `Qt6::Core`, `Qt6::Network`, `Qt6::Xml`, `pj_datastore`, `pj_marketplace`, `pj_plugin_runtime_catalog`, `nlohmann_json`. Private: `tsl::robin_map`, `pj_internal_fmt`, `pj_scripting` (DataProcessorService routes by-id applyFilter through the Luau FilterCatalogue).
+Public link surface (per `CMakeLists.txt`): `Qt6::Core`, `Qt6::Network`, `Qt6::Xml`, `pj_datastore`, `pj_marketplace`, the SDK discovery primitives (`pj_data_source_host`, `pj_message_parser_host`, `pj_toolbox_host`, `pj_plugin_catalog`, `pj_base`), `nlohmann_json`. Private: `tsl::robin_map`, `pj_internal_fmt`, `pj_scripting` (DataProcessorService routes by-id applyFilter through the Luau FilterCatalogue).
 
 ## When porting from PJ3
 
