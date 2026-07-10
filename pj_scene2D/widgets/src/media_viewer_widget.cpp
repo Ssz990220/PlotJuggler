@@ -20,6 +20,7 @@
 #include "pj_scene2d_core/video_color.h"  // buildYuvMatrix (BT.601/709 + limited/full range)
 #include "pj_scene2d_widgets/pixel_inspector.h"
 #include "pj_widgets/Colormap.h"  // shared Colormap enum + buildColormapLut + colormapGlsl
+using namespace Qt::StringLiterals;
 
 void pjMediaQtInitResources() {
   Q_INIT_RESOURCE(shaders);
@@ -31,7 +32,7 @@ static constexpr int kPointInspectorCropSize = 10;
 
 MediaViewerWidget::MediaViewerWidget(QWidget* parent) : QRhiWidget(parent) {
   setApi(Api::OpenGL);
-  setObjectName(QStringLiteral("mediaViewerCanvas"));
+  setObjectName(u"mediaViewerCanvas"_s);
   setFocusPolicy(Qt::StrongFocus);
   setMouseTracking(true);
   static bool resources_initialized = [] {

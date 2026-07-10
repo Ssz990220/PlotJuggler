@@ -24,6 +24,7 @@
 #include "pj_plugins/host/service_registry_builder.hpp"
 #include "pj_runtime/DataSourceRuntimeHost.h"
 #include "pj_runtime/ExtensionCatalogService.h"
+using namespace Qt::StringLiterals;
 
 #ifndef PJ_RUNTIME_HOST_OBJECT_PARSER_PATH
 #error "PJ_RUNTIME_HOST_OBJECT_PARSER_PATH must be defined"
@@ -34,7 +35,7 @@ namespace {
 class DataSourceRuntimeHostObjectIngestTest : public ::testing::Test {
  protected:
   void SetUp() override {
-    ASSERT_NE(catalog_.findParserByEncoding(QStringLiteral("runtime_host_object")), nullptr);
+    ASSERT_NE(catalog_.findParserByEncoding(u"runtime_host_object"_s), nullptr);
 
     auto dataset_or = engine_.createDataset(PJ::DatasetDescriptor{.source_name = "test", .time_domain_id = 0});
     ASSERT_TRUE(dataset_or.has_value()) << dataset_or.error();

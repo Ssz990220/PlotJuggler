@@ -26,6 +26,7 @@
 #include <pj_plugins/host/widget_event_builder.hpp>
 #include <pj_plugins/host_qt/dialog_engine.hpp>
 #include <pj_plugins/host_qt/widget_binding.hpp>
+using namespace Qt::StringLiterals;
 
 // Defined in mock_dialog.cpp, linked statically
 extern "C" const PJ_dialog_vtable_t* PJ_get_dialog_vtable() noexcept;
@@ -605,11 +606,11 @@ TEST(CodeEditorBinding, NoCaretTrackingIgnoresCursorMoves) {
 // ==========================================================================
 
 TEST(NamedIconResolver, MapsKnownIdsToThemedResourcePaths) {
-  EXPECT_EQ(PJ::resolveNamedIconPath("link"), QStringLiteral(":/resources/svg/link.svg"));
-  EXPECT_EQ(PJ::resolveNamedIconPath("contract"), QStringLiteral(":/resources/svg/contract.svg"));
-  EXPECT_EQ(PJ::resolveNamedIconPath("plug_connect"), QStringLiteral(":/resources/svg/plug_connect.svg"));
-  EXPECT_EQ(PJ::resolveNamedIconPath("refresh"), QStringLiteral(":/resources/svg/refresh.svg"));
-  EXPECT_EQ(PJ::resolveNamedIconPath("add"), QStringLiteral(":/resources/svg/add.svg"));
+  EXPECT_EQ(PJ::resolveNamedIconPath("link"), u":/resources/svg/link.svg"_s);
+  EXPECT_EQ(PJ::resolveNamedIconPath("contract"), u":/resources/svg/contract.svg"_s);
+  EXPECT_EQ(PJ::resolveNamedIconPath("plug_connect"), u":/resources/svg/plug_connect.svg"_s);
+  EXPECT_EQ(PJ::resolveNamedIconPath("refresh"), u":/resources/svg/refresh.svg"_s);
+  EXPECT_EQ(PJ::resolveNamedIconPath("add"), u":/resources/svg/add.svg"_s);
 }
 
 TEST(NamedIconResolver, ReturnsEmptyForUnknownOrEmptyId) {

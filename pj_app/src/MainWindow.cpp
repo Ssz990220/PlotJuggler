@@ -134,6 +134,7 @@
 #include "ui/Scene3DConfigPanel.h"
 #include "ui/TimelineWidget.h"
 #include "ui_MainWindow.h"
+using namespace Qt::StringLiterals;
 
 namespace PJ {
 
@@ -363,7 +364,7 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
   // the first show(). Keep a zero-size viewer in an existing visible layout
   // so image docks created later can initialize their QRhi.
   auto* rhi_bootstrap = new MediaViewerWidget(ui_->globalToolbarWidget);
-  rhi_bootstrap->setObjectName(QStringLiteral("rhi_bootstrap"));
+  rhi_bootstrap->setObjectName(u"rhi_bootstrap"_s);
   rhi_bootstrap->setMaximumSize(0, 0);
   rhi_bootstrap->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
   if (auto* global_toolbar_layout = qobject_cast<QVBoxLayout*>(ui_->globalToolbarWidget->layout())) {
@@ -453,13 +454,13 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
   help_menu->addAction(tr("About PlotJuggler..."), this, &MainWindow::onShowAboutDialog);
   help_menu->addAction(tr("Check for Updates..."), this, &MainWindow::onCheckForUpdates);
   help_menu->addAction(
-      tr("Documentation"), this, []() { QDesktopServices::openUrl(QUrl(QStringLiteral("https://plotjuggler.io"))); });
+      tr("Documentation"), this, []() { QDesktopServices::openUrl(QUrl(u"https://plotjuggler.io"_s)); });
   help_menu->addAction(tr("Report an Issue"), this, []() {
-    QDesktopServices::openUrl(QUrl(QStringLiteral("https://github.com/PlotJuggler/PJ4/issues")));
+    QDesktopServices::openUrl(QUrl(u"https://github.com/PlotJuggler/PJ4/issues"_s));
   });
   help_menu->addSeparator();
   installed_extensions_menu_ = help_menu->addMenu(tr("Installed Extensions"));
-  installed_extensions_menu_->setObjectName(QStringLiteral("PJMenu"));
+  installed_extensions_menu_->setObjectName(u"PJMenu"_s);
   connect(installed_extensions_menu_, &QMenu::aboutToShow, this, &MainWindow::onRebuildExtensionsMenu);
 
   setMenuWidget(title_bar_);
@@ -503,9 +504,9 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
           //  - kSceneEntities is both 2D and 3D; is3d wins (markers are primarily
           //    3D), but a 2D dock still accepts markers dropped onto it.
           //  - Neither → "".
-          resolved_kind = isImageFamilyObjectType(seed->object_type) ? QStringLiteral("scene2d")
-                          : is3dSceneObjectType(seed->object_type)   ? QStringLiteral("scene3d")
-                          : is2dSceneObjectType(seed->object_type)   ? QStringLiteral("scene2d")
+          resolved_kind = isImageFamilyObjectType(seed->object_type) ? u"scene2d"_s
+                          : is3dSceneObjectType(seed->object_type)   ? u"scene3d"_s
+                          : is2dSceneObjectType(seed->object_type)   ? u"scene2d"_s
                                                                      : QString();
         }
         if (seed == nullptr) {
@@ -612,7 +613,7 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
   // The "+" in Custom Series opens the Transform Editor — now provided by the
   // toolbox plugin (the native panel was retired). Launch it like any toolbox.
   connect(ui_->curveListPanel, &CurveListPanel::createCustomSeriesRequested, this, [this]() {
-    launchToolbox(QStringLiteral("toolbox-transform-editor"));
+    launchToolbox(u"toolbox-transform-editor"_s);
   });
   // Edit (pencil): open the Transform Editor pre-populated with the selected custom
   // series' saved editor state (stored in the recipe's params_json at create time),
@@ -638,7 +639,7 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
         break;
       }
     }
-    launchToolbox(QStringLiteral("toolbox-transform-editor"), initial_config);
+    launchToolbox(u"toolbox-transform-editor"_s, initial_config);
   });
   connect(ui_->curveListPanel, &CurveListPanel::deleteCustomSeriesRequested, this, [this](const QString& catalog_key) {
     QString output_name;
@@ -699,14 +700,14 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
   // Right-toolbar global view toggles persisted across sessions. Buttons
   // themselves are created later by buildGlobalToolbar(); we load state
   // first so the buttons can pick up the correct initial check state.
-  show_points_ = settings.value(QStringLiteral("MainWindow.buttonShowpoint"), true).toBool();
-  activate_grid_ = settings.value(QStringLiteral("MainWindow.buttonActivateGrid"), false).toBool();
-  dots_ = settings.value(QStringLiteral("MainWindow.buttonDots"), false).toBool();
+  show_points_ = settings.value(u"MainWindow.buttonShowpoint"_s, true).toBool();
+  activate_grid_ = settings.value(u"MainWindow.buttonActivateGrid"_s, false).toBool();
+  dots_ = settings.value(u"MainWindow.buttonDots"_s, false).toBool();
   tracker_info_ = static_cast<CurveTracker::Parameter>(
-      settings.value(QStringLiteral("MainWindow.timeTrackerSetting"), static_cast<int>(CurveTracker::kValue)).toInt());
-  keep_ratio_ = settings.value(QStringLiteral("MainWindow.buttonRatio"), true).toBool();
+      settings.value(u"MainWindow.timeTrackerSetting"_s, static_cast<int>(CurveTracker::kValue)).toInt());
+  keep_ratio_ = settings.value(u"MainWindow.buttonRatio"_s, true).toBool();
   legend_status_ = static_cast<LegendStatus>(
-      settings.value(QStringLiteral("MainWindow.legendStatus"), static_cast<int>(LegendStatus::kHidden)).toInt());
+      settings.value(u"MainWindow.legendStatus"_s, static_cast<int>(LegendStatus::kHidden)).toInt());
 
   // Push the just-loaded toggle states into every plot already created by
   // wireExistingPlots(). New plots will pick this up via onPlotAdded.
@@ -1091,13 +1092,13 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
           const QString& path, const QString& /*prefix*/, const QString& /*plugin_id*/,
           const QString& /*plugin_config_json*/) {
         QSettings recent_settings;
-        QStringList recent = recent_settings.value(QStringLiteral("File/recent")).toStringList();
+        QStringList recent = recent_settings.value(u"File/recent"_s).toStringList();
         recent.removeAll(path);
         recent.prepend(path);
         while (recent.size() > kMaxRecentEntries) {
           recent.removeLast();
         }
-        recent_settings.setValue(QStringLiteral("File/recent"), recent);
+        recent_settings.setValue(u"File/recent"_s, recent);
         ui_->leftPanel->setRecentEnabled(true);
       });
   // Recent files reopen through the normal load flow, including the dialog.
@@ -1109,8 +1110,8 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
   connect(ui_->leftPanel, &LeftPanel::recentLayoutSelected, this, &MainWindow::onLoadRecentLayout);
   // Enable the popup immediately when prior sessions recorded recent files or
   // layouts (either section is enough to make the popup worth showing).
-  const bool had_recent = !settings.value(QStringLiteral("File/recent")).toStringList().isEmpty() ||
-                          !settings.value(QStringLiteral("Layout/recent")).toStringList().isEmpty();
+  const bool had_recent = !settings.value(u"File/recent"_s).toStringList().isEmpty() ||
+                          !settings.value(u"Layout/recent"_s).toStringList().isEmpty();
   ui_->leftPanel->setRecentEnabled(had_recent);
 
   // Title-bar load progress strip — the non-modal replacement for the import
@@ -1122,7 +1123,7 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
   // One icon-only stop button on the left. The three real choices (keep /
   // discard / resume) live in the confirmation dialog below, so the button
   // itself is meaning-light — its tooltip just invites a stop.
-  ingest_progress_->setPrimaryButton({}, QStringLiteral(":/resources/svg/cancel.svg"), tr("Stop loading…"));
+  ingest_progress_->setPrimaryButton({}, u":/resources/svg/cancel.svg"_s, tr("Stop loading…"));
   title_bar_->setCenterWidget(ingest_progress_);
   ingest_show_timer_ = new QTimer(this);
   ingest_show_timer_->setSingleShot(true);
@@ -1164,7 +1165,7 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
       file_loader_.get(), &FileLoader::ingestStarted, this,
       [this](const QString& title, int index, int total, bool /*determinate*/) {
         ingest_progress_->setTitle(title);
-        ingest_progress_->setCounterText(total > 1 ? QStringLiteral("%1/%2").arg(index).arg(total) : QString());
+        ingest_progress_->setCounterText(total > 1 ? u"%1/%2"_s.arg(index).arg(total) : QString());
         ingest_progress_->setRange(0, 0);  // busy until the first determinate progress tick
         ingest_show_timer_->start(500);
       });
@@ -1210,8 +1211,7 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
   // their natural relative times so the Source Timeline reveals their offsets and
   // the user aligns them (manually, or via this toggle). No data yet, so this is a
   // no-op at startup; toggling it later bulk-writes each dataset's offset.
-  session_->sessionManager().setUseTimeOffset(
-      QSettings().value(QStringLiteral("MainWindow.useTimeOffset"), false).toBool());
+  session_->sessionManager().setUseTimeOffset(QSettings().value(u"MainWindow.useTimeOffset"_s, false).toBool());
 
   // Global column on the right of the plot area — Chart + Legend icons,
   // pinned at 24 px wide, never collapses. Always visible regardless of
@@ -1312,7 +1312,7 @@ IDataWidget* MainWindow::makeSceneDock(const QString& kind, QWidget* parent) {
   // Single construct + wire site for object-widget docks, shared by the drop
   // and layout-restore paths. Wiring (session / transform service / theme) is
   // identical regardless of how the dock is later populated.
-  if (kind == QStringLiteral("scene3d")) {
+  if (kind == u"scene3d"_s) {
     auto* widget = new Scene3DDockWidget(parent);
     widget->setSessionManager(&session_->sessionManager());
     widget->setTransformService(transform_service_.get());
@@ -1341,7 +1341,7 @@ IDataWidget* MainWindow::makeSceneDock(const QString& kind, QWidget* parent) {
     // palette luminance and repaints on QEvent::PaletteChange.
     return widget;
   }
-  if (kind == QStringLiteral("scene2d")) {
+  if (kind == u"scene2d"_s) {
     auto* widget = new Scene2DDockWidget(parent);
     widget->setSessionManager(&session_->sessionManager());
     topic_demand_controller_->registerSceneDock(widget);
@@ -1369,10 +1369,10 @@ void MainWindow::onObjectFamilyRequested(DockWidget* dock, VisualizationKind fam
   QString kind;
   switch (family) {
     case VisualizationKind::kScene2D:
-      kind = QStringLiteral("scene2d");
+      kind = u"scene2d"_s;
       break;
     case VisualizationKind::kScene3D:
-      kind = QStringLiteral("scene3d");
+      kind = u"scene3d"_s;
       break;
     case VisualizationKind::kPlot:
       return;
@@ -1535,7 +1535,7 @@ bool MainWindow::confirmAndRemoveDependentTransforms(const std::vector<std::stri
   const auto answer = QMessageBox::warning(
       this, tr("Delete derived series?"),
       tr("These derived series depend on what you are deleting and will also be removed:\n\n• %1")
-          .arg(names.join(QStringLiteral("\n• "))),
+          .arg(names.join(u"\n• "_s)),
       QMessageBox::Ok | QMessageBox::Cancel, QMessageBox::Cancel);
   if (answer != QMessageBox::Ok) {
     return false;  // user cancelled — leave everything intact
@@ -1754,9 +1754,9 @@ void MainWindow::checkForUpdates(bool interactive) {
       connect(update_checker_, &UpdateChecker::updateAvailable, this, [this](const ReleaseInfo& release) {
         QString message = tr("New release available: <b>%1</b>").arg(release.name.toHtmlEscaped());
         if (!release.html_url.isEmpty()) {
-          message += QStringLiteral("<br>") + tr("<a href=\"%1\">View on GitHub</a>").arg(release.html_url);
+          message += u"<br>"_s + tr("<a href=\"%1\">View on GitHub</a>").arg(release.html_url);
         }
-        showToast(message, QPixmap(QStringLiteral(":/resources/success_kid.png")));
+        showToast(message, QPixmap(u":/resources/success_kid.png"_s));
       });
 
   up_to_date_conn_ = connect(update_checker_, &UpdateChecker::upToDate, this, [this, interactive]() {
@@ -2030,17 +2030,17 @@ namespace {
 [[nodiscard]] QString legendCornerIcon(LegendStatus corner) {
   switch (corner) {
     case LegendStatus::kBottomRight:
-      return QStringLiteral(":/resources/svg/position_bottom_right.svg");
+      return u":/resources/svg/position_bottom_right.svg"_s;
     case LegendStatus::kBottomLeft:
-      return QStringLiteral(":/resources/svg/position_bottom_left.svg");
+      return u":/resources/svg/position_bottom_left.svg"_s;
     case LegendStatus::kTopRight:
-      return QStringLiteral(":/resources/svg/position_top_right.svg");
+      return u":/resources/svg/position_top_right.svg"_s;
     case LegendStatus::kTopLeft:
-      return QStringLiteral(":/resources/svg/position_top_left.svg");
+      return u":/resources/svg/position_top_left.svg"_s;
     case LegendStatus::kHidden:
-      return QStringLiteral(":/resources/svg/position_top_right.svg");
+      return u":/resources/svg/position_top_right.svg"_s;
   }
-  return QStringLiteral(":/resources/svg/position_top_right.svg");
+  return u":/resources/svg/position_top_right.svg"_s;
 }
 
 // Four-corner forward cycle. Used while the legend is visible to walk
@@ -2071,7 +2071,7 @@ void MainWindow::setLegendStatus(LegendStatus position) {
   if (position != LegendStatus::kHidden) {
     previous_legend_corner_ = position;
   }
-  QSettings().setValue(QStringLiteral("MainWindow.legendStatus"), static_cast<int>(legend_status_));
+  QSettings().setValue(u"MainWindow.legendStatus"_s, static_cast<int>(legend_status_));
   if (button_legend_ != nullptr) {
     const bool visible = (position != LegendStatus::kHidden);
     button_legend_->setChecked(visible);
@@ -2164,13 +2164,13 @@ void MainWindow::updateTimeTrackerIcon() {
   // someone designs them.
   switch (tracker_info_) {
     case CurveTracker::kLineOnly:
-      button_time_tracker_->setIcon(QIcon(QStringLiteral(":/style_light/line_tracker.png")));
+      button_time_tracker_->setIcon(QIcon(u":/style_light/line_tracker.png"_s));
       break;
     case CurveTracker::kValue:
-      button_time_tracker_->setIcon(QIcon(QStringLiteral(":/style_light/line_tracker_1.png")));
+      button_time_tracker_->setIcon(QIcon(u":/style_light/line_tracker_1.png"_s));
       break;
     case CurveTracker::kValueName:
-      button_time_tracker_->setIcon(QIcon(QStringLiteral(":/style_light/line_tracker_a.png")));
+      button_time_tracker_->setIcon(QIcon(u":/style_light/line_tracker_a.png"_s));
       break;
   }
 }
@@ -2187,7 +2187,7 @@ void MainWindow::onTimeTrackerButtonClicked() {
       tracker_info_ = CurveTracker::kLineOnly;
       break;
   }
-  QSettings().setValue(QStringLiteral("MainWindow.timeTrackerSetting"), static_cast<int>(tracker_info_));
+  QSettings().setValue(u"MainWindow.timeTrackerSetting"_s, static_cast<int>(tracker_info_));
   updateTimeTrackerIcon();
   forEachPlot([this](PlotWidget* plot) {
     plot->setTrackerParameter(tracker_info_);
@@ -2506,10 +2506,10 @@ void MainWindow::closeEvent(QCloseEvent* event) {
     file_loader_->joinForShutdown();
   }
   QSettings settings;
-  settings.setValue(QStringLiteral("MainWindow.buttonLink"), button_link_->isChecked());
+  settings.setValue(u"MainWindow.buttonLink"_s, button_link_->isChecked());
   // Remember the left-panel width (the whole splitter layout) so the next launch
   // restores it instead of falling back to the narrow .ui default.
-  settings.setValue(QStringLiteral("MainWindow.mainSplitterState"), ui_->mainSplitter->saveState());
+  settings.setValue(u"MainWindow.mainSplitterState"_s, ui_->mainSplitter->saveState());
   QMainWindow::closeEvent(event);
 }
 
@@ -2522,7 +2522,7 @@ void MainWindow::showEvent(QShowEvent* event) {
   // and still wins (it re-applies splitter sizes through restoreChromeState).
   if (!left_splitter_restored_) {
     left_splitter_restored_ = true;
-    const QByteArray state = QSettings().value(QStringLiteral("MainWindow.mainSplitterState")).toByteArray();
+    const QByteArray state = QSettings().value(u"MainWindow.mainSplitterState"_s).toByteArray();
     if (state.isEmpty() || !ui_->mainSplitter->restoreState(state)) {
       // First-ever launch (nothing remembered) — or a stale/mismatched saved blob
       // that restoreState rejected: open the left panel at a comfortable default
@@ -2630,7 +2630,7 @@ void MainWindow::onRebuildExtensionsMenu() {
     for (const auto& plugin : plugins) {
       const QString name = QString::fromStdString(plugin.name);
       const QString version = QString::fromStdString(plugin.version);
-      const QString label = version.isEmpty() ? name : QStringLiteral("%1 (%2)").arg(name, version);
+      const QString label = version.isEmpty() ? name : u"%1 (%2)"_s.arg(name, version);
       QAction* action = menu->addAction(label);
       action->setEnabled(false);  // Informational only — manage via Marketplace.
       added_any = true;
@@ -2728,7 +2728,7 @@ void MainWindow::loadLayoutFromPath(const QString& path) {
   // schema.
   const QDomElement root = doc.documentElement();
   bool version_ok = false;
-  const int version = root.attribute(QStringLiteral("pj4_version"), QStringLiteral("0")).toInt(&version_ok);
+  const int version = root.attribute(u"pj4_version"_s, u"0"_s).toInt(&version_ok);
   if (version_ok && version > kLayoutSchemaVersion) {
     emitDiagnostic(
         DiagnosticLevel::kWarning, "Layout", "schema-newer",
@@ -2742,13 +2742,13 @@ void MainWindow::loadLayoutFromPath(const QString& path) {
   // (and source-bound ones whose file is missing or where the user opts out)
   // bind straight to the currently-loaded data. The binding attribute records
   // the save-time intent; this is the load-time override.
-  const QString binding = root.attribute(QStringLiteral("binding"), QStringLiteral("source"));
+  const QString binding = root.attribute(u"binding"_s, u"source"_s);
   const QDir layout_dir(QFileInfo(path).absoluteDir());
   const QList<layout_xml::DataSourceRef> replays = layout_xml::extractDataSource(doc, layout_dir);
   // Set when the user chose "Reload original": the data loads (possibly async on
   // a worker), so the layout apply below must wait for the load queue to drain.
   bool reload_requested = false;
-  if (binding != QStringLiteral("generic") && !replays.empty()) {
+  if (binding != u"generic"_s && !replays.empty()) {
     // Classify each referenced file: already loaded (skip), missing on disk
     // (warn + skip), or reloadable. A file counts as already loaded only while
     // the catalog has data — a remembered-but-cleared source must reload.
@@ -2785,7 +2785,7 @@ void MainWindow::loadLayoutFromPath(const QString& path) {
         QStringList file_lines;
         file_lines.reserve(pending.size());
         for (const auto& replay : pending) {
-          file_lines.push_back(QStringLiteral("  %1").arg(replay.resolved_path));
+          file_lines.push_back(u"  %1"_s.arg(replay.resolved_path));
         }
         // Themed prompt (frameless, vertical button column in the app chrome).
         // The button order below defines the index question() returns:
@@ -2905,16 +2905,16 @@ void MainWindow::applyRestoredLayout(QDomDocument doc, const QString& path) {
 
 void MainWindow::restoreChromeAndPanels(const QDomDocument& doc, const QString& path) {
   // 4a. Restore curve-list content state (filters + show_topics/show_values toggles).
-  ui_->curveListPanel->restoreListState(doc.documentElement().firstChildElement(QStringLiteral("curve_list_state")));
+  ui_->curveListPanel->restoreListState(doc.documentElement().firstChildElement(u"curve_list_state"_s));
 
   // 4b. Restore right-panel state.
-  restoreRightPanelState(doc.documentElement().firstChildElement(QStringLiteral("right_panel_state")));
+  restoreRightPanelState(doc.documentElement().firstChildElement(u"right_panel_state"_s));
 
   // 4c. Restore LeftPanel Sources tab + streaming controls.
-  ui_->leftPanel->restoreSourcesState(doc.documentElement().firstChildElement(QStringLiteral("left_panel_state")));
+  ui_->leftPanel->restoreSourcesState(doc.documentElement().firstChildElement(u"left_panel_state"_s));
 
   // 4d. Restore chrome state (panel visibilities + splitter sizes).
-  restoreChromeState(doc.documentElement().firstChildElement(QStringLiteral("chrome_state")));
+  restoreChromeState(doc.documentElement().firstChildElement(u"chrome_state"_s));
 
   // 4e. Restore Source Timeline state (per-source display offsets + track order).
   // Runs after the datasets are (re)loaded so it re-binds them by path. The data
@@ -2926,7 +2926,7 @@ void MainWindow::restoreChromeAndPanels(const QDomDocument& doc, const QString& 
 
   // 4f. Restore the timeline's global view chrome (zoom/scroll/name-column/snap),
   // AFTER 4e so zoom/scroll map onto the offset-adjusted, rebuilt scene.
-  restoreSourceTimelineViewState(doc.documentElement().firstChildElement(QStringLiteral("source_timeline")));
+  restoreSourceTimelineViewState(doc.documentElement().firstChildElement(u"source_timeline"_s));
 
   // 5. Recent files + diagnostic
   recordRecentLayout(path);
@@ -3097,8 +3097,7 @@ void MainWindow::saveLayoutToPath(const QString& path, bool include_data_source)
   // Record the binding intent so load knows whether to reload the original
   // file (source-bound) or adopt the currently-loaded dataset (generic). The
   // data-source element below is only embedded for source-bound layouts.
-  doc.documentElement().setAttribute(
-      QStringLiteral("binding"), include_data_source ? QStringLiteral("source") : QStringLiteral("generic"));
+  doc.documentElement().setAttribute(u"binding"_s, include_data_source ? u"source"_s : u"generic"_s);
   if (include_data_source) {
     const QDir layout_dir(QFileInfo(path).absoluteDir());
     QDomElement ds = appendDataSourceElement(doc, layout_dir);
@@ -3147,23 +3146,22 @@ void MainWindow::saveLayoutToPath(const QString& path, bool include_data_source)
 }
 
 QDomElement MainWindow::saveDataProcessors(QDomDocument& doc) const {
-  QDomElement element = doc.createElement(QStringLiteral("data_processors"));
+  QDomElement element = doc.createElement(u"data_processors"_s);
   for (const auto& recipe : session_->sessionManager().dataProcessorService().recipes()) {
     // Resolve the input column to a stable (topic, field) path so it rebinds on
     // reload exactly like a plotted curve.
-    const QString input_key = QStringLiteral("dataset:%1/topic:%2/column:%3")
-                                  .arg(recipe.dataset_id)
+    const QString input_key = u"dataset:%1/topic:%2/column:%3"_s.arg(recipe.dataset_id)
                                   .arg(recipe.input_topic_id)
                                   .arg(recipe.input_column_index);
     const std::optional<CurveDescriptor> input_desc = session_->catalogModel().curveDescriptor(input_key);
     if (!input_desc.has_value()) {
       continue;  // input field is gone; nothing to persist
     }
-    QDomElement processor = doc.createElement(QStringLiteral("processor"));
-    processor.setAttribute(QStringLiteral("input_topic"), input_desc->topic_name);
-    processor.setAttribute(QStringLiteral("input_field"), input_desc->field_path);
-    processor.setAttribute(QStringLiteral("processor_id"), QString::fromStdString(recipe.processor_id));
-    processor.setAttribute(QStringLiteral("output_name"), QString::fromStdString(recipe.output_name));
+    QDomElement processor = doc.createElement(u"processor"_s);
+    processor.setAttribute(u"input_topic"_s, input_desc->topic_name);
+    processor.setAttribute(u"input_field"_s, input_desc->field_path);
+    processor.setAttribute(u"processor_id"_s, QString::fromStdString(recipe.processor_id));
+    processor.setAttribute(u"output_name"_s, QString::fromStdString(recipe.output_name));
     if (recipe.processor) {
       layout_xml::appendJsonAsCdata(doc, processor, QString::fromStdString(recipe.processor->saveParams()));
     }
@@ -3172,7 +3170,7 @@ QDomElement MainWindow::saveDataProcessors(QDomDocument& doc) const {
     // child element, NOT a second direct CDATA child — restore reads params via
     // directCdataText, which ignores child elements. Empty for native C++ builtins.
     if (!recipe.filter_source.empty()) {
-      QDomElement source_el = doc.createElement(QStringLiteral("source_fallback"));
+      QDomElement source_el = doc.createElement(u"source_fallback"_s);
       layout_xml::appendJsonAsCdata(doc, source_el, QString::fromStdString(recipe.filter_source));
       processor.appendChild(source_el);
     }
@@ -3185,32 +3183,32 @@ QDomElement MainWindow::saveDataProcessors(QDomDocument& doc) const {
   // DataProcessorService::restoreTransform. Inputs/outputs are topic NAMES (the
   // engine resolves them on restore), so no (topic, field) rebinding is needed here.
   for (const auto& recipe : session_->sessionManager().dataProcessorService().transformRecipes()) {
-    QDomElement transform = doc.createElement(QStringLiteral("transform"));
-    transform.setAttribute(QStringLiteral("owner_plugin"), QString::fromStdString(recipe.owner_plugin));
-    transform.setAttribute(QStringLiteral("id"), QString::fromStdString(recipe.user_id));
-    transform.setAttribute(QStringLiteral("backend"), QString::fromStdString(recipe.backend));
-    transform.setAttribute(QStringLiteral("api_version"), QString::fromStdString(recipe.api_version));
+    QDomElement transform = doc.createElement(u"transform"_s);
+    transform.setAttribute(u"owner_plugin"_s, QString::fromStdString(recipe.owner_plugin));
+    transform.setAttribute(u"id"_s, QString::fromStdString(recipe.user_id));
+    transform.setAttribute(u"backend"_s, QString::fromStdString(recipe.backend));
+    transform.setAttribute(u"api_version"_s, QString::fromStdString(recipe.api_version));
     if (!recipe.backend_version.empty()) {
-      transform.setAttribute(QStringLiteral("backend_version"), QString::fromStdString(recipe.backend_version));
+      transform.setAttribute(u"backend_version"_s, QString::fromStdString(recipe.backend_version));
     }
     for (const auto& input_name : recipe.inputs) {
-      QDomElement in = doc.createElement(QStringLiteral("input"));
-      in.setAttribute(QStringLiteral("name"), QString::fromStdString(input_name));
+      QDomElement in = doc.createElement(u"input"_s);
+      in.setAttribute(u"name"_s, QString::fromStdString(input_name));
       transform.appendChild(in);
     }
     for (const auto& output_name : recipe.outputs) {
-      QDomElement out = doc.createElement(QStringLiteral("output"));
-      out.setAttribute(QStringLiteral("name"), QString::fromStdString(output_name));
+      QDomElement out = doc.createElement(u"output"_s);
+      out.setAttribute(u"name"_s, QString::fromStdString(output_name));
       transform.appendChild(out);
     }
     // params (create(params), JSON) and script (the full backend payload, Luau today)
     // each get their own CDATA child so restore reads them back independently.
     if (!recipe.params_json.empty()) {
-      QDomElement params = doc.createElement(QStringLiteral("params"));
+      QDomElement params = doc.createElement(u"params"_s);
       layout_xml::appendJsonAsCdata(doc, params, QString::fromStdString(recipe.params_json));
       transform.appendChild(params);
     }
-    QDomElement script = doc.createElement(QStringLiteral("script"));
+    QDomElement script = doc.createElement(u"script"_s);
     layout_xml::appendJsonAsCdata(doc, script, QString::fromStdString(recipe.script));
     transform.appendChild(script);
     element.appendChild(transform);
@@ -3228,14 +3226,14 @@ void MainWindow::restoreDataProcessors(const QDomElement& root) {
   auto& service = session_->sessionManager().dataProcessorService();
   service.clearAllFilters();
 
-  const QDomElement element = root.firstChildElement(QStringLiteral("data_processors"));
+  const QDomElement element = root.firstChildElement(u"data_processors"_s);
   const auto datasets = session_->catalogModel().datasets();
   // A null <data_processors> yields a null firstChildElement, so this loop runs zero
   // times — the clear above is then the whole effect.
-  for (QDomElement processor = element.firstChildElement(QStringLiteral("processor")); !processor.isNull();
-       processor = processor.nextSiblingElement(QStringLiteral("processor"))) {
-    const QString input_topic = processor.attribute(QStringLiteral("input_topic"));
-    const QString input_field = processor.attribute(QStringLiteral("input_field"));
+  for (QDomElement processor = element.firstChildElement(u"processor"_s); !processor.isNull();
+       processor = processor.nextSiblingElement(u"processor"_s)) {
+    const QString input_topic = processor.attribute(u"input_topic"_s);
+    const QString input_field = processor.attribute(u"input_field"_s);
     // Resolve the input against whichever loaded dataset holds it (first match in
     // load order), so a multi-file layout restores each filter against its source.
     std::optional<CurveDescriptor> input_desc;
@@ -3255,11 +3253,11 @@ void MainWindow::restoreDataProcessors(const QDomElement& root) {
           tr("Layout filter on '%1/%2' has no matching data; skipping.").arg(input_topic, input_field));
       continue;
     }
-    const std::string id = processor.attribute(QStringLiteral("processor_id")).toStdString();
+    const std::string id = processor.attribute(u"processor_id"_s).toStdString();
     // Params are the <processor>'s OWN direct CDATA — directCdataText ignores the
     // <source_fallback> child (QDomElement::text() would recurse and merge them).
     const QString params = layout_xml::directCdataText(processor);
-    const QString source_fallback = processor.firstChildElement(QStringLiteral("source_fallback")).text();
+    const QString source_fallback = processor.firstChildElement(u"source_fallback"_s).text();
     // Resolve order: live catalogue → embedded source → transitional C++ builtin.
     std::unique_ptr<proc::DataProcessor> built = service.makeRestoredProcessor(
         id, params.isEmpty() ? std::string("{}") : params.toStdString(), source_fallback.toStdString());
@@ -3271,7 +3269,7 @@ void MainWindow::restoreDataProcessors(const QDomElement& root) {
     }
     const auto applied = service.applyFilter(
         input_desc->topic_id, input_desc->dataset_id, std::move(built),
-        processor.attribute(QStringLiteral("output_name")).toStdString(), input_desc->column_index);
+        processor.attribute(u"output_name"_s).toStdString(), input_desc->column_index);
     if (!applied.has_value()) {
       emitDiagnostic(
           DiagnosticLevel::kWarning, "Layout", "processor-apply-failed",
@@ -3285,29 +3283,28 @@ void MainWindow::restoreDataProcessors(const QDomElement& root) {
   // resolve it by name. The clear runs unconditionally: a snapshot with no
   // <transform> children then simply leaves every transform torn down.
   service.clearAllTransforms();
-  for (QDomElement transform = element.firstChildElement(QStringLiteral("transform")); !transform.isNull();
-       transform = transform.nextSiblingElement(QStringLiteral("transform"))) {
+  for (QDomElement transform = element.firstChildElement(u"transform"_s); !transform.isNull();
+       transform = transform.nextSiblingElement(u"transform"_s)) {
     DataProcessorService::TransformRecipe recipe;
-    recipe.owner_plugin = transform.attribute(QStringLiteral("owner_plugin")).toStdString();
-    recipe.user_id = transform.attribute(QStringLiteral("id")).toStdString();
+    recipe.owner_plugin = transform.attribute(u"owner_plugin"_s).toStdString();
+    recipe.user_id = transform.attribute(u"id"_s).toStdString();
     recipe.key = DataProcessorService::makeTransformKey(recipe.owner_plugin, recipe.user_id);
-    recipe.backend = transform.attribute(QStringLiteral("backend"), QStringLiteral("luau")).toStdString();
-    recipe.api_version = transform.attribute(QStringLiteral("api_version"), QStringLiteral("1")).toStdString();
-    recipe.backend_version = transform.attribute(QStringLiteral("backend_version")).toStdString();
-    for (QDomElement in = transform.firstChildElement(QStringLiteral("input")); !in.isNull();
-         in = in.nextSiblingElement(QStringLiteral("input"))) {
-      recipe.inputs.push_back(in.attribute(QStringLiteral("name")).toStdString());
+    recipe.backend = transform.attribute(u"backend"_s, u"luau"_s).toStdString();
+    recipe.api_version = transform.attribute(u"api_version"_s, u"1"_s).toStdString();
+    recipe.backend_version = transform.attribute(u"backend_version"_s).toStdString();
+    for (QDomElement in = transform.firstChildElement(u"input"_s); !in.isNull();
+         in = in.nextSiblingElement(u"input"_s)) {
+      recipe.inputs.push_back(in.attribute(u"name"_s).toStdString());
     }
-    for (QDomElement out = transform.firstChildElement(QStringLiteral("output")); !out.isNull();
-         out = out.nextSiblingElement(QStringLiteral("output"))) {
-      recipe.outputs.push_back(out.attribute(QStringLiteral("name")).toStdString());
+    for (QDomElement out = transform.firstChildElement(u"output"_s); !out.isNull();
+         out = out.nextSiblingElement(u"output"_s)) {
+      recipe.outputs.push_back(out.attribute(u"name"_s).toStdString());
     }
-    recipe.params_json =
-        layout_xml::directCdataText(transform.firstChildElement(QStringLiteral("params"))).toStdString();
+    recipe.params_json = layout_xml::directCdataText(transform.firstChildElement(u"params"_s)).toStdString();
     if (recipe.params_json.empty()) {
       recipe.params_json = "{}";
     }
-    recipe.script = layout_xml::directCdataText(transform.firstChildElement(QStringLiteral("script"))).toStdString();
+    recipe.script = layout_xml::directCdataText(transform.firstChildElement(u"script"_s)).toStdString();
     if (const auto restored = service.restoreTransform(recipe); !restored.has_value()) {
       emitDiagnostic(
           DiagnosticLevel::kWarning, "Layout", "transform-restore-failed",
@@ -3543,7 +3540,7 @@ QDomElement MainWindow::appendDataSourceElement(QDomDocument& doc, const QDir& l
     }
   }
 
-  QDomElement wrapper = doc.createElement(QStringLiteral("previouslyLoaded_Datafiles"));
+  QDomElement wrapper = doc.createElement(u"previouslyLoaded_Datafiles"_s);
 
   // One <fileInfo> per loaded file, in load order, so a multi-file session
   // round-trips. Old PJ4 readers that only read the first child degrade to the
@@ -3552,7 +3549,7 @@ QDomElement MainWindow::appendDataSourceElement(QDomDocument& doc, const QDir& l
     if (!live_paths.contains(src.path)) {
       continue;  // dataset removed since load; don't resurrect it on reload
     }
-    QDomElement file_info = doc.createElement(QStringLiteral("fileInfo"));
+    QDomElement file_info = doc.createElement(u"fileInfo"_s);
 
     const QFileInfo info(src.path);
     const QString abs = info.absoluteFilePath();
@@ -3565,9 +3562,9 @@ QDomElement MainWindow::appendDataSourceElement(QDomDocument& doc, const QDir& l
     // NOT emit a "../" prefix or the literal ".." path. The earlier check
     // (`!rel.startsWith("..")`) would misclassify legitimate filenames
     // like "..foo" or "..bar/data.csv" as escaping the dir.
-    const bool is_subpath = rel != QStringLiteral("..") && !rel.startsWith(QStringLiteral("../"));
-    file_info.setAttribute(QStringLiteral("filename"), is_subpath ? rel : abs);
-    file_info.setAttribute(QStringLiteral("prefix"), src.prefix);
+    const bool is_subpath = rel != u".."_s && !rel.startsWith(u"../"_s);
+    file_info.setAttribute(u"filename"_s, is_subpath ? rel : abs);
+    file_info.setAttribute(u"prefix"_s, src.prefix);
 
     // Source Timeline state for this file, re-bound by path on reload. The
     // display offset is read live from the SessionManager (the per-source
@@ -3576,10 +3573,9 @@ QDomElement MainWindow::appendDataSourceElement(QDomDocument& doc, const QDir& l
     if (const auto it = dataset_for_path.constFind(src.path); it != dataset_for_path.constEnd()) {
       const DatasetId id = it.value();
       file_info.setAttribute(
-          QStringLiteral("display_offset_ns"),
-          QString::number(session_->sessionManager().displayOffset(id).value.count()));
+          u"display_offset_ns"_s, QString::number(session_->sessionManager().displayOffset(id).value.count()));
       if (const auto order_it = timeline_order.constFind(id); order_it != timeline_order.constEnd()) {
-        file_info.setAttribute(QStringLiteral("timeline_order"), QString::number(order_it.value()));
+        file_info.setAttribute(u"timeline_order"_s, QString::number(order_it.value()));
       }
     }
 
@@ -3590,8 +3586,8 @@ QDomElement MainWindow::appendDataSourceElement(QDomDocument& doc, const QDir& l
     // plugin_id means the loader didn't capture a plugin (legacy path
     // or saveConfig failure); only that case skips the child.
     if (!src.plugin_id.isEmpty()) {
-      QDomElement plugin = doc.createElement(QStringLiteral("plugin"));
-      plugin.setAttribute(QStringLiteral("ID"), src.plugin_id);
+      QDomElement plugin = doc.createElement(u"plugin"_s);
+      plugin.setAttribute(u"ID"_s, src.plugin_id);
       // CDATA so the JSON survives round-tripping without XML escape mangling.
       // appendJsonAsCdata splits across multiple CDATA sections when the JSON
       // contains a literal "]]>" sequence (otherwise it'd terminate the
@@ -3665,7 +3661,7 @@ QDomElement MainWindow::saveSourceTimelineViewState(QDomDocument& doc) const {
     state.name_column_width = source_timeline_->nameColumnWidth();
   }
   if (ui_->timelineAlignRail != nullptr) {
-    if (auto* snap = ui_->timelineAlignRail->findChild<QToolButton*>(QStringLiteral("buttonTimelineSnap"))) {
+    if (auto* snap = ui_->timelineAlignRail->findChild<QToolButton*>(u"buttonTimelineSnap"_s)) {
       state.snap = snap->isChecked();
     }
   }
@@ -3695,7 +3691,7 @@ void MainWindow::restoreSourceTimelineViewState(const QDomElement& element) {
     // Drive the rail toggle so its checked state and the widget stay in sync
     // (toggled -> Timeline::setSnapEnabled). Fall back to the widget directly.
     auto* btn = ui_->timelineAlignRail != nullptr
-                    ? ui_->timelineAlignRail->findChild<QToolButton*>(QStringLiteral("buttonTimelineSnap"))
+                    ? ui_->timelineAlignRail->findChild<QToolButton*>(u"buttonTimelineSnap"_s)
                     : nullptr;
     if (btn != nullptr) {
       btn->setChecked(*state.snap);
@@ -3706,7 +3702,7 @@ void MainWindow::restoreSourceTimelineViewState(const QDomElement& element) {
 }
 
 QDomElement MainWindow::saveRightPanelState(QDomDocument& doc) const {
-  QDomElement element = doc.createElement(QStringLiteral("right_panel_state"));
+  QDomElement element = doc.createElement(u"right_panel_state"_s);
 
   // The right panel's open/closed state (the panel-visibility toggle button) is
   // an app-wide QSettings preference, NOT document state, so it is deliberately
@@ -3720,7 +3716,7 @@ QDomElement MainWindow::saveRightPanelState(QDomDocument& doc) const {
   if (width_button_group_ != nullptr) {
     const int id = width_button_group_->checkedId();
     if (id >= 0 && id < static_cast<int>(kWidthButtonSpecs.size())) {
-      element.setAttribute(QStringLiteral("width"), QString::number(kWidthButtonSpecs[id].second, 'g'));
+      element.setAttribute(u"width"_s, QString::number(kWidthButtonSpecs[id].second, 'g'));
     }
   }
 
@@ -3729,7 +3725,7 @@ QDomElement MainWindow::saveRightPanelState(QDomDocument& doc) const {
   if (style_button_group_ != nullptr) {
     const int id = style_button_group_->checkedId();
     if (id >= 0) {
-      element.setAttribute(QStringLiteral("style"), QString::number(id));
+      element.setAttribute(u"style"_s, QString::number(id));
     }
   }
 
@@ -3740,7 +3736,7 @@ QDomElement MainWindow::saveRightPanelState(QDomDocument& doc) const {
     for (int s : sizes) {
       parts.push_back(QString::number(s));
     }
-    element.setAttribute(QStringLiteral("splitter_sizes"), parts.join(QLatin1Char(',')));
+    element.setAttribute(u"splitter_sizes"_s, parts.join(QLatin1Char(',')));
   }
 
   return element;
@@ -3811,7 +3807,7 @@ void MainWindow::alignNameColumnToPlayback() {
   // edge is where the blue track starts. Its x within the playback bar — which
   // shares the bottom panel's left origin with the name column — is the column
   // width that lines the separator up exactly under that track start.
-  auto* slider = ui_->timelineWidget->findChild<QWidget*>(QStringLiteral("timeSlider"));
+  auto* slider = ui_->timelineWidget->findChild<QWidget*>(u"timeSlider"_s);
   if (slider == nullptr) {
     return;
   }
@@ -3829,7 +3825,7 @@ void MainWindow::alignNameColumnToPlayback() {
 }
 
 void MainWindow::restoreRightPanelState(const QDomElement& element) {
-  if (element.isNull() || element.tagName() != QStringLiteral("right_panel_state")) {
+  if (element.isNull() || element.tagName() != u"right_panel_state"_s) {
     return;
   }
 
@@ -3838,9 +3834,9 @@ void MainWindow::restoreRightPanelState(const QDomElement& element) {
   // Curve Width: look up the button whose canonical value fuzzy-matches
   // the layout's stored value. Block group signals so the idClicked
   // lambda doesn't refresh the previews on this passive resync.
-  if (element.hasAttribute(QStringLiteral("width")) && width_button_group_ != nullptr) {
+  if (element.hasAttribute(u"width"_s) && width_button_group_ != nullptr) {
     bool ok = false;
-    const double wanted = element.attribute(QStringLiteral("width")).toDouble(&ok);
+    const double wanted = element.attribute(u"width"_s).toDouble(&ok);
     if (ok) {
       for (int i = 0; i < static_cast<int>(kWidthButtonSpecs.size()); ++i) {
         if (qFuzzyCompare(kWidthButtonSpecs[i].second, wanted)) {
@@ -3853,9 +3849,9 @@ void MainWindow::restoreRightPanelState(const QDomElement& element) {
 
   // Curve Style: checkedId is the CurveStyle enum value; pass through.
   // Same preview-refresh suppression via QSignalBlocker.
-  if (element.hasAttribute(QStringLiteral("style")) && style_button_group_ != nullptr) {
+  if (element.hasAttribute(u"style"_s) && style_button_group_ != nullptr) {
     bool ok = false;
-    const int wanted = element.attribute(QStringLiteral("style")).toInt(&ok);
+    const int wanted = element.attribute(u"style"_s).toInt(&ok);
     if (ok) {
       checkGroupButton(style_button_group_, wanted);
     }
@@ -3864,9 +3860,8 @@ void MainWindow::restoreRightPanelState(const QDomElement& element) {
   // Splitter sizes: only apply when the parsed list length matches the
   // splitter's current widget count. A mismatch means the splitter shape
   // changed across PJ4 versions; layout silently skips this piece.
-  if (element.hasAttribute(QStringLiteral("splitter_sizes")) && ui_->rightToolbarSplitter != nullptr) {
-    const QStringList parts =
-        element.attribute(QStringLiteral("splitter_sizes")).split(QLatin1Char(','), Qt::SkipEmptyParts);
+  if (element.hasAttribute(u"splitter_sizes"_s) && ui_->rightToolbarSplitter != nullptr) {
+    const QStringList parts = element.attribute(u"splitter_sizes"_s).split(QLatin1Char(','), Qt::SkipEmptyParts);
     if (parts.size() == ui_->rightToolbarSplitter->count()) {
       QList<int> sizes;
       sizes.reserve(parts.size());
@@ -3888,7 +3883,7 @@ void MainWindow::restoreRightPanelState(const QDomElement& element) {
 }
 
 QDomElement MainWindow::saveChromeState(QDomDocument& doc) const {
-  QDomElement element = doc.createElement(QStringLiteral("chrome_state"));
+  QDomElement element = doc.createElement(u"chrome_state"_s);
 
   // Persist only the main splitter's left-panel width. Panel visibility and the
   // timeline-strip height are fixed launch state (see the constructor), not saved.
@@ -3904,14 +3899,14 @@ QDomElement MainWindow::saveChromeState(QDomDocument& doc) const {
   };
 
   if (ui_->mainSplitter != nullptr) {
-    element.setAttribute(QStringLiteral("main_splitter_sizes"), join_sizes(ui_->mainSplitter));
+    element.setAttribute(u"main_splitter_sizes"_s, join_sizes(ui_->mainSplitter));
   }
 
   return element;
 }
 
 void MainWindow::restoreChromeState(const QDomElement& element) {
-  if (element.isNull() || element.tagName() != QStringLiteral("chrome_state")) {
+  if (element.isNull() || element.tagName() != u"chrome_state"_s) {
     return;
   }
 
@@ -3939,8 +3934,8 @@ void MainWindow::restoreChromeState(const QDomElement& element) {
     splitter->setSizes(sizes);
   };
 
-  if (element.hasAttribute(QStringLiteral("main_splitter_sizes"))) {
-    apply_splitter(ui_->mainSplitter, element.attribute(QStringLiteral("main_splitter_sizes")));
+  if (element.hasAttribute(u"main_splitter_sizes"_s)) {
+    apply_splitter(ui_->mainSplitter, element.attribute(u"main_splitter_sizes"_s));
   }
 }
 
@@ -3948,15 +3943,15 @@ MainWindow::MissingCurveChoice MainWindow::promptMissingCurves(const QStringList
   static constexpr int kMaxShown = 10;
   const int name_count = static_cast<int>(names.size());
   QString body = tr("The layout references %n curve(s) not present in the current data:", "", name_count);
-  body += QStringLiteral("\n\n");
+  body += u"\n\n"_s;
   const int shown = std::min(name_count, kMaxShown);
   for (int i = 0; i < shown; ++i) {
-    body += QStringLiteral("  • ") + names[i] + QStringLiteral("\n");
+    body += u"  • "_s + names[i] + u"\n"_s;
   }
   if (name_count > kMaxShown) {
     body += tr("  … and %n more\n", "", name_count - kMaxShown);
   }
-  body += QStringLiteral("\n");
+  body += u"\n"_s;
   body += tr("Choose how to handle them:");
 
   // Themed prompt. "Remove from plots" takes the destructive role (purple ink);
@@ -3972,12 +3967,11 @@ MainWindow::MissingCurveChoice MainWindow::promptMissingCurves(const QStringList
 
 QDomDocument MainWindow::xmlSaveState() const {
   QDomDocument doc;
-  doc.appendChild(
-      doc.createProcessingInstruction(QStringLiteral("xml"), QStringLiteral("version='1.0' encoding='UTF-8'")));
+  doc.appendChild(doc.createProcessingInstruction(u"xml"_s, u"version='1.0' encoding='UTF-8'"_s));
 
-  QDomElement root = doc.createElement(QStringLiteral("root"));
-  root.setAttribute(QStringLiteral("format"), QStringLiteral("PlotJuggler"));
-  root.setAttribute(QStringLiteral("pj4_version"), QString::number(kLayoutSchemaVersion));
+  QDomElement root = doc.createElement(u"root"_s);
+  root.setAttribute(u"format"_s, u"PlotJuggler"_s);
+  root.setAttribute(u"pj4_version"_s, QString::number(kLayoutSchemaVersion));
   doc.appendChild(root);
 
   root.appendChild(ui_->tabbedPlotWidget->xmlSaveState(doc));
@@ -4000,18 +3994,18 @@ QDomDocument MainWindow::xmlSaveState() const {
 
 bool MainWindow::xmlLoadState(const QDomDocument& state_document) {
   const QDomElement root = state_document.documentElement();
-  if (root.isNull() || root.tagName() != QStringLiteral("root")) {
+  if (root.isNull() || root.tagName() != u"root"_s) {
     qCWarning(lcMain) << "No <root> element found at the top-level of the XML document";
     return false;
   }
 
   QDomElement main_tabbed_widget;
-  for (auto tabbed = root.firstChildElement(QStringLiteral("tabbed_widget")); !tabbed.isNull();
-       tabbed = tabbed.nextSiblingElement(QStringLiteral("tabbed_widget"))) {
+  for (auto tabbed = root.firstChildElement(u"tabbed_widget"_s); !tabbed.isNull();
+       tabbed = tabbed.nextSiblingElement(u"tabbed_widget"_s)) {
     if (main_tabbed_widget.isNull()) {
       main_tabbed_widget = tabbed;
     }
-    if (tabbed.attribute(QStringLiteral("parent")) == QStringLiteral("main_window")) {
+    if (tabbed.attribute(u"parent"_s) == u"main_window"_s) {
       main_tabbed_widget = tabbed;
       break;
     }
@@ -4200,7 +4194,7 @@ void MainWindow::buildGlobalToolbar() {
   // buttonTimeTracker cycles through 3 pre-rendered PNG icons by state, so it
   // skips the theme-tinted LoadSvg path baked into add_button. Built inline.
   button_time_tracker_ = new QToolButton(ui_->globalToolbarWidget);
-  button_time_tracker_->setObjectName(QStringLiteral("buttonTimeTracker"));
+  button_time_tracker_->setObjectName(u"buttonTimeTracker"_s);
   button_time_tracker_->setFocusPolicy(Qt::NoFocus);
   button_time_tracker_->setAutoRaise(true);
   button_time_tracker_->setFixedSize(24, 24);
@@ -4258,7 +4252,7 @@ void MainWindow::buildGlobalToolbar() {
     btn->setCheckable(true);
     btn->setChecked(initial_checked);
   };
-  make_checkable(button_link_, QSettings().value(QStringLiteral("MainWindow.buttonLink"), true).toBool());
+  make_checkable(button_link_, QSettings().value(u"MainWindow.buttonLink"_s, true).toBool());
   make_checkable(button_show_point_, show_points_);
   make_checkable(button_grid_, activate_grid_);
   make_checkable(button_ratio_, keep_ratio_);
@@ -4273,14 +4267,14 @@ void MainWindow::buildGlobalToolbar() {
     onUndoableChange();
   });
   connect(button_link_, &QToolButton::toggled, this, [](bool checked) {
-    QSettings().setValue(QStringLiteral("MainWindow.buttonLink"), checked);
+    QSettings().setValue(u"MainWindow.buttonLink"_s, checked);
   });
   connect(button_show_point_, &QToolButton::toggled, this, [this](bool checked) {
     if (applying_state_) {
       return;
     }
     show_points_ = checked;
-    QSettings().setValue(QStringLiteral("MainWindow.buttonShowpoint"), checked);
+    QSettings().setValue(u"MainWindow.buttonShowpoint"_s, checked);
     forEachPlot([checked](PlotWidget* plot) { plot->setShowPoints(checked); });
     applyShowPointsTo2DWidgets();
   });
@@ -4289,7 +4283,7 @@ void MainWindow::buildGlobalToolbar() {
       return;
     }
     activate_grid_ = checked;
-    QSettings().setValue(QStringLiteral("MainWindow.buttonActivateGrid"), checked);
+    QSettings().setValue(u"MainWindow.buttonActivateGrid"_s, checked);
     forEachPlot([checked](PlotWidget* plot) { plot->setGridVisible(checked); });
     syncFilterEditorPreviewDisplay();
     syncPanelPreviewDisplay();
@@ -4299,7 +4293,7 @@ void MainWindow::buildGlobalToolbar() {
       return;
     }
     dots_ = checked;
-    QSettings().setValue(QStringLiteral("MainWindow.buttonDots"), checked);
+    QSettings().setValue(u"MainWindow.buttonDots"_s, checked);
     forEachPlot([this](PlotWidget* plot) {
       applyDots(plot);
       plot->replot();
@@ -4311,7 +4305,7 @@ void MainWindow::buildGlobalToolbar() {
       return;
     }
     keep_ratio_ = checked;
-    QSettings().setValue(QStringLiteral("MainWindow.buttonRatio"), checked);
+    QSettings().setValue(u"MainWindow.buttonRatio"_s, checked);
     forEachPlot([checked](PlotWidget* plot) { plot->setKeepRatioXY(checked); });
   });
   // Session-only state — not persisted to QSettings, not in xmlSaveState.
@@ -4334,7 +4328,7 @@ void MainWindow::buildGlobalToolbar() {
     if (applying_state_) {
       return;
     }
-    QSettings().setValue(QStringLiteral("MainWindow.useTimeOffset"), checked);
+    QSettings().setValue(u"MainWindow.useTimeOffset"_s, checked);
     onUseTimeOffsetToggled(checked);
   });
 
@@ -4504,7 +4498,7 @@ void MainWindow::buildLocalToolbar() {
   };
 
   curve_width_header_ = build_section(
-      tr("Curve Width"), QStringLiteral("widgetLabelCurveWidth"),
+      tr("Curve Width"), u"widgetLabelCurveWidth"_s,
       {
           {"globalWidth1_0", ":/resources/svg/line_width_1_0.svg", "Line width 1.0", on_width(1.0)},
           {"globalWidth1_5", ":/resources/svg/line_width_1_5.svg", "Line width 1.5", on_width(1.5)},
@@ -4538,7 +4532,7 @@ void MainWindow::buildLocalToolbar() {
   });
 
   curve_style_header_ = build_section(
-      tr("Curve Style"), QStringLiteral("widgetLabelCurveStyle"),
+      tr("Curve Style"), u"widgetLabelCurveStyle"_s,
       {
           {"globalStyleLines", ":/resources/svg/style_lines.svg", "Lines",
            on_style(static_cast<int>(PlotWidgetBase::kLines))},
@@ -4747,12 +4741,12 @@ void MainWindow::openEmbeddedConsole() {
     return;
   }
   connect(view, &RasterStreamView::sessionEnded, this, [this]() { restoreCentralArea(); });
-  const QString dir = QCoreApplication::applicationDirPath() + QStringLiteral("/thirdparty/retro/");
-  QString helper = QStandardPaths::findExecutable(QStringLiteral("pj-raster-helper"), {dir});
+  const QString dir = QCoreApplication::applicationDirPath() + u"/thirdparty/retro/"_s;
+  QString helper = QStandardPaths::findExecutable(u"pj-raster-helper"_s, {dir});
   if (helper.isEmpty()) {
-    helper = dir + QStringLiteral("pj-raster-helper");
+    helper = dir + u"pj-raster-helper"_s;
   }
-  view->start(helper, dir + QStringLiteral("base.wad"));
+  view->start(helper, dir + u"base.wad"_s);
 }
 
 void MainWindow::launchToolbox(const QString& plugin_id, const QString& initial_config) {
@@ -4761,7 +4755,7 @@ void MainWindow::launchToolbox(const QString& plugin_id, const QString& initial_
   // fails is visible in the UI instead of silently doing nothing.
   auto report_error = [this](const QString& source, const QString& detail) {
     if (diagnostic_history_ != nullptr) {
-      diagnostic_history_->record(DiagnosticLevel::kError, source, QStringLiteral("toolbox"), detail);
+      diagnostic_history_->record(DiagnosticLevel::kError, source, u"toolbox"_s, detail);
     }
     qWarning("MainWindow::launchToolbox: %s", qPrintable(detail));
   };
@@ -4865,7 +4859,7 @@ void MainWindow::launchToolbox(const QString& plugin_id, const QString& initial_
     } else if (level == PJ_TOOLBOX_MESSAGE_WARNING) {
       diag = DiagnosticLevel::kWarning;
     }
-    diagnostic_history_->record(diag, source, QStringLiteral("toolbox"), QString::fromStdString(message));
+    diagnostic_history_->record(diag, source, u"toolbox"_s, QString::fromStdString(message));
   };
 
   // Parser-ingest deps: the plugin catalog for ensureParserBinding lookups and

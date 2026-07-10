@@ -36,6 +36,7 @@
 #include "pj_widgets/SvgUtil.h"
 #include "scene_object_classification.h"
 #include "ui_CurveListPanel.h"
+using namespace Qt::StringLiterals;
 
 namespace PJ {
 
@@ -198,7 +199,7 @@ CurveListPanel::CurveListPanel(QWidget* parent) : QWidget(parent), ui_(new Ui::C
   // Datasets header overflow menu — view toggles + Clear All
   // (destructive, so styled red).
   auto* datasets_menu = new QMenu(this);
-  datasets_menu->setObjectName(QStringLiteral("PJMenu"));
+  datasets_menu->setObjectName(u"PJMenu"_s);
 
   show_values_check_ = new QCheckBox(tr("Show Values"), datasets_menu);
   auto* show_values_action = new QWidgetAction(datasets_menu);
@@ -283,7 +284,7 @@ CurveListPanel::CurveListPanel(QWidget* parent) : QWidget(parent), ui_(new Ui::C
   // Custom-series header overflow menu — mirrors the Datasets menu.
   // Delete is destructive so it gets the same red treatment.
   auto* custom_menu = new QMenu(this);
-  custom_menu->setObjectName(QStringLiteral("PJMenu"));
+  custom_menu->setObjectName(u"PJMenu"_s);
   delete_custom_button_ = new QPushButton(tr("Delete"), custom_menu);
   delete_custom_button_->setFlat(true);
   delete_custom_button_->setProperty("destructive", true);
@@ -461,7 +462,7 @@ bool CurveListPanel::valuesColumnActive() const {
 
 void CurveListPanel::fillValuesNow() {
   QSettings settings;
-  const int precision = settings.value(QStringLiteral("Preferences::precision"), 3).toInt();
+  const int precision = settings.value(u"Preferences::precision"_s, 3).toInt();
   const double tracker_time = last_tracker_time_;
   auto provider = [this, tracker_time, precision](const QString& key) -> QString {
     // String fields show their text value at the cursor (zero-order hold), "-"
@@ -469,7 +470,7 @@ void CurveListPanel::fillValuesNow() {
     // MUST be checked before the numeric path: isScalarKey is true for strings
     // too, so reversing this order would render every string field as "-".
     if (catalog_->isStringKey(key)) {
-      return catalog_->stringValueAt(key, tracker_time).value_or(QStringLiteral("-"));
+      return catalog_->stringValueAt(key, tracker_time).value_or(u"-"_s);
     }
     const std::optional<double> value = catalog_->scalarValueAt(key, tracker_time);
     if (value.has_value()) {
@@ -477,36 +478,32 @@ void CurveListPanel::fillValuesNow() {
     }
     // No sample at or before the cursor: show "-" for a numeric scalar (PJ3
     // parity) and leave non-scalar rows (object topics) blank.
-    return catalog_->isScalarKey(key) ? QStringLiteral("-") : QString();
+    return catalog_->isScalarKey(key) ? u"-"_s : QString();
   };
   tree_view_->refreshVisibleValues(provider);
   custom_view_->refreshVisibleValues(provider);
 }
 
 QDomElement CurveListPanel::saveListState(QDomDocument& doc) const {
-  QDomElement element = doc.createElement(QStringLiteral("curve_list_state"));
+  QDomElement element = doc.createElement(u"curve_list_state"_s);
 
   if (preserve_topic_name_check_ != nullptr) {
-    element.setAttribute(
-        QStringLiteral("show_topics"),
-        preserve_topic_name_check_->isChecked() ? QStringLiteral("true") : QStringLiteral("false"));
+    element.setAttribute(u"show_topics"_s, preserve_topic_name_check_->isChecked() ? u"true"_s : u"false"_s);
   }
   if (show_values_check_ != nullptr) {
-    element.setAttribute(
-        QStringLiteral("show_values"),
-        show_values_check_->isChecked() ? QStringLiteral("true") : QStringLiteral("false"));
+    element.setAttribute(u"show_values"_s, show_values_check_->isChecked() ? u"true"_s : u"false"_s);
   }
   if (ui_->lineEditFilter != nullptr) {
-    element.setAttribute(QStringLiteral("datasets_filter"), ui_->lineEditFilter->text());
+    element.setAttribute(u"datasets_filter"_s, ui_->lineEditFilter->text());
   }
   if (ui_->lineEditCustomFilter != nullptr) {
-    element.setAttribute(QStringLiteral("custom_filter"), ui_->lineEditCustomFilter->text());
+    element.setAttribute(u"custom_filter"_s, ui_->lineEditCustomFilter->text());
   }
   return element;
 }
 
 void CurveListPanel::restoreListState(const QDomElement& element) {
-  if (element.isNull() || element.tagName() != QStringLiteral("curve_list_state")) {
+  if (element.isNull() || element.tagName() != u"curve_list_state"_s) {
     return;
   }
 
@@ -519,15 +516,15 @@ void CurveListPanel::restoreListState(const QDomElement& element) {
   {
     QScopedValueRollback guard(applying_state_, true);
 
-    if (element.hasAttribute(QStringLiteral("show_topics")) && preserve_topic_name_check_ != nullptr) {
-      const bool wanted = element.attribute(QStringLiteral("show_topics")) == QStringLiteral("true");
+    if (element.hasAttribute(u"show_topics"_s) && preserve_topic_name_check_ != nullptr) {
+      const bool wanted = element.attribute(u"show_topics"_s) == u"true"_s;
       if (preserve_topic_name_check_->isChecked() != wanted) {
         preserve_topic_name_check_->setChecked(wanted);  // emits toggled -> slot runs (rebuilds tree)
       }
     }
 
-    if (element.hasAttribute(QStringLiteral("show_values")) && show_values_check_ != nullptr) {
-      const bool wanted = element.attribute(QStringLiteral("show_values")) == QStringLiteral("true");
+    if (element.hasAttribute(u"show_values"_s) && show_values_check_ != nullptr) {
+      const bool wanted = element.attribute(u"show_values"_s) == u"true"_s;
       if (show_values_check_->isChecked() != wanted) {
         show_values_check_->setChecked(wanted);  // emits toggled -> slot runs (no QSettings write)
       }
@@ -537,11 +534,11 @@ void CurveListPanel::restoreListState(const QDomElement& element) {
   // Filter texts: setText emits textChanged, which the connected slots
   // forward to tree_view_->applyFilter — that's exactly what we want.
   // Do NOT block signals here.
-  if (element.hasAttribute(QStringLiteral("datasets_filter")) && ui_->lineEditFilter != nullptr) {
-    ui_->lineEditFilter->setText(element.attribute(QStringLiteral("datasets_filter")));
+  if (element.hasAttribute(u"datasets_filter"_s) && ui_->lineEditFilter != nullptr) {
+    ui_->lineEditFilter->setText(element.attribute(u"datasets_filter"_s));
   }
-  if (element.hasAttribute(QStringLiteral("custom_filter")) && ui_->lineEditCustomFilter != nullptr) {
-    ui_->lineEditCustomFilter->setText(element.attribute(QStringLiteral("custom_filter")));
+  if (element.hasAttribute(u"custom_filter"_s) && ui_->lineEditCustomFilter != nullptr) {
+    ui_->lineEditCustomFilter->setText(element.attribute(u"custom_filter"_s));
   }
 }
 
@@ -632,7 +629,7 @@ void CurveListPanel::onTreeContextMenu(const QPoint& pos) {
   // carries a themed leading icon and the destructive ones paint in the shared
   // ${purple} via the central `QMenu#PJMenu QPushButton[destructive="true"]` rule.
   QMenu menu(this);
-  menu.setObjectName(QStringLiteral("PJMenu"));
+  menu.setObjectName(u"PJMenu"_s);
   const QString theme = currentTheme();
   const auto add_item = [&](const QString& icon, const QString& text, bool destructive, bool enabled) {
     QPushButton* button = addMenuButton(&menu, icon, theme, text);
@@ -644,11 +641,9 @@ void CurveListPanel::onTreeContextMenu(const QPoint& pos) {
   };
 
   // Merge first (needs ≥2 datasets), then Remove (destructive → purple).
-  QPushButton* merge_button =
-      add_item(QStringLiteral(":/resources/svg/merge.svg"), tr("Merge"), false, dataset_ids.size() >= 2);
+  QPushButton* merge_button = add_item(u":/resources/svg/merge.svg"_s, tr("Merge"), false, dataset_ids.size() >= 2);
   QPushButton* remove_button = add_item(
-      QStringLiteral(":/resources/svg/trash.svg"),
-      dataset_ids.size() > 1 ? tr("Remove datasets") : tr("Remove dataset"),
+      u":/resources/svg/trash.svg"_s, dataset_ids.size() > 1 ? tr("Remove datasets") : tr("Remove dataset"),
       /*destructive=*/true, /*enabled=*/true);
 
   // QWidgetAction buttons don't dismiss the menu on click — close it ourselves and
@@ -700,9 +695,9 @@ void CurveListPanel::showTopicContextMenu(QTreeWidgetItem* clicked, const QPoint
   // can never pause a topic something still displays.
   const bool forced = tracker_->isTopicForced(item->dataset_id, item->topic_name);
   QMenu menu(this);
-  menu.setObjectName(QStringLiteral("PJMenu"));
+  menu.setObjectName(u"PJMenu"_s);
   QPushButton* button = addMenuButton(
-      &menu, QStringLiteral(":/resources/svg/cast.svg"), currentTheme(),
+      &menu, u":/resources/svg/cast.svg"_s, currentTheme(),
       forced ? tr("Stop forced streaming") : tr("Force topic streaming"));
 
   bool toggle = false;
@@ -879,10 +874,10 @@ void CurveListPanel::applyIcons(QString theme) {
   // per-instance stylesheet that pads ::item by layout_spacing on top
   // and bottom. Setting an empty stylesheet at zero spacing clears the
   // rule (otherwise the previous value would linger).
-  const QString row_padding = chrome_metrics_.layout_spacing > 0
-                                  ? QStringLiteral("QTreeView::item { padding-top: %1px; padding-bottom: %1px; }")
-                                        .arg(chrome_metrics_.layout_spacing)
-                                  : QString();
+  const QString row_padding =
+      chrome_metrics_.layout_spacing > 0
+          ? u"QTreeView::item { padding-top: %1px; padding-bottom: %1px; }"_s.arg(chrome_metrics_.layout_spacing)
+          : QString();
   if (tree_view_ != nullptr) {
     tree_view_->setStyleSheet(row_padding);
   }

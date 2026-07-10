@@ -54,6 +54,7 @@
 #include "pj_widgets/MessageBox.h"
 #include "pj_widgets/ProgressDialog.h"
 #include "pj_widgets/SvgUtil.h"
+using namespace Qt::StringLiterals;
 
 namespace PJ {
 
@@ -66,7 +67,7 @@ constexpr const char* kPluginConfigKeyPrefix = "PluginConfig/";
 
 QString normalizeExtension(const QString& path) {
   const QString suffix = QFileInfo(path).suffix();
-  return suffix.isEmpty() ? QString() : QStringLiteral(".") + suffix.toLower();
+  return suffix.isEmpty() ? QString() : u"."_s + suffix.toLower();
 }
 
 // Merge the file path into the (possibly empty) saved JSON config. Saved
@@ -82,7 +83,7 @@ std::string buildLoadConfig(std::string_view saved_config, const QString& path) 
       obj = doc.object();
     }
   }
-  obj.insert(QStringLiteral("filepath"), path);
+  obj.insert(u"filepath"_s, path);
   const QByteArray out = QJsonDocument(obj).toJson(QJsonDocument::Compact);
   return std::string(out.constData(), static_cast<std::size_t>(out.size()));
 }
@@ -119,11 +120,11 @@ int execScrollableMessageDialog(
   const QString head = nl < 0 ? q_text : q_text.left(nl);
   const QString body = nl < 0 ? QString() : q_text.mid(nl + 1).trimmed();
 
-  QString icon_path = QStringLiteral(":/resources/svg/diag_info.svg");
+  QString icon_path = u":/resources/svg/diag_info.svg"_s;
   if (type == PJ_MESSAGE_BOX_ERROR) {
-    icon_path = QStringLiteral(":/resources/svg/diag_error.svg");
+    icon_path = u":/resources/svg/diag_error.svg"_s;
   } else if (type == PJ_MESSAGE_BOX_WARNING || type == PJ_MESSAGE_BOX_QUESTION) {
-    icon_path = QStringLiteral(":/resources/svg/diag_warning.svg");
+    icon_path = u":/resources/svg/diag_warning.svg"_s;
   }
 
   Dialog dlg(dialog_parent);
@@ -204,7 +205,7 @@ int execScrollableMessageDialog(
       continue;
     }
     auto* btn = new QPushButton(QObject::tr(s.label), body_widget);
-    btn->setObjectName(QStringLiteral("pjMessageBoxButton"));
+    btn->setObjectName(u"pjMessageBoxButton"_s);
     btn->setProperty("msgbox_role", QLatin1String(s.role));
     btn->setAutoDefault(false);
     btn->setDefault(std::strcmp(s.role, "primary") == 0);
@@ -689,11 +690,9 @@ bool FileLoader::beginLoad(const LoadRequest& request) {
   // (Primary = Cancel/keep, Secondary = Discard).
   ProgressDialog progress_dlg(dialog_parent);
   progress_dlg.setPrimaryButton(
-      tr("Cancel"), QStringLiteral(":/resources/svg/cancel_keep.svg"),
-      tr("Stop reading; keep the data parsed so far."));
+      tr("Cancel"), u":/resources/svg/cancel_keep.svg"_s, tr("Stop reading; keep the data parsed so far."));
   progress_dlg.setSecondaryButton(
-      tr("Discard"), QStringLiteral(":/resources/svg/cancel_discard.svg"),
-      tr("Stop reading and discard the partial data."));
+      tr("Discard"), u":/resources/svg/cancel_discard.svg"_s, tr("Stop reading and discard the partial data."));
 
   // Progress callbacks are re-wired per ingest_session (once for single-instance,
   // N times in fanout mode) — the dialog itself is shared.

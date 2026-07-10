@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "FanoutConfig.h"
+using namespace Qt::StringLiterals;
 
 namespace {
 
@@ -67,29 +68,27 @@ TEST(ExtractFanout, AllNonStringEntriesFallBackToSingleInstance) {
 // --- parseDisplaySuffix -----------------------------------------------------
 
 TEST(ParseDisplaySuffix, EmptyConfigReturnsFallback) {
-  EXPECT_EQ(parseDisplaySuffix("", QStringLiteral("fb")).toStdString(), std::string("fb"));
+  EXPECT_EQ(parseDisplaySuffix("", u"fb"_s).toStdString(), std::string("fb"));
 }
 
 TEST(ParseDisplaySuffix, NonObjectReturnsFallback) {
-  EXPECT_EQ(parseDisplaySuffix("not json", QStringLiteral("fb")).toStdString(), std::string("fb"));
+  EXPECT_EQ(parseDisplaySuffix("not json", u"fb"_s).toStdString(), std::string("fb"));
 }
 
 TEST(ParseDisplaySuffix, MissingKeyReturnsFallback) {
-  EXPECT_EQ(parseDisplaySuffix(R"({"foo":"bar"})", QStringLiteral("fb")).toStdString(), std::string("fb"));
+  EXPECT_EQ(parseDisplaySuffix(R"({"foo":"bar"})", u"fb"_s).toStdString(), std::string("fb"));
 }
 
 TEST(ParseDisplaySuffix, NonStringValueReturnsFallback) {
-  EXPECT_EQ(parseDisplaySuffix(R"({"display_suffix":7})", QStringLiteral("fb")).toStdString(), std::string("fb"));
+  EXPECT_EQ(parseDisplaySuffix(R"({"display_suffix":7})", u"fb"_s).toStdString(), std::string("fb"));
 }
 
 TEST(ParseDisplaySuffix, EmptyStringValueReturnsFallback) {
-  EXPECT_EQ(parseDisplaySuffix(R"({"display_suffix":""})", QStringLiteral("fb")).toStdString(), std::string("fb"));
+  EXPECT_EQ(parseDisplaySuffix(R"({"display_suffix":""})", u"fb"_s).toStdString(), std::string("fb"));
 }
 
 TEST(ParseDisplaySuffix, PresentValueReturnsSuffix) {
-  EXPECT_EQ(
-      parseDisplaySuffix(R"({"display_suffix":"cam_left"})", QStringLiteral("fb")).toStdString(),
-      std::string("cam_left"));
+  EXPECT_EQ(parseDisplaySuffix(R"({"display_suffix":"cam_left"})", u"fb"_s).toStdString(), std::string("cam_left"));
 }
 
 // --- parseDisplayName -------------------------------------------------------

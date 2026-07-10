@@ -24,6 +24,7 @@
 
 #include "pj_widgets/SvgUtil.h"
 #include "pj_widgets/ThemeColors.h"
+using namespace Qt::StringLiterals;
 
 namespace PJ {
 
@@ -233,9 +234,9 @@ void setTopicIconDecoration(QTreeWidgetItem* item, bool is_image_topic, bool is_
   item->setData(kNameColumn, k3dObjectTopicRole, is_3d_object_topic);
   QIcon icon;
   if (is_image_topic) {
-    icon = QIcon(loadSvg(QStringLiteral(":/resources/svg/image.svg"), theme));
+    icon = QIcon(loadSvg(u":/resources/svg/image.svg"_s, theme));
   } else if (is_3d_object_topic) {
-    icon = QIcon(loadSvg(QStringLiteral(":/resources/svg/cube.svg"), theme));
+    icon = QIcon(loadSvg(u":/resources/svg/cube.svg"_s, theme));
   }
   item->setIcon(kNameColumn, icon);
 }
@@ -245,9 +246,9 @@ void refreshTopicIcons(QTreeWidgetItem* item, const QString& theme) {
     return;
   }
   if (item->data(kNameColumn, kImageTopicRole).toBool()) {
-    item->setIcon(kNameColumn, QIcon(loadSvg(QStringLiteral(":/resources/svg/image.svg"), theme)));
+    item->setIcon(kNameColumn, QIcon(loadSvg(u":/resources/svg/image.svg"_s, theme)));
   } else if (item->data(kNameColumn, k3dObjectTopicRole).toBool()) {
-    item->setIcon(kNameColumn, QIcon(loadSvg(QStringLiteral(":/resources/svg/cube.svg"), theme)));
+    item->setIcon(kNameColumn, QIcon(loadSvg(u":/resources/svg/cube.svg"_s, theme)));
   }
   for (int i = 0; i < item->childCount(); ++i) {
     refreshTopicIcons(item->child(i), theme);
@@ -349,11 +350,11 @@ CurveTreeView::CurveTreeView(QWidget* parent) : QTreeWidget(parent) {
 }
 
 QString CurveTreeView::catalogItemsMimeType() {
-  return QStringLiteral("plotjuggler/catalog-items");
+  return u"plotjuggler/catalog-items"_s;
 }
 
 QString CurveTreeView::newXyAxisMimeType() {
-  return QStringLiteral("curveslist/new_XY_axis");
+  return u"curveslist/new_XY_axis"_s;
 }
 
 QByteArray CurveTreeView::encodeCatalogKeys(const QStringList& keys) {
@@ -465,10 +466,10 @@ QString CurveTreeView::treePathFromCurvePath(const CurvePath& path) {
   const QString topic = normalizedPathSegment(path.topic);
   const QString field = normalizedPathSegment(path.field);
   if (!topic.isEmpty()) {
-    tree_path += QStringLiteral("/") + topic;
+    tree_path += u"/"_s + topic;
   }
   if (!field.isEmpty()) {
-    tree_path += QStringLiteral("/") + field;
+    tree_path += u"/"_s + field;
   }
   return tree_path;
 }
@@ -1148,7 +1149,7 @@ QMimeData* CurveTreeView::createDragMimeData(Qt::MouseButton button) const {
     mime_data->setData(catalogItemsMimeType(), encodeCatalogKeys(catalog_keys));
   }
   if (left_add && !names.empty()) {
-    mime_data->setData(QStringLiteral("curveslist/add_curve"), encoded);
+    mime_data->setData(u"curveslist/add_curve"_s, encoded);
   } else if (right_xy) {
     mime_data->setData(newXyAxisMimeType(), encoded);
   }
@@ -1174,7 +1175,7 @@ void CurveTreeView::mouseReleaseEvent(QMouseEvent* event) {
 
 QString formatScalarForColumn(double value, int precision) {
   if (!std::isfinite(value)) {
-    return QStringLiteral("-");
+    return u"-"_s;
   }
   // Fixed precision keeps a constant fractional width; then overwrite trailing
   // zeros — and a bare trailing '.' once all decimals are blanked — with spaces.

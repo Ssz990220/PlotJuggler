@@ -31,6 +31,7 @@
 #include "pj_runtime/SessionManager.h"
 #include "pj_scene3d_widgets/layers/occupancy_grid_layer.h"
 #include "pj_scene3d_widgets/scene3d_layer.h"
+using namespace Qt::StringLiterals;
 
 namespace {
 
@@ -210,7 +211,7 @@ TEST_F(OccupancyGridLayerUpdatesTest, ScrubReplayMatchesReference) {
 
   pj::scene3d::Scene3DLayerContext ctx;
   ctx.session = &session_;
-  pj::scene3d::OccupancyGridLayer layer(base_topic_, QStringLiteral("map"));
+  pj::scene3d::OccupancyGridLayer layer(base_topic_, u"map"_s);
   ASSERT_TRUE(layer.attach(ctx));
 
   renderAndExpectRef(layer, 100);  // base only
@@ -242,7 +243,7 @@ TEST_F(OccupancyGridLayerUpdatesTest, OutOfOrderArrivalUpdateInWindowIsApplied) 
 
   pj::scene3d::Scene3DLayerContext ctx;
   ctx.session = &session_;
-  pj::scene3d::OccupancyGridLayer layer(base_topic_, QStringLiteral("map"));
+  pj::scene3d::OccupancyGridLayer layer(base_topic_, u"map"_s);
   ASSERT_TRUE(layer.attach(ctx));
 
   // Window (100, 160] contains ts=110 and ts=150 but NOT ts=200 (whose newest UID
@@ -266,7 +267,7 @@ TEST_F(OccupancyGridLayerUpdatesTest, OutOfOrderArrivalBelowWindowLowEdgeDoesNot
 
   pj::scene3d::Scene3DLayerContext ctx;
   ctx.session = &session_;
-  pj::scene3d::OccupancyGridLayer layer(base_topic_, QStringLiteral("map"));
+  pj::scene3d::OccupancyGridLayer layer(base_topic_, u"map"_s);
   ASSERT_TRUE(layer.attach(ctx));
 
   // Window (100, 160]: ts=120 is in, ts=95 is out (<= lo). A latestAt(100) start
@@ -286,7 +287,7 @@ TEST_F(OccupancyGridLayerUpdatesTest, RetroactiveUpdateIsReappliedAfterLiveEdgeO
 
   pj::scene3d::Scene3DLayerContext ctx;
   ctx.session = &session_;
-  pj::scene3d::OccupancyGridLayer layer(base_topic_, QStringLiteral("map"));
+  pj::scene3d::OccupancyGridLayer layer(base_topic_, u"map"_s);
   ASSERT_TRUE(layer.attach(ctx));
 
   // The tracker is driven by a faster sibling topic's live edge, far past the
@@ -320,7 +321,7 @@ TEST_F(OccupancyGridLayerUpdatesTest, RetroactiveOutOfOrderUpdateSettlesCursorWi
 
   pj::scene3d::Scene3DLayerContext ctx;
   ctx.session = &session_;
-  pj::scene3d::OccupancyGridLayer layer(base_topic_, QStringLiteral("map"));
+  pj::scene3d::OccupancyGridLayer layer(base_topic_, u"map"_s);
   ASSERT_TRUE(layer.attach(ctx));
 
   renderAndExpectRef(layer, 200);  // consume base + 110 + 160; cursor settles
@@ -356,7 +357,7 @@ TEST_F(OccupancyGridLayerUpdatesTest, UnchangedBaseKeyframeIsNotReparsed) {
 
   pj::scene3d::Scene3DLayerContext ctx;
   ctx.session = &session_;
-  pj::scene3d::OccupancyGridLayer layer(base_topic_, QStringLiteral("map"));
+  pj::scene3d::OccupancyGridLayer layer(base_topic_, u"map"_s);
   ASSERT_TRUE(layer.attach(ctx));  // bootstrap parses the first sample once
 
   renderAndExpectRef(layer, 120);  // first renderAt populates the memo

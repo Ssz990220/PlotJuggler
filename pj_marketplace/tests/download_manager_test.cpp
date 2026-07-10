@@ -17,6 +17,7 @@
 #include <QTcpSocket>
 #include <QTemporaryDir>
 #include <QUrl>
+using namespace Qt::StringLiterals;
 
 namespace {
 
@@ -58,7 +59,7 @@ class LocalHttpServer {
   }
 
   QUrl url() const {
-    return QUrl(QStringLiteral("http://127.0.0.1:%1/").arg(server_.serverPort()));
+    return QUrl(u"http://127.0.0.1:%1/"_s.arg(server_.serverPort()));
   }
 
   void setBody(const QByteArray& body) {
@@ -127,7 +128,7 @@ TEST(DownloadManagerTest, InvalidUrlEmitsFailed) {
 
 TEST(DownloadManagerTest, SuccessfulDownloadExtractsFiles) {
   const QByteArray zip_data = buildZip({{"hello.txt", "world"}});
-  const QString checksum = QStringLiteral("sha256:") + sha256Hex(zip_data);
+  const QString checksum = u"sha256:"_s + sha256Hex(zip_data);
 
   LocalHttpServer server;
   server.setBody(zip_data);
@@ -177,9 +178,7 @@ TEST(DownloadManagerTest, ChecksumMismatchEmitsFailed) {
   QSignalSpy failed_spy(&dm, &PJ::DownloadManager::failed);
   QSignalSpy finished_spy(&dm, &PJ::DownloadManager::finished);
 
-  dm.fetch(
-      server.url(), QStringLiteral("sha256:0000000000000000000000000000000000000000000000000000000000000000"),
-      tmp.path());
+  dm.fetch(server.url(), u"sha256:0000000000000000000000000000000000000000000000000000000000000000"_s, tmp.path());
 
   EXPECT_TRUE(waitForSignal(failed_spy));
   EXPECT_TRUE(finished_spy.isEmpty());
@@ -232,7 +231,7 @@ TEST(DownloadManagerTest, CancelEmitsCancelled) {
   QSignalSpy failed_spy(&dm, &PJ::DownloadManager::failed);
   QSignalSpy finished_spy(&dm, &PJ::DownloadManager::finished);
 
-  const int id = dm.fetch(QUrl(QStringLiteral("http://127.0.0.1:%1/").arg(hanging_server.serverPort())), {}, {});
+  const int id = dm.fetch(QUrl(u"http://127.0.0.1:%1/"_s.arg(hanging_server.serverPort())), {}, {});
 
   QCoreApplication::processEvents(QEventLoop::AllEvents, 100);
   dm.cancel(id);

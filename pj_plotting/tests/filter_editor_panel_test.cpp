@@ -32,6 +32,7 @@
 #include "pj_runtime/CatalogModel.h"
 #include "pj_runtime/CurveDescriptor.h"
 #include "pj_runtime/SessionManager.h"
+using namespace Qt::StringLiterals;
 
 namespace {
 
@@ -116,7 +117,7 @@ TEST(FilterEditorPanelTest, ApplyMaterializesOutputAndReportsReplacement) {
   // Constructing the panel + showing the preview must not materialize anything.
   EXPECT_EQ(catalog.curves().size(), 1U);
 
-  selectTransform(transform_list, QStringLiteral("absolute"));
+  selectTransform(transform_list, u"absolute"_s);
   ASSERT_GT(series_list->count(), 0);
   series_list->item(0)->setSelected(true);
 
@@ -160,9 +161,9 @@ TEST(FilterEditorPanelTest, AppliesEverySourceWithItsOwnConfiguredTransform) {
 
   // Configure s0 and s1 individually; leave s2 on "No Transform".
   series_list->setCurrentRow(0, QItemSelectionModel::ClearAndSelect);
-  selectTransform(transform_list, QStringLiteral("absolute"));
+  selectTransform(transform_list, u"absolute"_s);
   series_list->setCurrentRow(1, QItemSelectionModel::ClearAndSelect);
-  selectTransform(transform_list, QStringLiteral("scale"));
+  selectTransform(transform_list, u"scale"_s);
   series_list->setCurrentRow(2, QItemSelectionModel::ClearAndSelect);
 
   QList<QPair<QString, QString>> reported;
@@ -202,7 +203,7 @@ TEST(FilterEditorPanelTest, ApplyAfterApplyToAllMaterializesEverySource) {
   ASSERT_NE(apply_all, nullptr);
   ASSERT_NE(apply_btn, nullptr);
 
-  selectTransform(transform_list, QStringLiteral("scale"));
+  selectTransform(transform_list, u"scale"_s);
   apply_all->click();
 
   QList<QPair<QString, QString>> reported;
@@ -221,12 +222,12 @@ TEST(FilterEditorPanelTest, SourceListLabelsValueColumnByTopicName) {
   PJ::SessionManager session;
   PJ::CatalogModel catalog(&session);
   PJ::CurveDescriptor output{};
-  output.name = QStringLiteral("dataset:1/topic:7/column:0");
-  output.topic_name = QStringLiteral("/angular_velocity/y[Absolute]");
-  output.field_name = QStringLiteral("value");
-  output.field_path = QStringLiteral("value");
+  output.name = u"dataset:1/topic:7/column:0"_s;
+  output.topic_name = u"/angular_velocity/y[Absolute]"_s;
+  output.field_name = u"value"_s;
+  output.field_path = u"value"_s;
 
-  EXPECT_EQ(firstSourceLabel(session, catalog, output), QStringLiteral("/angular_velocity/y[Absolute]"));
+  EXPECT_EQ(firstSourceLabel(session, catalog, output), u"/angular_velocity/y[Absolute]"_s);
 }
 
 // A real message field is labelled by its FULL "topic/field" path, not just the
@@ -235,12 +236,12 @@ TEST(FilterEditorPanelTest, SourceListPrependsTopicToFieldName) {
   PJ::SessionManager session;
   PJ::CatalogModel catalog(&session);
   PJ::CurveDescriptor source{};
-  source.name = QStringLiteral("dataset:1/topic:3/column:5");
-  source.topic_name = QStringLiteral("odom");
-  source.field_name = QStringLiteral("/twist/twist/linear/x");
-  source.field_path = QStringLiteral("/twist/twist/linear/x");
+  source.name = u"dataset:1/topic:3/column:5"_s;
+  source.topic_name = u"odom"_s;
+  source.field_name = u"/twist/twist/linear/x"_s;
+  source.field_path = u"/twist/twist/linear/x"_s;
 
-  EXPECT_EQ(firstSourceLabel(session, catalog, source), QStringLiteral("odom/twist/twist/linear/x"));
+  EXPECT_EQ(firstSourceLabel(session, catalog, source), u"odom/twist/twist/linear/x"_s);
 }
 
 // Reopening the editor on an already-filtered curve: (A) the source list labels it
@@ -283,15 +284,15 @@ TEST(FilterEditorPanelTest, ReopenOnFilterOutputLabelsInputAndRemovesOnNoTransfo
   // (A) The output source is labelled by its original input, not "x[Absolute]".
   ASSERT_EQ(series_list->count(), 1);
   EXPECT_EQ(series_list->item(0)->text(), input_label);
-  EXPECT_FALSE(series_list->item(0)->text().contains(QStringLiteral("[Absolute]")));
+  EXPECT_FALSE(series_list->item(0)->text().contains(u"[Absolute]"_s));
 
   // Select it -> EDIT mode: the recipe's transform shows and Apply is enabled.
   series_list->setCurrentRow(0, QItemSelectionModel::ClearAndSelect);
-  EXPECT_EQ(currentTransformId(transform_list), QStringLiteral("absolute"));
+  EXPECT_EQ(currentTransformId(transform_list), u"absolute"_s);
   EXPECT_TRUE(apply_btn->isEnabled());
 
   // (B) Switch to "No Transform" -> Apply stays enabled (was the bug).
-  selectTransform(transform_list, QStringLiteral("none"));
+  selectTransform(transform_list, u"none"_s);
   EXPECT_TRUE(apply_btn->isEnabled());
 
   QList<QPair<QString, QString>> reported;
@@ -340,7 +341,7 @@ TEST(FilterEditorPanelTest, EditModeUpdateNotifiesOutputTopicForRepaint) {
   ASSERT_NE(apply_btn, nullptr);
 
   // EDIT mode is auto-entered on open; switch to a different transform and Update.
-  selectTransform(transform_list, QStringLiteral("scale"));
+  selectTransform(transform_list, u"scale"_s);
   ASSERT_TRUE(apply_btn->isEnabled());
 
   int notify_count = 0;
@@ -401,7 +402,7 @@ TEST(FilterEditorPanelTest, ReactiveDisplayChangeKeepsGhostDashed) {
   ASSERT_NE(transform_list, nullptr);
   ASSERT_NE(preview, nullptr);
 
-  selectTransform(transform_list, QStringLiteral("scale"));  // active transform -> dashed ghost
+  selectTransform(transform_list, u"scale"_s);  // active transform -> dashed ghost
   ASSERT_GT(series_list->count(), 0);
   series_list->item(0)->setSelected(true);
 
@@ -413,7 +414,7 @@ TEST(FilterEditorPanelTest, ReactiveDisplayChangeKeepsGhostDashed) {
   }
   ASSERT_EQ(preview->curveList().size(), 2U);  // ghost + filtered
 
-  const QString kFilteredPrefix = QStringLiteral("__filter_preview__");
+  const QString kFilteredPrefix = u"__filter_preview__"_s;
   const auto ghostPenStyle = [&]() -> Qt::PenStyle {
     for (const auto& info : preview->curveList()) {
       if (info.curve != nullptr && !info.source_name.startsWith(kFilteredPrefix)) {
@@ -449,8 +450,8 @@ TEST(FilterEditorPanelTest, PreviewShowsEverySelectedSource) {
   ASSERT_NE(transform_list, nullptr);
   ASSERT_NE(preview, nullptr);
 
-  selectTransform(transform_list, QStringLiteral("scale"));  // active transform
-  series_list->selectAll();                                  // BOTH sources selected
+  selectTransform(transform_list, u"scale"_s);  // active transform
+  series_list->selectAll();                     // BOTH sources selected
 
   // Drive the debounced (150 ms single-shot) preview timer by spinning the event
   // loop across enough real time for it to fire.
@@ -489,7 +490,7 @@ TEST(FilterEditorPanelTest, PreviewFilteredCurveSharesGhostOffsetAcrossT0Toggle)
   ASSERT_NE(transform_list, nullptr);
   ASSERT_NE(preview, nullptr);
 
-  selectTransform(transform_list, QStringLiteral("absolute"));
+  selectTransform(transform_list, u"absolute"_s);
   ASSERT_GT(series_list->count(), 0);
   series_list->item(0)->setSelected(true);
 
@@ -501,7 +502,7 @@ TEST(FilterEditorPanelTest, PreviewFilteredCurveSharesGhostOffsetAcrossT0Toggle)
   }
   ASSERT_EQ(preview->curveList().size(), 2U);  // ghost + filtered
 
-  const QString kFilteredPrefix = QStringLiteral("__filter_preview__");
+  const QString kFilteredPrefix = u"__filter_preview__"_s;
   const auto firstX = [&](bool filtered) -> double {
     for (const auto& info : preview->curveList()) {
       if (info.source_name.startsWith(kFilteredPrefix) == filtered) {
@@ -552,9 +553,9 @@ TEST(FilterEditorPanelTest, PreviewUsesPerSourceConfigInMultiSelect) {
 
   // Configure A -> scale (default params = identity), then B -> absolute (B ends active/visible).
   series_list->setCurrentRow(0, QItemSelectionModel::ClearAndSelect);
-  selectTransform(transform_list, QStringLiteral("scale"));
+  selectTransform(transform_list, u"scale"_s);
   series_list->setCurrentRow(1, QItemSelectionModel::ClearAndSelect);
-  selectTransform(transform_list, QStringLiteral("absolute"));
+  selectTransform(transform_list, u"absolute"_s);
 
   // Multi-select BOTH so the preview shows every series Apply will touch.
   series_list->item(0)->setSelected(true);
@@ -568,7 +569,7 @@ TEST(FilterEditorPanelTest, PreviewUsesPerSourceConfigInMultiSelect) {
   }
 
   // A's filtered preview curve is keyed "__filter_preview__" + A's input name.
-  const QString a_filtered_key = QStringLiteral("__filter_preview__") + a.name;
+  const QString a_filtered_key = u"__filter_preview__"_s + a.name;
   double a_first_y = 999.0;
   for (const auto& info : preview->curveList()) {
     if (info.source_name == a_filtered_key) {
@@ -626,8 +627,8 @@ TEST(FilterEditorPanelTest, ApplyToAllReEditsEveryFilterOutputInPlace) {
   ASSERT_NE(apply_all, nullptr);
   ASSERT_NE(apply_btn, nullptr);
 
-  selectTransform(transform_list, QStringLiteral("absolute"));  // change the edited filter
-  apply_all->click();                                           // stamp Absolute onto both
+  selectTransform(transform_list, u"absolute"_s);  // change the edited filter
+  apply_all->click();                              // stamp Absolute onto both
   apply_btn->click();
 
   catalog.rebuildFromDatastore();
@@ -705,9 +706,9 @@ TEST(FilterEditorPanelTest, RemovalDoesNotDropOtherConfiguredSources) {
   // Configure the plain source with Absolute, then switch to the filter output and
   // set it to "No Transform" (a removal).
   series_list->setCurrentRow(0, QItemSelectionModel::ClearAndSelect);
-  selectTransform(transform_list, QStringLiteral("absolute"));
+  selectTransform(transform_list, u"absolute"_s);
   series_list->setCurrentRow(1, QItemSelectionModel::ClearAndSelect);
-  selectTransform(transform_list, QStringLiteral("none"));
+  selectTransform(transform_list, u"none"_s);
 
   QList<QPair<QString, QString>> reported;
   QObject::connect(
@@ -737,7 +738,7 @@ TEST(FilterEditorPanelTest, DefaultsToNoTransform) {
   PJ::FilterEditorPanel panel(&session, &catalog, {source}, {});
   auto* transform_list = panel.findChild<QListWidget*>("transform_list");
   ASSERT_NE(transform_list, nullptr);
-  EXPECT_EQ(currentTransformId(transform_list), QStringLiteral("none"));
+  EXPECT_EQ(currentTransformId(transform_list), u"none"_s);
 }
 
 // The alias field is editable (not the disabled field it used to be).
@@ -788,23 +789,23 @@ TEST(FilterEditorPanelTest, RemembersTransformPerSource) {
   ASSERT_EQ(series_list->count(), 3);
 
   // Source 0 starts at No Transform; configure it with Absolute.
-  EXPECT_EQ(currentTransformId(transform_list), QStringLiteral("none"));
-  selectTransform(transform_list, QStringLiteral("absolute"));
+  EXPECT_EQ(currentTransformId(transform_list), u"none"_s);
+  selectTransform(transform_list, u"absolute"_s);
 
   // Source 1 must start fresh (No Transform), NOT inherit Absolute. Configure Scale.
   series_list->setCurrentRow(1, QItemSelectionModel::ClearAndSelect);
-  EXPECT_EQ(currentTransformId(transform_list), QStringLiteral("none"));
-  selectTransform(transform_list, QStringLiteral("scale"));
+  EXPECT_EQ(currentTransformId(transform_list), u"none"_s);
+  selectTransform(transform_list, u"scale"_s);
 
   // Source 2 also starts fresh.
   series_list->setCurrentRow(2, QItemSelectionModel::ClearAndSelect);
-  EXPECT_EQ(currentTransformId(transform_list), QStringLiteral("none"));
+  EXPECT_EQ(currentTransformId(transform_list), u"none"_s);
 
   // Back to source 0: remembers Absolute. Back to source 1: remembers Scale.
   series_list->setCurrentRow(0, QItemSelectionModel::ClearAndSelect);
-  EXPECT_EQ(currentTransformId(transform_list), QStringLiteral("absolute"));
+  EXPECT_EQ(currentTransformId(transform_list), u"absolute"_s);
   series_list->setCurrentRow(1, QItemSelectionModel::ClearAndSelect);
-  EXPECT_EQ(currentTransformId(transform_list), QStringLiteral("scale"));
+  EXPECT_EQ(currentTransformId(transform_list), u"scale"_s);
 }
 
 // The preview filters the ENTIRE series, not just the first ~2000 samples.
@@ -824,7 +825,7 @@ TEST(FilterEditorPanelTest, PreviewCoversFullSeries) {
   ASSERT_NE(series_list, nullptr);
   ASSERT_NE(preview, nullptr);
 
-  selectTransform(transform_list, QStringLiteral("absolute"));
+  selectTransform(transform_list, u"absolute"_s);
   series_list->setCurrentRow(0, QItemSelectionModel::ClearAndSelect);
 
   // Pump the debounced preview refresh until the filtered curve is populated.
@@ -834,7 +835,7 @@ TEST(FilterEditorPanelTest, PreviewCoversFullSeries) {
     QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
     filtered = nullptr;
     for (const auto& info : preview->curveList()) {
-      if (info.source_name.startsWith(QStringLiteral("__filter_preview__"))) {
+      if (info.source_name.startsWith(u"__filter_preview__"_s)) {
         filtered = info.curve;
         break;
       }
@@ -871,7 +872,7 @@ TEST(FilterEditorPanelTest, NoTransformShowsPlainSourceNotGhost) {
     for (const auto& info : preview->curveList()) {
       if (info.source_name == source.name) {
         ghost = info.curve;
-      } else if (info.source_name.startsWith(QStringLiteral("__filter_preview__"))) {
+      } else if (info.source_name.startsWith(u"__filter_preview__"_s)) {
         filtered = info.curve;
       }
     }
@@ -906,7 +907,7 @@ TEST(FilterEditorPanelTest, FilteredCurveLegendUsesAlias) {
   ASSERT_NE(alias, nullptr);
   ASSERT_NE(preview, nullptr);
 
-  selectTransform(transform_list, QStringLiteral("absolute"));
+  selectTransform(transform_list, u"absolute"_s);
   series_list->setCurrentRow(0, QItemSelectionModel::ClearAndSelect);
 
   QwtPlotCurve* filtered = nullptr;
@@ -915,7 +916,7 @@ TEST(FilterEditorPanelTest, FilteredCurveLegendUsesAlias) {
     QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
     filtered = nullptr;
     for (const auto& info : preview->curveList()) {
-      if (info.source_name.startsWith(QStringLiteral("__filter_preview__"))) {
+      if (info.source_name.startsWith(u"__filter_preview__"_s)) {
         filtered = info.curve;
         break;
       }
@@ -928,7 +929,7 @@ TEST(FilterEditorPanelTest, FilteredCurveLegendUsesAlias) {
   const QString alias_text = alias->text();
   ASSERT_FALSE(alias_text.isEmpty());               // auto-alias was filled in
   EXPECT_EQ(filtered->title().text(), alias_text);  // legend uses the alias
-  EXPECT_NE(filtered->title().text(), QStringLiteral("filtered"));
+  EXPECT_NE(filtered->title().text(), u"filtered"_s);
 }
 
 // "Copy into all others" stamps the visible filter onto every source, so each
@@ -951,13 +952,13 @@ TEST(FilterEditorPanelTest, ApplyToAllStampsTransformOntoEverySource) {
   ASSERT_NE(apply_all, nullptr);
 
   // Configure source 0 with Scale, then copy it into all others.
-  selectTransform(transform_list, QStringLiteral("scale"));
+  selectTransform(transform_list, u"scale"_s);
   apply_all->click();
 
   series_list->setCurrentRow(1, QItemSelectionModel::ClearAndSelect);
-  EXPECT_EQ(currentTransformId(transform_list), QStringLiteral("scale"));
+  EXPECT_EQ(currentTransformId(transform_list), u"scale"_s);
   series_list->setCurrentRow(2, QItemSelectionModel::ClearAndSelect);
-  EXPECT_EQ(currentTransformId(transform_list), QStringLiteral("scale"));
+  EXPECT_EQ(currentTransformId(transform_list), u"scale"_s);
 }
 
 // Changing the transform (not just the source) refits the Y range while AutoZoom
@@ -1012,7 +1013,7 @@ TEST(FilterEditorPanelTest, AutoZoomRefitsOnTransformChange) {
   EXPECT_LT(preview->maxZoomRect().top(), 0.5);  // No Transform: range hugs the small source
 
   // Switch to Binary Filter (default Greater > 0): output reaches 1.
-  selectTransform(transform_list, QStringLiteral("binary_filter"));
+  selectTransform(transform_list, u"binary_filter"_s);
   pump(0.9, 2000);
   EXPECT_GT(preview->maxZoomRect().top(), 0.9);  // refit to include the filtered max (1)
 }
@@ -1054,10 +1055,10 @@ TEST(FilterEditorPanelTest, PreviewFilteredCurveTracksStreamingIngest) {
   ASSERT_NE(series_list, nullptr);
   ASSERT_NE(preview, nullptr);
 
-  selectTransform(transform_list, QStringLiteral("absolute"));
+  selectTransform(transform_list, u"absolute"_s);
   series_list->setCurrentRow(0, QItemSelectionModel::ClearAndSelect);
 
-  const QString kFilteredPrefix = QStringLiteral("__filter_preview__");
+  const QString kFilteredPrefix = u"__filter_preview__"_s;
   const auto filtered_size = [&]() -> std::size_t {
     for (const auto& info : preview->curveList()) {
       if (info.source_name.startsWith(kFilteredPrefix)) {

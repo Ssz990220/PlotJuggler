@@ -21,6 +21,7 @@
 #include "pj_scene3d_widgets/layers/pointcloud_layer.h"
 #include "pj_scene3d_widgets/passes/pointcloud_render_pass.h"
 #include "pj_scene_common/layer_params.h"
+using namespace Qt::StringLiterals;
 
 namespace {
 
@@ -34,8 +35,8 @@ TEST(PointCloudLayerParamTransfer, SerializeApplyRoundTripsEveryParamBetweenReal
   using pj::scene3d::PointCloudLayer;
   using pj::scene3d::PointcloudRenderPass;
 
-  PointCloudLayer src(topic(1), QStringLiteral("A"), PJ::sdk::BuiltinObjectType::kPointCloud);
-  PointCloudLayer dst(topic(2), QStringLiteral("B"), PJ::sdk::BuiltinObjectType::kPointCloud);
+  PointCloudLayer src(topic(1), u"A"_s, PJ::sdk::BuiltinObjectType::kPointCloud);
+  PointCloudLayer dst(topic(2), u"B"_s, PJ::sdk::BuiltinObjectType::kPointCloud);
 
   // Push src away from EVERY default, so a no-op apply can't masquerade as a pass.
   src.setShape(PointcloudRenderPass::Shape::kPoint);          // default kSphere

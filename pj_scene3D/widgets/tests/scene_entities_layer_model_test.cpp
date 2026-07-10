@@ -39,6 +39,7 @@
 #include "pj_scene3d_core/tf/tf_buffer.h"
 #include "pj_scene3d_widgets/layers/scene_entities_layer.h"
 #include "pj_scene3d_widgets/render_pass.h"
+using namespace Qt::StringLiterals;
 
 namespace {
 
@@ -150,8 +151,8 @@ void isolateSettings() {
   ASSERT_TRUE(settings_dir.isValid());
   QSettings::setPath(QSettings::IniFormat, QSettings::UserScope, settings_dir.path());
   QSettings::setDefaultFormat(QSettings::IniFormat);
-  QCoreApplication::setOrganizationName(QStringLiteral("pj_scene3d_tests"));
-  QCoreApplication::setApplicationName(QStringLiteral("scene_entities_layer_model_test"));
+  QCoreApplication::setOrganizationName(u"pj_scene3d_tests"_s);
+  QCoreApplication::setApplicationName(u"scene_entities_layer_model_test"_s);
 }
 
 PJ::sdk::SceneEntity makeUrlEntity(std::string id, PJ::Timestamp timestamp, std::string url, std::string media_type) {
@@ -176,7 +177,7 @@ TEST(SceneEntitiesLayerModelTest, AccumulatesSnapshotsAndReplacesMatchingEntityI
   pushSceneEntities(session, topic_id, 10, batchWithEntities({makeEntity("car", 10, "old_frame")}));
   pushSceneEntities(session, topic_id, 20, batchWithEntities({makeEntity("car", 20, "new_frame")}));
 
-  pj::scene3d::SceneEntitiesLayer layer(topic_id, QStringLiteral("/scene_entities"));
+  pj::scene3d::SceneEntitiesLayer layer(topic_id, u"/scene_entities"_s);
   const auto ctx = makeContext(session);
   ASSERT_TRUE(layer.attach(ctx));
 
@@ -200,7 +201,7 @@ TEST(SceneEntitiesLayerModelTest, MatchingIdDeletionRemovesTargetEntity) {
   deletion.id = "delete_me";
   pushSceneEntities(session, topic_id, 20, batchWithDeletions({deletion}));
 
-  pj::scene3d::SceneEntitiesLayer layer(topic_id, QStringLiteral("/scene_entities"));
+  pj::scene3d::SceneEntitiesLayer layer(topic_id, u"/scene_entities"_s);
   const auto ctx = makeContext(session);
   ASSERT_TRUE(layer.attach(ctx));
 
@@ -218,7 +219,7 @@ TEST(SceneEntitiesLayerModelTest, LifetimeDropsEntityAfterExpiry) {
   entity.lifetime_ns = 5;
   pushSceneEntities(session, topic_id, 10, batchWithEntities({entity}));
 
-  pj::scene3d::SceneEntitiesLayer layer(topic_id, QStringLiteral("/scene_entities"));
+  pj::scene3d::SceneEntitiesLayer layer(topic_id, u"/scene_entities"_s);
   const auto ctx = makeContext(session);
   ASSERT_TRUE(layer.attach(ctx));
 
@@ -242,7 +243,7 @@ TEST(SceneEntitiesLayerModelTest, LifetimeAnchorsOnStoreTimeNotEntityTimestamp) 
   entity.lifetime_ns = 50;
   pushSceneEntities(session, topic_id, /*store_ts=*/1'000'000, batchWithEntities({entity}));  // host-clock anchor
 
-  pj::scene3d::SceneEntitiesLayer layer(topic_id, QStringLiteral("/scene_entities"));
+  pj::scene3d::SceneEntitiesLayer layer(topic_id, u"/scene_entities"_s);
   const auto ctx = makeContext(session);
   ASSERT_TRUE(layer.attach(ctx));
 
@@ -266,7 +267,7 @@ TEST(SceneEntitiesLayerModelTest, CacheHitReFoldRestoresStoreAnchor) {
   pushSceneEntities(session, topic_id, /*store_ts=*/2'000, batchWithEntities({keep}));
   pushSceneEntities(session, topic_id, /*store_ts=*/2'050, batchWithEntities({makeEntity("other", 1'001)}));
 
-  pj::scene3d::SceneEntitiesLayer layer(topic_id, QStringLiteral("/scene_entities"));
+  pj::scene3d::SceneEntitiesLayer layer(topic_id, u"/scene_entities"_s);
   const auto ctx = makeContext(session);
   ASSERT_TRUE(layer.attach(ctx));
 
@@ -294,7 +295,7 @@ TEST(SceneEntitiesLayerModelTest, ZeroLifetimeNeverExpires) {
   entity.lifetime_ns = 0;  // never expires
   pushSceneEntities(session, topic_id, /*store_ts=*/10, batchWithEntities({entity}));
 
-  pj::scene3d::SceneEntitiesLayer layer(topic_id, QStringLiteral("/scene_entities"));
+  pj::scene3d::SceneEntitiesLayer layer(topic_id, u"/scene_entities"_s);
   const auto ctx = makeContext(session);
   ASSERT_TRUE(layer.attach(ctx));
 
@@ -312,7 +313,7 @@ TEST(SceneEntitiesLayerModelTest, NegativeLifetimeExpiresImmediately) {
   entity.lifetime_ns = -5;
   pushSceneEntities(session, topic_id, /*store_ts=*/100, batchWithEntities({entity}));
 
-  pj::scene3d::SceneEntitiesLayer layer(topic_id, QStringLiteral("/scene_entities"));
+  pj::scene3d::SceneEntitiesLayer layer(topic_id, u"/scene_entities"_s);
   const auto ctx = makeContext(session);
   ASSERT_TRUE(layer.attach(ctx));
 
@@ -342,7 +343,7 @@ TEST(SceneEntitiesLayerModelTest, MatchingIdDeletionGateUsesEntityTimestampNotAn
   del_survivor.id = "survivor";
   pushSceneEntities(session, topic_id, /*store_ts=*/3'000, batchWithDeletions({del_target, del_survivor}));
 
-  pj::scene3d::SceneEntitiesLayer layer(topic_id, QStringLiteral("/scene_entities"));
+  pj::scene3d::SceneEntitiesLayer layer(topic_id, u"/scene_entities"_s);
   const auto ctx = makeContext(session);
   ASSERT_TRUE(layer.attach(ctx));
 
@@ -370,7 +371,7 @@ TEST(SceneEntitiesLayerModelTest, ReAddAfterDeletionRefreshesAnchor) {
   again.lifetime_ns = 1'000;  // fresh anchor 5000 ⇒ expires at 6000
   pushSceneEntities(session, topic_id, /*store_ts=*/5'000, batchWithEntities({again}));
 
-  pj::scene3d::SceneEntitiesLayer layer(topic_id, QStringLiteral("/scene_entities"));
+  pj::scene3d::SceneEntitiesLayer layer(topic_id, u"/scene_entities"_s);
   const auto ctx = makeContext(session);
   ASSERT_TRUE(layer.attach(ctx));
 
@@ -409,7 +410,7 @@ TEST(SceneEntitiesLayerModelTest, IncrementalForwardReplayMatchesFullRebuild) {
   };
 
   // A: forward stepping → each step folds only the freshly-appended batch.
-  pj::scene3d::SceneEntitiesLayer incremental_layer(topic_id, QStringLiteral("/scene_entities"));
+  pj::scene3d::SceneEntitiesLayer incremental_layer(topic_id, u"/scene_entities"_s);
   const auto ctx_a = makeContext(session);
   ASSERT_TRUE(incremental_layer.attach(ctx_a));
   for (int64_t t : {15, 25, 35, 45}) {
@@ -418,7 +419,7 @@ TEST(SceneEntitiesLayerModelTest, IncrementalForwardReplayMatchesFullRebuild) {
   const auto incremental = snapshot(incremental_layer);
 
   // B: overshoot to 60, then scrub back to 45 → backward jump forces a full rebuild.
-  pj::scene3d::SceneEntitiesLayer full_layer(topic_id, QStringLiteral("/scene_entities"));
+  pj::scene3d::SceneEntitiesLayer full_layer(topic_id, u"/scene_entities"_s);
   const auto ctx_b = makeContext(session);
   ASSERT_TRUE(full_layer.attach(ctx_b));
   full_layer.setTrackerTime(PJ::fromRaw(60));
@@ -449,7 +450,7 @@ TEST(SceneEntitiesLayerModelTest, BackwardJumpRefoldsFromCacheWithoutReparsing) 
     pushSceneEntities(session, topic_id, ts, batchWithEntities({makeEntity("e" + std::to_string(i), ts)}));
   }
 
-  pj::scene3d::SceneEntitiesLayer layer(topic_id, QStringLiteral("/scene_entities"));
+  pj::scene3d::SceneEntitiesLayer layer(topic_id, u"/scene_entities"_s);
   const auto ctx = makeContext(session);
   ASSERT_TRUE(layer.attach(ctx));
   layer.setTrackerTime(PJ::fromRaw(10 * kN + 5));  // play forward to the end: caches every batch
@@ -482,7 +483,7 @@ TEST(SceneEntitiesLayerModelTest, ForwardPlaybackParsesEachBatchAboutOnce) {
     pushSceneEntities(session, topic_id, ts, batchWithEntities({makeEntity("e" + std::to_string(i), ts)}));
   }
 
-  pj::scene3d::SceneEntitiesLayer layer(topic_id, QStringLiteral("/scene_entities"));
+  pj::scene3d::SceneEntitiesLayer layer(topic_id, u"/scene_entities"_s);
   const auto ctx = makeContext(session);
   ASSERT_TRUE(layer.attach(ctx));
 
@@ -506,7 +507,7 @@ TEST(SceneEntitiesLayerModelTest, ForwardReplayKeepsApplyingAfterRetentionRenumb
   pushSceneEntities(session, topic_id, 20, batchWithEntities({makeEntity("e20", 20)}));
   pushSceneEntities(session, topic_id, 30, batchWithEntities({makeEntity("e30", 30)}));
 
-  pj::scene3d::SceneEntitiesLayer layer(topic_id, QStringLiteral("/scene_entities"));
+  pj::scene3d::SceneEntitiesLayer layer(topic_id, u"/scene_entities"_s);
   const auto ctx = makeContext(session);
   ASSERT_TRUE(layer.attach(ctx));
   layer.setTrackerTime(PJ::fromRaw(35));
@@ -530,7 +531,7 @@ TEST(SceneEntitiesLayerModelTest, SameTimestampAppendStillAdvancesBySequentialUi
   registerParser(session, topic_id);
   pushSceneEntities(session, topic_id, 10, batchWithEntities({makeEntity("first", 10)}));
 
-  pj::scene3d::SceneEntitiesLayer layer(topic_id, QStringLiteral("/scene_entities"));
+  pj::scene3d::SceneEntitiesLayer layer(topic_id, u"/scene_entities"_s);
   const auto ctx = makeContext(session);
   ASSERT_TRUE(layer.attach(ctx));
   layer.setTrackerTime(PJ::fromRaw(10));
@@ -566,7 +567,7 @@ TEST(SceneEntitiesLayerModelTest, OutOfOrderSnapshotReplayHonorsTimestampNotArri
   // future and must NOT be shown. Pre-fix: latestAt(250) resolves to c (the OOO
   // entry, which holds the LARGEST UID), so the walk `uid <= c.uid` also folds b.
   {
-    pj::scene3d::SceneEntitiesLayer layer(topic_id, QStringLiteral("/scene_entities"));
+    pj::scene3d::SceneEntitiesLayer layer(topic_id, u"/scene_entities"_s);
     const auto ctx = makeContext(session);
     ASSERT_TRUE(layer.attach(ctx));
     layer.setTrackerTime(PJ::fromRaw(250));
@@ -579,7 +580,7 @@ TEST(SceneEntitiesLayerModelTest, OutOfOrderSnapshotReplayHonorsTimestampNotArri
   // latestAt(400) resolves to b, whose UID is SMALLER than c's, so the walk
   // `uid <= b.uid` stops before c and the out-of-order @200 snapshot is dropped.
   {
-    pj::scene3d::SceneEntitiesLayer layer(topic_id, QStringLiteral("/scene_entities"));
+    pj::scene3d::SceneEntitiesLayer layer(topic_id, u"/scene_entities"_s);
     const auto ctx = makeContext(session);
     ASSERT_TRUE(layer.attach(ctx));
     layer.setTrackerTime(PJ::fromRaw(400));
@@ -610,7 +611,7 @@ TEST(SceneEntitiesLayerModelTest, ReplayStepsSparseUidsFromInterleavedTopics) {
     pushSceneEntities(session, topic_id, ts, batchWithEntities({makeEntity("e" + std::to_string(i), ts)}));
   }
 
-  pj::scene3d::SceneEntitiesLayer layer(topic_id, QStringLiteral("/scene_entities"));
+  pj::scene3d::SceneEntitiesLayer layer(topic_id, u"/scene_entities"_s);
   const auto ctx = makeContext(session);
   ASSERT_TRUE(layer.attach(ctx));
   for (int64_t t : {15, 25, 35}) {
@@ -636,7 +637,7 @@ TEST(SceneEntitiesLayerModelTest, LifetimeExpiryWithinSameBatchRequestsRepaint) 
   entity.lifetime_ns = 20;
   pushSceneEntities(session, topic_id, 10, batchWithEntities({entity}));
 
-  pj::scene3d::SceneEntitiesLayer layer(topic_id, QStringLiteral("/scene_entities"));
+  pj::scene3d::SceneEntitiesLayer layer(topic_id, u"/scene_entities"_s);
   const auto ctx = makeContext(session);
   ASSERT_TRUE(layer.attach(ctx));
   layer.setTrackerTime(PJ::fromRaw(15));
@@ -664,13 +665,13 @@ TEST(SceneEntitiesLayerModelTest, DetachlessReattachAfterDatasetReplaceResetsSta
   registerParser(session, topic_id);
   pushSceneEntities(session, topic_id, 10, batchWithEntities({makeEntity("old_car", 10, "old_frame")}));
 
-  pj::scene3d::SceneEntitiesLayer layer(topic_id, QStringLiteral("/scene_entities"));
+  pj::scene3d::SceneEntitiesLayer layer(topic_id, u"/scene_entities"_s);
   const auto ctx = makeContext(session);
   ASSERT_TRUE(layer.attach(ctx));
   layer.setTrackerTime(PJ::fromRaw(15));
   ASSERT_EQ(layer.currentEntities().count("old_car"), 1u);
   ASSERT_EQ(PJ::toRaw(layer.timeRange().min), 10);
-  ASSERT_EQ(layer.sourceFrame(), QStringLiteral("old_frame"));
+  ASSERT_EQ(layer.sourceFrame(), u"old_frame"_s);
 
   // Reload: stage the same topic name EMPTY (the new generation's first message
   // has not arrived yet) and run the real in-place replace. The primary
@@ -704,7 +705,7 @@ TEST(SceneEntitiesLayerModelTest, DetachlessReattachAfterDatasetReplaceResetsSta
   layer.setTrackerTime(PJ::fromRaw(15));
   EXPECT_EQ(layer.currentEntities().count("new_car"), 1u) << "new-generation entry skipped after re-attach";
   EXPECT_EQ(layer.currentEntities().count("old_car"), 0u);
-  EXPECT_EQ(layer.sourceFrame(), QStringLiteral("new_frame"));
+  EXPECT_EQ(layer.sourceFrame(), u"new_frame"_s);
 }
 
 // Regression (L.23): attach() must seed the initial decode when the topic's
@@ -720,7 +721,7 @@ TEST(SceneEntitiesLayerModelTest, AttachSeedsFirstSampleAtTimestampZero) {
   // Store timestamp 0 — the first (and only) sample lands exactly at the epoch.
   pushSceneEntities(session, topic_id, 0, batchWithEntities({makeEntity("sim_car", 0, "base_link")}));
 
-  pj::scene3d::SceneEntitiesLayer layer(topic_id, QStringLiteral("/scene_entities"));
+  pj::scene3d::SceneEntitiesLayer layer(topic_id, u"/scene_entities"_s);
   const auto ctx = makeContext(session);
   ASSERT_TRUE(layer.attach(ctx));
 
@@ -728,7 +729,7 @@ TEST(SceneEntitiesLayerModelTest, AttachSeedsFirstSampleAtTimestampZero) {
   // t=0, so the entity is present immediately.
   ASSERT_EQ(layer.currentEntities().count("sim_car"), 1u)
       << "attach() skipped the t=0 first sample (0 treated as a 'no data' sentinel)";
-  EXPECT_EQ(layer.sourceFrame(), QStringLiteral("base_link"));
+  EXPECT_EQ(layer.sourceFrame(), u"base_link"_s);
 }
 
 // Regression: a finished async ModelPrimitive mesh load must itself request the
@@ -743,7 +744,7 @@ TEST(SceneEntitiesLayerModelTest, MeshLoadCompletionRequestsRepaintWithoutRender
   registerParser(session, topic_id);
   pushSceneEntities(session, topic_id, 10, batchWithEntities({makeEntity("car", 10)}));
 
-  pj::scene3d::SceneEntitiesLayer layer(topic_id, QStringLiteral("/scene_entities"));
+  pj::scene3d::SceneEntitiesLayer layer(topic_id, u"/scene_entities"_s);
   const auto ctx = makeContext(session);
   ASSERT_TRUE(layer.attach(ctx));  // kicks the async mesh load for "car"
 
@@ -774,7 +775,7 @@ TEST(SceneEntitiesLayerModelTest, FrameCompositionAppliesTfPrimitivePoseAndScale
   primitive.color = {.r = 25, .g = 51, .b = 76, .a = 102};
   pushSceneEntities(session, topic_id, 10, batchWithEntities({entity}));
 
-  pj::scene3d::SceneEntitiesLayer layer(topic_id, QStringLiteral("/scene_entities"));
+  pj::scene3d::SceneEntitiesLayer layer(topic_id, u"/scene_entities"_s);
   const auto ctx = makeContext(session);
   ASSERT_TRUE(ctx.tf_buffer->setTransform(
       pj::scene3d::StampedTransform{
@@ -811,7 +812,7 @@ TEST(SceneEntitiesLayerModelTest, FrameCompositionAppliesTfPrimitivePoseAndScale
 TEST(SceneEntitiesLayerModelTest, RemoteModelUrlIsBlockedWithoutOptIn) {
   isolateSettings();
   QSettings settings;
-  settings.setValue(QStringLiteral("pj_scene3d/allow_remote_model_fetch"), false);
+  settings.setValue(u"pj_scene3d/allow_remote_model_fetch"_s, false);
   settings.sync();
 
   QTcpServer server;
@@ -825,7 +826,7 @@ TEST(SceneEntitiesLayerModelTest, RemoteModelUrlIsBlockedWithoutOptIn) {
   const std::string url = "http://127.0.0.1:" + std::to_string(server.serverPort()) + "/model.glb";
   pushSceneEntities(session, topic_id, 10, batchWithEntities({makeUrlEntity("remote", 10, url, "model/gltf-binary")}));
 
-  pj::scene3d::SceneEntitiesLayer layer(topic_id, QStringLiteral("/scene_entities"));
+  pj::scene3d::SceneEntitiesLayer layer(topic_id, u"/scene_entities"_s);
   QString notice_from_signal;
   QObject::connect(
       &layer, &pj::scene3d::SceneEntitiesLayer::remoteFetchNoticeChanged,
@@ -834,9 +835,9 @@ TEST(SceneEntitiesLayerModelTest, RemoteModelUrlIsBlockedWithoutOptIn) {
   ASSERT_TRUE(layer.attach(ctx));
   layer.setTrackerTime(PJ::fromRaw(15));
 
-  EXPECT_TRUE(layer.remoteFetchNotice().contains(QStringLiteral("Remote model fetch is disabled")))
+  EXPECT_TRUE(layer.remoteFetchNotice().contains(u"Remote model fetch is disabled"_s))
       << layer.remoteFetchNotice().toStdString();
-  EXPECT_TRUE(layer.remoteFetchNotice().contains(QStringLiteral("allow_remote_model_fetch")));
+  EXPECT_TRUE(layer.remoteFetchNotice().contains(u"allow_remote_model_fetch"_s));
   EXPECT_EQ(notice_from_signal, layer.remoteFetchNotice()) << "notice signal did not track the accessor";
 
   // Pump: even an asynchronous fetch would have to open a socket toward us.
@@ -855,19 +856,19 @@ TEST(SceneEntitiesLayerModelTest, RemoteModelUrlIsBlockedWithoutOptIn) {
 TEST(SceneEntitiesLayerModelTest, LocalFileModelUrlLoadsWithoutOptIn) {
   isolateSettings();
   QSettings settings;
-  settings.setValue(QStringLiteral("pj_scene3d/allow_remote_model_fetch"), false);
+  settings.setValue(u"pj_scene3d/allow_remote_model_fetch"_s, false);
   settings.sync();
 
   PJ::SessionManager session;
   const PJ::ObjectTopicId topic_id = registerTopic(session);
   registerParser(session, topic_id);
-  const QString fixture = QString(PJ_SCENE3D_FIXTURES_DIR) + QStringLiteral("/meshes/cube.stl");
+  const QString fixture = QString(PJ_SCENE3D_FIXTURES_DIR) + u"/meshes/cube.stl"_s;
   pushSceneEntities(
       session, topic_id, 10,
       batchWithEntities(
           {makeUrlEntity("local", 10, QUrl::fromLocalFile(fixture).toString().toStdString(), "model/stl")}));
 
-  pj::scene3d::SceneEntitiesLayer layer(topic_id, QStringLiteral("/scene_entities"));
+  pj::scene3d::SceneEntitiesLayer layer(topic_id, u"/scene_entities"_s);
   const auto ctx = makeContext(session);
   ASSERT_TRUE(layer.attach(ctx));  // kicks the async file fetch + import
 
@@ -893,7 +894,7 @@ TEST(SceneEntitiesLayerModelTest, LocalFileModelUrlLoadsWithoutOptIn) {
 TEST(SceneEntitiesLayerModelTest, PendingUrlFetchRecordIsSkippedByPoll) {
   isolateSettings();
   QSettings settings;
-  settings.setValue(QStringLiteral("pj_scene3d/allow_remote_model_fetch"), true);
+  settings.setValue(u"pj_scene3d/allow_remote_model_fetch"_s, true);
   settings.sync();
 
   QTcpServer server;  // accepts and never responds: the fetch stays in flight
@@ -907,7 +908,7 @@ TEST(SceneEntitiesLayerModelTest, PendingUrlFetchRecordIsSkippedByPoll) {
       session, topic_id, 10,
       batchWithEntities({makeUrlEntity("pending", 10, url, "model/gltf-binary"), makeEntity("embedded", 10)}));
 
-  pj::scene3d::SceneEntitiesLayer layer(topic_id, QStringLiteral("/scene_entities"));
+  pj::scene3d::SceneEntitiesLayer layer(topic_id, u"/scene_entities"_s);
   const auto ctx = makeContext(session);
   ASSERT_TRUE(layer.attach(ctx));  // URL record pending + embedded import kicked
 
@@ -924,7 +925,7 @@ TEST(SceneEntitiesLayerModelTest, PendingUrlFetchRecordIsSkippedByPoll) {
   EXPECT_GT(repaints, 0) << "embedded mesh record never drained";
 
   // Reset the opt-in so no other test inherits an enabled gate.
-  settings.setValue(QStringLiteral("pj_scene3d/allow_remote_model_fetch"), false);
+  settings.setValue(u"pj_scene3d/allow_remote_model_fetch"_s, false);
   settings.sync();
 }
 
@@ -934,7 +935,7 @@ TEST(SceneEntitiesLayerModelTest, PendingUrlFetchRecordIsSkippedByPoll) {
 TEST(SceneEntitiesLayerModelTest, RemoteModelUrlIsFetchedByDefault) {
   isolateSettings();
   QSettings settings;
-  settings.remove(QStringLiteral("pj_scene3d/allow_remote_model_fetch"));  // exercise the built-in default
+  settings.remove(u"pj_scene3d/allow_remote_model_fetch"_s);  // exercise the built-in default
   settings.sync();
 
   QTcpServer server;  // accepts the connection (response irrelevant — we assert the attempt)
@@ -948,12 +949,12 @@ TEST(SceneEntitiesLayerModelTest, RemoteModelUrlIsFetchedByDefault) {
   const std::string url = "http://127.0.0.1:" + std::to_string(server.serverPort()) + "/model.glb";
   pushSceneEntities(session, topic_id, 10, batchWithEntities({makeUrlEntity("remote", 10, url, "model/gltf-binary")}));
 
-  pj::scene3d::SceneEntitiesLayer layer(topic_id, QStringLiteral("/scene_entities"));
+  pj::scene3d::SceneEntitiesLayer layer(topic_id, u"/scene_entities"_s);
   const auto ctx = makeContext(session);
   ASSERT_TRUE(layer.attach(ctx));
   layer.setTrackerTime(PJ::fromRaw(15));
 
-  EXPECT_FALSE(layer.remoteFetchNotice().contains(QStringLiteral("disabled")))
+  EXPECT_FALSE(layer.remoteFetchNotice().contains(u"disabled"_s))
       << "default must not block the fetch: " << layer.remoteFetchNotice().toStdString();
 
   QElapsedTimer timer;
@@ -969,7 +970,7 @@ TEST(SceneEntitiesLayerModelTest, RemoteModelUrlIsFetchedByDefault) {
 TEST(SceneEntitiesLayerModelTest, FailedRemoteFetchSurfacesUrlAndErrorInNotice) {
   isolateSettings();
   QSettings settings;
-  settings.setValue(QStringLiteral("pj_scene3d/allow_remote_model_fetch"), true);
+  settings.setValue(u"pj_scene3d/allow_remote_model_fetch"_s, true);
   settings.sync();
 
   // Bind then release a port so the connection is refused immediately (fast,
@@ -987,7 +988,7 @@ TEST(SceneEntitiesLayerModelTest, FailedRemoteFetchSurfacesUrlAndErrorInNotice) 
   const std::string url = "http://127.0.0.1:" + std::to_string(port) + "/missing.glb";
   pushSceneEntities(session, topic_id, 10, batchWithEntities({makeUrlEntity("remote", 10, url, "model/gltf-binary")}));
 
-  pj::scene3d::SceneEntitiesLayer layer(topic_id, QStringLiteral("/scene_entities"));
+  pj::scene3d::SceneEntitiesLayer layer(topic_id, u"/scene_entities"_s);
   QString notice_from_signal;
   QObject::connect(
       &layer, &pj::scene3d::SceneEntitiesLayer::remoteFetchNoticeChanged,
@@ -1002,12 +1003,12 @@ TEST(SceneEntitiesLayerModelTest, FailedRemoteFetchSurfacesUrlAndErrorInNotice) 
     QCoreApplication::processEvents(QEventLoop::AllEvents, 50);
   }
   const QString notice = layer.remoteFetchNotice();
-  EXPECT_TRUE(notice.contains(QStringLiteral("Failed to fetch"))) << notice.toStdString();
+  EXPECT_TRUE(notice.contains(u"Failed to fetch"_s)) << notice.toStdString();
   EXPECT_TRUE(notice.contains(QString::fromStdString(url)))
       << "the offending URL must appear: " << notice.toStdString();
   EXPECT_EQ(notice_from_signal, notice) << "notice signal did not track the accessor";
 
-  settings.setValue(QStringLiteral("pj_scene3d/allow_remote_model_fetch"), false);  // quiet default for siblings
+  settings.setValue(u"pj_scene3d/allow_remote_model_fetch"_s, false);  // quiet default for siblings
   settings.sync();
 }
 
@@ -1021,7 +1022,7 @@ TEST(SceneEntitiesLayerModelTest, EmbeddedModelParseFailureSurfacesInNotice) {
   registerParser(session, topic_id);
   pushSceneEntities(session, topic_id, 10, batchWithEntities({makeEntity("bad", 10)}));
 
-  pj::scene3d::SceneEntitiesLayer layer(topic_id, QStringLiteral("/scene_entities"));
+  pj::scene3d::SceneEntitiesLayer layer(topic_id, u"/scene_entities"_s);
   const auto ctx = makeContext(session);
   ASSERT_TRUE(layer.attach(ctx));
 
@@ -1030,8 +1031,7 @@ TEST(SceneEntitiesLayerModelTest, EmbeddedModelParseFailureSurfacesInNotice) {
   while (layer.remoteFetchNotice().isEmpty() && timer.elapsed() < 5000) {
     QCoreApplication::processEvents(QEventLoop::AllEvents, 50);
   }
-  EXPECT_TRUE(layer.remoteFetchNotice().contains(QStringLiteral("Failed to load model")))
-      << layer.remoteFetchNotice().toStdString();
+  EXPECT_TRUE(layer.remoteFetchNotice().contains(u"Failed to load model"_s)) << layer.remoteFetchNotice().toStdString();
 }
 
 // Deleting the entity that owns a failed model clears its load notice: the
@@ -1040,7 +1040,7 @@ TEST(SceneEntitiesLayerModelTest, EmbeddedModelParseFailureSurfacesInNotice) {
 TEST(SceneEntitiesLayerModelTest, DeletingEntityClearsItsModelLoadNotice) {
   isolateSettings();
   QSettings settings;
-  settings.setValue(QStringLiteral("pj_scene3d/allow_remote_model_fetch"), true);
+  settings.setValue(u"pj_scene3d/allow_remote_model_fetch"_s, true);
   settings.sync();
 
   quint16 port = 0;
@@ -1060,7 +1060,7 @@ TEST(SceneEntitiesLayerModelTest, DeletingEntityClearsItsModelLoadNotice) {
   del.timestamp = 20;
   pushSceneEntities(session, topic_id, 20, batchWithDeletions({del}));
 
-  pj::scene3d::SceneEntitiesLayer layer(topic_id, QStringLiteral("/scene_entities"));
+  pj::scene3d::SceneEntitiesLayer layer(topic_id, u"/scene_entities"_s);
   const auto ctx = makeContext(session);
   ASSERT_TRUE(layer.attach(ctx));
   layer.setTrackerTime(PJ::fromRaw(10));  // kicks the fetch (which fails)
@@ -1070,14 +1070,13 @@ TEST(SceneEntitiesLayerModelTest, DeletingEntityClearsItsModelLoadNotice) {
   while (layer.remoteFetchNotice().isEmpty() && timer.elapsed() < 5000) {
     QCoreApplication::processEvents(QEventLoop::AllEvents, 50);
   }
-  ASSERT_TRUE(layer.remoteFetchNotice().contains(QStringLiteral("Failed to fetch")))
-      << layer.remoteFetchNotice().toStdString();
+  ASSERT_TRUE(layer.remoteFetchNotice().contains(u"Failed to fetch"_s)) << layer.remoteFetchNotice().toStdString();
 
   layer.setTrackerTime(PJ::fromRaw(20));  // DELETEALL folds → entity (and its failed model) gone
   EXPECT_TRUE(layer.remoteFetchNotice().isEmpty())
       << "deleting the entity must clear its model-load notice: " << layer.remoteFetchNotice().toStdString();
 
-  settings.setValue(QStringLiteral("pj_scene3d/allow_remote_model_fetch"), false);
+  settings.setValue(u"pj_scene3d/allow_remote_model_fetch"_s, false);
   settings.sync();
 }
 
@@ -1099,7 +1098,7 @@ TEST(SceneEntitiesLayerModelTest, ReloadSwapsParserWithoutTouchingStaleOne) {
                                     }));
   pushSceneEntities(session, topic_id, 10, batchWithEntities({makeEntity("car", 10, "old_frame")}));
 
-  pj::scene3d::SceneEntitiesLayer layer(topic_id, QStringLiteral("/scene_entities"));
+  pj::scene3d::SceneEntitiesLayer layer(topic_id, u"/scene_entities"_s);
   const auto ctx = makeContext(session);
   ASSERT_TRUE(layer.attach(ctx));
   layer.setTrackerTime(PJ::fromRaw(15));
@@ -1158,7 +1157,7 @@ TEST(SceneEntitiesLayerModelTest, DeleteAllPlusEntitiesInSameBatchLeavesEntities
   batch.entities = {makeEntity("new_a", 20), makeEntity("new_b", 20)};
   pushSceneEntities(session, topic_id, 20, batch);
 
-  pj::scene3d::SceneEntitiesLayer layer(topic_id, QStringLiteral("/scene_entities"));
+  pj::scene3d::SceneEntitiesLayer layer(topic_id, u"/scene_entities"_s);
   const auto ctx = makeContext(session);
   ASSERT_TRUE(layer.attach(ctx));
   layer.setTrackerTime(PJ::fromRaw(25));
@@ -1188,7 +1187,7 @@ TEST(SceneEntitiesLayerModelTest, CrossBatchDeleteAllErasesOlderBatchEntities) {
   kall.timestamp = 20;
   pushSceneEntities(session, topic_id, 20, batchWithDeletions({kall}));
 
-  pj::scene3d::SceneEntitiesLayer layer(topic_id, QStringLiteral("/scene_entities"));
+  pj::scene3d::SceneEntitiesLayer layer(topic_id, u"/scene_entities"_s);
   const auto ctx = makeContext(session);
   ASSERT_TRUE(layer.attach(ctx));
   layer.setTrackerTime(PJ::fromRaw(25));
@@ -1205,7 +1204,7 @@ int main(int argc, char** argv) {
   // The layer's UrlFetcher builds a QNetworkDiskCache; point it at a throwaway dir
   // (auto-removed at exit) so these tests never write into the real ~/.local/share.
   static QTemporaryDir model_cache_dir;
-  qputenv("PJ_MODEL_CACHE_DIR", (model_cache_dir.path() + QStringLiteral("/models")).toUtf8());
+  qputenv("PJ_MODEL_CACHE_DIR", (model_cache_dir.path() + u"/models"_s).toUtf8());
   testing::InitGoogleTest(&argc, argv);
   return RUN_ALL_TESTS();
 }

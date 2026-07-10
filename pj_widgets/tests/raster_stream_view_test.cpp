@@ -8,6 +8,7 @@
 #include <QtTest/QtTest>
 
 #include "pj_widgets/RasterStreamView.h"
+using namespace Qt::StringLiterals;
 
 namespace {
 
@@ -28,7 +29,7 @@ TEST(RasterStreamView, ReceivesAStubFrameAndStaysAlive) {
   PJ::RasterStreamView view;
   view.resize(320, 200);
   QSignalSpy ended(&view, &PJ::RasterStreamView::sessionEnded);
-  view.start(QStringLiteral(PJ_STUB_HELPER_PATH), QStringLiteral("/dev/null"));
+  view.start(QStringLiteral(PJ_STUB_HELPER_PATH), u"/dev/null"_s);
 
   bool received_frame = false;
   for (int attempt = 0; attempt < 60 && !received_frame; ++attempt) {

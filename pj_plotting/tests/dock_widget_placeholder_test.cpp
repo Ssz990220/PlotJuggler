@@ -42,6 +42,7 @@
 #include "pj_widgets/CurveTreeView.h"
 #include "pj_widgets/VisualizationKind.h"
 #include "pj_widgets/VisualizationPlaceholderWidget.h"
+using namespace Qt::StringLiterals;
 
 namespace {
 
@@ -112,7 +113,7 @@ class FakeStatefulObjectWidget : public QWidget, public PJ::IDataWidget {
   void onTrackerTime(double /*time*/) override {}
   QDomElement xmlSaveState(QDomDocument& doc) const override {
     QDomElement element = doc.createElement(tag_);
-    element.setAttribute(QStringLiteral("version"), QStringLiteral("1"));
+    element.setAttribute(u"version"_s, u"1"_s);
     return element;
   }
   bool xmlLoadState(const QDomElement& /*element*/) override {
@@ -134,7 +135,7 @@ class FakeClipboardObjectWidget : public QWidget, public PJ::IDataWidget {
   void onTrackerTime(double /*time*/) override {}
   QDomElement xmlSaveState(QDomDocument& doc) const override {
     QDomElement element = doc.createElement(tag_);
-    element.setAttribute(QStringLiteral("value"), value_);
+    element.setAttribute(u"value"_s, value_);
     return element;
   }
   bool xmlLoadState(const QDomElement& element) override {
@@ -142,7 +143,7 @@ class FakeClipboardObjectWidget : public QWidget, public PJ::IDataWidget {
       return false;
     }
     ++load_count_;
-    loaded_value_ = element.attribute(QStringLiteral("value"));
+    loaded_value_ = element.attribute(u"value"_s);
     return true;
   }
 
@@ -217,7 +218,7 @@ PJ::DockWidget* splitFrom(PJ::PlotDocker& docker, PJ::DockWidget* dock, int expe
   if (placeholder == nullptr) {
     return nullptr;
   }
-  auto* split = findActionByText(placeholder, QStringLiteral("Split Horizontally"));
+  auto* split = findActionByText(placeholder, u"Split Horizontally"_s);
   EXPECT_NE(split, nullptr);
   if (split == nullptr) {
     return nullptr;
@@ -250,7 +251,7 @@ class DockFocusTest : public ::testing::Test {
 TEST(DockWidgetPlaceholderTest, EmptyDockerStartsWithPlaceholderDock) {
   PJ::SessionManager session;
   PJ::CatalogModel catalog(&session);
-  PJ::PlotDocker docker(QStringLiteral("test"), &session, &catalog);
+  PJ::PlotDocker docker(u"test"_s, &session, &catalog);
 
   ASSERT_EQ(docker.plotCount(), 1);
   auto* dock = docker.plotAt(0);
@@ -270,12 +271,12 @@ TEST(DockWidgetPlaceholderTest, PlaceholderSplitActionsEmitRequests) {
     ++vertical_count;
   });
 
-  auto* horizontal_action = findActionByText(&placeholder, QStringLiteral("Split Horizontally"));
-  auto* vertical_action = findActionByText(&placeholder, QStringLiteral("Split Vertically"));
+  auto* horizontal_action = findActionByText(&placeholder, u"Split Horizontally"_s);
+  auto* vertical_action = findActionByText(&placeholder, u"Split Vertically"_s);
   ASSERT_NE(horizontal_action, nullptr);
   ASSERT_NE(vertical_action, nullptr);
-  EXPECT_EQ(findActionByText(&placeholder, QStringLiteral("Copy")), nullptr);
-  auto* paste_action = findActionByText(&placeholder, QStringLiteral("Paste"));
+  EXPECT_EQ(findActionByText(&placeholder, u"Copy"_s), nullptr);
+  auto* paste_action = findActionByText(&placeholder, u"Paste"_s);
   ASSERT_NE(paste_action, nullptr);
   EXPECT_FALSE(paste_action->isEnabled());
 
@@ -299,22 +300,22 @@ TEST(DockWidgetPlaceholderTest, PlotWidgetCopyPasteUsesClipboardXmlAndKeepsTarge
   ASSERT_FALSE(key.isEmpty());
 
   PJ::PlotWidget source(&session, &catalog);
-  source.setStateId(QStringLiteral("source-plot"));
+  source.setStateId(u"source-plot"_s);
   ASSERT_NE(source.addCurve(key), nullptr);
 
   PJ::PlotWidget target(&session, &catalog);
-  target.setStateId(QStringLiteral("target-plot"));
+  target.setStateId(u"target-plot"_s);
   int undo_count = 0;
   QObject::connect(&target, &PJ::PlotWidget::undoableChange, &target, [&]() { ++undo_count; });
 
   ASSERT_TRUE(QMetaObject::invokeMethod(&source, "copyWidgetToClipboard", Qt::DirectConnection));
-  EXPECT_TRUE(QGuiApplication::clipboard()->text().contains(QStringLiteral("<plot")));
+  EXPECT_TRUE(QGuiApplication::clipboard()->text().contains(u"<plot"_s));
 
   ASSERT_TRUE(QMetaObject::invokeMethod(&target, "pasteWidgetFromClipboard", Qt::DirectConnection));
 
   ASSERT_EQ(target.curveList().size(), 1U);
   EXPECT_EQ(target.curveList().front().source_name, key);
-  EXPECT_EQ(target.stateId(), QStringLiteral("target-plot"));
+  EXPECT_EQ(target.stateId(), u"target-plot"_s);
   EXPECT_EQ(undo_count, 1);
 }
 
@@ -341,7 +342,7 @@ TEST(DockWidgetPlaceholderTest, PlaceholderPasteCreatesPlotFromClipboardXml) {
   ASSERT_TRUE(QMetaObject::invokeMethod(&target, "updatePlaceholderPasteAction", Qt::DirectConnection));
   auto* placeholder = target.findChild<PJ::VisualizationPlaceholderWidget*>();
   ASSERT_NE(placeholder, nullptr);
-  auto* paste_action = findActionByText(placeholder, QStringLiteral("Paste"));
+  auto* paste_action = findActionByText(placeholder, u"Paste"_s);
   ASSERT_NE(paste_action, nullptr);
   EXPECT_TRUE(paste_action->isEnabled());
 
@@ -358,26 +359,26 @@ TEST(DockWidgetPlaceholderTest, ObjectWidgetClipboardPasteRequiresSameFamilyTag)
   QGuiApplication::clipboard()->clear();
 
   PJ::DockWidget source;
-  auto* source_widget = new FakeClipboardObjectWidget(QStringLiteral("scene2d"), QStringLiteral("camera"));
+  auto* source_widget = new FakeClipboardObjectWidget(u"scene2d"_s, u"camera"_s);
   source.setObjectWidget(source_widget);
 
   PJ::DockWidget same_family_target;
-  auto* same_family_widget = new FakeClipboardObjectWidget(QStringLiteral("scene2d"), QStringLiteral("old"));
+  auto* same_family_widget = new FakeClipboardObjectWidget(u"scene2d"_s, u"old"_s);
   same_family_target.setObjectWidget(same_family_widget);
   int same_family_undo = 0;
   QObject::connect(
       &same_family_target, &PJ::DockWidget::undoableChange, &same_family_target, [&]() { ++same_family_undo; });
 
   PJ::DockWidget other_family_target;
-  auto* other_family_widget = new FakeClipboardObjectWidget(QStringLiteral("scene3d"), QStringLiteral("old"));
+  auto* other_family_widget = new FakeClipboardObjectWidget(u"scene3d"_s, u"old"_s);
   other_family_target.setObjectWidget(other_family_widget);
 
   ASSERT_TRUE(QMetaObject::invokeMethod(&source, "copyObjectWidgetToClipboard", Qt::DirectConnection));
-  ASSERT_TRUE(QGuiApplication::clipboard()->text().contains(QStringLiteral("<scene2d")));
+  ASSERT_TRUE(QGuiApplication::clipboard()->text().contains(u"<scene2d"_s));
 
   ASSERT_TRUE(QMetaObject::invokeMethod(&same_family_target, "pasteObjectWidgetFromClipboard", Qt::DirectConnection));
   EXPECT_EQ(same_family_widget->loadCount(), 1);
-  EXPECT_EQ(same_family_widget->loadedValue(), QStringLiteral("camera"));
+  EXPECT_EQ(same_family_widget->loadedValue(), u"camera"_s);
   EXPECT_EQ(same_family_undo, 1);
 
   ASSERT_TRUE(QMetaObject::invokeMethod(&other_family_target, "pasteObjectWidgetFromClipboard", Qt::DirectConnection));
@@ -388,7 +389,7 @@ TEST(DockWidgetPlaceholderTest, PlaceholderPasteCreatesObjectWidgetFromClipboard
   QGuiApplication::clipboard()->clear();
 
   PJ::DockWidget source;
-  auto* source_widget = new FakeClipboardObjectWidget(QStringLiteral("scene2d"), QStringLiteral("camera"));
+  auto* source_widget = new FakeClipboardObjectWidget(u"scene2d"_s, u"camera"_s);
   source.setObjectWidget(source_widget);
   ASSERT_TRUE(QMetaObject::invokeMethod(&source, "copyObjectWidgetToClipboard", Qt::DirectConnection));
 
@@ -396,10 +397,10 @@ TEST(DockWidgetPlaceholderTest, PlaceholderPasteCreatesObjectWidgetFromClipboard
   FakeClipboardObjectWidget* pasted_widget = nullptr;
   target.setObjectWidgetFactory(
       [&](const QString& kind, const PJ::ObjectDropSeed* seed, QWidget* parent) -> PJ::IDataWidget* {
-        if (kind != QStringLiteral("scene2d") || seed != nullptr) {
+        if (kind != u"scene2d"_s || seed != nullptr) {
           return nullptr;
         }
-        pasted_widget = new FakeClipboardObjectWidget(kind, QStringLiteral("fresh"), parent);
+        pasted_widget = new FakeClipboardObjectWidget(kind, u"fresh"_s, parent);
         return pasted_widget;
       });
   int undo_count = 0;
@@ -408,7 +409,7 @@ TEST(DockWidgetPlaceholderTest, PlaceholderPasteCreatesObjectWidgetFromClipboard
   ASSERT_TRUE(QMetaObject::invokeMethod(&target, "updatePlaceholderPasteAction", Qt::DirectConnection));
   auto* placeholder = target.findChild<PJ::VisualizationPlaceholderWidget*>();
   ASSERT_NE(placeholder, nullptr);
-  auto* paste_action = findActionByText(placeholder, QStringLiteral("Paste"));
+  auto* paste_action = findActionByText(placeholder, u"Paste"_s);
   ASSERT_NE(paste_action, nullptr);
   EXPECT_TRUE(paste_action->isEnabled());
 
@@ -418,7 +419,7 @@ TEST(DockWidgetPlaceholderTest, PlaceholderPasteCreatesObjectWidgetFromClipboard
   EXPECT_EQ(target.objectWidget(), pasted_widget);
   EXPECT_EQ(target.plotWidget(), nullptr);
   EXPECT_EQ(pasted_widget->loadCount(), 1);
-  EXPECT_EQ(pasted_widget->loadedValue(), QStringLiteral("camera"));
+  EXPECT_EQ(pasted_widget->loadedValue(), u"camera"_s);
   EXPECT_EQ(undo_count, 1);
 }
 
@@ -437,14 +438,14 @@ TEST(DockWidgetPlaceholderTest, EmptyPlotDoesNotBroadcastLinkedZoom) {
 TEST(DockWidgetPlaceholderTest, PlaceholderSplitActionCreatesSiblingDock) {
   PJ::SessionManager session;
   PJ::CatalogModel catalog(&session);
-  PJ::PlotDocker docker(QStringLiteral("test"), &session, &catalog);
+  PJ::PlotDocker docker(u"test"_s, &session, &catalog);
 
   ASSERT_EQ(docker.plotCount(), 1);
   auto* dock = docker.plotAt(0);
   ASSERT_NE(dock, nullptr);
   auto* placeholder = dock->findChild<PJ::VisualizationPlaceholderWidget*>();
   ASSERT_NE(placeholder, nullptr);
-  auto* horizontal_action = findActionByText(placeholder, QStringLiteral("Split Horizontally"));
+  auto* horizontal_action = findActionByText(placeholder, u"Split Horizontally"_s);
   ASSERT_NE(horizontal_action, nullptr);
 
   horizontal_action->trigger();
@@ -461,7 +462,7 @@ TEST_F(DockFocusTest, DropFocusesReceivingDock) {
   const auto curves = catalog.curves();
   ASSERT_EQ(curves.size(), 1U);
 
-  PJ::PlotDocker docker(QStringLiteral("test"), &session, &catalog);
+  PJ::PlotDocker docker(u"test"_s, &session, &catalog);
   docker.show();  // focusedDockWidgetChanged only fires for visible docks.
 
   auto* dock0 = docker.plotAt(0);
@@ -498,7 +499,7 @@ TEST_F(DockFocusTest, ObjectDropFocusesReceivingDock) {
   const auto items = catalog.items();
   ASSERT_EQ(items.size(), 1U);
 
-  PJ::PlotDocker docker(QStringLiteral("test"), &session, &catalog);
+  PJ::PlotDocker docker(u"test"_s, &session, &catalog);
   docker.setObjectWidgetFactory(
       [](const QString& /*kind*/, const PJ::ObjectDropSeed* /*seed*/, QWidget* parent) -> PJ::IDataWidget* {
         return new FakeObjectWidget(parent);
@@ -526,7 +527,7 @@ TEST_F(DockFocusTest, ObjectDropFocusesReceivingDock) {
 TEST_F(DockFocusTest, ClosingFocusedDockRefocusesPreviouslyFocused) {
   PJ::SessionManager session;
   PJ::CatalogModel catalog(&session);
-  PJ::PlotDocker docker(QStringLiteral("test"), &session, &catalog);
+  PJ::PlotDocker docker(u"test"_s, &session, &catalog);
   docker.show();
 
   auto* dock0 = docker.plotAt(0);
@@ -556,7 +557,7 @@ TEST_F(DockFocusTest, ClosingFocusedDockRefocusesPreviouslyFocused) {
 TEST_F(DockFocusTest, ClosingLastRealDockFocusesPlaceholder) {
   PJ::SessionManager session;
   PJ::CatalogModel catalog(&session);
-  PJ::PlotDocker docker(QStringLiteral("test"), &session, &catalog);
+  PJ::PlotDocker docker(u"test"_s, &session, &catalog);
   docker.show();
 
   auto* dock0 = docker.plotAt(0);
@@ -584,7 +585,7 @@ TEST_F(DockFocusTest, DropOntoAlreadyFocusedPlaceholderRefreshes) {
   const auto curves = catalog.curves();
   ASSERT_EQ(curves.size(), 1U);
 
-  PJ::PlotDocker docker(QStringLiteral("test"), &session, &catalog);
+  PJ::PlotDocker docker(u"test"_s, &session, &catalog);
   docker.show();
 
   // Close the only widget: a fresh placeholder is created and *takes focus*.
@@ -620,7 +621,7 @@ TEST(DockWidgetPlaceholderTest, ScalarDropConvertsPlaceholderToPlot) {
   const auto curves = catalog.curves();
   ASSERT_EQ(curves.size(), 1U);
 
-  PJ::PlotDocker docker(QStringLiteral("test"), &session, &catalog);
+  PJ::PlotDocker docker(u"test"_s, &session, &catalog);
   auto* dock = docker.plotAt(0);
   ASSERT_NE(dock, nullptr);
 
@@ -643,7 +644,7 @@ class DockToolbarRenameTest : public ::testing::Test {
     toolbar_ = dock_->toolBar();
     ASSERT_NE(toolbar_, nullptr);
     label_ = toolbar_->label();
-    edit_ = toolbar_->findChild<QLineEdit*>(QStringLiteral("lineEditRename"));
+    edit_ = toolbar_->findChild<QLineEdit*>(u"lineEditRename"_s);
     ASSERT_NE(label_, nullptr);
     ASSERT_NE(edit_, nullptr);
   }
@@ -658,7 +659,7 @@ class DockToolbarRenameTest : public ::testing::Test {
 
   PJ::SessionManager session_;
   PJ::CatalogModel catalog_{&session_};
-  PJ::PlotDocker docker_{QStringLiteral("test"), &session_, &catalog_};
+  PJ::PlotDocker docker_{u"test"_s, &session_, &catalog_};
   PJ::DockWidget* dock_ = nullptr;
   PJ::DockToolbar* toolbar_ = nullptr;
   QLabel* label_ = nullptr;
@@ -668,7 +669,7 @@ class DockToolbarRenameTest : public ::testing::Test {
 TEST_F(DockToolbarRenameTest, DoubleClickEntersInlineEditAndEnterCommits) {
   // Double-clicking the title label swaps it for an in-place QLineEdit (no modal
   // dialog); pressing Enter writes the edited text back and emits titleChanged.
-  label_->setText(QStringLiteral("original"));
+  label_->setText(u"original"_s);
 
   QString emitted_title;
   int emit_count = 0;
@@ -681,39 +682,39 @@ TEST_F(DockToolbarRenameTest, DoubleClickEntersInlineEditAndEnterCommits) {
   doubleClickLabel();
   EXPECT_TRUE(label_->isHidden());
   EXPECT_FALSE(edit_->isHidden());
-  EXPECT_EQ(edit_->text(), QStringLiteral("original"));
+  EXPECT_EQ(edit_->text(), u"original"_s);
 
   // Edit the text and press Enter -> commit.
-  edit_->setText(QStringLiteral("renamed"));
+  edit_->setText(u"renamed"_s);
   QKeyEvent enter(QEvent::KeyPress, Qt::Key_Return, Qt::NoModifier);
   QApplication::sendEvent(edit_, &enter);
 
   EXPECT_FALSE(label_->isHidden());
   EXPECT_TRUE(edit_->isHidden());
-  EXPECT_EQ(label_->text(), QStringLiteral("renamed"));
-  EXPECT_EQ(dock_->name(), QStringLiteral("renamed"));
+  EXPECT_EQ(label_->text(), u"renamed"_s);
+  EXPECT_EQ(dock_->name(), u"renamed"_s);
   EXPECT_EQ(emit_count, 1);
-  EXPECT_EQ(emitted_title, QStringLiteral("renamed"));
+  EXPECT_EQ(emitted_title, u"renamed"_s);
 }
 
 TEST_F(DockToolbarRenameTest, InlineEditEscapeRevertsWithoutRenaming) {
   // Escape (and focus loss) cancels the inline edit, leaving the original name —
   // matching the tab-rename behaviour.
-  label_->setText(QStringLiteral("original"));
+  label_->setText(u"original"_s);
 
   int emit_count = 0;
   QObject::connect(toolbar_, &PJ::DockToolbar::titleChanged, toolbar_, [&](const QString&) { ++emit_count; });
 
   doubleClickLabel();
-  edit_->setText(QStringLiteral("discarded"));
+  edit_->setText(u"discarded"_s);
 
   QKeyEvent escape(QEvent::KeyPress, Qt::Key_Escape, Qt::NoModifier);
   EXPECT_TRUE(toolbar_->eventFilter(edit_, &escape));
 
   EXPECT_FALSE(label_->isHidden());
   EXPECT_TRUE(edit_->isHidden());
-  EXPECT_EQ(label_->text(), QStringLiteral("original"));
-  EXPECT_EQ(dock_->name(), QStringLiteral("original"));
+  EXPECT_EQ(label_->text(), u"original"_s);
+  EXPECT_EQ(dock_->name(), u"original"_s);
   EXPECT_EQ(emit_count, 0);
 }
 
@@ -721,7 +722,7 @@ TEST_F(DockToolbarRenameTest, InlineEditDefaultsToCompactWidthAndGrowsWithText) 
   // The editor is a compact 300 px by default (not the full bar width) and only
   // grows when the text would not fit.
   toolbar_->resize(1200, 30);  // wide geometry so the growth cap is large
-  label_->setText(QStringLiteral("short"));
+  label_->setText(u"short"_s);
 
   doubleClickLabel();
   // A short name fits in the default width, so the editor stays at exactly 300 px
@@ -756,7 +757,7 @@ TEST(DockWidgetPlaceholderTest, CurveListChangedSeesDisplayTitleAfterCatalogKeyA
 
   const auto curves = catalog.curves();
   ASSERT_EQ(curves.size(), 1U);
-  ASSERT_NE(curves[0].name, QStringLiteral("imu/accel/value"));
+  ASSERT_NE(curves[0].name, u"imu/accel/value"_s);
 
   PJ::PlotWidget plot(&session, &catalog);
   QStringList observed_titles;
@@ -771,8 +772,8 @@ TEST(DockWidgetPlaceholderTest, CurveListChangedSeesDisplayTitleAfterCatalogKeyA
   const auto* info = plot.addCurve(curves[0].name);
   ASSERT_NE(info, nullptr);
   EXPECT_EQ(info->source_name, curves[0].name);
-  EXPECT_EQ(info->curve->title().text(), QStringLiteral("imu/accel/value"));
-  EXPECT_EQ(observed_titles, QStringList{QStringLiteral("imu/accel/value")});
+  EXPECT_EQ(info->curve->title().text(), u"imu/accel/value"_s);
+  EXPECT_EQ(observed_titles, QStringList{u"imu/accel/value"_s});
 }
 
 TEST(DockWidgetPlaceholderTest, ImageObjectDropConvertsPlaceholderToMedia2D) {
@@ -794,7 +795,7 @@ TEST(DockWidgetPlaceholderTest, ImageObjectDropConvertsPlaceholderToMedia2D) {
   ASSERT_TRUE(PJ::isObjectTopic(items[0]));
   ASSERT_EQ(PJ::asObjectTopic(items[0])->object_type, PJ::sdk::BuiltinObjectType::kImage);
 
-  PJ::PlotDocker docker(QStringLiteral("test"), &session, &catalog);
+  PJ::PlotDocker docker(u"test"_s, &session, &catalog);
   bool factory_called = false;
   docker.setObjectWidgetFactory(
       [&](const QString& kind, const PJ::ObjectDropSeed* seed, QWidget* parent) -> PJ::IDataWidget* {
@@ -806,7 +807,7 @@ TEST(DockWidgetPlaceholderTest, ImageObjectDropConvertsPlaceholderToMedia2D) {
           EXPECT_EQ(seed->topic_id, *object_topic);
           EXPECT_EQ(seed->object_type, PJ::sdk::BuiltinObjectType::kImage);
           // Single dataset loaded -> title drops the redundant "drive.mcap/" prefix.
-          EXPECT_EQ(seed->title, QStringLiteral("/camera/image_raw/compressed"));
+          EXPECT_EQ(seed->title, u"/camera/image_raw/compressed"_s);
         }
         return new FakeObjectWidget(parent);
       });
@@ -821,7 +822,7 @@ TEST(DockWidgetPlaceholderTest, ImageObjectDropConvertsPlaceholderToMedia2D) {
   EXPECT_TRUE(factory_called);
   EXPECT_NE(dock->objectWidget(), nullptr);
   // Dragging a topic onto the placeholder does NOT rename the dock; it keeps "...".
-  EXPECT_EQ(dock->name(), QStringLiteral("..."));
+  EXPECT_EQ(dock->name(), u"..."_s);
 }
 
 TEST(DockWidgetPlaceholderTest, ClearObjectContentRestoresPlaceholder) {
@@ -841,7 +842,7 @@ TEST(DockWidgetPlaceholderTest, ClearObjectContentRestoresPlaceholder) {
   const auto items = catalog.items();
   ASSERT_EQ(items.size(), 1U);
 
-  PJ::PlotDocker docker(QStringLiteral("test"), &session, &catalog);
+  PJ::PlotDocker docker(u"test"_s, &session, &catalog);
   docker.setObjectWidgetFactory([](const QString&, const PJ::ObjectDropSeed*, QWidget* parent) -> PJ::IDataWidget* {
     return new FakeObjectWidget(parent);
   });
@@ -862,7 +863,7 @@ TEST(DockWidgetPlaceholderTest, ClearObjectContentRestoresPlaceholder) {
   EXPECT_EQ(dock->plotWidget(), nullptr);
   EXPECT_EQ(dock->objectWidget(), nullptr);
   EXPECT_NE(dock->findChild<PJ::VisualizationPlaceholderWidget*>(), nullptr);
-  EXPECT_EQ(dock->name(), QStringLiteral("..."));
+  EXPECT_EQ(dock->name(), u"..."_s);
   EXPECT_EQ(undoable_count, 2);
 }
 
@@ -871,10 +872,10 @@ TEST(DockWidgetPlaceholderTest, RestoreRoutesObjectWidgetTagsToFactoryByKind) {
   // restore and routed to the object-widget factory keyed by its XML tag. Before
   // the generic-restore fix the layout parser collected only <plot> and
   // <scene3d>, so <scene2d> docks silently vanished on reload.
-  for (const QString& kind : {QStringLiteral("scene2d"), QStringLiteral("scene3d")}) {
+  for (const QString& kind : {u"scene2d"_s, u"scene3d"_s}) {
     PJ::SessionManager session;
     PJ::CatalogModel catalog(&session);
-    PJ::PlotDocker docker(QStringLiteral("test"), &session, &catalog);
+    PJ::PlotDocker docker(u"test"_s, &session, &catalog);
 
     QString seen_kind;
     bool seed_was_null = false;
@@ -916,7 +917,7 @@ TEST(DockWidgetPlaceholderTest, PlaceholderAcceptsCatalogDragMoveAndIconDrop) {
   QMimeData mime_data;
   mime_data.setData(
       PJ::CurveTreeView::catalogItemsMimeType(),
-      PJ::CurveTreeView::encodeCatalogKeys(QStringList{QStringLiteral("dataset:/camera/image")}));
+      PJ::CurveTreeView::encodeCatalogKeys(QStringList{u"dataset:/camera/image"_s}));
   QDragEnterEvent drag_enter(QPoint(1, 1), Qt::CopyAction, &mime_data, Qt::LeftButton, Qt::NoModifier);
   placeholder.sendDragEnter(&drag_enter);
   EXPECT_TRUE(drag_enter.isAccepted());
@@ -942,7 +943,7 @@ TEST(DockWidgetPlaceholderTest, PlaceholderAcceptsCatalogDragMoveAndIconDrop) {
   EXPECT_TRUE(placeholder.sendFilteredEvent(icon_button, &icon_drop));
   EXPECT_TRUE(icon_drop.isAccepted());
   EXPECT_EQ(drop_count, 1);
-  EXPECT_EQ(dropped_keys, QStringList{QStringLiteral("dataset:/camera/image")});
+  EXPECT_EQ(dropped_keys, QStringList{u"dataset:/camera/image"_s});
 }
 
 TEST(VisualizationPlaceholderTest, ThreeDIconIsEnabledAndNamed) {
@@ -1004,7 +1005,7 @@ TEST(VisualizationPlaceholderTest, RealMouseClickPassesThroughDragFilterAndEmits
 TEST(DockWidgetPlaceholderTest, PlotIconClickConvertsPlaceholderToEmptyPlot) {
   PJ::SessionManager session;
   PJ::CatalogModel catalog(&session);
-  PJ::PlotDocker docker(QStringLiteral("test"), &session, &catalog);
+  PJ::PlotDocker docker(u"test"_s, &session, &catalog);
   auto* dock = docker.plotAt(0);
   ASSERT_NE(dock, nullptr);
   auto* placeholder = dock->findChild<PJ::VisualizationPlaceholderWidget*>();
@@ -1020,7 +1021,7 @@ TEST(DockWidgetPlaceholderTest, PlotIconClickConvertsPlaceholderToEmptyPlot) {
 TEST(DockWidgetPlaceholderTest, SceneIconClickRequestsObjectFamilyWithoutBuildingWidget) {
   PJ::SessionManager session;
   PJ::CatalogModel catalog(&session);
-  PJ::PlotDocker docker(QStringLiteral("test"), &session, &catalog);
+  PJ::PlotDocker docker(u"test"_s, &session, &catalog);
   auto* dock = docker.plotAt(0);
   ASSERT_NE(dock, nullptr);
 
@@ -1059,7 +1060,7 @@ TEST(DockWidgetPlaceholderTest, SceneIconClickRequestsObjectFamilyWithoutBuildin
 TEST(DockWidgetPlaceholderTest, AdoptObjectWidgetInstallsEmptyObjectWidget) {
   PJ::SessionManager session;
   PJ::CatalogModel catalog(&session);
-  PJ::PlotDocker docker(QStringLiteral("test"), &session, &catalog);
+  PJ::PlotDocker docker(u"test"_s, &session, &catalog);
   auto* dock = docker.plotAt(0);
   ASSERT_NE(dock, nullptr);
   int undoable_count = 0;
@@ -1070,14 +1071,14 @@ TEST(DockWidgetPlaceholderTest, AdoptObjectWidgetInstallsEmptyObjectWidget) {
 
   EXPECT_EQ(dock->objectWidget(), static_cast<PJ::IDataWidget*>(widget));
   EXPECT_EQ(dock->plotWidget(), nullptr);
-  EXPECT_EQ(dock->name(), QStringLiteral("..."));
+  EXPECT_EQ(dock->name(), u"..."_s);
   EXPECT_EQ(undoable_count, 1);
 }
 
 TEST(DockWidgetPlaceholderTest, AdoptNullObjectWidgetRevertsToPlaceholder) {
   PJ::SessionManager session;
   PJ::CatalogModel catalog(&session);
-  PJ::PlotDocker docker(QStringLiteral("test"), &session, &catalog);
+  PJ::PlotDocker docker(u"test"_s, &session, &catalog);
   auto* dock = docker.plotAt(0);
   ASSERT_NE(dock, nullptr);
 
@@ -1097,22 +1098,22 @@ TEST(DockWidgetPlaceholderTest, EmptyObjectWidgetSurvivesLayoutSaveRestore) {
   PJ::SessionManager session;
   PJ::CatalogModel catalog(&session);
 
-  PJ::PlotDocker docker(QStringLiteral("test"), &session, &catalog);
+  PJ::PlotDocker docker(u"test"_s, &session, &catalog);
   docker.setObjectWidgetFactory(
       [](const QString& kind, const PJ::ObjectDropSeed*, QWidget* parent) -> PJ::IDataWidget* {
-        return new FakeStatefulObjectWidget(kind.isEmpty() ? QStringLiteral("scene3d") : kind, parent);
+        return new FakeStatefulObjectWidget(kind.isEmpty() ? u"scene3d"_s : kind, parent);
       });
   auto* dock = docker.plotAt(0);
   ASSERT_NE(dock, nullptr);
-  dock->adoptObjectWidget(new FakeStatefulObjectWidget(QStringLiteral("scene3d")));
+  dock->adoptObjectWidget(new FakeStatefulObjectWidget(u"scene3d"_s));
   ASSERT_NE(dock->objectWidget(), nullptr);
 
   QDomDocument doc;
   const QDomElement saved = docker.xmlSaveState(doc);
   doc.appendChild(saved);
-  EXPECT_FALSE(saved.elementsByTagName(QStringLiteral("scene3d")).isEmpty()) << "empty object dock was skipped on save";
+  EXPECT_FALSE(saved.elementsByTagName(u"scene3d"_s).isEmpty()) << "empty object dock was skipped on save";
 
-  PJ::PlotDocker restored(QStringLiteral("test2"), &session, &catalog);
+  PJ::PlotDocker restored(u"test2"_s, &session, &catalog);
   restored.setObjectWidgetFactory(
       [](const QString& kind, const PJ::ObjectDropSeed*, QWidget* parent) -> PJ::IDataWidget* {
         return new FakeStatefulObjectWidget(kind, parent);
@@ -1132,7 +1133,7 @@ TEST(DockLayoutSizeTest, RestorePreservesSplitterProportions) {
   PJ::SessionManager session;
   PJ::CatalogModel catalog(&session);
 
-  PJ::PlotDocker source(QStringLiteral("src"), &session, &catalog);
+  PJ::PlotDocker source(u"src"_s, &session, &catalog);
   source.resize(1000, 600);
   source.show();
   QApplication::processEvents();
@@ -1158,7 +1159,7 @@ TEST(DockLayoutSizeTest, RestorePreservesSplitterProportions) {
   const QDomElement saved = source.xmlSaveState(doc);
 
   // Restore into a fresh docker, never shown before xmlLoadState.
-  PJ::PlotDocker restored(QStringLiteral("dst"), &session, &catalog);
+  PJ::PlotDocker restored(u"dst"_s, &session, &catalog);
   ASSERT_TRUE(restored.xmlLoadState(saved));
   restored.resize(1000, 600);
   restored.show();
@@ -1187,7 +1188,7 @@ TEST(DockLayoutSizeTest, RestorePreservesThreeWaySplitterProportions) {
   PJ::SessionManager session;
   PJ::CatalogModel catalog(&session);
 
-  PJ::PlotDocker source(QStringLiteral("src"), &session, &catalog);
+  PJ::PlotDocker source(u"src"_s, &session, &catalog);
   source.resize(1200, 600);
   source.show();
   QApplication::processEvents();
@@ -1213,7 +1214,7 @@ TEST(DockLayoutSizeTest, RestorePreservesThreeWaySplitterProportions) {
   QDomDocument doc;
   const QDomElement saved = source.xmlSaveState(doc);
 
-  PJ::PlotDocker restored(QStringLiteral("dst"), &session, &catalog);
+  PJ::PlotDocker restored(u"dst"_s, &session, &catalog);
   ASSERT_TRUE(restored.xmlLoadState(saved));
   restored.resize(1200, 600);
   restored.show();
@@ -1250,7 +1251,7 @@ TEST(DockWidgetPlaceholderTest, FirstObjectTopicAddedFiresOnceForAdoptedEmptyWid
   const auto items = catalog.items();
   ASSERT_EQ(items.size(), 2U);
 
-  PJ::PlotDocker docker(QStringLiteral("test"), &session, &catalog);
+  PJ::PlotDocker docker(u"test"_s, &session, &catalog);
   // A factory is required for the object-drop path to reach the in-place "offer",
   // even though the adopted widget is the one that absorbs the topics.
   docker.setObjectWidgetFactory([](const QString&, const PJ::ObjectDropSeed*, QWidget* parent) -> PJ::IDataWidget* {
@@ -1269,13 +1270,13 @@ TEST(DockWidgetPlaceholderTest, FirstObjectTopicAddedFiresOnceForAdoptedEmptyWid
   EXPECT_EQ(seed_count, 1);
   // Dragging a topic must NOT rename the dock — it keeps its default "..." name
   // (the user renames it explicitly via the title bar if they want to).
-  EXPECT_EQ(dock->name(), QStringLiteral("..."));
+  EXPECT_EQ(dock->name(), u"..."_s);
 
   ASSERT_TRUE(
       QMetaObject::invokeMethod(
           dock, "onCatalogItemsDropped", Qt::DirectConnection, Q_ARG(QStringList, QStringList{items[1].key})));
-  EXPECT_EQ(seed_count, 1);                        // not re-fired for the second topic
-  EXPECT_EQ(dock->name(), QStringLiteral("..."));  // still the default name after a second drop
+  EXPECT_EQ(seed_count, 1);           // not re-fired for the second topic
+  EXPECT_EQ(dock->name(), u"..."_s);  // still the default name after a second drop
 }
 
 TEST(DockWidgetPlaceholderTest, IncompatibleObjectDropOntoCommittedObjectWidgetIsRejected) {
@@ -1291,7 +1292,7 @@ TEST(DockWidgetPlaceholderTest, IncompatibleObjectDropOntoCommittedObjectWidgetI
   const auto items = catalog.items();
   ASSERT_EQ(items.size(), 1U);
 
-  PJ::PlotDocker docker(QStringLiteral("test"), &session, &catalog);
+  PJ::PlotDocker docker(u"test"_s, &session, &catalog);
   int factory_calls = 0;
   docker.setObjectWidgetFactory([&](const QString&, const PJ::ObjectDropSeed*, QWidget* parent) -> PJ::IDataWidget* {
     ++factory_calls;
@@ -1323,7 +1324,7 @@ TEST(DockWidgetPlaceholderTest, ScalarDropOntoCommittedObjectWidgetIsRejected) {
   const auto curves = catalog.curves();
   ASSERT_EQ(curves.size(), 1U);
 
-  PJ::PlotDocker docker(QStringLiteral("test"), &session, &catalog);
+  PJ::PlotDocker docker(u"test"_s, &session, &catalog);
   auto* dock = docker.plotAt(0);
   ASSERT_NE(dock, nullptr);
   auto* mounted = new FakeObjectWidget();
@@ -1348,7 +1349,7 @@ TEST(DockWidgetPlaceholderTest, CompatibleObjectDropOntoCommittedWidgetIsAccepte
   const auto items = catalog.items();
   ASSERT_EQ(items.size(), 1U);
 
-  PJ::PlotDocker docker(QStringLiteral("test"), &session, &catalog);
+  PJ::PlotDocker docker(u"test"_s, &session, &catalog);
   int factory_calls = 0;
   docker.setObjectWidgetFactory([&](const QString&, const PJ::ObjectDropSeed*, QWidget* parent) -> PJ::IDataWidget* {
     ++factory_calls;
@@ -1392,7 +1393,7 @@ TEST(DockWidgetPlaceholderTest, ObjectDropOntoCommittedPlotIsRejected) {
   }
   ASSERT_FALSE(image_key.isEmpty());
 
-  PJ::PlotDocker docker(QStringLiteral("test"), &session, &catalog);
+  PJ::PlotDocker docker(u"test"_s, &session, &catalog);
   int factory_calls = 0;
   docker.setObjectWidgetFactory([&](const QString&, const PJ::ObjectDropSeed*, QWidget* parent) -> PJ::IDataWidget* {
     ++factory_calls;
@@ -1451,7 +1452,7 @@ TEST(NewPlotTrackerConfig, DropCreatedPlotInheritsGlobalTrackerParameter) {
   const auto curves = catalog.curves();
   ASSERT_EQ(curves.size(), 1U);
 
-  PJ::PlotDocker docker(QStringLiteral("test"), &session, &catalog);
+  PJ::PlotDocker docker(u"test"_s, &session, &catalog);
   TrackerConfigHarness harness(docker, PJ::CurveTracker::kLineOnly);
 
   auto* dock = docker.plotAt(0);
@@ -1470,7 +1471,7 @@ TEST(NewPlotTrackerConfig, IconClickCreatedPlotInheritsGlobalTrackerParameter) {
   // via onVisualizationRequested(kPlot) -> ensurePlotWidget().
   PJ::SessionManager session;
   PJ::CatalogModel catalog(&session);
-  PJ::PlotDocker docker(QStringLiteral("test"), &session, &catalog);
+  PJ::PlotDocker docker(u"test"_s, &session, &catalog);
   TrackerConfigHarness harness(docker, PJ::CurveTracker::kLineOnly);
 
   auto* dock = docker.plotAt(0);
@@ -1495,7 +1496,7 @@ TEST(NewPlotTrackerConfig, SplitCreatedPlotInheritsGlobalTrackerParameter) {
   const auto curves = catalog.curves();
   ASSERT_EQ(curves.size(), 1U);
 
-  PJ::PlotDocker docker(QStringLiteral("test"), &session, &catalog);
+  PJ::PlotDocker docker(u"test"_s, &session, &catalog);
   TrackerConfigHarness harness(docker, PJ::CurveTracker::kLineOnly);
 
   auto* dock0 = docker.plotAt(0);
@@ -1523,7 +1524,7 @@ TEST(NewPlotTrackerConfig, PlotInSecondTabInheritsGlobalTrackerParameter) {
   const auto curves = catalog.curves();
   ASSERT_EQ(curves.size(), 1U);
 
-  PJ::TabbedPlotWidget tabbed(QStringLiteral("main"));
+  PJ::TabbedPlotWidget tabbed(u"main"_s);
   tabbed.setDataServices(&session, &catalog);
 
   const auto global_param = PJ::CurveTracker::kLineOnly;
@@ -1540,7 +1541,7 @@ TEST(NewPlotTrackerConfig, PlotInSecondTabInheritsGlobalTrackerParameter) {
     wire_docker(tabbed.dockerAt(index));
   }
 
-  PJ::PlotDocker* tab2 = tabbed.addTab(QStringLiteral("tab2"));
+  PJ::PlotDocker* tab2 = tabbed.addTab(u"tab2"_s);
   ASSERT_NE(tab2, nullptr);
   auto* dock = tab2->plotAt(0);
   ASSERT_NE(dock, nullptr);
@@ -1647,10 +1648,10 @@ TEST(DockWidgetPlaceholderTest, ObjectPlaceholderDropOnEmptyTileCreatesDockAndSt
   ASSERT_TRUE(dataset.has_value()) << dataset.error();
   catalog.setAdvertisedTopics(
       *dataset, {{.topic_name = "/cloud", .classification = PJ::sdk::BuiltinObjectType::kPointCloud}});
-  const QString key = advertisedKey(catalog, QStringLiteral("/cloud"));
+  const QString key = advertisedKey(catalog, u"/cloud"_s);
   ASSERT_FALSE(key.isEmpty());
 
-  PJ::PlotDocker docker(QStringLiteral("test"), &session, &catalog);
+  PJ::PlotDocker docker(u"test"_s, &session, &catalog);
   bool factory_called = false;
   docker.setObjectWidgetFactory(
       [&](const QString& kind, const PJ::ObjectDropSeed* seed, QWidget* parent) -> PJ::IDataWidget* {
@@ -1688,7 +1689,7 @@ TEST(DockWidgetPlaceholderTest, ObjectPlaceholderDropOnEmptyTileCreatesDockAndSt
   EXPECT_EQ(dock->plotWidget(), nullptr);
   EXPECT_EQ(signal_dock, dock);
   EXPECT_EQ(signal_dataset, *dataset);
-  EXPECT_EQ(signal_topic, QStringLiteral("/cloud"));
+  EXPECT_EQ(signal_topic, u"/cloud"_s);
   EXPECT_EQ(signal_type, PJ::sdk::BuiltinObjectType::kPointCloud);
 }
 
@@ -1702,12 +1703,12 @@ TEST(DockWidgetPlaceholderTest, MultiObjectPlaceholderDropPendsEveryKey) {
                     {.topic_name = "/lidar/front", .classification = PJ::sdk::BuiltinObjectType::kPointCloud},
                     {.topic_name = "/lidar/back", .classification = PJ::sdk::BuiltinObjectType::kPointCloud},
                 });
-  const QString front_key = advertisedKey(catalog, QStringLiteral("/lidar/front"));
-  const QString back_key = advertisedKey(catalog, QStringLiteral("/lidar/back"));
+  const QString front_key = advertisedKey(catalog, u"/lidar/front"_s);
+  const QString back_key = advertisedKey(catalog, u"/lidar/back"_s);
   ASSERT_FALSE(front_key.isEmpty());
   ASSERT_FALSE(back_key.isEmpty());
 
-  PJ::PlotDocker docker(QStringLiteral("test"), &session, &catalog);
+  PJ::PlotDocker docker(u"test"_s, &session, &catalog);
   int factory_calls = 0;
   docker.setObjectWidgetFactory([&](const QString&, const PJ::ObjectDropSeed*, QWidget* parent) -> PJ::IDataWidget* {
     ++factory_calls;
@@ -1728,7 +1729,7 @@ TEST(DockWidgetPlaceholderTest, MultiObjectPlaceholderDropPendsEveryKey) {
 
   EXPECT_EQ(factory_calls, 1);
   EXPECT_NE(dock->objectWidget(), nullptr);
-  EXPECT_EQ(dropped_topics, (QStringList{QStringLiteral("/lidar/front"), QStringLiteral("/lidar/back")}));
+  EXPECT_EQ(dropped_topics, (QStringList{u"/lidar/front"_s, u"/lidar/back"_s}));
 }
 
 TEST(DockWidgetPlaceholderTest, ObjectPlaceholderDropKeepsPlaceholderWhenFactoryRefuses) {
@@ -1738,10 +1739,10 @@ TEST(DockWidgetPlaceholderTest, ObjectPlaceholderDropKeepsPlaceholderWhenFactory
   ASSERT_TRUE(dataset.has_value()) << dataset.error();
   catalog.setAdvertisedTopics(
       *dataset, {{.topic_name = "/camera_info", .classification = PJ::sdk::BuiltinObjectType::kCameraInfo}});
-  const QString key = advertisedKey(catalog, QStringLiteral("/camera_info"));
+  const QString key = advertisedKey(catalog, u"/camera_info"_s);
   ASSERT_FALSE(key.isEmpty());
 
-  PJ::PlotDocker docker(QStringLiteral("test"), &session, &catalog);
+  PJ::PlotDocker docker(u"test"_s, &session, &catalog);
   docker.setObjectWidgetFactory(
       [](const QString&, const PJ::ObjectDropSeed*, QWidget*) -> PJ::IDataWidget* { return nullptr; });
   auto* dock = docker.plotAt(0);
@@ -1770,10 +1771,10 @@ TEST(DockWidgetPlaceholderTest, ObjectPlaceholderDropOntoCommittedPlotIsRejected
       *dataset, {{.topic_name = "/cloud", .classification = PJ::sdk::BuiltinObjectType::kPointCloud}});
   const auto curves = catalog.curves();
   ASSERT_EQ(curves.size(), 1U);
-  const QString placeholder_key = advertisedKey(catalog, QStringLiteral("/cloud"));
+  const QString placeholder_key = advertisedKey(catalog, u"/cloud"_s);
   ASSERT_FALSE(placeholder_key.isEmpty());
 
-  PJ::PlotDocker docker(QStringLiteral("test"), &session, &catalog);
+  PJ::PlotDocker docker(u"test"_s, &session, &catalog);
   bool factory_called = false;
   docker.setObjectWidgetFactory([&](const QString&, const PJ::ObjectDropSeed*, QWidget* parent) -> PJ::IDataWidget* {
     factory_called = true;

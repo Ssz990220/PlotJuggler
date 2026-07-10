@@ -46,6 +46,7 @@
 #include "pj_widgets/Style.h"
 #include "pj_widgets/SvgUtil.h"
 #include "ui_FilterEditorPanel.h"
+using namespace Qt::StringLiterals;
 
 namespace PJ {
 
@@ -74,12 +75,12 @@ QString readableName(const CurveDescriptor& descriptor) {
 // The catalog key identifying one column of a topic in a dataset — the canonical
 // "dataset:.../topic:.../column:..." string the catalog and host plots key curves by.
 QString curveKey(DatasetId dataset_id, TopicId topic_id, std::size_t column) {
-  return QStringLiteral("dataset:%1/topic:%2/column:%3").arg(dataset_id).arg(topic_id).arg(column);
+  return u"dataset:%1/topic:%2/column:%3"_s.arg(dataset_id).arg(topic_id).arg(column);
 }
 
 // Synthetic curve key/title for the in-memory filtered preview curve — never a
 // catalog key, so it lives only inside the preview PlotWidget.
-const QString kFilteredPreviewTitle = QStringLiteral("__filter_preview__");
+const QString kFilteredPreviewTitle = u"__filter_preview__"_s;
 
 // Process-global "copied filter" (id + params JSON) — survives across panel
 // instances so a filter can be copied from one plot and pasted onto another.
@@ -124,7 +125,7 @@ FilterEditorPanel::FilterEditorPanel(
   // schema comes from the bundled Luau filter classes (read once from the app
   // resource); M5 routes this through the FilterCatalogue instead.
   filter_engine_ = scripting::makeLuauEngine();
-  if (QFile f(QStringLiteral(":/filters/builtin_filters.luau")); f.open(QIODevice::ReadOnly)) {
+  if (QFile f(u":/filters/builtin_filters.luau"_s); f.open(QIODevice::ReadOnly)) {
     if (auto classes = filter_engine_->inspectModule(f.readAll().toStdString(), "bundled"); classes.has_value()) {
       filter_classes_ = std::move(classes.value());
     }
@@ -149,13 +150,13 @@ FilterEditorPanel::FilterEditorPanel(
     button->setToolTip(tip);
     return button;
   };
-  copy_button_ = make_icon_button(QStringLiteral(":/resources/svg/copy.svg"), tr("Copy parameters"));
-  paste_button_ = make_icon_button(QStringLiteral(":/resources/svg/paste.svg"), tr("Paste parameters"));
+  copy_button_ = make_icon_button(u":/resources/svg/copy.svg"_s, tr("Copy parameters"));
+  paste_button_ = make_icon_button(u":/resources/svg/paste.svg"_s, tr("Paste parameters"));
   apply_all_button_ =
-      make_icon_button(QStringLiteral(":/resources/svg/format_paint.svg"), tr("Copy these parameters into all series"));
-  copy_button_->setObjectName(QStringLiteral("filter_copy_btn"));
-  paste_button_->setObjectName(QStringLiteral("filter_paste_btn"));
-  apply_all_button_->setObjectName(QStringLiteral("filter_apply_all_btn"));
+      make_icon_button(u":/resources/svg/format_paint.svg"_s, tr("Copy these parameters into all series"));
+  copy_button_->setObjectName(u"filter_copy_btn"_s);
+  paste_button_->setObjectName(u"filter_paste_btn"_s);
+  apply_all_button_->setObjectName(u"filter_apply_all_btn"_s);
   ui_->autozoomRow->addWidget(copy_button_);
   ui_->autozoomRow->addWidget(paste_button_);
   ui_->autozoomRow->addWidget(apply_all_button_);
@@ -854,7 +855,7 @@ void FilterEditorPanel::applyToSelected() {
   // Surface any failures both inline AND as an app diagnostic (which survives the
   // panel closing), so a partial failure is never masked by a later success.
   if (!failures.isEmpty()) {
-    const QString summary = tr("%1 filter(s) failed: %2").arg(failures.size()).arg(failures.join(QStringLiteral("; ")));
+    const QString summary = tr("%1 filter(s) failed: %2").arg(failures.size()).arg(failures.join(u"; "_s));
     ui_->status_label->setText(summary);
     emit diagnostic(summary);
   }

@@ -21,6 +21,7 @@
 #include "pj_scene3d_widgets/parse_locked.h"
 #include "pj_widgets/ComboBox.h"
 #include "pj_widgets/DoubleScrubber.h"
+using namespace Qt::StringLiterals;
 
 namespace pj::scene3d {
 
@@ -42,7 +43,7 @@ PJ::SceneLayerInfo VoxelGridLayer::info() const {
       .topic_id = topic_id_,
       .object_type = PJ::sdk::BuiltinObjectType::kVoxelGrid,
       .display_name = display_name_,
-      .family_name = QStringLiteral("VoxelGrid"),
+      .family_name = u"VoxelGrid"_s,
       .visible = visible_,
   };
 }
@@ -64,15 +65,15 @@ QString VoxelGridLayer::sourceFrame() const {
 }
 
 QDomElement VoxelGridLayer::xmlSaveState(QDomDocument& doc) const {
-  QDomElement el = doc.createElement(QStringLiteral("voxel_grid"));
-  el.setAttribute(QStringLiteral("field"), QString::fromStdString(active_field_name_));
-  el.setAttribute(QStringLiteral("draw_mode"), static_cast<int>(draw_mode_));
-  el.setAttribute(QStringLiteral("threshold"), threshold_);
-  el.setAttribute(QStringLiteral("auto_range"), auto_range_ ? 1 : 0);
-  el.setAttribute(QStringLiteral("range_lo"), manual_lo_);
-  el.setAttribute(QStringLiteral("range_hi"), manual_hi_);
-  el.setAttribute(QStringLiteral("colormap"), static_cast<int>(colormap_));
-  el.setAttribute(QStringLiteral("opacity"), opacity_);
+  QDomElement el = doc.createElement(u"voxel_grid"_s);
+  el.setAttribute(u"field"_s, QString::fromStdString(active_field_name_));
+  el.setAttribute(u"draw_mode"_s, static_cast<int>(draw_mode_));
+  el.setAttribute(u"threshold"_s, threshold_);
+  el.setAttribute(u"auto_range"_s, auto_range_ ? 1 : 0);
+  el.setAttribute(u"range_lo"_s, manual_lo_);
+  el.setAttribute(u"range_hi"_s, manual_hi_);
+  el.setAttribute(u"colormap"_s, static_cast<int>(colormap_));
+  el.setAttribute(u"opacity"_s, opacity_);
   return el;
 }
 
@@ -80,18 +81,18 @@ bool VoxelGridLayer::xmlLoadState(const QDomElement& element) {
   // active_field_name_ is restored verbatim; if the named field is absent when a
   // grid arrives, resolveField() falls back to the default and adopts the saved
   // name later once a grid carrying it appears (late-arrival safe).
-  active_field_name_ = element.attribute(QStringLiteral("field")).toStdString();
+  active_field_name_ = element.attribute(u"field"_s).toStdString();
   uploaded_field_setting_ = "\x01";  // force a re-pack on the next render
 
-  const int mode = element.attribute(QStringLiteral("draw_mode"), QStringLiteral("1")).toInt();
+  const int mode = element.attribute(u"draw_mode"_s, u"1"_s).toInt();
   draw_mode_ = mode >= 0 && mode <= 3 ? static_cast<VoxelDrawMode>(mode) : VoxelDrawMode::kNonZero;
-  threshold_ = element.attribute(QStringLiteral("threshold"), QStringLiteral("0")).toDouble();
-  auto_range_ = element.attribute(QStringLiteral("auto_range"), QStringLiteral("1")).toInt() != 0;
-  manual_lo_ = element.attribute(QStringLiteral("range_lo"), QStringLiteral("0")).toDouble();
-  manual_hi_ = element.attribute(QStringLiteral("range_hi"), QStringLiteral("1")).toDouble();
-  const int cm = element.attribute(QStringLiteral("colormap"), QStringLiteral("0")).toInt();
+  threshold_ = element.attribute(u"threshold"_s, u"0"_s).toDouble();
+  auto_range_ = element.attribute(u"auto_range"_s, u"1"_s).toInt() != 0;
+  manual_lo_ = element.attribute(u"range_lo"_s, u"0"_s).toDouble();
+  manual_hi_ = element.attribute(u"range_hi"_s, u"1"_s).toDouble();
+  const int cm = element.attribute(u"colormap"_s, u"0"_s).toInt();
   colormap_ = cm >= 0 && cm < PJ::kColormapCount ? static_cast<PJ::Colormap>(cm) : PJ::Colormap::kTurbo;
-  opacity_ = std::clamp(element.attribute(QStringLiteral("opacity"), QStringLiteral("1")).toDouble(), 0.0, 1.0);
+  opacity_ = std::clamp(element.attribute(u"opacity"_s, u"1"_s).toDouble(), 0.0, 1.0);
   pushDisplayParamsToPass();
   return true;
 }

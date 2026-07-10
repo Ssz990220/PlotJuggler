@@ -31,6 +31,7 @@
 #include <vector>
 
 #include "pj_runtime/ExtensionCatalogService.h"
+using namespace Qt::StringLiterals;
 
 namespace {
 
@@ -48,7 +49,7 @@ TEST(ExtensionCatalogServiceThreadSafety, ConcurrentReloadAndParserResolutionSta
       while (!stop.load(std::memory_order_relaxed)) {
         // Both cross-thread-safe accessors: one resolves+instantiates a parser
         // under the shared lock, the other snapshots the encoding set.
-        auto handle = catalog.createParserHandleForEncoding(QStringLiteral("json"));
+        auto handle = catalog.createParserHandleForEncoding(u"json"_s);
         (void)handle.valid();
         const auto encodings = catalog.parserEncodings();
         (void)encodings.size();

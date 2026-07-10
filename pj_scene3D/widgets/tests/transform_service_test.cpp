@@ -52,6 +52,7 @@
 #include "pj_plugins/sdk/message_parser_plugin_base.hpp"
 #include "pj_runtime/SessionManager.h"
 #include "pj_scene3d_core/tf/tf_buffer.h"
+using namespace Qt::StringLiterals;
 
 namespace {
 
@@ -699,8 +700,8 @@ void clearPersistedFixedFrames() {
 TEST(TransformService, RemembersFixedFramePerDatasetInSession) {
   PJ::SessionManager session;
   TransformService service(session);
-  service.rememberFixedFrame(/*dataset_id=*/7, QStringLiteral("odom"));
-  EXPECT_EQ(service.rememberedFixedFrame(7), QStringLiteral("odom"));
+  service.rememberFixedFrame(/*dataset_id=*/7, u"odom"_s);
+  EXPECT_EQ(service.rememberedFixedFrame(7), u"odom"_s);
   EXPECT_EQ(service.rememberedFixedFrame(8), QString()) << "a different dataset has no remembered frame";
 }
 
@@ -714,7 +715,7 @@ TEST(TransformService, RememberedFixedFramePersistsAcrossSessionsBySource) {
   ASSERT_TRUE(id_a.has_value());
   {
     TransformService service_a(session_a);
-    service_a.rememberFixedFrame(*id_a, QStringLiteral("map"));
+    service_a.rememberFixedFrame(*id_a, u"map"_s);
   }
 
   // A separate session/service with its own empty in-session cache stands in for an
@@ -724,7 +725,7 @@ TEST(TransformService, RememberedFixedFramePersistsAcrossSessionsBySource) {
       session_b.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "robot_log.mcap", .time_domain_id = 0});
   ASSERT_TRUE(id_b.has_value());
   TransformService service_b(session_b);
-  EXPECT_EQ(service_b.rememberedFixedFrame(*id_b), QStringLiteral("map"))
+  EXPECT_EQ(service_b.rememberedFixedFrame(*id_b), u"map"_s)
       << "the manual choice must persist across sessions, keyed by source name (not the DatasetId)";
 }
 
@@ -733,8 +734,8 @@ TEST(TransformService, SourcelessDatasetIsSessionOnly) {
   PJ::SessionManager session;
   {
     TransformService service_a(session);
-    service_a.rememberFixedFrame(/*dataset_id=*/424242, QStringLiteral("odom"));  // no engine dataset -> no source
-    EXPECT_EQ(service_a.rememberedFixedFrame(424242), QStringLiteral("odom")) << "remembered within the session";
+    service_a.rememberFixedFrame(/*dataset_id=*/424242, u"odom"_s);  // no engine dataset -> no source
+    EXPECT_EQ(service_a.rememberedFixedFrame(424242), u"odom"_s) << "remembered within the session";
   }
   TransformService service_b(session);  // fresh in-session cache == a restart
   EXPECT_EQ(service_b.rememberedFixedFrame(424242), QString())
@@ -746,8 +747,8 @@ TEST(TransformService, SourcelessDatasetIsSessionOnly) {
 TEST(TransformService, InvalidateForgetsSessionRememberedFrame) {
   PJ::SessionManager session;
   TransformService service(session);
-  service.rememberFixedFrame(/*dataset_id=*/9, QStringLiteral("odom"));  // source-less -> session only
-  EXPECT_EQ(service.rememberedFixedFrame(9), QStringLiteral("odom"));
+  service.rememberFixedFrame(/*dataset_id=*/9, u"odom"_s);  // source-less -> session only
+  EXPECT_EQ(service.rememberedFixedFrame(9), u"odom"_s);
   service.invalidateDataset(9);
   EXPECT_EQ(service.rememberedFixedFrame(9), QString()) << "invalidate must drop the in-session remembered frame";
 }
@@ -756,8 +757,8 @@ TEST(TransformService, InvalidateForgetsSessionRememberedFrame) {
 
 int main(int argc, char** argv) {
   QCoreApplication app(argc, argv);
-  QCoreApplication::setOrganizationName(QStringLiteral("PlotJugglerTest"));
-  QCoreApplication::setApplicationName(QStringLiteral("transform_service_test"));
+  QCoreApplication::setOrganizationName(u"PlotJugglerTest"_s);
+  QCoreApplication::setApplicationName(u"transform_service_test"_s);
   // Redirect QSettings to a throwaway test location so the cross-restart
   // persistence tests never touch the developer's real PlotJuggler config.
   QStandardPaths::setTestModeEnabled(true);

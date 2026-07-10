@@ -25,6 +25,7 @@
 #include "pj_scene3d_widgets/layers/pointcloud_layer.h"
 #include "pj_scene3d_widgets/passes/pointcloud_render_pass.h"
 #include "pj_scene3d_widgets/scene3d_layer.h"
+using namespace Qt::StringLiterals;
 
 namespace {
 
@@ -106,8 +107,8 @@ AttachedLayer makeAttachedLayer() {
   session->registerObjectTopicParser(*topic_id, makeBoundHandle(kSchema, []() noexcept -> void* {
     return new CountingObjectParser(kSchema, PJ::sdk::BuiltinObjectType::kPointCloud, &calls, EmitFn);
   }));
-  auto layer = std::make_unique<pj::scene3d::PointCloudLayer>(
-      *topic_id, QStringLiteral("cloud"), PJ::sdk::BuiltinObjectType::kPointCloud);
+  auto layer =
+      std::make_unique<pj::scene3d::PointCloudLayer>(*topic_id, u"cloud"_s, PJ::sdk::BuiltinObjectType::kPointCloud);
   return AttachedLayer{std::move(session), std::move(layer)};
 }
 
@@ -119,13 +120,13 @@ TEST(PointCloudLayerRgb, ColorChannelsCollapseToRgbAndDefaultToIt) {
 
   // The individual colour channels must NOT be selectable as scalar fields.
   const QStringList fields = fixture.layer->availableColorFields();
-  EXPECT_FALSE(fields.contains(QStringLiteral("red")));
-  EXPECT_FALSE(fields.contains(QStringLiteral("green")));
-  EXPECT_FALSE(fields.contains(QStringLiteral("blue")));
-  EXPECT_FALSE(fields.contains(QStringLiteral("alpha")));
+  EXPECT_FALSE(fields.contains(u"red"_s));
+  EXPECT_FALSE(fields.contains(u"green"_s));
+  EXPECT_FALSE(fields.contains(u"blue"_s));
+  EXPECT_FALSE(fields.contains(u"alpha"_s));
   // Genuine scalar fields are still offered.
-  EXPECT_TRUE(fields.contains(QStringLiteral("intensity")));
-  EXPECT_TRUE(fields.contains(QStringLiteral("x")));
+  EXPECT_TRUE(fields.contains(u"intensity"_s));
+  EXPECT_TRUE(fields.contains(u"x"_s));
 
   // A cloud carrying colour defaults to RGB-direct mode.
   EXPECT_TRUE(fixture.layer->hasColorField());
@@ -140,7 +141,7 @@ TEST(PointCloudLayerRgb, PlainCloudKeepsFieldColormapMode) {
 
   EXPECT_FALSE(fixture.layer->hasColorField());
   EXPECT_EQ(fixture.layer->colorType(), ColorType::kField);
-  EXPECT_TRUE(fixture.layer->availableColorFields().contains(QStringLiteral("intensity")));
+  EXPECT_TRUE(fixture.layer->availableColorFields().contains(u"intensity"_s));
 }
 
 TEST(PointCloudLayerRgb, RestoredColorTypeSurvivesSmartDefault) {
@@ -148,9 +149,9 @@ TEST(PointCloudLayerRgb, RestoredColorTypeSurvivesSmartDefault) {
 
   // Restore an explicit "field" choice BEFORE attach (the layout-restore order).
   QDomDocument doc;
-  QDomElement el = doc.createElement(QStringLiteral("pointcloud"));
-  el.setAttribute(QStringLiteral("color_type"), QStringLiteral("field"));
-  el.setAttribute(QStringLiteral("color_field"), QStringLiteral("intensity"));
+  QDomElement el = doc.createElement(u"pointcloud"_s);
+  el.setAttribute(u"color_type"_s, u"field"_s);
+  el.setAttribute(u"color_field"_s, u"intensity"_s);
   ASSERT_TRUE(fixture.layer->xmlLoadState(el));
 
   pj::scene3d::Scene3DLayerContext ctx;
@@ -159,7 +160,7 @@ TEST(PointCloudLayerRgb, RestoredColorTypeSurvivesSmartDefault) {
 
   // The explicit restore must NOT be overridden by the colour-present RGB default.
   EXPECT_EQ(fixture.layer->colorType(), ColorType::kField);
-  EXPECT_EQ(fixture.layer->colorField(), QStringLiteral("intensity"));
+  EXPECT_EQ(fixture.layer->colorField(), u"intensity"_s);
 }
 
 TEST(PointCloudLayerRgb, RgbModeRoundTripsThroughXml) {

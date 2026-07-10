@@ -25,6 +25,7 @@
 #include <pj_plugins/host_qt/widget_adapters.hpp>
 #include <pj_plugins/host_qt/widget_binding.hpp>
 #include <utility>
+using namespace Qt::StringLiterals;
 
 namespace PJ {
 
@@ -99,7 +100,7 @@ struct PanelEngine::Impl {
     dlg->setWindowModality(Qt::ApplicationModal);
     applyWidgetData(dlg, full_view, config.session, config.catalog);
     connectWidgetSignals(dlg, [this](const std::string& n, const std::string& j) { forwardEvent(n, j); });
-    if (auto* button_box = dlg->findChild<QDialogButtonBox*>(QStringLiteral("buttonBox"))) {
+    if (auto* button_box = dlg->findChild<QDialogButtonBox*>(u"buttonBox"_s)) {
       QObject::connect(button_box, &QDialogButtonBox::rejected, dlg, &QDialog::reject);
       QObject::connect(button_box, &QDialogButtonBox::accepted, dlg, &QDialog::accept);
     }
@@ -222,13 +223,12 @@ struct PanelEngine::Impl {
         sub_dialog->setWindowFlag(Qt::FramelessWindowHint, true);
         sub_dialog->setWindowFlag(Qt::NoDropShadowWindowHint, true);
         sub_dialog->setAttribute(Qt::WA_StyledBackground, true);
-        sub_dialog->setStyleSheet(
-            sub_dialog->styleSheet() + QStringLiteral("\nQDialog{border:1px solid palette(mid);}"));
+        sub_dialog->setStyleSheet(sub_dialog->styleSheet() + u"\nQDialog{border:1px solid palette(mid);}"_s);
         // Wire the standard QDialogButtonBox (objectName "buttonBox") to
         // QDialog::accept/reject. Without this the OK/Cancel buttons are
         // inert and the only way to close the sub-dialog is the window
         // manager's X — the OK click would do nothing.
-        if (auto* button_box = sub_dialog->findChild<QDialogButtonBox*>(QStringLiteral("buttonBox"))) {
+        if (auto* button_box = sub_dialog->findChild<QDialogButtonBox*>(u"buttonBox"_s)) {
           QObject::connect(button_box, &QDialogButtonBox::accepted, sub_dialog, &QDialog::accept);
           QObject::connect(button_box, &QDialogButtonBox::rejected, sub_dialog, &QDialog::reject);
         }
@@ -261,7 +261,7 @@ struct PanelEngine::Impl {
         if (dlg_result == QDialog::Accepted) {
           for (auto* line_edit : sub_dialog->findChildren<QLineEdit*>()) {
             const QString name = line_edit->objectName();
-            if (name.isEmpty() || name.startsWith(QStringLiteral("qt_"))) {
+            if (name.isEmpty() || name.startsWith(u"qt_"_s)) {
               continue;
             }
             nlohmann::json ev = {{"text", line_edit->text().toStdString()}};
@@ -269,7 +269,7 @@ struct PanelEngine::Impl {
           }
           for (auto* check_box : sub_dialog->findChildren<QCheckBox*>()) {
             const QString name = check_box->objectName();
-            if (name.isEmpty() || name.startsWith(QStringLiteral("qt_"))) {
+            if (name.isEmpty() || name.startsWith(u"qt_"_s)) {
               continue;
             }
             nlohmann::json ev = {{"checked", check_box->isChecked()}};
@@ -277,7 +277,7 @@ struct PanelEngine::Impl {
           }
           for (auto* combo_box : sub_dialog->findChildren<QComboBox*>()) {
             const QString name = combo_box->objectName();
-            if (name.isEmpty() || name.startsWith(QStringLiteral("qt_"))) {
+            if (name.isEmpty() || name.startsWith(u"qt_"_s)) {
               continue;
             }
             nlohmann::json ev = {
@@ -402,7 +402,7 @@ QWidget* PanelEngine::openPanel() {
   // fall back on — so without this the Close/OK buttons are inert (the reported
   // bug: Close does nothing in every toolbox). Route them through the same
   // close path as a plugin-requested __request_close.
-  if (auto* button_box = loaded->findChild<QDialogButtonBox*>(QStringLiteral("buttonBox"))) {
+  if (auto* button_box = loaded->findChild<QDialogButtonBox*>(u"buttonBox"_s)) {
     auto on_close = [this]() {
       if (impl_->closed) {
         return;

@@ -17,6 +17,7 @@
 #include <memory>
 
 #include "pj_plotting/RasterTextEngine.h"
+using namespace Qt::StringLiterals;
 
 namespace {
 
@@ -103,7 +104,7 @@ struct StatePainter {
 TEST(RasterizeEngineText, ProducesInkAtDevicePixelRatio) {
   StatePainter state(2.0);
   const QwtPlainTextEngine engine;
-  const QImage image = PJ::rasterizeEngineText(engine, state.painter, QSizeF(80, 16), kFlags, QStringLiteral("Hello"));
+  const QImage image = PJ::rasterizeEngineText(engine, state.painter, QSizeF(80, 16), kFlags, u"Hello"_s);
 
   ASSERT_FALSE(image.isNull());
   EXPECT_DOUBLE_EQ(image.devicePixelRatio(), 2.0);
@@ -115,7 +116,7 @@ TEST(RasterizeEngineText, ProducesInkAtDevicePixelRatio) {
 TEST(RasterizeEngineText, HonorsPenColor) {
   StatePainter state(1.0, Qt::red);
   const QwtPlainTextEngine engine;
-  const QImage image = PJ::rasterizeEngineText(engine, state.painter, QSizeF(80, 16), kFlags, QStringLiteral("Hello"));
+  const QImage image = PJ::rasterizeEngineText(engine, state.painter, QSizeF(80, 16), kFlags, u"Hello"_s);
 
   const QColor core = inkCoreColor(image);
   ASSERT_TRUE(core.isValid()) << "no solid ink pixels";
@@ -127,8 +128,8 @@ TEST(RasterizeEngineText, HonorsPenColor) {
 TEST(RasterizeEngineText, RichTextHonorsHtmlColor) {
   StatePainter state(1.0);
   const QwtRichTextEngine engine;
-  const QImage image = PJ::rasterizeEngineText(
-      engine, state.painter, QSizeF(80, 20), kFlags, QStringLiteral("<font color=\"#ff0000\">XX</font>"));
+  const QImage image =
+      PJ::rasterizeEngineText(engine, state.painter, QSizeF(80, 20), kFlags, u"<font color=\"#ff0000\">XX</font>"_s);
 
   const QColor core = inkCoreColor(image);
   ASSERT_TRUE(core.isValid()) << "no solid ink pixels";
@@ -144,7 +145,7 @@ TEST(RasterizeEngineText, HonorsPainterTransformScale) {
   StatePainter state(1.0);
   state.painter.scale(2.0, 2.0);
   const QwtPlainTextEngine engine;
-  const QImage image = PJ::rasterizeEngineText(engine, state.painter, QSizeF(80, 16), kFlags, QStringLiteral("Hello"));
+  const QImage image = PJ::rasterizeEngineText(engine, state.painter, QSizeF(80, 16), kFlags, u"Hello"_s);
 
   ASSERT_FALSE(image.isNull());
   EXPECT_DOUBLE_EQ(image.devicePixelRatio(), 2.0);
@@ -156,7 +157,7 @@ TEST(RasterizeEngineText, CombinesDeviceDprWithTransformScale) {
   StatePainter state(2.0);
   state.painter.scale(1.5, 1.5);
   const QwtPlainTextEngine engine;
-  const QImage image = PJ::rasterizeEngineText(engine, state.painter, QSizeF(80, 16), kFlags, QStringLiteral("Hello"));
+  const QImage image = PJ::rasterizeEngineText(engine, state.painter, QSizeF(80, 16), kFlags, u"Hello"_s);
 
   ASSERT_FALSE(image.isNull());
   EXPECT_DOUBLE_EQ(image.devicePixelRatio(), 3.0);
@@ -168,7 +169,7 @@ TEST(RasterizeEngineText, EmptyTextGivesNullImage) {
   StatePainter state(1.0);
   const QwtPlainTextEngine engine;
   EXPECT_TRUE(PJ::rasterizeEngineText(engine, state.painter, QSizeF(80, 16), kFlags, QString()).isNull());
-  EXPECT_TRUE(PJ::rasterizeEngineText(engine, state.painter, QSizeF(0, 0), kFlags, QStringLiteral("x")).isNull());
+  EXPECT_TRUE(PJ::rasterizeEngineText(engine, state.painter, QSizeF(0, 0), kFlags, u"x"_s).isNull());
 }
 
 TEST(RasterTextEngine, PassthroughOnRasterDeviceMatchesStockEngine) {
@@ -180,7 +181,7 @@ TEST(RasterTextEngine, PassthroughOnRasterDeviceMatchesStockEngine) {
     QPainter painter(&stock_image);
     painter.setPen(Qt::black);
     const QwtPlainTextEngine stock;
-    stock.draw(&painter, rect, kFlags, QStringLiteral("Hello"));
+    stock.draw(&painter, rect, kFlags, u"Hello"_s);
   }
 
   QImage wrapped_image(120, 30, QImage::Format_ARGB32_Premultiplied);
@@ -189,7 +190,7 @@ TEST(RasterTextEngine, PassthroughOnRasterDeviceMatchesStockEngine) {
     QPainter painter(&wrapped_image);
     painter.setPen(Qt::black);
     const PJ::RasterTextEngine wrapper(std::make_unique<QwtPlainTextEngine>());
-    wrapper.draw(&painter, rect, kFlags, QStringLiteral("Hello"));
+    wrapper.draw(&painter, rect, kFlags, u"Hello"_s);
   }
 
   // Byte-identical: on a raster device the wrapper must delegate, not
@@ -203,7 +204,7 @@ TEST(RasterTextEngine, DelegatesLayoutMetrics) {
   const QwtPlainTextEngine stock;
   QFont font;
   font.setPointSize(11);
-  const QString text = QStringLiteral("Hello world");
+  const QString text = u"Hello world"_s;
 
   EXPECT_EQ(wrapper.textSize(font, kFlags, text), stock.textSize(font, kFlags, text));
   EXPECT_DOUBLE_EQ(wrapper.heightForWidth(font, kFlags, text, 60.0), stock.heightForWidth(font, kFlags, text, 60.0));
@@ -227,7 +228,7 @@ TEST(RasterTextEngine, DelegatesLayoutMetrics) {
   // Rich wrapper must keep the stock rich-text detection, or AutoText
   // resolution in Qwt's engine dictionary breaks.
   const PJ::RasterTextEngine rich_wrapper(std::make_unique<QwtRichTextEngine>());
-  EXPECT_TRUE(rich_wrapper.mightRender(QStringLiteral("<b>x</b>")));
+  EXPECT_TRUE(rich_wrapper.mightRender(u"<b>x</b>"_s));
 }
 
 TEST(PainterUsesGlTextPath, FalseForImagePainter) {

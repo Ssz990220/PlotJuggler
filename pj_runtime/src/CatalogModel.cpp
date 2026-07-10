@@ -28,6 +28,7 @@
 #include "pj_runtime/DataProcessorService.h"
 #include "pj_runtime/SessionManager.h"
 #include "pj_runtime/Time.h"
+using namespace Qt::StringLiterals;
 
 namespace PJ {
 namespace {
@@ -64,24 +65,24 @@ struct QStringHash {
 [[nodiscard]] QString baseDatasetLabel(const DatasetInfo* dataset) {
   QString label = dataset != nullptr ? QString::fromStdString(dataset->source_name) : QString{};
   if (label.isEmpty()) {
-    label = QStringLiteral("Dataset");
+    label = u"Dataset"_s;
   }
   label.replace('/', '_');
   return label;
 }
 
 [[nodiscard]] QString makeCurveKey(DatasetId dataset_id, TopicId topic_id, std::size_t column_index) {
-  return QStringLiteral("dataset:%1/topic:%2/column:%3").arg(dataset_id).arg(topic_id).arg(column_index);
+  return u"dataset:%1/topic:%2/column:%3"_s.arg(dataset_id).arg(topic_id).arg(column_index);
 }
 
 [[nodiscard]] QString makeObjectTopicKey(DatasetId dataset_id, ObjectTopicId object_topic_id) {
-  return QStringLiteral("dataset:%1/object_topic:%2").arg(dataset_id).arg(object_topic_id.id);
+  return u"dataset:%1/object_topic:%2"_s.arg(dataset_id).arg(object_topic_id.id);
 }
 
 // Key for a data-less advertised placeholder. Distinct namespace from the
 // curve/object keys so it never collides with a storage-backed entry.
 [[nodiscard]] QString makeAdvertisedKey(DatasetId dataset_id, const QString& topic_name) {
-  return QStringLiteral("dataset:%1/advertised:%2").arg(dataset_id).arg(topic_name);
+  return u"dataset:%1/advertised:%2"_s.arg(dataset_id).arg(topic_name);
 }
 
 [[nodiscard]] CurveDescriptor curveFromItem(const CatalogItem& item) {
@@ -587,7 +588,7 @@ void CatalogModel::rebuildNow() {
     if (label_counts[base_label] > 1) {
       const int ordinal = ++label_ordinals[base_label];
       if (ordinal > 1) {
-        label = QStringLiteral("%1 (%2)").arg(base_label).arg(ordinal);
+        label = u"%1 (%2)"_s.arg(base_label).arg(ordinal);
       }
     }
     dataset_labels.insert_or_assign(dataset_id, std::move(label));
@@ -697,7 +698,7 @@ void CatalogModel::rebuildNow() {
     Impl::NameSet materialized;  // "<dataset_id>\x1f<topic_name>" produced by storage this pass
     for (const auto& [key, item] : next_items) {
       (void)key;
-      materialized.insert(QStringLiteral("%1\x1f%2").arg(item.dataset_id).arg(item.topic_name));
+      materialized.insert(u"%1\x1f%2"_s.arg(item.dataset_id).arg(item.topic_name));
     }
     for (const auto& [dataset_id, topics] : impl_->advertised) {
       if (impl_->removed_datasets.count(dataset_id) > 0) {
@@ -712,7 +713,7 @@ void CatalogModel::rebuildNow() {
         removed_names_for_dataset = &it->second;
       }
       for (const auto& [topic_name, classification] : topics) {
-        if (materialized.count(QStringLiteral("%1\x1f%2").arg(dataset_id).arg(topic_name)) > 0) {
+        if (materialized.count(u"%1\x1f%2"_s.arg(dataset_id).arg(topic_name)) > 0) {
           continue;  // real data for this topic already surfaced — it wins
         }
         const QString key = makeAdvertisedKey(dataset_id, topic_name);

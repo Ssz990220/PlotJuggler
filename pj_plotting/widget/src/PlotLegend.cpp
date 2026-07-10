@@ -16,6 +16,7 @@
 #include <QString>
 #include <cmath>
 #include <unordered_map>
+using namespace Qt::StringLiterals;
 
 namespace PJ {
 
@@ -49,17 +50,15 @@ void logLegendEntry(
   const auto* gl_ctx = QOpenGLContext::currentContext();
   const char* gl_state = (gl_ctx == nullptr) ? "none" : (gl_ctx->isValid() ? "valid" : "INVALID");
 
-  const QString sig = QStringLiteral("EMPTY=%1 CLIPPED=%2(avail=%3) LOWCONTRAST=%4 text=%5 bg=%6 gl=%7")
-                          .arg(empty)
-                          .arg(clipped)
-                          .arg(text_avail, 0, 'f', 1)
-                          .arg(low_contrast)
-                          .arg(
-                              text_color.isValid() ? text_color.name() : QStringLiteral("(none)"), canvas_bg.name(),
-                              QString::fromLatin1(gl_state));
+  const QString sig =
+      u"EMPTY=%1 CLIPPED=%2(avail=%3) LOWCONTRAST=%4 text=%5 bg=%6 gl=%7"_s.arg(empty)
+          .arg(clipped)
+          .arg(text_avail, 0, 'f', 1)
+          .arg(low_contrast)
+          .arg(text_color.isValid() ? text_color.name() : u"(none)"_s, canvas_bg.name(), QString::fromLatin1(gl_state));
 
   static std::unordered_map<QString, QString> last_sig;
-  const QString key = QStringLiteral("%1|%2").arg(reinterpret_cast<quintptr>(plot)).arg(title);
+  const QString key = u"%1|%2"_s.arg(reinterpret_cast<quintptr>(plot)).arg(title);
   auto it = last_sig.find(key);
   if (it != last_sig.end() && it->second == sig) {
     return;  // unchanged since last paint — stay quiet

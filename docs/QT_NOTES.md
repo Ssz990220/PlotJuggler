@@ -122,6 +122,18 @@ Prefer these over hand-rolled equivalents. Names are exact.
   cursor quirk isn't called out in any 6.9–6.11 changelog. Don't assume the
   upgrade resolves it; re-test.
 
+## House style: string literal suffixes
+
+New code uses the Qt 6 literal suffixes — `u"…"_s` for `QString` (equivalent to
+`QStringLiteral("…")`) and `"…"_L1` for `QLatin1StringView` comparisons — via
+`using namespace Qt::StringLiterals;` placed after the last `#include` at file
+scope, **`.cpp` files only**. Never put that `using` directive at namespace
+scope in a header (it would leak into every translation unit that includes it);
+headers keep `QStringLiteral`. A trailing `#include "X.moc"` at the end of the
+file (required when a `Q_OBJECT` class is defined in the `.cpp`) does not count
+as "the last include" — place the `using` line after the top include block,
+before the first namespace/code.
+
 ## Explicitly NOT relevant to PJ4 (don't chase these)
 
 QML / Qt Quick / Qt Quick 3D (incl. SSGI/SSR/motion vectors), Qt Multimedia &

@@ -57,27 +57,28 @@
 
 #include "lua_syntax_highlighter.hpp"
 #include "python_syntax_highlighter.hpp"
+using namespace Qt::StringLiterals;
 
 namespace PJ {
 
 QString resolveNamedIconPath(std::string_view icon_name) {
   if (icon_name == "link") {
-    return QStringLiteral(":/resources/svg/link.svg");
+    return u":/resources/svg/link.svg"_s;
   }
   if (icon_name == "contract") {
-    return QStringLiteral(":/resources/svg/contract.svg");
+    return u":/resources/svg/contract.svg"_s;
   }
   if (icon_name == "plug_connect") {
-    return QStringLiteral(":/resources/svg/plug_connect.svg");
+    return u":/resources/svg/plug_connect.svg"_s;
   }
   if (icon_name == "refresh") {
-    return QStringLiteral(":/resources/svg/refresh.svg");
+    return u":/resources/svg/refresh.svg"_s;
   }
   if (icon_name == "search") {
-    return QStringLiteral(":/resources/svg/search_light.svg");
+    return u":/resources/svg/search_light.svg"_s;
   }
   if (icon_name == "add") {
-    return QStringLiteral(":/resources/svg/add.svg");
+    return u":/resources/svg/add.svg"_s;
   }
   return {};
 }
@@ -167,7 +168,7 @@ namespace {
 class RadioEmitHolder : public QObject {
  public:
   RadioEmitHolder(QObject* parent, std::function<void(int)> fn) : QObject(parent), emit_row(std::move(fn)) {
-    setObjectName(QStringLiteral("pj_radio_emit_holder"));
+    setObjectName(u"pj_radio_emit_holder"_s);
   }
   std::function<void(int)> emit_row;
 };
@@ -185,17 +186,17 @@ static void applyTableRadioColumn(
   if (col < 0 || col >= tw->columnCount()) {
     return;
   }
-  auto* group = tw->findChild<QButtonGroup*>(QStringLiteral("pj_radio_group"), Qt::FindDirectChildrenOnly);
+  auto* group = tw->findChild<QButtonGroup*>(u"pj_radio_group"_s, Qt::FindDirectChildrenOnly);
   if (group == nullptr) {
     group = new QButtonGroup(tw);
-    group->setObjectName(QStringLiteral("pj_radio_group"));
+    group->setObjectName(u"pj_radio_group"_s);
     group->setExclusive(true);
   }
   for (int r = 0; r < tw->rowCount(); ++r) {
     auto* radio = qobject_cast<QRadioButton*>(tw->cellWidget(r, col));
     if (radio == nullptr) {
       radio = new QRadioButton(tw);
-      radio->setStyleSheet(QStringLiteral("QRadioButton { margin-left: 8px; }"));
+      radio->setStyleSheet(u"QRadioButton { margin-left: 8px; }"_s);
       tw->setCellWidget(r, col, radio);
       group->addButton(radio);
       // Resolve the row at click time: rows renumber as the user adds/removes
@@ -333,8 +334,8 @@ static void applyToWidget(
     if (auto tip = view.fieldValidTooltip(name)) {
       w->setToolTip(QString::fromStdString(*tip));
     }
-    const QString sel = w->objectName().isEmpty() ? QString() : QStringLiteral("#%1").arg(w->objectName());
-    w->setStyleSheet(*ok || sel.isEmpty() ? QString() : sel + QStringLiteral(" { background-color: #ffcccc; }"));
+    const QString sel = w->objectName().isEmpty() ? QString() : u"#%1"_s.arg(w->objectName());
+    w->setStyleSheet(*ok || sel.isEmpty() ? QString() : sel + u" { background-color: #ffcccc; }"_s);
   }
 
   // --- QLineEdit ---
@@ -565,7 +566,7 @@ static void applyToWidget(
     if (auto col = view.tableRadioColumn(name)) {
       applyTableRadioColumn(tw, *col, view.tableRadioCheckedRow(name).value_or(-1), [tw](int row) {
         if (auto* holder = static_cast<RadioEmitHolder*>(
-                tw->findChild<QObject*>(QStringLiteral("pj_radio_emit_holder"), Qt::FindDirectChildrenOnly))) {
+                tw->findChild<QObject*>(u"pj_radio_emit_holder"_s, Qt::FindDirectChildrenOnly))) {
           holder->emit_row(row);
         }
       });

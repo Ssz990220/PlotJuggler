@@ -32,6 +32,7 @@
 #include "pj_plotting/RasterTextEngine.h"
 #include "pj_runtime/CatalogModel.h"
 #include "pj_runtime/SessionManager.h"
+using namespace Qt::StringLiterals;
 
 namespace {
 
@@ -106,7 +107,7 @@ TEST(RasterTextGl, DetectsGlPainterAndLeavesInk) {
 
     const PJ::RasterTextEngine engine(std::make_unique<QwtPlainTextEngine>());
     const int before = PJ::RasterTextEngine::glRasterDrawCount();
-    engine.draw(&painter, QRectF(6, 6, 188, 48), Qt::AlignLeft | Qt::AlignVCenter, QStringLiteral("Hello"));
+    engine.draw(&painter, QRectF(6, 6, 188, 48), Qt::AlignLeft | Qt::AlignVCenter, u"Hello"_s);
     painter.end();
     EXPECT_GT(PJ::RasterTextEngine::glRasterDrawCount(), before) << "draw did not take the GL raster path";
   }
@@ -169,7 +170,7 @@ TEST(RasterTextGl, LegendTextOnGlCanvasRoutesThroughRasterPath) {
 int main(int argc, char** argv) {
   // Force the GL canvas; honour an externally-set QT_QPA_PLATFORM so CI can
   // choose its GL-capable platform.
-  QSettings().setValue(QStringLiteral("Preferences::use_opengl"), true);
+  QSettings().setValue(u"Preferences::use_opengl"_s, true);
   testing::InitGoogleTest(&argc, argv);
   QApplication app(argc, argv);
   return RUN_ALL_TESTS();

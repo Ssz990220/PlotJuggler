@@ -8,6 +8,7 @@
 #include <QSet>
 #include <utility>
 #include <vector>
+using namespace Qt::StringLiterals;
 
 namespace PJ::layout_xml {
 
@@ -23,7 +24,7 @@ void appendJsonAsCdata(QDomDocument& doc, QDomElement& parent, const QString& js
   // QString APIs return qsizetype throughout.
   qsizetype start = 0;
   while (true) {
-    const qsizetype hit = json.indexOf(QStringLiteral("]]>"), start);
+    const qsizetype hit = json.indexOf(u"]]>"_s, start);
     if (hit < 0) {
       parent.appendChild(doc.createCDATASection(json.mid(start)));
       return;
@@ -46,35 +47,35 @@ QString directCdataText(const QDomElement& element) {
 
 QList<DataSourceRef> extractDataSource(const QDomDocument& doc, const QDir& layout_dir) {
   QList<DataSourceRef> sources;
-  const QDomElement wrapper = doc.documentElement().firstChildElement(QStringLiteral("previouslyLoaded_Datafiles"));
+  const QDomElement wrapper = doc.documentElement().firstChildElement(u"previouslyLoaded_Datafiles"_s);
   if (wrapper.isNull()) {
     return sources;
   }
   // Walk every <fileInfo> sibling, not just the first: a multi-file session
   // saves one per loaded data file (see MainWindow::appendDataSourceElement).
-  for (QDomElement file_info = wrapper.firstChildElement(QStringLiteral("fileInfo")); !file_info.isNull();
-       file_info = file_info.nextSiblingElement(QStringLiteral("fileInfo"))) {
-    const QString filename = file_info.attribute(QStringLiteral("filename"));
+  for (QDomElement file_info = wrapper.firstChildElement(u"fileInfo"_s); !file_info.isNull();
+       file_info = file_info.nextSiblingElement(u"fileInfo"_s)) {
+    const QString filename = file_info.attribute(u"filename"_s);
     if (filename.isEmpty()) {
       continue;
     }
     DataSourceRef info;
     const QFileInfo qfi(filename);
     info.resolved_path = qfi.isAbsolute() ? qfi.absoluteFilePath() : layout_dir.absoluteFilePath(filename);
-    info.prefix = file_info.attribute(QStringLiteral("prefix"));
+    info.prefix = file_info.attribute(u"prefix"_s);
 
     // Source Timeline state (optional; absent in pre-v3 layouts). A missing
     // display_offset_ns leaves has_display_offset false so the reloaded dataset
     // keeps its natural zero offset rather than being explicitly rewritten.
-    if (file_info.hasAttribute(QStringLiteral("display_offset_ns"))) {
-      info.display_offset_ns = file_info.attribute(QStringLiteral("display_offset_ns")).toLongLong();
+    if (file_info.hasAttribute(u"display_offset_ns"_s)) {
+      info.display_offset_ns = file_info.attribute(u"display_offset_ns"_s).toLongLong();
       info.has_display_offset = true;
     }
-    info.timeline_order = file_info.attribute(QStringLiteral("timeline_order"), QStringLiteral("-1")).toInt();
+    info.timeline_order = file_info.attribute(u"timeline_order"_s, u"-1"_s).toInt();
 
-    const QDomElement plugin = file_info.firstChildElement(QStringLiteral("plugin"));
+    const QDomElement plugin = file_info.firstChildElement(u"plugin"_s);
     if (!plugin.isNull()) {
-      info.plugin_id = plugin.attribute(QStringLiteral("ID"));
+      info.plugin_id = plugin.attribute(u"ID"_s);
       // QDomElement::text() concatenates all child text/CDATA — exactly
       // the round-trip of doc.createCDATASection above.
       info.plugin_config_json = plugin.text();
@@ -104,14 +105,14 @@ std::optional<SeriesPath> readPath(const QDomElement& curve, const QString& topi
 // Visits every <curve> that is a direct child of a <plot> element.
 template <typename Fn>
 void forEachPlotCurve(const QDomDocument& doc, Fn&& fn) {
-  const QDomNodeList plot_nodes = doc.elementsByTagName(QStringLiteral("plot"));
+  const QDomNodeList plot_nodes = doc.elementsByTagName(u"plot"_s);
   for (int i = 0; i < plot_nodes.size(); ++i) {
     const QDomElement plot = plot_nodes.at(i).toElement();
     if (plot.isNull()) {
       continue;
     }
-    for (QDomElement curve = plot.firstChildElement(QStringLiteral("curve")); !curve.isNull();
-         curve = curve.nextSiblingElement(QStringLiteral("curve"))) {
+    for (QDomElement curve = plot.firstChildElement(u"curve"_s); !curve.isNull();
+         curve = curve.nextSiblingElement(u"curve"_s)) {
       fn(curve);
     }
   }
@@ -133,9 +134,9 @@ QList<SeriesPath> extractSeriesPaths(const QDomDocument& doc) {
     }
   };
   forEachPlotCurve(doc, [&](const QDomElement& curve) {
-    push(readPath(curve, QStringLiteral("topic"), QStringLiteral("field")));
-    push(readPath(curve, QStringLiteral("x_topic"), QStringLiteral("x_field")));
-    push(readPath(curve, QStringLiteral("y_topic"), QStringLiteral("y_field")));
+    push(readPath(curve, u"topic"_s, u"field"_s));
+    push(readPath(curve, u"x_topic"_s, u"x_field"_s));
+    push(readPath(curve, u"y_topic"_s, u"y_field"_s));
   });
   return paths;
 }
@@ -155,18 +156,18 @@ QList<SeriesPath> rebindCurveKeys(QDomDocument& doc, const SeriesKeyResolver& re
   forEachPlotCurve(doc, [&](const QDomElement& curve) { curves.push_back(curve); });
 
   for (QDomElement& curve : curves) {
-    const std::optional<SeriesPath> xy_x = readPath(curve, QStringLiteral("x_topic"), QStringLiteral("x_field"));
+    const std::optional<SeriesPath> xy_x = readPath(curve, u"x_topic"_s, u"x_field"_s);
     if (xy_x.has_value()) {
       // XY curve: both axes must resolve, else the curve is undrawable.
-      const std::optional<SeriesPath> xy_y = readPath(curve, QStringLiteral("y_topic"), QStringLiteral("y_field"));
+      const std::optional<SeriesPath> xy_y = readPath(curve, u"y_topic"_s, u"y_field"_s);
       const std::optional<QString> x_key = resolve(*xy_x);
       const std::optional<QString> y_key = xy_y.has_value() ? resolve(*xy_y) : std::nullopt;
       if (x_key.has_value() && y_key.has_value()) {
-        curve.setAttribute(QStringLiteral("curve_x"), *x_key);
-        curve.setAttribute(QStringLiteral("curve_y"), *y_key);
+        curve.setAttribute(u"curve_x"_s, *x_key);
+        curve.setAttribute(u"curve_y"_s, *y_key);
       } else {
-        curve.removeAttribute(QStringLiteral("curve_x"));
-        curve.removeAttribute(QStringLiteral("curve_y"));
+        curve.removeAttribute(u"curve_x"_s);
+        curve.removeAttribute(u"curve_y"_s);
         if (!x_key.has_value()) {
           record_unresolved(*xy_x);
         }
@@ -177,14 +178,14 @@ QList<SeriesPath> rebindCurveKeys(QDomDocument& doc, const SeriesKeyResolver& re
       continue;
     }
 
-    const std::optional<SeriesPath> ts = readPath(curve, QStringLiteral("topic"), QStringLiteral("field"));
+    const std::optional<SeriesPath> ts = readPath(curve, u"topic"_s, u"field"_s);
     if (!ts.has_value()) {
       continue;  // No stable identity to rebind; leave as-is.
     }
     if (const std::optional<QString> key = resolve(*ts); key.has_value()) {
-      curve.setAttribute(QStringLiteral("name"), *key);
+      curve.setAttribute(u"name"_s, *key);
     } else {
-      curve.removeAttribute(QStringLiteral("name"));
+      curve.removeAttribute(u"name"_s);
       record_unresolved(*ts);
     }
   }
@@ -194,9 +195,8 @@ QList<SeriesPath> rebindCurveKeys(QDomDocument& doc, const SeriesKeyResolver& re
 void stripUnresolvedCurves(QDomDocument& doc) {
   std::vector<QDomNode> victims;
   forEachPlotCurve(doc, [&](const QDomElement& curve) {
-    const bool has_ts_key = !curve.attribute(QStringLiteral("name")).isEmpty();
-    const bool has_xy_keys =
-        !curve.attribute(QStringLiteral("curve_x")).isEmpty() && !curve.attribute(QStringLiteral("curve_y")).isEmpty();
+    const bool has_ts_key = !curve.attribute(u"name"_s).isEmpty();
+    const bool has_xy_keys = !curve.attribute(u"curve_x"_s).isEmpty() && !curve.attribute(u"curve_y"_s).isEmpty();
     if (!has_ts_key && !has_xy_keys) {
       victims.push_back(curve);
     }
@@ -207,19 +207,19 @@ void stripUnresolvedCurves(QDomDocument& doc) {
 }
 
 QDomElement writeSourceTimelineViewState(QDomDocument& doc, const SourceTimelineViewState& state) {
-  QDomElement element = doc.createElement(QStringLiteral("source_timeline"));
+  QDomElement element = doc.createElement(u"source_timeline"_s);
   if (state.zoom) {
     // High-precision 'g' so the tiny pixels-per-ns zoom (~1e-7) round-trips exactly.
-    element.setAttribute(QStringLiteral("zoom"), QString::number(*state.zoom, 'g', 17));
+    element.setAttribute(u"zoom"_s, QString::number(*state.zoom, 'g', 17));
   }
   if (state.scroll_left_ns) {
-    element.setAttribute(QStringLiteral("scroll_left_ns"), QString::number(*state.scroll_left_ns));
+    element.setAttribute(u"scroll_left_ns"_s, QString::number(*state.scroll_left_ns));
   }
   if (state.name_column_width) {
-    element.setAttribute(QStringLiteral("name_column_width"), QString::number(*state.name_column_width));
+    element.setAttribute(u"name_column_width"_s, QString::number(*state.name_column_width));
   }
   if (state.snap) {
-    element.setAttribute(QStringLiteral("snap"), *state.snap ? QStringLiteral("true") : QStringLiteral("false"));
+    element.setAttribute(u"snap"_s, *state.snap ? u"true"_s : u"false"_s);
   }
   return element;
 }
@@ -230,26 +230,26 @@ SourceTimelineViewState readSourceTimelineViewState(const QDomElement& element) 
     return state;
   }
   bool ok = false;
-  if (element.hasAttribute(QStringLiteral("zoom"))) {
-    const double zoom = element.attribute(QStringLiteral("zoom")).toDouble(&ok);
+  if (element.hasAttribute(u"zoom"_s)) {
+    const double zoom = element.attribute(u"zoom"_s).toDouble(&ok);
     if (ok && zoom > 0.0) {
       state.zoom = zoom;
     }
   }
-  if (element.hasAttribute(QStringLiteral("scroll_left_ns"))) {
-    const qint64 left_ns = element.attribute(QStringLiteral("scroll_left_ns")).toLongLong(&ok);
+  if (element.hasAttribute(u"scroll_left_ns"_s)) {
+    const qint64 left_ns = element.attribute(u"scroll_left_ns"_s).toLongLong(&ok);
     if (ok) {
       state.scroll_left_ns = left_ns;
     }
   }
-  if (element.hasAttribute(QStringLiteral("name_column_width"))) {
-    const int width = element.attribute(QStringLiteral("name_column_width")).toInt(&ok);
+  if (element.hasAttribute(u"name_column_width"_s)) {
+    const int width = element.attribute(u"name_column_width"_s).toInt(&ok);
     if (ok && width > 0) {
       state.name_column_width = width;
     }
   }
-  if (element.hasAttribute(QStringLiteral("snap"))) {
-    state.snap = element.attribute(QStringLiteral("snap")) == QStringLiteral("true");
+  if (element.hasAttribute(u"snap"_s)) {
+    state.snap = element.attribute(u"snap"_s) == u"true"_s;
   }
   return state;
 }

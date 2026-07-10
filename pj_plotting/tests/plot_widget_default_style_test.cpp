@@ -17,6 +17,7 @@
 #include "pj_runtime/CatalogModel.h"
 #include "pj_runtime/CurveDescriptor.h"
 #include "pj_runtime/SessionManager.h"
+using namespace Qt::StringLiterals;
 
 namespace {
 
@@ -120,11 +121,11 @@ TEST(PlotWidgetCurveStyle, StyleIsSavedOnThePlotNotPerCurve) {
 
   QDomDocument doc;
   const QDomElement element = plot.xmlSaveState(doc);
-  EXPECT_EQ(element.attribute(QStringLiteral("style")), QStringLiteral("Dots"));
-  const QDomElement curve = element.firstChildElement(QStringLiteral("curve"));
+  EXPECT_EQ(element.attribute(u"style"_s), u"Dots"_s);
+  const QDomElement curve = element.firstChildElement(u"curve"_s);
   ASSERT_FALSE(curve.isNull());
-  EXPECT_FALSE(curve.hasAttribute(QStringLiteral("style")));
-  EXPECT_FALSE(curve.hasAttribute(QStringLiteral("line_width")));
+  EXPECT_FALSE(curve.hasAttribute(u"style"_s));
+  EXPECT_FALSE(curve.hasAttribute(u"line_width"_s));
 }
 
 // XY (scatter) plots default to Dots, and a plot-level style/width change must
@@ -146,7 +147,7 @@ TEST(PlotWidgetCurveStyle, XyPlotUsesPlotLevelStyle) {
   plot.setModeXY(true);
   plot.setDefaultStyle(PJ::PlotWidgetBase::kSticks);  // the user's chosen style
 
-  auto* info = plot.addCurveXY(key_x, key_y, QStringLiteral("x vs y"));
+  auto* info = plot.addCurveXY(key_x, key_y, u"x vs y"_s);
   ASSERT_NE(info, nullptr);
   ASSERT_NE(info->curve, nullptr);
   EXPECT_EQ(info->curve->style(), QwtPlotCurve::Sticks);  // XY uses the plot style, not forced Dots
@@ -165,13 +166,13 @@ TEST(PlotWidgetCurveStyle, OldLayoutRecoversLineWidthFromFirstCurve) {
   PJ::PlotWidget plot(&session, &catalog);
 
   QDomDocument doc;
-  QDomElement plot_el = doc.createElement(QStringLiteral("plot"));
-  plot_el.setAttribute(QStringLiteral("mode"), QStringLiteral("TimeSeries"));
-  plot_el.setAttribute(QStringLiteral("line_width"), QStringLiteral("1.0"));  // stale plot-level default
-  QDomElement curve_el = doc.createElement(QStringLiteral("curve"));
+  QDomElement plot_el = doc.createElement(u"plot"_s);
+  plot_el.setAttribute(u"mode"_s, u"TimeSeries"_s);
+  plot_el.setAttribute(u"line_width"_s, u"1.0"_s);  // stale plot-level default
+  QDomElement curve_el = doc.createElement(u"curve"_s);
   // The curve key need not resolve — the width is read from the element before curves load.
-  curve_el.setAttribute(QStringLiteral("name"), QStringLiteral("dataset:1/topic:999/column:0"));
-  curve_el.setAttribute(QStringLiteral("line_width"), QStringLiteral("3.00"));  // real old per-curve width
+  curve_el.setAttribute(u"name"_s, u"dataset:1/topic:999/column:0"_s);
+  curve_el.setAttribute(u"line_width"_s, u"3.00"_s);  // real old per-curve width
   plot_el.appendChild(curve_el);
 
   plot.xmlLoadState(plot_el);
@@ -180,10 +181,8 @@ TEST(PlotWidgetCurveStyle, OldLayoutRecoversLineWidthFromFirstCurve) {
 
 // The XY dialog's alias auto-suggestion: common prefix + "[suffixX;suffixY]".
 TEST(XYCurveDialog, SuggestAlias) {
-  EXPECT_EQ(
-      PJ::XYCurveDialog::suggestAlias(QStringLiteral("/imu/x"), QStringLiteral("/imu/y")),
-      QStringLiteral("/imu/[x;y]"));
-  EXPECT_EQ(PJ::XYCurveDialog::suggestAlias(QStringLiteral("abc"), QStringLiteral("xyz")), QStringLiteral("[abc;xyz]"));
+  EXPECT_EQ(PJ::XYCurveDialog::suggestAlias(u"/imu/x"_s, u"/imu/y"_s), u"/imu/[x;y]"_s);
+  EXPECT_EQ(PJ::XYCurveDialog::suggestAlias(u"abc"_s, u"xyz"_s), u"[abc;xyz]"_s);
 }
 
 // A plot can hold multiple XY curves; each carries its user alias as the title,
@@ -201,13 +200,13 @@ TEST(PlotWidgetCurveStyle, MultipleXyCurvesCarryAliasAndDots) {
   PJ::PlotWidget plot(&session, &catalog);
   plot.setModeXY(true);
   plot.setDefaultStyle(PJ::PlotWidgetBase::kDots);  // the user picks Dots for the scatter
-  auto* c1 = plot.addCurveXY(key_x, key_y, QStringLiteral("x vs y"));
-  auto* c2 = plot.addCurveXY(key_x, key_z, QStringLiteral("x vs z"));
+  auto* c1 = plot.addCurveXY(key_x, key_y, u"x vs y"_s);
+  auto* c2 = plot.addCurveXY(key_x, key_z, u"x vs z"_s);
   ASSERT_NE(c1, nullptr);
   ASSERT_NE(c2, nullptr);
   ASSERT_EQ(plot.curveList().size(), 2U);
-  EXPECT_EQ(c1->source_name, QStringLiteral("x vs y"));
-  EXPECT_EQ(c2->source_name, QStringLiteral("x vs z"));
+  EXPECT_EQ(c1->source_name, u"x vs y"_s);
+  EXPECT_EQ(c2->source_name, u"x vs z"_s);
   EXPECT_EQ(c1->curve->style(), QwtPlotCurve::Dots);  // both inherit the plot style
   EXPECT_EQ(c2->curve->style(), QwtPlotCurve::Dots);
 
@@ -215,9 +214,8 @@ TEST(PlotWidgetCurveStyle, MultipleXyCurvesCarryAliasAndDots) {
   QDomDocument doc;
   const QDomElement element = plot.xmlSaveState(doc);
   int xy_curves = 0;
-  for (QDomElement c = element.firstChildElement(QStringLiteral("curve")); !c.isNull();
-       c = c.nextSiblingElement(QStringLiteral("curve"))) {
-    EXPECT_TRUE(c.hasAttribute(QStringLiteral("name")));
+  for (QDomElement c = element.firstChildElement(u"curve"_s); !c.isNull(); c = c.nextSiblingElement(u"curve"_s)) {
+    EXPECT_TRUE(c.hasAttribute(u"name"_s));
     ++xy_curves;
   }
   EXPECT_EQ(xy_curves, 2);
@@ -240,15 +238,15 @@ TEST(PlotWidgetCurveStyle, XyLoadRestoresAliasWithoutDialog) {
   plot.setDefaultStyle(PJ::PlotWidgetBase::kDots);  // the plot's restored style
 
   QDomDocument doc;
-  QDomElement xy_el = doc.createElement(QStringLiteral("curve"));
-  xy_el.setAttribute(QStringLiteral("curve_x"), key_x);  // post-rebind keys
-  xy_el.setAttribute(QStringLiteral("curve_y"), key_y);
-  xy_el.setAttribute(QStringLiteral("name"), QStringLiteral("my alias"));
+  QDomElement xy_el = doc.createElement(u"curve"_s);
+  xy_el.setAttribute(u"curve_x"_s, key_x);  // post-rebind keys
+  xy_el.setAttribute(u"curve_y"_s, key_y);
+  xy_el.setAttribute(u"name"_s, u"my alias"_s);
 
   auto* loaded = plot.applyCurveElement(xy_el);
   ASSERT_NE(loaded, nullptr);
   ASSERT_NE(loaded->curve, nullptr);
-  EXPECT_EQ(loaded->source_name, QStringLiteral("my alias"));
+  EXPECT_EQ(loaded->source_name, u"my alias"_s);
   EXPECT_EQ(loaded->curve->style(), QwtPlotCurve::Dots);  // inherits the plot style
 }
 

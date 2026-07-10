@@ -41,6 +41,7 @@
 #include "pj_scene3d_widgets/hud_overlay.h"
 #include "pj_scene3d_widgets/render_pass.h"
 #include "pj_scene3d_widgets/scene3d_layer.h"
+using namespace Qt::StringLiterals;
 
 namespace pj::scene3d {
 
@@ -1111,15 +1112,15 @@ void SceneViewWidget::drawPerfHud() {
 
   QStringList lines;
   if (scene_profiler_.hasResult()) {
-    lines << QStringLiteral("GPU  %1 ms").arg(scene_profiler_.averageMillis(), 0, 'f', 2);
+    lines << u"GPU  %1 ms"_s.arg(scene_profiler_.averageMillis(), 0, 'f', 2);
   } else {
-    lines << QStringLiteral("GPU  --");
+    lines << u"GPU  --"_s;
   }
-  lines << QStringLiteral("CPU  %1 ms").arg(cpuFrameMillis(), 0, 'f', 2);
-  lines << QStringLiteral("MSAA %1x").arg(achievedSceneSamples());
+  lines << u"CPU  %1 ms"_s.arg(cpuFrameMillis(), 0, 'f', 2);
+  lines << u"MSAA %1x"_s.arg(achievedSceneSamples());
 
   QFont font;
-  font.setFamily(QStringLiteral("monospace"));
+  font.setFamily(u"monospace"_s);
   font.setStyleHint(QFont::Monospace);
   font.setPointSizeF(9.5);
 

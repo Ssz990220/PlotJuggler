@@ -27,6 +27,7 @@
 #include "pj_plugins/host/service_registry_builder.hpp"
 #include "pj_runtime/ExtensionCatalogService.h"
 #include "pj_runtime/ToolboxRuntimeHost.h"
+using namespace Qt::StringLiterals;
 
 #ifndef PJ_RUNTIME_HOST_OBJECT_PARSER_PATH
 #error "PJ_RUNTIME_HOST_OBJECT_PARSER_PATH must be defined"
@@ -196,7 +197,7 @@ TEST_F(ToolboxRuntimeHostTest, NotifyDataChangedFlushesBufferedWritesBeforeCatal
 TEST_F(ToolboxRuntimeHostTest, ParserIngestDelegatesToCatalogParserAndRegistersObjectParser) {
   QFileInfo plugin_file{QString::fromUtf8(PJ_RUNTIME_HOST_OBJECT_PARSER_PATH)};
   PJ::ExtensionCatalogService catalog(plugin_file.absolutePath());
-  ASSERT_NE(catalog.findParserByEncoding(QStringLiteral("runtime_host_object")), nullptr);
+  ASSERT_NE(catalog.findParserByEncoding(u"runtime_host_object"_s), nullptr);
 
   std::vector<PJ::ObjectTopicId> registered_object_parsers;
   PJ::ToolboxRuntimeHost::ParserIngestDeps deps;

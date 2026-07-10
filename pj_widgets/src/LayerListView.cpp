@@ -25,6 +25,8 @@
 #include "pj_widgets/SvgUtil.h"
 #include "pj_widgets/ThemeColors.h"
 
+using namespace Qt::StringLiterals;
+
 namespace PJ {
 
 namespace {
@@ -57,7 +59,7 @@ class LayerRowWidget : public QWidget {
     name_->setHideBelowWidth(0);
 
     eye_ = new QToolButton(this);
-    eye_->setObjectName(QStringLiteral("curveVisibilityToggle"));
+    eye_->setObjectName(u"curveVisibilityToggle"_s);
     eye_->setCheckable(true);
     eye_->setChecked(visible);
     eye_->setAutoRaise(true);
@@ -65,7 +67,7 @@ class LayerRowWidget : public QWidget {
     eye_->setToolTip(tr("Toggle layer visibility"));
 
     trash_ = new QToolButton(this);
-    trash_->setObjectName(QStringLiteral("curveTrashToggle"));
+    trash_->setObjectName(u"curveTrashToggle"_s);
     trash_->setAutoRaise(true);
     trash_->setFocusPolicy(Qt::NoFocus);
     trash_->setToolTip(tr("Remove this layer"));
@@ -117,7 +119,7 @@ class LayerRowWidget : public QWidget {
     is_warning_ = is_warning;
     warning_reason_ = reason;
     if (is_warning_) {
-      name_->setStyleSheet(QStringLiteral("color: %1;").arg(theme::kAccentError.name()));
+      name_->setStyleSheet(u"color: %1;"_s.arg(theme::kAccentError.name()));
     } else {
       name_->setStyleSheet(QString{});
     }
@@ -275,7 +277,7 @@ LayerListView::LayerListView(QWidget* parent) : QWidget(parent), current_theme_(
   list_->setResizeMode(QListView::Adjust);
   list_->setSpacing(0);
   list_->setMinimumWidth(0);
-  list_->setStyleSheet(QStringLiteral("QListWidget::item { padding: 0px; }"));
+  list_->setStyleSheet(u"QListWidget::item { padding: 0px; }"_s);
   list_->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Maximum);
   list_->setFixedHeight(kDefaultRowHeight * 4 + 4);
   root->addWidget(list_);

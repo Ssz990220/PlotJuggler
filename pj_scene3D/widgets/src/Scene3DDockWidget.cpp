@@ -45,6 +45,7 @@
 #include "pj_widgets/ComboBox.h"
 #include "pj_widgets/SvgUtil.h"
 #include "urdf_package_resolver.h"
+using namespace Qt::StringLiterals;
 
 namespace PJ {
 
@@ -84,7 +85,7 @@ QString cameraModelToString(int combo_index) {
       return QString::fromLatin1(entry.id);
     }
   }
-  return QStringLiteral("orbit");
+  return u"orbit"_s;
 }
 
 // Combo index for a persisted model name, or -1 when missing / unknown (→ keep
@@ -232,7 +233,7 @@ Scene3DDockWidget::Scene3DDockWidget(QWidget* parent) : SceneDockWidget(parent) 
   // before connect() avoids a spurious callback into a not-yet-constructed view
   // during the ctor.
   camera_model_combo_ = new ComboBox(this);
-  camera_model_combo_->setObjectName(QStringLiteral("cameraModelCombo"));
+  camera_model_combo_->setObjectName(u"cameraModelCombo"_s);
   camera_model_combo_->setFocusPolicy(Qt::ClickFocus);
   camera_model_combo_->addItems({tr("Orbit"), tr("XYOrbit"), tr("Fly"), tr("Top-down ortho")});
   camera_model_combo_->raise();
@@ -244,13 +245,13 @@ Scene3DDockWidget::Scene3DDockWidget(QWidget* parent) : SceneDockWidget(parent) 
   });
 
   home_button_ = new QToolButton(this);
-  home_button_->setObjectName(QStringLiteral("cameraHomeButton"));
+  home_button_->setObjectName(u"cameraHomeButton"_s);
   home_button_->setFocusPolicy(Qt::ClickFocus);
   home_button_->setToolTip(tr("Reset view to default"));
   // Bundled "recenter" glyph (resources.qrc). Pinned to the light-theme
   // ink so it stays dark on this always-light overlay button, even when the
   // app is in dark mode (theme-following ink would render near-invisible here).
-  home_button_->setIcon(PJ::loadSvg(QStringLiteral(":/resources/svg/recenter.svg")));
+  home_button_->setIcon(PJ::loadSvg(u":/resources/svg/recenter.svg"_s));
   home_button_->setStyleSheet(QStringLiteral(
       "QToolButton { background-color: rgba(255, 255, 255, 200); border: 1px solid rgba(60, 60, 60, 180); "
       "padding: 0px; border-radius: 3px; }"));  // no padding: let the glyph fill the button (icon sized below)
@@ -766,7 +767,7 @@ uint64_t Scene3DDockWidget::viewRenderKey(PJ::Timepoint time) const {
 }
 
 QString Scene3DDockWidget::xmlTag() const {
-  return QStringLiteral("scene3d");
+  return u"scene3d"_s;
 }
 
 void Scene3DDockWidget::prepareTransformBufferForTopic(ObjectTopicId topic_id) {
@@ -1181,16 +1182,16 @@ bool Scene3DDockWidget::restoreLayerElement(const QDomElement& layer_el) {
     return false;
   }
 
-  const QString object_type_str = layer_el.attribute(QStringLiteral("object_type"));
+  const QString object_type_str = layer_el.attribute(u"object_type"_s);
   const auto object_type_opt = sdk::parseBuiltinObjectType(object_type_str.toStdString());
   if (!object_type_opt.has_value()) {
     return true;
   }
-  const QString display_name = layer_el.attribute(QStringLiteral("display_name"));
-  const bool visible = layer_el.attribute(QStringLiteral("visible"), QStringLiteral("true")) == QStringLiteral("true");
+  const QString display_name = layer_el.attribute(u"display_name"_s);
+  const bool visible = layer_el.attribute(u"visible"_s, u"true"_s) == u"true"_s;
 
   ObjectTopicId topic_id;
-  const bool local_layer = layer_el.attribute(QStringLiteral("local")) == QStringLiteral("true");
+  const bool local_layer = layer_el.attribute(u"local"_s) == u"true"_s;
   if (local_layer) {
     if (*object_type_opt != sdk::BuiltinObjectType::kRobotDescription) {
       return true;
@@ -1201,13 +1202,13 @@ bool Scene3DDockWidget::restoreLayerElement(const QDomElement& layer_el) {
     }
   } else {
     bool dataset_ok = false;
-    const auto dataset_value = layer_el.attribute(QStringLiteral("dataset_id")).toULongLong(&dataset_ok);
+    const auto dataset_value = layer_el.attribute(u"dataset_id"_s).toULongLong(&dataset_ok);
     if (!dataset_ok || dataset_value > std::numeric_limits<uint32_t>::max()) {
       return true;
     }
     const auto saved_id = static_cast<DatasetId>(dataset_value);
-    const QString saved_source = layer_el.attribute(QStringLiteral("dataset_source"));
-    const QString topic_name = layer_el.attribute(QStringLiteral("topic_name"));
+    const QString saved_source = layer_el.attribute(u"dataset_source"_s);
+    const QString topic_name = layer_el.attribute(u"topic_name"_s);
     // Re-resolve by stable source name first; the raw id is load-order (M.55).
     const auto dataset_id_opt = resolveDatasetId(sessionManager(), saved_id, saved_source);
     if (!dataset_id_opt.has_value()) {
@@ -1248,14 +1249,14 @@ bool Scene3DDockWidget::restoreConfigTopicElement(const QDomElement& config_el) 
   }
 
   bool dataset_ok = false;
-  const auto dataset_value = config_el.attribute(QStringLiteral("dataset_id")).toULongLong(&dataset_ok);
+  const auto dataset_value = config_el.attribute(u"dataset_id"_s).toULongLong(&dataset_ok);
   if (!dataset_ok || dataset_value > std::numeric_limits<uint32_t>::max()) {
     return true;
   }
   const auto saved_id = static_cast<DatasetId>(dataset_value);
-  const QString saved_source = config_el.attribute(QStringLiteral("dataset_source"));
-  const QString topic_name = config_el.attribute(QStringLiteral("topic_name"));
-  const QString object_type_str = config_el.attribute(QStringLiteral("object_type"));
+  const QString saved_source = config_el.attribute(u"dataset_source"_s);
+  const QString topic_name = config_el.attribute(u"topic_name"_s);
+  const QString object_type_str = config_el.attribute(u"object_type"_s);
   const auto object_type_opt = sdk::parseBuiltinObjectType(object_type_str.toStdString());
   if (!object_type_opt.has_value()) {
     return true;
@@ -1276,13 +1277,12 @@ bool Scene3DDockWidget::restoreOnePending(const QDomElement& element) {
   // 3D defers two element kinds into the base's shared pending queue: scene-config
   // topics (e.g. TF) and render layers. Dispatch on the tag; the base SceneDockWidget
   // owns the queue + the retry/unresolved/clear bookkeeping.
-  return element.tagName() == QStringLiteral("config_topic") ? restoreConfigTopicElement(element)
-                                                             : restoreLayerElement(element);
+  return element.tagName() == u"config_topic"_s ? restoreConfigTopicElement(element) : restoreLayerElement(element);
 }
 
 QDomElement Scene3DDockWidget::xmlSaveState(QDomDocument& doc) const {
   QDomElement root = doc.createElement(xmlTag());
-  root.setAttribute(QStringLiteral("version"), QStringLiteral("1"));
+  root.setAttribute(u"version"_s, u"1"_s);
 
   ObjectStore* store = sessionManager() != nullptr ? &sessionManager()->objectStore() : nullptr;
   for (const SceneLayerInfo& info : layers()) {
@@ -1291,25 +1291,25 @@ QDomElement Scene3DDockWidget::xmlSaveState(QDomDocument& doc) const {
       continue;
     }
 
-    QDomElement layer_el = doc.createElement(QStringLiteral("layer"));
+    QDomElement layer_el = doc.createElement(u"layer"_s);
     if (local_layer) {
-      layer_el.setAttribute(QStringLiteral("local"), QStringLiteral("true"));
-      layer_el.setAttribute(QStringLiteral("dataset_id"), QStringLiteral("0"));
-      layer_el.setAttribute(QStringLiteral("topic_name"), QString());
+      layer_el.setAttribute(u"local"_s, u"true"_s);
+      layer_el.setAttribute(u"dataset_id"_s, u"0"_s);
+      layer_el.setAttribute(u"topic_name"_s, QString());
     } else {
       const auto& desc = store->descriptor(info.topic_id);
-      layer_el.setAttribute(QStringLiteral("dataset_id"), QString::number(desc.dataset_id));
+      layer_el.setAttribute(u"dataset_id"_s, QString::number(desc.dataset_id));
       // Source name is stable across sessions; the raw id is a load-order counter
       // (see resolveDatasetId). Persist both so restore can re-resolve (M.55).
-      layer_el.setAttribute(QStringLiteral("dataset_source"), datasetSourceName(sessionManager(), desc.dataset_id));
-      layer_el.setAttribute(QStringLiteral("topic_name"), QString::fromStdString(desc.topic_name));
+      layer_el.setAttribute(u"dataset_source"_s, datasetSourceName(sessionManager(), desc.dataset_id));
+      layer_el.setAttribute(u"topic_name"_s, QString::fromStdString(desc.topic_name));
     }
     const auto object_type_name = sdk::name(info.object_type);
     layer_el.setAttribute(
-        QStringLiteral("object_type"),
+        u"object_type"_s,
         QString::fromLatin1(object_type_name.data(), static_cast<qsizetype>(object_type_name.size())));
-    layer_el.setAttribute(QStringLiteral("display_name"), info.display_name);
-    layer_el.setAttribute(QStringLiteral("visible"), info.visible ? QStringLiteral("true") : QStringLiteral("false"));
+    layer_el.setAttribute(u"display_name"_s, info.display_name);
+    layer_el.setAttribute(u"visible"_s, info.visible ? u"true"_s : u"false"_s);
 
     if (ISceneLayer* layer = layerFor(info.topic_id); layer != nullptr) {
       QDomElement payload = layer->xmlSaveState(doc);
@@ -1331,50 +1331,47 @@ QDomElement Scene3DDockWidget::xmlSaveState(QDomDocument& doc) const {
       if (desc.topic_name.empty()) {
         continue;  // evicted; nothing to restore
       }
-      QDomElement config_el = doc.createElement(QStringLiteral("config_topic"));
-      config_el.setAttribute(QStringLiteral("dataset_id"), QString::number(desc.dataset_id));
-      config_el.setAttribute(QStringLiteral("dataset_source"), datasetSourceName(sessionManager(), desc.dataset_id));
-      config_el.setAttribute(QStringLiteral("topic_name"), QString::fromStdString(desc.topic_name));
+      QDomElement config_el = doc.createElement(u"config_topic"_s);
+      config_el.setAttribute(u"dataset_id"_s, QString::number(desc.dataset_id));
+      config_el.setAttribute(u"dataset_source"_s, datasetSourceName(sessionManager(), desc.dataset_id));
+      config_el.setAttribute(u"topic_name"_s, QString::fromStdString(desc.topic_name));
       const auto frame_transforms_name = sdk::name(sdk::BuiltinObjectType::kFrameTransforms);
       config_el.setAttribute(
-          QStringLiteral("object_type"),
+          u"object_type"_s,
           QString::fromLatin1(frame_transforms_name.data(), static_cast<qsizetype>(frame_transforms_name.size())));
       root.appendChild(config_el);
     }
   }
 
   root.setAttribute(
-      QStringLiteral("fixed_frame_mode"),
-      fixed_frame_mode_ == FixedFrameMode::kAutoRoot ? QStringLiteral("auto_root") : QStringLiteral("explicit"));
-  root.setAttribute(QStringLiteral("fixed_frame"), currentFixedFrame());
-  root.setAttribute(QStringLiteral("follow_frame"), currentFollowFrame());
+      u"fixed_frame_mode"_s, fixed_frame_mode_ == FixedFrameMode::kAutoRoot ? u"auto_root"_s : u"explicit"_s);
+  root.setAttribute(u"fixed_frame"_s, currentFixedFrame());
+  root.setAttribute(u"follow_frame"_s, currentFollowFrame());
   if (view_ != nullptr && camera_model_combo_ != nullptr) {
-    root.setAttribute(QStringLiteral("camera_model"), cameraModelToString(camera_model_combo_->currentIndex()));
+    root.setAttribute(u"camera_model"_s, cameraModelToString(camera_model_combo_->currentIndex()));
     root.setAttribute(
-        QStringLiteral("camera_state"),
-        QString::fromStdString(pj::scene3d::cameraStateToJson(view_->camera().state())));
+        u"camera_state"_s, QString::fromStdString(pj::scene3d::cameraStateToJson(view_->camera().state())));
   }
   if (view_ != nullptr) {
     // Per-dock scene-look controls travel WITH the layout (export/import), so a
     // restored layout gives each view its own grid/frame/mesh look instead of a
     // shared global one. The QSettings group is only the seed for brand-new docks.
     // Field set mirrors Scene3DConfigPanel::applySceneControlsTo (keep in sync; 4 sites).
-    const auto bool_attr = [](bool value) { return value ? QStringLiteral("true") : QStringLiteral("false"); };
-    QDomElement sc = doc.createElement(QStringLiteral("scene_controls"));
-    sc.setAttribute(QStringLiteral("grid_visible"), bool_attr(view_->gridVisible()));
-    sc.setAttribute(
-        QStringLiteral("grid_style"), view_->gridStyle() == pj::scene3d::GridRenderPass::Style::kFilledCells ? 1 : 0);
-    sc.setAttribute(QStringLiteral("grid_extent_m"), view_->gridExtentMetres());
-    sc.setAttribute(QStringLiteral("grid_divisions"), view_->gridDivisions());
-    sc.setAttribute(QStringLiteral("axes_visible"), bool_attr(view_->axesVisible()));
-    sc.setAttribute(QStringLiteral("gizmo_size_m"), view_->gizmoSize());
-    sc.setAttribute(QStringLiteral("gizmo_opacity"), view_->gizmoOpacity());
-    sc.setAttribute(QStringLiteral("tf_parent_lines"), bool_attr(view_->tfConnectionsVisible()));
+    const auto bool_attr = [](bool value) { return value ? u"true"_s : u"false"_s; };
+    QDomElement sc = doc.createElement(u"scene_controls"_s);
+    sc.setAttribute(u"grid_visible"_s, bool_attr(view_->gridVisible()));
+    sc.setAttribute(u"grid_style"_s, view_->gridStyle() == pj::scene3d::GridRenderPass::Style::kFilledCells ? 1 : 0);
+    sc.setAttribute(u"grid_extent_m"_s, view_->gridExtentMetres());
+    sc.setAttribute(u"grid_divisions"_s, view_->gridDivisions());
+    sc.setAttribute(u"axes_visible"_s, bool_attr(view_->axesVisible()));
+    sc.setAttribute(u"gizmo_size_m"_s, view_->gizmoSize());
+    sc.setAttribute(u"gizmo_opacity"_s, view_->gizmoOpacity());
+    sc.setAttribute(u"tf_parent_lines"_s, bool_attr(view_->tfConnectionsVisible()));
     const auto& shading = view_->meshShadingParams();
-    sc.setAttribute(QStringLiteral("meshes_visible"), bool_attr(shading.meshes_visible));
-    sc.setAttribute(QStringLiteral("mesh_opacity"), shading.mesh_opacity);
-    sc.setAttribute(QStringLiteral("collisions_visible"), bool_attr(shading.collisions_visible));
-    sc.setAttribute(QStringLiteral("collision_opacity"), shading.collision_opacity);
+    sc.setAttribute(u"meshes_visible"_s, bool_attr(shading.meshes_visible));
+    sc.setAttribute(u"mesh_opacity"_s, shading.mesh_opacity);
+    sc.setAttribute(u"collisions_visible"_s, bool_attr(shading.collisions_visible));
+    sc.setAttribute(u"collision_opacity"_s, shading.collision_opacity);
     // shadows_enabled is intentionally NOT persisted: shadows are always on (see MeshShadingParams).
     root.appendChild(sc);
   }
@@ -1382,7 +1379,7 @@ QDomElement Scene3DDockWidget::xmlSaveState(QDomDocument& doc) const {
 }
 
 bool Scene3DDockWidget::xmlLoadState(const QDomElement& element) {
-  if (element.isNull() || element.tagName() != QStringLiteral("scene3d")) {
+  if (element.isNull() || element.tagName() != u"scene3d"_s) {
     return false;
   }
 
@@ -1399,14 +1396,14 @@ bool Scene3DDockWidget::xmlLoadState(const QDomElement& element) {
   scene_topic_datasets_.clear();
   clearPendingRestores();
 
-  const QString saved_mode = element.attribute(QStringLiteral("fixed_frame_mode"), QStringLiteral("auto_root"));
-  const QString saved_frame = element.attribute(QStringLiteral("fixed_frame"));
+  const QString saved_mode = element.attribute(u"fixed_frame_mode"_s, u"auto_root"_s);
+  const QString saved_frame = element.attribute(u"fixed_frame"_s);
 
   clearLayers();
   int unresolved_topics = 0;
   if (sessionManager() != nullptr) {
-    for (QDomElement layer_el = element.firstChildElement(QStringLiteral("layer")); !layer_el.isNull();
-         layer_el = layer_el.nextSiblingElement(QStringLiteral("layer"))) {
+    for (QDomElement layer_el = element.firstChildElement(u"layer"_s); !layer_el.isNull();
+         layer_el = layer_el.nextSiblingElement(u"layer"_s)) {
       if (!restoreLayerElement(layer_el)) {
         ++unresolved_topics;
         rememberPendingRestore(layer_el);
@@ -1416,8 +1413,8 @@ bool Scene3DDockWidget::xmlLoadState(const QDomElement& element) {
     // Re-add persisted FrameTransforms config topics so handleSceneConfigTopic
     // re-binds tf_buffer_/dataset_id_ (M.18). These create no layer; a TF-only
     // dock has nothing in the layer loop above and depends entirely on this.
-    for (QDomElement config_el = element.firstChildElement(QStringLiteral("config_topic")); !config_el.isNull();
-         config_el = config_el.nextSiblingElement(QStringLiteral("config_topic"))) {
+    for (QDomElement config_el = element.firstChildElement(u"config_topic"_s); !config_el.isNull();
+         config_el = config_el.nextSiblingElement(u"config_topic"_s)) {
       if (!restoreConfigTopicElement(config_el)) {
         ++unresolved_topics;
         rememberPendingRestore(config_el);
@@ -1428,7 +1425,7 @@ bool Scene3DDockWidget::xmlLoadState(const QDomElement& element) {
     qCWarning(lcScene3DDock) << unresolved_topics << "saved layer(s) could not be restored (dataset not loaded)";
   }
 
-  if (saved_mode == QStringLiteral("explicit") && !saved_frame.isEmpty()) {
+  if (saved_mode == u"explicit"_s && !saved_frame.isEmpty()) {
     setFixedFrame(saved_frame);
   } else {
     setFixedFrameAutoRoot();
@@ -1439,48 +1436,44 @@ bool Scene3DDockWidget::xmlLoadState(const QDomElement& element) {
   // adoptState then applies the saved pose on top.
   if (view_ != nullptr) {
     if (camera_model_combo_ != nullptr) {
-      if (const int idx = cameraModelFromString(element.attribute(QStringLiteral("camera_model"))); idx >= 0) {
+      if (const int idx = cameraModelFromString(element.attribute(u"camera_model"_s)); idx >= 0) {
         camera_model_combo_->setCurrentIndex(idx);
       }
     }
-    const QString camera_state = element.attribute(QStringLiteral("camera_state"));
+    const QString camera_state = element.attribute(u"camera_state"_s);
     if (!camera_state.isEmpty()) {
       view_->camera().adoptState(pj::scene3d::cameraStateFromJson(camera_state.toStdString(), view_->camera().state()));
     }
     // Restore the camera follow target (empty = off). Tolerant of older layouts
     // (missing attribute → empty → follow off). A target absent from the current
     // TF tree stays inert until it appears (applyFollow holds on lookup failure).
-    setFollowFrame(element.attribute(QStringLiteral("follow_frame")));
+    setFollowFrame(element.attribute(u"follow_frame"_s));
     // Per-dock scene controls: override the global seed applied at view creation
     // (sceneViewReady -> applySceneControlsTo) with this dock's saved look. Older
     // layouts have no <scene_controls> child -> keep the seed. Each attribute
     // falls back to the current value so a partial element never zeroes a control.
     // Field set mirrors Scene3DConfigPanel::applySceneControlsTo (keep in sync; 4 sites).
-    if (const QDomElement sc = element.firstChildElement(QStringLiteral("scene_controls")); !sc.isNull()) {
+    if (const QDomElement sc = element.firstChildElement(u"scene_controls"_s); !sc.isNull()) {
       const auto bool_attr = [&sc](const QString& key, bool fallback) {
-        return sc.attribute(key, fallback ? QStringLiteral("true") : QStringLiteral("false")) == QStringLiteral("true");
+        return sc.attribute(key, fallback ? u"true"_s : u"false"_s) == u"true"_s;
       };
-      view_->setGridVisible(bool_attr(QStringLiteral("grid_visible"), view_->gridVisible()));
+      view_->setGridVisible(bool_attr(u"grid_visible"_s, view_->gridVisible()));
       view_->setGridStyle(
-          sc.attribute(QStringLiteral("grid_style"), QStringLiteral("0")).toInt() == 1
-              ? pj::scene3d::GridRenderPass::Style::kFilledCells
-              : pj::scene3d::GridRenderPass::Style::kLines);
+          sc.attribute(u"grid_style"_s, u"0"_s).toInt() == 1 ? pj::scene3d::GridRenderPass::Style::kFilledCells
+                                                             : pj::scene3d::GridRenderPass::Style::kLines);
       view_->setGridExtentMetres(
-          sc.attribute(QStringLiteral("grid_extent_m"), QString::number(view_->gridExtentMetres())).toFloat());
-      view_->setGridDivisions(
-          sc.attribute(QStringLiteral("grid_divisions"), QString::number(view_->gridDivisions())).toInt());
-      view_->setAxesVisible(bool_attr(QStringLiteral("axes_visible"), view_->axesVisible()));
-      view_->setGizmoSize(sc.attribute(QStringLiteral("gizmo_size_m"), QString::number(view_->gizmoSize())).toFloat());
-      view_->setGizmoOpacity(
-          sc.attribute(QStringLiteral("gizmo_opacity"), QString::number(view_->gizmoOpacity())).toFloat());
-      view_->setTfConnectionsVisible(bool_attr(QStringLiteral("tf_parent_lines"), view_->tfConnectionsVisible()));
+          sc.attribute(u"grid_extent_m"_s, QString::number(view_->gridExtentMetres())).toFloat());
+      view_->setGridDivisions(sc.attribute(u"grid_divisions"_s, QString::number(view_->gridDivisions())).toInt());
+      view_->setAxesVisible(bool_attr(u"axes_visible"_s, view_->axesVisible()));
+      view_->setGizmoSize(sc.attribute(u"gizmo_size_m"_s, QString::number(view_->gizmoSize())).toFloat());
+      view_->setGizmoOpacity(sc.attribute(u"gizmo_opacity"_s, QString::number(view_->gizmoOpacity())).toFloat());
+      view_->setTfConnectionsVisible(bool_attr(u"tf_parent_lines"_s, view_->tfConnectionsVisible()));
       auto& shading = view_->meshShadingParams();
-      shading.meshes_visible = bool_attr(QStringLiteral("meshes_visible"), shading.meshes_visible);
-      shading.mesh_opacity =
-          sc.attribute(QStringLiteral("mesh_opacity"), QString::number(shading.mesh_opacity)).toFloat();
-      shading.collisions_visible = bool_attr(QStringLiteral("collisions_visible"), shading.collisions_visible);
+      shading.meshes_visible = bool_attr(u"meshes_visible"_s, shading.meshes_visible);
+      shading.mesh_opacity = sc.attribute(u"mesh_opacity"_s, QString::number(shading.mesh_opacity)).toFloat();
+      shading.collisions_visible = bool_attr(u"collisions_visible"_s, shading.collisions_visible);
       shading.collision_opacity =
-          sc.attribute(QStringLiteral("collision_opacity"), QString::number(shading.collision_opacity)).toFloat();
+          sc.attribute(u"collision_opacity"_s, QString::number(shading.collision_opacity)).toFloat();
     }
     view_->update();
   }

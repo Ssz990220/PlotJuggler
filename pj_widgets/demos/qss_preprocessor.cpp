@@ -15,6 +15,7 @@
 #include <QStringList>
 #include <QStringView>
 #include <map>
+using namespace Qt::StringLiterals;
 
 namespace pj_widgets_demos {
 
@@ -25,7 +26,7 @@ QString expandPlaceholders(const QString& body, const std::map<QString, QString>
   out.reserve(body.size());
   qsizetype i = 0;
   while (i < body.size()) {
-    const qsizetype start = body.indexOf(QStringLiteral("${"), i);
+    const qsizetype start = body.indexOf(u"${"_s, i);
     if (start < 0) {
       out.append(QStringView{body}.mid(i));
       break;
@@ -50,7 +51,7 @@ QString expandPlaceholders(const QString& body, const std::map<QString, QString>
 }
 
 QString loadAndExpandQss(const QString& theme, std::map<QString, QString>* tokens_out) {
-  const QString path = QStringLiteral("%1/stylesheet_%2.qss").arg(QStringLiteral(PJ_QSS_DIR), theme);
+  const QString path = u"%1/stylesheet_%2.qss"_s.arg(QStringLiteral(PJ_QSS_DIR), theme);
   QFile file(path);
   if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
     qWarning() << "Cannot open" << path;
@@ -104,12 +105,12 @@ void syncApplicationPalette(const std::map<QString, QString>& tokens) {
     return it == tokens.end() ? QColor() : QColor(it->second);
   };
 
-  const QColor window = color_for(QStringLiteral("main_background"));
-  const QColor text = color_for(QStringLiteral("default_text"));
-  const QColor base = color_for(QStringLiteral("input_background"));
-  const QColor button = color_for(QStringLiteral("widget_background_disabled"));
-  const QColor highlight = color_for(QStringLiteral("item_selection_background"));
-  const QColor highlighted_text = color_for(QStringLiteral("selection_text"));
+  const QColor window = color_for(u"main_background"_s);
+  const QColor text = color_for(u"default_text"_s);
+  const QColor base = color_for(u"input_background"_s);
+  const QColor button = color_for(u"widget_background_disabled"_s);
+  const QColor highlight = color_for(u"item_selection_background"_s);
+  const QColor highlighted_text = color_for(u"selection_text"_s);
   if (!window.isValid() || !text.isValid() || !base.isValid() || !button.isValid() || !highlight.isValid() ||
       !highlighted_text.isValid()) {
     qWarning() << "Cannot sync demo palette from theme tokens";
@@ -136,7 +137,7 @@ QString loadAndExpandQss(const QString& theme) {
 
 void applyTheme(const QString& theme) {
   QSettings settings;
-  settings.setValue(QStringLiteral("StyleSheet::theme"), theme);
+  settings.setValue(u"StyleSheet::theme"_s, theme);
   settings.sync();
 
   std::map<QString, QString> tokens;

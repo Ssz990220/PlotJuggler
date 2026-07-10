@@ -15,6 +15,7 @@
 #include <QSettings>
 #include <QString>
 #include <QWidget>
+using namespace Qt::StringLiterals;
 
 namespace PJ {
 
@@ -26,15 +27,13 @@ namespace {
 // popup's titlebar_background) so the closed combo and its open
 // dropdown read as the same surface.
 QColor popupBgColor() {
-  const QString theme = QSettings().value(QStringLiteral("StyleSheet::theme"), QStringLiteral("light")).toString();
-  return theme.contains(QStringLiteral("light")) ? QColor(QStringLiteral("#F5F5F5"))
-                                                 : QColor(QStringLiteral("#3B3B47"));
+  const QString theme = QSettings().value(u"StyleSheet::theme"_s, u"light"_s).toString();
+  return theme.contains(u"light"_s) ? QColor(u"#F5F5F5"_s) : QColor(u"#3B3B47"_s);
 }
 
 QColor popupTextColor() {
-  const QString theme = QSettings().value(QStringLiteral("StyleSheet::theme"), QStringLiteral("light")).toString();
-  return theme.contains(QStringLiteral("light")) ? QColor(QStringLiteral("#111111"))
-                                                 : QColor(QStringLiteral("#F0F0F0"));
+  const QString theme = QSettings().value(u"StyleSheet::theme"_s, u"light"_s).toString();
+  return theme.contains(u"light"_s) ? QColor(u"#111111"_s) : QColor(u"#F0F0F0"_s);
 }
 
 // Force every palette role that Fusion reads when painting a popup
@@ -67,7 +66,7 @@ bool WidgetTuner::eventFilter(QObject* watched, QEvent* event) {
 
   // QMenus (including Qt-internal context menus) — tag for QSS.
   if (auto* menu = qobject_cast<QMenu*>(watched); menu != nullptr && menu->objectName().isEmpty()) {
-    menu->setObjectName(QStringLiteral("PJMenu"));
+    menu->setObjectName(u"PJMenu"_s);
   }
 
   // QMessageBox: strip the native system frame. No other chrome.
@@ -91,7 +90,7 @@ bool WidgetTuner::eventFilter(QObject* watched, QEvent* event) {
 
   // QComboBoxPrivateContainer — strip frame and shadow, paint palette.
   if (auto* w = qobject_cast<QWidget*>(watched);
-      w != nullptr && QString::fromUtf8(w->metaObject()->className()) == QStringLiteral("QComboBoxPrivateContainer")) {
+      w != nullptr && QString::fromUtf8(w->metaObject()->className()) == u"QComboBoxPrivateContainer"_s) {
     w->setWindowFlag(Qt::NoDropShadowWindowHint, true);
     if (auto* frame = qobject_cast<QFrame*>(w)) {
       frame->setFrameShape(QFrame::NoFrame);

@@ -37,6 +37,7 @@
 #include "pj_scene3d_widgets/Scene3DDockWidget.h"
 #include "pj_scene3d_widgets/scene_view_widget.h"
 #include "pj_scene3d_widgets/transform_service.h"
+using namespace Qt::StringLiterals;
 
 namespace {
 
@@ -121,16 +122,16 @@ TEST(Scene3DDockPersistence, ConfigTopicRoundTripsAndResolvesBySource) {
   PJ::Scene3DDockWidget save_dock;
   save_dock.setSessionManager(&save_session);
   save_dock.setTransformService(&save_tf);
-  ASSERT_TRUE(save_dock.addTopic(saved.topic_id, PJ::sdk::BuiltinObjectType::kFrameTransforms, QStringLiteral("tf")));
+  ASSERT_TRUE(save_dock.addTopic(saved.topic_id, PJ::sdk::BuiltinObjectType::kFrameTransforms, u"tf"_s));
   ASSERT_TRUE(save_dock.layers().empty()) << "FrameTransforms must not create a render layer";
 
   QDomDocument doc;
   const QDomElement state = save_dock.xmlSaveState(doc);
   ASSERT_FALSE(state.isNull());
-  const QDomElement config_el = state.firstChildElement(QStringLiteral("config_topic"));
+  const QDomElement config_el = state.firstChildElement(u"config_topic"_s);
   ASSERT_FALSE(config_el.isNull()) << "config topic must be persisted (M.18)";
-  EXPECT_EQ(config_el.attribute(QStringLiteral("topic_name")), QStringLiteral("/tf"));
-  EXPECT_EQ(config_el.attribute(QStringLiteral("dataset_source")), QStringLiteral("drive.dat"));
+  EXPECT_EQ(config_el.attribute(u"topic_name"_s), u"/tf"_s);
+  EXPECT_EQ(config_el.attribute(u"dataset_source"_s), u"drive.dat"_s);
 
   // --- Restore session: a decoy file loads FIRST, so the SAME file is now
   // dataset id 2 — the saved id 1 must NOT be trusted blindly.
@@ -161,7 +162,7 @@ TEST(Scene3DDockPersistence, ConfigTopicUnresolvedWhenDatasetMissing) {
   PJ::Scene3DDockWidget save_dock;
   save_dock.setSessionManager(&save_session);
   save_dock.setTransformService(&save_tf);
-  ASSERT_TRUE(save_dock.addTopic(saved.topic_id, PJ::sdk::BuiltinObjectType::kFrameTransforms, QStringLiteral("tf")));
+  ASSERT_TRUE(save_dock.addTopic(saved.topic_id, PJ::sdk::BuiltinObjectType::kFrameTransforms, u"tf"_s));
   QDomDocument doc;
   const QDomElement state = save_dock.xmlSaveState(doc);
 
@@ -183,10 +184,10 @@ TEST(Scene3DDockPersistence, ExplicitFixedFrameSurvivesZeroLayerRestore) {
   // Hand-build a scene3d state element with an explicit fixed frame and no
   // layers / config topics (the "saved before the data file" case).
   QDomDocument doc;
-  QDomElement state = doc.createElement(QStringLiteral("scene3d"));
-  state.setAttribute(QStringLiteral("version"), QStringLiteral("1"));
-  state.setAttribute(QStringLiteral("fixed_frame_mode"), QStringLiteral("explicit"));
-  state.setAttribute(QStringLiteral("fixed_frame"), QStringLiteral("map"));
+  QDomElement state = doc.createElement(u"scene3d"_s);
+  state.setAttribute(u"version"_s, u"1"_s);
+  state.setAttribute(u"fixed_frame_mode"_s, u"explicit"_s);
+  state.setAttribute(u"fixed_frame"_s, u"map"_s);
   doc.appendChild(state);
 
   PJ::SessionManager session;
@@ -201,7 +202,7 @@ TEST(Scene3DDockPersistence, ExplicitFixedFrameSurvivesZeroLayerRestore) {
   // layers — previously view_ stayed null and the frame was silently dropped.
   EXPECT_FALSE(dock.isAutoRootMode()) << "explicit fixed-frame mode must survive restore (M.19)";
   ASSERT_NE(dock.sceneView(), nullptr) << "restore must force the lazily-created view";
-  EXPECT_EQ(dock.currentFixedFrame(), QStringLiteral("map"));
+  EXPECT_EQ(dock.currentFixedFrame(), u"map"_s);
 }
 
 // C1 regression: a saved DepthCloud (kImage) layer must restore even when its
@@ -220,14 +221,14 @@ TEST(Scene3DDockPersistence, DepthCloudLayerRestoresBeforeFirstSample) {
 
   // Hand-built saved state: one kImage (DepthCloud) layer, resolvable by source.
   QDomDocument doc;
-  QDomElement state = doc.createElement(QStringLiteral("scene3d"));
-  state.setAttribute(QStringLiteral("version"), QStringLiteral("1"));
-  QDomElement layer_el = doc.createElement(QStringLiteral("layer"));
-  layer_el.setAttribute(QStringLiteral("object_type"), QStringLiteral("kImage"));
-  layer_el.setAttribute(QStringLiteral("display_name"), QStringLiteral("depth"));
-  layer_el.setAttribute(QStringLiteral("dataset_id"), QString::number(topic.dataset_id));
-  layer_el.setAttribute(QStringLiteral("dataset_source"), QStringLiteral("cam.dat"));
-  layer_el.setAttribute(QStringLiteral("topic_name"), QStringLiteral("/cam/depth/image"));
+  QDomElement state = doc.createElement(u"scene3d"_s);
+  state.setAttribute(u"version"_s, u"1"_s);
+  QDomElement layer_el = doc.createElement(u"layer"_s);
+  layer_el.setAttribute(u"object_type"_s, u"kImage"_s);
+  layer_el.setAttribute(u"display_name"_s, u"depth"_s);
+  layer_el.setAttribute(u"dataset_id"_s, QString::number(topic.dataset_id));
+  layer_el.setAttribute(u"dataset_source"_s, u"cam.dat"_s);
+  layer_el.setAttribute(u"topic_name"_s, u"/cam/depth/image"_s);
   state.appendChild(layer_el);
   doc.appendChild(state);
 

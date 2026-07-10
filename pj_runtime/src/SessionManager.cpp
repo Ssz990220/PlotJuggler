@@ -19,6 +19,7 @@
 #include "pj_runtime/DataProcessorService.h"
 #include "pj_scripting/filter_catalogue.h"
 #include "pj_scripting/script_engine.h"
+using namespace Qt::StringLiterals;
 
 namespace PJ {
 
@@ -36,7 +37,7 @@ SessionManager::SessionManager(QObject* parent) : QObject(parent) {
   // headless unit test, where that binary installs its own catalogue if it needs
   // filters (there is no native C++ builtin fallback after M9).
   auto catalogue = std::make_shared<scripting::FilterCatalogue>(scripting::makeLuauEngine());
-  if (QFile f(QStringLiteral(":/filters/builtin_filters.luau")); f.open(QIODevice::ReadOnly)) {
+  if (QFile f(u":/filters/builtin_filters.luau"_s); f.open(QIODevice::ReadOnly)) {
     if (auto added = catalogue->addBundledSource(f.readAll().toStdString(), "bundled"); !added.has_value()) {
       qCWarning(lcSession) << "filter catalogue load failed:" << QString::fromStdString(added.error());
     }

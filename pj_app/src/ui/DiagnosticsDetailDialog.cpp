@@ -10,6 +10,7 @@
 
 #include "pj_widgets/SvgUtil.h"
 #include "ui_DiagnosticsDetailDialog.h"
+using namespace Qt::StringLiterals;
 
 namespace PJ {
 
@@ -44,10 +45,10 @@ DiagnosticsDetailDialog::DiagnosticsDetailDialog(const DiagnosticRecord& record,
     QGuiApplication::clipboard()->setText(record.message);
   });
 
-  ui_->detailTimestamp->setText(record.timestamp.toString(QStringLiteral("ddd d MMM yyyy HH:mm:ss")));
+  ui_->detailTimestamp->setText(record.timestamp.toString(u"ddd d MMM yyyy HH:mm:ss"_s));
   ui_->detailLevel->setText(levelLabel(record.level));
-  ui_->detailSource->setText(record.source.isEmpty() ? QStringLiteral("—") : record.source);
-  ui_->detailId->setText(record.id.isEmpty() ? QStringLiteral("—") : record.id);
+  ui_->detailSource->setText(record.source.isEmpty() ? u"—"_s : record.source);
+  ui_->detailId->setText(record.id.isEmpty() ? u"—"_s : record.id);
   ui_->detailMessage->setPlainText(record.message);
 
   if (parent != nullptr) {

@@ -32,6 +32,7 @@
 #include "pj_widgets/CurveTreeView.h"
 #include "pj_widgets/SvgUtil.h"
 #include "pj_widgets/VisualizationPlaceholderWidget.h"
+using namespace Qt::StringLiterals;
 
 namespace PJ {
 namespace {
@@ -62,8 +63,7 @@ QDomElement clipboardWidgetElement(QDomDocument& doc) {
 }
 
 bool objectElementSeedsWidget(const QDomElement& element) {
-  return !element.firstChildElement(QStringLiteral("layer")).isNull() ||
-         !element.firstChildElement(QStringLiteral("config_topic")).isNull();
+  return !element.firstChildElement(u"layer"_s).isNull() || !element.firstChildElement(u"config_topic"_s).isNull();
 }
 
 }  // namespace
@@ -203,7 +203,7 @@ void DockWidget::setPlaceholderWidget() {
   placeholder_widget_ = new VisualizationPlaceholderWidget(this);
   content_widget_ = placeholder_widget_;
   setWidget(placeholder_widget_);
-  setName(QStringLiteral("..."));
+  setName(u"..."_s);
   connect(
       placeholder_widget_, &VisualizationPlaceholderWidget::catalogItemsDropped, this,
       &DockWidget::onCatalogItemsDropped);
@@ -251,7 +251,7 @@ void DockWidget::adoptObjectWidget(IDataWidget* widget) {
   // setObjectWidget cleared the gate via clearCurrentContent; arm it now so the
   // first topic dropped into this empty widget seeds streaming playback.
   object_widget_awaiting_first_topic_ = true;
-  setName(QStringLiteral("..."));
+  setName(u"..."_s);
   emit undoableChange();
   focusSelf();
 }
@@ -379,7 +379,7 @@ DockWidget* DockWidget::splitInto(ads::DockWidgetArea dock_area, PlotWidget* plo
 PlotWidget* DockWidget::ensurePlotWidget() {
   if (plot_widget_ == nullptr) {
     setPlotWidget(new PlotWidget(session_, catalog_, this));
-    setName(QStringLiteral("..."));
+    setName(u"..."_s);
   }
   return plot_widget_;
 }
@@ -456,7 +456,7 @@ void DockWidget::onCatalogItemsDropped(const QStringList& keys) {
       // Arm the gate so the first real topic (a later drop into this widget)
       // seeds streaming playback, mirroring the click-create path.
       object_widget_awaiting_first_topic_ = true;
-      setName(QStringLiteral("..."));
+      setName(u"..."_s);
       emit undoableChange();
       focusSelf();
     }
@@ -511,7 +511,7 @@ void DockWidget::onCatalogItemsDropped(const QStringList& keys) {
   const auto title_for = [single_dataset](const auto& descriptor) {
     return (single_dataset || descriptor.dataset_name.isEmpty())
                ? descriptor.topic_name
-               : QStringLiteral("%1/%2").arg(descriptor.dataset_name, descriptor.topic_name);
+               : u"%1/%2"_s.arg(descriptor.dataset_name, descriptor.topic_name);
   };
   // Helper: walk all keys and offer each one to the given widget via
   // IDataWidget::tryAcceptObjectTopic. Returns the count accepted.
@@ -635,7 +635,7 @@ QString DockWidget::objectWidgetClipboardTag() const {
   if (object_widget_ == nullptr) {
     return {};
   }
-  QDomDocument doc(QStringLiteral("plotjuggler_widget"));
+  QDomDocument doc(u"plotjuggler_widget"_s);
   const QDomElement element = object_widget_->xmlSaveState(doc);
   return element.isNull() ? QString() : element.tagName();
 }
@@ -644,7 +644,7 @@ void DockWidget::copyObjectWidgetToClipboard() {
   if (object_widget_ == nullptr) {
     return;
   }
-  QDomDocument doc(QStringLiteral("plotjuggler_widget"));
+  QDomDocument doc(u"plotjuggler_widget"_s);
   QDomElement element = object_widget_->xmlSaveState(doc);
   if (element.isNull()) {
     return;
@@ -663,8 +663,8 @@ void DockWidget::pasteObjectWidgetFromClipboard() {
   }
   const QDomElement element = doc.documentElement();
   const bool seeds_empty_click_created_widget =
-      object_widget_awaiting_first_topic_ && (!element.firstChildElement(QStringLiteral("layer")).isNull() ||
-                                              !element.firstChildElement(QStringLiteral("config_topic")).isNull());
+      object_widget_awaiting_first_topic_ &&
+      (!element.firstChildElement(u"layer"_s).isNull() || !element.firstChildElement(u"config_topic"_s).isNull());
   if (object_widget_->xmlLoadState(element)) {
     if (seeds_empty_click_created_widget) {
       object_widget_awaiting_first_topic_ = false;
@@ -690,7 +690,7 @@ void DockWidget::pastePlaceholderWidgetFromClipboard() {
     return;
   }
 
-  if (element.tagName() == QStringLiteral("plot")) {
+  if (element.tagName() == u"plot"_s) {
     PlotWidget* plot = ensurePlotWidget();
     if (plot == nullptr) {
       return;
@@ -708,7 +708,7 @@ void DockWidget::pastePlaceholderWidgetFromClipboard() {
     return;
   }
   setObjectWidget(widget);
-  setName(QStringLiteral("..."));
+  setName(u"..."_s);
   const bool seeded = objectElementSeedsWidget(element);
   if (!object_widget_->xmlLoadState(element)) {
     setPlaceholderWidget();
@@ -734,7 +734,7 @@ bool DockWidget::canPastePlaceholderWidgetFromClipboard() const {
   if (element.isNull()) {
     return false;
   }
-  if (element.tagName() == QStringLiteral("plot")) {
+  if (element.tagName() == u"plot"_s) {
     return true;
   }
   return widget_clipboard::hasWidgetXml() && object_widget_factory_;
@@ -793,7 +793,7 @@ void DockWidget::removeObjectContextMenuFilter(QWidget* root) {
 void DockWidget::showObjectContextMenu(const QPoint& global_pos) {
   const QString theme = currentTheme();
   QMenu menu(this);
-  menu.setObjectName(QStringLiteral("PJMenu"));
+  menu.setObjectName(u"PJMenu"_s);
   menu.setProperty("categorySeparators", true);
   QAction* copy_action = menu.addAction(
       QIcon(loadSvg(":/resources/svg/copy.svg", theme)), tr("Copy"), this, [this]() { copyObjectWidgetToClipboard(); });

@@ -18,6 +18,7 @@
 
 #include "pj_widgets/CurveTreeView.h"
 #include "pj_widgets/SvgUtil.h"
+using namespace Qt::StringLiterals;
 
 namespace PJ {
 namespace {
@@ -72,7 +73,7 @@ bool dropCatalogItems(QDropEvent* event, VisualizationPlaceholderWidget* target)
 
 VisualizationPlaceholderWidget::VisualizationPlaceholderWidget(QWidget* parent) : QWidget(parent) {
   setAcceptDrops(true);
-  setObjectName(QStringLiteral("VisualizationPlaceholderWidget"));
+  setObjectName(u"VisualizationPlaceholderWidget"_s);
 
   action_split_horizontal_ = new QAction(tr("&Split Horizontally"), this);
   connect(action_split_horizontal_, &QAction::triggered, this, [this]() { emit splitHorizontalRequested(); });
@@ -191,7 +192,7 @@ void VisualizationPlaceholderWidget::showSplitContextMenu(const QPoint& global_p
   updateSplitActionIcons(currentTheme());
 
   QMenu menu(this);
-  menu.setObjectName(QStringLiteral("PJMenu"));
+  menu.setObjectName(u"PJMenu"_s);
   menu.setProperty("categorySeparators", true);
   menu.addAction(action_paste_);
   menu.addSeparator();

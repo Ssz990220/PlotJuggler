@@ -21,6 +21,7 @@
 #include <QUrl>
 
 #include "pj_runtime/UpdateChecker.h"
+using namespace Qt::StringLiterals;
 
 namespace {
 
@@ -52,7 +53,7 @@ class LocalHttpServer {
   }
 
   QUrl url() const {
-    return QUrl(QStringLiteral("http://127.0.0.1:%1/").arg(server_.serverPort()));
+    return QUrl(u"http://127.0.0.1:%1/"_s.arg(server_.serverPort()));
   }
 
   void setResponse(const QByteArray& status_line, const QByteArray& body) {
@@ -79,7 +80,7 @@ TEST(UpdateCheckerTest, NewerReleaseEmitsUpdateAvailable) {
 
   PJ::UpdateChecker checker;
   checker.setReleaseApiUrl(server.url());
-  checker.setCurrentVersion(QStringLiteral("3.999.0"));
+  checker.setCurrentVersion(u"3.999.0"_s);
 
   QSignalSpy update_spy(&checker, &PJ::UpdateChecker::updateAvailable);
   QSignalSpy uptodate_spy(&checker, &PJ::UpdateChecker::upToDate);
@@ -93,8 +94,8 @@ TEST(UpdateCheckerTest, NewerReleaseEmitsUpdateAvailable) {
   EXPECT_TRUE(failed_spy.isEmpty());
 
   const auto release = update_spy.first().at(0).value<PJ::ReleaseInfo>();
-  EXPECT_EQ(release.name, QStringLiteral("PJ 4"));
-  EXPECT_EQ(release.html_url, QStringLiteral("https://x/rel"));
+  EXPECT_EQ(release.name, u"PJ 4"_s);
+  EXPECT_EQ(release.html_url, u"https://x/rel"_s);
 }
 
 TEST(UpdateCheckerTest, EmptyNameFallsBackToTag) {
@@ -103,13 +104,13 @@ TEST(UpdateCheckerTest, EmptyNameFallsBackToTag) {
 
   PJ::UpdateChecker checker;
   checker.setReleaseApiUrl(server.url());
-  checker.setCurrentVersion(QStringLiteral("3.999.0"));
+  checker.setCurrentVersion(u"3.999.0"_s);
 
   QSignalSpy update_spy(&checker, &PJ::UpdateChecker::updateAvailable);
   checker.checkLatestRelease();
 
   ASSERT_TRUE(waitForSignal(update_spy));
-  EXPECT_EQ(update_spy.first().at(0).value<PJ::ReleaseInfo>().name, QStringLiteral("4.0.0"));
+  EXPECT_EQ(update_spy.first().at(0).value<PJ::ReleaseInfo>().name, u"4.0.0"_s);
 }
 
 TEST(UpdateCheckerTest, EqualVersionIsUpToDate) {
@@ -118,7 +119,7 @@ TEST(UpdateCheckerTest, EqualVersionIsUpToDate) {
 
   PJ::UpdateChecker checker;
   checker.setReleaseApiUrl(server.url());
-  checker.setCurrentVersion(QStringLiteral("3.999.0"));
+  checker.setCurrentVersion(u"3.999.0"_s);
 
   QSignalSpy update_spy(&checker, &PJ::UpdateChecker::updateAvailable);
   QSignalSpy uptodate_spy(&checker, &PJ::UpdateChecker::upToDate);
@@ -138,7 +139,7 @@ TEST(UpdateCheckerTest, OlderReleaseIsUpToDate) {
 
   PJ::UpdateChecker checker;
   checker.setReleaseApiUrl(server.url());
-  checker.setCurrentVersion(QStringLiteral("3.999.0"));
+  checker.setCurrentVersion(u"3.999.0"_s);
 
   QSignalSpy uptodate_spy(&checker, &PJ::UpdateChecker::upToDate);
   checker.checkLatestRelease();
@@ -151,7 +152,7 @@ TEST(UpdateCheckerTest, Http404EmitsCheckFailedSilently) {
 
   PJ::UpdateChecker checker;
   checker.setReleaseApiUrl(server.url());
-  checker.setCurrentVersion(QStringLiteral("3.999.0"));
+  checker.setCurrentVersion(u"3.999.0"_s);
 
   QSignalSpy update_spy(&checker, &PJ::UpdateChecker::updateAvailable);
   QSignalSpy uptodate_spy(&checker, &PJ::UpdateChecker::upToDate);
@@ -173,7 +174,7 @@ TEST(UpdateCheckerTest, ValidNonObjectJsonEmitsDistinctFailure) {
 
   PJ::UpdateChecker checker;
   checker.setReleaseApiUrl(server.url());
-  checker.setCurrentVersion(QStringLiteral("3.999.0"));
+  checker.setCurrentVersion(u"3.999.0"_s);
 
   QSignalSpy failed_spy(&checker, &PJ::UpdateChecker::checkFailed);
   checker.checkLatestRelease();
@@ -181,7 +182,7 @@ TEST(UpdateCheckerTest, ValidNonObjectJsonEmitsDistinctFailure) {
   ASSERT_TRUE(waitForSignal(failed_spy));
   const QString reason = failed_spy.first().at(0).toString();
   // Must not misreport a valid-but-non-object body as a "parse error: no error".
-  EXPECT_TRUE(reason.contains(QStringLiteral("not a JSON object")));
+  EXPECT_TRUE(reason.contains(u"not a JSON object"_s));
 }
 
 TEST(UpdateCheckerTest, MissingTagNameEmitsCheckFailed) {
@@ -190,7 +191,7 @@ TEST(UpdateCheckerTest, MissingTagNameEmitsCheckFailed) {
 
   PJ::UpdateChecker checker;
   checker.setReleaseApiUrl(server.url());
-  checker.setCurrentVersion(QStringLiteral("3.999.0"));
+  checker.setCurrentVersion(u"3.999.0"_s);
 
   QSignalSpy update_spy(&checker, &PJ::UpdateChecker::updateAvailable);
   QSignalSpy failed_spy(&checker, &PJ::UpdateChecker::checkFailed);
@@ -211,12 +212,12 @@ TEST(UpdateCheckerTest, SupersededCheckEmitsNothing) {
   good.setResponse("200 OK", R"({"tag_name":"4.0.0","name":"PJ 4","html_url":"https://x/rel"})");
 
   PJ::UpdateChecker checker;
-  checker.setCurrentVersion(QStringLiteral("3.999.0"));
+  checker.setCurrentVersion(u"3.999.0"_s);
   QSignalSpy update_spy(&checker, &PJ::UpdateChecker::updateAvailable);
   QSignalSpy uptodate_spy(&checker, &PJ::UpdateChecker::upToDate);
   QSignalSpy failed_spy(&checker, &PJ::UpdateChecker::checkFailed);
 
-  checker.setReleaseApiUrl(QUrl(QStringLiteral("http://127.0.0.1:%1/").arg(hanging.serverPort())));
+  checker.setReleaseApiUrl(QUrl(u"http://127.0.0.1:%1/"_s.arg(hanging.serverPort())));
   checker.checkLatestRelease();
   QCoreApplication::processEvents(QEventLoop::AllEvents, 100);
 

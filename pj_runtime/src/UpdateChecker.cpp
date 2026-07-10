@@ -11,6 +11,7 @@
 #include <QNetworkRequest>
 
 #include "pj_runtime/UpdateVersion.h"
+using namespace Qt::StringLiterals;
 
 namespace PJ {
 
@@ -50,7 +51,7 @@ void UpdateChecker::checkLatestRelease() {
   QNetworkRequest request(release_api_url_);
   request.setAttribute(QNetworkRequest::RedirectPolicyAttribute, QNetworkRequest::NoLessSafeRedirectPolicy);
   // api.github.com rejects requests without a User-Agent (HTTP 403).
-  request.setHeader(QNetworkRequest::UserAgentHeader, QStringLiteral("PlotJuggler"));
+  request.setHeader(QNetworkRequest::UserAgentHeader, u"PlotJuggler"_s);
   request.setRawHeader("Accept", "application/vnd.github+json");
   request.setTransferTimeout(kTransferTimeoutMs);
 
@@ -66,7 +67,7 @@ void UpdateChecker::checkLatestRelease() {
 
 void UpdateChecker::handleReply(QNetworkReply* reply) {
   if (!reply) {
-    emit checkFailed(QStringLiteral("no reply"));
+    emit checkFailed(u"no reply"_s);
     return;
   }
 
@@ -91,18 +92,18 @@ void UpdateChecker::handleReply(QNetworkReply* reply) {
   QJsonParseError parse_error;
   const QJsonDocument doc = QJsonDocument::fromJson(data, &parse_error);
   if (parse_error.error != QJsonParseError::NoError) {
-    emit checkFailed(QStringLiteral("release JSON parse error: %1").arg(parse_error.errorString()));
+    emit checkFailed(u"release JSON parse error: %1"_s.arg(parse_error.errorString()));
     return;
   }
   if (!doc.isObject()) {
-    emit checkFailed(QStringLiteral("release response was not a JSON object"));
+    emit checkFailed(u"release response was not a JSON object"_s);
     return;
   }
 
   const QJsonObject obj = doc.object();
-  const QString tag_name = obj.value(QStringLiteral("tag_name")).toString();
+  const QString tag_name = obj.value(u"tag_name"_s).toString();
   if (tag_name.isEmpty()) {
-    emit checkFailed(QStringLiteral("release JSON missing tag_name"));
+    emit checkFailed(u"release JSON missing tag_name"_s);
     return;
   }
 
@@ -113,8 +114,8 @@ void UpdateChecker::handleReply(QNetworkReply* reply) {
     return;
   }
 
-  const QString name = obj.value(QStringLiteral("name")).toString();
-  const QString html_url = obj.value(QStringLiteral("html_url")).toString();
+  const QString name = obj.value(u"name"_s).toString();
+  const QString html_url = obj.value(u"html_url"_s).toString();
   emit updateAvailable(ReleaseInfo{name.isEmpty() ? tag_name : name, html_url});
 }
 

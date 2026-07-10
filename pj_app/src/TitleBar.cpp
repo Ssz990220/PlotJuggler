@@ -16,6 +16,7 @@
 #include "pj_widgets/SvgUtil.h"
 #include "ui/DiagnosticsPopup.h"
 #include "ui_TitleBar.h"
+using namespace Qt::StringLiterals;
 
 namespace PJ {
 
@@ -56,11 +57,11 @@ TitleBar::TitleBar(QWidget* parent) : QWidget(parent), ui_(new Ui::TitleBar) {
   help_menu_ = new QMenu(tr("&Help"), this);
   ui_->menuBar->setNativeMenuBar(false);
   for (QMenu* menu : {file_menu_, toolbox_menu_, help_menu_}) {
-    menu->setObjectName(QStringLiteral("PJMenu"));
+    menu->setObjectName(u"PJMenu"_s);
     ui_->menuBar->addMenu(menu);
   }
   diagnostics_popup_ = new DiagnosticsPopup(this);
-  diagnostics_popup_->setObjectName(QStringLiteral("DiagnosticsPopup"));
+  diagnostics_popup_->setObjectName(u"DiagnosticsPopup"_s);
   connect(diagnostics_popup_, &DiagnosticsPopup::diagnosticActivated, this, &TitleBar::diagnosticActivated);
 
   // Bell flash: 5-s single-shot timer flips the icon back to its

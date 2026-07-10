@@ -33,6 +33,7 @@
 #include "pj_scene3d_widgets/Scene3DDockWidget.h"
 #include "pj_scene3d_widgets/scene_view_widget.h"
 #include "pj_scene3d_widgets/transform_service.h"
+using namespace Qt::StringLiterals;
 
 namespace {
 
@@ -97,7 +98,7 @@ void attachTfTopic(
     PJ::ObjectTopicId topic_id) {
   dock.setSessionManager(&session);
   dock.setTransformService(&tf);
-  ASSERT_TRUE(dock.addTopic(topic_id, PJ::sdk::BuiltinObjectType::kFrameTransforms, QStringLiteral("tf")));
+  ASSERT_TRUE(dock.addTopic(topic_id, PJ::sdk::BuiltinObjectType::kFrameTransforms, u"tf"_s));
   ASSERT_TRUE(pumpUntil([&] { return dock.sceneView() != nullptr; })) << "the lazily-created GL view must come up";
 }
 
@@ -106,13 +107,13 @@ TEST(Scene3DDockFixedFrame, NewDockSeedsRememberedFrameWhenPresent) {
   PJ::SessionManager session;
   pj::scene3d::TransformService tf(session);
   const DatasetTopic ds = makeTfDataset(session, tf, "seed.dat", "/tf");
-  tf.rememberFixedFrame(ds.dataset_id, QStringLiteral("odom"));  // not the heuristic root "map"
+  tf.rememberFixedFrame(ds.dataset_id, u"odom"_s);  // not the heuristic root "map"
 
   PJ::Scene3DDockWidget dock;
   attachTfTopic(dock, session, tf, ds.topic_id);
   dock.sceneView()->refreshAvailableFrames();  // -> framesChanged -> onAvailableFrames -> auto-seed
 
-  EXPECT_EQ(dock.currentFixedFrame(), QStringLiteral("odom"))
+  EXPECT_EQ(dock.currentFixedFrame(), u"odom"_s)
       << "a new dock must default to the dataset's remembered frame, not the map/world/odom heuristic";
 }
 
@@ -122,13 +123,13 @@ TEST(Scene3DDockFixedFrame, NewDockFallsBackToHeuristicWhenRememberedAbsent) {
   PJ::SessionManager session;
   pj::scene3d::TransformService tf(session);
   const DatasetTopic ds = makeTfDataset(session, tf, "fallback.dat", "/tf");
-  tf.rememberFixedFrame(ds.dataset_id, QStringLiteral("lidar"));  // not in map/odom/base_link
+  tf.rememberFixedFrame(ds.dataset_id, u"lidar"_s);  // not in map/odom/base_link
 
   PJ::Scene3DDockWidget dock;
   attachTfTopic(dock, session, tf, ds.topic_id);
   dock.sceneView()->refreshAvailableFrames();
 
-  EXPECT_EQ(dock.currentFixedFrame(), QStringLiteral("map"))
+  EXPECT_EQ(dock.currentFixedFrame(), u"map"_s)
       << "falls back to the heuristic root when the remembered frame is absent from the tree";
 }
 
@@ -142,14 +143,14 @@ TEST(Scene3DDockFixedFrame, SecondDockInheritsFirstDocksManualChoice) {
   PJ::Scene3DDockWidget dock_a;
   attachTfTopic(dock_a, session, tf, ds.topic_id);
   dock_a.sceneView()->refreshAvailableFrames();
-  dock_a.setFixedFrame(QStringLiteral("base_link"));  // a manual selection
-  ASSERT_EQ(dock_a.currentFixedFrame(), QStringLiteral("base_link"));
+  dock_a.setFixedFrame(u"base_link"_s);  // a manual selection
+  ASSERT_EQ(dock_a.currentFixedFrame(), u"base_link"_s);
 
   PJ::Scene3DDockWidget dock_b;  // created AFTER the manual pick
   attachTfTopic(dock_b, session, tf, ds.topic_id);
   dock_b.sceneView()->refreshAvailableFrames();
 
-  EXPECT_EQ(dock_b.currentFixedFrame(), QStringLiteral("base_link"))
+  EXPECT_EQ(dock_b.currentFixedFrame(), u"base_link"_s)
       << "a second dock on the same TransformBuffer must inherit the first dock's manual fixed frame";
 }
 
@@ -157,8 +158,8 @@ TEST(Scene3DDockFixedFrame, SecondDockInheritsFirstDocksManualChoice) {
 
 int main(int argc, char** argv) {
   QApplication app(argc, argv);
-  QCoreApplication::setOrganizationName(QStringLiteral("PlotJugglerTest"));
-  QCoreApplication::setApplicationName(QStringLiteral("scene3d_dock_fixed_frame_test"));
+  QCoreApplication::setOrganizationName(u"PlotJugglerTest"_s);
+  QCoreApplication::setApplicationName(u"scene3d_dock_fixed_frame_test"_s);
   // Redirect QSettings to a throwaway test location so recording never touches the
   // developer's real PlotJuggler config.
   QStandardPaths::setTestModeEnabled(true);

@@ -19,6 +19,7 @@
 #include <algorithm>
 
 #include "pj_widgets/ThemeColors.h"
+using namespace Qt::StringLiterals;
 
 namespace PJ {
 namespace {
@@ -29,14 +30,14 @@ namespace {
 // enumerated at runtime, so adding a meme is a pure resource change — no code
 // edit. Returns a null QPixmap when the pool is empty.
 QPixmap getFunnySplashscreen() {
-  QDir memes_dir(QStringLiteral(":/resources/memes"));
-  const QStringList files = memes_dir.entryList({QStringLiteral("*.jpg")}, QDir::Files, QDir::Name);
+  QDir memes_dir(u":/resources/memes"_s);
+  const QStringList files = memes_dir.entryList({u"*.jpg"_s}, QDir::Files, QDir::Name);
   if (files.isEmpty()) {
     return {};
   }
 
   QSettings settings;
-  QStringList recent = settings.value(QStringLiteral("previousFunnyMemesList")).toStringList();
+  QStringList recent = settings.value(u"previousFunnyMemesList"_s).toStringList();
   // Never block more entries than (pool - 1), otherwise the pick loop below
   // could never find an unseen meme and would spin forever.
   const qsizetype avoid_count = std::min<qsizetype>(recent.size(), files.size() - 1);
@@ -52,7 +53,7 @@ QPixmap getFunnySplashscreen() {
   while (recent.size() > 10) {
     recent.removeFirst();
   }
-  settings.setValue(QStringLiteral("previousFunnyMemesList"), recent);
+  settings.setValue(u"previousFunnyMemesList"_s, recent);
 
   // Cap oversized memes so a large/high-res image doesn't dominate the screen;
   // smaller ones are left untouched (never upscaled).
@@ -65,21 +66,21 @@ QPixmap getFunnySplashscreen() {
 // each launch.
 const QStringList& seriousSubtitles() {
   static const QStringList kSubtitles = {
-      QStringLiteral("Now you're plotting"),
-      QStringLiteral("The plot thickens"),
-      QStringLiteral("Hold my rosbag"),
-      QStringLiteral("Make your data confess"),
-      QStringLiteral("More than just curves now"),
-      QStringLiteral("Better than it has any right to be"),
-      QStringLiteral("Objectively the best. Probably."),
-      QStringLiteral("Still better than printf"),
-      QStringLiteral("Friends don't let friends use printf"),
-      QStringLiteral("Lovingly over-engineered"),
-      QStringLiteral("Suspiciously good for a free tool"),
-      QStringLiteral("Opening PlotJuggler. Again."),
-      QStringLiteral("Curves were just the beginning"),
-      QStringLiteral("Mostly written by an AI"),
-      QStringLiteral("An AI helped. Allegedly."),
+      u"Now you're plotting"_s,
+      u"The plot thickens"_s,
+      u"Hold my rosbag"_s,
+      u"Make your data confess"_s,
+      u"More than just curves now"_s,
+      u"Better than it has any right to be"_s,
+      u"Objectively the best. Probably."_s,
+      u"Still better than printf"_s,
+      u"Friends don't let friends use printf"_s,
+      u"Lovingly over-engineered"_s,
+      u"Suspiciously good for a free tool"_s,
+      u"Opening PlotJuggler. Again."_s,
+      u"Curves were just the beginning"_s,
+      u"Mostly written by an AI"_s,
+      u"An AI helped. Allegedly."_s,
   };
   return kSubtitles;
 }
@@ -117,7 +118,7 @@ QPixmap makeSeriousSplashscreen() {
   // Logo, vertically centred on the left.
   constexpr qreal kLogoSize = 156;
   const QRectF logo_rect(56, (kH - kLogoSize) / 2.0, kLogoSize, kLogoSize);
-  QSvgRenderer logo(QStringLiteral(":/resources/plotjuggler.svg"));
+  QSvgRenderer logo(u":/resources/plotjuggler.svg"_s);
   if (logo.isValid()) {
     logo.render(&p, logo_rect);
   }
@@ -130,25 +131,24 @@ QPixmap makeSeriousSplashscreen() {
   // glyphs land exactly on top of the grey ones, so the spacing is identical to
   // a single drawText of the full word.
   QFont wordmark_font;
-  wordmark_font.setFamilies({QStringLiteral("Khula"), QStringLiteral("Roboto"), wordmark_font.defaultFamily()});
+  wordmark_font.setFamilies({u"Khula"_s, u"Roboto"_s, wordmark_font.defaultFamily()});
   wordmark_font.setPixelSize(76);
   wordmark_font.setWeight(QFont::Thin);  // thinnest available weight, for an airy banner look
   p.setFont(wordmark_font);
-  const QString wordmark = QStringLiteral("PlotJuggler");
+  const QString wordmark = u"PlotJuggler"_s;
   const QFontMetricsF wordmark_fm(wordmark_font);
   const qreal wordmark_width = wordmark_fm.horizontalAdvance(wordmark);
   const QColor slate(0x63, 0x6a, 0x78);
   p.setPen(slate);
   p.drawText(QPointF(text_x, wordmark_baseline), wordmark);
   p.setPen(theme::kBlue);
-  p.drawText(QPointF(text_x, wordmark_baseline), QStringLiteral("P"));
+  p.drawText(QPointF(text_x, wordmark_baseline), u"P"_s);
   p.setPen(theme::kPurple);
-  p.drawText(
-      QPointF(text_x + wordmark_fm.horizontalAdvance(QStringLiteral("Plot")), wordmark_baseline), QStringLiteral("J"));
+  p.drawText(QPointF(text_x + wordmark_fm.horizontalAdvance(u"Plot"_s), wordmark_baseline), u"J"_s);
 
   // Random subtitle, centred horizontally under the wordmark, in the same slate.
   QFont subtitle_font;
-  subtitle_font.setFamilies({QStringLiteral("Roboto"), subtitle_font.defaultFamily()});
+  subtitle_font.setFamilies({u"Roboto"_s, subtitle_font.defaultFamily()});
   subtitle_font.setPixelSize(26);
   subtitle_font.setWeight(QFont::Light);  // thin, airy weight to match the banner
   p.setFont(subtitle_font);

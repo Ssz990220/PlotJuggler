@@ -14,6 +14,7 @@
 
 #include "RasterIpcProtocol.h"
 #include "pj_widgets/RasterFrame.h"
+using namespace Qt::StringLiterals;
 
 namespace PJ {
 
@@ -32,8 +33,8 @@ void RasterStreamView::start(const QString& helper_path, const QString& wad_path
     return;
   }
   const QString unique = QUuid::createUuid().toString(QUuid::Id128);
-  const QString shm_key = QStringLiteral("pjr-shm-") + unique;
-  const QString sock_name = QStringLiteral("pjr-sock-") + unique;
+  const QString shm_key = u"pjr-shm-"_s + unique;
+  const QString sock_name = u"pjr-sock-"_s + unique;
 
   shm_ = new QSharedMemory(shm_key, this);
   const int total = static_cast<int>(pj_raster::shmTotalSize(kWidth, kHeight, pj_raster::kBytesPerPixel));
@@ -53,9 +54,7 @@ void RasterStreamView::start(const QString& helper_path, const QString& wad_path
   process_ = new QProcess(this);
   connect(process_, &QProcess::finished, this, [this](int, QProcess::ExitStatus) { endSession(); });
   connect(process_, &QProcess::errorOccurred, this, [this](QProcess::ProcessError) { endSession(); });
-  process_->start(
-      helper_path,
-      {QStringLiteral("--shm"), shm_key, QStringLiteral("--sock"), sock_name, QStringLiteral("--wad"), wad_path});
+  process_->start(helper_path, {u"--shm"_s, shm_key, u"--sock"_s, sock_name, u"--wad"_s, wad_path});
 }
 
 void RasterStreamView::setKeyTranslator(std::function<int(int)> translator) {

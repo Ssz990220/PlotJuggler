@@ -24,6 +24,7 @@
 #include "pj_widgets/ColorPickerWidget.h"
 #include "pj_widgets/DoubleScrubber.h"
 #include "pj_widgets/ToggleSwitch.h"
+using namespace Qt::StringLiterals;
 
 namespace pj::scene3d {
 
@@ -41,7 +42,7 @@ PJ::SceneLayerInfo PosesInFrameLayer::info() const {
       .topic_id = topic_id_,
       .object_type = PJ::sdk::BuiltinObjectType::kPosesInFrame,
       .display_name = display_name_,
-      .family_name = QStringLiteral("PosesInFrame"),
+      .family_name = u"PosesInFrame"_s,
       .visible = visible_,
   };
 }
@@ -63,32 +64,31 @@ QString PosesInFrameLayer::sourceFrame() const {
 }
 
 QDomElement PosesInFrameLayer::xmlSaveState(QDomDocument& doc) const {
-  QDomElement el = doc.createElement(QStringLiteral("poses_in_frame"));
-  el.setAttribute(QStringLiteral("gizmo_size"), static_cast<double>(gizmo_size_));
-  el.setAttribute(QStringLiteral("gizmo_opacity"), static_cast<double>(gizmo_opacity_));
-  el.setAttribute(QStringLiteral("x_arrow_only"), x_arrow_only_ ? 1 : 0);
-  el.setAttribute(QStringLiteral("override_color"), override_color_enabled_ ? 1 : 0);
-  el.setAttribute(QStringLiteral("override_color_value"), override_color_.name(QColor::HexRgb));
+  QDomElement el = doc.createElement(u"poses_in_frame"_s);
+  el.setAttribute(u"gizmo_size"_s, static_cast<double>(gizmo_size_));
+  el.setAttribute(u"gizmo_opacity"_s, static_cast<double>(gizmo_opacity_));
+  el.setAttribute(u"x_arrow_only"_s, x_arrow_only_ ? 1 : 0);
+  el.setAttribute(u"override_color"_s, override_color_enabled_ ? 1 : 0);
+  el.setAttribute(u"override_color_value"_s, override_color_.name(QColor::HexRgb));
   return el;
 }
 
 bool PosesInFrameLayer::xmlLoadState(const QDomElement& element) {
-  if (element.tagName() != QStringLiteral("poses_in_frame")) {
+  if (element.tagName() != u"poses_in_frame"_s) {
     return false;
   }
   bool ok = false;
-  const float size = element.attribute(QStringLiteral("gizmo_size"), QStringLiteral("0.15")).toFloat(&ok);
+  const float size = element.attribute(u"gizmo_size"_s, u"0.15"_s).toFloat(&ok);
   if (ok) {
     setGizmoSize(size);
   }
-  const float opacity = element.attribute(QStringLiteral("gizmo_opacity"), QStringLiteral("1.0")).toFloat(&ok);
+  const float opacity = element.attribute(u"gizmo_opacity"_s, u"1.0"_s).toFloat(&ok);
   if (ok) {
     setGizmoOpacity(opacity);
   }
-  setXArrowOnly(element.attribute(QStringLiteral("x_arrow_only"), QStringLiteral("0")) == QStringLiteral("1"));
-  setOverrideColorEnabled(
-      element.attribute(QStringLiteral("override_color"), QStringLiteral("0")) == QStringLiteral("1"));
-  const QColor color(element.attribute(QStringLiteral("override_color_value")));
+  setXArrowOnly(element.attribute(u"x_arrow_only"_s, u"0"_s) == u"1"_s);
+  setOverrideColorEnabled(element.attribute(u"override_color"_s, u"0"_s) == u"1"_s);
+  const QColor color(element.attribute(u"override_color_value"_s));
   if (color.isValid()) {
     setOverrideColor(color);
   }

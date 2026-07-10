@@ -33,6 +33,7 @@
 #include "pj_runtime/ExtensionCatalogService.h"
 #include "pj_runtime/SessionManager.h"
 #include "pj_runtime/TopicDemandTracker.h"
+using namespace Qt::StringLiterals;
 
 namespace PJ {
 
@@ -290,7 +291,7 @@ void StreamingSourceManager::startSession(const QString& plugin_id) {
   }
 
   DataEngine& engine = session_manager_.dataEngine();
-  const QString display_name = QStringLiteral("[stream] %1").arg(source_name);
+  const QString display_name = u"[stream] %1"_s.arg(source_name);
 
   // One TimeDomain per stream so each is independently time-shiftable on the
   // Source Timeline. DUAL-ENGINE: the secondary (pause/tail buffer) must hold

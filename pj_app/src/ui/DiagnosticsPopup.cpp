@@ -20,6 +20,7 @@
 #include "pj_widgets/SvgUtil.h"
 #include "ui/DiagnosticsCard.h"
 #include "ui_DiagnosticsPopup.h"
+using namespace Qt::StringLiterals;
 
 namespace PJ {
 
@@ -140,7 +141,7 @@ void DiagnosticsPopup::clearCards() {
 
 void DiagnosticsPopup::appendCard(const DiagnosticRecord& item) {
   auto* card = new DiagnosticsCard(item, ui_->scrollContents);
-  card->setObjectName(QStringLiteral("DiagnosticsCard"));
+  card->setObjectName(u"DiagnosticsCard"_s);
   connect(card, &DiagnosticsCard::activated, this, [this](const DiagnosticRecord& r) {
     // Hide the popup before emitting so the detail dialog doesn't
     // immediately steal focus and cause Qt::Popup to dismiss us
@@ -157,7 +158,7 @@ void DiagnosticsPopup::appendCard(const DiagnosticRecord& item) {
 
 void DiagnosticsPopup::appendEmptyStateCard() {
   auto* placeholder = new QLabel(tr("No diagnostics"), ui_->scrollContents);
-  placeholder->setObjectName(QStringLiteral("DiagnosticsEmptyState"));
+  placeholder->setObjectName(u"DiagnosticsEmptyState"_s);
   placeholder->setAlignment(Qt::AlignCenter);
   placeholder->setMinimumHeight(kCardHeight);
   ui_->cardsLayout->addWidget(placeholder);
@@ -165,7 +166,7 @@ void DiagnosticsPopup::appendEmptyStateCard() {
 
 void DiagnosticsPopup::onCopyRequested(const DiagnosticRecord& item, DiagnosticsCard* originating) {
   QGuiApplication::clipboard()->setText(item.message);
-  auto* button = originating->findChild<QToolButton*>(QStringLiteral("cardCopyButton"));
+  auto* button = originating->findChild<QToolButton*>(u"cardCopyButton"_s);
   if (button == nullptr) {
     return;
   }

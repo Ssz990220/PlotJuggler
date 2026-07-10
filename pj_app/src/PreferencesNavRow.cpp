@@ -7,12 +7,13 @@
 #include <QLabel>
 #include <QMouseEvent>
 #include <QStyle>
+using namespace Qt::StringLiterals;
 
 namespace PJ {
 
 PreferencesNavRow::PreferencesNavRow(const QString& text, QWidget* parent)
     : QFrame(parent), label_(new QLabel(text, this)) {
-  setObjectName(QStringLiteral("navRow"));
+  setObjectName(u"navRow"_s);
   setProperty("selected", false);
   setCursor(Qt::PointingHandCursor);
   setAttribute(Qt::WA_Hover, true);
@@ -22,7 +23,7 @@ PreferencesNavRow::PreferencesNavRow(const QString& text, QWidget* parent)
   // between selected / unselected states.
   layout->setContentsMargins(12, 6, 12, 6);
   layout->setSpacing(0);
-  label_->setObjectName(QStringLiteral("navRowLabel"));
+  label_->setObjectName(u"navRowLabel"_s);
   layout->addWidget(label_);
   layout->addStretch(1);
 }

@@ -26,6 +26,7 @@
 #include "pj_runtime/SessionManager.h"
 #include "pj_scene3d_widgets/layers/occupancy_grid_layer.h"
 #include "pj_scene3d_widgets/scene3d_layer.h"
+using namespace Qt::StringLiterals;
 
 namespace {
 
@@ -70,7 +71,7 @@ TEST(OccupancyGridLayerRebind, ReloadSwapsParserWithoutTouchingStaleOne) {
 
   pj::scene3d::Scene3DLayerContext ctx;
   ctx.session = &session;
-  pj::scene3d::OccupancyGridLayer layer(*topic_id, QStringLiteral("map"));
+  pj::scene3d::OccupancyGridLayer layer(*topic_id, u"map"_s);
   ASSERT_TRUE(layer.attach(ctx));
   EXPECT_EQ(g_first_parser_calls.load(), 1);  // bootstrap decoded the first sample
 
@@ -125,7 +126,7 @@ TEST(OccupancyGridLayerStreamingAttach, AttachSucceedsBeforeFirstSampleAndSelfHe
 
   pj::scene3d::Scene3DLayerContext ctx;
   ctx.session = &session;
-  pj::scene3d::OccupancyGridLayer layer(*topic_id, QStringLiteral("map"));
+  pj::scene3d::OccupancyGridLayer layer(*topic_id, u"map"_s);
   ASSERT_TRUE(layer.attach(ctx)) << "attach must tolerate an empty store and keep the layer";
   EXPECT_EQ(g_streaming_parser_calls.load(), 0) << "bootstrap on an empty store must not parse anything";
 

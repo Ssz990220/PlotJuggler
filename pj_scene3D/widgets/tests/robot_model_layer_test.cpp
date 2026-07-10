@@ -26,6 +26,7 @@
 #include "pj_runtime/SessionManager.h"
 #include "pj_scene3d_core/tf/tf_buffer.h"
 #include "pj_scene3d_core/tf/transform.h"
+using namespace Qt::StringLiterals;
 
 namespace {
 
@@ -420,16 +421,16 @@ TEST(RobotModelLayerTest, TopicSourceDecodesThroughParserAndAppliesFramePrefix) 
   registerParser(session, topic_id, urdfParserVtable());
   pushWireBytes(session, topic_id);
 
-  pj::scene3d::RobotModelLayer layer(topic_id, QStringLiteral("/robot_description"));
-  layer.setFramePrefix(QStringLiteral("robot1/"));
+  pj::scene3d::RobotModelLayer layer(topic_id, u"/robot_description"_s);
+  layer.setFramePrefix(u"robot1/"_s);
   const auto ctx = makeContext(session);
 
   ASSERT_TRUE(layer.attach(ctx));
   ASSERT_NE(layer.robotModel(), nullptr);
   EXPECT_EQ(layer.robotModel()->root_link, "base_link");
-  EXPECT_EQ(layer.sourceFrame(), QStringLiteral("robot1/base_link"));
-  EXPECT_EQ(layer.linkFrameName("tool0"), QStringLiteral("robot1/tool0"));
-  EXPECT_TRUE(layer.fallbackFrames().contains(QStringLiteral("robot1/base_link")));
+  EXPECT_EQ(layer.sourceFrame(), u"robot1/base_link"_s);
+  EXPECT_EQ(layer.linkFrameName("tool0"), u"robot1/tool0"_s);
+  EXPECT_TRUE(layer.fallbackFrames().contains(u"robot1/base_link"_s));
 }
 
 TEST(RobotModelLayerTest, TimeRangeIsInvertedEvenWhenLatchIsMissing) {
@@ -437,7 +438,7 @@ TEST(RobotModelLayerTest, TimeRangeIsInvertedEvenWhenLatchIsMissing) {
   const PJ::ObjectTopicId topic_id = registerTopic(session);
   registerParser(session, topic_id, urdfParserVtable());
 
-  pj::scene3d::RobotModelLayer layer(topic_id, QStringLiteral("/robot_description"));
+  pj::scene3d::RobotModelLayer layer(topic_id, u"/robot_description"_s);
   const auto ctx = makeContext(session);
 
   ASSERT_TRUE(layer.attach(ctx));
@@ -445,7 +446,7 @@ TEST(RobotModelLayerTest, TimeRangeIsInvertedEvenWhenLatchIsMissing) {
   EXPECT_EQ(range.min, PJ::Timepoint::max());
   EXPECT_EQ(range.max, PJ::Timepoint::min());
   EXPECT_GT(range.min, range.max);
-  EXPECT_TRUE(layer.statusText().contains(QStringLiteral("Waiting for /robot_description")));
+  EXPECT_TRUE(layer.statusText().contains(u"Waiting for /robot_description"_s));
 }
 
 TEST(RobotModelLayerTest, FormatOtherThanUrdfIsRejectedWithStatus) {
@@ -454,12 +455,12 @@ TEST(RobotModelLayerTest, FormatOtherThanUrdfIsRejectedWithStatus) {
   registerParser(session, topic_id, sdfParserVtable());
   pushWireBytes(session, topic_id);
 
-  pj::scene3d::RobotModelLayer layer(topic_id, QStringLiteral("/robot_description"));
+  pj::scene3d::RobotModelLayer layer(topic_id, u"/robot_description"_s);
   const auto ctx = makeContext(session);
 
   ASSERT_TRUE(layer.attach(ctx));
   EXPECT_EQ(layer.robotModel(), nullptr);
-  EXPECT_TRUE(layer.statusText().contains(QStringLiteral("Format 'sdf' is not supported")));
+  EXPECT_TRUE(layer.statusText().contains(u"Format 'sdf' is not supported"_s));
 }
 
 TEST(RobotModelLayerTest, UnresolvedPackageMeshIsCountedForPlaceholderRendering) {
@@ -468,14 +469,14 @@ TEST(RobotModelLayerTest, UnresolvedPackageMeshIsCountedForPlaceholderRendering)
   registerParser(session, topic_id, unresolvedMeshParserVtable());
   pushWireBytes(session, topic_id);
 
-  pj::scene3d::RobotModelLayer layer(topic_id, QStringLiteral("/robot_description"));
+  pj::scene3d::RobotModelLayer layer(topic_id, u"/robot_description"_s);
   const auto ctx = makeContext(session);
 
   ASSERT_TRUE(layer.attach(ctx));
   ASSERT_NE(layer.robotModel(), nullptr);
   EXPECT_EQ(layer.totalMeshCount(), 1);
   EXPECT_EQ(layer.unresolvedMeshCount(), 1);
-  EXPECT_TRUE(layer.statusText().contains(QStringLiteral("packages unresolved")));
+  EXPECT_TRUE(layer.statusText().contains(u"packages unresolved"_s));
 }
 
 // M.48: render() memoizes the per-link DrawCall lists and rebuilds them only
@@ -490,7 +491,7 @@ TEST(RobotModelLayerTest, DrawCacheInvalidationSetIsExhaustive) {
   registerParser(session, topic_id, urdfParserVtable());
   pushWireBytes(session, topic_id);
 
-  pj::scene3d::RobotModelLayer layer(topic_id, QStringLiteral("/robot_description"));
+  pj::scene3d::RobotModelLayer layer(topic_id, u"/robot_description"_s);
   const auto ctx = makeContext(session);
   ASSERT_TRUE(layer.attach(ctx));
   ASSERT_NE(layer.robotModel(), nullptr);
@@ -506,8 +507,8 @@ TEST(RobotModelLayerTest, DrawCacheInvalidationSetIsExhaustive) {
   };
 
   expect_dirties("setTrackerTime", [&]() { layer.setTrackerTime(PJ::fromRaw(123)); });
-  expect_dirties("setFixedFrame", [&]() { layer.setFixedFrame(QStringLiteral("map")); });
-  expect_dirties("setFramePrefix", [&]() { layer.setFramePrefix(QStringLiteral("robotA/")); });
+  expect_dirties("setFixedFrame", [&]() { layer.setFixedFrame(u"map"_s); });
+  expect_dirties("setFramePrefix", [&]() { layer.setFramePrefix(u"robotA/"_s); });
   expect_dirties("setDisplayMode", [&]() { layer.setDisplayMode(pj::scene3d::RobotModelLayer::DisplayMode::kVisual); });
   expect_dirties("setFallbackColor", [&]() { layer.setFallbackColor(QColor(10, 20, 30)); });
 
@@ -534,7 +535,7 @@ TEST(RobotModelLayerTest, MeshLoadCompletionRequestsRepaintWithoutRender) {
   registerParser(session, topic_id, resolvedMeshParserVtable());
   pushWireBytes(session, topic_id);
 
-  pj::scene3d::RobotModelLayer layer(topic_id, QStringLiteral("/robot_description"));
+  pj::scene3d::RobotModelLayer layer(topic_id, u"/robot_description"_s);
   const auto ctx = makeContext(session);
   ASSERT_TRUE(layer.attach(ctx));  // parses the URDF and kicks the fixture mesh load
   ASSERT_NE(layer.robotModel(), nullptr);
@@ -565,7 +566,7 @@ TEST(RobotModelLayerTest, ColladaUpAxisToggleReloadsModel) {
   registerParser(session, topic_id, colladaMeshParserVtable());
   pushWireBytes(session, topic_id);
 
-  pj::scene3d::RobotModelLayer layer(topic_id, QStringLiteral("/robot_description"));
+  pj::scene3d::RobotModelLayer layer(topic_id, u"/robot_description"_s);
   const auto ctx = makeContext(session);
   ASSERT_TRUE(layer.attach(ctx));
   ASSERT_NE(layer.robotModel(), nullptr);
@@ -626,7 +627,7 @@ TEST(RobotModelLayerTest, ReloadSwapsParserWithoutTouchingStaleOne) {
                  }));
   // NOTE: no payload yet — attach must latch and wait for the first sample.
 
-  pj::scene3d::RobotModelLayer layer(topic_id, QStringLiteral("/robot_description"));
+  pj::scene3d::RobotModelLayer layer(topic_id, u"/robot_description"_s);
   const auto ctx = makeContext(session);
   ASSERT_TRUE(layer.attach(ctx));
   ASSERT_EQ(layer.robotModel(), nullptr);  // nothing to decode yet -> latched
@@ -669,19 +670,19 @@ TEST(RobotModelLayerTest, ReloadSwapsParserWithoutTouchingStaleOne) {
 TEST(RobotModelLayerTest, UrlSourceLoadsAsynchronouslyFromFileUrl) {
   QTemporaryDir dir;
   ASSERT_TRUE(dir.isValid());
-  const QString urdf_path = dir.filePath(QStringLiteral("decoded.urdf"));
+  const QString urdf_path = dir.filePath(u"decoded.urdf"_s);
   {
     QFile file(urdf_path);
     ASSERT_TRUE(file.open(QIODevice::WriteOnly));
     file.write(kDecodedUrdf);
   }
 
-  pj::scene3d::RobotModelLayer layer(PJ::ObjectTopicId{.id = 1}, QStringLiteral("robot"));
+  pj::scene3d::RobotModelLayer layer(PJ::ObjectTopicId{.id = 1}, u"robot"_s);
   layer.setSourceUrl(QUrl::fromLocalFile(urdf_path).toString());
 
   // Asynchronous kickoff: nothing may have been applied before returning.
   EXPECT_EQ(layer.robotModel(), nullptr) << "kUrl load applied synchronously (blocking-fetch regression)";
-  EXPECT_TRUE(layer.statusText().contains(QStringLiteral("Fetching"))) << layer.statusText().toStdString();
+  EXPECT_TRUE(layer.statusText().contains(u"Fetching"_s)) << layer.statusText().toStdString();
 
   QElapsedTimer timer;
   timer.start();
@@ -691,7 +692,7 @@ TEST(RobotModelLayerTest, UrlSourceLoadsAsynchronouslyFromFileUrl) {
   ASSERT_NE(layer.robotModel(), nullptr) << "async URL fetch never applied the model; status: "
                                          << layer.statusText().toStdString();
   EXPECT_EQ(layer.robotModel()->root_link, "base_link");
-  EXPECT_FALSE(layer.statusText().contains(QStringLiteral("Fetching")));
+  EXPECT_FALSE(layer.statusText().contains(u"Fetching"_s));
 }
 
 // M.27: a kTopic robot layer must persist enough identity (dataset + topic name)
@@ -703,7 +704,7 @@ TEST(RobotModelLayerTest, TopicSourceIdentitySurvivesSaveLoadRoundTrip) {
   registerParser(session, topic_id, urdfParserVtable());
   pushWireBytes(session, topic_id);
 
-  pj::scene3d::RobotModelLayer source_layer(topic_id, QStringLiteral("/robot_description"));
+  pj::scene3d::RobotModelLayer source_layer(topic_id, u"/robot_description"_s);
   const auto ctx = makeContext(session);
   ASSERT_TRUE(source_layer.attach(ctx));
   ASSERT_NE(source_layer.robotModel(), nullptr);
@@ -720,7 +721,7 @@ TEST(RobotModelLayerTest, TopicSourceIdentitySurvivesSaveLoadRoundTrip) {
   registerParser(session, other_id, sdfParserVtable());
   pushWireBytes(session, other_id);
 
-  pj::scene3d::RobotModelLayer restored_layer(other_id, QStringLiteral("/other_description"));
+  pj::scene3d::RobotModelLayer restored_layer(other_id, u"/other_description"_s);
   ASSERT_TRUE(restored_layer.attach(ctx));
   ASSERT_TRUE(restored_layer.xmlLoadState(saved));
   ASSERT_NE(restored_layer.robotModel(), nullptr) << "restored layer did not re-resolve the persisted source topic";
@@ -748,7 +749,7 @@ TEST(RobotModelLayerTest, FixedJointBridgeReconnectsChildFrameInRenderBuffer) {
   registerParser(session, topic_id, bridgeParserVtable());
   pushWireBytes(session, topic_id);
 
-  pj::scene3d::RobotModelLayer layer(topic_id, QStringLiteral("/robot_description"));
+  pj::scene3d::RobotModelLayer layer(topic_id, u"/robot_description"_s);
   const auto ctx = makeContext(session);  // attach-time context (its buffer is NOT the one we render against)
   ASSERT_TRUE(layer.attach(ctx));
   ASSERT_NE(layer.robotModel(), nullptr);
@@ -777,8 +778,8 @@ TEST(RobotModelLayerTest, FixedJointBridgeAppliesFramePrefix) {
   registerParser(session, topic_id, bridgeParserVtable());
   pushWireBytes(session, topic_id);
 
-  pj::scene3d::RobotModelLayer layer(topic_id, QStringLiteral("/robot_description"));
-  layer.setFramePrefix(QStringLiteral("robot1/"));
+  pj::scene3d::RobotModelLayer layer(topic_id, u"/robot_description"_s);
+  layer.setFramePrefix(u"robot1/"_s);
   const auto ctx = makeContext(session);
   ASSERT_TRUE(layer.attach(ctx));
   ASSERT_NE(layer.robotModel(), nullptr);
@@ -806,7 +807,7 @@ TEST(RobotModelLayerTest, DrawCacheInvalidatesWhenRenderOriginChanges) {
   registerParser(session, topic_id, urdfParserVtable());
   pushWireBytes(session, topic_id);
 
-  pj::scene3d::RobotModelLayer layer(topic_id, QStringLiteral("/robot_description"));
+  pj::scene3d::RobotModelLayer layer(topic_id, u"/robot_description"_s);
   const auto ctx = makeContext(session);
   ASSERT_TRUE(layer.attach(ctx));
   ASSERT_NE(layer.robotModel(), nullptr);
@@ -842,7 +843,7 @@ TEST(RobotModelLayerTest, AutoModeCollisionOnlyLinkRendersInCollisionGroupWhenMo
   registerParser(session, topic_id, mixedCollisionParserVtable());
   pushWireBytes(session, topic_id);
 
-  pj::scene3d::RobotModelLayer layer(topic_id, QStringLiteral("/robot_description"));  // kAuto default
+  pj::scene3d::RobotModelLayer layer(topic_id, u"/robot_description"_s);  // kAuto default
   const auto ctx = makeContext(session);
   ASSERT_TRUE(layer.attach(ctx));
   ASSERT_NE(layer.robotModel(), nullptr);
@@ -872,7 +873,7 @@ TEST(RobotModelLayerTest, AutoModeAllCollisionModelPromotesToVisuals) {
   registerParser(session, topic_id, allCollisionParserVtable());
   pushWireBytes(session, topic_id);
 
-  pj::scene3d::RobotModelLayer layer(topic_id, QStringLiteral("/robot_description"));  // kAuto default
+  pj::scene3d::RobotModelLayer layer(topic_id, u"/robot_description"_s);  // kAuto default
   const auto ctx = makeContext(session);
   ASSERT_TRUE(layer.attach(ctx));
   ASSERT_NE(layer.robotModel(), nullptr);

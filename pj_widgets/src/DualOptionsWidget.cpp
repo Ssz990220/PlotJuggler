@@ -13,6 +13,7 @@
 #include <algorithm>
 
 #include "pj_widgets/ThemeColors.h"
+using namespace Qt::StringLiterals;
 
 namespace PJ {
 
@@ -25,8 +26,7 @@ constexpr int kAnimationDurationMs = 140;
 
 }  // namespace
 
-DualOptionsWidget::DualOptionsWidget(QWidget* parent)
-    : DualOptionsWidget(QStringLiteral("Option A"), QStringLiteral("Option B"), parent) {}
+DualOptionsWidget::DualOptionsWidget(QWidget* parent) : DualOptionsWidget(u"Option A"_s, u"Option B"_s, parent) {}
 
 DualOptionsWidget::DualOptionsWidget(const QString& opt0, const QString& opt1, QWidget* parent)
     : QWidget(parent),

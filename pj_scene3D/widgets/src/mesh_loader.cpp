@@ -18,6 +18,7 @@
 #include <glm/gtc/matrix_transform.hpp>
 #include <string>
 #include <vector>
+using namespace Qt::StringLiterals;
 
 namespace pj::scene3d {
 namespace {
@@ -302,7 +303,7 @@ void appendNode(
 MeshData buildMeshData(const aiScene* scene, bool flip_to_z_up, const QString& source, const QString& base_dir) {
   MeshData out;
   if (scene == nullptr || scene->mRootNode == nullptr) {
-    out.error = QStringLiteral("assimp returned no scene for %1").arg(source);
+    out.error = u"assimp returned no scene for %1"_s.arg(source);
     return out;
   }
   // Resolve each material once (embedded-texture extraction is per-material, not
@@ -315,7 +316,7 @@ MeshData buildMeshData(const aiScene* scene, bool flip_to_z_up, const QString& s
   const glm::mat3 extra = flip_to_z_up ? zUpFromYUpRotation() : glm::mat3(1.0f);
   appendNode(scene, scene->mRootNode, glm::mat4(1.0f), extra, materials, out);
   if (out.vertices.empty() || out.indices.empty()) {
-    out.error = QStringLiteral("no renderable geometry in %1").arg(source);
+    out.error = u"no renderable geometry in %1"_s.arg(source);
     out.ok = false;
     return out;
   }
@@ -348,18 +349,18 @@ MeshData MeshLoader::importFromFile(const QString& path, bool flip_to_z_up) {
       MeshData out;
       out.error = QString::fromUtf8(importer.GetErrorString());
       if (out.error.isEmpty()) {
-        out.error = QStringLiteral("assimp failed to import %1").arg(path);
+        out.error = u"assimp failed to import %1"_s.arg(path);
       }
       return out;
     }
     return buildMeshData(scene, flip_to_z_up, path, QFileInfo(path).absolutePath());
   } catch (const std::exception& ex) {
     MeshData out;
-    out.error = QStringLiteral("mesh import of %1 threw: %2").arg(path, QString::fromUtf8(ex.what()));
+    out.error = u"mesh import of %1 threw: %2"_s.arg(path, QString::fromUtf8(ex.what()));
     return out;
   } catch (...) {
     MeshData out;
-    out.error = QStringLiteral("mesh import of %1 threw an unknown exception").arg(path);
+    out.error = u"mesh import of %1 threw an unknown exception"_s.arg(path);
     return out;
   }
 }
@@ -376,21 +377,21 @@ MeshData MeshLoader::importFromMemory(const QByteArray& bytes, const QString& fo
       MeshData out;
       out.error = QString::fromUtf8(importer.GetErrorString());
       if (out.error.isEmpty()) {
-        out.error = QStringLiteral("assimp failed to import %1 buffer").arg(format_hint);
+        out.error = u"assimp failed to import %1 buffer"_s.arg(format_hint);
       }
       return out;
     }
     // Embedded buffers (glTF/GLB, the Waymo path) keep their per-submesh materials:
     // embedded textures are extracted into Material::base_color etc. by readMaterial,
     // so there is no external base_dir to resolve against and nothing to flatten.
-    return buildMeshData(scene, flip_to_z_up, QStringLiteral("<memory:%1>").arg(format_hint), QString{});
+    return buildMeshData(scene, flip_to_z_up, u"<memory:%1>"_s.arg(format_hint), QString{});
   } catch (const std::exception& ex) {
     MeshData out;
-    out.error = QStringLiteral("mesh import of %1 buffer threw: %2").arg(format_hint, QString::fromUtf8(ex.what()));
+    out.error = u"mesh import of %1 buffer threw: %2"_s.arg(format_hint, QString::fromUtf8(ex.what()));
     return out;
   } catch (...) {
     MeshData out;
-    out.error = QStringLiteral("mesh import of %1 buffer threw an unknown exception").arg(format_hint);
+    out.error = u"mesh import of %1 buffer threw an unknown exception"_s.arg(format_hint);
     return out;
   }
 }

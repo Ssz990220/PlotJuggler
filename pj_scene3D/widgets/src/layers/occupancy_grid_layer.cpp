@@ -25,6 +25,7 @@
 #include "pj_scene3d_widgets/parse_locked.h"
 #include "pj_widgets/ComboBox.h"
 #include "pj_widgets/DoubleScrubber.h"
+using namespace Qt::StringLiterals;
 
 namespace pj::scene3d {
 
@@ -42,7 +43,7 @@ PJ::SceneLayerInfo OccupancyGridLayer::info() const {
       .topic_id = topic_id_,
       .object_type = PJ::sdk::BuiltinObjectType::kOccupancyGrid,
       .display_name = display_name_,
-      .family_name = QStringLiteral("OccupancyGrid"),
+      .family_name = u"OccupancyGrid"_s,
       .visible = visible_,
   };
 }
@@ -76,21 +77,18 @@ QString OccupancyGridLayer::sourceFrame() const {
 }
 
 QDomElement OccupancyGridLayer::xmlSaveState(QDomDocument& doc) const {
-  QDomElement el = doc.createElement(QStringLiteral("occupancy_grid"));
+  QDomElement el = doc.createElement(u"occupancy_grid"_s);
   el.setAttribute(
-      QStringLiteral("color_scheme"), color_scheme_ == OccupancyGridRenderPass::ColorScheme::kCostmap
-                                          ? QStringLiteral("costmap")
-                                          : QStringLiteral("map"));
-  el.setAttribute(QStringLiteral("opacity"), static_cast<double>(opacity_));
+      u"color_scheme"_s, color_scheme_ == OccupancyGridRenderPass::ColorScheme::kCostmap ? u"costmap"_s : u"map"_s);
+  el.setAttribute(u"opacity"_s, static_cast<double>(opacity_));
   return el;
 }
 
 bool OccupancyGridLayer::xmlLoadState(const QDomElement& element) {
-  color_scheme_ = element.attribute(QStringLiteral("color_scheme")) == QStringLiteral("costmap")
-                      ? OccupancyGridRenderPass::ColorScheme::kCostmap
-                      : OccupancyGridRenderPass::ColorScheme::kMap;
+  color_scheme_ = element.attribute(u"color_scheme"_s) == u"costmap"_s ? OccupancyGridRenderPass::ColorScheme::kCostmap
+                                                                       : OccupancyGridRenderPass::ColorScheme::kMap;
   bool ok = false;
-  const float opacity = element.attribute(QStringLiteral("opacity"), QStringLiteral("0.7")).toFloat(&ok);
+  const float opacity = element.attribute(u"opacity"_s, u"0.7"_s).toFloat(&ok);
   if (ok) {
     opacity_ = std::clamp(opacity, 0.0f, 1.0f);
   }

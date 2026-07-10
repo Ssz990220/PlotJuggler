@@ -35,6 +35,7 @@
 #include <QSvgRenderer>
 #include <QVBoxLayout>
 #include <algorithm>
+using namespace Qt::StringLiterals;
 
 namespace PJ {
 
@@ -58,7 +59,7 @@ const QColor kToHintColor(0xe7, 0x4c, 0x3c);    // red
 // so palette() resolves to Fusion light-grey on both themes. Sourcing colors
 // from theme tokens chosen by this key is the fix.
 bool pickerThemeIsLight() {
-  return QSettings().value(QStringLiteral("StyleSheet::theme"), QStringLiteral("light")).toString().contains("light");
+  return QSettings().value(u"StyleSheet::theme"_s, u"light"_s).toString().contains("light");
 }
 
 // Theme-token color set for the calendar/overlay. Values mirror the app's QSS
@@ -165,14 +166,14 @@ QIcon renderChevronIcon(bool left, const QColor& color, int px) {
   static QHash<QString, QIcon> cache;
   // Key on HexRgb to match the recolor below (color.name() drops alpha), so the
   // key can never disagree with the rasterized output.
-  const QString key = QStringLiteral("%1:%2:%3").arg(left ? 1 : 0).arg(color.name()).arg(px);
+  const QString key = u"%1:%2:%3"_s.arg(left ? 1 : 0).arg(color.name()).arg(px);
   const auto cached = cache.constFind(key);
   if (cached != cache.constEnd()) {
     return cached.value();
   }
 
-  const QString path = left ? QStringLiteral(":/resources/svg/keyboard_arrow_left_light.svg")
-                            : QStringLiteral(":/resources/svg/keyboard_arrow_right_light.svg");
+  const QString path =
+      left ? u":/resources/svg/keyboard_arrow_left_light.svg"_s : u":/resources/svg/keyboard_arrow_right_light.svg"_s;
   QFile file(path);
   if (!file.open(QIODevice::ReadOnly)) {
     return QIcon();
@@ -529,11 +530,11 @@ TimePickerWidget::TimePickerWidget(QWidget* parent) : QWidget(parent) {
 }
 
 void TimePickerWidget::setFromDate(const QDate& date) {
-  from_date_label_->setText(date.isValid() ? date.toString("ddd dd-MM-yy") : QStringLiteral("---"));
+  from_date_label_->setText(date.isValid() ? date.toString("ddd dd-MM-yy") : u"---"_s);
 }
 
 void TimePickerWidget::setToDate(const QDate& date) {
-  to_date_label_->setText(date.isValid() ? date.toString("ddd dd-MM-yy") : QStringLiteral("---"));
+  to_date_label_->setText(date.isValid() ? date.toString("ddd dd-MM-yy") : u"---"_s);
 }
 
 QTime TimePickerWidget::timeFrom12Hour(int hour12, int minute, const QString& ampm) const {
@@ -610,7 +611,7 @@ DualCalendarWidget::DualCalendarWidget(QWidget* parent)
     b->setFixedSize(btn_size);
     b->setFlat(true);
     b->setCursor(Qt::PointingHandCursor);
-    b->setStyleSheet(QStringLiteral("QPushButton { border: none; background: transparent; padding: 0; }"));
+    b->setStyleSheet(u"QPushButton { border: none; background: transparent; padding: 0; }"_s);
   };
   setup_nav(left_prev_, /*left=*/true);
   setup_nav(right_prev_, /*left=*/true);
@@ -910,7 +911,7 @@ DateRangePicker::DateRangePicker(QWidget* parent) : QWidget(parent) {
   // Material "Arrow Right Alt" between from/to, themed to the active ink (re-inked
   // on a live theme switch in changeEvent). A QLabel pixmap, not a text glyph.
   arrow_label_ = new QLabel;
-  arrow_label_->setPixmap(renderThemedIcon(QStringLiteral(":/resources/svg/arrow_right_alt.svg"), 18).pixmap(18, 18));
+  arrow_label_->setPixmap(renderThemedIcon(u":/resources/svg/arrow_right_alt.svg"_s, 18).pixmap(18, 18));
   to_edit_ = new QLineEdit;
   to_edit_->setPlaceholderText(QDate::currentDate().toString("dd/MM/yyyy"));
   calendar_button_ = new QPushButton;
@@ -920,7 +921,7 @@ DateRangePicker::DateRangePicker(QWidget* parent) : QWidget(parent) {
   calendar_button_->setFixedSize(28, 28);
   // Themed "Calendar Month" icon (recolored to the active theme's ink); the
   // icon stays static — toggleCalendar() no longer swaps a glyph.
-  calendar_button_->setIcon(renderThemedIcon(QStringLiteral(":/resources/svg/calendar_month.svg"), 24));
+  calendar_button_->setIcon(renderThemedIcon(u":/resources/svg/calendar_month.svg"_s, 24));
   calendar_button_->setIconSize(QSize(24, 24));
   date_row->addWidget(from_edit_, 1);
   date_row->addWidget(arrow_label_);
@@ -937,11 +938,11 @@ DateRangePicker::~DateRangePicker() {
 }
 
 void DateRangePicker::setEarliestDate(const QDate& date) {
-  from_edit_->setPlaceholderText(date.isValid() ? date.toString("dd/MM/yyyy") : QStringLiteral("DD/MM/YYYY"));
+  from_edit_->setPlaceholderText(date.isValid() ? date.toString("dd/MM/yyyy") : u"DD/MM/YYYY"_s);
 }
 
 void DateRangePicker::setLatestDate(const QDate& date) {
-  to_edit_->setPlaceholderText(date.isValid() ? date.toString("dd/MM/yyyy") : QStringLiteral("DD/MM/YYYY"));
+  to_edit_->setPlaceholderText(date.isValid() ? date.toString("dd/MM/yyyy") : u"DD/MM/YYYY"_s);
 }
 
 void DateRangePicker::showEvent(QShowEvent* event) {
@@ -979,11 +980,10 @@ void DateRangePicker::changeEvent(QEvent* event) {
   if (event->type() == QEvent::StyleChange || event->type() == QEvent::PaletteChange) {
     updateOverlayStyle();
     if (calendar_button_) {
-      calendar_button_->setIcon(renderThemedIcon(QStringLiteral(":/resources/svg/calendar_month.svg"), 24));
+      calendar_button_->setIcon(renderThemedIcon(u":/resources/svg/calendar_month.svg"_s, 24));
     }
     if (arrow_label_) {
-      arrow_label_->setPixmap(
-          renderThemedIcon(QStringLiteral(":/resources/svg/arrow_right_alt.svg"), 18).pixmap(18, 18));
+      arrow_label_->setPixmap(renderThemedIcon(u":/resources/svg/arrow_right_alt.svg"_s, 18).pixmap(18, 18));
     }
     if (dual_calendar_) {
       dual_calendar_->retheme();  // re-ink the nav chevrons to the new theme
@@ -1009,8 +1009,8 @@ void DateRangePicker::updateOverlayStyle() {
   // can't be used here: the app pins QPalette at Fusion defaults regardless of
   // theme, so it would resolve to Fusion light-grey on both.
   const PickerTokens tok = pickerTokens();
-  overlay_->setStyleSheet(QStringLiteral("QWidget#PickerOverlay { background-color: %1; border: 1px solid %2; }")
-                              .arg(tok.surface.name(), tok.border.name()));
+  overlay_->setStyleSheet(u"QWidget#PickerOverlay { background-color: %1; border: 1px solid %2; }"_s.arg(
+      tok.surface.name(), tok.border.name()));
 }
 
 void DateRangePicker::resizeEvent(QResizeEvent* event) {
@@ -1060,7 +1060,7 @@ void DateRangePicker::syncCalendarToFields() {
   if (!dual_calendar_) {
     return;
   }
-  const QString fmt = QStringLiteral("dd/MM/yyyy");
+  const QString fmt = u"dd/MM/yyyy"_s;
   QDate from = QDate::fromString(from_edit_->text(), fmt);
   QDate to = QDate::fromString(to_edit_->text(), fmt);
   dual_calendar_->setExternalRange(from, to);
@@ -1091,7 +1091,7 @@ void DateRangePicker::applyPreset(int id) {
 }
 
 void DateRangePicker::updateFieldsFromPreset(const QDate& from, const QDate& to) {
-  const QString fmt = QStringLiteral("dd/MM/yyyy");
+  const QString fmt = u"dd/MM/yyyy"_s;
   QSignalBlocker fb(from_edit_);
   QSignalBlocker tb(to_edit_);
   from_edit_->setText(from.isValid() ? from.toString(fmt) : QString());
@@ -1099,7 +1099,7 @@ void DateRangePicker::updateFieldsFromPreset(const QDate& from, const QDate& to)
 }
 
 int DateRangePicker::matchingPreset() const {
-  const QString fmt = QStringLiteral("dd/MM/yyyy");
+  const QString fmt = u"dd/MM/yyyy"_s;
   QDate from = QDate::fromString(from_edit_->text(), fmt);
   QDate to = QDate::fromString(to_edit_->text(), fmt);
   QDate today = QDate::currentDate();
@@ -1171,7 +1171,7 @@ void DateRangePicker::onTimeChanged() {
 
 RangeFilter DateRangePicker::buildFilter() const {
   RangeFilter f;
-  const QString fmt = QStringLiteral("dd/MM/yyyy");
+  const QString fmt = u"dd/MM/yyyy"_s;
   QDate from = QDate::fromString(from_edit_->text(), fmt);
   QDate to = QDate::fromString(to_edit_->text(), fmt);
   if (from.isValid()) {

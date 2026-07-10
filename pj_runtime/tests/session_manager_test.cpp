@@ -19,6 +19,7 @@
 #include "pj_plugins/host/message_parser_handle.hpp"
 #include "pj_plugins/sdk/message_parser_plugin_base.hpp"
 #include "pj_runtime/SessionManager.h"
+using namespace Qt::StringLiterals;
 
 namespace {
 
@@ -29,50 +30,49 @@ TEST(SessionManagerSourceTest, LastLoadedSourceStartsEmpty) {
 
 TEST(SessionManagerSourceTest, RecordLoadedSourceStoresPathAndPrefix) {
   PJ::SessionManager session;
-  session.recordLoadedSource(QStringLiteral("/tmp/run42.csv"), QStringLiteral("robot"));
+  session.recordLoadedSource(u"/tmp/run42.csv"_s, u"robot"_s);
   const auto src = session.lastLoadedSource();
   ASSERT_TRUE(src.has_value());
-  EXPECT_EQ(src->path, QStringLiteral("/tmp/run42.csv"));
-  EXPECT_EQ(src->prefix, QStringLiteral("robot"));
+  EXPECT_EQ(src->path, u"/tmp/run42.csv"_s);
+  EXPECT_EQ(src->prefix, u"robot"_s);
 }
 
 TEST(SessionManagerSourceTest, RecordLoadedSourceAppendsDistinctPaths) {
   PJ::SessionManager session;
-  session.recordLoadedSource(QStringLiteral("/tmp/a.csv"), QString());
-  session.recordLoadedSource(QStringLiteral("/tmp/b.csv"), QStringLiteral("p"));
+  session.recordLoadedSource(u"/tmp/a.csv"_s, QString());
+  session.recordLoadedSource(u"/tmp/b.csv"_s, u"p"_s);
   // Both distinct files are tracked, in load order.
   const auto& sources = session.loadedSources();
   ASSERT_EQ(sources.size(), 2u);
-  EXPECT_EQ(sources[0].path, QStringLiteral("/tmp/a.csv"));
-  EXPECT_EQ(sources[1].path, QStringLiteral("/tmp/b.csv"));
+  EXPECT_EQ(sources[0].path, u"/tmp/a.csv"_s);
+  EXPECT_EQ(sources[1].path, u"/tmp/b.csv"_s);
   // lastLoadedSource() is the most recent.
   const auto src = session.lastLoadedSource();
   ASSERT_TRUE(src.has_value());
-  EXPECT_EQ(src->path, QStringLiteral("/tmp/b.csv"));
-  EXPECT_EQ(src->prefix, QStringLiteral("p"));
+  EXPECT_EQ(src->path, u"/tmp/b.csv"_s);
+  EXPECT_EQ(src->prefix, u"p"_s);
 }
 
 TEST(SessionManagerSourceTest, RecordLoadedSourceReplacesSamePathInPlace) {
   PJ::SessionManager session;
-  session.recordLoadedSource(QStringLiteral("/tmp/a.csv"), QString());
-  session.recordLoadedSource(QStringLiteral("/tmp/b.csv"), QStringLiteral("p"));
+  session.recordLoadedSource(u"/tmp/a.csv"_s, QString());
+  session.recordLoadedSource(u"/tmp/b.csv"_s, u"p"_s);
   // Re-recording an existing path (a reload) updates it in place, keeping its
   // position and not growing the list.
-  session.recordLoadedSource(
-      QStringLiteral("/tmp/a.csv"), QStringLiteral("robot"), QStringLiteral("CSV"), QStringLiteral(R"({"x":1})"));
+  session.recordLoadedSource(u"/tmp/a.csv"_s, u"robot"_s, u"CSV"_s, uR"({"x":1})"_s);
   const auto& sources = session.loadedSources();
   ASSERT_EQ(sources.size(), 2u);
-  EXPECT_EQ(sources[0].path, QStringLiteral("/tmp/a.csv"));
-  EXPECT_EQ(sources[0].prefix, QStringLiteral("robot"));
-  EXPECT_EQ(sources[0].plugin_id, QStringLiteral("CSV"));
-  EXPECT_EQ(sources[0].plugin_config_json, QStringLiteral(R"({"x":1})"));
-  EXPECT_EQ(sources[1].path, QStringLiteral("/tmp/b.csv"));
+  EXPECT_EQ(sources[0].path, u"/tmp/a.csv"_s);
+  EXPECT_EQ(sources[0].prefix, u"robot"_s);
+  EXPECT_EQ(sources[0].plugin_id, u"CSV"_s);
+  EXPECT_EQ(sources[0].plugin_config_json, uR"({"x":1})"_s);
+  EXPECT_EQ(sources[1].path, u"/tmp/b.csv"_s);
 }
 
 TEST(SessionManagerSourceTest, ClearLoadedSourceResetsToEmpty) {
   PJ::SessionManager session;
-  session.recordLoadedSource(QStringLiteral("/tmp/a.csv"), QString());
-  session.recordLoadedSource(QStringLiteral("/tmp/b.csv"), QString());
+  session.recordLoadedSource(u"/tmp/a.csv"_s, QString());
+  session.recordLoadedSource(u"/tmp/b.csv"_s, QString());
   session.clearLoadedSource();
   EXPECT_FALSE(session.lastLoadedSource().has_value());
   EXPECT_TRUE(session.loadedSources().empty());
@@ -80,33 +80,30 @@ TEST(SessionManagerSourceTest, ClearLoadedSourceResetsToEmpty) {
 
 TEST(SessionManagerSourceTest, RecordLoadedSourceStoresPluginIdAndConfig) {
   PJ::SessionManager session;
-  session.recordLoadedSource(
-      QStringLiteral("/tmp/run42.mcap"), QStringLiteral(""), QStringLiteral("DataLoad MCAP"),
-      QStringLiteral(R"({"topics":["/imu"]})"));
+  session.recordLoadedSource(u"/tmp/run42.mcap"_s, u""_s, u"DataLoad MCAP"_s, uR"({"topics":["/imu"]})"_s);
   const auto src = session.lastLoadedSource();
   ASSERT_TRUE(src.has_value());
-  EXPECT_EQ(src->path, QStringLiteral("/tmp/run42.mcap"));
+  EXPECT_EQ(src->path, u"/tmp/run42.mcap"_s);
   EXPECT_EQ(src->prefix, QString());
-  EXPECT_EQ(src->plugin_id, QStringLiteral("DataLoad MCAP"));
-  EXPECT_EQ(src->plugin_config_json, QStringLiteral(R"({"topics":["/imu"]})"));
+  EXPECT_EQ(src->plugin_id, u"DataLoad MCAP"_s);
+  EXPECT_EQ(src->plugin_config_json, uR"({"topics":["/imu"]})"_s);
 }
 
 TEST(SessionManagerSourceTest, RecordLoadedSourceDefaultsPluginFieldsToEmpty) {
   PJ::SessionManager session;
   // Old 2-arg shape — plugin fields default-empty.
-  session.recordLoadedSource(QStringLiteral("/tmp/a.csv"), QStringLiteral("p"));
+  session.recordLoadedSource(u"/tmp/a.csv"_s, u"p"_s);
   const auto src = session.lastLoadedSource();
   ASSERT_TRUE(src.has_value());
-  EXPECT_EQ(src->path, QStringLiteral("/tmp/a.csv"));
-  EXPECT_EQ(src->prefix, QStringLiteral("p"));
+  EXPECT_EQ(src->path, u"/tmp/a.csv"_s);
+  EXPECT_EQ(src->prefix, u"p"_s);
   EXPECT_TRUE(src->plugin_id.isEmpty());
   EXPECT_TRUE(src->plugin_config_json.isEmpty());
 }
 
 TEST(SessionManagerSourceTest, ClearLoadedSourceResetsPluginFieldsToo) {
   PJ::SessionManager session;
-  session.recordLoadedSource(
-      QStringLiteral("/tmp/a.mcap"), QString(), QStringLiteral("DataLoad MCAP"), QStringLiteral(R"({"x":1})"));
+  session.recordLoadedSource(u"/tmp/a.mcap"_s, QString(), u"DataLoad MCAP"_s, uR"({"x":1})"_s);
   session.clearLoadedSource();
   EXPECT_FALSE(session.lastLoadedSource().has_value());
 }
@@ -606,20 +603,19 @@ TEST(SessionManagerRefillGuardTest, DetachEmitsAboutToBeReplacedBeforeEmptyInges
   // Record the emission order of the two signals (direct, same-thread connections).
   std::vector<QString> order;
   QObject::connect(&session, &PJ::SessionManager::datasetAboutToBeReplaced, &session, [&order](PJ::DatasetId) {
-    order.emplace_back(QStringLiteral("about"));
+    order.emplace_back(u"about"_s);
   });
   QObject::connect(
-      &session, &PJ::SessionManager::samplesIngested, &session, [&order](const QVector<PJ::TopicId>&, bool live) {
-        order.emplace_back(live ? QStringLiteral("ingest_live") : QStringLiteral("ingest"));
-      });
+      &session, &PJ::SessionManager::samplesIngested, &session,
+      [&order](const QVector<PJ::TopicId>&, bool live) { order.emplace_back(live ? u"ingest_live"_s : u"ingest"_s); });
 
   {
     PJ::RefillGuard guard = session.beginRefill(*ds);
     // beginRefill's detach MUST emit datasetAboutToBeReplaced before the empty-state
     // (non-live) ingest notify — adapters drop cached TopicChunk* before the data moves.
     ASSERT_EQ(order.size(), 2u);
-    EXPECT_EQ(order[0], QStringLiteral("about"));
-    EXPECT_EQ(order[1], QStringLiteral("ingest"));
+    EXPECT_EQ(order[0], u"about"_s);
+    EXPECT_EQ(order[1], u"ingest"_s);
 
     // Dataset is now empty, but its topic ids stay registered (a refill reuses them).
     EXPECT_FALSE(session.datasetDisplayRange(*ds).has_value());

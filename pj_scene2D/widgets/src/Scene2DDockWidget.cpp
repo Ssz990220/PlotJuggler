@@ -32,6 +32,7 @@
 #endif
 #include "pj_scene2d_widgets/media_viewer_widget.h"
 #include "pj_widgets/SvgUtil.h"
+using namespace Qt::StringLiterals;
 
 namespace PJ {
 
@@ -90,13 +91,12 @@ std::unique_ptr<ISceneLayer> createDepthImageLayer(
 std::unique_ptr<ISceneLayer> createImageAnnotationsLayer(
     ObjectTopicId topic_id, sdk::BuiltinObjectType object_type, const QString& display_name) {
   return std::make_unique<SceneDecoderLayer>(
-      topic_id, object_type, display_name, QStringLiteral("Annotations"), kSchemaImageAnnotations);
+      topic_id, object_type, display_name, u"Annotations"_s, kSchemaImageAnnotations);
 }
 
 std::unique_ptr<ISceneLayer> createSceneEntitiesLayer(
     ObjectTopicId topic_id, sdk::BuiltinObjectType object_type, const QString& display_name) {
-  return std::make_unique<SceneDecoderLayer>(
-      topic_id, object_type, display_name, QStringLiteral("Markers"), kSchemaSceneEntities);
+  return std::make_unique<SceneDecoderLayer>(topic_id, object_type, display_name, u"Markers"_s, kSchemaSceneEntities);
 }
 
 #ifdef PJ_HAS_FFMPEG
@@ -181,7 +181,7 @@ std::vector<ObjectTopicId> Scene2DDockWidget::compositeTopicOrderForTesting() co
 }
 
 QString Scene2DDockWidget::xmlTag() const {
-  return QStringLiteral("scene2d");
+  return u"scene2d"_s;
 }
 
 QWidget* Scene2DDockWidget::createSceneView() {
@@ -218,13 +218,13 @@ QWidget* Scene2DDockWidget::createSceneView() {
 
 QWidget* Scene2DDockWidget::makeEmptyPlaceholder(QWidget* parent) {
   auto* page = new QWidget(parent);
-  page->setObjectName(QStringLiteral("scene2dEmptyPlaceholder"));
+  page->setObjectName(u"scene2dEmptyPlaceholder"_s);
 
   auto* layout = new QVBoxLayout(page);
   layout->setContentsMargins(0, 0, 0, 0);
 
   empty_placeholder_icon_ = new QLabel(page);
-  empty_placeholder_icon_->setObjectName(QStringLiteral("scene2dEmptyPlaceholderIcon"));
+  empty_placeholder_icon_->setObjectName(u"scene2dEmptyPlaceholderIcon"_s);
   empty_placeholder_icon_->setAlignment(Qt::AlignCenter);
   // Dim the icon so it reads as a "drop a topic here" watermark, not chrome.
   auto* opacity = new QGraphicsOpacityEffect(empty_placeholder_icon_);
@@ -246,7 +246,7 @@ void Scene2DDockWidget::retintEmptyPlaceholder() {
   // Same 2D glyph the dock-level placeholder offers, tinted to the theme ink.
   constexpr int kIconPx = 96;
   const QPixmap pixmap = renderSvgPixmap(
-      QStringLiteral(":/resources/svg/image.svg"), currentTheme(), QSize(kIconPx, kIconPx),
+      u":/resources/svg/image.svg"_s, currentTheme(), QSize(kIconPx, kIconPx),
       empty_placeholder_icon_->devicePixelRatioF());
   empty_placeholder_icon_->setPixmap(pixmap);
 }

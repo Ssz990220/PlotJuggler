@@ -26,6 +26,7 @@
 #include "pj_scene_common/layer_params.h"
 #include "pj_scene_common/scene_dock_widget.h"
 #include "pj_scene_common/scene_layer.h"
+using namespace Qt::StringLiterals;
 
 namespace {
 
@@ -57,7 +58,7 @@ std::vector<int64_t> infoIds(const std::vector<PJ::SceneLayerInfo>& infos) {
 class FakeLayer : public PJ::ISceneLayer {
  public:
   FakeLayer(PJ::ObjectTopicId topic_id, PJ::sdk::BuiltinObjectType object_type, const QString& display_name)
-      : info_{topic_id, object_type, display_name, QStringLiteral("Fake"), true} {
+      : info_{topic_id, object_type, display_name, u"Fake"_s, true} {
     const auto it = g_fake_layer_configs.find(topic_id.id);
     if (it != g_fake_layer_configs.end()) {
       range_ = it->second.range;
@@ -114,13 +115,13 @@ class FakeLayer : public PJ::ISceneLayer {
   }
 
   QDomElement xmlSaveState(QDomDocument& doc) const override {
-    QDomElement element = doc.createElement(QStringLiteral("fake"));
-    element.setAttribute(QStringLiteral("payload"), payload_);
+    QDomElement element = doc.createElement(u"fake"_s);
+    element.setAttribute(u"payload"_s, payload_);
     return element;
   }
 
   bool xmlLoadState(const QDomElement& element) override {
-    payload_ = element.attribute(QStringLiteral("payload"));
+    payload_ = element.attribute(u"payload"_s);
     return true;
   }
 
@@ -242,7 +243,7 @@ class FakeSceneDock : public PJ::SceneDockWidget {
 TEST(LayerFactoryTest, RegisterSupportsCreateAndUnsupportedReturnsNull) {
   PJ::LayerFactory factory;
   EXPECT_FALSE(factory.supports(PJ::sdk::BuiltinObjectType::kPointCloud));
-  EXPECT_EQ(factory.create(topic(1), PJ::sdk::BuiltinObjectType::kPointCloud, QStringLiteral("cloud")), nullptr);
+  EXPECT_EQ(factory.create(topic(1), PJ::sdk::BuiltinObjectType::kPointCloud, u"cloud"_s), nullptr);
 
   factory.registerType(
       PJ::sdk::BuiltinObjectType::kPointCloud,
@@ -251,11 +252,11 @@ TEST(LayerFactoryTest, RegisterSupportsCreateAndUnsupportedReturnsNull) {
       });
 
   EXPECT_TRUE(factory.supports(PJ::sdk::BuiltinObjectType::kPointCloud));
-  auto layer = factory.create(topic(7), PJ::sdk::BuiltinObjectType::kPointCloud, QStringLiteral("cloud"));
+  auto layer = factory.create(topic(7), PJ::sdk::BuiltinObjectType::kPointCloud, u"cloud"_s);
   ASSERT_NE(layer, nullptr);
   EXPECT_EQ(layer->info().topic_id, topic(7));
-  EXPECT_EQ(layer->info().display_name, QStringLiteral("cloud"));
-  EXPECT_EQ(factory.create(topic(8), PJ::sdk::BuiltinObjectType::kImage, QStringLiteral("image")), nullptr);
+  EXPECT_EQ(layer->info().display_name, u"cloud"_s);
+  EXPECT_EQ(factory.create(topic(8), PJ::sdk::BuiltinObjectType::kImage, u"image"_s), nullptr);
 }
 
 TEST(SceneDockWidgetTest, AddTopicEmitsLayerAddedAndReportsDrawOrder) {
@@ -264,8 +265,8 @@ TEST(SceneDockWidgetTest, AddTopicEmitsLayerAddedAndReportsDrawOrder) {
   int added_count = 0;
   QObject::connect(&dock, &PJ::SceneDockWidget::layerAdded, &dock, [&](PJ::ObjectTopicId) { ++added_count; });
 
-  EXPECT_TRUE(dock.addTopic(topic(1), PJ::sdk::BuiltinObjectType::kPointCloud, QStringLiteral("cloud_a")));
-  EXPECT_TRUE(dock.addTopic(topic(2), PJ::sdk::BuiltinObjectType::kPointCloud, QStringLiteral("cloud_b")));
+  EXPECT_TRUE(dock.addTopic(topic(1), PJ::sdk::BuiltinObjectType::kPointCloud, u"cloud_a"_s));
+  EXPECT_TRUE(dock.addTopic(topic(2), PJ::sdk::BuiltinObjectType::kPointCloud, u"cloud_b"_s));
 
   EXPECT_EQ(added_count, 2);
   EXPECT_EQ(infoIds(dock.layers()), (std::vector<int64_t>{1, 2}));
@@ -273,7 +274,7 @@ TEST(SceneDockWidgetTest, AddTopicEmitsLayerAddedAndReportsDrawOrder) {
   auto* layer = dynamic_cast<FakeLayer*>(dock.layerFor(topic(1)));
   ASSERT_NE(layer, nullptr);
   EXPECT_TRUE(layer->attached());
-  EXPECT_EQ(layer->info().display_name, QStringLiteral("cloud_a"));
+  EXPECT_EQ(layer->info().display_name, u"cloud_a"_s);
 }
 
 TEST(SceneDockWidgetTest, AddingTheSameTopicTwiceIsRejected) {
@@ -282,11 +283,11 @@ TEST(SceneDockWidgetTest, AddingTheSameTopicTwiceIsRejected) {
   int added_count = 0;
   QObject::connect(&dock, &PJ::SceneDockWidget::layerAdded, &dock, [&](PJ::ObjectTopicId) { ++added_count; });
 
-  EXPECT_TRUE(dock.addTopic(topic(1), PJ::sdk::BuiltinObjectType::kPointCloud, QStringLiteral("cloud_a")));
+  EXPECT_TRUE(dock.addTopic(topic(1), PJ::sdk::BuiltinObjectType::kPointCloud, u"cloud_a"_s));
   // Re-adding the same topic must be rejected: no duplicate layer, no second
   // layerAdded signal. Drag-drop and XML restore both route through addTopic, so
   // this guards against the same topic appearing twice in one scene dock.
-  EXPECT_FALSE(dock.addTopic(topic(1), PJ::sdk::BuiltinObjectType::kPointCloud, QStringLiteral("cloud_a")));
+  EXPECT_FALSE(dock.addTopic(topic(1), PJ::sdk::BuiltinObjectType::kPointCloud, u"cloud_a"_s));
 
   EXPECT_EQ(added_count, 1);
   EXPECT_EQ(infoIds(dock.layers()), (std::vector<int64_t>{1}));
@@ -296,8 +297,8 @@ TEST(SceneDockWidgetTest, RemoveTopicDetachesAndEmitsLayerRemoved) {
   g_fake_layer_configs.clear();
   g_detached_topics.clear();
   FakeSceneDock dock;
-  ASSERT_TRUE(dock.addTopic(topic(1), PJ::sdk::BuiltinObjectType::kPointCloud, QStringLiteral("cloud_a")));
-  ASSERT_TRUE(dock.addTopic(topic(2), PJ::sdk::BuiltinObjectType::kPointCloud, QStringLiteral("cloud_b")));
+  ASSERT_TRUE(dock.addTopic(topic(1), PJ::sdk::BuiltinObjectType::kPointCloud, u"cloud_a"_s));
+  ASSERT_TRUE(dock.addTopic(topic(2), PJ::sdk::BuiltinObjectType::kPointCloud, u"cloud_b"_s));
 
   int removed_count = 0;
   QObject::connect(&dock, &PJ::SceneDockWidget::layerRemoved, &dock, [&](PJ::ObjectTopicId) { ++removed_count; });
@@ -313,9 +314,9 @@ TEST(SceneDockWidgetTest, RemoveTopicDetachesAndEmitsLayerRemoved) {
 TEST(SceneDockWidgetTest, ReorderLayersUpdatesPublicOrderAndSyncViewOrder) {
   g_fake_layer_configs.clear();
   FakeSceneDock dock;
-  ASSERT_TRUE(dock.addTopic(topic(1), PJ::sdk::BuiltinObjectType::kPointCloud, QStringLiteral("cloud_a")));
-  ASSERT_TRUE(dock.addTopic(topic(2), PJ::sdk::BuiltinObjectType::kPointCloud, QStringLiteral("cloud_b")));
-  ASSERT_TRUE(dock.addTopic(topic(3), PJ::sdk::BuiltinObjectType::kPointCloud, QStringLiteral("cloud_c")));
+  ASSERT_TRUE(dock.addTopic(topic(1), PJ::sdk::BuiltinObjectType::kPointCloud, u"cloud_a"_s));
+  ASSERT_TRUE(dock.addTopic(topic(2), PJ::sdk::BuiltinObjectType::kPointCloud, u"cloud_b"_s));
+  ASSERT_TRUE(dock.addTopic(topic(3), PJ::sdk::BuiltinObjectType::kPointCloud, u"cloud_c"_s));
 
   dock.reorderLayers({topic(3), topic(1), topic(2)});
 
@@ -328,8 +329,8 @@ TEST(SceneDockWidgetTest, TrackerTimeClampsToLayerUnionAndForwardsToVisibleLayer
   g_fake_layer_configs[1] = FakeLayerConfig{std::pair<int64_t, int64_t>{100, 200}};
   g_fake_layer_configs[2] = FakeLayerConfig{std::pair<int64_t, int64_t>{300, 400}};
   FakeSceneDock dock;
-  ASSERT_TRUE(dock.addTopic(topic(1), PJ::sdk::BuiltinObjectType::kPointCloud, QStringLiteral("cloud_a")));
-  ASSERT_TRUE(dock.addTopic(topic(2), PJ::sdk::BuiltinObjectType::kPointCloud, QStringLiteral("cloud_b")));
+  ASSERT_TRUE(dock.addTopic(topic(1), PJ::sdk::BuiltinObjectType::kPointCloud, u"cloud_a"_s));
+  ASSERT_TRUE(dock.addTopic(topic(2), PJ::sdk::BuiltinObjectType::kPointCloud, u"cloud_b"_s));
   auto* layer_a = dynamic_cast<FakeLayer*>(dock.layerFor(topic(1)));
   auto* layer_b = dynamic_cast<FakeLayer*>(dock.layerFor(topic(2)));
   ASSERT_NE(layer_a, nullptr);
@@ -367,8 +368,8 @@ TEST(SceneDockWidgetTest, UnhideRedeliversLastTrackerTimeClampedToLayerRange) {
   g_fake_layer_configs[1] = FakeLayerConfig{std::pair<int64_t, int64_t>{100, 500}};
   g_fake_layer_configs[2] = FakeLayerConfig{std::pair<int64_t, int64_t>{300, 400}};
   FakeSceneDock dock;
-  ASSERT_TRUE(dock.addTopic(topic(1), PJ::sdk::BuiltinObjectType::kPointCloud, QStringLiteral("cloud_a")));
-  ASSERT_TRUE(dock.addTopic(topic(2), PJ::sdk::BuiltinObjectType::kPointCloud, QStringLiteral("cloud_b")));
+  ASSERT_TRUE(dock.addTopic(topic(1), PJ::sdk::BuiltinObjectType::kPointCloud, u"cloud_a"_s));
+  ASSERT_TRUE(dock.addTopic(topic(2), PJ::sdk::BuiltinObjectType::kPointCloud, u"cloud_b"_s));
   auto* layer_a = dynamic_cast<FakeLayer*>(dock.layerFor(topic(1)));
   auto* layer_b = dynamic_cast<FakeLayer*>(dock.layerFor(topic(2)));
   ASSERT_NE(layer_a, nullptr);
@@ -407,7 +408,7 @@ TEST(SceneDockWidgetTest, UnhideBeforeAnyTrackerTickSeedsLayerFirstFrame) {
   g_fake_layer_configs.clear();
   g_fake_layer_configs[1] = FakeLayerConfig{std::pair<int64_t, int64_t>{700, 900}};
   FakeSceneDock dock;
-  ASSERT_TRUE(dock.addTopic(topic(1), PJ::sdk::BuiltinObjectType::kPointCloud, QStringLiteral("cloud")));
+  ASSERT_TRUE(dock.addTopic(topic(1), PJ::sdk::BuiltinObjectType::kPointCloud, u"cloud"_s));
   auto* layer = dynamic_cast<FakeLayer*>(dock.layerFor(topic(1)));
   ASSERT_NE(layer, nullptr);
 
@@ -440,18 +441,18 @@ TEST(SceneDockWidgetTest, XmlSaveLoadRoundTripsLayersOrderVisibilityAndPayload) 
 
   FakeSceneDock source;
   source.setSessionManager(&session);
-  ASSERT_TRUE(source.addTopic(*topic_a, PJ::sdk::BuiltinObjectType::kPointCloud, QStringLiteral("Cloud A")));
-  ASSERT_TRUE(source.addTopic(*topic_b, PJ::sdk::BuiltinObjectType::kPointCloud, QStringLiteral("Cloud B")));
+  ASSERT_TRUE(source.addTopic(*topic_a, PJ::sdk::BuiltinObjectType::kPointCloud, u"Cloud A"_s));
+  ASSERT_TRUE(source.addTopic(*topic_b, PJ::sdk::BuiltinObjectType::kPointCloud, u"Cloud B"_s));
   auto* source_a = dynamic_cast<FakeLayer*>(source.layerFor(*topic_a));
   auto* source_b = dynamic_cast<FakeLayer*>(source.layerFor(*topic_b));
   ASSERT_NE(source_a, nullptr);
   ASSERT_NE(source_b, nullptr);
-  source_a->setPayload(QStringLiteral("alpha"));
-  source_b->setPayload(QStringLiteral("beta"));
+  source_a->setPayload(u"alpha"_s);
+  source_b->setPayload(u"beta"_s);
   source.setLayerVisible(*topic_a, false);
   source.reorderLayers({*topic_b, *topic_a});
 
-  QDomDocument doc(QStringLiteral("scene_common"));
+  QDomDocument doc(u"scene_common"_s);
   const QDomElement root = source.xmlSaveState(doc);
   doc.appendChild(root);
 
@@ -463,17 +464,17 @@ TEST(SceneDockWidgetTest, XmlSaveLoadRoundTripsLayersOrderVisibilityAndPayload) 
   ASSERT_EQ(infos.size(), 2U);
   EXPECT_EQ(
       infoIds(infos), (std::vector<int64_t>{static_cast<int64_t>(topic_b->id), static_cast<int64_t>(topic_a->id)}));
-  EXPECT_EQ(infos[0].display_name, QStringLiteral("Cloud B"));
+  EXPECT_EQ(infos[0].display_name, u"Cloud B"_s);
   EXPECT_TRUE(infos[0].visible);
-  EXPECT_EQ(infos[1].display_name, QStringLiteral("Cloud A"));
+  EXPECT_EQ(infos[1].display_name, u"Cloud A"_s);
   EXPECT_FALSE(infos[1].visible);
 
   auto* restored_a = dynamic_cast<FakeLayer*>(restored.layerFor(*topic_a));
   auto* restored_b = dynamic_cast<FakeLayer*>(restored.layerFor(*topic_b));
   ASSERT_NE(restored_a, nullptr);
   ASSERT_NE(restored_b, nullptr);
-  EXPECT_EQ(restored_a->payload(), QStringLiteral("alpha"));
-  EXPECT_EQ(restored_b->payload(), QStringLiteral("beta"));
+  EXPECT_EQ(restored_a->payload(), u"alpha"_s);
+  EXPECT_EQ(restored_b->payload(), u"beta"_s);
   EXPECT_EQ(restored.lastSyncedIds(), infoIds(infos));
 }
 
@@ -489,7 +490,7 @@ TEST(SceneDockWidgetTest, LayerAddedIsEmittedAfterViewIsReconciled) {
     fired = true;
   });
 
-  ASSERT_TRUE(dock.addTopic(topic(1), PJ::sdk::BuiltinObjectType::kPointCloud, QStringLiteral("cloud_a")));
+  ASSERT_TRUE(dock.addTopic(topic(1), PJ::sdk::BuiltinObjectType::kPointCloud, u"cloud_a"_s));
 
   EXPECT_TRUE(fired);
   EXPECT_EQ(synced_at_emit, (std::vector<int64_t>{1}));
@@ -498,8 +499,8 @@ TEST(SceneDockWidgetTest, LayerAddedIsEmittedAfterViewIsReconciled) {
 TEST(SceneDockWidgetTest, LayerRemovedIsEmittedAfterViewIsReconciled) {
   g_fake_layer_configs.clear();
   FakeSceneDock dock;
-  ASSERT_TRUE(dock.addTopic(topic(1), PJ::sdk::BuiltinObjectType::kPointCloud, QStringLiteral("cloud_a")));
-  ASSERT_TRUE(dock.addTopic(topic(2), PJ::sdk::BuiltinObjectType::kPointCloud, QStringLiteral("cloud_b")));
+  ASSERT_TRUE(dock.addTopic(topic(1), PJ::sdk::BuiltinObjectType::kPointCloud, u"cloud_a"_s));
+  ASSERT_TRUE(dock.addTopic(topic(2), PJ::sdk::BuiltinObjectType::kPointCloud, u"cloud_b"_s));
 
   std::vector<int64_t> synced_at_emit;
   bool fired = false;
@@ -541,8 +542,8 @@ TEST(SceneDockWidgetTest, RevalidateObjectsPrunesEvictedTopicsAndReportsEmpty) {
 
   FakeSceneDock dock;
   dock.setSessionManager(&session);
-  ASSERT_TRUE(dock.addTopic(*topic_a, PJ::sdk::BuiltinObjectType::kPointCloud, QStringLiteral("a")));
-  ASSERT_TRUE(dock.addTopic(*topic_b, PJ::sdk::BuiltinObjectType::kPointCloud, QStringLiteral("b")));
+  ASSERT_TRUE(dock.addTopic(*topic_a, PJ::sdk::BuiltinObjectType::kPointCloud, u"a"_s));
+  ASSERT_TRUE(dock.addTopic(*topic_b, PJ::sdk::BuiltinObjectType::kPointCloud, u"b"_s));
   std::vector<uint32_t> removed_topics;
   QObject::connect(&dock, &PJ::SceneDockWidget::layerRemoved, [&removed_topics](PJ::ObjectTopicId topic_id) {
     removed_topics.push_back(topic_id.id);
@@ -574,7 +575,7 @@ TEST(SceneDockWidgetTest, LatchedLayerDoesNotDragTrackerTimeBack) {
   g_fake_layer_configs.clear();
   g_fake_layer_configs[1] = FakeLayerConfig{std::pair<int64_t, int64_t>{1'000, 1'000}};  // latched
   FakeSceneDock dock;
-  ASSERT_TRUE(dock.addTopic(topic(1), PJ::sdk::BuiltinObjectType::kPointCloud, QStringLiteral("map")));
+  ASSERT_TRUE(dock.addTopic(topic(1), PJ::sdk::BuiltinObjectType::kPointCloud, u"map"_s));
   auto* latched = dynamic_cast<FakeLayer*>(dock.layerFor(topic(1)));
   ASSERT_NE(latched, nullptr);
 
@@ -590,7 +591,7 @@ TEST(SceneDockWidgetTest, LatchedLayerDoesNotDragTrackerTimeBack) {
 
   // A spanning layer bounds the top; the latched layer still does not extend it.
   g_fake_layer_configs[2] = FakeLayerConfig{std::pair<int64_t, int64_t>{2'000, 3'000}};
-  ASSERT_TRUE(dock.addTopic(topic(2), PJ::sdk::BuiltinObjectType::kPointCloud, QStringLiteral("cloud")));
+  ASSERT_TRUE(dock.addTopic(topic(2), PJ::sdk::BuiltinObjectType::kPointCloud, u"cloud"_s));
   latched->clearTrackerTimes();
   dock.onTrackerTime(10'000.0 / 1'000'000'000.0);
   EXPECT_EQ(latched->trackerTimesNs(), (std::vector<int64_t>{3'000}));
@@ -607,8 +608,8 @@ TEST(SceneDockWidgetTest, StaticLayerWithInvertedRangeIsSkippedByClamp) {
       std::pair<int64_t, int64_t>{std::numeric_limits<int64_t>::max(), std::numeric_limits<int64_t>::lowest()}};
   g_fake_layer_configs[2] = FakeLayerConfig{std::pair<int64_t, int64_t>{2'000, 3'000}};  // spanning
   FakeSceneDock dock;
-  ASSERT_TRUE(dock.addTopic(topic(1), PJ::sdk::BuiltinObjectType::kPointCloud, QStringLiteral("static")));
-  ASSERT_TRUE(dock.addTopic(topic(2), PJ::sdk::BuiltinObjectType::kPointCloud, QStringLiteral("cloud")));
+  ASSERT_TRUE(dock.addTopic(topic(1), PJ::sdk::BuiltinObjectType::kPointCloud, u"static"_s));
+  ASSERT_TRUE(dock.addTopic(topic(2), PJ::sdk::BuiltinObjectType::kPointCloud, u"cloud"_s));
   auto* static_layer = dynamic_cast<FakeLayer*>(dock.layerFor(topic(1)));
   ASSERT_NE(static_layer, nullptr);
   static_layer->clearTrackerTimes();
@@ -632,7 +633,7 @@ TEST(SceneDockWidgetTest, TrackerRepaintCoalescesWhenRenderKeyUnchanged) {
   g_fake_layer_configs.clear();
   g_fake_layer_configs[1] = FakeLayerConfig{std::pair<int64_t, int64_t>{0, 1'000'000}};  // wide: no clamp distortion
   FakeSceneDock dock;
-  ASSERT_TRUE(dock.addTopic(topic(1), PJ::sdk::BuiltinObjectType::kPointCloud, QStringLiteral("cloud")));
+  ASSERT_TRUE(dock.addTopic(topic(1), PJ::sdk::BuiltinObjectType::kPointCloud, u"cloud"_s));
   auto* layer = dynamic_cast<FakeLayer*>(dock.layerFor(topic(1)));
   ASSERT_NE(layer, nullptr);
 
@@ -665,7 +666,7 @@ TEST(SceneDockWidgetTest, ViewRenderKeyChangeRepaintsDespiteStableLayers) {
   g_fake_layer_configs.clear();
   g_fake_layer_configs[1] = FakeLayerConfig{std::pair<int64_t, int64_t>{0, 1'000'000}};
   FakeSceneDock dock;
-  ASSERT_TRUE(dock.addTopic(topic(1), PJ::sdk::BuiltinObjectType::kPointCloud, QStringLiteral("cloud")));
+  ASSERT_TRUE(dock.addTopic(topic(1), PJ::sdk::BuiltinObjectType::kPointCloud, u"cloud"_s));
   auto* layer = dynamic_cast<FakeLayer*>(dock.layerFor(topic(1)));
   ASSERT_NE(layer, nullptr);
 
@@ -690,12 +691,12 @@ TEST(SceneDockWidgetTest, ViewRenderKeyChangeRepaintsDespiteStableLayers) {
 // reconciles, and the layers' GL resources die without a release hook.
 TEST(SceneDockWidgetTest, ClearLayersRepointsViewBeforeDestroyingLayers) {
   FakeSceneDock dock;
-  ASSERT_TRUE(dock.addTopic(topic(1), PJ::sdk::BuiltinObjectType::kPointCloud, QStringLiteral("a")));
-  ASSERT_TRUE(dock.addTopic(topic(2), PJ::sdk::BuiltinObjectType::kPointCloud, QStringLiteral("b")));
+  ASSERT_TRUE(dock.addTopic(topic(1), PJ::sdk::BuiltinObjectType::kPointCloud, u"a"_s));
+  ASSERT_TRUE(dock.addTopic(topic(2), PJ::sdk::BuiltinObjectType::kPointCloud, u"b"_s));
   g_layer_events.clear();
 
   QDomDocument doc;
-  const QDomElement empty_scene = doc.createElement(QStringLiteral("scene"));
+  const QDomElement empty_scene = doc.createElement(u"scene"_s);
   ASSERT_TRUE(dock.xmlLoadState(empty_scene));
 
   const auto begin = g_layer_events.begin();
@@ -714,7 +715,7 @@ TEST(SceneDockWidgetTest, TrackerTimeIgnoresNonFiniteValues) {
   g_fake_layer_configs.clear();
   g_fake_layer_configs[1] = FakeLayerConfig{std::pair<int64_t, int64_t>{100, 200}};
   FakeSceneDock dock;
-  ASSERT_TRUE(dock.addTopic(topic(1), PJ::sdk::BuiltinObjectType::kPointCloud, QStringLiteral("cloud_a")));
+  ASSERT_TRUE(dock.addTopic(topic(1), PJ::sdk::BuiltinObjectType::kPointCloud, u"cloud_a"_s));
   auto* layer = dynamic_cast<FakeLayer*>(dock.layerFor(topic(1)));
   ASSERT_NE(layer, nullptr);
   layer->clearTrackerTimes();
@@ -736,7 +737,7 @@ TEST(SceneDockWidgetTest, ConfigTopicIsConsumedWithoutCreatingLayer) {
 
   // A scene-wide config topic is accepted (addTopic == true) but spawns no layer
   // and no layerAdded signal: the two meanings the typed AddOutcome separates.
-  EXPECT_TRUE(dock.addTopic(topic(5), PJ::sdk::BuiltinObjectType::kImage, QStringLiteral("config")));
+  EXPECT_TRUE(dock.addTopic(topic(5), PJ::sdk::BuiltinObjectType::kImage, u"config"_s));
 
   EXPECT_EQ(added_count, 0);
   EXPECT_EQ(dock.layerFor(topic(5)), nullptr);
@@ -748,29 +749,29 @@ TEST(SceneDockWidgetTest, ConfigTopicIsConsumedWithoutCreatingLayer) {
 // it to another. FakeLayer's "payload" attribute stands in for real per-layer
 // params (shape, size, colormap, …).
 TEST(LayerParamsTest, RoundTripCopiesParamsBetweenLayers) {
-  FakeLayer source(topic(1), PJ::sdk::BuiltinObjectType::kPointCloud, QStringLiteral("src"));
-  source.setPayload(QStringLiteral("alpha"));
+  FakeLayer source(topic(1), PJ::sdk::BuiltinObjectType::kPointCloud, u"src"_s);
+  source.setPayload(u"alpha"_s);
 
   const QString xml = PJ::serializeLayerParams(source);
   ASSERT_FALSE(xml.isEmpty());
-  EXPECT_TRUE(xml.contains(QStringLiteral("alpha")));
+  EXPECT_TRUE(xml.contains(u"alpha"_s));
 
-  FakeLayer target(topic(2), PJ::sdk::BuiltinObjectType::kPointCloud, QStringLiteral("dst"));
+  FakeLayer target(topic(2), PJ::sdk::BuiltinObjectType::kPointCloud, u"dst"_s);
   ASSERT_TRUE(target.payload().isEmpty());
 
   EXPECT_TRUE(PJ::applyLayerParams(target, xml));
-  EXPECT_EQ(target.payload(), QStringLiteral("alpha"));
+  EXPECT_EQ(target.payload(), u"alpha"_s);
 }
 
 // Empty / malformed input must be rejected and leave the target untouched, so a
 // paste from an empty clipboard or a corrupted blob never silently wipes params.
 TEST(LayerParamsTest, ApplyRejectsEmptyAndMalformedXmlLeavingTargetUntouched) {
-  FakeLayer target(topic(1), PJ::sdk::BuiltinObjectType::kPointCloud, QStringLiteral("dst"));
-  target.setPayload(QStringLiteral("keep"));
+  FakeLayer target(topic(1), PJ::sdk::BuiltinObjectType::kPointCloud, u"dst"_s);
+  target.setPayload(u"keep"_s);
 
   EXPECT_FALSE(PJ::applyLayerParams(target, QString()));
-  EXPECT_FALSE(PJ::applyLayerParams(target, QStringLiteral("<broken")));
-  EXPECT_EQ(target.payload(), QStringLiteral("keep"));
+  EXPECT_FALSE(PJ::applyLayerParams(target, u"<broken"_s));
+  EXPECT_EQ(target.payload(), u"keep"_s);
 }
 
 int main(int argc, char** argv) {

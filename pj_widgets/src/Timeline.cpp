@@ -40,6 +40,7 @@
 #include "pj_widgets/Scrollbar.h"
 #include "pj_widgets/SvgButton.h"
 #include "pj_widgets/ThemeColors.h"
+using namespace Qt::StringLiterals;
 
 namespace PJ {
 
@@ -268,7 +269,7 @@ inline QString formatAbsoluteSeconds(qint64 epoch_ns, bool fixed_ms = false) {
   if (ms == 0 && !fixed_ms) {
     return QString::number(sec);
   }
-  return QStringLiteral("%1.%2").arg(sec).arg(ms, 3, 10, QChar('0'));
+  return u"%1.%2"_s.arg(sec).arg(ms, 3, 10, QChar('0'));
 }
 
 // Linear RGB blend a*(1-t) + b*t.
@@ -731,20 +732,20 @@ class TimelineNamePanel : public QWidget {
     // names. WA_StyledBackground so the band's QSS fill paints; opaque so rows
     // scrolled up never bleed into the header.
     header_ = new QWidget(this);
-    header_->setObjectName(QStringLiteral("timelineDatasetsHeader"));
+    header_->setObjectName(u"timelineDatasetsHeader"_s);
     header_->setAttribute(Qt::WA_StyledBackground, true);
     auto* row = new QHBoxLayout(header_);
     row->setContentsMargins(0, 0, 0, 0);
     row->setSpacing(0);
 
     header_label_ = new QLabel(tr("Datasets"), header_);
-    header_label_->setObjectName(QStringLiteral("timelineDatasetsLabel"));
+    header_label_->setObjectName(u"timelineDatasetsLabel"_s);
 
     // Merge button (merge icon, no label; 24-px to match the app chrome).
     // An SvgButton, so it re-tints itself on theme change — no applyHeaderTheme hook.
     // The Timeline enables it only when ≥2 sources are selected and wires its click.
-    merge_button_ = new SvgButton(QStringLiteral(":/resources/svg/merge.svg"), SvgButton::Size::kDefault, header_);
-    merge_button_->setObjectName(QStringLiteral("timelineMergeButton"));
+    merge_button_ = new SvgButton(u":/resources/svg/merge.svg"_s, SvgButton::Size::kDefault, header_);
+    merge_button_->setObjectName(u"timelineMergeButton"_s);
     merge_button_->setToolTip(tr("Merge the selected datasets"));
     merge_button_->setEnabled(false);
 
@@ -914,11 +915,11 @@ QString formatMarkerTime(qint64 rel_ns) {
   const qint64 min = (total_ms / 1000) / 60;
   QString body;
   if (min > 0) {
-    body = QStringLiteral("%1:%2.%3").arg(min).arg(sec, 2, 10, QChar('0')).arg(ms, 3, 10, QChar('0'));
+    body = u"%1:%2.%3"_s.arg(min).arg(sec, 2, 10, QChar('0')).arg(ms, 3, 10, QChar('0'));
   } else {
-    body = QStringLiteral("%1.%2 s").arg(sec).arg(ms, 3, 10, QChar('0'));
+    body = u"%1.%2 s"_s.arg(sec).arg(ms, 3, 10, QChar('0'));
   }
-  return (neg ? QStringLiteral("-") : QString()) + body;
+  return (neg ? u"-"_s : QString()) + body;
 }
 }  // namespace
 
@@ -1000,7 +1001,7 @@ Timeline::Timeline(QWidget* parent) : QWidget(parent) {
   // QSS styles QSplitter::handle as a 1-px border line that turns purple on
   // hover/drag, identical to every other splitter divider.
   name_splitter_ = new QSplitter(Qt::Horizontal, this);
-  name_splitter_->setObjectName(QStringLiteral("timelineNameSplitter"));
+  name_splitter_->setObjectName(u"timelineNameSplitter"_s);
   name_splitter_->setChildrenCollapsible(false);
   name_splitter_->setHandleWidth(1);
   name_splitter_->addWidget(name_panel_);
@@ -1053,7 +1054,7 @@ Timeline::Timeline(QWidget* parent) : QWidget(parent) {
   // Purely informational — WA_TransparentForMouseEvents so it never changes event
   // routing (the press/wheel gates already block interaction). Hidden until locked.
   lock_overlay_ = new QLabel(tr("Streaming: pause playback to interact with the timeline"), this);
-  lock_overlay_->setObjectName(QStringLiteral("timelineLockOverlay"));
+  lock_overlay_->setObjectName(u"timelineLockOverlay"_s);
   lock_overlay_->setAttribute(Qt::WA_TransparentForMouseEvents);
   lock_overlay_->setAlignment(Qt::AlignCenter);
   lock_overlay_->setWordWrap(true);

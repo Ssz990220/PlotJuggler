@@ -59,6 +59,7 @@
 #include "pj_plugins/host/service_registry_builder.hpp"
 #include "pj_runtime/DataSourceRuntimeHost.h"
 #include "pj_runtime/ExtensionCatalogService.h"
+using namespace Qt::StringLiterals;
 
 #ifndef PJ_STREAMING_CACHING_PARSER_PATH
 #error "PJ_STREAMING_CACHING_PARSER_PATH must be defined"
@@ -210,7 +211,7 @@ TEST_F(StreamEngineSwapTest, CachedSourceHandlesResolveAcrossPauseAndResumeSwap)
 class StreamParserSwapTest : public ::testing::Test {
  protected:
   void SetUp() override {
-    ASSERT_NE(catalog_.findParserByEncoding(QStringLiteral("streaming_caching")), nullptr)
+    ASSERT_NE(catalog_.findParserByEncoding(u"streaming_caching"_s), nullptr)
         << "streaming_caching_parser_plugin was not discovered in " << plugin_dir_.toStdString();
 
     auto primary_dataset =

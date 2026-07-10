@@ -17,6 +17,7 @@
 #include <QToolButton>
 
 #include "pj_widgets/SvgUtil.h"
+using namespace Qt::StringLiterals;
 
 namespace PJ {
 
@@ -86,7 +87,7 @@ FileDialog::FileDialog(QWidget* parent) : Dialog(parent) {
   for (auto* combo : inner_->findChildren<QComboBox*>()) {
     combo->setFixedHeight(kInputRowHeightPx);
   }
-  if (auto* name_edit = inner_->findChild<QLineEdit*>(QStringLiteral("fileNameEdit"))) {
+  if (auto* name_edit = inner_->findChild<QLineEdit*>(u"fileNameEdit"_s)) {
     name_edit->setFixedHeight(kInputRowHeightPx);
   }
 

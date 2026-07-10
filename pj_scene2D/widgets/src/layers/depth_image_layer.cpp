@@ -16,6 +16,7 @@
 #include "pj_runtime/SessionManager.h"
 #include "pj_scene2d_core/media_source.h"
 #include "pj_widgets/DoubleScrubber.h"
+using namespace Qt::StringLiterals;
 
 namespace PJ {
 
@@ -23,25 +24,25 @@ namespace {
 QString colormapName(Colormap colormap) {
   switch (colormap) {
     case Colormap::kTurbo:
-      return QStringLiteral("turbo");
+      return u"turbo"_s;
     case Colormap::kViridis:
-      return QStringLiteral("viridis");
+      return u"viridis"_s;
     case Colormap::kPlasma:
-      return QStringLiteral("plasma");
+      return u"plasma"_s;
     case Colormap::kGrayscale:
-      return QStringLiteral("grayscale");
+      return u"grayscale"_s;
   }
-  return QStringLiteral("turbo");
+  return u"turbo"_s;
 }
 
 Colormap parseColormap(const QString& value) {
-  if (value == QStringLiteral("viridis")) {
+  if (value == u"viridis"_s) {
     return Colormap::kViridis;
   }
-  if (value == QStringLiteral("plasma")) {
+  if (value == u"plasma"_s) {
     return Colormap::kPlasma;
   }
-  if (value == QStringLiteral("grayscale")) {
+  if (value == u"grayscale"_s) {
     return Colormap::kGrayscale;
   }
   return Colormap::kTurbo;  // also maps legacy "jet" layouts to the default.
@@ -50,7 +51,7 @@ Colormap parseColormap(const QString& value) {
 
 DepthImageLayer::DepthImageLayer(
     ObjectTopicId topic_id, sdk::BuiltinObjectType object_type, const QString& display_name, QObject* parent)
-    : Scene2DLayer(topic_id, object_type, display_name, QStringLiteral("Depth"), parent) {}
+    : Scene2DLayer(topic_id, object_type, display_name, u"Depth"_s, parent) {}
 
 QWidget* DepthImageLayer::createConfigWidget(QWidget* parent) {
   auto* widget = new QWidget(parent);
@@ -83,7 +84,7 @@ QWidget* DepthImageLayer::createConfigWidget(QWidget* parent) {
   invert_btn->setChecked(invert_);
   invert_btn->setFocusPolicy(Qt::NoFocus);
   invert_btn->setStyleSheet(kToggleButtonQss);
-  invert_btn->setIcon(QIcon(QStringLiteral(":/resources/svg/invert.svg")));
+  invert_btn->setIcon(QIcon(u":/resources/svg/invert.svg"_s));
   invert_btn->setIconSize(QSize(20, 20));
   // Match the standard icon-button extent used across the app (icon 20 + padding 4).
   invert_btn->setFixedSize(24, 24);
@@ -96,7 +97,7 @@ QWidget* DepthImageLayer::createConfigWidget(QWidget* parent) {
   near_spin->setRange(0.0, 100000.0);
   near_spin->setDecimals(3);
   near_spin->setSingleStep(0.1);
-  near_spin->setSuffix(QStringLiteral(" m"));
+  near_spin->setSuffix(u" m"_s);
   near_spin->setValue(near_m_);
   layout->addRow(tr("Near"), near_spin);
 
@@ -104,7 +105,7 @@ QWidget* DepthImageLayer::createConfigWidget(QWidget* parent) {
   far_spin->setRange(0.0, 100000.0);
   far_spin->setDecimals(3);
   far_spin->setSingleStep(0.1);
-  far_spin->setSuffix(QStringLiteral(" m"));
+  far_spin->setSuffix(u" m"_s);
   far_spin->setValue(far_m_);
   layout->addRow(tr("Far"), far_spin);
 
@@ -182,30 +183,29 @@ void DepthImageLayer::applyTo(DepthPipelineSource& source) const {
 }
 
 void DepthImageLayer::saveOptions(QDomElement& element) const {
-  element.setAttribute(QStringLiteral("colormap"), colormapName(colormap_));
-  element.setAttribute(QStringLiteral("invert"), invert_ ? QStringLiteral("true") : QStringLiteral("false"));
-  element.setAttribute(QStringLiteral("near_m"), QString::number(near_m_, 'g', 9));
-  element.setAttribute(QStringLiteral("far_m"), QString::number(far_m_, 'g', 9));
-  element.setAttribute(QStringLiteral("opacity"), QString::number(opacity_, 'g', 9));
+  element.setAttribute(u"colormap"_s, colormapName(colormap_));
+  element.setAttribute(u"invert"_s, invert_ ? u"true"_s : u"false"_s);
+  element.setAttribute(u"near_m"_s, QString::number(near_m_, 'g', 9));
+  element.setAttribute(u"far_m"_s, QString::number(far_m_, 'g', 9));
+  element.setAttribute(u"opacity"_s, QString::number(opacity_, 'g', 9));
 }
 
 bool DepthImageLayer::loadOptions(const QDomElement& element) {
-  colormap_ = parseColormap(element.attribute(QStringLiteral("colormap"), colormapName(colormap_)));
-  invert_ = element.attribute(QStringLiteral("invert"), invert_ ? QStringLiteral("true") : QStringLiteral("false")) ==
-            QStringLiteral("true");
+  colormap_ = parseColormap(element.attribute(u"colormap"_s, colormapName(colormap_)));
+  invert_ = element.attribute(u"invert"_s, invert_ ? u"true"_s : u"false"_s) == u"true"_s;
 
   bool ok = false;
-  const float near_m = element.attribute(QStringLiteral("near_m"), QString::number(near_m_)).toFloat(&ok);
+  const float near_m = element.attribute(u"near_m"_s, QString::number(near_m_)).toFloat(&ok);
   if (ok) {
     near_m_ = near_m;
   }
   ok = false;
-  const float far_m = element.attribute(QStringLiteral("far_m"), QString::number(far_m_)).toFloat(&ok);
+  const float far_m = element.attribute(u"far_m"_s, QString::number(far_m_)).toFloat(&ok);
   if (ok) {
     far_m_ = far_m;
   }
   ok = false;
-  const float opacity = element.attribute(QStringLiteral("opacity"), QString::number(opacity_)).toFloat(&ok);
+  const float opacity = element.attribute(u"opacity"_s, QString::number(opacity_)).toFloat(&ok);
   if (ok) {
     opacity_ = std::clamp(opacity, 0.0f, 1.0f);
   }

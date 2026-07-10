@@ -22,6 +22,7 @@
 #include "pj_runtime/SessionManager.h"
 #include "pj_runtime/Time.h"
 #include "pj_runtime/TopicDemandTracker.h"
+using namespace Qt::StringLiterals;
 
 namespace PJ {
 
@@ -304,7 +305,7 @@ DatasetId AppSession::mergeDatasets(const std::vector<DatasetId>& selected) {
     }
   }
   if (!anchor_label.isEmpty()) {
-    catalog_model_->setDatasetDisplayName(plan->anchor, anchor_label + QStringLiteral("_merged"));
+    catalog_model_->setDatasetDisplayName(plan->anchor, anchor_label + u"_merged"_s);
   }
   for (const auto& source : plan->sources) {
     catalog_model_->removeDataset(source.dataset_id);

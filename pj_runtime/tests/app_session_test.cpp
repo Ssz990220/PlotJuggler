@@ -23,6 +23,7 @@
 #include "pj_runtime/ExtensionCatalogService.h"
 #include "pj_runtime/PlaybackEngine.h"
 #include "pj_runtime/SessionManager.h"
+using namespace Qt::StringLiterals;
 
 namespace {
 
@@ -61,7 +62,7 @@ TEST(AppSessionTest, BuiltinPluginFoldersOrderedWithPluginDirOverride) {
   ASSERT_EQ(builtins.size(), 3);
   EXPECT_EQ(builtins.at(0), dir.path());
   EXPECT_NE(builtins.at(1), dir.path());  // marketplace location, distinct from the override
-  EXPECT_TRUE(builtins.at(2).endsWith(QStringLiteral("/plugins")));
+  EXPECT_TRUE(builtins.at(2).endsWith(u"/plugins"_s));
 }
 
 TEST(AppSessionTest, InvalidExtensionDirectoryReportsDiagnostic) {
@@ -208,7 +209,7 @@ TEST(AppSessionTest, TrashedCurvesStopContributingToPlaybackRange) {
   // Trash the long topic's curves (the dataset stays visible through /imu/x).
   std::vector<QString> trashed_keys;
   for (const PJ::CatalogItem& item : session.catalogModel().items()) {
-    if (item.topic_name == QStringLiteral("/gps/fix")) {
+    if (item.topic_name == u"/gps/fix"_s) {
       trashed_keys.push_back(item.key);
     }
   }
@@ -354,14 +355,14 @@ TEST(AppSessionTest, ClearingCatalogForgetsRememberedCurveColors) {
   session.catalogModel().rebuildFromDatastore();
 
   // A remembered curve color...
-  session.curveColorRegistry().setColor(QStringLiteral("/imu/x"), QStringLiteral("#1f77b4"));
-  ASSERT_TRUE(session.curveColorRegistry().color(QStringLiteral("/imu/x")).has_value());
+  session.curveColorRegistry().setColor(u"/imu/x"_s, u"#1f77b4"_s);
+  ASSERT_TRUE(session.curveColorRegistry().color(u"/imu/x"_s).has_value());
 
   // ...is forgotten when the catalog is cleared (data replaced), via the
   // AppSession wiring of CatalogModel::cleared -> CurveColorRegistry::clear.
   session.catalogModel().clearAll();
 
-  EXPECT_FALSE(session.curveColorRegistry().color(QStringLiteral("/imu/x")).has_value());
+  EXPECT_FALSE(session.curveColorRegistry().color(u"/imu/x"_s).has_value());
 }
 
 TEST(AppSessionTest, DatasetRawTimeRangeReturnsRawBounds) {

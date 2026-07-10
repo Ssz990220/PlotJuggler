@@ -33,6 +33,7 @@
 #include "pj_widgets/DoubleScrubber.h"
 #include "pj_widgets/ToggleSwitch.h"
 #include "url_fetcher.h"
+using namespace Qt::StringLiterals;
 
 namespace pj::scene3d {
 
@@ -61,19 +62,19 @@ std::uint64_t fnv1a(const std::vector<std::uint8_t>& data) {
 QString hintFromMediaType(const std::string& media_type, const std::string& url) {
   const QString media = QString::fromStdString(media_type).toLower();
   if (media == QLatin1String("model/gltf-binary") || media == QLatin1String("application/octet-stream+glb")) {
-    return QStringLiteral("glb");
+    return u"glb"_s;
   }
   if (media == QLatin1String("model/gltf+json") || media == QLatin1String("model/gltf")) {
-    return QStringLiteral("gltf");
+    return u"gltf"_s;
   }
   if (media == QLatin1String("model/vnd.collada+xml")) {
-    return QStringLiteral("dae");
+    return u"dae"_s;
   }
   if (media == QLatin1String("model/stl")) {
-    return QStringLiteral("stl");
+    return u"stl"_s;
   }
   if (media == QLatin1String("model/obj")) {
-    return QStringLiteral("obj");
+    return u"obj"_s;
   }
   if (!media.isEmpty()) {
     const qsizetype slash = media.lastIndexOf('/');
@@ -107,7 +108,7 @@ std::string sourceSignature(const PJ::sdk::ModelPrimitive& primitive) {
 // per newly-seen model source — a URL blocked under the old value stays recorded
 // (no per-tick re-check) until the layer re-attaches.
 bool remoteModelFetchAllowed() {
-  return QSettings().value(QStringLiteral("pj_scene3d/allow_remote_model_fetch"), true).toBool();
+  return QSettings().value(u"pj_scene3d/allow_remote_model_fetch"_s, true).toBool();
 }
 
 // Lifetime expiry with overflow-safe boundary handling (lifetime_ns == 0 means
@@ -190,7 +191,7 @@ PJ::SceneLayerInfo SceneEntitiesLayer::info() const {
       .topic_id = topic_id_,
       .object_type = PJ::sdk::BuiltinObjectType::kSceneEntities,
       .display_name = display_name_,
-      .family_name = QStringLiteral("Markers"),
+      .family_name = u"Markers"_s,
       .visible = visible_,
   };
 }
@@ -218,32 +219,31 @@ QString SceneEntitiesLayer::sourceFrame() const {
 }
 
 QDomElement SceneEntitiesLayer::xmlSaveState(QDomDocument& doc) const {
-  QDomElement el = doc.createElement(QStringLiteral("markers"));
-  el.setAttribute(QStringLiteral("opacity"), QString::number(static_cast<double>(overrides_.opacity), 'g', 6));
-  el.setAttribute(
-      QStringLiteral("color_override"), overrides_.color_override ? QStringLiteral("true") : QStringLiteral("false"));
-  el.setAttribute(QStringLiteral("override_color"), overrideColor().name(QColor::HexRgb));
-  el.setAttribute(QStringLiteral("wireframe"), overrides_.wireframe ? QStringLiteral("true") : QStringLiteral("false"));
+  QDomElement el = doc.createElement(u"markers"_s);
+  el.setAttribute(u"opacity"_s, QString::number(static_cast<double>(overrides_.opacity), 'g', 6));
+  el.setAttribute(u"color_override"_s, overrides_.color_override ? u"true"_s : u"false"_s);
+  el.setAttribute(u"override_color"_s, overrideColor().name(QColor::HexRgb));
+  el.setAttribute(u"wireframe"_s, overrides_.wireframe ? u"true"_s : u"false"_s);
   return el;
 }
 
 bool SceneEntitiesLayer::xmlLoadState(const QDomElement& element) {
-  if (element.isNull() || element.tagName() != QStringLiteral("markers")) {
+  if (element.isNull() || element.tagName() != u"markers"_s) {
     return false;
   }
   bool ok = false;
-  const float op = element.attribute(QStringLiteral("opacity"), QStringLiteral("1")).toFloat(&ok);
+  const float op = element.attribute(u"opacity"_s, u"1"_s).toFloat(&ok);
   if (ok) {
     setOpacity(op);
   }
-  if (element.hasAttribute(QStringLiteral("override_color"))) {
-    const QColor c(element.attribute(QStringLiteral("override_color")));
+  if (element.hasAttribute(u"override_color"_s)) {
+    const QColor c(element.attribute(u"override_color"_s));
     if (c.isValid()) {
       setOverrideColor(c);
     }
   }
-  setColorOverrideEnabled(element.attribute(QStringLiteral("color_override")) == QStringLiteral("true"));
-  setWireframe(element.attribute(QStringLiteral("wireframe")) == QStringLiteral("true"));
+  setColorOverrideEnabled(element.attribute(u"color_override"_s) == u"true"_s);
+  setWireframe(element.attribute(u"wireframe"_s) == u"true"_s);
   return true;
 }
 
@@ -765,7 +765,7 @@ void SceneEntitiesLayer::startMeshLoadIfNeeded(const std::string& key, const PJ:
   const QUrl url(url_text);
   // Local sources (bare paths / file:// URLs) stay ungated: reading the user's
   // disk is not network egress. Only data-supplied http(s) URLs need consent.
-  const bool is_remote = url.scheme() == QStringLiteral("http") || url.scheme() == QStringLiteral("https");
+  const bool is_remote = url.scheme() == u"http"_s || url.scheme() == u"https"_s;
   if (is_remote && !remoteModelFetchAllowed()) {
     // Recorded once as consumed+failed so the gate is decided per (key,
     // signature), never re-checked per tracker tick.

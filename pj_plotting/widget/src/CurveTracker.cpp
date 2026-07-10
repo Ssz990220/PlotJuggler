@@ -19,6 +19,7 @@
 #include <algorithm>
 #include <limits>
 #include <map>
+using namespace Qt::StringLiterals;
 
 namespace PJ {
 
@@ -38,8 +39,7 @@ void logTrackerText(const void* plot, bool visible, const QString& html, const Q
   }
   const auto* gl_ctx = QOpenGLContext::currentContext();
   const char* gl_state = (gl_ctx == nullptr) ? "none" : (gl_ctx->isValid() ? "valid" : "INVALID");
-  const QString sig = QStringLiteral("visible=%1 empty=%2 len=%3 text=%4 gl=%5")
-                          .arg(visible)
+  const QString sig = u"visible=%1 empty=%2 len=%3 text=%4 gl=%5"_s.arg(visible)
                           .arg(html.isEmpty())
                           .arg(html.size())
                           .arg(text_color.name(), QString::fromLatin1(gl_state));
@@ -137,7 +137,7 @@ void CurveTracker::setPosition(const QPointF& tracker_position) {
   };
 
   std::multimap<double, LineParts> text_lines;
-  const int precision = QSettings().value(QStringLiteral("Preferences::precision"), 3).toInt();
+  const int precision = QSettings().value(u"Preferences::precision"_s, 3).toInt();
   int values_char_count = 0;
   int delta_char_count = 0;
   double min_y = std::numeric_limits<double>::max();
@@ -176,7 +176,7 @@ void CurveTracker::setPosition(const QPointF& tracker_position) {
     parts.value = QString::number(point.y(), 'f', precision);
     parts.name = curve->title().text();
     if (maybe_reference.has_value()) {
-      parts.delta = QStringLiteral(" (Δ %1)").arg(QString::number(point.y() - maybe_reference->y(), 'f', precision));
+      parts.delta = u" (Δ %1)"_s.arg(QString::number(point.y() - maybe_reference->y(), 'f', precision));
     }
     text_lines.insert({point.y(), parts});
     values_char_count = std::max(values_char_count, static_cast<int>(parts.value.length()));
@@ -191,10 +191,10 @@ void CurveTracker::setPosition(const QPointF& tracker_position) {
   for (auto& [unused, parts] : text_lines) {
     (void)unused;
     while (parts.value.length() < values_char_count) {
-      parts.value.prepend(QStringLiteral("&nbsp;"));
+      parts.value.prepend(u"&nbsp;"_s);
     }
     while (parts.delta.length() < delta_char_count) {
-      parts.delta.prepend(QStringLiteral("&nbsp;"));
+      parts.delta.prepend(u"&nbsp;"_s);
     }
   }
 
@@ -202,24 +202,23 @@ void CurveTracker::setPosition(const QPointF& tracker_position) {
   const QColor text_color = plot_->palette().color(QPalette::WindowText);
   QString time_delta;
   if (reference_pos_.has_value()) {
-    time_delta =
-        QStringLiteral(" (Δ %1)").arg(QString::number(tracker_position.x() - reference_pos_->x(), 'f', precision));
+    time_delta = u" (Δ %1)"_s.arg(QString::number(tracker_position.x() - reference_pos_->x(), 'f', precision));
   }
-  QString marker_html = QStringLiteral("<font color=%1>time : %2%3</font><br>")
-                            .arg(text_color.name(), QString::number(tracker_position.x(), 'f', precision), time_delta);
+  QString marker_html = u"<font color=%1>time : %2%3</font><br>"_s.arg(
+      text_color.name(), QString::number(tracker_position.x(), 'f', precision), time_delta);
 
   if (valueBoxAllowed()) {
     int line_index = 0;
     for (auto it = text_lines.rbegin(); it != text_lines.rend(); ++it) {
       const LineParts& parts = it->second;
       if (parameter_ == kValue) {
-        marker_html += QStringLiteral("<font color=%1>%2%3</font>").arg(parts.color.name(), parts.value, parts.delta);
+        marker_html += u"<font color=%1>%2%3</font>"_s.arg(parts.color.name(), parts.value, parts.delta);
       } else {
-        marker_html += QStringLiteral("<font color=%1>%2%3 : %4</font>")
-                           .arg(parts.color.name(), parts.value, parts.delta, parts.name);
+        marker_html +=
+            u"<font color=%1>%2%3 : %4</font>"_s.arg(parts.color.name(), parts.value, parts.delta, parts.name);
       }
       if (++line_index < static_cast<int>(text_lines.size())) {
-        marker_html += QStringLiteral("<br>");
+        marker_html += u"<br>"_s;
       }
     }
 

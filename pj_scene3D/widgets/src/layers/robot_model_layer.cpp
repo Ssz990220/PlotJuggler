@@ -51,6 +51,7 @@
 #include "urdf_package_resolver.h"
 #include "urdf_parser.h"
 #include "url_fetcher.h"
+using namespace Qt::StringLiterals;
 
 namespace pj::scene3d {
 namespace {
@@ -61,20 +62,20 @@ constexpr auto kLatchRetryInterval = std::chrono::milliseconds(500);
 QString sourceTypeToString(RobotModelLayer::SourceType type) {
   switch (type) {
     case RobotModelLayer::SourceType::kFile:
-      return QStringLiteral("file");
+      return u"file"_s;
     case RobotModelLayer::SourceType::kUrl:
-      return QStringLiteral("url");
+      return u"url"_s;
     case RobotModelLayer::SourceType::kTopic:
     default:
-      return QStringLiteral("topic");
+      return u"topic"_s;
   }
 }
 
 RobotModelLayer::SourceType sourceTypeFromString(const QString& s) {
-  if (s == QStringLiteral("file")) {
+  if (s == u"file"_s) {
     return RobotModelLayer::SourceType::kFile;
   }
-  if (s == QStringLiteral("url")) {
+  if (s == u"url"_s) {
     return RobotModelLayer::SourceType::kUrl;
   }
   return RobotModelLayer::SourceType::kTopic;
@@ -83,20 +84,20 @@ RobotModelLayer::SourceType sourceTypeFromString(const QString& s) {
 QString displayModeToString(RobotModelLayer::DisplayMode mode) {
   switch (mode) {
     case RobotModelLayer::DisplayMode::kVisual:
-      return QStringLiteral("visual");
+      return u"visual"_s;
     case RobotModelLayer::DisplayMode::kCollision:
-      return QStringLiteral("collision");
+      return u"collision"_s;
     case RobotModelLayer::DisplayMode::kAuto:
     default:
-      return QStringLiteral("auto");
+      return u"auto"_s;
   }
 }
 
 RobotModelLayer::DisplayMode displayModeFromString(const QString& s) {
-  if (s == QStringLiteral("visual")) {
+  if (s == u"visual"_s) {
     return RobotModelLayer::DisplayMode::kVisual;
   }
-  if (s == QStringLiteral("collision")) {
+  if (s == u"collision"_s) {
     return RobotModelLayer::DisplayMode::kCollision;
   }
   return RobotModelLayer::DisplayMode::kAuto;
@@ -123,15 +124,15 @@ QString formatFromXml(const QString& text) {
 #if QT_VERSION >= QT_VERSION_CHECK(6, 5, 0)
   const auto result = doc.setContent(text.toUtf8());
   if (!result) {
-    return QStringLiteral("unknown");
+    return u"unknown"_s;
   }
 #else
   if (!doc.setContent(text)) {
-    return QStringLiteral("unknown");
+    return u"unknown"_s;
   }
 #endif
   const QString root = doc.documentElement().tagName();
-  return root == QStringLiteral("robot") ? QStringLiteral("urdf") : root;
+  return root == u"robot"_s ? u"urdf"_s : root;
 }
 
 std::optional<QString> readTextFile(const QString& path, QString* error) {
@@ -184,7 +185,7 @@ PJ::SceneLayerInfo RobotModelLayer::info() const {
       .topic_id = topic_id_,
       .object_type = PJ::sdk::BuiltinObjectType::kRobotDescription,
       .display_name = display_name_.isEmpty() ? tr("Robot model") : display_name_,
-      .family_name = QStringLiteral("RobotModel"),
+      .family_name = u"RobotModel"_s,
       .visible = visible_,
   };
 }
@@ -212,45 +213,42 @@ QString RobotModelLayer::sourceFrame() const {
 }
 
 QDomElement RobotModelLayer::xmlSaveState(QDomDocument& doc) const {
-  QDomElement el = doc.createElement(QStringLiteral("robot_model"));
-  el.setAttribute(QStringLiteral("source_type"), sourceTypeToString(source_type_));
-  el.setAttribute(QStringLiteral("source_value"), source_value_);
+  QDomElement el = doc.createElement(u"robot_model"_s);
+  el.setAttribute(u"source_type"_s, sourceTypeToString(source_type_));
+  el.setAttribute(u"source_value"_s, source_value_);
   // For a topic source, source_value_ is only a display string. Persist the
   // resolvable identity (dataset_id + topic_name) so restore re-binds the SAME
   // topic even when the user switched the config combo to a different one
   // (source_topic_id_ != the constructor's topic_id_).
   if (source_type_ == SourceType::kTopic && ctx_.session != nullptr) {
     const auto desc = ctx_.session->objectStore().descriptor(source_topic_id_);
-    el.setAttribute(QStringLiteral("source_topic_name"), QString::fromStdString(desc.topic_name));
-    el.setAttribute(QStringLiteral("source_dataset_id"), static_cast<uint>(desc.dataset_id));
+    el.setAttribute(u"source_topic_name"_s, QString::fromStdString(desc.topic_name));
+    el.setAttribute(u"source_dataset_id"_s, static_cast<uint>(desc.dataset_id));
   }
-  el.setAttribute(QStringLiteral("frame_prefix"), frame_prefix_);
-  el.setAttribute(QStringLiteral("display_mode"), displayModeToString(display_mode_));
-  el.setAttribute(QStringLiteral("visible"), visible_ ? QStringLiteral("true") : QStringLiteral("false"));
-  el.setAttribute(QStringLiteral("color"), fallback_color_.name(QColor::HexRgb));
-  el.setAttribute(
-      QStringLiteral("ignore_collada_up_axis"),
-      ignore_collada_up_axis_ ? QStringLiteral("true") : QStringLiteral("false"));
+  el.setAttribute(u"frame_prefix"_s, frame_prefix_);
+  el.setAttribute(u"display_mode"_s, displayModeToString(display_mode_));
+  el.setAttribute(u"visible"_s, visible_ ? u"true"_s : u"false"_s);
+  el.setAttribute(u"color"_s, fallback_color_.name(QColor::HexRgb));
+  el.setAttribute(u"ignore_collada_up_axis"_s, ignore_collada_up_axis_ ? u"true"_s : u"false"_s);
   return el;
 }
 
 bool RobotModelLayer::xmlLoadState(const QDomElement& element) {
-  if (element.isNull() || element.tagName() != QStringLiteral("robot_model")) {
+  if (element.isNull() || element.tagName() != u"robot_model"_s) {
     return false;
   }
-  source_type_ = sourceTypeFromString(element.attribute(QStringLiteral("source_type"), QStringLiteral("topic")));
-  source_value_ = element.attribute(QStringLiteral("source_value"), source_value_);
-  frame_prefix_ = element.attribute(QStringLiteral("frame_prefix"));
-  display_mode_ = displayModeFromString(element.attribute(QStringLiteral("display_mode"), QStringLiteral("auto")));
-  visible_ = element.attribute(QStringLiteral("visible"), QStringLiteral("true")) == QStringLiteral("true");
-  if (element.hasAttribute(QStringLiteral("color"))) {
-    const QColor color(element.attribute(QStringLiteral("color")));
+  source_type_ = sourceTypeFromString(element.attribute(u"source_type"_s, u"topic"_s));
+  source_value_ = element.attribute(u"source_value"_s, source_value_);
+  frame_prefix_ = element.attribute(u"frame_prefix"_s);
+  display_mode_ = displayModeFromString(element.attribute(u"display_mode"_s, u"auto"_s));
+  visible_ = element.attribute(u"visible"_s, u"true"_s) == u"true"_s;
+  if (element.hasAttribute(u"color"_s)) {
+    const QColor color(element.attribute(u"color"_s));
     if (color.isValid()) {
       fallback_color_ = color;
     }
   }
-  ignore_collada_up_axis_ =
-      element.attribute(QStringLiteral("ignore_collada_up_axis"), QStringLiteral("false")) == QStringLiteral("true");
+  ignore_collada_up_axis_ = element.attribute(u"ignore_collada_up_axis"_s, u"false"_s) == u"true"_s;
   // display_mode_ / frame_prefix_ / visible_ were just assigned directly above,
   // bypassing the setters; loadFromCurrentSource() below also sets this, but be
   // explicit so the restore path is self-evidently covered.
@@ -258,12 +256,11 @@ bool RobotModelLayer::xmlLoadState(const QDomElement& element) {
   // Re-resolve a persisted topic source by its (dataset_id, topic_name) identity
   // rather than trusting the constructor's default binding — the user may have
   // switched the source combo to a different topic before saving.
-  if (source_type_ == SourceType::kTopic && ctx_.session != nullptr &&
-      element.hasAttribute(QStringLiteral("source_topic_name"))) {
+  if (source_type_ == SourceType::kTopic && ctx_.session != nullptr && element.hasAttribute(u"source_topic_name"_s)) {
     // A malformed/absent dataset id parses to 0, which simply misses findTopic
     // and lands on the visible "not found" status below.
-    const auto dataset_id = static_cast<PJ::DatasetId>(element.attribute(QStringLiteral("source_dataset_id")).toUInt());
-    const std::string topic_name = element.attribute(QStringLiteral("source_topic_name")).toStdString();
+    const auto dataset_id = static_cast<PJ::DatasetId>(element.attribute(u"source_dataset_id"_s).toUInt());
+    const std::string topic_name = element.attribute(u"source_topic_name"_s).toStdString();
     const auto resolved = ctx_.session->objectStore().findTopic(dataset_id, topic_name);
     if (resolved.has_value()) {
       setSourceTopic(*resolved);  // re-binds source_topic_id_ and loads the model
@@ -586,7 +583,7 @@ QWidget* RobotModelLayer::createConfigWidget(QWidget* parent) {
   } else {
     int idx = topic_combo->findData(QVariant::fromValue(static_cast<uint>(source_topic_id_.id)));
     if (idx < 0) {
-      idx = topic_combo->findText(QStringLiteral("/robot_description"));
+      idx = topic_combo->findText(u"/robot_description"_s);
     }
     topic_combo->setCurrentIndex(idx >= 0 ? idx : 0);
   }
@@ -603,14 +600,12 @@ QWidget* RobotModelLayer::createConfigWidget(QWidget* parent) {
   file_edit->setToolTip(source_type_ == SourceType::kFile ? source_value_ : QString());
   // Themed icon buttons, matching the app's chrome (resources are registered
   // process-wide by pj_app; the LayerListView eye/trash rows are the pattern).
-  const QString icon_theme = QGuiApplication::palette().color(QPalette::Window).valueF() < 0.5
-                                 ? QStringLiteral("dark")
-                                 : QStringLiteral("light");
+  const QString icon_theme = QGuiApplication::palette().color(QPalette::Window).valueF() < 0.5 ? u"dark"_s : u"light"_s;
   auto* browse_button = new QToolButton(file_row);
   browse_button->setAutoRaise(true);
   browse_button->setFocusPolicy(Qt::NoFocus);
   browse_button->setToolTip(tr("Browse for a URDF file"));
-  browse_button->setIcon(PJ::loadSvg(QStringLiteral(":/resources/svg/folder_open.svg"), icon_theme));
+  browse_button->setIcon(PJ::loadSvg(u":/resources/svg/folder_open.svg"_s, icon_theme));
   file_layout->addWidget(file_edit, 1);
   file_layout->addWidget(browse_button);
   form->addRow(QString(), file_row);
@@ -623,7 +618,7 @@ QWidget* RobotModelLayer::createConfigWidget(QWidget* parent) {
   load_button->setAutoRaise(true);
   load_button->setFocusPolicy(Qt::NoFocus);
   load_button->setToolTip(tr("Fetch the URDF from this URL"));
-  load_button->setIcon(PJ::loadSvg(QStringLiteral(":/resources/svg/import.svg"), icon_theme));
+  load_button->setIcon(PJ::loadSvg(u":/resources/svg/import.svg"_s, icon_theme));
   url_layout->addWidget(url_edit, 1);
   url_layout->addWidget(load_button);
   form->addRow(QString(), url_row);
@@ -691,7 +686,7 @@ QWidget* RobotModelLayer::createConfigWidget(QWidget* parent) {
     QString status = status_text_;
     if (total_mesh_count_ > 0) {
       const int resolved = total_mesh_count_ - unresolved_mesh_count_;
-      const qsizetype split = status.indexOf(QStringLiteral("  •  "));
+      const qsizetype split = status.indexOf(u"  •  "_s);
       const QString prefix = split > 0 ? status.left(split) : tr("URDF: %1").arg(source_value_);
       if (unresolved_mesh_count_ > 0) {
         status = tr("%1  •  %2/%3 meshes  •  %4 packages unresolved")
@@ -744,14 +739,14 @@ QWidget* RobotModelLayer::createConfigWidget(QWidget* parent) {
     // Remember the last-browsed folder in the app QSettings so reopening the
     // dialog lands where the user last picked a URDF (the current file wins if set).
     QSettings settings;
-    const QString remembered = settings.value(QStringLiteral("pj_scene3d/urdf_browse_dir")).toString();
+    const QString remembered = settings.value(u"pj_scene3d/urdf_browse_dir"_s).toString();
     const QString start_dir = !source_value_.isEmpty() ? source_value_ : remembered;
     const QString path = QFileDialog::getOpenFileName(
         container, tr("Open URDF"), start_dir, tr("URDF files (*.urdf *.xml);;All files (*)"));
     if (path.isEmpty()) {
       return;
     }
-    settings.setValue(QStringLiteral("pj_scene3d/urdf_browse_dir"), QFileInfo(path).absolutePath());
+    settings.setValue(u"pj_scene3d/urdf_browse_dir"_s, QFileInfo(path).absolutePath());
     file_edit->setText(QFileInfo(path).fileName());
     file_edit->setToolTip(path);
     if (const int idx = source_combo->findData(static_cast<int>(SourceType::kFile)); idx >= 0) {
@@ -1022,7 +1017,7 @@ bool RobotModelLayer::tryLoadTopicDescription() {
 bool RobotModelLayer::applyRobotDescription(
     const QString& text, const QString& format, const QString& label, const QString& urdf_dir, bool source_is_url) {
   latch_pending_ = false;
-  if (format.compare(QStringLiteral("urdf"), Qt::CaseInsensitive) != 0) {
+  if (format.compare(u"urdf"_s, Qt::CaseInsensitive) != 0) {
     setStatus(tr("Format '%1' is not supported — only URDF").arg(format));
     return false;
   }

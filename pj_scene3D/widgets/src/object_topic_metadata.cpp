@@ -8,6 +8,7 @@
 #include <QJsonObject>
 #include <QJsonValue>
 #include <QString>
+using namespace Qt::StringLiterals;
 
 namespace pj::scene3d {
 
@@ -19,7 +20,7 @@ PJ::sdk::BuiltinObjectType builtinObjectTypeFor(const PJ::ObjectTopicDescriptor&
   if (!doc.isObject()) {
     return PJ::sdk::BuiltinObjectType::kNone;
   }
-  const QJsonValue value = doc.object().value(QStringLiteral("builtin_object_type"));
+  const QJsonValue value = doc.object().value(u"builtin_object_type"_s);
   if (!value.isString()) {
     return PJ::sdk::BuiltinObjectType::kNone;
   }

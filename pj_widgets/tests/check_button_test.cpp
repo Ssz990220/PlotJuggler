@@ -12,6 +12,7 @@
 #include <QSignalSpy>
 
 #include "pj_widgets/CheckButton.h"
+using namespace Qt::StringLiterals;
 
 namespace {
 
@@ -22,7 +23,7 @@ TEST(CheckButtonTest, IsCheckableByDefault) {
 }
 
 TEST(CheckButtonTest, ClickTogglesAndEmits) {
-  PJ::CheckButton button(QStringLiteral("Override color"));
+  PJ::CheckButton button(u"Override color"_s);
   QSignalSpy spy(&button, &PJ::CheckButton::toggled);
 
   button.click();
@@ -46,13 +47,13 @@ TEST(CheckButtonTest, ProgrammaticSetCheckedDoesNotClick) {
 
 TEST(CheckButtonTest, TextRoundTrips) {
   PJ::CheckButton button;
-  button.setText(QStringLiteral("X arrow only"));
-  EXPECT_EQ(button.text(), QStringLiteral("X arrow only"));
+  button.setText(u"X arrow only"_s);
+  EXPECT_EQ(button.text(), u"X arrow only"_s);
 }
 
 TEST(CheckButtonTest, SizeHintGrowsWithText) {
-  PJ::CheckButton short_btn(QStringLiteral("On"));
-  PJ::CheckButton long_btn(QStringLiteral("A much longer label"));
+  PJ::CheckButton short_btn(u"On"_s);
+  PJ::CheckButton long_btn(u"A much longer label"_s);
   EXPECT_GT(long_btn.sizeHint().width(), short_btn.sizeHint().width());
   EXPECT_GT(short_btn.sizeHint().height(), 0);
 }

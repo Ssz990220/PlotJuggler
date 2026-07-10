@@ -3,33 +3,34 @@
 #include <QString>
 
 #include "pj_runtime/CurveColorRegistry.h"
+using namespace Qt::StringLiterals;
 
 namespace {
 
 TEST(CurveColorRegistryTest, UnknownCurveHasNoRememberedColor) {
   PJ::CurveColorRegistry registry;
-  EXPECT_FALSE(registry.color(QStringLiteral("/imu/accel/x")).has_value());
+  EXPECT_FALSE(registry.color(u"/imu/accel/x"_s).has_value());
 }
 
 TEST(CurveColorRegistryTest, RemembersColorPerCurveKey) {
   PJ::CurveColorRegistry registry;
-  registry.setColor(QStringLiteral("/imu/accel/x"), QStringLiteral("#1f77b4"));
+  registry.setColor(u"/imu/accel/x"_s, u"#1f77b4"_s);
 
-  const auto color = registry.color(QStringLiteral("/imu/accel/x"));
+  const auto color = registry.color(u"/imu/accel/x"_s);
   ASSERT_TRUE(color.has_value());
-  EXPECT_EQ(*color, QStringLiteral("#1f77b4"));
+  EXPECT_EQ(*color, u"#1f77b4"_s);
   // A different key is still unknown.
-  EXPECT_FALSE(registry.color(QStringLiteral("/imu/accel/y")).has_value());
+  EXPECT_FALSE(registry.color(u"/imu/accel/y"_s).has_value());
 }
 
 TEST(CurveColorRegistryTest, SetColorOverwritesPreviousAssignment) {
   PJ::CurveColorRegistry registry;
-  registry.setColor(QStringLiteral("/speed"), QStringLiteral("#1f77b4"));
-  registry.setColor(QStringLiteral("/speed"), QStringLiteral("#d62728"));
+  registry.setColor(u"/speed"_s, u"#1f77b4"_s);
+  registry.setColor(u"/speed"_s, u"#d62728"_s);
 
-  const auto color = registry.color(QStringLiteral("/speed"));
+  const auto color = registry.color(u"/speed"_s);
   ASSERT_TRUE(color.has_value());
-  EXPECT_EQ(*color, QStringLiteral("#d62728"));
+  EXPECT_EQ(*color, u"#d62728"_s);
 }
 
 TEST(CurveColorRegistryTest, NextPaletteIndexIncrementsMonotonically) {
@@ -41,13 +42,13 @@ TEST(CurveColorRegistryTest, NextPaletteIndexIncrementsMonotonically) {
 
 TEST(CurveColorRegistryTest, ClearForgetsColorsAndResetsPaletteIndex) {
   PJ::CurveColorRegistry registry;
-  registry.setColor(QStringLiteral("/speed"), QStringLiteral("#1f77b4"));
+  registry.setColor(u"/speed"_s, u"#1f77b4"_s);
   EXPECT_EQ(registry.nextPaletteIndex(), 0);
   EXPECT_EQ(registry.nextPaletteIndex(), 1);
 
   registry.clear();
 
-  EXPECT_FALSE(registry.color(QStringLiteral("/speed")).has_value());
+  EXPECT_FALSE(registry.color(u"/speed"_s).has_value());
   EXPECT_EQ(registry.nextPaletteIndex(), 0);
 }
 

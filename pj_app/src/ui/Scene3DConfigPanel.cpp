@@ -43,6 +43,7 @@
 #include "pj_widgets/SectionHeaderBand.h"
 #include "pj_widgets/Style.h"  // PJ::Style::kInputHeight (uniform row height)
 #include "pj_widgets/SvgUtil.h"
+using namespace Qt::StringLiterals;
 
 namespace PJ {
 
@@ -82,7 +83,7 @@ void sizeTrailingButton(QToolButton* button) {
 // edge and the trailing eye/add button aligned across rows by construction.
 // `trailing` may be null (column 2 stays reserved via setColumnMinimumWidth).
 void addGridRow(QGridLayout* grid, int& row, const QString& label, QWidget* field, QWidget* trailing = nullptr) {
-  grid->addWidget(new QLabel(label + QStringLiteral(":")), row, 0);
+  grid->addWidget(new QLabel(label + u":"_s), row, 0);
   grid->addWidget(field, row, 1);
   if (trailing != nullptr) {
     grid->addWidget(trailing, row, 2);
@@ -136,7 +137,7 @@ std::optional<std::pair<ObjectTopicId, QString>> pickRobotDescriptionTopic(
 std::optional<QString> promptUrdfUrl(QWidget* parent) {
   Dialog dialog(parent);
   auto* edit = new QLineEdit(dialog.contentWidget());
-  edit->setPlaceholderText(QStringLiteral("https://example.com/robot.urdf"));
+  edit->setPlaceholderText(u"https://example.com/robot.urdf"_s);
   edit->setMinimumWidth(360);
   if (!execFieldDialog(dialog, QObject::tr("Load URDF from URL"), edit)) {
     return std::nullopt;
@@ -281,7 +282,7 @@ void Scene3DConfigPanel::buildSceneControls(QVBoxLayout* root) {
   // flat in every state — no checked/hover wash, the glyph is the indicator.
   const auto make_eye = [this, &settings](const char* key, const QString& tip) {
     auto* eye = new QToolButton(this);
-    eye->setObjectName(QStringLiteral("curveVisibilityToggle"));
+    eye->setObjectName(u"curveVisibilityToggle"_s);
     eye->setCheckable(true);
     eye->setAutoRaise(true);
     eye->setFocusPolicy(Qt::NoFocus);
@@ -374,10 +375,10 @@ void Scene3DConfigPanel::buildSceneControls(QVBoxLayout* root) {
   style_group->setExclusive(true);
   style_group->addButton(grid_lines_button_, 0);
   style_group->addButton(grid_cells_button_, 1);
-  const int saved_style = settings.value(QStringLiteral("grid_style"), 0).toInt();
+  const int saved_style = settings.value(u"grid_style"_s, 0).toInt();
   (saved_style == 1 ? grid_cells_button_ : grid_lines_button_)->setChecked(true);
   connect(style_group, &QButtonGroup::idClicked, this, [this](int id) {
-    persistControl(QStringLiteral("grid_style"), id);
+    persistControl(u"grid_style"_s, id);
     applySceneControls();
   });
   grid_eye_ = make_eye("grid_visible", tr("Show/hide the grid"));
@@ -387,7 +388,7 @@ void Scene3DConfigPanel::buildSceneControls(QVBoxLayout* root) {
   style_row->addStretch(1);
   // The style toggles are a strip, not a single field: keep the label in col 0
   // and let the strip span the field + trailing columns.
-  grid_grid->addWidget(new QLabel(tr("Style") + QStringLiteral(":")), grid_row, 0);
+  grid_grid->addWidget(new QLabel(tr("Style") + u":"_s), grid_row, 0);
   grid_grid->addLayout(style_row, grid_row, 1, 1, 2);
   ++grid_row;
 
@@ -426,10 +427,10 @@ void Scene3DConfigPanel::buildSceneControls(QVBoxLayout* root) {
   tf_lines_button_->setFocusPolicy(Qt::NoFocus);
   tf_lines_button_->setToolTip(tr("Show/hide lines connecting each TF frame to its parent"));
   sizeTrailingButton(tf_lines_button_);
-  tf_lines_button_->setProperty("settings_key", QStringLiteral("tf_parent_lines"));
-  tf_lines_button_->setChecked(settings.value(QStringLiteral("tf_parent_lines"), true).toBool());
+  tf_lines_button_->setProperty("settings_key", u"tf_parent_lines"_s);
+  tf_lines_button_->setChecked(settings.value(u"tf_parent_lines"_s, true).toBool());
   connect(tf_lines_button_, &QToolButton::toggled, this, [this](bool checked) {
-    persistControl(QStringLiteral("tf_parent_lines"), checked);
+    persistControl(u"tf_parent_lines"_s, checked);
     applySceneControls();
   });
 
@@ -608,10 +609,10 @@ void Scene3DConfigPanel::setEyeIcon(QToolButton* eye, bool on) {
 
 void Scene3DConfigPanel::applyIcons() {
   if (grid_lines_button_ != nullptr) {
-    grid_lines_button_->setIcon(loadSvg(QStringLiteral(":/resources/svg/grid_4x4.svg"), theme_));
+    grid_lines_button_->setIcon(loadSvg(u":/resources/svg/grid_4x4.svg"_s, theme_));
   }
   if (grid_cells_button_ != nullptr) {
-    grid_cells_button_->setIcon(loadSvg(QStringLiteral(":/resources/svg/grid_view.svg"), theme_));
+    grid_cells_button_->setIcon(loadSvg(u":/resources/svg/grid_view.svg"_s, theme_));
   }
   for (QToolButton* eye : {grid_eye_, gizmo_eye_, mesh_eye_, collision_eye_}) {
     if (eye != nullptr) {
@@ -625,16 +626,16 @@ void Scene3DConfigPanel::applyIcons() {
     tf_lines_button_->setIcon(loadSvg(QLatin1String(kTfConnectionsIconPath), theme_));
   }
   if (recenter_button_ != nullptr) {
-    recenter_button_->setIcon(loadSvg(QStringLiteral(":/resources/svg/recenter.svg"), theme_));
+    recenter_button_->setIcon(loadSvg(u":/resources/svg/recenter.svg"_s, theme_));
   }
   if (params_copy_ != nullptr) {
-    params_copy_->setIcon(loadSvg(QStringLiteral(":/resources/svg/copy.svg"), theme_));
+    params_copy_->setIcon(loadSvg(u":/resources/svg/copy.svg"_s, theme_));
   }
   if (params_paste_ != nullptr) {
-    params_paste_->setIcon(loadSvg(QStringLiteral(":/resources/svg/paste.svg"), theme_));
+    params_paste_->setIcon(loadSvg(u":/resources/svg/paste.svg"_s, theme_));
   }
   if (params_apply_all_ != nullptr) {
-    params_apply_all_->setIcon(loadSvg(QStringLiteral(":/resources/svg/format_paint.svg"), theme_));
+    params_apply_all_->setIcon(loadSvg(u":/resources/svg/format_paint.svg"_s, theme_));
   }
   for (const auto& [id, row] : robot_rows_) {
     if (auto* trash = row->findChild<QToolButton*>()) {
@@ -733,7 +734,7 @@ void Scene3DConfigPanel::addRobotRow(uint32_t topic_id_value, const QString& lab
   layout->addWidget(name, 1);
   auto* trash = new QToolButton(row);
   // Same flat styling as the topic-row trash buttons (QSS keys on this name).
-  trash->setObjectName(QStringLiteral("curveTrashToggle"));
+  trash->setObjectName(u"curveTrashToggle"_s);
   trash->setAutoRaise(true);
   trash->setFocusPolicy(Qt::NoFocus);
   trash->setToolTip(tr("Remove this robot model"));

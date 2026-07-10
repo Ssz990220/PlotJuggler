@@ -23,6 +23,7 @@
 #include "pj_plotting/PlotWidget.h"
 #include "pj_runtime/CatalogModel.h"
 #include "pj_runtime/SessionManager.h"
+using namespace Qt::StringLiterals;
 
 namespace {
 
@@ -91,10 +92,10 @@ TEST(LegendTextDiagnostics, FiresOnLegendPaint) {
 
   bool legend_logged = false;
   for (const QString& msg : g_messages) {
-    if (msg.startsWith(QStringLiteral("[PJ_PLOT_TEXT_DEBUG] legend"))) {
+    if (msg.startsWith(u"[PJ_PLOT_TEXT_DEBUG] legend"_s)) {
       legend_logged = true;
       // Healthy render: the title is present, so EMPTY must be 0.
-      EXPECT_TRUE(msg.contains(QStringLiteral("EMPTY=0"))) << msg.toStdString();
+      EXPECT_TRUE(msg.contains(u"EMPTY=0"_s)) << msg.toStdString();
     }
   }
   EXPECT_TRUE(legend_logged) << "No legend diagnostic emitted; captured " << g_messages.size() << " messages";
@@ -108,7 +109,7 @@ int main(int argc, char** argv) {
   qputenv("PJ_PLOT_TEXT_DEBUG", "1");
   // Force the raster canvas so the test needs no GL context; QwtPlotRenderer
   // draws via QPainter regardless, exercising the same drawLegendData path.
-  QSettings().setValue(QStringLiteral("Preferences::use_opengl"), false);
+  QSettings().setValue(u"Preferences::use_opengl"_s, false);
   testing::InitGoogleTest(&argc, argv);
   QApplication app(argc, argv);
   return RUN_ALL_TESTS();

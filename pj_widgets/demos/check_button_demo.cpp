@@ -29,34 +29,35 @@
 #include "pj_widgets/IntScrubber.h"
 #include "pj_widgets/Style.h"
 #include "qss_preprocessor.h"
+using namespace Qt::StringLiterals;
 
 namespace {
 using pj_widgets_demos::applyTheme;
 }  // namespace
 
 int main(int argc, char** argv) {
-  QApplication::setOrganizationName(QStringLiteral("PlotJuggler"));
-  QApplication::setApplicationName(QStringLiteral("CheckButtonDemo"));
+  QApplication::setOrganizationName(u"PlotJuggler"_s);
+  QApplication::setApplicationName(u"CheckButtonDemo"_s);
   QApplication app(argc, argv);
-  QApplication::setStyle(new PJ::Style(QStringLiteral("Fusion")));  // same as the app: pins inputs to 20px
+  QApplication::setStyle(new PJ::Style(u"Fusion"_s));  // same as the app: pins inputs to 20px
 
   QString screenshot;
-  QString theme = QStringLiteral("dark");
+  QString theme = u"dark"_s;
   for (int i = 1; i < argc; ++i) {
     const QString arg = QString::fromLocal8Bit(argv[i]);
-    if (arg == QStringLiteral("--screenshot") && i + 1 < argc) {
+    if (arg == u"--screenshot"_s && i + 1 < argc) {
       screenshot = QString::fromLocal8Bit(argv[++i]);
-    } else if (arg == QStringLiteral("--theme") && i + 1 < argc) {
+    } else if (arg == u"--theme"_s && i + 1 < argc) {
       theme = QString::fromLocal8Bit(argv[++i]);
     }
   }
   applyTheme(theme);
 
   QMainWindow win;
-  win.setWindowTitle(QStringLiteral("pj_widgets compact controls"));
+  win.setWindowTitle(u"pj_widgets compact controls"_s);
 
   auto* root = new QWidget(&win);
-  root->setObjectName(QStringLiteral("ConfigPanel"));
+  root->setObjectName(u"ConfigPanel"_s);
   auto* form = new QFormLayout(root);
   form->setContentsMargins(16, 16, 16, 16);
   form->setSpacing(10);
@@ -64,28 +65,28 @@ int main(int argc, char** argv) {
   // Every input type that must end up the SAME compact height (20px): a native
   // line edit + our combobox + the self-painted scrubbers + the pills + swatch.
   auto* line_edit = new QLineEdit(root);
-  line_edit->setText(QStringLiteral("base_link"));
-  form->addRow(QStringLiteral("LineEdit:"), line_edit);
+  line_edit->setText(u"base_link"_s);
+  form->addRow(u"LineEdit:"_s, line_edit);
   auto* combo = new PJ::ComboBox(root);
-  combo->addItems({QStringLiteral("File"), QStringLiteral("Topic"), QStringLiteral("URL")});
-  form->addRow(QStringLiteral("Combo:"), combo);
+  combo->addItems({u"File"_s, u"Topic"_s, u"URL"_s});
+  form->addRow(u"Combo:"_s, combo);
   auto* dscrub = new PJ::DoubleScrubber(root);
   dscrub->setValue(0.15);
-  form->addRow(QStringLiteral("DoubleScrubber:"), dscrub);
+  form->addRow(u"DoubleScrubber:"_s, dscrub);
   auto* iscrub = new PJ::IntScrubber(root);
   iscrub->setValue(10);
-  form->addRow(QStringLiteral("IntScrubber:"), iscrub);
+  form->addRow(u"IntScrubber:"_s, iscrub);
 
-  auto* off = new PJ::CheckButton(QStringLiteral("X arrow only"), root);
-  form->addRow(QStringLiteral("CheckButton:"), off);
-  auto* on = new PJ::CheckButton(QStringLiteral("Override color"), root);
+  auto* off = new PJ::CheckButton(u"X arrow only"_s, root);
+  form->addRow(u"CheckButton:"_s, off);
+  auto* on = new PJ::CheckButton(u"Override color"_s, root);
   on->setChecked(true);
 
-  auto* segmented_left = new PJ::DualOptionsWidget(QStringLiteral("Frame"), QStringLiteral("Arrow"), root);
-  form->addRow(QStringLiteral("Segmented L:"), segmented_left);
-  auto* segmented_right = new PJ::DualOptionsWidget(QStringLiteral("Frame"), QStringLiteral("Arrow"), root);
+  auto* segmented_left = new PJ::DualOptionsWidget(u"Frame"_s, u"Arrow"_s, root);
+  form->addRow(u"Segmented L:"_s, segmented_left);
+  auto* segmented_right = new PJ::DualOptionsWidget(u"Frame"_s, u"Arrow"_s, root);
   segmented_right->setSelectedIndex(1);
-  form->addRow(QStringLiteral("Segmented R:"), segmented_right);
+  form->addRow(u"Segmented R:"_s, segmented_right);
 
   // "Override color" row: pill toggle + swatch side by side (Image #3 layout).
   auto* override_row = new QWidget(root);
@@ -97,13 +98,13 @@ int main(int argc, char** argv) {
   row_layout->addWidget(on);
   row_layout->addWidget(swatch);
   row_layout->addStretch();
-  form->addRow(QStringLiteral("Checked + swatch:"), override_row);
+  form->addRow(u"Checked + swatch:"_s, override_row);
 
-  auto* toggle = new QPushButton(QStringLiteral("Toggle theme (currently: %1)").arg(theme), root);
+  auto* toggle = new QPushButton(u"Toggle theme (currently: %1)"_s.arg(theme), root);
   QObject::connect(toggle, &QPushButton::clicked, root, [toggle, theme]() mutable {
-    theme = (theme == QStringLiteral("dark")) ? QStringLiteral("light") : QStringLiteral("dark");
+    theme = (theme == u"dark"_s) ? u"light"_s : u"dark"_s;
     applyTheme(theme);
-    toggle->setText(QStringLiteral("Toggle theme (currently: %1)").arg(theme));
+    toggle->setText(u"Toggle theme (currently: %1)"_s.arg(theme));
   });
   form->addRow(QString(), toggle);
 

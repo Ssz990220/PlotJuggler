@@ -8,6 +8,7 @@
 #include <QTest>
 
 #include "pj_widgets/ToggleSwitch.h"
+using namespace Qt::StringLiterals;
 
 namespace {
 
@@ -19,8 +20,8 @@ TEST(ToggleSwitchTest, TextDefaultsEmpty) {
 
 TEST(ToggleSwitchTest, TextAndLabelSideRoundTrip) {
   PJ::ToggleSwitch sw;
-  sw.setText(QStringLiteral("Enabled"));
-  EXPECT_EQ(sw.text(), QStringLiteral("Enabled"));
+  sw.setText(u"Enabled"_s);
+  EXPECT_EQ(sw.text(), u"Enabled"_s);
   sw.setLabelSide(PJ::ToggleSwitch::LabelSide::Left);
   EXPECT_EQ(sw.labelSide(), PJ::ToggleSwitch::LabelSide::Left);
 }
@@ -36,11 +37,11 @@ TEST(ToggleSwitchTest, SizeHintUnchangedWithoutText) {
 TEST(ToggleSwitchTest, SizeHintGrowsWithLabel) {
   PJ::ToggleSwitch bare;
   PJ::ToggleSwitch labeled;
-  labeled.setText(QStringLiteral("Enable streaming"));
+  labeled.setText(u"Enable streaming"_s);
   EXPECT_GT(labeled.sizeHint().width(), bare.sizeHint().width());
 
   PJ::ToggleSwitch longer;
-  longer.setText(QStringLiteral("Enable streaming playback now"));
+  longer.setText(u"Enable streaming playback now"_s);
   EXPECT_GT(longer.sizeHint().width(), labeled.sizeHint().width());
 }
 
@@ -48,7 +49,7 @@ TEST(ToggleSwitchTest, SizeHintGrowsWithLabel) {
 // the track) must still toggle — that's the QCheckBox-like behavior.
 TEST(ToggleSwitchTest, ClickingLabelRegionToggles) {
   PJ::ToggleSwitch sw;
-  sw.setText(QStringLiteral("Enable streaming"));
+  sw.setText(u"Enable streaming"_s);
   sw.setLabelSide(PJ::ToggleSwitch::LabelSide::Right);  // track on the LEFT
   sw.resize(sw.sizeHint());
   sw.show();
@@ -67,7 +68,7 @@ TEST(ToggleSwitchTest, ClickingLabelRegionToggles) {
 // whose "...(if present)" rendered as "...(if prese…".
 TEST(ToggleSwitchTest, LabelSizeHintReservesSlackBeyondText) {
   PJ::ToggleSwitch sw;
-  sw.setText(QStringLiteral("Override with the message header timestamp (if present)"));
+  sw.setText(u"Override with the message header timestamp (if present)"_s);
   const int advance = sw.fontMetrics().horizontalAdvance(sw.text());
   // size hint = switch(34) + spacing(6) + advance + margin; assert a real margin
   // remains for the label after the switch + spacing are accounted for.

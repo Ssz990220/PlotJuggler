@@ -10,6 +10,7 @@
 
 #include "pj_widgets/SvgUtil.h"
 #include "ui_DiagnosticsCard.h"
+using namespace Qt::StringLiterals;
 
 namespace PJ {
 
@@ -20,7 +21,7 @@ DiagnosticsCard::DiagnosticsCard(const DiagnosticRecord& record, QWidget* parent
 
   ui_->cardLevelIcon->setPixmap(
       renderSvgPixmap(levelIconPath(record_.level), currentTheme(), QSize(16, 16), devicePixelRatioF()));
-  ui_->cardTimestamp->setText(record_.timestamp.toString(QStringLiteral("HH:mm:ss")));
+  ui_->cardTimestamp->setText(record_.timestamp.toString(u"HH:mm:ss"_s));
   ui_->cardMessage->setToolTip(record_.message);
   ui_->cardMessage->installEventFilter(this);
   applyElidedMessage();
@@ -60,12 +61,12 @@ void DiagnosticsCard::applyElidedMessage() {
 QString DiagnosticsCard::levelIconPath(DiagnosticLevel level) {
   switch (level) {
     case DiagnosticLevel::kError:
-      return QStringLiteral(":/resources/svg/diag_error.svg");
+      return u":/resources/svg/diag_error.svg"_s;
     case DiagnosticLevel::kWarning:
-      return QStringLiteral(":/resources/svg/diag_warning.svg");
+      return u":/resources/svg/diag_warning.svg"_s;
     case DiagnosticLevel::kInfo:
     default:
-      return QStringLiteral(":/resources/svg/diag_info.svg");
+      return u":/resources/svg/diag_info.svg"_s;
   }
 }
 

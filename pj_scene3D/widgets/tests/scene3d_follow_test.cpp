@@ -32,6 +32,7 @@
 #include "pj_scene3d_widgets/Scene3DDockWidget.h"
 #include "pj_scene3d_widgets/scene_view_widget.h"
 #include "pj_scene3d_widgets/transform_service.h"
+using namespace Qt::StringLiterals;
 
 namespace {
 
@@ -216,13 +217,13 @@ TEST(Scene3DFollow, DockFollowFrameRoundTripsThroughLayout) {
   save_dock.setTransformService(&save_tf);
   ASSERT_TRUE(pj::scene3d::test::pumpUntil([&] { return save_dock.sceneView() != nullptr; }));
 
-  save_dock.setFollowFrame(QStringLiteral("base_link"));
-  ASSERT_EQ(save_dock.currentFollowFrame(), QStringLiteral("base_link"));
+  save_dock.setFollowFrame(u"base_link"_s);
+  ASSERT_EQ(save_dock.currentFollowFrame(), u"base_link"_s);
 
   QDomDocument doc;
   const QDomElement state = save_dock.xmlSaveState(doc);
   ASSERT_FALSE(state.isNull());
-  EXPECT_EQ(state.attribute(QStringLiteral("follow_frame")), QStringLiteral("base_link"));
+  EXPECT_EQ(state.attribute(u"follow_frame"_s), u"base_link"_s);
 
   PJ::SessionManager load_session;
   pj::scene3d::TransformService load_tf(load_session);
@@ -230,8 +231,7 @@ TEST(Scene3DFollow, DockFollowFrameRoundTripsThroughLayout) {
   load_dock.setSessionManager(&load_session);
   load_dock.setTransformService(&load_tf);
   ASSERT_TRUE(load_dock.xmlLoadState(state));
-  EXPECT_EQ(load_dock.currentFollowFrame(), QStringLiteral("base_link"))
-      << "the follow target must restore from the layout";
+  EXPECT_EQ(load_dock.currentFollowFrame(), u"base_link"_s) << "the follow target must restore from the layout";
 }
 
 }  // namespace

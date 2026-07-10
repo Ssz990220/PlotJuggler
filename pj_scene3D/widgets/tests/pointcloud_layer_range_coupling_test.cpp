@@ -18,6 +18,7 @@
 #include "pj_scene3d_widgets/layers/pointcloud_layer.h"
 #include "pj_scene3d_widgets/passes/pointcloud_render_pass.h"
 #include "pj_widgets/DoubleScrubber.h"
+using namespace Qt::StringLiterals;
 
 namespace {
 
@@ -42,13 +43,13 @@ RangePanel makePanel(PointCloudLayer& layer, float lo, float hi) {
   layer.setManualRange(lo, hi);
   RangePanel p;
   p.widget.reset(layer.createConfigWidget(nullptr));
-  p.min_spin = p.widget->findChild<PJ::DoubleScrubber*>(QStringLiteral("pointcloud_range_min"));
-  p.max_spin = p.widget->findChild<PJ::DoubleScrubber*>(QStringLiteral("pointcloud_range_max"));
+  p.min_spin = p.widget->findChild<PJ::DoubleScrubber*>(u"pointcloud_range_min"_s);
+  p.max_spin = p.widget->findChild<PJ::DoubleScrubber*>(u"pointcloud_range_max"_s);
   return p;
 }
 
 TEST(PointCloudLayerRangeCoupling, RaisingMinAboveMaxDragsMaxUp) {
-  PointCloudLayer layer(topic(1), QStringLiteral("A"), PJ::sdk::BuiltinObjectType::kPointCloud);
+  PointCloudLayer layer(topic(1), u"A"_s, PJ::sdk::BuiltinObjectType::kPointCloud);
   RangePanel p = makePanel(layer, 0.5f, 0.5f);
   ASSERT_NE(p.min_spin, nullptr);
   ASSERT_NE(p.max_spin, nullptr);
@@ -61,7 +62,7 @@ TEST(PointCloudLayerRangeCoupling, RaisingMinAboveMaxDragsMaxUp) {
 }
 
 TEST(PointCloudLayerRangeCoupling, LoweringMaxBelowMinDragsMinDown) {
-  PointCloudLayer layer(topic(2), QStringLiteral("B"), PJ::sdk::BuiltinObjectType::kPointCloud);
+  PointCloudLayer layer(topic(2), u"B"_s, PJ::sdk::BuiltinObjectType::kPointCloud);
   RangePanel p = makePanel(layer, 0.5f, 0.5f);
   ASSERT_NE(p.min_spin, nullptr);
   ASSERT_NE(p.max_spin, nullptr);
@@ -77,7 +78,7 @@ TEST(PointCloudLayerRangeCoupling, NonCrossingEditsLeaveSiblingUntouched) {
   // Exactly-representable binary fractions (0.25, 0.75, 0.375, 0.625) so the
   // seeded float values survive the float->double widening without rounding
   // noise — the assertions check that the untouched sibling keeps its value.
-  PointCloudLayer layer(topic(3), QStringLiteral("C"), PJ::sdk::BuiltinObjectType::kPointCloud);
+  PointCloudLayer layer(topic(3), u"C"_s, PJ::sdk::BuiltinObjectType::kPointCloud);
   RangePanel p = makePanel(layer, 0.25f, 0.75f);
   ASSERT_NE(p.min_spin, nullptr);
   ASSERT_NE(p.max_spin, nullptr);

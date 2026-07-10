@@ -26,6 +26,7 @@
 
 #include "pj_widgets/ConfigPanelHost.h"
 #include "pj_widgets/LayerListView.h"
+using namespace Qt::StringLiterals;
 
 namespace {
 
@@ -43,9 +44,9 @@ TEST(LayerListViewTest, SetRowsReturnsIdsInOrder) {
   PJ::LayerListView view;
 
   view.setRows({
-      {.id = 10, .name = QStringLiteral("first"), .visible = true},
-      {.id = 20, .name = QStringLiteral("second"), .visible = false},
-      {.id = 30, .name = QStringLiteral("third"), .visible = true},
+      {.id = 10, .name = u"first"_s, .visible = true},
+      {.id = 20, .name = u"second"_s, .visible = false},
+      {.id = 30, .name = u"third"_s, .visible = true},
   });
 
   EXPECT_EQ(view.order(), ids({10, 20, 30}));
@@ -54,9 +55,9 @@ TEST(LayerListViewTest, SetRowsReturnsIdsInOrder) {
 TEST(LayerListViewTest, AddAndRemoveRowsUpdateOrder) {
   PJ::LayerListView view;
 
-  view.addRow({.id = 1, .name = QStringLiteral("one"), .visible = true});
-  view.addRow({.id = 2, .name = QStringLiteral("two"), .visible = true});
-  view.addRow({.id = 3, .name = QStringLiteral("three"), .visible = true});
+  view.addRow({.id = 1, .name = u"one"_s, .visible = true});
+  view.addRow({.id = 2, .name = u"two"_s, .visible = true});
+  view.addRow({.id = 3, .name = u"three"_s, .visible = true});
   EXPECT_EQ(view.order(), ids({1, 2, 3}));
 
   view.removeRow(2);
@@ -66,8 +67,8 @@ TEST(LayerListViewTest, AddAndRemoveRowsUpdateOrder) {
 TEST(LayerListViewTest, CurrentIdRoundTrips) {
   PJ::LayerListView view;
   view.setRows({
-      {.id = 101, .name = QStringLiteral("first"), .visible = true},
-      {.id = 202, .name = QStringLiteral("second"), .visible = true},
+      {.id = 101, .name = u"first"_s, .visible = true},
+      {.id = 202, .name = u"second"_s, .visible = true},
   });
 
   view.setCurrentId(202);
@@ -78,11 +79,11 @@ TEST(LayerListViewTest, CurrentIdRoundTrips) {
 
 TEST(LayerListViewTest, VisibilityToggleSignalFiresFromEyeButton) {
   PJ::LayerListView view;
-  view.setRows({{.id = 7, .name = QStringLiteral("row"), .visible = true}});
+  view.setRows({{.id = 7, .name = u"row"_s, .visible = true}});
   QSignalSpy spy(&view, &PJ::LayerListView::visibilityToggled);
   ASSERT_TRUE(spy.isValid());
 
-  auto* eye = view.findChild<QToolButton*>(QStringLiteral("curveVisibilityToggle"));
+  auto* eye = view.findChild<QToolButton*>(u"curveVisibilityToggle"_s);
   ASSERT_NE(eye, nullptr);
   eye->setChecked(false);
 
@@ -95,11 +96,11 @@ TEST(LayerListViewTest, VisibilityToggleSignalFiresFromEyeButton) {
 
 TEST(LayerListViewTest, RemoveRequestedSignalFiresFromTrashButton) {
   PJ::LayerListView view;
-  view.setRows({{.id = 9, .name = QStringLiteral("row"), .visible = true}});
+  view.setRows({{.id = 9, .name = u"row"_s, .visible = true}});
   QSignalSpy spy(&view, &PJ::LayerListView::removeRequested);
   ASSERT_TRUE(spy.isValid());
 
-  auto* trash = view.findChild<QAbstractButton*>(QStringLiteral("curveTrashToggle"));
+  auto* trash = view.findChild<QAbstractButton*>(u"curveTrashToggle"_s);
   ASSERT_NE(trash, nullptr);
   trash->click();
 
@@ -111,7 +112,7 @@ TEST(LayerListViewTest, RemoveRequestedSignalFiresFromTrashButton) {
 
 TEST(LayerListViewTest, SetRowWarningUpdatesTooltip) {
   PJ::LayerListView view;
-  view.setRows({{.id = 1, .name = QStringLiteral("row"), .visible = true}});
+  view.setRows({{.id = 1, .name = u"row"_s, .visible = true}});
   auto* list = view.findChild<QListWidget*>();
   ASSERT_NE(list, nullptr);
   ASSERT_EQ(list->count(), 1);
@@ -119,12 +120,12 @@ TEST(LayerListViewTest, SetRowWarningUpdatesTooltip) {
   auto* label = view.findChild<QLabel*>();  // the row's ElidingLabel (a QLabel)
   ASSERT_NE(label, nullptr);
 
-  view.setRowWarning(1, true, QStringLiteral("missing source"));
-  EXPECT_EQ(list->item(0)->toolTip(), QStringLiteral("missing source"));
+  view.setRowWarning(1, true, u"missing source"_s);
+  EXPECT_EQ(list->item(0)->toolTip(), u"missing source"_s);
   EXPECT_FALSE(label->styleSheet().isEmpty());  // warning color applied
 
   view.setRowWarning(1, false);
-  EXPECT_EQ(list->item(0)->toolTip(), QStringLiteral("row"));
+  EXPECT_EQ(list->item(0)->toolTip(), u"row"_s);
   EXPECT_TRUE(label->styleSheet().isEmpty());  // styling cleared
   EXPECT_EQ(view.order(), ids({1}));
 }
@@ -132,24 +133,24 @@ TEST(LayerListViewTest, SetRowWarningUpdatesTooltip) {
 TEST(LayerListViewTest, SetRowsAppliesAndDedupesWarningRows) {
   PJ::LayerListView view;
   view.setRows({
-      {.id = 1, .name = QStringLiteral("a"), .visible = true},
-      {.id = 2, .name = QStringLiteral("b"), .visible = true, .warn = true, .warning_reason = QStringLiteral("bad")},
-      {.id = 2, .name = QStringLiteral("dup"), .visible = true},  // duplicate id: ignored
+      {.id = 1, .name = u"a"_s, .visible = true},
+      {.id = 2, .name = u"b"_s, .visible = true, .warn = true, .warning_reason = u"bad"_s},
+      {.id = 2, .name = u"dup"_s, .visible = true},  // duplicate id: ignored
   });
 
   // Duplicate id dropped, and the warning carried by the LayerRow is applied.
   EXPECT_EQ(view.order(), ids({1, 2}));
   auto* list = view.findChild<QListWidget*>();
   ASSERT_NE(list, nullptr);
-  EXPECT_EQ(list->item(1)->toolTip(), QStringLiteral("bad"));
+  EXPECT_EQ(list->item(1)->toolTip(), u"bad"_s);
 }
 
 TEST(LayerListViewTest, ReorderPreservesWarningAndEmitsReordered) {
   PJ::LayerListView view;
   view.setRows({
-      {.id = 1, .name = QStringLiteral("a"), .visible = true},
-      {.id = 2, .name = QStringLiteral("b"), .visible = true, .warn = true, .warning_reason = QStringLiteral("bad")},
-      {.id = 3, .name = QStringLiteral("c"), .visible = true},
+      {.id = 1, .name = u"a"_s, .visible = true},
+      {.id = 2, .name = u"b"_s, .visible = true, .warn = true, .warning_reason = u"bad"_s},
+      {.id = 3, .name = u"c"_s, .visible = true},
   });
   QSignalSpy spy(&view, &PJ::LayerListView::reordered);
   ASSERT_TRUE(spy.isValid());
@@ -166,13 +167,13 @@ TEST(LayerListViewTest, ReorderPreservesWarningAndEmitsReordered) {
   ASSERT_EQ(spy.count(), 1);
 
   // The warning on id 2 survived the full rebuild (now at index 0).
-  EXPECT_EQ(list->item(0)->toolTip(), QStringLiteral("bad"));
+  EXPECT_EQ(list->item(0)->toolTip(), u"bad"_s);
 }
 
 TEST(LayerListViewTest, AddRowIgnoresDuplicateId) {
   PJ::LayerListView view;
-  view.addRow({.id = 5, .name = QStringLiteral("first"), .visible = true});
-  view.addRow({.id = 5, .name = QStringLiteral("second"), .visible = true});
+  view.addRow({.id = 5, .name = u"first"_s, .visible = true});
+  view.addRow({.id = 5, .name = u"second"_s, .visible = true});
 
   // The duplicate is rejected, not appended — exactly one row with id 5.
   EXPECT_EQ(view.order(), ids({5}));
@@ -221,8 +222,8 @@ TEST(ReorderIdsTest, OutOfRangeFromReturnsUnchanged) {
 
 TEST(ConfigPanelHostTest, ReplacesConfigWidgetAndDeletesPreviousLater) {
   PJ::ConfigPanelHost host;
-  auto* first = new QLabel(QStringLiteral("first"));
-  auto* second = new QLabel(QStringLiteral("second"));
+  auto* first = new QLabel(u"first"_s);
+  auto* second = new QLabel(u"second"_s);
   QPointer<QWidget> old = first;
 
   host.setConfigWidget(first);
@@ -238,7 +239,7 @@ TEST(ConfigPanelHostTest, ReplacesConfigWidgetAndDeletesPreviousLater) {
 
 TEST(ConfigPanelHostTest, SetNullClearsHostedWidget) {
   PJ::ConfigPanelHost host;
-  auto* widget = new QLabel(QStringLiteral("only"));
+  auto* widget = new QLabel(u"only"_s);
   QPointer<QWidget> tracked = widget;
 
   host.setConfigWidget(widget);

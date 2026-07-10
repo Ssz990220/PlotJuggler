@@ -20,6 +20,7 @@
 #include "pj_plotting/PlotDocker.h"
 #include "pj_runtime/CatalogModel.h"
 #include "pj_runtime/SessionManager.h"
+using namespace Qt::StringLiterals;
 
 namespace {
 
@@ -48,7 +49,7 @@ void clickFullscreen(PJ::DockWidget* dock) {
 TEST(DockFullscreenTest, MaximizingALeafCollapsesTheEmptiedSiblingBranch) {
   PJ::SessionManager session;
   PJ::CatalogModel catalog(&session);
-  PJ::PlotDocker docker(QStringLiteral("test"), &session, &catalog);
+  PJ::PlotDocker docker(u"test"_s, &session, &catalog);
 
   auto* dock0 = docker.plotAt(0);
   ASSERT_NE(dock0, nullptr);

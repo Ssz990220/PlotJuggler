@@ -28,6 +28,7 @@
 #include "pj_plotting/RasterTextEngine.h"
 #include "pj_scene3d_widgets/scene_view_widget.h"  // --screenshot grabs the 3D view
 #include "pj_widgets/Style.h"
+using namespace Qt::StringLiterals;
 
 namespace {
 // One process-wide crash handler. Its constructor (run at static-init, before
@@ -46,7 +47,7 @@ int main(int argc, char* argv[]) {
   // Adwaita, etc.) which silently overrides QSS on QMenu and other
   // popups. Style additionally suppresses default dialog-button icons
   // and the underline-mnemonic decoration.
-  QApplication::setStyle(new PJ::Style(QStringLiteral("Fusion")));
+  QApplication::setStyle(new PJ::Style(u"Fusion"_s));
 
   // NOTE: we deliberately do NOT set Qt::AA_ShareOpenGLContexts. It was once set
   // so a 3D scene's GL resources would survive a QOpenGLWidget context
@@ -67,13 +68,13 @@ int main(int argc, char* argv[]) {
   PJ::installRasterTextEngines();
 
   QApplication app(argc, argv);
-  QCoreApplication::setOrganizationName(QStringLiteral("PlotJuggler"));
-  QCoreApplication::setApplicationName(QStringLiteral("PlotJuggler4"));
+  QCoreApplication::setOrganizationName(u"PlotJuggler"_s);
+  QCoreApplication::setApplicationName(u"PlotJuggler4"_s);
   // PJ_VERSION_STRING comes from the root project(VERSION) via pj_app's
   // target_compile_definitions — the single source of truth read by the About
   // box and compared against the latest GitHub release.
   QCoreApplication::setApplicationVersion(QStringLiteral(PJ_VERSION_STRING));
-  QApplication::setApplicationDisplayName(QStringLiteral("PlotJuggler 4"));
+  QApplication::setApplicationDisplayName(u"PlotJuggler 4"_s);
 
   // WidgetTuner: app-wide Polish-event filter that side-steps QSS
   // specificity battles by directly tagging menus and palette-painting
@@ -82,41 +83,37 @@ int main(int argc, char* argv[]) {
   qApp->installEventFilter(tuner);
 
   QCommandLineParser parser;
-  parser.setApplicationDescription(QStringLiteral("PlotJuggler 4"));
+  parser.setApplicationDescription(u"PlotJuggler 4"_s);
   parser.addHelpOption();
   const QCommandLineOption test_data_option(
-      QStringLiteral("test-data"), QStringLiteral("Populate the datastore with generated sin/cos samples."));
+      u"test-data"_s, u"Populate the datastore with generated sin/cos samples."_s);
   parser.addOption(test_data_option);
   const QCommandLineOption plugin_dir_option(
-      QStringLiteral("plugin-dir"),
-      QStringLiteral("Override the directory where extensions are discovered and managed."), QStringLiteral("path"));
+      u"plugin-dir"_s, u"Override the directory where extensions are discovered and managed."_s, u"path"_s);
   parser.addOption(plugin_dir_option);
   const QCommandLineOption layout_option(
-      QStringLiteral("layout"), QStringLiteral("Load a layout file on startup, reloading its data source(s)."),
-      QStringLiteral("path"));
+      u"layout"_s, u"Load a layout file on startup, reloading its data source(s)."_s, u"path"_s);
   parser.addOption(layout_option);
   const QCommandLineOption autoplay_option(
-      QStringLiteral("autoplay"), QStringLiteral(
-                                      "Start looping playback automatically once a data source provides a time range "
-                                      "(useful with --layout / --test-data for demos and profiling)."));
+      u"autoplay"_s, QStringLiteral(
+                         "Start looping playback automatically once a data source provides a time range "
+                         "(useful with --layout / --test-data for demos and profiling)."));
   parser.addOption(autoplay_option);
   const QCommandLineOption nosplash_option(
-      QStringList() << QStringLiteral("n") << QStringLiteral("nosplash"),
-      QStringLiteral("Don't display the splashscreen on startup."));
+      QStringList() << u"n"_s << u"nosplash"_s, u"Don't display the splashscreen on startup."_s);
   parser.addOption(nosplash_option);
   // Dev-only splash preview, disabled but kept for future tweaks: renders the
   // configured splash to a PNG and exits (see the matching handler below).
   // const QCommandLineOption dump_splash_option(
-  //     QStringLiteral("dump-splash"),
-  //     QStringLiteral("Render the configured startup splashscreen to a PNG and exit (dev preview)."),
-  //     QStringLiteral("path"));
+  //     u"dump-splash"_s,
+  //     u"Render the configured startup splashscreen to a PNG and exit (dev preview)."_s,
+  //     u"path"_s);
   // parser.addOption(dump_splash_option);
   const QCommandLineOption debug_mode_option(
-      QStringLiteral("debug-mode"),
-      QStringLiteral("Reveal developer-only preferences and tooling that are hidden in normal runs."));
+      u"debug-mode"_s, u"Reveal developer-only preferences and tooling that are hidden in normal runs."_s);
   parser.addOption(debug_mode_option);
   const QCommandLineOption disable_opengl_option(
-      QStringLiteral("disable-opengl"),
+      u"disable-opengl"_s,
       QStringLiteral(
           "Force plots onto the software raster canvas for this session, overriding the saved OpenGL "
           "preference (does not change it)."));
@@ -126,12 +123,10 @@ int main(int argc, char* argv[]) {
   // first SceneViewWidget's framebuffer to a PNG and quit. GNOME Wayland blocks
   // external screen-capture tools, so the app must grab itself.
   const QCommandLineOption screenshot_option(
-      QStringLiteral("screenshot"),
-      QStringLiteral("Grab the first 3D view to a PNG after --screenshot-delay, then exit."), QStringLiteral("path"));
+      u"screenshot"_s, u"Grab the first 3D view to a PNG after --screenshot-delay, then exit."_s, u"path"_s);
   parser.addOption(screenshot_option);
   const QCommandLineOption screenshot_delay_option(
-      QStringLiteral("screenshot-delay"), QStringLiteral("ms to wait before the screenshot grab (default 7000)."),
-      QStringLiteral("ms"), QStringLiteral("7000"));
+      u"screenshot-delay"_s, u"ms to wait before the screenshot grab (default 7000)."_s, u"ms"_s, u"7000"_s);
   parser.addOption(screenshot_delay_option);
   parser.process(app);
 
@@ -226,7 +221,7 @@ int main(int argc, char* argv[]) {
   // skipped for headless --screenshot runs. Deferred to the running event loop
   // (QNetworkAccessManager needs it); failures/no-release are silent.
   if (!parser.isSet(screenshot_option) &&
-      QSettings().value(QStringLiteral("Preferences::check_updates_on_startup"), true).toBool()) {
+      QSettings().value(u"Preferences::check_updates_on_startup"_s, true).toBool()) {
     QTimer::singleShot(0, &window, [&window]() { window.checkForUpdates(/*interactive=*/false); });
   }
 

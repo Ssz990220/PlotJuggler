@@ -17,6 +17,7 @@
 #include "pj_scene2d_widgets/Scene2DDockWidget.h"
 #include "pj_scene2d_widgets/layers/depth_image_layer.h"
 #include "pj_scene2d_widgets/layers/image_layer.h"
+using namespace Qt::StringLiterals;
 
 namespace {
 
@@ -75,50 +76,50 @@ QString familyFor(const std::vector<PJ::SceneLayerInfo>& layers, PJ::ObjectTopic
 }  // namespace
 
 TEST(DepthImageLayer, XmlRoundTripPreservesColormapInvertAndRange) {
-  PJ::DepthImageLayer layer(PJ::ObjectTopicId{1}, PJ::sdk::BuiltinObjectType::kImage, QStringLiteral("depth"));
+  PJ::DepthImageLayer layer(PJ::ObjectTopicId{1}, PJ::sdk::BuiltinObjectType::kImage, u"depth"_s);
 
   QDomDocument doc;
-  QDomElement in = doc.createElement(QStringLiteral("scene2d_layer"));
-  in.setAttribute(QStringLiteral("colormap"), QStringLiteral("plasma"));
-  in.setAttribute(QStringLiteral("invert"), QStringLiteral("true"));
-  in.setAttribute(QStringLiteral("near_m"), QStringLiteral("1.5"));
-  in.setAttribute(QStringLiteral("far_m"), QStringLiteral("7"));
+  QDomElement in = doc.createElement(u"scene2d_layer"_s);
+  in.setAttribute(u"colormap"_s, u"plasma"_s);
+  in.setAttribute(u"invert"_s, u"true"_s);
+  in.setAttribute(u"near_m"_s, u"1.5"_s);
+  in.setAttribute(u"far_m"_s, u"7"_s);
   ASSERT_TRUE(layer.xmlLoadState(in));
 
   // Saving after loading must reproduce every depth-display attribute verbatim.
   const QDomElement out = layer.xmlSaveState(doc);
-  EXPECT_EQ(out.attribute(QStringLiteral("colormap")), QStringLiteral("plasma"));
-  EXPECT_EQ(out.attribute(QStringLiteral("invert")), QStringLiteral("true"));
-  EXPECT_FLOAT_EQ(out.attribute(QStringLiteral("near_m")).toFloat(), 1.5f);
-  EXPECT_FLOAT_EQ(out.attribute(QStringLiteral("far_m")).toFloat(), 7.0f);
+  EXPECT_EQ(out.attribute(u"colormap"_s), u"plasma"_s);
+  EXPECT_EQ(out.attribute(u"invert"_s), u"true"_s);
+  EXPECT_FLOAT_EQ(out.attribute(u"near_m"_s).toFloat(), 1.5f);
+  EXPECT_FLOAT_EQ(out.attribute(u"far_m"_s).toFloat(), 7.0f);
 }
 
 TEST(ImageLayer, XmlRoundTripPreservesRectifyEnabled) {
   // The rectify override is the user-facing half of the feature: turn it off, save the
   // layout, reopen -> the override must survive. Pin the save/load symmetry so a
   // future mis-typed key or flipped comparison can't silently drop it.
-  PJ::ImageLayer layer(PJ::ObjectTopicId{1}, PJ::sdk::BuiltinObjectType::kImage, QStringLiteral("image"));
+  PJ::ImageLayer layer(PJ::ObjectTopicId{1}, PJ::sdk::BuiltinObjectType::kImage, u"image"_s);
 
   QDomDocument doc;
-  QDomElement in = doc.createElement(QStringLiteral("scene2d_layer"));
-  in.setAttribute(QStringLiteral("rectify_enabled"), QStringLiteral("false"));
+  QDomElement in = doc.createElement(u"scene2d_layer"_s);
+  in.setAttribute(u"rectify_enabled"_s, u"false"_s);
   ASSERT_TRUE(layer.xmlLoadState(in));
 
   const QDomElement out = layer.xmlSaveState(doc);
-  EXPECT_EQ(out.attribute(QStringLiteral("rectify_enabled")), QStringLiteral("false"));
+  EXPECT_EQ(out.attribute(u"rectify_enabled"_s), u"false"_s);
 }
 
 TEST(ImageLayer, XmlLoadDefaultsRectifyOnWhenAttributeAbsent) {
   // A layout saved before this toggle existed has no rectify_enabled attribute; it
   // must default to ON, preserving the historical always-on rectification behaviour.
-  PJ::ImageLayer layer(PJ::ObjectTopicId{1}, PJ::sdk::BuiltinObjectType::kImage, QStringLiteral("image"));
+  PJ::ImageLayer layer(PJ::ObjectTopicId{1}, PJ::sdk::BuiltinObjectType::kImage, u"image"_s);
 
   QDomDocument doc;
-  QDomElement in = doc.createElement(QStringLiteral("scene2d_layer"));  // no rectify_enabled attribute
+  QDomElement in = doc.createElement(u"scene2d_layer"_s);  // no rectify_enabled attribute
   ASSERT_TRUE(layer.xmlLoadState(in));
 
   const QDomElement out = layer.xmlSaveState(doc);
-  EXPECT_EQ(out.attribute(QStringLiteral("rectify_enabled")), QStringLiteral("true"));
+  EXPECT_EQ(out.attribute(u"rectify_enabled"_s), u"true"_s);
 }
 
 TEST(Scene2DDockWidget, RoutesDepthEncodedImageToDepthLayer) {
@@ -136,13 +137,13 @@ TEST(Scene2DDockWidget, RoutesDepthEncodedImageToDepthLayer) {
 
   PJ::Scene2DDockWidget dock;
   dock.setSessionManager(&session);
-  ASSERT_TRUE(dock.addTopic(depth, PJ::sdk::BuiltinObjectType::kImage, QStringLiteral("depth")));
-  ASSERT_TRUE(dock.addTopic(color, PJ::sdk::BuiltinObjectType::kImage, QStringLiteral("color")));
+  ASSERT_TRUE(dock.addTopic(depth, PJ::sdk::BuiltinObjectType::kImage, u"depth"_s));
+  ASSERT_TRUE(dock.addTopic(color, PJ::sdk::BuiltinObjectType::kImage, u"color"_s));
 
   // A depth-encoded kImage routes to the colormap DepthImageLayer; a color kImage
   // (same type) stays on the plain ImageLayer.
-  EXPECT_EQ(familyFor(dock.layers(), depth), QStringLiteral("Depth"));
-  EXPECT_EQ(familyFor(dock.layers(), color), QStringLiteral("Image"));
+  EXPECT_EQ(familyFor(dock.layers(), depth), u"Depth"_s);
+  EXPECT_EQ(familyFor(dock.layers(), color), u"Image"_s);
 }
 
 TEST(Scene2DDockWidget, CompositeTracksVisibilityAndOrder) {
@@ -153,8 +154,8 @@ TEST(Scene2DDockWidget, CompositeTracksVisibilityAndOrder) {
   PJ::Scene2DDockWidget dock;
   dock.setSessionManager(&session);
 
-  ASSERT_TRUE(dock.addTopic(image, PJ::sdk::BuiltinObjectType::kImage, QStringLiteral("image")));
-  ASSERT_TRUE(dock.addTopic(depth, PJ::sdk::BuiltinObjectType::kDepthImage, QStringLiteral("depth")));
+  ASSERT_TRUE(dock.addTopic(image, PJ::sdk::BuiltinObjectType::kImage, u"image"_s));
+  ASSERT_TRUE(dock.addTopic(depth, PJ::sdk::BuiltinObjectType::kDepthImage, u"depth"_s));
 
   EXPECT_EQ(dock.compositeLayerCountForTesting(), 2U);
   EXPECT_EQ(ids(dock.compositeTopicOrderForTesting()), (std::vector<uint32_t>{image.id, depth.id}));
@@ -177,14 +178,13 @@ TEST(Scene2DDockWidget, XmlRoundTripRestoresLayerOrderAndVisibility) {
 
   PJ::Scene2DDockWidget original;
   original.setSessionManager(&session);
-  ASSERT_TRUE(original.addTopic(image, PJ::sdk::BuiltinObjectType::kImage, QStringLiteral("image")));
-  ASSERT_TRUE(
-      original.addTopic(annotations, PJ::sdk::BuiltinObjectType::kImageAnnotations, QStringLiteral("annotations")));
+  ASSERT_TRUE(original.addTopic(image, PJ::sdk::BuiltinObjectType::kImage, u"image"_s));
+  ASSERT_TRUE(original.addTopic(annotations, PJ::sdk::BuiltinObjectType::kImageAnnotations, u"annotations"_s));
 
   original.reorderLayers({annotations, image});
   original.setLayerVisible(image, false);
 
-  QDomDocument doc(QStringLiteral("scene2d"));
+  QDomDocument doc(u"scene2d"_s);
   const QDomElement saved = original.xmlSaveState(doc);
   doc.appendChild(saved);
 
@@ -213,7 +213,7 @@ TEST(Scene2DDockWidget, EmptyPlaceholderActiveUntilFirstVisibleLayer) {
   EXPECT_TRUE(dock.emptyPlaceholderActiveForTesting());
 
   // The first visible layer fronts the viewer instead.
-  ASSERT_TRUE(dock.addTopic(image, PJ::sdk::BuiltinObjectType::kImage, QStringLiteral("image")));
+  ASSERT_TRUE(dock.addTopic(image, PJ::sdk::BuiltinObjectType::kImage, u"image"_s));
   EXPECT_FALSE(dock.emptyPlaceholderActiveForTesting());
 
   // Hiding the only layer empties the composite, so the placeholder returns.
@@ -242,7 +242,7 @@ TEST(Scene2DDockWidget, RevalidateKeepsNeverPopulatedDockButResetsEvictedOne) {
   // Once it has held a topic and that topic is evicted, it reports empty so the
   // shell can reset it to the neutral placeholder — the original eviction behavior.
   const auto image = registerTopic(session, 9, "/camera/image");
-  ASSERT_TRUE(dock.addTopic(image, PJ::sdk::BuiltinObjectType::kImage, QStringLiteral("image")));
+  ASSERT_TRUE(dock.addTopic(image, PJ::sdk::BuiltinObjectType::kImage, u"image"_s));
   EXPECT_TRUE(dock.revalidateObjects());  // live layer remains
   session.objectStore().removeTopic(image);
   EXPECT_FALSE(dock.revalidateObjects());  // had content, now evicted -> reset

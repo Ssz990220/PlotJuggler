@@ -9,6 +9,7 @@
 
 #include "pj_widgets/ProgressBar.h"
 #include "pj_widgets/SvgUtil.h"
+using namespace Qt::StringLiterals;
 
 namespace PJ {
 
@@ -26,18 +27,18 @@ IngestProgressWidget::IngestProgressWidget(QWidget* parent) : QWidget(parent) {
 
   // The bar carries the status text in its centred caption (no separate label).
   bar_ = new ProgressBar(this);
-  bar_->setObjectName(QStringLiteral("ingestProgressBar"));
+  bar_->setObjectName(u"ingestProgressBar"_s);
   bar_->setFixedWidth(180);  // fixed strip width (no QSS width rule, so this holds)
 
   // QToolButtons (not QPushButtons): they sit naturally in a chrome/toolbar row.
   primary_ = new QToolButton(this);
-  primary_->setObjectName(QStringLiteral("ingestPrimaryButton"));
+  primary_->setObjectName(u"ingestPrimaryButton"_s);
   primary_->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
   primary_->setFocusPolicy(Qt::NoFocus);
   primary_->hide();  // hidden until setPrimaryButton() configures a label
 
   secondary_ = new QToolButton(this);
-  secondary_->setObjectName(QStringLiteral("ingestSecondaryButton"));
+  secondary_->setObjectName(u"ingestSecondaryButton"_s);
   secondary_->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
   secondary_->setFocusPolicy(Qt::NoFocus);
   secondary_->hide();
@@ -71,7 +72,7 @@ void IngestProgressWidget::setCounterText(const QString& text) {
 void IngestProgressWidget::updateCaption() {
   QString caption = title_text_;
   if (!counter_text_.isEmpty()) {
-    caption += caption.isEmpty() ? counter_text_ : QStringLiteral("  %1").arg(counter_text_);
+    caption += caption.isEmpty() ? counter_text_ : u"  %1"_s.arg(counter_text_);
   }
   // The caption is the bar's QProgressBar format() string (drawn centred); a plain
   // literal shows as-is (no %p/%v/%m token → no percentage substitution).

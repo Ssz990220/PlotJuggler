@@ -24,6 +24,7 @@
 #include "pj_plotting/DockWidget.h"
 #include "pj_plotting/PlotFocusOverlay.h"
 #include "pj_plotting/PlotWidget.h"
+using namespace Qt::StringLiterals;
 
 namespace PJ {
 
@@ -58,11 +59,9 @@ QDomElement saveChildNodesState(QDomDocument& doc, QWidget* widget) {
   }
 
   if (auto* splitter = qobject_cast<QSplitter*>(widget)) {
-    QDomElement splitter_element = doc.createElement(QStringLiteral("DockSplitter"));
-    splitter_element.setAttribute(
-        QStringLiteral("orientation"),
-        splitter->orientation() == Qt::Horizontal ? QStringLiteral("|") : QStringLiteral("-"));
-    splitter_element.setAttribute(QStringLiteral("count"), QString::number(splitter->count()));
+    QDomElement splitter_element = doc.createElement(u"DockSplitter"_s);
+    splitter_element.setAttribute(u"orientation"_s, splitter->orientation() == Qt::Horizontal ? u"|"_s : u"-"_s);
+    splitter_element.setAttribute(u"count"_s, QString::number(splitter->count()));
 
     QStringList normalized_sizes;
     int total_size = 0;
@@ -75,7 +74,7 @@ QDomElement saveChildNodesState(QDomDocument& doc, QWidget* widget) {
                                                : 1.0 / static_cast<double>(std::max(1, splitter->count()));
       normalized_sizes.push_back(QString::number(normalized, 'f', 8));
     }
-    splitter_element.setAttribute(QStringLiteral("sizes"), normalized_sizes.join(QStringLiteral(";")));
+    splitter_element.setAttribute(u"sizes"_s, normalized_sizes.join(u";"_s));
 
     for (int index = 0; index < splitter->count(); ++index) {
       QDomElement child = saveChildNodesState(doc, splitter->widget(index));
@@ -91,7 +90,7 @@ QDomElement saveChildNodesState(QDomDocument& doc, QWidget* widget) {
     return {};
   }
 
-  QDomElement area_element = doc.createElement(QStringLiteral("DockArea"));
+  QDomElement area_element = doc.createElement(u"DockArea"_s);
   for (int index = 0; index < dock_area->dockWidgetsCount(); ++index) {
     auto* dock_widget = dynamic_cast<DockWidget*>(dock_area->dockWidget(index));
     if (dock_widget == nullptr) {
@@ -112,8 +111,8 @@ QDomElement saveChildNodesState(QDomDocument& doc, QWidget* widget) {
     } else {
       continue;
     }
-    area_element.setAttribute(QStringLiteral("id"), dock_widget->stateId());
-    area_element.setAttribute(QStringLiteral("name"), dock_widget->name());
+    area_element.setAttribute(u"id"_s, dock_widget->stateId());
+    area_element.setAttribute(u"name"_s, dock_widget->name());
     area_element.appendChild(payload);
   }
   return area_element;
@@ -138,12 +137,11 @@ LayoutNode parseLayoutNode(const QDomElement& element) {
     return node;
   }
 
-  if (element.tagName() == QStringLiteral("DockSplitter")) {
+  if (element.tagName() == u"DockSplitter"_s) {
     node.type = LayoutNode::Type::kSplitter;
     node.valid = true;
-    node.orientation = element.attribute(QStringLiteral("orientation")).startsWith(QStringLiteral("|")) ? Qt::Horizontal
-                                                                                                        : Qt::Vertical;
-    for (const QString& size : element.attribute(QStringLiteral("sizes")).split(';', Qt::SkipEmptyParts)) {
+    node.orientation = element.attribute(u"orientation"_s).startsWith(u"|"_s) ? Qt::Horizontal : Qt::Vertical;
+    for (const QString& size : element.attribute(u"sizes"_s).split(';', Qt::SkipEmptyParts)) {
       bool ok = false;
       const double value = size.toDouble(&ok);
       if (ok) {
@@ -160,11 +158,11 @@ LayoutNode parseLayoutNode(const QDomElement& element) {
     return node;
   }
 
-  if (element.tagName() == QStringLiteral("DockArea")) {
+  if (element.tagName() == u"DockArea"_s) {
     node.type = LayoutNode::Type::kArea;
     node.valid = true;
-    node.area_id = element.attribute(QStringLiteral("id"));
-    node.area_name = element.attribute(QStringLiteral("name"));
+    node.area_id = element.attribute(u"id"_s);
+    node.area_name = element.attribute(u"name"_s);
     // node.plots holds the per-dock content element regardless of kind — a
     // <plot> (PlotWidget) or an object widget's own tag (<scene3d>, <scene2d>,
     // …). Each <DockArea> writes exactly one payload per dock, so collect every
@@ -197,7 +195,7 @@ QDomElement firstLeafElement(const LayoutNode& node) {
 // <plot> element. Restore hands its tagName() to the object-widget factory as
 // the "kind", so pj_plotting stays agnostic to specific scene families.
 bool isObjectWidgetElement(const QDomElement& element) {
-  return !element.isNull() && element.tagName() != QStringLiteral("plot");
+  return !element.isNull() && element.tagName() != u"plot"_s;
 }
 
 class RestorePlotPool {
@@ -233,7 +231,7 @@ class RestorePlotPool {
 
   PlotWidget* takeForArea(const LayoutNode& node) {
     const QDomElement plot_element = node.plots.isEmpty() ? QDomElement{} : node.plots.front();
-    const QString plot_id = plot_element.attribute(QStringLiteral("id"));
+    const QString plot_id = plot_element.attribute(u"id"_s);
     if (!plot_id.isEmpty()) {
       auto it = plots_by_id_.find(plot_id);
       if (it != plots_by_id_.end() && !used_.contains(it.value())) {
@@ -319,7 +317,7 @@ void restoreNode(
 
   if (node.type == LayoutNode::Type::kArea) {
     widget->setStateId(node.area_id);
-    widget->setName(node.area_name.isEmpty() ? QStringLiteral("...") : node.area_name);
+    widget->setName(node.area_name.isEmpty() ? u"..."_s : node.area_name);
 
     const QDomElement dock_element = node.plots.isEmpty() ? QDomElement{} : node.plots.front();
 
@@ -527,12 +525,12 @@ DockWidget* PlotDocker::addDockWithPlot(
 }
 
 QDomElement PlotDocker::xmlSaveState(QDomDocument& doc) const {
-  QDomElement tab_element = doc.createElement(QStringLiteral("Tab"));
-  tab_element.setAttribute(QStringLiteral("id"), state_id_);
-  tab_element.setAttribute(QStringLiteral("containers"), dockContainers().count());
+  QDomElement tab_element = doc.createElement(u"Tab"_s);
+  tab_element.setAttribute(u"id"_s, state_id_);
+  tab_element.setAttribute(u"containers"_s, dockContainers().count());
 
   for (ads::CDockContainerWidget* container : dockContainers()) {
-    QDomElement container_element = doc.createElement(QStringLiteral("Container"));
+    QDomElement container_element = doc.createElement(u"Container"_s);
     QDomElement child =
         saveChildNodesState(doc, container->findChild<QSplitter*>(QString(), Qt::FindDirectChildrenOnly));
     if (!child.isNull()) {
@@ -544,21 +542,21 @@ QDomElement PlotDocker::xmlSaveState(QDomDocument& doc) const {
 }
 
 bool PlotDocker::xmlLoadState(const QDomElement& tab_element) {
-  if (tab_element.isNull() || tab_element.tagName() != QStringLiteral("Tab")) {
+  if (tab_element.isNull() || tab_element.tagName() != u"Tab"_s) {
     return false;
   }
 
-  setStateId(tab_element.attribute(QStringLiteral("id")));
-  if (tab_element.hasAttribute(QStringLiteral("tab_name"))) {
-    setName(tab_element.attribute(QStringLiteral("tab_name")));
+  setStateId(tab_element.attribute(u"id"_s));
+  if (tab_element.hasAttribute(u"tab_name"_s)) {
+    setName(tab_element.attribute(u"tab_name"_s));
   }
 
   QVector<LayoutNode> container_nodes;
-  for (QDomElement container = tab_element.firstChildElement(QStringLiteral("Container")); !container.isNull();
-       container = container.nextSiblingElement(QStringLiteral("Container"))) {
-    QDomElement child = container.firstChildElement(QStringLiteral("DockSplitter"));
+  for (QDomElement container = tab_element.firstChildElement(u"Container"_s); !container.isNull();
+       container = container.nextSiblingElement(u"Container"_s)) {
+    QDomElement child = container.firstChildElement(u"DockSplitter"_s);
     if (child.isNull()) {
-      child = container.firstChildElement(QStringLiteral("DockArea"));
+      child = container.firstChildElement(u"DockArea"_s);
     }
     LayoutNode node = parseLayoutNode(child);
     if (node.valid) {

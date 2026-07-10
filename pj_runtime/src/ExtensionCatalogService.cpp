@@ -14,6 +14,7 @@
 
 #include "pj_marketplace/extension_manager.hpp"
 #include "pj_marketplace/platform_utils.hpp"
+using namespace Qt::StringLiterals;
 
 namespace PJ {
 
@@ -32,7 +33,7 @@ QString defaultPendingDir() {
 constexpr auto kCustomPluginFoldersKey = "Preferences::plugin_folders";
 
 QString executablePluginsDir() {
-  return QCoreApplication::applicationDirPath() + QStringLiteral("/plugins");
+  return QCoreApplication::applicationDirPath() + u"/plugins"_s;
 }
 }  // namespace
 
@@ -50,7 +51,7 @@ ExtensionCatalogService::ExtensionCatalogService(QString extensions_dir, Diagnos
                          << "- plugin loading will be a no-op until it exists.";
   }
   if (!QDir().mkpath(pending_dir)) {
-    const QString message = QStringLiteral("Failed to create extension staging directory \"%1\"").arg(pending_dir);
+    const QString message = u"Failed to create extension staging directory \"%1\""_s.arg(pending_dir);
     qCWarning(lcCatalog) << message;
     reportDiagnostic(DiagnosticLevel::kError, message);
   }

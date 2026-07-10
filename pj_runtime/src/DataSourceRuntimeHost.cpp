@@ -19,6 +19,7 @@
 #include "pj_plugins/host/service_registry_builder.hpp"
 #include "pj_runtime/ExtensionCatalogService.h"
 #include "pj_runtime/detail/payload_anchor.h"
+using namespace Qt::StringLiterals;
 
 namespace PJ {
 
@@ -102,7 +103,7 @@ struct FetcherOwner {
 
 QString errorMessage(const PJ_error_t& err) {
   if (err.message[0] == '\0') {
-    return QStringLiteral("<none>");
+    return u"<none>"_s;
   }
   return QString::fromUtf8(err.message);
 }

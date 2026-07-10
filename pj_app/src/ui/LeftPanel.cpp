@@ -29,6 +29,7 @@
 #include "pj_widgets/ScrubberBase.h"
 #include "pj_widgets/SvgUtil.h"
 #include "ui_LeftPanel.h"
+using namespace Qt::StringLiterals;
 
 namespace PJ {
 
@@ -65,7 +66,7 @@ LeftPanel::LeftPanel(QWidget* parent) : QWidget(parent), ui_(new Ui::LeftPanel) 
   // the stylesheet separator path and suppresses addSection() text. A disabled
   // QAction flows through the themed ::item:disabled rule and renders reliably.
   auto* recent_menu = new QMenu(this);
-  recent_menu->setObjectName(QStringLiteral("PJMenu"));
+  recent_menu->setObjectName(u"PJMenu"_s);
   connect(recent_menu, &QMenu::aboutToShow, this, [this, recent_menu]() {
     recent_menu->clear();
     const QStringList layouts = QSettings().value(kRecentLayoutsKey).toStringList();
@@ -238,24 +239,24 @@ void LeftPanel::applyPauseButtonState(QString theme) {
 }
 
 QDomElement LeftPanel::saveSourcesState(QDomDocument& doc) const {
-  QDomElement element = doc.createElement(QStringLiteral("left_panel_state"));
+  QDomElement element = doc.createElement(u"left_panel_state"_s);
 
   // sources_tab: report which of the three autoExclusive tabs is checked.
   if (ui_->tabFile->isChecked()) {
-    element.setAttribute(QStringLiteral("sources_tab"), QStringLiteral("file"));
+    element.setAttribute(u"sources_tab"_s, u"file"_s);
   } else if (ui_->tabStream->isChecked()) {
-    element.setAttribute(QStringLiteral("sources_tab"), QStringLiteral("stream"));
+    element.setAttribute(u"sources_tab"_s, u"stream"_s);
   } else if (ui_->tabCloud->isChecked()) {
-    element.setAttribute(QStringLiteral("sources_tab"), QStringLiteral("cloud"));
+    element.setAttribute(u"sources_tab"_s, u"cloud"_s);
   }
 
-  element.setAttribute(QStringLiteral("streaming_source"), ui_->comboStreaming->currentText());
-  element.setAttribute(QStringLiteral("streaming_buffer"), QString::number(ui_->streamingSpinBox->value()));
+  element.setAttribute(u"streaming_source"_s, ui_->comboStreaming->currentText());
+  element.setAttribute(u"streaming_buffer"_s, QString::number(ui_->streamingSpinBox->value()));
   return element;
 }
 
 void LeftPanel::restoreSourcesState(const QDomElement& element) {
-  if (element.isNull() || element.tagName() != QStringLiteral("left_panel_state")) {
+  if (element.isNull() || element.tagName() != u"left_panel_state"_s) {
     return;
   }
 
@@ -263,13 +264,13 @@ void LeftPanel::restoreSourcesState(const QDomElement& element) {
   // connected lambdas (which switch the inputStack page). We deliberately
   // do NOT block these signals — switching the visible page is the
   // intended side-effect of selecting a tab.
-  if (element.hasAttribute(QStringLiteral("sources_tab"))) {
-    const QString tab = element.attribute(QStringLiteral("sources_tab"));
-    if (tab == QStringLiteral("file")) {
+  if (element.hasAttribute(u"sources_tab"_s)) {
+    const QString tab = element.attribute(u"sources_tab"_s);
+    if (tab == u"file"_s) {
       ui_->tabFile->setChecked(true);
-    } else if (tab == QStringLiteral("stream")) {
+    } else if (tab == u"stream"_s) {
       ui_->tabStream->setChecked(true);
-    } else if (tab == QStringLiteral("cloud")) {
+    } else if (tab == u"cloud"_s) {
       ui_->tabCloud->setChecked(true);
     }
     // Unknown tab string -> silent no-op.
@@ -279,8 +280,8 @@ void LeftPanel::restoreSourcesState(const QDomElement& element) {
   // findText means the source isn't currently in the combo (plugin
   // not installed) -> silent no-op. Block signals so we don't emit
   // streamingSourceChanged during restore.
-  if (element.hasAttribute(QStringLiteral("streaming_source"))) {
-    const QString src = element.attribute(QStringLiteral("streaming_source"));
+  if (element.hasAttribute(u"streaming_source"_s)) {
+    const QString src = element.attribute(u"streaming_source"_s);
     const int idx = ui_->comboStreaming->findText(src);
     if (idx >= 0) {
       const QSignalBlocker blocker(ui_->comboStreaming);
@@ -291,9 +292,9 @@ void LeftPanel::restoreSourcesState(const QDomElement& element) {
   // streaming_buffer: setValue triggers the connected lambda which
   // writes QSettings AND emits streamingBufferChanged. Block signals
   // to suppress both.
-  if (element.hasAttribute(QStringLiteral("streaming_buffer"))) {
+  if (element.hasAttribute(u"streaming_buffer"_s)) {
     bool ok = false;
-    const int seconds = element.attribute(QStringLiteral("streaming_buffer")).toInt(&ok);
+    const int seconds = element.attribute(u"streaming_buffer"_s).toInt(&ok);
     if (ok) {
       const QSignalBlocker blocker(ui_->streamingSpinBox);
       ui_->streamingSpinBox->setValue(seconds);
@@ -328,7 +329,7 @@ void LeftPanel::applyIcons(QString theme) {
     // Cloud-launcher buttons are runtime-added text buttons, not the square
     // icon chrome this loop styles — leave their natural sizing alone, else
     // they get squashed to button_extent x button_extent and clip their label.
-    if (btn->objectName().startsWith(QStringLiteral("cloudToolboxOpen_"))) {
+    if (btn->objectName().startsWith(u"cloudToolboxOpen_"_s)) {
       continue;
     }
     btn->setMinimumSize(button_extent, button_extent);
@@ -415,7 +416,7 @@ void LeftPanel::populateCloudToolboxes(const std::vector<RuntimeToolboxPlugin>& 
     // One full-width button per cloud source; its label is the toolbox name
     // and clicking it launches the panel.
     auto* btn = new QPushButton(QString::fromStdString(tb.name), container);
-    btn->setObjectName(QStringLiteral("cloudToolboxOpen_") + QString::fromStdString(tb.id));
+    btn->setObjectName(u"cloudToolboxOpen_"_s + QString::fromStdString(tb.id));
     if (auto desc = manifest.find("description"); desc != manifest.end() && desc->is_string()) {
       btn->setToolTip(QString::fromStdString(desc->get<std::string>()));
     }
@@ -427,7 +428,7 @@ void LeftPanel::populateCloudToolboxes(const std::vector<RuntimeToolboxPlugin>& 
 
   if (!any_cloud) {
     auto* placeholder = new QLabel(tr("(no cloud toolboxes installed)"), container);
-    placeholder->setObjectName(QStringLiteral("labelCloudPlaceholder"));
+    placeholder->setObjectName(u"labelCloudPlaceholder"_s);
     placeholder->setAlignment(Qt::AlignCenter);
     placeholder->setEnabled(false);
     layout->addWidget(placeholder);

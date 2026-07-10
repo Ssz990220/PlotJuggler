@@ -11,6 +11,7 @@
 #include <QRegularExpressionValidator>
 #include <QSignalBlocker>
 #include <QVBoxLayout>
+using namespace Qt::StringLiterals;
 
 namespace PJ {
 
@@ -197,10 +198,9 @@ ColorPickerPopup::ColorPickerPopup(QWidget* parent) : QDialog(parent) {
   hue_slider_ = new HueSlider(this);
   sv_square_ = new SVSquare(this);
   hex_edit_ = new QLineEdit(this);
-  hex_edit_->setPlaceholderText(QStringLiteral("#rrggbb"));
+  hex_edit_->setPlaceholderText(u"#rrggbb"_s);
   hex_edit_->setMaxLength(7);
-  hex_edit_->setValidator(
-      new QRegularExpressionValidator(QRegularExpression(QStringLiteral("#?[0-9a-fA-F]{0,6}")), hex_edit_));
+  hex_edit_->setValidator(new QRegularExpressionValidator(QRegularExpression(u"#?[0-9a-fA-F]{0,6}"_s), hex_edit_));
 
   auto* layout = new QVBoxLayout(this);
   layout->setContentsMargins(kPopupMargin, kPopupMargin, kPopupMargin, kPopupMargin);

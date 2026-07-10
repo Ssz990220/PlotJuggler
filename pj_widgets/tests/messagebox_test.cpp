@@ -15,6 +15,7 @@
 #include <QPoint>
 #include <QPushButton>
 #include <algorithm>
+using namespace Qt::StringLiterals;
 
 namespace {
 
@@ -30,7 +31,7 @@ void realize(PJ::MessageBox& dlg) {
 
 // Vertical gaps (px) between consecutive stacked buttons, ordered top→bottom.
 QList<int> buttonGaps(PJ::MessageBox& dlg) {
-  auto buttons = dlg.findChildren<QPushButton*>(QStringLiteral("pjMessageBoxButton"));
+  auto buttons = dlg.findChildren<QPushButton*>(u"pjMessageBoxButton"_s);
   std::sort(buttons.begin(), buttons.end(), [&dlg](QPushButton* a, QPushButton* b) {
     return a->mapTo(&dlg, QPoint(0, 0)).y() < b->mapTo(&dlg, QPoint(0, 0)).y();
   });
@@ -44,23 +45,23 @@ QList<int> buttonGaps(PJ::MessageBox& dlg) {
 
 TEST(MessageBoxTest, ShortLabelIsNotWrapped) {
   PJ::MessageBox dlg;
-  dlg.setTitle(QStringLiteral("Title"));
-  dlg.setText(QStringLiteral("Body."));
-  QPushButton* ok = dlg.addButton(QStringLiteral("OK"), PJ::MessageBox::kPrimaryRole);
+  dlg.setTitle(u"Title"_s);
+  dlg.setText(u"Body."_s);
+  QPushButton* ok = dlg.addButton(u"OK"_s, PJ::MessageBox::kPrimaryRole);
   realize(dlg);
   // No soft break inserted for a label that already fits on one line.
   EXPECT_FALSE(ok->text().contains(QLatin1Char('\n')));
-  EXPECT_EQ(ok->text(), QStringLiteral("OK"));
+  EXPECT_EQ(ok->text(), u"OK"_s);
 }
 
 TEST(MessageBoxTest, LongLabelWrapsInsteadOfClipping) {
   PJ::MessageBox dlg;
-  dlg.setTitle(QStringLiteral("Confirm"));
-  dlg.setText(QStringLiteral("Are you sure?"));
+  dlg.setTitle(u"Confirm"_s);
+  dlg.setText(u"Are you sure?"_s);
   QPushButton* btn = dlg.addButton(
-      QStringLiteral("Reload the original file from disk and discard all unsaved local edits permanently"),
+      u"Reload the original file from disk and discard all unsaved local edits permanently"_s,
       PJ::MessageBox::kPrimaryRole);
-  dlg.addButton(QStringLiteral("Cancel"), PJ::MessageBox::kCancelRole);
+  dlg.addButton(u"Cancel"_s, PJ::MessageBox::kCancelRole);
   realize(dlg);
 
   // The dialog never exceeds its width cap.
@@ -78,14 +79,14 @@ TEST(MessageBoxTest, WrapsCorrectlyUnderLargerStyledFont) {
   // font reproduces the bug where labels were wrapped with stale metrics and
   // the lines then overflowed (clipped) at the real, larger font size.
   const QString prev = qApp->styleSheet();
-  qApp->setStyleSheet(QStringLiteral("QWidget { font-size: 16pt; }"));
+  qApp->setStyleSheet(u"QWidget { font-size: 16pt; }"_s);
   {
     PJ::MessageBox dlg;
-    dlg.setText(QStringLiteral("Body."));
+    dlg.setText(u"Body."_s);
     QPushButton* btn = dlg.addButton(
-        QStringLiteral("Reload the original file from disk and discard all unsaved local edits permanently"),
+        u"Reload the original file from disk and discard all unsaved local edits permanently"_s,
         PJ::MessageBox::kPrimaryRole);
-    dlg.addButton(QStringLiteral("Cancel"), PJ::MessageBox::kCancelRole);
+    dlg.addButton(u"Cancel"_s, PJ::MessageBox::kCancelRole);
     realize(dlg);
     EXPECT_TRUE(btn->text().contains(QLatin1Char('\n')));
     EXPECT_LE(btn->minimumSizeHint().width(), btn->width());
@@ -95,10 +96,10 @@ TEST(MessageBoxTest, WrapsCorrectlyUnderLargerStyledFont) {
 
 TEST(MessageBoxTest, WrappedButtonGrowsTaller) {
   PJ::MessageBox dlg;
-  dlg.setText(QStringLiteral("Body."));
-  QPushButton* shortb = dlg.addButton(QStringLiteral("OK"), PJ::MessageBox::kPrimaryRole);
+  dlg.setText(u"Body."_s);
+  QPushButton* shortb = dlg.addButton(u"OK"_s, PJ::MessageBox::kPrimaryRole);
   QPushButton* longb = dlg.addButton(
-      QStringLiteral("Reload the original file from disk and discard all unsaved local edits permanently"),
+      u"Reload the original file from disk and discard all unsaved local edits permanently"_s,
       PJ::MessageBox::kNeutralRole);
   realize(dlg);
   // Multi-line wrapping makes the long button visibly taller than the 1-line one.
@@ -119,14 +120,14 @@ TEST(MessageBoxTest, ButtonSpacingIsConstantAcrossDialogs) {
       "QPushButton#pjMessageBoxButton { min-height: 26px; padding: 6px 12px; border: none; }"));
 
   PJ::MessageBox three;
-  three.setTitle(QStringLiteral("Load Layout"));
+  three.setTitle(u"Load Layout"_s);
   three.setText(QStringLiteral(
       "This layout was saved with 1 data source(s):\n"
       "  /home/davide/ws_plotjuggler/DATA/example-024-quadruped-ds.mcap\n\n"
       "Reload them, or apply the layout to the currently loaded data?"));
-  three.addButton(QStringLiteral("Reload original"), PJ::MessageBox::kPrimaryRole);
-  three.addButton(QStringLiteral("Use current data"), PJ::MessageBox::kNeutralRole);
-  three.addButton(QStringLiteral("Cancel"), PJ::MessageBox::kCancelRole);
+  three.addButton(u"Reload original"_s, PJ::MessageBox::kPrimaryRole);
+  three.addButton(u"Use current data"_s, PJ::MessageBox::kNeutralRole);
+  three.addButton(u"Cancel"_s, PJ::MessageBox::kCancelRole);
   realize(three);
   const QList<int> three_gaps = buttonGaps(three);
   ASSERT_EQ(three_gaps.size(), 2);
@@ -135,9 +136,9 @@ TEST(MessageBoxTest, ButtonSpacingIsConstantAcrossDialogs) {
   }
 
   PJ::MessageBox two;
-  two.setText(QStringLiteral("Are you sure you want to remove 'example-024-quadruped-ds.mcap' and its data?"));
-  two.addButton(QStringLiteral("Remove"), PJ::MessageBox::kDestructiveRole);
-  two.addButton(QStringLiteral("Cancel"), PJ::MessageBox::kCancelRole);
+  two.setText(u"Are you sure you want to remove 'example-024-quadruped-ds.mcap' and its data?"_s);
+  two.addButton(u"Remove"_s, PJ::MessageBox::kDestructiveRole);
+  two.addButton(u"Cancel"_s, PJ::MessageBox::kCancelRole);
   realize(two);
   const QList<int> two_gaps = buttonGaps(two);
   ASSERT_EQ(two_gaps.size(), 1);

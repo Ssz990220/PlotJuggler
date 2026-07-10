@@ -15,6 +15,7 @@
 #include "pj_marketplace/extension_manager.hpp"
 #include "pj_marketplace/platform_utils.hpp"
 #include "pj_plugins/host/plugin_catalog.hpp"
+using namespace Qt::StringLiterals;
 
 namespace PJ {
 
@@ -107,20 +108,20 @@ DirectoryDiscovery discoverExtensionDirectory(const QString& ext_root) {
       result.error = QString::fromStdString(scan->diagnostics.front().message);
       return result;
     }
-    result.error = QStringLiteral("no valid plugin DSO found");
+    result.error = u"no valid plugin DSO found"_s;
     return result;
   }
 
   const PluginDescriptor& first = scan->plugins.front();
   for (const PluginDescriptor& descriptor : scan->plugins) {
     if (descriptor.id != first.id) {
-      result.error = QStringLiteral("multiple embedded plugin ids in one extension directory: \"%1\" and \"%2\"")
-                         .arg(QString::fromStdString(first.id), QString::fromStdString(descriptor.id));
+      result.error = u"multiple embedded plugin ids in one extension directory: \"%1\" and \"%2\""_s.arg(
+          QString::fromStdString(first.id), QString::fromStdString(descriptor.id));
       return result;
     }
     if (descriptor.version != first.version) {
-      result.error = QStringLiteral("multiple embedded plugin versions in one extension directory for \"%1\"")
-                         .arg(QString::fromStdString(first.id));
+      result.error = u"multiple embedded plugin versions in one extension directory for \"%1\""_s.arg(
+          QString::fromStdString(first.id));
       return result;
     }
   }
@@ -196,7 +197,7 @@ PendingInstallIntent readPendingInstallIntent(const QString& root) {
     intent.error = QString("Staged install registry intent has unsafe id: %1").arg(id_error);
     return intent;
   }
-  static const QRegularExpression k_version_re(QStringLiteral("^[0-9A-Za-z._+-]+$"));
+  static const QRegularExpression k_version_re(u"^[0-9A-Za-z._+-]+$"_s);
   if (!k_version_re.match(version).hasMatch()) {
     intent.error = QString("Staged install registry intent has unsafe version \"%1\"").arg(version);
     return intent;

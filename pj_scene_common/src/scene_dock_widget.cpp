@@ -19,6 +19,7 @@
 #include <vector>
 
 #include "pj_runtime/SessionManager.h"
+using namespace Qt::StringLiterals;
 
 namespace PJ {
 
@@ -168,16 +169,16 @@ bool SceneDockWidget::restoreLayerElement(const QDomElement& layer_el) {
   }
 
   bool dataset_ok = false;
-  const auto dataset_value = layer_el.attribute(QStringLiteral("dataset_id")).toULongLong(&dataset_ok);
+  const auto dataset_value = layer_el.attribute(u"dataset_id"_s).toULongLong(&dataset_ok);
   if (!dataset_ok || dataset_value > std::numeric_limits<uint32_t>::max()) {
     return true;
   }
   const auto saved_id = static_cast<DatasetId>(dataset_value);
-  const QString saved_source = layer_el.attribute(QStringLiteral("dataset_source"));
-  const QString topic_name = layer_el.attribute(QStringLiteral("topic_name"));
-  const QString object_type_str = layer_el.attribute(QStringLiteral("object_type"));
-  const QString display_name = layer_el.attribute(QStringLiteral("display_name"));
-  const bool visible = layer_el.attribute(QStringLiteral("visible"), QStringLiteral("true")) == QStringLiteral("true");
+  const QString saved_source = layer_el.attribute(u"dataset_source"_s);
+  const QString topic_name = layer_el.attribute(u"topic_name"_s);
+  const QString object_type_str = layer_el.attribute(u"object_type"_s);
+  const QString display_name = layer_el.attribute(u"display_name"_s);
+  const bool visible = layer_el.attribute(u"visible"_s, u"true"_s) == u"true"_s;
 
   const auto object_type_opt = sdk::parseBuiltinObjectType(object_type_str.toStdString());
   if (!object_type_opt.has_value()) {
@@ -215,7 +216,7 @@ void SceneDockWidget::rememberPendingRestore(const QDomElement& layer_el) {
   pending_restore_elements_.push_back(
       PendingRestoreElement{
           .document = doc,
-          .topic_name = layer_el.attribute(QStringLiteral("topic_name")),
+          .topic_name = layer_el.attribute(u"topic_name"_s),
       });
 }
 
@@ -437,7 +438,7 @@ DatasetId SceneDockWidget::representativeDatasetId() const {
 
 QDomElement SceneDockWidget::xmlSaveState(QDomDocument& doc) const {
   QDomElement root = doc.createElement(xmlTag());
-  root.setAttribute(QStringLiteral("version"), QStringLiteral("1"));
+  root.setAttribute(u"version"_s, u"1"_s);
 
   if (session_ == nullptr) {
     return root;
@@ -451,13 +452,13 @@ QDomElement SceneDockWidget::xmlSaveState(QDomDocument& doc) const {
     const auto info = it->second->info();
     const auto& desc = session_->objectStore().descriptor(info.topic_id);
 
-    QDomElement layer_el = doc.createElement(QStringLiteral("layer"));
-    layer_el.setAttribute(QStringLiteral("dataset_id"), QString::number(desc.dataset_id));
-    layer_el.setAttribute(QStringLiteral("dataset_source"), datasetSourceName(session_, desc.dataset_id));
-    layer_el.setAttribute(QStringLiteral("topic_name"), QString::fromStdString(desc.topic_name));
-    layer_el.setAttribute(QStringLiteral("object_type"), objectTypeName(info.object_type));
-    layer_el.setAttribute(QStringLiteral("display_name"), info.display_name);
-    layer_el.setAttribute(QStringLiteral("visible"), info.visible ? QStringLiteral("true") : QStringLiteral("false"));
+    QDomElement layer_el = doc.createElement(u"layer"_s);
+    layer_el.setAttribute(u"dataset_id"_s, QString::number(desc.dataset_id));
+    layer_el.setAttribute(u"dataset_source"_s, datasetSourceName(session_, desc.dataset_id));
+    layer_el.setAttribute(u"topic_name"_s, QString::fromStdString(desc.topic_name));
+    layer_el.setAttribute(u"object_type"_s, objectTypeName(info.object_type));
+    layer_el.setAttribute(u"display_name"_s, info.display_name);
+    layer_el.setAttribute(u"visible"_s, info.visible ? u"true"_s : u"false"_s);
 
     QDomElement payload = it->second->xmlSaveState(doc);
     if (!payload.isNull()) {
@@ -481,8 +482,8 @@ bool SceneDockWidget::xmlLoadState(const QDomElement& element) {
   }
 
   int unresolved_layers = 0;
-  for (QDomElement layer_el = element.firstChildElement(QStringLiteral("layer")); !layer_el.isNull();
-       layer_el = layer_el.nextSiblingElement(QStringLiteral("layer"))) {
+  for (QDomElement layer_el = element.firstChildElement(u"layer"_s); !layer_el.isNull();
+       layer_el = layer_el.nextSiblingElement(u"layer"_s)) {
     if (!restoreLayerElement(layer_el)) {
       ++unresolved_layers;
       rememberPendingRestore(layer_el);
@@ -580,7 +581,7 @@ std::optional<DatasetId> SceneDockWidget::resolveDatasetId(
 }
 
 QString SceneDockWidget::xmlTag() const {
-  return QStringLiteral("scene");
+  return u"scene"_s;
 }
 
 bool SceneDockWidget::handleSceneConfigTopic(

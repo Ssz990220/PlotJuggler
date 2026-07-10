@@ -26,6 +26,8 @@
 #include "pj_plotting/PlotDocker.h"
 #include "pj_widgets/SvgUtil.h"
 
+using namespace Qt::StringLiterals;
+
 namespace PJ {
 
 namespace {
@@ -224,7 +226,7 @@ class PlotTabFrame : public QFrame {
   bool edit_active_ = false;
 };
 
-TabbedPlotWidget::TabbedPlotWidget(QWidget* parent) : TabbedPlotWidget(QStringLiteral("main"), parent) {}
+TabbedPlotWidget::TabbedPlotWidget(QWidget* parent) : TabbedPlotWidget(u"main"_s, parent) {}
 
 TabbedPlotWidget::TabbedPlotWidget(QString name, QWidget* parent) : QWidget(parent), name_(std::move(name)) {
   applyAdsConfigOnce();
@@ -289,7 +291,7 @@ TabbedPlotWidget::TabbedPlotWidget(QString name, QWidget* parent) : QWidget(pare
   // (TitleBar::addRightClusterWidget) after construction.
   auto make_panel_button = [this](const char* tip) {
     auto* button = new QPushButton(this);
-    button->setObjectName(QStringLiteral("plotTabsPanelButton"));
+    button->setObjectName(u"plotTabsPanelButton"_s);
     button->setFlat(true);
     // Not checkable — MainWindow swaps the glyph between filled (panel
     // visible) and outlined (panel hidden) variants on click.
@@ -528,14 +530,14 @@ void TabbedPlotWidget::onStylesheetChanged(QString theme) {
 }
 
 QDomElement TabbedPlotWidget::xmlSaveState(QDomDocument& doc) const {
-  QDomElement tabbed_area = doc.createElement(QStringLiteral("tabbed_widget"));
-  tabbed_area.setAttribute(QStringLiteral("id"), state_id_);
-  tabbed_area.setAttribute(QStringLiteral("name"), name_);
-  tabbed_area.setAttribute(QStringLiteral("parent"), QStringLiteral("main_window"));
+  QDomElement tabbed_area = doc.createElement(u"tabbed_widget"_s);
+  tabbed_area.setAttribute(u"id"_s, state_id_);
+  tabbed_area.setAttribute(u"name"_s, name_);
+  tabbed_area.setAttribute(u"parent"_s, u"main_window"_s);
 
   for (const TabEntry& entry : tabs_) {
     QDomElement tab_element = entry.docker->xmlSaveState(doc);
-    tab_element.setAttribute(QStringLiteral("tab_name"), entry.docker->name());
+    tab_element.setAttribute(u"tab_name"_s, entry.docker->name());
     tabbed_area.appendChild(tab_element);
   }
 
@@ -547,25 +549,25 @@ QDomElement TabbedPlotWidget::xmlSaveState(QDomDocument& doc) const {
       break;
     }
   }
-  QDomElement current_tab = doc.createElement(QStringLiteral("currentTabIndex"));
-  current_tab.setAttribute(QStringLiteral("index"), current_index);
+  QDomElement current_tab = doc.createElement(u"currentTabIndex"_s);
+  current_tab.setAttribute(u"index"_s, current_index);
   tabbed_area.appendChild(current_tab);
   return tabbed_area;
 }
 
 bool TabbedPlotWidget::xmlLoadState(const QDomElement& tabbed_area) {
-  if (tabbed_area.isNull() || tabbed_area.tagName() != QStringLiteral("tabbed_widget")) {
+  if (tabbed_area.isNull() || tabbed_area.tagName() != u"tabbed_widget"_s) {
     return false;
   }
 
-  setStateId(tabbed_area.attribute(QStringLiteral("id")));
-  if (tabbed_area.hasAttribute(QStringLiteral("name"))) {
-    name_ = tabbed_area.attribute(QStringLiteral("name"));
+  setStateId(tabbed_area.attribute(u"id"_s));
+  if (tabbed_area.hasAttribute(u"name"_s)) {
+    name_ = tabbed_area.attribute(u"name"_s);
   }
 
   QVector<QDomElement> target_tabs;
-  for (QDomElement tab = tabbed_area.firstChildElement(QStringLiteral("Tab")); !tab.isNull();
-       tab = tab.nextSiblingElement(QStringLiteral("Tab"))) {
+  for (QDomElement tab = tabbed_area.firstChildElement(u"Tab"_s); !tab.isNull();
+       tab = tab.nextSiblingElement(u"Tab"_s)) {
     target_tabs.push_back(tab);
   }
   if (target_tabs.isEmpty()) {
@@ -586,10 +588,9 @@ bool TabbedPlotWidget::xmlLoadState(const QDomElement& tabbed_area) {
 
   for (qsizetype target_index = 0; target_index < target_tabs.size(); ++target_index) {
     const QDomElement tab_element = target_tabs.at(target_index);
-    const QString tab_name =
-        tab_element.attribute(QStringLiteral("tab_name"), QStringLiteral("tab%1").arg(target_index + 1));
+    const QString tab_name = tab_element.attribute(u"tab_name"_s, u"tab%1"_s.arg(target_index + 1));
     PlotDocker* docker = addTab(tab_name);
-    docker->setStateId(tab_element.attribute(QStringLiteral("id")));
+    docker->setStateId(tab_element.attribute(u"id"_s));
     docker->setName(tab_name);
     if (!docker->xmlLoadState(tab_element)) {
       restoring_state_ = false;
@@ -597,9 +598,7 @@ bool TabbedPlotWidget::xmlLoadState(const QDomElement& tabbed_area) {
     }
   }
 
-  const int requested_index = tabbed_area.firstChildElement(QStringLiteral("currentTabIndex"))
-                                  .attribute(QStringLiteral("index"), QStringLiteral("0"))
-                                  .toInt();
+  const int requested_index = tabbed_area.firstChildElement(u"currentTabIndex"_s).attribute(u"index"_s, u"0"_s).toInt();
   const int max_index = dockerCount() - 1;
   const int current_index = std::clamp(requested_index, 0, std::max(0, max_index));
   if (PlotDocker* docker = dockerAt(current_index)) {

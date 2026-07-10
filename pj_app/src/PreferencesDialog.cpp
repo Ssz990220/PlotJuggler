@@ -32,6 +32,7 @@
 #include "pj_widgets/ThemeColors.h"
 #include "pj_widgets/ToggleSwitch.h"
 #include "ui_PreferencesDialog.h"
+using namespace Qt::StringLiterals;
 
 namespace PJ {
 
@@ -99,7 +100,7 @@ PreferencesDialog::PreferencesDialog(Theme& theme, QWidget* parent)
   // saved on close (see the destructor).
   {
     QSettings settings;
-    const QByteArray geometry = settings.value(QStringLiteral("Preferences::dialog_geometry")).toByteArray();
+    const QByteArray geometry = settings.value(u"Preferences::dialog_geometry"_s).toByteArray();
     // A stale/corrupt blob (Qt upgrade, truncated .ini) makes restoreGeometry
     // return false and apply nothing — fall back to the default size rather than
     // opening off-screen or at 0x0.
@@ -163,22 +164,22 @@ PreferencesDialog::PreferencesDialog(Theme& theme, QWidget* parent)
   auto* main_window = qobject_cast<MainWindow*>(parent);
   ui_->iconSizeScrubber->setRange(12, 48);
   ui_->iconSizeScrubber->setSingleStep(1);
-  ui_->iconSizeScrubber->setSuffix(QStringLiteral(" px"));
+  ui_->iconSizeScrubber->setSuffix(u" px"_s);
   ui_->iconSizeScrubber->setValue(original_metrics_.icon_size);
 
   ui_->iconPaddingScrubber->setRange(0, 32);
   ui_->iconPaddingScrubber->setSingleStep(1);
-  ui_->iconPaddingScrubber->setSuffix(QStringLiteral(" px"));
+  ui_->iconPaddingScrubber->setSuffix(u" px"_s);
   ui_->iconPaddingScrubber->setValue(original_metrics_.icon_padding);
 
   ui_->layoutPaddingScrubber->setRange(0, 16);
   ui_->layoutPaddingScrubber->setSingleStep(1);
-  ui_->layoutPaddingScrubber->setSuffix(QStringLiteral(" px"));
+  ui_->layoutPaddingScrubber->setSuffix(u" px"_s);
   ui_->layoutPaddingScrubber->setValue(original_metrics_.layout_padding);
 
   ui_->layoutSpacingScrubber->setRange(0, 16);
   ui_->layoutSpacingScrubber->setSingleStep(1);
-  ui_->layoutSpacingScrubber->setSuffix(QStringLiteral(" px"));
+  ui_->layoutSpacingScrubber->setSuffix(u" px"_s);
   ui_->layoutSpacingScrubber->setValue(original_metrics_.layout_spacing);
 
   // Value preferences seeded together (one QSettings read pass) and committed on
@@ -198,14 +199,13 @@ PreferencesDialog::PreferencesDialog(Theme& theme, QWidget* parent)
   ui_->splashMode->setOptions(tr("memes"), tr("serious"));
   {
     QSettings settings;
-    ui_->scrubberFloatPrecision->setValue(settings.value(QStringLiteral("Preferences::precision"), 3).toInt());
-    ui_->curveColorMode->setSelectedIndex(
-        settings.value(QStringLiteral("Preferences::curve_color_global"), true).toBool() ? 0 : 1);
+    ui_->scrubberFloatPrecision->setValue(settings.value(u"Preferences::precision"_s, 3).toInt());
+    ui_->curveColorMode->setSelectedIndex(settings.value(u"Preferences::curve_color_global"_s, true).toBool() ? 0 : 1);
     ui_->openglToggle->setChecked(
-        settings.value(QStringLiteral("Preferences::use_opengl"), true).toBool(),
+        settings.value(u"Preferences::use_opengl"_s, true).toBool(),
         /*animate=*/false);
     ui_->checkUpdatesToggle->setChecked(
-        settings.value(QStringLiteral("Preferences::check_updates_on_startup"), true).toBool(),
+        settings.value(u"Preferences::check_updates_on_startup"_s, true).toBool(),
         /*animate=*/false);
     ui_->splashMode->setSelectedIndex(
         settings.value(kSplashModeKey, kSplashModeMemes).toString() == kSplashModeSerious ? 1 : 0);
@@ -247,9 +247,9 @@ PreferencesDialog::PreferencesDialog(Theme& theme, QWidget* parent)
     paint_missing(ui_->listDefaultPluginFolders);
 
     // SvgButton re-tints itself on a theme change — no manual retint wiring.
-    ui_->buttonAddPluginFolder->setIconPath(QStringLiteral(":/resources/svg/add.svg"));
+    ui_->buttonAddPluginFolder->setIconPath(u":/resources/svg/add.svg"_s);
     ui_->buttonAddPluginFolder->setExtent(26, 24);
-    ui_->buttonRemovePluginFolder->setIconPath(QStringLiteral(":/resources/svg/trash.svg"));
+    ui_->buttonRemovePluginFolder->setIconPath(u":/resources/svg/trash.svg"_s);
     ui_->buttonRemovePluginFolder->setExtent(26, 24);
     ui_->buttonAddPluginFolder->setToolTip(tr("Add a plugin folder…"));
     ui_->buttonRemovePluginFolder->setToolTip(tr("Remove the selected folder"));
@@ -273,7 +273,7 @@ PreferencesDialog::PreferencesDialog(Theme& theme, QWidget* parent)
   // open-time snapshot.
   // Same glyph as the timeline align-rail "reset all" button (restart_alt).
   // SvgButton re-tints itself on a theme change.
-  ui_->buttonResetDefaults->setIconPath(QStringLiteral(":/resources/svg/restart_alt.svg"));
+  ui_->buttonResetDefaults->setIconPath(u":/resources/svg/restart_alt.svg"_s);
   ui_->buttonResetDefaults->setSize(SvgButton::Size::kDefault);
   connect(ui_->buttonResetDefaults, &QToolButton::clicked, this, [this]() {
     ui_->iconSizeScrubber->setValue(kDefaultIconSize);
@@ -294,8 +294,8 @@ PreferencesDialog::PreferencesDialog(Theme& theme, QWidget* parent)
   ui_->themeToggle->setFixedSize(44, 24);
   // Icons are forced to white so they read clearly against the
   // colored track (blue when on, gray when off).
-  ui_->themeToggle->setLeftIcon(loadWhiteFillIcon(QStringLiteral(":/resources/svg/light_mode_light.svg")));
-  ui_->themeToggle->setRightIcon(loadWhiteFillIcon(QStringLiteral(":/resources/svg/dark_mode_light.svg")));
+  ui_->themeToggle->setLeftIcon(loadWhiteFillIcon(u":/resources/svg/light_mode_light.svg"_s));
+  ui_->themeToggle->setRightIcon(loadWhiteFillIcon(u":/resources/svg/dark_mode_light.svg"_s));
   // Snap the toggle to the active theme without animating — the
   // dialog opens with the thumb already at its correct endpoint,
   // not mid-slide from 0 to 1 across the first 180ms after open.
@@ -334,7 +334,7 @@ PreferencesDialog::PreferencesDialog(Theme& theme, QWidget* parent)
   }
   connect(ui_->themeToggle, &ToggleSwitch::clicked, this, [this]() { ui_->themeToggle->setEnabled(false); });
   connect(ui_->themeToggle, &ToggleSwitch::toggled, this, [this](bool checked) {
-    theme_.setTheme(checked ? QStringLiteral("light") : QStringLiteral("dark"));
+    theme_.setTheme(checked ? u"light"_s : u"dark"_s);
   });
 
   // Plotting page: auto-zoom plots. When on, adding/removing a curve rescales
@@ -344,7 +344,7 @@ PreferencesDialog::PreferencesDialog(Theme& theme, QWidget* parent)
   {
     QSettings settings;
     ui_->autoZoomToggle->setChecked(
-        settings.value(QStringLiteral("Preferences::auto_zoom_plots"), true).toBool(),
+        settings.value(u"Preferences::auto_zoom_plots"_s, true).toBool(),
         /*animate=*/false);
   }
   connect(this, &QDialog::rejected, this, [this, main_window]() {
@@ -368,12 +368,12 @@ PreferencesDialog::PreferencesDialog(Theme& theme, QWidget* parent)
       main_window->setCustomPluginFolders(plugin_folders);
     }
     QSettings settings;
-    settings.setValue(QStringLiteral("Preferences::precision"), ui_->scrubberFloatPrecision->value());
-    settings.setValue(QStringLiteral("Preferences::use_opengl"), ui_->openglToggle->isChecked());
-    settings.setValue(QStringLiteral("Preferences::check_updates_on_startup"), ui_->checkUpdatesToggle->isChecked());
-    settings.setValue(QStringLiteral("Preferences::curve_color_global"), ui_->curveColorMode->selectedIndex() == 0);
+    settings.setValue(u"Preferences::precision"_s, ui_->scrubberFloatPrecision->value());
+    settings.setValue(u"Preferences::use_opengl"_s, ui_->openglToggle->isChecked());
+    settings.setValue(u"Preferences::check_updates_on_startup"_s, ui_->checkUpdatesToggle->isChecked());
+    settings.setValue(u"Preferences::curve_color_global"_s, ui_->curveColorMode->selectedIndex() == 0);
     settings.setValue(kSplashModeKey, ui_->splashMode->selectedIndex() == 1 ? kSplashModeSerious : kSplashModeMemes);
-    settings.setValue(QStringLiteral("Preferences::auto_zoom_plots"), ui_->autoZoomToggle->isChecked());
+    settings.setValue(u"Preferences::auto_zoom_plots"_s, ui_->autoZoomToggle->isChecked());
   });
 
   connect(ui_->buttonOk, &QPushButton::clicked, this, &QDialog::accept);
@@ -384,7 +384,7 @@ PreferencesDialog::~PreferencesDialog() {
   // Remember the dialog size across launches regardless of OK/Cancel — window
   // size is a UI preference, not a settings change.
   QSettings settings;
-  settings.setValue(QStringLiteral("Preferences::dialog_geometry"), saveGeometry());
+  settings.setValue(u"Preferences::dialog_geometry"_s, saveGeometry());
   delete ui_;
 }
 

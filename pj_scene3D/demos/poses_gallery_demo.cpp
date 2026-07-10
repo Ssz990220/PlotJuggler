@@ -27,6 +27,7 @@
 #include "pj_scene3d_widgets/passes/poses_render_pass.h"
 #include "pj_scene3d_widgets/scene3d_layer.h"
 #include "pj_scene3d_widgets/scene_view_widget.h"
+using namespace Qt::StringLiterals;
 
 namespace {
 
@@ -126,17 +127,17 @@ int main(int argc, char** argv) {
   for (int i = 1; i < argc; ++i) {
     const QString arg = QString::fromLocal8Bit(argv[i]);
     const auto next = [&]() { return (i + 1 < argc) ? QString::fromLocal8Bit(argv[++i]) : QString(); };
-    if (arg == QStringLiteral("--screenshot")) {
+    if (arg == u"--screenshot"_s) {
       opts.screenshot_path = next();
-    } else if (arg == QStringLiteral("--delay-ms")) {
+    } else if (arg == u"--delay-ms"_s) {
       opts.delay_ms = next().toInt();
-    } else if (arg == QStringLiteral("--size")) {
+    } else if (arg == u"--size"_s) {
       opts.size = next().toFloat();
-    } else if (arg == QStringLiteral("--opacity")) {
+    } else if (arg == u"--opacity"_s) {
       opts.opacity = next().toFloat();
-    } else if (arg == QStringLiteral("--x-only")) {
+    } else if (arg == u"--x-only"_s) {
       opts.x_only = true;
-    } else if (arg == QStringLiteral("--override-color")) {
+    } else if (arg == u"--override-color"_s) {
       const QStringList rgb = next().split(QLatin1Char(','));
       if (rgb.size() == 3) {
         opts.override_color = true;

@@ -29,6 +29,7 @@
 #include "pj_marketplace/platform_utils.hpp"
 #include "pj_marketplace/registry_manager.hpp"
 #include "ui_marketplace_window.h"
+using namespace Qt::StringLiterals;
 
 namespace PJ {
 
@@ -179,11 +180,9 @@ void MarketplaceWindow::installChrome() {
   close_btn->setAutoRaise(true);
   close_btn->setFocusPolicy(Qt::NoFocus);
   close_btn->setIconSize(QSize(20, 20));
-  const bool dark_theme = QSettings().value(QStringLiteral("StyleSheet::theme"), QStringLiteral("light")).toString() !=
-                          QStringLiteral("light");
-  close_btn->setIcon(QIcon(
-      dark_theme ? QStringLiteral(":/resources/svg/close_windows_dark.svg")
-                 : QStringLiteral(":/resources/svg/close_windows_light.svg")));
+  const bool dark_theme = QSettings().value(u"StyleSheet::theme"_s, u"light"_s).toString() != u"light"_s;
+  close_btn->setIcon(
+      QIcon(dark_theme ? u":/resources/svg/close_windows_dark.svg"_s : u":/resources/svg/close_windows_light.svg"_s));
   connect(close_btn, &QToolButton::clicked, this, &QDialog::reject);
 
   tb_layout->addWidget(dialog_title_label_);
@@ -222,28 +221,21 @@ void MarketplaceWindow::setupUi() {
   // The marketplace doesn't link pj_app_core, so it can't pipe icons
   // through LoadSvg's recolor. Pick the theme-appropriate variant
   // directly from the resource bundle.
-  const bool dark_theme = QSettings().value(QStringLiteral("StyleSheet::theme"), QStringLiteral("light")).toString() !=
-                          QStringLiteral("light");
-  ui_->settings_btn_->setIcon(QIcon(
-      dark_theme ? QStringLiteral(":/resources/svg/settings_cog_dark.svg")
-                 : QStringLiteral(":/resources/svg/settings_cog_light.svg")));
-  ui_->refresh_btn_->setIcon(QIcon(
-      dark_theme ? QStringLiteral(":/resources/svg/reload_dark.svg")
-                 : QStringLiteral(":/resources/svg/reload_light.svg")));
+  const bool dark_theme = QSettings().value(u"StyleSheet::theme"_s, u"light"_s).toString() != u"light"_s;
+  ui_->settings_btn_->setIcon(
+      QIcon(dark_theme ? u":/resources/svg/settings_cog_dark.svg"_s : u":/resources/svg/settings_cog_light.svg"_s));
+  ui_->refresh_btn_->setIcon(
+      QIcon(dark_theme ? u":/resources/svg/reload_dark.svg"_s : u":/resources/svg/reload_light.svg"_s));
   // Magnifying glass leading the search field, matching the curve list filter.
   ui_->search_edit_->addAction(
-      QIcon(
-          dark_theme ? QStringLiteral(":/resources/svg/search_dark.svg")
-                     : QStringLiteral(":/resources/svg/search_light.svg")),
+      QIcon(dark_theme ? u":/resources/svg/search_dark.svg"_s : u":/resources/svg/search_light.svg"_s),
       QLineEdit::LeadingPosition);
   // Trailing clear-text "X" — Qt's built-in clearButtonEnabled paints
   // a stock SP_LineEditClearButton that ignores our theme, so we wire
   // up our own QAction with the same close glyph used by the dialog
   // chrome. Hidden when the field is empty.
   auto* clear_search_action = ui_->search_edit_->addAction(
-      QIcon(
-          dark_theme ? QStringLiteral(":/resources/svg/close_windows_dark.svg")
-                     : QStringLiteral(":/resources/svg/close_windows_light.svg")),
+      QIcon(dark_theme ? u":/resources/svg/close_windows_dark.svg"_s : u":/resources/svg/close_windows_light.svg"_s),
       QLineEdit::TrailingPosition);
   clear_search_action->setVisible(false);
   connect(ui_->search_edit_, &QLineEdit::textChanged, clear_search_action, [clear_search_action](const QString& text) {
@@ -562,7 +554,7 @@ void MarketplaceWindow::setStatus(const QString& msg, bool is_error) {
   // The error tone is keyed off objectName via the
   // QLabel#marketplaceStatusError rule in resources/stylesheet_*.qss.
   // Clearing the objectName restores the inherited default text style.
-  ui_->status_label_->setObjectName(is_error ? QStringLiteral("marketplaceStatusError") : QString{});
+  ui_->status_label_->setObjectName(is_error ? u"marketplaceStatusError"_s : QString{});
   ui_->status_label_->style()->unpolish(ui_->status_label_);
   ui_->status_label_->style()->polish(ui_->status_label_);
 }
@@ -657,11 +649,9 @@ void MarketplaceWindow::onSettingsClicked() {
   close_btn->setAutoRaise(true);
   close_btn->setFocusPolicy(Qt::NoFocus);
   close_btn->setIconSize(QSize(20, 20));
-  const bool dark_theme = QSettings().value(QStringLiteral("StyleSheet::theme"), QStringLiteral("light")).toString() !=
-                          QStringLiteral("light");
-  close_btn->setIcon(QIcon(
-      dark_theme ? QStringLiteral(":/resources/svg/close_windows_dark.svg")
-                 : QStringLiteral(":/resources/svg/close_windows_light.svg")));
+  const bool dark_theme = QSettings().value(u"StyleSheet::theme"_s, u"light"_s).toString() != u"light"_s;
+  close_btn->setIcon(
+      QIcon(dark_theme ? u":/resources/svg/close_windows_dark.svg"_s : u":/resources/svg/close_windows_light.svg"_s));
   connect(close_btn, &QToolButton::clicked, &dlg, &QDialog::reject);
 
   tb_layout->addWidget(title_label);

@@ -39,6 +39,7 @@
 #include "pj_runtime/CatalogModel.h"
 #include "pj_runtime/ExtensionCatalogService.h"
 #include "pj_runtime/SessionManager.h"
+using namespace Qt::StringLiterals;
 
 #ifndef PJ_MOCK_FILE_SOURCE_PLUGIN_PATH
 #error "PJ_MOCK_FILE_SOURCE_PLUGIN_PATH must be defined"
@@ -67,14 +68,14 @@ class FileLoaderTest : public ::testing::Test {
     // with the destruction order the plugin handles require (session-held
     // parser handles die before the plugin libraries unload).
     app_session_ = std::make_unique<PJ::AppSession>(extensions_dir_.path());
-    ASSERT_FALSE(app_session_->extensionCatalog().findSourcesForExtension(QStringLiteral(".mock")).empty())
+    ASSERT_FALSE(app_session_->extensionCatalog().findSourcesForExtension(u".mock"_s).empty())
         << "mock_file_source_plugin did not load from the staged extensions dir";
 
     loader_ = std::make_unique<PJ::FileLoader>(
         app_session_->sessionManager(), app_session_->extensionCatalog(), app_session_->catalogModel());
 
     // The mock source never reads the file; only the path/extension matter.
-    mock_path_ = makeMockFile(QStringLiteral("sensors.mock"));
+    mock_path_ = makeMockFile(u"sensors.mock"_s);
   }
 
   [[nodiscard]] PJ::SessionManager& session() {
@@ -95,9 +96,9 @@ class FileLoaderTest : public ::testing::Test {
   // Unified hints builder: skip the dialog, target the mock source, with an
   // optional preset config (e.g. {"fail_start":true} or a __pj_fanout list) and
   // the prefer_reuse flag a layout replay sets.
-  [[nodiscard]] PJ::LoadHints loadHints(const QString& config = QStringLiteral("{}"), bool prefer_reuse = false) {
+  [[nodiscard]] PJ::LoadHints loadHints(const QString& config = u"{}"_s, bool prefer_reuse = false) {
     PJ::LoadHints hints;
-    hints.expected_plugin_id = QStringLiteral("Mock File Source");
+    hints.expected_plugin_id = u"Mock File Source"_s;
     hints.preset_config_json = config;
     hints.skip_dialog = true;
     hints.prefer_reuse = prefer_reuse;
@@ -106,7 +107,7 @@ class FileLoaderTest : public ::testing::Test {
 
   // Back-compat alias used by the progressive-load tests.
   PJ::LoadHints skipDialogHints(bool prefer_reuse = false) {
-    return loadHints(QStringLiteral("{}"), prefer_reuse);
+    return loadHints(u"{}"_s, prefer_reuse);
   }
 
   // Enqueue a load and pump the event loop until it completes. Single-instance
@@ -213,8 +214,8 @@ TEST_F(FileLoaderTest, ReloadingSameFileReplacesDatasetInPlace) {
 // engine, so any id confusion between staged and primary leaks the reload into
 // whichever primary dataset shares the staged id (here: the first file).
 TEST_F(FileLoaderTest, ReloadWithMultipleDatasetsLeavesOthersIntact) {
-  const QString path_a = makeMockFile(QStringLiteral("a.mock"));
-  const QString path_b = makeMockFile(QStringLiteral("b.mock"));
+  const QString path_a = makeMockFile(u"a.mock"_s);
+  const QString path_b = makeMockFile(u"b.mock"_s);
   ASSERT_TRUE(load(path_a));
   ASSERT_TRUE(load(path_b));
 
@@ -239,10 +240,10 @@ TEST_F(FileLoaderTest, ReloadWithMultipleDatasetsLeavesOthersIntact) {
 // not basename, so the second file is not mistaken for a reload of the first
 // (which would silently alias its data and lose the second file entirely).
 TEST_F(FileLoaderTest, SameBasenameDifferentDirsLoadAsDistinctDatasets) {
-  ASSERT_TRUE(QDir(data_dir_.path()).mkpath(QStringLiteral("runA")));
-  ASSERT_TRUE(QDir(data_dir_.path()).mkpath(QStringLiteral("runB")));
-  const QString path_a = makeMockFile(QStringLiteral("runA/log.mock"));
-  const QString path_b = makeMockFile(QStringLiteral("runB/log.mock"));
+  ASSERT_TRUE(QDir(data_dir_.path()).mkpath(u"runA"_s));
+  ASSERT_TRUE(QDir(data_dir_.path()).mkpath(u"runB"_s));
+  const QString path_a = makeMockFile(u"runA/log.mock"_s);
+  const QString path_b = makeMockFile(u"runB/log.mock"_s);
   ASSERT_TRUE(load(path_a));
   ASSERT_TRUE(load(path_b));
 
@@ -256,10 +257,10 @@ TEST_F(FileLoaderTest, SameBasenameDifferentDirsLoadAsDistinctDatasets) {
 // on. Pre-fix the second prefer_reuse load reused the first dataset and emitted
 // no new one, collapsing the session to a single file.
 TEST_F(FileLoaderTest, LayoutReloadOfSameBasenameDifferentDirsRestoresBoth) {
-  ASSERT_TRUE(QDir(data_dir_.path()).mkpath(QStringLiteral("runA")));
-  ASSERT_TRUE(QDir(data_dir_.path()).mkpath(QStringLiteral("runB")));
-  const QString path_a = makeMockFile(QStringLiteral("runA/log.mock"));
-  const QString path_b = makeMockFile(QStringLiteral("runB/log.mock"));
+  ASSERT_TRUE(QDir(data_dir_.path()).mkpath(u"runA"_s));
+  ASSERT_TRUE(QDir(data_dir_.path()).mkpath(u"runB"_s));
+  const QString path_a = makeMockFile(u"runA/log.mock"_s);
+  const QString path_b = makeMockFile(u"runB/log.mock"_s);
   ASSERT_TRUE(loadAndWait(path_a, skipDialogHints(/*prefer_reuse=*/true)));  // mimic a layout replay
   ASSERT_TRUE(loadAndWait(path_b, skipDialogHints(/*prefer_reuse=*/true)));
 
@@ -288,8 +289,8 @@ TEST_F(FileLoaderTest, SourcePathForDatasetTracksLoadedFileAndUntracks) {
 // would re-list and resurrect it on reload. Exercised with the real
 // CatalogModel + FileLoader (the XML emission itself lives in MainWindow).
 TEST_F(FileLoaderTest, RemovedDatasetDropsFromLiveSourcePaths) {
-  const QString path_a = makeMockFile(QStringLiteral("a.mock"));
-  const QString path_b = makeMockFile(QStringLiteral("b.mock"));
+  const QString path_a = makeMockFile(u"a.mock"_s);
+  const QString path_b = makeMockFile(u"b.mock"_s);
   ASSERT_TRUE(load(path_a));
   ASSERT_TRUE(load(path_b));
   const PJ::DatasetId id_a = datasetNamed("a.mock");
@@ -346,8 +347,8 @@ TEST_F(FileLoaderTest, RealDeleteThenPreferReuseReloadReIngestsFreshDataset) {
   // the emptied dataset (restoreDataset + return-false: no worker, no re-ingest); now the
   // erased dataset is gone from listDatasets, so the loader mints a fresh one and ingests.
   PJ::LoadHints hints;
-  hints.expected_plugin_id = QStringLiteral("Mock File Source");
-  hints.preset_config_json = QStringLiteral("{}");
+  hints.expected_plugin_id = u"Mock File Source"_s;
+  hints.preset_config_json = u"{}"_s;
   hints.skip_dialog = true;
   hints.prefer_reuse = true;
   // The dataset was erased, so prefer_reuse finds nothing to reuse and falls through
@@ -362,21 +363,21 @@ TEST_F(FileLoaderTest, RealDeleteThenPreferReuseReloadReIngestsFreshDataset) {
 }
 
 TEST_F(FileLoaderTest, FanoutReloadErasesOldDatasetBeforePreferReuseReload) {
-  const QString path = makeMockFile(QStringLiteral("fanout.mock"));
+  const QString path = makeMockFile(u"fanout.mock"_s);
   ASSERT_TRUE(load(path));
 
   const PJ::DatasetId old_id = datasetNamed("fanout.mock");
   ASSERT_NE(old_id, 0u);
   ASSERT_EQ(singleTopicRowCount(old_id), 3);
 
-  PJ::LoadHints fanout_hints = loadHints(
-      QStringLiteral(R"({"__pj_fanout":["{\"display_suffix\":\"left\"}","{\"display_suffix\":\"right\"}"]})"));
+  PJ::LoadHints fanout_hints =
+      loadHints(uR"({"__pj_fanout":["{\"display_suffix\":\"left\"}","{\"display_suffix\":\"right\"}"]})"_s);
   ASSERT_TRUE(loader_->loadFile(path, nullptr, fanout_hints));
 
   EXPECT_FALSE(engineHasDataset(old_id)) << "fanout reload must erase the tombstoned old dataset from the engine";
   EXPECT_EQ(datasetNamed("fanout.mock"), 0u) << "prefer_reuse must not find the old basename after fanout reload";
 
-  PJ::LoadHints reuse_hints = loadHints(QStringLiteral("{}"));
+  PJ::LoadHints reuse_hints = loadHints(u"{}"_s);
   reuse_hints.prefer_reuse = true;
   // Old dataset erased → prefer_reuse falls through to a fresh async load; wait for it.
   ASSERT_TRUE(loadAndWait(path, reuse_hints));
@@ -388,15 +389,15 @@ TEST_F(FileLoaderTest, FanoutReloadErasesOldDatasetBeforePreferReuseReload) {
 }
 
 TEST_F(FileLoaderTest, FailedFirstLoadErasesAbandonedLiveDatasetBeforePreferReuseReload) {
-  const QString path = makeMockFile(QStringLiteral("failed.mock"));
+  const QString path = makeMockFile(u"failed.mock"_s);
 
-  ASSERT_FALSE(loadWithConfig(path, QStringLiteral(R"({"fail_start":true})")));
+  ASSERT_FALSE(loadWithConfig(path, uR"({"fail_start":true})"_s));
 
   EXPECT_TRUE(session().createReader().listDatasets().empty())
       << "failed first load must erase the live-engine dataset shell";
   EXPECT_EQ(datasetNamed("failed.mock"), 0u) << "no failed-load shell may remain matchable by basename";
 
-  PJ::LoadHints reuse_hints = loadHints(QStringLiteral("{}"));
+  PJ::LoadHints reuse_hints = loadHints(u"{}"_s);
   reuse_hints.prefer_reuse = true;
   // Old dataset erased → prefer_reuse falls through to a fresh async load; wait for it.
   ASSERT_TRUE(loadAndWait(path, reuse_hints));
@@ -410,9 +411,9 @@ TEST_F(FileLoaderTest, FailedFirstLoadErasesAbandonedLiveDatasetBeforePreferReus
 // Several files enqueued without waiting between them run sequentially on the
 // worker; queueDrained fires once when the last completes, and all datasets land.
 TEST_F(FileLoaderTest, QueueProcessesEnqueuedLoadsSequentially) {
-  const QString a = makeMockFile(QStringLiteral("qa.mock"));
-  const QString b = makeMockFile(QStringLiteral("qb.mock"));
-  const QString c = makeMockFile(QStringLiteral("qc.mock"));
+  const QString a = makeMockFile(u"qa.mock"_s);
+  const QString b = makeMockFile(u"qb.mock"_s);
+  const QString c = makeMockFile(u"qc.mock"_s);
 
   int drained = 0;
   QObject::connect(loader_.get(), &PJ::FileLoader::queueDrained, loader_.get(), [&drained]() { ++drained; });
@@ -462,7 +463,7 @@ TEST_F(FileLoaderTest, ReplacingReloadStartFailureRestoresPriorData) {
   // Reload the SAME file with a configured start() failure. beginRefill detaches the
   // prior data up front; start() then fails on the worker, so onWorkerFinished's
   // replacing start-fail arm must ROLL BACK to the prior data, not leave it empty.
-  EXPECT_FALSE(loadWithConfig(mock_path_, QStringLiteral(R"({"fail_start":true})")));
+  EXPECT_FALSE(loadWithConfig(mock_path_, uR"({"fail_start":true})"_s));
 
   EXPECT_EQ(datasetNamed("sensors.mock"), id) << "DatasetId stays stable across a failed reload";
   EXPECT_EQ(singleTopicRowCount(id), 3) << "prior data restored, NOT left empty";
@@ -569,7 +570,7 @@ class MessageBoxMarshalTest : public ::testing::Test {
     ASSERT_TRUE(QFile::copy(src, dst)) << "could not stage " << src.toStdString();
 
     app_session_ = std::make_unique<PJ::AppSession>(extensions_dir_.path());
-    ASSERT_FALSE(app_session_->extensionCatalog().findSourcesForExtension(QStringLiteral(".msgboxmock")).empty())
+    ASSERT_FALSE(app_session_->extensionCatalog().findSourcesForExtension(u".msgboxmock"_s).empty())
         << "msgbox_mock_source_plugin did not load from the staged extensions dir";
 
     loader_ = std::make_unique<PJ::FileLoader>(
@@ -595,7 +596,7 @@ TEST_F(MessageBoxMarshalTest, WorkerThreadMessageBoxIsMarshaledToGuiThread) {
   QtMessageCapture capture;
   QWidget parent;  // a real GUI-thread-owned parent for the marshaled message box
 
-  const QString path = data_dir_.filePath(QStringLiteral("trigger.msgboxmock"));
+  const QString path = data_dir_.filePath(u"trigger.msgboxmock"_s);
   {
     QFile file(path);
     ASSERT_TRUE(file.open(QIODevice::WriteOnly));
@@ -603,8 +604,8 @@ TEST_F(MessageBoxMarshalTest, WorkerThreadMessageBoxIsMarshaledToGuiThread) {
   }
 
   PJ::LoadHints hints;
-  hints.expected_plugin_id = QStringLiteral("Msgbox Mock Source");
-  hints.preset_config_json = QStringLiteral(R"({"ask_msgbox":true})");
+  hints.expected_plugin_id = u"Msgbox Mock Source"_s;
+  hints.preset_config_json = uR"({"ask_msgbox":true})"_s;
   hints.skip_dialog = true;
 
   // The marshaled QMessageBox::exec() spins a nested event loop on the GUI
@@ -659,9 +660,9 @@ TEST_F(MessageBoxMarshalTest, WorkerThreadMessageBoxIsMarshaledToGuiThread) {
   QObject::disconnect(on_failed);
   dismiss.stop();
 
-  EXPECT_FALSE(capture.sawText(QStringLiteral("Cannot set parent")))
+  EXPECT_FALSE(capture.sawText(u"Cannot set parent"_s))
       << "host built the QMessageBox off the GUI thread (QObject::setParent cross-thread warning)";
-  EXPECT_FALSE(capture.sawText(QStringLiteral("different thread")))
+  EXPECT_FALSE(capture.sawText(u"different thread"_s))
       << "a cross-thread Qt warning was emitted during the worker-thread message box";
   EXPECT_TRUE(ok) << "the marshaled askContinue must return Continue and complete the load";
 }
@@ -674,8 +675,8 @@ int main(int argc, char** argv) {
   ::testing::InitGoogleTest(&argc, argv);
   QApplication app(argc, argv);
   // Keep test QSettings out of the user's real PlotJuggler4.conf.
-  QCoreApplication::setOrganizationName(QStringLiteral("PJ4Tests"));
-  QCoreApplication::setApplicationName(QStringLiteral("file_loader_test"));
+  QCoreApplication::setOrganizationName(u"PJ4Tests"_s);
+  QCoreApplication::setApplicationName(u"file_loader_test"_s);
   static QTemporaryDir settings_dir;
   QSettings::setDefaultFormat(QSettings::IniFormat);
   QSettings::setPath(QSettings::IniFormat, QSettings::UserScope, settings_dir.path());

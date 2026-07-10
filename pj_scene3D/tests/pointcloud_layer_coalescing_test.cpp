@@ -44,6 +44,7 @@
 #include "pj_runtime/Time.h"
 #include "pj_scene3d_widgets/layers/pointcloud_layer.h"
 #include "pj_scene3d_widgets/scene3d_layer.h"
+using namespace Qt::StringLiterals;
 
 namespace {
 
@@ -164,8 +165,7 @@ TEST(PointCloudLayerCoalescing, LatestWinsCollapsesSupersededPending) {
 
   pj::scene3d::Scene3DLayerContext ctx;
   ctx.session = &harness.session;
-  pj::scene3d::PointCloudLayer layer(
-      harness.topic_id, QStringLiteral("cloud"), PJ::sdk::BuiltinObjectType::kCompressedPointCloud);
+  pj::scene3d::PointCloudLayer layer(harness.topic_id, u"cloud"_s, PJ::sdk::BuiltinObjectType::kCompressedPointCloud);
   ASSERT_TRUE(layer.attach(ctx));
   // attach() bootstrap-decodes the first sample (10) asynchronously; let it settle
   // so the test starts from a clean (no inflight, no pending) state.
@@ -199,8 +199,7 @@ TEST(PointCloudLayerCoalescing, LateDecodeDoesNotRepaintAfterScrubBack) {
 
   pj::scene3d::Scene3DLayerContext ctx;
   ctx.session = &harness.session;
-  pj::scene3d::PointCloudLayer layer(
-      harness.topic_id, QStringLiteral("cloud"), PJ::sdk::BuiltinObjectType::kCompressedPointCloud);
+  pj::scene3d::PointCloudLayer layer(harness.topic_id, u"cloud"_s, PJ::sdk::BuiltinObjectType::kCompressedPointCloud);
   ASSERT_TRUE(layer.attach(ctx));
   drainDecode(layer);
 
@@ -233,8 +232,7 @@ TEST(PointCloudLayerCoalescing, FailedSampleIsMemoizedAndNotRedecoded) {
 
   pj::scene3d::Scene3DLayerContext ctx;
   ctx.session = &harness.session;
-  pj::scene3d::PointCloudLayer layer(
-      harness.topic_id, QStringLiteral("cloud"), PJ::sdk::BuiltinObjectType::kCompressedPointCloud);
+  pj::scene3d::PointCloudLayer layer(harness.topic_id, u"cloud"_s, PJ::sdk::BuiltinObjectType::kCompressedPointCloud);
   ASSERT_TRUE(layer.attach(ctx));
   drainDecode(layer);
 

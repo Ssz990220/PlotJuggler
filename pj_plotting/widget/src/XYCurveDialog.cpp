@@ -10,6 +10,7 @@
 #include <algorithm>
 
 #include "ui_XYCurveDialog.h"
+using namespace Qt::StringLiterals;
 
 namespace PJ {
 
@@ -73,7 +74,7 @@ QString XYCurveDialog::suggestAlias(const QString& x_label, const QString& y_lab
   const QString common = x_label.left(prefix);
   const QString suffix_x = x_label.mid(prefix);
   const QString suffix_y = y_label.mid(prefix);
-  return common + QStringLiteral("[") + suffix_x + QStringLiteral(";") + suffix_y + QStringLiteral("]");
+  return common + u"["_s + suffix_x + u";"_s + suffix_y + u"]"_s;
 }
 
 }  // namespace PJ

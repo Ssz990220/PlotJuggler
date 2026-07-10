@@ -16,11 +16,12 @@
 #include <QStyleOptionFrame>
 
 #include "pj_widgets/Style.h"
+using namespace Qt::StringLiterals;
 
 namespace {
 
 TEST(StyleInputHeight, PinsInputsToKInputHeightForAnyFont) {
-  PJ::Style style(QStringLiteral("Fusion"));
+  PJ::Style style(u"Fusion"_s);
 
   // A small font (Fusion would size the control below 20) and a tall one (above
   // 20): both must come out exactly kInputHeight.

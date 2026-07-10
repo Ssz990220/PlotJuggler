@@ -24,6 +24,7 @@
 #include "pj_scene2d_core/media_source.h"
 #include "pj_scene2d_widgets/scene2d_pipelines.h"
 #include "pj_widgets/ToggleSwitch.h"
+using namespace Qt::StringLiterals;
 
 namespace PJ {
 
@@ -38,7 +39,7 @@ bool topicUsesCanonicalImageCodec(const std::string& metadata_json) {
     }
     return false;
   }
-  return doc.object().value(QStringLiteral("image_codec")).toString() == QStringLiteral("pj_image_v1");
+  return doc.object().value(u"image_codec"_s).toString() == u"pj_image_v1"_s;
 }
 
 // Build a frame_id -> CameraInfo map by running each "<ns>/camera_info" topic's
@@ -92,7 +93,7 @@ std::unordered_map<std::string, sdk::CameraInfo> collectCameraInfoByFrameId(
 
 ImageLayer::ImageLayer(
     ObjectTopicId topic_id, sdk::BuiltinObjectType object_type, const QString& display_name, QObject* parent)
-    : Scene2DLayer(topic_id, object_type, display_name, QStringLiteral("Image"), parent) {}
+    : Scene2DLayer(topic_id, object_type, display_name, u"Image"_s, parent) {}
 
 std::unique_ptr<MediaSource> ImageLayer::createMediaSource(const SceneLayerContext& ctx) {
   auto* session = ctx.session;
@@ -182,16 +183,13 @@ void ImageLayer::applyOptions() {
 }
 
 void ImageLayer::saveOptions(QDomElement& element) const {
-  element.setAttribute(
-      QStringLiteral("rectify_enabled"), rectify_enabled_ ? QStringLiteral("true") : QStringLiteral("false"));
+  element.setAttribute(u"rectify_enabled"_s, rectify_enabled_ ? u"true"_s : u"false"_s);
 }
 
 bool ImageLayer::loadOptions(const QDomElement& element) {
   // Absent attribute (layout saved before this toggle existed) keeps the current
   // default (true) -> rectification stays on, preserving the historical behaviour.
-  rectify_enabled_ = element.attribute(
-                         QStringLiteral("rectify_enabled"),
-                         rectify_enabled_ ? QStringLiteral("true") : QStringLiteral("false")) == QStringLiteral("true");
+  rectify_enabled_ = element.attribute(u"rectify_enabled"_s, rectify_enabled_ ? u"true"_s : u"false"_s) == u"true"_s;
   applyOptions();
   return true;
 }

@@ -29,6 +29,7 @@
 #include "pj_widgets/ElidingLabel.h"
 #include "pj_widgets/SvgUtil.h"
 #include "ui_CurveEditor.h"
+using namespace Qt::StringLiterals;
 
 namespace PJ {
 
@@ -175,7 +176,7 @@ CurveEditor::CurveEditor(QWidget* parent) : QWidget(parent), ui_(new Ui::CurveEd
   // header. The kebab currently hosts a single "Clear all curves" action;
   // future panel-level options (sort, hide-invisible, etc.) hang here.
   auto* curves_menu = new QMenu(this);
-  curves_menu->setObjectName(QStringLiteral("PJMenu"));
+  curves_menu->setObjectName(u"PJMenu"_s);
   auto* clear_all_button = new QPushButton(tr("Clear all curves"), curves_menu);
   clear_all_button->setFlat(true);
   clear_all_button->setProperty("destructive", true);
@@ -320,7 +321,7 @@ void CurveEditor::appendRow(const QString& curve_key, const QString& display_nam
   // The objectName drives the curveVisibilityToggle QSS rule that strips
   // QToolButton's default hover / checked background so the eye icon
   // appears as a plain ink glyph regardless of state.
-  visibility->setObjectName(QStringLiteral("curveVisibilityToggle"));
+  visibility->setObjectName(u"curveVisibilityToggle"_s);
   visibility->setProperty(kVisibilityButtonProperty, curve_key);
   visibility->setCheckable(true);
   visibility->setAutoRaise(true);
@@ -335,7 +336,7 @@ void CurveEditor::appendRow(const QString& curve_key, const QString& display_nam
   });
 
   auto* name_label = new ElidingLabel();
-  name_label->setObjectName(QStringLiteral("curveNameLabel"));
+  name_label->setObjectName(u"curveNameLabel"_s);
   // Curve names are typically topic paths (`/foo/bar/leaf`); elide from
   // the left so the meaningful leaf stays visible as the row narrows.
   name_label->setElideMode(Qt::ElideLeft);
@@ -343,7 +344,7 @@ void CurveEditor::appendRow(const QString& curve_key, const QString& display_nam
   name_label->setToolTip(curve_key);
 
   auto* trash = new QToolButton();
-  trash->setObjectName(QStringLiteral("curveTrashToggle"));
+  trash->setObjectName(u"curveTrashToggle"_s);
   trash->setProperty(kTrashButtonProperty, curve_key);
   trash->setAutoRaise(true);
   trash->setFocusPolicy(Qt::NoFocus);

@@ -15,6 +15,7 @@
 #include <QShowEvent>
 #include <QSizePolicy>
 #include <QVBoxLayout>
+using namespace Qt::StringLiterals;
 
 namespace PJ {
 
@@ -80,7 +81,7 @@ QString wrapLabelToWidth(const QString& text, const QFontMetrics& fm, int max_wi
 }  // namespace
 
 MessageBox::MessageBox(QWidget* parent) : QDialog(parent) {
-  setObjectName(QStringLiteral("pjMessageBox"));
+  setObjectName(u"pjMessageBox"_s);
 
   // Frameless modal so the WM's title-bar chrome doesn't fight the in-body
   // heading. WA_StyledBackground lets the QDialog#pjMessageBox QSS rule
@@ -112,7 +113,7 @@ MessageBox::MessageBox(QWidget* parent) : QDialog(parent) {
   outer->setSpacing(0);
 
   auto* card = new QFrame(this);
-  card->setObjectName(QStringLiteral("pjMessageBoxCard"));
+  card->setObjectName(u"pjMessageBoxCard"_s);
   outer->addWidget(card);
 
   // Inner layout on the card. Uniform spacing throughout so every gap reads
@@ -125,12 +126,12 @@ MessageBox::MessageBox(QWidget* parent) : QDialog(parent) {
   root->setSpacing(14);
 
   title_label_ = new QLabel(card);
-  title_label_->setObjectName(QStringLiteral("pjMessageBoxTitle"));
+  title_label_->setObjectName(u"pjMessageBoxTitle"_s);
   title_label_->setWordWrap(true);
   root->addWidget(title_label_);
 
   body_label_ = new QLabel(card);
-  body_label_->setObjectName(QStringLiteral("pjMessageBoxBody"));
+  body_label_->setObjectName(u"pjMessageBoxBody"_s);
   body_label_->setWordWrap(true);
   // Expanding width + heightForWidth so a wrapped body is laid out at the full
   // card width and allotted its full wrapped height. The explicit policy must
@@ -142,7 +143,7 @@ MessageBox::MessageBox(QWidget* parent) : QDialog(parent) {
   root->addWidget(body_label_);
 
   dont_show_again_ = new QCheckBox(card);
-  dont_show_again_->setObjectName(QStringLiteral("pjMessageBoxDontShowAgain"));
+  dont_show_again_->setObjectName(u"pjMessageBoxDontShowAgain"_s);
   dont_show_again_->setText(tr("Don't show again."));
   dont_show_again_->hide();  // opt-in via setShowDontShowAgain()
   root->addWidget(dont_show_again_);
@@ -183,7 +184,7 @@ bool MessageBox::dontShowAgainChecked() const {
 
 QPushButton* MessageBox::addButton(const QString& label, ButtonRole role) {
   auto* btn = new QPushButton(label, this);
-  btn->setObjectName(QStringLiteral("pjMessageBoxButton"));
+  btn->setObjectName(u"pjMessageBoxButton"_s);
   btn->setProperty("msgbox_role", QLatin1String(roleToToken(role)));
   // Disable autoDefault so Enter doesn't trigger a non-primary button just
   // because focus traversed onto it. The primary button still receives

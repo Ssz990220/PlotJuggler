@@ -43,6 +43,7 @@
 #include "pj_widgets/DoubleScrubber.h"
 #include "pj_widgets/Style.h"  // PJ::Style::kInputHeight
 #include "pj_widgets/SvgButton.h"
+using namespace Qt::StringLiterals;
 
 namespace pj::scene3d {
 
@@ -113,13 +114,13 @@ QString defaultColorField(const QStringList& available) {
   if (available.isEmpty()) {
     return QString();
   }
-  return available.contains(QStringLiteral("intensity")) ? QStringLiteral("intensity") : available.first();
+  return available.contains(u"intensity"_s) ? u"intensity"_s : available.first();
 }
 
 // Reserved sentinel stored as the "RGB" combo item's data, distinguishing it from a
 // "Field: X" item (whose data is the field name) and "Solid" (empty data). Safe because
 // the colour channel names are excluded from the field list, so this never collides.
-const QString kRgbComboToken = QStringLiteral("__rgb__");
+const QString kRgbComboToken = u"__rgb__"_s;
 
 }  // namespace
 
@@ -150,7 +151,7 @@ PJ::SceneLayerInfo PointCloudLayer::info() const {
       .topic_id = topic_id_,
       .object_type = object_type_,
       .display_name = display_name_,
-      .family_name = QStringLiteral("PointCloud"),
+      .family_name = u"PointCloud"_s,
       .visible = visible_,
   };
 }
@@ -172,121 +173,116 @@ QString PointCloudLayer::sourceFrame() const {
 }
 
 QDomElement PointCloudLayer::xmlSaveState(QDomDocument& doc) const {
-  QDomElement el = doc.createElement(QStringLiteral("pointcloud"));
+  QDomElement el = doc.createElement(u"pointcloud"_s);
   auto shape_str = [&]() -> QString {
     switch (shape_) {
       case PointcloudRenderPass::Shape::kSphere:
-        return QStringLiteral("sphere");
+        return u"sphere"_s;
       case PointcloudRenderPass::Shape::kPoint:
-        return QStringLiteral("point");
+        return u"point"_s;
       case PointcloudRenderPass::Shape::kCube:
-        return QStringLiteral("cube");
+        return u"cube"_s;
     }
-    return QStringLiteral("sphere");
+    return u"sphere"_s;
   }();
   auto colormap_str = [&]() -> QString {
     switch (colormap_) {
       case PointcloudRenderPass::Colormap::kTurbo:
-        return QStringLiteral("turbo");
+        return u"turbo"_s;
       case PointcloudRenderPass::Colormap::kViridis:
-        return QStringLiteral("viridis");
+        return u"viridis"_s;
       case PointcloudRenderPass::Colormap::kPlasma:
-        return QStringLiteral("plasma");
+        return u"plasma"_s;
       case PointcloudRenderPass::Colormap::kGrayscale:
-        return QStringLiteral("grayscale");
+        return u"grayscale"_s;
     }
-    return QStringLiteral("turbo");
+    return u"turbo"_s;
   }();
-  el.setAttribute(QStringLiteral("shape"), shape_str);
-  el.setAttribute(QStringLiteral("size_meters"), QString::number(static_cast<double>(size_meters_), 'g', 6));
-  el.setAttribute(QStringLiteral("size_pixels"), QString::number(static_cast<double>(size_pixels_), 'g', 6));
-  const QString color_type_str = color_type_ == PointcloudRenderPass::ColorType::kSolid ? QStringLiteral("solid")
-                                 : color_type_ == PointcloudRenderPass::ColorType::kRgb ? QStringLiteral("rgb")
-                                                                                        : QStringLiteral("field");
-  el.setAttribute(QStringLiteral("color_type"), color_type_str);
-  el.setAttribute(QStringLiteral("color_field"), QString::fromStdString(color_field_));
-  el.setAttribute(QStringLiteral("solid_color"), solid_color_.name(QColor::HexRgb));
-  el.setAttribute(QStringLiteral("colormap"), colormap_str);
-  el.setAttribute(QStringLiteral("auto_range"), auto_range_ ? QStringLiteral("true") : QStringLiteral("false"));
-  el.setAttribute(QStringLiteral("invert_lut"), invert_lut_ ? QStringLiteral("true") : QStringLiteral("false"));
-  el.setAttribute(
-      QStringLiteral("outside_range_opacity"), QString::number(static_cast<double>(outside_range_opacity_), 'g', 6));
-  el.setAttribute(
-      QStringLiteral("outside_range_visible"),
-      outside_range_visible_ ? QStringLiteral("true") : QStringLiteral("false"));
-  el.setAttribute(QStringLiteral("range_min"), QString::number(static_cast<double>(manual_range_min_), 'g', 6));
-  el.setAttribute(QStringLiteral("range_max"), QString::number(static_cast<double>(manual_range_max_), 'g', 6));
+  el.setAttribute(u"shape"_s, shape_str);
+  el.setAttribute(u"size_meters"_s, QString::number(static_cast<double>(size_meters_), 'g', 6));
+  el.setAttribute(u"size_pixels"_s, QString::number(static_cast<double>(size_pixels_), 'g', 6));
+  const QString color_type_str = color_type_ == PointcloudRenderPass::ColorType::kSolid ? u"solid"_s
+                                 : color_type_ == PointcloudRenderPass::ColorType::kRgb ? u"rgb"_s
+                                                                                        : u"field"_s;
+  el.setAttribute(u"color_type"_s, color_type_str);
+  el.setAttribute(u"color_field"_s, QString::fromStdString(color_field_));
+  el.setAttribute(u"solid_color"_s, solid_color_.name(QColor::HexRgb));
+  el.setAttribute(u"colormap"_s, colormap_str);
+  el.setAttribute(u"auto_range"_s, auto_range_ ? u"true"_s : u"false"_s);
+  el.setAttribute(u"invert_lut"_s, invert_lut_ ? u"true"_s : u"false"_s);
+  el.setAttribute(u"outside_range_opacity"_s, QString::number(static_cast<double>(outside_range_opacity_), 'g', 6));
+  el.setAttribute(u"outside_range_visible"_s, outside_range_visible_ ? u"true"_s : u"false"_s);
+  el.setAttribute(u"range_min"_s, QString::number(static_cast<double>(manual_range_min_), 'g', 6));
+  el.setAttribute(u"range_max"_s, QString::number(static_cast<double>(manual_range_max_), 'g', 6));
   return el;
 }
 
 bool PointCloudLayer::xmlLoadState(const QDomElement& element) {
-  if (element.isNull() || element.tagName() != QStringLiteral("pointcloud")) {
+  if (element.isNull() || element.tagName() != u"pointcloud"_s) {
     return false;
   }
-  const QString shape_str = element.attribute(QStringLiteral("shape"), QStringLiteral("sphere"));
-  if (shape_str == QStringLiteral("point")) {
+  const QString shape_str = element.attribute(u"shape"_s, u"sphere"_s);
+  if (shape_str == u"point"_s) {
     setShape(PointcloudRenderPass::Shape::kPoint);
-  } else if (shape_str == QStringLiteral("cube")) {
+  } else if (shape_str == u"cube"_s) {
     setShape(PointcloudRenderPass::Shape::kCube);
   } else {
     setShape(PointcloudRenderPass::Shape::kSphere);
   }
 
   bool ok = false;
-  const float size_m = element.attribute(QStringLiteral("size_meters"), QStringLiteral("0.01")).toFloat(&ok);
+  const float size_m = element.attribute(u"size_meters"_s, u"0.01"_s).toFloat(&ok);
   if (ok) {
     setSizeMeters(size_m);
   }
-  const float size_px = element.attribute(QStringLiteral("size_pixels"), QStringLiteral("2")).toFloat(&ok);
+  const float size_px = element.attribute(u"size_pixels"_s, u"2"_s).toFloat(&ok);
   if (ok) {
     setSizePixels(size_px);
   }
 
-  const QString color_type_str = element.attribute(QStringLiteral("color_type"), QStringLiteral("field"));
+  const QString color_type_str = element.attribute(u"color_type"_s, u"field"_s);
   setColorType(
-      color_type_str == QStringLiteral("solid") ? PointcloudRenderPass::ColorType::kSolid
-      : color_type_str == QStringLiteral("rgb") ? PointcloudRenderPass::ColorType::kRgb
-                                                : PointcloudRenderPass::ColorType::kField);
+      color_type_str == u"solid"_s ? PointcloudRenderPass::ColorType::kSolid
+      : color_type_str == u"rgb"_s ? PointcloudRenderPass::ColorType::kRgb
+                                   : PointcloudRenderPass::ColorType::kField);
   // An explicitly restored colour mode must survive the colour-present RGB default that
   // populateColorFields() would otherwise apply on the first decoded sample. (setColorType
   // above may early-return when the restored value equals the construction default, so set
   // the flag here unconditionally.)
   color_choice_explicit_ = true;
-  if (element.hasAttribute(QStringLiteral("color_field"))) {
-    setColorField(element.attribute(QStringLiteral("color_field")));
+  if (element.hasAttribute(u"color_field"_s)) {
+    setColorField(element.attribute(u"color_field"_s));
   }
-  if (element.hasAttribute(QStringLiteral("solid_color"))) {
-    const QColor c(element.attribute(QStringLiteral("solid_color")));
+  if (element.hasAttribute(u"solid_color"_s)) {
+    const QColor c(element.attribute(u"solid_color"_s));
     if (c.isValid()) {
       setSolidColor(c);
     }
   }
 
-  const QString cm_str = element.attribute(QStringLiteral("colormap"), QStringLiteral("turbo"));
-  if (cm_str == QStringLiteral("viridis")) {
+  const QString cm_str = element.attribute(u"colormap"_s, u"turbo"_s);
+  if (cm_str == u"viridis"_s) {
     setColormap(PointcloudRenderPass::Colormap::kViridis);
-  } else if (cm_str == QStringLiteral("plasma")) {
+  } else if (cm_str == u"plasma"_s) {
     setColormap(PointcloudRenderPass::Colormap::kPlasma);
-  } else if (cm_str == QStringLiteral("grayscale")) {
+  } else if (cm_str == u"grayscale"_s) {
     setColormap(PointcloudRenderPass::Colormap::kGrayscale);
   } else {
     setColormap(PointcloudRenderPass::Colormap::kTurbo);
   }
 
-  setInvertLut(element.attribute(QStringLiteral("invert_lut")) == QStringLiteral("true"));
+  setInvertLut(element.attribute(u"invert_lut"_s) == u"true"_s);
   bool ok_outside_opacity = false;
-  const float outside_opacity =
-      element.attribute(QStringLiteral("outside_range_opacity"), QStringLiteral("1")).toFloat(&ok_outside_opacity);
+  const float outside_opacity = element.attribute(u"outside_range_opacity"_s, u"1"_s).toFloat(&ok_outside_opacity);
   if (ok_outside_opacity) {
     setOutsideRangeOpacity(outside_opacity);
   }
-  setOutsideRangeVisible(
-      element.attribute(QStringLiteral("outside_range_visible"), QStringLiteral("true")) == QStringLiteral("true"));
+  setOutsideRangeVisible(element.attribute(u"outside_range_visible"_s, u"true"_s) == u"true"_s);
 
   bool ok_min = false;
   bool ok_max = false;
-  const float r_min = element.attribute(QStringLiteral("range_min"), QStringLiteral("0")).toFloat(&ok_min);
-  const float r_max = element.attribute(QStringLiteral("range_max"), QStringLiteral("1")).toFloat(&ok_max);
+  const float r_min = element.attribute(u"range_min"_s, u"0"_s).toFloat(&ok_min);
+  const float r_max = element.attribute(u"range_max"_s, u"1"_s).toFloat(&ok_max);
   if (ok_min && ok_max) {
     setManualRange(r_min, r_max);
   }
@@ -295,8 +291,7 @@ bool PointCloudLayer::xmlLoadState(const QDomElement& element) {
   // sample, so world_bounds_ is already populated) BEFORE calling xmlLoadState,
   // so the interactive freeze would overwrite the manual range just restored
   // above with the recomputed data range. The saved values are authoritative.
-  const bool auto_on =
-      element.attribute(QStringLiteral("auto_range"), QStringLiteral("true")) == QStringLiteral("true");
+  const bool auto_on = element.attribute(u"auto_range"_s, u"true"_s) == u"true"_s;
   applyAutoRange(auto_on, /*seed_manual_from_world=*/false);
 
   return true;
@@ -487,13 +482,13 @@ QWidget* PointCloudLayer::createConfigWidget(QWidget* parent) {
   const auto apply_size_units = [size_spin, this]() {
     QSignalBlocker block(size_spin);
     if (shape_ == PointcloudRenderPass::Shape::kPoint) {
-      size_spin->setSuffix(QStringLiteral(" px"));
+      size_spin->setSuffix(u" px"_s);
       size_spin->setDecimals(1);
       size_spin->setSingleStep(0.5);
       size_spin->setRange(1.0, 32.0);
       size_spin->setValue(static_cast<double>(size_pixels_));
     } else {
-      size_spin->setSuffix(QStringLiteral(" m"));
+      size_spin->setSuffix(u" m"_s);
       size_spin->setDecimals(3);
       size_spin->setSingleStep(0.001);
       size_spin->setRange(0.001, 10.0);
@@ -568,10 +563,10 @@ QWidget* PointCloudLayer::createConfigWidget(QWidget* parent) {
   colormap_row_layout->setContentsMargins(0, 0, 0, 0);
   colormap_row_layout->setSpacing(6);
   auto* colormap_combo = new PJ::ComboBox(colormap_row);
-  colormap_combo->addItem(QStringLiteral("turbo"), static_cast<int>(PointcloudRenderPass::Colormap::kTurbo));
-  colormap_combo->addItem(QStringLiteral("viridis"), static_cast<int>(PointcloudRenderPass::Colormap::kViridis));
-  colormap_combo->addItem(QStringLiteral("plasma"), static_cast<int>(PointcloudRenderPass::Colormap::kPlasma));
-  colormap_combo->addItem(QStringLiteral("grayscale"), static_cast<int>(PointcloudRenderPass::Colormap::kGrayscale));
+  colormap_combo->addItem(u"turbo"_s, static_cast<int>(PointcloudRenderPass::Colormap::kTurbo));
+  colormap_combo->addItem(u"viridis"_s, static_cast<int>(PointcloudRenderPass::Colormap::kViridis));
+  colormap_combo->addItem(u"plasma"_s, static_cast<int>(PointcloudRenderPass::Colormap::kPlasma));
+  colormap_combo->addItem(u"grayscale"_s, static_cast<int>(PointcloudRenderPass::Colormap::kGrayscale));
   colormap_combo->setCurrentIndex(static_cast<int>(colormap_));
   colormap_row_layout->addWidget(colormap_combo, 1);
   auto* invert_btn = new QPushButton(colormap_row);
@@ -579,7 +574,7 @@ QWidget* PointCloudLayer::createConfigWidget(QWidget* parent) {
   invert_btn->setChecked(invert_lut_);
   invert_btn->setFocusPolicy(Qt::NoFocus);
   invert_btn->setStyleSheet(kToggleButtonQss);
-  invert_btn->setIcon(QIcon(QStringLiteral(":/resources/svg/invert.svg")));
+  invert_btn->setIcon(QIcon(u":/resources/svg/invert.svg"_s));
   invert_btn->setIconSize(QSize(20, 20));
   // Match the standard icon-button extent used across the app
   // (icon_size + icon_padding = 24 — see CurveListPanel / TimelineWidget).
@@ -623,14 +618,14 @@ QWidget* PointCloudLayer::createConfigWidget(QWidget* parent) {
   // Shape / Point size / Color type. Only visible in gradient mode with
   // auto-range OFF.
   auto* range_min_spin = new PJ::DoubleScrubber(container);
-  range_min_spin->setObjectName(QStringLiteral("pointcloud_range_min"));
+  range_min_spin->setObjectName(u"pointcloud_range_min"_s);
   range_min_spin->setDecimals(4);
   range_min_spin->setRange(-1e9, 1e9);
   range_min_spin->setValue(static_cast<double>(manual_range_min_));
   form->addRow(tr("Range Min:"), range_min_spin);
 
   auto* range_max_spin = new PJ::DoubleScrubber(container);
-  range_max_spin->setObjectName(QStringLiteral("pointcloud_range_max"));
+  range_max_spin->setObjectName(u"pointcloud_range_max"_s);
   range_max_spin->setDecimals(4);
   range_max_spin->setRange(-1e9, 1e9);
   range_max_spin->setValue(static_cast<double>(manual_range_max_));
@@ -646,17 +641,16 @@ QWidget* PointCloudLayer::createConfigWidget(QWidget* parent) {
   outside_layout->setContentsMargins(0, 0, 0, 0);
   outside_layout->setSpacing(6);
   auto* outside_opacity_spin = new PJ::DoubleScrubber(outside_row);
-  outside_opacity_spin->setObjectName(QStringLiteral("pointcloud_outside_range_opacity"));
+  outside_opacity_spin->setObjectName(u"pointcloud_outside_range_opacity"_s);
   outside_opacity_spin->setDecimals(2);
   outside_opacity_spin->setSingleStep(0.05);
   outside_opacity_spin->setRange(0.0, 1.0);
   outside_opacity_spin->setValue(static_cast<double>(outside_range_opacity_));
   const auto eye_icon = [](bool visible) {
-    return visible ? QStringLiteral(":/resources/svg/visibility.svg")
-                   : QStringLiteral(":/resources/svg/visibility_off.svg");
+    return visible ? u":/resources/svg/visibility.svg"_s : u":/resources/svg/visibility_off.svg"_s;
   };
   auto* outside_eye = new PJ::SvgButton(eye_icon(outside_range_visible_), PJ::SvgButton::Size::kSmaller, outside_row);
-  outside_eye->setObjectName(QStringLiteral("curveVisibilityToggle"));  // flat eye-toggle QSS
+  outside_eye->setObjectName(u"curveVisibilityToggle"_s);  // flat eye-toggle QSS
   outside_eye->setCheckable(true);
   outside_eye->setChecked(outside_range_visible_);
   outside_eye->setFocusPolicy(Qt::NoFocus);
@@ -1328,13 +1322,13 @@ void PointCloudLayer::startDecode(const CompressedPointCloud& cloud, SampleId id
       }
     } catch (const std::bad_alloc&) {
       result.cloud.reset();
-      result.error = QStringLiteral("out of memory finalizing decoded point cloud");  // no-alloc literal
+      result.error = u"out of memory finalizing decoded point cloud"_s;  // no-alloc literal
     } catch (const std::exception& ex) {
       result.cloud.reset();
       result.error = QString::fromUtf8(ex.what());
     } catch (...) {
       result.cloud.reset();
-      result.error = QStringLiteral("unknown exception decoding point cloud");
+      result.error = u"unknown exception decoding point cloud"_s;
     }
     return result;
   }));

@@ -19,6 +19,7 @@
 #include "pj_plotting/PlotWidgetBase.h"
 #include "pj_runtime/CatalogModel.h"
 #include "pj_runtime/SessionManager.h"
+using namespace Qt::StringLiterals;
 
 namespace {
 
@@ -65,7 +66,7 @@ TEST(PlotWidgetXyMarker, MarkerRidesCurveWithTracker) {
 
   PJ::PlotWidget plot(&session, &catalog);
   plot.setModeXY(true);
-  auto* info = plot.addCurveXY(key_x, key_y, QStringLiteral("y vs x"));
+  auto* info = plot.addCurveXY(key_x, key_y, u"y vs x"_s);
   ASSERT_NE(info, nullptr);
   ASSERT_NE(info->marker, nullptr);
 
@@ -103,7 +104,7 @@ TEST(PlotWidgetXyMarker, HiddenCurveHidesMarker) {
 
   PJ::PlotWidget plot(&session, &catalog);
   plot.setModeXY(true);
-  auto* info = plot.addCurveXY(key_x, key_y, QStringLiteral("y vs x"));
+  auto* info = plot.addCurveXY(key_x, key_y, u"y vs x"_s);
   ASSERT_NE(info, nullptr);
   ASSERT_NE(info->curve, nullptr);
   info->curve->setVisible(false);

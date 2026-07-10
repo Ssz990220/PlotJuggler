@@ -13,6 +13,7 @@
 #include <cmath>
 #include <glm/glm.hpp>
 #include <vector>
+using namespace Qt::StringLiterals;
 
 namespace pj::scene3d {
 namespace {
@@ -191,7 +192,7 @@ TEST(MeshLoaderTest, LoadsFromMemory) {
   MeshLoader loader;
   const QByteArray bytes = readFixtureBytes("cube.dae");
   ASSERT_FALSE(bytes.isEmpty());
-  QFuture<MeshData> future = loader.loadFromMemory(bytes, QStringLiteral("dae"));
+  QFuture<MeshData> future = loader.loadFromMemory(bytes, u"dae"_s);
   const MeshData mesh = future.result();
   ASSERT_TRUE(mesh.ok) << mesh.error.toStdString();
   expectValidIndices(mesh);
@@ -209,7 +210,7 @@ TEST(MeshLoaderTest, LoadsGlbFromMemory) {
   MeshLoader loader;
   const QByteArray bytes = readFixtureBytes("zup_marker.glb");
   ASSERT_FALSE(bytes.isEmpty());
-  QFuture<MeshData> future = loader.loadFromMemory(bytes, QStringLiteral("glb"));
+  QFuture<MeshData> future = loader.loadFromMemory(bytes, u"glb"_s);
   const MeshData mesh = future.result();
   ASSERT_TRUE(mesh.ok) << mesh.error.toStdString();
   EXPECT_FALSE(mesh.vertices.empty());
@@ -235,7 +236,7 @@ TEST(MeshLoaderTest, EmbeddedGlbExtractsBaseColorTextureAndPbrFactors) {
   MeshLoader loader;
   const QByteArray bytes = readFixtureBytes("embedded_base.glb");
   ASSERT_FALSE(bytes.isEmpty());
-  const MeshData mesh = loader.loadFromMemory(bytes, QStringLiteral("glb")).result();
+  const MeshData mesh = loader.loadFromMemory(bytes, u"glb"_s).result();
   ASSERT_TRUE(mesh.ok) << mesh.error.toStdString();
   ASSERT_FALSE(mesh.submeshes.empty());
 
@@ -269,8 +270,8 @@ TEST(MeshLoaderTest, EmbeddedTextureKeyIsStableAcrossLoads) {
   MeshLoader loader;
   const QByteArray bytes = readFixtureBytes("embedded_base.glb");
   ASSERT_FALSE(bytes.isEmpty());
-  const MeshData a = loader.loadFromMemory(bytes, QStringLiteral("glb")).result();
-  const MeshData b = loader.loadFromMemory(bytes, QStringLiteral("glb")).result();
+  const MeshData a = loader.loadFromMemory(bytes, u"glb"_s).result();
+  const MeshData b = loader.loadFromMemory(bytes, u"glb"_s).result();
   ASSERT_TRUE(a.ok && b.ok);
   ASSERT_FALSE(a.submeshes.empty());
   ASSERT_FALSE(b.submeshes.empty());
@@ -286,7 +287,7 @@ TEST(MeshLoaderTest, GeneratesTangentBasis) {
   MeshLoader loader;
   const QByteArray bytes = readFixtureBytes("embedded_base.glb");
   ASSERT_FALSE(bytes.isEmpty());
-  const MeshData mesh = loader.loadFromMemory(bytes, QStringLiteral("glb")).result();
+  const MeshData mesh = loader.loadFromMemory(bytes, u"glb"_s).result();
   ASSERT_TRUE(mesh.ok) << mesh.error.toStdString();
   ASSERT_FALSE(mesh.vertices.empty());
 
@@ -346,7 +347,7 @@ TEST(MeshLoaderTest, SingleSidedMaterialStaysCullable) {
   MeshLoader loader;
   const QByteArray bytes = readFixtureBytes("embedded_base.glb");
   ASSERT_FALSE(bytes.isEmpty());
-  const MeshData mesh = loader.loadFromMemory(bytes, QStringLiteral("glb")).result();
+  const MeshData mesh = loader.loadFromMemory(bytes, u"glb"_s).result();
   ASSERT_TRUE(mesh.ok) << mesh.error.toStdString();
   ASSERT_FALSE(mesh.submeshes.empty());
   EXPECT_FALSE(mesh.submeshes.front().material->double_sided);
@@ -370,7 +371,7 @@ TEST(MeshLoaderTest, MissingFileFailsCleanly) {
 TEST(MeshLoaderTest, EvictForcesReimportOfChangedFile) {
   QTemporaryDir dir;
   ASSERT_TRUE(dir.isValid());
-  const QString path = dir.filePath(QStringLiteral("evict_me.stl"));
+  const QString path = dir.filePath(u"evict_me.stl"_s);
   {
     QFile fixture(fixturePath("cube.stl"));
     ASSERT_TRUE(fixture.copy(path));
@@ -442,7 +443,7 @@ TEST(MeshLoaderTest, ColladaDefaultMatchesExplicitFlip) {
 TEST(MeshLoaderTest, EvictDropsBothFlipVariants) {
   QTemporaryDir dir;
   ASSERT_TRUE(dir.isValid());
-  const QString path = dir.filePath(QStringLiteral("evict_both.dae"));
+  const QString path = dir.filePath(u"evict_both.dae"_s);
   {
     QFile fixture(fixturePath("cube.dae"));
     ASSERT_TRUE(fixture.copy(path));

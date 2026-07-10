@@ -37,6 +37,7 @@
 #include "pj_marketplace/download_manager.hpp"
 #include "pj_marketplace/extension.hpp"
 #include "pj_marketplace/platform_utils.hpp"
+using namespace Qt::StringLiterals;
 
 namespace PJ {
 namespace {
@@ -88,7 +89,7 @@ class LocalHttpServer {
   }
 
   QUrl url() const {
-    return QUrl(QStringLiteral("http://127.0.0.1:%1/").arg(server_.serverPort()));
+    return QUrl(u"http://127.0.0.1:%1/"_s.arg(server_.serverPort()));
   }
 
   void setBody(const QByteArray& body) {
@@ -355,7 +356,7 @@ TEST_F(ExtensionManagerTest, InstallBlocksConcurrentRequests) {
   // download pending indefinitely without burning CPU or requiring a timeout.
   QTcpServer hanging_server;
   hanging_server.listen(QHostAddress::LocalHost, 0);
-  const QUrl hanging_url = QUrl(QStringLiteral("http://127.0.0.1:%1/").arg(hanging_server.serverPort()));
+  const QUrl hanging_url = QUrl(u"http://127.0.0.1:%1/"_s.arg(hanging_server.serverPort()));
 
   const Extension ext_a = makeExtension("mock-data-source", "1.0.0", hanging_url);
   const Extension ext_b = makeExtension("mock-file-source", "1.0.0", hanging_url);

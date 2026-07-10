@@ -14,6 +14,7 @@
 #include <vector>
 
 #include "pj_widgets/CurveTreeView.h"
+using namespace Qt::StringLiterals;
 
 namespace {
 
@@ -67,17 +68,17 @@ QTreeWidgetItem* findChild(QTreeWidgetItem* parent, const QString& name) {
 TEST(CurveTreeViewTest, SortsTopLevelGroupsAndChildren) {
   PJ::CurveTreeView view;
 
-  view.addCurve(QStringLiteral("gamma/zeta"));
-  view.addCurve(QStringLiteral("alpha/delta"));
-  view.addCurve(QStringLiteral("beta/root"));
-  view.addCurve(QStringLiteral("alpha/charlie"));
-  view.addCurve(QStringLiteral("alpha/bravo"));
+  view.addCurve(u"gamma/zeta"_s);
+  view.addCurve(u"alpha/delta"_s);
+  view.addCurve(u"beta/root"_s);
+  view.addCurve(u"alpha/charlie"_s);
+  view.addCurve(u"alpha/bravo"_s);
 
   EXPECT_EQ(topLevelNames(view), (std::vector<std::string>{"alpha", "beta", "gamma"}));
 
   ASSERT_EQ(view.topLevelItemCount(), 3);
   QTreeWidgetItem* alpha = view.topLevelItem(0);
-  ASSERT_EQ(alpha->text(0), QStringLiteral("alpha"));
+  ASSERT_EQ(alpha->text(0), u"alpha"_s);
   EXPECT_EQ(childNames(alpha), (std::vector<std::string>{"bravo", "charlie", "delta"}));
 }
 
@@ -86,34 +87,34 @@ TEST(CurveTreeViewTest, BatchedCatalogInsertSortsTopLevelGroupsAndChildren) {
 
   view.addCatalogItems({
       PJ::CurveTreeView::CurvePath{
-          .key = QStringLiteral("gamma/zeta"),
-          .dataset = QStringLiteral("gamma"),
+          .key = u"gamma/zeta"_s,
+          .dataset = u"gamma"_s,
           .topic = {},
-          .field = QStringLiteral("zeta"),
+          .field = u"zeta"_s,
       },
       PJ::CurveTreeView::CurvePath{
-          .key = QStringLiteral("alpha/delta"),
-          .dataset = QStringLiteral("alpha"),
+          .key = u"alpha/delta"_s,
+          .dataset = u"alpha"_s,
           .topic = {},
-          .field = QStringLiteral("delta"),
+          .field = u"delta"_s,
       },
       PJ::CurveTreeView::CurvePath{
-          .key = QStringLiteral("beta/root"),
-          .dataset = QStringLiteral("beta"),
+          .key = u"beta/root"_s,
+          .dataset = u"beta"_s,
           .topic = {},
-          .field = QStringLiteral("root"),
+          .field = u"root"_s,
       },
       PJ::CurveTreeView::CurvePath{
-          .key = QStringLiteral("alpha/charlie"),
-          .dataset = QStringLiteral("alpha"),
+          .key = u"alpha/charlie"_s,
+          .dataset = u"alpha"_s,
           .topic = {},
-          .field = QStringLiteral("charlie"),
+          .field = u"charlie"_s,
       },
       PJ::CurveTreeView::CurvePath{
-          .key = QStringLiteral("alpha/bravo"),
-          .dataset = QStringLiteral("alpha"),
+          .key = u"alpha/bravo"_s,
+          .dataset = u"alpha"_s,
           .topic = {},
-          .field = QStringLiteral("bravo"),
+          .field = u"bravo"_s,
       },
   });
 
@@ -121,7 +122,7 @@ TEST(CurveTreeViewTest, BatchedCatalogInsertSortsTopLevelGroupsAndChildren) {
 
   ASSERT_EQ(view.topLevelItemCount(), 3);
   QTreeWidgetItem* alpha = view.topLevelItem(0);
-  ASSERT_EQ(alpha->text(0), QStringLiteral("alpha"));
+  ASSERT_EQ(alpha->text(0), u"alpha"_s);
   EXPECT_EQ(childNames(alpha), (std::vector<std::string>{"bravo", "charlie", "delta"}));
 }
 
@@ -130,20 +131,20 @@ TEST(CurveTreeViewTest, BatchedCatalogInsertSortsTopLevelGroupsAndChildren) {
 TEST(CurveTreeViewTest, FilterAppliesToRowsInsertedAfterItWasSet) {
   PJ::CurveTreeView view;
 
-  view.applyFilter(QStringLiteral("imu"));
+  view.applyFilter(u"imu"_s);
 
   view.addCatalogItems({
       PJ::CurveTreeView::CurvePath{
-          .key = QStringLiteral("veh/imu/x"),
-          .dataset = QStringLiteral("veh"),
-          .topic = QStringLiteral("imu"),
-          .field = QStringLiteral("x"),
+          .key = u"veh/imu/x"_s,
+          .dataset = u"veh"_s,
+          .topic = u"imu"_s,
+          .field = u"x"_s,
       },
       PJ::CurveTreeView::CurvePath{
-          .key = QStringLiteral("veh/gps/lat"),
-          .dataset = QStringLiteral("veh"),
-          .topic = QStringLiteral("gps"),
-          .field = QStringLiteral("lat"),
+          .key = u"veh/gps/lat"_s,
+          .dataset = u"veh"_s,
+          .topic = u"gps"_s,
+          .field = u"lat"_s,
       },
   });
 
@@ -151,23 +152,23 @@ TEST(CurveTreeViewTest, FilterAppliesToRowsInsertedAfterItWasSet) {
   QTreeWidgetItem* veh = view.topLevelItem(0);
   EXPECT_FALSE(veh->isHidden());
 
-  QTreeWidgetItem* imu = findChild(veh, QStringLiteral("imu"));
+  QTreeWidgetItem* imu = findChild(veh, u"imu"_s);
   ASSERT_NE(imu, nullptr);
   EXPECT_FALSE(imu->isHidden());
-  EXPECT_FALSE(findChild(imu, QStringLiteral("x"))->isHidden());
+  EXPECT_FALSE(findChild(imu, u"x"_s)->isHidden());
 
-  QTreeWidgetItem* gps = findChild(veh, QStringLiteral("gps"));
+  QTreeWidgetItem* gps = findChild(veh, u"gps"_s);
   ASSERT_NE(gps, nullptr);
   EXPECT_TRUE(gps->isHidden());
-  EXPECT_TRUE(findChild(gps, QStringLiteral("lat"))->isHidden());
+  EXPECT_TRUE(findChild(gps, u"lat"_s)->isHidden());
 }
 
 TEST(CurveTreeViewTest, TopLevelGroupsSelectableIntermediateGroupsLeafOnly) {
   PJ::CurveTreeView view;
 
   // Two-level path: "dataset" (top-level group) / "folder" (intermediate) / leaf.
-  view.addCurve(QStringLiteral("dataset/folder/b"));
-  view.addCurve(QStringLiteral("dataset/folder/a"));
+  view.addCurve(u"dataset/folder/b"_s);
+  view.addCurve(u"dataset/folder/a"_s);
 
   ASSERT_EQ(view.selectionMode(), QAbstractItemView::ExtendedSelection);
   ASSERT_EQ(view.selectionBehavior(), QAbstractItemView::SelectRows);
@@ -194,13 +195,13 @@ TEST(CurveTreeViewTest, TopLevelGroupsSelectableIntermediateGroupsLeafOnly) {
 TEST(CurveTreeViewTest, ReturnsSortedSelectedLeafCurveNames) {
   PJ::CurveTreeView view;
 
-  view.addCurve(QStringLiteral("root/b"));
-  view.addCurve(QStringLiteral("root/a"));
-  view.addCurve(QStringLiteral("z"));
+  view.addCurve(u"root/b"_s);
+  view.addCurve(u"root/a"_s);
+  view.addCurve(u"z"_s);
 
   QTreeWidgetItem* root = view.topLevelItem(0);
   ASSERT_NE(root, nullptr);
-  ASSERT_EQ(root->text(0), QStringLiteral("root"));
+  ASSERT_EQ(root->text(0), u"root"_s);
   ASSERT_EQ(root->childCount(), 2);
   root->child(1)->setSelected(true);
   root->child(0)->setSelected(true);
@@ -214,9 +215,9 @@ TEST(CurveTreeViewTest, PressingSelectedItemDoesNotCollapseMultiSelection) {
   TestCurveTreeView view;
   view.resize(240, 200);
 
-  view.addCurve(QStringLiteral("root/b"));
-  view.addCurve(QStringLiteral("root/a"));
-  view.addCurve(QStringLiteral("z"));
+  view.addCurve(u"root/b"_s);
+  view.addCurve(u"root/a"_s);
+  view.addCurve(u"z"_s);
   view.expandAll();
   view.show();
   QApplication::processEvents();
@@ -258,8 +259,8 @@ TEST(CurveTreeViewTest, PressingSelectedItemDoesNotCollapseMultiSelection) {
 TEST(CurveTreeViewTest, DoubleClickOnDatasetTogglesOnlyDatasetExpansion) {
   PJ::CurveTreeView view;
 
-  view.addCurve(QStringLiteral("root/branch/leaf_a"));
-  view.addCurve(QStringLiteral("root/branch/leaf_b"));
+  view.addCurve(u"root/branch/leaf_a"_s);
+  view.addCurve(u"root/branch/leaf_b"_s);
 
   QTreeWidgetItem* root = view.topLevelItem(0);
   ASSERT_NE(root, nullptr);
@@ -283,8 +284,8 @@ TEST(CurveTreeViewTest, DoubleClickOnDatasetTogglesOnlyDatasetExpansion) {
 TEST(CurveTreeViewTest, DoubleClickBelowDatasetTogglesWholeSubtreeExpansion) {
   PJ::CurveTreeView view;
 
-  view.addCurve(QStringLiteral("root/branch/subbranch/leaf_a"));
-  view.addCurve(QStringLiteral("root/branch/subbranch/leaf_b"));
+  view.addCurve(u"root/branch/subbranch/leaf_a"_s);
+  view.addCurve(u"root/branch/subbranch/leaf_b"_s);
 
   QTreeWidgetItem* root = view.topLevelItem(0);
   ASSERT_NE(root, nullptr);
@@ -313,27 +314,27 @@ TEST(CurveTreeViewTest, ObjectTopicsUseTopicNodeWithoutEnteringCurveSelection) {
 
   view.addCatalogItem(
       PJ::CurveTreeView::CurvePath{
-          .key = QStringLiteral("object:1"),
-          .dataset = QStringLiteral("drive.mcap"),
-          .topic = QStringLiteral("/camera/image"),
+          .key = u"object:1"_s,
+          .dataset = u"drive.mcap"_s,
+          .topic = u"/camera/image"_s,
           .field = {},
           .selectable = false,
           .is_image_topic = true,
       });
   view.addCurve(
       PJ::CurveTreeView::CurvePath{
-          .key = QStringLiteral("curve:1"),
-          .dataset = QStringLiteral("drive.mcap"),
-          .topic = QStringLiteral("/camera/image"),
-          .field = QStringLiteral("byte_count"),
+          .key = u"curve:1"_s,
+          .dataset = u"drive.mcap"_s,
+          .topic = u"/camera/image"_s,
+          .field = u"byte_count"_s,
       });
 
   ASSERT_EQ(view.topLevelItemCount(), 1);
   QTreeWidgetItem* dataset = view.topLevelItem(0);
   ASSERT_NE(dataset, nullptr);
-  QTreeWidgetItem* camera = findChild(dataset, QStringLiteral("camera"));
+  QTreeWidgetItem* camera = findChild(dataset, u"camera"_s);
   ASSERT_NE(camera, nullptr);
-  QTreeWidgetItem* image = findChild(camera, QStringLiteral("image"));
+  QTreeWidgetItem* image = findChild(camera, u"image"_s);
   ASSERT_NE(image, nullptr);
   EXPECT_FALSE(image->font(0).italic());
   EXPECT_FALSE(image->icon(0).isNull());
@@ -341,7 +342,7 @@ TEST(CurveTreeViewTest, ObjectTopicsUseTopicNodeWithoutEnteringCurveSelection) {
   EXPECT_TRUE(image->flags().testFlag(Qt::ItemIsDragEnabled));
 
   ASSERT_EQ(image->childCount(), 1);
-  EXPECT_EQ(image->child(0)->text(0), QStringLiteral("byte_count"));
+  EXPECT_EQ(image->child(0)->text(0), u"byte_count"_s);
   EXPECT_TRUE(image->child(0)->flags().testFlag(Qt::ItemIsSelectable));
 
   image->setSelected(true);
@@ -356,13 +357,12 @@ TEST(CurveTreeViewTest, ObjectTopicsUseTopicNodeWithoutEnteringCurveSelection) {
 TEST(CurveTreeViewTest, EncodesCatalogItemDragPayloads) {
   QMimeData mime_data;
   mime_data.setData(
-      PJ::CurveTreeView::catalogItemsMimeType(),
-      PJ::CurveTreeView::encodeCatalogKeys({QStringLiteral("object:1"), QStringLiteral("curve:1")}));
+      PJ::CurveTreeView::catalogItemsMimeType(), PJ::CurveTreeView::encodeCatalogKeys({u"object:1"_s, u"curve:1"_s}));
 
   const QStringList keys = PJ::CurveTreeView::decodeCatalogKeys(&mime_data);
   ASSERT_EQ(keys.size(), 2);
-  EXPECT_EQ(keys[0], QStringLiteral("object:1"));
-  EXPECT_EQ(keys[1], QStringLiteral("curve:1"));
+  EXPECT_EQ(keys[0], u"object:1"_s);
+  EXPECT_EQ(keys[1], u"curve:1"_s);
 }
 
 // Regression: dragging a multi-selection onto an empty pane (which consumes the
@@ -370,9 +370,9 @@ TEST(CurveTreeViewTest, EncodesCatalogItemDragPayloads) {
 // payload used to carry only the row under the cursor at press time.
 TEST(CurveTreeViewTest, DragPayloadCarriesEverySelectedScalarCurve) {
   PJ::CurveTreeView view;
-  view.addCurve(QStringLiteral("vehicle/speed"));
-  view.addCurve(QStringLiteral("vehicle/rpm"));
-  view.addCurve(QStringLiteral("vehicle/temp"));
+  view.addCurve(u"vehicle/speed"_s);
+  view.addCurve(u"vehicle/rpm"_s);
+  view.addCurve(u"vehicle/temp"_s);
 
   QTreeWidgetItem* group = view.topLevelItem(0);
   ASSERT_NE(group, nullptr);
@@ -388,13 +388,13 @@ TEST(CurveTreeViewTest, DragPayloadCarriesEverySelectedScalarCurve) {
   // Catalog payload — consumed when dropping on an empty pane / placeholder.
   const QStringList catalog_keys = PJ::CurveTreeView::decodeCatalogKeys(mime.get());
   EXPECT_EQ(catalog_keys.size(), 3);
-  EXPECT_TRUE(catalog_keys.contains(QStringLiteral("vehicle/speed")));
-  EXPECT_TRUE(catalog_keys.contains(QStringLiteral("vehicle/rpm")));
-  EXPECT_TRUE(catalog_keys.contains(QStringLiteral("vehicle/temp")));
+  EXPECT_TRUE(catalog_keys.contains(u"vehicle/speed"_s));
+  EXPECT_TRUE(catalog_keys.contains(u"vehicle/rpm"_s));
+  EXPECT_TRUE(catalog_keys.contains(u"vehicle/temp"_s));
 
   // Curve-name payload — consumed when dropping on an existing plot.
-  ASSERT_TRUE(mime->hasFormat(QStringLiteral("curveslist/add_curve")));
-  QByteArray encoded = mime->data(QStringLiteral("curveslist/add_curve"));
+  ASSERT_TRUE(mime->hasFormat(u"curveslist/add_curve"_s));
+  QByteArray encoded = mime->data(u"curveslist/add_curve"_s);
   QDataStream stream(&encoded, QIODevice::ReadOnly);
   int curve_count = 0;
   while (!stream.atEnd()) {
@@ -414,18 +414,18 @@ TEST(CurveTreeViewTest, DragPayloadCarriesEverySelectedObjectTopic) {
   PJ::CurveTreeView view;
   view.addCatalogItem(
       PJ::CurveTreeView::CurvePath{
-          .key = QStringLiteral("object:a"),
-          .dataset = QStringLiteral("drive.mcap"),
-          .topic = QStringLiteral("/camera/front"),
+          .key = u"object:a"_s,
+          .dataset = u"drive.mcap"_s,
+          .topic = u"/camera/front"_s,
           .field = {},
           .selectable = false,
           .is_image_topic = true,
       });
   view.addCatalogItem(
       PJ::CurveTreeView::CurvePath{
-          .key = QStringLiteral("object:b"),
-          .dataset = QStringLiteral("drive.mcap"),
-          .topic = QStringLiteral("/camera/rear"),
+          .key = u"object:b"_s,
+          .dataset = u"drive.mcap"_s,
+          .topic = u"/camera/rear"_s,
           .field = {},
           .selectable = false,
           .is_image_topic = true,
@@ -433,10 +433,10 @@ TEST(CurveTreeViewTest, DragPayloadCarriesEverySelectedObjectTopic) {
 
   QTreeWidgetItem* dataset = view.topLevelItem(0);
   ASSERT_NE(dataset, nullptr);
-  QTreeWidgetItem* camera = findChild(dataset, QStringLiteral("camera"));
+  QTreeWidgetItem* camera = findChild(dataset, u"camera"_s);
   ASSERT_NE(camera, nullptr);
-  QTreeWidgetItem* front = findChild(camera, QStringLiteral("front"));
-  QTreeWidgetItem* rear = findChild(camera, QStringLiteral("rear"));
+  QTreeWidgetItem* front = findChild(camera, u"front"_s);
+  QTreeWidgetItem* rear = findChild(camera, u"rear"_s);
   ASSERT_NE(front, nullptr);
   ASSERT_NE(rear, nullptr);
   front->setSelected(true);
@@ -447,61 +447,61 @@ TEST(CurveTreeViewTest, DragPayloadCarriesEverySelectedObjectTopic) {
 
   const QStringList catalog_keys = PJ::CurveTreeView::decodeCatalogKeys(mime.get());
   EXPECT_EQ(catalog_keys.size(), 2);
-  EXPECT_TRUE(catalog_keys.contains(QStringLiteral("object:a")));
-  EXPECT_TRUE(catalog_keys.contains(QStringLiteral("object:b")));
+  EXPECT_TRUE(catalog_keys.contains(u"object:a"_s));
+  EXPECT_TRUE(catalog_keys.contains(u"object:b"_s));
 }
 
 // The "Value" column keeps decimal points vertically aligned in a monospace
 // right-aligned cell by formatting at a fixed precision then blanking trailing
 // zeros (and a bare trailing dot) with spaces. Ported from PJ3.
 TEST(CurveTreeViewTest, FormatScalarForColumnTrimsTrailingZerosToAlignDecimals) {
-  EXPECT_EQ(PJ::formatScalarForColumn(1.2, 3), QStringLiteral("1.2") + QString(3, QChar(' ')));
-  EXPECT_EQ(PJ::formatScalarForColumn(5.0, 3), QStringLiteral("5") + QString(5, QChar(' ')));
-  EXPECT_EQ(PJ::formatScalarForColumn(-0.001, 3), QStringLiteral("-0.001 "));
-  EXPECT_EQ(PJ::formatScalarForColumn(123.456, 3), QStringLiteral("123.456 "));
+  EXPECT_EQ(PJ::formatScalarForColumn(1.2, 3), u"1.2"_s + QString(3, QChar(' ')));
+  EXPECT_EQ(PJ::formatScalarForColumn(5.0, 3), u"5"_s + QString(5, QChar(' ')));
+  EXPECT_EQ(PJ::formatScalarForColumn(-0.001, 3), u"-0.001 "_s);
+  EXPECT_EQ(PJ::formatScalarForColumn(123.456, 3), u"123.456 "_s);
 }
 
 // refreshVisibleValues fills column 1 only for leaf rows, via the supplied
 // provider keyed on each leaf's catalog key; group (non-leaf) rows stay empty.
 TEST(CurveTreeViewTest, RefreshVisibleValuesFillsScalarLeavesAndSkipsGroups) {
   PJ::CurveTreeView view;
-  view.addCurve(QStringLiteral("vehicle/speed"));
-  view.addCurve(QStringLiteral("vehicle/rpm"));
+  view.addCurve(u"vehicle/speed"_s);
+  view.addCurve(u"vehicle/rpm"_s);
   view.setValuesColumnHidden(false);
   view.expandAll();
   view.resize(400, 300);
   view.show();
   QApplication::processEvents();
 
-  view.refreshVisibleValues([](const QString& key) { return key.isEmpty() ? QString() : QStringLiteral("42 "); });
+  view.refreshVisibleValues([](const QString& key) { return key.isEmpty() ? QString() : u"42 "_s; });
 
   QTreeWidgetItem* group = view.topLevelItem(0);
   ASSERT_NE(group, nullptr);
   EXPECT_EQ(group->text(1), QString()) << "group node carries no value";
   ASSERT_EQ(group->childCount(), 2);
-  EXPECT_EQ(group->child(0)->text(1), QStringLiteral("42 "));
-  EXPECT_EQ(group->child(1)->text(1), QStringLiteral("42 "));
+  EXPECT_EQ(group->child(0)->text(1), u"42 "_s);
+  EXPECT_EQ(group->child(1)->text(1), u"42 "_s);
 }
 
 // When the value column is hidden the refresh is a no-op, so cells are not
 // recomputed (and the per-row data reads are skipped entirely).
 TEST(CurveTreeViewTest, RefreshVisibleValuesIsNoOpWhenValueColumnHidden) {
   PJ::CurveTreeView view;
-  view.addCurve(QStringLiteral("vehicle/speed"));
+  view.addCurve(u"vehicle/speed"_s);
   view.setValuesColumnHidden(false);
   view.expandAll();
   view.resize(400, 300);
   view.show();
   QApplication::processEvents();
 
-  view.refreshVisibleValues([](const QString&) { return QStringLiteral("42 "); });
+  view.refreshVisibleValues([](const QString&) { return u"42 "_s; });
   QTreeWidgetItem* leaf = view.topLevelItem(0)->child(0);
   ASSERT_NE(leaf, nullptr);
-  ASSERT_EQ(leaf->text(1), QStringLiteral("42 "));
+  ASSERT_EQ(leaf->text(1), u"42 "_s);
 
   view.setValuesColumnHidden(true);
-  view.refreshVisibleValues([](const QString&) { return QStringLiteral("99 "); });
-  EXPECT_EQ(leaf->text(1), QStringLiteral("42 ")) << "hidden value column must not refresh";
+  view.refreshVisibleValues([](const QString&) { return u"99 "_s; });
+  EXPECT_EQ(leaf->text(1), u"42 "_s) << "hidden value column must not refresh";
 }
 
 // Regression: expanding a collapsed group must fill the newly-revealed leaves
@@ -509,14 +509,14 @@ TEST(CurveTreeViewTest, RefreshVisibleValuesIsNoOpWhenValueColumnHidden) {
 // (previously a freshly-expanded row stayed blank until the tracker moved).
 TEST(CurveTreeViewTest, RefreshVisibleValuesRefillsRowsRevealedByExpansion) {
   PJ::CurveTreeView view;
-  view.addCurve(QStringLiteral("vehicle/speed"));
+  view.addCurve(u"vehicle/speed"_s);
   view.setValuesColumnHidden(false);
   view.resize(400, 300);
   view.show();
   view.collapseAll();
   QApplication::processEvents();
 
-  view.refreshVisibleValues([](const QString& key) { return key.isEmpty() ? QString() : QStringLiteral("42 "); });
+  view.refreshVisibleValues([](const QString& key) { return key.isEmpty() ? QString() : u"42 "_s; });
 
   QTreeWidgetItem* group = view.topLevelItem(0);
   ASSERT_NE(group, nullptr);
@@ -526,7 +526,7 @@ TEST(CurveTreeViewTest, RefreshVisibleValuesRefillsRowsRevealedByExpansion) {
 
   view.expandAll();
   QApplication::processEvents();  // flush the deferred re-apply scheduled by itemExpanded
-  EXPECT_EQ(leaf->text(1), QStringLiteral("42 ")) << "expanding must fill the revealed leaf";
+  EXPECT_EQ(leaf->text(1), u"42 "_s) << "expanding must fill the revealed leaf";
 }
 
 // Regression: scrolling down must fill the rows that scroll into view at the
@@ -535,7 +535,7 @@ TEST(CurveTreeViewTest, RefreshVisibleValuesRefillsRowsRevealedByExpansion) {
 TEST(CurveTreeViewTest, RefreshVisibleValuesFillsRowsRevealedByScrolling) {
   PJ::CurveTreeView view;
   for (int i = 0; i < 60; ++i) {
-    view.addCurve(QStringLiteral("grp/c%1").arg(i, 2, 10, QChar('0')));
+    view.addCurve(u"grp/c%1"_s.arg(i, 2, 10, QChar('0')));
   }
   view.setValuesColumnHidden(false);
   view.expandAll();
@@ -543,7 +543,7 @@ TEST(CurveTreeViewTest, RefreshVisibleValuesFillsRowsRevealedByScrolling) {
   view.show();
   QApplication::processEvents();
 
-  view.refreshVisibleValues([](const QString& key) { return key.isEmpty() ? QString() : QStringLiteral("v "); });
+  view.refreshVisibleValues([](const QString& key) { return key.isEmpty() ? QString() : u"v "_s; });
 
   QScrollBar* scroll = view.verticalScrollBar();
   ASSERT_GT(scroll->maximum(), 0) << "content must overflow for the scroll case to be meaningful";
@@ -554,7 +554,7 @@ TEST(CurveTreeViewTest, RefreshVisibleValuesFillsRowsRevealedByScrolling) {
   ASSERT_NE(group, nullptr);
   QTreeWidgetItem* last_leaf = group->child(group->childCount() - 1);
   ASSERT_NE(last_leaf, nullptr);
-  EXPECT_EQ(last_leaf->text(1), QStringLiteral("v ")) << "row scrolled into view must be filled";
+  EXPECT_EQ(last_leaf->text(1), u"v "_s) << "row scrolled into view must be filled";
 }
 
 // A value-only leaf (draggable=false, e.g. a string field) is shown and
@@ -563,29 +563,29 @@ TEST(CurveTreeViewTest, ValueOnlyLeafIsNotDraggableAndExcludedFromDragPayload) {
   PJ::CurveTreeView view;
   view.addCatalogItem(
       PJ::CurveTreeView::CurvePath{
-          .key = QStringLiteral("curve:num"),
-          .dataset = QStringLiteral("drive.mcap"),
-          .topic = QStringLiteral("/diag"),
-          .field = QStringLiteral("value"),
+          .key = u"curve:num"_s,
+          .dataset = u"drive.mcap"_s,
+          .topic = u"/diag"_s,
+          .field = u"value"_s,
           .selectable = true,
           .draggable = true,
       });
   view.addCatalogItem(
       PJ::CurveTreeView::CurvePath{
-          .key = QStringLiteral("curve:str"),
-          .dataset = QStringLiteral("drive.mcap"),
-          .topic = QStringLiteral("/diag"),
-          .field = QStringLiteral("frame_id"),
+          .key = u"curve:str"_s,
+          .dataset = u"drive.mcap"_s,
+          .topic = u"/diag"_s,
+          .field = u"frame_id"_s,
           .selectable = true,
           .draggable = false,
       });
 
   QTreeWidgetItem* dataset = view.topLevelItem(0);
   ASSERT_NE(dataset, nullptr);
-  QTreeWidgetItem* diag = findChild(dataset, QStringLiteral("diag"));
+  QTreeWidgetItem* diag = findChild(dataset, u"diag"_s);
   ASSERT_NE(diag, nullptr);
-  QTreeWidgetItem* num = findChild(diag, QStringLiteral("value"));
-  QTreeWidgetItem* str = findChild(diag, QStringLiteral("frame_id"));
+  QTreeWidgetItem* num = findChild(diag, u"value"_s);
+  QTreeWidgetItem* str = findChild(diag, u"frame_id"_s);
   ASSERT_NE(num, nullptr);
   ASSERT_NE(str, nullptr);
 
@@ -615,16 +615,16 @@ TEST(CurveTreeViewTest, ExpandedGroupPathsSurviveRebuild) {
   const auto add_all = [&view]() {
     view.addCatalogItems({
         PJ::CurveTreeView::CurvePath{
-            .key = QStringLiteral("k1"),
-            .dataset = QStringLiteral("robot"),
-            .topic = QStringLiteral("imu"),
-            .field = QStringLiteral("x"),
+            .key = u"k1"_s,
+            .dataset = u"robot"_s,
+            .topic = u"imu"_s,
+            .field = u"x"_s,
         },
         PJ::CurveTreeView::CurvePath{
-            .key = QStringLiteral("k2"),
-            .dataset = QStringLiteral("robot"),
-            .topic = QStringLiteral("odom"),
-            .field = QStringLiteral("x"),
+            .key = u"k2"_s,
+            .dataset = u"robot"_s,
+            .topic = u"odom"_s,
+            .field = u"x"_s,
         },
     });
   };
@@ -633,10 +633,10 @@ TEST(CurveTreeViewTest, ExpandedGroupPathsSurviveRebuild) {
   QTreeWidgetItem* robot = view.topLevelItem(0);
   ASSERT_NE(robot, nullptr);
   robot->setExpanded(true);
-  QTreeWidgetItem* imu = findChild(robot, QStringLiteral("imu"));
+  QTreeWidgetItem* imu = findChild(robot, u"imu"_s);
   ASSERT_NE(imu, nullptr);
   imu->setExpanded(true);
-  QTreeWidgetItem* odom = findChild(robot, QStringLiteral("odom"));
+  QTreeWidgetItem* odom = findChild(robot, u"odom"_s);
   ASSERT_NE(odom, nullptr);
   ASSERT_FALSE(odom->isExpanded());
 
@@ -651,10 +651,10 @@ TEST(CurveTreeViewTest, ExpandedGroupPathsSurviveRebuild) {
   view.restoreExpandedGroupPaths(expanded);
 
   EXPECT_TRUE(rebuilt_robot->isExpanded());
-  QTreeWidgetItem* rebuilt_imu = findChild(rebuilt_robot, QStringLiteral("imu"));
+  QTreeWidgetItem* rebuilt_imu = findChild(rebuilt_robot, u"imu"_s);
   ASSERT_NE(rebuilt_imu, nullptr);
   EXPECT_TRUE(rebuilt_imu->isExpanded());
-  QTreeWidgetItem* rebuilt_odom = findChild(rebuilt_robot, QStringLiteral("odom"));
+  QTreeWidgetItem* rebuilt_odom = findChild(rebuilt_robot, u"odom"_s);
   ASSERT_NE(rebuilt_odom, nullptr);
   EXPECT_FALSE(rebuilt_odom->isExpanded());
 }
@@ -663,46 +663,46 @@ TEST(CurveTreeViewTest, SetUnsubscribedKeysReplacesTheFullSet) {
   PJ::CurveTreeView view;
   view.addCatalogItems({
       PJ::CurveTreeView::CurvePath{
-          .key = QStringLiteral("k1"),
-          .dataset = QStringLiteral("robot"),
-          .topic = QStringLiteral("imu"),
-          .field = QStringLiteral("x"),
+          .key = u"k1"_s,
+          .dataset = u"robot"_s,
+          .topic = u"imu"_s,
+          .field = u"x"_s,
       },
       PJ::CurveTreeView::CurvePath{
-          .key = QStringLiteral("k2"),
-          .dataset = QStringLiteral("robot"),
-          .topic = QStringLiteral("odom"),
-          .field = QStringLiteral("x"),
+          .key = u"k2"_s,
+          .dataset = u"robot"_s,
+          .topic = u"odom"_s,
+          .field = u"x"_s,
       },
   });
 
-  EXPECT_FALSE(view.isKeyUnsubscribed(QStringLiteral("k1")));
-  EXPECT_FALSE(view.isKeyUnsubscribed(QStringLiteral("k2")));
+  EXPECT_FALSE(view.isKeyUnsubscribed(u"k1"_s));
+  EXPECT_FALSE(view.isKeyUnsubscribed(u"k2"_s));
 
-  view.setUnsubscribedKeys({QStringLiteral("k1")});
-  EXPECT_TRUE(view.isKeyUnsubscribed(QStringLiteral("k1")));
-  EXPECT_FALSE(view.isKeyUnsubscribed(QStringLiteral("k2")));
+  view.setUnsubscribedKeys({u"k1"_s});
+  EXPECT_TRUE(view.isKeyUnsubscribed(u"k1"_s));
+  EXPECT_FALSE(view.isKeyUnsubscribed(u"k2"_s));
 
   // Full-set replace: re-subscribing k1 and unsubscribing k2 in one call
   // flips both, not just adds k2.
-  view.setUnsubscribedKeys({QStringLiteral("k2")});
-  EXPECT_FALSE(view.isKeyUnsubscribed(QStringLiteral("k1")));
-  EXPECT_TRUE(view.isKeyUnsubscribed(QStringLiteral("k2")));
+  view.setUnsubscribedKeys({u"k2"_s});
+  EXPECT_FALSE(view.isKeyUnsubscribed(u"k1"_s));
+  EXPECT_TRUE(view.isKeyUnsubscribed(u"k2"_s));
 
-  EXPECT_FALSE(view.isKeyUnsubscribed(QStringLiteral("no-such-key")));
+  EXPECT_FALSE(view.isKeyUnsubscribed(u"no-such-key"_s));
 }
 
 TEST(CurveTreeViewTest, IsUnsubscribedSeedsFromCurvePathAtConstruction) {
   PJ::CurveTreeView view;
   view.addCatalogItem(
       PJ::CurveTreeView::CurvePath{
-          .key = QStringLiteral("k1"),
-          .dataset = QStringLiteral("robot"),
-          .topic = QStringLiteral("imu"),
-          .field = QStringLiteral("x"),
+          .key = u"k1"_s,
+          .dataset = u"robot"_s,
+          .topic = u"imu"_s,
+          .field = u"x"_s,
           .is_unsubscribed = true,
       });
-  EXPECT_TRUE(view.isKeyUnsubscribed(QStringLiteral("k1")));
+  EXPECT_TRUE(view.isKeyUnsubscribed(u"k1"_s));
 }
 
 namespace {
@@ -722,9 +722,9 @@ TEST(CurveTreeViewTest, DoubleClickEmitsPeekOnlyForScalarPlaceholderLeaf) {
   // Scalar-shaped placeholder: a draggable leaf with no field breakdown yet.
   view.addCatalogItem(
       PJ::CurveTreeView::CurvePath{
-          .key = QStringLiteral("scalar-key"),
-          .dataset = QStringLiteral("robot"),
-          .topic = QStringLiteral("/speed"),
+          .key = u"scalar-key"_s,
+          .dataset = u"robot"_s,
+          .topic = u"/speed"_s,
           .field = QString(),
           .selectable = true,
           .is_placeholder = true,
@@ -733,9 +733,9 @@ TEST(CurveTreeViewTest, DoubleClickEmitsPeekOnlyForScalarPlaceholderLeaf) {
   // childless node, but NOT peek-eligible).
   view.addCatalogItem(
       PJ::CurveTreeView::CurvePath{
-          .key = QStringLiteral("object-key"),
-          .dataset = QStringLiteral("robot"),
-          .topic = QStringLiteral("/points"),
+          .key = u"object-key"_s,
+          .dataset = u"robot"_s,
+          .topic = u"/points"_s,
           .field = QString(),
           .selectable = false,
           .is_3d_object_topic = true,
@@ -744,9 +744,9 @@ TEST(CurveTreeViewTest, DoubleClickEmitsPeekOnlyForScalarPlaceholderLeaf) {
   // Real (subscribed) scalar leaf: not a placeholder.
   view.addCatalogItem(
       PJ::CurveTreeView::CurvePath{
-          .key = QStringLiteral("real-key"),
-          .dataset = QStringLiteral("robot"),
-          .topic = QStringLiteral("/temp"),
+          .key = u"real-key"_s,
+          .dataset = u"robot"_s,
+          .topic = u"/temp"_s,
           .field = QString(),
           .selectable = true,
           .is_placeholder = false,
@@ -758,9 +758,9 @@ TEST(CurveTreeViewTest, DoubleClickEmitsPeekOnlyForScalarPlaceholderLeaf) {
 
   QTreeWidgetItem* root = view.topLevelItem(0);
   ASSERT_NE(root, nullptr);
-  QTreeWidgetItem* scalar_leaf = peekChildByText(root, QStringLiteral("speed"));
-  QTreeWidgetItem* object_terminal = peekChildByText(root, QStringLiteral("points"));
-  QTreeWidgetItem* real_leaf = peekChildByText(root, QStringLiteral("temp"));
+  QTreeWidgetItem* scalar_leaf = peekChildByText(root, u"speed"_s);
+  QTreeWidgetItem* object_terminal = peekChildByText(root, u"points"_s);
+  QTreeWidgetItem* real_leaf = peekChildByText(root, u"temp"_s);
   ASSERT_NE(scalar_leaf, nullptr);
   ASSERT_NE(object_terminal, nullptr);
   ASSERT_NE(real_leaf, nullptr);
@@ -770,14 +770,14 @@ TEST(CurveTreeViewTest, DoubleClickEmitsPeekOnlyForScalarPlaceholderLeaf) {
   EXPECT_TRUE(captured.isEmpty()) << "object placeholder and real leaf must not emit a peek";
 
   Q_EMIT view.itemDoubleClicked(scalar_leaf, 0);
-  EXPECT_EQ(captured, QStringList{QStringLiteral("scalar-key")});
+  EXPECT_EQ(captured, QStringList{u"scalar-key"_s});
 }
 
 TEST(CurveTreeViewTest, RequestExpansionWhenPromotedFiresOnceThenRespectsManualCollapse) {
   PJ::CurveTreeView view;  // default hierarchical view
 
   // Arm the intent for the topic's tree-path while it is still a placeholder leaf.
-  view.requestExpansionWhenPromoted(QStringLiteral("robot/imu/data"));
+  view.requestExpansionWhenPromoted(u"robot/imu/data"_s);
 
   // Promotion: the placeholder leaf is replaced by real field leaves under the
   // topic, so "robot/imu/data" becomes a group node.
@@ -785,23 +785,23 @@ TEST(CurveTreeViewTest, RequestExpansionWhenPromotedFiresOnceThenRespectsManualC
     view.clearCurves();
     view.addCatalogItems(
         {PJ::CurveTreeView::CurvePath{
-             .key = QStringLiteral("f1"),
-             .dataset = QStringLiteral("robot"),
-             .topic = QStringLiteral("/imu/data"),
-             .field = QStringLiteral("angular_velocity.z"),
+             .key = u"f1"_s,
+             .dataset = u"robot"_s,
+             .topic = u"/imu/data"_s,
+             .field = u"angular_velocity.z"_s,
          },
          PJ::CurveTreeView::CurvePath{
-             .key = QStringLiteral("f2"),
-             .dataset = QStringLiteral("robot"),
-             .topic = QStringLiteral("/imu/data"),
-             .field = QStringLiteral("orientation.w"),
+             .key = u"f2"_s,
+             .dataset = u"robot"_s,
+             .topic = u"/imu/data"_s,
+             .field = u"orientation.w"_s,
          }});
   };
 
   promote();
-  QTreeWidgetItem* imu = peekChildByText(view.topLevelItem(0), QStringLiteral("imu"));
+  QTreeWidgetItem* imu = peekChildByText(view.topLevelItem(0), u"imu"_s);
   ASSERT_NE(imu, nullptr);
-  QTreeWidgetItem* data_group = peekChildByText(imu, QStringLiteral("data"));
+  QTreeWidgetItem* data_group = peekChildByText(imu, u"data"_s);
   ASSERT_NE(data_group, nullptr);
   EXPECT_TRUE(data_group->isExpanded()) << "the promoted topic group auto-expands once";
 
@@ -809,9 +809,9 @@ TEST(CurveTreeViewTest, RequestExpansionWhenPromotedFiresOnceThenRespectsManualC
   // already consumed).
   data_group->setExpanded(false);
   promote();
-  QTreeWidgetItem* imu2 = peekChildByText(view.topLevelItem(0), QStringLiteral("imu"));
+  QTreeWidgetItem* imu2 = peekChildByText(view.topLevelItem(0), u"imu"_s);
   ASSERT_NE(imu2, nullptr);
-  QTreeWidgetItem* data_group2 = peekChildByText(imu2, QStringLiteral("data"));
+  QTreeWidgetItem* data_group2 = peekChildByText(imu2, u"data"_s);
   ASSERT_NE(data_group2, nullptr);
   EXPECT_FALSE(data_group2->isExpanded()) << "auto-expand must not re-fire after the one-shot intent is consumed";
 }
@@ -819,20 +819,20 @@ TEST(CurveTreeViewTest, RequestExpansionWhenPromotedFiresOnceThenRespectsManualC
 TEST(CurveTreeViewTest, RequestExpansionWhenPromotedFiresInShowTopicsView) {
   PJ::CurveTreeView view;
   view.setViewMode(PJ::CurveTreeView::ViewMode::kShowTopics);  // the app's default view
-  view.requestExpansionWhenPromoted(QStringLiteral("robot/imu/data"));
+  view.requestExpansionWhenPromoted(u"robot/imu/data"_s);
 
   view.addCatalogItems(
       {PJ::CurveTreeView::CurvePath{
-           .key = QStringLiteral("f1"),
-           .dataset = QStringLiteral("robot"),
-           .topic = QStringLiteral("/imu/data"),
-           .field = QStringLiteral("angular_velocity.z"),
+           .key = u"f1"_s,
+           .dataset = u"robot"_s,
+           .topic = u"/imu/data"_s,
+           .field = u"angular_velocity.z"_s,
        },
        PJ::CurveTreeView::CurvePath{
-           .key = QStringLiteral("f2"),
-           .dataset = QStringLiteral("robot"),
-           .topic = QStringLiteral("/imu/data"),
-           .field = QStringLiteral("orientation.w"),
+           .key = u"f2"_s,
+           .dataset = u"robot"_s,
+           .topic = u"/imu/data"_s,
+           .field = u"orientation.w"_s,
        }});
 
   // In show-topics view the topic is a single verbatim node "/imu/data" whose
@@ -840,7 +840,7 @@ TEST(CurveTreeViewTest, RequestExpansionWhenPromotedFiresInShowTopicsView) {
   // resolves and expands it.
   QTreeWidgetItem* root = view.topLevelItem(0);
   ASSERT_NE(root, nullptr);
-  QTreeWidgetItem* topic = peekChildByText(root, QStringLiteral("/imu/data"));
+  QTreeWidgetItem* topic = peekChildByText(root, u"/imu/data"_s);
   ASSERT_NE(topic, nullptr);
   EXPECT_TRUE(topic->isExpanded());
 }
@@ -850,33 +850,33 @@ TEST(CurveTreeViewTest, CatalogKeysUnderCollectsSelfAndDescendants) {
   view.setViewMode(PJ::CurveTreeView::ViewMode::kShowTopics);
   view.addCatalogItems({
       PJ::CurveTreeView::CurvePath{
-          .key = QStringLiteral("k_x"),
-          .dataset = QStringLiteral("robot"),
-          .topic = QStringLiteral("/imu/data"),
-          .field = QStringLiteral("x"),
+          .key = u"k_x"_s,
+          .dataset = u"robot"_s,
+          .topic = u"/imu/data"_s,
+          .field = u"x"_s,
       },
       PJ::CurveTreeView::CurvePath{
-          .key = QStringLiteral("k_y"),
-          .dataset = QStringLiteral("robot"),
-          .topic = QStringLiteral("/imu/data"),
-          .field = QStringLiteral("y"),
+          .key = u"k_y"_s,
+          .dataset = u"robot"_s,
+          .topic = u"/imu/data"_s,
+          .field = u"y"_s,
       },
   });
 
   QTreeWidgetItem* robot = view.topLevelItem(0);
   ASSERT_NE(robot, nullptr);
-  QTreeWidgetItem* topic = findChild(robot, QStringLiteral("/imu/data"));
+  QTreeWidgetItem* topic = findChild(robot, u"/imu/data"_s);
   ASSERT_NE(topic, nullptr);
   ASSERT_TRUE(PJ::CurveTreeView::catalogKeyOf(topic).isEmpty()) << "a promoted topic group carries no key itself";
 
   QStringList keys = PJ::CurveTreeView::catalogKeysUnder(topic);
   keys.sort();
-  EXPECT_EQ(keys, (QStringList{QStringLiteral("k_x"), QStringLiteral("k_y")}));
+  EXPECT_EQ(keys, (QStringList{u"k_x"_s, u"k_y"_s}));
 
   // A keyed leaf reports just itself.
-  QTreeWidgetItem* leaf_x = findChild(topic, QStringLiteral("x"));
+  QTreeWidgetItem* leaf_x = findChild(topic, u"x"_s);
   ASSERT_NE(leaf_x, nullptr);
-  EXPECT_EQ(PJ::CurveTreeView::catalogKeysUnder(leaf_x), (QStringList{QStringLiteral("k_x")}));
+  EXPECT_EQ(PJ::CurveTreeView::catalogKeysUnder(leaf_x), (QStringList{u"k_x"_s}));
 }
 
 TEST(CurveTreeViewTest, ForcedTopicMarksLandOnTheTopicNodeAndSurviveRebuild) {
@@ -885,15 +885,15 @@ TEST(CurveTreeViewTest, ForcedTopicMarksLandOnTheTopicNodeAndSurviveRebuild) {
   const auto add_all = [&view]() {
     view.addCatalogItems({
         PJ::CurveTreeView::CurvePath{
-            .key = QStringLiteral("k_x"),
-            .dataset = QStringLiteral("robot"),
-            .topic = QStringLiteral("/imu/data"),
-            .field = QStringLiteral("x"),
+            .key = u"k_x"_s,
+            .dataset = u"robot"_s,
+            .topic = u"/imu/data"_s,
+            .field = u"x"_s,
         },
         PJ::CurveTreeView::CurvePath{
-            .key = QStringLiteral("k_pc"),
-            .dataset = QStringLiteral("robot"),
-            .topic = QStringLiteral("/points"),
+            .key = u"k_pc"_s,
+            .dataset = u"robot"_s,
+            .topic = u"/points"_s,
             .field = {},
             .selectable = false,  // object-topic terminal — IS the topic row
         },
@@ -902,11 +902,9 @@ TEST(CurveTreeViewTest, ForcedTopicMarksLandOnTheTopicNodeAndSurviveRebuild) {
   add_all();
 
   const QString imu_path = PJ::CurveTreeView::treePathFromCurvePath(
-      PJ::CurveTreeView::CurvePath{
-          .key = {}, .dataset = QStringLiteral("robot"), .topic = QStringLiteral("/imu/data"), .field = {}});
+      PJ::CurveTreeView::CurvePath{.key = {}, .dataset = u"robot"_s, .topic = u"/imu/data"_s, .field = {}});
   const QString pc_path = PJ::CurveTreeView::treePathFromCurvePath(
-      PJ::CurveTreeView::CurvePath{
-          .key = {}, .dataset = QStringLiteral("robot"), .topic = QStringLiteral("/points"), .field = {}});
+      PJ::CurveTreeView::CurvePath{.key = {}, .dataset = u"robot"_s, .topic = u"/points"_s, .field = {}});
 
   view.setForcedTopicPaths({imu_path, pc_path});
   EXPECT_TRUE(view.isTopicPathForced(imu_path)) << "promoted scalar topic: mark on the keyless GROUP node";

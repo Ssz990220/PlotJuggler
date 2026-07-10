@@ -12,6 +12,7 @@
 #include <memory>
 
 #include "pj_widgets/Timeline.h"
+using namespace Qt::StringLiterals;
 
 namespace PJ {
 namespace {
@@ -238,9 +239,9 @@ TEST(Timeline, InteractionLockBlocksWheelZoom) {
 // The "pause playback to interact" overlay appears over the scene only while locked.
 TEST(Timeline, InteractionLockShowsOverlay) {
   auto w = makeScrollableTimeline();  // shown, so isVisible() is meaningful
-  auto* overlay = w->findChild<QLabel*>(QStringLiteral("timelineLockOverlay"));
+  auto* overlay = w->findChild<QLabel*>(u"timelineLockOverlay"_s);
   ASSERT_NE(overlay, nullptr);
-  EXPECT_TRUE(overlay->text().contains(QStringLiteral("pause"), Qt::CaseInsensitive));
+  EXPECT_TRUE(overlay->text().contains(u"pause"_s, Qt::CaseInsensitive));
   EXPECT_FALSE(overlay->isVisible());
 
   w->setInteractionLocked(true);
@@ -456,7 +457,7 @@ std::unique_ptr<Timeline> makeTallTimeline() {
     tracks.push_back(
         TimelineTrack{
             .id = static_cast<quint64>(i + 1),
-            .name = QStringLiteral("t%1").arg(i),
+            .name = u"t%1"_s.arg(i),
             .t_min_ns = 0,
             .t_max_ns = 10'000'000'000,
             .offset_ns = 0,
@@ -603,11 +604,11 @@ TEST(Timeline, AbsoluteLabelRoundsMillisecondsLikePlayback) {
   Timeline w;
   w.setAbsoluteTimeLabels(true);
   // 123.6 ms past the second → rounds UP to .124 (truncation would show .123).
-  EXPECT_EQ(w.markerLabelForTest(1'700'000'005'123'600'000LL), QStringLiteral("1700000005.124"));
+  EXPECT_EQ(w.markerLabelForTest(1'700'000'005'123'600'000LL), u"1700000005.124"_s);
   // A whole second still shows 3 decimals, matching the playback readout's "X.000".
-  EXPECT_EQ(w.markerLabelForTest(1'700'000'005'000'000'000LL), QStringLiteral("1700000005.000"));
+  EXPECT_EQ(w.markerLabelForTest(1'700'000'005'000'000'000LL), u"1700000005.000"_s);
   // Rounding carries into the next second.
-  EXPECT_EQ(w.markerLabelForTest(1'700'000'005'999'600'000LL), QStringLiteral("1700000006.000"));
+  EXPECT_EQ(w.markerLabelForTest(1'700'000'005'999'600'000LL), u"1700000006.000"_s);
 }
 
 }  // namespace

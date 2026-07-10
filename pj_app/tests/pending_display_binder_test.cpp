@@ -24,6 +24,7 @@
 #include "pj_runtime/CatalogModel.h"
 #include "pj_runtime/SessionManager.h"
 #include "pj_runtime/TopicDemandTracker.h"
+using namespace Qt::StringLiterals;
 
 namespace {
 
@@ -58,30 +59,30 @@ PJ::TopicId addScalarTopic(PJ::AppSession& app_session, PJ::DatasetId dataset_id
 QDomElement addPlot(QDomDocument& doc, const QString& id, const QString& mode) {
   QDomElement root = doc.documentElement();
   if (root.isNull()) {
-    root = doc.createElement(QStringLiteral("root"));
+    root = doc.createElement(u"root"_s);
     doc.appendChild(root);
   }
-  QDomElement plot = doc.createElement(QStringLiteral("plot"));
-  plot.setAttribute(QStringLiteral("id"), id);
-  plot.setAttribute(QStringLiteral("mode"), mode);
+  QDomElement plot = doc.createElement(u"plot"_s);
+  plot.setAttribute(u"id"_s, id);
+  plot.setAttribute(u"mode"_s, mode);
   root.appendChild(plot);
   return plot;
 }
 
 QDomElement addTimeSeriesCurve(QDomDocument& doc, QDomElement& plot, const SeriesPath& path) {
-  QDomElement curve = doc.createElement(QStringLiteral("curve"));
-  curve.setAttribute(QStringLiteral("topic"), path.topic);
-  curve.setAttribute(QStringLiteral("field"), path.field);
+  QDomElement curve = doc.createElement(u"curve"_s);
+  curve.setAttribute(u"topic"_s, path.topic);
+  curve.setAttribute(u"field"_s, path.field);
   plot.appendChild(curve);
   return curve;
 }
 
 QDomElement addXyCurve(QDomDocument& doc, QDomElement& plot, const SeriesPath& x_path, const SeriesPath& y_path) {
-  QDomElement curve = doc.createElement(QStringLiteral("curve"));
-  curve.setAttribute(QStringLiteral("x_topic"), x_path.topic);
-  curve.setAttribute(QStringLiteral("x_field"), x_path.field);
-  curve.setAttribute(QStringLiteral("y_topic"), y_path.topic);
-  curve.setAttribute(QStringLiteral("y_field"), y_path.field);
+  QDomElement curve = doc.createElement(u"curve"_s);
+  curve.setAttribute(u"x_topic"_s, x_path.topic);
+  curve.setAttribute(u"x_field"_s, x_path.field);
+  curve.setAttribute(u"y_topic"_s, y_path.topic);
+  curve.setAttribute(u"y_field"_s, y_path.field);
   plot.appendChild(curve);
   return curve;
 }
@@ -109,22 +110,22 @@ TEST(PendingDisplayBinderTest, RestoredEntryReleasesItsReferenceWhenThePlotDies)
   // The topic is advertised (nameable) but has no data — a layout restore over
   // a live demand stream stages a pending curve holding a demand reference.
   app_session.catalogModel().setAdvertisedTopics(
-      dataset_id, {PJ::AdvertisedTopic{QStringLiteral("/speed"), PJ::sdk::BuiltinObjectType::kNone}});
+      dataset_id, {PJ::AdvertisedTopic{u"/speed"_s, PJ::sdk::BuiltinObjectType::kNone}});
   QDomDocument doc;
   auto plot = std::make_unique<PJ::PlotWidget>(&app_session.sessionManager(), &app_session.catalogModel());
-  QDomElement plot_element = addPlot(doc, plot->stateId(), QStringLiteral("time"));
-  addTimeSeriesCurve(doc, plot_element, SeriesPath{QStringLiteral("/speed"), QStringLiteral("value")});
+  QDomElement plot_element = addPlot(doc, plot->stateId(), u"time"_s);
+  addTimeSeriesCurve(doc, plot_element, SeriesPath{u"/speed"_s, u"value"_s});
   binder.collect(doc, indexByStateId(*plot));
   ASSERT_EQ(binder.size(), 1);
   const auto held = tracker.activeTopics(dataset_id);
-  ASSERT_NE(std::find(held.begin(), held.end(), QStringLiteral("/speed")), held.end());
+  ASSERT_NE(std::find(held.begin(), held.end(), u"/speed"_s), held.end());
 
   // The plot dies before the topic ever materializes: the reference must
   // release AT destruction — on a quiet stream no later flush ever runs, and a
   // lazy release would keep the topic subscribed forever.
   plot.reset();
   const auto after = tracker.activeTopics(dataset_id);
-  EXPECT_EQ(std::find(after.begin(), after.end(), QStringLiteral("/speed")), after.end());
+  EXPECT_EQ(std::find(after.begin(), after.end(), u"/speed"_s), after.end());
   EXPECT_EQ(binder.size(), 0);
 }
 
@@ -140,8 +141,8 @@ TEST(PendingDisplayBinderTest, DuplicatePlaceholderDropStagesOneEntry) {
   // duplicate's addCurve() calls all return null, and it would sit forever
   // holding its demand reference (and re-add ghost curves after a manual
   // curve delete on a later flush).
-  binder.addPendingCurve(&plot, SeriesPath{QStringLiteral("/speed"), QString()}, dataset_id);
-  binder.addPendingCurve(&plot, SeriesPath{QStringLiteral("/speed"), QString()}, dataset_id);
+  binder.addPendingCurve(&plot, SeriesPath{u"/speed"_s, QString()}, dataset_id);
+  binder.addPendingCurve(&plot, SeriesPath{u"/speed"_s, QString()}, dataset_id);
   EXPECT_EQ(binder.size(), 1);
 }
 
@@ -152,20 +153,20 @@ TEST(PendingDisplayBinderTest, CollectsUnresolvedCurvesAndBindsThemWhenTopicArri
   const PJ::DatasetId dataset_id = createDataset(app_session);
   ASSERT_NE(dataset_id, 0U);
 
-  const SeriesPath ready{QStringLiteral("/ready"), QStringLiteral("value")};
-  const SeriesPath late{QStringLiteral("/late"), QStringLiteral("value")};
+  const SeriesPath ready{u"/ready"_s, u"value"_s};
+  const SeriesPath late{u"/late"_s, u"value"_s};
   ASSERT_NE(addScalarTopic(app_session, dataset_id, ready.topic.toStdString()), 0U);
 
   QDomDocument doc;
-  QDomElement plot_element = addPlot(doc, QStringLiteral("plot_ts"), QStringLiteral("TimeSeries"));
+  QDomElement plot_element = addPlot(doc, u"plot_ts"_s, u"TimeSeries"_s);
   // Style and line width are plot-level (every curve inherits them); colour and
   // visibility are per-curve.
-  plot_element.setAttribute(QStringLiteral("style"), QStringLiteral("Dots"));
-  plot_element.setAttribute(QStringLiteral("line_width"), QStringLiteral("3.0"));
+  plot_element.setAttribute(u"style"_s, u"Dots"_s);
+  plot_element.setAttribute(u"line_width"_s, u"3.0"_s);
   addTimeSeriesCurve(doc, plot_element, ready);
   QDomElement late_curve = addTimeSeriesCurve(doc, plot_element, late);
-  late_curve.setAttribute(QStringLiteral("color"), QStringLiteral("#123456"));
-  late_curve.setAttribute(QStringLiteral("visible"), QStringLiteral("false"));
+  late_curve.setAttribute(u"color"_s, u"#123456"_s);
+  late_curve.setAttribute(u"visible"_s, u"false"_s);
   rebindAgainstCatalog(doc, app_session.catalogModel());
 
   PJ::PlotWidget plot(&app_session.sessionManager(), &app_session.catalogModel());
@@ -177,7 +178,7 @@ TEST(PendingDisplayBinderTest, CollectsUnresolvedCurvesAndBindsThemWhenTopicArri
   ASSERT_EQ(binder.size(), 1);
   ASSERT_EQ(binder.unresolved().size(), 1);
   EXPECT_EQ(binder.unresolved().front(), late);
-  EXPECT_EQ(binder.flush(QSet<QString>{QStringLiteral("/unrelated")}), 0);
+  EXPECT_EQ(binder.flush(QSet<QString>{u"/unrelated"_s}), 0);
   EXPECT_EQ(binder.size(), 1);
 
   ASSERT_NE(addScalarTopic(app_session, dataset_id, late.topic.toStdString()), 0U);
@@ -190,7 +191,7 @@ TEST(PendingDisplayBinderTest, CollectsUnresolvedCurvesAndBindsThemWhenTopicArri
   PJ::PlotWidget::CurveInfo* info = plot.curveFromTitle(*late_key);
   ASSERT_NE(info, nullptr);
   ASSERT_NE(info->curve, nullptr);
-  EXPECT_EQ(info->curve->pen().color(), QColor(QStringLiteral("#123456")));
+  EXPECT_EQ(info->curve->pen().color(), QColor(u"#123456"_s));
   // Style and width are inherited from the plot (Dots at the plot's line width).
   EXPECT_EQ(info->curve->style(), QwtPlotCurve::Dots);
   EXPECT_DOUBLE_EQ(info->curve->pen().widthF(), PJ::dotWidthValue(PJ::LineWidth::kPoints30));
@@ -207,12 +208,12 @@ TEST(PendingDisplayBinderTest, XyCurveWaitsForBothHalvesBeforeBinding) {
   const PJ::DatasetId dataset_id = createDataset(app_session);
   ASSERT_NE(dataset_id, 0U);
 
-  const SeriesPath x_path{QStringLiteral("/pose_x"), QStringLiteral("value")};
-  const SeriesPath y_path{QStringLiteral("/pose_y"), QStringLiteral("value")};
+  const SeriesPath x_path{u"/pose_x"_s, u"value"_s};
+  const SeriesPath y_path{u"/pose_y"_s, u"value"_s};
   ASSERT_NE(addScalarTopic(app_session, dataset_id, x_path.topic.toStdString()), 0U);
 
   QDomDocument doc;
-  QDomElement plot_element = addPlot(doc, QStringLiteral("plot_xy"), QStringLiteral("XYPlot"));
+  QDomElement plot_element = addPlot(doc, u"plot_xy"_s, u"XYPlot"_s);
   addXyCurve(doc, plot_element, x_path, y_path);
   rebindAgainstCatalog(doc, app_session.catalogModel());
 

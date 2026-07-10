@@ -22,6 +22,7 @@
 #include "pj_marketplace/extension.hpp"
 #include "pj_marketplace/extension_manager.hpp"
 #include "pj_marketplace/registry_manager.hpp"
+using namespace Qt::StringLiterals;
 
 namespace PJ {
 namespace {
@@ -57,7 +58,7 @@ TEST(ExtensionManagerIntegrationTest, InstallCanBusParserUsingRegistry) {
   // ---------------------------------------------------------------------------
   // 2. Look up can-bus-parser
   // ---------------------------------------------------------------------------
-  const Extension ext = registry.findById(QStringLiteral("can-bus-parser"));
+  const Extension ext = registry.findById(u"can-bus-parser"_s);
   ASSERT_FALSE(ext.id.isEmpty()) << "can-bus-parser not found in registry.json";
 
   // ---------------------------------------------------------------------------
@@ -86,9 +87,8 @@ TEST(ExtensionManagerIntegrationTest, InstallCanBusParserUsingRegistry) {
   EXPECT_EQ(spy_started.first().at(0).toString(), "can-bus-parser");
 
   // Real network download — allow up to 60 seconds.
-  ASSERT_TRUE(waitForSignal(spy_finished, 60000))
-      << "installFinished not received within 60s — check network and URL: "
-      << ext.platforms.value(QStringLiteral("linux-x86_64")).url.toStdString();
+  ASSERT_TRUE(waitForSignal(spy_finished, 60000)) << "installFinished not received within 60s — check network and URL: "
+                                                  << ext.platforms.value(u"linux-x86_64"_s).url.toStdString();
 
   EXPECT_TRUE(spy_finished.first().at(1).toBool())
       << "Install failed: " << (spy_error.isEmpty() ? "" : spy_error.first().at(1).toString().toStdString());

@@ -33,6 +33,7 @@
 #include "pj_plotting/PlotWidget.h"
 #include "pj_runtime/CatalogModel.h"
 #include "pj_runtime/SessionManager.h"
+using namespace Qt::StringLiterals;
 
 namespace {
 
@@ -160,7 +161,7 @@ TEST(PlotCanvasContextRecreation, CanvasStillDrawsAfterContextRecreation) {
 int main(int argc, char** argv) {
   // Force the GL canvas; a real platform (not offscreen) is needed for a true
   // context recreation on reparent, so honour an externally-set QT_QPA_PLATFORM.
-  QSettings().setValue(QStringLiteral("Preferences::use_opengl"), true);
+  QSettings().setValue(u"Preferences::use_opengl"_s, true);
   testing::InitGoogleTest(&argc, argv);
   QApplication app(argc, argv);
   return RUN_ALL_TESTS();

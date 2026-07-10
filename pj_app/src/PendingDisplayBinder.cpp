@@ -8,6 +8,7 @@
 #include <utility>
 
 #include "pj_runtime/TopicDemandTracker.h"
+using namespace Qt::StringLiterals;
 
 namespace PJ {
 
@@ -83,38 +84,37 @@ void PendingDisplayBinder::collect(const QDomDocument& doc, const QHash<QString,
   }
   entries_.clear();
 
-  const QDomNodeList plot_nodes = doc.elementsByTagName(QStringLiteral("plot"));
+  const QDomNodeList plot_nodes = doc.elementsByTagName(u"plot"_s);
   for (int i = 0; i < plot_nodes.size(); ++i) {
     const QDomElement plot_element = plot_nodes.at(i).toElement();
     if (plot_element.isNull()) {
       continue;
     }
-    PlotWidget* plot = plots_by_state_id.value(plot_element.attribute(QStringLiteral("id")), nullptr);
+    PlotWidget* plot = plots_by_state_id.value(plot_element.attribute(u"id"_s), nullptr);
     if (plot == nullptr) {
       continue;
     }
 
-    for (QDomElement curve = plot_element.firstChildElement(QStringLiteral("curve")); !curve.isNull();
-         curve = curve.nextSiblingElement(QStringLiteral("curve"))) {
+    for (QDomElement curve = plot_element.firstChildElement(u"curve"_s); !curve.isNull();
+         curve = curve.nextSiblingElement(u"curve"_s)) {
       PendingDisplayEntry entry;
       entry.plot = plot;
 
-      if (curve.hasAttribute(QStringLiteral("x_topic"))) {
+      if (curve.hasAttribute(u"x_topic"_s)) {
         entry.x_path = layout_xml::SeriesPath{
-            curve.attribute(QStringLiteral("x_topic")),
-            curve.attribute(QStringLiteral("x_field")),
+            curve.attribute(u"x_topic"_s),
+            curve.attribute(u"x_field"_s),
         };
         entry.path = layout_xml::SeriesPath{
-            curve.attribute(QStringLiteral("y_topic")),
-            curve.attribute(QStringLiteral("y_field")),
+            curve.attribute(u"y_topic"_s),
+            curve.attribute(u"y_field"_s),
         };
         if (resolveSeriesPath(catalog_, entry.x_path).has_value() &&
             resolveSeriesPath(catalog_, entry.path).has_value()) {
           continue;
         }
-      } else if (curve.hasAttribute(QStringLiteral("topic"))) {
-        entry.path =
-            layout_xml::SeriesPath{curve.attribute(QStringLiteral("topic")), curve.attribute(QStringLiteral("field"))};
+      } else if (curve.hasAttribute(u"topic"_s)) {
+        entry.path = layout_xml::SeriesPath{curve.attribute(u"topic"_s), curve.attribute(u"field"_s)};
         if (resolveSeriesPath(catalog_, entry.path).has_value()) {
           continue;
         }
@@ -161,10 +161,10 @@ void PendingDisplayBinder::addPendingCurve(
   entry.plot = plot;
   entry.path = path;
   entry.preferred_dataset = preferred_dataset;
-  entry.curve_element = entry.curve_doc.createElement(QStringLiteral("curve"));
+  entry.curve_element = entry.curve_doc.createElement(u"curve"_s);
   entry.curve_doc.appendChild(entry.curve_element);
-  entry.curve_element.setAttribute(QStringLiteral("topic"), path.topic);
-  entry.curve_element.setAttribute(QStringLiteral("field"), path.field);
+  entry.curve_element.setAttribute(u"topic"_s, path.topic);
+  entry.curve_element.setAttribute(u"field"_s, path.field);
   refreshDemandRefs(entry);
   watchTargetDestruction(plot);
   entries_.push_back(std::move(entry));
@@ -348,10 +348,10 @@ int PendingDisplayBinder::flush(const QSet<QString>& topics) {
     }
 
     if (entry.isXY()) {
-      entry.curve_element.setAttribute(QStringLiteral("curve_x"), *x_key);
-      entry.curve_element.setAttribute(QStringLiteral("curve_y"), *key);
+      entry.curve_element.setAttribute(u"curve_x"_s, *x_key);
+      entry.curve_element.setAttribute(u"curve_y"_s, *key);
     } else {
-      entry.curve_element.setAttribute(QStringLiteral("name"), *key);
+      entry.curve_element.setAttribute(u"name"_s, *key);
     }
 
     PlotWidget* plot = entry.plot.data();

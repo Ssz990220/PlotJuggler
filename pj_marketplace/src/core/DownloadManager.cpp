@@ -12,6 +12,7 @@
 
 #include "pj_base/expected.hpp"
 #include "pj_marketplace/download_manager.hpp"
+using namespace Qt::StringLiterals;
 
 namespace PJ {
 
@@ -22,8 +23,8 @@ namespace PJ {
 PJ::Expected<void, QString> DownloadManager::extractFromMemory(
     const QByteArray& data, const QString& destination_dir) const {
   QDir dest_dir(destination_dir);
-  if (!dest_dir.exists() && !dest_dir.mkpath(QStringLiteral("."))) {
-    return PJ::unexpected(QStringLiteral("Could not create destination directory: %1").arg(destination_dir));
+  if (!dest_dir.exists() && !dest_dir.mkpath(u"."_s)) {
+    return PJ::unexpected(u"Could not create destination directory: %1"_s.arg(destination_dir));
   }
 
   // Trailing separator ensures prefix check is exact and not fooled by
@@ -36,8 +37,7 @@ PJ::Expected<void, QString> DownloadManager::extractFromMemory(
   archive_read_support_format_zip(a.get());
 
   if (archive_read_open_memory(a.get(), data.constData(), static_cast<size_t>(data.size())) != ARCHIVE_OK) {
-    return PJ::unexpected(
-        QStringLiteral("Could not open ZIP: %1").arg(QString::fromUtf8(archive_error_string(a.get()))));
+    return PJ::unexpected(u"Could not open ZIP: %1"_s.arg(QString::fromUtf8(archive_error_string(a.get()))));
   }
 
   struct archive_entry* entry;
@@ -48,7 +48,7 @@ PJ::Expected<void, QString> DownloadManager::extractFromMemory(
 
     // Guard against path-traversal attacks (e.g. entries containing "../")
     if (!QFileInfo(target_path).absoluteFilePath().startsWith(safe_root)) {
-      return PJ::unexpected(QStringLiteral("Unsafe path detected in ZIP entry: %1").arg(entry_name));
+      return PJ::unexpected(u"Unsafe path detected in ZIP entry: %1"_s.arg(entry_name));
     }
 
     if (archive_entry_filetype(entry) == AE_IFDIR) {
@@ -62,7 +62,7 @@ PJ::Expected<void, QString> DownloadManager::extractFromMemory(
 
     QFile out_file(target_path);
     if (!out_file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
-      return PJ::unexpected(QStringLiteral("No write permission for: %1").arg(target_path));
+      return PJ::unexpected(u"No write permission for: %1"_s.arg(target_path));
     }
 
     const void* buf;
@@ -75,8 +75,8 @@ PJ::Expected<void, QString> DownloadManager::extractFromMemory(
       }
       if (rc != ARCHIVE_OK) {
         out_file.close();
-        return PJ::unexpected(QStringLiteral("Error reading ZIP entry '%1': %2")
-                                  .arg(entry_name, QString::fromUtf8(archive_error_string(a.get()))));
+        return PJ::unexpected(
+            u"Error reading ZIP entry '%1': %2"_s.arg(entry_name, QString::fromUtf8(archive_error_string(a.get()))));
       }
       out_file.write(static_cast<const char*>(buf), static_cast<qint64>(size));
     }
@@ -84,8 +84,7 @@ PJ::Expected<void, QString> DownloadManager::extractFromMemory(
   }
 
   if (r != ARCHIVE_EOF) {
-    return PJ::unexpected(
-        QStringLiteral("Error during extraction: %1").arg(QString::fromUtf8(archive_error_string(a.get()))));
+    return PJ::unexpected(u"Error during extraction: %1"_s.arg(QString::fromUtf8(archive_error_string(a.get()))));
   }
 
   return {};
@@ -151,7 +150,7 @@ void DownloadManager::onReplyFinished(QNetworkReply* reply) {
   reply->deleteLater();
 
   if (!op.expected_checksum.isEmpty() && !verifyChecksum(data, op.expected_checksum)) {
-    emit failed(id, QStringLiteral("Checksum mismatch"));
+    emit failed(id, u"Checksum mismatch"_s);
     return;
   }
 
@@ -170,7 +169,7 @@ QString DownloadManager::calculateSha256(const QByteArray& data) const {
 
 bool DownloadManager::verifyChecksum(const QByteArray& data, const QString& expected_checksum) const {
   QString expected = expected_checksum;
-  if (expected.startsWith(QStringLiteral("sha256:"))) {
+  if (expected.startsWith(u"sha256:"_s)) {
     expected = expected.mid(7);
   }
   return calculateSha256(data) == expected;

@@ -44,6 +44,7 @@
 #include <vector>
 
 #include "gtest/gtest.h"
+using namespace Qt::StringLiterals;
 
 namespace {
 
@@ -257,10 +258,10 @@ TEST(WidgetBindingRadioPairAdapter, ConvertsSafePairAndPreservesRadioEvents) {
   auto* root_layout = new QVBoxLayout(&root);
   auto* row = new QWidget(&root);
   auto* row_layout = new QHBoxLayout(row);
-  auto* frame = new QRadioButton(QStringLiteral("Frame"), row);
+  auto* frame = new QRadioButton(u"Frame"_s, row);
   frame->setObjectName("frameMode");
   frame->setChecked(true);
-  auto* arrow = new QRadioButton(QStringLiteral("Arrow"), row);
+  auto* arrow = new QRadioButton(u"Arrow"_s, row);
   arrow->setObjectName("arrowMode");
   auto* group = new QButtonGroup(row);
   group->addButton(frame);
@@ -300,10 +301,10 @@ TEST(WidgetBindingRadioPairAdapter, WidgetDataSyncsVisibleDualOptionsWidget) {
 
   QWidget root;
   auto* row_layout = new QHBoxLayout(&root);
-  auto* frame = new QRadioButton(QStringLiteral("Frame"), &root);
+  auto* frame = new QRadioButton(u"Frame"_s, &root);
   frame->setObjectName("frameMode");
   frame->setChecked(true);
-  auto* arrow = new QRadioButton(QStringLiteral("Arrow"), &root);
+  auto* arrow = new QRadioButton(u"Arrow"_s, &root);
   arrow->setObjectName("arrowMode");
   auto* group = new QButtonGroup(&root);
   group->addButton(frame);
@@ -331,9 +332,9 @@ TEST(WidgetBindingRadioPairAdapter, ConvertsAfterInitialWidgetDataSelectsRadio) 
 
   QWidget root;
   auto* row_layout = new QHBoxLayout(&root);
-  auto* frame = new QRadioButton(QStringLiteral("Frame"), &root);
+  auto* frame = new QRadioButton(u"Frame"_s, &root);
   frame->setObjectName("frameMode");
-  auto* arrow = new QRadioButton(QStringLiteral("Arrow"), &root);
+  auto* arrow = new QRadioButton(u"Arrow"_s, &root);
   arrow->setObjectName("arrowMode");
   auto* group = new QButtonGroup(&root);
   group->addButton(frame);
@@ -361,16 +362,16 @@ TEST(WidgetBindingRadioPairAdapter, ConvertsPairEmbeddedInMixedBoxRow) {
 
   QWidget root;
   auto* row_layout = new QHBoxLayout(&root);
-  auto* label = new QLabel(QStringLiteral("Timestamp:"), &root);
-  auto* publish = new QRadioButton(QStringLiteral("publish"), &root);
+  auto* label = new QLabel(u"Timestamp:"_s, &root);
+  auto* publish = new QRadioButton(u"publish"_s, &root);
   publish->setObjectName("publishTimestamp");
   publish->setChecked(true);
-  auto* log = new QRadioButton(QStringLiteral("log"), &root);
+  auto* log = new QRadioButton(u"log"_s, &root);
   log->setObjectName("logTimestamp");
   auto* group = new QButtonGroup(&root);
   group->addButton(publish);
   group->addButton(log);
-  auto* header = new QCheckBox(QStringLiteral("Use timestamp inside message (header)"), &root);
+  auto* header = new QCheckBox(u"Use timestamp inside message (header)"_s, &root);
   row_layout->addWidget(label);
   row_layout->addWidget(publish);
   row_layout->addWidget(log);
@@ -393,9 +394,9 @@ TEST(WidgetBindingRadioPairAdapter, LeavesUngroupedTwoRadioRowUntouched) {
 
   QWidget root;
   auto* row_layout = new QHBoxLayout(&root);
-  auto* first = new QRadioButton(QStringLiteral("First"), &root);
+  auto* first = new QRadioButton(u"First"_s, &root);
   first->setChecked(true);
-  auto* second = new QRadioButton(QStringLiteral("Second"), &root);
+  auto* second = new QRadioButton(u"Second"_s, &root);
   row_layout->addWidget(first);
   row_layout->addWidget(second);
 
@@ -414,13 +415,13 @@ TEST(WidgetBindingRadioPairAdapter, ConvertsButtonGroupsInsideNestedLayouts) {
 
   auto* array_row = new QHBoxLayout();
   auto* spin = new QSpinBox(&root);
-  auto* clamp = new QRadioButton(QStringLiteral("Clamp"), &root);
-  auto* skip = new QRadioButton(QStringLiteral("Skip"), &root);
+  auto* clamp = new QRadioButton(u"Clamp"_s, &root);
+  auto* skip = new QRadioButton(u"Skip"_s, &root);
   auto* array_group = new QButtonGroup(&root);
   array_group->addButton(clamp);
   array_group->addButton(skip);
   skip->setChecked(true);
-  array_row->addWidget(new QLabel(QStringLiteral("When an array size exceeds:"), &root));
+  array_row->addWidget(new QLabel(u"When an array size exceeds:"_s, &root));
   array_row->addWidget(spin);
   array_row->addStretch();
   array_row->addWidget(clamp);
@@ -428,17 +429,17 @@ TEST(WidgetBindingRadioPairAdapter, ConvertsButtonGroupsInsideNestedLayouts) {
   outer_layout->addLayout(array_row);
 
   auto* timestamp_row = new QHBoxLayout();
-  auto* publish = new QRadioButton(QStringLiteral("publish"), &root);
-  auto* log = new QRadioButton(QStringLiteral("log"), &root);
+  auto* publish = new QRadioButton(u"publish"_s, &root);
+  auto* log = new QRadioButton(u"log"_s, &root);
   auto* timestamp_group = new QButtonGroup(&root);
   timestamp_group->addButton(publish);
   timestamp_group->addButton(log);
   publish->setChecked(true);
-  timestamp_row->addWidget(new QLabel(QStringLiteral("Timestamp:"), &root));
+  timestamp_row->addWidget(new QLabel(u"Timestamp:"_s, &root));
   timestamp_row->addWidget(publish);
   timestamp_row->addWidget(log);
   timestamp_row->addStretch();
-  timestamp_row->addWidget(new QCheckBox(QStringLiteral("Use timestamp inside message (header)"), &root));
+  timestamp_row->addWidget(new QCheckBox(u"Use timestamp inside message (header)"_s, &root));
   outer_layout->addLayout(timestamp_row);
 
   PJ::adaptRadioButtonPairs(&root);
@@ -456,10 +457,10 @@ TEST(WidgetBindingRadioPairAdapter, ConvertsIndependentButtonGroupsSharingParent
 
   QWidget root;
   auto* row_layout = new QHBoxLayout(&root);
-  auto* publish = new QRadioButton(QStringLiteral("publish"), &root);
-  auto* log = new QRadioButton(QStringLiteral("log"), &root);
-  auto* clamp = new QRadioButton(QStringLiteral("Clamp"), &root);
-  auto* skip = new QRadioButton(QStringLiteral("Skip"), &root);
+  auto* publish = new QRadioButton(u"publish"_s, &root);
+  auto* log = new QRadioButton(u"log"_s, &root);
+  auto* clamp = new QRadioButton(u"Clamp"_s, &root);
+  auto* skip = new QRadioButton(u"Skip"_s, &root);
   auto* timestamp_group = new QButtonGroup(&root);
   timestamp_group->addButton(publish);
   timestamp_group->addButton(log);
@@ -468,11 +469,11 @@ TEST(WidgetBindingRadioPairAdapter, ConvertsIndependentButtonGroupsSharingParent
   overflow_group->addButton(skip);
   publish->setChecked(true);
   skip->setChecked(true);
-  row_layout->addWidget(new QLabel(QStringLiteral("Timestamp:"), &root));
+  row_layout->addWidget(new QLabel(u"Timestamp:"_s, &root));
   row_layout->addWidget(publish);
   row_layout->addWidget(log);
   row_layout->addStretch();
-  row_layout->addWidget(new QLabel(QStringLiteral("When an array size exceeds:"), &root));
+  row_layout->addWidget(new QLabel(u"When an array size exceeds:"_s, &root));
   row_layout->addWidget(clamp);
   row_layout->addWidget(skip);
 
@@ -492,18 +493,18 @@ TEST(WidgetBindingRadioPairAdapter, ConvertsGroupedPairInsideGridRow) {
   QWidget root;
   auto* grid = new QGridLayout(&root);
   auto* spin = new QSpinBox(&root);
-  auto* clamp = new QRadioButton(QStringLiteral("Clamp"), &root);
-  auto* skip = new QRadioButton(QStringLiteral("Skip"), &root);
+  auto* clamp = new QRadioButton(u"Clamp"_s, &root);
+  auto* skip = new QRadioButton(u"Skip"_s, &root);
   skip->setChecked(true);
   auto* overflow_group = new QButtonGroup(&root);
   overflow_group->addButton(clamp);
   overflow_group->addButton(skip);
-  grid->addWidget(new QLabel(QStringLiteral("When an array size exceeds:"), &root), 0, 0);
+  grid->addWidget(new QLabel(u"When an array size exceeds:"_s, &root), 0, 0);
   grid->addWidget(spin, 0, 1);
   grid->addItem(new QSpacerItem(20, 1, QSizePolicy::Expanding, QSizePolicy::Minimum), 0, 2);
   grid->addWidget(clamp, 0, 3);
   grid->addWidget(skip, 0, 4);
-  grid->addWidget(new QCheckBox(QStringLiteral("Use timestamp inside message (header)"), &root), 1, 0, 1, 5);
+  grid->addWidget(new QCheckBox(u"Use timestamp inside message (header)"_s, &root), 1, 0, 1, 5);
 
   PJ::adaptRadioButtonPairs(&root);
 
@@ -519,11 +520,11 @@ TEST(WidgetBindingRadioPairAdapter, LeavesUngroupedLargerRadioSetUntouched) {
 
   QWidget root;
   auto* row_layout = new QHBoxLayout(&root);
-  auto* a = new QRadioButton(QStringLiteral("A"), &root);
+  auto* a = new QRadioButton(u"A"_s, &root);
   a->setChecked(true);
-  auto* b = new QRadioButton(QStringLiteral("B"), &root);
-  auto* c = new QRadioButton(QStringLiteral("C"), &root);
-  auto* d = new QRadioButton(QStringLiteral("D"), &root);
+  auto* b = new QRadioButton(u"B"_s, &root);
+  auto* c = new QRadioButton(u"C"_s, &root);
+  auto* d = new QRadioButton(u"D"_s, &root);
   row_layout->addWidget(a);
   row_layout->addWidget(b);
   row_layout->addWidget(c);
@@ -544,7 +545,7 @@ TEST(WidgetCheckBoxAdapter, ConvertsCheckBoxToLabeledToggleAndPreservesEvents) {
 
   QWidget root;
   auto* layout = new QVBoxLayout(&root);
-  auto* check = new QCheckBox(QStringLiteral("Enable streaming"), &root);
+  auto* check = new QCheckBox(u"Enable streaming"_s, &root);
   check->setObjectName("enableStreaming");
   layout->addWidget(check);
 
@@ -553,7 +554,7 @@ TEST(WidgetCheckBoxAdapter, ConvertsCheckBoxToLabeledToggleAndPreservesEvents) {
   auto* toggle = root.findChild<PJ::ToggleSwitch*>();
   ASSERT_NE(toggle, nullptr);
   EXPECT_TRUE(check->isHidden());
-  EXPECT_EQ(toggle->text(), QStringLiteral("Enable streaming"));
+  EXPECT_EQ(toggle->text(), u"Enable streaming"_s);
   EXPECT_EQ(toggle->labelSide(), PJ::ToggleSwitch::LabelSide::Left);
   EXPECT_FALSE(toggle->isChecked());
 
@@ -583,7 +584,7 @@ TEST(WidgetCheckBoxAdapter, WidgetDataSyncsToggle) {
 
   QWidget root;
   auto* layout = new QVBoxLayout(&root);
-  auto* check = new QCheckBox(QStringLiteral("Loop"), &root);
+  auto* check = new QCheckBox(u"Loop"_s, &root);
   check->setObjectName("loop");
   layout->addWidget(check);
 
@@ -606,7 +607,7 @@ TEST(WidgetCheckBoxAdapter, LeavesTristateCheckBoxUntouched) {
 
   QWidget root;
   auto* layout = new QVBoxLayout(&root);
-  auto* check = new QCheckBox(QStringLiteral("Partial"), &root);
+  auto* check = new QCheckBox(u"Partial"_s, &root);
   check->setTristate(true);
   layout->addWidget(check);
 
@@ -655,7 +656,7 @@ TEST(WidgetComboBoxAdapter, UpgradesPlainComboBoxInPlacePreservingState) {
   auto* layout = new QVBoxLayout(&root);
   auto* combo = new QComboBox(&root);
   combo->setObjectName("mode");
-  combo->addItems({QStringLiteral("a"), QStringLiteral("b"), QStringLiteral("c")});
+  combo->addItems({u"a"_s, u"b"_s, u"c"_s});
   combo->setCurrentIndex(2);
   layout->addWidget(combo);
 

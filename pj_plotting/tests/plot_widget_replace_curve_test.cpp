@@ -15,6 +15,7 @@
 #include "pj_runtime/CatalogModel.h"
 #include "pj_runtime/CurveDescriptor.h"
 #include "pj_runtime/SessionManager.h"
+using namespace Qt::StringLiterals;
 
 namespace {
 
@@ -91,7 +92,7 @@ TEST(PlotWidgetReplaceCurve, AbsentSourceJustAddsOutput) {
   ASSERT_FALSE(out_key.isEmpty());
 
   PJ::PlotWidget plot(&session, &catalog);
-  plot.replaceCurve(QStringLiteral("dataset:1/topic:999/column:0"), out_key);
+  plot.replaceCurve(u"dataset:1/topic:999/column:0"_s, out_key);
 
   ASSERT_EQ(plot.curveList().size(), 1U);
   EXPECT_EQ(plot.curveList().front().source_name, out_key);
@@ -114,7 +115,7 @@ TEST(PlotWidgetReplaceCurve, NoOpWhenOutputMissing) {
   ASSERT_EQ(plot.curveList().size(), 1U);
 
   // The output key references a topic that does not exist in the catalog.
-  plot.replaceCurve(src_key, QStringLiteral("dataset:1/topic:999/column:0"));
+  plot.replaceCurve(src_key, u"dataset:1/topic:999/column:0"_s);
 
   // No-op: the source curve stays; nothing is dropped.
   ASSERT_EQ(plot.curveList().size(), 1U);

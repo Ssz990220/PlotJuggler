@@ -27,6 +27,7 @@
 
 #include "pj_widgets/ToastManager.h"
 #include "qss_preprocessor.h"
+using namespace Qt::StringLiterals;
 
 namespace {
 
@@ -59,23 +60,23 @@ class DemoWindow : public QMainWindow {
 
 int main(int argc, char** argv) {
   QApplication app(argc, argv);
-  QApplication::setOrganizationName(QStringLiteral("PlotJuggler"));
-  QApplication::setApplicationName(QStringLiteral("ToastDemo"));
+  QApplication::setOrganizationName(u"PlotJuggler"_s);
+  QApplication::setApplicationName(u"ToastDemo"_s);
 
-  QString theme = QStringLiteral("dark");
+  QString theme = u"dark"_s;
   QString screenshot_path;
   for (int i = 1; i < argc; ++i) {
     const QString a = QString::fromLocal8Bit(argv[i]);
-    if (a == QStringLiteral("--theme") && i + 1 < argc) {
+    if (a == u"--theme"_s && i + 1 < argc) {
       theme = QString::fromLocal8Bit(argv[++i]);
-    } else if (a == QStringLiteral("--screenshot") && i + 1 < argc) {
+    } else if (a == u"--screenshot"_s && i + 1 < argc) {
       screenshot_path = QString::fromLocal8Bit(argv[++i]);
     }
   }
   applyTheme(theme);
 
   auto* win = new DemoWindow;
-  win->setWindowTitle(QStringLiteral("PJ Toast demo"));
+  win->setWindowTitle(u"PJ Toast demo"_s);
   auto* toasts = new PJ::ToastManager(win);  // parents its container into the window
   win->toasts = toasts;
 
@@ -83,18 +84,18 @@ int main(int argc, char** argv) {
   auto* lay = new QVBoxLayout(central);
   lay->setContentsMargins(16, 16, 16, 16);
   lay->setSpacing(8);
-  lay->addWidget(new QLabel(QStringLiteral("Trigger a toast (slides in bottom-right):"), central));
+  lay->addWidget(new QLabel(u"Trigger a toast (slides in bottom-right):"_s, central));
 
   auto add = [&](const QString& label, const std::function<void()>& on_click) {
     auto* btn = new QPushButton(label, central);
     QObject::connect(btn, &QPushButton::clicked, central, on_click);
     lay->addWidget(btn);
   };
-  add(QStringLiteral("New release available"),
-      [toasts]() { toasts->showToast(releaseMessage(), QPixmap(QStringLiteral(":/resources/success_kid.png"))); });
-  add(QStringLiteral("Up to date"), [toasts]() { toasts->showToast(QStringLiteral("PlotJuggler is up to date.")); });
-  add(QStringLiteral("Could not check"),
-      [toasts]() { toasts->showToast(QStringLiteral("Could not check for updates. Please try again later.")); });
+  add(u"New release available"_s,
+      [toasts]() { toasts->showToast(releaseMessage(), QPixmap(u":/resources/success_kid.png"_s)); });
+  add(u"Up to date"_s, [toasts]() { toasts->showToast(u"PlotJuggler is up to date."_s); });
+  add(u"Could not check"_s,
+      [toasts]() { toasts->showToast(u"Could not check for updates. Please try again later."_s); });
   lay->addStretch();
   win->setCentralWidget(central);
   win->resize(820, 520);
@@ -102,7 +103,7 @@ int main(int argc, char** argv) {
 
   if (!screenshot_path.isEmpty()) {
     // Show the release toast, let the 300 ms slide-in settle, grab, quit.
-    toasts->showToast(releaseMessage(), QPixmap(QStringLiteral(":/resources/success_kid.png")));
+    toasts->showToast(releaseMessage(), QPixmap(u":/resources/success_kid.png"_s));
     QTimer::singleShot(600, win, [win, screenshot_path]() {
       const bool ok = win->grab().save(screenshot_path);
       std::fprintf(

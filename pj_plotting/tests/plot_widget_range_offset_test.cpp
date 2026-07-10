@@ -22,6 +22,7 @@
 #include "pj_plotting/PlotWidget.h"
 #include "pj_runtime/CatalogModel.h"
 #include "pj_runtime/SessionManager.h"
+using namespace Qt::StringLiterals;
 
 namespace {
 
@@ -60,9 +61,9 @@ QString keyForTopic(PJ::CatalogModel& catalog, PJ::TopicId topic_id) {
 // "name" attribute. Setting it keeps the curve across the load so the plot can
 // resolve the dataset's display offset.
 void rebindCurveNames(QDomElement& plot_element, const QString& key) {
-  for (QDomElement curve = plot_element.firstChildElement(QStringLiteral("curve")); !curve.isNull();
-       curve = curve.nextSiblingElement(QStringLiteral("curve"))) {
-    curve.setAttribute(QStringLiteral("name"), key);
+  for (QDomElement curve = plot_element.firstChildElement(u"curve"_s); !curve.isNull();
+       curve = curve.nextSiblingElement(u"curve"_s)) {
+    curve.setAttribute(u"name"_s, key);
   }
 }
 
@@ -102,12 +103,12 @@ TEST(PlotWidgetRangeOffset, SavesAbsoluteTimeRange) {
 
   QDomDocument doc;
   const QDomElement plot_element = fixture.plot.xmlSaveState(doc);
-  const QDomElement range = plot_element.firstChildElement(QStringLiteral("range"));
+  const QDomElement range = plot_element.firstChildElement(u"range"_s);
   ASSERT_FALSE(range.isNull());
 
-  EXPECT_FALSE(range.hasAttribute(QStringLiteral("x_absolute"))) << "the obsolete marker must not be written";
-  EXPECT_NEAR(range.attribute(QStringLiteral("left")).toDouble(), kT0Sec, 1e-3);
-  EXPECT_NEAR(range.attribute(QStringLiteral("right")).toDouble(), kT0Sec + 1.0, 1e-3);
+  EXPECT_FALSE(range.hasAttribute(u"x_absolute"_s)) << "the obsolete marker must not be written";
+  EXPECT_NEAR(range.attribute(u"left"_s).toDouble(), kT0Sec, 1e-3);
+  EXPECT_NEAR(range.attribute(u"right"_s).toDouble(), kT0Sec + 1.0, 1e-3);
 }
 
 // The core bug: save with the offset ON, load with it OFF. The restored axis
@@ -158,16 +159,16 @@ TEST(PlotWidgetRangeOffset, UnmarkedTimeRangeLoadsAsAbsolute) {
   fixture.session.setUseTimeOffset(true);  // offset = kT0Ns
 
   QDomDocument doc;
-  QDomElement plot_element = doc.createElement(QStringLiteral("plot"));
-  plot_element.setAttribute(QStringLiteral("mode"), QStringLiteral("TimeSeries"));
-  QDomElement range = doc.createElement(QStringLiteral("range"));
-  range.setAttribute(QStringLiteral("left"), QString::number(kT0Sec, 'f', 6));
-  range.setAttribute(QStringLiteral("right"), QString::number(kT0Sec + 1.0, 'f', 6));
-  range.setAttribute(QStringLiteral("top"), QStringLiteral("5.000000"));
-  range.setAttribute(QStringLiteral("bottom"), QStringLiteral("-5.000000"));
+  QDomElement plot_element = doc.createElement(u"plot"_s);
+  plot_element.setAttribute(u"mode"_s, u"TimeSeries"_s);
+  QDomElement range = doc.createElement(u"range"_s);
+  range.setAttribute(u"left"_s, QString::number(kT0Sec, 'f', 6));
+  range.setAttribute(u"right"_s, QString::number(kT0Sec + 1.0, 'f', 6));
+  range.setAttribute(u"top"_s, u"5.000000"_s);
+  range.setAttribute(u"bottom"_s, u"-5.000000"_s);
   plot_element.appendChild(range);
-  QDomElement curve = doc.createElement(QStringLiteral("curve"));
-  curve.setAttribute(QStringLiteral("name"), fixture.key);
+  QDomElement curve = doc.createElement(u"curve"_s);
+  curve.setAttribute(u"name"_s, fixture.key);
   plot_element.appendChild(curve);
 
   ASSERT_TRUE(fixture.plot.xmlLoadState(plot_element, /*autozoom=*/true));
