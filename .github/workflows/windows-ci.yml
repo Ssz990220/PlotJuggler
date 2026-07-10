@@ -10,7 +10,10 @@ on:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  # Cancel superseded runs on PRs only. Push-to-main runs must complete: they
+  # are the only runs that save the Conan cache layers (ghcr.io + GHA), so
+  # cancelling them on a rapid push sequence starves the caches cold forever.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   pre-commit:
@@ -28,11 +31,12 @@ jobs:
     # PRs while the codebase converges on cross-platform cleanliness.
     continue-on-error: true
     # Backstop against hangs (a deadlocked test otherwise holds the runner for
-    # GitHub's 6-hour default). Worst observed legitimate run — cold sccache —
-    # is ~59 min; a cold-Conan + cold-sccache combination has landed at ~93
-    # min, so raise the ceiling to 120 to leave a comfortable margin over that
-    # while still catching real hangs.
-    timeout-minutes: 120
+    # GitHub's 6-hour default). Worst observed legitimate run is ~121 min:
+    # both Conan layers cold (~65 min rebuilding the closure from source) plus
+    # an effectively cold sccache — a from-source Conan rebuild lands packages
+    # at new paths, so compile command lines change and cached objects miss.
+    # 150 leaves margin over that while still catching real hangs.
+    timeout-minutes: 150
     permissions:
       contents: read
       packages: write   # push/pull the Conan cache OCI artifact on ghcr.io
@@ -70,6 +74,10 @@ jobs:
         # case we degrade to "no Conan cache this run" (build still completes).
         id: setup_oras
         uses: oras-project/setup-oras@v1
+        with:
+          # Keep in sync with the fallback step below so both paths install
+          # the same oras.
+          version: "1.3.0"
         continue-on-error: true
 
       - name: Setup oras (manual download fallback)
@@ -116,13 +124,19 @@ jobs:
           # not Conan 2.0 ready" from the same truncated blob. A re-run restores the
           # same bad blob, so the only fix is a new cache identity that forces a clean
           # cold rebuild (and a fresh save on the next push-to-main).
-          $cacheVersion = "v5"
+          # v6: evicts the v5 blob saved from a conan install that died mid-graph
+          # (zlib.net 415 on minizip) — 23/47 packages, restored as a HIT forever.
+          $cacheVersion = "v6"
           $fileHash = (Get-FileHash conanfile.txt -Algorithm SHA256).Hash.Substring(0, 16).ToLower()
           $hash = "$cacheVersion-$fileHash"
           $owner = "${{ github.repository_owner }}".ToLower()
           $tag = "ghcr.io/$owner/pj4-conan-cache:windows-msvc-relwithdebinfo-$hash"
           "hash=$hash" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
           "tag=$tag" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          # Emitted as an output so the GHA restore step's restore-keys can't
+          # drift from the salt above (a bump that misses one of two literals
+          # silently breaks the prefix fallback).
+          "restore_prefix=conan-windows-msvc-relwithdebinfo-$cacheVersion-" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
           Write-Host "Cache tag: $tag"
 
       - name: Login to ghcr.io
@@ -161,11 +175,13 @@ jobs:
 
       - name: Restore Conan cache from GitHub Actions cache
         # Fallback layer under the ghcr.io cache above (same rationale as the
-        # Linux job): ghcr.io only restores on the canonical PlotJuggler repo and
-        # only saves on push-to-main, so PRs that touch conanfile.txt and all
-        # fork builds rebuild every Conan dep from source. The native Actions
-        # cache works on PRs/forks with no token and fills that gap. Skipped when
-        # ghcr.io already produced a HIT — %USERPROFILE%\.conan2 is populated.
+        # Linux job): ghcr.io only restores on the canonical PlotJuggler repo,
+        # so fork builds would rebuild every Conan dep from source. The native
+        # Actions cache needs no token and fills that gap: entries are saved on
+        # push-to-main only (see the save step below — per-PR saves blew the
+        # repo's 10 GB cache budget) and restored here cross-scope from the
+        # default branch by exact key or salt prefix. Skipped when ghcr.io
+        # already produced a HIT — %USERPROFILE%\.conan2 is populated.
         id: conan-gha-cache
         if: env.CONAN_CACHE_HIT != '1'
         uses: actions/cache/restore@v5
@@ -173,11 +189,52 @@ jobs:
           path: ~/.conan2
           key: conan-windows-msvc-relwithdebinfo-${{ steps.conan_cache.outputs.hash }}
           restore-keys: |
-            conan-windows-msvc-relwithdebinfo-v5-
+            ${{ steps.conan_cache.outputs.restore_prefix }}
 
-      - name: Cache Qt
+      - name: Seed Conan source download cache
+        # Some third-party source tarballs live on hosts that reject
+        # GitHub-runner IPs (zlib.net answers HTTP 415; minizip — a hard
+        # requirement of assimp — downloads zlib's tarball from there and has
+        # no mirror in its recipe). Those tarballs are versioned in-repo under
+        # .github/conan/source-backup/, addressed by sha256, and copied into
+        # Conan's source download cache here so a source() fetch is served
+        # locally and never touches the flaky host. Conan still verifies the
+        # recipe-pinned sha256 on every use, and anything not seeded falls
+        # through to the recipe's own URLs as usual. (An HTTP backup via
+        # raw.githubusercontent does NOT work here: this repo is private, so
+        # unauthenticated raw fetches 404.) See
+        # .github/conan/source-backup/README.md.
+        #
+        # ORDERING INVARIANT: this step must run AFTER both Conan cache
+        # restores above — they untar a full ~/.conan2 (including global.conf)
+        # over the Conan home and would clobber the line written here. The
+        # write is idempotent (replace-not-append) because a restored
+        # global.conf may already carry this line from the run that saved it.
+        shell: pwsh
+        run: |
+          $cacheDir = (Join-Path $env:RUNNER_TEMP "conan-source-cache").Replace('\', '/')
+          New-Item -ItemType Directory -Force -Path "$cacheDir/s" | Out-Null
+          Get-ChildItem ".github/conan/source-backup" -Exclude "README.md" |
+            Copy-Item -Destination "$cacheDir/s"
+          $conanHome = (conan config home | Out-String).Trim()
+          $conf = Join-Path $conanHome "global.conf"
+          $lines = @()
+          if (Test-Path $conf) {
+            $lines = @(Get-Content $conf | Where-Object { $_ -notmatch '^core\.sources:download_cache=' })
+          }
+          $lines + "core.sources:download_cache=$cacheDir" | Set-Content $conf
+          # Surface the effective conf in the log so a clobber regression is
+          # visible at a glance.
+          Get-Content $conf
+
+      - name: Restore Qt cache
+        # Split restore/save (not actions/cache) so the entry is written by an
+        # explicit step right after the install instead of a post-job save:
+        # push-to-main only, to keep this multi-hundred-MB blob from being
+        # duplicated across PR refs (shared 10 GB budget), and never capturing
+        # a tree mutated by later steps.
         id: qt-cache
-        uses: actions/cache@v5
+        uses: actions/cache/restore@v5
         with:
           path: .qt
           key: qt-6.11.1-windows-msvc2022_64
@@ -220,6 +277,15 @@ jobs:
             sleep $((attempt * 15))
           done
 
+      - name: Save Qt cache
+        # Immutable, version-keyed blob: saved once per Qt version, from a
+        # push-to-main run (see the restore step's comment for why not per-PR).
+        if: github.event_name == 'push' && steps.qt-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v5
+        with:
+          path: .qt
+          key: qt-6.11.1-windows-msvc2022_64
+
       - name: Install sccache
         # sccache is a compile-cache speedup, NOT load-bearing: the build is
         # correct without it, just slower. So this step must never fail the run.
@@ -259,6 +325,34 @@ jobs:
         with:
           arch: x64
 
+      - name: Conan install
+        # Its own step (not folded into Build) so the cache-save steps below can
+        # gate on ITS outcome: a conan install that dies mid-graph (e.g. an
+        # upstream source host rejecting the runner) must never get its partial
+        # ~/.conan2 persisted as the official cache blob — that is exactly how
+        # the incomplete v5 blob was born.
+        id: conan_install
+        shell: bash
+        run: |
+          conan profile detect --force
+          # Tell Conan to generate a Ninja-compatible toolchain. Without this
+          # override Conan auto-picks "Visual Studio 17 2022" and stamps the
+          # toolchain with CMAKE_GENERATOR_PLATFORM=x64 + CMAKE_GENERATOR_TOOLSET=v143.
+          # Then our `cmake -G "Ninja Multi-Config"` below errors with:
+          #   Generator Ninja Multi-Config does not support platform specification,
+          #   but platform x64 was specified.
+          # CPython's Conan recipe disables the STATIC MSVC build (>=3.10), so the
+          # embedded Python backend (pj_scripting) must link it shared here. CPython's
+          # MSVC build (PCbuild.sln) also has no "RelWithDebInfo" configuration — only
+          # Debug/Release — so build just that dependency as Release. Release is
+          # CRT-compatible with the rest of the RelWithDebInfo graph (both use the
+          # release /MD runtime). Both overrides are scoped to cpython only and
+          # Windows-CI-only; Linux links CPython statically.
+          conan install . --output-folder=build --build=missing \
+            -s build_type=RelWithDebInfo -s compiler.cppstd=20 \
+            -o "cpython/*:shared=True" -s "cpython/*:build_type=Release" \
+            -c tools.cmake.cmaketoolchain:generator="Ninja Multi-Config"
+
       - name: Build
         shell: bash
         env:
@@ -283,25 +377,6 @@ jobs:
             echo "::error::Qt 6.11.1 not found at $QT_DIR"
             exit 1
           fi
-
-          conan profile detect --force
-          # Tell Conan to generate a Ninja-compatible toolchain. Without this
-          # override Conan auto-picks "Visual Studio 17 2022" and stamps the
-          # toolchain with CMAKE_GENERATOR_PLATFORM=x64 + CMAKE_GENERATOR_TOOLSET=v143.
-          # Then our `cmake -G "Ninja Multi-Config"` below errors with:
-          #   Generator Ninja Multi-Config does not support platform specification,
-          #   but platform x64 was specified.
-          # CPython's Conan recipe disables the STATIC MSVC build (>=3.10), so the
-          # embedded Python backend (pj_scripting) must link it shared here. CPython's
-          # MSVC build (PCbuild.sln) also has no "RelWithDebInfo" configuration — only
-          # Debug/Release — so build just that dependency as Release. Release is
-          # CRT-compatible with the rest of the RelWithDebInfo graph (both use the
-          # release /MD runtime). Both overrides are scoped to cpython only and
-          # Windows-CI-only; Linux links CPython statically.
-          conan install . --output-folder=build --build=missing \
-            -s build_type=RelWithDebInfo -s compiler.cppstd=20 \
-            -o "cpython/*:shared=True" -s "cpython/*:build_type=Release" \
-            -c tools.cmake.cmaketoolchain:generator="Ninja Multi-Config"
 
           # Use Ninja Multi-Config so sccache is actually invoked: CMake's
           # CMAKE_<LANG>_COMPILER_LAUNCHER is honored by the Ninja and
@@ -368,11 +443,14 @@ jobs:
         # Only push from the canonical repo on real pushes (forks lack write
         # access to ghcr.io packages). Skip on cache HIT — the tag content is
         # already up to date, no point re-uploading the same bytes.
-        # `!cancelled()` lets us save the cache even when the project compile
-        # step (`cmake --build`) fails — Conan deps finished long before, so
-        # the cache is fully populated and worth preserving for the next run.
+        # Gated on the "Conan install" step's outcome, NOT on !cancelled(): a
+        # failing project compile may still save (deps finished earlier), but a
+        # conan install that died mid-graph must never publish its partial
+        # ~/.conan2 as the official blob — a partial blob restores as a HIT and
+        # (by the skip-on-HIT rule) is then never healed.
         if: |
-          !cancelled() &&
+          always() &&
+          steps.conan_install.outcome == 'success' &&
           github.event_name == 'push' &&
           github.repository == 'PlotJuggler/PJ4' &&
           env.CONAN_CACHE_HIT != '1' &&
@@ -402,18 +480,25 @@ jobs:
       - name: Trim Conan cache before saving
         # Drop build/source/temp trees so only the package binaries are persisted
         # (matches the ghcr.io save above). Runs only when about to save a fresh
-        # GHA cache entry.
-        if: always() && env.CONAN_CACHE_HIT != '1' && steps.conan-gha-cache.outputs.cache-hit != 'true'
+        # GHA cache entry, and only if conan install fully succeeded (same
+        # partial-blob rationale as the ghcr.io save).
+        if: always() && steps.conan_install.outcome == 'success' && github.event_name == 'push' && env.CONAN_CACHE_HIT != '1' && steps.conan-gha-cache.outputs.cache-hit != 'true'
         shell: pwsh
         run: conan cache clean "*" --build --source --temp; $global:LASTEXITCODE = 0
 
       - name: Save Conan cache to GitHub Actions cache
-        # Persist the built closure under the exact conanfile hash so the next
-        # run on this branch (or any identically-keyed branch) restores it.
-        # `always()` so a failing project compile still saves the third-party
-        # deps that finished earlier. Skipped on a ghcr.io HIT or exact GHA-key
-        # hit: %USERPROFILE%\.conan2 is already current and GHA keys are immutable.
-        if: always() && env.CONAN_CACHE_HIT != '1' && steps.conan-gha-cache.outputs.cache-hit != 'true'
+        # Persist the built closure under the exact conanfile hash so later
+        # runs restore it. `always()` so a failing project compile still saves
+        # the third-party deps that finished earlier — but only if conan
+        # install itself fully succeeded (a mid-graph death must not persist a
+        # partial closure). Push-to-main only: per-ref PR saves duplicated
+        # multi-GB blobs across refs and blew the repo's shared 10 GB Actions
+        # cache budget (LRU eviction then randomly evicted whole caches); PR
+        # runs restore main's entry cross-scope instead. Trade-off: a PR that
+        # edits conanfile.txt rebuilds the dep delta on every push until it
+        # merges. Skipped on a ghcr.io HIT or exact GHA-key hit:
+        # %USERPROFILE%\.conan2 is already current and GHA keys are immutable.
+        if: always() && steps.conan_install.outcome == 'success' && github.event_name == 'push' && env.CONAN_CACHE_HIT != '1' && steps.conan-gha-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v5
         with:
           path: ~/.conan2
