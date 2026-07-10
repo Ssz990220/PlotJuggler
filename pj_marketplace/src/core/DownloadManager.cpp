@@ -169,7 +169,7 @@ QString DownloadManager::calculateSha256(const QByteArray& data) const {
 
 bool DownloadManager::verifyChecksum(const QByteArray& data, const QString& expected_checksum) const {
   QString expected = expected_checksum;
-  if (expected.startsWith(u"sha256:"_s)) {
+  if (expected.startsWith("sha256:"_L1)) {
     expected = expected.mid(7);
   }
   return calculateSha256(data) == expected;

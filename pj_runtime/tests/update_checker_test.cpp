@@ -182,7 +182,7 @@ TEST(UpdateCheckerTest, ValidNonObjectJsonEmitsDistinctFailure) {
   ASSERT_TRUE(waitForSignal(failed_spy));
   const QString reason = failed_spy.first().at(0).toString();
   // Must not misreport a valid-but-non-object body as a "parse error: no error".
-  EXPECT_TRUE(reason.contains(u"not a JSON object"_s));
+  EXPECT_TRUE(reason.contains("not a JSON object"_L1));
 }
 
 TEST(UpdateCheckerTest, MissingTagNameEmitsCheckFailed) {

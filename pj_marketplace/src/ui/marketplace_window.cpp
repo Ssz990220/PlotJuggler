@@ -180,7 +180,7 @@ void MarketplaceWindow::installChrome() {
   close_btn->setAutoRaise(true);
   close_btn->setFocusPolicy(Qt::NoFocus);
   close_btn->setIconSize(QSize(20, 20));
-  const bool dark_theme = QSettings().value(u"StyleSheet::theme"_s, u"light"_s).toString() != u"light"_s;
+  const bool dark_theme = QSettings().value(u"StyleSheet::theme"_s, u"light"_s).toString() != "light"_L1;
   close_btn->setIcon(
       QIcon(dark_theme ? u":/resources/svg/close_windows_dark.svg"_s : u":/resources/svg/close_windows_light.svg"_s));
   connect(close_btn, &QToolButton::clicked, this, &QDialog::reject);
@@ -221,7 +221,7 @@ void MarketplaceWindow::setupUi() {
   // The marketplace doesn't link pj_app_core, so it can't pipe icons
   // through LoadSvg's recolor. Pick the theme-appropriate variant
   // directly from the resource bundle.
-  const bool dark_theme = QSettings().value(u"StyleSheet::theme"_s, u"light"_s).toString() != u"light"_s;
+  const bool dark_theme = QSettings().value(u"StyleSheet::theme"_s, u"light"_s).toString() != "light"_L1;
   ui_->settings_btn_->setIcon(
       QIcon(dark_theme ? u":/resources/svg/settings_cog_dark.svg"_s : u":/resources/svg/settings_cog_light.svg"_s));
   ui_->refresh_btn_->setIcon(
@@ -649,7 +649,7 @@ void MarketplaceWindow::onSettingsClicked() {
   close_btn->setAutoRaise(true);
   close_btn->setFocusPolicy(Qt::NoFocus);
   close_btn->setIconSize(QSize(20, 20));
-  const bool dark_theme = QSettings().value(u"StyleSheet::theme"_s, u"light"_s).toString() != u"light"_s;
+  const bool dark_theme = QSettings().value(u"StyleSheet::theme"_s, u"light"_s).toString() != "light"_L1;
   close_btn->setIcon(
       QIcon(dark_theme ? u":/resources/svg/close_windows_dark.svg"_s : u":/resources/svg/close_windows_light.svg"_s));
   connect(close_btn, &QToolButton::clicked, &dlg, &QDialog::reject);

@@ -86,7 +86,7 @@ void UrlFetcher::fetch(const QUrl& url, std::function<void(FetchResult)> on_done
     deliverLater(std::move(on_done), readLocalFile(*local));
     return;
   }
-  if (url.scheme() != u"http"_s && url.scheme() != u"https"_s) {
+  if (url.scheme() != "http"_L1 && url.scheme() != "https"_L1) {
     FetchResult result;
     result.error = tr("unsupported URL scheme '%1'").arg(url.scheme());
     deliverLater(std::move(on_done), std::move(result));

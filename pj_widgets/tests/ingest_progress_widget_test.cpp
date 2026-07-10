@@ -84,11 +84,11 @@ TEST(IngestProgressWidgetTest, TitleAndCounterInCaption) {
   ASSERT_NE(bar, nullptr);
   widget.setTitle(u"data.mcap"_s);
   widget.setCounterText(u"2/5"_s);
-  EXPECT_TRUE(bar->format().contains(u"data.mcap"_s));
-  EXPECT_TRUE(bar->format().contains(u"2/5"_s));
+  EXPECT_TRUE(bar->format().contains("data.mcap"_L1));
+  EXPECT_TRUE(bar->format().contains("2/5"_L1));
   widget.setCounterText(QString());  // counter cleared, title stays
-  EXPECT_FALSE(bar->format().contains(u"2/5"_s));
-  EXPECT_TRUE(bar->format().contains(u"data.mcap"_s));
+  EXPECT_FALSE(bar->format().contains("2/5"_L1));
+  EXPECT_TRUE(bar->format().contains("data.mcap"_L1));
 }
 
 TEST(IngestProgressWidgetTest, UnconfiguredButtonStaysHidden) {

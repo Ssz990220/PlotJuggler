@@ -114,7 +114,7 @@ QString defaultColorField(const QStringList& available) {
   if (available.isEmpty()) {
     return QString();
   }
-  return available.contains(u"intensity"_s) ? u"intensity"_s : available.first();
+  return available.contains("intensity"_L1) ? u"intensity"_s : available.first();
 }
 
 // Reserved sentinel stored as the "RGB" combo item's data, distinguishing it from a
@@ -218,13 +218,13 @@ QDomElement PointCloudLayer::xmlSaveState(QDomDocument& doc) const {
 }
 
 bool PointCloudLayer::xmlLoadState(const QDomElement& element) {
-  if (element.isNull() || element.tagName() != u"pointcloud"_s) {
+  if (element.isNull() || element.tagName() != "pointcloud"_L1) {
     return false;
   }
   const QString shape_str = element.attribute(u"shape"_s, u"sphere"_s);
-  if (shape_str == u"point"_s) {
+  if (shape_str == "point"_L1) {
     setShape(PointcloudRenderPass::Shape::kPoint);
-  } else if (shape_str == u"cube"_s) {
+  } else if (shape_str == "cube"_L1) {
     setShape(PointcloudRenderPass::Shape::kCube);
   } else {
     setShape(PointcloudRenderPass::Shape::kSphere);
@@ -242,8 +242,8 @@ bool PointCloudLayer::xmlLoadState(const QDomElement& element) {
 
   const QString color_type_str = element.attribute(u"color_type"_s, u"field"_s);
   setColorType(
-      color_type_str == u"solid"_s ? PointcloudRenderPass::ColorType::kSolid
-      : color_type_str == u"rgb"_s ? PointcloudRenderPass::ColorType::kRgb
+      color_type_str == "solid"_L1 ? PointcloudRenderPass::ColorType::kSolid
+      : color_type_str == "rgb"_L1 ? PointcloudRenderPass::ColorType::kRgb
                                    : PointcloudRenderPass::ColorType::kField);
   // An explicitly restored colour mode must survive the colour-present RGB default that
   // populateColorFields() would otherwise apply on the first decoded sample. (setColorType
@@ -261,23 +261,23 @@ bool PointCloudLayer::xmlLoadState(const QDomElement& element) {
   }
 
   const QString cm_str = element.attribute(u"colormap"_s, u"turbo"_s);
-  if (cm_str == u"viridis"_s) {
+  if (cm_str == "viridis"_L1) {
     setColormap(PointcloudRenderPass::Colormap::kViridis);
-  } else if (cm_str == u"plasma"_s) {
+  } else if (cm_str == "plasma"_L1) {
     setColormap(PointcloudRenderPass::Colormap::kPlasma);
-  } else if (cm_str == u"grayscale"_s) {
+  } else if (cm_str == "grayscale"_L1) {
     setColormap(PointcloudRenderPass::Colormap::kGrayscale);
   } else {
     setColormap(PointcloudRenderPass::Colormap::kTurbo);
   }
 
-  setInvertLut(element.attribute(u"invert_lut"_s) == u"true"_s);
+  setInvertLut(element.attribute(u"invert_lut"_s) == "true"_L1);
   bool ok_outside_opacity = false;
   const float outside_opacity = element.attribute(u"outside_range_opacity"_s, u"1"_s).toFloat(&ok_outside_opacity);
   if (ok_outside_opacity) {
     setOutsideRangeOpacity(outside_opacity);
   }
-  setOutsideRangeVisible(element.attribute(u"outside_range_visible"_s, u"true"_s) == u"true"_s);
+  setOutsideRangeVisible(element.attribute(u"outside_range_visible"_s, u"true"_s) == "true"_L1);
 
   bool ok_min = false;
   bool ok_max = false;
@@ -291,7 +291,7 @@ bool PointCloudLayer::xmlLoadState(const QDomElement& element) {
   // sample, so world_bounds_ is already populated) BEFORE calling xmlLoadState,
   // so the interactive freeze would overwrite the manual range just restored
   // above with the recomputed data range. The saved values are authoritative.
-  const bool auto_on = element.attribute(u"auto_range"_s, u"true"_s) == u"true"_s;
+  const bool auto_on = element.attribute(u"auto_range"_s, u"true"_s) == "true"_L1;
   applyAutoRange(auto_on, /*seed_manual_from_world=*/false);
 
   return true;

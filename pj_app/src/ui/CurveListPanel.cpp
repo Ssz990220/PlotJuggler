@@ -503,7 +503,7 @@ QDomElement CurveListPanel::saveListState(QDomDocument& doc) const {
 }
 
 void CurveListPanel::restoreListState(const QDomElement& element) {
-  if (element.isNull() || element.tagName() != u"curve_list_state"_s) {
+  if (element.isNull() || element.tagName() != "curve_list_state"_L1) {
     return;
   }
 
@@ -517,14 +517,14 @@ void CurveListPanel::restoreListState(const QDomElement& element) {
     QScopedValueRollback guard(applying_state_, true);
 
     if (element.hasAttribute(u"show_topics"_s) && preserve_topic_name_check_ != nullptr) {
-      const bool wanted = element.attribute(u"show_topics"_s) == u"true"_s;
+      const bool wanted = element.attribute(u"show_topics"_s) == "true"_L1;
       if (preserve_topic_name_check_->isChecked() != wanted) {
         preserve_topic_name_check_->setChecked(wanted);  // emits toggled -> slot runs (rebuilds tree)
       }
     }
 
     if (element.hasAttribute(u"show_values"_s) && show_values_check_ != nullptr) {
-      const bool wanted = element.attribute(u"show_values"_s) == u"true"_s;
+      const bool wanted = element.attribute(u"show_values"_s) == "true"_L1;
       if (show_values_check_->isChecked() != wanted) {
         show_values_check_->setChecked(wanted);  // emits toggled -> slot runs (no QSettings write)
       }

@@ -388,9 +388,9 @@ TEST(CurveTreeViewTest, DragPayloadCarriesEverySelectedScalarCurve) {
   // Catalog payload — consumed when dropping on an empty pane / placeholder.
   const QStringList catalog_keys = PJ::CurveTreeView::decodeCatalogKeys(mime.get());
   EXPECT_EQ(catalog_keys.size(), 3);
-  EXPECT_TRUE(catalog_keys.contains(u"vehicle/speed"_s));
-  EXPECT_TRUE(catalog_keys.contains(u"vehicle/rpm"_s));
-  EXPECT_TRUE(catalog_keys.contains(u"vehicle/temp"_s));
+  EXPECT_TRUE(catalog_keys.contains("vehicle/speed"_L1));
+  EXPECT_TRUE(catalog_keys.contains("vehicle/rpm"_L1));
+  EXPECT_TRUE(catalog_keys.contains("vehicle/temp"_L1));
 
   // Curve-name payload — consumed when dropping on an existing plot.
   ASSERT_TRUE(mime->hasFormat(u"curveslist/add_curve"_s));
@@ -447,8 +447,8 @@ TEST(CurveTreeViewTest, DragPayloadCarriesEverySelectedObjectTopic) {
 
   const QStringList catalog_keys = PJ::CurveTreeView::decodeCatalogKeys(mime.get());
   EXPECT_EQ(catalog_keys.size(), 2);
-  EXPECT_TRUE(catalog_keys.contains(u"object:a"_s));
-  EXPECT_TRUE(catalog_keys.contains(u"object:b"_s));
+  EXPECT_TRUE(catalog_keys.contains("object:a"_L1));
+  EXPECT_TRUE(catalog_keys.contains("object:b"_L1));
 }
 
 // The "Value" column keeps decimal points vertically aligned in a monospace

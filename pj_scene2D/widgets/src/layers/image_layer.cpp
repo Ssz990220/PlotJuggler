@@ -39,7 +39,7 @@ bool topicUsesCanonicalImageCodec(const std::string& metadata_json) {
     }
     return false;
   }
-  return doc.object().value(u"image_codec"_s).toString() == u"pj_image_v1"_s;
+  return doc.object().value(u"image_codec"_s).toString() == "pj_image_v1"_L1;
 }
 
 // Build a frame_id -> CameraInfo map by running each "<ns>/camera_info" topic's
@@ -189,7 +189,7 @@ void ImageLayer::saveOptions(QDomElement& element) const {
 bool ImageLayer::loadOptions(const QDomElement& element) {
   // Absent attribute (layout saved before this toggle existed) keeps the current
   // default (true) -> rectification stays on, preserving the historical behaviour.
-  rectify_enabled_ = element.attribute(u"rectify_enabled"_s, rectify_enabled_ ? u"true"_s : u"false"_s) == u"true"_s;
+  rectify_enabled_ = element.attribute(u"rectify_enabled"_s, rectify_enabled_ ? u"true"_s : u"false"_s) == "true"_L1;
   applyOptions();
   return true;
 }

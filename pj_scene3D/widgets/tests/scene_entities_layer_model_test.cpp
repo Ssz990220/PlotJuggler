@@ -835,9 +835,9 @@ TEST(SceneEntitiesLayerModelTest, RemoteModelUrlIsBlockedWithoutOptIn) {
   ASSERT_TRUE(layer.attach(ctx));
   layer.setTrackerTime(PJ::fromRaw(15));
 
-  EXPECT_TRUE(layer.remoteFetchNotice().contains(u"Remote model fetch is disabled"_s))
+  EXPECT_TRUE(layer.remoteFetchNotice().contains("Remote model fetch is disabled"_L1))
       << layer.remoteFetchNotice().toStdString();
-  EXPECT_TRUE(layer.remoteFetchNotice().contains(u"allow_remote_model_fetch"_s));
+  EXPECT_TRUE(layer.remoteFetchNotice().contains("allow_remote_model_fetch"_L1));
   EXPECT_EQ(notice_from_signal, layer.remoteFetchNotice()) << "notice signal did not track the accessor";
 
   // Pump: even an asynchronous fetch would have to open a socket toward us.
@@ -954,7 +954,7 @@ TEST(SceneEntitiesLayerModelTest, RemoteModelUrlIsFetchedByDefault) {
   ASSERT_TRUE(layer.attach(ctx));
   layer.setTrackerTime(PJ::fromRaw(15));
 
-  EXPECT_FALSE(layer.remoteFetchNotice().contains(u"disabled"_s))
+  EXPECT_FALSE(layer.remoteFetchNotice().contains("disabled"_L1))
       << "default must not block the fetch: " << layer.remoteFetchNotice().toStdString();
 
   QElapsedTimer timer;
@@ -1003,7 +1003,7 @@ TEST(SceneEntitiesLayerModelTest, FailedRemoteFetchSurfacesUrlAndErrorInNotice) 
     QCoreApplication::processEvents(QEventLoop::AllEvents, 50);
   }
   const QString notice = layer.remoteFetchNotice();
-  EXPECT_TRUE(notice.contains(u"Failed to fetch"_s)) << notice.toStdString();
+  EXPECT_TRUE(notice.contains("Failed to fetch"_L1)) << notice.toStdString();
   EXPECT_TRUE(notice.contains(QString::fromStdString(url)))
       << "the offending URL must appear: " << notice.toStdString();
   EXPECT_EQ(notice_from_signal, notice) << "notice signal did not track the accessor";
@@ -1031,7 +1031,7 @@ TEST(SceneEntitiesLayerModelTest, EmbeddedModelParseFailureSurfacesInNotice) {
   while (layer.remoteFetchNotice().isEmpty() && timer.elapsed() < 5000) {
     QCoreApplication::processEvents(QEventLoop::AllEvents, 50);
   }
-  EXPECT_TRUE(layer.remoteFetchNotice().contains(u"Failed to load model"_s)) << layer.remoteFetchNotice().toStdString();
+  EXPECT_TRUE(layer.remoteFetchNotice().contains("Failed to load model"_L1)) << layer.remoteFetchNotice().toStdString();
 }
 
 // Deleting the entity that owns a failed model clears its load notice: the
@@ -1070,7 +1070,7 @@ TEST(SceneEntitiesLayerModelTest, DeletingEntityClearsItsModelLoadNotice) {
   while (layer.remoteFetchNotice().isEmpty() && timer.elapsed() < 5000) {
     QCoreApplication::processEvents(QEventLoop::AllEvents, 50);
   }
-  ASSERT_TRUE(layer.remoteFetchNotice().contains(u"Failed to fetch"_s)) << layer.remoteFetchNotice().toStdString();
+  ASSERT_TRUE(layer.remoteFetchNotice().contains("Failed to fetch"_L1)) << layer.remoteFetchNotice().toStdString();
 
   layer.setTrackerTime(PJ::fromRaw(20));  // DELETEALL folds → entity (and its failed model) gone
   EXPECT_TRUE(layer.remoteFetchNotice().isEmpty())

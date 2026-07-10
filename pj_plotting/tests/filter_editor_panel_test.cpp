@@ -284,7 +284,7 @@ TEST(FilterEditorPanelTest, ReopenOnFilterOutputLabelsInputAndRemovesOnNoTransfo
   // (A) The output source is labelled by its original input, not "x[Absolute]".
   ASSERT_EQ(series_list->count(), 1);
   EXPECT_EQ(series_list->item(0)->text(), input_label);
-  EXPECT_FALSE(series_list->item(0)->text().contains(u"[Absolute]"_s));
+  EXPECT_FALSE(series_list->item(0)->text().contains("[Absolute]"_L1));
 
   // Select it -> EDIT mode: the recipe's transform shows and Apply is enabled.
   series_list->setCurrentRow(0, QItemSelectionModel::ClearAndSelect);
@@ -835,7 +835,7 @@ TEST(FilterEditorPanelTest, PreviewCoversFullSeries) {
     QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
     filtered = nullptr;
     for (const auto& info : preview->curveList()) {
-      if (info.source_name.startsWith(u"__filter_preview__"_s)) {
+      if (info.source_name.startsWith("__filter_preview__"_L1)) {
         filtered = info.curve;
         break;
       }
@@ -872,7 +872,7 @@ TEST(FilterEditorPanelTest, NoTransformShowsPlainSourceNotGhost) {
     for (const auto& info : preview->curveList()) {
       if (info.source_name == source.name) {
         ghost = info.curve;
-      } else if (info.source_name.startsWith(u"__filter_preview__"_s)) {
+      } else if (info.source_name.startsWith("__filter_preview__"_L1)) {
         filtered = info.curve;
       }
     }
@@ -916,7 +916,7 @@ TEST(FilterEditorPanelTest, FilteredCurveLegendUsesAlias) {
     QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
     filtered = nullptr;
     for (const auto& info : preview->curveList()) {
-      if (info.source_name.startsWith(u"__filter_preview__"_s)) {
+      if (info.source_name.startsWith("__filter_preview__"_L1)) {
         filtered = info.curve;
         break;
       }

@@ -26,7 +26,7 @@ void appendJsonAsCdata(QDomDocument& doc, QDomElement& parent, const QString& js
   // QString APIs return qsizetype throughout.
   qsizetype start = 0;
   while (true) {
-    const qsizetype hit = json.indexOf(u"]]>"_s, start);
+    const qsizetype hit = json.indexOf("]]>"_L1, start);
     if (hit < 0) {
       parent.appendChild(doc.createCDATASection(json.mid(start)));
       return;
@@ -433,7 +433,7 @@ SourceTimelineViewState readSourceTimelineViewState(const QDomElement& element) 
     }
   }
   if (element.hasAttribute(u"snap"_s)) {
-    state.snap = element.attribute(u"snap"_s) == u"true"_s;
+    state.snap = element.attribute(u"snap"_s) == "true"_L1;
   }
   return state;
 }

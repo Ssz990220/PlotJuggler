@@ -45,9 +45,9 @@ int main(int argc, char** argv) {
   QString theme = u"dark"_s;
   for (int i = 1; i < argc; ++i) {
     const QString arg = QString::fromLocal8Bit(argv[i]);
-    if (arg == u"--screenshot"_s && i + 1 < argc) {
+    if (arg == "--screenshot"_L1 && i + 1 < argc) {
       screenshot = QString::fromLocal8Bit(argv[++i]);
-    } else if (arg == u"--theme"_s && i + 1 < argc) {
+    } else if (arg == "--theme"_L1 && i + 1 < argc) {
       theme = QString::fromLocal8Bit(argv[++i]);
     }
   }
@@ -102,7 +102,7 @@ int main(int argc, char** argv) {
 
   auto* toggle = new QPushButton(u"Toggle theme (currently: %1)"_s.arg(theme), root);
   QObject::connect(toggle, &QPushButton::clicked, root, [toggle, theme]() mutable {
-    theme = (theme == u"dark"_s) ? u"light"_s : u"dark"_s;
+    theme = (theme == "dark"_L1) ? u"light"_s : u"dark"_s;
     applyTheme(theme);
     toggle->setText(u"Toggle theme (currently: %1)"_s.arg(theme));
   });

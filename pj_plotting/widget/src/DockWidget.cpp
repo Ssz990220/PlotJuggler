@@ -690,7 +690,7 @@ void DockWidget::pastePlaceholderWidgetFromClipboard() {
     return;
   }
 
-  if (element.tagName() == u"plot"_s) {
+  if (element.tagName() == "plot"_L1) {
     PlotWidget* plot = ensurePlotWidget();
     if (plot == nullptr) {
       return;
@@ -734,7 +734,7 @@ bool DockWidget::canPastePlaceholderWidgetFromClipboard() const {
   if (element.isNull()) {
     return false;
   }
-  if (element.tagName() == u"plot"_s) {
+  if (element.tagName() == "plot"_L1) {
     return true;
   }
   return widget_clipboard::hasWidgetXml() && object_widget_factory_;

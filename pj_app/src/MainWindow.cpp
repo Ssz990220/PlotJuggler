@@ -1322,7 +1322,7 @@ IDataWidget* MainWindow::makeSceneDock(const QString& kind, QWidget* parent) {
   // Single construct + wire site for object-widget docks, shared by the drop
   // and layout-restore paths. Wiring (session / transform service / theme) is
   // identical regardless of how the dock is later populated.
-  if (kind == u"scene3d"_s) {
+  if (kind == "scene3d"_L1) {
     auto* widget = new Scene3DDockWidget(parent);
     widget->setSessionManager(&session_->sessionManager());
     widget->setTransformService(transform_service_.get());
@@ -1351,7 +1351,7 @@ IDataWidget* MainWindow::makeSceneDock(const QString& kind, QWidget* parent) {
     // palette luminance and repaints on QEvent::PaletteChange.
     return widget;
   }
-  if (kind == u"scene2d"_s) {
+  if (kind == "scene2d"_L1) {
     auto* widget = new Scene2DDockWidget(parent);
     widget->setSessionManager(&session_->sessionManager());
     topic_demand_controller_->registerSceneDock(widget);
@@ -2768,7 +2768,7 @@ void MainWindow::loadLayoutFromPath(const QString& path) {
   // Set when the user chose "Reload original": the data loads (possibly async on
   // a worker), so the layout apply below must wait for the load queue to drain.
   bool reload_requested = false;
-  if (binding != u"generic"_s && !replays.empty()) {
+  if (binding != "generic"_L1 && !replays.empty()) {
     // Classify each referenced file: already loaded (skip), missing on disk
     // (warn + skip), or reloadable. A file counts as already loaded only while
     // the catalog has data — a remembered-but-cleared source must reload.
@@ -3861,7 +3861,7 @@ void MainWindow::alignNameColumnToPlayback() {
 }
 
 void MainWindow::restoreRightPanelState(const QDomElement& element) {
-  if (element.isNull() || element.tagName() != u"right_panel_state"_s) {
+  if (element.isNull() || element.tagName() != "right_panel_state"_L1) {
     return;
   }
 
@@ -3942,7 +3942,7 @@ QDomElement MainWindow::saveChromeState(QDomDocument& doc) const {
 }
 
 void MainWindow::restoreChromeState(const QDomElement& element) {
-  if (element.isNull() || element.tagName() != u"chrome_state"_s) {
+  if (element.isNull() || element.tagName() != "chrome_state"_L1) {
     return;
   }
 
@@ -4030,7 +4030,7 @@ QDomDocument MainWindow::xmlSaveState() const {
 
 bool MainWindow::xmlLoadState(const QDomDocument& state_document) {
   const QDomElement root = state_document.documentElement();
-  if (root.isNull() || root.tagName() != u"root"_s) {
+  if (root.isNull() || root.tagName() != "root"_L1) {
     qCWarning(lcMain) << "No <root> element found at the top-level of the XML document";
     return false;
   }
@@ -4041,7 +4041,7 @@ bool MainWindow::xmlLoadState(const QDomDocument& state_document) {
     if (main_tabbed_widget.isNull()) {
       main_tabbed_widget = tabbed;
     }
-    if (tabbed.attribute(u"parent"_s) == u"main_window"_s) {
+    if (tabbed.attribute(u"parent"_s) == "main_window"_L1) {
       main_tabbed_widget = tabbed;
       break;
     }

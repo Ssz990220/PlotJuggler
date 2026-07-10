@@ -62,7 +62,7 @@ TEST(AppSessionTest, BuiltinPluginFoldersOrderedWithPluginDirOverride) {
   ASSERT_EQ(builtins.size(), 3);
   EXPECT_EQ(builtins.at(0), dir.path());
   EXPECT_NE(builtins.at(1), dir.path());  // marketplace location, distinct from the override
-  EXPECT_TRUE(builtins.at(2).endsWith(u"/plugins"_s));
+  EXPECT_TRUE(builtins.at(2).endsWith("/plugins"_L1));
 }
 
 TEST(AppSessionTest, InvalidExtensionDirectoryReportsDiagnostic) {
@@ -209,7 +209,7 @@ TEST(AppSessionTest, TrashedCurvesStopContributingToPlaybackRange) {
   // Trash the long topic's curves (the dataset stays visible through /imu/x).
   std::vector<QString> trashed_keys;
   for (const PJ::CatalogItem& item : session.catalogModel().items()) {
-    if (item.topic_name == u"/gps/fix"_s) {
+    if (item.topic_name == "/gps/fix"_L1) {
       trashed_keys.push_back(item.key);
     }
   }

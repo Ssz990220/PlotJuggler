@@ -85,7 +85,7 @@ QDomElement OccupancyGridLayer::xmlSaveState(QDomDocument& doc) const {
 }
 
 bool OccupancyGridLayer::xmlLoadState(const QDomElement& element) {
-  color_scheme_ = element.attribute(u"color_scheme"_s) == u"costmap"_s ? OccupancyGridRenderPass::ColorScheme::kCostmap
+  color_scheme_ = element.attribute(u"color_scheme"_s) == "costmap"_L1 ? OccupancyGridRenderPass::ColorScheme::kCostmap
                                                                        : OccupancyGridRenderPass::ColorScheme::kMap;
   bool ok = false;
   const float opacity = element.attribute(u"opacity"_s, u"0.7"_s).toFloat(&ok);

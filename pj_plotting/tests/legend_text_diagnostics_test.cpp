@@ -92,10 +92,10 @@ TEST(LegendTextDiagnostics, FiresOnLegendPaint) {
 
   bool legend_logged = false;
   for (const QString& msg : g_messages) {
-    if (msg.startsWith(u"[PJ_PLOT_TEXT_DEBUG] legend"_s)) {
+    if (msg.startsWith("[PJ_PLOT_TEXT_DEBUG] legend"_L1)) {
       legend_logged = true;
       // Healthy render: the title is present, so EMPTY must be 0.
-      EXPECT_TRUE(msg.contains(u"EMPTY=0"_s)) << msg.toStdString();
+      EXPECT_TRUE(msg.contains("EMPTY=0"_L1)) << msg.toStdString();
     }
   }
   EXPECT_TRUE(legend_logged) << "No legend diagnostic emitted; captured " << g_messages.size() << " messages";

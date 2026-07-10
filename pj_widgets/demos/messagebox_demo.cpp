@@ -33,7 +33,7 @@ int main(int argc, char** argv) {
   QString interactive_theme = u"dark"_s;
   for (int i = 1; i < argc; ++i) {
     const QString a = QString::fromLocal8Bit(argv[i]);
-    if (a == u"--theme"_s && i + 1 < argc) {
+    if (a == "--theme"_L1 && i + 1 < argc) {
       interactive_theme = QString::fromLocal8Bit(argv[++i]);
     }
   }
@@ -81,7 +81,7 @@ int main(int argc, char** argv) {
 
   auto* toggle = new QPushButton(u"Toggle theme (currently: %1)"_s.arg(interactive_theme), central);
   QObject::connect(toggle, &QPushButton::clicked, central, [toggle, theme = interactive_theme]() mutable {
-    theme = (theme == u"dark"_s) ? u"light"_s : u"dark"_s;
+    theme = (theme == "dark"_L1) ? u"light"_s : u"dark"_s;
     applyTheme(theme);
     toggle->setText(u"Toggle theme (currently: %1)"_s.arg(theme));
   });

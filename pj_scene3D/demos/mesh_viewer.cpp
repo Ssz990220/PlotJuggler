@@ -358,45 +358,45 @@ CliOptions parseCli(const QStringList& args) {
   for (int i = 1; i < args.size(); ++i) {
     const QString& arg = args[i];
     const auto next = [&args, &i]() -> QString { return ++i < args.size() ? args[i] : QString(); };
-    if (arg == u"--screenshot"_s) {
+    if (arg == "--screenshot"_L1) {
       opts.screenshot_path = next();
-    } else if (arg == u"--benchmark"_s) {
+    } else if (arg == "--benchmark"_L1) {
       opts.benchmark = true;
-    } else if (arg == u"--bench-frames"_s) {
+    } else if (arg == "--bench-frames"_L1) {
       opts.bench_frames = next().toInt();
-    } else if (arg == u"--bench-csv"_s) {
+    } else if (arg == "--bench-csv"_L1) {
       opts.bench_csv = next();
-    } else if (arg == u"--win-size"_s) {
+    } else if (arg == "--win-size"_L1) {
       const QStringList wh = next().split('x', Qt::SkipEmptyParts);
       if (wh.size() == 2) {
         opts.win_w = wh[0].toInt();
         opts.win_h = wh[1].toInt();
       }
-    } else if (arg == u"--msaa"_s) {
+    } else if (arg == "--msaa"_L1) {
       opts.msaa = next().toInt();
-    } else if (arg == u"--ssaa"_s) {
+    } else if (arg == "--ssaa"_L1) {
       opts.ssaa = next().toFloat();
-    } else if (arg == u"--delay-ms"_s) {
+    } else if (arg == "--delay-ms"_L1) {
       opts.delay_ms = next().toInt();
-    } else if (arg == u"--tonemap"_s) {
+    } else if (arg == "--tonemap"_L1) {
       opts.tonemap = next().toInt();
-    } else if (arg == u"--env"_s) {
+    } else if (arg == "--env"_L1) {
       opts.env = next().toFloat();
-    } else if (arg == u"--key-az"_s) {
+    } else if (arg == "--key-az"_L1) {
       opts.key_az = next().toFloat();
-    } else if (arg == u"--key-el"_s) {
+    } else if (arg == "--key-el"_L1) {
       opts.key_el = next().toFloat();
-    } else if (arg == u"--shadows"_s) {
-      opts.shadows = next() != u"off"_s;  // "--shadows on" / "--shadows off"
-    } else if (arg == u"--collisions"_s) {
-      opts.collisions = next() != u"off"_s;
-    } else if (arg == u"--cam-radius"_s) {
+    } else if (arg == "--shadows"_L1) {
+      opts.shadows = next() != "off"_L1;  // "--shadows on" / "--shadows off"
+    } else if (arg == "--collisions"_L1) {
+      opts.collisions = next() != "off"_L1;
+    } else if (arg == "--cam-radius"_L1) {
       opts.cam_radius = next().toFloat();
-    } else if (arg == u"--cam-az"_s) {
+    } else if (arg == "--cam-az"_L1) {
       opts.cam_az = next().toFloat();
-    } else if (arg == u"--cam-el"_s) {
+    } else if (arg == "--cam-el"_L1) {
       opts.cam_el = next().toFloat();
-    } else if (arg == u"--cam-focal-z"_s) {
+    } else if (arg == "--cam-focal-z"_L1) {
       opts.cam_focal_z = next().toFloat();
     } else if (opts.urdf.isEmpty()) {
       opts.urdf = arg;

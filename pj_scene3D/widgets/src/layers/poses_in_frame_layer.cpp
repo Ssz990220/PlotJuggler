@@ -74,7 +74,7 @@ QDomElement PosesInFrameLayer::xmlSaveState(QDomDocument& doc) const {
 }
 
 bool PosesInFrameLayer::xmlLoadState(const QDomElement& element) {
-  if (element.tagName() != u"poses_in_frame"_s) {
+  if (element.tagName() != "poses_in_frame"_L1) {
     return false;
   }
   bool ok = false;
@@ -86,8 +86,8 @@ bool PosesInFrameLayer::xmlLoadState(const QDomElement& element) {
   if (ok) {
     setGizmoOpacity(opacity);
   }
-  setXArrowOnly(element.attribute(u"x_arrow_only"_s, u"0"_s) == u"1"_s);
-  setOverrideColorEnabled(element.attribute(u"override_color"_s, u"0"_s) == u"1"_s);
+  setXArrowOnly(element.attribute(u"x_arrow_only"_s, u"0"_s) == "1"_L1);
+  setOverrideColorEnabled(element.attribute(u"override_color"_s, u"0"_s) == "1"_L1);
   const QColor color(element.attribute(u"override_color_value"_s));
   if (color.isValid()) {
     setOverrideColor(color);

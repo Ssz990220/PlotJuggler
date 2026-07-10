@@ -178,7 +178,7 @@ bool SceneDockWidget::restoreLayerElement(const QDomElement& layer_el) {
   const QString topic_name = layer_el.attribute(u"topic_name"_s);
   const QString object_type_str = layer_el.attribute(u"object_type"_s);
   const QString display_name = layer_el.attribute(u"display_name"_s);
-  const bool visible = layer_el.attribute(u"visible"_s, u"true"_s) == u"true"_s;
+  const bool visible = layer_el.attribute(u"visible"_s, u"true"_s) == "true"_L1;
 
   const auto object_type_opt = sdk::parseBuiltinObjectType(object_type_str.toStdString());
   if (!object_type_opt.has_value()) {

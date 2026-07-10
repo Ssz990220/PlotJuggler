@@ -241,7 +241,7 @@ TEST(Timeline, InteractionLockShowsOverlay) {
   auto w = makeScrollableTimeline();  // shown, so isVisible() is meaningful
   auto* overlay = w->findChild<QLabel*>(u"timelineLockOverlay"_s);
   ASSERT_NE(overlay, nullptr);
-  EXPECT_TRUE(overlay->text().contains(u"pause"_s, Qt::CaseInsensitive));
+  EXPECT_TRUE(overlay->text().contains("pause"_L1, Qt::CaseInsensitive));
   EXPECT_FALSE(overlay->isVisible());
 
   w->setInteractionLocked(true);

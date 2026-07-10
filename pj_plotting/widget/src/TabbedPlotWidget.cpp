@@ -556,7 +556,7 @@ QDomElement TabbedPlotWidget::xmlSaveState(QDomDocument& doc) const {
 }
 
 bool TabbedPlotWidget::xmlLoadState(const QDomElement& tabbed_area) {
-  if (tabbed_area.isNull() || tabbed_area.tagName() != u"tabbed_widget"_s) {
+  if (tabbed_area.isNull() || tabbed_area.tagName() != "tabbed_widget"_L1) {
     return false;
   }
 

@@ -36,13 +36,13 @@ QString colormapName(Colormap colormap) {
 }
 
 Colormap parseColormap(const QString& value) {
-  if (value == u"viridis"_s) {
+  if (value == "viridis"_L1) {
     return Colormap::kViridis;
   }
-  if (value == u"plasma"_s) {
+  if (value == "plasma"_L1) {
     return Colormap::kPlasma;
   }
-  if (value == u"grayscale"_s) {
+  if (value == "grayscale"_L1) {
     return Colormap::kGrayscale;
   }
   return Colormap::kTurbo;  // also maps legacy "jet" layouts to the default.
@@ -192,7 +192,7 @@ void DepthImageLayer::saveOptions(QDomElement& element) const {
 
 bool DepthImageLayer::loadOptions(const QDomElement& element) {
   colormap_ = parseColormap(element.attribute(u"colormap"_s, colormapName(colormap_)));
-  invert_ = element.attribute(u"invert"_s, invert_ ? u"true"_s : u"false"_s) == u"true"_s;
+  invert_ = element.attribute(u"invert"_s, invert_ ? u"true"_s : u"false"_s) == "true"_L1;
 
   bool ok = false;
   const float near_m = element.attribute(u"near_m"_s, QString::number(near_m_)).toFloat(&ok);

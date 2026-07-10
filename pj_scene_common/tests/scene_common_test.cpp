@@ -754,7 +754,7 @@ TEST(LayerParamsTest, RoundTripCopiesParamsBetweenLayers) {
 
   const QString xml = PJ::serializeLayerParams(source);
   ASSERT_FALSE(xml.isEmpty());
-  EXPECT_TRUE(xml.contains(u"alpha"_s));
+  EXPECT_TRUE(xml.contains("alpha"_L1));
 
   FakeLayer target(topic(2), PJ::sdk::BuiltinObjectType::kPointCloud, u"dst"_s);
   ASSERT_TRUE(target.payload().isEmpty());

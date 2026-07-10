@@ -72,10 +72,10 @@ QString sourceTypeToString(RobotModelLayer::SourceType type) {
 }
 
 RobotModelLayer::SourceType sourceTypeFromString(const QString& s) {
-  if (s == u"file"_s) {
+  if (s == "file"_L1) {
     return RobotModelLayer::SourceType::kFile;
   }
-  if (s == u"url"_s) {
+  if (s == "url"_L1) {
     return RobotModelLayer::SourceType::kUrl;
   }
   return RobotModelLayer::SourceType::kTopic;
@@ -94,10 +94,10 @@ QString displayModeToString(RobotModelLayer::DisplayMode mode) {
 }
 
 RobotModelLayer::DisplayMode displayModeFromString(const QString& s) {
-  if (s == u"visual"_s) {
+  if (s == "visual"_L1) {
     return RobotModelLayer::DisplayMode::kVisual;
   }
-  if (s == u"collision"_s) {
+  if (s == "collision"_L1) {
     return RobotModelLayer::DisplayMode::kCollision;
   }
   return RobotModelLayer::DisplayMode::kAuto;
@@ -132,7 +132,7 @@ QString formatFromXml(const QString& text) {
   }
 #endif
   const QString root = doc.documentElement().tagName();
-  return root == u"robot"_s ? u"urdf"_s : root;
+  return root == "robot"_L1 ? u"urdf"_s : root;
 }
 
 std::optional<QString> readTextFile(const QString& path, QString* error) {
@@ -234,21 +234,21 @@ QDomElement RobotModelLayer::xmlSaveState(QDomDocument& doc) const {
 }
 
 bool RobotModelLayer::xmlLoadState(const QDomElement& element) {
-  if (element.isNull() || element.tagName() != u"robot_model"_s) {
+  if (element.isNull() || element.tagName() != "robot_model"_L1) {
     return false;
   }
   source_type_ = sourceTypeFromString(element.attribute(u"source_type"_s, u"topic"_s));
   source_value_ = element.attribute(u"source_value"_s, source_value_);
   frame_prefix_ = element.attribute(u"frame_prefix"_s);
   display_mode_ = displayModeFromString(element.attribute(u"display_mode"_s, u"auto"_s));
-  visible_ = element.attribute(u"visible"_s, u"true"_s) == u"true"_s;
+  visible_ = element.attribute(u"visible"_s, u"true"_s) == "true"_L1;
   if (element.hasAttribute(u"color"_s)) {
     const QColor color(element.attribute(u"color"_s));
     if (color.isValid()) {
       fallback_color_ = color;
     }
   }
-  ignore_collada_up_axis_ = element.attribute(u"ignore_collada_up_axis"_s, u"false"_s) == u"true"_s;
+  ignore_collada_up_axis_ = element.attribute(u"ignore_collada_up_axis"_s, u"false"_s) == "true"_L1;
   // display_mode_ / frame_prefix_ / visible_ were just assigned directly above,
   // bypassing the setters; loadFromCurrentSource() below also sets this, but be
   // explicit so the restore path is self-evidently covered.
@@ -1017,7 +1017,7 @@ bool RobotModelLayer::tryLoadTopicDescription() {
 bool RobotModelLayer::applyRobotDescription(
     const QString& text, const QString& format, const QString& label, const QString& urdf_dir, bool source_is_url) {
   latch_pending_ = false;
-  if (format.compare(u"urdf"_s, Qt::CaseInsensitive) != 0) {
+  if (format.compare("urdf"_L1, Qt::CaseInsensitive) != 0) {
     setStatus(tr("Format '%1' is not supported — only URDF").arg(format));
     return false;
   }

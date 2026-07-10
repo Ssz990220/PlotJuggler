@@ -221,15 +221,15 @@ QDomElement DepthCloudLayer::xmlSaveState(QDomDocument& doc) const {
 }
 
 bool DepthCloudLayer::xmlLoadState(const QDomElement& element) {
-  if (element.isNull() || element.tagName() != u"depthcloud"_s) {
+  if (element.isNull() || element.tagName() != "depthcloud"_L1) {
     return false;
   }
   const QString cm_str = element.attribute(u"colormap"_s, u"turbo"_s);
-  if (cm_str == u"viridis"_s) {
+  if (cm_str == "viridis"_L1) {
     setColormap(PointcloudRenderPass::Colormap::kViridis);
-  } else if (cm_str == u"plasma"_s) {
+  } else if (cm_str == "plasma"_L1) {
     setColormap(PointcloudRenderPass::Colormap::kPlasma);
-  } else if (cm_str == u"grayscale"_s) {
+  } else if (cm_str == "grayscale"_L1) {
     setColormap(PointcloudRenderPass::Colormap::kGrayscale);
   } else {
     setColormap(PointcloudRenderPass::Colormap::kTurbo);

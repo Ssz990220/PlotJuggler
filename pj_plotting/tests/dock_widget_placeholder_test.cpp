@@ -309,7 +309,7 @@ TEST(DockWidgetPlaceholderTest, PlotWidgetCopyPasteUsesClipboardXmlAndKeepsTarge
   QObject::connect(&target, &PJ::PlotWidget::undoableChange, &target, [&]() { ++undo_count; });
 
   ASSERT_TRUE(QMetaObject::invokeMethod(&source, "copyWidgetToClipboard", Qt::DirectConnection));
-  EXPECT_TRUE(QGuiApplication::clipboard()->text().contains(u"<plot"_s));
+  EXPECT_TRUE(QGuiApplication::clipboard()->text().contains("<plot"_L1));
 
   ASSERT_TRUE(QMetaObject::invokeMethod(&target, "pasteWidgetFromClipboard", Qt::DirectConnection));
 
@@ -489,7 +489,7 @@ TEST(DockWidgetPlaceholderTest, ObjectWidgetClipboardPasteRequiresSameFamilyTag)
   other_family_target.setObjectWidget(other_family_widget);
 
   ASSERT_TRUE(QMetaObject::invokeMethod(&source, "copyObjectWidgetToClipboard", Qt::DirectConnection));
-  ASSERT_TRUE(QGuiApplication::clipboard()->text().contains(u"<scene2d"_s));
+  ASSERT_TRUE(QGuiApplication::clipboard()->text().contains("<scene2d"_L1));
 
   ASSERT_TRUE(QMetaObject::invokeMethod(&same_family_target, "pasteObjectWidgetFromClipboard", Qt::DirectConnection));
   EXPECT_EQ(same_family_widget->loadCount(), 1);
@@ -512,7 +512,7 @@ TEST(DockWidgetPlaceholderTest, PlaceholderPasteCreatesObjectWidgetFromClipboard
   FakeClipboardObjectWidget* pasted_widget = nullptr;
   target.setObjectWidgetFactory(
       [&](const QString& kind, const PJ::ObjectDropSeed* seed, QWidget* parent) -> PJ::IDataWidget* {
-        if (kind != u"scene2d"_s || seed != nullptr) {
+        if (kind != "scene2d"_L1 || seed != nullptr) {
           return nullptr;
         }
         pasted_widget = new FakeClipboardObjectWidget(kind, u"fresh"_s, parent);

@@ -1188,10 +1188,10 @@ bool Scene3DDockWidget::restoreLayerElement(const QDomElement& layer_el) {
     return true;
   }
   const QString display_name = layer_el.attribute(u"display_name"_s);
-  const bool visible = layer_el.attribute(u"visible"_s, u"true"_s) == u"true"_s;
+  const bool visible = layer_el.attribute(u"visible"_s, u"true"_s) == "true"_L1;
 
   ObjectTopicId topic_id;
-  const bool local_layer = layer_el.attribute(u"local"_s) == u"true"_s;
+  const bool local_layer = layer_el.attribute(u"local"_s) == "true"_L1;
   if (local_layer) {
     if (*object_type_opt != sdk::BuiltinObjectType::kRobotDescription) {
       return true;
@@ -1277,7 +1277,7 @@ bool Scene3DDockWidget::restoreOnePending(const QDomElement& element) {
   // 3D defers two element kinds into the base's shared pending queue: scene-config
   // topics (e.g. TF) and render layers. Dispatch on the tag; the base SceneDockWidget
   // owns the queue + the retry/unresolved/clear bookkeeping.
-  return element.tagName() == u"config_topic"_s ? restoreConfigTopicElement(element) : restoreLayerElement(element);
+  return element.tagName() == "config_topic"_L1 ? restoreConfigTopicElement(element) : restoreLayerElement(element);
 }
 
 QDomElement Scene3DDockWidget::xmlSaveState(QDomDocument& doc) const {
@@ -1379,7 +1379,7 @@ QDomElement Scene3DDockWidget::xmlSaveState(QDomDocument& doc) const {
 }
 
 bool Scene3DDockWidget::xmlLoadState(const QDomElement& element) {
-  if (element.isNull() || element.tagName() != u"scene3d"_s) {
+  if (element.isNull() || element.tagName() != "scene3d"_L1) {
     return false;
   }
 
@@ -1425,7 +1425,7 @@ bool Scene3DDockWidget::xmlLoadState(const QDomElement& element) {
     qCWarning(lcScene3DDock) << unresolved_topics << "saved layer(s) could not be restored (dataset not loaded)";
   }
 
-  if (saved_mode == u"explicit"_s && !saved_frame.isEmpty()) {
+  if (saved_mode == "explicit"_L1 && !saved_frame.isEmpty()) {
     setFixedFrame(saved_frame);
   } else {
     setFixedFrameAutoRoot();
@@ -1455,7 +1455,7 @@ bool Scene3DDockWidget::xmlLoadState(const QDomElement& element) {
     // Field set mirrors Scene3DConfigPanel::applySceneControlsTo (keep in sync; 4 sites).
     if (const QDomElement sc = element.firstChildElement(u"scene_controls"_s); !sc.isNull()) {
       const auto bool_attr = [&sc](const QString& key, bool fallback) {
-        return sc.attribute(key, fallback ? u"true"_s : u"false"_s) == u"true"_s;
+        return sc.attribute(key, fallback ? u"true"_s : u"false"_s) == "true"_L1;
       };
       view_->setGridVisible(bool_attr(u"grid_visible"_s, view_->gridVisible()));
       view_->setGridStyle(

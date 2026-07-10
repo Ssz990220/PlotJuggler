@@ -120,13 +120,13 @@ TEST(PointCloudLayerRgb, ColorChannelsCollapseToRgbAndDefaultToIt) {
 
   // The individual colour channels must NOT be selectable as scalar fields.
   const QStringList fields = fixture.layer->availableColorFields();
-  EXPECT_FALSE(fields.contains(u"red"_s));
-  EXPECT_FALSE(fields.contains(u"green"_s));
-  EXPECT_FALSE(fields.contains(u"blue"_s));
-  EXPECT_FALSE(fields.contains(u"alpha"_s));
+  EXPECT_FALSE(fields.contains("red"_L1));
+  EXPECT_FALSE(fields.contains("green"_L1));
+  EXPECT_FALSE(fields.contains("blue"_L1));
+  EXPECT_FALSE(fields.contains("alpha"_L1));
   // Genuine scalar fields are still offered.
-  EXPECT_TRUE(fields.contains(u"intensity"_s));
-  EXPECT_TRUE(fields.contains(u"x"_s));
+  EXPECT_TRUE(fields.contains("intensity"_L1));
+  EXPECT_TRUE(fields.contains("x"_L1));
 
   // A cloud carrying colour defaults to RGB-direct mode.
   EXPECT_TRUE(fixture.layer->hasColorField());
@@ -141,7 +141,7 @@ TEST(PointCloudLayerRgb, PlainCloudKeepsFieldColormapMode) {
 
   EXPECT_FALSE(fixture.layer->hasColorField());
   EXPECT_EQ(fixture.layer->colorType(), ColorType::kField);
-  EXPECT_TRUE(fixture.layer->availableColorFields().contains(u"intensity"_s));
+  EXPECT_TRUE(fixture.layer->availableColorFields().contains("intensity"_L1));
 }
 
 TEST(PointCloudLayerRgb, RestoredColorTypeSurvivesSmartDefault) {

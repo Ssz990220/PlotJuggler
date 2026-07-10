@@ -67,9 +67,9 @@ int main(int argc, char** argv) {
   QString screenshot_path;
   for (int i = 1; i < argc; ++i) {
     const QString a = QString::fromLocal8Bit(argv[i]);
-    if (a == u"--theme"_s && i + 1 < argc) {
+    if (a == "--theme"_L1 && i + 1 < argc) {
       theme = QString::fromLocal8Bit(argv[++i]);
-    } else if (a == u"--screenshot"_s && i + 1 < argc) {
+    } else if (a == "--screenshot"_L1 && i + 1 < argc) {
       screenshot_path = QString::fromLocal8Bit(argv[++i]);
     }
   }

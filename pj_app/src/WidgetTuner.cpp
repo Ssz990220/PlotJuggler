@@ -28,12 +28,12 @@ namespace {
 // dropdown read as the same surface.
 QColor popupBgColor() {
   const QString theme = QSettings().value(u"StyleSheet::theme"_s, u"light"_s).toString();
-  return theme.contains(u"light"_s) ? QColor(u"#F5F5F5"_s) : QColor(u"#3B3B47"_s);
+  return theme.contains("light"_L1) ? QColor(u"#F5F5F5"_s) : QColor(u"#3B3B47"_s);
 }
 
 QColor popupTextColor() {
   const QString theme = QSettings().value(u"StyleSheet::theme"_s, u"light"_s).toString();
-  return theme.contains(u"light"_s) ? QColor(u"#111111"_s) : QColor(u"#F0F0F0"_s);
+  return theme.contains("light"_L1) ? QColor(u"#111111"_s) : QColor(u"#F0F0F0"_s);
 }
 
 // Force every palette role that Fusion reads when painting a popup
@@ -90,7 +90,7 @@ bool WidgetTuner::eventFilter(QObject* watched, QEvent* event) {
 
   // QComboBoxPrivateContainer — strip frame and shadow, paint palette.
   if (auto* w = qobject_cast<QWidget*>(watched);
-      w != nullptr && QString::fromUtf8(w->metaObject()->className()) == u"QComboBoxPrivateContainer"_s) {
+      w != nullptr && QString::fromUtf8(w->metaObject()->className()) == "QComboBoxPrivateContainer"_L1) {
     w->setWindowFlag(Qt::NoDropShadowWindowHint, true);
     if (auto* frame = qobject_cast<QFrame*>(w)) {
       frame->setFrameShape(QFrame::NoFrame);

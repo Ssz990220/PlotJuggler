@@ -137,10 +137,10 @@ LayoutNode parseLayoutNode(const QDomElement& element) {
     return node;
   }
 
-  if (element.tagName() == u"DockSplitter"_s) {
+  if (element.tagName() == "DockSplitter"_L1) {
     node.type = LayoutNode::Type::kSplitter;
     node.valid = true;
-    node.orientation = element.attribute(u"orientation"_s).startsWith(u"|"_s) ? Qt::Horizontal : Qt::Vertical;
+    node.orientation = element.attribute(u"orientation"_s).startsWith("|"_L1) ? Qt::Horizontal : Qt::Vertical;
     for (const QString& size : element.attribute(u"sizes"_s).split(';', Qt::SkipEmptyParts)) {
       bool ok = false;
       const double value = size.toDouble(&ok);
@@ -158,7 +158,7 @@ LayoutNode parseLayoutNode(const QDomElement& element) {
     return node;
   }
 
-  if (element.tagName() == u"DockArea"_s) {
+  if (element.tagName() == "DockArea"_L1) {
     node.type = LayoutNode::Type::kArea;
     node.valid = true;
     node.area_id = element.attribute(u"id"_s);
@@ -195,7 +195,7 @@ QDomElement firstLeafElement(const LayoutNode& node) {
 // <plot> element. Restore hands its tagName() to the object-widget factory as
 // the "kind", so pj_plotting stays agnostic to specific scene families.
 bool isObjectWidgetElement(const QDomElement& element) {
-  return !element.isNull() && element.tagName() != u"plot"_s;
+  return !element.isNull() && element.tagName() != "plot"_L1;
 }
 
 class RestorePlotPool {
@@ -542,7 +542,7 @@ QDomElement PlotDocker::xmlSaveState(QDomDocument& doc) const {
 }
 
 bool PlotDocker::xmlLoadState(const QDomElement& tab_element) {
-  if (tab_element.isNull() || tab_element.tagName() != u"Tab"_s) {
+  if (tab_element.isNull() || tab_element.tagName() != "Tab"_L1) {
     return false;
   }
 

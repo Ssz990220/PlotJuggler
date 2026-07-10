@@ -430,7 +430,7 @@ TEST(RobotModelLayerTest, TopicSourceDecodesThroughParserAndAppliesFramePrefix) 
   EXPECT_EQ(layer.robotModel()->root_link, "base_link");
   EXPECT_EQ(layer.sourceFrame(), u"robot1/base_link"_s);
   EXPECT_EQ(layer.linkFrameName("tool0"), u"robot1/tool0"_s);
-  EXPECT_TRUE(layer.fallbackFrames().contains(u"robot1/base_link"_s));
+  EXPECT_TRUE(layer.fallbackFrames().contains("robot1/base_link"_L1));
 }
 
 TEST(RobotModelLayerTest, TimeRangeIsInvertedEvenWhenLatchIsMissing) {
@@ -446,7 +446,7 @@ TEST(RobotModelLayerTest, TimeRangeIsInvertedEvenWhenLatchIsMissing) {
   EXPECT_EQ(range.min, PJ::Timepoint::max());
   EXPECT_EQ(range.max, PJ::Timepoint::min());
   EXPECT_GT(range.min, range.max);
-  EXPECT_TRUE(layer.statusText().contains(u"Waiting for /robot_description"_s));
+  EXPECT_TRUE(layer.statusText().contains("Waiting for /robot_description"_L1));
 }
 
 TEST(RobotModelLayerTest, FormatOtherThanUrdfIsRejectedWithStatus) {
@@ -460,7 +460,7 @@ TEST(RobotModelLayerTest, FormatOtherThanUrdfIsRejectedWithStatus) {
 
   ASSERT_TRUE(layer.attach(ctx));
   EXPECT_EQ(layer.robotModel(), nullptr);
-  EXPECT_TRUE(layer.statusText().contains(u"Format 'sdf' is not supported"_s));
+  EXPECT_TRUE(layer.statusText().contains("Format 'sdf' is not supported"_L1));
 }
 
 TEST(RobotModelLayerTest, UnresolvedPackageMeshIsCountedForPlaceholderRendering) {
@@ -476,7 +476,7 @@ TEST(RobotModelLayerTest, UnresolvedPackageMeshIsCountedForPlaceholderRendering)
   ASSERT_NE(layer.robotModel(), nullptr);
   EXPECT_EQ(layer.totalMeshCount(), 1);
   EXPECT_EQ(layer.unresolvedMeshCount(), 1);
-  EXPECT_TRUE(layer.statusText().contains(u"packages unresolved"_s));
+  EXPECT_TRUE(layer.statusText().contains("packages unresolved"_L1));
 }
 
 // M.48: render() memoizes the per-link DrawCall lists and rebuilds them only
@@ -682,7 +682,7 @@ TEST(RobotModelLayerTest, UrlSourceLoadsAsynchronouslyFromFileUrl) {
 
   // Asynchronous kickoff: nothing may have been applied before returning.
   EXPECT_EQ(layer.robotModel(), nullptr) << "kUrl load applied synchronously (blocking-fetch regression)";
-  EXPECT_TRUE(layer.statusText().contains(u"Fetching"_s)) << layer.statusText().toStdString();
+  EXPECT_TRUE(layer.statusText().contains("Fetching"_L1)) << layer.statusText().toStdString();
 
   QElapsedTimer timer;
   timer.start();
@@ -692,7 +692,7 @@ TEST(RobotModelLayerTest, UrlSourceLoadsAsynchronouslyFromFileUrl) {
   ASSERT_NE(layer.robotModel(), nullptr) << "async URL fetch never applied the model; status: "
                                          << layer.statusText().toStdString();
   EXPECT_EQ(layer.robotModel()->root_link, "base_link");
-  EXPECT_FALSE(layer.statusText().contains(u"Fetching"_s));
+  EXPECT_FALSE(layer.statusText().contains("Fetching"_L1));
 }
 
 // M.27: a kTopic robot layer must persist enough identity (dataset + topic name)

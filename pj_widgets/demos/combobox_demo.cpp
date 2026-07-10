@@ -30,20 +30,20 @@ using pj_widgets_demos::applyTheme;
 // Populates a fresh PJ::ComboBox with a labelled variant. Caller owns.
 QComboBox* makeCombo(const QString& variant, QWidget* parent) {
   auto* combo = new PJ::ComboBox(parent);
-  if (variant == u"basic"_s) {
+  if (variant == "basic"_L1) {
     combo->addItems({u"Apple"_s, u"Banana"_s, u"Cherry"_s, u"Date"_s, u"Elderberry"_s});
-  } else if (variant == u"long"_s) {
+  } else if (variant == "long"_L1) {
     combo->addItems(
         {u"Short"_s, u"Medium length item"_s, u"A very long item name that exceeds the typical combobox width"_s,
          u"Another quite long entry for measuring elision behaviour"_s});
-  } else if (variant == u"many"_s) {
+  } else if (variant == "many"_L1) {
     for (int i = 1; i <= 30; ++i) {
       combo->addItem(u"Item %1"_s.arg(i));
     }
-  } else if (variant == u"editable"_s) {
+  } else if (variant == "editable"_L1) {
     combo->setEditable(true);
     combo->addItems({u"Recent value 1"_s, u"Recent value 2"_s, u"Recent value 3"_s});
-  } else if (variant == u"disabled"_s) {
+  } else if (variant == "disabled"_L1) {
     combo->addItems({u"This is disabled"_s, u"Option B"_s});
     combo->setEnabled(false);
   }
@@ -70,7 +70,7 @@ int main(int argc, char** argv) {
   QString interactive_theme = u"dark"_s;
   for (int i = 1; i < argc; ++i) {
     const QString a = QString::fromLocal8Bit(argv[i]);
-    if (a == u"--theme"_s && i + 1 < argc) {
+    if (a == "--theme"_L1 && i + 1 < argc) {
       interactive_theme = QString::fromLocal8Bit(argv[++i]);
     }
   }
@@ -106,7 +106,7 @@ int main(int argc, char** argv) {
 
   auto* toggle = new QPushButton(u"Toggle theme (currently: %1)"_s.arg(interactive_theme), central);
   QObject::connect(toggle, &QPushButton::clicked, central, [toggle, theme = interactive_theme]() mutable {
-    theme = (theme == u"dark"_s) ? u"light"_s : u"dark"_s;
+    theme = (theme == "dark"_L1) ? u"light"_s : u"dark"_s;
     applyTheme(theme);
     toggle->setText(u"Toggle theme (currently: %1)"_s.arg(theme));
   });

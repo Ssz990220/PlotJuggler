@@ -39,7 +39,7 @@ QString expandPlaceholders(const QString& body, const std::map<QString, QString>
 
   qsizetype i = 0;
   while (i < body.size()) {
-    const qsizetype start = body.indexOf(u"${"_s, i);
+    const qsizetype start = body.indexOf("${"_L1, i);
     if (start < 0) {
       out.append(QStringView{body}.mid(i));
       break;

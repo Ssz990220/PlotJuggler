@@ -228,7 +228,7 @@ QDomElement SceneEntitiesLayer::xmlSaveState(QDomDocument& doc) const {
 }
 
 bool SceneEntitiesLayer::xmlLoadState(const QDomElement& element) {
-  if (element.isNull() || element.tagName() != u"markers"_s) {
+  if (element.isNull() || element.tagName() != "markers"_L1) {
     return false;
   }
   bool ok = false;
@@ -242,8 +242,8 @@ bool SceneEntitiesLayer::xmlLoadState(const QDomElement& element) {
       setOverrideColor(c);
     }
   }
-  setColorOverrideEnabled(element.attribute(u"color_override"_s) == u"true"_s);
-  setWireframe(element.attribute(u"wireframe"_s) == u"true"_s);
+  setColorOverrideEnabled(element.attribute(u"color_override"_s) == "true"_L1);
+  setWireframe(element.attribute(u"wireframe"_s) == "true"_L1);
   return true;
 }
 
@@ -765,7 +765,7 @@ void SceneEntitiesLayer::startMeshLoadIfNeeded(const std::string& key, const PJ:
   const QUrl url(url_text);
   // Local sources (bare paths / file:// URLs) stay ungated: reading the user's
   // disk is not network egress. Only data-supplied http(s) URLs need consent.
-  const bool is_remote = url.scheme() == u"http"_s || url.scheme() == u"https"_s;
+  const bool is_remote = url.scheme() == "http"_L1 || url.scheme() == "https"_L1;
   if (is_remote && !remoteModelFetchAllowed()) {
     // Recorded once as consumed+failed so the gate is decided per (key,
     // signature), never re-checked per tracker tick.

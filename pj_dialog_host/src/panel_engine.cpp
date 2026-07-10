@@ -261,7 +261,7 @@ struct PanelEngine::Impl {
         if (dlg_result == QDialog::Accepted) {
           for (auto* line_edit : sub_dialog->findChildren<QLineEdit*>()) {
             const QString name = line_edit->objectName();
-            if (name.isEmpty() || name.startsWith(u"qt_"_s)) {
+            if (name.isEmpty() || name.startsWith("qt_"_L1)) {
               continue;
             }
             nlohmann::json ev = {{"text", line_edit->text().toStdString()}};
@@ -269,7 +269,7 @@ struct PanelEngine::Impl {
           }
           for (auto* check_box : sub_dialog->findChildren<QCheckBox*>()) {
             const QString name = check_box->objectName();
-            if (name.isEmpty() || name.startsWith(u"qt_"_s)) {
+            if (name.isEmpty() || name.startsWith("qt_"_L1)) {
               continue;
             }
             nlohmann::json ev = {{"checked", check_box->isChecked()}};
@@ -277,7 +277,7 @@ struct PanelEngine::Impl {
           }
           for (auto* combo_box : sub_dialog->findChildren<QComboBox*>()) {
             const QString name = combo_box->objectName();
-            if (name.isEmpty() || name.startsWith(u"qt_"_s)) {
+            if (name.isEmpty() || name.startsWith("qt_"_L1)) {
               continue;
             }
             nlohmann::json ev = {

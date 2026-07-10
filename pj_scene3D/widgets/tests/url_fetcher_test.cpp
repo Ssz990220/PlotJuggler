@@ -114,7 +114,7 @@ TEST(UrlFetcherTest, UnsupportedSchemeFailsAsynchronously) {
   EXPECT_FALSE(called) << "even immediate errors must be delivered through the event loop";
   ASSERT_TRUE(pumpUntil([&called]() { return called; }, 5000));
   EXPECT_FALSE(result.ok);
-  EXPECT_TRUE(result.error.contains(u"unsupported URL scheme"_s)) << result.error.toStdString();
+  EXPECT_TRUE(result.error.contains("unsupported URL scheme"_L1)) << result.error.toStdString();
 }
 
 // Regression (Windows): an absolute path like "C:/dir/file.bin" becomes a QUrl
@@ -132,7 +132,7 @@ TEST(UrlFetcherTest, WindowsDriveLetterPathTreatedAsLocalFile) {
   });
   ASSERT_TRUE(pumpUntil([&called]() { return called; }, 5000));
   EXPECT_FALSE(result.ok);  // the file does not exist on the test host
-  EXPECT_FALSE(result.error.contains(u"unsupported URL scheme"_s))
+  EXPECT_FALSE(result.error.contains("unsupported URL scheme"_L1))
       << "drive-letter path misrouted as a URL scheme: " << result.error.toStdString();
 }
 
@@ -185,7 +185,7 @@ TEST(UrlFetcherTest, ResponseBeyondSizeCapIsAborted) {
 
   ASSERT_TRUE(pumpUntil([&called]() { return called; }, 10000)) << "capped fetch never completed";
   EXPECT_FALSE(result.ok);
-  EXPECT_TRUE(result.error.contains(u"limit"_s)) << result.error.toStdString();
+  EXPECT_TRUE(result.error.contains("limit"_L1)) << result.error.toStdString();
 }
 
 namespace {

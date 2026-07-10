@@ -174,22 +174,22 @@ bool parseGeomElement(
 
 // Map a URDF joint `type` attribute to JointType (unknown/empty ⇒ kOther).
 JointType jointTypeFromString(const QString& type) {
-  if (type == u"fixed"_s) {
+  if (type == "fixed"_L1) {
     return JointType::kFixed;
   }
-  if (type == u"revolute"_s) {
+  if (type == "revolute"_L1) {
     return JointType::kRevolute;
   }
-  if (type == u"continuous"_s) {
+  if (type == "continuous"_L1) {
     return JointType::kContinuous;
   }
-  if (type == u"prismatic"_s) {
+  if (type == "prismatic"_L1) {
     return JointType::kPrismatic;
   }
-  if (type == u"floating"_s) {
+  if (type == "floating"_L1) {
     return JointType::kFloating;
   }
-  if (type == u"planar"_s) {
+  if (type == "planar"_L1) {
     return JointType::kPlanar;
   }
   return JointType::kOther;
@@ -245,7 +245,7 @@ std::pair<std::optional<RobotModel>, std::string> parseUrdf(
   }
   // Format inference from the root element.
   const QString root_tag = root.tagName();
-  if (root_tag != u"robot"_s) {
+  if (root_tag != "robot"_L1) {
     return {std::nullopt, "Format '" + root_tag.toStdString() + "' is not supported — only URDF"};
   }
 

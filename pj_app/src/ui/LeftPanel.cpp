@@ -256,7 +256,7 @@ QDomElement LeftPanel::saveSourcesState(QDomDocument& doc) const {
 }
 
 void LeftPanel::restoreSourcesState(const QDomElement& element) {
-  if (element.isNull() || element.tagName() != u"left_panel_state"_s) {
+  if (element.isNull() || element.tagName() != "left_panel_state"_L1) {
     return;
   }
 
@@ -266,11 +266,11 @@ void LeftPanel::restoreSourcesState(const QDomElement& element) {
   // intended side-effect of selecting a tab.
   if (element.hasAttribute(u"sources_tab"_s)) {
     const QString tab = element.attribute(u"sources_tab"_s);
-    if (tab == u"file"_s) {
+    if (tab == "file"_L1) {
       ui_->tabFile->setChecked(true);
-    } else if (tab == u"stream"_s) {
+    } else if (tab == "stream"_L1) {
       ui_->tabStream->setChecked(true);
-    } else if (tab == u"cloud"_s) {
+    } else if (tab == "cloud"_L1) {
       ui_->tabCloud->setChecked(true);
     }
     // Unknown tab string -> silent no-op.
@@ -329,7 +329,7 @@ void LeftPanel::applyIcons(QString theme) {
     // Cloud-launcher buttons are runtime-added text buttons, not the square
     // icon chrome this loop styles — leave their natural sizing alone, else
     // they get squashed to button_extent x button_extent and clip their label.
-    if (btn->objectName().startsWith(u"cloudToolboxOpen_"_s)) {
+    if (btn->objectName().startsWith("cloudToolboxOpen_"_L1)) {
       continue;
     }
     btn->setMinimumSize(button_extent, button_extent);

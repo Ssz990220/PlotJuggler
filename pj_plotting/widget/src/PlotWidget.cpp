@@ -573,12 +573,12 @@ QDomElement PlotWidget::xmlSaveState(QDomDocument& doc) const {
 }
 
 bool PlotWidget::xmlLoadState(const QDomElement& plot_element, bool autozoom) {
-  if (plot_element.isNull() || plot_element.tagName() != u"plot"_s) {
+  if (plot_element.isNull() || plot_element.tagName() != "plot"_L1) {
     return false;
   }
 
   setStateId(plot_element.attribute(u"id"_s));
-  setModeXY(plot_element.attribute(u"mode"_s) == u"XYPlot"_s);
+  setModeXY(plot_element.attribute(u"mode"_s) == "XYPlot"_L1);
   // Line width is plot-level. New layouts store the chosen width on the <plot>.
   // Older layouts kept the plot-level value at the stale default ("1.0") and the
   // real width per-curve, so when the plot value is absent/default fall back to
@@ -586,7 +586,7 @@ bool PlotWidget::xmlLoadState(const QDomElement& plot_element, bool autozoom) {
   // line_width, so the fallback only fires for genuinely old files.
   const QString plot_line_width = plot_element.attribute(u"line_width"_s);
   const QDomElement first_curve = plot_element.firstChildElement(u"curve"_s);
-  if ((plot_line_width.isEmpty() || plot_line_width == u"1.0"_s) && first_curve.hasAttribute(u"line_width"_s)) {
+  if ((plot_line_width.isEmpty() || plot_line_width == "1.0"_L1) && first_curve.hasAttribute(u"line_width"_s)) {
     setLineWidth(lineWidthFromPixels(first_curve.attribute(u"line_width"_s).toDouble()));
   } else {
     setLineWidth(lineWidthFromString(plot_line_width.isEmpty() ? u"1.0"_s : plot_line_width));
@@ -599,7 +599,7 @@ bool PlotWidget::xmlLoadState(const QDomElement& plot_element, bool autozoom) {
     style_attr = first_curve.attribute(u"style"_s, u"Lines"_s);
   }
   setDefaultStyle(curveStyleFromString(style_attr));
-  setTrackerEnabled(plot_element.attribute(u"tracker_enabled"_s, u"true"_s) == u"true"_s);
+  setTrackerEnabled(plot_element.attribute(u"tracker_enabled"_s, u"true"_s) == "true"_L1);
   qwtPlot()->setTitle(plot_element.attribute(u"title"_s));
 
   const bool was_loading_state = loading_state_;
@@ -733,7 +733,7 @@ PlotWidget::CurveInfo* PlotWidget::applyCurveElement(const QDomElement& curve_el
   // and visibility are per-curve.
   if (loaded_curve != nullptr) {
     const QString visible_attr = curve_element.attribute(u"visible"_s, u"true"_s);
-    loaded_curve->curve->setVisible(visible_attr == u"true"_s);
+    loaded_curve->curve->setVisible(visible_attr == "true"_L1);
   }
   return loaded_curve;
 }
@@ -1409,13 +1409,13 @@ QString PlotWidget::lineWidthToString(LineWidth width) {
 }
 
 LineWidth PlotWidget::lineWidthFromString(QString value) {
-  if (value == u"1.5"_s) {
+  if (value == "1.5"_L1) {
     return LineWidth::kPoints15;
   }
-  if (value == u"2.0"_s) {
+  if (value == "2.0"_L1) {
     return LineWidth::kPoints20;
   }
-  if (value == u"3.0"_s) {
+  if (value == "3.0"_L1) {
     return LineWidth::kPoints30;
   }
   return LineWidth::kPoints10;
@@ -1459,19 +1459,19 @@ QString PlotWidget::curveStyleToString(CurveStyle style) {
 }
 
 PlotWidgetBase::CurveStyle PlotWidget::curveStyleFromString(QString value) {
-  if (value == u"Dots"_s) {
+  if (value == "Dots"_L1) {
     return kDots;
   }
-  if (value == u"LinesAndDots"_s) {
+  if (value == "LinesAndDots"_L1) {
     return kLinesAndDots;
   }
-  if (value == u"Sticks"_s) {
+  if (value == "Sticks"_L1) {
     return kSticks;
   }
-  if (value == u"Steps"_s) {
+  if (value == "Steps"_L1) {
     return kSteps;
   }
-  if (value == u"StepsInverted"_s) {
+  if (value == "StepsInverted"_L1) {
     return kStepsInverted;
   }
   return kLines;

@@ -718,7 +718,7 @@ TEST(RebindCurveKeys, SetsNameForResolvedTimeSeries) {
   PlotDoc pd = makePlotDoc();
   QDomElement c = addTsCurve(pd, u"/imu"_s, u"accel.x"_s);
   const auto resolve = [](const SeriesPath& p) -> std::optional<QString> {
-    if (p.topic == u"/imu"_s && p.field == u"accel.x"_s) {
+    if (p.topic == "/imu"_L1 && p.field == "accel.x"_L1) {
       return u"dataset:7/topic:3/column:0"_s;
     }
     return std::nullopt;

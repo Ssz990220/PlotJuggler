@@ -127,17 +127,17 @@ int main(int argc, char** argv) {
   for (int i = 1; i < argc; ++i) {
     const QString arg = QString::fromLocal8Bit(argv[i]);
     const auto next = [&]() { return (i + 1 < argc) ? QString::fromLocal8Bit(argv[++i]) : QString(); };
-    if (arg == u"--screenshot"_s) {
+    if (arg == "--screenshot"_L1) {
       opts.screenshot_path = next();
-    } else if (arg == u"--delay-ms"_s) {
+    } else if (arg == "--delay-ms"_L1) {
       opts.delay_ms = next().toInt();
-    } else if (arg == u"--size"_s) {
+    } else if (arg == "--size"_L1) {
       opts.size = next().toFloat();
-    } else if (arg == u"--opacity"_s) {
+    } else if (arg == "--opacity"_L1) {
       opts.opacity = next().toFloat();
-    } else if (arg == u"--x-only"_s) {
+    } else if (arg == "--x-only"_L1) {
       opts.x_only = true;
-    } else if (arg == u"--override-color"_s) {
+    } else if (arg == "--override-color"_L1) {
       const QStringList rgb = next().split(QLatin1Char(','));
       if (rgb.size() == 3) {
         opts.override_color = true;
