@@ -1,4 +1,4 @@
-find_package(Qt6 REQUIRED COMPONENTS Core)
+find_package(Qt6 REQUIRED COMPONENTS Core Xml)
 
 add_library(pj_plotting_core STATIC
     src/DatastoreCurveAdapter.cpp
@@ -6,6 +6,7 @@ add_library(pj_plotting_core STATIC
     src/PointSeriesXY.cpp
     include/pj_plotting/DatastoreCurveAdapter.h
     include/pj_plotting/FilteredCurveAdapter.h
+    include/pj_plotting/PlotXml.h
     include/pj_plotting/PointSeriesXY.h
 )
 
@@ -19,4 +20,5 @@ target_link_libraries(pj_plotting_core PUBLIC
     pj_datastore
     plotjuggler_qwt
     Qt6::Core
+    Qt6::Xml
 )

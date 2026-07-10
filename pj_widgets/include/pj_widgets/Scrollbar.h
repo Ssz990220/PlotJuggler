@@ -153,6 +153,10 @@ class Scrollbar : public QWidget {
     return click_to_scroll_;
   }
 
+ signals:
+  /// A user pill drag ended after changing the backing scrollbar.
+  void scrollChangeCommitted();
+
  protected:
   void paintEvent(QPaintEvent* event) override;
   bool eventFilter(QObject* watched, QEvent* event) override;
@@ -227,6 +231,7 @@ class Scrollbar : public QWidget {
   // handle under the cursor first); when false only the handle is a drag target.
   // Opt-in (Timeline), so an overlay on foreign content never steals strip clicks.
   bool click_to_scroll_ = false;
+  long drag_origin_value_ = 0;
   long drag_start_value_ = 0;
   double drag_start_axis_px_ = 0.0;
 

@@ -47,6 +47,14 @@ struct PendingDisplayEntry {
   // this dataset when two datasets name the same topic, falling back to the
   // load-order scan if it vanished (stream reconnects mint fresh ids).
   std::optional<DatasetId> preferred_dataset;
+  /// True for an unresolved ordinary curve carrying pending_intent="true".
+  /// It is real workspace state, so the drain prompt must not discard it.
+  bool persistent_intent = false;
+  /// Completion viewport policy captured when the entry is staged: true — a
+  /// restored or already-populated plot keeps its viewport when the late curve
+  /// lands; false — the plot was a fresh empty one, so its first data auto-fits
+  /// (re-checked against the plot's live state at completion time).
+  bool preserve_viewport_on_completion = false;
 
   [[nodiscard]] bool isXY() const {
     return kind == Kind::kCurve && !x_path.topic.isEmpty();
@@ -86,9 +94,9 @@ class PendingDisplayBinder : public QObject {
   explicit PendingDisplayBinder(CatalogModel& catalog, TopicDemandTracker* tracker = nullptr);
 
   // Re-walks the saved layout and stores unresolved per-plot curves as detached DOM clones.
-  // Replaces ALL previously staged entries — scene pends too — releasing their demand
-  // references first (a layout load rebuilds the dock world, so staged intents against
-  // the old widgets are moot).
+  // Replaces every previously staged plot-curve entry (releasing its demand reference
+  // first) and drops dead scene entries; LIVE scene-layer pends survive — they are
+  // interactive drops that exist only in the binder, never in the XML being collected.
   void collect(const QDomDocument& doc, const QHash<QString, PlotWidget*>& plots_by_state_id);
 
   // Stages ONE interactive drop (M3-UI: dropping an advertised placeholder scalar
@@ -110,6 +118,8 @@ class PendingDisplayBinder : public QObject {
       SceneDockWidget* dock, const QString& topic_name, std::optional<DatasetId> preferred_dataset);
 
   // Attempts pending entries whose topics arrived; an empty set is the drain pass and tries all entries.
+  // Returns the number of pending intents COMPLETED this pass — not curves added: a
+  // topic that materializes with zero numeric fields terminally fulfills its intent.
   [[nodiscard]] int flush(const QSet<QString>& topics);
 
   // Remaining unresolved stable paths for a final missing-curve prompt; dead plots
@@ -137,10 +147,11 @@ class PendingDisplayBinder : public QObject {
   // reconnects mint fresh dataset ids).
   [[nodiscard]] std::optional<QString> resolveEntryPath(
       const layout_xml::SeriesPath& path, std::optional<DatasetId> preferred) const;
-  // Keys of every scalar field materialized for `topic`, all from one dataset
-  // (`preferred` when it has any, else the first dataset naming the topic) — the
-  // empty-field placeholder-drop fallback binds one curve per returned key.
-  [[nodiscard]] std::vector<QString> scalarKeysForTopic(const QString& topic, std::optional<DatasetId> preferred) const;
+  // Keys of every scalar field materialized for one identity-resolved dataset.
+  // nullopt means absent/ambiguous; an empty vector means the topic materialized
+  // with no numeric fields and terminally fulfills the scalar-shaped intent.
+  [[nodiscard]] std::optional<std::vector<QString>> scalarKeysForTopic(
+      const layout_xml::SeriesPath& path, std::optional<DatasetId> preferred) const;
   // First object topic naming `topic` (preferring `preferred`), or nullopt while
   // none has materialized — the kSceneLayer twin of resolveEntryPath.
   [[nodiscard]] std::optional<CatalogItem> resolveObjectTopic(
@@ -151,7 +162,8 @@ class PendingDisplayBinder : public QObject {
   // True when an identical intent (same kind, same live target widget, same
   // topic/field path) is already staged — the dedup gate for interactive drops.
   [[nodiscard]] bool hasEntryFor(
-      PendingDisplayEntry::Kind kind, const QObject* target, const layout_xml::SeriesPath& path) const;
+      PendingDisplayEntry::Kind kind, const QObject* target, const layout_xml::SeriesPath& path,
+      std::optional<DatasetId> preferred_dataset) const;
   // Releases entries (and their references) the moment their target widget is
   // destroyed — connected once per distinct target at stage time. Lazy QPointer
   // checks are not enough: on a quiet stream no flush ever runs, and a dead

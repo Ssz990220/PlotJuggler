@@ -60,6 +60,7 @@ SourceTimelineController::SourceTimelineController(Timeline* widget, AppSession*
     sessions.setDisplayOffset(static_cast<DatasetId>(id), DisplayOffset{Duration{new_offset}});
     scheduleRangeRecompute();
   });
+  connect(widget_, &Timeline::offsetChangeCommitted, this, &SourceTimelineController::workspaceChangeCommitted);
   connect(widget_, &Timeline::alignRequested, this, &SourceTimelineController::alignStarts);
   connect(widget_, &Timeline::mergeRequested, this, &SourceTimelineController::onMergeRequested);
   connect(widget_, &Timeline::tracksReordered, this, [this](const QList<quint64>& ids) {
@@ -70,6 +71,7 @@ SourceTimelineController::SourceTimelineController(Timeline* widget, AppSession*
       display_order_.push_back(static_cast<DatasetId>(id));
     }
     rebuildTracks();
+    emit workspaceChangeCommitted();
   });
   connect(widget_, &Timeline::playheadSeeked, this, [&playback](double display_seconds) {
     // The widget already emits in the playback frame (it undoes its time-frame
@@ -159,6 +161,11 @@ void SourceTimelineController::setDisplayOrder(std::vector<DatasetId> order) {
 
 void SourceTimelineController::rebuildTracks() {
   SessionManager& sessions = session_->sessionManager();
+  std::unordered_set<DatasetId> previous_track_ids;
+  previous_track_ids.reserve(tracks_.size());
+  for (const TimelineTrack& track : tracks_) {
+    previous_track_ids.insert(static_cast<DatasetId>(track.id));
+  }
   // Honor the user's drag order first (those still loaded), then any remaining
   // datasets in catalog (load) order.
   const auto catalog = session_->catalogModel().datasets();
@@ -194,6 +201,12 @@ void SourceTimelineController::rebuildTracks() {
   }
   tracks_ = std::move(tracks);
   widget_->setTracks(tracks_);
+  for (const TimelineTrack& track : tracks_) {
+    const DatasetId id = static_cast<DatasetId>(track.id);
+    if (previous_track_ids.count(id) == 0) {
+      emit trackAdded(id);
+    }
+  }
 }
 
 void SourceTimelineController::updateTrackOffsets() {
@@ -234,6 +247,7 @@ void SourceTimelineController::resetAll() {
   rebuildTracks();
   scheduleRangeRecompute();
   widget_->fitToContents();  // re-frame after reset (no-op if auto-zoom is off)
+  emit workspaceChangeCommitted();
 }
 
 void SourceTimelineController::applyAlignment(AlignMode mode) {
@@ -266,6 +280,7 @@ void SourceTimelineController::applyAlignment(AlignMode mode) {
   }
   scheduleRangeRecompute();
   widget_->fitToContents();  // re-frame the realigned extent (no-op if auto-zoom is off)
+  emit workspaceChangeCommitted();
 }
 
 void SourceTimelineController::scheduleRangeRecompute() {

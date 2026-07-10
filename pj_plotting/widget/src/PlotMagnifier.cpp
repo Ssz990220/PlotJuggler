@@ -121,6 +121,9 @@ void PlotMagnifier::rescale(double factor, AxisMode axis) {
 
   qwt_plot->setAutoReplot(auto_replot);
   if (do_replot) {
+    // Keep this signal as the gesture commit point: synchronous history
+    // snapshots must observe the new canvas maps, not the preceding viewport.
+    qwt_plot->replot();
     emit rescaled(new_rect);
   }
 }

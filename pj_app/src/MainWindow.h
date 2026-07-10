@@ -13,6 +13,7 @@
 #include <QPointF>
 #include <QPointer>
 #include <QRectF>
+#include <QSet>
 #include <QString>
 #include <QStringList>
 #include <deque>
@@ -96,6 +97,7 @@ class MainWindow : public QMainWindow {
   friend class MainWindowSourceLayoutTestPeer;
   friend class MainWindowFanoutAmbiguousTestPeer;
   friend class MainWindowViewportReframeTestPeer;
+  friend class MainWindowHistoryTestPeer;
 
  public:
   // Creates the main window using the default extension directory.
@@ -460,6 +462,56 @@ class MainWindow : public QMainWindow {
   void applyActivePlotWidth(double width);
   void applyActivePlotStyle(int style);
 
+  /// Exact in-memory state of one dataset track. Portable qualifiers are carried
+  /// only so a source-replacement snapshot can map a reminted DatasetId; history
+  /// replay still requires the raw id to remain live.
+  struct TimelineTrackState {
+    DatasetId dataset_id = 0;
+    qint64 display_offset_ns = 0;
+    int timeline_order = -1;
+    QString source_name;
+    QString source_path;
+    int source_index = -1;
+
+    [[nodiscard]] bool operator==(const TimelineTrackState&) const = default;
+  };
+
+  /// Source Timeline offsets/order and view chrome kept outside layout XML.
+  struct TimelineState {
+    std::vector<TimelineTrackState> tracks;
+    double zoom = 1.0;
+    qint64 scroll_left_ns = 0;
+    int scroll_top_px = 0;
+    int name_column_width = 0;
+    bool snap = true;
+
+    [[nodiscard]] bool operator==(const TimelineState&) const = default;
+  };
+
+  /// One atomic workspace snapshot. XML stays on the established schema while
+  /// session-only timeline identity and chrome remain in memory.
+  struct CapturedWorkspace {
+    QByteArray xml;
+    TimelineState timeline;
+
+    [[nodiscard]] bool operator==(const CapturedWorkspace&) const = default;
+  };
+
+  struct PendingSourceReplacement {
+    CapturedWorkspace workspace;
+    QString path;
+  };
+
+  struct TimelineChromeState {
+    double zoom = 1.0;
+    qint64 scroll_left_ns = 0;
+    int scroll_top_px = 0;
+    int name_column_width = 0;
+    bool snap = true;
+  };
+
+  using TimelineResolutionPlan = std::vector<DatasetId>;
+
   // Layout helpers.
   void loadLayoutFromPath(const QString& path);
   // Applies a parsed layout to already-loaded data: curve rebind, plot/panel
@@ -468,7 +520,17 @@ class MainWindow : public QMainWindow {
   void applyRestoredLayout(QDomDocument doc, const QString& path);
   void beginProgressiveLayoutRestore(QDomDocument doc, const QString& path);
   void cancelProgressiveLayoutRestore();
+  [[nodiscard]] bool rollbackProgressiveWorkspace();
+  [[nodiscard]] bool abortProgressiveRestore();
   void flushPendingCurveBindings(const std::vector<CatalogItem>& items);
+  /// Re-registers the document's unresolved curves with the pending binder
+  /// (live scene pends survive; see PendingDisplayBinder::collect).
+  void collectPendingDisplayBindings(const QDomDocument& doc);
+  /// collectPendingDisplayBindings + an immediate drain-pass flush — the
+  /// post-replay shape used by restore and rollback.
+  void rebuildPendingDisplayBindings(const QDomDocument& doc);
+  /// Coalesces plot-owned intent changes into one binder rebuild on the event loop.
+  void schedulePendingDisplayBindingRebuild();
   int retryPendingSceneRestores(const std::vector<CatalogItem>& items);
   [[nodiscard]] QStringList unresolvedPendingSceneRestores();
   void clearPendingSceneRestores();
@@ -493,7 +555,12 @@ class MainWindow : public QMainWindow {
   // How a complete-snapshot restore handles curves no loaded dataset can provide.
   enum class MissingCurvePolicy {
     kPrompt,      ///< layout load: prompt the user (cancel aborts, remove strips them)
-    kSilentDrop,  ///< undo/redo: silently drop a curve whose data is gone (no prompt)
+    kSilentDrop,  ///< compatibility restore: unresolved curves may be discarded
+    kExact,       ///< history/rollback: fail rather than drop unresolved state
+  };
+  enum class TimelineRestoreMode {
+    kExact,
+    kPortableSourceReplacement,
   };
   // Outcome of restoreWorkspaceState.
   enum class RestoreResult {
@@ -508,7 +575,32 @@ class MainWindow : public QMainWindow {
   // is in the catalog), then rebind curve keys, then apply plots+toggles via
   // xmlLoadState. Snapshots carry stable topic/field paths, not per-load keys, so one
   // survives an intervening data reload. Callers run it under applying_state_ as needed.
-  [[nodiscard]] RestoreResult restoreWorkspaceState(QDomDocument& doc, MissingCurvePolicy policy);
+  [[nodiscard]] RestoreResult restoreWorkspaceState(
+      QDomDocument& doc, MissingCurvePolicy policy, const CapturedWorkspace* rollback_to = nullptr);
+  [[nodiscard]] RestoreResult restoreWorkspaceState(
+      const CapturedWorkspace& target, MissingCurvePolicy policy, TimelineRestoreMode timeline_mode,
+      const CapturedWorkspace* rollback_to = nullptr);
+
+  /// Capture/apply helpers shared by history, rollback, progressive restore, and
+  /// source replacement. Timeline validation resolves every id and overflow
+  /// guard before the first offset is written.
+  [[nodiscard]] CapturedWorkspace captureWorkspace() const;
+  [[nodiscard]] CapturedWorkspace capturePortableWorkspace() const;
+  [[nodiscard]] TimelineState captureTimelineState() const;
+  [[nodiscard]] TimelineChromeState captureTimelineChrome() const;
+  void applyTimelineChrome(const TimelineChromeState& state);
+  [[nodiscard]] std::optional<DatasetId> resolveTimelineTrack(
+      const TimelineTrackState& track, TimelineRestoreMode mode,
+      const std::vector<std::pair<DatasetId, QString>>& live_datasets) const;
+  [[nodiscard]] std::optional<TimelineResolutionPlan> validateTimelineState(
+      const TimelineState& state, TimelineRestoreMode mode) const;
+  [[nodiscard]] bool applyTimelineState(const TimelineState& state, const TimelineResolutionPlan& plan);
+  [[nodiscard]] RestoreResult applyWorkspace(
+      QDomDocument& doc, MissingCurvePolicy policy, const TimelineState* timeline_state,
+      const TimelineResolutionPlan* timeline_plan);
+  [[nodiscard]] RestoreResult restoreWorkspaceStateImpl(
+      QDomDocument& doc, MissingCurvePolicy policy, const TimelineState* timeline_state,
+      TimelineRestoreMode timeline_mode, const CapturedWorkspace* rollback_to);
 
   // kPlaceholders was removed: the SessionManager API for registering
   // empty placeholder series doesn't exist yet, so the "Create empty
@@ -579,7 +671,7 @@ class MainWindow : public QMainWindow {
   // Resolves each saved filter's input against whichever loaded dataset holds it
   // (first match in load order, mirroring rebindCurvesToLoadedDatasets), so a
   // multi-file layout restores each filter against its own source.
-  void restoreDataProcessors(const QDomElement& root);
+  [[nodiscard]] bool restoreDataProcessors(const QDomElement& root);
 
   // Size the bottom panel from the Source Timeline strip's open/closed state:
   // when OPEN, pin a minimum height so the strip can't be dragged to a clipped
@@ -612,6 +704,16 @@ class MainWindow : public QMainWindow {
 
   // Adds or replaces the newest undo snapshot.
   void pushUndoState(bool force_new_state = false);
+
+  // Replace the current history tip after non-undoable additive data growth or
+  // successful navigation, without creating a data-load undo operation.
+  void hydrateCurrentUndoState(bool refresh_data_universe = true);
+  void restoreHistoryState(const CapturedWorkspace& target, bool undo);
+  void reconcileHistoryWithDataUniverse();
+
+  // Exact raw storage identities that make existing history snapshots safe to
+  // replay. Processor outputs are workspace state and are excluded.
+  [[nodiscard]] QSet<QString> captureHistoryDataUniverse() const;
 
   // Updates enabled state for undo / redo actions.
   void updateUndoRedoActions();
@@ -754,19 +856,25 @@ class MainWindow : public QMainWindow {
   QAction* action_load_layout_ = nullptr;
   QAction* action_save_layout_ = nullptr;
   QAction* action_preferences_ = nullptr;
-  std::deque<QByteArray> undo_states_;
-  std::deque<QByteArray> redo_states_;
+  std::deque<CapturedWorkspace> undo_states_;
+  std::deque<CapturedWorkspace> redo_states_;
+  QSet<QString> history_data_universe_;
   QElapsedTimer undo_timer_;
   bool applying_state_ = false;
   bool progressive_layout_in_flight_ = false;
   QMetaObject::Connection pending_items_added_conn_;
   QMetaObject::Connection pending_queue_drained_conn_;
+  bool pending_binding_rebuild_scheduled_ = false;
   // Timeline state (per-source offsets + track order) extracted during a progressive
   // restore but not yet applicable: the async worker had not registered the reloaded
   // datasets' source paths when restoreChromeAndPanels ran, so the offsets were
   // skipped. onProgressiveLayoutDrained re-applies these once the paths settle. Empty
   // outside a progressive restore.
   QList<layout_xml::DataSourceRef> pending_timeline_sources_;
+  // The saved target must outlive begin so processors can replay only at drain.
+  QDomDocument progressive_layout_doc_;
+  std::optional<CapturedWorkspace> progressive_previous_workspace_;
+  std::optional<PendingSourceReplacement> pending_source_replacement_;
   // Set only while a --layout CLI load runs, so loadLayoutFromPath auto-reloads the
   // layout's source(s) instead of prompting.
   bool startup_auto_reload_ = false;

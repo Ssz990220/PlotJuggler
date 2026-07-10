@@ -10,6 +10,9 @@
 #include <limits>
 #include <utility>
 #include <vector>
+
+#include "pj_plotting/PlotXml.h"
+
 using namespace Qt::StringLiterals;
 
 namespace PJ::layout_xml {
@@ -227,6 +230,7 @@ QList<SeriesPath> rebindCurveKeys(QDomDocument& doc, const SeriesKeyResolver& re
   forEachPlotCurve(doc, [&](const QDomElement& curve) { curves.push_back(curve); });
 
   for (QDomElement& curve : curves) {
+    const bool persistent_intent = plot_xml::isPendingIntent(curve);
     const std::optional<SeriesPath> xy_x = readXyXPath(curve);
     if (xy_x.has_value()) {
       // XY curve: both axes must resolve, else the curve is undrawable.
@@ -239,10 +243,10 @@ QList<SeriesPath> rebindCurveKeys(QDomDocument& doc, const SeriesKeyResolver& re
       } else {
         curve.removeAttribute(u"curve_x"_s);
         curve.removeAttribute(u"curve_y"_s);
-        if (!x_key.has_value()) {
+        if (!persistent_intent && !x_key.has_value()) {
           record_unresolved(*xy_x);
         }
-        if (xy_y.has_value() && !y_key.has_value()) {
+        if (!persistent_intent && xy_y.has_value() && !y_key.has_value()) {
           record_unresolved(*xy_y);
         }
       }
@@ -257,7 +261,9 @@ QList<SeriesPath> rebindCurveKeys(QDomDocument& doc, const SeriesKeyResolver& re
       curve.setAttribute(u"name"_s, *key);
     } else {
       curve.removeAttribute(u"name"_s);
-      record_unresolved(*ts);
+      if (!persistent_intent) {
+        record_unresolved(*ts);
+      }
     }
   }
   return unresolved;
@@ -419,6 +425,9 @@ void resolveDatasetSourcePaths(QDomDocument& doc, const QDir& layout_dir) {
 void stripUnresolvedCurves(QDomDocument& doc) {
   std::vector<QDomNode> victims;
   forEachPlotCurve(doc, [&](const QDomElement& curve) {
+    if (plot_xml::isPendingIntent(curve)) {
+      return;
+    }
     const bool has_ts_key = !curve.attribute(u"name"_s).isEmpty();
     const bool has_xy_keys = !curve.attribute(u"curve_x"_s).isEmpty() && !curve.attribute(u"curve_y"_s).isEmpty();
     if (!has_ts_key && !has_xy_keys) {
@@ -440,14 +449,14 @@ void normalizePlotRangeBasis(QDomDocument& doc) {
     QDomElement range = plot.firstChildElement(u"range"_s);
     // A range already carrying x_basis was written by a current build; leave it
     // (keeps this migration idempotent). Only annotate the historical unmarked form.
-    if (range.isNull() || range.hasAttribute(u"x_basis"_s)) {
+    if (range.isNull() || range.hasAttribute(plot_xml::kXBasisAttribute)) {
       continue;
     }
     // No numeric values change. XY plots stored a raw data value; time-series plots
     // have always stored ABSOLUTE seconds (the v3 writer added the display offset),
     // so the pre-marker form maps directly onto today's two bases.
     const bool is_xy = plot.attribute(u"mode"_s) == u"XYPlot"_s;
-    range.setAttribute(u"x_basis"_s, is_xy ? u"value"_s : u"absolute"_s);
+    range.setAttribute(plot_xml::kXBasisAttribute, is_xy ? plot_xml::kXBasisValue : plot_xml::kXBasisAbsolute);
   }
 }
 

@@ -848,6 +848,9 @@ bool FileLoader::beginLoad(const LoadRequest& request) {
     // remove-then-fresh: tombstone the existing dataset now (objects evicted past the rollback point below) and let
     // the fanout create fresh datasets on the live engine. The handle bound to existing_primary_id above is never
     // start()ed here (fanout mints its own per-entry handles), so the dataset takes no data before its removal.
+    if (replacing) {
+      emit sourceReplacementAboutToCommit(path);
+    }
     if (replacing && catalog_.removeDataset(existing_primary_id)) {
       tombstoned_for_replace.push_back(existing_primary_id);
     }

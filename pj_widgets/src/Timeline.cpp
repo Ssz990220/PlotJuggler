@@ -928,7 +928,16 @@ using timeline_detail::TimelineBarItem;
 using timeline_detail::TimelineNeedleItem;
 using timeline_detail::TimelineRulerItem;
 
+namespace {
+// Wheel zoom and name-column drags fire per input event; one
+// viewStateChangeCommitted publishes after the gesture goes quiet.
+constexpr int kViewStateCommitDebounceMs = 200;
+}  // namespace
+
 Timeline::Timeline(QWidget* parent) : QWidget(parent) {
+  view_state_commit_debounce_.setSingleShot(true);
+  view_state_commit_debounce_.setInterval(kViewStateCommitDebounceMs);
+  connect(&view_state_commit_debounce_, &QTimer::timeout, this, &Timeline::viewStateChangeCommitted);
   gscene_ = new QGraphicsScene(this);
   view_ = new QGraphicsView(gscene_, this);
   view_->setRenderHint(QPainter::Antialiasing, true);
@@ -962,9 +971,11 @@ Timeline::Timeline(QWidget* parent) : QWidget(parent) {
   h_scrollbar_ = new Scrollbar(Qt::Horizontal);
   h_scrollbar_->setClickToScroll(true);
   h_scrollbar_->attach(view_);
+  connect(h_scrollbar_, &Scrollbar::scrollChangeCommitted, this, &Timeline::viewStateChangeCommitted);
   v_scrollbar_ = new Scrollbar(Qt::Vertical);
   v_scrollbar_->setClickToScroll(true);
   v_scrollbar_->attach(view_);
+  connect(v_scrollbar_, &Scrollbar::scrollChangeCommitted, this, &Timeline::viewStateChangeCommitted);
 
   align_button_ = new QPushButton(tr("Align"), this);
   align_button_->setToolTip(tr("Shift every source so their starts line up at the earliest start"));
@@ -1014,6 +1025,7 @@ Timeline::Timeline(QWidget* parent) : QWidget(parent) {
   connect(name_splitter_, &QSplitter::splitterMoved, this, [this](int, int) {
     updateLockOverlayGeometry();
     emit nameColumnWidthChanged(nameColumnWidth());
+    view_state_commit_debounce_.start();
   });
 
   auto* layout = new QVBoxLayout(this);
@@ -1270,6 +1282,10 @@ qint64 Timeline::viewportLeftDisplayNs() const {
   return TimelineScene::pxToNs(static_cast<double>(view_->horizontalScrollBar()->value()), viewport_);
 }
 
+int Timeline::viewportTopOffsetPx() const {
+  return (view_ != nullptr && view_->verticalScrollBar() != nullptr) ? view_->verticalScrollBar()->value() : 0;
+}
+
 void Timeline::setViewportLeftDisplayNs(qint64 display_ns) {
   if (view_ == nullptr || view_->horizontalScrollBar() == nullptr) {
     return;
@@ -1278,6 +1294,12 @@ void Timeline::setViewportLeftDisplayNs(qint64 display_ns) {
   // a wider window than at save time) lands at the nearest reachable edge.
   const double scene_x = TimelineScene::nsToPx(display_ns, viewport_);
   view_->horizontalScrollBar()->setValue(static_cast<int>(std::llround(scene_x)));
+}
+
+void Timeline::setViewportTopOffsetPx(int offset_px) {
+  if (view_ != nullptr && view_->verticalScrollBar() != nullptr) {
+    view_->verticalScrollBar()->setValue(std::max(0, offset_px));
+  }
 }
 
 int Timeline::nameColumnWidth() const {
@@ -1724,6 +1746,10 @@ void Timeline::setSnapEnabled(bool enabled) {
   }
 }
 
+bool Timeline::snapEnabled() const {
+  return snap_enabled_;
+}
+
 void Timeline::setInteractionLocked(bool locked) {
   if (interaction_locked_ == locked) {
     return;
@@ -2161,6 +2187,7 @@ void Timeline::wheelEvent(QWheelEvent* event) {
   rebuild();
   const double new_anchor_scene_x = TimelineScene::nsToPx(anchor_ns, viewport_);
   view_->horizontalScrollBar()->setValue(static_cast<int>(std::llround(new_anchor_scene_x - anchor_vp_x)));
+  view_state_commit_debounce_.start();
   event->accept();
 }
 
@@ -2210,6 +2237,7 @@ void Timeline::mousePressEvent(QMouseEvent* event) {
     const TimelineSourceId pressed_id = bar->sourceId();
     const bool group_move = selected_ids_.count(pressed_id) != 0;
     drag_group_.clear();
+    bar_drag_changed_ = false;
     snap_active_ = false;  // fresh drag: start with no sticky snap held
     drag_start_scene_x_ = scene_pos.x();
     for (TimelineBarItem* candidate : bar_items_) {
@@ -2269,6 +2297,7 @@ void Timeline::mouseMoveEvent(QMouseEvent* event) {
   if (!drag_group_.empty()) {
     const double dx_px = scene_pos.x() - drag_start_scene_x_;
     qint64 delta_ns = TimelineScene::pxDeltaToNs(dx_px, viewport_);
+    bar_drag_changed_ = bar_drag_changed_ || delta_ns != 0;
     double applied_dx_px = dx_px;
     // Edge-snap: align a dragged start/end onto a neighbour's start/end when within
     // the threshold; a guide line marks it. Dragging past the threshold releases it.
@@ -2308,6 +2337,7 @@ void Timeline::mouseReleaseEvent(QMouseEvent* event) {
     panning_ = false;
     if (pan_moved_) {
       view_->viewport()->unsetCursor();
+      emit viewStateChangeCommitted();
     } else {
       clearSelection();  // a plain background click (no pan) deselects
     }
@@ -2327,15 +2357,20 @@ void Timeline::mouseReleaseEvent(QMouseEvent* event) {
     return;
   }
   if (!drag_group_.empty()) {
+    const bool changed = bar_drag_changed_;
     for (const DragMember& m : drag_group_) {
       m.item->setGhostDx(0.0);
     }
     drag_group_.clear();
+    bar_drag_changed_ = false;
     hideSnapLine();
     view_->viewport()->unsetCursor();
     // A rebuild was suppressed during the drag; re-lay-out now from whatever the
     // host wrote back (or the original state if it ignored the intent).
     rebuild();
+    if (changed) {
+      emit offsetChangeCommitted();
+    }
     event->accept();
     return;
   }

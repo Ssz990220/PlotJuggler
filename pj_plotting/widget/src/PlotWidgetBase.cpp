@@ -110,10 +110,9 @@ class PlotWidgetBase::QwtPlotPimpl : public QwtPlot {
     panner2->setMouseButton(Qt::MiddleButton, Qt::NoModifier);
 
     connect(zoomer, &PlotZoomer::zoomed, this, [this](const QRectF& rect) { this->resized_callback(rect); });
-    connect(magnifier, &PlotMagnifier::rescaled, this, [this](const QRectF& rect) {
-      this->resized_callback(rect);
-      replot();
-    });
+    // No replot here: PlotMagnifier::rescale() replots before emitting so the
+    // canvas maps are already committed when this callback runs.
+    connect(magnifier, &PlotMagnifier::rescaled, this, [this](const QRectF& rect) { this->resized_callback(rect); });
     connect(panner1, &PlotPanner::rescaled, this, [this](const QRectF& rect) { this->resized_callback(rect); });
     connect(panner2, &PlotPanner::rescaled, this, [this](const QRectF& rect) { this->resized_callback(rect); });
 
@@ -140,7 +139,12 @@ class PlotWidgetBase::QwtPlotPimpl : public QwtPlot {
 
   void resizeEvent(QResizeEvent* event) override {
     QwtPlot::resizeEvent(event);
-    resized_callback(canvasBoundingRect());
+    // Window geometry is not a viewport gesture. XY plots still need their
+    // aspect ratio corrected, but that correction must not create history.
+    if (parent->isXYPlot() && parent->keepRatioXY()) {
+      parent->applyRectKeepingRatio(canvasBoundingRect());
+      replot();
+    }
   }
 
   void dragEnterEvent(QDragEnterEvent* event) override {

@@ -124,6 +124,19 @@ class FakeStatefulObjectWidget : public QWidget, public PJ::IDataWidget {
   QString tag_;
 };
 
+class FakeRejectingObjectWidget : public QWidget, public PJ::IDataWidget {
+ public:
+  using QWidget::QWidget;
+
+  QWidget* widget() override {
+    return this;
+  }
+  void onTrackerTime(double /*time*/) override {}
+  bool xmlLoadState(const QDomElement& /*element*/) override {
+    return false;
+  }
+};
+
 class FakeClipboardObjectWidget : public QWidget, public PJ::IDataWidget {
  public:
   FakeClipboardObjectWidget(QString tag, QString value, QWidget* parent = nullptr)
@@ -258,6 +271,28 @@ TEST(DockWidgetPlaceholderTest, EmptyDockerStartsWithPlaceholderDock) {
   ASSERT_NE(dock, nullptr);
   EXPECT_EQ(dock->plotWidget(), nullptr);
   EXPECT_EQ(dock->objectWidget(), nullptr);
+}
+
+TEST(DockWidgetPlaceholderTest, BarePlaceholderSurvivesLayoutSaveRestore) {
+  PJ::SessionManager session;
+  PJ::CatalogModel catalog(&session);
+  PJ::PlotDocker source(u"source"_s, &session, &catalog);
+  auto* source_dock = source.plotAt(0);
+  ASSERT_NE(source_dock, nullptr);
+  ASSERT_EQ(source_dock->plotWidget(), nullptr);
+  ASSERT_EQ(source_dock->objectWidget(), nullptr);
+
+  QDomDocument doc;
+  const QDomElement saved = source.xmlSaveState(doc);
+  EXPECT_EQ(saved.elementsByTagName(u"placeholder"_s).size(), 1);
+
+  PJ::PlotDocker restored(u"restored"_s, &session, &catalog);
+  ASSERT_TRUE(restored.xmlLoadState(saved));
+  auto* restored_dock = restored.plotAt(0);
+  ASSERT_NE(restored_dock, nullptr);
+  EXPECT_EQ(restored_dock->plotWidget(), nullptr);
+  EXPECT_EQ(restored_dock->objectWidget(), nullptr);
+  EXPECT_NE(restored_dock->findChild<PJ::VisualizationPlaceholderWidget*>(), nullptr);
 }
 
 TEST(DockWidgetPlaceholderTest, PlaceholderSplitActionsEmitRequests) {
@@ -1016,6 +1051,24 @@ TEST(DockWidgetPlaceholderTest, RestoreRoutesObjectWidgetTagsToFactoryByKind) {
     EXPECT_NE(dock->objectWidget(), nullptr);
     EXPECT_EQ(dock->plotWidget(), nullptr);
   }
+}
+
+TEST(DockWidgetPlaceholderTest, ObjectPayloadFailureFailsDockerRestore) {
+  PJ::SessionManager session;
+  PJ::CatalogModel catalog(&session);
+  PJ::PlotDocker docker(u"test"_s, &session, &catalog);
+  docker.setObjectWidgetFactory([](const QString&, const PJ::ObjectDropSeed*, QWidget* parent) -> PJ::IDataWidget* {
+    return new FakeRejectingObjectWidget(parent);
+  });
+
+  QDomDocument doc;
+  ASSERT_TRUE(
+      doc.setContent(uR"(
+      <Tab id="t1" containers="1"><Container><DockArea id="a1" name="View">
+      <scene2d version="1"/></DockArea></Container></Tab>)"_s));
+
+  EXPECT_FALSE(docker.xmlLoadState(doc.documentElement()))
+      << "a partial object restore must propagate to the transactional caller";
 }
 
 TEST(DockWidgetPlaceholderTest, PlaceholderAcceptsCatalogDragMoveAndIconDrop) {

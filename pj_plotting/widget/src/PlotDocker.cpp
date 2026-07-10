@@ -19,6 +19,8 @@
 #include <QUuid>
 #include <QVector>
 #include <algorithm>
+#include <cmath>
+#include <numeric>
 #include <utility>
 
 #include "pj_plotting/DockWidget.h"
@@ -48,6 +50,10 @@ class SplittableComponentsFactory : public ads::CDockComponentsFactory {
     return title_bar;
   }
 };
+
+// A splitter drag emits splitterMoved per mouse move; coalesce into one
+// history snapshot after the drag goes quiet.
+constexpr int kSplitterUndoDebounceMs = 200;
 
 QString newStateId() {
   return QUuid::createUuid().toString(QUuid::WithoutBraces);
@@ -109,7 +115,9 @@ QDomElement saveChildNodesState(QDomDocument& doc, QWidget* widget) {
         continue;
       }
     } else {
-      continue;
+      // The chooser is workspace state: omitting it makes undo of a visualization
+      // choice restore an empty plot instead of the chooser.
+      payload = doc.createElement(u"placeholder"_s);
     }
     area_element.setAttribute(u"id"_s, dock_widget->stateId());
     area_element.setAttribute(u"name"_s, dock_widget->name());
@@ -139,37 +147,80 @@ LayoutNode parseLayoutNode(const QDomElement& element) {
 
   if (element.tagName() == "DockSplitter"_L1) {
     node.type = LayoutNode::Type::kSplitter;
-    node.valid = true;
-    node.orientation = element.attribute(u"orientation"_s).startsWith("|"_L1) ? Qt::Horizontal : Qt::Vertical;
-    for (const QString& size : element.attribute(u"sizes"_s).split(';', Qt::SkipEmptyParts)) {
-      bool ok = false;
-      const double value = size.toDouble(&ok);
-      if (ok) {
+    const QString orientation = element.attribute(u"orientation"_s);
+    if (orientation == "|"_L1) {
+      node.orientation = Qt::Horizontal;
+    } else if (orientation == "-"_L1) {
+      node.orientation = Qt::Vertical;
+    } else {
+      return node;
+    }
+
+    if (element.hasAttribute(u"sizes"_s)) {
+      const QString sizes = element.attribute(u"sizes"_s);
+      if (sizes.isEmpty()) {
+        return node;
+      }
+      double total_ratio = 0.0;
+      for (const QString& size : sizes.split(';', Qt::KeepEmptyParts)) {
+        bool ok = false;
+        const double value = size.toDouble(&ok);
+        if (!ok || !std::isfinite(value) || value < 0.0) {
+          return node;
+        }
         node.size_ratios.push_back(value);
+        total_ratio += value;
+      }
+      if (!std::isfinite(total_ratio) || !(total_ratio > 0.0)) {
+        return node;
       }
     }
     for (QDomElement child = element.firstChildElement(); !child.isNull(); child = child.nextSiblingElement()) {
       LayoutNode child_node = parseLayoutNode(child);
-      if (child_node.valid) {
-        node.children.push_back(std::move(child_node));
+      if (!child_node.valid) {
+        // A splitter is one structural unit. Skipping one malformed branch
+        // would silently delete its plots while applying the valid siblings.
+        return node;
+      }
+      node.children.push_back(std::move(child_node));
+    }
+    if (node.children.isEmpty()) {
+      return node;
+    }
+    if (element.hasAttribute(u"count"_s)) {
+      bool ok = false;
+      const int declared_count = element.attribute(u"count"_s).toInt(&ok);
+      if (!ok || declared_count != node.children.size()) {
+        return node;
       }
     }
-    node.valid = !node.children.isEmpty();
+    if (!node.size_ratios.isEmpty() && node.size_ratios.size() != node.children.size()) {
+      return node;
+    }
+    node.valid = true;
     return node;
   }
 
   if (element.tagName() == "DockArea"_L1) {
     node.type = LayoutNode::Type::kArea;
-    node.valid = true;
     node.area_id = element.attribute(u"id"_s);
     node.area_name = element.attribute(u"name"_s);
-    // node.plots holds the per-dock content element regardless of kind — a
-    // <plot> (PlotWidget) or an object widget's own tag (<scene3d>, <scene2d>,
-    // …). Each <DockArea> writes exactly one payload per dock, so collect every
-    // child element and let restore discriminate by tagName().
-    for (QDomElement child = element.firstChildElement(); !child.isNull(); child = child.nextSiblingElement()) {
-      node.plots.push_back(child);
+    // One PJ dock has exactly one payload. Picking the first of several would
+    // turn a malformed document into a successful but lossy restore.
+    const QDomElement payload = element.firstChildElement();
+    if (payload.isNull() || !payload.nextSiblingElement().isNull()) {
+      return node;
     }
+    const QString payload_tag = payload.tagName();
+    if (payload_tag == "Tab"_L1 || payload_tag == "Container"_L1 || payload_tag == "DockSplitter"_L1 ||
+        payload_tag == "DockArea"_L1) {
+      return node;
+    }
+    if (payload_tag == "placeholder"_L1 && !payload.firstChildElement().isNull()) {
+      return node;
+    }
+    node.plots.push_back(payload);
+    node.valid = true;
     return node;
   }
 
@@ -195,7 +246,11 @@ QDomElement firstLeafElement(const LayoutNode& node) {
 // <plot> element. Restore hands its tagName() to the object-widget factory as
 // the "kind", so pj_plotting stays agnostic to specific scene families.
 bool isObjectWidgetElement(const QDomElement& element) {
-  return !element.isNull() && element.tagName() != "plot"_L1;
+  return !element.isNull() && element.tagName() != "plot"_L1 && element.tagName() != "placeholder"_L1;
+}
+
+bool isPlaceholderElement(const QDomElement& element) {
+  return !element.isNull() && element.tagName() == "placeholder"_L1;
 }
 
 class RestorePlotPool {
@@ -301,18 +356,19 @@ void applySplitterSizes(const LayoutNode& node, const QVector<DockWidget*>& widg
   // scale reproduces the saved ratios exactly regardless of when the dock area
   // becomes visible.
   constexpr double kRelativeScale = 1'000'000.0;
+  const double total_ratio = std::accumulate(node.size_ratios.cbegin(), node.size_ratios.cend(), 0.0);
   QList<int> sizes;
   for (double ratio : node.size_ratios) {
-    sizes.push_back(std::max(1, static_cast<int>(ratio * kRelativeScale)));
+    sizes.push_back(std::max(1, static_cast<int>((ratio / total_ratio) * kRelativeScale)));
   }
   splitter->setSizes(sizes);
 }
 
-void restoreNode(
+bool restoreNode(
     const LayoutNode& node, DockWidget* widget, RestorePlotPool& pool,
     const PlotDocker::ObjectWidgetFactory& object_factory) {
   if (widget == nullptr) {
-    return;
+    return false;
   }
 
   if (node.type == LayoutNode::Type::kArea) {
@@ -321,16 +377,21 @@ void restoreNode(
 
     const QDomElement dock_element = node.plots.isEmpty() ? QDomElement{} : node.plots.front();
 
+    if (isPlaceholderElement(dock_element)) {
+      widget->setPlaceholderWidget();
+      return true;
+    }
+
     if (isObjectWidgetElement(dock_element)) {
       // Object-widget path: build an empty dock by kind (the XML tag), then ask
       // it to load its own payload. Unknown kind (no factory / null result) →
       // leave the dock as-is rather than mis-parsing a scene element as a plot.
       IDataWidget* obj = object_factory ? object_factory(dock_element.tagName(), nullptr, widget) : nullptr;
-      if (obj != nullptr) {
-        widget->setObjectWidget(obj);
-        obj->xmlLoadState(dock_element);
+      if (obj == nullptr) {
+        return false;
       }
-      return;
+      widget->setObjectWidget(obj);
+      return obj->xmlLoadState(dock_element);
     }
 
     // Plot path
@@ -340,15 +401,15 @@ void restoreNode(
       widget->setPlotWidget(plot);
     }
     if (!dock_element.isNull()) {
-      plot->xmlLoadState(dock_element);
+      return plot->xmlLoadState(dock_element);
     } else {
       plot->removeAllCurves();
     }
-    return;
+    return true;
   }
 
   if (node.children.isEmpty()) {
-    return;
+    return false;
   }
 
   QVector<DockWidget*> widgets;
@@ -357,7 +418,8 @@ void restoreNode(
   for (qsizetype index = 1; index < node.children.size(); ++index) {
     const LayoutNode& child = node.children.at(index);
     const bool child_is_object = isObjectWidgetElement(firstLeafElement(child));
-    if (child_is_object) {
+    const bool child_is_placeholder = isPlaceholderElement(firstLeafElement(child));
+    if (child_is_object || child_is_placeholder) {
       // No plot needed — the leaf will install an object widget itself.
       split_anchor =
           node.orientation == Qt::Horizontal ? split_anchor->splitHorizontal() : split_anchor->splitVertical();
@@ -367,15 +429,17 @@ void restoreNode(
                                                         : split_anchor->splitVertical(child_plot);
     }
     if (split_anchor == nullptr) {
-      return;
+      return false;
     }
     widgets.push_back(split_anchor);
   }
   applySplitterSizes(node, widgets);
 
+  bool restored = widgets.size() == node.children.size();
   for (qsizetype index = 0; index < node.children.size() && index < widgets.size(); ++index) {
-    restoreNode(node.children.at(index), widgets.at(index), pool, object_factory);
+    restored = restoreNode(node.children.at(index), widgets.at(index), pool, object_factory) && restored;
   }
+  return restored;
 }
 
 }  // namespace
@@ -397,6 +461,7 @@ PlotDocker::PlotDocker(QString name, SessionManager* session, CatalogModel* cata
     }
   });
   connect(this, &ads::CDockManager::dockAreasAdded, this, [this]() {
+    watchSplitters();
     if (!restoring_state_) {
       emit undoableChange();
     }
@@ -416,7 +481,18 @@ PlotDocker::PlotDocker(QString name, SessionManager* session, CatalogModel* cata
       });
   connect(this, &PlotDocker::plotWidgetAdded, this, &PlotDocker::watchPlotForHover);
 
+  splitter_undo_debounce_.setSingleShot(true);
+  splitter_undo_debounce_.setInterval(kSplitterUndoDebounceMs);
+  connect(&splitter_undo_debounce_, &QTimer::timeout, this, [this]() {
+    // Re-check at fire time: a debounce armed just before a restore must not
+    // publish into it.
+    if (!restoring_state_) {
+      emit undoableChange();
+    }
+  });
+
   ensureAtLeastOneWidget();
+  watchSplitters();
 }
 
 PlotDocker::~PlotDocker() = default;
@@ -424,6 +500,18 @@ PlotDocker::~PlotDocker() = default;
 void PlotDocker::watchPlotForHover(PlotWidget* plot) {
   if (plot != nullptr) {
     plot->installHoverFilter(this);
+  }
+}
+
+void PlotDocker::watchSplitters() {
+  for (QSplitter* splitter : findChildren<QSplitter*>()) {
+    connect(splitter, &QSplitter::splitterMoved, this, &PlotDocker::onSplitterMoved, Qt::UniqueConnection);
+  }
+}
+
+void PlotDocker::onSplitterMoved(int /*position*/, int /*index*/) {
+  if (!restoring_state_) {
+    splitter_undo_debounce_.start();
   }
 }
 
@@ -546,26 +634,39 @@ bool PlotDocker::xmlLoadState(const QDomElement& tab_element) {
     return false;
   }
 
+  // Parse and validate the complete structural tree before changing the live
+  // docker. Floating containers are disabled, so exactly one is restorable.
+  QDomElement container;
+  int container_count = 0;
+  for (QDomElement child = tab_element.firstChildElement(); !child.isNull(); child = child.nextSiblingElement()) {
+    if (child.tagName() != "Container"_L1) {
+      return false;
+    }
+    container = child;
+    ++container_count;
+  }
+  if (container_count != 1) {
+    return false;
+  }
+  if (tab_element.hasAttribute(u"containers"_s)) {
+    bool ok = false;
+    const int declared_count = tab_element.attribute(u"containers"_s).toInt(&ok);
+    if (!ok || declared_count != container_count) {
+      return false;
+    }
+  }
+  const QDomElement serialized_root = container.firstChildElement();
+  if (serialized_root.isNull() || !serialized_root.nextSiblingElement().isNull()) {
+    return false;
+  }
+  const LayoutNode root_node = parseLayoutNode(serialized_root);
+  if (!root_node.valid) {
+    return false;
+  }
+
   setStateId(tab_element.attribute(u"id"_s));
   if (tab_element.hasAttribute(u"tab_name"_s)) {
     setName(tab_element.attribute(u"tab_name"_s));
-  }
-
-  QVector<LayoutNode> container_nodes;
-  for (QDomElement container = tab_element.firstChildElement(u"Container"_s); !container.isNull();
-       container = container.nextSiblingElement(u"Container"_s)) {
-    QDomElement child = container.firstChildElement(u"DockSplitter"_s);
-    if (child.isNull()) {
-      child = container.firstChildElement(u"DockArea"_s);
-    }
-    LayoutNode node = parseLayoutNode(child);
-    if (node.valid) {
-      container_nodes.push_back(std::move(node));
-    }
-  }
-
-  if (container_nodes.isEmpty()) {
-    return false;
   }
 
   const bool was_hidden = isHidden();
@@ -587,19 +688,21 @@ bool PlotDocker::xmlLoadState(const QDomElement& tab_element) {
     dock->deleteLater();
   }
 
-  const LayoutNode& root_node = container_nodes.front();
   // Decide top-level dock kind by peeking the first leaf's content tag. An
   // object-widget root (<scene3d>, <scene2d>, …) needs a plot-less placeholder
   // DockWidget, into which restoreNode installs the dock via the factory.
-  const bool root_is_object = isObjectWidgetElement(firstLeafElement(root_node));
+  const QDomElement root_element = firstLeafElement(root_node);
+  const bool root_is_object = isObjectWidgetElement(root_element);
+  const bool root_is_placeholder = isPlaceholderElement(root_element);
   DockWidget* root_widget = nullptr;
-  if (root_is_object) {
+  if (root_is_object || root_is_placeholder) {
     root_widget = addDockWithPlot(nullptr, ads::TopDockWidgetArea);
   } else {
     PlotWidget* root_plot = pool.takeFirstForNode(root_node);
     root_widget = addDockWithPlot(root_plot, ads::TopDockWidgetArea);
   }
-  restoreNode(root_node, root_widget, pool, object_widget_factory_);
+  const bool restored = restoreNode(root_node, root_widget, pool, object_widget_factory_);
+  watchSplitters();
   pool.deleteUnused();
 
   restoring_state_ = false;
@@ -607,7 +710,7 @@ bool PlotDocker::xmlLoadState(const QDomElement& tab_element) {
   if (!was_hidden) {
     show();
   }
-  return true;
+  return restored;
 }
 
 int PlotDocker::plotCount() const {

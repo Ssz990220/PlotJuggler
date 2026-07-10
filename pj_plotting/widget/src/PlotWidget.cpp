@@ -23,6 +23,7 @@
 #include <QMouseEvent>
 #include <QPalette>
 #include <QPen>
+#include <QScopedValueRollback>
 #include <QSettings>
 #include <QUuid>
 #include <QVector>
@@ -38,6 +39,7 @@
 #include "pj_plotting/CurveTracker.h"
 #include "pj_plotting/DatastoreCurveAdapter.h"
 #include "pj_plotting/PlotLegend.h"
+#include "pj_plotting/PlotXml.h"
 #include "pj_plotting/PointSeriesXY.h"
 #include "pj_plotting/XYCurveDialog.h"
 #include "pj_runtime/CatalogModel.h"
@@ -68,11 +70,56 @@ QString newStateId() {
   return QUuid::createUuid().toString(QUuid::WithoutBraces);
 }
 
+// Continuous gestures (wheel ticks, pan moves) coalesce into one history
+// snapshot this long after the last event.
+constexpr int kGestureUndoDebounceMs = 200;
+
 QString curveKey(const QString& source_name, const QString& x_name = {}, const QString& y_name = {}) {
   if (!x_name.isEmpty() || !y_name.isEmpty()) {
     return u"xy:"_s + x_name + u"\n"_s + y_name;
   }
   return u"ts:"_s + source_name;
+}
+
+QString pendingCurveIdentity(const QDomElement& curve) {
+  static const QStringList attributes{
+      u"topic"_s,   u"field"_s,   u"dataset_id"_s,   u"dataset_source"_s,   u"dataset_path"_s,
+      u"x_topic"_s, u"x_field"_s, u"x_dataset_id"_s, u"x_dataset_source"_s, u"x_dataset_path"_s,
+      u"y_topic"_s, u"y_field"_s, u"y_dataset_id"_s, u"y_dataset_source"_s, u"y_dataset_path"_s,
+  };
+  QStringList fields;
+  fields.reserve(attributes.size() + 1);
+  for (const QString& attribute : attributes) {
+    fields.push_back(curve.attribute(attribute));
+  }
+  if (!curve.attribute(u"x_topic"_s).isEmpty()) {
+    fields.push_back(curve.attribute(u"name"_s));
+  }
+  return fields.join(QLatin1Char('\x1f'));
+}
+
+bool isPendingCurveIntentValid(const QDomElement& curve, bool xy_plot) {
+  if (curve.tagName() != "curve"_L1 || !plot_xml::isPendingIntent(curve)) {
+    return false;
+  }
+  const bool time_series = !curve.attribute(u"topic"_s).isEmpty();
+  const bool xy = !curve.attribute(u"x_topic"_s).isEmpty() && !curve.attribute(u"y_topic"_s).isEmpty();
+  if (time_series == xy || xy != xy_plot) {
+    return false;
+  }
+  const QStringList id_attributes =
+      xy ? QStringList{u"x_dataset_id"_s, u"y_dataset_id"_s} : QStringList{u"dataset_id"_s};
+  for (const QString& attribute : id_attributes) {
+    if (!curve.hasAttribute(attribute)) {
+      continue;
+    }
+    bool ok = false;
+    const qulonglong raw = curve.attribute(attribute).toULongLong(&ok);
+    if (!ok || raw == 0 || raw > std::numeric_limits<DatasetId>::max()) {
+      return false;
+    }
+  }
+  return true;
 }
 
 // The session-scoped curve-color registry (issue #68), reached through the
@@ -111,6 +158,13 @@ PlotWidget::PlotWidget(SessionManager* session, CatalogModel* catalog, QWidget* 
   show_point_text_->attach(qwtPlot());
 
   connect(this, &PlotWidgetBase::viewResized, this, &PlotWidget::onExternallyResized);
+  gesture_undo_debounce_.setSingleShot(true);
+  gesture_undo_debounce_.setInterval(kGestureUndoDebounceMs);
+  connect(&gesture_undo_debounce_, &QTimer::timeout, this, [this]() {
+    if (!loading_state_) {
+      emit undoableChange();
+    }
+  });
   connect(this, &PlotWidgetBase::curveListChanged, this, [this]() {
     updateMaximumZoomArea();
     autoZoomPlotVertically();
@@ -195,6 +249,11 @@ PlotWidget::CurveInfo* PlotWidget::addCurve(const QString& name, QColor color) {
   updateMaximumZoomArea();
   replot();
   return info;
+}
+
+PlotWidget::CurveInfo* PlotWidget::addCurveFromPending(const QString& name, bool preserve_viewport) {
+  const QScopedValueRollback guard(loading_state_, loading_state_ || preserve_viewport);
+  return addCurve(name);
 }
 
 void PlotWidget::autoZoomPlotVertically() {
@@ -511,7 +570,7 @@ QDomElement PlotWidget::xmlSaveState(QDomDocument& doc) const {
       // XY X is a data value, not time — offset-independent, stored verbatim.
       range_element.setAttribute(u"left"_s, QString::number(rect.left(), 'f', 6));
       range_element.setAttribute(u"right"_s, QString::number(rect.right(), 'f', 6));
-      range_element.setAttribute(u"x_basis"_s, u"value"_s);
+      range_element.setAttribute(plot_xml::kXBasisAttribute, plot_xml::kXBasisValue);
     } else {
       // The X axis of a time-series plot is TIME: persist it in ABSOLUTE seconds,
       // not the display-relative seconds the Qwt axis speaks (display = absolute -
@@ -537,7 +596,7 @@ QDomElement PlotWidget::xmlSaveState(QDomDocument& doc) const {
           u"right"_s, QString::number(static_cast<double>(absolute_right_ns) / kNanosecondsPerSecond, 'f', 6));
       range_element.setAttribute(u"left_ns"_s, QString::number(absolute_left_ns));
       range_element.setAttribute(u"right_ns"_s, QString::number(absolute_right_ns));
-      range_element.setAttribute(u"x_basis"_s, u"absolute"_s);
+      range_element.setAttribute(plot_xml::kXBasisAttribute, plot_xml::kXBasisAbsolute);
     }
     plot_element.appendChild(range_element);
   }
@@ -588,7 +647,61 @@ QDomElement PlotWidget::xmlSaveState(QDomDocument& doc) const {
     plot_element.appendChild(curve_element);
   }
 
+  for (const QDomDocument& pending_doc : pending_curve_intents_) {
+    const QDomElement pending = pending_doc.documentElement();
+    if (!pending.isNull()) {
+      plot_element.appendChild(doc.importNode(pending, /*deep=*/true));
+    }
+  }
+
   return plot_element;
+}
+
+bool PlotWidget::rememberPendingCurveIntent(const QDomElement& curve_element, bool notify) {
+  if (!isPendingCurveIntentValid(curve_element, isXYPlot())) {
+    return false;
+  }
+  const QString identity = pendingCurveIdentity(curve_element);
+  for (const QDomDocument& existing : pending_curve_intents_) {
+    if (pendingCurveIdentity(existing.documentElement()) == identity) {
+      return false;
+    }
+  }
+  QDomDocument pending_doc;
+  QDomElement pending = pending_doc.importNode(curve_element, /*deep=*/true).toElement();
+  pending.setTagName(u"curve"_s);
+  plot_xml::markPendingIntent(pending);
+  if (pending.attribute(u"x_topic"_s).isEmpty()) {
+    pending.removeAttribute(u"name"_s);
+  }
+  pending.removeAttribute(u"curve_x"_s);
+  pending.removeAttribute(u"curve_y"_s);
+  pending_doc.appendChild(pending);
+  pending_curve_intents_.push_back(std::move(pending_doc));
+  emit pendingCurveIntentsChanged();
+  if (notify && !loading_state_) {
+    emit undoableChange();
+  }
+  return true;
+}
+
+void PlotWidget::forgetPendingCurveIntent(const QDomElement& curve_element, bool notify) {
+  const QString identity = pendingCurveIdentity(curve_element);
+  const std::size_t old_size = pending_curve_intents_.size();
+  pending_curve_intents_.erase(
+      std::remove_if(
+          pending_curve_intents_.begin(), pending_curve_intents_.end(),
+          [&](const QDomDocument& pending_doc) {
+            return pendingCurveIdentity(pending_doc.documentElement()) == identity;
+          }),
+      pending_curve_intents_.end());
+  if (pending_curve_intents_.size() == old_size) {
+    return;
+  }
+  emit pendingCurveIntentsChanged();
+  if (notify && !loading_state_) {
+    emit undoableChange();
+  }
 }
 
 bool PlotWidget::xmlLoadState(const QDomElement& plot_element, bool autozoom) {
@@ -596,8 +709,31 @@ bool PlotWidget::xmlLoadState(const QDomElement& plot_element, bool autozoom) {
     return false;
   }
 
+  const bool saved_xy_mode = plot_element.attribute(u"mode"_s) == "XYPlot"_L1;
+  std::vector<QDomDocument> parsed_pending_curves;
+  std::set<QString> parsed_pending_identities;
+  for (QDomElement curve = plot_element.firstChildElement(u"curve"_s); !curve.isNull();
+       curve = curve.nextSiblingElement(u"curve"_s)) {
+    if (!plot_xml::isPendingIntent(curve)) {
+      continue;
+    }
+    const bool resolved = saved_xy_mode
+                              ? !curve.attribute(u"curve_x"_s).isEmpty() && !curve.attribute(u"curve_y"_s).isEmpty()
+                              : !curve.attribute(u"name"_s).isEmpty();
+    if (resolved) {
+      continue;
+    }
+    const QString identity = pendingCurveIdentity(curve);
+    if (!isPendingCurveIntentValid(curve, saved_xy_mode) || !parsed_pending_identities.insert(identity).second) {
+      return false;
+    }
+    QDomDocument pending_doc;
+    pending_doc.appendChild(pending_doc.importNode(curve, /*deep=*/true));
+    parsed_pending_curves.push_back(std::move(pending_doc));
+  }
+
   setStateId(plot_element.attribute(u"id"_s));
-  setModeXY(plot_element.attribute(u"mode"_s) == "XYPlot"_L1);
+  setModeXY(saved_xy_mode);
   // Line width is plot-level. New layouts store the chosen width on the <plot>.
   // Older layouts kept the plot-level value at the stale default ("1.0") and the
   // real width per-curve, so when the plot value is absent/default fall back to
@@ -623,6 +759,11 @@ bool PlotWidget::xmlLoadState(const QDomElement& plot_element, bool autozoom) {
 
   const bool was_loading_state = loading_state_;
   loading_state_ = true;
+  const bool intents_changing = !pending_curve_intents_.empty() || !parsed_pending_curves.empty();
+  pending_curve_intents_ = std::move(parsed_pending_curves);
+  if (intents_changing) {
+    emit pendingCurveIntentsChanged();
+  }
 
   std::set<QString> desired_keys;
   for (QDomElement curve_element = plot_element.firstChildElement(u"curve"_s); !curve_element.isNull();
@@ -674,7 +815,7 @@ bool PlotWidget::xmlLoadState(const QDomElement& plot_element, bool autozoom) {
     // x_basis is authoritative: "value" = XY data value, anything else (incl. a
     // v3 layout with no marker, annotated to "absolute" by normalizePlotRangeBasis
     // on load) = absolute time. Never re-infer the basis from plot mode.
-    view.x_is_absolute = range_element.attribute(u"x_basis"_s) != u"value"_s;
+    view.x_is_absolute = range_element.attribute(plot_xml::kXBasisAttribute) != plot_xml::kXBasisValue;
     // Prefer the integer-ns edges (schema v4+) — they survive an epoch-scale round
     // trip exactly, unlike the decimal left/right which a v3 layout is limited to.
     if (view.x_is_absolute && range_element.hasAttribute(u"left_ns"_s) && range_element.hasAttribute(u"right_ns"_s)) {
@@ -768,7 +909,7 @@ void PlotWidget::applySavedViewportOrZoom(bool clear_after) {
   }
 }
 
-PlotWidget::CurveInfo* PlotWidget::applyCurveElement(const QDomElement& curve_element) {
+PlotWidget::CurveInfo* PlotWidget::applyCurveElement(const QDomElement& curve_element, bool preserve_viewport) {
   const QColor color(curve_element.attribute(u"color"_s));
   CurveInfo* loaded_curve = nullptr;
   if (isXYPlot() && curve_element.hasAttribute(u"curve_x"_s) && curve_element.hasAttribute(u"curve_y"_s)) {
@@ -786,12 +927,14 @@ PlotWidget::CurveInfo* PlotWidget::applyCurveElement(const QDomElement& curve_el
     }
     if (loaded_curve == nullptr) {
       // Restore the saved alias as the title; no dialog on load.
+      const QScopedValueRollback guard(loading_state_, loading_state_ || preserve_viewport);
       loaded_curve = addCurveXY(x_name, y_name, source_name, color.isValid() ? color : Qt::transparent);
     }
   } else {
     const QString curve_name = curve_element.attribute(u"name"_s);
     loaded_curve = curveFromTitle(curve_name);
     if (loaded_curve == nullptr) {
+      const QScopedValueRollback guard(loading_state_, loading_state_ || preserve_viewport);
       loaded_curve = addCurve(curve_name, color.isValid() ? color : Qt::transparent);
     }
   }
@@ -1060,18 +1203,20 @@ void PlotWidget::onExternallyResized(const QRectF& rect) {
       // Wheel-zoom (magnifier) and pan bypass the drag-zoom keep-ratio path,
       // and the magnifier clamps each axis independently at the data bounds —
       // that asymmetry skews a 1:1 circle into an ellipse. Re-impose the
-      // canvas aspect ratio on the event's rect (not currentBoundingRect():
-      // the magnifier emits this signal before it replots, so the current
-      // view is still stale here).
+      // canvas aspect ratio on the event's rect — the exact proposed gesture
+      // viewport, immune to canvas-map round-off.
       applyRectKeepingRatio(rect);
       replot();
     }
+    gesture_undo_debounce_.start();
     return;  // XY never emits rectChanged (PJ3 parity).
   }
-  if (!isZoomLinkEnabled()) {
-    return;
+  if (isZoomLinkEnabled()) {
+    emit rectChanged(this, rect);
   }
-  emit rectChanged(this, rect);
+  // rectChanged reaches linked peers immediately; the history snapshot is
+  // debounced so a continuous gesture publishes once, after its last event.
+  gesture_undo_debounce_.start();
 }
 
 void PlotWidget::onDragEnterEvent(QDragEnterEvent* event) {
@@ -1575,8 +1720,10 @@ void PlotWidget::reconnectDataSignals() {
     disconnect(display_offset_dataset_connection_);
   }
   if (session_ == nullptr) {
+    last_global_time_reference_ = 0;
     return;
   }
+  last_global_time_reference_ = session_->globalTimeReference();
 
   samples_ingested_connection_ =
       connect(session_, &SessionManager::samplesIngested, this, [this](const QVector<TopicId>& ids, bool live) {
@@ -1643,12 +1790,17 @@ void PlotWidget::reconnectDataSignals() {
 
   // Global "Use time offset" toggled (or otherwise re-based): every curve's x
   // shifts by a constant and NO topic changed, so a per-topic samplesIngested
-  // would skip them all. Drop each time-series adapter's cached offset and
-  // re-fit, since the prior zoom rect (in display seconds) no longer frames the
-  // shifted data.
+  // would skip them all. Translate the current viewport by the same frame delta
+  // so its absolute interval survives the automatic global rebase.
   display_offset_connection_ = connect(session_, qOverload<>(&SessionManager::displayOffsetChanged), this, [this]() {
+    const Timestamp new_reference = session_ != nullptr ? session_->globalTimeReference() : 0;
+    const double delta_seconds = timestampDifferenceSeconds(last_global_time_reference_, new_reference);
+    last_global_time_reference_ = new_reference;
     if (invalidateAdapterOffsets()) {
-      resetZoom();
+      QRectF viewport = currentBoundingRect();
+      viewport.translate(delta_seconds, 0.0);
+      updateMaximumZoomArea();
+      setZoomRectangle(viewport, /*emit_signal=*/false);
     }
     // The curves just moved to the new frame, so each tracker's cached
     // intersection markers (the circles) were sampled against the OLD data and

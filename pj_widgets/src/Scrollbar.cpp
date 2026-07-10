@@ -178,11 +178,15 @@ void Scrollbar::setInteractive(bool interactive) {
     // the pill. Otherwise a pill grabbed (or scroll-revealed) at the instant the
     // lock engages would stay stuck fully visible over the frozen view, with no
     // event scheduled to hide it. Hover still re-reveals it on the next move.
+    const bool changed = dragging_ && area_ != nullptr && bar()->value() != drag_origin_value_;
     dragging_ = false;
     if (hide_timer_ != nullptr) {
       hide_timer_->stop();
     }
     setShown(false);
+    if (changed) {
+      emit scrollChangeCommitted();
+    }
   }
 }
 
@@ -290,6 +294,7 @@ bool Scrollbar::eventFilter(QObject* watched, QEvent* event) {
 
       const double axis_px = (orientation_ == Qt::Horizontal) ? pos.x() : pos.y();
       const bool on_handle = (axis_px >= handle_pos_) && (axis_px <= handle_pos_ + handle_len_);
+      drag_origin_value_ = bar()->value();
 
       // By default only the visible handle is a drag target: a press on the empty
       // track (in the strip but off the handle) is NOT consumed, so it falls
@@ -365,6 +370,7 @@ bool Scrollbar::eventFilter(QObject* watched, QEvent* event) {
             dragging_ = false;
             break;
           }
+          const bool changed = bar()->value() != drag_origin_value_;
           dragging_ = false;
           // Re-evaluate pill visibility from the release position. If the release
           // landed off the strip (easy to do — the cursor drifts off the 14px band
@@ -374,6 +380,9 @@ bool Scrollbar::eventFilter(QObject* watched, QEvent* event) {
             setShown(true);
           } else {
             revealTemporarily();
+          }
+          if (changed) {
+            emit scrollChangeCommitted();
           }
           return true;  // consume: paired with the press we consumed
         }

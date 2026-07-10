@@ -133,6 +133,11 @@ class FileLoader : public QObject {
   static void applyDefaultIngestPolicies(PJ::sdk::ObjectIngestPolicyResolver& resolver);
 
  signals:
+  /// A same-source fan-out replacement is about to retire a DatasetId. The
+  /// shell captures path-qualified workspace state before the old catalog item
+  /// is hidden, then rebinds it after fileLoaded exposes the reminted datasets.
+  void sourceReplacementAboutToCommit(const QString& path);
+
   void fileLoaded(
       const QString& path, const QString& prefix, const QString& plugin_id, const QString& plugin_config_json);
   void fileLoadFailed(const QString& path, const QString& reason);

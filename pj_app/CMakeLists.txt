@@ -80,6 +80,13 @@ add_library(pj_app_shell OBJECT
     src/RasterKeyMap.h
 )
 
+# LayoutXml.cpp is also compiled directly into focused test executables. Its
+# plot-range vocabulary is a header-only contract owned by pj_plotting_core, so
+# expose that one include tree without linking those DOM-only tests to widgets.
+set_property(SOURCE src/LayoutXml.cpp APPEND PROPERTY
+    INCLUDE_DIRECTORIES ${CMAKE_SOURCE_DIR}/pj_plotting/core/include
+)
+
 set_target_properties(pj_app_shell PROPERTIES
     AUTOMOC ON
     AUTOUIC ON
@@ -190,6 +197,11 @@ if(PJ_BUILD_TESTS)
     # and the progressive-drain pending-timeline seam (FIX 2).
     add_pj_app_gui_test(main_window_viewport_reframe_test MainWindowViewportReframeTest
         tests/main_window_viewport_reframe_test.cpp)
+
+    # Transactional workspace history. One MainWindow is shared by all cases in
+    # this binary; the shell leaks process-global widget state across instances.
+    add_pj_app_gui_test(main_window_history_test MainWindowHistoryTest
+        tests/main_window_history_test.cpp)
 
     # Pure config-parsing logic (no GUI), compiled standalone so it's linkable
     # from a plain gtest binary. FanoutConfig.cpp is also part of pj_app itself.

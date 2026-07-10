@@ -9,6 +9,7 @@
 #include <QList>
 #include <QPointer>
 #include <QString>
+#include <QTimer>
 #include <functional>
 
 #include "pj_base/builtin/builtin_object.hpp"
@@ -109,6 +110,8 @@ class PlotDocker : public ads::CDockManager {
   void ensureAtLeastOneWidget();
   DockWidget* addDockWithPlot(PlotWidget* plot, ads::DockWidgetArea area, ads::CDockAreaWidget* relative_to = nullptr);
   void watchPlotForHover(PlotWidget* plot);
+  void watchSplitters();
+  void onSplitterMoved(int position, int index);
   // Move focus to a surviving dock after the focused one was removed, so its
   // settings stay visible. Prefers the previously focused dock; otherwise the
   // first remaining dock (which, after ensureAtLeastOneWidget, may be a fresh
@@ -121,6 +124,9 @@ class PlotDocker : public ads::CDockManager {
   CatalogModel* catalog_ = nullptr;
   ObjectWidgetFactory object_widget_factory_;
   bool restoring_state_ = false;
+  // Coalesces per-mouse-move splitterMoved events into one history snapshot
+  // after the drag goes quiet.
+  QTimer splitter_undo_debounce_;
   PlotFocusOverlay* focus_overlay_ = nullptr;
   // One-deep focus history, maintained from focusedDockWidgetChanged. Used to
   // restore focus to the previously active dock when the current one closes.

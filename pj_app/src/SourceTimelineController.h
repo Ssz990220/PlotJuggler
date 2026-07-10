@@ -50,6 +50,13 @@ class SourceTimelineController : public QObject {
   /// (the timeline footer or the curve tree's context menu via MainWindow).
   void markDatasetMerged(DatasetId anchor);
 
+ signals:
+  /// One complete user edit of offsets/order has finished.
+  void workspaceChangeCommitted();
+
+  /// A dataset became a drawable track and must hydrate the current history tip.
+  void trackAdded(PJ::DatasetId dataset_id);
+
  public slots:
   /// Align every source's displayed START to the earliest start (the in-strip
   /// "Align" behaviour, now driven from the timeline panel's align rail).

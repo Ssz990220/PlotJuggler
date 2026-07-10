@@ -10,6 +10,8 @@
 #include <QMetaObject>
 #include <QRectF>
 #include <QStringList>
+#include <QTimer>
+#include <cstddef>
 #include <optional>
 #include <vector>
 
@@ -58,7 +60,12 @@ class PlotWidget : public PlotWidgetBase {
   // layout restore can bind a curve later (once its topic finishes loading) WITHOUT
   // re-running xmlLoadState, whose remove-pass would drop the already-live curves.
   // Returns the curve, or null if the element's key attribute is empty/unresolvable.
-  CurveInfo* applyCurveElement(const QDomElement& curve_element);
+  CurveInfo* applyCurveElement(const QDomElement& curve_element, bool preserve_viewport = false);
+
+  /// Adds a curve while optionally suppressing the normal curve-list auto-fit.
+  /// Pending completion uses this when an existing or layout-restored viewport
+  /// must stay fixed as the late curve materializes.
+  CurveInfo* addCurveFromPending(const QString& name, bool preserve_viewport);
 
   // Replace the curve plotting `source_key` with one plotting `output_key`, the
   // new curve inheriting the source's color and taking its place (PJ3 in-place
@@ -99,6 +106,17 @@ class PlotWidget : public PlotWidgetBase {
   [[nodiscard]] QDomElement xmlSaveState(QDomDocument& doc) const;
   bool xmlLoadState(const QDomElement& plot_element, bool autozoom = true);
 
+  /// Retains one unresolved ordinary <curve pending_intent="true"> element as
+  /// real workspace state until the pending binder fulfills it.
+  bool rememberPendingCurveIntent(const QDomElement& curve_element, bool notify = true);
+  void forgetPendingCurveIntent(const QDomElement& curve_element, bool notify = false);
+  [[nodiscard]] std::size_t pendingCurveIntentCount() const noexcept {
+    return pending_curve_intents_.size();
+  }
+  [[nodiscard]] bool hasSavedViewport() const noexcept {
+    return saved_viewport_.has_value();
+  }
+
   // Re-frame to the viewport stashed by the last xmlLoadState, converting any
   // absolute-time X with the display offset in effect NOW. xmlLoadState applies it
   // once, but during a PROGRESSIVE restore the catalog is still empty then (offset
@@ -128,6 +146,9 @@ class PlotWidget : public PlotWidgetBase {
   void trackerMoved(QPointF point);
   void curvesDropped();
   void statusMessageRequested(QString message);
+  /// The serialized unresolved-curve set changed and binder registrations must
+  /// be rebuilt from the plot's current XML state.
+  void pendingCurveIntentsChanged();
   void splitHorizontal();
   void splitVertical();
   void curveColorChanged(QString curve_name, QColor color);
@@ -235,6 +256,7 @@ class PlotWidget : public PlotWidgetBase {
   QMetaObject::Connection dataset_replace_connection_;
   QMetaObject::Connection display_offset_connection_;          // global "Use time offset" frame
   QMetaObject::Connection display_offset_dataset_connection_;  // per-source Timeline drag
+  Timestamp last_global_time_reference_ = 0;
   DragInfo dragging_;
   CurveTracker* tracker_ = nullptr;
   CurveTracker* reference_tracker_ = nullptr;
@@ -245,6 +267,10 @@ class PlotWidget : public PlotWidgetBase {
   double last_tracker_time_sec_ = 0.0;
   bool show_points_ = true;
   bool loading_state_ = false;
+  // Trailing-edge coalescer for gesture-driven history snapshots: wheel-zoom and
+  // pan emit per input event, but serializing the whole workspace per event is
+  // wasteful — one undoableChange fires when the gesture goes quiet.
+  QTimer gesture_undo_debounce_;
   QwtPlotMarker* show_point_marker_ = nullptr;
   QwtPlotMarker* show_point_text_ = nullptr;
   // Used to skip replot when the mouse drifts but the snapped sample is unchanged.
@@ -275,6 +301,7 @@ class PlotWidget : public PlotWidgetBase {
     bool x_is_absolute = true;
   };
   std::optional<SavedViewport> saved_viewport_;
+  std::vector<QDomDocument> pending_curve_intents_;
 
   QAction* action_split_horizontal_ = nullptr;
   QAction* action_split_vertical_ = nullptr;

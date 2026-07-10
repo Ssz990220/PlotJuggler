@@ -61,6 +61,7 @@
 #include <memory>
 #include <nlohmann/json.hpp>
 #include <optional>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -108,6 +109,7 @@
 #include "pj_runtime/SessionManager.h"
 #include "pj_runtime/Time.h"
 #include "pj_runtime/ToolboxRuntimeHost.h"
+#include "pj_runtime/TopicDemandTracker.h"
 #include "pj_runtime/UpdateChecker.h"
 #include "pj_scene2d_widgets/Scene2DDockWidget.h"
 #include "pj_scene2d_widgets/media_viewer_widget.h"
@@ -614,14 +616,15 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
     syncWidgetsToCatalog();
   });
   connect(session_.get(), &AppSession::datasetsMerged, this, [this](DatasetId anchor, QList<DatasetId> consumed) {
-    if (transform_service_ == nullptr) {
-      return;
+    if (transform_service_ != nullptr) {
+      for (const DatasetId id : consumed) {
+        transform_service_->invalidateDataset(id);
+      }
+      transform_service_->invalidateDataset(anchor);
+      transform_service_->ingestFrameTransformsForDataset(anchor);
     }
-    for (const DatasetId id : consumed) {
-      transform_service_->invalidateDataset(id);
-    }
-    transform_service_->invalidateDataset(anchor);
-    transform_service_->ingestFrameTransformsForDataset(anchor);
+    syncWidgetsToCatalog();
+    resetUndoHistory();
   });
 
   connect(ui_->curveListPanel, &CurveListPanel::trashRequested, this, &MainWindow::onCatalogTrashRequested);
@@ -885,15 +888,35 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
     pending_tracker_time_ = time;
     tracker_broadcast_trigger_->request();
   });
-  // Frame change (the "Use time offset" toggle today, any future re-base): the
-  // blue reference line stores a frame-invariant instant, so re-project it
-  // through the new offset and re-push — keeping it pinned to its instant rather
-  // than stranded off the re-fitted axis.
-  connect(&session_->sessionManager(), qOverload<>(&SessionManager::displayOffsetChanged), this, [this]() {
-    // The global frame moved: re-project the reference and re-push it to the plots
-    // and (re-bridged into the Timeline frame) the Source Timeline.
-    broadcastReferenceLine();
-  });
+  Timestamp last_global_reference = session_->sessionManager().globalTimeReference();
+  connect(
+      &session_->sessionManager(), qOverload<>(&SessionManager::displayOffsetChanged), this,
+      [this, last_global_reference]() mutable {
+        SessionManager& manager = session_->sessionManager();
+        PlaybackEngine& engine = session_->playbackEngine();
+        const Timestamp new_global_reference = manager.globalTimeReference();
+        const DisplaySeconds old_time = engine.currentTime();
+        const double frame_delta = timestampDifferenceSeconds(last_global_reference, new_global_reference);
+        last_global_reference = new_global_reference;
+        if (active_streaming_dataset_id_ != 0) {
+          if (const auto range = manager.datasetDisplayRange(active_streaming_dataset_id_); range.has_value()) {
+            engine.setRange(*range);
+          }
+        } else {
+          session_->recomputeRange();
+        }
+        engine.setCurrentTime(DisplaySeconds{old_time.value + frame_delta});
+        broadcastReferenceLine();
+        pending_tracker_time_ = toAxisDouble(engine.currentTime());
+        tracker_broadcast_trigger_->request();
+      });
+  connect(
+      &session_->sessionManager(), qOverload<DatasetId>(&SessionManager::displayOffsetChanged), this,
+      [this](DatasetId) {
+        broadcastReferenceLine();
+        pending_tracker_time_ = toAxisDouble(session_->playbackEngine().currentTime());
+        tracker_broadcast_trigger_->request();
+      });
 
   // Mount the multi-track Source Timeline into the reserved bottom strip and
   // bind it to the runtime. timelineStrip is an empty native widget in the .ui;
@@ -905,6 +928,16 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
   strip_layout->setContentsMargins(0, 0, 0, 0);
   strip_layout->addWidget(source_timeline);
   source_timeline_controller_ = new PJ::SourceTimelineController(source_timeline, session_.get(), this);
+  connect(source_timeline_controller_, &SourceTimelineController::workspaceChangeCommitted, this, [this]() {
+    onUndoableChange(/*force_new_state=*/true);
+  });
+  connect(source_timeline_controller_, &SourceTimelineController::trackAdded, this, [this](DatasetId) {
+    if (applying_state_ || progressive_layout_in_flight_) {
+      return;
+    }
+    reconcileHistoryWithDataUniverse();
+  });
+  connect(source_timeline, &Timeline::viewStateChangeCommitted, this, [this]() { onUndoableChange(); });
   // Remember the user's name-column width so it sticks across rebuilds / panel
   // toggles (alignNameColumnToPlayback re-applies it over the playback-aligned
   // floor) and is persisted into layouts.
@@ -1101,6 +1134,13 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
   connect(ui_->leftPanel, &LeftPanel::loadDataRequested, this, &MainWindow::onLoadDataRequested);
   connect(ui_->leftPanel, &LeftPanel::reloadDataRequested, this, &MainWindow::onReloadDataRequested);
   connect(ui_->leftPanel, &LeftPanel::cloudToolboxRequested, this, [this](const QString& id) { launchToolbox(id); });
+  connect(file_loader_.get(), &FileLoader::sourceReplacementAboutToCommit, this, [this](const QString& path) {
+    if (progressive_layout_in_flight_) {
+      return;
+    }
+    pending_source_replacement_ =
+        PendingSourceReplacement{.workspace = capturePortableWorkspace(), .path = QFileInfo(path).absoluteFilePath()};
+  });
   connect(file_loader_.get(), &FileLoader::fileLoaded, this, &MainWindow::onFileLoaded);
   // Track successful loads for the recent-files popup.
   connect(
@@ -1502,6 +1542,95 @@ void MainWindow::onReloadDataRequested() {
   file_loader_->loadFile(src->path, this, hints);
 }
 
+QSet<QString> MainWindow::captureHistoryDataUniverse() const {
+  QSet<QString> universe;
+  const QChar separator(QLatin1Char('\x1f'));
+  const auto signature = [separator](const QStringList& fields) { return fields.join(separator); };
+
+  // Processor outputs belong to workspace state and may be recreated by undo.
+  // Only raw inputs constrain whether an older snapshot remains restorable.
+  const DataProcessorService& processors = session_->sessionManager().dataProcessorService();
+  std::unordered_set<TopicId> processor_outputs = processors.ephemeralOutputTopics();
+  for (const DataProcessorService::FilterRecipe& recipe : processors.recipes()) {
+    processor_outputs.insert(recipe.output_topic_id);
+  }
+  for (const DataProcessorService::TransformRecipe& recipe : processors.transformRecipes()) {
+    processor_outputs.insert(recipe.output_topic_ids.begin(), recipe.output_topic_ids.end());
+  }
+
+  // Use datastore identities, including hidden catalog rows. A processor can
+  // retain a raw dependency after its input has disappeared from the browser.
+  SessionManager& session_manager = session_->sessionManager();
+  const DataEngine& engine = session_manager.dataEngine();
+  QHash<DatasetId, QStringList> dataset_identities;
+  {
+    auto lock = engine.lockEngine();
+    for (const DatasetId dataset_id : engine.listDatasets()) {
+      const DatasetInfo* dataset = engine.getDataset(dataset_id);
+      if (dataset == nullptr) {
+        continue;
+      }
+      const QStringList dataset_identity{
+          QString::number(dataset_id), QString::fromStdString(dataset->source_name),
+          session_manager.datasetSourcePath(dataset_id), QString::number(dataset->time_domain.id)};
+      dataset_identities.insert(dataset_id, dataset_identity);
+      for (const TopicId topic_id : engine.listTopics(dataset_id)) {
+        if (processor_outputs.contains(topic_id)) {
+          continue;
+        }
+        const TopicStorage* storage = engine.getTopicStorage(topic_id);
+        if (storage == nullptr) {
+          continue;
+        }
+        const TopicDescriptor& topic_descriptor = storage->descriptor();
+        QStringList topic_identity{u"scalar-topic"_s};
+        topic_identity.append(dataset_identity);
+        topic_identity.append(
+            {QString::number(topic_id), QString::fromStdString(topic_descriptor.name),
+             QString::number(topic_descriptor.schema_id)});
+        universe.insert(signature(topic_identity));
+        const auto& columns = storage->columnDescriptors();
+        for (std::size_t column = 0; column < columns.size(); ++column) {
+          const ColumnDescriptor& column_descriptor = columns[column];
+          QStringList column_identity{u"scalar-column"_s};
+          column_identity.append(dataset_identity);
+          column_identity.append(
+              {QString::number(topic_id), QString::number(static_cast<qulonglong>(column)),
+               QString::number(column_descriptor.field_id),
+               QString::number(static_cast<int>(column_descriptor.logical_type)),
+               QString::fromStdString(column_descriptor.field_path)});
+          universe.insert(signature(column_identity));
+        }
+      }
+    }
+  }
+
+  // ObjectStore has an independent lock; never nest it under DataEngine's.
+  const ObjectStore& objects = session_manager.objectStore();
+  for (const ObjectTopicId topic_id : objects.listTopics()) {
+    const ObjectTopicDescriptor object_descriptor = objects.descriptor(topic_id);
+    QStringList object_identity{u"object-topic"_s};
+    object_identity.append(dataset_identities.value(
+        object_descriptor.dataset_id, {QString::number(object_descriptor.dataset_id), QString(),
+                                       session_manager.datasetSourcePath(object_descriptor.dataset_id), QString()}));
+    object_identity.append(
+        {QString::number(topic_id.id), QString::fromStdString(object_descriptor.topic_name),
+         QString::fromStdString(object_descriptor.metadata_json)});
+    universe.insert(signature(object_identity));
+  }
+  return universe;
+}
+
+void MainWindow::reconcileHistoryWithDataUniverse() {
+  const QSet<QString> current_universe = captureHistoryDataUniverse();
+  if (!current_universe.contains(history_data_universe_)) {
+    resetUndoHistory();
+    return;
+  }
+  history_data_universe_ = current_universe;
+  hydrateCurrentUndoState(/*refresh_data_universe=*/false);
+}
+
 void MainWindow::onFileLoaded(
     const QString& path, const QString& prefix, const QString& plugin_id, const QString& plugin_config_json) {
   // MainWindow is the shell that wires load completion to the runtime —
@@ -1523,11 +1652,25 @@ void MainWindow::onFileLoaded(
   });
   // TODO(embedded-assets): route in-band embedded assets to Scene3D docks once the
   // load path surfaces the extracted asset map (resolver step 0).
+  if (pending_source_replacement_.has_value() && layout_xml::isSamePath(pending_source_replacement_->path, path)) {
+    const CapturedWorkspace replacement = pending_source_replacement_->workspace;
+    if (restoreWorkspaceState(
+            replacement, MissingCurvePolicy::kExact, TimelineRestoreMode::kPortableSourceReplacement) !=
+        RestoreResult::kApplied) {
+      emitDiagnostic(
+          DiagnosticLevel::kWarning, "Reload", "workspace-rebind-failed",
+          tr("The source was reloaded, but some workspace bindings could not be mapped to its new datasets."));
+    }
+    pending_source_replacement_.reset();
+  }
   session_->seedPlaybackFromSession();
   // A same-source reload evicts the old dataset's objects AFTER the removeDataset
   // signal fired, so re-run the coherence pass here to reset any 2D viewer still
   // bound to an evicted topic. Idempotent for a first/additive load.
   syncWidgetsToCatalog();
+  if (!progressive_layout_in_flight_) {
+    reconcileHistoryWithDataUniverse();
+  }
   // Seed every data widget AND the curve-list Value column with the just-set
   // playhead. seedPlaybackFromSession positions the cursor, but currentTimeChanged
   // only fires on an actual change — so a fresh load that lands the cursor where it
@@ -1947,6 +2090,9 @@ void MainWindow::onPlotAdded(PlotWidget* plot) {
   // one-shot per session, so file-curve drops and later stream drops are harmless.
   connect(plot, &PlotWidget::curvesDropped, this, &MainWindow::seedStreamingPlaybackFromDrop, Qt::UniqueConnection);
   connect(plot, &PlotWidget::filterEditorRequested, this, &MainWindow::openFilterEditor, Qt::UniqueConnection);
+  connect(
+      plot, &PlotWidget::pendingCurveIntentsChanged, this, &MainWindow::schedulePendingDisplayBindingRebuild,
+      Qt::UniqueConnection);
   connect(plot, &PlotWidget::statusMessageRequested, this, [this](const QString& message) {
     emitDiagnostic(DiagnosticLevel::kInfo, "Plot", "status", message);
   });
@@ -2284,32 +2430,9 @@ void MainWindow::broadcastReferenceLine() {
 }
 
 void MainWindow::onUseTimeOffsetToggled(bool checked) {
-  auto& sm = session_->sessionManager();
-  auto& engine = session_->playbackEngine();
-
-  // Representative dataset frames the playhead; the blue reference re-projects
-  // through the same dataset (referenceDisplaySeconds, on displayOffsetChanged).
-  const DatasetId representative = representativeDatasetId();
-  const DisplayOffset old_offset = sm.displayOffset(representative);
-  const DisplaySeconds old_time = engine.currentTime();
-
-  sm.setUseTimeOffset(checked);  // emits displayOffsetChanged -> every plot re-fits in the new frame
-
-  const DisplayOffset new_offset = sm.displayOffset(representative);
-
-  // Re-seed the slider range in the new frame (same choke points as a load).
-  if (active_streaming_dataset_id_ != 0) {
-    if (const auto range = sm.datasetDisplayRange(active_streaming_dataset_id_); range.has_value()) {
-      engine.setRange(*range);
-    }
-  } else {
-    session_->seedPlaybackFromSession();
-  }
-  // Keep the cursor on the same real instant: freeze it as an absolute Timepoint
-  // in the old frame, then re-project into the new one — the Time.h round-trip,
-  // no hand-rolled chrono delta.
-  const Timepoint instant = toAbsolute(old_time, old_offset);
-  engine.setCurrentTime(toDisplaySeconds(instant, new_offset));
+  // The synchronous global displayOffsetChanged handler owns range/playhead
+  // translation for both explicit toggles and automatic origin rebases.
+  session_->sessionManager().setUseTimeOffset(checked);
 }
 
 void MainWindow::seedStreamingPlaybackFromDrop() {
@@ -2933,6 +3056,7 @@ void MainWindow::applyRestoredLayout(QDomDocument doc, const QString& path) {
   }
 
   restoreChromeAndPanels(doc, path);
+  resetUndoHistory();
 }
 
 void MainWindow::restoreChromeAndPanels(const QDomDocument& doc, const QString& path) {
@@ -2983,24 +3107,22 @@ void MainWindow::restoreChromeAndPanels(const QDomDocument& doc, const QString& 
 
 void MainWindow::beginProgressiveLayoutRestore(QDomDocument doc, const QString& path) {
   cancelProgressiveLayoutRestore();
+  progressive_previous_workspace_ = capturePortableWorkspace();
   progressive_layout_in_flight_ = true;
+  progressive_layout_doc_ = doc;
 
   bool applied = false;
   {
     QScopedValueRollback guard(applying_state_, true);
-    const QDomElement root = doc.documentElement();
-    restoreDataProcessors(root);
-    // rebindCurvesToLoadedDatasets rewrites doc in place; its unresolved-paths return is
-    // not needed here — the progressive binder reports unresolved curves at drain.
+    // FileLoader is still producing topics. Tear down the previous graph now,
+    // but replay nothing until queueDrained, when missing inputs are meaningful.
+    static_cast<void>(restoreDataProcessors(QDomElement{}));
+    // rebindCurvesToLoadedDatasets rewrites doc in place; its unresolved-paths
+    // return is not needed here because the progressive binder reports them at
+    // drain.
     static_cast<void>(rebindCurvesToLoadedDatasets(doc));
     if (xmlLoadState(doc)) {
-      QHash<QString, PlotWidget*> plots_by_state_id;
-      forEachPlot([&plots_by_state_id](PlotWidget* plot) {
-        if (!plot->stateId().isEmpty()) {
-          plots_by_state_id.insert(plot->stateId(), plot);
-        }
-      });
-      pending_binder_->collect(doc, plots_by_state_id);
+      collectPendingDisplayBindings(doc);
       restoreChromeAndPanels(doc, path);
       broadcastTrackerTime(toAxisDouble(session_->playbackEngine().currentTime()));
       applied = true;
@@ -3008,7 +3130,7 @@ void MainWindow::beginProgressiveLayoutRestore(QDomDocument doc, const QString& 
   }
 
   if (!applied) {
-    cancelProgressiveLayoutRestore();
+    static_cast<void>(abortProgressiveRestore());
     MessageBox::warning(this, tr("Load Layout"), tr("Layout was parsed but could not be applied."));
     return;
   }
@@ -3035,7 +3157,49 @@ void MainWindow::cancelProgressiveLayoutRestore() {
   }
   clearPendingSceneRestores();
   pending_timeline_sources_.clear();
+  progressive_layout_doc_.clear();
+  progressive_previous_workspace_.reset();
   progressive_layout_in_flight_ = false;
+}
+
+bool MainWindow::rollbackProgressiveWorkspace() {
+  if (!progressive_previous_workspace_.has_value()) {
+    return false;
+  }
+  CapturedWorkspace previous = *progressive_previous_workspace_;
+  const std::vector<std::pair<DatasetId, QString>> live_datasets = session_->catalogModel().datasets();
+  previous.timeline.tracks.erase(
+      std::remove_if(
+          previous.timeline.tracks.begin(), previous.timeline.tracks.end(),
+          [&live_datasets](const auto& track) {
+            return std::none_of(live_datasets.begin(), live_datasets.end(), [&track](const auto& live) {
+              return live.first == track.dataset_id;
+            });
+          }),
+      previous.timeline.tracks.end());
+  std::vector<TimelineTrackState*> ordered_tracks;
+  for (TimelineTrackState& track : previous.timeline.tracks) {
+    if (track.timeline_order >= 0) {
+      ordered_tracks.push_back(&track);
+    }
+  }
+  std::sort(ordered_tracks.begin(), ordered_tracks.end(), [](const auto* lhs, const auto* rhs) {
+    return lhs->timeline_order < rhs->timeline_order;
+  });
+  for (int slot = 0; slot < static_cast<int>(ordered_tracks.size()); ++slot) {
+    ordered_tracks[static_cast<std::size_t>(slot)]->timeline_order = slot;
+  }
+  return restoreWorkspaceState(previous, MissingCurvePolicy::kExact, TimelineRestoreMode::kExact) ==
+         RestoreResult::kApplied;
+}
+
+bool MainWindow::abortProgressiveRestore() {
+  const bool rolled_back = rollbackProgressiveWorkspace();
+  cancelProgressiveLayoutRestore();
+  if (!rolled_back) {
+    resetUndoHistory();
+  }
+  return rolled_back;
 }
 
 void MainWindow::flushPendingCurveBindings(const std::vector<CatalogItem>& items) {
@@ -3049,6 +3213,51 @@ void MainWindow::flushPendingCurveBindings(const std::vector<CatalogItem>& items
     }
   }
   static_cast<void>(pending_binder_->flush(topics));
+}
+
+void MainWindow::collectPendingDisplayBindings(const QDomDocument& doc) {
+  if (pending_binder_ == nullptr) {
+    return;
+  }
+  QHash<QString, PlotWidget*> plots_by_state_id;
+  forEachPlot([&plots_by_state_id](PlotWidget* plot) {
+    if (plot != nullptr && !plot->stateId().isEmpty()) {
+      plots_by_state_id.insert(plot->stateId(), plot);
+    }
+  });
+  pending_binder_->collect(doc, plots_by_state_id);
+}
+
+void MainWindow::rebuildPendingDisplayBindings(const QDomDocument& doc) {
+  if (pending_binder_ == nullptr) {
+    return;
+  }
+  collectPendingDisplayBindings(doc);
+  static_cast<void>(pending_binder_->flush({}));
+}
+
+void MainWindow::schedulePendingDisplayBindingRebuild() {
+  if (pending_binding_rebuild_scheduled_) {
+    return;
+  }
+  pending_binding_rebuild_scheduled_ = true;
+  QTimer::singleShot(0, this, [this]() {
+    pending_binding_rebuild_scheduled_ = false;
+    if (applying_state_ || progressive_layout_in_flight_) {
+      return;
+    }
+    // Nothing staged and no plot holds an intent: skip the full-workspace
+    // serialization the rebuild would otherwise pay.
+    bool any_intents = pending_binder_ != nullptr && !pending_binder_->empty();
+    if (!any_intents) {
+      forEachPlot([&any_intents](PlotWidget* plot) {
+        any_intents = any_intents || (plot != nullptr && plot->pendingCurveIntentCount() > 0);
+      });
+    }
+    if (any_intents) {
+      rebuildPendingDisplayBindings(xmlSaveState());
+    }
+  });
 }
 
 int MainWindow::retryPendingSceneRestores(const std::vector<CatalogItem>& items) {
@@ -3089,6 +3298,23 @@ void MainWindow::onProgressiveLayoutDrained() {
   QObject::disconnect(pending_items_added_conn_);
   pending_items_added_conn_ = {};
 
+  // All file inputs now exist. Rebuild the complete saved processor graph
+  // before the binder's last pass so derived curves resolve to fresh outputs.
+  if (!progressive_layout_doc_.isNull() && !restoreDataProcessors(progressive_layout_doc_.documentElement())) {
+    const bool rolled_back = abortProgressiveRestore();
+    if (!rolled_back) {
+      MessageBox::warning(
+          this, tr("Load Layout"),
+          tr("A saved data processor could not be restored, and the previous workspace could not be fully "
+             "restored against the reloaded data. The partial layout was kept as the new undo baseline."));
+    } else {
+      MessageBox::warning(
+          this, tr("Load Layout"),
+          tr("A saved data processor could not be restored; the previous workspace was restored."));
+    }
+    return;
+  }
+
   if (pending_binder_ != nullptr) {
     static_cast<void>(pending_binder_->flush({}));
     // Now that the worker has registered the reloaded datasets' source paths, apply the
@@ -3120,10 +3346,10 @@ void MainWindow::onProgressiveLayoutDrained() {
       switch (promptMissingCurves(shown)) {
         case MissingCurveChoice::kRemove:
           break;  // Remaining curves were never bound, so there is nothing to strip from live widgets.
-        case MissingCurveChoice::kCancel:
-          // The reload has already mutated the live session, so progressive restore is non-transactional:
-          // leave the partial layout in place instead of rolling back to a stale pre-load snapshot.
-          break;
+        case MissingCurveChoice::kCancel: {
+          static_cast<void>(abortProgressiveRestore());
+        }
+          return;
       }
     }
     pending_binder_->clear();
@@ -3143,7 +3369,9 @@ void MainWindow::onProgressiveLayoutDrained() {
   QObject::disconnect(pending_queue_drained_conn_);
   pending_queue_drained_conn_ = {};
   progressive_layout_in_flight_ = false;
-  pushUndoState(/*force_new_state=*/true);
+  progressive_layout_doc_.clear();
+  progressive_previous_workspace_.reset();
+  resetUndoHistory();
 }
 
 void MainWindow::saveLayoutToPath(const QString& path, bool include_data_source) {
@@ -3298,7 +3526,7 @@ QDomElement MainWindow::saveDataProcessors(QDomDocument& doc) const {
   return element;
 }
 
-void MainWindow::restoreDataProcessors(const QDomElement& root) {
+bool MainWindow::restoreDataProcessors(const QDomElement& root) {
   // Reconcile the live filter set to this snapshot: drop ALL current filters first,
   // then recreate the snapshot's set. This makes restore idempotent for undo/redo (no
   // duplicate or output-name-colliding filters) and correct for a layout load onto an
@@ -3306,6 +3534,7 @@ void MainWindow::restoreDataProcessors(const QDomElement& root) {
   // every filter; the rebuild at the end MUST run on both branches so the now-retired
   // outputs leave the catalog.
   auto& service = session_->sessionManager().dataProcessorService();
+  bool restored_all = true;
   service.clearAllFilters();
 
   const QDomElement element = root.firstChildElement(u"data_processors"_s);
@@ -3332,6 +3561,7 @@ void MainWindow::restoreDataProcessors(const QDomElement& root) {
       emitDiagnostic(
           DiagnosticLevel::kWarning, "Layout", "processor-input-missing",
           tr("Layout filter on '%1/%2' has no matching data; skipping.").arg(input_topic, input_field));
+      restored_all = false;
       continue;
     }
     const std::string id = processor.attribute(u"processor_id"_s).toStdString();
@@ -3346,6 +3576,7 @@ void MainWindow::restoreDataProcessors(const QDomElement& root) {
       emitDiagnostic(
           DiagnosticLevel::kWarning, "Layout", "processor-unknown",
           tr("Layout filter '%1' is unknown to this PlotJuggler; skipping.").arg(QString::fromStdString(id)));
+      restored_all = false;
       continue;
     }
     const auto applied = service.applyFilter(
@@ -3355,6 +3586,7 @@ void MainWindow::restoreDataProcessors(const QDomElement& root) {
       emitDiagnostic(
           DiagnosticLevel::kWarning, "Layout", "processor-apply-failed",
           tr("Could not restore filter: %1").arg(QString::fromStdString(applied.error())));
+      restored_all = false;
     }
   }
 
@@ -3391,9 +3623,11 @@ void MainWindow::restoreDataProcessors(const QDomElement& root) {
           DiagnosticLevel::kWarning, "Layout", "transform-restore-failed",
           tr("Could not restore transform '%1': %2")
               .arg(QString::fromStdString(recipe.key), QString::fromStdString(restored.error())));
+      restored_all = false;
     }
   }
   session_->catalogModel().rebuildFromDatastore();
+  return restored_all;
 }
 
 void MainWindow::recordRecentLayout(const QString& path) {
@@ -3502,13 +3736,214 @@ QList<layout_xml::SeriesPath> MainWindow::rebindCurvesToLoadedDatasets(QDomDocum
       doc, [this](const layout_xml::SeriesPath& p) { return resolveSeriesPath(session_->catalogModel(), p); });
 }
 
-MainWindow::RestoreResult MainWindow::restoreWorkspaceState(QDomDocument& doc, MissingCurvePolicy policy) {
+MainWindow::TimelineChromeState MainWindow::captureTimelineChrome() const {
+  TimelineChromeState state;
+  if (source_timeline_ != nullptr) {
+    state.zoom = source_timeline_->zoom();
+    state.scroll_left_ns = source_timeline_->viewportLeftDisplayNs();
+    state.scroll_top_px = source_timeline_->viewportTopOffsetPx();
+    state.name_column_width = source_timeline_->nameColumnWidth();
+    state.snap = source_timeline_->snapEnabled();
+  }
+  return state;
+}
+
+void MainWindow::applyTimelineChrome(const TimelineChromeState& state) {
+  if (source_timeline_ != nullptr) {
+    source_timeline_->setZoom(state.zoom);
+    source_timeline_->setViewportLeftDisplayNs(state.scroll_left_ns);
+    timeline_name_column_width_ = state.name_column_width;
+    source_timeline_->resizeNameColumn(state.name_column_width);
+    source_timeline_->setViewportTopOffsetPx(state.scroll_top_px);
+  }
+  auto* snap = ui_->timelineAlignRail != nullptr
+                   ? ui_->timelineAlignRail->findChild<QToolButton*>(u"buttonTimelineSnap"_s)
+                   : nullptr;
+  if (snap != nullptr) {
+    snap->setChecked(state.snap);
+  } else if (source_timeline_ != nullptr) {
+    source_timeline_->setSnapEnabled(state.snap);
+  }
+}
+
+MainWindow::TimelineState MainWindow::captureTimelineState() const {
+  const TimelineChromeState chrome = captureTimelineChrome();
+  TimelineState state;
+  state.zoom = chrome.zoom;
+  state.scroll_left_ns = chrome.scroll_left_ns;
+  state.scroll_top_px = chrome.scroll_top_px;
+  state.name_column_width = chrome.name_column_width;
+  state.snap = chrome.snap;
+
+  QHash<DatasetId, int> order_slots;
+  if (source_timeline_controller_ != nullptr) {
+    const std::vector<DatasetId> order = source_timeline_controller_->currentTrackOrder();
+    for (int slot = 0; slot < static_cast<int>(order.size()); ++slot) {
+      order_slots.insert(order[static_cast<std::size_t>(slot)], slot);
+    }
+  }
+  const auto datasets = session_->catalogModel().datasets();
+  QHash<QString, int> source_ordinals;
+  for (const auto& [dataset_id, label] : datasets) {
+    (void)label;
+    TimelineTrackState track;
+    track.dataset_id = dataset_id;
+    track.display_offset_ns = session_->sessionManager().sourceDisplayOffset(dataset_id).value.count();
+    track.timeline_order = order_slots.value(dataset_id, -1);
+    track.source_path = session_->sessionManager().datasetSourcePath(dataset_id);
+    track.source_name = session_->catalogModel().datasetSourceName(dataset_id).value_or(QString{});
+    if (!track.source_path.isEmpty()) {
+      const QString canonical_path = QFileInfo(track.source_path).canonicalFilePath();
+      if (!canonical_path.isEmpty()) {
+        track.source_index = source_ordinals.value(canonical_path, 0);
+        source_ordinals[canonical_path] = track.source_index + 1;
+      }
+    }
+    state.tracks.push_back(std::move(track));
+  }
+  return state;
+}
+
+MainWindow::CapturedWorkspace MainWindow::captureWorkspace() const {
+  return CapturedWorkspace{.xml = xmlSaveState().toByteArray(2), .timeline = captureTimelineState()};
+}
+
+MainWindow::CapturedWorkspace MainWindow::capturePortableWorkspace() const {
+  QDomDocument doc = xmlSaveState();
+  const TimelineState timeline = captureTimelineState();
+  const QByteArray unstamped = doc.toByteArray(2);
+  layout_xml::stampDatasetSourcePaths(doc, [this](std::uint32_t dataset_id) {
+    return file_loader_->sourcePathForDataset(static_cast<DatasetId>(dataset_id));
+  });
+  const QByteArray stamped = doc.toByteArray(2);
+  return CapturedWorkspace{.xml = stamped.isEmpty() ? unstamped : stamped, .timeline = timeline};
+}
+
+std::optional<DatasetId> MainWindow::resolveTimelineTrack(
+    const TimelineTrackState& track, TimelineRestoreMode mode,
+    const std::vector<std::pair<DatasetId, QString>>& live_datasets) const {
+  const auto live_it = std::find_if(live_datasets.begin(), live_datasets.end(), [&track](const auto& live) {
+    return live.first == track.dataset_id;
+  });
+  if (live_it != live_datasets.end()) {
+    return track.dataset_id;
+  }
+  if (mode == TimelineRestoreMode::kExact || track.source_path.isEmpty()) {
+    return std::nullopt;
+  }
+  std::vector<DatasetId> candidates;
+  for (const auto& [candidate_id, label] : live_datasets) {
+    (void)label;
+    if (layout_xml::isSamePath(session_->sessionManager().datasetSourcePath(candidate_id), track.source_path)) {
+      candidates.push_back(candidate_id);
+    }
+  }
+  std::vector<DatasetId> named;
+  for (const DatasetId candidate : candidates) {
+    const std::optional<QString> source_name = session_->catalogModel().datasetSourceName(candidate);
+    if (track.source_name.isEmpty() || (source_name.has_value() && *source_name == track.source_name)) {
+      named.push_back(candidate);
+    }
+  }
+  if (named.size() == 1) {
+    return named.front();
+  }
+  if (track.source_index >= 0 && track.source_index < static_cast<int>(candidates.size())) {
+    const DatasetId indexed = candidates[static_cast<std::size_t>(track.source_index)];
+    if (std::find(named.begin(), named.end(), indexed) != named.end()) {
+      return indexed;
+    }
+  }
+  return std::nullopt;
+}
+
+std::optional<MainWindow::TimelineResolutionPlan> MainWindow::validateTimelineState(
+    const TimelineState& state, TimelineRestoreMode mode) const {
+  if (!std::isfinite(state.zoom) || !(state.zoom > 0.0) || state.scroll_top_px < 0 || state.name_column_width <= 0) {
+    return std::nullopt;
+  }
+  const auto live_datasets = session_->catalogModel().datasets();
+
+  QSet<DatasetId> resolved_ids;
+  QSet<int> order_slots;
+  TimelineResolutionPlan plan;
+  plan.reserve(state.tracks.size());
+  for (const TimelineTrackState& track : state.tracks) {
+    const std::optional<DatasetId> resolved = resolveTimelineTrack(track, mode, live_datasets);
+    if (!resolved.has_value() || resolved_ids.contains(*resolved) || track.timeline_order < -1) {
+      return std::nullopt;
+    }
+    plan.push_back(*resolved);
+    resolved_ids.insert(*resolved);
+    if (track.timeline_order >= 0) {
+      if (order_slots.contains(track.timeline_order)) {
+        return std::nullopt;
+      }
+      order_slots.insert(track.timeline_order);
+    }
+    if (const auto raw = session_->datasetRawTimeRange(*resolved);
+        raw.has_value() && (!timelineDifferenceFits(raw->min, track.display_offset_ns) ||
+                            !timelineDifferenceFits(raw->max, track.display_offset_ns))) {
+      return std::nullopt;
+    }
+  }
+  for (int slot = 0; slot < order_slots.size(); ++slot) {
+    if (!order_slots.contains(slot)) {
+      return std::nullopt;
+    }
+  }
+  return plan;
+}
+
+bool MainWindow::applyTimelineState(const TimelineState& state, const TimelineResolutionPlan& plan) {
+  if (plan.size() != state.tracks.size()) {
+    return false;
+  }
+
+  std::vector<std::pair<int, DatasetId>> ordered;
+  for (std::size_t index = 0; index < state.tracks.size(); ++index) {
+    const TimelineTrackState& track = state.tracks[index];
+    const DatasetId dataset_id = plan[index];
+    session_->sessionManager().setDisplayOffset(dataset_id, DisplayOffset{Duration{track.display_offset_ns}});
+    if (track.timeline_order >= 0) {
+      ordered.emplace_back(track.timeline_order, dataset_id);
+    }
+  }
+  std::sort(ordered.begin(), ordered.end());
+  std::vector<DatasetId> order;
+  order.reserve(ordered.size());
+  for (const auto& [slot, dataset_id] : ordered) {
+    (void)slot;
+    order.push_back(dataset_id);
+  }
+  if (source_timeline_controller_ != nullptr) {
+    source_timeline_controller_->setDisplayOrder(std::move(order));
+  }
+  applyTimelineChrome(
+      TimelineChromeState{
+          .zoom = state.zoom,
+          .scroll_left_ns = state.scroll_left_ns,
+          .scroll_top_px = state.scroll_top_px,
+          .name_column_width = state.name_column_width,
+          .snap = state.snap,
+      });
+  return true;
+}
+
+MainWindow::RestoreResult MainWindow::applyWorkspace(
+    QDomDocument& doc, MissingCurvePolicy policy, const TimelineState* timeline_state,
+    const TimelineResolutionPlan* timeline_plan) {
   const QDomElement root = doc.documentElement();
   // 1. Recreate the snapshot's filters first, so each derived output topic is in the
   //    catalog and its plotted (derived) curve resolves like any other curve.
-  restoreDataProcessors(root);
+  if (!restoreDataProcessors(root)) {
+    return RestoreResult::kFailed;
+  }
   // 2. Rebind every curve's stable topic+field to a concrete catalog key.
   const QList<layout_xml::SeriesPath> unresolved = rebindCurvesToLoadedDatasets(doc);
+  if (policy == MissingCurvePolicy::kExact && !unresolved.isEmpty()) {
+    return RestoreResult::kFailed;
+  }
   if (policy == MissingCurvePolicy::kPrompt && !unresolved.isEmpty()) {
     QStringList shown;
     shown.reserve(unresolved.size());
@@ -3523,13 +3958,19 @@ MainWindow::RestoreResult MainWindow::restoreWorkspaceState(QDomDocument& doc, M
         break;
     }
   }
-  // kSilentDrop (undo/redo): unresolved curves are left to drop during xmlLoadState's
-  // bind — a snapshot survives an intervening data reload because it carries stable
-  // topic/field paths, not per-load keys.
+  // kSilentDrop compatibility restores leave unresolved curves for xmlLoadState
+  // to discard. Undo/redo uses kExact.
   // 3. Apply plots + global toggles.
   if (!xmlLoadState(doc)) {
     return RestoreResult::kFailed;
   }
+  // Plot reconstruction and the timeline are independent restore participants.
+  // Scene docks join this bool-and-rollback transaction in PR 5.
+  if (timeline_state != nullptr && (timeline_plan == nullptr || !applyTimelineState(*timeline_state, *timeline_plan))) {
+    return RestoreResult::kFailed;
+  }
+  rebuildPendingDisplayBindings(doc);
+  forEachPlot([](PlotWidget* plot) { plot->applySavedViewportOrZoom(/*clear_after=*/true); });
   // 4. Seed the just-recreated docks with the current playhead. currentTimeChanged
   // only fires on a CHANGE, so a freshly restored dock would sit at no-tracker-time
   // until the next scrub — scene docks then render blank (TF lookups / image decode
@@ -3539,51 +3980,88 @@ MainWindow::RestoreResult MainWindow::restoreWorkspaceState(QDomDocument& doc, M
   return RestoreResult::kApplied;
 }
 
+MainWindow::RestoreResult MainWindow::restoreWorkspaceStateImpl(
+    QDomDocument& doc, MissingCurvePolicy policy, const TimelineState* timeline_state,
+    TimelineRestoreMode timeline_mode, const CapturedWorkspace* rollback_to) {
+  std::optional<TimelineResolutionPlan> timeline_plan;
+  if (timeline_state != nullptr) {
+    timeline_plan = validateTimelineState(*timeline_state, timeline_mode);
+    if (!timeline_plan.has_value()) {
+      return RestoreResult::kFailed;
+    }
+  }
+
+  QScopedValueRollback applying_guard(applying_state_, true);
+  const CapturedWorkspace previous = rollback_to != nullptr ? *rollback_to : captureWorkspace();
+  const RestoreResult result =
+      applyWorkspace(doc, policy, timeline_state, timeline_plan.has_value() ? &*timeline_plan : nullptr);
+  if (result == RestoreResult::kApplied) {
+    return result;
+  }
+
+  QDomDocument previous_doc;
+  if (previous_doc.setContent(previous.xml)) {
+    const std::optional<TimelineResolutionPlan> previous_plan =
+        validateTimelineState(previous.timeline, TimelineRestoreMode::kExact);
+    if (previous_plan.has_value()) {
+      static_cast<void>(
+          applyWorkspace(previous_doc, MissingCurvePolicy::kSilentDrop, &previous.timeline, &*previous_plan));
+    }
+  }
+  return result;
+}
+
+MainWindow::RestoreResult MainWindow::restoreWorkspaceState(
+    QDomDocument& doc, MissingCurvePolicy policy, const CapturedWorkspace* rollback_to) {
+  return restoreWorkspaceStateImpl(doc, policy, nullptr, TimelineRestoreMode::kExact, rollback_to);
+}
+
+MainWindow::RestoreResult MainWindow::restoreWorkspaceState(
+    const CapturedWorkspace& target, MissingCurvePolicy policy, TimelineRestoreMode timeline_mode,
+    const CapturedWorkspace* rollback_to) {
+  QDomDocument doc;
+  if (!doc.setContent(target.xml)) {
+    return RestoreResult::kFailed;
+  }
+  return restoreWorkspaceStateImpl(doc, policy, &target.timeline, timeline_mode, rollback_to);
+}
+
 void MainWindow::onUndo() {
-  if (undo_states_.size() <= 1) {
+  if (progressive_layout_in_flight_ || undo_states_.size() <= 1) {
     return;
   }
 
-  redo_states_.push_back(undo_states_.back());
-  undo_states_.pop_back();
-  QDomDocument doc;
-  doc.setContent(undo_states_.back());
-  // Restore the COMPLETE snapshot (filters + curves + plots/toggles) under
-  // applying_state_ so the catalog-rebuild signals fired by the filter reconcile do not
-  // re-enter onUndoableChange and push spurious undo states.
-  const bool loaded = [&] {
-    QScopedValueRollback guard(applying_state_, true);
-    return restoreWorkspaceState(doc, MissingCurvePolicy::kSilentDrop) == RestoreResult::kApplied;
-  }();
-
-  if (!loaded) {
-    statusBar()->showMessage(tr("Unable to restore undo state"), 3000);
-  }
-  undo_timer_.restart();
-  updateUndoRedoActions();
+  const CapturedWorkspace target_state = undo_states_[undo_states_.size() - 2];
+  restoreHistoryState(target_state, /*undo=*/true);
 }
 
 void MainWindow::onRedo() {
-  if (redo_states_.empty()) {
+  if (progressive_layout_in_flight_ || redo_states_.empty()) {
     return;
   }
 
-  undo_states_.push_back(redo_states_.back());
-  redo_states_.pop_back();
-  QDomDocument doc;
-  doc.setContent(undo_states_.back());
-  // Restore the COMPLETE snapshot (filters + curves + plots/toggles) under
-  // applying_state_ so the catalog-rebuild signals fired by the filter reconcile do not
-  // re-enter onUndoableChange and push spurious undo states.
-  const bool loaded = [&] {
-    QScopedValueRollback guard(applying_state_, true);
-    return restoreWorkspaceState(doc, MissingCurvePolicy::kSilentDrop) == RestoreResult::kApplied;
-  }();
+  const CapturedWorkspace target_state = redo_states_.back();
+  restoreHistoryState(target_state, /*undo=*/false);
+}
 
+void MainWindow::restoreHistoryState(const CapturedWorkspace& target, bool undo) {
+  const CapturedWorkspace current_state = captureWorkspace();
+  const bool loaded =
+      restoreWorkspaceState(target, MissingCurvePolicy::kExact, TimelineRestoreMode::kExact, &current_state) ==
+      RestoreResult::kApplied;
   if (!loaded) {
-    statusBar()->showMessage(tr("Unable to restore redo state"), 3000);
+    statusBar()->showMessage(undo ? tr("Unable to restore undo state") : tr("Unable to restore redo state"), 3000);
+  } else if (undo) {
+    redo_states_.push_back(current_state);
+    undo_states_.pop_back();
+    hydrateCurrentUndoState(/*refresh_data_universe=*/false);
+  } else {
+    undo_states_.back() = current_state;
+    undo_states_.push_back(target);
+    redo_states_.pop_back();
+    hydrateCurrentUndoState(/*refresh_data_universe=*/false);
   }
-  undo_timer_.restart();
+  undo_timer_.invalidate();
   updateUndoRedoActions();
 }
 
@@ -3649,8 +4127,8 @@ QDomElement MainWindow::appendDataSourceElement(QDomDocument& doc, const QDir& l
       const DatasetId id = datasets_for_file[index];
       QDomElement dataset_el = doc.createElement(u"dataset"_s);
       dataset_el.setAttribute(u"source_index"_s, QString::number(index));
-      if (const DatasetInfo* dataset = session_->sessionManager().dataEngine().getDataset(id)) {
-        dataset_el.setAttribute(u"source_name"_s, QString::fromStdString(dataset->source_name));
+      if (const std::optional<QString> source_name = session_->catalogModel().datasetSourceName(id)) {
+        dataset_el.setAttribute(u"source_name"_s, *source_name);
       }
       const QString offset = QString::number(session_->sessionManager().sourceDisplayOffset(id).value.count());
       dataset_el.setAttribute(u"display_offset_ns"_s, offset);
@@ -3706,7 +4184,7 @@ bool MainWindow::applyTimelineStateFromLayout(const QList<layout_xml::DataSource
   std::vector<std::pair<int, DatasetId>> ordered;  // (timeline_order, id)
   QSet<DatasetId> matched_ids;
   bool offset_changed = false;
-  const auto apply_state = [&mgr, &ordered, &matched_ids, &offset_changed](
+  const auto apply_state = [this, &mgr, &ordered, &matched_ids, &offset_changed](
                                DatasetId matched, qint64 offset_ns, bool has_offset, bool includes_global_reference,
                                int order) {
     // Multiple <fileInfo>/<dataset> aliases can resolve to one physical dataset.
@@ -3721,15 +4199,27 @@ bool MainWindow::applyTimelineStateFromLayout(const QList<layout_xml::DataSource
       // reference for a v3 read so total placement stays equal without
       // double-applying it (setDisplayOffset writes the per-source alignment).
       if (includes_global_reference) {
-        offset_ns -= mgr.globalTimeReference();
+        const std::optional<qint64> migrated = checkedTimelineDifference(offset_ns, mgr.globalTimeReference());
+        if (!migrated.has_value()) {
+          has_offset = false;
+        } else {
+          offset_ns = *migrated;
+        }
+      }
+      if (const auto raw = session_->datasetRawTimeRange(matched);
+          raw.has_value() &&
+          (!timelineDifferenceFits(raw->min, offset_ns) || !timelineDifferenceFits(raw->max, offset_ns))) {
+        has_offset = false;
       }
       // Track whether this write actually MOVES the offset: plots restored earlier
       // (restoreWorkspaceState) framed their viewport with the pre-apply offset, so
       // the caller must re-frame only when an offset really changed here.
-      if (mgr.sourceDisplayOffset(matched).value.count() != offset_ns) {
+      if (has_offset && mgr.sourceDisplayOffset(matched).value.count() != offset_ns) {
         offset_changed = true;
       }
-      mgr.setDisplayOffset(matched, DisplayOffset{Duration{offset_ns}});
+      if (has_offset) {
+        mgr.setDisplayOffset(matched, DisplayOffset{Duration{offset_ns}});
+      }
     }
     if (order >= 0) {
       ordered.emplace_back(order, matched);
@@ -3780,8 +4270,7 @@ bool MainWindow::applyTimelineStateFromLayout(const QList<layout_xml::DataSource
     };
     const auto named_candidate_count = [&](const QString& name) {
       return static_cast<int>(std::count_if(candidates.begin(), candidates.end(), [&](DatasetId id) {
-        const DatasetInfo* dataset = mgr.dataEngine().getDataset(id);
-        return dataset != nullptr && QString::fromStdString(dataset->source_name) == name;
+        return session_->catalogModel().datasetSourceName(id) == name;
       }));
     };
 
@@ -3799,9 +4288,7 @@ bool MainWindow::applyTimelineStateFromLayout(const QList<layout_xml::DataSource
       if (used.contains(indexed)) {
         return std::nullopt;
       }
-      const DatasetInfo* dataset = mgr.dataEngine().getDataset(indexed);
-      if (saved.source_name.isEmpty() ||
-          (dataset != nullptr && QString::fromStdString(dataset->source_name) == saved.source_name)) {
+      if (saved.source_name.isEmpty() || session_->catalogModel().datasetSourceName(indexed) == saved.source_name) {
         return indexed;
       }
       return std::nullopt;
@@ -3825,9 +4312,8 @@ bool MainWindow::applyTimelineStateFromLayout(const QList<layout_xml::DataSource
           if (used.contains(candidate)) {
             continue;
           }
-          const DatasetInfo* dataset = mgr.dataEngine().getDataset(candidate);
           if (saved.source_name.isEmpty() ||
-              (dataset != nullptr && QString::fromStdString(dataset->source_name) == saved.source_name)) {
+              session_->catalogModel().datasetSourceName(candidate) == saved.source_name) {
             source_matches.push_back(candidate);
           }
         }
@@ -3873,18 +4359,13 @@ bool MainWindow::applyPendingTimelineState() {
 }
 
 QDomElement MainWindow::saveSourceTimelineViewState(QDomDocument& doc) const {
-  // Read the view chrome off the widgets; layout_xml owns the XML schema.
-  layout_xml::SourceTimelineViewState state;
-  if (source_timeline_ != nullptr) {
-    state.zoom = source_timeline_->zoom();
-    state.scroll_left_ns = source_timeline_->viewportLeftDisplayNs();
-    state.name_column_width = source_timeline_->nameColumnWidth();
-  }
-  if (ui_->timelineAlignRail != nullptr) {
-    if (auto* snap = ui_->timelineAlignRail->findChild<QToolButton*>(u"buttonTimelineSnap"_s)) {
-      state.snap = snap->isChecked();
-    }
-  }
+  const TimelineChromeState chrome = captureTimelineChrome();
+  layout_xml::SourceTimelineViewState state{
+      .zoom = chrome.zoom,
+      .scroll_left_ns = chrome.scroll_left_ns,
+      .name_column_width = chrome.name_column_width,
+      .snap = chrome.snap,
+  };
   return layout_xml::writeSourceTimelineViewState(doc, state);
 }
 
@@ -3892,33 +4373,21 @@ void MainWindow::restoreSourceTimelineViewState(const QDomElement& element) {
   if (source_timeline_ == nullptr) {
     return;
   }
-  const layout_xml::SourceTimelineViewState state = layout_xml::readSourceTimelineViewState(element);
-  // Zoom first: it rebuilds the scene (width + scrollbar range), so the scroll
-  // restore below maps onto the intended zoom.
-  if (state.zoom) {
-    source_timeline_->setZoom(*state.zoom);
+  const layout_xml::SourceTimelineViewState saved = layout_xml::readSourceTimelineViewState(element);
+  TimelineChromeState state = captureTimelineChrome();
+  if (saved.zoom) {
+    state.zoom = *saved.zoom;
   }
-  if (state.scroll_left_ns) {
-    source_timeline_->setViewportLeftDisplayNs(*state.scroll_left_ns);
+  if (saved.scroll_left_ns) {
+    state.scroll_left_ns = *saved.scroll_left_ns;
   }
-  if (state.name_column_width) {
-    // Remember it so the deferred alignNameColumnToPlayback keeps the column at
-    // this width (over the playback-aligned floor), then apply it now.
-    timeline_name_column_width_ = *state.name_column_width;
-    source_timeline_->resizeNameColumn(*state.name_column_width);
+  if (saved.name_column_width) {
+    state.name_column_width = *saved.name_column_width;
   }
-  if (state.snap) {
-    // Drive the rail toggle so its checked state and the widget stay in sync
-    // (toggled -> Timeline::setSnapEnabled). Fall back to the widget directly.
-    auto* btn = ui_->timelineAlignRail != nullptr
-                    ? ui_->timelineAlignRail->findChild<QToolButton*>(u"buttonTimelineSnap"_s)
-                    : nullptr;
-    if (btn != nullptr) {
-      btn->setChecked(*state.snap);
-    } else {
-      source_timeline_->setSnapEnabled(*state.snap);
-    }
+  if (saved.snap) {
+    state.snap = *saved.snap;
   }
+  applyTimelineChrome(state);
 }
 
 QDomElement MainWindow::saveRightPanelState(QDomDocument& doc) const {
@@ -4254,8 +4723,9 @@ bool MainWindow::xmlLoadState(const QDomDocument& state_document) {
 void MainWindow::pushInitialUndoState() {
   undo_states_.clear();
   redo_states_.clear();
-  undo_states_.push_back(xmlSaveState().toByteArray(2));
-  undo_timer_.start();
+  undo_states_.push_back(captureWorkspace());
+  history_data_universe_ = captureHistoryDataUniverse();
+  undo_timer_.invalidate();
   updateUndoRedoActions();
 }
 
@@ -4267,7 +4737,7 @@ void MainWindow::resetUndoHistory() {
 }
 
 void MainWindow::pushUndoState(bool force_new_state) {
-  const QByteArray state = xmlSaveState().toByteArray(2);
+  const CapturedWorkspace state = captureWorkspace();
   if (!undo_states_.empty() && undo_states_.back() == state) {
     updateUndoRedoActions();
     return;
@@ -4285,16 +4755,34 @@ void MainWindow::pushUndoState(bool force_new_state) {
     undo_states_.pop_front();
   }
   redo_states_.clear();
-  undo_timer_.restart();
+  if (force_new_state) {
+    // A forced edit is discrete on both sides; the following ordinary edit
+    // must not coalesce forward into it.
+    undo_timer_.invalidate();
+  } else {
+    undo_timer_.restart();
+  }
+  updateUndoRedoActions();
+}
+
+void MainWindow::hydrateCurrentUndoState(bool refresh_data_universe) {
+  if (applying_state_ || progressive_layout_in_flight_ || undo_states_.empty()) {
+    return;
+  }
+  undo_states_.back() = captureWorkspace();
+  if (refresh_data_universe) {
+    history_data_universe_ = captureHistoryDataUniverse();
+  }
+  undo_timer_.invalidate();
   updateUndoRedoActions();
 }
 
 void MainWindow::updateUndoRedoActions() {
   if (undo_action_ != nullptr) {
-    undo_action_->setEnabled(undo_states_.size() > 1);
+    undo_action_->setEnabled(!progressive_layout_in_flight_ && undo_states_.size() > 1);
   }
   if (redo_action_ != nullptr) {
-    redo_action_->setEnabled(!redo_states_.empty());
+    redo_action_->setEnabled(!progressive_layout_in_flight_ && !redo_states_.empty());
   }
 }
 

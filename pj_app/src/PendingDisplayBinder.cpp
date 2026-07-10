@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <utility>
 
+#include "pj_plotting/PlotXml.h"
 #include "pj_runtime/TopicDemandTracker.h"
 using namespace Qt::StringLiterals;
 
@@ -77,10 +78,22 @@ void PendingDisplayBinder::releaseDemandRefs(const PendingDisplayEntry& entry) {
 }
 
 void PendingDisplayBinder::collect(const QDomDocument& doc, const QHash<QString, PlotWidget*>& plots_by_state_id) {
-  for (const PendingDisplayEntry& entry : entries_) {
-    releaseDemandRefs(entry);
+  // Replace every plot-curve entry from the document, but keep scene-layer
+  // entries whose dock is still alive: they are interactive drops that exist
+  // only in the binder (never in the XML), so re-collecting after a plot
+  // intent change must not discard them. A layout load that rebuilds the dock
+  // world destroys the old docks, and destruction-watch releases those
+  // entries eagerly.
+  auto entry_it = entries_.begin();
+  while (entry_it != entries_.end()) {
+    const bool keep = entry_it->kind == PendingDisplayEntry::Kind::kSceneLayer && !entry_it->targetIsNull();
+    if (keep) {
+      ++entry_it;
+      continue;
+    }
+    releaseDemandRefs(*entry_it);
+    entry_it = entries_.erase(entry_it);
   }
-  entries_.clear();
 
   const QDomNodeList plot_nodes = doc.elementsByTagName(u"plot"_s);
   for (int i = 0; i < plot_nodes.size(); ++i) {
@@ -97,6 +110,8 @@ void PendingDisplayBinder::collect(const QDomDocument& doc, const QHash<QString,
          curve = curve.nextSiblingElement(u"curve"_s)) {
       PendingDisplayEntry entry;
       entry.plot = plot;
+      entry.persistent_intent = plot_xml::isPendingIntent(curve);
+      entry.preserve_viewport_on_completion = plot->hasSavedViewport() || !plot->curveList().empty();
 
       // Read curve attributes through layout_xml's single reader so the
       // range-checked dataset-id parse stays consistent with the layout writer.
@@ -122,6 +137,12 @@ void PendingDisplayBinder::collect(const QDomDocument& doc, const QHash<QString,
 
       entry.curve_element = entry.curve_doc.importNode(curve, /*deep=*/true).toElement();
       entry.curve_doc.appendChild(entry.curve_element);
+      if (entry.persistent_intent) {
+        const auto identity =
+            catalog_.resolveDatasetIdentity(entry.path.dataset_id, entry.path.dataset_source, entry.path.dataset_path);
+        entry.preferred_dataset = identity.id;
+        static_cast<void>(plot->rememberPendingCurveIntent(entry.curve_element, /*notify=*/false));
+      }
       refreshDemandRefs(entry);
       watchTargetDestruction(plot);
       entries_.push_back(std::move(entry));
@@ -130,13 +151,14 @@ void PendingDisplayBinder::collect(const QDomDocument& doc, const QHash<QString,
 }
 
 bool PendingDisplayBinder::hasEntryFor(
-    PendingDisplayEntry::Kind kind, const QObject* target, const layout_xml::SeriesPath& path) const {
+    PendingDisplayEntry::Kind kind, const QObject* target, const layout_xml::SeriesPath& path,
+    std::optional<DatasetId> preferred_dataset) const {
   for (const PendingDisplayEntry& entry : entries_) {
     const QObject* entry_target = entry.kind == PendingDisplayEntry::Kind::kCurve
                                       ? static_cast<const QObject*>(entry.plot.data())
                                       : static_cast<const QObject*>(entry.scene_dock.data());
-    if (entry.kind == kind && entry_target == target && entry.path.topic == path.topic &&
-        entry.path.field == path.field) {
+    if (entry.kind == kind && entry_target == target && entry.path == path &&
+        entry.preferred_dataset == preferred_dataset) {
       return true;
     }
   }
@@ -152,17 +174,42 @@ void PendingDisplayBinder::addPendingCurve(
   // promotion the first entry binds every field, the duplicate's addCurve()
   // calls all return null, and it would wait forever holding its demand
   // reference (and re-add ghost curves after a manual delete on a later flush).
-  if (hasEntryFor(PendingDisplayEntry::Kind::kCurve, plot, path)) {
+  layout_xml::SeriesPath qualified_path = path;
+  if (preferred_dataset.has_value()) {
+    if (qualified_path.dataset_id == 0) {
+      qualified_path.dataset_id = *preferred_dataset;
+    }
+    if (qualified_path.dataset_source.isEmpty()) {
+      qualified_path.dataset_source = catalog_.datasetSourceName(*preferred_dataset).value_or(QString{});
+    }
+    if (qualified_path.dataset_path.isEmpty()) {
+      qualified_path.dataset_path = catalog_.datasetSourcePath(*preferred_dataset);
+    }
+  }
+  if (hasEntryFor(PendingDisplayEntry::Kind::kCurve, plot, qualified_path, preferred_dataset)) {
     return;
   }
   PendingDisplayEntry entry;
   entry.plot = plot;
-  entry.path = path;
+  entry.path = qualified_path;
   entry.preferred_dataset = preferred_dataset;
+  entry.persistent_intent = true;
+  entry.preserve_viewport_on_completion = plot->hasSavedViewport() || !plot->curveList().empty();
   entry.curve_element = entry.curve_doc.createElement(u"curve"_s);
   entry.curve_doc.appendChild(entry.curve_element);
-  entry.curve_element.setAttribute(u"topic"_s, path.topic);
-  entry.curve_element.setAttribute(u"field"_s, path.field);
+  entry.curve_element.setAttribute(u"topic"_s, qualified_path.topic);
+  entry.curve_element.setAttribute(u"field"_s, qualified_path.field);
+  plot_xml::markPendingIntent(entry.curve_element);
+  if (qualified_path.dataset_id != 0) {
+    entry.curve_element.setAttribute(u"dataset_id"_s, QString::number(qualified_path.dataset_id));
+  }
+  if (!qualified_path.dataset_source.isEmpty()) {
+    entry.curve_element.setAttribute(u"dataset_source"_s, qualified_path.dataset_source);
+  }
+  if (!qualified_path.dataset_path.isEmpty()) {
+    entry.curve_element.setAttribute(u"dataset_path"_s, qualified_path.dataset_path);
+  }
+  static_cast<void>(plot->rememberPendingCurveIntent(entry.curve_element, /*notify=*/true));
   refreshDemandRefs(entry);
   watchTargetDestruction(plot);
   entries_.push_back(std::move(entry));
@@ -173,7 +220,9 @@ void PendingDisplayBinder::addPendingSceneLayer(
   if (dock == nullptr || topic_name.isEmpty()) {
     return;
   }
-  if (hasEntryFor(PendingDisplayEntry::Kind::kSceneLayer, dock, layout_xml::SeriesPath{topic_name, QString()})) {
+  if (hasEntryFor(
+          PendingDisplayEntry::Kind::kSceneLayer, dock, layout_xml::SeriesPath{topic_name, QString()},
+          preferred_dataset)) {
     return;  // same dock, same topic — one pending layer is enough
   }
   PendingDisplayEntry entry;
@@ -252,8 +301,15 @@ std::optional<QString> PendingDisplayBinder::resolveEntryPath(
   // fall through to the strict resolution below, which binds a unique successor
   // and stays pending under ambiguity.
   if (preferred.has_value()) {
-    if (const auto descriptor = catalog_.descriptorForPath(*preferred, path.topic, path.field)) {
-      return descriptor->name;
+    layout_xml::SeriesPath preferred_path = path;
+    preferred_path.dataset_id = *preferred;
+    if (preferred_path.dataset_source.isEmpty()) {
+      preferred_path.dataset_source = catalog_.datasetSourceName(*preferred).value_or(QString{});
+    }
+    if (const auto key = catalog_.resolveCurveKey(
+            preferred_path.dataset_id, preferred_path.dataset_source, preferred_path.dataset_path, preferred_path.topic,
+            preferred_path.field)) {
+      return key;
     }
     if (catalog_.datasetSourceName(*preferred).has_value()) {
       return std::nullopt;
@@ -262,23 +318,50 @@ std::optional<QString> PendingDisplayBinder::resolveEntryPath(
   return resolveSeriesPath(catalog_, path);
 }
 
-std::vector<QString> PendingDisplayBinder::scalarKeysForTopic(
-    const QString& topic, std::optional<DatasetId> preferred) const {
-  std::vector<QString> preferred_keys;
-  std::vector<QString> fallback_keys;
-  std::optional<DatasetId> fallback_dataset;
+std::optional<std::vector<QString>> PendingDisplayBinder::scalarKeysForTopic(
+    const layout_xml::SeriesPath& path, std::optional<DatasetId> preferred) const {
+  std::optional<DatasetId> selected_dataset;
+  if (preferred.has_value() && catalog_.datasetSourceName(*preferred).has_value()) {
+    selected_dataset = preferred;
+  } else if (path.dataset_id != 0 || !path.dataset_source.isEmpty() || !path.dataset_path.isEmpty()) {
+    const auto identity = catalog_.resolveDatasetIdentity(path.dataset_id, path.dataset_source, path.dataset_path);
+    if (identity.ambiguous || !identity.id.has_value()) {
+      return std::nullopt;
+    }
+    selected_dataset = identity.id;
+  }
+
+  QSet<DatasetId> materialized_datasets;
+  std::vector<QString> keys;
   for (const CatalogItem& item : catalog_.items()) {
-    if (item.topic_name != topic || !isScalarField(item)) {
+    if (item.topic_name != path.topic) {
       continue;
     }
-    if (preferred.has_value() && item.dataset_id == *preferred) {
-      preferred_keys.push_back(item.key);
-    } else if (!fallback_dataset.has_value() || item.dataset_id == *fallback_dataset) {
-      fallback_dataset = item.dataset_id;  // keep all keys from ONE dataset, never a cross-dataset mix
-      fallback_keys.push_back(item.key);
+    if (selected_dataset.has_value() && item.dataset_id != *selected_dataset) {
+      continue;
+    }
+    if (isScalarField(item)) {
+      materialized_datasets.insert(item.dataset_id);
+      keys.push_back(item.key);
+    } else if (asObjectTopic(item) != nullptr) {
+      materialized_datasets.insert(item.dataset_id);
     }
   }
-  return preferred_keys.empty() ? fallback_keys : preferred_keys;
+  if (selected_dataset.has_value()) {
+    if (!materialized_datasets.contains(*selected_dataset)) {
+      return std::nullopt;
+    }
+    return keys;
+  }
+  if (materialized_datasets.size() != 1) {
+    return std::nullopt;
+  }
+  const DatasetId only_dataset = *materialized_datasets.cbegin();
+  std::erase_if(keys, [&catalog = catalog_, only_dataset](const QString& key) {
+    const auto descriptor = catalog.curveDescriptor(key);
+    return !descriptor.has_value() || descriptor->dataset_id != only_dataset;
+  });
+  return keys;
 }
 
 int PendingDisplayBinder::flush(const QSet<QString>& topics) {
@@ -288,7 +371,9 @@ int PendingDisplayBinder::flush(const QSet<QString>& topics) {
 
   const bool drain_pass = topics.isEmpty();
   QSet<PlotWidget*> touched;
-  int bound = 0;
+  QSet<PlotWidget*> zoom_on_completion;
+  QSet<PlotWidget*> preserve_viewport_on_completion;
+  int completed_intents = 0;
 
   auto it = entries_.begin();
   while (it != entries_.end()) {
@@ -311,7 +396,7 @@ int PendingDisplayBinder::flush(const QSet<QString>& topics) {
 
     if (entry.kind == PendingDisplayEntry::Kind::kSceneLayer) {
       if (tryCompleteSceneEntry(entry)) {
-        ++bound;
+        ++completed_intents;
         releaseDemandRefs(entry);
         it = entries_.erase(it);
       } else {
@@ -330,20 +415,28 @@ int PendingDisplayBinder::flush(const QSet<QString>& topics) {
     // per scalar field (mirrors dropping the real topic node). Handled here
     // because no single descriptorForPath answer exists for "all of them".
     if (!key.has_value() && !entry.isXY() && entry.path.field.isEmpty()) {
-      const std::vector<QString> field_keys = scalarKeysForTopic(entry.path.topic, entry.preferred_dataset);
-      if (!field_keys.empty()) {
+      const std::optional<std::vector<QString>> field_keys = scalarKeysForTopic(entry.path, entry.preferred_dataset);
+      if (field_keys.has_value()) {
         PlotWidget* plot = entry.plot.data();
+        const bool was_empty_without_saved_viewport = plot->curveList().empty() && !plot->hasSavedViewport();
         bool any_bound = false;
-        for (const QString& field_key : field_keys) {
-          any_bound = plot->addCurve(field_key) != nullptr || any_bound;
+        for (const QString& field_key : *field_keys) {
+          any_bound =
+              plot->addCurveFromPending(field_key, entry.preserve_viewport_on_completion) != nullptr || any_bound;
         }
         if (any_bound) {
           touched.insert(plot);
-          ++bound;
-          releaseDemandRefs(entry);
-          it = entries_.erase(it);
-          continue;
+          if (entry.preserve_viewport_on_completion) {
+            preserve_viewport_on_completion.insert(plot);
+          } else if (was_empty_without_saved_viewport) {
+            zoom_on_completion.insert(plot);
+          }
         }
+        ++completed_intents;
+        plot->forgetPendingCurveIntent(entry.curve_element, /*notify=*/false);
+        releaseDemandRefs(entry);
+        it = entries_.erase(it);
+        continue;
       }
       ++it;
       continue;
@@ -362,13 +455,20 @@ int PendingDisplayBinder::flush(const QSet<QString>& topics) {
     }
 
     PlotWidget* plot = entry.plot.data();
-    if (plot->applyCurveElement(entry.curve_element) == nullptr) {
+    const bool was_empty_without_saved_viewport = plot->curveList().empty() && !plot->hasSavedViewport();
+    if (plot->applyCurveElement(entry.curve_element, entry.preserve_viewport_on_completion) == nullptr) {
       ++it;
       continue;
     }
 
     touched.insert(plot);
-    ++bound;
+    if (entry.preserve_viewport_on_completion) {
+      preserve_viewport_on_completion.insert(plot);
+    } else if (was_empty_without_saved_viewport) {
+      zoom_on_completion.insert(plot);
+    }
+    ++completed_intents;
+    plot->forgetPendingCurveIntent(entry.curve_element, /*notify=*/false);
     releaseDemandRefs(entry);
     it = entries_.erase(it);
   }
@@ -380,15 +480,22 @@ int PendingDisplayBinder::flush(const QSet<QString>& topics) {
     // saved range with the live offset — pinning the final window up front so data
     // fills into it like streaming — and falls back to zoomOut when there is no saved
     // range. clear_after=false: keep the stash; the drain pass clears it.
-    plot->applySavedViewportOrZoom(/*clear_after=*/false);
+    if (plot->hasSavedViewport()) {
+      plot->applySavedViewportOrZoom(/*clear_after=*/false);
+    } else if (!preserve_viewport_on_completion.contains(plot) && zoom_on_completion.contains(plot)) {
+      plot->zoomOut(/*emit_signal=*/false);
+    }
   }
-  return bound;
+  return completed_intents;
 }
 
 QList<layout_xml::SeriesPath> PendingDisplayBinder::unresolved() const {
   QList<layout_xml::SeriesPath> paths;
   for (const PendingDisplayEntry& entry : entries_) {
     if (entry.kind != PendingDisplayEntry::Kind::kCurve || entry.plot.isNull()) {
+      continue;
+    }
+    if (entry.persistent_intent) {
       continue;
     }
     // Report only the half/halves that still don't resolve: an XY entry can be

@@ -16,6 +16,7 @@
 #include <algorithm>
 #include <memory>
 #include <optional>
+#include <vector>
 
 #include "LayoutXml.h"
 #include "PendingDisplayBinder.h"
@@ -25,6 +26,7 @@
 #include "pj_runtime/CatalogModel.h"
 #include "pj_runtime/SessionManager.h"
 #include "pj_runtime/TopicDemandTracker.h"
+#include "pj_scene_common/scene_dock_widget.h"
 using namespace Qt::StringLiterals;
 
 namespace {
@@ -153,31 +155,7 @@ TEST(PendingDisplayBinderTest, DuplicatePlaceholderDropStagesOneEntry) {
   EXPECT_EQ(binder.size(), 1);
 }
 
-// REVIEW: production gap found while porting (packet 3, tests-only scope — not
-// fixed here). Both assertions below are commented out because they fail
-// against current PendingDisplayBinder.cpp:
-//
-// 1. `scalarKeysForTopic` (PendingDisplayBinder.cpp) falls back to "the first
-//    dataset naming the topic" when `preferred` has no data yet, instead of
-//    waiting for `preferred` specifically. So an empty-field placeholder drop
-//    staged against dataset B (preferred_dataset=dataset_b) resolves against
-//    dataset A's pre-existing same-named data on the very next flush(), i.e.
-//    "dataset A satisfies dataset B's explicit drop" — the multi-dataset bug
-//    this PR targets, but for the empty-field/placeholder-drop path rather
-//    than the layout-restore path fixed by resolveSeriesPath.
-// 2. `hasEntryFor` (the addPendingCurve dedup gate) keys on (kind, target,
-//    topic, field) only — it ignores preferred_dataset — so two distinct
-//    interactive drops of the SAME topic from two DIFFERENT datasets onto one
-//    plot collapse into a single staged entry; the second drop's dataset
-//    intent is silently discarded.
-//
-// Commit ad32f2ce's message already flags gap 1 explicitly ("scalarKeysForTopic
-// keeps its pre-existing first-dataset fallback for empty-field placeholder
-// drops ... the strict treatment is entangled with the persistent-intent
-// machinery and lands with it"), so this is a known, deliberately-deferred
-// interim gap, not a new discovery — kept here as a regression marker for when
-// that work lands, per this packet's tests-only scope.
-TEST(PendingDisplayBinderTest, DISABLED_PreferredPlaceholderWaitsForItsDatasetInsteadOfStealingSibling) {
+TEST(PendingDisplayBinderTest, PreferredPlaceholderWaitsForItsDatasetInsteadOfStealingSibling) {
   PJ::AppSession app_session;
   const PJ::DatasetId dataset_a = createDataset(app_session);
   const PJ::DatasetId dataset_b = createDataset(app_session);
@@ -189,10 +167,8 @@ TEST(PendingDisplayBinderTest, DISABLED_PreferredPlaceholderWaitsForItsDatasetIn
   PJ::PlotWidget plot(&app_session.sessionManager(), &app_session.catalogModel());
   binder.addPendingCurve(&plot, SeriesPath{u"/speed"_s, QString()}, dataset_b);
 
-  // REVIEW: fails today — flush({}) returns 1 (binds against dataset A) instead
-  // of 0. See scalarKeysForTopic's first-dataset fallback, noted above.
-  // EXPECT_EQ(binder.flush({}), 0);
-  // EXPECT_TRUE(plot.curveList().empty()) << "dataset A must not satisfy dataset B's explicit drop";
+  EXPECT_EQ(binder.flush({}), 0);
+  EXPECT_TRUE(plot.curveList().empty()) << "dataset A must not satisfy dataset B's explicit drop";
   ASSERT_NE(addScalarTopic(app_session, dataset_b, "/speed"), 0U);
   EXPECT_EQ(binder.flush(QSet<QString>{u"/speed"_s}), 1);
   ASSERT_EQ(plot.curveList().size(), 1U);
@@ -201,7 +177,7 @@ TEST(PendingDisplayBinderTest, DISABLED_PreferredPlaceholderWaitsForItsDatasetIn
   EXPECT_EQ(descriptor->dataset_id, dataset_b);
 }
 
-TEST(PendingDisplayBinderTest, DISABLED_SameTopicDropsFromDifferentDatasetsRemainDistinctIntents) {
+TEST(PendingDisplayBinderTest, SameTopicDropsFromDifferentDatasetsRemainDistinctIntents) {
   PJ::AppSession app_session;
   const PJ::DatasetId dataset_a = createDataset(app_session);
   const PJ::DatasetId dataset_b = createDataset(app_session);
@@ -211,11 +187,114 @@ TEST(PendingDisplayBinderTest, DISABLED_SameTopicDropsFromDifferentDatasetsRemai
   const SeriesPath topic{u"/speed"_s, QString()};
   binder.addPendingCurve(&plot, topic, dataset_a);
   binder.addPendingCurve(&plot, topic, dataset_b);
-  // REVIEW: fails today — binder.size() is 1, not 2. hasEntryFor's dedup key
-  // (kind, target, topic, field) ignores preferred_dataset, so the second drop
-  // is discarded as a "duplicate" of the first even though it names a
-  // different dataset. See note above.
-  // EXPECT_EQ(binder.size(), 2) << "preferred DatasetId participates in pending-entry identity";
+  EXPECT_EQ(binder.size(), 2) << "preferred DatasetId participates in pending-entry identity";
+}
+
+TEST(PendingDisplayBinderTest, PlaceholderCompletionPreservesPopulatedPlotZoom) {
+  PJ::AppSession app_session;
+  const PJ::DatasetId ready_dataset = createDataset(app_session);
+  const PJ::DatasetId late_dataset = createDataset(app_session);
+  ASSERT_NE(addScalarTopic(app_session, ready_dataset, "/ready"), 0U);
+  app_session.catalogModel().setAdvertisedTopics(
+      late_dataset, {PJ::AdvertisedTopic{u"/late"_s, PJ::sdk::BuiltinObjectType::kNone}});
+
+  PJ::PlotWidget plot(&app_session.sessionManager(), &app_session.catalogModel());
+  const auto ready_key =
+      PJ::resolveSeriesPath(app_session.catalogModel(), SeriesPath{u"/ready"_s, u"value"_s, ready_dataset});
+  ASSERT_TRUE(ready_key.has_value());
+  ASSERT_NE(plot.addCurve(*ready_key), nullptr);
+  plot.setZoomRectangle(QRectF(12.0, -4.0, 3.0, 8.0), /*emit_signal=*/false);
+  const QRectF user_zoom = plot.currentBoundingRect();
+
+  PJ::PendingDisplayBinder binder(app_session.catalogModel());
+  binder.addPendingCurve(&plot, SeriesPath{u"/late"_s, QString()}, late_dataset);
+  ASSERT_NE(addScalarTopic(app_session, late_dataset, "/late"), 0U);
+  ASSERT_EQ(binder.flush({}), 1);
+  EXPECT_EQ(plot.currentBoundingRect(), user_zoom);
+}
+
+TEST(PendingDisplayBinderTest, FreshPlaceholderCompletionZoomsToFirstCurve) {
+  PJ::AppSession app_session;
+  const PJ::DatasetId dataset_id = createDataset(app_session);
+  app_session.catalogModel().setAdvertisedTopics(
+      dataset_id, {PJ::AdvertisedTopic{u"/late"_s, PJ::sdk::BuiltinObjectType::kNone}});
+  PJ::PlotWidget plot(&app_session.sessionManager(), &app_session.catalogModel());
+  PJ::PendingDisplayBinder binder(app_session.catalogModel());
+  binder.addPendingCurve(&plot, SeriesPath{u"/late"_s, QString()}, dataset_id);
+
+  ASSERT_NE(addScalarTopic(app_session, dataset_id, "/late"), 0U);
+  ASSERT_EQ(binder.flush({}), 1);
+  EXPECT_EQ(plot.currentBoundingRect(), plot.maxZoomRect());
+}
+
+TEST(PendingDisplayBinderTest, FinalizedSavedViewportSurvivesLateOnlyCurveMaterialization) {
+  PJ::AppSession app_session;
+  const PJ::DatasetId dataset_id = createDataset(app_session);
+  app_session.catalogModel().setAdvertisedTopics(
+      dataset_id, {PJ::AdvertisedTopic{u"/late"_s, PJ::sdk::BuiltinObjectType::kNone}});
+
+  QDomDocument doc;
+  PJ::PlotWidget plot(&app_session.sessionManager(), &app_session.catalogModel());
+  QDomElement plot_element = addPlot(doc, plot.stateId(), u"TimeSeries"_s);
+  QDomElement range = doc.createElement(u"range"_s);
+  range.setAttribute(u"bottom"_s, u"-5"_s);
+  range.setAttribute(u"top"_s, u"5"_s);
+  range.setAttribute(u"left"_s, u"10"_s);
+  range.setAttribute(u"right"_s, u"20"_s);
+  range.setAttribute(u"left_ns"_s, u"10000000000"_s);
+  range.setAttribute(u"right_ns"_s, u"20000000000"_s);
+  range.setAttribute(u"x_basis"_s, u"absolute"_s);
+  plot_element.appendChild(range);
+  QDomElement pending = addTimeSeriesCurve(doc, plot_element, SeriesPath{u"/late"_s, QString(), dataset_id, u"test"_s});
+  pending.setAttribute(u"pending_intent"_s, u"true"_s);
+
+  ASSERT_TRUE(plot.xmlLoadState(plot_element));
+  PJ::PendingDisplayBinder binder(app_session.catalogModel());
+  binder.collect(doc, indexByStateId(plot));
+  ASSERT_EQ(binder.size(), 1);
+  plot.applySavedViewportOrZoom(/*clear_after=*/true);
+  const QRectF finalized = plot.currentBoundingRect();
+  ASSERT_FALSE(plot.hasSavedViewport());
+
+  ASSERT_NE(addScalarTopic(app_session, dataset_id, "/late"), 0U);
+  ASSERT_EQ(binder.flush({}), 1);
+  EXPECT_EQ(plot.currentBoundingRect(), finalized);
+  EXPECT_EQ(plot.curveList().size(), 1U);
+}
+
+TEST(PendingDisplayBinderTest, PlaceholderIntentRoundTripsAsOrdinaryKeepAliveCurve) {
+  PJ::AppSession app_session;
+  const PJ::DatasetId dataset_id = createDataset(app_session);
+  app_session.catalogModel().setAdvertisedTopics(
+      dataset_id, {PJ::AdvertisedTopic{u"/speed"_s, PJ::sdk::BuiltinObjectType::kNone}});
+  PJ::PendingDisplayBinder binder(app_session.catalogModel());
+  PJ::PlotWidget plot(&app_session.sessionManager(), &app_session.catalogModel());
+  binder.addPendingCurve(&plot, SeriesPath{u"/speed"_s, QString()}, dataset_id);
+
+  QDomDocument saved_doc;
+  const QDomElement saved = plot.xmlSaveState(saved_doc);
+  EXPECT_TRUE(saved.firstChildElement(u"pending_curve"_s).isNull());
+  const QDomElement intent = saved.firstChildElement(u"curve"_s);
+  ASSERT_FALSE(intent.isNull());
+  EXPECT_EQ(intent.attribute(u"pending_intent"_s), u"true"_s);
+  EXPECT_EQ(intent.attribute(u"dataset_id"_s).toUInt(), dataset_id);
+
+  QDomDocument stripped_doc;
+  stripped_doc.appendChild(stripped_doc.importNode(saved, /*deep=*/true));
+  PJ::layout_xml::removeUnvalidatedDatasetIds(stripped_doc);
+  PJ::layout_xml::stripUnresolvedCurves(stripped_doc);
+  const QDomElement stripped_intent = stripped_doc.documentElement().firstChildElement(u"curve"_s);
+  ASSERT_FALSE(stripped_intent.isNull());
+  EXPECT_FALSE(stripped_intent.hasAttribute(u"dataset_id"_s));
+  EXPECT_EQ(stripped_intent.attribute(u"pending_intent"_s), u"true"_s);
+
+  PJ::PlotWidget restored(&app_session.sessionManager(), &app_session.catalogModel());
+  ASSERT_TRUE(restored.xmlLoadState(saved));
+  ASSERT_EQ(restored.pendingCurveIntentCount(), 1U);
+  QDomDocument resaved_doc;
+  const QDomElement resaved = restored.xmlSaveState(resaved_doc);
+  EXPECT_TRUE(resaved.firstChildElement(u"pending_curve"_s).isNull());
+  EXPECT_EQ(resaved.firstChildElement(u"curve"_s).attribute(u"pending_intent"_s), u"true"_s);
 }
 
 TEST(PendingDisplayBinderTest, LateXyHalvesKeepTheirIndependentDatasetIdentities) {
@@ -646,6 +725,38 @@ TEST(PendingDisplayBinderTest, LateDuplicatePathBindsToSavedDatasetId) {
   const auto descriptor = app_session.catalogModel().curveDescriptor(plot.curveList().front().source_name);
   ASSERT_TRUE(descriptor.has_value());
   EXPECT_EQ(descriptor->dataset_id, *dataset_b) << "the late duplicate path binds its saved dataset, not the sibling";
+}
+
+// Minimal concrete SceneDockWidget: the binder only needs a live target.
+class BinderStubSceneDock : public PJ::SceneDockWidget {
+ protected:
+  QWidget* createSceneView() override {
+    return new QWidget();
+  }
+  std::unique_ptr<PJ::SceneLayerContext> makeContext() override {
+    return std::make_unique<PJ::SceneLayerContext>();
+  }
+  [[nodiscard]] bool acceptsObjectType(PJ::sdk::BuiltinObjectType /*object_type*/) const override {
+    return true;
+  }
+  void syncViewLayers(const std::vector<PJ::ISceneLayer*>& /*ordered_layers*/) override {}
+};
+
+TEST(PendingDisplayBinderTest, CollectPreservesLiveInteractiveScenePends) {
+  PJ::AppSession app_session;
+  const PJ::DatasetId dataset_id = createDataset(app_session);
+  PJ::PendingDisplayBinder binder(app_session.catalogModel());
+  BinderStubSceneDock dock;
+  binder.addPendingSceneLayer(&dock, u"/scene_topic"_s, dataset_id);
+  ASSERT_EQ(binder.size(), 1);
+
+  // An interactive plot-intent change re-collects from the workspace XML, which
+  // never carries scene pends — the live scene drop must survive the pass.
+  QDomDocument doc;
+  PJ::PlotWidget plot(&app_session.sessionManager(), &app_session.catalogModel());
+  addPlot(doc, plot.stateId(), u"TimeSeries"_s);
+  binder.collect(doc, {{plot.stateId(), &plot}});
+  EXPECT_EQ(binder.size(), 1) << "live scene-layer pends exist only in the binder and must not be dropped";
 }
 
 int main(int argc, char** argv) {
