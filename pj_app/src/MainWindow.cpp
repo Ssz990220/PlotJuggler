@@ -243,6 +243,10 @@ constexpr int kIconPaddingDefault = 4;
 constexpr int kLayoutPaddingDefault = 2;
 constexpr int kLayoutSpacingDefault = 2;
 
+// Scene scrubber drags emit workspaceChanged per tick; one history snapshot
+// publishes after the gesture goes quiet.
+constexpr int kSceneUndoDebounceMs = 200;
+
 Qt::Edges edgesAtPoint(const QSize& window_size, const QPoint& pos) {
   Qt::Edges edges;
   if (pos.x() <= kResizeMargin) {
@@ -967,7 +971,12 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
   // (which has its own restore-scoped duplicate of this connection); flush them
   // whenever the catalog gains topics. Idempotent — an entry binds once and the
   // no-entries early-return makes the steady-state cost nil.
-  connect(&session_->catalogModel(), &CatalogModel::itemsAdded, this, &MainWindow::flushPendingCurveBindings);
+  connect(&session_->catalogModel(), &CatalogModel::itemsAdded, this, [this](const std::vector<CatalogItem>& items) {
+    // Dock queues own scene completion. The binder observes the completed queue
+    // only afterwards and releases the corresponding demand reference.
+    retryPendingSceneRestores(items);
+    flushPendingCurveBindings(items);
+  });
   connect(
       ui_->leftPanel, &LeftPanel::streamingSourceChanged, streaming_manager_.get(),
       &StreamingSourceManager::onSourceChanged);
@@ -1131,6 +1140,10 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
   connect(ui_->leftPanel, &LeftPanel::loadDataRequested, this, &MainWindow::onLoadDataRequested);
   connect(ui_->leftPanel, &LeftPanel::reloadDataRequested, this, &MainWindow::onReloadDataRequested);
   connect(ui_->leftPanel, &LeftPanel::cloudToolboxRequested, this, [this](const QString& id) { launchToolbox(id); });
+  scene_undo_debounce_.setSingleShot(true);
+  scene_undo_debounce_.setInterval(kSceneUndoDebounceMs);
+  connect(&scene_undo_debounce_, &QTimer::timeout, this, [this]() { onUndoableChange(); });
+
   connect(file_loader_.get(), &FileLoader::sourceReplacementAboutToCommit, this, [this](const QString& path) {
     if (progressive_layout_in_flight_) {
       return;
@@ -1368,6 +1381,8 @@ IDataWidget* MainWindow::makeSceneDock(const QString& kind, QWidget* parent) {
   // identical regardless of how the dock is later populated.
   if (kind == "scene3d"_L1) {
     auto* widget = new Scene3DDockWidget(parent);
+    connect(widget, &SceneDockWidget::pendingRestoresChanged, this, &MainWindow::schedulePendingDisplayBindingRebuild);
+    connect(widget, &SceneDockWidget::workspaceChanged, &scene_undo_debounce_, qOverload<>(&QTimer::start));
     widget->setSessionManager(&session_->sessionManager());
     widget->setTransformService(transform_service_.get());
     widget->setSettings(app_settings_.get());
@@ -1397,6 +1412,8 @@ IDataWidget* MainWindow::makeSceneDock(const QString& kind, QWidget* parent) {
   }
   if (kind == "scene2d"_L1) {
     auto* widget = new Scene2DDockWidget(parent);
+    connect(widget, &SceneDockWidget::pendingRestoresChanged, this, &MainWindow::schedulePendingDisplayBindingRebuild);
+    connect(widget, &SceneDockWidget::workspaceChanged, &scene_undo_debounce_, qOverload<>(&QTimer::start));
     widget->setSessionManager(&session_->sessionManager());
     topic_demand_controller_->registerSceneDock(widget);
     return widget;
@@ -1454,7 +1471,7 @@ void MainWindow::onPlaceholderTopicDropped(
   IDataWidget* object_widget = dock->objectWidget();
   if (auto* scene_dock = qobject_cast<SceneDockWidget*>(object_widget != nullptr ? object_widget->widget() : nullptr);
       scene_dock != nullptr) {
-    topic_demand_controller_->handleSceneDockPlaceholderDrop(scene_dock, dataset_id, topic_name);
+    topic_demand_controller_->handleSceneDockPlaceholderDrop(scene_dock, dataset_id, topic_name, object_type);
   }
 }
 
@@ -1729,6 +1746,10 @@ void MainWindow::onCatalogTrashRequested(QStringList keys, bool covers_all) {
       active_streaming_dataset_id_ = 0;
       streaming_playback_seeded_ = false;
     }
+    if (pending_binder_ != nullptr) {
+      pending_binder_->clear();
+    }
+    clearPendingSceneRestores();
     // Free ObjectStore topics before the catalog wipe so the cleared()
     // subscription sees them gone and resets 2D viewers (symmetric with the
     // "Remove all Datasets" path). Keep lastLoadedSource for reload.
@@ -1769,6 +1790,9 @@ void MainWindow::onCatalogTrashRequested(QStringList keys, bool covers_all) {
   std::vector<ObjectTopicId> trashed_objects;
   for (const QString& key : keys) {
     if (const auto item = catalog.itemDescriptor(key); item.has_value()) {
+      forEachSceneDock([&item](SceneDockWidget* scene_dock) {
+        scene_dock->discardPendingRestoresForTopic(item->dataset_id, item->topic_name);
+      });
       if (const ObjectTopicPayload* obj = asObjectTopic(*item)) {
         trashed_objects.push_back(obj->object_topic_id);
       }
@@ -1776,6 +1800,9 @@ void MainWindow::onCatalogTrashRequested(QStringList keys, bool covers_all) {
   }
   session_->sessionManager().evictObjectTopics(trashed_objects);
   catalog.removeItems(std::vector<QString>(keys.begin(), keys.end()));
+  if (pending_binder_ != nullptr) {
+    static_cast<void>(pending_binder_->flush({}));
+  }
   // Shrink the playback range to the surviving visible data right away,
   // rather than only on the next load — unless a streaming dataset exists:
   // the slider is then scoped to the active stream (see the streaming range
@@ -1787,6 +1814,11 @@ void MainWindow::onCatalogTrashRequested(QStringList keys, bool covers_all) {
 }
 
 void MainWindow::removeDatasetData(DatasetId dataset_id) {
+  forEachSceneDock(
+      [dataset_id](SceneDockWidget* scene_dock) { scene_dock->discardPendingRestoresForDataset(dataset_id); });
+  if (pending_binder_ != nullptr) {
+    static_cast<void>(pending_binder_->flush({}));
+  }
   if (dataset_id == active_streaming_dataset_id_) {
     if (streaming_manager_ != nullptr) {
       streaming_manager_->stopDatasetAndWait(dataset_id, tr("dataset removed"));
@@ -3143,14 +3175,14 @@ void MainWindow::beginProgressiveLayoutRestore(QDomDocument doc, const QString& 
 
   pending_items_added_conn_ = connect(
       &session_->catalogModel(), &CatalogModel::itemsAdded, this, [this](const std::vector<CatalogItem>& items) {
-        flushPendingCurveBindings(items);
         retryPendingSceneRestores(items);
+        flushPendingCurveBindings(items);
       });
   pending_queue_drained_conn_ = connect(
       file_loader_.get(), &FileLoader::queueDrained, this, &MainWindow::onProgressiveLayoutDrained,
       Qt::SingleShotConnection);
-  flushPendingCurveBindings({});
   retryPendingSceneRestores({});
+  flushPendingCurveBindings({});
 }
 
 void MainWindow::cancelProgressiveLayoutRestore() {
@@ -3232,6 +3264,11 @@ void MainWindow::collectPendingDisplayBindings(const QDomDocument& doc) {
     }
   });
   pending_binder_->collect(doc, plots_by_state_id);
+  forEachSceneDock([this](SceneDockWidget* scene_dock) {
+    for (const SceneDockWidget::PendingRestoreDemand& demand : scene_dock->pendingRestoreDemands()) {
+      pending_binder_->addPendingSceneLayer(scene_dock, demand.topic_name, demand.preferred_dataset);
+    }
+  });
 }
 
 void MainWindow::rebuildPendingDisplayBindings(const QDomDocument& doc) {
@@ -3260,10 +3297,28 @@ void MainWindow::schedulePendingDisplayBindingRebuild() {
         any_intents = any_intents || (plot != nullptr && plot->pendingCurveIntentCount() > 0);
       });
     }
+    if (!any_intents) {
+      forEachSceneDock([&any_intents](SceneDockWidget* scene_dock) {
+        any_intents = any_intents || scene_dock->hasPendingRestoreDemands();
+      });
+    }
     if (any_intents) {
       rebuildPendingDisplayBindings(xmlSaveState());
     }
   });
+}
+
+MainWindow::SceneRestoreVerdict MainWindow::settleSceneRestores() {
+  // One final retry so a deferred element whose identity became resolvable is
+  // validated now, then fold every dock's verdict. Aggregation lives here —
+  // a dock cannot see its siblings.
+  retryPendingSceneRestores({});
+  SceneRestoreVerdict verdict;
+  forEachSceneDock([&verdict](SceneDockWidget* scene_dock) {
+    verdict.failed = verdict.failed || scene_dock->workspaceRestoreFailed();
+  });
+  verdict.blocking_topics = unresolvedPendingSceneRestores();
+  return verdict;
 }
 
 int MainWindow::retryPendingSceneRestores(const std::vector<CatalogItem>& items) {
@@ -3286,7 +3341,7 @@ QStringList MainWindow::unresolvedPendingSceneRestores() {
   QStringList unresolved;
   QSet<QString> seen;
   forEachSceneDock([&](SceneDockWidget* scene_dock) {
-    for (const QString& topic : scene_dock->unresolvedPendingRestores()) {
+    for (const QString& topic : scene_dock->unresolvedBlockingPendingRestores()) {
       if (!topic.isEmpty() && !seen.contains(topic)) {
         seen.insert(topic);
         unresolved.push_back(topic);
@@ -3321,6 +3376,21 @@ void MainWindow::onProgressiveLayoutDrained() {
     return;
   }
 
+  // A deferred scene identity can become available only at drain, which is
+  // also when its payload/type can finally be validated. A permanently
+  // rejected element is a transaction failure, not an "unresolved" warning:
+  // otherwise the invalid entry is consumed and the partial scene becomes the
+  // baseline. Independent of the binder's existence.
+  if (settleSceneRestores().failed) {
+    const bool rolled_back = abortProgressiveRestore();
+    MessageBox::warning(
+        this, tr("Load Layout"),
+        rolled_back ? tr("A saved scene element was invalid; the previous workspace was restored.")
+                    : tr("A saved scene element was invalid, and the previous workspace could not be fully restored "
+                         "against the reloaded data. The partial layout was kept as the new undo baseline."));
+    return;
+  }
+
   if (pending_binder_ != nullptr) {
     static_cast<void>(pending_binder_->flush({}));
     // Now that the worker has registered the reloaded datasets' source paths, apply the
@@ -3348,10 +3418,23 @@ void MainWindow::onProgressiveLayoutDrained() {
         shown.push_back(display);
       }
     }
+    // Unresolved BLOCKING scene references join the same prompt: Remove drops
+    // them (so the committed baseline never carries blocking pends — an exact
+    // undo back to it must be able to succeed), Cancel aborts the restore.
+    for (const QString& topic : unresolvedPendingSceneRestores()) {
+      if (!topic.isEmpty() && !seen.contains(topic)) {
+        seen.insert(topic);
+        shown.push_back(topic);
+      }
+    }
     if (!shown.isEmpty()) {
       switch (promptMissingCurves(shown)) {
         case MissingCurveChoice::kRemove:
-          break;  // Remaining curves were never bound, so there is nothing to strip from live widgets.
+          // Remaining curves were never bound (nothing to strip from live
+          // widgets); blocking scene pends are dropped so they cannot poison
+          // later exact snapshots.
+          forEachSceneDock([](SceneDockWidget* scene_dock) { scene_dock->clearBlockingPendingRestores(); });
+          break;
         case MissingCurveChoice::kCancel: {
           static_cast<void>(abortProgressiveRestore());
         }
@@ -3361,7 +3444,6 @@ void MainWindow::onProgressiveLayoutDrained() {
     pending_binder_->clear();
   }
 
-  retryPendingSceneRestores({});
   broadcastTrackerTime(toAxisDouble(session_->playbackEngine().currentTime()));
   const QStringList unresolved_scenes = unresolvedPendingSceneRestores();
   if (!unresolved_scenes.isEmpty()) {
@@ -4033,12 +4115,28 @@ MainWindow::RestoreResult MainWindow::applyWorkspace(
   if (!xmlLoadState(doc)) {
     return RestoreResult::kFailed;
   }
-  // Plot reconstruction and the timeline are independent restore participants.
-  // Scene docks join this bool-and-rollback transaction in PR 5.
+  // Plot reconstruction, the timeline, and scene docks are independent restore
+  // participants of this bool-and-rollback transaction.
   if (timeline_state != nullptr && (timeline_plan == nullptr || !applyTimelineState(*timeline_state, *timeline_plan))) {
     return RestoreResult::kFailed;
   }
   rebuildPendingDisplayBindings(doc);
+  // Scene layers/config topics can be deferred by their dock until the saved
+  // dataset identity exists. Blocking loads and history replay have no later
+  // queue-drain phase, so make one final attempt now and treat any permanent
+  // rejection — or any unresolved BLOCKING element in an exact snapshot — as a
+  // failed transaction rather than silently committing a partial scene.
+  const SceneRestoreVerdict scenes = settleSceneRestores();
+  if (scenes.failed || (policy == MissingCurvePolicy::kExact && !scenes.blocking_topics.isEmpty())) {
+    return RestoreResult::kFailed;
+  }
+  if (policy == MissingCurvePolicy::kPrompt && !scenes.blocking_topics.isEmpty()) {
+    emitDiagnostic(
+        DiagnosticLevel::kWarning, "Layout", "scene_restore_pending",
+        tr("%n scene layer(s) could not be rebound and were omitted.", nullptr,
+           static_cast<int>(scenes.blocking_topics.size())));
+    forEachSceneDock([](SceneDockWidget* scene_dock) { scene_dock->clearBlockingPendingRestores(); });
+  }
   forEachPlot([](PlotWidget* plot) { plot->applySavedViewportOrZoom(/*clear_after=*/true); });
   // 4. Seed the just-recreated docks with the current playhead. currentTimeChanged
   // only fires on a CHANGE, so a freshly restored dock would sit at no-tracker-time
@@ -4322,80 +4420,19 @@ bool MainWindow::applyTimelineStateFromLayout(const QList<layout_xml::DataSource
       continue;
     }
 
-    // Fan-out apply: bind each saved <dataset> back to a live candidate.
-    //
-    // A source_name shared by MORE THAN ONE saved child cannot disambiguate those
-    // children (they are indistinguishable by name), so they bind by source_index
-    // ONLY. Binding by index is safe only when the fan-out SHAPE is unchanged for
-    // that name: the count of same-named candidates must equal the count of
-    // same-named saved children. If the shape changed (e.g. two saved "camera"
-    // tracks but only one "camera" candidate loaded), none of them bind — a
-    // surviving sibling must never inherit an offset we cannot prove is its own.
-    // A name-UNIQUE saved child keeps the robust name-first-then-index resolution.
-    const auto named_saved_count = [&ref](const QString& name) {
-      return static_cast<int>(std::count_if(
-          ref.datasets.begin(), ref.datasets.end(),
-          [&name](const layout_xml::DataSourceDatasetRef& d) { return d.source_name == name; }));
-    };
-    const auto named_candidate_count = [&](const QString& name) {
-      return static_cast<int>(std::count_if(candidates.begin(), candidates.end(), [&](DatasetId id) {
-        return session_->catalogModel().datasetSourceName(id) == name;
-      }));
-    };
-
-    QSet<DatasetId> used;
-    // Resolve a saved child by its source_index against the live candidates: the
-    // index must be in range, its candidate not yet consumed, and its live
-    // source_name must agree with the saved name (an empty saved name matches any).
-    // Shared by both matcher arms — the index tiebreak in the unique-name arm and
-    // the shape-guarded index bind in the duplicate-name arm.
-    const auto match_by_index = [&](const layout_xml::DataSourceDatasetRef& saved) -> std::optional<DatasetId> {
-      if (saved.source_index < 0 || saved.source_index >= static_cast<int>(candidates.size())) {
-        return std::nullopt;
-      }
-      const DatasetId indexed = candidates[static_cast<std::size_t>(saved.source_index)];
-      if (used.contains(indexed)) {
-        return std::nullopt;
-      }
-      if (saved.source_name.isEmpty() || session_->catalogModel().datasetSourceName(indexed) == saved.source_name) {
-        return indexed;
-      }
-      return std::nullopt;
-    };
-
-    for (const layout_xml::DataSourceDatasetRef& saved : ref.datasets) {
-      const bool name_is_duplicated = !saved.source_name.isEmpty() && named_saved_count(saved.source_name) > 1;
-
-      DatasetId matched = 0;
-      if (name_is_duplicated) {
-        // Index-only, shape-guarded: bind to candidates[source_index] iff that
-        // candidate shares the name AND the same-named fan-out shape is preserved.
-        const bool shape_preserved = named_candidate_count(saved.source_name) == named_saved_count(saved.source_name);
-        if (shape_preserved) {
-          matched = match_by_index(saved).value_or(0);
-        }
-      } else {
-        // Name-unique child: match by name first, else by source_index.
-        std::vector<DatasetId> source_matches;
-        for (const DatasetId candidate : candidates) {
-          if (used.contains(candidate)) {
-            continue;
-          }
-          if (saved.source_name.isEmpty() ||
-              session_->catalogModel().datasetSourceName(candidate) == saved.source_name) {
-            source_matches.push_back(candidate);
-          }
-        }
-        if (source_matches.size() == 1) {
-          matched = source_matches.front();
-        } else {
-          matched = match_by_index(saved).value_or(0);
-        }
-      }
+    // Fan-out apply: bind each saved <dataset> back to a live candidate through
+    // the shared shape-guarded matcher (see layout_xml::matchFanoutDatasets for
+    // the name/index policy), then apply each bound child's offset and order.
+    const std::vector<std::uint32_t> matches = layout_xml::matchFanoutDatasets(
+        ref.datasets, std::vector<std::uint32_t>(candidates.begin(), candidates.end()), [this](std::uint32_t id) {
+          return session_->catalogModel().datasetSourceName(static_cast<DatasetId>(id)).value_or(QString{});
+        });
+    for (qsizetype child_index = 0; child_index < ref.datasets.size(); ++child_index) {
+      const DatasetId matched = static_cast<DatasetId>(matches[static_cast<std::size_t>(child_index)]);
       if (matched == 0) {
         continue;  // missing/ambiguous fan-out entry: never shift a sibling
       }
-      used.insert(matched);
+      const layout_xml::DataSourceDatasetRef& saved = ref.datasets[child_index];
       apply_state(
           matched, saved.display_offset_ns, saved.has_display_offset, saved.display_offset_includes_global_reference,
           saved.timeline_order);

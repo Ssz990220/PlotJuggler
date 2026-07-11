@@ -14,6 +14,7 @@
 #include <glm/glm.hpp>
 #include <optional>
 
+#include "layer_xml_validation.h"
 #include "pj_base/builtin/poses_in_frame.hpp"
 #include "pj_base/time.hpp"  // PJ::toRaw
 #include "pj_plugins/sdk/message_parser_plugin_base.hpp"
@@ -74,23 +75,33 @@ QDomElement PosesInFrameLayer::xmlSaveState(QDomDocument& doc) const {
 }
 
 bool PosesInFrameLayer::xmlLoadState(const QDomElement& element) {
-  if (element.tagName() != "poses_in_frame"_L1) {
+  if (element.isNull() || element.tagName() != "poses_in_frame"_L1 || !detail::isLeafPayload(element)) {
     return false;
   }
-  bool ok = false;
-  const float size = element.attribute(u"gizmo_size"_s, u"0.15"_s).toFloat(&ok);
-  if (ok) {
-    setGizmoSize(size);
+  float restored_size = 0.0f;
+  float restored_opacity = 0.0f;
+  bool restored_x_arrow_only = false;
+  bool restored_override_enabled = false;
+  if (!detail::parseFiniteFloat(element, "gizmo_size", 0.15f, 0.01f, 100.0f, restored_size) ||
+      !detail::parseFiniteFloat(element, "gizmo_opacity", 1.0f, 0.0f, 1.0f, restored_opacity) ||
+      !detail::parseZeroOne(element, "x_arrow_only", false, restored_x_arrow_only) ||
+      !detail::parseZeroOne(element, "override_color", false, restored_override_enabled)) {
+    return false;
   }
-  const float opacity = element.attribute(u"gizmo_opacity"_s, u"1.0"_s).toFloat(&ok);
-  if (ok) {
-    setGizmoOpacity(opacity);
+  QColor restored_color;
+  const bool has_override_color = element.hasAttribute(u"override_color_value"_s);
+  if (has_override_color) {
+    restored_color = QColor(element.attribute(u"override_color_value"_s));
+    if (!restored_color.isValid()) {
+      return false;
+    }
   }
-  setXArrowOnly(element.attribute(u"x_arrow_only"_s, u"0"_s) == "1"_L1);
-  setOverrideColorEnabled(element.attribute(u"override_color"_s, u"0"_s) == "1"_L1);
-  const QColor color(element.attribute(u"override_color_value"_s));
-  if (color.isValid()) {
-    setOverrideColor(color);
+  setGizmoSize(restored_size);
+  setGizmoOpacity(restored_opacity);
+  setXArrowOnly(restored_x_arrow_only);
+  setOverrideColorEnabled(restored_override_enabled);
+  if (has_override_color) {
+    setOverrideColor(restored_color);
   }
   return true;
 }
@@ -264,6 +275,7 @@ void PosesInFrameLayer::setGizmoSize(float meters) {
   gizmo_size_ = clamped;
   ++style_revision_;
   tracker_dirty_ = true;  // re-expand the current sample on the next paint
+  emit configurationChanged();
   emit repaintRequested();
 }
 
@@ -275,6 +287,7 @@ void PosesInFrameLayer::setGizmoOpacity(float opacity) {
   gizmo_opacity_ = clamped;
   ++style_revision_;
   tracker_dirty_ = true;
+  emit configurationChanged();
   emit repaintRequested();
 }
 
@@ -285,6 +298,7 @@ void PosesInFrameLayer::setXArrowOnly(bool x_arrow_only) {
   x_arrow_only_ = x_arrow_only;
   ++style_revision_;
   tracker_dirty_ = true;  // re-expand the current sample (triad <-> single arm)
+  emit configurationChanged();
   emit repaintRequested();
 }
 
@@ -295,11 +309,12 @@ void PosesInFrameLayer::setOverrideColorEnabled(bool enabled) {
   override_color_enabled_ = enabled;
   ++style_revision_;
   tracker_dirty_ = true;  // re-expand: per-axis RGB <-> shared override color
+  emit configurationChanged();
   emit repaintRequested();
 }
 
 void PosesInFrameLayer::setOverrideColor(QColor color) {
-  if (override_color_ == color) {
+  if (!color.isValid() || override_color_.rgb() == color.rgb()) {
     return;
   }
   override_color_ = color;
@@ -307,6 +322,7 @@ void PosesInFrameLayer::setOverrideColor(QColor color) {
   // Only changes what is drawn while the override is enabled, but bump
   // unconditionally so the next paint reflects it immediately when it is.
   tracker_dirty_ = true;
+  emit configurationChanged();
   emit repaintRequested();
 }
 

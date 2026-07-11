@@ -984,6 +984,78 @@ TEST(NormalizePlotRangeBasis, PlotWithoutRangeIsSkipped) {
   EXPECT_TRUE(pd.plot.firstChildElement(u"range"_s).isNull());
 }
 
+// --- matchFanoutDatasets: the shape-guarded fan-out matcher -------------------
+
+namespace fanout {
+
+PJ::layout_xml::DataSourceDatasetRef savedChild(const QString& name, int index) {
+  PJ::layout_xml::DataSourceDatasetRef child;
+  child.source_name = name;
+  child.source_index = index;
+  return child;
+}
+
+// Candidate ids double as name keys: names[i] names candidates[i].
+std::function<QString(std::uint32_t)> namesOf(const std::vector<std::uint32_t>& candidates, QStringList names) {
+  return [candidates, names = std::move(names)](std::uint32_t id) {
+    for (std::size_t index = 0; index < candidates.size(); ++index) {
+      if (candidates[index] == id) {
+        return names[static_cast<qsizetype>(index)];
+      }
+    }
+    return QString();
+  };
+}
+
+}  // namespace fanout
+
+TEST(MatchFanoutDatasets, UniqueNamesBindByNameRegardlessOfIndex) {
+  const std::vector<std::uint32_t> candidates{11, 22};
+  const auto matches = PJ::layout_xml::matchFanoutDatasets(
+      {fanout::savedChild(u"right"_s, 0), fanout::savedChild(u"left"_s, 1)}, candidates,
+      fanout::namesOf(candidates, {u"left"_s, u"right"_s}));
+  EXPECT_EQ(matches, (std::vector<std::uint32_t>{22, 11}));
+}
+
+TEST(MatchFanoutDatasets, DuplicateNamesBindIndexOnlyWhileShapeIsPreserved) {
+  const std::vector<std::uint32_t> candidates{11, 22, 33};
+  const auto matches = PJ::layout_xml::matchFanoutDatasets(
+      {fanout::savedChild(u"cam"_s, 0), fanout::savedChild(u"cam"_s, 2), fanout::savedChild(u"imu"_s, 1)}, candidates,
+      fanout::namesOf(candidates, {u"cam"_s, u"imu"_s, u"cam"_s}));
+  EXPECT_EQ(matches, (std::vector<std::uint32_t>{11, 33, 22}));
+}
+
+TEST(MatchFanoutDatasets, ChangedShapeBindsNoDuplicateNameChild) {
+  // Two saved "cam" tracks but only one live "cam": a surviving sibling must
+  // never inherit an offset that cannot be proven its own.
+  const std::vector<std::uint32_t> candidates{11, 22};
+  const auto matches = PJ::layout_xml::matchFanoutDatasets(
+      {fanout::savedChild(u"cam"_s, 0), fanout::savedChild(u"cam"_s, 1)}, candidates,
+      fanout::namesOf(candidates, {u"cam"_s, u"imu"_s}));
+  EXPECT_EQ(matches, (std::vector<std::uint32_t>{0, 0}));
+}
+
+TEST(MatchFanoutDatasets, IndexBindRequiresNameAgreementAndUnconsumedCandidate) {
+  const std::vector<std::uint32_t> candidates{11, 22};
+  // Child 0's unique name is not loaded and its index points at a
+  // differently-named candidate: the index fallback must not bind it. Child 1
+  // then consumes candidate 22 by unique name; child 2's index points at that
+  // consumed candidate and stays unbound.
+  const auto matches = PJ::layout_xml::matchFanoutDatasets(
+      {fanout::savedChild(u"gps"_s, 0), fanout::savedChild(u"right"_s, 0), fanout::savedChild(u"right2"_s, 1)},
+      candidates, fanout::namesOf(candidates, {u"left"_s, u"right"_s}));
+  EXPECT_EQ(matches[0], 0U) << "index bind must agree on the saved name";
+  EXPECT_EQ(matches[1], 22U) << "unique name binds by name, not its stale index";
+  EXPECT_EQ(matches[2], 0U) << "a consumed candidate cannot bind again";
+}
+
+TEST(MatchFanoutDatasets, EmptySavedNameMatchesByIndexAcrossAnyNames) {
+  const std::vector<std::uint32_t> candidates{11, 22};
+  const auto matches = PJ::layout_xml::matchFanoutDatasets(
+      {fanout::savedChild(QString(), 1)}, candidates, fanout::namesOf(candidates, {u"a"_s, u"b"_s}));
+  EXPECT_EQ(matches, (std::vector<std::uint32_t>{22}));
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {

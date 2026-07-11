@@ -187,8 +187,10 @@ void TopicDemandController::handlePlaceholderPlotDrop(
 }
 
 void TopicDemandController::handleSceneDockPlaceholderDrop(
-    SceneDockWidget* dock, DatasetId dataset_id, const QString& topic_name) {
-  pending_binder_.addPendingSceneLayer(dock, topic_name, dataset_id);
+    SceneDockWidget* dock, DatasetId dataset_id, const QString& topic_name, sdk::BuiltinObjectType object_type) {
+  if (dock != nullptr && dock->deferTopicIntent(dataset_id, topic_name, object_type, topic_name)) {
+    pending_binder_.addPendingSceneLayer(dock, topic_name, dataset_id);
+  }
 }
 
 // --- bounded field-preview subscriptions ------------------------------------

@@ -10,6 +10,7 @@
 #include <QSignalBlocker>
 #include <QSize>
 #include <algorithm>
+#include <cmath>
 #include <memory>
 
 #include "pj_plugins/sdk/message_parser_plugin_base.hpp"
@@ -191,25 +192,44 @@ void DepthImageLayer::saveOptions(QDomElement& element) const {
 }
 
 bool DepthImageLayer::loadOptions(const QDomElement& element) {
-  colormap_ = parseColormap(element.attribute(u"colormap"_s, colormapName(colormap_)));
-  invert_ = element.attribute(u"invert"_s, invert_ ? u"true"_s : u"false"_s) == "true"_L1;
+  const Colormap restored_colormap = parseColormap(element.attribute(u"colormap"_s, colormapName(colormap_)));
+  const QString invert_text = element.attribute(u"invert"_s, invert_ ? u"true"_s : u"false"_s);
+  if (invert_text != u"true"_s && invert_text != u"false"_s) {
+    return false;
+  }
+  const bool restored_invert = invert_text == u"true"_s;
 
-  bool ok = false;
-  const float near_m = element.attribute(u"near_m"_s, QString::number(near_m_)).toFloat(&ok);
-  if (ok) {
-    near_m_ = near_m;
+  const auto read_float = [&element](const QString& name, float fallback, float& output) {
+    if (!element.hasAttribute(name)) {
+      output = fallback;
+      return true;
+    }
+    bool ok = false;
+    output = element.attribute(name).toFloat(&ok);
+    return ok && std::isfinite(output);
+  };
+  float restored_near = near_m_;
+  float restored_far = far_m_;
+  float restored_opacity = opacity_;
+  if (!read_float(u"near_m"_s, near_m_, restored_near) || !read_float(u"far_m"_s, far_m_, restored_far) ||
+      !read_float(u"opacity"_s, opacity_, restored_opacity)) {
+    return false;
   }
-  ok = false;
-  const float far_m = element.attribute(u"far_m"_s, QString::number(far_m_)).toFloat(&ok);
-  if (ok) {
-    far_m_ = far_m;
+  if (restored_far < restored_near) {
+    std::swap(restored_near, restored_far);
   }
-  ok = false;
-  const float opacity = element.attribute(u"opacity"_s, QString::number(opacity_)).toFloat(&ok);
-  if (ok) {
-    opacity_ = std::clamp(opacity, 0.0f, 1.0f);
+  restored_opacity = std::clamp(restored_opacity, 0.0f, 1.0f);
+
+  const bool changed = colormap_ != restored_colormap || invert_ != restored_invert || near_m_ != restored_near ||
+                       far_m_ != restored_far || opacity_ != restored_opacity;
+  colormap_ = restored_colormap;
+  invert_ = restored_invert;
+  near_m_ = restored_near;
+  far_m_ = restored_far;
+  opacity_ = restored_opacity;
+  if (changed) {
+    applyOptions();
   }
-  applyOptions();
   return true;
 }
 
@@ -234,6 +254,7 @@ void DepthImageLayer::setColormap(Colormap colormap) {
   }
   colormap_ = colormap;
   applyOptions();
+  emit configurationChanged();
 }
 
 void DepthImageLayer::setInvert(bool invert) {
@@ -242,15 +263,20 @@ void DepthImageLayer::setInvert(bool invert) {
   }
   invert_ = invert;
   applyOptions();
+  emit configurationChanged();
 }
 
 void DepthImageLayer::setRange(float near_m, float far_m) {
   if (far_m < near_m) {
     std::swap(near_m, far_m);
   }
+  if (near_m_ == near_m && far_m_ == far_m) {
+    return;
+  }
   near_m_ = near_m;
   far_m_ = far_m;
   applyOptions();
+  emit configurationChanged();
 }
 
 }  // namespace PJ

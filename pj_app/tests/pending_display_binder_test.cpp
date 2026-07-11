@@ -729,6 +729,11 @@ TEST(PendingDisplayBinderTest, LateDuplicatePathBindsToSavedDatasetId) {
 
 // Minimal concrete SceneDockWidget: the binder only needs a live target.
 class BinderStubSceneDock : public PJ::SceneDockWidget {
+ public:
+  [[nodiscard]] int configConsumeAttempts() const {
+    return config_consume_attempts_;
+  }
+
  protected:
   QWidget* createSceneView() override {
     return new QWidget();
@@ -739,24 +744,71 @@ class BinderStubSceneDock : public PJ::SceneDockWidget {
   [[nodiscard]] bool acceptsObjectType(PJ::sdk::BuiltinObjectType /*object_type*/) const override {
     return true;
   }
+  bool handleSceneConfigTopic(
+      PJ::ObjectTopicId /*topic_id*/, PJ::sdk::BuiltinObjectType /*object_type*/, const QString& /*title*/) override {
+    ++config_consume_attempts_;
+    return true;
+  }
   void syncViewLayers(const std::vector<PJ::ISceneLayer*>& /*ordered_layers*/) override {}
+
+ private:
+  int config_consume_attempts_ = 0;
 };
 
-TEST(PendingDisplayBinderTest, CollectPreservesLiveInteractiveScenePends) {
+TEST(PendingDisplayBinderTest, SceneDemandReferenceCannotMaterializeIntentByItself) {
   PJ::AppSession app_session;
   const PJ::DatasetId dataset_id = createDataset(app_session);
   PJ::PendingDisplayBinder binder(app_session.catalogModel());
   BinderStubSceneDock dock;
+  dock.setSessionManager(&app_session.sessionManager());
+  ASSERT_TRUE(
+      dock.deferTopicIntent(dataset_id, u"/scene_topic"_s, PJ::sdk::BuiltinObjectType::kPointCloud, u"scene_topic"_s));
   binder.addPendingSceneLayer(&dock, u"/scene_topic"_s, dataset_id);
   ASSERT_EQ(binder.size(), 1);
 
-  // An interactive plot-intent change re-collects from the workspace XML, which
-  // never carries scene pends — the live scene drop must survive the pass.
+  const auto object_topic = app_session.sessionManager().objectStore().registerTopic(
+      PJ::ObjectTopicDescriptor{
+          .dataset_id = dataset_id,
+          .topic_name = "/scene_topic",
+          .metadata_json = R"({"builtin_object_type":"kPointCloud"})",
+      });
+  ASSERT_TRUE(object_topic.has_value()) << object_topic.error();
+  app_session.catalogModel().rebuildFromDatastore();
+
+  static_cast<void>(binder.flush(QSet<QString>{u"/scene_topic"_s}));
+  EXPECT_EQ(dock.configConsumeAttempts(), 0) << "the binder must never call the dock's addTopic path";
+  EXPECT_EQ(binder.size(), 1) << "only dock-queue completion may release the scene demand reference";
+}
+
+TEST(PendingDisplayBinderTest, SceneDemandRefsRebuildFromDockQueueAndReleaseOnCompletion) {
+  PJ::AppSession app_session;
+  const PJ::DatasetId dataset_id = createDataset(app_session);
+  app_session.catalogModel().setAdvertisedTopics(
+      dataset_id, {PJ::AdvertisedTopic{u"/scene_topic"_s, PJ::sdk::BuiltinObjectType::kPointCloud}});
+  PJ::TopicDemandTracker tracker;
+  PJ::PendingDisplayBinder binder(app_session.catalogModel(), &tracker);
+  BinderStubSceneDock dock;
+  dock.setSessionManager(&app_session.sessionManager());
+  ASSERT_TRUE(
+      dock.deferTopicIntent(dataset_id, u"/scene_topic"_s, PJ::sdk::BuiltinObjectType::kPointCloud, u"scene_topic"_s));
+  binder.addPendingSceneLayer(&dock, u"/scene_topic"_s, dataset_id);
+  ASSERT_EQ(binder.size(), 1);
+  const auto is_referenced = [&tracker, dataset_id]() {
+    const auto active = tracker.activeTopics(dataset_id);
+    return std::find(active.cbegin(), active.cend(), u"/scene_topic"_s) != active.cend();
+  };
+  EXPECT_TRUE(is_referenced());
+
+  // collect rebuilds the binder from authoritative widget-owned state.
   QDomDocument doc;
-  PJ::PlotWidget plot(&app_session.sessionManager(), &app_session.catalogModel());
-  addPlot(doc, plot.stateId(), u"TimeSeries"_s);
-  binder.collect(doc, {{plot.stateId(), &plot}});
-  EXPECT_EQ(binder.size(), 1) << "live scene-layer pends exist only in the binder and must not be dropped";
+  binder.collect(doc, {});
+  EXPECT_FALSE(is_referenced());
+  binder.addPendingSceneLayer(&dock, u"/scene_topic"_s, dataset_id);
+  EXPECT_TRUE(is_referenced());
+
+  dock.clearPendingRestores();
+  EXPECT_EQ(binder.flush({}), 1);
+  EXPECT_FALSE(is_referenced());
 }
 
 int main(int argc, char** argv) {

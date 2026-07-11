@@ -396,6 +396,24 @@ PJ::ObjectTopicId registerTopic(PJ::SessionManager& session, std::string topic_n
   return *topic;
 }
 
+PJ::DatasetId createDataset(PJ::SessionManager& session, std::string source_name) {
+  const auto dataset = session.dataEngine().createDataset(
+      PJ::DatasetDescriptor{.source_name = std::move(source_name), .time_domain_id = 0});
+  EXPECT_TRUE(dataset.has_value());
+  return dataset.has_value() ? *dataset : 0;
+}
+
+PJ::ObjectTopicId registerTopicForDataset(
+    PJ::SessionManager& session, PJ::DatasetId dataset_id, std::string topic_name = "/robot_description") {
+  auto topic = session.objectStore().registerTopic(
+      PJ::ObjectTopicDescriptor{
+          .dataset_id = dataset_id,
+          .topic_name = std::move(topic_name),
+          .metadata_json = R"({"builtin_object_type":"kRobotDescription"})"});
+  EXPECT_TRUE(topic.has_value());
+  return topic.has_value() ? *topic : PJ::ObjectTopicId{};
+}
+
 void registerParser(PJ::SessionManager& session, PJ::ObjectTopicId topic_id, const PJ_message_parser_vtable_t* vtable) {
   auto parser = std::make_unique<PJ::MessageParserHandle>(vtable);
   ASSERT_TRUE(parser->bindSchema("robot_description", PJ::Span<const uint8_t>{}));
@@ -411,6 +429,12 @@ pj::scene3d::Scene3DLayerContext makeContext(PJ::SessionManager& session) {
 
 void pushWireBytes(PJ::SessionManager& session, PJ::ObjectTopicId topic_id) {
   ASSERT_TRUE(session.objectStore().pushOwned(topic_id, 123, std::vector<uint8_t>{0x00, 0x04, 0xFF, 0x10}));
+}
+
+QString serializedLayerState(const pj::scene3d::RobotModelLayer& layer) {
+  QDomDocument doc;
+  doc.appendChild(layer.xmlSaveState(doc));
+  return doc.toString(-1);
 }
 
 }  // namespace
@@ -700,7 +724,8 @@ TEST(RobotModelLayerTest, UrlSourceLoadsAsynchronouslyFromFileUrl) {
 // round trip must survive a fresh layer wired to a different default topic id.
 TEST(RobotModelLayerTest, TopicSourceIdentitySurvivesSaveLoadRoundTrip) {
   PJ::SessionManager session;
-  const PJ::ObjectTopicId topic_id = registerTopic(session, "/robot_description");
+  const PJ::DatasetId dataset_id = createDataset(session, "same-session.dat");
+  const PJ::ObjectTopicId topic_id = registerTopicForDataset(session, dataset_id, "/robot_description");
   registerParser(session, topic_id, urdfParserVtable());
   pushWireBytes(session, topic_id);
 
@@ -710,22 +735,281 @@ TEST(RobotModelLayerTest, TopicSourceIdentitySurvivesSaveLoadRoundTrip) {
   ASSERT_NE(source_layer.robotModel(), nullptr);
 
   QDomDocument doc;
-  const QDomElement saved = source_layer.xmlSaveState(doc);
+  QDomElement saved = source_layer.xmlSaveState(doc);
+  EXPECT_EQ(saved.attribute(u"source_dataset_source"_s), u"same-session.dat"_s);
 
   // A second topic with a different id stands in for "the constructor default no
   // longer points at /robot_description" — the restore must re-resolve by name.
   // It has its own (SDF) parser, so a layer left on this default would decode the
   // WRONG, unsupported model; only re-resolution by name yields the URDF.
-  const PJ::ObjectTopicId other_id = registerTopic(session, "/other_description");
+  const PJ::ObjectTopicId other_id = registerTopicForDataset(session, dataset_id, "/other_description");
   ASSERT_NE(other_id.id, topic_id.id);
   registerParser(session, other_id, sdfParserVtable());
   pushWireBytes(session, other_id);
 
   pj::scene3d::RobotModelLayer restored_layer(other_id, u"/other_description"_s);
   ASSERT_TRUE(restored_layer.attach(ctx));
+  int configuration_changes = 0;
+  QObject::connect(
+      &restored_layer, &PJ::ISceneLayer::configurationChanged, &restored_layer,
+      [&configuration_changes]() { ++configuration_changes; });
   ASSERT_TRUE(restored_layer.xmlLoadState(saved));
+  EXPECT_EQ(configuration_changes, 1) << "topic-source XML paste must produce one committed configuration change";
   ASSERT_NE(restored_layer.robotModel(), nullptr) << "restored layer did not re-resolve the persisted source topic";
   EXPECT_EQ(restored_layer.robotModel()->root_link, "base_link");
+  configuration_changes = 0;
+  ASSERT_TRUE(restored_layer.xmlLoadState(saved));
+  EXPECT_EQ(configuration_changes, 0) << "re-applying identical robot parameters is not a workspace mutation";
+
+  // Pre-source-attribute layouts retain their safe same-session raw-id lookup.
+  saved.removeAttribute(u"source_dataset_source"_s);
+  pj::scene3d::RobotModelLayer legacy_layer(other_id, u"/other_description"_s);
+  ASSERT_TRUE(legacy_layer.attach(ctx));
+  ASSERT_TRUE(legacy_layer.xmlLoadState(saved));
+  ASSERT_NE(legacy_layer.robotModel(), nullptr);
+  EXPECT_EQ(legacy_layer.robotModel()->root_link, "base_link");
+
+  // Generic layouts remove both qualifiers. A globally unique topic+type may
+  // still bind to the loaded recording.
+  saved.removeAttribute(u"source_dataset_id"_s);
+  pj::scene3d::RobotModelLayer generic_layer(other_id, u"/other_description"_s);
+  ASSERT_TRUE(generic_layer.attach(ctx));
+  ASSERT_TRUE(generic_layer.xmlLoadState(saved));
+  ASSERT_NE(generic_layer.robotModel(), nullptr);
+  EXPECT_EQ(generic_layer.robotModel()->root_link, "base_link");
+}
+
+TEST(RobotModelLayerTest, TopicSourceResolvesRemintedDatasetIdByUniqueRawSource) {
+  PJ::SessionManager save_session;
+  const PJ::DatasetId saved_dataset = createDataset(save_session, "robot-source.dat");
+  const PJ::ObjectTopicId saved_topic = registerTopicForDataset(save_session, saved_dataset, "/robot_description");
+  registerParser(save_session, saved_topic, urdfParserVtable());
+  pushWireBytes(save_session, saved_topic);
+  pj::scene3d::RobotModelLayer source(saved_topic, u"/robot_description"_s);
+  ASSERT_TRUE(source.attach(makeContext(save_session)));
+
+  QDomDocument doc;
+  const QDomElement saved = source.xmlSaveState(doc);
+  ASSERT_EQ(saved.attribute(u"source_dataset_id"_s).toUInt(), saved_dataset);
+  ASSERT_EQ(saved.attribute(u"source_dataset_source"_s), u"robot-source.dat"_s);
+
+  PJ::SessionManager load_session;
+  const PJ::DatasetId decoy_dataset = createDataset(load_session, "decoy.dat");
+  const PJ::ObjectTopicId decoy_topic = registerTopicForDataset(load_session, decoy_dataset, "/robot_description");
+  registerParser(load_session, decoy_topic, sdfParserVtable());
+  pushWireBytes(load_session, decoy_topic);
+  const PJ::DatasetId reminted_dataset = createDataset(load_session, "robot-source.dat");
+  ASSERT_NE(reminted_dataset, saved_dataset);
+  const PJ::ObjectTopicId reminted_topic =
+      registerTopicForDataset(load_session, reminted_dataset, "/robot_description");
+  registerParser(load_session, reminted_topic, urdfParserVtable());
+  pushWireBytes(load_session, reminted_topic);
+
+  pj::scene3d::RobotModelLayer restored(decoy_topic, u"/robot_description"_s);
+  ASSERT_TRUE(restored.attach(makeContext(load_session)));
+  ASSERT_TRUE(restored.xmlLoadState(saved));
+  ASSERT_NE(restored.robotModel(), nullptr) << restored.statusText().toStdString();
+  EXPECT_EQ(restored.robotModel()->root_link, "base_link");
+
+  QDomDocument re_saved_doc;
+  const QDomElement re_saved = restored.xmlSaveState(re_saved_doc);
+  EXPECT_EQ(re_saved.attribute(u"source_dataset_id"_s).toUInt(), reminted_dataset);
+  EXPECT_EQ(re_saved.attribute(u"source_dataset_source"_s), u"robot-source.dat"_s);
+}
+
+TEST(RobotModelLayerTest, TopicSourceFullPathRejectsSameBasenameRemintedIdCollision) {
+  PJ::SessionManager save_session;
+  const PJ::DatasetId saved_dataset = createDataset(save_session, "robot-source.dat");
+  const PJ::ObjectTopicId saved_topic = registerTopicForDataset(save_session, saved_dataset, "/robot_description");
+  registerParser(save_session, saved_topic, urdfParserVtable());
+  pushWireBytes(save_session, saved_topic);
+  pj::scene3d::RobotModelLayer source(saved_topic, u"/robot_description"_s);
+  ASSERT_TRUE(source.attach(makeContext(save_session)));
+
+  QDomDocument doc;
+  QDomElement saved = source.xmlSaveState(doc);
+  const QString intended_path = u"wanted/robot-source.dat"_s;
+  saved.setAttribute(u"source_dataset_path"_s, intended_path);
+
+  PJ::SessionManager load_session;
+  // First id collides numerically with the save session and has the same raw
+  // basename, but comes from a different file and decodes to the wrong model.
+  const PJ::DatasetId collision_dataset = createDataset(load_session, "robot-source.dat");
+  saved.setAttribute(u"source_dataset_id"_s, QString::number(collision_dataset));
+  const PJ::ObjectTopicId collision_topic =
+      registerTopicForDataset(load_session, collision_dataset, "/robot_description");
+  registerParser(load_session, collision_topic, sdfParserVtable());
+  pushWireBytes(load_session, collision_topic);
+  load_session.setDatasetSourcePath(collision_dataset, u"other/robot-source.dat"_s);
+
+  const PJ::DatasetId intended_dataset = createDataset(load_session, "robot-source.dat");
+  const PJ::ObjectTopicId intended_topic =
+      registerTopicForDataset(load_session, intended_dataset, "/robot_description");
+  registerParser(load_session, intended_topic, urdfParserVtable());
+  pushWireBytes(load_session, intended_topic);
+  load_session.setDatasetSourcePath(intended_dataset, intended_path);
+
+  pj::scene3d::RobotModelLayer restored(collision_topic, u"/robot_description"_s);
+  ASSERT_TRUE(restored.attach(makeContext(load_session)));
+  ASSERT_TRUE(restored.xmlLoadState(saved)) << restored.statusText().toStdString();
+  ASSERT_NE(restored.robotModel(), nullptr);
+  EXPECT_EQ(restored.robotModel()->root_link, "base_link")
+      << "the saved full path must override the coincidentally reminted same-basename id";
+}
+
+TEST(RobotModelLayerTest, QualifiedTopicSourceTypeMismatchLeavesLiveLayerUntouched) {
+  PJ::SessionManager session;
+  const PJ::DatasetId dataset = createDataset(session, "robot-source.dat");
+  const PJ::ObjectTopicId robot_topic = registerTopicForDataset(session, dataset, "/robot_description");
+  registerParser(session, robot_topic, urdfParserVtable());
+  pushWireBytes(session, robot_topic);
+  const auto wrong_topic = session.objectStore().registerTopic(
+      PJ::ObjectTopicDescriptor{
+          .dataset_id = dataset,
+          .topic_name = "/same_name_but_cloud",
+          .metadata_json = R"({"builtin_object_type":"kPointCloud"})",
+      });
+  ASSERT_TRUE(wrong_topic.has_value()) << wrong_topic.error();
+
+  pj::scene3d::RobotModelLayer layer(robot_topic, u"/robot_description"_s);
+  ASSERT_TRUE(layer.attach(makeContext(session)));
+  ASSERT_NE(layer.robotModel(), nullptr);
+  const QString state_before = serializedLayerState(layer);
+  const QString status_before = layer.statusText();
+  const std::string root_before = layer.robotModel()->root_link;
+  int configuration_changes = 0;
+  int repaints = 0;
+  int status_changes = 0;
+  QObject::connect(
+      &layer, &PJ::ISceneLayer::configurationChanged, &layer, [&configuration_changes] { ++configuration_changes; });
+  QObject::connect(&layer, &PJ::ISceneLayer::repaintRequested, &layer, [&repaints] { ++repaints; });
+  QObject::connect(&layer, &pj::scene3d::RobotModelLayer::statusTextChanged, &layer, [&status_changes](const QString&) {
+    ++status_changes;
+  });
+
+  QDomDocument doc;
+  QDomElement saved = doc.createElement(u"robot_model"_s);
+  saved.setAttribute(u"source_type"_s, u"topic"_s);
+  saved.setAttribute(u"source_topic_name"_s, u"/same_name_but_cloud"_s);
+  saved.setAttribute(u"source_dataset_id"_s, QString::number(dataset));
+  saved.setAttribute(u"source_dataset_source"_s, u"robot-source.dat"_s);
+
+  EXPECT_FALSE(layer.xmlLoadState(saved));
+  ASSERT_NE(layer.robotModel(), nullptr);
+  EXPECT_EQ(layer.robotModel()->root_link, root_before);
+  EXPECT_EQ(serializedLayerState(layer), state_before);
+  EXPECT_EQ(layer.statusText(), status_before);
+  EXPECT_EQ(configuration_changes, 0);
+  EXPECT_EQ(repaints, 0);
+  EXPECT_EQ(status_changes, 0);
+}
+
+TEST(RobotModelLayerTest, DeferredTopicIdentityLeavesLiveLayerAndSignalsUntouched) {
+  PJ::SessionManager session;
+  const PJ::DatasetId dataset = createDataset(session, "current.dat");
+  const PJ::ObjectTopicId current_topic = registerTopicForDataset(session, dataset, "/robot_description");
+  registerParser(session, current_topic, urdfParserVtable());
+  pushWireBytes(session, current_topic);
+
+  pj::scene3d::RobotModelLayer layer(current_topic, u"/robot_description"_s);
+  ASSERT_TRUE(layer.attach(makeContext(session)));
+  ASSERT_NE(layer.robotModel(), nullptr);
+  const QString state_before = serializedLayerState(layer);
+  const QString status_before = layer.statusText();
+  const std::string root_before = layer.robotModel()->root_link;
+  int configuration_changes = 0;
+  int repaints = 0;
+  int info_changes = 0;
+  int visibility_changes = 0;
+  int status_changes = 0;
+  QObject::connect(
+      &layer, &PJ::ISceneLayer::configurationChanged, &layer, [&configuration_changes] { ++configuration_changes; });
+  QObject::connect(&layer, &PJ::ISceneLayer::repaintRequested, &layer, [&repaints] { ++repaints; });
+  QObject::connect(&layer, &PJ::ISceneLayer::infoChanged, &layer, [&info_changes] { ++info_changes; });
+  QObject::connect(
+      &layer, &PJ::ISceneLayer::visibilityChanged, &layer, [&visibility_changes](bool) { ++visibility_changes; });
+  QObject::connect(&layer, &pj::scene3d::RobotModelLayer::statusTextChanged, &layer, [&status_changes](const QString&) {
+    ++status_changes;
+  });
+
+  QDomDocument doc;
+  QDomElement pending = doc.createElement(u"robot_model"_s);
+  pending.setAttribute(u"source_type"_s, u"topic"_s);
+  pending.setAttribute(u"source_value"_s, u"/late_robot"_s);
+  pending.setAttribute(u"source_topic_name"_s, u"/late_robot"_s);
+  pending.setAttribute(u"source_dataset_id"_s, QString::number(dataset));
+  pending.setAttribute(u"source_dataset_source"_s, u"current.dat"_s);
+  pending.setAttribute(u"frame_prefix"_s, u"would_have_mutated/"_s);
+  pending.setAttribute(u"display_mode"_s, u"collision"_s);
+  pending.setAttribute(u"visible"_s, u"false"_s);
+  pending.setAttribute(u"color"_s, u"#123456"_s);
+  pending.setAttribute(u"ignore_collada_up_axis"_s, u"true"_s);
+  doc.appendChild(pending);
+
+  EXPECT_EQ(layer.xmlLoadStateResult(pending), pj::scene3d::RobotModelLayer::XmlLoadResult::kDeferred);
+  ASSERT_NE(layer.robotModel(), nullptr);
+  EXPECT_EQ(layer.robotModel()->root_link, root_before);
+  EXPECT_EQ(serializedLayerState(layer), state_before);
+  EXPECT_EQ(layer.statusText(), status_before);
+  EXPECT_EQ(configuration_changes, 0);
+  EXPECT_EQ(repaints, 0);
+  EXPECT_EQ(info_changes, 0);
+  EXPECT_EQ(visibility_changes, 0);
+  EXPECT_EQ(status_changes, 0);
+}
+
+TEST(RobotModelLayerTest, DuplicateRawSourceDoesNotSelectFirstDatasetAfterIdRemint) {
+  PJ::SessionManager save_session;
+  const PJ::DatasetId saved_dataset = createDataset(save_session, "duplicate.dat");
+  const PJ::ObjectTopicId saved_topic = registerTopicForDataset(save_session, saved_dataset, "/robot_description");
+  registerParser(save_session, saved_topic, urdfParserVtable());
+  pushWireBytes(save_session, saved_topic);
+  pj::scene3d::RobotModelLayer source(saved_topic, u"/robot_description"_s);
+  ASSERT_TRUE(source.attach(makeContext(save_session)));
+  QDomDocument doc;
+  const QDomElement saved = source.xmlSaveState(doc);
+
+  PJ::SessionManager load_session;
+  const PJ::DatasetId decoy_dataset = createDataset(load_session, "decoy.dat");
+  const PJ::ObjectTopicId decoy_topic = registerTopicForDataset(load_session, decoy_dataset, "/robot_description");
+  registerParser(load_session, decoy_topic, urdfParserVtable());
+  pushWireBytes(load_session, decoy_topic);
+  const PJ::DatasetId duplicate_a = createDataset(load_session, "duplicate.dat");
+  const PJ::DatasetId duplicate_b = createDataset(load_session, "duplicate.dat");
+  ASSERT_NE(duplicate_a, duplicate_b);
+  const PJ::ObjectTopicId topic_a = registerTopicForDataset(load_session, duplicate_a, "/robot_description");
+  const PJ::ObjectTopicId topic_b = registerTopicForDataset(load_session, duplicate_b, "/robot_description");
+  registerParser(load_session, topic_a, urdfParserVtable());
+  registerParser(load_session, topic_b, bridgeParserVtable());
+  pushWireBytes(load_session, topic_a);
+  pushWireBytes(load_session, topic_b);
+
+  pj::scene3d::RobotModelLayer restored(decoy_topic, u"/robot_description"_s);
+  ASSERT_TRUE(restored.attach(makeContext(load_session)));
+  ASSERT_NE(restored.robotModel(), nullptr) << "test premise: constructor default loaded the decoy robot";
+  const QString restored_state_before = serializedLayerState(restored);
+  const QString restored_status_before = restored.statusText();
+  const std::string restored_root_before = restored.robotModel()->root_link;
+  ASSERT_FALSE(restored.xmlLoadState(saved));
+  ASSERT_NE(restored.robotModel(), nullptr);
+  EXPECT_EQ(restored.robotModel()->root_link, restored_root_before);
+  EXPECT_EQ(serializedLayerState(restored), restored_state_before);
+  EXPECT_EQ(restored.statusText(), restored_status_before);
+
+  QDomElement generic = saved.cloneNode(/*deep=*/true).toElement();
+  generic.removeAttribute(u"source_dataset_id"_s);
+  generic.removeAttribute(u"source_dataset_source"_s);
+  pj::scene3d::RobotModelLayer generic_restored(decoy_topic, u"/robot_description"_s);
+  ASSERT_TRUE(generic_restored.attach(makeContext(load_session)));
+  ASSERT_NE(generic_restored.robotModel(), nullptr);
+  const QString generic_state_before = serializedLayerState(generic_restored);
+  const QString generic_status_before = generic_restored.statusText();
+  const std::string generic_root_before = generic_restored.robotModel()->root_link;
+  ASSERT_FALSE(generic_restored.xmlLoadState(generic));
+  ASSERT_NE(generic_restored.robotModel(), nullptr);
+  EXPECT_EQ(generic_restored.robotModel()->root_link, generic_root_before);
+  EXPECT_EQ(serializedLayerState(generic_restored), generic_state_before);
+  EXPECT_EQ(generic_restored.statusText(), generic_status_before);
 }
 
 // Seed "scene -> child" (identity) into a buffer.

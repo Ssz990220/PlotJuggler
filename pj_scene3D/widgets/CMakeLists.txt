@@ -432,6 +432,17 @@ if(PJ_BUILD_TESTS)
   target_compile_options(poses_in_frame_layer_test PRIVATE ${PJ_WARNING_FLAGS} ${PJ_SANITIZER_FLAGS})
   add_test(NAME poses_in_frame_layer_test COMMAND poses_in_frame_layer_test)
 
+  add_executable(scene3d_layer_xml_validation_test
+    tests/scene3d_layer_xml_validation_test.cpp
+  )
+  target_link_libraries(scene3d_layer_xml_validation_test PRIVATE
+    pj_scene3d_widgets
+    Qt6::Network
+    GTest::gtest
+  )
+  target_compile_options(scene3d_layer_xml_validation_test PRIVATE ${PJ_WARNING_FLAGS} ${PJ_SANITIZER_FLAGS})
+  add_test(NAME scene3d_layer_xml_validation_test COMMAND scene3d_layer_xml_validation_test)
+
   # M.65: pin PointCloudLayer's per-use parser binding (raw renderAt path still
   # calls parseLocked on the UI thread per tick — a reintroduced cached pointer is
   # a same-file-reload use-after-free). Mirrors occupancy_grid_layer_rebind_test.

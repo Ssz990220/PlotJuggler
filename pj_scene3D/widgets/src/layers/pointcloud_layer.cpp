@@ -25,6 +25,7 @@
 #include <string_view>
 #include <utility>
 
+#include "layer_xml_validation.h"
 #include "pj_base/builtin/builtin_object.hpp"
 #include "pj_base/builtin/compressed_point_cloud.hpp"
 #include "pj_base/builtin/point_cloud.hpp"
@@ -201,10 +202,12 @@ QDomElement PointCloudLayer::xmlSaveState(QDomDocument& doc) const {
   el.setAttribute(u"shape"_s, shape_str);
   el.setAttribute(u"size_meters"_s, QString::number(static_cast<double>(size_meters_), 'g', 6));
   el.setAttribute(u"size_pixels"_s, QString::number(static_cast<double>(size_pixels_), 'g', 6));
-  const QString color_type_str = color_type_ == PointcloudRenderPass::ColorType::kSolid ? u"solid"_s
-                                 : color_type_ == PointcloudRenderPass::ColorType::kRgb ? u"rgb"_s
-                                                                                        : u"field"_s;
+  const QString color_type_str = !color_choice_explicit_                                  ? u"auto"_s
+                                 : color_type_ == PointcloudRenderPass::ColorType::kSolid ? u"solid"_s
+                                 : color_type_ == PointcloudRenderPass::ColorType::kRgb   ? u"rgb"_s
+                                                                                          : u"field"_s;
   el.setAttribute(u"color_type"_s, color_type_str);
+  el.setAttribute(u"color_choice_explicit"_s, color_choice_explicit_ ? u"true"_s : u"false"_s);
   el.setAttribute(u"color_field"_s, QString::fromStdString(color_field_));
   el.setAttribute(u"solid_color"_s, solid_color_.name(QColor::HexRgb));
   el.setAttribute(u"colormap"_s, colormap_str);
@@ -218,82 +221,105 @@ QDomElement PointCloudLayer::xmlSaveState(QDomDocument& doc) const {
 }
 
 bool PointCloudLayer::xmlLoadState(const QDomElement& element) {
-  if (element.isNull() || element.tagName() != "pointcloud"_L1) {
+  if (element.isNull() || element.tagName() != "pointcloud"_L1 || !detail::isLeafPayload(element)) {
     return false;
   }
   const QString shape_str = element.attribute(u"shape"_s, u"sphere"_s);
-  if (shape_str == "point"_L1) {
-    setShape(PointcloudRenderPass::Shape::kPoint);
+  PointcloudRenderPass::Shape restored_shape;
+  if (shape_str == "sphere"_L1) {
+    restored_shape = PointcloudRenderPass::Shape::kSphere;
+  } else if (shape_str == "point"_L1) {
+    restored_shape = PointcloudRenderPass::Shape::kPoint;
   } else if (shape_str == "cube"_L1) {
-    setShape(PointcloudRenderPass::Shape::kCube);
+    restored_shape = PointcloudRenderPass::Shape::kCube;
   } else {
-    setShape(PointcloudRenderPass::Shape::kSphere);
+    return false;
   }
-
-  bool ok = false;
-  const float size_m = element.attribute(u"size_meters"_s, u"0.01"_s).toFloat(&ok);
-  if (ok) {
-    setSizeMeters(size_m);
+  float restored_size_meters = 0.0f;
+  float restored_size_pixels = 0.0f;
+  float restored_outside_opacity = 0.0f;
+  float restored_range_min = 0.0f;
+  float restored_range_max = 0.0f;
+  if (!detail::parseFiniteFloat(element, "size_meters", 0.01f, 0.001f, 10.0f, restored_size_meters) ||
+      !detail::parseFiniteFloat(element, "size_pixels", 2.0f, 1.0f, 32.0f, restored_size_pixels) ||
+      !detail::parseFiniteFloat(element, "outside_range_opacity", 1.0f, 0.0f, 1.0f, restored_outside_opacity) ||
+      !detail::parseFiniteFloat(
+          element, "range_min", 0.0f, std::numeric_limits<float>::lowest(), std::numeric_limits<float>::max(),
+          restored_range_min) ||
+      !detail::parseFiniteFloat(
+          element, "range_max", 1.0f, std::numeric_limits<float>::lowest(), std::numeric_limits<float>::max(),
+          restored_range_max) ||
+      restored_range_min > restored_range_max) {
+    return false;
   }
-  const float size_px = element.attribute(u"size_pixels"_s, u"2"_s).toFloat(&ok);
-  if (ok) {
-    setSizePixels(size_px);
-  }
-
   const QString color_type_str = element.attribute(u"color_type"_s, u"field"_s);
-  setColorType(
-      color_type_str == "solid"_L1 ? PointcloudRenderPass::ColorType::kSolid
-      : color_type_str == "rgb"_L1 ? PointcloudRenderPass::ColorType::kRgb
-                                   : PointcloudRenderPass::ColorType::kField);
-  // An explicitly restored colour mode must survive the colour-present RGB default that
-  // populateColorFields() would otherwise apply on the first decoded sample. (setColorType
-  // above may early-return when the restored value equals the construction default, so set
-  // the flag here unconditionally.)
-  color_choice_explicit_ = true;
+  if (color_type_str != "auto"_L1 && color_type_str != "solid"_L1 && color_type_str != "rgb"_L1 &&
+      color_type_str != "field"_L1) {
+    return false;
+  }
+  bool restored_explicit = color_type_str != "auto"_L1;
+  if (!detail::parseTrueFalse(element, "color_choice_explicit", restored_explicit, restored_explicit) ||
+      ((color_type_str == "auto"_L1) == restored_explicit)) {
+    return false;
+  }
+  PointcloudRenderPass::ColorType restored_color_type = PointcloudRenderPass::ColorType::kField;
+  if (color_type_str == "solid"_L1) {
+    restored_color_type = PointcloudRenderPass::ColorType::kSolid;
+  } else if (color_type_str == "rgb"_L1) {
+    restored_color_type = PointcloudRenderPass::ColorType::kRgb;
+  }
+  const QString colormap_text = element.attribute(u"colormap"_s, u"turbo"_s);
+  PointcloudRenderPass::Colormap restored_colormap;
+  if (colormap_text == "turbo"_L1) {
+    restored_colormap = PointcloudRenderPass::Colormap::kTurbo;
+  } else if (colormap_text == "viridis"_L1) {
+    restored_colormap = PointcloudRenderPass::Colormap::kViridis;
+  } else if (colormap_text == "plasma"_L1) {
+    restored_colormap = PointcloudRenderPass::Colormap::kPlasma;
+  } else if (colormap_text == "grayscale"_L1) {
+    restored_colormap = PointcloudRenderPass::Colormap::kGrayscale;
+  } else {
+    return false;
+  }
+  bool restored_auto_range = true;
+  bool restored_invert_lut = false;
+  bool restored_outside_visible = true;
+  if (!detail::parseTrueFalse(element, "auto_range", true, restored_auto_range) ||
+      !detail::parseTrueFalse(element, "invert_lut", false, restored_invert_lut) ||
+      !detail::parseTrueFalse(element, "outside_range_visible", true, restored_outside_visible)) {
+    return false;
+  }
+  QColor restored_solid_color;
+  const bool has_solid_color = element.hasAttribute(u"solid_color"_s);
+  if (has_solid_color) {
+    restored_solid_color = QColor(element.attribute(u"solid_color"_s));
+    if (!restored_solid_color.isValid()) {
+      return false;
+    }
+  }
+  setShape(restored_shape);
+  setSizeMeters(restored_size_meters);
+  setSizePixels(restored_size_pixels);
+  setColorType(restored_color_type);
+  color_choice_explicit_ = restored_explicit;
+  // A latent ("auto") choice re-derives the colour-present RGB default the
+  // smart default would have picked on the first decoded sample.
+  if (!color_choice_explicit_ && has_color_) {
+    color_type_ = PointcloudRenderPass::ColorType::kRgb;
+    cloud_pass_.setColorType(color_type_);
+  }
   if (element.hasAttribute(u"color_field"_s)) {
     setColorField(element.attribute(u"color_field"_s));
   }
-  if (element.hasAttribute(u"solid_color"_s)) {
-    const QColor c(element.attribute(u"solid_color"_s));
-    if (c.isValid()) {
-      setSolidColor(c);
-    }
+  if (has_solid_color) {
+    setSolidColor(restored_solid_color);
   }
-
-  const QString cm_str = element.attribute(u"colormap"_s, u"turbo"_s);
-  if (cm_str == "viridis"_L1) {
-    setColormap(PointcloudRenderPass::Colormap::kViridis);
-  } else if (cm_str == "plasma"_L1) {
-    setColormap(PointcloudRenderPass::Colormap::kPlasma);
-  } else if (cm_str == "grayscale"_L1) {
-    setColormap(PointcloudRenderPass::Colormap::kGrayscale);
-  } else {
-    setColormap(PointcloudRenderPass::Colormap::kTurbo);
-  }
-
-  setInvertLut(element.attribute(u"invert_lut"_s) == "true"_L1);
-  bool ok_outside_opacity = false;
-  const float outside_opacity = element.attribute(u"outside_range_opacity"_s, u"1"_s).toFloat(&ok_outside_opacity);
-  if (ok_outside_opacity) {
-    setOutsideRangeOpacity(outside_opacity);
-  }
-  setOutsideRangeVisible(element.attribute(u"outside_range_visible"_s, u"true"_s) == "true"_L1);
-
-  bool ok_min = false;
-  bool ok_max = false;
-  const float r_min = element.attribute(u"range_min"_s, u"0"_s).toFloat(&ok_min);
-  const float r_max = element.attribute(u"range_max"_s, u"1"_s).toFloat(&ok_max);
-  if (ok_min && ok_max) {
-    setManualRange(r_min, r_max);
-  }
-  // Restore the auto-range flag WITHOUT seeding the manual range from the current
-  // world-axis bounds. The dock attach()es the layer (which renders the first
-  // sample, so world_bounds_ is already populated) BEFORE calling xmlLoadState,
-  // so the interactive freeze would overwrite the manual range just restored
-  // above with the recomputed data range. The saved values are authoritative.
-  const bool auto_on = element.attribute(u"auto_range"_s, u"true"_s) == "true"_L1;
-  applyAutoRange(auto_on, /*seed_manual_from_world=*/false);
-
+  setColormap(restored_colormap);
+  setInvertLut(restored_invert_lut);
+  setOutsideRangeOpacity(restored_outside_opacity);
+  setOutsideRangeVisible(restored_outside_visible);
+  setManualRange(restored_range_min, restored_range_max);
+  applyAutoRange(restored_auto_range, /*seed_manual_from_world=*/false);
   return true;
 }
 
@@ -717,9 +743,6 @@ QWidget* PointCloudLayer::createConfigWidget(QWidget* parent) {
   QObject::connect(
       color_type_combo, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
       [this, color_type_combo, color_stack, apply_range_step, apply_range_visibility](int) {
-        // A user pick is an explicit choice: it must survive the colour-present RGB
-        // default that populateColorFields() would otherwise reapply on the next sample.
-        color_choice_explicit_ = true;
         const QString data = color_type_combo->currentData().toString();
         if (data.isEmpty()) {
           setColorType(PointcloudRenderPass::ColorType::kSolid);
@@ -826,6 +849,7 @@ void PointCloudLayer::setColorField(const QString& field) {
   color_field_ = new_field;
   range_dirty_ = true;
   emit currentColorFieldChanged(field);
+  emit configurationChanged();
   refreshNow();
 }
 
@@ -835,6 +859,7 @@ void PointCloudLayer::setShape(PointcloudRenderPass::Shape shape) {
   }
   shape_ = shape;
   cloud_pass_.setShape(shape_);
+  emit configurationChanged();
   emit repaintRequested();
 }
 
@@ -844,6 +869,7 @@ void PointCloudLayer::setSizeMeters(float meters) {
   }
   size_meters_ = meters;
   cloud_pass_.setSizeMeters(size_meters_);
+  emit configurationChanged();
   emit repaintRequested();
 }
 
@@ -853,11 +879,17 @@ void PointCloudLayer::setSizePixels(float pixels) {
   }
   size_pixels_ = pixels;
   cloud_pass_.setSizePixels(size_pixels_);
+  emit configurationChanged();
   emit repaintRequested();
 }
 
 void PointCloudLayer::setColorType(PointcloudRenderPass::ColorType type) {
+  const bool explicitness_changed = !color_choice_explicit_;
+  color_choice_explicit_ = true;
   if (color_type_ == type) {
+    if (explicitness_changed) {
+      emit configurationChanged();
+    }
     return;
   }
   // Toggling RGB-direct on/off changes what convertCanonical extracts (per-point colour
@@ -867,6 +899,7 @@ void PointCloudLayer::setColorType(PointcloudRenderPass::ColorType type) {
       (color_type_ == PointcloudRenderPass::ColorType::kRgb) != (type == PointcloudRenderPass::ColorType::kRgb);
   color_type_ = type;
   cloud_pass_.setColorType(color_type_);
+  emit configurationChanged();
   if (rgb_changed) {
     range_dirty_ = true;  // re-fit the scalar auto-range when leaving RGB
     refreshNow();
@@ -876,11 +909,12 @@ void PointCloudLayer::setColorType(PointcloudRenderPass::ColorType type) {
 }
 
 void PointCloudLayer::setSolidColor(QColor color) {
-  if (solid_color_ == color) {
+  if (!color.isValid() || solid_color_.rgb() == color.rgb()) {
     return;
   }
   solid_color_ = color;
   cloud_pass_.setSolidColor(glm::vec3(solid_color_.redF(), solid_color_.greenF(), solid_color_.blueF()));
+  emit configurationChanged();
   emit repaintRequested();
 }
 
@@ -890,6 +924,7 @@ void PointCloudLayer::setColormap(PointcloudRenderPass::Colormap cm) {
   }
   colormap_ = cm;
   cloud_pass_.setColormap(colormap_);
+  emit configurationChanged();
   emit repaintRequested();
 }
 
@@ -899,6 +934,7 @@ void PointCloudLayer::setInvertLut(bool invert) {
   }
   invert_lut_ = invert;
   cloud_pass_.setInvertLut(invert_lut_);
+  emit configurationChanged();
   emit repaintRequested();
 }
 
@@ -909,6 +945,7 @@ void PointCloudLayer::setOutsideRangeOpacity(float opacity) {
   }
   outside_range_opacity_ = clamped;
   pushOutsideRangeAlpha();
+  emit configurationChanged();
   emit repaintRequested();
 }
 
@@ -918,6 +955,7 @@ void PointCloudLayer::setOutsideRangeVisible(bool visible) {
   }
   outside_range_visible_ = visible;
   pushOutsideRangeAlpha();
+  emit configurationChanged();
   emit repaintRequested();
 }
 
@@ -940,6 +978,7 @@ void PointCloudLayer::applyAutoRange(bool enable, bool seed_manual_from_world) {
     // Force the next cloud swap to recompute, which will also re-emit
     // autoRangeComputed so the panel's hidden spinboxes refresh.
     range_dirty_ = true;
+    emit configurationChanged();
     refreshNow();
     return;
   }
@@ -963,6 +1002,7 @@ void PointCloudLayer::applyAutoRange(bool enable, bool seed_manual_from_world) {
   // snap to stale auto-computed bounds, and refresh the panel's spinboxes to match.
   cloud_pass_.setColormapRange(manual_range_min_, manual_range_max_);
   emit autoRangeComputed(manual_range_min_, manual_range_max_);
+  emit configurationChanged();
   emit repaintRequested();
 }
 
@@ -972,6 +1012,7 @@ void PointCloudLayer::setManualRange(float min_value, float max_value) {
   }
   manual_range_min_ = min_value;
   manual_range_max_ = max_value;
+  emit configurationChanged();
   if (!auto_range_) {
     cloud_pass_.setColormapRange(manual_range_min_, manual_range_max_);
     emit repaintRequested();

@@ -551,6 +551,73 @@ TEST_F(MainWindowHistoryFixture, ProgressiveProcessorMissingAtDrainRollsWorkspac
   EXPECT_TRUE(processors.recipes().empty());
 }
 
+TEST_F(MainWindowHistoryFixture, InvalidSceneElementFailsExactUndoTransactionally) {
+  PJ::MainWindow& window = mainWindow();
+  PJ::PlotWidget* plot = ensureCurrentPlot(window);
+  ASSERT_NE(plot, nullptr);
+  plot->setStateId(u"scene-transaction-before"_s);
+  PJ::MainWindowHistoryTestPeer::resetHistory(window);
+  plot->setStateId(u"scene-transaction-after"_s);
+  PJ::MainWindowHistoryTestPeer::recordDiscreteState(window);
+  const QByteArray live_before_undo = PJ::MainWindowHistoryTestPeer::liveState(window);
+  ASSERT_EQ(PJ::MainWindowHistoryTestPeer::undoSize(window), 2U);
+
+  // Scene docks are restore participants: a permanently invalid scene element
+  // in the undo target must fail the whole exact transaction, leaving live
+  // state and both stacks untouched.
+  QDomDocument rejected_target;
+  ASSERT_TRUE(static_cast<bool>(rejected_target.setContent(live_before_undo)));
+  QDomElement tab = rejected_target.documentElement().firstChildElement(u"tabbed_widget"_s).firstChildElement(u"Tab"_s);
+  ASSERT_FALSE(tab.isNull());
+  QDomElement area =
+      tab.firstChildElement(u"Container"_s).firstChildElement(u"DockSplitter"_s).isNull()
+          ? tab.firstChildElement(u"Container"_s).firstChildElement(u"DockArea"_s)
+          : tab.firstChildElement(u"Container"_s).firstChildElement(u"DockSplitter"_s).firstChildElement(u"DockArea"_s);
+  ASSERT_FALSE(area.isNull());
+  QDomElement scene = rejected_target.createElement(u"scene3d"_s);
+  QDomElement bad_layer = rejected_target.createElement(u"layer"_s);
+  bad_layer.setAttribute(u"object_type"_s, u"not_a_type"_s);
+  scene.appendChild(bad_layer);
+  area.removeChild(area.firstChildElement());
+  area.appendChild(scene);
+  PJ::MainWindowHistoryTestPeer::replaceUndoTarget(window, rejected_target.toByteArray(2));
+
+  PJ::MainWindowHistoryTestPeer::undo(window);
+  EXPECT_EQ(PJ::MainWindowHistoryTestPeer::liveState(window), live_before_undo);
+  EXPECT_EQ(PJ::MainWindowHistoryTestPeer::undoSize(window), 2U);
+  EXPECT_EQ(PJ::MainWindowHistoryTestPeer::redoSize(window), 0U);
+
+  // Second arm: a WELL-FORMED scene layer whose dataset is not loaded defers at
+  // the dock — an exact snapshot must treat that unresolved BLOCKING reference
+  // as a failed transaction too (a partial scene must never become the tip).
+  QDomDocument deferred_target;
+  ASSERT_TRUE(static_cast<bool>(deferred_target.setContent(live_before_undo)));
+  QDomElement deferred_tab =
+      deferred_target.documentElement().firstChildElement(u"tabbed_widget"_s).firstChildElement(u"Tab"_s);
+  QDomElement deferred_area =
+      deferred_tab.firstChildElement(u"Container"_s).firstChildElement(u"DockSplitter"_s).isNull()
+          ? deferred_tab.firstChildElement(u"Container"_s).firstChildElement(u"DockArea"_s)
+          : deferred_tab.firstChildElement(u"Container"_s)
+                .firstChildElement(u"DockSplitter"_s)
+                .firstChildElement(u"DockArea"_s);
+  ASSERT_FALSE(deferred_area.isNull());
+  QDomElement deferred_scene = deferred_target.createElement(u"scene3d"_s);
+  QDomElement ghost_layer = deferred_target.createElement(u"layer"_s);
+  ghost_layer.setAttribute(u"dataset_id"_s, u"999"_s);
+  ghost_layer.setAttribute(u"dataset_source"_s, u"ghost.dat"_s);
+  ghost_layer.setAttribute(u"topic_name"_s, u"/ghost"_s);
+  ghost_layer.setAttribute(u"object_type"_s, u"kPointCloud"_s);
+  deferred_scene.appendChild(ghost_layer);
+  deferred_area.removeChild(deferred_area.firstChildElement());
+  deferred_area.appendChild(deferred_scene);
+  PJ::MainWindowHistoryTestPeer::replaceUndoTarget(window, deferred_target.toByteArray(2));
+
+  PJ::MainWindowHistoryTestPeer::undo(window);
+  EXPECT_EQ(PJ::MainWindowHistoryTestPeer::liveState(window), live_before_undo);
+  EXPECT_EQ(PJ::MainWindowHistoryTestPeer::undoSize(window), 2U);
+  EXPECT_EQ(PJ::MainWindowHistoryTestPeer::redoSize(window), 0U);
+}
+
 TEST_F(MainWindowHistoryFixture, ProgressiveFileCompletionLeavesHistoryTransactionOwnedByDrain) {
   PJ::MainWindow& window = mainWindow();
   PJ::AppSession& app_session = PJ::MainWindowHistoryTestPeer::appSession(window);

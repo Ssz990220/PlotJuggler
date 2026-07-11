@@ -13,6 +13,7 @@
 #include <QUrl>
 #include <QVBoxLayout>
 #include <QWidget>
+#include <algorithm>
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 #include <limits>
@@ -21,6 +22,7 @@
 #include <string>
 #include <utility>
 
+#include "layer_xml_validation.h"
 #include "mesh_load_set.h"
 #include "mesh_loader.h"
 #include "pj_base/builtin/scene_entities.hpp"
@@ -228,22 +230,31 @@ QDomElement SceneEntitiesLayer::xmlSaveState(QDomDocument& doc) const {
 }
 
 bool SceneEntitiesLayer::xmlLoadState(const QDomElement& element) {
-  if (element.isNull() || element.tagName() != "markers"_L1) {
+  if (element.isNull() || element.tagName() != "markers"_L1 || !detail::isLeafPayload(element)) {
     return false;
   }
-  bool ok = false;
-  const float op = element.attribute(u"opacity"_s, u"1"_s).toFloat(&ok);
-  if (ok) {
-    setOpacity(op);
+  float restored_opacity = 0.0f;
+  bool restored_color_override = false;
+  bool restored_wireframe = false;
+  if (!detail::parseFiniteFloat(element, "opacity", 1.0f, 0.0f, 1.0f, restored_opacity) ||
+      !detail::parseTrueFalse(element, "color_override", false, restored_color_override) ||
+      !detail::parseTrueFalse(element, "wireframe", false, restored_wireframe)) {
+    return false;
   }
-  if (element.hasAttribute(u"override_color"_s)) {
-    const QColor c(element.attribute(u"override_color"_s));
-    if (c.isValid()) {
-      setOverrideColor(c);
+  QColor restored_color;
+  const bool has_override_color = element.hasAttribute(u"override_color"_s);
+  if (has_override_color) {
+    restored_color = QColor(element.attribute(u"override_color"_s));
+    if (!restored_color.isValid()) {
+      return false;
     }
   }
-  setColorOverrideEnabled(element.attribute(u"color_override"_s) == "true"_L1);
-  setWireframe(element.attribute(u"wireframe"_s) == "true"_L1);
+  setOpacity(restored_opacity);
+  if (has_override_color) {
+    setOverrideColor(restored_color);
+  }
+  setColorOverrideEnabled(restored_color_override);
+  setWireframe(restored_wireframe);
   return true;
 }
 
@@ -872,23 +883,45 @@ void SceneEntitiesLayer::pollMeshLoads() {
 }
 
 void SceneEntitiesLayer::setOpacity(float opacity) {
-  overrides_.opacity = opacity;
+  const float clamped = std::clamp(opacity, 0.0f, 1.0f);
+  if (overrides_.opacity == clamped) {
+    return;
+  }
+  overrides_.opacity = clamped;
+  emit configurationChanged();
   applyOverrides();
 }
 
 void SceneEntitiesLayer::setColorOverrideEnabled(bool enabled) {
+  if (overrides_.color_override == enabled) {
+    return;
+  }
   overrides_.color_override = enabled;
+  emit configurationChanged();
   applyOverrides();
 }
 
 void SceneEntitiesLayer::setOverrideColor(QColor color) {
-  overrides_.override_color = glm::vec4(
-      static_cast<float>(color.redF()), static_cast<float>(color.greenF()), static_cast<float>(color.blueF()), 1.0F);
+  if (!color.isValid()) {
+    return;
+  }
+  const glm::vec4 next{
+      static_cast<float>(color.redF()), static_cast<float>(color.greenF()), static_cast<float>(color.blueF()), 1.0F};
+  if (overrides_.override_color.r == next.r && overrides_.override_color.g == next.g &&
+      overrides_.override_color.b == next.b) {
+    return;
+  }
+  overrides_.override_color = next;
+  emit configurationChanged();
   applyOverrides();
 }
 
 void SceneEntitiesLayer::setWireframe(bool enabled) {
+  if (overrides_.wireframe == enabled) {
+    return;
+  }
   overrides_.wireframe = enabled;
+  emit configurationChanged();
   applyOverrides();
 }
 

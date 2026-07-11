@@ -15,6 +15,8 @@
 #include <gtest/gtest.h>
 
 #include <QApplication>
+#include <QDomDocument>
+#include <QDomElement>
 #include <QSettings>
 #include <QStandardPaths>
 #include <QString>
@@ -152,6 +154,62 @@ TEST(Scene3DDockFixedFrame, SecondDockInheritsFirstDocksManualChoice) {
 
   EXPECT_EQ(dock_b.currentFixedFrame(), u"base_link"_s)
       << "a second dock on the same TransformBuffer must inherit the first dock's manual fixed frame";
+}
+
+// Undo/layout restore must reproduce the resolved frame recorded in the XML,
+// even for an auto-root dock. The remembered-frame preference is mutable
+// user-global state and may have changed after the snapshot was captured.
+TEST(Scene3DDockFixedFrame, AutoRootRestoreUsesSavedResolvedFrame) {
+  PJ::SessionManager session;
+  pj::scene3d::TransformService tf(session);
+  const DatasetTopic ds = makeTfDataset(session, tf, "auto_restore.dat", "/tf");
+
+  PJ::Scene3DDockWidget dock;
+  attachTfTopic(dock, session, tf, ds.topic_id);
+  dock.sceneView()->refreshAvailableFrames();
+  ASSERT_TRUE(dock.isAutoRootMode());
+  ASSERT_EQ(dock.currentFixedFrame(), u"map"_s);
+
+  QDomDocument doc;
+  const QDomElement saved = dock.xmlSaveState(doc);
+  ASSERT_EQ(saved.attribute(u"fixed_frame_mode"_s), u"auto_root"_s);
+  ASSERT_EQ(saved.attribute(u"fixed_frame"_s), u"map"_s);
+
+  dock.setFixedFrame(u"odom"_s);
+  ASSERT_EQ(tf.rememberedFixedFrame(ds.dataset_id), u"odom"_s);
+
+  ASSERT_TRUE(dock.xmlLoadState(saved));
+  EXPECT_TRUE(dock.isAutoRootMode());
+  EXPECT_EQ(dock.currentFixedFrame(), u"map"_s)
+      << "restore must use the snapshot's resolved frame, not today's remembered preference";
+  EXPECT_EQ(tf.rememberedFixedFrame(ds.dataset_id), u"odom"_s)
+      << "restoring an auto snapshot must not rewrite the user's remembered preference";
+}
+
+// Applying an explicit fixed frame from XML is restoration, not a manual pick.
+// It must not change the preference that seeds subsequently-created docks.
+TEST(Scene3DDockFixedFrame, ExplicitRestoreDoesNotRewriteRememberedFrame) {
+  PJ::SessionManager session;
+  pj::scene3d::TransformService tf(session);
+  const DatasetTopic ds = makeTfDataset(session, tf, "explicit_restore.dat", "/tf");
+
+  PJ::Scene3DDockWidget save_dock;
+  attachTfTopic(save_dock, session, tf, ds.topic_id);
+  save_dock.sceneView()->refreshAvailableFrames();
+  save_dock.setFixedFrame(u"map"_s);
+  QDomDocument doc;
+  const QDomElement saved = save_dock.xmlSaveState(doc);
+  ASSERT_EQ(saved.attribute(u"fixed_frame_mode"_s), u"explicit"_s);
+
+  tf.rememberFixedFrame(ds.dataset_id, u"odom"_s);
+  PJ::Scene3DDockWidget load_dock;
+  load_dock.setSessionManager(&session);
+  load_dock.setTransformService(&tf);
+  ASSERT_TRUE(load_dock.xmlLoadState(saved));
+
+  EXPECT_FALSE(load_dock.isAutoRootMode());
+  EXPECT_EQ(load_dock.currentFixedFrame(), u"map"_s);
+  EXPECT_EQ(tf.rememberedFixedFrame(ds.dataset_id), u"odom"_s) << "XML restore must not masquerade as a user selection";
 }
 
 }  // namespace

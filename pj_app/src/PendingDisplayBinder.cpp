@@ -77,23 +77,20 @@ void PendingDisplayBinder::releaseDemandRefs(const PendingDisplayEntry& entry) {
   }
 }
 
+// One demand-vs-intent match rule: same topic, and when the intent prefers a
+// dataset the demand must have resolved to the same one.
+static bool demandMatches(
+    const SceneDockWidget::PendingRestoreDemand& demand, const QString& topic_name,
+    const std::optional<DatasetId>& preferred_dataset) {
+  return demand.topic_name == topic_name &&
+         (!preferred_dataset.has_value() || demand.preferred_dataset == preferred_dataset);
+}
+
 void PendingDisplayBinder::collect(const QDomDocument& doc, const QHash<QString, PlotWidget*>& plots_by_state_id) {
-  // Replace every plot-curve entry from the document, but keep scene-layer
-  // entries whose dock is still alive: they are interactive drops that exist
-  // only in the binder (never in the XML), so re-collecting after a plot
-  // intent change must not discard them. A layout load that rebuilds the dock
-  // world destroys the old docks, and destruction-watch releases those
-  // entries eagerly.
-  auto entry_it = entries_.begin();
-  while (entry_it != entries_.end()) {
-    const bool keep = entry_it->kind == PendingDisplayEntry::Kind::kSceneLayer && !entry_it->targetIsNull();
-    if (keep) {
-      ++entry_it;
-      continue;
-    }
-    releaseDemandRefs(*entry_it);
-    entry_it = entries_.erase(entry_it);
+  for (const PendingDisplayEntry& entry : entries_) {
+    releaseDemandRefs(entry);
   }
+  entries_.clear();
 
   const QDomNodeList plot_nodes = doc.elementsByTagName(u"plot"_s);
   for (int i = 0; i < plot_nodes.size(); ++i) {
@@ -220,6 +217,15 @@ void PendingDisplayBinder::addPendingSceneLayer(
   if (dock == nullptr || topic_name.isEmpty()) {
     return;
   }
+  const auto demands = dock->pendingRestoreDemands();
+  const bool dock_owns_intent = std::any_of(
+      demands.cbegin(), demands.cend(),
+      [&topic_name, &preferred_dataset](const SceneDockWidget::PendingRestoreDemand& demand) {
+        return demandMatches(demand, topic_name, preferred_dataset);
+      });
+  if (!dock_owns_intent) {
+    return;
+  }
   if (hasEntryFor(
           PendingDisplayEntry::Kind::kSceneLayer, dock, layout_xml::SeriesPath{topic_name, QString()},
           preferred_dataset)) {
@@ -260,36 +266,14 @@ void PendingDisplayBinder::watchTargetDestruction(QObject* target) {
   });
 }
 
-std::optional<CatalogItem> PendingDisplayBinder::resolveObjectTopic(
-    const QString& topic, std::optional<DatasetId> preferred) const {
-  std::optional<CatalogItem> fallback;
-  for (const CatalogItem& item : catalog_.items()) {
-    if (item.topic_name != topic || asObjectTopic(item) == nullptr) {
-      continue;
-    }
-    if (preferred.has_value() && item.dataset_id == *preferred) {
-      return item;
-    }
-    if (!fallback.has_value()) {
-      fallback = item;
-    }
+bool PendingDisplayBinder::sceneEntryCompleted(const PendingDisplayEntry& entry) const {
+  if (entry.scene_dock.isNull()) {
+    return true;
   }
-  return fallback;
-}
-
-bool PendingDisplayBinder::tryCompleteSceneEntry(PendingDisplayEntry& entry) {
-  const std::optional<CatalogItem> item = resolveObjectTopic(entry.path.topic, entry.preferred_dataset);
-  if (!item.has_value()) {
-    return false;
-  }
-  const auto* object_topic = asObjectTopic(*item);
-  // addTopic fires layerAdded, whose handler re-establishes the displayed
-  // reference BEFORE the caller releases this entry's pend hold — the topic
-  // never transiently looks unreferenced. A dock that declines the topic still
-  // consumes the entry, mirroring what an on-arrival drop would have done.
-  static_cast<void>(
-      entry.scene_dock->addTopic(object_topic->object_topic_id, object_topic->object_type, item->topic_name));
-  return true;
+  const auto demands = entry.scene_dock->pendingRestoreDemands();
+  return std::none_of(demands.cbegin(), demands.cend(), [&entry](const SceneDockWidget::PendingRestoreDemand& demand) {
+    return demandMatches(demand, entry.path.topic, entry.preferred_dataset);
+  });
 }
 
 std::optional<QString> PendingDisplayBinder::resolveEntryPath(
@@ -395,7 +379,7 @@ int PendingDisplayBinder::flush(const QSet<QString>& topics) {
     }
 
     if (entry.kind == PendingDisplayEntry::Kind::kSceneLayer) {
-      if (tryCompleteSceneEntry(entry)) {
+      if (sceneEntryCompleted(entry)) {
         ++completed_intents;
         releaseDemandRefs(entry);
         it = entries_.erase(it);

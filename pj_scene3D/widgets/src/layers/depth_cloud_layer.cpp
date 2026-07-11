@@ -14,6 +14,7 @@
 #include <utility>
 #include <vector>
 
+#include "layer_xml_validation.h"
 #include "pj_base/builtin/builtin_object.hpp"
 #include "pj_base/builtin/camera_info.hpp"
 #include "pj_base/builtin/image.hpp"
@@ -168,6 +169,7 @@ void DepthCloudLayer::setColormap(PointcloudRenderPass::Colormap cm) {
   }
   colormap_ = cm;
   cloud_pass_.setColormap(colormap_);
+  emit configurationChanged();
   emit repaintRequested();
 }
 
@@ -177,6 +179,7 @@ void DepthCloudLayer::setPointSizePixels(float pixels) {
   }
   point_size_px_ = pixels;
   cloud_pass_.setSizePixels(point_size_px_);
+  emit configurationChanged();
   emit repaintRequested();
 }
 
@@ -186,6 +189,7 @@ void DepthCloudLayer::setMinDepth(float metres) {
   }
   min_depth_m_ = metres;
   last_pushed_id_ = {};
+  emit configurationChanged();
   refreshNow();
 }
 
@@ -195,6 +199,7 @@ void DepthCloudLayer::setMaxDepth(float metres) {
   }
   max_depth_m_ = metres;
   last_pushed_id_ = {};
+  emit configurationChanged();
   refreshNow();
 }
 
@@ -224,29 +229,35 @@ bool DepthCloudLayer::xmlLoadState(const QDomElement& element) {
   if (element.isNull() || element.tagName() != "depthcloud"_L1) {
     return false;
   }
-  const QString cm_str = element.attribute(u"colormap"_s, u"turbo"_s);
-  if (cm_str == "viridis"_L1) {
-    setColormap(PointcloudRenderPass::Colormap::kViridis);
-  } else if (cm_str == "plasma"_L1) {
-    setColormap(PointcloudRenderPass::Colormap::kPlasma);
-  } else if (cm_str == "grayscale"_L1) {
-    setColormap(PointcloudRenderPass::Colormap::kGrayscale);
+  if (!detail::isLeafPayload(element)) {
+    return false;
+  }
+  const QString colormap_text = element.attribute(u"colormap"_s, u"turbo"_s);
+  PointcloudRenderPass::Colormap restored_colormap;
+  if (colormap_text == "turbo"_L1) {
+    restored_colormap = PointcloudRenderPass::Colormap::kTurbo;
+  } else if (colormap_text == "viridis"_L1) {
+    restored_colormap = PointcloudRenderPass::Colormap::kViridis;
+  } else if (colormap_text == "plasma"_L1) {
+    restored_colormap = PointcloudRenderPass::Colormap::kPlasma;
+  } else if (colormap_text == "grayscale"_L1) {
+    restored_colormap = PointcloudRenderPass::Colormap::kGrayscale;
   } else {
-    setColormap(PointcloudRenderPass::Colormap::kTurbo);
+    return false;
   }
-  bool ok = false;
-  const float ps = element.attribute(u"point_size_px"_s, u"2"_s).toFloat(&ok);
-  if (ok) {
-    setPointSizePixels(ps);
+  float restored_point_size = 0.0f;
+  float restored_min_depth = 0.0f;
+  float restored_max_depth = 0.0f;
+  if (!detail::parseFiniteFloat(element, "point_size_px", 2.0f, 1.0f, 32.0f, restored_point_size) ||
+      !detail::parseFiniteFloat(element, "min_depth", 0.0f, 0.0f, 1000.0f, restored_min_depth) ||
+      !detail::parseFiniteFloat(element, "max_depth", 0.0f, 0.0f, 1000.0f, restored_max_depth) ||
+      (restored_max_depth > 0.0f && restored_min_depth > restored_max_depth)) {
+    return false;
   }
-  const float nd = element.attribute(u"min_depth"_s, u"0"_s).toFloat(&ok);
-  if (ok) {
-    setMinDepth(nd);
-  }
-  const float fd = element.attribute(u"max_depth"_s, u"0"_s).toFloat(&ok);
-  if (ok) {
-    setMaxDepth(fd);
-  }
+  setColormap(restored_colormap);
+  setPointSizePixels(restored_point_size);
+  setMinDepth(restored_min_depth);
+  setMaxDepth(restored_max_depth);
   return true;
 }
 

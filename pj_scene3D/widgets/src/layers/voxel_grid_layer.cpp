@@ -10,9 +10,11 @@
 #include <QWidget>
 #include <algorithm>
 #include <any>
+#include <cmath>
 #include <glm/glm.hpp>
 #include <optional>
 
+#include "layer_xml_validation.h"
 #include "pj_base/builtin/voxel_grid.hpp"
 #include "pj_base/time.hpp"  // PJ::fromRaw, PJ::toRaw
 #include "pj_plugins/sdk/message_parser_plugin_base.hpp"
@@ -78,21 +80,40 @@ QDomElement VoxelGridLayer::xmlSaveState(QDomDocument& doc) const {
 }
 
 bool VoxelGridLayer::xmlLoadState(const QDomElement& element) {
+  if (element.isNull() || element.tagName() != "voxel_grid"_L1 || !detail::isLeafPayload(element)) {
+    return false;
+  }
+  bool mode_ok = false;
+  bool threshold_ok = false;
+  bool auto_range_ok = false;
+  bool range_lo_ok = false;
+  bool range_hi_ok = false;
+  bool colormap_ok = false;
+  bool opacity_ok = false;
+  const int mode = element.attribute(u"draw_mode"_s, u"1"_s).toInt(&mode_ok);
+  const double threshold = element.attribute(u"threshold"_s, u"0"_s).toDouble(&threshold_ok);
+  const int auto_range = element.attribute(u"auto_range"_s, u"1"_s).toInt(&auto_range_ok);
+  const double range_lo = element.attribute(u"range_lo"_s, u"0"_s).toDouble(&range_lo_ok);
+  const double range_hi = element.attribute(u"range_hi"_s, u"1"_s).toDouble(&range_hi_ok);
+  const int colormap = element.attribute(u"colormap"_s, u"0"_s).toInt(&colormap_ok);
+  const double opacity = element.attribute(u"opacity"_s, u"1"_s).toDouble(&opacity_ok);
+  if (!mode_ok || mode < 0 || mode > 3 || !threshold_ok || !std::isfinite(threshold) || !auto_range_ok ||
+      (auto_range != 0 && auto_range != 1) || !range_lo_ok || !std::isfinite(range_lo) || !range_hi_ok ||
+      !std::isfinite(range_hi) || range_lo > range_hi || !colormap_ok || colormap < 0 ||
+      colormap >= PJ::kColormapCount || !opacity_ok || !std::isfinite(opacity) || opacity < 0.0 || opacity > 1.0) {
+    return false;
+  }
   // active_field_name_ is restored verbatim; if the named field is absent when a
   // grid arrives, resolveField() falls back to the default and adopts the saved
   // name later once a grid carrying it appears (late-arrival safe).
-  active_field_name_ = element.attribute(u"field"_s).toStdString();
+  setActiveField(element.attribute(u"field"_s));
   uploaded_field_setting_ = "\x01";  // force a re-pack on the next render
-
-  const int mode = element.attribute(u"draw_mode"_s, u"1"_s).toInt();
-  draw_mode_ = mode >= 0 && mode <= 3 ? static_cast<VoxelDrawMode>(mode) : VoxelDrawMode::kNonZero;
-  threshold_ = element.attribute(u"threshold"_s, u"0"_s).toDouble();
-  auto_range_ = element.attribute(u"auto_range"_s, u"1"_s).toInt() != 0;
-  manual_lo_ = element.attribute(u"range_lo"_s, u"0"_s).toDouble();
-  manual_hi_ = element.attribute(u"range_hi"_s, u"1"_s).toDouble();
-  const int cm = element.attribute(u"colormap"_s, u"0"_s).toInt();
-  colormap_ = cm >= 0 && cm < PJ::kColormapCount ? static_cast<PJ::Colormap>(cm) : PJ::Colormap::kTurbo;
-  opacity_ = std::clamp(element.attribute(u"opacity"_s, u"1"_s).toDouble(), 0.0, 1.0);
+  setDrawMode(static_cast<VoxelDrawMode>(mode));
+  setThreshold(threshold);
+  setAutoRange(auto_range != 0);
+  setManualRange(range_lo, range_hi);
+  setColormap(static_cast<PJ::Colormap>(colormap));
+  setOpacity(opacity);
   pushDisplayParamsToPass();
   return true;
 }
@@ -347,45 +368,75 @@ void VoxelGridLayer::pushDisplayParamsToPass() {
 }
 
 void VoxelGridLayer::setActiveField(const QString& field_name) {
-  active_field_name_ = field_name.toStdString();
+  const std::string next = field_name.toStdString();
+  if (active_field_name_ == next) {
+    return;
+  }
+  active_field_name_ = next;
   tracker_dirty_ = true;  // force renderAt → re-pack with the new field
+  emit configurationChanged();
   emit repaintRequested();
 }
 
 void VoxelGridLayer::setDrawMode(VoxelDrawMode mode) {
+  if (draw_mode_ == mode) {
+    return;
+  }
   draw_mode_ = mode;
   pass_.setDrawMode(mode);
+  emit configurationChanged();
   emit repaintRequested();
 }
 
 void VoxelGridLayer::setThreshold(double threshold) {
+  if (threshold_ == threshold) {
+    return;
+  }
   threshold_ = threshold;
   pass_.setThreshold(static_cast<float>(threshold));
+  emit configurationChanged();
   emit repaintRequested();
 }
 
 void VoxelGridLayer::setAutoRange(bool on) {
+  if (auto_range_ == on) {
+    return;
+  }
   auto_range_ = on;
   pass_.setAutoRange(on);
+  emit configurationChanged();
   emit repaintRequested();
 }
 
 void VoxelGridLayer::setManualRange(double lo, double hi) {
+  if (manual_lo_ == lo && manual_hi_ == hi) {
+    return;
+  }
   manual_lo_ = lo;
   manual_hi_ = hi;
   pass_.setManualRange(static_cast<float>(lo), static_cast<float>(hi));
+  emit configurationChanged();
   emit repaintRequested();
 }
 
 void VoxelGridLayer::setColormap(PJ::Colormap colormap) {
+  if (colormap_ == colormap) {
+    return;
+  }
   colormap_ = colormap;
   pass_.setColormap(colormap);
+  emit configurationChanged();
   emit repaintRequested();
 }
 
 void VoxelGridLayer::setOpacity(double opacity) {
-  opacity_ = std::clamp(opacity, 0.0, 1.0);
+  const double clamped = std::clamp(opacity, 0.0, 1.0);
+  if (opacity_ == clamped) {
+    return;
+  }
+  opacity_ = clamped;
   pass_.setOpacity(static_cast<float>(opacity_));
+  emit configurationChanged();
   emit repaintRequested();
 }
 

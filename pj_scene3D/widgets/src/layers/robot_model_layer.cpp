@@ -33,6 +33,7 @@
 #include <string>
 #include <utility>
 
+#include "layer_xml_validation.h"
 #include "mesh_load_set.h"
 #include "mesh_loader.h"
 #include "pj_base/builtin/robot_description.hpp"
@@ -101,6 +102,11 @@ RobotModelLayer::DisplayMode displayModeFromString(const QString& s) {
     return RobotModelLayer::DisplayMode::kCollision;
   }
   return RobotModelLayer::DisplayMode::kAuto;
+}
+
+QString datasetSource(PJ::SessionManager& session, PJ::DatasetId dataset_id) {
+  const PJ::DatasetInfo* info = session.dataEngine().getDataset(dataset_id);
+  return info != nullptr ? QString::fromStdString(info->source_name) : QString();
 }
 
 void addObjectTopicToCombo(QComboBox* combo, PJ::ObjectTopicId topic_id, const PJ::ObjectTopicDescriptor& desc) {
@@ -224,6 +230,11 @@ QDomElement RobotModelLayer::xmlSaveState(QDomDocument& doc) const {
     const auto desc = ctx_.session->objectStore().descriptor(source_topic_id_);
     el.setAttribute(u"source_topic_name"_s, QString::fromStdString(desc.topic_name));
     el.setAttribute(u"source_dataset_id"_s, static_cast<uint>(desc.dataset_id));
+    el.setAttribute(u"source_dataset_source"_s, datasetSource(*ctx_.session, desc.dataset_id));
+    const QString path = ctx_.session->datasetSourcePath(desc.dataset_id);
+    if (!path.isEmpty()) {
+      el.setAttribute(u"source_dataset_path"_s, path);
+    }
   }
   el.setAttribute(u"frame_prefix"_s, frame_prefix_);
   el.setAttribute(u"display_mode"_s, displayModeToString(display_mode_));
@@ -234,48 +245,122 @@ QDomElement RobotModelLayer::xmlSaveState(QDomDocument& doc) const {
 }
 
 bool RobotModelLayer::xmlLoadState(const QDomElement& element) {
-  if (element.isNull() || element.tagName() != "robot_model"_L1) {
-    return false;
+  return xmlLoadStateResult(element) == XmlLoadResult::kRestored;
+}
+
+RobotModelLayer::XmlLoadResult RobotModelLayer::xmlLoadStateResult(const QDomElement& element) {
+  if (element.isNull() || element.tagName() != "robot_model"_L1 || !detail::isLeafPayload(element)) {
+    return XmlLoadResult::kInvalid;
   }
-  source_type_ = sourceTypeFromString(element.attribute(u"source_type"_s, u"topic"_s));
+  const QString source_type_text = element.attribute(u"source_type"_s, u"topic"_s);
+  if (source_type_text != "topic"_L1 && source_type_text != "file"_L1 && source_type_text != "url"_L1) {
+    return XmlLoadResult::kInvalid;
+  }
+  const SourceType restored_source_type = sourceTypeFromString(source_type_text);
+  const QString display_mode_text = element.attribute(u"display_mode"_s, u"auto"_s);
+  if (display_mode_text != "auto"_L1 && display_mode_text != "visual"_L1 && display_mode_text != "collision"_L1) {
+    return XmlLoadResult::kInvalid;
+  }
+  bool restored_visible = true;
+  bool restored_ignore_up_axis = false;
+  if (!detail::parseTrueFalse(element, "visible", true, restored_visible) ||
+      !detail::parseTrueFalse(element, "ignore_collada_up_axis", false, restored_ignore_up_axis)) {
+    return XmlLoadResult::kInvalid;
+  }
+  QColor restored_color = fallback_color_;
+  if (element.hasAttribute(u"color"_s)) {
+    restored_color = QColor(element.attribute(u"color"_s));
+    if (!restored_color.isValid()) {
+      return XmlLoadResult::kInvalid;
+    }
+  }
+  const bool has_topic_name = element.hasAttribute(u"source_topic_name"_s);
+  const bool has_dataset_id = element.hasAttribute(u"source_dataset_id"_s);
+  const bool has_dataset_source = element.hasAttribute(u"source_dataset_source"_s);
+  const bool has_dataset_path = element.hasAttribute(u"source_dataset_path"_s);
+  const bool has_topic_identity = has_topic_name || has_dataset_id || has_dataset_source || has_dataset_path;
+  if ((restored_source_type != SourceType::kTopic && has_topic_identity) ||
+      (!has_topic_name && (has_dataset_id || has_dataset_source || has_dataset_path))) {
+    return XmlLoadResult::kInvalid;
+  }
+  PJ::DatasetId saved_dataset_id = 0;
+  if (has_dataset_id) {
+    bool id_ok = false;
+    const qulonglong value = element.attribute(u"source_dataset_id"_s).toULongLong(&id_ok);
+    if (!id_ok || value == 0 || value > std::numeric_limits<uint32_t>::max()) {
+      return XmlLoadResult::kInvalid;
+    }
+    saved_dataset_id = static_cast<PJ::DatasetId>(value);
+  }
+  const QString topic_name = element.attribute(u"source_topic_name"_s);
+  if (has_topic_name && topic_name.isEmpty()) {
+    return XmlLoadResult::kInvalid;
+  }
+  std::optional<PJ::ObjectTopicId> restored_topic;
+  if (restored_source_type == SourceType::kTopic && ctx_.session != nullptr && has_topic_name) {
+    const QString source = element.attribute(u"source_dataset_source"_s);
+    const QString path = element.attribute(u"source_dataset_path"_s);
+    if (!has_dataset_id && source.isEmpty() && path.isEmpty()) {
+      const UniqueObjectTopicResolution generic = resolveUniqueObjectTopic(
+          ctx_.session->objectStore(), topic_name.toStdString(), PJ::sdk::BuiltinObjectType::kRobotDescription);
+      if (generic.ambiguous) {
+        return XmlLoadResult::kInvalid;
+      }
+      restored_topic = generic.topic_id;
+    } else {
+      const PJ::DatasetIdentityResolution dataset =
+          ctx_.session->resolveDatasetIdentity(saved_dataset_id, source, path);
+      if (dataset.ambiguous) {
+        return XmlLoadResult::kInvalid;
+      }
+      if (dataset.id.has_value()) {
+        restored_topic = ctx_.session->objectStore().findTopic(*dataset.id, topic_name.toStdString());
+      }
+    }
+    if (!restored_topic.has_value()) {
+      return XmlLoadResult::kDeferred;
+    }
+    const PJ::ObjectTopicDescriptor& descriptor = ctx_.session->objectStore().descriptor(*restored_topic);
+    const PJ::sdk::BuiltinObjectType live_type = builtinObjectTypeFor(descriptor);
+    if (live_type != PJ::sdk::BuiltinObjectType::kNone && live_type != PJ::sdk::BuiltinObjectType::kRobotDescription) {
+      return XmlLoadResult::kInvalid;
+    }
+  }
+
+  const SourceType old_source_type = source_type_;
+  const QString old_source_value = source_value_;
+  const uint32_t old_topic_id = source_topic_id_.id;
+  const QString old_prefix = frame_prefix_;
+  const DisplayMode old_mode = display_mode_;
+  const bool old_visible = visible_;
+  const QRgb old_color = fallback_color_.rgb();
+  const bool old_ignore_up_axis = ignore_collada_up_axis_;
+  source_type_ = restored_source_type;
   source_value_ = element.attribute(u"source_value"_s, source_value_);
   frame_prefix_ = element.attribute(u"frame_prefix"_s);
-  display_mode_ = displayModeFromString(element.attribute(u"display_mode"_s, u"auto"_s));
-  visible_ = element.attribute(u"visible"_s, u"true"_s) == "true"_L1;
-  if (element.hasAttribute(u"color"_s)) {
-    const QColor color(element.attribute(u"color"_s));
-    if (color.isValid()) {
-      fallback_color_ = color;
-    }
-  }
-  ignore_collada_up_axis_ = element.attribute(u"ignore_collada_up_axis"_s, u"false"_s) == "true"_L1;
-  // display_mode_ / frame_prefix_ / visible_ were just assigned directly above,
-  // bypassing the setters; loadFromCurrentSource() below also sets this, but be
-  // explicit so the restore path is self-evidently covered.
+  display_mode_ = displayModeFromString(display_mode_text);
+  visible_ = restored_visible;
+  fallback_color_ = restored_color;
+  ignore_collada_up_axis_ = restored_ignore_up_axis;
   draws_dirty_ = true;
-  // Re-resolve a persisted topic source by its (dataset_id, topic_name) identity
-  // rather than trusting the constructor's default binding — the user may have
-  // switched the source combo to a different topic before saving.
-  if (source_type_ == SourceType::kTopic && ctx_.session != nullptr && element.hasAttribute(u"source_topic_name"_s)) {
-    // A malformed/absent dataset id parses to 0, which simply misses findTopic
-    // and lands on the visible "not found" status below.
-    const auto dataset_id = static_cast<PJ::DatasetId>(element.attribute(u"source_dataset_id"_s).toUInt());
-    const std::string topic_name = element.attribute(u"source_topic_name"_s).toStdString();
-    const auto resolved = ctx_.session->objectStore().findTopic(dataset_id, topic_name);
-    if (resolved.has_value()) {
-      setSourceTopic(*resolved);  // re-binds source_topic_id_ and loads the model
-    } else {
-      // Keep the constructor binding (source_topic_id_ unchanged) and surface why
-      // nothing loaded instead of silently restoring the wrong / empty model.
-      setStatus(tr("Topic '%1' not found in this dataset").arg(QString::fromStdString(topic_name)));
-    }
+  bool source_setter_emitted = false;
+  if (restored_topic.has_value()) {
+    source_setter_emitted = source_topic_id_.id != restored_topic->id;
+    setSourceTopic(*restored_topic);
   } else if (ctx_.session != nullptr) {
     loadFromCurrentSource();
+  }
+  const bool changed = old_source_type != source_type_ || old_source_value != source_value_ ||
+                       old_topic_id != source_topic_id_.id || old_prefix != frame_prefix_ ||
+                       old_mode != display_mode_ || old_visible != visible_ || old_color != fallback_color_.rgb() ||
+                       old_ignore_up_axis != ignore_collada_up_axis_;
+  if (changed && !source_setter_emitted) {
+    emit configurationChanged();
   }
   emit infoChanged();
   emit visibilityChanged(visible_);
   emit repaintRequested();
-  return true;
+  return XmlLoadResult::kRestored;
 }
 
 bool RobotModelLayer::attach(const PJ::SceneLayerContext& ctx) {
@@ -815,6 +900,8 @@ void RobotModelLayer::setPackageResolver(UrdfPackageResolver* resolver) {
 }
 
 void RobotModelLayer::setSourceTopic(PJ::ObjectTopicId topic_id, QString display_name) {
+  const bool changed = source_type_ != SourceType::kTopic || source_topic_id_.id != topic_id.id ||
+                       (!display_name.isEmpty() && display_name_ != display_name);
   source_type_ = SourceType::kTopic;
   source_topic_id_ = topic_id;
   if (!display_name.isEmpty()) {
@@ -829,18 +916,29 @@ void RobotModelLayer::setSourceTopic(PJ::ObjectTopicId topic_id, QString display
     }
     loadFromCurrentSource();
   }
+  if (changed) {
+    emit configurationChanged();
+  }
 }
 
 void RobotModelLayer::setSourceFile(QString path) {
+  if (source_type_ == SourceType::kFile && source_value_ == path) {
+    return;
+  }
   source_type_ = SourceType::kFile;
   source_value_ = std::move(path);
   loadFromCurrentSource();
+  emit configurationChanged();
 }
 
 void RobotModelLayer::setSourceUrl(QString url) {
+  if (source_type_ == SourceType::kUrl && source_value_ == url) {
+    return;
+  }
   source_type_ = SourceType::kUrl;
   source_value_ = std::move(url);
   loadFromCurrentSource();
+  emit configurationChanged();
 }
 
 void RobotModelLayer::setFramePrefix(QString prefix) {
@@ -852,6 +950,7 @@ void RobotModelLayer::setFramePrefix(QString prefix) {
   rebuildStaticBridges();  // bridge frames carry the prefix too
   emit sourceFrameChanged(sourceFrame());
   emit fallbackFramesChanged(fallbackFrames());
+  emit configurationChanged();
   emit repaintRequested();
 }
 
@@ -884,15 +983,17 @@ void RobotModelLayer::setDisplayMode(DisplayMode mode) {
   }
   display_mode_ = mode;
   draws_dirty_ = true;  // visuals/collisions selection changes the draw list
+  emit configurationChanged();
   emit repaintRequested();
 }
 
 void RobotModelLayer::setFallbackColor(QColor color) {
-  if (!color.isValid() || fallback_color_ == color) {
+  if (!color.isValid() || fallback_color_.rgb() == color.rgb()) {
     return;
   }
   fallback_color_ = std::move(color);
   draws_dirty_ = true;
+  emit configurationChanged();
   emit repaintRequested();
 }
 
@@ -906,6 +1007,7 @@ void RobotModelLayer::setIgnoreColladaUpAxis(bool ignore) {
   // .dae meshes re-import with the new effective flip (it also re-resolves the
   // override per path in startMeshLoads).
   loadFromCurrentSource();
+  emit configurationChanged();
 }
 
 QString RobotModelLayer::linkFrameName(const std::string& link_name) const {

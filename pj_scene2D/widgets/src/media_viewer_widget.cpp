@@ -83,10 +83,43 @@ bool MediaViewerWidget::pointInspectorEnabled() const noexcept {
 }
 
 void MediaViewerWidget::resetView() {
-  zoom_ = 1.0f;
-  pan_x_ = 0.0f;
-  pan_y_ = 0.0f;
+  static_cast<void>(setViewState({}));
+}
+
+MediaViewState MediaViewerWidget::viewState() const noexcept {
+  return MediaViewState{.zoom = zoom_, .pan_x = pan_x_, .pan_y = pan_y_};
+}
+
+bool MediaViewerWidget::isViewStateValid(const MediaViewState& state) noexcept {
+  constexpr float kMinZoom = 1.0f;
+  constexpr float kMaxZoom = 20.0f;
+  if (!std::isfinite(state.zoom) || !std::isfinite(state.pan_x) || !std::isfinite(state.pan_y) ||
+      state.zoom < kMinZoom || state.zoom > kMaxZoom) {
+    return false;
+  }
+  return state.zoom != kMinZoom || (state.pan_x == 0.0f && state.pan_y == 0.0f);
+}
+
+bool MediaViewerWidget::setViewState(const MediaViewState& state) {
+  if (!isViewStateValid(state)) {
+    return false;
+  }
+  const MediaViewState previous = viewState();
+  if (previous == state) {
+    return true;
+  }
+  zoom_ = state.zoom;
+  pan_x_ = state.pan_x;
+  pan_y_ = state.pan_y;
   update();
+  if (zoom_ != previous.zoom) {
+    emit zoomChanged(zoom_);
+  }
+  if (point_inspector_enabled_.load(std::memory_order_relaxed) &&
+      point_inspector_active_.load(std::memory_order_relaxed)) {
+    refreshPointInspector();
+  }
+  return true;
 }
 
 void MediaViewerWidget::setMediaSource(MediaSource* source) {
@@ -1222,30 +1255,29 @@ void MediaViewerWidget::render(QRhiCommandBuffer* cb) {
 }
 
 void MediaViewerWidget::wheelEvent(QWheelEvent* e) {
-  float old_zoom = zoom_;
-  float delta = e->angleDelta().y() > 0 ? 1.1f : 1.0f / 1.1f;
-  zoom_ = std::clamp(zoom_ * delta, 1.0f, 20.0f);
+  const MediaViewState previous = viewState();
+  MediaViewState next = previous;
+  const float delta = e->angleDelta().y() > 0 ? 1.1f : 1.0f / 1.1f;
+  next.zoom = std::clamp(next.zoom * delta, 1.0f, 20.0f);
 
-  if (zoom_ <= 1.0f) {
-    pan_x_ = 0.0f;
-    pan_y_ = 0.0f;
+  if (next.zoom <= 1.0f) {
+    next.pan_x = 0.0f;
+    next.pan_y = 0.0f;
   } else {
-    float mx = (2.0f * static_cast<float>(e->position().x()) / static_cast<float>(width()) - 1.0f);
-    float my = (2.0f * static_cast<float>(e->position().y()) / static_cast<float>(height()) - 1.0f);
-    pan_x_ += mx * (1.0f / zoom_ - 1.0f / old_zoom);
-    pan_y_ += my * (1.0f / zoom_ - 1.0f / old_zoom);
+    const float mx = (2.0f * static_cast<float>(e->position().x()) / static_cast<float>(width()) - 1.0f);
+    const float my = (2.0f * static_cast<float>(e->position().y()) / static_cast<float>(height()) - 1.0f);
+    next.pan_x += mx * (1.0f / next.zoom - 1.0f / previous.zoom);
+    next.pan_y += my * (1.0f / next.zoom - 1.0f / previous.zoom);
   }
 
-  update();
-  emit zoomChanged(zoom_);
-  if (point_inspector_enabled_.load(std::memory_order_relaxed) &&
-      point_inspector_active_.load(std::memory_order_relaxed)) {
-    refreshPointInspector();
+  if (next != previous && setViewState(next)) {
+    emit viewInteractionCommitted();
   }
   e->accept();
 }
 
 void MediaViewerWidget::mousePressEvent(QMouseEvent* e) {
+  pan_interaction_changed_ = false;
   if (e->button() == Qt::LeftButton) {
     hidePointInspector();
   }
@@ -1261,6 +1293,7 @@ void MediaViewerWidget::mouseMoveEvent(QMouseEvent* e) {
     auto dy = static_cast<float>(e->position().y() - last_mouse_pos_.y()) / static_cast<float>(height()) * 2.0f / zoom_;
     pan_x_ += dx;
     pan_y_ -= dy;
+    pan_interaction_changed_ = pan_interaction_changed_ || dx != 0.0f || dy != 0.0f;
     last_mouse_pos_ = e->position();
     update();
     e->accept();
@@ -1274,8 +1307,23 @@ void MediaViewerWidget::mouseMoveEvent(QMouseEvent* e) {
   }
 }
 
+void MediaViewerWidget::mouseReleaseEvent(QMouseEvent* e) {
+  if (e->button() == Qt::LeftButton && pan_interaction_changed_) {
+    pan_interaction_changed_ = false;
+    emit viewInteractionCommitted();
+    e->accept();
+    return;
+  }
+  pan_interaction_changed_ = false;
+  QRhiWidget::mouseReleaseEvent(e);
+}
+
 void MediaViewerWidget::mouseDoubleClickEvent(QMouseEvent* e) {
+  const MediaViewState previous = viewState();
   resetView();
+  if (viewState() != previous) {
+    emit viewInteractionCommitted();
+  }
   e->accept();
 }
 

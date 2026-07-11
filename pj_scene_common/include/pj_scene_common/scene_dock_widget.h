@@ -4,11 +4,13 @@
 
 #include <QDomDocument>
 #include <QDomElement>
+#include <QScopedValueRollback>
 #include <QSet>
 #include <QString>
 #include <QStringList>
 #include <QWidget>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <string>
@@ -48,7 +50,43 @@ class SceneDockWidget : public QWidget, public IDataWidget, public IObjectViewer
   /// was not available yet. An empty filter drains all pending entries.
   virtual int retryPendingRestores(const QSet<QString>& topic_names);
   [[nodiscard]] virtual QStringList unresolvedPendingRestores() const;
+  /// Returns unresolved saved elements that block an exact restore. Interactive
+  /// advertised-topic intents are durable workspace state and are excluded.
+  [[nodiscard]] QStringList unresolvedBlockingPendingRestores() const;
   virtual void clearPendingRestores();
+  void clearBlockingPendingRestores();
+  /// Base<->family payload convention: attributes named `dataset_id` /
+  /// `source_dataset_id` anywhere in a deferred payload are dataset
+  /// references — discardPendingRestoresFor* honors exactly these.
+  void discardPendingRestoresForDataset(DatasetId dataset_id);
+  void discardPendingRestoresForTopic(DatasetId dataset_id, const QString& topic_name);
+
+  struct PendingRestoreDemand {
+    QString topic_name;
+    std::optional<DatasetId> preferred_dataset;
+  };
+  [[nodiscard]] std::vector<PendingRestoreDemand> pendingRestoreDemands() const;
+  /// Resolver-free emptiness probe — pendingRestoreDemands() runs the identity
+  /// ladder per element, so use this for a plain yes/no question.
+  [[nodiscard]] bool hasPendingRestoreDemands() const;
+
+  /// Records a not-yet-materialized advertised object drop in the dock-owned
+  /// deferred queue. The binder may hold demand for it but cannot complete it.
+  bool deferTopicIntent(
+      DatasetId dataset_id, const QString& topic_name, sdk::BuiltinObjectType object_type,
+      const QString& display_name = {});
+
+  /// Optional override of the object-identity policy (tests, custom hosts).
+  /// The callback must reject ambiguity. Without it, resolution defaults to
+  /// the session's ambiguity-safe ladder; without a session, restores pend.
+  using ObjectDatasetResolver =
+      std::function<std::optional<DatasetId>(DatasetId, const QString&, const QString&, const QString&)>;
+  void setObjectDatasetResolver(ObjectDatasetResolver resolver);
+
+  /// True when the current replay permanently rejected an element or payload.
+  [[nodiscard]] bool workspaceRestoreFailed() const noexcept {
+    return restore_failure_count_ != 0;
+  }
 
   /// IObjectViewer: non-virtual template method. Runs pruneEvictedObjects() (the
   /// family-specific eviction sweep) and then applies the keep-if-never-populated
@@ -86,8 +124,13 @@ class SceneDockWidget : public QWidget, public IDataWidget, public IObjectViewer
   void layerRemoved(ObjectTopicId topic_id);
   void layerVisibilityChanged(ObjectTopicId topic_id, bool visible);
   void layerWarningChanged(ObjectTopicId topic_id, bool warn, QString reason);
+  /// Emitted whenever the dock-owned deferred queue changes.
+  void pendingRestoresChanged();
+  /// Emitted for committed, persistent user mutations, never during restore.
+  void workspaceChanged();
 
  protected:
+  enum class DeferredElementKind { kRenderLayer, kConfigTopic };
   /// Registry used by subclasses to register their supported layer types.
   [[nodiscard]] LayerFactory& layerFactory();
   [[nodiscard]] const LayerFactory& layerFactory() const;
@@ -95,6 +138,9 @@ class SceneDockWidget : public QWidget, public IDataWidget, public IObjectViewer
 
   /// XML root tag for this scene family. Defaults to "scene".
   [[nodiscard]] virtual QString xmlTag() const;
+
+  /// Direct child tags accepted by this family before destructive replay.
+  [[nodiscard]] virtual bool acceptsStateChildTag(const QString& tag) const;
 
   /// Creates the scene widget hosted by this dock; called lazily by the base.
   virtual QWidget* createSceneView() = 0;
@@ -104,6 +150,14 @@ class SceneDockWidget : public QWidget, public IDataWidget, public IObjectViewer
 
   /// Filters object topics before layer construction.
   [[nodiscard]] virtual bool acceptsObjectType(sdk::BuiltinObjectType object_type) const = 0;
+
+  [[nodiscard]] virtual bool acceptsDeferredObjectType(sdk::BuiltinObjectType object_type) const {
+    return acceptsObjectType(object_type);
+  }
+
+  [[nodiscard]] virtual DeferredElementKind deferredElementKind(sdk::BuiltinObjectType /*object_type*/) const {
+    return DeferredElementKind::kRenderLayer;
+  }
 
   /// Allows subclasses to consume scene-wide config topics without adding a layer.
   virtual bool handleSceneConfigTopic(ObjectTopicId topic_id, sdk::BuiltinObjectType object_type, const QString& title);
@@ -182,12 +236,9 @@ class SceneDockWidget : public QWidget, public IDataWidget, public IObjectViewer
   /// re-resolve a layer across sessions where load order assigned a different id.
   [[nodiscard]] static QString datasetSourceName(const SessionManager* session, DatasetId dataset_id);
 
-  /// Maps a saved (dataset_id, source) pair to a currently-loaded DatasetId.
-  /// Prefers a source-name match over the raw id, because DatasetIds are a
-  /// load-order counter and are not stable across sessions; falls back to the
-  /// saved id when it still resolves, else nullopt (dataset not loaded).
-  [[nodiscard]] static std::optional<DatasetId> resolveDatasetId(
-      const SessionManager* session, DatasetId saved_id, const QString& saved_source);
+  /// Resolves through the host-injected ambiguity-safe object identity policy.
+  [[nodiscard]] std::optional<DatasetId> resolveObjectDataset(
+      DatasetId saved_id, const QString& saved_source, const QString& saved_path, const QString& topic_name) const;
 
   /// The dataset whose display-offset represents this dock's time domain when
   /// onTrackerTime() recovers the absolute tracker instant. The base scans render
@@ -215,6 +266,17 @@ class SceneDockWidget : public QWidget, public IDataWidget, public IObjectViewer
   }
 
  protected:
+  struct PendingRestoreElement {
+    QDomDocument document;
+    QString topic_name;
+  };
+
+  struct PendingRestoreSnapshot {
+    std::vector<PendingRestoreElement> elements;
+    uint64_t restore_failure_count = 0;
+    bool ever_had_content = false;
+  };
+
   /// Per-element restore hook the pending-retry loop (retryPendingRestores) calls for
   /// each deferred element. The base restores a <layer>; a widget family overrides this
   /// to dispatch other element kinds (e.g. 3D's <config_topic>). Returns false to keep
@@ -224,17 +286,25 @@ class SceneDockWidget : public QWidget, public IDataWidget, public IObjectViewer
   /// Stashes an XML element whose dataset/topic is not available yet, so a later
   /// retryPendingRestores re-attempts it. Protected so a derived family can defer its
   /// own elements into the one shared pending queue.
-  void rememberPendingRestore(const QDomElement& element);
+  void rememberPendingRestore(const QDomElement& element, QString topic_name = {});
+  [[nodiscard]] PendingRestoreSnapshot capturePendingRestoreState() const;
+  void restorePendingRestoreState(const PendingRestoreSnapshot& snapshot);
+  void appendPendingRestoreElements(QDomDocument& doc, QDomElement& root) const;
+  void markWorkspaceRestoreFailed();
+  void resetWorkspaceRestoreStatus();
+  void notifyWorkspaceChanged();
+
+  [[nodiscard]] QScopedValueRollback<bool> beginWorkspaceRestore() {
+    return QScopedValueRollback<bool>(restoring_state_, true);
+  }
 
  private:
   /// Result of an add attempt, separating the two outcomes addTopic's bool used
   /// to conflate ("layer created" vs "consumed as a scene-config topic").
   enum class AddOutcome { kLayerAdded, kConsumedAsConfig, kRejected };
 
-  struct PendingRestoreElement {
-    QDomDocument document;
-    QString topic_name;
-  };
+  /// Removes matching queue entries and emits pendingRestoresChanged once.
+  void erasePendingRestoresIf(const std::function<bool(const PendingRestoreElement&)>& predicate);
 
   [[nodiscard]] PJ::Timepoint clampToLayerRange(PJ::Timepoint time) const;
   [[nodiscard]] std::vector<ISceneLayer*> orderedLayerPtrs() const;
@@ -275,6 +345,7 @@ class SceneDockWidget : public QWidget, public IDataWidget, public IObjectViewer
   std::vector<PendingRestoreElement> pending_restore_elements_;
   LayerFactory factory_;
   SessionManager* session_ = nullptr;
+  ObjectDatasetResolver object_dataset_resolver_;
   std::optional<PJ::Timepoint> last_tracker_;
   QWidget* scene_view_ = nullptr;
   std::unordered_map<int64_t, bool> layer_visibility_cache_;
@@ -282,6 +353,8 @@ class SceneDockWidget : public QWidget, public IDataWidget, public IObjectViewer
   // everHadContent()); never cleared, so an evicted-to-empty dock stays
   // distinguishable from a never-populated one.
   bool ever_had_content_ = false;
+  bool restoring_state_ = false;
+  uint64_t restore_failure_count_ = 0;
 
   // Per-tick repaint coalescing (see onTrackerTime). last_render_key_ is the
   // trackerRenderKey() of the most recently painted tracker frame; have_render_key_

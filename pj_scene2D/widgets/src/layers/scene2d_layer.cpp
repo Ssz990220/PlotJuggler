@@ -114,6 +114,9 @@ bool Scene2DLayer::xmlLoadState(const QDomElement& element) {
   if (element.isNull()) {
     return true;
   }
+  if (element.tagName() != u"scene2d_layer"_s) {
+    return false;
+  }
   return loadOptions(element);
 }
 

@@ -215,6 +215,75 @@ QList<SeriesPath> extractSeriesPaths(const QDomDocument& doc) {
   return paths;
 }
 
+std::vector<std::uint32_t> matchFanoutDatasets(
+    const QList<DataSourceDatasetRef>& saved, const std::vector<std::uint32_t>& candidates,
+    const std::function<QString(std::uint32_t)>& source_name_of) {
+  std::vector<std::uint32_t> matches(static_cast<std::size_t>(saved.size()), 0);
+  const auto named_saved_count = [&saved](const QString& name) {
+    return static_cast<int>(std::count_if(
+        saved.begin(), saved.end(), [&name](const DataSourceDatasetRef& child) { return child.source_name == name; }));
+  };
+  const auto named_candidate_count = [&candidates, &source_name_of](const QString& name) {
+    return static_cast<int>(std::count_if(
+        candidates.begin(), candidates.end(), [&](std::uint32_t id) { return source_name_of(id) == name; }));
+  };
+
+  QSet<std::uint32_t> used;
+  // Resolve a saved child by its source_index against the live candidates: the
+  // index must be in range, its candidate not yet consumed, and its live
+  // source_name must agree with the saved name (an empty saved name matches
+  // any). Shared by both matcher arms — the index tiebreak in the unique-name
+  // arm and the shape-guarded index bind in the duplicate-name arm.
+  const auto match_by_index = [&](const DataSourceDatasetRef& child) -> std::optional<std::uint32_t> {
+    if (child.source_index < 0 || child.source_index >= static_cast<int>(candidates.size())) {
+      return std::nullopt;
+    }
+    const std::uint32_t indexed = candidates[static_cast<std::size_t>(child.source_index)];
+    if (used.contains(indexed)) {
+      return std::nullopt;
+    }
+    if (child.source_name.isEmpty() || source_name_of(indexed) == child.source_name) {
+      return indexed;
+    }
+    return std::nullopt;
+  };
+
+  for (qsizetype child_index = 0; child_index < saved.size(); ++child_index) {
+    const DataSourceDatasetRef& child = saved[child_index];
+    const bool name_is_duplicated = !child.source_name.isEmpty() && named_saved_count(child.source_name) > 1;
+
+    std::uint32_t matched = 0;
+    if (name_is_duplicated) {
+      // Index-only, shape-guarded: bind to candidates[source_index] iff that
+      // candidate shares the name AND the same-named fan-out shape is preserved.
+      if (named_candidate_count(child.source_name) == named_saved_count(child.source_name)) {
+        matched = match_by_index(child).value_or(0);
+      }
+    } else {
+      // Name-unique child: match by name first, else by source_index.
+      std::vector<std::uint32_t> source_matches;
+      for (const std::uint32_t candidate : candidates) {
+        if (used.contains(candidate)) {
+          continue;
+        }
+        if (child.source_name.isEmpty() || source_name_of(candidate) == child.source_name) {
+          source_matches.push_back(candidate);
+        }
+      }
+      if (source_matches.size() == 1) {
+        matched = source_matches.front();
+      } else {
+        matched = match_by_index(child).value_or(0);
+      }
+    }
+    if (matched != 0) {
+      used.insert(matched);
+      matches[static_cast<std::size_t>(child_index)] = matched;
+    }
+  }
+  return matches;
+}
+
 QList<SeriesPath> rebindCurveKeys(QDomDocument& doc, const SeriesKeyResolver& resolve) {
   QList<SeriesPath> unresolved;
   QSet<QString> unresolved_seen;

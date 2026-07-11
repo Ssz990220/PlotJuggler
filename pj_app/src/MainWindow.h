@@ -16,6 +16,7 @@
 #include <QSet>
 #include <QString>
 #include <QStringList>
+#include <QTimer>
 #include <deque>
 #include <functional>
 #include <memory>
@@ -531,6 +532,14 @@ class MainWindow : public QMainWindow {
   void rebuildPendingDisplayBindings(const QDomDocument& doc);
   /// Coalesces plot-owned intent changes into one binder rebuild on the event loop.
   void schedulePendingDisplayBindingRebuild();
+  /// One post-restore settlement of every scene dock: final pending retry,
+  /// then the folded verdict (permanent failure / unresolved BLOCKING topics).
+  struct SceneRestoreVerdict {
+    bool failed = false;
+    QStringList blocking_topics;
+  };
+  [[nodiscard]] SceneRestoreVerdict settleSceneRestores();
+
   int retryPendingSceneRestores(const std::vector<CatalogItem>& items);
   [[nodiscard]] QStringList unresolvedPendingSceneRestores();
   void clearPendingSceneRestores();
@@ -865,6 +874,12 @@ class MainWindow : public QMainWindow {
   QMetaObject::Connection pending_items_added_conn_;
   QMetaObject::Connection pending_queue_drained_conn_;
   bool pending_binding_rebuild_scheduled_ = false;
+  // Trailing-edge coalescer for scene-dock workspaceChanged: layer/view
+  // scrubbers emit per drag tick, and each push would serialize the whole
+  // workspace — one capture fires when the gesture goes quiet (the plot-side
+  // twin lives in the emitting widgets; scene docks have too many emitters,
+  // so the shell debounces its one subscription instead).
+  QTimer scene_undo_debounce_;
   // Timeline state (per-source offsets + track order) extracted during a progressive
   // restore but not yet applicable: the async worker had not registered the reloaded
   // datasets' source paths when restoreChromeAndPanels ran, so the offsets were

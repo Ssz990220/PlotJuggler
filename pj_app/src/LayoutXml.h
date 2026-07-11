@@ -12,6 +12,7 @@
 #include <functional>
 #include <optional>
 #include <utility>
+#include <vector>
 
 namespace PJ::layout_xml {
 
@@ -45,6 +46,21 @@ struct DataSourceDatasetRef {
   bool display_offset_includes_global_reference = false;
   int timeline_order = -1;
 };
+
+/// Binds each saved <fileInfo>/<dataset> fan-out child to a live candidate
+/// dataset, consuming each candidate at most once. Returns one DatasetId per
+/// saved child (dataset ids as raw std::uint32_t, this header's convention),
+/// aligned by index (0 = unmatched: missing or ambiguous — a
+/// surviving sibling must never inherit an offset that cannot be proven its
+/// own). Policy: a name shared by SEVERAL saved children binds by
+/// source_index ONLY, and only while the same-named fan-out shape is
+/// unchanged (saved count == candidate count for that name); a name-unique
+/// child matches by name first, falling back to its source_index (which must
+/// agree with the saved name when one is present). `source_name_of` supplies
+/// each candidate's live raw source name.
+[[nodiscard]] std::vector<std::uint32_t> matchFanoutDatasets(
+    const QList<DataSourceDatasetRef>& saved, const std::vector<std::uint32_t>& candidates,
+    const std::function<QString(std::uint32_t)>& source_name_of);
 
 // Resolved data-source reference extracted from <previouslyLoaded_Datafiles>.
 // Empty resolved_path means no replayable source was found in the layout.

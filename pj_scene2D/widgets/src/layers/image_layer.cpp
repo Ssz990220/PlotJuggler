@@ -166,6 +166,7 @@ void ImageLayer::setRectifyEnabled(bool enabled) {
   }
   rectify_enabled_ = enabled;
   applyOptions();
+  emit configurationChanged();
 }
 
 void ImageLayer::applyOptions() {
@@ -189,8 +190,15 @@ void ImageLayer::saveOptions(QDomElement& element) const {
 bool ImageLayer::loadOptions(const QDomElement& element) {
   // Absent attribute (layout saved before this toggle existed) keeps the current
   // default (true) -> rectification stays on, preserving the historical behaviour.
-  rectify_enabled_ = element.attribute(u"rectify_enabled"_s, rectify_enabled_ ? u"true"_s : u"false"_s) == "true"_L1;
-  applyOptions();
+  const QString saved = element.attribute(u"rectify_enabled"_s, rectify_enabled_ ? u"true"_s : u"false"_s);
+  if (saved != u"true"_s && saved != u"false"_s) {
+    return false;
+  }
+  const bool restored = saved == u"true"_s;
+  if (rectify_enabled_ != restored) {
+    rectify_enabled_ = restored;
+    applyOptions();
+  }
   return true;
 }
 

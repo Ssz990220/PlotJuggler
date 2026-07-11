@@ -28,4 +28,20 @@ PJ::sdk::BuiltinObjectType builtinObjectTypeFor(const PJ::ObjectTopicDescriptor&
   return parsed.value_or(PJ::sdk::BuiltinObjectType::kNone);
 }
 
+UniqueObjectTopicResolution resolveUniqueObjectTopic(
+    PJ::ObjectStore& store, std::string_view topic_name, PJ::sdk::BuiltinObjectType object_type) {
+  std::optional<PJ::ObjectTopicId> match;
+  for (const PJ::ObjectTopicId candidate : store.listTopics()) {
+    const PJ::ObjectTopicDescriptor& descriptor = store.descriptor(candidate);
+    if (descriptor.topic_name != topic_name || builtinObjectTypeFor(descriptor) != object_type) {
+      continue;
+    }
+    if (match.has_value()) {
+      return UniqueObjectTopicResolution{.topic_id = std::nullopt, .ambiguous = true};
+    }
+    match = candidate;
+  }
+  return UniqueObjectTopicResolution{.topic_id = match};
+}
+
 }  // namespace pj::scene3d

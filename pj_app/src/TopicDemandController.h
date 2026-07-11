@@ -75,10 +75,10 @@ class TopicDemandController : public QObject {
   void handlePlaceholderPlotDrop(PlotWidget* plot, DatasetId dataset_id, const QString& topic_name);
 
   // M3-UI placeholder drop path: an advertised OBJECT placeholder was dropped
-  // onto an already-mounted `dock`. Stages a pending scene layer via
-  // PendingDisplayBinder, which holds the demand reference and completes
-  // `dock->addTopic(...)` once the real object topic materializes.
-  void handleSceneDockPlaceholderDrop(SceneDockWidget* dock, DatasetId dataset_id, const QString& topic_name);
+  // onto an already-mounted `dock`. The dock stages the authoritative intent;
+  // PendingDisplayBinder holds only its demand reference.
+  void handleSceneDockPlaceholderDrop(
+      SceneDockWidget* dock, DatasetId dataset_id, const QString& topic_name, sdk::BuiltinObjectType object_type);
 
   // Starts a bounded, self-releasing "preview" subscription for `topic_name`: a
   // demand reference is held just long enough for one real sample to land (which

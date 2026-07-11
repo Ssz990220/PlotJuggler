@@ -122,6 +122,7 @@ class SceneViewWidget : public QOpenGLWidget {
   [[nodiscard]] MeshShadingParams& meshShadingParams() {
     return shading_params_;
   }
+  void setMeshShadingParams(const MeshShadingParams& params);
   [[nodiscard]] ICamera& camera() {
     return *camera_;
   }
@@ -132,6 +133,10 @@ class SceneViewWidget : public QOpenGLWidget {
   // Switch the active controller, carrying the current pose across so the view
   // doesn't jump (capture state → construct → adoptState → swap → repaint).
   void setCameraModel(CameraModel model);
+  [[nodiscard]] CameraModel cameraModel() const {
+    return camera_model_;
+  }
+  void resetCamera();
   // Latest scene extent (union of entity worldBounds()); forwarded to the active
   // camera for adaptive near/far and framing.
   void setSceneBounds(const AABB& bounds);
@@ -158,22 +163,46 @@ class SceneViewWidget : public QOpenGLWidget {
 
   // Part C scene-controls fan-out (call update() after changing).
   void setGridStyle(GridRenderPass::Style style) {
+    const auto before = grid_.style();
     grid_.setStyle(style);
+    if (grid_.style() != before) {
+      emit presentationChanged();
+    }
   }
   void setGridDivisions(int divisions) {
+    const int before = grid_.divisions();
     grid_.setDivisions(divisions);
+    if (grid_.divisions() != before) {
+      emit presentationChanged();
+    }
   }
   void setGridExtentMetres(float extent_m) {
+    const float before = grid_.extentMetres();
     grid_.setExtentMetres(extent_m);
+    if (grid_.extentMetres() != before) {
+      emit presentationChanged();
+    }
   }
   void setGizmoSize(float length_m) {
+    const float before = axes_.axisLength();
     axes_.setAxisLength(length_m);
+    if (axes_.axisLength() != before) {
+      emit presentationChanged();
+    }
   }
   void setGizmoOpacity(float opacity) {
+    const float before = axes_.opacity();
     axes_.setOpacity(opacity);
+    if (axes_.opacity() != before) {
+      emit presentationChanged();
+    }
   }
   void setGridVisible(bool visible) {
+    if (grid_visible_ == visible) {
+      return;
+    }
     grid_visible_ = visible;
+    emit presentationChanged();
   }
 
   // Per-view scene-control readback (the inverse of the setters above) so the
@@ -273,6 +302,7 @@ class SceneViewWidget : public QOpenGLWidget {
 
  signals:
   void framesChanged(const QList<FrameRow>& frames);
+  void presentationChanged();
 
  protected:
   void initializeGL() override;
@@ -365,6 +395,7 @@ class SceneViewWidget : public QOpenGLWidget {
   // Active camera controller (one of the CameraModel kinds). Owned; swapped by
   // setCameraModel(). Defaults to the improved Orbit.
   std::unique_ptr<ICamera> camera_{std::make_unique<OrbitCamera>()};
+  CameraModel camera_model_{CameraModel::kOrbit};
 
   // Latest scene extent, retained so a camera-model swap can re-apply it to the
   // freshly constructed controller (bounds are not part of CameraState).
@@ -422,6 +453,7 @@ class SceneViewWidget : public QOpenGLWidget {
 
   QPoint last_mouse_pos_;
   Qt::MouseButton active_button_{Qt::NoButton};
+  bool camera_gesture_changed_ = false;
 
   // ---- TF frame hover-label state ------------------------------------------
   // proj*view from the most recent paintGL, so the hover hit-test (a mouse-move

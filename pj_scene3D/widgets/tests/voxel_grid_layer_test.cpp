@@ -240,7 +240,15 @@ TEST(VoxelGridLayer, XmlRoundTrip) {
   const QDomElement saved = source.xmlSaveState(doc);
 
   pj::scene3d::VoxelGridLayer restored(topic_id, u"voxels"_s);
+  int configuration_changes = 0;
+  QObject::connect(&restored, &PJ::ISceneLayer::configurationChanged, &restored, [&configuration_changes]() {
+    ++configuration_changes;
+  });
   ASSERT_TRUE(restored.xmlLoadState(saved));
+  EXPECT_GT(configuration_changes, 0) << "user-facing XML parameter paste must reach the workspace undo path";
+  configuration_changes = 0;
+  ASSERT_TRUE(restored.xmlLoadState(saved));
+  EXPECT_EQ(configuration_changes, 0) << "re-applying identical parameters is not a workspace mutation";
 
   // Re-serialize and compare: every persisted attribute must survive the trip.
   QDomDocument doc2;

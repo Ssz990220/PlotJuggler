@@ -175,6 +175,13 @@ TEST(PointCloudLayerRgb, RgbModeRoundTripsThroughXml) {
 
   auto restored = makeAttachedLayer<&emitColoredCloud>();
   ASSERT_TRUE(restored.layer->xmlLoadState(saved));
+  // A smart-defaulted (latent) RGB choice persists as latent, not as a baked
+  // "rgb": the restored layer re-derives the colour-present default at its
+  // first decode, so the same layout against a colourless cloud correctly
+  // falls back to field colouring instead of forcing RGB.
+  pj::scene3d::Scene3DLayerContext restored_ctx;
+  restored_ctx.session = restored.session.get();
+  ASSERT_TRUE(restored.layer->attach(restored_ctx));
   EXPECT_EQ(restored.layer->colorType(), ColorType::kRgb);
 }
 

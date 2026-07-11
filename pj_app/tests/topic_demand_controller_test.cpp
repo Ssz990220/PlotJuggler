@@ -187,6 +187,10 @@ class StubSceneDockWidget : public PJ::SceneDockWidget {
   void syncViewLayers(const std::vector<PJ::ISceneLayer*>& /*ordered_layers*/) override {}
 };
 
+void wireSceneDock(StubSceneDockWidget& dock, PJ::AppSession& app_session) {
+  dock.setSessionManager(&app_session.sessionManager());
+}
+
 // --- fixture -----------------------------------------------------------------
 
 class TopicDemandControllerTest : public ::testing::Test {
@@ -361,9 +365,11 @@ TEST_F(TopicDemandControllerTest, SceneDockPlaceholderDropCompletesOnRealTopicWi
       dataset_id_, {PJ::AdvertisedTopic{u"/points"_s, PJ::sdk::BuiltinObjectType::kPointCloud}});
 
   auto dock = std::make_unique<StubSceneDockWidget>();
+  wireSceneDock(*dock, *app_session_);
   controller_->registerSceneDock(dock.get());
 
-  controller_->handleSceneDockPlaceholderDrop(dock.get(), dataset_id_, u"/points"_s);
+  controller_->handleSceneDockPlaceholderDrop(
+      dock.get(), dataset_id_, u"/points"_s, PJ::sdk::BuiltinObjectType::kPointCloud);
   auto& tracker = app_session_->topicDemandTracker();
   EXPECT_TRUE(referencesTopic(tracker, dataset_id_, u"/points"_s));
 
@@ -371,6 +377,7 @@ TEST_F(TopicDemandControllerTest, SceneDockPlaceholderDropCompletesOnRealTopicWi
   // itemsAdded wiring) retries addTopic and hands the reference off from the
   // placeholder hold to the real layerAdded-driven one.
   addObjectTopic(*app_session_, dataset_id_, u"/points"_s);
+  EXPECT_EQ(dock->retryPendingRestores(QSet<QString>{u"/points"_s}), 1);
   EXPECT_EQ(binder_->flush(QSet<QString>{u"/points"_s}), 1);
   EXPECT_TRUE(referencesTopic(tracker, dataset_id_, u"/points"_s));
   const ObjectTopicId topic_id = findObjectTopicId(app_session_->catalogModel(), u"/points"_s);
@@ -405,9 +412,11 @@ TEST_F(TopicDemandControllerTest, SceneDockDestructionReleasesUnresolvedPlacehol
       dataset_id_, {PJ::AdvertisedTopic{u"/points"_s, PJ::sdk::BuiltinObjectType::kPointCloud}});
 
   auto dock = std::make_unique<StubSceneDockWidget>();
+  wireSceneDock(*dock, *app_session_);
   controller_->registerSceneDock(dock.get());
 
-  controller_->handleSceneDockPlaceholderDrop(dock.get(), dataset_id_, u"/points"_s);
+  controller_->handleSceneDockPlaceholderDrop(
+      dock.get(), dataset_id_, u"/points"_s, PJ::sdk::BuiltinObjectType::kPointCloud);
   auto& tracker = app_session_->topicDemandTracker();
   EXPECT_TRUE(referencesTopic(tracker, dataset_id_, u"/points"_s));
 
@@ -427,8 +436,10 @@ TEST_F(TopicDemandControllerTest, SceneDropSurvivesStreamReconnectMintingFreshDa
       dataset_id_, {PJ::AdvertisedTopic{u"/points"_s, PJ::sdk::BuiltinObjectType::kPointCloud}});
 
   auto dock = std::make_unique<StubSceneDockWidget>();
+  wireSceneDock(*dock, *app_session_);
   controller_->registerSceneDock(dock.get());
-  controller_->handleSceneDockPlaceholderDrop(dock.get(), dataset_id_, u"/points"_s);
+  controller_->handleSceneDockPlaceholderDrop(
+      dock.get(), dataset_id_, u"/points"_s, PJ::sdk::BuiltinObjectType::kPointCloud);
 
   auto& tracker = app_session_->topicDemandTracker();
   EXPECT_TRUE(referencesTopic(tracker, dataset_id_, u"/points"_s));
@@ -444,9 +455,12 @@ TEST_F(TopicDemandControllerTest, SceneDropSurvivesStreamReconnectMintingFreshDa
   static_cast<void>(binder_->flush({}));
   EXPECT_TRUE(referencesTopic(tracker, dataset_b, u"/points"_s))
       << "pend reference must follow the topic to the reconnected dataset";
+  ASSERT_TRUE(catalog.removeDataset(dataset_id_, /*tombstone=*/false));
+  app_session_->sessionManager().removeDataset(dataset_id_);
 
   // The topic materializes under B only — the pend must still complete.
   addObjectTopic(*app_session_, dataset_b, u"/points"_s);
+  EXPECT_EQ(dock->retryPendingRestores(QSet<QString>{u"/points"_s}), 1);
   static_cast<void>(binder_->flush(QSet<QString>{u"/points"_s}));
   const ObjectTopicId topic_id = findObjectTopicId(app_session_->catalogModel(), u"/points"_s);
   ASSERT_NE(topic_id.id, 0U);
@@ -482,13 +496,19 @@ TEST_F(TopicDemandControllerTest, AllPendingSceneDropsForOneTopicComplete) {
 
   auto dock_a = std::make_unique<StubSceneDockWidget>();
   auto dock_b = std::make_unique<StubSceneDockWidget>();
+  wireSceneDock(*dock_a, *app_session_);
+  wireSceneDock(*dock_b, *app_session_);
   controller_->registerSceneDock(dock_a.get());
   controller_->registerSceneDock(dock_b.get());
 
-  controller_->handleSceneDockPlaceholderDrop(dock_a.get(), dataset_id_, u"/points"_s);
-  controller_->handleSceneDockPlaceholderDrop(dock_b.get(), dataset_id_, u"/points"_s);
+  controller_->handleSceneDockPlaceholderDrop(
+      dock_a.get(), dataset_id_, u"/points"_s, PJ::sdk::BuiltinObjectType::kPointCloud);
+  controller_->handleSceneDockPlaceholderDrop(
+      dock_b.get(), dataset_id_, u"/points"_s, PJ::sdk::BuiltinObjectType::kPointCloud);
 
   addObjectTopic(*app_session_, dataset_id_, u"/points"_s);
+  EXPECT_EQ(dock_a->retryPendingRestores(QSet<QString>{u"/points"_s}), 1);
+  EXPECT_EQ(dock_b->retryPendingRestores(QSet<QString>{u"/points"_s}), 1);
   // BOTH pending drops complete on one flush pass (not just the first match).
   EXPECT_EQ(binder_->flush(QSet<QString>{u"/points"_s}), 2);
   const ObjectTopicId topic_id = findObjectTopicId(app_session_->catalogModel(), u"/points"_s);

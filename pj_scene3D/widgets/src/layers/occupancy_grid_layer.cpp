@@ -16,6 +16,7 @@
 #include <utility>
 #include <vector>
 
+#include "layer_xml_validation.h"
 #include "pj_base/builtin/occupancy_grid.hpp"
 #include "pj_base/builtin/occupancy_grid_update.hpp"
 #include "pj_base/time.hpp"  // PJ::fromRaw, PJ::toRaw
@@ -85,13 +86,24 @@ QDomElement OccupancyGridLayer::xmlSaveState(QDomDocument& doc) const {
 }
 
 bool OccupancyGridLayer::xmlLoadState(const QDomElement& element) {
-  color_scheme_ = element.attribute(u"color_scheme"_s) == "costmap"_L1 ? OccupancyGridRenderPass::ColorScheme::kCostmap
-                                                                       : OccupancyGridRenderPass::ColorScheme::kMap;
-  bool ok = false;
-  const float opacity = element.attribute(u"opacity"_s, u"0.7"_s).toFloat(&ok);
-  if (ok) {
-    opacity_ = std::clamp(opacity, 0.0f, 1.0f);
+  if (element.isNull() || element.tagName() != "occupancy_grid"_L1 || !detail::isLeafPayload(element)) {
+    return false;
   }
+  const QString scheme_text = element.attribute(u"color_scheme"_s, u"map"_s);
+  OccupancyGridRenderPass::ColorScheme restored_scheme;
+  if (scheme_text == "map"_L1) {
+    restored_scheme = OccupancyGridRenderPass::ColorScheme::kMap;
+  } else if (scheme_text == "costmap"_L1) {
+    restored_scheme = OccupancyGridRenderPass::ColorScheme::kCostmap;
+  } else {
+    return false;
+  }
+  float restored_opacity = 0.0f;
+  if (!detail::parseFiniteFloat(element, "opacity", 0.7f, 0.0f, 1.0f, restored_opacity)) {
+    return false;
+  }
+  setColorScheme(restored_scheme);
+  setOpacity(restored_opacity);
   grid_pass_.setColorScheme(color_scheme_);
   grid_pass_.setOpacity(opacity_);
   return true;
@@ -387,14 +399,23 @@ std::optional<AABB> OccupancyGridLayer::worldBounds() const {
 }
 
 void OccupancyGridLayer::setColorScheme(OccupancyGridRenderPass::ColorScheme scheme) {
+  if (color_scheme_ == scheme) {
+    return;
+  }
   color_scheme_ = scheme;
   grid_pass_.setColorScheme(scheme);
+  emit configurationChanged();
   emit repaintRequested();
 }
 
 void OccupancyGridLayer::setOpacity(float opacity) {
-  opacity_ = std::clamp(opacity, 0.0f, 1.0f);
+  const float clamped = std::clamp(opacity, 0.0f, 1.0f);
+  if (opacity_ == clamped) {
+    return;
+  }
+  opacity_ = clamped;
   grid_pass_.setOpacity(opacity_);
+  emit configurationChanged();
   emit repaintRequested();
 }
 

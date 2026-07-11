@@ -77,8 +77,9 @@ struct PendingDisplayEntry {
 
 // GUI-thread-only registry for display intents whose topics were not in the catalog
 // when they were staged: plot curves from a progressive layout restore (collect()) or
-// a placeholder drop on a plot (addPendingCurve()), and scene layers from a
-// placeholder drop on a scene dock (addPendingSceneLayer()). It owns no widgets; a
+// a placeholder drop on a plot (addPendingCurve()), plus demand references for
+// scene intents owned by dock queues (addPendingSceneLayer()). It owns no widgets
+// or scene intents; a
 // target widget's destruction releases its entries (and their references) eagerly —
 // a dead pend must not keep its topic subscribed while the stream stays quiet.
 //
@@ -94,9 +95,8 @@ class PendingDisplayBinder : public QObject {
   explicit PendingDisplayBinder(CatalogModel& catalog, TopicDemandTracker* tracker = nullptr);
 
   // Re-walks the saved layout and stores unresolved per-plot curves as detached DOM clones.
-  // Replaces every previously staged plot-curve entry (releasing its demand reference
-  // first) and drops dead scene entries; LIVE scene-layer pends survive — they are
-  // interactive drops that exist only in the binder, never in the XML being collected.
+  // Replaces every staged entry and releases its demand references. Callers then
+  // re-register demand for the authoritative queues of the rebuilt live docks.
   void collect(const QDomDocument& doc, const QHash<QString, PlotWidget*>& plots_by_state_id);
 
   // Stages ONE interactive drop (M3-UI: dropping an advertised placeholder scalar
@@ -109,11 +109,9 @@ class PendingDisplayBinder : public QObject {
   void addPendingCurve(
       PlotWidget* plot, const layout_xml::SeriesPath& path, std::optional<DatasetId> preferred_dataset = std::nullopt);
 
-  // Stages ONE placeholder drop on a scene dock: completes via dock->addTopic()
-  // once an object topic with this name materializes (preferring
-  // `preferred_dataset`, falling back to any dataset naming it — stream
-  // reconnects mint fresh ids). The entry is consumed when the topic
-  // materializes even if the dock declines it, mirroring an on-arrival drop.
+  // Tracks demand for ONE intent already owned by `dock`'s deferred queue. A
+  // missing queue entry is ignored. The binder releases demand only after that
+  // queue completes or drops the matching intent; it never calls addTopic().
   void addPendingSceneLayer(
       SceneDockWidget* dock, const QString& topic_name, std::optional<DatasetId> preferred_dataset);
 
@@ -152,13 +150,8 @@ class PendingDisplayBinder : public QObject {
   // with no numeric fields and terminally fulfills the scalar-shaped intent.
   [[nodiscard]] std::optional<std::vector<QString>> scalarKeysForTopic(
       const layout_xml::SeriesPath& path, std::optional<DatasetId> preferred) const;
-  // First object topic naming `topic` (preferring `preferred`), or nullopt while
-  // none has materialized — the kSceneLayer twin of resolveEntryPath.
-  [[nodiscard]] std::optional<CatalogItem> resolveObjectTopic(
-      const QString& topic, std::optional<DatasetId> preferred) const;
-  // Completes one kSceneLayer entry if its object topic materialized. True means
-  // the entry is consumed (release refs + erase), false means keep waiting.
-  [[nodiscard]] bool tryCompleteSceneEntry(PendingDisplayEntry& entry);
+  /// True once the authoritative dock queue no longer contains this entry.
+  [[nodiscard]] bool sceneEntryCompleted(const PendingDisplayEntry& entry) const;
   // True when an identical intent (same kind, same live target widget, same
   // topic/field path) is already staged — the dedup gate for interactive drops.
   [[nodiscard]] bool hasEntryFor(

@@ -18,6 +18,7 @@
 #include <utility>
 #include <vector>
 
+#include "pj_runtime/CatalogModel.h"
 #include "pj_runtime/SessionManager.h"
 #include "pj_scene2d_core/borrowed_media_source.h"
 #include "pj_scene2d_core/composite_media_source.h"
@@ -37,6 +38,150 @@ using namespace Qt::StringLiterals;
 namespace PJ {
 
 namespace {
+
+constexpr auto kViewTag = "view";
+constexpr auto kViewZoom = "zoom";
+constexpr auto kViewPanX = "pan_x";
+constexpr auto kViewPanY = "pan_y";
+constexpr auto kLayerKind = "layer_kind";
+constexpr auto kImageKind = "image";
+constexpr auto kDepthKind = "depth";
+
+[[nodiscard]] std::optional<MediaViewState> parseViewState(const QDomElement& root) {
+  const QDomElement view = root.firstChildElement(QString::fromLatin1(kViewTag));
+  if (view.isNull()) {
+    return MediaViewState{};  // layout written before viewport persistence
+  }
+
+  MediaViewState state;
+  const auto read = [&view](const char* name, float fallback, bool& valid) {
+    const QString key = QString::fromLatin1(name);
+    if (!view.hasAttribute(key)) {
+      return fallback;
+    }
+    bool ok = false;
+    const float value = view.attribute(key).toFloat(&ok);
+    valid = valid && ok;
+    return value;
+  };
+  bool valid = true;
+  state.zoom = read(kViewZoom, state.zoom, valid);
+  state.pan_x = read(kViewPanX, state.pan_x, valid);
+  state.pan_y = read(kViewPanY, state.pan_y, valid);
+  if (!valid || !MediaViewerWidget::isViewStateValid(state)) {
+    return std::nullopt;
+  }
+  return state;
+}
+
+[[nodiscard]] bool validateLayerPayloads(const QDomElement& root) {
+  for (QDomElement layer = root.firstChildElement(u"layer"_s); !layer.isNull();
+       layer = layer.nextSiblingElement(u"layer"_s)) {
+    const auto object_type = sdk::parseBuiltinObjectType(layer.attribute(u"object_type"_s).toStdString());
+    if (!object_type.has_value()) {
+      return false;
+    }
+    const QString kind = layer.attribute(QString::fromLatin1(kLayerKind));
+    if (!kind.isEmpty() && kind != QString::fromLatin1(kImageKind) && kind != QString::fromLatin1(kDepthKind)) {
+      return false;
+    }
+
+    const bool image_type = *object_type == sdk::BuiltinObjectType::kImage;
+    const bool depth_type = *object_type == sdk::BuiltinObjectType::kDepthImage;
+    if ((!kind.isEmpty() && !image_type && !depth_type) || (kind == QString::fromLatin1(kImageKind) && !image_type)) {
+      return false;
+    }
+
+    const QDomElement payload = layer.firstChildElement();
+    if (payload.isNull()) {
+      continue;
+    }
+    if (!payload.nextSiblingElement().isNull() || payload.tagName() != u"scene2d_layer"_s) {
+      return false;
+    }
+
+    // Legacy kImage XML has no layer_kind. Depth settings are unambiguous, so
+    // validate with the same concrete class that first-sample dispatch selects.
+    const bool has_depth_options = payload.hasAttribute(u"colormap"_s) || payload.hasAttribute(u"invert"_s) ||
+                                   payload.hasAttribute(u"near_m"_s) || payload.hasAttribute(u"far_m"_s) ||
+                                   payload.hasAttribute(u"opacity"_s);
+    const bool validate_as_depth =
+        depth_type || kind == QString::fromLatin1(kDepthKind) || (image_type && kind.isEmpty() && has_depth_options);
+    if (validate_as_depth) {
+      DepthImageLayer candidate(ObjectTopicId{}, *object_type, QString());
+      if (!candidate.xmlLoadState(payload)) {
+        return false;
+      }
+    } else if (image_type) {
+      ImageLayer candidate(ObjectTopicId{}, *object_type, QString());
+      if (!candidate.xmlLoadState(payload)) {
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
+// Resolves only genuinely unqualified (generic-layout) layer identities. A
+// non-zero id or a source name remains authoritative and is left to the shared
+// exact/source resolver used by undo and source-bound layouts.
+[[nodiscard]] bool resolveGenericLayerIdentities(QDomElement root, SessionManager* session) {
+  for (QDomElement layer = root.firstChildElement(u"layer"_s); !layer.isNull();
+       layer = layer.nextSiblingElement(u"layer"_s)) {
+    const QString dataset_id_key = u"dataset_id"_s;
+    const bool has_dataset_id = layer.hasAttribute(dataset_id_key);
+    bool dataset_ok = false;
+    const qulonglong dataset_value = layer.attribute(dataset_id_key).toULongLong(&dataset_ok);
+    if (has_dataset_id && (!dataset_ok || dataset_value > std::numeric_limits<uint32_t>::max())) {
+      return false;
+    }
+
+    const QString dataset_source = layer.attribute(u"dataset_source"_s);
+    const QString dataset_path = layer.attribute(u"dataset_path"_s);
+    if ((has_dataset_id && dataset_value != 0) || !dataset_source.isEmpty() || !dataset_path.isEmpty()) {
+      // A source-qualified layer with no numeric hint is still source-bound.
+      // Give the base parser its neutral id so it can perform the existing
+      // unique-source fallback without degrading to generic topic matching.
+      if (!has_dataset_id) {
+        layer.setAttribute(dataset_id_key, u"0"_s);
+      }
+      continue;
+    }
+
+    if (session == nullptr) {
+      return false;
+    }
+    const QString topic_name = layer.attribute(u"topic_name"_s);
+    const auto saved_type = sdk::parseBuiltinObjectType(layer.attribute(u"object_type"_s).toStdString());
+    if (topic_name.isEmpty() || !saved_type.has_value() || !Scene2DDockWidget::handlesObjectType(*saved_type)) {
+      return false;
+    }
+
+    const std::string topic_name_utf8 = topic_name.toStdString();
+    std::optional<DatasetId> unique_dataset;
+    for (const ObjectTopicId candidate : session->objectStore().listTopics()) {
+      const ObjectTopicDescriptor descriptor = session->objectStore().descriptor(candidate);
+      if (descriptor.topic_name != topic_name_utf8 || objectTypeFromMetadata(descriptor.metadata_json) != *saved_type) {
+        continue;
+      }
+      if (unique_dataset.has_value()) {
+        return false;  // same compatible topic in multiple loaded datasets
+      }
+      unique_dataset = descriptor.dataset_id;
+    }
+    if (!unique_dataset.has_value()) {
+      return false;
+    }
+
+    const DatasetInfo* dataset = session->dataEngine().getDataset(*unique_dataset);
+    if (dataset == nullptr) {
+      return false;  // ObjectStore/DataEngine identity is not a loaded dataset
+    }
+    layer.setAttribute(dataset_id_key, QString::number(*unique_dataset));
+    layer.setAttribute(u"dataset_source"_s, QString::fromStdString(dataset->source_name));
+  }
+  return true;
+}
 
 using LayerCreator = std::unique_ptr<ISceneLayer> (*)(
     ObjectTopicId topic_id, sdk::BuiltinObjectType object_type, const QString& display_name);
@@ -132,6 +277,12 @@ Scene2DDockWidget::Scene2DDockWidget(QWidget* parent) : SceneDockWidget(parent) 
   layerFactory().registerType(
       sdk::BuiltinObjectType::kImage,
       [this](ObjectTopicId topic_id, sdk::BuiltinObjectType object_type, const QString& display_name) {
+        const auto restore_kind = restore_image_layer_kinds_.find(topicKey(topic_id));
+        if (restore_kind != restore_image_layer_kinds_.end()) {
+          return restore_kind->second == ImageLayerKind::kDepth
+                     ? createDepthImageLayer(topic_id, object_type, display_name)
+                     : createImageLayer(topic_id, object_type, display_name);
+        }
         return firstSampleIsDepthEncoded(sessionManager(), topic_id)
                    ? createDepthImageLayer(topic_id, object_type, display_name)
                    : createImageLayer(topic_id, object_type, display_name);
@@ -146,6 +297,103 @@ Scene2DDockWidget::~Scene2DDockWidget() {
     viewer_->setMediaSource(nullptr);
   }
   composite_.reset();
+}
+
+QDomElement Scene2DDockWidget::xmlSaveState(QDomDocument& doc) const {
+  QDomElement root = SceneDockWidget::xmlSaveState(doc);
+
+  QDomElement layer_element = root.firstChildElement(u"layer"_s);
+  for (const SceneLayerInfo& info : layers()) {
+    if (layer_element.isNull()) {
+      break;
+    }
+    if (dynamic_cast<DepthImageLayer*>(layerFor(info.topic_id)) != nullptr) {
+      layer_element.setAttribute(QString::fromLatin1(kLayerKind), QString::fromLatin1(kDepthKind));
+    } else if (dynamic_cast<ImageLayer*>(layerFor(info.topic_id)) != nullptr) {
+      layer_element.setAttribute(QString::fromLatin1(kLayerKind), QString::fromLatin1(kImageKind));
+    }
+    layer_element = layer_element.nextSiblingElement(u"layer"_s);
+  }
+
+  const MediaViewState state = viewer_ != nullptr ? viewer_->viewState() : MediaViewState{};
+  QDomElement view = doc.createElement(QString::fromLatin1(kViewTag));
+  view.setAttribute(QString::fromLatin1(kViewZoom), QString::number(state.zoom, 'g', 9));
+  view.setAttribute(QString::fromLatin1(kViewPanX), QString::number(state.pan_x, 'g', 9));
+  view.setAttribute(QString::fromLatin1(kViewPanY), QString::number(state.pan_y, 'g', 9));
+  root.appendChild(view);
+  return root;
+}
+
+bool Scene2DDockWidget::xmlLoadState(const QDomElement& element) {
+  if (element.isNull() || element.tagName() != xmlTag()) {
+    return false;
+  }
+  if (!validateLayerPayloads(element)) {
+    return false;
+  }
+  int view_elements = 0;
+  for (QDomElement child = element.firstChildElement(); !child.isNull(); child = child.nextSiblingElement()) {
+    if (!acceptsStateChildTag(child.tagName()) ||
+        (child.tagName() == QString::fromLatin1(kViewTag) && ++view_elements > 1)) {
+      return false;
+    }
+  }
+  const auto view_state = parseViewState(element);
+  if (!view_state.has_value()) {
+    return false;  // reject before the base destructively replaces the layer stack
+  }
+
+  // The base fills legacy order attributes while restoring, and generic layouts
+  // need concrete dataset identities before that destructive pass. Work on a
+  // private clone so neither normalization mutates the caller's XML document.
+  QDomDocument restore_doc;
+  QDomElement restore_element = restore_doc.importNode(element, /*deep=*/true).toElement();
+  restore_doc.appendChild(restore_element);
+  if (!resolveGenericLayerIdentities(restore_element, sessionManager())) {
+    return false;
+  }
+
+  // The base restore clears the live layer stack before replay. Preserve a
+  // private snapshot so a late duplicate/attach/payload failure can put this
+  // same widget back exactly; direct clipboard paste has no MainWindow-level
+  // transaction wrapper.
+  QDomDocument previous_doc;
+  QDomElement previous_element = xmlSaveState(previous_doc);
+  previous_doc.appendChild(previous_element);
+  const PendingRestoreSnapshot previous_pending = capturePendingRestoreState();
+  const auto rollback = [this, &previous_element, &previous_pending]() {
+    primeRestoreLayerKinds(previous_element);
+    const bool layers_restored = SceneDockWidget::xmlLoadState(previous_element);
+    restore_image_layer_kinds_.clear();
+    const auto previous_view = parseViewState(previous_element);
+    ensureSceneViewCreated();
+    const bool restored =
+        layers_restored && previous_view.has_value() && viewer_ != nullptr && viewer_->setViewState(*previous_view);
+    if (restored) {
+      restorePendingRestoreState(previous_pending);
+    }
+    return restored;
+  };
+
+  auto restore_guard = beginWorkspaceRestore();
+  primeRestoreLayerKinds(restore_element);
+  const bool loaded = SceneDockWidget::xmlLoadState(restore_element);
+  restore_image_layer_kinds_.clear();
+  if (!loaded) {
+    if (!rollback()) {
+      qWarning("Scene2DDockWidget: failed to roll back rejected XML state");
+    }
+    return false;
+  }
+
+  ensureSceneViewCreated();
+  if (viewer_ == nullptr || !viewer_->setViewState(*view_state)) {
+    if (!rollback()) {
+      qWarning("Scene2DDockWidget: failed to roll back rejected view state");
+    }
+    return false;
+  }
+  return true;
 }
 
 void Scene2DDockWidget::setSessionManager(SessionManager* session) {
@@ -184,6 +432,10 @@ QString Scene2DDockWidget::xmlTag() const {
   return u"scene2d"_s;
 }
 
+bool Scene2DDockWidget::acceptsStateChildTag(const QString& tag) const {
+  return tag == u"layer"_s || tag == QString::fromLatin1(kViewTag);
+}
+
 QWidget* Scene2DDockWidget::createSceneView() {
   auto* container = new QWidget(this);
   container->setContentsMargins(0, 0, 0, 0);
@@ -195,6 +447,7 @@ QWidget* Scene2DDockWidget::createSceneView() {
   // Forces Qt 6.8 to create an RHI-backed window backing store before first show();
   // dynamically added QRhiWidgets otherwise never get a QRhi. See TECHNICAL_NOTES.md.
   bootstrap_ = new MediaViewerWidget(container);
+  bootstrap_->setObjectName(u"scene2dRhiBootstrap"_s);
   bootstrap_->setMaximumSize(0, 0);
   layout->addWidget(bootstrap_);
 
@@ -206,7 +459,9 @@ QWidget* Scene2DDockWidget::createSceneView() {
   view_stack_->addWidget(makeEmptyPlaceholder(view_stack_));
 
   viewer_ = new MediaViewerWidget(view_stack_);
+  viewer_->setObjectName(u"scene2dMediaViewer"_s);
   viewer_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+  connect(viewer_, &MediaViewerWidget::viewInteractionCommitted, this, [this]() { notifyWorkspaceChanged(); });
   view_stack_->addWidget(viewer_);
   if (composite_ != nullptr) {
     viewer_->setMediaSource(composite_.get());
@@ -331,6 +586,55 @@ void Scene2DDockWidget::refreshView() {
   if (viewer_ != nullptr) {
     viewer_->update();
   }
+}
+
+void Scene2DDockWidget::primeRestoreLayerKinds(const QDomElement& root) {
+  restore_image_layer_kinds_.clear();
+  for (QDomElement layer = root.firstChildElement(u"layer"_s); !layer.isNull();
+       layer = layer.nextSiblingElement(u"layer"_s)) {
+    primeRestoreLayerKind(layer);
+  }
+}
+
+void Scene2DDockWidget::primeRestoreLayerKind(const QDomElement& layer_element) {
+  if (sessionManager() == nullptr) {
+    return;
+  }
+  const QString saved_kind = layer_element.attribute(QString::fromLatin1(kLayerKind));
+  if (saved_kind != QString::fromLatin1(kImageKind) && saved_kind != QString::fromLatin1(kDepthKind)) {
+    return;  // legacy layout: retain first-sample encoding dispatch
+  }
+
+  bool dataset_ok = false;
+  const qulonglong dataset_value = layer_element.attribute(u"dataset_id"_s).toULongLong(&dataset_ok);
+  if (!dataset_ok || dataset_value > std::numeric_limits<uint32_t>::max()) {
+    return;
+  }
+  const QString topic_name = layer_element.attribute(u"topic_name"_s);
+  const auto dataset_id = sessionManager()
+                              ->resolveObjectDatasetIdentity(
+                                  static_cast<DatasetId>(dataset_value), layer_element.attribute(u"dataset_source"_s),
+                                  layer_element.attribute(u"dataset_path"_s), topic_name)
+                              .id;
+  if (!dataset_id.has_value()) {
+    return;
+  }
+  const auto topic_id = sessionManager()->objectStore().findTopic(*dataset_id, topic_name.toStdString());
+  if (!topic_id.has_value()) {
+    return;
+  }
+  restore_image_layer_kinds_.insert_or_assign(
+      topicKey(*topic_id),
+      saved_kind == QString::fromLatin1(kDepthKind) ? ImageLayerKind::kDepth : ImageLayerKind::kImage);
+}
+
+bool Scene2DDockWidget::restoreOnePending(const QDomElement& element) {
+  auto previous_kinds = std::move(restore_image_layer_kinds_);
+  restore_image_layer_kinds_.clear();
+  primeRestoreLayerKind(element);
+  const bool restored = SceneDockWidget::restoreOnePending(element);
+  restore_image_layer_kinds_ = std::move(previous_kinds);
+  return restored;
 }
 
 void Scene2DDockWidget::reconnectLiveSamples(SessionManager* session) {

@@ -29,6 +29,18 @@ namespace PJ {
 class MediaSource;
 class PixelInspector;
 
+/// XML-visible spatial viewport of a 2D media canvas.
+///
+/// Pan is expressed in the viewer's normalized clip-space convention. It is
+/// meaningful only above 1x zoom; the default view therefore has zero pan.
+struct MediaViewState {
+  float zoom = 1.0f;
+  float pan_x = 0.0f;
+  float pan_y = 0.0f;
+
+  friend bool operator==(const MediaViewState&, const MediaViewState&) = default;
+};
+
 /// GPU-accelerated scene/video viewer using QRhiWidget.
 ///
 /// Attach a MediaSource with setMediaSource(), then call setTimestamp() on each
@@ -61,6 +73,17 @@ class MediaViewerWidget : public QRhiWidget {
   /// Reset zoom to 1x and pan to origin.
   void resetView();
 
+  /// Returns the spatial viewport represented in Scene2D workspace XML.
+  [[nodiscard]] MediaViewState viewState() const noexcept;
+
+  /// Applies a validated spatial viewport. Rejects non-finite values, zoom
+  /// outside [1, 20], and non-zero pan at 1x without changing the current view.
+  /// Programmatic restore does not emit viewInteractionCommitted().
+  bool setViewState(const MediaViewState& state);
+
+  /// Shared validation used to preflight XML before a destructive dock restore.
+  [[nodiscard]] static bool isViewStateValid(const MediaViewState& state) noexcept;
+
   void setClearColor(const QColor& color);
   [[nodiscard]] QColor clearColor() const;
 
@@ -70,6 +93,9 @@ class MediaViewerWidget : public QRhiWidget {
 
  signals:
   void zoomChanged(float zoom);
+  /// One complete user gesture changed the XML-visible viewport: one wheel
+  /// event, a finished pan drag, or a double-click reset.
+  void viewInteractionCommitted();
 
  protected:
   void initialize(QRhiCommandBuffer* cb) override;
@@ -79,6 +105,7 @@ class MediaViewerWidget : public QRhiWidget {
   void wheelEvent(QWheelEvent* e) override;
   void mousePressEvent(QMouseEvent* e) override;
   void mouseMoveEvent(QMouseEvent* e) override;
+  void mouseReleaseEvent(QMouseEvent* e) override;
   void mouseDoubleClickEvent(QMouseEvent* e) override;
   void leaveEvent(QEvent* e) override;
 
@@ -244,6 +271,7 @@ class MediaViewerWidget : public QRhiWidget {
   float zoom_ = 1.0f;
   float pan_x_ = 0.0f;
   float pan_y_ = 0.0f;
+  bool pan_interaction_changed_ = false;
   QPointF last_mouse_pos_;
   QPointF last_point_inspector_pos_;
   QColor clear_color_{Qt::white};
