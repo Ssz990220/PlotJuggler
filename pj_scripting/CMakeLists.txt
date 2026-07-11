@@ -14,20 +14,41 @@ find_package(nlohmann_json REQUIRED)
 find_package(Python REQUIRED)    # conan-provided embedded CPython (cpython::embed)
 find_package(pybind11 REQUIRED)  # embedded CPython backend (python_engine.cpp)
 
+# Outside Conan (e.g. a conda/pixi environment) there is no cpython::embed —
+# resolve the embed library through CMake's stock FindPython and bridge it to
+# the same target name.
+if(NOT TARGET cpython::embed)
+  find_package(Python REQUIRED COMPONENTS Interpreter Development.Embed)
+  add_library(cpython::embed INTERFACE IMPORTED)
+  target_link_libraries(cpython::embed INTERFACE Python::Python)
+endif()
+
 # Bake the CPython prefix so the embedded interpreter finds its stdlib at runtime
 # (PYTHONHOME = <prefix>, with the stdlib at <prefix>/lib/pythonX.Y). Prefer Conan's
 # cpython_PACKAGE_FOLDER_<CONFIG> (always emitted); fall back to deriving it from the
 # Python include dir or executable if needed.
 set(_pj_python_home "")
+set(_pj_python_home_is_conan FALSE)
 foreach(_cfg RELWITHDEBINFO RELEASE DEBUG MINSIZEREL NONE)
   if(DEFINED cpython_PACKAGE_FOLDER_${_cfg})
     set(_pj_python_home "${cpython_PACKAGE_FOLDER_${_cfg}}")
+    set(_pj_python_home_is_conan TRUE)
     break()
   endif()
 endforeach()
 if(NOT _pj_python_home AND Python_INCLUDE_DIRS)
   list(GET Python_INCLUDE_DIRS 0 _pj_py_inc)
-  get_filename_component(_pj_python_home "${_pj_py_inc}" DIRECTORY)
+  if(WIN32)
+    # Non-Conan Windows Python packages (e.g. conda-forge) install headers
+    # directly at <prefix>/include, with no version-suffixed subdir — one hop
+    # already reaches <prefix>. The Unix two-hop rule below would overshoot.
+    get_filename_component(_pj_python_home "${_pj_py_inc}" DIRECTORY)
+  else()
+    # <prefix>/include/pythonX.Y -> <prefix> (two hops; the stdlib lives at
+    # <prefix>/lib/pythonX.Y).
+    get_filename_component(_pj_py_inc_parent "${_pj_py_inc}" DIRECTORY)
+    get_filename_component(_pj_python_home "${_pj_py_inc_parent}" DIRECTORY)
+  endif()
 endif()
 if(NOT _pj_python_home AND DEFINED _Python_EXECUTABLE)
   get_filename_component(_pj_python_home "${_Python_EXECUTABLE}" DIRECTORY)
@@ -40,10 +61,10 @@ message(STATUS "pj_scripting: embedded Python home = ${_pj_python_home}")
 
 # PYTHONHOME the embedded interpreter is pointed at. On Windows the Conan CPython
 # package nests its runtime — python3XX.dll, Lib/ (stdlib), DLLs/ — under
-# <prefix>/bin, so PYTHONHOME must point there; on Linux the stdlib lives at
-# <prefix>/lib/pythonX.Y directly under the package root.
+# <prefix>/bin, so PYTHONHOME must point there; on Linux (and non-Conan Windows
+# toolchains, e.g. conda-forge) the stdlib lives directly under the package root.
 set(_pj_python_home_define "${_pj_python_home}")
-if(WIN32 AND _pj_python_home)
+if(WIN32 AND _pj_python_home_is_conan)
   set(_pj_python_home_define "${_pj_python_home}/bin")
 endif()
 

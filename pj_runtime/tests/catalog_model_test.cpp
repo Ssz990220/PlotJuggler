@@ -125,9 +125,11 @@ TEST(CatalogModelTest, ResolveDatasetIdentityDelegatesToSessionRegistry) {
   EXPECT_FALSE(portable.id.has_value());
   EXPECT_TRUE(portable.ambiguous);
 
-  // The facade mirrors the session's source-path registry.
+  // The facade mirrors the session's source-path registry. Compare through
+  // normalizedSourcePath — on Windows a driveless Unix-style input gains a
+  // drive prefix (see SessionManager::normalizedSourcePath's doc comment).
   session.setDatasetSourcePath(*first, u"/data/run.mcap"_s);
-  EXPECT_EQ(catalog.datasetSourcePath(*first), u"/data/run.mcap"_s);
+  EXPECT_EQ(catalog.datasetSourcePath(*first), PJ::SessionManager::normalizedSourcePath(u"/data/run.mcap"_s));
   EXPECT_TRUE(catalog.datasetSourcePath(*second).isEmpty());
 
   // A detached catalog resolves nothing (and is not ambiguous).

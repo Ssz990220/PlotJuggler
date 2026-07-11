@@ -92,7 +92,13 @@ endif()
 # Some package managers (e.g. Conan) bundle it alongside the IPC library
 # but don't declare it as a transitive link dependency. Since the IPC target
 # already sets INTERFACE_LINK_DIRECTORIES, linking by name suffices.
-target_link_libraries(${PJ_NANOARROW_IPC_TARGET} INTERFACE flatccrt)
+# Upstream nanoarrow configs expose the preferred name as an ALIAS, which
+# target_link_libraries rejects — resolve to the underlying target first.
+get_target_property(_pj_nanoarrow_ipc_real ${PJ_NANOARROW_IPC_TARGET} ALIASED_TARGET)
+if(NOT _pj_nanoarrow_ipc_real)
+  set(_pj_nanoarrow_ipc_real ${PJ_NANOARROW_IPC_TARGET})
+endif()
+target_link_libraries(${_pj_nanoarrow_ipc_real} INTERFACE flatccrt)
 
 # ---------------------------------------------------------------------------
 # Library

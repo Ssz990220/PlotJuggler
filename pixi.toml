@@ -1,0 +1,122 @@
+# SPDX-License-Identifier: MPL-2.0
+#
+# EXPLORATORY pixi environment for building PJ4 with conda-forge dependencies
+# instead of Conan (+ the manual install_qt6.sh Qt install).
+#
+# Status: exploration — see docs/plans/pixi_build_exploration.md for findings.
+# The Conan path (`./build.sh`) remains the canonical build.
+#
+# Known gaps vs conanfile.txt (not on conda-forge; resolved via the local
+# channel built by `pixi run -e pack build-local-channel`, see recipes/):
+#   - luau      (pj_scripting's filter engine)
+#   - mcap      (C++ header-only reader/writer; the conda-forge `mcap` package
+#                is the *Python* wrapper, not the C++ lib)
+#   - cloudini  (compressed point clouds; our own library)
+
+[workspace]
+name = "pj4"
+# local-channel/ holds the 4 packages missing from conda-forge, built from
+# recipes/ via: rattler-build build --recipe-dir recipes/ -m recipes/variants.yaml -c conda-forge --output-dir local-channel
+channels = ["conda-forge", "./local-channel"]
+platforms = ["linux-64"]
+
+[dependencies]
+# --- toolchain -------------------------------------------------------------
+cmake = ">=3.28"
+ninja = "*"
+cxx-compiler = "*"
+pkg-config = "*"
+ccache = "*"
+
+# --- Qt (replaces install_qt6.sh; PJ4 pins 6.11.1 in CMakeLists) ------------
+qt6-main = "6.11.1.*"
+
+# --- direct library deps (mirror conanfile.txt) ------------------------------
+fmt = "12.*"
+tsl_robin_map = "1.4.*"          # conda name uses underscores; CMake config is tsl-robin-map
+gtest = "1.17.*"
+glm = "1.0.*"
+benchmark = "1.9.*"
+libnanoarrow = "0.7.*"           # local channel (conda-forge `nanoarrow` is the Python binding)
+nlohmann_json = "3.12.*"
+python = "3.12.*"                # embedded CPython for pj_scripting's PythonEngine
+pybind11 = "2.13.*"
+zstd = "1.5.*"
+lz4-c = "*"                      # cloudini + mcap runtime
+fast_float = "8.*"
+libarchive = "3.8.*"             # shared (conda-forge has no static); conanfile used static
+libjpeg-turbo = "3.*"
+libpng = "1.6.*"
+backward-cpp = "1.6.*"
+draco = "*"                      # conan pinned 1.5.6 only for assimp source-build graph conflict
+assimp = "*"                     # conda-forge is 6.x vs conan 5.4.3 — API risk to verify
+
+# --- local channel (gaps vs conda-forge; see recipes/) ------------------------
+luau = "0.700.*"
+libmcap = "2.1.*"                # C++ header-only mcap (conda-forge `mcap` is the Python wrapper)
+cloudini = "1.2.*"
+
+# Linux-only deps. elfutils backs backward-cpp's `dw` stack-trace backend
+# (Windows backward-cpp uses the DbgHelp/PDB backend instead); the libGL/EGL
+# -devel stubs feed pj_scene3D's find_package(OpenGL) (Windows gets OpenGL from
+# the SDK's opengl32). None of these have win-64 conda packages.
+[target.linux-64.dependencies]
+elfutils = "*"
+libgl-devel = "*"
+libopengl-devel = "*"
+libegl-devel = "*"
+# LGPL build variant only — PJ4 ships MPL-2.0 and must not link GPL codec libs
+# (mirrors conanfile.txt's "Keep this LGPL-oriented" block; conda-forge publishes
+# gpl_* and lgpl_* ffmpeg builds, default resolution picks gpl).
+ffmpeg = { version = "8.*", build = "lgpl_*" }
+
+# conda-forge's win-64 ffmpeg has NO lgpl build (GPL only). Windows is a
+# non-shipped CI portability tracker (CLAUDE.md non-goals), so taking the GPL
+# build to prove the code compiles is acceptable here — it must NOT be used for
+# a shipped Windows artifact. Linux keeps the LGPL-clean pin above.
+[target.win-64.dependencies]
+ffmpeg = "8.*"
+sccache = "*"                    # MSVC compiler-cache launcher (see activation.env below)
+
+[tasks]
+# CMAKE_PREFIX_PATH lists both the env root and its Library subtree: on Windows
+# conda puts headers/libs/cmake under <prefix>/Library, on Linux under <prefix>.
+# Listing both keeps this one task cross-platform (the missing one is ignored).
+# ccache/sccache are wired via CMAKE_*_COMPILER_LAUNCHER env vars (see the
+# activation.env blocks below). CMP0141=NEW + Embedded switches MSVC to /Z7
+# (debug info embedded per .obj) instead of /Zi's shared .pdb: sccache doesn't
+# preserve MSVC's own /FS synchronization for concurrent writers to one shared
+# PDB, so a parallel build hits C1041 "cannot open program database" without
+# this. Inert on Linux (these are MSVC-only CMake variables).
+configure = "cmake -G Ninja -S . -B build-pixi -DCMAKE_BUILD_TYPE=RelWithDebInfo -DCMAKE_PREFIX_PATH=\"$CONDA_PREFIX;$CONDA_PREFIX/Library\" -DCMAKE_POLICY_DEFAULT_CMP0141=NEW -DCMAKE_MSVC_DEBUG_INFORMATION_FORMAT=Embedded"
+build = { cmd = "cmake --build build-pixi --parallel", depends-on = ["configure"] }
+# --timeout 120 bounds any single test (a GL test under software rendering /
+# llvmpipe can stall) so a hang fails fast instead of holding the runner — the
+# Conan linux-ci.yml uses the same per-test cap.
+test = { cmd = "ctest --test-dir build-pixi --output-on-failure --timeout 120", depends-on = ["build"] }
+
+# ccache speeds up the GCC toolchain (linux). CMake reads these env vars to
+# seed CMAKE_<LANG>_COMPILER_LAUNCHER.
+[target.linux-64.activation.env]
+CMAKE_C_COMPILER_LAUNCHER = "ccache"
+CMAKE_CXX_COMPILER_LAUNCHER = "ccache"
+
+# sccache is the MSVC-compatible compiler cache — ccache's cl.exe support is
+# unreliable, especially with Ninja + PDB debug info. Both launchers' disk
+# caches persist across CI runs via actions/cache in pixi-ci.yml (CCACHE_DIR /
+# SCCACHE_DIR set there); a local dev run just gets an unbounded local cache.
+[target.win-64.activation.env]
+CMAKE_C_COMPILER_LAUNCHER = "sccache"
+CMAKE_CXX_COMPILER_LAUNCHER = "sccache"
+
+# Bootstrap: the default env depends on the 4 gap packages, so local-channel/
+# must exist before ANY `pixi run`/`pixi install` (which always solves the
+# default env first). Build it with `pixi exec` — an ephemeral env that ignores
+# the project lockfile entirely — NOT `pixi run`:
+#
+#   pixi exec --spec "rattler-build>=0.66" \
+#     rattler-build build --recipe-dir recipes/ -m recipes/variants.yaml \
+#       -c conda-forge --output-dir local-channel
+#
+# -m recipes/variants.yaml pins the glibc sysroot so the archives stay portable
+# (without it the build falls back to system glibc → unresolved __isoc23_* refs).

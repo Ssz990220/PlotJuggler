@@ -1,0 +1,193 @@
+# Exploratory pixi/conda-forge build of PJ4 (parallel to the canonical Conan CI).
+# Builds the 4 gap packages (luau, mcap, cloudini, nanoarrow) into a local conda
+# channel, then builds + tests PJ4 against a pixi environment on Linux and Windows.
+name: Pixi CI
+
+on:
+  pull_request:
+    branches: [main, development]
+    types: [opened, synchronize, reopened, ready_for_review]
+  push:
+    branches: [main, development]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    # Unlike the canonical Conan workflows this runs on draft PRs too: the pixi
+    # build is exploratory and the Windows leg can only be validated in CI, so
+    # it needs to run before the PR is marked ready.
+    name: pixi-build (${{ matrix.name }})
+    runs-on: ${{ matrix.os }}
+    # Windows is a non-blocking portability tracker, matching the canonical
+    # Conan windows-ci.yml: PJ4 v1 is Linux-only (CLAUDE.md non-goal) and the
+    # codebase still has Windows portability gaps that fail regardless of the
+    # build system. The pixi win-64 leg proves the *build system* works on
+    # Windows; its test failures should not gate the PR.
+    continue-on-error: ${{ matrix.name == 'win-64' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-64
+            os: ubuntu-22.04
+          - name: win-64
+            os: windows-latest
+    # Windows gap-package builds + Qt link are slow; give headroom over the
+    # 6-hour GitHub default so a hang is caught by the job, not the runner.
+    timeout-minutes: 120
+
+    # Explicit, workspace-relative cache locations (rather than relying on
+    # per-OS rattler/ccache/sccache defaults) so the actions/cache steps below
+    # can target them precisely on both linux-64 and win-64. Each var is a
+    # no-op on the OS that doesn't use it (e.g. SCCACHE_DIR is inert on Linux).
+    env:
+      PIXI_CACHE_DIR: ${{ github.workspace }}/.pixi_cache
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+      SCCACHE_DIR: ${{ github.workspace }}/.sccache
+
+    steps:
+      - name: Use HTTPS for github.com submodules
+        shell: bash
+        run: git config --global url."https://github.com/".insteadOf "git@github.com:"
+
+      - uses: actions/checkout@v6
+        with:
+          submodules: recursive
+
+      - name: Free up runner disk space (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc \
+            /usr/local/.ghcup /opt/hostedtoolcache/CodeQL /usr/local/lib/node_modules
+          sudo docker image prune --all --force >/dev/null 2>&1 || true
+          df -h /
+
+      # Persists pixi's downloaded package archives (~2.1 GB: Qt 6.11.1, the
+      # compiler, every conda-forge library) across runs. There's no committed
+      # multi-platform pixi.lock to key setup-pixi's own cache on yet (blocked
+      # on the win-64 gap packages needing to exist first to generate one, see
+      # docs/research/pixi_build_exploration.md), so key on the inputs that
+      # actually change what gets solved/downloaded instead: the manifest and
+      # the recipes that feed local-channel/. Package-level content hashing
+      # inside the cache means a stale hit just re-fetches the few packages
+      # that changed, not the whole environment. Also covers the `pixi exec`
+      # rattler-build invocation below (same PIXI_CACHE_DIR, same toolchain
+      # packages: compiler, cmake, ninja, git).
+      - name: Cache pixi package downloads
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.PIXI_CACHE_DIR }}
+          key: pixi-pkgs-${{ matrix.name }}-${{ hashFiles('pixi.toml', 'recipes/**') }}
+          restore-keys: |
+            pixi-pkgs-${{ matrix.name }}-
+
+      - uses: prefix-dev/setup-pixi@v0.8.14
+        with:
+          # Only install the pixi binary here. The default env cannot be solved
+          # yet (local-channel/ does not exist until the next step), so we build
+          # the channel first, then install on demand via `pixi run`. Caching is
+          # off: setup-pixi's cache is tied to the install it is not doing here,
+          # and there is no committed lockfile to key a cache on anyway.
+          run-install: false
+          cache: false
+
+      - name: Build local conda channel (gap packages)
+        shell: bash
+        # pixi exec runs rattler-build in an ephemeral env, independent of the
+        # project lockfile — so it works before the default env can be solved
+        # (which needs the very channel this step produces) and regardless of
+        # whether the runner's platform is in the manifest yet. `pixi run` would
+        # instead try to solve the default env first and fail.
+        run: pixi exec --spec "rattler-build>=0.66" rattler-build build --recipe-dir recipes/ -m recipes/variants.yaml -c conda-forge --output-dir local-channel
+
+      # MSVC (cl.exe) + Ninja for the PJ4 app build. Deliberately AFTER the
+      # channel build: rattler-build runs conda's own vs2022 activation
+      # (vcvars64.bat) internally, and stacking msvc-dev-cmd's already-huge
+      # PATH under a second vcvars run overflows cmd.exe's 8191-char line limit
+      # ("The input line is too long"). The app build (`pixi run build`) has no
+      # such internal activation, so it needs this. No-op / skipped on Linux.
+      - name: Set up MSVC (Windows)
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+
+      # The committed manifest lists only linux-64 (a Linux dev box cannot build
+      # the win-64 gap packages, so a committed win-64 lock is impossible). On
+      # the Windows runner the channel now HOLDS win-64 packages, so point the
+      # single platform at win-64 (a leftover linux-64 target table only warns).
+      - name: Point the manifest at win-64 (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: sed -i 's/platforms = \["linux-64"\]/platforms = ["win-64"]/' pixi.toml
+
+      # Persists the ccache (linux-64) / sccache (win-64) object cache across
+      # runs — without this, CMAKE_*_COMPILER_LAUNCHER only helps within a
+      # single ephemeral runner and every run compiles PJ4 from scratch. Keyed
+      # on the commit so every run seeds a fresh save point; restore-keys falls
+      # back to the most recent available cache on a miss (the standard
+      # ccache/sccache-on-CI pattern — compiler caches are content-addressed
+      # internally, so an imperfect key match still yields a high hit rate).
+      - name: Cache compiler cache (ccache / sccache)
+        uses: actions/cache@v4
+        with:
+          path: |
+            ${{ env.CCACHE_DIR }}
+            ${{ env.SCCACHE_DIR }}
+          key: compiler-cache-${{ matrix.name }}-${{ github.sha }}
+          restore-keys: |
+            compiler-cache-${{ matrix.name }}-
+
+      - name: Build PJ4
+        shell: bash
+        run: pixi run build
+
+      - name: Show compiler cache stats (Linux)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: pixi run ccache --show-stats
+        continue-on-error: true
+
+      - name: Show compiler cache stats (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: pixi run sccache --show-stats
+        continue-on-error: true
+
+      # Qt needs a display for the widget/GL tests; wrap ctest in a virtual
+      # framebuffer. conda's Qt ships its own xcb platform plugin + libs, so
+      # xvfb (the display) is the only extra piece the runner needs.
+      # Runs the Qt-free CORE test suite only (~155 tests). The widget/GL test
+      # families (pj_scene3D/widgets, pj_scene2D/widgets, pj_widgets, plotting-GL)
+      # need a GL context that conda's Qt cannot bring up on this GPU-less runner
+      # — it stalls instead of falling back to llvmpipe (unlike the aqt-Qt +
+      # system-Mesa combo the Conan CI uses). Rather than a fragile GL denylist,
+      # scope ctest to the core modules, which structurally never create a GL
+      # context (no Qt6::Widgets/OpenGL link) — this cannot hang and covers the
+      # computational heart of PJ4: the columnar store, runtime services, the
+      # Luau/Python scripting engine, the SDK, and the scene *core* logic (tf,
+      # pointcloud/occupancy/voxel codecs, media decode). The GUI/GL tests are
+      # verified locally (with a GPU), by the Conan Linux CI, and by the pixi
+      # win-64 leg. The local `pixi run test` still runs the full suite. See
+      # docs/research/pixi_build_exploration.md.
+      - name: Test PJ4 core suite (Linux)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          fail=0
+          for m in pj_datastore pj_runtime pj_scripting \
+                   plotjuggler_sdk/pj_base plotjuggler_sdk/pj_plugins \
+                   pj_scene3D/core pj_scene2D/core pj_scene_common; do
+            echo "::group::ctest ${m}"
+            pixi run ctest --test-dir "build-pixi/${m}" --output-on-failure --timeout 120 || fail=1
+            echo "::endgroup::"
+          done
+          exit $fail
+
+      # Windows Qt runs headless on the runner without an X server; no wrapper.
+      - name: Test PJ4 (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: pixi run test
