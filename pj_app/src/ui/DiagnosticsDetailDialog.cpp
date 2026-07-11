@@ -6,7 +6,7 @@
 #include <QClipboard>
 #include <QGuiApplication>
 #include <QPlainTextEdit>
-#include <QToolButton>
+#include <QPushButton>
 
 #include "pj_widgets/SvgUtil.h"
 #include "ui_DiagnosticsDetailDialog.h"
@@ -41,7 +41,7 @@ DiagnosticsDetailDialog::DiagnosticsDetailDialog(const DiagnosticRecord& record,
   contentLayout()->addWidget(body);
 
   ui_->buttonCopy->setIcon(loadSvg(":/resources/svg/copy.svg", currentTheme()));
-  connect(ui_->buttonCopy, &QToolButton::clicked, this, [record]() {
+  connect(ui_->buttonCopy, &QPushButton::clicked, this, [record]() {
     QGuiApplication::clipboard()->setText(record.message);
   });
 

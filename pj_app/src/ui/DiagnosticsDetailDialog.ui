@@ -37,12 +37,10 @@
       </spacer>
      </item>
      <item>
-      <widget class="QToolButton" name="buttonCopy">
+      <widget class="QPushButton" name="buttonCopy">
        <property name="text"><string>Copy</string></property>
        <property name="toolTip"><string>Copy to clipboard</string></property>
-       <property name="toolButtonStyle"><enum>Qt::ToolButtonStyle::ToolButtonTextBesideIcon</enum></property>
        <property name="iconSize"><size><width>16</width><height>16</height></size></property>
-       <property name="autoRaise"><bool>true</bool></property>
       </widget>
      </item>
     </layout>
