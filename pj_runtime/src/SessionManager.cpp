@@ -28,11 +28,9 @@ namespace PJ {
 namespace {
 Q_LOGGING_CATEGORY(lcSession, "pj.runtime.session")
 
-// Canonicalizes a source path so two aliases of one file (symlink, relative,
-// redundant separators) compare equal. canonicalFilePath resolves symlinks but
-// returns empty for a path that does not exist on disk, so fall back to the
-// cleaned absolute path in that case.
-QString normalizedSourcePath(const QString& path) {
+}  // namespace
+
+QString SessionManager::normalizedSourcePath(const QString& path) {
   if (path.isEmpty()) {
     return {};
   }
@@ -40,12 +38,11 @@ QString normalizedSourcePath(const QString& path) {
   const QString canonical = info.canonicalFilePath();
   return QDir::cleanPath(canonical.isEmpty() ? info.absoluteFilePath() : canonical);
 }
-}  // namespace
 
 SessionManager::SessionManager(QObject* parent) : QObject(parent) {
   // data_engine_ is already alive (member init precedes the ctor body), so the
   // processor service can bind its DerivedEngine to it.
-  processor_service_ = std::make_unique<DataProcessorService>(data_engine_);
+  processor_service_ = std::make_unique<DataProcessorService>(*this);
 
   // Install the bundled Luau filter catalogue so applied/restored filters resolve
   // to Luau classes. The resource is embedded in the app; it is absent only in a
@@ -420,6 +417,13 @@ RefillGuard::RefillGuard(SessionManager& session, DatasetId dataset_id) : sessio
   // Capture the prior topic id sets BEFORE detaching: scalars for the empty-state
   // notify, object ids so rollback can tell which object topics a failed refill added.
   const std::vector<TopicId> scalar_topics = session.dataEngine().listTopics(dataset_id);
+  processor_output_topic_ids_ = session.dataProcessorService().processorOutputTopics();
+  replaced_source_topic_ids_.reserve(scalar_topics.size());
+  for (const TopicId topic_id : scalar_topics) {
+    if (processor_output_topic_ids_.count(topic_id) == 0) {
+      replaced_source_topic_ids_.push_back(topic_id);
+    }
+  }
   prior_object_topic_ids_ = session.objectStore().listTopics(dataset_id);
 
   // (1) Adapters drop cached TopicChunk* before any deque is moved (same ordering
@@ -439,6 +443,8 @@ RefillGuard::RefillGuard(RefillGuard&& other) noexcept
       scalar_snapshot_(std::move(other.scalar_snapshot_)),
       object_snapshot_(std::move(other.object_snapshot_)),
       prior_object_topic_ids_(std::move(other.prior_object_topic_ids_)),
+      replaced_source_topic_ids_(std::move(other.replaced_source_topic_ids_)),
+      processor_output_topic_ids_(std::move(other.processor_output_topic_ids_)),
       committed_(other.committed_) {
   other.session_ = nullptr;  // the moved-from guard must not roll back
   other.committed_ = true;
@@ -454,6 +460,8 @@ RefillGuard& RefillGuard::operator=(RefillGuard&& other) noexcept {
     scalar_snapshot_ = std::move(other.scalar_snapshot_);
     object_snapshot_ = std::move(other.object_snapshot_);
     prior_object_topic_ids_ = std::move(other.prior_object_topic_ids_);
+    replaced_source_topic_ids_ = std::move(other.replaced_source_topic_ids_);
+    processor_output_topic_ids_ = std::move(other.processor_output_topic_ids_);
     committed_ = other.committed_;
     other.session_ = nullptr;
     other.committed_ = true;
@@ -472,6 +480,22 @@ void RefillGuard::commit() {
   scalar_snapshot_ = {};  // free the held-aside prior data; the refilled data is kept
   object_snapshot_ = {};
   prior_object_topic_ids_.clear();
+  replaced_source_topic_ids_.clear();
+  processor_output_topic_ids_.clear();
+}
+
+Status RefillGuard::recomputeProcessors() {
+  if (session_ == nullptr || replaced_source_topic_ids_.empty()) {
+    return PJ::okStatus();
+  }
+  auto outputs = session_->dataProcessorService().rebindAndRecomputeForReplacedSources(replaced_source_topic_ids_);
+  if (!outputs.has_value()) {
+    return PJ::unexpected(outputs.error());
+  }
+  if (!outputs->empty()) {
+    session_->notifyIngest(QVector<TopicId>(outputs->begin(), outputs->end()), /*live=*/false);
+  }
+  return PJ::okStatus();
 }
 
 void RefillGuard::pruneVanishedTopics() {
@@ -485,6 +509,9 @@ void RefillGuard::pruneVanishedTopics() {
   {
     auto lock = session_->dataEngine().lockEngine();
     for (const TopicId topic_id : scalar_snapshot_.prior_topic_ids) {
+      if (processor_output_topic_ids_.count(topic_id) != 0) {
+        continue;
+      }
       const TopicStorage* storage = session_->dataEngine().getTopicStorage(topic_id);
       if (storage != nullptr && storage->empty()) {
         vanished_scalar.push_back(topic_id);
@@ -532,7 +559,14 @@ void RefillGuard::rollback() {
   }
   // (d) Object: move the prior entries back into the stable ids.
   session_->objectStore().reattachDataset(dataset_id_, std::move(object_snapshot_));
-  // (e) UI: reflect the restored topic set (non-live).
+  // (e) A failed tentative replay may have reset stateful operator internals.
+  // Replaying over the byte-for-byte restored raw snapshot repairs that state.
+  if (auto replayed = session_->dataProcessorService().rebindAndRecomputeForReplacedSources(replaced_source_topic_ids_);
+      !replayed.has_value()) {
+    qCWarning(lcSession).noquote() << "RefillGuard rollback processor replay failed:"
+                                   << QString::fromStdString(replayed.error());
+  }
+  // (f) UI: reflect the restored topic set (non-live).
   const std::vector<TopicId> current = session_->dataEngine().listTopics(dataset_id_);
   session_->notifyIngest(QVector<TopicId>(current.begin(), current.end()), /*live=*/false);
 }
@@ -600,10 +634,14 @@ void SessionManager::replaceDataset(
   // input chunks wholesale, so the derived output must be reset+replayed (not
   // appended). Notify those outputs too, so plots showing filtered curves refresh.
   if (processor_service_ && !changed.isEmpty()) {
-    const std::vector<TopicId> outputs =
-        processor_service_->recomputeForReplacedSources(std::vector<TopicId>(changed.begin(), changed.end()));
-    for (const TopicId out : outputs) {
-      changed.push_back(out);
+    auto outputs =
+        processor_service_->rebindAndRecomputeForReplacedSources(std::vector<TopicId>(changed.begin(), changed.end()));
+    if (outputs.has_value()) {
+      for (const TopicId out : *outputs) {
+        changed.push_back(out);
+      }
+    } else {
+      qCWarning(lcSession).noquote() << "replaceDataset (processors):" << QString::fromStdString(outputs.error());
     }
   }
 

@@ -662,28 +662,25 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
     launchToolbox(u"toolbox-transform-editor"_s, initial_config);
   });
   connect(ui_->curveListPanel, &CurveListPanel::deleteCustomSeriesRequested, this, [this](const QString& catalog_key) {
-    QString output_name;
-    for (const auto& item : session_->catalogModel().items()) {
-      if (item.key == catalog_key) {
-        output_name = item.topic_name;
-        break;
-      }
+    const std::optional<CurveDescriptor> output = session_->catalogModel().curveDescriptor(catalog_key);
+    if (!output.has_value()) {
+      return;
     }
-    // Cascade FIRST to any derivative built on top of this one (and its chain):
-    // its output name is the input of those, so the transitive resolver finds them.
-    // Warns + removes them; cancel aborts (this series is left intact too).
-    if (!confirmAndRemoveDependentTransforms({output_name.toStdString()})) {
+    if (!confirmAndRemoveDependentTransforms({output->topic_id})) {
       return;
     }
     auto& dp = session_->sessionManager().dataProcessorService();
+    bool removed = false;
     for (const auto& recipe : dp.transformRecipes()) {
-      const bool owns = std::any_of(recipe.outputs.begin(), recipe.outputs.end(), [&](const std::string& o) {
-        return QString::fromStdString(o) == output_name;
-      });
+      const bool owns = std::find(recipe.output_topic_ids.begin(), recipe.output_topic_ids.end(), output->topic_id) !=
+                        recipe.output_topic_ids.end();
       if (owns) {
-        (void)dp.removeTransform(recipe.key);
+        removed = dp.removeTransform(recipe.key).has_value();
         break;
       }
+    }
+    if (!removed) {
+      return;
     }
     session_->catalogModel().rebuildFromDatastore();
     ui_->curveListPanel->removeCustomCurve(catalog_key);
@@ -1680,17 +1677,29 @@ void MainWindow::onFileLoaded(
   ui_->leftPanel->setReloadEnabled(true);
 }
 
-bool MainWindow::confirmAndRemoveDependentTransforms(const std::vector<std::string>& removed_names) {
+bool MainWindow::confirmAndRemoveDependentTransforms(const std::vector<TopicId>& removed_topics) {
   auto& dp = session_->sessionManager().dataProcessorService();
-  const auto affected = dp.transformsDependingOn(removed_names);
-  if (affected.empty()) {
+  const std::vector<TopicId> outputs = dp.dependentProcessorOutputs(removed_topics);
+  if (outputs.empty()) {
     return true;  // nothing depends on it — proceed
   }
+  const std::unordered_set<TopicId> dependent_outputs(outputs.begin(), outputs.end());
+
+  // One catalog pass collects both what the dialog shows and what gets removed
+  // from the curve list after confirmation.
   QStringList names;
-  for (const auto& recipe : affected) {
-    for (const auto& out : recipe.outputs) {
-      names << QString::fromStdString(out);
+  QStringList dependent_curve_keys;
+  for (const CatalogItem& item : session_->catalogModel().items()) {
+    if (const ScalarFieldPayload* scalar = asScalarField(item);
+        scalar != nullptr && dependent_outputs.count(scalar->topic_id) != 0) {
+      names
+          << (scalar->field_path.isEmpty() ? item.topic_name : item.topic_name + QLatin1Char('/') + scalar->field_path);
+      dependent_curve_keys << item.key;
     }
+  }
+  names.removeDuplicates();
+  if (names.isEmpty()) {
+    names << tr("%n derived series", nullptr, static_cast<int>(dependent_outputs.size()));
   }
   const auto answer = QMessageBox::warning(
       this, tr("Delete derived series?"),
@@ -1700,14 +1709,15 @@ bool MainWindow::confirmAndRemoveDependentTransforms(const std::vector<std::stri
   if (answer != QMessageBox::Ok) {
     return false;  // user cancelled — leave everything intact
   }
-  // Remove each derivative: drop its Custom Series entry BY NAME (robust against
-  // catalog-key churn — same as PJ3's removeCurve(name)), then the transform node.
-  for (const auto& recipe : affected) {
-    for (const auto& out : recipe.outputs) {
-      ui_->curveListPanel->removeCustomCurveByName(QString::fromStdString(out));
-    }
-    (void)dp.removeTransform(recipe.key);
+  for (const QString& key : dependent_curve_keys) {
+    ui_->curveListPanel->removeCustomCurve(key);
   }
+  if (const Status removed = dp.removeProcessorsDependingOn(removed_topics); !removed.has_value()) {
+    emitDiagnostic(
+        DiagnosticLevel::kError, "Processors", "dependent-remove-failed", QString::fromStdString(removed.error()));
+    return false;
+  }
+  session_->catalogModel().rebuildFromDatastore();
   return true;
 }
 
@@ -1741,16 +1751,13 @@ void MainWindow::onCatalogTrashRequested(QStringList keys, bool covers_all) {
   }
   // Cascade to derived series that depend on the trashed ones (warn + remove).
   {
-    std::vector<std::string> removed_names;
+    std::vector<TopicId> removed_topics;
     for (const QString& key : keys) {
       if (const auto d = catalog.curveDescriptor(key)) {
-        removed_names.push_back(d->topic_name.toStdString());
-        if (!d->field_name.isEmpty()) {
-          removed_names.push_back((d->topic_name + "/" + d->field_name).toStdString());
-        }
+        removed_topics.push_back(d->topic_id);
       }
     }
-    if (!confirmAndRemoveDependentTransforms(removed_names)) {
+    if (!confirmAndRemoveDependentTransforms(removed_topics)) {
       return;  // user cancelled
     }
   }
@@ -1840,13 +1847,12 @@ void MainWindow::onRemoveDatasetsRequested(const QList<DatasetId>& dataset_ids) 
   // them). Warn + remove those transforms and their Custom Series entries; abort
   // the whole removal on cancel. No-op when nothing depends on the removed data.
   {
-    std::vector<std::string> removed_names;
-    for (const auto& item : session_->catalogModel().items()) {
-      if (std::find(dataset_ids.begin(), dataset_ids.end(), item.dataset_id) != dataset_ids.end()) {
-        removed_names.push_back(item.topic_name.toStdString());
-      }
+    std::vector<TopicId> removed_topics;
+    for (const DatasetId dataset_id : dataset_ids) {
+      const std::vector<TopicId> dataset_topics = session_->sessionManager().dataEngine().listTopics(dataset_id);
+      removed_topics.insert(removed_topics.end(), dataset_topics.begin(), dataset_topics.end());
     }
-    if (!confirmAndRemoveDependentTransforms(removed_names)) {
+    if (!confirmAndRemoveDependentTransforms(removed_topics)) {
       return;  // user cancelled
     }
   }
@@ -3501,9 +3507,18 @@ QDomElement MainWindow::saveDataProcessors(QDomDocument& doc) const {
     if (!recipe.backend_version.empty()) {
       transform.setAttribute(u"backend_version"_s, QString::fromStdString(recipe.backend_version));
     }
-    for (const auto& input_name : recipe.inputs) {
+    for (std::size_t index = 0; index < recipe.inputs.size(); ++index) {
+      const std::string& input_name = recipe.inputs[index];
       QDomElement in = doc.createElement(u"input"_s);
       in.setAttribute(u"name"_s, QString::fromStdString(input_name));
+      if (index < recipe.input_bindings.size()) {
+        const auto& binding = recipe.input_bindings[index];
+        in.setAttribute(u"dataset_id"_s, QString::number(binding.dataset_id));
+        in.setAttribute(u"dataset_source"_s, QString::fromStdString(binding.dataset_source));
+        in.setAttribute(u"topic"_s, QString::fromStdString(binding.topic_name));
+        in.setAttribute(u"field"_s, QString::fromStdString(binding.field_path));
+        in.setAttribute(u"column"_s, QString::number(static_cast<qulonglong>(binding.column_index)));
+      }
       transform.appendChild(in);
     }
     for (const auto& output_name : recipe.outputs) {
@@ -3599,15 +3614,62 @@ bool MainWindow::restoreDataProcessors(const QDomElement& root) {
   for (QDomElement transform = element.firstChildElement(u"transform"_s); !transform.isNull();
        transform = transform.nextSiblingElement(u"transform"_s)) {
     DataProcessorService::TransformRecipe recipe;
+    QString transform_parse_error;
     recipe.owner_plugin = transform.attribute(u"owner_plugin"_s).toStdString();
     recipe.user_id = transform.attribute(u"id"_s).toStdString();
     recipe.key = DataProcessorService::makeTransformKey(recipe.owner_plugin, recipe.user_id);
     recipe.backend = transform.attribute(u"backend"_s, u"luau"_s).toStdString();
     recipe.api_version = transform.attribute(u"api_version"_s, u"1"_s).toStdString();
     recipe.backend_version = transform.attribute(u"backend_version"_s).toStdString();
+    std::vector<DataProcessorService::TransformInputBinding> parsed_bindings;
+    bool has_persisted_binding = false;
     for (QDomElement in = transform.firstChildElement(u"input"_s); !in.isNull();
          in = in.nextSiblingElement(u"input"_s)) {
       recipe.inputs.push_back(in.attribute(u"name"_s).toStdString());
+      DataProcessorService::TransformInputBinding binding;
+      const bool has_binding = in.hasAttribute(u"dataset_id"_s) || in.hasAttribute(u"dataset_source"_s) ||
+                               in.hasAttribute(u"dataset_path"_s) || in.hasAttribute(u"topic"_s) ||
+                               in.hasAttribute(u"field"_s) || in.hasAttribute(u"column"_s);
+      has_persisted_binding = has_persisted_binding || has_binding;
+      if (in.hasAttribute(u"dataset_id"_s)) {
+        bool ok = false;
+        const qulonglong raw = in.attribute(u"dataset_id"_s).toULongLong(&ok);
+        if (ok && raw <= std::numeric_limits<DatasetId>::max()) {
+          binding.dataset_id = static_cast<DatasetId>(raw);
+        } else {
+          transform_parse_error = tr("invalid input dataset id");
+        }
+      }
+      binding.dataset_source = in.attribute(u"dataset_source"_s).toStdString();
+      binding.topic_name = in.attribute(u"topic"_s).toStdString();
+      binding.field_path = in.attribute(u"field"_s).toStdString();
+      const QString saved_dataset_path = in.attribute(u"dataset_path"_s);
+      if (!saved_dataset_path.isEmpty()) {
+        const DatasetIdentityResolution resolved = session_->sessionManager().resolveDatasetIdentity(
+            binding.dataset_id, QString::fromStdString(binding.dataset_source), saved_dataset_path);
+        if (resolved.id.has_value()) {
+          binding.dataset_id = *resolved.id;
+          if (const DatasetInfo* live = session_->sessionManager().dataEngine().getDataset(*resolved.id)) {
+            binding.dataset_source = live->source_name;
+          }
+        } else {
+          transform_parse_error =
+              resolved.ambiguous ? tr("ambiguous input dataset path") : tr("input dataset path is not loaded");
+        }
+      }
+      if (in.hasAttribute(u"column"_s)) {
+        bool ok = false;
+        const qulonglong raw = in.attribute(u"column"_s).toULongLong(&ok);
+        if (ok && raw <= std::numeric_limits<std::size_t>::max()) {
+          binding.column_index = static_cast<std::size_t>(raw);
+        } else {
+          transform_parse_error = tr("invalid input column");
+        }
+      }
+      parsed_bindings.push_back(std::move(binding));
+    }
+    if (has_persisted_binding) {
+      recipe.input_bindings = std::move(parsed_bindings);
     }
     for (QDomElement out = transform.firstChildElement(u"output"_s); !out.isNull();
          out = out.nextSiblingElement(u"output"_s)) {
@@ -3618,6 +3680,13 @@ bool MainWindow::restoreDataProcessors(const QDomElement& root) {
       recipe.params_json = "{}";
     }
     recipe.script = layout_xml::directCdataText(transform.firstChildElement(u"script"_s)).toStdString();
+    if (!transform_parse_error.isEmpty()) {
+      emitDiagnostic(
+          DiagnosticLevel::kWarning, "Layout", "transform-restore-failed",
+          tr("Could not restore transform '%1': %2").arg(QString::fromStdString(recipe.key), transform_parse_error));
+      restored_all = false;
+      continue;
+    }
     if (const auto restored = service.restoreTransform(recipe); !restored.has_value()) {
       emitDiagnostic(
           DiagnosticLevel::kWarning, "Layout", "transform-restore-failed",

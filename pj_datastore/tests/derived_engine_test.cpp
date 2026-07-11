@@ -228,6 +228,27 @@ class ScaleByTwoTransform : public ISISOTransform {
   }
 };
 
+// Records reset order while otherwise passing samples through unchanged.
+class ResetTracingIdentityTransform : public ISISOTransform {
+ public:
+  ResetTracingIdentityTransform(std::string label, std::vector<std::string>& reset_trace)
+      : label_(std::move(label)), reset_trace_(reset_trace) {}
+
+  void reset() override {
+    reset_trace_.push_back(label_);
+  }
+
+  bool calculate(PJ::Timestamp time, const VarValue& input, PJ::Timestamp& out_time, VarValue& out_value) override {
+    out_time = time;
+    out_value = input;
+    return true;
+  }
+
+ private:
+  std::string label_;
+  std::vector<std::string>& reset_trace_;
+};
+
 // Emits the first N rows (identity), then goes sticky-failed: calculate() returns false and
 // failed()==true thereafter — models a Luau filter that errors mid-stream. reset() rearms it.
 class FailAfterNTransform : public ISISOTransform {
@@ -334,6 +355,50 @@ TEST(DerivedEngineFieldSelectTest, SisoDefaultColumnIsZero) {
   }
 }
 
+TEST(DerivedEngineFieldSelectTest, InputBindingState_SisoResolveRestoreAndReplay) {
+  DataEngine engine;
+  DerivedEngine derived(engine);
+  PJ::DatasetId dataset = makeDataset(engine);
+  PJ::TopicId input_topic = make_three_column_topic(engine, dataset, 4);
+
+  auto node = derived.addSisoTransform(input_topic, "selected", dataset, std::make_unique<IdentityTransform>(), 1);
+  ASSERT_TRUE(node.has_value()) << node.error();
+
+  auto original = derived.inputBindingState(*node);
+  ASSERT_TRUE(original.has_value()) << original.error();
+  EXPECT_EQ(original->columns, (std::vector<std::size_t>{1}));
+  EXPECT_EQ(original->kinds, (std::vector<StorageKind>{StorageKind::kFloat64}));
+
+  auto resolved = derived.resolvedInputBindingState(*node, {2});
+  ASSERT_TRUE(resolved.has_value()) << resolved.error();
+  EXPECT_EQ(resolved->columns, (std::vector<std::size_t>{2}));
+  EXPECT_EQ(resolved->kinds, (std::vector<StorageKind>{StorageKind::kFloat64}));
+  ASSERT_TRUE(derived.restoreInputBindingState(*node, *resolved).has_value());
+
+  auto restored = derived.inputBindingState(*node);
+  ASSERT_TRUE(restored.has_value()) << restored.error();
+  EXPECT_EQ(restored->columns, resolved->columns);
+  EXPECT_EQ(restored->kinds, resolved->kinds);
+  ASSERT_TRUE(derived.scheduleAll().has_value());
+  EXPECT_EQ(collectValues(engine, derived.outputTopics(*node)[0]), (std::vector<double>{200, 201, 202, 203}));
+}
+
+TEST(DerivedEngineFieldSelectTest, InputBindingState_RejectsInvalidRequests) {
+  DataEngine engine;
+  DerivedEngine derived(engine);
+  PJ::DatasetId dataset = makeDataset(engine);
+  PJ::TopicId input_topic = make_three_column_topic(engine, dataset, 1);
+  auto node = derived.addSisoTransform(input_topic, "selected", dataset, std::make_unique<IdentityTransform>());
+  ASSERT_TRUE(node.has_value()) << node.error();
+
+  EXPECT_FALSE(derived.inputBindingState(9999u).has_value());
+  EXPECT_FALSE(derived.resolvedInputBindingState(9999u, {0}).has_value());
+  EXPECT_FALSE(derived.resolvedInputBindingState(*node, {}).has_value());
+  EXPECT_FALSE(derived.resolvedInputBindingState(*node, {3}).has_value());
+  EXPECT_FALSE(derived.restoreInputBindingState(*node, DerivedEngine::InputBindingState{}).has_value());
+  EXPECT_FALSE(derived.restoreInputBindingState(9999u, DerivedEngine::InputBindingState{}).has_value());
+}
+
 TEST(DerivedEngineFieldSelectTest, ReplaceSisoTransform_InPlaceRecompute) {
   DataEngine engine;
   DerivedEngine derived(engine);
@@ -377,9 +442,9 @@ TEST(DerivedEngineFieldSelectTest, PartialFailure_DoesNotCommitTruncatedOutput) 
   EXPECT_TRUE(collectValues(engine, derived.outputTopics(*node)[0]).empty());  // no truncated 2-row prefix
 }
 
-// [b] A recompute (op swap) whose new op fails must leave NO stale/partial output —
-// recompute cleared the old output first, so a failed replay must not commit a prefix.
-TEST(DerivedEngineFieldSelectTest, RecomputeBatch_FailureLeavesNoStaleOutput) {
+// An in-place op swap is transactional. A failed candidate must not leave either
+// its truncated prefix or an empty graph: the known-good op and output are replayed.
+TEST(DerivedEngineFieldSelectTest, ReplaceSisoTransform_FailureRestoresPreviousOutput) {
   DataEngine engine;
   DerivedEngine derived(engine);
   PJ::DatasetId ds = makeDataset(engine);
@@ -392,7 +457,7 @@ TEST(DerivedEngineFieldSelectTest, RecomputeBatch_FailureLeavesNoStaleOutput) {
   ASSERT_EQ(collectValues(engine, out_tid).size(), 5u);  // healthy output first
 
   EXPECT_FALSE(derived.replaceSisoTransform(*node, std::make_unique<FailAfterNTransform>(2)).has_value());
-  EXPECT_TRUE(collectValues(engine, out_tid).empty());  // failed replay left nothing, not a 2-row prefix
+  EXPECT_EQ(collectValues(engine, out_tid), (std::vector<double>{0, 2, 4, 6, 8}));
 }
 
 // [a] Editing a filter that feeds another filter must refresh the whole downstream chain,
@@ -642,6 +707,85 @@ TEST(DerivedEngineTest, RecomputeBatch_ClearsAndRegenerates) {
   }
 }
 
+TEST(DerivedEngineTest, RecomputeBatch_MultipleRootsRecomputesDiamondOnceInTopologicalOrder) {
+  DataEngine engine;
+  DerivedEngine derived(engine);
+  PJ::DatasetId dataset = makeDataset(engine);
+  PJ::TopicId source = makeLinearTopic(engine, dataset, 1.0, 4);
+  std::vector<std::string> reset_trace;
+
+  PJ::NodeId node_a = *derived.addSisoTransform(
+      source, "A", dataset, std::make_unique<ResetTracingIdentityTransform>("A", reset_trace));
+  PJ::TopicId output_a = derived.outputTopics(node_a)[0];
+  PJ::NodeId node_b = *derived.addSisoTransform(
+      output_a, "B", dataset, std::make_unique<ResetTracingIdentityTransform>("B", reset_trace));
+  PJ::NodeId node_c = *derived.addSisoTransform(
+      output_a, "C", dataset, std::make_unique<ResetTracingIdentityTransform>("C", reset_trace));
+
+  class ResetTracingSumTransform : public IMIMOTransform {
+   public:
+    explicit ResetTracingSumTransform(std::vector<std::string>& reset_trace) : reset_trace_(reset_trace) {}
+
+    void reset() override {
+      reset_trace_.push_back("D");
+    }
+
+    std::vector<StorageKind> outputKinds(PJ::Span<const StorageKind> /*input_kinds*/) const override {
+      return {StorageKind::kFloat64};
+    }
+
+    bool calculate(
+        PJ::Timestamp time, PJ::Span<const VarValue> inputs, PJ::Timestamp& out_time,
+        std::vector<VarValue>& output) override {
+      out_time = time;
+      output[0] = std::get<double>(inputs[0]) + std::get<double>(inputs[1]);
+      return true;
+    }
+
+   private:
+    std::vector<std::string>& reset_trace_;
+  };
+
+  PJ::NodeId node_d = *derived.addMimoTransform(
+      {derived.outputTopics(node_b)[0], derived.outputTopics(node_c)[0]}, {"D"}, dataset,
+      std::make_unique<ResetTracingSumTransform>(reset_trace));
+  ASSERT_TRUE(derived.scheduleAll().has_value());
+
+  reset_trace.clear();
+  const std::vector<PJ::NodeId> roots = {node_a, node_c};
+  ASSERT_TRUE(derived.recomputeBatch(roots).has_value());
+  EXPECT_EQ(reset_trace, (std::vector<std::string>{"A", "B", "C", "D"}));
+  EXPECT_EQ(collectValues(engine, derived.outputTopics(node_d)[0]), (std::vector<double>{0, 2, 4, 6}));
+}
+
+TEST(DerivedEngineTest, SameNamedTopicsInDifferentDatasetsStayDependencyIsolated) {
+  DataEngine engine;
+  DerivedEngine derived(engine);
+  PJ::DatasetId first_dataset = makeDataset(engine, "first");
+  PJ::DatasetId second_dataset = makeDataset(engine, "second");
+  PJ::TopicId first_source = makeLinearTopic(engine, first_dataset, 1.0, 5);
+  PJ::TopicId second_source = makeLinearTopic(engine, second_dataset, 1.0, 5);
+
+  PJ::NodeId first_root =
+      *derived.addSisoTransform(first_source, "same_root", first_dataset, std::make_unique<IdentityTransform>());
+  PJ::NodeId second_root =
+      *derived.addSisoTransform(second_source, "same_root", second_dataset, std::make_unique<IdentityTransform>());
+  PJ::NodeId first_child = *derived.addSisoTransform(
+      derived.outputTopics(first_root)[0], "same_child", first_dataset, std::make_unique<IdentityTransform>());
+  PJ::NodeId second_child = *derived.addSisoTransform(
+      derived.outputTopics(second_root)[0], "same_child", second_dataset, std::make_unique<IdentityTransform>());
+  ASSERT_TRUE(derived.scheduleAll().has_value());
+
+  const std::size_t first_count_before = collectValues(engine, derived.outputTopics(first_child)[0]).size();
+  const std::size_t second_count_before = collectValues(engine, derived.outputTopics(second_child)[0]).size();
+  appendLinearRows(engine, first_source, 1.0, 1, 5);
+  notify(derived, {first_source});
+  ASSERT_TRUE(derived.scheduleAll().has_value());
+
+  EXPECT_EQ(collectValues(engine, derived.outputTopics(first_child)[0]).size(), first_count_before + 1);
+  EXPECT_EQ(collectValues(engine, derived.outputTopics(second_child)[0]).size(), second_count_before);
+}
+
 // ---------------------------------------------------------------------------
 // Parity: incremental == batch
 // ---------------------------------------------------------------------------
@@ -830,6 +974,27 @@ class DiffMimoTransform : public IMIMOTransform {
     return true;
   }
 };
+
+TEST(MimoTransformTest, InputBindingState_MimoResolveAndRestore) {
+  DataEngine engine;
+  DerivedEngine derived(engine);
+  PJ::DatasetId dataset = makeDataset(engine);
+  PJ::TopicId input_topic = make_three_column_topic(engine, dataset, 3);
+  auto node = derived.addMimoTransform(
+      {input_topic, input_topic}, {"sum"}, dataset, std::make_unique<SumMimoTransform>(), {0, 1});
+  ASSERT_TRUE(node.has_value()) << node.error();
+
+  auto original = derived.inputBindingState(*node);
+  ASSERT_TRUE(original.has_value()) << original.error();
+  EXPECT_EQ(original->columns, (std::vector<std::size_t>{0, 1}));
+  EXPECT_EQ(original->kinds, (std::vector<StorageKind>{StorageKind::kFloat64, StorageKind::kFloat64}));
+
+  auto resolved = derived.resolvedInputBindingState(*node, {1, 2});
+  ASSERT_TRUE(resolved.has_value()) << resolved.error();
+  ASSERT_TRUE(derived.restoreInputBindingState(*node, *resolved).has_value());
+  ASSERT_TRUE(derived.scheduleAll().has_value());
+  EXPECT_EQ(collectValues(engine, derived.outputTopics(*node)[0]), (std::vector<double>{300, 302, 304}));
+}
 
 // Collect (timestamp, value) pairs for a given column index.
 static std::vector<std::pair<PJ::Timestamp, double>> collectRowsCol(

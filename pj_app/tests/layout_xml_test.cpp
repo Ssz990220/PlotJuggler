@@ -558,9 +558,8 @@ TEST(ExtractSeriesPaths, DedupKeepsSameTopicFieldFromDifferentDatasets) {
 TEST(DatasetSourcePath, StampResolveAndPortableIdGuardCoverEveryIdentityShape) {
   QTemporaryDir layout_dir;
   ASSERT_TRUE(layout_dir.isValid());
-  // Curves live inside a <plot>; the stamp/strip passes are scoped to plot curves
-  // and <processor> inputs, so a scene <layer>/<config_topic>/<robot_model> and a
-  // <transform>/<input> are placed alongside to prove those pass through untouched.
+  // Curves live inside a <plot>; processor inputs carry the same portable dataset
+  // identity, while scene elements remain owned by their widget families.
   PlotDoc pd = makePlotDoc();
   QDomElement& doc_root = pd.plot;  // curves attach to the plot
   QDomElement ts = addTsCurve(pd, u"/imu"_s, u"x"_s);
@@ -574,8 +573,13 @@ TEST(DatasetSourcePath, StampResolveAndPortableIdGuardCoverEveryIdentityShape) {
   QDomElement processor = pd.doc.createElement(u"processor"_s);
   processor.setAttribute(u"input_dataset_id"_s, u"7"_s);
   processors.appendChild(processor);
+  QDomElement transform = pd.doc.createElement(u"transform"_s);
+  QDomElement transform_input = pd.doc.createElement(u"input"_s);
+  transform_input.setAttribute(u"dataset_id"_s, u"7"_s);
+  transform.appendChild(transform_input);
+  processors.appendChild(transform);
 
-  // Scene + transform-input elements: must be invisible to all three passes.
+  // Scene elements must be invisible to all three passes.
   QDomElement scene = pd.doc.createElement(u"scene3d"_s);
   pd.doc.documentElement().appendChild(scene);
   QDomElement layer = pd.doc.createElement(u"layer"_s);
@@ -600,6 +604,7 @@ TEST(DatasetSourcePath, StampResolveAndPortableIdGuardCoverEveryIdentityShape) {
   EXPECT_EQ(xy.attribute(u"x_dataset_path"_s), u"data/run.mcap"_s);
   EXPECT_FALSE(xy.hasAttribute(u"y_dataset_path"_s));  // id 8 unknown to the lookup
   EXPECT_EQ(processor.attribute(u"input_dataset_path"_s), u"data/run.mcap"_s);
+  EXPECT_EQ(transform_input.attribute(u"dataset_path"_s), u"data/run.mcap"_s);
   EXPECT_FALSE(layer.hasAttribute(u"dataset_path"_s)) << "scene layers are not stamped";
   EXPECT_FALSE(robot.hasAttribute(u"source_dataset_path"_s)) << "robot models are not stamped";
 
@@ -609,6 +614,7 @@ TEST(DatasetSourcePath, StampResolveAndPortableIdGuardCoverEveryIdentityShape) {
   EXPECT_FALSE(xy.hasAttribute(u"y_dataset_id"_s))  // id-only, no path -> stripped
       << "an unvalidated volatile id must not survive a file save";
   EXPECT_TRUE(processor.hasAttribute(u"input_dataset_id"_s));
+  EXPECT_TRUE(transform_input.hasAttribute(u"dataset_id"_s));
   // Scene ids survive untouched — restore requires them and the scene family owns
   // its own qualifier round-trip.
   EXPECT_TRUE(layer.hasAttribute(u"dataset_id"_s)) << "scene layer id must not be stripped";
@@ -623,6 +629,7 @@ TEST(DatasetSourcePath, StampResolveAndPortableIdGuardCoverEveryIdentityShape) {
   EXPECT_EQ(ts.attribute(u"dataset_path"_s), expected);
   EXPECT_EQ(xy.attribute(u"x_dataset_path"_s), expected);
   EXPECT_EQ(processor.attribute(u"input_dataset_path"_s), expected);
+  EXPECT_EQ(transform_input.attribute(u"dataset_path"_s), expected);
 }
 
 TEST(GenericLayout, RemovesDatasetQualifiersButKeepsStablePaths) {
@@ -700,11 +707,11 @@ TEST(GenericLayout, RemovesDatasetQualifiersButKeepsStablePaths) {
   EXPECT_FALSE(processor.hasAttribute(u"input_dataset_source"_s));
   EXPECT_FALSE(processor.hasAttribute(u"input_dataset_path"_s));
 
-  // A <transform>/<input> resolves by NAME, not by a dataset qualifier, so this
-  // pass leaves it alone (it was never stamped either).
-  EXPECT_TRUE(input.hasAttribute(u"dataset_id"_s));
-  EXPECT_TRUE(input.hasAttribute(u"dataset_source"_s));
-  EXPECT_TRUE(input.hasAttribute(u"dataset_path"_s));
+  // Transform input qualifiers are portable in source-bound files but stripped
+  // from a generic export, leaving its topic/field identity for unique resolution.
+  EXPECT_FALSE(input.hasAttribute(u"dataset_id"_s));
+  EXPECT_FALSE(input.hasAttribute(u"dataset_source"_s));
+  EXPECT_FALSE(input.hasAttribute(u"dataset_path"_s));
   EXPECT_EQ(input.attribute(u"topic"_s), u"/imu"_s);
   EXPECT_EQ(input.attribute(u"field"_s), u"x"_s);
   EXPECT_EQ(input.attribute(u"column"_s), u"1"_s);

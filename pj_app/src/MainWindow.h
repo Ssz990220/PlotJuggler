@@ -224,7 +224,7 @@ class MainWindow : public QMainWindow {
   // confirmed — remove those transforms and their Custom Series entries. Returns
   // true to proceed with the deletion, false if the user cancelled. No-op + true
   // when nothing depends on the removed series.
-  bool confirmAndRemoveDependentTransforms(const std::vector<std::string>& removed_names);
+  bool confirmAndRemoveDependentTransforms(const std::vector<TopicId>& removed_topics);
 
   // Removes the selected datasets (curve tree "Remove dataset(s)"): shows one
   // combined confirmation, then erases each. Widget sync is signal-driven.

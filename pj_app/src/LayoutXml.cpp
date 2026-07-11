@@ -291,6 +291,7 @@ constexpr std::array<DatasetIdentityAttributes, 3> kCurveIdentityAttributes{{
 // reload exactly like a plotted curve, so it carries the same qualifiers).
 constexpr DatasetIdentityAttributes kProcessorInputIdentityAttributes{
     "input_dataset_id", "input_dataset_source", "input_dataset_path"};
+constexpr DatasetIdentityAttributes kTransformInputIdentityAttributes{"dataset_id", "dataset_source", "dataset_path"};
 
 // Visits every <processor> that is a descendant of <data_processors>.
 template <typename Fn>
@@ -300,6 +301,18 @@ void forEachProcessor(QDomDocument& doc, Fn&& fn) {
     QDomElement processor = processors.at(index).toElement();
     if (!processor.isNull()) {
       fn(processor);
+    }
+  }
+}
+
+template <typename Fn>
+void forEachTransformInput(QDomDocument& doc, Fn&& fn) {
+  const QDomNodeList transforms = doc.elementsByTagName(u"transform"_s);
+  for (int transform_index = 0; transform_index < transforms.size(); ++transform_index) {
+    const QDomElement transform = transforms.at(transform_index).toElement();
+    for (QDomElement input = transform.firstChildElement(u"input"_s); !input.isNull();
+         input = input.nextSiblingElement(u"input"_s)) {
+      fn(input);
     }
   }
 }
@@ -341,6 +354,8 @@ void removeDatasetQualifiersForGenericLayout(QDomDocument& doc) {
   });
   forEachProcessor(
       doc, [&strip_pair](QDomElement& processor) { strip_pair(processor, kProcessorInputIdentityAttributes); });
+  forEachTransformInput(
+      doc, [&strip_pair](QDomElement& input) { strip_pair(input, kTransformInputIdentityAttributes); });
 }
 
 namespace {
@@ -390,6 +405,8 @@ void stampDatasetSourcePaths(QDomDocument& doc, const DatasetPathLookup& lookup)
   forEachProcessor(doc, [&lookup](QDomElement& processor) {
     stampIdentityPair(processor, kProcessorInputIdentityAttributes, lookup);
   });
+  forEachTransformInput(
+      doc, [&lookup](QDomElement& input) { stampIdentityPair(input, kTransformInputIdentityAttributes, lookup); });
 }
 
 void removeUnvalidatedDatasetIds(QDomDocument& doc) {
@@ -400,6 +417,8 @@ void removeUnvalidatedDatasetIds(QDomDocument& doc) {
   });
   forEachProcessor(
       doc, [](QDomElement& processor) { stripUnvalidatedIdentityPair(processor, kProcessorInputIdentityAttributes); });
+  forEachTransformInput(
+      doc, [](QDomElement& input) { stripUnvalidatedIdentityPair(input, kTransformInputIdentityAttributes); });
 }
 
 void resolveDatasetSourcePaths(QDomDocument& doc, const QDir& layout_dir) {

@@ -19,25 +19,51 @@
 #include <thread>
 #include <vector>
 
+#include "pj_datastore/data_processor.hpp"
+#include "pj_datastore/topic_storage.hpp"
 #include "pj_datastore/writer.hpp"
 #include "pj_plugins/host/message_parser_handle.hpp"
 #include "pj_plugins/sdk/message_parser_plugin_base.hpp"
+#include "pj_runtime/DataProcessorService.h"
 #include "pj_runtime/SessionManager.h"
 using namespace Qt::StringLiterals;
 
 namespace {
+
+class PassThroughProcessor : public PJ::proc::DataProcessor {
+ public:
+  const char* id() const override {
+    return "test-pass";
+  }
+  const char* bracketLabel() const override {
+    return "Pass";
+  }
+  PJ::proc::TraitMask traits() const override {
+    return PJ::proc::kStatelessOneToOne | PJ::proc::kPreservesOrder;
+  }
+  bool isStreamSafe() const override {
+    return true;
+  }
+  void reset() override {}
+  std::optional<PJ::proc::Sample> calculateNextPoint(const PJ::proc::Sample& input) override {
+    return input;
+  }
+};
 
 TEST(SessionManagerSourceTest, LastLoadedSourceStartsEmpty) {
   PJ::SessionManager session;
   EXPECT_FALSE(session.lastLoadedSource().has_value());
 }
 
+// recordLoadedSource stores normalizedSourcePath(path) — compare through the
+// same contract, not against the raw literal: on Windows even an absolute
+// Unix-style input gains a drive prefix from the absolute-path fallback.
 TEST(SessionManagerSourceTest, RecordLoadedSourceStoresPathAndPrefix) {
   PJ::SessionManager session;
   session.recordLoadedSource(u"/tmp/run42.csv"_s, u"robot"_s);
   const auto src = session.lastLoadedSource();
   ASSERT_TRUE(src.has_value());
-  EXPECT_EQ(src->path, u"/tmp/run42.csv"_s);
+  EXPECT_EQ(src->path, PJ::SessionManager::normalizedSourcePath(u"/tmp/run42.csv"_s));
   EXPECT_EQ(src->prefix, u"robot"_s);
 }
 
@@ -182,12 +208,12 @@ TEST(SessionManagerSourceTest, RecordLoadedSourceAppendsDistinctPaths) {
   // Both distinct files are tracked, in load order.
   const auto& sources = session.loadedSources();
   ASSERT_EQ(sources.size(), 2u);
-  EXPECT_EQ(sources[0].path, u"/tmp/a.csv"_s);
-  EXPECT_EQ(sources[1].path, u"/tmp/b.csv"_s);
+  EXPECT_EQ(sources[0].path, PJ::SessionManager::normalizedSourcePath(u"/tmp/a.csv"_s));
+  EXPECT_EQ(sources[1].path, PJ::SessionManager::normalizedSourcePath(u"/tmp/b.csv"_s));
   // lastLoadedSource() is the most recent.
   const auto src = session.lastLoadedSource();
   ASSERT_TRUE(src.has_value());
-  EXPECT_EQ(src->path, u"/tmp/b.csv"_s);
+  EXPECT_EQ(src->path, PJ::SessionManager::normalizedSourcePath(u"/tmp/b.csv"_s));
   EXPECT_EQ(src->prefix, u"p"_s);
 }
 
@@ -200,11 +226,11 @@ TEST(SessionManagerSourceTest, RecordLoadedSourceReplacesSamePathInPlace) {
   session.recordLoadedSource(u"/tmp/a.csv"_s, u"robot"_s, u"CSV"_s, uR"({"x":1})"_s);
   const auto& sources = session.loadedSources();
   ASSERT_EQ(sources.size(), 2u);
-  EXPECT_EQ(sources[0].path, u"/tmp/a.csv"_s);
+  EXPECT_EQ(sources[0].path, PJ::SessionManager::normalizedSourcePath(u"/tmp/a.csv"_s));
   EXPECT_EQ(sources[0].prefix, u"robot"_s);
   EXPECT_EQ(sources[0].plugin_id, u"CSV"_s);
   EXPECT_EQ(sources[0].plugin_config_json, uR"({"x":1})"_s);
-  EXPECT_EQ(sources[1].path, u"/tmp/b.csv"_s);
+  EXPECT_EQ(sources[1].path, PJ::SessionManager::normalizedSourcePath(u"/tmp/b.csv"_s));
 }
 
 TEST(SessionManagerSourceTest, ClearLoadedSourceResetsToEmpty) {
@@ -221,7 +247,7 @@ TEST(SessionManagerSourceTest, RecordLoadedSourceStoresPluginIdAndConfig) {
   session.recordLoadedSource(u"/tmp/run42.mcap"_s, u""_s, u"DataLoad MCAP"_s, uR"({"topics":["/imu"]})"_s);
   const auto src = session.lastLoadedSource();
   ASSERT_TRUE(src.has_value());
-  EXPECT_EQ(src->path, u"/tmp/run42.mcap"_s);
+  EXPECT_EQ(src->path, PJ::SessionManager::normalizedSourcePath(u"/tmp/run42.mcap"_s));
   EXPECT_EQ(src->prefix, QString());
   EXPECT_EQ(src->plugin_id, u"DataLoad MCAP"_s);
   EXPECT_EQ(src->plugin_config_json, uR"({"topics":["/imu"]})"_s);
@@ -233,7 +259,7 @@ TEST(SessionManagerSourceTest, RecordLoadedSourceDefaultsPluginFieldsToEmpty) {
   session.recordLoadedSource(u"/tmp/a.csv"_s, u"p"_s);
   const auto src = session.lastLoadedSource();
   ASSERT_TRUE(src.has_value());
-  EXPECT_EQ(src->path, u"/tmp/a.csv"_s);
+  EXPECT_EQ(src->path, PJ::SessionManager::normalizedSourcePath(u"/tmp/a.csv"_s));
   EXPECT_EQ(src->prefix, u"p"_s);
   EXPECT_TRUE(src->plugin_id.isEmpty());
   EXPECT_TRUE(src->plugin_config_json.isEmpty());
@@ -954,6 +980,39 @@ TEST(SessionManagerRefillGuardTest, CommitKeepsRefilledDataAndFreesSnapshot) {
     EXPECT_EQ(storage->timeMin(), 1000);
     EXPECT_EQ(storage->timeMax(), 2000);
   }
+}
+
+TEST(SessionManagerRefillGuardTest, ProcessorOutputsReplayBeforePruneAndKeepStableTopicIds) {
+  PJ::SessionManager session;
+  auto dataset = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "reload.mcap"});
+  ASSERT_TRUE(dataset.has_value()) << dataset.error();
+  writeScalarSamples(session, *dataset, "/a", {100, 200});
+  const PJ::TopicId input = session.dataEngine().listTopics(*dataset).front();
+  auto filter =
+      session.dataProcessorService().applyFilter(input, *dataset, std::make_unique<PassThroughProcessor>(), "/a[Pass]");
+  ASSERT_TRUE(filter.has_value()) << filter.error();
+  const PJ::TopicId output = filter->output_topic_id;
+  ASSERT_EQ(session.dataEngine().getTopicStorage(output)->metadata().total_row_count, 2U);
+
+  {
+    PJ::RefillGuard guard = session.beginRefill(*dataset);
+    EXPECT_TRUE(session.dataEngine().getTopicStorage(output)->empty());
+    PJ::DataWriter writer = session.dataEngine().createWriter();
+    writer.appendScalar(PJ::ScalarSeriesHandle{input, 0}, 1000, 10.0);
+    writer.appendScalar(PJ::ScalarSeriesHandle{input, 0}, 2000, 20.0);
+    ASSERT_FALSE(session.dataEngine().commitChunks(writer.flushAll()).empty());
+    ASSERT_TRUE(guard.recomputeProcessors().has_value());
+    guard.pruneVanishedTopics();
+    guard.commit();
+  }
+
+  const auto topics = session.dataEngine().listTopics(*dataset);
+  EXPECT_NE(std::find(topics.begin(), topics.end(), output), topics.end());
+  const PJ::TopicStorage* output_storage = session.dataEngine().getTopicStorage(output);
+  ASSERT_NE(output_storage, nullptr);
+  EXPECT_EQ(output_storage->metadata().total_row_count, 2U);
+  EXPECT_EQ(output_storage->timeMin(), 1000);
+  EXPECT_EQ(output_storage->timeMax(), 2000);
 }
 
 TEST(SessionManagerRefillGuardTest, RollbackRetiresTopicsAddedByRefill) {

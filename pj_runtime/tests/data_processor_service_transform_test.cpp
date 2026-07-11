@@ -16,11 +16,15 @@
 #include "pj_base/dataset.hpp"
 #include "pj_base/type_tree.hpp"
 #include "pj_base/types.hpp"
+#include "pj_datastore/derived_engine.hpp"
 #include "pj_datastore/engine.hpp"
 #include "pj_datastore/query.hpp"
 #include "pj_datastore/topic_storage.hpp"
 #include "pj_datastore/writer.hpp"
 #include "pj_runtime/DataProcessorService.h"
+#include "pj_runtime/SessionManager.h"
+#include "pj_scripting/filter_catalogue.h"
+#include "pj_scripting/script_engine.h"
 
 namespace PJ {
 namespace {
@@ -37,6 +41,11 @@ return { id="negate", name="Negate", output="same",
   create = function(p) return { calculate = function(t, v) return v * 10.0 end } end }
 )LUAU";
 
+constexpr const char* kNegateBoom = R"LUAU(-- pj-script: luau
+return { id="negate", name="Negate", output="same",
+  create = function(p) return { calculate = function(t, v) error("boom") end } end }
+)LUAU";
+
 // A class whose calculate() raises a runtime error on the first sample.
 constexpr const char* kBoom = R"LUAU(-- pj-script: luau
 return { id="boom", name="Boom",
@@ -48,6 +57,23 @@ constexpr const char* kSplit = R"LUAU(-- pj-script: luau
 return { id="split", name="Split",
   create = function(p) return { calculate = function(t, v) return v, -v end } end }
 )LUAU";
+
+constexpr const char* kSplitTimes10 = R"LUAU(-- pj-script: luau
+return { id="split", name="Split",
+  create = function(p) return { calculate = function(t, v) return v * 10.0, v * -10.0 end } end }
+)LUAU";
+
+constexpr const char* kSplitBoom = R"LUAU(-- pj-script: luau
+return { id="split", name="Split",
+  create = function(p) return { calculate = function(t, v) error("boom") end } end }
+)LUAU";
+
+constexpr const char* kScale = R"LUAU(return { {
+  id = "scale", name = "Scale", output = "same",
+  create = function(params)
+    return { calculate = function(time, value) return value * 2 end }
+  end
+} })LUAU";
 
 // Read one column of a topic as doubles (readValues above is column-0 only).
 std::vector<double> readColumn(DataEngine& engine, TopicId tid, std::size_t col) {
@@ -75,8 +101,9 @@ std::vector<double> readValues(DataEngine& engine, TopicId tid) {
 // Build a single float64 series named `name` in a fresh dataset and commit the
 // given samples (one per second). Returns the dataset id and input topic id.
 struct Fixture {
-  DataEngine engine;
-  DataProcessorService service{engine};
+  SessionManager session;
+  DataEngine& engine = session.dataEngine();
+  DataProcessorService& service = session.dataProcessorService();
   DatasetId ds = 0;
   TopicId input = 0;
 
@@ -121,6 +148,19 @@ struct Fixture {
   }
 };
 
+DataProcessorService::TransformRecipe negateRecipe(DataProcessorService::TransformInputBinding binding) {
+  DataProcessorService::TransformRecipe recipe;
+  recipe.key = "pluginA/negate";
+  recipe.owner_plugin = "pluginA";
+  recipe.user_id = "negate";
+  recipe.inputs = {binding.topic_name};
+  recipe.input_bindings = {std::move(binding)};
+  recipe.outputs = {"out"};
+  recipe.script = kNegate;
+  recipe.params_json = "{}";
+  return recipe;
+}
+
 TEST(DataProcessorTransformTest, UpsertCreatesNamedTopic) {
   Fixture fx;
   fx.seed("speed", {-1.0, 2.0, -3.0});
@@ -132,11 +172,97 @@ TEST(DataProcessorTransformTest, UpsertCreatesNamedTopic) {
   EXPECT_EQ(rec->user_id, "negate");
   EXPECT_EQ(rec->backend, "luau");
   EXPECT_EQ(rec->dataset_id, fx.ds);  // output dataset = the input topic's dataset
+  ASSERT_EQ(rec->input_bindings.size(), 1u);
+  EXPECT_EQ(rec->input_bindings.front().dataset_id, fx.ds);
+  EXPECT_EQ(rec->input_bindings.front().dataset_source, "s");
+  EXPECT_EQ(rec->input_bindings.front().topic_name, "speed");
+  EXPECT_EQ(rec->input_bindings.front().field_path, "value");
+  EXPECT_EQ(rec->input_bindings.front().column_index, 0u);
   ASSERT_EQ(rec->output_topic_ids.size(), 1u);
 
   const TopicId out = rec->output_topic_ids.front();
   EXPECT_TRUE(fx.listed(out));
   EXPECT_EQ(readValues(fx.engine, out), (std::vector<double>{1.0, -2.0, 3.0}));
+}
+
+TEST(DataProcessorTransformTest, SourceTopicsForOutputTraversesTransformChain) {
+  Fixture fx;
+  fx.seed("speed", {1.0, 2.0});
+  const auto first = fx.service.upsertTransform("pluginA", "negate", {"speed"}, {"mid"}, kNegate, "{}");
+  ASSERT_TRUE(first.has_value()) << first.error();
+  const auto second = fx.service.upsertTransform("pluginB", "negate", {"mid"}, {"final"}, kNegate, "{}");
+  ASSERT_TRUE(second.has_value()) << second.error();
+  EXPECT_EQ(
+      fx.service.sourceTopicsForOutput(second->output_topic_ids.front()),
+      (std::vector<std::pair<DatasetId, std::string>>{{fx.ds, "speed"}}));
+}
+
+TEST(DataProcessorTransformTest, SourceTopicsForOutputDoesNotJumpToSameNamedReplacement) {
+  Fixture fx;
+  fx.seed("speed", {1.0});
+  const auto recipe = fx.service.upsertTransform("pluginA", "negate", {"speed"}, {"out"}, kNegate, "{}");
+  ASSERT_TRUE(recipe.has_value()) << recipe.error();
+
+  const DatasetId other = *fx.engine.createDataset(DatasetDescriptor{.source_name = "other", .time_domain_id = 0});
+  DataWriter writer = fx.engine.createWriter();
+  auto same_name = writer.registerScalarSeries(other, "speed", NumericType::kFloat64);
+  writer.appendScalar(*same_name, 0, 99.0);
+  fx.engine.commitChunks(writer.flushAll());
+  fx.engine.retireTopic(fx.input);
+  EXPECT_TRUE(fx.service.sourceTopicsForOutput(recipe->output_topic_ids.front()).empty());
+}
+
+TEST(DataProcessorTransformTest, DependencyPreflightAndCascadeKeepSameNamedDatasetsIsolated) {
+  SessionManager session;
+  DataEngine& engine = session.dataEngine();
+  DataProcessorService& service = session.dataProcessorService();
+  const DatasetId dataset_a = *engine.createDataset(DatasetDescriptor{.source_name = "a.mcap"});
+  const DatasetId dataset_b = *engine.createDataset(DatasetDescriptor{.source_name = "b.mcap"});
+  DataWriter writer = engine.createWriter();
+  auto input_a = writer.registerScalarSeries(dataset_a, "speed", NumericType::kFloat64);
+  auto input_b = writer.registerScalarSeries(dataset_b, "speed", NumericType::kFloat64);
+  writer.appendScalar(*input_a, 0, 1.0);
+  writer.appendScalar(*input_b, 0, 9.0);
+  engine.commitChunks(writer.flushAll());
+
+  const auto transform_b = service.restoreTransform(negateRecipe(
+      DataProcessorService::TransformInputBinding{
+          .dataset_id = dataset_b,
+          .dataset_source = "b.mcap",
+          .topic_name = "speed",
+          .field_path = "value",
+          .column_index = 0,
+      }));
+  ASSERT_TRUE(transform_b.has_value()) << transform_b.error();
+  auto catalogue = std::make_shared<scripting::FilterCatalogue>(scripting::makeLuauEngine());
+  ASSERT_TRUE(catalogue->addBundledSource(kScale, "test").has_value());
+  service.setFilterCatalogue(std::move(catalogue));
+  const auto filter_a = service.applyFilter(input_a->topic_id, dataset_a, "scale", "a_filtered");
+  ASSERT_TRUE(filter_a.has_value()) << filter_a.error();
+  const auto transform_a = service.upsertTransform("pluginC", "negate", {"a_filtered"}, {"a_final"}, kNegate, "{}");
+  ASSERT_TRUE(transform_a.has_value()) << transform_a.error();
+
+  const auto affected_a = service.transformsDependingOn({input_a->topic_id});
+  ASSERT_EQ(affected_a.size(), 1u);
+  EXPECT_EQ(affected_a.front().key, transform_a->key);
+  const auto affected_b = service.transformsDependingOn({input_b->topic_id});
+  ASSERT_EQ(affected_b.size(), 1u);
+  EXPECT_EQ(affected_b.front().key, transform_b->key);
+  ASSERT_TRUE(service.removeFilter(filter_a->node_id).has_value());
+  const auto remaining = service.transformRecipes();
+  ASSERT_EQ(remaining.size(), 1u);
+  EXPECT_EQ(remaining.front().key, transform_b->key);
+}
+
+TEST(DataProcessorTransformTest, RemoveFilterRejectsTransformNodeId) {
+  Fixture fx;
+  fx.seed("speed", {1.0});
+  const auto recipe = fx.service.upsertTransform("pluginA", "negate", {"speed"}, {"out"}, kNegate, "{}");
+  ASSERT_TRUE(recipe.has_value()) << recipe.error();
+
+  EXPECT_FALSE(fx.service.removeFilter(recipe->node_id).has_value());
+  EXPECT_TRUE(fx.service.derivedEngine().hasNode(recipe->node_id));
+  EXPECT_TRUE(fx.listed(recipe->output_topic_ids.front()));
 }
 
 TEST(DataProcessorTransformTest, UpsertReplacesExistingNode) {
@@ -151,7 +277,104 @@ TEST(DataProcessorTransformTest, UpsertReplacesExistingNode) {
   const auto second = fx.service.upsertTransform("pluginA", "negate", {"speed"}, {"speed/out"}, kTimes10, "{}");
   ASSERT_TRUE(second.has_value()) << second.error();
   EXPECT_EQ(fx.service.transformRecipes().size(), 1u);
+  EXPECT_EQ(second->node_id, first->node_id);
+  EXPECT_EQ(second->output_topic_ids, first->output_topic_ids);
   EXPECT_EQ(readValues(fx.engine, second->output_topic_ids.front()), (std::vector<double>{10.0, 20.0}));
+}
+
+TEST(DataProcessorTransformTest, ExistingKeyCannotChangePersistentLifetime) {
+  Fixture fx;
+  fx.seed("speed", {1.0, 2.0});
+  const auto persistent =
+      fx.service.upsertTransform("pluginA", "negate", {"speed"}, {"speed/out"}, kNegate, "{}", false);
+  ASSERT_TRUE(persistent.has_value()) << persistent.error();
+
+  const auto preview = fx.service.upsertTransform("pluginA", "negate", {"speed"}, {"speed/out"}, kTimes10, "{}", true);
+  ASSERT_FALSE(preview.has_value());
+  const auto saved = fx.service.transformRecipes();
+  ASSERT_EQ(saved.size(), 1u);
+  EXPECT_FALSE(saved.front().ephemeral);
+  EXPECT_EQ(saved.front().node_id, persistent->node_id);
+}
+
+TEST(DataProcessorTransformTest, ReplacingUpstreamPreservesAndRecomputesExactTopicDependents) {
+  Fixture fx;
+  fx.seed("speed", {1.0, 2.0});
+
+  const auto parent = fx.service.upsertTransform("pluginA", "negate", {"speed"}, {"mid"}, kNegate, "{}");
+  ASSERT_TRUE(parent.has_value()) << parent.error();
+  const auto child = fx.service.upsertTransform("pluginB", "negate", {"mid"}, {"final"}, kNegate, "{}");
+  ASSERT_TRUE(child.has_value()) << child.error();
+
+  auto catalogue = std::make_shared<scripting::FilterCatalogue>(scripting::makeLuauEngine());
+  ASSERT_TRUE(catalogue->addBundledSource(kScale, "test").has_value());
+  fx.service.setFilterCatalogue(std::move(catalogue));
+  const auto filtered = fx.service.applyFilter(child->output_topic_ids.front(), fx.ds, "scale", "filtered");
+  ASSERT_TRUE(filtered.has_value()) << filtered.error();
+
+  const auto replaced = fx.service.upsertTransform("pluginA", "negate", {"speed"}, {"mid"}, kTimes10, "{}");
+  ASSERT_TRUE(replaced.has_value()) << replaced.error();
+  EXPECT_EQ(replaced->node_id, parent->node_id);
+  EXPECT_EQ(replaced->output_topic_ids, parent->output_topic_ids);
+  EXPECT_TRUE(fx.service.derivedEngine().hasNode(child->node_id));
+  EXPECT_TRUE(fx.service.derivedEngine().hasNode(filtered->node_id));
+  EXPECT_EQ(readValues(fx.engine, parent->output_topic_ids.front()), (std::vector<double>{10.0, 20.0}));
+  EXPECT_EQ(readValues(fx.engine, child->output_topic_ids.front()), (std::vector<double>{-10.0, -20.0}));
+  EXPECT_EQ(readValues(fx.engine, filtered->output_topic_id), (std::vector<double>{-20.0, -40.0}));
+}
+
+TEST(DataProcessorTransformTest, FailedCompatibleReplacementRollsBackRootAndDependents) {
+  Fixture fx;
+  fx.seed("speed", {1.0, 2.0});
+
+  const auto parent = fx.service.upsertTransform("pluginA", "negate", {"speed"}, {"mid"}, kNegate, "{}");
+  ASSERT_TRUE(parent.has_value()) << parent.error();
+  const auto child = fx.service.upsertTransform("pluginB", "negate", {"mid"}, {"final"}, kNegate, "{}");
+  ASSERT_TRUE(child.has_value()) << child.error();
+
+  const auto failed = fx.service.upsertTransform("pluginA", "negate", {"speed"}, {"mid"}, kNegateBoom, "{}");
+  ASSERT_FALSE(failed.has_value());
+  EXPECT_EQ(fx.service.transformRecipes().size(), 2u);
+  EXPECT_TRUE(fx.service.derivedEngine().hasNode(parent->node_id));
+  EXPECT_TRUE(fx.service.derivedEngine().hasNode(child->node_id));
+  EXPECT_EQ(readValues(fx.engine, parent->output_topic_ids.front()), (std::vector<double>{-1.0, -2.0}));
+  EXPECT_EQ(readValues(fx.engine, child->output_topic_ids.front()), (std::vector<double>{1.0, 2.0}));
+}
+
+TEST(DataProcessorTransformTest, StructuralReplacementIsRejectedWithoutMutatingGraph) {
+  Fixture fx;
+  fx.seed("speed", {1.0, 2.0});
+
+  const auto parent = fx.service.upsertTransform("pluginA", "negate", {"speed"}, {"mid"}, kNegate, "{}");
+  ASSERT_TRUE(parent.has_value()) << parent.error();
+  const auto child = fx.service.upsertTransform("pluginB", "negate", {"mid"}, {"final"}, kNegate, "{}");
+  ASSERT_TRUE(child.has_value()) << child.error();
+
+  const auto rejected = fx.service.upsertTransform("pluginA", "negate", {"speed"}, {"renamed"}, kTimes10, "{}");
+  ASSERT_FALSE(rejected.has_value());
+  EXPECT_EQ(fx.service.transformRecipes().size(), 2u);
+  EXPECT_TRUE(fx.service.derivedEngine().hasNode(parent->node_id));
+  EXPECT_TRUE(fx.service.derivedEngine().hasNode(child->node_id));
+  EXPECT_EQ(readValues(fx.engine, parent->output_topic_ids.front()), (std::vector<double>{-1.0, -2.0}));
+  EXPECT_EQ(readValues(fx.engine, child->output_topic_ids.front()), (std::vector<double>{1.0, 2.0}));
+}
+
+TEST(DataProcessorTransformTest, RemovingTransformCascadesDownstreamFilter) {
+  Fixture fx;
+  fx.seed("speed", {1.0});
+  const auto parent = fx.service.upsertTransform("pluginA", "negate", {"speed"}, {"mid"}, kNegate, "{}");
+  ASSERT_TRUE(parent.has_value()) << parent.error();
+
+  auto catalogue = std::make_shared<scripting::FilterCatalogue>(scripting::makeLuauEngine());
+  ASSERT_TRUE(catalogue->addBundledSource(kScale, "test").has_value());
+  fx.service.setFilterCatalogue(std::move(catalogue));
+  const auto child = fx.service.applyFilter(parent->output_topic_ids.front(), fx.ds, "scale", "final");
+  ASSERT_TRUE(child.has_value()) << child.error();
+
+  ASSERT_TRUE(fx.service.removeTransform(parent->key).has_value());
+  EXPECT_TRUE(fx.service.transformRecipes().empty());
+  EXPECT_TRUE(fx.service.recipes().empty());
+  EXPECT_FALSE(fx.listed(child->output_topic_id));
 }
 
 TEST(DataProcessorTransformTest, RemoveRetiresTopic) {
@@ -216,6 +439,87 @@ TEST(DataProcessorTransformTest, ResolvesSchemalessNestedFieldInput) {
   EXPECT_EQ(readValues(fx.engine, rec->output_topic_ids.front()), (std::vector<double>{-1.0, -2.0}));
 }
 
+TEST(DataProcessorTransformTest, ExplicitInputColumnIsCapturedAndRestored) {
+  Fixture fx;
+  fx.seedMultiColumn("/imu", {"x", "selected"}, {{100.0, 200.0}, {1.0, 2.0}});
+  const auto recipe = fx.service.upsertTransform("pluginA", "negate", {"/imu"}, {"out"}, kNegate, "{}", false, 1);
+  ASSERT_TRUE(recipe.has_value()) << recipe.error();
+  ASSERT_EQ(recipe->input_bindings.size(), 1u);
+  EXPECT_EQ(recipe->input_bindings.front().field_path, "selected");
+  const TopicId original_output = recipe->output_topic_ids.front();
+
+  const DataProcessorService::TransformRecipe snapshot = *recipe;
+  fx.service.clearAllTransforms();
+  const auto restored = fx.service.restoreTransform(snapshot);
+  ASSERT_TRUE(restored.has_value()) << restored.error();
+  EXPECT_NE(restored->output_topic_ids.front(), original_output);
+  EXPECT_EQ(restored->input_bindings.front().column_index, 1u);
+  EXPECT_EQ(readValues(fx.engine, restored->output_topic_ids.front()), (std::vector<double>{-1.0, -2.0}));
+}
+
+TEST(DataProcessorTransformTest, QualifiedFieldPathSurvivesColumnReordering) {
+  Fixture fx;
+  fx.seedMultiColumn("/imu", {"other", "selected"}, {{100.0, 200.0}, {1.0, 2.0}});
+  auto recipe = negateRecipe(
+      DataProcessorService::TransformInputBinding{
+          .dataset_id = fx.ds,
+          .dataset_source = "s",
+          .topic_name = "/imu",
+          .field_path = "selected",
+          .column_index = 0,
+      });
+  const auto restored = fx.service.restoreTransform(recipe);
+  ASSERT_TRUE(restored.has_value()) << restored.error();
+  EXPECT_EQ(restored->input_bindings.front().column_index, 1u);
+  EXPECT_EQ(readValues(fx.engine, restored->output_topic_ids.front()), (std::vector<double>{-1.0, -2.0}));
+}
+
+TEST(DataProcessorTransformTest, InPlaceReloadRebindKeepsOutputTopicIdStable) {
+  SessionManager session;
+  DataEngine& engine = session.dataEngine();
+  const DatasetId dataset = *engine.createDataset(DatasetDescriptor{.source_name = "s", .time_domain_id = 0});
+  DataWriter writer = engine.createWriter();
+  const TopicId input =
+      *writer.registerTopic(dataset, TopicDescriptor{.name = "/imu", .schema_id = 0, .dataset_id = dataset});
+  (void)writer.ensureColumn(input, "other", PrimitiveType::kFloat64);
+  (void)writer.ensureColumn(input, "selected", PrimitiveType::kFloat64);
+  for (std::size_t row = 0; row < 2; ++row) {
+    ASSERT_TRUE(writer.beginRow(input, static_cast<Timestamp>(row)).has_value());
+    writer.set<double>(input, 0, 100.0 + static_cast<double>(row));
+    writer.set<double>(input, 1, 1.0 + static_cast<double>(row));
+    ASSERT_TRUE(writer.finishRow(input).has_value());
+  }
+  engine.commitChunks(writer.flushAll());
+
+  auto installed =
+      session.dataProcessorService().upsertTransform("pluginA", "negate", {"/imu/selected"}, {"out"}, kNegate, "{}");
+  ASSERT_TRUE(installed.has_value()) << installed.error();
+  const TopicId output = installed->output_topic_ids.front();
+  EXPECT_EQ(readValues(engine, output), (std::vector<double>{-1.0, -2.0}));
+
+  DataEngine staged;
+  const DatasetId staged_dataset = *staged.createDataset(DatasetDescriptor{.source_name = "s", .time_domain_id = 0});
+  DataWriter staged_writer = staged.createWriter();
+  const TopicId staged_input = *staged_writer.registerTopic(
+      staged_dataset, TopicDescriptor{.name = "/imu", .schema_id = 0, .dataset_id = staged_dataset});
+  (void)staged_writer.ensureColumn(staged_input, "selected", PrimitiveType::kFloat64);
+  (void)staged_writer.ensureColumn(staged_input, "other", PrimitiveType::kFloat64);
+  for (std::size_t row = 0; row < 2; ++row) {
+    ASSERT_TRUE(staged_writer.beginRow(staged_input, static_cast<Timestamp>(row)).has_value());
+    staged_writer.set<double>(staged_input, 0, 10.0 + static_cast<double>(row));
+    staged_writer.set<double>(staged_input, 1, 900.0 + static_cast<double>(row));
+    ASSERT_TRUE(staged_writer.finishRow(staged_input).has_value());
+  }
+  staged.commitChunks(staged_writer.flushAll());
+
+  auto replaced = engine.replaceDatasetFrom(staged, staged_dataset, dataset);
+  ASSERT_TRUE(replaced.has_value()) << replaced.error();
+  auto replayed = session.dataProcessorService().rebindAndRecomputeForReplacedSources(replaced->replaced_topics);
+  ASSERT_TRUE(replayed.has_value()) << replayed.error();
+  EXPECT_EQ(session.dataProcessorService().transformRecipes().front().output_topic_ids.front(), output);
+  EXPECT_EQ(readValues(engine, output), (std::vector<double>{-10.0, -11.0}));
+}
+
 // A single structured "topic:f1,f2" output collapses into ONE topic with those
 // named columns (single-topic parity), instead of N separate scalar topics.
 TEST(DataProcessorTransformTest, GroupsStructuredOutputIntoOneTopic) {
@@ -254,11 +558,73 @@ TEST(DataProcessorTransformTest, PlainMimoOutputsStaySeparateTopics) {
   EXPECT_EQ(rec->output_topic_ids.size(), 2u);  // two separate scalar topics
 }
 
+TEST(DataProcessorTransformTest, CompatibleMimoReplacementPreservesOutputIds) {
+  Fixture fx;
+  fx.seed("speed", {1.0, 2.0});
+  const auto first = fx.service.upsertTransform("pluginA", "split", {"speed"}, {"alpha", "beta"}, kSplit, "{}");
+  ASSERT_TRUE(first.has_value()) << first.error();
+  const auto replaced =
+      fx.service.upsertTransform("pluginA", "split", {"speed"}, {"alpha", "beta"}, kSplitTimes10, "{}");
+  ASSERT_TRUE(replaced.has_value()) << replaced.error();
+  EXPECT_EQ(replaced->node_id, first->node_id);
+  EXPECT_EQ(replaced->output_topic_ids, first->output_topic_ids);
+  EXPECT_EQ(readValues(fx.engine, first->output_topic_ids[0]), (std::vector<double>{10.0, 20.0}));
+  EXPECT_EQ(readValues(fx.engine, first->output_topic_ids[1]), (std::vector<double>{-10.0, -20.0}));
+}
+
+TEST(DataProcessorTransformTest, FailedMimoReplacementRestoresOldOperatorAndData) {
+  Fixture fx;
+  fx.seed("speed", {1.0, 2.0});
+  const auto first = fx.service.upsertTransform("pluginA", "split", {"speed"}, {"alpha", "beta"}, kSplit, "{}");
+  ASSERT_TRUE(first.has_value()) << first.error();
+  const auto failed = fx.service.upsertTransform("pluginA", "split", {"speed"}, {"alpha", "beta"}, kSplitBoom, "{}");
+  ASSERT_FALSE(failed.has_value());
+  const auto recipes = fx.service.transformRecipes();
+  ASSERT_EQ(recipes.size(), 1u);
+  EXPECT_EQ(recipes.front().output_topic_ids, first->output_topic_ids);
+  EXPECT_EQ(readValues(fx.engine, first->output_topic_ids[0]), (std::vector<double>{1.0, 2.0}));
+  EXPECT_EQ(readValues(fx.engine, first->output_topic_ids[1]), (std::vector<double>{-1.0, -2.0}));
+}
+
 TEST(DataProcessorTransformTest, InputNameNotFoundRejected) {
   Fixture fx;
   fx.seed("speed", {1.0});
   const auto rec = fx.service.upsertTransform("pluginA", "negate", {"nonexistent"}, {"out"}, kNegate, "{}");
   EXPECT_FALSE(rec.has_value());
+}
+
+TEST(DataProcessorTransformTest, UnqualifiedUpsertRejectsDuplicateNamesAcrossDatasets) {
+  Fixture fx;
+  fx.seed("speed", {3.0});
+  const DatasetId second = *fx.engine.createDataset(DatasetDescriptor{.source_name = "second", .time_domain_id = 0});
+  DataWriter writer = fx.engine.createWriter();
+  auto duplicate = writer.registerScalarSeries(second, "speed", NumericType::kFloat64);
+  writer.appendScalar(*duplicate, 0, 8.0);
+  fx.engine.commitChunks(writer.flushAll());
+  EXPECT_FALSE(fx.service.upsertTransform("pluginA", "negate", {"speed"}, {"out"}, kNegate, "{}").has_value());
+}
+
+TEST(DataProcessorTransformTest, QualifiedRestoreUsesExactIdToDisambiguateDuplicateSource) {
+  Fixture fx;
+  fx.seed("speed", {1.0});
+  const DatasetId second = *fx.engine.createDataset(DatasetDescriptor{.source_name = "s", .time_domain_id = 0});
+  DataWriter writer = fx.engine.createWriter();
+  auto second_input = writer.registerScalarSeries(second, "speed", NumericType::kFloat64);
+  writer.appendScalar(*second_input, 0, 9.0);
+  fx.engine.commitChunks(writer.flushAll());
+
+  auto recipe = negateRecipe(
+      DataProcessorService::TransformInputBinding{
+          .dataset_id = second,
+          .dataset_source = "s",
+          .topic_name = "speed",
+          .field_path = "value",
+          .column_index = 0,
+      });
+  const auto restored = fx.service.restoreTransform(recipe);
+  ASSERT_TRUE(restored.has_value()) << restored.error();
+  EXPECT_EQ(restored->input_topic_ids, (std::vector<TopicId>{second_input->topic_id}));
+  EXPECT_EQ(readValues(fx.engine, restored->output_topic_ids.front()), (std::vector<double>{-9.0}));
 }
 
 TEST(DataProcessorTransformTest, ClearForPluginRemovesOnlyThatPlugin) {

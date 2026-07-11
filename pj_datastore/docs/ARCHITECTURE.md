@@ -143,7 +143,10 @@ Encoding selection in `TopicChunkBuilder::seal()`:
 - `onSourceCommitted(changed_topics)` — marks directly dependent nodes dirty.
 - `scheduleAll()` — processes all dirty nodes in topological order (incremental path).
 - `scheduleActive(active_nodes)` — processes only specified nodes and their transitive upstream dependencies.
-- `recomputeBatch(node_id)` — clears output topic, calls `transform.reset()`, replays full input history.
+- `recomputeBatch(node_id)` — clears output topics, resets the transform, and replays the node plus its downstream graph.
+- `recomputeBatch(root_node_ids)` — performs one topological replay over the union of several roots' downstream graphs, so a converging node runs once against one generation of its inputs.
+- `inputBindingState()` / `resolvedInputBindingState()` / `restoreInputBindingState()` — capture, validate against the current input schemas, and restore input-column metadata for a host-managed reload transaction without reminting node or output topic ids.
+- `replaceSisoTransform()` / `replaceMimoTransform()` — exchange only a node's operator while preserving topology and topic ids. They transactionally replay the downstream graph and restore the old operator and graph on failure.
 
 **`ISISOTransform`** — Point-at-a-time interface. `calculate(time, input, &out_time, &out_value) -> bool`. Called in strictly ascending timestamp order. State persists across chunk boundaries. `reset()` clears state for batch recompute. `outputKind()` declares output `StorageKind` (default kFloat64).
 

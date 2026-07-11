@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include <cstddef>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <string>
@@ -19,6 +20,7 @@ namespace PJ {
 
 class DataEngine;
 class DerivedEngine;
+class SessionManager;
 namespace proc {
 class DataProcessor;
 }
@@ -62,6 +64,7 @@ class DataProcessorService {
     TopicId output_topic_id = 0;
     TopicId input_topic_id = 0;
     std::size_t input_column_index = 0;
+    std::string input_field_path;  ///< semantic leaf identity; survives schema column reorder
     DatasetId dataset_id = 0;
     std::string processor_id;  ///< builtin id (e.g. "scale") — selects the panel
     std::string output_name;
@@ -71,6 +74,17 @@ class DataProcessorService {
     /// a machine without the filter installed. Empty for native C++ builtins (which
     /// round-trip by `processor_id` alone).
     std::string filter_source;
+  };
+
+  /// Persisted identity of one transform input. The session dataset id is only
+  /// a same-session hint; source, topic, and field carry the reload-stable
+  /// identity, while the column remains a fallback for metadata-poor topics.
+  struct TransformInputBinding {
+    DatasetId dataset_id = 0;
+    std::string dataset_source;
+    std::string topic_name;
+    std::string field_path;
+    std::size_t column_index = 0;
   };
 
   /// A plugin-created TRANSFORM: a named, owner-tagged, session-persisted node,
@@ -93,17 +107,22 @@ class DataProcessorService {
     std::string backend = "luau";        ///< inferred from the payload: "luau" | (future) "python"/"wasm"
     std::string api_version = "1";
     std::string backend_version;
+    /// Exact input identities captured after a successful initial resolution.
+    /// Empty means a legacy name-only recipe.
+    std::vector<TransformInputBinding> input_bindings;
     /// Ephemeral (preview) node: a real `DerivedEngine` node like any other, but
     /// excluded from `transformRecipes()` so it never persists to a layout. The
     /// caller also keeps its output topics out of the catalog (does not rebuild),
     /// so a live preview leaves no trace once `removeTransform`d. Not persisted.
     bool ephemeral = false;
     NodeId node_id = 0;                     ///< runtime: the engine node (not persisted)
+    std::vector<TopicId> input_topic_ids;   ///< runtime: exact live input topics
     std::vector<TopicId> output_topic_ids;  ///< runtime: materialized output topics
     DatasetId dataset_id = 0;               ///< runtime: resolved from the input topic's dataset
   };
 
   explicit DataProcessorService(DataEngine& engine);
+  explicit DataProcessorService(SessionManager& session);
   ~DataProcessorService();
   DataProcessorService(const DataProcessorService&) = delete;
   DataProcessorService& operator=(const DataProcessorService&) = delete;
@@ -127,8 +146,8 @@ class DataProcessorService {
       TopicId input_topic_id, DatasetId dataset_id, std::unique_ptr<proc::DataProcessor> processor,
       std::string output_name, std::size_t input_column_index = 0);
 
-  /// Drop a previously applied filter's engine node. (Output-topic teardown in
-  /// the DataEngine is a later milestone; the materialized topic currently stays.)
+  /// Drop a filter, retire its output, and remove exact-TopicId downstream
+  /// processors leaf-first. An unknown node id is an error.
   Status removeFilter(NodeId node_id);
 
   /// Remove EVERY live filter at once: for each recipe, drop its engine node AND
@@ -163,13 +182,10 @@ class DataProcessorService {
   /// note); it never calls this directly, so reading the recipe maps needs no lock.
   [[nodiscard]] std::vector<TopicId> advanceOnCommit(const std::vector<TopicId>& changed_inputs);
 
-  /// Reset + replay every filter whose INPUT topic is in `replaced_inputs`. A dataset
-  /// reload swaps the input chunks WHOLESALE, so the derived output must be cleared
-  /// and recomputed from scratch, NOT appended (which would leave stale old output).
-  /// Returns the affected output topic ids for the caller to re-notify (so plots
-  /// refresh). No-op if no filter reads a replaced input.
-  /// [main-thread]
-  [[nodiscard]] std::vector<TopicId> recomputeForReplacedSources(const std::vector<TopicId>& replaced_inputs);
+  /// Strict reload path: re-resolve semantic fields in place, preserve node and
+  /// output ids, then replay the complete affected graph once.
+  [[nodiscard]] Expected<std::vector<TopicId>> rebindAndRecomputeForReplacedSources(
+      const std::vector<TopicId>& replaced_inputs);
 
   /// Snapshot of every live filter recipe (unspecified order) — for layout
   /// persistence: the host serializes these and re-applies them on load.
@@ -196,16 +212,15 @@ class DataProcessorService {
   // --- Plugin-created transforms (pj.data_processors.v1 host side) ---
 
   /// Create-or-replace (upsert by `"<plugin_id>/<id>"`) a named, plugin-owned
-  /// transform. Resolves every input by NAME, creates the output topics in the first
-  /// input's dataset, infers the backend from `script` (Luau today;
-  /// `\0asm`/WASM and Python are diagnosed as unavailable), compiles the script, and
-  /// installs an eager `DerivedEngine` node run over the committed inputs. Shape is
+  /// transform. Initial name resolution is reject-ambiguous and captures a
+  /// dataset/source/topic/field binding for every input. Restores resolve that
+  /// binding through SessionManager's dataset identity policy. Output topics are
+  /// created in the first input's dataset. Shape is
   /// N->M: 1->1 installs a SISO node (`LuaSisoTransform`), anything else a MIMO node
   /// (`LuaMimoTransform` via `addMimoTransform`, which joins inputs on exact
-  /// timestamp). Field-level binding (a column within a multi-column input) is a
-  /// follow-up: inputs resolve to whole scalar topics. Transactional: on any failure
-  /// nothing is left behind (and on a *replace*, the old node is dropped only after
-  /// the new script compiles, so a bad Save never destroys a working transform).
+  /// timestamp). A compatible replacement swaps the operator in place and rolls
+  /// back root plus dependents on replay failure; shape-changing replacements are
+  /// rejected before mutation.
   /// [main-thread]
   ///
   /// `ephemeral` marks a preview node: it installs and runs identically, but is left
@@ -223,17 +238,21 @@ class DataProcessorService {
   /// script is well-formed, else the compiler/runtime error message. [main-thread]
   Status validateScript(std::string_view script, std::string_view language, std::string_view params_json);
 
-  /// Transitive closure of transforms that depend on `removed_series` (topic or
-  /// "topic/field" names being deleted): every transform whose input references a
-  /// removed series OR the output of another affected transform (so the chain
-  /// derivative-of-derivative is covered). Returned in dependency order (a parent
-  /// before its children), so a caller can remove them and report them safely.
-  /// Read-only; does not remove anything.
-  [[nodiscard]] std::vector<TransformRecipe> transformsDependingOn(
-      const std::vector<std::string>& removed_series) const;
+  /// Transitive closure of named transforms consuming exact removed TopicIds.
+  /// Filters participate in traversal so mixed chains remain visible.
+  [[nodiscard]] std::vector<TransformRecipe> transformsDependingOn(const std::vector<TopicId>& removed_topics) const;
 
-  /// Remove a transform by its namespaced key, retiring its output topic(s).
-  /// An unknown key is an error.
+  /// Output TopicIds of every processor (filter or transform, ephemeral
+  /// included — matching what removeProcessorsDependingOn would delete)
+  /// transitively depending on any of `input_topics`; parents before children.
+  [[nodiscard]] std::vector<TopicId> dependentProcessorOutputs(const std::vector<TopicId>& input_topics) const;
+
+  /// Remove every filter/transform transitively consuming `input_topics`, in
+  /// leaf-first order so no recipe remains attached to a retired topic.
+  [[nodiscard]] Status removeProcessorsDependingOn(const std::vector<TopicId>& input_topics);
+
+  /// Remove a transform by its namespaced key, cascading through every exact
+  /// downstream processor and retiring all affected outputs. Unknown key = error.
   Status removeTransform(std::string_view namespaced_key);
 
   /// Tear down every transform owned by `plugin_id` (plugin uninstall). Does NOT
@@ -275,6 +294,9 @@ class DataProcessorService {
   /// preview never surfaces its prefixed output topics in the Sources tree.
   [[nodiscard]] std::unordered_set<TopicId> ephemeralOutputTopics() const;
 
+  /// Every live materialized processor output, including preview transforms.
+  [[nodiscard]] std::unordered_set<TopicId> processorOutputTopics() const;
+
   /// Replay a persisted transform recipe on session load. Same install path as
   /// `upsertTransform`; an unknown/unavailable backend returns an error WITHOUT
   /// storing it (the caller keeps the persisted XML and surfaces the diagnostic).
@@ -292,6 +314,8 @@ class DataProcessorService {
   /// Shared upsert/restore install path (see `upsertTransform`). Fills the runtime
   /// fields of `recipe` and stores it on success.
   [[nodiscard]] Expected<TransformRecipe> installTransform(TransformRecipe recipe);
+  [[nodiscard]] Status removeFilterOnly(NodeId node_id);
+  [[nodiscard]] Status removeTransformOnly(std::string_view namespaced_key);
   /// Resolve a topic NAME to (topic id, dataset id) by scanning the engine — there
   /// is no name→id index. `nullopt` if no live topic has that name.
   [[nodiscard]] std::optional<std::pair<TopicId, DatasetId>> resolveInputTopic(const std::string& name) const;
@@ -305,11 +329,25 @@ class DataProcessorService {
   /// a topic-field path ("pose/orientation/x") — to (topic, dataset, leaf column).
   /// `nullopt` if no live topic matches, or the field is not a leaf of that topic.
   [[nodiscard]] std::optional<ResolvedInput> resolveInputField(const std::string& name) const;
+  /// Resolve a saved binding's dataset through SessionManager's shared identity
+  /// policy, then resolve its exact topic and semantic leaf.
+  [[nodiscard]] Expected<ResolvedInput> resolveInputBinding(const TransformInputBinding& binding) const;
+
+  /// Fixpoint walk of every processor transitively depending on a topic in
+  /// `affected` (which grows with each visited processor's outputs). Visits
+  /// each recipe exactly once, parents before children. When
+  /// !include_ephemeral_transforms, ephemeral transform recipes are neither
+  /// visited nor propagated through (transformsDependingOn's contract).
+  void forEachDependentProcessor(
+      std::unordered_set<TopicId>& affected, bool include_ephemeral_transforms,
+      const std::function<void(TopicId, const FilterRecipe&)>& on_filter,
+      const std::function<void(const std::string&, const TransformRecipe&)>& on_transform) const;
   /// True if `name` is already a live engine topic or another transform's output
   /// (a transform owned by `except_key` is excluded, so an in-place replace is allowed).
   [[nodiscard]] bool outputNameInUse(const std::string& name, const std::string& except_key) const;
 
   DataEngine& engine_;  ///< engine derived_ writes into; needed to retire orphaned filter outputs on clear
+  SessionManager* session_ = nullptr;  ///< production identity resolver; null only in engine-level tests
   std::unique_ptr<DerivedEngine> derived_;
   std::unordered_map<TopicId, FilterRecipe> recipes_;                   ///< output topic id -> live recipe
   std::unordered_map<std::string, TransformRecipe> transform_recipes_;  ///< "<plugin>/<id>" -> live transform

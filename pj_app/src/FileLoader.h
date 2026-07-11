@@ -186,6 +186,9 @@ class FileLoader : public QObject {
   // pre-reload data (start-fail / discard / shutdown), reflect the restored data in
   // the catalog and rebuild the per-dataset TF buffer. The guard restores the data +
   // re-notifies adapters; this refreshes the catalog tree + scene TF on top.
+  /// Failure exit for a replacing reload: roll the refill back (guard dtor),
+  /// refresh the catalog/UI to the restored state, and emit fileLoadFailed.
+  void failReplacingLoad(DatasetId dataset_id, const QString& path, const QString& reason);
   void refreshAfterReplacingRollback(DatasetId dataset_id);
 
   SessionManager& session_;

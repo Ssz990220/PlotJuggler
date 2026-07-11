@@ -1137,14 +1137,13 @@ void FileLoader::onWorkerFinished() {
       // non-replacing cleanup lambda near the top of loadFile) — a discarded partial
       // load may have progress-flushed EARLIER data than any prior dataset.
       session_.removeDataset(dataset_id);
+      ctx_.reset();
+      emit fileLoadFailed(path, tr("Import discarded"));
     } else {
       // Roll back to the pre-reload data (guard dtor reattaches scalar + object data,
       // retires/removes topics the failed refill added, evicts their parsers).
-      ctx_->refill_guard.reset();
-      refreshAfterReplacingRollback(dataset_id);
+      failReplacingLoad(dataset_id, path, tr("Import discarded"));
     }
-    ctx_.reset();
-    emit fileLoadFailed(path, tr("Import discarded"));
   } else if (!ctx_->start_ok && cancel == 0) {  // start() failed (and not a user stop)
     const QString reason = tr("Plugin '%1': start failed: %2").arg(source_name, ctx_->start_error);
     qCWarning(lcFileLoader).noquote() << reason;
@@ -1157,39 +1156,61 @@ void FileLoader::onWorkerFinished() {
       // Via SessionManager::removeDataset for the origin invalidate + reframe (see the
       // non-replacing cleanup lambda near the top of loadFile).
       session_.removeDataset(dataset_id);
+      ctx_.reset();
+      emit fileLoadFailed(path, reason);
     } else {
       // Same rollback as Discard: a failed start() on a reload must restore the prior
       // data rather than leave the dataset empty.
-      ctx_->refill_guard.reset();
-      refreshAfterReplacingRollback(dataset_id);
+      failReplacingLoad(dataset_id, path, reason);
     }
-    ctx_.reset();
-    emit fileLoadFailed(path, reason);
   } else {  // Completed, or Cancel(keep): make the parsed rows visible and finalize
     if (cancel == 1) {
       qCInfo(lcFileLoader) << "[FileLoader] import cancelled by user; keeping the partial load";
     }
     ctx_->ingest->flushAll();
+    bool refill_ok = true;
     if (ctx_->refill_guard) {
-      // On a COMPLETE reload (cancel == 0), retire prior topics the new file no
-      // longer has — they stayed empty through the refill (codex #2). Skipped on
-      // Cancel-Keep: a topic the partial load never reached is not "vanished". Must
-      // run BEFORE commit(), which frees the prior-topic snapshots it reads.
-      if (cancel == 0) {
-        ctx_->refill_guard->pruneVanishedTopics();
+      // Derived outputs were detached with the raw dataset. Replay them before
+      // pruning, while failure can still restore the complete prior snapshot.
+      if (const Status replayed = ctx_->refill_guard->recomputeProcessors(); !replayed.has_value()) {
+        const QString reason = tr("Plugin '%1': derived-series replay failed: %2")
+                                   .arg(source_name, QString::fromStdString(replayed.error()));
+        qCWarning(lcFileLoader).noquote() << reason;
+        failReplacingLoad(dataset_id, path, reason);
+        refill_ok = false;
+      } else {
+        // On a COMPLETE reload (cancel == 0), retire prior topics the new file no
+        // longer has — they stayed empty through the refill (codex #2). Skipped on
+        // Cancel-Keep: a topic the partial load never reached is not "vanished". Must
+        // run BEFORE commit(), which frees the prior-topic snapshots it reads.
+        if (cancel == 0) {
+          ctx_->refill_guard->pruneVanishedTopics();
+        }
+        // COMMIT the refill: both Completed and Cancel-Keep keep the refilled data, so
+        // free the prior-data snapshot. Must run BEFORE finishLoadOnGui() — it resets ctx_
+        // (destroying the guard), and an uncommitted guard would then silently roll back
+        // over the new data.
+        ctx_->refill_guard->commit();
       }
-      // COMMIT the refill: both Completed and Cancel-Keep keep the refilled data, so
-      // free the prior-data snapshot. Must run BEFORE finishLoadOnGui() — it resets ctx_
-      // (destroying the guard), and an uncommitted guard would then silently roll back
-      // over the new data.
-      ctx_->refill_guard->commit();
     }
-    finishLoadOnGui();  // emits fileLoaded; resets ctx_
+    if (refill_ok) {
+      finishLoadOnGui();  // emits fileLoaded; resets ctx_
+    }
   }
 
   cancel_mode_.store(0);
   active_load_ = false;
   startNext();
+}
+
+// Shared failure exit for a REPLACING reload: destroy the guard (its dtor
+// reattaches the prior data snapshot), refresh the catalog/UI to the restored
+// state, and report the failure.
+void FileLoader::failReplacingLoad(DatasetId dataset_id, const QString& path, const QString& reason) {
+  ctx_->refill_guard.reset();
+  refreshAfterReplacingRollback(dataset_id);
+  ctx_.reset();
+  emit fileLoadFailed(path, reason);
 }
 
 void FileLoader::refreshAfterReplacingRollback(DatasetId dataset_id) {

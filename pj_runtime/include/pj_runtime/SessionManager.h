@@ -97,6 +97,13 @@ class SessionManager : public QObject {
   /// streaming/test dataset and for an id no longer tracked by FileLoader.
   [[nodiscard]] QString datasetSourcePath(DatasetId dataset_id) const;
 
+  /// The physical-path normalization every stored source path goes through
+  /// (setDatasetSourcePath, recordLoadedSource): canonicalFilePath when the
+  /// file exists (resolving symlink/relative aliases), cleaned absolute path
+  /// otherwise. Exposed so callers and tests can compare against the stored
+  /// form — on Windows even an absolute Unix-style input gains a drive prefix.
+  [[nodiscard]] static QString normalizedSourcePath(const QString& path);
+
   /// Resolves a persisted identity without guessing. Resolution order:
   ///  1. The exact `saved_id`, trusted only while every supplied qualifier (raw
   ///     source label and/or full source path) still agrees — this is what lets
@@ -496,6 +503,9 @@ class RefillGuard {
 
   /// Keep the refilled data: drop the snapshot so the destructor no longer rolls back.
   void commit();
+  /// Replay processor outputs after the final raw flush and before vanished-topic
+  /// pruning. Failure leaves the transaction live for destructor rollback.
+  [[nodiscard]] Status recomputeProcessors();
   /// Retire prior topics that VANISHED from the reloaded file (codex #2): a prior
   /// scalar/object topic still empty after the refill is one the new file no longer
   /// has (beginRefill emptied every prior topic; the refill writes back only the
@@ -518,6 +528,8 @@ class RefillGuard {
   DataEngine::DatasetChunkSnapshot scalar_snapshot_;
   ObjectStore::ObjectDatasetSnapshot object_snapshot_;
   std::vector<ObjectTopicId> prior_object_topic_ids_;
+  std::vector<TopicId> replaced_source_topic_ids_;
+  std::unordered_set<TopicId> processor_output_topic_ids_;
   bool committed_ = false;
 };
 

@@ -49,6 +49,10 @@ return { { id="scale", name="Scale",
   parameters = { { name="value_scale", type="number", default=1.0 } },
   create = function(p) return { calculate = function(t, v) return v * p.value_scale end } end } }
 )LUAU";
+constexpr const char* kNegateTransformSrc = R"LUAU(-- pj-script: luau
+return { id="negate", name="Negate", output="same",
+  create = function(p) return { calculate = function(t, v) return -v end } end }
+)LUAU";
 
 std::vector<double> readValues(DataEngine& engine, TopicId tid) {
   std::vector<double> out;
@@ -111,6 +115,93 @@ TEST(DataProcessorServiceTest, SourceTopicsForOutputResolvesFilterInput) {
 
   // An id that names no filter/transform output resolves to nothing.
   EXPECT_TRUE(service.sourceTopicsForOutput(src).empty());
+}
+
+TEST(DataProcessorServiceTest, SourceTopicsForOutputTraversesFilterChain) {
+  DataEngine engine;
+  DataProcessorService service(engine);
+  service.setFilterCatalogue(catalogueFromSource(kScaleSrc));
+  const DatasetId dataset = *engine.createDataset(DatasetDescriptor{.source_name = "t", .time_domain_id = 0});
+  DataWriter writer = engine.createWriter();
+  auto handle = writer.registerScalarSeries(dataset, "speed", NumericType::kFloat64);
+  writer.appendScalar(*handle, 0, 1.0);
+  engine.commitChunks(writer.flushAll());
+
+  const auto first = service.applyFilter(handle->topic_id, dataset, "scale", "speed[Scale]");
+  ASSERT_TRUE(first.has_value()) << first.error();
+  const auto second = service.applyFilter(first->output_topic_id, dataset, "scale", "speed[Scale][Scale]");
+  ASSERT_TRUE(second.has_value()) << second.error();
+  EXPECT_EQ(
+      service.sourceTopicsForOutput(second->output_topic_id),
+      (std::vector<std::pair<DatasetId, std::string>>{{dataset, "speed"}}));
+}
+
+TEST(DataProcessorServiceTest, SourceTopicsForOutputTraversesMixedProcessorChains) {
+  DataEngine engine;
+  DataProcessorService service(engine);
+  service.setFilterCatalogue(catalogueFromSource(kScaleSrc));
+  const DatasetId dataset = *engine.createDataset(DatasetDescriptor{.source_name = "t", .time_domain_id = 0});
+  DataWriter writer = engine.createWriter();
+  auto handle = writer.registerScalarSeries(dataset, "speed", NumericType::kFloat64);
+  writer.appendScalar(*handle, 0, 1.0);
+  engine.commitChunks(writer.flushAll());
+
+  const auto filter = service.applyFilter(handle->topic_id, dataset, "scale", "speed[Scale]");
+  ASSERT_TRUE(filter.has_value()) << filter.error();
+  const auto transform =
+      service.upsertTransform("pluginA", "negate", {"speed[Scale]"}, {"filtered/final"}, kNegateTransformSrc, "{}");
+  ASSERT_TRUE(transform.has_value()) << transform.error();
+  EXPECT_EQ(
+      service.sourceTopicsForOutput(transform->output_topic_ids.front()),
+      (std::vector<std::pair<DatasetId, std::string>>{{dataset, "speed"}}));
+
+  const auto transform_first =
+      service.upsertTransform("pluginB", "negate", {"speed"}, {"speed/negated"}, kNegateTransformSrc, "{}");
+  ASSERT_TRUE(transform_first.has_value()) << transform_first.error();
+  const auto filter_last = service.applyFilter(transform_first->output_topic_ids.front(), dataset, "scale", "final");
+  ASSERT_TRUE(filter_last.has_value()) << filter_last.error();
+  EXPECT_EQ(
+      service.sourceTopicsForOutput(filter_last->output_topic_id),
+      (std::vector<std::pair<DatasetId, std::string>>{{dataset, "speed"}}));
+}
+
+TEST(DataProcessorServiceTest, RemovedUpstreamFilterDoesNotBecomeRawDemand) {
+  DataEngine engine;
+  DataProcessorService service(engine);
+  service.setFilterCatalogue(catalogueFromSource(kScaleSrc));
+  const DatasetId dataset = *engine.createDataset(DatasetDescriptor{.source_name = "t", .time_domain_id = 0});
+  DataWriter writer = engine.createWriter();
+  auto handle = writer.registerScalarSeries(dataset, "speed", NumericType::kFloat64);
+  writer.appendScalar(*handle, 0, 1.0);
+  engine.commitChunks(writer.flushAll());
+
+  const auto parent = service.applyFilter(handle->topic_id, dataset, "scale", "parent");
+  ASSERT_TRUE(parent.has_value()) << parent.error();
+  const auto child = service.applyFilter(parent->output_topic_id, dataset, "scale", "child");
+  ASSERT_TRUE(child.has_value()) << child.error();
+  ASSERT_TRUE(service.removeFilter(parent->node_id).has_value());
+  EXPECT_TRUE(service.recipes().empty());
+  EXPECT_TRUE(service.sourceTopicsForOutput(child->output_topic_id).empty());
+}
+
+TEST(DataProcessorServiceTest, RemoveFilterRetiresOutputAndFreesName) {
+  DataEngine engine;
+  DataProcessorService service(engine);
+  service.setFilterCatalogue(catalogueFromSource(kScaleSrc));
+  const DatasetId dataset = *engine.createDataset(DatasetDescriptor{.source_name = "t", .time_domain_id = 0});
+  DataWriter writer = engine.createWriter();
+  auto handle = writer.registerScalarSeries(dataset, "speed", NumericType::kFloat64);
+  writer.appendScalar(*handle, 0, 2.0);
+  engine.commitChunks(writer.flushAll());
+
+  const auto first = service.applyFilter(handle->topic_id, dataset, "scale", "speed[Scale]");
+  ASSERT_TRUE(first.has_value()) << first.error();
+  const TopicId stale_output = first->output_topic_id;
+  ASSERT_TRUE(service.removeFilter(first->node_id).has_value());
+  EXPECT_TRUE(readValues(engine, stale_output).empty());
+  const auto recreated = service.applyFilter(handle->topic_id, dataset, "scale", "speed[Scale]");
+  ASSERT_TRUE(recreated.has_value()) << recreated.error();
+  EXPECT_NE(recreated->output_topic_id, stale_output);
 }
 
 TEST(DataProcessorServiceTest, IntegralFilterAccumulates) {
@@ -193,8 +284,9 @@ TEST(DataProcessorServiceTest, ReloadRecomputesFilterOutput) {
   ASSERT_TRUE(rep.has_value()) << rep.error();
 
   // Recompute the filters whose input was just swapped.
-  const auto outputs = service.recomputeForReplacedSources(rep->replaced_topics);
-  EXPECT_FALSE(outputs.empty());  // the filter on the reloaded input was recomputed
+  const auto outputs = service.rebindAndRecomputeForReplacedSources(rep->replaced_topics);
+  ASSERT_TRUE(outputs.has_value()) << outputs.error();
+  EXPECT_FALSE(outputs->empty());  // the filter on the reloaded input was recomputed
   EXPECT_EQ(readValues(engine, result->output_topic_id), (std::vector<double>{10.0, 20.0}));  // NEW data, not stale
 }
 
@@ -232,10 +324,11 @@ TEST(DataProcessorServiceTest, RecomputeForReplacedSourcesPropagatesToChainedFil
   const auto rep = engine.replaceDatasetFrom(staged, staged_ds, ds);
   ASSERT_TRUE(rep.has_value()) << rep.error();
 
-  const auto outputs = service.recomputeForReplacedSources(rep->replaced_topics);
-  // BOTH outputs must be reported — out2 is the chained one the old direct-input-only walk missed.
-  EXPECT_NE(std::find(outputs.begin(), outputs.end(), out1->output_topic_id), outputs.end());
-  EXPECT_NE(std::find(outputs.begin(), outputs.end(), out2->output_topic_id), outputs.end());
+  const auto outputs = service.rebindAndRecomputeForReplacedSources(rep->replaced_topics);
+  ASSERT_TRUE(outputs.has_value()) << outputs.error();
+  // BOTH outputs must be reported — out2 is the chained one a direct-input-only walk would miss.
+  EXPECT_NE(std::find(outputs->begin(), outputs->end(), out1->output_topic_id), outputs->end());
+  EXPECT_NE(std::find(outputs->begin(), outputs->end(), out2->output_topic_id), outputs->end());
   EXPECT_EQ(readValues(engine, out2->output_topic_id), (std::vector<double>{10.0, 20.0}));
   // [e] integration: the reloaded chained output is back in the catalog (un-retired on commit).
   const auto topics = engine.listTopics(ds);
