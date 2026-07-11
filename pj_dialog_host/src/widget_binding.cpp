@@ -120,6 +120,14 @@ std::int64_t sliderToNs(int pos, int slider_max, std::int64_t min_ns, std::int64
 // apply_widget_data — push WidgetDataView values into Qt widgets
 // ---------------------------------------------------------------------------
 
+// Item-data role tagging a QTableWidgetItem/QListWidgetItem with the plugin
+// row/list index it was written for. Anchored to the item object itself — Qt
+// relocates item pointers (not their data) when it re-sorts — so the
+// row-translation functions below recover the true originating index
+// directly, with no key-text matching and no ambiguity when two rows/items
+// share identical text.
+constexpr int kPluginRowRole = Qt::UserRole + 1;
+
 // Push `rows` into the table with minimal churn. All table aspects
 // (rows/selection/visibility) share one widget-data key, so every selection
 // change and every streamed per-row detail update re-delivers the whole rows
@@ -130,6 +138,24 @@ std::int64_t sliderToNs(int pos, int slider_max, std::int64_t min_ns, std::int64
 // fill in cell-by-cell instead of snapping in all at once. Only a row/column
 // count change forces a full rebuild.
 static void applyTableRows(QTableWidget* tw, const std::vector<std::vector<std::string>>& rows) {
+  // Rows arrive in the plugin's own order and are written by model-row index. With
+  // sorting enabled QTableWidget physically re-sorts the model on every setItem/
+  // setText, so a mid-loop re-sort remaps the indices and the remaining writes land
+  // on the wrong rows (blank cells, name↔value pairs scrambled, duplicated rows).
+  // Suspend sorting before the first cell write and restore it once at the end, so
+  // Qt applies a single clean sort. Suspending lazily means a streaming re-delivery
+  // that changes no cell never toggles sorting and pays no re-sort — preserving the
+  // same-shape path's minimal-churn intent. Text-keyed selection restore
+  // (selected_items) runs later, once the sort has settled, and still matches rows.
+  const bool was_sorting = tw->isSortingEnabled();
+  bool suspended = false;
+  auto suspend_sorting = [&] {
+    if (was_sorting && !suspended) {
+      tw->setSortingEnabled(false);
+      suspended = true;
+    }
+  };
+
   const bool same_shape = static_cast<std::size_t>(tw->rowCount()) == rows.size() &&
                           (rows.empty() || static_cast<std::size_t>(tw->columnCount()) == rows.front().size());
   if (same_shape) {
@@ -139,24 +165,35 @@ static void applyTableRows(QTableWidget* tw, const std::vector<std::vector<std::
         const QString text = QString::fromStdString(row[c]);
         QTableWidgetItem* item = tw->item(static_cast<int>(r), static_cast<int>(c));
         if (item == nullptr) {
-          tw->setItem(static_cast<int>(r), static_cast<int>(c), new QTableWidgetItem(text));
+          suspend_sorting();
+          item = new QTableWidgetItem(text);
+          tw->setItem(static_cast<int>(r), static_cast<int>(c), item);
         } else if (item->text() != text) {
+          suspend_sorting();
           item->setText(text);
         }
+        item->setData(kPluginRowRole, static_cast<int>(r));
       }
     }
-    return;
-  }
-  const bool updates = tw->updatesEnabled();
-  tw->setUpdatesEnabled(false);
-  tw->setRowCount(static_cast<int>(rows.size()));
-  for (std::size_t r = 0; r < rows.size(); ++r) {
-    const auto& row = rows[r];
-    for (std::size_t c = 0; c < row.size(); ++c) {
-      tw->setItem(static_cast<int>(r), static_cast<int>(c), new QTableWidgetItem(QString::fromStdString(row[c])));
+  } else {
+    suspend_sorting();
+    const bool updates = tw->updatesEnabled();
+    tw->setUpdatesEnabled(false);
+    tw->setRowCount(static_cast<int>(rows.size()));
+    for (std::size_t r = 0; r < rows.size(); ++r) {
+      const auto& row = rows[r];
+      for (std::size_t c = 0; c < row.size(); ++c) {
+        auto* item = new QTableWidgetItem(QString::fromStdString(row[c]));
+        item->setData(kPluginRowRole, static_cast<int>(r));
+        tw->setItem(static_cast<int>(r), static_cast<int>(c), item);
+      }
     }
+    tw->setUpdatesEnabled(updates);
   }
-  tw->setUpdatesEnabled(updates);
+
+  if (suspended) {
+    tw->setSortingEnabled(true);
+  }
 }
 
 namespace {
@@ -227,15 +264,23 @@ static void applyTableRadioColumn(
   }
 }
 
-// Key text identifying a table row for text-keyed selection (selected_items):
-// the text of its first column that hosts no cell widget. Columns with a cell
-// widget (e.g. an exclusive radio column) carry no selectable item text, so a
-// fixed column 0 would yield empty keys when the radio sits first. Stops at
-// that column even if it has no item (nullopt), rather than falling through to
-// a later column — this is a single definition of the contract shared by the
-// selection-changed emit in connectWidgetSignals and the selected_items apply
-// below, so the two directions cannot drift.
+// Key text identifying a table row for text-keyed selection (selected_items
+// apply + selection-changed emit). Plugin-fed tables read the key column
+// recorded at delivery time (_pj_plugin_key_col, see recordPluginKeyColumn);
+// it is authoritative even before radio cell widgets materialise. Tables
+// never fed by a delivery (predefined in a .ui) fall back to scanning for the
+// first column that hosts no cell widget — columns with one (e.g. an
+// exclusive radio column) carry no selectable item text. The scan stops at
+// that column even if it has no item (nullopt), rather than falling through
+// to a later column.
 static std::optional<std::string> tableRowKeyText(const QTableWidget* tw, int row) {
+  const QVariant recorded_col = tw->property("_pj_plugin_key_col");
+  if (recorded_col.isValid()) {
+    if (auto* item = tw->item(row, recorded_col.toInt())) {
+      return item->text().toStdString();
+    }
+    return std::nullopt;
+  }
   for (int c = 0; c < tw->columnCount(); ++c) {
     if (tw->cellWidget(row, c) == nullptr) {
       if (auto* item = tw->item(row, c)) {
@@ -245,6 +290,79 @@ static std::optional<std::string> tableRowKeyText(const QTableWidget* tw, int ro
     }
   }
   return std::nullopt;
+}
+
+// ---------------------------------------------------------------------------
+// Plugin-order ↔ view-order row translation.
+//
+// Plugins deliver `rows` in their own order and key every index-based aspect
+// (selected_rows, visible_rows, disabled_rows, radio_checked_row) — and
+// interpret every emitted index (table_radio_row, item_double_clicked_index) —
+// against that order. With sortingEnabled the user can re-order the view, so
+// the host translates row indices in both directions. Rows are identified by
+// the kPluginRowRole tag applyTableRows() stamps on every item, not by text,
+// so two rows sharing identical key-column text still resolve to their own
+// distinct plugin index (a text-keyed lookup could not tell them apart).
+// Tables whose rows never came from a plugin delivery (predefined in a .ui)
+// have no tagged items and keep raw-index semantics via the identity fallback.
+// ---------------------------------------------------------------------------
+
+// Record the key column for this delivery. `radio_col` is the column rendered
+// as radio widgets this delivery (or -1): it carries no item text, so the key
+// column is the first column other than it. Consumed by tableRowKeyText,
+// which needs the key column even before radio cell widgets materialise; row
+// index translation does not need this (see viewToPluginRowMap).
+static void recordPluginKeyColumn(QTableWidget* tw, int radio_col) {
+  tw->setProperty("_pj_plugin_key_col", radio_col == 0 ? 1 : 0);
+}
+
+// view row -> plugin row for every current row, read directly off each row's
+// kPluginRowRole item tag. Falls back to identity (raw row index) for a row
+// whose items were never tagged — normal for a .ui-predefined table never fed
+// by a plugin delivery.
+static std::vector<int> viewToPluginRowMap(const QTableWidget* tw) {
+  std::vector<int> map(static_cast<std::size_t>(tw->rowCount()));
+  for (int r = 0; r < tw->rowCount(); ++r) {
+    int plugin_row = r;
+    for (int c = 0; c < tw->columnCount(); ++c) {
+      if (const QTableWidgetItem* item = tw->item(r, c)) {
+        const QVariant tag = item->data(kPluginRowRole);
+        if (tag.isValid()) {
+          plugin_row = tag.toInt();
+        }
+        break;
+      }
+    }
+    map[static_cast<std::size_t>(r)] = plugin_row;
+  }
+  return map;
+}
+
+// Inverse of a viewToPluginRowMap result: plugin row -> current view row.
+static std::vector<int> invertRowMap(const std::vector<int>& view_to_plugin) {
+  std::vector<int> inverse(view_to_plugin.size());
+  for (std::size_t r = 0; r < view_to_plugin.size(); ++r) {
+    inverse[static_cast<std::size_t>(view_to_plugin[r])] = static_cast<int>(r);
+  }
+  return inverse;
+}
+
+// Emit-direction translation for a single row (radio click, double-click).
+static int viewRowToPluginRow(const QTableWidget* tw, int view_row) {
+  const std::vector<int> map = viewToPluginRowMap(tw);
+  if (view_row < 0 || static_cast<std::size_t>(view_row) >= map.size()) {
+    return view_row;
+  }
+  return map[static_cast<std::size_t>(view_row)];
+}
+
+// Plugin index of a list item: the kPluginRowRole tag stamped on it when
+// listItems was applied — anchored to the item itself, so it survives list
+// sorting and needs no text matching (safe even with duplicate item text).
+// Falls back to the raw view row for lists never fed by a delivery.
+static int listItemPluginIndex(const QListWidget* lw, const QListWidgetItem* item) {
+  const QVariant tag = item->data(kPluginRowRole);
+  return tag.isValid() ? tag.toInt() : lw->row(item);
 }
 
 // True when `tw`'s header labels already equal `headers`.
@@ -521,8 +639,12 @@ static void applyToWidget(
   if (auto* lw = qobject_cast<QListWidget*>(w)) {
     if (auto v = view.listItems(name)) {
       lw->clear();
-      for (const auto& item : *v) {
-        lw->addItem(QString::fromStdString(item));
+      for (std::size_t i = 0; i < v->size(); ++i) {
+        auto* item = new QListWidgetItem(QString::fromStdString((*v)[i]));
+        // Delivered index, so itemDoubleClicked can report the plugin's index
+        // even when list sorting re-orders the view (see listItemPluginIndex).
+        item->setData(kPluginRowRole, static_cast<int>(i));
+        lw->addItem(item);
       }
     }
     if (auto v = view.selectedItems(name)) {
@@ -537,6 +659,13 @@ static void applyToWidget(
 
   // --- QTableWidget ---
   if (auto* tw = qobject_cast<QTableWidget*>(w)) {
+    // The dialog protocol carries no cell-edit event (only selection, double-click
+    // and radio), so an edited cell can never be read back by the plugin — an
+    // editable cell silently discards the edit on accept. Force read-only on every
+    // protocol table so no picker looks editable when it isn't. Persistent and
+    // idempotent, so setting it on each delivery is free. A future editable table
+    // would need a new protocol event anyway, and would opt out here then.
+    tw->setEditTriggers(QAbstractItemView::NoEditTriggers);
     if (auto v = view.tableHeaders(name)) {
       QStringList hdr;
       for (const auto& h : *v) {
@@ -554,8 +683,26 @@ static void applyToWidget(
       // so calling it on every delivery is cheap (port/fix of #90).
       installTreeLikeHeader(tw);
     }
+    // The radio column is read up front: recordPluginKeyColumn needs to know
+    // which column carries radio widgets (no item text) to pick the key column.
+    const std::optional<int> radio_col = view.tableRadioColumn(name);
     if (auto v = view.tableRows(name)) {
       applyTableRows(tw, *v);
+      recordPluginKeyColumn(tw, radio_col.value_or(-1));
+    }
+    // Every index-keyed aspect below arrives in plugin row order; translate it
+    // to the current (possibly user-sorted) view order. The maps reflect the
+    // rows just applied above and are only built when this delivery actually
+    // carries an index-keyed aspect — a rows-only streaming tick skips them.
+    const auto visible_rows = view.visibleRows(name);
+    const auto disabled_rows = view.disabledRows(name);
+    const auto selected_rows = view.selectedRows(name);
+    const auto cell_tooltips = view.cellTooltips(name);
+    std::vector<int> view_to_plugin;
+    std::vector<int> plugin_to_view;
+    if (radio_col || visible_rows || disabled_rows || selected_rows || cell_tooltips) {
+      view_to_plugin = viewToPluginRowMap(tw);
+      plugin_to_view = invertRowMap(view_to_plugin);
     }
     // Radio column: render the designated column as an exclusive radio group and
     // sync the checked row. Build the radios UNCONDITIONALLY — a Modify flow delivers
@@ -563,8 +710,13 @@ static void applyToWidget(
     // stashes the holder; gating on the holder there left the radio column empty and
     // its width mis-stretched (unlike Create, whose rows arrive by drop after wiring).
     // The click callback resolves the holder lazily, so clicks still emit once it lands.
-    if (auto col = view.tableRadioColumn(name)) {
-      applyTableRadioColumn(tw, *col, view.tableRadioCheckedRow(name).value_or(-1), [tw](int row) {
+    if (radio_col) {
+      const int checked_plugin_row = view.tableRadioCheckedRow(name).value_or(-1);
+      const int checked_view_row =
+          checked_plugin_row >= 0 && static_cast<std::size_t>(checked_plugin_row) < plugin_to_view.size()
+              ? plugin_to_view[static_cast<std::size_t>(checked_plugin_row)]
+              : -1;
+      applyTableRadioColumn(tw, *radio_col, checked_view_row, [tw](int row) {
         if (auto* holder = static_cast<RadioEmitHolder*>(
                 tw->findChild<QObject*>(u"pj_radio_emit_holder"_s, Qt::FindDirectChildrenOnly))) {
           holder->emit_row(row);
@@ -573,16 +725,16 @@ static void applyToWidget(
     }
     // Row visibility (live filtering): hide rows not in the visible set. Absent
     // (clearVisibleRows ⇒ nullopt) means "no change"; an empty set hides all.
-    if (auto v = view.visibleRows(name)) {
-      std::set<int> visible(v->begin(), v->end());
+    if (visible_rows) {
+      std::set<int> visible(visible_rows->begin(), visible_rows->end());
       for (int r = 0; r < tw->rowCount(); ++r) {
-        tw->setRowHidden(r, !visible.contains(r));
+        tw->setRowHidden(r, !visible.contains(view_to_plugin[static_cast<std::size_t>(r)]));
       }
     }
-    if (auto v = view.disabledRows(name)) {
-      std::set<int> disabled(v->begin(), v->end());
+    if (disabled_rows) {
+      std::set<int> disabled(disabled_rows->begin(), disabled_rows->end());
       for (int r = 0; r < tw->rowCount(); ++r) {
-        bool is_disabled = disabled.count(r) > 0;
+        bool is_disabled = disabled.count(view_to_plugin[static_cast<std::size_t>(r)]) > 0;
         for (int c = 0; c < tw->columnCount(); ++c) {
           if (auto* item = tw->item(r, c)) {
             auto flags = item->flags();
@@ -598,25 +750,50 @@ static void applyToWidget(
         }
       }
     }
-    if (auto v = view.selectedRows(name)) {
+    // Cell tooltips arrive as (plugin row, col, text); translate the row to the
+    // current view order and set the tooltip on the item. A delivery that carries
+    // cell_tooltips states the complete set, so clear every item tooltip first —
+    // otherwise a tooltip the plugin dropped would linger on a stale cell after
+    // an in-place row rewrite.
+    if (cell_tooltips) {
+      for (int r = 0; r < tw->rowCount(); ++r) {
+        for (int c = 0; c < tw->columnCount(); ++c) {
+          if (auto* item = tw->item(r, c)) {
+            item->setToolTip(QString());
+          }
+        }
+      }
+      for (const auto& [plugin_row, col, tip] : *cell_tooltips) {
+        if (plugin_row < 0 || static_cast<std::size_t>(plugin_row) >= plugin_to_view.size()) {
+          continue;
+        }
+        const int view_row = plugin_to_view[static_cast<std::size_t>(plugin_row)];
+        if (auto* item = tw->item(view_row, col)) {
+          item->setToolTip(QString::fromStdString(tip));
+        }
+      }
+    }
+    if (selected_rows) {
       // Re-applying the selection via selectRow() scrolls the view to the last
       // selected row, so the table "jumps" on every re-render that follows a user
       // selection change (the common case, where the selection is ALREADY what we
       // want). Skip when it already matches; otherwise preserve the scroll position
       // across the change so a programmatic update (deselect-all, filter) does not
       // yank the viewport either.
-      std::set<int> want(v->begin(), v->end());
+      // Both sides of the comparison live in plugin row space, so a selection
+      // that already matches is recognized even under a user-sorted view.
+      std::set<int> want(selected_rows->begin(), selected_rows->end());
       std::set<int> have;
       for (const QModelIndex& idx : tw->selectionModel()->selectedRows()) {
-        have.insert(idx.row());
+        have.insert(view_to_plugin[static_cast<std::size_t>(idx.row())]);
       }
       if (want != have) {
         QScrollBar* vbar = tw->verticalScrollBar();
         const int scroll = vbar != nullptr ? vbar->value() : 0;
         tw->clearSelection();
-        for (int r : *v) {
-          if (r >= 0 && r < tw->rowCount()) {
-            tw->selectRow(r);
+        for (int r : *selected_rows) {
+          if (r >= 0 && static_cast<std::size_t>(r) < plugin_to_view.size()) {
+            tw->selectRow(plugin_to_view[static_cast<std::size_t>(r)]);
           }
         }
         if (vbar != nullptr) {
@@ -1094,7 +1271,8 @@ void connectWidgetSignals(QWidget* root, WidgetEventCallback callback) {
         callback(name, WidgetEventBuilder::selectionChanged(sel));
       });
       QObject::connect(lw, &QListWidget::itemDoubleClicked, lw, [callback, name, lw](QListWidgetItem* item) {
-        callback(name, WidgetEventBuilder::itemDoubleClicked(lw->row(item)));
+        // Report the delivered-order index, not the (possibly sorted) view row.
+        callback(name, WidgetEventBuilder::itemDoubleClicked(listItemPluginIndex(lw, item)));
       });
       continue;
     }
@@ -1127,14 +1305,17 @@ void connectWidgetSignals(QWidget* root, WidgetEventCallback callback) {
       });
       // Double-click a row -> itemDoubleClicked(row), mirroring QListWidget so a
       // plugin can implement double-click-to-use on a table (e.g. the function
-      // library box). Emits the row index of the double-clicked cell.
-      QObject::connect(tw, &QTableWidget::cellDoubleClicked, tw, [callback, name](int row, int /*col*/) {
-        callback(name, WidgetEventBuilder::itemDoubleClicked(row));
+      // library box). Emits the plugin-order index of the double-clicked row,
+      // translated from the (possibly user-sorted) view position.
+      QObject::connect(tw, &QTableWidget::cellDoubleClicked, tw, [callback, name, tw](int row, int /*col*/) {
+        callback(name, WidgetEventBuilder::itemDoubleClicked(viewRowToPluginRow(tw, row)));
       });
       // Stash the event callback so applyTableRadioColumn can wire radio cells
-      // (created lazily as rows arrive) back to the dialog event stream.
-      new RadioEmitHolder(
-          tw, [callback, name](int row) { callback(name, WidgetEventBuilder::tableRadioSelected(row)); });
+      // (created lazily as rows arrive) back to the dialog event stream. The
+      // clicked radio resolves to a view row; the plugin expects its own order.
+      new RadioEmitHolder(tw, [callback, name, tw](int row) {
+        callback(name, WidgetEventBuilder::tableRadioSelected(viewRowToPluginRow(tw, row)));
+      });
       continue;
     }
     if (auto* btn = qobject_cast<QPushButton*>(w)) {
