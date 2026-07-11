@@ -144,6 +144,18 @@ target_link_libraries(plot_widget_range_offset_test PRIVATE
 
 add_test(NAME PlotWidgetRangeOffsetTest COMMAND plot_widget_range_offset_test)
 
+add_executable(plot_widget_max_zoom_offset_test
+    plot_widget_max_zoom_offset_test.cpp
+)
+
+target_compile_options(plot_widget_max_zoom_offset_test PRIVATE ${PJ_WARNING_FLAGS})
+target_link_libraries(plot_widget_max_zoom_offset_test PRIVATE
+    pj_plotting
+    GTest::gtest
+)
+
+add_test(NAME PlotWidgetMaxZoomOffsetTest COMMAND plot_widget_max_zoom_offset_test)
+
 add_executable(plot_magnifier_clamp_test
     plot_magnifier_clamp_test.cpp
 )

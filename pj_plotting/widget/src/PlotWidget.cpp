@@ -1826,6 +1826,10 @@ void PlotWidget::reconnectDataSignals() {
   display_offset_dataset_connection_ = connect(
       session_, qOverload<PJ::DatasetId>(&SessionManager::displayOffsetChanged), this, [this](DatasetId dataset_id) {
         if (invalidateAdapterOffsets(dataset_id)) {
+          // The max zoom-out rect (and the magnifier's wheel-out clamp) is
+          // view-independent data state: refresh it here or it stays frozen at
+          // the pre-drag union of curve ranges.
+          updateMaximumZoomArea();
           replot();  // current zoom; the source's curve slides into its new position
         }
       });
