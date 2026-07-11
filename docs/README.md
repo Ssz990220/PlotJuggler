@@ -27,7 +27,8 @@ Examples of what belongs here:
 | Path | Status | Notes |
 |---|---|---|
 | `QT_NOTES.md` | Reference | **Qt 6.11.1 baseline.** Features new since 6.8 (likely past most models' training cutoff), deprecations, and build/platform floors. Read before using an unfamiliar Qt API or reaching for a 6.8-era workaround. |
-| `undo_redo_integrity_plan.md` | Plan (active) | Consolidated undo/redo state-integrity delivery plan: dataset identity, transactional undo, timeline-state snapshots, processor/scene persistence — five incremental PRs distilled from two prior solution branches. |
+| `undo_redo_integrity_plan.md` | Plan (delivered) | Consolidated undo/redo state-integrity delivery plan: dataset identity, transactional undo, timeline-state snapshots, processor/scene persistence — five incremental PRs (#373 #377 #379 #380 #382, all merged) distilled from two prior solution branches. |
+| `was_pending_followup_plan.md` | Plan (draft) | Follow-up to the state-integrity epic: unified was-pending semantics for scene restore queues — serialize binding state instead of origin so exact-restore correctness is structural rather than shell-maintained. |
 | `research/dataset_format_comparison.md` | Reference | Cross-cutting comparison of MCAP, RLDS, LeRobot, Zarr. Informs pj_scene2D and any future dataset-format work. |
 | `research/rerun_notes.md` | Reference | Analysis of Rerun's 2D architecture; comparison input for pj_scene2D and (potentially) pj_scene3D. |
 

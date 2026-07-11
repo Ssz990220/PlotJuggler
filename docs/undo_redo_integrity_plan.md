@@ -1,8 +1,11 @@
 # Undo/Redo State Integrity — consolidated delivery plan
 
-Status: **planned** (PR 1 in progress). This document merges two prior solution
-attempts into one delivery plan aiming at completeness, correctness, and
-simplicity. It is the source of truth for the five PRs described in §5.
+Status: **delivered** — all five PRs merged (#373 identity, #377 time/viewport,
+#379 transactional undo, #380 processor transactionality, #382 scene docks).
+This document merges two prior solution attempts into one delivery plan aiming
+at completeness, correctness, and simplicity; it remains the reference for the
+shipped design. Post-merge follow-ups are ranked in the PR #382 description;
+the rank-1 item has its own draft: `was_pending_followup_plan.md`.
 
 ## 1. Context & goals
 
