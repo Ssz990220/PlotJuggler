@@ -168,9 +168,18 @@ QString TransformService::datasetSourceKey(PJ::DatasetId dataset_id) const {
   if (info == nullptr || info->source_name.empty()) {
     return {};
   }
-  // source_name is a free-form label (often a file path); percent-encode it so a
-  // '/' (or other special char) can't be misread as a QSettings group separator.
-  return QString::fromUtf8(QUrl::toPercentEncoding(QString::fromStdString(info->source_name)));
+  // Qualify the name with the source path: two same-named files in different
+  // folders must not share a remembered frame, and fan-out members (same path,
+  // distinct names) must stay distinct — so the key needs both parts. Each part
+  // is percent-encoded so a '/' can't be misread as a QSettings group separator;
+  // '|' never survives the encoding, making it an unambiguous joiner. A pathless
+  // source (e.g. a live stream with a stable name) keys by name alone.
+  const QString name = QString::fromUtf8(QUrl::toPercentEncoding(QString::fromStdString(info->source_name)));
+  const QString path = session_.datasetSourcePath(dataset_id);
+  if (path.isEmpty()) {
+    return name;
+  }
+  return QString::fromUtf8(QUrl::toPercentEncoding(path)) + u'|' + name;
 }
 
 void TransformService::rememberFixedFrame(PJ::DatasetId dataset_id, const QString& frame) {

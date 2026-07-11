@@ -91,15 +91,16 @@ class TransformService : public QObject {
   // instead of the map/world/odom heuristic (see Scene3DDockWidget). Writes two
   // tiers: an in-session cache keyed by DatasetId (shared instantly by sibling
   // docks on the same dataset) and a cross-restart record in QSettings keyed by
-  // the dataset's stable source name (DataEngine source_name — the same identity
-  // layout restore matches datasets by). A dataset with no source name (e.g. an
+  // the dataset's source path + name (the same identity pair layout restore
+  // matches datasets by — name alone would let two same-named files in
+  // different folders share a frame). A dataset with no source name (e.g. an
   // unnamed live stream) is remembered for this session only. An empty `frame`
   // is ignored. GUI-thread only.
   void rememberFixedFrame(PJ::DatasetId dataset_id, const QString& frame);
 
   // The remembered manual fixed frame for `dataset_id`, or empty if none. Checks
   // the in-session cache first, then falls back to the persisted QSettings record
-  // (looked up by the dataset's source name), memoizing the result — hit OR miss —
+  // (looked up by the dataset's source path + name), memoizing the result — hit OR miss —
   // so the hot onAvailableFrames seeding path does not re-read QSettings on every
   // frame-tree change. Callers MUST still confirm the frame exists in the live TF
   // tree before using it: a remembered frame can be absent from a different
@@ -132,8 +133,9 @@ class TransformService : public QObject {
   // GUI-thread only. Returns true if any transform was applied.
   bool ingestNewerThanCursor(PJ::DatasetId dataset_id);
 
-  // The cross-restart QSettings key for `dataset_id`: its DataEngine source_name,
-  // percent-encoded so a path-like name can't be misread as a settings group
+  // The cross-restart QSettings key for `dataset_id`: its SessionManager source
+  // path joined with its DataEngine source_name (name alone for a pathless
+  // source), each percent-encoded so a path can't be misread as a settings group
   // separator. Empty when the dataset is unknown or has no source name (then the
   // remembered frame is session-only). GUI-thread only.
   [[nodiscard]] QString datasetSourceKey(PJ::DatasetId dataset_id) const;

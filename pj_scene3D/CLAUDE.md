@@ -160,7 +160,8 @@ full mechanism.
     newly-created 3D dock defaults to it via `Scene3DDockWidget::resolveAutoFixedFrame`
     instead of the `map`/`world`/`odom` heuristic. In-session it is keyed by
     `DatasetId` (shared by sibling docks); across restarts it persists in QSettings
-    under `pj_scene3d/fixed_frame_by_source`, keyed by the dataset's `source_name`.
+    under `pj_scene3d/fixed_frame_by_source`, keyed by the dataset's source path +
+    `source_name` (name alone for a pathless source).
     See `docs/REQUIREMENTS.md` §5 / §10.
   - `MeshData` carries per-vertex UV0 + tangents plus a per-`SubMesh` `Material`
     (glTF 2.0 metallic-roughness, read via assimp's material abstraction so it

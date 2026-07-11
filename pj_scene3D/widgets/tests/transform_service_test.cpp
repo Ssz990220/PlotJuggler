@@ -684,7 +684,7 @@ TEST(TransformService, LiveWindowDropsOldKeepsNewAndStatic) {
 // -----------------------------------------------------------------------------
 // Per-dataset remembered fixed frame: a newly-created 3D dock defaults to the
 // last fixed frame the user manually picked for the same TransformBuffer
-// (in-session by DatasetId, cross-restart by the dataset's source name).
+// (in-session by DatasetId, cross-restart by the dataset's source path + name).
 // -----------------------------------------------------------------------------
 
 constexpr char kFixedFrameGroup[] = "pj_scene3d/fixed_frame_by_source";
@@ -705,14 +705,15 @@ TEST(TransformService, RemembersFixedFramePerDatasetInSession) {
   EXPECT_EQ(service.rememberedFixedFrame(8), QString()) << "a different dataset has no remembered frame";
 }
 
-// (l) Cross-session: the choice persists keyed by the dataset's source name, so a
-//     fresh service (a restart) with a NEW DatasetId for the SAME source resolves it.
+// (l) Cross-session: the choice persists keyed by the dataset's source path + name,
+//     so a fresh service (a restart) with a NEW DatasetId for the SAME file resolves it.
 TEST(TransformService, RememberedFixedFramePersistsAcrossSessionsBySource) {
   clearPersistedFixedFrames();
   PJ::SessionManager session_a;
   const auto id_a =
       session_a.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "robot_log.mcap", .time_domain_id = 0});
   ASSERT_TRUE(id_a.has_value());
+  session_a.setDatasetSourcePath(*id_a, u"/data/run_a/robot_log.mcap"_s);
   {
     TransformService service_a(session_a);
     service_a.rememberFixedFrame(*id_a, u"map"_s);
@@ -724,9 +725,77 @@ TEST(TransformService, RememberedFixedFramePersistsAcrossSessionsBySource) {
   const auto id_b =
       session_b.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "robot_log.mcap", .time_domain_id = 0});
   ASSERT_TRUE(id_b.has_value());
+  session_b.setDatasetSourcePath(*id_b, u"/data/run_a/robot_log.mcap"_s);
   TransformService service_b(session_b);
   EXPECT_EQ(service_b.rememberedFixedFrame(*id_b), u"map"_s)
-      << "the manual choice must persist across sessions, keyed by source name (not the DatasetId)";
+      << "the manual choice must persist across sessions, keyed by source identity (not the DatasetId)";
+}
+
+// (l2) Two files sharing a basename in different folders must NOT share a
+//      remembered frame — name-only keying was the epic's identity bug class.
+TEST(TransformService, SameNameDifferentPathDoesNotShareRememberedFrame) {
+  clearPersistedFixedFrames();
+  PJ::SessionManager session;
+  const auto id_a =
+      session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "robot_log.mcap", .time_domain_id = 0});
+  const auto id_b =
+      session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "robot_log.mcap", .time_domain_id = 0});
+  ASSERT_TRUE(id_a.has_value());
+  ASSERT_TRUE(id_b.has_value());
+  session.setDatasetSourcePath(*id_a, u"/data/run_a/robot_log.mcap"_s);
+  session.setDatasetSourcePath(*id_b, u"/data/run_b/robot_log.mcap"_s);
+  {
+    TransformService service(session);
+    service.rememberFixedFrame(*id_a, u"odom"_s);
+  }
+  TransformService fresh(session);  // empty in-session cache -> both resolve via QSettings
+  EXPECT_EQ(fresh.rememberedFixedFrame(*id_a), u"odom"_s);
+  EXPECT_EQ(fresh.rememberedFixedFrame(*id_b), QString())
+      << "a same-named file in a different folder must not inherit the other's frame";
+}
+
+// (l3) Fan-out members share the file path but carry distinct source names; the
+//      composite key must keep their remembered frames separate.
+TEST(TransformService, FanOutSiblingsSamePathStayDistinct) {
+  clearPersistedFixedFrames();
+  PJ::SessionManager session;
+  const auto id_a =
+      session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "member_a", .time_domain_id = 0});
+  const auto id_b =
+      session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "member_b", .time_domain_id = 0});
+  ASSERT_TRUE(id_a.has_value());
+  ASSERT_TRUE(id_b.has_value());
+  session.setDatasetSourcePath(*id_a, u"/data/bundle.mcap"_s);
+  session.setDatasetSourcePath(*id_b, u"/data/bundle.mcap"_s);
+  {
+    TransformService service(session);
+    service.rememberFixedFrame(*id_a, u"base_link"_s);
+  }
+  TransformService fresh(session);
+  EXPECT_EQ(fresh.rememberedFixedFrame(*id_a), u"base_link"_s);
+  EXPECT_EQ(fresh.rememberedFixedFrame(*id_b), QString())
+      << "fan-out siblings share a path but must not share a remembered frame";
+}
+
+// (l4) A pathless source with a stable name (e.g. a live stream) still persists
+//      by name alone.
+TEST(TransformService, PathlessNamedSourcePersistsByNameAlone) {
+  clearPersistedFixedFrames();
+  PJ::SessionManager session_a;
+  const auto id_a =
+      session_a.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "ros2_stream", .time_domain_id = 0});
+  ASSERT_TRUE(id_a.has_value());
+  {
+    TransformService service_a(session_a);
+    service_a.rememberFixedFrame(*id_a, u"map"_s);
+  }
+  PJ::SessionManager session_b;
+  const auto id_b =
+      session_b.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "ros2_stream", .time_domain_id = 0});
+  ASSERT_TRUE(id_b.has_value());
+  TransformService service_b(session_b);
+  EXPECT_EQ(service_b.rememberedFixedFrame(*id_b), u"map"_s)
+      << "a named but pathless source must keep its cross-restart memory";
 }
 
 // (m) A dataset with no stable source name is remembered for this session only.
