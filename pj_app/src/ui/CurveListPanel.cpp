@@ -903,7 +903,7 @@ void CurveListPanel::applyIcons(QString theme) {
   };
   ui_->buttonFilterPlot->setIcon(make_toggle_icon(":/resources/svg/line_axis.svg"));
   ui_->buttonFilterScene2D->setIcon(make_toggle_icon(":/resources/svg/image.svg"));
-  ui_->buttonFilterScene3D->setIcon(make_toggle_icon(":/resources/svg/cube_axes.svg"));
+  ui_->buttonFilterScene3D->setIcon(make_toggle_icon(":/resources/svg/cube.svg"));
 
   // Resize chrome buttons in lock-step with the global icon metrics.
   // clear_all_button_ and delete_custom_button_ are inline-action menu

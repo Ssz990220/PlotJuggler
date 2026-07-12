@@ -141,7 +141,7 @@ class CurveTreeItemDelegate : public QStyledItemDelegate {
       opt.palette.setColor(QPalette::HighlightedText, theme::kBlue);
     }
 
-    // A topic row's builtin-family badge (image.svg / cube_axes.svg, set as the
+    // A topic row's builtin-family badge (image.svg / cube.svg, set as the
     // item's DecorationRole icon) is painted by the default control as a normal
     // left-side decoration, before the text; its size is the view's iconSize().
     const QWidget* widget = opt.widget;
@@ -212,7 +212,7 @@ void setTopicIconDecoration(QTreeWidgetItem* item, bool is_image_topic, bool is_
   if (is_image_topic) {
     icon = QIcon(loadSvg(u":/resources/svg/image.svg"_s, theme));
   } else if (is_3d_object_topic) {
-    icon = QIcon(loadSvg(u":/resources/svg/cube_axes.svg"_s, theme));
+    icon = QIcon(loadSvg(u":/resources/svg/cube.svg"_s, theme));
   }
   item->setIcon(kNameColumn, icon);
 }
@@ -224,7 +224,7 @@ void refreshTopicIcons(QTreeWidgetItem* item, const QString& theme) {
   if (item->data(kNameColumn, kImageTopicRole).toBool()) {
     item->setIcon(kNameColumn, QIcon(loadSvg(u":/resources/svg/image.svg"_s, theme)));
   } else if (item->data(kNameColumn, k3dObjectTopicRole).toBool()) {
-    item->setIcon(kNameColumn, QIcon(loadSvg(u":/resources/svg/cube_axes.svg"_s, theme)));
+    item->setIcon(kNameColumn, QIcon(loadSvg(u":/resources/svg/cube.svg"_s, theme)));
   }
   for (int i = 0; i < item->childCount(); ++i) {
     refreshTopicIcons(item->child(i), theme);
