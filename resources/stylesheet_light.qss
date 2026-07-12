@@ -2121,7 +2121,7 @@ PJ--ToastNotification QPushButton#toastCloseButton {
     border: none;
     color: ${disabled_text};
     font-size: 14pt;
-    font-weight: bold;
+    font-weight: 600;
     padding: 0px;
     margin: 0px;
 }

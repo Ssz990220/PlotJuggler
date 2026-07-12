@@ -280,7 +280,7 @@ void CalendarWidget::paintEvent(QPaintEvent* /*event*/) {
 
   // Month/Year title
   QFont title_font = font();
-  title_font.setBold(true);
+  title_font.setWeight(QFont::DemiBold);
   title_font.setPointSize(font().pointSize() + 2);
   p.setFont(title_font);
   QString title = QDate(year_, month_, 1).toString("MMMM yyyy");

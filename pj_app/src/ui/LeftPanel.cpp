@@ -80,7 +80,7 @@ LeftPanel::LeftPanel(QWidget* parent) : QWidget(parent), ui_(new Ui::LeftPanel) 
       QAction* header = recent_menu->addAction(title);
       header->setEnabled(false);
       QFont font = header->font();
-      font.setBold(true);
+      font.setWeight(QFont::DemiBold);
       header->setFont(font);
     };
     if (!layouts.isEmpty()) {

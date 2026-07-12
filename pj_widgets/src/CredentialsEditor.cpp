@@ -46,7 +46,7 @@ void CredentialsEditor::applyTick(QLabel* tick, const QString& text, bool ok) {
     return;
   }
   tick->setText(ok ? QString::fromUtf8("✓") : QString::fromUtf8("✗"));
-  tick->setStyleSheet(ok ? u"color: green; font-weight: bold;"_s : u"color: red; font-weight: bold;"_s);
+  tick->setStyleSheet(ok ? u"color: green; font-weight: 600;"_s : u"color: red; font-weight: 600;"_s);
 }
 
 CredentialsEditor::CredentialsEditor(QWidget* parent) : QWidget(parent) {

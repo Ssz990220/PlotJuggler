@@ -1,4 +1,4 @@
-exclude: ^.vscode/|^deps/|^build/|^3rdparty/
+exclude: ^.vscode/|^deps/|^build/|^3rdparty/|^resources/fonts/
 repos:
 
   # Standard hooks
@@ -8,7 +8,7 @@ repos:
       - id: check-added-large-files
         # The Conan source backup deliberately stores third-party source
         # tarballs (sha256-addressed; see its README) — exempt it from the
-        # accidental-large-binary guard.
+        # accidental-large-binary guard. (resources/fonts/ is exempt globally.)
         exclude: ^\.github/conan/source-backup/
       - id: check-ast
       - id: check-case-conflict

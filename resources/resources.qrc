@@ -7,6 +7,13 @@
     <file alias="plotjuggler.svg">plotjuggler.svg</file>
     <!-- "Success kid" meme icon shown in the "new release available" toast. -->
     <file alias="success_kid.png">success_kid.png</file>
+    <!-- Bundled UI font (SIL OFL 1.1). Loaded at startup via
+         QFontDatabase::addApplicationFont and set as the application font, so
+         typography is controlled and consistent across machines instead of
+         relying on the host's default sans-serif. The variable font covers the
+         whole weight axis, so font-weight 400/600/700 resolve to real masters
+         (not synthesized bold). -->
+    <file alias="fonts/NotoSans/NotoSans-Variable.ttf">fonts/NotoSans/NotoSans-Variable.ttf</file>
   </qresource>
   <qresource prefix="/resources">
     <!-- Funny splashscreen pool. The startup splash enumerates this directory

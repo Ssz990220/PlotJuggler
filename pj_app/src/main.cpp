@@ -5,6 +5,8 @@
 #include <QCommandLineOption>
 #include <QCommandLineParser>
 #include <QDateTime>
+#include <QFont>
+#include <QFontDatabase>
 #include <QGuiApplication>
 #include <QImage>
 #include <QPixmap>
@@ -75,6 +77,19 @@ int main(int argc, char* argv[]) {
   // box and compared against the latest GitHub release.
   QCoreApplication::setApplicationVersion(QStringLiteral(PJ_VERSION_STRING));
   QApplication::setApplicationDisplayName(u"PlotJuggler 4"_s);
+
+  // Register the bundled Noto Sans and apply it as the application font, before
+  // any window is built so every widget — and every plugin dialog, which
+  // inherits the app font — uses it. The variable font spans the whole weight
+  // axis, so font-weight 400/600/700 resolve to real masters (not synthesized
+  // bold). The QSS never declares a font-family, so this family flows through
+  // untouched; only font-size is styled.
+  if (QFontDatabase::addApplicationFont(u":/resources/fonts/NotoSans/NotoSans-Variable.ttf"_s) < 0) {
+    qWarning("Failed to load bundled Noto Sans font");
+  }
+  QFont app_font = QApplication::font();
+  app_font.setFamily(u"Noto Sans"_s);
+  QApplication::setFont(app_font);
 
   // WidgetTuner: app-wide Polish-event filter that side-steps QSS
   // specificity battles by directly tagging menus and palette-painting
