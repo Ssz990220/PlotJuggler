@@ -36,7 +36,7 @@ Widgets:
 | `RangeSlider.h` | Two-handle (min/max) slider for selecting a sub-range. |
 | `ConfigPanelHost.h` | Single-slot container that hosts one config panel at a time, taking ownership and `deleteLater()`-ing the previous one. |
 | `CredentialsEditor.h` | Composite credentials editor (cert path / api key / allow-insecure) used as the host-side widget for plugin `.ui` `<widget class="CredentialsEditor">`; domain-neutral, with optional plugin-supplied `apiKeyPattern`. |
-| `DateRangePicker.h` | Date/time range picker bundle (`CalendarWidget` / `TimePickerWidget` / `DualCalendarWidget` / `DateRangePicker`); registered by class name for plugin `.ui` files. Emits `filterChanged(RangeFilter)`. |
+| `DateRangePicker.h` | Date/time range picker bundle (`CalendarWidget` / `TimePickerWidget` / `RangeCalendarWidget` / `DateRangePicker`); registered by class name for plugin `.ui` files. Emits `filterChanged(RangeFilter)`. |
 | `RealSlider.h` | Floating-point `QSlider`. |
 | `FlowLayout.h` | Standard Qt example flow layout. |
 | `ElidingLabel.h` | `QLabel` that elides instead of clipping. |

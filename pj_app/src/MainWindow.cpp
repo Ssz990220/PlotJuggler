@@ -5623,9 +5623,18 @@ void MainWindow::launchToolbox(const QString& plugin_id, const QString& initial_
   const std::string plugin_id_std = plugin_id.toStdString();
   callbacks.on_data_changed = [this, plugin_id_std](std::vector<DatasetId> ingested_datasets) {
     session_->catalogModel().rebuildFromDatastore();
+    // FileLoader parity: re-scan each ingested dataset's time reference. Without
+    // this the "use time offset" origin memo can stay pinned at the 0 it
+    // acquired before any data existed (setUseTimeOffset queries
+    // globalTimeReference() eagerly), so cloud-imported series keep an ABSOLUTE
+    // epoch axis and the t0 toggle looks dead — files never hit it because the
+    // file loader always refreshes.
+    for (const DatasetId id : ingested_datasets) {
+      session_->sessionManager().refreshDatasetTimeReference(id);
+    }
     // Bridge ingested kFrameTransforms object topics into the 3D scene's TF
-    // buffers — the SAME step the file loader does (FileLoader.cpp ~713-727).
-    // Without it a toolbox/cloud dataset registers its /tf object topic in the
+    // buffers — the SAME step the file loader does. Without it a toolbox/cloud
+    // dataset registers its /tf object topic in the
     // ObjectStore but the per-dataset TransformBuffer stays empty, so the 3D
     // frame dropdown is blank and pointclouds (which resolve through TF) never
     // render. Runs AFTER the catalog rebuild so the object topics + their

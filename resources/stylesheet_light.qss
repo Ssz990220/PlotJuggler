@@ -1081,6 +1081,24 @@ QTableWidget::item {
    color: ${default_text};
 }
 
+/* Disabled tables / rows: grey the text. Without these, the unconditional
+   ::item color above wins in EVERY state (QSS beats the palette), so neither a
+   mode-disabled table (e.g. the topic table in "All" mode) nor per-row
+   disabling (zero-count topic rows) had any visible cue. The selected:disabled
+   pair also suppresses the selection highlight so a disabled table reads
+   uniformly inert; ENABLED selected rows (incl. force-selected ones) keep the
+   regular selection look from the rule below. */
+QTableView::item:disabled,
+QTableWidget::item:disabled {
+   background-color: ${input_background};
+   color: ${disabled_text};
+}
+QTableView::item:selected:disabled,
+QTableWidget::item:selected:disabled {
+   background-color: ${input_background};
+   color: ${disabled_text};
+}
+
 QTableView::item:selected,
 QTreeView::item:selected,
 QListView::item:selected {
@@ -2017,11 +2035,11 @@ QWidget#datePicker QLineEdit {
     max-height: 26px;
 }
 
-/* The calendar overlay's time-picker spin boxes + AM/PM combos match that same
-   dropdown height, so the time row doesn't read shorter than the date fields and
+/* The calendar overlay's time scrubbers + month/year combos match that same
+   dropdown height, so the time rows don't read shorter than the date fields and
    metadata-filter dropdowns. Scoped to the overlay (PickerOverlay) so it overrides
-   the global 18px input cap only here. */
-QWidget#PickerOverlay QSpinBox,
+   the global input caps only here. */
+QWidget#PickerOverlay PJ--ScrubberBase,
 QWidget#PickerOverlay QComboBox {
     min-height: 26px;
     max-height: 26px;

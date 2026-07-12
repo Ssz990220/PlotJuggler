@@ -18,6 +18,7 @@ class IntScrubber : public ScrubberBase {
   Q_PROPERTY(int singleStep READ singleStep WRITE setSingleStep)
   Q_PROPERTY(QString suffix READ suffix WRITE setSuffix)
   Q_PROPERTY(QString prefix READ prefix WRITE setPrefix)
+  Q_PROPERTY(int padWidth READ padWidth WRITE setPadWidth)
  public:
   explicit IntScrubber(QWidget* parent = nullptr);
 
@@ -39,6 +40,9 @@ class IntScrubber : public ScrubberBase {
   QString prefix() const {
     return prefix_;
   }
+  int padWidth() const {
+    return pad_width_;
+  }
 
  public slots:
   void setValue(int v);
@@ -48,6 +52,9 @@ class IntScrubber : public ScrubberBase {
   void setSingleStep(int v);
   void setSuffix(const QString& s);
   void setPrefix(const QString& s);
+  // Zero-pad the displayed value to at least `w` digits (0 = none). Display
+  // only — editing/commit still parse a plain integer. E.g. w=2: 5 -> "05".
+  void setPadWidth(int w);
 
  signals:
   void valueChanged(int v);
@@ -58,6 +65,7 @@ class IntScrubber : public ScrubberBase {
   bool commitText(const QString& text) override;
 
  private:
+  int pad_width_ = 0;
   int clamp(int v) const;
 
   int value_ = 0;

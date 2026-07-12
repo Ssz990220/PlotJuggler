@@ -4,9 +4,10 @@
 //
 // Date/time range picker bundle. Registered with the host's PjUiLoader so
 // plugin .ui files can declare a "DateRangePicker" by class name. Comprises:
-//   CalendarWidget        — single painted month grid
-//   TimePickerWidget      — from/to 12-hour time
-//   DualCalendarWidget    — two mediated calendars + nav
+//   CalendarWidget        — single painted month grid (title-less; the range
+//                           widget's header row carries month/year + nav)
+//   TimePickerWidget      — from/to 24-hour time
+//   RangeCalendarWidget   — one calendar + [<][Month][Year][>] header row
 //   DateRangePicker       — inline presets + from/to fields + calendar overlay
 // DateRangePicker emits filterChanged(RangeFilter); the host binding serializes
 // it into a dateRangeChanged event.
@@ -25,6 +26,9 @@ class QPushButton;
 class QSpinBox;
 
 namespace PJ {
+
+class IntScrubber;
+class SvgButton;
 
 // --- CalendarWidget -------------------------------------------------------
 
@@ -104,28 +108,31 @@ class TimePickerWidget : public QWidget {
   void timeChanged();
 
  private:
-  QTime timeFrom12Hour(int hour12, int minute, const QString& ampm) const;
-
   QLabel* from_date_label_;
-  QSpinBox* from_hour_;
-  QSpinBox* from_minute_;
-  QComboBox* from_am_pm_;
+  IntScrubber* from_hour_;
+  IntScrubber* from_minute_;
   QLabel* to_date_label_;
-  QSpinBox* to_hour_;
-  QSpinBox* to_minute_;
-  QComboBox* to_am_pm_;
+  IntScrubber* to_hour_;
+  IntScrubber* to_minute_;
 };
 
-// --- DualCalendarWidget ---------------------------------------------------
-
-class DualCalendarWidget : public QWidget {
+// --- RangeCalendarWidget ----------------------------------------------------
+// ONE month grid + a [<] [Month] [Year] [>] header row. Two-click range
+// selection with hover preview (click start, click end; a new click restarts).
+// The month/year combos jump anywhere in the data's multi-year span directly,
+// which chevron marching can't do.
+class RangeCalendarWidget : public QWidget {
   Q_OBJECT
  public:
-  explicit DualCalendarWidget(QWidget* parent = nullptr);
+  explicit RangeCalendarWidget(QWidget* parent = nullptr);
 
   void setExternalRange(const QDate& from, const QDate& to);
 
-  // Re-render the nav chevrons + repaint the calendars for the active theme.
+  // Bounds for the year combo (from the picker's earliest/latest data hints);
+  // invalid dates fall back to a [current-6, current] span.
+  void setYearSpan(const QDate& earliest, const QDate& latest);
+
+  // Re-render the nav chevrons + repaint the calendar for the active theme.
   // Called by DateRangePicker on a live theme toggle (the icons are baked, so a
   // plain repaint wouldn't re-ink them).
   void retheme();
@@ -138,31 +145,29 @@ class DualCalendarWidget : public QWidget {
   void onDateClicked(const QDate& date);
   void onDateHovered(const QDate& date);
   void onHoverLeft();
-  void leftPrev();
-  void leftNext();
-  void rightPrev();
-  void rightNext();
+  void prevMonth();
+  void nextMonth();
 
  private:
-  void updateCalendars();
-  void updateNavButtons();
+  void setMonth(int year, int month);
+  void syncHeaderControls();  // combos + chevron direction hints
   void broadcastState();
   static void advanceMonth(int& year, int& month, int delta);
 
-  QList<CalendarWidget*> calendars_;
-  QPushButton* left_prev_;
-  QPushButton* left_next_;
-  QPushButton* right_prev_;
-  QPushButton* right_next_;
+  CalendarWidget* calendar_ = nullptr;
+  QPushButton* prev_ = nullptr;
+  QPushButton* next_ = nullptr;
+  QComboBox* month_combo_ = nullptr;
+  QComboBox* year_combo_ = nullptr;
 
-  int left_year_;
-  int left_month_;
-  int left_max_year_;
-  int left_max_month_;
-  int right_year_;
-  int right_month_;
-  int right_min_year_;
-  int right_min_month_;
+  int year_;
+  int month_;
+  int min_year_ = 0;  // year-combo span (inclusive)
+  int max_year_ = 0;
+  // Last-applied chevron hint signature (syncHeaderControls): -1 = never
+  // applied, so the first sync always inks the buttons. Per-instance on
+  // purpose — a rebuilt overlay must not inherit a stale skip.
+  int last_hint_sig_ = -1;
 
   bool selecting_ = false;
   QDate range_from_;
@@ -219,17 +224,26 @@ class DateRangePicker : public QWidget {
   static constexpr int kPresetPast24h = 1;
   static constexpr int kPresetLast7Days = 2;
   static constexpr int kPresetLastMonth = 3;
+  // Not a date window: checked when the fields hold a range no preset matches;
+  // clicking it opens the calendar overlay to define one.
+  static constexpr int kPresetCustom = 4;
 
   QButtonGroup* preset_group_ = nullptr;
   QPushButton* all_button_ = nullptr;
+  QPushButton* custom_button_ = nullptr;  // leads the from/to row (kPresetCustom)
   QLineEdit* from_edit_ = nullptr;
   QLineEdit* to_edit_ = nullptr;
   QLabel* arrow_label_ = nullptr;  // Material arrow between from/to; re-inked on theme switch.
   QPushButton* calendar_button_ = nullptr;
 
   QWidget* overlay_ = nullptr;
-  DualCalendarWidget* dual_calendar_ = nullptr;
+  SvgButton* overlay_close_ = nullptr;  // corner X, positioned in repositionOverlay
+  RangeCalendarWidget* range_calendar_ = nullptr;
   TimePickerWidget* time_picker_ = nullptr;
+  // Data-span hints (setEarliestDate/setLatestDate) — forwarded to the range
+  // calendar's year combo; retained because the overlay is built lazily.
+  QDate earliest_hint_;
+  QDate latest_hint_;
 
   bool calendar_visible_ = false;
 };

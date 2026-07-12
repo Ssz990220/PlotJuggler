@@ -1126,7 +1126,10 @@ static void applyToWidget(
   // Containers (QGroupBox, QWidget) — only generic properties applied above.
   // Warn about widget types that have data in the view but aren't handled.
   // Skip known container types that only use generic enabled/visible properties.
-  if (!qobject_cast<QGroupBox*>(w) && !qobject_cast<QSplitter*>(w)) {
+  // Plain QWidget is matched by EXACT type (not qobject_cast, which any widget
+  // satisfies): a bare container pane taking generic show/hide is legitimate,
+  // while an unhandled CUSTOM subclass still deserves the warning.
+  if (!qobject_cast<QGroupBox*>(w) && !qobject_cast<QSplitter*>(w) && w->metaObject() != &QWidget::staticMetaObject) {
     qWarning(
         "WidgetBinding: unsupported widget type '%s' for '%s'; "
         "see dialog-plugin-guide.md for supported types",
