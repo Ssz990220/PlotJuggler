@@ -4144,6 +4144,13 @@ MainWindow::RestoreResult MainWindow::applyWorkspace(
   // key off the tracker instant). Same seeding the drag-drop / click-create paths do
   // (MainWindow.cpp:480, makeSeededEmptyObjectDock); here it covers layout load + undo/redo.
   broadcastTrackerTime(toAxisDouble(session_->playbackEngine().currentTime()));
+  // 5. Re-route the right panel to the restored active dock's family. xmlLoadState
+  // rebuilds docks with focus suppressed (PlotDocker::restoring_state_), so no
+  // dockFocused signal fires — without this the panel keeps whatever page it last
+  // showed (page 0 / plot-config at startup), so a scene-only layout would display
+  // curve options over a 3D scene. activeFocusedDock() falls back to the first dock
+  // when focus is stale/null after the rebuild.
+  onDockFocused(activeFocusedDock());
   return RestoreResult::kApplied;
 }
 
