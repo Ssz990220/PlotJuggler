@@ -388,7 +388,14 @@ Range<double> PlotWidgetBase::getVisualizationRangeY(Range<double> range_x) cons
     top = 1.0;
   }
 
-  const double margin = (top - bottom) * 0.025;
+  // A curve (or set of curves) whose samples all share one value collapses to a
+  // zero-height range, which Qwt renders as an unreadable flat axis. The 2.5%
+  // proportional margin is 0 in that case, so fall back to a fixed ±0.1 pad that
+  // centers the constant value with visible headroom.
+  double margin = (top - bottom) * 0.025;
+  if (margin == 0.0) {
+    margin = 0.1;
+  }
   return Range<double>{.min = bottom - margin, .max = top + margin};
 }
 
