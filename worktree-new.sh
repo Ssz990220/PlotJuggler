@@ -52,6 +52,7 @@ done
 # The primary checkout holds .qt + the populated submodules. Resolve it whether
 # we're invoked from it or from another worktree (both share one git dir).
 MAIN_REPO="$(dirname "$(cd "$(git rev-parse --git-common-dir)" && pwd)")"
+source "${MAIN_REPO}/versions.env"
 WT="$MAIN_REPO/.worktrees/$DIR"
 
 [[ ! -e "$WT" ]] || { echo "worktree-new: $WT already exists" >&2; exit 1; }
@@ -60,8 +61,8 @@ if git -C "$MAIN_REPO" show-ref --verify --quiet "refs/heads/$BRANCH"; then
 fi
 
 QT_SRC="$MAIN_REPO/plotjuggler_sdk/.qt"
-[[ -d "$QT_SRC/6.11.1/gcc_64" ]] ||
-  echo "worktree-new: WARNING: $QT_SRC/6.11.1/gcc_64 missing — run ./install_qt6.sh in the primary checkout" >&2
+[[ -d "$QT_SRC/${PJ_QT_VERSION}/gcc_64" ]] ||
+  echo "worktree-new: WARNING: $QT_SRC/${PJ_QT_VERSION}/gcc_64 missing — run ./install_qt6.sh in the primary checkout" >&2
 
 echo "worktree-new: fetching origin..."
 git -C "$MAIN_REPO" fetch origin --quiet

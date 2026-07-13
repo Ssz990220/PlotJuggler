@@ -1,13 +1,26 @@
 cmake_minimum_required(VERSION 3.22)
-# Version is deliberately 3.999.0: an ironic pre-4.0.0 beta number that flows
-# through the same GitHub release-check/version-compare mechanism as any real
-# release (see pj_runtime/UpdateChecker + UpdateVersion).
-project(plotjuggler4 VERSION 3.999.0 LANGUAGES CXX)
+include("${CMAKE_CURRENT_LIST_DIR}/cmake/PjVersions.cmake")
+pj_read_versions("${CMAKE_CURRENT_LIST_DIR}/versions.env")
+if(NOT PJ_VERSION AND DEFINED ENV{PJ_VERSION} AND NOT "$ENV{PJ_VERSION}" STREQUAL "")
+    set(PJ_VERSION "$ENV{PJ_VERSION}")
+endif()
+if(NOT PJ_VERSION)
+    set(PJ_VERSION "${PJ_APP_VERSION}")
+endif()
+set(_PJ_PROJECT_VERSION_INPUT "${PJ_VERSION}")
+string(REGEX REPLACE "^[vV]" "" _PJ_PROJECT_VERSION_INPUT "${_PJ_PROJECT_VERSION_INPUT}")
+string(REGEX MATCH "^[0-9]+(\\.[0-9]+)?(\\.[0-9]+)?(\\.[0-9]+)?" PJ_PROJECT_VERSION "${_PJ_PROJECT_VERSION_INPUT}")
+if(NOT PJ_PROJECT_VERSION)
+    message(FATAL_ERROR "PJ_VERSION='${PJ_VERSION}' must start with a numeric version, optionally prefixed with v")
+endif()
+project(plotjuggler4 VERSION "${PJ_PROJECT_VERSION}" LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+
+configure_file(cmake/pj_version.h.in ${CMAKE_BINARY_DIR}/generated/pj_version.h @ONLY)
 
 # ---------------------------------------------------------------------------
 # Options
@@ -61,7 +74,7 @@ endif()
 # Qt
 # ---------------------------------------------------------------------------
 
-find_package(Qt6 6.11.1 REQUIRED COMPONENTS Core Gui Widgets Network OpenGLWidgets Xml Svg SvgWidgets)
+find_package(Qt6 ${PJ_QT_VERSION} REQUIRED COMPONENTS Core Gui Widgets Network OpenGLWidgets Xml Svg SvgWidgets)
 find_package(fmt REQUIRED)
 
 # ---------------------------------------------------------------------------

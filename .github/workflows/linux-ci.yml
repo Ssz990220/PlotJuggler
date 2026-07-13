@@ -50,6 +50,19 @@ jobs:
         with:
           submodules: recursive
 
+      - name: Read versions
+        id: versions
+        shell: bash
+        run: |
+          set -euo pipefail
+          source ./versions.env
+          echo "PJ_APP_VERSION=${PJ_APP_VERSION}" >> "${GITHUB_ENV}"
+          echo "PJ_QT_VERSION=${PJ_QT_VERSION}" >> "${GITHUB_ENV}"
+          echo "PJ_APPIMAGE_ARCH=${PJ_APPIMAGE_ARCH}" >> "${GITHUB_ENV}"
+          echo "app_version=${PJ_APP_VERSION}" >> "${GITHUB_OUTPUT}"
+          echo "qt_version=${PJ_QT_VERSION}" >> "${GITHUB_OUTPUT}"
+          echo "appimage_arch=${PJ_APPIMAGE_ARCH}" >> "${GITHUB_OUTPUT}"
+
       - uses: conan-io/setup-conan@v1
         with:
           # Backed by ghcr.io via oras (see steps below) instead of
@@ -170,11 +183,11 @@ jobs:
         uses: actions/cache@v5
         with:
           path: .qt
-          key: qt-6.11.1-linux-gcc_64
+          key: qt-${{ steps.versions.outputs.qt_version }}-linux-gcc_64
 
-      - name: Install Qt 6.11.1 via aqt
-        # Delegates to the repo-root install script (single source of truth for
-        # the Linux Qt version). It installs into ./.qt and no-ops if present.
+      - name: Install Qt via aqt
+        # Delegates to the repo-root install script, which reads versions.env.
+        # It installs into ./.qt and no-ops if present.
         if: steps.qt-cache.outputs.cache-hit != 'true'
         run: ./install_qt6.sh
 
@@ -204,7 +217,7 @@ jobs:
             ccache-linux-
 
       - name: Set ccache limits
-        # 2G, not 500M: the full compiled object set (esp. after the Qt 6.11
+        # 2G, not 500M: the full compiled object set (esp. after the Qt
         # bump, whose larger headers grew per-TU output) exceeds 500M, so a
         # 500M cap thrashed — ccache evicted this build's own early objects
         # mid-run (observed: 25 cleanups, 39% hit rate), leaving every later
@@ -295,6 +308,19 @@ jobs:
         with:
           submodules: recursive
 
+      - name: Read versions
+        id: versions
+        shell: bash
+        run: |
+          set -euo pipefail
+          source ./versions.env
+          echo "PJ_APP_VERSION=${PJ_APP_VERSION}" >> "${GITHUB_ENV}"
+          echo "PJ_QT_VERSION=${PJ_QT_VERSION}" >> "${GITHUB_ENV}"
+          echo "PJ_APPIMAGE_ARCH=${PJ_APPIMAGE_ARCH}" >> "${GITHUB_ENV}"
+          echo "app_version=${PJ_APP_VERSION}" >> "${GITHUB_OUTPUT}"
+          echo "qt_version=${PJ_QT_VERSION}" >> "${GITHUB_OUTPUT}"
+          echo "appimage_arch=${PJ_APPIMAGE_ARCH}" >> "${GITHUB_OUTPUT}"
+
       - uses: conan-io/setup-conan@v1
         with:
           cache_packages: false
@@ -324,9 +350,9 @@ jobs:
         uses: actions/cache@v5
         with:
           path: .qt
-          key: qt-6.11.1-linux-gcc_64
+          key: qt-${{ steps.versions.outputs.qt_version }}-linux-gcc_64
 
-      - name: Install Qt 6.11.1 via aqt
+      - name: Install Qt via aqt
         if: steps.qt-cache.outputs.cache-hit != 'true'
         run: ./install_qt6.sh
 

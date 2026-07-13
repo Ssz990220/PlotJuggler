@@ -1,0 +1,3 @@
+#pragma once
+
+#define PJ_VERSION_STRING "@PJ_VERSION@"

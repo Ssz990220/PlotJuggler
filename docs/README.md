@@ -2,9 +2,9 @@
 
 This folder is for **cross-cutting documentation only** — material that doesn't fit inside any single module's `docs/` folder.
 
-> **Qt toolchain:** PJ4 builds against **Qt 6.11.1**. Install it with the repo-root
-> [`../install_qt6.sh`](../install_qt6.sh) — the single source of truth for the
-> Linux Qt version (`build.sh`, `run.sh`, and Linux CI all consume it). See
+> **Qt toolchain:** PJ4 builds against the Qt version pinned in
+> [`../versions.env`](../versions.env) (currently **Qt 6.11.1**). Install it with
+> the repo-root [`../install_qt6.sh`](../install_qt6.sh). See
 > [`QT_NOTES.md`](./QT_NOTES.md) for what changed since 6.8.
 
 Examples of what belongs here:

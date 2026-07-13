@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "${SCRIPT_DIR}/versions.env"
 
-QT_DIR="${SCRIPT_DIR}/.qt/6.11.1/gcc_64"
+QT_DIR="${SCRIPT_DIR}/.qt/${PJ_QT_VERSION}/gcc_64"
 
 # `./build.sh --tsan` builds + runs the Qt-free foundation concurrency tests under
 # ThreadSanitizer in a separate build-tsan/ tree (the default build/ is untouched).
@@ -19,7 +20,7 @@ for arg in "$@"; do
 done
 
 if [[ ! -d "$QT_DIR" ]]; then
-  echo "Qt 6.11.1 not found at ${QT_DIR}."
+  echo "Qt ${PJ_QT_VERSION} not found at ${QT_DIR}."
   echo "Install it with: ./install_qt6.sh"
   exit 1
 fi
@@ -74,6 +75,7 @@ cmake -S "$SCRIPT_DIR" -B "$BUILD_DIR" \
   -DCMAKE_TOOLCHAIN_FILE="$BUILD_DIR/conan_toolchain.cmake" \
   -DCMAKE_BUILD_TYPE=RelWithDebInfo \
   -DCMAKE_PREFIX_PATH="${QT_DIR}" \
+  -DPJ_VERSION="${PJ_VERSION:-${PJ_APP_VERSION}}" \
   "${CMAKE_CCACHE_ARGS[@]+"${CMAKE_CCACHE_ARGS[@]}"}"
 
 # Surface the compile DB (CMAKE_EXPORT_COMPILE_COMMANDS writes it under build/) at

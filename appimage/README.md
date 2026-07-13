@@ -1,7 +1,9 @@
 # PlotJuggler 4 — AppImage packaging
 
-Builds a single relocatable `PlotJuggler-<version>-x86_64.AppImage` bundling the
+Builds a single relocatable `PlotJuggler-<version>-<arch>.AppImage` bundling the
 `plotjuggler4` shell, its Qt 6 + Conan runtime, and (optionally) a set of plugins.
+The default app version, Qt version, and AppImage arch come from repo-root
+`versions.env`; release builds may override `PJ_VERSION` with the tag.
 
 ## Build
 
@@ -14,7 +16,7 @@ appimage/build_appimage.sh --plugins-dir <path>  # bundle a local plugin folder
 appimage/build_appimage.sh --plugins-registry    # bundle the official set (CI default)
 ```
 
-Output lands at `appimage/PlotJuggler-<version>-x86_64.AppImage`.
+Output lands at `appimage/PlotJuggler-<version>-<arch>.AppImage`.
 
 ## Plugins
 
@@ -65,6 +67,26 @@ scanner does not collide with Qt's own platform plugins that
 user supplies one. Marketplace installs land in the writable per-user extensions
 dir, which the app also scans — so installing from within the AppImage works,
 separately from the read-only bundle.
+
+## Build & verify in Docker
+
+`appimage/build_in_docker.sh` builds the AppImage in the fully-baked builder
+image (`Dockerfile.build`). Plugins:
+
+- `--plugins-registry` — bundle the official set from the plugin registry.
+- `--plugins-dir <dir>` — `<dir>` may be a **pj-official-plugins source repo**
+  (compiled *inside* the builder at the container's glibc 2.35, so the `.so`
+  actually `dlopen` on the runtime image / older distros — host-built plugins
+  link a newer glibc and silently fail to load), or a directory of prebuilt
+  self-contained plugins (copied verbatim). A source build runs the single
+  aggregate `./build.sh`, which on Linux compiles all plugins including
+  `toolbox_mosaico` in one pass (Arrow built once with Flight + gRPC), so Mosaico
+  is included without a second standalone build. Any host path works — it is
+  bind-mounted for you, no manual staging.
+
+`appimage/run_in_docker.sh [--help]` verifies the built AppImage on a clean
+`ubuntu:22.04` runtime image (`Dockerfile.run`) with only base X/GL libraries;
+the GUI is forwarded to the host display via `xhost`.
 
 ## CI
 

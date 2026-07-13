@@ -1,13 +1,17 @@
 # ---------------------------------------------------------------------------
-# pj_scene2d_widgets — Qt widget layer for media display (requires Qt 6.11+)
+# pj_scene2d_widgets — Qt widget layer for media display (requires the configured Qt floor)
 # ---------------------------------------------------------------------------
+
+if(NOT DEFINED PJ_QT_VERSION)
+  set(PJ_QT_VERSION 6.11.1)
+endif()
 
 # GuiPrivate (for QRhi private headers used by MediaViewerWidget) must be
 # requested in THIS scope: Qt 6.11 no longer leaks the Qt6::GuiPrivate imported
 # target in from another subdirectory's find_package the way 6.8 did.
-find_package(Qt6 6.11.1 QUIET COMPONENTS Widgets Gui GuiPrivate)
+find_package(Qt6 ${PJ_QT_VERSION} QUIET COMPONENTS Widgets Gui GuiPrivate)
 if(NOT Qt6_FOUND)
-  message(STATUS "pj_scene2d_widgets: Qt 6.11+ not found, skipping")
+  message(STATUS "pj_scene2d_widgets: Qt ${PJ_QT_VERSION}+ not found, skipping")
   return()
 endif()
 message(STATUS "pj_scene2d_widgets: using Qt ${Qt6_VERSION}")

@@ -1,14 +1,14 @@
 # Qt version notes (for AI agents and humans)
 
-**PJ4 builds against Qt 6.11.1.** Install it with [`../install_qt6.sh`](../install_qt6.sh)
-(the single source of truth for the Linux Qt version).
+**PJ4 builds against the Qt version pinned in [`../versions.env`](../versions.env)
+(currently 6.11.1).** Install it with [`../install_qt6.sh`](../install_qt6.sh).
 
 > **Read this if your training data predates ~2025.** Qt 6.9, 6.10 and 6.11
 > shipped *after* the knowledge cutoff of most current models. If you "know" PJ4
 > is on Qt 6.8, that is stale — this file is the delta. Don't reach for a 6.8-era
 > workaround for something later Qt fixed, and don't assume an API you don't
 > recognize doesn't exist. When unsure about a Qt symbol, check the installed
-> headers under `.qt/6.11.1/gcc_64/include/` rather than guessing from memory.
+> headers under `.qt/<PJ_QT_VERSION>/gcc_64/include/` rather than guessing from memory.
 
 ## Why 6.11 (a non-LTS) and not 6.12 LTS
 
@@ -103,7 +103,7 @@ Prefer these over hand-rolled equivalents. Names are exact.
   the floor. Don't bump the requirement past 3.22 (see the note in
   `.github/workflows/windows-ci.yml`); don't drop a runner below it either.
 - **glibc floor raised 2.28 → 2.34** (6.10): official Linux Qt binaries (what
-  `install_qt6.sh` fetches via aqt) are built on RHEL9. So a PJ4 binary built
+  the repo install script fetches via aqt) are built on RHEL9. So a PJ4 binary built
   against them needs **glibc ≥ 2.34 (≈ Ubuntu 22.04+)** to run. Matters for
   *shipping* to end users, not for the dev box.
 - **Private modules need their own component**: `find_package(Qt6 COMPONENTS
@@ -144,6 +144,7 @@ FFmpeg). scene3D's photorealism is hand-written OpenGL, *not* Qt Quick 3D.
 
 ## See also
 
-- [`../install_qt6.sh`](../install_qt6.sh) — installs the pinned Qt.
+- [`../versions.env`](../versions.env) — pins the Qt version consumed by CMake, scripts, Docker, and CI.
+- [`../install_qt6.sh`](../install_qt6.sh) — installs the pinned Linux Qt build.
 - `pj_scene2D/docs/TECHNICAL_NOTES.md` — `QRhiWidget` lifecycle + video-rendering
   specifics (the APIs there became public/usable in 6.8 and remain so on 6.11).

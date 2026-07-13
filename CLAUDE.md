@@ -88,7 +88,7 @@ Every PJ4 module (anything matching `pj_*/`) owns:
   - **Standard module**: `docs/REQUIREMENTS.md` (the WHAT).
   - **Module with non-obvious internals**: add `docs/ARCHITECTURE.md` (the HOW). See `pj_scene2D/docs/` for the reference shape.
 
-Cross-cutting docs (porting strategy, glossary, ADRs) live in top-level `docs/`. Its scope is described in [`docs/README.md`](./docs/README.md). Notably, [`docs/QT_NOTES.md`](./docs/QT_NOTES.md) records the current Qt baseline (6.11.1) and what changed since 6.8 — read it before using an unfamiliar Qt API.
+Cross-cutting docs (porting strategy, glossary, ADRs) live in top-level `docs/`. Its scope is described in [`docs/README.md`](./docs/README.md). Notably, [`docs/QT_NOTES.md`](./docs/QT_NOTES.md) records the current Qt baseline from [`versions.env`](./versions.env) and what changed since 6.8 — read it before using an unfamiliar Qt API.
 
 ### Module documentation index
 
@@ -135,7 +135,7 @@ The "wholesale lift" strategy for plot widgets (plan §5.3, §8) means porting f
 
 ## Build
 
-- **Qt 6.11.1** (required). Install via [`./install_qt6.sh`](./install_qt6.sh) — the single source of truth for the Qt version. See [`docs/QT_NOTES.md`](./docs/QT_NOTES.md) for what changed since 6.8 (new APIs past most training cutoffs, deprecations, build floors).
+- **Qt 6.11.1** (required; pinned by [`versions.env`](./versions.env)). Install via [`./install_qt6.sh`](./install_qt6.sh). See [`docs/QT_NOTES.md`](./docs/QT_NOTES.md) for what changed since 6.8 (new APIs past most training cutoffs, deprecations, build floors).
 - **CMake + Conan**. CMake is the build driver; Conan provides external non-vendored dependencies.
 - **C++20**.
 - **Linux-only** for v1. The code **must stay portable** — no Linux-only APIs or POSIX-specific paths in module code; gate anything platform-specific behind the usual CMake / `#ifdef` guards so a future macOS/Windows build is a build-system problem, not a code problem.
@@ -161,18 +161,31 @@ Conan, so rich traces need no system `-dev` packages.
 
 ### Compile instructions
 
-One-time setup (installs Qt 6.11.1 into `./.qt/`, ~1GB):
+One-time setup (installs the Qt version from `versions.env` into `./.qt/`, ~1GB):
 
 ```bash
 ./install_qt6.sh
 ```
 
-`install_qt6.sh` is the **single source of truth** for the Qt version PJ4 builds
-against — `build.sh`, `run.sh`, and Linux CI all expect Qt at
-`.qt/6.11.1/gcc_64`. To upgrade Qt, bump `QT_VERSION` there and the matching
-paths/cache-keys in `build.sh`, `run.sh`, `CMakeLists.txt`, and
-`.github/workflows/*` (Windows CI installs Qt inline because the script is
-Linux-only).
+`versions.env` is the **single source of truth** for the PJ4 app version, Qt
+version, and AppImage arch. `install_qt6.sh`, `build.sh`, `run.sh`, Docker, CMake,
+and CI all consume it. To upgrade Qt, update `PJ_QT_VERSION` there; Windows CI
+still installs Qt inline because the Linux installer uses the `gcc_64` build.
+
+> **Versioning rule — never hardcode a version.** `PJ_APP_VERSION` (app version),
+> `PJ_QT_VERSION` (Qt), and `PJ_APPIMAGE_ARCH` (AppImage arch) live **only** in
+> [`versions.env`](./versions.env); always read them from there rather than
+> writing a literal (`3.999.0`, `6.11.1`, `x86_64`) anywhere. How each consumer
+> reads it: bash scripts `source "<anchor>/versions.env"` by absolute path; CMake
+> via `pj_read_versions()` in [`cmake/PjVersions.cmake`](./cmake/PjVersions.cmake)
+> (which stamps `cmake/pj_version.h.in` → `main.cpp` and feeds `find_package(Qt6 …)`);
+> CI via a `Read versions` step (`source ./versions.env` → `$GITHUB_ENV`); Docker
+> via `--build-arg` from `build_in_docker.sh`. To change a version, edit
+> `versions.env` and nothing else. **Only the app version is overridable** per
+> build — `-DPJ_VERSION=<v>` or the `PJ_VERSION` env var (release CI stamps the git
+> tag); `PJ_QT_VERSION`/`PJ_APPIMAGE_ARCH` are hard pins with no override. The Qt
+> platform dir tokens (`gcc_64`/`msvc2022_64`) are a separate namespace — leave
+> them literal, never derive them from `PJ_APPIMAGE_ARCH`.
 
 System build dependencies (Linux): the Conan FFmpeg build needs `libva-dev` and
 `libdrm-dev` on the build host, because `conanfile.txt` enables
@@ -197,9 +210,9 @@ Build (configures Conan, runs CMake, builds):
 
 That script:
 
-1. Checks for `.qt/6.11.1/gcc_64/` and tells you to run `./install_qt6.sh` if missing.
+1. Checks for `.qt/<PJ_QT_VERSION>/gcc_64/` and tells you to run `./install_qt6.sh` if missing.
 2. Runs `conan install ... --output-folder=build --build=missing -s compiler.cppstd=20` (reads `conanfile.txt`).
-3. Configures CMake with `CMAKE_TOOLCHAIN_FILE=build/conan_toolchain.cmake` and `CMAKE_PREFIX_PATH=./.qt/6.11.1/gcc_64`.
+3. Configures CMake with `CMAKE_TOOLCHAIN_FILE=build/conan_toolchain.cmake` and `CMAKE_PREFIX_PATH=./.qt/<PJ_QT_VERSION>/gcc_64`.
 4. Builds with `cmake --build build -j$(nproc)`.
 
 Run the app:
@@ -208,7 +221,7 @@ Run the app:
 ./run.sh
 ```
 
-`run.sh` unsets `QT_IM_MODULE` before launching. Otherwise the IBus platform input context gets loaded from a system / older Qt install and segfaults under the Qt 6.11.1 runtime.
+`run.sh` unsets `QT_IM_MODULE` before launching. Otherwise the IBus platform input context can get loaded from a system / older Qt install and crash under the pinned Qt runtime.
 
 Run the tests (`enable_testing()` is wired at the top level, so `ctest` covers every module):
 

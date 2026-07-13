@@ -78,6 +78,14 @@ if(WIN32 AND _pj_python_home)
   file(WRITE "${CMAKE_BINARY_DIR}/pj_python_bin_dirs.txt" "${_pj_python_home}/bin\n${_pj_python_home}\n")
 endif()
 
+# Record the CPython prefix so the AppImage packager can bundle the stdlib
+# (<prefix>/lib/pythonX.Y) into the AppDir and point PYTHONHOME at it, instead of
+# relying on PJ_PYTHON_HOME — the build-machine Conan path baked into the binary,
+# which does not exist on any other machine.
+if(NOT WIN32 AND _pj_python_home)
+  file(WRITE "${CMAKE_BINARY_DIR}/pj_python_home.txt" "${_pj_python_home}\n")
+endif()
+
 add_library(pj_scripting STATIC
   src/luau_engine.cpp
   src/lua_siso_transform.cpp

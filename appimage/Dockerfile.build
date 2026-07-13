@@ -1,0 +1,137 @@
+# syntax=docker/dockerfile:1
+# SPDX-License-Identifier: MPL-2.0
+#
+# Fully-baked PlotJuggler 4 AppImage builder.
+#
+# Base: ubuntu:22.04 (glibc 2.35) — matches the release.yml runner and gives the
+# broadest AppImage compatibility. Everything the build needs is baked into image
+# layers so a container run fetches NOTHING at run time (the one exception is
+# --plugins-registry, which downloads published plugin zips):
+#   * Qt from versions.env -> /opt/.qt/<version>/gcc_64  (via the repo's install_qt6.sh)
+#   * Conan dep closure    -> /root/.conan2              (prebuilt, RelWithDebInfo)
+#   * pinned linuxdeploy  -> /opt/linuxdeploy/
+#
+# The container runs as ROOT internally so it can read the baked /root/.conan2 and
+# /opt/.qt; the entrypoint chowns the generated build/ + *.AppImage back to the
+# invoking host user (HOST_UID/HOST_GID). Root-then-chown avoids a fragile in-image
+# UID match while keeping host outputs host-owned.
+FROM ubuntu:22.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV TZ=Etc/UTC
+
+# 1) Build + packaging deps. The Qt/XCB/VAAPI block is lifted VERBATIM from the
+#    "Install Qt 6 + FFmpeg VAAPI system dependencies" step in linux-ci.yml so it
+#    cannot drift from CI. xvfb omitted (no GUI tests here); imagemagick omitted
+#    (the icon ships as committed resources/svg/plotjuggler4.png).
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        libgl1-mesa-dev libegl1-mesa-dev libxkbcommon-dev \
+        libxcb-cursor0 libxcb-icccm4 libxcb-image0 libxcb-keysyms1 \
+        libxcb-randr0 libxcb-render-util0 libxcb-shape0 libxcb-xinerama0 \
+        libxcb-xkb1 libxkbcommon-x11-0 libfontconfig1 libdbus-1-3 \
+        libva-dev libdrm-dev \
+        build-essential cmake ninja-build ccache git ca-certificates \
+        wget curl file pkg-config python3 python3-pip \
+        patchelf unzip zstd \
+    && rm -rf /var/lib/apt/lists/*
+
+# 2) Python tooling: aqt (Qt installer) + conan. Installing aqt up front means
+#    install_qt6.sh finds it (command -v aqt) and SKIPS its own bare `pip install`.
+RUN python3 -m pip install --no-cache-dir 'aqtinstall>=3.3' 'conan>=2,<3'
+
+# 3) Bake Qt via the repo's install_qt6.sh using versions.env. Running it from
+#    /opt lands Qt under /opt/.qt/ — a stable path outside the eventual /work bind mount.
+ARG PJ_QT_VERSION
+ARG PJ_APPIMAGE_ARCH
+RUN test -n "$PJ_QT_VERSION" && test -n "$PJ_APPIMAGE_ARCH"
+ENV PJ_QT_VERSION=$PJ_QT_VERSION
+ENV PJ_APPIMAGE_ARCH=$PJ_APPIMAGE_ARCH
+COPY versions.env /opt/versions.env
+COPY install_qt6.sh /opt/install_qt6.sh
+RUN bash /opt/install_qt6.sh
+
+# 4) Warm the Conan cache into /root/.conan2 with the SAME settings build.sh uses,
+#    so the run-time conan install is an offline cache hit. Only the requires file
+#    is needed to resolve.
+COPY conanfile.txt /opt/conan-ctx/conanfile.txt
+RUN conan profile detect --force \
+ && conan install /opt/conan-ctx \
+        --output-folder=/tmp/conan-warm --build=missing \
+        -s build_type=RelWithDebInfo -s compiler.cppstd=20 \
+ && rm -rf /tmp/conan-warm \
+ && conan cache clean "*" --build --source --temp || true
+
+# 5) Bake a PINNED linuxdeploy + its Qt plugin. linuxdeploy publishes mainly the
+#    rolling 'continuous' tag, so the PIN = freezing the exact bytes into this
+#    layer. SHA256SUMS records provenance. The optional build args, when non-empty,
+#    assert the bytes and FAIL the build on mismatch; default empty = record-only.
+ARG LINUXDEPLOY_SHA256=
+ARG LINUXDEPLOY_QT_SHA256=
+RUN mkdir -p /opt/linuxdeploy && cd /opt/linuxdeploy \
+ && wget -q https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-${PJ_APPIMAGE_ARCH}.AppImage \
+ && wget -q https://github.com/linuxdeploy/linuxdeploy-plugin-qt/releases/download/continuous/linuxdeploy-plugin-qt-${PJ_APPIMAGE_ARCH}.AppImage \
+ && chmod +x linuxdeploy-${PJ_APPIMAGE_ARCH}.AppImage linuxdeploy-plugin-qt-${PJ_APPIMAGE_ARCH}.AppImage \
+ && if [ -n "${LINUXDEPLOY_SHA256}" ]; then echo "${LINUXDEPLOY_SHA256}  linuxdeploy-${PJ_APPIMAGE_ARCH}.AppImage" | sha256sum -c -; fi \
+ && if [ -n "${LINUXDEPLOY_QT_SHA256}" ]; then echo "${LINUXDEPLOY_QT_SHA256}  linuxdeploy-plugin-qt-${PJ_APPIMAGE_ARCH}.AppImage" | sha256sum -c -; fi \
+ && sha256sum linuxdeploy-${PJ_APPIMAGE_ARCH}.AppImage linuxdeploy-plugin-qt-${PJ_APPIMAGE_ARCH}.AppImage > SHA256SUMS \
+ && cat SHA256SUMS
+
+# 6) Baked entrypoint (quoted heredoc => nothing expanded at image-build time).
+RUN cat > /usr/local/bin/pj4-build-entry.sh <<'PJEOF'
+#!/usr/bin/env bash
+# SPDX-License-Identifier: MPL-2.0
+# Entrypoint for the PJ4 AppImage builder image. Runs as root (reads baked
+# /opt/.qt + /root/.conan2); hands outputs back to the host user via chown.
+set -euo pipefail
+
+HOST_UID="${HOST_UID:-0}"
+HOST_GID="${HOST_GID:-0}"
+
+git config --global --add safe.directory '*' || true
+
+ln -sfn /opt/linuxdeploy/linuxdeploy-${PJ_APPIMAGE_ARCH}.AppImage \
+        /work/appimage/linuxdeploy-${PJ_APPIMAGE_ARCH}.AppImage
+ln -sfn /opt/linuxdeploy/linuxdeploy-plugin-qt-${PJ_APPIMAGE_ARCH}.AppImage \
+        /work/appimage/linuxdeploy-plugin-qt-${PJ_APPIMAGE_ARCH}.AppImage
+
+cleanup() {
+  rm -f /work/appimage/linuxdeploy-${PJ_APPIMAGE_ARCH}.AppImage \
+        /work/appimage/linuxdeploy-plugin-qt-${PJ_APPIMAGE_ARCH}.AppImage || true
+  chown -R "${HOST_UID}:${HOST_GID}" /work/build 2>/dev/null || true
+  shopt -s nullglob
+  local f
+  for f in /work/appimage/PlotJuggler-*-${PJ_APPIMAGE_ARCH}.AppImage; do
+    chown "${HOST_UID}:${HOST_GID}" "$f" 2>/dev/null || true
+  done
+  shopt -u nullglob
+}
+trap cleanup EXIT
+
+# Make /work/.qt/${PJ_QT_VERSION}/gcc_64 resolve to the baked Qt WITHOUT mutating the host.
+# In a worktree, /work/.qt is an absolute symlink into the host primary checkout
+# that dangles in-container; we materialize THAT target path inside the container
+# layer (not under /work) and aim it at the baked Qt, leaving the host untouched.
+QT_LINK="/work/.qt"
+BAKED_QT="/opt/.qt"
+if [[ ! -d "${QT_LINK}/${PJ_QT_VERSION}/gcc_64" ]]; then
+  if [[ -L "${QT_LINK}" ]]; then
+    qt_target="$(readlink "${QT_LINK}")"
+    if [[ "${qt_target}" == /* ]]; then
+      mkdir -p "$(dirname "${qt_target}")"
+      ln -sfn "${BAKED_QT}" "${qt_target}"
+    else
+      rm -f "${QT_LINK}"; ln -sfn "${BAKED_QT}" "${QT_LINK}"
+    fi
+  else
+    ln -sfn "${BAKED_QT}" "${QT_LINK}"
+  fi
+fi
+
+export APPIMAGE_EXTRACT_AND_RUN=1
+
+bash /work/build.sh
+bash /work/appimage/build_appimage.sh "$@"
+PJEOF
+RUN chmod +x /usr/local/bin/pj4-build-entry.sh
+
+ENTRYPOINT ["/usr/local/bin/pj4-build-entry.sh"]

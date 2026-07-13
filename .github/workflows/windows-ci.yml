@@ -60,6 +60,19 @@ jobs:
         with:
           submodules: recursive
 
+      - name: Read versions
+        id: versions
+        shell: bash
+        run: |
+          set -euo pipefail
+          source ./versions.env
+          echo "PJ_APP_VERSION=${PJ_APP_VERSION}" >> "${GITHUB_ENV}"
+          echo "PJ_QT_VERSION=${PJ_QT_VERSION}" >> "${GITHUB_ENV}"
+          echo "PJ_APPIMAGE_ARCH=${PJ_APPIMAGE_ARCH}" >> "${GITHUB_ENV}"
+          echo "app_version=${PJ_APP_VERSION}" >> "${GITHUB_OUTPUT}"
+          echo "qt_version=${PJ_QT_VERSION}" >> "${GITHUB_OUTPUT}"
+          echo "appimage_arch=${PJ_APPIMAGE_ARCH}" >> "${GITHUB_OUTPUT}"
+
       - uses: conan-io/setup-conan@v1
         with:
           # Backed by ghcr.io via oras (see steps below) instead of
@@ -237,40 +250,39 @@ jobs:
         uses: actions/cache/restore@v5
         with:
           path: .qt
-          key: qt-6.11.1-windows-msvc2022_64
+          key: qt-${{ steps.versions.outputs.qt_version }}-windows-msvc2022_64
 
       - name: Verify Qt cache content
         # actions/cache can report cache-hit=true while the restored tree is
         # incomplete (interrupted Save, partial eviction). Without this guard
         # the next step skips aqtinstall and the Configure step then fails with
-        # "Qt 6.11.1 not found at $QT_DIR". Probe qmake.exe (the artifact the
+        # "Qt not found at $QT_DIR". Probe qmake.exe (the artifact the
         # rest of the pipeline actually needs) and force a reinstall on miss.
         id: qt-verify
         shell: bash
         run: |
-          if [[ -x ".qt/6.11.1/msvc2022_64/bin/qmake.exe" ]]; then
+          if [[ -x ".qt/${PJ_QT_VERSION}/msvc2022_64/bin/qmake.exe" ]]; then
             echo "valid=true" >> "$GITHUB_OUTPUT"
           else
             echo "valid=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Install Qt 6.11.1 via aqt
+      - name: Install Qt via aqt
         # Inline (not install_qt6.sh): that script is Linux-only (gcc_64); this
-        # job needs the win64_msvc2022_64 build. Keep the version in sync with
-        # install_qt6.sh / the cache key above on upgrade.
+        # job needs the win64_msvc2022_64 build. The version comes from versions.env.
         if: steps.qt-cache.outputs.cache-hit != 'true' || steps.qt-verify.outputs.valid != 'true'
         shell: bash
         run: |
-          # Released aqt (<=3.3.0) can't install Qt >= 6.11 on Windows: Qt moved
+          # Released aqt (<=3.3.0) can't install the pinned Qt on Windows: Qt moved
           # the Windows repo to per-arch folders and released aqt still requests
           # the old nested path (miurahr/aqtinstall#959 / #1007), failing with
-          # "Failed to locate XML data for Qt version '6.11.1'". The fix (PR #1000)
+          # "Failed to locate XML data for Qt version". The fix (PR #1000)
           # is merged but unreleased, so pin to that merge commit.
           # TODO: revert to `pip install 'aqtinstall>=3.3.1'` once it ships.
           pip install "git+https://github.com/miurahr/aqtinstall.git@8c3695d4a4e1ceabf6a74dc6c79681656dc6b74b"
           # Retry with backoff for transient mirror failures.
           attempt=0
-          until aqt install-qt windows desktop 6.11.1 win64_msvc2022_64 --outputdir ./.qt; do
+          until aqt install-qt windows desktop "${PJ_QT_VERSION}" win64_msvc2022_64 --outputdir ./.qt; do
             attempt=$((attempt + 1))
             if [ "$attempt" -ge 5 ]; then echo "aqt failed after ${attempt} attempts" >&2; exit 1; fi
             echo "aqt attempt ${attempt} failed (transient mirror?); retrying in $((attempt * 15))s..."
@@ -372,9 +384,9 @@ jobs:
           # to an uncached (but correct) build instead of failing.
           SCCACHE_AVAILABLE: ${{ steps.setup_sccache.outcome == 'success' }}
         run: |
-          QT_DIR="$(pwd)/.qt/6.11.1/msvc2022_64"
+          QT_DIR="$(pwd)/.qt/${PJ_QT_VERSION}/msvc2022_64"
           if [[ ! -d "$QT_DIR" ]]; then
-            echo "::error::Qt 6.11.1 not found at $QT_DIR"
+            echo "::error::Qt ${PJ_QT_VERSION} not found at $QT_DIR"
             exit 1
           fi
 
@@ -511,7 +523,7 @@ jobs:
         # (STATUS_DLL_NOT_FOUND) before any test code runs.
         shell: bash
         run: |
-          export PATH="$(pwd)/.qt/6.11.1/msvc2022_64/bin:$PATH"
+          export PATH="$(pwd)/.qt/${PJ_QT_VERSION}/msvc2022_64/bin:$PATH"
           # FFmpeg's Conan bin dir(s) are emitted at configure time by
           # pj_scene2D/core/CMakeLists.txt (Conan's package path is hashed and not
           # knowable here). Prepend each so every exe that transitively links
