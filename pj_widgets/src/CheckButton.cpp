@@ -4,31 +4,34 @@
 #include "pj_widgets/CheckButton.h"
 
 #include <QFontMetrics>
+#include <QGuiApplication>
 #include <QPaintEvent>
 #include <QPainter>
+#include <QPalette>
 
-#include "pj_widgets/ThemeColors.h"
+#include "pj_widgets/FrameworkTokens.h"
 
 namespace PJ {
 
 namespace {
-constexpr int kHPadding = 10;         // text inset on each side (snug to text)
-constexpr int kHeight = 20;           // fixed button height
-constexpr qreal kCornerRadius = 4.0;  // rounded rectangle, like the "auto" toggle
-constexpr qreal kBorderWidth = 1.0;
+constexpr auto kHPadding = theme::Space::Comfortable;  // text inset on each side (snug to text)
+
+theme::Theme frameworkTheme() {
+  const QColor window = QGuiApplication::palette().color(QPalette::Window);
+  return theme::themeFor(window.lightness() >= 128);
+}
 }  // namespace
 
 CheckButton::CheckButton(QWidget* parent) : CheckButton(QString(), parent) {}
 
 CheckButton::CheckButton(const QString& text, QWidget* parent)
     : QAbstractButton(parent),
-      // Defaults mirror the QSS tokens (border_checked / border_default /
-      // item_selection_background / default_text) so the widget still looks right
+      // Defaults mirror the framework roles so the widget still looks right
       // before a stylesheet sets the qproperties.
-      accent_color_(theme::kBlue),
-      border_color_(0xC0, 0xC0, 0xC0),
-      checked_fill_color_(theme::kLightBlue),
-      text_color_(0x11, 0x11, 0x11) {
+      accent_color_(theme::surface(PJ::theme::Surface::Separation, frameworkTheme())),
+      border_color_(theme::surface(PJ::theme::Surface::Separation, frameworkTheme())),
+      checked_fill_color_(theme::interaction(theme::Variant::Accent, theme::State::Checked, frameworkTheme())),
+      text_color_(theme::text(frameworkTheme())) {
   setText(text);
   setCheckable(true);
   setCursor(Qt::PointingHandCursor);
@@ -73,7 +76,7 @@ void CheckButton::setTextColor(const QColor& color) {
 
 QSize CheckButton::sizeHint() const {
   const int text_width = fontMetrics().horizontalAdvance(text());
-  return {text_width + 2 * kHPadding, kHeight};
+  return {text_width + 2 * theme::space(kHPadding), theme::metric(theme::Metric::InputOuterHeight)};
 }
 
 QSize CheckButton::minimumSizeHint() const {
@@ -84,34 +87,39 @@ void CheckButton::paintEvent(QPaintEvent* /*event*/) {
   QPainter painter(this);
   painter.setRenderHint(QPainter::Antialiasing, true);
 
+  const auto fw_theme = frameworkTheme();
+  const qreal border_width = theme::stroke(theme::Stroke::Hairline, fw_theme);
+  const qreal corner_radius = theme::radius(theme::Radius::Input, fw_theme);
+
   // Inset by half the border so the stroke stays inside the widget rect.
   const QRectF box =
-      QRectF(rect()).adjusted(kBorderWidth / 2.0, kBorderWidth / 2.0, -kBorderWidth / 2.0, -kBorderWidth / 2.0);
+      QRectF(rect()).adjusted(border_width / 2.0, border_width / 2.0, -border_width / 2.0, -border_width / 2.0);
 
   QColor fill;
   QColor border;
   QColor label = text_color_;
   if (!isEnabled()) {
-    border = palette().color(QPalette::Disabled, QPalette::Text);
-    label = border;
-    fill = QColor(Qt::transparent);
+    border = theme::surface(PJ::theme::Surface::Separation, fw_theme);
+    label = theme::onSurface(theme::Surface::Backdrop, theme::Emphasis::Disabled, fw_theme);
+    fill = theme::interaction(theme::Variant::Neutral, theme::State::Disabled, fw_theme);
   } else if (isChecked()) {
     // Active: light selection fill + accent border (the "auto" button checked look).
-    fill = isDown() ? checked_fill_color_.darker(108) : checked_fill_color_;
+    fill = isDown() ? theme::interaction(theme::Variant::Accent, theme::State::CheckedPressed, fw_theme)
+                    : checked_fill_color_;
     border = accent_color_;
   } else {
     // Resting button: quiet hairline border, accent border on hover/press, with a
     // faint button fill so it reads as a real control.
     fill = palette().color(QPalette::Button);
     if (isDown()) {
-      fill = fill.darker(108);
+      fill = theme::interaction(theme::Variant::Neutral, theme::State::Pressed, fw_theme);
     }
     border = underMouse() ? accent_color_ : border_color_;
   }
 
   painter.setBrush(fill);
-  painter.setPen(border.alpha() == 0 ? QPen(Qt::NoPen) : QPen(border, kBorderWidth));
-  painter.drawRoundedRect(box, kCornerRadius, kCornerRadius);
+  painter.setPen(border.alpha() == 0 ? QPen(Qt::NoPen) : QPen(border, border_width));
+  painter.drawRoundedRect(box, corner_radius, corner_radius);
 
   painter.setPen(label);
   painter.drawText(rect(), Qt::AlignCenter, text());

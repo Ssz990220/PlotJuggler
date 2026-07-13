@@ -7,6 +7,8 @@
 #include <QPixmap>
 #include <QWidget>
 
+#include "pj_widgets/FrameworkTokens.h"
+
 namespace PJ {
 
 class ToastNotification;
@@ -44,9 +46,9 @@ class ToastManager : public QObject {
   QWidget* container_ = nullptr;
   QList<ToastNotification*> toasts_;
 
-  int margin_right_ = 16;
-  int margin_bottom_ = 16;
-  int spacing_ = 8;
+  int margin_right_ = theme::space(theme::Space::Section);
+  int margin_bottom_ = theme::space(theme::Space::Section);
+  int spacing_ = theme::space(theme::Space::Comfortable);
   int max_width_ = 400;
 };
 

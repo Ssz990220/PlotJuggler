@@ -16,6 +16,7 @@
 #include <QString>
 #include <QToolButton>
 
+#include "pj_widgets/FrameworkTokens.h"
 #include "pj_widgets/SvgUtil.h"
 using namespace Qt::StringLiterals;
 
@@ -63,11 +64,13 @@ FileDialog::FileDialog(QWidget* parent) : Dialog(parent) {
   contentLayout()->addWidget(inner_);
 
   // Swap Qt's stock SP_FileDialog* icons (native theme glyphs that clash
-  // with our flat chrome) for our keyboard_arrow_* chevrons. LoadSvg
-  // re-tints for the active theme automatically.
-  applySvgIcon(inner_, "backButton", ":/resources/svg/keyboard_arrow_left_dark.svg");
-  applySvgIcon(inner_, "forwardButton", ":/resources/svg/keyboard_arrow_right_dark.svg");
-  applySvgIcon(inner_, "toParentButton", ":/resources/svg/keyboard_arrow_up_dark.svg");
+  // with our flat chrome) for our keyboard_arrow_* chevrons. The _light
+  // variants carry the #3D3D3D authoring ink that loadSvg's recolor pipeline
+  // folds onto the active theme ink (the _dark variants' #E0E0E0 is
+  // deliberately NOT folded and would stay pale on the light theme).
+  applySvgIcon(inner_, "backButton", ":/resources/svg/keyboard_arrow_left_light.svg");
+  applySvgIcon(inner_, "forwardButton", ":/resources/svg/keyboard_arrow_right_light.svg");
+  applySvgIcon(inner_, "toParentButton", ":/resources/svg/keyboard_arrow_up_light.svg");
   applySvgIcon(inner_, "newFolderButton", ":/resources/svg/create_new_folder.svg");
   // QFileDialog's "list mode" is the columns-of-icons display, "detail
   // mode" is the table with name/size/type/date columns — match Material's
@@ -99,6 +102,10 @@ FileDialog::FileDialog(QWidget* parent) : Dialog(parent) {
 
 void FileDialog::onChromeMetricsChanged(const ChromeMetrics& metrics) {
   chrome_metrics_ = metrics;
+  // Size the chrome title bar to the live metrics so the file picker's chrome
+  // matches the main window (and every other dialog) rather than sitting at the
+  // constructor's default height.
+  setChromeMetrics(metrics);
   // Mirror CurveListPanel: the icon gets icon_size, the button's outer
   // extent gets icon_size + icon_padding. Setting only setIconSize leaves
   // the button at its default ~16px size and the larger icon clips.
@@ -188,6 +195,23 @@ QStringList FileDialog::getOpenFileNames(
   return dlg.selectedFiles();
 }
 
+QString FileDialog::getExistingDirectory(QWidget* parent, const QString& caption, const QString& dir) {
+  FileDialog dlg(parent);
+  if (!caption.isEmpty()) {
+    dlg.setDialogTitle(caption);
+  }
+  dlg.setAcceptMode(QFileDialog::AcceptOpen);
+  dlg.setFileMode(QFileDialog::Directory);
+  dlg.inner_->setOption(QFileDialog::ShowDirsOnly, true);
+  if (!dir.isEmpty()) {
+    dlg.setDirectory(dir);
+  }
+  if (dlg.exec() != QDialog::Accepted) {
+    return {};
+  }
+  return dlg.selectedFile();
+}
+
 QString FileDialog::getSaveFileName(
     QWidget* parent, const QString& caption, const QString& dir, const QString& filter, const QString& default_suffix) {
   FileDialog dlg(parent);
@@ -222,7 +246,9 @@ std::vector<QCheckBox*> FileDialog::embedExtras(const std::vector<ExtraOption>& 
   // columns so the checkbox row sits cleanly above the OK/Cancel buttons.
   auto* extras_widget = new QWidget(inner_);
   auto* row = new QHBoxLayout(extras_widget);
-  row->setContentsMargins(0, 0, 0, 0);
+  row->setContentsMargins(
+      theme::space(theme::Space::None), theme::space(theme::Space::None), theme::space(theme::Space::None),
+      theme::space(theme::Space::None));
   for (const ExtraOption& opt : extras) {
     auto* box = new QCheckBox(opt.label, extras_widget);
     box->setChecked(opt.default_checked);

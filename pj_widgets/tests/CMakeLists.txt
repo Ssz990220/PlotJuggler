@@ -165,7 +165,10 @@ set_target_properties(coalescing_trigger_test PROPERTIES
 
 add_test(NAME CoalescingTrigger COMMAND coalescing_trigger_test)
 
-add_executable(check_button_test check_button_test.cpp)
+add_executable(check_button_test
+    check_button_test.cpp
+    ${CMAKE_SOURCE_DIR}/resources/resources.qrc
+)
 
 target_link_libraries(check_button_test PRIVATE
     pj_widgets
@@ -179,12 +182,16 @@ if(DEFINED PJ_WARNING_FLAGS)
 endif()
 
 set_target_properties(check_button_test PROPERTIES
+    AUTORCC ON
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
 )
 
 add_test(NAME CheckButton COMMAND check_button_test)
 
-add_executable(dual_options_widget_test dual_options_widget_test.cpp)
+add_executable(dual_options_widget_test
+    dual_options_widget_test.cpp
+    ${CMAKE_SOURCE_DIR}/resources/resources.qrc
+)
 
 target_link_libraries(dual_options_widget_test PRIVATE
     pj_widgets
@@ -198,6 +205,7 @@ if(DEFINED PJ_WARNING_FLAGS)
 endif()
 
 set_target_properties(dual_options_widget_test PROPERTIES
+    AUTORCC ON
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
 )
 
@@ -296,7 +304,10 @@ set_target_properties(colormap_test PROPERTIES
 
 add_test(NAME Colormap COMMAND colormap_test)
 
-add_executable(messagebox_test messagebox_test.cpp)
+add_executable(messagebox_test
+    messagebox_test.cpp
+    ${CMAKE_SOURCE_DIR}/resources/resources.qrc
+)
 
 target_link_libraries(messagebox_test PRIVATE
     pj_widgets
@@ -309,7 +320,10 @@ if(DEFINED PJ_WARNING_FLAGS)
     target_compile_options(messagebox_test PRIVATE ${PJ_WARNING_FLAGS})
 endif()
 
+# The layout margins/spacing + button wrap budget now resolve from the framework
+# palette (pj_widgets FrameworkTokens), so the stylesheet resource must be linked.
 set_target_properties(messagebox_test PROPERTIES
+    AUTORCC ON
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
 )
 
@@ -390,22 +404,6 @@ if(DEFINED PJ_WARNING_FLAGS)
 endif()
 add_test(NAME ToastTest COMMAND toast_test)
 
-add_executable(scrollbar_test scrollbar_test.cpp)
-set_target_properties(scrollbar_test PROPERTIES
-    AUTOMOC ON
-    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
-)
-target_link_libraries(scrollbar_test PRIVATE
-    pj_widgets
-    GTest::gtest_main
-    Qt6::Test
-    Qt6::Widgets
-)
-if(DEFINED PJ_WARNING_FLAGS)
-    target_compile_options(scrollbar_test PRIVATE ${PJ_WARNING_FLAGS})
-endif()
-add_test(NAME ScrollbarTest COMMAND scrollbar_test)
-
 # Drift guard: C++ FrameworkTokens vs the QSS palette blocks. Links the qrc so
 # the stylesheets are readable as `:/resources/...` at runtime.
 add_executable(framework_tokens_test
@@ -424,3 +422,41 @@ set_target_properties(framework_tokens_test PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
 )
 add_test(NAME FrameworkTokens COMMAND framework_tokens_test)
+
+add_executable(scrollbar_test
+    scrollbar_test.cpp
+    ${CMAKE_SOURCE_DIR}/resources/resources.qrc
+)
+set_target_properties(scrollbar_test PROPERTIES
+    AUTOMOC ON
+    AUTORCC ON
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
+)
+target_link_libraries(scrollbar_test PRIVATE
+    pj_widgets
+    GTest::gtest_main
+    Qt6::Test
+    Qt6::Widgets
+)
+if(DEFINED PJ_WARNING_FLAGS)
+    target_compile_options(scrollbar_test PRIVATE ${PJ_WARNING_FLAGS})
+endif()
+add_test(NAME ScrollbarTest COMMAND scrollbar_test)
+
+add_executable(search_test
+    search_test.cpp
+    ${CMAKE_SOURCE_DIR}/resources/resources.qrc
+)
+set_target_properties(search_test PROPERTIES
+    AUTORCC ON
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
+)
+target_link_libraries(search_test PRIVATE
+    pj_widgets
+    GTest::gtest
+    Qt6::Test
+)
+if(DEFINED PJ_WARNING_FLAGS)
+    target_compile_options(search_test PRIVATE ${PJ_WARNING_FLAGS})
+endif()
+add_test(NAME SearchTest COMMAND search_test)

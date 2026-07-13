@@ -15,6 +15,8 @@
 #include <QPoint>
 #include <QPushButton>
 #include <algorithm>
+
+#include "pj_widgets/FrameworkTokens.h"
 using namespace Qt::StringLiterals;
 
 namespace {
@@ -109,15 +111,17 @@ TEST(MessageBoxTest, WrappedButtonGrowsTaller) {
 TEST(MessageBoxTest, ButtonSpacingIsConstantAcrossDialogs) {
   // A wrapping body used to over-constrain the layout, which then compressed
   // the gaps between buttons by a variable amount (measured 5–14 px across
-  // dialogs). Every gap must now be a constant 6 px regardless of button
+  // dialogs). Every gap must now use Comfortable spacing regardless of button
   // count or body length. The compression only reproduces under the app's QSS
   // metrics (10pt font + the button min-height/padding that make the dialog
   // tall enough to over-constrain), so apply a matching stylesheet here.
-  constexpr int kExpectedGap = 6;
+  const int kExpectedGap = PJ::theme::space(PJ::theme::Space::Comfortable);
   const QString prev = qApp->styleSheet();
   qApp->setStyleSheet(QStringLiteral(
-      "QWidget { font-size: 10pt; }"
-      "QPushButton#pjMessageBoxButton { min-height: 26px; padding: 6px 12px; border: none; }"));
+                          "QWidget { font-size: 10pt; }"
+                          "QPushButton#pjMessageBoxButton { min-height: 26px; padding: %1px %2px; border: none; }")
+                          .arg(PJ::theme::space(PJ::theme::Space::Comfortable))
+                          .arg(PJ::theme::space(PJ::theme::Space::Section)));
 
   PJ::MessageBox three;
   three.setTitle(u"Load Layout"_s);

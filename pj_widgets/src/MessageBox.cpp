@@ -15,6 +15,8 @@
 #include <QShowEvent>
 #include <QSizePolicy>
 #include <QVBoxLayout>
+
+#include "pj_widgets/FrameworkTokens.h"
 using namespace Qt::StringLiterals;
 
 namespace PJ {
@@ -38,14 +40,14 @@ const char* roleToToken(MessageBox::ButtonRole role) {
 
 // Layout insets used to derive the per-line wrap budget for button labels.
 // They mirror values set elsewhere — the card content margin in the ctor
-// (root->setContentsMargins(24, …)), the 1px card border and the button's
-// horizontal padding from the QSS rule for #pjMessageBoxButton (padding:
-// 6px 12px). They only need to be *conservative*: under-estimating the budget
+// (root->setContentsMargins()), the 1px card border and the button's
+// horizontal padding from the QSS rule for #pjMessageBoxButton. They only
+// need to be *conservative*: under-estimating the budget
 // wraps a hair early but never lets a line get clipped, so small drift in the
 // QSS values is harmless.
-constexpr int kCardContentMargin = 24;
+constexpr auto kCardContentMargin = theme::Space::Section;
 constexpr int kCardBorder = 1;
-constexpr int kButtonHPadding = 12;
+constexpr auto kButtonHPadding = theme::Space::Section;
 constexpr int kWrapSlack = 4;  // extra safety against font-metric rounding
 
 // Greedy word-wrap: insert '\n' so no single rendered line exceeds max_width.
@@ -109,8 +111,10 @@ MessageBox::MessageBox(QWidget* parent) : QDialog(parent) {
   // Outer layout: just hosts the card; no margins so the card fills the
   // window flush and its rounded corners are the dialog's only shape.
   auto* outer = new QVBoxLayout(this);
-  outer->setContentsMargins(0, 0, 0, 0);
-  outer->setSpacing(0);
+  outer->setContentsMargins(
+      theme::space(theme::Space::None), theme::space(theme::Space::None), theme::space(theme::Space::None),
+      theme::space(theme::Space::None));
+  outer->setSpacing(theme::space(theme::Space::None));
 
   auto* card = new QFrame(this);
   card->setObjectName(u"pjMessageBoxCard"_s);
@@ -118,12 +122,14 @@ MessageBox::MessageBox(QWidget* parent) : QDialog(parent) {
 
   // Inner layout on the card. Uniform spacing throughout so every gap reads
   // the same: title→body, body→checkbox, body→buttons (when no checkbox),
-  // checkbox→buttons — every adjacent visible pair sits 14 px apart.
-  // Earlier versions added a 6 px sub-section spacer above the buttons,
+  // checkbox→buttons — every adjacent visible pair uses Section spacing.
+  // Earlier versions added a compact sub-section spacer above the buttons,
   // which made the spacing inconsistent when the checkbox was hidden.
   auto* root = new QVBoxLayout(card);
-  root->setContentsMargins(24, 24, 24, 24);
-  root->setSpacing(14);
+  root->setContentsMargins(
+      theme::space(kCardContentMargin), theme::space(kCardContentMargin), theme::space(kCardContentMargin),
+      theme::space(kCardContentMargin));
+  root->setSpacing(theme::space(theme::Space::Section));
 
   title_label_ = new QLabel(card);
   title_label_->setObjectName(u"pjMessageBoxTitle"_s);
@@ -149,13 +155,15 @@ MessageBox::MessageBox(QWidget* parent) : QDialog(parent) {
   root->addWidget(dont_show_again_);
 
   auto* btn_holder = new QVBoxLayout;
-  btn_holder->setContentsMargins(0, 0, 0, 0);
-  // Fixed 6 px gap between stacked buttons — tighter than the 14 px body→button
+  btn_holder->setContentsMargins(
+      theme::space(theme::Space::None), theme::space(theme::Space::None), theme::space(theme::Space::None),
+      theme::space(theme::Space::None));
+  // Comfortable gap between stacked buttons — tighter than the Section body→button
   // gap so the buttons read as one grouped affordance. This value must render
   // identically in every dialog; showEvent() resizes the dialog to the exact
   // height its content needs so the layout can never compress this spacing
   // (see the comment there).
-  btn_holder->setSpacing(6);
+  btn_holder->setSpacing(theme::space(theme::Space::Comfortable));
   button_column_ = btn_holder;
   root->addLayout(btn_holder);
 }
@@ -292,7 +300,8 @@ void MessageBox::showEvent(QShowEvent* event) {
 void MessageBox::rewrapButtonLabels() {
   // Widest a single button line may be before the dialog would exceed its
   // maximumWidth(): the cap minus the card margins, border and button padding.
-  const int max_line = maximumWidth() - 2 * kCardContentMargin - 2 * kCardBorder - 2 * kButtonHPadding - kWrapSlack;
+  const int max_line = maximumWidth() - 2 * theme::space(kCardContentMargin) - 2 * kCardBorder -
+                       2 * theme::space(kButtonHPadding) - kWrapSlack;
   for (int i = 0; i < buttons_.size(); ++i) {
     // Force the button's own polish so its font reflects the QSS font-size
     // before we measure: the dialog's Polish fires before its children's, so

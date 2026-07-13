@@ -24,8 +24,8 @@
 #include <functional>
 #include <utility>
 
+#include "pj_widgets/FrameworkTokens.h"
 #include "pj_widgets/SvgUtil.h"
-#include "pj_widgets/ThemeColors.h"
 using namespace Qt::StringLiterals;
 
 namespace PJ {
@@ -137,8 +137,9 @@ class CurveTreeItemDelegate : public QStyledItemDelegate {
       // "subscribed because forced". Name column only: the mark lives on topic
       // rows, which have no Value text, so the extra lookup is skipped on the
       // (paint-hot) Value cells.
-      opt.palette.setColor(QPalette::Text, theme::kBlue);
-      opt.palette.setColor(QPalette::HighlightedText, theme::kBlue);
+      const QColor accent = theme::gradient(theme::Gradient::Brand, theme::Theme::Dark).first;
+      opt.palette.setColor(QPalette::Text, accent);
+      opt.palette.setColor(QPalette::HighlightedText, accent);
     }
 
     // A topic row's builtin-family badge (image.svg / cube.svg, set as the

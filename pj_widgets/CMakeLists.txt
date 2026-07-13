@@ -22,6 +22,7 @@ add_library(pj_widgets STATIC
     src/IntScrubber.cpp
     src/LayerListView.cpp
     src/MessageBox.cpp
+    src/Search.cpp
     src/ProgressBar.cpp
     src/ProgressDialog.cpp
     src/RangeSlider.cpp
@@ -59,6 +60,7 @@ add_library(pj_widgets STATIC
     include/pj_widgets/IntScrubber.h
     include/pj_widgets/LayerListView.h
     include/pj_widgets/MessageBox.h
+    include/pj_widgets/Search.h
     include/pj_widgets/ProgressBar.h
     include/pj_widgets/ProgressDialog.h
     include/pj_widgets/RealSlider.h

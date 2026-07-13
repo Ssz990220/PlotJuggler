@@ -20,6 +20,7 @@
 
 #include "pj_widgets/ComboBox.h"
 #include "pj_widgets/DoubleScrubber.h"
+#include "pj_widgets/FrameworkTokens.h"
 #include "qss_preprocessor.h"
 using namespace Qt::StringLiterals;
 
@@ -53,8 +54,10 @@ QComboBox* makeCombo(const QString& variant, QWidget* parent) {
 QWidget* makeRow(const QString& label, const QString& variant, QWidget* parent) {
   auto* row = new QWidget(parent);
   auto* lay = new QFormLayout(row);
-  lay->setContentsMargins(0, 0, 0, 0);
-  lay->setHorizontalSpacing(12);
+  lay->setContentsMargins(
+      PJ::theme::space(PJ::theme::Space::None), PJ::theme::space(PJ::theme::Space::None),
+      PJ::theme::space(PJ::theme::Space::None), PJ::theme::space(PJ::theme::Space::None));
+  lay->setHorizontalSpacing(PJ::theme::space(PJ::theme::Space::Section));
   auto* lbl = new QLabel(label, row);
   lay->addRow(lbl, makeCombo(variant, row));
   return row;
@@ -81,8 +84,10 @@ int main(int argc, char** argv) {
   win.setWindowTitle(u"PJ QComboBox demo"_s);
   auto* central = new QWidget;
   auto* lay = new QVBoxLayout(central);
-  lay->setContentsMargins(20, 20, 20, 20);
-  lay->setSpacing(12);
+  lay->setContentsMargins(
+      PJ::theme::space(PJ::theme::Space::Section), PJ::theme::space(PJ::theme::Space::Section),
+      PJ::theme::space(PJ::theme::Space::Section), PJ::theme::space(PJ::theme::Space::Section));
+  lay->setSpacing(PJ::theme::space(PJ::theme::Space::Section));
 
   lay->addWidget(makeRow(u"Basic"_s, u"basic"_s, central));
   lay->addWidget(makeRow(u"Long content"_s, u"long"_s, central));
@@ -95,8 +100,10 @@ int main(int argc, char** argv) {
   {
     auto* ref_row = new QWidget(central);
     auto* ref_lay = new QFormLayout(ref_row);
-    ref_lay->setContentsMargins(0, 0, 0, 0);
-    ref_lay->setHorizontalSpacing(12);
+    ref_lay->setContentsMargins(
+        PJ::theme::space(PJ::theme::Space::None), PJ::theme::space(PJ::theme::Space::None),
+        PJ::theme::space(PJ::theme::Space::None), PJ::theme::space(PJ::theme::Space::None));
+    ref_lay->setHorizontalSpacing(PJ::theme::space(PJ::theme::Space::Section));
     auto* scrubber = new PJ::DoubleScrubber(ref_row);
     scrubber->setRange(0.0, 100.0);
     scrubber->setValue(42.0);

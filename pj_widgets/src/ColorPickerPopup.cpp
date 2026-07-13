@@ -13,6 +13,8 @@
 #include <QVBoxLayout>
 using namespace Qt::StringLiterals;
 
+#include "pj_widgets/FrameworkTokens.h"
+
 namespace PJ {
 
 namespace {
@@ -20,7 +22,7 @@ namespace {
 constexpr int kHueSliderHeight = 18;
 constexpr int kSquareSide = 220;
 constexpr int kCursorRadius = 6;
-constexpr int kPopupMargin = 8;
+constexpr auto kPopupMargin = theme::Space::Comfortable;
 
 }  // namespace
 
@@ -62,10 +64,10 @@ void HueSlider::paintEvent(QPaintEvent* /*event*/) {
   // White core + black flanks so the handle stays visible against any rainbow
   // segment (red/cyan would otherwise camouflage a single-color line).
   const int x = qBound(0, static_cast<int>(qreal(hue_) / 359.0 * (w - 1)), w - 1);
-  p.setPen(QPen(Qt::black, 1));
+  p.setPen(QPen(theme::contrastInk(theme::Contrast::Dark), 1));
   p.drawLine(x - 2, 0, x - 2, h - 1);
   p.drawLine(x + 2, 0, x + 2, h - 1);
-  p.setPen(QPen(Qt::white, 2));
+  p.setPen(QPen(theme::contrastInk(theme::Contrast::Light), 2));
   p.drawLine(x, 0, x, h - 1);
 }
 
@@ -153,9 +155,9 @@ void SVSquare::paintEvent(QPaintEvent* /*event*/) {
   const qreal cx = s_ * (w - 1);
   const qreal cy = (1.0 - v_) * (h - 1);
   p.setBrush(Qt::NoBrush);
-  p.setPen(QPen(Qt::black, 1));
+  p.setPen(QPen(theme::contrastInk(theme::Contrast::Dark), 1));
   p.drawEllipse(QPointF(cx, cy), kCursorRadius + 1, kCursorRadius + 1);
-  p.setPen(QPen(Qt::white, 2));
+  p.setPen(QPen(theme::contrastInk(theme::Contrast::Light), 2));
   p.drawEllipse(QPointF(cx, cy), kCursorRadius, kCursorRadius);
 }
 
@@ -203,8 +205,9 @@ ColorPickerPopup::ColorPickerPopup(QWidget* parent) : QDialog(parent) {
   hex_edit_->setValidator(new QRegularExpressionValidator(QRegularExpression(u"#?[0-9a-fA-F]{0,6}"_s), hex_edit_));
 
   auto* layout = new QVBoxLayout(this);
-  layout->setContentsMargins(kPopupMargin, kPopupMargin, kPopupMargin, kPopupMargin);
-  layout->setSpacing(kPopupMargin);
+  layout->setContentsMargins(
+      theme::space(kPopupMargin), theme::space(kPopupMargin), theme::space(kPopupMargin), theme::space(kPopupMargin));
+  layout->setSpacing(theme::space(kPopupMargin));
   layout->addWidget(hue_slider_);
   layout->addWidget(sv_square_, 1);
   layout->addWidget(hex_edit_);

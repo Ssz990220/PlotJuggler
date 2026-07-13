@@ -22,8 +22,9 @@
 #include <utility>
 
 #include "pj_widgets/ElidingLabel.h"
+#include "pj_widgets/FrameworkTokens.h"
+#include "pj_widgets/Scrollbar.h"
 #include "pj_widgets/SvgUtil.h"
-#include "pj_widgets/ThemeColors.h"
 
 using namespace Qt::StringLiterals;
 
@@ -118,17 +119,14 @@ class LayerRowWidget : public QWidget {
     }
     is_warning_ = is_warning;
     warning_reason_ = reason;
-    if (is_warning_) {
-      name_->setStyleSheet(u"color: %1;"_s.arg(theme::kAccentError.name()));
-    } else {
-      name_->setStyleSheet(QString{});
-    }
+    applyWarningStyle();
     name_->setToolTip(effectiveToolTip());
   }
 
   void setTheme(const QString& theme) {
     current_theme_ = theme;
     refreshIcons();
+    applyWarningStyle();
   }
 
   void setRowHeight(int row_height) {
@@ -182,6 +180,22 @@ class LayerRowWidget : public QWidget {
   }
 
  private:
+  [[nodiscard]] theme::Theme frameworkTheme() const {
+    return theme::themeFor(current_theme_.contains("light"));
+  }
+
+  void applyWarningStyle() {
+    if (is_warning_) {
+      // The semantic warning STATUS hue, not an interaction fill: the Highlight
+      // family's pale nominal fill is a background tone with near-zero contrast
+      // as text on the light data backdrop.
+      const QColor warning = theme::status(theme::Status::Warning, frameworkTheme());
+      name_->setStyleSheet(QStringLiteral("color: %1;").arg(warning.name()));
+    } else {
+      name_->setStyleSheet(QString{});
+    }
+  }
+
   void refreshIcons() {
     const QSize sz(row_height_, row_height_);
     eye_->setIconSize(sz);
@@ -267,17 +281,19 @@ void detachItemWidgets(QListWidget* list) {
 
 LayerListView::LayerListView(QWidget* parent) : QWidget(parent), current_theme_(currentTheme()) {
   auto* root = new QVBoxLayout(this);
-  root->setContentsMargins(0, 0, 0, 0);
-  root->setSpacing(0);
+  root->setContentsMargins(
+      theme::space(theme::Space::None), theme::space(theme::Space::None), theme::space(theme::Space::None),
+      theme::space(theme::Space::None));
+  root->setSpacing(theme::space(theme::Space::None));
 
   auto* list = new LayerListWidget(this);
   list_ = list;
   list_->setUniformItemSizes(true);
   list_->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
   list_->setResizeMode(QListView::Adjust);
-  list_->setSpacing(0);
+  list_->setSpacing(theme::space(theme::Space::None));
   list_->setMinimumWidth(0);
-  list_->setStyleSheet(u"QListWidget::item { padding: 0px; }"_s);
+  list_->setStyleSheet(QStringLiteral("QListWidget::item { padding: %1px; }").arg(theme::space(theme::Space::None)));
   list_->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Maximum);
   list_->setFixedHeight(kDefaultRowHeight * 4 + 4);
   root->addWidget(list_);
@@ -285,6 +301,9 @@ LayerListView::LayerListView(QWidget* parent) : QWidget(parent), current_theme_(
 
   connect(list_, &QListWidget::itemSelectionChanged, this, &LayerListView::selectionChanged);
   connect(list, &LayerListWidget::rowMoved, this, &LayerListView::onRowMoved, Qt::QueuedConnection);
+
+  // The layer list scrolls with the canonical overlay pill, not a native bar.
+  attachPillScrollbars(this);
 }
 
 void LayerListView::setRows(const std::vector<LayerRow>& rows) {

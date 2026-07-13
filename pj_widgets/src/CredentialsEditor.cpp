@@ -15,6 +15,8 @@
 #include <QToolButton>
 using namespace Qt::StringLiterals;
 
+#include "pj_widgets/FrameworkTokens.h"
+
 namespace PJ {
 
 bool CredentialsEditor::isApiKeyValid(const QString& key, const QString& pattern) {
@@ -46,7 +48,9 @@ void CredentialsEditor::applyTick(QLabel* tick, const QString& text, bool ok) {
     return;
   }
   tick->setText(ok ? QString::fromUtf8("✓") : QString::fromUtf8("✗"));
-  tick->setStyleSheet(ok ? u"color: green; font-weight: 600;"_s : u"color: red; font-weight: 600;"_s);
+  const auto fw_theme = theme::appTheme();
+  const QColor tick_color = theme::status(ok ? theme::Status::Success : theme::Status::Error, fw_theme);
+  tick->setStyleSheet(QStringLiteral("color: %1; font-weight: 600;").arg(tick_color.name(QColor::HexArgb)));
 }
 
 CredentialsEditor::CredentialsEditor(QWidget* parent) : QWidget(parent) {
@@ -59,7 +63,9 @@ CredentialsEditor::CredentialsEditor(QWidget* parent) : QWidget(parent) {
   cert_tick_->setObjectName(u"certTick"_s);
   auto* browse = new QPushButton(tr("Browse..."), this);
   auto* cert_row = new QHBoxLayout();
-  cert_row->setContentsMargins(0, 0, 0, 0);
+  cert_row->setContentsMargins(
+      theme::space(theme::Space::None), theme::space(theme::Space::None), theme::space(theme::Space::None),
+      theme::space(theme::Space::None));
   cert_row->addWidget(cert_path_);
   cert_row->addWidget(cert_tick_);
   cert_row->addWidget(browse);
@@ -76,7 +82,9 @@ CredentialsEditor::CredentialsEditor(QWidget* parent) : QWidget(parent) {
   reveal->setCheckable(true);
   reveal->setText(tr("Show"));
   auto* key_row = new QHBoxLayout();
-  key_row->setContentsMargins(0, 0, 0, 0);
+  key_row->setContentsMargins(
+      theme::space(theme::Space::None), theme::space(theme::Space::None), theme::space(theme::Space::None),
+      theme::space(theme::Space::None));
   key_row->addWidget(api_key_);
   key_row->addWidget(api_key_tick_);
   key_row->addWidget(reveal);

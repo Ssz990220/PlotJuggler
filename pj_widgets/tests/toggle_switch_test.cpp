@@ -7,6 +7,7 @@
 #include <QSignalSpy>
 #include <QTest>
 
+#include "pj_widgets/FrameworkTokens.h"
 #include "pj_widgets/ToggleSwitch.h"
 using namespace Qt::StringLiterals;
 
@@ -70,9 +71,9 @@ TEST(ToggleSwitchTest, LabelSizeHintReservesSlackBeyondText) {
   PJ::ToggleSwitch sw;
   sw.setText(u"Override with the message header timestamp (if present)"_s);
   const int advance = sw.fontMetrics().horizontalAdvance(sw.text());
-  // size hint = switch(34) + spacing(6) + advance + margin; assert a real margin
-  // remains for the label after the switch + spacing are accounted for.
-  EXPECT_GT(sw.sizeHint().width() - advance, 34 + 6)
+  // Assert a real margin remains after the switch and canonical spacing
+  // allowance are accounted for.
+  EXPECT_GT(sw.sizeHint().width() - advance, 34 + PJ::theme::space(PJ::theme::Space::Comfortable))
       << "the label must get more than just the switch+spacing width, so the text never elides at the size hint";
 }
 

@@ -13,10 +13,13 @@
 #include <QIcon>
 #include <QMenu>
 #include <QMimeData>
+#include <QPaintEvent>
+#include <QPainter>
 #include <QSize>
 #include <QToolButton>
 
 #include "pj_widgets/CurveTreeView.h"
+#include "pj_widgets/FrameworkTokens.h"
 #include "pj_widgets/SvgUtil.h"
 using namespace Qt::StringLiterals;
 
@@ -86,8 +89,10 @@ VisualizationPlaceholderWidget::VisualizationPlaceholderWidget(QWidget* parent) 
   connect(action_paste_, &QAction::triggered, this, [this]() { emit pasteRequested(); });
 
   auto* layout = new QHBoxLayout(this);
-  layout->setContentsMargins(0, 0, 0, 0);
-  layout->setSpacing(10);
+  layout->setContentsMargins(
+      theme::space(theme::Space::None), theme::space(theme::Space::None), theme::space(theme::Space::None),
+      theme::space(theme::Space::None));
+  layout->setSpacing(theme::space(theme::Space::Comfortable));
   layout->addStretch(1);
   const struct {
     const char* path;
@@ -125,6 +130,12 @@ void VisualizationPlaceholderWidget::setPasteActionEnabled(bool enabled) {
 void VisualizationPlaceholderWidget::onStylesheetChanged(const QString& theme) {
   updateSplitActionIcons(theme);
 
+  // Cache the Data Backdrop fill for the active theme and repaint. Qualified
+  // PJ::theme:: to see past the `theme` parameter.
+  const bool light = theme.contains(QStringLiteral("light"));
+  backdrop_color_ = PJ::theme::surface(PJ::theme::Surface::DataBackdrop, PJ::theme::themeFor(light));
+  update();
+
   // RenderSvgPixmap (not LoadSvg) so the central icons rasterize at
   // exactly their display size (with DPR baked in) and stay crisp. The
   // shared LoadSvg cache always renders to 64x64, which is downsampled
@@ -134,6 +145,14 @@ void VisualizationPlaceholderWidget::onStylesheetChanged(const QString& theme) {
     const QPixmap pixmap = renderSvgPixmap(entry.icon_path, theme, icon_size, devicePixelRatioF());
     entry.button->setIcon(QIcon(pixmap));
   }
+}
+
+void VisualizationPlaceholderWidget::paintEvent(QPaintEvent* event) {
+  if (backdrop_color_.isValid()) {
+    QPainter painter(this);
+    painter.fillRect(event->rect(), backdrop_color_);
+  }
+  QWidget::paintEvent(event);
 }
 
 void VisualizationPlaceholderWidget::contextMenuEvent(QContextMenuEvent* event) {

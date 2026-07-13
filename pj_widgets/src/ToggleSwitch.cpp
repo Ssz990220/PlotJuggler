@@ -5,9 +5,13 @@
 
 #include <QEasingCurve>
 #include <QEvent>
+#include <QGuiApplication>
 #include <QKeyEvent>
 #include <QMouseEvent>
 #include <QPainter>
+#include <QPalette>
+
+#include "pj_widgets/FrameworkTokens.h"
 
 namespace PJ {
 
@@ -23,6 +27,18 @@ constexpr int kLabelSpacing = 6;  // gap between the switch pill and its label
 // difference between the size-hint metrics and the actual paint — or a layout
 // that shaves a pixel — elides the label. A few px of slack absorbs that.
 constexpr int kLabelMargin = 8;
+// Gap kept between a right-anchored switch (Left-side label) and the widget's
+// right edge, so a row-filling toggle sits a touch off the panel edge rather
+// than jammed against it. Buttongroups use the same inset to line up on the right.
+constexpr int kRightInset = 8;
+
+theme::Theme frameworkTheme() {
+  // Derive the theme from the app-global palette, NOT the widget's own palette:
+  // under the app stylesheet, QStyleSheetStyle clobbers per-widget palettes, so
+  // widget->palette() can report the wrong theme (e.g. white label in light mode).
+  const QColor window = QGuiApplication::palette().color(QPalette::Window);
+  return theme::themeFor(window.lightness() >= 128);
+}
 }  // namespace
 
 ToggleSwitch::ToggleSwitch(QWidget* parent)
@@ -115,7 +131,8 @@ QSize ToggleSwitch::sizeHint() const {
   // Switch pill keeps the default 34x18 proportions; the label adds its
   // advance width plus a gap. Height grows only if the font needs more.
   const int height = std::max(kDefaultHeight, fontMetrics().height());
-  const int width = kDefaultWidth + kLabelSpacing + fontMetrics().horizontalAdvance(text_) + kLabelMargin;
+  const int inset = (label_side_ == LabelSide::Left) ? kRightInset : 0;
+  const int width = kDefaultWidth + kLabelSpacing + fontMetrics().horizontalAdvance(text_) + kLabelMargin + inset;
   return {width, height};
 }
 
@@ -132,9 +149,10 @@ QRect ToggleSwitch::trackRect() const {
   if (text_.isEmpty()) {
     return rect();
   }
-  // Fixed-width pill flush to the edge opposite the label; full height.
+  // Fixed-width pill near the edge opposite the label; full height. A Left-side
+  // label anchors the pill to the right, kept kRightInset off the edge.
   const int track_w = kDefaultWidth;
-  const int x = (label_side_ == LabelSide::Left) ? width() - track_w : 0;
+  const int x = (label_side_ == LabelSide::Left) ? width() - track_w - kRightInset : 0;
   return {x, 0, track_w, height()};
 }
 
@@ -183,8 +201,11 @@ void ToggleSwitch::paintEvent(QPaintEvent* /*event*/) {
   // Track: pill (corner radius = half the height). Fill interpolates
   // from the "off" tone to the "on" tone as the thumb moves so the
   // color transition tracks the animation smoothly.
-  const QColor off_track(120, 120, 120);
-  const QColor on_track(0x11, 0x77, 0xFF);  // blue
+  const auto fw_theme = frameworkTheme();
+  const QColor off_track = theme::interaction(theme::Variant::Neutral, theme::State::Nominal, fw_theme);
+  // Darker accent (checked) for the "on" track, so the filled state reads clearly
+  // as checked rather than a resting nominal fill.
+  const QColor on_track = theme::interaction(theme::Variant::Accent, theme::State::Checked, fw_theme);
   const auto lerp = [](int a, int b, qreal t) { return static_cast<int>(a + ((b - a) * t)); };
   const QColor track_color(
       lerp(off_track.red(), on_track.red(), thumb_position_),
@@ -197,13 +218,18 @@ void ToggleSwitch::paintEvent(QPaintEvent* /*event*/) {
   painter.setBrush(track_color);
   painter.drawRoundedRect(track, radius, radius);
 
-  // Optional inline label, in the palette text colour (faded when disabled),
-  // aligned toward the switch and vertically centred.
+  // Optional inline label, faded when disabled, aligned toward the switch and
+  // vertically centred.
   if (!text_.isEmpty()) {
-    const QPalette::ColorGroup group = isEnabled() ? QPalette::Active : QPalette::Disabled;
-    painter.setPen(palette().color(group, QPalette::WindowText));
+    painter.setPen(
+        isEnabled() ? theme::text(fw_theme)
+                    : theme::onSurface(theme::Surface::Backdrop, theme::Emphasis::Disabled, fw_theme));
     const QRect lr = labelRect();
-    const int align = (label_side_ == LabelSide::Left ? Qt::AlignRight : Qt::AlignLeft) | Qt::AlignVCenter;
+    // Always left-align the text within its rect so the label's left edge sits at
+    // the widget's leading edge, flush with sibling form labels. (Right-aligning a
+    // Left-side label pushes the text right by the sizeHint's anti-elide slack,
+    // indenting adapted-checkbox rows past the other labels in a form.)
+    const int align = Qt::AlignLeft | Qt::AlignVCenter;
     const QString elided = fontMetrics().elidedText(text_, Qt::ElideRight, lr.width());
     painter.drawText(lr, align, elided);
   }
@@ -214,10 +240,11 @@ void ToggleSwitch::paintEvent(QPaintEvent* /*event*/) {
   paintLeftSlot(painter, leftSlotRect(), thumb_position_);
   paintRightSlot(painter, rightSlotRect(), thumb_position_);
 
-  // Thumb: white circle with a faint outer outline for definition.
+  // Thumb: raised circle with a faint outer outline for definition.
   const QRect thumb = thumbRect();
-  painter.setPen(QPen(QColor(0, 0, 0, 40), 1));
-  painter.setBrush(Qt::white);
+  painter.setPen(
+      QPen(theme::surface(PJ::theme::Surface::Separation, fw_theme), theme::stroke(theme::Stroke::Hairline, fw_theme)));
+  painter.setBrush(theme::interaction(theme::Variant::Neutral, theme::State::Nominal, fw_theme));
   painter.drawEllipse(thumb);
 }
 

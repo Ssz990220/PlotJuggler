@@ -11,6 +11,7 @@
 #include <QPushButton>
 #include <QVBoxLayout>
 
+#include "pj_widgets/FrameworkTokens.h"
 #include "pj_widgets/SvgUtil.h"
 
 namespace PJ {
@@ -52,8 +53,10 @@ ProgressDialog::ProgressDialog(QWidget* parent) : Dialog(parent) {
 
   // contentLayout() is the base chrome's vertical layout under the titlebar.
   auto* layout = qobject_cast<QVBoxLayout*>(contentLayout());
-  layout->setContentsMargins(12, 12, 12, 12);
-  layout->setSpacing(8);
+  layout->setContentsMargins(
+      theme::space(theme::Space::Section), theme::space(theme::Space::Section), theme::space(theme::Space::Section),
+      theme::space(theme::Space::Section));
+  layout->setSpacing(theme::space(theme::Space::Comfortable));
   layout->addWidget(message_);
   layout->addWidget(bar_);
   layout->addLayout(button_row);

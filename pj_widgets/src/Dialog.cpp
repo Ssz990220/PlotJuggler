@@ -7,10 +7,13 @@
 #include <QEvent>
 #include <QLayout>
 #include <QMouseEvent>
+#include <QShowEvent>
+#include <QSize>
 #include <QToolButton>
 #include <QVBoxLayout>
 #include <QWindow>
 
+#include "pj_widgets/Scrollbar.h"
 #include "pj_widgets/SvgUtil.h"
 #include "ui_Dialog.h"
 
@@ -53,6 +56,9 @@ Dialog::Dialog(QWidget* parent) : QDialog(parent), ui_(new Ui::Dialog) {
   setAttribute(Qt::WA_StyledBackground, true);
 
   applyIcons();
+  // Canonical chrome sizing from the shared defaults (matches the main window).
+  // A host with live metrics re-applies via setChromeMetrics().
+  setChromeMetrics(ChromeMetrics{});
   connect(ui_->buttonClose, &QToolButton::clicked, this, &QDialog::reject);
 
   // Application-wide event filter so we can swap the cursor and start
@@ -63,6 +69,23 @@ Dialog::Dialog(QWidget* parent) : QDialog(parent), ui_(new Ui::Dialog) {
 
 Dialog::~Dialog() {
   delete ui_;
+}
+
+void Dialog::setChromeMetrics(const ChromeMetrics& metrics) {
+  const int bar_height = metrics.titleBarHeight();
+  ui_->dialogTitleBar->setMinimumHeight(bar_height);
+  ui_->dialogTitleBar->setMaximumHeight(bar_height);
+  // Close button + icon track the same button extent / icon size the main-window
+  // chrome buttons use, so the whole chrome reads identically.
+  const int button_extent = metrics.icon_size + metrics.icon_padding;
+  ui_->buttonClose->setMinimumSize(button_extent, button_extent);
+  ui_->buttonClose->setMaximumSize(button_extent, button_extent);
+  ui_->buttonClose->setIconSize(QSize(metrics.icon_size, metrics.icon_size));
+  if (auto* layout = ui_->titleBarLayout) {
+    layout->setContentsMargins(
+        metrics.layout_padding, metrics.layout_padding, metrics.layout_padding, metrics.layout_padding);
+    layout->setSpacing(metrics.layout_spacing);
+  }
 }
 
 void Dialog::setDialogTitle(const QString& title) {
@@ -85,6 +108,14 @@ QWidget* Dialog::contentWidget() const {
 
 QLayout* Dialog::contentLayout() const {
   return ui_->dialogContent->layout();
+}
+
+void Dialog::showEvent(QShowEvent* event) {
+  QDialog::showEvent(event);
+  if (!scroll_pills_attached_) {
+    scroll_pills_attached_ = true;
+    attachPillScrollbars(contentWidget());
+  }
 }
 
 void Dialog::applyIcons() {

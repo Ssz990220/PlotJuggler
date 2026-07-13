@@ -1,7 +1,10 @@
 // SPDX-License-Identifier: MPL-2.0
 #include "pj_widgets/Scrollbar.h"
 
+#include <QAbstractItemView>
 #include <QAbstractScrollArea>
+#include <QChildEvent>
+#include <QComboBox>
 #include <QCursor>
 #include <QEvent>
 #include <QGraphicsOpacityEffect>
@@ -14,6 +17,8 @@
 #include <QWheelEvent>
 #include <algorithm>
 #include <cmath>
+
+#include "pj_widgets/FrameworkTokens.h"
 
 namespace PJ::scrollbar_detail {
 
@@ -43,10 +48,9 @@ long valueForDrag(long start_value, double delta_px, double track_len_px, long t
 }
 
 QColor defaultAccent(const QColor& window_color) {
-  // The app sets QPalette::Window per theme but not QPalette::Highlight, so we
-  // derive the theme from the window lightness rather than trusting the (system)
-  // highlight. Dark chrome -> pale grey; light chrome -> info blue.
-  return window_color.lightness() < 128 ? kPillAccentDark : kPillAccentLight;
+  // The app sets QPalette::Window per theme but not QPalette::Highlight, so
+  // derive the theme from window lightness and read the framework scroll handle.
+  return theme::surface(theme::Surface::ScrollHandle, theme::themeFor(window_color.lightness() >= 128));
 }
 
 }  // namespace PJ::scrollbar_detail
@@ -70,6 +74,10 @@ Scrollbar::Scrollbar(Qt::Orientation orientation, QWidget* parent) : QWidget(par
 void Scrollbar::attach(QAbstractScrollArea* area) {
   area_ = area;
   viewport_ = area->viewport();
+  // Stamp the marker EVERY attach path sets, so a host that attaches its own
+  // pills directly (e.g. the Timeline) is skipped by the bulk adaptScrollAreas
+  // helper instead of receiving a second, unmanaged pair.
+  area->setProperty("pjScrollbarAttached", true);
 
   // Reparent so this widget lives inside the scroll area's coordinate space.
   setParent(area);
@@ -121,6 +129,16 @@ void Scrollbar::attach(QAbstractScrollArea* area) {
   // so attach() must do it to be self-sufficient.
   area->viewport()->setMouseTracking(true);
   area->viewport()->installEventFilter(this);
+
+  // When child widgets fully cover the viewport (e.g. a QScrollArea of cards),
+  // hover MouseMoves are delivered to those children, not the viewport, so the
+  // viewport filter above never sees them and the pill would only reveal on
+  // scroll/click. Observe the covering subtree too (future cards via ChildAdded).
+  for (QObject* child : area->viewport()->children()) {
+    if (child->isWidgetType()) {
+      installHoverObserver(static_cast<QWidget*>(child));
+    }
+  }
 
   // Make visible and ensure we paint on top of other children.
   // Opacity starts at 0, so "visible" means "ready to be faded in on hover".
@@ -271,9 +289,126 @@ bool Scrollbar::pointInStrip(const QPoint& viewport_pos) const {
   }
 }
 
+void Scrollbar::applyHoverAt(const QPoint& viewport_pos) {
+  // Entering the strip shows the pill; leaving it hides — UNLESS a
+  // scroll/interaction reveal is still holding it (a hover-out, or the synthetic
+  // MouseMove Qt delivers as scrolled content slides under a stationary cursor,
+  // must not cancel that reveal; the hold timer owns the eventual hide).
+  if (pointInStrip(viewport_pos)) {
+    setShown(true);
+  } else if (!scrollRevealActive()) {
+    setShown(false);
+  }
+}
+
+void Scrollbar::installHoverObserver(QWidget* widget) {
+  if (widget == nullptr) {
+    return;
+  }
+  widget->setMouseTracking(true);
+  widget->installEventFilter(this);
+  for (QObject* child : widget->children()) {
+    if (child->isWidgetType()) {
+      installHoverObserver(static_cast<QWidget*>(child));
+    }
+  }
+}
+
 bool Scrollbar::eventFilter(QObject* watched, QEvent* event) {
-  if (area_ == nullptr || watched != area_->viewport()) {
+  if (area_ == nullptr) {
     return false;
+  }
+  QWidget* viewport = area_->viewport();
+
+  // A newly-added descendant anywhere in the observed subtree (a fresh card, or a
+  // content widget set on the scroll area) must be observed for hover too, so the
+  // pill keeps revealing as the content grows.
+  if (event->type() == QEvent::ChildAdded) {
+    auto* ce = static_cast<QChildEvent*>(event);
+    if (ce->child() != nullptr && ce->child()->isWidgetType()) {
+      installHoverObserver(qobject_cast<QWidget*>(ce->child()));
+    }
+    return false;
+  }
+
+  // Events from a covering child (see installHoverObserver). Hover MouseMoves
+  // are mapped into viewport space to drive show/hide without consuming. The
+  // one interaction we DO own from a child is a drag that starts on the
+  // VISIBLE pill handle: without it, a child widget that overlaps the strip
+  // (e.g. a list row's trailing action button) receives the press instead of
+  // the pill the user is looking at — grabbing the handle could activate the
+  // child. Presses anywhere else on the child (including the empty strip —
+  // never click-to-scroll from a child) are left untouched.
+  if (watched != viewport) {
+    auto* w = qobject_cast<QWidget*>(watched);
+    if (w == nullptr) {
+      return false;
+    }
+    const auto mapped = [&](QMouseEvent* me) {
+      return viewport->mapFromGlobal(w->mapToGlobal(me->position().toPoint()));
+    };
+    switch (event->type()) {
+      case QEvent::MouseMove: {
+        auto* me = static_cast<QMouseEvent*>(event);
+        const QPoint pos = mapped(me);
+        if (dragging_) {
+          if (!interactive_) {
+            dragging_ = false;
+          } else {
+            const double axis_px = (orientation_ == Qt::Horizontal) ? pos.x() : pos.y();
+            const double track_len = (orientation_ == Qt::Horizontal) ? static_cast<double>(viewport->width())
+                                                                      : static_cast<double>(viewport->height());
+            const long total = (bar()->maximum() - bar()->minimum()) + bar()->pageStep();
+            bar()->setValue(
+                static_cast<int>(scrollbar_detail::valueForDrag(
+                    drag_start_value_, axis_px - drag_start_axis_px_, track_len, total)));
+            return true;
+          }
+        }
+        applyHoverAt(pos);
+        return false;
+      }
+      case QEvent::MouseButtonPress: {
+        auto* me = static_cast<QMouseEvent*>(event);
+        if (me->button() != Qt::LeftButton || !interactive_ || !shown_) {
+          return false;
+        }
+        const QPoint pos = mapped(me);
+        if (!pointInStrip(pos) || bar()->maximum() <= bar()->minimum()) {
+          return false;
+        }
+        const double axis_px = (orientation_ == Qt::Horizontal) ? pos.x() : pos.y();
+        const bool on_handle = (axis_px >= handle_pos_) && (axis_px <= handle_pos_ + handle_len_);
+        if (!on_handle) {
+          return false;
+        }
+        drag_origin_value_ = bar()->value();
+        drag_start_value_ = bar()->value();
+        drag_start_axis_px_ = axis_px;
+        dragging_ = true;
+        setShown(true);
+        return true;  // consume: the press belongs to the pill, not the child
+      }
+      case QEvent::MouseButtonRelease: {
+        auto* me = static_cast<QMouseEvent*>(event);
+        if (!dragging_ || me->button() != Qt::LeftButton) {
+          return false;
+        }
+        const bool changed = bar()->value() != drag_origin_value_;
+        dragging_ = false;
+        if (pointInStrip(mapped(me))) {
+          setShown(true);
+        } else {
+          revealTemporarily();
+        }
+        if (changed && interactive_) {
+          emit scrollChangeCommitted();
+        }
+        return true;  // consume: paired with the press we consumed
+      }
+      default:
+        return false;
+    }
   }
 
   switch (event->type()) {
@@ -348,16 +483,8 @@ bool Scrollbar::eventFilter(QObject* watched, QEvent* event) {
         }
       }
 
-      // Not dragging (or drag just cleared): normal hover show/hide. Entering the
-      // strip always shows. Leaving it hides — UNLESS a scroll/interaction reveal
-      // is still holding the pill: a hover-out (or the synthetic MouseMove Qt
-      // delivers as scrolled content slides under a stationary cursor) must not
-      // cancel that reveal; the hold timer owns the hide.
-      if (pointInStrip(pos)) {
-        setShown(true);
-      } else if (!scrollRevealActive()) {
-        setShown(false);
-      }
+      // Not dragging (or drag just cleared): normal hover show/hide.
+      applyHoverAt(pos);
       return false;
     }
 
@@ -500,6 +627,57 @@ void Scrollbar::paintEvent(QPaintEvent* /*event*/) {
   painter.setPen(Qt::NoPen);
   painter.setBrush(accent_);
   painter.drawRoundedRect(r, thickness / 2.0, thickness / 2.0);
+}
+
+void attachPillScrollbars(QWidget* root, const std::function<bool(QAbstractScrollArea*)>& skip) {
+  if (root == nullptr) {
+    return;
+  }
+  constexpr bool kDefaultAutoHide = true;
+  constexpr int kDefaultFadeMs = 150;
+
+  const QList<QAbstractScrollArea*> areas = root->findChildren<QAbstractScrollArea*>();
+  for (QAbstractScrollArea* area : areas) {
+    if (area->property("pjScrollbarAttached").toBool()) {
+      continue;
+    }
+    if (skip && skip(area)) {
+      continue;
+    }
+    // A combo-box's internal view / a transient popup item view (e.g. the list a
+    // combo opens): a pill over a drop-down dismissed on selection would flicker.
+    if (qobject_cast<QComboBox*>(area->parentWidget()) != nullptr) {
+      continue;
+    }
+    if (qobject_cast<QAbstractItemView*>(area) != nullptr && (area->window()->windowFlags() & Qt::Popup) == Qt::Popup) {
+      continue;
+    }
+    // An AlwaysOn axis is a deliberate persistent, draggable native bar (e.g. a
+    // log view) that a hover-only pill would silently replace — leave it be.
+    const bool adapt_h = area->horizontalScrollBarPolicy() != Qt::ScrollBarAlwaysOn;
+    const bool adapt_v = area->verticalScrollBarPolicy() != Qt::ScrollBarAlwaysOn;
+    if (!adapt_h && !adapt_v) {
+      continue;
+    }
+    const bool auto_hide = area->property("pjScrollbarAutoHide").isValid()
+                               ? area->property("pjScrollbarAutoHide").toBool()
+                               : kDefaultAutoHide;
+    const int fade_ms =
+        area->property("pjScrollbarFadeMs").isValid() ? area->property("pjScrollbarFadeMs").toInt() : kDefaultFadeMs;
+    const auto attach_pill = [&](Qt::Orientation orientation) {
+      auto* pill = new Scrollbar(orientation, area);
+      pill->attach(area);
+      pill->setAutoHide(auto_hide);
+      pill->setFadeDurationMs(fade_ms);
+    };
+    if (adapt_h) {
+      attach_pill(Qt::Horizontal);
+    }
+    if (adapt_v) {
+      attach_pill(Qt::Vertical);
+    }
+    area->setProperty("pjScrollbarAttached", true);
+  }
 }
 
 }  // namespace PJ

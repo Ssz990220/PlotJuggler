@@ -15,6 +15,7 @@
 #include <QVBoxLayout>
 #include <QWidget>
 
+#include "pj_widgets/FrameworkTokens.h"
 #include "pj_widgets/MessageBox.h"
 #include "qss_preprocessor.h"
 using namespace Qt::StringLiterals;
@@ -44,8 +45,10 @@ int main(int argc, char** argv) {
   win.setWindowTitle(u"PJ MessageBox demo"_s);
   auto* central = new QWidget;
   auto* lay = new QVBoxLayout(central);
-  lay->setContentsMargins(16, 16, 16, 16);
-  lay->setSpacing(8);
+  lay->setContentsMargins(
+      PJ::theme::space(PJ::theme::Space::Section), PJ::theme::space(PJ::theme::Space::Section),
+      PJ::theme::space(PJ::theme::Space::Section), PJ::theme::space(PJ::theme::Space::Section));
+  lay->setSpacing(PJ::theme::space(PJ::theme::Space::Comfortable));
 
   auto add_trigger = [&](const QString& label, std::function<void()> on_click) {
     auto* btn = new QPushButton(label, central);

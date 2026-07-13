@@ -5,16 +5,17 @@
 
 #include <QPaintEvent>
 #include <QPainter>
+#include <QPalette>
 #include <QPoint>
 
 #include "pj_widgets/ColorPickerPopup.h"
+#include "pj_widgets/FrameworkTokens.h"
 
 namespace PJ {
 
 namespace {
 constexpr int kSwatchWidth = 20;
 constexpr int kSwatchHeight = 20;
-constexpr qreal kCornerRadius = 5.0;
 }  // namespace
 
 ColorPickerWidget::ColorPickerWidget(QWidget* parent) : QAbstractButton(parent) {
@@ -48,9 +49,11 @@ void ColorPickerWidget::paintEvent(QPaintEvent* /*event*/) {
   // A hairline border keeps a near-background swatch (e.g. white in the light
   // theme) visible against the panel.
   const QRectF face = QRectF(rect()).adjusted(0.5, 0.5, -0.5, -0.5);
-  painter.setPen(QPen(QColor(0x55, 0x55, 0x55), 1.0));
+  const auto fw_theme = theme::appTheme();
+  painter.setPen(QPen(theme::outline(theme::OutlineRole::Default, theme::OutlineState::Rest, fw_theme), 1.0));
   painter.setBrush(color_);
-  painter.drawRoundedRect(face, kCornerRadius, kCornerRadius);
+  const qreal corner_radius = theme::radius(theme::Radius::Input);
+  painter.drawRoundedRect(face, corner_radius, corner_radius);
 }
 
 void ColorPickerWidget::openPopup() {

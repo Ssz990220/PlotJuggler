@@ -7,6 +7,7 @@
 #include <QIcon>
 #include <QToolButton>
 
+#include "pj_widgets/FrameworkTokens.h"
 #include "pj_widgets/ProgressBar.h"
 #include "pj_widgets/SvgUtil.h"
 using namespace Qt::StringLiterals;
@@ -22,8 +23,11 @@ IngestProgressWidget::IngestProgressWidget(QWidget* parent) : QWidget(parent) {
   setSizePolicy(QSizePolicy::Maximum, QSizePolicy::Preferred);
 
   auto* layout = new QHBoxLayout(this);
-  layout->setContentsMargins(0, 0, 0, 0);  // zero margin — the strip is the bar + buttons, nothing else
-  layout->setSpacing(6);                   // 6px gap between the bar and the icon-sized stop button
+  // The strip is the bar + buttons, with only the canonical inter-control gap.
+  layout->setContentsMargins(
+      theme::space(theme::Space::None), theme::space(theme::Space::None), theme::space(theme::Space::None),
+      theme::space(theme::Space::None));
+  layout->setSpacing(theme::space(theme::Space::Comfortable));
 
   // The bar carries the status text in its centred caption (no separate label).
   bar_ = new ProgressBar(this);

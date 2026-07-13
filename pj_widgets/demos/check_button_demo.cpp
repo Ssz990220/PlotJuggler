@@ -26,6 +26,7 @@
 #include "pj_widgets/ComboBox.h"
 #include "pj_widgets/DoubleScrubber.h"
 #include "pj_widgets/DualOptionsWidget.h"
+#include "pj_widgets/FrameworkTokens.h"
 #include "pj_widgets/IntScrubber.h"
 #include "pj_widgets/Style.h"
 #include "qss_preprocessor.h"
@@ -59,8 +60,10 @@ int main(int argc, char** argv) {
   auto* root = new QWidget(&win);
   root->setObjectName(u"ConfigPanel"_s);
   auto* form = new QFormLayout(root);
-  form->setContentsMargins(16, 16, 16, 16);
-  form->setSpacing(10);
+  form->setContentsMargins(
+      PJ::theme::space(PJ::theme::Space::Section), PJ::theme::space(PJ::theme::Space::Section),
+      PJ::theme::space(PJ::theme::Space::Section), PJ::theme::space(PJ::theme::Space::Section));
+  form->setSpacing(PJ::theme::space(PJ::theme::Space::Comfortable));
 
   // Every input type that must end up the SAME compact height (20px): a native
   // line edit + our combobox + the self-painted scrubbers + the pills + swatch.
@@ -91,8 +94,10 @@ int main(int argc, char** argv) {
   // "Override color" row: pill toggle + swatch side by side (Image #3 layout).
   auto* override_row = new QWidget(root);
   auto* row_layout = new QHBoxLayout(override_row);
-  row_layout->setContentsMargins(0, 0, 0, 0);
-  row_layout->setSpacing(8);
+  row_layout->setContentsMargins(
+      PJ::theme::space(PJ::theme::Space::None), PJ::theme::space(PJ::theme::Space::None),
+      PJ::theme::space(PJ::theme::Space::None), PJ::theme::space(PJ::theme::Space::None));
+  row_layout->setSpacing(PJ::theme::space(PJ::theme::Space::Comfortable));
   auto* swatch = new PJ::ColorPickerWidget(override_row);
   swatch->setColor(QColor(0xE0, 0x39, 0x39));
   row_layout->addWidget(on);

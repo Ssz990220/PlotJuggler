@@ -13,7 +13,6 @@
 #include <QMouseEvent>
 #include <QPainter>
 #include <QPainterPath>
-#include <QPalette>
 #include <QResizeEvent>
 #include <QScreen>
 #include <QStyle>
@@ -23,8 +22,8 @@
 #include <Qt>
 #include <cmath>
 
+#include "pj_widgets/FrameworkTokens.h"
 #include "pj_widgets/SvgUtil.h"
-#include "pj_widgets/ThemeColors.h"
 
 namespace PJ {
 
@@ -118,43 +117,33 @@ void ScrubberBase::paintEvent(QPaintEvent*) {
   QPainter p(this);
   p.setRenderHint(QPainter::Antialiasing);
 
-  const QPalette& pal = palette();
-  // Theme-matched separator grey (same #c0c0c0 / #666666 as splitter
-  // handles + treeview header borders, defined in stylesheet_*.qss).
   const bool light = currentTheme().contains("light");
-  // Match palette token border_default in stylesheet_{light,dark}.qss.
-  const QColor border_grey = light ? QColor(0xc0, 0xc0, 0xc0) : QColor(0xb0, 0xb0, 0xbf);
-  const QColor active = light ? QColor(0x62, 0xc5, 0xff) : QColor(0x14, 0x8c, 0xd2);
+  const auto fw_theme = theme::themeFor(light);
 
-  // Background fill: full rect. Colours come from pj_widgets/ThemeColors.h
-  // so they stay in lockstep with the QSS `input_background` token used by
-  // PJ::ComboBox — Qt's palette(base) brush varies per platform and landed
-  // near-white in dark mode, defeating the dark theme.
+  // Background fill: full rect. Qt's palette(base) brush varies per platform,
+  // so self-painted input chrome reads the same framework token as QSS inputs.
   QPainterPath fill_path;
-  fill_path.addRoundedRect(rect(), kCornerRadiusPx, kCornerRadiusPx);
-  const QBrush fill_brush(light ? theme::kInputBackgroundLight : theme::kInputBackgroundDark);
+  const qreal corner_radius = theme::radius(theme::Radius::Input, fw_theme);
+  fill_path.addRoundedRect(rect(), corner_radius, corner_radius);
+  const QBrush fill_brush(theme::surface(theme::Surface::Input, fw_theme));
   p.fillPath(fill_path, fill_brush);
 
   // Border stroke: inset by 0.5 px so the 1 px line lands cleanly on
   // pixel boundaries (otherwise antialiasing smears the edge across two
   // rows/columns and the rectangle looks uneven).
-  qreal active_mix = hover_alpha_;
-  if (state_ == State::kDragging || state_ == State::kEditing || hasFocus()) {
-    active_mix = 1.0;
-  }
-  const QColor mixed(
-      static_cast<int>((border_grey.red() * (1.0 - active_mix)) + (active.red() * active_mix)),
-      static_cast<int>((border_grey.green() * (1.0 - active_mix)) + (active.green() * active_mix)),
-      static_cast<int>((border_grey.blue() * (1.0 - active_mix)) + (active.blue() * active_mix)), 255);
+  const bool focused = state_ == State::kDragging || state_ == State::kEditing || hasFocus();
+  const auto outline_state =
+      focused ? theme::OutlineState::Focused : (is_hovered_ ? theme::OutlineState::Hovered : theme::OutlineState::Rest);
+  const QColor border = theme::outline(theme::OutlineRole::Interactive, outline_state, fw_theme);
   QPainterPath stroke_path;
-  stroke_path.addRoundedRect(QRectF(rect()).adjusted(0.5, 0.5, -0.5, -0.5), kCornerRadiusPx, kCornerRadiusPx);
-  p.setPen(QPen(mixed, 1.0));
+  stroke_path.addRoundedRect(QRectF(rect()).adjusted(0.5, 0.5, -0.5, -0.5), corner_radius, corner_radius);
+  p.setPen(QPen(border, theme::stroke(theme::Stroke::Hairline, fw_theme)));
   p.setBrush(Qt::NoBrush);
   p.drawPath(stroke_path);
 
   // Centre text (skip while editing — the QLineEdit covers it)
   if (state_ != State::kEditing) {
-    p.setPen(pal.color(QPalette::Text));
+    p.setPen(theme::onSurface(theme::Surface::Input, theme::Emphasis::Default, fw_theme));
     p.drawText(centerRect(), Qt::AlignCenter, displayText());
   }
 

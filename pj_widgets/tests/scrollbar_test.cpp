@@ -11,11 +11,11 @@
 #include <QTest>
 #include <QWheelEvent>
 
+#include "pj_widgets/FrameworkTokens.h"
+
 using PJ::scrollbar_detail::computeHandle;
 using PJ::scrollbar_detail::defaultAccent;
 using PJ::scrollbar_detail::Handle;
-using PJ::scrollbar_detail::kPillAccentDark;
-using PJ::scrollbar_detail::kPillAccentLight;
 using PJ::scrollbar_detail::valueForDrag;
 
 // ---------------------------------------------------------------------------
@@ -58,14 +58,18 @@ TEST(ScrollbarHandle, ZeroPageStepIsEmpty) {
 // needed.
 // ---------------------------------------------------------------------------
 
-TEST(ScrollbarAccent, DarkWindowYieldsPaleGrey) {
-  // A dark chrome (low lightness) must pick the pale-grey pill, never the OS
-  // highlight (e.g. Yaru orange).
-  EXPECT_EQ(defaultAccent(QColor(0x2B, 0x2B, 0x33)), kPillAccentDark);
+TEST(ScrollbarAccent, DarkWindowYieldsFrameworkScrollHandle) {
+  // A dark chrome (low lightness) resolves to the framework Scroll Handle color
+  // for the dark theme, keyed off window lightness — never the OS highlight.
+  EXPECT_EQ(
+      defaultAccent(QColor(0x2B, 0x2B, 0x33)),
+      PJ::theme::surface(PJ::theme::Surface::ScrollHandle, PJ::theme::Theme::Dark));
 }
 
-TEST(ScrollbarAccent, LightWindowYieldsInfoBlue) {
-  EXPECT_EQ(defaultAccent(QColor(0xF5, 0xF5, 0xF5)), kPillAccentLight);
+TEST(ScrollbarAccent, LightWindowYieldsFrameworkScrollHandle) {
+  EXPECT_EQ(
+      defaultAccent(QColor(0xF5, 0xF5, 0xF5)),
+      PJ::theme::surface(PJ::theme::Surface::ScrollHandle, PJ::theme::Theme::Light));
 }
 
 // ---------------------------------------------------------------------------
@@ -173,6 +177,63 @@ TEST(ScrollbarWidget, AttachEnablesViewportMouseTracking) {
 
   EXPECT_TRUE(area.viewport()->hasMouseTracking())
       << "attach() must enable viewport mouse tracking so hover-reveal works";
+}
+
+TEST(ScrollbarWidget, HoverOverCoveringChildRevealsPill) {
+  // When a child widget fully covers the viewport (e.g. a QScrollArea packed with
+  // marketplace cards), hover MouseMoves are delivered to that child, not the
+  // viewport — so attach() must observe the covering subtree, otherwise the pill
+  // only ever reveals on scroll/click. Here the content widget is the cover.
+  QScrollArea area;
+  auto* content = new QWidget;
+  content->setFixedSize(2000, 2000);  // both axes overflow; content covers the viewport
+  area.setWidget(content);
+  area.resize(200, 200);
+  area.show();
+
+  PJ::Scrollbar v(Qt::Vertical);
+  v.attach(&area);
+  ASSERT_FALSE(v.isShown());
+
+  // Content sits at the scroll origin, so a content-local point equals its
+  // viewport point; pick one inside the right-edge strip.
+  const int vp_w = area.viewport()->width();
+  const QPoint local(vp_w - 5, 100);
+  QMouseEvent move(
+      QEvent::MouseMove, QPointF(local), content->mapToGlobal(local), Qt::NoButton, Qt::NoButton, Qt::NoModifier);
+  QCoreApplication::sendEvent(content, &move);
+
+  EXPECT_TRUE(v.isShown()) << "hover over a covering child, inside the strip, must reveal the pill";
+}
+
+TEST(ScrollbarWidget, CoveringChildAddedAfterAttachIsObserved) {
+  // Cards arrive asynchronously (the marketplace fetches its registry after the
+  // window is built), so a child added AFTER attach() must be picked up via
+  // ChildAdded and observed for hover too.
+  QScrollArea area;
+  auto* content = new QWidget;
+  content->setFixedSize(2000, 2000);
+  area.setWidget(content);
+  area.resize(200, 200);
+  area.show();
+
+  PJ::Scrollbar v(Qt::Vertical);
+  v.attach(&area);
+
+  // A card added under the content widget after attach.
+  auto* card = new QWidget(content);
+  card->setFixedSize(2000, 100);
+  card->move(0, 0);
+  QCoreApplication::processEvents();  // let the ChildAdded reach the observer
+
+  ASSERT_FALSE(v.isShown());
+  const int vp_w = area.viewport()->width();
+  const QPoint local(vp_w - 5, 40);  // on the card, inside the strip
+  QMouseEvent move(
+      QEvent::MouseMove, QPointF(local), card->mapToGlobal(local), Qt::NoButton, Qt::NoButton, Qt::NoModifier);
+  QCoreApplication::sendEvent(card, &move);
+
+  EXPECT_TRUE(v.isShown()) << "a card added after attach must still reveal the pill on hover";
 }
 
 TEST(ScrollbarWidget, WheelScrollRevealsMatchingAxisOnly) {

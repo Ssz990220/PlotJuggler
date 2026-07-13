@@ -13,6 +13,7 @@
 #include <utility>
 
 #include "RasterIpcProtocol.h"
+#include "pj_widgets/FrameworkTokens.h"
 #include "pj_widgets/RasterFrame.h"
 using namespace Qt::StringLiterals;
 
@@ -95,7 +96,8 @@ void RasterStreamView::onSocketReadyRead() {
 
 void RasterStreamView::paintEvent(QPaintEvent* /*event*/) {
   QPainter painter(this);
-  painter.fillRect(rect(), Qt::black);
+  const auto fw_theme = theme::appTheme();
+  painter.fillRect(rect(), theme::surface(theme::Surface::DataBackdrop, fw_theme));
   if (frame_.isNull()) {
     return;
   }
