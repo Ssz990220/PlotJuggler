@@ -490,6 +490,17 @@ void ExtensionManager::update(const Extension& ext) {
     return;
   }
 
+  // An update already staged for this id — install OR uninstall — would just
+  // be re-downloaded and re-staged on top of the pending marker; the installed
+  // version does not change until restart, so a caller relying on hasUpdate()
+  // can ask again. Refuse rather than redo the work. Both markers matter: on
+  // Windows the uninstall path stages the removal, so a subsequent update()
+  // during that window would resurrect an id the user just asked to remove.
+  if (hasPendingInstall(ext.id) || hasPendingUninstall(ext.id)) {
+    emitInstallFailure(ext.id, QString("Update for \"%1\" is already staged; restart to apply it").arg(ext.id));
+    return;
+  }
+
   doInstall(ext, /*staging=*/true, /*allow_existing=*/true);
 }
 

@@ -693,6 +693,107 @@ TEST_F(ExtensionManagerTest, FailedUpdateStagingLeavesLiveInstallUntouched) {
   EXPECT_TRUE(backupDirsFor("mock-data-source").isEmpty()) << "a failed staging must not create a backup";
 }
 
+// A second update() against an id that already has a staged install must be
+// refused up front rather than redownloading and re-staging the same payload on
+// top of the pending dir — the installed version stays live until restart, so
+// hasUpdate() keeps returning true and a caller relying on it can innocently
+// ask again. The manager guard is the safety net for callers that are not the
+// marketplace UI (the UI additionally gates the "Update All" button off).
+TEST_F(ExtensionManagerTest, UpdateRejectsAlreadyPendingInstall) {
+  cleanBackups("mock-data-source");
+
+  QTemporaryDir local_ext_dir(QDir(PlatformUtils::backupDir()).absoluteFilePath("../test_ext_XXXXXX"));
+  ASSERT_TRUE(local_ext_dir.isValid());
+  QTemporaryDir local_pending_dir(QDir(PlatformUtils::backupDir()).absoluteFilePath("../test_pending_XXXXXX"));
+  ASSERT_TRUE(local_pending_dir.isValid());
+
+  DownloadManager local_dl;
+  ExtensionManager local_mgr(&local_dl, local_ext_dir.path(), local_pending_dir.path());
+
+  server_.setBody(dummyPluginZip("mock-data-source"));
+  const Extension ext_v1 = makeExtension("mock-data-source", "1.0.0", server_.url());
+
+  QSignalSpy spy_finished(&local_mgr, &ExtensionManager::installFinished);
+  local_mgr.install(ext_v1);
+  ASSERT_TRUE(waitForSignal(spy_finished));
+  ASSERT_TRUE(spy_finished.first().at(1).toBool());
+
+  // First update() stages v2 (installPendingRestart fires).
+  server_.setBody(dummyPluginZip("mock-data-source", "2.0.0"));
+  const Extension ext_v2 = makeExtension("mock-data-source", "2.0.0", server_.url());
+
+  QSignalSpy spy_pending(&local_mgr, &ExtensionManager::installPendingRestart);
+  local_mgr.update(ext_v2);
+  ASSERT_TRUE(waitForSignal(spy_pending));
+  ASSERT_TRUE(local_mgr.hasPendingInstall("mock-data-source"));
+
+  // Second update() must be refused synchronously — no download, no re-stage.
+  QSignalSpy spy_error(&local_mgr, &ExtensionManager::installError);
+  QSignalSpy spy_finished_2(&local_mgr, &ExtensionManager::installFinished);
+  QSignalSpy spy_pending_2(&local_mgr, &ExtensionManager::installPendingRestart);
+  local_mgr.update(ext_v2);
+
+  ASSERT_EQ(spy_error.count(), 1) << "second update on an already-pending id must emit installError";
+  EXPECT_EQ(spy_error.first().at(0).toString(), "mock-data-source");
+  EXPECT_TRUE(spy_error.first().at(1).toString().contains("already staged"))
+      << "error message should surface why the update was refused";
+  EXPECT_EQ(spy_pending_2.count(), 0) << "no second installPendingRestart";
+  EXPECT_TRUE(spy_finished_2.isEmpty() || !spy_finished_2.first().at(1).toBool())
+      << "installFinished must not fire success";
+
+  cleanBackups("mock-data-source");
+}
+
+// A pending-uninstall marker on an id must also block a subsequent update():
+// on Windows the uninstall path stages the removal, and update() during that
+// window would resurrect an id the user just asked to remove. The manager guard
+// covers this along with hasPendingInstall; the marker file is portable enough
+// to exercise on any platform.
+TEST_F(ExtensionManagerTest, UpdateRejectsAlreadyPendingUninstall) {
+  cleanBackups("mock-data-source");
+
+  QTemporaryDir local_ext_dir(QDir(PlatformUtils::backupDir()).absoluteFilePath("../test_ext_XXXXXX"));
+  ASSERT_TRUE(local_ext_dir.isValid());
+  QTemporaryDir local_pending_dir(QDir(PlatformUtils::backupDir()).absoluteFilePath("../test_pending_XXXXXX"));
+  ASSERT_TRUE(local_pending_dir.isValid());
+
+  DownloadManager local_dl;
+  ExtensionManager local_mgr(&local_dl, local_ext_dir.path(), local_pending_dir.path());
+
+  server_.setBody(dummyPluginZip("mock-data-source"));
+  const Extension ext_v1 = makeExtension("mock-data-source", "1.0.0", server_.url());
+
+  QSignalSpy spy_finished(&local_mgr, &ExtensionManager::installFinished);
+  local_mgr.install(ext_v1);
+  ASSERT_TRUE(waitForSignal(spy_finished));
+  ASSERT_TRUE(spy_finished.first().at(1).toBool());
+
+  // Simulate a pending uninstall by dropping the marker in the installed dir.
+  // Real code takes this path only on Windows (schedulePendingUninstall) when a
+  // loaded DSO cannot be removed; the marker file itself is portable and is what
+  // hasPendingUninstall() checks.
+  const QString marker = local_ext_dir.path() + "/mock-data-source/.pj_pending_uninstall";
+  QFile marker_file(marker);
+  ASSERT_TRUE(marker_file.open(QIODevice::WriteOnly));
+  marker_file.close();
+  ASSERT_TRUE(local_mgr.hasPendingUninstall("mock-data-source"));
+
+  server_.setBody(dummyPluginZip("mock-data-source", "2.0.0"));
+  const Extension ext_v2 = makeExtension("mock-data-source", "2.0.0", server_.url());
+
+  QSignalSpy spy_error(&local_mgr, &ExtensionManager::installError);
+  QSignalSpy spy_pending(&local_mgr, &ExtensionManager::installPendingRestart);
+  local_mgr.update(ext_v2);
+
+  ASSERT_EQ(spy_error.count(), 1) << "update() must refuse when a pending uninstall marker is present";
+  EXPECT_EQ(spy_error.first().at(0).toString(), "mock-data-source");
+  EXPECT_TRUE(spy_error.first().at(1).toString().contains("already staged"))
+      << "error message should surface why the update was refused";
+  EXPECT_EQ(spy_pending.count(), 0) << "no installPendingRestart must fire";
+
+  cleanBackups("mock-data-source");
+}
+
 // ---------------------------------------------------------------------------
 // [5] hasUpdate — version comparison
 //

@@ -407,7 +407,11 @@ void MarketplaceWindow::populateCards() {
 
     const bool has_update = ext_mgr_->hasUpdate(ext);
     const bool has_newer_local = ext_mgr_->hasNewerInstalledVersion(ext);
-    if (has_update) {
+    const bool pending = ext_mgr_->hasPendingInstall(ext.id) || ext_mgr_->hasPendingUninstall(ext.id);
+    // A staged update keeps its old installed version until restart, so
+    // hasUpdate() stays true — exclude already-pending extensions so "Update
+    // All" doesn't stay enabled and re-stage what is already queued for restart.
+    if (has_update && !pending) {
       has_updatable = true;
     }
 
@@ -744,7 +748,10 @@ void MarketplaceWindow::onUpdateAllClicked() {
   clearStickyStatus();
   update_queue_.clear();
   for (const auto& ext : filtered_) {
-    if (ext_mgr_->hasUpdate(ext)) {
+    // Skip extensions already staged for restart: a staged update leaves the
+    // installed version unchanged (so hasUpdate() stays true) but re-queuing it
+    // would just re-download and re-stage the same payload.
+    if (ext_mgr_->hasUpdate(ext) && !ext_mgr_->hasPendingInstall(ext.id) && !ext_mgr_->hasPendingUninstall(ext.id)) {
       update_queue_.append(ext);
     }
   }
