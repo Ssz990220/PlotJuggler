@@ -40,7 +40,7 @@ constexpr auto kCustomPluginFoldersKey = "Preferences::plugin_folders";
 // it is simply skipped (buildScanHierarchy drops folders that don't exist);
 // developers point at their freshly built plugins with --plugin-dir instead.
 QString bundledPluginsDir() {
-  return QDir::cleanPath(QCoreApplication::applicationDirPath() + u"/../lib/plotjuggler/plugins"_s);
+  return QDir::cleanPath(QCoreApplication::applicationDirPath() + QStringLiteral("/../lib/plotjuggler/plugins"));
 }
 }  // namespace
 

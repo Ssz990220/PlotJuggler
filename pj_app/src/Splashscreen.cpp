@@ -18,7 +18,7 @@
 #include <Qt>
 #include <algorithm>
 
-#include "pj_widgets/ThemeColors.h"
+#include "pj_widgets/FrameworkTokens.h"
 using namespace Qt::StringLiterals;
 
 namespace PJ {
@@ -85,8 +85,8 @@ const QStringList& seriousSubtitles() {
   return kSubtitles;
 }
 
-// Renders the "serious" splashscreen: the PlotJuggler logo + wordmark (P blue,
-// J magenta, the rest slate grey) over a soft light gradient, with a random
+// Renders the "serious" splashscreen: the PlotJuggler logo + wordmark over
+// framework surface and brand-gradient tokens, with a random
 // subtitle underneath. Composed with QPainter rather than baked into an image
 // so every element stays crisp at any DPI and the subtitle can vary per launch.
 QPixmap makeSeriousSplashscreen() {
@@ -103,16 +103,19 @@ QPixmap makeSeriousSplashscreen() {
 
   const QRectF canvas(0, 0, kW, kH);
 
-  // Soft, cool, near-white background gradient — modern and unobtrusive.
+  const auto token_theme = theme::themeFor(true);
+  const auto brand = theme::gradient(theme::Gradient::Brand, token_theme);
+
+  // Soft framework surface gradient.
   QLinearGradient bg(canvas.topLeft(), canvas.bottomRight());
-  bg.setColorAt(0.0, QColor(0xff, 0xff, 0xff));
-  bg.setColorAt(1.0, QColor(0xea, 0xf0, 0xfb));
+  bg.setColorAt(0.0, theme::surface(theme::Surface::Backdrop, token_theme));
+  bg.setColorAt(1.0, theme::surface(theme::Surface::Backdrop, token_theme));
   p.fillRect(canvas, bg);
 
   // A thin brand-gradient accent along the bottom edge.
   QLinearGradient accent(canvas.bottomLeft(), canvas.bottomRight());
-  accent.setColorAt(0.0, theme::kBlue);
-  accent.setColorAt(1.0, theme::kPurple);
+  accent.setColorAt(0.0, brand.first);
+  accent.setColorAt(1.0, brand.second);
   p.fillRect(QRectF(0, kH - 4, kW, 4), accent);
 
   // Logo, vertically centred on the left.
@@ -138,21 +141,22 @@ QPixmap makeSeriousSplashscreen() {
   const QString wordmark = u"PlotJuggler"_s;
   const QFontMetricsF wordmark_fm(wordmark_font);
   const qreal wordmark_width = wordmark_fm.horizontalAdvance(wordmark);
-  const QColor slate(0x63, 0x6a, 0x78);
-  p.setPen(slate);
+  const QColor wordmark_ink = theme::onSurface(theme::Surface::Backdrop, theme::Emphasis::Muted, token_theme);
+  p.setPen(wordmark_ink);
   p.drawText(QPointF(text_x, wordmark_baseline), wordmark);
-  p.setPen(theme::kBlue);
-  p.drawText(QPointF(text_x, wordmark_baseline), u"P"_s);
-  p.setPen(theme::kPurple);
-  p.drawText(QPointF(text_x + wordmark_fm.horizontalAdvance(u"Plot"_s), wordmark_baseline), u"J"_s);
+  p.setPen(brand.first);
+  p.drawText(QPointF(text_x, wordmark_baseline), QStringLiteral("P"));
+  p.setPen(brand.second);
+  p.drawText(
+      QPointF(text_x + wordmark_fm.horizontalAdvance(QStringLiteral("Plot")), wordmark_baseline), QStringLiteral("J"));
 
-  // Random subtitle, centred horizontally under the wordmark, in the same slate.
+  // Random subtitle, centred horizontally under the wordmark, in the same ink.
   QFont subtitle_font;
   subtitle_font.setFamilies({u"Roboto"_s, subtitle_font.defaultFamily()});
   subtitle_font.setPixelSize(26);
   subtitle_font.setWeight(QFont::Light);  // thin, airy weight to match the banner
   p.setFont(subtitle_font);
-  p.setPen(slate);
+  p.setPen(wordmark_ink);
   const QStringList& subs = seriousSubtitles();
   const QString subtitle = subs.at(QRandomGenerator::global()->bounded(static_cast<int>(subs.size())));
   const qreal subtitle_width = QFontMetricsF(subtitle_font).horizontalAdvance(subtitle);
@@ -162,7 +166,7 @@ QPixmap makeSeriousSplashscreen() {
   QFont version_font;
   version_font.setPixelSize(13);
   p.setFont(version_font);
-  p.setPen(QColor(0xa6, 0xb0, 0xbd));
+  p.setPen(theme::onSurface(theme::Surface::Backdrop, theme::Emphasis::Disabled, token_theme));
   p.drawText(
       QRectF(0, kH - 30, kW - 18, 20), Qt::AlignRight | Qt::AlignVCenter, QCoreApplication::applicationVersion());
 

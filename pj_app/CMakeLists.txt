@@ -95,6 +95,7 @@ set_target_properties(pj_app_shell PROPERTIES
 
 target_include_directories(pj_app_shell PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/src
+    ${CMAKE_BINARY_DIR}/generated
     ${CMAKE_SOURCE_DIR}/raster_ipc
 )
 
@@ -130,11 +131,10 @@ set_target_properties(pj_app PROPERTIES
 target_include_directories(pj_app PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_link_libraries(pj_app PRIVATE pj_app_shell Backward::Backward)
 
-# Single source of truth for the app version: the root project(VERSION). main.cpp
-# (the only PJ_VERSION_STRING user) is compiled into this executable, not the
-# shell, so the definition rides on the pj_app target. Both the About box
-# (applicationVersion()) and the GitHub release check compare against this string.
-target_compile_definitions(pj_app PRIVATE PJ_VERSION_STRING="${PROJECT_VERSION}")
+# App version: single source of truth is versions.env, stamped by the root
+# CMakeLists into generated/pj_version.h (PJ_VERSION_STRING). main.cpp — the only
+# user — includes that header directly, so no per-target compile definition is
+# needed (a duplicate -D here would redefine the macro under -Werror).
 
 # -Werror guards against the bug class that bit the reload path: a merge that
 # drops wiring leaves an unused variable behind, which these flags turn into a

@@ -341,7 +341,7 @@ void LeftPanel::applyIcons(QString theme) {
   // Band height grows by 2 * layout_padding so the contentsMargins
   // applied to inner layouts are absorbed by the container instead of
   // squeezing the buttons.
-  const int band_extent = button_extent + (2 * chrome_metrics_.layout_padding);
+  const int band_extent = chrome_metrics_.bandHeight();
   // Every icon-bearing button in this panel uses the same square chrome
   // pattern; iterate by type rather than by name.
   for (auto* btn : findChildren<QToolButton*>()) {
@@ -377,12 +377,20 @@ void LeftPanel::applyIcons(QString theme) {
       chrome_metrics_.layout_padding, chrome_metrics_.layout_padding, chrome_metrics_.layout_padding,
       chrome_metrics_.layout_padding);
   for (auto* layout : std::initializer_list<QLayout*>{
-           ui_->inputHeaderLayout, ui_->pageFile->layout(), ui_->pageStream->layout(), ui_->pageCloud->layout(),
-           ui_->streamSourceRow, ui_->streamBufferRow, ui_->cloudSourceRow}) {
+           ui_->pageFile->layout(), ui_->pageStream->layout(), ui_->pageCloud->layout(), ui_->streamSourceRow,
+           ui_->streamBufferRow, ui_->cloudSourceRow}) {
     if (layout != nullptr) {
       layout->setContentsMargins(margins);
       layout->setSpacing(chrome_metrics_.layout_spacing);
     }
+  }
+  // The "Sources" title band leads via labelInput's own canonical padding-left
+  // (Tight), so its layout adds no left inset — otherwise the two stack into a
+  // doubled leading that no longer matches the other section bands.
+  if (auto* layout = ui_->inputHeaderLayout) {
+    layout->setContentsMargins(
+        0, chrome_metrics_.layout_padding, chrome_metrics_.layout_padding, chrome_metrics_.layout_padding);
+    layout->setSpacing(chrome_metrics_.layout_spacing);
   }
 }
 

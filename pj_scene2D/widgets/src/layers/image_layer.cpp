@@ -23,6 +23,7 @@
 #include "pj_scene2d_core/image_pipeline_source.h"
 #include "pj_scene2d_core/media_source.h"
 #include "pj_scene2d_widgets/scene2d_pipelines.h"
+#include "pj_widgets/FrameworkTokens.h"
 #include "pj_widgets/ToggleSwitch.h"
 using namespace Qt::StringLiterals;
 
@@ -142,7 +143,9 @@ std::unique_ptr<MediaSource> ImageLayer::createMediaSource(const SceneLayerConte
 QWidget* ImageLayer::createConfigWidget(QWidget* parent) {
   auto* widget = new QWidget(parent);
   auto* layout = new QFormLayout(widget);
-  layout->setContentsMargins(0, 0, 0, 0);
+  layout->setContentsMargins(
+      PJ::theme::space(PJ::theme::Space::None), PJ::theme::space(PJ::theme::Space::None),
+      PJ::theme::space(PJ::theme::Space::None), PJ::theme::space(PJ::theme::Space::None));
 
   auto* rectify = new ToggleSwitch(widget);
   rectify->setChecked(rectify_enabled_, /*animate=*/false);  // snap to state without emitting toggled

@@ -2,9 +2,13 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 
+#include <QGuiApplication>
+#include <QPalette>
 #include <QRegularExpression>
 #include <QSyntaxHighlighter>
 #include <QTextCharFormat>
+
+#include "pj_widgets/FrameworkTokens.h"
 
 namespace PJ {
 
@@ -12,9 +16,11 @@ namespace PJ {
 class LuaSyntaxHighlighter : public QSyntaxHighlighter {
  public:
   explicit LuaSyntaxHighlighter(QTextDocument* parent) : QSyntaxHighlighter(parent) {
+    const auto fw_theme = theme::themeFor(QGuiApplication::palette().window().color().lightness() >= 128);
+
     // Keywords
     QTextCharFormat keyword_fmt;
-    keyword_fmt.setForeground(QColor("#0000ff"));
+    keyword_fmt.setForeground(theme::syntaxInk(theme::SyntaxRole::Keyword, fw_theme));
     keyword_fmt.setFontWeight(QFont::Bold);
     const char* keywords[] = {"and",      "break",  "do",   "else", "elseif", "end",  "false", "for",
                               "function", "goto",   "if",   "in",   "local",  "nil",  "not",   "or",
@@ -25,23 +31,23 @@ class LuaSyntaxHighlighter : public QSyntaxHighlighter {
 
     // Numbers
     QTextCharFormat number_fmt;
-    number_fmt.setForeground(QColor("#098658"));
+    number_fmt.setForeground(theme::syntaxInk(theme::SyntaxRole::Number, fw_theme));
     rules_.append({QRegularExpression("\\b[0-9]+(\\.[0-9]+)?([eE][+-]?[0-9]+)?\\b"), number_fmt});
 
     // Strings (double and single quoted)
     QTextCharFormat string_fmt;
-    string_fmt.setForeground(QColor("#a31515"));
+    string_fmt.setForeground(theme::syntaxInk(theme::SyntaxRole::String, fw_theme));
     rules_.append({QRegularExpression("\"[^\"]*\""), string_fmt});
     rules_.append({QRegularExpression("'[^']*'"), string_fmt});
 
     // Single-line comments
-    comment_fmt_.setForeground(QColor("#008000"));
+    comment_fmt_.setForeground(theme::syntaxInk(theme::SyntaxRole::Comment, fw_theme));
     comment_fmt_.setFontItalic(true);
     rules_.append({QRegularExpression("--[^\n]*"), comment_fmt_});
 
     // Built-in functions
     QTextCharFormat builtin_fmt;
-    builtin_fmt.setForeground(QColor("#795e26"));
+    builtin_fmt.setForeground(theme::syntaxInk(theme::SyntaxRole::Builtin, fw_theme));
     const char* builtins[] = {"print", "type",  "tostring", "tonumber", "pairs", "ipairs",
                               "math",  "table", "string",   "assert",   "error", "pcall"};
     for (const char* bi : builtins) {

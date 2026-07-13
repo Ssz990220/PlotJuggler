@@ -20,10 +20,10 @@
 #include <QVBoxLayout>
 #include <QWheelEvent>
 #include <algorithm>
-#include <array>
 #include <utility>
 
 #include "pj_plotting/PlotDocker.h"
+#include "pj_widgets/FrameworkTokens.h"
 #include "pj_widgets/SvgUtil.h"
 
 using namespace Qt::StringLiterals;
@@ -104,8 +104,10 @@ class PlotTabFrame : public QFrame {
     setFixedHeight(kTabBarButtonSize);
 
     auto* layout = new QHBoxLayout(this);
-    layout->setContentsMargins(8, 0, 4, 0);
-    layout->setSpacing(6);
+    layout->setContentsMargins(
+        PJ::theme::space(theme::Space::Comfortable), PJ::theme::space(theme::Space::None),
+        PJ::theme::space(theme::Space::Snug), PJ::theme::space(theme::Space::None));
+    layout->setSpacing(PJ::theme::space(theme::Space::Comfortable));
 
     label_ = new QLabel(tab_name, this);
     label_->setAttribute(Qt::WA_TransparentForMouseEvents);
@@ -230,11 +232,15 @@ TabbedPlotWidget::TabbedPlotWidget(QWidget* parent) : TabbedPlotWidget(u"main"_s
 
 TabbedPlotWidget::TabbedPlotWidget(QString name, QWidget* parent) : QWidget(parent), name_(std::move(name)) {
   applyAdsConfigOnce();
-  setContentsMargins(0, 0, 0, 0);
+  setContentsMargins(
+      PJ::theme::space(theme::Space::None), PJ::theme::space(theme::Space::None), PJ::theme::space(theme::Space::None),
+      PJ::theme::space(theme::Space::None));
 
   auto* root_layout = new QVBoxLayout(this);
-  root_layout->setContentsMargins(0, 0, 0, 0);
-  root_layout->setSpacing(0);
+  root_layout->setContentsMargins(
+      PJ::theme::space(theme::Space::None), PJ::theme::space(theme::Space::None), PJ::theme::space(theme::Space::None),
+      PJ::theme::space(theme::Space::None));
+  root_layout->setSpacing(PJ::theme::space(theme::Space::None));
 
   // Tab strip — outer hbox with two regions:
   //   * a horizontally scrollable area containing the [+] add button
@@ -245,10 +251,14 @@ TabbedPlotWidget::TabbedPlotWidget(QString name, QWidget* parent) : QWidget(pare
   //   * the three panel-toggle buttons, pinned at the far right.
   auto* tabs_bar_widget = new QWidget(this);
   tabs_bar_widget->setObjectName("plotTabsBar");
-  tabs_bar_widget->setContentsMargins(0, 0, 0, 0);
+  tabs_bar_widget->setContentsMargins(
+      PJ::theme::space(theme::Space::None), PJ::theme::space(theme::Space::None), PJ::theme::space(theme::Space::None),
+      PJ::theme::space(theme::Space::None));
   auto* outer_layout = new QHBoxLayout(tabs_bar_widget);
-  outer_layout->setContentsMargins(0, 0, 0, 0);
-  outer_layout->setSpacing(0);
+  outer_layout->setContentsMargins(
+      PJ::theme::space(theme::Space::None), PJ::theme::space(theme::Space::None), PJ::theme::space(theme::Space::None),
+      PJ::theme::space(theme::Space::None));
+  outer_layout->setSpacing(PJ::theme::space(theme::Space::None));
 
   // QScrollArea-based wrapper removed — the scroll area's viewport was
   // reserving a couple of pixels of vertical chrome that pushed the
@@ -267,11 +277,15 @@ TabbedPlotWidget::TabbedPlotWidget(QString name, QWidget* parent) : QWidget(pare
   //   outer_layout->addWidget(tabs_scroll, 1);
   tabs_inner_ = new QWidget(tabs_bar_widget);
   tabs_inner_->setObjectName("plotTabsInner");
-  tabs_inner_->setContentsMargins(0, 0, 0, 0);
+  tabs_inner_->setContentsMargins(
+      PJ::theme::space(theme::Space::None), PJ::theme::space(theme::Space::None), PJ::theme::space(theme::Space::None),
+      PJ::theme::space(theme::Space::None));
   tabs_inner_->setFixedHeight(kTabBarHeight);
   tabs_bar_layout_ = new QHBoxLayout(tabs_inner_);
-  tabs_bar_layout_->setContentsMargins(0, 0, 0, 0);
-  tabs_bar_layout_->setSpacing(0);
+  tabs_bar_layout_->setContentsMargins(
+      PJ::theme::space(theme::Space::None), PJ::theme::space(theme::Space::None), PJ::theme::space(theme::Space::None),
+      PJ::theme::space(theme::Space::None));
+  tabs_bar_layout_->setSpacing(PJ::theme::space(theme::Space::None));
 
   button_add_tab_ = new QPushButton(this);
   button_add_tab_->setFlat(true);
@@ -317,7 +331,9 @@ TabbedPlotWidget::TabbedPlotWidget(QString name, QWidget* parent) : QWidget(pare
   root_layout->addWidget(tabs_separator);
 
   stack_ = new QStackedWidget(this);
-  stack_->setContentsMargins(0, 0, 0, 0);
+  stack_->setContentsMargins(
+      PJ::theme::space(theme::Space::None), PJ::theme::space(theme::Space::None), PJ::theme::space(theme::Space::None),
+      PJ::theme::space(theme::Space::None));
   root_layout->addWidget(stack_, 1);
 
   onStylesheetChanged(currentTheme());
@@ -495,16 +511,12 @@ void TabbedPlotWidget::onChromeMetricsChanged(const ChromeMetrics& metrics) {
   if (tabs_inner_ != nullptr) {
     tabs_inner_->setFixedHeight(chrome_extent);
   }
-  const int button_extent = std::max(1, chrome_extent);
-  const QSize icon_sz(metrics.icon_size, metrics.icon_size);
-  const std::array<QPushButton*, 4> chrome_buttons{
-      button_add_tab_, button_left_panel_, button_bottom_panel_, button_right_panel_};
-  for (QPushButton* btn : chrome_buttons) {
-    if (btn == nullptr) {
-      continue;
-    }
-    btn->setFixedSize(QSize(button_extent, button_extent));
-    btn->setIconSize(icon_sz);
+  // Only the add-tab button lives in the strip; the panel-toggle buttons are
+  // reparented into the TitleBar right cluster, which sizes them to its own
+  // chrome extent — sizing them here would overflow the title-bar row.
+  if (button_add_tab_ != nullptr) {
+    button_add_tab_->setFixedSize(QSize(chrome_extent, chrome_extent));
+    button_add_tab_->setIconSize(QSize(metrics.icon_size, metrics.icon_size));
   }
   for (const TabEntry& entry : tabs_) {
     if (entry.frame != nullptr) {

@@ -32,6 +32,7 @@
 #include "pj_plotting/RasterTextEngine.h"
 #include "pj_runtime/CatalogModel.h"
 #include "pj_runtime/SessionManager.h"
+#include "pj_widgets/FrameworkTokens.h"
 using namespace Qt::StringLiterals;
 
 namespace {
@@ -141,7 +142,9 @@ TEST(RasterTextGl, LegendTextOnGlCanvasRoutesThroughRasterPath) {
 
   QWidget window;
   auto* layout = new QVBoxLayout(&window);
-  layout->setContentsMargins(0, 0, 0, 0);
+  layout->setContentsMargins(
+      PJ::theme::space(PJ::theme::Space::None), PJ::theme::space(PJ::theme::Space::None),
+      PJ::theme::space(PJ::theme::Space::None), PJ::theme::space(PJ::theme::Space::None));
   layout->addWidget(plot.get());
   window.resize(400, 300);
   window.show();

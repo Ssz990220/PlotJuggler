@@ -405,6 +405,8 @@ void StreamingSourceManager::startSession(const QString& plugin_id) {
       .catalog = extensions_,
       .parent = dialog_parent_,
       .initial_parser_config = initial_parser_config,
+      .section_band_metrics =
+          chrome_metrics_provider_ ? std::optional<ChromeMetrics>(chrome_metrics_provider_()) : std::nullopt,
   });
   if (dlg.outcome == dialog_presenter::Outcome::kPluginContractViolation) {
     emit streamError(

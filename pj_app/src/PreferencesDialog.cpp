@@ -5,9 +5,9 @@
 
 #include <QAbstractItemModel>
 #include <QBrush>
+#include <QColor>
 #include <QDir>
 #include <QFile>
-#include <QFileDialog>
 #include <QFormLayout>
 #include <QIcon>
 #include <QImage>
@@ -15,6 +15,7 @@
 #include <QPainter>
 #include <QPixmap>
 #include <QPushButton>
+#include <QRegularExpression>
 #include <QSettings>
 #include <QStackedWidget>
 #include <QSvgRenderer>
@@ -27,9 +28,10 @@
 #include "Splashscreen.h"
 #include "Theme.h"
 #include "pj_widgets/DualOptionsWidget.h"
+#include "pj_widgets/FileDialog.h"
+#include "pj_widgets/FrameworkTokens.h"
 #include "pj_widgets/IntScrubber.h"
 #include "pj_widgets/SvgButton.h"
-#include "pj_widgets/ThemeColors.h"
 #include "pj_widgets/ToggleSwitch.h"
 #include "ui_PreferencesDialog.h"
 using namespace Qt::StringLiterals;
@@ -47,18 +49,15 @@ constexpr int kDefaultIconPadding = 4;
 constexpr int kDefaultLayoutPadding = 2;
 constexpr int kDefaultLayoutSpacing = 2;
 
-// The toggle's track is gray (off) ↔ blue (on); the baked `#3D3D3D`
-// fill on the sun/moon SVGs reads as muddy dark-gray-on-blue. Recolor
-// to pure white at load time so the glyphs pop against either track
-// tone. Used only here — keep it local rather than promoting a helper.
-QIcon loadWhiteFillIcon(const QString& resource_path) {
+QIcon loadIconInkIcon(const QString& resource_path, theme::Theme token_theme) {
   QFile file(resource_path);
   if (!file.open(QFile::ReadOnly | QFile::Text)) {
     return {};
   }
-  QByteArray svg = file.readAll();
-  svg.replace("#3D3D3D", "#FFFFFF");
-  QSvgRenderer renderer(svg);
+  QString svg = QString::fromUtf8(file.readAll());
+  const QString ink = theme::iconInk(token_theme).name(QColor::HexRgb);
+  svg.replace(QRegularExpression(QStringLiteral(R"(fill="#[0-9A-Fa-f]{6}")")), QStringLiteral("fill=\"%1\"").arg(ink));
+  QSvgRenderer renderer(svg.toUtf8());
   QImage image(64, 64, QImage::Format_ARGB32);
   image.fill(Qt::transparent);
   QPainter painter(&image);
@@ -223,11 +222,13 @@ PreferencesDialog::PreferencesDialog(Theme& theme, QWidget* parent)
   // on disk render in red. The custom list persists on OK and applies on next
   // launch (no hot reload of extensions).
   if (main_window != nullptr) {
-    auto paint_missing = [](QListWidget* list) {
+    auto paint_missing = [this](QListWidget* list) {
+      const auto token_theme = theme::themeFor(theme_.currentTheme() == QLatin1String("light"));
+      const QBrush missing_brush(theme::interaction(theme::Variant::Highlight, theme::State::Nominal, token_theme));
       for (int row = 0; row < list->count(); ++row) {
         QListWidgetItem* item = list->item(row);
         const bool missing = !QDir(item->text()).exists();
-        item->setForeground(missing ? QBrush(theme::kAccentError) : QBrush());
+        item->setForeground(missing ? missing_brush : QBrush());
         item->setToolTip(missing ? tr("This folder does not exist.") : QString());
       }
     };
@@ -245,6 +246,10 @@ PreferencesDialog::PreferencesDialog(Theme& theme, QWidget* parent)
     ui_->listDefaultPluginFolders->setSelectionMode(QAbstractItemView::NoSelection);
     ui_->listDefaultPluginFolders->setFocusPolicy(Qt::NoFocus);
     paint_missing(ui_->listDefaultPluginFolders);
+    connect(&theme_, &Theme::themeChanged, this, [this, paint_missing](const QString&) {
+      paint_missing(ui_->listCustomPluginFolders);
+      paint_missing(ui_->listDefaultPluginFolders);
+    });
 
     // SvgButton re-tints itself on a theme change — no manual retint wiring.
     ui_->buttonAddPluginFolder->setIconPath(u":/resources/svg/add.svg"_s);
@@ -254,7 +259,7 @@ PreferencesDialog::PreferencesDialog(Theme& theme, QWidget* parent)
     ui_->buttonAddPluginFolder->setToolTip(tr("Add a plugin folder…"));
     ui_->buttonRemovePluginFolder->setToolTip(tr("Remove the selected folder"));
     connect(ui_->buttonAddPluginFolder, &QToolButton::clicked, this, [this, paint_missing]() {
-      const QString dir = QFileDialog::getExistingDirectory(this, tr("Add plugin folder"));
+      const QString dir = PJ::FileDialog::getExistingDirectory(this, tr("Add plugin folder"));
       if (!dir.isEmpty()) {
         ui_->listCustomPluginFolders->addItem(dir);
         paint_missing(ui_->listCustomPluginFolders);
@@ -292,10 +297,12 @@ PreferencesDialog::PreferencesDialog(Theme& theme, QWidget* parent)
   //
   // Larger than the compact 34x18 default so the sun/moon icons read clearly.
   ui_->themeToggle->setFixedSize(44, 24);
-  // Icons are forced to white so they read clearly against the
-  // colored track (blue when on, gray when off).
-  ui_->themeToggle->setLeftIcon(loadWhiteFillIcon(u":/resources/svg/light_mode_light.svg"_s));
-  ui_->themeToggle->setRightIcon(loadWhiteFillIcon(u":/resources/svg/dark_mode_light.svg"_s));
+  auto apply_toggle_icons = [this]() {
+    const auto token_theme = theme::themeFor(theme_.currentTheme() == QLatin1String("light"));
+    ui_->themeToggle->setLeftIcon(loadIconInkIcon(QStringLiteral(":/resources/svg/light_mode_light.svg"), token_theme));
+    ui_->themeToggle->setRightIcon(loadIconInkIcon(QStringLiteral(":/resources/svg/dark_mode_light.svg"), token_theme));
+  };
+  apply_toggle_icons();
   // Snap the toggle to the active theme without animating — the
   // dialog opens with the thumb already at its correct endpoint,
   // not mid-slide from 0 to 1 across the first 180ms after open.
@@ -330,7 +337,11 @@ PreferencesDialog::PreferencesDialog(Theme& theme, QWidget* parent)
   if (main_window != nullptr) {
     connect(
         main_window, &MainWindow::stylesheetChanged, this,
-        [this](const QString&) { ui_->themeToggle->setEnabled(true); }, Qt::QueuedConnection);
+        [this, apply_toggle_icons](const QString&) {
+          apply_toggle_icons();
+          ui_->themeToggle->setEnabled(true);
+        },
+        Qt::QueuedConnection);
   }
   connect(ui_->themeToggle, &ToggleSwitch::clicked, this, [this]() { ui_->themeToggle->setEnabled(false); });
   connect(ui_->themeToggle, &ToggleSwitch::toggled, this, [this](bool checked) {

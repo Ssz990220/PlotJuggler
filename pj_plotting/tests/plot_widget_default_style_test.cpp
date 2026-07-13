@@ -6,6 +6,7 @@
 
 #include <QApplication>
 #include <QDomDocument>
+#include <QPalette>
 #include <QPen>
 #include <QtGlobal>
 #include <string_view>
@@ -17,6 +18,7 @@
 #include "pj_runtime/CatalogModel.h"
 #include "pj_runtime/CurveDescriptor.h"
 #include "pj_runtime/SessionManager.h"
+#include "pj_widgets/FrameworkTokens.h"
 using namespace Qt::StringLiterals;
 
 namespace {
@@ -248,6 +250,74 @@ TEST(PlotWidgetCurveStyle, XyLoadRestoresAliasWithoutDialog) {
   ASSERT_NE(loaded->curve, nullptr);
   EXPECT_EQ(loaded->source_name, u"my alias"_s);
   EXPECT_EQ(loaded->curve->style(), QwtPlotCurve::Dots);  // inherits the plot style
+}
+
+// The empty-plot canvas paints the Data Backdrop surface for the ACTIVE theme,
+// and follows a theme change delivered AFTER construction. Regression: the canvas
+// colour used to be resolved once at construction, so a plot built before the dark
+// palette synced (startup) or a runtime toggle kept the light backdrop. Theme is
+// detected from QPalette::Window lightness, which Theme::syncApplicationPalette
+// keeps in lockstep with the theme tokens.
+TEST(PlotWidgetCanvas, DataBackdropFollowsTheme) {
+  const auto set_window = [](const QColor& c) {
+    QPalette pal = QApplication::palette();
+    pal.setColor(QPalette::Window, c);
+    QApplication::setPalette(pal);
+    QApplication::processEvents();  // deliver ApplicationPaletteChange
+  };
+  // The code sets canvas->setPalette(QColor); mirror that derivation here.
+  const auto expected_window = [](PJ::theme::Theme t) {
+    return QPalette(PJ::theme::surface(PJ::theme::Surface::DataBackdrop, t)).color(QPalette::Window);
+  };
+
+  // Guard: the framework palette resource must actually resolve, else the two
+  // themes collapse to the same invalid colour and every check below passes
+  // trivially (the qrc must be linked into this target).
+  const QColor dark_bg = PJ::theme::surface(PJ::theme::Surface::DataBackdrop, PJ::theme::Theme::Dark);
+  const QColor light_bg = PJ::theme::surface(PJ::theme::Surface::DataBackdrop, PJ::theme::Theme::Light);
+  ASSERT_TRUE(dark_bg.isValid() && light_bg.isValid()) << "framework palette not linked";
+  ASSERT_EQ(dark_bg, QColor("#5C5C70"));
+  ASSERT_EQ(light_bg, QColor("#FFFFFF"));
+  ASSERT_NE(expected_window(PJ::theme::Theme::Dark), expected_window(PJ::theme::Theme::Light));
+
+  PJ::SessionManager session;
+  PJ::CatalogModel catalog(&session);
+
+  // Start dark (Backdrop #373743, lightness < 128): resolved at construction.
+  set_window(QColor("#373743"));
+  PJ::PlotWidget plot(&session, &catalog);
+  auto* canvas = plot.findChild<QWidget*>(QStringLiteral("qwtCanvas"));
+  ASSERT_NE(canvas, nullptr);
+  EXPECT_EQ(canvas->palette().color(QPalette::Window), expected_window(PJ::theme::Theme::Dark));
+
+  // Toggle to light (Backdrop #eeeeee): must reach the canvas via changeEvent.
+  set_window(QColor("#eeeeee"));
+  EXPECT_EQ(canvas->palette().color(QPalette::Window), expected_window(PJ::theme::Theme::Light));
+
+  // And back to dark.
+  set_window(QColor("#373743"));
+  EXPECT_EQ(canvas->palette().color(QPalette::Window), expected_window(PJ::theme::Theme::Dark));
+}
+
+// A default PlotWidget reserves a small top margin (Qwt aligns the canvas to the
+// scales, leaving room for the top axis label). Embedded toolbox charts opt out
+// via setCanvasAlignedToScales(false) so they sit flush against surrounding
+// chrome (e.g. a toolbox banner) — the canvas then starts at the widget's top.
+TEST(PlotWidgetCanvas, FlushTopWhenNotAlignedToScales) {
+  PJ::SessionManager session;
+  PJ::CatalogModel catalog(&session);
+  PJ::PlotWidget plot(&session, &catalog);
+  plot.resize(600, 400);
+  plot.show();
+  qApp->processEvents();
+  const auto canvas_top = [&]() {
+    qApp->processEvents();
+    auto* canvas = plot.findChild<QWidget*>(QStringLiteral("qwtCanvas"));
+    return canvas ? canvas->mapTo(&plot, QPoint(0, 0)).y() : -1;
+  };
+  EXPECT_GT(canvas_top(), 0);  // default: aligned to scales, small top margin
+  plot.setCanvasAlignedToScales(false);
+  EXPECT_EQ(canvas_top(), 0);  // flush: canvas reaches the widget top
 }
 
 int main(int argc, char** argv) {

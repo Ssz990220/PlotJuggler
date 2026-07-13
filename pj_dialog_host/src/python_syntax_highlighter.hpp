@@ -2,9 +2,13 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 
+#include <QGuiApplication>
+#include <QPalette>
 #include <QRegularExpression>
 #include <QSyntaxHighlighter>
 #include <QTextCharFormat>
+
+#include "pj_widgets/FrameworkTokens.h"
 
 namespace PJ {
 
@@ -12,9 +16,11 @@ namespace PJ {
 class PythonSyntaxHighlighter : public QSyntaxHighlighter {
  public:
   explicit PythonSyntaxHighlighter(QTextDocument* parent) : QSyntaxHighlighter(parent) {
+    const auto fw_theme = theme::themeFor(QGuiApplication::palette().window().color().lightness() >= 128);
+
     // Keywords
     QTextCharFormat keyword_fmt;
-    keyword_fmt.setForeground(QColor("#0000ff"));
+    keyword_fmt.setForeground(theme::syntaxInk(theme::SyntaxRole::Keyword, fw_theme));
     keyword_fmt.setFontWeight(QFont::Bold);
     const char* keywords[] = {
         "and",      "as",      "assert", "break", "class",  "continue", "def",    "del", "elif",  "else",   "except",
@@ -29,22 +35,22 @@ class PythonSyntaxHighlighter : public QSyntaxHighlighter {
 
     // Numbers
     QTextCharFormat number_fmt;
-    number_fmt.setForeground(QColor("#098658"));
+    number_fmt.setForeground(theme::syntaxInk(theme::SyntaxRole::Number, fw_theme));
     rules_.append({QRegularExpression("\\b[0-9]+(\\.[0-9]+)?([eE][+-]?[0-9]+)?\\b"), number_fmt});
 
     // Strings (single and double quoted, single-line)
-    string_fmt_.setForeground(QColor("#a31515"));
+    string_fmt_.setForeground(theme::syntaxInk(theme::SyntaxRole::String, fw_theme));
     rules_.append({QRegularExpression("\"[^\"]*\""), string_fmt_});
     rules_.append({QRegularExpression("'[^']*'"), string_fmt_});
 
     // Single-line comments
-    comment_fmt_.setForeground(QColor("#008000"));
+    comment_fmt_.setForeground(theme::syntaxInk(theme::SyntaxRole::Comment, fw_theme));
     comment_fmt_.setFontItalic(true);
     rules_.append({QRegularExpression("#[^\n]*"), comment_fmt_});
 
     // Built-in functions
     QTextCharFormat builtin_fmt;
-    builtin_fmt.setForeground(QColor("#795e26"));
+    builtin_fmt.setForeground(theme::syntaxInk(theme::SyntaxRole::Builtin, fw_theme));
     const char* builtins[] = {"print", "len",   "range", "type",      "int",        "float",   "str",    "list",
                               "dict",  "tuple", "set",   "enumerate", "zip",        "map",     "filter", "sorted",
                               "abs",   "min",   "max",   "sum",       "isinstance", "hasattr", "getattr"};

@@ -44,6 +44,7 @@
 #include <vector>
 
 #include "gtest/gtest.h"
+#include "pj_widgets/FrameworkTokens.h"
 using namespace Qt::StringLiterals;
 
 namespace {
@@ -501,7 +502,11 @@ TEST(WidgetBindingRadioPairAdapter, ConvertsGroupedPairInsideGridRow) {
   overflow_group->addButton(skip);
   grid->addWidget(new QLabel(u"When an array size exceeds:"_s, &root), 0, 0);
   grid->addWidget(spin, 0, 1);
-  grid->addItem(new QSpacerItem(20, 1, QSizePolicy::Expanding, QSizePolicy::Minimum), 0, 2);
+  grid->addItem(
+      new QSpacerItem(
+          PJ::theme::space(PJ::theme::Space::Section), PJ::theme::space(PJ::theme::Space::Tight),
+          QSizePolicy::Expanding, QSizePolicy::Minimum),
+      0, 2);
   grid->addWidget(clamp, 0, 3);
   grid->addWidget(skip, 0, 4);
   grid->addWidget(new QCheckBox(u"Use timestamp inside message (header)"_s, &root), 1, 0, 1, 5);

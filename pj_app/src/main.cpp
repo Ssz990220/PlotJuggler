@@ -11,7 +11,6 @@
 #include <QImage>
 #include <QPixmap>
 #include <QScreen>
-#include <QSettings>
 #include <QSplashScreen>
 #include <QThread>
 #include <QTimer>
@@ -29,6 +28,7 @@
 #include "pj_plotting/PlotWidgetBase.h"
 #include "pj_plotting/RasterTextEngine.h"
 #include "pj_scene3d_widgets/scene_view_widget.h"  // --screenshot grabs the 3D view
+#include "pj_version.h"
 #include "pj_widgets/Style.h"
 using namespace Qt::StringLiterals;
 
@@ -100,6 +100,7 @@ int main(int argc, char* argv[]) {
   QCommandLineParser parser;
   parser.setApplicationDescription(u"PlotJuggler 4"_s);
   parser.addHelpOption();
+  parser.addVersionOption();
   const QCommandLineOption test_data_option(
       u"test-data"_s, u"Populate the datastore with generated sin/cos samples."_s);
   parser.addOption(test_data_option);

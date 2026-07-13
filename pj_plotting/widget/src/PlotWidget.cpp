@@ -16,6 +16,7 @@
 #include <QDragLeaveEvent>
 #include <QDropEvent>
 #include <QFontDatabase>
+#include <QGuiApplication>
 #include <QIODevice>
 #include <QIcon>
 #include <QMenu>
@@ -49,9 +50,9 @@
 #include "pj_runtime/SessionManager.h"
 #include "pj_runtime/Time.h"
 #include "pj_widgets/CurveTreeView.h"
+#include "pj_widgets/FrameworkTokens.h"
 #include "pj_widgets/MessageBox.h"
 #include "pj_widgets/SvgUtil.h"
-#include "pj_widgets/ThemeColors.h"
 using namespace Qt::StringLiterals;
 
 namespace PJ {
@@ -136,20 +137,25 @@ PlotWidget::PlotWidget(SessionManager* session, CatalogModel* catalog, QWidget* 
     : PlotWidgetBase(parent), session_(session), catalog_(catalog) {
   state_id_ = newStateId();
   setAcceptDrops(true);
-  // Magenta playback tracker, matching the Source Timeline's playhead needle
-  // (theme::kPurple) for cross-widget visual consistency. The reference tracker
-  // is blue, matching the timeline's blue reference line.
-  tracker_ = new CurveTracker(qwtPlot(), PJ::theme::kPurple);
-  reference_tracker_ = new CurveTracker(qwtPlot(), QColor(Qt::blue));
+  const auto fw_theme = theme::themeFor(QGuiApplication::palette().color(QPalette::Window).lightness() >= 128);
+  // Highlight playback tracker, matching the Source Timeline's playhead needle
+  // for cross-widget visual consistency. The reference tracker uses Accent,
+  // matching the timeline's reference line.
+  tracker_ =
+      new CurveTracker(qwtPlot(), theme::interaction(theme::Variant::Highlight, theme::State::Checked, fw_theme));
+  reference_tracker_ =
+      new CurveTracker(qwtPlot(), theme::interaction(theme::Variant::Accent, theme::State::Checked, fw_theme));
   reference_tracker_->setParameter(CurveTracker::kLineOnly);
   reference_tracker_->setEnabled(false);
 
   // Mouse-hover inspector. Shows a snap-to-curve dot + value tooltip wherever
   // the mouse points, gated by show_points_. Independent from the playback
-  // tracker (tracker_): the red playback line always shows the current
+  // tracker (tracker_): the playback line always shows the current
   // playback time and is not affected by this toggle.
   show_point_marker_ = new QwtPlotMarker();
-  show_point_marker_->setSymbol(new QwtSymbol(QwtSymbol::Ellipse, QColor(Qt::yellow), QPen(Qt::black), QSize(8, 8)));
+  show_point_marker_->setSymbol(new QwtSymbol(
+      QwtSymbol::Ellipse, theme::interaction(theme::Variant::Emphasis, theme::State::Nominal, fw_theme),
+      QPen(theme::onFill(theme::Variant::Emphasis, theme::State::Nominal, fw_theme)), QSize(8, 8)));
   show_point_marker_->setVisible(false);
   show_point_marker_->attach(qwtPlot());
 
@@ -496,12 +502,12 @@ void PlotWidget::showPointValues(QPoint paint_point) {
 
   if (updated) {
     show_point_marker_->setValue(marker_point);
+    const auto fw_theme = theme::themeFor(QGuiApplication::palette().color(QPalette::Window).lightness() >= 128);
 
     QwtText label;
     label.setText(text);
-    label.setBorderPen(QColor(Qt::transparent));
-    QColor background = qwtPlot()->palette().color(QPalette::Window);
-    background.setAlpha(220);
+    label.setBorderPen(QPen(Qt::NoPen));
+    const QColor background = theme::overlay(theme::Overlay::Hud, fw_theme);
     label.setBackgroundBrush(background);
     QFont font = QFontDatabase::systemFont(QFontDatabase::FixedFont);
     font.setPointSize(9);

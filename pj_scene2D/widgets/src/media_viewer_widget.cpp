@@ -20,6 +20,7 @@
 #include "pj_scene2d_core/video_color.h"  // buildYuvMatrix (BT.601/709 + limited/full range)
 #include "pj_scene2d_widgets/pixel_inspector.h"
 #include "pj_widgets/Colormap.h"  // shared Colormap enum + buildColormapLut + colormapGlsl
+#include "pj_widgets/FrameworkTokens.h"
 using namespace Qt::StringLiterals;
 
 void pjMediaQtInitResources() {
@@ -31,6 +32,8 @@ namespace PJ {
 static constexpr int kPointInspectorCropSize = 10;
 
 MediaViewerWidget::MediaViewerWidget(QWidget* parent) : QRhiWidget(parent) {
+  const auto fw_theme = theme::appTheme();
+  clear_color_ = theme::surface(theme::Surface::DataBackdrop, fw_theme);
   setApi(Api::OpenGL);
   setObjectName(u"mediaViewerCanvas"_s);
   setFocusPolicy(Qt::StrongFocus);
@@ -53,7 +56,8 @@ MediaViewerWidget::~MediaViewerWidget() {
 }
 
 void MediaViewerWidget::setClearColor(const QColor& color) {
-  QColor next = color.isValid() ? color : QColor(Qt::white);
+  const auto fw_theme = theme::appTheme();
+  QColor next = color.isValid() ? color : theme::surface(theme::Surface::DataBackdrop, fw_theme);
   next.setAlpha(255);
   if (next == clear_color_) {
     return;

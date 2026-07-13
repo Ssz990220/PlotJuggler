@@ -17,6 +17,8 @@
 #include <QVBoxLayout>
 #include <algorithm>
 
+#include "pj_widgets/FrameworkTokens.h"
+#include "pj_widgets/Scrollbar.h"
 #include "pj_widgets/SvgUtil.h"
 #include "ui/DiagnosticsCard.h"
 #include "ui_DiagnosticsPopup.h"
@@ -38,6 +40,8 @@ DiagnosticsPopup::DiagnosticsPopup(QWidget* parent) : QFrame(parent), ui_(new Ui
   // Watch viewport resizes — we use them to clamp scrollContents to
   // the viewport width (see syncContentsWidthToViewport).
   ui_->scrollArea->viewport()->installEventFilter(this);
+  // Canonical overlay pill scrollbar in place of the native vertical bar.
+  attachPillScrollbars(this);
 
   // Pin cards to the top of the scroll contents. Replaces the trailing
   // stretch we used to insert in rebuildCards() — that pattern forced
@@ -179,11 +183,13 @@ int DiagnosticsPopup::sizedHeight() const {
   const int count = (history_ == nullptr) ? 0 : history_->size();
   const int visible = qMin(count, kMaxVisibleCards);
   const int rows = qMax(1, visible);  // empty-state row counts as 1
-  return rows * kCardHeight + (rows - 1) * kCardSpacing + 2 * kFrameMargin + kDragHandleHeight;
+  return rows * kCardHeight + (rows - 1) * PJ::theme::space(kCardSpacing) + 2 * PJ::theme::space(kFrameMargin) +
+         kDragHandleHeight;
 }
 
 int DiagnosticsPopup::minimumUserHeight() const {
-  return kMaxVisibleCards * kCardHeight + (kMaxVisibleCards - 1) * kCardSpacing + 2 * kFrameMargin + kDragHandleHeight;
+  return kMaxVisibleCards * kCardHeight + (kMaxVisibleCards - 1) * PJ::theme::space(kCardSpacing) +
+         2 * PJ::theme::space(kFrameMargin) + kDragHandleHeight;
 }
 
 int DiagnosticsPopup::effectiveHeight() const {

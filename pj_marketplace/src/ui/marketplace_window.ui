@@ -7,21 +7,17 @@
   </property>
   <layout class="QVBoxLayout" name="main_layout">
    <property name="spacing"><number>8</number></property>
-   <property name="leftMargin"><number>10</number></property>
-   <property name="topMargin"><number>10</number></property>
-   <property name="rightMargin"><number>10</number></property>
-   <property name="bottomMargin"><number>10</number></property>
+   <property name="leftMargin"><number>8</number></property>
+   <property name="topMargin"><number>8</number></property>
+   <property name="rightMargin"><number>8</number></property>
+   <property name="bottomMargin"><number>8</number></property>
 
    <!-- Toolbar -->
    <item>
     <layout class="QHBoxLayout" name="toolbar_layout">
      <item>
-      <widget class="QLineEdit" name="search_edit_">
-       <property name="placeholderText"><string>Search extensions...</string></property>
-       <!-- Custom themed clear action wired in setupUi() — Qt's stock
-            clearButton is intentionally off so we don't get the
-            system-styled X next to ours. -->
-       <property name="clearButtonEnabled"><bool>false</bool></property>
+      <widget class="PJ::Search" name="search_edit_">
+       <property name="placeholder"><string>Search extensions...</string></property>
       </widget>
      </item>
      <item>
@@ -68,15 +64,15 @@
        <rect><x>0</x><y>0</y><width>618</width><height>440</height></rect>
       </property>
       <layout class="QVBoxLayout" name="cards_layout_">
-       <property name="spacing"><number>6</number></property>
+       <property name="spacing"><number>8</number></property>
        <property name="leftMargin"><number>0</number></property>
        <property name="topMargin"><number>0</number></property>
-       <property name="rightMargin"><number>6</number></property>
+       <property name="rightMargin"><number>8</number></property>
        <property name="bottomMargin"><number>0</number></property>
        <item>
         <spacer name="cards_stretch">
          <property name="orientation"><enum>Qt::Vertical</enum></property>
-         <property name="sizeHint" stdset="0"><size><width>20</width><height>40</height></size></property>
+         <property name="sizeHint" stdset="0"><size><width>20</width><height>16</height></size></property>
         </spacer>
        </item>
       </layout>
@@ -125,6 +121,11 @@
   </layout>
  </widget>
  <customwidgets>
+  <customwidget>
+   <class>PJ::Search</class>
+   <extends>QWidget</extends>
+   <header>pj_widgets/Search.h</header>
+  </customwidget>
   <customwidget>
    <class>PJ::ComboBox</class>
    <extends>QComboBox</extends>

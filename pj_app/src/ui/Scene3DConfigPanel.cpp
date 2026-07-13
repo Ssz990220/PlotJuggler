@@ -6,7 +6,6 @@
 #include <QButtonGroup>
 #include <QDialogButtonBox>
 #include <QEvent>
-#include <QFileDialog>
 #include <QFileInfo>
 #include <QGridLayout>
 #include <QHBoxLayout>
@@ -36,6 +35,8 @@
 #include "pj_widgets/ConfigPanelHost.h"
 #include "pj_widgets/Dialog.h"
 #include "pj_widgets/DoubleScrubber.h"
+#include "pj_widgets/FileDialog.h"
+#include "pj_widgets/FrameworkTokens.h"
 #include "pj_widgets/IntScrubber.h"
 #include "pj_widgets/LayerListView.h"
 #include "pj_widgets/MessageBox.h"
@@ -66,7 +67,7 @@ constexpr int kTrailingSlotWidth = 20;
 constexpr int kTrailingIconPx = 20;
 // Horizontal gap between grid columns; the robot-row HBox reuses it so the robot
 // name's right edge lands on the same x as the field column above.
-constexpr int kGridHSpacing = 8;
+constexpr auto kGridHSpacing = theme::Space::Comfortable;
 
 // Uniform sizing for the inline eye/add/trash buttons so the trailing column is
 // pixel-aligned regardless of the platform style's default tool-button metrics.
@@ -181,15 +182,19 @@ Scene3DConfigPanel::Scene3DConfigPanel(QWidget* parent) : QWidget(parent) {
   // panel's Curve Width / Curve Style bands; each content block under a band
   // re-adds its own 8-px horizontal inset.
   auto* outer = new QVBoxLayout(this);
-  outer->setContentsMargins(0, 0, 0, 0);
-  outer->setSpacing(0);
+  outer->setContentsMargins(
+      PJ::theme::space(theme::Space::None), PJ::theme::space(theme::Space::None), PJ::theme::space(theme::Space::None),
+      PJ::theme::space(theme::Space::None));
+  outer->setSpacing(PJ::theme::space(theme::Space::None));
 
   buildSceneControls(outer);
 
   outer->addWidget(new SectionHeaderBand(tr("Topics"), this));
   auto* topics_host = new QWidget(this);
   auto* topics_layout = new QVBoxLayout(topics_host);
-  topics_layout->setContentsMargins(8, 4, 8, 4);
+  topics_layout->setContentsMargins(
+      PJ::theme::space(theme::Space::Comfortable), PJ::theme::space(theme::Space::Snug),
+      PJ::theme::space(theme::Space::Comfortable), PJ::theme::space(theme::Space::Snug));
   layer_list_ = new LayerListView(topics_host);
   topics_layout->addWidget(layer_list_);
   outer->addWidget(topics_host);
@@ -197,15 +202,19 @@ Scene3DConfigPanel::Scene3DConfigPanel(QWidget* parent) : QWidget(parent) {
   outer->addWidget(new SectionHeaderBand(tr("Settings"), this));
   auto* settings_host = new QWidget(this);
   auto* settings_layout = new QVBoxLayout(settings_host);
-  settings_layout->setContentsMargins(8, 4, 8, 4);
+  settings_layout->setContentsMargins(
+      PJ::theme::space(theme::Space::Comfortable), PJ::theme::space(theme::Space::Snug),
+      PJ::theme::space(theme::Space::Comfortable), PJ::theme::space(theme::Space::Snug));
 
   // Right-aligned copy / paste / apply-to-family row, just below the Settings
   // header. Glyphs are set theme-aware in applyIcons(); enabled state tracks the
   // selection + clipboard via updateParamsToolbarState().
   auto* params_toolbar = new QWidget(settings_host);
   auto* params_toolbar_layout = new QHBoxLayout(params_toolbar);
-  params_toolbar_layout->setContentsMargins(0, 0, 0, 0);
-  params_toolbar_layout->setSpacing(2);
+  params_toolbar_layout->setContentsMargins(
+      PJ::theme::space(theme::Space::None), PJ::theme::space(theme::Space::None), PJ::theme::space(theme::Space::None),
+      PJ::theme::space(theme::Space::None));
+  params_toolbar_layout->setSpacing(PJ::theme::space(theme::Space::Tight));
   params_toolbar_layout->addStretch(1);
   const auto make_param_button = [params_toolbar](const QString& tip) {
     auto* button = new QToolButton(params_toolbar);
@@ -310,9 +319,11 @@ void Scene3DConfigPanel::buildSceneControls(QVBoxLayout* root) {
   const auto add_grid = [this, root]() {
     auto* host = new QWidget(this);
     auto* grid = new QGridLayout(host);
-    grid->setContentsMargins(8, 4, 8, 4);
-    grid->setHorizontalSpacing(kGridHSpacing);
-    grid->setVerticalSpacing(4);
+    grid->setContentsMargins(
+        PJ::theme::space(theme::Space::Comfortable), PJ::theme::space(theme::Space::Snug),
+        PJ::theme::space(theme::Space::Comfortable), PJ::theme::space(theme::Space::Snug));
+    grid->setHorizontalSpacing(PJ::theme::space(kGridHSpacing));
+    grid->setVerticalSpacing(PJ::theme::space(theme::Space::Snug));
     grid->setColumnStretch(1, 1);
     grid->setColumnMinimumWidth(2, kTrailingSlotWidth);
     root->addWidget(host);
@@ -358,7 +369,9 @@ void Scene3DConfigPanel::buildSceneControls(QVBoxLayout* root) {
   int grid_row = 0;
 
   auto* style_row = new QHBoxLayout;
-  style_row->setContentsMargins(0, 0, 0, 0);
+  style_row->setContentsMargins(
+      PJ::theme::space(theme::Space::None), PJ::theme::space(theme::Space::None), PJ::theme::space(theme::Space::None),
+      PJ::theme::space(theme::Space::None));
   const auto make_style_button = [this](const QString& tip) {
     auto* button = new QToolButton(this);
     button->setCheckable(true);
@@ -465,8 +478,10 @@ void Scene3DConfigPanel::buildSceneControls(QVBoxLayout* root) {
   // reserve vertical spacing and leave a phantom gap under Model/URDF.
   robot_rows_host_ = new QWidget(this);
   robot_rows_layout_ = new QVBoxLayout(robot_rows_host_);
-  robot_rows_layout_->setContentsMargins(0, 0, 0, 0);
-  robot_rows_layout_->setSpacing(2);
+  robot_rows_layout_->setContentsMargins(
+      PJ::theme::space(theme::Space::None), PJ::theme::space(theme::Space::None), PJ::theme::space(theme::Space::None),
+      PJ::theme::space(theme::Space::None));
+  robot_rows_layout_->setSpacing(PJ::theme::space(theme::Space::Tight));
   robot_rows_host_->hide();
   tm_grid->addWidget(robot_rows_host_, tm_row, 0, 1, 3);
   ++tm_row;
@@ -652,7 +667,7 @@ void Scene3DConfigPanel::onAddModelClicked() {
     case 0: {  // File
       QSettings settings;
       const QString start_dir = settings.value(QString::fromLatin1(kUrdfBrowseDirKey)).toString();
-      const QString path = QFileDialog::getOpenFileName(
+      const QString path = PJ::FileDialog::getOpenFileName(
           this, tr("Load URDF"), start_dir, tr("URDF files (*.urdf *.xml);;All files (*)"));
       if (path.isEmpty()) {
         return;
@@ -718,8 +733,11 @@ void Scene3DConfigPanel::addRobotRow(uint32_t topic_id_value, const QString& lab
 
   auto* row = new QWidget(this);
   auto* layout = new QHBoxLayout(row);
-  layout->setContentsMargins(0, 0, 0, 0);
-  layout->setSpacing(kGridHSpacing);  // match the grid's column gap so the name's right edge lines up
+  layout->setContentsMargins(
+      PJ::theme::space(theme::Space::None), PJ::theme::space(theme::Space::None), PJ::theme::space(theme::Space::None),
+      PJ::theme::space(theme::Space::None));
+  // Match the grid's column gap so the name's right edge lines up.
+  layout->setSpacing(PJ::theme::space(kGridHSpacing));
   auto* name = new QLineEdit(label, row);
   name->setReadOnly(true);
   name->setFocusPolicy(Qt::NoFocus);

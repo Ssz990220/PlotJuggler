@@ -6,6 +6,7 @@
 #include <QApplication>
 #include <QFontMetrics>
 #include <QPainter>
+#include <QPalette>
 #include <QScreen>
 #include <algorithm>
 #include <array>
@@ -15,6 +16,7 @@
 #include "pj_scene2d_core/depth_range.h"  // isValidDepth — shared depth no-data rule
 #include "pj_scene2d_core/video_color.h"  // buildYuvMatrix — single source of the YUV->RGB coefficients
 #include "pj_widgets/Colormap.h"          // colorFor — same colormap source the GPU depth LUT is built from
+#include "pj_widgets/FrameworkTokens.h"
 using namespace Qt::StringLiterals;
 
 namespace PJ {
@@ -56,6 +58,11 @@ constexpr int kDepthBytesPerPixel = 4;  ///< kDepthR32F: one float32 per pixel
 [[nodiscard]] bool hasExpectedStorage(const DecodedFrame& frame) {
   return frame.width > 0 && frame.height > 0 && frame.pixels != nullptr &&
          frame.pixels->size() >= expectedBufferSize(frame.width, frame.height, frame.format);
+}
+
+PJ::theme::Theme widgetTheme(const QWidget* widget) {
+  (void)widget;
+  return PJ::theme::appTheme();
 }
 
 }  // namespace
@@ -295,7 +302,7 @@ void PixelInspector::hideImmediately() {
 void PixelInspector::paintEvent(QPaintEvent* /*event*/) {
   QPainter painter(this);
   painter.setRenderHint(QPainter::Antialiasing, false);
-  painter.fillRect(rect(), QColor(30, 30, 30, 240));
+  painter.fillRect(rect(), PJ::theme::overlay(PJ::theme::Overlay::Hud, widgetTheme(this)));
   if (mode_ == Mode::Depth) {
     paintDepth(painter);
   } else {
@@ -320,14 +327,16 @@ void PixelInspector::paintRgb(QPainter& painter) {
     }
   }
 
-  painter.setPen(QPen(QColor(80, 80, 80, 120), 1));
+  const auto fw_theme = PJ::theme::appTheme();
+  painter.setPen(QPen(PJ::theme::surface(PJ::theme::Surface::Separation, fw_theme), 1));
   for (int i = 0; i <= crop_size_; ++i) {
     painter.drawLine(grid_x + i * kZoomCellSize, grid_y, grid_x + i * kZoomCellSize, grid_y + zoom_area);
     painter.drawLine(grid_x, grid_y + i * kZoomCellSize, grid_x + zoom_area, grid_y + i * kZoomCellSize);
   }
 
   const int half = crop_size_ / 2;
-  painter.setPen(QPen(Qt::white, 2));
+  painter.setPen(
+      QPen(PJ::theme::outline(PJ::theme::OutlineRole::Interactive, PJ::theme::OutlineState::Focused, fw_theme), 2));
   painter.drawRect(grid_x + half * kZoomCellSize, grid_y + half * kZoomCellSize, kZoomCellSize, kZoomCellSize);
 
   const auto center = cropPixel(half, half);
@@ -335,7 +344,7 @@ void PixelInspector::paintRgb(QPainter& painter) {
   int info_y = grid_y;
   QFont mono(u"monospace"_s, kFontSize);
   painter.setFont(mono);
-  painter.setPen(Qt::white);
+  painter.setPen(PJ::theme::onOverlayHud(fw_theme));
 
   painter.drawText(info_x, info_y + kLineHeight, u"Position: %1, %2"_s.arg(image_x_).arg(image_y_));
   info_y += kLineHeight + 8;
@@ -354,16 +363,17 @@ void PixelInspector::paintRgb(QPainter& painter) {
   info_y += kLineHeight + 12;
 
   painter.fillRect(info_x, info_y, kSwatchSize, kSwatchSize, QColor(center.r, center.g, center.b));
-  painter.setPen(QPen(QColor(100, 100, 100), 1));
+  painter.setPen(QPen(PJ::theme::surface(PJ::theme::Surface::Separation, fw_theme), 1));
   painter.drawRect(info_x, info_y, kSwatchSize, kSwatchSize);
 }
 
 void PixelInspector::paintDepth(QPainter& painter) {
+  const auto fw_theme = PJ::theme::appTheme();
   int x = kPadding;
   int y = kPadding;
   QFont mono(u"monospace"_s, kFontSize);
   painter.setFont(mono);
-  painter.setPen(Qt::white);
+  painter.setPen(PJ::theme::onOverlayHud(fw_theme));
 
   // Labels padded so the values line up under each other in the monospace font.
   painter.drawText(x, y + kLineHeight, u"Position: %1, %2"_s.arg(image_x_).arg(image_y_));
@@ -376,7 +386,7 @@ void PixelInspector::paintDepth(QPainter& painter) {
   const InspectorRgb swatch =
       depth_m_.has_value() ? depthColormapColor(*depth_m_, depth_params_) : InspectorRgb{70, 70, 70};
   painter.fillRect(x, y, kSwatchSize, kSwatchSize, QColor(swatch.r, swatch.g, swatch.b));
-  painter.setPen(QPen(QColor(100, 100, 100), 1));
+  painter.setPen(QPen(PJ::theme::surface(PJ::theme::Surface::Separation, fw_theme), 1));
   painter.drawRect(x, y, kSwatchSize, kSwatchSize);
 }
 

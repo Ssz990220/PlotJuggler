@@ -13,13 +13,11 @@
 #include <QIcon>
 #include <QLabel>
 #include <QLineEdit>
-#include <QMessageBox>
 #include <QMouseEvent>
 #include <QPlainTextEdit>
 #include <QPushButton>
 #include <QSettings>
 #include <QStyle>
-#include <QToolButton>
 #include <QVBoxLayout>
 #include <QWindow>
 
@@ -28,6 +26,11 @@
 #include "pj_marketplace/extension_manager.hpp"
 #include "pj_marketplace/platform_utils.hpp"
 #include "pj_marketplace/registry_manager.hpp"
+#include "pj_widgets/ChromeMetrics.h"
+#include "pj_widgets/FrameworkTokens.h"
+#include "pj_widgets/MessageBox.h"
+#include "pj_widgets/Scrollbar.h"
+#include "pj_widgets/Search.h"
 #include "ui_marketplace_window.h"
 using namespace Qt::StringLiterals;
 
@@ -38,38 +41,6 @@ static constexpr const char* kDefaultRegistryUrl =
     "/refs/heads/development/registry.json";
 
 namespace {
-
-// Event filter that turns a click on a frameless dialog's title bar
-// into a system move. Mirrors what MarketplaceWindow does in its own
-// mousePressEvent, but exposed as a filter so it can serve transient
-// dialogs spun up inline (e.g. the Marketplace Settings popup).
-class FramelessTitleBarDragFilter : public QObject {
- public:
-  FramelessTitleBarDragFilter(QDialog* dlg, QWidget* title_bar, QLabel* title_label, QObject* parent = nullptr)
-      : QObject(parent), dlg_(dlg), title_bar_(title_bar), title_label_(title_label) {}
-
- protected:
-  bool eventFilter(QObject* watched, QEvent* event) override {
-    if (watched == title_bar_ && event->type() == QEvent::MouseButtonPress) {
-      auto* me = static_cast<QMouseEvent*>(event);
-      if (me->button() == Qt::LeftButton) {
-        // Only treat clicks on bare title-bar area or the label as drag
-        // starts — clicks on the close button etc. fall through.
-        QWidget* hit = title_bar_->childAt(me->position().toPoint());
-        if ((hit == nullptr || hit == title_label_) && dlg_->windowHandle() != nullptr) {
-          dlg_->windowHandle()->startSystemMove();
-          return true;
-        }
-      }
-    }
-    return QObject::eventFilter(watched, event);
-  }
-
- private:
-  QDialog* dlg_;
-  QWidget* title_bar_;
-  QLabel* title_label_;
-};
 
 bool installedStatesEqual(const QMap<QString, InstalledExtension>& lhs, const QMap<QString, InstalledExtension>& rhs) {
   if (lhs.size() != rhs.size()) {
@@ -92,7 +63,7 @@ bool installedStatesEqual(const QMap<QString, InstalledExtension>& lhs, const QM
 }  // namespace
 
 MarketplaceWindow::MarketplaceWindow(const QUrl& registry_url, QWidget* parent)
-    : QDialog(parent), ui_(new Ui::MarketplaceWindow) {
+    : Dialog(parent), ui_(new Ui::MarketplaceWindow) {
   download_mgr_ = new DownloadManager(this);
   registry_mgr_ = new RegistryManager(this);
   ext_mgr_ = new ExtensionManager(
@@ -101,7 +72,6 @@ MarketplaceWindow::MarketplaceWindow(const QUrl& registry_url, QWidget* parent)
   const QString saved = settings.value("registry_url").toString();
   registry_url_ = saved.isEmpty() ? registry_url : QUrl(saved);
 
-  installChrome();
   setupUi();
   setupSignals();
   updateDiagnosticsButton();
@@ -111,14 +81,13 @@ MarketplaceWindow::MarketplaceWindow(const QUrl& registry_url, QWidget* parent)
 }
 
 MarketplaceWindow::MarketplaceWindow(ExtensionManager* ext_mgr, const QUrl& registry_url, QWidget* parent)
-    : QDialog(parent), ui_(new Ui::MarketplaceWindow) {
+    : Dialog(parent), ui_(new Ui::MarketplaceWindow) {
   registry_mgr_ = new RegistryManager(this);
   ext_mgr_ = ext_mgr;
   QSettings settings("PlotJuggler", "Marketplace");
   const QString saved = settings.value("registry_url").toString();
   registry_url_ = saved.isEmpty() ? registry_url : QUrl(saved);
 
-  installChrome();
   setupUi();
   setupSignals();
   updateDiagnosticsButton();
@@ -129,7 +98,7 @@ MarketplaceWindow::MarketplaceWindow(ExtensionManager* ext_mgr, const QUrl& regi
 MarketplaceWindow::MarketplaceWindow(
     ExtensionManager* ext_mgr, const QUrl& registry_url, const QMap<QString, InstalledExtension>& installed,
     QWidget* parent)
-    : QDialog(parent), ui_(new Ui::MarketplaceWindow) {
+    : Dialog(parent), ui_(new Ui::MarketplaceWindow) {
   registry_mgr_ = new RegistryManager(this);
   ext_mgr_ = ext_mgr;
   initial_snapshot_provided_ = true;
@@ -137,7 +106,6 @@ MarketplaceWindow::MarketplaceWindow(
   const QString saved = settings.value("registry_url").toString();
   registry_url_ = saved.isEmpty() ? registry_url : QUrl(saved);
 
-  installChrome();
   setupUi();
   setupSignals();
   ext_mgr_->setInstalledExtensions(installed);
@@ -150,98 +118,33 @@ MarketplaceWindow::~MarketplaceWindow() {
   delete ui_;
 }
 
-void MarketplaceWindow::installChrome() {
-  // Frameless + no system shadow so the WM-drawn chrome doesn't overrule
-  // the app's title-bar style. Mirrors what Dialog does in pj_app —
-  // duplicated here because pj_marketplace_ui can't depend on pj_app
-  // without a circular link.
-  setWindowFlag(Qt::FramelessWindowHint, true);
-  setWindowFlag(Qt::NoDropShadowWindowHint, true);
-  setAttribute(Qt::WA_StyledBackground, true);
-  setWindowTitle(tr("PlotJuggler Marketplace"));
-
-  auto* outer = new QVBoxLayout(this);
-  outer->setContentsMargins(0, 0, 0, 0);
-  outer->setSpacing(0);
-
-  dialog_title_bar_ = new QWidget(this);
-  dialog_title_bar_->setObjectName("dialogTitleBar");
-  dialog_title_bar_->setFixedHeight(24);
-  auto* tb_layout = new QHBoxLayout(dialog_title_bar_);
-  tb_layout->setContentsMargins(10, 0, 0, 0);
-  tb_layout->setSpacing(0);
-
-  dialog_title_label_ = new QLabel(tr("PlotJuggler Marketplace"), dialog_title_bar_);
-  dialog_title_label_->setObjectName("dialogTitleLabel");
-
-  auto* close_btn = new QToolButton(dialog_title_bar_);
-  close_btn->setObjectName("buttonClose");
-  close_btn->setFixedSize(23, 23);
-  close_btn->setAutoRaise(true);
-  close_btn->setFocusPolicy(Qt::NoFocus);
-  close_btn->setIconSize(QSize(20, 20));
-  const bool dark_theme = QSettings().value(u"StyleSheet::theme"_s, u"light"_s).toString() != "light"_L1;
-  close_btn->setIcon(
-      QIcon(dark_theme ? u":/resources/svg/close_windows_dark.svg"_s : u":/resources/svg/close_windows_light.svg"_s));
-  connect(close_btn, &QToolButton::clicked, this, &QDialog::reject);
-
-  tb_layout->addWidget(dialog_title_label_);
-  tb_layout->addStretch();
-  tb_layout->addWidget(close_btn);
-
-  auto* body = new QWidget(this);
-  body->setObjectName("dialogContent");
-  ui_->setupUi(body);
-
-  outer->addWidget(dialog_title_bar_);
-  outer->addWidget(body);
-}
-
-void MarketplaceWindow::mousePressEvent(QMouseEvent* event) {
-  if (event->button() == Qt::LeftButton && dialog_title_bar_ != nullptr &&
-      dialog_title_bar_->geometry().contains(event->position().toPoint())) {
-    QWidget* hit = dialog_title_bar_->childAt(dialog_title_bar_->mapFrom(this, event->position().toPoint()));
-    if (hit == nullptr || hit == dialog_title_label_) {
-      if (auto* h = windowHandle()) {
-        h->startSystemMove();
-        event->accept();
-        return;
-      }
-    }
-  }
-  QDialog::mousePressEvent(event);
-}
-
 // ─── UI Setup ────────────────────────────────────────────────────────────────
 
 void MarketplaceWindow::setupUi() {
+  // Canonical chrome: build the .ui onto a child body under PJ::Dialog's title
+  // bar (its content area already owns a zero-margin layout).
+  setDialogTitle(tr("PlotJuggler Marketplace"));
+  auto* body = new QWidget;
+  ui_->setupUi(body);
+  contentLayout()->addWidget(body);
+
   ui_->update_all_btn_->setFixedWidth(90);
   ui_->update_all_btn_->setEnabled(false);
 
   // The marketplace doesn't link pj_app_core, so it can't pipe icons
   // through LoadSvg's recolor. Pick the theme-appropriate variant
   // directly from the resource bundle.
-  const bool dark_theme = QSettings().value(u"StyleSheet::theme"_s, u"light"_s).toString() != "light"_L1;
-  ui_->settings_btn_->setIcon(
-      QIcon(dark_theme ? u":/resources/svg/settings_cog_dark.svg"_s : u":/resources/svg/settings_cog_light.svg"_s));
-  ui_->refresh_btn_->setIcon(
-      QIcon(dark_theme ? u":/resources/svg/reload_dark.svg"_s : u":/resources/svg/reload_light.svg"_s));
-  // Magnifying glass leading the search field, matching the curve list filter.
-  ui_->search_edit_->addAction(
-      QIcon(dark_theme ? u":/resources/svg/search_dark.svg"_s : u":/resources/svg/search_light.svg"_s),
-      QLineEdit::LeadingPosition);
-  // Trailing clear-text "X" — Qt's built-in clearButtonEnabled paints
-  // a stock SP_LineEditClearButton that ignores our theme, so we wire
-  // up our own QAction with the same close glyph used by the dialog
-  // chrome. Hidden when the field is empty.
-  auto* clear_search_action = ui_->search_edit_->addAction(
-      QIcon(dark_theme ? u":/resources/svg/close_windows_dark.svg"_s : u":/resources/svg/close_windows_light.svg"_s),
-      QLineEdit::TrailingPosition);
-  clear_search_action->setVisible(false);
-  connect(ui_->search_edit_, &QLineEdit::textChanged, clear_search_action, [clear_search_action](const QString& text) {
-    clear_search_action->setVisible(!text.isEmpty());
-  });
-  connect(clear_search_action, &QAction::triggered, ui_->search_edit_, &QLineEdit::clear);
+  const bool dark_theme = QSettings().value(QStringLiteral("StyleSheet::theme"), QStringLiteral("light")).toString() !=
+                          QStringLiteral("light");
+  ui_->settings_btn_->setIcon(QIcon(
+      dark_theme ? QStringLiteral(":/resources/svg/settings_cog_dark.svg")
+                 : QStringLiteral(":/resources/svg/settings_cog_light.svg")));
+  ui_->refresh_btn_->setIcon(QIcon(
+      dark_theme ? QStringLiteral(":/resources/svg/reload_dark.svg")
+                 : QStringLiteral(":/resources/svg/reload_light.svg")));
+  // The canonical Search provides the (self-retinting) magnifying glass and a
+  // themed clear "x"; it sits on the toolbar surface, so use the standalone tone.
+  ui_->search_edit_->setVariant(Search::Variant::kStandalone);
 
   // Scroll-area background comes from the central stylesheet
   // (#scroll_area_ rule binds it to ${dark_background}).
@@ -252,7 +155,7 @@ void MarketplaceWindow::setupUi() {
   ui_->category_combo_->addItem("Message Parser", "message_parser");
   ui_->category_combo_->addItem("Toolbox", "toolbox");
 
-  connect(ui_->search_edit_, &QLineEdit::textChanged, this, &MarketplaceWindow::onSearchChanged);
+  connect(ui_->search_edit_, &Search::textChanged, this, &MarketplaceWindow::onSearchChanged);
   connect(
       ui_->category_combo_, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
       &MarketplaceWindow::onCategoryChanged);
@@ -260,6 +163,10 @@ void MarketplaceWindow::setupUi() {
   connect(ui_->update_all_btn_, &QPushButton::clicked, this, &MarketplaceWindow::onUpdateAllClicked);
   connect(ui_->settings_btn_, &QPushButton::clicked, this, &MarketplaceWindow::onSettingsClicked);
   connect(ui_->diagnostics_btn_, &QPushButton::clicked, this, &MarketplaceWindow::onDiagnosticsClicked);
+
+  // Canonical overlay pill scrollbars for the extension list / detail scroll
+  // areas just built (their ranges update live as the registry loads).
+  attachPillScrollbars(this);
 }
 
 // ─── Signal wiring ───────────────────────────────────────────────────────────
@@ -429,8 +336,10 @@ void MarketplaceWindow::populateCards() {
     // are wired in resources/stylesheet_*.qss.
 
     auto* card_layout = new QVBoxLayout(card);
-    card_layout->setContentsMargins(10, 8, 10, 8);
-    card_layout->setSpacing(4);
+    card_layout->setContentsMargins(
+        theme::space(theme::Space::Comfortable), theme::space(theme::Space::Comfortable),
+        theme::space(theme::Space::Comfortable), theme::space(theme::Space::Comfortable));
+    card_layout->setSpacing(theme::space(theme::Space::Snug));
 
     auto* top_row = new QHBoxLayout();
 
@@ -462,7 +371,7 @@ void MarketplaceWindow::populateCards() {
     // Text colour comes from the QFrame#extCard QLabel rule.
 
     auto* btn_box = new QHBoxLayout();
-    btn_box->setSpacing(6);
+    btn_box->setSpacing(theme::space(theme::Space::Comfortable));
 
     // Per-state action button / status badge. Object name selects the
     // matching #extButton* / #extBadge* rule in resources/stylesheet_*.qss.
@@ -522,14 +431,20 @@ void MarketplaceWindow::populateCards() {
 // ─── Event Filter (double-click on card) ─────────────────────────────────────
 
 bool MarketplaceWindow::eventFilter(QObject* obj, QEvent* event) {
+  // Open the detail dialog on a double-click of a card. Consume ONLY when the
+  // event is on a card (it carries an "ext_id"): the base PJ::Dialog installs
+  // this object as an app-wide event filter (for resize-edge cursors), so this
+  // override sees every widget's events — returning true unconditionally would
+  // swallow the card's double-click at the window level before it propagates
+  // down to the card, and no detail dialog would ever open.
   if (event->type() == QEvent::MouseButtonDblClick) {
-    const QString ext_id = static_cast<QFrame*>(obj)->property("ext_id").toString();
+    const QString ext_id = obj->property("ext_id").toString();
     if (!ext_id.isEmpty()) {
       openDetail(ext_id);
+      return true;
     }
-    return true;
   }
-  return QDialog::eventFilter(obj, event);
+  return Dialog::eventFilter(obj, event);
 }
 
 void MarketplaceWindow::openDetail(const QString& ext_id) {
@@ -653,55 +568,15 @@ void MarketplaceWindow::showEvent(QShowEvent* event) {
     updateDiagnosticsButton();
     showLatestDiagnostic();
   }
-  QDialog::showEvent(event);
+  Dialog::showEvent(event);
 }
 
 void MarketplaceWindow::onSettingsClicked() {
-  // Frameless chrome matching the marketplace window itself —
-  // duplicated inline because pj_marketplace can't depend on pj_app's
-  // Dialog without a circular link.
-  QDialog dlg(this);
-  dlg.setWindowTitle(tr("Marketplace Settings"));
-  dlg.setWindowFlag(Qt::FramelessWindowHint, true);
-  dlg.setWindowFlag(Qt::NoDropShadowWindowHint, true);
-  dlg.setAttribute(Qt::WA_StyledBackground, true);
+  Dialog dlg(this);
+  dlg.setDialogTitle(tr("Marketplace Settings"));
   dlg.setMinimumWidth(480);
 
-  auto* outer = new QVBoxLayout(&dlg);
-  outer->setContentsMargins(0, 0, 0, 0);
-  outer->setSpacing(0);
-
-  auto* title_bar = new QWidget(&dlg);
-  title_bar->setObjectName("dialogTitleBar");
-  title_bar->setFixedHeight(24);
-  auto* tb_layout = new QHBoxLayout(title_bar);
-  tb_layout->setContentsMargins(10, 0, 0, 0);
-  tb_layout->setSpacing(0);
-
-  auto* title_label = new QLabel(tr("Marketplace Settings"), title_bar);
-  title_label->setObjectName("dialogTitleLabel");
-
-  auto* close_btn = new QToolButton(title_bar);
-  close_btn->setObjectName("buttonClose");
-  close_btn->setFixedSize(23, 23);
-  close_btn->setAutoRaise(true);
-  close_btn->setFocusPolicy(Qt::NoFocus);
-  close_btn->setIconSize(QSize(20, 20));
-  const bool dark_theme = QSettings().value(u"StyleSheet::theme"_s, u"light"_s).toString() != "light"_L1;
-  close_btn->setIcon(
-      QIcon(dark_theme ? u":/resources/svg/close_windows_dark.svg"_s : u":/resources/svg/close_windows_light.svg"_s));
-  connect(close_btn, &QToolButton::clicked, &dlg, &QDialog::reject);
-
-  tb_layout->addWidget(title_label);
-  tb_layout->addStretch();
-  tb_layout->addWidget(close_btn);
-
-  // Drag the dialog by clicking the bare title-bar area or the label.
-  auto* drag_filter = new FramelessTitleBarDragFilter(&dlg, title_bar, title_label, &dlg);
-  title_bar->installEventFilter(drag_filter);
-
-  auto* body = new QWidget(&dlg);
-  body->setObjectName("dialogContent");
+  auto* body = new QWidget;
   auto* layout = new QFormLayout(body);
 
   auto* url_edit = new QLineEdit(registry_url_.toString(), body);
@@ -728,8 +603,7 @@ void MarketplaceWindow::onSettingsClicked() {
   connect(ok_button, &QPushButton::clicked, &dlg, &QDialog::accept);
   connect(cancel_button, &QPushButton::clicked, &dlg, &QDialog::reject);
 
-  outer->addWidget(title_bar);
-  outer->addWidget(body);
+  dlg.contentLayout()->addWidget(body);
 
   if (dlg.exec() != QDialog::Accepted) {
     return;
@@ -739,7 +613,7 @@ void MarketplaceWindow::onSettingsClicked() {
   const QUrl new_url(text);
   if (text.isEmpty() || !new_url.isValid() ||
       (new_url.scheme() != "http" && new_url.scheme() != "https" && new_url.scheme() != "file")) {
-    QMessageBox::warning(
+    MessageBox::warning(
         this, "Invalid registry URL",
         QString("\"%1\" is not a valid http(s) or file URL. The registry URL was not changed.").arg(text));
     return;
@@ -817,12 +691,13 @@ void MarketplaceWindow::onUpdateAllClicked() {
 }
 
 void MarketplaceWindow::onDiagnosticsClicked() {
-  QDialog dlg(this);
-  dlg.setWindowTitle("Marketplace Diagnostics");
+  Dialog dlg(this);
+  dlg.setDialogTitle(tr("Marketplace Diagnostics"));
   dlg.resize(640, 360);
 
-  auto* layout = new QVBoxLayout(&dlg);
-  auto* text = new QPlainTextEdit(&dlg);
+  auto* body = new QWidget;
+  auto* layout = new QVBoxLayout(body);
+  auto* text = new QPlainTextEdit(body);
   text->setReadOnly(true);
 
   QStringList lines;
@@ -837,10 +712,11 @@ void MarketplaceWindow::onDiagnosticsClicked() {
 
   auto* close_row = new QHBoxLayout;
   close_row->addStretch();
-  auto* close_button = new QPushButton(tr("Close"), &dlg);
+  auto* close_button = new QPushButton(tr("Close"), body);
   close_row->addWidget(close_button);
   connect(close_button, &QPushButton::clicked, &dlg, &QDialog::reject);
   layout->addLayout(close_row);
+  dlg.contentLayout()->addWidget(body);
   dlg.exec();
 }
 

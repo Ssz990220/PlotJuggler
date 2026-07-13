@@ -12,7 +12,6 @@
 #include <QJsonObject>
 #include <QLabel>
 #include <QLoggingCategory>
-#include <QMessageBox>
 #include <QPlainTextEdit>
 #include <QPushButton>
 #include <QSettings>
@@ -50,6 +49,7 @@
 #include "pj_scene3d_widgets/transform_service.h"
 #include "pj_widgets/Dialog.h"
 #include "pj_widgets/FileDialog.h"
+#include "pj_widgets/FrameworkTokens.h"
 #include "pj_widgets/MessageBox.h"
 #include "pj_widgets/ProgressDialog.h"
 #include "pj_widgets/SvgUtil.h"
@@ -133,11 +133,13 @@ int execScrollableMessageDialog(
 
   auto* body_widget = new QWidget;
   auto* vbox = new QVBoxLayout(body_widget);
-  vbox->setContentsMargins(16, 12, 16, 16);
-  vbox->setSpacing(8);
+  vbox->setContentsMargins(
+      PJ::theme::space(theme::Space::Section), PJ::theme::space(theme::Space::Section),
+      PJ::theme::space(theme::Space::Section), PJ::theme::space(theme::Space::Section));
+  vbox->setSpacing(PJ::theme::space(theme::Space::Comfortable));
 
   auto* header = new QHBoxLayout();
-  header->setSpacing(12);
+  header->setSpacing(PJ::theme::space(theme::Space::Section));
   auto* icon_label = new QLabel(body_widget);
   // Use the (already-shown) parent's DPR; the dialog has no screen yet.
   const qreal dpr = dialog_parent != nullptr ? dialog_parent->devicePixelRatioF() : dlg.devicePixelRatioF();
@@ -161,15 +163,19 @@ int execScrollableMessageDialog(
 
   // Read-only, monospace scroll view (the CurveTreeView FixedFont
   // idiom): it scrolls its own content, so the dialog stays bounded.
-  auto* body_view = new QPlainTextEdit(body, body_widget);
-  body_view->setReadOnly(true);
-  body_view->setFrameShape(QFrame::NoFrame);
-  body_view->setLineWrapMode(QPlainTextEdit::NoWrap);
-  QFont mono = body_view->font();
-  mono.setFamily(QFontDatabase::systemFont(QFontDatabase::FixedFont).family());
-  mono.setStyleHint(QFont::Monospace);
-  body_view->setFont(mono);
-  vbox->addWidget(body_view, 1);
+  // Skipped for a short (single-line) message — no detail to scroll, so the
+  // dialog stays compact instead of showing an empty scroll area.
+  if (!body.isEmpty()) {
+    auto* body_view = new QPlainTextEdit(body, body_widget);
+    body_view->setReadOnly(true);
+    body_view->setFrameShape(QFrame::NoFrame);
+    body_view->setLineWrapMode(QPlainTextEdit::NoWrap);
+    QFont mono = body_view->font();
+    mono.setFamily(QFontDatabase::systemFont(QFontDatabase::FixedFont).family());
+    mono.setStyleHint(QFont::Monospace);
+    body_view->setFont(mono);
+    vbox->addWidget(body_view, 1);
+  }
 
   // App button idiom (see PJ::MessageBox): objectName + msgbox_role
   // dynamic property drive the themed look (primary = brand gradient,
@@ -508,63 +514,10 @@ bool FileLoader::beginLoad(const LoadRequest& request) {
           // the user closes the modal (the documented blocking semantics). On the fanout path
           // we are already on the GUI thread, so call directly to avoid a self-deadlock.
           auto show = [&]() -> int {
-            // Long messages (>= kInlineLineLimit lines, e.g. a per-row list of
-            // thousands of skipped CSV lines) go to the app-styled scrollable
-            // dialog; see execScrollableMessageDialog for why and how.
-            constexpr int kInlineLineLimit = 12;
-            if (q_text.count(QLatin1Char('\n')) >= kInlineLineLimit) {
-              return execScrollableMessageDialog(dialog_parent, q_title, q_text, type, buttons);
-            }
-
-            QMessageBox msg_box(dialog_parent);
-            msg_box.setWindowTitle(q_title);
-            msg_box.setText(q_text);
-            switch (type) {
-              case PJ_MESSAGE_BOX_WARNING:
-                msg_box.setIcon(QMessageBox::Warning);
-                break;
-              case PJ_MESSAGE_BOX_ERROR:
-                msg_box.setIcon(QMessageBox::Critical);
-                break;
-              case PJ_MESSAGE_BOX_QUESTION:
-                msg_box.setIcon(QMessageBox::Question);
-                break;
-              default:
-                msg_box.setIcon(QMessageBox::Information);
-                break;
-            }
-            QPushButton* btn_ok = (buttons & PJ_MSG_BTN_OK) ? msg_box.addButton(QMessageBox::Ok) : nullptr;
-            QPushButton* btn_cancel = (buttons & PJ_MSG_BTN_CANCEL) ? msg_box.addButton(QMessageBox::Cancel) : nullptr;
-            QPushButton* btn_yes = (buttons & PJ_MSG_BTN_YES) ? msg_box.addButton(QMessageBox::Yes) : nullptr;
-            QPushButton* btn_no = (buttons & PJ_MSG_BTN_NO) ? msg_box.addButton(QMessageBox::No) : nullptr;
-            QPushButton* btn_continue = (buttons & PJ_MSG_BTN_CONTINUE)
-                                            ? msg_box.addButton(QObject::tr("Continue"), QMessageBox::AcceptRole)
-                                            : nullptr;
-            QPushButton* btn_abort = (buttons & PJ_MSG_BTN_ABORT)
-                                         ? msg_box.addButton(QObject::tr("Abort"), QMessageBox::RejectRole)
-                                         : nullptr;
-
-            msg_box.exec();
-            const auto* clicked = msg_box.clickedButton();
-            if (clicked == btn_continue) {
-              return PJ_MSG_BTN_CONTINUE;
-            }
-            if (clicked == btn_abort) {
-              return PJ_MSG_BTN_ABORT;
-            }
-            if (clicked == btn_yes) {
-              return PJ_MSG_BTN_YES;
-            }
-            if (clicked == btn_no) {
-              return PJ_MSG_BTN_NO;
-            }
-            if (clicked == btn_ok) {
-              return PJ_MSG_BTN_OK;
-            }
-            if (clicked == btn_cancel) {
-              return PJ_MSG_BTN_CANCEL;
-            }
-            return -1;
+            // Every host-shown plugin message uses the app-styled dialog (PJ::Dialog,
+            // no system/GNOME chrome): it scrolls long detail (per-row lists of
+            // thousands of skipped CSV lines) and stays compact for short text.
+            return execScrollableMessageDialog(dialog_parent, q_title, q_text, type, buttons);
           };
 
           if (QThread::currentThread() == qApp->thread()) {

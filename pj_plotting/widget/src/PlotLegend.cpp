@@ -18,6 +18,8 @@
 #include <unordered_map>
 using namespace Qt::StringLiterals;
 
+#include "pj_widgets/FrameworkTokens.h"
+
 namespace PJ {
 
 namespace {
@@ -76,7 +78,7 @@ PlotLegend::PlotLegend(QwtPlot* parent) : parent_plot_(parent) {
   setMaxColumns(1);
   setAlignmentInCanvas(Qt::Alignment(Qt::AlignTop | Qt::AlignRight));
   setBackgroundMode(QwtPlotLegendItem::BackgroundMode::LegendBackground);
-  setBorderRadius(0);
+  setBorderRadius(theme::radius(theme::Radius::Square));
   setMargin(2);
   setSpacing(1);
   setItemMargin(2);
@@ -108,9 +110,11 @@ void PlotLegend::draw(QPainter* painter, const QwtScaleMap& x_map, const QwtScal
   }
 
   painter->save();
+  const auto fw_theme = theme::appTheme();
   const QColor color = parent_plot_->canvas()->palette().windowText().color();
   painter->setPen(color);
-  painter->setBrush(QBrush(Qt::white, Qt::SolidPattern));
+  painter->setBrush(
+      QBrush(theme::interaction(theme::Variant::Neutral, theme::State::Nominal, fw_theme), Qt::SolidPattern));
   painter->drawEllipse(icon_rect);
 
   if (collapsed_) {
@@ -160,8 +164,10 @@ void PlotLegend::drawLegendData(
   }
 
   QPen pen = textPen();
-  const QColor text_color =
-      plot_item->isVisible() ? parent_plot_->canvas()->palette().windowText().color() : QColor(122, 122, 122);
+  const auto fw_theme = theme::appTheme();
+  const QColor text_color = plot_item->isVisible()
+                                ? parent_plot_->canvas()->palette().windowText().color()
+                                : theme::onSurface(theme::Surface::DataBackdrop, theme::Emphasis::Disabled, fw_theme);
   pen.setColor(text_color);
   logLegendEntry(parent_plot_, text.text(), /*empty=*/false, item_rect, title_offset, text_color, canvas_bg);
   painter->setPen(pen);
@@ -171,16 +177,12 @@ void PlotLegend::drawLegendData(
 
 void PlotLegend::drawBackground(QPainter* painter, const QRectF& rect) const {
   painter->save();
+  const auto fw_theme = theme::appTheme();
   QPen pen = textPen();
-  QColor border = parent_plot_->canvas()->palette().windowText().color();
-  border.setAlphaF(0.4);
+  const QColor border = theme::outline(theme::OutlineRole::Default, theme::OutlineState::Rest, fw_theme);
   pen.setColor(border);
   painter->setPen(pen);
-  QColor background = parent_plot_->palette().window().color();
-  if (!background.isValid() || background.alpha() == 0) {
-    background = parent_plot_->canvas()->palette().window().color();
-  }
-  background.setAlphaF(0.4);
+  const QColor background = theme::overlay(theme::Overlay::Hud, fw_theme);
   painter->setBrush(background);
   const double radius = borderRadius();
   painter->drawRoundedRect(rect, radius, radius);

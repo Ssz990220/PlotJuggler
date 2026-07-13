@@ -41,6 +41,7 @@
 #include "pj_scene3d_widgets/hud_overlay.h"
 #include "pj_scene3d_widgets/render_pass.h"
 #include "pj_scene3d_widgets/scene3d_layer.h"
+#include "pj_widgets/FrameworkTokens.h"
 using namespace Qt::StringLiterals;
 
 namespace pj::scene3d {
@@ -825,9 +826,9 @@ void SceneViewWidget::renderScene(
   // application palette is kept in lockstep with the theme by pj_app's Theme.
   const QPalette pal = QGuiApplication::palette();
   const QColor window_bg = pal.color(QPalette::Window);
-  const bool dark_theme = window_bg.valueF() < 0.5F;
-  const QColor bg = dark_theme ? QColor(45, 48, 56) : QColor(255, 255, 255);
-  const QColor fg = dark_theme ? QColor(220, 220, 220) : QColor(40, 40, 40);
+  const auto fw_theme = PJ::theme::themeFor(window_bg.lightness() >= 128);
+  const QColor bg = PJ::theme::surface(PJ::theme::Surface::DataBackdrop, fw_theme);
+  const QColor fg = PJ::theme::onSurface(PJ::theme::Surface::DataBackdrop, PJ::theme::Emphasis::Default, fw_theme);
   // Off-screen path: the scene FBO is linear-light (the composite present
   // re-encodes to sRGB), so display-referred theme colors must be linearized on
   // write. The direct-to-backing fallback has no encode — leave them as-is there.
@@ -1178,11 +1179,13 @@ void SceneViewWidget::drawPerfHud() {
   font.setStyleHint(QFont::Monospace);
   font.setPointSizeF(9.5);
 
+  const auto fw_theme = PJ::theme::appTheme();
+
   // Rasterize the panel + text on the CPU and blit it: a glyph-atlas-free path
   // that survives the GL context recreation ADS triggers on dock reparent /
   // layout restore (see hud_overlay.h). drawImage is a plain textured quad.
-  const QImage panel =
-      renderHudPanel(lines, font, devicePixelRatioF(), /*padding=*/8, /*panel_alpha=*/150, QColor(235, 235, 235));
+  const QImage panel = renderHudPanel(
+      lines, font, devicePixelRatioF(), /*padding=*/8, /*panel_alpha=*/150, PJ::theme::onOverlayHud(fw_theme));
   if (panel.isNull()) {
     return;
   }
@@ -1221,9 +1224,10 @@ void SceneViewWidget::drawHoverLabel(const FrameContext& frame_ctx) {
   // paint engine renders correctly regardless.
   QFont font;
   font.setPointSizeF(9.5);
+  const auto fw_theme = PJ::theme::appTheme();
   const QImage panel = renderHudPanel(
       {QString::fromStdString(*hovered_frame_)}, font, devicePixelRatioF(),
-      /*padding=*/6, /*panel_alpha=*/170, QColor(235, 235, 235));
+      /*padding=*/6, /*panel_alpha=*/170, PJ::theme::onOverlayHud(fw_theme));
   if (panel.isNull()) {
     return;
   }
@@ -1243,7 +1247,8 @@ void SceneViewWidget::drawHoverLabel(const FrameContext& frame_ctx) {
   // A small ring on the frame origin ties the label to the gizmo it names.
   painter.setRenderHint(QPainter::Antialiasing, true);
   painter.setBrush(Qt::NoBrush);
-  painter.setPen(QPen(QColor(255, 255, 255, 200), 1.5));
+  painter.setPen(
+      QPen(PJ::theme::outline(PJ::theme::OutlineRole::Interactive, PJ::theme::OutlineState::Hovered, fw_theme), 1.5));
   painter.drawEllipse(QPointF(anchor->x, anchor->y), 3.0, 3.0);
 }
 

@@ -19,8 +19,10 @@
 #include <QDragEnterEvent>
 #include <QDragLeaveEvent>
 #include <QDropEvent>
+#include <QGuiApplication>
 #include <QHBoxLayout>
 #include <QMouseEvent>
+#include <QPalette>
 #include <QPen>
 #include <QSettings>
 #include <QWheelEvent>
@@ -36,6 +38,7 @@
 #include "pj_plotting/PlotMagnifier.h"
 #include "pj_plotting/PlotPanner.h"
 #include "pj_plotting/PlotZoomer.h"
+#include "pj_widgets/FrameworkTokens.h"
 
 namespace PJ {
 namespace {
@@ -43,6 +46,14 @@ namespace {
 [[nodiscard]] bool isUsableRect(const QRectF& rect) noexcept {
   return rect.width() >= 0.0 && rect.height() >= 0.0 && std::isfinite(rect.left()) && std::isfinite(rect.right()) &&
          std::isfinite(rect.top()) && std::isfinite(rect.bottom());
+}
+
+// The Data Backdrop fill for the active theme. Theme detection uses the synced
+// application palette's Window lightness (Theme::syncApplicationPalette keeps it
+// in lockstep with the theme tokens), so this must be read AFTER a theme applies.
+[[nodiscard]] QColor dataBackdropForCurrentTheme() {
+  const bool is_light = QGuiApplication::palette().color(QPalette::Window).lightness() >= 128;
+  return PJ::theme::surface(PJ::theme::Surface::DataBackdrop, PJ::theme::themeFor(is_light));
 }
 
 [[nodiscard]] QColor colorFromIndex(int index) {
@@ -79,22 +90,27 @@ class PlotWidgetBase::QwtPlotPimpl : public QwtPlot {
         event_callback(std::move(event_callback)),
         parent(parent_widget) {
     setCanvas(canvas_widget);
+    const auto fw_theme = theme::appTheme();
     legend = new PlotLegend(this);
     grid = new QwtPlotGrid();
     grid->enableX(false);
     grid->enableXMin(false);
     grid->enableY(false);
     grid->enableYMin(false);
-    grid->setMajorPen(QPen(QColor(150, 150, 150), 0.0, Qt::DashLine));
-    grid->setMinorPen(QPen(QColor(210, 210, 210), 0.0, Qt::DotLine));
+    grid->setMajorPen(
+        QPen(theme::outline(theme::OutlineRole::Gridline, theme::OutlineState::Rest, fw_theme), 0.0, Qt::DashLine));
+    grid->setMinorPen(
+        QPen(theme::outline(theme::OutlineRole::Gridline, theme::OutlineState::Rest, fw_theme), 0.0, Qt::DotLine));
     grid->attach(this);
     magnifier = new PlotMagnifier(canvas_widget);
     panner1 = new PlotPanner(canvas_widget);
     panner2 = new PlotPanner(canvas_widget);
     zoomer = new PlotZoomer(canvas_widget);
 
-    zoomer->setRubberBandPen(QPen(QColor(Qt::red), 1, Qt::DotLine));
-    zoomer->setTrackerPen(QPen(QColor(Qt::green), 1, Qt::DotLine));
+    zoomer->setRubberBandPen(
+        QPen(theme::outline(theme::OutlineRole::Interactive, theme::OutlineState::Focused, fw_theme), 1, Qt::DotLine));
+    zoomer->setTrackerPen(
+        QPen(theme::onSurface(theme::Surface::DataBackdrop, theme::Emphasis::Default, fw_theme), 1, Qt::DotLine));
     zoomer->setMousePattern(QwtEventPattern::MouseSelect1, Qt::LeftButton, Qt::NoModifier);
 
     magnifier->setAxisEnabled(QwtPlot::xTop, false);
@@ -186,11 +202,12 @@ PlotWidgetBase::PlotWidgetBase(QWidget* parent) : QWidget(parent) {
 
   const bool use_opengl = !g_opengl_disabled_override && QSettings().value("Preferences::use_opengl", true).toBool();
 
-  // TODO(theme): QwtPlotCanvas uses a backing-store paint path that ignores
-  //   QSS background rules, so the canvas needs a solid palette colour here.
-  //   Currently baked to the light-theme ${dark_background} value (#F5F5F5);
-  //   should be wired to react on themeChanged. See resources/visual_guidelines.md §5.
-  const QColor canvas_bg(0xf5, 0xf5, 0xf5);
+  // QwtPlotCanvas uses a backing-store paint path that ignores QSS background
+  // rules, so the canvas needs a solid palette colour. The Main Plot is the
+  // Data Backdrop surface (ui_framework.md § Data Backdrop); read it from the
+  // framework for the current theme. changeEvent() re-applies it when the theme
+  // is applied after construction or toggled at runtime.
+  const QColor canvas_bg = dataBackdropForCurrentTheme();
 
   QWidget* abs_canvas = nullptr;
   if (use_opengl) {
@@ -218,7 +235,9 @@ PlotWidgetBase::PlotWidgetBase(QWidget* parent) : QWidget(parent) {
   plot_ = new QwtPlotPimpl(this, abs_canvas, on_view_resized, on_event);
 
   auto* layout = new QHBoxLayout(this);
-  layout->setContentsMargins(0, 0, 0, 0);
+  layout->setContentsMargins(
+      PJ::theme::space(theme::Space::None), PJ::theme::space(theme::Space::None), PJ::theme::space(theme::Space::None),
+      PJ::theme::space(theme::Space::None));
   layout->addWidget(plot_);
 
   plot_->setMinimumSize(100, 100);
@@ -240,6 +259,25 @@ PlotWidgetBase::~PlotWidgetBase() {
   plot_ = nullptr;
 }
 
+void PlotWidgetBase::refreshCanvasBackground() {
+  QwtPlot* plot = qwtPlot();
+  QWidget* canvas = (plot != nullptr) ? plot->canvas() : nullptr;
+  if (canvas == nullptr) {
+    return;
+  }
+  canvas->setPalette(dataBackdropForCurrentTheme());
+  canvas->update();
+}
+
+void PlotWidgetBase::changeEvent(QEvent* event) {
+  QWidget::changeEvent(event);
+  // QGuiApplication::setPalette (Theme::syncApplicationPalette) delivers
+  // ApplicationPaletteChange to every widget; re-derive the Data Backdrop then.
+  if (event->type() == QEvent::ApplicationPaletteChange || event->type() == QEvent::PaletteChange) {
+    refreshCanvasBackground();
+  }
+}
+
 PlotWidgetBase::CurveInfo* PlotWidgetBase::addCurve(
     const QString& name, QwtSeriesData<QPointF>* series, QColor color, const QString& display_name) {
   if (series == nullptr || curveFromTitle(name) != nullptr) {
@@ -258,11 +296,18 @@ PlotWidgetBase::CurveInfo* PlotWidgetBase::addCurve(
 
   // Per-curve tracker marker: the dot that rides an XY curve at the playback
   // cursor (PlotWidget's XY tracker moves + shows it). Fill matches the curve so
-  // multi-curve XY plots stay legible; hidden until the XY tracker reveals it.
+  // multi-curve XY plots stay legible (all markers show at once — a single
+  // shared color would make them unattributable); hidden until the XY tracker
+  // reveals it. The outline uses the data-backdrop ink so the dot separates
+  // from the identically-colored curve underneath.
   auto* marker = new QwtPlotMarker;
   marker->attach(qwtPlot());
   marker->setVisible(false);
-  marker->setSymbol(new QwtSymbol(QwtSymbol::Ellipse, curve->pen().color(), QPen(Qt::black), QSize(8, 8)));
+  const auto fw_theme = theme::appTheme();
+  const QColor marker_fill = curve->pen().color();
+  marker->setSymbol(new QwtSymbol(
+      QwtSymbol::Ellipse, marker_fill,
+      QPen(theme::onSurface(theme::Surface::DataBackdrop, theme::Emphasis::Default, fw_theme)), QSize(8, 8)));
 
   plot_->curve_list.push_back(CurveInfo{.source_name = name, .curve = curve, .marker = marker});
   emit curveListChanged();
@@ -445,6 +490,11 @@ void PlotWidgetBase::setGridVisible(bool visible) {
 
 bool PlotWidgetBase::gridVisible() const noexcept {
   return plot_->grid->xEnabled();
+}
+
+void PlotWidgetBase::setCanvasAlignedToScales(bool aligned) {
+  plot_->plotLayout()->setAlignCanvasToScales(aligned);
+  plot_->updateLayout();
 }
 
 void PlotWidgetBase::setZoomEnabled(bool enabled) {

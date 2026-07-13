@@ -16,9 +16,13 @@ namespace PJ {
 
 ExtensionDetailDialog::ExtensionDetailDialog(
     const Extension& ext, const QString& installed_version, bool needs_restart, QWidget* parent)
-    : QDialog(parent), ui_(new Ui::ExtensionDetailDialog) {
-  ui_->setupUi(this);
-  setWindowTitle(ext.name + " — Details");
+    : Dialog(parent), ui_(new Ui::ExtensionDetailDialog) {
+  // The Dialog content area already owns a zero-margin layout, so build the .ui
+  // onto a child body and add it, rather than setupUi(contentWidget()).
+  auto* body = new QWidget;
+  ui_->setupUi(body);
+  contentLayout()->addWidget(body);
+  setDialogTitle(ext.name + " — Details");
 
   // ── Title ──────────────────────────────────────────────────────────────────
   ui_->title_lbl->setText(ext.name + "  v" + ext.version);

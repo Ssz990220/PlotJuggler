@@ -507,11 +507,15 @@ if(PJ_BUILD_TESTS)
   # under xvfb-run. Needs a QApplication (custom main) so it links GTest::gtest.
   add_executable(hud_overlay_gl_test
     tests/hud_overlay_gl_test.cpp
+    ${CMAKE_SOURCE_DIR}/resources/resources.qrc
   )
   target_link_libraries(hud_overlay_gl_test PRIVATE
     pj_scene3d_widgets
     GTest::gtest
   )
+  # The overlay text/border colours now resolve from the framework palette
+  # (pj_widgets FrameworkTokens), so the stylesheet resource must be compiled in.
+  set_target_properties(hud_overlay_gl_test PROPERTIES AUTORCC ON)
   target_compile_options(hud_overlay_gl_test PRIVATE ${PJ_WARNING_FLAGS} ${PJ_SANITIZER_FLAGS})
   add_test(NAME hud_overlay_gl_test COMMAND hud_overlay_gl_test)
 

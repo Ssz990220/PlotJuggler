@@ -33,6 +33,7 @@
 #include "pj_plotting/PlotWidget.h"
 #include "pj_runtime/CatalogModel.h"
 #include "pj_runtime/SessionManager.h"
+#include "pj_widgets/FrameworkTokens.h"
 using namespace Qt::StringLiterals;
 
 namespace {
@@ -116,7 +117,9 @@ TEST(PlotCanvasContextRecreation, CanvasStillDrawsAfterContextRecreation) {
 
   QWidget window1;
   auto* layout1 = new QVBoxLayout(&window1);
-  layout1->setContentsMargins(0, 0, 0, 0);
+  layout1->setContentsMargins(
+      PJ::theme::space(PJ::theme::Space::None), PJ::theme::space(PJ::theme::Space::None),
+      PJ::theme::space(PJ::theme::Space::None), PJ::theme::space(PJ::theme::Space::None));
   layout1->addWidget(plot.get());
   window1.resize(400, 300);
   window1.show();
@@ -140,7 +143,9 @@ TEST(PlotCanvasContextRecreation, CanvasStillDrawsAfterContextRecreation) {
   // which recreates the QOpenGLWidget's (unshared) context.
   QWidget window2;
   auto* layout2 = new QVBoxLayout(&window2);
-  layout2->setContentsMargins(0, 0, 0, 0);
+  layout2->setContentsMargins(
+      PJ::theme::space(PJ::theme::Space::None), PJ::theme::space(PJ::theme::Space::None),
+      PJ::theme::space(PJ::theme::Space::None), PJ::theme::space(PJ::theme::Space::None));
   plot->setParent(nullptr);
   layout2->addWidget(plot.get());
   window2.resize(400, 300);  // same size -> the cached FBO would be reused as-is

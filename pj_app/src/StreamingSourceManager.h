@@ -4,11 +4,13 @@
 
 #include <QObject>
 #include <QString>
+#include <functional>
 #include <memory>
 #include <unordered_map>
 #include <vector>
 
 #include "pj_base/types.hpp"
+#include "pj_widgets/ChromeMetrics.h"
 
 QT_BEGIN_NAMESPACE
 class QThread;
@@ -43,6 +45,16 @@ class StreamingSourceManager : public QObject {
 
   StreamingSourceManager(const StreamingSourceManager&) = delete;
   StreamingSourceManager& operator=(const StreamingSourceManager&) = delete;
+
+  // Supplies the app's live chrome metrics so a plugin's stream dialog sizes its
+  // SectionHeaderBands to the canonical band height (matching the toolboxes).
+  // Injected by the shell to keep this manager free of a MainWindow link — same
+  // pattern as FileLoader::setFilePicker. Read at dialog-show time, so it always
+  // reflects the current icon-size preference. Unset -> bands keep default size.
+  using ChromeMetricsProvider = std::function<ChromeMetrics()>;
+  void setChromeMetricsProvider(ChromeMetricsProvider provider) {
+    chrome_metrics_provider_ = std::move(provider);
+  }
 
   // True iff any session is currently live.
   bool hasActiveSession() const;
@@ -168,6 +180,7 @@ class StreamingSourceManager : public QObject {
   CatalogModel& catalog_;
   TopicDemandTracker& topic_demand_tracker_;
   QWidget* dialog_parent_;
+  ChromeMetricsProvider chrome_metrics_provider_;
 
   QString selected_plugin_;
   int retention_seconds_ = 5;

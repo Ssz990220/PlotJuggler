@@ -4,17 +4,31 @@
 #include "pj_scene3d_widgets/hud_overlay.h"
 
 #include <QFontMetrics>
+#include <QGuiApplication>
 #include <QPainter>
+#include <QPalette>
 #include <QRectF>
 #include <QSize>
 #include <algorithm>
 #include <cmath>
 
+#include "pj_widgets/FrameworkTokens.h"
+
 namespace pj::scene3d {
+
+namespace {
+
+PJ::theme::Theme appTheme() {
+  const QColor window = QGuiApplication::palette().color(QPalette::Window);
+  return PJ::theme::themeFor(window.lightnessF() > 0.5);
+}
+
+}  // namespace
 
 QImage renderHudPanel(
     const QStringList& lines, const QFont& font, qreal device_pixel_ratio, int padding, int panel_alpha,
     const QColor& text_color) {
+  (void)panel_alpha;
   // Nothing to draw: no lines, or every line empty. A null image lets the caller
   // skip the blit entirely.
   const bool has_text = std::any_of(lines.cbegin(), lines.cend(), [](const QString& line) { return !line.isEmpty(); });
@@ -49,11 +63,12 @@ QImage renderHudPanel(
   painter.setRenderHint(QPainter::TextAntialiasing, true);
   painter.setFont(font);
 
-  // Translucent rounded panel (the recipe formerly in SceneViewWidget's
-  // fillHudPanel): black fill at panel_alpha, 4px corner radius.
+  // Translucent rounded panel.
   painter.setPen(Qt::NoPen);
-  painter.setBrush(QColor(0, 0, 0, panel_alpha));
-  painter.drawRoundedRect(QRectF(0, 0, box_w, box_h), 4, 4);
+  const auto active_theme = appTheme();
+  painter.setBrush(PJ::theme::overlay(PJ::theme::Overlay::Hud, active_theme));
+  const int radius = PJ::theme::radius(PJ::theme::Radius::Input, active_theme);
+  painter.drawRoundedRect(QRectF(0, 0, box_w, box_h), radius, radius);
 
   // Lines left-aligned, stacked top to bottom on successive baselines.
   painter.setPen(text_color);

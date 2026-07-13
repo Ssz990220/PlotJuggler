@@ -32,6 +32,7 @@
 #include "pj_scene3d_core/tf/tf_buffer.h"
 #include "pj_scene3d_core/tf/transform.h"
 #include "pj_scene3d_widgets/scene_view_widget.h"
+#include "pj_widgets/FrameworkTokens.h"
 
 namespace {
 
@@ -70,7 +71,9 @@ class TfConnectionsGlTest : public ::testing::Test {
     }
     host_ = std::make_unique<QWidget>();
     auto* layout = new QVBoxLayout(host_.get());
-    layout->setContentsMargins(0, 0, 0, 0);
+    layout->setContentsMargins(
+        PJ::theme::space(PJ::theme::Space::None), PJ::theme::space(PJ::theme::Space::None),
+        PJ::theme::space(PJ::theme::Space::None), PJ::theme::space(PJ::theme::Space::None));
     view_ = new SceneViewWidget();
     layout->addWidget(view_);
     host_->resize(480, 360);
@@ -120,7 +123,9 @@ class TfConnectionsGlTest : public ::testing::Test {
   void reparentAndRecreate() {
     host2_ = std::make_unique<QWidget>();
     auto* layout2 = new QVBoxLayout(host2_.get());
-    layout2->setContentsMargins(0, 0, 0, 0);
+    layout2->setContentsMargins(
+        PJ::theme::space(PJ::theme::Space::None), PJ::theme::space(PJ::theme::Space::None),
+        PJ::theme::space(PJ::theme::Space::None), PJ::theme::space(PJ::theme::Space::None));
     layout2->addWidget(view_);
     host2_->resize(480, 360);
     host2_->show();

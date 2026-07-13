@@ -9,6 +9,7 @@
 #include <QIcon>
 #include <QLabel>
 #include <QLoggingCategory>
+#include <QPalette>
 #include <QPushButton>
 #include <QSignalBlocker>
 #include <QSize>
@@ -42,6 +43,7 @@
 #include "pj_widgets/ColorPickerWidget.h"
 #include "pj_widgets/ComboBox.h"
 #include "pj_widgets/DoubleScrubber.h"
+#include "pj_widgets/FrameworkTokens.h"
 #include "pj_widgets/Style.h"  // PJ::Style::kInputHeight
 #include "pj_widgets/SvgButton.h"
 using namespace Qt::StringLiterals;
@@ -122,6 +124,36 @@ QString defaultColorField(const QStringList& available) {
 // "Field: X" item (whose data is the field name) and "Solid" (empty data). Safe because
 // the colour channel names are excluded from the field list, so this never collides.
 const QString kRgbComboToken = u"__rgb__"_s;
+
+QString qssColor(const QColor& color) {
+  if (!color.isValid()) {
+    return QStringLiteral("transparent");
+  }
+  return QStringLiteral("rgba(%1, %2, %3, %4)")
+      .arg(color.red())
+      .arg(color.green())
+      .arg(color.blue())
+      .arg(color.alpha());
+}
+
+PJ::theme::Theme widgetTheme(const QWidget* widget) {
+  (void)widget;
+  return PJ::theme::appTheme();
+}
+
+QString toggleButtonQss(PJ::theme::Theme active_theme) {
+  // A button is the Secondary interaction fill per state — no border.
+  return QStringLiteral(
+             "QPushButton { border: none; border-radius: %1px; padding: %2px %3px; background-color: %4; }"
+             "QPushButton:hover { background-color: %5; }"
+             "QPushButton:checked { background-color: %6; }")
+      .arg(PJ::theme::radius(PJ::theme::Radius::Input, active_theme))
+      .arg(PJ::theme::space(PJ::theme::Space::Tight, active_theme))
+      .arg(PJ::theme::space(PJ::theme::Space::Comfortable, active_theme))
+      .arg(qssColor(PJ::theme::interaction(PJ::theme::Variant::Accent, PJ::theme::State::Nominal, active_theme)))
+      .arg(qssColor(PJ::theme::interaction(PJ::theme::Variant::Accent, PJ::theme::State::Hovered, active_theme)))
+      .arg(qssColor(PJ::theme::interaction(PJ::theme::Variant::Accent, PJ::theme::State::Checked, active_theme)));
+}
 
 }  // namespace
 
@@ -487,12 +519,16 @@ void PointCloudLayer::releaseGL() {
 QWidget* PointCloudLayer::createConfigWidget(QWidget* parent) {
   auto* container = new QWidget(parent);
   auto* outer = new QVBoxLayout(container);
-  outer->setContentsMargins(0, 0, 0, 0);
-  outer->setSpacing(6);
+  outer->setContentsMargins(
+      PJ::theme::space(PJ::theme::Space::None), PJ::theme::space(PJ::theme::Space::None),
+      PJ::theme::space(PJ::theme::Space::None), PJ::theme::space(PJ::theme::Space::None));
+  outer->setSpacing(PJ::theme::space(PJ::theme::Space::Comfortable));
 
   auto* form = new QFormLayout();
-  form->setContentsMargins(0, 0, 0, 0);
-  form->setSpacing(6);
+  form->setContentsMargins(
+      PJ::theme::space(PJ::theme::Space::None), PJ::theme::space(PJ::theme::Space::None),
+      PJ::theme::space(PJ::theme::Space::None), PJ::theme::space(PJ::theme::Space::None));
+  form->setSpacing(PJ::theme::space(PJ::theme::Space::Comfortable));
   outer->addLayout(form);
 
   // --- Shape ----------------------------------------------------------------
@@ -560,7 +596,9 @@ QWidget* PointCloudLayer::createConfigWidget(QWidget* parent) {
   // on click), consistent with every other layer's colour control.
   auto* solid_page = new QWidget(color_stack);
   auto* solid_layout = new QHBoxLayout(solid_page);
-  solid_layout->setContentsMargins(0, 0, 0, 0);
+  solid_layout->setContentsMargins(
+      PJ::theme::space(PJ::theme::Space::None), PJ::theme::space(PJ::theme::Space::None),
+      PJ::theme::space(PJ::theme::Space::None), PJ::theme::space(PJ::theme::Space::None));
   solid_layout->setAlignment(Qt::AlignLeft | Qt::AlignTop);
   auto* color_button = new PJ::ColorPickerWidget(solid_page);
   color_button->setColor(solid_color_);
@@ -571,23 +609,18 @@ QWidget* PointCloudLayer::createConfigWidget(QWidget* parent) {
   // Page 1: Gradient.
   auto* gradient_page = new QWidget(color_stack);
   auto* gradient_layout = new QFormLayout(gradient_page);
-  gradient_layout->setContentsMargins(0, 0, 0, 0);
-  gradient_layout->setSpacing(6);
-
-  // Explicit toggle-button style so checkable QPushButtons read as buttons
-  // (not labels) regardless of the underlying Qt platform style. 4 px corner
-  // radius mirrors pj_widgets DoubleScrubber — the panel's reference style.
-  static constexpr auto kToggleButtonQss =
-      "QPushButton { border: 1px solid #8c8c8c; border-radius: 4px; padding: 2px 10px; background-color: "
-      "palette(button); }"
-      "QPushButton:hover { border-color: #5b8fd9; }"
-      "QPushButton:checked { background-color: #b7d2f5; border-color: #5b8fd9; }";
+  gradient_layout->setContentsMargins(
+      PJ::theme::space(PJ::theme::Space::None), PJ::theme::space(PJ::theme::Space::None),
+      PJ::theme::space(PJ::theme::Space::None), PJ::theme::space(PJ::theme::Space::None));
+  gradient_layout->setSpacing(PJ::theme::space(PJ::theme::Space::Comfortable));
 
   // --- Colormap row: combo + invert toggle right-aligned ---
   auto* colormap_row = new QWidget(gradient_page);
   auto* colormap_row_layout = new QHBoxLayout(colormap_row);
-  colormap_row_layout->setContentsMargins(0, 0, 0, 0);
-  colormap_row_layout->setSpacing(6);
+  colormap_row_layout->setContentsMargins(
+      PJ::theme::space(PJ::theme::Space::None), PJ::theme::space(PJ::theme::Space::None),
+      PJ::theme::space(PJ::theme::Space::None), PJ::theme::space(PJ::theme::Space::None));
+  colormap_row_layout->setSpacing(PJ::theme::space(PJ::theme::Space::Comfortable));
   auto* colormap_combo = new PJ::ComboBox(colormap_row);
   colormap_combo->addItem(u"turbo"_s, static_cast<int>(PointcloudRenderPass::Colormap::kTurbo));
   colormap_combo->addItem(u"viridis"_s, static_cast<int>(PointcloudRenderPass::Colormap::kViridis));
@@ -599,8 +632,8 @@ QWidget* PointCloudLayer::createConfigWidget(QWidget* parent) {
   invert_btn->setCheckable(true);
   invert_btn->setChecked(invert_lut_);
   invert_btn->setFocusPolicy(Qt::NoFocus);
-  invert_btn->setStyleSheet(kToggleButtonQss);
-  invert_btn->setIcon(QIcon(u":/resources/svg/invert.svg"_s));
+  invert_btn->setStyleSheet(toggleButtonQss(widgetTheme(container)));
+  invert_btn->setIcon(QIcon(QStringLiteral(":/resources/svg/invert.svg")));
   invert_btn->setIconSize(QSize(20, 20));
   // Match the standard icon-button extent used across the app
   // (icon_size + icon_padding = 24 — see CurveListPanel / TimelineWidget).
@@ -616,7 +649,9 @@ QWidget* PointCloudLayer::createConfigWidget(QWidget* parent) {
   // configure; a disabled hint stands in for the empty page.
   auto* rgb_page = new QWidget(color_stack);
   auto* rgb_layout = new QHBoxLayout(rgb_page);
-  rgb_layout->setContentsMargins(0, 0, 0, 0);
+  rgb_layout->setContentsMargins(
+      PJ::theme::space(PJ::theme::Space::None), PJ::theme::space(PJ::theme::Space::None),
+      PJ::theme::space(PJ::theme::Space::None), PJ::theme::space(PJ::theme::Space::None));
   auto* rgb_hint = new QLabel(tr("Per-point color"), rgb_page);
   rgb_hint->setEnabled(false);
   rgb_layout->addWidget(rgb_hint);
@@ -635,7 +670,9 @@ QWidget* PointCloudLayer::createConfigWidget(QWidget* parent) {
   auto_btn->setFocusPolicy(Qt::NoFocus);
   auto* auto_row = new QWidget(container);
   auto* auto_row_layout = new QHBoxLayout(auto_row);
-  auto_row_layout->setContentsMargins(0, 0, 0, 0);
+  auto_row_layout->setContentsMargins(
+      PJ::theme::space(PJ::theme::Space::None), PJ::theme::space(PJ::theme::Space::None),
+      PJ::theme::space(PJ::theme::Space::None), PJ::theme::space(PJ::theme::Space::None));
   auto_row_layout->addWidget(auto_btn);
   auto_row_layout->addStretch();
   form->addRow(tr("Range:"), auto_row);
@@ -664,8 +701,10 @@ QWidget* PointCloudLayer::createConfigWidget(QWidget* parent) {
   // layout. Shares the Range Min/Max visibility group (gradient + manual range).
   auto* outside_row = new QWidget(container);
   auto* outside_layout = new QHBoxLayout(outside_row);
-  outside_layout->setContentsMargins(0, 0, 0, 0);
-  outside_layout->setSpacing(6);
+  outside_layout->setContentsMargins(
+      PJ::theme::space(PJ::theme::Space::None), PJ::theme::space(PJ::theme::Space::None),
+      PJ::theme::space(PJ::theme::Space::None), PJ::theme::space(PJ::theme::Space::None));
+  outside_layout->setSpacing(PJ::theme::space(PJ::theme::Space::Comfortable));
   auto* outside_opacity_spin = new PJ::DoubleScrubber(outside_row);
   outside_opacity_spin->setObjectName(u"pointcloud_outside_range_opacity"_s);
   outside_opacity_spin->setDecimals(2);
@@ -834,7 +873,10 @@ QWidget* PointCloudLayer::createConfigWidget(QWidget* parent) {
   // (input_outer_height). The two custom toggle buttons (auto, invert) carry an
   // inline stylesheet that the input QSS rules can't reach, so pin them to the
   // same input height here so the whole panel lines up.
-  const int input_h = PJ::Style::kInputHeight;
+  int input_h = PJ::theme::metric(PJ::theme::Metric::InputOuterHeight, widgetTheme(container));
+  if (input_h <= 0) {
+    input_h = PJ::Style::kInputHeight;
+  }
   invert_btn->setFixedSize(input_h, input_h);
   invert_btn->setIconSize(QSize(input_h - 6, input_h - 6));
 

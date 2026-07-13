@@ -3,6 +3,7 @@
 
 #include <qwt_legend.h>
 #include <qwt_legend_data.h>
+#include <qwt_plot_canvas.h>
 #include <qwt_plot_curve.h>
 #include <qwt_plot_item.h>
 #include <qwt_plot_zoomer.h>
@@ -10,6 +11,9 @@
 
 #include <QColor>
 #include <QEvent>
+#include <QFrame>
+#include <QGuiApplication>
+#include <QPalette>
 #include <QPen>
 #include <QPointF>
 #include <QSignalBlocker>
@@ -19,6 +23,8 @@
 #include <algorithm>
 #include <limits>
 #include <pj_plugins/host_qt/chart_preview_widget.hpp>
+
+#include "pj_widgets/FrameworkTokens.h"
 
 namespace PJ {
 
@@ -36,7 +42,16 @@ const std::vector<QColor>& kDefaultPalette() {
 }  // namespace
 
 ChartPreviewWidget::ChartPreviewWidget(QWidget* parent) : QwtPlot(parent) {
-  setCanvasBackground(Qt::white);
+  // Theme from the APPLICATION palette, never the widget's: QStyleSheetStyle
+  // rewrites widget palettes under QSS, mis-detecting the theme inside styled
+  // plugin dialogs (Theme.cpp keeps the app palette's Window in lockstep).
+  const auto fw_theme = theme::themeFor(QGuiApplication::palette().color(QPalette::Window).lightness() >= 128);
+  setCanvasBackground(theme::surface(theme::Surface::DataBackdrop, fw_theme));
+  setFrameStyle(QFrame::NoFrame);
+  if (auto* c = qobject_cast<QwtPlotCanvas*>(canvas())) {
+    c->setFrameStyle(QFrame::NoFrame);
+    c->setLineWidth(0);
+  }
 
   // Bottom legend with checkable entries: clicking one toggles its curve's
   // visibility (mirrors the old Qt Charts interactive legend).

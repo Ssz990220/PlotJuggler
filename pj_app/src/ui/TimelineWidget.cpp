@@ -271,7 +271,7 @@ void TimelineWidget::onChromeMetricsChanged(const ChromeMetrics& metrics) {
 void TimelineWidget::applyIcons(QString theme) {
   const QSize icon_sz(chrome_metrics_.icon_size, chrome_metrics_.icon_size);
   const int button_extent = chrome_metrics_.icon_size + chrome_metrics_.icon_padding;
-  const int band_extent = button_extent + (2 * chrome_metrics_.layout_padding);
+  const int band_extent = chrome_metrics_.bandHeight();
   ui_->playbackLoop->setIcon(loadSvg(":/resources/svg/loop.svg", theme));
   ui_->playbackLoop->setIconSize(icon_sz);
   ui_->playbackLoop->setMinimumSize(button_extent, button_extent);

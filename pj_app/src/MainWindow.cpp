@@ -18,13 +18,13 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QFontMetrics>
+#include <QHBoxLayout>
 #include <QHash>
 #include <QIcon>
 #include <QKeySequence>
 #include <QLabel>
 #include <QLoggingCategory>
 #include <QMenu>
-#include <QMessageBox>
 #include <QMouseEvent>
 #include <QPalette>
 #include <QPixmap>
@@ -39,6 +39,7 @@
 #include <QShortcut>
 #include <QShowEvent>
 #include <QSignalBlocker>
+#include <QSize>
 #include <QSizePolicy>
 #include <QSplitter>
 #include <QStackedWidget>
@@ -119,9 +120,11 @@
 #include "pj_widgets/CoalescingTrigger.h"
 #include "pj_widgets/FileDialog.h"
 #include "pj_widgets/FlowLayout.h"
+#include "pj_widgets/FrameworkTokens.h"
 #include "pj_widgets/IngestProgressWidget.h"
 #include "pj_widgets/MessageBox.h"
 #include "pj_widgets/RasterStreamView.h"
+#include "pj_widgets/Scrollbar.h"
 #include "pj_widgets/SectionHeaderBand.h"
 #include "pj_widgets/SvgButton.h"
 #include "pj_widgets/SvgUtil.h"
@@ -373,19 +376,45 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
   // implicit gap below the menuWidget (TitleBar), which the user sees
   // as a strip of titlebar-background between the title bar and the
   // first chrome row of the central area.
-  setContentsMargins(0, 0, 0, 0);
-  ui_->centralWidget->setContentsMargins(0, 0, 0, 0);
-  ui_->upperArea->setContentsMargins(0, 0, 0, 0);
-  ui_->leftColumn->setContentsMargins(0, 0, 0, 0);
-  ui_->bottomPanel->setContentsMargins(0, 0, 0, 0);
-  ui_->leftPanel->setContentsMargins(0, 0, 0, 0);
-  ui_->curveListPanel->setContentsMargins(0, 0, 0, 0);
-  ui_->tabbedPlotWidget->setContentsMargins(0, 0, 0, 0);
-  ui_->timelineSplitter->setContentsMargins(0, 0, 0, 0);
-  ui_->mainSplitter->setContentsMargins(0, 0, 0, 0);
-  ui_->rightToolbarSplitter->setContentsMargins(0, 0, 0, 0);
-  ui_->plotsAndGlobalContainer->setContentsMargins(0, 0, 0, 0);
-  ui_->globalToolbarWidget->setContentsMargins(0, 0, 0, 0);
+  setContentsMargins(
+      PJ::theme::space(theme::Space::None), PJ::theme::space(theme::Space::None), PJ::theme::space(theme::Space::None),
+      PJ::theme::space(theme::Space::None));
+  ui_->centralWidget->setContentsMargins(
+      PJ::theme::space(theme::Space::None), PJ::theme::space(theme::Space::None), PJ::theme::space(theme::Space::None),
+      PJ::theme::space(theme::Space::None));
+  ui_->upperArea->setContentsMargins(
+      PJ::theme::space(theme::Space::None), PJ::theme::space(theme::Space::None), PJ::theme::space(theme::Space::None),
+      PJ::theme::space(theme::Space::None));
+  ui_->leftColumn->setContentsMargins(
+      PJ::theme::space(theme::Space::None), PJ::theme::space(theme::Space::None), PJ::theme::space(theme::Space::None),
+      PJ::theme::space(theme::Space::None));
+  ui_->bottomPanel->setContentsMargins(
+      PJ::theme::space(theme::Space::None), PJ::theme::space(theme::Space::None), PJ::theme::space(theme::Space::None),
+      PJ::theme::space(theme::Space::None));
+  ui_->leftPanel->setContentsMargins(
+      PJ::theme::space(theme::Space::None), PJ::theme::space(theme::Space::None), PJ::theme::space(theme::Space::None),
+      PJ::theme::space(theme::Space::None));
+  ui_->curveListPanel->setContentsMargins(
+      PJ::theme::space(theme::Space::None), PJ::theme::space(theme::Space::None), PJ::theme::space(theme::Space::None),
+      PJ::theme::space(theme::Space::None));
+  ui_->tabbedPlotWidget->setContentsMargins(
+      PJ::theme::space(theme::Space::None), PJ::theme::space(theme::Space::None), PJ::theme::space(theme::Space::None),
+      PJ::theme::space(theme::Space::None));
+  ui_->timelineSplitter->setContentsMargins(
+      PJ::theme::space(theme::Space::None), PJ::theme::space(theme::Space::None), PJ::theme::space(theme::Space::None),
+      PJ::theme::space(theme::Space::None));
+  ui_->mainSplitter->setContentsMargins(
+      PJ::theme::space(theme::Space::None), PJ::theme::space(theme::Space::None), PJ::theme::space(theme::Space::None),
+      PJ::theme::space(theme::Space::None));
+  ui_->rightToolbarSplitter->setContentsMargins(
+      PJ::theme::space(theme::Space::None), PJ::theme::space(theme::Space::None), PJ::theme::space(theme::Space::None),
+      PJ::theme::space(theme::Space::None));
+  ui_->plotsAndGlobalContainer->setContentsMargins(
+      PJ::theme::space(theme::Space::None), PJ::theme::space(theme::Space::None), PJ::theme::space(theme::Space::None),
+      PJ::theme::space(theme::Space::None));
+  ui_->globalToolbarWidget->setContentsMargins(
+      PJ::theme::space(theme::Space::None), PJ::theme::space(theme::Space::None), PJ::theme::space(theme::Space::None),
+      PJ::theme::space(theme::Space::None));
 
   // Qt 6.8 QRhiWidget needs an RHI-capable top-level backing store from
   // the first show(). Keep a zero-size viewer in an existing visible layout
@@ -450,6 +479,7 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
   title_bar_ = new TitleBar(this);
   connect(title_bar_, &TitleBar::diagnosticActivated, this, [this](const DiagnosticRecord& r) {
     auto* dlg = new DiagnosticsDetailDialog(r, this);
+    dlg->setChromeMetrics(chrome_metrics_);
     dlg->show();
   });
 
@@ -795,8 +825,9 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
   auto apply_theme_chrome = [this]() {
     qApp->setStyleSheet(theme_->expandedQss());
     const bool light = theme_->currentTheme().contains("light");
-    const QColor tip_bg = light ? QColor(0xF5, 0xF5, 0xF5) : QColor(0x44, 0x44, 0x44);
-    const QColor tip_fg = light ? QColor(0x11, 0x11, 0x11) : QColor(0xF0, 0xF0, 0xF0);
+    const auto token_theme = theme::themeFor(light);
+    const QColor tip_bg = theme::surface(theme::Surface::Backdrop, token_theme);
+    const QColor tip_fg = theme::text(token_theme);
     QPalette p = qApp->palette();
     p.setColor(QPalette::ToolTipBase, tip_bg);
     p.setColor(QPalette::ToolTipText, tip_fg);
@@ -926,7 +957,9 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
   auto* source_timeline = new PJ::Timeline(ui_->timelineStrip);
   source_timeline_ = source_timeline;
   auto* strip_layout = new QVBoxLayout(ui_->timelineStrip);
-  strip_layout->setContentsMargins(0, 0, 0, 0);
+  strip_layout->setContentsMargins(
+      PJ::theme::space(theme::Space::None), PJ::theme::space(theme::Space::None), PJ::theme::space(theme::Space::None),
+      PJ::theme::space(theme::Space::None));
   strip_layout->addWidget(source_timeline);
   source_timeline_controller_ = new PJ::SourceTimelineController(source_timeline, session_.get(), this);
   connect(source_timeline_controller_, &SourceTimelineController::workspaceChangeCommitted, this, [this]() {
@@ -967,6 +1000,9 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
   streaming_manager_ = std::make_unique<StreamingSourceManager>(
       session_->sessionManager(), session_->extensionCatalog(), session_->catalogModel(),
       session_->topicDemandTracker(), this, this);
+  // Feed the stream dialog live chrome metrics so its SectionHeaderBands match
+  // the panel-hosted toolboxes' canonical band height.
+  streaming_manager_->setChromeMetricsProvider([this] { return chrome_metrics_; });
   // Interactive placeholder drops stage pending binds OUTSIDE any layout restore
   // (which has its own restore-scoped duplicate of this connection); flush them
   // whenever the catalog gains topics. Idempotent — an entry binds once and the
@@ -1290,21 +1326,27 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
   // strips + CurveEditor). Pages 1 and 2 are per-family placeholders
   // (Scene2D, Scene3D); onDockFocused() picks the active page.
   auto* outer_layout = qobject_cast<QVBoxLayout*>(ui_->localToolbarWidget->layout());
-  outer_layout->setSpacing(0);
-  outer_layout->setContentsMargins(0, 0, 0, 0);
+  outer_layout->setSpacing(PJ::theme::space(theme::Space::None));
+  outer_layout->setContentsMargins(
+      PJ::theme::space(theme::Space::None), PJ::theme::space(theme::Space::None), PJ::theme::space(theme::Space::None),
+      PJ::theme::space(theme::Space::None));
   right_panel_stack_ = new QStackedWidget(ui_->localToolbarWidget);
   outer_layout->addWidget(right_panel_stack_, /*stretch=*/1);
 
   plot_config_page_ = new QWidget(right_panel_stack_);
   auto* plot_config_layout = new QVBoxLayout(plot_config_page_);
-  plot_config_layout->setSpacing(0);
-  plot_config_layout->setContentsMargins(0, 0, 0, 0);
+  plot_config_layout->setSpacing(PJ::theme::space(theme::Space::None));
+  plot_config_layout->setContentsMargins(
+      PJ::theme::space(theme::Space::None), PJ::theme::space(theme::Space::None), PJ::theme::space(theme::Space::None),
+      PJ::theme::space(theme::Space::None));
   right_panel_stack_->addWidget(plot_config_page_);
 
   auto make_placeholder = [this](const QString& text) {
     auto* page = new QWidget(right_panel_stack_);
     auto* layout = new QVBoxLayout(page);
-    layout->setContentsMargins(0, 0, 0, 0);
+    layout->setContentsMargins(
+        PJ::theme::space(theme::Space::None), PJ::theme::space(theme::Space::None),
+        PJ::theme::space(theme::Space::None), PJ::theme::space(theme::Space::None));
     layout->addStretch(1);
     auto* label = new QLabel(text, page);
     label->setAlignment(Qt::AlignCenter);
@@ -1373,6 +1415,12 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
 
   pushInitialUndoState();
   updateUndoRedoActions();
+
+  // Give every scroll area present in the shell at startup (Datasets / Custom
+  // Series / Sources trees, the curve list, …) the canonical overlay pill
+  // scrollbars. Dynamically-created panels attach their own (config panels in
+  // their ctors; plugin panels via the dialog host).
+  attachPillScrollbars(this);
 }
 
 IDataWidget* MainWindow::makeSceneDock(const QString& kind, QWidget* parent) {
@@ -1530,6 +1578,7 @@ bool MainWindow::populateTestData() {
 void MainWindow::onOpenMarketplace() {
   auto& catalog = session_->extensionCatalog();
   MarketplaceWindow dlg(&catalog.extensionManager(), registryUrlFromSettings(), this);
+  dlg.setChromeMetrics(chrome_metrics_);
   dlg.resize(900, 600);
   dlg.exec();
   if (dlg.installationsChanged()) {
@@ -1718,12 +1767,12 @@ bool MainWindow::confirmAndRemoveDependentTransforms(const std::vector<TopicId>&
   if (names.isEmpty()) {
     names << tr("%n derived series", nullptr, static_cast<int>(dependent_outputs.size()));
   }
-  const auto answer = QMessageBox::warning(
+  const int choice = MessageBox::question(
       this, tr("Delete derived series?"),
       tr("These derived series depend on what you are deleting and will also be removed:\n\n• %1")
           .arg(names.join(u"\n• "_s)),
-      QMessageBox::Ok | QMessageBox::Cancel, QMessageBox::Cancel);
-  if (answer != QMessageBox::Ok) {
+      {{tr("Delete"), MessageBox::kDestructiveRole}, {tr("Cancel"), MessageBox::kCancelRole}});
+  if (choice != 0) {
     return false;  // user cancelled — leave everything intact
   }
   for (const QString& key : dependent_curve_keys) {
@@ -1920,11 +1969,13 @@ void MainWindow::onMergeDatasetsRequested(const QList<DatasetId>& dataset_ids) {
 
 void MainWindow::onShowPreferencesDialog() {
   PreferencesDialog dlg(*theme_, this);
+  dlg.setChromeMetrics(chrome_metrics_);
   dlg.exec();
 }
 
 void MainWindow::onShowAboutDialog() {
   AboutDialog dialog(this);
+  dialog.setChromeMetrics(chrome_metrics_);
   dialog.exec();
 }
 
@@ -4992,8 +5043,10 @@ void MainWindow::buildGlobalToolbar() {
   if (outer == nullptr) {
     return;
   }
-  outer->setSpacing(0);
-  outer->setContentsMargins(0, 0, 0, 0);
+  outer->setSpacing(PJ::theme::space(theme::Space::None));
+  outer->setContentsMargins(
+      PJ::theme::space(theme::Space::None), PJ::theme::space(theme::Space::None), PJ::theme::space(theme::Space::None),
+      PJ::theme::space(theme::Space::None));
 
   auto add_button = [this, outer](const char* object_name, const char* icon_path, const char* tooltip) -> SvgButton* {
     auto* btn = new SvgButton(ui_->globalToolbarWidget);
@@ -5187,8 +5240,10 @@ void MainWindow::buildTimelineAlignRail() {
   if (outer == nullptr) {
     return;
   }
-  outer->setSpacing(0);
-  outer->setContentsMargins(0, 0, 0, 0);
+  outer->setSpacing(PJ::theme::space(theme::Space::None));
+  outer->setContentsMargins(
+      PJ::theme::space(theme::Space::None), PJ::theme::space(theme::Space::None), PJ::theme::space(theme::Space::None),
+      PJ::theme::space(theme::Space::None));
 
   auto add_button = [this, outer](const char* object_name, const char* icon_path, const char* tooltip) -> QToolButton* {
     auto* btn = new SvgButton(ui_->timelineAlignRail);
@@ -5287,7 +5342,8 @@ void MainWindow::buildLocalToolbar() {
     // kept for widget-tree selectors; the chrome-metrics handler resizes it.
     auto* header = new SectionHeaderBand(heading, plot_config_page_);
     header->setObjectName(header_object_name);
-    header->setFixedHeight(chrome_metrics_.icon_size + chrome_metrics_.icon_padding);
+    header->onChromeMetricsChanged(chrome_metrics_);
+    connect(this, &MainWindow::chromeMetricsChanged, header, &SectionHeaderBand::onChromeMetricsChanged);
     outer->addWidget(header);
 
     // Icon strip: FlowLayout, spacing 0 so icons sit flush with each
@@ -5304,7 +5360,10 @@ void MainWindow::buildLocalToolbar() {
     QSizePolicy strip_policy(QSizePolicy::Preferred, QSizePolicy::Minimum);
     strip_policy.setHeightForWidth(true);
     strip->setSizePolicy(strip_policy);
-    auto* flow = new FlowLayout(strip, /*margin=*/0, /*h_spacing=*/0, /*v_spacing=*/0);
+    auto* flow = new FlowLayout(
+        strip, /*margin=*/PJ::theme::space(theme::Space::None),
+        /*h_spacing=*/PJ::theme::space(theme::Space::None),
+        /*v_spacing=*/PJ::theme::space(theme::Space::None));
     for (const auto& spec : specs) {
       auto* btn = new SvgButton(strip);
       btn->setObjectName(QString::fromLatin1(spec.object_name));
@@ -5463,6 +5522,63 @@ void MainWindow::applyActivePlotStyle(int style) {
   // curveStyle()).
   plot->setDefaultStyle(static_cast<PlotWidgetBase::CurveStyle>(style));
   onUndoableChange();
+}
+
+QWidget* MainWindow::wrapToolboxPanel(QWidget* content, const QString& title, const std::function<void()>& on_close) {
+  auto* container = new QWidget;
+  container->setObjectName(QStringLiteral("toolboxPanelContainer"));
+  auto* column = new QVBoxLayout(container);
+  column->setContentsMargins(
+      PJ::theme::space(theme::Space::None), PJ::theme::space(theme::Space::None), PJ::theme::space(theme::Space::None),
+      PJ::theme::space(theme::Space::None));
+  column->setSpacing(PJ::theme::space(theme::Space::None));
+
+  // Banner header (Surface::Banner): title far-left, close far-right — mirrors
+  // the PJ::Dialog title bar so a docked toolbox reads like every app dialog.
+  auto* banner = new QWidget(container);
+  banner->setObjectName(QStringLiteral("toolboxBanner"));
+  auto* row = new QHBoxLayout(banner);
+  // No left inset: the title leads via toolboxBannerTitle's own canonical
+  // padding-left (Tight), matching every other section band's leading.
+  row->setContentsMargins(
+      PJ::theme::space(theme::Space::None), PJ::theme::space(theme::Space::None), PJ::theme::space(theme::Space::None),
+      PJ::theme::space(theme::Space::None));
+  row->setSpacing(PJ::theme::space(theme::Space::None));
+
+  auto* title_label = new QLabel(title, banner);
+  title_label->setObjectName(QStringLiteral("toolboxBannerTitle"));
+  row->addWidget(title_label);
+  row->addStretch(1);
+
+  auto* close_button = new QToolButton(banner);
+  close_button->setObjectName(QStringLiteral("buttonClose"));
+
+  // Banner + close button ride the canonical band height so a docked toolbox
+  // reads at the same height as every section band and every chrome button,
+  // and rescales with the icon size. Seed from the current metrics, then keep
+  // in step via the chromeMetricsChanged broadcast.
+  const auto size_banner = [banner, close_button](const ChromeMetrics& metrics) {
+    banner->setFixedHeight(metrics.bandHeight());
+    close_button->setFixedSize(metrics.bandHeight(), metrics.bandHeight());
+    close_button->setIconSize(QSize(metrics.icon_size, metrics.icon_size));
+  };
+  size_banner(chrome_metrics_);
+  connect(this, &MainWindow::chromeMetricsChanged, banner, size_banner);
+  close_button->setAutoRaise(true);
+  close_button->setFocusPolicy(Qt::NoFocus);
+  close_button->setCursor(Qt::PointingHandCursor);
+  close_button->setToolTip(tr("Close"));
+  const auto tint_close = [close_button](const QString& theme) {
+    close_button->setIcon(loadSvg(QStringLiteral(":/resources/svg/close_windows_light.svg"), theme));
+  };
+  tint_close(theme_->currentTheme());
+  connect(this, &MainWindow::stylesheetChanged, close_button, tint_close);
+  connect(close_button, &QToolButton::clicked, this, [on_close]() { on_close(); });
+  row->addWidget(close_button);
+
+  column->addWidget(banner);
+  column->addWidget(content, /*stretch=*/1);
+  return container;
 }
 
 bool MainWindow::presentPanel(QWidget* panel) {
@@ -5770,6 +5886,15 @@ void MainWindow::launchToolbox(const QString& plugin_id, const QString& initial_
     child->setAcceptDrops(false);
   }
 
+  // A plugin .ui's SectionHeaderBand (e.g. the FFT "Frequencies" band) is
+  // inflated by QUiLoader at the widget default height and has no wiring to the
+  // app. Route the chrome-metrics broadcast into it so it matches every other
+  // section band and the toolbox banner above, and rescales with the icon size.
+  for (auto* band : panel->findChildren<SectionHeaderBand*>()) {
+    band->onChromeMetricsChanged(chrome_metrics_);
+    connect(this, &MainWindow::chromeMetricsChanged, band, &SectionHeaderBand::onChromeMetricsChanged);
+  }
+
   // 5. Close -> restore + teardown. The captured session keeps the services +
   //    plugin alive until the panel is gone; deleteLater defers the teardown
   //    (incl. the handle's worker-thread join) past any in-flight signals, and
@@ -5781,13 +5906,21 @@ void MainWindow::launchToolbox(const QString& plugin_id, const QString& initial_
     engine->deleteLater();
   });
 
-  // 6. Present in the chart area.
-  if (!presentPanel(panel)) {
-    report_error(source, tr("Cannot show '%1': another panel is already open").arg(source));
-    // presentPanel did not parent `panel` on the reject path, and the engine keeps
-    // only a non-owning QPointer to it, so it would leak unless we delete it here.
+  // 6. Wrap the panel in the canonical Banner header (title left, close right)
+  //    and present it in the chart area. The banner close runs the same
+  //    host-initiated teardown as presentPanel's replace path.
+  QWidget* framed = wrapToolboxPanel(panel, source, [this, engine]() {
     engine->close();
-    panel->deleteLater();
+    restoreCentralArea();
+    engine->deleteLater();
+  });
+  if (!presentPanel(framed)) {
+    report_error(source, tr("Cannot show '%1': another panel is already open").arg(source));
+    // presentPanel did not parent `framed` on the reject path, and the engine keeps
+    // only a non-owning QPointer to the inner panel, so delete the wrapper (which
+    // owns `panel`) here to avoid a leak.
+    engine->close();
+    framed->deleteLater();
     engine->deleteLater();
     return;
   }

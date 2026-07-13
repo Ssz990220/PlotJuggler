@@ -9,6 +9,7 @@
 
 #include "pj_plugins/dialog_protocol.h"
 #include "pj_runtime/ExtensionCatalogService.h"
+#include "pj_widgets/ChromeMetrics.h"
 
 QT_BEGIN_NAMESPACE
 class QWidget;
@@ -62,6 +63,10 @@ struct DataSourceRequest {
   const ExtensionCatalogService& catalog;
   QWidget* parent = nullptr;
   std::string_view initial_parser_config{};
+  // The app's live chrome metrics, used to size any SectionHeaderBand in the
+  // plugin dialog to the canonical band height. Leave unset for callers whose
+  // dialogs have no bands (e.g. file loaders) or that lack live app metrics.
+  std::optional<ChromeMetrics> section_band_metrics{};
 };
 
 // Caller decides what to persist and whether to re-loadConfig before start().

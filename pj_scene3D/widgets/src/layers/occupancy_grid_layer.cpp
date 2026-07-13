@@ -26,6 +26,7 @@
 #include "pj_scene3d_widgets/parse_locked.h"
 #include "pj_widgets/ComboBox.h"
 #include "pj_widgets/DoubleScrubber.h"
+#include "pj_widgets/FrameworkTokens.h"
 using namespace Qt::StringLiterals;
 
 namespace pj::scene3d {
@@ -422,11 +423,15 @@ void OccupancyGridLayer::setOpacity(float opacity) {
 QWidget* OccupancyGridLayer::createConfigWidget(QWidget* parent) {
   auto* container = new QWidget(parent);
   auto* outer = new QVBoxLayout(container);
-  outer->setContentsMargins(0, 0, 0, 0);
-  outer->setSpacing(6);
+  outer->setContentsMargins(
+      PJ::theme::space(PJ::theme::Space::None), PJ::theme::space(PJ::theme::Space::None),
+      PJ::theme::space(PJ::theme::Space::None), PJ::theme::space(PJ::theme::Space::None));
+  outer->setSpacing(PJ::theme::space(PJ::theme::Space::Comfortable));
   auto* form = new QFormLayout();
-  form->setContentsMargins(0, 0, 0, 0);
-  form->setSpacing(6);
+  form->setContentsMargins(
+      PJ::theme::space(PJ::theme::Space::None), PJ::theme::space(PJ::theme::Space::None),
+      PJ::theme::space(PJ::theme::Space::None), PJ::theme::space(PJ::theme::Space::None));
+  form->setSpacing(PJ::theme::space(PJ::theme::Space::Comfortable));
   outer->addLayout(form);
 
   auto* scheme_combo = new PJ::ComboBox(container);

@@ -51,6 +51,7 @@
 #include "pj_scene3d_widgets/passes/mesh_render_pass.h"
 #include "pj_scene3d_widgets/scene_look_defaults.h"
 #include "pj_scene3d_widgets/scene_view_widget.h"
+#include "pj_widgets/FrameworkTokens.h"
 #include "urdf_package_resolver.h"  // private widgets/src header, like the tests
 using namespace Qt::StringLiterals;
 
@@ -147,7 +148,9 @@ QSlider* addSlider(
 QWidget* makeControls(pj::scene3d::SceneViewWidget& view) {
   auto* panel = new QWidget;
   auto* form = new QFormLayout(panel);
-  form->setContentsMargins(8, 8, 8, 8);
+  form->setContentsMargins(
+      PJ::theme::space(PJ::theme::Space::Comfortable), PJ::theme::space(PJ::theme::Space::Comfortable),
+      PJ::theme::space(PJ::theme::Space::Comfortable), PJ::theme::space(PJ::theme::Space::Comfortable));
   const auto repaint = [&view] { view.update(); };
 
   // ---- Anti-aliasing + live perf HUD (what this view exists to explore) ------
@@ -629,7 +632,9 @@ int main(int argc, char** argv) {
   QWidget window;
   window.setWindowTitle(u"scene3d_mesh_viewer — %1"_s.arg(QFileInfo(urdf_path).fileName()));
   auto* row = new QHBoxLayout(&window);
-  row->setContentsMargins(0, 0, 0, 0);
+  row->setContentsMargins(
+      PJ::theme::space(PJ::theme::Space::None), PJ::theme::space(PJ::theme::Space::None),
+      PJ::theme::space(PJ::theme::Space::None), PJ::theme::space(PJ::theme::Space::None));
   auto* view = new pj::scene3d::SceneViewWidget(&window);
   view->setTransformBuffer(tf);
   view->setAxesVisible(false);  // look-dev default: meshes only (panel toggle)

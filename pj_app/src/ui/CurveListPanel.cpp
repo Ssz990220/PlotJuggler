@@ -38,6 +38,7 @@
 #include "pj_runtime/CatalogModel.h"
 #include "pj_runtime/TopicDemandTracker.h"
 #include "pj_widgets/CurveTreeView.h"
+#include "pj_widgets/Search.h"
 #include "pj_widgets/SvgUtil.h"
 #include "scene_object_classification.h"
 #include "ui_CurveListPanel.h"
@@ -217,21 +218,6 @@ CurveListPanel::CurveListPanel(QWidget* parent) : QWidget(parent), ui_(new Ui::C
   ui_->verticalSplitter->setStretchFactor(0, 5);
   ui_->verticalSplitter->setStretchFactor(1, 1);
 
-  // Leading search icons attached before applyIcons() so the icon
-  // refresh sees them. Zero text margins so the leading action sits
-  // flush against the line edit's left edge instead of getting style-
-  // default inset.
-  // No leading-action search icons — QLineEdit's internal
-  // QLineEditIconButton hardcodes its rendered icon to 16 px for any
-  // line edit shorter than 34 px (see QLineEditPrivate::
-  // sideWidgetParameters in Qt source), so setIconSize is ignored and
-  // the magnifying glass paints with visible padding inside the
-  // 20-px chrome button. Instead, the .ui keeps the search button as
-  // a sibling QToolButton next to the filter line edit, sized at the
-  // standard 20×20 with no extra chrome.
-  ui_->lineEditFilter->setTextMargins(0, 0, 0, 0);
-  ui_->lineEditCustomFilter->setTextMargins(0, 0, 0, 0);
-
   // Datasets header overflow menu — view toggles + Clear All
   // (destructive, so styled red).
   auto* datasets_menu = new QMenu(this);
@@ -290,9 +276,9 @@ CurveListPanel::CurveListPanel(QWidget* parent) : QWidget(parent), ui_(new Ui::C
 
   applyIcons(currentTheme());
 
-  // Both filter line edits are inline in their respective header bands.
-  connect(ui_->lineEditFilter, &QLineEdit::textChanged, this, &CurveListPanel::onFilterChanged);
-  connect(ui_->lineEditCustomFilter, &QLineEdit::textChanged, this, &CurveListPanel::onCustomFilterChanged);
+  // Both filters are canonical Search controls inline in their header bands.
+  connect(ui_->filterTimeseries, &Search::textChanged, this, &CurveListPanel::onFilterChanged);
+  connect(ui_->filterCustom, &Search::textChanged, this, &CurveListPanel::onCustomFilterChanged);
 
   // Datasets type-filter toggles (plot / 2D / 3D). All start checked (see the
   // .ui), so no initial push is needed — the tree defaults to all kinds shown.
@@ -304,14 +290,14 @@ CurveListPanel::CurveListPanel(QWidget* parent) : QWidget(parent), ui_(new Ui::C
   // Enter while typing drops focus back to the panel — restores the
   // sibling label + action buttons (via the focus-out branch of
   // eventFilter) without forcing the user to click elsewhere.
-  connect(ui_->lineEditFilter, &QLineEdit::returnPressed, ui_->lineEditFilter, &QLineEdit::clearFocus);
-  connect(ui_->lineEditCustomFilter, &QLineEdit::returnPressed, ui_->lineEditCustomFilter, &QLineEdit::clearFocus);
+  connect(ui_->filterTimeseries, &Search::returnPressed, ui_->filterTimeseries->lineEdit(), &QLineEdit::clearFocus);
+  connect(ui_->filterCustom, &Search::returnPressed, ui_->filterCustom->lineEdit(), &QLineEdit::clearFocus);
 
   // While the Custom Series filter has focus, hide its sibling label + buttons
   // so the input takes the full header width. Restored on focus loss. The
   // Datasets filter lives on its own dedicated row (widgetSearchTimeseries),
   // so it never competes with the label for width and needs no such expansion.
-  ui_->lineEditCustomFilter->installEventFilter(this);
+  ui_->filterCustom->lineEdit()->installEventFilter(this);
 
   // Lock each header band to its natural height so hiding the Custom Series
   // siblings can't shrink the row and shift the line edit's vertical centre.
@@ -540,12 +526,8 @@ QDomElement CurveListPanel::saveListState(QDomDocument& doc) const {
   if (show_values_check_ != nullptr) {
     element.setAttribute(u"show_values"_s, show_values_check_->isChecked() ? u"true"_s : u"false"_s);
   }
-  if (ui_->lineEditFilter != nullptr) {
-    element.setAttribute(u"datasets_filter"_s, ui_->lineEditFilter->text());
-  }
-  if (ui_->lineEditCustomFilter != nullptr) {
-    element.setAttribute(u"custom_filter"_s, ui_->lineEditCustomFilter->text());
-  }
+  element.setAttribute(QStringLiteral("datasets_filter"), ui_->filterTimeseries->text());
+  element.setAttribute(QStringLiteral("custom_filter"), ui_->filterCustom->text());
   return element;
 }
 
@@ -581,11 +563,11 @@ void CurveListPanel::restoreListState(const QDomElement& element) {
   // Filter texts: setText emits textChanged, which the connected slots
   // forward to tree_view_->applyFilter — that's exactly what we want.
   // Do NOT block signals here.
-  if (element.hasAttribute(u"datasets_filter"_s) && ui_->lineEditFilter != nullptr) {
-    ui_->lineEditFilter->setText(element.attribute(u"datasets_filter"_s));
+  if (element.hasAttribute(QStringLiteral("datasets_filter"))) {
+    ui_->filterTimeseries->setText(element.attribute(QStringLiteral("datasets_filter")));
   }
-  if (element.hasAttribute(u"custom_filter"_s) && ui_->lineEditCustomFilter != nullptr) {
-    ui_->lineEditCustomFilter->setText(element.attribute(u"custom_filter"_s));
+  if (element.hasAttribute(QStringLiteral("custom_filter"))) {
+    ui_->filterCustom->setText(element.attribute(QStringLiteral("custom_filter")));
   }
 }
 
@@ -625,7 +607,7 @@ void CurveListPanel::onPreserveTopicNameToggled(bool checked) {
   }
   tree_view_->setViewMode(checked ? CurveTreeView::ViewMode::kShowTopics : CurveTreeView::ViewMode::kHierarchical);
   rebuildTree(tree_view_, catalog_, tracker_, custom_keys_);
-  tree_view_->applyFilter(ui_->lineEditFilter->text());
+  tree_view_->applyFilter(ui_->filterTimeseries->text());
 }
 
 void CurveListPanel::onTrashClicked() {
@@ -859,7 +841,7 @@ bool CurveListPanel::eventFilter(QObject* watched, QEvent* event) {
   const QEvent::Type type = event->type();
   if (type == QEvent::FocusIn || type == QEvent::FocusOut) {
     const bool focused = (type == QEvent::FocusIn);
-    if (watched == ui_->lineEditCustomFilter) {
+    if (watched == ui_->filterCustom->lineEdit()) {
       ui_->labelCustom->setVisible(!focused);
       ui_->buttonAddCustom->setVisible(!focused);
       ui_->buttonCustomMenu->setVisible(!focused);
@@ -882,16 +864,13 @@ void CurveListPanel::applyIcons(QString theme) {
   if (delete_custom_button_ != nullptr) {
     delete_custom_button_->setIcon(loadSvg(":/resources/svg/delete_forever.svg", theme));
   }
-  const QIcon search_icon(loadSvg(":/resources/svg/search_light.svg", theme));
-  ui_->buttonSearchTimeseries->setIcon(search_icon);
-  ui_->buttonSearchCustom->setIcon(search_icon);
   // Type-filter toggles reuse the exact placeholder-widget glyphs (plot / 2D /
   // 3D). The On (checked = shown) state is the plain themed glyph; the Off
   // (unchecked = hidden) state is a dimmed, slashed variant so an omitted kind
   // reads as struck-through. The checked-background fill is suppressed for these
   // buttons in QSS, so the default all-shown state stays visually calm.
   // Match the app's visibility_off eye-slash ink exactly (loadSvg keys "light"
-  // → #3D3D3D, else #E0E0E0), so the two "hidden" affordances read the same.
+  // -> #3D3D3D, else #E0E0E0), so the two "hidden" affordances read the same.
   const QColor slash_ink = isLightTheme(theme) ? QColor(0x3D, 0x3D, 0x3D) : QColor(0xE0, 0xE0, 0xE0);
   const QColor slash_halo = palette().color(QPalette::Window);
   const auto make_toggle_icon = [&](const QString& path) {
@@ -904,25 +883,25 @@ void CurveListPanel::applyIcons(QString theme) {
   ui_->buttonFilterPlot->setIcon(make_toggle_icon(":/resources/svg/line_axis.svg"));
   ui_->buttonFilterScene2D->setIcon(make_toggle_icon(":/resources/svg/image.svg"));
   ui_->buttonFilterScene3D->setIcon(make_toggle_icon(":/resources/svg/cube.svg"));
+  // The Search filters own their glyph + sizing; keep them in lock-step with
+  // the global icon metrics (height + glyph track the chrome).
+  ui_->filterTimeseries->setChromeMetrics(chrome_metrics_);
+  ui_->filterCustom->setChromeMetrics(chrome_metrics_);
 
   // Resize chrome buttons in lock-step with the global icon metrics.
   // clear_all_button_ and delete_custom_button_ are inline-action menu
   // items (full-width inside a popup), not square chrome — skip them.
   const QSize icon_sz(chrome_metrics_.icon_size, chrome_metrics_.icon_size);
   const int button_extent = chrome_metrics_.icon_size + chrome_metrics_.icon_padding;
-  const int band_extent = button_extent + (2 * chrome_metrics_.layout_padding);
-  const std::array<QToolButton*, 8> chrome_buttons{
-      ui_->buttonDatasetsMenu, ui_->buttonCustomMenu, ui_->buttonAddCustom,     ui_->buttonSearchTimeseries,
-      ui_->buttonSearchCustom, ui_->buttonFilterPlot, ui_->buttonFilterScene2D, ui_->buttonFilterScene3D};
+  const int band_extent = chrome_metrics_.bandHeight();
+  const std::array<QToolButton*, 6> chrome_buttons{ui_->buttonDatasetsMenu,  ui_->buttonCustomMenu,
+                                                   ui_->buttonAddCustom,     ui_->buttonFilterPlot,
+                                                   ui_->buttonFilterScene2D, ui_->buttonFilterScene3D};
   for (QToolButton* btn : chrome_buttons) {
     btn->setMinimumSize(button_extent, button_extent);
     btn->setMaximumSize(button_extent, button_extent);
     btn->setIconSize(icon_sz);
   }
-  ui_->lineEditFilter->setMinimumHeight(button_extent);
-  ui_->lineEditFilter->setMaximumHeight(button_extent);
-  ui_->lineEditCustomFilter->setMinimumHeight(button_extent);
-  ui_->lineEditCustomFilter->setMaximumHeight(button_extent);
   // Bands grow to band_extent so the contentsMargins applied to their
   // inner layouts (below) are absorbed by the band instead of squeezing
   // the chrome inside.
@@ -932,8 +911,14 @@ void CurveListPanel::applyIcons(QString theme) {
   const QMargins margins(
       chrome_metrics_.layout_padding, chrome_metrics_.layout_padding, chrome_metrics_.layout_padding,
       chrome_metrics_.layout_padding);
+  // Title bands lead via their label's own canonical padding-left (Tight), so
+  // their layout adds no left inset — otherwise the two stack into a doubled
+  // leading that no longer matches the SectionHeaderBand/Timeline reference.
+  // Search bands keep the left inset: their field carries no internal padding.
+  const QMargins title_band_margins(
+      0, chrome_metrics_.layout_padding, chrome_metrics_.layout_padding, chrome_metrics_.layout_padding);
   if (auto* layout = ui_->timeseriesHeaderLayout) {
-    layout->setContentsMargins(margins);
+    layout->setContentsMargins(title_band_margins);
     layout->setSpacing(chrome_metrics_.layout_spacing);
   }
   if (auto* layout = ui_->searchTimeseriesLayout) {
@@ -941,7 +926,7 @@ void CurveListPanel::applyIcons(QString theme) {
     layout->setSpacing(chrome_metrics_.layout_spacing);
   }
   if (auto* layout = ui_->customHeaderLayout) {
-    layout->setContentsMargins(margins);
+    layout->setContentsMargins(title_band_margins);
     layout->setSpacing(chrome_metrics_.layout_spacing);
   }
   // Per-row padding on the Datasets / Custom Series trees. QTreeView

@@ -19,12 +19,14 @@
 #include <QDateTime>
 #include <QDialogButtonBox>
 #include <QDoubleSpinBox>
+#include <QFile>
 #include <QGridLayout>
 #include <QGroupBox>
 #include <QHeaderView>
 #include <QLabel>
 #include <QLineEdit>
 #include <QListWidget>
+#include <QMouseEvent>
 #include <QPainter>
 #include <QPixmap>
 #include <QPlainTextEdit>
@@ -37,12 +39,14 @@
 #include <QSpinBox>
 #include <QSplitter>
 #include <QStyle>
+#include <QStyledItemDelegate>
 #include <QSvgRenderer>
 #include <QTabBar>
 #include <QTabWidget>
 #include <QTableWidget>
 #include <QTextCursor>
 #include <QTimeZone>
+#include <QTimer>
 #include <QVBoxLayout>
 #include <QVariant>
 #include <algorithm>
@@ -55,7 +59,9 @@
 #include <pj_plugins/host_qt/widget_binding.hpp>
 #include <set>
 
+#include "chart_placeholder_overlay.hpp"
 #include "lua_syntax_highlighter.hpp"
+#include "pj_widgets/FrameworkTokens.h"
 #include "python_syntax_highlighter.hpp"
 using namespace Qt::StringLiterals;
 
@@ -67,6 +73,10 @@ QString resolveNamedIconPath(std::string_view icon_name) {
   }
   if (icon_name == "contract") {
     return u":/resources/svg/contract.svg"_s;
+  }
+  if (icon_name == "file") {
+    // The same glyph the app's file data-source tab uses.
+    return QStringLiteral(":/resources/svg/draft.svg");
   }
   if (icon_name == "plug_connect") {
     return u":/resources/svg/plug_connect.svg"_s;
@@ -209,6 +219,102 @@ class RadioEmitHolder : public QObject {
   }
   std::function<void(int)> emit_row;
 };
+
+// The canonical Material trash icon (:/resources/svg/trash.svg, the same glyph
+// LayerListView / Scene3DConfigPanel use), tinted to `ink` and rasterised from
+// the vector at the target DEVICE resolution (extent * dpr) so it stays crisp on
+// HiDPI — rendering at logical size and letting the view upscale is what made it
+// fuzzy. Cached by (ink, extent, dpr).
+QPixmap rowTrashPixmap(const QColor& ink, int extent, qreal dpr) {
+  static std::map<std::tuple<QRgb, int, qint64>, QPixmap> cache;
+  const auto key = std::make_tuple(ink.rgba(), extent, qRound64(dpr * 100));
+  auto it = cache.find(key);
+  if (it != cache.end()) {
+    return it->second;
+  }
+  QString svg;
+  QFile file(QStringLiteral(":/resources/svg/trash.svg"));
+  if (file.open(QIODevice::ReadOnly)) {
+    svg = QString::fromUtf8(file.readAll());
+  }
+  // trash.svg paints a single fill="#3D3D3D"; recolour it to the row ink.
+  svg.replace(QStringLiteral("#3D3D3D"), ink.name(QColor::HexRgb), Qt::CaseInsensitive);
+  const int px = qMax(1, qRound(extent * dpr));
+  QPixmap pix(px, px);
+  pix.fill(Qt::transparent);
+  QSvgRenderer renderer(svg.toUtf8());
+  if (renderer.isValid()) {
+    QPainter painter(&pix);
+    renderer.render(&painter);
+  }
+  pix.setDevicePixelRatio(dpr);
+  cache.emplace(key, pix);
+  return pix;
+}
+
+// Paints a trailing trash icon on every row of a QListWidget and turns a click
+// on that icon into an itemDeleteRequested(row) event. Only active when the list
+// carries a true "pj_deletable" dynamic property (set from WidgetData), so the
+// same delegate is harmless on non-deletable lists. Clicks off the icon fall
+// through untouched, so selection and double-click-to-load still work.
+class ListRowDeleteDelegate : public QStyledItemDelegate {
+ public:
+  static constexpr int kIconExtent = 16;
+  static constexpr int kIconMargin = 6;
+  static constexpr int kRowVPadding = 6;  // matches QPushButton's QSS padding
+
+  ListRowDeleteDelegate(QObject* parent, std::function<void(int)> on_delete)
+      : QStyledItemDelegate(parent), on_delete_(std::move(on_delete)) {}
+
+  void paint(QPainter* painter, const QStyleOptionViewItem& option, const QModelIndex& index) const override {
+    QStyledItemDelegate::paint(painter, option, index);
+    if (!deletable()) {
+      return;
+    }
+    const qreal dpr = painter->device() != nullptr ? painter->device()->devicePixelRatioF() : 1.0;
+    painter->drawPixmap(iconRect(option.rect), rowTrashPixmap(option.palette.color(QPalette::Text), kIconExtent, dpr));
+  }
+
+  QSize sizeHint(const QStyleOptionViewItem& option, const QModelIndex& index) const override {
+    QSize s = QStyledItemDelegate::sizeHint(option, index);
+    if (deletable()) {
+      s.setWidth(s.width() + kIconExtent + (2 * kIconMargin));
+      // Match the Save button's height: text + the same 6px vertical padding a
+      // QPushButton uses, so a row reads as the same size as the button below.
+      s.setHeight(qMax(s.height(), option.fontMetrics.height() + (2 * kRowVPadding)));
+    }
+    return s;
+  }
+
+  bool editorEvent(
+      QEvent* event, QAbstractItemModel* model, const QStyleOptionViewItem& option, const QModelIndex& index) override {
+    if (deletable() && event->type() == QEvent::MouseButtonRelease) {
+      const auto* me = static_cast<QMouseEvent*>(event);
+      if (me->button() == Qt::LeftButton && iconRect(option.rect).contains(me->pos())) {
+        // Report the delivered-order (plugin) index, not the view row: on a
+        // sorted list index.row() names a DIFFERENT underlying item, so the
+        // trash button would delete the wrong thing (double-click already
+        // translates the same way — see listItemPluginIndex).
+        const QVariant tag = index.data(kPluginRowRole);
+        on_delete_(tag.isValid() ? tag.toInt() : index.row());
+        return true;  // consume so it isn't also read as a selection change
+      }
+    }
+    return QStyledItemDelegate::editorEvent(event, model, option, index);
+  }
+
+ private:
+  [[nodiscard]] bool deletable() const {
+    const auto* list = qobject_cast<const QWidget*>(parent());
+    return list != nullptr && list->property("pj_deletable").toBool();
+  }
+  [[nodiscard]] static QRect iconRect(const QRect& row) {
+    return {
+        row.right() - kIconExtent - kIconMargin, row.top() + ((row.height() - kIconExtent) / 2), kIconExtent,
+        kIconExtent};
+  }
+  std::function<void(int)> on_delete_;
+};
 }  // namespace
 
 // Render `col` of `tw` as an exclusive radio group (one QRadioButton per row),
@@ -233,7 +339,7 @@ static void applyTableRadioColumn(
     auto* radio = qobject_cast<QRadioButton*>(tw->cellWidget(r, col));
     if (radio == nullptr) {
       radio = new QRadioButton(tw);
-      radio->setStyleSheet(u"QRadioButton { margin-left: 8px; }"_s);
+      radio->setStyleSheet(u"QRadioButton { margin-left: %1px; }"_s.arg(theme::space(theme::Space::Comfortable)));
       tw->setCellWidget(r, col, radio);
       group->addButton(radio);
       // Resolve the row at click time: rows renumber as the user adds/removes
@@ -444,22 +550,36 @@ static void applyToWidget(
 
   // --- Generic field-validity indicator (any widget) ---
   // The plugin owns the validation rule and pushes {valid, tooltip}; the host
-  // renders a soft cue (the tooltip plus a light-red background on the field
+  // renders a soft cue (the tooltip plus an error background on the field
   // itself when invalid) without needing a per-field indicator widget. The cue
   // is scoped by objectName so child widgets are unaffected; cleared when valid.
-  // PJ3 parity: invalid input fields use a #ffcccc background, not a border.
+  // PJ3 parity: invalid input fields use an error background, not a border.
   if (auto ok = view.fieldValid(name)) {
     if (auto tip = view.fieldValidTooltip(name)) {
       w->setToolTip(QString::fromStdString(*tip));
     }
-    const QString sel = w->objectName().isEmpty() ? QString() : u"#%1"_s.arg(w->objectName());
-    w->setStyleSheet(*ok || sel.isEmpty() ? QString() : sel + u" { background-color: #ffcccc; }"_s);
+    const QString sel = w->objectName().isEmpty() ? QString() : QStringLiteral("#%1").arg(w->objectName());
+    if (*ok || sel.isEmpty()) {
+      w->setStyleSheet(QString());
+    } else {
+      const auto fw_theme = theme::appTheme();
+      w->setStyleSheet(
+          sel + QStringLiteral(" { background-color: %1; color: %2; }")
+                    .arg(
+                        theme::statusErrorSurface(fw_theme).name(QColor::HexArgb),
+                        theme::onStatusErrorSurface(fw_theme).name(QColor::HexArgb)));
+    }
   }
 
   // --- QLineEdit ---
   if (auto* le = qobject_cast<QLineEdit*>(w)) {
     if (auto v = view.text(name)) {
-      le->setText(QString::fromStdString(*v));
+      // Guard against re-setting identical text: an editable field that refreshes
+      // on its own onTextChanged would otherwise move the caret to the end mid-typing.
+      const QString t = QString::fromStdString(*v);
+      if (le->text() != t) {
+        le->setText(t);
+      }
     }
     if (auto v = view.placeholder(name)) {
       le->setPlaceholderText(QString::fromStdString(*v));
@@ -637,6 +757,15 @@ static void applyToWidget(
 
   // --- QListWidget ---
   if (auto* lw = qobject_cast<QListWidget*>(w)) {
+    // Per-row delete affordance (setListItemsDeletable). The property drives the
+    // ListRowDeleteDelegate installed in connectWidgetSignals; toggling it after
+    // rows exist needs a relayout so sizeHint (which reserves the icon width) is
+    // re-queried.
+    const bool deletable = view.listDeletable(name).value_or(false);
+    if (lw->property("pj_deletable").toBool() != deletable) {
+      lw->setProperty("pj_deletable", deletable);
+      lw->doItemsLayout();
+    }
     if (auto v = view.listItems(name)) {
       lw->clear();
       for (std::size_t i = 0; i < v->size(); ++i) {
@@ -653,6 +782,30 @@ static void applyToWidget(
         auto* item = lw->item(i);
         item->setSelected(selected.count(item->text().toStdString()) > 0);
       }
+    }
+    // Empty-state overlay: a centered hint floating over the list viewport while
+    // it has no rows, hidden the moment items appear (mirrors the chart
+    // placeholder). Parented to the viewport so it tracks the list's content area.
+    if (auto ph = view.listPlaceholder(name)) {
+      auto* overlay = lw->viewport()->findChild<ChartPlaceholderOverlay*>(QString(), Qt::FindDirectChildrenOnly);
+      if (overlay == nullptr) {
+        overlay = new ChartPlaceholderOverlay(lw->viewport());
+      }
+      overlay->setText(QString::fromStdString(*ph));
+      overlay->setVisible(lw->count() == 0);
+      overlay->recenter();
+      // Re-center after the current layout settles: on initial injection the
+      // viewport may still grow to its final height afterwards, and no later
+      // resize event fires if the surrounding dialog was already sized — which
+      // left the hint stuck low instead of centered.
+      QTimer::singleShot(0, overlay, [overlay]() { overlay->recenter(); });
+    } else if (
+        auto* overlay = lw->viewport()->findChild<ChartPlaceholderOverlay*>(QString(), Qt::FindDirectChildrenOnly)) {
+      // A payload that updates items WITHOUT re-sending list_placeholder must
+      // still recompute the overlay — the SDK contract is auto-hide the moment
+      // data appears, not "hide only when the plugin repeats the key".
+      overlay->setVisible(lw->count() == 0);
+      overlay->recenter();
     }
     return;
   }
@@ -832,6 +985,19 @@ static void applyToWidget(
         }
       }
     }
+    // Empty-state overlay: a centered hint over the table viewport while it has no
+    // rows, hidden the moment rows appear (mirrors the QListWidget placeholder).
+    // Parented to the viewport so it tracks the table's content area.
+    if (auto ph = view.listPlaceholder(name)) {
+      auto* overlay = tw->viewport()->findChild<ChartPlaceholderOverlay*>(QString(), Qt::FindDirectChildrenOnly);
+      if (overlay == nullptr) {
+        overlay = new ChartPlaceholderOverlay(tw->viewport());
+      }
+      overlay->setText(QString::fromStdString(*ph));
+      overlay->setVisible(tw->rowCount() == 0);
+      overlay->recenter();
+      QTimer::singleShot(0, overlay, [overlay]() { overlay->recenter(); });
+    }
     return;
   }
 
@@ -976,8 +1142,11 @@ static void applyToWidget(
     auto series_data = view.chartSeries(name);
     auto zoom_enabled = view.chartZoomEnabled(name);
     auto auto_zoom = view.chartAutoZoom(name);
-    if (series_data || zoom_enabled) {
-      if (session != nullptr && catalog != nullptr) {
+    auto chart_placeholder = view.chartPlaceholder(name);
+    // chart_placeholder alone must be honored too — a plugin may send the
+    // hint before (or without) any series/zoom keys.
+    if (series_data || zoom_enabled || chart_placeholder) {
+      if ((series_data || zoom_enabled) && session != nullptr && catalog != nullptr) {
         // Full PlotWidget — zoom/tracker/legend, matching FilterEditorPanel preview quality.
         // Right-click context menu disabled per Davide's comment ("embedded PlotWidget
         // should have the right click menu disabled").
@@ -986,13 +1155,29 @@ static void applyToWidget(
           auto* layout = frame->layout();
           if (!layout) {
             layout = new QVBoxLayout(frame);
-            layout->setContentsMargins(0, 0, 0, 4);
+            // Flush: the chart fills the whole frame so the darker panel
+            // backdrop never shows around it. Breathing room comes from
+            // padding INSIDE the chart (contentsMargins below), which the
+            // plot paints in its own Data-surface background.
+            layout->setContentsMargins(
+                theme::space(theme::Space::None), theme::space(theme::Space::None), theme::space(theme::Space::None),
+                theme::space(theme::Space::None));
           }
           plot = new PJ::PlotWidget(&session->sessionManager(), catalog, frame);
           plot->setContextMenuEnabled(false);
           // PlotWidgetBase starts with the grid disabled; show it so embedded chart
           // previews match the native editor's gridded look.
           plot->setGridVisible(true);
+          // Let the canvas fill to the plot's top edge instead of reserving
+          // Qwt's top-axis-label margin.
+          plot->setCanvasAlignedToScales(false);
+          // QwtPlot lays its axes out inside contentsRect, so these margins are
+          // Data-toned internal padding, not a hole onto the panel backdrop.
+          if (auto* qwt = plot->findChild<QwtPlot*>()) {
+            qwt->setContentsMargins(
+                theme::space(theme::Space::Comfortable), theme::space(theme::Space::Comfortable),
+                theme::space(theme::Space::Comfortable), theme::space(theme::Space::Comfortable));
+          }
           layout->addWidget(plot);
         }
         if (series_data) {
@@ -1095,16 +1280,25 @@ static void applyToWidget(
             plot->zoomOut(false);
           }
         }
-      } else {
-        // Fallback: ChartPreviewWidget (no session/catalog available).
+      } else if (series_data || zoom_enabled) {
+        // Fallback: ChartPreviewWidget (no session/catalog available). Guarded
+        // like the PlotWidget branch so a placeholder-only payload never
+        // constructs a chart widget.
         auto* chart = frame->findChild<PJ::ChartPreviewWidget*>();
         if (!chart) {
           auto* layout = frame->layout();
           if (!layout) {
             layout = new QVBoxLayout(frame);
-            layout->setContentsMargins(0, 0, 0, 0);
+            // Flush frame + Data-toned internal padding — same scheme as the
+            // PlotWidget branch above.
+            layout->setContentsMargins(
+                theme::space(theme::Space::None), theme::space(theme::Space::None), theme::space(theme::Space::None),
+                theme::space(theme::Space::None));
           }
           chart = new PJ::ChartPreviewWidget(frame);
+          chart->setContentsMargins(
+              theme::space(theme::Space::Comfortable), theme::space(theme::Space::Comfortable),
+              theme::space(theme::Space::Comfortable), theme::space(theme::Space::Comfortable));
           layout->addWidget(chart);
         }
         if (series_data) {
@@ -1117,6 +1311,33 @@ static void applyToWidget(
         }
         if (zoom_enabled) {
           chart->setZoomEnabled(*zoom_enabled);
+        }
+      }
+
+      // Placeholder overlay: a centered translucent hint shown while the chart
+      // has no series (e.g. a drop prompt). Created lazily as a child of the
+      // frame; shown/hidden per current data.
+      if (chart_placeholder) {
+        const bool has_data = series_data && !series_data->empty();
+        auto* overlay = frame->findChild<ChartPlaceholderOverlay*>(QString(), Qt::FindDirectChildrenOnly);
+        if (overlay == nullptr) {
+          overlay = new ChartPlaceholderOverlay(frame);
+        }
+        overlay->setText(QString::fromStdString(*chart_placeholder));
+        overlay->setVisible(!has_data);
+        if (!has_data) {
+          overlay->recenter();
+        }
+      } else if (series_data) {
+        // Series delivered WITHOUT re-sending chart_placeholder: recompute the
+        // existing overlay so it auto-hides over fresh data (and reappears if
+        // the series went empty), per the SDK contract.
+        if (auto* overlay = frame->findChild<ChartPlaceholderOverlay*>(QString(), Qt::FindDirectChildrenOnly)) {
+          const bool has_data = !series_data->empty();
+          overlay->setVisible(!has_data);
+          if (!has_data) {
+            overlay->recenter();
+          }
         }
       }
     }
@@ -1277,6 +1498,11 @@ void connectWidgetSignals(QWidget* root, WidgetEventCallback callback) {
         // Report the delivered-order index, not the (possibly sorted) view row.
         callback(name, WidgetEventBuilder::itemDoubleClicked(listItemPluginIndex(lw, item)));
       });
+      // Per-row trash button: the delegate only draws / handles it when the list
+      // carries the pj_deletable property (set from setListItemsDeletable), so it
+      // is inert on ordinary lists.
+      lw->setItemDelegate(new ListRowDeleteDelegate(
+          lw, [callback, name](int row) { callback(name, WidgetEventBuilder::itemDeleteRequested(row)); }));
       continue;
     }
     if (auto* tw = qobject_cast<QTableWidget*>(w)) {

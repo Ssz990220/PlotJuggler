@@ -7,7 +7,6 @@
 #include <QDir>
 #include <QDomElement>
 #include <QFile>
-#include <QFileDialog>
 #include <QFileInfo>
 #include <QFont>
 #include <QFormLayout>
@@ -48,6 +47,8 @@
 #include "pj_widgets/CheckButton.h"
 #include "pj_widgets/ColorPickerWidget.h"
 #include "pj_widgets/ComboBox.h"
+#include "pj_widgets/FileDialog.h"
+#include "pj_widgets/FrameworkTokens.h"
 #include "pj_widgets/SvgUtil.h"
 #include "urdf_package_resolver.h"
 #include "urdf_parser.h"
@@ -632,12 +633,16 @@ void RobotModelLayer::releaseGL() {
 QWidget* RobotModelLayer::createConfigWidget(QWidget* parent) {
   auto* container = new QWidget(parent);
   auto* outer = new QVBoxLayout(container);
-  outer->setContentsMargins(0, 0, 0, 0);
-  outer->setSpacing(6);
+  outer->setContentsMargins(
+      PJ::theme::space(PJ::theme::Space::None), PJ::theme::space(PJ::theme::Space::None),
+      PJ::theme::space(PJ::theme::Space::None), PJ::theme::space(PJ::theme::Space::None));
+  outer->setSpacing(PJ::theme::space(PJ::theme::Space::Comfortable));
 
   auto* form = new QFormLayout();
-  form->setContentsMargins(0, 0, 0, 0);
-  form->setSpacing(6);
+  form->setContentsMargins(
+      PJ::theme::space(PJ::theme::Space::None), PJ::theme::space(PJ::theme::Space::None),
+      PJ::theme::space(PJ::theme::Space::None), PJ::theme::space(PJ::theme::Space::None));
+  form->setSpacing(PJ::theme::space(PJ::theme::Space::Comfortable));
   outer->addLayout(form);
 
   auto* source_combo = new PJ::ComboBox(container);
@@ -676,7 +681,9 @@ QWidget* RobotModelLayer::createConfigWidget(QWidget* parent) {
 
   auto* file_row = new QWidget(container);
   auto* file_layout = new QHBoxLayout(file_row);
-  file_layout->setContentsMargins(0, 0, 0, 0);
+  file_layout->setContentsMargins(
+      PJ::theme::space(PJ::theme::Space::None), PJ::theme::space(PJ::theme::Space::None),
+      PJ::theme::space(PJ::theme::Space::None), PJ::theme::space(PJ::theme::Space::None));
   // Shows only the file name (full path lives in source_value_ / the tooltip); the
   // field is read-only — Browse is the way to change it.
   auto* file_edit =
@@ -697,7 +704,9 @@ QWidget* RobotModelLayer::createConfigWidget(QWidget* parent) {
 
   auto* url_row = new QWidget(container);
   auto* url_layout = new QHBoxLayout(url_row);
-  url_layout->setContentsMargins(0, 0, 0, 0);
+  url_layout->setContentsMargins(
+      PJ::theme::space(PJ::theme::Space::None), PJ::theme::space(PJ::theme::Space::None),
+      PJ::theme::space(PJ::theme::Space::None), PJ::theme::space(PJ::theme::Space::None));
   auto* url_edit = new QLineEdit(source_type_ == SourceType::kUrl ? source_value_ : QString(), url_row);
   auto* load_button = new QToolButton(url_row);
   load_button->setAutoRaise(true);
@@ -710,8 +719,10 @@ QWidget* RobotModelLayer::createConfigWidget(QWidget* parent) {
 
   auto* status_row = new QWidget(container);
   auto* status_layout = new QHBoxLayout(status_row);
-  status_layout->setContentsMargins(0, 0, 0, 0);
-  status_layout->setSpacing(4);
+  status_layout->setContentsMargins(
+      PJ::theme::space(PJ::theme::Space::None), PJ::theme::space(PJ::theme::Space::None),
+      PJ::theme::space(PJ::theme::Space::None), PJ::theme::space(PJ::theme::Space::None));
+  status_layout->setSpacing(PJ::theme::space(PJ::theme::Space::Snug));
   auto* status_label = new QLabel(status_text_, status_row);
   status_label->setWordWrap(true);
   status_label->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
@@ -826,7 +837,7 @@ QWidget* RobotModelLayer::createConfigWidget(QWidget* parent) {
     QSettings settings;
     const QString remembered = settings.value(u"pj_scene3d/urdf_browse_dir"_s).toString();
     const QString start_dir = !source_value_.isEmpty() ? source_value_ : remembered;
-    const QString path = QFileDialog::getOpenFileName(
+    const QString path = PJ::FileDialog::getOpenFileName(
         container, tr("Open URDF"), start_dir, tr("URDF files (*.urdf *.xml);;All files (*)"));
     if (path.isEmpty()) {
       return;
@@ -852,7 +863,7 @@ QWidget* RobotModelLayer::createConfigWidget(QWidget* parent) {
     if (packages.isEmpty() || resolver_ == nullptr) {
       return;
     }
-    const QString root = QFileDialog::getExistingDirectory(
+    const QString root = PJ::FileDialog::getExistingDirectory(
         container, tr("Select the folder that contains your robot packages"), QString());
     if (root.isEmpty()) {
       return;

@@ -6,6 +6,7 @@
 #include <QFormLayout>
 #include <QHBoxLayout>
 #include <QIcon>
+#include <QPalette>
 #include <QPushButton>
 #include <QSignalBlocker>
 #include <QSize>
@@ -17,6 +18,7 @@
 #include "pj_runtime/SessionManager.h"
 #include "pj_scene2d_core/media_source.h"
 #include "pj_widgets/DoubleScrubber.h"
+#include "pj_widgets/FrameworkTokens.h"
 using namespace Qt::StringLiterals;
 
 namespace PJ {
@@ -48,6 +50,36 @@ Colormap parseColormap(const QString& value) {
   }
   return Colormap::kTurbo;  // also maps legacy "jet" layouts to the default.
 }
+
+QString qssColor(const QColor& color) {
+  if (!color.isValid()) {
+    return QStringLiteral("transparent");
+  }
+  return QStringLiteral("rgba(%1, %2, %3, %4)")
+      .arg(color.red())
+      .arg(color.green())
+      .arg(color.blue())
+      .arg(color.alpha());
+}
+
+PJ::theme::Theme widgetTheme(const QWidget* widget) {
+  (void)widget;
+  return PJ::theme::appTheme();
+}
+
+QString toggleButtonQss(PJ::theme::Theme active_theme) {
+  // A button is the Secondary interaction fill per state — no border.
+  return QStringLiteral(
+             "QPushButton { border: none; border-radius: %1px; padding: %2px %3px; background-color: %4; }"
+             "QPushButton:hover { background-color: %5; }"
+             "QPushButton:checked { background-color: %6; }")
+      .arg(PJ::theme::radius(PJ::theme::Radius::Input, active_theme))
+      .arg(PJ::theme::space(PJ::theme::Space::Tight, active_theme))
+      .arg(PJ::theme::space(PJ::theme::Space::Comfortable, active_theme))
+      .arg(qssColor(PJ::theme::interaction(PJ::theme::Variant::Accent, PJ::theme::State::Nominal, active_theme)))
+      .arg(qssColor(PJ::theme::interaction(PJ::theme::Variant::Accent, PJ::theme::State::Hovered, active_theme)))
+      .arg(qssColor(PJ::theme::interaction(PJ::theme::Variant::Accent, PJ::theme::State::Checked, active_theme)));
+}
 }  // namespace
 
 DepthImageLayer::DepthImageLayer(
@@ -57,20 +89,16 @@ DepthImageLayer::DepthImageLayer(
 QWidget* DepthImageLayer::createConfigWidget(QWidget* parent) {
   auto* widget = new QWidget(parent);
   auto* layout = new QFormLayout(widget);
-  layout->setContentsMargins(0, 0, 0, 0);
-
-  // Colormap row: combo + a right-aligned invert toggle, matching the 3D
-  // pointcloud color config exactly (same invert.svg icon, style, and extent).
-  static constexpr auto kToggleButtonQss =
-      "QPushButton { border: 1px solid #8c8c8c; border-radius: 4px; padding: 2px 10px; background-color: "
-      "palette(button); }"
-      "QPushButton:hover { border-color: #5b8fd9; }"
-      "QPushButton:checked { background-color: #b7d2f5; border-color: #5b8fd9; }";
+  layout->setContentsMargins(
+      PJ::theme::space(PJ::theme::Space::None), PJ::theme::space(PJ::theme::Space::None),
+      PJ::theme::space(PJ::theme::Space::None), PJ::theme::space(PJ::theme::Space::None));
 
   auto* colormap_row = new QWidget(widget);
   auto* colormap_row_layout = new QHBoxLayout(colormap_row);
-  colormap_row_layout->setContentsMargins(0, 0, 0, 0);
-  colormap_row_layout->setSpacing(6);
+  colormap_row_layout->setContentsMargins(
+      PJ::theme::space(PJ::theme::Space::None), PJ::theme::space(PJ::theme::Space::None),
+      PJ::theme::space(PJ::theme::Space::None), PJ::theme::space(PJ::theme::Space::None));
+  colormap_row_layout->setSpacing(PJ::theme::space(PJ::theme::Space::Comfortable));
 
   auto* colormap = new QComboBox(colormap_row);
   colormap->addItem(tr("Turbo"), static_cast<int>(Colormap::kTurbo));
@@ -84,8 +112,8 @@ QWidget* DepthImageLayer::createConfigWidget(QWidget* parent) {
   invert_btn->setCheckable(true);
   invert_btn->setChecked(invert_);
   invert_btn->setFocusPolicy(Qt::NoFocus);
-  invert_btn->setStyleSheet(kToggleButtonQss);
-  invert_btn->setIcon(QIcon(u":/resources/svg/invert.svg"_s));
+  invert_btn->setStyleSheet(toggleButtonQss(widgetTheme(widget)));
+  invert_btn->setIcon(QIcon(QStringLiteral(":/resources/svg/invert.svg")));
   invert_btn->setIconSize(QSize(20, 20));
   // Match the standard icon-button extent used across the app (icon 20 + padding 4).
   invert_btn->setFixedSize(24, 24);

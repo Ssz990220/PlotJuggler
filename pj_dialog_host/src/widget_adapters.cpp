@@ -16,6 +16,7 @@
 #include <QButtonGroup>
 #include <QCheckBox>
 #include <QComboBox>
+#include <QDialog>
 #include <QFrame>
 #include <QGridLayout>
 #include <QLayout>
@@ -30,6 +31,8 @@
 #include <QTableView>
 #include <QVariant>
 #include <algorithm>
+
+#include "pj_widgets/FrameworkTokens.h"
 
 namespace PJ {
 
@@ -253,10 +256,40 @@ static void insertDualOptionsWidget(
   }
 
   if (placement.box_layout != nullptr) {
-    const int insert_index = std::min(placement.first_index, placement.second_index);
-    placement.box_layout->removeWidget(first);
-    placement.box_layout->removeWidget(second);
-    placement.box_layout->insertWidget(insert_index, dual);
+    QBoxLayout* box = placement.box_layout;
+    const bool horizontal = box->direction() == QBoxLayout::LeftToRight || box->direction() == QBoxLayout::RightToLeft;
+    const int insert_at = std::min(placement.first_index, placement.second_index);
+    // The push-to-right-edge rearrangement below is only valid for the classic
+    // `[... pair (expanding spacer)]` tail rows. If any real widget follows the
+    // pair (e.g. `[label, pair, stretch, checkbox]`), rearranging would scramble
+    // the row — those rows keep the pair's original slot instead.
+    bool trailing_widget = false;
+    for (int i = std::max(placement.first_index, placement.second_index) + 1; i < box->count(); ++i) {
+      if (box->itemAt(i)->widget() != nullptr) {
+        trailing_widget = true;
+        break;
+      }
+    }
+    box->removeWidget(first);
+    box->removeWidget(second);
+    if (horizontal && !trailing_widget) {
+      // Drop the trailing horizontal spacer that used to hold the pair on the left,
+      // then re-append as [stretch][group][inset] so the group is pushed to the
+      // right edge of its row with the canonical comfortable inset — lining up
+      // with the row-filling ToggleSwitches (which use the same inset).
+      for (int i = box->count() - 1; i >= 0; --i) {
+        QSpacerItem* sp = box->itemAt(i)->spacerItem();
+        if (sp != nullptr && (sp->expandingDirections() & Qt::Horizontal)) {
+          delete box->takeAt(i);
+          break;
+        }
+      }
+      box->addStretch(1);
+      box->addWidget(dual);
+      box->addSpacing(theme::space(theme::Space::Comfortable));
+    } else {
+      box->insertWidget(insert_at, dual);
+    }
   } else if (placement.grid_layout != nullptr) {
     placement.grid_layout->removeWidget(first);
     placement.grid_layout->removeWidget(second);
@@ -431,6 +464,10 @@ static bool tryAdaptCheckBox(QCheckBox* checkbox) {
   auto* toggle = new ToggleSwitch(parent);
   toggle->setText(checkbox->text());
   toggle->setLabelSide(ToggleSwitch::LabelSide::Left);
+  // Fill the row so the switch (drawn at the widget's right edge for a Left-side
+  // label) is pushed to the far right of its settings area, settings-list style,
+  // instead of hugging the label text. The pill itself stays a fixed width.
+  toggle->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
   toggle->setToolTip(checkbox->toolTip());
   toggle->setEnabled(checkbox->isEnabled());
   toggle->setChecked(checkbox->isChecked(), /*animate=*/false);
@@ -578,61 +615,10 @@ void adaptComboBoxes(QWidget* root) {
 }
 
 void adaptScrollAreas(QWidget* root) {
-  if (root == nullptr) {
-    return;
-  }
-  static constexpr bool kDefaultAutoHide = true;
-  static constexpr int kDefaultFadeMs = 150;
-
-  const QList<QAbstractScrollArea*> areas = root->findChildren<QAbstractScrollArea*>();
-  for (QAbstractScrollArea* area : areas) {
-    if (area->property("pjScrollbarAttached").toBool() || isInsideHostComposite(area)) {
-      continue;
-    }
-    // FIX 7: skip the internal scroll area of a combo-box container — adapting
-    // it would add pill overlays to the combo's own view and/or its popup list.
-    if (qobject_cast<QComboBox*>(area->parentWidget()) != nullptr) {
-      continue;
-    }
-    // FIX 7: skip a QAbstractItemView whose top-level window is a popup (e.g.
-    // the QListView Qt opens for a combo-box drop-down in a transient popup
-    // window — it is closed on selection and should never receive overlays).
-    if (qobject_cast<QAbstractItemView*>(area) != nullptr && (area->window()->windowFlags() & Qt::Popup) == Qt::Popup) {
-      continue;
-    }
-
-    // Respect a deliberately-pinned scrollbar: a plugin that set an axis to
-    // AlwaysOn wants a persistent, draggable native bar (e.g. a log/console
-    // view), which a hover-only pill would silently replace. Skip that axis and
-    // leave its native bar untouched. AsNeeded (the default) and AlwaysOff are
-    // both compatible with the pill (the pill paints over a hidden gutter).
-    const bool adapt_h = area->horizontalScrollBarPolicy() != Qt::ScrollBarAlwaysOn;
-    const bool adapt_v = area->verticalScrollBarPolicy() != Qt::ScrollBarAlwaysOn;
-    if (!adapt_h && !adapt_v) {
-      continue;  // both axes pinned by the plugin; nothing to adapt
-    }
-
-    const bool auto_hide = area->property("pjScrollbarAutoHide").isValid()
-                               ? area->property("pjScrollbarAutoHide").toBool()
-                               : kDefaultAutoHide;
-    const int fade_ms =
-        area->property("pjScrollbarFadeMs").isValid() ? area->property("pjScrollbarFadeMs").toInt() : kDefaultFadeMs;
-
-    const auto attach_pill = [&](Qt::Orientation orientation) {
-      auto* pill = new PJ::Scrollbar(orientation, area);
-      pill->attach(area);
-      pill->setAutoHide(auto_hide);
-      pill->setFadeDurationMs(fade_ms);
-    };
-    if (adapt_h) {
-      attach_pill(Qt::Horizontal);
-    }
-    if (adapt_v) {
-      attach_pill(Qt::Vertical);
-    }
-
-    area->setProperty("pjScrollbarAttached", true);
-  }
+  // The canonical walker lives in pj_widgets alongside PJ::Scrollbar so app
+  // windows can reuse it; the host only adds its composite-widget veto (a plugin
+  // custom widget's internal scroll areas must not get overlaid).
+  PJ::attachPillScrollbars(root, [](QAbstractScrollArea* area) { return isInsideHostComposite(area); });
 }
 
 void adaptGridTables(QWidget* root) {
@@ -694,6 +680,16 @@ bool redirectAdaptedVisibility(QWidget* w, bool visible) {
     return true;
   }
   return false;
+}
+
+void forwardEmbeddedDialogClose(QWidget* content, QDialog* outer) {
+  auto* inner = qobject_cast<QDialog*>(content);
+  if (inner == nullptr || outer == nullptr) {
+    return;
+  }
+  // Esc (or any programmatic accept/reject) on the embedded root closes the
+  // hosting chrome with the same result instead of hiding just the content.
+  QObject::connect(inner, &QDialog::finished, outer, [outer](int result) { outer->done(result); });
 }
 
 }  // namespace PJ

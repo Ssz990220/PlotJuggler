@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <ui version="4.0">
  <class>ExtensionDetailDialog</class>
- <widget class="QDialog" name="ExtensionDetailDialog">
+ <widget class="QWidget" name="ExtensionDetailDialog">
   <property name="minimumSize">
    <size><width>500</width><height>400</height></size>
   </property>
@@ -45,7 +45,7 @@
       <item>
        <spacer name="tags_stretch">
         <property name="orientation"><enum>Qt::Horizontal</enum></property>
-        <property name="sizeHint" stdset="0"><size><width>40</width><height>20</height></size></property>
+        <property name="sizeHint" stdset="0"><size><width>16</width><height>20</height></size></property>
        </spacer>
       </item>
      </layout>
@@ -80,7 +80,7 @@
    <item>
     <spacer name="main_stretch">
      <property name="orientation"><enum>Qt::Vertical</enum></property>
-     <property name="sizeHint" stdset="0"><size><width>20</width><height>40</height></size></property>
+     <property name="sizeHint" stdset="0"><size><width>20</width><height>16</height></size></property>
     </spacer>
    </item>
 
@@ -91,7 +91,7 @@
       <widget class="QPushButton" name="github_btn">
        <property name="text"><string>Visit Website</string></property>
        <property name="styleSheet">
-        <string notr="true">QPushButton { border: 1px solid palette(mid); border-radius: 4px; padding: 4px 14px; }
+        <string notr="true">QPushButton { border: 1px solid palette(mid); padding: 4px 14px; }
 QPushButton:hover { background: palette(mid); }
 QPushButton:disabled { color: palette(mid); }</string>
        </property>
@@ -100,7 +100,7 @@ QPushButton:disabled { color: palette(mid); }</string>
      <item>
       <spacer name="btn_stretch">
        <property name="orientation"><enum>Qt::Horizontal</enum></property>
-       <property name="sizeHint" stdset="0"><size><width>40</width><height>20</height></size></property>
+       <property name="sizeHint" stdset="0"><size><width>16</width><height>20</height></size></property>
       </spacer>
      </item>
      <!-- action_btn: text/style/visibility set in C++ based on install state -->
@@ -116,7 +116,7 @@ QPushButton:disabled { color: palette(mid); }</string>
        <property name="visible"><bool>false</bool></property>
        <property name="text"><string>Uninstall</string></property>
        <property name="styleSheet">
-        <string notr="true">QPushButton { border: 1px solid palette(mid); border-radius: 4px; padding: 4px 14px; }
+        <string notr="true">QPushButton { border: 1px solid palette(mid); padding: 4px 14px; }
 QPushButton:hover { background: palette(mid); }</string>
        </property>
       </widget>
@@ -126,7 +126,7 @@ QPushButton:hover { background: palette(mid); }</string>
        <property name="text"><string>Close</string></property>
        <property name="default"><bool>true</bool></property>
        <property name="styleSheet">
-        <string notr="true">QPushButton { border: 1px solid palette(mid); border-radius: 4px; padding: 4px 14px; }
+        <string notr="true">QPushButton { border: 1px solid palette(mid); padding: 4px 14px; }
 QPushButton:hover { background: palette(mid); }</string>
        </property>
       </widget>

@@ -62,6 +62,7 @@ add_test(NAME PlotWidgetReplaceCurveTest COMMAND plot_widget_replace_curve_test)
 
 add_executable(plot_widget_default_style_test
     plot_widget_default_style_test.cpp
+    ${CMAKE_SOURCE_DIR}/resources/resources.qrc  # framework token palette (DataBackdrop test)
 )
 
 target_compile_options(plot_widget_default_style_test PRIVATE ${PJ_WARNING_FLAGS})
@@ -69,6 +70,7 @@ target_link_libraries(plot_widget_default_style_test PRIVATE
     pj_plotting
     GTest::gtest
 )
+set_target_properties(plot_widget_default_style_test PROPERTIES AUTORCC ON)
 
 add_test(NAME PlotWidgetDefaultStyleTest COMMAND plot_widget_default_style_test)
 

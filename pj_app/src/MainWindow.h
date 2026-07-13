@@ -765,6 +765,12 @@ class MainWindow : public QMainWindow {
   bool presentPanel(QWidget* panel);
   void restoreCentralArea();
 
+  // Wraps a toolbox panel's `content` in the canonical Banner header (title on
+  // the far left, close button on the far right; Surface::Banner). The close
+  // button invokes `on_close`. The returned container is what presentPanel()
+  // swaps into the chart area.
+  QWidget* wrapToolboxPanel(QWidget* content, const QString& title, const std::function<void()>& on_close);
+
   // Constructs + wires (but does not populate) an object-widget dock of the
   // given kind ("scene3d" / "scene2d"). Shared by both the drop and the
   // layout-restore paths of the object-widget factory; returns nullptr for an

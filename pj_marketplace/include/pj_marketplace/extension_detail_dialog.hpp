@@ -2,9 +2,8 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 
-#include <QDialog>
-
 #include "pj_marketplace/extension.hpp"
+#include "pj_widgets/Dialog.h"
 
 namespace Ui {
 class ExtensionDetailDialog;
@@ -12,7 +11,9 @@ class ExtensionDetailDialog;
 
 namespace PJ {
 
-class ExtensionDetailDialog : public QDialog {
+// Canonical app chrome (PJ::Dialog): frameless title bar + close, no system
+// (window-manager) decorations.
+class ExtensionDetailDialog : public Dialog {
   Q_OBJECT
 
  public:

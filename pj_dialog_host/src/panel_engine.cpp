@@ -1,6 +1,8 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MIT
+#include <pj_widgets/Dialog.h>
 #include <pj_widgets/FileDialog.h>
+#include <pj_widgets/FrameworkTokens.h>
 #include <pj_widgets/SvgUtil.h>  // currentTheme()
 
 #include <QBuffer>
@@ -9,7 +11,6 @@
 #include <QDialog>
 #include <QDialogButtonBox>
 #include <QEvent>
-#include <QFileDialog>
 #include <QLineEdit>
 #include <QPointer>
 #include <QString>
@@ -85,22 +86,17 @@ struct PanelEngine::Impl {
       return;
     }
     adaptStyledWidgets(loaded);
-    QDialog* dlg = qobject_cast<QDialog*>(loaded);
-    if (dlg == nullptr) {
-      dlg = new QDialog(root);
-      auto* lay = new QVBoxLayout(dlg);
-      lay->setContentsMargins(0, 0, 0, 0);
-      lay->addWidget(loaded);
-    }
-    // Keep the native title bar (unlike the frameless modal sub-dialog) so the
-    // .ui's windowTitle shows as the dialog title, matching PJ3. "[*]" renders
-    // empty yet stops Qt appending the " - PlotJuggler 4" suffix.
-    dlg->setWindowTitle(loaded->windowTitle() + "[*]");
-    dlg->setAttribute(Qt::WA_StyledBackground, true);
+    // Wrap in the app's canonical frameless chrome — the .ui's windowTitle shows
+    // on the custom title bar. Bindings/signals target `loaded` (the plugin
+    // content), not the whole dialog, so the chrome's own buttons never get wired.
+    auto* dlg = new PJ::Dialog(root);
+    dlg->setDialogTitle(loaded->windowTitle());
+    dlg->contentLayout()->addWidget(loaded);
+    forwardEmbeddedDialogClose(loaded, dlg);
     dlg->setWindowModality(Qt::ApplicationModal);
-    applyWidgetData(dlg, full_view, config.session, config.catalog);
-    connectWidgetSignals(dlg, [this](const std::string& n, const std::string& j) { forwardEvent(n, j); });
-    if (auto* button_box = dlg->findChild<QDialogButtonBox*>(u"buttonBox"_s)) {
+    applyWidgetData(loaded, full_view, config.session, config.catalog);
+    connectWidgetSignals(loaded, [this](const std::string& n, const std::string& j) { forwardEvent(n, j); });
+    if (auto* button_box = loaded->findChild<QDialogButtonBox*>(QStringLiteral("buttonBox"))) {
       QObject::connect(button_box, &QDialogButtonBox::rejected, dlg, &QDialog::reject);
       QObject::connect(button_box, &QDialogButtonBox::accepted, dlg, &QDialog::accept);
     }
@@ -205,30 +201,19 @@ struct PanelEngine::Impl {
       QWidget* sub_loaded = sub_loader.load(&sub_buffer, root);
       if (sub_loaded != nullptr) {
         adaptStyledWidgets(sub_loaded);
-        QDialog* sub_dialog = qobject_cast<QDialog*>(sub_loaded);
-        if (sub_dialog == nullptr) {
-          sub_dialog = new QDialog(root);
-          auto* sub_layout = new QVBoxLayout(sub_dialog);
-          sub_layout->setContentsMargins(0, 0, 0, 0);
-          sub_layout->addWidget(sub_loaded);
-        }
-        // "[*]" renders empty yet stops Qt appending the " — PlotJuggler 4" title suffix.
-        sub_dialog->setWindowTitle(sub_loaded->windowTitle() + "[*]");
-        // Frameless + theme-painted, like the app's own dialogs. The .ui ships a
-        // plain QDialog that otherwise gets the native OS titlebar (which doesn't
-        // match the dark/light chrome). FramelessWindowHint drops the OS frame;
-        // WA_StyledBackground lets the global `QDialog { background: ... }` QSS
-        // paint the themed surface. A 1px border gives the borderless window
-        // definition against whatever sits behind it.
-        sub_dialog->setWindowFlag(Qt::FramelessWindowHint, true);
-        sub_dialog->setWindowFlag(Qt::NoDropShadowWindowHint, true);
-        sub_dialog->setAttribute(Qt::WA_StyledBackground, true);
-        sub_dialog->setStyleSheet(sub_dialog->styleSheet() + u"\nQDialog{border:1px solid palette(mid);}"_s);
+        // Canonical chrome, same as dialog_engine's sub-dialogs: the plugin
+        // content (QDialog-rooted or not) is embedded as the CONTENT of a
+        // PJ::Dialog, which brings the themed title bar with a working close
+        // button, drag-to-move, and the app dialog surface — the hand-rolled
+        // frameless QDialog this replaces had a border but no affordances.
+        auto* sub_dialog = new PJ::Dialog(root);
+        sub_dialog->setDialogTitle(sub_loaded->windowTitle());
+        sub_dialog->contentLayout()->addWidget(sub_loaded);
+        forwardEmbeddedDialogClose(sub_loaded, sub_dialog);
         // Wire the standard QDialogButtonBox (objectName "buttonBox") to
         // QDialog::accept/reject. Without this the OK/Cancel buttons are
-        // inert and the only way to close the sub-dialog is the window
-        // manager's X — the OK click would do nothing.
-        if (auto* button_box = sub_dialog->findChild<QDialogButtonBox*>(u"buttonBox"_s)) {
+        // inert — the OK click would do nothing.
+        if (auto* button_box = sub_loaded->findChild<QDialogButtonBox*>(u"buttonBox"_s)) {
           QObject::connect(button_box, &QDialogButtonBox::accepted, sub_dialog, &QDialog::accept);
           QObject::connect(button_box, &QDialogButtonBox::rejected, sub_dialog, &QDialog::reject);
         }
@@ -388,7 +373,7 @@ QWidget* PanelEngine::openPanel() {
         forward(name, PJ::WidgetEventBuilder::fileSelected(path.toStdString()));
       }
     } else if (picker_view.isFolderPicker(name)) {
-      const QString path = QFileDialog::getExistingDirectory(
+      const QString path = PJ::FileDialog::getExistingDirectory(
           impl_->root, QString::fromStdString(picker_view.folderPickerTitle(name).value_or("Select Folder")));
       if (!path.isEmpty()) {
         forward(name, PJ::WidgetEventBuilder::folderSelected(path.toStdString()));

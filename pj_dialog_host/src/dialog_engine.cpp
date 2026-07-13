@@ -1,7 +1,9 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 
+#include <pj_widgets/Dialog.h>
 #include <pj_widgets/FileDialog.h>
+#include <pj_widgets/SectionHeaderBand.h>
 
 #include <QAbstractItemView>
 #include <QBuffer>
@@ -9,7 +11,6 @@
 #include <QDialog>
 #include <QDialogButtonBox>
 #include <QEventLoop>
-#include <QFileDialog>
 #include <QGroupBox>
 #include <QLayout>
 #include <QPlainTextEdit>
@@ -26,7 +27,26 @@
 #include <pj_plugins/host_qt/widget_adapters.hpp>
 #include <pj_plugins/host_qt/widget_binding.hpp>
 
+#include "pj_widgets/FrameworkTokens.h"
+
 namespace PJ {
+
+namespace {
+
+// Size every SectionHeaderBand in a freshly-loaded plugin UI to the app's
+// canonical band height. QUiLoader inflates them at the widget default height
+// with no wiring to the host, so without this they render shorter than the
+// panel-hosted toolboxes' bands. No-op when metrics are unset (headless/tests).
+void applySectionBandMetrics(QWidget* root, const std::optional<ChromeMetrics>& metrics) {
+  if (root == nullptr || !metrics.has_value()) {
+    return;
+  }
+  for (auto* band : root->findChildren<SectionHeaderBand*>()) {
+    band->onChromeMetricsChanged(*metrics);
+  }
+}
+
+}  // namespace
 
 DialogEngine::DialogEngine(PJ::DialogHandle handle, DialogEngineConfig config)
     : handle_(std::move(handle)), config_(config) {}
@@ -107,17 +127,21 @@ DialogResult DialogEngine::showDialog(QWidget* parent) {
   }
   adaptStyledWidgets(loaded);
 
-  // 2. Wrap in QDialog if needed
-  auto* dialog = qobject_cast<QDialog*>(loaded);
-  if (!dialog) {
-    dialog = new QDialog(parent);
-    auto* layout = new QVBoxLayout(dialog);
-    layout->setContentsMargins(0, 0, 0, 0);
-    layout->addWidget(loaded);
+  // 2. Wrap in the app's canonical frameless chrome. Plugin UIs are declarative
+  //    and rendered by the host, so the host owns their window chrome: they get
+  //    the same custom title bar / drag / resize / close as every app dialog,
+  //    never native GNOME decorations. `loaded` is embedded as the content
+  //    regardless of whether its .ui root was a QDialog or a plain QWidget.
+  auto* dialog = new PJ::Dialog(parent);
+  // Match the host's live chrome metrics so the plugin dialog's title bar is the
+  // same height as the main window (falls back to the shared defaults otherwise).
+  if (config_.section_band_metrics) {
+    dialog->setChromeMetrics(*config_.section_band_metrics);
   }
-
-  // "[*]" renders empty yet stops Qt appending the " — PlotJuggler 4" title suffix.
-  dialog->setWindowTitle(loaded->windowTitle() + "[*]");
+  dialog->setDialogTitle(loaded->windowTitle());
+  dialog->contentLayout()->addWidget(loaded);
+  // A QDialog-rooted .ui swallows Esc itself; forward its close to the chrome.
+  forwardEmbeddedDialogClose(loaded, dialog);
 
   // Dialogs with a parser slot embed a parser-options widget whose height varies
   // with the chosen message protocol (a single msgpack checkbox vs a tall
@@ -137,9 +161,14 @@ DialogResult DialogEngine::showDialog(QWidget* parent) {
     if (slot == nullptr) {
       return;
     }
-    loaded->setMinimumHeight(0);
-    dialog->setMinimumHeight(0);
-    slot->setMinimumHeight(0);
+    // Clear BOTH width and height minimums (not just height): the floor set at the
+    // end of a previous run — setMinimumSize(minimumSizeHint()) — pins width too, so
+    // a wider parser's minimum width would otherwise stick and prevent a later,
+    // narrower parser from shrinking the dialog back. Resetting only height is what
+    // made the final size depend on the order parsers were selected.
+    loaded->setMinimumSize(0, 0);
+    dialog->setMinimumSize(0, 0);
+    slot->setMinimumSize(0, 0);
     std::function<void(QLayout*)> collapse_vspacers = [&](QLayout* layout) {
       if (layout == nullptr) {
         return;
@@ -148,7 +177,15 @@ DialogResult DialogEngine::showDialog(QWidget* parent) {
         QLayoutItem* item = layout->itemAt(i);
         if (QSpacerItem* spacer = item->spacerItem()) {
           if (spacer->expandingDirections() & Qt::Vertical) {
-            spacer->changeSize(0, 0, QSizePolicy::Minimum, QSizePolicy::Fixed);
+            // Zero the spacer's size hint so it contributes no dead space to
+            // adjustSize (the dialog still snaps to its content), but keep it
+            // VERTICALLY EXPANDING so that when a pane is taller than its content
+            // — a short parser page under a tall topic list, a few-option
+            // serialization page — the spacer absorbs the surplus and the
+            // settings stay pinned to the top instead of spreading apart.
+            spacer->changeSize(
+                theme::space(theme::Space::None), theme::space(theme::Space::None), QSizePolicy::Minimum,
+                QSizePolicy::Expanding);
           }
         } else if (QLayout* child = item->layout()) {
           collapse_vspacers(child);
@@ -157,6 +194,15 @@ DialogResult DialogEngine::showDialog(QWidget* parent) {
       layout->invalidate();
     };
     collapse_vspacers(loaded->layout());
+    // QSplitter (and other composite widgets) hold their children as widgets, not
+    // as layout items, so the recursion above never reaches spacers nested inside
+    // a splitter pane. Collapse the vertical spacers in every descendant widget's
+    // own layout too — otherwise a splitter-based dialog keeps its dead space and
+    // mis-sizes (e.g. the MQTT dialog's Security column gap, which in turn clipped
+    // the list placeholder overlay).
+    for (QWidget* descendant : loaded->findChildren<QWidget*>()) {
+      collapse_vspacers(descendant->layout());
+    }
     // Parser options that carry a table (Protobuf, ROS1/ROS2) need room to be
     // usable; give such tables/editors a generous minimum height. Protocols
     // without a table (msgpack/cbor/json) have no item view here and stay
@@ -172,7 +218,23 @@ DialogResult DialogEngine::showDialog(QWidget* parent) {
     for (QPlainTextEdit* editor : loaded->findChildren<QPlainTextEdit*>()) {
       ensure_readable(editor);
     }
+    // Force a fresh layout pass so the size hints reflect the just-injected parser,
+    // then explicitly size the dialog to that content. With the minimums cleared in
+    // both dimensions above, this snaps to the correct size for the selected parser
+    // every time, independent of the order parsers were selected.
+    if (dialog->layout() != nullptr) {
+      dialog->layout()->activate();
+    }
     dialog->adjustSize();
+    // Re-establish a resize floor at the content minimum. The minimum resets
+    // above let the dialog re-measure smaller; leaving the floor at 0 is what let
+    // the user drag the window below what its widgets need — a QSplitter squeezed
+    // under its panes' minimum crushes their rows into overlapping text (the
+    // Connection/Security grids) and squashes the parser list so its placeholder
+    // clips. minimumSizeHint is layout-derived (grids + readable item views, with
+    // dead-space spacers already collapsed), so the floor is the true crush point
+    // and tracks the current parser. Recomputed on every protocol change.
+    dialog->setMinimumSize(dialog->minimumSizeHint());
   };
 
   // Wire buttonBox signals — works whether the loaded widget was a QDialog
@@ -254,7 +316,7 @@ DialogResult DialogEngine::showDialog(QWidget* parent) {
       return;
     }
     auto title = view.folderPickerTitle(widget_name).value_or("Select Folder");
-    QString path = QFileDialog::getExistingDirectory(dialog, QString::fromStdString(title));
+    QString path = PJ::FileDialog::getExistingDirectory(dialog, QString::fromStdString(title));
     if (!path.isEmpty()) {
       if (handle->sendEvent(widget_name, PJ::WidgetEventBuilder::folderSelected(path.toStdString()))) {
         std::string raw = handle->widget_data();
@@ -408,7 +470,9 @@ DialogResult DialogEngine::showDialog(QWidget* parent) {
     if (parser_slot) {
       parser_slot_container = parser_slot->parentWidget();  // Usually a QGroupBox
       parser_slot_layout = new QVBoxLayout(parser_slot);
-      parser_slot_layout->setContentsMargins(0, 0, 0, 0);
+      parser_slot_layout->setContentsMargins(
+          theme::space(theme::Space::None), theme::space(theme::Space::None), theme::space(theme::Space::None),
+          theme::space(theme::Space::None));
 
       // Connect encoding combo to trigger parser dialog injection, then re-fit.
       // The fit is deferred with singleShot(0) so it runs AFTER the layout has
@@ -447,6 +511,10 @@ DialogResult DialogEngine::showDialog(QWidget* parent) {
   }
   fit_to_content();
 
+  // Bands are in their final tree now (initial parser injection done); size them
+  // to the canonical app band height so plugin dialogs match the toolboxes.
+  applySectionBandMetrics(loaded, config_.section_band_metrics);
+
   // Helper: open a sub-dialog from UI XML (nested modal inside parent)
   auto maybe_open_sub_dialog = [&](const ApplyResult& ar) {
     if (!ar.sub_dialog_ui) {
@@ -463,22 +531,16 @@ DialogResult DialogEngine::showDialog(QWidget* parent) {
       return;
     }
     adaptStyledWidgets(sub_loaded);
+    applySectionBandMetrics(sub_loaded, config_.section_band_metrics);
 
-    auto* sub_dialog = qobject_cast<QDialog*>(sub_loaded);
-    if (!sub_dialog) {
-      sub_dialog = new QDialog(dialog);
-      auto* sub_layout = new QVBoxLayout(sub_dialog);
-      sub_layout->setContentsMargins(0, 0, 0, 0);
-      sub_layout->addWidget(sub_loaded);
-
-      auto* sub_bb = sub_loaded->findChild<QDialogButtonBox*>("buttonBox");
-      if (sub_bb) {
-        QObject::connect(sub_bb, &QDialogButtonBox::accepted, sub_dialog, &QDialog::accept);
-        QObject::connect(sub_bb, &QDialogButtonBox::rejected, sub_dialog, &QDialog::reject);
-      }
+    auto* sub_dialog = new PJ::Dialog(dialog);
+    sub_dialog->setDialogTitle(sub_loaded->windowTitle());
+    sub_dialog->contentLayout()->addWidget(sub_loaded);
+    forwardEmbeddedDialogClose(sub_loaded, sub_dialog);
+    if (auto* sub_bb = sub_loaded->findChild<QDialogButtonBox*>("buttonBox")) {
+      QObject::connect(sub_bb, &QDialogButtonBox::accepted, sub_dialog, &QDialog::accept);
+      QObject::connect(sub_bb, &QDialogButtonBox::rejected, sub_dialog, &QDialog::reject);
     }
-    // "[*]" renders empty yet stops Qt appending the " — PlotJuggler 4" title suffix.
-    sub_dialog->setWindowTitle(sub_loaded->windowTitle() + "[*]");
 
     sub_dialog->exec();
     delete sub_dialog;

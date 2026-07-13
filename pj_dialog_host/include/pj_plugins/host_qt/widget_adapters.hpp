@@ -4,6 +4,8 @@
 
 #include <QWidget>
 
+class QDialog;
+
 namespace PJ {
 
 // Styled-widget adapters: swap plain controls that come out of a plugin's .ui
@@ -24,6 +26,13 @@ namespace PJ {
 /// Adapt every adaptable control under `root` (radios, checkboxes, comboboxes).
 /// Call once after the .ui is loaded. Idempotent and safe to re-run.
 void adaptStyledWidgets(QWidget* root);
+
+/// When a plugin .ui's ROOT is a QDialog embedded as content inside the host's
+/// PJ::Dialog chrome, forward the inner dialog's finished(result) to the outer
+/// dialog. Without this, Esc lands on the inner QDialog::keyPressEvent, which
+/// rejects and hides ONLY the content while the outer modal chrome stays open
+/// and empty. No-op when `content` is not a QDialog.
+void forwardEmbeddedDialogClose(QWidget* content, QDialog* outer);
 
 /// Per-kind entry points (adaptStyledWidgets calls each). Exposed individually
 /// so each adapter can be unit-tested in isolation.

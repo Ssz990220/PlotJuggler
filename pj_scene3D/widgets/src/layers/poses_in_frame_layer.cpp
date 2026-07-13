@@ -24,6 +24,7 @@
 #include "pj_scene3d_widgets/resolve_object.h"  // resolveObject, hasCanonical3DCodec
 #include "pj_widgets/ColorPickerWidget.h"
 #include "pj_widgets/DoubleScrubber.h"
+#include "pj_widgets/FrameworkTokens.h"
 #include "pj_widgets/ToggleSwitch.h"
 using namespace Qt::StringLiterals;
 
@@ -329,12 +330,16 @@ void PosesInFrameLayer::setOverrideColor(QColor color) {
 QWidget* PosesInFrameLayer::createConfigWidget(QWidget* parent) {
   auto* container = new QWidget(parent);
   auto* outer = new QVBoxLayout(container);
-  outer->setContentsMargins(0, 0, 0, 0);
-  outer->setSpacing(4);
+  outer->setContentsMargins(
+      PJ::theme::space(PJ::theme::Space::None), PJ::theme::space(PJ::theme::Space::None),
+      PJ::theme::space(PJ::theme::Space::None), PJ::theme::space(PJ::theme::Space::None));
+  outer->setSpacing(PJ::theme::space(PJ::theme::Space::Snug));
   auto* form = new QFormLayout();
-  form->setContentsMargins(0, 0, 0, 0);
-  form->setHorizontalSpacing(8);
-  form->setVerticalSpacing(4);
+  form->setContentsMargins(
+      PJ::theme::space(PJ::theme::Space::None), PJ::theme::space(PJ::theme::Space::None),
+      PJ::theme::space(PJ::theme::Space::None), PJ::theme::space(PJ::theme::Space::None));
+  form->setHorizontalSpacing(PJ::theme::space(PJ::theme::Space::Comfortable));
+  form->setVerticalSpacing(PJ::theme::space(PJ::theme::Space::Snug));
   outer->addLayout(form);
 
   auto* size_spin = new PJ::DoubleScrubber(container);
@@ -366,8 +371,10 @@ QWidget* PosesInFrameLayer::createConfigWidget(QWidget* parent) {
   // single X arm OR the whole triad; picking a color auto-enables the override.
   auto* override_row = new QWidget(container);
   auto* override_layout = new QHBoxLayout(override_row);
-  override_layout->setContentsMargins(0, 0, 0, 0);
-  override_layout->setSpacing(8);
+  override_layout->setContentsMargins(
+      PJ::theme::space(PJ::theme::Space::None), PJ::theme::space(PJ::theme::Space::None),
+      PJ::theme::space(PJ::theme::Space::None), PJ::theme::space(PJ::theme::Space::None));
+  override_layout->setSpacing(PJ::theme::space(PJ::theme::Space::Comfortable));
   auto* override_toggle = new PJ::ToggleSwitch(override_row);
   override_toggle->setChecked(override_color_enabled_, /*animate=*/false);
   auto* swatch = new PJ::ColorPickerWidget(override_row);

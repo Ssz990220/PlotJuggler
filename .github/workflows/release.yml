@@ -30,6 +30,30 @@ jobs:
           submodules: recursive
           fetch-depth: 0   # tags/describe need full history
 
+      - name: Read versions
+        id: versions
+        shell: bash
+        run: |
+          set -euo pipefail
+          source ./versions.env
+          echo "PJ_APP_VERSION=${PJ_APP_VERSION}" >> "${GITHUB_ENV}"
+          echo "PJ_QT_VERSION=${PJ_QT_VERSION}" >> "${GITHUB_ENV}"
+          echo "PJ_APPIMAGE_ARCH=${PJ_APPIMAGE_ARCH}" >> "${GITHUB_ENV}"
+          echo "app_version=${PJ_APP_VERSION}" >> "${GITHUB_OUTPUT}"
+          echo "qt_version=${PJ_QT_VERSION}" >> "${GITHUB_OUTPUT}"
+          echo "appimage_arch=${PJ_APPIMAGE_ARCH}" >> "${GITHUB_OUTPUT}"
+
+      - name: Select release version
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "${GITHUB_REF_TYPE:-}" == "tag" ]]; then
+            version="${GITHUB_REF_NAME}"
+          else
+            version="${PJ_APP_VERSION:-4.0.0-dev}"
+          fi
+          echo "PJ_VERSION=${version}" >> "${GITHUB_ENV}"
+
       - uses: conan-io/setup-conan@v1
         with:
           cache_packages: false
@@ -42,28 +66,27 @@ jobs:
           key: conan-appimage-${{ hashFiles('**/conanfile.txt') }}
           restore-keys: conan-appimage-
 
-      - name: Cache Qt 6.11.1
+      - name: Cache Qt
         id: qt-cache
         uses: actions/cache@v5
         with:
           path: .qt
-          key: qt-6.11.1-linux
+          key: qt-${{ steps.versions.outputs.qt_version }}-linux-gcc_64
 
-      - name: Install Qt 6.11.1 via aqt
+      - name: Install Qt via aqt
         if: steps.qt-cache.outputs.cache-hit != 'true'
-        run: ./install_qt6.sh   # installs into ./.qt; no-ops if already present
+        run: ./install_qt6.sh   # reads versions.env; installs into ./.qt; no-ops if already present
 
       - name: Install system dependencies
         run: |
           sudo apt-get update
           # libva-dev / libdrm-dev: required by the FFmpeg Conan build (VAAPI).
-          # imagemagick: `convert` rasterizes the app icon in build_appimage.sh.
           # wget/file: linuxdeploy fetch + ELF inspection.
           # unzip: --plugins-registry unpacks the downloaded plugin zips (python3
           #        + sha256sum for registry parse/verify are already on the runner).
           sudo apt-get install -y --no-install-recommends \
             libva-dev libdrm-dev \
-            imagemagick wget file unzip ccache zstd
+            wget file unzip ccache zstd
 
       - name: Configure ccache
         uses: actions/cache@v5
@@ -86,19 +109,12 @@ jobs:
           # from pj-plugin-registry (main), verify checksums, unpack into the bundle.
           # Fails the release if any curated plugin can't be resolved/downloaded.
           bash appimage/build_appimage.sh --plugins-registry
-          # Stamp the artifact with the tag (or short sha for manual runs). The
-          # script emits PlotJuggler-<version>-x86_64.AppImage into appimage/.
-          ref="${GITHUB_REF_NAME:-$(git rev-parse --short HEAD)}"
-          safe="${ref//\//-}"
-          src="$(ls appimage/PlotJuggler-*-x86_64.AppImage)"
-          dest="appimage/PlotJuggler-${safe}-x86_64.AppImage"
-          [ "${src}" = "${dest}" ] || mv "${src}" "${dest}"
-          echo "APPIMAGE=${dest}" >> "${GITHUB_ENV}"
+          echo "APPIMAGE=appimage/PlotJuggler-${PJ_VERSION}-${PJ_APPIMAGE_ARCH}.AppImage" >> "${GITHUB_ENV}"
 
       - name: Upload AppImage artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ format('PlotJuggler-{0}-x86_64.AppImage', github.ref_name) }}
+          name: PlotJuggler-${{ env.PJ_VERSION }}-${{ env.PJ_APPIMAGE_ARCH }}.AppImage
           path: ${{ env.APPIMAGE }}
           if-no-files-found: error
 

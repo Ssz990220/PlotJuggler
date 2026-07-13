@@ -47,6 +47,7 @@
 #include "pj_scene3d_widgets/scene_view_widget.h"
 #include "pj_scene3d_widgets/transform_service.h"
 #include "pj_widgets/ComboBox.h"
+#include "pj_widgets/FrameworkTokens.h"
 #include "pj_widgets/SvgUtil.h"
 #include "urdf_package_resolver.h"
 using namespace Qt::StringLiterals;
@@ -455,9 +456,12 @@ Scene3DDockWidget::Scene3DDockWidget(QWidget* parent) : SceneDockWidget(parent) 
   // ink so it stays dark on this always-light overlay button, even when the
   // app is in dark mode (theme-following ink would render near-invisible here).
   home_button_->setIcon(PJ::loadSvg(u":/resources/svg/recenter.svg"_s));
-  home_button_->setStyleSheet(QStringLiteral(
-      "QToolButton { background-color: rgba(255, 255, 255, 200); border: 1px solid rgba(60, 60, 60, 180); "
-      "padding: 0px; border-radius: 3px; }"));  // no padding: let the glyph fill the button (icon sized below)
+  // No padding: let the glyph fill the button (icon sized below).
+  home_button_->setStyleSheet(
+      QStringLiteral(
+          "QToolButton { background-color: rgba(255, 255, 255, 200); border: 1px solid rgba(60, 60, 60, 180); "
+          "padding: %1px; border-radius: 3px; }")
+          .arg(PJ::theme::space(PJ::theme::Space::None)));
   home_button_->raise();
   connect(home_button_, &QToolButton::clicked, this, [this]() {
     if (view_ != nullptr) {
@@ -858,7 +862,9 @@ DatasetId Scene3DDockWidget::representativeDatasetId() const {
 QWidget* Scene3DDockWidget::createSceneView() {
   auto* view = new pj::scene3d::SceneViewWidget();
   view_ = view;
-  view_->setContentsMargins(0, 0, 0, 0);
+  view_->setContentsMargins(
+      PJ::theme::space(PJ::theme::Space::None), PJ::theme::space(PJ::theme::Space::None),
+      PJ::theme::space(PJ::theme::Space::None), PJ::theme::space(PJ::theme::Space::None));
   view_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
   if (camera_model_combo_ != nullptr && camera_model_combo_->currentIndex() >= 0) {
     view_->setCameraModel(static_cast<SceneViewWidget::CameraModel>(camera_model_combo_->currentIndex()));

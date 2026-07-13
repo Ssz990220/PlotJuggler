@@ -30,6 +30,7 @@
 #include "pj_plotting/PlotWidget.h"
 #include "pj_runtime/CatalogModel.h"
 #include "pj_widgets/CurveTreeView.h"
+#include "pj_widgets/FrameworkTokens.h"
 #include "pj_widgets/SvgUtil.h"
 #include "pj_widgets/VisualizationPlaceholderWidget.h"
 using namespace Qt::StringLiterals;
@@ -106,7 +107,9 @@ DockWidget::DockWidget(
     emit undoableChange();
   });
 
-  layout()->setContentsMargins(0, 0, 0, 0);
+  layout()->setContentsMargins(
+      PJ::theme::space(theme::Space::None), PJ::theme::space(theme::Space::None), PJ::theme::space(theme::Space::None),
+      PJ::theme::space(theme::Space::None));
   if (plot != nullptr || create_plot_when_null) {
     setPlotWidget(plot != nullptr ? plot : new PlotWidget(session_, catalog_, this));
   } else {
@@ -161,7 +164,10 @@ void DockWidget::setPlotWidget(PlotWidget* plot) {
   }
   plot_widget_->setDataServices(session_, catalog_);
   setWidget(plot_widget_);
-  layout()->setContentsMargins(6, 6, 6, 6);  // plots keep a margin; reset to flush in clearCurrentContent
+  // Plots keep a margin; reset to flush in clearCurrentContent.
+  layout()->setContentsMargins(
+      PJ::theme::space(theme::Space::Comfortable), PJ::theme::space(theme::Space::Comfortable),
+      PJ::theme::space(theme::Space::Comfortable), PJ::theme::space(theme::Space::Comfortable));
   connect(plot_widget_, &PlotWidget::splitHorizontal, this, [this]() { splitHorizontal(); });
   connect(plot_widget_, &PlotWidget::splitVertical, this, [this]() { splitVertical(); });
   connect(plot_widget_, &PlotWidget::undoableChange, this, &DockWidget::undoableChange);
@@ -759,7 +765,10 @@ void DockWidget::clearCurrentContent(bool delete_content) {
   plot_widget_ = nullptr;
   object_widget_ = nullptr;
   object_widget_awaiting_first_topic_ = false;
-  layout()->setContentsMargins(0, 0, 0, 0);  // flush by default; setPlotWidget re-adds the plot margin
+  // Flush by default; setPlotWidget re-adds the plot margin.
+  layout()->setContentsMargins(
+      PJ::theme::space(theme::Space::None), PJ::theme::space(theme::Space::None), PJ::theme::space(theme::Space::None),
+      PJ::theme::space(theme::Space::None));
 }
 
 void DockWidget::installObjectContextMenuFilter(QWidget* root) {

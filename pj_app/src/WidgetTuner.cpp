@@ -17,23 +17,24 @@
 #include <QWidget>
 using namespace Qt::StringLiterals;
 
+#include "pj_widgets/FrameworkTokens.h"
+
 namespace PJ {
 
 namespace {
 
-// Theme tokens — kept in sync with stylesheet_{light,dark}.qss.
-// Popup background for combo dropdowns and Fusion-painted popup
-// surfaces. We use dark_background (one step lighter than the menu
-// popup's titlebar_background) so the closed combo and its open
-// dropdown read as the same surface.
+theme::Theme popupTheme() {
+  const QString theme_name = QSettings().value(QStringLiteral("StyleSheet::theme"), QStringLiteral("light")).toString();
+  return theme::themeFor(theme_name.contains(QStringLiteral("light")));
+}
+
+// Combo popup palettes use the same framework input surface as the closed combo.
 QColor popupBgColor() {
-  const QString theme = QSettings().value(u"StyleSheet::theme"_s, u"light"_s).toString();
-  return theme.contains("light"_L1) ? QColor(u"#F5F5F5"_s) : QColor(u"#3B3B47"_s);
+  return theme::surface(theme::Surface::Input, popupTheme());
 }
 
 QColor popupTextColor() {
-  const QString theme = QSettings().value(u"StyleSheet::theme"_s, u"light"_s).toString();
-  return theme.contains("light"_L1) ? QColor(u"#111111"_s) : QColor(u"#F0F0F0"_s);
+  return theme::onSurface(theme::Surface::Input, theme::Emphasis::Default, popupTheme());
 }
 
 // Force every palette role that Fusion reads when painting a popup

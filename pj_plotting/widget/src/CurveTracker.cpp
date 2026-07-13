@@ -21,6 +21,8 @@
 #include <map>
 using namespace Qt::StringLiterals;
 
+#include "pj_widgets/FrameworkTokens.h"
+
 namespace PJ {
 
 namespace {
@@ -108,6 +110,7 @@ void CurveTracker::setPosition(const QPointF& tracker_position) {
   if (plot_ == nullptr) {
     return;
   }
+  const auto fw_theme = theme::appTheme();
 
   const QwtPlotItemList curves = plot_->itemList(QwtPlotItem::Rtti_PlotCurve);
   line_marker_->setValue(tracker_position);
@@ -154,7 +157,9 @@ void CurveTracker::setPosition(const QPointF& tracker_position) {
     const QColor color = curve->pen().color();
     QwtPlotMarker* point_marker = point_markers_[static_cast<std::size_t>(index)];
     if (point_marker->symbol() == nullptr || point_marker->symbol()->brush().color() != color) {
-      point_marker->setSymbol(new QwtSymbol(QwtSymbol::Ellipse, color, QPen(Qt::black), QSize(5, 5)));
+      point_marker->setSymbol(new QwtSymbol(
+          QwtSymbol::Ellipse, color,
+          QPen(theme::outline(theme::OutlineRole::Default, theme::OutlineState::Rest, fw_theme)), QSize(5, 5)));
     }
 
     const auto maybe_point = curvePointAt(curve, tracker_position.x());
@@ -222,10 +227,9 @@ void CurveTracker::setPosition(const QPointF& tracker_position) {
       }
     }
 
-    QColor background_color = plot_->palette().color(QPalette::Window);
-    background_color.setAlpha(180);
+    const QColor background_color = theme::overlay(theme::Overlay::Hud, fw_theme);
     marker_text.setBackgroundBrush(background_color);
-    marker_text.setBorderPen(QColor(Qt::transparent));
+    marker_text.setBorderPen(QPen(Qt::NoPen));
     marker_text.setText(marker_html);
     QFont font = QFontDatabase::systemFont(QFontDatabase::FixedFont);
     font.setPointSize(9);

@@ -9,17 +9,15 @@
 #include <QEvent>
 #include <QPaintEvent>
 #include <QPainter>
+#include <QPalette>
 #include <QRect>
 #include <algorithm>
+
+#include "pj_widgets/FrameworkTokens.h"
 
 namespace PJ {
 
 namespace {
-// Match the QSS palette tokens — see resources/stylesheet_*.qss
-// (blue, light_blue). Keep these in sync if the tokens change.
-const QColor kFocusColor = QColor("#1177FF");
-const QColor kHoverColor = QColor("#C2DCFF");
-
 // Paint a 1-px frame at the 4 splitter handles / outer-edge pixels that
 // hug the area's bounding rect (in container coords). For inner edges
 // the line sits one pixel OUTSIDE the area, landing on the adjacent
@@ -88,11 +86,16 @@ void PlotFocusOverlay::paintEvent(QPaintEvent* /*event*/) {
   };
 
   // Hover only paints when it differs from focus (focus wins under cursor).
+  // Focus uses the accent outline so the ACTIVE dock reads distinctly from a
+  // merely hovered one (identical colors would erase the focus cue).
+  const auto token_theme = theme::appTheme();
+  const QColor hover_color = theme::surface(PJ::theme::Surface::Separation, token_theme);
+  const QColor focus_color = theme::interaction(theme::Variant::Accent, theme::State::Nominal, token_theme);
   if (hovered_area_ != nullptr && hovered_area_ != focused_area_) {
-    paintFrame(painter, rect_for(hovered_area_), container_rect, kHoverColor);
+    paintFrame(painter, rect_for(hovered_area_), container_rect, hover_color);
   }
   if (focused_area_ != nullptr) {
-    paintFrame(painter, rect_for(focused_area_), container_rect, kFocusColor);
+    paintFrame(painter, rect_for(focused_area_), container_rect, focus_color);
   }
 }
 

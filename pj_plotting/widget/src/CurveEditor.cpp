@@ -27,6 +27,8 @@
 #include "pj_plotting/PlotWidgetBase.h"
 #include "pj_widgets/ColorPickerPopup.h"
 #include "pj_widgets/ElidingLabel.h"
+#include "pj_widgets/FrameworkTokens.h"
+#include "pj_widgets/Search.h"
 #include "pj_widgets/SvgUtil.h"
 #include "ui_CurveEditor.h"
 using namespace Qt::StringLiterals;
@@ -86,7 +88,7 @@ class CurveColorButton : public QPushButton {
 
     const int extent = std::max(6, std::min(width(), height()) - 6);
     const QRectF swatch_rect((width() - extent) / 2.0, (height() - extent) / 2.0, extent, extent);
-    const qreal radius = std::max<qreal>(2.0, extent * 0.22);
+    const qreal radius = theme::radius(theme::Radius::Input);
     painter.drawRoundedRect(swatch_rect, radius, radius);
   }
 
@@ -218,11 +220,11 @@ CurveEditor::CurveEditor(QWidget* parent) : QWidget(parent), ui_(new Ui::CurveEd
       curves_menu->move(bottom_left.x() - shift, bottom_left.y());
     }
   });
-  connect(ui_->lineEditCurvesFilter, &QLineEdit::textChanged, this, &CurveEditor::onFilterChanged);
+  connect(ui_->filterCurves, &Search::textChanged, this, &CurveEditor::onFilterChanged);
   // Enter while typing drops focus — restores any sibling header chrome
   // via the focus-out branch of eventFilter without a stray click.
-  connect(ui_->lineEditCurvesFilter, &QLineEdit::returnPressed, ui_->lineEditCurvesFilter, &QLineEdit::clearFocus);
-  ui_->lineEditCurvesFilter->installEventFilter(this);
+  connect(ui_->filterCurves, &Search::returnPressed, ui_->filterCurves->lineEdit(), &QLineEdit::clearFocus);
+  ui_->filterCurves->lineEdit()->installEventFilter(this);
   // Lock the header row to its natural height so hiding label/kebab on
   // filter focus doesn't shift the line edit vertically.
   ui_->widgetLabelCurves->layout()->activate();
@@ -238,7 +240,7 @@ CurveEditor::CurveEditor(QWidget* parent) : QWidget(parent), ui_(new Ui::CurveEd
   // shrink with the viewport).
   ui_->listWidget->setResizeMode(QListView::Adjust);
   // Rows sit flush against each other — no inter-item gap.
-  ui_->listWidget->setSpacing(0);
+  ui_->listWidget->setSpacing(PJ::theme::space(theme::Space::None));
 
   // QHBoxLayout's minimumSize is the sum of every child's natural
   // minimum. The QLabel ("Curves") and the QLineEdit have non-zero
@@ -249,7 +251,7 @@ CurveEditor::CurveEditor(QWidget* parent) : QWidget(parent), ui_(new Ui::CurveEd
   setMinimumWidth(0);
   ui_->widgetLabelCurves->setMinimumWidth(0);
   ui_->labelCurves->setMinimumWidth(0);
-  ui_->lineEditCurvesFilter->setMinimumWidth(0);
+  ui_->filterCurves->setMinimumWidth(0);
   ui_->listWidget->setMinimumWidth(0);
 }
 
@@ -422,14 +424,10 @@ void CurveEditor::onChromeMetricsChanged(const ChromeMetrics& metrics) {
   const int button_extent = metrics.icon_size + metrics.icon_padding;
   const int band_extent = button_extent + (2 * metrics.layout_padding);
   const QSize icon_sz(metrics.icon_size, metrics.icon_size);
-  ui_->buttonSearchCurves->setMinimumSize(button_extent, button_extent);
-  ui_->buttonSearchCurves->setMaximumSize(button_extent, button_extent);
-  ui_->buttonSearchCurves->setIconSize(icon_sz);
+  ui_->filterCurves->setChromeMetrics(metrics);
   ui_->buttonCurvesMenu->setMinimumSize(button_extent, button_extent);
   ui_->buttonCurvesMenu->setMaximumSize(button_extent, button_extent);
   ui_->buttonCurvesMenu->setIconSize(icon_sz);
-  ui_->lineEditCurvesFilter->setMinimumHeight(button_extent);
-  ui_->lineEditCurvesFilter->setMaximumHeight(button_extent);
   ui_->widgetLabelCurves->setMinimumHeight(band_extent);
   ui_->widgetLabelCurves->setMaximumHeight(band_extent);
   if (auto* layout = ui_->headerLayout) {
@@ -465,8 +463,7 @@ void CurveEditor::onChromeMetricsChanged(const ChromeMetrics& metrics) {
 
 void CurveEditor::onStylesheetChanged(QString theme) {
   current_theme_ = std::move(theme);
-  // Header chrome icons: search glyph + kebab.
-  ui_->buttonSearchCurves->setIcon(loadSvg(":/resources/svg/search_light.svg", current_theme_));
+  // Header kebab icon (the Search glyph self-retints).
   ui_->buttonCurvesMenu->setIcon(loadSvg(":/resources/svg/more_vert.svg", current_theme_));
   // Re-tint every row's visibility + trash toggles to the new theme ink.
   // The buttons are owned by the row widgets stored as itemWidget on each
@@ -491,7 +488,7 @@ void CurveEditor::onFilterChanged(const QString& /*text*/) {
 }
 
 void CurveEditor::applyFilter() {
-  const QString needle = ui_->lineEditCurvesFilter->text().trimmed();
+  const QString needle = ui_->filterCurves->text().trimmed();
   for (int i = 0; i < ui_->listWidget->count(); ++i) {
     QListWidgetItem* item = ui_->listWidget->item(i);
     const QString curve_name = item->data(kCurveNameRole).toString();
@@ -504,7 +501,7 @@ void CurveEditor::applyFilter() {
 
 bool CurveEditor::eventFilter(QObject* watched, QEvent* event) {
   const QEvent::Type type = event->type();
-  if ((type == QEvent::FocusIn || type == QEvent::FocusOut) && watched == ui_->lineEditCurvesFilter) {
+  if ((type == QEvent::FocusIn || type == QEvent::FocusOut) && watched == ui_->filterCurves->lineEdit()) {
     // Focus expands the filter into the label's space. Kebab stays
     // visible — it never gets pushed out.
     const bool focused = (type == QEvent::FocusIn);
@@ -526,8 +523,7 @@ void CurveEditor::updateHeaderForWidth() {
   // (handled in eventFilter).
   constexpr int kFilterHideBelow = 140;
   const bool wide_enough = width() >= kFilterHideBelow;
-  ui_->buttonSearchCurves->setVisible(wide_enough);
-  ui_->lineEditCurvesFilter->setVisible(wide_enough);
+  ui_->filterCurves->setVisible(wide_enough);
 }
 
 }  // namespace PJ

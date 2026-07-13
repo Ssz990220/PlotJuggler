@@ -19,7 +19,6 @@
 #include <QEventLoop>
 #include <QFile>
 #include <QFileInfo>
-#include <QMessageBox>
 #include <QMutex>
 #include <QSet>
 #include <QSettings>
@@ -622,26 +621,27 @@ TEST_F(MessageBoxMarshalTest, WorkerThreadMessageBoxIsMarshaledToGuiThread) {
   hints.preset_config_json = uR"({"ask_msgbox":true})"_s;
   hints.skip_dialog = true;
 
-  // The marshaled QMessageBox::exec() spins a nested event loop on the GUI
-  // thread; this timer fires inside it, finds the modal, and clicks its Continue
-  // (AcceptRole) button so askContinue returns true and the load proceeds.
+  // The marshaled dialog is an app-styled PJ::Dialog (execScrollableMessageDialog),
+  // shown modal via exec(); its exec() spins a nested event loop on the GUI thread.
+  // This timer fires inside it, finds the modal, and clicks its "Continue" button
+  // so askContinue returns true and the load proceeds.
   QTimer dismiss;
   dismiss.setInterval(20);
   QObject::connect(&dismiss, &QTimer::timeout, [&]() {
-    auto* box = qobject_cast<QMessageBox*>(QApplication::activeModalWidget());
-    if (box == nullptr) {
+    QWidget* dlg = QApplication::activeModalWidget();
+    if (dlg == nullptr) {
       for (QWidget* w : QApplication::topLevelWidgets()) {
-        if (auto* candidate = qobject_cast<QMessageBox*>(w); candidate != nullptr && candidate->isVisible()) {
-          box = candidate;
+        if (w->isVisible() && w->isModal()) {
+          dlg = w;
           break;
         }
       }
     }
-    if (box == nullptr) {
+    if (dlg == nullptr) {
       return;
     }
-    for (QAbstractButton* button : box->buttons()) {
-      if (box->buttonRole(button) == QMessageBox::AcceptRole) {
+    for (QAbstractButton* button : dlg->findChildren<QAbstractButton*>()) {
+      if (button->text() == u"Continue"_s) {
         button->click();
         return;
       }
@@ -675,7 +675,7 @@ TEST_F(MessageBoxMarshalTest, WorkerThreadMessageBoxIsMarshaledToGuiThread) {
   dismiss.stop();
 
   EXPECT_FALSE(capture.sawText(u"Cannot set parent"_s))
-      << "host built the QMessageBox off the GUI thread (QObject::setParent cross-thread warning)";
+      << "host built the message box off the GUI thread (QObject::setParent cross-thread warning)";
   EXPECT_FALSE(capture.sawText(u"different thread"_s))
       << "a cross-thread Qt warning was emitted during the worker-thread message box";
   EXPECT_TRUE(ok) << "the marshaled askContinue must return Continue and complete the load";

@@ -7,6 +7,9 @@
 #include <QLabel>
 #include <QMouseEvent>
 #include <QStyle>
+
+#include "pj_widgets/FrameworkTokens.h"
+
 using namespace Qt::StringLiterals;
 
 namespace PJ {
@@ -21,8 +24,10 @@ PreferencesNavRow::PreferencesNavRow(const QString& text, QWidget* parent)
   auto* layout = new QHBoxLayout(this);
   // Left padding matches the accent edge so the label doesn't shift
   // between selected / unselected states.
-  layout->setContentsMargins(12, 6, 12, 6);
-  layout->setSpacing(0);
+  layout->setContentsMargins(
+      PJ::theme::space(theme::Space::Section), PJ::theme::space(theme::Space::Comfortable),
+      PJ::theme::space(theme::Space::Section), PJ::theme::space(theme::Space::Comfortable));
+  layout->setSpacing(PJ::theme::space(theme::Space::None));
   label_->setObjectName(u"navRowLabel"_s);
   layout->addWidget(label_);
   layout->addStretch(1);

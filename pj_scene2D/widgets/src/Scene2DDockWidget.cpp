@@ -32,6 +32,7 @@
 #include "pj_scene2d_widgets/layers/video_layer.h"
 #endif
 #include "pj_scene2d_widgets/media_viewer_widget.h"
+#include "pj_widgets/FrameworkTokens.h"
 #include "pj_widgets/SvgUtil.h"
 using namespace Qt::StringLiterals;
 
@@ -438,11 +439,15 @@ bool Scene2DDockWidget::acceptsStateChildTag(const QString& tag) const {
 
 QWidget* Scene2DDockWidget::createSceneView() {
   auto* container = new QWidget(this);
-  container->setContentsMargins(0, 0, 0, 0);
+  container->setContentsMargins(
+      PJ::theme::space(PJ::theme::Space::None), PJ::theme::space(PJ::theme::Space::None),
+      PJ::theme::space(PJ::theme::Space::None), PJ::theme::space(PJ::theme::Space::None));
 
   auto* layout = new QVBoxLayout(container);
-  layout->setContentsMargins(0, 0, 0, 0);
-  layout->setSpacing(0);
+  layout->setContentsMargins(
+      PJ::theme::space(PJ::theme::Space::None), PJ::theme::space(PJ::theme::Space::None),
+      PJ::theme::space(PJ::theme::Space::None), PJ::theme::space(PJ::theme::Space::None));
+  layout->setSpacing(PJ::theme::space(PJ::theme::Space::None));
 
   // Forces Qt 6.8 to create an RHI-backed window backing store before first show();
   // dynamically added QRhiWidgets otherwise never get a QRhi. See TECHNICAL_NOTES.md.
@@ -476,7 +481,9 @@ QWidget* Scene2DDockWidget::makeEmptyPlaceholder(QWidget* parent) {
   page->setObjectName(u"scene2dEmptyPlaceholder"_s);
 
   auto* layout = new QVBoxLayout(page);
-  layout->setContentsMargins(0, 0, 0, 0);
+  layout->setContentsMargins(
+      PJ::theme::space(PJ::theme::Space::None), PJ::theme::space(PJ::theme::Space::None),
+      PJ::theme::space(PJ::theme::Space::None), PJ::theme::space(PJ::theme::Space::None));
 
   empty_placeholder_icon_ = new QLabel(page);
   empty_placeholder_icon_->setObjectName(u"scene2dEmptyPlaceholderIcon"_s);

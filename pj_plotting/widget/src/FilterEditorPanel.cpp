@@ -43,6 +43,7 @@
 #include "pj_runtime/Time.h"
 #include "pj_scripting/lua_siso_transform.h"
 #include "pj_scripting/script_engine.h"
+#include "pj_widgets/FrameworkTokens.h"
 #include "pj_widgets/Style.h"
 #include "pj_widgets/SvgUtil.h"
 #include "ui_FilterEditorPanel.h"
@@ -365,7 +366,10 @@ void FilterEditorPanel::applyGhostPens() {
 
 void FilterEditorPanel::setupPreview() {
   auto* layout = new QVBoxLayout(ui_->chart_preview);
-  layout->setContentsMargins(0, 0, 0, 4);  // 4px breathing room below the plot
+  // Keep a snug amount of breathing room below the plot.
+  layout->setContentsMargins(
+      PJ::theme::space(theme::Space::None), PJ::theme::space(theme::Space::None), PJ::theme::space(theme::Space::None),
+      PJ::theme::space(theme::Space::Snug));
 
   // A real PlotWidget (zoom / legend / tracker), not a bare QwtPlot. It reads the
   // same datastore, so the ghost (source) curve renders natively; the filtered

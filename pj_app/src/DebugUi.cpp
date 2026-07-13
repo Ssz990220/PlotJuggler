@@ -20,6 +20,7 @@
 #include <functional>
 
 #include "Theme.h"
+#include "pj_widgets/FrameworkTokens.h"
 
 namespace PJ {
 
@@ -29,34 +30,35 @@ constexpr auto kQssSettingsKey = "DebugUi/qssLayerEnabled";
 
 // Pesticide-style debug stylesheet appended over the active theme when
 // the QSS layer is toggled on. Borders shift layout by 1px — accepted.
-constexpr auto kDebugQss = R"qss(
-* { border: 1px dotted #888888; }
+QString debugQss() {
+  return QStringLiteral(R"qss(
+* { border: 1px dotted %1; }
 
-QMainWindow      { border: 1px dashed #ff3b30; }
-QDialog          { border: 1px dashed #ff9500; }
-QWidget          { border: 1px dashed #ffd60a; }
-QFrame           { border: 1px dashed #cccc00; }
-QSplitter        { border: 1px dashed #34c759; }
-QSplitter::handle{ border: 1px dashed #00b894; }
-QTabWidget       { border: 1px dashed #00c7be; }
-QTabWidget::pane { border: 1px dashed #5ac8fa; }
-QTabBar::tab     { border: 1px dashed #007aff; }
+QMainWindow      { border: 1px dashed %2; }
+QDialog          { border: 1px dashed %3; }
+QWidget          { border: 1px dashed %4; }
+QFrame           { border: 1px dashed %5; }
+QSplitter        { border: 1px dashed %6; }
+QSplitter::handle{ border: 1px dashed %7; }
+QTabWidget       { border: 1px dashed %8; }
+QTabWidget::pane { border: 1px dashed %9; }
+QTabBar::tab     { border: 1px dashed %10; }
 
-QMenuBar         { border: 1px dashed #5856d6; }
-QMenuBar::item   { border: 1px dashed #6c5ce7; }
-QMenu            { border: 1px dashed #af52de; }
-QMenu::item      { border: 1px dashed #d63384; }
-QToolTip         { border: 1px dashed #ff2d92; }
+QMenuBar         { border: 1px dashed %11; }
+QMenuBar::item   { border: 1px dashed %12; }
+QMenu            { border: 1px dashed %13; }
+QMenu::item      { border: 1px dashed %14; }
+QToolTip         { border: 1px dashed %15; }
 
-QLineEdit        { border: 1px dashed #e91e63; }
-QPlainTextEdit   { border: 1px dashed #f06292; }
-QTextBrowser     { border: 1px dashed #ec407a; }
-QComboBox        { border: 1px dashed #ab47bc; }
-QAbstractSpinBox { border: 1px dashed #7e57c2; }
-QCheckBox        { border: 1px dashed #5c6bc0; }
-QRadioButton     { border: 1px dashed #42a5f5; }
-QGroupBox        { border: 1px dashed #29b6f6; }
-QLabel           { border: 1px dashed #26c6da; }
+QLineEdit        { border: 1px dashed %16; }
+QPlainTextEdit   { border: 1px dashed %17; }
+QTextBrowser     { border: 1px dashed %18; }
+QComboBox        { border: 1px dashed %19; }
+QAbstractSpinBox { border: 1px dashed %20; }
+QCheckBox        { border: 1px dashed %21; }
+QRadioButton     { border: 1px dashed %22; }
+QGroupBox        { border: 1px dashed %23; }
+QLabel           { border: 1px dashed %24; }
 
 QPushButton,
 QPushButton:hover,
@@ -64,26 +66,64 @@ QPushButton:pressed,
 QPushButton:checked,
 QPushButton:disabled,
 QPushButton:checked:hover,
-QPushButton:checked:disabled { border: 1px dashed #66bb6a; }
+QPushButton:checked:disabled { border: 1px dashed %25; }
 
-QListView        { border: 1px dashed #9ccc65; }
-QTreeView        { border: 1px dashed #d4e157; }
-QHeaderView::section { border: 1px dashed #ffee58; }
+QListView        { border: 1px dashed %26; }
+QTreeView        { border: 1px dashed %27; }
+QHeaderView::section { border: 1px dashed %28; }
 
 QScrollBar:horizontal,
-QScrollBar:vertical { border: 1px dashed #ffa726; }
+QScrollBar:vertical { border: 1px dashed %29; }
 QScrollBar::handle:horizontal,
-QScrollBar::handle:vertical { border: 1px dashed #ff7043; }
-QSlider::groove:horizontal { border: 1px dashed #d84315; }
-QSlider::handle:horizontal { border: 1px dashed #bf360c; }
-QSlider::sub-page:horizontal { border: 1px dashed #8d6e63; }
+QScrollBar::handle:vertical { border: 1px dashed %30; }
+QSlider::groove:horizontal { border: 1px dashed %31; }
+QSlider::handle:horizontal { border: 1px dashed %32; }
+QSlider::sub-page:horizontal { border: 1px dashed %33; }
 
-PlotWidget       { border: 1px dashed #ef5350; }
-QwtPlot          { border: 1px dashed #b71c1c; }
+PlotWidget       { border: 1px dashed %34; }
+QwtPlot          { border: 1px dashed %35; }
 
-TitleBar         { border: 1px dashed #00bcd4; }
-TitleBar QToolButton { border: 1px dashed #4dd0e1; }
-)qss";
+TitleBar         { border: 1px dashed %36; }
+TitleBar QToolButton { border: 1px dashed %37; }
+)qss")
+      .arg(theme::diagnostic(theme::Diagnostic::Fallback).name(QColor::HexArgb))
+      .arg(theme::diagnostic(theme::Diagnostic::MainWindow).name(QColor::HexArgb))
+      .arg(theme::diagnostic(theme::Diagnostic::Dialog).name(QColor::HexArgb))
+      .arg(theme::diagnostic(theme::Diagnostic::Widget).name(QColor::HexArgb))
+      .arg(theme::diagnostic(theme::Diagnostic::Frame).name(QColor::HexArgb))
+      .arg(theme::diagnostic(theme::Diagnostic::Splitter).name(QColor::HexArgb))
+      .arg(theme::diagnostic(theme::Diagnostic::SplitterHandle).name(QColor::HexArgb))
+      .arg(theme::diagnostic(theme::Diagnostic::TabWidget).name(QColor::HexArgb))
+      .arg(theme::diagnostic(theme::Diagnostic::TabPane).name(QColor::HexArgb))
+      .arg(theme::diagnostic(theme::Diagnostic::Tab).name(QColor::HexArgb))
+      .arg(theme::diagnostic(theme::Diagnostic::MenuBar).name(QColor::HexArgb))
+      .arg(theme::diagnostic(theme::Diagnostic::MenuBarItem).name(QColor::HexArgb))
+      .arg(theme::diagnostic(theme::Diagnostic::Menu).name(QColor::HexArgb))
+      .arg(theme::diagnostic(theme::Diagnostic::MenuItem).name(QColor::HexArgb))
+      .arg(theme::diagnostic(theme::Diagnostic::ToolTip).name(QColor::HexArgb))
+      .arg(theme::diagnostic(theme::Diagnostic::LineEdit).name(QColor::HexArgb))
+      .arg(theme::diagnostic(theme::Diagnostic::PlainTextEdit).name(QColor::HexArgb))
+      .arg(theme::diagnostic(theme::Diagnostic::TextBrowser).name(QColor::HexArgb))
+      .arg(theme::diagnostic(theme::Diagnostic::ComboBox).name(QColor::HexArgb))
+      .arg(theme::diagnostic(theme::Diagnostic::SpinBox).name(QColor::HexArgb))
+      .arg(theme::diagnostic(theme::Diagnostic::CheckBox).name(QColor::HexArgb))
+      .arg(theme::diagnostic(theme::Diagnostic::RadioButton).name(QColor::HexArgb))
+      .arg(theme::diagnostic(theme::Diagnostic::GroupBox).name(QColor::HexArgb))
+      .arg(theme::diagnostic(theme::Diagnostic::Label).name(QColor::HexArgb))
+      .arg(theme::diagnostic(theme::Diagnostic::PushButton).name(QColor::HexArgb))
+      .arg(theme::diagnostic(theme::Diagnostic::ListView).name(QColor::HexArgb))
+      .arg(theme::diagnostic(theme::Diagnostic::TreeView).name(QColor::HexArgb))
+      .arg(theme::diagnostic(theme::Diagnostic::HeaderSection).name(QColor::HexArgb))
+      .arg(theme::diagnostic(theme::Diagnostic::ScrollBar).name(QColor::HexArgb))
+      .arg(theme::diagnostic(theme::Diagnostic::ScrollHandle).name(QColor::HexArgb))
+      .arg(theme::diagnostic(theme::Diagnostic::SliderGroove).name(QColor::HexArgb))
+      .arg(theme::diagnostic(theme::Diagnostic::SliderHandle).name(QColor::HexArgb))
+      .arg(theme::diagnostic(theme::Diagnostic::SliderSubPage).name(QColor::HexArgb))
+      .arg(theme::diagnostic(theme::Diagnostic::PlotWidget).name(QColor::HexArgb))
+      .arg(theme::diagnostic(theme::Diagnostic::QwtPlot).name(QColor::HexArgb))
+      .arg(theme::diagnostic(theme::Diagnostic::TitleBar).name(QColor::HexArgb))
+      .arg(theme::diagnostic(theme::Diagnostic::TitleBarButton).name(QColor::HexArgb));
+}
 
 QColor colourForDepth(int depth) {
   return QColor::fromHsl((depth * 47) % 360, 220, 130, 220);
@@ -241,7 +281,7 @@ void DebugUi::applyQss() {
   QString stylesheet = theme_->expandedQss();
   if (qss_enabled_) {
     stylesheet.append(QLatin1Char('\n'));
-    stylesheet.append(QLatin1String(kDebugQss));
+    stylesheet.append(debugQss());
   }
   qApp->setStyleSheet(stylesheet);
 }

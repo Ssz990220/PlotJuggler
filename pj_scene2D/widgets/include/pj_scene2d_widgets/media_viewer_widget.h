@@ -23,6 +23,7 @@
 #include "pj_scene2d_core/scene_frame.h"
 #include "pj_scene2d_core/undistort_remap.h"
 #include "pj_scene2d_core/video_color.h"  // buildYuvMatrix (per-layer YUV->RGB matrix cache)
+#include "pj_widgets/FrameworkTokens.h"
 
 namespace PJ {
 
@@ -274,7 +275,7 @@ class MediaViewerWidget : public QRhiWidget {
   bool pan_interaction_changed_ = false;
   QPointF last_mouse_pos_;
   QPointF last_point_inspector_pos_;
-  QColor clear_color_{Qt::white};
+  QColor clear_color_;
   std::unique_ptr<PixelInspector> point_inspector_;
   std::atomic_bool point_inspector_enabled_{false};
   std::atomic_bool point_inspector_active_{false};

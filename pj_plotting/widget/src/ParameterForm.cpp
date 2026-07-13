@@ -14,6 +14,7 @@
 #include <limits>
 
 #include "pj_widgets/ComboBox.h"
+#include "pj_widgets/FrameworkTokens.h"
 #include "pj_widgets/ToggleSwitch.h"
 
 namespace PJ {
@@ -23,7 +24,9 @@ using scripting::ParamType;
 
 ParameterForm::ParameterForm(QWidget* parent) : QWidget(parent) {
   form_ = new QFormLayout(this);
-  form_->setContentsMargins(0, 0, 0, 0);
+  form_->setContentsMargins(
+      PJ::theme::space(theme::Space::None), PJ::theme::space(theme::Space::None), PJ::theme::space(theme::Space::None),
+      PJ::theme::space(theme::Space::None));
   form_->setLabelAlignment(Qt::AlignLeft);
 }
 
