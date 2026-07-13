@@ -1,0 +1,126 @@
+name: Release Windows Installer
+
+# Builds the PlotJuggler 4 Windows installer (.exe) on a clean windows-2022 runner
+# and, on a version tag, attaches it to the GitHub Release. The Windows sibling of
+# release.yml (which does the Linux AppImage).
+#
+# A clean runner (single MSVC toolset, empty Conan cache) is also what makes the
+# plugin builds succeed here: the toolset/cache link failures seen on developer
+# machines (date-tz / ixwebsocket "unresolved external __std_*", stale /EHsc caches)
+# do not happen on a fresh image. The installer recipe treats a plugin that still
+# fails to build as non-fatal, so the rest still ship.
+#
+# Triggers:
+#   - workflow_dispatch -> build the installer from any branch (artifact only)
+#   - push of a `v*` tag -> build + attach the installer to that tag's Release
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write   # softprops/action-gh-release needs write to create/update the Release
+
+concurrency:
+  group: windows-release-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  windows-installer:
+    # Pinned to windows-2022 (see windows-ci.yml): the VS18/MSVC 14.5x image breaks
+    # the libsodium/1.0.20 Conan recipe that some plugins pull in.
+    runs-on: windows-2022
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0   # tags/describe need full history
+
+      - name: Read versions.env
+        # PJ_QT_VERSION / PJ_APP_VERSION are the single source of truth.
+        shell: bash
+        run: cat versions.env >> "$GITHUB_ENV"
+
+      - name: Resolve installer version
+        # Tag build -> the tag (without a leading 'v'); manual build -> PJ_APP_VERSION.
+        shell: bash
+        run: |
+          if [[ "${GITHUB_REF_TYPE:-}" == "tag" ]]; then
+            echo "PJ_VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
+          else
+            echo "PJ_VERSION=${PJ_APP_VERSION}" >> "$GITHUB_ENV"
+          fi
+
+      - name: Install Conan
+        uses: conan-io/setup-conan@v1
+
+      - name: Install cmake and ninja
+        run: pip install cmake ninja
+
+      - name: Install Qt (msvc) + Installer Framework via aqt
+        shell: bash
+        run: |
+          # Released aqt can't fetch the current Windows Qt layout yet
+          # (miurahr/aqtinstall#959/#1007); pin to the merged fix commit — same as
+          # windows-ci.yml. Retry for transient mirror failures.
+          pip install "git+https://github.com/miurahr/aqtinstall.git@8c3695d4a4e1ceabf6a74dc6c79681656dc6b74b"
+          attempt=0
+          until aqt install-qt windows desktop "${PJ_QT_VERSION}" win64_msvc2022_64 --outputdir ./.qt; do
+            attempt=$((attempt + 1))
+            if [ "$attempt" -ge 5 ]; then echo "aqt install-qt failed after ${attempt} attempts" >&2; exit 1; fi
+            echo "aqt attempt ${attempt} failed; retrying in $((attempt * 15))s..."
+            sleep $((attempt * 15))
+          done
+          # binarycreator for the installer step.
+          aqt install-tool --outputdir ./.qt windows desktop tools_ifw
+
+      - name: Set up MSVC environment
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Build PlotJuggler 4 (app)
+        shell: bash
+        run: |
+          # cpython shared: its Conan recipe disables the static MSVC build (>=3.10),
+          # so the embedded interpreter must link shared here (Release CRT, matching
+          # the RelWithDebInfo /MD graph). Ninja Multi-Config + the CMP0141/Embedded
+          # debug-info flags avoid the parallel-cl.exe shared-PDB race (C1041).
+          conan install . --output-folder=build --build=missing \
+            -s build_type=RelWithDebInfo -s compiler.cppstd=20 \
+            -o "cpython/*:shared=True" -s "cpython/*:build_type=Release" \
+            -c tools.cmake.cmaketoolchain:generator="Ninja Multi-Config"
+
+          cmake -S . -B build -G "Ninja Multi-Config" \
+            -DCMAKE_TOOLCHAIN_FILE="build/conan_toolchain.cmake" \
+            -DCMAKE_PREFIX_PATH="$(pwd)/.qt/${PJ_QT_VERSION}/msvc2022_64" \
+            -DCMAKE_POLICY_DEFAULT_CMP0141=NEW \
+            -DCMAKE_MSVC_DEBUG_INFORMATION_FORMAT=Embedded
+          cmake --build build --config RelWithDebInfo --parallel
+
+      - name: Build the installer
+        # The recipe builds the ported plugins (from source), stages the exe + Qt +
+        # FFmpeg + CPython + plugins, and runs binarycreator. It auto-detects Qt/IFW
+        # under .qt, activates MSVC, and locates ninja.
+        shell: pwsh
+        run: |
+          .\installer\build_windows_installer.ps1 -QtDir ".qt\$env:PJ_QT_VERSION\msvc2022_64" -Version $env:PJ_VERSION -OutDir dist
+
+      - name: Upload installer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: PlotJuggler-${{ env.PJ_VERSION }}-Windows-x64
+          path: dist/PlotJuggler-*-Windows-x64.exe
+          if-no-files-found: error
+
+      - name: Attach installer to the GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v3
+        with:
+          files: dist/PlotJuggler-*-Windows-x64.exe
+          generate_release_notes: true
+          fail_on_unmatched_files: true
