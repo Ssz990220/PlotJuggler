@@ -261,6 +261,27 @@ QTabWidget[framed="true"] QTabBar::tab:!selected {
     border-bottom: 1px solid ${border_default};
 }
 
+/* Opt-in "filter field" look: a QLineEdit topic filter that sets the dynamic
+   property filterField="true" renders as a flat underlined search box — a muted
+   bottom border that turns to the highlight colour on focus. Single source of
+   truth for the plugin-dialog topic filters (MCAP, ROS2, MQTT, foxglove, webrtc,
+   pj_bridge, Transform Editor). The object-name+attribute selector is id-level,
+   so it outranks the app's own flat #lineEditFilter/#topicFilter rules; the
+   attribute gate leaves the app's own filters (which don't set it) flat. */
+QLineEdit#lineEditFilter[filterField="true"],
+QLineEdit#lineEditTopicFilter[filterField="true"],
+QLineEdit#lineEditTab2Filter[filterField="true"] {
+    background-color: transparent;
+    border: 0px;
+    border-radius: 0px;
+    border-bottom: 2px solid palette(mid);
+}
+QLineEdit#lineEditFilter[filterField="true"]:focus,
+QLineEdit#lineEditTopicFilter[filterField="true"]:focus,
+QLineEdit#lineEditTab2Filter[filterField="true"]:focus {
+    border-bottom: 2px solid palette(highlight);
+}
+
 
 QTextBrowser {
    background: ${widget_background};
