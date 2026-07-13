@@ -302,6 +302,7 @@ void MarketplaceWindow::setupSignals() {
 
   // ExtensionManager
   connect(ext_mgr_, &ExtensionManager::installStarted, this, [this](const QString& id) {
+    active_install_id_ = id;
     ui_->progress_bar_->setValue(0);
     ui_->progress_bar_->setRange(0, 100);
     ui_->progress_bar_->setVisible(true);
@@ -317,7 +318,40 @@ void MarketplaceWindow::setupSignals() {
     ui_->progress_bar_->setValue(percent);
   });
 
+  // Post-download phases (verifying, extracting) do not report byte-level
+  // progress, so we flip the bar to indeterminate/busy mode and update the
+  // status label with the current phase.
+  connect(ext_mgr_, &ExtensionManager::installPhase, this, [this](const QString& id, DownloadManager::WorkPhase phase) {
+    ui_->progress_bar_->setRange(0, 0);
+    QString ext_name = id;
+    for (const auto& ext : extensions_) {
+      if (ext.id == id) {
+        ext_name = ext.name;
+        break;
+      }
+    }
+    QString verb;
+    switch (phase) {
+      case DownloadManager::WorkPhase::Verifying:
+        verb = u"Verifying"_s;
+        break;
+      case DownloadManager::WorkPhase::Extracting:
+        verb = u"Extracting"_s;
+        break;
+    }
+    setStatus(verb + u" "_s + ext_name + u"..."_s);
+  });
+
   connect(ext_mgr_, &ExtensionManager::installFinished, this, [this](const QString& id, bool success) {
+    // Only clear the busy marker if this is the finish of the install we
+    // actually started. A failure from a call that never reached
+    // installStarted (rejected by an ExtensionManager guard, e.g.
+    // unsupported platform) also emits installFinished with success=false;
+    // in that case active_install_id_ still points at the install that IS
+    // in flight and must stay set until it completes.
+    if (id == active_install_id_) {
+      active_install_id_.clear();
+    }
     ui_->progress_bar_->setVisible(false);
     if (success) {
       installations_changed_ = true;
@@ -723,6 +757,25 @@ void MarketplaceWindow::onSettingsClicked() {
 }
 
 void MarketplaceWindow::onActionButtonClicked(const QString& ext_id) {
+  // If another install/update is already in flight, queue this click and let
+  // processInstallQueue() dispatch it when the current one completes.
+  // Otherwise ExtensionManager::install() would reject with
+  // "Install of X is already in progress" — its single-install-at-a-time
+  // model is intentional, we just hide it behind a queue at the UI layer.
+  if (!active_install_id_.isEmpty()) {
+    if (ext_id == active_install_id_ || pending_clicks_.contains(ext_id)) {
+      return;  // deduplicate — either it IS the running one or already queued
+    }
+    pending_clicks_.append(ext_id);
+    for (const auto& ext : extensions_) {
+      if (ext.id == ext_id) {
+        setStatus(u"Queued "_s + ext.name);
+        break;
+      }
+    }
+    return;
+  }
+
   for (const auto& ext : filtered_) {
     if (ext.id != ext_id) {
       continue;
@@ -792,10 +845,22 @@ void MarketplaceWindow::onDiagnosticsClicked() {
 }
 
 void MarketplaceWindow::processInstallQueue() {
-  if (update_queue_.isEmpty()) {
+  // Wait until the current install/update finishes before dispatching the
+  // next one — ExtensionManager only runs one at a time.
+  if (!active_install_id_.isEmpty()) {
     return;
   }
-  ext_mgr_->update(update_queue_.takeFirst());
+  // Individual button clicks (pending_clicks_) run ahead of Update All
+  // (update_queue_) so an explicit user click on a card is not stuck
+  // behind a bulk-update batch that was already in flight.
+  if (!pending_clicks_.isEmpty()) {
+    const QString next_id = pending_clicks_.takeFirst();
+    onActionButtonClicked(next_id);
+    return;
+  }
+  if (!update_queue_.isEmpty()) {
+    ext_mgr_->update(update_queue_.takeFirst());
+  }
 }
 
 }  // namespace PJ

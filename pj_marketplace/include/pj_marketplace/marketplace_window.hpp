@@ -127,6 +127,15 @@ class MarketplaceWindow : public QDialog {
   QList<Extension> extensions_;  // populated from RegistryManager::fetchFinished
   QList<Extension> filtered_;
   QList<Extension> update_queue_;
+  // Individual Install/Update button clicks that arrive while another install
+  // is already running. Drained by processInstallQueue() in FIFO order once
+  // active_install_id_ clears.
+  QList<QString> pending_clicks_;
+  // Id of the extension currently being installed or updated by the manager,
+  // set from installStarted and cleared from installFinished. Empty means
+  // idle — the UI-side guard uses this to decide whether to enqueue a click
+  // instead of dispatching it straight to ExtensionManager::install().
+  QString active_install_id_;
   bool installations_changed_ = false;
   bool status_error_sticky_ = false;
   bool initial_snapshot_provided_ = false;

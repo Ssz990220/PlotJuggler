@@ -316,6 +316,97 @@ TEST(DownloadManagerTest, CancelEmitsCancelled) {
   EXPECT_TRUE(finished_spy.isEmpty());
 }
 
+TEST(DownloadManagerTest, PhaseChangedFiresVerifyingThenExtractingBeforeFinished) {
+  // Small artifact with a correct checksum: both phases should fire, in order,
+  // before finished is emitted.
+  const QByteArray zip_data = buildZip({{"hello.txt", "world"}});
+  const QString checksum = sha256Hex(zip_data);
+
+  LocalHttpServer server;
+  server.setBody(zip_data);
+
+  PJ::DownloadManager dm;
+  QTemporaryDir tmp;
+  ASSERT_TRUE(tmp.isValid());
+
+  QSignalSpy phase_spy(&dm, &PJ::DownloadManager::phaseChanged);
+  QSignalSpy finished_spy(&dm, &PJ::DownloadManager::finished);
+
+  dm.fetch(server.url(), checksum, tmp.path());
+
+  EXPECT_TRUE(waitForSignal(finished_spy));
+
+  ASSERT_EQ(phase_spy.count(), 2);
+  const auto phase0 = phase_spy.at(0).at(1).value<PJ::DownloadManager::WorkPhase>();
+  const auto phase1 = phase_spy.at(1).at(1).value<PJ::DownloadManager::WorkPhase>();
+  EXPECT_EQ(phase0, PJ::DownloadManager::WorkPhase::Verifying);
+  EXPECT_EQ(phase1, PJ::DownloadManager::WorkPhase::Extracting);
+}
+
+TEST(DownloadManagerTest, PhaseChangedSkipsVerifyingWhenChecksumEmpty) {
+  // No checksum requested → the verify phase must be skipped and only
+  // Extracting is announced.
+  const QByteArray zip_data = buildZip({{"hello.txt", "world"}});
+
+  LocalHttpServer server;
+  server.setBody(zip_data);
+
+  PJ::DownloadManager dm;
+  QTemporaryDir tmp;
+  ASSERT_TRUE(tmp.isValid());
+
+  QSignalSpy phase_spy(&dm, &PJ::DownloadManager::phaseChanged);
+  QSignalSpy finished_spy(&dm, &PJ::DownloadManager::finished);
+
+  dm.fetch(server.url(), {}, tmp.path());
+
+  EXPECT_TRUE(waitForSignal(finished_spy));
+
+  ASSERT_EQ(phase_spy.count(), 1);
+  const auto phase = phase_spy.at(0).at(1).value<PJ::DownloadManager::WorkPhase>();
+  EXPECT_EQ(phase, PJ::DownloadManager::WorkPhase::Extracting);
+}
+
+TEST(DownloadManagerTest, CancelDuringExtractEmitsCancelled) {
+  // Many small entries so the extract loop has plenty of cancel checkpoints
+  // and the flag is observed before the loop completes. Each iteration in
+  // extractFromMemory checks the cancel flag before consuming the next entry.
+  QMap<QString, QByteArray> files;
+  const QByteArray blob(4 * 1024, 'x');
+  for (int i = 0; i < 400; ++i) {
+    files.insert(u"file_%1.bin"_s.arg(i, 3, 10, QLatin1Char('0')), blob);
+  }
+  const QByteArray zip_data = buildZip(files);
+
+  LocalHttpServer server;
+  server.setBody(zip_data);
+
+  PJ::DownloadManager dm;
+  QTemporaryDir tmp;
+  ASSERT_TRUE(tmp.isValid());
+
+  QSignalSpy cancelled_spy(&dm, &PJ::DownloadManager::cancelled);
+  QSignalSpy finished_spy(&dm, &PJ::DownloadManager::finished);
+  QSignalSpy failed_spy(&dm, &PJ::DownloadManager::failed);
+
+  const int id = dm.fetch(server.url(), {}, tmp.path());
+
+  // Trigger cancel the moment the worker announces the Extracting phase.
+  // Receiver is &dm so the lambda runs on the manager's thread — cancel()
+  // touches internal maps which the manager only reads from its own thread.
+  QObject::connect(
+      &dm, &PJ::DownloadManager::phaseChanged, &dm, [&dm, id](int the_id, PJ::DownloadManager::WorkPhase phase) {
+        if (the_id == id && phase == PJ::DownloadManager::WorkPhase::Extracting) {
+          dm.cancel(the_id);
+        }
+      });
+
+  EXPECT_TRUE(waitForSignal(cancelled_spy, 10000));
+  EXPECT_EQ(cancelled_spy.first().at(0).toInt(), id);
+  EXPECT_TRUE(finished_spy.isEmpty());
+  EXPECT_TRUE(failed_spy.isEmpty());
+}
+
 TEST(DownloadManagerTest, MultipleOperationsHaveUniqueIds) {
   PJ::DownloadManager dm;
 

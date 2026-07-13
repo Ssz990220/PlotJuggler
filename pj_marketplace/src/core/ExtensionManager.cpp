@@ -296,9 +296,14 @@ void ExtensionManager::doInstall(const Extension& ext, bool staging, bool allow_
   const QString dest_dir = staging ? pending_dir_ : extensions_dir_;
   QDir().mkpath(dest_dir);
   const QString transaction_root = makeTransactionRoot(dest_dir, ext.id);
+  // Create the transaction root eagerly so the refresh guard has a real path
+  // to protect from the moment install() returns — otherwise a Refresh that
+  // fires during the download window would find no directory to skip and the
+  // guard would appear untested even though it is exercised in practice.
+  QDir().mkpath(transaction_root);
 
   pending_id_ = ext.id;
-  pending_extract_dir_ = transaction_root;
+  pending_extract_dir_ = QDir::cleanPath(transaction_root);
   emit installStarted(ext.id);
 
   dl_progress_conn_ =
@@ -319,6 +324,14 @@ void ExtensionManager::doInstall(const Extension& ext, bool staging, bool allow_
 
         const int percent = (total > 0) ? static_cast<int>(received * 100 / total) : 0;
         emit installProgress(pending_id_, percent);
+      });
+
+  dl_phase_conn_ =
+      connect(downloader_, &DownloadManager::phaseChanged, this, [this](int id, DownloadManager::WorkPhase phase) {
+        if (id != pending_op_id_) {
+          return;
+        }
+        emit installPhase(pending_id_, phase);
       });
 
   dl_finished_conn_ =
@@ -704,6 +717,7 @@ void ExtensionManager::clearDiagnostics() {
 
 void ExtensionManager::disconnectDlConns() {
   disconnect(dl_progress_conn_);
+  disconnect(dl_phase_conn_);
   disconnect(dl_finished_conn_);
   disconnect(dl_failed_conn_);
   disconnect(dl_cancelled_conn_);
@@ -764,7 +778,16 @@ void ExtensionManager::refreshInstalledFromDisk() {
   for (const QFileInfo& entry : dir.entryInfoList(QDir::Dirs | QDir::Hidden | QDir::System | QDir::NoDotAndDotDot)) {
     const QString root = entry.absoluteFilePath();
     if (isTransactionDirectoryName(entry.fileName())) {
-      removeDirectoryIfSet(root);
+      // Skip the transaction dir of an install that is still in progress —
+      // the worker is writing into it in the background, and its completion
+      // handler owns cleanup. Wiping it here (triggered by Refresh, or by
+      // starting an install/uninstall/update of a different plugin) would
+      // race with the worker and truncate a partial install into a broken
+      // final state. Both sides are normalized so the guard tolerates
+      // trailing slashes, `..` segments, and case-insensitive filesystems.
+      if (QDir::cleanPath(root) != pending_extract_dir_) {
+        removeDirectoryIfSet(root);
+      }
       continue;
     }
     if (QFile::exists(root + "/" + kPendingUninstallMarker)) {

@@ -10,13 +10,12 @@
 #include <QString>
 
 #include "pj_base/diagnostic_sink.hpp"
+#include "pj_marketplace/download_manager.hpp"
 #include "pj_marketplace/extension.hpp"
 #include "pj_marketplace/installed_extension.hpp"
 #include "pj_marketplace/platform_utils.hpp"
 
 namespace PJ {
-
-class DownloadManager;
 
 // One user-visible diagnostic emitted by marketplace lifecycle operations.
 struct ExtensionDiagnostic {
@@ -109,6 +108,11 @@ class ExtensionManager : public QObject {
   // Emitted with percentage progress for the active download.
   void installProgress(const QString& id, int percent);
 
+  // Reports post-download work whose duration is not covered by installProgress.
+  // See DownloadManager::WorkPhase for the meaning of each value; consumers
+  // should switch their UI to an indeterminate/busy indicator when this fires.
+  void installPhase(const QString& id, PJ::DownloadManager::WorkPhase phase);
+
   // Emitted when install or update completes.
   void installFinished(const QString& id, bool success);
 
@@ -184,6 +188,7 @@ class ExtensionManager : public QObject {
 
   // Stored so we can disconnect cleanly after each operation completes.
   QMetaObject::Connection dl_progress_conn_;
+  QMetaObject::Connection dl_phase_conn_;
   QMetaObject::Connection dl_finished_conn_;
   QMetaObject::Connection dl_failed_conn_;
   QMetaObject::Connection dl_cancelled_conn_;

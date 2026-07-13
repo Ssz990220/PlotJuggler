@@ -1381,6 +1381,65 @@ TEST(PlatformDetectionTest, IsWindowsReturnsFalseOnLinux) {
   EXPECT_FALSE(PlatformUtils::isWindows());
 }
 
+// ---------------------------------------------------------------------------
+// Refresh during an in-progress install
+// ---------------------------------------------------------------------------
+
+// Regression test for the case where refreshInstalledFromDisk() is invoked
+// while the async checksum/extract worker is still writing into the
+// transaction directory. Before the guard on pending_extract_dir_, the sweep
+// would wipe the in-flight `.pj_install_*` directory and the install would
+// fail its downstream validation. With the guard the install completes
+// normally.
+TEST_F(ExtensionManagerTest, RefreshDuringInstallDoesNotWipeInProgressTransaction) {
+  server_.setBody(dummyPluginZip("mock-data-source"));
+  const Extension ext = makeExtension("mock-data-source", "1.0.0", server_.url());
+
+  QSignalSpy spy_finished(mgr_, &ExtensionManager::installFinished);
+  QSignalSpy spy_error(mgr_, &ExtensionManager::installError);
+
+  // Trigger a refresh the moment the worker announces its extract phase. The
+  // receiver is mgr_ so the lambda runs on the manager's thread, matching how
+  // a real UI Refresh button click would arrive.
+  QObject::connect(
+      mgr_, &ExtensionManager::installPhase, mgr_, [this](const QString&, DownloadManager::WorkPhase phase) {
+        if (phase == DownloadManager::WorkPhase::Extracting) {
+          mgr_->refreshInstalledFromDisk();
+        }
+      });
+
+  mgr_->install(ext);
+
+  ASSERT_TRUE(waitForSignal(spy_finished)) << "installFinished not received within 5 s";
+  ASSERT_EQ(spy_finished.count(), 1);
+  EXPECT_TRUE(spy_finished.first().at(1).toBool()) << "install must succeed despite refresh mid-flight";
+  EXPECT_TRUE(spy_error.isEmpty());
+  EXPECT_TRUE(mgr_->isInstalled("mock-data-source"));
+}
+
+// Once the install is finished, refreshInstalledFromDisk() must resume its
+// normal duty of sweeping stale transaction directories (this asserts that
+// the guard is not overly broad — it only protects the CURRENT install).
+TEST_F(ExtensionManagerTest, RefreshWipesStaleTransactionDirsAfterInstall) {
+  server_.setBody(dummyPluginZip("mock-data-source"));
+  const Extension ext = makeExtension("mock-data-source", "1.0.0", server_.url());
+
+  QSignalSpy spy_finished(mgr_, &ExtensionManager::installFinished);
+  mgr_->install(ext);
+  ASSERT_TRUE(waitForSignal(spy_finished));
+
+  // Drop a fake stale transaction directory in extensions_dir_. This
+  // simulates a leftover from a crashed install on a previous run.
+  const QString stale_dir = QDir(ext_dir_.path()).absoluteFilePath(u".pj_install_stale_abc"_s);
+  ASSERT_TRUE(QDir().mkpath(stale_dir));
+  ASSERT_TRUE(QFile::exists(stale_dir));
+
+  mgr_->refreshInstalledFromDisk();
+
+  EXPECT_FALSE(QFile::exists(stale_dir)) << "stale .pj_install_* should have been swept";
+  EXPECT_TRUE(mgr_->isInstalled("mock-data-source")) << "live install must remain registered";
+}
+
 }  // namespace
 }  // namespace PJ
 
