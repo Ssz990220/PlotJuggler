@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Installer>
+  <Name>PlotJuggler 4</Name>
+  <Version>__PJ_VERSION__</Version>
+  <Title>PlotJuggler 4 installer</Title>
+  <Publisher>PlotJuggler</Publisher>
+  <StartMenuDir>PlotJuggler 4</StartMenuDir>
+  <TargetDir>@ApplicationsDirX64@/PlotJuggler4</TargetDir>
+  <DependsOnLocalInstallerBinary>true</DependsOnLocalInstallerBinary>
+  <RunProgram>@TargetDir@/PlotJuggler4.exe</RunProgram>
+</Installer>

@@ -1,0 +1,6 @@
+# The staging directory now lives under %TEMP% (see build_windows_installer.ps1),
+# so nothing under packages/ should ever appear in a checkout. Kept as a
+# safety net in case a legacy in-tree stage is still around locally.
+packages/io.plotjuggler.application/data/
+# Output produced by build_windows_installer.ps1 -OutDir <default '.'>.
+**/PlotJuggler-*-Windows-x64.exe
