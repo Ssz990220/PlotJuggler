@@ -1,5 +1,9 @@
 # linuxdeploy tooling fetched on demand by build_appimage.sh
 linuxdeploy*.AppImage
+# Build output
+PlotJuggler-*.AppImage
+# Fetched-on-demand packaging tool (not source)
+appimagetool*.AppImage
 # Icon rasterized from resources/svg/plotjuggler.svg at build time
 plotjuggler4.png
 # Build output

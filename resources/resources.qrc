@@ -106,6 +106,7 @@
     <file alias="extension.svg">svg/extension.svg</file>
     <file alias="file_open.svg">svg/file_open.svg</file>
     <file alias="filter_list.svg">svg/filter_list.svg</file>
+    <file alias="folder.svg">svg/folder.svg</file>
     <file alias="folder_open.svg">svg/folder_open.svg</file>
     <file alias="format_paint.svg">svg/format_paint.svg</file>
     <file alias="fullscreen.svg">svg/fullscreen.svg</file>

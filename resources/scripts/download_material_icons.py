@@ -112,6 +112,7 @@ ICON_MAPPING: dict[str, tuple[str, dict[str, str]]] = {
     "export.svg":                          ("Upload",                     {}),
     "extension.svg":                       ("Extension",                  {}),
     "file_open.svg":                       ("File Open",                  {}),
+    "folder.svg":                          ("Folder",                     {}),
     "folder_open.svg":                     ("Folder Open",                {}),
     "filter_list.svg":                     ("Filter List",                {}),
     "format_paint.svg":                    ("Format Paint",               {}),

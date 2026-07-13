@@ -405,3 +405,22 @@ if(DEFINED PJ_WARNING_FLAGS)
     target_compile_options(scrollbar_test PRIVATE ${PJ_WARNING_FLAGS})
 endif()
 add_test(NAME ScrollbarTest COMMAND scrollbar_test)
+
+# Drift guard: C++ FrameworkTokens vs the QSS palette blocks. Links the qrc so
+# the stylesheets are readable as `:/resources/...` at runtime.
+add_executable(framework_tokens_test
+    framework_tokens_test.cpp
+    ${CMAKE_SOURCE_DIR}/resources/resources.qrc
+)
+target_link_libraries(framework_tokens_test PRIVATE
+    pj_widgets
+    GTest::gtest_main
+)
+if(DEFINED PJ_WARNING_FLAGS)
+    target_compile_options(framework_tokens_test PRIVATE ${PJ_WARNING_FLAGS})
+endif()
+set_target_properties(framework_tokens_test PROPERTIES
+    AUTORCC ON
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
+)
+add_test(NAME FrameworkTokens COMMAND framework_tokens_test)

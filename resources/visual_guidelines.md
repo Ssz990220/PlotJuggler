@@ -119,7 +119,7 @@ Geometry tokens:
 | `chrome_icon_size` | `20` | Icon rendered inside every chrome button. |
 | `chrome_spacing` | `4` | Horizontal gap between icon buttons in the same row; also label-text left padding. |
 | `chrome_border_width` | `1` | Every chrome border. |
-| `corner_radius` | `4` | Corner radius for input chrome (`QLineEdit`, `QAbstractSpinBox`, `QComboBox`, `DoubleScrubber`). Keep `ScrubberBase::kCornerRadiusPx` in lockstep. |
+| `radius_square` / `radius_input` / `radius_card` / `radius_dialog` / `radius_pill` | `0` / `4` / `6` / `8` / `9999` | The canonical corner-radius scale (see §2.4). QSS references `${radius_*}`; self-painted C++ uses `PJ::theme::radius(PJ::theme::Radius::*)` (theme-independent). Never hardcode a radius literal. |
 | `input_min_height` | `18` | Min **content** height shared by every input-chrome widget so text fields, spin boxes and combo boxes resolve to one identical outer height (18 + 2×2 padding + 2×1 border = 24). |
 
 ### 2.1 Why two button sizes
@@ -169,23 +169,31 @@ splitter-handle widget to style.
 
 ### 2.4 Border radii
 
-**Zero** everywhere **except input chrome.** Chrome bars, panels,
-buttons, tabs and views all use square corners (`border-radius: 0px`) —
-that's the house style, so push back if you reach for a rounded corner
-on those.
+Every corner radius comes from **one canonical 5-step token scale** — never a
+hardcoded literal. QSS rules reference `${radius_*}`; self-painted C++ widgets
+call `PJ::theme::radius(PJ::theme::Radius::*)` (radii are theme-independent, so
+no theme argument is needed).
 
-The one deliberate exception is the **input-chrome family** —
-`QLineEdit`, `QAbstractSpinBox` and `QComboBox` (plus the C++-painted
-`DoubleScrubber`) — which share `${corner_radius}px` (4px) rounded
-corners, the `${input_background}` fill, and a `${border_hover}` focus
-ring, so text fields, spin boxes and combo boxes read as one consistent
-inset-input family. The `PJ::MessageBox` card is a second, separate
-exception (`6`/`8px`) covered in its own section.
+| Token | px | Used by |
+|---|---|---|
+| `radius_square` | `0` | Flat surfaces: chrome bars, panels, tabs, tables/lists, scrollbars, menus, tooltips, popups, frames. |
+| `radius_input` | `4` | Input chrome (`QLineEdit`, `QAbstractSpinBox`, `QComboBox`, `DoubleScrubber`) **and every icon/tool button** (`QToolButton`) — the hover/press chip behind an icon is a 4px rounded square. |
+| `radius_card` | `6` | Cards, toasts, and the message-box action buttons. |
+| `radius_dialog` | `8` | The `PJ::MessageBox` modal card (a deliberately softer dialog corner) and other floating hint banners. |
+| `radius_pill` | `9999` | Fully-rounded capsules: toggle switches, scrollbar pills, range-slider handles, progress bars. |
 
-Inline search fields embedded in header bands (`#lineEditFilter`,
-`#lineEditCustomFilter`, `#lineEditCurvesFilter`, `#lineEditPrefix`) opt
-back out via id selectors (transparent, borderless, `padding: 0`) — the
-leading magnifier icon already cues "type here", so they stay flat.
+Input chrome also shares the `${input_background}` fill and `${border_hover}`
+focus ring, so text fields, spin boxes and combo boxes read as one consistent
+inset-input family. If you need a radius that isn't on the scale, add a token —
+do not sprinkle a magic number.
+
+App search/filter fields use the canonical **`PJ::Search`** control (a
+non-interactive magnifier butted flush against a borderless field, sharing
+one flat background), styled by the `PJ--Search` class rule — so they opt
+out of the inset-input family (transparent field, borderless, `padding: 0`);
+the leading magnifier already cues "type here". Plugin-provided fields still
+in a header band (`#seqFilter`, `#topicFilter`) and the prefix editor
+(`#lineEditPrefix`) opt out the same way via id selectors.
 
 ---
 
@@ -332,10 +340,11 @@ that's a bug.
 
 ### 4.4 Border radii
 
-Stay at `0px`. The house style is sharp corners across every
-widget. If a designer asks for rounded corners on something, raise
-it as an explicit design exception rather than slipping it into a
-rule.
+Never write a radius literal. Reference a `${radius_*}` token in QSS (or
+`PJ::theme::radius(PJ::theme::Radius::*)` in C++) — see §2.4 for the scale.
+A `border-radius: 4px` slipped into a rule is a bug the same way a hardcoded
+colour is; if no existing token fits, add one to the scale rather than
+introducing a magic number in a single rule.
 
 ### 4.5 Padding / margin discipline
 

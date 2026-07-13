@@ -7,81 +7,42 @@
 theme: light
 
 // ---- Backgrounds ---------------------------------------------------
-widget_background:           transparent
-main_background:             #eeeeee
-dark_background:             #F5F5F5
-titlebar_background:         #e0e0e0
-widget_background_disabled:  #eeeeee
 // Fill colour for input chrome (PJ::ComboBox, DoubleScrubber). White so
 // the input rectangle reads as a chart-surface inset; ScrubberBase
 // uses the same value in C++ to stay in lockstep with the QComboBox QSS.
-input_background:            #FFFFFF
 // Floating "toast" notification card. Needs its own solid fill because
 // widget_background is transparent; a clean white card over the grey body.
-toast_background:            #FFFFFF
 // Theme-agnostic — the plotting canvas, the Qwt internal canvas, and
 // the per-tab strip frames in TabbedPlotWidget all paint this colour
 // so the plot area reads as a flat white surface in both themes.
-chart_background:            #ffffff
 
 // ---- Text ----------------------------------------------------------
-default_text:    #111111
-disabled_text:   #666666
-inverse_text:    #ffffff
 
 // ---- Borders -------------------------------------------------------
-border_default:  #c0c0c0
-border_hover:    #62c5ff
-border_checked:  #1177ff
 
 // ---- Selections ----------------------------------------------------
-item_selection_background: #C2DCFF
 // Text painted on top of `item_selection_background` in views (tables,
 // trees, lists, file-dialog sidebar). Stays dark in both themes because
 // the highlight fill is light/mid blue and reads better with dark ink
 // than with the theme's regular default_text.
-selection_text:            #000000
 
 // ---- Brand accent colors (theme-agnostic, same in both stylesheets) ----
-purple:        #CC00CC
-blue:          #1177FF
-light_blue:     #C2DCFF
-light_purple:   #FFAEFF
 
 // ---- Status accents (used by marketplace cards + status banners) ---
 // Theme-agnostic — these read the same against either chrome shade.
-accent_warning:        #e6a817
-accent_warning_hover:  #f0b820
-accent_success:        #4caf6e
-accent_info:           #148cd2
-accent_info_hover:     #42a5f5
-accent_neutral:        #607d8b
-accent_error:          #d32f2f
 
 // ---- Marketplace card surface (theme-relative) ---------------------
-marketplace_card_bg:        #e0e0e0
-marketplace_card_bg_hover:  #d0d0d0
 
 // ---- Hover / pressed overlays --------------------------------------
 // Translucent ink applied on top of a widget's background. In light
 // theme this is black-with-alpha; the dark stylesheet inverts to
 // white-with-alpha so the overlay always reads as "darker on hover,
 // even darker when pressed" relative to the underlying surface.
-hover_overlay:   rgba(0, 0, 0, 40)
-pressed_overlay: rgba(0, 0, 0, 70)
-ink_select:      rgba(0, 0, 0, 60)
 
 // ---- Scrollbar / slider tones -------------------------------------
-scrollbar_handle:        #787878
-scrollbar_handle_hover:  #148CD2
-slider_handle:           #999999
-slider_handle_hover:     #99ccff
 
 // ---- MessageBox per-theme overrides --------------------------------
 // See stylesheet_dark.qss for the rationale.
-destructive_text:        #CC00CC
-msgbox_cancel_bg:       #c4c4c4
-msgbox_cancel_bg_hover: #b0b0b0
 
 // ---- Chrome geometry (in pixels, no `px` suffix) -------------------
 // Every horizontal chrome row (TitleBar, Sources / Datasets / Custom
@@ -109,7 +70,6 @@ chrome_border_width:       1
 
 // Corner radius for input chrome (PJ::ComboBox closed + open, DoubleScrubber).
 // Keep DoubleScrubber's ScrubberBase::kCornerRadiusPx in lockstep.
-corner_radius:             4
 
 // Single source of truth for the compact input height. Every input widget
 // resolves to `input_outer_height` (20px) outer:
@@ -128,78 +88,391 @@ input_outer_height:        20
 // Thick near-black outline + white trough + light-blue rounded fill +
 // dark centred caption. Scoped to PJ::ProgressBar so the plain
 // QProgressBar in ProgressDialog keeps the default Fusion look.
-progress_border:  #1c1c1c
-progress_trough:  #ffffff
-progress_fill:    #a6d5f7
-progress_text:    #111111
+
+// ============ FRAMEWORK TOKENS (resources/ui_framework.md) ==========
+// Semantic surface roles + the interaction variantxstate grid. These are
+// the authoritative UI-framework tokens and the single ground truth for
+// framework colors; the legacy brand/overlay tokens above are being migrated
+// onto them and will be removed. Self-painted (QPainter) widgets read these in
+// C++ via pj_widgets FrameworkTokens.{h,cpp}, a reader over this palette that
+// holds no values of its own; framework_tokens_test asserts every token the
+// framework enums require is present and valid here.
+// "Special" is not a token: compose it in a rule as a qlineargradient
+// from ${accent_<state>} to ${highlight_<state>}.
+
+// ---- Surfaces ----
+banner:         #D6D6D6
+backdrop:       #EBEBEB
+data_backdrop:  #FFFFFF
+input:          #F5F5F5
+separation:     #ADADAD
+banner_input:   #E0E0E0
+scroll_handle:  #47A3FF
+surface_transparent: transparent
+
+// ---- Foreground / content ink ----
+// `text` is a compatibility alias for `on_backdrop_default`.
+text:                         #333333
+// Surface ink: on_<surface>_<emphasis>.
+on_banner_default:            #333333
+on_banner_muted:              #747474
+on_banner_disabled:           #666666
+on_backdrop_default:          #333333
+on_backdrop_muted:            #7E7E7E
+on_backdrop_disabled:         #666666
+on_data_backdrop_default:     #333333
+on_data_backdrop_muted:       #888888
+on_data_backdrop_disabled:    #666666
+on_input_default:             #333333
+on_input_muted:               #838383
+on_input_disabled:            #666666
+on_separation_default:        #111111
+on_separation_muted:          #5F5F5F
+on_separation_disabled:       #666666
+on_banner_input_default:      #333333
+on_banner_input_muted:        #787878
+on_banner_input_disabled:     #666666
+on_scroll_handle_default:     #111111
+on_scroll_handle_muted:       #2C5A88
+on_scroll_handle_disabled:    #666666
+
+// Fill ink: on_<variant>_<state>. Near-black/near-white chosen per cell for WCAG
+// contrast against the fill; absolute #000/#FFF only where #111111/#F0F0F0 cannot
+// reach 4.5:1 on the current (pre-migration) fill.
+on_neutral_nominal:           #111111
+on_neutral_hovered:           #111111
+on_neutral_checked:           #111111
+on_neutral_pressed:           #111111
+on_neutral_checked_hovered:   #111111
+on_neutral_checked_pressed:   #111111
+on_neutral_disabled:          #F0F0F0
+
+on_accent_nominal:         #111111
+on_accent_hovered:         #111111
+on_accent_checked:         #111111
+on_accent_pressed:         #111111
+on_accent_checked_hovered: #111111
+on_accent_checked_pressed: #111111
+on_accent_disabled:        #F0F0F0
+
+on_highlight_nominal:             #111111
+on_highlight_hovered:             #111111
+on_highlight_checked:             #111111
+on_highlight_pressed:             #111111
+on_highlight_checked_hovered:     #111111
+on_highlight_checked_pressed:     #111111
+on_highlight_disabled:            #F0F0F0
+
+on_emphasis_nominal:           #111111
+on_emphasis_hovered:           #111111
+on_emphasis_checked:           #111111
+on_emphasis_pressed:           #111111
+on_emphasis_checked_hovered:   #FFFFFF
+on_emphasis_checked_pressed:   #F0F0F0
+on_emphasis_disabled:          #F0F0F0
+
+// Special gradient ink: on_special_<state>.
+on_special_nominal:           #111111
+on_special_hovered:           #111111
+on_special_checked:           #111111
+on_special_pressed:           #111111
+on_special_checked_hovered:   #111111
+on_special_checked_pressed:   #111111
+on_special_disabled:          #F0F0F0
+
+// ---- Icons ----
+icon_ink:       #333333
+icon_ink_disabled:       #A3A3A3
+// ---- Interaction grid: <variant>_<state> ----
+neutral_nominal:          #E0E0E0
+neutral_hovered:          #CCCCCC
+neutral_checked:          #B8B8B8
+neutral_pressed:          #B8B8B8
+neutral_checked_hovered:  #A3A3A3
+neutral_checked_pressed:  #999999
+neutral_disabled:         #333333
+
+accent_nominal:          #D6EBFF
+accent_hovered:          #C2E0FF
+accent_checked:          #99CCFF
+accent_pressed:          #99CCFF
+accent_checked_hovered:  #70B8FF
+accent_checked_pressed:  #5CADFF
+accent_disabled:         #333333
+
+highlight_nominal:          #FFD6FF
+highlight_hovered:          #FFC2FF
+highlight_checked:          #FF99FF
+highlight_pressed:          #FF99FF
+highlight_checked_hovered:  #FF70FF
+highlight_checked_pressed:  #FF5CFF
+highlight_disabled:         #333333
+
+emphasis_nominal:          #F5D33D
+emphasis_hovered:          #F3CA16
+emphasis_checked:          #C2A00A
+emphasis_pressed:          #C2A00A
+emphasis_checked_hovered:  #887007
+emphasis_checked_pressed:  #615005
+emphasis_disabled:         #333333
+
+// ---- Outline / stroke + focus (stroke ink; Separation stays the fill role) ----
+outline_default_rest:         #C0C0C0
+outline_default_hovered:      #62C5FF
+outline_default_focused:      #1177FF
+outline_default_checked:      #1177FF
+outline_default_disabled:     #D6D6D6
+
+outline_interactive_rest:     #C0C0C0
+outline_interactive_hovered:  #62C5FF
+outline_interactive_focused:  #1177FF
+outline_interactive_checked:  #1177FF
+outline_interactive_disabled: #D6D6D6
+
+outline_divider_rest:         #C0C0C0
+outline_divider_hovered:      #62C5FF
+outline_divider_focused:      #1177FF
+outline_divider_checked:      #1177FF
+outline_divider_disabled:     #D6D6D6
+
+outline_gridline_rest:        #C0C0C0
+outline_gridline_hovered:     #62C5FF
+outline_gridline_focused:     #1177FF
+outline_gridline_checked:     #1177FF
+outline_gridline_disabled:    #D6D6D6
+
+// ---- Overlay / alpha (state layers + veils; theme-inverted) ----
+overlay_hover:    rgba(0, 0, 0, 40)
+overlay_pressed:  rgba(0, 0, 0, 70)
+overlay_selected: rgba(0, 0, 0, 60)
+overlay_scrim:    rgba(0, 0, 0, 140)
+overlay_hud:      rgba(0, 0, 0, 170)
+
+// ---- Selection (fill + ink; distinct from interaction Checked) ----
+selection_fill:      #C2DCFF
+on_selection:        #000000
+text_selection_fill: rgba(0, 0, 0, 60)
+on_text_selection:   #111111
+
+// ---- Elevated surfaces (raised/floating tier, parallel to the base 7) ----
+surface_dialog:       #F5F5F5
+surface_card:         #E0E0E0
+surface_card_hover:   #D0D0D0
+surface_toast:        #FFFFFF
+surface_disabled:     #EEEEEE
+
+// ---- Gradients (two-stop endpoint tokens) ----
+gradient_accent_start:  #FFAEFF
+gradient_accent_end:    #C2DCFF
+gradient_brand_start:   #1177FF
+gradient_brand_end:     #CC00CC
+
+// ---- Status (semantic warning/success/error/info/neutral; theme-agnostic hues) ----
+status_success:          #4CAF6E
+status_warning:          #E6A817
+status_warning_hovered:  #F0B820
+status_error:            #D32F2F
+status_info:             #148CD2
+status_info_hovered:     #42A5F5
+status_neutral:          #607D8B
+// Per-status inks (WCAG): the warm/light hues need dark ink, error stays white.
+on_status_success:       #111111
+on_status_warning:       #111111
+on_status_error:         #FFFFFF
+on_status_info:          #111111
+on_status_neutral:       #111111
+status_error_surface:    #FFCCCC
+on_status_error_surface: #7A1F1F
+
+// ---- Destructive (close / remove actions) ----
+destructive_ink:      #CC00CC
+destructive_nominal:  #CC00CC
+destructive_hovered:  #FFAEFF
+destructive_pressed:  #CC00CC
+// Per-state inks: the legible ink flips with the fill's luminance
+// (#CC00CC wants white, the pale #FFAEFF hover wants dark).
+on_destructive_nominal:  #FFFFFF
+on_destructive_hovered:  #111111
+on_destructive_pressed:  #FFFFFF
+
+// ---- Progress indicators ----
+progress_outline:    #1C1C1C
+progress_track:      #FFFFFF
+progress_indicator:  #A6D5F7
+on_progress:         #111111
+
+// ---- Controls (slider handle + scrollbar hover) ----
+slider_handle_nominal:  #999999
+slider_handle_hovered:  #99CCFF
+scroll_handle_hovered:  #148CD2
+
+// ---- Cancel action (msgbox) ----
+cancel_nominal:  #C4C4C4
+cancel_hovered:  #B0B0B0
+
+// ---- Ink over overlays (foreground on Overlay::Hud) ----
+on_overlay_hud:  #F7F7F7
+
+// ---- Code editor content ink (background = data_backdrop) ----
+on_code_editor:  #1E1E1E
+
+// ---- Syntax highlighting (editor content semantics) ----
+syntax_keyword:  #0000FF
+syntax_number:   #098658
+syntax_string:   #A31515
+syntax_comment:  #008000
+syntax_builtin:  #795E26
+
+// ---- Contrast ink (theme-independent; guaranteed contrast over arbitrary gamut) ----
+contrast_dark:   #000000
+contrast_light:  #FFFFFF
+
+// ---- Muted icon ink (tree-branch line assets; also baked into *_light/_dark.svg) ----
+icon_ink_muted:  #454545
+
+// ---- Diagnostic dev-only categorical palette (DebugUi widget-class outlines) ----
+diag_fallback:          #888888
+diag_main_window:       #FF3B30
+diag_dialog:            #FF9500
+diag_widget:            #FFD60A
+diag_frame:             #CCCC00
+diag_splitter:          #34C759
+diag_splitter_handle:   #00B894
+diag_tab_widget:        #00C7BE
+diag_tab_pane:          #5AC8FA
+diag_tab:               #007AFF
+diag_menu_bar:          #5856D6
+diag_menu_bar_item:     #6C5CE7
+diag_menu:              #AF52DE
+diag_menu_item:         #D63384
+diag_tooltip:           #FF2D92
+diag_line_edit:         #E91E63
+diag_plain_text_edit:   #F06292
+diag_text_browser:      #EC407A
+diag_combo_box:         #AB47BC
+diag_spin_box:          #7E57C2
+diag_check_box:         #5C6BC0
+diag_radio_button:      #42A5F5
+diag_group_box:         #29B6F6
+diag_label:             #26C6DA
+diag_push_button:       #66BB6A
+diag_list_view:         #9CCC65
+diag_tree_view:         #D4E157
+diag_header_section:    #FFEE58
+diag_scroll_bar:        #FFA726
+diag_scroll_handle:     #FF7043
+diag_slider_groove:     #D84315
+diag_slider_handle:     #BF360C
+diag_slider_subpage:    #8D6E63
+diag_plot_widget:       #EF5350
+diag_qwt_plot:          #B71C1C
+diag_title_bar:         #00BCD4
+diag_title_bar_button:  #4DD0E1
+
+// ---- Size / non-color axes (theme-agnostic; duplicated in both palettes) ----
+space_none:                    0
+space_tight:                   2
+space_snug:                    4
+space_comfortable:             8
+space_section:                 16
+
+size_input_min_height:         18
+size_input_outer_height:       20
+
+radius_square:                 0
+radius_input:                  4
+radius_card:                   6
+radius_dialog:                 8
+radius_pill:                   9999
+
+stroke_hairline:               1
+stroke_emphasis:               2
+
+type_caption_family:           sans-serif
+type_caption_size:             9
+type_caption_weight:           400
+type_body_family:              sans-serif
+type_body_size:                10
+type_body_weight:              400
+type_title_family:             sans-serif
+type_title_size:               12
+type_title_weight:             600
+type_heading_family:           sans-serif
+type_heading_size:             14
+type_heading_weight:           600
+
+motion_fast:                   140
+motion_base:                   180
+motion_slow:                   300
+motion_reveal_hold:            1200
 
 //------- PALETTE END --------
 
 QWidget {
   background: transparent;
-  padding: 0px;
-  color: ${default_text};
+  padding: ${space_none}px;
+  color: ${text};
   font-size: 10pt;
 }
 
 QWidget:disabled{
-  color: ${disabled_text};
-  background: ${widget_background_disabled};
+  color: ${on_backdrop_disabled};
+  background: ${surface_disabled};
 }
 
 PlotWidget {
-    background: ${chart_background};
+    background: ${data_backdrop};
     border: none;
 }
 
 QMainWindow {
-    background: ${dark_background};
+    background: ${backdrop};
 }
 
 QDialog {
     /* Use the same token as QMainWindow so frameless dialogs sit on
        the same shade as the app behind them rather than a slightly
        different one. */
-    background: ${dark_background};
+    background: ${backdrop};
 }
 
 QLabel {
-    color: ${default_text};
+    color: ${text};
     background: transparent;
 }
 
 QLineEdit {
-    color: ${default_text};
-    background: ${input_background};
-    border: 1px solid ${border_default};
-    border-radius: ${corner_radius}px;
-    padding-top: 0px;
-    padding-bottom: 0px;
-    padding-left: ${chrome_spacing}px;
-    padding-right: ${chrome_spacing}px;
-    min-height: ${input_min_height}px;
-    max-height: ${input_min_height}px;
+    color: ${on_input_default};
+    background: ${input};
+    border: 1px solid ${separation};
+    border-radius: ${radius_input}px;
+    padding-top: ${space_none}px;
+    padding-bottom: ${space_none}px;
+    padding-left: ${space_snug}px;
+    padding-right: ${space_snug}px;
+    min-height: ${size_input_min_height}px;
+    max-height: ${size_input_min_height}px;
 }
 
 QLineEdit:hover,
 QLineEdit:focus {
-    border: 1px solid ${border_hover};
+    border: 1px solid ${separation};
 }
 
 QLineEdit:disabled {
-    color: ${disabled_text};
+    color: ${on_input_disabled};
 }
 
 QTabWidget{
-  background: ${widget_background};
-  margin-left: 6px;
+  background: ${surface_transparent};
+  margin-left: ${space_comfortable}px;
 }
 
 QTabWidget::pane { /* The tab widget frame */
     border: none;
-    background: ${widget_background};
+    background: ${surface_transparent};
     top: -1px;
-    border-radius: 0px;
+    border-radius: ${radius_square}px;
     border-top-left-radius: 0px;
 }
 
@@ -218,17 +491,17 @@ QTabBar::tab {
     border-bottom-right-radius: 0px;
     min-width: 10ex;
     min-height: 34px;
-    padding: 0px;
-    padding-right: 6px;
-    padding-left: 6px;
-    color: ${default_text};
+    padding: ${space_none}px;
+    padding-right: ${space_comfortable}px;
+    padding-left: ${space_comfortable}px;
+    color: ${text};
     border-left: none;
     border-right: none;
     border-top: none;
 }
 
 QTabBar::tab:selected {
-    background: ${widget_background};
+    background: ${surface_transparent};
 }
 QTabBar::tab:!selected {
     background: transparent;
@@ -241,58 +514,36 @@ QTabBar::tab:!selected {
    duplicated per .ui; the app's own tab strips stay flat (they don't set it).
    The [framed] attribute selector outranks the base rules above. */
 QTabWidget[framed="true"]::pane {
-    border: 1px solid ${border_default};
-    border-radius: 2px;
+    border: 1px solid ${separation};
+    border-radius: ${radius_square}px;
     border-top-left-radius: 0px;
     top: -1px;
 }
 QTabWidget[framed="true"] QTabBar::tab {
-    border: 1px solid ${border_default};
+    border: 1px solid ${separation};
     border-bottom: none;
     border-top-left-radius: 2px;
     border-top-right-radius: 2px;
-    padding: 4px 12px;
+    padding: ${space_snug}px ${space_section}px;
 }
 QTabWidget[framed="true"] QTabBar::tab:selected {
-    background: ${dark_background};
+    background: ${backdrop};
 }
 QTabWidget[framed="true"] QTabBar::tab:!selected {
     background: transparent;
-    border-bottom: 1px solid ${border_default};
+    border-bottom: 1px solid ${separation};
 }
-
-/* Opt-in "filter field" look: a QLineEdit topic filter that sets the dynamic
-   property filterField="true" renders as a flat underlined search box — a muted
-   bottom border that turns to the highlight colour on focus. Single source of
-   truth for the plugin-dialog topic filters (MCAP, ROS2, MQTT, foxglove, webrtc,
-   pj_bridge, Transform Editor). The object-name+attribute selector is id-level,
-   so it outranks the app's own flat #lineEditFilter/#topicFilter rules; the
-   attribute gate leaves the app's own filters (which don't set it) flat. */
-QLineEdit#lineEditFilter[filterField="true"],
-QLineEdit#lineEditTopicFilter[filterField="true"],
-QLineEdit#lineEditTab2Filter[filterField="true"] {
-    background-color: transparent;
-    border: 0px;
-    border-radius: 0px;
-    border-bottom: 2px solid palette(mid);
-}
-QLineEdit#lineEditFilter[filterField="true"]:focus,
-QLineEdit#lineEditTopicFilter[filterField="true"]:focus,
-QLineEdit#lineEditTab2Filter[filterField="true"]:focus {
-    border-bottom: 2px solid palette(highlight);
-}
-
 
 QTextBrowser {
-   background: ${widget_background};
-   color: ${default_text};
+   background: ${surface_transparent};
+   color: ${text};
 }
 
 QTextEdit,
 QPlainTextEdit {
-   background: ${widget_background};
-   color: ${default_text};
-   border-radius: 0px;
+   background: ${surface_transparent};
+   color: ${text};
+   border-radius: ${radius_square}px;
    border: none;
 }
 
@@ -300,30 +551,28 @@ QPlainTextEdit {
    white token colors), so the text area stays white with dark ink. Tagged via
    the dynamic property _pj_code_editor in pj_dialog_host's widget binding. */
 QPlainTextEdit[_pj_code_editor="true"] {
-   background: #ffffff;
-   color: #1E1E1E;
+   background: ${data_backdrop};
+   color: ${on_code_editor};
 }
 
 /* The pane wrapping a code editor (assist dropdowns + labels around it) shares
    the same white surface, so the whole editor block reads as one. Tagged
    _pj_code_editor_pane alongside the editor in the widget binding. */
 QWidget[_pj_code_editor_pane="true"] {
-   background: #ffffff;
+   background: ${data_backdrop};
 }
 
 QToolTip {
-    border: 1px solid ${border_default};
-    border-radius: 0px;
-    background-color: ${dark_background};
-    color: ${default_text};
-    padding: 2px 4px;
+    border: 1px solid ${separation};
+    border-radius: ${radius_square}px;
+    background-color: ${backdrop};
+    color: ${text};
+    padding: ${space_tight}px ${space_snug}px;
 }
-
 
 /* QScrollArea ------------------------------------------------------------
 
 --------------------------------------------------------------------------- */
-
 
 /* QScrollBar -------------------------------------------------------------
 
@@ -332,50 +581,50 @@ https://doc.qt.io/qt-5/stylesheet-examples.html#customizing-qscrollbar
 --------------------------------------------------------------------------- */
 QScrollBar:horizontal {
   height: 16px;
-  margin: 2px 16px 2px 16px;
+  margin: ${space_tight}px ${space_section}px ${space_tight}px ${space_section}px;
   border: none;
-  border-radius: 0px;
-  background-color: ${widget_background};
+  border-radius: ${radius_square}px;
+  background-color: ${surface_transparent};
 }
 
 QScrollBar:vertical {
-  background-color: ${widget_background};
+  background-color: ${surface_transparent};
   width: 16px;
-  margin: 16px 2px 16px 2px;
+  margin: ${space_section}px ${space_tight}px ${space_section}px ${space_tight}px;
   border: none;
-  border-radius: 0px;
+  border-radius: ${radius_square}px;
 }
 
 QScrollBar::handle:horizontal {
-  background-color: ${scrollbar_handle};
+  background-color: ${scroll_handle};
   border: none;
-  border-radius: 0px;
+  border-radius: ${radius_square}px;
   min-width: 8px;
 }
 
 QScrollBar::handle:horizontal:hover {
-  background-color: ${scrollbar_handle_hover};
+  background-color: ${scroll_handle_hovered};
   border: none;
-  border-radius: 0px;
+  border-radius: ${radius_square}px;
   min-width: 8px;
 }
 
 QScrollBar::handle:vertical {
-  background-color: ${scrollbar_handle};
+  background-color: ${scroll_handle};
   border: none;
   min-height: 8px;
-  border-radius: 0px;
+  border-radius: ${radius_square}px;
 }
 
 QScrollBar::handle:vertical:hover {
-  background-color: ${scrollbar_handle_hover};
+  background-color: ${scroll_handle_hovered};
   border: none;
-  border-radius: 0px;
+  border-radius: ${radius_square}px;
   min-height: 8px;
 }
 
 QScrollBar::add-line:horizontal {
-  margin: 0px 0px 0px 0px;
+  margin: ${space_none}px ${space_none}px ${space_none}px ${space_none}px;
   border-image: url(":/resources/svg/keyboard_arrow_right_light.svg");
   height: 12px;
   width: 12px;
@@ -390,7 +639,7 @@ QScrollBar::add-line:horizontal:pressed {
 }
 
 QScrollBar::add-line:vertical {
-  margin: 3px 0px 3px 0px;
+  margin: ${space_snug}px ${space_none}px ${space_snug}px ${space_none}px;
   border-image: url(":/resources/svg/keyboard_arrow_down_light.svg");
   height: 12px;
   width: 12px;
@@ -405,7 +654,7 @@ QScrollBar::add-line:vertical:pressed {
 }
 
 QScrollBar::sub-line:horizontal {
-  margin: 0px 3px 0px 3px;
+  margin: ${space_none}px ${space_snug}px ${space_none}px ${space_snug}px;
   border-image: url(":/resources/svg/keyboard_arrow_left_light.svg");
   height: 12px;
   width: 12px;
@@ -420,7 +669,7 @@ QScrollBar::sub-line:horizontal:pressed {
 }
 
 QScrollBar::sub-line:vertical {
-  margin: 3px 0px 3px 0px;
+  margin: ${space_snug}px ${space_none}px ${space_snug}px ${space_none}px;
   border-image: url(":/resources/svg/keyboard_arrow_up_light.svg");
   height: 12px;
   width: 12px;
@@ -458,57 +707,60 @@ QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {
    menu with `setObjectName("PJMenu")` to opt into this styling. */
 
 QMenu#PJMenu {
-    background: ${dark_background};
-    background-color: ${dark_background};
-    color: ${default_text};
-    border: 1px solid ${border_default};
-    padding: 0;
+    background: ${backdrop};
+    background-color: ${backdrop};
+    color: ${text};
+    border: 1px solid ${separation};
+    padding: ${space_none}px;
 }
 
 QMenu#PJMenu::icon {
-    padding-left: 0;
+    padding-left: ${space_none}px;
 }
 
 QMenu#PJMenu::item {
     background-color: transparent;
     /* top, right, bottom, left — left is minimal so the icon hugs
        the menu's left edge; right keeps a breathing margin. */
-    padding: 4px 14px 4px 6px;
-    color: ${default_text};
+    padding: ${space_snug}px ${space_section}px ${space_snug}px ${space_comfortable}px;
+    color: ${text};
     border: none;
-    margin: 0;
+    margin: ${space_none}px;
 }
 
 QMenu#PJMenu::item:selected {
-    background-color: ${light_blue};
-    color: ${default_text};
+    background-color: ${accent_checked};
+    color: ${on_accent_checked};
 }
 
 QMenu#PJMenu::item:checked {
-    color: ${blue};
+    /* status_info is a readable accent-blue INK in both themes; accent_nominal
+       is an interaction FILL (a pale background tone in light) and disappears
+       when used as text. */
+    color: ${status_info};
 }
 
 QMenu#PJMenu::item:disabled {
-    color: ${disabled_text};
+    color: ${on_backdrop_disabled};
 }
 
 QMenu#PJMenu::separator {
     height: 0px;
     background-color: transparent;
-    margin: 0;
+    margin: ${space_none}px;
 }
 
 QMenu#PJMenu[categorySeparators="true"]::separator {
     height: 1px;
-    background-color: ${border_default};
-    margin: 3px 8px;
+    background-color: ${separation};
+    margin: ${space_snug}px ${space_comfortable}px;
 }
 
 QMenu#PJMenu::right-arrow {
     image: url(":/resources/svg/keyboard_arrow_right_light.svg");
     width: 12px;
     height: 12px;
-    margin-right: 4px;
+    margin-right: ${space_snug}px;
 }
 
 QMenu#PJMenu::indicator {
@@ -518,9 +770,8 @@ QMenu#PJMenu::indicator {
 }
 
 /* Push buttons hosted inside PJMenu (e.g. destructive-action items via
-   QWidgetAction). No state ever paints a blue accent border — palette
-   highlight stays out — and hover is a fixed light-blue swatch the
-   user picked, identical in both themes. */
+   QWidgetAction). No state paints an accent border; hover uses the shared
+   secondary interaction fill. */
 QMenu#PJMenu QPushButton,
 QMenu#PJMenu QPushButton:focus,
 QMenu#PJMenu QPushButton:pressed,
@@ -528,9 +779,9 @@ QMenu#PJMenu QPushButton:checked {
     background: transparent;
     border: none;
     outline: none;
-    padding: 4px 14px 4px 6px;
+    padding: ${space_snug}px ${space_section}px ${space_snug}px ${space_comfortable}px;
     text-align: left;
-    border-radius: 0;
+    border-radius: ${radius_square};
 }
 
 /* Destructive menu items (Cancel/Delete/Clear...) get purple text
@@ -538,7 +789,7 @@ QMenu#PJMenu QPushButton:checked {
    stylesheet only has to set the `destructive` property — no
    hardcoded colour duplicated per call-site. */
 QMenu#PJMenu QPushButton[destructive="true"] {
-    color: ${purple};
+    color: ${destructive_nominal};
 }
 
 /* QCheckBox embedded in PJMenu (e.g. "Show Values"): match the
@@ -547,28 +798,27 @@ QMenu#PJMenu QPushButton[destructive="true"] {
    margin-left is zeroed so the indicator itself sits at the
    item's padding-left, not 4px further in. */
 QMenu#PJMenu QCheckBox {
-    padding: 4px 14px 4px 6px;
+    padding: ${space_snug}px ${space_section}px ${space_snug}px ${space_comfortable}px;
 }
 
 QMenu#PJMenu QCheckBox::indicator {
-    margin-left: 0;
+    margin-left: ${space_none}px;
 }
 
 QMenu#PJMenu QPushButton:hover {
-    background: ${light_blue};
+    background: ${accent_hovered};
+    color: ${on_accent_hovered};
     border: none;
     outline: none;
 }
 
 /* Destructive / negative-action buttons (Cancel, Delete, Clear, etc.)
-   opt in via `setProperty("destructive", true)`. Hover gets the
-   light_purple swatch so destructive controls read distinctly from
-   neutral ones (which use light_blue). Applies inside or outside a
-   QMenu — the second selector is just for specificity over the
-   PJMenu QPushButton:hover rule above. */
+   opt in via `setProperty("destructive", true)`. Hover uses the error
+   interaction fill. Applies inside or outside a QMenu — the second selector is
+   just for specificity over the PJMenu QPushButton:hover rule above. */
 QPushButton[destructive="true"]:hover,
 QMenu#PJMenu QPushButton[destructive="true"]:hover {
-    background: ${light_purple};
+    background: ${destructive_hovered};
     border: none;
     outline: none;
 }
@@ -577,16 +827,16 @@ QMenu#PJMenu QPushButton[destructive="true"]:hover {
 
 --------------------------------------------------------------------------- */
 QAbstractSpinBox {
-  background-color: ${input_background};
-  border: 1px solid ${border_default};
-  color: ${default_text};
-  padding-top: 0px;
-  padding-bottom: 0px;
-  padding-left: ${chrome_spacing}px;
-  padding-right: ${chrome_spacing}px;
-  border-radius: ${corner_radius}px;
-  min-height: ${input_min_height}px;
-  max-height: ${input_min_height}px;
+  background-color: ${input};
+  border: 1px solid ${separation};
+  color: ${on_input_default};
+  padding-top: ${space_none}px;
+  padding-bottom: ${space_none}px;
+  padding-left: ${space_snug}px;
+  padding-right: ${space_snug}px;
+  border-radius: ${radius_input}px;
+  min-height: ${size_input_min_height}px;
+  max-height: ${size_input_min_height}px;
 }
 
 QAbstractSpinBox:up-button {
@@ -594,7 +844,7 @@ QAbstractSpinBox:up-button {
   subcontrol-origin: border;
   subcontrol-position: top right;
   border: none;
-  margin: 0px;
+  margin: ${space_none}px;
 }
 
 QAbstractSpinBox::up-arrow,
@@ -611,7 +861,7 @@ QAbstractSpinBox:down-button {
   subcontrol-origin: border;
   subcontrol-position: bottom right;
   border: none;
-  margin: 0px;
+  margin: ${space_none}px;
 }
 
 QAbstractSpinBox::down-arrow,
@@ -625,29 +875,28 @@ QAbstractSpinBox::down-arrow:hover {
 
 QAbstractSpinBox:hover,
 QAbstractSpinBox:focus {
-  border: 1px solid ${border_hover};
+  border: 1px solid ${separation};
 }
-
 
 /* QRadioButton ----------------------------------------------------------- */
 
 QRadioButton{
-    color: ${default_text};
+    color: ${text};
     background-color: transparent;
-    spacing: 0;
-    padding: 0;
+    spacing: ${space_none}px;
+    padding: ${space_none}px;
     border: none;
     outline: none;
 }
 
 QRadioButton:disabled {
-    color: ${disabled_text};
+    color: ${on_backdrop_disabled};
 }
 
 QRadioButton::indicator {
     border: none;
     outline: none;
-    margin-bottom: 2px;
+    margin-bottom: ${space_tight}px;
     width: 25px;
     height: 25px;
 }
@@ -672,11 +921,11 @@ QRadioButton::indicator:unchecked:disabled {
 
 QCheckBox{
    background-color: transparent;
-   color: ${default_text};
+   color: ${text};
 }
 
 QCheckBox::indicator {
-    margin-left: ${chrome_spacing}px;
+    margin-left: ${space_snug}px;
     width: 16px;
     height: 16px;
 }
@@ -700,25 +949,25 @@ QCheckBox::indicator:checked:disabled {
 /* QGroupBox -------------------------------------------------------------- */
 
 QGroupBox{
-    margin-top: 8px;
-    padding-top: 16px;
+    margin-top: ${space_comfortable}px;
+    padding-top: ${space_section}px;
 }
 
 QGroupBox::title {
     subcontrol-origin: margin;
     subcontrol-position: top left;
-    padding-bottom: 10px;
+    padding-bottom: ${space_comfortable}px;
     font-weight: 600;
 }
 
 QGroupBox::indicator {
-    margin-left: ${chrome_spacing}px;
+    margin-left: ${space_snug}px;
     width: 16px;
     height: 16px;
 }
 
 QGroupBox::indicator {
-    margin-left: 2px;
+    margin-left: ${space_tight}px;
 }
 
 QGroupBox::indicator:unchecked {
@@ -741,9 +990,9 @@ QGroupBox::indicator:unchecked:disabled {
 
 QPushButton
 {
-    color: ${default_text};
-    border-radius: 4px;
-    padding: 6px;
+    color: ${text};
+    border-radius: ${radius_input}px;
+    padding: ${space_comfortable}px;
     outline: none;
 }
 
@@ -753,18 +1002,36 @@ QPushButton[flat="true"]
     border: none;
 }
 
+/* A solid button IS the Primary interaction variant (fill per state), never a
+   bordered box. Separation is only for dividers between objects, not buttons. */
 QPushButton[flat="false"]
 {
-    background: ${widget_background};
-    border: 1px solid ${border_default};
+    background: ${neutral_nominal};
+    border: none;
+    color: ${on_neutral_nominal};
 }
 
 QPushButton[flat="false"]:hover {
-    border: 1px solid ${border_hover};
+    background: ${neutral_hovered};
+    color: ${on_neutral_hovered};
+}
+
+QPushButton[flat="false"]:pressed {
+    background: ${neutral_pressed};
+    color: ${on_neutral_pressed};
+}
+
+/* Extension-detail dialog action buttons: their per-widget .ui styleSheet can't
+   reference the radius_* tokens, so the corner radius comes from the token here (the ID
+   selector outranks the .ui's type selector, which keeps only its border/padding). */
+QPushButton#github_btn,
+QPushButton#uninstall_btn,
+QPushButton#close_btn {
+    border-radius: ${radius_input}px;
 }
 
 QPushButton:disabled {
-    color: ${disabled_text};
+    color: ${on_backdrop_disabled};
 }
 
 QPushButton::menu-indicator {
@@ -775,28 +1042,28 @@ QPushButton::menu-indicator {
 
 /* Consistent state feedback. Hover / pressed are neutral darken
    overlays; the active "selected" states (checked) use the same
-   ${item_selection_background} tone as tree-view selections so all
+   ${accent_checked} tone as tree-view selections so all
    "this is the active thing" indicators read identically. */
 QPushButton:hover {
-    background: ${hover_overlay};
+    background: ${overlay_hover};
 }
 
 QPushButton:pressed {
-    background: ${pressed_overlay};
+    background: ${overlay_pressed};
 }
 
 QPushButton:checked {
-    background: ${item_selection_background};
+    background: ${accent_checked};
+    color: ${on_accent_checked};
 }
 
 QPushButton:checked:hover {
-    background: ${item_selection_background};
+    background: ${accent_checked};
 }
 
 QPushButton:checked:disabled {
-    color: ${disabled_text};
+    color: ${on_backdrop_disabled};
 }
-
 
 /* QToolButton ----------------------------------------------------------- */
 /* Explicit rules pre-empt the platform fallback paint, which on some */
@@ -806,21 +1073,21 @@ QPushButton:checked:disabled {
 QToolButton {
     background: transparent;
     border: none;
-    border-radius: 0px;
-    color: ${default_text};
-    padding: 0;
+    border-radius: ${radius_input}px;
+    color: ${text};
+    padding: ${space_none}px;
 }
 
 QToolButton:hover {
-    background: ${hover_overlay};
+    background: ${overlay_hover};
 }
 
 QToolButton:pressed {
-    background: ${pressed_overlay};
+    background: ${overlay_pressed};
 }
 
 QToolButton:checked {
-    background: ${item_selection_background};
+    background: ${accent_checked};
 }
 
 /* Datasets type-filter toggles convey state through the icon (plain vs. dimmed +
@@ -833,7 +1100,7 @@ QToolButton#buttonFilterScene3D:checked {
 
 QToolButton:disabled {
     background: transparent;
-    color: ${disabled_text};
+    color: ${on_backdrop_disabled};
 }
 
 /* Curve-editor per-row inline buttons (visibility eye, trash): kept flat
@@ -889,31 +1156,30 @@ QToolButton#radioStepsInverted:checked {
     border: none;
 }
 
-
 /* QCombobox -------------------------------------------------------------- */
 
 /* Closed combobox chrome — mirrors DoubleScrubber's painted chrome. */
 QComboBox {
-    color: ${default_text};
-    background: ${input_background};
-    selection-color: ${selection_text};
-    border: 1px solid ${border_default};
-    border-radius: ${corner_radius}px;
-    padding-top: 0px;
-    padding-bottom: 0px;
-    padding-left: ${chrome_spacing}px;
+    color: ${on_input_default};
+    background: ${input};
+    selection-color: ${on_accent_checked};
+    border: 1px solid ${separation};
+    border-radius: ${radius_input}px;
+    padding-top: ${space_none}px;
+    padding-bottom: ${space_none}px;
+    padding-left: ${space_snug}px;
     /* Right gutter reserves the chevron region. Keep it == the ::drop-down
        width so the text ends exactly at the drop-down edge (no overlap, no dead
        space). This width also feeds sizeFromContents, so a tighter value makes
        every combo hug its widest item instead of carrying a fat right margin. */
-    padding-right: 12px;
-    min-height: ${input_min_height}px;
-    max-height: ${input_min_height}px;
+    padding-right: ${space_section}px;
+    min-height: ${size_input_min_height}px;
+    max-height: ${size_input_min_height}px;
 }
 
 QComboBox:hover,
 QComboBox:focus {
-    border: 1px solid ${border_hover};
+    border: 1px solid ${separation};
 }
 
 QComboBox::drop-down {
@@ -936,8 +1202,8 @@ QComboBox::down-arrow:on {
     image: url(:/resources/svg/keyboard_arrow_down_light.svg);
 }
 
-/* Popup — rounded surface + 1 px border. The light_purple→light_blue
-   gradient on selected/hovered items is painted by the
+/* Popup — rounded surface + 1 px border. The accent gradient on
+   selected/hovered items is painted by the
    PJ::ComboBoxGradientDelegate in C++; Qt's QSS engine doesn't honour
    gradient backgrounds on QComboBox popup items (they go through
    QPalette::Highlight, which only carries a solid colour). */
@@ -951,27 +1217,26 @@ QComboBoxPrivateContainer {
 }
 
 QComboBox QAbstractItemView {
-    background-color: ${dark_background};
-    border: 1px solid ${border_default};
-    border-radius: ${corner_radius}px;
-    color: ${default_text};
+    background-color: ${backdrop};
+    border: 1px solid ${separation};
+    border-radius: ${radius_input}px;
+    color: ${text};
     outline: none;
-    padding-top: 4px;
-    padding-bottom: 4px;
-    padding-left: 0;
-    padding-right: 0;
-    margin: 0;
+    padding-top: ${space_snug}px;
+    padding-bottom: ${space_snug}px;
+    padding-left: ${space_none}px;
+    padding-right: ${space_none}px;
+    margin: ${space_none}px;
 }
 
 QComboBox QAbstractItemView::viewport {
-    background-color: ${dark_background};
+    background-color: ${backdrop};
 }
-
 
 /* QSlider ---------------------------------------------------------------- */
 
 QSlider:disabled {
-    background: ${widget_background_disabled};
+    background: ${surface_disabled};
 }
 
 QSlider:focus {
@@ -979,36 +1244,36 @@ QSlider:focus {
 }
 
 QSlider::groove:horizontal {
-    background: ${widget_background};
+    background: ${surface_transparent};
     border: none;
     height: 8px;
-    margin: 0px;
-    border-radius: 0px;
+    margin: ${space_none}px;
+    border-radius: ${radius_square}px;
 }
 
 QSlider::sub-page:horizontal {
-    background: ${blue};
+    background: ${accent_nominal};
     border: none;
     height: 4px;
-    margin: 0px;
-    border-radius: 0px;
+    margin: ${space_none}px;
+    border-radius: ${radius_square}px;
 }
 
 QSlider::sub-page:horizontal:disabled {
-    background: ${widget_background_disabled};
+    background: ${surface_disabled};
 }
 
 QSlider::handle:horizontal {
-    background: ${slider_handle};
+    background: ${slider_handle_nominal};
     border: none;
     width: 8px;
     height: 8px;
-    margin: -4px 0;
-    border-radius: 0px;
+    margin: -${space_snug}px ${space_none}px;
+    border-radius: ${radius_square}px;
 }
 
 QSlider::handle:horizontal:hover {
-    background: ${slider_handle_hover};
+    background: ${slider_handle_hovered};
     border: none;
 }
 
@@ -1018,7 +1283,7 @@ QSlider::handle:horizontal:hover {
    away (via the bottom-panel toggle) takes the divider with it
    rather than leaving a stray border at the window's bottom edge. */
 QWidget#timelineStrip {
-    border-top: 1px solid ${border_default};
+    border-top: 1px solid ${separation};
 }
 
 /* Playback slider spans the full 24-px chrome row top-to-bottom:
@@ -1027,79 +1292,98 @@ QWidget#timelineStrip {
    tall narrow grip. */
 QSlider#timeSlider::groove:horizontal {
     height: 24px;
-    margin: 0;
-    background: ${widget_background};
-    border: 1px solid ${border_default};
+    margin: ${space_none}px;
+    background: ${surface_transparent};
+    border: 1px solid ${separation};
+    border-radius: ${radius_input}px;
 }
 
 QSlider#timeSlider::sub-page:horizontal {
     height: 24px;
-    margin: 0;
-    background: ${light_blue};
-    /* No border — at value 0.0 the sub-page collapses to width 0 and
-       a 1-px border would still paint as a vertical blue sliver
-       hugging the groove's left edge. The groove's own border draws
-       the outer rectangle; the sub-page just fills the played area. */
-    border: none;
+    margin: ${space_none}px;
+    background: ${accent_nominal};
+    /* Darker-accent outline so the played fill reads as a defined bar against the
+       lighter accent body. At value 0.0 the sub-page is 0-width, so it shows as a
+       thin vertical sliver hugging the groove's left edge until playback advances
+       — an accepted tradeoff. */
+    border: 1px solid ${accent_checked};
+    /* Only the LEFT corners round (nesting inside the groove's rounded start);
+       the right edge stays square where it meets the rectangular handle. */
+    border-top-left-radius: ${radius_input}px;
+    border-bottom-left-radius: ${radius_input}px;
 }
 
-/* Playback handle: light_purple nominal, purple on hover/hold —
-   distinct from the generic slider styling so the scrubber reads
-   as "the time control" against any other slider in the dialog. */
+QSlider#timeSlider::sub-page:horizontal:disabled {
+    background: ${accent_disabled};
+    border: 1px solid ${accent_disabled};
+}
+
+/* Playback handle: highlight (magenta) family so the grip stands out against
+   the accent-blue played track (sub-page) and reads as "the time control"
+   distinct from any other slider. Rectangular — only the groove border
+   carries the framework rounding. */
 QSlider#timeSlider::handle:horizontal {
     width: 6px;
     height: 24px;
-    margin: 0;
-    background: ${light_purple};
-    border: 1px solid ${purple};
+    margin: ${space_none}px;
+    background: ${highlight_nominal};
+    border: 1px solid ${separation};
 }
 
-QSlider#timeSlider::handle:horizontal:hover,
+QSlider#timeSlider::handle:horizontal:hover {
+    background: ${highlight_hovered};
+    border: 1px solid ${separation};
+}
+
 QSlider#timeSlider::handle:horizontal:pressed {
-    background: ${purple};
-    border: 1px solid ${purple};
+    background: ${highlight_pressed};
+    border: 1px solid ${separation};
 }
 
+QSlider#timeSlider::handle:horizontal:disabled {
+    background: ${highlight_disabled};
+    border: 1px solid ${separation};
+}
 
 /* --------------------------------------------------------------------------- */
 
-/* Tables read as an input surface (white in light, lighter grey in dark) with a
+/* Tables read as the data backdrop surface with a
    hairline border, like the Preferences lists — so a table separates from the
    dialog/page behind it instead of blending in. Applies to every QTableView /
    QTableWidget in the app and in plugin dialogs. */
 QTableView {
-   background: ${input_background};
-   alternate-background-color: ${input_background};
-   color: ${default_text};
-   border-radius: 0px;
-   border: 1px solid ${border_default};
+   background: ${data_backdrop};
+   alternate-background-color: ${data_backdrop};
+   color: ${on_data_backdrop_default};
+   border-radius: ${radius_square}px;
+   border: 1px solid ${separation};
 
-   selection-color: ${default_text};
+   selection-color: ${on_data_backdrop_default};
    selection-background-color: transparent;
    show-decoration-selected: 1;
 }
 
 QTreeView,
 QListView {
-   background: ${widget_background};
-   color: ${default_text};
-   border-radius: 0px;
+   background: ${data_backdrop};
+   color: ${on_data_backdrop_default};
+   border-radius: ${radius_square}px;
    border: none;
 
-   selection-color: ${default_text};
+   selection-color: ${text};
    selection-background-color: transparent;
    show-decoration-selected: 1;
 }
 
-/* Cells must be painted with the same input surface as the viewport: Qt
+/* Cells must be painted with the same data backdrop surface as the viewport: Qt
    initializes QPalette::Base on QTableWidget to white regardless of the
    theme, and QStyledItemDelegate paints each item's background from that
    palette role, ignoring a `background: transparent` on ::item. Pin the
-   colour explicitly so cells match the viewport ${input_background}. */
+   colour explicitly so cells match the viewport ${data_backdrop}. */
 QTableView::item,
 QTableWidget::item {
-   background-color: ${input_background};
-   color: ${default_text};
+   background-color: ${data_backdrop};
+   color: ${on_data_backdrop_default};
 }
 
 /* Disabled tables / rows: grey the text. Without these, the unconditional
@@ -1111,20 +1395,20 @@ QTableWidget::item {
    regular selection look from the rule below. */
 QTableView::item:disabled,
 QTableWidget::item:disabled {
-   background-color: ${input_background};
-   color: ${disabled_text};
+   background-color: ${data_backdrop};
+   color: ${on_data_backdrop_disabled};
 }
 QTableView::item:selected:disabled,
 QTableWidget::item:selected:disabled {
-   background-color: ${input_background};
-   color: ${disabled_text};
+   background-color: ${data_backdrop};
+   color: ${on_data_backdrop_disabled};
 }
 
 QTableView::item:selected,
 QTreeView::item:selected,
 QListView::item:selected {
-   background-color: ${item_selection_background};
-   color: ${selection_text};
+   background-color: ${accent_checked};
+   color: ${on_accent_checked};
 }
 
 /* The widget itself owns the continuous bottom line so the divider
@@ -1132,22 +1416,22 @@ QListView::item:selected {
    columns don't fill the available width. The per-section border-bottom
    below paints on top of this and stays in sync visually. */
 QHeaderView {
-    background-color: ${main_background};
+    background-color: ${backdrop};
     border: none;
-    border-bottom: 1px solid ${border_default};
+    border-bottom: 1px solid ${separation};
 }
 
 QHeaderView::section {
-    background-color: ${main_background};
-    color: ${default_text};
+    background-color: ${backdrop};
+    color: ${text};
     /* Non-bold: QTableWidget defaults its header font to bold, and a widget-side
        setFont(non-bold) is ignored while the app stylesheet is active, so force it
        here. */
     font-weight: normal;
-    padding-left: ${chrome_spacing}px;
+    padding-left: ${space_snug}px;
     border: none;
-    border-top: 1px solid ${border_default};
-    border-right: 1px solid ${border_default};
+    border-top: 1px solid ${separation};
+    border-right: 1px solid ${separation};
 }
 
 QHeaderView::section:last,
@@ -1155,19 +1439,19 @@ QHeaderView::section:only-one {
     border-right: none;
 }
 
-/* Divider hover: paint the section's right border purple so the
+/* Divider hover: paint the section's right border with the interactive outline so the
    resizable column separator lights up the same way QSplitter handles
    do when the user hovers it. The full border shorthand is re-specified
    here (not just `border-right-color`) because Qt's QSS engine drops
    the inherited bottom + right borders when only the color is changed
    in a :hover variant. */
 QHeaderView::section:hover {
-    background-color: ${main_background};
-    color: ${default_text};
-    padding-left: ${chrome_spacing}px;
+    background-color: ${backdrop};
+    color: ${text};
+    padding-left: ${space_snug}px;
     border: none;
-    border-top: 1px solid ${border_default};
-    border-right: 1px solid ${purple};
+    border-top: 1px solid ${separation};
+    border-right: 1px solid ${separation};
 }
 QHeaderView::section:last:hover,
 QHeaderView::section:only-one:hover {
@@ -1175,8 +1459,8 @@ QHeaderView::section:only-one:hover {
 }
 
 QHeaderView::text{
-    padding-left: ${chrome_spacing}px;
-    padding-right: ${chrome_spacing}px;
+    padding-left: ${space_snug}px;
+    padding-right: ${space_snug}px;
 }
 
 QHeaderView::up-arrow {
@@ -1184,8 +1468,8 @@ QHeaderView::up-arrow {
     image: url(:/resources/svg/keyboard_arrow_up_light.svg);
     height: 12px;
     width: 12px;
-    padding-left: ${chrome_spacing}px;
-    padding-right: ${chrome_spacing}px;
+    padding-left: ${space_snug}px;
+    padding-right: ${space_snug}px;
 }
 
 QHeaderView::down-arrow {
@@ -1193,14 +1477,13 @@ QHeaderView::down-arrow {
     image: url(:/resources/svg/keyboard_arrow_down_light.svg);
     height: 12px;
     width: 12px;
-    padding-left: ${chrome_spacing}px;
-    padding-right: ${chrome_spacing}px;
+    padding-left: ${space_snug}px;
+    padding-right: ${space_snug}px;
 }
 
 QTreeView:branch {
     background-color: transparent;
 }
-
 
 QTreeView:branch:selected, QTreeView:branch:hover {
   background: transparent;
@@ -1231,44 +1514,47 @@ QTreeView:branch:open:has-children:!has-siblings, QTreeView:branch:open:has-chil
   image: url(":/resources/svg/keyboard_arrow_down_light.svg");
 }
 
-
 QSplitter {
-  spacing: 0px;
-  padding: 0px;
-  margin: 0px;
+  spacing: ${space_none}px;
+  padding: ${space_none}px;
+  margin: ${space_none}px;
 }
 
 /* Splitter handles are now thin 1px separator lines instead of icon
    drag-handles. Resize still works (you can grab the line) but the
    visual is just a divider. */
 QSplitter::handle {
-  background-color: ${border_default};
+  background-color: ${separation};
   border: none;
-  spacing: 0px;
-  padding: 0px;
-  margin: 0px;
+  spacing: ${space_none}px;
+  padding: ${space_none}px;
+  margin: ${space_none}px;
   image: none;
 }
 
 QSplitter::handle:horizontal { width: 1px; }
 QSplitter::handle:vertical   { height: 1px; }
 
-QSplitter::handle:hover,
-QSplitter::handle:pressed {
-  background-color: ${purple};
+QSplitter::handle:hover {
+  background-color: ${separation};
 }
 
+/* Canonical: an interactable separator, while grabbed/pressed, is the Highlight
+   variant's Pressed color — everywhere. */
+QSplitter::handle:pressed {
+  background-color: ${highlight_pressed};
+}
 
 /* QMenuBar ---------------------------------------------------------------
 
 Embedded in the TitleBar chrome (TitleBar.ui), so it stays transparent
-and inherits titlebar_background; items highlight with the same overlay
+and inherits the banner surface; items highlight with the same overlay
 tones as the chrome buttons around them.
 
 --------------------------------------------------------------------------- */
 QMenuBar {
   background: transparent;
-  color: ${default_text};
+  color: ${text};
   border: none;
 }
 
@@ -1278,48 +1564,33 @@ QMenuBar:focus {
 
 QMenuBar::item {
   background: transparent;
-  padding: 4px 3px;
+  padding: ${space_snug}px ${space_snug}px;
+  border-radius: ${radius_input}px;
 }
 
 QMenuBar::item:selected {
-  background: ${hover_overlay};
+  background: ${overlay_hover};
   border: none;
 }
 
 QMenuBar::item:pressed {
-  background: ${pressed_overlay};
+  background: ${overlay_pressed};
   border: none;
 }
-
-
 
 /* ------------------------ Specific Widgets ------------------------ */
 
 QWidget#leftMainWindowFrame
 {
-  background-color: ${main_background};
-}
-
-
-QLineEdit#lineEditFilter,
-QLineEdit#lineEditCustomFilter{
-  background-color: transparent;
-  border: none;
-  border-radius: 0px;
-  border-bottom: none;
+  background-color: ${backdrop};
 }
 
 QLineEdit#lineEditPrefix{
   background-color: transparent;
   border: none;
-  border-radius: 0px;
+  border-radius: ${radius_square}px;
   border-bottom: none;
-  padding: 0;
-}
-
-QLineEdit#lineEditFilter:focus,
-QLineEdit#lineEditCustomFilter:focus{
-  border-bottom: none;
+  padding: ${space_none}px;
 }
 
 QLineEdit#lineEditPrefix:focus{
@@ -1327,42 +1598,46 @@ QLineEdit#lineEditPrefix:focus{
 }
 
 QWidget#plottingArea{
-  background-color: ${dark_background};
+  background-color: ${backdrop};
 }
 
-QWidget#mediaViewerCanvas{
-  qproperty-clearColor: ${dark_background};
+/* Both names: the widget authors itself as mediaViewerCanvas; the app's
+   Scene2DDockWidget renames its instance to scene2dMediaViewer. The 2D media
+   canvas is a DATA surface, matching the C++ constructor default. */
+QWidget#mediaViewerCanvas,
+QWidget#scene2dMediaViewer{
+  qproperty-clearColor: ${data_backdrop};
 }
 
 QWidget#plottingArea QMenu{
-  background-color: ${widget_background};
+  background-color: ${surface_transparent};
 }
 
 QFrame#framePlotPreview,
 QFrame#framePlotPreviewA,
 QFrame#framePlotPreviewB,
 QFrame#framePlotPreviewC {
-   background-color: ${widget_background};
+   background-color: ${surface_transparent};
    border: none;
-   margin: 0px;
+   margin: ${space_none}px;
 }
 
 QWidget#formulaPage{
-   background-color: ${main_background};
+   background-color: ${backdrop};
 }
 
 ads--CDockContainerWidget {
-  background: ${chart_background};
+  background: ${data_backdrop};
   border: none;
 }
 
 ads--CDockAreaWidget {
-   background: ${chart_background};
+   background: ${data_backdrop};
    border: none;
 }
 
 ads--CDockWidget {
-   background: ${chart_background};
+   background: ${data_backdrop};
    border: none;
 }
 
@@ -1371,31 +1646,31 @@ QScrollArea#dockWidgetScrollArea {
 }
 
 QwtPlot {
-   background: ${chart_background};
+   background: ${data_backdrop};
    border: none;
 }
 
 QWidget#qwtCanvas {
-   background: ${chart_background};
+   background: ${data_backdrop};
    border: none;
 }
 
 QDialog#PlotWidgetEditor QListView::item:selected {
-    background-color: ${main_background};
+    background-color: ${backdrop};
 }
 
 /* Toast Notification ----------------------------------------------------- */
 
 ToastNotification {
-    background-color: ${widget_background};
+    background-color: ${surface_transparent};
     border: none;
-    border-radius: 0px;
+    border-radius: ${radius_square}px;
     min-width: 250px;
     max-width: 400px;
 }
 
 ToastNotification QLabel#toastMessage {
-    color: ${default_text};
+    color: ${text};
     font-size: 10pt;
 }
 
@@ -1406,15 +1681,15 @@ ToastNotification QLabel#toastIcon {
 ToastNotification QPushButton#toastCloseButton {
     background: transparent;
     border: none;
-    color: ${disabled_text};
+    color: ${on_backdrop_disabled};
     font-size: 14pt;
     font-weight: 600;
-    padding: 0px;
-    margin: 0px;
+    padding: ${space_none}px;
+    margin: ${space_none}px;
 }
 
 ToastNotification QPushButton#toastCloseButton:hover {
-    color: ${default_text};
+    color: ${text};
 }
 
 /* ---------- Frameless chrome bars ---------- */
@@ -1423,8 +1698,31 @@ ToastNotification QPushButton#toastCloseButton:hover {
    than copy-pasting the background/border pair into a new block. */
 #TitleBar,
 QDialog QWidget#dialogTitleBar {
-    background: ${titlebar_background};
-    border-bottom: ${chrome_border_width}px solid ${border_default};
+    background: ${banner};
+    border-bottom: ${stroke_hairline}px solid ${separation};
+}
+
+/* Toolbox panel Banner header (MainWindow::wrapToolboxPanel): Surface::Banner
+   with a far-left title and a far-right close button, mirroring the dialog
+   title-bar chrome for docked toolboxes. */
+QWidget#toolboxBanner {
+    background: ${banner};
+    border-bottom: ${stroke_hairline}px solid ${separation};
+}
+QLabel#toolboxBannerTitle {
+    color: ${text};
+    padding-left: ${space_tight}px;
+}
+QWidget#toolboxBanner QToolButton#buttonClose {
+    background: transparent;
+    border: none;
+    padding: ${space_none}px;
+}
+QWidget#toolboxBanner QToolButton#buttonClose:hover {
+    background: ${overlay_hover};
+}
+QWidget#toolboxBanner QToolButton#buttonClose:pressed {
+    background: ${overlay_pressed};
 }
 
 /* Standalone 1-px separators painted at chrome boundaries that aren't
@@ -1433,7 +1731,7 @@ QDialog QWidget#dialogTitleBar {
 QFrame#timelineSeparator,
 QFrame#plotTabsSeparator,
 QFrame[separatorLine="true"] {
-    background-color: ${border_default};
+    background-color: ${separation};
 }
 
 /* Tab-strip chrome — flat white so the bar reads as part of the
@@ -1441,7 +1739,7 @@ QFrame[separatorLine="true"] {
    dark stylesheet inherits via transparency. */
 QWidget#plotTabsBar,
 QWidget#plotTabsInner {
-    background: ${chart_background};
+    background: ${data_backdrop};
     border: none;
 }
 
@@ -1449,26 +1747,26 @@ QWidget#plotTabsInner {
    `selected="true"` dynamic property so it stands out from the inactive
    peers without needing a different objectName per state. */
 QFrame#plotTabFrame {
-    background: ${chart_background};
+    background: ${data_backdrop};
     border: none;
-    border-radius: 0px;
-    color: ${default_text};
+    border-radius: ${radius_square}px;
+    color: ${text};
 }
 
 QFrame#plotTabFrame[selected="true"] {
-    background: ${item_selection_background};
+    background: ${accent_checked};
 }
 
 QFrame#plotTabFrame:hover {
-    background: ${titlebar_background};
+    background: ${banner};
 }
 
 QLineEdit#plotTabRenameEdit {
     background: transparent;
     border: none;
-    padding: 0;
-    selection-background-color: ${ink_select};
-    selection-color: ${default_text};
+    padding: ${space_none}px;
+    selection-background-color: ${overlay_selected};
+    selection-color: ${text};
 }
 
 /* Accordion-header bands in the LHS panels and the right-side
@@ -1482,14 +1780,59 @@ QWidget#widgetLabelCurves,
 QWidget#widgetLabelChart,
 QWidget#widgetLabelLegend,
 QWidget#timelineDatasetsHeader {
-    background-color: ${titlebar_background};
+    background-color: ${banner};
 }
 
 /* Shared section-header widget (pj_widgets SectionHeaderBand): same band
    tone, themed once via the class selector — no per-instance objectName
    registration. The leading indent is baked into the widget. */
 PJ--SectionHeaderBand {
-    background-color: ${titlebar_background};
+    background-color: ${banner};
+}
+
+/* Canonical search/filter control (pj_widgets Search): the magnifying glass
+   and the field share one flat background so they read as a single control. The
+   default `kBanner` variant sits in a header band (banner_input tone); the
+   `standalone` variant sits on its own surface (input tone, e.g. marketplace).
+   The inner line edit + glyph buttons are transparent so the frame fill shows
+   through as one seamless surface; the global QLineEdit height cap is lifted so
+   the field fills the chrome-sized frame. */
+PJ--Search {
+    background: ${banner_input};
+    /* A 1px border is always present (transparent at rest) so hover/focus only
+       recolour it — the content never shifts. Hover/focus land on the WHOLE
+       control via the pjHovered/pjFocused dynamic properties the widget sets in
+       C++ (Qt QSS has no :focus-within, and a child's state doesn't reach the
+       frame). Focus wins over hover (later rule, equal specificity). */
+    border: 1px solid transparent;
+    border-radius: ${radius_input}px;
+}
+PJ--Search[variant="standalone"] {
+    background: ${input};
+}
+PJ--Search[pjHovered="true"] {
+    border: 1px solid ${accent_checked_hovered};
+}
+PJ--Search[pjFocused="true"] {
+    border: 1px solid ${accent_checked};
+}
+/* The inner field is borderless in every state — the global QLineEdit:hover/
+   :focus rule (higher specificity than a bare descendant selector) would
+   otherwise re-add its border, which is exactly what we're moving to the frame. */
+PJ--Search QLineEdit,
+PJ--Search QLineEdit:hover,
+PJ--Search QLineEdit:focus {
+    background: transparent;
+    color: ${on_banner_input_default};
+    border: none;
+    padding: ${space_none}px;
+    min-height: 0;
+    max-height: 16777215;
+    selection-background-color: ${overlay_selected};
+    selection-color: ${text};
+}
+PJ--Search[variant="standalone"] QLineEdit {
+    color: ${on_input_default};
 }
 
 /* Pill toggle (pj_widgets CheckButton): self-painted, so its colours come
@@ -1497,28 +1840,28 @@ PJ--SectionHeaderBand {
    the same selection tokens as the rest of the app: accent border, light
    selection fill, dark selection label. */
 PJ--CheckButton {
-    qproperty-accentColor: ${border_checked};
-    qproperty-borderColor: ${border_default};
-    qproperty-checkedFillColor: ${item_selection_background};
-    qproperty-textColor: ${default_text};
+    qproperty-accentColor: ${separation};
+    qproperty-borderColor: ${separation};
+    qproperty-checkedFillColor: ${accent_checked};
+    qproperty-textColor: ${text};
 }
 
 /* Two-option segmented control: self-painted, with a shared base and selected
    segment rendered as the active chip. */
 PJ--DualOptionsWidget {
-    qproperty-accentColor: ${border_checked};
-    qproperty-borderColor: ${border_default};
-    qproperty-baseFillColor: ${input_background};
-    qproperty-selectedFillColor: ${item_selection_background};
-    qproperty-textColor: ${default_text};
+    qproperty-accentColor: ${separation};
+    qproperty-borderColor: ${separation};
+    qproperty-baseFillColor: ${input};
+    qproperty-selectedFillColor: ${accent_checked};
+    qproperty-textColor: ${text};
 }
 
 /* Self-painted input widgets (scrubbers, pill toggle, colour swatch) have no
    QSS border/padding of their own, so min/max-height IS their outer height.
-   Pin them to input_outer_height so they match the native inputs + each other. */
+   Pin them to size_input_outer_height so they match the native inputs + each other. */
 PJ--ScrubberBase, PJ--CheckButton, PJ--DualOptionsWidget, PJ--ColorPickerWidget {
-    min-height: ${input_outer_height}px;
-    max-height: ${input_outer_height}px;
+    min-height: ${size_input_outer_height}px;
+    max-height: ${size_input_outer_height}px;
 }
 
 /* Scene-control icon buttons (eye / add / trash / grid-style / copy-paste) sit in
@@ -1528,11 +1871,11 @@ PJ--ScrubberBase, PJ--CheckButton, PJ--DualOptionsWidget, PJ--ColorPickerWidget 
    Pin every QToolButton in the panel to the input height so they match the inputs
    and the Topics-table eyes (which are setGeometry'd to the same size). */
 PJ--Scene3DConfigPanel QToolButton {
-    min-width: ${input_outer_height}px;
-    max-width: ${input_outer_height}px;
-    min-height: ${input_outer_height}px;
-    max-height: ${input_outer_height}px;
-    padding: 0px;
+    min-width: ${size_input_outer_height}px;
+    max-width: ${size_input_outer_height}px;
+    min-height: ${size_input_outer_height}px;
+    max-height: ${size_input_outer_height}px;
+    padding: ${space_none}px;
 }
 
 /* 2-px leading padding so the section titles ("Sources", "Datasets",
@@ -1542,7 +1885,7 @@ QLabel#labelTimeseries,
 QLabel#labelCustom,
 QLabel#labelCurves,
 QLabel#timelineDatasetsLabel {
-    padding-left: 2px;
+    padding-left: ${space_tight}px;
 }
 
 /* Static 1-px border on the left edge of the global column, separating
@@ -1552,56 +1895,53 @@ QLabel#timelineDatasetsLabel {
 QFrame#globalToolbarLeftBorder,
 QFrame#timelineAlignBorder,
 QFrame#timelinePlaybackBorder {
-    background-color: ${border_default};
+    background-color: ${separation};
     border: none;
 }
 
-/* Inline search line edits sit directly inside the header band — the
-   default chrome (background + border) reads as a separate input which
-   we don't want; the leading magnifying-glass icon already cues "type
-   here". The neutral selection colours replace the system blue text
-   highlight that the platform palette would otherwise inject. */
-QLineEdit#lineEditFilter,
-QLineEdit#lineEditCustomFilter,
-QLineEdit#lineEditCurvesFilter,
-QLineEdit#timelineDatasetFilter,
+/* Plugin-provided inline search line edits (Sequence / Topic filters supplied
+   by a source dialog's own .ui) sit directly inside a header band — the default
+   chrome reads as a separate input which we don't want; the leading magnifying-
+   glass button already cues "type here". The neutral selection colours replace
+   the system blue text highlight the platform palette would otherwise inject.
+   (App-owned filters use pj_widgets Search and are styled by PJ--Search.) */
 QLineEdit#seqFilter,
 QLineEdit#topicFilter,
-QLineEdit#lineEditFilter:focus,
-QLineEdit#lineEditCustomFilter:focus,
-QLineEdit#lineEditCurvesFilter:focus,
-QLineEdit#timelineDatasetFilter:focus,
 QLineEdit#seqFilter:focus,
 QLineEdit#topicFilter:focus {
-    background: transparent;
+    background: ${banner_input};
+    color: ${on_banner_input_default};
     border: none;
-    padding: 0;
-    selection-background-color: ${ink_select};
-    selection-color: ${default_text};
+    padding: ${space_none}px;
+    selection-background-color: ${overlay_selected};
+    selection-color: ${text};
 }
 
 /* ---------- Chrome buttons (TitleBar + dialog title bars) ----------
-   Inset chrome bars (TitleBar + dialog) draw a 1-px bottom border,
-   so the buttons inside sit at chrome_button_size_inset (23-px) to
-   fit the reduced inner content rect. Padding stays 0 because every
-   button already carries its icon at chrome_icon_size with 1-px ring
-   around it — additional QSS padding would crush the icon. */
+   Button/icon geometry comes from the runtime ChromeMetrics broadcast
+   (icon_size + icon_padding), not from QSS. Padding stays 0 because every
+   button already carries its icon with a ring of chrome padding around it —
+   additional QSS padding would crush the icon. */
 #TitleBar QToolButton,
+#TitleBar QPushButton#plotTabsPanelButton,
 QDialog QToolButton#buttonClose {
     background: transparent;
     border: none;
-    color: ${default_text};
-    padding: 0;
+    color: ${text};
+    padding: ${space_none}px;
+    border-radius: ${radius_input}px;
 }
 
 #TitleBar QToolButton:hover,
+#TitleBar QPushButton#plotTabsPanelButton:hover,
 QDialog QToolButton#buttonClose:hover {
-    background: ${hover_overlay};
+    background: ${overlay_hover};
 }
 
 #TitleBar QToolButton:pressed,
+#TitleBar QPushButton#plotTabsPanelButton:pressed,
 QDialog QToolButton#buttonClose:pressed {
-    background: ${pressed_overlay};
+    background: ${overlay_pressed};
 }
 
 /* Qt's QToolButton stamps a dropdown indicator any time setMenu() is
@@ -1620,101 +1960,101 @@ QDialog QToolButton#buttonClose:pressed {
     subcontrol-position: top right;
 }
 
-/* Close glyphs (window-close in TitleBar + dialog) get a brand-accent
-   hover treatment to call out the destructive action. */
+/* Close glyphs (window-close in TitleBar + dialog) get the error interaction
+   treatment to call out the destructive action. */
 #TitleBar QToolButton#buttonClose:hover,
 QDialog QToolButton#buttonClose:hover {
-    background: ${light_purple};
+    background: ${destructive_hovered};
 }
 
 #TitleBar QToolButton#buttonClose:pressed,
 QDialog QToolButton#buttonClose:pressed {
-    background: ${purple};
-    color: ${inverse_text};
+    background: ${destructive_nominal};
+    color: ${on_destructive_nominal};
 }
 
 QDialog QLabel#dialogTitleLabel {
-    color: ${default_text};
-    padding-left: ${chrome_spacing}px;
+    color: ${text};
+    padding-left: ${space_snug}px;
 }
 
 /* PreferencesDialog two-pane body --------------------------------------
    The section list (left) is the recessed titlebar tone; the settings
-   pane (right) is the lighter `dark_background` surface, so the active
+   pane (right) is the lighter dialog surface, so the active
    page reads as a brighter "paper" against the darker index. 1-px
    `navSeparator` / `buttonBarSeparator` hairlines split the three
    regions. Rows are PreferencesNavRow (QFrame#navRow); the selected row
    paints a tinted fill, no accent edge. */
 QScrollArea#navScrollArea {
-    background: ${titlebar_background};
+    background: ${banner};
     border: none;
 }
 QScrollArea#navScrollArea > QWidget > QWidget#navContainer {
-    background: ${titlebar_background};
+    background: ${banner};
 }
 QFrame#navRow {
     background: transparent;
     border: none;
 }
 QFrame#navRow:hover {
-    background: ${hover_overlay};
+    background: ${overlay_hover};
 }
 QFrame#navRow[selected="true"] {
-    background: ${item_selection_background};
+    background: ${accent_checked};
 }
 QLabel#navRowLabel {
     background: transparent;
-    color: ${default_text};
+    color: ${text};
 }
 /* Right-hand settings pane: the lighter surface the section list sits
    against. Both the stack and its page children are transparent by
    default (they would show the darker dialog body), so fill both. */
 QStackedWidget#pagesStack {
-    background: ${dark_background};
+    background: ${backdrop};
 }
 QStackedWidget#pagesStack > QWidget {
-    background: ${dark_background};
+    background: ${backdrop};
 }
 /* Hairline dividers between the three regions (1-px QFrames sized in
    the .ui). */
 QFrame#navSeparator,
 QFrame#buttonBarSeparator {
-    background: ${border_default};
+    background: ${separation};
     border: none;
 }
 /* Folder/table lists in the Preferences pages read as input surfaces — the
-   lighter input_background with a hairline border — so they separate from the
+   input surface with a hairline border — so they separate from the
    page behind them. */
 QStackedWidget#pagesStack QListWidget,
 QStackedWidget#pagesStack QListView {
-    background: ${input_background};
-    border: 1px solid ${border_default};
+    background: ${input};
+    border: 1px solid ${separation};
 }
 /* Roomier rows so list entries aren't cramped. */
 QStackedWidget#pagesStack QListWidget::item,
 QStackedWidget#pagesStack QListView::item {
-    padding-top: 3px;
-    padding-bottom: 3px;
+    padding-top: ${space_snug}px;
+    padding-bottom: ${space_snug}px;
 }
 
 /* "Close Plot Area" button (DockToolbar uses QPushButton, not the
    QToolButton that title bars use — covered by its own selector). */
 QPushButton#buttonClose:hover {
-    background: ${light_purple};
+    background: ${destructive_hovered};
 }
 
 QPushButton#buttonClose:pressed {
-    background: ${purple};
+    background: ${destructive_nominal};
 }
 
 /* DiagnosticsPopup ------------------------------------------------ */
 
 QFrame#DiagnosticsPopup {
-    background: ${dark_background};
-    background-color: ${dark_background};
-    color: ${default_text};
-    border: 1px solid ${border_default};
-    border-radius: 0;
+    background: ${backdrop};
+    background-color: ${backdrop};
+    color: ${text};
+    border: 1px solid ${separation};
+    border-radius: ${radius_square};
 }
 
 /* When the cursor is over the drag handle or a resize drag is in
@@ -1724,36 +2064,36 @@ QFrame#DiagnosticsPopup {
    rootLayout's side margins would otherwise impose. The "dragActive"
    dynamic property is toggled in DiagnosticsPopup::setDragActive(). */
 QFrame#DiagnosticsPopup[dragActive="true"] {
-    border-bottom: 1px solid ${purple};
+    border-bottom: 1px solid ${separation};
 }
 
 QFrame#DiagnosticsCard {
     background-color: transparent;
     border: none;
-    border-radius: 0;
+    border-radius: ${radius_square};
 }
 
 QFrame#DiagnosticsCard:hover {
-    background-color: ${item_selection_background};
+    background-color: ${accent_checked};
 }
 
 QFrame#DiagnosticsCard QLabel#cardTimestamp {
-    color: ${default_text};
+    color: ${text};
 }
 
 QToolButton#cardCopyButton {
     border: none;
     background: transparent;
-    padding: 0;
+    padding: ${space_none}px;
 }
 
 QToolButton#cardCopyButton:hover {
-    background: ${item_selection_background};
-    border-radius: 0;
+    background: ${accent_checked};
+    border-radius: ${radius_input}px;
 }
 
 QLabel#DiagnosticsEmptyState {
-    color: ${disabled_text};
+    color: ${on_backdrop_disabled};
 }
 
 /* Drag-to-resize handle — purely a transparent hit zone. The visible
@@ -1763,7 +2103,7 @@ QLabel#DiagnosticsEmptyState {
 QFrame#dragHandle {
     background: transparent;
     border: none;
-    margin: 0;
+    margin: ${space_none}px;
     min-height: 4px;
     max-height: 4px;
 }
@@ -1775,28 +2115,28 @@ QFrame#dragHandle {
 
 QScrollArea#scroll_area_,
 QScrollArea#scroll_area_ > QWidget > QWidget {
-    background: ${dark_background};
+    background: ${backdrop};
 }
 
 QFrame#extCard {
-    background: ${marketplace_card_bg};
-    color: ${default_text};
+    background: ${neutral_nominal};
+    color: ${on_neutral_nominal};
     border: none;
 }
 
 QFrame#extCard:hover {
-    background: ${marketplace_card_bg_hover};
+    background: ${neutral_hovered};
 }
 
 /* Card child labels — version readout, description — inherit the
    card's text colour rather than going through palette(text). */
 QFrame#extCard QLabel {
-    color: ${default_text};
+    color: ${on_neutral_nominal};
     background: transparent;
 }
 
 QLabel#extCardDescription {
-    color: ${default_text};
+    color: ${text};
     font-size: 11px;
 }
 
@@ -1807,9 +2147,8 @@ QPushButton#extButtonUpdate,
 QPushButton#extBadgeInstalled,
 QPushButton#extBadgeNeedsRestart,
 QPushButton#extBadgeLocalNewer {
-    color: ${inverse_text};
     border: none;
-    padding: 4px 0px;
+    padding: ${space_snug}px ${space_none}px;
     font-weight: 600;
 }
 
@@ -1820,33 +2159,34 @@ QPushButton#extButtonUpdate {
     min-width: 96px;
 }
 
-QPushButton#extButtonInstall            { background: ${accent_info}; }
-QPushButton#extButtonInstall:hover      { background: ${accent_info_hover}; }
-QPushButton#extButtonUpdate             { background: ${accent_warning}; }
-QPushButton#extButtonUpdate:hover       { background: ${accent_warning_hover}; }
-QPushButton#extBadgeInstalled:disabled  { background: ${accent_success}; }
-QPushButton#extBadgeNeedsRestart:disabled { background: ${accent_warning}; }
-QPushButton#extBadgeLocalNewer:disabled { background: ${accent_neutral}; }
+QPushButton#extButtonInstall            { background: ${status_info}; color: ${on_status_info}; }
+QPushButton#extButtonInstall:hover      { background: ${status_info_hovered}; color: ${on_status_info}; }
+QPushButton#extButtonUpdate             { background: ${status_warning}; color: ${on_status_warning}; }
+QPushButton#extButtonUpdate:hover       { background: ${status_warning_hovered}; color: ${on_status_warning}; }
+QPushButton#extBadgeInstalled:disabled  { background: ${status_success}; color: ${on_status_success}; }
+QPushButton#extBadgeNeedsRestart:disabled { background: ${status_warning}; color: ${on_status_warning}; }
+QPushButton#extBadgeLocalNewer:disabled { background: ${status_neutral}; color: ${on_status_neutral}; }
 
 /* Tag chip in the extension-detail dialog. Uses the same card surface
    tone so chips feel like inset elements of the card. */
 QLabel#extTagChip {
-    background: ${marketplace_card_bg};
-    border: 1px solid ${border_default};
-    padding: 1px 6px;
+    background: ${neutral_nominal};
+    border: 1px solid ${separation};
+    padding: ${space_tight}px ${space_comfortable}px;
     font-size: 11px;
 }
 
 /* Marketplace status banner — sticky error state. */
 QLabel#marketplaceStatusError {
-    color: ${accent_error};
+    /* Error STATUS ink, not the highlight interaction fill (near-invisible as text). */
+    color: ${status_error};
     font-weight: 600;
 }
 
 /* ---------- PJ::MessageBox ----------
    See stylesheet_dark.qss for the design rationale. Light theme uses the
    same selectors with theme-relative tokens; the gradient stops
-   (light_purple → light_blue) are theme-agnostic and read the same in
+   are theme-agnostic and read the same in
    either chrome, so the primary button looks identical in both themes. */
 
 /* Dialog window itself is fully transparent — the rounded card inside it
@@ -1859,75 +2199,75 @@ QDialog#pjMessageBox {
 }
 
 QFrame#pjMessageBoxCard {
-    background: ${dark_background};
-    border: 1px solid ${border_default};
-    border-radius: 8px;
+    background: ${backdrop};
+    border: 1px solid ${separation};
+    border-radius: ${radius_dialog}px;
 }
 
 QLabel#pjMessageBoxTitle {
-    color: ${default_text};
+    color: ${text};
     font-size: 12pt;
     font-weight: 600;
 }
 
 QLabel#pjMessageBoxBody {
-    color: ${default_text};
+    color: ${text};
 }
 
 QPushButton#pjMessageBoxButton {
     min-height: 26px;
-    padding: 6px 12px;
+    padding: ${space_comfortable}px ${space_section}px;
     border: none;
-    /* Rounded corners — matches info_dialog.png. Departs from the app's
-       general border-radius:0 aesthetic deliberately; the message box is a
-       distinct modal moment and the soft corners read as more dialog-y. */
-    border-radius: 6px;
+    /* Softer corners (radius_card) than the app's flat surfaces (radius_square):
+       the message box is a distinct modal moment and reads as more dialog-y. */
+    border-radius: ${radius_card}px;
     font-weight: 600;
 }
 
+/* Special variant (ui_framework.md § Interactions): a per-state gradient from
+   the Accent endpoint to the Highlight endpoint. */
 QPushButton[msgbox_role="primary"] {
     background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
-                                stop:0 ${light_purple},
-                                stop:1 ${light_blue});
-    color: ${selection_text};
+                                stop:0 ${accent_nominal},
+                                stop:1 ${highlight_nominal});
+    color: ${on_special_nominal};
 }
 
 QPushButton[msgbox_role="primary"]:hover {
     background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
-                                stop:0 ${light_purple},
-                                stop:0.5 ${light_blue},
-                                stop:1 ${light_blue});
-    color: ${selection_text};
+                                stop:0 ${accent_hovered},
+                                stop:1 ${highlight_hovered});
+    color: ${on_special_hovered};
 }
 
 QPushButton[msgbox_role="neutral"] {
-    background: ${marketplace_card_bg};
-    color: ${default_text};
+    background: ${neutral_nominal};
+    color: ${text};
 }
 
 QPushButton[msgbox_role="neutral"]:hover {
-    background: ${marketplace_card_bg_hover};
-    color: ${default_text};
+    background: ${neutral_hovered};
+    color: ${text};
 }
 
 QPushButton[msgbox_role="cancel"] {
-    background: ${msgbox_cancel_bg};
-    color: ${default_text};
+    background: ${cancel_nominal};
+    color: ${text};
 }
 
 QPushButton[msgbox_role="cancel"]:hover {
-    background: ${msgbox_cancel_bg_hover};
-    color: ${default_text};
+    background: ${cancel_hovered};
+    color: ${text};
 }
 
 QPushButton[msgbox_role="destructive"] {
-    background: ${marketplace_card_bg};
-    color: ${destructive_text};
+    background: ${neutral_nominal};
+    color: ${destructive_ink};
 }
 
 QPushButton[msgbox_role="destructive"]:hover {
-    background: ${light_purple};
-    color: ${inverse_text};
+    background: ${destructive_hovered};
+    color: ${on_destructive_hovered};
 }
 
 /* QFileDialog (non-native) ---------------------------------------------- */
@@ -1940,37 +2280,37 @@ QPushButton[msgbox_role="destructive"]:hover {
    between them already paints a 1px divider (see QSplitter::handle). */
 
 QFileDialog QListView#sidebar {
-    background: ${main_background};
+    background: ${backdrop};
     /* Three-sided border — the splitter handle on the right already paints
        the divider, so we omit border-right to avoid a 2 px stacked line. */
-    border-top: 1px solid ${border_default};
-    border-left: 1px solid ${border_default};
-    border-bottom: 1px solid ${border_default};
+    border-top: 1px solid ${separation};
+    border-left: 1px solid ${separation};
+    border-bottom: 1px solid ${separation};
     border-right: none;
-    padding: 2px 0px;
+    padding: ${space_tight}px ${space_none}px;
 }
 
 QFileDialog QListView#sidebar::item {
-    padding: 4px 6px;
+    padding: ${space_snug}px ${space_comfortable}px;
 }
 
 QFileDialog QListView#sidebar::item:selected {
-    background-color: ${item_selection_background};
-    color: ${selection_text};
+    background-color: ${accent_checked};
+    color: ${on_accent_checked};
 }
 
 QFileDialog QFrame#frame {
     background: transparent;
     /* Three-sided border — the splitter handle on the left already paints
        the divider, so we omit border-left to avoid a 2 px stacked line. */
-    border-top: 1px solid ${border_default};
-    border-right: 1px solid ${border_default};
-    border-bottom: 1px solid ${border_default};
+    border-top: 1px solid ${separation};
+    border-right: 1px solid ${separation};
+    border-bottom: 1px solid ${separation};
     border-left: none;
 }
 
 QFileDialog QToolButton {
-    padding: 2px;
+    padding: ${space_tight}px;
 }
 
 /* ---- Mosaico panel: 3-column splitter -----------------------------------
@@ -1983,16 +2323,17 @@ QFrame#seqPanelContainer,
 QFrame#topicPanelContainer,
 QFrame#dataViewContainer {
     border: none;
-    padding: 0px;
-    background-color: #ffffff;
+    padding: ${space_none}px;
+    background-color: ${data_backdrop};
 }
 
-/* Pure-white panel surfaces. Everything in the Mosaico panel is #ffffff EXCEPT
-   the four title-bar-tone header bands (server / seq / topic / info), which keep
-   ${titlebar_background}. Covers the panel root, the body wrapper, the Lua query
-   pane + its editor, both tables, and the Info text area. (The dark theme themes
-   these to ${dark_background}; both must be set here rather than inline in the .ui
-   so the surface follows the active theme.) */
+/* Panel surfaces — plottable/editable containers are DATA surfaces
+   (${data_backdrop}: pure white in light, lighter than the backdrop in dark)
+   EXCEPT the four title-bar-tone header bands (server / seq / topic / info),
+   which keep ${banner}. Covers the panel root, the body wrapper, the Lua query
+   pane + its editor, both tables, and the Info text area — mirroring the dark
+   stylesheet's block exactly. Set here rather than inline in the .ui so the
+   surface follows the active theme. */
 QWidget#MosaicoPanel,
 QWidget#mosaicoBody,
 QWidget#queryPane,
@@ -2000,7 +2341,7 @@ QTableWidget#seqTable,
 QTableWidget#topicTable,
 QPlainTextEdit#dataView,
 QPlainTextEdit#lua_queryBar {
-    background-color: #ffffff;
+    background-color: ${data_backdrop};
 }
 
 /* Cell grid for the Sequences / Topics tables: INTERIOR dividers only, no outer
@@ -2018,7 +2359,7 @@ QPlainTextEdit#lua_queryBar {
    (the old blue double line). The delegate, not QSS, makes this grid correct. */
 QTableWidget#seqTable,
 QTableWidget#topicTable {
-    gridline-color: ${border_default};
+    gridline-color: ${separation};
     border: none;
 }
 
@@ -2026,7 +2367,7 @@ QTableWidget#topicTable {
    "Sources"/"Datasets" headers: title-bar tone behind the Server URL combo
    and its flat icon buttons (Connect / Refresh / Cert). */
 QFrame#serverHeaderBand {
-    background-color: ${titlebar_background};
+    background-color: ${banner};
 }
 
 /* Sequence / Topic / Info column header bands wear the title-bar tone, just like
@@ -2036,11 +2377,11 @@ QFrame#seqHeaderBand,
 QFrame#topicHeaderBand,
 QFrame#infoHeaderBand,
 QFrame#metadataFilterHeaderBand {
-    background-color: ${titlebar_background};
+    background-color: ${banner};
 }
 
 /* The Server URL dropdown + the Lua query-assist dropdowns (Key/Op/Value) are
-   pinned to 26px content (28px outer) instead of the global input_min_height
+   pinned to 26px content (28px outer) instead of the global size_input_min_height
    cap, so the URL combo fills its header band and the Lua combos match it. */
 QComboBox#comboUri,
 QComboBox#keyCombo,
@@ -2069,13 +2410,13 @@ QWidget#PickerOverlay QComboBox {
 /* 1px divider under the Server header container, separating it from the body. */
 QFrame#serverSeparator,
 QFrame#rangeSeparator {
-    background-color: ${border_default};
+    background-color: ${separation};
 }
 
 /* The Sequence / Topic filter fields fill their chrome row like the URL dropdown:
-   the global QLineEdit rule caps inputs at input_min_height (a short box), so
+   the global QLineEdit rule caps inputs at size_input_min_height (a short box), so
    pin these to the 28px chrome-row height. They are borderless (see the
-   lineEditFilter rule), so 28px content == 28px outer == the row. */
+   seqFilter / topicFilter rule above), so 28px content == 28px outer == the row. */
 QLineEdit#seqFilter,
 QLineEdit#topicFilter {
     min-height: 28px;
@@ -2088,7 +2429,7 @@ QLineEdit#topicFilter {
    chrome icon metrics: 28px button / 24px icon at icon_size=24); flat=true in
    the .ui already removes the surface + border, leaving the shared QPushButton
    hover/pressed overlays. */
-QPushButton#buttonConnect,
+QPushButton#buttonConnect[flat="true"],
 QPushButton#buttonCert,
 QPushButton#buttonSearchSeq,
 QPushButton#buttonSearchTopic,
@@ -2097,7 +2438,7 @@ QPushButton#buttonReloadTopic,
 QPushButton#buttonAddClause,
 QPushButton#seqRegexToggle,
 QPushButton#topicRegexToggle {
-    padding: 0px;
+    padding: ${space_none}px;
 }
 
 /* PJ::ProgressBar — the rounded "Loading …" bar. Scoped to the subclass so
@@ -2105,11 +2446,11 @@ QPushButton#topicRegexToggle {
    is the QProgressBar format() string, drawn once on top of the fill in a
    single colour (it does not split where the fill crosses behind it). */
 PJ--ProgressBar {
-    border: 2px solid ${progress_border};
-    border-radius: 11px;
-    background: ${progress_trough};
+    border: 2px solid ${progress_outline};
+    border-radius: ${radius_pill}px;
+    background: ${progress_track};
     text-align: center;
-    color: ${progress_text};
+    color: ${on_progress};
     min-height: 30px;
     font-size: 11pt;
 }
@@ -2117,9 +2458,9 @@ PJ--ProgressBar {
 /* The fill is inset via `margin` so it floats inside the outline; its own
    border-radius rounds the trailing edge as it grows. */
 PJ--ProgressBar::chunk {
-    background-color: ${progress_fill};
-    border-radius: 8px;
-    margin: 2px;
+    background-color: ${progress_indicator};
+    border-radius: ${radius_pill}px;
+    margin: ${space_tight}px;
 }
 
 /* The ingest bar lives in the title bar, so it is shorter + thinner than the
@@ -2128,26 +2469,26 @@ PJ--IngestProgressWidget PJ--ProgressBar {
     min-height: 0px;
     max-height: 20px;
     border-width: 1px;
-    border-radius: 10px;
+    border-radius: ${radius_pill}px;
     font-size: 9pt;
 }
 PJ--IngestProgressWidget PJ--ProgressBar::chunk {
-    border-radius: 8px;
-    margin: 1px;
+    border-radius: ${radius_pill}px;
+    margin: ${space_tight}px;
 }
 
 /* Toast Notification ----------------------------------------------------- */
 
 PJ--ToastNotification {
-    background-color: ${toast_background};
-    border: 1px solid ${border_default};
-    border-radius: 6px;
+    background-color: ${backdrop};
+    border: 1px solid ${separation};
+    border-radius: ${radius_card}px;
     min-width: 250px;
     max-width: 400px;
 }
 
 PJ--ToastNotification QLabel#toastMessage {
-    color: ${default_text};
+    color: ${text};
     font-size: 10pt;
 }
 
@@ -2158,13 +2499,13 @@ PJ--ToastNotification QLabel#toastIcon {
 PJ--ToastNotification QPushButton#toastCloseButton {
     background: transparent;
     border: none;
-    color: ${disabled_text};
+    color: ${on_backdrop_disabled};
     font-size: 14pt;
     font-weight: 600;
-    padding: 0px;
-    margin: 0px;
+    padding: ${space_none}px;
+    margin: ${space_none}px;
 }
 
 PJ--ToastNotification QPushButton#toastCloseButton:hover {
-    color: ${default_text};
+    color: ${text};
 }

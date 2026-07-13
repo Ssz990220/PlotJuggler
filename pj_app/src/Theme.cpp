@@ -124,10 +124,10 @@ void syncApplicationPalette(const std::map<QString, QString>& tokens) {
   if (qGuiApp == nullptr) {
     return;  // Theme constructed without a GUI application (tests)
   }
-  const auto window_it = tokens.find(u"main_background"_s);
-  const auto text_it = tokens.find(u"default_text"_s);
+  const auto window_it = tokens.find(u"backdrop"_s);
+  const auto text_it = tokens.find(u"on_backdrop_default"_s);
   if (window_it == tokens.end() || text_it == tokens.end()) {
-    qCWarning(lcTheme) << "Palette tokens main_background/default_text missing; application palette not synced";
+    qCWarning(lcTheme) << "Palette tokens backdrop/on_backdrop_default missing; application palette not synced";
     return;
   }
   const QColor window_color(window_it->second);
