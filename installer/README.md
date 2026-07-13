@@ -28,6 +28,26 @@ placeholders) and never mutated by a build: the script renders the XMLs into
 a scratch staging directory under `%TEMP%\pj4-installer-stage` and points
 `binarycreator -p` at that staged `packages/` tree.
 
+### Installed layout (prefix tree)
+
+The staged payload mirrors the prefix layout the app discovers plugins from —
+the same convention the Linux AppImage uses (`bin` beside `lib`):
+
+```
+<TargetDir>/                         # @ApplicationsDirX64@/PlotJuggler4
+├── bin/
+│   ├── PlotJuggler4.exe             # + Qt DLLs, Qt plugins, MSVC runtime, FFmpeg, CPython (+ Lib/, DLLs/, ._pth)
+│   └── platforms/ …
+└── lib/plotjuggler/plugins/         # built + bundled plugins; app resolves bin/../lib/plotjuggler/plugins
+    └── *_plugin.dll
+```
+
+The app scans `bin/../lib/plotjuggler/plugins` (via `applicationDirPath`), so
+bundled plugins MUST live there — dropping them next to the exe is not scanned.
+Plugins load their Qt/FFmpeg/CPython DLLs from `bin/` (the exe's directory, which
+Windows searches at load time); `windeployqt --dir bin` puts any plugin-only Qt
+modules there too.
+
 ## Prerequisites on the Windows build host
 
 - **PJ4 already built** (RelWithDebInfo) with CPython enabled:
@@ -40,44 +60,65 @@ a scratch staging directory under `%TEMP%\pj4-installer-stage` and points
   The `cpython/*:shared=True` override matches Windows CI and produces
   `python3XX.dll` — the local default is static on MSVC and the installer
   would then fail to find the runtime.
-- **Qt 6.11.1 msvc2022_64** — for `windeployqt.exe`.
-- **Qt Installer Framework tools** — for `binarycreator.exe`. Install via the
-  Qt Maintenance Tool, or `aqt install-tool windows desktop tools_ifw`.
-- The **Conan cache** that produced the build (`%USERPROFILE%\.conan2`).
+- **Qt 6.11.1 msvc2022_64** — for `windeployqt.exe`. Auto-detected under `.qt`
+  (the `install_qt6.sh` / aqt layout); otherwise pass `-QtDir`.
+- **Qt Installer Framework tools** — for `binarycreator.exe`. Install via the Qt
+  Maintenance Tool, or `aqt install-tool --outputdir .qt windows desktop tools_ifw`.
+  Auto-detected next to `-QtDir` (aqt `.qt\Tools`) and under `C:\Qt\Tools`.
+- **Conan + CMake** on PATH — the script builds the ported plugins natively (no
+  Git Bash). It handles the MSVC toolchain and Ninja itself:
+  - **MSVC** — if `cl.exe` isn't already on PATH (i.e. you're not in an x64 Native
+    Tools prompt), the script locates Visual Studio via `vswhere` and imports
+    `vcvarsall.bat x64` into the process. Needs VS with the **C++ x64 workload**.
+  - **Ninja** — required by the Conan profile's generator; the script auto-locates
+    `ninja.exe` (PATH, Conan cache, or Python's Scripts dir) and passes it via
+    `-DCMAKE_MAKE_PROGRAM`, so it need not be on PATH. `pip install ninja` if it is
+    missing entirely.
+
+  Skip the whole plugin build with `-SkipPlugins`.
+- **Consistent MSVC toolset + a clean Conan cache.** The plugin build reuses
+  cached deps by `compiler.version=194` (all VS2022 minors share one package id),
+  so a cache holding a binary built with a *different* MSVC minor (e.g. 14.5x vs
+  14.4x) yields STL link errors (`unresolved external __std_*`). On a clean machine
+  this never happens; on a mixed one, `conan remove "<dep>/*" -c` and rebuild.
 
 ## Usage
 
-From the repo root, after a Windows build:
+From the repo root, after a Windows build of the app — a plain run builds the
+plugins and produces the full installer:
 
 ```powershell
-.\installer\build_windows_installer.ps1 `
-    -BuildDir build `
-    -QtDir C:\Qt\6.11.1\msvc2022_64
+.\installer\build_windows_installer.ps1
 ```
 
-`-Version` defaults to `PJ_APP_VERSION` read from repo-root `versions.env`;
-override with `-Version <x.y.z>` for a one-off build.
+`-QtDir` / `-IfwDir` are auto-detected (`.qt` first, then `C:\Qt`); pass them only
+if Qt/IFW live elsewhere. `-Version` defaults to `PJ_APP_VERSION` from repo-root
+`versions.env`; override with `-Version <x.y.z>`.
 
 The script:
 
-1. Locates the built `plotjuggler4.exe` / `pj_app.exe` under `-BuildDir`.
-2. Stages it as `PlotJuggler4.exe` in a scratch tree under `%TEMP%`.
-3. Runs `windeployqt` over the exe **and every plugin DLL** — a plugin can
-   pull Qt modules the main exe does not, and without walking each plugin
-   those transitive Qt DLLs never land in the bundle.
-4. Copies non-Qt Conan-shared runtime DLLs (FFmpeg, CPython, dav1d, Draco,
-   zstd, lz4, mcap) from `~/.conan2/p/<hash>/p/bin/` — the search is
-   constrained to Conan **package** dirs, so intermediate build-tree copies
-   are ignored.
-5. Copies the CPython `Lib/`, `DLLs/`, and any `python3XX._pth` next to the
-   DLL so the embedded interpreter finds its stdlib.
+1. Locates the built `plotjuggler4.exe` / `pj_app.exe` under `-BuildDir`; stages
+   it as `bin\PlotJuggler4.exe` in a scratch tree under `%TEMP%`.
+2. **Builds the ported plugins** from source (unless `-SkipPlugins`): for each
+   plugin in `-PluginList` it runs `conan install` + `cmake` + `cmake --build`
+   natively (the same three steps as `pj_ported_plugins/build.sh`, no Git Bash),
+   prints an OK/FAIL summary, and bundles the resulting `*_plugin.dll` into
+   `lib\plotjuggler\plugins`. A plugin that fails to build is skipped (not fatal) —
+   the rest still ship. Only `*_plugin.dll` is collected, so dependency DLLs in the
+   build tree are never dragged in.
+3. Runs `windeployqt` over the exe **and every bundled plugin DLL** (`--dir bin`,
+   so plugin-only Qt modules land in `bin`).
+4. Copies the FFmpeg + CPython runtime DLLs from the Conan cache (both the
+   downloaded `~/.conan2/p/<hash>/p/bin` and built-from-source
+   `~/.conan2/p/b/<hash>/p/bin` layouts; everything else in the graph is static).
+5. Copies the CPython `Lib/`, `DLLs/`, and any `python3XX._pth` so the embedded
+   interpreter finds its stdlib.
 6. Renders `config.xml` / `package.xml` into the stage tree (version +
    release-date tokens substituted).
 7. Runs `binarycreator --offline-only` against the stage.
 
-`binarycreator` and `windeployqt` are auto-detected from `PATH` (and IFW also
-from `C:\Qt\Tools\QtInstallerFramework\*`) when the corresponding `-QtDir` /
-`-IfwDir` are omitted. Bundle extra plugins with `-PluginsDir <dir>`.
+Options: `-SkipPlugins` (fast core-only installer), `-PluginList a,b,c` (override
+the plugin set), `-PortedPluginsDir <path>` (plugins repo location).
 
 ## Install-time behaviour
 

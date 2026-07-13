@@ -28,14 +28,14 @@ Component.prototype.createOperations = function()
         component.createOperations();
         if (systemInfo.productType === "windows") {
             component.addOperation("CreateShortcut",
-                "@TargetDir@/PlotJuggler4.exe",
+                "@TargetDir@/bin/PlotJuggler4.exe",
                 "@StartMenuDir@/PlotJuggler 4.lnk",
-                "workingDirectory=@TargetDir@", "iconId=0",
+                "workingDirectory=@TargetDir@/bin", "iconId=0",
                 "description=Launch PlotJuggler 4");
             component.addOperation("CreateShortcut",
-                "@TargetDir@/PlotJuggler4.exe",
+                "@TargetDir@/bin/PlotJuggler4.exe",
                 "@DesktopDir@/PlotJuggler 4.lnk",
-                "workingDirectory=@TargetDir@", "iconId=0",
+                "workingDirectory=@TargetDir@/bin", "iconId=0",
                 "description=Launch PlotJuggler 4");
         }
     } catch (e) {

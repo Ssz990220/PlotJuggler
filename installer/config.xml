@@ -7,5 +7,5 @@
   <StartMenuDir>PlotJuggler 4</StartMenuDir>
   <TargetDir>@ApplicationsDirX64@/PlotJuggler4</TargetDir>
   <DependsOnLocalInstallerBinary>true</DependsOnLocalInstallerBinary>
-  <RunProgram>@TargetDir@/PlotJuggler4.exe</RunProgram>
+  <RunProgram>@TargetDir@/bin/PlotJuggler4.exe</RunProgram>
 </Installer>
