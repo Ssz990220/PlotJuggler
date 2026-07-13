@@ -42,8 +42,10 @@ jobs:
 
       - name: Read versions.env
         # PJ_QT_VERSION / PJ_APP_VERSION are the single source of truth.
+        # Filter to KEY=VALUE lines — GITHUB_ENV rejects '#' comments and blanks
+        # verbatim, and versions.env carries a header comment.
         shell: bash
-        run: cat versions.env >> "$GITHUB_ENV"
+        run: grep -E '^[A-Za-z_][A-Za-z0-9_]*=' versions.env >> "$GITHUB_ENV"
 
       - name: Resolve installer version
         # Tag build -> the tag (without a leading 'v'); manual build -> PJ_APP_VERSION.
