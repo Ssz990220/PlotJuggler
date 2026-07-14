@@ -24,6 +24,13 @@ ExtensionDetailDialog::ExtensionDetailDialog(
   contentLayout()->addWidget(body);
   setDialogTitle(ext.name + " — Details");
 
+  // The .ui form carries a 500x400 minimum that applied to the dialog itself
+  // before the Dialog chrome moved the content into a child body. Re-apply the
+  // floor and size to the content's natural sizeHint (as a plain QDialog did),
+  // so the dialog opens fully instead of collapsed — the chrome title bar is
+  // added on top of the content, so don't clamp to the bare 400.
+  setMinimumSize(500, 400);
+
   // ── Title ──────────────────────────────────────────────────────────────────
   ui_->title_lbl->setText(ext.name + "  v" + ext.version);
   QFont title_font = ui_->title_lbl->font();
@@ -119,6 +126,11 @@ ExtensionDetailDialog::ExtensionDetailDialog(
   }
 
   connect(ui_->close_btn, &QPushButton::clicked, this, &QDialog::accept);
+
+  // Size to the fully-populated content (title/meta/tags/description/buttons are
+  // all set above), floored by the minimum, so the dialog opens showing
+  // everything — like the plain QDialog did before the chrome wrap.
+  adjustSize();
 }
 
 ExtensionDetailDialog::~ExtensionDetailDialog() {
