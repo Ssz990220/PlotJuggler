@@ -182,7 +182,7 @@ void PlotLegend::drawBackground(QPainter* painter, const QRectF& rect) const {
   const QColor border = theme::outline(theme::OutlineRole::Default, theme::OutlineState::Rest, fw_theme);
   pen.setColor(border);
   painter->setPen(pen);
-  const QColor background = theme::overlay(theme::Overlay::Hud, fw_theme);
+  const QColor background = theme::surface(theme::Surface::Backdrop, fw_theme);
   painter->setBrush(background);
   const double radius = borderRadius();
   painter->drawRoundedRect(rect, radius, radius);

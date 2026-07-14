@@ -164,10 +164,6 @@ void DockWidget::setPlotWidget(PlotWidget* plot) {
   }
   plot_widget_->setDataServices(session_, catalog_);
   setWidget(plot_widget_);
-  // Plots keep a margin; reset to flush in clearCurrentContent.
-  layout()->setContentsMargins(
-      PJ::theme::space(theme::Space::Comfortable), PJ::theme::space(theme::Space::Comfortable),
-      PJ::theme::space(theme::Space::Comfortable), PJ::theme::space(theme::Space::Comfortable));
   connect(plot_widget_, &PlotWidget::splitHorizontal, this, [this]() { splitHorizontal(); });
   connect(plot_widget_, &PlotWidget::splitVertical, this, [this]() { splitVertical(); });
   connect(plot_widget_, &PlotWidget::undoableChange, this, &DockWidget::undoableChange);
@@ -765,10 +761,6 @@ void DockWidget::clearCurrentContent(bool delete_content) {
   plot_widget_ = nullptr;
   object_widget_ = nullptr;
   object_widget_awaiting_first_topic_ = false;
-  // Flush by default; setPlotWidget re-adds the plot margin.
-  layout()->setContentsMargins(
-      PJ::theme::space(theme::Space::None), PJ::theme::space(theme::Space::None), PJ::theme::space(theme::Space::None),
-      PJ::theme::space(theme::Space::None));
 }
 
 void DockWidget::installObjectContextMenuFilter(QWidget* root) {

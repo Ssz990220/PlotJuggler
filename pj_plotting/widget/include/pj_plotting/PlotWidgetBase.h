@@ -91,9 +91,10 @@ class PlotWidgetBase : public QWidget {
   [[nodiscard]] bool gridVisible() const noexcept;
 
   // When true (the default), Qwt aligns the canvas to the axis scales, reserving
-  // a small margin above the canvas for the top axis label. Set false so the
-  // canvas fills to the widget's top edge — used by embedded charts that must sit
-  // flush against surrounding chrome (e.g. a toolbox banner).
+  // a small margin above the canvas for the top axis label, and the chart keeps
+  // its internal breathing-room padding. Set false so the canvas fills to the
+  // widget's top edge with zero internal padding — used by embedded charts that
+  // must sit flush against surrounding chrome (e.g. a toolbox banner).
   void setCanvasAlignedToScales(bool aligned);
 
   void setZoomEnabled(bool enabled);

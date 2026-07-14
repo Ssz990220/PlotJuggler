@@ -240,6 +240,13 @@ PlotWidgetBase::PlotWidgetBase(QWidget* parent) : QWidget(parent) {
       PJ::theme::space(theme::Space::None));
   layout->addWidget(plot_);
 
+  // Charts fill their container edge-to-edge; breathing room lives INSIDE the
+  // chart. QwtPlot lays out within contentsRect() and the QSS `QwtPlot` rule
+  // paints the Data Backdrop across the full widget rect, so this margin reads
+  // as chart surface — never as the dock backdrop ringing the plot.
+  const int chart_pad = PJ::theme::space(theme::Space::Comfortable);
+  plot_->setContentsMargins(chart_pad, chart_pad, chart_pad, chart_pad);
+
   plot_->setMinimumSize(100, 100);
   plot_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
   plot_->canvas()->setMouseTracking(true);
@@ -494,6 +501,10 @@ bool PlotWidgetBase::gridVisible() const noexcept {
 
 void PlotWidgetBase::setCanvasAlignedToScales(bool aligned) {
   plot_->plotLayout()->setAlignCanvasToScales(aligned);
+  // The internal chart padding belongs to the default (dock-hosted) mode only;
+  // embedded charts sit flush against the surrounding chrome.
+  const int chart_pad = aligned ? PJ::theme::space(theme::Space::Comfortable) : PJ::theme::space(theme::Space::None);
+  plot_->setContentsMargins(chart_pad, chart_pad, chart_pad, chart_pad);
   plot_->updateLayout();
 }
 

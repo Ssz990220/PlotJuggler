@@ -7,6 +7,7 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QPushButton>
+#include <algorithm>
 
 #include "pj_widgets/ComboBox.h"
 #include "pj_widgets/FrameworkTokens.h"
@@ -35,6 +36,22 @@ SectionHeaderBand::SectionHeaderBand(const QString& title, QWidget* parent) : QW
   label_->setIndent(theme::space(theme::Space::Tight));
   layout_->addWidget(label_);
   layout_->addStretch(1);
+  // Remember the stretch so an expanding filter/combo can replace it later —
+  // by then it is no longer the last item (trailing controls may exist).
+  stretch_ = layout_->itemAt(layout_->count() - 1);
+}
+
+void SectionHeaderBand::takeStretch() {
+  if (stretch_ == nullptr) {
+    return;
+  }
+  for (int i = 0; i < layout_->count(); ++i) {
+    if (layout_->itemAt(i) == stretch_) {
+      delete layout_->takeAt(i);
+      break;
+    }
+  }
+  stretch_ = nullptr;
 }
 
 void SectionHeaderBand::ensureFilter() {
@@ -43,18 +60,18 @@ void SectionHeaderBand::ensureFilter() {
   }
   // The trailing stretch keeps a bare title left-aligned; the expanding filter
   // field takes over that role once the filter exists, so drop it first.
-  if (QLayoutItem* stretch = layout_->takeAt(layout_->count() - 1); stretch != nullptr) {
-    delete stretch;
-  }
+  takeStretch();
 
   // The canonical filter control: glyph + flat field sharing one background, the
   // kBanner tone matching the band. It sizes to the band via onChromeMetricsChanged.
-  layout_->addSpacing(theme::space(theme::Space::Tight));
+  // Inserted right after the title so later-created trailing controls always end
+  // up on its right, whatever order the .ui set the properties in.
+  layout_->insertSpacing(1, theme::space(theme::Space::Tight));
   filter_search_ = new Search(this);
   filter_search_->setFieldObjectName(filter_field_name_);
   filter_search_->setChromeMetrics(current_metrics_);
   filter_search_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
-  layout_->addWidget(filter_search_, 1, Qt::AlignVCenter);
+  layout_->insertWidget(2, filter_search_, 1, Qt::AlignVCenter);
 }
 
 QLineEdit* SectionHeaderBand::filterEdit() const {
@@ -88,15 +105,25 @@ void SectionHeaderBand::ensureTrailingCombo() {
   if (trailing_combo_ != nullptr) {
     return;
   }
-  // The band's `label_ + stretch(1)` already right-justifies anything appended;
-  // add the combo after the stretch so the title stays left and the dropdown
-  // docks to the right edge (with a little inset). A PJ::ComboBox gives the
-  // gradient popup without relying on the host's combo adapter.
+  // A PJ::ComboBox gives the gradient popup without relying on the host's
+  // combo adapter.
   trailing_combo_ = new ComboBox(this);
   trailing_combo_->setObjectName(trailing_combo_name_);
+  trailing_combo_->setEditable(combo_editable_);
   trailing_combo_->setMaximumHeight(height());
-  layout_->addWidget(trailing_combo_, 0, Qt::AlignVCenter);
-  layout_->addSpacing(theme::space(theme::Space::Comfortable));
+  if (combo_expanding_) {
+    // "Label + input" banner row: the combo takes over the stretch and fills
+    // the band right after the title (e.g. a "Server:" URL bar).
+    takeStretch();
+    layout_->insertSpacing(1, theme::space(theme::Space::Tight));
+    trailing_combo_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    layout_->insertWidget(2, trailing_combo_, 1, Qt::AlignVCenter);
+  } else {
+    // The band's `label_ + stretch(1)` already right-justifies anything
+    // appended; the dropdown docks to the right edge (with a little inset).
+    layout_->addWidget(trailing_combo_, 0, Qt::AlignVCenter);
+    layout_->addSpacing(theme::space(theme::Space::Comfortable));
+  }
 }
 
 void SectionHeaderBand::setTrailingComboName(const QString& name) {
@@ -110,6 +137,28 @@ void SectionHeaderBand::setTrailingComboName(const QString& name) {
 
 QString SectionHeaderBand::trailingComboName() const {
   return trailing_combo_name_;
+}
+
+void SectionHeaderBand::setComboExpanding(bool expanding) {
+  if (combo_expanding_ == expanding) {
+    return;
+  }
+  combo_expanding_ = expanding;
+  if (trailing_combo_ != nullptr && expanding) {
+    // Created docked first (property order): move it into the expanding slot.
+    layout_->removeWidget(trailing_combo_);
+    takeStretch();
+    layout_->insertSpacing(1, theme::space(theme::Space::Tight));
+    trailing_combo_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    layout_->insertWidget(2, trailing_combo_, 1, Qt::AlignVCenter);
+  }
+}
+
+void SectionHeaderBand::setComboEditable(bool editable) {
+  combo_editable_ = editable;
+  if (trailing_combo_ != nullptr) {
+    trailing_combo_->setEditable(editable);
+  }
 }
 
 void SectionHeaderBand::ensureTrailingButton() {
@@ -155,6 +204,111 @@ QString SectionHeaderBand::trailingButtonIcon() const {
   return trailing_button_icon_;
 }
 
+int SectionHeaderBand::trailingInsertIndex(bool before_buttons) const {
+  int idx = layout_->count();
+  if (trailing_combo_ != nullptr && !combo_expanding_) {
+    idx = std::min(idx, layout_->indexOf(trailing_combo_));
+  }
+  if (before_buttons) {
+    if (!trailing_buttons_.isEmpty()) {
+      idx = std::min(idx, layout_->indexOf(trailing_buttons_.first()));
+    }
+    if (trailing_button_ != nullptr) {
+      idx = std::min(idx, layout_->indexOf(trailing_button_));
+    }
+  }
+  return idx;
+}
+
+void SectionHeaderBand::applyButtonMetrics(QPushButton* button) const {
+  // Same recipe as the toolbox banner's close button: a bandHeight box holding
+  // an icon_size icon, so band affordances read at one size everywhere.
+  button->setFixedSize(current_metrics_.bandHeight(), current_metrics_.bandHeight());
+  button->setIconSize(QSize(current_metrics_.icon_size, current_metrics_.icon_size));
+}
+
+void SectionHeaderBand::ensureTrailingToggle() {
+  if (trailing_toggle_ != nullptr) {
+    return;
+  }
+  trailing_toggle_ = new QPushButton(this);
+  trailing_toggle_->setCheckable(true);
+  trailing_toggle_->setFlat(true);
+  trailing_toggle_->setCursor(Qt::PointingHandCursor);
+  trailing_toggle_->setFocusPolicy(Qt::NoFocus);
+  applyButtonMetrics(trailing_toggle_);
+  layout_->insertWidget(trailingInsertIndex(/*before_buttons=*/true), trailing_toggle_, 0, Qt::AlignVCenter);
+}
+
+void SectionHeaderBand::ensureTrailingButtons(int count) {
+  while (trailing_buttons_.size() < count) {
+    auto* button = new QPushButton(this);
+    button->setFlat(true);
+    button->setCursor(Qt::PointingHandCursor);
+    button->setFocusPolicy(Qt::NoFocus);
+    applyButtonMetrics(button);
+    layout_->insertWidget(trailingInsertIndex(/*before_buttons=*/false), button, 0, Qt::AlignVCenter);
+    trailing_buttons_.append(button);
+  }
+}
+
+void SectionHeaderBand::setTrailingButtonNames(const QStringList& names) {
+  trailing_button_names_ = names;
+  ensureTrailingButtons(static_cast<int>(names.size()));
+  for (int i = 0; i < names.size(); ++i) {
+    trailing_buttons_[i]->setObjectName(names[i]);
+    if (i < trailing_button_tooltips_.size()) {
+      trailing_buttons_[i]->setToolTip(trailing_button_tooltips_[i]);
+    }
+  }
+}
+
+QStringList SectionHeaderBand::trailingButtonNames() const {
+  return trailing_button_names_;
+}
+
+void SectionHeaderBand::setTrailingButtonToolTips(const QStringList& tooltips) {
+  trailing_button_tooltips_ = tooltips;
+  const int n = static_cast<int>(std::min(tooltips.size(), trailing_buttons_.size()));
+  for (int i = 0; i < n; ++i) {
+    trailing_buttons_[i]->setToolTip(tooltips[i]);
+  }
+}
+
+QStringList SectionHeaderBand::trailingButtonToolTips() const {
+  return trailing_button_tooltips_;
+}
+
+void SectionHeaderBand::setTrailingToggleName(const QString& name) {
+  trailing_toggle_name_ = name;
+  ensureTrailingToggle();
+  trailing_toggle_->setObjectName(name);
+}
+
+QString SectionHeaderBand::trailingToggleName() const {
+  return trailing_toggle_name_;
+}
+
+void SectionHeaderBand::setTrailingToggleText(const QString& text) {
+  trailing_toggle_text_ = text;
+  ensureTrailingToggle();
+  trailing_toggle_->setText(text);
+}
+
+QString SectionHeaderBand::trailingToggleText() const {
+  return trailing_toggle_text_;
+}
+
+void SectionHeaderBand::setTrailingToggleToolTip(const QString& tooltip) {
+  trailing_toggle_tooltip_ = tooltip;
+  ensureTrailingToggle();
+  trailing_toggle_->setToolTip(tooltip);
+}
+
+QString SectionHeaderBand::trailingToggleToolTip() const {
+  return trailing_toggle_tooltip_;
+}
+
 void SectionHeaderBand::onChromeMetricsChanged(const ChromeMetrics& metrics) {
   current_metrics_ = metrics;
   setFixedHeight(metrics.bandHeight());
@@ -164,6 +318,12 @@ void SectionHeaderBand::onChromeMetricsChanged(const ChromeMetrics& metrics) {
   if (filter_search_ != nullptr) {
     filter_search_->setChromeMetrics(metrics);
   }
+  if (trailing_toggle_ != nullptr) {
+    applyButtonMetrics(trailing_toggle_);
+  }
+  for (auto* button : trailing_buttons_) {
+    applyButtonMetrics(button);
+  }
 }
 
 void SectionHeaderBand::setText(const QString& title) {
@@ -172,6 +332,14 @@ void SectionHeaderBand::setText(const QString& title) {
 
 QString SectionHeaderBand::text() const {
   return label_->text();
+}
+
+void SectionHeaderBand::setTitleObjectName(const QString& name) {
+  label_->setObjectName(name);
+}
+
+QString SectionHeaderBand::titleObjectName() const {
+  return label_->objectName();
 }
 
 }  // namespace PJ

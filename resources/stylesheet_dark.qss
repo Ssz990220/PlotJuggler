@@ -446,11 +446,20 @@ QLineEdit {
     padding-right: ${space_snug}px;
     min-height: ${size_input_min_height}px;
     max-height: ${size_input_min_height}px;
+    /* Framework text-selection colors (same pair the canonical Search uses).
+       Without these the Fusion palette's system blue leaks into every plain
+       line edit (e.g. the DateRangePicker date fields). */
+    selection-background-color: ${overlay_selected};
+    selection-color: ${text};
 }
 
-QLineEdit:hover,
+/* Inputs react like the canonical Search frame: accent border on hover, the
+   stronger accent on focus (focus wins — later rule, equal specificity). */
+QLineEdit:hover {
+    border: 1px solid ${accent_checked_hovered};
+}
 QLineEdit:focus {
-    border: 1px solid ${separation};
+    border: 1px solid ${accent_checked};
 }
 
 QLineEdit:disabled {
@@ -1888,24 +1897,6 @@ QFrame#timelinePlaybackBorder {
     border: none;
 }
 
-/* Plugin-provided inline search line edits (Sequence / Topic filters supplied
-   by a source dialog's own .ui) sit directly inside a header band — the default
-   chrome reads as a separate input which we don't want; the leading magnifying-
-   glass button already cues "type here". The neutral selection colours replace
-   the system blue text highlight the platform palette would otherwise inject.
-   (App-owned filters use pj_widgets Search and are styled by PJ--Search.) */
-QLineEdit#seqFilter,
-QLineEdit#topicFilter,
-QLineEdit#seqFilter:focus,
-QLineEdit#topicFilter:focus {
-    background: ${banner_input};
-    color: ${on_banner_input_default};
-    border: none;
-    padding: ${space_none}px;
-    selection-background-color: ${overlay_selected};
-    selection-color: ${text};
-}
-
 /* ---------- Chrome buttons (TitleBar + dialog title bars) ----------
    See the light stylesheet for the geometry rationale. Close actions use the
    error interaction fill/ink. The panel-toggle QPushButtons reparented into
@@ -2346,23 +2337,6 @@ QTableWidget#topicTable {
     border: none;
 }
 
-/* Server header band — a full-width chrome row matching the host
-   "Sources"/"Datasets" headers: title-bar tone behind the Server URL combo
-   and its flat icon buttons (Connect / Refresh / Cert). */
-QFrame#serverHeaderBand {
-    background-color: ${banner};
-}
-
-/* Sequence / Topic / Info column header bands wear the title-bar tone, just like
-   the LHS "Datasets" header band (same darker background, same 28px band height
-   set in the .ui). */
-QFrame#seqHeaderBand,
-QFrame#topicHeaderBand,
-QFrame#infoHeaderBand,
-QFrame#metadataFilterHeaderBand {
-    background-color: ${banner};
-}
-
 /* The Server URL dropdown + the Lua query-assist dropdowns (Key/Op/Value) are
    pinned to 26px content (28px outer) instead of the global size_input_min_height
    cap, so the URL combo fills its header band and the Lua combos match it. */
@@ -2396,26 +2370,13 @@ QFrame#rangeSeparator {
     background-color: ${separation};
 }
 
-/* The Sequence / Topic filter fields fill their chrome row like the URL dropdown:
-   the global QLineEdit rule caps inputs at size_input_min_height (a short box), so
-   pin these to the 28px chrome-row height. They are borderless (see the
-   seqFilter / topicFilter rule above), so 28px content == 28px outer == the row. */
-QLineEdit#seqFilter,
-QLineEdit#topicFilter {
-    min-height: 28px;
-    max-height: 28px;
-}
-
-/* The band's icon buttons are flat QPushButtons (the dialog host only wires
-   QPushButton clicks). Drop the default 6px QPushButton padding so the icon
-   fills the button like the Sources QToolButtons do (the .ui sizes them to the
-   chrome icon metrics: 28px button / 24px icon at icon_size=24); flat=true in
-   the .ui already removes the surface + border, leaving the shared QPushButton
-   hover/pressed overlays. */
+/* The bands' icon buttons are flat QPushButtons (the dialog host only wires
+   QPushButton clicks); SectionHeaderBand sizes them to the chrome metrics
+   (bandHeight box / icon_size icon). Drop the default 6px QPushButton padding so
+   the icon fills the button like the Sources QToolButtons do; flat=true already
+   removes the surface + border, leaving the shared hover/pressed overlays. */
 QPushButton#buttonConnect[flat="true"],
 QPushButton#buttonCert,
-QPushButton#buttonSearchSeq,
-QPushButton#buttonSearchTopic,
 QPushButton#buttonReloadSeq,
 QPushButton#buttonReloadTopic,
 QPushButton#buttonAddClause,
