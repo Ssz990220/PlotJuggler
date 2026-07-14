@@ -392,19 +392,34 @@ function Copy-CPythonStdlib {
            Where-Object { $_.FullName -match '\\p\\(?:b\\)?[^\\]+\\p\\bin\\' } |
            Sort-Object LastWriteTime -Descending | Select-Object -First 1
   if (-not $pyDll) { Warn "CPython DLL missing -- stdlib bundling skipped."; return }
-  $pyPkgRoot = Split-Path -Parent (Split-Path -Parent $pyDll.FullName)   # ...\p\<hash>\p
-  $libSrc  = Join-Path $pyPkgRoot "Lib"
-  $dllsSrc = Join-Path $pyPkgRoot "DLLs"
-  if (Test-Path $libSrc)  {
-    Copy-Item $libSrc  $stageBin -Recurse -Force
-    Info "staged CPython Lib/ from $libSrc"
-  } else { Warn "CPython Lib/ not found under $pyPkgRoot -- pj_scripting may fail to init the interpreter." }
-  if (Test-Path $dllsSrc) {
-    Copy-Item $dllsSrc $stageBin -Recurse -Force
-    Info "staged CPython DLLs/ from $dllsSrc"
+  # On Windows the Conan CPython package nests python3XX.dll, Lib/ (stdlib) and DLLs/
+  # TOGETHER under <prefix>/bin — i.e. the stdlib lives in the DLL's OWN directory
+  # (pj_scripting points PYTHONHOME there too). Look there, not one level up.
+  $pyBin = $pyDll.Directory.FullName
+  foreach ($sub in @("Lib", "DLLs")) {
+    $src = Join-Path $pyBin $sub
+    if (Test-Path $src) {
+      Copy-Item $src $stageBin -Recurse -Force
+      Info "staged CPython $sub/ from $src"
+    } elseif ($sub -eq "Lib") {
+      Warn "CPython Lib/ not found under $pyBin -- pj_scripting may fail to init the interpreter."
+    }
   }
-  $pth = Get-ChildItem $pyDll.Directory.FullName -Filter "python3*._pth" -ErrorAction SilentlyContinue | Select-Object -First 1
-  if ($pth) { Copy-Item $pth.FullName $stageBin -Force; Info "staged $($pth.Name)" }
+  # A pythonXX._pth next to the DLL makes CPython resolve its stdlib RELATIVE TO THE
+  # DLL and ignore PYTHONHOME. That is what makes the interpreter portable: the
+  # PJ_PYTHON_HOME baked into the binary is the build machine's Conan cache path,
+  # which does not exist on the user's machine. Reuse the package's _pth if it ships
+  # one; otherwise synthesize a minimal one named to match the DLL (python312.dll ->
+  # python312._pth).
+  $pth = Get-ChildItem $pyBin -Filter "python3*._pth" -ErrorAction SilentlyContinue | Select-Object -First 1
+  if ($pth) {
+    Copy-Item $pth.FullName $stageBin -Force
+    Info "staged $($pth.Name)"
+  } else {
+    $pthName = [System.IO.Path]::GetFileNameWithoutExtension($pyDll.Name) + "._pth"
+    Set-Content -Path (Join-Path $stageBin $pthName) -Value @(".", "Lib", "DLLs", "import site") -Encoding ASCII
+    Info "generated $pthName (portable stdlib path, relative to the DLL)"
+  }
 }
 Copy-CPythonStdlib
 

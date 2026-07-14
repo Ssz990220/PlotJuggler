@@ -111,8 +111,11 @@ The script:
 4. Copies the FFmpeg + CPython runtime DLLs from the Conan cache (both the
    downloaded `~/.conan2/p/<hash>/p/bin` and built-from-source
    `~/.conan2/p/b/<hash>/p/bin` layouts; everything else in the graph is static).
-5. Copies the CPython `Lib/`, `DLLs/`, and any `python3XX._pth` so the embedded
-   interpreter finds its stdlib.
+5. Copies the CPython `Lib/` + `DLLs/` (from the DLL's own dir — the Conan package
+   nests them next to `python3XX.dll` on Windows) and either reuses the package's
+   `python3XX._pth` or synthesizes one, so the embedded interpreter resolves its
+   stdlib relative to the DLL instead of the build-machine `PYTHONHOME` baked into
+   the binary.
 6. Renders `config.xml` / `package.xml` into the stage tree (version +
    release-date tokens substituted).
 7. Runs `binarycreator --offline-only` against the stage.
