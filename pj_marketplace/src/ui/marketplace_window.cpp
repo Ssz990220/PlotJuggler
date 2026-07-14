@@ -638,6 +638,11 @@ void MarketplaceWindow::onSettingsClicked() {
 
   dlg.contentLayout()->addWidget(body);
 
+  // Size the dialog to its fully-populated content (the PJ::Dialog chrome does
+  // not drive height from the body, so without this it opens too short and
+  // clips the Cancel/OK row). setMinimumWidth above stays the floor.
+  dlg.adjustSize();
+
   if (dlg.exec() != QDialog::Accepted) {
     return;
   }
