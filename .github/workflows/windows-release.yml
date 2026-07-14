@@ -114,21 +114,21 @@ jobs:
           path: pj-official-plugins
           submodules: recursive
 
-      - name: Configure plotjuggler cloudsmith Conan remote
-        # Each plugin's conanfile requires `plotjuggler_sdk/${SDK_VERSION}` which the
-        # ported plugin builds resolve from the plotjuggler cloudsmith Conan repo
-        # (see PlotJuggler/pj-official-plugins .github/workflows/build-release.yml
-        # for the sibling pattern). Configured before the installer script runs the
-        # per-plugin `conan install`.
-        env:
-          CLOUDSMITH_USER: ${{ secrets.CLOUDSMITH_USER }}
-          CLOUDSMITH_API_KEY: ${{ secrets.CLOUDSMITH_API_KEY }}
+      - name: Publish plotjuggler_sdk to the local Conan cache from the submodule
+        # Each ported plugin's conanfile requires plotjuggler_sdk/${SDK_VERSION}
+        # (0.17.0 as of the current pin). Rather than depend on a Conan remote
+        # (Conan Center only has 0.16.0 and cloudsmith needs credentials), we
+        # build the SDK from source right here: the plotjuggler_sdk submodule is
+        # already checked out at the tagged commit that CMake stamps as the
+        # required version. `conan create` publishes it to the local cache with
+        # that exact version, so the per-plugin `conan install` below resolves
+        # it locally without touching any remote.
         shell: bash
         run: |
-          conan remote add plotjuggler-cloudsmith \
-            https://conan.cloudsmith.io/plotjuggler/plotjuggler --force
-          conan remote login plotjuggler-cloudsmith \
-            "$CLOUDSMITH_USER" -p "$CLOUDSMITH_API_KEY"
+          conan create plotjuggler_sdk \
+            --profile:host default --profile:build default \
+            -s build_type=RelWithDebInfo -s compiler.cppstd=20 \
+            --build=missing
 
       - name: Build the installer
         # The recipe builds the ported plugins (from source), stages the exe + Qt +
