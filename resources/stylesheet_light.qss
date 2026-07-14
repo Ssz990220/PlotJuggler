@@ -2146,6 +2146,7 @@ QPushButton#extButtonInstall,
 QPushButton#extButtonUpdate,
 QPushButton#extBadgeInstalled,
 QPushButton#extBadgeNeedsRestart,
+QPushButton#extBadgeInstalling,
 QPushButton#extBadgeLocalNewer {
     border: none;
     padding: ${space_snug}px ${space_none}px;
@@ -2166,6 +2167,7 @@ QPushButton#extButtonUpdate:hover       { background: ${status_warning_hovered};
 QPushButton#extBadgeInstalled:disabled  { background: ${status_success}; color: ${on_status_success}; }
 QPushButton#extBadgeNeedsRestart:disabled { background: ${status_warning}; color: ${on_status_warning}; }
 QPushButton#extBadgeLocalNewer:disabled { background: ${status_neutral}; color: ${on_status_neutral}; }
+QPushButton#extBadgeInstalling:disabled { background: ${status_neutral}; color: ${on_status_neutral}; }
 
 /* Tag chip in the extension-detail dialog. Uses the same card surface
    tone so chips feel like inset elements of the card. */

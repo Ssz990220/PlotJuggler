@@ -105,6 +105,18 @@ class MarketplaceWindow : public Dialog {
   // Processes one pending bulk-update item at a time.
   void processInstallQueue();
 
+  // Shows the status of the in-flight install together with the queue depth,
+  // e.g. "Installing mcap…  ·  2 queued". `verb` is the current phase word
+  // ("Installing", "Verifying", "Extracting"). No-op when nothing is active, so
+  // it never clobbers a terminal "Installed"/"Failed" message. Called on every
+  // event that changes the active id or the queue, so the count stays live and
+  // an enqueue no longer hides what is currently installing.
+  void showInstallProgress(const QString& verb = QStringLiteral("Installing"));
+
+  // "  ·  N queued" for the combined pending_clicks_ + update_queue_ depth,
+  // or an empty string when nothing is waiting.
+  QString queueSuffix() const;
+
   Ui::MarketplaceWindow* ui_ = nullptr;
   DownloadManager* download_mgr_ = nullptr;
   RegistryManager* registry_mgr_ = nullptr;

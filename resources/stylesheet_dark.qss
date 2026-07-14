@@ -2127,6 +2127,7 @@ QPushButton#extButtonInstall,
 QPushButton#extButtonUpdate,
 QPushButton#extBadgeInstalled,
 QPushButton#extBadgeNeedsRestart,
+QPushButton#extBadgeInstalling,
 QPushButton#extBadgeLocalNewer {
     border: none;
     padding: ${space_snug}px ${space_none}px;

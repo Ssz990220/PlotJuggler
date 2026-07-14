@@ -20,6 +20,7 @@
 #include <QStyle>
 #include <QVBoxLayout>
 #include <QWindow>
+#include <algorithm>
 
 #include "pj_marketplace/download_manager.hpp"
 #include "pj_marketplace/extension_detail_dialog.hpp"
@@ -189,6 +190,13 @@ void MarketplaceWindow::setupSignals() {
   });
 
   connect(ext_mgr_, &ExtensionManager::installPendingRestart, this, [this](const QString& id) {
+    // Staging finishes the active install just like installFinished does; clear
+    // the busy marker so the card flips to "Needs Restart" (not a stuck
+    // "Installing" badge) and processInstallQueue() can advance to the next item.
+    if (id == active_install_id_) {
+      active_install_id_.clear();
+    }
+    installations_changed_ = true;
     ui_->progress_bar_->setVisible(false);
     status_error_sticky_ = false;
     populateCards();
@@ -213,12 +221,8 @@ void MarketplaceWindow::setupSignals() {
     ui_->progress_bar_->setValue(0);
     ui_->progress_bar_->setRange(0, 100);
     ui_->progress_bar_->setVisible(true);
-    for (const auto& ext : extensions_) {
-      if (ext.id == id) {
-        setStatus("Installing " + ext.name + "...");
-        break;
-      }
-    }
+    showInstallProgress();
+    populateCards();  // repaint so the active card shows the "Installing" badge
   });
 
   connect(ext_mgr_, &ExtensionManager::installProgress, this, [this](const QString& /*id*/, int percent) {
@@ -228,26 +232,20 @@ void MarketplaceWindow::setupSignals() {
   // Post-download phases (verifying, extracting) do not report byte-level
   // progress, so we flip the bar to indeterminate/busy mode and update the
   // status label with the current phase.
-  connect(ext_mgr_, &ExtensionManager::installPhase, this, [this](const QString& id, DownloadManager::WorkPhase phase) {
-    ui_->progress_bar_->setRange(0, 0);
-    QString ext_name = id;
-    for (const auto& ext : extensions_) {
-      if (ext.id == id) {
-        ext_name = ext.name;
-        break;
-      }
-    }
-    QString verb;
-    switch (phase) {
-      case DownloadManager::WorkPhase::Verifying:
-        verb = u"Verifying"_s;
-        break;
-      case DownloadManager::WorkPhase::Extracting:
-        verb = u"Extracting"_s;
-        break;
-    }
-    setStatus(verb + u" "_s + ext_name + u"..."_s);
-  });
+  connect(
+      ext_mgr_, &ExtensionManager::installPhase, this, [this](const QString& /*id*/, DownloadManager::WorkPhase phase) {
+        ui_->progress_bar_->setRange(0, 0);
+        QString verb;
+        switch (phase) {
+          case DownloadManager::WorkPhase::Verifying:
+            verb = u"Verifying"_s;
+            break;
+          case DownloadManager::WorkPhase::Extracting:
+            verb = u"Extracting"_s;
+            break;
+        }
+        showInstallProgress(verb);
+      });
 
   connect(ext_mgr_, &ExtensionManager::installFinished, this, [this](const QString& id, bool success) {
     // Only clear the busy marker if this is the finish of the install we
@@ -373,9 +371,22 @@ void MarketplaceWindow::populateCards() {
     auto* btn_box = new QHBoxLayout();
     btn_box->setSpacing(theme::space(theme::Space::Comfortable));
 
+    // An install is in flight or queued for this extension (the active one, an
+    // explicit click awaiting its turn, or an Update All entry). Show a disabled
+    // "Installing" badge on all of them until the operation completes.
+    const bool queued_for_update =
+        std::any_of(update_queue_.begin(), update_queue_.end(), [&](const Extension& e) { return e.id == ext.id; });
+    const bool installing = ext.id == active_install_id_ || pending_clicks_.contains(ext.id) || queued_for_update;
+
     // Per-state action button / status badge. Object name selects the
     // matching #extButton* / #extBadge* rule in resources/stylesheet_*.qss.
-    if (ext_mgr_->hasPendingInstall(ext.id) || ext_mgr_->hasPendingUninstall(ext.id)) {
+    if (installing) {
+      auto* badge = new QPushButton("Installing", card);
+      badge->setObjectName("extBadgeInstalling");
+      badge->setFixedWidth(90);
+      badge->setEnabled(false);
+      btn_box->addWidget(badge);
+    } else if (ext_mgr_->hasPendingInstall(ext.id) || ext_mgr_->hasPendingUninstall(ext.id)) {
       auto* badge = new QPushButton("Needs Restart", card);
       badge->setObjectName("extBadgeNeedsRestart");
       badge->setFixedWidth(90);
@@ -516,6 +527,28 @@ void MarketplaceWindow::clearStickyStatus() {
   status_error_sticky_ = false;
 }
 
+QString MarketplaceWindow::queueSuffix() const {
+  const int queued = pending_clicks_.size() + update_queue_.size();
+  if (queued == 0) {
+    return {};
+  }
+  return u"  ·  "_s + QString::number(queued) + u" queued"_s;
+}
+
+void MarketplaceWindow::showInstallProgress(const QString& verb) {
+  if (active_install_id_.isEmpty()) {
+    return;
+  }
+  QString name = active_install_id_;
+  for (const auto& ext : extensions_) {
+    if (ext.id == active_install_id_) {
+      name = ext.name;
+      break;
+    }
+  }
+  setStatus(verb + u" "_s + name + u"…"_s + queueSuffix());
+}
+
 void MarketplaceWindow::showLatestDiagnostic() {
   const QList<ExtensionDiagnostic> diagnostics = ext_mgr_->diagnostics();
   if (diagnostics.isEmpty()) {
@@ -641,12 +674,8 @@ void MarketplaceWindow::onActionButtonClicked(const QString& ext_id) {
       return;  // deduplicate — either it IS the running one or already queued
     }
     pending_clicks_.append(ext_id);
-    for (const auto& ext : extensions_) {
-      if (ext.id == ext_id) {
-        setStatus(u"Queued "_s + ext.name);
-        break;
-      }
-    }
+    showInstallProgress();  // keep the active install visible; reflect the new queue depth
+    populateCards();        // repaint so the queued card shows the "Installing" badge
     return;
   }
 
@@ -690,6 +719,7 @@ void MarketplaceWindow::onUpdateAllClicked() {
   }
   ui_->update_all_btn_->setEnabled(false);
   setStatus("Updating " + QString::number(update_queue_.size()) + " extensions...");
+  populateCards();  // repaint so all queued cards show the "Installing" badge
   processInstallQueue();
 }
 
