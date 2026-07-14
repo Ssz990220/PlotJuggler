@@ -41,7 +41,7 @@ jobs:
     runs-on: windows-2022
     # Backstop against hangs — same rationale as windows-ci.yml, with margin for
     # the extra installer-side ported-plugin builds after the app compile.
-    timeout-minutes: 180
+    timeout-minutes: 360
 
     env:
       # Pin sccache's object cache to a known path so actions/cache can persist
