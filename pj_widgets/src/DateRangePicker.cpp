@@ -289,16 +289,9 @@ void CalendarWidget::paintEvent(QPaintEvent* /*event*/) {
   int cell_w = width() / kCols;
   int fm_h = fontMetrics().height();
 
-  // Day name headers only; month/year lives in RangeCalendarWidget's header
-  // controls.
-  // Month/Year title
-  QFont title_font = font();
-  title_font.setWeight(QFont::DemiBold);
-  title_font.setPointSize(font().pointSize() + 2);
-  p.setFont(title_font);
-  QString title = QDate(year_, month_, 1).toString("MMMM yyyy");
-  p.setPen(tok.text);
-  p.drawText(QRect(0, 0, width(), fm_h + kHeaderPad * 2), Qt::AlignCenter, title);
+  // Day name headers only; the month/year lives in RangeCalendarWidget's header
+  // controls, so this grid is intentionally title-less — do NOT paint an
+  // "MMMM yyyy" title here (it would overdraw the weekday row / calendar).
 
   // Day name headers
   p.setFont(font());
