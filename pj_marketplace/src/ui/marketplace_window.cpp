@@ -650,7 +650,10 @@ void MarketplaceWindow::onActionButtonClicked(const QString& ext_id) {
     return;
   }
 
-  for (const auto& ext : filtered_) {
+  // Resolve against extensions_ (all loaded), not filtered_: a queued click
+  // dispatched by processInstallQueue() must still be found even if the user
+  // changed the search/category filter and it is no longer in the visible set.
+  for (const auto& ext : extensions_) {
     if (ext.id != ext_id) {
       continue;
     }
@@ -732,6 +735,13 @@ void MarketplaceWindow::processInstallQueue() {
   if (!pending_clicks_.isEmpty()) {
     const QString next_id = pending_clicks_.takeFirst();
     onActionButtonClicked(next_id);
+    // If the dispatch didn't actually start an install (e.g. the extension is
+    // already installed or is "local newer" by now), no installFinished will
+    // fire to advance the queue — keep draining so one dead entry can't stall
+    // the rest.
+    if (active_install_id_.isEmpty()) {
+      processInstallQueue();
+    }
     return;
   }
   if (!update_queue_.isEmpty()) {
