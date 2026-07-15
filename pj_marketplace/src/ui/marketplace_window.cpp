@@ -605,9 +605,13 @@ void MarketplaceWindow::updateDiagnosticsButton() {
 // ─── Slots ────────────────────────────────────────────────────────────────────
 
 void MarketplaceWindow::onSearchChanged(const QString& /*text*/) {
+  // Filtering is a user action like Refresh/Install: clear a sticky error so the
+  // "K of N shown" count applyFilters() emits isn't suppressed by setStatus().
+  clearStickyStatus();
   applyFilters();
 }
 void MarketplaceWindow::onCategoryChanged(int /*index*/) {
+  clearStickyStatus();
   applyFilters();
 }
 
