@@ -452,22 +452,61 @@ TEST(SessionManagerParserRaceTest, ConcurrentRegisterAndBindIsSafe) {
 
   constexpr int kIterations = 5000;
   std::atomic<bool> writer_done{false};
+  std::atomic<bool> writer_at_handoff{false};
+  std::atomic<bool> reader_has_snapshot{false};
+  std::atomic<bool> handoff_replacement_done{false};
 
   std::thread writer([&] {
     for (int iteration = 0; iteration < kIterations; ++iteration) {
+      // Coordinate one replacement so the reader deterministically holds the
+      // prior binding across it. Without this handoff, a fast runner can finish
+      // all 5,000 writes before the reader is scheduled, which tests scheduler
+      // luck instead of the keepalive contract.
+      const bool handoff = iteration == kIterations / 2;
+      if (handoff) {
+        writer_at_handoff.store(true, std::memory_order_release);
+        while (!reader_has_snapshot.load(std::memory_order_acquire)) {
+          std::this_thread::yield();
+        }
+      }
+
       // Each registration overwrites the slot, dropping the previous handle —
       // exactly the cross-thread replacement that used to free a parser out from
       // under a reader holding only a raw pointer.
       session.registerObjectTopicParser(topic, makeNoopHandle());
+      if (handoff) {
+        handoff_replacement_done.store(true, std::memory_order_release);
+      }
     }
     writer_done.store(true, std::memory_order_release);
   });
+
+  while (!writer_at_handoff.load(std::memory_order_acquire)) {
+    std::this_thread::yield();
+  }
+
+  // Keep this snapshot alive while the writer replaces its slot, then
+  // dereference the old handle. This is the lifetime edge the test protects.
+  PJ::SessionManager::ParserBinding handoff_binding = session.parserBindingForObjectTopic(topic);
+  const bool handoff_binding_valid = static_cast<bool>(handoff_binding);
+  reader_has_snapshot.store(true, std::memory_order_release);
+  while (!handoff_replacement_done.load(std::memory_order_acquire)) {
+    std::this_thread::yield();
+  }
 
   // Reader loop: take a per-use snapshot, and when truthy, dereference the parser
   // through the binding's keepalive — the keepalive is what must keep a replaced
   // parser alive for the duration of this access.
   std::size_t valid_bindings = 0;
   std::size_t manifest_bytes = 0;  // sink so the manifest read is not optimized away
+  if (handoff_binding_valid) {
+    const auto* handle = static_cast<const PJ::MessageParserHandle*>(handoff_binding.keepalive.get());
+    manifest_bytes += handle->manifest().size();
+    ++valid_bindings;
+  } else {
+    ADD_FAILURE() << "seeded parser binding disappeared before the coordinated replacement";
+  }
+
   while (!writer_done.load(std::memory_order_acquire)) {
     PJ::SessionManager::ParserBinding binding = session.parserBindingForObjectTopic(topic);
     if (binding) {
