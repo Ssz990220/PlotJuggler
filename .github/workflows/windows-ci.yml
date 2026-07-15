@@ -244,6 +244,10 @@ jobs:
           # Windows-CI-only; Linux links CPython statically.
           conan_remotes=(-r=conancenter)
           if [[ "$PJ_USE_JFROG" == "true" ]]; then
+            bash .github/scripts/sync-conan-recipes.sh \
+              -s build_type=RelWithDebInfo -s compiler.cppstd=20 \
+              -o "cpython/*:shared=True" -s "cpython/*:build_type=Release" \
+              -c tools.cmake.cmaketoolchain:generator="Ninja Multi-Config"
             conan_remotes=(-r=plotjuggler-conan -r=conancenter)
           fi
           conan_log="${RUNNER_TEMP}/pj4-conan-install.log"

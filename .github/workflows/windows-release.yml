@@ -245,6 +245,10 @@ jobs:
           # so the embedded interpreter must link shared (Release CRT, matching the
           # RelWithDebInfo /MD graph). Ninja Multi-Config so sccache's compiler
           # launcher is honoured (VS/MSBuild ignores it).
+          bash .github/scripts/sync-conan-recipes.sh \
+            -s build_type=RelWithDebInfo -s compiler.cppstd=20 \
+            -o "cpython/*:shared=True" -s "cpython/*:build_type=Release" \
+            -c tools.cmake.cmaketoolchain:generator="Ninja Multi-Config"
           conan_remotes=(-r=plotjuggler-conan -r=conancenter)
           conan_log="${RUNNER_TEMP}/pj4-conan-install.log"
           conan install . --output-folder=build --build=missing "${conan_remotes[@]}" \

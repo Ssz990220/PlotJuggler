@@ -298,6 +298,8 @@ jobs:
           conan profile detect --force
           conan_remotes=(-r=conancenter)
           if [[ "$PJ_USE_JFROG" == "true" ]]; then
+            bash .github/scripts/sync-conan-recipes.sh \
+              -s build_type=RelWithDebInfo -s compiler.cppstd=20
             conan_remotes=(-r=plotjuggler-conan -r=conancenter)
           fi
           conan_log="${RUNNER_TEMP}/pj4-conan-install.log"
@@ -538,6 +540,14 @@ jobs:
           ccache --set-config=max_size=1G
           ccache --set-config=compression=true
           ccache -z
+
+      - name: Refresh ConanCenter recipe revisions in JFrog
+        if: steps.conan_remote.outputs.authenticated == 'true'
+        shell: bash
+        run: |
+          conan profile detect --force
+          bash .github/scripts/sync-conan-recipes.sh \
+            -s build_type=RelWithDebInfo -s compiler.cppstd=20
 
       - name: Build + run foundation tests under ThreadSanitizer
         run: ./build.sh --tsan
