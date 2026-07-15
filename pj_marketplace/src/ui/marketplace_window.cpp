@@ -307,6 +307,9 @@ void MarketplaceWindow::setupSignals() {
       ext_mgr_, &ExtensionManager::diagnosticReported, this,
       [this](const QString& /*id*/, const QString& message, bool is_error) {
         updateDiagnosticsButton();
+        // Seen live while the window is open — mark it surfaced so a later
+        // re-open doesn't show it again as if it were new.
+        ext_mgr_->markDiagnosticsSurfaced();
         if (is_error) {
           setStatus("Marketplace diagnostic: " + message, true);
         }
@@ -570,11 +573,15 @@ void MarketplaceWindow::showInstallProgress(const QString& verb) {
 }
 
 void MarketplaceWindow::showLatestDiagnostic() {
-  const QList<ExtensionDiagnostic> diagnostics = ext_mgr_->diagnostics();
-  if (diagnostics.isEmpty()) {
+  // Surface a diagnostic on window open ONLY if one arrived that hasn't been
+  // shown yet (e.g. a staged-promotion failure that happened at startup while
+  // no window was open). Re-showing the latest unconditionally on every re-open
+  // resurrected a stale error the user had already moved past.
+  if (!ext_mgr_->hasUnsurfacedDiagnostics()) {
     return;
   }
-  const ExtensionDiagnostic& diagnostic = diagnostics.back();
+  const ExtensionDiagnostic& diagnostic = ext_mgr_->diagnostics().back();
+  ext_mgr_->markDiagnosticsSurfaced();
   setStatus("Marketplace diagnostic: " + diagnostic.message, diagnostic.is_error);
 }
 

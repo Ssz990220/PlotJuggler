@@ -755,6 +755,15 @@ QList<ExtensionDiagnostic> ExtensionManager::diagnostics() const {
 
 void ExtensionManager::clearDiagnostics() {
   diagnostics_.clear();
+  diagnostics_surfaced_ = diagnostics_recorded_;
+}
+
+bool ExtensionManager::hasUnsurfacedDiagnostics() const {
+  return !diagnostics_.isEmpty() && diagnostics_recorded_ > diagnostics_surfaced_;
+}
+
+void ExtensionManager::markDiagnosticsSurfaced() {
+  diagnostics_surfaced_ = diagnostics_recorded_;
 }
 
 // ---------------------------------------------------------------------------
@@ -779,6 +788,7 @@ bool ExtensionManager::schedulePendingUninstall(const QString& path) {
 
 void ExtensionManager::reportDiagnostic(const QString& id, const QString& message, bool is_error) {
   diagnostics_.append(ExtensionDiagnostic{id, message, is_error, QDateTime::currentDateTimeUtc()});
+  ++diagnostics_recorded_;
   while (diagnostics_.size() > kMaxDiagnostics) {
     diagnostics_.removeFirst();
   }

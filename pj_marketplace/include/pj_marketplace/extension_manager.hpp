@@ -88,6 +88,16 @@ class ExtensionManager : public QObject {
   // Clears the in-memory diagnostic history.
   void clearDiagnostics();
 
+  // True when a diagnostic has been recorded that has not yet been surfaced to
+  // the user via markDiagnosticsSurfaced(). Lets the UI show a diagnostic on
+  // window open exactly once (diagnostics live here and persist across the
+  // per-open window instances), instead of re-showing a stale one every re-open.
+  bool hasUnsurfacedDiagnostics() const;
+
+  // Marks every diagnostic recorded so far as surfaced, so hasUnsurfacedDiagnostics()
+  // returns false until a newer one arrives.
+  void markDiagnosticsSurfaced();
+
   // Root directory where extension DSOs are discovered and managed.
   QString extensionsDir() const {
     return extensions_dir_;
@@ -193,6 +203,11 @@ class ExtensionManager : public QObject {
   // promotes a staged update; used for failure diagnostics.
   QString pending_backup_path_;
   QList<ExtensionDiagnostic> diagnostics_;
+  // Monotonic count of every diagnostic ever recorded (never reset by the
+  // kMaxDiagnostics ring-buffer trim), and how many have been surfaced to the
+  // user. total > surfaced means there is an unsurfaced diagnostic.
+  quint64 diagnostics_recorded_ = 0;
+  quint64 diagnostics_surfaced_ = 0;
 
   // Stored so we can disconnect cleanly after each operation completes.
   QMetaObject::Connection dl_progress_conn_;
