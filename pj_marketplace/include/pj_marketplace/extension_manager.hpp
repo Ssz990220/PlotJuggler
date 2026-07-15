@@ -161,6 +161,14 @@ class ExtensionManager : public QObject {
   // already populated from the embedded manifest.
   void registerInstalledExtension(const QString& id, const QString& dst, InstalledExtension record);
 
+  // Backs up (or removes) any directory under extensions_dir_ — other than
+  // `keep_dir` — whose embedded plugin id equals `id`. Called before promoting
+  // an install/update so a prior copy stored under a DIFFERENT directory name
+  // (e.g. a bundled plugin in "data-load-foo" for id "foo") is replaced instead
+  // of left behind as a duplicate that refreshInstalledFromDisk would then
+  // resolve non-deterministically by directory name.
+  void replaceConflictingInstallDirs(const QString& id, const QString& keep_dir);
+
   // Emits uninstallError + uninstallFinished(false) and records a diagnostic.
   void emitUninstallFailure(const QString& id, const QString& message);
 

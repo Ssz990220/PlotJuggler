@@ -391,6 +391,9 @@ void ExtensionManager::doInstall(const Extension& ext, bool staging, bool allow_
         }
 
         const QString dst = extRoot(extensions_dir_, ext.id);
+        // Replace any prior copy of this id stored under a different directory
+        // name so we don't leave a duplicate alongside the promoted "<id>" dir.
+        replaceConflictingInstallDirs(ext.id, dst);
         if (QDir(dst).exists() && !QDir(dst).removeRecursively()) {
           fail_after_extraction(QString("Could not replace existing extension directory \"%1\"").arg(dst));
           return;
@@ -517,6 +520,45 @@ void ExtensionManager::update(const Extension& ext) {
   doInstall(ext, /*staging=*/true, /*allow_existing=*/true);
 }
 
+void ExtensionManager::replaceConflictingInstallDirs(const QString& id, const QString& keep_dir) {
+  const QString keep = QDir::cleanPath(keep_dir);
+  const QString pending_clean = QDir::cleanPath(pending_dir_);
+  const QDir dir(extensions_dir_);
+  for (const QFileInfo& entry : dir.entryInfoList(QDir::Dirs | QDir::Hidden | QDir::System | QDir::NoDotAndDotDot)) {
+    const QString root = entry.absoluteFilePath();
+    const QString clean = QDir::cleanPath(root);
+    // Never touch the promotion target itself, the staging area, or transaction/
+    // quarantine scratch dirs.
+    if (clean == keep || clean == pending_clean) {
+      continue;
+    }
+    const QString name = entry.fileName();
+    if (isTransactionDirectoryName(name) || name.startsWith(kQuarantinePrefix)) {
+      continue;
+    }
+    const DirectoryDiscovery item = discoverExtensionDirectory(root);
+    if (!item.found_plugin || item.record.id != id) {
+      continue;  // ids are unique per extension, so only a true prior copy matches
+    }
+    // Move the shadow copy into the backup area (kept for recovery); fall back to
+    // outright removal if the rename fails. Either way it must leave extensions_dir_
+    // so the promoted "<id>" directory becomes the sole install of this extension.
+    QDir().mkpath(PlatformUtils::backupDir());
+    const QString backup = QDir(PlatformUtils::backupDir())
+                               .absoluteFilePath(id + "-replaced-" + QUuid::createUuid().toString(QUuid::Id128));
+    if (QDir().rename(root, backup)) {
+      qWarning(
+          "ExtensionManager: replaced prior install of '%s' at '%s' (backed up to '%s')", qPrintable(id),
+          qPrintable(root), qPrintable(backup));
+    } else if (QDir(root).removeRecursively()) {
+      qWarning("ExtensionManager: removed prior install of '%s' at '%s'", qPrintable(id), qPrintable(root));
+    } else {
+      qWarning("ExtensionManager: could not remove prior install of '%s' at '%s'", qPrintable(id), qPrintable(root));
+    }
+    installed_.remove(id);
+  }
+}
+
 void ExtensionManager::applyPendingInstalls() {
   const QDir pending(pending_dir_);
   if (!pending.exists()) {
@@ -582,6 +624,10 @@ void ExtensionManager::applyPendingInstalls() {
     }
 
     const QString dst = extRoot(extensions_dir_, intent.id);
+
+    // Replace any prior copy of this id stored under a different directory name
+    // (e.g. a bundled plugin) so promoting to "<id>" does not leave a duplicate.
+    replaceConflictingInstallDirs(intent.id, dst);
 
     // Back up the existing install before the staged version takes its place:
     // move the current dir aside first, so promoting an update never silently
@@ -800,10 +846,21 @@ void ExtensionManager::refreshInstalledFromDisk() {
       continue;
     }
     if (discovered.contains(item.record.id)) {
+      // Two directories embed the same id (e.g. a promoted update left alongside
+      // a differently-named prior copy). Keep the HIGHEST version rather than
+      // whichever the directory scan happened to hit first, so the resolution is
+      // deterministic and an update never loses to a stale lower-version copy.
+      const QVersionNumber existing = QVersionNumber::fromString(discovered[item.record.id].version);
+      const QVersionNumber candidate = QVersionNumber::fromString(item.record.version);
+      if (QVersionNumber::compare(candidate, existing) <= 0) {
+        qWarning(
+            "ExtensionManager: duplicate embedded id '%s' in '%s'; keeping higher version already found",
+            qPrintable(item.record.id), qPrintable(root));
+        continue;
+      }
       qWarning(
-          "ExtensionManager: duplicate embedded extension id '%s' in '%s'; keeping first", qPrintable(item.record.id),
-          qPrintable(root));
-      continue;
+          "ExtensionManager: duplicate embedded id '%s'; '%s' supersedes the lower-version copy",
+          qPrintable(item.record.id), qPrintable(root));
     }
     discovered[item.record.id] = item.record;
   }
