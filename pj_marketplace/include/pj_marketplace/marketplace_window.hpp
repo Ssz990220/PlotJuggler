@@ -121,6 +121,12 @@ class MarketplaceWindow : public Dialog {
   // or an empty string when nothing is waiting.
   QString queueSuffix() const;
 
+  // Shows an informational (non-error) status, UNLESS an install/update is in
+  // flight — then the status line belongs to that operation, so re-assert its
+  // progress instead of clobbering it with unrelated text (filter count,
+  // "Refreshing", "Ready", "Loading registry"). Errors still go via setStatus().
+  void setInfoStatus(const QString& msg);
+
   Ui::MarketplaceWindow* ui_ = nullptr;
   DownloadManager* download_mgr_ = nullptr;
   RegistryManager* registry_mgr_ = nullptr;

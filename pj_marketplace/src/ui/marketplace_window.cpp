@@ -176,7 +176,7 @@ void MarketplaceWindow::setupUi() {
 
 void MarketplaceWindow::setupSignals() {
   // RegistryManager
-  connect(registry_mgr_, &RegistryManager::fetchStarted, this, [this]() { setStatus("Loading registry..."); });
+  connect(registry_mgr_, &RegistryManager::fetchStarted, this, [this]() { setInfoStatus("Loading registry..."); });
 
   connect(registry_mgr_, &RegistryManager::fetchFinished, this, [this](bool success) {
     if (!success) {
@@ -188,7 +188,7 @@ void MarketplaceWindow::setupSignals() {
     clearStickyStatus();
     extensions_ = registry_mgr_->compatibleExtensions(PlatformUtils::currentPlatform());
     applyFilters();
-    setStatus("Ready — " + QString::number(extensions_.size()) + " extensions loaded");
+    setInfoStatus("Ready — " + QString::number(extensions_.size()) + " extensions loaded");
   });
 
   connect(ext_mgr_, &ExtensionManager::installPendingRestart, this, [this](const QString& id) {
@@ -529,7 +529,7 @@ void MarketplaceWindow::applyFilters() {
   }
 
   populateCards(/*preserve_scroll=*/false);
-  setStatus(QString::number(filtered_.size()) + " of " + QString::number(extensions_.size()) + " extensions shown");
+  setInfoStatus(QString::number(filtered_.size()) + " of " + QString::number(extensions_.size()) + " extensions shown");
 }
 
 void MarketplaceWindow::setStatus(const QString& msg, bool is_error) {
@@ -556,6 +556,17 @@ QString MarketplaceWindow::queueSuffix() const {
     return {};
   }
   return u"  ·  "_s + QString::number(queued) + u" queued"_s;
+}
+
+void MarketplaceWindow::setInfoStatus(const QString& msg) {
+  if (!active_install_id_.isEmpty()) {
+    // An install owns the status line; keep it showing the live progress rather
+    // than letting a filter/refresh/registry-load message desync it from the
+    // still-moving progress bar.
+    showInstallProgress();
+    return;
+  }
+  setStatus(msg);
 }
 
 void MarketplaceWindow::showInstallProgress(const QString& verb) {
@@ -602,7 +613,7 @@ void MarketplaceWindow::onCategoryChanged(int /*index*/) {
 
 void MarketplaceWindow::onRefreshClicked() {
   clearStickyStatus();
-  setStatus("Refreshing...");
+  setInfoStatus("Refreshing...");
   const auto before = ext_mgr_->installedExtensions();
   ext_mgr_->refreshInstalledFromDisk();
   if (!installedStatesEqual(ext_mgr_->installedExtensions(), before)) {
