@@ -37,6 +37,7 @@ jobs:
     timeout-minutes: 150
     permissions:
       contents: read
+      packages: read   # pull the canonical read-only Conan cache from ghcr.io
 
     env:
       # Share object-level MSVC results with the release and Pixi workflows.
@@ -81,20 +82,113 @@ jobs:
         with:
           arch: x64
 
-      - name: Restore public Conan cache for pull requests
-        # Pull requests cannot receive the deploy-capable JFrog token. Keep the
-        # existing main-branch Conan cache as a read-only migration/fork layer
-        # so an untrusted run reuses the last published closure instead of
-        # rebuilding every dependency. There is deliberately no matching save
-        # step: PR-scoped copies would consume the repository's shared cache
-        # budget, while restore-keys can read the newest default-branch entry.
+      - name: Setup oras for public Conan cache
+        id: setup_oras
         if: github.event_name == 'pull_request' || github.repository != 'PlotJuggler/PJ4'
+        continue-on-error: true
+        uses: oras-project/setup-oras@v1
+        with:
+          version: "1.3.0"
+
+      - name: Setup oras (manual download fallback)
+        id: setup_oras_fallback
+        if: >-
+          (github.event_name == 'pull_request' || github.repository != 'PlotJuggler/PJ4') &&
+          steps.setup_oras.outcome == 'failure'
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          $version = "1.3.0"
+          $url = "https://github.com/oras-project/oras/releases/download/v$version/oras_${version}_windows_amd64.zip"
+          $zip = Join-Path $env:RUNNER_TEMP "oras.zip"
+          $installDir = Join-Path $env:RUNNER_TEMP "oras-bin"
+          New-Item -ItemType Directory -Force -Path $installDir | Out-Null
+
+          $attempts = 0
+          while ($attempts -lt 5) {
+            try {
+              Invoke-WebRequest -Uri $url -OutFile $zip -UseBasicParsing
+              break
+            } catch {
+              $attempts++
+              if ($attempts -ge 5) { throw }
+              $delay = [math]::Pow(2, $attempts) * 5
+              Write-Host "Download attempt $attempts failed: $_. Retry in ${delay}s..."
+              Start-Sleep -Seconds $delay
+            }
+          }
+          Expand-Archive -Path $zip -DestinationPath $installDir -Force
+          "$installDir" | Out-File -FilePath $env:GITHUB_PATH -Append
+          & "$installDir\oras.exe" version
+
+      - name: Compute public Conan cache tag
+        id: public_conan_cache
+        if: github.event_name == 'pull_request' || github.repository != 'PlotJuggler/PJ4'
+        shell: pwsh
+        run: |
+          # Match the immutable cache identity published by the proven
+          # push-to-main Windows workflow. JFrog remains authoritative for
+          # trusted runs; this OCI artifact is a read-only PR/fork fallback.
+          $cacheVersion = "v6"
+          $fileHash = (Get-FileHash conanfile.txt -Algorithm SHA256).Hash.Substring(0, 16).ToLower()
+          $hash = "$cacheVersion-$fileHash"
+          $tag = "ghcr.io/plotjuggler/pj4-conan-cache:windows-msvc-relwithdebinfo-$hash"
+          "hash=$hash" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          "tag=$tag" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          "restore_prefix=conan-windows-msvc-relwithdebinfo-$cacheVersion-" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          Write-Host "Public cache tag: $tag"
+
+      - name: Login to ghcr.io for public Conan cache
+        if: >-
+          (github.event_name == 'pull_request' || github.repository != 'PlotJuggler/PJ4') &&
+          github.repository_owner == 'PlotJuggler' &&
+          (steps.setup_oras.outcome == 'success' || steps.setup_oras_fallback.outcome == 'success')
+        shell: pwsh
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $env:GHCR_TOKEN | oras login ghcr.io -u $env:GITHUB_ACTOR --password-stdin
+
+      - name: Restore public Conan cache from ghcr.io
+        if: >-
+          (github.event_name == 'pull_request' || github.repository != 'PlotJuggler/PJ4') &&
+          (steps.setup_oras.outcome == 'success' || steps.setup_oras_fallback.outcome == 'success')
+        shell: pwsh
+        run: |
+          $tag = "${{ steps.public_conan_cache.outputs.tag }}"
+          $pullDir = Join-Path $env:RUNNER_TEMP "conan-cache-pull"
+          New-Item -ItemType Directory -Force -Path $pullDir | Out-Null
+          Push-Location $pullDir
+          try {
+            oras pull $tag 2>&1 | Out-Host
+            $pulled = $LASTEXITCODE
+          } finally {
+            Pop-Location
+          }
+          $tarball = Join-Path $pullDir "conan-cache.tar.zst"
+          if ($pulled -eq 0 -and (Test-Path $tarball)) {
+            Write-Host "Cache HIT: extracting $tarball"
+            New-Item -ItemType Directory -Force -Path "$env:USERPROFILE\.conan2" | Out-Null
+            tar --zstd -xf $tarball -C $env:USERPROFILE
+            "CONAN_CACHE_HIT=1" | Out-File -FilePath $env:GITHUB_ENV -Append
+          } else {
+            Write-Host "Cache MISS for $tag; ConanCenter remains available as a fallback"
+          }
+          $global:LASTEXITCODE = 0
+
+      - name: Restore public Conan cache from GitHub Actions cache
+        # Tertiary fallback if the OCI registry or oras setup is unavailable.
+        # There is deliberately no matching save step: per-PR copies would
+        # consume the repository's shared Actions-cache budget.
+        if: >-
+          (github.event_name == 'pull_request' || github.repository != 'PlotJuggler/PJ4') &&
+          env.CONAN_CACHE_HIT != '1'
         uses: actions/cache/restore@v5
         with:
           path: ~/.conan2
-          key: conan-windows-msvc-relwithdebinfo-v6-${{ hashFiles('conanfile.txt') }}
+          key: conan-windows-msvc-relwithdebinfo-${{ steps.public_conan_cache.outputs.hash }}
           restore-keys: |
-            conan-windows-msvc-relwithdebinfo-v6-
+            ${{ steps.public_conan_cache.outputs.restore_prefix }}
 
       - name: Configure public Conan repository for pull requests
         if: github.event_name == 'pull_request' || github.repository != 'PlotJuggler/PJ4'
