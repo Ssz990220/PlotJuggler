@@ -2,8 +2,9 @@
 
 A self-contained Windows installer for PJ4, built with the **Qt Installer
 Framework** (IFW) — the same mechanism PlotJuggler 3 uses. Output is a single
-offline `PlotJuggler-<version>-Windows-x64.exe`: a wizard that installs the app
-with a Start-Menu + Desktop shortcut and a maintenance/uninstall tool.
+offline `<YYYY.MM.DD>.PlotJuggler-<version>-Windows-x64.<main-commit>.exe` (dated,
+and stamped with the `main` commit hash): a wizard that installs the app with a
+Start-Menu + Desktop shortcut and a maintenance/uninstall tool.
 
 There is **no portable-zip path** — the deployment target is this installer.
 

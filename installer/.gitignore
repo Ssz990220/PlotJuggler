@@ -3,4 +3,6 @@
 # safety net in case a legacy in-tree stage is still around locally.
 packages/io.plotjuggler.application/data/
 # Output produced by build_windows_installer.ps1 -OutDir <default '.'>.
-**/PlotJuggler-*-Windows-x64.exe
+# Name is <YYYY.MM.DD>.PlotJuggler-<Version>-Windows-x64.<main-commit>.exe, so the
+# glob is broad enough to catch the date prefix and commit suffix.
+**/*PlotJuggler-*Windows-x64*.exe

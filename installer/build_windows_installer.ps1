@@ -19,7 +19,7 @@
     5. copy the FFmpeg + CPython + other Conan-shared runtime DLLs from the
        Conan cache that produced the build (constrained to package bin dirs)
     6. render config.xml / package.xml from templates into the stage tree
-    7. binarycreator --offline-only -> PlotJuggler-<Version>-Windows-x64.exe
+    7. binarycreator --offline-only -> <YYYY.MM.DD>.PlotJuggler-<Version>-Windows-x64.<main-commit>.exe
 
   This does NOT build the app (only, optionally, the plugins). Run it AFTER a
   Windows build of the app, e.g.
@@ -443,7 +443,19 @@ foreach ($f in Get-ChildItem (Join-Path $pkgSrc "meta") -File | Where-Object { $
 
 # --- build the installer ---------------------------------------------------
 if (-not (Test-Path $OutDir)) { New-Item -ItemType Directory -Force -Path $OutDir | Out-Null }
-$outExe = Join-Path (Resolve-Path $OutDir) "PlotJuggler-$Version-Windows-x64.exe"
+# Artifact name: <YYYY.MM.DD>.PlotJuggler-<Version>-Windows-x64.<main-commit>.exe
+# The commit hash is deliberately taken from MAIN (not the current/checked-out
+# branch), so the name pins the artifact to the mainline commit. Resolve local
+# `main`, falling back to the `origin/main` tracking ref. (EAP='Continue' so a
+# failed rev-parse falls through instead of aborting under the script's 'Stop'.)
+$dateStamp = Get-Date -Format 'yyyy.MM.dd'
+$prevEAP = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
+$mainHash = (& git -C $repoRoot rev-parse --short --verify main 2>$null | Select-Object -First 1)
+if (-not $mainHash) { $mainHash = (& git -C $repoRoot rev-parse --short --verify origin/main 2>$null | Select-Object -First 1) }
+$ErrorActionPreference = $prevEAP
+if (-not $mainHash) { Die "Could not resolve the 'main' commit hash (tried 'main' and 'origin/main' in $repoRoot). Fetch main first: git fetch origin main." }
+$mainHash = "$mainHash".Trim()
+$outExe = Join-Path (Resolve-Path $OutDir) "$dateStamp.PlotJuggler-$Version-Windows-x64.$mainHash.exe"
 Info "running binarycreator -> $outExe"
 & $binarycreator --offline-only -c (Join-Path $StageDir "config.xml") -p $stagePackages $outExe
 if ($LASTEXITCODE -ne 0) { Die "binarycreator failed (exit $LASTEXITCODE)." }
