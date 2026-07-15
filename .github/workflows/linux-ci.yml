@@ -287,24 +287,49 @@ jobs:
           ccache --set-config=compression=true
           ccache -z
 
-      - name: Build
-        run: ./build.sh
-
-      - name: Publish Conan packages to JFrog
-        if: steps.conan_remote.outputs.authenticated == 'true'
+      - name: Conan install
+        # Match the proven Windows sequencing: resolve/build the dependency
+        # graph, publish it immediately, then compile PlotJuggler. A later app
+        # compile failure must not discard an otherwise reusable Conan closure.
+        id: conan_install
         shell: bash
         run: |
-          # Upload both downloaded recipes and any Linux binaries built by
-          # --build=missing. Existing revisions are skipped by Conan.
+          set -euo pipefail
+          conan profile detect --force
+          conan_remotes=(-r=conancenter)
+          if [[ "$PJ_USE_JFROG" == "true" ]]; then
+            conan_remotes=(-r=plotjuggler-conan -r=conancenter)
+          fi
+          conan_log="${RUNNER_TEMP}/pj4-conan-install.log"
+          conan install . --output-folder=build --build=missing "${conan_remotes[@]}" \
+            -s build_type=RelWithDebInfo -s compiler.cppstd=20 \
+            2>&1 | tee "$conan_log"
+          if grep -q "Building from source" "$conan_log"; then
+            echo "::notice::Conan built missing Linux binaries; trusted jobs will publish them to JFrog."
+          fi
+
+      - name: Publish Conan packages to JFrog
+        if: steps.conan_install.outcome == 'success' && steps.conan_remote.outputs.authenticated == 'true'
+        shell: bash
+        run: |
+          # Upload both downloaded recipes and Linux binaries built by
+          # --build=missing before compiling the application. Existing
+          # revisions are skipped by Conan.
           conan upload "*" -r=plotjuggler-conan --confirm \
             -cc core.upload:parallel=4
 
       - name: Remove JFrog credentials from Conan home
-        # ~/.conan2 is archived below. Logout even when the build/upload fails
+        # ~/.conan2 is archived below. Logout even when install/upload fails
         # so a deploy-capable token can never enter GHCR or Actions caches.
         if: always() && steps.conan_remote.outputs.authenticated == 'true'
         shell: bash
         run: conan remote logout plotjuggler-conan
+
+      - name: Build
+        # Conan already generated build/conan_toolchain.cmake above. Do not
+        # resolve the graph twice (and do not require JFrog credentials during
+        # the much longer application compile).
+        run: ./build.sh --skip-conan-install
 
       - name: Save Conan cache to ghcr.io
         # Only push from the canonical repo on real pushes (forks lack write

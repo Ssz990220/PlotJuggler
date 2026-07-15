@@ -12,10 +12,12 @@ QT_DIR="${SCRIPT_DIR}/.qt/${PJ_QT_VERSION}/gcc_64"
 # RelWithDebInfo configure, so the Conan dependency closure is reused as-is (no
 # Debug rebuild) and only our own sources are instrumented.
 TSAN=0
+SKIP_CONAN_INSTALL=0
 for arg in "$@"; do
   case "$arg" in
     --tsan) TSAN=1 ;;
-    *) echo "unknown argument: $arg (supported: --tsan)" >&2; exit 2 ;;
+    --skip-conan-install) SKIP_CONAN_INSTALL=1 ;;
+    *) echo "unknown argument: $arg (supported: --tsan, --skip-conan-install)" >&2; exit 2 ;;
   esac
 done
 
@@ -47,8 +49,13 @@ TSAN_TESTS=(engine_thread_safety_test engine_concurrency_test)
 if [[ "$TSAN" == "1" ]]; then
   BUILD_DIR="${SCRIPT_DIR}/build-tsan"
 
-  conan install "$SCRIPT_DIR" --output-folder="$BUILD_DIR" --build=missing \
-    -s build_type=RelWithDebInfo -s compiler.cppstd=20 "${CONAN_REMOTE_ARGS[@]}"
+  if [[ "$SKIP_CONAN_INSTALL" == "0" ]]; then
+    conan install "$SCRIPT_DIR" --output-folder="$BUILD_DIR" --build=missing \
+      -s build_type=RelWithDebInfo -s compiler.cppstd=20 "${CONAN_REMOTE_ARGS[@]}"
+  elif [[ ! -f "$BUILD_DIR/conan_toolchain.cmake" ]]; then
+    echo "Missing $BUILD_DIR/conan_toolchain.cmake; run Conan install first." >&2
+    exit 1
+  fi
 
   # PJ4_BUILD_APP=OFF + building only the foundation test targets keeps Qt out of
   # the picture entirely (no Qt code is compiled), even though configure still
@@ -77,8 +84,13 @@ BUILD_DIR="${SCRIPT_DIR}/build"
 # Pin resolution to the explicit remote list selected above. A developer machine
 # may have unrelated private remotes that host forked recipes under a user
 # channel; those must never shadow PJ4's intended dependency graph.
-conan install "$SCRIPT_DIR" --output-folder="$BUILD_DIR" --build=missing \
-  -s build_type=RelWithDebInfo -s compiler.cppstd=20 "${CONAN_REMOTE_ARGS[@]}"
+if [[ "$SKIP_CONAN_INSTALL" == "0" ]]; then
+  conan install "$SCRIPT_DIR" --output-folder="$BUILD_DIR" --build=missing \
+    -s build_type=RelWithDebInfo -s compiler.cppstd=20 "${CONAN_REMOTE_ARGS[@]}"
+elif [[ ! -f "$BUILD_DIR/conan_toolchain.cmake" ]]; then
+  echo "Missing $BUILD_DIR/conan_toolchain.cmake; run Conan install first." >&2
+  exit 1
+fi
 
 cmake -S "$SCRIPT_DIR" -B "$BUILD_DIR" \
   -DCMAKE_TOOLCHAIN_FILE="$BUILD_DIR/conan_toolchain.cmake" \
