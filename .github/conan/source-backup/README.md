@@ -16,9 +16,8 @@ uses for URDF mesh loading) has no source of its own: its Conan recipe downloads
 **zlib's** source tarball (minizip lives in zlib's `contrib/minizip/`) from a
 single URL, `https://zlib.net/fossils/zlib-1.2.13.tar.gz` — and zlib.net rejects
 GitHub-runner IPs with HTTP 415. Any cold Windows CI build was therefore a
-lottery: runs died mid-`conan install`, and one such death got persisted as a
-partial Conan cache blob (see the save-gating fix in `windows-ci.yml`), turning
-an intermittent network failure into a permanent red/green coin flip.
+lottery: runs could die mid-`conan install` before the missing binary package
+was available in the PlotJuggler Conan repository.
 
 The recipe for zlib itself carries a GitHub mirror URL and never fails; the
 minizip recipe simply lacks one. An upstream PR adding the mirror to

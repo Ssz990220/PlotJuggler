@@ -73,6 +73,27 @@ modules there too.
   mandatory. Use `-SkipPlugins` for an app-only installer, or point
   `-PluginRegistryUrl` at a local registry mirror.
 
+## GitHub Actions Conan repository
+
+The Windows CI and release workflows first resolve Conan 2 packages through the
+shared `plotjuggler-conan` repository at
+`https://plotjuggler.jfrog.io/artifactory/api/conan/plotjuggler-conan`. Configure
+these repository-level GitHub Actions settings before dispatching a build:
+
+- Variable `JFROG_USER`: the username shown by the JFrog profile menu (often the
+  account email address).
+- Secret `JFROG_TOKEN`: a scoped JFrog identity/access token with read and
+  deploy/write access to the repository.
+
+Trusted push and manual jobs authenticate, install with
+`-r=plotjuggler-conan -r=conancenter`, and publish only missing Conan revisions
+to JFrog. This requires one local Conan repository in JFrog; an Artifactory
+remote proxy and virtual repository are not required. Pull-request and
+noncanonical-repository jobs never reference the JFrog credential; Windows CI
+uses public ConanCenter for those jobs and never uploads. Release jobs require
+the JFrog settings and fail early with an actionable error when either is
+missing. No workflow archives or restores the complete `~/.conan2` directory.
+
 ## Usage
 
 From the repo root, after a Windows build of the app — a plain run downloads the

@@ -8,11 +8,10 @@ name: Release Windows Installer
 # the curated Windows set from pj-plugin-registry, verifies every artifact, and
 # proves every DLL loads in the staged app before creating the installer.
 #
-# Cache: ports the three cache layers from windows-ci.yml so the build is not
-# cold every dispatch.
+# Cache/repository layers shared with windows-ci.yml:
 #   - Qt kit via actions/cache
 #   - sccache via actions/cache (585 TU compiler cache)
-#   - Conan closure via ghcr.io OCI + actions/cache fallback (>10 GB)
+#   - Conan packages via PlotJuggler's JFrog repository, then ConanCenter
 #
 # Triggers:
 #   - workflow_dispatch -> build the installer from any branch (artifact only)
@@ -26,7 +25,6 @@ on:
 
 permissions:
   contents: write     # softprops/action-gh-release needs write to create/update the Release
-  packages: write     # push/pull the Conan cache OCI artifact on ghcr.io
 
 concurrency:
   group: windows-release-${{ github.ref }}
@@ -46,7 +44,7 @@ jobs:
       # persisted cache, sccache's local disk starts empty every run — a 0% hit
       # rate that forces all ~585 translation units to recompile cold (~30 min).
       # SCCACHE_CACHE_SIZE bounds the dir so the cached artifact stays well under
-      # the 10 GB Actions-cache budget shared with the Conan/Qt caches.
+      # the Actions-cache budget shared with the Qt cache.
       SCCACHE_DIR: ${{ github.workspace }}/.sccache
       SCCACHE_CACHE_SIZE: "2G"
 
@@ -81,147 +79,49 @@ jobs:
       - name: Install Conan
         uses: conan-io/setup-conan@v1
         with:
-          # Backed by ghcr.io via oras (see steps below) instead of
-          # actions/cache (10 GB soft cap, 7-day eviction, branch-scoped).
-          # ghcr.io public repos: unlimited storage, tags survive forever,
-          # cross-branch.
+          # Packages are resolved and published through JFrog below. Avoid
+          # duplicating the complete ~/.conan2 directory in Actions cache.
           cache_packages: false
 
       - name: Install cmake and ninja
         run: pip install cmake ninja
 
       - name: Set up MSVC environment
-        # The detected Conan profile is part of the cache identity, so MSVC must
-        # be active before the cache tag is computed. This prevents binaries
-        # built with one runner toolset (for example msvc/193) from being
-        # restored as a false hit for another (msvc/194).
+        # Conan's package ID includes the detected compiler settings, so activate
+        # MSVC before detecting the profile or resolving Artifactory binaries.
         uses: ilammy/msvc-dev-cmd@v1
         with:
           arch: x64
 
-      # ─────────────────────────── Conan cache: restore ───────────────────────────
+      # ─────────────────────────── Conan repository ───────────────────────────
 
-      - name: Setup oras (OCI Registry As Storage)
-        # Primary install path. continue-on-error so a 5xx on the github.com
-        # release CDN doesn't kill CI — we have a fallback below, and worst
-        # case we degrade to "no Conan cache this run" (build still completes).
-        id: setup_oras
-        uses: oras-project/setup-oras@v1
-        with:
-          version: "1.3.0"
-        continue-on-error: true
-
-      - name: Setup oras (manual download fallback)
-        id: setup_oras_fallback
-        if: steps.setup_oras.outcome == 'failure'
-        continue-on-error: true
-        shell: pwsh
-        run: |
-          $version = "1.3.0"
-          $url = "https://github.com/oras-project/oras/releases/download/v$version/oras_${version}_windows_amd64.zip"
-          $zip = Join-Path $env:RUNNER_TEMP "oras.zip"
-          $installDir = Join-Path $env:RUNNER_TEMP "oras-bin"
-          New-Item -ItemType Directory -Force -Path $installDir | Out-Null
-          $attempts = 0
-          while ($attempts -lt 5) {
-            try { Invoke-WebRequest -Uri $url -OutFile $zip -UseBasicParsing; break }
-            catch {
-              $attempts++
-              if ($attempts -ge 5) { throw }
-              Start-Sleep -Seconds ([math]::Pow(2, $attempts) * 5)
-            }
-          }
-          Expand-Archive -Path $zip -DestinationPath $installDir -Force
-          "$installDir" | Out-File -FilePath $env:GITHUB_PATH -Append
-
-      - name: Compute Conan cache tag
-        # Cache identity includes both dependency declarations and the effective
-        # Conan/MSVC profile. The old key only hashed conanfile.txt, so an msvc/193
-        # blob restored as a HIT on an msvc/194 runner, rebuilt ~30 packages, and
-        # then never healed because HITs were not republished.
-        id: conan_cache
-        shell: pwsh
-        run: |
-          $cacheVersion = "v7"
-          conan profile detect --force
-          $profilePath = (& conan profile path default | Out-String).Trim()
-          if (-not (Test-Path -LiteralPath $profilePath -PathType Leaf)) {
-            throw "Conan default profile not found at '$profilePath'"
-          }
-          $profileFingerprintPath = Join-Path $env:RUNNER_TEMP "pj4-conan-cache-profile.txt"
-          $profileText = Get-Content -LiteralPath $profilePath -Raw
-          @(
-            $profileText.TrimEnd(),
-            "[workflow-overrides]",
-            "build_type=RelWithDebInfo",
-            "compiler.cppstd=20",
-            "cpython/*:shared=True",
-            "cpython/*:build_type=Release",
-            "tools.cmake.cmaketoolchain:generator=Ninja Multi-Config"
-          ) -join "`n" | Set-Content -LiteralPath $profileFingerprintPath -NoNewline
-          $profileHash = (Get-FileHash $profileFingerprintPath -Algorithm SHA256).Hash.Substring(0, 16).ToLower()
-          $fileHash = (Get-FileHash conanfile.txt -Algorithm SHA256).Hash.Substring(0, 16).ToLower()
-          $hash = "$cacheVersion-$profileHash-$fileHash"
-          $owner = "${{ github.repository_owner }}".ToLower()
-          $tag = "ghcr.io/$owner/pj4-conan-cache:windows-msvc-relwithdebinfo-$hash"
-          "hash=$hash" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
-          "tag=$tag" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
-          "restore_prefix=conan-windows-msvc-relwithdebinfo-$cacheVersion-$profileHash-" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
-          Write-Host "Effective Conan profile:`n$profileText"
-          Write-Host "Profile fingerprint: $profileHash"
-          Write-Host "Cache tag: $tag"
-
-      - name: Login to ghcr.io
-        if: github.repository_owner == 'PlotJuggler' && (steps.setup_oras.outcome == 'success' || steps.setup_oras_fallback.outcome == 'success')
-        shell: pwsh
+      - name: Configure JFrog Conan repository
+        id: conan_remote
+        shell: bash
         env:
-          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          JFROG_USER: ${{ vars.JFROG_USER }}
+          JFROG_TOKEN: ${{ secrets.JFROG_TOKEN }}
         run: |
-          $env:GHCR_TOKEN | oras login ghcr.io -u $env:GITHUB_ACTOR --password-stdin
-
-      - name: Restore Conan cache from ghcr.io
-        if: github.repository_owner == 'PlotJuggler' && (steps.setup_oras.outcome == 'success' || steps.setup_oras_fallback.outcome == 'success')
-        shell: pwsh
-        run: |
-          $tag = "${{ steps.conan_cache.outputs.tag }}"
-          $pullDir = Join-Path $env:RUNNER_TEMP "conan-cache-pull"
-          New-Item -ItemType Directory -Force -Path $pullDir | Out-Null
-          Push-Location $pullDir
-          try {
-            oras pull $tag 2>&1 | Out-Host
-            $pulled = $LASTEXITCODE
-          } finally { Pop-Location }
-          $tarball = Join-Path $pullDir "conan-cache.tar.zst"
-          if ($pulled -eq 0 -and (Test-Path $tarball)) {
-            Write-Host "Cache HIT: extracting $tarball"
-            New-Item -ItemType Directory -Force -Path "$env:USERPROFILE\.conan2" | Out-Null
-            tar --zstd -xf $tarball -C $env:USERPROFILE
-            "CONAN_CACHE_HIT=1" | Out-File -FilePath $env:GITHUB_ENV -Append
-          } else {
-            Write-Host "Cache MISS for $tag (cold start or first build of this conanfile)"
-          }
-          $global:LASTEXITCODE = 0
-
-      - name: Restore Conan cache from GitHub Actions cache (fallback)
-        # Skipped when ghcr.io already produced a HIT — %USERPROFILE%\.conan2 is
-        # already populated. Fills the fork-build gap (no ghcr.io write there).
-        id: conan-gha-cache
-        if: env.CONAN_CACHE_HIT != '1'
-        uses: actions/cache/restore@v5
-        with:
-          path: ~/.conan2
-          key: conan-windows-msvc-relwithdebinfo-${{ steps.conan_cache.outputs.hash }}
-          restore-keys: |
-            ${{ steps.conan_cache.outputs.restore_prefix }}
+          set -euo pipefail
+          if [[ -z "$JFROG_USER" || -z "$JFROG_TOKEN" ]]; then
+            echo "::error::Configure the JFROG_USER Actions variable and JFROG_TOKEN Actions secret."
+            exit 1
+          fi
+          conan remote add plotjuggler-conan \
+            "https://plotjuggler.jfrog.io/artifactory/api/conan/plotjuggler-conan" \
+            --force --index=0
+          conan remote login plotjuggler-conan "$JFROG_USER" -p "$JFROG_TOKEN"
+          echo "PJ_USE_JFROG=true" >> "$GITHUB_ENV"
+          echo "authenticated=true" >> "$GITHUB_OUTPUT"
+          conan remote list
 
       - name: Seed Conan source download cache
         # Some third-party source tarballs live on hosts that reject
         # GitHub-runner IPs (zlib.net → HTTP 415). Those are versioned in-repo
         # under .github/conan/source-backup/, addressed by sha256, and copied
         # into Conan's source download cache here so source() fetches are
-        # served locally. Must run AFTER the Conan cache restores above (they
-        # untar a full ~/.conan2 that would clobber the global.conf line
-        # written here).
+        # served locally. The source cache is separate from the binary packages
+        # resolved through Artifactory.
         shell: pwsh
         run: |
           $cacheDir = (Join-Path $env:RUNNER_TEMP "conan-source-cache").Replace('\', '/')
@@ -313,9 +213,8 @@ jobs:
       # ─────────────────────────── Build ───────────────────────────
 
       - name: Conan install
-        # Own step so the save-cache steps below can gate on ITS outcome: a
-        # conan install that dies mid-graph must never publish its partial
-        # ~/.conan2 as the cache blob.
+        # Search the authenticated JFrog repository first, then public
+        # ConanCenter for packages that have not been uploaded yet.
         id: conan_install
         shell: bash
         run: |
@@ -324,16 +223,25 @@ jobs:
           # so the embedded interpreter must link shared (Release CRT, matching the
           # RelWithDebInfo /MD graph). Ninja Multi-Config so sccache's compiler
           # launcher is honoured (VS/MSBuild ignores it).
+          conan_remotes=(-r=plotjuggler-conan -r=conancenter)
           conan_log="${RUNNER_TEMP}/pj4-conan-install.log"
-          conan install . --output-folder=build --build=missing \
+          conan install . --output-folder=build --build=missing "${conan_remotes[@]}" \
             -s build_type=RelWithDebInfo -s compiler.cppstd=20 \
             -o "cpython/*:shared=True" -s "cpython/*:build_type=Release" \
             -c tools.cmake.cmaketoolchain:generator="Ninja Multi-Config" \
             2>&1 | tee "$conan_log"
           if grep -q "Building from source" "$conan_log"; then
-            echo "CONAN_CACHE_DIRTY=1" >> "$GITHUB_ENV"
-            echo "::notice::Conan built missing binaries; the OCI cache will be refreshed."
+            echo "::notice::Conan built missing binaries; they will be published to JFrog."
           fi
+
+      - name: Publish Conan packages to JFrog
+        if: steps.conan_install.outcome == 'success'
+        shell: bash
+        run: |
+          # Existing revisions are skipped. Seed both ConanCenter downloads and
+          # binaries built by --build=missing for the next Windows job.
+          conan upload "*" -r=plotjuggler-conan --confirm \
+            -cc core.upload:parallel=4
 
       - name: Build PlotJuggler 4 (app)
         shell: bash
@@ -397,7 +305,7 @@ jobs:
           generate_release_notes: true
           fail_on_unmatched_files: true
 
-      # ─────────────────────────── Cache: save ───────────────────────────
+      # ─────────────────────────── Compiler cache: save ───────────────────────────
 
       - name: Save sccache cache
         # Persist the now-warm compiler cache for the next run. always() so a
@@ -408,44 +316,3 @@ jobs:
         with:
           path: ${{ github.workspace }}/.sccache
           key: sccache-windows-msvc-relwithdebinfo-${{ github.sha }}
-
-      - name: Save Conan cache to ghcr.io
-        # Publish after a clean Conan install on a miss, or heal a nominal HIT
-        # when Conan still had to build missing binaries. A hit is not proof
-        # that the restored closure was complete.
-        if: |
-          always() &&
-          steps.conan_install.outcome == 'success' &&
-          github.repository == 'PlotJuggler/PJ4' &&
-          (env.CONAN_CACHE_HIT != '1' || env.CONAN_CACHE_DIRTY == '1') &&
-          (steps.setup_oras.outcome == 'success' || steps.setup_oras_fallback.outcome == 'success')
-        shell: pwsh
-        run: |
-          $tag = "${{ steps.conan_cache.outputs.tag }}"
-          $tarball = Join-Path $env:RUNNER_TEMP "conan-cache.tar.zst"
-          # Trim build trees before packing so the uploaded artifact only
-          # contains the package binaries consumers actually need.
-          conan cache clean "*" --build --source --temp
-          Write-Host "Packing ~/.conan2 -> $tarball"
-          tar --zstd -cf $tarball -C $env:USERPROFILE .conan2
-          $size = (Get-Item $tarball).Length / 1MB
-          Write-Host ("Compressed cache size: {0:N1} MB" -f $size)
-          Push-Location $env:RUNNER_TEMP
-          try {
-            oras push $tag "conan-cache.tar.zst:application/vnd.oci.image.layer.v1.tar+zstd"
-          } finally { Pop-Location }
-
-      - name: Trim Conan cache before GHA save
-        if: always() && steps.conan_install.outcome == 'success' && env.CONAN_CACHE_HIT != '1' && steps.conan-gha-cache.outputs.cache-hit != 'true'
-        shell: pwsh
-        run: conan cache clean "*" --build --source --temp; $global:LASTEXITCODE = 0
-
-      - name: Save Conan cache to GitHub Actions cache
-        # Persist under the exact conanfile hash so later runs restore it.
-        # Gated on a clean conan install (a mid-graph death must not persist a
-        # partial closure). Skipped on ghcr.io HIT or exact GHA-key hit.
-        if: always() && steps.conan_install.outcome == 'success' && env.CONAN_CACHE_HIT != '1' && steps.conan-gha-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v5
-        with:
-          path: ~/.conan2
-          key: conan-windows-msvc-relwithdebinfo-${{ steps.conan_cache.outputs.hash }}
